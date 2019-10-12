@@ -1578,7 +1578,7 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
 const int YEARLY_BLOCKCOUNT = 1051896; // Amount of Blocks per year
 
 // Proof of Stake miner's coin stake reward based on coin age spent (coin-days)
-int64_t GetProofOfStakeReward(int nHeight, int64_t nCoinAge, int64_t nFees)
+int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees)
 {
   int64_t nSubsidy = 1 * COIN;
 
