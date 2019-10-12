@@ -1,11 +1,11 @@
 <RCC>
     <qresource prefix="/icons">
-        <file alias="bitcoin">res/icons/denarius-80.png</file>
-        <file alias="denarius">res/icons/denarius-256.png</file>
-        <file alias="denarius128">res/icons/denarius-128.png</file>
-        <file alias="bitcoin_testnet">res/icons/denarius_testnet.png</file>
-        <file alias="toolbar">res/icons/denarius-16.png</file>
-        <file alias="toolbar_testnet">res/icons/denarius-16.png</file>
+        <file alias="bitcoin">res/icons/innova-80.png</file>
+        <file alias="innova">res/icons/innova-256.png</file>
+        <file alias="innova128">res/icons/innova-128.png</file>
+        <file alias="bitcoin_testnet">res/icons/innova_testnet.png</file>
+        <file alias="toolbar">res/icons/innova-16.png</file>
+        <file alias="toolbar_testnet">res/icons/innova-16.png</file>
         <file alias="address-book">res/icons/address-book.png</file>
         <file alias="quit">res/icons/quit.png</file>
         <file alias="send">res/icons/send.png</file>

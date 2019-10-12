@@ -1,35 +1,35 @@
-# Denarius [D]
+# Innova [INN]
 Tribus Algo PoW/PoS Hybrid Cryptocurrency
 
 ![logo](http://i.imgur.com/gIe5vnw.png)
 
-[![GitHub version](https://img.shields.io/github/release/carsenk/denarius.svg)](https://badge.fury.io/gh/carsenk%2Fdenarius)
-[![License: GPL v3](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/carsenk/denarius/blob/master/COPYING)
-[![Denarius downloads](https://img.shields.io/github/downloads/carsenk/denarius/total.svg)](https://github.com/carsenk/denarius/releases)
-[![Denarius lateat release downloads](https://img.shields.io/github/downloads/carsenk/denarius/latest/total)](https://github.com/carsenk/denarius/releases)
+[![GitHub version](https://img.shields.io/github/release/carsenk/innova.svg)](https://badge.fury.io/gh/carsenk%2Finnova)
+[![License: GPL v3](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/carsenk/innova/blob/master/COPYING)
+[![Innova downloads](https://img.shields.io/github/downloads/carsenk/innova/total.svg)](https://github.com/carsenk/innova/releases)
+[![Innova lateat release downloads](https://img.shields.io/github/downloads/carsenk/innova/latest/total)](https://github.com/carsenk/innova/releases)
 [![Join the chat at https://discord.gg/AcThv2y](https://img.shields.io/badge/Discord-Chat-blue.svg?logo=discord)](https://discord.gg/AcThv2y)
 
-[![HitCount](http://hits.dwyl.io/carsenk/denarius.svg)](http://hits.dwyl.io/carsenk/denarius)
+[![HitCount](http://hits.dwyl.io/carsenk/innova.svg)](http://hits.dwyl.io/carsenk/innova)
 <a href="https://discord.gg/UPpQy3n"><img src="https://discordapp.com/api/guilds/334361453320732673/embed.png" alt="Discord server" /></a>
 
-![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/carsenk/denarius.svg) ![GitHub repo size in bytes](https://img.shields.io/github/repo-size/carsenk/denarius.svg)
+![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/carsenk/innova.svg) ![GitHub repo size in bytes](https://img.shields.io/github/repo-size/carsenk/innova.svg)
 
-[![Snap Status](https://build.snapcraft.io/badge/carsenk/denarius.svg)](https://build.snapcraft.io/user/carsenk/denarius)
+[![Snap Status](https://build.snapcraft.io/badge/carsenk/innova.svg)](https://build.snapcraft.io/user/carsenk/innova)
 
-![Code Climate](https://codeclimate.com/github/carsenk/denarius/badges/gpa.svg)
+![Code Climate](https://codeclimate.com/github/carsenk/innova/badges/gpa.svg)
 
-[![Build Status](https://travis-ci.org/carsenk/denarius.svg?branch=master)](https://travis-ci.org/carsenk/denarius)
+[![Build Status](https://travis-ci.org/carsenk/innova.svg?branch=master)](https://travis-ci.org/carsenk/innova)
 
-[![Build history](https://buildstats.info/travisci/chart/carsenk/denarius?branch=master)](https://travis-ci.org/carsenk/denarius?branch=master)
+[![Build history](https://buildstats.info/travisci/chart/carsenk/innova?branch=master)](https://travis-ci.org/carsenk/innova?branch=master)
 
 Intro
 ==========================
-Denarius is a true optionally anonymous, untraceable, and secure hybrid cryptocurrency.
+Innova is a true optionally anonymous, untraceable, and secure hybrid cryptocurrency.
 
 Ticker: D
 
-Denarius [D] is an anonymous, untraceable, energy efficient, Proof-of-Work (New Tribus Algorithm) and Proof-of-Stake cryptocurrency.
-10,000,000 D will be created in approx. about 3 years during the PoW phase.
+Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (New Tribus Algorithm) and Proof-of-Stake cryptocurrency.
+10,000,000 INN will be created in approx. about 3 years during the PoW phase.
 
 Supported Operating Systems
 ==========================
@@ -37,13 +37,13 @@ Supported Operating Systems
 * Windows 64-bit
 * macOS 10.11+
 
-Install Denarius with Snap on any Linux Distro
+Install Innova with Snap on any Linux Distro
 ==========================
 * `sudo apt install snapd`
-* `sudo snap install denarius`
+* `sudo snap install innova`
 
-* `denarius` for running the QT
-* `denarius.daemon` for running denariusd
+* `innova` for running the QT
+* `innova.daemon` for running innovad
 
 Specifications
 ==========================
@@ -60,7 +60,7 @@ Specifications
 * RPC Port: 32369, Testnet RPC Port: 32368
 * Fortuna Stake Port: 9999, Testnet Port: 19999
 
-* D Magic Number: 0xb4eff2fa
+* INN Magic Number: 0xa23d7e5c
 * BIP44 CoinType: 116
 * Base58 Pubkey Decimal: 30
 * Base58 Scriptkey Decimal: 90
@@ -84,10 +84,10 @@ Technology
 
 LINKS
 ==========================
-* Official Website(https://denarius.io/)
-* Official Forums(https://denariustalk.org/)
-* Denarius Twitter(https://twitter.com/denariuscoin)
-* Denarius Discord Chat(https://discord.gg/C64HXbc)
+* Official Website(https://innova.io/)
+* Official Forums(https://innovatalk.org/)
+* Innova Twitter(https://twitter.com/innovacoin)
+* Innova Discord Chat(https://discord.gg/C64HXbc)
 
 ASCII CAST TUTORIALS
 ==========================
@@ -95,19 +95,19 @@ ASCII CAST TUTORIALS
 [![asciicast](https://asciinema.org/a/179362.png)](https://asciinema.org/a/179362)
 [![asciicast](https://asciinema.org/a/179355.png)](https://asciinema.org/a/179355)
 
-denariusqtubuntu.sh by Buzzkillb
+innovaqtubuntu.sh by Buzzkillb
 ===========================
-Compile the latest Denarius QT (Graphical Wallet) Ubuntu 16.04 or Ubuntu 18.04+
+Compile the latest Innova QT (Graphical Wallet) Ubuntu 16.04 or Ubuntu 18.04+
 
-Credits to Buzzkillb for the creation of this bash script, original repository: https://github.com/buzzkillb/denarius-qt/
+Credits to Buzzkillb for the creation of this bash script, original repository: https://github.com/buzzkillb/innova-qt/
 
-Compiles Denarius QT Ubuntu 16.04 or 18.04, Grabs latest chaindata, and populates denarius.conf with addnodes or can update a previous compile to the latest master branch.  
-```bash -c "$(wget -O - https://raw.githubusercontent.com/carsenk/denarius/master/denariusqtubuntu.sh)"```  
+Compiles Innova QT Ubuntu 16.04 or 18.04, Grabs latest chaindata, and populates innova.conf with addnodes or can update a previous compile to the latest master branch.  
+```bash -c "$(wget -O - https://raw.githubusercontent.com/carsenk/innova/master/innovaqtubuntu.sh)"```  
 
-To turn on nativetor in denarius.conf  
+To turn on nativetor in innova.conf  
 ```nativetor=1```  
 
-![Denarius Installer Menu](https://raw.githubusercontent.com/buzzkillb/denarius-qt/master/compile-menu.PNG)  
+![Innova Installer Menu](https://raw.githubusercontent.com/buzzkillb/innova-qt/master/compile-menu.PNG)  
 
 Development process
 ===========================
@@ -122,7 +122,7 @@ or are controversial.
 
 The master branch is regularly built and tested, but is not guaranteed
 to be completely stable. Tags are regularly created to indicate new
-stable release versions of Denarius.
+stable release versions of Innova.
 
 Feature branches are created when there are major new features being
 worked on by several people.

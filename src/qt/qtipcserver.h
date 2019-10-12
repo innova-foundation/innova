@@ -1,8 +1,8 @@
 #ifndef QTIPCSERVER_H
 #define QTIPCSERVER_H
 
-// Define Denarius-Qt message queue name
-#define BITCOINURI_QUEUE_NAME "DenariusURI"
+// Define Innova-Qt message queue name
+#define BITCOINURI_QUEUE_NAME "InnovaURI"
 
 void ipcScanRelay(int argc, char *argv[]);
 void ipcInit(int argc, char *argv[]);

@@ -19,9 +19,9 @@ QRCodeDialog::QRCodeDialog(const QString &addr, const QString &label, bool enabl
 {
     ui->setupUi(this);
     if (label.trimmed().isEmpty()) {
-        setWindowTitle(QString("Denarius - Generate QR Code"));
+        setWindowTitle(QString("Innova - Generate QR Code"));
     } else {
-        setWindowTitle(QString("Denarius - Generate QR Code for %1").arg(label));
+        setWindowTitle(QString("Innova - Generate QR Code for %1").arg(label));
     }
     ui->chkReqPayment->setVisible(enableReq);
     ui->lblAmount->setVisible(enableReq);
@@ -85,7 +85,7 @@ void QRCodeDialog::genCode()
 
 QString QRCodeDialog::getURI()
 {
-    QString ret = QString("denarius:%1").arg(address);
+    QString ret = QString("innova:%1").arg(address);
     int paramCount = 0;
 
     ui->outUri->clear();

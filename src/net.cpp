@@ -392,7 +392,7 @@ bool GetMyExternalIP(CNetAddr& ipRet)
 
             pszGet = "GET / HTTP/1.1\r\n"
                      "Host: checkip.dyndns.org\r\n"
-                     "User-Agent: Denarius\r\n"
+                     "User-Agent: Innova\r\n"
                      "Connection: close\r\n"
                      "\r\n";
 
@@ -411,7 +411,7 @@ bool GetMyExternalIP(CNetAddr& ipRet)
 
             pszGet = "GET /simple/ HTTP/1.1\r\n"
                      "Host: www.showmyip.com\r\n"
-                     "User-Agent: Denarius\r\n"
+                     "User-Agent: Innova\r\n"
                      "Connection: close\r\n"
                      "\r\n";
 
@@ -448,7 +448,7 @@ bool GetMyExternalIP_STUN(CNetAddr& ipRet) {
 void ThreadGetMyExternalIP(void* parg)
 {
     // Make this thread recognisable as the external IP detection thread
-    RenameThread("denarius-ext-ip");
+    RenameThread("innova-ext-ip");
 
     CNetAddr addrLocalHost;
     if (GetMyExternalIP_STUN(addrLocalHost)) //GetMyExternalIP by STUN instead now
@@ -981,7 +981,7 @@ void SocketSendData(CNode *pnode)
 void ThreadSocketHandler(void* parg)
 {
     // Make this thread recognisable as the networking thread
-    RenameThread("denarius-net");
+    RenameThread("innova-net");
 
     try
     {
@@ -1333,7 +1333,7 @@ void ThreadSocketHandler2(void* parg)
 void ThreadMapPort(void* parg)
 {
     // Make this thread recognisable as the UPnP thread
-    RenameThread("denarius-UPnP");
+    RenameThread("innova-UPnP");
 
     try
     {
@@ -1401,7 +1401,7 @@ void ThreadMapPort2(void* parg)
             }
         }
 
-        string strDesc = "Denarius " + FormatFullVersion();
+        string strDesc = "Innova " + FormatFullVersion();
 #ifndef UPNPDISCOVER_SUCCESS
         /* miniupnpc 1.5 */
         r = UPNP_AddPortMapping(urls.controlURL, data.first.servicetype,
@@ -1532,11 +1532,11 @@ void ThreadOnionSeed(void* parg)
 
 static const char *strDNSSeed[][2] = {
     {"dnsseed.hashbag.cc", "dnsseed.hashbag.cc"},
-    {"seed.denarius.host", "seed.denarius.host"},
-    {"dnsseed.denarius.guide", "dnsseed.denarius.guide"},
-    {"dnsseed.denarius.pro", "dnsseed.denarius.pro"},
-    {"mseed.denarius.guide", "mseed.denarius.guide"},
-    {"bseed.denarius.guide", "bseed.denarius.guide"}
+    {"seed.innova.host", "seed.innova.host"},
+    {"dnsseed.innova.guide", "dnsseed.innova.guide"},
+    {"dnsseed.innova.pro", "dnsseed.innova.pro"},
+    {"mseed.innova.guide", "mseed.innova.guide"},
+    {"bseed.innova.guide", "bseed.innova.guide"}
 };
 
 
@@ -1545,7 +1545,7 @@ void ThreadDNSAddressSeed(void* parg)
     if(!fNativeTor)
     {
         // Make this thread recognisable as the DNS seeding thread
-        RenameThread("denarius-dnsseed");
+        RenameThread("innova-dnsseed");
 
         try
         {
@@ -1643,7 +1643,7 @@ void ThreadDumpAddress2(void* parg)
 void ThreadDumpAddress(void* parg)
 {
     // Make this thread recognisable as the address dumping thread
-    RenameThread("denarius-adrdump");
+    RenameThread("innova-adrdump");
 
     try
     {
@@ -1658,7 +1658,7 @@ void ThreadDumpAddress(void* parg)
 void ThreadOpenConnections(void* parg)
 {
     // Make this thread recognisable as the connection opening thread
-    RenameThread("denarius-opencon");
+    RenameThread("innova-opencon");
 
     try
     {
@@ -1839,7 +1839,7 @@ void ThreadOpenConnections2(void* parg)
 void ThreadOpenAddedConnections(void* parg)
 {
     // Make this thread recognisable as the connection opening thread
-    RenameThread("denarius-opencon");
+    RenameThread("innova-opencon");
 
     try
     {
@@ -2021,7 +2021,7 @@ void static StartSync(const vector<CNode*> &vNodes) {
 void ThreadMessageHandler(void* parg)
 {
     // Make this thread recognisable as the message handling thread
-    RenameThread("denarius-msghand");
+    RenameThread("innova-msghand");
 
     try
     {
@@ -2214,7 +2214,7 @@ bool BindListenPort(const CService &addrBind, string& strError)
     {
         int nErr = WSAGetLastError();
         if (nErr == WSAEADDRINUSE)
-            strError = strprintf(_("Unable to bind to %s on this computer. Denarius is probably already running."), addrBind.ToString().c_str());
+            strError = strprintf(_("Unable to bind to %s on this computer. Innova is probably already running."), addrBind.ToString().c_str());
         else
             strError = strprintf(_("Unable to bind to %s on this computer (bind returned error %d, %s)"), addrBind.ToString().c_str(), nErr, strerror(nErr));
         printf("%s\n", strError.c_str());
@@ -2372,7 +2372,7 @@ void StartTor(void* parg)
 void StartNode(void* parg)
 {
     // Make this thread recognisable as the startup thread
-    RenameThread("denarius-start");
+    RenameThread("innova-start");
 
     if (semOutbound == NULL) {
         // initialize semaphore

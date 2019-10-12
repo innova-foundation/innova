@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
-// Copyright (c) 2017-2018 The Denarius developers
+// Copyright (c) 2017-2018 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -8,7 +8,7 @@
 #include "main.h"
 #include "txdb.h"
 #include "walletdb.h"
-#include "denariusrpc.h"
+#include "innovarpc.h"
 #include "net.h"
 #include "init.h"
 #include "util.h"
@@ -92,7 +92,7 @@ void Shutdown(void* parg)
     printf("Shutdown is in progress...\n\n");
 
     // Make this thread recognisable as the shutdown thread
-    RenameThread("denarius-shutoff");
+    RenameThread("innova-shutoff");
 
     bool fFirstThread = false;
     {
@@ -123,7 +123,7 @@ void Shutdown(void* parg)
         */
         NewThread(ExitTimeout, NULL);
         MilliSleep(50);
-        printf("Denarius exited\n\n");
+        printf("Innova exited\n\n");
         fExit = true;
 #ifndef QT_GUI
         // ensure non-UI client gets exited here, but let Bitcoin-Qt reach 'return 0;' in bitcoin.cpp
@@ -177,12 +177,12 @@ bool AppInit(int argc, char* argv[])
         if (mapArgs.count("-?") || mapArgs.count("--help"))
         {
             // First part of help message is specific to bitcoind / RPC client
-            std::string strUsage = _("Denarius version") + " " + FormatFullVersion() + "\n\n" +
+            std::string strUsage = _("Innova version") + " " + FormatFullVersion() + "\n\n" +
                 _("Usage:") + "\n" +
-                  "  denariusd [options]                     " + "\n" +
-                  "  denariusd [options] <command> [params]  " + _("Send command to -server or denariusd") + "\n" +
-                  "  denariusd [options] help                " + _("List commands") + "\n" +
-                  "  denariusd [options] help <command>      " + _("Get help for a command") + "\n";
+                  "  innovad [options]                     " + "\n" +
+                  "  innovad [options] <command> [params]  " + _("Send command to -server or innovad") + "\n" +
+                  "  innovad [options] help                " + _("List commands") + "\n" +
+                  "  innovad [options] help <command>      " + _("Get help for a command") + "\n";
 
             strUsage += "\n" + HelpMessage();
 
@@ -192,7 +192,7 @@ bool AppInit(int argc, char* argv[])
 
         // Command-line RPC
         for (int i = 1; i < argc; i++)
-            if (!IsSwitchChar(argv[i][0]) && !boost::algorithm::istarts_with(argv[i], "denarius:"))
+            if (!IsSwitchChar(argv[i][0]) && !boost::algorithm::istarts_with(argv[i], "innova:"))
                 fCommandLine = true;
 
         if (fCommandLine)
@@ -259,13 +259,13 @@ int main(int argc, char* argv[])
 
 bool static InitError(const std::string &str)
 {
-    uiInterface.ThreadSafeMessageBox(str, _("Denarius"), CClientUIInterface::OK | CClientUIInterface::MODAL);
+    uiInterface.ThreadSafeMessageBox(str, _("Innova"), CClientUIInterface::OK | CClientUIInterface::MODAL);
     return false;
 }
 
 bool static InitWarning(const std::string &str)
 {
-    uiInterface.ThreadSafeMessageBox(str, _("Denarius"), CClientUIInterface::OK | CClientUIInterface::ICON_EXCLAMATION | CClientUIInterface::MODAL);
+    uiInterface.ThreadSafeMessageBox(str, _("Innova"), CClientUIInterface::OK | CClientUIInterface::ICON_EXCLAMATION | CClientUIInterface::MODAL);
     return true;
 }
 
@@ -290,8 +290,8 @@ std::string HelpMessage()
 {
     string strUsage = _("Options:") + "\n" +
         "  -?                     " + _("This help message") + "\n" +
-        "  -conf=<file>           " + _("Specify configuration file (default: denarius.conf)") + "\n" +
-        "  -pid=<file>            " + _("Specify pid file (default: denariusd.pid)") + "\n" +
+        "  -conf=<file>           " + _("Specify configuration file (default: innova.conf)") + "\n" +
+        "  -pid=<file>            " + _("Specify pid file (default: innovad.pid)") + "\n" +
         "  -datadir=<dir>         " + _("Specify data directory") + "\n" +
         "  -wallet=<dir>          " + _("Specify wallet file (within data directory)") + "\n" +
         "  -dbcache=<n>           " + _("Set database cache size in megabytes (default: 25)") + "\n" +
@@ -303,7 +303,7 @@ std::string HelpMessage()
         "  -dns                   " + _("Allow DNS lookups for -addnode, -seednode and -connect") + "\n" +
         "  -port=<port>           " + _("Listen for connections on <port> (default: 33369 or testnet: 33368)") + "\n" +
         "  -maxconnections=<n>    " + _("Maintain at most <n> connections to peers (default: 125)") + "\n" +
-        "  -maxuploadtarget=<n>   " + _("Set a max upload target for your D node, 100 = 100MB (default: 0 unlimited)") + "\n" +
+        "  -maxuploadtarget=<n>   " + _("Set a max upload target for your INN node, 100 = 100MB (default: 0 unlimited)") + "\n" +
         "  -addnode=<ip>          " + _("Add a node to connect to and attempt to keep the connection open") + "\n" +
         "  -connect=<ip>          " + _("Connect only to the specified node(s)") + "\n" +
         "  -seednode=<ip>         " + _("Connect to a node to retrieve peer addresses, and disconnect") + "\n" +
@@ -560,7 +560,7 @@ bool AppInit2()
         // Rewrite just private keys: rescan to find transactions
         SoftSetBoolArg("-rescan", true);
     }
-    
+
     // -zapwallettx implies a rescan
     if (GetBoolArg("-zapwallettxes", false)) {
         if (SoftSetBoolArg("-rescan", true))
@@ -651,7 +651,7 @@ bool AppInit2()
     // ********************************************************* Step 4: application initialization: dir lock, daemonize, pidfile, debug log
     // Sanity check
     if (!InitSanityCheck())
-        return InitError(_("Initialization sanity check failed. Denarius is shutting down."));
+        return InitError(_("Initialization sanity check failed. Innova is shutting down."));
 
     std::string strDataDir = GetDataDir().string();
     std::string strWalletFileName = GetArg("-wallet", "wallet.dat");
@@ -668,12 +668,12 @@ bool AppInit2()
 
     static boost::interprocess::file_lock lock(pathLockFile.string().c_str());
     if (!lock.try_lock())
-        return InitError(strprintf(_("Cannot obtain a lock on data directory %s.  Denarius is probably already running."), strDataDir.c_str()));
+        return InitError(strprintf(_("Cannot obtain a lock on data directory %s.  Innova is probably already running."), strDataDir.c_str()));
 
     if (GetBoolArg("-shrinkdebugfile", !fDebug))
         ShrinkDebugFile();
     printf("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
-    printf("Denarius version %s (%s)\n", FormatFullVersion().c_str(), CLIENT_DATE.c_str());
+    printf("Innova version %s (%s)\n", FormatFullVersion().c_str(), CLIENT_DATE.c_str());
     printf("Using OpenSSL version %s\n", SSLeay_version(SSLEAY_VERSION));
     if (!fLogTimestamps)
         printf("Startup time: %s\n", DateTimeStrFormat("%x %H:%M:%S", GetTime()).c_str());
@@ -698,11 +698,11 @@ bool AppInit2()
     }
 
     if (fDaemon)
-        fprintf(stdout, "Denarius server starting\n");
+        fprintf(stdout, "Innova server starting\n");
 
     int64_t nStart;
 
-    // Anonymous Ring Signatures ~ D e n a r i u s - v3.0.0.0
+    // Anonymous Ring Signatures ~ I n n o v a - v3.0.0.0
     if (initialiseRingSigs() != 0)
         return InitError("initialiseRingSigs() failed.");
 
@@ -735,7 +735,7 @@ bool AppInit2()
                                      " Original wallet.dat saved as wallet.{timestamp}.bak in %s; if"
                                      " your balance or transactions are incorrect you should"
                                      " restore from a backup."), strDataDir.c_str());
-            uiInterface.ThreadSafeMessageBox(msg, _("Denarius"), CClientUIInterface::OK | CClientUIInterface::ICON_EXCLAMATION | CClientUIInterface::MODAL);
+            uiInterface.ThreadSafeMessageBox(msg, _("Innova"), CClientUIInterface::OK | CClientUIInterface::ICON_EXCLAMATION | CClientUIInterface::MODAL);
         };
 
         if (r == CDBEnv::RECOVER_FAIL)
@@ -879,9 +879,9 @@ bool AppInit2()
                 return InitError(_("Failed to listen on any port. Use -listen=0 if you want this."));
         };
     };
-	
+
 #ifdef USE_NATIVETOR
-    // Native Tor Integration Continued - D e n a r i u s v3
+    // Native Tor Integration Continued - I n n o v a v3
     if(fNativeTor)
     {
         CService addrBind;
@@ -1008,12 +1008,12 @@ bool AppInit2()
     // ********************************************************* Step 8: load wallet
 
     if (GetBoolArg("-zapwallettxes", false)) {
-        uiInterface.InitMessage(_("Zapping all transactions from D wallet..."));
+        uiInterface.InitMessage(_("Zapping all transactions from INN wallet..."));
 
         pwalletMain = new CWallet("wallet.dat");
         DBErrors nZapWalletRet = pwalletMain->ZapWalletTx();
         if (nZapWalletRet != DB_LOAD_OK) {
-            uiInterface.InitMessage(_("Error loading wallet.dat: D Wallet corrupted"));
+            uiInterface.InitMessage(_("Error loading wallet.dat: INN Wallet corrupted"));
             return false;
         }
 
@@ -1021,8 +1021,8 @@ bool AppInit2()
         pwalletMain = NULL;
     }
 
-    uiInterface.InitMessage(_("Loading D wallet..."));
-    printf("Loading D wallet...\n");
+    uiInterface.InitMessage(_("Loading INN wallet..."));
+    printf("Loading INN wallet...\n");
     nStart = GetTimeMillis();
     bool fFirstRun = true;
     pwalletMain = new CWallet(strWalletFileName);
@@ -1036,15 +1036,15 @@ bool AppInit2()
         {
             string msg(_("Warning: error reading wallet.dat! All keys read correctly, but transaction data"
                          " or address book entries might be missing or incorrect."));
-            uiInterface.ThreadSafeMessageBox(msg, _("Denarius"), CClientUIInterface::OK | CClientUIInterface::ICON_EXCLAMATION | CClientUIInterface::MODAL);
+            uiInterface.ThreadSafeMessageBox(msg, _("Innova"), CClientUIInterface::OK | CClientUIInterface::ICON_EXCLAMATION | CClientUIInterface::MODAL);
         }
         else
         if (nLoadWalletRet == DB_TOO_NEW)
-            strErrors << _("Error loading wallet.dat: Wallet requires newer version of Denarius") << "\n";
+            strErrors << _("Error loading wallet.dat: Wallet requires newer version of Innova") << "\n";
         else
         if (nLoadWalletRet == DB_NEED_REWRITE)
         {
-            strErrors << _("Wallet needed to be rewritten: restart Denarius to complete") << "\n";
+            strErrors << _("Wallet needed to be rewritten: restart Innova to complete") << "\n";
             printf("%s", strErrors.str().c_str());
             return InitError(strErrors.str());
         }
@@ -1166,7 +1166,7 @@ bool AppInit2()
 
     if (!CheckDiskSpace())
     {
-        return InitError(_("Error: not enough disk space to start Denarius."));
+        return InitError(_("Error: not enough disk space to start Innova."));
     }
 
     if (!strErrors.str().empty())

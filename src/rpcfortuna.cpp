@@ -1,6 +1,6 @@
 // Copyright (c) 2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Darkcoin developers
-// Copyright (c) 2017 The Denarius developers
+// Copyright (c) 2017 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -10,7 +10,7 @@
 #include "fortunastake.h"
 #include "activefortunastake.h"
 #include "fortunastakeconfig.h"
-#include "denariusrpc.h"
+#include "innovarpc.h"
 #include <boost/lexical_cast.hpp>
 #include "util.h"
 #include "base58.h"
@@ -60,17 +60,17 @@ Value fortunastake(const Array& params, bool fHelp)
 			"  enforce      - Enforce fortunastake payments\n"
 			"  outputs      - Print fortunastake compatible outputs\n"
             "  status       - Current fortunastake status\n"
-			"  start        - Start fortunastake configured in denarius.conf\n"
+			"  start        - Start fortunastake configured in innova.conf\n"
 			"  start-alias  - Start single fortunastake by assigned alias configured in fortunastake.conf\n"
 			"  start-many   - Start all fortunastakes configured in fortunastake.conf\n"
-			"  stop         - Stop fortunastake configured in denarius.conf\n"
+			"  stop         - Stop fortunastake configured in innova.conf\n"
 			"  stop-alias   - Stop single fortunastake by assigned alias configured in fortunastake.conf\n"
 			"  stop-many    - Stop all fortunastakes configured in fortunastake.conf\n"
 			"  list         - Print list of all known fortunastakes (see fortunastakelist for more info)\n"
 			"  list-conf    - Print fortunastake.conf in JSON format\n"
 			"  winners      - Print list of fortunastake winners\n"
-			//"  vote-many    - Vote on a Denarius initiative\n"
-			//"  vote         - Vote on a Denarius initiative\n"
+			//"  vote-many    - Vote on a Innova initiative\n"
+			//"  vote         - Vote on a Innova initiative\n"
             );
     if (strCommand == "stop")
     {
@@ -715,17 +715,17 @@ Value masternode(const Array& params, bool fHelp)
 			"  enforce      - Enforce fortunastake payments\n"
 			"  outputs      - Print fortunastake compatible outputs\n"
             "  status       - Current fortunastake status\n"
-			"  start        - Start fortunastake configured in denarius.conf\n"
+			"  start        - Start fortunastake configured in innova.conf\n"
 			"  start-alias  - Start single fortunastake by assigned alias configured in fortunastake.conf\n"
 			"  start-many   - Start all fortunastakes configured in fortunastake.conf\n"
-			"  stop         - Stop fortunastake configured in denarius.conf\n"
+			"  stop         - Stop fortunastake configured in innova.conf\n"
 			"  stop-alias   - Stop single fortunastake by assigned alias configured in fortunastake.conf\n"
 			"  stop-many    - Stop all fortunastakes configured in fortunastake.conf\n"
 			"  list         - Print list of all known fortunastakes (see fortunastakelist for more info)\n"
 			"  list-conf    - Print fortunastake.conf in JSON format\n"
 			"  winners      - Print list of fortunastake winners\n"
-			//"  vote-many    - Vote on a Denarius initiative\n"
-			//"  vote         - Vote on a Denarius initiative\n"
+			//"  vote-many    - Vote on a Innova initiative\n"
+			//"  vote         - Vote on a Innova initiative\n"
             );
     if (strCommand == "stop")
     {

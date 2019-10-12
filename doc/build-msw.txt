@@ -7,7 +7,7 @@ cryptographic software written by Eric Young (eay@cryptsoft.com) and UPnP
 software written by Thomas Bernard.
 
 
-See readme-qt.rst for instructions on building Denarius QT, the
+See readme-qt.rst for instructions on building Innova QT, the
 graphical user interface.
 
 WINDOWS BUILD NOTES
@@ -76,9 +76,9 @@ make -f Makefile.mingw
 mkdir miniupnpc
 cp *.h miniupnpc/
 
-Denarius
+Innova
 -------
 DOS prompt:
-cd \denarius\src
+cd \innova\src
 mingw32-make -f makefile.mingw
-strip denariusd.exe
+strip innovad.exe

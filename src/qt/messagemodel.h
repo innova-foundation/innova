@@ -67,7 +67,7 @@ struct MessageTableEntry
     }
 };
 
-/** Interface to Denarius Secure Messaging from Qt view code. */
+/** Interface to Innova Secure Messaging from Qt view code. */
 class MessageModel : public QAbstractTableModel
 {
     Q_OBJECT

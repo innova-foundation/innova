@@ -1,0 +1,2 @@
+debian/bin/innovad usr/bin
+src/innovad usr/lib/innova

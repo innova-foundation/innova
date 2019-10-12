@@ -28,7 +28,7 @@
       <string notr="true">QLabel { font-style:italic; }</string>
      </property>
      <property name="text">
-      <string>Welcome to Denarius!</string>
+      <string>Welcome to Innova!</string>
      </property>
      <property name="wordWrap">
       <bool>true</bool>
@@ -45,7 +45,7 @@
        <item>
         <widget class="QLabel" name="label_4">
          <property name="text">
-          <string>This is the first time &lt;strong&gt;Denarius&lt;/strong&gt; has launched on this computer, so you can choose where Denarius will store its data.</string>
+          <string>This is the first time &lt;strong&gt;Innova&lt;/strong&gt; has launched on this computer, so you can choose where Innova will store its data.</string>
          </property>
          <property name="wordWrap">
           <bool>true</bool>
@@ -55,7 +55,7 @@
        <item>
         <widget class="QLabel" name="sizeWarningLabel">
          <property name="text">
-          <string>Denarius will download and store a copy of the Denarius block chain. At least &lt;strong&gt;%3GB+&lt;/strong&gt; of data will need to be available to be stored in this directory, as it will grow over time. The wallet data will also be stored in this directory.</string>
+          <string>Innova will download and store a copy of the Innova blockchain. At least &lt;strong&gt;%1GB+&lt;/strong&gt; of data will need to be available to be stored in this directory, as it will grow over time. The wallet data will also be stored in this directory.</string>
          </property>
          <property name="wordWrap">
           <bool>true</bool>
@@ -70,7 +70,7 @@
         <string/>
        </property>
        <property name="pixmap">
-        <pixmap resource="../bitcoin.qrc">:/icons/denarius128</pixmap>
+        <pixmap resource="../bitcoin.qrc">:/icons/innova128</pixmap>
        </property>
        <property name="alignment">
         <set>Qt::AlignCenter</set>

@@ -4,7 +4,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "main.h"
-#include "denariusrpc.h"
+#include "innovarpc.h"
 #include "spork.h"
 
 using namespace json_spirit;
@@ -119,7 +119,7 @@ Object blockheaderToJSON(const CBlockIndex* blockindex)
         result.push_back(Pair("previousblockhash", blockindex->pprev->GetBlockHash().GetHex()));
     if (blockindex->pnext)
         result.push_back(Pair("nextblockhash", blockindex->pnext->GetBlockHash().GetHex()));
-	
+
 	result.push_back(Pair("flags", strprintf("%s%s", blockindex->IsProofOfStake()? "proof-of-stake" : "proof-of-work", blockindex->GeneratedStakeModifier()? " stake-modifier": "")));
     result.push_back(Pair("proofhash", blockindex->hashProof.GetHex()));
     result.push_back(Pair("entropybit", (int)blockindex->GetStakeEntropyBit()));
@@ -314,7 +314,7 @@ Value getblockhash(const Array& params, bool fHelp)
     return pblockindex->phashBlock->GetHex();
 }
 
-//New getblock RPC Command for Denariium Compatibility
+//New getblock RPC Command for Innovai Compatibility
 Value getblock(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 1 || params.size() > 2)
@@ -380,7 +380,7 @@ Value getblock(const Array& params, bool fHelp)
 
     CBlock block;
     CBlockIndex* pblockindex = mapBlockIndex[hash];
-	
+
 	if(!block.ReadFromDisk(pblockindex, true)){
         // Block not found on disk. This could be because we have the block
         // header in our index but don't have the block (for example if a
@@ -391,7 +391,7 @@ Value getblock(const Array& params, bool fHelp)
 	}
 
 	block.ReadFromDisk(pblockindex, true);
-	
+
     if (verbosity <= 0)
     {
         CDataStream ssBlock(SER_NETWORK, PROTOCOL_VERSION);
@@ -587,7 +587,7 @@ Value gettxout(const Array& params, bool fHelp)
     CTransaction tx;
     uint256 hashBlock = 0;
     if (!GetTransaction(hash, tx, hashBlock, mem))
-      return Value::null;  
+      return Value::null;
 
     if (n<0 || (unsigned int)n>=tx.vout.size() || tx.vout[n].IsNull())
       return Value::null;
@@ -661,10 +661,10 @@ Value getblockchaininfo(const Array& params, bool fHelp)
                 "  \"blocks\": xxxxxx,         (numeric) the current number of blocks processed in the server\n"
                 "  \"bestblockhash\": \"...\", (string) the hash of the currently best block\n"
                 "  \"difficulty\": xxxxxx,     (numeric) the current difficulty\n"
-                "  \"initialblockdownload\": xxxx, (bool) estimate of whether this D node is in Initial Block Download mode.\n"
+                "  \"initialblockdownload\": xxxx, (bool) estimate of whether this INN node is in Initial Block Download mode.\n"
                 "  \"verificationprogress\": xxxx, (numeric) estimate of verification progress [0..1]\n"
                 "  \"chainwork\": \"xxxx\"     (string) total amount of work in active chain, in hexadecimal\n"
-                "  \"moneysupply\": xxxx, (numeric) the current supply of D in circulation\n"
+                "  \"moneysupply\": xxxx, (numeric) the current supply of INN in circulation\n"
                 "}\n"
         );
 
