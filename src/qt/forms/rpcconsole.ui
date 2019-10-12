@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>Denarius - Debug window</string>
+   <string>Innova - Debug window</string>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout_2">
    <item>
@@ -33,7 +33,7 @@
           </font>
          </property>
          <property name="text">
-          <string>Denarius Core</string>
+          <string>Innova Core</string>
          </property>
         </widget>
        </item>
@@ -336,7 +336,7 @@
        <item row="16" column="0">
         <widget class="QPushButton" name="openDebugLogfileButton">
          <property name="toolTip">
-          <string>Open the Denarius debug log file from the current data directory. This can take a few seconds for large log files.</string>
+          <string>Open the Innova debug log file from the current data directory. This can take a few seconds for large log files.</string>
          </property>
          <property name="text">
           <string>&amp;Open</string>
@@ -362,7 +362,7 @@
        <item row="18" column="0">
         <widget class="QPushButton" name="showCLOptionsButton">
          <property name="toolTip">
-          <string>Show the Denarius-Qt help message to get a list with possible Denarius command-line options.</string>
+          <string>Show the Innova-Qt help message to get a list with possible Innova command-line options.</string>
          </property>
          <property name="text">
           <string>&amp;Show</string>

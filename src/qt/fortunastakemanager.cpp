@@ -13,7 +13,7 @@
 #include "walletmodel.h"
 #include "wallet.h"
 #include "init.h"
-#include "denariusrpc.h"
+#include "innovarpc.h"
 #include "askpassphrasedialog.h"
 
 #include <boost/lexical_cast.hpp>
@@ -578,7 +578,7 @@ void FortunastakeManager::on_startButton_clicked()
     }
 
     QMessageBox msg;
-    msg.setWindowTitle("Denarius Message");
+    msg.setWindowTitle("Innova Message");
     msg.setText(results);
     msg.exec();
 }
@@ -628,7 +628,7 @@ void FortunastakeManager::on_startAllButton_clicked()
     }
 
     QMessageBox msg;
-    msg.setWindowTitle("Denarius Message");
+    msg.setWindowTitle("Innova Message");
     msg.setText(results);
     msg.exec();
 
@@ -686,7 +686,7 @@ void FortunastakeManager::on_stopButton_clicked()
     std::string errorMessage;
     bool result = activeFortunastake.StopFortunaStake(c.sAddress, c.sFortunastakePrivKey, errorMessage);
     QMessageBox msg;
-    msg.setWindowTitle("Denarius Message");
+    msg.setWindowTitle("Innova Message");
     if(result)
     {
         msg.setText("Hybrid Fortunastake at " + QString::fromStdString(c.sAddress) + " stopped.");
@@ -717,7 +717,7 @@ void FortunastakeManager::on_stopAllButton_clicked()
     }
 
     QMessageBox msg;
-    msg.setWindowTitle("Denarius Message");
+    msg.setWindowTitle("Innova Message");
     msg.setText(QString::fromStdString(results));
     msg.exec();
 }

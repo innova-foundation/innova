@@ -1,4 +1,4 @@
-// Copyright (c) 2017 The Denarius developers
+// Copyright (c) 2017 The Innova developers
 // Copyright (c) 2009-2012 The Darkcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
@@ -224,7 +224,7 @@ class CFortunaSession
 class CForTunaPool
 {
 public:
-    static const int PROTOCOL_VERSION = 33900; //33900, D v3.3.9.2
+    static const int PROTOCOL_VERSION = 33900; //33900, INN v3.3.9.2
 
     // clients entries
     std::vector<CForTunaEntry> myEntries;
@@ -419,7 +419,7 @@ public:
     // get the denominations for a list of outputs (returns a bitshifted integer)
     int GetDenominations(const std::vector<CTxOut>& vout);
     void GetDenominationsToString(int nDenom, std::string& strDenom);
-    // get the denominations for a specific amount of denarius.
+    // get the denominations for a specific amount of innova.
     int GetDenominationsByAmount(int64_t nAmount, int nDenomTarget=0);
 
     int GetDenominationsByAmounts(std::vector<int64_t>& vecAmount);

@@ -252,7 +252,7 @@ private slots:
     void showGraph();
     void showPeer();
 
-    /** Open external (default) editor with denarius.conf */
+    /** Open external (default) editor with innova.conf */
     void showConfEditor();
     /** Open external (default) editor with fortunastake.conf */
     void showMNConfEditor();

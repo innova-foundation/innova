@@ -68,7 +68,7 @@ OBJS= \
     obj/net.o \
 	  obj/core.o \
     obj/protocol.o \
-    obj/denariusrpc.o \
+    obj/innovarpc.o \
     obj/rpcdump.o \
     obj/rpcnet.o \
     obj/rpcmining.o \
@@ -91,7 +91,7 @@ OBJS= \
     obj/smessage.o \
     obj/stealth.o 
 
-all: denariusd.exe
+all: innovad.exe
 
 #
 # LevelDB support
@@ -142,11 +142,11 @@ obj/%.o: json/%.cpp
 	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
 	rm -f $(@:%.o=%.d)
 
-denariusd.exe: $(OBJS:obj/%=obj/%)
+innovad.exe: $(OBJS:obj/%=obj/%)
 	g++ $(CFLAGS) $(LDFLAGS) -o $@ $(LIBPATHS) $^ $(LIBS)
 
 clean:
-	-del /Q denariusd
+	-del /Q innovad
 	-del /Q obj\*
 
 FORCE:

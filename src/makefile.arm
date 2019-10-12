@@ -295,7 +295,7 @@ OBJS= \
     obj/net.o \
 	  obj/core.o \
     obj/protocol.o \
-    obj/denariusrpc.o \
+    obj/innovarpc.o \
     obj/rpcdump.o \
     obj/rpcnet.o \
     obj/rpcmining.o \
@@ -328,7 +328,7 @@ OBJS= \
     obj/stun.o
 
 
-all: denariusd
+all: innovad
 
 #
 # LevelDB support
@@ -400,11 +400,11 @@ ifeq (${USE_NATIVETOR}, 1)
     rm -f $(@:%.o=%.d)
 endif
 
-denariusd: $(OBJS:obj/%=obj/%)
+innovad: $(OBJS:obj/%=obj/%)
 	$(LINK) $(xCXXFLAGS) -o $@ $^ $(xLDFLAGS) $(LIBS)
 
 clean:
-	-rm -f denariusd
+	-rm -f innovad
 	-rm -f obj/*.o
 	-rm -f obj/*.P
 	-rm -f obj/*.d

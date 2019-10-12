@@ -108,7 +108,7 @@ static std::string Translate(const char* psz)
 static void handleRunawayException(std::exception *e)
 {
     PrintExceptionContinue(e, "Runaway exception");
-    QMessageBox::critical(0, "Runaway exception", BitcoinGUI::tr("A fatal error occurred. Denarius can no longer continue safely and will quit.") + QString("\n\n") + QString::fromStdString(strMiscWarning));
+    QMessageBox::critical(0, "Runaway exception", BitcoinGUI::tr("A fatal error occurred. Innova can no longer continue safely and will quit.") + QString("\n\n") + QString::fromStdString(strMiscWarning));
     exit(1);
 }
 
@@ -129,12 +129,12 @@ int main(int argc, char *argv[])
 
     // Application identification (must be set before OptionsModel is initialized,
     // as it is used to locate QSettings)
-    app.setOrganizationName("Denarius");
+    app.setOrganizationName("Innova");
     //XXX app.setOrganizationDomain("");
     if(GetBoolArg("-testnet")) // Separate UI settings for testnet
-        app.setApplicationName("Denarius-Qt-testnet");
+        app.setApplicationName("Innova-Qt-testnet");
     else
-        app.setApplicationName("Denarius-Qt");
+        app.setApplicationName("Innova-Qt");
 
     // Get desired locale (e.g. "de_DE") from command line or use system locale
     QString lang_territory = QString::fromStdString(GetArg("-lang", QLocale::system().name().toStdString()));
@@ -175,7 +175,7 @@ int main(int argc, char *argv[])
     // ... then bitcoin.conf:
     if (!boost::filesystem::is_directory(GetDataDir(false)))
     {
-        QMessageBox::critical(0, "Denarius",
+        QMessageBox::critical(0, "Innova",
                               QObject::tr("Error: Specified data directory \"%1\" does not exist.").arg(QString::fromStdString(mapArgs["-datadir"])));
         return 1;
     }
@@ -274,7 +274,7 @@ int main(int argc, char *argv[])
             splash.setEnabled(false);
             splash.show();
             splashref = &splash;
-            uiInterface.InitMessage(_("Denarius is shutting down, please do not turn off your computer..."));
+            uiInterface.InitMessage(_("Innova is shutting down, please do not turn off your computer..."));
 
             // Shutdown the core and its threads, but don't exit Bitcoin-Qt here
             Shutdown(NULL);

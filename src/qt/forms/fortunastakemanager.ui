@@ -41,7 +41,7 @@
        </property>
        <widget class="QWidget" name="tab">
         <attribute name="title">
-         <string>Denarius Network</string>
+         <string>Innova Network</string>
         </attribute>
         <layout class="QGridLayout" name="gridLayout">
          <item row="1" column="0">
@@ -98,7 +98,7 @@
            <item>
             <widget class="QLabel" name="label_2">
              <property name="text">
-              <string>Denarius Fortuna Stake Count:</string>
+              <string>Innova Fortuna Stake Count:</string>
              </property>
             </widget>
            </item>
@@ -128,7 +128,7 @@
        </widget>
        <widget class="QWidget" name="tab_2">
         <attribute name="title">
-         <string>My Denarius Fortuna Stakes</string>
+         <string>My Innova Fortuna Stakes</string>
         </attribute>
         <layout class="QGridLayout" name="gridLayout_2">
          <item row="0" column="0">

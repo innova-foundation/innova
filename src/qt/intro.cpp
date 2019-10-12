@@ -167,7 +167,7 @@ void Intro::pickDataDirectory()
         /* If current default data directory does not exist, let the user choose one */
         Intro intro;
         intro.setDataDirectory(dataDir);
-        intro.setWindowIcon(QIcon(":icons/denarius"));
+        intro.setWindowIcon(QIcon(":icons/innova"));
 
         for ( ; ; )
         {
@@ -181,7 +181,7 @@ void Intro::pickDataDirectory()
                 boost::filesystem::create_directory(GUIUtil::qstringToBoostPath(dataDir));
                 break;
             } catch (const fs::filesystem_error&) {
-                QMessageBox::critical(0, tr("Denarius"),
+                QMessageBox::critical(0, tr("Innova"),
                     tr("Error: Specified data directory \"%1\" cannot be created.").arg(dataDir));
                 /* fall through, back to choosing screen */
             }

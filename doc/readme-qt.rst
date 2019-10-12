@@ -1,4 +1,4 @@
-Denarius-qt: Qt5 GUI for Denarius
+Innova-qt: Qt5 GUI for Innova
 ===============================
 
 Build instructions
@@ -30,9 +30,9 @@ Optional qmake flags:
 "USE_LEVELDB=-"
 "USE_NATIVETOR=-"
 
-Alternatively, install Qt Creator and open the `denarius-qt.pro` file.
+Alternatively, install Qt Creator and open the `innova-qt.pro` file.
 
-An executable named `denarius-qt` will be built.
+An executable named `innova-qt` will be built.
 
 
 Windows
@@ -72,24 +72,24 @@ Mac OS X
 Build configuration options
 ============================
 
-Build with Native Tor Support in Denarius
+Build with Native Tor Support in Innova
 -----------------------
 
 libevent-dev and obfs4proxy are required to be installed if you are building with the Native Tor Library
-The native Tor C Library is located in src/tor and is compiled into Denarius by default to allow the nativetor=1 flag in your denarius.conf
-Use the USE_NATIVETOR=- flag to disable building Denarius with the Tor library
+The native Tor C Library is located in src/tor and is compiled into Innova by default to allow the nativetor=1 flag in your innova.conf
+Use the USE_NATIVETOR=- flag to disable building Innova with the Tor library
 
 +--------------+--------------------------------------------------------------------------+
 | USE_NATIVETOR=- | No Native Tor Support - libevent-dev and obfs4proxy are not required  |
 +--------------+--------------------------------------------------------------------------+
-| USE_NATIVETOR=1 | Native Tor Library enabled to be compiled with Denarius (default)     |
+| USE_NATIVETOR=1 | Native Tor Library enabled to be compiled with Innova (default)     |
 +--------------+--------------------------------------------------------------------------+
 
 
 UPNnP port forwarding
 ---------------------
 
-To use UPnP for port forwarding behind a NAT router (recommended, as more connections overall allow for a faster and more stable denarius experience), pass the following argument to qmake:
+To use UPnP for port forwarding behind a NAT router (recommended, as more connections overall allow for a faster and more stable innova experience), pass the following argument to qmake:
 
 ::
 
@@ -137,9 +137,9 @@ flag to qmake to control this:
 Berkely DB version warning
 ==========================
 
-A warning for people using the *static binary* version of Denarius on a Linux/UNIX-ish system (tl;dr: **Berkely DB databases are not forward compatible**).
+A warning for people using the *static binary* version of Innova on a Linux/UNIX-ish system (tl;dr: **Berkely DB databases are not forward compatible**).
 
-The static binary version of Denarius is linked against libdb 5.0 (see also `this Debian issue`_).
+The static binary version of Innova is linked against libdb 5.0 (see also `this Debian issue`_).
 
 Now the nasty thing is that databases from 5.X are not compatible with 4.X.
 
@@ -154,7 +154,7 @@ Ubuntu 11.10 warning
 ====================
 
 Ubuntu 11.10 has a package called 'qt-at-spi' installed by default.  At the time of writing, having that package
-installed causes denarius-qt to crash intermittently.  The issue has been reported as `launchpad bug 857790`_, but
+installed causes innova-qt to crash intermittently.  The issue has been reported as `launchpad bug 857790`_, but
 isn't yet fixed.
 
 Until the bug is fixed, you can remove the qt-at-spi package to work around the problem, though this will presumably

@@ -20,10 +20,10 @@
 #define DECORATION_SIZE 36
 #define NUM_ITEMS 7
 
-const QString BaseURL = "http://denarius.io/dnrusd.php";
-const QString BaseURL2 = "http://denarius.io/dnrbtc.php";
-const QString BaseURL3 = "http://denarius.io/newsfeed.php";
-double denariusx;
+const QString BaseURL = "http://innova.io/dnrusd.php";
+const QString BaseURL2 = "http://innova.io/dnrbtc.php";
+const QString BaseURL3 = "http://innova.io/newsfeed.php";
+double innovax;
 double dnrbtcx;
 
 class TxViewDelegate : public QAbstractItemDelegate
@@ -173,17 +173,17 @@ void OverviewPage::parseNetworkResponse(QNetworkReply *finished )
         return;
     }
 
-if (what == BaseURL) // Denarius Price
+if (what == BaseURL) // Innova Price
 {
 
     // QNetworkReply is a QIODevice. So we read from it just like it was a file
-    QString denarius = finished->readAll();
-    denariusx = (denarius.toDouble());
-    denarius = QString::number(denariusx, 'f', 2);
+    QString innova = finished->readAll();
+    innovax = (innova.toDouble());
+    innova = QString::number(innovax, 'f', 2);
 
-	dollarg = denarius;
+	dollarg = innova;
 }
-if (what == BaseURL2) // Denarius BTC Price
+if (what == BaseURL2) // Innova BTC Price
 {
 
     // QNetworkReply is a QIODevice. So we read from it just like it was a file
@@ -193,7 +193,7 @@ if (what == BaseURL2) // Denarius BTC Price
 
 	bitcoing = dnrbtc;
 }
-if (what == BaseURL3) // Denarius News Feed
+if (what == BaseURL3) // Innova News Feed
 {
 
     // QNetworkReply is a QIODevice. So we read from it just like it was a file

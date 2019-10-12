@@ -3,7 +3,7 @@
 # Distributed under the MIT/X11 software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-# Mac OS X makefile for denarius
+# Mac OS X makefile for innova
 # Originally by Laszlo Hanyecz (solar@heliacal.net)
 
 CXX=llvm-g++
@@ -25,7 +25,7 @@ USE_UPNP:=1
 LIBS= -dead_strip
 
 ifdef STATIC
-# Build STATIC if you are redistributing the denariusd binary
+# Build STATIC if you are redistributing the innovad binary
 LIBS += \
  $(DEPSDIR)/lib/db48/libdb_cxx-4.8.a \
  $(DEPSDIR)/lib/libboost_system-mt.a \
@@ -81,7 +81,7 @@ OBJS= \
     obj/net.o \
 	  obj/core.o \
     obj/protocol.o \
-    obj/denariusrpc.o \
+    obj/innovarpc.o \
     obj/rpcdump.o \
     obj/rpcnet.o \
     obj/rpcmining.o \
@@ -124,7 +124,7 @@ else
 endif
 endif
 
-all: denariusd
+all: innovad
 
 #
 # LevelDB support
@@ -180,11 +180,11 @@ obj/%.o: json/%.cpp
 	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
 	rm -f $(@:%.o=%.d)
 
-denariusd: $(OBJS:obj/%=obj/%)
+innovad: $(OBJS:obj/%=obj/%)
 	$(LINK) $(xCXXFLAGS) -o $@ $^ $(xLDFLAGS) $(LIBS)
 
 clean:
-	-rm -f denariusd
+	-rm -f innovad
 	-rm -f obj/*.o
 	-rm -f obj/*.P
 	-rm -f obj/*.d

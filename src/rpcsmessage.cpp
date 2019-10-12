@@ -1,9 +1,9 @@
-// Copyright (c) 2014 The Denarius developers
+// Copyright (c) 2014 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "main.h"
-#include "denariusrpc.h"
+#include "innovarpc.h"
 
 #include <boost/lexical_cast.hpp>
 

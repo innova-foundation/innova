@@ -3,7 +3,7 @@
 
 #include "base58.h"
 #include "util.h"
-#include "denariusrpc.h"
+#include "innovarpc.h"
 
 using namespace std;
 using namespace json_spirit;

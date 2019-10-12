@@ -5,7 +5,7 @@
 #include "init.h"
 #include "base58.h"
 #include "clientmodel.h"
-#include "denariusrpc.h"
+#include "innovarpc.h"
 #include "marketbrowser.h"
 #include <sstream>
 #include <string>
@@ -17,9 +17,9 @@ StatisticsPage::StatisticsPage(QWidget *parent) :
     ui(new Ui::StatisticsPage)
 {
     ui->setupUi(this);
-    
+
     setFixedSize(400, 420);
-    
+
     connect(ui->startButton, SIGNAL(pressed()), this, SLOT(updateStatistics()));
 }
 
@@ -66,15 +66,15 @@ void StatisticsPage::updateStatistics()
     QString subsidy = "";
 	if (pindexBest->nHeight < 1000000)
     {
-        subsidy = "3 D per block";
+        subsidy = "3 INN per block";
     }
 	else if (pindexBest->nHeight < 2000000)
     {
-        subsidy = "4 D per block";
+        subsidy = "4 INN per block";
     }
 	else if (pindexBest->nHeight < 3000000)
     {
-        subsidy = "3 D per block";
+        subsidy = "3 INN per block";
     }
     else if (pindexBest->nHeight > 3000000)
     {
@@ -87,10 +87,10 @@ void StatisticsPage::updateStatistics()
 
     QString QPeers = QString::number(peers);
     QString qVolume = QString::number(volume);
-	QString mn = "5,000 D";
+	QString mn = "5,000 INN";
 	QString mn2 = "33% of PoW/PoS block reward";
-	
-	ui->mncost->setText("<b><font color=\"orange\">" + mn + "</font></b>");	
+
+	ui->mncost->setText("<b><font color=\"orange\">" + mn + "</font></b>");
 	ui->mnreward->setText("<b><font color=\"orange\">" + mn2 + "</font></b>");
 
     if(nHeight > heightPrevious)
@@ -119,23 +119,23 @@ void StatisticsPage::updateStatistics()
     } else {
     ui->cBox->setText("<b><font color=\"orange\">" + phase + "</font></b>");
     }
-    
+
     if(subsidy != rewardPrevious)
     {
         ui->rewardBox->setText("<b><font color=\"yellow\">" + subsidy + "</font></b>");
     } else {
     ui->rewardBox->setText("<b><font color=\"orange\">" + subsidy + "</font></b>");
     }
-    
+
     if(pHardness > hardnessPrevious)
     {
-        ui->diffBox->setText("<b><font color=\"yellow\">" + hardness + "</font></b>");        
+        ui->diffBox->setText("<b><font color=\"yellow\">" + hardness + "</font></b>");
     } else if(pHardness < hardnessPrevious) {
         ui->diffBox->setText("<b><font color=\"red\">" + hardness + "</font></b>");
     } else {
-        ui->diffBox->setText("<b><font color=\"orange\">" + hardness + "</font></b>");        
+        ui->diffBox->setText("<b><font color=\"orange\">" + hardness + "</font></b>");
     }
-	
+
     if(marketcap > marketcapPrevious)
     {
         ui->marketcap->setText("<b><font color=\"yellow\">$" + QString::number(marketcap) + " USD</font></b>");
@@ -153,7 +153,7 @@ void StatisticsPage::updateStatistics()
     } else {
         ui->diffBox2->setText("<b><font color=\"orange\">" + hardness2 + "</font></b>");
     }
-    
+
     if(pPawrate2 > netPawratePrevious)
     {
         ui->pawrateBox->setText("<b><font color=\"yellow\">" + pawrate + " MH/s</font></b>");
@@ -169,14 +169,14 @@ void StatisticsPage::updateStatistics()
     } else {
     ui->localBox->setText("<b><font color=\"orange\">" + Qlpawrate + "</font></b>");
     }
-    
+
     if(peers > connectionPrevious)
     {
-        ui->connectionBox->setText("<b><font color=\"yellow\">" + QPeers + "</font></b>");             
+        ui->connectionBox->setText("<b><font color=\"yellow\">" + QPeers + "</font></b>");
     } else if(peers < connectionPrevious) {
-        ui->connectionBox->setText("<b><font color=\"red\">" + QPeers + "</font></b>");        
+        ui->connectionBox->setText("<b><font color=\"red\">" + QPeers + "</font></b>");
     } else {
-        ui->connectionBox->setText("<b><font color=\"orange\">" + QPeers + "</font></b>");  
+        ui->connectionBox->setText("<b><font color=\"orange\">" + QPeers + "</font></b>");
     }
 
     if(volume > volumePrevious)
@@ -187,7 +187,7 @@ void StatisticsPage::updateStatistics()
     } else {
         ui->volumeBox->setText("<b><font color=\"orange\">" + qVolume + " D" + "</font></b>");
     }
-	
+
     updatePrevious(nHeight, nMinWeight, nNetworkWeight, phase, subsidy, pHardness, pHardness2, pPawrate2, Qlpawrate, peers, volume, marketcap);
 }
 

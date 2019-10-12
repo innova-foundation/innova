@@ -97,7 +97,7 @@ font-family:'Open Sans,sans-serif';</string>
        <string/>
       </property>
       <property name="pixmap">
-       <pixmap resource="../bitcoin.qrc">:/icons/denarius</pixmap>
+       <pixmap resource="../bitcoin.qrc">:/icons/innova</pixmap>
       </property>
       <property name="scaledContents">
        <bool>true</bool>
@@ -339,7 +339,7 @@ font-family:'Open Sans,sans-serif';</string>
            </font>
           </property>
           <property name="text">
-           <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-size:20px; font-weight:600; color:#FFFFFF;&quot;&gt;Denarius [D] Statistics&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+           <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-size:20px; font-weight:600; color:#FFFFFF;&quot;&gt;Innova [INN] Statistics&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
           </property>
          </widget>
         </item>

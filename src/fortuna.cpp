@@ -1,4 +1,4 @@
-// Copyright (c) 2017 The Denarius developers
+// Copyright (c) 2017 The Innova developers
 // Copyright (c) 2009-2012 The Darkcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
@@ -40,14 +40,14 @@ CActiveFortunastake activeFortunastake;
 int RequestedFortunaStakeList = 0;
 
 //MIN_MN_PROTO_VERSION
-int MIN_MN_PROTO_VERSION = 33900; // D v3.3.9.2 - Proto - 33900
+int MIN_MN_PROTO_VERSION = 33900; // INN v3.3.9.2 - Proto - 33900
 
 /* *** BEGIN FORTUNA MAGIC  **********
     Copyright 2014, Darkcoin Developers
         eduffield - evan@darkcoin.io
-    Copyright 2018-2019, Denarius Developers
-        carsenk - admin@denarius.io
-        enkayz - enkayz@denarius.io
+    Copyright 2018-2019, Innova Developers
+        carsenk - admin@innova.io
+        enkayz - enkayz@innova.io
 */
 
 int randomizeList (int i) { return std::rand()%i;}
@@ -799,13 +799,13 @@ int CForTunaPool::GetDenominationsByAmount(int64_t nAmount, int nDenomTarget){
 bool CForTunaSigner::IsVinAssociatedWithPubkey(CTxIn& vin, CPubKey& pubkey){
 	bool fIsInitialDownload = IsInitialBlockDownload();
     if(fIsInitialDownload) return nullptr; // Needs to return a value, so returns null pointer v3.3.9.1 - macOS
-	
+
     CScript payee2;
     payee2= GetScriptForDestination(pubkey.GetID());
 
     CTransaction txVin;
     uint256 hash;
-	
+
     if(GetTransaction(vin.prevout.hash, txVin, hash)){
         CTxOut out = txVin.vout[vin.prevout.n];
 		if ((out.nValue == GetMNCollateral()*COIN) && (out.scriptPubKey == payee2))
@@ -940,7 +940,7 @@ bool CFortunaQueue::CheckSignature()
 void ThreadCheckForTunaPool(void* parg)
 {
     // Make this thread recognisable as the wallet flushing thread
-    RenameThread("denarius-mn");
+    RenameThread("innova-mn");
 
     unsigned int c = 0;
     std::string errorMessage;
