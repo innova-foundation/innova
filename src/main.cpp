@@ -1581,15 +1581,15 @@ const int YEARLY_BLOCKCOUNT = 1051896; // Amount of Blocks per year
 int64_t GetProofOfStakeReward(int nHeight, int64_t nCoinAge, int64_t nFees)
 {
   int64_t nSubsidy = 1 * COIN;
-  
+
   if (pindexBest->nHeight <= FAIR_LAUNCH_BLOCK)
           nSubsidy = 0.5 * COIN/2;
 	else if (pindexBest->nHeight <= 10000)
 		      nSubsidy = 0.5 * COIN;
                   return nFees;
 
-  //  int64_t nRewardCoinYear;
-  //  nRewardCoinYear = COIN_YEAR_REWARD; // 0.1 10%
+    int64_t nRewardCoinYear;
+    nRewardCoinYear = 1 * COIN; // 0.1 10%
 
 //    int64_t nSubsidy;
 //    nSubsidy = nCoinAge * nRewardCoinYear / 365 / COIN;
