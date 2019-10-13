@@ -12,7 +12,7 @@ CONFIG="$DATA_DIR/innova.conf"
 if [[ -f "$CONFIG" ]]; then
   EXISTS=1
 else
-  PORT=33369
+  PORT=14530
   RPCPORT=33379
   RPCUSER=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)
   RPCPASS=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)

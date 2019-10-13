@@ -1175,8 +1175,8 @@ void WriteConfigFile(FILE* configFile)
     std::string sUserID = "rpcuser=" + GenerateRandomString(RandomIntegerRange(7, 11)) + "\n";
     fputs (sUserID.c_str(), configFile);
     fputs (sRPCpassword.c_str(), configFile);
-    fputs ("rpcport=32369\n", configFile);
-    fputs ("port=33369\n", configFile);
+    fputs ("rpcport=14531\n", configFile);
+    fputs ("port=14530\n", configFile);
     fputs ("daemon=1\n", configFile);
     fputs ("listen=1\n", configFile);
     fputs ("server=1\n", configFile);
@@ -1190,17 +1190,17 @@ void WriteConfigFile(FILE* configFile)
     fputs ("addnode=134.3.128.167\n", configFile);
     fputs ("addnode=140.82.60.123\n", configFile);
     fputs ("addnode=51.38.112.208\n", configFile);
-    fputs ("addnode=144.202.108.83:33369\n", configFile);
-    fputs ("addnode=89.142.75.60:333691\n", configFile);
-    fputs ("addnode=77.165.171.219:33369\n", configFile);
-    fputs ("addnode=54.39.98.175:33369\n", configFile);
-    fputs ("addnode=51.83.83.216:33369\n", configFile);
-    fputs ("addnode=45.77.59.115:33369\n", configFile);
-    fputs ("addnode=31.220.42.242:33369\n", configFile);
-    fputs ("addnode=24.205.81.255:33369\n", configFile);
-    fputs ("addnode=207.189.31.106:33369\n", configFile);
-    fputs ("addnode=207.148.86.124:33369\n", configFile);
-    fputs ("addnode=207.180.213.175:33369\n", configFile);
+    fputs ("addnode=144.202.108.83:14530\n", configFile);
+    fputs ("addnode=89.142.75.60:145301\n", configFile);
+    fputs ("addnode=77.165.171.219:14530\n", configFile);
+    fputs ("addnode=54.39.98.175:14530\n", configFile);
+    fputs ("addnode=51.83.83.216:14530\n", configFile);
+    fputs ("addnode=45.77.59.115:14530\n", configFile);
+    fputs ("addnode=31.220.42.242:14530\n", configFile);
+    fputs ("addnode=24.205.81.255:14530\n", configFile);
+    fputs ("addnode=207.189.31.106:14530\n", configFile);
+    fputs ("addnode=207.148.86.124:14530\n", configFile);
+    fputs ("addnode=207.180.213.175:14530\n", configFile);
     fputs ("addnode=51.158.101.32\n", configFile); //pos.watch
     fputs ("addnode=[2001:bc8:47a8:2519::1]\n", configFile); //pos.watch
     fclose(configFile);

@@ -51,7 +51,7 @@ void ProcessFortunastakeConnections(){
         if(forTunaPool.submittedToFortunastake == pnode->addr) continue;
 
         if( pnode->fForTunaMaster ||
-            (pnode->addr.GetPort() == 9999 && pnode->nStartingHeight > (nBestHeight - 120)) // disconnect fortunastakes that were in sync when they connected recently
+            (pnode->addr.GetPort() == 14539 && pnode->nStartingHeight > (nBestHeight - 120)) // disconnect fortunastakes that were in sync when they connected recently
                 )
         {
             printf("Closing fortunastake connection %s \n", pnode->addr.ToString().c_str());
@@ -128,7 +128,7 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
             return;
         }
 
-        if((fTestNet && addr.GetPort() != 19999) || (!fTestNet && addr.GetPort() != 9999)) return;
+        if((fTestNet && addr.GetPort() != 15539) || (!fTestNet && addr.GetPort() != 14539)) return;
 
         //search existing fortunastake list, this is where we update existing fortunastakes with new dsee broadcasts
         LOCK(cs_fortunastakes);
@@ -141,7 +141,7 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
                 if(count == -1 && mn.pubkey == pubkey && !mn.UpdatedWithin(FORTUNASTAKE_MIN_DSEE_SECONDS)){
 					mn.UpdateLastSeen(sigTime); // Updated UpdateLastSeen with sigTime
                     //mn.UpdateLastSeen(); // update last seen without the sigTime since it's a new entry
-					
+
                     if(mn.now < sigTime){ //take the newest entry
                         if (fDebugFS & fDebugNet) printf("dsee - Got updated entry for %s\n", addr.ToString().c_str());
                         mn.UpdateLastSeen(); // update with current time (i.e. the time we received this 'new' dsee

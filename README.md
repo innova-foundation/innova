@@ -56,9 +56,9 @@ Specifications
 
 * Cost of Hybrid Fortuna Stakes: 5,000 D
 * Hybrid Fortuna Stake Reward: 33% of the current block reward
-* P2P Port: 33369, Testnet Port: 33368
-* RPC Port: 32369, Testnet RPC Port: 32368
-* Fortuna Stake Port: 9999, Testnet Port: 19999
+* P2P Port: 14530, Testnet Port: 33368
+* RPC Port: 14531, Testnet RPC Port: 32368
+* Fortuna Stake Port: 14539, Testnet Port: 15539
 
 * INN Magic Number: 0xa23d7e5c
 * BIP44 CoinType: 116
