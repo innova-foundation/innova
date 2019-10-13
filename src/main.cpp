@@ -46,7 +46,7 @@ CBigNum bnProofOfWorkLimitTestNet(~uint256(0) >> 16);
 // Block Variables
 
 unsigned int nTargetSpacing     = 45;               // 45 seconds, FAST
-unsigned int nStakeMinAge       = 12 * 60 * 60;      // 12 hour min stake age
+unsigned int nStakeMinAge       = 5 * 60;      // 12 hour min stake age
 unsigned int nStakeMaxAge       = -1;               // unlimited
 unsigned int nModifierInterval  = 10 * 60;          // time to elapse before new modifier is computed
 int64_t nLastCoinStakeSearchTime = GetAdjustedTime();
@@ -1580,9 +1580,10 @@ const int YEARLY_BLOCKCOUNT = 1051896; // Amount of Blocks per year
 // Proof of Stake miner's coin stake reward based on coin age spent (coin-days)
 int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees)
 {
-  int64_t nSubsidy = 1 * COIN;
+  int64_t nSubsidy;
+    nSubsidy = 1 * COIN;
 
-  if (pindexBest->nHeight <= FAIR_LAUNCH_BLOCK)
+  if (pindexBest->nHeight <= 5000)
           nSubsidy = 0.5 * COIN/2;
 	else if (pindexBest->nHeight <= 10000)
 		      nSubsidy = 0.5 * COIN;
@@ -1591,12 +1592,9 @@ int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees)
     int64_t nRewardCoinYear;
     nRewardCoinYear = 1 * COIN; // 0.1 10%
 
-//    int64_t nSubsidy;
-//    nSubsidy = nCoinAge * nRewardCoinYear / 365 / COIN;
-
     //PoS Fixed on Block 2500 v2.0+ RuPpeEeVoLuTiOn
     if (pindexBest->nHeight >= MAINNET_POSFIX || fTestNet)
-        nSubsidy = nCoinAge * nRewardCoinYear / 365;
+        nSubsidy = 1 * COIN;
 
     if (fDebug && GetBoolArg("-printcreation"))
         printf("GetProofOfStakeReward(): create=%s nCoinAge=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nCoinAge);
