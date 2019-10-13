@@ -8,7 +8,7 @@ CONFIG="$DATA_DIR/innova.conf"
 # own config on start.
 
 ### examples:
-# snapctl set port=33369
+# snapctl set port=14530
 # snapctl set rpcport=33379
 # snapctl set rpcuser=$RPCUSER
 # snapctl set rpcpass=$RPCPASS
