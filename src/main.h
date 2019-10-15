@@ -58,7 +58,7 @@ class CNode;
 
 // General Innova Block Values
 
-static const int LAST_POW_BLOCK = 25000; // Block 25000
+static const int LAST_POW_BLOCK = 50000; // Block 50000
 static const int FAIR_LAUNCH_BLOCK = 210; // Last Block until full block reward starts
 static const unsigned int MAX_BLOCK_SIZE = 1000000; // 1MB block hard limit, double the size of Bitcoin
 static const unsigned int MAX_BLOCK_SIZE_GEN = MAX_BLOCK_SIZE/2; // 512kb block soft limit, ditto
@@ -76,8 +76,8 @@ static const unsigned int MAX_INV_SZ = 50000;
 static const int64_t MIN_TX_FEE = 1000;
 static const int64_t MIN_TX_FEE_ANON = 10000;
 static const int64_t MIN_RELAY_TX_FEE = MIN_TX_FEE;
-static const int64_t MAX_MONEY = 10000000 * COIN; // 10,000,000 INN Innova Max
-static const int64_t COIN_YEAR_REWARD = 0.1 * COIN; // 10% per year
+static const int64_t MAX_MONEY = 23000000 * COIN; // 10,000,000 INN Innova Max
+static const int64_t COIN_YEAR_REWARD = 0.06 * COIN; // 6% per year
 
 static const int64_t MAINNET_POSFIX = 2500; //Mainnet Proof of Stake update not enabled until block 2500
 static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 10000; // Enforce fortunastake payments after this height - BLOCK 10k

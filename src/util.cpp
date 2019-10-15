@@ -1183,26 +1183,10 @@ void WriteConfigFile(FILE* configFile)
     fputs ("fortunastake=0\n", configFile); //input fs=0 by default
     fputs ("fortunastakeaddr=\n", configFile);
     fputs ("fortunastakeprivkey=\n", configFile);
-    fputs ("addnode=149.28.51.135\n", configFile); //mining.cafe
-    fputs ("addnode=144.136.70.136\n", configFile);
-    fputs ("addnode=104.238.179.184\n", configFile);
-    fputs ("addnode=116.203.60.24\n", configFile);
-    fputs ("addnode=134.3.128.167\n", configFile);
-    fputs ("addnode=140.82.60.123\n", configFile);
-    fputs ("addnode=51.38.112.208\n", configFile);
-    fputs ("addnode=144.202.108.83:14530\n", configFile);
-    fputs ("addnode=89.142.75.60:145301\n", configFile);
-    fputs ("addnode=77.165.171.219:14530\n", configFile);
-    fputs ("addnode=54.39.98.175:14530\n", configFile);
-    fputs ("addnode=51.83.83.216:14530\n", configFile);
-    fputs ("addnode=45.77.59.115:14530\n", configFile);
-    fputs ("addnode=31.220.42.242:14530\n", configFile);
-    fputs ("addnode=24.205.81.255:14530\n", configFile);
-    fputs ("addnode=207.189.31.106:14530\n", configFile);
-    fputs ("addnode=207.148.86.124:14530\n", configFile);
-    fputs ("addnode=207.180.213.175:14530\n", configFile);
-    fputs ("addnode=51.158.101.32\n", configFile); //pos.watch
-    fputs ("addnode=[2001:bc8:47a8:2519::1]\n", configFile); //pos.watch
+    fputs ("addnode=209.250.240.159\n", configFile); //mining.cafe
+    fputs ("addnode=207.148.30.107\n", configFile);
+    fputs ("addnode=62.210.116.86\n", configFile);
+    fputs ("addnode=62.210.169.41\n", configFile);
     fclose(configFile);
     ReadConfigFile(mapArgs, mapMultiArgs);
 }
