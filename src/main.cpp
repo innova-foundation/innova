@@ -46,7 +46,7 @@ CBigNum bnProofOfWorkLimitTestNet(~uint256(0) >> 16);
 // Block Variables
 
 unsigned int nTargetSpacing     = 45;               // 45 seconds, FAST
-unsigned int nStakeMinAge       = 5 * 60;      // 12 hour min stake age
+unsigned int nStakeMinAge       = 10 * 60 * 60;      // 10 hour min stake age
 unsigned int nStakeMaxAge       = -1;               // unlimited
 unsigned int nModifierInterval  = 10 * 60;          // time to elapse before new modifier is computed
 int64_t nLastCoinStakeSearchTime = GetAdjustedTime();
@@ -1552,21 +1552,43 @@ void static PruneOrphanBlocks()
 // Proof of Work miner's coin base reward
 int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
 {
-	int64_t nSubsidy = 1 * COIN;
+	int64_t nSubsidy = 0 * COIN;
 
 	if (pindexBest->nHeight == 1)
 		nSubsidy = 9751000 * COIN;  //Swap amount for Innova Chain v0.12 + Founders Fund (2 million [1 million - CircuitBreaker, 1 million - Mangae, 500k Saibaba, 500k Earthshaker])
 	else if (pindexBest->nHeight <= FAIR_LAUNCH_BLOCK) // Block 210, Instamine prevention
         nSubsidy = 0.5 * COIN/2;
-	else if (pindexBest->nHeight <= 10000) //
-		nSubsidy = 0.5 * COIN;
-  else if (pindexBest->nHeight <= 20000)//
-    nSubsidy = 0.25 * COIN;
-	else if (pindexBest->nHeight <= 30000) //
-		nSubsidy = 0.125 * COIN;
+	else if (pindexBest->nHeight <= 5000) //
+		nSubsidy = 1 * COIN;
+  else if (pindexBest->nHeight <= 10000) //
+  	nSubsidy = 2 * COIN;
+  else if (pindexBest->nHeight <= 15000) //
+    nSubsidy = 3 * COIN;
+  else if (pindexBest->nHeight <= 20000) //
+  	nSubsidy = 4 * COIN;
+  else if (pindexBest->nHeight <= 25000)//
+    nSubsidy = 5 * COIN;
+	else if (pindexBest->nHeight <= 27500) //
+		nSubsidy = 4.5 * COIN;
+  else if (pindexBest->nHeight <= 30000) //
+  	nSubsidy = 4 * COIN;
+  else if (pindexBest->nHeight <= 32500) //
+    nSubsidy = 3.5 * COIN;
+  else if (pindexBest->nHeight <= 35000) //
+    nSubsidy = 3 * COIN;
+  else if (pindexBest->nHeight <= 37500) //
+    nSubsidy = 2.5 * COIN;
 	else if (pindexBest->nHeight <= 40000) //
-		nSubsidy = 0.0625 * COIN;
-    else if (pindexBest->nHeight > LAST_POW_BLOCK) // Block 3m
+		nSubsidy = 2 * COIN;
+  else if (pindexBest->nHeight <= 42500) //
+  	nSubsidy = 1.5 * COIN;
+  else if (pindexBest->nHeight <= 45000) //
+  	nSubsidy = 1 * COIN;
+  else if (pindexBest->nHeight <= 47500) //
+  	nSubsidy = 0.5 * COIN;
+  else if (pindexBest->nHeight <= 50000) //
+  	nSubsidy = 0.25 * COIN;
+    else if (pindexBest->nHeight > LAST_POW_BLOCK) // Block 50k
 		nSubsidy = 0.03125; // PoW Ends
 
     if (fDebug && GetBoolArg("-printcreation"))
@@ -1575,26 +1597,23 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
     return nSubsidy + nFees;
 }
 
-const int YEARLY_BLOCKCOUNT = 1051896; // Amount of Blocks per year
+const int YEARLY_BLOCKCOUNT = 700800; // Amount of Blocks per year
 
 // Proof of Stake miner's coin stake reward based on coin age spent (coin-days)
 int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees)
 {
-  int64_t nSubsidy;
-    nSubsidy = 1 * COIN;
-
-  if (pindexBest->nHeight <= 5000)
-          nSubsidy = 0.5 * COIN/2;
-	else if (pindexBest->nHeight <= 10000)
-		      nSubsidy = 0.5 * COIN;
-                  return nFees;
+	if (pindexBest->nHeight > (YEARLY_BLOCKCOUNT*9000)) //It's Over 9000!!!!...... years.
+        return nFees;
 
     int64_t nRewardCoinYear;
-    nRewardCoinYear = 1 * COIN; // 0.1 10%
+    nRewardCoinYear = COIN_YEAR_REWARD; // 0.06 6%
 
-    //PoS Fixed on Block 2500 v2.0+ RuPpeEeVoLuTiOn
+    int64_t nSubsidy;
+    nSubsidy = nCoinAge * nRewardCoinYear / 365 / COIN;
+
+    //PoS Fixed
     if (pindexBest->nHeight >= MAINNET_POSFIX || fTestNet)
-        nSubsidy = 1 * COIN;
+        nSubsidy = nCoinAge * nRewardCoinYear / 365;
 
     if (fDebug && GetBoolArg("-printcreation"))
         printf("GetProofOfStakeReward(): create=%s nCoinAge=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nCoinAge);
@@ -5408,8 +5427,8 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
 
 int64_t GetFortunastakePayment(int nHeight, int64_t blockValue)
 {
-    //int64_t ret = blockValue * 55/100; //55%
-	int64_t ret = static_cast<int64_t>(blockValue * 55/100); //55%
+    //int64_t ret = blockValue * 70/100; //70%
+	int64_t ret = static_cast<int64_t>(blockValue * 70/100); //70%
 
     return ret;
 }
