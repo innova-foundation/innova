@@ -1589,7 +1589,7 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
   else if (pindexBest->nHeight <= 50000) //
   	nSubsidy = 0.25 * COIN;
     else if (pindexBest->nHeight > LAST_POW_BLOCK) // Block 50k
-		nSubsidy = 0.03125; // PoW Ends
+		nSubsidy = 0.03125 * COIN; // PoW Ends
 
     if (fDebug && GetBoolArg("-printcreation"))
         printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);

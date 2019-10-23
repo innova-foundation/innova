@@ -76,7 +76,7 @@ static const unsigned int MAX_INV_SZ = 50000;
 static const int64_t MIN_TX_FEE = 1000;
 static const int64_t MIN_TX_FEE_ANON = 10000;
 static const int64_t MIN_RELAY_TX_FEE = MIN_TX_FEE;
-static const int64_t MAX_MONEY = 23000000 * COIN; // 10,000,000 INN Innova Max
+static const int64_t MAX_MONEY = 10000000 * COIN; // 10,000,000 INN Innova Max
 static const int64_t COIN_YEAR_REWARD = 0.06 * COIN; // 6% per year
 
 static const int64_t MAINNET_POSFIX = 2500; //Mainnet Proof of Stake update not enabled until block 2500
