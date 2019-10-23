@@ -89,8 +89,8 @@ text-align: left;\
 }\
 QToolButton {\
 min-width:180px;\
-background-color: transparent;\
-border: 1px solid #707070;\
+background-color: #01619b;\
+border: 1px solid #66a0c3;\
 border-radius: 3px;\
 margin: 3px;\
 padding-left: 5px;\
@@ -101,16 +101,16 @@ text-align: left;\
 padding-bottom:5px;\
 }\
 QToolButton:pressed {\
-background-color: #31363B;\
+background-color: #66a0c3;\
 border: 1px solid silver;\
 }\
 QToolButton:hover {\
-background-color: #31363B;\
+background-color: #66a0c3;\
 border: 1px solid #707070;\
 }"
 #define HORIZONTAL_TOOLBAR_STYLESHEET "QToolBar {\
     border: 1px solid #707070;\
-    background: 1px solid #31363B;\
+    background: 1px solid #01619b;\
     font-weight: bold;\
 }"
 
@@ -283,7 +283,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     QString curStyle = qApp->style()->metaObject()->className();
     if(curStyle == "QWindowsStyle" || curStyle == "QWindowsXPStyle")
     {
-        progressBar->setStyleSheet("QProgressBar { background-color: #e8e8e8; border: 1px solid grey; border-radius: 7px; padding: 1px; text-align: center; } QProgressBar::chunk { background: QLinearGradient(x1: 0, y1: 0, x2: 1, y2: 0, stop: 0 #FF8000, stop: 1 orange); border-radius: 7px; margin: 0px; }");
+        progressBar->setStyleSheet("QProgressBar { background-color: #001d2; border: 1px solid grey; border-radius: 7px; padding: 1px; text-align: center; } QProgressBar::chunk { background: QLinearGradient(x1: 0, y1: 0, x2: 1, y2: 0, stop: 0 #FF8000, stop: 1 orange); border-radius: 7px; margin: 0px; }");
     }
 
     statusBar()->addWidget(progressBarLabel);
