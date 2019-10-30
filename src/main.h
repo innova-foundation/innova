@@ -18,17 +18,17 @@
 
 class CValidationState;
 
-#define BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET 1000 // Testnet Fortunastake payments enabled block 81k5
-#define BLOCK_START_FORTUNASTAKE_PAYMENTS 5000 //Mainnet Fortunastake payments not enabled until block 645k
-#define BLOCK_START_FORTUNASTAKE_DELAYPAY 9000 //Activates a delay in payment for MNs - I N N O V A Block 9k
+#define BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET 1000
+#define BLOCK_START_FORTUNASTAKE_PAYMENTS 5000 //Mainnet Fortunastake payments not enabled until block 5k
+#define BLOCK_START_FORTUNASTAKE_DELAYPAY 9000 //Activates a delay in payment for MNs Block 9k
 
 //#define START_FORTUNASTAKE_PAYMENTS_TESTNET 1519430400  //Sat, 24 Feb 2018 00:00:00 GMT
 //#define START_FORTUNASTAKE_PAYMENTS 1520985600  //Wed, 14 Mar 2018 00:00:00 GMT
 
-static const int64_t FORTUNA_COLLATERAL = (5000*COIN); // 5,000 D
-static const int64_t FORTUNA_FEE = (0.010000*COIN); //0.01 D
-static const int64_t POOL_FEE_AMOUNT = (0.1*COIN); //0.1 D
-static const int64_t FORTUNA_POOL_MAX = (11000*COIN); //11,000 D
+static const int64_t FORTUNA_COLLATERAL = (25000*COIN); // 25,000 INN
+static const int64_t FORTUNA_FEE = (0.010000*COIN); //0.01 INN
+static const int64_t POOL_FEE_AMOUNT = (0.1*COIN); //0.1 INN
+static const int64_t FORTUNA_POOL_MAX = (51000*COIN); //51,000 INN
 
 #define MESSAGE_START_SIZE 4
 typedef unsigned char MessageStartChars[MESSAGE_START_SIZE];
@@ -76,7 +76,7 @@ static const unsigned int MAX_INV_SZ = 50000;
 static const int64_t MIN_TX_FEE = 1000;
 static const int64_t MIN_TX_FEE_ANON = 10000;
 static const int64_t MIN_RELAY_TX_FEE = MIN_TX_FEE;
-static const int64_t MAX_MONEY = 10000000 * COIN; // 10,000,000 INN Innova Max
+static const int64_t MAX_MONEY = 25000000 * COIN; // 25,000,000 INN Innova Max
 static const int64_t COIN_YEAR_REWARD = 0.06 * COIN; // 6% per year
 
 static const int64_t MAINNET_POSFIX = 2500; //Mainnet Proof of Stake update not enabled until block 2500
