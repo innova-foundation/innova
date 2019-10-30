@@ -1555,7 +1555,7 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
 	int64_t nSubsidy = 0 * COIN;
 
 	if (pindexBest->nHeight == 1)
-		nSubsidy = 9751000 * COIN;  //Swap amount for Innova Chain v0.12 + Founders Fund (2 million [1 million - CircuitBreaker, 1 million - Mangae, 500k Saibaba, 500k Earthshaker])
+		nSubsidy = 10000000 * COIN;  //Swap amount for Innova Chain v0.12 + Founders Fund 3 million
 	else if (pindexBest->nHeight <= FAIR_LAUNCH_BLOCK) // Block 210, Instamine prevention
         nSubsidy = 0.5 * COIN/2;
 	else if (pindexBest->nHeight <= 5000) //
@@ -3919,9 +3919,9 @@ bool LoadBlockIndex(bool fAllowNew)
         if (!fAllowNew)
             return false;
 
-        const char* pszTimestamp = "";
+        const char* pszTimestamp = "Innova Revival 10/30/2019";
         CTransaction txNew;
-        txNew.nTime = 1497476511;
+        txNew.nTime = 1572460932;
         txNew.vin.resize(1);
         txNew.vout.resize(1);
         txNew.vin[0].scriptSig = CScript() << 0 << CBigNum(42) << vector<unsigned char>((const unsigned char*)pszTimestamp, (const unsigned char*)pszTimestamp + strlen(pszTimestamp));
@@ -3931,14 +3931,14 @@ bool LoadBlockIndex(bool fAllowNew)
         block.vtx.push_back(txNew);
         block.hashPrevBlock = 0;
         block.hashMerkleRoot = block.BuildMerkleTree();
-        block.nTime    = 1497476511;
+        block.nTime    = 1572460932;
         block.nVersion = 1;
         block.nBits    = bnProofOfWorkLimit.GetCompact();
-		    block.nNonce   = 335401;
+		    block.nNonce   = 0;
 
 		    if(fTestNet)
         {
-            block.nNonce   = 13278;
+            block.nNonce   = 0;
         }
         if (true && (block.GetHash() != hashGenesisBlock)) {
 
@@ -3963,7 +3963,7 @@ bool LoadBlockIndex(bool fAllowNew)
 
 
         //// debug print
-        assert(block.hashMerkleRoot == uint256("0x66a6b1b5765bfd84ee8ef2a75e96ab69cec70fd99e95e96a70f59b76f043ed6b"));
+        assert(block.hashMerkleRoot == uint256("0x"));
         block.print();
         assert(block.GetHash() == (!fTestNet ? hashGenesisBlock : hashGenesisBlockTestNet));
         assert(block.CheckBlock());
@@ -5428,7 +5428,7 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
 int64_t GetFortunastakePayment(int nHeight, int64_t blockValue)
 {
     //int64_t ret = blockValue * 70/100; //70%
-	int64_t ret = static_cast<int64_t>(blockValue * 70/100); //70%
+	int64_t ret = static_cast<int64_t>(blockValue * 65/100); //65%
 
     return ret;
 }
