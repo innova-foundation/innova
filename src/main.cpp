@@ -3938,9 +3938,9 @@ bool LoadBlockIndex(bool fAllowNew)
 
 		    if(fTestNet)
         {
-            block.nNonce   = 0;
+            block.nNonce   = 5732;
         }
-        if (true && (block.GetHash() != hashGenesisBlock)) {
+        if (false && (block.GetHash() != hashGenesisBlock)) {
 
         // This will figure out a valid hash and Nonce if you're
         // creating a different genesis block:
