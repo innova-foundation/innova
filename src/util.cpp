@@ -1183,10 +1183,10 @@ void WriteConfigFile(FILE* configFile)
     fputs ("fortunastake=0\n", configFile); //input fs=0 by default
     fputs ("fortunastakeaddr=\n", configFile);
     fputs ("fortunastakeprivkey=\n", configFile);
-    fputs ("addnode=209.250.240.159\n", configFile); //mining.cafe
-    fputs ("addnode=207.148.30.107\n", configFile);
-    fputs ("addnode=62.210.116.86\n", configFile);
-    fputs ("addnode=62.210.169.41\n", configFile);
+    fputs ("addnode=\n", configFile); //mining.cafe
+    fputs ("addnode=\n", configFile);
+    fputs ("addnode=\n", configFile);
+    fputs ("addnode=\n", configFile);
     fclose(configFile);
     ReadConfigFile(mapArgs, mapMultiArgs);
 }
