@@ -45,7 +45,7 @@ CBigNum bnProofOfWorkLimitTestNet(~uint256(0) >> 16);
 
 // Block Variables
 
-unsigned int nTargetSpacing     = 45;               // 45 seconds, FAST
+unsigned int nTargetSpacing     = 45;               // 45 seconds
 unsigned int nStakeMinAge       = 10 * 60 * 60;      // 10 hour min stake age
 unsigned int nStakeMaxAge       = -1;               // unlimited
 unsigned int nModifierInterval  = 10 * 60;          // time to elapse before new modifier is computed

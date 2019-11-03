@@ -54,29 +54,77 @@ void StatisticsPage::updateStatistics()
     QString stakemin = QString::number(nMinWeight);
     QString stakemax = QString::number(nNetworkWeight);
     QString phase = "";
-    if (pindexBest->nHeight < 3000000)
+    if (pindexBest->nHeight < 50000)
     {
         phase = "Tribus Proof of Work with Proof of Stake";
     }
-    else if (pindexBest->nHeight > 3000000)
+    else if (pindexBest->nHeight > 50000)
     {
         phase = "Proof of Stake";
     }
 
     QString subsidy = "";
-	if (pindexBest->nHeight < 1000000)
+	if (pindexBest->nHeight < 5000)
+    {
+        subsidy = "1 INN per block";
+    }
+	else if (pindexBest->nHeight < 10000)
+    {
+        subsidy = "2 INN per block";
+    }
+  else if (pindexBest->nHeight < 15000)
     {
         subsidy = "3 INN per block";
     }
-	else if (pindexBest->nHeight < 2000000)
+  else if (pindexBest->nHeight < 20000)
     {
         subsidy = "4 INN per block";
     }
-	else if (pindexBest->nHeight < 3000000)
+  else if (pindexBest->nHeight < 25000)
+    {
+        subsidy = "5 INN per block";
+    }
+  else if (pindexBest->nHeight < 27500)
+    {
+        subsidy = "4.5 INN per block";
+    }
+	else if (pindexBest->nHeight < 30000)
+    {
+        subsidy = "4 INN per block";
+    }
+  else if (pindexBest->nHeight < 32500)
+    {
+        subsidy = "3.5 INN per block";
+    }
+  else if (pindexBest->nHeight < 35000)
     {
         subsidy = "3 INN per block";
     }
-    else if (pindexBest->nHeight > 3000000)
+  else if (pindexBest->nHeight < 37500)
+    {
+        subsidy = "2.5 INN per block";
+    }
+  else if (pindexBest->nHeight < 40000)
+    {
+        subsidy = "2 INN per block";
+    }
+    else if (pindexBest->nHeight < 42500)
+    {
+        subsidy = "1.5 INN per block";
+    }
+    else if (pindexBest->nHeight < 45000)
+    {
+        subsidy = "1 INN per block";
+    }
+    else if (pindexBest->nHeight < 47500)
+    {
+        subsidy = "0.5 INN per block";
+    }
+    else if (pindexBest->nHeight < 50000)
+    {
+        subsidy = "0.25 INN per block";
+    }
+    else if (pindexBest->nHeight > 50000)
     {
         subsidy = "No PoW Reward";
     }
@@ -87,44 +135,44 @@ void StatisticsPage::updateStatistics()
 
     QString QPeers = QString::number(peers);
     QString qVolume = QString::number(volume);
-	QString mn = "5,000 INN";
-	QString mn2 = "33% of PoW/PoS block reward";
+	QString mn = "25,000 INN";
+	QString mn2 = "65% of PoW/PoS block reward";
 
-	ui->mncost->setText("<b><font color=\"orange\">" + mn + "</font></b>");
-	ui->mnreward->setText("<b><font color=\"orange\">" + mn2 + "</font></b>");
+	ui->mncost->setText("<b><font color=\"light blue\">" + mn + "</font></b>");
+	ui->mnreward->setText("<b><font color=\"light blue\">" + mn2 + "</font></b>");
 
     if(nHeight > heightPrevious)
     {
         ui->heightBox->setText("<b><font color=\"yellow\">" + height + "</font></b>");
     } else {
-		ui->heightBox->setText("<b><font color=\"orange\">" + height + "</font></b>");
+		ui->heightBox->setText("<b><font color=\"light blue\">" + height + "</font></b>");
     }
 
     if(0 > stakeminPrevious)
     {
         ui->minBox->setText("<b><font color=\"yellow\">" + stakemin + "</font></b>");
     } else {
-    ui->minBox->setText("<b><font color=\"orange\">" + stakemin + "</font></b>");
+    ui->minBox->setText("<b><font color=\"light blue\">" + stakemin + "</font></b>");
     }
     if(0 > stakemaxPrevious)
     {
         ui->maxBox->setText("<b><font color=\"yellow\">" + stakemax + "</font></b>");
     } else {
-    ui->maxBox->setText("<b><font color=\"orange\">" + stakemax + "</font></b>");
+    ui->maxBox->setText("<b><font color=\"light blue\">" + stakemax + "</font></b>");
     }
 
     if(phase != stakecPrevious)
     {
         ui->cBox->setText("<b><font color=\"yellow\">" + phase + "</font></b>");
     } else {
-    ui->cBox->setText("<b><font color=\"orange\">" + phase + "</font></b>");
+    ui->cBox->setText("<b><font color=\"light blue\">" + phase + "</font></b>");
     }
 
     if(subsidy != rewardPrevious)
     {
         ui->rewardBox->setText("<b><font color=\"yellow\">" + subsidy + "</font></b>");
     } else {
-    ui->rewardBox->setText("<b><font color=\"orange\">" + subsidy + "</font></b>");
+    ui->rewardBox->setText("<b><font color=\"light blue\">" + subsidy + "</font></b>");
     }
 
     if(pHardness > hardnessPrevious)
@@ -133,7 +181,7 @@ void StatisticsPage::updateStatistics()
     } else if(pHardness < hardnessPrevious) {
         ui->diffBox->setText("<b><font color=\"red\">" + hardness + "</font></b>");
     } else {
-        ui->diffBox->setText("<b><font color=\"orange\">" + hardness + "</font></b>");
+        ui->diffBox->setText("<b><font color=\"light blue\">" + hardness + "</font></b>");
     }
 
     if(marketcap > marketcapPrevious)
@@ -142,7 +190,7 @@ void StatisticsPage::updateStatistics()
     } else if(marketcap < marketcapPrevious) {
         ui->marketcap->setText("<b><font color=\"red\">$" + QString::number(marketcap) + " USD</font></b>");
     } else {
-        ui->marketcap->setText("<b><font color=\"orange\">$"+QString::number(marketcap)+" USD</font></b>");
+        ui->marketcap->setText("<b><font color=\"light blue\">$"+QString::number(marketcap)+" USD</font></b>");
     }
 
     if(pHardness2 > hardnessPrevious2)
@@ -151,7 +199,7 @@ void StatisticsPage::updateStatistics()
     } else if(pHardness2 < hardnessPrevious2) {
         ui->diffBox2->setText("<b><font color=\"red\">" + hardness2 + "</font></b>");
     } else {
-        ui->diffBox2->setText("<b><font color=\"orange\">" + hardness2 + "</font></b>");
+        ui->diffBox2->setText("<b><font color=\"light blue\">" + hardness2 + "</font></b>");
     }
 
     if(pPawrate2 > netPawratePrevious)
@@ -160,14 +208,14 @@ void StatisticsPage::updateStatistics()
     } else if(pPawrate2 < netPawratePrevious) {
         ui->pawrateBox->setText("<b><font color=\"red\">" + pawrate + " MH/s</font></b>");
     } else {
-        ui->pawrateBox->setText("<b><font color=\"orange\">" + pawrate + " MH/s</font></b>");
+        ui->pawrateBox->setText("<b><font color=\"light blue\">" + pawrate + " MH/s</font></b>");
     }
 
     if(Qlpawrate != pawratePrevious)
     {
         ui->localBox->setText("<b><font color=\"yellow\">" + Qlpawrate + "</font></b>");
     } else {
-    ui->localBox->setText("<b><font color=\"orange\">" + Qlpawrate + "</font></b>");
+    ui->localBox->setText("<b><font color=\"light blue\">" + Qlpawrate + "</font></b>");
     }
 
     if(peers > connectionPrevious)
@@ -176,7 +224,7 @@ void StatisticsPage::updateStatistics()
     } else if(peers < connectionPrevious) {
         ui->connectionBox->setText("<b><font color=\"red\">" + QPeers + "</font></b>");
     } else {
-        ui->connectionBox->setText("<b><font color=\"orange\">" + QPeers + "</font></b>");
+        ui->connectionBox->setText("<b><font color=\"light blue\">" + QPeers + "</font></b>");
     }
 
     if(volume > volumePrevious)
@@ -185,7 +233,7 @@ void StatisticsPage::updateStatistics()
     } else if(volume < volumePrevious) {
         ui->volumeBox->setText("<b><font color=\"red\">" + qVolume + " D" + "</font></b>");
     } else {
-        ui->volumeBox->setText("<b><font color=\"orange\">" + qVolume + " D" + "</font></b>");
+        ui->volumeBox->setText("<b><font color=\"light blue\">" + qVolume + " D" + "</font></b>");
     }
 
     updatePrevious(nHeight, nMinWeight, nNetworkWeight, phase, subsidy, pHardness, pHardness2, pPawrate2, Qlpawrate, peers, volume, marketcap);

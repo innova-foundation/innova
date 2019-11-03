@@ -129,7 +129,7 @@ public:
 };
 
 //
-// The Fortunastake Class. For managing the fortuna process. It contains the input of the 5000 D, signature to prove
+// The Fortunastake Class. For managing the fortuna process. It contains the input of the 25000 INN, signature to prove
 // it's the one who own that ip address and code for calculating the payment election.
 //
 class CFortunaStake
