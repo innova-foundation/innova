@@ -410,7 +410,7 @@
         </sizepolicy>
        </property>
        <property name="text">
-        <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-weight:600; color:#767676;&quot;&gt;D Price Calculator :&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+        <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-weight:600; color:#fff;&quot;&gt;INN Price Calculator :&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
        </property>
        <property name="alignment">
         <set>Qt::AlignRight|Qt::AlignTrailing|Qt::AlignVCenter</set>
@@ -439,10 +439,10 @@
      <item>
       <widget class="QLabel" name="label">
        <property name="styleSheet">
-        <string notr="true">color:#61696c;</string>
+        <string notr="true">color:#fff;</string>
        </property>
        <property name="text">
-        <string>D</string>
+        <string>INN</string>
        </property>
       </widget>
      </item>
@@ -477,7 +477,7 @@
         </sizepolicy>
        </property>
        <property name="styleSheet">
-        <string notr="true">color:#61696c;</string>
+        <string notr="true">color:#fff;</string>
        </property>
        <property name="text">
         <string>0$ / 0 BTC</string>

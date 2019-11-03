@@ -82,15 +82,15 @@ extern int64_t nLastCoinStakeSearchInterval;
 double GetPoSKernelPS();
 
 #define VERTICAL_TOOBAR_STYLESHEET "QToolBar {\
-border:none;\
+border: 1px solid #1c1c28;\
 height:100%;\
 padding-top:20px;\
 text-align: left;\
 }\
 QToolButton {\
 min-width:180px;\
-background-color: #01619b;\
-border: 1px solid #66a0c3;\
+background-color: #1c1c28;\
+border: 1px solid #1c1c28;\
 border-radius: 3px;\
 margin: 3px;\
 padding-left: 5px;\
@@ -102,15 +102,15 @@ padding-bottom:5px;\
 }\
 QToolButton:pressed {\
 background-color: #66a0c3;\
-border: 1px solid silver;\
+border: 1px solid #01619b;\
 }\
 QToolButton:hover {\
-background-color: #66a0c3;\
+background-color: #01619b;\
 border: 1px solid #707070;\
 }"
 #define HORIZONTAL_TOOLBAR_STYLESHEET "QToolBar {\
-    border: 1px solid #707070;\
-    background: 1px solid #01619b;\
+    border: 1px solid #1c1c28;\
+    background: 1px solid #1c1c28;\
     font-weight: bold;\
 }"
 
@@ -1359,19 +1359,19 @@ void BitcoinGUI::setEncryptionStatus(int status)
         disconnect(labelEncryptionIcon, SIGNAL(clicked()), unlockWalletAction, SLOT(trigger()));
         disconnect(labelEncryptionIcon, SIGNAL(clicked()),   lockWalletAction, SLOT(trigger()));
         connect   (labelEncryptionIcon, SIGNAL(clicked()),   lockWalletAction, SLOT(trigger()));
-		
+
 		if (fWalletUnlockStakingOnly)
         {
 			labelEncryptionIcon->show();
             labelEncryptionIcon->setPixmap(QIcon(":/icons/lock_staking").pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
-			labelEncryptionIcon->setToolTip(tr("Wallet is <b>encrypted</b> and currently <b>unlocked for staking only</b>")); 
+			labelEncryptionIcon->setToolTip(tr("Wallet is <b>encrypted</b> and currently <b>unlocked for staking only</b>"));
         } else
         {
 			labelEncryptionIcon->show();
 			labelEncryptionIcon->setPixmap(QIcon(":/icons/lock_open").pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
-			labelEncryptionIcon->setToolTip(tr("Wallet is <b>encrypted</b> and currently <b>unlocked</b>")); 
+			labelEncryptionIcon->setToolTip(tr("Wallet is <b>encrypted</b> and currently <b>unlocked</b>"));
         };
-		
+
         encryptWalletAction->setChecked(true);
         changePassphraseAction->setEnabled(true);
         unlockWalletAction->setVisible(false);
@@ -1384,7 +1384,7 @@ void BitcoinGUI::setEncryptionStatus(int status)
         connect   (labelEncryptionIcon, SIGNAL(clicked()), unlockWalletAction, SLOT(trigger()));
         labelEncryptionIcon->show();
         labelEncryptionIcon->setPixmap(QIcon(":/icons/lock_closed").pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
-        labelEncryptionIcon->setToolTip(tr("Wallet is <b>encrypted</b> and currently <b>locked</b>")); 
+        labelEncryptionIcon->setToolTip(tr("Wallet is <b>encrypted</b> and currently <b>locked</b>"));
         encryptWalletAction->setChecked(true);
         changePassphraseAction->setEnabled(true);
         unlockWalletAction->setVisible(true);
