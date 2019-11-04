@@ -171,7 +171,7 @@ void FortunastakeManager::updateAdrenalineNode(QString alias, QString addr, QStr
                 else
                     address2.Set(address1);
                 if (vout.nValue != GetMNCollateral()*COIN)
-                    errorMessage += "TX is not equal to 5000 D. ";
+                    errorMessage += "TX is not equal to 25000 INN. ";
             }
             //if (fDebug) printf("FortunastakeManager:: %s %s - found %s for alias %s\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str(), address2.ToString().c_str(),mne.getAlias().c_str());
             break;

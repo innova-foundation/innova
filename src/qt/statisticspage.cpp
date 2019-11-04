@@ -229,11 +229,11 @@ void StatisticsPage::updateStatistics()
 
     if(volume > volumePrevious)
     {
-        ui->volumeBox->setText("<b><font color=\"yellow\">" + qVolume + " D" + "</font></b>");
+        ui->volumeBox->setText("<b><font color=\"yellow\">" + qVolume + " INN" + "</font></b>");
     } else if(volume < volumePrevious) {
-        ui->volumeBox->setText("<b><font color=\"red\">" + qVolume + " D" + "</font></b>");
+        ui->volumeBox->setText("<b><font color=\"red\">" + qVolume + " INN" + "</font></b>");
     } else {
-        ui->volumeBox->setText("<b><font color=\"light blue\">" + qVolume + " D" + "</font></b>");
+        ui->volumeBox->setText("<b><font color=\"light blue\">" + qVolume + " INN" + "</font></b>");
     }
 
     updatePrevious(nHeight, nMinWeight, nNetworkWeight, phase, subsidy, pHardness, pHardness2, pPawrate2, Qlpawrate, peers, volume, marketcap);
