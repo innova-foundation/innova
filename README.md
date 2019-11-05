@@ -1,35 +1,35 @@
 # Innova [INN]
 Tribus Algo PoW/PoS Hybrid Cryptocurrency
 
-![logo](http://i.imgur.com/gIe5vnw.png)
+![logo](https://i.imgur.com/Zo0uzw9.png)
 
 [![GitHub version](https://img.shields.io/github/release/carsenk/innova.svg)](https://badge.fury.io/gh/carsenk%2Finnova)
 [![License: GPL v3](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/carsenk/innova/blob/master/COPYING)
 [![Innova downloads](https://img.shields.io/github/downloads/carsenk/innova/total.svg)](https://github.com/carsenk/innova/releases)
 [![Innova lateat release downloads](https://img.shields.io/github/downloads/carsenk/innova/latest/total)](https://github.com/carsenk/innova/releases)
-[![Join the chat at https://discord.gg/AcThv2y](https://img.shields.io/badge/Discord-Chat-blue.svg?logo=discord)](https://discord.gg/AcThv2y)
+[![Join the chat at https://discord.gg/QeVx8cU](https://img.shields.io/badge/Discord-Chat-blue.svg?logo=discord)](https://discord.gg/QeVx8cU)
 
-[![HitCount](http://hits.dwyl.io/carsenk/innova.svg)](http://hits.dwyl.io/carsenk/innova)
-<a href="https://discord.gg/UPpQy3n"><img src="https://discordapp.com/api/guilds/334361453320732673/embed.png" alt="Discord server" /></a>
+[![HitCount](http://hits.dwyl.io/innova-foundation/innova.svg)](http://hits.dwyl.io/innova-foundation/innova)
+<a href="https://discord.gg/QeVx8cU"><img src="https://discordapp.com/api/guilds/334361453320732673/embed.png" alt="Discord server" /></a>
 
-![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/carsenk/innova.svg) ![GitHub repo size in bytes](https://img.shields.io/github/repo-size/carsenk/innova.svg)
+![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/innova-foundation/innova.svg) ![GitHub repo size in bytes](https://img.shields.io/github/repo-size/innova-foundation/innova.svg)
 
-[![Snap Status](https://build.snapcraft.io/badge/carsenk/innova.svg)](https://build.snapcraft.io/user/carsenk/innova)
+[![Snap Status](https://build.snapcraft.io/badge/innova-foundation/innova.svg)](https://build.snapcraft.io/user/innova-foundation/innova)
 
-![Code Climate](https://codeclimate.com/github/carsenk/innova/badges/gpa.svg)
+![Code Climate](https://codeclimate.com/github/innova-foundation/innova/badges/gpa.svg)
 
-[![Build Status](https://travis-ci.org/carsenk/innova.svg?branch=master)](https://travis-ci.org/carsenk/innova)
+[![Build Status](https://travis-ci.org/innova-foundation/innova.svg?branch=master)](https://travis-ci.org/innova-foundation/innova)
 
-[![Build history](https://buildstats.info/travisci/chart/carsenk/innova?branch=master)](https://travis-ci.org/carsenk/innova?branch=master)
+[![Build history](https://buildstats.info/travisci/chart/innova-foundation/innova?branch=master)](https://travis-ci.org/innova-foundation/innova?branch=master)
 
 Intro
 ==========================
 Innova is a true optionally anonymous, untraceable, and secure hybrid cryptocurrency.
 
-Ticker: D
+Ticker: INN
 
-Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (New Tribus Algorithm) and Proof-of-Stake cryptocurrency.
-10,000,000 INN will be created in approx. about 3 years during the PoW phase.
+Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Tribus Algorithm) and Proof-of-Stake cryptocurrency.
+
 
 Supported Operating Systems
 ==========================
@@ -47,15 +47,15 @@ Install Innova with Snap on any Linux Distro
 
 Specifications
 ==========================
-* Total number of coins: 10,000,000 D
-* Ideal block time: 30 seconds
+* Total number of coins: 25,000,000 INN
+* Ideal block time: 45 seconds
 * Stake interest: 6% annual static inflation
 * Confirmations: 10 blocks
-* Maturity: 30 blocks (15 minutes)
-* Min stake age: 8 hours
+* Maturity: 75 blocks (64 for Testnet)
+* Min stake age: 10 hours
 
-* Cost of Hybrid Fortuna Stakes: 5,000 D
-* Hybrid Fortuna Stake Reward: 33% of the current block reward
+* Cost of Hybrid Fortuna Stakes: 25,000 INN
+* Hybrid Fortuna Stake Reward: 65% of the current block reward
 * P2P Port: 14530, Testnet Port: 15530
 * RPC Port: 14531, Testnet RPC Port: 15531
 * Fortuna Stake Port: 14539, Testnet Port: 15539
@@ -77,8 +77,8 @@ Technology
 * Atomic Swaps using UTXOs (BIP65 CLTV)
 * BIP39 Support (Coin Type 116)
 * Proof of Data (Image/Data Timestamping)
-* Fast 30 Second Block Times
-* New/First Tribus PoW Algorithm comprising of 3 NIST5 algorithms
+* Fast 45 Second Block Times
+* Tribus PoW Algorithm comprising of 3 NIST5 algorithms
 * Tribus PoW/PoS Hybrid
 * Full decentralization
 
@@ -87,7 +87,7 @@ LINKS
 * Official Website(https://innova.io/)
 * Official Forums(https://innovatalk.org/)
 * Innova Twitter(https://twitter.com/innovacoin)
-* Innova Discord Chat(https://discord.gg/C64HXbc)
+* Innova Discord Chat(https://discord.gg/QeVx8cU)
 
 ASCII CAST TUTORIALS
 ==========================
@@ -95,19 +95,17 @@ ASCII CAST TUTORIALS
 [![asciicast](https://asciinema.org/a/179362.png)](https://asciinema.org/a/179362)
 [![asciicast](https://asciinema.org/a/179355.png)](https://asciinema.org/a/179355)
 
-innovaqtubuntu.sh by Buzzkillb
+innovaqtubuntu.sh
 ===========================
 Compile the latest Innova QT (Graphical Wallet) Ubuntu 16.04 or Ubuntu 18.04+
 
-Credits to Buzzkillb for the creation of this bash script, original repository: https://github.com/buzzkillb/innova-qt/
+Credits to Buzzkillb for the creation of this bash script, original repository: https://github.com/buzzkillb/denarius-qt/
 
 Compiles Innova QT Ubuntu 16.04 or 18.04, Grabs latest chaindata, and populates innova.conf with addnodes or can update a previous compile to the latest master branch.  
 ```bash -c "$(wget -O - https://raw.githubusercontent.com/carsenk/innova/master/innovaqtubuntu.sh)"```  
 
 To turn on nativetor in innova.conf  
-```nativetor=1```  
-
-![Innova Installer Menu](https://raw.githubusercontent.com/buzzkillb/innova-qt/master/compile-menu.PNG)  
+```nativetor=1```   
 
 Development process
 ===========================
