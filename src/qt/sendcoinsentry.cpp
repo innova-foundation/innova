@@ -24,7 +24,7 @@ SendCoinsEntry::SendCoinsEntry(QWidget *parent) :
 #if QT_VERSION >= 0x040700
     /* Do not move this to the XML file, Qt before 4.7 will choke on it */
     ui->addAsLabel->setPlaceholderText(tr("Enter a label for this address to add it to your address book"));
-    ui->payTo->setPlaceholderText(tr("Enter a Innova address (e.g. DyvGBZBowrppUwwNUo1GCRDTibzJi7g2M)"));
+    ui->payTo->setPlaceholderText(tr("Enter a Innova address (e.g. iZ4HRXTsLkp2Rty5RUHMLc6d5qVxVGifKJ)"));
     ui->narration->setPlaceholderText(tr("Enter a short note to send with payment (max 24 characters)"));
 #endif
     setFocusPolicy(Qt::TabFocus);
