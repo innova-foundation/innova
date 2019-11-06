@@ -3,14 +3,14 @@ Tribus Algo PoW/PoS Hybrid Cryptocurrency
 
 ![logo](https://i.imgur.com/Zo0uzw9.png)
 
-[![GitHub version](https://img.shields.io/github/release/carsenk/innova.svg)](https://badge.fury.io/gh/carsenk%2Finnova)
-[![License: GPL v3](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/carsenk/innova/blob/master/COPYING)
-[![Innova downloads](https://img.shields.io/github/downloads/carsenk/innova/total.svg)](https://github.com/carsenk/innova/releases)
-[![Innova lateat release downloads](https://img.shields.io/github/downloads/carsenk/innova/latest/total)](https://github.com/carsenk/innova/releases)
+[![GitHub version](https://img.shields.io/github/release/innova-foundation/innova.svg)](https://badge.fury.io/gh/innova-foundation%2Finnova)
+[![License: GPL v3](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/innova-foundation/innova/blob/master/COPYING)
+[![Innova downloads](https://img.shields.io/github/downloads/innova-foundation/innova/total.svg)](https://github.com/carsenk/innova/releases)
+[![Innova lateat release downloads](https://img.shields.io/github/downloads/innova-foundation/innova/latest/total)](https://github.com/innova-foundation/innova/releases)
 [![Join the chat at https://discord.gg/QeVx8cU](https://img.shields.io/badge/Discord-Chat-blue.svg?logo=discord)](https://discord.gg/QeVx8cU)
 
 [![HitCount](http://hits.dwyl.io/innova-foundation/innova.svg)](http://hits.dwyl.io/innova-foundation/innova)
-<a href="https://discord.gg/QeVx8cU"><img src="https://discordapp.com/api/guilds/334361453320732673/embed.png" alt="Discord server" /></a>
+<a href="https://discord.gg/QeVx8cU"><img src="https://discordapp.com/api/guilds/391676334956347395/embed.png" alt="Discord server" /></a>
 
 ![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/innova-foundation/innova.svg) ![GitHub repo size in bytes](https://img.shields.io/github/repo-size/innova-foundation/innova.svg)
 
