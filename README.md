@@ -12,7 +12,7 @@ Tribus Algo PoW/PoS Hybrid Cryptocurrency
 [![HitCount](http://hits.dwyl.io/innova-foundation/innova.svg)](http://hits.dwyl.io/innova-foundation/innova)
 <a href="https://discord.gg/QeVx8cU"><img src="https://discordapp.com/api/guilds/391676334956347395/embed.png" alt="Discord server" /></a>
 
-![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/innova-foundation/innova.svg) ![GitHub repo size in bytes](https://img.shields.io/github/repo-size/innova-foundation/innova.svg)
+![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/innova-foundation/innova.svg)
 
 [![Build Status](https://travis-ci.org/innova-foundation/innova.svg?branch=master)](https://travis-ci.org/innova-foundation/innova)
 
