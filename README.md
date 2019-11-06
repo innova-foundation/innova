@@ -14,10 +14,6 @@ Tribus Algo PoW/PoS Hybrid Cryptocurrency
 
 ![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/innova-foundation/innova.svg) ![GitHub repo size in bytes](https://img.shields.io/github/repo-size/innova-foundation/innova.svg)
 
-[![Snap Status](https://build.snapcraft.io/badge/innova-foundation/innova.svg)](https://build.snapcraft.io/user/innova-foundation/innova)
-
-![Code Climate](https://codeclimate.com/github/innova-foundation/innova/badges/gpa.svg)
-
 [![Build Status](https://travis-ci.org/innova-foundation/innova.svg?branch=master)](https://travis-ci.org/innova-foundation/innova)
 
 [![Build history](https://buildstats.info/travisci/chart/innova-foundation/innova?branch=master)](https://travis-ci.org/innova-foundation/innova?branch=master)
@@ -36,14 +32,6 @@ Supported Operating Systems
 * Linux 64-bit
 * Windows 64-bit
 * macOS 10.11+
-
-Install Innova with Snap on any Linux Distro
-==========================
-* `sudo apt install snapd`
-* `sudo snap install innova`
-
-* `innova` for running the QT
-* `innova.daemon` for running innovad
 
 Specifications
 ==========================
@@ -89,12 +77,6 @@ LINKS
 * Innova Twitter(https://twitter.com/innovacoin)
 * Innova Discord Chat(https://discord.gg/QeVx8cU)
 
-ASCII CAST TUTORIALS
-==========================
-[![asciicast](https://asciinema.org/a/179356.png)](https://asciinema.org/a/179356)
-[![asciicast](https://asciinema.org/a/179362.png)](https://asciinema.org/a/179362)
-[![asciicast](https://asciinema.org/a/179355.png)](https://asciinema.org/a/179355)
-
 innovaqtubuntu.sh
 ===========================
 Compile the latest Innova QT (Graphical Wallet) Ubuntu 16.04 or Ubuntu 18.04+
@@ -102,7 +84,7 @@ Compile the latest Innova QT (Graphical Wallet) Ubuntu 16.04 or Ubuntu 18.04+
 Credits to Buzzkillb for the creation of this bash script, original repository: https://github.com/buzzkillb/denarius-qt/
 
 Compiles Innova QT Ubuntu 16.04 or 18.04, Grabs latest chaindata, and populates innova.conf with addnodes or can update a previous compile to the latest master branch.  
-```bash -c "$(wget -O - https://raw.githubusercontent.com/carsenk/innova/master/innovaqtubuntu.sh)"```  
+```bash -c "$(wget -O - https://raw.githubusercontent.com/innova-foundation/innova/master/innovaqtubuntu.sh)"```  
 
 To turn on nativetor in innova.conf  
 ```nativetor=1```   
