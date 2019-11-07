@@ -50,9 +50,9 @@ Specifications
 
 * INN Magic Number: 0xa23d7e5c
 * BIP44 CoinType: 116
-* Base58 Pubkey Decimal: 30
-* Base58 Scriptkey Decimal: 90
-* Base58 Privkey Decimal: 158
+* Base58 Pubkey Decimal: 103
+* Base58 Scriptkey Decimal: 113
+* Base58 Privkey Decimal: 231
 
 Technology
 ==========================
