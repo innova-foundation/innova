@@ -5,7 +5,7 @@ Tribus Algo PoW/PoS Hybrid Cryptocurrency
 
 [![GitHub version](https://img.shields.io/github/release/innova-foundation/innova.svg)](https://badge.fury.io/gh/innova-foundation%2Finnova)
 [![License: GPL v3](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/innova-foundation/innova/blob/master/COPYING)
-[![Innova downloads](https://img.shields.io/github/downloads/innova-foundation/innova/total.svg)](https://github.com/carsenk/innova/releases)
+[![Innova downloads](https://img.shields.io/github/downloads/innova-foundation/innova/total.svg)](https://github.com/innova-foundation/innova/releases)
 [![Innova lateat release downloads](https://img.shields.io/github/downloads/innova-foundation/innova/latest/total)](https://github.com/innova-foundation/innova/releases)
 [![Join the chat at https://discord.gg/QeVx8cU](https://img.shields.io/badge/Discord-Chat-blue.svg?logo=discord)](https://discord.gg/QeVx8cU)
 
