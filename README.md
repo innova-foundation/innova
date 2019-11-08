@@ -24,7 +24,7 @@ Innova is a true optionally anonymous, untraceable, and secure hybrid cryptocurr
 
 Ticker: INN
 
-Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Tribus Algorithm) and Proof-of-Stake cryptocurrency.
+Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Tribus Algorithm created bt carsenk) and Proof-of-Stake cryptocurrency.
 
 
 Supported Operating Systems
@@ -39,7 +39,7 @@ Specifications
 * Ideal block time: 45 seconds
 * Stake interest: 6% annual static inflation
 * Confirmations: 10 blocks
-* Maturity: 75 blocks (64 for Testnet)
+* Maturity: 75 blocks (65 for Testnet)
 * Min stake age: 10 hours
 
 * Cost of Hybrid Fortuna Stakes: 25,000 INN
