@@ -653,8 +653,8 @@ int64_t avg2(std::vector<CFortunaStake> const& v) {
         int64_t x = v[i].payValue;
         int64_t delta = x - mean;
         //TODO: implement in mandatory update, will reduce average & lead to rejections
-        //if (v[i].payValue > 2*COIN) { continue; } // don't consider payees above 2.00000000D (pos only / lucky payees)
-        if (v[i].payValue < 1*COIN) { continue; } // don't consider payees below 1.00000000D (pos only / new payees)
+        //if (v[i].payValue > 2*COIN) { continue; } // don't consider payees above 2.00000000INN (pos only / lucky payees)
+        if (v[i].payValue < 1*COIN) { continue; } // don't consider payees below 1.00000000INN (pos only / new payees)
         mean += delta/++n;
     }
     return mean;
