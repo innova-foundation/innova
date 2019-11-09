@@ -1552,7 +1552,7 @@ void static PruneOrphanBlocks()
 // Proof of Work miner's coin base reward
 int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
 {
-	int64_t nSubsidy = 0 * COIN;
+	int64_t nSubsidy = 1 * COIN;
 
 	if (pindexBest->nHeight == 1)
 		nSubsidy = 10000000 * COIN;  //Swap amount for Innova Chain v0.12 + Founders Fund 3 million
@@ -1589,7 +1589,7 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
   else if (pindexBest->nHeight <= 50000) //
   	nSubsidy = 0.25 * COIN;
     else if (pindexBest->nHeight > LAST_POW_BLOCK) // Block 50k
-		nSubsidy = 0.03125 * COIN; // PoW Ends
+		nSubsidy = 0; // PoW Ends
 
     if (fDebug && GetBoolArg("-printcreation"))
         printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
