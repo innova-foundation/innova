@@ -19,7 +19,7 @@
 class CValidationState;
 
 #define BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET 1000
-#define BLOCK_START_FORTUNASTAKE_PAYMENTS 5000 //Mainnet Fortunastake payments not enabled until block 5k
+#define BLOCK_START_FORTUNASTAKE_PAYMENTS 1000 //Mainnet Fortunastake payments not enabled until block 5k
 #define BLOCK_START_FORTUNASTAKE_DELAYPAY 9000 //Activates a delay in payment for MNs Block 9k
 
 //#define START_FORTUNASTAKE_PAYMENTS_TESTNET 1519430400  //Sat, 24 Feb 2018 00:00:00 GMT
