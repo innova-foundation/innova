@@ -512,7 +512,7 @@ vector<COutput> CActiveFortunastake::SelectCoinsFortunastake(bool fSelectUnlocke
     // Filter
     BOOST_FOREACH(const COutput& out, vCoins)
     {
-        if(out.tx->vout[out.i].nValue == GetMNCollateral()*COIN) { //exactly 5,000 D
+        if(out.tx->vout[out.i].nValue == GetMNCollateral()*COIN) { //exactly 25,000 INN
             filteredCoins.push_back(out);
         }
     }
