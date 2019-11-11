@@ -18,7 +18,7 @@
 
 class CValidationState;
 
-#define BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET 800
+#define BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET 250
 #define BLOCK_START_FORTUNASTAKE_PAYMENTS 800 //Mainnet Fortunastake payments not enabled until block 5k
 #define BLOCK_START_FORTUNASTAKE_DELAYPAY 10000 //Activates a delay in payment for MNs Block 9k
 
@@ -79,7 +79,7 @@ static const int64_t MIN_RELAY_TX_FEE = MIN_TX_FEE;
 static const int64_t MAX_MONEY = 25000000 * COIN; // 25,000,000 INN Innova Max
 static const int64_t COIN_YEAR_REWARD = 0.06 * COIN; // 6% per year
 
-static const int64_t MAINNET_POSFIX = 500; //Mainnet Proof of Stake update not enabled until block 2500
+static const int64_t MAINNET_POSFIX = 211; //Mainnet Proof of Stake update not enabled until block 2500
 static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 5000; // Enforce fortunastake payments after this height - BLOCK 10k
 
 inline bool MoneyRange(int64_t nValue) { return (nValue >= 0 && nValue <= MAX_MONEY); }
