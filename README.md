@@ -39,7 +39,7 @@ Specifications
 * Ideal block time: 45 seconds
 * Stake interest: 6% annual static inflation
 * Confirmations: 10 blocks
-* Maturity: 75 blocks 
+* Maturity: 75 blocks
 * Min stake age: 10 hours
 
 * Cost of Hybrid Fortuna Stakes: 25,000 INN

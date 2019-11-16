@@ -1,4 +1,3 @@
-
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
 // Copyright (c) 2017-2018 The Innova developers
@@ -45,12 +44,12 @@ CBigNum bnProofOfWorkLimitTestNet(~uint256(0) >> 16);
 
 // Block Variables
 
-unsigned int nTargetSpacing     = 30;               // 15 seconds
+unsigned int nTargetSpacing     = 30;               // 15 seconds, FAST
 unsigned int nStakeMinAge       = 10 * 60 * 60;      // 10 hour min stake age
 unsigned int nStakeMaxAge       = -1;               // unlimited
 unsigned int nModifierInterval  = 10 * 60;          // time to elapse before new modifier is computed
 int64_t nLastCoinStakeSearchTime = GetAdjustedTime();
-int nCoinbaseMaturity = 65; //75 on Mainnet I n n o v a, 65 for testnet
+int nCoinbaseMaturity = 65; //75 on Mainnet
 CBlockIndex* pindexGenesisBlock = NULL;
 int nBestHeight = -1;
 bool FortunaReorgBlock = true;
@@ -1602,7 +1601,7 @@ const int YEARLY_BLOCKCOUNT = 700800; // Amount of Blocks per year
 // Proof of Stake miner's coin stake reward based on coin age spent (coin-days)
 int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees)
 {
-	if (pindexBest->nHeight > (YEARLY_BLOCKCOUNT*9000)) //It's Over 9000!!!!...... years.
+	if (pindexBest->nHeight > (YEARLY_BLOCKCOUNT*9000)) // It's Over 9000 !! years.
         return nFees;
 
     int64_t nRewardCoinYear;
@@ -1611,7 +1610,7 @@ int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees)
     int64_t nSubsidy;
     nSubsidy = nCoinAge * nRewardCoinYear / 365 / COIN;
 
-    //PoS Fixed
+    //PoS Fixed on Block MAINNET_POSFIX - v2.0+ InNoVa
     if (pindexBest->nHeight >= MAINNET_POSFIX || fTestNet)
         nSubsidy = nCoinAge * nRewardCoinYear / 365;
 
@@ -2566,7 +2565,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
 
     // ----------- fortunastake payments -----------
     // Once upon a time, People were really interested in D.
-    // So much so, People wanted to bring INN to the moon. Even Mars, Sooner than the roadster...
+    // So much so, People wanted to bring D to the moon. Even Mars, Sooner than the roadster...
     // The Discord was active, People discussed how they would reach that goal.
     // There was one person, named Thi3rryzz watching all this from a save distance.
     // Then, the word FORTUNASTAKES came to the table.
@@ -2584,7 +2583,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
 
     // and oh ye of little faith, feast your eyes upon the broth of thine calling. the hybrid stakes are no more.
     // gone are the days of not knowing when to expect the sweet caress of the glorious INN to be gracing the silver linings
-    // of your wallet. forever more you shall know the D, and the INN shall know you, and ye shall be fairly judged
+    // of your wallet. forever more you shall know the INN, and the INN shall know you, and ye shall be fairly judged
     // for all of eternity
 
 
@@ -3733,7 +3732,7 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
 
     //After block 1.5m, The Minimum FortunaStake Protocol Version is 31005
     if(nBestHeight >= 1500000) {
-        MIN_MN_PROTO_VERSION = 50001;
+        MIN_MN_PROTO_VERSION = 33900;
     }
 
     // ppcoin: if responsible for sync-checkpoint send it
@@ -5427,7 +5426,7 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
 
 int64_t GetFortunastakePayment(int nHeight, int64_t blockValue)
 {
-    //int64_t ret = blockValue * 70/100; //70%
+    //int64_t ret = blockValue * 7/10; //70%
 	int64_t ret = static_cast<int64_t>(blockValue * 65/100); //65%
 
     return ret;

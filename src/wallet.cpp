@@ -22,7 +22,7 @@
 using namespace std;
 
 unsigned int nStakeSplitAge = 1 * 24 * 60 * 60;
-int64_t nStakeCombineThreshold = 1000 * COIN;
+int64_t nStakeCombineThreshold = 1000 * COIN; ///////////////////
 
 int64_t gcd(int64_t n,int64_t m) { return m == 0 ? n : gcd(m, n % m); }
 static uint64_t CoinWeightCost(const COutput &out)
@@ -272,7 +272,7 @@ bool CWallet::Unlock(const SecureString& strWalletPassphrase)
         }
 
         UnlockStealthAddresses(vMasterKey);
-		ProcessLockedAnonOutputs(); //Process Locked Anon Outputs when unlocked, I N N O V A - v3.1
+		ProcessLockedAnonOutputs(); //Process Locked Anon Outputs when unlocked, I n n o v a - v3.1
         SecureMsgWalletUnlocked();
         return true;
     }
@@ -2518,7 +2518,7 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64_t> >& vecSend, 
                 int64_t nTotalValue = nValue + nFeeRet;
                 double dPriority = 0;
 
-                // vouts to the payees with UTXO splitter - I N N O V A
+                // vouts to the payees with UTXO splitter
                 if(coinControl && !coinControl->fSplitBlock)
                 {
                     BOOST_FOREACH (const PAIRTYPE(CScript, int64_t)& s, vecSend)
@@ -3995,7 +3995,7 @@ DBErrors CWallet::ZapWalletTx()
     return DB_LOAD_OK;
 }
 
-//D E N A R I U S
+//I n n o v a
 bool CWallet::SetAddressBookName(const CTxDestination& address, const string& strName)
 {
     bool fOwned;

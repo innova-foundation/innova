@@ -1,8 +1,8 @@
-Denarius
+Innova
 src/*.exe
-src/denarius
-src/denariusd
-src/test_denarius
+src/innova
+src/innovad
+src/test_innova
 src/build.h
 src/leveldb/*.a
 src/leveldb/build_config.mk
@@ -12,9 +12,9 @@ stage
 *.snap
 *.tar.bz2
 .qmake.stash
-object_script.Denarius.Release
-object_script.Denarius.Debug
-denarius_plugin_import.cpp
+object_script.Innova.Release
+object_script.Innova.Debug
+innova_plugin_import.cpp
 Makefile
 Makefile.*
 release

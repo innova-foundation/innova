@@ -1216,7 +1216,7 @@ void ListTransactions(const CWalletTx& wtx, const string& strAccount, int nMinDe
 					entry.push_back(Pair("amount", ValueFromAmount(r.amount)));
 					entry.push_back(Pair("reward", ValueFromAmount(-nFee)));
                     stop = true;
-				//FortunaStake PoS Reward - I N N O V A
+				//FortunaStake PoS Reward - I n n o v a
                 } else if (wtx.IsCoinStake() && nFee == 0) {
 					entry.push_back(Pair("reward", ValueFromAmount(r.amount)));
 					stop = true;

@@ -13,7 +13,7 @@ if [[ -f "$CONFIG" ]]; then
   EXISTS=1
 else
   PORT=14530
-  RPCPORT=33379
+  RPCPORT=14531
   RPCUSER=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)
   RPCPASS=$(cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1)
   echo "port=$PORT" > $CONFIG

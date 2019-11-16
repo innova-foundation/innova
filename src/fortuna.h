@@ -224,7 +224,7 @@ class CFortunaSession
 class CForTunaPool
 {
 public:
-    static const int PROTOCOL_VERSION = 50002; // 
+    static const int PROTOCOL_VERSION = 33900; //33900, INN v3.3.9.2
 
     // clients entries
     std::vector<CForTunaEntry> myEntries;
@@ -291,7 +291,7 @@ public:
 
     void InitCollateralAddress(){
         std::string strAddress = "";
-            strAddress = "DQjK69r9hjKgJo3foVsqdErBzL1Rdmsswr";
+            strAddress = "iMyFz7qDjtps7YzQ3Rw9KhTFBbn37DoqFR";
         SetCollateralAddress(strAddress);
     }
 
