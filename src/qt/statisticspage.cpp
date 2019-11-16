@@ -64,7 +64,7 @@ void StatisticsPage::updateStatistics()
     }
 
     QString subsidy = "";
-	if (pindexBest->nHeight < 5000)
+    if (pindexBest->nHeight < 5000)
     {
         subsidy = "1 INN per block";
     }
@@ -135,7 +135,7 @@ void StatisticsPage::updateStatistics()
 
     QString QPeers = QString::number(peers);
     QString qVolume = QString::number(volume);
-	QString mn = "25,000 INN";
+	QString mn = "25,000 Innova";
 	QString mn2 = "65% of PoW/PoS block reward";
 
 	ui->mncost->setText("<b><font color=\"light blue\">" + mn + "</font></b>");

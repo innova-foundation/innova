@@ -84,7 +84,7 @@ lessThan(QT_MAJOR_VERSION, 5): win32: QMAKE_LFLAGS *= -static
 # use: qmake "USE_NATIVETOR=1" ( enabled by default; default)
 #  or: qmake "USE_NATIVETOR=0" (disabled by default)
 #  or: qmake "USE_NATIVETOR=-" (not supported)
-# I N N O V A Native Tor - USE_NATIVETOR=- to not compile with the Tor C Library by Tor Project located in src/tor
+# I n n o v a Native Tor - USE_NATIVETOR=- to not compile with the Tor C Library by Tor Project located in src/tor
 contains(USE_NATIVETOR, -) {
     message(Building without Native Tor support)
 } else {
@@ -94,7 +94,7 @@ contains(USE_NATIVETOR, -) {
     }
     DEFINES += USE_NATIVETOR=$$USE_NATIVETOR
     INCLUDEPATH += src/tor
-
+	
 	### Tor native integration sources
 	SOURCES += src/tor/anonymize.cpp \
 		src/tor/address.c \

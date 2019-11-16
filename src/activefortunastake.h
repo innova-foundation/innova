@@ -47,7 +47,7 @@ public:
     bool Register(CTxIn vin, CService service, CKey key, CPubKey pubKey, CKey keyFortunastake, CPubKey pubKeyFortunastake, std::string &retErrorMessage); // register any fortunastake
     bool RegisterByPubKey(std::string strService, std::string strKeyFortunastake, std::string collateralAddress, std::string& errorMessage); // register for a specific collateral address
 
-    // get 25000INN input that can be used for the fortunastake
+    // get 25000 INN input that can be used for the fortunastake
     bool GetFortunaStakeVin(CTxIn& vin, CPubKey& pubkey, CKey& secretKey);
     bool GetFortunaStakeVin(CTxIn& vin, CPubKey& pubkey, CKey& secretKey, std::string strTxHash, std::string strOutputIndex);
     bool GetFortunaStakeVin(CTxIn& vin, CPubKey& pubkey, CKey& secretKey, std::string strTxHash, std::string strOutputIndex, std::string& errorMessage);

@@ -18,9 +18,9 @@
 
 class CValidationState;
 
-#define BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET 250
-#define BLOCK_START_FORTUNASTAKE_PAYMENTS 800 //Mainnet Fortunastake payments not enabled until block 5k
-#define BLOCK_START_FORTUNASTAKE_DELAYPAY 2000 //Activates a delay in payment for MNs Block 9k
+#define BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET 510 // Testnet Fortunastake payments enabled this block
+#define BLOCK_START_FORTUNASTAKE_PAYMENTS 800 //Mainnet Fortunastake payments not enabled until this block
+#define BLOCK_START_FORTUNASTAKE_DELAYPAY 2000 //Activates a delay in payment for MNs
 
 //#define START_FORTUNASTAKE_PAYMENTS_TESTNET 1519430400  //Sat, 24 Feb 2018 00:00:00 GMT
 //#define START_FORTUNASTAKE_PAYMENTS 1520985600  //Wed, 14 Mar 2018 00:00:00 GMT
@@ -58,8 +58,8 @@ class CNode;
 
 // General Innova Block Values
 
-static const int LAST_POW_BLOCK = 50000; // Block 50000
-static const int FAIR_LAUNCH_BLOCK = 25; // Last Block until full block reward starts
+static const int LAST_POW_BLOCK = 500000; // Block 50k
+static const int FAIR_LAUNCH_BLOCK = 210; // Last Block until full block reward starts
 static const unsigned int MAX_BLOCK_SIZE = 1000000; // 1MB block hard limit, double the size of Bitcoin
 static const unsigned int MAX_BLOCK_SIZE_GEN = MAX_BLOCK_SIZE/2; // 512kb block soft limit, ditto
 /** The maximum size for transactions we're willing to relay/mine **/
@@ -79,8 +79,8 @@ static const int64_t MIN_RELAY_TX_FEE = MIN_TX_FEE;
 static const int64_t MAX_MONEY = 25000000 * COIN; // 25,000,000 INN Innova Max
 static const int64_t COIN_YEAR_REWARD = 0.06 * COIN; // 6% per year
 
-static const int64_t MAINNET_POSFIX = 50; //Mainnet Proof of Stake update not enabled until block 2500
-static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 5000; // Enforce fortunastake payments after this height - BLOCK 10k
+static const int64_t MAINNET_POSFIX = 250; //Mainnet Proof of Stake update not enabled until block 250
+static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 5000; // Enforce fortunastake payments after this height
 
 inline bool MoneyRange(int64_t nValue) { return (nValue >= 0 && nValue <= MAX_MONEY); }
 
