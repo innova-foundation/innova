@@ -252,7 +252,7 @@
              <string>Current total balance in watch-only addresses</string>
             </property>
             <property name="text">
-             <string notr="true">0 INN</string>
+             <string notr="true">0 D</string>
             </property>
             <property name="alignment">
              <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
@@ -277,7 +277,7 @@
              <string>Your current balance in watch-only addresses</string>
             </property>
             <property name="text">
-             <string notr="true">0 INN</string>
+             <string notr="true">0 D</string>
             </property>
             <property name="alignment">
              <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
@@ -316,7 +316,7 @@
              <string>Mined balance in watch-only addresses that has not yet matured</string>
             </property>
             <property name="text">
-             <string notr="true">0 INN</string>
+             <string notr="true">0 D</string>
             </property>
             <property name="alignment">
              <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
@@ -394,7 +394,7 @@
              <string>Unconfirmed transactions to watch-only addresses</string>
             </property>
             <property name="text">
-             <string notr="true">0 INN</string>
+             <string notr="true">0 D</string>
             </property>
             <property name="alignment">
              <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>
@@ -542,7 +542,7 @@
            <string>Your current total balance</string>
           </property>
           <property name="text">
-           <string notr="true">35626236326.63632636 INN</string>
+           <string notr="true">35626236326.63632636 D</string>
           </property>
           <property name="textInteractionFlags">
            <set>Qt::LinksAccessibleByMouse|Qt::TextSelectableByKeyboard|Qt::TextSelectableByMouse</set>
@@ -590,7 +590,7 @@
              <cursorShape>PointingHandCursor</cursorShape>
             </property>
             <property name="text">
-             <string>&lt;div style=&quot;color: #fff;&quot;&gt;(&lt;a href=&quot;https://crex24.com/exchange/INN-BTC; style=&quot;color: #fff;&quot;&gt;Trade INN&lt;/a&gt;)&lt;/div&gt;</string>
+             <string>&lt;div style=&quot;color: #fff;&quot;&gt;(&lt;a href=&quot;https://www.coinexchange.io/market/D/BTC&quot; style=&quot;color: #fff;&quot;&gt;Trade D&lt;/a&gt;)&lt;/div&gt;</string>
             </property>
             <property name="openExternalLinks">
              <bool>true</bool>

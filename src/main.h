@@ -18,9 +18,9 @@
 
 class CValidationState;
 
-#define BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET 510 // Testnet Fortunastake payments enabled this block
-#define BLOCK_START_FORTUNASTAKE_PAYMENTS 800 //Mainnet Fortunastake payments not enabled until this block
-#define BLOCK_START_FORTUNASTAKE_DELAYPAY 2000 //Activates a delay in payment for MNs
+#define BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET 550 // Testnet Fortunastake payments enabled block 81k5
+#define BLOCK_START_FORTUNASTAKE_PAYMENTS 800 //Mainnet Fortunastake payments not enabled until block 645k
+#define BLOCK_START_FORTUNASTAKE_DELAYPAY 5000 //Activates a delay in payment for MNs - I n n o v a Block 1.35 Million
 
 //#define START_FORTUNASTAKE_PAYMENTS_TESTNET 1519430400  //Sat, 24 Feb 2018 00:00:00 GMT
 //#define START_FORTUNASTAKE_PAYMENTS 1520985600  //Wed, 14 Mar 2018 00:00:00 GMT
@@ -58,8 +58,8 @@ class CNode;
 
 // General Innova Block Values
 
-static const int LAST_POW_BLOCK = 500000; // Block 50k
-static const int FAIR_LAUNCH_BLOCK = 210; // Last Block until full block reward starts
+static const int LAST_POW_BLOCK = 50000; // Block 3m Approx. 3 years of Proof of Work before Proof of Stake consensus kicks in
+static const int FAIR_LAUNCH_BLOCK = 490; // Last Block until full block reward starts
 static const unsigned int MAX_BLOCK_SIZE = 1000000; // 1MB block hard limit, double the size of Bitcoin
 static const unsigned int MAX_BLOCK_SIZE_GEN = MAX_BLOCK_SIZE/2; // 512kb block soft limit, ditto
 /** The maximum size for transactions we're willing to relay/mine **/
@@ -67,11 +67,7 @@ static const unsigned int MAX_STANDARD_TX_SIZE = MAX_BLOCK_SIZE_GEN/5;
 static const unsigned int MAX_BLOCK_SIGOPS = MAX_BLOCK_SIZE/50;
 /** The maximum number of sigops we're willing to relay/mine in a single tx */
 static const unsigned int MAX_TX_SIGOPS = MAX_BLOCK_SIGOPS/5;
-//static const unsigned int MAX_ORPHAN_TRANSACTIONS = MAX_BLOCK_SIZE/100; deprecated
-/** Default for -maxorphantx, maximum number of orphan transactions kept in memory */
-static const unsigned int DEFAULT_MAX_ORPHAN_TRANSACTIONS = 10000; //Was 100, lets handle 10k
-/** Default for -maxorphanblocks, maximum number of orphan blocks kept in memory */
-static const unsigned int DEFAULT_MAX_ORPHAN_BLOCKS = 1000; //Default 750, Lets handle 1000
+static const unsigned int MAX_ORPHAN_TRANSACTIONS = MAX_BLOCK_SIZE/100;
 static const unsigned int MAX_INV_SZ = 50000;
 static const int64_t MIN_TX_FEE = 1000;
 static const int64_t MIN_TX_FEE_ANON = 10000;
@@ -79,8 +75,8 @@ static const int64_t MIN_RELAY_TX_FEE = MIN_TX_FEE;
 static const int64_t MAX_MONEY = 25000000 * COIN; // 25,000,000 INN Innova Max
 static const int64_t COIN_YEAR_REWARD = 0.06 * COIN; // 6% per year
 
-static const int64_t MAINNET_POSFIX = 250; //Mainnet Proof of Stake update not enabled until block 250
-static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 5000; // Enforce fortunastake payments after this height
+static const int64_t MAINNET_POSFIX = 500; //Mainnet Proof of Stake update not enabled until block 640k
+static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 2500; // Enforce fortunastake payments after this height - BLOCK 1.45 Million
 
 inline bool MoneyRange(int64_t nValue) { return (nValue >= 0 && nValue <= MAX_MONEY); }
 
@@ -90,8 +86,8 @@ static const unsigned int LOCKTIME_THRESHOLD = 500000000; // Tue Nov  5 00:53:20
 /** Maxiumum number of signature check operations in an IsStandard() P2SH script */
 static const unsigned int MAX_P2SH_SIGOPS = 15;
 
-static const uint256 hashGenesisBlock("0x00000d8d15e2451cdd50cd51d8e6a7458e69af9d5e8ff46bf38809a472186137");
-static const uint256 hashGenesisBlockTestNet("0x00004d2d8492c46d90fc9c61971cb1d83e0aa7c17081d3217dd6d6da0db04f70");
+static const uint256 hashGenesisBlock("0x000009bd42d259eb7031ae4f634aede1a690da795e5529786a72c3cd6d989995");
+static const uint256 hashGenesisBlockTestNet("0x00006d9ebd08daaba835059276f29656a9e018cbd69f79688777c42766ceec6a");
 
 //inline bool IsProtocolV1RetargetingFixed(int nHeight) { return fTestNet || nHeight > 0; }
 //inline bool IsProtocolV2(int nHeight) { return fTestNet || nHeight > 0; }
@@ -482,7 +478,7 @@ public:
     {
         std::string str;
         str += IsCoinBase()? "Coinbase" : (IsCoinStake()? "Coinstake" : "CTransaction");
-        str += strprintf("(hash=%s, nTime=%d, ver=%d, vin.size=%" PRIszu", vout.size=%" PRIszu", nLockTime=%d)\n",
+        str += strprintf("(hash=%s, nTime=%d, ver=%d, vin.size=%"PRIszu", vout.size=%"PRIszu", nLockTime=%d)\n",
             GetHash().ToString().substr(0,10).c_str(),
             nTime,
             nVersion,
@@ -912,7 +908,7 @@ public:
 
     void print() const
     {
-        printf("CBlock(hash=%s, ver=%d, hashPrevBlock=%s, hashMerkleRoot=%s, nTime=%u, nBits=%08x, nNonce=%u, vtx=%" PRIszu", vchBlockSig=%s)\n",
+        printf("CBlock(hash=%s, ver=%d, hashPrevBlock=%s, hashMerkleRoot=%s, nTime=%u, nBits=%08x, nNonce=%u, vtx=%"PRIszu", vchBlockSig=%s)\n",
             GetHash().ToString().c_str(),
             nVersion,
             hashPrevBlock.ToString().c_str(),
@@ -974,16 +970,6 @@ public:
     int64_t nMint;
     int64_t nMoneySupply;
 
-    // (memory only) Total amount of work (expected number of hashes) in the chain up to and including this block
-    uint256 nChainWork;
-
-    // Number of transactions in this block.
-    // Note: in a potential headers-first mode, this number cannot be relied upon
-    unsigned int nTx;
-
-    // (memory only) Number of transactions in the chain up to and including this block
-    unsigned int nChainTx; // change to 64-bit type when necessary; won't happen before 2030
-
     unsigned int nFlags;  // ppcoin: block index flags
     enum
     {
@@ -1017,9 +1003,6 @@ public:
         nBlockPos = 0;
         nHeight = 0;
         nChainTrust = 0;
-        nChainWork = 0;
-        nTx = 0;
-        nChainTx = 0;
         nMint = 0;
         nMoneySupply = 0;
         nFlags = 0;
@@ -1045,9 +1028,6 @@ public:
         nBlockPos = nBlockPosIn;
         nHeight = 0;
         nChainTrust = 0;
-        nChainWork = 0;
-        nTx = 0;
-        nChainTx = 0;
         nMint = 0;
         nMoneySupply = 0;
         nFlags = 0;
@@ -1094,15 +1074,6 @@ public:
     int64_t GetBlockTime() const
     {
         return (int64_t)nTime;
-    }
-
-    CBigNum GetBlockWork() const
-    {
-        CBigNum bnTarget;
-        bnTarget.SetCompact(nBits);
-        if (bnTarget <= 0)
-            return 0;
-        return (CBigNum(1)<<256) / (bnTarget+1);
     }
 
     uint256 GetBlockTrust() const;
@@ -1368,8 +1339,6 @@ public:
                 pindex = pindex->pprev;
             if (vHave.size() > 10)
                 nStep *= 2;
-            // build a shorter locator to save cpu time on large chains: LNK CR B82REZ 2G4
-            if (nStep > 1024) break;
         }
         vHave.push_back((!fTestNet ? hashGenesisBlock : hashGenesisBlockTestNet));
     }

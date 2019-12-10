@@ -34,7 +34,7 @@ SendMessagesDialog::SendMessagesDialog(Mode mode, Type type, QWidget *parent) :
 #if QT_VERSION >= 0x040700
      /* Do not move this to the XML file, Qt before 4.7 will choke on it */
     if(mode == SendMessagesDialog::Encrypted)
-        ui->addressFrom->setPlaceholderText(tr("Enter a Innova address (e.g. iZ4HRXTsLkp2Rty5RUHMLc6d5qVxVGifKJ)"));
+        ui->addressFrom->setPlaceholderText(tr("Enter a Innova address (e.g. igYcNv4Zp7g4ysSpdFUuzn6VaxvzAZAxsd)"));
  #endif
     addEntry();
 

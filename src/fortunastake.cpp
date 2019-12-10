@@ -131,7 +131,7 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
         if((fTestNet && addr.GetPort() != 15539) || (!fTestNet && addr.GetPort() != 14539)) return;
 
         //search existing fortunastake list, this is where we update existing fortunastakes with new dsee broadcasts
-        LOCK(cs_fortunastakes);
+	      LOCK(cs_fortunastakes);
         BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes) {
             if(mn.vin.prevout == vin.prevout) {
                 // count == -1 when it's a new entry
@@ -139,12 +139,10 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
                 // mn.pubkey = pubkey, IsVinAssociatedWithPubkey is validated once below,
                 //   after that they just need to match
                 if(count == -1 && mn.pubkey == pubkey && !mn.UpdatedWithin(FORTUNASTAKE_MIN_DSEE_SECONDS)){
-					mn.UpdateLastSeen(sigTime); // Updated UpdateLastSeen with sigTime
-                    //mn.UpdateLastSeen(); // update last seen without the sigTime since it's a new entry
+                    mn.UpdateLastSeen();
 
                     if(mn.now < sigTime){ //take the newest entry
                         if (fDebugFS & fDebugNet) printf("dsee - Got updated entry for %s\n", addr.ToString().c_str());
-                        mn.UpdateLastSeen(); // update with current time (i.e. the time we received this 'new' dsee
                         mn.pubkey2 = pubkey2;
                         mn.now = sigTime;
                         mn.sig = vchSig;
@@ -545,7 +543,7 @@ bool GetFortunastakeRanks(CBlockIndex* pindex)
     if (vecFortunastakeScoresListHash.size() > 0 && vecFortunastakeScoresListHash == pindex->GetBlockHash()) {
         // if ScoresList was calculated for the current pindex hash, then just use that list
         // TODO: make a vector of these somehow
-        if (fDebug) printf(" STARTCOPY (%" PRId64"ms)", GetTimeMillis() - nStartTime);
+        if (fDebug) printf(" STARTCOPY (%"PRId64"ms)", GetTimeMillis() - nStartTime);
         BOOST_FOREACH(CFortunaStake& mn, vecFortunastakeScoresList)
         {
             i++;
@@ -559,7 +557,7 @@ bool GetFortunastakeRanks(CBlockIndex* pindex)
         FortunaReorgBlock = false; // reset reorg flag, we can check now it's updated
 
         // now we build the list for sorting
-        if (fDebug) printf(" STARTLOOP (%" PRId64"ms)", GetTimeMillis() - nStartTime);
+        if (fDebug) printf(" STARTLOOP (%"PRId64"ms)", GetTimeMillis() - nStartTime);
         BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes) {
 
             mn.Check();
@@ -585,7 +583,7 @@ bool GetFortunastakeRanks(CBlockIndex* pindex)
     // TODO: Store the whole Scores vector in a caching hash map, maybe need hashPrev as well to make sure it re calculates any different chains with the same end block?
     //vecFortunastakeScoresCache.insert(make_pair(pindex->GetBlockHash(), vecFortunastakeScoresList));
 
-    if (fDebug) printf(" SORT (%" PRId64"ms)", GetTimeMillis() - nStartTime);
+    if (fDebug) printf(" SORT (%"PRId64"ms)", GetTimeMillis() - nStartTime);
     sort(vecFortunastakeScores.rbegin(), vecFortunastakeScores.rend(), CompareLastPay(pindex)); // sort requires current pindex for modulus as pindexBest is different between clients
 
     i = 0;
@@ -596,7 +594,7 @@ bool GetFortunastakeRanks(CBlockIndex* pindex)
         s.first = i;
         s.second->nRank = i;
     }
-    if (fDebug) printf(" DONE (%" PRId64"ms)\n", GetTimeMillis() - nStartTime);
+    if (fDebug) printf(" DONE (%"PRId64"ms)\n", GetTimeMillis() - nStartTime);
     return true;
 }
 
@@ -630,22 +628,6 @@ bool CheckFSPayment(CBlockIndex* pindex, int64_t value, CFortunaStake &mn) {
     return true;
 }
 
-bool CheckPoSFSPayment(CBlockIndex* pindex, int64_t value, CFortunaStake &mn) {
-    if (mn.nBlockLastPaid == 0) return true; // if we didn't find a payment for this MN, let it through regardless of rate
-    // find height
-    // calculate average payment across all FS
-    // check if value is > 25% higher
-    nAverageFSIncome = avg2(vecFortunastakeScoresList);
-    if (nAverageFSIncome < 1 * COIN) return true; // if we can't calculate a decent average, then let the payment through
-    //int64_t max = nAverageFSIncome * 10 / 8;
-    /* // Dont check if value is > 25% higher since PoS
-    if (value > max) {
-        return false;
-    }
-    */
-    return true;
-}
-
 int64_t avg2(std::vector<CFortunaStake> const& v) {
     int n = 0;
     int64_t mean = 0;
@@ -653,8 +635,8 @@ int64_t avg2(std::vector<CFortunaStake> const& v) {
         int64_t x = v[i].payValue;
         int64_t delta = x - mean;
         //TODO: implement in mandatory update, will reduce average & lead to rejections
-        //if (v[i].payValue > 2*COIN) { continue; } // don't consider payees above 2.00000000INN (pos only / lucky payees)
-        if (v[i].payValue < 1*COIN) { continue; } // don't consider payees below 1.00000000INN (pos only / new payees)
+        //if (v[i].payValue > 2*COIN) { continue; } // don't consider payees above 2.00000000D (pos only / lucky payees)
+        if (v[i].payValue < 1*COIN) { continue; } // don't consider payees below 1.00000000D (pos only / new payees)
         mean += delta/++n;
     }
     return mean;

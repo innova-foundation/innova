@@ -2,8 +2,8 @@
 // Copyright (c) 2017-2018 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#ifndef INNOVA_KERNEL_H
-#define INNOVA_KERNEL_H
+#ifndef DENARIUS_KERNEL_H
+#define DENARIUS_KERNEL_H
 
 #include "main.h"
 #include "core.h"
@@ -38,4 +38,4 @@ bool CheckStakeModifierCheckpoints(int nHeight, unsigned int nStakeModifierCheck
 // Get time weight using supplied timestamps
 int64_t GetWeight(int64_t nIntervalBeginning, int64_t nIntervalEnd);
 
-#endif // INNOVA_KERNEL_H
+#endif // DENARIUS_KERNEL_H

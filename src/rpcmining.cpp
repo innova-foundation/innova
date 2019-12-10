@@ -9,7 +9,7 @@
 #include "init.h"
 #include "miner.h"
 #include "fortunastake.h"
-#include "innovarpc.h"
+#include "bitcoinrpc.h"
 
 
 using namespace json_spirit;
@@ -557,7 +557,7 @@ Value getblocktemplate(const Array& params, bool fHelp)
                     if (fDebug) printf("CreateNewBlock(): Failed to detect fortunastake to pay, burning coins.");
                     std::string burnAddress;
                     if (fTestNet) std::string burnAddress = "8TestXXXXXXXXXXXXXXXXXXXXXXXXbCvpq";
-                    else std::string burnAddress = "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw";
+                    else std::string burnAddress = "DNRXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw";
                     CBitcoinAddress burnAddr;
                     burnAddr.SetString(burnAddress);
                     payee = GetScriptForDestination(burnAddr.Get());
@@ -571,7 +571,7 @@ Value getblocktemplate(const Array& params, bool fHelp)
 		result.push_back(Pair("payee", address2.ToString().c_str()));
 		result.push_back(Pair("payee_amount", (int64_t)GetFortunastakePayment(pindexPrev->nHeight+1, pblock->vtx[0].GetValueOut())));
 	  } else {
-        result.push_back(Pair("payee", "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw"));
+        result.push_back(Pair("payee", "DNRXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw"));
 	result.push_back(Pair("payee_amount", (int64_t)GetFortunastakePayment(pindexPrev->nHeight+1, pblock->vtx[0].GetValueOut())));
     }
 

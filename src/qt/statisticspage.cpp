@@ -5,7 +5,7 @@
 #include "init.h"
 #include "base58.h"
 #include "clientmodel.h"
-#include "innovarpc.h"
+#include "bitcoinrpc.h"
 #include "marketbrowser.h"
 #include <sstream>
 #include <string>
@@ -55,74 +55,74 @@ void StatisticsPage::updateStatistics()
     QString stakemax = QString::number(nNetworkWeight);
     QString phase = "";
     if (pindexBest->nHeight < 50000)
-    {
-        phase = "Tribus Proof of Work with Proof of Stake";
-    }
-    else if (pindexBest->nHeight > 50000)
-    {
-        phase = "Proof of Stake";
-    }
+  {
+      phase = "Tribus Proof of Work with Proof of Stake";
+  }
+  else if (pindexBest->nHeight > 50000)
+  {
+      phase = "Proof of Stake";
+  }
 
-    QString subsidy = "";
-    if (pindexBest->nHeight < 5000)
+  QString subsidy = "";
+  if (pindexBest->nHeight < 5000)
     {
-        subsidy = "1 INN per block";
+        subsidy = "0.33 INN per block";
     }
-	else if (pindexBest->nHeight < 10000)
+  else if (pindexBest->nHeight < 10000)
     {
-        subsidy = "2 INN per block";
+        subsidy = "0.66 INN per block";
     }
   else if (pindexBest->nHeight < 15000)
     {
-        subsidy = "3 INN per block";
+        subsidy = "0.99 INN per block";
     }
   else if (pindexBest->nHeight < 20000)
     {
-        subsidy = "4 INN per block";
+        subsidy = "1.32 INN per block";
     }
   else if (pindexBest->nHeight < 25000)
     {
-        subsidy = "5 INN per block";
+        subsidy = "1.65 INN per block";
     }
   else if (pindexBest->nHeight < 27500)
     {
-        subsidy = "4.5 INN per block";
+        subsidy = "1.485 INN per block";
     }
-	else if (pindexBest->nHeight < 30000)
+  else if (pindexBest->nHeight < 30000)
     {
-        subsidy = "4 INN per block";
+        subsidy = "1.32 INN per block";
     }
   else if (pindexBest->nHeight < 32500)
     {
-        subsidy = "3.5 INN per block";
+        subsidy = "1.155 INN per block";
     }
   else if (pindexBest->nHeight < 35000)
     {
-        subsidy = "3 INN per block";
+        subsidy = "0.99 INN per block";
     }
   else if (pindexBest->nHeight < 37500)
     {
-        subsidy = "2.5 INN per block";
+        subsidy = "0.825 INN per block";
     }
   else if (pindexBest->nHeight < 40000)
     {
-        subsidy = "2 INN per block";
+        subsidy = "0.66 INN per block";
     }
     else if (pindexBest->nHeight < 42500)
     {
-        subsidy = "1.5 INN per block";
+        subsidy = "0.495 INN per block";
     }
     else if (pindexBest->nHeight < 45000)
     {
-        subsidy = "1 INN per block";
+        subsidy = "0.33 INN per block";
     }
     else if (pindexBest->nHeight < 47500)
     {
-        subsidy = "0.5 INN per block";
+        subsidy = "0.165 INN per block";
     }
     else if (pindexBest->nHeight < 50000)
     {
-        subsidy = "0.25 INN per block";
+        subsidy = "0.0825 INN per block";
     }
     else if (pindexBest->nHeight > 50000)
     {
@@ -135,7 +135,7 @@ void StatisticsPage::updateStatistics()
 
     QString QPeers = QString::number(peers);
     QString qVolume = QString::number(volume);
-	QString mn = "25,000 Innova";
+	QString mn = "25,000 INN";
 	QString mn2 = "65% of PoW/PoS block reward";
 
 	ui->mncost->setText("<b><font color=\"light blue\">" + mn + "</font></b>");

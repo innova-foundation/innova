@@ -353,12 +353,6 @@ bool CActiveFortunastake::GetFortunaStakeVin(CTxIn& vin, CPubKey& pubkey, CKey& 
 
 bool CActiveFortunastake::GetFortunaStakeVin(CTxIn& vin, CPubKey& pubkey, CKey& secretKey, std::string strTxHash, std::string strOutputIndex, std::string& errorMessage) {
 
-    if (pwalletMain->IsLocked())
-    {
-        errorMessage = "Error: Your wallet is locked! Please unlock your wallet!";
-        return false;
-    }
-
     // Find possible candidates
     vector<COutput> possibleCoins = SelectCoinsFortunastake(false);
     COutput *selectedOutput;
@@ -490,7 +484,7 @@ vector<COutput> CActiveFortunastake::SelectCoinsFortunastake(bool fSelectUnlocke
     vector<COutPoint> confLockedCoins;
 
     // Temporary unlock MN coins from fortunastake.conf
-    if(fSelectUnlocked && GetBoolArg("-fsconflock", true)) {
+    if(fSelectUnlocked && GetBoolArg("-mnconflock", true) || fSelectUnlocked && GetBoolArg("-fsconflock", true)) {
         uint256 mnTxHash;
         BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
             mnTxHash.SetHex(mne.getTxHash());
@@ -512,7 +506,7 @@ vector<COutput> CActiveFortunastake::SelectCoinsFortunastake(bool fSelectUnlocke
     // Filter
     BOOST_FOREACH(const COutput& out, vCoins)
     {
-        if(out.tx->vout[out.i].nValue == GetMNCollateral()*COIN) { //exactly 25,000 INN
+        if(out.tx->vout[out.i].nValue == GetMNCollateral()*COIN) { //exactly 5,000 D
             filteredCoins.push_back(out);
         }
     }
@@ -544,7 +538,7 @@ vector<COutput> CActiveFortunastake::SelectCoinsFortunastakeForPubKey(std::strin
 // when starting a fortunastake, this can enable to run as a hot wallet with no funds
 bool CActiveFortunastake::EnableHotColdFortunaStake(CTxIn& newVin, CService& newService)
 {
-    if(!fFortunaStake) fFortunaStake = true;
+    if(!fFortunaStake) return false;
 
     status = FORTUNASTAKE_REMOTELY_ENABLED;
 
