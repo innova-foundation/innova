@@ -1,5 +1,5 @@
 # Copyright (c) 2009-2010 Satoshi Nakamoto
-# Copyright (c) 2017-2019 D e n a r i u s [D]
+# Copyright (c) 2017-2019 I n n o v a [D]
 # Distributed under the MIT/X11 software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -287,7 +287,7 @@ OBJS= \
     obj/net.o \
     obj/core.o \
     obj/protocol.o \
-    obj/innovarpc.o \
+    obj/bitcoinrpc.o \
     obj/rpcdump.o \
     obj/rpcnet.o \
     obj/rpcmining.o \
@@ -316,8 +316,7 @@ OBJS= \
     obj/spork.o \
     obj/fortuna.o \
     obj/eccryptoverify.o \
-    obj/ringsig.o \
-    obj/stun.o
+    obj/ringsig.o
 else
 OBJS= \
     obj/echo.o \
@@ -340,7 +339,7 @@ OBJS= \
     obj/net.o \
     obj/core.o \
     obj/protocol.o \
-    obj/innovarpc.o \
+    obj/bitcoinrpc.o \
     obj/rpcdump.o \
     obj/rpcnet.o \
     obj/rpcmining.o \
@@ -369,8 +368,7 @@ OBJS= \
     obj/spork.o \
     obj/fortuna.o \
     obj/eccryptoverify.o \
-    obj/ringsig.o \
-    obj/stun.o
+    obj/ringsig.o
 endif
 
 

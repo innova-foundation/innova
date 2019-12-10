@@ -13,7 +13,7 @@
 #include "walletmodel.h"
 #include "wallet.h"
 #include "init.h"
-#include "innovarpc.h"
+#include "bitcoinrpc.h"
 #include "askpassphrasedialog.h"
 
 #include <boost/lexical_cast.hpp>
@@ -56,21 +56,8 @@ FortunastakeManager::FortunastakeManager(QWidget *parent) :
     subscribeToCoreSignals();
 
 	timer = new QTimer(this);
-    //connect(timer, SIGNAL(timeout()), this, SLOT(updateNodeList(pindexBest)));
-    //if(!GetBoolArg("-reindexaddr", false))
-    //    timer->start(30000);
-
-    QTimer::singleShot(1000, this, SLOT(updateNodeList()));
-    QTimer::singleShot(5000, this, SLOT(updateNodeList()));
-    QTimer::singleShot(10000, this, SLOT(updateNodeList()));
-    QTimer::singleShot(30000, this, SLOT(updateNodeList())); // try to load the node list ASAP for the user
-	QTimer::singleShot(60000, this, SLOT(updateNodeList()));
-
-	/*
-	timer = new QTimer(this);
     connect(timer, SIGNAL(timeout()), this, SLOT(updateNodeList()));
-        timer->start(1000); // 1000 ms to do heavy work and be snappy
-		*/
+        timer->start(); // No 1000 ms to do heavy work and be snappy
 }
 
 FortunastakeManager::~FortunastakeManager()
@@ -271,10 +258,9 @@ void FortunastakeManager::updateNodeList()
     ui->countLabel->setText("Updating...");
     if (mnCount == 0 || IsInitialBlockDownload()) return;
 
-    ui->tableWidget->setSortingEnabled(false);
-    ui->tableWidget->setUpdatesEnabled(false);
     ui->tableWidget->clearContents();
     ui->tableWidget->setRowCount(0);
+    ui->tableWidget->setSortingEnabled(false);
 
     BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes)
     {
@@ -438,7 +424,6 @@ void FortunastakeManager::updateNodeList()
         ui->countLabel->setText(QString("%1 active (average income: %2/day)").arg(vecFortunastakes.size()).arg(QString::fromStdString(FormatMoney(payPer24H))));
 
     ui->tableWidget->setSortingEnabled(true);
-    ui->tableWidget->setUpdatesEnabled(true);
 
     if(pwalletMain)
     {
@@ -467,22 +452,6 @@ void FortunastakeManager::setWalletModel(WalletModel *model)
 
 void FortunastakeManager::on_createButton_clicked()
 {
-    if (pwalletMain->IsLocked())
-    {
-        QMessageBox msg;
-        msg.setText("Error: Wallet is locked, unable to create FS.");
-        msg.exec();
-        return;
-    };
-
-    if (fWalletUnlockStakingOnly)
-    {
-        QMessageBox msg;
-        msg.setText("Error: Wallet unlocked for staking only, unable to create FS.");
-        msg.exec();
-        return;
-    };
-
     AddEditAdrenalineNode* aenode = new AddEditAdrenalineNode();
     aenode->exec();
 }
@@ -534,52 +503,27 @@ void FortunastakeManager::on_getConfigButton_clicked()
 
 void FortunastakeManager::on_startButton_clicked()
 {
-    QString results;
-    WalletModel::UnlockContext ctx(walletModel->requestUnlock());
+    // start the node
+    QItemSelectionModel* selectionModel = ui->tableWidget_2->selectionModel();
+    QModelIndexList selected = selectionModel->selectedRows();
+    if(selected.count() == 0)
+        return;
 
-    if(!ctx.isValid())
-    {
-        results = "Wallet failed to unlock.\n";
+    QModelIndex index = selected.at(0);
+    int r = index.row();
+    std::string sAddress = ui->tableWidget_2->item(r, 1)->text().toStdString();
+    CAdrenalineNodeConfig c = pwalletMain->mapMyAdrenalineNodes[sAddress];
 
-    } else {
-        // start the node
-        QItemSelectionModel *selectionModel = ui->tableWidget_2->selectionModel();
-        QModelIndexList selected = selectionModel->selectedRows();
-        if (selected.count() == 0)
-            return;
-
-        int successful = 0;
-        int fail = 0;
-
-        QModelIndex index = selected.at(0);
-        int r = index.row();
-        std::string sAddress = ui->tableWidget_2->item(r, 1)->text().toStdString();
-        CAdrenalineNodeConfig c = pwalletMain->mapMyAdrenalineNodes[sAddress];
-
-        std::string errorMessage;
-        bool result = activeFortunastake.Register(c.sAddress, c.sFortunastakePrivKey, c.sTxHash, c.sOutputIndex,
-                                                  errorMessage);
-
-        if (result)
-        {
-            results += "Hybrid Fortunastake at " + QString::fromStdString(c.sAddress) + " started.";
-            successful++;
-        }
-        else
-        {
-            results += "Error: " + QString::fromStdString(errorMessage);
-            fail++;
-        }
-    }
-
-    if(ctx.isValid())
-    {
-        pwalletMain->Lock();
-    }
+    std::string errorMessage;
+    bool result = activeFortunastake.Register(c.sAddress, c.sFortunastakePrivKey, c.sTxHash, c.sOutputIndex, errorMessage);
 
     QMessageBox msg;
     msg.setWindowTitle("Innova Message");
-    msg.setText(results);
+    if(result)
+        msg.setText("Hybrid Fortunastake at " + QString::fromStdString(c.sAddress) + " started.");
+    else
+        msg.setText("Error: " + QString::fromStdString(errorMessage));
+
     msg.exec();
 }
 

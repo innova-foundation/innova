@@ -17,12 +17,11 @@ public:
      */
     enum Unit
     {
-        BTC,
+         BTC,
         dBTC,
-	    USD,
+	       USD,
         mBTC,
-        uBTC,
-        Innovai
+        uBTC
     };
 
     //! @name Static API

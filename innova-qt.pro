@@ -1,6 +1,6 @@
 TEMPLATE = app
 TARGET = Innova
-VERSION = 3.3.9.4
+VERSION = 3.3.8.5
 INCLUDEPATH += src src/json src/qt src/qt/plugins/mrichtexteditor
 DEFINES += QT_GUI BOOST_THREAD_USE_LIB BOOST_SPIRIT_THREADSAFE
 CONFIG += no_include_pwd
@@ -94,7 +94,7 @@ contains(USE_NATIVETOR, -) {
     }
     DEFINES += USE_NATIVETOR=$$USE_NATIVETOR
     INCLUDEPATH += src/tor
-	
+
 	### Tor native integration sources
 	SOURCES += src/tor/anonymize.cpp \
 		src/tor/address.c \
@@ -479,7 +479,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/transactionfilterproxy.h \
     src/qt/transactionview.h \
     src/qt/walletmodel.h \
-    src/innovarpc.h \
+    src/bitcoinrpc.h \
     src/qt/overviewpage.h \
     src/qt/csvmodelwriter.h \
     src/crypter.h \
@@ -549,7 +549,6 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/proofofimage.cpp \
     src/qt/termsofuse.cpp \
     src/alert.cpp \
-    src/stun.cpp \
     src/base58.cpp \
     src/version.cpp \
     src/sync.cpp \
@@ -583,7 +582,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/transactionfilterproxy.cpp \
     src/qt/transactionview.cpp \
     src/qt/walletmodel.cpp \
-    src/innovarpc.cpp \
+    src/bitcoinrpc.cpp \
     src/rpcdump.cpp \
     src/rpcnet.cpp \
     src/rpcmining.cpp \

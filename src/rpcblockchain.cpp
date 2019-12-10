@@ -4,7 +4,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "main.h"
-#include "innovarpc.h"
+#include "bitcoinrpc.h"
 #include "spork.h"
 
 using namespace json_spirit;
@@ -119,11 +119,11 @@ Object blockheaderToJSON(const CBlockIndex* blockindex)
         result.push_back(Pair("previousblockhash", blockindex->pprev->GetBlockHash().GetHex()));
     if (blockindex->pnext)
         result.push_back(Pair("nextblockhash", blockindex->pnext->GetBlockHash().GetHex()));
-
+	
 	result.push_back(Pair("flags", strprintf("%s%s", blockindex->IsProofOfStake()? "proof-of-stake" : "proof-of-work", blockindex->GeneratedStakeModifier()? " stake-modifier": "")));
     result.push_back(Pair("proofhash", blockindex->hashProof.GetHex()));
     result.push_back(Pair("entropybit", (int)blockindex->GetStakeEntropyBit()));
-    result.push_back(Pair("modifier", strprintf("%016" PRIx64, blockindex->nStakeModifier)));
+    result.push_back(Pair("modifier", strprintf("%016"PRIx64, blockindex->nStakeModifier)));
 	result.push_back(Pair("modifierchecksum", strprintf("%08x", blockindex->nStakeModifierChecksum)));
     return result;
 } */
@@ -159,7 +159,6 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
     result.push_back(Pair("difficulty", GetDifficulty(blockindex)));
     result.push_back(Pair("blocktrust", leftTrim(blockindex->GetBlockTrust().GetHex(), '0')));
     result.push_back(Pair("chaintrust", leftTrim(blockindex->nChainTrust.GetHex(), '0')));
-    result.push_back(Pair("chainwork", leftTrim(blockindex->nChainWork.GetHex(), '0')));
     if (blockindex->pprev)
         result.push_back(Pair("previousblockhash", blockindex->pprev->GetBlockHash().GetHex()));
     if (blockindex->pnext)
@@ -168,7 +167,7 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
     result.push_back(Pair("flags", strprintf("%s%s", blockindex->IsProofOfStake()? "proof-of-stake" : "proof-of-work", blockindex->GeneratedStakeModifier()? " stake-modifier": "")));
     result.push_back(Pair("proofhash", blockindex->hashProof.GetHex()));
     result.push_back(Pair("entropybit", (int)blockindex->GetStakeEntropyBit()));
-    result.push_back(Pair("modifier", strprintf("%016" PRIx64, blockindex->nStakeModifier)));
+    result.push_back(Pair("modifier", strprintf("%016"PRIx64, blockindex->nStakeModifier)));
     result.push_back(Pair("modifierchecksum", strprintf("%08x", blockindex->nStakeModifierChecksum)));
     Array txinfo;
     BOOST_FOREACH (const CTransaction& tx, block.vtx)
@@ -314,7 +313,7 @@ Value getblockhash(const Array& params, bool fHelp)
     return pblockindex->phashBlock->GetHex();
 }
 
-//New getblock RPC Command for Innovai Compatibility
+//New getblock RPC Command for Denariium Compatibility
 Value getblock(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 1 || params.size() > 2)
@@ -380,7 +379,7 @@ Value getblock(const Array& params, bool fHelp)
 
     CBlock block;
     CBlockIndex* pblockindex = mapBlockIndex[hash];
-
+	
 	if(!block.ReadFromDisk(pblockindex, true)){
         // Block not found on disk. This could be because we have the block
         // header in our index but don't have the block (for example if a
@@ -391,7 +390,7 @@ Value getblock(const Array& params, bool fHelp)
 	}
 
 	block.ReadFromDisk(pblockindex, true);
-
+	
     if (verbosity <= 0)
     {
         CDataStream ssBlock(SER_NETWORK, PROTOCOL_VERSION);
@@ -542,6 +541,45 @@ Value getcheckpoint(const Array& params, bool fHelp)
     return result;
 }
 
+/*
+    Used for updating/reading spork settings on the network
+*/
+Value spork(const Array& params, bool fHelp)
+{
+    if(params.size() == 1 && params[0].get_str() == "show"){
+        std::map<int, CSporkMessage>::iterator it = mapSporksActive.begin();
+
+        Object ret;
+        while(it != mapSporksActive.end()) {
+            ret.push_back(Pair(sporkManager.GetSporkNameByID(it->second.nSporkID), it->second.nValue));
+            it++;
+        }
+        return ret;
+    } else if (params.size() == 2){
+        int nSporkID = sporkManager.GetSporkIDByName(params[0].get_str());
+        if(nSporkID == -1){
+            return "Invalid spork name";
+        }
+
+        // SPORK VALUE
+        int64_t nValue = params[1].get_int();
+
+        //broadcast new spork
+        if(sporkManager.UpdateSpork(nSporkID, nValue)){
+            return "success";
+        } else {
+            return "failure";
+        }
+
+    }
+
+    throw runtime_error(
+        "spork <name> [<value>]\n"
+        "<name> is the corresponding spork name, or 'show' to show all current spork settings"
+        "<value> is a epoch datetime to enable or disable spork"
+        + HelpRequiringPassphrase());
+}
+
 Value gettxout(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 2 || params.size() > 3)
@@ -587,7 +625,7 @@ Value gettxout(const Array& params, bool fHelp)
     CTransaction tx;
     uint256 hashBlock = 0;
     if (!GetTransaction(hash, tx, hashBlock, mem))
-      return Value::null;
+      return Value::null;  
 
     if (n<0 || (unsigned int)n>=tx.vout.size() || tx.vout[n].IsNull())
       return Value::null;
@@ -647,45 +685,4 @@ Value gettxout(const Array& params, bool fHelp)
     ret.push_back(Pair("coinstake", tx.IsCoinStake()));
 
     return ret;
-}
-
-Value getblockchaininfo(const Array& params, bool fHelp)
-{
-    if (fHelp || params.size() != 0)
-        throw runtime_error(
-                "getblockchaininfo\n"
-                "Returns an object containing various state info regarding block chain processing.\n"
-                "\nResult:\n"
-                "{\n"
-                "  \"chain\": \"xxxx\",        (string) current chain (main, testnet)\n"
-                "  \"blocks\": xxxxxx,         (numeric) the current number of blocks processed in the server\n"
-                "  \"bestblockhash\": \"...\", (string) the hash of the currently best block\n"
-                "  \"difficulty\": xxxxxx,     (numeric) the current difficulty\n"
-                "  \"initialblockdownload\": xxxx, (bool) estimate of whether this INN node is in Initial Block Download mode.\n"
-                "  \"verificationprogress\": xxxx, (numeric) estimate of verification progress [0..1]\n"
-                "  \"chainwork\": \"xxxx\"     (string) total amount of work in active chain, in hexadecimal\n"
-                "  \"moneysupply\": xxxx, (numeric) the current supply of INN in circulation\n"
-                "}\n"
-        );
-
-    proxyType proxy;
-    GetProxy(NET_IPV4, proxy);
-
-    Object obj, diff;
-    std::string chain = "testnet";
-    if(!fTestNet)
-        chain = "main";
-    obj.push_back(Pair("chain",          chain));
-    obj.push_back(Pair("blocks",         (int)nBestHeight));
-    //obj.push_back(Pair("headers",      pindexBestHeader ? pindexBestHeader->nHeight : -1));
-    obj.push_back(Pair("bestblockhash",  hashBestChain.GetHex()));
-    diff.push_back(Pair("proof-of-work",  GetDifficulty()));
-    diff.push_back(Pair("proof-of-stake", GetDifficulty(GetLastBlockIndex(pindexBest, true))));
-    obj.push_back(Pair("difficulty",     diff));
-    obj.push_back(Pair("initialblockdownload",  IsInitialBlockDownload()));
-    obj.push_back(Pair("verificationprogress", Checkpoints::GuessVerificationProgress(pindexBest)));
-    obj.push_back(Pair("chainwork",      leftTrim(pindexBest->nChainWork.GetHex(), '0')));
-    obj.push_back(Pair("moneysupply",    ValueFromAmount(pindexBest->nMoneySupply)));
-    //obj.push_back(Pair("size_on_disk",   CalculateCurrentUsage()));
-    return obj;
 }

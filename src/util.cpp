@@ -92,7 +92,6 @@ bool fCommandLine = false;
 string strMiscWarning;
 bool fTestNet = false;
 bool fNativeTor = false;
-bool fFSLock = false;
 bool fNoListen = false;
 bool fLogTimestamps = false;
 CMedianFilter<int64_t> vTimeOffsets(200,0);
@@ -495,7 +494,7 @@ string FormatMoney(int64_t n, bool fPlus)
     int64_t n_abs = (n > 0 ? n : -n);
     int64_t quotient = n_abs/COIN;
     int64_t remainder = n_abs%COIN;
-    string str = strprintf("%" PRId64".%08" PRId64, quotient, remainder);
+    string str = strprintf("%"PRId64".%08"PRId64, quotient, remainder);
 
     // Right-trim excess zeros before the decimal point:
     int nTrim = 0;
@@ -1114,7 +1113,6 @@ void PrintExceptionContinue(std::exception* pex, const char* pszThread)
 boost::filesystem::path GetDefaultDataDir()
 {
     namespace fs = boost::filesystem;
-
     // Windows < Vista: C:\Documents and Settings\Username\Application Data\Innova
     // Windows >= Vista: C:\Users\Username\AppData\Roaming\Innova
     // Mac: ~/Library/Application Support/Innova
@@ -1180,13 +1178,10 @@ void WriteConfigFile(FILE* configFile)
     fputs ("daemon=1\n", configFile);
     fputs ("listen=1\n", configFile);
     fputs ("server=1\n", configFile);
-    fputs ("fortunastake=0\n", configFile); //input fs=0 by default
-    fputs ("fortunastakeaddr=\n", configFile);
-    fputs ("fortunastakeprivkey=\n", configFile);
-    fputs ("addnode=\n", configFile); //mining.cafe
-    fputs ("addnode=\n", configFile);
-    fputs ("addnode=\n", configFile);
-    fputs ("addnode=\n", configFile);
+    fputs ("addnode=104.207.147.210\n", configFile);
+    fputs ("addnode=140.82.25.108\n", configFile);
+    fputs ("addnode=144.202.40.17\n", configFile);
+    fputs ("addnode=207.246.70.165\n", configFile);
     fclose(configFile);
     ReadConfigFile(mapArgs, mapMultiArgs);
 }
@@ -1235,7 +1230,7 @@ boost::filesystem::path GetConfigFile()
 
 boost::filesystem::path GetFortunastakeConfigFile()
 {
-    boost::filesystem::path pathConfigFile(GetArg("-fsconf", "fortunastake.conf"));
+    boost::filesystem::path pathConfigFile(GetArg("-mnconf", "fortunastake.conf"));
     if (!pathConfigFile.is_complete()) pathConfigFile = GetDataDir(false) / pathConfigFile;
     return pathConfigFile;
 }
@@ -1245,18 +1240,18 @@ void ReadConfigFile(map<string, string>& mapSettingsRet,
 {
     boost::filesystem::ifstream streamConfig(GetConfigFile());
     if (!streamConfig.good()){
-        // Create empty innova.conf if it does not exist
-        FILE* configFile = fopen(GetConfigFile().string().c_str(), "a");
-        if (configFile != NULL) {
-            WriteConfigFile(configFile);
-            //fclose(configFile);
-            printf("WriteConfigFile() Innova.conf Setup Successfully!");
-            ReadConfigFile(mapSettingsRet, mapMultiSettingsRet);
-        } else {
-            printf("WriteConfigFile() innova.conf file could not be created");
-            return; // Nothing to read, so just return
-        }
-    }
+         // Create empty innova.conf if it does not exist
+         FILE* configFile = fopen(GetConfigFile().string().c_str(), "a");
+         if (configFile != NULL) {
+             WriteConfigFile(configFile);
+             fclose(configFile);
+             printf("WriteConfigFile() Innova.conf Setup Successfully!");
+             ReadConfigFile(mapSettingsRet, mapMultiSettingsRet);
+         } else {
+             printf("WriteConfigFile() innova.conf file could not be created");
+             return; // Nothing to read, so just return
+         }
+     }
 
     set<string> setOptions;
     setOptions.insert("*");
@@ -1381,7 +1376,7 @@ void AddTimeData(const CNetAddr& ip, int64_t nTime)
 
     // Add data
     vTimeOffsets.input(nOffsetSample);
-    printf("Added time data, samples %d, offset %+" PRId64" (%+" PRId64" minutes)\n", vTimeOffsets.size(), nOffsetSample, nOffsetSample/60);
+    printf("Added time data, samples %d, offset %+"PRId64" (%+"PRId64" minutes)\n", vTimeOffsets.size(), nOffsetSample, nOffsetSample/60);
     if (vTimeOffsets.size() >= 5 && vTimeOffsets.size() % 2 == 1)
     {
         int64_t nMedian = vTimeOffsets.median();
@@ -1416,10 +1411,10 @@ void AddTimeData(const CNetAddr& ip, int64_t nTime)
         }
         if (fDebug) {
             BOOST_FOREACH(int64_t n, vSorted)
-                printf("%+" PRId64"  ", n);
+                printf("%+"PRId64"  ", n);
             printf("|  ");
         }
-        printf("nTimeOffset = %+" PRId64"  (%+" PRId64" minutes)\n", nTimeOffset, nTimeOffset/60);
+        printf("nTimeOffset = %+"PRId64"  (%+"PRId64" minutes)\n", nTimeOffset, nTimeOffset/60);
     }
 }
 

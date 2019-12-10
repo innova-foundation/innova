@@ -4,7 +4,7 @@
 #include "wallet.h"
 #include "base58.h"
 #include "clientmodel.h"
-#include "innovarpc.h"
+#include "bitcoinrpc.h"
 #include <QDesktopServices>
 
 #include <sstream>

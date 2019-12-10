@@ -24,8 +24,7 @@ Innova is a true optionally anonymous, untraceable, and secure hybrid cryptocurr
 
 Ticker: INN
 
-Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Tribus Algorithm created bt carsenk) and Proof-of-Stake cryptocurrency.
-
+Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Tribus Algorithm created by carsenk) and Proof-of-Stake cryptocurrency.
 
 Supported Operating Systems
 ==========================
@@ -48,11 +47,11 @@ Specifications
 * RPC Port: 14531, Testnet RPC Port: 15531
 * Fortuna Stake Port: 14539, Testnet Port: 15539
 
-* INN Magic Number: 0xa23d7e5c
-* BIP44 CoinType: 116
-* Base58 Pubkey Decimal: 103
-* Base58 Scriptkey Decimal: 113
-* Base58 Privkey Decimal: 231
+* INN Magic Number: 0xb73ff4fa
+* BIP44 CoinType: 114
+* Base58 Pubkey Decimal: 102
+* Base58 Scriptkey Decimal: 137
+* Base58 Privkey Decimal: 230
 
 Technology
 ==========================
@@ -63,9 +62,9 @@ Technology
 * Encrypted Messaging
 * Multi-Signature Addresses & TXs
 * Atomic Swaps using UTXOs (BIP65 CLTV)
-* BIP39 Support (Coin Type 116)
+* BIP39 Support (Coin Type 114)
 * Proof of Data (Image/Data Timestamping)
-* Fast 45 Second Block Times
+* Fast 15 Second Block Times
 * Tribus PoW Algorithm comprising of 3 NIST5 algorithms
 * Tribus PoW/PoS Hybrid
 * Full decentralization

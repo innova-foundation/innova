@@ -4,7 +4,7 @@
 #include "wallet.h"
 #include "base58.h"
 #include "clientmodel.h"
-#include "innovarpc.h"
+#include "bitcoinrpc.h"
 #include "transactionrecord.h"
 
 #include <sstream>
@@ -210,7 +210,7 @@ std::string getOutputs(std::string txid)
         str.append(lol7);
         str.append(": ");
         str.append(amount);
-        str.append(" D");
+        str.append(" INN");
         str.append("\n");
     }
 
@@ -254,7 +254,7 @@ std::string getInputs(std::string txid)
         str.append(lol6);
         str.append(": ");
         str.append(amount);
-        str.append("D");
+        str.append("INN");
         str.append("\n");
     }
 
@@ -327,13 +327,13 @@ BlockBrowser::BlockBrowser(QWidget *parent) :
     ui->setupUi(this);
 
     setFixedSize(400, 420);
-        
+
     connect(ui->blockButton, SIGNAL(pressed()), this, SLOT(blockClicked()));
     connect(ui->txButton, SIGNAL(pressed()), this, SLOT(txClicked()));
 }
 
 void BlockBrowser::updateExplorer(bool block)
-{    
+{
     if(block)
     {
         ui->heightLabel->show();
@@ -380,11 +380,11 @@ void BlockBrowser::updateExplorer(bool block)
         ui->merkleBox->setText(QMerkle);
         ui->bitsBox->setText(QBits);
         ui->nonceBox->setText(QNonce);
-        ui->timeBox->setText(QTime);     
+        ui->timeBox->setText(QTime);
         ui->hardBox->setText(QHardness);
         ui->pawBox->setText(QPawrate + " KH/s");
-    } 
-    
+    }
+
     if(block == false) {
         ui->txID->show();
         ui->txLabel->show();
@@ -406,11 +406,11 @@ void BlockBrowser::updateExplorer(bool block)
         QString QOutputs = QString::fromUtf8(outputs.c_str());
         QString QInputs = QString::fromUtf8(inputs.c_str());
         QString QFees = QString::number(fees, 'f', 6);
-        ui->valueBox->setText(QValue + " D");
+        ui->valueBox->setText(QValue + " INN");
         ui->txID->setText(QID);
         ui->outputBox->setText(QOutputs);
         ui->inputBox->setText(QInputs);
-        ui->feesBox->setText(QFees + " D");
+        ui->feesBox->setText(QFees + " INN");
     }
 }
 

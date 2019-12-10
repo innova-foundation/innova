@@ -40,12 +40,12 @@ CActiveFortunastake activeFortunastake;
 int RequestedFortunaStakeList = 0;
 
 //MIN_MN_PROTO_VERSION
-int MIN_MN_PROTO_VERSION = 33900; // INN v3.3.9.2 - Proto - 33900
+int MIN_MN_PROTO_VERSION = 31000;
 
 /* *** BEGIN FORTUNA MAGIC  **********
     Copyright 2014, Darkcoin Developers
         eduffield - evan@darkcoin.io
-    Copyright 2018-2019, Innova Developers
+    Copyright 2018, Innova Developers
         carsenk - admin@innova.io
         enkayz - enkayz@innova.io
 */
@@ -798,14 +798,14 @@ int CForTunaPool::GetDenominationsByAmount(int64_t nAmount, int nDenomTarget){
 
 bool CForTunaSigner::IsVinAssociatedWithPubkey(CTxIn& vin, CPubKey& pubkey){
 	bool fIsInitialDownload = IsInitialBlockDownload();
-    if(fIsInitialDownload) return nullptr; // Needs to return a value, so returns null pointer v3.3.9.1 - macOS
-
+    if(fIsInitialDownload) return;
+	
     CScript payee2;
     payee2= GetScriptForDestination(pubkey.GetID());
 
     CTransaction txVin;
     uint256 hash;
-
+	
     if(GetTransaction(vin.prevout.hash, txVin, hash)){
         CTxOut out = txVin.vout[vin.prevout.n];
 		if ((out.nValue == GetMNCollateral()*COIN) && (out.scriptPubKey == payee2))

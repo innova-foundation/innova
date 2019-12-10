@@ -65,7 +65,7 @@ QDateTime ClientModel::getLastBlockDate() const
     if (pindexBest)
         return QDateTime::fromTime_t(pindexBest->GetBlockTime());
     else
-        return QDateTime::fromTime_t(1497476511); // I n n o v a - Genesis block's time
+        return QDateTime::fromTime_t(1576002227); // I n n o v a - Genesis block's time
 }
 
 void ClientModel::updateTimer()
@@ -73,9 +73,9 @@ void ClientModel::updateTimer()
     // Get required lock upfront. This avoids the GUI from getting stuck on
     // periodical polls if the core is holding the locks for a longer time -
     // for example, during a wallet rescan.
-//    TRY_LOCK(cs_main, lockMain);
-//    if(!lockMain)
-//        return;
+    TRY_LOCK(cs_main, lockMain);
+    if(!lockMain)
+        return;
 
     // Some quantities (such as number of blocks) change so fast that we don't want to be notified for each change.
     // Periodically check and update with a timer.
@@ -98,9 +98,9 @@ void ClientModel::updateNumBlocks(int newNumBlocks, int newNumBlocksOfPeers)
     // Get required lock upfront. This avoids the GUI from getting stuck on
     // periodical polls if the core is holding the locks for a longer time -
     // for example, during a wallet rescan.
-//    TRY_LOCK(cs_main, lockMain);
-//    if(!lockMain)
-//        return;
+    TRY_LOCK(cs_main, lockMain);
+    if(!lockMain)
+        return;
 
     emit numBlocksChanged(newNumBlocks, newNumBlocksOfPeers);
     emit bytesChanged(getTotalBytesRecv(), getTotalBytesSent());
@@ -138,11 +138,6 @@ bool ClientModel::isTestNet() const
 bool ClientModel::isNativeTor() const
 {
     return fNativeTor;
-}
-
-bool ClientModel::isFSLock() const
-{
-    return fFSLock;
 }
 
 bool ClientModel::inInitialBlockDownload() const

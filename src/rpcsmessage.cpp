@@ -3,7 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "main.h"
-#include "innovarpc.h"
+#include "bitcoinrpc.h"
 
 #include <boost/lexical_cast.hpp>
 
@@ -805,7 +805,7 @@ Value smsgbuckets(const Array& params, bool fHelp)
                 std::string sBucket = boost::lexical_cast<std::string>(it->first);
                 std::string sFile = sBucket + "_01.dat";
                 
-                snprintf(cbuf, sizeof(cbuf), "%" PRIszu, tokenSet.size());
+                snprintf(cbuf, sizeof(cbuf), "%"PRIszu, tokenSet.size());
                 std::string snContents(cbuf);
                 
                 std::string sHash = boost::lexical_cast<std::string>(it->second.hash);

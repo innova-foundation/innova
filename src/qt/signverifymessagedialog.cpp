@@ -24,10 +24,10 @@ SignVerifyMessageDialog::SignVerifyMessageDialog(QWidget *parent) :
 
 #if (QT_VERSION >= 0x040700)
     /* Do not move this to the XML file, Qt before 4.7 will choke on it */
-    ui->addressIn_SM->setPlaceholderText(tr("Enter an Innova address (e.g. iZ4HRXTsLkp2Rty5RUHMLc6d5qVxVGifKJ)"));
+    ui->addressIn_SM->setPlaceholderText(tr("Enter an Innova address (e.g. igYcNv4Zp7g4ysSpdFUuzn6VaxvzAZAxsd)"));
     ui->signatureOut_SM->setPlaceholderText(tr("Click \"Sign Message\" to generate signature"));
 
-    ui->addressIn_VM->setPlaceholderText(tr("Enter an Innova address (e.g. iZ4HRXTsLkp2Rty5RUHMLc6d5qVxVGifKJ)"));
+    ui->addressIn_VM->setPlaceholderText(tr("Enter an Innova address (e.g. igYcNv4Zp7g4ysSpdFUuzn6VaxvzAZAxsd)"));
     ui->signatureIn_VM->setPlaceholderText(tr("Enter Innova signature"));
 #endif
 

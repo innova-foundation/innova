@@ -1,12 +1,12 @@
 [Desktop Entry]
 Encoding=UTF-8
 Name=Innova
-Comment=Innova [INN] Hybrid P2P Cryptocurrency
+Comment=Innova P2P Cryptocurrency
 Comment[fr]=Innova, monnaie virtuelle cryptographique pair à pair
 Comment[tr]=Innova, eşten eşe kriptografik sanal para birimi
 Exec=/usr/bin/Innova
 Terminal=false
 Type=Application
-Icon=/share/pixmaps/innova-128.png
+Icon=/usr/share/pixmaps/bitcoin80.xpm
 MimeType=x-scheme-handler/innova;
-Categories=Finance;
+Categories=Office;

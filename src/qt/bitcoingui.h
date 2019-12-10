@@ -112,7 +112,6 @@ private:
     QLabel *labelConnectionsIcon;
     QLabel *labelBlocksIcon;
     QLabel *labelConnectTypeIcon;
-    QLabel *labelFSLockIcon;
     QLabel *progressBarLabel;
     QLabel *mainIcon;
     QToolBar *mainToolbar;
@@ -167,7 +166,6 @@ private:
     int spinnerFrame;
 
     int64_t nClientUpdateTime;
-    int64_t nLastUpdateTime;
     int nBlocksInLastPeriod;
     int nLastBlocks;
     int nBlocksPerSec;
