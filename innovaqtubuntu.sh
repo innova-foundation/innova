@@ -11,7 +11,7 @@ sudo apt-get update -y && sudo apt-get upgrade -y
 sudo apt-get install -y git unzip build-essential libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake  libtool libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools qt5-default
 
 echo "Installing Innova Wallet"
-git clone https://github.com/innovafoundation/innova
+git clone https://github.com/innova-foundation/innova
 cd innova || exit
 git checkout master
 git pull
@@ -31,7 +31,7 @@ echo -e "nativetor=0\naddnode=innova.host\naddnode=innova.win\naddnode=innova.pr
 #rm -rf database txleveldb smsgDB
 #wget http://d.hashbag.cc/chaindata.zip
 #unzip chaindata.zip
-#wget https://github.com/innovafoundation/innova/releases/download/v3.3.7/chaindata1799510.zip
+#wget https://github.com/innova-foundation/innova/releases/download/v3.3.7/chaindata1799510.zip
 #unzip chaindata1799510.zip
 #rm chaindata1799510.zip
 Echo "Back to Compiled QT Binary Folder"
@@ -70,7 +70,7 @@ cd ~
 openssl version -v
 
 echo "Installing Innova Wallet"
-git clone https://github.com/innovafoundation/innova
+git clone https://github.com/innova-foundation/innova
 cd innova
 git checkout master
 git pull
@@ -90,7 +90,7 @@ echo -e "nativetor=0\naddnode=innova.host\naddnode=innova.win\naddnode=innova.pr
 #rm -rf database txleveldb smsgDB
 #wget http://d.hashbag.cc/chaindata.zip
 #unzip chaindata.zip
-#wget https://github.com/innovafoundation/innova/releases/download/v3.3.7/chaindata1799510.zip
+#wget https://github.com/innova-foundation/innova/releases/download/v3.3.7/chaindata1799510.zip
 #unzip chaindata1799510.zip
 #rm chaindata1799510.zip
 Echo "Back to Compiled QT Binary Folder"
