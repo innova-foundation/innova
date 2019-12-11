@@ -35,7 +35,7 @@ Supported Operating Systems
 Specifications
 ==========================
 * Total number of coins: 25,000,000 INN
-* Ideal block time: 15 seconds
+* Ideal block time: ~15 seconds
 * Stake interest: 6% annual static inflation
 * Confirmations: 10 blocks
 * Maturity: 75 blocks
@@ -64,7 +64,7 @@ Technology
 * Atomic Swaps using UTXOs (BIP65 CLTV)
 * BIP39 Support (Coin Type 114)
 * Proof of Data (Image/Data Timestamping)
-* Fast 15 Second Block Times
+* Fast ~15 Second Block Times
 * Tribus PoW Algorithm comprising of 3 NIST5 algorithms
 * Tribus PoW/PoS Hybrid
 * Full decentralization
