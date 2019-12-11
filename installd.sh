@@ -11,7 +11,7 @@ sudo apt-get update -y && sudo apt-get upgrade -y
 sudo apt-get --assume-yes install git unzip build-essential libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev obfs4proxy
 
 echo "Installing Innova Wallet"
-git clone https://github.com/carsenk/innova
+git clone https://github.com/innovafoundation/innova
 cd innova || exit
 git checkout master
 git pull
@@ -27,12 +27,12 @@ echo "Populate innova.conf"
 mkdir ~/.innova
 echo -e "daemon=1\listen=1\rpcuser=user\rpcpassword=changethispassword\nativetor=0\naddnode=innova.host\naddnode=innova.win\naddnode=innova.pro\naddnode=triforce.black" > ~/.innova/innova.conf
 
-echo "Get Chaindata"
-cd ~/.innova || exit
-rm -rf database txleveldb smsgDB
-wget https://github.com/carsenk/innova/releases/download/v3.3.7/chaindata1701122.zip
-unzip chaindata1701122.zip
-rm -rf chaindata1701122.zip
+#echo "Get Chaindata"
+#cd ~/.innova || exit
+#rm -rf database txleveldb smsgDB
+#wget https://github.com/innovafoundation/innova/releases/download/v3.3.7/chaindata1701122.zip
+#unzip chaindata1701122.zip
+#rm -rf chaindata1701122.zip
 echo "Back to Compiled innovad Binary Folder"
 cd ~/innova/src
                 ;;
@@ -71,7 +71,7 @@ cd ~
 openssl version -v
 
 echo "Installing Innova Wallet"
-git clone https://github.com/carsenk/innova
+git clone https://github.com/innovafoundation/innova
 cd innova
 git checkout master
 git pull
@@ -87,12 +87,12 @@ echo "Populate innova.conf"
 mkdir ~/.innova
 echo -e "daemon=1\listen=1\rpcuser=user\rpcpassword=changethispassword\nativetor=0\naddnode=innova.host\naddnode=innova.win\naddnode=innova.pro\naddnode=triforce.black" > ~/.innova/innova.conf
 
-echo "Get Chaindata"
-cd ~/.innova
-rm -rf database txleveldb smsgDB
-wget https://github.com/carsenk/innova/releases/download/v3.3.7/chaindata1701122.zip
-unzip chaindata1701122.zip
-rm -rf chaindata1701122.zip
+#echo "Get Chaindata"
+#cd ~/.innova
+#rm -rf database txleveldb smsgDB
+#wget https://github.com/innovafoundation/innova/releases/download/v3.3.7/chaindata1701122.zip
+#unzip chaindata1701122.zip
+#rm -rf chaindata1701122.zip
 echo "Back to Compiled innovad Binary Folder"
 cd ~/innova/src
                 ;;

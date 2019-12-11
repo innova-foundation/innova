@@ -17,7 +17,7 @@ parts:
     after: [desktop-qt5]
     plugin: qmake
     qt-version: qt5
-    source: https://github.com/carsenk/innova.git
+    source: https://github.com/innovafoundation/innova.git
     build-packages:
       - g++
       - unzip
@@ -53,9 +53,9 @@ parts:
       echo "Grabbing Latest Chaindata"
       cd ~/.innova
       rm -rf database txleveldb smsgDB
-      wget https://github.com/carsenk/innova/releases/download/v3.3.7/chaindata1799510.zip
-      unzip chaindata1799510.zip
-      rm chaindata1799510.zip
+    #  wget https://github.com/innovafoundation/innova/releases/download/v3.3.7/chaindata1799510.zip
+    #  unzip chaindata1799510.zip
+    #  rm chaindata1799510.zip
       echo "Back to Compiled QT Binary Folder"
       cd ~/innova
       echo "Get Coinexplorer FS List"
