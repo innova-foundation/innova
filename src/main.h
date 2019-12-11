@@ -1,6 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
-// Copyright (c) 2017-2018 The Innova developers
+// Copyright (c) 2017-2018 The Denarius developers
+// Copyright (c) 2019 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #ifndef BITCOIN_MAIN_H
@@ -18,9 +19,9 @@
 
 class CValidationState;
 
-#define BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET 550 // Testnet Fortunastake payments enabled block 81k5
-#define BLOCK_START_FORTUNASTAKE_PAYMENTS 800 //Mainnet Fortunastake payments not enabled until block 645k
-#define BLOCK_START_FORTUNASTAKE_DELAYPAY 5000 //Activates a delay in payment for MNs - I n n o v a Block 1.35 Million
+#define BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET 550 // Testnet Fortunastake payments enabled block 800
+#define BLOCK_START_FORTUNASTAKE_PAYMENTS 800 //Mainnet Fortunastake payments not enabled until block 800
+#define BLOCK_START_FORTUNASTAKE_DELAYPAY 2500 //Activates a delay in payment for MNs - I n n o v a Block 2500
 
 //#define START_FORTUNASTAKE_PAYMENTS_TESTNET 1519430400  //Sat, 24 Feb 2018 00:00:00 GMT
 //#define START_FORTUNASTAKE_PAYMENTS 1520985600  //Wed, 14 Mar 2018 00:00:00 GMT
@@ -58,7 +59,7 @@ class CNode;
 
 // General Innova Block Values
 
-static const int LAST_POW_BLOCK = 50000; // Block 3m Approx. 3 years of Proof of Work before Proof of Stake consensus kicks in
+static const int LAST_POW_BLOCK = 50000; // 50k blocks before Proof of Stake consensus kicks in
 static const int FAIR_LAUNCH_BLOCK = 490; // Last Block until full block reward starts
 static const unsigned int MAX_BLOCK_SIZE = 1000000; // 1MB block hard limit, double the size of Bitcoin
 static const unsigned int MAX_BLOCK_SIZE_GEN = MAX_BLOCK_SIZE/2; // 512kb block soft limit, ditto
@@ -75,8 +76,8 @@ static const int64_t MIN_RELAY_TX_FEE = MIN_TX_FEE;
 static const int64_t MAX_MONEY = 25000000 * COIN; // 25,000,000 INN Innova Max
 static const int64_t COIN_YEAR_REWARD = 0.06 * COIN; // 6% per year
 
-static const int64_t MAINNET_POSFIX = 500; //Mainnet Proof of Stake update not enabled until block 640k
-static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 2500; // Enforce fortunastake payments after this height - BLOCK 1.45 Million
+static const int64_t MAINNET_POSFIX = 500; //Mainnet Proof of Stake update not enabled until block 500
+static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 4500; // Enforce fortunastake payments after this height - BLOCK 4500
 
 inline bool MoneyRange(int64_t nValue) { return (nValue >= 0 && nValue <= MAX_MONEY); }
 

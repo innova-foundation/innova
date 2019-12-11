@@ -1,4 +1,5 @@
-// Copyright (c) 2017 The Innova developers
+// Copyright (c) 2017-2019 The Denarius developers
+// Copyright (c) 2017-2019 The Innova developers
 // Copyright (c) 2009-2012 The Darkcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
@@ -799,13 +800,13 @@ int CForTunaPool::GetDenominationsByAmount(int64_t nAmount, int nDenomTarget){
 bool CForTunaSigner::IsVinAssociatedWithPubkey(CTxIn& vin, CPubKey& pubkey){
 	bool fIsInitialDownload = IsInitialBlockDownload();
     if(fIsInitialDownload) return;
-	
+
     CScript payee2;
     payee2= GetScriptForDestination(pubkey.GetID());
 
     CTransaction txVin;
     uint256 hash;
-	
+
     if(GetTransaction(vin.prevout.hash, txVin, hash)){
         CTxOut out = txVin.vout[vin.prevout.n];
 		if ((out.nValue == GetMNCollateral()*COIN) && (out.scriptPubKey == payee2))

@@ -1,6 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
-// Copyright (c) 2017-2018 The Innova developers
+// Copyright (c) 2017-2018 The Denarius developers
+// Copyright (c) 2019 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -1538,8 +1539,8 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
 	int64_t nSubsidy = 1 * COIN;
 
   if (pindexBest->nHeight == 1)
-		nSubsidy = 10250000 * COIN;  //Swap amount for Innova Chain v0.12 + Founders Fund 2.25 million
-	else if (pindexBest->nHeight <= FAIR_LAUNCH_BLOCK) // Block 210, Instamine prevention
+		nSubsidy = 10350000 * COIN;  //Swap amount for Innova Chain v0.12 + Founders Fund 2.25 million
+	else if (pindexBest->nHeight <= FAIR_LAUNCH_BLOCK) // Block 490, Instamine prevention
         nSubsidy = 0.165 * COIN/2;
 	else if (pindexBest->nHeight <= 5000) //
 		nSubsidy = 0.33 * COIN;
