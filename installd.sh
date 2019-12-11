@@ -11,7 +11,7 @@ sudo apt-get update -y && sudo apt-get upgrade -y
 sudo apt-get --assume-yes install git unzip build-essential libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev obfs4proxy
 
 echo "Installing Innova Wallet"
-git clone https://github.com/innovafoundation/innova
+git clone https://github.com/innova-foundation/innova
 cd innova || exit
 git checkout master
 git pull
@@ -30,7 +30,7 @@ echo -e "daemon=1\listen=1\rpcuser=user\rpcpassword=changethispassword\nativetor
 #echo "Get Chaindata"
 #cd ~/.innova || exit
 #rm -rf database txleveldb smsgDB
-#wget https://github.com/innovafoundation/innova/releases/download/v3.3.7/chaindata1701122.zip
+#wget https://github.com/innova-foundation/innova/releases/download/v3.3.7/chaindata1701122.zip
 #unzip chaindata1701122.zip
 #rm -rf chaindata1701122.zip
 echo "Back to Compiled innovad Binary Folder"
@@ -71,7 +71,7 @@ cd ~
 openssl version -v
 
 echo "Installing Innova Wallet"
-git clone https://github.com/innovafoundation/innova
+git clone https://github.com/innova-foundation/innova
 cd innova
 git checkout master
 git pull
@@ -90,7 +90,7 @@ echo -e "daemon=1\listen=1\rpcuser=user\rpcpassword=changethispassword\nativetor
 #echo "Get Chaindata"
 #cd ~/.innova
 #rm -rf database txleveldb smsgDB
-#wget https://github.com/innovafoundation/innova/releases/download/v3.3.7/chaindata1701122.zip
+#wget https://github.com/innova-foundation/innova/releases/download/v3.3.7/chaindata1701122.zip
 #unzip chaindata1701122.zip
 #rm -rf chaindata1701122.zip
 echo "Back to Compiled innovad Binary Folder"
