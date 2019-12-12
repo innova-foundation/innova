@@ -1227,7 +1227,7 @@ void CFortunastakePayments::CleanPaymentList()
     LOCK(cs_fortunastakes);
     if(pindexBest == NULL) return;
 
-    int nLimit = std::max(((int)vecFortunastakes.size())*2, 25000);
+    int nLimit = std::max(((int)vecFortunastakes.size())*2, 5000);
 
     vector<CFortunastakePaymentWinner>::iterator it;
     for(it=vWinning.begin();it<vWinning.end();it++){
