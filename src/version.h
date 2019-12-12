@@ -30,13 +30,13 @@ static const int DATABASE_VERSION = 21212;
 // network protocol versioning
 //
 
-static const int PROTOCOL_VERSION = 43500; //Protocol is now 43500
+static const int PROTOCOL_VERSION = 43510; //Protocol is now 43500
 
 // intial proto version, to be increased after version/verack negotiation
 static const int INIT_PROTO_VERSION = 21212;
 
 // disconnect from peers older than this proto version
-static const int MIN_PEER_PROTO_VERSION = 41005;
+static const int MIN_PEER_PROTO_VERSION = 41015;
 
 // Don't forget to change proto in FORTUNA.h as well!! On Block 1.5m this will be 31005
 extern int MIN_MN_PROTO_VERSION;
