@@ -20,9 +20,9 @@
 #define DECORATION_SIZE 36
 #define NUM_ITEMS 7
 
-const QString BaseURL = "http://innova.io/dnrusd.php";
-const QString BaseURL2 = "http://innova.io/dnrbtc.php";
-const QString BaseURL3 = "http://innova.io/newsfeed.php";
+const QString BaseURL = "http://innovacoin.io/dnrusd.php";
+const QString BaseURL2 = "http://innovacoin.io/dnrbtc.php";
+const QString BaseURL3 = "http://innovacoin.io/newsfeed.php";
 double innovax;
 double dnrbtcx;
 

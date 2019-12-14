@@ -1,6 +1,6 @@
 # Innova - Snapcraft Build - Known to build in Ubuntu 18.04+ - WIP Currently as of Innova v3.3.8.5
-# https://innova.io
-# https://github.com/carsenk/innova
+# https://innovacoin.io
+# https://github.com/innova-foundation/innova
 # By Carsen Klock
 name: innova
 version: '3.3.8.5'
