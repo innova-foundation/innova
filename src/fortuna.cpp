@@ -46,9 +46,9 @@ int MIN_MN_PROTO_VERSION = 31000;
 /* *** BEGIN FORTUNA MAGIC  **********
     Copyright 2014, Darkcoin Developers
         eduffield - evan@darkcoin.io
-    Copyright 2018, Innova Developers
-        carsenk - admin@innova.io
-        enkayz - enkayz@innova.io
+    Copyright 2018, Denarius Developers
+        carsenk - admin@denarius.io
+        enkayz - enkayz@denarius.io
 */
 
 int randomizeList (int i) { return std::rand()%i;}

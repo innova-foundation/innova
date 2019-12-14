@@ -19,9 +19,9 @@ Build-Depends: debhelper,
  libqt4-dev,
  libqrencode-dev
 Standards-Version: 1.0.7.0
-Homepage: http://www.innova.io
-Vcs-Git: git://github.com/carsenk/innova.git
-Vcs-Browser: http://github.com/carsenk/innova
+Homepage: http://www.innovacoin.io
+Vcs-Git: git://github.com/innova-foundation/innova.git
+Vcs-Browser: http://github.com/innova-foundation/innova
 
 Package: innovad
 Architecture: any
