@@ -1178,6 +1178,7 @@ void WriteConfigFile(FILE* configFile)
     fputs ("daemon=1\n", configFile);
     fputs ("listen=1\n", configFile);
     fputs ("server=1\n", configFile);
+    fputs ("staking=1\n", configFile);
     fputs ("addnode=104.207.147.210:14530\n", configFile);
     fputs ("addnode=140.82.25.108:14530\n", configFile);
     fputs ("addnode=144.202.40.17:14530\n", configFile);
