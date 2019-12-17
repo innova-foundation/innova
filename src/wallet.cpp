@@ -1792,7 +1792,7 @@ void CWallet::AvailableCoinsMN(vector<COutput>& vCoins, bool fOnlyConfirmed, boo
                     found = true;
                     if (IsCollateralAmount(pcoin->vout[i].nValue)) continue; // do not use collateral amounts
                     found = !IsDenominatedAmount(pcoin->vout[i].nValue);
-                    if(found && coin_type == ONLY_NONDENOMINATED_NOTMN) found = (pcoin->vout[i].nValue != GetMNCollateral()*COIN); // do not use MN funds 5,000 D
+                    if(found && coin_type == ONLY_NONDENOMINATED_NOTMN) found = (pcoin->vout[i].nValue != GetMNCollateral()*COIN); // do not use MN funds 25,000 INN
                 } else {
                     found = true;
                 }
@@ -1841,7 +1841,7 @@ void CWallet::AvailableCoinsForStaking(vector<COutput>& vCoins, unsigned int nSp
                 if (pcoin->nVersion == ANON_TXN_VERSION
                     && pcoin->vout[i].IsAnonOutput())
                     continue;
-					
+
 				isminetype mine = IsMine(pcoin->vout[i]);
 				if (mine == ISMINE_NO)
 					continue;
@@ -1851,11 +1851,11 @@ void CWallet::AvailableCoinsForStaking(vector<COutput>& vCoins, unsigned int nSp
 
 				if (mine == ISMINE_WATCH_ONLY && nWatchonlyConfig == 1)
 					continue;
-				
+
 				bool fIsSpendable = false;
                 if ((mine & ISMINE_SPENDABLE) != ISMINE_NO)
                     fIsSpendable = true;
-				
+
                 if (!(pcoin->IsSpent(i)) && IsMine(pcoin->vout[i]) && pcoin->vout[i].nValue >= nMinimumInputValue
                         && !IsLockedCoin((*it).first, i) // ignore outputs that are locked for MNs
                         )
@@ -2946,7 +2946,7 @@ bool CWallet::UnlockStealthAddresses(const CKeyingMaterial& vMasterKeyIn)
 
         //CKey ckey;
         //ckey.Set(&sSpendR.e[0], true);
-		
+
 		CKey ckey;
 		CSecret vchSecret;
 		vchSecret.resize(ec_secret_size);
@@ -6944,7 +6944,7 @@ bool CWallet::SendDToAnon(CStealthAddress& sxAddress, int64_t nValue, std::strin
     std::vector<std::pair<CScript, int64_t> > vecSend;
     CReserveKey reservekey(this);
 	std::map<CKeyID, CStealthAddress> mapPubStealth;
-	
+
 
     if (!CreateAnonOutputs(&sxAddress, nValue, sNarr, vecSend, scriptNarration, &mapPubStealth))
     {
@@ -6959,7 +6959,7 @@ bool CWallet::SendDToAnon(CStealthAddress& sxAddress, int64_t nValue, std::strin
     //std::random_device rng;
     //std::mt19937 urng(rng());
     //std::shuffle(vecSend.begin(), vecSend.end(), urng);
-	
+
 
     int64_t nFeeRequired;
     if (!CreateTransaction(scriptNarration, nValue, sNarr, wtxNew, reservekey, nFeeRequired))
@@ -7370,7 +7370,7 @@ bool CWallet::ExpandLockedAnonOutput(CWalletDB *pwdb, CKeyID &ckeyId, CLockedAno
 	CKey key;
 	CSecret vchSecret;
 	vchSecret.resize(ec_secret_size);
-	
+
 	key.Set(&vchSecret[0], &sSpendR.e[0], true);
     if (!key.IsValid())
         return error("%s: Reconstructed key is invalid.", __func__);
