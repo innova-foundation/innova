@@ -1,6 +1,6 @@
 TEMPLATE = app
 TARGET = Innova
-VERSION = 3.3.8.5
+VERSION = 4.3.8.5
 INCLUDEPATH += src src/json src/qt src/qt/plugins/mrichtexteditor
 DEFINES += QT_GUI BOOST_THREAD_USE_LIB BOOST_SPIRIT_THREADSAFE
 CONFIG += no_include_pwd
@@ -22,6 +22,14 @@ greaterThan(QT_MAJOR_VERSION, 4) {
 linux {
     QMAKE_CFLAGS += -std=gnu99
 }
+
+macx {
+    BOOST_LIB_PATH=/usr/local/lib/
+    BOOST_INCLUDE_PATH=/usr/local/include/
+    OPENSSL_LIB_PATH=/opt/local/lib/openssl-1.0/
+    OPENSSL_INCLUDE_PATH=/opt/local/include/openssl-1.0/
+}
+
 
 win32 {
 BOOST_LIB_SUFFIX=-mgw49-mt-s-1_57
