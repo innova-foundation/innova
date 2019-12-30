@@ -686,7 +686,7 @@ if config.dmg is not None:
         if verbose >= 3:
             print "Creating temp image for modification..."
         try:
-            runHDIUtil("create", dmg_name + ".temp", srcfolder="dist", format="UDRW", size=size, volname=app_bundle_name, ov=True)
+            runHDIUtil("create", dmg_name + ".temp", srcfolder="dist", fs="HFS+", format="UDRW", size=size, volname=app_bundle_name, ov=True)
         except subprocess.CalledProcessError as e:
             sys.exit(e.returncode)
         
