@@ -1,0 +1,16 @@
+#!/bin/sh -e
+
+DATA_DIR="$SNAP_SNAP_COMMON"
+CONFIG="$DATA_DIR/innova.conf"
+
+# This may be used to bootstrap config settings from the environment settings
+# given by the snap installation command. Otherwise, denariusd will make it's
+# own config on start.
+
+### examples:
+# snapctl set port=14530
+# snapctl set rpcport=14531
+# snapctl set rpcuser=$RPCUSER
+# snapctl set rpcpass=$RPCPASS
+
+snapctl stop --disable innova.innovad
