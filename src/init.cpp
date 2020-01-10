@@ -304,6 +304,7 @@ std::string HelpMessage()
         "  -dns                   " + _("Allow DNS lookups for -addnode, -seednode and -connect") + "\n" +
         "  -port=<port>           " + _("Listen for connections on <port> (default: 14530 or testnet: 15530)") + "\n" +
         "  -maxconnections=<n>    " + _("Maintain at most <n> connections to peers (default: 125)") + "\n" +
+        "  -maxuploadtarget=<n>   " + _("Set a max upload target for your INN node, 100 = 100MB (default: 0 unlimited)") + "\n" +
         "  -addnode=<ip>          " + _("Add a node to connect to and attempt to keep the connection open") + "\n" +
         "  -connect=<ip>          " + _("Connect only to the specified node(s)") + "\n" +
         "  -seednode=<ip>         " + _("Connect to a node to retrieve peer addresses, and disconnect") + "\n" +
@@ -373,6 +374,8 @@ std::string HelpMessage()
         "  -blockminsize=<n>      "   + _("Set minimum block size in bytes (default: 0)") + "\n" +
         "  -blockmaxsize=<n>      "   + _("Set maximum block size in bytes (default: 250000)") + "\n" +
         "  -blockprioritysize=<n> "   + _("Set maximum size of high-priority/low-fee transactions in bytes (default: 27000)") + "\n" +
+        "  -maxorphantx=<n>       "   + strprintf(_("Keep at most <n> unconnectable transactions in memory (default: %u)"), DEFAULT_MAX_ORPHAN_TRANSACTIONS) + "\n" +
+        "  -maxorphanblocks=<n>   "   + strprintf(_("Keep at most <n> unconnectable blocks in memory (default: %u)"), DEFAULT_MAX_ORPHAN_BLOCKS) + "\n" +
 
         "\n" + _("SSL options: (see the Bitcoin Wiki for SSL setup instructions)") + "\n" +
         "  -rpcssl                                  " + _("Use OpenSSL (https) for JSON-RPC connections") + "\n" +
@@ -383,7 +386,6 @@ std::string HelpMessage()
         "\n" + _("Fortunastake options:") + "\n" +
         "  -fortunastake=<n>            " + _("Enable the client to act as a fortunastake (0-1, default: 0)") + "\n" +
         "  -mnconf=<file>             " + _("Specify fortunastake configuration file (default: fortunastake.conf)") + "\n" +
-        "  -mnconflock=<n>            " + _("Lock fortunastakes from fortunastake configuration file (default: 1)") +
         "  -fsconflock=<n>            " + _("Lock fortunastakes from fortunastake configuration file (default: 1)") +
         "  -fortunastakeprivkey=<n>     " + _("Set the fortunastake private key") + "\n" +
         "  -fortunastakeaddr=<n>        " + _("Set external address:port to get to this fortunastake (example: address:port)") + "\n" +
@@ -490,7 +492,7 @@ bool AppInit2()
     // Fee-per-kilobyte amount considered the same as "free"
     // Be careful setting this: if you set it to zero then
     // a transaction spammer can cheaply fill blocks using
-    // 1-satoshi-fee transactions. It should be set above the real
+    // 1-denarii-fee transactions. It should be set above the real
     // cost to you of processing a transaction.
     if (mapArgs.count("-mintxfee"))
         ParseMoney(mapArgs["-mintxfee"], nMinTxFee);
@@ -513,6 +515,8 @@ bool AppInit2()
     nDerivationMethodIndex = 0;
 
     fTestNet = GetBoolArg("-testnet");
+
+    fFSLock = GetBoolArg("-fsconflock");
     fNativeTor = GetBoolArg("-nativetor");
 
     //if (fTestNet)
@@ -680,6 +684,11 @@ bool AppInit2()
 
     //ignore fortunastakes below protocol version
     CFortunaStake::minProtoVersion = GetArg("-fortunastakeminprotocol", MIN_MN_PROTO_VERSION);
+
+    // Added maxuploadtarget=MB Tries to keep outbound traffic under the given target (in MiB per 24h), 0 = no limit
+    if (mapArgs.count("-maxuploadtarget")) {
+        CNode::SetMaxOutboundTarget(GetArg("-maxuploadtarget", 0)*1024*1024);
+    }
 
     if (fDaemon)
         fprintf(stdout, "Innova server starting\n");
@@ -1175,25 +1184,25 @@ bool AppInit2()
         }
     }
 
-    if(GetBoolArg("-mnconflock", true) && pwalletMain || GetBoolArg("-fsconflock", true) && pwalletMain) {
-        LOCK(pwalletMain->cs_wallet);
-        printf("Locking Fortunastakes:\n");
-        uint256 mnTxHash;
-        int outputIndex;
-        BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
-            mnTxHash.SetHex(mne.getTxHash());
-            outputIndex = boost::lexical_cast<unsigned int>(mne.getOutputIndex());
-            COutPoint outpoint = COutPoint(mnTxHash, outputIndex);
-            // don't lock non-spendable outpoint (i.e. it's already spent or it's not from this wallet at all)
-            if(pwalletMain->IsMine(CTxIn(outpoint)) != ISMINE_SPENDABLE) {
-                printf("  %s %s - IS NOT SPENDABLE, was not locked\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str());
-                continue;
+    if (pwalletMain) {
+        if(GetBoolArg("-fsconflock", true)) {
+            LOCK(pwalletMain->cs_wallet);
+            printf("Locking Fortunastakes:\n");
+            uint256 mnTxHash;
+            int outputIndex;
+            BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
+                mnTxHash.SetHex(mne.getTxHash());
+                outputIndex = boost::lexical_cast<unsigned int>(mne.getOutputIndex());
+                COutPoint outpoint = COutPoint(mnTxHash, outputIndex);
+                if(pwalletMain->IsMine(CTxIn(outpoint)) != ISMINE_SPENDABLE) {
+                    printf("  %s %s - IS NOT SPENDABLE, was not locked\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str());
+                    continue;
+                }
+                pwalletMain->LockCoin(outpoint);
+                printf("  %s %s - locked successfully\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str());
             }
-            pwalletMain->LockCoin(outpoint);
-            printf("  %s %s - locked successfully\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str());
         }
     }
-
 
     // Add any fortunastake.conf fortunastakes to the adrenaline nodes
     BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries())
