@@ -1184,10 +1184,8 @@ void WriteConfigFile(FILE* configFile)
     fputs ("addnode=144.202.40.17:14530\n", configFile);
     fputs ("addnode=207.246.64.66:14530\n", configFile);
     fputs ("addnode=45.77.114.67:14530\n", configFile);
-    fputs ("addnode=195.154.146.17:15530\n", configFile);
-    fputs ("addnode=62.210.251.30:15530\n", configFile);
-    fputs ("addnode=62.210.90.59:15530\n", configFile);
-    fputs ("addnode=51.15.174.178:15530\n", configFile);
+    fputs ("addnode=45.32.29.200:14530\n", configFile);
+    fputs ("addnode=104.156.239.127:14530\n", configFile);
     fclose(configFile);
     ReadConfigFile(mapArgs, mapMultiArgs);
 }
