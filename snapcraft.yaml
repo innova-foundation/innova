@@ -7,28 +7,49 @@ version: '4.3.8.5'
 summary: Innova
 description: |
   An open source hybrid cryptocurrency called Innova, which features Fortuna Stakes (Masternodes), Staking, Mining, Multisig, and much more!
-icon: src/qt/res/icons/innova_icon.png
+icon: share/pixmaps/innova-128.png
 
 grade: development
-confinement: classic
+confinement: strict
 
 apps:
   innova:
-    command: desktop-launch $SNAP/usr/local/bin/Innova
-    plugs: [network, network-bind, unity7]
+    command: Innova
+    plugs: [home, network, network-bind, unity7]
+    desktop: innova.desktop
+
 
 parts:
+  openssl:
+    plugin: nil
+    source: https://www.openssl.org/source/openssl-1.0.1j.tar.gz
+    build-packages:
+      - g++
+      - build-essential
+      - libtool
+    override-build: |
+      echo "Downgrading OpenSSL to 1.0.1j"
+      sudo ./config
+      sudo make
+      echo "Make depends OpenSSL to 1.0.1j"
+      sudo make depend
+      echo "Make install OpenSSL to 1.0.1j"
+      sudo make install
+      echo "Linking OpenSSL to 1.0.1j"
+      sudo ln -sf /usr/local/ssl/bin/openssl `which openssl`
   innova:
-    after: [desktop-qt5]
+    after: [desktop-qt5, openssl]
     plugin: qmake
     qt-version: qt5
     source: https://github.com/innova-foundation/innova.git
     build-packages:
       - g++
-      - unzip
-      - wget
       - jq
+      - wget
+      - unzip
+      - curl
       - build-essential
+      - apt-transport-https
       - zlib1g-dev
       - libdb++-dev
       - libboost-all-dev
@@ -45,40 +66,32 @@ parts:
       - qt5-default
       - qtbase5-dev-tools
     override-build: |
-      echo "Downgrading OpenSSL to 1.0.1j"
-      sudo wget https://www.openssl.org/source/openssl-1.0.1j.tar.gz
-      sudo tar -xzvf openssl-1.0.1j.tar.gz
-      cd openssl-1.0.1j
-      sudo ./config
-      sudo make
-      sudo make depend
-      sudo make install
-      sudo ln -sf /usr/local/ssl/bin/openssl `which openssl`
-      echo "Creating ~/innova dir and innova.conf"
-      sudo mkdir ~/.innova
-      sudo chmod +x ~/.innova
-      sudo chmod -R 777 ~/.innova
-      echo "Populating innova.conf"
-      mkdir ~/.innova
-      sudo printf "nativetor=0\naddnode=innova.host\naddnode=innova.win\naddnode=innova.pro\naddnode=triforce.black" > ~/.innova/innova.conf
-      echo "Grabbing Latest Chaindata"
-      cd ~/.innova
-      rm -rf database txleveldb smsgDB
-    # sudo wget https://github.com/innova-foundation/innova/releases/download/v3.3.7/chaindata1799510.zip
-    # sudo unzip chaindata1799510.zip
-    # sudo rm chaindata1799510.zip
-      echo "Back to Compiled QT Binary Folder"
-      cd ~/innova
-      sudo echo "Get Coinexplorer FS List"
-      sudo wget https://www.coinexplorer.net/api/v1/INN/masternode/list
-      sudo cat list | jq '.result[0].addr' | tr -d "\""  >> fspeers.txt
-      sudo cat list | jq '.result[1].addr' | tr -d "\""  >> fspeers.txt
-      sudo cat list | jq '.result[2].addr' | tr -d "\""  >> fspeers.txt
-      sudo sed 's/^/addnode=/' fspeers.txt > addnode.txt
-      sudo cat addnode.txt >> ~/.innova/innova.conf
-      sudo rm list
-      sudo rm fspeers.txt
-      sudo rm addnode.txt
-    override-build: |
-      qmake "USE_UPNP=1" "USE_QRCODE=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
+      set -x
+      ARCH=$(uname -m)
+      MF=USE_NATIVETOR=1
+      if [ "$ARCH" = "x86_64" ]; then
+          MF="USE_NATIVETOR=1"
+      elif [ "$ARCH" = "i686" ] || [ "$ARCH" = "i386" ]; then
+          MF="USE_NATIVETOR=-"
+      elif [ "$ARCH" = "armv7l" ] || [ "$ARCH" = "armv6l" ]; then
+          MF="USE_NATIVETOR=-"
+      elif [ "$ARCH" = *"armv8"* ] || [ "$ARCH" = "aarch64" ]; then
+          MF="USE_NATIVETOR=-"
+      elif [ "$ARCH" = *"mips64le"* ]; then
+          MF="USE_NATIVETOR=-"
+      elif [ "$ARCH" = *"mips64"* ]; then
+          MF="USE_NATIVETOR=-"
+      elif [ "$ARCH" = *"mipsle"* ]; then
+          MF="USE_NATIVETOR=-"
+      elif [ "$ARCH" = *"mips"* ]; then
+          MF="USE_NATIVETOR=-"
+      elif [[ "$ARCH" == "ppc64le" ]]; then
+          MF="USE_NATIVETOR=-"
+      elif [[ "$ARCH" == "ppc64" ]]; then
+          MF="USE_NATIVETOR=-"
+      fi
+      qmake "USE_UPNP=1" "USE_QRCODE=1" "${MF}" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
       OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib make -j4
+      sudo cp Innova /usr/bin/
+      sudo cp contrib/debian/innova-qt.desktop $SNAPCRAFT_PART_INSTALL/innova.desktop
+      sudo cp share/pixmaps/innova-128.png $SNAPCRAFT_PART_INSTALL/innova-128.png
