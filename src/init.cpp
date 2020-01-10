@@ -490,7 +490,7 @@ bool AppInit2()
     // Fee-per-kilobyte amount considered the same as "free"
     // Be careful setting this: if you set it to zero then
     // a transaction spammer can cheaply fill blocks using
-    // 1-satoshi-fee transactions. It should be set above the real
+    // 1-denarii-fee transactions. It should be set above the real
     // cost to you of processing a transaction.
     if (mapArgs.count("-mintxfee"))
         ParseMoney(mapArgs["-mintxfee"], nMinTxFee);
@@ -1175,25 +1175,25 @@ bool AppInit2()
         }
     }
 
-    if(GetBoolArg("-mnconflock", true) && pwalletMain || GetBoolArg("-fsconflock", true) && pwalletMain) {
-        LOCK(pwalletMain->cs_wallet);
-        printf("Locking Fortunastakes:\n");
-        uint256 mnTxHash;
-        int outputIndex;
-        BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
-            mnTxHash.SetHex(mne.getTxHash());
-            outputIndex = boost::lexical_cast<unsigned int>(mne.getOutputIndex());
-            COutPoint outpoint = COutPoint(mnTxHash, outputIndex);
-            // don't lock non-spendable outpoint (i.e. it's already spent or it's not from this wallet at all)
-            if(pwalletMain->IsMine(CTxIn(outpoint)) != ISMINE_SPENDABLE) {
-                printf("  %s %s - IS NOT SPENDABLE, was not locked\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str());
-                continue;
+    if (pwalletMain) {
+        if(GetBoolArg("-fsconflock", true) & GetBoolArg("-mnconflock", true)) {
+            LOCK(pwalletMain->cs_wallet);
+            printf("Locking Fortunastakes:\n");
+            uint256 mnTxHash;
+            int outputIndex;
+            BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
+                mnTxHash.SetHex(mne.getTxHash());
+                outputIndex = boost::lexical_cast<unsigned int>(mne.getOutputIndex());
+                COutPoint outpoint = COutPoint(mnTxHash, outputIndex);
+                if(pwalletMain->IsMine(CTxIn(outpoint)) != ISMINE_SPENDABLE) {
+                    printf("  %s %s - IS NOT SPENDABLE, was not locked\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str());
+                    continue;
+                }
+                pwalletMain->LockCoin(outpoint);
+                printf("  %s %s - locked successfully\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str());
             }
-            pwalletMain->LockCoin(outpoint);
-            printf("  %s %s - locked successfully\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str());
         }
     }
-
 
     // Add any fortunastake.conf fortunastakes to the adrenaline nodes
     BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries())

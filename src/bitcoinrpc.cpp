@@ -359,7 +359,6 @@ static const CRPCCommand vRPCCommands[] =
 
     /* Fortunastake features */
     { "getpoolinfo",            &getpoolinfo,            true,   false},
-    { "spork",                  &spork,                  true,   false},
     { "masternode",           	&masternode,             true,   false},
     { "fortunastake",           &fortunastake,           true,   false},
 
