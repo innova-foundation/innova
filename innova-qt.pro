@@ -549,6 +549,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/proofofimage.cpp \
     src/qt/termsofuse.cpp \
     src/alert.cpp \
+    src/stun.cpp \
     src/base58.cpp \
     src/version.cpp \
     src/sync.cpp \
@@ -669,6 +670,8 @@ HEADERS += src/qt/qrcodedialog.h
 SOURCES += src/qt/qrcodedialog.cpp
 FORMS += src/qt/forms/qrcodedialog.ui
 }
+
+
 
 CODECFORTR = UTF-8
 
