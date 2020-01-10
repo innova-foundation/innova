@@ -13,4 +13,4 @@ CONFIG="$DATA_DIR/innova.conf"
 # snapctl set rpcuser=$RPCUSER
 # snapctl set rpcpass=$RPCPASS
 
-snapctl stop --disable innova.innovad
+snapctl stop --disable $SNAP_INSTANCE_NAME.innovad
