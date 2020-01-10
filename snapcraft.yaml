@@ -8,6 +8,7 @@ summary: Innova
 description: |
   An open source hybrid cryptocurrency called Innova, which features Fortuna Stakes (Masternodes), Staking, Mining, Multisig, and much more!
 
+
 grade: stable
 confinement: strict
 
