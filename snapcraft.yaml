@@ -94,4 +94,4 @@ parts:
       OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib make -j4
       sudo cp Innova /usr/bin/
       sudo cp contrib/debian/innova-qt.desktop $SNAPCRAFT_PART_INSTALL/innova.desktop
-      sudo cp share/pixmaps/innova-128.png $SNAPCRAFT_PART_INSTALL/innova-128.png
+      sudo cp ${SNAP}/share/pixmaps/innova-128.png $SNAPCRAFT_PART_INSTALL/innova-128.png

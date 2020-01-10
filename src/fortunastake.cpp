@@ -140,7 +140,7 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
                 // mn.pubkey = pubkey, IsVinAssociatedWithPubkey is validated once below,
                 //   after that they just need to match
                 if(count == -1 && mn.pubkey == pubkey && !mn.UpdatedWithin(FORTUNASTAKE_MIN_DSEE_SECONDS)){
-                  mn.UpdateLastSeen(sigTime); // update last seen with the sigTime 
+                  mn.UpdateLastSeen(sigTime); // update last seen with the sigTime
 
                     if(mn.now < sigTime){ //take the newest entry
                         if (fDebugFS & fDebugNet) printf("dsee - Got updated entry for %s\n", addr.ToString().c_str());
@@ -627,6 +627,17 @@ bool CheckFSPayment(CBlockIndex* pindex, int64_t value, CFortunaStake &mn) {
     if (value > max) {
         return false;
     }
+    return true;
+}
+
+bool CheckPoSFSPayment(CBlockIndex* pindex, int64_t value, CFortunaStake &mn) {
+    if (mn.nBlockLastPaid == 0) return true; // if we didn't find a payment for this MN, let it through regardless of rate
+    // find height
+    // calculate average payment across all FS
+    // check if value is > 25% higher
+    nAverageFSIncome = avg2(vecFortunastakeScoresList);
+    if (nAverageFSIncome < 1 * COIN) return true; // if we can't calculate a decent average, then let the payment through
+    //int64_t max = nAverageFSIncome * 10 / 8;
     return true;
 }
 

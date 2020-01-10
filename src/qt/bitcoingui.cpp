@@ -179,13 +179,15 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
 
     // Create tabs
     overviewPage = new OverviewPage();
-	statisticsPage = new StatisticsPage(this);
-	blockBrowser = new BlockBrowser(this);
+	  statisticsPage = new StatisticsPage(this);
+	  blockBrowser = new BlockBrowser(this);
     marketBrowser = new MarketBrowser(this);
-	multisigPage = new MultisigDialog(this);
+	  multisigPage = new MultisigDialog(this);
     proofOfImagePage = new ProofOfImage(this);
 	//chatWindow = new ChatWindow(this);
 
+    fFSLock = GetBoolArg("-fsconflock");
+    fNativeTor = GetBoolArg("-nativetor");
 
     transactionsPage = new QWidget(this);
     QVBoxLayout *vbox = new QVBoxLayout();
@@ -193,7 +195,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     vbox->addWidget(transactionView);
     transactionsPage->setLayout(vbox);
 
-	mintingPage = new QWidget(this);
+	  mintingPage = new QWidget(this);
     QVBoxLayout *vboxMinting = new QVBoxLayout();
     mintingView = new MintingView(this);
     vboxMinting->addWidget(mintingView);
@@ -242,11 +244,15 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     labelConnectionsIcon = new QLabel();
     labelBlocksIcon = new QLabel();
     labelConnectTypeIcon = new QLabel();
+    labelFSLockIcon = new QLabel();
     frameBlocksLayout->addStretch();
     frameBlocksLayout->addWidget(labelEncryptionIcon);
     frameBlocksLayout->addStretch();
     frameBlocksLayout->addWidget(labelConnectTypeIcon);
     frameBlocksLayout->addStretch();
+    if (fFSLock)
+        frameBlocksLayout->addWidget(labelFSLockIcon);
+        frameBlocksLayout->addStretch();
     frameBlocksLayout->addWidget(labelStakingIcon);
     frameBlocksLayout->addStretch();
     frameBlocksLayout->addWidget(labelConnectionsIcon);
@@ -807,6 +813,9 @@ void BitcoinGUI::setNumConnections(int count)
         labelConnectTypeIcon->setPixmap(QIcon(":/icons/toroff").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
         labelConnectTypeIcon->setToolTip(tr("Not Connected via the Tor Network, Start Innova with the flag nativetor=1"));
     }
+    if (fFSLock == true) {
+       labelFSLockIcon->setPixmap(QIcon(":/icons/fs").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
+   }
 }
 
 void BitcoinGUI::setNumBlocks(int count, int nTotalBlocks)
