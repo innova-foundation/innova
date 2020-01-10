@@ -119,7 +119,7 @@ Object blockheaderToJSON(const CBlockIndex* blockindex)
         result.push_back(Pair("previousblockhash", blockindex->pprev->GetBlockHash().GetHex()));
     if (blockindex->pnext)
         result.push_back(Pair("nextblockhash", blockindex->pnext->GetBlockHash().GetHex()));
-	
+
 	result.push_back(Pair("flags", strprintf("%s%s", blockindex->IsProofOfStake()? "proof-of-stake" : "proof-of-work", blockindex->GeneratedStakeModifier()? " stake-modifier": "")));
     result.push_back(Pair("proofhash", blockindex->hashProof.GetHex()));
     result.push_back(Pair("entropybit", (int)blockindex->GetStakeEntropyBit()));
@@ -379,7 +379,7 @@ Value getblock(const Array& params, bool fHelp)
 
     CBlock block;
     CBlockIndex* pblockindex = mapBlockIndex[hash];
-	
+
 	if(!block.ReadFromDisk(pblockindex, true)){
         // Block not found on disk. This could be because we have the block
         // header in our index but don't have the block (for example if a
@@ -390,7 +390,7 @@ Value getblock(const Array& params, bool fHelp)
 	}
 
 	block.ReadFromDisk(pblockindex, true);
-	
+
     if (verbosity <= 0)
     {
         CDataStream ssBlock(SER_NETWORK, PROTOCOL_VERSION);
@@ -541,44 +541,6 @@ Value getcheckpoint(const Array& params, bool fHelp)
     return result;
 }
 
-/*
-    Used for updating/reading spork settings on the network
-*/
-Value spork(const Array& params, bool fHelp)
-{
-    if(params.size() == 1 && params[0].get_str() == "show"){
-        std::map<int, CSporkMessage>::iterator it = mapSporksActive.begin();
-
-        Object ret;
-        while(it != mapSporksActive.end()) {
-            ret.push_back(Pair(sporkManager.GetSporkNameByID(it->second.nSporkID), it->second.nValue));
-            it++;
-        }
-        return ret;
-    } else if (params.size() == 2){
-        int nSporkID = sporkManager.GetSporkIDByName(params[0].get_str());
-        if(nSporkID == -1){
-            return "Invalid spork name";
-        }
-
-        // SPORK VALUE
-        int64_t nValue = params[1].get_int();
-
-        //broadcast new spork
-        if(sporkManager.UpdateSpork(nSporkID, nValue)){
-            return "success";
-        } else {
-            return "failure";
-        }
-
-    }
-
-    throw runtime_error(
-        "spork <name> [<value>]\n"
-        "<name> is the corresponding spork name, or 'show' to show all current spork settings"
-        "<value> is a epoch datetime to enable or disable spork"
-        + HelpRequiringPassphrase());
-}
 
 Value gettxout(const Array& params, bool fHelp)
 {
@@ -625,7 +587,7 @@ Value gettxout(const Array& params, bool fHelp)
     CTransaction tx;
     uint256 hashBlock = 0;
     if (!GetTransaction(hash, tx, hashBlock, mem))
-      return Value::null;  
+      return Value::null;
 
     if (n<0 || (unsigned int)n>=tx.vout.size() || tx.vout[n].IsNull())
       return Value::null;

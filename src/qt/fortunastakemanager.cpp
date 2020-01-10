@@ -55,9 +55,19 @@ FortunastakeManager::FortunastakeManager(QWidget *parent) :
 
     subscribeToCoreSignals();
 
+    timer = new QTimer(this);
+
+    QTimer::singleShot(1000, this, SLOT(updateNodeList()));
+    QTimer::singleShot(5000, this, SLOT(updateNodeList()));
+    QTimer::singleShot(10000, this, SLOT(updateNodeList()));
+    QTimer::singleShot(30000, this, SLOT(updateNodeList()));
+    QTimer::singleShot(60000, this, SLOT(updateNodeList()));
+
+  /*
 	timer = new QTimer(this);
     connect(timer, SIGNAL(timeout()), this, SLOT(updateNodeList()));
         timer->start(); // No 1000 ms to do heavy work and be snappy
+        */
 }
 
 FortunastakeManager::~FortunastakeManager()
@@ -258,9 +268,10 @@ void FortunastakeManager::updateNodeList()
     ui->countLabel->setText("Updating...");
     if (mnCount == 0 || IsInitialBlockDownload()) return;
 
+    ui->tableWidget->setSortingEnabled(false);
+    ui->tableWidget->setUpdatesEnabled(false);
     ui->tableWidget->clearContents();
     ui->tableWidget->setRowCount(0);
-    ui->tableWidget->setSortingEnabled(false);
 
     BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes)
     {
@@ -424,6 +435,7 @@ void FortunastakeManager::updateNodeList()
         ui->countLabel->setText(QString("%1 active (average income: %2/day)").arg(vecFortunastakes.size()).arg(QString::fromStdString(FormatMoney(payPer24H))));
 
     ui->tableWidget->setSortingEnabled(true);
+    ui->tableWidget->setUpdatesEnabled(true);
 
     if(pwalletMain)
     {
