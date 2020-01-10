@@ -2,4 +2,4 @@
 
 # This prevents the innova.daemon from booting upon snap refresh/install
 
-snapctl stop --disable innova.innovad
+snapctl stop --disable $SNAP_INSTANCE_NAME.innovad
