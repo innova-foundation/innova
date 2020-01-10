@@ -6,7 +6,7 @@
 #include <boost/assign/list_of.hpp>
 
 #include "base58.h"
-#include "bitcoinrpc.h"
+#include "innovarpc.h"
 #include "txdb.h"
 #include "init.h"
 #include "main.h"
