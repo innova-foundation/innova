@@ -7,6 +7,6 @@ Comment[tr]=Innova, eşten eşe kriptografik sanal para birimi
 Exec=/usr/bin/Innova
 Terminal=false
 Type=Application
-Icon=share/pixmaps/innova-128.png
+Icon=/share/pixmaps/innova-128.png
 MimeType=x-scheme-handler/innova;
 Categories=Finance;
