@@ -201,7 +201,7 @@ public:
     int UpdateLastPaidAmounts(const CBlockIndex *pindex, int nMaxBlocksToScanBack, int &value);
     void UpdateLastPaidBlock(const CBlockIndex *pindex, int nMaxBlocksToScanBack);
 
-    void UpdateLastSeen(int64_t override=0 || override > GetAdjustedTime())
+    void UpdateLastSeen(int64_t override=0)
     {
         if(override == 0){
             lastTimeSeen = GetAdjustedTime();
