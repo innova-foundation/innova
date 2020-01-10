@@ -18,6 +18,20 @@ namespace Checkpoints
 {
     typedef std::map<int, uint256> MapCheckpoints;
 
+    // How many times we expect transactions after the last checkpoint to
+   // be slower. This number is a compromise, as it can't be accurate for
+   // every system. When reindexing from a fast disk with a slow CPU, it
+   // can be up to 20, while when downloading from a slow network with a
+   // fast multicore CPU, it won't be much higher than 1.
+   static const double SIGCHECK_VERIFICATION_FACTOR = 5.0;
+
+   struct CCheckpointData {
+       const MapCheckpoints *mapCheckpoints;
+       int64_t nTimeLastCheckpoint;
+       int64_t nTransactionsLastCheckpoint;
+       double fTransactionsPerDay;
+   };
+
     //
     // What makes a good checkpoint block?
     // + Is surrounded by blocks with reasonable timestamps
@@ -28,6 +42,14 @@ namespace Checkpoints
     static MapCheckpoints mapCheckpoints =
         boost::assign::map_list_of
         ( 0,       hashGenesisBlock )
+        ( 2000,    uint256("0x000000007e4fbd38a6072a2725273901d2eafdadbe9ce2e28f22882db6e76817") )
+        ( 5000,    uint256("0x0000000090efedc86969fcd821ee8fdde179796547a4bd07c643800d75c1ddbd") )
+        ( 10000,   uint256("0x00000000026e6c5aca75f2c3b288f5f68907dbf7fe4525cc39bffc3d40234984") )
+        ( 20000,   uint256("0x00000000078317bdc2930e6918491529b42dc399e7d291b5cf1add64afcdce20") )
+        ( 30000,   uint256("0x05f89e228fbf708ca70539f8725835c70dbe726cb400a6417ddd1e456008fe96") )
+        ( 50000,   uint256("0x00000000062440c503446206ea2b49472b5096dfdcbfa94fd2d60ac2babe7f8d") )
+        ( 75000,   uint256("0xa18904ad0c2997b421e1e71375f5d0195d40a0bf5672ce63e387d8d0a794134d") )
+        ( 90000,   uint256("0xb173dd04c9a979196bf2eb35764214464ef418013c7cb9306bf1a421865c8d7a") )
       //
 	;
 
