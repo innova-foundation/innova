@@ -21,7 +21,8 @@ public:
         dBTC,
 	       USD,
         mBTC,
-        uBTC
+        uBTC,
+        Innovai
     };
 
     //! @name Static API

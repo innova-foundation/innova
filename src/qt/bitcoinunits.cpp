@@ -16,6 +16,7 @@ QList<BitcoinUnits::Unit> BitcoinUnits::availableUnits()
     //unitlist.append(USD);
     unitlist.append(mBTC);
     unitlist.append(uBTC);
+    unitlist.append(Innovai);
     return unitlist;
 }
 
@@ -28,6 +29,7 @@ bool BitcoinUnits::valid(int unit)
     case USD:
     case mBTC:
     case uBTC:
+    case Innovai:
         return true;
     default:
         return false;
@@ -43,6 +45,7 @@ QString BitcoinUnits::name(int unit)
     case USD: return QString("USD");
     case mBTC: return QString("mINN");
     case uBTC: return QString::fromUtf8("μINN");
+    case Innovai: return QString("Innovai");
     default: return QString("???");
     }
 }
@@ -56,6 +59,7 @@ QString BitcoinUnits::description(int unit)
     case USD: return QString("USD");
     case mBTC: return QString("Milli-Innova (1 / 1,000)");
     case uBTC: return QString("Micro-Innova (1 / 1,000,000)");
+    case Innovai: return QString("Innovai (1 / 100,000,000");
     default: return QString("???");
     }
 }
@@ -69,6 +73,7 @@ qint64 BitcoinUnits::factor(int unit)
     case USD:  return 100000000;
     case mBTC: return 100000;
     case uBTC: return 100;
+    case Innovai: return 1;
     default:   return 100000000;
     }
 }
@@ -82,6 +87,7 @@ int BitcoinUnits::amountDigits(int unit)
     case USD: return 8;
     case mBTC: return 11; // 21,000,000,000
     case uBTC: return 14; // 21,000,000,000,000
+    case Innovai: return 16; // 2,100,000,000,000,000
     default: return 0;
     }
 }
@@ -95,6 +101,7 @@ int BitcoinUnits::decimals(int unit)
     case USD: return 2;
     case mBTC: return 5;
     case uBTC: return 2;
+    case Denarii: return 0;
     default: return 0;
     }
 }
