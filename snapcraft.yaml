@@ -7,44 +7,16 @@ version: '4.3.8.5'
 summary: Innova
 description: |
   An open source hybrid cryptocurrency called Innova, which features Fortuna Stakes (Masternodes), Staking, Mining, Multisig, and much more!
+icon: share/pixmaps/innova-128.png
 
-
-grade: stable
+grade: development
 confinement: strict
 
-plugs: # plugs for theming, font settings, cursor and to use gtk3 file chooser
-  gtk-3-themes:
-    interface: content
-    target: $SNAP/data-dir/themes
-    default-provider: gtk-common-themes:gtk-3-themes
-  icon-themes:
-    interface: content
-    target: $SNAP/data-dir/icons
-    default-provider: gtk-common-themes:icon-themes
-  sound-themes:
-    interface: content
-    target: $SNAP/data-dir/sounds
-    default-provider: gtk-common-themes:sounds-themes
-
 apps:
-  denariusd:
-    command: bin/innovad
-    plugs: [home, network, network-bind]
-    daemon: forking
-  daemon:
-    command: bin/innovad
-    plugs: [home, network, network-bind]
-    environment:
-      XDG_DATA_DIRS: $SNAP_USER_DATA:/var/lib/snapd/desktop:$XDG_DATA_DIRS
-      HOME: $SNAP_USER_COMMON
   innova:
-    command: desktop-launch $SNAP/bin/Innova
-    plugs: [home, network, network-bind, unity7, wayland, desktop-legacy, desktop, x11, gsettings]
-    desktop: innova.desktop
-    environment:
-      QT_QPA_PLATFORMTHEME: gtk3
-      XDG_DATA_DIRS: $SNAP_USER_DATA:/var/lib/snapd/desktop:$XDG_DATA_DIRS
-      HOME: $SNAP_USER_COMMON
+    command: Innova
+    plugs: [home, network, network-bind, unity7]
+    desktop: innova-qt.desktop
 
 
 parts:
@@ -65,101 +37,12 @@ parts:
       sudo make install
       echo "Linking OpenSSL to 1.0.1j"
       sudo ln -sf /usr/local/ssl/bin/openssl `which openssl`
-      daemon:
-    source: https://github.com/innova-foundation/innova.git
-    source-type: git
-    source-tag: master
-    plugin: nil
-    build-packages:
-      - g++
-      - jq
-      - wget
-      - unzip
-      - curl
-      - build-essential
-      - apt-transport-https
-      - zlib1g-dev
-      - libdb++-dev
-      - libboost-all-dev
-      - libqrencode-dev
-      - libminiupnpc-dev
-      - libevent-dev
-      - libssl-dev
-      - libtool
-    stage-packages:
-      - g++
-      - jq
-      - wget
-      - unzip
-      - curl
-      - build-essential
-      - apt-transport-https
-      - zlib1g-dev
-      - libdb++-dev
-      - libboost-all-dev
-      - libqrencode-dev
-      - libminiupnpc-dev
-      - libevent-dev
-      - libssl-dev
-      - libtool
-    override-build: |
-      set -x
-      ARCH=$(uname -m)
-      MF=makefile.unix
-      if [ "$ARCH" = "x86_64" ]; then
-          MF="makefile.unix"
-      elif [ "$ARCH" = "i686" ] || [ "$ARCH" = "i386" ]; then
-          MF="makefile.arm"
-      elif [ "$ARCH" = "armv7l" ] || [ "$ARCH" = "armv6l" ]; then
-          MF="makefile.arm"
-      elif [ "$ARCH" = *"armv8"* ] || [ "$ARCH" = "aarch64" ]; then
-          MF="makefile.arm"
-      elif [ "$ARCH" = *"mips64le"* ]; then
-          MF="makefile.arm"
-      elif [ "$ARCH" = *"mips64"* ]; then
-          MF="makefile.arm"
-      elif [ "$ARCH" = *"mipsle"* ]; then
-          MF="makefile.arm"
-      elif [ "$ARCH" = *"mips"* ]; then
-          MF="makefile.arm"
-      elif [[ "$ARCH" == "ppc64le" ]]; then
-          MF="makefile.arm"
-      elif [[ "$ARCH" == "ppc64" ]]; then
-          MF="makefile.arm"
-      fi
-      cd src
-      OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib make -f "${MF}" -j4
-      cp $SNAPCRAFT_PART_BUILD/src/innovad $SNAPCRAFT_PART_INSTALL/bin
   innova:
-    source: https://github.com/innova-foundation/innova.git
-    source-type: git
-    source-tag: master
+    after: [desktop-qt5, openssl]
     plugin: qmake
     qt-version: qt5
+    source: https://github.com/innova-foundation/innova.git
     build-packages:
-      - g++
-      - jq
-      - wget
-      - unzip
-      - curl
-      - build-essential
-      - apt-transport-https
-      - zlib1g-dev
-      - libdb++-dev
-      - libboost-all-dev
-      - libqrencode-dev
-      - libminiupnpc-dev
-      - libevent-dev
-      - libssl-dev
-      - libtool
-      - libqt5gui5
-      - libqt5core5a
-      - libqt5dbus5
-      - qttools5-dev
-      - qttools5-dev-tools
-      - qt5-default
-      - qtbase5-dev-tools
-      stage-packages:
       - g++
       - jq
       - wget
@@ -209,21 +92,6 @@ parts:
       fi
       qmake "USE_UPNP=1" "USE_QRCODE=1" "${MF}" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
       OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib make -j4
-      cp Innova $SNAPCRAFT_PART_INSTALL/bin
-    after: [desktop-qt5]
-    desktop:
-    source: snap/gui
-    plugin: dump
-  hooks:
-    plugin: dump
-    source: hooks/
-    organize:
-      bin/: snap/hooks/
-
-hooks:
-  install:
-    plugs: [network, network-bind]
-  post-refresh:
-    plugs: [network, network-bind]
-  configure:
-    plugs: [network, network-bind]
+      sudo cp Innova /usr/bin/
+      sudo cp contrib/debian/innova-qt.desktop $SNAPCRAFT_PART_INSTALL/innova.desktop
+      sudo cp share/pixmaps/innova-128.png $SNAPCRAFT_PART_INSTALL/innova-128.png
