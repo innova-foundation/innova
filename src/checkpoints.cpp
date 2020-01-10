@@ -53,11 +53,33 @@ namespace Checkpoints
       //
 	;
 
+  static const CCheckpointData data = {
+        &mapCheckpoints,
+        1578570403, // * UNIX timestamp of last checkpoint block above ^^
+        5033897,   // * total number of transactions between genesis and last checkpoint
+                    //   (the tx=... number in the SetBestChain debug.log lines)
+        5000.0     // * estimated number of transactions per day after checkpoint
+    };
+
     // TestNet has no checkpoints
     static MapCheckpoints mapCheckpointsTestnet =
         boost::assign::map_list_of
         ( 0, hashGenesisBlockTestNet )
     ;
+
+    static const CCheckpointData dataTestnet = {
+        &mapCheckpointsTestnet,
+        1338180505,
+        16341,
+        300
+    };
+
+    const CCheckpointData &Checkpoints() {
+        if (fTestNet)
+            return dataTestnet;
+        else
+            return data;
+    }
 
     bool CheckHardened(int nHeight, const uint256& hash)
     {
@@ -67,6 +89,38 @@ namespace Checkpoints
         if (i == checkpoints.end()) return true;
         return hash == i->second;
     }
+
+    // Guess how far we are in the verification process at the given block index
+       double GuessVerificationProgress(CBlockIndex *pindex, bool fSigchecks) {
+           if (pindex==NULL)
+               return 0.0;
+
+           int64_t nNow = time(NULL);
+
+           double fSigcheckVerificationFactor = fSigchecks ? SIGCHECK_VERIFICATION_FACTOR : 1.0;
+           double fWorkBefore = 0.0; // Amount of work done before pindex
+           double fWorkAfter = 0.0;  // Amount of work left after pindex (estimated)
+           // Work is defined as: 1.0 per transaction before the last checkpoint, and
+           // fSigcheckVerificationFactor per transaction after.
+
+           const CCheckpointData &data = Checkpoints();
+   
+           if (pindex->nChainTx <= data.nTransactionsLastCheckpoint) {
+               double nCheapBefore = pindex->nChainTx;
+               double nCheapAfter = data.nTransactionsLastCheckpoint - pindex->nChainTx;
+               double nExpensiveAfter = (nNow - data.nTimeLastCheckpoint)/86400.0*data.fTransactionsPerDay;
+               fWorkBefore = nCheapBefore;
+               fWorkAfter = nCheapAfter + nExpensiveAfter*fSigcheckVerificationFactor;
+           } else {
+               double nCheapBefore = data.nTransactionsLastCheckpoint;
+               double nExpensiveBefore = pindex->nChainTx - data.nTransactionsLastCheckpoint;
+               double nExpensiveAfter = (nNow - pindex->nTime)/86400.0*data.fTransactionsPerDay;
+               fWorkBefore = nCheapBefore + nExpensiveBefore*fSigcheckVerificationFactor;
+               fWorkAfter = nExpensiveAfter*fSigcheckVerificationFactor;
+           }
+
+           return fWorkBefore / (fWorkBefore + fWorkAfter);
+       }
 
     int GetTotalBlocksEstimate()
     {

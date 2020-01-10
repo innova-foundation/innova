@@ -677,16 +677,16 @@ Value getblockchaininfo(const Array& params, bool fHelp)
   if(!fTestNet)
       chain = "main";
       obj.push_back(Pair("chain",          chain));
-      obj.push_back(Pair("blocks",         (int)nBestHeight));
-      //obj.push_back(Pair("headers",      pindexBestHeader ? pindexBestHeader->nHeight : -1));
-      obj.push_back(Pair("bestblockhash",  hashBestChain.GetHex()));
-  diff.push_back(Pair("proof-of-work",  GetDifficulty()));
-  diff.push_back(Pair("proof-of-stake", GetDifficulty(GetLastBlockIndex(pindexBest, true))));
-  obj.push_back(Pair("difficulty",     diff));
-  obj.push_back(Pair("initialblockdownload",  IsInitialBlockDownload()));
-  obj.push_back(Pair("verificationprogress", Checkpoints::GuessVerificationProgress(pindexBest)));
-  obj.push_back(Pair("chainwork",      leftTrim(pindexBest->nChainWork.GetHex(), '0')));
-  obj.push_back(Pair("moneysupply",    ValueFromAmount(pindexBest->nMoneySupply)));
-  //obj.push_back(Pair("size_on_disk",   CalculateCurrentUsage()));
-  return obj;
+    obj.push_back(Pair("blocks",         (int)nBestHeight));
+    //obj.push_back(Pair("headers",      pindexBestHeader ? pindexBestHeader->nHeight : -1));
+    obj.push_back(Pair("bestblockhash",  hashBestChain.GetHex()));
+    diff.push_back(Pair("proof-of-work",  GetDifficulty()));
+    diff.push_back(Pair("proof-of-stake", GetDifficulty(GetLastBlockIndex(pindexBest, true))));
+    obj.push_back(Pair("difficulty",     diff));
+    obj.push_back(Pair("initialblockdownload",  IsInitialBlockDownload()));
+    obj.push_back(Pair("verificationprogress", Checkpoints::GuessVerificationProgress(pindexBest)));
+    obj.push_back(Pair("chainwork",      leftTrim(pindexBest->nChainWork.GetHex(), '0')));
+    obj.push_back(Pair("moneysupply",    ValueFromAmount(pindexBest->nMoneySupply)));
+    //obj.push_back(Pair("size_on_disk",   CalculateCurrentUsage()));
+    return obj;
 }
