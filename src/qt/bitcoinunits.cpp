@@ -101,7 +101,7 @@ int BitcoinUnits::decimals(int unit)
     case USD: return 2;
     case mBTC: return 5;
     case uBTC: return 2;
-    case Inovai: return 0;
+    case Innovai: return 0;
     default: return 0;
     }
 }
