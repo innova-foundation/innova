@@ -265,6 +265,11 @@ static const CRPCCommand vRPCCommands[] =
     { "getblockcount",          &getblockcount,          true,   false },
     { "getconnectioncount",     &getconnectioncount,     true,   false },
     { "getpeerinfo",            &getpeerinfo,            true,   false },
+    { "getaddednodeinfo",       &getaddednodeinfo,       true,   true },
+    { "ping",                   &ping,                   true,   true },
+    { "getnettotals",           &getnettotals,           true,   false },
+    { "disconnectnode",         &disconnectnode,         true,   false },
+    { "getnetworkinfo",         &getnetworkinfo,         true,   false },
     { "gethashespersec",        &gethashespersec,        true,   false },
     { "addnode",                &addnode,                true,   true },
     { "dumpbootstrap",          &dumpbootstrap,          false,  false },
@@ -359,7 +364,6 @@ static const CRPCCommand vRPCCommands[] =
 
     /* Fortunastake features */
     { "getpoolinfo",            &getpoolinfo,            true,   false},
-    { "spork",                  &spork,                  true,   false},
     { "masternode",           	&masternode,             true,   false},
     { "fortunastake",           &fortunastake,           true,   false},
 

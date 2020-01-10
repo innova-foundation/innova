@@ -68,7 +68,11 @@ static const unsigned int MAX_STANDARD_TX_SIZE = MAX_BLOCK_SIZE_GEN/5;
 static const unsigned int MAX_BLOCK_SIGOPS = MAX_BLOCK_SIZE/50;
 /** The maximum number of sigops we're willing to relay/mine in a single tx */
 static const unsigned int MAX_TX_SIGOPS = MAX_BLOCK_SIGOPS/5;
-static const unsigned int MAX_ORPHAN_TRANSACTIONS = MAX_BLOCK_SIZE/100;
+//static const unsigned int MAX_ORPHAN_TRANSACTIONS = MAX_BLOCK_SIZE/100; deprecated
+/** Default for -maxorphantx, maximum number of orphan transactions kept in memory */
+static const unsigned int DEFAULT_MAX_ORPHAN_TRANSACTIONS = 100;
+/** Default for -maxorphanblocks, maximum number of orphan blocks kept in memory */
+static const unsigned int DEFAULT_MAX_ORPHAN_BLOCKS = 750;
 static const unsigned int MAX_INV_SZ = 50000;
 static const int64_t MIN_TX_FEE = 1000;
 static const int64_t MIN_TX_FEE_ANON = 10000;
@@ -1340,6 +1344,7 @@ public:
                 pindex = pindex->pprev;
             if (vHave.size() > 10)
                 nStep *= 2;
+            if (nStep > 1024) break;
         }
         vHave.push_back((!fTestNet ? hashGenesisBlock : hashGenesisBlockTestNet));
     }

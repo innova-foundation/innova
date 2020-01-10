@@ -179,13 +179,15 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
 
     // Create tabs
     overviewPage = new OverviewPage();
-	statisticsPage = new StatisticsPage(this);
-	blockBrowser = new BlockBrowser(this);
+	  statisticsPage = new StatisticsPage(this);
+	  blockBrowser = new BlockBrowser(this);
     marketBrowser = new MarketBrowser(this);
-	multisigPage = new MultisigDialog(this);
+	  multisigPage = new MultisigDialog(this);
     proofOfImagePage = new ProofOfImage(this);
 	//chatWindow = new ChatWindow(this);
 
+    fFSLock = GetBoolArg("-fsconflock");
+    fNativeTor = GetBoolArg("-nativetor");
 
     transactionsPage = new QWidget(this);
     QVBoxLayout *vbox = new QVBoxLayout();
@@ -193,7 +195,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     vbox->addWidget(transactionView);
     transactionsPage->setLayout(vbox);
 
-	mintingPage = new QWidget(this);
+	  mintingPage = new QWidget(this);
     QVBoxLayout *vboxMinting = new QVBoxLayout();
     mintingView = new MintingView(this);
     vboxMinting->addWidget(mintingView);
@@ -242,11 +244,15 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     labelConnectionsIcon = new QLabel();
     labelBlocksIcon = new QLabel();
     labelConnectTypeIcon = new QLabel();
+    labelFSLockIcon = new QLabel();
     frameBlocksLayout->addStretch();
     frameBlocksLayout->addWidget(labelEncryptionIcon);
     frameBlocksLayout->addStretch();
     frameBlocksLayout->addWidget(labelConnectTypeIcon);
     frameBlocksLayout->addStretch();
+    if (fFSLock)
+        frameBlocksLayout->addWidget(labelFSLockIcon);
+        frameBlocksLayout->addStretch();
     frameBlocksLayout->addWidget(labelStakingIcon);
     frameBlocksLayout->addStretch();
     frameBlocksLayout->addWidget(labelConnectionsIcon);
@@ -258,7 +264,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     {
         QTimer *timerStakingIcon = new QTimer(labelStakingIcon);
         connect(timerStakingIcon, SIGNAL(timeout()), this, SLOT(updateStakingIcon()));
-        timerStakingIcon->start();
+        timerStakingIcon->start(1000); // Update once every second
         updateStakingIcon();
     }
 
@@ -807,6 +813,9 @@ void BitcoinGUI::setNumConnections(int count)
         labelConnectTypeIcon->setPixmap(QIcon(":/icons/toroff").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
         labelConnectTypeIcon->setToolTip(tr("Not Connected via the Tor Network, Start Innova with the flag nativetor=1"));
     }
+    if (fFSLock == true) {
+       labelFSLockIcon->setPixmap(QIcon(":/icons/fs").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
+   }
 }
 
 void BitcoinGUI::setNumBlocks(int count, int nTotalBlocks)
@@ -886,8 +895,11 @@ void BitcoinGUI::setNumBlocks(int count, int nTotalBlocks)
 
         tooltip = tr("Catching up...") + QString("<br>") + tooltip;
 
-        labelBlocksIcon->setPixmap(QIcon(QString(":/movies/res/movies/spinner-%1.png").arg(spinnerFrame, 3, 10, QChar('0'))).pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
-        spinnerFrame = (spinnerFrame + 1) % 36;
+        if (GetTimeMicros() > nLastUpdateTime + 27000) { // 27ms per spinner frame = 1 sec per 'spin'
+            labelBlocksIcon->setPixmap(QIcon(QString(":/movies/res/movies/spinner-%1.png").arg(spinnerFrame, 3, 10, QChar('0'))).pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
+            spinnerFrame = (spinnerFrame + 1) % 36;
+            nLastUpdateTime = GetTimeMicros();
+        }
 
         overviewPage->showOutOfSyncWarning(true);
 
