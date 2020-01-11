@@ -3,7 +3,7 @@
 # https://github.com/innova-foundation/innova
 # By Carsen Klock - Edited by CircuitBreaker
 name: innova
-version: '3.3.9.4'
+version: '4.3.8.5'
 summary: Innova
 description: |
   An open source hybrid cryptocurrency called Innova, which features Fortuna Stakes (Masternodes), Staking, Mining, Multisig, and much more!
@@ -68,7 +68,7 @@ parts:
       echo "Linking OpenSSL to 1.0.1j"
       sudo ln -sf /usr/local/ssl/bin/openssl `which openssl`
   daemon:
-    source: https://github.com/carsenk/innova.git
+    source: https://github.com/innova-foundation/innova.git
     source-type: git
     source-tag: master
     plugin: nil
@@ -133,7 +133,7 @@ parts:
       OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib make -f "${MF}" -j4
       cp $SNAPCRAFT_PART_BUILD/src/innovad $SNAPCRAFT_PART_INSTALL/bin
   innova:
-    source: https://github.com/carsenk/innova.git
+    source: https://github.com/innova-foundation/innova.git
     source-type: git
     source-tag: master
     plugin: qmake
