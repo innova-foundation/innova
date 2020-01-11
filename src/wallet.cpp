@@ -5806,7 +5806,7 @@ static bool checkCombinations(int64_t nReq, int m, std::vector<COwnedAnonOutput*
 
                 if (fDebugRingSig && !(nCount % 500))
                 {
-                    printf("checkCombinations() nCount: %"PRId64" - l: %d, n: %d, m: %d, i: %d, nReq: %"PRId64", v[0]: %d, nTotal: %"PRId64" \n", nCount, l, n, m, i, nReq, v[0], nTotal);
+                    printf("checkCombinations() nCount: %" PRId64 " - l: %d, n: %d, m: %d, i: %d, nReq: %"PRId64", v[0]: %d, nTotal: %"PRId64" \n", nCount, l, n, m, i, nReq, v[0], nTotal);
                     for (i = m; i--;) printf("%d%c", v[i], i ? ' ': '\n');
                 };
             };
