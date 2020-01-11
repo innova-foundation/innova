@@ -1,6 +1,6 @@
 TEMPLATE = app
 TARGET = Innova
-VERSION = 4.3.8.5
+VERSION = 4.3.8.6
 INCLUDEPATH += src src/json src/qt src/qt/plugins/mrichtexteditor
 DEFINES += QT_GUI BOOST_THREAD_USE_LIB BOOST_SPIRIT_THREADSAFE
 CONFIG += no_include_pwd
