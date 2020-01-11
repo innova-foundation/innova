@@ -92,6 +92,7 @@ bool fCommandLine = false;
 string strMiscWarning;
 bool fTestNet = false;
 bool fNativeTor = false;
+bool fFSLock = false;
 bool fNoListen = false;
 bool fLogTimestamps = false;
 CMedianFilter<int64_t> vTimeOffsets(200,0);
@@ -1134,7 +1135,7 @@ boost::filesystem::path GetDefaultDataDir()
     return pathRet / "Innova";
 #else
     // Unix
-    return pathRet / ".innova";
+return pathRet / ".innova";
 #endif
 #endif
 }
@@ -1179,15 +1180,16 @@ void WriteConfigFile(FILE* configFile)
     fputs ("listen=1\n", configFile);
     fputs ("server=1\n", configFile);
     fputs ("staking=1\n", configFile);
+    fputs ("fortunastake=0\n", configFile); //default
+    fputs ("fortunastakeaddr=\n", configFile);
+    fputs ("fortunastakeprivkey=\n", configFile);
     fputs ("addnode=104.207.147.210:14530\n", configFile);
     fputs ("addnode=140.82.25.108:14530\n", configFile);
     fputs ("addnode=144.202.40.17:14530\n", configFile);
     fputs ("addnode=207.246.64.66:14530\n", configFile);
     fputs ("addnode=45.77.114.67:14530\n", configFile);
-    fputs ("addnode=195.154.146.17:15530\n", configFile);
-    fputs ("addnode=62.210.251.30:15530\n", configFile);
-    fputs ("addnode=62.210.90.59:15530\n", configFile);
-    fputs ("addnode=51.15.174.178:15530\n", configFile);
+    fputs ("addnode=45.32.29.200:14530\n", configFile);
+    fputs ("addnode=104.156.239.127:14530\n", configFile);
     fclose(configFile);
     ReadConfigFile(mapArgs, mapMultiArgs);
 }
@@ -1236,7 +1238,7 @@ boost::filesystem::path GetConfigFile()
 
 boost::filesystem::path GetFortunastakeConfigFile()
 {
-    boost::filesystem::path pathConfigFile(GetArg("-mnconf", "fortunastake.conf"));
+    boost::filesystem::path pathConfigFile(GetArg("-fsconf", "fortunastake.conf"));
     if (!pathConfigFile.is_complete()) pathConfigFile = GetDataDir(false) / pathConfigFile;
     return pathConfigFile;
 }
@@ -1250,7 +1252,7 @@ void ReadConfigFile(map<string, string>& mapSettingsRet,
          FILE* configFile = fopen(GetConfigFile().string().c_str(), "a");
          if (configFile != NULL) {
              WriteConfigFile(configFile);
-             fclose(configFile);
+            // fclose(configFile);
              printf("WriteConfigFile() Innova.conf Setup Successfully!");
              ReadConfigFile(mapSettingsRet, mapMultiSettingsRet);
          } else {

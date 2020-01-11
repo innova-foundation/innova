@@ -6,7 +6,7 @@
 
 #include "wallet.h"
 #include "walletdb.h"
-#include "bitcoinrpc.h"
+#include "innovarpc.h"
 #include "init.h"
 #include "base58.h"
 #include "stealth.h"
@@ -131,6 +131,7 @@ Value getinfo(const Array& params, bool fHelp)
 
     obj.push_back(Pair("testnet",       fTestNet));
     obj.push_back(Pair("fortunastake",    fFortunaStake));
+    obj.push_back(Pair("fslock",        fFSLock));
     obj.push_back(Pair("nativetor",     fNativeTor));
     obj.push_back(Pair("keypoololdest", (int64_t)pwalletMain->GetOldestKeyPoolTime()));
     obj.push_back(Pair("keypoolsize",   (int)pwalletMain->GetKeyPoolSize()));
@@ -748,7 +749,7 @@ Value sendfrom(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 3 || params.size() > 7)
         throw runtime_error(
-            "sendfrom <fromaccount> <toshadowcoinaddress> <amount> [minconf=1] [comment] [comment-to] [narration] \n"
+            "sendfrom <fromaccount> <toinnovaaddress> <amount> [minconf=1] [comment] [comment-to] [narration] \n"
             "<amount> is a real and is rounded to the nearest 0.000001"
             + HelpRequiringPassphrase());
 
@@ -1181,7 +1182,7 @@ void ListTransactions(const CWalletTx& wtx, const string& strAccount, int nMinDe
 			std::string account;
             if (pwalletMain->mapAddressBook.count(r.destination))
                 account = pwalletMain->mapAddressBook[r.destination];
-			
+
             if (fAllAccounts || (account == strAccount))
             {
                 Object entry;
@@ -1202,13 +1203,13 @@ void ListTransactions(const CWalletTx& wtx, const string& strAccount, int nMinDe
                 {
                     entry.push_back(Pair("category", "receive"));
                 }
-				
+
 				// PoW Amount
 				if (!wtx.IsCoinStake())
 				{
 					entry.push_back(Pair("amount", ValueFromAmount(r.amount)));
 				}
-				
+
 				// PoS Reward and Amount
                 if (wtx.IsCoinStake() && nFee != 0)
                 {
@@ -1220,13 +1221,13 @@ void ListTransactions(const CWalletTx& wtx, const string& strAccount, int nMinDe
 					entry.push_back(Pair("reward", ValueFromAmount(r.amount)));
 					stop = true;
 				}
-				
+
 				entry.push_back(Pair("vout", r.vout));
-				
+
                 if (pwalletMain->mapAddressBook.count(r.destination)) {
                     entry.push_back(Pair("label", account));
                 }
-				
+
                 if (fLong)
                     WalletTxToJSON(wtx, entry);
                 ret.push_back(entry);
@@ -1275,7 +1276,7 @@ Value listtransactions(const Array& params, bool fHelp)
     if(params.size() > 3)
         if(params[3].get_bool())
             filter = filter | ISMINE_WATCH_ONLY;
-	
+
 	bool fShowCoinstake = true;
     if (params.size() > 4)
     {
@@ -2337,11 +2338,11 @@ Value scanforalltxns(const Array& params, bool fHelp)
     return result;
 }
 
-Value senddtoanon(const Array& params, bool fHelp)
+Value sendinntoanon(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 2 || params.size() > 5)
         throw std::runtime_error(
-            "senddtoanon <stealth_address> <amount> [narration] [comment] [comment-to]\n"
+            "sendinntoanon <stealth_address> <amount> [narration] [comment] [comment-to]\n"
             "<amount> is a real number and is rounded to the nearest 0.000001"
             + HelpRequiringPassphrase());
 
@@ -2355,7 +2356,7 @@ Value senddtoanon(const Array& params, bool fHelp)
     std::string sNarr;
     if (params.size() > 2 && params[2].type() != null_type && !params[2].get_str().empty())
         sNarr = params[2].get_str();
-	
+
 	if (sNarr.length() == 0)
         throw std::runtime_error("Narration is required.");
 
@@ -2374,9 +2375,9 @@ Value senddtoanon(const Array& params, bool fHelp)
         wtx.mapValue["to"]      = params[4].get_str();
 
     std::string sError;
-    if (!pwalletMain->SendDToAnon(sxAddr, nAmount, sNarr, wtx, sError))
+    if (!pwalletMain->SendINNToAnon(sxAddr, nAmount, sNarr, wtx, sError))
     {
-        printf("SendDToAnon failed %s\n", sError.c_str());
+        printf("SendINNToAnon failed %s\n", sError.c_str());
         throw JSONRPCError(RPC_WALLET_ERROR, sError);
     };
     return wtx.GetHash().GetHex();
@@ -2443,11 +2444,11 @@ Value sendanontoanon(const Array& params, bool fHelp)
     return wtx.GetHash().GetHex();
 }
 
-Value sendanontod(const Array& params, bool fHelp)
+Value sendanontoinn(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 3 || params.size() > 6)
         throw std::runtime_error(
-            "sendanontod <stealth_address> <amount> <ring_size> [narration] [comment] [comment-to]\n"
+            "sendanontoinn <stealth_address> <amount> <ring_size> [narration] [comment] [comment-to]\n"
             "<amount> is a real number and is rounded to the nearest 0.000001\n"
             "<ring_size> is a number of outputs of the same amount to include in the signature"
             + HelpRequiringPassphrase());
@@ -2485,9 +2486,9 @@ Value sendanontod(const Array& params, bool fHelp)
 
 
     std::string sError;
-    if (!pwalletMain->SendAnonToD(sxAddr, nAmount, nRingSize, sNarr, wtx, sError))
+    if (!pwalletMain->SendAnonToINN(sxAddr, nAmount, nRingSize, sNarr, wtx, sError))
     {
-        printf("SendAnonToD failed %s\n", sError.c_str());
+        printf("SendAnonToINN failed %s\n", sError.c_str());
         throw JSONRPCError(RPC_WALLET_ERROR, sError);
     };
     return wtx.GetHash().GetHex();
@@ -2642,7 +2643,7 @@ Value anonoutputs(const Array& params, bool fHelp)
 Value anoninfo(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() > 1)
-        throw std::runtime_error(
+        throw runtime_error(
             "anoninfo [recalculate]\n"
             "list outputs in system.");
 
@@ -2664,7 +2665,7 @@ Value anoninfo(const Array& params, bool fHelp)
     if (fRecalculate)
     {
         if (pwalletMain->CountAllAnonOutputs(lOutputCounts, fMatureOnly) != 0)
-            throw std::runtime_error("CountAllAnonOutputs() failed.");
+            throw runtime_error("CountAllAnonOutputs() failed.");
     } else
     {
         // TODO: make mapAnonOutputStats a vector preinitialised with all possible coin values?
@@ -2685,32 +2686,29 @@ Value anoninfo(const Array& params, bool fHelp)
             if (!fProcessed)
                 lOutputCounts.push_back(aoc);
         };
-    };
+    }
 
-    result.push_back(Pair("No. Exists, No. Spends, No. Compromised, Least Depth", "value"));
+    result.push_back(Pair("No. Exists, No. Spends, Least Depth", "value"));
 
 
     // -- lOutputCounts is ordered by value
     char cbuf[256];
     int64_t nTotalIn = 0;
     int64_t nTotalOut = 0;
-    int64_t nTotalCompromised = 0;
     int64_t nTotalCoins = 0;
     for (std::list<CAnonOutputCount>::iterator it = lOutputCounts.begin(); it != lOutputCounts.end(); ++it)
     {
-        snprintf(cbuf, sizeof(cbuf), "%5d, %5d, %7d, %3d", it->nExists, it->nSpends, it->nCompromised, it->nLeastDepth);
+        snprintf(cbuf, sizeof(cbuf), "%05d, %05d, %05d", it->nExists, it->nSpends, it->nLeastDepth);
         result.push_back(Pair(cbuf, ValueFromAmount(it->nValue)));
 
 
         nTotalIn += it->nValue * it->nExists;
         nTotalOut += it->nValue * it->nSpends;
-        nTotalCompromised += it->nValue * it->nCompromised;
         nTotalCoins += it->nExists;
     };
 
     result.push_back(Pair("total anon value in", ValueFromAmount(nTotalIn)));
     result.push_back(Pair("total anon value out", ValueFromAmount(nTotalOut)));
-    result.push_back(Pair("total anon value compromised", ValueFromAmount(nTotalCompromised)));
     result.push_back(Pair("total anon outputs", nTotalCoins));
 
     return result;
