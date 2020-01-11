@@ -23,6 +23,14 @@ linux {
     QMAKE_CFLAGS += -std=gnu99
 }
 
+macx {
+    BOOST_LIB_PATH=/opt/local/libexec/boost169/lib/
+    BOOST_INCLUDE_PATH=/opt/local/libexec/boost169/include/
+    OPENSSL_LIB_PATH=/opt/local/lib/openssl-1.0/
+    OPENSSL_INCLUDE_PATH=/opt/local/include/openssl-1.0/
+}
+
+
 win32 {
 BOOST_LIB_SUFFIX=-mgw49-mt-s-1_57
 BOOST_INCLUDE_PATH=C:/deps/boost_1_57_0
@@ -57,8 +65,8 @@ UI_DIR = build
 
 # use: qmake "RELEASE=1"
 contains(RELEASE, 1) {
-    # Mac: compile for maximum compatibility (10.6, 32-bit)
-    macx:QMAKE_CXXFLAGS += -mmacosx-version-min=10.6 -arch x86_64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.6.sdk
+    # Mac: compile for compatibility (10.8, 64-bit)
+    macx:QMAKE_CXXFLAGS += -mmacosx-version-min=10.8 -arch x86_64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/
 
     !windows:!macx {
         # Linux: static link
@@ -753,8 +761,8 @@ macx:ICON = src/qt/res/icons/innova.icns
 macx:TARGET = "Innova"
 macx:QMAKE_CFLAGS_THREAD += -pthread
 macx:QMAKE_LFLAGS_THREAD += -pthread
-macx:QMAKE_MACOSX_DEPLOYMENT_TARGET = 10.9
-macx:QMAKE_MAC_SDK = macosx10.14
+macx:QMAKE_MACOSX_DEPLOYMENT_TARGET = 10.8
+macx:QMAKE_MAC_SDK = macosx10.8
 macx:QMAKE_CXXFLAGS_THREAD += -pthread
 macx:QMAKE_RPATHDIR = @executable_path/../Frameworks
 macx:QMAKE_CXXFLAGS += -stdlib=libc++

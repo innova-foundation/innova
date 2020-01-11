@@ -545,7 +545,7 @@ bool GetFortunastakeRanks(CBlockIndex* pindex)
     if (vecFortunastakeScoresListHash.size() > 0 && vecFortunastakeScoresListHash == pindex->GetBlockHash()) {
         // if ScoresList was calculated for the current pindex hash, then just use that list
         // TODO: make a vector of these somehow
-        if (fDebug) printf(" STARTCOPY (%"PRId64"ms)", GetTimeMillis() - nStartTime);
+        if (fDebug) printf(" STARTCOPY (%" PRId64 "ms)", GetTimeMillis() - nStartTime);
         BOOST_FOREACH(CFortunaStake& mn, vecFortunastakeScoresList)
         {
             i++;
@@ -559,7 +559,7 @@ bool GetFortunastakeRanks(CBlockIndex* pindex)
         FortunaReorgBlock = false; // reset reorg flag, we can check now it's updated
 
         // now we build the list for sorting
-        if (fDebug) printf(" STARTLOOP (%"PRId64"ms)", GetTimeMillis() - nStartTime);
+        if (fDebug) printf(" STARTLOOP (%" PRId64 "ms)", GetTimeMillis() - nStartTime);
         BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes) {
 
             mn.Check();
@@ -585,7 +585,7 @@ bool GetFortunastakeRanks(CBlockIndex* pindex)
     // TODO: Store the whole Scores vector in a caching hash map, maybe need hashPrev as well to make sure it re calculates any different chains with the same end block?
     //vecFortunastakeScoresCache.insert(make_pair(pindex->GetBlockHash(), vecFortunastakeScoresList));
 
-    if (fDebug) printf(" SORT (%"PRId64"ms)", GetTimeMillis() - nStartTime);
+    if (fDebug) printf(" SORT (%" PRId64 "ms)", GetTimeMillis() - nStartTime);
     sort(vecFortunastakeScores.rbegin(), vecFortunastakeScores.rend(), CompareLastPay(pindex)); // sort requires current pindex for modulus as pindexBest is different between clients
 
     i = 0;
@@ -596,7 +596,7 @@ bool GetFortunastakeRanks(CBlockIndex* pindex)
         s.first = i;
         s.second->nRank = i;
     }
-    if (fDebug) printf(" DONE (%"PRId64"ms)\n", GetTimeMillis() - nStartTime);
+    if (fDebug) printf(" DONE (%" PRId64 "ms)\n", GetTimeMillis() - nStartTime);
     return true;
 }
 
