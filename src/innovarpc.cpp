@@ -354,9 +354,9 @@ static const CRPCCommand vRPCCommands[] =
     { "scanforalltxns",         &scanforalltxns,         false,  false},
 
     // Ring Signatures - I n n o v a - v3.1.0
-    { "senddtoanon",          	&senddtoanon,          	 false,  false},
+    { "sendinntoanon",          	&sendinntoanon,          	 false,  false},
     { "sendanontoanon",         &sendanontoanon,         false,  false},
-    { "sendanontod",          	&sendanontod,         	 false,  false},
+    { "sendanontoinn",          	&sendanontoinn,         	 false,  false},
     { "estimateanonfee",        &estimateanonfee,        false,  false},
     { "txnreport",              &txnreport,              false,  false},
     { "anonoutputs",            &anonoutputs,            false,  false},
@@ -1365,11 +1365,11 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "gettxout"               && n == 3) { ConvertTo<int64_t>(params[1]); ConvertTo<bool>(params[2]); }
     if (strMethod == "importaddress"          && n > 2) ConvertTo<bool>(params[2]);
 
-    if (strMethod == "senddtoanon"         	  && n > 1) ConvertTo<double>(params[1]);
+    if (strMethod == "sendinntoanon"         	  && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "sendanontoanon"         && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "sendanontoanon"         && n > 2) ConvertTo<int64_t>(params[2]);
-    if (strMethod == "sendanontod"        	  && n > 1) ConvertTo<double>(params[1]);
-    if (strMethod == "sendanontod"        	  && n > 2) ConvertTo<int64_t>(params[2]);
+    if (strMethod == "sendanontoinn"        	  && n > 1) ConvertTo<double>(params[1]);
+    if (strMethod == "sendanontoinn"        	  && n > 2) ConvertTo<int64_t>(params[2]);
 	  if (strMethod == "estimateanonfee"        && n > 0) ConvertTo<double>(params[0]);
 	  if (strMethod == "estimateanonfee"        && n > 1) ConvertTo<int64_t>(params[1]);
 
