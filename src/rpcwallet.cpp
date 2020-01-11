@@ -2338,11 +2338,11 @@ Value scanforalltxns(const Array& params, bool fHelp)
     return result;
 }
 
-Value senddtoanon(const Array& params, bool fHelp)
+Value sendinntoanon(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 2 || params.size() > 5)
         throw std::runtime_error(
-            "senddtoanon <stealth_address> <amount> [narration] [comment] [comment-to]\n"
+            "sendinntoanon <stealth_address> <amount> [narration] [comment] [comment-to]\n"
             "<amount> is a real number and is rounded to the nearest 0.000001"
             + HelpRequiringPassphrase());
 
@@ -2375,9 +2375,9 @@ Value senddtoanon(const Array& params, bool fHelp)
         wtx.mapValue["to"]      = params[4].get_str();
 
     std::string sError;
-    if (!pwalletMain->SendDToAnon(sxAddr, nAmount, sNarr, wtx, sError))
+    if (!pwalletMain->SendINNToAnon(sxAddr, nAmount, sNarr, wtx, sError))
     {
-        printf("SendDToAnon failed %s\n", sError.c_str());
+        printf("SendINNToAnon failed %s\n", sError.c_str());
         throw JSONRPCError(RPC_WALLET_ERROR, sError);
     };
     return wtx.GetHash().GetHex();
@@ -2444,11 +2444,11 @@ Value sendanontoanon(const Array& params, bool fHelp)
     return wtx.GetHash().GetHex();
 }
 
-Value sendanontod(const Array& params, bool fHelp)
+Value sendanontoinn(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 3 || params.size() > 6)
         throw std::runtime_error(
-            "sendanontod <stealth_address> <amount> <ring_size> [narration] [comment] [comment-to]\n"
+            "sendanontoinn <stealth_address> <amount> <ring_size> [narration] [comment] [comment-to]\n"
             "<amount> is a real number and is rounded to the nearest 0.000001\n"
             "<ring_size> is a number of outputs of the same amount to include in the signature"
             + HelpRequiringPassphrase());
@@ -2486,9 +2486,9 @@ Value sendanontod(const Array& params, bool fHelp)
 
 
     std::string sError;
-    if (!pwalletMain->SendAnonToD(sxAddr, nAmount, nRingSize, sNarr, wtx, sError))
+    if (!pwalletMain->SendAnonToINN(sxAddr, nAmount, nRingSize, sNarr, wtx, sError))
     {
-        printf("SendAnonToD failed %s\n", sError.c_str());
+        printf("SendAnonToINN failed %s\n", sError.c_str());
         throw JSONRPCError(RPC_WALLET_ERROR, sError);
     };
     return wtx.GetHash().GetHex();
