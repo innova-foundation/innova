@@ -6390,10 +6390,10 @@ bool CWallet::CacheAnonStats()
 };
 
 
-bool CWallet::SendDToAnon(CStealthAddress& sxAddress, int64_t nValue, std::string& sNarr, CWalletTx& wtxNew, std::string& sError, bool fAskFee)
+bool CWallet::SendINNToAnon(CStealthAddress& sxAddress, int64_t nValue, std::string& sNarr, CWalletTx& wtxNew, std::string& sError, bool fAskFee)
 {
     if (fDebugRingSig)
-        printf("SendDToAnon()\n");
+        printf("SendINNToAnon()\n");
 
     if (IsLocked())
     {
@@ -6594,10 +6594,10 @@ bool CWallet::SendAnonToAnon(CStealthAddress& sxAddress, int64_t nValue, int nRi
     return true;
 };
 
-bool CWallet::SendAnonToD(CStealthAddress& sxAddress, int64_t nValue, int nRingSize, std::string& sNarr, CWalletTx& wtxNew, std::string& sError, bool fAskFee)
+bool CWallet::SendAnonToINN(CStealthAddress& sxAddress, int64_t nValue, int nRingSize, std::string& sNarr, CWalletTx& wtxNew, std::string& sError, bool fAskFee)
 {
     if (fDebug)
-        printf("SendAnonToD()\n");
+        printf("SendAnonToINN()\n");
 
     if (IsLocked())
     {
@@ -6665,7 +6665,7 @@ bool CWallet::SendAnonToD(CStealthAddress& sxAddress, int64_t nValue, int nRingS
     std::string sError2;
     if (!AddAnonInputs(nRingSize == 1 ? RING_SIG_1 : RING_SIG_2, nValue, nRingSize, vecSend, vecChange, wtxNew, nFeeRequired, false, sError2))
     {
-        printf("SendAnonToD() AddAnonInputs failed %s.\n", sError2.c_str());
+        printf("SendAnonToINN() AddAnonInputs failed %s.\n", sError2.c_str());
         sError = "AddAnonInputs() failed: " + sError2;
         return false;
     };
