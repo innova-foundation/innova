@@ -2,7 +2,7 @@ language: cpp
 dist: xenial
 env:
   global:
-    - MAKEFLAGS="-j 2"
+    - MAKEFLAGS="-j 4"
 addons:
   apt:
     packages:
