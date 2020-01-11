@@ -14,6 +14,8 @@ Tribus Algo PoW/PoS Hybrid Cryptocurrency
 
 ![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/innova-foundation/innova.svg) ![GitHub repo size in bytes](https://img.shields.io/github/repo-size/innova-foundation/innova.svg)
 
+[![Snap Status](https://build.snapcraft.io/badge/innova-foundation/innova.svg)](https://build.snapcraft.io/user/innova-foundation/innova)
+
 [![Build Status](https://travis-ci.org/innova-foundation/innova.svg?branch=master)](https://travis-ci.org/innova-foundation/innova)
 
 [![Build history](https://buildstats.info/travisci/chart/innova-foundation/innova?branch=master)](https://travis-ci.org/innova-foundation/innova?branch=master)
@@ -32,6 +34,14 @@ Supported Operating Systems
 * Windows 64-bit
 * macOS 10.11+
 
+Install Innova with Snap on any Linux Distro
+==========================
+* `sudo apt install snapd`
+* `sudo snap install innova`
+
+* `innova` for running the QT
+* `innova.daemon` for running innovad
+
 Specifications
 ==========================
 * Total number of coins: 25,000,000 INN
@@ -48,7 +58,7 @@ Specifications
 * Fortuna Stake Port: 14539, Testnet Port: 15539
 
 * INN Magic Number: 0xb73ff4fa
-* BIP44 CoinType: 114
+* BIP44 CoinType: 116
 * Base58 Pubkey Decimal: 102
 * Base58 Scriptkey Decimal: 137
 * Base58 Privkey Decimal: 230
@@ -62,7 +72,7 @@ Technology
 * Encrypted Messaging
 * Multi-Signature Addresses & TXs
 * Atomic Swaps using UTXOs (BIP65 CLTV)
-* BIP39 Support (Coin Type 114)
+* BIP39 Support (Coin Type 116)
 * Proof of Data (Image/Data Timestamping)
 * Fast ~15 Second Block Times
 * Tribus PoW Algorithm comprising of 3 NIST5 algorithms

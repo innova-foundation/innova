@@ -3,7 +3,7 @@
 # https://github.com/innova-foundation/innova
 # By Carsen Klock - Edited by CircuitBreaker
 name: innova
-version: '4.3.8.5'
+version: '4.3.8.6'
 summary: Innova
 description: |
   An open source hybrid cryptocurrency called Innova, which features Fortuna Stakes (Masternodes), Staking, Mining, Multisig, and much more!
