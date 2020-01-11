@@ -314,7 +314,7 @@ Value getblockhash(const Array& params, bool fHelp)
     return pblockindex->phashBlock->GetHex();
 }
 
-//New getblock RPC Command for Denariium Compatibility
+//New getblock RPC Command for Innovaium Compatibility
 Value getblock(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 1 || params.size() > 2)
