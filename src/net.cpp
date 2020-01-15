@@ -452,7 +452,7 @@ void ThreadGetMyExternalIP(void* parg)
     RenameThread("innova-ext-ip");
 
     CNetAddr addrLocalHost;
-    if (GetMyExternalIP_STUN(addrLocalHost)) 
+    if (GetMyExternalIP_STUN(addrLocalHost))
     {
       //  printf("GetMyExternalIP() returned %s\n", addrLocalHost.ToStringIP().c_str());
         AddLocal(addrLocalHost, LOCAL_HTTP);
@@ -1526,6 +1526,8 @@ static const char *strDNSSeed[][2] = {
     {"144.202.40.17:14530", "144.202.40.17:14530"},
     {"207.246.64.66:14530", "207.246.64.66:14530"},
     {"45.77.114.67:14530", "45.77.114.67:14530"},
+    {"51.15.27.10:14530", "51.15.27.10:14530"},
+    {"51.15.27.72:14530", "51.15.27.72:14530"},
 };
 
 void ThreadDNSAddressSeed(void* parg)
