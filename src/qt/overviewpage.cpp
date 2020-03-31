@@ -198,8 +198,8 @@ if (what == BaseURL3) // Innova News Feed
 
     // QNetworkReply is a QIODevice. So we read from it just like it was a file
     QString dnewsfeed = finished->readAll();
-    dnewsfeedx = (dnewsfeed.toDouble());
-    dnewsfeed = QString::number(dnewsfeedx, 'f', 8);
+    //dnewsfeedx = (dnewsfeed.toDouble());
+    //dnewsfeed = QString::number(dnewsfeedx, 'f', 8);
 
 	dnrnewsfeed = dnewsfeed;
 }
