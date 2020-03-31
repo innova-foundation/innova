@@ -46,11 +46,11 @@ CBigNum bnProofOfWorkLimitTestNet(~uint256(0) >> 16);
 // Block Variables
 
 unsigned int nTargetSpacing     = 15;               // 15 seconds
-unsigned int nStakeMinAge       = 10 * 60 * 60;      // 10 hour min stake age
+unsigned int nStakeMinAge       = 10 * 60 * 60;     // 10 hour min stake age
 unsigned int nStakeMaxAge       = -1;               // unlimited
 unsigned int nModifierInterval  = 10 * 60;          // time to elapse before new modifier is computed
 int64_t nLastCoinStakeSearchTime = GetAdjustedTime();
-int nCoinbaseMaturity = 65; //75 on Mainnet I n n o v a, 65 for testnet
+int nCoinbaseMaturity = 65; //75 on Mainnet I n n o v a
 CBlockIndex* pindexGenesisBlock = NULL;
 int nBestHeight = -1;
 bool FortunaReorgBlock = true;
@@ -1611,7 +1611,7 @@ int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees)
     int64_t nSubsidy;
     nSubsidy = nCoinAge * nRewardCoinYear / 365 / COIN;
 
-    //PoS Fixed on Block 640k v2.0+ DeNaRiUs
+    //PoS Fixed on Block 640k
     if (pindexBest->nHeight >= MAINNET_POSFIX || fTestNet)
         nSubsidy = nCoinAge * nRewardCoinYear / 365;
 
