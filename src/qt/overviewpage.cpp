@@ -112,13 +112,13 @@ OverviewPage::OverviewPage(QWidget *parent) :
     filter(0)
 {
     ui->setupUi(this);
-	
-	
 
-    PriceRequest();
+
+
+  PriceRequest();
 	QObject::connect(&m_nam, SIGNAL(finished(QNetworkReply*)), this, SLOT(parseNetworkResponse(QNetworkReply*)));
 	connect(ui->refreshButton, SIGNAL(pressed()), this, SLOT( PriceRequest()));
-	
+
 	//Refresh the Est. Balances and News automatically
 	refreshbtnTimer = new QTimer(this);
     connect(refreshbtnTimer, SIGNAL(timeout()), this, SLOT( PriceRequest()));
@@ -198,8 +198,8 @@ if (what == BaseURL3) // Innova News Feed
 
     // QNetworkReply is a QIODevice. So we read from it just like it was a file
     QString dnewsfeed = finished->readAll();
-    //dnewsfeedx = (dnewsfeed.toDouble());
-    //dnewsfeed = QString::number(dnewsfeedx, 'f', 8);
+    dnewsfeedx = (dnewsfeed.toDouble());
+    dnewsfeed = QString::number(dnewsfeedx, 'f', 8);
 
 	dnrnewsfeed = dnewsfeed;
 }
@@ -251,9 +251,9 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
     double dollarg2 = (dollarg.toDouble() * totalBalance / 100000000);
   	total = QString::number(dollarg2, 'f', 2);
   	ui->labelUSDTotal->setText("$" + total + " USD");
-	
+
 	QString eurtotal;
-	double dollarg1 = (dollarg.toDouble() * totalBalance * 0.886 / 100000000); 
+	double dollarg1 = (dollarg.toDouble() * totalBalance * 0.886 / 100000000);
   	eurtotal = QString::number(dollarg1, 'f', 2);
   	ui->labelEURTotal->setText("€" + eurtotal + " EUR");
 
@@ -261,7 +261,7 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
     ui->labelTradeLink->setTextFormat(Qt::RichText);
     ui->labelTradeLink->setTextInteractionFlags(Qt::TextBrowserInteraction);
     ui->labelTradeLink->setOpenExternalLinks(true);
-	
+
 	QString news;
 	news = dnrnewsfeed;
 	ui->labelNewsFeed->setText(news);
@@ -292,7 +292,7 @@ void OverviewPage::updateWatchOnlyLabels(bool showWatchOnly)
     ui->labelWatchAvailable->setVisible(showWatchOnly); // show watch-only available balance
     ui->labelWatchPending->setVisible(showWatchOnly);   // show watch-only pending balance
     ui->labelWatchTotal->setVisible(showWatchOnly);     // show watch-only total balance
-	
+
 	ui->watch1->setVisible(showWatchOnly);
 	ui->watch2->setVisible(showWatchOnly);
     ui->labelWatchImmatureText->setVisible(showWatchOnly);
