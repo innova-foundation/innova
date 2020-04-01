@@ -12,22 +12,22 @@
 
 using namespace json_spirit;
 
-const QString kBaseUrl = "http://innovacoin.io/dnrusd.php";
-const QString kBaseUrl1 = "http://innovacoin.io/dbitcoin.php";
-const QString kBaseUrl2 = "http://innovacoin.io/dnrmc.php";
-const QString kBaseUrl3 = "http://innovacoin.io/dnrbtc.php";
+const QString kBaseUrl = "http://innovacoin.io/innusd.php";
+const QString kBaseUrl1 = "http://innovacoin.io/innbtc.php";
+const QString kBaseUrl2 = "http://innovacoin.io/innmc.php";
+const QString kBaseUrl3 = "http://innovacoin.io/innbtc.php";
 
 QString bitcoinp = "";
 QString innovap = "";
-QString dnrmcp = "";
-QString dnrbtcp = "";
+QString innmcp = "";
+QString innbtcp = "";
 double bitcoin2;
 double innova2;
-double dnrmc2;
-double dnrbtc2;
+double innmc2;
+double innbtc2;
 QString bitcoing;
 QString dnrnewsfeed;
-QString dnrmarket;
+QString innmarket;
 QString dollarg;
 int mode=1;
 int o = 0;
@@ -84,7 +84,7 @@ void MarketBrowser::parseNetworkResponse(QNetworkReply *finished )
         emit networkError( finished->error() );
         return;
     }
-	
+
 if (what == kBaseUrl) // Innova Price
 {
 
@@ -92,7 +92,7 @@ if (what == kBaseUrl) // Innova Price
     QString innova = finished->readAll();
     innova2 = (innova.toDouble());
     innova = QString::number(innova2, 'f', 2);
-	
+
     if(innova > innovap)
     {
         ui->innova->setText("<font color=\"yellow\">$" + innova + "</font>");
@@ -129,42 +129,42 @@ if (what == kBaseUrl2) // Innova Market Cap
 {
 
     // QNetworkReply is a QIODevice. So we read from it just like it was a file
-    QString dnrmc = finished->readAll();
-    dnrmc2 = (dnrmc.toDouble());
-    dnrmc = QString::number(dnrmc2, 'f', 2);
-	
-    if(dnrmc > dnrmcp)
+    QString innmc = finished->readAll();
+    innmc2 = (innmc.toDouble());
+    innmc = QString::number(innmc2, 'f', 2);
+
+    if(innmc > innmcp)
     {
-        ui->dnrmc->setText("<font color=\"yellow\">$" + dnrmc + "</font>");
-    } else if (dnrmc < dnrmcp) {
-        ui->dnrmc->setText("<font color=\"red\">$" + dnrmc + "</font>");
+        ui->innmc->setText("<font color=\"yellow\">$" + innmc + "</font>");
+    } else if (innmc < innmcp) {
+        ui->innmc->setText("<font color=\"red\">$" + innmc + "</font>");
         } else {
-    ui->dnrmc->setText("$"+dnrmc+" USD");
+    ui->innmc->setText("$"+innmc+" USD");
     }
 
-    dnrmcp = dnrmc;
-	dnrmarket = dnrmc;
+    innmcp = innmc;
+	innmarket = innmc;
 }
 
 if (what == kBaseUrl3) // Innova BTC Price
 {
 
     // QNetworkReply is a QIODevice. So we read from it just like it was a file
-    QString dnrbtc = finished->readAll();
-    dnrbtc2 = (dnrbtc.toDouble());
-    dnrbtc = QString::number(dnrbtc2, 'f', 8);
-	
-    if(dnrbtc > dnrbtcp)
+    QString innbtc = finished->readAll();
+    innbtc2 = (innbtc.toDouble());
+    innbtc = QString::number(innbtc2, 'f', 8);
+
+    if(innbtc > innbtcp)
     {
-        ui->dnrbtc->setText("<font color=\"yellow\">" + dnrbtc + " BTC</font>");
-    } else if (dnrbtc < dnrbtcp) {
-        ui->dnrbtc->setText("<font color=\"red\">" + dnrbtc + " BTC</font>");
+        ui->innbtc->setText("<font color=\"yellow\">" + innbtc + " BTC</font>");
+    } else if (innbtc < innbtcp) {
+        ui->innbtc->setText("<font color=\"red\">" + innbtc + " BTC</font>");
         } else {
-    ui->dnrbtc->setText(dnrbtc+" BTC");
+    ui->innbtc->setText(innbtc+" BTC");
     }
 
-    dnrbtcp = dnrbtc;
-	bitcoing = dnrbtc;
+    innbtcp = innbtc;
+	bitcoing = innbtc;
 }
 
 finished->deleteLater();

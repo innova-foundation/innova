@@ -24,7 +24,7 @@ const QString BaseURL = "https://innovacoin.io/innusd.php";
 const QString BaseURL2 = "https://innovacoin.io/innbtc.php";
 const QString BaseURL3 = "http://innovacoin.io/newsfeed.php";
 double innovax;
-double dnrbtcx;
+double innbtcx;
 
 class TxViewDelegate : public QAbstractItemDelegate
 {
@@ -187,11 +187,11 @@ if (what == BaseURL2) // Innova BTC Price
 {
 
     // QNetworkReply is a QIODevice. So we read from it just like it was a file
-    QString dnrbtc = finished->readAll();
-    dnrbtcx = (dnrbtc.toDouble());
-    dnrbtc = QString::number(dnrbtcx, 'f', 8);
+    QString innbtc = finished->readAll();
+    innbtcx = (innbtc.toDouble());
+    innbtc = QString::number(innbtcx, 'f', 8);
 
-	bitcoing = dnrbtc;
+	bitcoing = innbtc;
 }
 if (what == BaseURL3) // Innova News Feed
 {
