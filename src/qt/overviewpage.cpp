@@ -23,7 +23,7 @@
 const QString BaseURL = "https://innovacoin.io/innusd.php";
 const QString BaseURL2 = "https://innovacoin.io/innbitcoin.php";
 const QString BaseURL3 = "https://innovacoin.io/newsfeed.php";
-const QString BaseURL4 = "https://innovacoin.io/inneur.php"
+const QString BaseURL4 = "https://innovacoin.io/inneur.php";
 double innovax;
 double innbtcx;
 
