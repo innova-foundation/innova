@@ -23,6 +23,7 @@
 const QString BaseURL = "https://innovacoin.io/innusd.php";
 const QString BaseURL2 = "https://innovacoin.io/innbitcoin.php";
 const QString BaseURL3 = "https://innovacoin.io/newsfeed.php";
+const QString BaseURL4 = "https://innovacoin.io/inneur.php"
 double innovax;
 double innbtcx;
 
@@ -173,7 +174,7 @@ void OverviewPage::parseNetworkResponse(QNetworkReply *finished )
         return;
     }
 
-if (what == BaseURL) // Innova Price
+if (what == BaseURL) // Innova USD Price
 {
 
     // QNetworkReply is a QIODevice. So we read from it just like it was a file
@@ -202,6 +203,16 @@ if (what == BaseURL3) // Innova News Feed
     //dnewsfeed = QString::number(dnewsfeedx, 'f', 8);
 
 	dnrnewsfeed = dnewsfeed;
+}
+if (what == BaseURL4) // Innova EUR Price
+{
+
+    // QNetworkReply is a QIODevice. So we read from it just like it was a file
+    QString innova = finished->readAll();
+    innovax = (innova.toDouble());
+    innova = QString::number(innovax, 'f', 2);
+
+	eurog = innova;
 }
 finished->deleteLater();
 }
@@ -248,13 +259,13 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
 
 
   	QString total;
-    double dollarg2 = (dollarg.toDouble() * totalBalance / 100000000);
-  	total = QString::number(dollarg2, 'f', 2);
+    double dollarg1 = (dollarg.toDouble() * totalBalance / 100000000);
+  	total = QString::number(dollarg1, 'f', 2);
   	ui->labelUSDTotal->setText("$" + total + " USD");
 
-	QString eurtotal;
-	double dollarg1 = (dollarg.toDouble() * totalBalance * 0.886 / 100000000);
-  	eurtotal = QString::number(dollarg1, 'f', 2);
+	  QString eurtotal;
+	  double eurog1 = (eurog.toDouble() * totalBalance / 100000000);
+  	eurtotal = QString::number(eurog1, 'f', 2);
   	ui->labelEURTotal->setText("€" + eurtotal + " EUR");
 
     ui->labelBTCTotal->setText(BitcoinUnits::formatWithUnit(unitdBTC, bitcoing.toDouble() * totalBalance));

@@ -13,6 +13,7 @@
 
 extern QString bitcoing;
 extern QString dollarg;
+extern QString eurog;
 extern QString innmarket;
 extern QString dnrnewsfeed;
 
