@@ -21,8 +21,8 @@
 #define NUM_ITEMS 7
 
 const QString BaseURL = "https://innovacoin.io/innusd.php";
-const QString BaseURL2 = "https://innovacoin.io/innbtc.php";
-const QString BaseURL3 = "http://innovacoin.io/newsfeed.php";
+const QString BaseURL2 = "https://innovacoin.io/innbitcoin.php";
+const QString BaseURL3 = "https://innovacoin.io/newsfeed.php";
 double innovax;
 double innbtcx;
 
