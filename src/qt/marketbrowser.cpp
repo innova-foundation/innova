@@ -29,6 +29,7 @@ QString bitcoing;
 QString dnrnewsfeed;
 QString innmarket;
 QString dollarg;
+QString eurog;
 int mode=1;
 int o = 0;
 
@@ -103,7 +104,7 @@ if (what == kBaseUrl) // Innova Price
     }
 
     innovap = innova;
-	dollarg = innova;
+	  dollarg = innova;
 }
 
 if (what == kBaseUrl1) // Bitcoin Price
