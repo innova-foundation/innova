@@ -375,7 +375,7 @@ Value sendtoaddress(const Array& params, bool fHelp)
     return wtx.GetHash().GetHex();
 }
 
-Value burn(const UniValue& params, bool fHelp)
+Value burn(const Value& params, bool fHelp)
 {
     if (fHelp || params.size() < 1 || params.size() > 2)
         throw runtime_error(
