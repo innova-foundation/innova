@@ -26,7 +26,7 @@ const QString BaseURL3 = "https://innovacoin.io/newsfeed.php";
 const QString BaseURL4 = "https://innovacoin.io/inneur.php";
 double innovax;
 double innovae;
-double innovao;
+double inneuro;
 double innbtcx;
 
 class TxViewDelegate : public QAbstractItemDelegate
@@ -210,11 +210,11 @@ if (what == BaseURL4) // Innova EUR Price
 {
 
     // QNetworkReply is a QIODevice. So we read from it just like it was a file
-    QString innova = finished->readAll();
-    innovao = (innova.toDouble());
-    innova = QString::number(innovao, 'f', 4);
+    QString inneur = finished->readAll();
+    inneuro = (inneur.toDouble());
+    inneur = QString::number(inneuro, 'f', 4);
 
-	eurog = innova;
+	eurog = inneur;
 }
 finished->deleteLater();
 }
@@ -267,7 +267,7 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
 
 	  QString eurtotal;
 	  double eurog1 = (eurog.toDouble() * totalBalance / 100000000);
-  	eurtotal = QString::number(eurog1, 'f', 2);
+  	eurtotal = QString::number(eurog1, 'f', 4);
   	ui->labelEURTotal->setText("€" + eurtotal + " EUR");
 
     ui->labelBTCTotal->setText(BitcoinUnits::formatWithUnit(unitdBTC, bitcoing.toDouble() * totalBalance));

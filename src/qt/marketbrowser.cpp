@@ -12,10 +12,10 @@
 
 using namespace json_spirit;
 
-const QString kBaseUrl = "http://innovacoin.io/innusd.php";
-const QString kBaseUrl1 = "http://innovacoin.io/ibitcoin.php";
-const QString kBaseUrl2 = "http://innovacoin.io/innmc.php";
-const QString kBaseUrl3 = "http://innovacoin.io/innbitcoin.php";
+const QString kBaseUrl = "https://innovacoin.io/innusd.php";
+const QString kBaseUrl1 = "https://innovacoin.io/ibitcoin.php";
+const QString kBaseUrl2 = "https://innovacoin.io/innmc.php";
+const QString kBaseUrl3 = "https://innovacoin.io/innbitcoin.php";
 
 QString bitcoinp = "";
 QString innovap = "";
