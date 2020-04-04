@@ -2150,7 +2150,7 @@ int64_t CTransaction::GetValueOutUnspendable() const
     CAmount nValueOut = 0;
     for (std::vector<CTxOut>::const_iterator it(vout.begin()); it != vout.end(); ++it)
     {
-        if( !it->IsNull() && !it->IsEmpty() && it->scriptPubKey.IsUnspendable() )
+        if( !it->IsNull() && !it->IsEmpty() && it->IsUnspendable() )
             nValueOut += it->nValue;
     }
     return nValueOut;
@@ -2512,7 +2512,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
         if (tx.IsCoinBase())
             nValueOut += tx.GetValueOut();
             nValueOutUnspendable += tx.GetValueOutUnspendable();
-        if else
+        else
         {
             bool fInvalid;
             if (!tx.FetchInputs(txdb, mapQueuedChanges, true, false, mapInputs, fInvalid))
