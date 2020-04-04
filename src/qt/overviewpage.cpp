@@ -284,7 +284,7 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
   	ui->labelEURTotal->setText("€" + eurtotal + " EUR");
 
     QString gbptotal;
-    double poundg1 = poundg.toDouble() * totalBalance / 100000000);
+    double poundg1 = (poundg.toDouble() * totalBalance / 100000000);
     gbptotal = QString::number(poundg1, 'f', 6);
     ui->labelGBPTotal->setText("£" + gbptotal + " GBP");
 
