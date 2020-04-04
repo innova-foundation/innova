@@ -2509,10 +2509,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
             nTxPos += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
 
         MapPrevTx mapInputs;
-        if (tx.IsCoinBase())
+        if (tx.IsCoinBase()) {
             nValueOut += tx.GetValueOut();
             nValueOutUnspendable += tx.GetValueOutUnspendable();
-        else
+        } else
         {
             bool fInvalid;
             if (!tx.FetchInputs(txdb, mapQueuedChanges, true, false, mapInputs, fInvalid))
