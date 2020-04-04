@@ -362,7 +362,7 @@
              <cursorShape>IBeamCursor</cursorShape>
             </property>
             <property name="toolTip">
-             <string>Your current total balance estimated in BTC, Rate is not updated often</string>
+             <string>Your current total balance estimated in BTC</string>
             </property>
             <property name="text">
              <string>0 BTC</string>
@@ -417,7 +417,7 @@
              <cursorShape>IBeamCursor</cursorShape>
             </property>
             <property name="toolTip">
-             <string>Your current total balance estimated in USD, Rate is not updated often</string>
+             <string>Your current total balance estimated in USD</string>
             </property>
             <property name="text">
              <string>0 USD</string>
@@ -490,7 +490,7 @@
              <cursorShape>IBeamCursor</cursorShape>
             </property>
             <property name="toolTip">
-             <string>Your current total balance estimated in EUR, Rate is based off a static 0.886 to 1 compared to USD</string>
+             <string>Your current total balance estimated in EUR</string>
             </property>
             <property name="text">
              <string>0 EUR</string>

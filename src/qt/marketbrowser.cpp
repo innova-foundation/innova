@@ -61,7 +61,7 @@ void MarketBrowser::update()
 void MarketBrowser::requests()
 {
 	getRequest(kBaseUrl);
-    getRequest(kBaseUrl1);
+  getRequest(kBaseUrl1);
 	getRequest(kBaseUrl2);
 	getRequest(kBaseUrl3);
 }
