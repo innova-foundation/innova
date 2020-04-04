@@ -101,6 +101,7 @@ Value getinfo(const Array& params, bool fHelp)
     obj.push_back(Pair("anonbalance",   ValueFromAmount(pwalletMain->GetAnonBalance())));
     obj.push_back(Pair("newmint",       ValueFromAmount(pwalletMain->GetNewMint())));
     obj.push_back(Pair("stake",         ValueFromAmount(pwalletMain->GetStake())));
+    obj.push_back(Pair("coldstaking",   ValueFromAmount(pwalletMain->GetStakingOnlyBalance())));
     obj.push_back(Pair("reserve",       ValueFromAmount(nReserveBalance)));
     obj.push_back(Pair("unconfirmed",   ValueFromAmount(pwalletMain->GetUnconfirmedBalance())));
     obj.push_back(Pair("immature",      ValueFromAmount(pwalletMain->GetImmatureBalance())));
@@ -143,6 +144,51 @@ Value getinfo(const Array& params, bool fHelp)
     return obj;
 }
 
+Value addcoldstakeaddress(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 2 || params.size() > 3)
+    {
+        string msg = "addcoldstakeaddress <staking address> <spending address> [account]\n"
+            "Add a cold staking address to the wallet.\n"
+            "The coins sent to this address will be mintable only with the staking private key.\n"
+            "And they will be spendable only with the spending private key.\n"
+            "If [account] is specified, assign address to [account].";
+        throw runtime_error(msg);
+    }
+
+    string strAccount;
+    if (params.size() > 2)
+        strAccount = AccountFromValue(params[2]);
+
+    CBitcoinAddress stakingAddress(params[0].get_str());
+    CBitcoinAddress spendingAddress(params[1].get_str());
+
+    if (!stakingAddress.IsValid())
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid staking address");
+    if (!spendingAddress.IsValid())
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid spending address");
+
+    CKeyID stakingKeyID;
+    CKeyID spendingKeyID;
+
+    if (!stakingAddress.GetKeyID(stakingKeyID))
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Staking address does not refer to a key");
+    if (!spendingAddress.GetKeyID(spendingKeyID))
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Spending address does not refer to a key");
+
+    // Construct using pay-to-script-hash:
+    CScript inner;
+    inner.SetColdStaking(stakingKeyID, spendingKeyID);
+
+    CScriptID innerID = inner.GetID();
+    if (!pwalletMain->AddCScript(inner))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Failed to add script to wallet");
+
+    if (!pwalletMain->SetAddressBookName(innerID, strAccount))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Failed to set account");
+
+    return CBitcoinAddress(innerID).ToString();
+}
 
 Value getnewpubkey(const Array& params, bool fHelp)
 {

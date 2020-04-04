@@ -383,7 +383,7 @@ static const CRPCCommand vRPCCommands[] =
     { "smsgoutbox",             &smsgoutbox,             false,  false},
     { "smsgbuckets",            &smsgbuckets,            false,  false},
 
-
+    { "addcoldstakeaddress",  &addcoldstakeaddress,      false,  false },
 
 };
 

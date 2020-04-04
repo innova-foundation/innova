@@ -113,6 +113,7 @@ private:
     //bool SelectCoins(int64_t nTargetValue, unsigned int nSpendTime, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet, const CCoinControl *coinControl=NULL) const;
     bool SelectCoins(CAmount nTargetValue, unsigned int nSpendTime, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet, const CCoinControl *coinControl = NULL) const;
     CWalletDB *pwalletdbEncryption;
+    bool SelectStakingOnlyCoins(unsigned int nSpendTime, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet, const CCoinControl *coinControl = NULL) const;
 
     // the current wallet version: clients below this version are not able to load the wallet
     int nWalletVersion;
@@ -283,6 +284,7 @@ public:
     void ReacceptWalletTransactions();
     void ResendWalletTransactions(bool fForce = false);
     int64_t GetBalance() const;
+    int64_t GetStakingOnlyBalance() const;
     int64_t GetAnonBalance() const;
     int64_t GetLockedBalance() const;
     int64_t GetUnlockedBalance() const;
@@ -397,6 +399,16 @@ public:
             throw std::runtime_error("CWallet::GetCredit() : value out of range");
         return ((IsMine(txout) & filter) ? txout.nValue : 0);
     }
+    bool IsMineForStakingOnly(const CTxOut& txout) const
+    {
+        return ::IsMineForStakingOnly(*this, txout.scriptPubKey);
+    }
+    int64_t GetStakingOnlyCredit(const CTxOut& txout) const
+    {
+        if (!MoneyRange(txout.nValue))
+            throw std::runtime_error("CWallet::GetStakingOnlyCredit() : value out of range");
+        return (IsMineForStakingOnly(txout) ? txout.nValue : 0);
+    }
     bool IsChange(const CTxOut& txout) const;
     int64_t GetChange(const CTxOut& txout) const
     {
@@ -408,6 +420,13 @@ public:
     {
         BOOST_FOREACH(const CTxOut& txout, tx.vout)
             if (IsMine(txout) && txout.nValue >= nMinimumInputValue)
+                return true;
+        return false;
+    }
+    bool IsMineForStakingOnly(const CTransaction& tx) const
+    {
+        BOOST_FOREACH(const CTxOut& txout, tx.vout)
+            if (IsMineForStakingOnly(txout))
                 return true;
         return false;
     }
@@ -446,6 +465,18 @@ public:
             //nCredit += GetCredit(txout, filter);
             if (!MoneyRange(nCredit))
                 throw std::runtime_error("CWallet::GetCredit() : value out of range");
+        }
+        return nCredit;
+    }
+
+    int64_t GetStakingOnlyCredit(const CTransaction& tx) const
+    {
+        int64_t nCredit = 0;
+        BOOST_FOREACH(const CTxOut& txout, tx.vout)
+        {
+            nCredit += GetStakingOnlyCredit(txout);
+            if (!MoneyRange(nCredit))
+                throw std::runtime_error("CWallet::GetStakingOnlyCredit() : value out of range");
         }
         return nCredit;
     }
@@ -960,6 +991,27 @@ public:
         fAvailableCreditCached = true;
         return nCredit;
     }
+
+    int64_t GetAvailableCreditForStakingOnly() const
+        {
+            // Must wait until coinbase is safely deep enough in the chain before valuing it
+            if ((IsCoinBase() || IsCoinStake()) && GetBlocksToMaturity() > 0)
+                return 0;
+
+            int64_t nCredit = 0;
+            for (unsigned int i = 0; i < vout.size(); i++)
+            {
+                if (!IsSpent(i))
+                {
+                    const CTxOut &txout = vout[i];
+                    nCredit += pwallet->GetStakingOnlyCredit(txout);
+                    if (!MoneyRange(nCredit))
+                        throw std::runtime_error("CWalletTx::GetAvailableCreditForStakingOnly() : value out of range");
+                }
+            }
+
+            return nCredit;
+        }
 
     int64_t GetAvailableAnonCredit(bool fUseCache=true) const
     {
