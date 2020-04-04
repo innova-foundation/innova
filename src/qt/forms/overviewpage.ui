@@ -507,6 +507,36 @@
             </property>
            </widget>
           </item>
+          <item row="12" column="1">
+           <widget class="QLabel" name="labelGBPTotal">
+            <property name="font">
+             <font>
+              <pointsize>8</pointsize>
+              <weight>75</weight>
+              <bold>true</bold>
+             </font>
+            </property>
+            <property name="cursor">
+             <cursorShape>IBeamCursor</cursorShape>
+            </property>
+            <property name="toolTip">
+             <string>Your current total balance estimated in GBP</string>
+            </property>
+            <property name="text">
+             <string>0 GBP</string>
+            </property>
+            <property name="textInteractionFlags">
+             <set>Qt::LinksAccessibleByMouse|Qt::TextSelectableByKeyboard|Qt::TextSelectableByMouse</set>
+            </property>
+           </widget>
+          </item>
+          <item row="12" column="0">
+           <widget class="QLabel" name="eurtotal">
+            <property name="text">
+             <string>Est. GBP Total:</string>
+            </property>
+           </widget>
+          </item>
          </layout>
         </item>
         <item row="6" column="0">
