@@ -26,10 +26,11 @@ double innova2;
 double innmc2;
 double innbtc2;
 QString bitcoing;
-QString dnrnewsfeed;
+QString innnewsfeed;
 QString innmarket;
 QString dollarg;
 QString eurog;
+QString poundg;
 int mode=1;
 int o = 0;
 
