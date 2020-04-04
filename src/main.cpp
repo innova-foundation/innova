@@ -2512,7 +2512,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
         if (tx.IsCoinBase())
             nValueOut += tx.GetValueOut();
             nValueOutUnspendable += tx.GetValueOutUnspendable();
-        else
+        if else
         {
             bool fInvalid;
             if (!tx.FetchInputs(txdb, mapQueuedChanges, true, false, mapInputs, fInvalid))
@@ -2632,7 +2632,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
 
         CScript burnPayee;
         CBitcoinAddress burnDestination;
-        burnDestination.SetString("DNRXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw");
+        burnDestination.SetString("innXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw");
         burnPayee = GetScriptForDestination(burnDestination.Get());
 
         if(IsProofOfStake() && pindexBest != NULL){
