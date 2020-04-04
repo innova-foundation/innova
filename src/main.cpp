@@ -2145,6 +2145,17 @@ int64_t CTransaction::GetValueIn(const MapPrevTx& inputs) const
     return nResult;
 }
 
+int64_t CTransaction::GetValueOutUnspendable() const
+{
+    CAmount nValueOut = 0;
+    for (std::vector<CTxOut>::const_iterator it(vout.begin()); it != vout.end(); ++it)
+    {
+        if( !it->IsNull() && !it->IsEmpty() && it->scriptPubKey.IsUnspendable() )
+            nValueOut += it->nValue;
+    }
+    return nValueOut;
+}
+
 unsigned int CTransaction::GetP2SHSigOpCount(const MapPrevTx& inputs) const
 {
     if (IsCoinBase())
@@ -2462,6 +2473,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
     map<uint256, CTxIndex> mapQueuedChanges;
     int64_t nFees = 0;
     int64_t nValueIn = 0;
+    int64_t nValueOutUnspendable = 0;
     int64_t nValueOut = 0;
     int64_t nStakeReward = 0;
     unsigned int nSigOps = 0;
@@ -2499,6 +2511,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
         MapPrevTx mapInputs;
         if (tx.IsCoinBase())
             nValueOut += tx.GetValueOut();
+            nValueOutUnspendable += tx.GetValueOutUnspendable();
         else
         {
             bool fInvalid;
@@ -2514,6 +2527,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
 
             int64_t nTxValueIn = tx.GetValueIn(mapInputs);
             int64_t nTxValueOut = tx.GetValueOut();
+            int64_t nTxValueOutUnspendable = tx.GetValueOutUnspendable();
 
             if (tx.nVersion == ANON_TXN_VERSION)
             {
@@ -2899,8 +2913,16 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
     }
 
     // ppcoin: track money supply and mint amount info
-    pindex->nMint = nValueOut - nValueIn + nFees;
+    CAmount nMoneySupplyPrev = pindex->pprev ? pindex->pprev->nMoneySupply : 0;
     pindex->nMoneySupply = (pindex->pprev? pindex->pprev->nMoneySupply : 0) + nValueOut - nValueIn;
+
+    // Subtract from the money supply the unspendable UTXO
+    pindex->nMoneySupply -= nValueOutUnspendable;
+    pindex->nMint = nValueOut - nValueIn + nFees;
+    // Unspendable Value (coins burned) can cause a negative nMint value
+    if (pindex->nMint < 0)
+        pindex->nMint = 0;
+
     if (!txdb.WriteBlockIndex(CDiskBlockIndex(pindex)))
         return error("Connect() : WriteBlockIndex for pindex failed");
 
