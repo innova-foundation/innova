@@ -542,7 +542,7 @@
            <string>Your current total balance</string>
           </property>
           <property name="text">
-           <string notr="true">35626236326.63632636 D</string>
+           <string notr="true">35626236326.63632636 INN</string>
           </property>
           <property name="textInteractionFlags">
            <set>Qt::LinksAccessibleByMouse|Qt::TextSelectableByKeyboard|Qt::TextSelectableByMouse</set>
