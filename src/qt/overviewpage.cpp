@@ -25,8 +25,7 @@ const QString BaseURL2 = "https://innovacoin.io/innbitcoin.php";
 const QString BaseURL3 = "https://innovacoin.io/newsfeed.php";
 const QString BaseURL4 = "https://innovacoin.io/inneur.php";
 double innovax;
-double innovae;
-double inneuro;
+double inneurx;
 double innbtcx;
 
 class TxViewDelegate : public QAbstractItemDelegate
@@ -123,9 +122,9 @@ OverviewPage::OverviewPage(QWidget *parent) :
 	connect(ui->refreshButton, SIGNAL(pressed()), this, SLOT( PriceRequest()));
 
 	//Refresh the Est. Balances and News automatically
-	refreshbtnTimer = new QTimer(this);
+	  refreshbtnTimer = new QTimer(this);
     connect(refreshbtnTimer, SIGNAL(timeout()), this, SLOT( PriceRequest()));
-    refreshbtnTimer->start(160000); // 160 second timer
+    refreshbtnTimer->start(120000); // 120 second timer
 
     //Handle refreshing updateDisplayUnit() more often instead of every tx change
     updateDisplayTimer = new QTimer(this);
@@ -211,8 +210,8 @@ if (what == BaseURL4) // Innova EUR Price
 
     // QNetworkReply is a QIODevice. So we read from it just like it was a file
     QString inneur = finished->readAll();
-    inneuro = (inneur.toDouble());
-    inneur = QString::number(inneuro, 'f', 4);
+    inneurx = (inneur.toDouble());
+    inneur = QString::number(inneurx, 'f', 2);
 
 	eurog = inneur;
 }
@@ -267,7 +266,7 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
 
 	  QString eurtotal;
 	  double eurog1 = (eurog.toDouble() * totalBalance / 100000000);
-  	eurtotal = QString::number(eurog1, 'f', 4);
+  	eurtotal = QString::number(eurog1, 'f', 2);
   	ui->labelEURTotal->setText("€" + eurtotal + " EUR");
 
     ui->labelBTCTotal->setText(BitcoinUnits::formatWithUnit(unitdBTC, bitcoing.toDouble() * totalBalance));
