@@ -212,7 +212,7 @@ if (what == BaseURL4) // Innova EUR Price
     // QNetworkReply is a QIODevice. So we read from it just like it was a file
     QString innova = finished->readAll();
     innovao = (innova.toDouble());
-    innova = QString::number(innovao, 'f', 2);
+    innova = QString::number(innovao, 'f', 4);
 
 	eurog = innova;
 }
