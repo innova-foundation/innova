@@ -203,11 +203,11 @@ if (what == BaseURL3) // Innova News Feed
 {
 
     // QNetworkReply is a QIODevice. So we read from it just like it was a file
-    QString dnewsfeed = finished->readAll();
-    //dnewsfeedx = (dnewsfeed.toDouble());
-    //dnewsfeed = QString::number(dnewsfeedx, 'f', 8);
+    QString inewsfeed = finished->readAll();
+    //inewsfeedx = (inewsfeed.toDouble());
+    //inewsfeed = QString::number(inewsfeedx, 'f', 8);
 
-	dnrnewsfeed = dnewsfeed;
+	innnewsfeed = inewsfeed;
 }
 if (what == BaseURL4) // Innova EUR Price
 {
@@ -294,7 +294,7 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
     ui->labelTradeLink->setOpenExternalLinks(true);
 
 	QString news;
-	news = dnrnewsfeed;
+	news = innnewsfeed;
 	ui->labelNewsFeed->setText(news);
 
     // only show immature (newly mined) balance if it's non-zero, so as not to complicate things
