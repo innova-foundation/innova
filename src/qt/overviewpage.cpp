@@ -212,7 +212,7 @@ if (what == BaseURL4) // Innova EUR Price
     // QNetworkReply is a QIODevice. So we read from it just like it was a file
     QString inneur = finished->readAll();
     inneurx = (inneur.toDouble());
-    inneur = QString::number(inneurx, 'f', 2);
+    inneur = QString::number(inneurx, 'f', 4);
 
 	eurog = inneur;
 }
@@ -267,7 +267,7 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
 
 	  QString eurtotal;
 	  double eurog1 = (eurog.toDouble() * totalBalance / 100000000);
-  	eurtotal = QString::number(eurog1, 'f', 2);
+  	eurtotal = QString::number(eurog1, 'f', 4);
   	ui->labelEURTotal->setText("€" + eurtotal + " EUR");
 
     ui->labelBTCTotal->setText(BitcoinUnits::formatWithUnit(unitdBTC, bitcoing.toDouble() * totalBalance));
