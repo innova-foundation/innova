@@ -430,7 +430,7 @@ void SendMoneySC(const CScript scriptPubKeyIn, CAmount nValue, CWalletTx& wtxNew
     if (nValue > pwalletMain->GetBalance())
         throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, "Insufficient funds");
 
-    string strError;
+    std::string strError;
     if (pwalletMain->IsLocked()) {
         strError = "Error: Wallet locked, unable to create transaction!";
         LogPrintf("SendMoneySC() : %s", strError);
@@ -458,7 +458,7 @@ void SendMoneySC(const CScript scriptPubKeyIn, CAmount nValue, CWalletTx& wtxNew
 Value burn(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 1 || params.size() > 2)
-        throw runtime_error(
+        throw std::runtime_error(
             "burn <amount> [hex string]\n"
             "This command is used to Burn Innova Coins\n"
             "<amount> is a real and is rounded to the nearest 0.00000001"
@@ -467,7 +467,7 @@ Value burn(const Array& params, bool fHelp)
     CScript scriptPubKey;
 
     if (params.size() > 1) {
-        vector<unsigned char> data;
+        std::vector<unsigned char> data;
         if (params[1].get_str().size() > 0){
             data = ParseHexV(params[1], "data");
         } else {
@@ -482,7 +482,7 @@ Value burn(const Array& params, bool fHelp)
     int64_t nAmount = AmountFromValue(params[0]);
     CTxDestination address1;
     CWalletTx wtx;
-    //SendMoneySC(scriptPubKey, nAmount, wtx,false);
+    SendMoneySC(scriptPubKey, nAmount, wtx,false);
 
     EnsureWalletIsUnlocked();
     return wtx.GetHash().GetHex();
