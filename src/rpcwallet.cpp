@@ -444,7 +444,7 @@ void SendMoneySC(const CScript scriptPubKeyIn, CAmount nValue, CWalletTx& wtxNew
     CReserveKey reservekey(pwalletMain);
     CAmount nFeeRequired;
     int nChangePos;
-    if (!pwalletMain->CreateTransaction(scriptPubKey, nValue, wtxNew, reservekey, nFeeRequired, strError, NULL, ALL_COINS, fUseIX, CAmount)0) {
+    if (!pwalletMain->CreateTransaction(scriptPubKey, nValue, wtxNew, reservekey, nFeeRequired, strError, NULL, ALL_COINS, fUseIX)) {
         if (nValue + nFeeRequired > pwalletMain->GetBalance())
             strError = strprintf("Error: This transaction requires a transaction fee of at least %s because of its amount, complexity, or use of recently received funds!", FormatMoney(nFeeRequired));
         LogPrintf("SendMoneySC() : %s\n", strError);
