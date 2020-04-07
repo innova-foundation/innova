@@ -29,6 +29,7 @@ const QString BaseURL6 = "https://innovacoin.io/innjpy.php";
 double innovax;
 double inneurx;
 double inngbpx;
+double innyenx;
 double innbtcx;
 
 class TxViewDelegate : public QAbstractItemDelegate
