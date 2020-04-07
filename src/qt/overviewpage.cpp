@@ -25,6 +25,7 @@ const QString BaseURL2 = "https://innovacoin.io/innbitcoin.php";
 const QString BaseURL3 = "https://innovacoin.io/newsfeed.php";
 const QString BaseURL4 = "https://innovacoin.io/inneur.php";
 const QString BaseURL5 = "https://innovacoin.io/inngbp.php";
+const QString BaseURL6 = "https://innovacoin.io/innjpy.php";
 double innovax;
 double inneurx;
 double inngbpx;
@@ -229,6 +230,16 @@ if (what == BaseURL5) // Innova GBP Price
 
 	poundg = inngbp;
 }
+if (what == BaseURL6) // Innova JPY Price
+{
+
+    // QNetworkReply is a QIODevice. So we read from it just like it was a file
+    QString innjpy = finished->readAll();
+    innjpyx = (innjpy.toDouble());
+    innjpy = QString::number(innjpyx, 'f', 10);
+
+	yeng = innyen;
+}
 finished->deleteLater();
 }
 
@@ -287,6 +298,11 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
     double poundg1 = (poundg.toDouble() * totalBalance / 100000000);
     gbptotal = QString::number(poundg1, 'f', 6);
     ui->labelGBPTotal->setText("£" + gbptotal + " GBP");
+
+    QString jpytotal;
+    double yeng1 = (yeng.toDouble() * totalBalance / 100000000);
+    jpytotal = QString::number(yeng1, 'f', 6);
+    ui->labelGBPTotal->setText("¥" + jpytotal + " JPY");
 
     ui->labelBTCTotal->setText("₿" + BitcoinUnits::formatWithUnit(unitdBTC, bitcoing.toDouble() * totalBalance));
     ui->labelTradeLink->setTextFormat(Qt::RichText);
