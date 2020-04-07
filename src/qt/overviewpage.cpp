@@ -158,6 +158,7 @@ void OverviewPage::PriceRequest()
 	getRequest(BaseURL3);
   getRequest(BaseURL4);
   getRequest(BaseURL5);
+  getRequest(BaseURL6);
     //updateDisplayUnit(); //Segfault Fix
 }
 
