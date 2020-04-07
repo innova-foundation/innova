@@ -28,7 +28,7 @@ const QString BaseURL5 = "https://innovacoin.io/inngbp.php";
 const QString BaseURL6 = "https://innovacoin.io/innjpy.php";
 double innovax;
 double inneurx;
-double inngbpx;
+double innyenx;
 double innyenx;
 double innbtcx;
 
@@ -239,7 +239,7 @@ if (what == BaseURL6) // Innova JPY Price
     innjpyx = (innjpy.toDouble());
     innjpy = QString::number(innjpyx, 'f', 10);
 
-	yeng = innyen;
+	yeng = innjpy;
 }
 finished->deleteLater();
 }
