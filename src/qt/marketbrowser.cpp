@@ -31,6 +31,7 @@ QString innmarket;
 QString dollarg;
 QString eurog;
 QString poundg;
+QString yeng;
 int mode=1;
 int o = 0;
 
