@@ -18,7 +18,7 @@ static std::map<int, unsigned int> mapStakeModifierCheckpoints =
     boost::assign::map_list_of
         //( 0, 0x0e00670b )
         //( 500000, 0x993757b7 )
-		( 1000000, 0x0164bdb4 )
+		//( 1000000, 0x0164bdb4 )
 		( 1701527, 0xb64daf99 )
         //( 640106, 0x491697be ) Example of bad modifier checkpoint, must have proof-of-stake flag
     ;
