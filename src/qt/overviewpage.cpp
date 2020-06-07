@@ -20,11 +20,17 @@
 #define DECORATION_SIZE 36
 #define NUM_ITEMS 7
 
-const QString BaseURL = "http://innovacoin.io/dnrusd.php";
-const QString BaseURL2 = "http://innovacoin.io/dnrbtc.php";
-const QString BaseURL3 = "http://innovacoin.io/newsfeed.php";
+const QString BaseURL = "https://innovacoin.io/innusd.php";
+const QString BaseURL2 = "https://innovacoin.io/innbitcoin.php";
+const QString BaseURL3 = "https://innovacoin.io/newsfeed.php";
+const QString BaseURL4 = "https://innovacoin.io/inneur.php";
+const QString BaseURL5 = "https://innovacoin.io/inngbp.php";
+const QString BaseURL6 = "https://innovacoin.io/innjpy.php";
 double innovax;
-double dnrbtcx;
+double inneurx;
+double inngbpx;
+double innjpyx;
+double innbtcx;
 
 class TxViewDelegate : public QAbstractItemDelegate
 {
@@ -112,17 +118,17 @@ OverviewPage::OverviewPage(QWidget *parent) :
     filter(0)
 {
     ui->setupUi(this);
-	
-	
 
-    PriceRequest();
+
+
+  PriceRequest();
 	QObject::connect(&m_nam, SIGNAL(finished(QNetworkReply*)), this, SLOT(parseNetworkResponse(QNetworkReply*)));
 	connect(ui->refreshButton, SIGNAL(pressed()), this, SLOT( PriceRequest()));
-	
+
 	//Refresh the Est. Balances and News automatically
-	refreshbtnTimer = new QTimer(this);
+	  refreshbtnTimer = new QTimer(this);
     connect(refreshbtnTimer, SIGNAL(timeout()), this, SLOT( PriceRequest()));
-    refreshbtnTimer->start(160000); // 160 second timer
+    refreshbtnTimer->start(120000); // 120 second timer
 
     //Handle refreshing updateDisplayUnit() more often instead of every tx change
     updateDisplayTimer = new QTimer(this);
@@ -150,6 +156,9 @@ void OverviewPage::PriceRequest()
 	getRequest(BaseURL);
 	getRequest(BaseURL2);
 	getRequest(BaseURL3);
+  getRequest(BaseURL4);
+  getRequest(BaseURL5);
+  getRequest(BaseURL6);
     //updateDisplayUnit(); //Segfault Fix
 }
 
@@ -173,7 +182,7 @@ void OverviewPage::parseNetworkResponse(QNetworkReply *finished )
         return;
     }
 
-if (what == BaseURL) // Innova Price
+if (what == BaseURL) // Innova USD Price
 {
 
     // QNetworkReply is a QIODevice. So we read from it just like it was a file
@@ -187,21 +196,51 @@ if (what == BaseURL2) // Innova BTC Price
 {
 
     // QNetworkReply is a QIODevice. So we read from it just like it was a file
-    QString dnrbtc = finished->readAll();
-    dnrbtcx = (dnrbtc.toDouble());
-    dnrbtc = QString::number(dnrbtcx, 'f', 8);
+    QString innbtc = finished->readAll();
+    innbtcx = (innbtc.toDouble());
+    innbtc = QString::number(innbtcx, 'f', 8);
 
-	bitcoing = dnrbtc;
+	bitcoing = innbtc;
 }
 if (what == BaseURL3) // Innova News Feed
 {
 
     // QNetworkReply is a QIODevice. So we read from it just like it was a file
-    QString dnewsfeed = finished->readAll();
-    //dnewsfeedx = (dnewsfeed.toDouble());
-    //dnewsfeed = QString::number(dnewsfeedx, 'f', 8);
+    QString inewsfeed = finished->readAll();
+    //inewsfeedx = (inewsfeed.toDouble());
+    //inewsfeed = QString::number(inewsfeedx, 'f', 8);
 
-	dnrnewsfeed = dnewsfeed;
+	innnewsfeed = inewsfeed;
+}
+if (what == BaseURL4) // Innova EUR Price
+{
+
+    // QNetworkReply is a QIODevice. So we read from it just like it was a file
+    QString inneur = finished->readAll();
+    inneurx = (inneur.toDouble());
+    inneur = QString::number(inneurx, 'f', 4);
+
+	eurog = inneur;
+}
+if (what == BaseURL5) // Innova GBP Price
+{
+
+    // QNetworkReply is a QIODevice. So we read from it just like it was a file
+    QString inngbp = finished->readAll();
+    inngbpx = (inngbp.toDouble());
+    inngbp = QString::number(inngbpx, 'f', 6);
+
+	poundg = inngbp;
+}
+if (what == BaseURL6) // Innova JPY Price
+{
+
+    // QNetworkReply is a QIODevice. So we read from it just like it was a file
+    QString innjpy = finished->readAll();
+    innjpyx = (innjpy.toDouble());
+    innjpy = QString::number(innjpyx, 'f', 10);
+
+	yeng = innjpy;
 }
 finished->deleteLater();
 }
@@ -248,22 +287,32 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
 
 
   	QString total;
-    double dollarg2 = (dollarg.toDouble() * totalBalance / 100000000);
-  	total = QString::number(dollarg2, 'f', 2);
+    double dollarg1 = (dollarg.toDouble() * totalBalance / 100000000);
+  	total = QString::number(dollarg1, 'f', 2);
   	ui->labelUSDTotal->setText("$" + total + " USD");
-	
-	QString eurtotal;
-	double dollarg1 = (dollarg.toDouble() * totalBalance * 0.886 / 100000000); 
-  	eurtotal = QString::number(dollarg1, 'f', 2);
+
+	  QString eurtotal;
+	  double eurog1 = (eurog.toDouble() * totalBalance / 100000000);
+  	eurtotal = QString::number(eurog1, 'f', 4);
   	ui->labelEURTotal->setText("€" + eurtotal + " EUR");
 
-    ui->labelBTCTotal->setText(BitcoinUnits::formatWithUnit(unitdBTC, bitcoing.toDouble() * totalBalance));
+    QString gbptotal;
+    double poundg1 = (poundg.toDouble() * totalBalance / 100000000);
+    gbptotal = QString::number(poundg1, 'f', 6);
+    ui->labelGBPTotal->setText("£" + gbptotal + " GBP");
+
+    QString jpytotal;
+    double yeng1 = (yeng.toDouble() * totalBalance / 100000000);
+    jpytotal = QString::number(yeng1, 'f', 10);
+    ui->labelJPYTotal->setText("¥" + jpytotal + " JPY");
+
+    ui->labelBTCTotal->setText("₿" + BitcoinUnits::formatWithUnit(unitdBTC, bitcoing.toDouble() * totalBalance));
     ui->labelTradeLink->setTextFormat(Qt::RichText);
     ui->labelTradeLink->setTextInteractionFlags(Qt::TextBrowserInteraction);
     ui->labelTradeLink->setOpenExternalLinks(true);
-	
+
 	QString news;
-	news = dnrnewsfeed;
+	news = innnewsfeed;
 	ui->labelNewsFeed->setText(news);
 
     // only show immature (newly mined) balance if it's non-zero, so as not to complicate things
@@ -292,7 +341,7 @@ void OverviewPage::updateWatchOnlyLabels(bool showWatchOnly)
     ui->labelWatchAvailable->setVisible(showWatchOnly); // show watch-only available balance
     ui->labelWatchPending->setVisible(showWatchOnly);   // show watch-only pending balance
     ui->labelWatchTotal->setVisible(showWatchOnly);     // show watch-only total balance
-	
+
 	ui->watch1->setVisible(showWatchOnly);
 	ui->watch2->setVisible(showWatchOnly);
     ui->labelWatchImmatureText->setVisible(showWatchOnly);

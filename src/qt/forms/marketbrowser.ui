@@ -129,7 +129,7 @@
         <enum>QLayout::SetDefaultConstraint</enum>
        </property>
        <item>
-        <widget class="QLabel" name="dnrmc">
+        <widget class="QLabel" name="innmc">
          <property name="sizePolicy">
           <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
            <horstretch>0</horstretch>
@@ -156,7 +156,7 @@
         </widget>
        </item>
        <item>
-        <widget class="QLabel" name="dnrbtc">
+        <widget class="QLabel" name="innbtc">
          <property name="sizePolicy">
           <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
            <horstretch>0</horstretch>
