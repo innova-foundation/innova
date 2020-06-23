@@ -391,9 +391,10 @@ Value burncoins(const Array& params, bool fHelp)
             "\"transactionid\"  (string) The transaction id.\n"
 
             "\nExamples:\n" +
-            obj.push_back(Pair("burncoins", "0.1")) +
-            obj.push_back(Pair("burncoins", "0.1 \"hello world\"")) +
-            obj.push_back(Pair("burncoins", "0.1, \"hello world\""));
+
+            ("burncoins", "0.1") +
+            ("burncoins", "0.1 \"hello world\"") +
+            ("burncoins", "0.1, \"hello world\""));
 
     LOCK2(cs_main, pwalletMain->cs_wallet);
 
