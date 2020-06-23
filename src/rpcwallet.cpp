@@ -391,9 +391,9 @@ Value burncoins(const Array& params, bool fHelp)
             "\"transactionid\"  (string) The transaction id.\n"
 
             "\nExamples:\n" +
-            HelpExampleCli("burncoins", "0.1") +
-            HelpExampleCli("burncoins", "0.1 \"hello world\"") +
-            HelpExampleRpc("burncoins", "0.1, \"hello world\""));
+            obj.push_back(Pair("burncoins", "0.1")) +
+            obj.push_back(Pair("burncoins", "0.1 \"hello world\"")) +
+            obj.push_back(Pair("burncoins", "0.1, \"hello world\""));
 
     LOCK2(cs_main, pwalletMain->cs_wallet);
 
@@ -405,7 +405,7 @@ Value burncoins(const Array& params, bool fHelp)
     // Comment
     CWalletTx wtx;
     CScript burnScript = CScript() << OP_RETURN;
-    if (params.size() > 1 && !params[1].isNull() && !params[1].get_str().empty()) {
+    if (params.size() > 1 && !params[1].is_null() && !params[1].get_str().empty()) {
         if (params[1].get_str().length() > MAX_OP_RETURN_RELAY - 3)
             throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Comment cannot be longer than %u characters", MAX_OP_RETURN_RELAY - 3));
         burnScript << ToByteVector(params[1].get_str());
@@ -416,7 +416,7 @@ Value burncoins(const Array& params, bool fHelp)
     int64_t nFeeRequired;
     std::string strError;
 
-    if (!pwalletMain->CreateTransaction(burnScript, nAmount, wtx, reservekey, nFeeRequired, strError)) {
+    if (!pwalletMain->CreateTransaction(burnScript, nAmount, wtx, reservekey, nFeeRequired)) {
         if (nAmount + nFeeRequired > pwalletMain->GetBalance())
             strError = strprintf("Error: This transaction requires a transaction fee of at least %s because of its amount, complexity, or use of recently received funds!", FormatMoney(nFeeRequired));
         LogPrintf("BurnCoins() : %s\n", strError);
