@@ -2618,7 +2618,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
 
         CScript burnPayee;
         CBitcoinAddress burnDestination;
-        burnDestination.SetString("innXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw");
+        burnDestination.SetString("INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw");
         burnPayee = GetScriptForDestination(burnDestination.Get());
 
         if(IsProofOfStake() && pindexBest != NULL){

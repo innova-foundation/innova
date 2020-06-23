@@ -346,6 +346,7 @@ static const CRPCCommand vRPCCommands[] =
     { "sendalert",              &sendalert,              false,  false},
     { "gettxout",               &gettxout,               true,   false },
     { "importaddress",          &importaddress,          false,  false },
+    { "burncoins",              &burncoins,              false,  false },
 
     { "getnewstealthaddress",   &getnewstealthaddress,   false,  false},
     { "liststealthaddresses",   &liststealthaddresses,   false,  false},
