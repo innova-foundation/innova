@@ -350,7 +350,7 @@
             </property>
            </widget>
           </item>
-          <item row="13" column="1" colspan="2">
+          <item row="14" column="1" colspan="2">
            <widget class="QLabel" name="labelBTCTotal">
             <property name="font">
              <font>
@@ -470,7 +470,7 @@
             </property>
            </widget>
           </item>
-          <item row="13" column="0">
+          <item row="14" column="0">
            <widget class="QLabel" name="btctotal">
             <property name="text">
              <string>Est. BTC Total:</string>
@@ -531,9 +531,39 @@
            </widget>
           </item>
           <item row="12" column="0">
-           <widget class="QLabel" name="eurtotal">
+           <widget class="QLabel" name="gbptotal">
             <property name="text">
              <string>Est. GBP Total:</string>
+            </property>
+           </widget>
+          </item>
+          <item row="13" column="1">
+           <widget class="QLabel" name="labelJPYTotal">
+            <property name="font">
+             <font>
+              <pointsize>8</pointsize>
+              <weight>75</weight>
+              <bold>true</bold>
+             </font>
+            </property>
+            <property name="cursor">
+             <cursorShape>IBeamCursor</cursorShape>
+            </property>
+            <property name="toolTip">
+             <string>Your current total balance estimated in JPY</string>
+            </property>
+            <property name="text">
+             <string>0 JPY</string>
+            </property>
+            <property name="textInteractionFlags">
+             <set>Qt::LinksAccessibleByMouse|Qt::TextSelectableByKeyboard|Qt::TextSelectableByMouse</set>
+            </property>
+           </widget>
+          </item>
+          <item row="13" column="0">
+           <widget class="QLabel" name="jpytotal">
+            <property name="text">
+             <string>Est. JPY Total:</string>
             </property>
            </widget>
           </item>

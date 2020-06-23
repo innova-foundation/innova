@@ -95,7 +95,7 @@ private:
 public:
 
     CSporkManager() {
-        strMainPubKey = "invalid"; //Sporks deprecated for dFPS Decentralized Denarius Fortuna Stake system
+        strMainPubKey = "invalid"; //Sporks deprecated for dFPS Decentralized Innova Fortuna Stake system
         strTestPubKey = "invalid";
     }
 
