@@ -419,6 +419,8 @@ public:
         return nValueOut;
     }
 
+    int64_t GetValueOutUnspendable() const;
+
     /** Amount of bitcoins coming in to this transaction
         Note that lightweight clients may not know anything besides the hash of previous transactions,
         so may not be able to calculate this.

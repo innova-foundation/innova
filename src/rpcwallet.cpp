@@ -101,6 +101,7 @@ Value getinfo(const Array& params, bool fHelp)
     obj.push_back(Pair("anonbalance",   ValueFromAmount(pwalletMain->GetAnonBalance())));
     obj.push_back(Pair("newmint",       ValueFromAmount(pwalletMain->GetNewMint())));
     obj.push_back(Pair("stake",         ValueFromAmount(pwalletMain->GetStake())));
+    obj.push_back(Pair("coldstaking",   ValueFromAmount(pwalletMain->GetStakingOnlyBalance())));
     obj.push_back(Pair("reserve",       ValueFromAmount(nReserveBalance)));
     obj.push_back(Pair("unconfirmed",   ValueFromAmount(pwalletMain->GetUnconfirmedBalance())));
     obj.push_back(Pair("immature",      ValueFromAmount(pwalletMain->GetImmatureBalance())));
@@ -143,6 +144,51 @@ Value getinfo(const Array& params, bool fHelp)
     return obj;
 }
 
+Value addcoldstakeaddress(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 2 || params.size() > 3)
+    {
+        string msg = "addcoldstakeaddress <staking address> <spending address> [account]\n"
+            "Add a cold staking address to the wallet.\n"
+            "The coins sent to this address will be mintable only with the staking private key.\n"
+            "And they will be spendable only with the spending private key.\n"
+            "If [account] is specified, assign address to [account].";
+        throw runtime_error(msg);
+    }
+
+    string strAccount;
+    if (params.size() > 2)
+        strAccount = AccountFromValue(params[2]);
+
+    CBitcoinAddress stakingAddress(params[0].get_str());
+    CBitcoinAddress spendingAddress(params[1].get_str());
+
+    if (!stakingAddress.IsValid())
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid staking address");
+    if (!spendingAddress.IsValid())
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid spending address");
+
+    CKeyID stakingKeyID;
+    CKeyID spendingKeyID;
+
+    if (!stakingAddress.GetKeyID(stakingKeyID))
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Staking address does not refer to a key");
+    if (!spendingAddress.GetKeyID(spendingKeyID))
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Spending address does not refer to a key");
+
+    // Construct using pay-to-script-hash:
+    CScript inner;
+    inner.SetColdStaking(stakingKeyID, spendingKeyID);
+
+    CScriptID innerID = inner.GetID();
+    if (!pwalletMain->AddCScript(inner))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Failed to add script to wallet");
+
+    if (!pwalletMain->SetAddressBookName(innerID, strAccount))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Failed to set account");
+
+    return CBitcoinAddress(innerID).ToString();
+}
 
 Value getnewpubkey(const Array& params, bool fHelp)
 {
@@ -372,6 +418,73 @@ Value sendtoaddress(const Array& params, bool fHelp)
     if (strError != "")
         throw JSONRPCError(RPC_WALLET_ERROR, strError);
 
+    return wtx.GetHash().GetHex();
+}
+
+void SendMoneySC(const CScript scriptPubKeyIn, CAmount nValue, CWalletTx& wtxNew, bool fUseIX = false)
+{
+    // Check amount
+    if (nValue <= 0)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid amount");
+
+    if (nValue > pwalletMain->GetBalance())
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, "Insufficient funds");
+
+    std::string strError;
+    if (pwalletMain->IsLocked()) {
+        strError = "Error: Wallet locked, unable to create transaction!";
+        LogPrintf("SendMoneySC() : %s", strError);
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+    }
+
+    // get ScriptPubKey
+    CScript scriptPubKey = scriptPubKeyIn;
+
+    // Create and send the transaction
+    CReserveKey reservekey(pwalletMain);
+    CAmount nFeeRequired;
+    int nChangePos;
+    if (!pwalletMain->CreateTransaction(scriptPubKey, nValue, wtxNew, reservekey, nFeeRequired))) {
+        if (nValue + nFeeRequired > pwalletMain->GetBalance())
+            strError = strprintf("Error: This transaction requires a transaction fee of at least %s because of its amount, complexity, or use of recently received funds!", FormatMoney(nFeeRequired));
+        LogPrintf("SendMoney() : %s\n", strError);
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+    }
+
+    if (!pwalletMain->CommitTransaction(wtxNew, reservekey, (!fUseIX ? "tx" : "ix")))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: The transaction was rejected! This might happen if some of the coins in your wallet were already spent, such as if you used a copy of wallet.dat and coins were spent in the copy but not marked as spent here.");
+}
+
+Value burn(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 1 || params.size() > 2)
+        throw runtime_error(
+            "burn <amount> [hex string]\n"
+            "This command is used to Burn Innova Coins\n"
+            "<amount> is a real and is rounded to the nearest 0.00000001"
+            + HelpRequiringPassphrase());
+
+    CScript scriptPubKey;
+
+    if (params.size() > 1) {
+        vector<unsigned char> data;
+        if (params[1].get_str().size() > 0){
+            data = ParseHexV(params[1], "data");
+        } else {
+            // Empty data is valid
+        }
+        scriptPubKey = CScript() << OP_RETURN << data;
+    } else {
+        scriptPubKey = CScript() << OP_RETURN;
+    }
+
+    // Amount
+    int64_t nAmount = AmountFromValue(params[0]);
+    CTxDestination address1;
+    CWalletTx wtx;
+    SendMoneySC(scriptPubKey, nAmount, wtx,false);
+
+    EnsureWalletIsUnlocked();
     return wtx.GetHash().GetHex();
 }
 
@@ -848,7 +961,7 @@ Value sendmany(const Array& params, bool fHelp)
     int64_t nFeeRequired = 0;
     int nChangePos;
 
-    bool fCreated = pwalletMain->CreateTransaction(vecSend, wtx, keyChange, nFeeRequired, nChangePos);
+    bool fCreated = pwalletMain->CreateTransaction(vecSend, wtx, keyChange, nFeeRequired, nChangePos, coinControl);
     if (!fCreated)
     {
         if (totalAmount + nFeeRequired > pwalletMain->GetBalance())

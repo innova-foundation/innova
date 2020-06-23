@@ -2145,6 +2145,17 @@ int64_t CTransaction::GetValueIn(const MapPrevTx& inputs) const
     return nResult;
 }
 
+int64_t CTransaction::GetValueOutUnspendable() const
+{
+    CAmount nValueOut = 0;
+    for (std::vector<CTxOut>::const_iterator it(vout.begin()); it != vout.end(); ++it)
+    {
+        if( !it->IsNull() && !it->IsEmpty() && it->IsUnspendable() )
+            nValueOut += it->nValue;
+    }
+    return nValueOut;
+}
+
 unsigned int CTransaction::GetP2SHSigOpCount(const MapPrevTx& inputs) const
 {
     if (IsCoinBase())
@@ -2462,6 +2473,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
     map<uint256, CTxIndex> mapQueuedChanges;
     int64_t nFees = 0;
     int64_t nValueIn = 0;
+    int64_t nValueOutUnspendable = 0;
     int64_t nValueOut = 0;
     int64_t nStakeReward = 0;
     unsigned int nSigOps = 0;
@@ -2497,9 +2509,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
             nTxPos += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
 
         MapPrevTx mapInputs;
-        if (tx.IsCoinBase())
+        if (tx.IsCoinBase()) {
             nValueOut += tx.GetValueOut();
-        else
+            nValueOutUnspendable += tx.GetValueOutUnspendable();
+        } else
         {
             bool fInvalid;
             if (!tx.FetchInputs(txdb, mapQueuedChanges, true, false, mapInputs, fInvalid))
@@ -2514,6 +2527,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
 
             int64_t nTxValueIn = tx.GetValueIn(mapInputs);
             int64_t nTxValueOut = tx.GetValueOut();
+            int64_t nTxValueOutUnspendable = tx.GetValueOutUnspendable();
 
             if (tx.nVersion == ANON_TXN_VERSION)
             {
@@ -2899,8 +2913,16 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
     }
 
     // ppcoin: track money supply and mint amount info
-    pindex->nMint = nValueOut - nValueIn + nFees;
+    CAmount nMoneySupplyPrev = pindex->pprev ? pindex->pprev->nMoneySupply : 0;
     pindex->nMoneySupply = (pindex->pprev? pindex->pprev->nMoneySupply : 0) + nValueOut - nValueIn;
+
+    // Subtract from the money supply the unspendable UTXO
+    pindex->nMoneySupply -= nValueOutUnspendable;
+    pindex->nMint = nValueOut - nValueIn + nFees;
+    // Unspendable Value (coins burned) can cause a negative nMint value
+    if (pindex->nMint < 0)
+        pindex->nMint = 0;
+
     if (!txdb.WriteBlockIndex(CDiskBlockIndex(pindex)))
         return error("Connect() : WriteBlockIndex for pindex failed");
 
@@ -3815,6 +3837,47 @@ bool CBlock::CheckBlockSignature() const
     {
         valtype& vchPubKey = vSolutions[0];
         return CPubKey(vchPubKey).Verify(GetHash(), vchBlockSig);
+    }
+
+    //Cold Staking I n n o v a
+    else if (whichType == TX_SCRIPTHASH)
+    {
+        // Output is a pay-to-script-hash
+        // Only allowed with cold staking
+
+        if (!IsProofOfStake())
+            return false;
+
+        // CoinStake scriptSig should contain 3 pushes: the signature, the pubkey and the cold staking script
+        CScript scriptSig = vtx[1].vin[0].scriptSig;
+        if (!scriptSig.IsPushOnly())
+            return false;
+        vector<vector<unsigned char> > stack;
+        if (!EvalScript(stack, scriptSig, CTransaction(), 0, 0, 0))
+            return false;
+        if (stack.size() != 3)
+            return false;
+
+        // Verify the script is a cold staking script
+        const valtype& scriptSerialized = stack.back();
+        CScript script(scriptSerialized.begin(), scriptSerialized.end());
+        if (!Solver(script, whichType, vSolutions))
+            return false;
+        if (whichType != TX_COLDSTAKING)
+            return false;
+
+        // Verify the scriptSig pubkey matches the staking key
+        valtype& vchPubKey = stack[1];
+        if (Hash160(vchPubKey) != uint160(vSolutions[0]))
+            return false;
+
+        // Verify the block signature with the staking key
+        CKey key;
+        if (!key.SetPubKey(vchPubKey))
+            return false;
+        if (vchBlockSig.empty())
+            return false;
+        return key.Verify(GetHash(), vchBlockSig);
     }
 
     return false;
