@@ -1,0 +1,10 @@
+build/*
+*.qm
+*.o
+*.a
+*.mk
+*.stash
+qrc_bitcoin.cpp
+qrc_style.cpp
+Makefile
+Innova
