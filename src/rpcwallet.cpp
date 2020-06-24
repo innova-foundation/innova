@@ -415,9 +415,10 @@ Value burncoins(const Array& params, bool fHelp)
     EnsureWalletIsUnlocked();
     CReserveKey reservekey(pwalletMain);
     int64_t nFeeRequired;
-    std::string strError;
+    std::string strError = "CreateTransaction() failed.";
+    std::string sNarr = "";
 
-    if (!pwalletMain->CreateTransaction(burnScript, nAmount, wtx, reservekey, nFeeRequired, strError, NULL)) {
+    if (!pwalletMain->CreateTransaction(burnScript, nAmount, sNarr, wtx, reservekey, nFeeRequired, nullptr)) {
         if (nAmount + nFeeRequired > pwalletMain->GetBalance())
             strError = "Error: This transaction requires a transaction fee of at least " + FormatMoney(nFeeRequired) + " because of its amount, complexity, or use of recently received funds!";
         LogPrintf("BurnCoins() : %s\n", strError);
