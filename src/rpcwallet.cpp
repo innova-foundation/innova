@@ -419,7 +419,7 @@ Value burncoins(const Array& params, bool fHelp)
 
     if (!pwalletMain->CreateTransaction(burnScript, nAmount, wtx, reservekey, nFeeRequired, strError, NULL)) {
         if (nAmount + nFeeRequired > pwalletMain->GetBalance())
-            strError = strprintf("Error: This transaction requires a transaction fee of at least %s because of its amount, complexity, or use of recently received funds!", FormatMoney(nFeeRequired));
+            strError = "Error: This transaction requires a transaction fee of at least " + FormatMoney(nFeeRequired) + " because of its amount, complexity, or use of recently received funds!";
         LogPrintf("BurnCoins() : %s\n", strError);
         throw JSONRPCError(RPC_WALLET_ERROR, strError);
     }
