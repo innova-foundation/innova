@@ -304,7 +304,7 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
     QString jpytotal;
     double yeng1 = (yeng.toDouble() * totalBalance / 100000000);
     jpytotal = QString::number(yeng1, 'f', 10);
-    ui->labelGBPTotal->setText("¥" + jpytotal + " JPY");
+    ui->labelJPYTotal->setText("¥" + jpytotal + " JPY");
 
     ui->labelBTCTotal->setText("₿" + BitcoinUnits::formatWithUnit(unitdBTC, bitcoing.toDouble() * totalBalance));
     ui->labelTradeLink->setTextFormat(Qt::RichText);
