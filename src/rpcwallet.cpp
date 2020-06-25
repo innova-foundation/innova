@@ -375,11 +375,11 @@ Value sendtoaddress(const Array& params, bool fHelp)
     return wtx.GetHash().GetHex();
 }
 
-Value burncoins(const Array& params, bool fHelp)
+Value burn(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 1 || params.size() > 2)
         throw std::runtime_error(
-            "burncoins amount ( \"comment\" )\n"
+            "burn amount ( \"comment\" )\n"
             "\nBurn an amount of coins. The amount is a real and is rounded to the nearest 0.00000001\n" +
             HelpRequiringPassphrase() + "\n"
 
@@ -392,9 +392,9 @@ Value burncoins(const Array& params, bool fHelp)
 
             "\nExamples:\n" +
 
-            ("burncoins", "0.1") +
-            ("burncoins", "0.1 \"hello world\"") +
-            ("burncoins", "0.1, \"hello world\""));
+            ("burn", "0.1") +
+            ("burn", "0.1 \"hello world\"") +
+            ("burn", "0.1, \"hello world\""));
 
     LOCK2(cs_main, pwalletMain->cs_wallet);
 
