@@ -375,6 +375,61 @@ Value sendtoaddress(const Array& params, bool fHelp)
     return wtx.GetHash().GetHex();
 }
 
+Value burncoins(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 1 || params.size() > 2)
+        throw std::runtime_error(
+            "burncoins amount ( \"comment\" )\n"
+            "\nBurn an amount of coins. The amount is a real and is rounded to the nearest 0.00000001\n" +
+            HelpRequiringPassphrase() + "\n"
+
+            "\nArguments:\n"
+            "1. \"amount\"      (numeric, required) The amount in INN to burn. eg 0.1\n"
+            "2. \"comment\"     (string, optional) A comment embedded in the transaction on the blockchain.\n"
+
+            "\nResult:\n"
+            "\"transactionid\"  (string) The transaction id.\n"
+
+            "\nExamples:\n" +
+
+            ("burncoins", "0.1") +
+            ("burncoins", "0.1 \"hello world\"") +
+            ("burncoins", "0.1, \"hello world\""));
+
+    LOCK2(cs_main, pwalletMain->cs_wallet);
+
+    // Amount
+    CAmount nAmount = AmountFromValue(params[0]);
+    if (nAmount > pwalletMain->GetBalance())
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, "Insufficient funds");
+
+    // Comment
+    CWalletTx wtx;
+    CScript burnScript = CScript() << OP_RETURN;
+    if (params.size() > 1 && !params[1].is_null() && !params[1].get_str().empty()) {
+        if (params[1].get_str().length() > MAX_OP_RETURN_RELAY - 3)
+            throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Comment cannot be longer than %u characters", MAX_OP_RETURN_RELAY - 3));
+        burnScript << ToByteVector(params[1].get_str());
+    }
+
+    EnsureWalletIsUnlocked();
+    CReserveKey reservekey(pwalletMain);
+    int64_t nFeeRequired;
+    std::string strError = "CreateTransaction() failed.";
+    std::string sNarr = "";
+
+    if (!pwalletMain->CreateTransaction(burnScript, nAmount, sNarr, wtx, reservekey, nFeeRequired, nullptr)) {
+        if (nAmount + nFeeRequired > pwalletMain->GetBalance())
+            strError = "Error: This transaction requires a transaction fee of at least " + FormatMoney(nFeeRequired) + " because of its amount, complexity, or use of recently received funds!";
+        LogPrintf("BurnCoins() : %s\n", strError);
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+    }
+    if (!pwalletMain->CommitTransaction(wtx, reservekey))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: The transaction was rejected! This might happen if some of the coins in your wallet were already spent, such as if you used a copy of wallet.dat and coins were spent in the copy but not marked as spent here.");
+
+    return wtx.GetHash().GetHex();
+}
+
 Value listaddressgroupings(const Array& params, bool fHelp)
 {
     if (fHelp)
