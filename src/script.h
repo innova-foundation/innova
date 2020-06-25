@@ -841,6 +841,11 @@ public:
     void SetMultisig(int nRequired, const std::vector<CKey>& keys);
 	void SetMultisigpub(int nRequired, const std::vector<CPubKey>& keys);
 
+  bool IsUnspendable() const
+      {
+          return (size() > 0 && *begin() == OP_RETURN) || (size() > MAX_SCRIPT_SIZE);
+      }
+
     std::string ToString(bool fShort=false) const
     {
         std::string str;
