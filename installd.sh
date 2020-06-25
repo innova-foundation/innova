@@ -23,10 +23,6 @@ sudo yes | cp -rf innovad /usr/bin/
 
 echo "Copied to /usr/bin for ease of use"
 
-echo "Populate innova.conf"
-mkdir ~/.innova
-echo -e "daemon=1\listen=1\rpcuser=user\rpcpassword=changethispassword\nativetor=0\naddnode=innova.host\naddnode=innova.win\naddnode=innova.pro\naddnode=triforce.black" > ~/.innova/innova.conf
-
 #echo "Get Chaindata"
 #cd ~/.innova || exit
 #rm -rf database txleveldb smsgDB
@@ -82,10 +78,6 @@ make OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl
 sudo yes | cp -rf innovad /usr/bin/
 
 echo "Copied to /usr/bin for ease of use"
-
-echo "Populate innova.conf"
-mkdir ~/.innova
-echo -e "daemon=1\listen=1\rpcuser=user\rpcpassword=changethispassword\nativetor=0\naddnode=innova.host\naddnode=innova.win\naddnode=innova.pro\naddnode=triforce.black" > ~/.innova/innova.conf
 
 #echo "Get Chaindata"
 #cd ~/.innova
