@@ -89,60 +89,98 @@ Value getinfo(const Array& params, bool fHelp)
         throw runtime_error(
             "getinfo\n"
             "Returns an object containing various state info.");
-
     proxyType proxy;
     GetProxy(NET_IPV4, proxy);
-
     Object obj, diff;
     obj.push_back(Pair("version",       FormatFullVersion()));
     obj.push_back(Pair("protocolversion",(int)PROTOCOL_VERSION));
     obj.push_back(Pair("walletversion", pwalletMain->GetVersion()));
     obj.push_back(Pair("balance",       ValueFromAmount(pwalletMain->GetBalance())));
     obj.push_back(Pair("anonbalance",   ValueFromAmount(pwalletMain->GetAnonBalance())));
+    obj.push_back(Pair("reserve",       ValueFromAmount(nReserveBalance)));
     obj.push_back(Pair("newmint",       ValueFromAmount(pwalletMain->GetNewMint())));
     obj.push_back(Pair("stake",         ValueFromAmount(pwalletMain->GetStake())));
-    obj.push_back(Pair("reserve",       ValueFromAmount(nReserveBalance)));
     obj.push_back(Pair("unconfirmed",   ValueFromAmount(pwalletMain->GetUnconfirmedBalance())));
     obj.push_back(Pair("immature",      ValueFromAmount(pwalletMain->GetImmatureBalance())));
     obj.push_back(Pair("blocks",        (int)nBestHeight));
     obj.push_back(Pair("timeoffset",    (int64_t)GetTimeOffset()));
     obj.push_back(Pair("moneysupply",   ValueFromAmount(pindexBest->nMoneySupply)));
     obj.push_back(Pair("connections",   (int)vNodes.size()));
+    obj.push_back(Pair("datareceived",  bytesReadable(CNode::GetTotalBytesRecv())));
+    obj.push_back(Pair("datasent",      bytesReadable(CNode::GetTotalBytesSent())));
     obj.push_back(Pair("proxy",         (proxy.first.IsValid() ? proxy.first.ToStringIPPort() : string())));
     if(fNativeTor)
     {
         string automatic_onion;
         fs::path const hostname_path = GetDefaultDataDir() / "onion" / "hostname";
-
         if (!fs::exists(hostname_path)) {
             printf("No external address found.");
         }
-
         ifstream file(hostname_path.string().c_str());
         file >> automatic_onion;
-        obj.push_back(Pair("tor",       (automatic_onion)));
+        obj.push_back(Pair("ip",       (automatic_onion)));
     }
     if(!fNativeTor)
         obj.push_back(Pair("ip",            addrSeenByPeer.ToStringIP()));
-
     diff.push_back(Pair("proof-of-work",  GetDifficulty()));
     diff.push_back(Pair("proof-of-stake", GetDifficulty(GetLastBlockIndex(pindexBest, true))));
-    obj.push_back(Pair("difficulty",    diff));
 
+    obj.push_back(Pair("difficulty",    diff));
     obj.push_back(Pair("testnet",       fTestNet));
-    obj.push_back(Pair("fortunastake",    fFortunaStake));
+    obj.push_back(Pair("fortunastake",  fFortunaStake));
     obj.push_back(Pair("fslock",        fFSLock));
     obj.push_back(Pair("nativetor",     fNativeTor));
     obj.push_back(Pair("keypoololdest", (int64_t)pwalletMain->GetOldestKeyPoolTime()));
     obj.push_back(Pair("keypoolsize",   (int)pwalletMain->GetKeyPoolSize()));
     obj.push_back(Pair("paytxfee",      ValueFromAmount(nTransactionFee)));
     obj.push_back(Pair("mininput",      ValueFromAmount(nMinimumInputValue)));
-    if (pwalletMain->IsCrypted())
+    obj.push_back(Pair("datadir",       GetDataDir().string()));
+	obj.push_back(Pair("initialblockdownload",  IsInitialBlockDownload()));
+    if(fDebug)
+	{
+    	obj.push_back(Pair("debug",             fDebug));
+        obj.push_back(Pair("debugnet",          fDebugNet));
+        obj.push_back(Pair("debugchain",        fDebugChain));
+        obj.push_back(Pair("debugringsig",      fDebugRingSig));
+	}
+	if (pwalletMain->IsCrypted())
         obj.push_back(Pair("unlocked_until", (int64_t)nWalletUnlockTime / 1000));
+	if (!pwalletMain->IsCrypted())
+        obj.push_back(Pair("wallet_status", "unencrypted"));
+	if (!pwalletMain->IsLocked() && pwalletMain->IsCrypted() && !fWalletUnlockStakingOnly)
+		obj.push_back(Pair("wallet_status", "unlocked"));
+	if (!pwalletMain->IsLocked() && pwalletMain->IsCrypted() && fWalletUnlockStakingOnly)
+		obj.push_back(Pair("wallet_status", "stakingonly"));
+	if (pwalletMain->IsLocked() && pwalletMain->IsCrypted())
+		obj.push_back(Pair("wallet_status", "locked"));
     obj.push_back(Pair("errors",        GetWarnings("statusbar")));
     return obj;
 }
 
+
+// Wallet Lock Status RPC
+//Credit to Carsenk
+Value walletstatus(const Array& params, bool fHelp)
+{
+	if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "walletstatus\n"
+			"Returns the current wallet lock and encryption status.");
+
+	Object obj;
+    if (pwalletMain->IsCrypted())
+        obj.push_back(Pair("unlocked_until", (int64_t)nWalletUnlockTime / 1000));
+	if (!pwalletMain->IsCrypted())
+        obj.push_back(Pair("wallet_status", "unencrypted"));
+	if (!pwalletMain->IsLocked() && pwalletMain->IsCrypted() && !fWalletUnlockStakingOnly)
+		obj.push_back(Pair("wallet_status", "unlocked"));
+	if (!pwalletMain->IsLocked() && pwalletMain->IsCrypted() && fWalletUnlockStakingOnly)
+		obj.push_back(Pair("wallet_status", "stakingonly"));
+	if (pwalletMain->IsLocked() && pwalletMain->IsCrypted())
+		obj.push_back(Pair("wallet_status", "locked"));
+
+	return obj;
+}
 
 Value getnewpubkey(const Array& params, bool fHelp)
 {
