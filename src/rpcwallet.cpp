@@ -1,6 +1,7 @@
 // Copyright (c) 2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
-// Copyright (c) 2017-2018 Innova developers
+// Copyright (c) 2017-2020 Denarius developers
+// Copyright (c) 2020 Innova Developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -91,6 +92,10 @@ Value getinfo(const Array& params, bool fHelp)
             "Returns an object containing various state info.");
     proxyType proxy;
     GetProxy(NET_IPV4, proxy);
+
+    uint64_t nMinWeight = 0, nMaxWeight = 0, nWeight = 0;
+    pwalletMain->GetStakeWeight(*pwalletMain, nMinWeight, nMaxWeight, nWeight);
+
     Object obj, diff;
     obj.push_back(Pair("version",       FormatFullVersion()));
     obj.push_back(Pair("protocolversion",(int)PROTOCOL_VERSION));
@@ -126,6 +131,11 @@ Value getinfo(const Array& params, bool fHelp)
     diff.push_back(Pair("proof-of-stake", GetDifficulty(GetLastBlockIndex(pindexBest, true))));
 
     obj.push_back(Pair("difficulty",    diff));
+    obj.push_back(Pair("netmhashps",     GetPoWMHashPS()));
+	  obj.push_back(Pair("netstakeweight", GetPoSKernelPS()));
+
+	  obj.push_back(Pair("weight", (uint64_t)nWeight));
+
     obj.push_back(Pair("testnet",       fTestNet));
     obj.push_back(Pair("fortunastake",  fFortunaStake));
     obj.push_back(Pair("fslock",        fFSLock));
@@ -143,23 +153,23 @@ Value getinfo(const Array& params, bool fHelp)
         obj.push_back(Pair("debugchain",        fDebugChain));
         obj.push_back(Pair("debugringsig",      fDebugRingSig));
 	}
-	if (pwalletMain->IsCrypted())
+  if (pwalletMain->IsCrypted())
         obj.push_back(Pair("unlocked_until", (int64_t)nWalletUnlockTime / 1000));
-	if (!pwalletMain->IsCrypted())
+  if (!pwalletMain->IsCrypted())
         obj.push_back(Pair("wallet_status", "unencrypted"));
-	if (!pwalletMain->IsLocked() && pwalletMain->IsCrypted() && !fWalletUnlockStakingOnly)
-		obj.push_back(Pair("wallet_status", "unlocked"));
-	if (!pwalletMain->IsLocked() && pwalletMain->IsCrypted() && fWalletUnlockStakingOnly)
-		obj.push_back(Pair("wallet_status", "stakingonly"));
-	if (pwalletMain->IsLocked() && pwalletMain->IsCrypted())
-		obj.push_back(Pair("wallet_status", "locked"));
+  if (!pwalletMain->IsLocked() && pwalletMain->IsCrypted() && !fWalletUnlockStakingOnly)
+      	obj.push_back(Pair("wallet_status", "unlocked"));
+  if (!pwalletMain->IsLocked() && pwalletMain->IsCrypted() && fWalletUnlockStakingOnly)
+    		obj.push_back(Pair("wallet_status", "stakingonly"));
+  if (pwalletMain->IsLocked() && pwalletMain->IsCrypted())
+      	obj.push_back(Pair("wallet_status", "locked"));
     obj.push_back(Pair("errors",        GetWarnings("statusbar")));
     return obj;
 }
 
 
 // Wallet Lock Status RPC
-//Credit to Carsenk
+// Credit to Carsenk
 Value walletstatus(const Array& params, bool fHelp)
 {
 	if (fHelp || params.size() != 0)
@@ -1748,6 +1758,7 @@ Value walletpassphrase(const Array& params, bool fHelp)
 
     if (!pwalletMain->IsLocked())
         throw JSONRPCError(RPC_WALLET_ALREADY_UNLOCKED, "Error: Wallet is already unlocked, use walletlock first if need to change unlock settings.");
+
     // Note that the walletpassphrase is stored in params[0] which is not mlock()ed
     SecureString strWalletPass;
     strWalletPass.reserve(100);
@@ -1767,10 +1778,16 @@ Value walletpassphrase(const Array& params, bool fHelp)
 
     NewThread(ThreadTopUpKeyPool, NULL);
     int64_t* pnSleepTime = new int64_t(params[1].get_int64());
+    //LOCK(cs_nWalletUnlockTime);
+	  //nWalletUnlockTime = GetTime() + pnSleepTime;
     NewThread(ThreadCleanWalletPassphrase, pnSleepTime);
 
-    // ppcoin: if user OS account compromised prevent trivial sendmoney commands
-    if (params.size() > 2)
+    //fWalletUnlockStakingOnly = false;
+
+    // Innova: if user OS account compromised prevent trivial sendmoney commands
+    // if (params.size() > 2 && params[2].get_bool() == true)
+        // fWalletUnlockStakingOnly = true;
+	if (params.size() > 2)
         fWalletUnlockStakingOnly = params[2].get_bool();
     else
         fWalletUnlockStakingOnly = false;
@@ -2972,7 +2989,7 @@ Value txnreport(const Array& params, bool fHelp)
                 if (pwtx->nVersion == ANON_TXN_VERSION
                     && txin.IsAnonInput())
                 {
-                    entry.push_back("DENARIUS in");
+                    entry.push_back("INNOVA in");
                     entry.push_back("");
                     std::vector<uint8_t> vchImage;
                     txin.ExtractKeyImage(vchImage);
@@ -3005,7 +3022,7 @@ Value txnreport(const Array& params, bool fHelp)
                     if (txin.prevout.IsNull()) // coinbase
                         continue;
 
-                    entry.push_back("D in");
+                    entry.push_back("INN in");
                     entry.push_back(fCoinBase ? "coinbase" : fCoinStake ? "coinstake" : "");
 
                     if (pwalletMain->IsMine(txin))
@@ -3072,7 +3089,7 @@ Value txnreport(const Array& params, bool fHelp)
                 if (pwtx->nVersion == ANON_TXN_VERSION
                     && txout.IsAnonOutput())
                 {
-                    entry.push_back("DENARIUS out");
+                    entry.push_back("INNOVA out");
                     entry.push_back("");
 
                     CPubKey pkCoin    = txout.ExtractAnonPk();
