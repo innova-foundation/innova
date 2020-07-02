@@ -32,7 +32,10 @@
 #include <boost/algorithm/string/predicate.hpp>
 #include <openssl/crypto.h>
 
-
+#include <string>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
 
 #ifndef WIN32
 #include <signal.h>
@@ -519,6 +522,7 @@ bool AppInit2()
 
     fFSLock = GetBoolArg("-fsconflock");
     fNativeTor = GetBoolArg("-nativetor");
+    fJupiterLocal = GetBoolArg("-jupiterlocal");
 
     //if (fTestNet)
 
@@ -675,7 +679,11 @@ bool AppInit2()
         ShrinkDebugFile();
     printf("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
     printf("Innova version %s (%s)\n", FormatFullVersion().c_str(), CLIENT_DATE.c_str());
+    #if (OPENSSL_VERSION_NUMBER < 0x10100000L) //WIP OpenSSL 1.0.x only, OpenSSL 1.1 not supported yet
     printf("Using OpenSSL version %s\n", SSLeay_version(SSLEAY_VERSION));
+  #else
+    printf("Using OpenSSL version %s\n", OpenSSL_version(OPENSSL_VERSION));
+  #endif
     if (!fLogTimestamps)
         printf("Startup time: %s\n", DateTimeStrFormat("%x %H:%M:%S", GetTime()).c_str());
     printf("Default data directory %s\n", GetDefaultDataDir().string().c_str());
@@ -1270,6 +1278,7 @@ bool AppInit2()
            pblockAddrIndex->nHeight, GetTimeMillis() - nStart);
     }
 
+
     //// debug print
     printf("mapBlockIndex.size() = %"PRIszu"\n",   mapBlockIndex.size());
     printf("nBestHeight = %d\n",            nBestHeight);
@@ -1278,14 +1287,14 @@ bool AppInit2()
     printf("mapAddressBook.size() = %"PRIszu"\n",  pwalletMain->mapAddressBook.size());
 
     if(fNativeTor)
-        printf("Native Tor Onion Relay Node Enabled");
+        printf("Native Tor Onion Relay Node Enabled\n");
     else
-        printf("Native Tor Onion Relay Disabled, Using Regular Peers...");
+        printf("Native Tor Onion Relay Disabled, Using Regular Peers...\n");
 
     if (fDebug)
-        printf("Debugging is Enabled.");
+        printf("Debugging is Enabled.\n");
 	else
-        printf("Debugging is not enabled.");
+        printf("Debugging is not enabled.\n");
 
     if (!NewThread(StartNode, NULL))
         InitError(_("Error: could not start node"));

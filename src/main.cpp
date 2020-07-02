@@ -2588,19 +2588,19 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
     // on the D to bring them joy and happiness, and not worry for when they might next taste the D
 
     // and oh ye of little faith, feast your eyes upon the broth of thine calling. the hybrid stakes are no more.
-    // gone are the days of not knowing when to expect the sweet caress of the glorious INN to be gracing the silver linings
+    // gone are the days of not knowing when to expect the sweet caress of the glorious D to be gracing the silver linings
     // of your wallet. forever more you shall know the D, and the D shall know you, and ye shall be fairly judged
     // for all of eternity
 
 
-    // ----- Innova fortuna stakes, the fair payment edition  -----
+    // ----- fortuna stakes, the fair payment edition  -----
     // proudly presented by enkayz
 
     bool FortunastakePayments = false;
     bool fIsInitialDownload = IsInitialBlockDownload();
 
     if (fTestNet){
-        if (pindex->nHeight > BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET){ // Block 75k Testnet
+        if (pindex->nHeight > BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET){
             FortunastakePayments = true;
             if(fDebug) { printf("CheckBlock() : Fortunastake payments enabled\n"); }
         }else{
@@ -2608,7 +2608,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
             if(fDebug) { printf("CheckBlock() : Fortunastake payments disabled\n"); }
         }
     }else{
-        if (pindex->nHeight > BLOCK_START_FORTUNASTAKE_PAYMENTS){ //Block 645k Mainnet
+        if (pindex->nHeight > BLOCK_START_FORTUNASTAKE_PAYMENTS){
             FortunastakePayments = true;
             if(fDebug) { printf("CheckBlock() : Fortunastake payments enabled\n"); }
         }else{
@@ -3496,8 +3496,8 @@ bool CBlock::AcceptBlock()
     CBlockIndex* pindexPrev = (*mi).second;
     int nHeight = pindexPrev->nHeight+1;
 
-    if (IsProofOfWork() && nHeight > LAST_POW_BLOCK)
-        return DoS(100, error("AcceptBlock() : reject proof-of-work at height %d", nHeight));
+  //  if (IsProofOfWork() && nHeight > LAST_POW_BLOCK)
+  //      return DoS(100, error("AcceptBlock() : reject proof-of-work at height %d", nHeight));
 
     // Check proof-of-work or proof-of-stake
     if (nBits != GetNextTargetRequired(pindexPrev, IsProofOfStake()))

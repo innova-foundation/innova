@@ -292,7 +292,7 @@ public:
 
     void InitCollateralAddress(){
         std::string strAddress = "";
-            strAddress = "DQjK69r9hjKgJo3foVsqdErBzL1Rdmsswr";
+            strAddress = "i9RDeejErpSuy4wkugwTM2y1WYEh1Fvpuy";
         SetCollateralAddress(strAddress);
     }
 

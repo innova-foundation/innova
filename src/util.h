@@ -220,6 +220,7 @@ extern bool fCommandLine;
 extern std::string strMiscWarning;
 extern bool fTestNet;
 extern bool fNativeTor;
+extern bool fJupiterLocal;
 extern bool fFSLock;
 extern bool fNoListen;
 extern bool fLogTimestamps;

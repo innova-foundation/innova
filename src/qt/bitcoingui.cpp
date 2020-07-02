@@ -37,6 +37,7 @@
 #include "wallet.h"
 #include "termsofuse.h"
 #include "proofofimage.h"
+#include "jupiter.h"
 
 #ifdef Q_OS_MAC
 #include "macdockiconhandler.h"
@@ -177,6 +178,11 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     // Create the tray icon (or setup the dock icon)
     createTrayIcon();
 
+    fFSLock = GetBoolArg("-fsconflock");
+    fThinMode = GetBoolArg("-thinmode");
+    fNativeTor = GetBoolArg("-nativetor");
+    fJupiterLocal = GetBoolArg("-jupiterlocal");
+
     // Create tabs
     overviewPage = new OverviewPage();
 	  statisticsPage = new StatisticsPage(this);
@@ -184,6 +190,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     marketBrowser = new MarketBrowser(this);
 	  multisigPage = new MultisigDialog(this);
     proofOfImagePage = new ProofOfImage(this);
+    jupiterPage = new Jupiter(this);
 	//chatWindow = new ChatWindow(this);
 
     fFSLock = GetBoolArg("-fsconflock");
@@ -215,16 +222,17 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     centralWidget = new QStackedWidget(this);
     centralWidget->addWidget(overviewPage);
     centralWidget->addWidget(transactionsPage);
-	centralWidget->addWidget(mintingPage);
+	  centralWidget->addWidget(mintingPage);
     centralWidget->addWidget(addressBookPage);
     centralWidget->addWidget(receiveCoinsPage);
     centralWidget->addWidget(sendCoinsPage);
     centralWidget->addWidget(messagePage);
-	centralWidget->addWidget(statisticsPage);
-	centralWidget->addWidget(blockBrowser);
+	  centralWidget->addWidget(statisticsPage);
+	  centralWidget->addWidget(blockBrowser);
     centralWidget->addWidget(fortunastakeManagerPage);
-	centralWidget->addWidget(marketBrowser);
+	  centralWidget->addWidget(marketBrowser);
     centralWidget->addWidget(proofOfImagePage);
+    centralWidget->addWidget(jupiterPage);
 	//centralWidget->addWidget(chatWindow);
     setCentralWidget(centralWidget);
 
@@ -407,6 +415,12 @@ void BitcoinGUI::createActions()
 	proofOfImageAction->setStatusTip(tr("PoD: Timestamp files"));
     tabGroup->addAction(proofOfImageAction);
 
+    jupiterAction = new QAction(QIcon(":/icons/jupiter"), tr("&Jupiter"), this);
+    jupiterAction ->setToolTip(tr("Decentralized your files, upload to IPFS!"));
+    jupiterAction ->setCheckable(true);
+	  jupiterAction->setStatusTip(tr("Decentralized File Uploads"));
+    tabGroup->addAction(jupiterAction);
+
 	multisigAction = new QAction(QIcon(":/icons/multi"), tr("Multisig"), this);
     tabGroup->addAction(multisigAction);
 	multisigAction->setStatusTip(tr("Multisig Interface"));
@@ -435,6 +449,8 @@ void BitcoinGUI::createActions()
     connect(multisigAction, SIGNAL(triggered()), this, SLOT(gotoMultisigPage()));
     connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(gotoProofOfImagePage()));
+    connect(jupiterAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
+    connect(jupiterAction, SIGNAL(triggered()), this, SLOT(gotoJupiterPage()));
 
     quitAction = new QAction(QIcon(":/icons/quit"), tr("E&xit"), this);
     quitAction->setToolTip(tr("Quit application"));
@@ -572,6 +588,7 @@ void BitcoinGUI::createToolBars()
     mainToolbar->addAction(statisticsAction);
 	mainToolbar->addAction(fortunastakeManagerAction);
 	mainToolbar->addAction(proofOfImageAction);
+  mainToolbar->addAction(jupiterAction);
 	mainToolbar->addAction(marketAction);
     mainToolbar->addAction(blockAction);
 	mainToolbar->addAction(messageAction);
@@ -1147,6 +1164,15 @@ void BitcoinGUI::gotoProofOfImagePage()
 {
     proofOfImageAction->setChecked(true);
     centralWidget->setCurrentWidget(proofOfImagePage);
+
+    exportAction->setEnabled(false);
+    disconnect(exportAction, SIGNAL(triggered()), 0, 0);
+}
+
+void BitcoinGUI::gotoJupiterPage()
+{
+    jupiterAction->setChecked(true);
+    centralWidget->setCurrentWidget(jupiterPage);
 
     exportAction->setEnabled(false);
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);

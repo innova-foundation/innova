@@ -196,7 +196,7 @@ extern json_spirit::Value signmessage(const json_spirit::Array& params, bool fHe
 extern json_spirit::Value verifymessage(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getreceivedbyaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getreceivedbyaccount(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value fetchbalance(const json_spirit::Array& params, bool fHelp); // I n n o v a
+extern json_spirit::Value fetchbalance(const json_spirit::Array& params, bool fHelp); // I n n o v a - Q0lSQ1VJVEJSRUFLRVI=
 extern json_spirit::Value getbalance(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value movecmd(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value sendfrom(const json_spirit::Array& params, bool fHelp);
@@ -217,6 +217,7 @@ extern json_spirit::Value walletpassphrase(const json_spirit::Array& params, boo
 extern json_spirit::Value walletpassphrasechange(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value walletlock(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value encryptwallet(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value walletstatus(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value validateaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getinfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value reservebalance(const json_spirit::Array& params, bool fHelp);
@@ -237,8 +238,8 @@ extern json_spirit::Value signrawtransaction(const json_spirit::Array& params, b
 extern json_spirit::Value sendrawtransaction(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value searchrawtransactions(const json_spirit::Array& params, bool fHelp);
 
-extern json_spirit::Value getbestblockhash(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
-extern json_spirit::Value getblockcount(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
+extern json_spirit::Value getbestblockhash(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value getblockcount(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getblockchaininfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getdifficulty(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value dumpbootstrap(const json_spirit::Array& params, bool fHelp);
@@ -252,7 +253,16 @@ extern json_spirit::Value getblockbynumber(const json_spirit::Array& params, boo
 extern json_spirit::Value getcheckpoint(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value gettxout(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value importaddress(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value proofofdata(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value burn(const json_spirit::Array& params, bool fHelp);
+
+extern json_spirit::Value jupiterversion(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value jupiterupload(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value jupiterpod(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value jupiterduo(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value jupiterduopod(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value jupitergetblock(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value jupitergetstat(const json_spirit::Array& params, bool fHelp);
 
 extern json_spirit::Value getnewstealthaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value liststealthaddresses(const json_spirit::Array& params, bool fHelp);
