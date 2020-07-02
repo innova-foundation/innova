@@ -5,7 +5,10 @@
 
 #include "main.h"
 #include "innovarpc.h"
-#include "spork.h"
+
+#include <boost/filesystem.hpp>
+#include <fstream>
+
 
 using namespace json_spirit;
 using namespace std;
@@ -231,6 +234,74 @@ Value dumpbootstrap(const Array& params, bool fHelp)
     }
 
     return Value::null;
+}
+
+Value proofofdata(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 1)
+    throw runtime_error(
+        "proofofdata\n"
+        "\nArguments:\n"
+        "1. \"filelocation\"          (string, required) The file location of the file to upload (e.g. /home/name/file.jpg)\n"
+        "Returns the Innova address and transaction ID of the proof of data submission of the file hashed into an INN address");
+
+    Object obj;
+    std::string userFile = params[0].get_str();
+    std::ifstream dataFile;
+
+    if(userFile == "")
+    {
+        return;
+    }
+
+    std::string filename = userFile.c_str();
+
+    boost::filesystem::path p(filename);
+    std::string basename = p.filename().string();
+
+    dataFile.open(userFile.c_str(), std::ios::binary);
+    std::vector<char> dataContents((std::istreambuf_iterator<char>(dataFile)), std::istreambuf_iterator<char>());
+
+    printf("POD Upload File Start: %s\n", basename.c_str());
+
+    //Hash the file for Innova POD
+    uint256 datahash = SerializeHash(dataContents);
+    CKeyID keyid(Hash160(datahash.begin(), datahash.end()));
+    CBitcoinAddress baddr = CBitcoinAddress(keyid);
+    std::string addr = baddr.ToString();
+
+    CAmount nAmount = 0.001 * COIN; // 0.001 INN Fee
+
+    // Wallet comments
+    CWalletTx wtx;
+    wtx.mapValue["comment"] = basename.c_str();
+    std::string sNarr = "POD";
+    wtx.mapValue["to"]      = "Proof of Data";
+
+    if (pwalletMain->IsLocked())
+    {
+        obj.push_back(Pair("error",  "Error, Your wallet is locked! Please unlock your wallet!"));
+        //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send POD. Unlock your wallet!");
+    } else if (pwalletMain->GetBalance() < 0.001) {
+        obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send POD!"));
+        //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send POD.");
+    } else {
+        //std::string sNarr;
+        std::string strError = pwalletMain->SendMoneyToDestination(baddr.Get(), nAmount, sNarr, wtx);
+
+        if(strError != "")
+        {
+            obj.push_back(Pair("error",  strError.c_str()));
+        }
+
+        obj.push_back(Pair("filename",           basename.c_str()));
+        //obj.push_back(Pair("sizebytes",        size));
+        obj.push_back(Pair("podaddress",         addr.c_str()));
+        obj.push_back(Pair("podtxid",            wtx.GetHash().GetHex()));
+    }
+
+    return obj;
+
 }
 
 Value getbestblockhash(const Array& params, bool fHelp)

@@ -681,8 +681,6 @@ Value fortunastake(const Array& params, bool fHelp)
 				        //remoteObj.push_back(Pair("collateral", CBitcoinAddress(mn->pubKeyCollateralAddress.GetID()).ToString()));
 
 
-                //
-
                 bool mnfound = false;
                 BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes)
                 {

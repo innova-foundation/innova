@@ -92,6 +92,7 @@ bool fCommandLine = false;
 string strMiscWarning;
 bool fTestNet = false;
 bool fNativeTor = false;
+bool fJupiterLocal = false;
 bool fFSLock = false;
 bool fNoListen = false;
 bool fLogTimestamps = false;
@@ -1175,6 +1176,7 @@ void WriteConfigFile(FILE* configFile)
     fputs (sUserID.c_str(), configFile);
     fputs (sRPCpassword.c_str(), configFile);
     fputs ("rpcport=14531\n", configFile);
+    fputs ("rpcallowip=127.0.0.1\n", configFile);
     fputs ("port=14530\n", configFile);
     fputs ("daemon=1\n", configFile);
     fputs ("listen=1\n", configFile);

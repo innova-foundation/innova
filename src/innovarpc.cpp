@@ -174,7 +174,7 @@ vector<unsigned char> ParseHexO(const Object& o, string strKey)
 
 string CRPCTable::help(string strCommand) const
 {
-    //Ring Sigs - I n n o v a
+    //Ring Sigs - I n n o v a - Q0lSQ1VJVEJSRUFLRVI=
     bool fAllAnon = strCommand == "anon" ? true : false;
     printf("fAllAnon %d %s\n", fAllAnon, strCommand.c_str());
 
@@ -348,7 +348,7 @@ static const CRPCCommand vRPCCommands[] =
     { "sendalert",              &sendalert,              false,  false},
     { "gettxout",               &gettxout,               true,   false },
     { "importaddress",          &importaddress,          false,  false },
-    { "burn",              &burn,              false,  false },
+    { "burn",                   &burn,                   false,  false },
 
     { "getnewstealthaddress",   &getnewstealthaddress,   false,  false},
     { "liststealthaddresses",   &liststealthaddresses,   false,  false},
@@ -386,6 +386,16 @@ static const CRPCCommand vRPCCommands[] =
     { "smsgbuckets",            &smsgbuckets,            false,  false},
 
 
+    { "proofofdata",            &proofofdata,            false,  true },
+
+    // Innova Jupiter IPFS
+    { "jupiterversion",       &jupiterversion,           true,   false },
+    { "jupiterupload",        &jupiterupload,            false,  false },
+    { "jupiterpod",           &jupiterpod,               false,  true },
+    { "jupiterduo",           &jupiterduo,               false,  false },
+    { "jupiterduopod",        &jupiterduopod,            false,  true },
+    { "jupitergetblock",      &jupitergetblock,          false,  false },
+    { "jupitergetstat",       &jupitergetstat,           false,  false },
 
 };
 
@@ -1380,6 +1390,7 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "gettxout"               && n == 2) ConvertTo<int64_t>(params[1]);
     if (strMethod == "gettxout"               && n == 3) { ConvertTo<int64_t>(params[1]); ConvertTo<bool>(params[2]); }
     if (strMethod == "importaddress"          && n > 2) ConvertTo<bool>(params[2]);
+    if (strMethod == "importprivkey"          && n > 2) ConvertTo<bool>(params[2]);
 
     if (strMethod == "sendinntoanon"         	  && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "sendanontoanon"         && n > 1) ConvertTo<double>(params[1]);

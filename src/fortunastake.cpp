@@ -648,8 +648,8 @@ int64_t avg2(std::vector<CFortunaStake> const& v) {
         int64_t x = v[i].payValue;
         int64_t delta = x - mean;
         //TODO: implement in mandatory update, will reduce average & lead to rejections
-        //if (v[i].payValue > 2*COIN) { continue; } // don't consider payees above 2.00000000D (pos only / lucky payees)
-        if (v[i].payValue < 1*COIN) { continue; } // don't consider payees below 1.00000000D (pos only / new payees)
+        //if (v[i].payValue > 2*COIN) { continue; } // don't consider payees above 2.00000000INN (pos only / lucky payees)
+        if (v[i].payValue < 1*COIN) { continue; } // don't consider payees below 1.00000000INN (pos only / new payees)
         mean += delta/++n;
     }
     return mean;
@@ -758,7 +758,7 @@ int CFortunaStake::SetPayRate(int nHeight)
              payCount = matches;
              payValue = amount;
              // set the node's current 'reward rate' - pay value divided by rounds (3)
-             // this rate is representative of "D per day"
+             // this rate is representative of "INN per day"
              payRate = ((payValue / scanBack) / 30) * 86400;
              // printf("%d found with %s value %.2f rate\n", matches, FormatMoney(amount).c_str(), payRate);
              return matches;
