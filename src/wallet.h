@@ -172,6 +172,7 @@ public:
         strWalletFile = strWalletFileIn;
         fFileBacked = true;
     }
+
     void SetNull()
     {
         nWalletVersion = FEATURE_BASE;
@@ -1131,6 +1132,7 @@ public:
         // Quick answer in most cases
         if (!IsFinal())
             return false;
+
         // Coins newer than our current chain can't be trusted
         if (nTime > pindexBest->GetBlockTime())
             return false;
@@ -1205,17 +1207,14 @@ public:
     const CWalletTx *tx;
     int i;
     int nDepth;
-
     COutput(const CWalletTx *txIn, int iIn, int nDepthIn)
     {
         tx = txIn; i = iIn; nDepth = nDepthIn;
     }
-
     std::string ToString() const
     {
         return strprintf("COutput(%s, %d, %d) [%s]", tx->GetHash().ToString().substr(0,10).c_str(), i, nDepth, FormatMoney(tx->vout[i].nValue).c_str());
     }
-
     void print() const
     {
         printf("%s\n", ToString().c_str());

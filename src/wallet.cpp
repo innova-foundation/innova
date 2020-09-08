@@ -644,45 +644,46 @@ bool CWallet::AddToWallet(const CWalletTx& wtxIn)
             wtx.nTimeSmart = wtx.nTimeReceived;
             if (wtxIn.hashBlock != 0)
             {
-                if (mapBlockIndex.count(wtxIn.hashBlock))
+              if (mapBlockIndex.count(wtxIn.hashBlock))
                 {
                     unsigned int latestNow = wtx.nTimeReceived;
                     unsigned int latestEntry = 0;
+
                     {
-                        // Tolerate times up to the last timestamp in the wallet not more than 5 minutes into the future
-                        int64_t latestTolerated = latestNow + 300;
-                        std::list<CAccountingEntry> acentries;
-                        TxItems txOrdered = OrderedTxItems(acentries);
-                        for (TxItems::reverse_iterator it = txOrdered.rbegin(); it != txOrdered.rend(); ++it)
+                      // Tolerate times up to the last timestamp in the wallet not more than 5 minutes into the future
+                      int64_t latestTolerated = latestNow + 300;
+                      std::list<CAccountingEntry> acentries;
+                      TxItems txOrdered = OrderedTxItems(acentries);
+                      for (TxItems::reverse_iterator it = txOrdered.rbegin(); it != txOrdered.rend(); ++it)
+                      {
+                        CWalletTx *const pwtx = (*it).second.first;
+                        if (pwtx == &wtx)
+                        continue;
+                        CAccountingEntry *const pacentry = (*it).second.second;
+                        int64_t nSmartTime;
+                        if (pwtx)
                         {
-                            CWalletTx *const pwtx = (*it).second.first;
-                            if (pwtx == &wtx)
-                                continue;
-                            CAccountingEntry *const pacentry = (*it).second.second;
-                            int64_t nSmartTime;
-                            if (pwtx)
-                            {
-                                nSmartTime = pwtx->nTimeSmart;
-                                if (!nSmartTime)
-                                    nSmartTime = pwtx->nTimeReceived;
-                            }
-                            else
-                                nSmartTime = pacentry->nTime;
-                            if (nSmartTime <= latestTolerated)
-                            {
-                                latestEntry = nSmartTime;
-                                if (nSmartTime > latestNow)
-                                    latestNow = nSmartTime;
-                                break;
-                            }
+                          nSmartTime = pwtx->nTimeSmart;
+                          if (!nSmartTime)
+                          nSmartTime = pwtx->nTimeReceived;
                         }
+                        else
+                        nSmartTime = pacentry->nTime;
+                        if (nSmartTime <= latestTolerated)
+                        {
+                          latestEntry = nSmartTime;
+                          if (nSmartTime > latestNow)
+                          latestNow = nSmartTime;
+                          break;
+                        }
+                      }
                     }
 
                     unsigned int& blocktime = mapBlockIndex[wtxIn.hashBlock]->nTime;
                     wtx.nTimeSmart = std::max(latestEntry, std::min(blocktime, latestNow));
                 }
                 else
-                    printf("AddToWallet() : found %s in block %s not in index\n",
+                  printf("AddToWallet() : found %s in block %s not in index\n",
                            wtxIn.GetHash().ToString().substr(0,10).c_str(),
                            wtxIn.hashBlock.ToString().c_str());
             }
@@ -743,7 +744,7 @@ bool CWallet::AddToWallet(const CWalletTx& wtxIn)
         // Notify UI of new or updated transaction
         NotifyTransactionChanged(this, hash, fInsertedNew ? CT_NEW : CT_UPDATED);
 
-		vMintingWalletUpdated.push_back(hash);
+        vMintingWalletUpdated.push_back(hash);
 
         // notify an external script when a wallet transaction comes in or is updated
         std::string strCmd = GetArg("-walletnotify", "");
@@ -778,31 +779,24 @@ bool CWallet::AddToWalletIfInvolvingMe(const CTransaction& tx, const CBlock* pbl
         if (stealthAddresses.size() > 0 && !fDisableStealth) FindStealthTransactions(tx, mapNarr);
 
         bool fIsMine = false;
-        if (tx.nVersion == ANON_TXN_VERSION)
+        uint256 blockHash = 0;
+        blockHash = pblock ? ((CBlock*)pblock)->GetHash() : 0;
+        walletdb.TxnBegin();
+        txdb.TxnBegin();
+        std::vector<std::map<uint256, CWalletTx>::iterator> vUpdatedTxns;
+        if (!ProcessAnonTransaction(&walletdb, &txdb, tx, blockHash, fIsMine, mapNarr, vUpdatedTxns))
         {
-            LOCK(cs_main); // cs_wallet is already locked
-            CWalletDB walletdb(strWalletFile, "cr+");
-            CTxDB txdb("cr+");
-
-            uint256 blockHash = 0;
-            blockHash = pblock ? ((CBlock*)pblock)->GetHash() : 0;
-
-            walletdb.TxnBegin();
-            txdb.TxnBegin();
-            std::vector<std::map<uint256, CWalletTx>::iterator> vUpdatedTxns;
-            if (!ProcessAnonTransaction(&walletdb, &txdb, tx, blockHash, fIsMine, mapNarr, vUpdatedTxns))
-            {
-                printf("ProcessAnonTransaction failed %s\n", hash.ToString().c_str());
-                walletdb.TxnAbort();
-                txdb.TxnAbort();
-                return false;
-            } else
-            {
-                walletdb.TxnCommit();
-                txdb.TxnCommit();
-                for (std::vector<std::map<uint256, CWalletTx>::iterator>::iterator it = vUpdatedTxns.begin();
-                    it != vUpdatedTxns.end(); ++it)
-                    NotifyTransactionChanged(this, (*it)->first, CT_UPDATED);
+            printf("ProcessAnonTransaction failed %s\n", hash.ToString().c_str());
+            walletdb.TxnAbort();
+            txdb.TxnAbort();
+            return false;
+        } else
+        {
+            walletdb.TxnCommit();
+            txdb.TxnCommit();
+            for (std::vector<std::map<uint256, CWalletTx>::iterator>::iterator it = vUpdatedTxns.begin();
+                it != vUpdatedTxns.end(); ++it)
+                NotifyTransactionChanged(this, (*it)->first, CT_UPDATED);
             };
         };
 
@@ -818,7 +812,7 @@ bool CWallet::AddToWalletIfInvolvingMe(const CTransaction& tx, const CBlock* pbl
             if (pcblock)
                 wtx.SetMerkleBranch(pcblock);
 
-            return AddToWallet(wtx); //AddToWallet(wtx, hash);
+                return AddToWallet(wtx); //AddToWallet(wtx, hash);
         } else
         {
             WalletUpdateSpent(tx);
@@ -3448,7 +3442,7 @@ bool CWallet::GetStakeWeight(const CKeyStore& keystore, uint64_t& nMinWeight, ui
     CTxDB txdb("r");
     BOOST_FOREACH(PAIRTYPE(const CWalletTx*, unsigned int) pcoin, setCoins)
     {
-        CTxIndex txindex;
+      CTxIndex txindex;
         {
             LOCK2(cs_main, cs_wallet);
             if (!txdb.ReadTxIndex(pcoin.first->GetHash(), txindex))
@@ -4016,13 +4010,13 @@ bool CWallet::SetAddressBookName(const CTxDestination& address, const string& st
     {
         const CBitcoinAddress& caddress = address;
         SecureMsgWalletKeyChanged(caddress.ToString(), strName, nMode);
-    }
+      }
     NotifyAddressBookChanged(this, address, strName, fOwned, nMode);
 
     if (!fFileBacked)
         return false;
-    return CWalletDB(strWalletFile).WriteName(CBitcoinAddress(address).ToString(), strName);
-}
+        return CWalletDB(strWalletFile).WriteName(CBitcoinAddress(address).ToString(), strName);
+      }
 
 bool CWallet::DelAddressBookName(const CTxDestination& address)
 {
@@ -4639,10 +4633,10 @@ static int GetBlockHeightFromHash(const uint256& blockHash)
     if (blockHash == 0)
         return 0;
 
-    std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(blockHash);
-    if (mi == mapBlockIndex.end())
-        return 0;
-    return mi->second->nHeight;
+        std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(blockHash);
+        if (mi == mapBlockIndex.end())
+            return 0;
+        return mi->second->nHeight;
 
     return 0;
 }

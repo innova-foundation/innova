@@ -1,7 +1,7 @@
 // Copyright (c) 2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
 // Copyright (c) 2017-2020 Denarius developers
-// Copyright (c) 2020 Innova Developers
+// Copyright (c) 2019-2020 Innova Developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -58,6 +58,7 @@ void EnsureWalletIsUnlocked()
 
 void WalletTxToJSON(const CWalletTx& wtx, Object& entry)
 {
+    entry.push_back(Pair("version", wtx.nVersion));
     int confirms = wtx.GetDepthInMainChain();
     entry.push_back(Pair("confirmations", confirms));
     if (wtx.IsCoinBase() || wtx.IsCoinStake())
@@ -66,8 +67,11 @@ void WalletTxToJSON(const CWalletTx& wtx, Object& entry)
     {
         entry.push_back(Pair("blockhash", wtx.hashBlock.GetHex()));
         entry.push_back(Pair("blockindex", wtx.nIndex));
-        entry.push_back(Pair("blocktime", (int64_t)(mapBlockIndex[wtx.hashBlock]->nTime)));
-    }
+        int64_t nTime = 0;
+        nTime = mapBlockIndex[wtx.hashBlock]->nTime;
+
+        entry.push_back(Pair("blocktime", nTime));
+    };
     entry.push_back(Pair("txid", wtx.GetHash().GetHex()));
     entry.push_back(Pair("time", (int64_t)wtx.GetTxTime()));
     entry.push_back(Pair("timereceived", (int64_t)wtx.nTimeReceived));
@@ -126,7 +130,7 @@ Value getinfo(const Array& params, bool fHelp)
         obj.push_back(Pair("ip",       (automatic_onion)));
     }
     if(!fNativeTor)
-        obj.push_back(Pair("ip",            addrSeenByPeer.ToStringIP()));
+    obj.push_back(Pair("ip",            addrSeenByPeer.ToStringIP()));
     diff.push_back(Pair("proof-of-work",  GetDifficulty()));
     diff.push_back(Pair("proof-of-stake", GetDifficulty(GetLastBlockIndex(pindexBest, true))));
 
@@ -145,7 +149,7 @@ Value getinfo(const Array& params, bool fHelp)
     obj.push_back(Pair("paytxfee",      ValueFromAmount(nTransactionFee)));
     obj.push_back(Pair("mininput",      ValueFromAmount(nMinimumInputValue)));
     obj.push_back(Pair("datadir",       GetDataDir().string()));
-	obj.push_back(Pair("initialblockdownload",  IsInitialBlockDownload()));
+    obj.push_back(Pair("initialblockdownload",  IsInitialBlockDownload()));
     if(fDebug)
 	{
     	obj.push_back(Pair("debug",             fDebug));
@@ -153,32 +157,34 @@ Value getinfo(const Array& params, bool fHelp)
         obj.push_back(Pair("debugchain",        fDebugChain));
         obj.push_back(Pair("debugringsig",      fDebugRingSig));
 	}
-  if (pwalletMain->IsCrypted())
+  //Q0lSQ1VJVEJSRUFLRVI=
+	if (pwalletMain->IsCrypted())
         obj.push_back(Pair("unlocked_until", (int64_t)nWalletUnlockTime / 1000));
-  if (!pwalletMain->IsCrypted())
+	if (!pwalletMain->IsCrypted())
         obj.push_back(Pair("wallet_status", "unencrypted"));
-  if (!pwalletMain->IsLocked() && pwalletMain->IsCrypted() && !fWalletUnlockStakingOnly)
-      	obj.push_back(Pair("wallet_status", "unlocked"));
-  if (!pwalletMain->IsLocked() && pwalletMain->IsCrypted() && fWalletUnlockStakingOnly)
-    		obj.push_back(Pair("wallet_status", "stakingonly"));
-  if (pwalletMain->IsLocked() && pwalletMain->IsCrypted())
-      	obj.push_back(Pair("wallet_status", "locked"));
+	if (!pwalletMain->IsLocked() && pwalletMain->IsCrypted() && !fWalletUnlockStakingOnly)
+		obj.push_back(Pair("wallet_status", "unlocked"));
+	if (!pwalletMain->IsLocked() && pwalletMain->IsCrypted() && fWalletUnlockStakingOnly)
+		obj.push_back(Pair("wallet_status", "stakingonly"));
+	if (pwalletMain->IsLocked() && pwalletMain->IsCrypted())
+		obj.push_back(Pair("wallet_status", "locked"));
     obj.push_back(Pair("errors",        GetWarnings("statusbar")));
     return obj;
 }
 
 
-// Wallet Lock Status RPC
-// Credit to Carsenk
+// Innova (INN) Wallet Lock Status RPC
+// Credit to Carsenk - Original Legatus Legionis - Q0FSU0VOIEtMT0NL
+// Q0lSQ1VJVEJSRUFLRVI=
 Value walletstatus(const Array& params, bool fHelp)
 {
 	if (fHelp || params.size() != 0)
         throw runtime_error(
             "walletstatus\n"
-			"Returns the current wallet lock and encryption status.");
+			             "Returns the current wallet lock and encryption status.");
 
 	Object obj;
-    if (pwalletMain->IsCrypted())
+  if (pwalletMain->IsCrypted())
         obj.push_back(Pair("unlocked_until", (int64_t)nWalletUnlockTime / 1000));
 	if (!pwalletMain->IsCrypted())
         obj.push_back(Pair("wallet_status", "unencrypted"));
@@ -189,7 +195,7 @@ Value walletstatus(const Array& params, bool fHelp)
 	if (pwalletMain->IsLocked() && pwalletMain->IsCrypted())
 		obj.push_back(Pair("wallet_status", "locked"));
 
-	return obj;
+	  return obj;
 }
 
 Value getnewpubkey(const Array& params, bool fHelp)
@@ -385,7 +391,13 @@ Value sendtoaddress(const Array& params, bool fHelp)
             "<amount> is a real and is rounded to the nearest 0.000001"
             + HelpRequiringPassphrase());
 
-    //EnsureWalletIsUnlocked();
+    EnsureWalletIsUnlocked();
+
+    /*
+    if (params[0].get_str().length() > 75
+      && IsStealthAddress(params[0].get_str()))
+      return sendtostealthaddress(params, false);
+    */
 
     CBitcoinAddress address(params[0].get_str());
     if (!address.IsValid())
@@ -441,8 +453,8 @@ Value burn(const Array& params, bool fHelp)
             "\nExamples:\n" +
 
             ("burn", "0.1") +
-            ("burn", "0.1 \"hello world\"") +
-            ("burn", "0.1, \"hello world\""));
+            ("burn", "0.1 \"burn test\"") +
+            ("burn", "0.1, \"burn test\""));
 
     LOCK2(cs_main, pwalletMain->cs_wallet);
 
@@ -1786,7 +1798,7 @@ Value walletpassphrase(const Array& params, bool fHelp)
 
     // Innova: if user OS account compromised prevent trivial sendmoney commands
     // if (params.size() > 2 && params[2].get_bool() == true)
-        // fWalletUnlockStakingOnly = true;
+    //     fWalletUnlockStakingOnly = true;
 	if (params.size() > 2)
         fWalletUnlockStakingOnly = params[2].get_bool();
     else
@@ -2213,6 +2225,10 @@ Value importstealthaddress(const Array& params, bool fHelp)
     std::string sSpendSecret = params[1].get_str();
     std::string sLabel;
 
+    if (pwalletMain->IsLocked())
+    {
+        throw runtime_error("Failed: Wallet must be unlocked.");
+    }
 
     if (params.size() > 2)
     {

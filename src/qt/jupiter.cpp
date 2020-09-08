@@ -58,14 +58,13 @@ Jupiter::~Jupiter()
 
 void Jupiter::on_filePushButton_clicked()
 {
-
+  //Upload a file
 	fileName = QFileDialog::getOpenFileName(this,
     tr("Upload File to IPFS"), "./", tr("All Files (*.*)"));
 
     //fileCont = QFileDialog::getOpenFileContent("All Files (*.*)",  fileContentReady);
 
-    ui->labelFile->setText(fileName);
-
+  ui->labelFile->setText(fileName);
 }
 
 void Jupiter::on_createPodButton_clicked()
@@ -389,91 +388,90 @@ std::string filename = fileName.toStdString().c_str();
 boost::filesystem::path p(filename);
 std::string basename = p.filename().string();
 
-        ipfsFile.open(fileName.toStdString().c_str(), std::ios::binary);
-        std::vector<char> ipfsContents((std::istreambuf_iterator<char>(ipfsFile)), std::istreambuf_iterator<char>());
+    ipfsFile.open(fileName.toStdString().c_str(), std::ios::binary);
+    std::vector<char> ipfsContents((std::istreambuf_iterator<char>(ipfsFile)), std::istreambuf_iterator<char>());
 
-        std::string ipfsC(ipfsContents.begin(), ipfsContents.end());
+    std::string ipfsC(ipfsContents.begin(), ipfsContents.end());
 
-        std::string fileContents = ipfsC.c_str();
+    std::string fileContents = ipfsC.c_str();
 
-        printf("Jupiter Upload File Start: %s\n", basename.c_str());
-        //printf("Jupiter File Contents: %s\n", ipfsC.c_str());
+    printf("Jupiter Upload File Start: %s\n", basename.c_str());
+    //printf("Jupiter File Contents: %s\n", ipfsC.c_str());
 
-        client.FilesAdd(
-        {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, fileName.toStdString().c_str()}},
-        &add_result);
+    client.FilesAdd(
+    {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, fileName.toStdString().c_str()}},
+    &add_result);
 
-        const std::string& hash = add_result[0]["hash"];
+    const std::string& hash = add_result[0]["hash"];
 
-        ui->lineEdit->setText(QString::fromStdString(hash));
+    ui->lineEdit->setText(QString::fromStdString(hash));
 
-        std::string r = add_result.dump();
-        printf("Jupiter Successfully Added IPFS File(s): %s\n", r.c_str());
+    std::string r = add_result.dump();
+    printf("Jupiter Successfully Added IPFS File(s): %s\n", r.c_str());
 
-        if (hash != "") {
-          ui->checkButton->setHidden(false);
-          //ui->checkLabel->setHidden(false);
-          ui->lineEdit->setHidden(false);
-          ui->hashLabel->setHidden(false);
-          ui->checkButtonCloudflare->setHidden(false);
-        }
-
-      } catch (const std::exception& e) {
-          std::cerr << e.what() << std::endl; //302 error on large files: passing null and throwing exception
-          QMessageBox errbox;
-          errbox.setText(QString::fromStdString(e.what()));
-          errbox.exec();
-      }
-
+    if (hash != "") {
+      ui->checkButton->setHidden(false);
+      //ui->checkLabel->setHidden(false);
+      ui->lineEdit->setHidden(false);
+      ui->hashLabel->setHidden(false);
+      ui->checkButtonCloudflare->setHidden(false);
     }
+
+  } catch (const std::exception& e) {
+      std::cerr << e.what() << std::endl; //302 error on large files: passing null and throwing exception
+      QMessageBox errbox;
+      errbox.setText(QString::fromStdString(e.what()));
+      errbox.exec();
+  }
+
+}
 #endif
 
 }
 
 void Jupiter::on_checkButton_clicked()
 {
-
     if(fileName == "")
-    {
-  noImageSelected();
-  return;
-    }
-
-    //go to public IPFS gateway
-        std::string linkurl = "https://ipfs.infura.io/ipfs/";
-    //open url
-    QString link = QString::fromStdString(linkurl + ui->lineEdit->text().toStdString());
-    QDesktopServices::openUrl(QUrl(link));
-    */
-}
-
-void Jupiter::on_checkButtonCloudflare_clicked()
-{if(fileName == "")
     {
       noImageSelected();
       return;
     }
 
     //go to public IPFS gateway
-    std::string linkurl2 = "https://cloudflare-ipfs.com/ipfs/";
+    std::string linkurl = "https://ipfs.infura.io/ipfs/";
     //open url
-    QString link2 = QString::fromStdString(linkurl2 + ui->lineEdit->text().toStdString());
-    QDesktopServices::openUrl(QUrl(link2));
+    QString link = QString::fromStdString(linkurl + ui->lineEdit->text().toStdString());
+    QDesktopServices::openUrl(QUrl(link));
+
+}
+
+void Jupiter::on_checkButtonCloudflare_clicked()
+{
+  if(fileName == "")
+      {
+        noImageSelected();
+        return;
+      }
+      //go to public IPFS gateway
+   std::string linkurl2 = "https://cloudflare-ipfs.com/ipfs/";
+   //open url
+   QString link2 = QString::fromStdString(linkurl2 + ui->lineEdit->text().toStdString());
+   QDesktopServices::openUrl(QUrl(link2));
 }
 
 void Jupiter::on_checkHashButton_clicked()
 {
-    if(fileName == "")
-    {
-      noImageSelected();
-      return;
-    }
+   if(fileName == "")
+   {
+     noImageSelected();
+     return;
+   }
 
-    //go to public IPFS gateway
-    std::string linkurl3 = "https://explorer.innovacoin.io/tx/";
-    //open url
-    QString link3 = QString::fromStdString(linkurl3 + ui->lineEdit_3->text().toStdString());
-    QDesktopServices::openUrl(QUrl(link3));
+   //go to public IPFS gateway
+   std::string linkurl3 = "https://chainz.cryptoid.info/d/tx.dws?";
+   //open url
+   QString link3 = QString::fromStdString(linkurl3 + ui->lineEdit_3->text().toStdString());
+   QDesktopServices::openUrl(QUrl(link3));
 }
 
 void Jupiter::noImageSelected()

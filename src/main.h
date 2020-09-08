@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
-// Copyright (c) 2017-2018 The Denarius developers
-// Copyright (c) 2019 The Innova developers
+// Copyright (c) 2017-2020 The Denarius developers
+// Copyright (c) 2019-2020 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #ifndef BITCOIN_MAIN_H
@@ -70,9 +70,9 @@ static const unsigned int MAX_BLOCK_SIGOPS = MAX_BLOCK_SIZE/50;
 static const unsigned int MAX_TX_SIGOPS = MAX_BLOCK_SIGOPS/5;
 //static const unsigned int MAX_ORPHAN_TRANSACTIONS = MAX_BLOCK_SIZE/100; deprecated
 /** Default for -maxorphantx, maximum number of orphan transactions kept in memory */
-static const unsigned int DEFAULT_MAX_ORPHAN_TRANSACTIONS = 100;
+static const unsigned int DEFAULT_MAX_ORPHAN_TRANSACTIONS = 100; // Was 10k
 /** Default for -maxorphanblocks, maximum number of orphan blocks kept in memory */
-static const unsigned int DEFAULT_MAX_ORPHAN_BLOCKS = 750;
+static const unsigned int DEFAULT_MAX_ORPHAN_BLOCKS = 750; //Default 750, try testing with 1000
 static const unsigned int MAX_INV_SZ = 50000;
 static const int64_t MIN_TX_FEE = 1000;
 static const int64_t MIN_TX_FEE_ANON = 10000;
@@ -610,9 +610,6 @@ public:
     void setAbandoned() { hashBlock = ABANDON_HASH; }
 };
 
-
-
-
 /**  A txdb record that contains the disk location of a transaction and the
  * locations of transactions that spend its outputs.  vSpent is really only
  * used as a flag, but having the location is very helpful for debugging.
@@ -713,13 +710,13 @@ public:
 
     IMPLEMENT_SERIALIZE
     (
-        READWRITE(this->nVersion);
-        nVersion = this->nVersion;
-        READWRITE(hashPrevBlock);
-        READWRITE(hashMerkleRoot);
-        READWRITE(nTime);
-        READWRITE(nBits);
-        READWRITE(nNonce);
+      READWRITE(this->nVersion);
+      nVersion = this->nVersion;
+      READWRITE(hashPrevBlock);
+      READWRITE(hashMerkleRoot);
+      READWRITE(nTime);
+      READWRITE(nBits);
+      READWRITE(nNonce);
 
         // ConnectBlock depends on vtx following header to generate CDiskTxPos
         if (!(nType & (SER_GETHASH|SER_BLOCKHEADERONLY)))
@@ -950,10 +947,6 @@ private:
 };
 
 
-
-
-
-
 /** The block chain is a tree shaped structure starting with the
  * genesis block at the root, with each block potentially having multiple
  * candidates to be the next block.  pprev and pnext link a path through the
@@ -974,9 +967,6 @@ public:
 
     int64_t nMint;
     int64_t nMoneySupply;
-
-    // (memory only) Total amount of work (expected number of hashes) in the chain up to and including this block
-    uint256 nChainWork;
 
     // Number of transactions in this block.
     // Note: in a potential headers-first mode, this number cannot be relied upon
@@ -1019,9 +1009,6 @@ public:
         nBlockPos = 0;
         nHeight = 0;
         nChainTrust = 0;
-        nChainWork = 0;
-        nTx = 0;
-        nChainTx = 0;
         nMint = 0;
         nMoneySupply = 0;
         nFlags = 0;
@@ -1047,9 +1034,6 @@ public:
         nBlockPos = nBlockPosIn;
         nHeight = 0;
         nChainTrust = 0;
-        nChainWork = 0;
-        nTx = 0;
-        nChainTx = 0;
         nMint = 0;
         nMoneySupply = 0;
         nFlags = 0;
@@ -1207,17 +1191,15 @@ public:
     }
 };
 
+  /** Used to marshal pointers into hashes for db storage. */
+  class CDiskBlockIndex : public CBlockIndex
+  {
+  private:
+      uint256 blockHash;
 
-
-/** Used to marshal pointers into hashes for db storage. */
-class CDiskBlockIndex : public CBlockIndex
-{
-private:
-    uint256 blockHash;
-
-public:
-    uint256 hashPrev;
-    uint256 hashNext;
+  public:
+      uint256 hashPrev;
+      uint256 hashNext;
 
     CDiskBlockIndex()
     {
@@ -1301,13 +1283,6 @@ public:
         printf("%s\n", ToString().c_str());
     }
 };
-
-
-
-
-
-
-
 
 /** Describes a place in the block chain to another node such that if the
  * other node doesn't have the same branch, it can find a recent common trunk.

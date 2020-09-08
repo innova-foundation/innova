@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
 // Copyright (c) 2017-2018 The Denarius developers
-// Copyright (c) 2019 The Innova developers
+// Copyright (c) 2019-2020 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -524,7 +524,6 @@ bool AppInit2()
     fNativeTor = GetBoolArg("-nativetor");
     fJupiterLocal = GetBoolArg("-jupiterlocal");
 
-    //if (fTestNet)
 
     if (mapArgs.count("-bind"))
     {
@@ -711,6 +710,10 @@ bool AppInit2()
 
     int64_t nStart;
 
+    // SMSG_RELAY Node Enum
+    if (fNoSmsg)
+        nLocalServices &= ~(SMSG_RELAY);
+
     // Anonymous Ring Signatures ~ I n n o v a - v3.0.0.0
     if (initialiseRingSigs() != 0)
         return InitError("initialiseRingSigs() failed.");
@@ -753,7 +756,7 @@ bool AppInit2()
 
     // ********************************************************* Step 6: network initialization
 
-    //nBloomFilterElements = GetArg("-bloomfilterelements", 1536);
+    nBloomFilterElements = GetArg("-bloomfilterelements", 1536);
 
     int nSocksVersion = GetArg("-socks", 5);
 
@@ -1123,6 +1126,9 @@ bool AppInit2()
 
     // Add wallet transactions that aren't already in a block to mapTransactions
     pwalletMain->ReacceptWalletTransactions();
+
+    // Init Bloom Filters
+    //pwalletMain->InitBloomFilter();
 
     // ********************************************************* Step 9: import blocks
 
