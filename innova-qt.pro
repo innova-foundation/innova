@@ -1,6 +1,6 @@
 TEMPLATE = app
 TARGET = Innova
-VERSION = 4.3.8.8
+VERSION = 4.3.8.9
 INCLUDEPATH += src src/json src/qt src/qt/plugins/mrichtexteditor
 DEFINES += QT_GUI BOOST_THREAD_USE_LIB BOOST_SPIRIT_THREADSAFE CURL_STATICLIB
 CONFIG += no_include_pwd
@@ -100,6 +100,7 @@ contains(USE_IPFS, -) {
 	SOURCES += src/ipfs.cc \
 		src/ipfscurl.cc
 }
+
 
 # use: qmake "USE_NATIVETOR=1" ( enabled by default; default)
 #  or: qmake "USE_NATIVETOR=0" (disabled by default)
@@ -678,7 +679,7 @@ FORMS += \
     src/qt/forms/blockbrowser.ui \
     src/qt/forms/marketbrowser.ui \
     src/qt/forms/proofofimage.ui \
-    src/qt/forms/jupiter.ui
+    src/qt/forms/jupiter.ui \
     src/qt/forms/termsofuse.ui \
     src/qt/forms/fortunastakemanager.ui \
     src/qt/forms/addeditadrenalinenode.ui \
@@ -695,8 +696,6 @@ HEADERS += src/qt/qrcodedialog.h
 SOURCES += src/qt/qrcodedialog.cpp
 FORMS += src/qt/forms/qrcodedialog.ui
 }
-
-
 
 CODECFORTR = UTF-8
 
