@@ -1,6 +1,5 @@
-// Copyright (c) 2017-2018 The Denarius developers
-// Copyright (c) 2017-2019 The Denarius developers
-// Copyright (c) 2017-2019 The Innova developers
+// Copyright (c) 2017-2020 The Denarius developers
+// Copyright (c) 2019-2020 The Innova developers
 // Copyright (c) 2009-2012 The Darkcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.

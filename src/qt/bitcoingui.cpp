@@ -83,15 +83,15 @@ extern int64_t nLastCoinStakeSearchInterval;
 double GetPoSKernelPS();
 
 #define VERTICAL_TOOBAR_STYLESHEET "QToolBar {\
-border: 1px solid #1c1c28;\
+border:none;\
 height:100%;\
 padding-top:20px;\
 text-align: left;\
 }\
 QToolButton {\
 min-width:180px;\
-background-color: #1c1c28;\
-border: 1px solid #1c1c28;\
+background-color: transparent;\
+border: 1px solid #707070;\
 border-radius: 3px;\
 margin: 3px;\
 padding-left: 5px;\
@@ -102,16 +102,16 @@ text-align: left;\
 padding-bottom:5px;\
 }\
 QToolButton:pressed {\
-background-color: #66a0c3;\
-border: 1px solid #01619b;\
+background-color: #31363B;\
+border: 1px solid silver;\
 }\
 QToolButton:hover {\
-background-color: #01619b;\
+background-color: #31363B;\
 border: 1px solid #707070;\
 }"
 #define HORIZONTAL_TOOLBAR_STYLESHEET "QToolBar {\
-    border: 1px solid #1c1c28;\
-    background: 1px solid #1c1c28;\
+    border: 1px solid #707070;\
+    background: 1px solid #31363B;\
     font-weight: bold;\
 }"
 
@@ -142,8 +142,9 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     nBlocksInLastPeriod(0),
     nLastBlocks(0)
 {
-    resize(600, 400);
-    setWindowTitle(tr("Innova") + " - " + tr("Wallet"));
+  resize(600, 400);
+  setWindowTitle(tr("Innova") + " - " + tr("Wallet"));
+
 #ifndef Q_OS_MAC
     qApp->setWindowIcon(QIcon(":icons/innova"));
     setWindowIcon(QIcon(":icons/innova"));
@@ -179,22 +180,18 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     createTrayIcon();
 
     fFSLock = GetBoolArg("-fsconflock");
-    fThinMode = GetBoolArg("-thinmode");
     fNativeTor = GetBoolArg("-nativetor");
     fJupiterLocal = GetBoolArg("-jupiterlocal");
 
     // Create tabs
     overviewPage = new OverviewPage();
-	  statisticsPage = new StatisticsPage(this);
-	  blockBrowser = new BlockBrowser(this);
+	statisticsPage = new StatisticsPage(this);
+	blockBrowser = new BlockBrowser(this);
     marketBrowser = new MarketBrowser(this);
-	  multisigPage = new MultisigDialog(this);
+	multisigPage = new MultisigDialog(this);
     proofOfImagePage = new ProofOfImage(this);
     jupiterPage = new Jupiter(this);
 	//chatWindow = new ChatWindow(this);
-
-    fFSLock = GetBoolArg("-fsconflock");
-    fNativeTor = GetBoolArg("-nativetor");
 
     transactionsPage = new QWidget(this);
     QVBoxLayout *vbox = new QVBoxLayout();
@@ -202,7 +199,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     vbox->addWidget(transactionView);
     transactionsPage->setLayout(vbox);
 
-	  mintingPage = new QWidget(this);
+	mintingPage = new QWidget(this);
     QVBoxLayout *vboxMinting = new QVBoxLayout();
     mintingView = new MintingView(this);
     vboxMinting->addWidget(mintingView);
@@ -222,15 +219,15 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     centralWidget = new QStackedWidget(this);
     centralWidget->addWidget(overviewPage);
     centralWidget->addWidget(transactionsPage);
-	  centralWidget->addWidget(mintingPage);
+	centralWidget->addWidget(mintingPage);
     centralWidget->addWidget(addressBookPage);
     centralWidget->addWidget(receiveCoinsPage);
     centralWidget->addWidget(sendCoinsPage);
     centralWidget->addWidget(messagePage);
-	  centralWidget->addWidget(statisticsPage);
-	  centralWidget->addWidget(blockBrowser);
+    centralWidget->addWidget(statisticsPage);
+	centralWidget->addWidget(blockBrowser);
     centralWidget->addWidget(fortunastakeManagerPage);
-	  centralWidget->addWidget(marketBrowser);
+	centralWidget->addWidget(marketBrowser);
     centralWidget->addWidget(proofOfImagePage);
     centralWidget->addWidget(jupiterPage);
 	//centralWidget->addWidget(chatWindow);
@@ -272,7 +269,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     {
         QTimer *timerStakingIcon = new QTimer(labelStakingIcon);
         connect(timerStakingIcon, SIGNAL(timeout()), this, SLOT(updateStakingIcon()));
-        timerStakingIcon->start(1000); // Update once every second
+        timerStakingIcon->start(1000); // Set to update every 1000ms (1 second) better CPU usage
         updateStakingIcon();
     }
 
@@ -580,19 +577,20 @@ void BitcoinGUI::createToolBars()
     mainToolbar = addToolBar(tr("Tabs toolbar"));
     mainToolbar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
     mainToolbar->addWidget(mainIcon);
+
     mainToolbar->addAction(overviewAction);
-    mainToolbar->addAction(sendCoinsAction);
-    mainToolbar->addAction(receiveCoinsAction);
-    mainToolbar->addAction(historyAction);
-    mainToolbar->addAction(addressBookAction);
-    mainToolbar->addAction(statisticsAction);
-	mainToolbar->addAction(fortunastakeManagerAction);
-	mainToolbar->addAction(proofOfImageAction);
+  mainToolbar->addAction(sendCoinsAction);
+  mainToolbar->addAction(receiveCoinsAction);
+  mainToolbar->addAction(historyAction);
+  mainToolbar->addAction(addressBookAction);
+  mainToolbar->addAction(statisticsAction);
+  mainToolbar->addAction(fortunastakeManagerAction);
+  mainToolbar->addAction(proofOfImageAction);
   mainToolbar->addAction(jupiterAction);
-	mainToolbar->addAction(marketAction);
-    mainToolbar->addAction(blockAction);
-	mainToolbar->addAction(messageAction);
-	mainToolbar->addAction(mintingAction);
+  mainToolbar->addAction(marketAction);
+  mainToolbar->addAction(blockAction);
+  mainToolbar->addAction(messageAction);
+  mainToolbar->addAction(mintingAction);
 
     secondaryToolbar = addToolBar(tr("Actions toolbar"));
     secondaryToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -686,8 +684,7 @@ void BitcoinGUI::setWalletModel(WalletModel *walletModel)
 
         // Put transaction list in tabs
         transactionView->setModel(walletModel);
-
-		mintingView->setModel(walletModel);
+        mintingView->setModel(walletModel);
 
         overviewPage->setModel(walletModel);
         addressBookPage->setModel(walletModel->getAddressTableModel());
@@ -831,8 +828,8 @@ void BitcoinGUI::setNumConnections(int count)
         labelConnectTypeIcon->setToolTip(tr("Not Connected via the Tor Network, Start Innova with the flag nativetor=1"));
     }
     if (fFSLock == true) {
-       labelFSLockIcon->setPixmap(QIcon(":/icons/fs").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
-   }
+        labelFSLockIcon->setPixmap(QIcon(":/icons/fs").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
+    }
 }
 
 void BitcoinGUI::setNumBlocks(int count, int nTotalBlocks)
@@ -853,51 +850,50 @@ void BitcoinGUI::setNumBlocks(int count, int nTotalBlocks)
     if (nLastBlocks == 0)
         nLastBlocks = pindexBest->nHeight;
 
-    if (count > nLastBlocks && GetTime() - nClientUpdateTime > BPS_PERIOD) {
-        nBlocksInLastPeriod = count - nLastBlocks;
-        nLastBlocks = count;
-        nClientUpdateTime = GetTime();
-    }
-    if (nBlocksInLastPeriod>0)
-        nBlocksPerSec = nBlocksInLastPeriod / BPS_PERIOD;
-    else
-        nBlocksPerSec = 0;
+        if (count > nLastBlocks && GetTime() - nClientUpdateTime > BPS_PERIOD) {
+            nBlocksInLastPeriod = count - nLastBlocks;
+            nLastBlocks = count;
+            nClientUpdateTime = GetTime();
+        }
+        if (nBlocksInLastPeriod>0)
+            nBlocksPerSec = nBlocksInLastPeriod / BPS_PERIOD;
+        else
+            nBlocksPerSec = 0;
 
-    if (nBlocksPerSec>0) {
-        nRemainingTime = QDateTime::fromTime_t((nTotalBlocks - count) / nBlocksPerSec).toUTC().toString("hh'h'mm'm'");
-    }
+            if (nBlocksPerSec>0) {
+              nRemainingTime = QDateTime::fromTime_t((nTotalBlocks - count) / nBlocksPerSec).toUTC().toString("hh'h'mm'm'");
+          }
 
-    QDateTime lastBlockDate = clientModel->getLastBlockDate();
-    int secs = lastBlockDate.secsTo(QDateTime::currentDateTime());
-    QString text;
+          QDateTime lastBlockDate = clientModel->getLastBlockDate();
+          int secs = lastBlockDate.secsTo(QDateTime::currentDateTime());
+          QString text;
+          // Represent time from last generated block in human readable text
+          if(secs <= 0)
+          {
+              // Fully up to date. Leave text empty.
+          }
+          else if(secs < 60)
+          {
+              text = tr("%n second(s) ago","",secs);
+          }
+          else if(secs < 60*60)
+          {
+              text = tr("%n minute(s) ago","",secs/60);
+          }
+          else if(secs < 24*60*60)
+          {
+              text = tr("%n hour(s) ago","",secs/(60*60));
+          }
+          else
+          {
+              text = tr("%n day(s) ago","",secs/(60*60*24));
+          }
 
-    // Represent time from last generated block in human readable text
-    if(secs <= 0)
-    {
-        // Fully up to date. Leave text empty.
-    }
-    else if(secs < 60)
-    {
-        text = tr("%n second(s) ago","",secs);
-    }
-    else if(secs < 60*60)
-    {
-        text = tr("%n minute(s) ago","",secs/60);
-    }
-    else if(secs < 24*60*60)
-    {
-        text = tr("%n hour(s) ago","",secs/(60*60));
-    }
-    else
-    {
-        text = tr("%n day(s) ago","",secs/(60*60*24));
-    }
-
-    if (IsInitialBlockDownload() || count < nTotalBlocks-30) // if we're in initial download or more than 30 blocks behind
-    {
-        int nRemainingBlocks = nTotalBlocks - count;
-        float nPercentageDone = count / (nTotalBlocks * 0.01f);
-        if (strStatusBarWarnings.isEmpty())
+          if (IsInitialBlockDownload() || count < nTotalBlocks-30) // if we're in initial download or more than 30 blocks behind
+          {
+              int nRemainingBlocks = nTotalBlocks - count;
+              float nPercentageDone = count / (nTotalBlocks * 0.01f);
+              if (strStatusBarWarnings.isEmpty())
         {
             progressBarLabel->setText(tr("Synchronizing with the network..."));
             progressBarLabel->setVisible(true);
@@ -927,33 +923,33 @@ void BitcoinGUI::setNumBlocks(int count, int nTotalBlocks)
         if (strStatusBarWarnings.isEmpty())
             progressBarLabel->setVisible(false);
 
-        tooltip = tr("Up to date") + QString(".<br>") + tooltip;
-        labelBlocksIcon->setPixmap(QIcon(":/icons/synced").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
-        overviewPage->showOutOfSyncWarning(false);
-        progressBar->setVisible(false);
-        tooltip = tr("Downloaded %1 blocks of transaction history.").arg(count);
-    }
+            tooltip = tr("Up to date") + QString(".<br>") + tooltip;
+            labelBlocksIcon->setPixmap(QIcon(":/icons/synced").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
+            overviewPage->showOutOfSyncWarning(false);
+            progressBar->setVisible(false);
+            tooltip = tr("Downloaded %1 blocks of transaction history.").arg(count);
+        }
 
-    // Override progressBarLabel text and hide progress bar, when we have warnings to display
-    if (!strStatusBarWarnings.isEmpty())
-    {
-        progressBarLabel->setText(strStatusBarWarnings);
-        progressBarLabel->setVisible(true);
-        progressBar->setVisible(false);
-    }
+        // Override progressBarLabel text and hide progress bar, when we have warnings to display
+        if (!strStatusBarWarnings.isEmpty())
+        {
+            progressBarLabel->setText(strStatusBarWarnings);
+            progressBarLabel->setVisible(true);
+            progressBar->setVisible(false);
+        }
 
-    if(!text.isEmpty())
-    {
-        tooltip += QString("<br>");
-        tooltip += tr("Last received block was generated %1.").arg(text);
-    }
+        if(!text.isEmpty())
+        {
+            tooltip += QString("<br>");
+            tooltip += tr("Last received block was generated %1.").arg(text);
+        }
 
-    // Don't word-wrap this (fixed-width) tooltip
-    tooltip = QString("<nobr>") + tooltip + QString("</nobr>");
+        // Don't word-wrap this (fixed-width) tooltip
+        tooltip = QString("<nobr>") + tooltip + QString("</nobr>");
 
-    labelBlocksIcon->setToolTip(tooltip);
-    progressBarLabel->setToolTip(tooltip);
-    progressBar->setToolTip(tooltip);
+        labelBlocksIcon->setToolTip(tooltip);
+        progressBarLabel->setToolTip(tooltip);
+        progressBar->setToolTip(tooltip);
 }
 
 void BitcoinGUI::error(const QString &title, const QString &message, bool modal)
@@ -1436,11 +1432,12 @@ void BitcoinGUI::backupWallet()
 {
     QString saveDir = QDesktopServices::storageLocation(QDesktopServices::DocumentsLocation);
     QString filename = QFileDialog::getSaveFileName(this, tr("Backup Wallet"), saveDir, tr("Wallet Data (*.dat)"));
+
     if(!filename.isEmpty()) {
         if(!walletModel->backupWallet(filename)) {
-          QMessageBox::warning(this, tr("Backup Failed"), tr("There was an error trying to save your wallet data to %1.").arg(filename));
-    } else {
-        QMessageBox::warning(this, tr("Backup Successful!"), tr("Successfully saved your wallet data to %1.").arg(filename));
+            QMessageBox::warning(this, tr("Backup Failed"), tr("There was an error trying to save your wallet data to %1.").arg(filename));
+        } else {
+            QMessageBox::warning(this, tr("Backup Successful!"), tr("Successfully saved your wallet data to %1.").arg(filename));
         }
     }
 }

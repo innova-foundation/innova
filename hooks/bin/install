@@ -4,7 +4,7 @@ DATA_DIR="$SNAP_USER_COMMON"
 CONFIG="$DATA_DIR/innova.conf"
 
 # This may be used to bootstrap config settings from the environment settings
-# given by the snap installation command. Otherwise, denariusd will make it's
+# given by the snap installation command. Otherwise, innovad will make it's
 # own config on start.
 
 ### examples:

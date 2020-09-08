@@ -11,7 +11,6 @@
 #include <map>
 
 class CBlockIndex;
-class CBlockThinIndex;
 
 #include "json/json_spirit_reader_template.h"
 #include "json/json_spirit_writer_template.h"
@@ -128,6 +127,7 @@ public:
      * @throws an exception (json_spirit::Value) when an error happens.
      */
     json_spirit::Value execute(const std::string &method, const json_spirit::Array &params) const;
+
     /**
     * Returns a list of registered commands
     * @returns List of registered commands.
@@ -141,7 +141,6 @@ extern int64_t nWalletUnlockTime;
 extern int64_t AmountFromValue(const json_spirit::Value& value);
 extern json_spirit::Value ValueFromAmount(int64_t amount);
 extern double GetDifficulty(const CBlockIndex* blockindex = NULL);
-extern double GetHeaderDifficulty(const CBlockThinIndex* blockindex = NULL);
 
 extern double GetPoWMHashPS();
 extern double GetPoSKernelPS();
@@ -150,7 +149,7 @@ extern std::string HexBits(unsigned int nBits);
 extern std::string HelpRequiringPassphrase();
 extern void EnsureWalletIsUnlocked();
 
-//
+// Q0lSQ1VJVEJSRUFLRVI=
 // Utilities: convert hex-encoded Values
 // (throws error if not hex).
 //
@@ -217,7 +216,7 @@ extern json_spirit::Value walletpassphrase(const json_spirit::Array& params, boo
 extern json_spirit::Value walletpassphrasechange(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value walletlock(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value encryptwallet(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value walletstatus(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value walletstatus(const json_spirit::Array& params, bool fHelp); //Q0lSQ1VJVEJSRUFLRVI=
 extern json_spirit::Value validateaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getinfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value reservebalance(const json_spirit::Array& params, bool fHelp);
@@ -242,6 +241,7 @@ extern json_spirit::Value getbestblockhash(const json_spirit::Array& params, boo
 extern json_spirit::Value getblockcount(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getblockchaininfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getdifficulty(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value setbestblockbyheight(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value dumpbootstrap(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value settxfee(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getrawmempool(const json_spirit::Array& params, bool fHelp);
@@ -254,7 +254,6 @@ extern json_spirit::Value getcheckpoint(const json_spirit::Array& params, bool f
 extern json_spirit::Value gettxout(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value importaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value proofofdata(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value burn(const json_spirit::Array& params, bool fHelp);
 
 extern json_spirit::Value jupiterversion(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value jupiterupload(const json_spirit::Array& params, bool fHelp);
@@ -264,13 +263,15 @@ extern json_spirit::Value jupiterduopod(const json_spirit::Array& params, bool f
 extern json_spirit::Value jupitergetblock(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value jupitergetstat(const json_spirit::Array& params, bool fHelp);
 
+extern json_spirit::Value burn(const json_spirit::Array& params, bool fHelp);
+
 extern json_spirit::Value getnewstealthaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value liststealthaddresses(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value importstealthaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value clearwallettransactions(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value scanforalltxns(const json_spirit::Array& params, bool fHelp);
 
-//RPC Ring Sigs - I n n o v a
+//RPC Ring Sigs - I n n o v a - Q0lSQ1VJVEJSRUFLRVI=
 extern json_spirit::Value sendinntoanon(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value sendanontoanon(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value sendanontoinn(const json_spirit::Array& params, bool fHelp);

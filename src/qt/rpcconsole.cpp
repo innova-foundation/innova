@@ -385,11 +385,15 @@ void RPCConsole::setNumBlocks(int count, int countOfPeers)
 {
     ui->numberOfBlocks->setText(QString::number(count));
     ui->totalBlocks->setText(QString::number(countOfPeers));
+
+    QDateTime lastBlockDate;
+    lastBlockDate = clientModel->getLastBlockDate();
+
     if(clientModel)
     {
         // If there is no current number available display N/A instead of 0, which can't ever be true
         ui->totalBlocks->setText(clientModel->getNumBlocksOfPeers() == 0 ? tr("N/A") : QString::number(clientModel->getNumBlocksOfPeers()));
-        ui->lastBlockTime->setText(clientModel->getLastBlockDate().toString());
+        ui->lastBlockTime->setText(lastBlockDate.toString());
     }
 }
 
@@ -613,7 +617,7 @@ void RPCConsole::updateNodeDetail(const CNodeCombinedStats *stats)
     ui->peerSubversion->setText(QString::fromStdString(stats->nodeStats.strSubVer));
     ui->peerId->setText(QString("%1").arg(stats->nodeStats.nodeid));
     ui->peerDirection->setText(stats->nodeStats.fInbound ? tr("Inbound") : tr("Outbound"));
-    ui->peerHeight->setText(QString("%1").arg(stats->nodeStats.nStartingHeight));
+    ui->peerHeight->setText(QString("%1").arg(stats->nodeStats.nChainHeight));
 
     // This check fails for example if the lock was busy and
     // nodeStateStats couldn't be fetched.
