@@ -1,4 +1,4 @@
-// Copyright (c) 2018 The Innova developers
+// Copyright (c) 2018 The Denarius developers
 // Copyright (c) 2014-2016 The ShadowCoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file license.txt or http://www.opensource.org/licenses/mit-license.php.
@@ -20,6 +20,7 @@ static EC_GROUP *ecGrp   = NULL;
 static BN_CTX   *bnCtx   = NULL;
 static BIGNUM   *bnOrder = NULL;
 
+
 void printBigNum(BIGNUM *b)
 {
   char *number = BN_bn2hex(b);
@@ -34,17 +35,18 @@ int initialiseRingSigs()
     if (fDebugRingSig)
         printf("initialiseRingSigs()\n");
 
- // if (!(ecGrp = EC_GROUP_new_by_curve_name(NID_secp256k1)))
-      // printf("initialiseRingSigs(): EC_GROUP_new_by_curve_name failed.");
+    // if (!(ecGrp = EC_GROUP_new_by_curve_name(NID_secp256k1)))
+        // printf("initialiseRingSigs(): EC_GROUP_new_by_curve_name failed.");
 
- // if (!(bnCtx = BN_CTX_new()))
-      // printf("initialiseRingSigs(): BN_CTX_new failed.");
+    // if (!(bnCtx = BN_CTX_new()))
+        // printf("initialiseRingSigs(): BN_CTX_new failed.");
 
-    if (!(ecGrp = EC_GROUP_new_by_curve_name(NID_secp256k1)))
+	if (!(ecGrp = EC_GROUP_new_by_curve_name(NID_secp256k1)))
         return errorN(1, "initialiseRingSigs(): EC_GROUP_new_by_curve_name failed.");
 
     if (!(bnCtx = BN_CTX_new()))
         return errorN(1, "initialiseRingSigs(): BN_CTX_new failed.");
+
 
     BN_CTX_start(bnCtx);
 
@@ -179,7 +181,7 @@ int getOldKeyImage(CPubKey &publicKey, ec_point &keyImage)
 
 static int hashToEC(const uint8_t *p, uint32_t len, BIGNUM *bnTmp, EC_POINT *ptRet, bool fNew=false)
 {
-    // - bn(hash(data)) * (G + bn1)
+	// - bn(hash(data)) * (G + bn1)
     int count = 0;
     uint256 pkHash = Hash(p, p + len);
     BIGNUM *bnOne = BN_CTX_get(bnCtx);
@@ -209,7 +211,7 @@ static int hashToEC(const uint8_t *p, uint32_t len, BIGNUM *bnTmp, EC_POINT *ptR
 
 int generateKeyImage(ec_point &publicKey, ec_secret secret, ec_point &keyImage)
 {
-  // - keyImage = secret * hash(publicKey) * G
+   // - keyImage = secret * hash(publicKey) * G
 
     if (publicKey.size() != EC_COMPRESSED_SIZE)
         return errorN(1, "%s: Invalid publicKey.", __func__);
@@ -238,7 +240,7 @@ int generateKeyImage(ec_point &publicKey, ec_secret secret, ec_point &keyImage)
 
     try { keyImage.resize(EC_COMPRESSED_SIZE); } catch (std::exception& e)
     {
-        LogPrintf(1, "%s: keyImage.resize threw: %s.\n", __func__, e.what());
+        LogPrintf("%s: keyImage.resize threw: %s.\n", __func__, e.what());
         rv = 1; goto End;
     }
 
@@ -261,7 +263,7 @@ int generateKeyImage(ec_point &publicKey, ec_secret secret, ec_point &keyImage)
 
 int generateRingSignature(data_chunk &keyImage, uint256 &txnHash, int nRingSize, int nSecretOffset, ec_secret secret, const uint8_t *pPubkeys, uint8_t *pSigc, uint8_t *pSigr)
 {
-    if (fDebugRingSig)
+     if (fDebugRingSig)
         LogPrintf("%s: Ring size %d.\n", __func__, nRingSize);
 
     int rv = 0;
@@ -400,7 +402,7 @@ int generateRingSignature(data_chunk &keyImage, uint256 &txnHash, int nRingSize,
             // ptL = ptT1 + ptT2
             if (!EC_POINT_add(ecGrp, ptL, ptT1, ptT2, bnCtx))
             {
-                LogPrint("%s: EC_POINT_add failed.\n", __func__);
+                LogPrintf("%s: EC_POINT_add failed.\n", __func__);
                 rv = 1; goto End;
             }
 
@@ -728,7 +730,7 @@ int generateRingSignatureAB(data_chunk &keyImage, uint256 &txnHash, int nRingSiz
     ec_secret sAlpha;
 
     if (0 != GenerateRandomSecret(sAlpha))
-        return erroN(1, "%s: GenerateRandomSecret failed.", __func__);
+        return errorN(1, "%s: GenerateRandomSecret failed.", __func__);
 
     CHashWriter ssPkHash(SER_GETHASH, PROTOCOL_VERSION);
     CHashWriter ssCjHash(SER_GETHASH, PROTOCOL_VERSION);
@@ -943,7 +945,6 @@ int generateRingSignatureAB(data_chunk &keyImage, uint256 &txnHash, int nRingSiz
           && (rv = errorN(1, "%s: hash -> bnC failed.", __func__)))
             goto End;
 
-
         if (i == nSecretOffset
          &&!BN_copy(bnCj, bnC)
          && (rv = errorN(1, "%s: BN_copy failed.\n", __func__)))
@@ -1035,15 +1036,15 @@ int verifyRingSignatureAB(data_chunk &keyImage, uint256 &txnHash, int nRingSize,
 
     // get keyimage as point
     if (!EC_POINT_oct2point(ecGrp, ptKi, &keyImage[0], EC_COMPRESSED_SIZE, bnCtx)
-    &&(rv = errorN(1, "%s: extract ptKi failed.", __func__)))
-      goto End;
+      &&(rv = errorN(1, "%s: extract ptKi failed.", __func__)))
+        goto End;
 
-  // test ECC validity with: keyimage * order == infinity/identity
-  if (!EC_POINT_mul(ecGrp, ptT4, NULL, ptKi, bnOrder, bnCtx)
-          &&(rv = errorN(1, "%s: EC_POINT_mul failed.\n", __func__)))
-      goto End;
-  if (!EC_POINT_is_at_infinity(ecGrp, ptT4)
-          &&(rv = errorN(1, "%s: keyImage not valid (ptKi * bnOrder != infinity).\n", __func__)))
+    // test ECC validity with: keyimage * order == infinity/identity
+    if (!EC_POINT_mul(ecGrp, ptT4, NULL, ptKi, bnOrder, bnCtx)
+            &&(rv = errorN(1, "%s: EC_POINT_mul failed.\n", __func__)))
+        goto End;
+    if (!EC_POINT_is_at_infinity(ecGrp, ptT4)
+            &&(rv = errorN(1, "%s: keyImage not valid (ptKi * bnOrder != infinity).\n", __func__)))
         goto End;
 
     if (!bnC1 || !BN_bin2bn(&sigC[0], EC_SECRET_SIZE, bnC1))
@@ -1062,7 +1063,7 @@ int verifyRingSignatureAB(data_chunk &keyImage, uint256 &txnHash, int nRingSize,
     printBigNum(bnC1);
     printf("\n");
 
-    for (int i = 0; i < nRingSize; ++i)
+   for (int i = 0; i < nRingSize; ++i)
     {
         if (!bnS || !(BN_bin2bn(&pSigS[i * EC_SECRET_SIZE], EC_SECRET_SIZE, bnS)))
         {
@@ -1142,7 +1143,7 @@ int verifyRingSignatureAB(data_chunk &keyImage, uint256 &txnHash, int nRingSize,
         printf("\n");
     }
 
-    // bnT = (bnC - bnC1) % N
+	// bnT = (bnC - bnC1) % N
     if (!BN_mod_sub(bnT, bnC, bnC1, bnOrder, bnCtx))
     {
         LogPrintf("%s: BN_mod_sub failed.\n", __func__);
@@ -1172,7 +1173,7 @@ int verifyRingSignatureAB(data_chunk &keyImage, uint256 &txnHash, int nRingSize,
     EC_POINT_free(ptT1);
     EC_POINT_free(ptT2);
     EC_POINT_free(ptT3);
-    EC_POINT_free(ptT4);
+	  EC_POINT_free(ptT4);
     EC_POINT_free(ptPk);
 
     return rv;
