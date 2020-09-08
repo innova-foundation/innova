@@ -2122,7 +2122,7 @@ unsigned int CTransaction::GetP2SHSigOpCount(const MapPrevTx& inputs) const
 {
   if (IsCoinBase())
       return 0;
-}
+
 unsigned int nSigOps = 0;
     for (unsigned int i = 0; i < vin.size(); i++)
     {
@@ -3194,7 +3194,7 @@ bool CTransaction::GetCoinAge(CTxDB& txdb, uint64_t& nCoinAge) const
     CBigNum bnCentSecond = 0;  // coin age in the unit of cent-seconds
     nCoinAge = 0;
 
-  if (IsCoinBase)
+  if (IsCoinBase())
       return true;
 
       BOOST_FOREACH(const CTxIn& txin, vin)
@@ -4604,7 +4604,6 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             g_signals.Inventory(inv.hash);
            }
          }
-       }
 
     else if (strCommand == "getdata")
     {
