@@ -50,7 +50,7 @@ void StatisticsPage::updateStatistics()
 
     pwalletMain->GetStakeWeight(*pwalletMain, nMinWeight, nMaxWeight, nWeight);
     uint64_t nNetworkWeight = GetPoSKernelPS();
-	int64_t marketcap = dnrmarket.toDouble();
+	  int64_t marketcap = innmarket.toDouble();
     int peers = this->model->getNumConnections();
 
     QString height = QString::number(nHeight);
