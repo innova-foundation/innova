@@ -20,12 +20,12 @@
 #define DECORATION_SIZE 36
 #define NUM_ITEMS 7
 
-const QString BaseURL = "https://innovacoin.io/innusd.php";
-const QString BaseURL2 = "https://innovacoin.io/innbitcoin.php";
-const QString BaseURL3 = "https://innovacoin.io/newsfeed.php";
-const QString BaseURL4 = "https://innovacoin.io/inneur.php";
-const QString BaseURL5 = "https://innovacoin.io/inngbp.php";
-const QString BaseURL6 = "https://innovacoin.io/innjpy.php";
+const QString BaseURL = "https://innova-foundation.com/innusd.php";
+const QString BaseURL2 = "https://innova-foundation.com/innbitcoin.php";
+const QString BaseURL3 = "https://innova-foundation.com/newsfeed.php";
+const QString BaseURL4 = "https://innova-foundation.com/inneur.php";
+const QString BaseURL5 = "https://innova-foundation.com/inngbp.php";
+const QString BaseURL6 = "https://innova-foundation.com/innjpy.php";
 double innovax;
 double inneurx;
 double inngbpx;
@@ -313,7 +313,7 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
 
 	QString news;
 	news = innnewsfeed;
-  ui->labelNewsFeed->setText(news);  
+  ui->labelNewsFeed->setText(news);
 
     // only show immature (newly mined) balance if it's non-zero, so as not to complicate things
     // for the non-mining users

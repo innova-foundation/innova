@@ -127,7 +127,7 @@ std::vector<char> imageContents((std::istreambuf_iterator<char>(imageFile)),
     std::string addr = CBitcoinAddress(keyid).ToString();
 
     //go to block explorer
-    std::string bexp = "https://explorer.innovacoin.io/address/";
+    std::string bexp = "https://explorer.innova-foundation.com/address/";
     //open url
     QString link = QString::fromStdString(bexp + addr);
     QDesktopServices::openUrl(QUrl(link));
@@ -136,7 +136,7 @@ std::vector<char> imageContents((std::istreambuf_iterator<char>(imageFile)),
 void ProofOfImage::on_checkTxButton_clicked()
 {
   //go to block explorer
-    std::string bexp = "https://explorer.innovacoin.io/tx/";
+    std::string bexp = "https://explorer.innova-foundation.com/tx/";
     //open url
     QString link = QString::fromStdString(bexp + ui->txLineEdit->text().toStdString());
     QDesktopServices::openUrl(QUrl(link));

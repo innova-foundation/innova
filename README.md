@@ -83,7 +83,7 @@ Technology
 
 LINKS
 ==========================
-* Official Website(https://innovacoin.io/)
+* Official Website(https://innova-foundation.com/)
 * Innova Twitter(https://twitter.com/innovacoin)
 * Innova Discord Chat(https://discord.gg/QeVx8cU)
 
