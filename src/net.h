@@ -99,7 +99,7 @@ enum
     MSG_TXLOCK_REQUEST,
     MSG_TXLOCK_VOTE,
     MSG_SPORK,
-    MSG_FORTUNASTAKE_WINNER
+    MSG_COLLATERALSTAKE_WINNER
 };
 
 class CRequestTracker
@@ -863,6 +863,6 @@ void SendForTunaElectionEntry(const CTxIn vin, const CService addr, const std::v
 void RelayForTunaElectionEntryPing(const CTxIn vin, const std::vector<unsigned char> vchSig, const int64_t nNow, const bool stop);
 void SendForTunaElectionEntryPing(const CTxIn vin, const std::vector<unsigned char> vchSig, const int64_t nNow, const bool stop);
 void RelayForTunaCompletedTransaction(const int sessionID, const bool error, const std::string errorMessage);
-void RelayForTunaFortunaStakeContestant();
+void RelayForTunaCollateralNodeContestant();
 
 #endif

@@ -24,8 +24,8 @@
 #include "statisticspage.h"
 #include "blockbrowser.h"
 #include "marketbrowser.h"
-#include "fortunastakemanager.h"
-#include "fortuna.h"
+#include "collateralnodemanager.h"
+#include "collateral.h"
 #include "mintingview.h"
 #include "multisigdialog.h"
 #include "bitcoinunits.h"
@@ -37,7 +37,7 @@
 #include "wallet.h"
 #include "termsofuse.h"
 #include "proofofimage.h"
-#include "jupiter.h"
+#include "hyperfile.h"
 
 #ifdef Q_OS_MAC
 #include "macdockiconhandler.h"
@@ -83,15 +83,15 @@ extern int64_t nLastCoinStakeSearchInterval;
 double GetPoSKernelPS();
 
 #define VERTICAL_TOOBAR_STYLESHEET "QToolBar {\
-border:none;\
+border: 1px solid #1c1c28;\
 height:100%;\
 padding-top:20px;\
 text-align: left;\
 }\
 QToolButton {\
 min-width:180px;\
-background-color: transparent;\
-border: 1px solid #707070;\
+background-color: #1c1c28;\
+border: 1px solid #1c1c28;\
 border-radius: 3px;\
 margin: 3px;\
 padding-left: 5px;\
@@ -102,16 +102,16 @@ text-align: left;\
 padding-bottom:5px;\
 }\
 QToolButton:pressed {\
-background-color: #31363B;\
-border: 1px solid silver;\
+background-color: #66a0c3;\
+border: 1px solid #01619b;\
 }\
 QToolButton:hover {\
-background-color: #31363B;\
+background-color: #01619b;\
 border: 1px solid #707070;\
 }"
 #define HORIZONTAL_TOOLBAR_STYLESHEET "QToolBar {\
-    border: 1px solid #707070;\
-    background: 1px solid #31363B;\
+    border: 1px solid #1c1c28;\
+    background: 1px solid #1c1c28;\
     font-weight: bold;\
 }"
 
@@ -179,9 +179,9 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     // Create the tray icon (or setup the dock icon)
     createTrayIcon();
 
-    fFSLock = GetBoolArg("-fsconflock");
+    fCNLock = GetBoolArg("-cnconflock");
     fNativeTor = GetBoolArg("-nativetor");
-    fJupiterLocal = GetBoolArg("-jupiterlocal");
+    fHyperFileLocal = GetBoolArg("-hyperfilelocal");
 
     // Create tabs
     overviewPage = new OverviewPage();
@@ -190,7 +190,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     marketBrowser = new MarketBrowser(this);
 	multisigPage = new MultisigDialog(this);
     proofOfImagePage = new ProofOfImage(this);
-    jupiterPage = new Jupiter(this);
+    hyperfilePage = new HyperFile(this);
 	//chatWindow = new ChatWindow(this);
 
     transactionsPage = new QWidget(this);
@@ -212,7 +212,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     sendCoinsPage = new SendCoinsDialog(this);
     messagePage = new MessagePage(this);
 
-    fortunastakeManagerPage = new FortunastakeManager(this);
+    collateralnodeManagerPage = new CollateralnodeManager(this);
 
     signVerifyMessageDialog = new SignVerifyMessageDialog(this);
 
@@ -226,10 +226,10 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     centralWidget->addWidget(messagePage);
     centralWidget->addWidget(statisticsPage);
 	centralWidget->addWidget(blockBrowser);
-    centralWidget->addWidget(fortunastakeManagerPage);
+    centralWidget->addWidget(collateralnodeManagerPage);
 	centralWidget->addWidget(marketBrowser);
     centralWidget->addWidget(proofOfImagePage);
-    centralWidget->addWidget(jupiterPage);
+    centralWidget->addWidget(hyperfilePage);
 	//centralWidget->addWidget(chatWindow);
     setCentralWidget(centralWidget);
 
@@ -249,14 +249,14 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     labelConnectionsIcon = new QLabel();
     labelBlocksIcon = new QLabel();
     labelConnectTypeIcon = new QLabel();
-    labelFSLockIcon = new QLabel();
+    labelCNLockIcon = new QLabel();
     frameBlocksLayout->addStretch();
     frameBlocksLayout->addWidget(labelEncryptionIcon);
     frameBlocksLayout->addStretch();
     frameBlocksLayout->addWidget(labelConnectTypeIcon);
     frameBlocksLayout->addStretch();
-    if (fFSLock)
-        frameBlocksLayout->addWidget(labelFSLockIcon);
+    if (fCNLock)
+        frameBlocksLayout->addWidget(labelCNLockIcon);
         frameBlocksLayout->addStretch();
     frameBlocksLayout->addWidget(labelStakingIcon);
     frameBlocksLayout->addStretch();
@@ -400,11 +400,11 @@ void BitcoinGUI::createActions()
     mintingAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_9));
     tabGroup->addAction(mintingAction);
 
-    fortunastakeManagerAction = new QAction(QIcon(":/icons/mn"), tr("&Fortuna Stakes"), this);
-    fortunastakeManagerAction->setToolTip(tr("Show Innova Fortuna Stakes status and configure your nodes."));
-    fortunastakeManagerAction->setCheckable(true);
-	fortunastakeManagerAction->setStatusTip(tr("Fortuna Stakes"));
-    tabGroup->addAction(fortunastakeManagerAction);
+    collateralnodeManagerAction = new QAction(QIcon(":/icons/mn"), tr("&Collateral Nodes"), this);
+    collateralnodeManagerAction->setToolTip(tr("Show Innova Collateral Nodes status and configure your nodes."));
+    collateralnodeManagerAction->setCheckable(true);
+	collateralnodeManagerAction->setStatusTip(tr("Collateral Nodes"));
+    tabGroup->addAction(collateralnodeManagerAction);
 
     proofOfImageAction = new QAction(QIcon(":/icons/data"), tr("&Proof of Data"), this);
     proofOfImageAction ->setToolTip(tr("Timestamp Files on the Innova blockchain."));
@@ -412,11 +412,11 @@ void BitcoinGUI::createActions()
 	proofOfImageAction->setStatusTip(tr("PoD: Timestamp files"));
     tabGroup->addAction(proofOfImageAction);
 
-    jupiterAction = new QAction(QIcon(":/icons/jupiter"), tr("&Jupiter"), this);
-    jupiterAction ->setToolTip(tr("Decentralized your files, upload to IPFS!"));
-    jupiterAction ->setCheckable(true);
-	  jupiterAction->setStatusTip(tr("Decentralized File Uploads"));
-    tabGroup->addAction(jupiterAction);
+    hyperfileAction = new QAction(QIcon(":/icons/hyperfile"), tr("&HyperFile"), this);
+    hyperfileAction ->setToolTip(tr("Decentralized your files, upload to IPFS!"));
+    hyperfileAction ->setCheckable(true);
+	  hyperfileAction->setStatusTip(tr("Decentralized File Uploads"));
+    tabGroup->addAction(hyperfileAction);
 
 	multisigAction = new QAction(QIcon(":/icons/multi"), tr("Multisig"), this);
     tabGroup->addAction(multisigAction);
@@ -434,8 +434,8 @@ void BitcoinGUI::createActions()
     connect(receiveCoinsAction, SIGNAL(triggered()), this, SLOT(gotoReceiveCoinsPage()));
 	connect(mintingAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(mintingAction, SIGNAL(triggered()), this, SLOT(gotoMintingPage()));
-    connect(fortunastakeManagerAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
-    connect(fortunastakeManagerAction, SIGNAL(triggered()), this, SLOT(gotoFortunastakeManagerPage()));
+    connect(collateralnodeManagerAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
+    connect(collateralnodeManagerAction, SIGNAL(triggered()), this, SLOT(gotoCollateralnodeManagerPage()));
     connect(historyAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(historyAction, SIGNAL(triggered()), this, SLOT(gotoHistoryPage()));
     connect(addressBookAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
@@ -446,8 +446,8 @@ void BitcoinGUI::createActions()
     connect(multisigAction, SIGNAL(triggered()), this, SLOT(gotoMultisigPage()));
     connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(gotoProofOfImagePage()));
-    connect(jupiterAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
-    connect(jupiterAction, SIGNAL(triggered()), this, SLOT(gotoJupiterPage()));
+    connect(hyperfileAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
+    connect(hyperfileAction, SIGNAL(triggered()), this, SLOT(gotoHyperFilePage()));
 
     quitAction = new QAction(QIcon(":/icons/quit"), tr("E&xit"), this);
     quitAction->setToolTip(tr("Quit application"));
@@ -496,8 +496,8 @@ void BitcoinGUI::createActions()
     openPeerAction->setStatusTip(tr("Show Innova network peers"));
     openConfEditorAction = new QAction(QIcon(":/icons/edit"), tr("Open Wallet &Configuration File"), this);
     openConfEditorAction->setStatusTip(tr("Open configuration file"));
-    openMNConfEditorAction = new QAction(QIcon(":/icons/edit"), tr("Open &Fortunastake Configuration File"), this);
-    openMNConfEditorAction->setStatusTip(tr("Open Fortunastake configuration file"));
+    openMNConfEditorAction = new QAction(QIcon(":/icons/edit"), tr("Open &Collateralnode Configuration File"), this);
+    openMNConfEditorAction->setStatusTip(tr("Open Collateralnode configuration file"));
 
     connect(quitAction, SIGNAL(triggered()), qApp, SLOT(quit()));
     connect(aboutAction, SIGNAL(triggered()), this, SLOT(aboutClicked()));
@@ -584,9 +584,9 @@ void BitcoinGUI::createToolBars()
   mainToolbar->addAction(historyAction);
   mainToolbar->addAction(addressBookAction);
   mainToolbar->addAction(statisticsAction);
-  mainToolbar->addAction(fortunastakeManagerAction);
+  mainToolbar->addAction(collateralnodeManagerAction);
   mainToolbar->addAction(proofOfImageAction);
-  mainToolbar->addAction(jupiterAction);
+  mainToolbar->addAction(hyperfileAction);
   mainToolbar->addAction(marketAction);
   mainToolbar->addAction(blockAction);
   mainToolbar->addAction(messageAction);
@@ -694,7 +694,7 @@ void BitcoinGUI::setWalletModel(WalletModel *walletModel)
 		statisticsPage->setModel(clientModel);
 		blockBrowser->setModel(clientModel);
 		marketBrowser->setModel(clientModel);
-        fortunastakeManagerPage->setWalletModel(walletModel);
+        collateralnodeManagerPage->setWalletModel(walletModel);
 		multisigPage->setModel(walletModel);
 		//chatWindow->setModel(clientModel);
 
@@ -827,8 +827,8 @@ void BitcoinGUI::setNumConnections(int count)
         labelConnectTypeIcon->setPixmap(QIcon(":/icons/toroff").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
         labelConnectTypeIcon->setToolTip(tr("Not Connected via the Tor Network, Start Innova with the flag nativetor=1"));
     }
-    if (fFSLock == true) {
-        labelFSLockIcon->setPixmap(QIcon(":/icons/fs").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
+    if (fCNLock == true) {
+        labelCNLockIcon->setPixmap(QIcon(":/icons/cn").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
     }
 }
 
@@ -1124,14 +1124,14 @@ void BitcoinGUI::showConfEditor()
 
 void BitcoinGUI::showMNConfEditor()
 {
-    boost::filesystem::path pathMNConfig = GetFortunastakeConfigFile();
+    boost::filesystem::path pathMNConfig = GetCollateralnodeConfigFile();
 
-    /* Open fortunastake.conf with the associated application */
+    /* Open collateralnode.conf with the associated application */
     if (boost::filesystem::exists(pathMNConfig)) {
         QDesktopServices::openUrl(QUrl::fromLocalFile(QString::fromStdString(pathMNConfig.string())));
 	} else {
-		QMessageBox::warning(this, tr("No fortunastake.conf"),
-        tr("Your fortunastake.conf does not exist! Please create one in your Innova data directory."),
+		QMessageBox::warning(this, tr("No collateralnode.conf"),
+        tr("Your collateralnode.conf does not exist! Please create one in your Innova data directory."),
         QMessageBox::Ok, QMessageBox::Ok);
 	}
     //GUIUtil::openMNConfigfile();
@@ -1165,19 +1165,19 @@ void BitcoinGUI::gotoProofOfImagePage()
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
 }
 
-void BitcoinGUI::gotoJupiterPage()
+void BitcoinGUI::gotoHyperFilePage()
 {
-    jupiterAction->setChecked(true);
-    centralWidget->setCurrentWidget(jupiterPage);
+    hyperfileAction->setChecked(true);
+    centralWidget->setCurrentWidget(hyperfilePage);
 
     exportAction->setEnabled(false);
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
 }
 
-void BitcoinGUI::gotoFortunastakeManagerPage()
+void BitcoinGUI::gotoCollateralnodeManagerPage()
 {
-    fortunastakeManagerAction->setChecked(true);
-    centralWidget->setCurrentWidget(fortunastakeManagerPage);
+    collateralnodeManagerAction->setChecked(true);
+    centralWidget->setCurrentWidget(collateralnodeManagerPage);
 
     exportAction->setEnabled(false);
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);

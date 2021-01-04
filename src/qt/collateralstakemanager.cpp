@@ -1,14 +1,14 @@
-#include "fortunastakemanager.h"
-#include "ui_fortunastakemanager.h"
+#include "collateralnodemanager.h"
+#include "ui_collateralnodemanager.h"
 #include "addeditadrenalinenode.h"
 #include "adrenalinenodeconfigdialog.h"
 
 #include "sync.h"
 #include "clientmodel.h"
 #include "walletmodel.h"
-#include "activefortunastake.h"
-#include "fortunastakeconfig.h"
-#include "fortunastake.h"
+#include "activecollateralnode.h"
+#include "collateralnodeconfig.h"
+#include "collateralnode.h"
 #include "walletdb.h"
 #include "walletmodel.h"
 #include "wallet.h"
@@ -32,9 +32,9 @@ using namespace std;
 #include <QClipboard>
 #include <QMessageBox>
 
-FortunastakeManager::FortunastakeManager(QWidget *parent) :
+CollateralnodeManager::CollateralnodeManager(QWidget *parent) :
     QWidget(parent),
-    ui(new Ui::FortunastakeManager),
+    ui(new Ui::CollateralnodeManager),
     clientModel(0),
     walletModel(0)
 {
@@ -70,7 +70,7 @@ FortunastakeManager::FortunastakeManager(QWidget *parent) :
         */
 }
 
-FortunastakeManager::~FortunastakeManager()
+CollateralnodeManager::~CollateralnodeManager()
 {
     delete ui;
 }
@@ -84,12 +84,12 @@ public:
     }
 };
 
-static void NotifyAdrenalineNodeUpdated(FortunastakeManager *page, CAdrenalineNodeConfig nodeConfig)
+static void NotifyAdrenalineNodeUpdated(CollateralnodeManager *page, CAdrenalineNodeConfig nodeConfig)
 {
     // alias, address, privkey, collateral address
     QString alias = QString::fromStdString(nodeConfig.sAlias);
     QString addr = QString::fromStdString(nodeConfig.sAddress);
-    QString privkey = QString::fromStdString(nodeConfig.sFortunastakePrivKey);
+    QString privkey = QString::fromStdString(nodeConfig.sCollateralnodePrivKey);
 
     QMetaObject::invokeMethod(page, "updateAdrenalineNode", Qt::QueuedConnection,
                               Q_ARG(QString, alias),
@@ -97,25 +97,25 @@ static void NotifyAdrenalineNodeUpdated(FortunastakeManager *page, CAdrenalineNo
                               Q_ARG(QString, privkey)
                               );
 }
-static void NotifyRanksUpdated(FortunastakeManager *page)
+static void NotifyRanksUpdated(CollateralnodeManager *page)
 {
     QMetaObject::invokeMethod(page, "updateNodeList", Qt::QueuedConnection);
 }
-void FortunastakeManager::subscribeToCoreSignals()
+void CollateralnodeManager::subscribeToCoreSignals()
 {
     // Connect signals to core
     uiInterface.NotifyAdrenalineNodeChanged.connect(boost::bind(&NotifyAdrenalineNodeUpdated, this, _1));
     uiInterface.NotifyRanksUpdated.connect(boost::bind(&NotifyRanksUpdated, this));
 }
 
-void FortunastakeManager::unsubscribeFromCoreSignals()
+void CollateralnodeManager::unsubscribeFromCoreSignals()
 {
     // Disconnect signals from core
     uiInterface.NotifyAdrenalineNodeChanged.disconnect(boost::bind(&NotifyAdrenalineNodeUpdated, this, _1));
     uiInterface.NotifyRanksUpdated.disconnect(boost::bind(&NotifyRanksUpdated, this));
 }
 
-void FortunastakeManager::on_tableWidget_2_itemSelectionChanged()
+void CollateralnodeManager::on_tableWidget_2_itemSelectionChanged()
 {
     if(ui->tableWidget_2->selectedItems().count() > 0)
     {
@@ -127,7 +127,7 @@ void FortunastakeManager::on_tableWidget_2_itemSelectionChanged()
     }
 }
 
-void FortunastakeManager::updateAdrenalineNode(QString alias, QString addr, QString privkey)
+void CollateralnodeManager::updateAdrenalineNode(QString alias, QString addr, QString privkey)
 {
     LOCK(cs_adrenaline);
 
@@ -147,14 +147,14 @@ void FortunastakeManager::updateAdrenalineNode(QString alias, QString addr, QStr
     if (!pwalletLock)
         return;
 
-    BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
+    BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry mne, collateralnodeConfig.getEntries()) {
         if (mne.getAlias() == alias.toStdString())
         {
             mnTxHash.SetHex(mne.getTxHash());
             outputIndex = boost::lexical_cast<unsigned int>(mne.getOutputIndex());
             COutPoint outpoint = COutPoint(mnTxHash, outputIndex);
             if(pwalletMain->IsMine(CTxIn(outpoint)) != ISMINE_SPENDABLE) {
-                if (fDebug) printf("FortunastakeManager:: %s %s - IS NOT SPENDABLE, status is bad!\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str());
+                if (fDebug) printf("CollateralnodeManager:: %s %s - IS NOT SPENDABLE, status is bad!\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str());
                 errorMessage = "Output is not spendable. ";
                 break;
             }
@@ -170,7 +170,7 @@ void FortunastakeManager::updateAdrenalineNode(QString alias, QString addr, QStr
                 if (vout.nValue != GetMNCollateral()*COIN)
                     errorMessage += "TX is not equal to 25000 INN. ";
             }
-            //if (fDebug) printf("FortunastakeManager:: %s %s - found %s for alias %s\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str(), address2.ToString().c_str(),mne.getAlias().c_str());
+            //if (fDebug) printf("CollateralnodeManager:: %s %s - found %s for alias %s\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str(), address2.ToString().c_str(),mne.getAlias().c_str());
             break;
         }
     }
@@ -179,7 +179,7 @@ void FortunastakeManager::updateAdrenalineNode(QString alias, QString addr, QStr
         errorMessage += "Could not find collateral address. ";
     }
 
-    if (errorMessage == "" || mnCount > vecFortunastakes.size()) {
+    if (errorMessage == "" || mnCount > vecCollateralnodes.size()) {
         status = QString::fromStdString("Loading");
         collateral = QString::fromStdString(address2.ToString().c_str());
     }
@@ -188,16 +188,16 @@ void FortunastakeManager::updateAdrenalineNode(QString alias, QString addr, QStr
         collateral = QString::fromStdString(errorMessage);
     }
 
-    BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes) {
+    BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes) {
         if (mn.addr.ToString().c_str() == addr){
-            rank = GetFortunastakeRank(mn, pindexBest);
+            rank = GetCollateralnodeRank(mn, pindexBest);
             status = QString::fromStdString("Online");
             collateral = QString::fromStdString(address2.ToString().c_str());
             payrate = QString::fromStdString(strprintf("%sINN/day", FormatMoney(mn.payRate).c_str()));
         }
     }
 
-    if (vecFortunastakes.size() >= mnCount && rank == 0)
+    if (vecCollateralnodes.size() >= mnCount && rank == 0)
     {
         status = QString::fromStdString("Offline");
     }
@@ -255,14 +255,14 @@ static QString seconds_to_DHMS(quint32 duration)
 }
 
 uint256 lastNodeUpdateHash;
-void FortunastakeManager::updateNodeList()
+void CollateralnodeManager::updateNodeList()
 {
     if (pindexBest == NULL) return;
     if (pindexBest->GetBlockHash() == lastNodeUpdateHash) return;
     lastNodeUpdateHash = pindexBest->GetBlockHash();
 
-    TRY_LOCK(cs_fortunastakes, lockFortunastakes);
-    if(!lockFortunastakes)
+    TRY_LOCK(cs_collateralnodes, lockCollateralnodes);
+    if(!lockCollateralnodes)
         return;
 
     ui->countLabel->setText("Updating...");
@@ -273,7 +273,7 @@ void FortunastakeManager::updateNodeList()
     ui->tableWidget->clearContents();
     ui->tableWidget->setRowCount(0);
 
-    BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes)
+    BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
     {
         bool bFound = false;
         int nodeRow = 0;
@@ -294,7 +294,7 @@ void FortunastakeManager::updateNodeList()
         }
 
         //ui->tableWidget->insertRow(0);
-        //int mnRank = GetFortunastakeRank(mn, pindexBest);
+        //int mnRank = GetCollateralnodeRank(mn, pindexBest);
         int mnRank = mn.nRank;
         int64_t value = mn.payValue;
         //mn.GetPaymentInfo(pindexBest, value, rate);
@@ -339,7 +339,7 @@ void FortunastakeManager::updateNodeList()
         QString naddr;
         int nrank = 0;
         LOCK(cs_adrenaline);
-        BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
+        BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry mne, collateralnodeConfig.getEntries()) {
             if (mn.vin.prevout.hash.ToString() == mne.getTxHash() && mn.vin.prevout.n == boost::lexical_cast<unsigned int>(mne.getOutputIndex()))
             {
                 CTxDestination address1;
@@ -369,7 +369,7 @@ void FortunastakeManager::updateNodeList()
                 }
                 ncollateral = QString::fromStdString(address2.ToString().c_str());
                 found = true;
-                //if (fDebug) printf("\nFortunastakeManager:: %s %s - found %s for alias %s\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str(), address2.ToString().c_str(),mne.getAlias().c_str());
+                //if (fDebug) printf("\nCollateralnodeManager:: %s %s - found %s for alias %s\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str(), address2.ToString().c_str(),mne.getAlias().c_str());
                 break;
             }
         }
@@ -420,19 +420,19 @@ void FortunastakeManager::updateNodeList()
     }
 
     // calc length of average round
-    int roundLengthSecs = 30 * (max(FORTUNASTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * FORTUNASTAKE_FAIR_PAYMENT_ROUNDS);
+    int roundLengthSecs = 30 * (max(COLLATERALSTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALSTAKE_FAIR_PAYMENT_ROUNDS);
     // figure out how the average per second this round is
-    int64_t roundPerSec = nAverageFSIncome / roundLengthSecs;
+    int64_t roundPerSec = nAverageCNIncome / roundLengthSecs;
     // how much is that per day?
     int64_t payPer24H = roundPerSec * 86400;
 
     if (mnCount > 0)
-        ui->countLabel->setText(QString("%1/%2 active (average income: %3/day)").arg(vecFortunastakes.size()).arg(mnCount).arg(QString::fromStdString(FormatMoney(payPer24H))));
+        ui->countLabel->setText(QString("%1/%2 active (average income: %3/day)").arg(vecCollateralnodes.size()).arg(mnCount).arg(QString::fromStdString(FormatMoney(payPer24H))));
     else
         ui->countLabel->setText("Loading...");
 
-    if (mnCount < vecFortunastakes.size())
-        ui->countLabel->setText(QString("%1 active (average income: %2/day)").arg(vecFortunastakes.size()).arg(QString::fromStdString(FormatMoney(payPer24H))));
+    if (mnCount < vecCollateralnodes.size())
+        ui->countLabel->setText(QString("%1 active (average income: %2/day)").arg(vecCollateralnodes.size()).arg(QString::fromStdString(FormatMoney(payPer24H))));
 
     ui->tableWidget->setSortingEnabled(true);
     ui->tableWidget->setUpdatesEnabled(true);
@@ -442,13 +442,13 @@ void FortunastakeManager::updateNodeList()
         LOCK(cs_adrenaline);
         BOOST_FOREACH(PAIRTYPE(std::string, CAdrenalineNodeConfig) adrenaline, pwalletMain->mapMyAdrenalineNodes)
         {
-            // updateAdrenalineNode(QString::fromStdString(adrenaline.second.sAlias), QString::fromStdString(adrenaline.second.sAddress), QString::fromStdString(adrenaline.second.sFortunastakePrivKey));
+            // updateAdrenalineNode(QString::fromStdString(adrenaline.second.sAlias), QString::fromStdString(adrenaline.second.sAddress), QString::fromStdString(adrenaline.second.sCollateralnodePrivKey));
         }
     }
 
 }
 
-void FortunastakeManager::setClientModel(ClientModel *model)
+void CollateralnodeManager::setClientModel(ClientModel *model)
 {
     this->clientModel = model;
     if(model)
@@ -456,18 +456,18 @@ void FortunastakeManager::setClientModel(ClientModel *model)
     }
 }
 
-void FortunastakeManager::setWalletModel(WalletModel *model)
+void CollateralnodeManager::setWalletModel(WalletModel *model)
 {
     this->walletModel = model;
 
 }
 
-void FortunastakeManager::on_createButton_clicked()
+void CollateralnodeManager::on_createButton_clicked()
 {
   if (pwalletMain->IsLocked())
   {
       QMessageBox msg;
-      msg.setText("Error: Wallet is locked, unable to create FS.");
+      msg.setText("Error: Wallet is locked, unable to create CN.");
       msg.exec();
       return;
   };
@@ -475,7 +475,7 @@ void FortunastakeManager::on_createButton_clicked()
   if (fWalletUnlockStakingOnly)
   {
       QMessageBox msg;
-      msg.setText("Error: Wallet unlocked for staking only, unable to create FS.");
+      msg.setText("Error: Wallet unlocked for staking only, unable to create CN.");
       msg.exec();
       return;
   };
@@ -484,7 +484,7 @@ void FortunastakeManager::on_createButton_clicked()
     aenode->exec();
 }
 
-void FortunastakeManager::on_copyAddressButton_clicked()
+void CollateralnodeManager::on_copyAddressButton_clicked()
 {
     QItemSelectionModel* selectionModel = ui->tableWidget_2->selectionModel();
     QModelIndexList selected = selectionModel->selectedRows();
@@ -498,7 +498,7 @@ void FortunastakeManager::on_copyAddressButton_clicked()
     QApplication::clipboard()->setText(QString::fromStdString(sCollateralAddress));
 }
 
-void FortunastakeManager::on_editButton_clicked()
+void CollateralnodeManager::on_editButton_clicked()
 {
     QItemSelectionModel* selectionModel = ui->tableWidget_2->selectionModel();
     QModelIndexList selected = selectionModel->selectedRows();
@@ -513,7 +513,7 @@ void FortunastakeManager::on_editButton_clicked()
 
 }
 
-void FortunastakeManager::on_getConfigButton_clicked()
+void CollateralnodeManager::on_getConfigButton_clicked()
 {
     QItemSelectionModel* selectionModel = ui->tableWidget_2->selectionModel();
     QModelIndexList selected = selectionModel->selectedRows();
@@ -524,12 +524,12 @@ void FortunastakeManager::on_getConfigButton_clicked()
     int r = index.row();
     std::string sAddress = ui->tableWidget_2->item(r, 1)->text().toStdString();
     CAdrenalineNodeConfig c = pwalletMain->mapMyAdrenalineNodes[sAddress];
-    std::string sPrivKey = c.sFortunastakePrivKey;
+    std::string sPrivKey = c.sCollateralnodePrivKey;
     AdrenalineNodeConfigDialog* d = new AdrenalineNodeConfigDialog(this, QString::fromStdString(sAddress), QString::fromStdString(sPrivKey));
     d->exec();
 }
 
-void FortunastakeManager::on_startButton_clicked()
+void CollateralnodeManager::on_startButton_clicked()
 {
     QString results;
     WalletModel::UnlockContext ctx(walletModel->requestUnlock());
@@ -554,12 +554,12 @@ void FortunastakeManager::on_startButton_clicked()
           CAdrenalineNodeConfig c = pwalletMain->mapMyAdrenalineNodes[sAddress];
 
           std::string errorMessage;
-          bool result = activeFortunastake.Register(c.sAddress, c.sFortunastakePrivKey, c.sTxHash, c.sOutputIndex,
+          bool result = activeCollateralnode.Register(c.sAddress, c.sCollateralnodePrivKey, c.sTxHash, c.sOutputIndex,
                                                     errorMessage);
 
           if (result)
           {
-              results += "Hybrid Fortunastake at " + QString::fromStdString(c.sAddress) + " started.";
+              results += "Hybrid Collateralnode at " + QString::fromStdString(c.sAddress) + " started.";
               successful++;
           }
           else
@@ -580,7 +580,7 @@ void FortunastakeManager::on_startButton_clicked()
     msg.exec();
 }
 
-void FortunastakeManager::on_startAllButton_clicked()
+void CollateralnodeManager::on_startAllButton_clicked()
 {
     QString results;
     WalletModel::UnlockContext ctx(walletModel->requestUnlock());
@@ -589,18 +589,18 @@ void FortunastakeManager::on_startAllButton_clicked()
     {
         results = "Wallet failed to unlock.\n";
     } else {
-        std::vector<CFortunastakeConfig::CFortunastakeEntry> mnEntries;
-        mnEntries = fortunastakeConfig.getEntries();
+        std::vector<CCollateralnodeConfig::CCollateralnodeEntry> mnEntries;
+        mnEntries = collateralnodeConfig.getEntries();
 
         int total = 0;
         int successful = 0;
         int fail = 0;
 
-        BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
+        BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry mne, collateralnodeConfig.getEntries()) {
             total++;
 
             std::string errorMessage;
-            bool result = activeFortunastake.Register(mne.getIp(), mne.getPrivKey(), mne.getTxHash(), mne.getOutputIndex(), errorMessage);
+            bool result = activeCollateralnode.Register(mne.getIp(), mne.getPrivKey(), mne.getTxHash(), mne.getOutputIndex(), errorMessage);
 
             if(result)
             {
@@ -615,7 +615,7 @@ void FortunastakeManager::on_startAllButton_clicked()
             }
         }
 
-        results += QString::fromStdString("Successfully started " + boost::lexical_cast<std::string>(successful) + " fortunastakes, failed to start " +
+        results += QString::fromStdString("Successfully started " + boost::lexical_cast<std::string>(successful) + " collateralnodes, failed to start " +
                 boost::lexical_cast<std::string>(fail) + ", total " + boost::lexical_cast<std::string>(total));
     }
 
@@ -631,7 +631,7 @@ void FortunastakeManager::on_startAllButton_clicked()
 
 }
 
-void FortunastakeManager::on_removeButton_clicked()
+void CollateralnodeManager::on_removeButton_clicked()
 {
     QItemSelectionModel* selectionModel = ui->tableWidget_2->selectionModel();
     QModelIndexList selected = selectionModel->selectedRows();
@@ -639,7 +639,7 @@ void FortunastakeManager::on_removeButton_clicked()
         return;
 
     QMessageBox::StandardButton confirm;
-    confirm = QMessageBox::question(this, "Delete fortunastake.conf?", "Are you sure you want to delete this hybrid fortunastake configuration?", QMessageBox::Yes|QMessageBox::No);
+    confirm = QMessageBox::question(this, "Delete collateralnode.conf?", "Are you sure you want to delete this hybrid collateralnode configuration?", QMessageBox::Yes|QMessageBox::No);
 
     if(confirm == QMessageBox::Yes)
     {
@@ -650,11 +650,11 @@ void FortunastakeManager::on_removeButton_clicked()
         CAdrenalineNodeConfig c = pwalletMain->mapMyAdrenalineNodes[sAddress];
         CWalletDB walletdb(pwalletMain->strWalletFile);
 
-        BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries())
+        BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry mne, collateralnodeConfig.getEntries())
         {
             if (mne.getIp() == sAddress)
             {
-                fortunastakeConfig.purge(mne);
+                collateralnodeConfig.purge(mne);
                 std::map<std::string, CAdrenalineNodeConfig>::iterator iter = pwalletMain->mapMyAdrenalineNodes.find(sAddress);
                 if (iter != pwalletMain->mapMyAdrenalineNodes.end())
                     pwalletMain->mapMyAdrenalineNodes.erase(iter);
@@ -667,7 +667,7 @@ void FortunastakeManager::on_removeButton_clicked()
     }
 }
 
-void FortunastakeManager::on_stopButton_clicked()
+void CollateralnodeManager::on_stopButton_clicked()
 {
     // start the node
     QItemSelectionModel* selectionModel = ui->tableWidget_2->selectionModel();
@@ -681,12 +681,12 @@ void FortunastakeManager::on_stopButton_clicked()
     CAdrenalineNodeConfig c = pwalletMain->mapMyAdrenalineNodes[sAddress];
 
     std::string errorMessage;
-    bool result = activeFortunastake.StopFortunaStake(c.sAddress, c.sFortunastakePrivKey, errorMessage);
+    bool result = activeCollateralnode.StopCollateralNode(c.sAddress, c.sCollateralnodePrivKey, errorMessage);
     QMessageBox msg;
     msg.setWindowTitle("Innova Message");
     if(result)
     {
-        msg.setText("Hybrid Fortunastake at " + QString::fromStdString(c.sAddress) + " stopped.");
+        msg.setText("Hybrid Collateralnode at " + QString::fromStdString(c.sAddress) + " stopped.");
     }
     else
     {
@@ -695,14 +695,14 @@ void FortunastakeManager::on_stopButton_clicked()
     msg.exec();
 }
 
-void FortunastakeManager::on_stopAllButton_clicked()
+void CollateralnodeManager::on_stopAllButton_clicked()
 {
     std::string results;
     BOOST_FOREACH(PAIRTYPE(std::string, CAdrenalineNodeConfig) adrenaline, pwalletMain->mapMyAdrenalineNodes)
     {
         CAdrenalineNodeConfig c = adrenaline.second;
 	std::string errorMessage;
-        bool result = activeFortunastake.StopFortunaStake(c.sAddress, c.sFortunastakePrivKey, errorMessage);
+        bool result = activeCollateralnode.StopCollateralNode(c.sAddress, c.sCollateralnodePrivKey, errorMessage);
 	if(result)
 	{
    	    results += c.sAddress + ": STOPPED\n";

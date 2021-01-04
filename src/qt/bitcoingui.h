@@ -12,7 +12,7 @@ class WalletModel;
 class MessageModel;
 class TransactionView;
 class MintingView;
-class FortunastakeManager;
+class CollateralnodeManager;
 class MultisigDialog;
 class OverviewPage;
 class AddressBookPage;
@@ -25,7 +25,7 @@ class SignVerifyMessageDialog;
 class Notificator;
 class RPCConsole;
 class ProofOfImage;
-class Jupiter;
+class HyperFile;
 
 QT_BEGIN_NAMESPACE
 class QLabel;
@@ -101,8 +101,8 @@ private:
 	  QWidget *mintingPage;
 	  MultisigDialog *multisigPage;
 	  ProofOfImage *proofOfImagePage;
-    Jupiter *jupiterPage;
-	  FortunastakeManager *fortunastakeManagerPage;
+    HyperFile *hyperfilePage;
+	  CollateralnodeManager *collateralnodeManagerPage;
     AddressBookPage *addressBookPage;
     AddressBookPage *receiveCoinsPage;
     MessagePage *messagePage;
@@ -114,7 +114,7 @@ private:
     QLabel *labelConnectionsIcon;
     QLabel *labelBlocksIcon;
     QLabel *labelConnectTypeIcon;
-    QLabel *labelFSLockIcon;
+    QLabel *labelCNLockIcon;
     QLabel *progressBarLabel;
     QLabel *mainIcon;
     QToolBar *mainToolbar;
@@ -130,8 +130,8 @@ private:
 	  QAction *mintingAction;
 	  QAction *multisigAction;
     QAction *proofOfImageAction;
-    QAction *jupiterAction;
-	  QAction *fortunastakeManagerAction;
+    QAction *hyperfileAction;
+	  QAction *collateralnodeManagerAction;
     QAction *quitAction;
     QAction *sendCoinsAction;
     QAction *addressBookAction;
@@ -234,12 +234,12 @@ private slots:
     void gotoSendCoinsPage();
     /** Switch to message page */
     void gotoMessagePage();
-	/** Switch to fortunastake manager page */
-	void gotoFortunastakeManagerPage();
+	/** Switch to collateralnode manager page */
+	void gotoCollateralnodeManagerPage();
 	/** Switch to proof of image page */
 	void gotoProofOfImagePage();
-  /** Switch to Jupiter page */
-  void gotoJupiterPage();
+  /** Switch to HyperFile page */
+  void gotoHyperFilePage();
   
 
     //void gotoChatPage();
@@ -260,7 +260,7 @@ private slots:
 
     /** Open external (default) editor with innova.conf */
     void showConfEditor();
-    /** Open external (default) editor with fortunastake.conf */
+    /** Open external (default) editor with collateralnode.conf */
     void showMNConfEditor();
 
     /** Show configuration dialog */

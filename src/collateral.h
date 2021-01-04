@@ -3,21 +3,21 @@
 // Copyright (c) 2009-2012 The Darkcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#ifndef FORTUNA_H
-#define FORTUNA_H
+#ifndef COLLATERAL_H
+#define COLLATERAL_H
 
 #include "main.h"
-#include "fortunastake.h"
-#include "activefortunastake.h"
+#include "collateralnode.h"
+#include "activecollateralnode.h"
 
 class CTxIn;
 class CForTunaPool;
 class CForTunaSigner;
-class CFortunaStakeVote;
+class CCollateralNodeVote;
 class CBitcoinAddress;
-class CFortunaQueue;
-class CFortunaBroadcastTx;
-class CActiveFortunastake;
+class CCollateralQueue;
+class CCollateralBroadcastTx;
+class CActiveCollateralnode;
 
 #define POOL_MAX_TRANSACTIONS                  3 // wait for X transactions to merge and publish
 #define POOL_STATUS_UNKNOWN                    0 // waiting for update
@@ -31,28 +31,28 @@ class CActiveFortunastake;
 #define POOL_STATUS_SUCCESS                    8 // success
 
 // status update message constants
-#define FORTUNASTAKE_ACCEPTED                    1
-#define FORTUNASTAKE_REJECTED                    0
-#define FORTUNASTAKE_RESET                       -1
+#define COLLATERALSTAKE_ACCEPTED                    1
+#define COLLATERALSTAKE_REJECTED                    0
+#define COLLATERALSTAKE_RESET                       -1
 
-#define FORTUNA_QUEUE_TIMEOUT                 120
-#define FORTUNA_SIGNING_TIMEOUT               30
+#define COLLATERAL_QUEUE_TIMEOUT                 120
+#define COLLATERAL_SIGNING_TIMEOUT               30
 
 extern CForTunaPool forTunaPool;
 extern CForTunaSigner forTunaSigner;
-extern std::vector<CFortunaQueue> vecFortunaQueue;
-extern std::string strFortunaStakePrivKey;
-extern map<uint256, CFortunaBroadcastTx> mapFortunaBroadcastTxes;
-extern CActiveFortunastake activeFortunastake;
+extern std::vector<CCollateralQueue> vecCollateralQueue;
+extern std::string strCollateralNodePrivKey;
+extern map<uint256, CCollateralBroadcastTx> mapCollateralBroadcastTxes;
+extern CActiveCollateralnode activeCollateralnode;
 
-//specific messages for the Fortuna protocol
-void ProcessMessageFortuna(CNode* pfrom, std::string& strCommand, CDataStream& vRecv);
+//specific messages for the Collateral protocol
+void ProcessMessageCollateral(CNode* pfrom, std::string& strCommand, CDataStream& vRecv);
 
-// get the fortuna chain depth for a given input
-int GetInputFortunaRounds(CTxIn in, int rounds=0);
+// get the collateral chain depth for a given input
+int GetInputCollateralRounds(CTxIn in, int rounds=0);
 
 
-// An input in the fortuna pool
+// An input in the collateral pool
 class CForTunaEntryVin
 {
 public:
@@ -66,7 +66,7 @@ public:
     }
 };
 
-// A clients transaction in the fortuna pool
+// A clients transaction in the collateral pool
 class CForTunaEntry
 {
 public:
@@ -121,14 +121,14 @@ public:
 
     bool IsExpired()
     {
-        return (GetTime() - addedTime) > FORTUNA_QUEUE_TIMEOUT;// 120 seconds
+        return (GetTime() - addedTime) > COLLATERAL_QUEUE_TIMEOUT;// 120 seconds
     }
 };
 
 //
-// A currently inprogress fortuna merge and denomination information
+// A currently inprogress collateral merge and denomination information
 //
-class CFortunaQueue
+class CCollateralQueue
 {
 public:
     CTxIn vin;
@@ -137,7 +137,7 @@ public:
     bool ready; //ready for submit
     std::vector<unsigned char> vchSig;
 
-    CFortunaQueue()
+    CCollateralQueue()
     {
         nDenom = 0;
         vin = CTxIn();
@@ -160,7 +160,7 @@ public:
 
     bool GetAddress(CService &addr)
     {
-        BOOST_FOREACH(CFortunaStake mn, vecFortunastakes) {
+        BOOST_FOREACH(CCollateralNode mn, vecCollateralnodes) {
             if(mn.vin == vin){
                 addr = mn.addr;
                 return true;
@@ -171,7 +171,7 @@ public:
 
     bool GetProtocolVersion(int &protocolVersion)
     {
-        BOOST_FOREACH(CFortunaStake mn, vecFortunastakes) {
+        BOOST_FOREACH(CCollateralNode mn, vecCollateralnodes) {
             if(mn.vin == vin){
                 protocolVersion = mn.protocolVersion;
                 return true;
@@ -185,15 +185,15 @@ public:
 
     bool IsExpired()
     {
-        return (GetTime() - time) > FORTUNA_QUEUE_TIMEOUT;// 120 seconds
+        return (GetTime() - time) > COLLATERAL_QUEUE_TIMEOUT;// 120 seconds
     }
 
     bool CheckSignature();
 
 };
 
-// store fortuna tx signature information
-class CFortunaBroadcastTx
+// store collateral tx signature information
+class CCollateralBroadcastTx
 {
 public:
     CTransaction tx;
@@ -214,13 +214,13 @@ public:
     bool VerifyMessage(CPubKey pubkey, std::vector<unsigned char>& vchSig, std::string strMessage, std::string& errorMessage);
 };
 
-class CFortunaSession
+class CCollateralSession
 {
 
 };
 
 //
-// Used to keep track of current status of fortuna pool
+// Used to keep track of current status of collateral pool
 //
 class CForTunaPool
 {
@@ -229,7 +229,7 @@ public:
 
     // clients entries
     std::vector<CForTunaEntry> myEntries;
-    // fortunastake entries
+    // collateralnode entries
     std::vector<CForTunaEntry> entries;
     // the finalized transaction ready for signing
     CTransaction finalTransaction;
@@ -252,12 +252,12 @@ public:
     std::string lastMessage;
     bool completedTransaction;
     bool unitTest;
-    CService submittedToFortunastake;
+    CService submittedToCollateralnode;
 
     int sessionID;
     int sessionDenom; //Users must submit an denom matching this
     int sessionUsers; //N Users have said they'll join
-    bool sessionFoundFortunastake; //If we've found a compatible fortunastake
+    bool sessionFoundCollateralnode; //If we've found a compatible collateralnode
     int64_t sessionTotalValue; //used for autoDenom
     std::vector<CTransaction> vecSessionCollateral;
 
@@ -318,7 +318,7 @@ public:
 
     int GetEntriesCount() const
     {
-        if(fFortunaStake){
+        if(fCollateralNode){
             return entries.size();
         } else {
             return entriesCount;
@@ -342,16 +342,16 @@ public:
 
     void UpdateState(unsigned int newState)
     {
-        if (fFortunaStake && (newState == POOL_STATUS_ERROR || newState == POOL_STATUS_SUCCESS)){
-            printf("CForTunaPool::UpdateState() - Can't set state to ERROR or SUCCESS as a fortunastake. \n");
+        if (fCollateralNode && (newState == POOL_STATUS_ERROR || newState == POOL_STATUS_SUCCESS)){
+            printf("CForTunaPool::UpdateState() - Can't set state to ERROR or SUCCESS as a collateralnode. \n");
             return;
         }
 
         printf("CForTunaPool::UpdateState() == %d | %d \n", state, newState);
         if(state != newState){
             lastTimeChanged = GetTimeMillis();
-            if(fFortunaStake) {
-                RelayForTunaStatus(forTunaPool.sessionID, forTunaPool.GetState(), forTunaPool.GetEntriesCount(), FORTUNASTAKE_RESET);
+            if(fCollateralNode) {
+                RelayForTunaStatus(forTunaPool.sessionID, forTunaPool.GetState(), forTunaPool.GetEntriesCount(), COLLATERALSTAKE_RESET);
             }
         }
         state = newState;
@@ -374,12 +374,12 @@ public:
     // Is this amount compatible with other client in the pool?
     bool IsCompatibleWithSession(int64_t nAmount, CTransaction txCollateral, std::string& strReason);
 
-    // Passively run Fortuna in the background according to the configuration in settings (only for QT)
+    // Passively run Collateral in the background according to the configuration in settings (only for QT)
     bool DoAutomaticDenominating(bool fDryRun=false, bool ready=false);
-    bool PrepareFortunaDenominate();
+    bool PrepareCollateralDenominate();
 
 
-    // check for process in Fortuna
+    // check for process in Collateral
     void Check();
     // charge fees to bad actors
     void ChargeFees();
@@ -396,9 +396,9 @@ public:
     bool AddScriptSig(const CTxIn newVin);
     // are all inputs signed?
     bool SignaturesComplete();
-    // as a client, send a transaction to a fortunastake to start the denomination process
-    void SendFortunaDenominate(std::vector<CTxIn>& vin, std::vector<CTxOut>& vout, int64_t amount);
-    // get fortunastake updates about the progress of fortuna
+    // as a client, send a transaction to a collateralnode to start the denomination process
+    void SendCollateralDenominate(std::vector<CTxIn>& vin, std::vector<CTxOut>& vout, int64_t amount);
+    // get collateralnode updates about the progress of collateral
     bool StatusUpdate(int newState, int newEntriesCount, int newAccepted, std::string& error, int newSessionID=0);
 
     // as a client, check and sign the final transaction
@@ -427,7 +427,7 @@ public:
 };
 
 
-void ConnectToForTunaFortunaStakeWinner();
+void ConnectToForTunaCollateralNodeWinner();
 
 void ThreadCheckForTunaPool(void* parg);
 

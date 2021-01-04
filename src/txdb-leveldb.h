@@ -18,7 +18,7 @@
 
 // Class that provides access to a LevelDB. Note that this class is frequently
 // instantiated on the stack and then destroyed again, so instantiation has to
-// be very cheap. Unfortunately that means, a CTxDB instance is actually just a
+// be very cheap. Uncollateraltely that means, a CTxDB instance is actually just a
 // wrapper around some global state.
 //
 // A LevelDB is a key/value store that is optimized for fast usage on hard

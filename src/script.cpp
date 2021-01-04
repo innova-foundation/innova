@@ -1294,7 +1294,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
                     // A bug causes CHECKMULTISIG to consume one extra argument
                     // whose contents were not checked in any way.
                     //
-                    // Unfortunately this is a potential source of mutability,
+                    // Uncollateraltely this is a potential source of mutability,
                     // so optionally verify it is exactly equal to zero prior
                     // to removing it from the stack.
                     if (stack.size() < 1)

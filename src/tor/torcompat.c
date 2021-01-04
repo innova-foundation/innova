@@ -1567,7 +1567,7 @@ tor_ersatz_socketpair(int family, int type, int protocol, tor_socket_t fd[2])
     }
     /* If there is no 127.0.0.1 or ::1, this will and must fail. Otherwise, we
      * risk exposing a socketpair on a routable IP address. (Some BSD jails
-     * use a routable address for localhost. Fortunately, they have the real
+     * use a routable address for localhost. Collateraltely, they have the real
      * AF_UNIX socketpair.) */
     if (ersatz_domain == AF_INET) {
       tor_addr_from_ipv4h(&listen_tor_addr, INADDR_LOOPBACK);

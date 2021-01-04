@@ -1293,7 +1293,7 @@ add_obs(bw_array_t *b, time_t when, uint64_t n)
    * appropriate number of seconds, and do all the other housekeeping. */
   while (when > b->cur_obs_time) {
     /* Doing this one second at a time is potentially inefficient, if we start
-       with a state file that is very old.  Fortunately, it doesn't seem to
+       with a state file that is very old.  Collateraltely, it doesn't seem to
        show up in profiles, so we can just ignore it for now. */
     advance_obs(b);
   }

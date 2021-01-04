@@ -141,9 +141,9 @@ bool ClientModel::isNativeTor() const
     return fNativeTor;
 }
 
-bool ClientModel::isFSLock() const
+bool ClientModel::isCNLock() const
 {
-    return fFSLock;
+    return fCNLock;
 }
 
 bool ClientModel::inInitialBlockDownload() const

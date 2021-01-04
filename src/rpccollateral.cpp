@@ -7,9 +7,9 @@
 #include "main.h"
 #include "db.h"
 #include "init.h"
-#include "fortunastake.h"
-#include "activefortunastake.h"
-#include "fortunastakeconfig.h"
+#include "collateralnode.h"
+#include "activecollateralnode.h"
+#include "collateralnodeconfig.h"
 #include "innovarpc.h"
 #include <boost/lexical_cast.hpp>
 #include "util.h"
@@ -30,14 +30,14 @@ Value getpoolinfo(const Array& params, bool fHelp)
             "Returns an object containing anonymous pool-related information.");
 
     Object obj;
-    obj.push_back(Pair("current_fortunastake",        GetCurrentFortunaStake()));
+    obj.push_back(Pair("current_collateralnode",        GetCurrentCollateralNode()));
     obj.push_back(Pair("state",        forTunaPool.GetState()));
     obj.push_back(Pair("entries",      forTunaPool.GetEntriesCount()));
     obj.push_back(Pair("entries_accepted",      forTunaPool.GetCountEntriesAccepted()));
     return obj;
 }
 
-Value fortunastake(const Array& params, bool fHelp)
+Value collateralnode(const Array& params, bool fHelp)
 {
     string strCommand;
     if (params.size() >= 1)
@@ -47,34 +47,34 @@ Value fortunastake(const Array& params, bool fHelp)
         (strCommand != "start" && strCommand != "start-alias" && strCommand != "start-many" && strCommand != "stop" && strCommand != "stop-alias" && strCommand != "stop-many" && strCommand != "list" && strCommand != "list-conf" && strCommand != "count"  && strCommand != "enforce"
             && strCommand != "debug" && strCommand != "current" && strCommand != "winners" && strCommand != "genkey" && strCommand != "connect" && strCommand != "outputs" && strCommand != "status"))
 		throw runtime_error(
-			"fortunastake \"command\"... ( \"passphrase\" )\n"
-			"Set of commands to execute fortunastake related actions\n"
+			"collateralnode \"command\"... ( \"passphrase\" )\n"
+			"Set of commands to execute collateralnode related actions\n"
 			"\nArguments:\n"
 			"1. \"command\"        (string or set of strings, required) The command to execute\n"
 			"2. \"passphrase\"     (string, optional) The wallet passphrase\n"
 			"\nAvailable commands:\n"
-			"  count        - Print number of all known fortunastakes (optional: 'enabled', 'both')\n"
-			"  current      - Print info on current fortunastake winner\n"
-			"  debug        - Print fortunastake status\n"
-			"  genkey       - Generate new fortunastakeprivkey\n"
-			"  enforce      - Enforce fortunastake payments\n"
-			"  outputs      - Print fortunastake compatible outputs\n"
-            "  status       - Current fortunastake status\n"
-			"  start        - Start fortunastake configured in innova.conf\n"
-			"  start-alias  - Start single fortunastake by assigned alias configured in fortunastake.conf\n"
-			"  start-many   - Start all fortunastakes configured in fortunastake.conf\n"
-			"  stop         - Stop fortunastake configured in innova.conf\n"
-			"  stop-alias   - Stop single fortunastake by assigned alias configured in fortunastake.conf\n"
-			"  stop-many    - Stop all fortunastakes configured in fortunastake.conf\n"
-			"  list         - Print list of all known fortunastakes (see fortunastakelist for more info)\n"
-			"  list-conf    - Print fortunastake.conf in JSON format\n"
-			"  winners      - Print list of fortunastake winners\n"
+			"  count        - Print number of all known collateralnodes (optional: 'enabled', 'both')\n"
+			"  current      - Print info on current collateralnode winner\n"
+			"  debug        - Print collateralnode status\n"
+			"  genkey       - Generate new collateralnodeprivkey\n"
+			"  enforce      - Enforce collateralnode payments\n"
+			"  outputs      - Print collateralnode compatible outputs\n"
+            "  status       - Current collateralnode status\n"
+			"  start        - Start collateralnode configured in innova.conf\n"
+			"  start-alias  - Start single collateralnode by assigned alias configured in collateralnode.conf\n"
+			"  start-many   - Start all collateralnodes configured in collateralnode.conf\n"
+			"  stop         - Stop collateralnode configured in innova.conf\n"
+			"  stop-alias   - Stop single collateralnode by assigned alias configured in collateralnode.conf\n"
+			"  stop-many    - Stop all collateralnodes configured in collateralnode.conf\n"
+			"  list         - Print list of all known collateralnodes (see collateralnodelist for more info)\n"
+			"  list-conf    - Print collateralnode.conf in JSON format\n"
+			"  winners      - Print list of collateralnode winners\n"
 			//"  vote-many    - Vote on a Innova initiative\n"
 			//"  vote         - Vote on a Innova initiative\n"
             );
     if (strCommand == "stop")
     {
-        if(!fFortunaStake) return "You must set fortunastake=1 in the configuration";
+        if(!fCollateralNode) return "You must set collateralnode=1 in the configuration";
 
         if(pwalletMain->IsLocked()) {
             SecureString strWalletPass;
@@ -93,13 +93,13 @@ Value fortunastake(const Array& params, bool fHelp)
         }
 
         std::string errorMessage;
-        if(!activeFortunastake.StopFortunaStake(errorMessage)) {
+        if(!activeCollateralnode.StopCollateralNode(errorMessage)) {
         	return "Stop Failed: " + errorMessage;
         }
         pwalletMain->Lock();
 
-        if(activeFortunastake.status == FORTUNASTAKE_STOPPED) return "Successfully Stopped Fortunastake";
-        if(activeFortunastake.status == FORTUNASTAKE_NOT_CAPABLE) return "Not a capable Fortunastake";
+        if(activeCollateralnode.status == COLLATERALSTAKE_STOPPED) return "Successfully Stopped Collateralnode";
+        if(activeCollateralnode.status == COLLATERALSTAKE_NOT_CAPABLE) return "Not a capable Collateralnode";
 
         return "unknown";
     }
@@ -134,11 +134,11 @@ Value fortunastake(const Array& params, bool fHelp)
 		Object statusObj;
 		statusObj.push_back(Pair("alias", alias));
 
-    	BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
+    	BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry mne, collateralnodeConfig.getEntries()) {
     		if(mne.getAlias() == alias) {
     			found = true;
     			std::string errorMessage;
-    			bool result = activeFortunastake.StopFortunaStake(mne.getIp(), mne.getPrivKey(), errorMessage);
+    			bool result = activeCollateralnode.StopCollateralNode(mne.getIp(), mne.getPrivKey(), errorMessage);
 
 				statusObj.push_back(Pair("result", result ? "successful" : "failed"));
     			if(!result) {
@@ -182,11 +182,11 @@ Value fortunastake(const Array& params, bool fHelp)
 
 		Object resultsObj;
 
-		BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
+		BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry mne, collateralnodeConfig.getEntries()) {
 			total++;
 
 			std::string errorMessage;
-			bool result = activeFortunastake.StopFortunaStake(mne.getIp(), mne.getPrivKey(), errorMessage);
+			bool result = activeCollateralnode.StopCollateralNode(mne.getIp(), mne.getPrivKey(), errorMessage);
 
 			Object statusObj;
 			statusObj.push_back(Pair("alias", mne.getAlias()));
@@ -204,7 +204,7 @@ Value fortunastake(const Array& params, bool fHelp)
 		pwalletMain->Lock();
 
 		Object returnObj;
-		returnObj.push_back(Pair("overall", "Successfully stopped " + boost::lexical_cast<std::string>(successful) + " fortunastakes, failed to stop " +
+		returnObj.push_back(Pair("overall", "Successfully stopped " + boost::lexical_cast<std::string>(successful) + " collateralnodes, failed to stop " +
 				boost::lexical_cast<std::string>(fail) + ", total " + boost::lexical_cast<std::string>(total)));
 		returnObj.push_back(Pair("detail", resultsObj));
 
@@ -226,7 +226,7 @@ Value fortunastake(const Array& params, bool fHelp)
         }
 
         Object obj;
-        BOOST_FOREACH(CFortunaStake mn, vecFortunastakes) {
+        BOOST_FOREACH(CCollateralNode mn, vecCollateralnodes) {
             mn.Check();
 
             if(strCommand == "active"){
@@ -252,7 +252,7 @@ Value fortunastake(const Array& params, bool fHelp)
             } else if (strCommand == "activeseconds") {
                 obj.push_back(Pair(mn.addr.ToString().c_str(),       (int64_t)(mn.lastTimeSeen - mn.now)));
             } else if (strCommand == "rank") {
-                obj.push_back(Pair(mn.addr.ToString().c_str(),       (int)(GetFortunastakeRank(mn, pindexBest))));
+                obj.push_back(Pair(mn.addr.ToString().c_str(),       (int)(GetCollateralnodeRank(mn, pindexBest))));
             } else if (strCommand == "roundpayments") {
                 obj.push_back(Pair(mn.addr.ToString().c_str(),       mn.payCount));
             } else if (strCommand == "roundearnings") {
@@ -277,7 +277,7 @@ Value fortunastake(const Array& params, bool fHelp)
                 list.push_back(Pair("protocolversion",       (int64_t)mn.protocolVersion));
                 list.push_back(Pair("lastseen",       (int64_t)mn.lastTimeSeen));
                 list.push_back(Pair("activeseconds",  (int64_t)(mn.lastTimeSeen - mn.now)));
-                list.push_back(Pair("rank",           (int)(GetFortunastakeRank(mn, pindexBest))));
+                list.push_back(Pair("rank",           (int)(GetCollateralnodeRank(mn, pindexBest))));
                 list.push_back(Pair("lastpaid",       mn.nBlockLastPaid));
                 list.push_back(Pair("roundpayments",       mn.payCount));
                 list.push_back(Pair("roundearnings",       mn.payValue));
@@ -287,11 +287,11 @@ Value fortunastake(const Array& params, bool fHelp)
         }
         return obj;
     }
-    if (strCommand == "count") return (int)vecFortunastakes.size();
+    if (strCommand == "count") return (int)vecCollateralnodes.size();
 
     if (strCommand == "start")
     {
-        if(!fFortunaStake) return "you must set fortunastake=1 in the configuration";
+        if(!fCollateralNode) return "you must set collateralnode=1 in the configuration";
 
         if(pwalletMain->IsLocked()) {
             SecureString strWalletPass;
@@ -309,19 +309,19 @@ Value fortunastake(const Array& params, bool fHelp)
             }
         }
 
-        if(activeFortunastake.status != FORTUNASTAKE_REMOTELY_ENABLED && activeFortunastake.status != FORTUNASTAKE_IS_CAPABLE){
-            activeFortunastake.status = FORTUNASTAKE_NOT_PROCESSED; // TODO: consider better way
+        if(activeCollateralnode.status != COLLATERALSTAKE_REMOTELY_ENABLED && activeCollateralnode.status != COLLATERALSTAKE_IS_CAPABLE){
+            activeCollateralnode.status = COLLATERALSTAKE_NOT_PROCESSED; // TODO: consider better way
             std::string errorMessage;
-            activeFortunastake.ManageStatus();
+            activeCollateralnode.ManageStatus();
             pwalletMain->Lock();
         }
 
-        if(activeFortunastake.status == FORTUNASTAKE_REMOTELY_ENABLED) return "fortunastake started remotely";
-        if(activeFortunastake.status == FORTUNASTAKE_INPUT_TOO_NEW) return "fortunastake input must have at least 15 confirmations";
-        if(activeFortunastake.status == FORTUNASTAKE_STOPPED) return "fortunastake is stopped";
-        if(activeFortunastake.status == FORTUNASTAKE_IS_CAPABLE) return "successfully started fortunastake";
-        if(activeFortunastake.status == FORTUNASTAKE_NOT_CAPABLE) return "not capable fortunastake: " + activeFortunastake.notCapableReason;
-        if(activeFortunastake.status == FORTUNASTAKE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
+        if(activeCollateralnode.status == COLLATERALSTAKE_REMOTELY_ENABLED) return "collateralnode started remotely";
+        if(activeCollateralnode.status == COLLATERALSTAKE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
+        if(activeCollateralnode.status == COLLATERALSTAKE_STOPPED) return "collateralnode is stopped";
+        if(activeCollateralnode.status == COLLATERALSTAKE_IS_CAPABLE) return "successfully started collateralnode";
+        if(activeCollateralnode.status == COLLATERALSTAKE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
+        if(activeCollateralnode.status == COLLATERALSTAKE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
 
         return "unknown";
     }
@@ -356,11 +356,11 @@ Value fortunastake(const Array& params, bool fHelp)
 		Object statusObj;
 		statusObj.push_back(Pair("alias", alias));
 
-    	BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
+    	BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry mne, collateralnodeConfig.getEntries()) {
     		if(mne.getAlias() == alias) {
     			found = true;
     			std::string errorMessage;
-    			bool result = activeFortunastake.Register(mne.getIp(), mne.getPrivKey(), mne.getTxHash(), mne.getOutputIndex(), errorMessage);
+    			bool result = activeCollateralnode.Register(mne.getIp(), mne.getPrivKey(), mne.getTxHash(), mne.getOutputIndex(), errorMessage);
 
     			statusObj.push_back(Pair("result", result ? "successful" : "failed"));
     			if(!result) {
@@ -398,8 +398,8 @@ Value fortunastake(const Array& params, bool fHelp)
 			}
 		}
 
-		std::vector<CFortunastakeConfig::CFortunastakeEntry> mnEntries;
-		mnEntries = fortunastakeConfig.getEntries();
+		std::vector<CCollateralnodeConfig::CCollateralnodeEntry> mnEntries;
+		mnEntries = collateralnodeConfig.getEntries();
 
 		int total = 0;
 		int successful = 0;
@@ -407,11 +407,11 @@ Value fortunastake(const Array& params, bool fHelp)
 
 		Object resultsObj;
 
-		BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
+		BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry mne, collateralnodeConfig.getEntries()) {
 			total++;
 
 			std::string errorMessage;
-			bool result = activeFortunastake.Register(mne.getIp(), mne.getPrivKey(), mne.getTxHash(), mne.getOutputIndex(), errorMessage);
+			bool result = activeCollateralnode.Register(mne.getIp(), mne.getPrivKey(), mne.getTxHash(), mne.getOutputIndex(), errorMessage);
 
 			Object statusObj;
 			statusObj.push_back(Pair("alias", mne.getAlias()));
@@ -429,7 +429,7 @@ Value fortunastake(const Array& params, bool fHelp)
 		pwalletMain->Lock();
 
 		Object returnObj;
-		returnObj.push_back(Pair("overall", "Successfully started " + boost::lexical_cast<std::string>(successful) + " fortunastakes, failed to start " +
+		returnObj.push_back(Pair("overall", "Successfully started " + boost::lexical_cast<std::string>(successful) + " collateralnodes, failed to start " +
 				boost::lexical_cast<std::string>(fail) + ", total " + boost::lexical_cast<std::string>(total)));
 		returnObj.push_back(Pair("detail", resultsObj));
 
@@ -438,19 +438,19 @@ Value fortunastake(const Array& params, bool fHelp)
 
     if (strCommand == "debug")
     {
-        if(activeFortunastake.status == FORTUNASTAKE_REMOTELY_ENABLED) return "fortunastake started remotely";
-        if(activeFortunastake.status == FORTUNASTAKE_INPUT_TOO_NEW) return "fortunastake input must have at least 15 confirmations";
-        if(activeFortunastake.status == FORTUNASTAKE_IS_CAPABLE) return "successfully started fortunastake";
-        if(activeFortunastake.status == FORTUNASTAKE_STOPPED) return "fortunastake is stopped";
-        if(activeFortunastake.status == FORTUNASTAKE_NOT_CAPABLE) return "not capable fortunastake: " + activeFortunastake.notCapableReason;
-        if(activeFortunastake.status == FORTUNASTAKE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
+        if(activeCollateralnode.status == COLLATERALSTAKE_REMOTELY_ENABLED) return "collateralnode started remotely";
+        if(activeCollateralnode.status == COLLATERALSTAKE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
+        if(activeCollateralnode.status == COLLATERALSTAKE_IS_CAPABLE) return "successfully started collateralnode";
+        if(activeCollateralnode.status == COLLATERALSTAKE_STOPPED) return "collateralnode is stopped";
+        if(activeCollateralnode.status == COLLATERALSTAKE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
+        if(activeCollateralnode.status == COLLATERALSTAKE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
 
         CTxIn vin = CTxIn();
         CPubKey pubkey = CScript();
         CKey key;
-        bool found = activeFortunastake.GetFortunaStakeVin(vin, pubkey, key);
+        bool found = activeCollateralnode.GetCollateralNodeVin(vin, pubkey, key);
         if(!found){
-            return "Missing fortunastake input, please look at the documentation for instructions on fortunastake creation";
+            return "Missing collateralnode input, please look at the documentation for instructions on collateralnode creation";
         } else {
             return "No problems were found";
         }
@@ -459,14 +459,14 @@ Value fortunastake(const Array& params, bool fHelp)
     if (strCommand == "create")
     {
 
-        return "Not implemented yet, please look at the documentation for instructions on fortunastake creation";
+        return "Not implemented yet, please look at the documentation for instructions on collateralnode creation";
     }
 
     if (strCommand == "current")
     {
-        int winner = GetCurrentFortunaStake(1);
+        int winner = GetCurrentCollateralNode(1);
         if(winner >= 0) {
-            return vecFortunastakes[winner].addr.ToString().c_str();
+            return vecCollateralnodes[winner].addr.ToString().c_str();
         }
 
         return "unknown";
@@ -486,7 +486,7 @@ Value fortunastake(const Array& params, bool fHelp)
         for(int nHeight = pindexBest->nHeight-10; nHeight < pindexBest->nHeight+20; nHeight++)
         {
             CScript payee;
-            if(fortunastakePayments.GetBlockPayee(nHeight, payee)){
+            if(collateralnodePayments.GetBlockPayee(nHeight, payee)){
                 CTxDestination address1;
                 ExtractDestination(payee, address1);
                 CBitcoinAddress address2(address1);
@@ -501,7 +501,7 @@ Value fortunastake(const Array& params, bool fHelp)
 
     if(strCommand == "enforce")
     {
-        return (uint64_t)enforceFortunastakePaymentsTime;
+        return (uint64_t)enforceCollateralnodePaymentsTime;
     }
 
     if(strCommand == "connect")
@@ -511,7 +511,7 @@ Value fortunastake(const Array& params, bool fHelp)
             strAddress = params[1].get_str().c_str();
         } else {
             throw runtime_error(
-                "Fortunastake address required\n");
+                "Collateralnode address required\n");
         }
 
         CService addr = CService(strAddress);
@@ -525,19 +525,19 @@ Value fortunastake(const Array& params, bool fHelp)
 
     if(strCommand == "list-conf")
     {
-    	std::vector<CFortunastakeConfig::CFortunastakeEntry> mnEntries;
-    	mnEntries = fortunastakeConfig.getEntries();
+    	std::vector<CCollateralnodeConfig::CCollateralnodeEntry> mnEntries;
+    	mnEntries = collateralnodeConfig.getEntries();
 
         Object resultObj;
 
-        BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
+        BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry mne, collateralnodeConfig.getEntries()) {
     		Object mnObj;
     		mnObj.push_back(Pair("alias", mne.getAlias()));
     		mnObj.push_back(Pair("address", mne.getIp()));
     		mnObj.push_back(Pair("privateKey", mne.getPrivKey()));
     		mnObj.push_back(Pair("txHash", mne.getTxHash()));
     		mnObj.push_back(Pair("outputIndex", mne.getOutputIndex()));
-    		resultObj.push_back(Pair("fortunastake", mnObj));
+    		resultObj.push_back(Pair("collateralnode", mnObj));
     	}
 
     	return resultObj;
@@ -545,7 +545,7 @@ Value fortunastake(const Array& params, bool fHelp)
 
     if (strCommand == "outputs"){
         // Find possible candidates
-        vector<COutput> possibleCoins = activeFortunastake.SelectCoinsFortunastake();
+        vector<COutput> possibleCoins = activeCollateralnode.SelectCoinsCollateralnode();
 
         Object obj;
         BOOST_FOREACH(COutput& out, possibleCoins) {
@@ -558,12 +558,12 @@ Value fortunastake(const Array& params, bool fHelp)
 
     if(strCommand == "status")
     {
-        std::vector<CFortunastakeConfig::CFortunastakeEntry> mnEntries;
-        mnEntries = fortunastakeConfig.getEntries();
+        std::vector<CCollateralnodeConfig::CCollateralnodeEntry> mnEntries;
+        mnEntries = collateralnodeConfig.getEntries();
         Object mnObj;
 
             CScript pubkey;
-            pubkey = GetScriptForDestination(activeFortunastake.pubKeyFortunastake.GetID());
+            pubkey = GetScriptForDestination(activeCollateralnode.pubKeyCollateralnode.GetID());
             CTxDestination address1;
             ExtractDestination(pubkey, address1);
             CBitcoinAddress address2(address1);
@@ -572,24 +572,24 @@ Value fortunastake(const Array& params, bool fHelp)
             int outputIndex;
 
 
-            if (activeFortunastake.pubKeyFortunastake.IsFullyValid()) {
+            if (activeCollateralnode.pubKeyCollateralnode.IsFullyValid()) {
                 CScript pubkey;
                 CTxDestination address1;
                 std::string address = "";
                 bool found = false;
                 Object localObj;
-                localObj.push_back(Pair("vin", activeFortunastake.vin.ToString().c_str()));
-                localObj.push_back(Pair("service", activeFortunastake.service.ToString().c_str()));
-                LOCK(cs_fortunastakes);
-                BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes) {
-                    if (mn.vin == activeFortunastake.vin) {
-                        //int mnRank = GetFortunastakeRank(mn, pindexBest);
+                localObj.push_back(Pair("vin", activeCollateralnode.vin.ToString().c_str()));
+                localObj.push_back(Pair("service", activeCollateralnode.service.ToString().c_str()));
+                LOCK(cs_collateralnodes);
+                BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes) {
+                    if (mn.vin == activeCollateralnode.vin) {
+                        //int mnRank = GetCollateralnodeRank(mn, pindexBest);
                         pubkey = GetScriptForDestination(mn.pubkey.GetID());
                         ExtractDestination(pubkey, address1);
                         CBitcoinAddress address2(address1);
                         address = address2.ToString();
                         localObj.push_back(Pair("payment_address", address));
-                        //localObj.push_back(Pair("rank", GetFortunastakeRank(mn, pindexBest)));
+                        //localObj.push_back(Pair("rank", GetCollateralnodeRank(mn, pindexBest)));
                         localObj.push_back(Pair("network_status", mn.IsActive() ? "active" : "registered"));
                         if (mn.IsActive()) {
                           localObj.push_back(Pair("activetime",(mn.lastTimeSeen - mn.now)));
@@ -601,16 +601,16 @@ Value fortunastake(const Array& params, bool fHelp)
                     }
                 }
                 string reason;
-                if(activeFortunastake.status == FORTUNASTAKE_REMOTELY_ENABLED) reason = "fortunastake started remotely";
-                if(activeFortunastake.status == FORTUNASTAKE_INPUT_TOO_NEW) reason = "fortunastake input must have at least 15 confirmations";
-                if(activeFortunastake.status == FORTUNASTAKE_IS_CAPABLE) reason = "successfully started fortunastake";
-                if(activeFortunastake.status == FORTUNASTAKE_STOPPED) reason = "fortunastake is stopped";
-                if(activeFortunastake.status == FORTUNASTAKE_NOT_CAPABLE) reason = "not capable fortunastake: " + activeFortunastake.notCapableReason;
-                if(activeFortunastake.status == FORTUNASTAKE_SYNC_IN_PROCESS) reason = "sync in process. Must wait until client is synced to start.";
+                if(activeCollateralnode.status == COLLATERALSTAKE_REMOTELY_ENABLED) reason = "collateralnode started remotely";
+                if(activeCollateralnode.status == COLLATERALSTAKE_INPUT_TOO_NEW) reason = "collateralnode input must have at least 15 confirmations";
+                if(activeCollateralnode.status == COLLATERALSTAKE_IS_CAPABLE) reason = "successfully started collateralnode";
+                if(activeCollateralnode.status == COLLATERALSTAKE_STOPPED) reason = "collateralnode is stopped";
+                if(activeCollateralnode.status == COLLATERALSTAKE_NOT_CAPABLE) reason = "not capable collateralnode: " + activeCollateralnode.notCapableReason;
+                if(activeCollateralnode.status == COLLATERALSTAKE_SYNC_IN_PROCESS) reason = "sync in process. Must wait until client is synced to start.";
 
                 if (!found) {
                     localObj.push_back(Pair("network_status", "unregistered"));
-                    if (activeFortunastake.status != 9 && activeFortunastake.status != 7)
+                    if (activeCollateralnode.status != 9 && activeCollateralnode.status != 7)
                     {
                         localObj.push_back(Pair("notCapableReason", reason));
                     }
@@ -628,17 +628,17 @@ Value fortunastake(const Array& params, bool fHelp)
                 mnObj.push_back(Pair("local",localObj));
             }
 
-            BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry& mne, fortunastakeConfig.getEntries()) {
+            BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry& mne, collateralnodeConfig.getEntries()) {
                 Object remoteObj;
                 std::string address = mne.getIp();
 
                 CTxIn vin;
                 CTxDestination address1;
-                CActiveFortunastake amn;
+                CActiveCollateralnode amn;
                 CPubKey pubKeyCollateralAddress;
                 CKey keyCollateralAddress;
-                CPubKey pubKeyFortunastake;
-                CKey keyFortunastake;
+                CPubKey pubKeyCollateralnode;
+                CKey keyCollateralnode;
                 std::string errorMessage;
                 std::string forTunaError;
                 std::string vinError;
@@ -647,12 +647,12 @@ Value fortunastake(const Array& params, bool fHelp)
                 outputIndex = boost::lexical_cast<unsigned int>(mne.getOutputIndex());
                 COutPoint outpoint = COutPoint(mnTxHash, outputIndex);
 
-                if(!forTunaSigner.SetKey(mne.getPrivKey(), forTunaError, keyFortunastake, pubKeyFortunastake))
+                if(!forTunaSigner.SetKey(mne.getPrivKey(), forTunaError, keyCollateralnode, pubKeyCollateralnode))
                 {
                     errorMessage = forTunaError;
                 }
 
-                if (!amn.GetFortunaStakeVin(vin, pubKeyCollateralAddress, keyCollateralAddress, mne.getTxHash(), mne.getOutputIndex(), vinError))
+                if (!amn.GetCollateralNodeVin(vin, pubKeyCollateralAddress, keyCollateralAddress, mne.getTxHash(), mne.getOutputIndex(), vinError))
                 {
                     errorMessage = vinError;
                 }
@@ -682,7 +682,7 @@ Value fortunastake(const Array& params, bool fHelp)
                 //INNOVA - Q0lSQ1VJVEJSRUFLRVI=
 
                 bool mnfound = false;
-                BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes)
+                BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
                 {
                     if (mn.addr.ToString() == mne.getIp()) {
                       //remoteObj.push_back(Pair("status", "online"));
@@ -722,13 +722,13 @@ Value fortunastake(const Array& params, bool fHelp)
 						            }
 						         //remoteObj.push_back(Pair("txid",mn.vin.prevout.hash.ToString().c_str()));
 						          remoteObj.push_back(Pair("outputindex", (int64_t)mn.vin.prevout.n));
-						          remoteObj.push_back(Pair("rank", GetFortunastakeRank(mn, pindexBest)));
+						          remoteObj.push_back(Pair("rank", GetCollateralnodeRank(mn, pindexBest)));
 						          remoteObj.push_back(Pair("roundpayments", mn.payCount));
 						          remoteObj.push_back(Pair("earnings", mn.payValue));
 						          remoteObj.push_back(Pair("daily", mn.payRate));
                       remoteObj.push_back(Pair("version",mn.protocolVersion));
 
-						//printf("FortunastakeSTATUS:: %s %s - found %s - %s for alias %s\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str(), address4.ToString().c_str(), address2.ToString().c_str(), mne.getAlias().c_str());
+						//printf("CollateralnodeSTATUS:: %s %s - found %s - %s for alias %s\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str(), address4.ToString().c_str(), address2.ToString().c_str(), mne.getAlias().c_str());
                         mnfound = true;
                         break;
                     }
@@ -762,34 +762,34 @@ Value masternode(const Array& params, bool fHelp)
         (strCommand != "start" && strCommand != "start-alias" && strCommand != "start-many" && strCommand != "stop" && strCommand != "stop-alias" && strCommand != "stop-many" && strCommand != "list" && strCommand != "list-conf" && strCommand != "count"  && strCommand != "enforce"
             && strCommand != "debug" && strCommand != "current" && strCommand != "winners" && strCommand != "genkey" && strCommand != "connect" && strCommand != "outputs" && strCommand != "status"))
 		throw runtime_error(
-			"fortunastake \"command\"... ( \"passphrase\" )\n"
-			"Set of commands to execute fortunastake related actions\n"
+			"collateralnode \"command\"... ( \"passphrase\" )\n"
+			"Set of commands to execute collateralnode related actions\n"
 			"\nArguments:\n"
 			"1. \"command\"        (string or set of strings, required) The command to execute\n"
 			"2. \"passphrase\"     (string, optional) The wallet passphrase\n"
 			"\nAvailable commands:\n"
-			"  count        - Print number of all known fortunastakes (optional: 'enabled', 'both')\n"
-			"  current      - Print info on current fortunastake winner\n"
-			"  debug        - Print fortunastake status\n"
-			"  genkey       - Generate new fortunastakeprivkey\n"
-			"  enforce      - Enforce fortunastake payments\n"
-			"  outputs      - Print fortunastake compatible outputs\n"
-            "  status       - Current fortunastake status\n"
-			"  start        - Start fortunastake configured in innova.conf\n"
-			"  start-alias  - Start single fortunastake by assigned alias configured in fortunastake.conf\n"
-			"  start-many   - Start all fortunastakes configured in fortunastake.conf\n"
-			"  stop         - Stop fortunastake configured in innova.conf\n"
-			"  stop-alias   - Stop single fortunastake by assigned alias configured in fortunastake.conf\n"
-			"  stop-many    - Stop all fortunastakes configured in fortunastake.conf\n"
-			"  list         - Print list of all known fortunastakes (see fortunastakelist for more info)\n"
-			"  list-conf    - Print fortunastake.conf in JSON format\n"
-			"  winners      - Print list of fortunastake winners\n"
+			"  count        - Print number of all known collateralnodes (optional: 'enabled', 'both')\n"
+			"  current      - Print info on current collateralnode winner\n"
+			"  debug        - Print collateralnode status\n"
+			"  genkey       - Generate new collateralnodeprivkey\n"
+			"  enforce      - Enforce collateralnode payments\n"
+			"  outputs      - Print collateralnode compatible outputs\n"
+            "  status       - Current collateralnode status\n"
+			"  start        - Start collateralnode configured in innova.conf\n"
+			"  start-alias  - Start single collateralnode by assigned alias configured in collateralnode.conf\n"
+			"  start-many   - Start all collateralnodes configured in collateralnode.conf\n"
+			"  stop         - Stop collateralnode configured in innova.conf\n"
+			"  stop-alias   - Stop single collateralnode by assigned alias configured in collateralnode.conf\n"
+			"  stop-many    - Stop all collateralnodes configured in collateralnode.conf\n"
+			"  list         - Print list of all known collateralnodes (see collateralnodelist for more info)\n"
+			"  list-conf    - Print collateralnode.conf in JSON format\n"
+			"  winners      - Print list of collateralnode winners\n"
 			//"  vote-many    - Vote on a Innova initiative\n"
 			//"  vote         - Vote on a Innova initiative\n"
             );
     if (strCommand == "stop")
     {
-        if(!fFortunaStake) return "You must set fortunastake=1 in the configuration";
+        if(!fCollateralNode) return "You must set collateralnode=1 in the configuration";
 
         if(pwalletMain->IsLocked()) {
             SecureString strWalletPass;
@@ -808,13 +808,13 @@ Value masternode(const Array& params, bool fHelp)
         }
 
         std::string errorMessage;
-        if(!activeFortunastake.StopFortunaStake(errorMessage)) {
+        if(!activeCollateralnode.StopCollateralNode(errorMessage)) {
         	return "Stop Failed: " + errorMessage;
         }
         pwalletMain->Lock();
 
-        if(activeFortunastake.status == FORTUNASTAKE_STOPPED) return "Successfully Stopped Fortunastake";
-        if(activeFortunastake.status == FORTUNASTAKE_NOT_CAPABLE) return "Not a capable Fortunastake";
+        if(activeCollateralnode.status == COLLATERALSTAKE_STOPPED) return "Successfully Stopped Collateralnode";
+        if(activeCollateralnode.status == COLLATERALSTAKE_NOT_CAPABLE) return "Not a capable Collateralnode";
 
         return "unknown";
     }
@@ -849,11 +849,11 @@ Value masternode(const Array& params, bool fHelp)
 		Object statusObj;
 		statusObj.push_back(Pair("alias", alias));
 
-    	BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
+    	BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry mne, collateralnodeConfig.getEntries()) {
     		if(mne.getAlias() == alias) {
     			found = true;
     			std::string errorMessage;
-    			bool result = activeFortunastake.StopFortunaStake(mne.getIp(), mne.getPrivKey(), errorMessage);
+    			bool result = activeCollateralnode.StopCollateralNode(mne.getIp(), mne.getPrivKey(), errorMessage);
 
 				statusObj.push_back(Pair("result", result ? "successful" : "failed"));
     			if(!result) {
@@ -897,11 +897,11 @@ Value masternode(const Array& params, bool fHelp)
 
 		Object resultsObj;
 
-		BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
+		BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry mne, collateralnodeConfig.getEntries()) {
 			total++;
 
 			std::string errorMessage;
-			bool result = activeFortunastake.StopFortunaStake(mne.getIp(), mne.getPrivKey(), errorMessage);
+			bool result = activeCollateralnode.StopCollateralNode(mne.getIp(), mne.getPrivKey(), errorMessage);
 
 			Object statusObj;
 			statusObj.push_back(Pair("alias", mne.getAlias()));
@@ -919,7 +919,7 @@ Value masternode(const Array& params, bool fHelp)
 		pwalletMain->Lock();
 
 		Object returnObj;
-		returnObj.push_back(Pair("overall", "Successfully stopped " + boost::lexical_cast<std::string>(successful) + " fortunastakes, failed to stop " +
+		returnObj.push_back(Pair("overall", "Successfully stopped " + boost::lexical_cast<std::string>(successful) + " collateralnodes, failed to stop " +
 				boost::lexical_cast<std::string>(fail) + ", total " + boost::lexical_cast<std::string>(total)));
 		returnObj.push_back(Pair("detail", resultsObj));
 
@@ -941,7 +941,7 @@ Value masternode(const Array& params, bool fHelp)
         }
 
         Object obj;
-        BOOST_FOREACH(CFortunaStake mn, vecFortunastakes) {
+        BOOST_FOREACH(CCollateralNode mn, vecCollateralnodes) {
             mn.Check();
 
             if(strCommand == "active"){
@@ -967,7 +967,7 @@ Value masternode(const Array& params, bool fHelp)
             } else if (strCommand == "activeseconds") {
                 obj.push_back(Pair(mn.addr.ToString().c_str(),       (int64_t)(mn.lastTimeSeen - mn.now)));
             } else if (strCommand == "rank") {
-                obj.push_back(Pair(mn.addr.ToString().c_str(),       (int)(GetFortunastakeRank(mn, pindexBest))));
+                obj.push_back(Pair(mn.addr.ToString().c_str(),       (int)(GetCollateralnodeRank(mn, pindexBest))));
             }
 			else if (strCommand == "full") {
                 Object list;
@@ -985,18 +985,18 @@ Value masternode(const Array& params, bool fHelp)
                 list.push_back(Pair("protocolversion",       (int64_t)mn.protocolVersion));
                 list.push_back(Pair("lastseen",       (int64_t)mn.lastTimeSeen));
                 list.push_back(Pair("activeseconds",  (int64_t)(mn.lastTimeSeen - mn.now)));
-                list.push_back(Pair("rank",           (int)(GetFortunastakeRank(mn, pindexBest))));
+                list.push_back(Pair("rank",           (int)(GetCollateralnodeRank(mn, pindexBest))));
                 list.push_back(Pair("lastpaid",       mn.nBlockLastPaid));
                 obj.push_back(Pair(mn.addr.ToString().c_str(), list));
             }
         }
         return obj;
     }
-    if (strCommand == "count") return (int)vecFortunastakes.size();
+    if (strCommand == "count") return (int)vecCollateralnodes.size();
 
     if (strCommand == "start")
     {
-        if(!fFortunaStake) return "you must set fortunastake=1 in the configuration";
+        if(!fCollateralNode) return "you must set collateralnode=1 in the configuration";
 
         if(pwalletMain->IsLocked()) {
             SecureString strWalletPass;
@@ -1014,19 +1014,19 @@ Value masternode(const Array& params, bool fHelp)
             }
         }
 
-        if(activeFortunastake.status != FORTUNASTAKE_REMOTELY_ENABLED && activeFortunastake.status != FORTUNASTAKE_IS_CAPABLE){
-            activeFortunastake.status = FORTUNASTAKE_NOT_PROCESSED; // TODO: consider better way
+        if(activeCollateralnode.status != COLLATERALSTAKE_REMOTELY_ENABLED && activeCollateralnode.status != COLLATERALSTAKE_IS_CAPABLE){
+            activeCollateralnode.status = COLLATERALSTAKE_NOT_PROCESSED; // TODO: consider better way
             std::string errorMessage;
-            activeFortunastake.ManageStatus();
+            activeCollateralnode.ManageStatus();
             pwalletMain->Lock();
         }
 
-        if(activeFortunastake.status == FORTUNASTAKE_REMOTELY_ENABLED) return "fortunastake started remotely";
-        if(activeFortunastake.status == FORTUNASTAKE_INPUT_TOO_NEW) return "fortunastake input must have at least 15 confirmations";
-        if(activeFortunastake.status == FORTUNASTAKE_STOPPED) return "fortunastake is stopped";
-        if(activeFortunastake.status == FORTUNASTAKE_IS_CAPABLE) return "successfully started fortunastake";
-        if(activeFortunastake.status == FORTUNASTAKE_NOT_CAPABLE) return "not capable fortunastake: " + activeFortunastake.notCapableReason;
-        if(activeFortunastake.status == FORTUNASTAKE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
+        if(activeCollateralnode.status == COLLATERALSTAKE_REMOTELY_ENABLED) return "collateralnode started remotely";
+        if(activeCollateralnode.status == COLLATERALSTAKE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
+        if(activeCollateralnode.status == COLLATERALSTAKE_STOPPED) return "collateralnode is stopped";
+        if(activeCollateralnode.status == COLLATERALSTAKE_IS_CAPABLE) return "successfully started collateralnode";
+        if(activeCollateralnode.status == COLLATERALSTAKE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
+        if(activeCollateralnode.status == COLLATERALSTAKE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
 
         return "unknown";
     }
@@ -1061,11 +1061,11 @@ Value masternode(const Array& params, bool fHelp)
 		Object statusObj;
 		statusObj.push_back(Pair("alias", alias));
 
-    	BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
+    	BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry mne, collateralnodeConfig.getEntries()) {
     		if(mne.getAlias() == alias) {
     			found = true;
     			std::string errorMessage;
-    			bool result = activeFortunastake.Register(mne.getIp(), mne.getPrivKey(), mne.getTxHash(), mne.getOutputIndex(), errorMessage);
+    			bool result = activeCollateralnode.Register(mne.getIp(), mne.getPrivKey(), mne.getTxHash(), mne.getOutputIndex(), errorMessage);
 
     			statusObj.push_back(Pair("result", result ? "successful" : "failed"));
     			if(!result) {
@@ -1103,8 +1103,8 @@ Value masternode(const Array& params, bool fHelp)
 			}
 		}
 
-		std::vector<CFortunastakeConfig::CFortunastakeEntry> mnEntries;
-		mnEntries = fortunastakeConfig.getEntries();
+		std::vector<CCollateralnodeConfig::CCollateralnodeEntry> mnEntries;
+		mnEntries = collateralnodeConfig.getEntries();
 
 		int total = 0;
 		int successful = 0;
@@ -1112,11 +1112,11 @@ Value masternode(const Array& params, bool fHelp)
 
 		Object resultsObj;
 
-		BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
+		BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry mne, collateralnodeConfig.getEntries()) {
 			total++;
 
 			std::string errorMessage;
-			bool result = activeFortunastake.Register(mne.getIp(), mne.getPrivKey(), mne.getTxHash(), mne.getOutputIndex(), errorMessage);
+			bool result = activeCollateralnode.Register(mne.getIp(), mne.getPrivKey(), mne.getTxHash(), mne.getOutputIndex(), errorMessage);
 
 			Object statusObj;
 			statusObj.push_back(Pair("alias", mne.getAlias()));
@@ -1134,7 +1134,7 @@ Value masternode(const Array& params, bool fHelp)
 		pwalletMain->Lock();
 
 		Object returnObj;
-		returnObj.push_back(Pair("overall", "Successfully started " + boost::lexical_cast<std::string>(successful) + " fortunastakes, failed to start " +
+		returnObj.push_back(Pair("overall", "Successfully started " + boost::lexical_cast<std::string>(successful) + " collateralnodes, failed to start " +
 				boost::lexical_cast<std::string>(fail) + ", total " + boost::lexical_cast<std::string>(total)));
 		returnObj.push_back(Pair("detail", resultsObj));
 
@@ -1143,19 +1143,19 @@ Value masternode(const Array& params, bool fHelp)
 
     if (strCommand == "debug")
     {
-        if(activeFortunastake.status == FORTUNASTAKE_REMOTELY_ENABLED) return "fortunastake started remotely";
-        if(activeFortunastake.status == FORTUNASTAKE_INPUT_TOO_NEW) return "fortunastake input must have at least 15 confirmations";
-        if(activeFortunastake.status == FORTUNASTAKE_IS_CAPABLE) return "successfully started fortunastake";
-        if(activeFortunastake.status == FORTUNASTAKE_STOPPED) return "fortunastake is stopped";
-        if(activeFortunastake.status == FORTUNASTAKE_NOT_CAPABLE) return "not capable fortunastake: " + activeFortunastake.notCapableReason;
-        if(activeFortunastake.status == FORTUNASTAKE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
+        if(activeCollateralnode.status == COLLATERALSTAKE_REMOTELY_ENABLED) return "collateralnode started remotely";
+        if(activeCollateralnode.status == COLLATERALSTAKE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
+        if(activeCollateralnode.status == COLLATERALSTAKE_IS_CAPABLE) return "successfully started collateralnode";
+        if(activeCollateralnode.status == COLLATERALSTAKE_STOPPED) return "collateralnode is stopped";
+        if(activeCollateralnode.status == COLLATERALSTAKE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
+        if(activeCollateralnode.status == COLLATERALSTAKE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
 
         CTxIn vin = CTxIn();
         CPubKey pubkey = CScript();
         CKey key;
-        bool found = activeFortunastake.GetFortunaStakeVin(vin, pubkey, key);
+        bool found = activeCollateralnode.GetCollateralNodeVin(vin, pubkey, key);
         if(!found){
-            return "Missing fortunastake input, please look at the documentation for instructions on fortunastake creation";
+            return "Missing collateralnode input, please look at the documentation for instructions on collateralnode creation";
         } else {
             return "No problems were found";
         }
@@ -1164,14 +1164,14 @@ Value masternode(const Array& params, bool fHelp)
     if (strCommand == "create")
     {
 
-        return "Not implemented yet, please look at the documentation for instructions on fortunastake creation";
+        return "Not implemented yet, please look at the documentation for instructions on collateralnode creation";
     }
 
     if (strCommand == "current")
     {
-        int winner = GetCurrentFortunaStake(1);
+        int winner = GetCurrentCollateralNode(1);
         if(winner >= 0) {
-            return vecFortunastakes[winner].addr.ToString().c_str();
+            return vecCollateralnodes[winner].addr.ToString().c_str();
         }
 
         return "unknown";
@@ -1191,7 +1191,7 @@ Value masternode(const Array& params, bool fHelp)
         for(int nHeight = pindexBest->nHeight-10; nHeight < pindexBest->nHeight+20; nHeight++)
         {
             CScript payee;
-            if(fortunastakePayments.GetBlockPayee(nHeight, payee)){
+            if(collateralnodePayments.GetBlockPayee(nHeight, payee)){
                 CTxDestination address1;
                 ExtractDestination(payee, address1);
                 CBitcoinAddress address2(address1);
@@ -1206,7 +1206,7 @@ Value masternode(const Array& params, bool fHelp)
 
     if(strCommand == "enforce")
     {
-        return (uint64_t)enforceFortunastakePaymentsTime;
+        return (uint64_t)enforceCollateralnodePaymentsTime;
     }
 
     if(strCommand == "connect")
@@ -1216,7 +1216,7 @@ Value masternode(const Array& params, bool fHelp)
             strAddress = params[1].get_str().c_str();
         } else {
             throw runtime_error(
-                "Fortunastake address required\n");
+                "Collateralnode address required\n");
         }
 
         CService addr = CService(strAddress);
@@ -1230,19 +1230,19 @@ Value masternode(const Array& params, bool fHelp)
 
     if(strCommand == "list-conf")
     {
-    	std::vector<CFortunastakeConfig::CFortunastakeEntry> mnEntries;
-    	mnEntries = fortunastakeConfig.getEntries();
+    	std::vector<CCollateralnodeConfig::CCollateralnodeEntry> mnEntries;
+    	mnEntries = collateralnodeConfig.getEntries();
 
         Object resultObj;
 
-        BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
+        BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry mne, collateralnodeConfig.getEntries()) {
     		Object mnObj;
     		mnObj.push_back(Pair("alias", mne.getAlias()));
     		mnObj.push_back(Pair("address", mne.getIp()));
     		mnObj.push_back(Pair("privateKey", mne.getPrivKey()));
     		mnObj.push_back(Pair("txHash", mne.getTxHash()));
     		mnObj.push_back(Pair("outputIndex", mne.getOutputIndex()));
-    		resultObj.push_back(Pair("fortunastake", mnObj));
+    		resultObj.push_back(Pair("collateralnode", mnObj));
     	}
 
     	return resultObj;
@@ -1250,7 +1250,7 @@ Value masternode(const Array& params, bool fHelp)
 
     if (strCommand == "outputs"){
         // Find possible candidates
-        vector<COutput> possibleCoins = activeFortunastake.SelectCoinsFortunastake();
+        vector<COutput> possibleCoins = activeCollateralnode.SelectCoinsCollateralnode();
 
         Object obj;
         BOOST_FOREACH(COutput& out, possibleCoins) {
@@ -1263,33 +1263,33 @@ Value masternode(const Array& params, bool fHelp)
 
     if(strCommand == "status")
     {
-        std::vector<CFortunastakeConfig::CFortunastakeEntry> mnEntries;
-        mnEntries = fortunastakeConfig.getEntries();
+        std::vector<CCollateralnodeConfig::CCollateralnodeEntry> mnEntries;
+        mnEntries = collateralnodeConfig.getEntries();
         Object mnObj;
 
         CScript pubkey;
-      pubkey = GetScriptForDestination(activeFortunastake.pubKeyFortunastake.GetID());
+      pubkey = GetScriptForDestination(activeCollateralnode.pubKeyCollateralnode.GetID());
       CTxDestination address1;
       ExtractDestination(pubkey, address1);
       CBitcoinAddress address2(address1);
-      if (activeFortunastake.pubKeyFortunastake.IsFullyValid()) {
+      if (activeCollateralnode.pubKeyCollateralnode.IsFullyValid()) {
             CScript pubkey;
             CTxDestination address1;
             std::string address = "";
             bool found = false;
             Object localObj;
-            localObj.push_back(Pair("vin", activeFortunastake.vin.ToString().c_str()));
-            localObj.push_back(Pair("service", activeFortunastake.service.ToString().c_str()));
-            LOCK(cs_fortunastakes);
-            BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes) {
-                if (mn.vin == activeFortunastake.vin) {
-                    //int mnRank = GetFortunastakeRank(mn, pindexBest);
+            localObj.push_back(Pair("vin", activeCollateralnode.vin.ToString().c_str()));
+            localObj.push_back(Pair("service", activeCollateralnode.service.ToString().c_str()));
+            LOCK(cs_collateralnodes);
+            BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes) {
+                if (mn.vin == activeCollateralnode.vin) {
+                    //int mnRank = GetCollateralnodeRank(mn, pindexBest);
                     pubkey = GetScriptForDestination(mn.pubkey.GetID());
                     ExtractDestination(pubkey, address1);
                     CBitcoinAddress address2(address1);
                     address = address2.ToString();
                     localObj.push_back(Pair("payment_address", address));
-                    //localObj.push_back(Pair("rank", GetFortunastakeRank(mn, pindexBest)));
+                    //localObj.push_back(Pair("rank", GetCollateralnodeRank(mn, pindexBest)));
                     localObj.push_back(Pair("network_status", mn.IsActive() ? "active" : "registered"));
                     if (mn.IsActive()) {
                         localObj.push_back(Pair("activetime",(mn.lastTimeSeen - mn.now)));
@@ -1301,16 +1301,16 @@ Value masternode(const Array& params, bool fHelp)
                       }
                   }
                   string reason;
-                  if(activeFortunastake.status == FORTUNASTAKE_REMOTELY_ENABLED) reason = "fortunastake started remotely";
-                  if(activeFortunastake.status == FORTUNASTAKE_INPUT_TOO_NEW) reason = "fortunastake input must have at least 15 confirmations";
-                  if(activeFortunastake.status == FORTUNASTAKE_IS_CAPABLE) reason = "successfully started fortunastake";
-                  if(activeFortunastake.status == FORTUNASTAKE_STOPPED) reason = "fortunastake is stopped";
-                  if(activeFortunastake.status == FORTUNASTAKE_NOT_CAPABLE) reason = "not capable fortunastake: " + activeFortunastake.notCapableReason;
-                  if(activeFortunastake.status == FORTUNASTAKE_SYNC_IN_PROCESS) reason = "sync in process. Must wait until client is synced to start.";
+                  if(activeCollateralnode.status == COLLATERALSTAKE_REMOTELY_ENABLED) reason = "collateralnode started remotely";
+                  if(activeCollateralnode.status == COLLATERALSTAKE_INPUT_TOO_NEW) reason = "collateralnode input must have at least 15 confirmations";
+                  if(activeCollateralnode.status == COLLATERALSTAKE_IS_CAPABLE) reason = "successfully started collateralnode";
+                  if(activeCollateralnode.status == COLLATERALSTAKE_STOPPED) reason = "collateralnode is stopped";
+                  if(activeCollateralnode.status == COLLATERALSTAKE_NOT_CAPABLE) reason = "not capable collateralnode: " + activeCollateralnode.notCapableReason;
+                  if(activeCollateralnode.status == COLLATERALSTAKE_SYNC_IN_PROCESS) reason = "sync in process. Must wait until client is synced to start.";
 
                   if (!found) {
                       localObj.push_back(Pair("network_status", "unregistered"));
-                      if (activeFortunastake.status != 9 && activeFortunastake.status != 7)
+                      if (activeCollateralnode.status != 9 && activeCollateralnode.status != 7)
                       {
                           localObj.push_back(Pair("notCapableReason", reason));
                       }
@@ -1327,27 +1327,27 @@ Value masternode(const Array& params, bool fHelp)
                   mnObj.push_back(Pair("local",localObj));
                 }
 
-                BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry& mne, fortunastakeConfig.getEntries()) {
+                BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry& mne, collateralnodeConfig.getEntries()) {
                   Object remoteObj;
                   std::string address = mne.getIp();
 
                 CTxIn vin;
                 CTxDestination address1;
-                CActiveFortunastake amn;
+                CActiveCollateralnode amn;
                 CPubKey pubKeyCollateralAddress;
                 CKey keyCollateralAddress;
-                CPubKey pubKeyFortunastake;
-                CKey keyFortunastake;
+                CPubKey pubKeyCollateralnode;
+                CKey keyCollateralnode;
                 std::string errorMessage;
                 std::string forTunaError;
                 std::string vinError;
 
-                if(!forTunaSigner.SetKey(mne.getPrivKey(), forTunaError, keyFortunastake, pubKeyFortunastake))
+                if(!forTunaSigner.SetKey(mne.getPrivKey(), forTunaError, keyCollateralnode, pubKeyCollateralnode))
               {
                   errorMessage = forTunaError;
               }
 
-              if (!amn.GetFortunaStakeVin(vin, pubKeyCollateralAddress, keyCollateralAddress, mne.getTxHash(), mne.getOutputIndex(), vinError))
+              if (!amn.GetCollateralNodeVin(vin, pubKeyCollateralAddress, keyCollateralAddress, mne.getTxHash(), mne.getOutputIndex(), vinError))
           {
               errorMessage = vinError;
           }
@@ -1368,7 +1368,7 @@ Value masternode(const Array& params, bool fHelp)
           //remoteObj.push_back(Pair("collateral", CBitcoinAddress(mn->pubKeyCollateralAddress.GetID()).ToString()));
 
           bool mnfound = false;
-          BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes)
+          BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
           {
               if (mn.addr.ToString() == mne.getIp()) {
                   remoteObj.push_back(Pair("status", "online"));

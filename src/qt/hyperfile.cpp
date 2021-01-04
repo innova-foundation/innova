@@ -1,5 +1,5 @@
-#include "jupiter.h"
-#include "ui_jupiter.h"
+#include "hyperfile.h"
+#include "ui_hyperfile.h"
 
 #include "bitcoinunits.h"
 #include "guiutil.h"
@@ -31,9 +31,9 @@
 #include <sstream>
 #include <stdexcept>
 
-Jupiter::Jupiter(QWidget *parent) :
+HyperFile::HyperFile(QWidget *parent) :
     QWidget(parent),
-    ui(new Ui::Jupiter)
+    ui(new Ui::HyperFile)
 {
     ui->setupUi(this);
     fileName = "";
@@ -51,12 +51,12 @@ Jupiter::Jupiter(QWidget *parent) :
     ui->checkButtonCloudflare->setHidden(true);
 }
 
-Jupiter::~Jupiter()
+HyperFile::~HyperFile()
 {
     delete ui;
 }
 
-void Jupiter::on_filePushButton_clicked()
+void HyperFile::on_filePushButton_clicked()
 {
   //Upload a file
 	fileName = QFileDialog::getOpenFileName(this,
@@ -67,23 +67,23 @@ void Jupiter::on_filePushButton_clicked()
   ui->labelFile->setText(fileName);
 }
 
-void Jupiter::on_createPodButton_clicked()
+void HyperFile::on_createPodButton_clicked()
 {
 
 #ifdef USE_IPFS
-fJupiterLocal = GetBoolArg("-jupiterlocal");
+fHyperFileLocal = GetBoolArg("-hyperfilelocal");
 
-if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova Jupiter POD", "Warning: This costs 0.001 INN to timestamp your IPFS file hash on the Innova blockchain.", QMessageBox::Yes|QMessageBox::No).exec())
+if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova HyperFile POD", "Warning: This costs 0.001 INN to timestamp your IPFS file hash on the Innova blockchain.", QMessageBox::Yes|QMessageBox::No).exec())
 {
     //qDebug() << "Yes was clicked";
 
     //Ensure IPFS connected
-    if (fJupiterLocal) {
+    if (fHyperFileLocal) {
       try {
         std::stringstream contents;
         ipfs::Json add_result;
 
-        std::string ipfsip = GetArg("-jupiterip", "localhost:5001"); //Default Localhost
+        std::string ipfsip = GetArg("-hyperfileip", "localhost:5001"); //Default Localhost
 
         ipfs::Client client(ipfsip);
 
@@ -107,8 +107,8 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova Jupiter PO
 
         std::string fileContents = ipfsC.c_str();
 
-        printf("Jupiter Upload File Start: %s\n", basename.c_str());
-        //printf("Jupiter File Contents: %s\n", ipfsC.c_str());
+        printf("HyperFile Upload File Start: %s\n", basename.c_str());
+        //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
         client.FilesAdd(
         {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, fileName.toStdString().c_str()}},
@@ -121,11 +121,11 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova Jupiter PO
 
 
         std::string r = add_result.dump();
-        printf("Jupiter POD Successfully Added IPFS File(s): %s\n", r.c_str());
+        printf("HyperFile POD Successfully Added IPFS File(s): %s\n", r.c_str());
 
-        //Jupiter POD
+        //HyperFile POD
         if (hash != "") {
-          //Hash the file for Innova Jupiter POD
+          //Hash the file for Innova HyperFile POD
           //uint256 imagehash = SerializeHash(ipfsContents);
           CKeyID keyid(Hash160(hash.begin(), hash.end()));
           CBitcoinAddress baddr = CBitcoinAddress(keyid);
@@ -138,20 +138,20 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova Jupiter PO
           // Wallet comments
           CWalletTx wtx;
           wtx.mapValue["comment"] = hash;
-          std::string sNarr = "Jupiter POD";
-          wtx.mapValue["to"]      = "Jupiter POD";
+          std::string sNarr = "HyperFile POD";
+          wtx.mapValue["to"]      = "HyperFile POD";
 
           if (pwalletMain->IsLocked())
           {
             QMessageBox unlockbox;
             unlockbox.setText("Error, Your wallet is locked! Please unlock your wallet!");
             unlockbox.exec();
-            //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send Jupiter POD. Unlock your wallet!");
+            //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send HyperFile POD. Unlock your wallet!");
           } else if (pwalletMain->GetBalance() < 0.001) {
             QMessageBox error2box;
-            error2box.setText("Error, You need at least 0.001 INN to send Jupiter POD!");
+            error2box.setText("Error, You need at least 0.001 INN to send HyperFile POD!");
             error2box.exec();
-            //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send Jupiter POD.");
+            //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send HyperFile POD.");
           } else {
             //std::string sNarr;
             std::string strError = pwalletMain->SendMoneyToDestination(baddr.Get(), nAmount, sNarr, wtx);
@@ -163,7 +163,7 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova Jupiter PO
                 infobox.exec();
             }
             QMessageBox successbox;
-            successbox.setText("Jupiter POD Timestamp Successful!");
+            successbox.setText("HyperFile POD Timestamp Successful!");
             successbox.exec();
             ui->lineEdit_3->setText(QString::fromStdString(wtx.GetHash().GetHex()));
           }
@@ -215,8 +215,8 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova Jupiter PO
 
         std::string fileContents = ipfsC.c_str();
 
-        printf("Jupiter Upload File Start: %s\n", basename.c_str());
-        //printf("Jupiter File Contents: %s\n", ipfsC.c_str());
+        printf("HyperFile Upload File Start: %s\n", basename.c_str());
+        //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
         client.FilesAdd(
         {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, fileName.toStdString().c_str()}},
@@ -227,11 +227,11 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova Jupiter PO
         ui->lineEdit->setText(QString::fromStdString(hash));
 
         std::string r = add_result.dump();
-        printf("Jupiter POD Successfully Added IPFS File(s): %s\n", r.c_str());
+        printf("HyperFile POD Successfully Added IPFS File(s): %s\n", r.c_str());
 
-        //Jupiter POD
+        //HyperFile POD
         if (hash != "") {
-          //Hash the file for Innova Jupiter POD
+          //Hash the file for Innova HyperFile POD
           //uint256 imagehash = SerializeHash(ipfsContents);
           CKeyID keyid(Hash160(hash.begin(), hash.end()));
           CBitcoinAddress baddr = CBitcoinAddress(keyid);
@@ -244,20 +244,20 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova Jupiter PO
           // Wallet comments
           CWalletTx wtx;
           wtx.mapValue["comment"] = hash;
-          std::string sNarr = "Jupiter POD";
-          wtx.mapValue["to"]      = "Jupiter POD";
+          std::string sNarr = "HyperFile POD";
+          wtx.mapValue["to"]      = "HyperFile POD";
 
           if (pwalletMain->IsLocked())
           {
             QMessageBox unlockbox;
             unlockbox.setText("Error, Your wallet is locked! Please unlock your wallet!");
             unlockbox.exec();
-            //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send Jupiter POD. Unlock your wallet!");
+            //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send HyperFile POD. Unlock your wallet!");
           } else if (pwalletMain->GetBalance() < 0.001) {
             QMessageBox error2box;
-            error2box.setText("Error, You need at least 0.001 INN to send Jupiter POD!");
+            error2box.setText("Error, You need at least 0.001 INN to send HyperFile POD!");
             error2box.exec();
-            //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send Jupiter POD.");
+            //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send HyperFile POD.");
           } else {
             //std::string sNarr;
             std::string strError = pwalletMain->SendMoneyToDestination(baddr.Get(), nAmount, sNarr, wtx);
@@ -269,7 +269,7 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova Jupiter PO
                 infobox.exec();
             }
             QMessageBox successbox;
-            successbox.setText("Jupiter POD Timestamp Successful!");
+            successbox.setText("HyperFile POD Timestamp Successful!");
             successbox.exec();
             ui->lineEdit_3->setText(QString::fromStdString(wtx.GetHash().GetHex()));
           }
@@ -304,19 +304,19 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova Jupiter PO
 
 }
 
-void Jupiter::on_createPushButton_clicked()
+void HyperFile::on_createPushButton_clicked()
 {
 
 #ifdef USE_IPFS
-fJupiterLocal = GetBoolArg("-jupiterlocal");
+fHyperFileLocal = GetBoolArg("-hyperfilelocal");
 
 //Ensure IPFS connected
-if (fJupiterLocal) {
+if (fHyperFileLocal) {
 try {
 std::stringstream contents;
 ipfs::Json add_result;
 
-std::string ipfsip = GetArg("-jupiterip", "localhost:5001"); //Default Localhost
+std::string ipfsip = GetArg("-hyperfileip", "localhost:5001"); //Default Localhost
 
 ipfs::Client client(ipfsip);
 
@@ -340,8 +340,8 @@ std::string ipfsC(ipfsContents.begin(), ipfsContents.end());
 
 std::string fileContents = ipfsC.c_str();
 
-printf("Jupiter Upload File Start: %s\n", basename.c_str());
-//printf("Jupiter File Contents: %s\n", ipfsC.c_str());
+printf("HyperFile Upload File Start: %s\n", basename.c_str());
+//printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
 client.FilesAdd(
 {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, fileName.toStdString().c_str()}},
@@ -352,7 +352,7 @@ const std::string& hash = add_result[0]["hash"];
 ui->lineEdit->setText(QString::fromStdString(hash));
 
 std::string r = add_result.dump();
-printf("Jupiter Successfully Added IPFS File(s): %s\n", r.c_str());
+printf("HyperFile Successfully Added IPFS File(s): %s\n", r.c_str());
 
 if (hash != "") {
   ui->checkButton->setHidden(false);
@@ -395,8 +395,8 @@ std::string basename = p.filename().string();
 
     std::string fileContents = ipfsC.c_str();
 
-    printf("Jupiter Upload File Start: %s\n", basename.c_str());
-    //printf("Jupiter File Contents: %s\n", ipfsC.c_str());
+    printf("HyperFile Upload File Start: %s\n", basename.c_str());
+    //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
     client.FilesAdd(
     {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, fileName.toStdString().c_str()}},
@@ -407,7 +407,7 @@ std::string basename = p.filename().string();
     ui->lineEdit->setText(QString::fromStdString(hash));
 
     std::string r = add_result.dump();
-    printf("Jupiter Successfully Added IPFS File(s): %s\n", r.c_str());
+    printf("HyperFile Successfully Added IPFS File(s): %s\n", r.c_str());
 
     if (hash != "") {
       ui->checkButton->setHidden(false);
@@ -429,7 +429,7 @@ std::string basename = p.filename().string();
 
 }
 
-void Jupiter::on_checkButton_clicked()
+void HyperFile::on_checkButton_clicked()
 {
     if(fileName == "")
     {
@@ -445,7 +445,7 @@ void Jupiter::on_checkButton_clicked()
 
 }
 
-void Jupiter::on_checkButtonCloudflare_clicked()
+void HyperFile::on_checkButtonCloudflare_clicked()
 {
   if(fileName == "")
       {
@@ -459,7 +459,7 @@ void Jupiter::on_checkButtonCloudflare_clicked()
    QDesktopServices::openUrl(QUrl(link2));
 }
 
-void Jupiter::on_checkHashButton_clicked()
+void HyperFile::on_checkHashButton_clicked()
 {
    if(fileName == "")
    {
@@ -474,7 +474,7 @@ void Jupiter::on_checkHashButton_clicked()
    QDesktopServices::openUrl(QUrl(link3));
 }
 
-void Jupiter::noImageSelected()
+void HyperFile::noImageSelected()
 {
   //err message
   QMessageBox errorbox;

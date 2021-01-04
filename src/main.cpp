@@ -13,8 +13,8 @@
 #include "init.h"
 #include "ui_interface.h"
 #include "kernel.h"
-#include "fortuna.h"
-#include "fortunastake.h"
+#include "collateral.h"
+#include "collateralnode.h"
 #include "spork.h"
 #include "smessage.h"
 #include <boost/algorithm/string/replace.hpp>
@@ -53,7 +53,7 @@ int64_t nLastCoinStakeSearchTime = GetAdjustedTime();
 int nCoinbaseMaturity = 65; //75 on Mainnet I n n o v a
 CBlockIndex* pindexGenesisBlock = NULL;
 int nBestHeight = -1;
-bool FortunaReorgBlock = true;
+bool CollateralReorgBlock = true;
 uint256 nBestChainTrust = 0;
 uint256 nBestInvalidTrust = 0;
 
@@ -821,7 +821,7 @@ bool CTransaction::CheckTransaction() const
         BOOST_FOREACH(const CTxIn& txin, vin)
             if (txin.prevout.IsNull())
                 return DoS(10, error("CTransaction::CheckTransaction() : prevout is null"));
-    } //New ban code for hybrid fortunastakes and FMPS - Not for prime time yet, may or may not be used
+    } //New ban code for hybrid collateralnodes and FMPS - Not for prime time yet, may or may not be used
 	/*
 	else
 	{
@@ -1740,7 +1740,7 @@ bool IsInitialBlockDownload()
           {
               lockIBDState = true;
               // do stuff required at end of sync
-              GetFortunastakeRanks(pindexBest);
+              GetCollateralnodeRanks(pindexBest);
           }
           return state;
 
@@ -2526,20 +2526,20 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
       if (nStakeReward > nCalculatedStakeReward)
             return DoS(100, error("ConnectBlock() : coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
     }
-    // ----------- fortunastake payments -----------
+    // ----------- collateralnode payments -----------
     // Once upon a time, People were really interested in D.
     // So much so, People wanted to bring D to the moon. Even Mars, Sooner than the roadster...
     // The Discord was active, People discussed how they would reach that goal.
     // There was one person, named Thi3rryzz watching all this from a save distance.
-    // Then, the word FORTUNASTAKES came to the table.
-    // People wanted fortunastakes... Really Bad. But King Carsen was already busy with the rest of D
+    // Then, the word COLLATERALSTAKES came to the table.
+    // People wanted collateralnodes... Really Bad. But King Carsen was already busy with the rest of D
     // So Thi3rryzz decided to jump in..
     // After a lot of: "How much for MN" and "When MN?"
     // We hope to proudly present you:
-    // ----------- hybrid fortunastake payments -----------
+    // ----------- hybrid collateralnode payments -----------
 
 
-    // ... after a long time, it came to be known in the lands that the fortunastakes were indeed high.
+    // ... after a long time, it came to be known in the lands that the collateralnodes were indeed high.
     // many of thy were so invested in their stakes they pushed it, to get all the D they could. the streets
     // were dark and the days were long. people wanted a fair hand. they wanted to know they could rely
     // on the D to bring them joy and happiness, and not worry for when they might next taste the D
@@ -2550,32 +2550,32 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
     // for all of eternity
 
 
-    // ----- Innova fortuna stakes, the fair payment edition  -----
+    // ----- Innova collateral stakes, the fair payment edition  -----
     // proudly presented by enkayz
 
-    bool FortunastakePayments = false;
+    bool CollateralnodePayments = false;
     bool fIsInitialDownload = IsInitialBlockDownload();
 
     if (fTestNet){
-        if (pindex->nHeight > BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET){ // Block 75k Testnet
-            FortunastakePayments = true;
-            if(fDebug) { printf("CheckBlock() : Fortunastake payments enabled\n"); }
+        if (pindex->nHeight > BLOCK_START_COLLATERALSTAKE_PAYMENTS_TESTNET){ // Block 75k Testnet
+            CollateralnodePayments = true;
+            if(fDebug) { printf("CheckBlock() : Collateralnode payments enabled\n"); }
         }else{
-            FortunastakePayments = false;
-            if(fDebug) { printf("CheckBlock() : Fortunastake payments disabled\n"); }
+            CollateralnodePayments = false;
+            if(fDebug) { printf("CheckBlock() : Collateralnode payments disabled\n"); }
         }
     }else{
-        if (pindex->nHeight > BLOCK_START_FORTUNASTAKE_PAYMENTS){ //Block 645k Mainnet
-            FortunastakePayments = true;
-            if(fDebug) { printf("CheckBlock() : Fortunastake payments enabled\n"); }
+        if (pindex->nHeight > BLOCK_START_COLLATERALSTAKE_PAYMENTS){ //Block 645k Mainnet
+            CollateralnodePayments = true;
+            if(fDebug) { printf("CheckBlock() : Collateralnode payments enabled\n"); }
         }else{
-            FortunastakePayments = false;
-            if(fDebug) { printf("CheckBlock() : Fortunastake payments disabled\n"); }
+            CollateralnodePayments = false;
+            if(fDebug) { printf("CheckBlock() : Collateralnode payments disabled\n"); }
         }
     }
 
 
-  if(!fJustCheck && pindex->GetBlockTime() > GetTime() - 20*nCoinbaseMaturity && (pindex->nHeight < pindexBest->nHeight+5) && !IsInitialBlockDownload() && FortunastakePayments == true)
+  if(!fJustCheck && pindex->GetBlockTime() > GetTime() - 20*nCoinbaseMaturity && (pindex->nHeight < pindexBest->nHeight+5) && !IsInitialBlockDownload() && CollateralnodePayments == true)
     {
         LOCK2(cs_main, mempool.cs);
         CScript burnPayee;
@@ -2587,46 +2587,46 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
             if(pindexBest->GetBlockHash() == hashPrevBlock){
 
         // make sure the ranks are updated to prev block
-        GetFortunastakeRanks(pindexBest);
-        // Calculate Coin Age for Fortunastake Reward Calculation
+        GetCollateralnodeRanks(pindexBest);
+        // Calculate Coin Age for Collateralnode Reward Calculation
         uint64_t nCoinAge;
         if (!vtx[1].GetCoinAge(txdb, nCoinAge))
-            return error("CheckBlock-POS : %s unable to get coin age for coinstake, Can't Calculate Fortunastake Reward\n", vtx[1].GetHash().ToString().substr(0,10).c_str());
+            return error("CheckBlock-POS : %s unable to get coin age for coinstake, Can't Calculate Collateralnode Reward\n", vtx[1].GetHash().ToString().substr(0,10).c_str());
         int64_t nCalculatedStakeReward = GetProofOfStakeReward(nCoinAge, nFees);
-        // Calculate expected fortunastakePaymentAmmount
-        int64_t fortunastakePaymentAmount = GetFortunastakePayment(pindex->nHeight, nCalculatedStakeReward);
+        // Calculate expected collateralnodePaymentAmmount
+        int64_t collateralnodePaymentAmount = GetCollateralnodePayment(pindex->nHeight, nCalculatedStakeReward);
 
-        // If we don't already have its previous block, skip fortunastake payment step
+        // If we don't already have its previous block, skip collateralnode payment step
         if (pindex != NULL)
         {
           bool foundPaymentAmount = false;
           bool foundPayee = false;
           bool paymentOK = false;
           CScript payee;
-          if(fDebug) { printf("CheckBlock-POS() : Using fortunastake payments for block %ld\n", pindex->nHeight); }
+          if(fDebug) { printf("CheckBlock-POS() : Using collateralnode payments for block %ld\n", pindex->nHeight); }
 
-          // Check transaction for payee and if contains fortunastake reward payment
+          // Check transaction for payee and if contains collateralnode reward payment
           if(fDebug) { printf("CheckBlock-POS(): Transaction 1 Size : %i\n", vtx[1].vout.size()); }
-          if(fDebug) { printf("CheckBlock-POS() : Expected Fortunastake reward of: %ld\n", fortunastakePaymentAmount); }
+          if(fDebug) { printf("CheckBlock-POS() : Expected Collateralnode reward of: %ld\n", collateralnodePaymentAmount); }
           for (unsigned int i = 0; i < vtx[1].vout.size(); i++) {
             if(fDebug) { printf("CheckBlock-POS() : Payment vout number: %i , Amount: %ld\n",i, vtx[1].vout[i].nValue); }
-            if(vtx[1].vout[i].nValue == fortunastakePaymentAmount )
+            if(vtx[1].vout[i].nValue == collateralnodePaymentAmount )
               {
                 foundPaymentAmount = true;
                 payee = vtx[1].vout[i].scriptPubKey;
                 CScript pubScript;
                 if (pubScript == payee) {
-                printf("CheckBlock-POS() : Found fortunastake payment: %s INN to anonymous payee.\n", FormatMoney(vtx[1].vout[i].nValue).c_str());
+                printf("CheckBlock-POS() : Found collateralnode payment: %s INN to anonymous payee.\n", FormatMoney(vtx[1].vout[i].nValue).c_str());
                 foundPayee = true;
                 } else if (payee == burnPayee) {
-                  printf("CheckBlock-POS() : Found fortunastake payment: %s INN to burn address.\n", FormatMoney(vtx[1].vout[i].nValue).c_str());
+                  printf("CheckBlock-POS() : Found collateralnode payment: %s INN to burn address.\n", FormatMoney(vtx[1].vout[i].nValue).c_str());
                   foundPayee = true;
                 } else {
                   CTxDestination mnDest;
                   ExtractDestination(vtx[1].vout[i].scriptPubKey, mnDest);
                   CBitcoinAddress mnAddress(mnDest);
-                  if (fDebug) printf("CheckBlock-POS() : Found fortunastake payment: %s INN to %s.\n",FormatMoney(vtx[1].vout[i].nValue).c_str(), mnAddress.ToString().c_str());
-                  BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes)
+                  if (fDebug) printf("CheckBlock-POS() : Found collateralnode payment: %s INN to %s.\n",FormatMoney(vtx[1].vout[i].nValue).c_str(), mnAddress.ToString().c_str());
+                  BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
                   {
                     pubScript = GetScriptForDestination(mn.pubkey.GetID());
                     CTxDestination address1;
@@ -2636,25 +2636,25 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
                     if (vtx[1].vout[i].scriptPubKey == pubScript)
                     {
                       int64_t value = vtx[1].vout[i].nValue;
-                      if (fDebug) printf("CheckBlock-POS() : Fortunastake PoS payee found at block %d: %s who got paid %s INN rate:%" PRId64" rank:%d lastpaid:%d\n", pindex->nHeight, address2.ToString().c_str(), FormatMoney(value).c_str(), mn.payRate, mn.nRank, mn.nBlockLastPaid);
+                      if (fDebug) printf("CheckBlock-POS() : Collateralnode PoS payee found at block %d: %s who got paid %s INN rate:%" PRId64" rank:%d lastpaid:%d\n", pindex->nHeight, address2.ToString().c_str(), FormatMoney(value).c_str(), mn.payRate, mn.nRank, mn.nBlockLastPaid);
                       if (!fIsInitialDownload) {
-                      if (!CheckPoSFSPayment(pindex, vtx[1].vout[i].nValue, mn)) // CheckPoSFSPayment()
+                      if (!CheckPoSCNPayment(pindex, vtx[1].vout[i].nValue, mn)) // CheckPoSCNPayment()
                       {
-                        if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT) { //Update PoS FS Payments to not go out of sync
-          							printf("CheckBlock-POS() : Out-of-cycle fortunastake payment detected, rejecting block.");
+                        if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT) { //Update PoS CN Payments to not go out of sync
+          							printf("CheckBlock-POS() : Out-of-cycle collateralnode payment detected, rejecting block.");
                         } else {
-                        printf("CheckBlock-POS(): This fortunastake payment is too aggressive and will be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
+                        printf("CheckBlock-POS(): This collateralnode payment is too aggressive and will be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
                         }
         								//break;
                         } else {
-                        if (fDebug) printf("CheckBlock-POS() : Payment meets rate requirement: payee has earnt %s against average %s\n",FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageFSIncome).c_str());
+                        if (fDebug) printf("CheckBlock-POS() : Payment meets rate requirement: payee has earnt %s against average %s\n",FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageCNIncome).c_str());
                          }
                         } else {
                         if (fDebug) printf("CheckBlock-POS() : Wallet currently in startup mode, ignoring rate requirements.");
                          }
                         // add mn payment data
                         mn.nBlockLastPaid = pindex->nHeight;
-                        CFortunaPayData data;
+                        CCollateralPayData data;
                         data.height = pindex->nHeight;
                         data.amount = value;
                         data.hash = pindex->GetBlockHash();
@@ -2667,7 +2667,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
                     }
                     // if payee not found in mn list, check if the pubkey holds a 5K transaction
                        if (!foundPayee) {
-                         if (FindFSPayment(payee, pindex)) {
+                         if (FindCNPayment(payee, pindex)) {
                             if (fDebug) printf("CheckBlock-POS() : WARNING: Payee was not found in MN list, but confirmed to hold collateral.\n");
                             foundPayee = true;
                         }
@@ -2682,14 +2682,14 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
                       BOOST_FOREACH(CNode* pnode, vNodes)
                   {
                 if (pnode->nVersion >= forTunaPool.PROTOCOL_VERSION) {
-                    printf("Asking for Fortunastake list from %s\n",pnode->addr.ToStringIPPort().c_str());
+                    printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
                     pnode->PushMessage("dseg", CTxIn()); //request full mn list
                     pnode->nLastDseg = GetTime();
                         }
                       }
-                    return error("CheckBlock-POS() : Did not find this payee in the fortunastake list. Requesting list update and rejecting block.");
+                    return error("CheckBlock-POS() : Did not find this payee in the collateralnode list. Requesting list update and rejecting block.");
                     } else {
-                    if (fDebug) printf("WARNING: Did not find this payee in the fortunastake list, this block will not be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
+                    if (fDebug) printf("WARNING: Did not find this payee in the collateralnode list, this block will not be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
                     foundPayee = true;
                       }
                       } else if (paymentOK) {
@@ -2704,26 +2704,26 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
                         CTxDestination address1;
                         ExtractDestination(payee, address1);
                         CBitcoinAddress address2(address1);
-                        if(fDebug) { printf("CheckBlock-POS() : Couldn't find fortunastake payment(%d|%ld) or payee(%d|%s) nHeight %ld. \n", foundPaymentAmount, fortunastakePaymentAmount, foundPayee, address2.ToString().c_str(), pindexBest->nHeight+1); }
-                          return DoS(100, error("CheckBlock-POS() : Couldn't find fortunastake payment or payee"));
+                        if(fDebug) { printf("CheckBlock-POS() : Couldn't find collateralnode payment(%d|%ld) or payee(%d|%s) nHeight %ld. \n", foundPaymentAmount, collateralnodePaymentAmount, foundPayee, address2.ToString().c_str(), pindexBest->nHeight+1); }
+                          return DoS(100, error("CheckBlock-POS() : Couldn't find collateralnode payment or payee"));
                         } else {
-                       if(fDebug) { printf("CheckBlock-POS() : Found fortunastake payment %d\n", pindexBest->nHeight+1); }
+                       if(fDebug) { printf("CheckBlock-POS() : Found collateralnode payment %d\n", pindexBest->nHeight+1); }
                               }
                       } else {
-                      if(fDebug) { printf("CheckBlock-POS() : Is initial download, skipping fortunastake payment check %ld\n", pindexBest->nHeight+1); }
+                      if(fDebug) { printf("CheckBlock-POS() : Is initial download, skipping collateralnode payment check %ld\n", pindexBest->nHeight+1); }
                         }
                       } else {
-                      if(fDebug) { printf("CheckBlock-POS() : Skipping fortunastake payment check - nHeight %ld Hash %s\n", pindex->nHeight, GetHash().ToString().c_str()); }
+                      if(fDebug) { printf("CheckBlock-POS() : Skipping collateralnode payment check - nHeight %ld Hash %s\n", pindex->nHeight, GetHash().ToString().c_str()); }
                         }
                       }else if(IsProofOfWork() && pindexBest != NULL){
                       if(pindexBest->GetBlockHash() == hashPrevBlock){
 
 // make sure the ranks are updated
-GetFortunastakeRanks(pindexBest);
+GetCollateralnodeRanks(pindexBest);
 
-        int64_t fortunastakePaymentAmount = GetFortunastakePayment(pindex->nHeight, vtx[0].GetValueOut());
+        int64_t collateralnodePaymentAmount = GetCollateralnodePayment(pindex->nHeight, vtx[0].GetValueOut());
 
-        // If we don't already have its previous block, skip fortunastake payment step
+        // If we don't already have its previous block, skip collateralnode payment step
         if (pindex != NULL)
         {
             bool foundPaymentAmount = false;
@@ -2731,26 +2731,26 @@ GetFortunastakeRanks(pindexBest);
             bool paymentOK = true;
             CScript payee;
 
-        if(fDebug) { printf("CheckBlock-POW() : Using non-specific fortunastake payments %ld\n", pindex->nHeight); }
+        if(fDebug) { printf("CheckBlock-POW() : Using non-specific collateralnode payments %ld\n", pindex->nHeight); }
 
-        // Check transaction for payee and if contains fortunastake reward payment
+        // Check transaction for payee and if contains collateralnode reward payment
         if (fDebug) { printf("CheckBlock-POW(): Transaction 0 Size : %i\n", vtx[0].vout.size()); }
-        if (fDebug) { printf("CheckBlock-POW() : Expected Fortunastake reward of: %ld\n", fortunastakePaymentAmount); }
+        if (fDebug) { printf("CheckBlock-POW() : Expected Collateralnode reward of: %ld\n", collateralnodePaymentAmount); }
         for (unsigned int i = 0; i < vtx[0].vout.size(); i++) {
             if(fDebug) { printf("CheckBlock-POW() : Payment vout number: %i , Amount: %lld\n",i, vtx[0].vout[i].nValue); }
-            if(vtx[0].vout[i].nValue == fortunastakePaymentAmount )
+            if(vtx[0].vout[i].nValue == collateralnodePaymentAmount )
             {
                 CTxDestination mnDest;
                 payee = vtx[0].vout[i].scriptPubKey;
                 ExtractDestination(payee, mnDest);
                 CBitcoinAddress mnAddress(mnDest);
-                if (fDebug) printf("CheckBlock-POW() : Found fortunastake payment: %s INN to %s.\n",FormatMoney(vtx[0].vout[i].nValue).c_str(), mnAddress.ToString().c_str());
+                if (fDebug) printf("CheckBlock-POW() : Found collateralnode payment: %s INN to %s.\n",FormatMoney(vtx[0].vout[i].nValue).c_str(), mnAddress.ToString().c_str());
 
        foundPaymentAmount = true;
 
        CScript pubScript;
 
-       BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes)
+       BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
         {
             pubScript = GetScriptForDestination(mn.pubkey.GetID());
             CTxDestination address1;
@@ -2759,18 +2759,18 @@ GetFortunastakeRanks(pindexBest);
 
             if (payee == pubScript)
              {
-                 if (fDebug) printf("CheckBlock-POW() : Fortunastake PoW payee found at block %d: %s who got paid %s INN rate:%" PRId64" rank:%d lastpaid:%d\n", pindex->nHeight, address2.ToString().c_str(), FormatMoney(vtx[0].vout[i].nValue).c_str(), FormatMoney(mn.payRate).c_str(), mn.nRank, mn.nBlockLastPaid);
+                 if (fDebug) printf("CheckBlock-POW() : Collateralnode PoW payee found at block %d: %s who got paid %s INN rate:%" PRId64" rank:%d lastpaid:%d\n", pindex->nHeight, address2.ToString().c_str(), FormatMoney(vtx[0].vout[i].nValue).c_str(), FormatMoney(mn.payRate).c_str(), mn.nRank, mn.nBlockLastPaid);
                  if (!fIsInitialDownload) {
-                     if (!CheckFSPayment(pindex, vtx[0].vout[i].nValue, mn)) // if MN is being paid and it's bottom 50% ranked, don't let it be paid.
+                     if (!CheckCNPayment(pindex, vtx[0].vout[i].nValue, mn)) // if MN is being paid and it's bottom 50% ranked, don't let it be paid.
                      {
                          if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT)
                          {
-                             return error("CheckBlock-POW() : Fortunastake overpayment detected, rejecting block. rank:%d value:%s avg:%s payRate:%s",mn.nRank,FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageFSIncome).c_str(),FormatMoney(mn.payRate).c_str());
+                             return error("CheckBlock-POW() : Collateralnode overpayment detected, rejecting block. rank:%d value:%s avg:%s payRate:%s",mn.nRank,FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageCNIncome).c_str(),FormatMoney(mn.payRate).c_str());
                          } else {
-                             if (fDebug) printf("WARNING: This fortunastake payment is too aggressive and will not be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
+                             if (fDebug) printf("WARNING: This collateralnode payment is too aggressive and will not be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
                          }
                      } else {
-                         if (fDebug) printf("CheckBlock-POW() : Payment meets rate requirement: payee has earnt %s against average %s\n",FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageFSIncome).c_str());
+                         if (fDebug) printf("CheckBlock-POW() : Payment meets rate requirement: payee has earnt %s against average %s\n",FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageCNIncome).c_str());
                      }
                  } else {
                      if (fDebug) printf("CheckBlock-POW() : Wallet currently in startup mode, ignoring rate requirements.");
@@ -2778,7 +2778,7 @@ GetFortunastakeRanks(pindexBest);
 
 
                  mn.nBlockLastPaid = pindex->nHeight;
-                  CFortunaPayData data;
+                  CCollateralPayData data;
                   data.height = pindex->nHeight;
                   data.amount = vtx[0].vout[i].nValue;
                   data.hash = pindex->GetBlockHash();
@@ -2788,14 +2788,14 @@ GetFortunastakeRanks(pindexBest);
                   paymentOK = true;
                   break;
               } else if (payee == burnPayee) {
-                  printf("CheckBlock-POW() : Found fortunastake payment: %s INN to burn address.\n", FormatMoney(vtx[1].vout[i].nValue).c_str());
+                  printf("CheckBlock-POW() : Found collateralnode payment: %s INN to burn address.\n", FormatMoney(vtx[1].vout[i].nValue).c_str());
                   foundPayee = true;
               }
           }
 
           // if payee not found in mn list, check if the pubkey holds a 5K transaction
           if (!foundPayee) {
-              if (FindFSPayment(payee, pindex)) {
+              if (FindCNPayment(payee, pindex)) {
                   if (fDebug) printf("CheckBlock-POW() : WARNING: Payee was not found in MN list, but confirmed to hold collateral.\n");
                   foundPayee = true;
               }
@@ -2808,14 +2808,14 @@ GetFortunastakeRanks(pindexBest);
                BOOST_FOREACH(CNode* pnode, vNodes)
                {
                    if (pnode->nVersion >= forTunaPool.PROTOCOL_VERSION) {
-                           printf("Asking for Fortunastake list from %s\n",pnode->addr.ToStringIPPort().c_str());
+                           printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
                            pnode->PushMessage("dseg", CTxIn()); //request full mn list
                            pnode->nLastDseg = GetTime();
                    }
                }
-               return error("CheckBlock-POW() : Did not find this payee in the fortunastake list, rejecting block.");
+               return error("CheckBlock-POW() : Did not find this payee in the collateralnode list, rejecting block.");
        } else {
-           if (fDebug) printf("WARNING: Did not find this payee in  the fortunastake list, this block will not be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
+           if (fDebug) printf("WARNING: Did not find this payee in  the collateralnode list, this block will not be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
            foundPayee = true;
        }
    } else if (paymentOK) {
@@ -2832,24 +2832,24 @@ GetFortunastakeRanks(pindexBest);
        CTxDestination address1;
        ExtractDestination(payee, address1);
        CBitcoinAddress address2(address1);
-       if(fDebug) { printf("CheckBlock-POW() : Couldn't find fortunastake payment(%d|%ld) or payee(%d|%s) nHeight %d. \n", foundPaymentAmount, fortunastakePaymentAmount, foundPayee, address2.ToString().c_str(), pindexBest->nHeight+1); }
-       return DoS(100, error("CheckBlock-POW() : Couldn't find fortunastake payment or payee"));
+       if(fDebug) { printf("CheckBlock-POW() : Couldn't find collateralnode payment(%d|%ld) or payee(%d|%s) nHeight %d. \n", foundPaymentAmount, collateralnodePaymentAmount, foundPayee, address2.ToString().c_str(), pindexBest->nHeight+1); }
+       return DoS(100, error("CheckBlock-POW() : Couldn't find collateralnode payment or payee"));
    } else {
-       if(fDebug) { printf("CheckBlock-POW() : Found fortunastake payment %ld\n", pindexBest->nHeight+1); }
+       if(fDebug) { printf("CheckBlock-POW() : Found collateralnode payment %ld\n", pindexBest->nHeight+1); }
                     }
                   } else {
-  if(fDebug) { printf("CheckBlock-POW() : Is initial download, skipping fortunastake payment check %ld\n", pindexBest->nHeight+1); }
+  if(fDebug) { printf("CheckBlock-POW() : Is initial download, skipping collateralnode payment check %ld\n", pindexBest->nHeight+1); }
                 }
               } else {
-  if(fDebug) { printf("CheckBlock-POW() : Skipping fortunastake payment check - nHeight %ld Hash %s\n", pindexBest->nHeight+1, GetHash().ToString().c_str()); }
+  if(fDebug) { printf("CheckBlock-POW() : Skipping collateralnode payment check - nHeight %ld Hash %s\n", pindexBest->nHeight+1, GetHash().ToString().c_str()); }
             }
         }
         else {
-           if(fDebug) { printf("CheckBlock() : pindex is null, skipping fortunastake payment check\n"); }
+           if(fDebug) { printf("CheckBlock() : pindex is null, skipping collateralnode payment check\n"); }
        }
    } else {
        if(fDebug) {
-               printf("CheckBlock() : skipping fortunastake payment checks\n");
+               printf("CheckBlock() : skipping collateralnode payment checks\n");
         }
     }
 
@@ -2997,7 +2997,7 @@ for (CBlockIndex* pindex = pindexBest; pindex != pfork; pindex = pindex->pprev)
             if (!block.ReadFromDisk(pindex))
                 return error("Reorganize() : ReadFromDisk for connect failed");
 
-                if (!IsInitialBlockDownload()) GetFortunastakeRanks(pindex); // recalculate ranks for the this block hash if required
+                if (!IsInitialBlockDownload()) GetCollateralnodeRanks(pindex); // recalculate ranks for the this block hash if required
 
                 if (!block.ConnectBlock(txdb, pindex))
                 {
@@ -3035,7 +3035,7 @@ for (CBlockIndex* pindex = pindexBest; pindex != pfork; pindex = pindex->pprev)
               mempool.removeConflicts(tx);
           }
 
-          FortunaReorgBlock = true;
+          CollateralReorgBlock = true;
           printf("REORGANIZE: done\n");
 
           return true;
@@ -3581,10 +3581,10 @@ uint256 CBlockIndex::GetBlockTrust() const
     CScript payee;
 
     if (!fImporting && !fReindex && pindexBest->nHeight > Checkpoints::GetTotalBlocksEstimate()){
-        if(fortunastakePayments.GetBlockPayee(pindexBest->nHeight, payee)){
+        if(collateralnodePayments.GetBlockPayee(pindexBest->nHeight, payee)){
             // MAYBE NEEDS TO BE REWORKED
-            //UPDATE FORTUNASTAKE LAST PAID TIME
-            // CFortunastake* pmn = mnodeman.Find(vin);
+            //UPDATE COLLATERALSTAKE LAST PAID TIME
+            // CCollateralnode* pmn = mnodeman.Find(vin);
             // if(pmn != NULL) {
             //     pmn->nLastPaid = GetAdjustedTime();
             // }
@@ -3594,7 +3594,7 @@ uint256 CBlockIndex::GetBlockTrust() const
 
         forTunaPool.CheckTimeout();
         forTunaPool.NewBlock();
-        fortunastakePayments.ProcessBlock((pindexBest->nHeight)+10);
+        collateralnodePayments.ProcessBlock((pindexBest->nHeight)+10);
 
        }
 
@@ -3669,7 +3669,7 @@ if (!mapBlockIndex.count(pblock->hashPrevBlock)) //pblock->hashPrevBlock != 0 &&
         if (fDebug) printf("ProcessBlock: ACCEPTED\n");
     }
 
-    //After block 1.5m, The Minimum FortunaStake Protocol Version is 31005
+    //After block 1.5m, The Minimum CollateralNode Protocol Version is 31005
     if(nBestHeight >= 1500000) {
         MIN_MN_PROTO_VERSION = 31005;
     }
@@ -4156,8 +4156,8 @@ bool static AlreadyHave(CTxDB& txdb, const CInv& inv)
                      mapOrphanBlocks.count(inv.hash);
           case MSG_SPORK:
               return mapSporks.count(inv.hash);
-          case MSG_FORTUNASTAKE_WINNER:
-              return mapSeenFortunastakeVotes.count(inv.hash);
+          case MSG_COLLATERALSTAKE_WINNER:
+              return mapSeenCollateralnodeVotes.count(inv.hash);
           }
           // Don't know what it is, just say we already got one
           return true;
@@ -4231,14 +4231,14 @@ bool pushed = false;
     }
 }*/
 if (!pushed && inv.type == MSG_TX) {
-    if(mapFortunaBroadcastTxes.count(inv.hash)){
+    if(mapCollateralBroadcastTxes.count(inv.hash)){
         CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
         ss.reserve(1000);
         ss <<
-            mapFortunaBroadcastTxes[inv.hash].tx <<
-            mapFortunaBroadcastTxes[inv.hash].vin <<
-            mapFortunaBroadcastTxes[inv.hash].vchSig <<
-            mapFortunaBroadcastTxes[inv.hash].sigTime;
+            mapCollateralBroadcastTxes[inv.hash].tx <<
+            mapCollateralBroadcastTxes[inv.hash].vin <<
+            mapCollateralBroadcastTxes[inv.hash].vchSig <<
+            mapCollateralBroadcastTxes[inv.hash].sigTime;
 
         pfrom->PushMessage("dstx", ss);
         pushed = true;
@@ -4262,12 +4262,12 @@ if (!pushed && inv.type == MSG_SPORK) {
         pushed = true;
     }
 }
-if (!pushed && inv.type == MSG_FORTUNASTAKE_WINNER) {
-    if(mapSeenFortunastakeVotes.count(inv.hash)){
+if (!pushed && inv.type == MSG_COLLATERALSTAKE_WINNER) {
+    if(mapSeenCollateralnodeVotes.count(inv.hash)){
         CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
         int a = 0;
         ss.reserve(1000);
-        ss << mapSeenFortunastakeVotes[inv.hash] << a;
+        ss << mapSeenCollateralnodeVotes[inv.hash] << a;
         pfrom->PushMessage("mnw", ss);
         pushed = true;
     }
@@ -4344,7 +4344,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
           printf("Partner %s using obsolete version %i; DISCONNECTING\n", pfrom->addr.ToString().c_str(), pfrom->nVersion);
           pfrom->fDisconnect = true;
           if (pfrom->fForTunaMaster)
-              printf("Fortuna Stake hosting node version was obsolete. This Fortuna Stake should be removed from the list\n");
+              printf("Collateral Node hosting node version was obsolete. This Collateral Node should be removed from the list\n");
           return false;
         }
 
@@ -4422,7 +4422,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             }
         }
 
-        // Ask every node for the fortunastake list straight away
+        // Ask every node for the collateralnode list straight away
         pfrom->PushMessage("dseg", CTxIn());
 
         // Ask the first connected node for block updates
@@ -5000,8 +5000,8 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         if (fSecMsgEnabled)
             SecureMsgReceiveData(pfrom, strCommand, vRecv);
 
-        //ProcessMessageFortuna(pfrom, strCommand, vRecv);
-        ProcessMessageFortunastake(pfrom, strCommand, vRecv);
+        //ProcessMessageCollateral(pfrom, strCommand, vRecv);
+        ProcessMessageCollateralnode(pfrom, strCommand, vRecv);
         //ProcessSpork(pfrom, strCommand, vRecv);
 
         // Ignore unknown commands for extensibility
@@ -5346,7 +5346,7 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
     return true;
 }
 
-int64_t GetFortunastakePayment(int nHeight, int64_t blockValue)
+int64_t GetCollateralnodePayment(int nHeight, int64_t blockValue)
 {
     //int64_t ret = blockValue * 1/3; //33%
 	int64_t ret = static_cast<int64_t>(blockValue * 65/100); //65%

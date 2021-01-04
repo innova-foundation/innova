@@ -367,10 +367,10 @@ static const CRPCCommand vRPCCommands[] =
     { "anoninfo",               &anoninfo,               false,  false},
     { "reloadanondata",         &reloadanondata,         false,  false},
 
-    /* Fortunastake features */
+    /* Collateralnode features */
     { "getpoolinfo",            &getpoolinfo,            true,   false},
     { "masternode",           	&masternode,             true,   false},
-    { "fortunastake",           &fortunastake,           true,   false},
+    { "collateralnode",           &collateralnode,           true,   false},
 
     { "smsgenable",             &smsgenable,             false,  false},
     { "smsgdisable",            &smsgdisable,            false,  false},
@@ -389,14 +389,14 @@ static const CRPCCommand vRPCCommands[] =
 
     { "proofofdata",            &proofofdata,            false,  true },
 
-    // Innova Jupiter IPFS
-    { "jupiterversion",       &jupiterversion,           true,   false },
-    { "jupiterupload",        &jupiterupload,            false,  false },
-    { "jupiterpod",           &jupiterpod,               false,  true },
-    { "jupiterduo",           &jupiterduo,               false,  false },
-    { "jupiterduopod",        &jupiterduopod,            false,  true },
-    { "jupitergetblock",      &jupitergetblock,          false,  false },
-    { "jupitergetstat",       &jupitergetstat,           false,  false },
+    // Innova HyperFile IPFS
+    { "hyperfileversion",       &hyperfileversion,           true,   false },
+    { "hyperfileupload",        &hyperfileupload,            false,  false },
+    { "hyperfilepod",           &hyperfilepod,               false,  true },
+    { "hyperfileduo",           &hyperfileduo,               false,  false },
+    { "hyperfileduopod",        &hyperfileduopod,            false,  true },
+    { "hyperfilegetblock",      &hyperfilegetblock,          false,  false },
+    { "hyperfilegetstat",       &hyperfilegetstat,           false,  false },
 
 };
 

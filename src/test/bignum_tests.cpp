@@ -6,7 +6,7 @@
 
 BOOST_AUTO_TEST_SUITE(bignum_tests)
 
-// Unfortunately there's no standard way of preventing a function from being
+// Uncollateraltely there's no standard way of preventing a function from being
 // inlined, so we define a macro for it.
 //
 // You should use it like this:

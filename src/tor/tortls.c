@@ -2313,7 +2313,7 @@ tor_tls_get_n_raw_bytes(tor_tls_t *tls, size_t *n_read, size_t *n_written)
   BIO *wbio, *tmpbio;
   unsigned long r, w;
   r = (unsigned long) BIO_number_read(SSL_get_rbio(tls->ssl));
-  /* We want the number of bytes actually for real written.  Unfortunately,
+  /* We want the number of bytes actually for real written.  Uncollateraltely,
    * sometimes OpenSSL replaces the wbio on tls->ssl with a buffering bio,
    * which makes the answer turn out wrong.  Let's cope with that.  Note
    * that this approach will fail if we ever replace tls->ssl's BIOs with

@@ -93,7 +93,7 @@ T* alignup(T* p)
     return u.ptr;
 }
 
-boost::filesystem::path GetFortunastakeConfigFile();
+boost::filesystem::path GetCollateralnodeConfigFile();
 
 #ifdef WIN32
 #define MSG_NOSIGNAL        0
@@ -186,15 +186,15 @@ static inline int errorN(int n, const char* format)
 
 
 
-//Fortunastake features
+//Collateralnode features
 
-extern bool fFortunaStake;
-extern int nFortunaRounds;
+extern bool fCollateralNode;
+extern int nCollateralRounds;
 
 extern int nMinStakeInterval;
 
-extern int64_t enforceFortunastakePaymentsTime;
-extern std::string strFortunaStakeAddr;
+extern int64_t enforceCollateralnodePaymentsTime;
+extern std::string strCollateralNodeAddr;
 extern int keysLoaded;
 extern bool fSuccessfullyLoaded;
 extern std::vector<int64_t> forTunaDenominations;
@@ -205,7 +205,7 @@ extern std::map<std::string, std::vector<std::string> > mapMultiArgs;
 extern bool fDebug;
 extern bool fDebugNet;
 extern bool fDebugSmsg;
-extern bool fDebugFS;
+extern bool fDebugCN;
 extern bool fDebugChain;
 extern bool fDebugRingSig;
 extern bool fNoSmsg;
@@ -220,8 +220,8 @@ extern bool fCommandLine;
 extern std::string strMiscWarning;
 extern bool fTestNet;
 extern bool fNativeTor;
-extern bool fJupiterLocal;
-extern bool fFSLock;
+extern bool fHyperFileLocal;
+extern bool fCNLock;
 extern bool fNoListen;
 extern bool fLogTimestamps;
 extern bool fReopenDebugLog;

@@ -437,7 +437,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/mintingtablemodel.h \
     src/qt/mintingview.h \
     src/qt/proofofimage.h \
-    src/qt/jupiter.h \
+    src/qt/hyperfile.h \
     src/qt/multisigaddressentry.h \
     src/qt/multisiginputentry.h \
     src/qt/multisigdialog.h \
@@ -470,10 +470,10 @@ HEADERS += src/qt/bitcoingui.h \
     src/walletdb.h \
     src/script.h \
     src/stealth.h \
-    src/fortuna.h \
-    src/activefortunastake.h \
-    src/fortunastake.h \
-    src/fortunastakeconfig.h \
+    src/collateral.h \
+    src/activecollateralnode.h \
+    src/collateralnode.h \
+    src/collateralnodeconfig.h \
     src/spork.h \
     src/init.h \
     src/mruset.h \
@@ -520,7 +520,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/statisticspage.h \
     src/qt/marketbrowser.h \
     src/qt/qcustomplot.h \
-    src/qt/fortunastakemanager.h \
+    src/qt/collateralnodemanager.h \
     src/qt/addeditadrenalinenode.h \
     src/qt/adrenalinenodeconfigdialog.h \
     src/qt/termsofuse.h \
@@ -568,7 +568,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/multisiginputentry.cpp \
     src/qt/multisigdialog.cpp \
     src/qt/proofofimage.cpp \
-    src/qt/jupiter.cpp \
+    src/qt/hyperfile.cpp \
     src/qt/termsofuse.cpp \
     src/alert.cpp \
     src/stun.cpp \
@@ -612,8 +612,8 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/rpcnet.cpp \
     src/rpcmining.cpp \
     src/rpcwallet.cpp \
-    src/rpcfortuna.cpp \
-    src/rpcjupiter.cpp \
+    src/rpccollateral.cpp \
+    src/rpchyperfile.cpp \
     src/rpcblockchain.cpp \
     src/rpcrawtransaction.cpp \
     src/rpcsmessage.cpp \
@@ -637,7 +637,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/sendmessagesentry.cpp \
     src/qt/qvalidatedtextedit.cpp \
     src/qt/plugins/mrichtexteditor/mrichtextedit.cpp \
-    src/qt/fortunastakemanager.cpp \
+    src/qt/collateralnodemanager.cpp \
     src/qt/addeditadrenalinenode.cpp \
     src/qt/adrenalinenodeconfigdialog.cpp \
     src/noui.cpp \
@@ -648,10 +648,10 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/scrypt.cpp \
     src/pbkdf2.cpp \
     src/stealth.cpp \
-    src/fortuna.cpp \
-    src/activefortunastake.cpp \
-    src/fortunastake.cpp \
-    src/fortunastakeconfig.cpp \
+    src/collateral.cpp \
+    src/activecollateralnode.cpp \
+    src/collateralnode.cpp \
+    src/collateralnodeconfig.cpp \
     src/spork.cpp
 
 #### I n n o v a sources
@@ -679,9 +679,9 @@ FORMS += \
     src/qt/forms/blockbrowser.ui \
     src/qt/forms/marketbrowser.ui \
     src/qt/forms/proofofimage.ui \
-    src/qt/forms/jupiter.ui \
+    src/qt/forms/hyperfile.ui \
     src/qt/forms/termsofuse.ui \
-    src/qt/forms/fortunastakemanager.ui \
+    src/qt/forms/collateralnodemanager.ui \
     src/qt/forms/addeditadrenalinenode.ui \
     src/qt/forms/adrenalinenodeconfigdialog.ui \
     src/qt/forms/multisigaddressentry.ui \

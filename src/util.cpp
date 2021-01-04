@@ -58,19 +58,19 @@ namespace boost {
 
 using namespace std;
 
-//Fortunastake  features
-bool fFortunaStake = false;
-string strFortunaStakePrivKey = "";
-string strFortunaStakeAddr = "";
-int nFortunaRounds = 2;
+//Collateralnode  features
+bool fCollateralNode = false;
+string strCollateralNodePrivKey = "";
+string strCollateralNodeAddr = "";
+int nCollateralRounds = 2;
 
 int nMinStakeInterval = 30;         // in seconds, min time between successful stakes
 
 /** Spork enforcement enabled time */
-int64_t enforceFortunastakePaymentsTime = 4085657524;
+int64_t enforceCollateralnodePaymentsTime = 4085657524;
 bool fSuccessfullyLoaded = false;
 
-/** All denominations used by fortuna */
+/** All denominations used by collateral */
 std::vector<int64_t> forTunaDenominations;
 
 map<string, string> mapArgs;
@@ -78,7 +78,7 @@ map<string, vector<string> > mapMultiArgs;
 bool fDebug = false;
 bool fDebugNet = false;
 bool fDebugSmsg = false;
-bool fDebugFS = false;
+bool fDebugCN = false;
 bool fDebugChain = false;
 bool fDebugRingSig = false;
 bool fNoSmsg = false;
@@ -93,8 +93,8 @@ bool fCommandLine = false;
 string strMiscWarning;
 bool fTestNet = false;
 bool fNativeTor = false;
-bool fJupiterLocal = false;
-bool fFSLock = false;
+bool fHyperFileLocal = false;
+bool fCNLock = false;
 bool fNoListen = false;
 bool fLogTimestamps = false;
 CMedianFilter<int64_t> vTimeOffsets(200,0);
@@ -1207,9 +1207,9 @@ void WriteConfigFile(FILE* configFile)
     fputs ("listen=1\n", configFile);
     fputs ("server=1\n", configFile);
     fputs ("staking=1\n", configFile);
-    fputs ("fortunastake=0\n", configFile); //default
-    fputs ("fortunastakeaddr=\n", configFile);
-    fputs ("fortunastakeprivkey=\n", configFile);
+    fputs ("collateralnode=0\n", configFile); //default
+    fputs ("collateralnodeaddr=\n", configFile);
+    fputs ("collateralnodeprivkey=\n", configFile);
     fputs ("addnode=104.207.147.210:14530\n", configFile);
     fputs ("addnode=140.82.25.108:14530\n", configFile);
     fputs ("addnode=144.202.40.17:14530\n", configFile);
@@ -1282,9 +1282,9 @@ boost::filesystem::path GetConfigFile()
     return pathConfigFile;
 }
 
-boost::filesystem::path GetFortunastakeConfigFile()
+boost::filesystem::path GetCollateralnodeConfigFile()
 {
-    boost::filesystem::path pathConfigFile(GetArg("-fsconf", "fortunastake.conf"));
+    boost::filesystem::path pathConfigFile(GetArg("-fsconf", "collateralnode.conf"));
     if (!pathConfigFile.is_complete()) pathConfigFile = GetDataDir(false) / pathConfigFile;
     return pathConfigFile;
 }

@@ -2595,7 +2595,7 @@ connection_or_compute_authenticate_cell_body(or_connection_t *conn,
   }
 
   /* 8 octets were reserved for the current time, but we're trying to get out
-   * of the habit of sending time around willynilly.  Fortunately, nothing
+   * of the habit of sending time around willynilly.  Collateraltely, nothing
    * checks it.  That's followed by 16 bytes of nonce. */
   crypto_rand((char*)auth->rand, 24);
 

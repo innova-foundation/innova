@@ -67,7 +67,7 @@ static tor_mutex_t cb_buf_mutex;
  * log the correct function from which a signal was received with context
  * <b>ctx</b>.  (When we get a signal, the current function will not have
  * called any other function, and will therefore have not pushed its address
- * onto the stack.  Fortunately, we usually have the program counter in the
+ * onto the stack.  Collateraltely, we usually have the program counter in the
  * ucontext_t structure.
  */
 void

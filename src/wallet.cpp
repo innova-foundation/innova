@@ -12,8 +12,8 @@
 #include "kernel.h"
 #include "coincontrol.h"
 #include "spork.h"
-#include "fortuna.h"
-#include "fortunastake.h"
+#include "collateral.h"
+#include "collateralnode.h"
 #include "bloom.h"
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/range/algorithm.hpp>
@@ -2356,7 +2356,7 @@ bool CWallet::SelectCoinsCollateral(std::vector<CTxIn>& setCoinsRet, int64_t& nV
 
     BOOST_FOREACH(const COutput& out, vCoins)
     {
-        // collateral inputs will always be a multiple of FORTUNA_COLLATERAL, up to five
+        // collateral inputs will always be a multiple of COLLATERALN_COLLATERAL, up to five
         if(IsCollateralAmount(out.tx->vout[out.i].nValue))
         {
             CTxIn vin = CTxIn(out.tx->GetHash(),out.i);
@@ -2418,7 +2418,7 @@ bool CWallet::HasCollateralInputs() const
 
 bool CWallet::IsCollateralAmount(int64_t nInputAmount) const
 {
-	return nInputAmount != 0 && nInputAmount % FORTUNA_COLLATERAL == 0 && nInputAmount < FORTUNA_COLLATERAL * 5 && nInputAmount > FORTUNA_COLLATERAL;
+	return nInputAmount != 0 && nInputAmount % COLLATERALN_COLLATERAL == 0 && nInputAmount < COLLATERALN_COLLATERAL * 5 && nInputAmount > COLLATERALN_COLLATERAL;
 }
 
 bool CWallet::CreateCollateralTransaction(CTransaction& txCollateral, std::string strReason)
@@ -2438,7 +2438,7 @@ bool CWallet::CreateCollateralTransaction(CTransaction& txCollateral, std::strin
 
     if (!SelectCoinsCollateral(vCoinsCollateral, nValueIn2))
     {
-        strReason = "Error: Fortuna requires a collateral transaction and could not locate an acceptable input!";
+        strReason = "Error: Collateral requires a collateral transaction and could not locate an acceptable input!";
         return false;
     }
 
@@ -2452,9 +2452,9 @@ bool CWallet::CreateCollateralTransaction(CTransaction& txCollateral, std::strin
     BOOST_FOREACH(CTxIn v, vCoinsCollateral)
         txCollateral.vin.push_back(v);
 
-    if(nValueIn2 - FORTUNA_COLLATERAL - nFeeRet > 0) {
+    if(nValueIn2 - COLLATERALN_COLLATERAL - nFeeRet > 0) {
         //pay collateral charge in fees
-        CTxOut vout3 = CTxOut(nValueIn2 - FORTUNA_COLLATERAL, scriptChange);
+        CTxOut vout3 = CTxOut(nValueIn2 - COLLATERALN_COLLATERAL, scriptChange);
         txCollateral.vout.push_back(vout3);
     }
 
@@ -3670,30 +3670,30 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
         nCredit += nReward;
     }
 
-	// Fortunastake Payments
+	// Collateralnode Payments
     int payments = 1;
-    // start fortunastake payments
-    bool bFortunaStakePayment = false;
+    // start collateralnode payments
+    bool bCollateralNodePayment = false;
 
     if (fTestNet){
-        if (pindexPrev->nHeight+1 > BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET ){
-            bFortunaStakePayment = true;
+        if (pindexPrev->nHeight+1 > BLOCK_START_COLLATERALSTAKE_PAYMENTS_TESTNET ){
+            bCollateralNodePayment = true;
         }
     }else{
-        if (pindexPrev->nHeight+1 > BLOCK_START_FORTUNASTAKE_PAYMENTS){
-            bFortunaStakePayment = true;
+        if (pindexPrev->nHeight+1 > BLOCK_START_COLLATERALSTAKE_PAYMENTS){
+            bCollateralNodePayment = true;
         }
     }
-    if(fDebug) { printf("CreateCoinStake() : Fortunastake Payments = %i!\n", bFortunaStakePayment); }
+    if(fDebug) { printf("CreateCoinStake() : Collateralnode Payments = %i!\n", bCollateralNodePayment); }
 
     CScript payee;
     bool hasPayment = true;
-    if(bFortunaStakePayment) {
+    if(bCollateralNodePayment) {
         //spork
-        if(!fortunastakePayments.GetBlockPayee(pindexPrev->nHeight+1, payee)){
-            int winningNode = GetFortunastakeByRank(1);
+        if(!collateralnodePayments.GetBlockPayee(pindexPrev->nHeight+1, payee)){
+            int winningNode = GetCollateralnodeByRank(1);
                 if(winningNode >= 0){
-                    BOOST_FOREACH(PAIRTYPE(int, CFortunaStake*)& s, vecFortunastakeScores)
+                    BOOST_FOREACH(PAIRTYPE(int, CCollateralNode*)& s, vecCollateralnodeScores)
                     {
                         if (s.first == winningNode)
                         {
@@ -3702,8 +3702,8 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                         }
                     }
                 } else {
-                    if(fDebug) { printf("CreateCoinStake() : Failed to detect fortunastake to pay\n"); }
-                    // fortunastakes are in-eligible for payment, burn the coins in-stead
+                    if(fDebug) { printf("CreateCoinStake() : Failed to detect collateralnode to pay\n"); }
+                    // collateralnodes are in-eligible for payment, burn the coins in-stead
                     std::string burnAddress;
                     if (fTestNet) burnAddress = "8TestXXXXXXXXXXXXXXXXXXXXXXXXbCvpq";
                     else burnAddress = "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw";
@@ -3725,38 +3725,38 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
         ExtractDestination(payee, address1);
         CBitcoinAddress address2(address1);
 
-        if(fDebug) { printf("CreateCoinStake() : Fortunastake payment to %s\n", address2.ToString().c_str()); }
+        if(fDebug) { printf("CreateCoinStake() : Collateralnode payment to %s\n", address2.ToString().c_str()); }
     }
 
     int64_t blockValue = nCredit;
-    int64_t fortunastakePayment = GetFortunastakePayment(pindexPrev->nHeight+1, nReward);
+    int64_t collateralnodePayment = GetCollateralnodePayment(pindexPrev->nHeight+1, nReward);
 
 
     // Set output amount
-    if (!hasPayment && txNew.vout.size() == 3) // 2 stake outputs, stake was split, no fortunastake payment
+    if (!hasPayment && txNew.vout.size() == 3) // 2 stake outputs, stake was split, no collateralnode payment
     {
         if(fDebug) { printf("CreateCoinStake() : 2 stake outputs, No MN payment!\n"); }
         txNew.vout[1].nValue = (blockValue / 2 / CENT) * CENT;
         txNew.vout[2].nValue = blockValue - txNew.vout[1].nValue;
     }
-    else if(hasPayment && txNew.vout.size() == 4) // 2 stake outputs, stake was split, plus a fortunastake payment
+    else if(hasPayment && txNew.vout.size() == 4) // 2 stake outputs, stake was split, plus a collateralnode payment
     {
         if(fDebug) { printf("CreateCoinStake() : 2 stake outputs, Split stake, with MN payment\n"); }
-        txNew.vout[payments-1].nValue = fortunastakePayment;
-        blockValue -= fortunastakePayment;
+        txNew.vout[payments-1].nValue = collateralnodePayment;
+        blockValue -= collateralnodePayment;
         txNew.vout[1].nValue = (blockValue / 2 / CENT) * CENT;
         txNew.vout[2].nValue = blockValue - txNew.vout[1].nValue;
     }
-    else if(!hasPayment && txNew.vout.size() == 2) // only 1 stake output, was not split, no fortunastake payment
+    else if(!hasPayment && txNew.vout.size() == 2) // only 1 stake output, was not split, no collateralnode payment
     {
         if(fDebug) { printf("CreateCoinStake() : 1 Stake output, No MN payment!\n"); }
         txNew.vout[1].nValue = blockValue;
     }
-    else if(hasPayment && txNew.vout.size() == 3) // only 1 stake output, was not split, plus a fortunastake payment
+    else if(hasPayment && txNew.vout.size() == 3) // only 1 stake output, was not split, plus a collateralnode payment
     {
         if(fDebug) { printf("CreateCoinStake() : 1 stake output, With MN payment!\n"); }
-        txNew.vout[payments-1].nValue = fortunastakePayment;
-        blockValue -= fortunastakePayment;
+        txNew.vout[payments-1].nValue = collateralnodePayment;
+        blockValue -= collateralnodePayment;
         txNew.vout[1].nValue = blockValue;
     }
 

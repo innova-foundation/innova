@@ -19,30 +19,30 @@
 
 class CValidationState;
 
-#define BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET 550 // Testnet Fortunastake payments enabled block 800
-#define BLOCK_START_FORTUNASTAKE_PAYMENTS 800 //Mainnet Fortunastake payments not enabled until block 800
-#define BLOCK_START_FORTUNASTAKE_DELAYPAY 2500 //Activates a delay in payment for MNs - I n n o v a Block 2500
+#define BLOCK_START_COLLATERALSTAKE_PAYMENTS_TESTNET 550 // Testnet Collateralnode payments enabled block 800
+#define BLOCK_START_COLLATERALSTAKE_PAYMENTS 800 //Mainnet Collateralnode payments not enabled until block 800
+#define BLOCK_START_COLLATERALSTAKE_DELAYPAY 2500 //Activates a delay in payment for MNs - I n n o v a Block 2500
 
-//#define START_FORTUNASTAKE_PAYMENTS_TESTNET 1519430400  //Sat, 24 Feb 2018 00:00:00 GMT
-//#define START_FORTUNASTAKE_PAYMENTS 1520985600  //Wed, 14 Mar 2018 00:00:00 GMT
+//#define START_COLLATERALSTAKE_PAYMENTS_TESTNET 1519430400  //Sat, 24 Feb 2018 00:00:00 GMT
+//#define START_COLLATERALSTAKE_PAYMENTS 1520985600  //Wed, 14 Mar 2018 00:00:00 GMT
 
-static const int64_t FORTUNA_COLLATERAL = (25000*COIN); // 25,000 INN
-static const int64_t FORTUNA_FEE = (0.010000*COIN); //0.01 INN
+static const int64_t COLLATERALN_COLLATERAL = (25000*COIN); // 25,000 INN
+static const int64_t COLLATERAL_FEE = (0.010000*COIN); //0.01 INN
 static const int64_t POOL_FEE_AMOUNT = (0.1*COIN); //0.1 INN
-static const int64_t FORTUNA_POOL_MAX = (51000*COIN); //51,000 INN
+static const int64_t COLLATERAL_POOL_MAX = (51000*COIN); //51,000 INN
 
 #define MESSAGE_START_SIZE 4
 typedef unsigned char MessageStartChars[MESSAGE_START_SIZE];
 
-#define FORTUNASTAKE_NOT_PROCESSED               0 // initial state
-#define FORTUNASTAKE_IS_CAPABLE                  1
-#define FORTUNASTAKE_NOT_CAPABLE                 2
-#define FORTUNASTAKE_STOPPED                     3
-#define FORTUNASTAKE_INPUT_TOO_NEW               4
-#define FORTUNASTAKE_PORT_NOT_OPEN               6
-#define FORTUNASTAKE_PORT_OPEN                   7
-#define FORTUNASTAKE_SYNC_IN_PROCESS             8
-#define FORTUNASTAKE_REMOTELY_ENABLED            9
+#define COLLATERALSTAKE_NOT_PROCESSED               0 // initial state
+#define COLLATERALSTAKE_IS_CAPABLE                  1
+#define COLLATERALSTAKE_NOT_CAPABLE                 2
+#define COLLATERALSTAKE_STOPPED                     3
+#define COLLATERALSTAKE_INPUT_TOO_NEW               4
+#define COLLATERALSTAKE_PORT_NOT_OPEN               6
+#define COLLATERALSTAKE_PORT_OPEN                   7
+#define COLLATERALSTAKE_SYNC_IN_PROCESS             8
+#define COLLATERALSTAKE_REMOTELY_ENABLED            9
 
 class CWallet;
 class CWalletTx;
@@ -81,7 +81,7 @@ static const int64_t MAX_MONEY = 25000000 * COIN; // 25,000,000 INN Innova Max
 static const int64_t COIN_YEAR_REWARD = 0.06 * COIN; // 6% per year
 
 static const int64_t MAINNET_POSFIX = 500; //Mainnet Proof of Stake update not enabled until block 500
-static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 4500; // Enforce fortunastake payments after this height - BLOCK 4500
+static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 4500; // Enforce collateralnode payments after this height - BLOCK 4500
 
 inline bool MoneyRange(int64_t nValue) { return (nValue >= 0 && nValue <= MAX_MONEY); }
 
@@ -115,7 +115,7 @@ extern unsigned int nStakeMinAge;
 extern unsigned int nStakeMaxAge;
 extern int64_t nLastCoinStakeSearchTime;
 extern unsigned int nNodeLifespan;
-extern bool FortunaReorgBlock;
+extern bool CollateralReorgBlock;
 extern int nCoinbaseMaturity;
 extern int nBestHeight;
 extern uint256 nBestChainTrust;
@@ -207,7 +207,7 @@ int GetIXConfirmations(uint256 nTXHash);
 bool AbortNode(const std::string &msg, const std::string &userMessage="");
 /** Increase a node's misbehavior score. */
 void Misbehaving(NodeId nodeid, int howmuch);
-int64_t GetFortunastakePayment(int nHeight, int64_t blockValue);
+int64_t GetCollateralnodePayment(int nHeight, int64_t blockValue);
 
 
 bool IsStandardTx(const CTransaction& tx, std::string& reason);

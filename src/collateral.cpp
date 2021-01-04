@@ -3,11 +3,11 @@
 // Copyright (c) 2009-2012 The Darkcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#include "fortuna.h"
+#include "collateral.h"
 #include "main.h"
 #include "init.h"
 #include "util.h"
-#include "fortunastake.h"
+#include "collateralnode.h"
 #include "ui_interface.h"
 
 #include <openssl/rand.h>
@@ -23,27 +23,27 @@
 using namespace std;
 using namespace boost;
 
-CCriticalSection cs_fortuna;
+CCriticalSection cs_collateral;
 
-/** The main object for accessing fortuna */
+/** The main object for accessing collateral */
 CForTunaPool forTunaPool;
-/** A helper object for signing messages from fortunastakes */
+/** A helper object for signing messages from collateralnodes */
 CForTunaSigner forTunaSigner;
-/** The current fortunas in progress on the network */
-std::vector<CFortunaQueue> vecFortunaQueue;
-/** Keep track of the used fortunastakes */
-std::vector<CTxIn> vecFortunastakesUsed;
+/** The current collaterals in progress on the network */
+std::vector<CCollateralQueue> vecCollateralQueue;
+/** Keep track of the used collateralnodes */
+std::vector<CTxIn> vecCollateralnodesUsed;
 // keep track of the scanning errors I've seen
-map<uint256, CFortunaBroadcastTx> mapFortunaBroadcastTxes;
+map<uint256, CCollateralBroadcastTx> mapCollateralBroadcastTxes;
 //
-CActiveFortunastake activeFortunastake;
+CActiveCollateralnode activeCollateralnode;
 // count peers we've requested the list from
-int RequestedFortunaStakeList = 0;
+int RequestedCollateralNodeList = 0;
 
 //MIN_MN_PROTO_VERSION
 int MIN_MN_PROTO_VERSION = 31000;
 
-/* *** BEGIN FORTUNA MAGIC  **********
+/* *** BEGIN COLLATERAL MAGIC  **********
     Copyright 2014, Darkcoin Developers
         eduffield - evan@darkcoin.io
     Copyright 2018, Denarius Developers
@@ -53,8 +53,8 @@ int MIN_MN_PROTO_VERSION = 31000;
 
 int randomizeList (int i) { return std::rand()%i;}
 
-// Recursively determine the rounds of a given input (How deep is the fortuna chain for a given input)
-int GetInputFortunaRounds(CTxIn in, int rounds)
+// Recursively determine the rounds of a given input (How deep is the collateral chain for a given input)
+int GetInputCollateralRounds(CTxIn in, int rounds)
 {
     if(rounds >= 17) return rounds;
 
@@ -67,7 +67,7 @@ int GetInputFortunaRounds(CTxIn in, int rounds)
         // bounds check
         if(in.prevout.n >= tx.vout.size()) return -4;
 
-        if(tx.vout[in.prevout.n].nValue == FORTUNA_FEE) return -3;
+        if(tx.vout[in.prevout.n].nValue == COLLATERAL_FEE) return -3;
 
         //make sure the final output is non-denominate
         if(rounds == 0 && !pwalletMain->IsDenominatedAmount(tx.vout[in.prevout.n].nValue)) return -2; //NOT DENOM
@@ -86,7 +86,7 @@ int GetInputFortunaRounds(CTxIn in, int rounds)
             if(pwalletMain->IsMine(in2))
             {
                 //printf("rounds :: %s %s %d NEXT\n", padding.c_str(), in.ToString().c_str(), rounds);
-                int n = GetInputFortunaRounds(in2, rounds+1);
+                int n = GetInputCollateralRounds(in2, rounds+1);
                 if(n != -3) return n;
             }
         }
@@ -97,7 +97,7 @@ int GetInputFortunaRounds(CTxIn in, int rounds)
 
 void CForTunaPool::Reset(){
     cachedLastSuccess = 0;
-    vecFortunastakesUsed.clear();
+    vecCollateralnodesUsed.clear();
     UnlockCoins();
     SetNull();
 }
@@ -119,14 +119,14 @@ void CForTunaPool::SetNull(bool clearEverything){
 
     sessionUsers = 0;
     sessionDenom = 0;
-    sessionFoundFortunastake = false;
+    sessionFoundCollateralnode = false;
     vecSessionCollateral.clear();
     txCollateral = CTransaction();
 
     if(clearEverything){
         myEntries.clear();
 
-        if(fFortunaStake){
+        if(fCollateralNode){
             sessionID = 1 + (rand() % 999999);
         } else {
             sessionID = 0;
@@ -151,7 +151,7 @@ bool CForTunaPool::SetCollateralAddress(std::string strAddress){
 }
 
 //
-// Unlock coins after Fortuna fails or succeeds
+// Unlock coins after Collateral fails or succeeds
 //
 void CForTunaPool::UnlockCoins(){
     BOOST_FOREACH(CTxIn v, lockedCoins)
@@ -161,26 +161,26 @@ void CForTunaPool::UnlockCoins(){
 }
 
 //
-// Check for various timeouts (queue objects, fortuna, etc)
+// Check for various timeouts (queue objects, collateral, etc)
 //
 void CForTunaPool::CheckTimeout(){
-    if(!fFortunaStake) return;
+    if(!fCollateralNode) return;
 
     // catching hanging sessions
-    if(!fFortunaStake) {
+    if(!fCollateralNode) {
         if(state == POOL_STATUS_TRANSMISSION) {
             if(fDebug) printf("CForTunaPool::CheckTimeout() -- Session complete -- Running Check()\n");
             // Check();
         }
     }
 
-    // check fortuna queue objects for timeouts
+    // check collateral queue objects for timeouts
     int c = 0;
-    vector<CFortunaQueue>::iterator it;
-    for(it=vecFortunaQueue.begin();it<vecFortunaQueue.end();it++){
+    vector<CCollateralQueue>::iterator it;
+    for(it=vecCollateralQueue.begin();it<vecCollateralQueue.end();it++){
         if((*it).IsExpired()){
             if(fDebug) printf("CForTunaPool::CheckTimeout() : Removing expired queue entry - %d\n", c);
-            vecFortunaQueue.erase(it);
+            vecCollateralQueue.erase(it);
             break;
         }
         c++;
@@ -188,9 +188,9 @@ void CForTunaPool::CheckTimeout(){
 
     /* Check to see if we're ready for submissions from clients */
     if(state == POOL_STATUS_QUEUE && sessionUsers == GetMaxPoolTransactions()) {
-        CFortunaQueue dsq;
+        CCollateralQueue dsq;
         dsq.nDenom = sessionDenom;
-        dsq.vin = activeFortunastake.vin;
+        dsq.vin = activeCollateralnode.vin;
         dsq.time = GetTime();
         dsq.ready = true;
         dsq.Sign();
@@ -200,14 +200,14 @@ void CForTunaPool::CheckTimeout(){
     }
 
     int addLagTime = 0;
-    if(!fFortunaStake) addLagTime = 10000; //if we're the client, give the server a few extra seconds before resetting.
+    if(!fCollateralNode) addLagTime = 10000; //if we're the client, give the server a few extra seconds before resetting.
 
     if(state == POOL_STATUS_ACCEPTING_ENTRIES || state == POOL_STATUS_QUEUE){
         c = 0;
 
-        // if it's a fortunastake, the entries are stored in "entries", otherwise they're stored in myEntries
+        // if it's a collateralnode, the entries are stored in "entries", otherwise they're stored in myEntries
         std::vector<CForTunaEntry> *vec = &myEntries;
-        if(fFortunaStake) vec = &entries;
+        if(fCollateralNode) vec = &entries;
 
         // check for a timeout and reset if needed
         vector<CForTunaEntry>::iterator it2;
@@ -219,26 +219,26 @@ void CForTunaPool::CheckTimeout(){
                     SetNull(true);
                     UnlockCoins();
                 }
-                if(fFortunaStake){
-                    RelayForTunaStatus(forTunaPool.sessionID, forTunaPool.GetState(), forTunaPool.GetEntriesCount(), FORTUNASTAKE_RESET);
+                if(fCollateralNode){
+                    RelayForTunaStatus(forTunaPool.sessionID, forTunaPool.GetState(), forTunaPool.GetEntriesCount(), COLLATERALSTAKE_RESET);
                 }
                 break;
             }
             c++;
         }
 
-        if(GetTimeMillis()-lastTimeChanged >= (FORTUNA_QUEUE_TIMEOUT*1000)+addLagTime){
+        if(GetTimeMillis()-lastTimeChanged >= (COLLATERAL_QUEUE_TIMEOUT*1000)+addLagTime){
             lastTimeChanged = GetTimeMillis();
 
-            // reset session information for the queue query stage (before entering a fortunastake, clients will send a queue request to make sure they're compatible denomination wise)
+            // reset session information for the queue query stage (before entering a collateralnode, clients will send a queue request to make sure they're compatible denomination wise)
             sessionUsers = 0;
             sessionDenom = 0;
-            sessionFoundFortunastake = false;
+            sessionFoundCollateralnode = false;
             vecSessionCollateral.clear();
 
             UpdateState(POOL_STATUS_ACCEPTING_ENTRIES);
         }
-    } else if(GetTimeMillis()-lastTimeChanged >= (FORTUNA_QUEUE_TIMEOUT*1000)+addLagTime){
+    } else if(GetTimeMillis()-lastTimeChanged >= (COLLATERAL_QUEUE_TIMEOUT*1000)+addLagTime){
         if(fDebug) printf("CForTunaPool::CheckTimeout() -- Session timed out (30s) -- resetting\n");
         SetNull();
         UnlockCoins();
@@ -247,7 +247,7 @@ void CForTunaPool::CheckTimeout(){
         lastMessage = _("Session timed out (30 seconds), please resubmit.");
     }
 
-    if(state == POOL_STATUS_SIGNING && GetTimeMillis()-lastTimeChanged >= (FORTUNA_SIGNING_TIMEOUT*1000)+addLagTime ) {
+    if(state == POOL_STATUS_SIGNING && GetTimeMillis()-lastTimeChanged >= (COLLATERAL_SIGNING_TIMEOUT*1000)+addLagTime ) {
         if(fDebug) printf("CForTunaPool::CheckTimeout() -- Session timed out -- restting\n");
         SetNull();
         UnlockCoins();
@@ -333,8 +333,8 @@ bool CForTunaPool::IsCollateralValid(const CTransaction& txCollateral){
         return false;
     }
 
-    //collateral transactions are required to pay out FORTUNA_COLLATERAL as a fee to the miners
-    if(nValueIn-nValueOut < FORTUNA_COLLATERAL) {
+    //collateral transactions are required to pay out COLLATERALN_COLLATERAL as a fee to the miners
+    if(nValueIn-nValueOut < COLLATERALN_COLLATERAL) {
         if(fDebug) printf("CForTunaPool::IsCollateralValid - did not include enough fees in transaction %lu\n%s\n", nValueOut-nValueIn, txCollateral.ToString().c_str());
         return false;
     }
@@ -357,7 +357,7 @@ bool CForTunaPool::IsCollateralValid(const CTransaction& txCollateral){
 // Add a clients transaction to the pool
 //
 bool CForTunaPool::AddEntry(const std::vector<CTxIn>& newInput, const int64_t& nAmount, const CTransaction& txCollateral, const std::vector<CTxOut>& newOutput, std::string& error){
-    if (!fFortunaStake) return false;
+    if (!fCollateralNode) return false;
 
     BOOST_FOREACH(CTxIn in, newInput) {
         if (in.prevout.IsNull() || nAmount < 0) {
@@ -462,19 +462,19 @@ bool CForTunaPool::SignaturesComplete(){
     return true;
 }
 
-// Incoming message from fortunastake updating the progress of fortuna
+// Incoming message from collateralnode updating the progress of collateral
 //    newAccepted:  -1 mean's it'n not a "transaction accepted/not accepted" message, just a standard update
 //                  0 means transaction was not accepted
 //                  1 means transaction was accepted
 
 bool CForTunaPool::StatusUpdate(int newState, int newEntriesCount, int newAccepted, std::string& error, int newSessionID){
-    if(fFortunaStake) return false;
+    if(fCollateralNode) return false;
     if(state == POOL_STATUS_ERROR || state == POOL_STATUS_SUCCESS) return false;
 
     UpdateState(newState);
     entriesCount = newEntriesCount;
 
-    if(error.size() > 0) strAutoDenomResult = _("Fortunastake:") + " " + error;
+    if(error.size() > 0) strAutoDenomResult = _("Collateralnode:") + " " + error;
 
     if(newAccepted != -1) {
         lastEntryAccepted = newAccepted;
@@ -487,29 +487,29 @@ bool CForTunaPool::StatusUpdate(int newState, int newEntriesCount, int newAccept
         if(newAccepted == 1) {
             sessionID = newSessionID;
             printf("CForTunaPool::StatusUpdate - set sessionID to %d\n", sessionID);
-            sessionFoundFortunastake = true;
+            sessionFoundCollateralnode = true;
         }
     }
 
     if(newState == POOL_STATUS_ACCEPTING_ENTRIES){
         if(newAccepted == 1){
             printf("CForTunaPool::StatusUpdate - entry accepted! \n");
-            sessionFoundFortunastake = true;
-            //wait for other users. Fortunastake will report when ready
+            sessionFoundCollateralnode = true;
+            //wait for other users. Collateralnode will report when ready
             UpdateState(POOL_STATUS_QUEUE);
-        } else if (newAccepted == 0 && sessionID == 0 && !sessionFoundFortunastake) {
-            printf("CForTunaPool::StatusUpdate - entry not accepted by fortunastake \n");
+        } else if (newAccepted == 0 && sessionID == 0 && !sessionFoundCollateralnode) {
+            printf("CForTunaPool::StatusUpdate - entry not accepted by collateralnode \n");
             UnlockCoins();
             UpdateState(POOL_STATUS_ACCEPTING_ENTRIES);
         }
-        if(sessionFoundFortunastake) return true;
+        if(sessionFoundCollateralnode) return true;
     }
 
     return true;
 }
 
 //
-// After we receive the finalized transaction from the fortunastake, we must
+// After we receive the finalized transaction from the collateralnode, we must
 // check it to make sure it's what we want, then sign it if we agree.
 // If we refuse to sign, it's possible we'll be charged collateral
 //
@@ -582,7 +582,7 @@ bool CForTunaPool::SignFinalTransaction(CTransaction& finalTransactionNew, CNode
         if(fDebug) printf("CForTunaPool::Sign - txNew:\n%s", finalTransaction.ToString().c_str());
     }
 
-    // push all of our signatures to the fortunastake
+    // push all of our signatures to the collateralnode
     if(sigs.size() > 0 && node != NULL)
         node->PushMessage("dss", sigs);
 
@@ -599,13 +599,13 @@ void CForTunaPool::NewBlock()
 
     forTunaPool.CheckTimeout();
 
-    if(!fFortunaStake){
+    if(!fCollateralNode){
         //denominate all non-denominated inputs every 50 blocks (25 minutes)
         if(pindexBest->nHeight % 50 == 0)
             UnlockCoins();
-        // free up fortunastake connections every 30 blocks unless we are syncing
+        // free up collateralnode connections every 30 blocks unless we are syncing
         if(pindexBest->nHeight % 60 == 0 && !IsInitialBlockDownload())
-            ProcessFortunastakeConnections();
+            ProcessCollateralnodeConnections();
     }
 }
 
@@ -634,9 +634,9 @@ bool CForTunaPool::IsCompatibleWithSession(int64_t nDenom, CTransaction txCollat
 
         if(!unitTest){
             //broadcast that I'm accepting entries, only if it's the first entry though
-            CFortunaQueue dsq;
+            CCollateralQueue dsq;
             dsq.nDenom = nDenom;
-            dsq.vin = activeFortunastake.vin;
+            dsq.vin = activeCollateralnode.vin;
             dsq.time = GetTime();
             dsq.Sign();
             dsq.Relay();
@@ -649,7 +649,7 @@ bool CForTunaPool::IsCompatibleWithSession(int64_t nDenom, CTransaction txCollat
 
     if((state != POOL_STATUS_ACCEPTING_ENTRIES && state != POOL_STATUS_QUEUE) || sessionUsers >= GetMaxPoolTransactions()){
         if((state != POOL_STATUS_ACCEPTING_ENTRIES && state != POOL_STATUS_QUEUE)) strReason = _("Incompatible mode.");
-        if(sessionUsers >= GetMaxPoolTransactions()) strReason = _("Fortunastake queue is full.");
+        if(sessionUsers >= GetMaxPoolTransactions()) strReason = _("Collateralnode queue is full.");
         printf("CForTunaPool::IsCompatibleWithSession - incompatible mode, return false %d %d\n", state != POOL_STATUS_ACCEPTING_ENTRIES, sessionUsers >= GetMaxPoolTransactions());
         return false;
     }
@@ -876,9 +876,9 @@ bool CForTunaSigner::VerifyMessage(CPubKey pubkey, vector<unsigned char>& vchSig
     return (pubkey2.GetID() == pubkey.GetID());
 }
 
-bool CFortunaQueue::Sign()
+bool CCollateralQueue::Sign()
 {
-    if(!fFortunaStake) return false;
+    if(!fCollateralNode) return false;
 
     std::string strMessage = vin.ToString() + boost::lexical_cast<std::string>(nDenom) + boost::lexical_cast<std::string>(time) + boost::lexical_cast<std::string>(ready);
 
@@ -886,26 +886,26 @@ bool CFortunaQueue::Sign()
     CPubKey pubkey2;
     std::string errorMessage = "";
 
-    if(!forTunaSigner.SetKey(strFortunaStakePrivKey, errorMessage, key2, pubkey2))
+    if(!forTunaSigner.SetKey(strCollateralNodePrivKey, errorMessage, key2, pubkey2))
     {
-        printf("CFortunaQueue():Relay - ERROR: Invalid fortunastakeprivkey: '%s'\n", errorMessage.c_str());
+        printf("CCollateralQueue():Relay - ERROR: Invalid collateralnodeprivkey: '%s'\n", errorMessage.c_str());
         return false;
     }
 
     if(!forTunaSigner.SignMessage(strMessage, errorMessage, vchSig, key2)) {
-        printf("CFortunaQueue():Relay - Sign message failed");
+        printf("CCollateralQueue():Relay - Sign message failed");
         return false;
     }
 
     if(!forTunaSigner.VerifyMessage(pubkey2, vchSig, strMessage, errorMessage)) {
-        printf("CFortunaQueue():Relay - Verify message failed");
+        printf("CCollateralQueue():Relay - Verify message failed");
         return false;
     }
 
     return true;
 }
 
-bool CFortunaQueue::Relay()
+bool CCollateralQueue::Relay()
 {
 
     //LOCK(cs_vNodes);
@@ -917,16 +917,16 @@ bool CFortunaQueue::Relay()
     return true;
 }
 
-bool CFortunaQueue::CheckSignature()
+bool CCollateralQueue::CheckSignature()
 {
-    BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes) {
+    BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes) {
 
         if(mn.vin == vin) {
             std::string strMessage = vin.ToString() + boost::lexical_cast<std::string>(nDenom) + boost::lexical_cast<std::string>(time) + boost::lexical_cast<std::string>(ready);
 
             std::string errorMessage = "";
             if(!forTunaSigner.VerifyMessage(mn.pubkey2, vchSig, strMessage, errorMessage)){
-                return error("CFortunaQueue::CheckSignature() - Got bad fortunastake address signature %s \n", vin.ToString().c_str());
+                return error("CCollateralQueue::CheckSignature() - Got bad collateralnode address signature %s \n", vin.ToString().c_str());
             }
 
             return true;
@@ -959,26 +959,26 @@ void ThreadCheckForTunaPool(void* parg)
         if(c % mnTimeout == 0){
             LOCK(cs_main);
             /*
-                cs_main is required for doing fortunastake.Check because something
+                cs_main is required for doing collateralnode.Check because something
                 is modifying the coins view without a mempool lock. It causes
                 segfaults from this code without the cs_main lock.
             */
         {
 
-        LOCK(cs_fortunastakes);
-            vector<CFortunaStake>::iterator it = vecFortunastakes.begin();
+        LOCK(cs_collateralnodes);
+            vector<CCollateralNode>::iterator it = vecCollateralnodes.begin();
             //check them separately
-            while(it != vecFortunastakes.end()){
+            while(it != vecCollateralnodes.end()){
                 (*it).Check();
                 ++it;
             }
 
             //remove inactive
-            it = vecFortunastakes.begin();
-            while(it != vecFortunastakes.end()){
+            it = vecCollateralnodes.begin();
+            while(it != vecCollateralnodes.end()){
                 if((*it).enabled == 4 || (*it).enabled == 3){
-                    printf("Removing inactive fortunastake %s\n", (*it).addr.ToString().c_str());
-                    it = vecFortunastakes.erase(it);
+                    printf("Removing inactive collateralnode %s\n", (*it).addr.ToString().c_str());
+                    it = vecCollateralnodes.erase(it);
                     mnCount = mnCount-1;
                 } else {
                     ++it;
@@ -986,13 +986,13 @@ void ThreadCheckForTunaPool(void* parg)
             }
 
         }
-            fortunastakePayments.CleanPaymentList();
+            collateralnodePayments.CleanPaymentList();
         }
 
         int mnRefresh = 30;
 
-        //try to sync the fortunastake list and payment list every 30 seconds from at least 2 nodes until we have them all
-        if(vNodes.size() > 1 && c % mnRefresh == 0 && (mnCount == 0 || vecFortunastakes.size() < mnCount)) {
+        //try to sync the collateralnode list and payment list every 30 seconds from at least 2 nodes until we have them all
+        if(vNodes.size() > 1 && c % mnRefresh == 0 && (mnCount == 0 || vecCollateralnodes.size() < mnCount)) {
             bool fIsInitialDownload = IsInitialBlockDownload();
             if(!fIsInitialDownload) {
                 LOCK(cs_vNodes);
@@ -1005,45 +1005,45 @@ void ThreadCheckForTunaPool(void* parg)
                         {
                             continue;
                         } else {
-                            printf("Asking for Fortunastake list from %s\n",pnode->addr.ToStringIPPort().c_str());
+                            printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
                             pnode->PushMessage("dseg", CTxIn()); //request full mn list
                             pnode->nLastDseg = GetTime();
                             pnode->PushMessage("getsporks"); //get current network sporks
-                            RequestedFortunaStakeList++;
+                            RequestedCollateralNodeList++;
                         }
                     }
                 }
             }
         }
 
-        if(c % FORTUNASTAKE_PING_SECONDS == 0){
-            activeFortunastake.ManageStatus();
+        if(c % COLLATERALSTAKE_PING_SECONDS == 0){
+            activeCollateralnode.ManageStatus();
         }
 
         //if(c % (60*5) == 0){
-        if(c % 60 == 0 && vecFortunastakes.size()) {
-            //let's connect to a random fortunastake every minute!
-            int fs = rand() % vecFortunastakes.size();
-            CService addr = vecFortunastakes[fs].addr;
+        if(c % 60 == 0 && vecCollateralnodes.size()) {
+            //let's connect to a random collateralnode every minute!
+            int cn = rand() % vecCollateralnodes.size();
+            CService addr = vecCollateralnodes[fs].addr;
             AddOneShot(addr.ToStringIPPort());
-            if (fDebug) printf("added fortunastake at %s to connection attempts\n",addr.ToStringIPPort().c_str());
+            if (fDebug) printf("added collateralnode at %s to connection attempts\n",addr.ToStringIPPort().c_str());
 
 
-            //if we're low on peers, let's connect to some random ipv4 fortunastakes. ipv6 probably won't route anyway
-            if (GetArg("-maxconnections", 125) > 16 && vNodes.size() < min(25, (int)GetArg("-maxconnections", 125)) && vecFortunastakes.size() > 25) {
+            //if we're low on peers, let's connect to some random ipv4 collateralnodes. ipv6 probably won't route anyway
+            if (GetArg("-maxconnections", 125) > 16 && vNodes.size() < min(25, (int)GetArg("-maxconnections", 125)) && vecCollateralnodes.size() > 25) {
                 int x = 25 - vNodes.size();
                 for (int i = x; i-- > 0; ) {
-                    int fs = rand() % vecFortunastakes.size();
-                    CService addr = vecFortunastakes[fs].addr;
+                    int cn = rand() % vecCollateralnodes.size();
+                    CService addr = vecCollateralnodes[fs].addr;
                     if (addr.IsIPv4() && !addr.IsLocal()) {
                         AddOneShot(addr.ToStringIPPort());
                     }
                 }
 
             }
-            //if we've used 1/5 of the fortunastake list, then clear the list.
-            if((int)vecFortunastakesUsed.size() > (int)vecFortunastakes.size() / 5)
-                vecFortunastakesUsed.clear();
+            //if we've used 1/5 of the collateralnode list, then clear the list.
+            if((int)vecCollateralnodesUsed.size() > (int)vecCollateralnodes.size() / 5)
+                vecCollateralnodesUsed.clear();
         }
     }
 }

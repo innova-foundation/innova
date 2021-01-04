@@ -61,9 +61,9 @@
         <file alias="statistics">res/icons/stats.png</file>
         <file alias="msg">res/icons/message.png</file>
         <file alias="refresh">res/icons/refresh.png</file>
-        <file alias="fs">res/icons/fs.png</file>
+        <file alias="cn">res/icons/cn.png</file>
         <file alias="data">res/icons/data.png</file>
-        <file alias="jupiter">res/icons/jupiter.png</file>
+        <file alias="hyperfile">res/icons/hyperfile.png</file>
         <file alias="trade">res/icons/trade.png</file>
     </qresource>
     <qresource prefix="/images">

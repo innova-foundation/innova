@@ -380,14 +380,14 @@ Value setdebug(const Array& params, bool fHelp)
         strOn = params[1].get_str();
     }
     if (fHelp || params.size() != 2 ||
-        (strOn != "on" && strOn != "off" && (strType != "all" && strType != "fs" && strType != "net" && strType != "chain" && strType != "ringsig" && strType != "smsg") ))
+        (strOn != "on" && strOn != "off" && (strType != "all" && strType != "cn" && strType != "net" && strType != "chain" && strType != "ringsig" && strType != "smsg") ))
         throw runtime_error(
             "setdebug <type> <on|off>\n"
             "Sets the debug mode on the wallet. type 'all' includes 'fs', 'net', 'chain', 'ringsig', 'smsg'");
 
 
     fDebug = strType == "all" && strOn == "on";
-    fDebugFS = (strType == "all" || strType == "fs") && strOn == "on";
+    fDebugCN = (strType == "all" || strType == "cn") && strOn == "on";
     fDebugChain = (strType == "all" || strType == "chain") && strOn == "on";
     fDebugNet = (strType == "all" || strType == "net") && strOn == "on";
     fDebugRingSig = (strType == "all" || strType == "ringsig") && strOn == "on";

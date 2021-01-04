@@ -3,7 +3,7 @@
 // Copyright (c) 2019-2020 The Innova Developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-// Original OG - credits to carsenk for original IPFS code & Denarius Jupiter Commands
+// Original OG - credits to carsenk for original IPFS code & Denarius HyperFile Commands
 
 #include "main.h"
 #include "innovarpc.h"
@@ -24,11 +24,11 @@ using namespace json_spirit;
 using namespace std;
 
 #ifdef USE_IPFS
-Value jupitergetstat(const Array& params, bool fHelp)
+Value hyperfilegetstat(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 1)
         throw runtime_error(
-            "jupitergetstat\n"
+            "hyperfilegetstat\n"
             "\nArguments:\n"
             "1. \"ipfshash\"          (string, required) The IPFS Hash/Block\n"
             "Returns the IPFS block stats of the inputted IPFS CID/Hash/Block");
@@ -37,10 +37,10 @@ Value jupitergetstat(const Array& params, bool fHelp)
     std::string userHash = params[0].get_str();
     ipfs::Json stat_result;
 
-    fJupiterLocal = GetBoolArg("-jupiterlocal");
+    fHyperFileLocal = GetBoolArg("-hyperfilelocal");
 
-    if (fJupiterLocal) {
-        std::string ipfsip = GetArg("-jupiterip", "localhost:5001"); //Default Localhost
+    if (fHyperFileLocal) {
+        std::string ipfsip = GetArg("-hyperfileip", "localhost:5001"); //Default Localhost
 
         ipfs::Client client(ipfsip);
 
@@ -65,11 +65,11 @@ Value jupitergetstat(const Array& params, bool fHelp)
         return obj;
     }
 }
-Value jupitergetblock(const Array& params, bool fHelp)
+Value hyperfilegetblock(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 1)
         throw runtime_error(
-            "jupitergetblock\n"
+            "hyperfilegetblock\n"
             "\nArguments:\n"
             "1. \"ipfshash\"          (string, required) The IPFS Hash/Block\n"
             "Returns the IPFS hash/block data hex of the inputted IPFS CID/Hash/Block");
@@ -78,10 +78,10 @@ Value jupitergetblock(const Array& params, bool fHelp)
     std::string userHash = params[0].get_str();
     std::stringstream block_contents;
 
-    fJupiterLocal = GetBoolArg("-jupiterlocal");
+    fHyperFileLocal = GetBoolArg("-hyperfilelocal");
 
-    if (fJupiterLocal) {
-        std::string ipfsip = GetArg("-jupiterip", "localhost:5001"); //Default Localhost
+    if (fHyperFileLocal) {
+        std::string ipfsip = GetArg("-hyperfileip", "localhost:5001"); //Default Localhost
 
         ipfs::Client client(ipfsip);
 
@@ -103,28 +103,28 @@ Value jupitergetblock(const Array& params, bool fHelp)
     }
 }
 
-Value jupiterversion(const Array& params, bool fHelp)
+Value hyperfileversion(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() != 0)
         throw runtime_error(
-            "jupiterversion\n"
-            "Returns the version of the connected IPFS node within the Innova Jupiter");
+            "hyperfileversion\n"
+            "Returns the version of the connected IPFS node within the Innova HyperFile");
 
     ipfs::Json version;
     ipfs::Json id;
     bool connected = false;
     Object obj, peerinfo;
 
-    fJupiterLocal = GetBoolArg("-jupiterlocal");
+    fHyperFileLocal = GetBoolArg("-hyperfilelocal");
 
-    if (fJupiterLocal) {
-        std::string ipfsip = GetArg("-jupiterip", "localhost:5001"); //Default Localhost
+    if (fHyperFileLocal) {
+        std::string ipfsip = GetArg("-hyperfileip", "localhost:5001"); //Default Localhost
 
         ipfs::Client client(ipfsip);
 
         client.Version(&version);
         const std::string& vv = version["Version"].dump();
-        printf("Jupiter: IPFS Peer Version: %s\n", vv.c_str());
+        printf("HyperFile: IPFS Peer Version: %s\n", vv.c_str());
         std::string versionj = version["Version"].dump();
 
         if (version["Version"].dump() != "") {
@@ -134,7 +134,7 @@ Value jupiterversion(const Array& params, bool fHelp)
         client.Id(&id);
 
         obj.push_back(Pair("connected",          connected));
-        obj.push_back(Pair("jupiterlocal",       "true"));
+        obj.push_back(Pair("hyperfilelocal",       "true"));
         obj.push_back(Pair("ipfspeer",           ipfsip));
         obj.push_back(Pair("ipfsversion",        version["Version"].dump().c_str()));
 
@@ -149,7 +149,7 @@ Value jupiterversion(const Array& params, bool fHelp)
 
         client.Version(&version);
         const std::string& vv = version["Version"].dump();
-        printf("Jupiter: IPFS Peer Version: %s\n", vv.c_str());
+        printf("HyperFile: IPFS Peer Version: %s\n", vv.c_str());
         std::string versionj = version["Version"].dump();
 
         if (version["Version"].dump() != "") {
@@ -157,36 +157,36 @@ Value jupiterversion(const Array& params, bool fHelp)
         }
 
         obj.push_back(Pair("connected",          connected));
-        obj.push_back(Pair("jupiterlocal",       "false"));
+        obj.push_back(Pair("hyperfilelocal",       "false"));
         obj.push_back(Pair("ipfspeer",           "https://ipfs.infura.io:5001"));
         obj.push_back(Pair("ipfsversion",        version["Version"].dump().c_str()));
-        obj.push_back(Pair("peerinfo",           "Peer ID Info only supported with jupiterlocal=1"));
+        obj.push_back(Pair("peerinfo",           "Peer ID Info only supported with hyperfilelocal=1"));
 
         return obj;
     }
 }
 
-Value jupiterpod(const Array& params, bool fHelp)
+Value hyperfilepod(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 1)
     throw runtime_error(
-        "jupiterpod\n"
+        "hyperfilepod\n"
         "\nArguments:\n"
         "1. \"filelocation\"          (string, required) The file location of the file to upload (e.g. /home/name/file.jpg)\n"
-        "Returns the uploaded IPFS file CID/Hash of the uploaded file and public gateway link if successful, along with the Jupiter POD TX ID Timestamp.");
+        "Returns the uploaded IPFS file CID/Hash of the uploaded file and public gateway link if successful, along with the HyperFile POD TX ID Timestamp.");
 
     Object obj;
     std::string userFile = params[0].get_str();
 
 
     //Ensure IPFS connected
-    fJupiterLocal = GetBoolArg("-jupiterlocal");
+    fHyperFileLocal = GetBoolArg("-hyperfilelocal");
 
-    if (fJupiterLocal) {
+    if (fHyperFileLocal) {
         try {
             ipfs::Json add_result;
 
-            std::string ipfsip = GetArg("-jupiterip", "localhost:5001"); //Default Localhost
+            std::string ipfsip = GetArg("-hyperfileip", "localhost:5001"); //Default Localhost
 
             ipfs::Client client(ipfsip);
 
@@ -200,8 +200,8 @@ Value jupiterpod(const Array& params, bool fHelp)
             boost::filesystem::path p(filename);
             std::string basename = p.filename().string();
 
-            printf("Jupiter Upload File Start: %s\n", basename.c_str());
-            //printf("Jupiter File Contents: %s\n", ipfsC.c_str());
+            printf("HyperFile Upload File Start: %s\n", basename.c_str());
+            //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
             client.FilesAdd(
             {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, userFile.c_str()}},
@@ -211,11 +211,11 @@ Value jupiterpod(const Array& params, bool fHelp)
             int size = add_result[0]["size"];
 
             std::string r = add_result.dump();
-            printf("Jupiter POD Successfully Added IPFS File(s): %s\n", r.c_str());
+            printf("HyperFile POD Successfully Added IPFS File(s): %s\n", r.c_str());
 
-            //Jupiter POD
+            //HyperFile POD
             if (hash != "") {
-                //Hash the file for Innova Jupiter POD
+                //Hash the file for Innova HyperFile POD
                 //uint256 imagehash = SerializeHash(ipfsContents);
                 CKeyID keyid(Hash160(hash.begin(), hash.end()));
                 CBitcoinAddress baddr = CBitcoinAddress(keyid);
@@ -228,16 +228,16 @@ Value jupiterpod(const Array& params, bool fHelp)
                 // Wallet comments
                 CWalletTx wtx;
                 wtx.mapValue["comment"] = hash;
-                std::string sNarr = "Jupiter POD";
-                wtx.mapValue["to"]      = "Jupiter POD";
+                std::string sNarr = "HyperFile POD";
+                wtx.mapValue["to"]      = "HyperFile POD";
 
                 if (pwalletMain->IsLocked())
                 {
                     obj.push_back(Pair("error",  "Error, Your wallet is locked! Please unlock your wallet!"));
-                    //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send Jupiter POD. Unlock your wallet!");
+                    //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send HyperFile POD. Unlock your wallet!");
                 } else if (pwalletMain->GetBalance() < 0.001) {
-                    obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send Jupiter POD!"));
-                    //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send Jupiter POD.");
+                    obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send HyperFile POD!"));
+                    //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send HyperFile POD.");
                 } else {
                     //std::string sNarr;
                     std::string strError = pwalletMain->SendMoneyToDestination(baddr.Get(), nAmount, sNarr, wtx);
@@ -296,8 +296,8 @@ Value jupiterpod(const Array& params, bool fHelp)
                 boost::filesystem::path p(filename);
                 std::string basename = p.filename().string();
 
-                printf("Jupiter Upload File Start: %s\n", basename.c_str());
-                //printf("Jupiter File Contents: %s\n", ipfsC.c_str());
+                printf("HyperFile Upload File Start: %s\n", basename.c_str());
+                //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
                 client.FilesAdd(
                 {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, userFile.c_str()}},
@@ -307,11 +307,11 @@ Value jupiterpod(const Array& params, bool fHelp)
                 int size = add_result[0]["size"];
 
                 std::string r = add_result.dump();
-                printf("Jupiter POD Successfully Added IPFS File(s): %s\n", r.c_str());
+                printf("HyperFile POD Successfully Added IPFS File(s): %s\n", r.c_str());
 
-                //Jupiter POD
+                //HyperFile POD
                 if (hash != "") {
-                    //Hash the file for Innova Jupiter POD
+                    //Hash the file for Innova HyperFile POD
                     //uint256 imagehash = SerializeHash(ipfsContents);
                     CKeyID keyid(Hash160(hash.begin(), hash.end()));
                     CBitcoinAddress baddr = CBitcoinAddress(keyid);
@@ -324,16 +324,16 @@ Value jupiterpod(const Array& params, bool fHelp)
                     // Wallet comments
                     CWalletTx wtx;
                     wtx.mapValue["comment"] = hash;
-                    std::string sNarr = "Jupiter POD";
-                    wtx.mapValue["to"]      = "Jupiter POD";
+                    std::string sNarr = "HyperFile POD";
+                    wtx.mapValue["to"]      = "HyperFile POD";
 
                     if (pwalletMain->IsLocked())
                     {
                         obj.push_back(Pair("error",  "Error, Your wallet is locked! Please unlock your wallet!"));
-                        //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send Jupiter POD. Unlock your wallet!");
+                        //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send HyperFile POD. Unlock your wallet!");
                     } else if (pwalletMain->GetBalance() < 0.001) {
-                        obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send Jupiter POD!"));
-                        //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send Jupiter POD.");
+                        obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send HyperFile POD!"));
+                        //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send HyperFile POD.");
                     } else {
                         //std::string sNarr;
                         std::string strError = pwalletMain->SendMoneyToDestination(baddr.Get(), nAmount, sNarr, wtx);
@@ -369,11 +369,11 @@ Value jupiterpod(const Array& params, bool fHelp)
         }
 }
 
-Value jupiterupload(const Array& params, bool fHelp)
+Value hyperfileupload(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 1)
     throw runtime_error(
-        "jupiterupload\n"
+        "hyperfileupload\n"
         "\nArguments:\n"
         "1. \"filelocation\"          (string, required) The file location of the file to upload (e.g. /home/name/file.jpg)\n"
         "Returns the uploaded IPFS file CID/Hash of the uploaded file and public gateway link if successful.");
@@ -383,13 +383,13 @@ Value jupiterupload(const Array& params, bool fHelp)
 
 
     //Ensure IPFS connected
-    fJupiterLocal = GetBoolArg("-jupiterlocal");
+    fHyperFileLocal = GetBoolArg("-hyperfilelocal");
 
-    if (fJupiterLocal) {
+    if (fHyperFileLocal) {
         try {
             ipfs::Json add_result;
 
-            std::string ipfsip = GetArg("-jupiterip", "localhost:5001"); //Default Localhost
+            std::string ipfsip = GetArg("-hyperfileip", "localhost:5001"); //Default Localhost
 
             ipfs::Client client(ipfsip);
 
@@ -403,8 +403,8 @@ Value jupiterupload(const Array& params, bool fHelp)
             boost::filesystem::path p(filename);
             std::string basename = p.filename().string();
 
-            printf("Jupiter Upload File Start: %s\n", basename.c_str());
-            //printf("Jupiter File Contents: %s\n", ipfsC.c_str());
+            printf("HyperFile Upload File Start: %s\n", basename.c_str());
+            //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
             client.FilesAdd(
             {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, userFile.c_str()}},
@@ -414,7 +414,7 @@ Value jupiterupload(const Array& params, bool fHelp)
             int size = add_result[0]["size"];
 
             std::string r = add_result.dump();
-            printf("Jupiter Successfully Added IPFS File(s): %s\n", r.c_str());
+            printf("HyperFile Successfully Added IPFS File(s): %s\n", r.c_str());
 
             std::string filelink = "https://ipfs.infura.io/ipfs/" + hash;
             std::string cloudlink = "https://cloudflare-ipfs.com/ipfs/" + hash;
@@ -448,8 +448,8 @@ Value jupiterupload(const Array& params, bool fHelp)
                 boost::filesystem::path p(filename);
                 std::string basename = p.filename().string();
 
-                printf("Jupiter Upload File Start: %s\n", basename.c_str());
-                //printf("Jupiter File Contents: %s\n", ipfsC.c_str());
+                printf("HyperFile Upload File Start: %s\n", basename.c_str());
+                //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
                 client.FilesAdd(
                 {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, userFile.c_str()}},
@@ -459,7 +459,7 @@ Value jupiterupload(const Array& params, bool fHelp)
                 int size = add_result[0]["size"];
 
                 std::string r = add_result.dump();
-                printf("Jupiter Successfully Added IPFS File(s): %s\n", r.c_str());
+                printf("HyperFile Successfully Added IPFS File(s): %s\n", r.c_str());
 
                 std::string filelink = "https://ipfs.infura.io/ipfs/" + hash;
                 std::string cloudlink = "https://cloudflare-ipfs.com/ipfs/" + hash;
@@ -481,7 +481,7 @@ Value jupiterupload(const Array& params, bool fHelp)
         }
 
         /*     ￼
-        jupiterupload C:/users/NAME/Dropbox/Innova/innova-128.png
+        hyperfileupload C:/users/NAME/Dropbox/Innova/innova-128.png
         15:45:55        ￼
         {
         "filename" : "innova-128.png",
@@ -492,11 +492,11 @@ Value jupiterupload(const Array& params, bool fHelp)
         */
 }
 
-Value jupiterduo(const Array& params, bool fHelp)
+Value hyperfileduo(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 1)
     throw runtime_error(
-        "jupiterduo\n"
+        "hyperfileduo\n"
         "\nArguments:\n"
         "1. \"filelocation\"          (string, required) The file location of the file to upload (e.g. /home/name/file.jpg)\n"
         "Returns the uploaded IPFS file CID/Hashes of the uploaded file and public gateway links if successful from submission to two IPFS API nodes.");
@@ -506,13 +506,13 @@ Value jupiterduo(const Array& params, bool fHelp)
 
 
     //Ensure IPFS connected
-    fJupiterLocal = GetBoolArg("-jupiterlocal");
+    fHyperFileLocal = GetBoolArg("-hyperfilelocal");
 
-    if (fJupiterLocal) {
+    if (fHyperFileLocal) {
         try {
             ipfs::Json add_result;
 
-            std::string ipfsip = GetArg("-jupiterip", "localhost:5001"); //Default Localhost
+            std::string ipfsip = GetArg("-hyperfileip", "localhost:5001"); //Default Localhost
 
             ipfs::Client client(ipfsip);
 
@@ -526,8 +526,8 @@ Value jupiterduo(const Array& params, bool fHelp)
             boost::filesystem::path p(filename);
             std::string basename = p.filename().string();
 
-            printf("Jupiter Upload File Start: %s\n", basename.c_str());
-            //printf("Jupiter File Contents: %s\n", ipfsC.c_str());
+            printf("HyperFile Upload File Start: %s\n", basename.c_str());
+            //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
             client.FilesAdd(
             {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, userFile.c_str()}},
@@ -537,7 +537,7 @@ Value jupiterduo(const Array& params, bool fHelp)
             int size = add_result[0]["size"];
 
             std::string r = add_result.dump();
-            printf("Jupiter Duo Successfully Added IPFS File(s): %s\n", r.c_str());
+            printf("HyperFile Duo Successfully Added IPFS File(s): %s\n", r.c_str());
 
             std::string filelink = "https://ipfs.infura.io/ipfs/" + hash;
             std::string cloudlink = "https://cloudflare-ipfs.com/ipfs/" + hash;
@@ -573,8 +573,8 @@ Value jupiterduo(const Array& params, bool fHelp)
                 boost::filesystem::path p(filename);
                 std::string basename = p.filename().string();
 
-                printf("Jupiter Upload File Start: %s\n", basename.c_str());
-                //printf("Jupiter File Contents: %s\n", ipfsC.c_str());
+                printf("HyperFile Upload File Start: %s\n", basename.c_str());
+                //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
                 client.FilesAdd(
                 {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, userFile.c_str()}},
@@ -584,7 +584,7 @@ Value jupiterduo(const Array& params, bool fHelp)
                 int size = add_result[0]["size"];
 
                 std::string r = add_result.dump();
-                printf("Jupiter Duo Successfully Added IPFS File(s): %s\n", r.c_str());
+                printf("HyperFile Duo Successfully Added IPFS File(s): %s\n", r.c_str());
 
                 std::string filelink = "https://ipfs.infura.io/ipfs/" + hash;
                 std::string cloudlink = "https://cloudflare-ipfs.com/ipfs/" + hash;
@@ -608,12 +608,12 @@ Value jupiterduo(const Array& params, bool fHelp)
 
 
         } else {
-            obj.push_back(Pair("error",          "jupiterduo is only available with -jupiterlocal=1"));
+            obj.push_back(Pair("error",          "hyperfileduo is only available with -hyperfilelocal=1"));
             return obj;
         }
 
         /*     ￼
-        jupiterupload C:/users/NAME/Dropbox/Innova/innova-128.png
+        hyperfileupload C:/users/NAME/Dropbox/Innova/innova-128.png
         15:45:55        ￼
         {
         "filename" : "innova-128.png",
@@ -624,11 +624,11 @@ Value jupiterduo(const Array& params, bool fHelp)
         */
 }
 
-Value jupiterduopod(const Array& params, bool fHelp)
+Value hyperfileduopod(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 1)
     throw runtime_error(
-        "jupiterduopod\n"
+        "hyperfileduopod\n"
         "\nArguments:\n"
         "1. \"filelocation\"          (string, required) The file location of the file to upload (e.g. /home/name/file.jpg)\n"
         "Returns the uploaded IPFS file CID/Hashes of the uploaded file and public gateway links if successful from submission to two IPFS API nodes and PODs with D");
@@ -638,13 +638,13 @@ Value jupiterduopod(const Array& params, bool fHelp)
 
 
     //Ensure IPFS connected
-    fJupiterLocal = GetBoolArg("-jupiterlocal");
+    fHyperFileLocal = GetBoolArg("-hyperfilelocal");
 
-    if (fJupiterLocal) {
+    if (fHyperFileLocal) {
         try {
             ipfs::Json add_result;
 
-            std::string ipfsip = GetArg("-jupiterip", "localhost:5001"); //Default Localhost
+            std::string ipfsip = GetArg("-hyperfileip", "localhost:5001"); //Default Localhost
 
             ipfs::Client client(ipfsip);
 
@@ -658,8 +658,8 @@ Value jupiterduopod(const Array& params, bool fHelp)
             boost::filesystem::path p(filename);
             std::string basename = p.filename().string();
 
-            printf("Jupiter Upload File Start: %s\n", basename.c_str());
-            //printf("Jupiter File Contents: %s\n", ipfsC.c_str());
+            printf("HyperFile Upload File Start: %s\n", basename.c_str());
+            //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
             client.FilesAdd(
             {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, userFile.c_str()}},
@@ -669,11 +669,11 @@ Value jupiterduopod(const Array& params, bool fHelp)
             int size = add_result[0]["size"];
 
             std::string r = add_result.dump();
-            printf("Jupiter Duo Pod Successfully Added IPFS File(s): %s\n", r.c_str());
+            printf("HyperFile Duo Pod Successfully Added IPFS File(s): %s\n", r.c_str());
 
-            //Jupiter POD for Duo
+            //HyperFile POD for Duo
             if (hash != "") {
-                //Hash the file for Innova Jupiter POD
+                //Hash the file for Innova HyperFile POD
                 //uint256 imagehash = SerializeHash(ipfsContents);
                 CKeyID keyid(Hash160(hash.begin(), hash.end()));
                 CBitcoinAddress baddr = CBitcoinAddress(keyid);
@@ -681,21 +681,21 @@ Value jupiterduopod(const Array& params, bool fHelp)
 
                 //ui->lineEdit_2->setText(QString::fromStdString(addr));
 
-                CAmount nAmount = 0.0005 * COIN; // 0.0005 INN Fee - 0.001 INN Total for Jupiter Duo Pod
+                CAmount nAmount = 0.0005 * COIN; // 0.0005 INN Fee - 0.001 INN Total for HyperFile Duo Pod
 
                 // Wallet comments
                 CWalletTx wtx;
                 wtx.mapValue["comment"] = hash;
-                std::string sNarr = "Jupiter Duo POD";
-                wtx.mapValue["to"]      = "Jupiter Duo POD";
+                std::string sNarr = "HyperFile Duo POD";
+                wtx.mapValue["to"]      = "HyperFile Duo POD";
 
                 if (pwalletMain->IsLocked())
                 {
                     obj.push_back(Pair("error",  "Error, Your wallet is locked! Please unlock your wallet!"));
-                    //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send Jupiter POD. Unlock your wallet!");
+                    //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send HyperFile POD. Unlock your wallet!");
                 } else if (pwalletMain->GetBalance() < 0.001) {
-                    obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send Jupiter POD!"));
-                    //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send Jupiter POD.");
+                    obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send HyperFile POD!"));
+                    //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send HyperFile POD.");
                 } else {
                     //std::string sNarr;
                     std::string strError = pwalletMain->SendMoneyToDestination(baddr.Get(), nAmount, sNarr, wtx);
@@ -744,8 +744,8 @@ Value jupiterduopod(const Array& params, bool fHelp)
                 boost::filesystem::path p(filename);
                 std::string basename = p.filename().string();
 
-                printf("Jupiter Upload File Start: %s\n", basename.c_str());
-                //printf("Jupiter File Contents: %s\n", ipfsC.c_str());
+                printf("HyperFile Upload File Start: %s\n", basename.c_str());
+                //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
                 client.FilesAdd(
                 {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, userFile.c_str()}},
@@ -755,11 +755,11 @@ Value jupiterduopod(const Array& params, bool fHelp)
                 int size = add_result[0]["size"];
 
                 std::string r = add_result.dump();
-                printf("Jupiter Duo POD Successfully Added IPFS File(s): %s\n", r.c_str());
+                printf("HyperFile Duo POD Successfully Added IPFS File(s): %s\n", r.c_str());
 
-                //Jupiter POD for Duo
+                //HyperFile POD for Duo
                 if (hash != "") {
-                    //Hash the file for Innova Jupiter POD
+                    //Hash the file for Innova HyperFile POD
                     //uint256 imagehash = SerializeHash(ipfsContents);
                     CKeyID keyid(Hash160(hash.begin(), hash.end()));
                     CBitcoinAddress baddr = CBitcoinAddress(keyid);
@@ -767,21 +767,21 @@ Value jupiterduopod(const Array& params, bool fHelp)
 
                     //ui->lineEdit_2->setText(QString::fromStdString(addr));
 
-                    CAmount nAmount = 0.0005 * COIN; // 0.0005 INN Fee - 0.001 INN Total for Jupiter Duo Pod
+                    CAmount nAmount = 0.0005 * COIN; // 0.0005 INN Fee - 0.001 INN Total for HyperFile Duo Pod
 
                     // Wallet comments
                     CWalletTx wtx;
                     wtx.mapValue["comment"] = hash;
-                    std::string sNarr = "Jupiter Duo POD";
-                    wtx.mapValue["to"]      = "Jupiter Duo POD";
+                    std::string sNarr = "HyperFile Duo POD";
+                    wtx.mapValue["to"]      = "HyperFile Duo POD";
 
                     if (pwalletMain->IsLocked())
                     {
                         obj.push_back(Pair("error",  "Error, Your wallet is locked! Please unlock your wallet!"));
-                        //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send Jupiter POD. Unlock your wallet!");
+                        //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send HyperFile POD. Unlock your wallet!");
                     } else if (pwalletMain->GetBalance() < 0.001) {
-                        obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send Jupiter POD!"));
-                        //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send Jupiter POD.");
+                        obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send HyperFile POD!"));
+                        //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send HyperFile POD.");
                     } else {
                         //std::string sNarr;
                         std::string strError = pwalletMain->SendMoneyToDestination(baddr.Get(), nAmount, sNarr, wtx);
@@ -818,7 +818,7 @@ Value jupiterduopod(const Array& params, bool fHelp)
 
 
         } else {
-            obj.push_back(Pair("error",          "jupiterduopod is only available with -jupiterlocal=1"));
+            obj.push_back(Pair("error",          "hyperfileduopod is only available with -hyperfilelocal=1"));
             return obj;
         }
 }
