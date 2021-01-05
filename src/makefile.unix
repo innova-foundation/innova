@@ -326,12 +326,12 @@ OBJS= \
     obj/scrypt-x86_64.o \
     obj/smessage.o \
     obj/stealth.o \
-    obj/activefortunastake.o \
-    obj/fortunastakeconfig.o \
-    obj/fortunastake.o \
-    obj/rpcfortuna.o \
+    obj/activecollateralnode.o \
+    obj/collateralnodeconfig.o \
+    obj/collateralnode.o \
+    obj/rpccollateral.o \
     obj/spork.o \
-    obj/fortuna.o \
+    obj/collateral.o \
     obj/eccryptoverify.o \
     obj/ringsig.o \
     obj/bloom.o \
@@ -384,12 +384,12 @@ OBJS= \
     obj/scrypt-x86_64.o \
     obj/smessage.o \
     obj/stealth.o \
-    obj/activefortunastake.o \
-    obj/fortunastakeconfig.o \
-    obj/fortunastake.o \
-    obj/rpcfortuna.o \
+    obj/activecollateralnode.o \
+    obj/collateralnodeconfig.o \
+    obj/collateralnode.o \
+    obj/rpccollateral.o \
     obj/spork.o \
-    obj/fortuna.o \
+    obj/collateral.o \
     obj/eccryptoverify.o \
     obj/ringsig.o \
     obj/bloom.o \
