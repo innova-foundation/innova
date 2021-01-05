@@ -292,7 +292,7 @@ bool CActiveCollateralnode::Register(CTxIn vin, CService service, CKey keyCollat
               printf("CActiveCollateralnode::Register() FAILED! CollateralNode Is Already In The List. Change your collateral address to a different address for this CollateralNode.\n", retErrorMessage.c_str());
               return false;
           }
-          BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes)
+          BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
           {
               if(mn.vin == vin) {
                   printf("Found CN VIN in CollateralNodes List\n");
