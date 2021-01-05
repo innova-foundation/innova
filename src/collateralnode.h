@@ -263,6 +263,7 @@ int GetCurrentCollateralNode(int mod=1, int64_t nBlockHeight=0, int minProtocol=
 bool CheckCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn);
 bool CheckPoSCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn);
 int64_t avg2(std::vector<CCollateralNode> const& v);
+int64_t avgCount(std::vector<CCollateralNode> const& v);
 int GetCollateralnodeByVin(CTxIn& vin);
 int GetCollateralnodeRank(CCollateralNode& tmn, CBlockIndex* pindex, int minProtocol=CCollateralNode::minProtoVersion);
 int GetCollateralnodeByRank(int findRank, int64_t nBlockHeight=0, int minProtocol=CCollateralNode::minProtoVersion);

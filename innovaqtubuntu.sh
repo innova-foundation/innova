@@ -24,7 +24,7 @@ make
 
 echo "Populate innova.conf"
 mkdir ~/.innova
-echo -e "nativetor=0\naddnode=innova.host\naddnode=innova.win\naddnode=innova.pro\naddnode=triforce.black" > ~/.innova/innova.conf
+echo -e "nativetor=0\naddnode=37.201.49.7\naddnode=198.23.221.5\naddnode=88.131.213.108\naddnode=194.182.77.250" > ~/.innova/innova.conf
 
 #echo "Get Chaindata"
 #cd ~/.innova || exit
@@ -83,7 +83,7 @@ make
 
 echo "Populate innova.conf"
 mkdir ~/.innova
-echo -e "nativetor=0\naddnode=innova.host\naddnode=innova.win\naddnode=innova.pro\naddnode=triforce.black" > ~/.innova/innova.conf
+echo -e "nativetor=0\naddnode=37.201.49.7\naddnode=198.23.221.5\naddnode=88.131.213.108\naddnode=194.182.77.250" > ~/.innova/innova.conf
 
 #echo "Get Chaindata"
 #cd ~/.innova

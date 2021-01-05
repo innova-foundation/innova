@@ -291,7 +291,7 @@ Value collateralnode(const Array& params, bool fHelp)
 
     if (strCommand == "start")
     {
-        if(!fCollateralNode) return "you must set collateralnode=1 in the configuration";
+        if(!fCollateralNode) return "You must set collateralnode=1 in your innova.conf";
 
         if(pwalletMain->IsLocked()) {
             SecureString strWalletPass;
@@ -305,7 +305,7 @@ Value collateralnode(const Array& params, bool fHelp)
             }
 
             if(!pwalletMain->Unlock(strWalletPass)){
-                return "incorrect passphrase";
+                return "Incorrect passphrase";
             }
         }
 
@@ -347,7 +347,7 @@ Value collateralnode(const Array& params, bool fHelp)
 			}
 
 			if(!pwalletMain->Unlock(strWalletPass)){
-				return "incorrect passphrase";
+				return "Incorrect passphrase";
 			}
         }
 
@@ -394,7 +394,7 @@ Value collateralnode(const Array& params, bool fHelp)
 			}
 
 			if(!pwalletMain->Unlock(strWalletPass)){
-				return "incorrect passphrase";
+				return "Incorrect passphrase";
 			}
 		}
 

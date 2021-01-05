@@ -225,7 +225,7 @@ class CCollateralSession
 class CForTunaPool
 {
 public:
-    static const int PROTOCOL_VERSION = 41015; //41005, INN v4.3
+    static const int PROTOCOL_VERSION = 43890; //Innova V4.3.8.9
 
     // clients entries
     std::vector<CForTunaEntry> myEntries;

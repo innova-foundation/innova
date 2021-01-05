@@ -41,6 +41,7 @@ std::map<int64_t, uint256> mapCacheBlockHashes;
 CMedianFilter<unsigned int> mnMedianCount(10, 0);
 unsigned int mnCount = 0;
 int64_t nAverageCNIncome;
+int64_t nAveragePayCount;
 
 // manage the collateralnode connections
 void ProcessCollateralnodeConnections(){
@@ -158,6 +159,10 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
                 return;
             }
         }
+
+        sort(vecCollateralnodes.begin(), vecCollateralnodes.end());
+        vecCollateralnodes.erase(unique(vecCollateralnodes.begin(), vecCollateralnodes.end() ), vecCollateralnodes.end());
+        // printf("Sorted and removed duplicate CN out of the vector!-----------------------------------!\n");
 
         if (count > 0) {
             mnMedianCount.input(count);
@@ -618,6 +623,10 @@ int GetCollateralnodeRank(CCollateralNode &tmn, CBlockIndex* pindex, int minProt
 
 bool CheckCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn) {
     if (mn.nBlockLastPaid == 0) return true; // if we didn't find a payment for this MN, let it through regardless of rate
+
+    //if (mn.nBlockLastPaid - vCollateralnodes.count()) return false;
+
+
     // find height
     // calculate average payment across all CN
     // check if value is > 25% higher
@@ -627,18 +636,57 @@ bool CheckCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn) {
     if (value > max) {
         return false;
     }
+
+    CScript pubScript;
+    pubScript = GetScriptForDestination(mn.pubkey.GetID());
+    CTxDestination address1;
+    ExtractDestination(pubScript, address1);
+    CBitcoinAddress address2(address1);
+
+    // calculate pay count average across CN
+    // check if pay count is > 50% higher than the avg
+    nAveragePayCount = avgCount(vecCollateralnodeScoresList);
+    if (nAveragePayCount < 1) return true; // If the pay count is less than 1 just let it through
+    int64_t maxed = nAveragePayCount * 12 / 8;
+    if (mn.payCount > maxed) {
+      printf("CheckCNPayment() Current payCount of %s CN is %d - payCount Overall Average %d\n", address2.ToString().c_str(), mn.payCount, nAveragePayCount);
+      return false;
+    }
+
     return true;
 }
 
 bool CheckPoSCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn) {
     if (mn.nBlockLastPaid == 0) return true; // if we didn't find a payment for this MN, let it through regardless of rate
+
     // find height
     // calculate average payment across all CN
     // check if value is > 25% higher
     nAverageCNIncome = avg2(vecCollateralnodeScoresList);
     if (nAverageCNIncome < 1 * COIN) return true; // if we can't calculate a decent average, then let the payment through
-    //int64_t max = nAverageCNIncome * 10 / 8;
-    return true;
+    //int64_t max = nAverageFSIncome * 10 / 8;
+   /* // Dont check if value is > 25% higher since PoS
+   if (value > max) {
+       return false;
+   } */
+
+    CScript pubScript;
+    pubScript = GetScriptForDestination(mn.pubkey.GetID());
+    CTxDestination address1;
+    ExtractDestination(pubScript, address1);
+    CBitcoinAddress address2(address1);
+
+   // calculate pay count average across CN
+    // check if pay count is > 50% higher than the avg
+    nAveragePayCount = avgCount(vecCollateralnodeScoresList);
+    if (nAveragePayCount < 1) return true; // if the pay count is less than 1 just let it through
+    int64_t maxed = nAveragePayCount * 12 / 8;
+    if (mn.payCount > maxed) {
+      printf("CheckPoSCNPayment() Current payCount of %s is %d - payCount Overall Average %d\n", address2.ToString().c_str(), mn.payCount, nAveragePayCount);
+        return false;
+    }
+
+   return true;
 }
 
 int64_t avg2(std::vector<CCollateralNode> const& v) {
@@ -653,6 +701,19 @@ int64_t avg2(std::vector<CCollateralNode> const& v) {
         mean += delta/++n;
     }
     return mean;
+}
+
+int64_t avgCount(std::vector<CCollateralNode> const& v) {
+  int n = 0;
+  int64_t mean = 0;
+  for (int i = 0; i < v.size(); i++) {
+      int64_t x = v[i].payCount;
+      int64_t delta = x - mean;
+      //TODO: implement in mandatory update, will reduce average & lead rejections
+      if (v[i].payCount < 1) { continue; } // Don't consider payees below 1 payment (PoS only / new payees)
+      mean += delta/++n;
+   }
+   return mean;
 }
 
 int GetCollateralnodeByRank(int findRank, int64_t nBlockHeight, int minProtocol)
@@ -993,7 +1054,7 @@ void CCollateralNode::UpdateLastPaidBlock(const CBlockIndex *pindex, int nMaxBlo
                 // TODO HERE: Scan the block for collateralnode payment amount
                 BOOST_FOREACH(CTxOut txout, block.vtx[1].vout)
                     if(mnpayee == txout.scriptPubKey) {
-                        nBlockLastPaid = BlockReading->nHeight;\
+                        nBlockLastPaid = BlockReading->nHeight;
                         int lastPay = pindexBest->nHeight - nBlockLastPaid;
                         int value = txout.nValue;
                         // TODO HERE: Check the nValue for the collateralnode payment amount
@@ -1014,7 +1075,7 @@ void CCollateralNode::UpdateLastPaidBlock(const CBlockIndex *pindex, int nMaxBlo
 }
 
 //
-// Deterministically calculate a given "score" for a collateralnode depending on how close it's hash is to
+// Deterministically calculate a given "score" for a collateralnode with tribus depending on how close it's hash is to
 // the proof of work for that block. The further away they are the better, the furthest will win the election
 // and get paid this block
 //

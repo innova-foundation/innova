@@ -2641,11 +2641,12 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
                       if (!CheckPoSCNPayment(pindex, vtx[1].vout[i].nValue, mn)) // CheckPoSCNPayment()
                       {
                         if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT) { //Update PoS CN Payments to not go out of sync
-          							printf("CheckBlock-POS() : Out-of-cycle collateralnode payment detected, rejecting block.");
+                                        //printf("CheckBlock-POS() : Out-of-cycle fortunastake payment detected, rejecting block.");
+                            printf("CheckBlock-POS() : Out-of-cycle CollateralNode payment detected, rejecting block. rank:%d value:%s avg:%s payRate:%s payCount:%d\n",mn.nRank,FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageCNIncome).c_str(),FormatMoney(mn.payRate).c_str(), mn.payCount);
                         } else {
-                        printf("CheckBlock-POS(): This collateralnode payment is too aggressive and will be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
-                        }
-        								//break;
+                            printf("CheckBlock-POS(): This collateralnode payment is too aggressive and will be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
+                          }
+                          // break;
                         } else {
                         if (fDebug) printf("CheckBlock-POS() : Payment meets rate requirement: payee has earnt %s against average %s\n",FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageCNIncome).c_str());
                          }
@@ -2765,10 +2766,11 @@ GetCollateralnodeRanks(pindexBest);
                      {
                          if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT)
                          {
-                             return error("CheckBlock-POW() : Collateralnode overpayment detected, rejecting block. rank:%d value:%s avg:%s payRate:%s",mn.nRank,FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageCNIncome).c_str(),FormatMoney(mn.payRate).c_str());
+                             printf("CheckBlock-POW() : Collateralnode overpayment detected, rejecting block. rank:%d value:%s avg:%s payRate:%s payCount:%d\n",mn.nRank,FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageCNIncome).c_str(),FormatMoney(mn.payRate).c_str());
                          } else {
-                             if (fDebug) printf("WARNING: This collateralnode payment is too aggressive and will not be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
+                             printf("WARNING: This collateralnode payment is too aggressive and will not be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
                          }
+                        //  break;
                      } else {
                          if (fDebug) printf("CheckBlock-POW() : Payment meets rate requirement: payee has earnt %s against average %s\n",FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageCNIncome).c_str());
                      }
@@ -3669,9 +3671,9 @@ if (!mapBlockIndex.count(pblock->hashPrevBlock)) //pblock->hashPrevBlock != 0 &&
         if (fDebug) printf("ProcessBlock: ACCEPTED\n");
     }
 
-    //After block 1.5m, The Minimum CollateralNode Protocol Version is 31005
+    //After block 1.5m, The Minimum CollateralNode Protocol Version is 43890
     if(nBestHeight >= 1500000) {
-        MIN_MN_PROTO_VERSION = 31005;
+        MIN_MN_PROTO_VERSION = 43890;
     }
 
     // ppcoin: if responsible for sync-checkpoint send it

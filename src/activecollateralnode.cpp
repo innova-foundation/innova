@@ -75,7 +75,7 @@ void CActiveCollateralnode::ManageStatus()
             //    return;
             //}
 
-            printf("CActiveCollateralnode::ManageStatus() - Is capable master node!\n");
+            printf("CActiveCollateralnode::ManageStatus() - Is a capable Collateral Node!\n");
 
             status = COLLATERALSTAKE_IS_CAPABLE;
             notCapableReason = "";
@@ -279,10 +279,26 @@ bool CActiveCollateralnode::Register(CTxIn vin, CService service, CKey keyCollat
     }
 
     bool found = false;
+    bool dup = false;
     LOCK(cs_collateralnodes);
     BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
-        if(mn.vin == vin)
+    {
+      if(mn.pubkey == pubKeyCollateralAddress) {
+                  dup = true;
+              }
+          }
+          if (dup) {
+              retErrorMessage = "Failed, this CollateralNode is already in the list, use a different pubkey";
+              printf("CActiveCollateralnode::Register() FAILED! CollateralNode Is Already In The List. Change your collateral address to a different address for this CollateralNode.\n", retErrorMessage.c_str());
+              return false;
+          }
+          BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes)
+          {
+              if(mn.vin == vin) {
+                  printf("Found CN VIN in CollateralNodes List\n");
             found = true;
+        }
+    }
 
     if(!found) {
         printf("CActiveCollateralnode::Register() - Adding to collateralnode list service: %s - vin: %s\n", service.ToString().c_str(), vin.ToString().c_str());
@@ -335,6 +351,19 @@ bool CActiveCollateralnode::GetCollateralNodeVin(CTxIn& vin, CPubKey& pubkey, CK
             int remain = COLLATERALSTAKE_MIN_CONFIRMATIONS_NOPAY - selectedOutput->nDepth;
             printf("CActiveCollateralnode::GetCollateralNodeVin - Transaction for MN %s is too young (%d more confirms required)", address2.ToString().c_str(), remain);
             return false;
+        }
+        //Check the list
+        bool dup = false;
+        LOCK(cs_collateralnodes);
+        BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
+        {
+          if(mn.pubkey == pubkey) {
+            dup = true;
+          }
+        }
+        if (dup) {
+          printf("CActiveCollateralnode::Register() FAILED! CN ALREADY IN LIST.\n");
+          return false;
         }
     } else {
         // No output specified,  Select the first one

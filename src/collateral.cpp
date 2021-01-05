@@ -41,7 +41,7 @@ CActiveCollateralnode activeCollateralnode;
 int RequestedCollateralNodeList = 0;
 
 //MIN_MN_PROTO_VERSION
-int MIN_MN_PROTO_VERSION = 31000;
+int MIN_MN_PROTO_VERSION = 43890; // Innova v4.3.8.9
 
 /* *** BEGIN COLLATERAL MAGIC  **********
     Copyright 2014, Darkcoin Developers
@@ -1024,7 +1024,7 @@ void ThreadCheckForTunaPool(void* parg)
         if(c % 60 == 0 && vecCollateralnodes.size()) {
             //let's connect to a random collateralnode every minute!
             int cn = rand() % vecCollateralnodes.size();
-            CService addr = vecCollateralnodes[fs].addr;
+            CService addr = vecCollateralnodes[cn].addr;
             AddOneShot(addr.ToStringIPPort());
             if (fDebug) printf("added collateralnode at %s to connection attempts\n",addr.ToStringIPPort().c_str());
 
@@ -1034,7 +1034,7 @@ void ThreadCheckForTunaPool(void* parg)
                 int x = 25 - vNodes.size();
                 for (int i = x; i-- > 0; ) {
                     int cn = rand() % vecCollateralnodes.size();
-                    CService addr = vecCollateralnodes[fs].addr;
+                    CService addr = vecCollateralnodes[cn].addr;
                     if (addr.IsIPv4() && !addr.IsLocal()) {
                         AddOneShot(addr.ToStringIPPort());
                     }
