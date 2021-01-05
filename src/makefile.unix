@@ -310,7 +310,7 @@ OBJS= \
     obj/rpcwallet.o \
     obj/rpcblockchain.o \
     obj/rpcrawtransaction.o \
-    obj/rpcjupiter.o \
+    obj/rpchyperfile.o \
     obj/rpcsmessage.o \
     obj/script.o \
     obj/sync.o \
@@ -369,7 +369,7 @@ OBJS= \
     obj/rpcblockchain.o \
     obj/rpcrawtransaction.o \
     obj/rpcsmessage.o \
-    obj/rpcjupiter.o \
+    obj/rpchyperfile.o \
     obj/script.o \
     obj/sync.o \
     obj/util.o \
