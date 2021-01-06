@@ -1020,12 +1020,12 @@ bool AppInit2()
     // ********************************************************* Step 8: load wallet
 
     if (GetBoolArg("-zapwallettxes", false)) {
-        uiInterface.InitMessage(_("Zapping all transactions from INN wallet..."));
+        uiInterface.InitMessage(_("Zapping all transactions from Innova Wallet..."));
 
         pwalletMain = new CWallet("wallet.dat");
         DBErrors nZapWalletRet = pwalletMain->ZapWalletTx();
         if (nZapWalletRet != DB_LOAD_OK) {
-            uiInterface.InitMessage(_("Error loading wallet.dat: INN Wallet corrupted"));
+            uiInterface.InitMessage(_("Error loading wallet.dat: Innova Wallet corrupted"));
             return false;
         }
 
@@ -1033,8 +1033,8 @@ bool AppInit2()
         pwalletMain = NULL;
     }
 
-    uiInterface.InitMessage(_("Loading INN wallet..."));
-    printf("Loading INN wallet...\n");
+    uiInterface.InitMessage(_("Loading Innova Wallet..."));
+    printf("Loading Innova Wallet...\n");
     nStart = GetTimeMillis();
     bool fFirstRun = true;
     pwalletMain = new CWallet(strWalletFileName);
