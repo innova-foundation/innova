@@ -22,10 +22,6 @@ git pull
 qmake "USE_QRCODE=1" "USE_UPNP=1" innova-qt.pro
 make
 
-echo "Populate innova.conf"
-mkdir ~/.innova
-echo -e "nativetor=0\naddnode=37.201.49.7\naddnode=198.23.221.5\naddnode=88.131.213.108\naddnode=194.182.77.250" > ~/.innova/innova.conf
-
 #echo "Get Chaindata"
 #cd ~/.innova || exit
 #rm -rf database txleveldb smsgDB
@@ -80,10 +76,6 @@ git pull
 
 qmake "USE_UPNP=1" "USE_QRCODE=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
 make
-
-echo "Populate innova.conf"
-mkdir ~/.innova
-echo -e "nativetor=0\naddnode=37.201.49.7\naddnode=198.23.221.5\naddnode=88.131.213.108\naddnode=194.182.77.250" > ~/.innova/innova.conf
 
 #echo "Get Chaindata"
 #cd ~/.innova
