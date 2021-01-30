@@ -38,6 +38,7 @@
 #include "termsofuse.h"
 #include "proofofimage.h"
 #include "hyperfile.h"
+#include "managenamespage.h"
 
 #ifdef Q_OS_MAC
 #include "macdockiconhandler.h"
@@ -185,12 +186,14 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
 
     // Create tabs
     overviewPage = new OverviewPage();
-	statisticsPage = new StatisticsPage(this);
-	blockBrowser = new BlockBrowser(this);
+	  statisticsPage = new StatisticsPage(this);
+	  blockBrowser = new BlockBrowser(this);
     marketBrowser = new MarketBrowser(this);
-	multisigPage = new MultisigDialog(this);
+	  multisigPage = new MultisigDialog(this);
     proofOfImagePage = new ProofOfImage(this);
     hyperfilePage = new HyperFile(this);
+    manageNamesPage = new ManageNamesPage(this);
+
 	//chatWindow = new ChatWindow(this);
 
     transactionsPage = new QWidget(this);
@@ -219,15 +222,16 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     centralWidget = new QStackedWidget(this);
     centralWidget->addWidget(overviewPage);
     centralWidget->addWidget(transactionsPage);
-	centralWidget->addWidget(mintingPage);
+	  centralWidget->addWidget(mintingPage);
+    centralWidget->addWidget(manageNamesPage);
     centralWidget->addWidget(addressBookPage);
     centralWidget->addWidget(receiveCoinsPage);
     centralWidget->addWidget(sendCoinsPage);
     centralWidget->addWidget(messagePage);
     centralWidget->addWidget(statisticsPage);
-	centralWidget->addWidget(blockBrowser);
+	  centralWidget->addWidget(blockBrowser);
     centralWidget->addWidget(collateralnodeManagerPage);
-	centralWidget->addWidget(marketBrowser);
+	  centralWidget->addWidget(marketBrowser);
     centralWidget->addWidget(proofOfImagePage);
     centralWidget->addWidget(hyperfilePage);
 	//centralWidget->addWidget(chatWindow);
@@ -330,28 +334,34 @@ void BitcoinGUI::createActions()
     overviewAction->setToolTip(tr("Show general overview of wallet"));
     overviewAction->setCheckable(true);
     overviewAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_1));
-	overviewAction->setStatusTip(tr("Wallet Overview"));
+	  overviewAction->setStatusTip(tr("Wallet Overview"));
     tabGroup->addAction(overviewAction);
 
-	statisticsAction = new QAction(QIcon(":/icons/statistics"), tr("&Statistics"), this);
+	  statisticsAction = new QAction(QIcon(":/icons/statistics"), tr("&Statistics"), this);
     statisticsAction->setToolTip(tr("View statistics"));
     statisticsAction->setCheckable(true);
-	statisticsAction->setStatusTip(tr("Innova Statistics"));
+	  statisticsAction->setStatusTip(tr("Innova Statistics"));
     tabGroup->addAction(statisticsAction);
 
-	blockAction = new QAction(QIcon(":/icons/block"), tr("&Block Explorer"), this);
+	  blockAction = new QAction(QIcon(":/icons/block"), tr("&Block Explorer"), this);
     blockAction->setToolTip(tr("Explore the Innova Blockchain"));
     blockAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_6));
-	blockAction->setStatusTip(tr("Block Explorer"));
+	  blockAction->setStatusTip(tr("Block Explorer"));
     blockAction->setCheckable(true);
     tabGroup->addAction(blockAction);
 
-	marketAction = new QAction(QIcon(":/icons/mark"), tr("&Market"), this);
+	  marketAction = new QAction(QIcon(":/icons/mark"), tr("&Market"), this);
     marketAction->setToolTip(tr("Market Data"));
     marketAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_7));
-	marketAction->setStatusTip(tr("Innova Market Data"));
+	  marketAction->setStatusTip(tr("Innova Market Data"));
     marketAction->setCheckable(true);
     tabGroup->addAction(marketAction);
+
+    manageNamesAction = new QAction(QIcon(":/icons/names"), tr("&Manage NVS"), this);
+    manageNamesAction->setToolTip(tr("Manage Innova NVS"));
+    manageNamesAction->setCheckable(true);
+    manageNamesAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_0));
+    tabGroup->addAction(manageNamesAction);
 
 	//chatAction = new QAction(QIcon(":/icons/msg"), tr("&Social"), this);
     //chatAction->setToolTip(tr("View chat"));
@@ -424,15 +434,17 @@ void BitcoinGUI::createActions()
 
     connect(overviewAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(overviewAction, SIGNAL(triggered()), this, SLOT(gotoOverviewPage()));
-	connect(blockAction, SIGNAL(triggered()), this, SLOT(gotoBlockBrowser()));
-	connect(statisticsAction, SIGNAL(triggered()), this, SLOT(gotoStatisticsPage()));
-	connect(marketAction, SIGNAL(triggered()), this, SLOT(gotoMarketBrowser()));
-	//connect(chatAction, SIGNAL(triggered()), this, SLOT(gotoChatPage()));
+	  connect(blockAction, SIGNAL(triggered()), this, SLOT(gotoBlockBrowser()));
+	  connect(statisticsAction, SIGNAL(triggered()), this, SLOT(gotoStatisticsPage()));
+	  connect(marketAction, SIGNAL(triggered()), this, SLOT(gotoMarketBrowser()));
+	  //connect(chatAction, SIGNAL(triggered()), this, SLOT(gotoChatPage()));
     connect(sendCoinsAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(sendCoinsAction, SIGNAL(triggered()), this, SLOT(gotoSendCoinsPage()));
     connect(receiveCoinsAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(receiveCoinsAction, SIGNAL(triggered()), this, SLOT(gotoReceiveCoinsPage()));
-	connect(mintingAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
+    connect(manageNamesAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
+    connect(manageNamesAction, SIGNAL(triggered()), this, SLOT(gotoManageNamesPage()));
+	  connect(mintingAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(mintingAction, SIGNAL(triggered()), this, SLOT(gotoMintingPage()));
     connect(collateralnodeManagerAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(collateralnodeManagerAction, SIGNAL(triggered()), this, SLOT(gotoCollateralnodeManagerPage()));
@@ -442,7 +454,7 @@ void BitcoinGUI::createActions()
     connect(addressBookAction, SIGNAL(triggered()), this, SLOT(gotoAddressBookPage()));
     connect(messageAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(messageAction, SIGNAL(triggered()), this, SLOT(gotoMessagePage()));
-	connect(multisigAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
+	  connect(multisigAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(multisigAction, SIGNAL(triggered()), this, SLOT(gotoMultisigPage()));
     connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(gotoProofOfImagePage()));
@@ -585,8 +597,9 @@ void BitcoinGUI::createToolBars()
   mainToolbar->addAction(addressBookAction);
   mainToolbar->addAction(statisticsAction);
   mainToolbar->addAction(collateralnodeManagerAction);
-  mainToolbar->addAction(proofOfImageAction);
+  mainToolbar->addAction(manageNamesAction);
   mainToolbar->addAction(hyperfileAction);
+  mainToolbar->addAction(proofOfImageAction);
   mainToolbar->addAction(marketAction);
   mainToolbar->addAction(blockAction);
   mainToolbar->addAction(messageAction);
@@ -696,6 +709,7 @@ void BitcoinGUI::setWalletModel(WalletModel *walletModel)
 		marketBrowser->setModel(clientModel);
         collateralnodeManagerPage->setWalletModel(walletModel);
 		multisigPage->setModel(walletModel);
+    manageNamesPage->setModel(walletModel);
 		//chatWindow->setModel(clientModel);
 
         setEncryptionStatus(walletModel->getEncryptionStatus());
@@ -1154,6 +1168,16 @@ void BitcoinGUI::gotoMarketBrowser()
     exportAction->setEnabled(false);
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
 
+}
+
+void BitcoinGUI::gotoManageNamesPage()
+{
+    manageNamesAction->setChecked(true);
+    centralWidget->setCurrentWidget(manageNamesPage);
+
+    exportAction->setEnabled(true);
+    disconnect(exportAction, SIGNAL(triggered()), 0, 0);
+    connect(exportAction, SIGNAL(triggered()), manageNamesPage, SLOT(exportClicked()));
 }
 
 void BitcoinGUI::gotoProofOfImagePage()

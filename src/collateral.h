@@ -31,9 +31,9 @@ class CActiveCollateralnode;
 #define POOL_STATUS_SUCCESS                    8 // success
 
 // status update message constants
-#define COLLATERALSTAKE_ACCEPTED                    1
-#define COLLATERALSTAKE_REJECTED                    0
-#define COLLATERALSTAKE_RESET                       -1
+#define COLLATERALNODE_ACCEPTED                    1
+#define COLLATERALNODE_REJECTED                    0
+#define COLLATERALNODE_RESET                       -1
 
 #define COLLATERAL_QUEUE_TIMEOUT                 120
 #define COLLATERAL_SIGNING_TIMEOUT               30
@@ -351,7 +351,7 @@ public:
         if(state != newState){
             lastTimeChanged = GetTimeMillis();
             if(fCollateralNode) {
-                RelayForTunaStatus(forTunaPool.sessionID, forTunaPool.GetState(), forTunaPool.GetEntriesCount(), COLLATERALSTAKE_RESET);
+                RelayForTunaStatus(forTunaPool.sessionID, forTunaPool.GetState(), forTunaPool.GetEntriesCount(), COLLATERALNODE_RESET);
             }
         }
         state = newState;

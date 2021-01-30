@@ -140,7 +140,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
                 //   e.g. We don't want the entry relayed/time updated when we're syncing the list
                 // mn.pubkey = pubkey, IsVinAssociatedWithPubkey is validated once below,
                 //   after that they just need to match
-                if(count == -1 && mn.pubkey == pubkey && !mn.UpdatedWithin(COLLATERALSTAKE_MIN_DSEE_SECONDS)){
+                if(count == -1 && mn.pubkey == pubkey && !mn.UpdatedWithin(COLLATERALNODE_MIN_DSEE_SECONDS)){
                   mn.UpdateLastSeen(sigTime); // update last seen with the sigTime
 
                     if(mn.now < sigTime){ //take the newest entry
@@ -185,8 +185,8 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         if(CheckCollateralnodeVin(vin,vinError,pindexBest)){
             if (fDebugCN && fDebugNet) printf("dsee - Accepted input for collateralnode entry %i %i\n", count, current);
 
-            //if(GetInputAge(vin, pindexBest) < (nBestHeight > BLOCK_START_COLLATERALSTAKE_DELAYPAY ? COLLATERALSTAKE_MIN_CONFIRMATIONS_NOPAY : COLLATERALSTAKE_MIN_CONFIRMATIONS)){
-            //    if (fDebugCN && fDebugNet) printf("dsee - Input must have least %d confirmations\n", (nBestHeight > BLOCK_START_COLLATERALSTAKE_DELAYPAY ? COLLATERALSTAKE_MIN_CONFIRMATIONS_NOPAY : COLLATERALSTAKE_MIN_CONFIRMATIONS));
+            //if(GetInputAge(vin, pindexBest) < (nBestHeight > BLOCK_START_COLLATERALNODE_DELAYPAY ? COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY : COLLATERALNODE_MIN_CONFIRMATIONS)){
+            //    if (fDebugCN && fDebugNet) printf("dsee - Input must have least %d confirmations\n", (nBestHeight > BLOCK_START_COLLATERALNODE_DELAYPAY ? COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY : COLLATERALNODE_MIN_CONFIRMATIONS));
             //    Misbehaving(pfrom->GetId(), 20);
             //    return;
             //}
@@ -262,7 +262,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 
                     mn.lastDseep = sigTime;
 
-                    if(!mn.UpdatedWithin(COLLATERALSTAKE_MIN_DSEEP_SECONDS)){
+                    if(!mn.UpdatedWithin(COLLATERALNODE_MIN_DSEEP_SECONDS)){
                         mn.UpdateLastSeen();
                         if(stop) {
                             mn.Disable();
@@ -509,6 +509,7 @@ int GetCollateralnodeByVin(CTxIn& vin)
 
 int GetCurrentCollateralNode(int mod, int64_t nBlockHeight, int minProtocol)
 {
+    if (IsInitialBlockDownload()) return 0;
     int i = 0;
     unsigned int score = 0;
     int winner = -1;
@@ -550,7 +551,7 @@ bool GetCollateralnodeRanks(CBlockIndex* pindex)
     if (vecCollateralnodeScoresListHash.size() > 0 && vecCollateralnodeScoresListHash == pindex->GetBlockHash()) {
         // if ScoresList was calculated for the current pindex hash, then just use that list
         // TODO: make a vector of these somehow
-        if (fDebug) printf(" STARTCOPY (%"PRId64"ms)", GetTimeMillis() - nStartTime);
+        if (fDebug) printf(" STARTCOPY (%" PRId64"ms)", GetTimeMillis() - nStartTime);
         BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodeScoresList)
         {
             i++;
@@ -564,7 +565,7 @@ bool GetCollateralnodeRanks(CBlockIndex* pindex)
         CollateralReorgBlock = false; // reset reorg flag, we can check now it's updated
 
         // now we build the list for sorting
-        if (fDebug) printf(" STARTLOOP (%"PRId64"ms)", GetTimeMillis() - nStartTime);
+        if (fDebug) printf(" STARTLOOP (%" PRId64"ms)", GetTimeMillis() - nStartTime);
         BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes) {
 
             mn.Check();
@@ -576,7 +577,7 @@ bool GetCollateralnodeRanks(CBlockIndex* pindex)
 
             int value = -1;
             // CBlockIndex* pindex = pindexBest; // don't use the best chain, use the chain we're asking about!
-            // int payments = mn.UpdateLastPaidAmounts(pindex, max(COLLATERALSTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALSTAKE_FAIR_PAYMENT_ROUNDS, value); // do a search back 1000 blocks when receiving a new collateralnode to find their last payment, payments = number of payments received, value = amount
+            // int payments = mn.UpdateLastPaidAmounts(pindex, max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALNODE_FAIR_PAYMENT_ROUNDS, value); // do a search back 1000 blocks when receiving a new collateralnode to find their last payment, payments = number of payments received, value = amount
 
 
             vecCollateralnodeScores.push_back(make_pair(value, &mn));
@@ -590,7 +591,7 @@ bool GetCollateralnodeRanks(CBlockIndex* pindex)
     // TODO: Store the whole Scores vector in a caching hash map, maybe need hashPrev as well to make sure it re calculates any different chains with the same end block?
     //vecCollateralnodeScoresCache.insert(make_pair(pindex->GetBlockHash(), vecCollateralnodeScoresList));
 
-    if (fDebug) printf(" SORT (%"PRId64"ms)", GetTimeMillis() - nStartTime);
+    if (fDebug) printf(" SORT (%" PRId64"ms)", GetTimeMillis() - nStartTime);
     sort(vecCollateralnodeScores.rbegin(), vecCollateralnodeScores.rend(), CompareLastPay(pindex)); // sort requires current pindex for modulus as pindexBest is different between clients
 
     i = 0;
@@ -601,7 +602,7 @@ bool GetCollateralnodeRanks(CBlockIndex* pindex)
         s.first = i;
         s.second->nRank = i;
     }
-    if (fDebug) printf(" DONE (%"PRId64"ms)\n", GetTimeMillis() - nStartTime);
+    if (fDebug) printf(" DONE (%" PRId64"ms)\n", GetTimeMillis() - nStartTime);
     return true;
 }
 
@@ -664,7 +665,7 @@ bool CheckPoSCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn) 
     // check if value is > 25% higher
     nAverageCNIncome = avg2(vecCollateralnodeScoresList);
     if (nAverageCNIncome < 1 * COIN) return true; // if we can't calculate a decent average, then let the payment through
-    //int64_t max = nAverageFSIncome * 10 / 8;
+    //int64_t max = nAverageCNIncome * 10 / 8;
    /* // Dont check if value is > 25% higher since PoS
    if (value > max) {
        return false;
@@ -772,7 +773,7 @@ bool GetBlockHash(uint256& hash, int nBlockHeight)
 
 bool CCollateralNode::GetPaymentInfo(const CBlockIndex *pindex, int64_t &totalValue, double &actualRate)
 {
-    int scanBack = max(COLLATERALSTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALSTAKE_FAIR_PAYMENT_ROUNDS;
+    int scanBack = max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALNODE_FAIR_PAYMENT_ROUNDS;
     double requiredRate = scanBack / (int)mnCount;
     int actualPayments = GetPaymentAmount(pindex, scanBack, totalValue);
     actualRate = actualPayments / requiredRate;
@@ -783,7 +784,7 @@ bool CCollateralNode::GetPaymentInfo(const CBlockIndex *pindex, int64_t &totalVa
 
 float CCollateralNode::GetPaymentRate(const CBlockIndex *pindex)
 {
-    int scanBack = max(COLLATERALSTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALSTAKE_FAIR_PAYMENT_ROUNDS;
+    int scanBack = max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALNODE_FAIR_PAYMENT_ROUNDS;
     double requiredRate = scanBack / (int)mnCount;
     int64_t totalValue;
     int actualPayments = GetPaymentAmount(pindex, scanBack, totalValue);
@@ -793,7 +794,7 @@ float CCollateralNode::GetPaymentRate(const CBlockIndex *pindex)
 
 int CCollateralNode::SetPayRate(int nHeight)
 {
-     int scanBack = max(COLLATERALSTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALSTAKE_FAIR_PAYMENT_ROUNDS;
+     int scanBack = max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALNODE_FAIR_PAYMENT_ROUNDS;
      if (nHeight > pindexBest->nHeight) {
          scanBack += nHeight - pindexBest->nHeight;
      } // if going past current height, add to scan back height to account for how far it is - e.g. 200 in front will get 200 more blocks to smooth it out
@@ -894,7 +895,7 @@ int CCollateralNode::UpdateLastPaidAmounts(const CBlockIndex *pindex, int nMaxBl
     int64_t rewardValue = 0;
     int64_t val = 0;
     value = 0;
-    int scanBack = max(COLLATERALSTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALSTAKE_FAIR_PAYMENT_ROUNDS;
+    int scanBack = max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALNODE_FAIR_PAYMENT_ROUNDS;
 
     //if (now > pindex->GetBlockTime()) return 0; // don't update paid amounts for nodes before the block they broadcasted on
     if (payData.size()) {
@@ -1098,7 +1099,7 @@ uint256 CCollateralNode::CalculateScore(int mod, int64_t nBlockHeight)
 
 void CCollateralNode::Check(bool forceCheck)
 {
-    if(!forceCheck && (GetTime() - lastTimeChecked < COLLATERALSTAKE_CHECK_SECONDS)) return;
+    if(!forceCheck && (GetTime() - lastTimeChecked < COLLATERALNODE_CHECK_SECONDS)) return;
     lastTimeChecked = GetTime();
 
 
@@ -1106,13 +1107,13 @@ void CCollateralNode::Check(bool forceCheck)
     if(enabled==3) return;
 
 
-    if(!UpdatedWithin(COLLATERALSTAKE_REMOVAL_SECONDS)){
+    if(!UpdatedWithin(COLLATERALNODE_REMOVAL_SECONDS)){
         status = "Expired";
         enabled = 4;
         return;
     }
 
-    if(!UpdatedWithin(COLLATERALSTAKE_EXPIRATION_SECONDS)){
+    if(!UpdatedWithin(COLLATERALNODE_EXPIRATION_SECONDS)){
         status = "Inactive, expiring soon";
         enabled = 2;
         return;
@@ -1145,8 +1146,8 @@ bool CheckCollateralnodeVin(CTxIn& vin, std::string& errorMessage, CBlockIndex* 
         if(mapBlockIndex.find(hashBlock) != mapBlockIndex.end())
         {
             int confirms = pindex->nHeight - mapBlockIndex[hashBlock]->nHeight;
-            if (confirms < COLLATERALSTAKE_MIN_CONFIRMATIONS_NOPAY) {
-                errorMessage = strprintf("specified vin has only %d/%d more confirms",confirms,COLLATERALSTAKE_MIN_CONFIRMATIONS_NOPAY);
+            if (confirms < COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY) {
+                errorMessage = strprintf("specified vin has only %d/%d more confirms",confirms,COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY);
                 return false;
             }
         }
@@ -1382,7 +1383,7 @@ bool CCollateralnodePayments::ProcessBlock(int nBlockHeight)
 
 void CCollateralnodePayments::Relay(CCollateralnodePaymentWinner& winner)
 {
-    CInv inv(MSG_COLLATERALSTAKE_WINNER, winner.GetHash());
+    CInv inv(MSG_COLLATERALNODE_WINNER, winner.GetHash());
 
     vector<CInv> vInv;
     vInv.push_back(inv);
@@ -1437,7 +1438,7 @@ void CCollateralPayments::update(const CBlockIndex *pindex, bool force)
     int rewardCount = 0;
     int64_t rewardValue = 0;
     int64_t val = 0;
-    int scanBack = max(COLLATERALSTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALSTAKE_FAIR_PAYMENT_ROUNDS;
+    int scanBack = max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALNODE_FAIR_PAYMENT_ROUNDS;
 
     int64_t nStart = GetTimeMillis();
 
@@ -1445,7 +1446,7 @@ void CCollateralPayments::update(const CBlockIndex *pindex, bool force)
     // - update is called from GetForunstakeRanks which is called with new pindex, or pindexBest
     // we only want to update this on a reorg
     if (force) {
-    LOCK(cs_collateralnodes);
+        LOCK(cs_collateralnodes);
 
         // clear existing pay data
         BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
@@ -1498,7 +1499,7 @@ void CCollateralPayments::update(const CBlockIndex *pindex, bool force)
     }
     if (fDebug) printf("Calculating payrates (%d ms)\n",GetTimeMillis() - nStart);
 
-    // do pay rate loops
+    // do pay rate loops, already do this in connectblock()
     BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
     {
         mn.SetPayRate(pindex->nHeight);
@@ -1516,7 +1517,8 @@ bool CCollateralPayments::initialize(const CBlockIndex *pindex)
     const CBlockIndex *BlockReading = pindex;
     int blocksFound = 0;
     int nHeight = 0;
-    for (int i = 0; BlockReading && BlockReading->nHeight > BLOCK_START_COLLATERALSTAKE_PAYMENTS; i++) {
+    if (fTestNet) {
+        for (int i = 0; BlockReading && BlockReading->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET; i++) {
             CBlock block;
             if(!block.ReadFromDisk(BlockReading, true)) // shouldn't really happen
                 continue;
@@ -1568,11 +1570,68 @@ bool CCollateralPayments::initialize(const CBlockIndex *pindex)
                 }
             }
 
-        if (BlockReading->pprev == NULL) { assert(BlockReading); break; }
+            if (BlockReading->pprev == NULL) { assert(BlockReading); break; }
 
-        BlockReading = BlockReading->pprev;
-    }
+            BlockReading = BlockReading->pprev;
+            }
+        } else { //For mainnet CN checking
+            for (int i = 0; BlockReading && BlockReading->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS; i++) {
+                    CBlock block;
+                    if(!block.ReadFromDisk(BlockReading, true)) // shouldn't really happen
+                        continue;
 
+                    nHeight = BlockReading->nHeight;
+
+                    if (block.IsProofOfWork() || block.IsProofOfStake())
+                    {
+                        BOOST_FOREACH(const CTransaction& tx, block.vtx) {
+                            int n = 0;
+                            BOOST_FOREACH(const CTxOut& txout, tx.vout)
+                            {
+                                if(txout.nValue == GetMNCollateral() * COIN) {
+                                    COutPoint cout = COutPoint(tx.GetHash(),n);
+                                    CTxIn vin = CTxIn(cout, txout.scriptPubKey);
+                                    CTxOut vout = CTxOut(1 * COIN, txout.scriptPubKey);
+                                    CScript mnpayee = GetScriptForDestination(txout.scriptPubKey.GetID());
+                                    CTransaction txCollateral;
+                                    txCollateral.vin.push_back(vin);
+                                    txCollateral.vout.push_back(vout);
+
+                                    CCollateralNCollateral data;
+                                    data.vin = vin;
+                                    data.blockHash = block.GetHash();
+                                    data.height = nHeight;
+                                    data.scriptPubKey = txout.scriptPubKey;
+
+                                    // if data is already in the vector for this script, let's just skip
+                                    if (std::find(vScripts.begin(), vScripts.end(), mnpayee) != vScripts.end()) { continue; }
+
+                                    //if (fDebug) printf("Found CN payment at height %d - TX %s\n TXOut %s\n",nHeight,tx.ToString().c_str(),txout.ToString().c_str());
+                                    // TODO: check spent with fetch inputs?
+                                    bool* pfMissingInputs;
+                                    //if(fDebug) printf("CForTunaPool::IsCollateralValid - Testing TX %s\n",txCollateral.ToString().c_str());
+                                    if(!AcceptableInputs(mempool, txCollateral, false, pfMissingInputs)){
+                                        //if(fDebug) printf("CForTunaPool::IsCollateralValid - didn't pass IsAcceptable\n");
+                                        continue;
+                                    } else {
+                                        // show addy?
+                                        if(fDebug) printf("CForTunaPool::IsCollateralValid - Valid CN Collateral found for outpoint %s\n",vin.ToString().c_str());
+
+                                        vCollaterals.push_back(data);
+                                        vScripts.push_back(mnpayee);
+
+                                    }
+                                }
+                                n++;
+                            }
+                        }
+                    }
+
+                if (BlockReading->pprev == NULL) { assert(BlockReading); break; }
+
+                BlockReading = BlockReading->pprev;
+            }
+        }
     if (fDebug){
         printf("finished at height %d\n-----------%d collaterals------------",nHeight,vCollaterals.size());
         BOOST_FOREACH(CCollateralNCollateral& rec, vCollaterals)
@@ -1652,43 +1711,84 @@ bool FindCNPayments(CScript& payee, CBlockIndex* pindex)
     const CBlockIndex *BlockReading = pindex;
     int blocksFound = 0;
     int nHeight = 0;
-    for (int i = 0; BlockReading && BlockReading->nHeight > MN_ENFORCEMENT_ACTIVE_HEIGHT; i++) {
-            CBlock block;
-            if(!block.ReadFromDisk(BlockReading, true)) // shouldn't really happen
-                continue;
+    if (fTestNet) {
+        for (int i = 0; BlockReading && BlockReading->nHeight > MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET; i++) {
+                CBlock block;
+                if(!block.ReadFromDisk(BlockReading, true)) // shouldn't really happen
+                    continue;
 
-            nHeight = BlockReading->nHeight;
+                    nHeight = BlockReading->nHeight;
 
-            if (block.IsProofOfWork() || block.IsProofOfStake())
-            {
-                BOOST_FOREACH(const CTransaction& tx, block.vtx) {
-                    int n = 0;
-                    BOOST_FOREACH(const CTxOut& txout, tx.vout)
-                    {
-                        if(payee == txout.scriptPubKey && txout.nValue == GetMNCollateral() * COIN) {
-                            if (fDebug) printf("Found CN payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
-                            // TODO: check spent with fetch inputs?
-                            CTransaction txCollateral;
-                            CTxOut vout = CTxOut((GetMNCollateral() - 1)* COIN, forTunaPool.collateralPubKey);
-                            CTxIn vin = CTxIn(txout.GetHash(),n);
-                            txCollateral.vin.push_back(vin);
-                            txCollateral.vout.push_back(vout);
-                            bool* pfMissingInputs;
-                            if(!AcceptableInputs(mempool, txCollateral, false, pfMissingInputs)){
-                                if(fDebug) printf("CForTunaPool::IsCollateralValid - didn't pass IsAcceptable\n");
-                                continue;
+                        if (block.IsProofOfWork() || block.IsProofOfStake())
+                        {
+                            BOOST_FOREACH(const CTransaction& tx, block.vtx) {
+                                int n = 0;
+                                BOOST_FOREACH(const CTxOut& txout, tx.vout)
+                                {
+                                    if(payee == txout.scriptPubKey && txout.nValue == GetMNCollateral() * COIN) {
+                                        if (fDebug) printf("Found CN payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
+                                        // TODO: check spent with fetch inputs?
+                                        CTransaction txCollateral;
+                                        CTxOut vout = CTxOut((GetMNCollateral() - 1)* COIN, forTunaPool.collateralPubKey);
+                                        CTxIn vin = CTxIn(txout.GetHash(),n);
+                                        txCollateral.vin.push_back(vin);
+                                        txCollateral.vout.push_back(vout);
+                                        bool* pfMissingInputs;
+                                        if(!AcceptableInputs(mempool, txCollateral, false, pfMissingInputs)){
+                                            if(fDebug) printf("CForTunaPool::IsCollateralValid - didn't pass IsAcceptable\n");
+                                            continue;
+                                        }
+                                        return true;
+
                             }
-                            return true;
-
+                            n++;
                         }
-                        n++;
                     }
                 }
+
+            if (BlockReading->pprev == NULL) { assert(BlockReading); break; }
+
+            BlockReading = BlockReading->pprev;
+        }
+    } else {
+        for (int i = 0; BlockReading && BlockReading->nHeight > MN_ENFORCEMENT_ACTIVE_HEIGHT; i++) {
+                CBlock block;
+                if(!block.ReadFromDisk(BlockReading, true)) // shouldn't really happen
+                    continue;
+
+                    nHeight = BlockReading->nHeight;
+
+                if (block.IsProofOfWork() || block.IsProofOfStake())
+                {
+                    BOOST_FOREACH(const CTransaction& tx, block.vtx) {
+                        int n = 0;
+                        BOOST_FOREACH(const CTxOut& txout, tx.vout)
+                        {
+                            if(payee == txout.scriptPubKey && txout.nValue == GetMNCollateral() * COIN) {
+                                if (fDebug) printf("Found CN payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
+                                // TODO: check spent with fetch inputs?
+                                CTransaction txCollateral;
+                                CTxOut vout = CTxOut((GetMNCollateral() - 1)* COIN, forTunaPool.collateralPubKey);
+                                CTxIn vin = CTxIn(txout.GetHash(),n);
+                                txCollateral.vin.push_back(vin);
+                                txCollateral.vout.push_back(vout);
+                                bool* pfMissingInputs;
+                                if(!AcceptableInputs(mempool, txCollateral, false, pfMissingInputs)){
+                                    if(fDebug) printf("CForTunaPool::IsCollateralValid - didn't pass IsAcceptable\n");
+                                    continue;
+                                }
+                                return true;
+
+                            }
+                            n++;
+                        }
+                    }
+                }
+
+                if (BlockReading->pprev == NULL) { assert(BlockReading); break; }
+
+                BlockReading = BlockReading->pprev;
             }
-
-        if (BlockReading->pprev == NULL) { assert(BlockReading); break; }
-
-        BlockReading = BlockReading->pprev;
     }
     printf("finished at height %d\n",nHeight);
     return (blocksFound > 0);

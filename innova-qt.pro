@@ -61,7 +61,7 @@ UI_DIR = build
 # use: qmake "RELEASE=1"
 contains(RELEASE, 1) {
     # Mac: compile for maximum compatibility (10.6, 32-bit)
-    macx:QMAKE_CXXFLAGS += -mmacosx-version-min=10.6 -arch x86_64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.6.sdk
+    macx:QMAKE_CXXFLAGS += -mmacosx-version-min=11 -arch x86_64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX10.15.sdk/
 
     !windows:!macx {
         # Linux: static link
@@ -471,6 +471,9 @@ HEADERS += src/qt/bitcoingui.h \
     src/walletdb.h \
     src/script.h \
     src/stealth.h \
+    src/idns.h \
+    src/hooks.h \
+	  src/namecoin.h \
     src/collateral.h \
     src/activecollateralnode.h \
     src/collateralnode.h \
@@ -537,6 +540,8 @@ HEADERS += src/qt/bitcoingui.h \
     src/sph_types.h \
     src/threadsafety.h \
     src/eccryptoverify.h \
+    src/qt/nametablemodel.h \
+    src/qt/managenamespage.h \
     src/qt/messagepage.h \
     src/qt/messagemodel.h \
     src/qt/sendmessagesdialog.h \
@@ -631,6 +636,8 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/qtipcserver.cpp \
     src/qt/rpcconsole.cpp \
     src/qt/trafficgraphwidget.cpp \
+    src/qt/nametablemodel.cpp \
+    src/qt/managenamespage.cpp \
     src/qt/messagepage.cpp \
     src/qt/messagemodel.cpp \
     src/qt/qcustomplot.cpp \
@@ -649,6 +656,8 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/scrypt.cpp \
     src/pbkdf2.cpp \
     src/stealth.cpp \
+    src/idns.cpp \
+	  src/namecoin.cpp \
     src/collateral.cpp \
     src/activecollateralnode.cpp \
     src/collateralnode.cpp \
@@ -688,6 +697,7 @@ FORMS += \
     src/qt/forms/multisigaddressentry.ui \
     src/qt/forms/multisiginputentry.ui \
     src/qt/forms/multisigdialog.ui \
+    src/qt/forms/managenamespage.ui \
     src/qt/forms/sendmessagesentry.ui \
     src/qt/forms/sendmessagesdialog.ui \
     src/qt/plugins/mrichtexteditor/mrichtextedit.ui
@@ -778,8 +788,8 @@ macx:ICON = src/qt/res/icons/innova.icns
 macx:TARGET = "Innova"
 macx:QMAKE_CFLAGS_THREAD += -pthread
 macx:QMAKE_LFLAGS_THREAD += -pthread
-macx:QMAKE_MACOSX_DEPLOYMENT_TARGET = 10.9
-macx:QMAKE_MAC_SDK = macosx10.14
+macx:QMAKE_MACOSX_DEPLOYMENT_TARGET = 11
+macx:QMAKE_MAC_SDK = macosx11.1
 macx:QMAKE_CXXFLAGS_THREAD += -pthread
 macx:QMAKE_RPATHDIR = @executable_path/../Frameworks
 macx:QMAKE_CXXFLAGS += -stdlib=libc++

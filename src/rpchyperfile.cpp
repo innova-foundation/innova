@@ -192,7 +192,7 @@ Value hyperfilepod(const Array& params, bool fHelp)
 
             if(userFile == "")
             {
-            return;
+              return 0;
             }
 
             std::string filename = userFile.c_str();
@@ -288,7 +288,7 @@ Value hyperfilepod(const Array& params, bool fHelp)
 
                 if(userFile == "")
                 {
-                return;
+                  return 0;
                 }
 
                 std::string filename = userFile.c_str();
@@ -440,7 +440,7 @@ Value hyperfileupload(const Array& params, bool fHelp)
 
                 if(userFile == "")
                 {
-                return;
+                  return 0;
                 }
 
                 std::string filename = userFile.c_str();
@@ -518,7 +518,7 @@ Value hyperfileduo(const Array& params, bool fHelp)
 
             if(userFile == "")
             {
-            return;
+              return 0;
             }
 
             std::string filename = userFile.c_str();
@@ -565,7 +565,7 @@ Value hyperfileduo(const Array& params, bool fHelp)
 
                 if(userFile == "")
                 {
-                return;
+                  return 0;
                 }
 
                 std::string filename = userFile.c_str();
@@ -650,7 +650,7 @@ Value hyperfileduopod(const Array& params, bool fHelp)
 
             if(userFile == "")
             {
-            return;
+              return 0;
             }
 
             std::string filename = userFile.c_str();
@@ -736,7 +736,7 @@ Value hyperfileduopod(const Array& params, bool fHelp)
 
                 if(userFile == "")
                 {
-                return;
+                  return 0;
                 }
 
                 std::string filename = userFile.c_str();

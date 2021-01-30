@@ -220,7 +220,7 @@ void CForTunaPool::CheckTimeout(){
                     UnlockCoins();
                 }
                 if(fCollateralNode){
-                    RelayForTunaStatus(forTunaPool.sessionID, forTunaPool.GetState(), forTunaPool.GetEntriesCount(), COLLATERALSTAKE_RESET);
+                    RelayForTunaStatus(forTunaPool.sessionID, forTunaPool.GetState(), forTunaPool.GetEntriesCount(), COLLATERALNODE_RESET);
                 }
                 break;
             }
@@ -1016,7 +1016,7 @@ void ThreadCheckForTunaPool(void* parg)
             }
         }
 
-        if(c % COLLATERALSTAKE_PING_SECONDS == 0){
+        if(c % COLLATERALNODE_PING_SECONDS == 0){
             activeCollateralnode.ManageStatus();
         }
 

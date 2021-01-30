@@ -8,7 +8,9 @@
 #include "strlcpy.h"
 #include "version.h"
 #include "state.h"
+#include "main.h"
 #include "ui_interface.h"
+#include "tinyformat.h"
 #include <boost/algorithm/string/join.hpp>
 
 // Work around clang compilation problem in Boost 1.46:
@@ -502,7 +504,7 @@ string FormatMoney(int64_t n, bool fPlus)
     int64_t n_abs = (n > 0 ? n : -n);
     int64_t quotient = n_abs/COIN;
     int64_t remainder = n_abs%COIN;
-    string str = strprintf("%"PRId64".%08"PRId64, quotient, remainder);
+    string str = strprintf("%" PRId64".%08" PRId64, quotient, remainder);
 
     // Right-trim excess zeros before the decimal point:
     int nTrim = 0;
@@ -1207,6 +1209,7 @@ void WriteConfigFile(FILE* configFile)
     fputs ("listen=1\n", configFile);
     fputs ("server=1\n", configFile);
     fputs ("staking=1\n", configFile);
+    fputs ("ddns=1\n", configFile);
     fputs ("collateralnode=0\n", configFile); //default
     fputs ("collateralnodeaddr=\n", configFile);
     fputs ("collateralnodeprivkey=\n", configFile);
@@ -1379,7 +1382,7 @@ std::string bytesReadable(uint64_t nBytes)
     if (nBytes >= 1024)
         snprintf(buffer, sizeof(buffer), "%.2f KB", nBytes/1024.0);
     else
-        snprintf(buffer, sizeof(buffer), "%"PRIu64" B", nBytes);
+        snprintf(buffer, sizeof(buffer), "%" PRIu64" B", nBytes);
     return std::string(buffer);
 };
 
@@ -1449,7 +1452,7 @@ void AddTimeData(const CNetAddr& ip, int64_t nTime)
 
     // Add data
     vTimeOffsets.input(nOffsetSample);
-    printf("Added time data, samples %d, offset %+"PRId64" (%+"PRId64" minutes)\n", vTimeOffsets.size(), nOffsetSample, nOffsetSample/60);
+    printf("Added time data, samples %d, offset %+" PRId64" (%+" PRId64" minutes)\n", vTimeOffsets.size(), nOffsetSample, nOffsetSample/60);
     if (vTimeOffsets.size() >= 5 && vTimeOffsets.size() % 2 == 1)
     {
         int64_t nMedian = vTimeOffsets.median();
@@ -1484,10 +1487,10 @@ void AddTimeData(const CNetAddr& ip, int64_t nTime)
         }
         if (fDebug) {
             BOOST_FOREACH(int64_t n, vSorted)
-                printf("%+"PRId64"  ", n);
+                printf("%+" PRId64"  ", n);
             printf("|  ");
         }
-        printf("nTimeOffset = %+"PRId64"  (%+"PRId64" minutes)\n", nTimeOffset, nTimeOffset/60);
+        printf("nTimeOffset = %+" PRId64"  (%+" PRId64" minutes)\n", nTimeOffset, nTimeOffset/60);
     }
 }
 

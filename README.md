@@ -15,7 +15,7 @@ Tribus Algo PoW/PoS Hybrid Cryptocurrency
 
 ![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/innova-foundation/innova.svg) ![GitHub repo size in bytes](https://img.shields.io/github/repo-size/innova-foundation/innova.svg)
 
-[![Snap Status](https://build.snapcraft.io/badge/innova-foundation/innova.svg)](https://build.snapcraft.io/user/innova-foundation/innova)
+[![Innova Snapcraft](https://snapcraft.io/innova/badge.svg)](https://snapcraft.io/innova)
 
 [![Build Status](https://travis-ci.org/innova-foundation/innova.svg?branch=master)](https://travis-ci.org/innova-foundation/innova)
 

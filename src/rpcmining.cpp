@@ -530,10 +530,10 @@ Value getblocktemplate(const Array& params, bool fHelp)
 
     bool bCollateralnodePayments = false;
 
-    if(fTestNet){
-        if(pindexPrev->nHeight+1 >= BLOCK_START_COLLATERALSTAKE_PAYMENTS_TESTNET) bCollateralnodePayments = true;
+    if(fTestNet) {
+        if(pindexPrev->nHeight+1 >= BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET) bCollateralnodePayments = true;
     } else {
-        if(pindexPrev->nHeight+1 >= BLOCK_START_COLLATERALSTAKE_PAYMENTS) bCollateralnodePayments = true;
+        if(pindexPrev->nHeight+1 >= BLOCK_START_COLLATERALNODE_PAYMENTS) bCollateralnodePayments = true;
     }
     if(fDebug && fDebugCN) { printf("GetBlockTemplate(): Collateralnode Payments : %i\n", bCollateralnodePayments); }
 

@@ -56,6 +56,9 @@ CollateralnodeManager::CollateralnodeManager(QWidget *parent) :
     subscribeToCoreSignals();
 
     timer = new QTimer(this);
+    //connect(timer, SIGNAL(timeout()), this, SLOT(updateNodeList(pindexBest)));
+    //if(!GetBoolArg("-reindexaddr", false))
+    //    timer->start(30000);
 
     QTimer::singleShot(1000, this, SLOT(updateNodeList()));
     QTimer::singleShot(5000, this, SLOT(updateNodeList()));
@@ -193,7 +196,7 @@ void CollateralnodeManager::updateAdrenalineNode(QString alias, QString addr, QS
             rank = GetCollateralnodeRank(mn, pindexBest);
             status = QString::fromStdString("Online");
             collateral = QString::fromStdString(address2.ToString().c_str());
-            payrate = QString::fromStdString(strprintf("%sINN/day", FormatMoney(mn.payRate).c_str()));
+            payrate = QString::fromStdString(strprintf("%s INN/day", FormatMoney(mn.payRate).c_str()));
         }
     }
 
@@ -226,6 +229,9 @@ void CollateralnodeManager::updateAdrenalineNode(QString alias, QString addr, QS
     QTableWidgetItem *collateralItem = new QTableWidgetItem(collateral);
     SortedWidgetItem *rankItem = new SortedWidgetItem();
     SortedWidgetItem *payrateItem = new SortedWidgetItem();
+
+    payrateItem->setData(Qt::UserRole, rank ? rank : 2000);
+    payrateItem->setData(Qt::DisplayRole, QString("%2").arg(payrate));
 
     rankItem->setData(Qt::UserRole, rank ? rank : 2000);
     rankItem->setData(Qt::DisplayRole, rank > 0 && rank < 500000 ? QString::number(rank) : "");
@@ -298,7 +304,7 @@ void CollateralnodeManager::updateNodeList()
         int mnRank = mn.nRank;
         int64_t value = mn.payValue;
         //mn.GetPaymentInfo(pindexBest, value, rate);
-        QString payrate = QString::fromStdString(strprintf("%sINN", FormatMoney(value).c_str()));
+        QString payrate = QString::fromStdString(strprintf("%s INN", FormatMoney(value).c_str()));
         // populate list
         // Address, Rank, Active, Active Seconds, Last Seen, Pub Key
         QTableWidgetItem *activeItem = new QTableWidgetItem();
@@ -365,7 +371,7 @@ void CollateralnodeManager::updateNodeList()
 				}
                 npayrate = QString::fromStdString("");
                 if (value > 0) {
-                    npayrate = QString::fromStdString(strprintf("%sINN", FormatMoney(value).c_str()));
+                    npayrate = QString::fromStdString(strprintf("%s INN", FormatMoney(value).c_str()));
                 }
                 ncollateral = QString::fromStdString(address2.ToString().c_str());
                 found = true;
@@ -375,7 +381,7 @@ void CollateralnodeManager::updateNodeList()
         }
 
         if (!found) {
-            nstatus = QString::fromStdString("Stake node not started");
+            nstatus = QString::fromStdString("CollateralNode has not started");
         } else {
             // find it in tableWidget_2
             if (errorMessage == "OK") {
@@ -407,6 +413,9 @@ void CollateralnodeManager::updateNodeList()
             SortedWidgetItem *nrankItem = new SortedWidgetItem();
             SortedWidgetItem *payrateItem = new SortedWidgetItem();
 
+            payrateItem->setData(Qt::UserRole, mnRank ? mnRank : 2000);
+            payrateItem->setData(Qt::DisplayRole, QString("%2").arg(payrate));
+
             nrankItem->setData(Qt::UserRole, mnRank ? mnRank : 2000);
             nrankItem->setData(Qt::DisplayRole, mnRank > 0 && mnRank < 500000 ? QString::number(mnRank) : "");
 
@@ -420,7 +429,7 @@ void CollateralnodeManager::updateNodeList()
     }
 
     // calc length of average round
-    int roundLengthSecs = 30 * (max(COLLATERALSTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALSTAKE_FAIR_PAYMENT_ROUNDS);
+    int roundLengthSecs = 30 * (max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALNODE_FAIR_PAYMENT_ROUNDS);
     // figure out how the average per second this round is
     int64_t roundPerSec = nAverageCNIncome / roundLengthSecs;
     // how much is that per day?

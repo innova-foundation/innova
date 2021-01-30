@@ -424,7 +424,6 @@ bool GetMyExternalIP(CNetAddr& ipRet)
 
     return false;
 }
-
 #endif
 
 /*--------------------------------------------------------------------------*/
@@ -452,9 +451,9 @@ void ThreadGetMyExternalIP(void* parg)
     RenameThread("innova-ext-ip");
 
     CNetAddr addrLocalHost;
-    if (GetMyExternalIP_STUN(addrLocalHost))
+    if (GetMyExternalIP_STUN(addrLocalHost)) //GetMyExternalIP by STUN instead now
     {
-      //  printf("GetMyExternalIP() returned %s\n", addrLocalHost.ToStringIP().c_str());
+        //printf("GetMyExternalIP() returned %s\n", addrLocalHost.ToStringIP().c_str());
         AddLocal(addrLocalHost, LOCAL_HTTP);
     }
 }
@@ -546,6 +545,11 @@ CNode* ConnectNode(CAddress addrConnect, const char *pszDest, bool forTunaMaster
     if (pszDest ? ConnectSocketByName(addrConnect, hSocket, pszDest, GetDefaultPort(), nConnectTimeout, &proxyConnectionFailed) :
                   ConnectSocket(addrConnect, hSocket, nConnectTimeout, &proxyConnectionFailed))
     {
+        if (!IsSelectableSocket(hSocket)) {
+            printf("Cannot create connection: non-selectable socket created (fd >= FD_SETSIZE ?)\n");
+            closesocket(hSocket);
+            return NULL;
+        }
         addrman.Attempt(addrConnect);
 
         if (fDebugNet) printf("net: connected %s\n", pszDest ? pszDest : addrConnect.ToString().c_str());
@@ -612,8 +616,11 @@ void CNode::PushVersion()
     RAND_bytes((unsigned char*)&nLocalHostNonce, sizeof(nLocalHostNonce));
     printf("send version message: version %d, blocks=%d, us=%s, them=%s, peer=%s\n", PROTOCOL_VERSION, nBestHeight, addrMe.ToString().c_str(), addrYou.ToString().c_str(), addr.ToString().c_str());
     PushMessage("version", PROTOCOL_VERSION, nLocalServices, nTime, addrYou, addrMe,
-              nLocalHostNonce, FormatSubVersion(CLIENT_NAME, CLIENT_VERSION, std::vector<string>()), nBestHeight);
-    }
+                nLocalHostNonce, FormatSubVersion(CLIENT_NAME, CLIENT_VERSION, std::vector<string>()), nBestHeight);
+}
+
+
+
 
 
 std::map<CNetAddr, int64_t> CNode::setBanned;
@@ -662,6 +669,7 @@ bool CNode::IsWhitelistedRange(const CNetAddr &addr) {
     }
     return false;
 }
+
 void CNode::AddWhitelistedRange(const CSubNet &subnet) {
     LOCK(cs_vWhitelistedRange);
     vWhitelistedRange.push_back(subnet);
@@ -710,7 +718,7 @@ void CNode::copyStats(CNodeStats &stats)
     X(fInbound);
     X(nChainHeight);
     X(nMisbehavior);
-  //X(fWhitelisted);
+    //X(fWhitelisted);
 
     // It is common for nodes with good ping times to suddenly become lagged,
     // due to a new block arriving or other large transfer.
@@ -759,7 +767,7 @@ void CNode::SetMaxOutboundTarget(uint64_t limit)
     nMaxOutboundLimit = limit;
 
     if (limit < recommendedMinimum)
-        LogPrintf("Max outbound target is very small (%s) and will be overshot. Recommended minimum is %s\n.", nMaxOutboundLimit, recommendedMinimum);
+        printf("Max outbound target is very small (%s) and will be overshot. Recommended minimum is %s\n.", nMaxOutboundLimit, recommendedMinimum);
 }
 
 uint64_t CNode::GetMaxOutboundTarget()
@@ -1161,6 +1169,11 @@ void ThreadSocketHandler2(void* parg)
                 if (nErr != WSAEWOULDBLOCK)
                     printf("socket error accept failed: %d\n", nErr);
             }
+            else if (!IsSelectableSocket(hSocket))
+            {
+                printf("connection from %s dropped: non-selectable socket\n", addr.ToString().c_str());
+                closesocket(hSocket);
+            }
             else if (nInbound >= GetArg("-maxconnections", 125) - MAX_OUTBOUND_CONNECTIONS)
             {
                 closesocket(hSocket);
@@ -1283,12 +1296,12 @@ void ThreadSocketHandler2(void* parg)
                 }
                 else if (nTime - pnode->nLastSend > TIMEOUT_INTERVAL)
                 {
-                    printf("socket sending timeout: %"PRId64"s\n", nTime - pnode->nLastSend);
+                    printf("socket sending timeout: %" PRId64"s\n", nTime - pnode->nLastSend);
                     pnode->fDisconnect = true;
                 }
                 else if (nTime - pnode->nLastRecv > (pnode->nVersion > BIP0031_VERSION ? TIMEOUT_INTERVAL : 90*60))
                 {
-                    printf("socket receive timeout: %"PRId64"s\n", nTime - pnode->nLastRecv);
+                    printf("socket receive timeout: %" PRId64"s\n", nTime - pnode->nLastRecv);
                     pnode->fDisconnect = true;
                 }
                 else if (pnode->nPingNonceSent && pnode->nPingUsecStart + TIMEOUT_INTERVAL * 1000000 < GetTimeMicros())
@@ -1518,13 +1531,13 @@ void ThreadOnionSeed(void* parg)
 // The second name should resolve to a list of seed addresses.
 
 static const char *strDNSSeed[][2] = {
-    {"104.207.147.210:14530", "104.207.147.210:14530"},
-    {"140.82.25.108:14530", "140.82.25.108:14530"},
-    {"144.202.40.17:14530", "144.202.40.17:14530"},
-    {"207.246.64.66:14530", "207.246.64.66:14530"},
-    {"45.77.114.67:14530", "45.77.114.67:14530"},
-    {"51.15.27.10:14530", "51.15.27.10:14530"},
-    {"51.15.27.72:14530", "51.15.27.72:14530"},
+{"104.207.147.210:14530", "104.207.147.210:14530"},
+{"140.82.25.108:14530", "140.82.25.108:14530"},
+{"144.202.40.17:14530", "144.202.40.17:14530"},
+{"innova2.circuitbreaker.online", "innova2.circuitbreaker.online"},
+{"seeder.circuitbreaker.online", "seeder.circuitbreaker.online"},
+{"inndns.circuitbreaker.online", "inndns.circuitbreaker.online"},
+{"innova.circuitbreaker.online", "innova.circuitbreaker.online"},
 };
 
 void ThreadDNSAddressSeed(void* parg)
@@ -1610,7 +1623,7 @@ void DumpAddresses()
     CAddrDB adb;
     adb.Write(addrman);
 
-    printf("Flushed %d addresses to peers.dat  %"PRId64"ms\n",
+    printf("Flushed %d addresses to peers.dat  %" PRId64"ms\n",
            addrman.size(), GetTimeMillis() - nStart);
 }
 
@@ -1938,8 +1951,8 @@ bool OpenNetworkConnection(const CAddress& addrConnect, CSemaphoreGrant *grantOu
         return false;
     if (!strDest) {
         if (IsLocal(addrConnect) ||
-        FindNode((CNetAddr) addrConnect) || CNode::IsBanned(addrConnect) ||
-        FindNode(addrConnect.ToStringIPPort()))
+            FindNode((CNetAddr) addrConnect) || CNode::IsBanned(addrConnect) ||
+            FindNode(addrConnect.ToStringIPPort()))
             return false;
     } else if (FindNode(strDest))
         return false;
@@ -2145,6 +2158,12 @@ bool BindListenPort(const CService &addrBind, string& strError)
     if (hListenSocket == INVALID_SOCKET)
     {
         strError = strprintf("Error: Couldn't open socket for incoming connections (socket returned error %d)", WSAGetLastError());
+        printf("%s\n", strError.c_str());
+        return false;
+    }
+    if (!IsSelectableSocket(hListenSocket))
+    {
+        strError = "Error: Couldn't create a listenable socket for incoming connections";
         printf("%s\n", strError.c_str());
         return false;
     }

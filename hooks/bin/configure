@@ -21,8 +21,8 @@ else
   echo "rpcpassword=$RPCPASS" >> $CONFIG
   echo "rpcport=$RPCPORT" >> $CONFIG
   echo "collateralnode=0" >> $CONFIG
-  echo "collateralnodeaddr=$COLLATERALSTAKEADDR" >> $CONFIG
-  echo "collateralnodeprivkey=$COLLATERALSTAKEPRIVKEY" >> $CONFIG
+  echo "collateralnodeaddr=$COLLATERALNODEADDR" >> $CONFIG
+  echo "collateralnodeprivkey=$COLLATERALNODEPRIVKEY" >> $CONFIG
   echo "daemon=1" >> $CONFIG
 fi
 

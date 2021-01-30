@@ -9,6 +9,8 @@
 #include <string>
 #include <list>
 #include <map>
+#include <boost/asio.hpp>
+#include <boost/asio/ssl.hpp>
 
 class CBlockIndex;
 
@@ -18,6 +20,17 @@ class CBlockIndex;
 
 #include "util.h"
 #include "checkpoints.h"
+
+// Innova Building w/ Boost Support for 1.70.0+
+#if BOOST_VERSION >= 107000
+    #define GetIOService(s) ((boost::asio::io_context&)(s).get_executor().context())
+    #define GetIOServiceFromPtr(s) ((boost::asio::io_context&)(s->get_executor().context()))
+    typedef boost::asio::io_context ioContext;
+#else
+    #define GetIOService(s) ((s).get_io_service())
+    #define GetIOServiceFromPtr(s) ((s)->get_io_service())
+    typedef boost::asio::io_service ioContext;
+#endif
 
 // HTTP status codes
 enum HTTPStatusCode
@@ -204,6 +217,7 @@ extern json_spirit::Value addmultisigaddress(const json_spirit::Array& params, b
 extern json_spirit::Value addredeemscript(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value listreceivedbyaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value listreceivedbyaccount(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value deletetransaction(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value listtransactions(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value listaddressgroupings(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value listaddressgroups(const json_spirit::Array& params, bool fHelp);
@@ -262,6 +276,18 @@ extern json_spirit::Value hyperfileduo(const json_spirit::Array& params, bool fH
 extern json_spirit::Value hyperfileduopod(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value hyperfilegetblock(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value hyperfilegetstat(const json_spirit::Array& params, bool fHelp);
+
+extern json_spirit::Value name_new(const json_spirit::Array& params, bool fHelp); // in namecoin.cpp Innova Name commands
+extern json_spirit::Value name_update(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value name_delete(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value sendtoname(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value name_list(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value name_scan(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value name_filter(const json_spirit::Array& params, bool fHelp);
+//extern json_spirit::Value name_history(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value name_mempool(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value name_show(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value name_debug(const json_spirit::Array& params, bool fHelp);
 
 extern json_spirit::Value burn(const json_spirit::Array& params, bool fHelp);
 

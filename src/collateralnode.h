@@ -3,8 +3,8 @@
 // Copyright (c) 2009-2012 The Darkcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#ifndef COLLATERALSTAKE_H
-#define COLLATERALSTAKE_H
+#ifndef COLLATERALNODE_H
+#define COLLATERALNODE_H
 
 #include "uint256.h"
 #include "uint256.h"
@@ -21,27 +21,27 @@ class CCollateralNode;
 class CCollateralnodePayments;
 class uint256;
 
-#define COLLATERALSTAKE_NOT_PROCESSED               0 // initial state
-#define COLLATERALSTAKE_IS_CAPABLE                  1
-#define COLLATERALSTAKE_NOT_CAPABLE                 2
-#define COLLATERALSTAKE_STOPPED                     3
-#define COLLATERALSTAKE_INPUT_TOO_NEW               4
-#define COLLATERALSTAKE_PORT_NOT_OPEN               6
-#define COLLATERALSTAKE_PORT_OPEN                   7
-#define COLLATERALSTAKE_SYNC_IN_PROCESS             8
-#define COLLATERALSTAKE_REMOTELY_ENABLED            9
+#define COLLATERALNODE_NOT_PROCESSED               0 // initial state
+#define COLLATERALNODE_IS_CAPABLE                  1
+#define COLLATERALNODE_NOT_CAPABLE                 2
+#define COLLATERALNODE_STOPPED                     3
+#define COLLATERALNODE_INPUT_TOO_NEW               4
+#define COLLATERALNODE_PORT_NOT_OPEN               6
+#define COLLATERALNODE_PORT_OPEN                   7
+#define COLLATERALNODE_SYNC_IN_PROCESS             8
+#define COLLATERALNODE_REMOTELY_ENABLED            9
 
-#define COLLATERALSTAKE_MIN_CONFIRMATIONS           15
-#define COLLATERALSTAKE_MIN_CONFIRMATIONS_NOPAY     500
-#define COLLATERALSTAKE_MIN_DSEEP_SECONDS           (10*60)
-#define COLLATERALSTAKE_MIN_DSEE_SECONDS            (5*60)
-#define COLLATERALSTAKE_PING_SECONDS                (1*60)
-#define COLLATERALSTAKE_EXPIRATION_SECONDS          (120*60)
-#define COLLATERALSTAKE_REMOVAL_SECONDS             (130*60)
-#define COLLATERALSTAKE_CHECK_SECONDS               10
+#define COLLATERALNODE_MIN_CONFIRMATIONS           15
+#define COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY     500
+#define COLLATERALNODE_MIN_DSEEP_SECONDS           (10*60)
+#define COLLATERALNODE_MIN_DSEE_SECONDS            (5*60)
+#define COLLATERALNODE_PING_SECONDS                (1*60)
+#define COLLATERALNODE_EXPIRATION_SECONDS          (120*60)
+#define COLLATERALNODE_REMOVAL_SECONDS             (130*60)
+#define COLLATERALNODE_CHECK_SECONDS               10
 
-#define COLLATERALSTAKE_FAIR_PAYMENT_MINIMUM         200
-#define COLLATERALSTAKE_FAIR_PAYMENT_ROUNDS          3
+#define COLLATERALNODE_FAIR_PAYMENT_MINIMUM         200
+#define COLLATERALNODE_FAIR_PAYMENT_ROUNDS          3
 
 using namespace std;
 
@@ -210,7 +210,7 @@ public:
     }
 
     bool IsActive() {
-        if (lastTimeSeen - now > (max(COLLATERALSTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * 30))
+        if (lastTimeSeen - now > (max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * 30))
         { // dsee broadcast is more than a round old, let's consider it active
                 return true;
         }

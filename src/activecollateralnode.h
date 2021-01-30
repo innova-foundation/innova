@@ -2,8 +2,8 @@
 // Copyright (c) 2009-2012 The DarkCoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#ifndef ACTIVECOLLATERALSTAKE_H
-#define ACTIVECOLLATERALSTAKE_H
+#ifndef ACTIVECOLLATERALNODE_H
+#define ACTIVECOLLATERALNODE_H
 
 #include "uint256.h"
 #include "sync.h"
@@ -31,7 +31,7 @@ public:
 
     CActiveCollateralnode()
     {
-        status = COLLATERALSTAKE_NOT_PROCESSED;
+        status = COLLATERALNODE_NOT_PROCESSED;
     }
 
     void ManageStatus(); // manage status of main collateralnode

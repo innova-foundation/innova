@@ -178,12 +178,12 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 	//Only if it isn't Proof of Stake?
 	if (!fProofOfStake)
     {
-		if (fTestNet){
-			if (nHeight >= BLOCK_START_COLLATERALSTAKE_PAYMENTS_TESTNET){
+		if (fTestNet) {
+			if (nHeight >= BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET){
 				bCollateralNodePayment = true;
 			}
-		}else{
-			if (nHeight >= BLOCK_START_COLLATERALSTAKE_PAYMENTS){
+		} else {
+			if (nHeight >= BLOCK_START_COLLATERALNODE_PAYMENTS){
 				bCollateralNodePayment = true;
 			}
 		}
@@ -494,7 +494,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         }
 
         if (fDebug && GetBoolArg("-printpriority"))
-            printf("CreateNewBlock(): total size %"PRIu64"\n", nBlockSize);
+            printf("CreateNewBlock(): total size %" PRIu64"\n", nBlockSize);
 
         if (!fProofOfStake){
             pblock->vtx[0].vout[0].nValue = blockValue;
@@ -723,7 +723,7 @@ void StakeMiner(CWallet *pwallet)
             continue;
         };
 
-        if (vecCollateralnodes.size() == 0)
+        if (vecCollateralnodes.size() == 0 && !fTestNet)
         {
             if (fDebug && GetBoolArg("-printcoinstake")) printf("StakeMiner() waiting for CN list.");
             vnThreadsRunning[THREAD_STAKE_MINER]--;
