@@ -809,7 +809,7 @@ int CCollateralNode::SetPayRate(int nHeight)
          // printf(" (payInfo:%d@%f)...", payCount, payRate);
          int64_t amount = 0;
          int matches = 0;
-         BOOST_FOREACH(CCollateralPayData &item, payData)
+         BOOST_FOREACH(CCollateralNPayData &item, payData)
          {
              if (item.height > nHeight - scanBack && mapBlockIndex.count(item.hash)) { // find payments in last scanrange
                 amount += item.amount;
@@ -841,7 +841,7 @@ int CCollateralNode::GetPaymentAmount(const CBlockIndex *pindex, int nMaxBlocksT
         //printf("(payInfo:%d@%f)...", payCount, payRate);
         int64_t amount = 0;
         int matches = 0;
-        BOOST_FOREACH(CCollateralPayData &item, payData)
+        BOOST_FOREACH(CCollateralNPayData &item, payData)
         {
             if (item.height > pindex->nHeight - nMaxBlocksToScanBack && mapBlockIndex.count(item.hash)) { // find payments in last scanrange
                amount += item.amount;
@@ -917,7 +917,7 @@ int CCollateralNode::UpdateLastPaidAmounts(const CBlockIndex *pindex, int nMaxBl
                 }
         */
         // all of that doesn't matter if we pay attention to the hash of the payment!
-        BOOST_FOREACH(CCollateralPayData &item, payData)
+        BOOST_FOREACH(CCollateralNPayData &item, payData)
         {
             if (mapBlockIndex.count(item.hash)) {
                 if (item.height > pindex->nHeight - nMaxBlocksToScanBack) { // find payments in last scanrange
@@ -964,7 +964,7 @@ int CCollateralNode::UpdateLastPaidAmounts(const CBlockIndex *pindex, int nMaxBl
                         int height = BlockReading->nHeight;
                         int64_t amount = txout.nValue;
                         uint256 hash = BlockReading->GetBlockHash();
-                        CCollateralPayData data;
+                        CCollateralNPayData data;
 
                         data.height = height;
                         data.amount = amount;
@@ -1474,7 +1474,7 @@ void CCollateralPayments::update(const CBlockIndex *pindex, bool force)
                                   int height = BlockReading->nHeight;
                                   int64_t amount = txout.nValue;
                                   uint256 hash = BlockReading->GetBlockHash();
-                                  CCollateralPayData data;
+                                  CCollateralNPayData data;
 
                                   data.height = height;
                                   data.amount = amount;

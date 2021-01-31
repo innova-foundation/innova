@@ -42,7 +42,7 @@ extern CForTunaPool forTunaPool;
 extern CForTunaSigner forTunaSigner;
 extern std::vector<CCollateralQueue> vecCollateralQueue;
 extern std::string strCollateralNodePrivKey;
-extern map<uint256, CCollateralBroadcastTx> mapCollateralBroadcastTxes;
+extern map<uint256, CCollateralBroadcastTx> mapCollateralNBroadcastTxes;
 extern CActiveCollateralnode activeCollateralnode;
 
 //specific messages for the Collateral protocol

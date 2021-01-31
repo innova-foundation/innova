@@ -34,7 +34,7 @@ std::vector<CCollateralQueue> vecCollateralQueue;
 /** Keep track of the used collateralnodes */
 std::vector<CTxIn> vecCollateralnodesUsed;
 // keep track of the scanning errors I've seen
-map<uint256, CCollateralBroadcastTx> mapCollateralBroadcastTxes;
+map<uint256, CCollateralBroadcastTx> mapCollateralNBroadcastTxes;
 //
 CActiveCollateralnode activeCollateralnode;
 // count peers we've requested the list from
@@ -67,7 +67,7 @@ int GetInputCollateralRounds(CTxIn in, int rounds)
         // bounds check
         if(in.prevout.n >= tx.vout.size()) return -4;
 
-        if(tx.vout[in.prevout.n].nValue == COLLATERAL_FEE) return -3;
+        if(tx.vout[in.prevout.n].nValue == COLLATERALNODE_FEE) return -3;
 
         //make sure the final output is non-denominate
         if(rounds == 0 && !pwalletMain->IsDenominatedAmount(tx.vout[in.prevout.n].nValue)) return -2; //NOT DENOM
