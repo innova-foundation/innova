@@ -147,7 +147,7 @@ bool DecodeNameTx(const CTransaction& tx, NameTxInfo& nti, bool checkValuesCorre
 void GetNameList(const std::vector<unsigned char> &vchNameUniq, std::map<std::vector<unsigned char>, NameTxInfo> &mapNames, std::map<std::vector<unsigned char>, NameTxInfo> &mapPending);
 bool GetNameValue(const std::vector<unsigned char> &vchName, std::vector<unsigned char> &vchValue, bool checkPending);
 
-bool SignNameSignatureD(const CKeyStore& keystore, const CTransaction& txFrom, CTransaction& txTo, unsigned int nIn, int nHashType=SIGHASH_ALL);
+bool SignNameSignatureI(const CKeyStore& keystore, const CTransaction& txFrom, CTransaction& txTo, unsigned int nIn, int nHashType=SIGHASH_ALL);
 struct NameTxReturn
 {
      bool ok;

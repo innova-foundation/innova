@@ -333,8 +333,8 @@ bool CForTunaPool::IsCollateralValid(const CTransaction& txCollateral){
         return false;
     }
 
-    //collateral transactions are required to pay out COLLATERALN_COLLATERAL as a fee to the miners
-    if(nValueIn-nValueOut < COLLATERALN_COLLATERAL) {
+    //collateral transactions are required to pay out COLLATERALNODE_COLLATERAL as a fee to the miners
+    if(nValueIn-nValueOut < COLLATERALNODE_COLLATERAL) {
         if(fDebug) printf("CForTunaPool::IsCollateralValid - did not include enough fees in transaction %lu\n%s\n", nValueOut-nValueIn, txCollateral.ToString().c_str());
         return false;
     }

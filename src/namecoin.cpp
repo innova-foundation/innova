@@ -229,7 +229,7 @@ bool RemoveNameScriptPrefix(const CScript& scriptIn, CScript& scriptOut)
 //     return true;
 // }
 
-bool SignNameSignatureD(const CKeyStore& keystore, const CTransaction& txFrom, CTransaction& txTo, unsigned int nIn, int nHashType)
+bool SignNameSignatureI(const CKeyStore& keystore, const CTransaction& txFrom, CTransaction& txTo, unsigned int nIn, int nHashType)
 {
     assert(nIn < txTo.vin.size());
     CTxIn& txin = txTo.vin[nIn];
@@ -243,7 +243,7 @@ bool SignNameSignatureD(const CKeyStore& keystore, const CTransaction& txFrom, C
 
     CScript scriptPubKey;
     if (!RemoveNameScriptPrefix(txout.scriptPubKey, scriptPubKey))
-        return error("SignNameSignatureD(): failed to remove name script prefix");
+        return error("SignNameSignatureI(): failed to remove name script prefix");
 
     txnouttype whichType;
     if (!Solver(keystore, scriptPubKey, hash, nHashType, txin.scriptSig, whichType))
@@ -457,7 +457,7 @@ bool CreateTransactionWithInputTx(const vector<pair<CScript, int64_t> >& vecSend
                 {
                     if (coin.first == &wtxIn && coin.second == nTxOut)
                     {
-                        if (!SignNameSignatureD(*pwalletMain, *coin.first, wtxNew, nIn++))
+                        if (!SignNameSignatureI(*pwalletMain, *coin.first, wtxNew, nIn++))
                         {
                             strFailReason = _("Signing name input failed");
                             return false;
@@ -2529,9 +2529,9 @@ bool CNamecoinHooks::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex)
         if (nameRec.vtxPos.size() > NAMEINDEX_CHAIN_SIZE
              && nameRec.vtxPos.size() - nameRec.nLastActiveChainIndex + 1 <= NAMEINDEX_CHAIN_SIZE)
         {
-            int i = nameRec.vtxPos.size() - NAMEINDEX_CHAIN_SIZE; // number of elements to delete
+            int d = nameRec.vtxPos.size() - NAMEINDEX_CHAIN_SIZE; // number of elements to delete
             nameRec.vtxPos.erase(nameRec.vtxPos.begin(), nameRec.vtxPos.begin() + d);
-            nameRec.nLastActiveChainIndex -= i; // move last index backwards by i elements
+            nameRec.nLastActiveChainIndex -= d; // move last index backwards by d elements
             assert(nameRec.nLastActiveChainIndex >= 0);
         }
 
