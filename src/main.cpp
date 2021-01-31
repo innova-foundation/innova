@@ -801,11 +801,9 @@ bool CTransaction::CheckTransaction() const
                 if (GetTransaction(txin.prevout.hash, txPrev, hashBlock, true) && ExtractDestination(txPrev.vout[txin.prevout.n].scriptPubKey, dest)) {
                     std::string address = CBitcoinAddress(dest).ToString(); //could also compare prevout scriptpubkey directly against burnscripts
                     if (address == vBurnAddresses)
-                       return DoS(100, error("%s : Burn address attempted to spend in %s", __func__, GetHash().ToString().c_str()),
-                                             REJECT_INVALID, "bad-txns-spending-burned-coins");
+                       return DoS(100, error("%s : Burn address attempted to spend in %s", __func__, GetHash().ToString().c_str()));
                 } else
-                    return DoS(100, error("%s : Output %s not found", __func__, GetHash().ToString().c_str()),
-                                     REJECT_INVALID, "bad-txns-missing-prevout");
+                    return DoS(100, error("%s : Output %s not found", __func__, GetHash().ToString().c_str()));
             }
 	}
 
