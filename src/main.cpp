@@ -793,6 +793,7 @@ bool CTransaction::CheckTransaction() const
 
     std::set<COutPoint> vInOutPoints;
     //burn addresses cannot spend
+	BOOST_FOREACH(const CTxIn& txin, vin) {
             if (txin.prevout.hash != 0) {
                 CTransaction txPrev;
                 uint256 hashBlock;
@@ -809,6 +810,7 @@ bool CTransaction::CheckTransaction() const
                     return state.DoS(100, error("%s : Output %s not found", __func__, txin.prevout.hash.GetHex()),
                                      REJECT_INVALID, "bad-txns-missing-prevout");
             }
+	}
 
     // Check for duplicate inputs
     set<COutPoint> vInOutPoints;
