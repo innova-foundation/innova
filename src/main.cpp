@@ -798,20 +798,18 @@ bool CTransaction::CheckTransaction() const
                 CTransaction txPrev;
                 uint256 hashBlock;
                 CTxDestination dest;
-                Burn vBurnAddresses;
                 if (GetTransaction(txin.prevout.hash, txPrev, hashBlock, true) && ExtractDestination(txPrev.vout[txin.prevout.n].scriptPubKey, dest)) {
                     std::string address = CBitcoinAddress(dest).ToString(); //could also compare prevout scriptpubkey directly against burnscripts
-                    if (address == Burn::vBurnAddresses)
-                       return state.DoS(100, error("%s : Burn address attempted to spend in %s", __func__, tx.GetHash().GetHex()),
+                    if (address == vBurnAddresses)
+                       return DoS(100, error("%s : Burn address attempted to spend in %s", __func__, GetHash().ToString().c_str()),
                                              REJECT_INVALID, "bad-txns-spending-burned-coins");
                 } else
-                    return state.DoS(100, error("%s : Output %s not found", __func__, txin.prevout.hash.GetHex()),
+                    return DoS(100, error("%s : Output %s not found", __func__, GetHash().ToString().c_str()),
                                      REJECT_INVALID, "bad-txns-missing-prevout");
             }
 	}
 
     // Check for duplicate inputs
-    set<COutPoint> vInOutPoints;
     BOOST_FOREACH(const CTxIn& txin, vin)
     {
         if (nVersion == ANON_TXN_VERSION
