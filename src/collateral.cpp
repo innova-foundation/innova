@@ -34,7 +34,7 @@ std::vector<CCollateralQueue> vecCollateralQueue;
 /** Keep track of the used collateralnodes */
 std::vector<CTxIn> vecCollateralnodesUsed;
 // keep track of the scanning errors I've seen
-map<uint256, CCollateralBroadcastTx> mapCollateralBroadcastTxes;
+map<uint256, CCollateralBroadcastTx> mapCollateralNBroadcastTxes;
 //
 CActiveCollateralnode activeCollateralnode;
 // count peers we've requested the list from
@@ -67,7 +67,7 @@ int GetInputCollateralRounds(CTxIn in, int rounds)
         // bounds check
         if(in.prevout.n >= tx.vout.size()) return -4;
 
-        if(tx.vout[in.prevout.n].nValue == COLLATERAL_FEE) return -3;
+        if(tx.vout[in.prevout.n].nValue == COLLATERALNODE_FEE) return -3;
 
         //make sure the final output is non-denominate
         if(rounds == 0 && !pwalletMain->IsDenominatedAmount(tx.vout[in.prevout.n].nValue)) return -2; //NOT DENOM
@@ -333,8 +333,8 @@ bool CForTunaPool::IsCollateralValid(const CTransaction& txCollateral){
         return false;
     }
 
-    //collateral transactions are required to pay out COLLATERALN_COLLATERAL as a fee to the miners
-    if(nValueIn-nValueOut < COLLATERALN_COLLATERAL) {
+    //collateral transactions are required to pay out COLLATERALNODE_COLLATERAL as a fee to the miners
+    if(nValueIn-nValueOut < COLLATERALNODE_COLLATERAL) {
         if(fDebug) printf("CForTunaPool::IsCollateralValid - did not include enough fees in transaction %lu\n%s\n", nValueOut-nValueIn, txCollateral.ToString().c_str());
         return false;
     }

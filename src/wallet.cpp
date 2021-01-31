@@ -1135,7 +1135,7 @@ void CWalletTx::GetAmounts(list<COutputEntry>& listReceived,
 
         // In either case, we need to get the destination address
         CTxDestination address;
-        if (!ExtractDestination(txout.scriptPubKey, address) && !txout.scriptPubkey.IsUnspendable())
+        if (!ExtractDestination(txout.scriptPubKey, address) && !txout.scriptPubKey.IsUnspendable())
         {
             printf("CWalletTx::GetAmounts: Unknown transaction type found, txid %s\n",
                 this->GetHash().ToString().c_str());
@@ -1883,7 +1883,7 @@ bool CWallet::SelectCoinsMinConfByCoinAge(int64_t nTargetValue, unsigned int nSp
         int64_t n = pcoin->vout[i].nValue;
 
         // ignore Innova Name TxOut
-        if (pcoin->nVersion == NAMCECOIN_TX_VERSION && hooks->IsNameScript(pcoin->vout[i].scriptPubKey))
+        if (pcoin->nVersion == NAMECOIN_TX_VERSION && hooks->IsNameScript(pcoin->vout[i].scriptPubKey))
             continue;
 
         pair<pair<int64_t,int64_t>,pair<const CWalletTx*,unsigned int> > coin = make_pair(make_pair(n,output.second),make_pair(pcoin, i));
@@ -2336,7 +2336,7 @@ bool CWallet::SelectCoinsCollateral(std::vector<CTxIn>& setCoinsRet, int64_t& nV
 
     BOOST_FOREACH(const COutput& out, vCoins)
     {
-        // collateral inputs will always be a multiple of COLLATERALN_COLLATERAL, up to five
+        // collateral inputs will always be a multiple of COLLATERALNODE_COLLATERAL, up to five
         if(IsCollateralAmount(out.tx->vout[out.i].nValue))
         {
             CTxIn vin = CTxIn(out.tx->GetHash(),out.i);
@@ -2398,7 +2398,7 @@ bool CWallet::HasCollateralInputs() const
 
 bool CWallet::IsCollateralAmount(int64_t nInputAmount) const
 {
-	return nInputAmount != 0 && nInputAmount % COLLATERALN_COLLATERAL == 0 && nInputAmount < COLLATERALN_COLLATERAL * 5 && nInputAmount > COLLATERALN_COLLATERAL;
+	return nInputAmount != 0 && nInputAmount % COLLATERALNODE_COLLATERAL == 0 && nInputAmount < COLLATERALNODE_COLLATERAL * 5 && nInputAmount > COLLATERALNODE_COLLATERAL;
 }
 
 bool CWallet::CreateCollateralTransaction(CTransaction& txCollateral, std::string strReason)
@@ -2432,9 +2432,9 @@ bool CWallet::CreateCollateralTransaction(CTransaction& txCollateral, std::strin
     BOOST_FOREACH(CTxIn v, vCoinsCollateral)
         txCollateral.vin.push_back(v);
 
-    if(nValueIn2 - COLLATERALN_COLLATERAL - nFeeRet > 0) {
+    if(nValueIn2 - COLLATERALNODE_COLLATERAL - nFeeRet > 0) {
         //pay collateral charge in fees
-        CTxOut vout3 = CTxOut(nValueIn2 - COLLATERALN_COLLATERAL, scriptChange);
+        CTxOut vout3 = CTxOut(nValueIn2 - COLLATERALNODE_COLLATERAL, scriptChange);
         txCollateral.vout.push_back(vout3);
     }
 

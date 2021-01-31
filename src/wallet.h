@@ -1260,7 +1260,7 @@ public:
     //Used with Collateral. Will return fees, then denominations, everything else, then very small inputs that aren't fees
     int Priority() const
     {
-        if(tx->vout[i].nValue == COLLATERAL_FEE) return -20000;
+        if(tx->vout[i].nValue == COLLATERALNODE_FEE) return -20000;
         BOOST_FOREACH(int64_t d, forTunaDenominations)
             if(tx->vout[i].nValue == d) return 10000;
         if(tx->vout[i].nValue < 1*COIN) return 20000;

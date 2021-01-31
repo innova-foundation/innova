@@ -67,14 +67,14 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 bool CheckCollateralnodeVin(CTxIn& vin, std::string& errorMessage, CBlockIndex *pindex);
 
 // For storing payData
-class CCollateralPayData
+class CCollateralNPayData
 {
 public:
     int height;
     uint256 hash;
     int64_t amount;
 
-    CCollateralPayData() {
+    CCollateralNPayData() {
         height = 0;
         hash = 0;
         amount = 0;
@@ -101,7 +101,7 @@ class CCollateralPayments
 {
 public:
     std::vector<CCollateralNode> vStakes; // this array should be sorted
-    std::vector<CCollateralPayData> vPayments; // this array just contains our scanned data
+    std::vector<CCollateralNPayData> vPayments; // this array just contains our scanned data
     //std::vector<CTxIn> vCollaterals;
     std::vector<CCollateralNCollateral> vCollaterals;
     std::vector<CScript> vScripts;
@@ -141,7 +141,7 @@ public:
     CPubKey pubkey;
     CPubKey pubkey2;
     std::vector<unsigned char> sig;
-    std::vector<CCollateralPayData> payData;
+    std::vector<CCollateralNPayData> payData;
     pair<int, int64_t> payInfo;
     int64_t payRate;
     int payCount;
