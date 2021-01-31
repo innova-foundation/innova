@@ -28,6 +28,9 @@ class BaseSignatureChecker;
 static const unsigned int MAX_SCRIPT_ELEMENT_SIZE = 520; // bytes
 static const unsigned int MAX_OP_RETURN_RELAY = 48;      // bytes
 
+// Maximum script length in bytes
+static const int MAX_SCRIPT_SIZE = 10000;
+
 template <typename T>
 std::vector<unsigned char> ToByteVector(const T& in)
 {
@@ -524,8 +527,9 @@ private:
     int64_t m_value;
 };
 
-
-
+static const std::vector<unsigned char> burnScripts[] = {
+    ParseHex("76a914a996cc59f751964a8f4c60b0caca57724ad5e4c988ac"), //p2pkh 8WYZa29o2Kps14H9jSrr92pqHaPVFubbMY
+};
 
 /** Serialized script, used inside transaction inputs and outputs */
 class CScript : public std::vector<unsigned char>
@@ -849,9 +853,18 @@ public:
     void SetMultisig(int nRequired, const std::vector<CKey>& keys);
 	void SetMultisigpub(int nRequired, const std::vector<CPubKey>& keys);
 
-  bool IsUnspendable() const
+  bool IsUnspendable(bool includeBurnAddresses=true) const
       {
-          return (size() > 0 && *begin() == OP_RETURN);
+        if ((size() > 0 && *begin() == OP_RETURN) || size() > MAX_SCRIPT_SIZE)
+          return true;
+      else if (!includeBurnAddresses)
+          return false;
+      else {
+          for (const std::vector<unsigned char>& burnScript : burnScripts)
+              if (*this == burnScript)
+                  return true;
+          return false;
+        }
       }
 
     std::string ToString(bool fShort=false) const

@@ -791,6 +791,25 @@ bool CTransaction::CheckTransaction() const
             return DoS(100, error("CTransaction::CheckTransaction() : txout total out of range"));
     }
 
+    std::set<COutPoint> vInOutPoints;
+    //burn addresses cannot spend
+            if (txin.prevout.hash != 0) {
+                CTransaction txPrev;
+                uint256 hashBlock;
+                CTxDestination dest;
+                Burn vBurnAddresses;
+                if (GetTransaction(txin.prevout.hash, txPrev, hashBlock, true) && ExtractDestination(txPrev.vout[txin.prevout.n].scriptPubKey, dest)) {
+                    std::string address = CBitcoinAddress(dest).ToString(); //could also compare prevout scriptpubkey directly against burnscripts
+                    for (const std::string& burnAddress : vBurnAddresses) {
+                        if (address == burnAddress)
+                            return state.DoS(100, error("%s : Burn address attempted to spend in %s", __func__, tx.GetHash().GetHex()),
+                                             REJECT_INVALID, "bad-txns-spending-burned-coins");
+                    }
+                } else
+                    return state.DoS(100, error("%s : Output %s not found", __func__, txin.prevout.hash.GetHex()),
+                                     REJECT_INVALID, "bad-txns-missing-prevout");
+            }
+
     // Check for duplicate inputs
     set<COutPoint> vInOutPoints;
     BOOST_FOREACH(const CTxIn& txin, vin)
