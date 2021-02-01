@@ -1183,6 +1183,7 @@ void WriteConfigFile(FILE* configFile)
     fputs ("fortunastake=0\n", configFile); //default
     fputs ("fortunastakeaddr=\n", configFile);
     fputs ("fortunastakeprivkey=\n", configFile);
+    fput  ("addnode=innseeder.circuitbreaker.online\n", configFile);
     fputs ("addnode=104.207.147.210:14530\n", configFile);
     fputs ("addnode=140.82.25.108:14530\n", configFile);
     fputs ("addnode=144.202.40.17:14530\n", configFile);
