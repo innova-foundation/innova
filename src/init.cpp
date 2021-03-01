@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
-// Copyright (c) 2017-2018 The Denarius developers
-// Copyright (c) 2019-2020 The Innova developers
+// Copyright (c) 2017-2021 The Denarius developers
+// Copyright (c) 2019-2021 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -20,6 +20,7 @@
 #include "spork.h"
 #include "smessage.h"
 #include "ringsig.h"
+#include "idns.h"
 
 #ifdef USE_NATIVETOR
 #include "tor/anonymize.h" //Tor native optional integration (Flag -nativetor=1)
@@ -46,6 +47,7 @@ using namespace std;
 using namespace boost;
 
 CWallet* pwalletMain = NULL;
+IDns* idns = NULL;
 CClientUIInterface uiInterface;
 bool fConfChange;
 bool fEnforceCanonical;
@@ -112,6 +114,9 @@ void Shutdown(void* parg)
     {
         fShutdown = true;
 
+        if(idns) {
+            delete idns;
+        }
         Finalise();
         /*
         SecureMsgShutdown();
@@ -664,7 +669,7 @@ bool AppInit2()
     if (strWalletFileName != boost::filesystem::basename(strWalletFileName) + boost::filesystem::extension(strWalletFileName))
         return InitError(strprintf(_("Wallet %s resides outside data directory %s."), strWalletFileName.c_str(), strDataDir.c_str()));
 
-    // Make sure only a single Bitcoin process is using the data directory.
+    // Make sure only a single Innova process is using the data directory.
     boost::filesystem::path pathLockFile = GetDataDir() / ".lock";
     FILE* file = fopen(pathLockFile.string().c_str(), "a"); // empty lock file; created if it doesn't exist.
     if (file)
@@ -672,8 +677,9 @@ bool AppInit2()
 
     static boost::interprocess::file_lock lock(pathLockFile.string().c_str());
     if (!lock.try_lock())
-        return InitError(strprintf(_("Cannot obtain a lock on data directory %s.  Innova is probably already running."), strDataDir.c_str()));
+        return InitError(strprintf(_("Cannot obtain a lock on data directory %s. Innova is probably already running."), strDataDir.c_str()));
 
+    hooks = InitHook(); //Initialized Innova Name Hooks
     if (GetBoolArg("-shrinkdebugfile", !fDebug))
         ShrinkDebugFile();
     printf("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
@@ -986,7 +992,7 @@ bool AppInit2()
         printf("Shutdown requested. Exiting.\n");
         return false;
     };
-    printf(" block index %15"PRId64"ms\n", GetTimeMillis() - nStart);
+    printf(" block index %15" PRId64"ms\n", GetTimeMillis() - nStart);
 
     if (GetBoolArg("-printblockindex") || GetBoolArg("-printblocktree"))
     {
@@ -1066,6 +1072,14 @@ bool AppInit2()
         };
     };
 
+    //Create Innova Name index - this must happen before ReacceptWalletTransactions()
+    filesystem::path nameindexfile = filesystem::path(GetDataDir()) / "inameindex.dat";
+    extern void createNameIndexFile();
+    if (!filesystem::exists(nameindexfile)) {
+        createNameIndexFile();
+        printf("Created Innova Name DB");
+    }
+
     if (GetBoolArg("-upgradewallet", fFirstRun))
     {
         int nMaxVersion = GetArg("-upgradewallet", 0);
@@ -1099,7 +1113,7 @@ bool AppInit2()
     };
 
     printf("%s", strErrors.str().c_str());
-    printf(" wallet      %15"PRId64"ms\n", GetTimeMillis() - nStart);
+    printf("Innova Wallet %15" PRId64"ms\n", GetTimeMillis() - nStart);
 
     RegisterWallet(pwalletMain);
 
@@ -1121,7 +1135,7 @@ bool AppInit2()
         printf("Rescanning last %i blocks (from block %i)...\n", pindexBest->nHeight - pindexRescan->nHeight, pindexRescan->nHeight);
         nStart = GetTimeMillis();
         pwalletMain->ScanForWalletTransactions(pindexRescan, true);
-        printf(" rescan      %15"PRId64"ms\n", GetTimeMillis() - nStart);
+        printf(" rescan      %15" PRId64"ms\n", GetTimeMillis() - nStart);
     };
 
     // Add wallet transactions that aren't already in a block to mapTransactions
@@ -1169,7 +1183,7 @@ bool AppInit2()
             printf("Invalid or missing peers.dat; recreating\n");
     }
 
-    printf("Loaded %i addresses from peers.dat  %"PRId64"ms\n",
+    printf("Loaded %i addresses from peers.dat  %" PRId64"ms\n",
            addrman.size(), GetTimeMillis() - nStart);
 
 
@@ -1280,17 +1294,17 @@ bool AppInit2()
         pblockAddrIndex = pblockAddrIndex->pprev;
     }
 
-    printf("Rebuilt address index of %i blocks in %"PRId64"ms\n",
+    printf("Rebuilt address index of %i blocks in %" PRId64"ms\n",
            pblockAddrIndex->nHeight, GetTimeMillis() - nStart);
     }
 
 
     //// debug print
-    printf("mapBlockIndex.size() = %"PRIszu"\n",   mapBlockIndex.size());
+    printf("mapBlockIndex.size() = %" PRIszu"\n",   mapBlockIndex.size());
     printf("nBestHeight = %d\n",            nBestHeight);
-    printf("setKeyPool.size() = %"PRIszu"\n",      pwalletMain->setKeyPool.size());
-    printf("mapWallet.size() = %"PRIszu"\n",       pwalletMain->mapWallet.size());
-    printf("mapAddressBook.size() = %"PRIszu"\n",  pwalletMain->mapAddressBook.size());
+    printf("setKeyPool.size() = %" PRIszu"\n",      pwalletMain->setKeyPool.size());
+    printf("mapWallet.size() = %" PRIszu"\n",       pwalletMain->mapWallet.size());
+    printf("mapAddressBook.size() = %" PRIszu"\n",  pwalletMain->mapAddressBook.size());
 
     if(fNativeTor)
         printf("Native Tor Onion Relay Node Enabled\n");
@@ -1308,6 +1322,23 @@ bool AppInit2()
     if (fServer)
         NewThread(ThreadRPCServer, NULL);
 
+    // Init Innova INS.
+    if (GetBoolArg("-idns", true))
+    {
+        #define IDNS_PORT 6565
+        int port = GetArg("-idnsport", IDNS_PORT);
+        int verbose = GetArg("-idnsverbose", 1);
+        if (port <= 0)
+            port = IDNS_PORT;
+        string suffix  = GetArg("-idnssuffix", "");
+        string bind_ip = GetArg("-idnsbindip", "");
+        string allowed = GetArg("-idnsallowed", "");
+        string localcf = GetArg("-idnslocalcf", "");
+        idns = new IDns(bind_ip.c_str(), port,
+        suffix.c_str(), allowed.c_str(), localcf.c_str(), verbose);
+        printf("Innova DNS Server started on port 6565!\n");
+    }
+
     // ********************************************************* Step 12: finished
 
     uiInterface.InitMessage(_("Done loading"));
@@ -1319,6 +1350,9 @@ bool AppInit2()
 #if !defined(QT_GUI)
     // Loop until process is exit()ed from shutdown() function,
     // called from ThreadRPCServer thread when a "stop" command is received.
+    if(idns) {
+	    idns->Run();
+    }
     while (1)
         //MilliSleep(5000);
         sleep(5);

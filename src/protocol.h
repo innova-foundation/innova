@@ -16,6 +16,8 @@
 #include "uint256.h"
 #include "state.h"
 
+#define IDNS_PORT 6565
+
 extern bool fTestNet;
 static inline unsigned short GetDefaultPort(const bool testnet = fTestNet)
 {
