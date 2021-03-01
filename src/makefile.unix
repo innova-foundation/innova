@@ -1,6 +1,6 @@
 # Copyright (c) 2009-2010 Satoshi Nakamoto
-# Copyright (c) 2017-2020 D e n a r i u s [D]
-# Copyright (c) 2019-2020 I n n o v a [INN]
+# Copyright (c) 2017-2021 D e n a r i u s [D]
+# Copyright (c) 2019-2021 I n n o v a [INN]
 # Distributed under the MIT/X11 software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -394,6 +394,8 @@ OBJS= \
     obj/ringsig.o \
     obj/bloom.o \
     obj/state.o \
+    obj/idns.o \
+    obj/namecoin.o \
     obj/ipfs.o \
     obj/ipfscurl.o  \
     obj/stun.o
