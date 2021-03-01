@@ -28,7 +28,7 @@ static std::map<int, unsigned int> mapStakeModifierCheckpoints =
 // Hard checkpoints of stake modifiers to ensure they are deterministic (testNet)
 static std::map<int, unsigned int> mapStakeModifierCheckpointsTestNet =
     boost::assign::map_list_of
-        ( 0, 0xfd11f4e7 )
+        ( 9999999999, 0x4038ad82 )
     ;
 
 // Get time weight
