@@ -41,6 +41,7 @@ std::map<int64_t, uint256> mapCacheBlockHashes;
 CMedianFilter<unsigned int> mnMedianCount(10, 0);
 unsigned int mnCount = 0;
 int64_t nAverageFSIncome;
+int64_t nAveragePayCount;
 
 // manage the fortunastake connections
 void ProcessFortunastakeConnections(){
@@ -132,7 +133,7 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
         if((fTestNet && addr.GetPort() != 15539) || (!fTestNet && addr.GetPort() != 14539)) return;
 
         //search existing fortunastake list, this is where we update existing fortunastakes with new dsee broadcasts
-	      LOCK(cs_fortunastakes);
+        LOCK(cs_fortunastakes);
         BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes) {
             if(mn.vin.prevout == vin.prevout) {
                 // count == -1 when it's a new entry
@@ -140,7 +141,8 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
                 // mn.pubkey = pubkey, IsVinAssociatedWithPubkey is validated once below,
                 //   after that they just need to match
                 if(count == -1 && mn.pubkey == pubkey && !mn.UpdatedWithin(FORTUNASTAKE_MIN_DSEE_SECONDS)){
-                  mn.UpdateLastSeen(sigTime); // update last seen with the sigTime
+					mn.UpdateLastSeen(sigTime); // Updated UpdateLastSeen with sigTime
+                    //mn.UpdateLastSeen(); // update last seen without the sigTime since it's a new entry
 
                     if(mn.now < sigTime){ //take the newest entry
                         if (fDebugFS & fDebugNet) printf("dsee - Got updated entry for %s\n", addr.ToString().c_str());
@@ -545,7 +547,7 @@ bool GetFortunastakeRanks(CBlockIndex* pindex)
     if (vecFortunastakeScoresListHash.size() > 0 && vecFortunastakeScoresListHash == pindex->GetBlockHash()) {
         // if ScoresList was calculated for the current pindex hash, then just use that list
         // TODO: make a vector of these somehow
-        if (fDebug) printf(" STARTCOPY (%"PRId64"ms)", GetTimeMillis() - nStartTime);
+        if (fDebug) printf(" STARTCOPY (%" PRId64"ms)", GetTimeMillis() - nStartTime);
         BOOST_FOREACH(CFortunaStake& mn, vecFortunastakeScoresList)
         {
             i++;
@@ -559,7 +561,7 @@ bool GetFortunastakeRanks(CBlockIndex* pindex)
         FortunaReorgBlock = false; // reset reorg flag, we can check now it's updated
 
         // now we build the list for sorting
-        if (fDebug) printf(" STARTLOOP (%"PRId64"ms)", GetTimeMillis() - nStartTime);
+        if (fDebug) printf(" STARTLOOP (%" PRId64"ms)", GetTimeMillis() - nStartTime);
         BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes) {
 
             mn.Check();
@@ -585,7 +587,7 @@ bool GetFortunastakeRanks(CBlockIndex* pindex)
     // TODO: Store the whole Scores vector in a caching hash map, maybe need hashPrev as well to make sure it re calculates any different chains with the same end block?
     //vecFortunastakeScoresCache.insert(make_pair(pindex->GetBlockHash(), vecFortunastakeScoresList));
 
-    if (fDebug) printf(" SORT (%"PRId64"ms)", GetTimeMillis() - nStartTime);
+    if (fDebug) printf(" SORT (%" PRId64"ms)", GetTimeMillis() - nStartTime);
     sort(vecFortunastakeScores.rbegin(), vecFortunastakeScores.rend(), CompareLastPay(pindex)); // sort requires current pindex for modulus as pindexBest is different between clients
 
     i = 0;
@@ -596,7 +598,7 @@ bool GetFortunastakeRanks(CBlockIndex* pindex)
         s.first = i;
         s.second->nRank = i;
     }
-    if (fDebug) printf(" DONE (%"PRId64"ms)\n", GetTimeMillis() - nStartTime);
+    if (fDebug) printf(" DONE (%" PRId64"ms)\n", GetTimeMillis() - nStartTime);
     return true;
 }
 
@@ -618,6 +620,9 @@ int GetFortunastakeRank(CFortunaStake &tmn, CBlockIndex* pindex, int minProtocol
 
 bool CheckFSPayment(CBlockIndex* pindex, int64_t value, CFortunaStake &mn) {
     if (mn.nBlockLastPaid == 0) return true; // if we didn't find a payment for this MN, let it through regardless of rate
+
+    //if (mn.nBlockLastPaid - vFortunastakes.count()) return false;
+
     // find height
     // calculate average payment across all FS
     // check if value is > 25% higher
@@ -627,17 +632,56 @@ bool CheckFSPayment(CBlockIndex* pindex, int64_t value, CFortunaStake &mn) {
     if (value > max) {
         return false;
     }
+
+    CScript pubScript;
+    pubScript = GetScriptForDestination(mn.pubkey.GetID());
+    CTxDestination address1;
+    ExtractDestination(pubScript, address1);
+    CBitcoinAddress address2(address1);
+
+    // calculate pay count average across FS
+    // check if pay count is > 50% higher than the avg
+    nAveragePayCount = avgCount(vecFortunastakeScoresList);
+    if (nAveragePayCount < 1) return true; // if the pay count is less than 1 just let it through
+    int64_t maxed = nAveragePayCount * 12 / 8;
+    if (mn.payCount > maxed) {
+        printf("CheckFSPayment() Current payCount of %s FS is %d - payCount Overall Average %d\n", address2.ToString().c_str(), mn.payCount, nAveragePayCount);
+        return false;
+    }
+
     return true;
 }
 
 bool CheckPoSFSPayment(CBlockIndex* pindex, int64_t value, CFortunaStake &mn) {
     if (mn.nBlockLastPaid == 0) return true; // if we didn't find a payment for this MN, let it through regardless of rate
+
     // find height
     // calculate average payment across all FS
     // check if value is > 25% higher
     nAverageFSIncome = avg2(vecFortunastakeScoresList);
     if (nAverageFSIncome < 1 * COIN) return true; // if we can't calculate a decent average, then let the payment through
     //int64_t max = nAverageFSIncome * 10 / 8;
+    /* // Dont check if value is > 25% higher since PoS
+    if (value > max) {
+        return false;
+    }
+    */
+    CScript pubScript;
+    pubScript = GetScriptForDestination(mn.pubkey.GetID());
+    CTxDestination address1;
+    ExtractDestination(pubScript, address1);
+    CBitcoinAddress address2(address1);
+
+    // calculate pay count average across FS
+    // check if pay count is > 50% higher than the avg
+    nAveragePayCount = avgCount(vecFortunastakeScoresList);
+    if (nAveragePayCount < 1) return true; // if the pay count is less than 1 just let it through
+    int64_t maxed = nAveragePayCount * 12 / 8;
+    if (mn.payCount > maxed) {
+        printf("CheckPoSFSPayment() Current payCount of %s is %d - payCount Overall Average %d\n", address2.ToString().c_str(), mn.payCount, nAveragePayCount);
+        return false;
+    }
+
     return true;
 }
 
@@ -648,8 +692,21 @@ int64_t avg2(std::vector<CFortunaStake> const& v) {
         int64_t x = v[i].payValue;
         int64_t delta = x - mean;
         //TODO: implement in mandatory update, will reduce average & lead to rejections
-        //if (v[i].payValue > 2*COIN) { continue; } // don't consider payees above 2.00000000INN (pos only / lucky payees)
-        if (v[i].payValue < 1*COIN) { continue; } // don't consider payees below 1.00000000INN (pos only / new payees)
+        //if (v[i].payValue > 2*COIN) { continue; } // don't consider payees above 2.00000000D (pos only / lucky payees)
+        if (v[i].payValue < 1*COIN) { continue; } // don't consider payees below 1.00000000D (pos only / new payees)
+        mean += delta/++n;
+    }
+    return mean;
+}
+
+int64_t avgCount(std::vector<CFortunaStake> const& v) {
+    int n = 0;
+    int64_t mean = 0;
+    for (int i = 0; i < v.size(); i++) {
+        int64_t x = v[i].payCount;
+        int64_t delta = x - mean;
+        //TODO: implement in mandatory update, will reduce average & lead to rejections
+        if (v[i].payCount < 1) { continue; } // don't consider payees below 1 payment (pos only / new payees)
         mean += delta/++n;
     }
     return mean;
@@ -759,7 +816,7 @@ int CFortunaStake::SetPayRate(int nHeight)
              payValue = amount;
              // set the node's current 'reward rate' - pay value divided by rounds (3)
              // this rate is representative of "INN per day"
-             payRate = ((payValue / scanBack) / 30) * 86400;
+             payRate = ((payValue / scanBack) / 30) * 86400; // INNTODO
              // printf("%d found with %s value %.2f rate\n", matches, FormatMoney(amount).c_str(), payRate);
              return matches;
          }
@@ -993,7 +1050,7 @@ void CFortunaStake::UpdateLastPaidBlock(const CBlockIndex *pindex, int nMaxBlock
                 // TODO HERE: Scan the block for fortunastake payment amount
                 BOOST_FOREACH(CTxOut txout, block.vtx[1].vout)
                     if(mnpayee == txout.scriptPubKey) {
-                        nBlockLastPaid = BlockReading->nHeight;\
+                        nBlockLastPaid = BlockReading->nHeight;
                         int lastPay = pindexBest->nHeight - nBlockLastPaid;
                         int value = txout.nValue;
                         // TODO HERE: Check the nValue for the fortunastake payment amount
@@ -1014,7 +1071,7 @@ void CFortunaStake::UpdateLastPaidBlock(const CBlockIndex *pindex, int nMaxBlock
 }
 
 //
-// Deterministically calculate a given "score" for a fortunastake depending on how close it's hash is to
+// Deterministically calculate a given "score" for a fortunastake with tribus depending on how close it's hash is to
 // the proof of work for that block. The further away they are the better, the furthest will win the election
 // and get paid this block
 //
