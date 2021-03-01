@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
-// Copyright (c) 2017-2020 The Denarius developers
-// Copyright (c) 2019-2020 The Innova developers
+// Copyright (c) 2017-2021 The Denarius developers
+// Copyright (c) 2019-2021 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #ifndef BITCOIN_MAIN_H
@@ -21,7 +21,7 @@ class CValidationState;
 
 #define BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET 550 // Testnet Fortunastake payments enabled block 800
 #define BLOCK_START_FORTUNASTAKE_PAYMENTS 800 //Mainnet Fortunastake payments not enabled until block 800
-#define BLOCK_START_FORTUNASTAKE_DELAYPAY 2500 //Activates a delay in payment for MNs - I n n o v a Block 2500
+#define BLOCK_START_FORTUNASTAKE_DELAYPAY 2500 // Unused
 
 //#define START_FORTUNASTAKE_PAYMENTS_TESTNET 1519430400  //Sat, 24 Feb 2018 00:00:00 GMT
 //#define START_FORTUNASTAKE_PAYMENTS 1520985600  //Wed, 14 Mar 2018 00:00:00 GMT
@@ -82,6 +82,7 @@ static const int64_t COIN_YEAR_REWARD = 0.06 * COIN; // 6% per year
 
 static const int64_t MAINNET_POSFIX = 500; //Mainnet Proof of Stake update not enabled until block 500
 static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 4500; // Enforce fortunastake payments after this height - BLOCK 4500
+static const int MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET = 551; //Enforce FS payments after this height for Innova Testnet!
 
 inline bool MoneyRange(int64_t nValue) { return (nValue >= 0 && nValue <= MAX_MONEY); }
 

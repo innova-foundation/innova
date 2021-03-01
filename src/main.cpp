@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
-// Copyright (c) 2017-2020 The Denarius developers
-// Copyright (c) 2020 The Innova developers
+// Copyright (c) 2017-2021 The Denarius developers
+// Copyright (c) 2017-2021 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -1553,42 +1553,57 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
 {
 	int64_t nSubsidy = 1 * COIN;
 
+  if (fTestNet) {
+       if (pindexBest->nHeight == 1)
+           nSubsidy = 3000000 * COIN;  // 10m INN Premine for Testnet for testing
+       else if (pindexBest->nHeight <= FAIR_LAUNCH_BLOCK) // Block 490, Instamine prevention
+           nSubsidy = 1 * COIN/2;
+       else if (pindexBest->nHeight <= 500)
+           nSubsidy = 3 * COIN;
+       else if (pindexBest->nHeight > 500) // Block 500
+           nSubsidy = 0; // PoW Rewards Ends
+
+       if (fDebug && GetBoolArg("-printcreation"))
+           printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
+
+       return nSubsidy + nFees;
+   } else {
   if (pindexBest->nHeight == 1)
   		nSubsidy = 10350000 * COIN;  //Swap amount for Innova Chain v0.12 + Founders Fund 2.25 million
   	else if (pindexBest->nHeight <= FAIR_LAUNCH_BLOCK) // Block 490, Instamine prevention
       nSubsidy = 0.165 * COIN/2;
-  	else if (pindexBest->nHeight <= 5000) //
+  	else if (pindexBest->nHeight <= 5000)
   		nSubsidy = 0.33 * COIN;
-    else if (pindexBest->nHeight <= 10000) //
+    else if (pindexBest->nHeight <= 10000)
     	nSubsidy = 0.66 * COIN;
-    else if (pindexBest->nHeight <= 15000) //
+    else if (pindexBest->nHeight <= 15000)
       nSubsidy = 0.99 * COIN;
-    else if (pindexBest->nHeight <= 20000) //
+    else if (pindexBest->nHeight <= 20000)
     	nSubsidy = 1.32 * COIN;
-    else if (pindexBest->nHeight <= 25000)//
+    else if (pindexBest->nHeight <= 25000)
       nSubsidy = 1.65 * COIN;
-  	else if (pindexBest->nHeight <= 27500) //
+  	else if (pindexBest->nHeight <= 27500)
   		nSubsidy = 1.485 * COIN;
-    else if (pindexBest->nHeight <= 30000) //
+    else if (pindexBest->nHeight <= 30000)
     	nSubsidy = 1.32 * COIN;
-    else if (pindexBest->nHeight <= 32500) //
+    else if (pindexBest->nHeight <= 32500)
       nSubsidy = 1.155 * COIN;
-    else if (pindexBest->nHeight <= 35000) //
+    else if (pindexBest->nHeight <= 35000)
       nSubsidy = 0.99 * COIN;
-    else if (pindexBest->nHeight <= 37500) //
+    else if (pindexBest->nHeight <= 37500)
       nSubsidy = 0.825 * COIN;
-  	else if (pindexBest->nHeight <= 40000) //
+  	else if (pindexBest->nHeight <= 40000)
   		nSubsidy = 0.66 * COIN;
-    else if (pindexBest->nHeight <= 42500) //
+    else if (pindexBest->nHeight <= 42500)
     	nSubsidy = 0.495 * COIN;
-    else if (pindexBest->nHeight <= 45000) //
+    else if (pindexBest->nHeight <= 45000)
     	nSubsidy = 0.33 * COIN;
-    else if (pindexBest->nHeight <= 47500) //
+    else if (pindexBest->nHeight <= 47500)
     	nSubsidy = 0.165 * COIN;
-    else if (pindexBest->nHeight <= 50000) //
+    else if (pindexBest->nHeight <= 50000)
     	nSubsidy = 0.0825 * COIN;
     else if (pindexBest->nHeight > LAST_POW_BLOCK) // Block 50k
-  		nSubsidy = 0; // PoW Ends
+  		nSubsidy = 0; // PoW Rewards Ends
 
     if (fDebug && GetBoolArg("-printcreation"))
         printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
@@ -1606,9 +1621,9 @@ int64_t nRewardCoinYear;
 nRewardCoinYear = COIN_YEAR_REWARD; // 0.06 6%
 
 int64_t nSubsidy;
-nSubsidy = nCoinAge * nRewardCoinYear / 365 / COIN;
+nSubsidy = nCoinAge * nRewardCoinYear / 365; // Updated on block 500
 
-//PoS Fixed on Block 640k
+// PoS Fixed on Block 500
 if (pindexBest->nHeight >= MAINNET_POSFIX || fTestNet)
 nSubsidy = nCoinAge * nRewardCoinYear / 365;
 
@@ -2526,45 +2541,23 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
       if (nStakeReward > nCalculatedStakeReward)
             return DoS(100, error("ConnectBlock() : coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
     }
-    // ----------- fortunastake payments -----------
-    // Once upon a time, People were really interested in D.
-    // So much so, People wanted to bring D to the moon. Even Mars, Sooner than the roadster...
-    // The Discord was active, People discussed how they would reach that goal.
-    // There was one person, named Thi3rryzz watching all this from a save distance.
-    // Then, the word FORTUNASTAKES came to the table.
-    // People wanted fortunastakes... Really Bad. But King Carsen was already busy with the rest of D
-    // So Thi3rryzz decided to jump in..
-    // After a lot of: "How much for MN" and "When MN?"
-    // We hope to proudly present you:
-    // ----------- hybrid fortunastake payments -----------
-
-
-    // ... after a long time, it came to be known in the lands that the fortunastakes were indeed high.
-    // many of thy were so invested in their stakes they pushed it, to get all the D they could. the streets
-    // were dark and the days were long. people wanted a fair hand. they wanted to know they could rely
-    // on the D to bring them joy and happiness, and not worry for when they might next taste the D
-
-    // and oh ye of little faith, feast your eyes upon the broth of thine calling. the hybrid stakes are no more.
-    // gone are the days of not knowing when to expect the sweet caress of the glorious INN to be gracing the silver linings
-    // of your wallet. forever more you shall know the D, and the D shall know you, and ye shall be fairly judged
-    // for all of eternity
-
 
     // ----- Innova fortuna stakes, the fair payment edition  -----
     // proudly presented by enkayz
+    // credits to carsenk
 
     bool FortunastakePayments = false;
     bool fIsInitialDownload = IsInitialBlockDownload();
 
-    if (fTestNet){
-        if (pindex->nHeight > BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET){ // Block 75k Testnet
+    if (fTestNet) {
+        if (pindex->nHeight > BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET){ // Block 551 Testnet
             FortunastakePayments = true;
             if(fDebug) { printf("CheckBlock() : Fortunastake payments enabled\n"); }
         }else{
             FortunastakePayments = false;
             if(fDebug) { printf("CheckBlock() : Fortunastake payments disabled\n"); }
         }
-    }else{
+    } else {
         if (pindex->nHeight > BLOCK_START_FORTUNASTAKE_PAYMENTS){ //Block 645k Mainnet
             FortunastakePayments = true;
             if(fDebug) { printf("CheckBlock() : Fortunastake payments enabled\n"); }
@@ -2640,7 +2633,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
                       if (!fIsInitialDownload) {
                       if (!CheckPoSFSPayment(pindex, vtx[1].vout[i].nValue, mn)) // CheckPoSFSPayment()
                       {
-                        if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT) { //Update PoS FS Payments to not go out of sync
+                        if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) { //Update PoS FS Payments to not go out of sync
                           //printf("CheckBlock-POS() : Out-of-cycle fortunastake payment detected, rejecting block.");
                           printf("CheckBlock-POS() : Out-of-cycle FortunaStake payment detected, rejecting block. rank:%d value:%s avg:%s payRate:%s payCount:%d\n",mn.nRank,FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageFSIncome).c_str(),FormatMoney(mn.payRate).c_str(), mn.payCount);
                         } else {
@@ -2678,7 +2671,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
                 }
 
                 if (!foundPayee) {
-                  if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT) {
+                  if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) {
                       LOCK(cs_vNodes);
                       BOOST_FOREACH(CNode* pnode, vNodes)
                   {
@@ -2694,7 +2687,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
                     foundPayee = true;
                       }
                       } else if (paymentOK) {
-                    if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT) {
+                    if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) {
                         if (fDebug) printf("CheckBlock-POS() : This payment has been determined as legitimate, and will be allowed.\n");
                           } else {
                           if (fDebug) printf("CheckBlock-POS() : This payment has been determined as legitimate, and will be allowed after block %d.\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
@@ -2764,7 +2757,7 @@ GetFortunastakeRanks(pindexBest);
                  if (!fIsInitialDownload) {
                      if (!CheckFSPayment(pindex, vtx[0].vout[i].nValue, mn)) // if MN is being paid and it's bottom 50% ranked, don't let it be paid.
                      {
-                         if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT)
+                         if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET)
                          {
                              printf("CheckBlock-POW() : Fortunastake overpayment detected, rejecting block. rank:%d value:%s avg:%s payRate:%s payCount:%d\n",mn.nRank,FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageFSIncome).c_str(),FormatMoney(mn.payRate).c_str(), mn.payCount);
                          } else {
@@ -2805,7 +2798,7 @@ GetFortunastakeRanks(pindexBest);
       }
   }
   if (!foundPayee) {
-       if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT) {
+       if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) {
                LOCK(cs_vNodes);
                BOOST_FOREACH(CNode* pnode, vNodes)
                {
@@ -2821,7 +2814,7 @@ GetFortunastakeRanks(pindexBest);
            foundPayee = true;
        }
    } else if (paymentOK) {
-       if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT) {
+       if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) {
            if (fDebug) printf("CheckBlock-POW() : This payment has been determined as legitimate, and will be allowed.\n");
        } else {
            if (fDebug) printf("CheckBlock-POW() : This payment has been determined as legitimate, and will be allowed after block %d.\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
@@ -3671,9 +3664,9 @@ if (!mapBlockIndex.count(pblock->hashPrevBlock)) //pblock->hashPrevBlock != 0 &&
         if (fDebug) printf("ProcessBlock: ACCEPTED\n");
     }
 
-    //After block 1.5m, The Minimum FortunaStake Protocol Version is 31005
-    if(nBestHeight >= 1500000) {
-        MIN_MN_PROTO_VERSION = 31005;
+    //After block 1.5m, The Minimum FortunaStake Protocol Version is 43890
+    if(nBestHeight >= 15000000 || fTestNet) {
+        MIN_MN_PROTO_VERSION = 43890;
     }
 
     // ppcoin: if responsible for sync-checkpoint send it
@@ -3836,7 +3829,7 @@ FILE* OpenBlockFile(unsigned int nFile, unsigned int nBlockPos, const char* pszM
       pchMessageStart[3] = 0x1b;
 
       bnProofOfWorkLimit = bnProofOfWorkLimitTestNet; // 16 bits PoW target limit for testnet
-      nStakeMinAge = 1 * 60 * 60; // test net min age is 1 hour
+      nStakeMinAge = 10 * 60 * 60; // test net min age is 10 hours
       nCoinbaseMaturity = 65; // test maturity is 65 blocks
   };
 
@@ -3857,6 +3850,74 @@ FILE* OpenBlockFile(unsigned int nFile, unsigned int nBlockPos, const char* pszM
             if (!fAllowNew)
             return false;
 
+            if(fTestNet)
+        {
+            const char* pszTimestampTestNet = "Innova Test Blockchain | CircuitBreaker";
+            CTransaction txNewTestNet;
+
+            txNewTestNet.nTime = 1614593682;
+            txNewTestNet.vin.resize(1);
+            txNewTestNet.vout.resize(1);
+            txNewTestNet.vin[0].scriptSig = CScript() << 0 << CBigNum(42) << vector<unsigned char>((const unsigned char*)pszTimestampTestNet, (const unsigned char*)pszTimestampTestNet + strlen(pszTimestampTestNet));
+            txNewTestNet.vout[0].SetEmpty();
+
+            CBlock blocktest;
+            blocktest.vtx.push_back(txNewTestNet);
+            blocktest.hashPrevBlock = 0;
+            blocktest.hashMerkleRoot = blocktest.BuildMerkleTree();
+            blocktest.nTime    = 1614593682;
+            blocktest.nVersion = 1;
+            blocktest.nBits    = bnProofOfWorkLimit.GetCompact();
+            blocktest.nNonce   = 25640;
+
+            if (false && (blocktest.GetHash() != hashGenesisBlockTestNet)) {
+            // This will figure out a valid hash and Nonce if you're
+            // creating a different genesis block:
+                uint256 hashTarget = CBigNum().SetCompact(blocktest.nBits).getuint256();
+                while (blocktest.GetHash() > hashTarget)
+                {
+                    ++blocktest.nNonce;
+                    if (blocktest.nNonce == 0)
+                    {
+                        printf("NONCE WRAPPED, incrementing time");
+                        ++blocktest.nTime;
+                    }
+                }
+            }
+            blocktest.print();
+            printf("TestNet blocktest.GetHash() == %s\n", blocktest.GetHash().ToString().c_str());
+            printf("TestNet blocktest.hashMerkleRoot == %s\n", blocktest.hashMerkleRoot.ToString().c_str());
+            printf("TestNet blocktest.nTime = %u \n", blocktest.nTime);
+            printf("TestNet blocktest.nNonce = %u \n", blocktest.nNonce);
+
+
+            //// debug print
+            assert(blocktest.hashMerkleRoot == uint256("0x844eb990208614fa067144c1dc036af20be4b80192a4cd6937ceb37a32d361e0"));
+            blocktest.print();
+            assert(blocktest.GetHash() == hashGenesisBlockTestNet);
+            assert(blocktest.CheckBlock());
+
+            // -- debug print
+            if (fDebugChain)
+            {
+                printf("Initialised Denarius TestNet genesis block:\n");
+                blocktest.print();
+            };
+
+            // Start new block file
+            unsigned int nFile;
+            unsigned int nBlockPos;
+            if (!blocktest.WriteToDisk(nFile, nBlockPos))
+                return error("TestNetLoadBlockIndex() : writing genesis block to disk failed");
+            if (!blocktest.AddToBlockIndex(nFile, nBlockPos, hashGenesisBlockTestNet))
+                return error("TestNetLoadBlockIndex() : Testnet genesis block not accepted");
+
+            // ppcoin: initialize synchronized checkpoint
+            if (!Checkpoints::WriteSyncCheckpoint(hashGenesisBlockTestNet))
+                return error("TestNetLoadBlockIndex() : failed to init sync checkpoint");
+
+        } else {
+
             const char* pszTimestamp = "Innova Blockchain starts on 12/10/2019";
             CTransaction txNew;
             txNew.nTime = 1576002227;
@@ -3866,18 +3927,14 @@ FILE* OpenBlockFile(unsigned int nFile, unsigned int nBlockPos, const char* pszM
             txNew.vout[0].SetEmpty();
 
             CBlock block;
-                    block.vtx.push_back(txNew);
-                    block.hashPrevBlock = 0;
-                    block.hashMerkleRoot = block.BuildMerkleTree();
-                    block.nTime    = 1576002227;
-                    block.nVersion = 1;
-                    block.nBits    = bnProofOfWorkLimit.GetCompact();
-            		    block.nNonce   = 253080;
+            block.vtx.push_back(txNew);
+            block.hashPrevBlock = 0;
+            block.hashMerkleRoot = block.BuildMerkleTree();
+            block.nTime    = 1576002227;
+            block.nVersion = 1;
+            block.nBits    = bnProofOfWorkLimit.GetCompact();
+            block.nNonce   = 253080;
 
-                    if(fTestNet)
-            {
-                block.nNonce   = 33733;
-            }
             if (false && (block.GetHash() != hashGenesisBlock)) {
 
             // This will figure out a valid hash and Nonce if you're
@@ -3891,8 +3948,8 @@ FILE* OpenBlockFile(unsigned int nFile, unsigned int nBlockPos, const char* pszM
                            printf("NONCE WRAPPED, incrementing time");
                            ++block.nTime;
                        }
-                   }
-            }
+                    }
+                 }
             block.print();
             printf("block.GetHash() == %s\n", block.GetHash().ToString().c_str());
             printf("block.hashMerkleRoot == %s\n", block.hashMerkleRoot.ToString().c_str());
@@ -3902,14 +3959,14 @@ FILE* OpenBlockFile(unsigned int nFile, unsigned int nBlockPos, const char* pszM
             //// debug print
             assert(block.hashMerkleRoot == uint256("0x7fe3177ea86b03a9c8773b32a3db36f32f4011bec4a0724032c36bc1c9d569a0"));
             block.print();
-            assert(block.GetHash() == (!fTestNet ? hashGenesisBlock : hashGenesisBlockTestNet));
+            assert(block.GetHash() == hashGenesisBlock);
             assert(block.CheckBlock());
 
             // -- debug print
             if (fDebugChain)
             {
-              printf("Initialised genesis block:\n");
-              block.print();
+                printf("Initialised genesis block:\n");
+                block.print();
             };
 
             // Start new block file
@@ -3920,10 +3977,11 @@ FILE* OpenBlockFile(unsigned int nFile, unsigned int nBlockPos, const char* pszM
             if (!block.AddToBlockIndex(nFile, nBlockPos, hashGenesisBlock))
                 return error("LoadBlockIndex() : genesis block not accepted");
 
-                // ppcoin: initialize synchronized checkpoint
-                if (!Checkpoints::WriteSyncCheckpoint((!fTestNet ? hashGenesisBlock : hashGenesisBlockTestNet)))
-                    return error("LoadBlockIndex() : failed to init sync checkpoint");
-            }
+            // ppcoin: initialize synchronized checkpoint
+            if (!Checkpoints::WriteSyncCheckpoint(hashGenesisBlock))
+                return error("LoadBlockIndex() : failed to init sync checkpoint");
+        }
+    }
 
             string strPubKey = "";
 
