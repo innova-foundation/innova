@@ -253,6 +253,15 @@ Value proofofdata(const Array& params, bool fHelp)
     std::string sNarr = "POD";
     wtx.mapValue["to"]      = "Proof of Data";
 
+    // Comment
+    // CWalletTx wtx;
+    // CScript podScript = CScript() << OP_RETURN; //CScript()
+    // if (!basename.c_str().empty()) {
+    //     if (basename.c_str().length() > MAX_OP_RETURN_RELAY - 3) //Max 45 Bytes
+    //         throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Comment cannot be longer than %u characters", MAX_OP_RETURN_RELAY - 3));
+    //     podScript << ToByteVector("POD: " + basename.c_str());
+    // }
+
     if (pwalletMain->IsLocked())
     {
         obj.push_back(Pair("error",  "Error, Your wallet is locked! Please unlock your wallet!"));
