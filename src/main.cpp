@@ -2641,7 +2641,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
                       if (!CheckPoSFSPayment(pindex, vtx[1].vout[i].nValue, mn)) // CheckPoSFSPayment()
                       {
                         if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT) { //Update PoS FS Payments to not go out of sync
-          							printf("CheckBlock-POS() : Out-of-cycle fortunastake payment detected, rejecting block.");
+          							printf("CheckBlock-POS() : Out-of-cycle FortunaStake payment detected, rejecting block. rank:%d value:%s avg:%s payRate:%s payCount:%d\n",mn.nRank,FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageFSIncome).c_str(),FormatMoney(mn.payRate).c_str(), mn.payCount);
                         } else {
                         printf("CheckBlock-POS(): This fortunastake payment is too aggressive and will be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
                         }
@@ -2665,7 +2665,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck)
                           break;
                         }
                     }
-                    // if payee not found in mn list, check if the pubkey holds a 5K transaction
+                    // if payee not found in mn list, check if the pubkey holds a 25K transaction
                        if (!foundPayee) {
                          if (FindFSPayment(payee, pindex)) {
                             if (fDebug) printf("CheckBlock-POS() : WARNING: Payee was not found in MN list, but confirmed to hold collateral.\n");
@@ -2765,10 +2765,11 @@ GetFortunastakeRanks(pindexBest);
                      {
                          if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT)
                          {
-                             return error("CheckBlock-POW() : Fortunastake overpayment detected, rejecting block. rank:%d value:%s avg:%s payRate:%s",mn.nRank,FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageFSIncome).c_str(),FormatMoney(mn.payRate).c_str());
+                             printf("CheckBlock-POW() : Fortunastake overpayment detected, rejecting block. rank:%d value:%s avg:%s payRate:%s payCount:%d\n",mn.nRank,FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageFSIncome).c_str(),FormatMoney(mn.payRate).c_str(), mn.payCount);
                          } else {
                              if (fDebug) printf("WARNING: This fortunastake payment is too aggressive and will not be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
                          }
+                         //break;
                      } else {
                          if (fDebug) printf("CheckBlock-POW() : Payment meets rate requirement: payee has earnt %s against average %s\n",FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageFSIncome).c_str());
                      }
