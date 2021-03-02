@@ -2380,10 +2380,9 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
           return error("DisconnectBlock() : WriteBlockIndex failed");
     }
 
-    // denarius: undo name transactions in reverse order
-    if (fWriteNames)
-        for (int i = vtx.size() - 1; i >= 0; i--)
-            hooks->DisconnectInputs(vtx[i]);
+    // innova: undo name transactions in reverse order
+    for (int i = vtx.size() - 1; i >= 0; i--)
+        hooks->DisconnectInputs(vtx[i]);
 
     // ppcoin: clean up wallet after disconnecting coinstake
     BOOST_FOREACH(CTransaction& tx, vtx)
@@ -2979,7 +2978,7 @@ GetFortunastakeRanks(pindexBest);
     vector<nameTempProxy> vName;
     for (unsigned int i=0; i<vtx.size(); i++)
     {
-        printf("ConnectBlock() CheckInputs() for Name Index\n");
+      if (fDebug) printf("ConnectBlock() for Name Index\n");
         const CTransaction &tx = vtx[i];
         if (!tx.IsCoinBase())
             hooks->CheckInputs(tx, pindex, vName, vPos[i].second, vFees[i]); // collect valid name tx to vName
@@ -3060,7 +3059,6 @@ BOOST_FOREACH(CTransaction& tx, vtx)
 SyncWithWallets(tx, this, true);
 
   // add names to innovanames.dat
-    printf('ConnectBlock() Connected Block with Name Indexing\n');
     hooks->ConnectBlock(pindex, vName);
 
 // update the UI about the new block
