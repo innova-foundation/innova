@@ -516,6 +516,7 @@ public:
     bool ReadFromDisk(CTxDB& txdb, COutPoint prevout, CTxIndex& txindexRet);
     bool ReadFromDisk(CTxDB& txdb, COutPoint prevout);
     bool ReadFromDisk(COutPoint prevout);
+
     bool DisconnectInputs(CTxDB& txdb);
 
     /** Fetch from memory and/or disk. inputsRet keys are transaction hashes.
@@ -978,8 +979,8 @@ public:
     }
 
 
-    bool DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex);
-    bool ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck=false);
+    bool DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames = true);
+    bool ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck=false, bool fWriteNames = true);
     bool ReadFromDisk(const CBlockIndex* pindex, bool fReadTransactions=true);
     bool SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew);
     bool AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const uint256& hashProof);
@@ -993,6 +994,11 @@ public:
 private:
     bool SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew);
 };
+
+
+// bool ReadBlockFromDisk(CBlock& block, const CDiskBlockPos& pos);
+// bool ReadBlockFromDisk(CBlock& block, const CBlockIndex* pindex);
+
 
 
 /** The block chain is a tree shaped structure starting with the
@@ -1527,6 +1533,7 @@ public:
 class CTxMemPool
 {
 private:
+    // CTransaction tx;
     unsigned int nTransactionsUpdated;
 public:
     mutable CCriticalSection cs;
