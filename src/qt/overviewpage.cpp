@@ -195,11 +195,11 @@ void OverviewPage::getRequest1( const QString &urlString )
       //qDebug(readBuffer);
       //qDebug("cURL Request: %s", readBuffer.c_str());
 
-        QString denarius = QString::fromStdString(readBuffer);
-        denariusx = (denarius.toDouble());
-        denarius = QString::number(denariusx, 'f', 2);
+        QString innova = QString::fromStdString(readBuffer);
+        innovax = (innova.toDouble());
+        innova = QString::number(innovax, 'f', 2);
 
-        dollarg = denarius;
+        dollarg = innova;
     }
 }
 

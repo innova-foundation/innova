@@ -1003,10 +1003,10 @@ bool AppInit2()
     extern bool createNameIndexFile();
    if (!filesystem::exists(GetDataDir() / "innovanames.dat") && !createNameIndexFile())
    {
-       LogPrintf("Fatal error: Failed to create innovanames.dat\n");
+       printf("Fatal error: Failed to create innovanames.dat\n");
        return false;
      }
-    
+
     printf("Loaded Name DB %15" PRId64"ms\n", GetTimeMillis() - nStart2);
 
     if (GetBoolArg("-printblockindex") || GetBoolArg("-printblocktree"))
