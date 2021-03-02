@@ -2380,9 +2380,10 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
           return error("DisconnectBlock() : WriteBlockIndex failed");
     }
 
-    // innova: undo name transactions in reverse order
-    for (int i = vtx.size() - 1; i >= 0; i--)
-        hooks->DisconnectInputs(vtx[i]);
+    // denarius: undo name transactions in reverse order
+    if (fWriteNames)
+        for (int i = vtx.size() - 1; i >= 0; i--)
+            hooks->DisconnectInputs(vtx[i]);
 
     // ppcoin: clean up wallet after disconnecting coinstake
     BOOST_FOREACH(CTransaction& tx, vtx)
