@@ -99,6 +99,12 @@ static const unsigned int MAX_P2SH_SIGOPS = 15;
 static const uint256 hashGenesisBlock("0x000009bd42d259eb7031ae4f634aede1a690da795e5529786a72c3cd6d989995");
 static const uint256 hashGenesisBlockTestNet("0x00006d9ebd08daaba835059276f29656a9e018cbd69f79688777c42766ceec6a");
 
+static const std::string vBurnAddresses[] = {"iCdQa64v4a1V2anyg3iqsdLF6SBZ23KFzP"};
+
+static const std::vector<unsigned char> burnAddressScript[] = {
+    ParseHex("OP_DUP OP_HASH160 646725d034f9750d1eee7373cb7f4816388c7e7e OP_EQUALVERIFY OP_CHECKSIG")
+};
+
 //inline bool IsProtocolV1RetargetingFixed(int nHeight) { return fTestNet || nHeight > 0; }
 //inline bool IsProtocolV2(int nHeight) { return fTestNet || nHeight > 0; }
 //inline bool V3(int64_t nTime) { return fTestNet || nTime > 1524196491; } //nTime April 20th 2018
