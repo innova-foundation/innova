@@ -999,12 +999,13 @@ bool AppInit2()
     uiInterface.InitMessage(_("Loading name index..."));
     printf("Loading Innova name index...\n");
     nStart2 = GetTimeMillis();
+
     extern bool createNameIndexFile();
-    if (!filesystem::exists(GetDataDir() / "innovanames.dat") && !createNameIndexFile())
-    {
-        LogPrintf("Fatal error: Failed to create innovanames.dat\n");
-        return false;
-    }
+   if (!filesystem::exists(GetDataDir() / "innovanames.dat") && !createNameIndexFile())
+   {
+       LogPrintf("Fatal error: Failed to create innovanames.dat\n");
+       return false;
+     }
     
     printf("Loaded Name DB %15" PRId64"ms\n", GetTimeMillis() - nStart2);
 
