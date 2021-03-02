@@ -538,6 +538,38 @@
            </widget>
           </item>
           <item row="13" column="1">
+           <widget class="QLabel" name="labelRUBTotal">
+            <property name="font">
+             <font>
+              <pointsize>8</pointsize>
+              <weight>75</weight>
+              <bold>true</bold>
+             </font>
+            </property>
+            <property name="cursor">
+             <cursorShape>IBeamCursor</cursorShape>
+            </property>
+            <property name="toolTip">
+             <string>Your current total balance estimated in RUB</string>
+            </property>
+            <property name="text">
+             <string>0 RUB</string>
+            </property>
+            <property name="textInteractionFlags">
+             <set>Qt::LinksAccessibleByMouse|Qt::TextSelectableByKeyboard|Qt::TextSelectableByMouse</set>
+            </property>
+           </widget>
+          </item>
+          <item row="13" column="0">
+           <widget class="QLabel" name="rubtotal">
+            <property name="text">
+             <string>Est. RUB Total:</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+          <item row="14" column="1">
            <widget class="QLabel" name="labelJPYTotal">
             <property name="font">
              <font>
@@ -560,7 +592,7 @@
             </property>
            </widget>
           </item>
-          <item row="13" column="0">
+          <item row="14" column="0">
            <widget class="QLabel" name="jpytotal">
             <property name="text">
              <string>Est. JPY Total:</string>

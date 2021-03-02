@@ -4,6 +4,7 @@
 #include <QWidget>
 #include <QTimer>
 #include <QtNetwork/QtNetwork>
+#include <curl/curl.h>
 
 QT_BEGIN_NAMESPACE
 class QModelIndex;

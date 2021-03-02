@@ -6,6 +6,7 @@
 #include "clientmodel.h"
 #include "innovarpc.h"
 #include <QDesktopServices>
+#include <curl/curl.h>
 
 #include <sstream>
 #include <string>
@@ -31,6 +32,7 @@ QString innmarket;
 QString dollarg;
 QString eurog;
 QString poundg;
+QString rubleg;
 QString yeng;
 int mode=1;
 int o = 0;
@@ -45,7 +47,7 @@ MarketBrowser::MarketBrowser(QWidget *parent) :
 
 
 requests();
-QObject::connect(&m_nam, SIGNAL(finished(QNetworkReply*)), this, SLOT(parseNetworkResponse(QNetworkReply*)));
+//QObject::connect(&m_nam, SIGNAL(finished(QNetworkReply*)), this, SLOT(parseNetworkResponse(QNetworkReply*)));
 connect(ui->startButton, SIGNAL(pressed()), this, SLOT( requests()));
 connect(ui->egal, SIGNAL(pressed()), this, SLOT( update()));
 
@@ -62,117 +64,180 @@ void MarketBrowser::update()
 
 void MarketBrowser::requests()
 {
-	getRequest(kBaseUrl);
-  getRequest(kBaseUrl1);
-	getRequest(kBaseUrl2);
-	getRequest(kBaseUrl3);
+	getRequest1(kBaseUrl);
+  getRequest2(kBaseUrl1);
+	getRequest3(kBaseUrl2);
+	getRequest4(kBaseUrl3);
 }
 
-void MarketBrowser::getRequest( const QString &urlString )
+static size_t WriteCallback(void *contents, size_t size, size_t nmemb, void *userp)
 {
-    QUrl url ( urlString );
-    QNetworkRequest req ( url );
-    req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json; charset=utf-8");
-    m_nam.get(req);
+    ((std::string*)userp)->append((char*)contents, size * nmemb);
+    return size * nmemb;
 }
 
-void MarketBrowser::parseNetworkResponse(QNetworkReply *finished )
+void MarketBrowser::getRequest1( const QString &urlString )
 {
+    CURL *curl;
+    CURLcode res;
+    std::string readBuffer;
 
-    QUrl what = finished->url();
+    curl = curl_easy_init();
+    if(curl) {
+      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
+      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+      res = curl_easy_perform(curl);
+      if(res != CURLE_OK){
+            qWarning("curl_easy_perform() failed: \n");
+      }
+      curl_easy_cleanup(curl);
 
-    if ( finished->error() != QNetworkReply::NoError )
-    {
-        // A communication error has occurred
-        emit networkError( finished->error() );
-        return;
+    //   std::cout << readBuffer << std::endl;
+
+      //qDebug(readBuffer);
+    //   qDebug("INN cURL Request: %s", readBuffer.c_str());
+
+        QString innova = QString::fromStdString(readBuffer);
+        innova2 = (innova.toDouble());
+        innova = QString::number(innova2, 'f', 2);
+
+        if(innova > innovap)
+        {
+            ui->innova->setText("<font color=\"yellow\">$" + innova + "</font>");
+        } else if (innova < innovap) {
+            ui->innova->setText("<font color=\"red\">$" + innova + "</font>");
+            } else {
+        ui->innova->setText("$"+innova+" USD");
+        }
+
+        innovap = innova;
+        dollarg = innova;
     }
+}
 
-if (what == kBaseUrl) // Innova Price
+void MarketBrowser::getRequest2( const QString &urlString )
 {
+    CURL *curl;
+    CURLcode res;
+    std::string readBuffer;
 
-    // QNetworkReply is a QIODevice. So we read from it just like it was a file
-    QString innova = finished->readAll();
-    innova2 = (innova.toDouble());
-    innova = QString::number(innova2, 'f', 2);
+    curl = curl_easy_init();
+    if(curl) {
+      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
+      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+      res = curl_easy_perform(curl);
+      if(res != CURLE_OK){
+            qWarning("curl_easy_perform() failed: \n");
+      }
+      curl_easy_cleanup(curl);
 
-    if(innova > innovap)
-    {
-        ui->innova->setText("<font color=\"yellow\">$" + innova + "</font>");
-    } else if (innova < innovap) {
-        ui->innova->setText("<font color=\"red\">$" + innova + "</font>");
-        } else {
-    ui->innova->setText("$"+innova+" USD");
+    //   std::cout << readBuffer << std::endl;
+
+      //qDebug(readBuffer);
+    //   qDebug("BTC cURL Request: %s", readBuffer.c_str());
+
+        QString bitcoin = QString::fromStdString(readBuffer);
+        bitcoin2 = (bitcoin.toDouble());
+        bitcoin = QString::number(bitcoin2, 'f', 2);
+        if(bitcoin > bitcoinp)
+        {
+            ui->bitcoin->setText("<font color=\"yellow\">$" + bitcoin + " USD</font>");
+        } else if (bitcoin < bitcoinp) {
+            ui->bitcoin->setText("<font color=\"red\">$" + bitcoin + " USD</font>");
+            } else {
+        ui->bitcoin->setText("$"+bitcoin+" USD");
+        }
+
+        bitcoinp = bitcoin;
     }
-
-    innovap = innova;
-	  dollarg = innova;
 }
 
-if (what == kBaseUrl1) // Bitcoin Price
+void MarketBrowser::getRequest3( const QString &urlString )
 {
+    CURL *curl;
+    CURLcode res;
+    std::string readBuffer;
 
-    // QNetworkReply is a QIODevice. So we read from it just like it was a file
-    QString bitcoin = finished->readAll();
-    bitcoin2 = (bitcoin.toDouble());
-    bitcoin = QString::number(bitcoin2, 'f', 2);
-    if(bitcoin > bitcoinp)
-    {
-        ui->bitcoin->setText("<font color=\"yellow\">$" + bitcoin + " USD</font>");
-    } else if (bitcoin < bitcoinp) {
-        ui->bitcoin->setText("<font color=\"red\">$" + bitcoin + " USD</font>");
-        } else {
-    ui->bitcoin->setText("$"+bitcoin+" USD");
+    curl = curl_easy_init();
+    if(curl) {
+      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
+      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+      res = curl_easy_perform(curl);
+      if(res != CURLE_OK){
+            qWarning("curl_easy_perform() failed: \n");
+      }
+      curl_easy_cleanup(curl);
+
+    //   std::cout << readBuffer << std::endl;
+
+      //qDebug(readBuffer);
+        // qDebug("INN MCap cURL Request: %s", readBuffer.c_str());
+
+        QString innmc = QString::fromStdString(readBuffer);
+        innmc2 = (innmc.toDouble());
+        innmc = QString::number(innmc2, 'f', 2);
+
+        if(innmc > innmcp)
+        {
+            ui->innmc->setText("<font color=\"yellow\">$" + innmc + "</font>");
+        } else if (innmc < innmcp) {
+            ui->innmc->setText("<font color=\"red\">$" + innmc + "</font>");
+            } else {
+        ui->innmc->setText("$"+innmc+" USD");
+        }
+
+        innmcp = innmc;
+        innmarket = innmc;
     }
-
-    bitcoinp = bitcoin;
 }
 
-if (what == kBaseUrl2) // Innova Market Cap
+void MarketBrowser::getRequest4( const QString &urlString )
 {
+    CURL *curl;
+    CURLcode res;
+    std::string readBuffer;
 
-    // QNetworkReply is a QIODevice. So we read from it just like it was a file
-    QString innmc = finished->readAll();
-    innmc2 = (innmc.toDouble());
-    innmc = QString::number(innmc2, 'f', 2);
+    curl = curl_easy_init();
+    if(curl) {
+        curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+        res = curl_easy_perform(curl);
+        if(res != CURLE_OK){
+            qWarning("curl_easy_perform() failed: \n");
+        }
+        curl_easy_cleanup(curl);
 
-    if(innmc > innmcp)
-    {
-        ui->innmc->setText("<font color=\"yellow\">$" + innmc + "</font>");
-    } else if (innmc < innmcp) {
-        ui->innmc->setText("<font color=\"red\">$" + innmc + "</font>");
-        } else {
-    ui->innmc->setText("$"+innmc+" USD");
+        // std::cout << readBuffer << std::endl;
+
+        //qDebug(readBuffer);
+        // qDebug("INN/BTC cURL Request: %s", readBuffer.c_str());
+
+
+        QString innbtc = QString::fromStdString(readBuffer);
+        innbtc2 = (innbtc.toDouble());
+        innbtc = QString::number(innbtc2, 'f', 8);
+
+        if(innbtc > innbtcp)
+        {
+            ui->innbtc->setText("<font color=\"yellow\">" + innbtc + " BTC</font>");
+        } else if (innbtc < innbtcp) {
+            ui->innbtc->setText("<font color=\"red\">" + innbtc + " BTC</font>");
+            } else {
+        ui->innbtc->setText(innbtc+" BTC");
+        }
+
+        innbtcp = innbtc;
+        bitcoing = innbtc;
     }
-
-    innmcp = innmc;
-	innmarket = innmc;
 }
-
-if (what == kBaseUrl3) // Innova BTC Price
-{
-
-    // QNetworkReply is a QIODevice. So we read from it just like it was a file
-    QString innbtc = finished->readAll();
-    innbtc2 = (innbtc.toDouble());
-    innbtc = QString::number(innbtc2, 'f', 8);
-
-    if(innbtc > innbtcp)
-    {
-        ui->innbtc->setText("<font color=\"yellow\">" + innbtc + " BTC</font>");
-    } else if (innbtc < innbtcp) {
-        ui->innbtc->setText("<font color=\"red\">" + innbtc + " BTC</font>");
-        } else {
-    ui->innbtc->setText(innbtc+" BTC");
-    }
-
-    innbtcp = innbtc;
-	bitcoing = innbtc;
-}
-
-finished->deleteLater();
-}
-
 
 void MarketBrowser::setModel(ClientModel *model)
 {
