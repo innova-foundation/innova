@@ -229,7 +229,7 @@ bool RemoveNameScriptPrefix(const CScript& scriptIn, CScript& scriptOut)
 //     return true;
 // }
 
-bool SignNameSignatureD(const CKeyStore& keystore, const CTransaction& txFrom, CTransaction& txTo, unsigned int nIn, int nHashType)
+bool SignNameSignatureINN(const CKeyStore& keystore, const CTransaction& txFrom, CTransaction& txTo, unsigned int nIn, int nHashType)
 {
     assert(nIn < txTo.vin.size());
     CTxIn& txin = txTo.vin[nIn];
@@ -243,7 +243,7 @@ bool SignNameSignatureD(const CKeyStore& keystore, const CTransaction& txFrom, C
 
     CScript scriptPubKey;
     if (!RemoveNameScriptPrefix(txout.scriptPubKey, scriptPubKey))
-        return error("SignNameSignatureD(): failed to remove name script prefix");
+        return error("SignNameSignatureINN(): failed to remove name script prefix");
 
     txnouttype whichType;
     if (!Solver(keystore, scriptPubKey, hash, nHashType, txin.scriptSig, whichType))
@@ -457,7 +457,7 @@ bool CreateTransactionWithInputTx(const vector<pair<CScript, int64_t> >& vecSend
                 {
                     if (coin.first == &wtxIn && coin.second == nTxOut)
                     {
-                        if (!SignNameSignatureD(*pwalletMain, *coin.first, wtxNew, nIn++))
+                        if (!SignNameSignatureINN(*pwalletMain, *coin.first, wtxNew, nIn++))
                         {
                             strFailReason = _("Signing name input failed");
                             return false;
