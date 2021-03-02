@@ -1625,9 +1625,11 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
        else if (pindexBest->nHeight <= FAIR_LAUNCH_BLOCK) // Block 490, Instamine prevention
            nSubsidy = 1 * COIN/2;
        else if (pindexBest->nHeight <= 500)
-           nSubsidy = 3 * COIN;
+           nSubsidy = 10 * COIN;
        else if (pindexBest->nHeight > 500) // Block 500
-           nSubsidy = 0; // PoW Rewards Ends
+           nSubsidy = 0; // PoW Reward 0.0001
+     //else if (pindexBest->nHeight > 10000)
+         //nSubsidy = 10000; // PoW Reward 0.0001
 
        if (fDebug && GetBoolArg("-printcreation"))
            printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
@@ -1669,7 +1671,9 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
     else if (pindexBest->nHeight <= 50000)
     	nSubsidy = 0.0825 * COIN;
     else if (pindexBest->nHeight > LAST_POW_BLOCK) // Block 50k
-  		nSubsidy = 0; // PoW Rewards Ends
+     nSubsidy = 0; // PoW Reward
+  //else if (pindexBest->nHeight > 4300000) // Block 4.3m, Start PoW Rewards again as 0.0001 INN per block, ~200 INN per year
+   //nSubsidy = 10000; // PoW Reward 0.0001 INN
 
     if (fDebug && GetBoolArg("-printcreation"))
         printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
@@ -1681,7 +1685,7 @@ const int YEARLY_BLOCKCOUNT = 2103792; // Amount of Blocks per year
 // Proof of Stake miner's coin stake reward based on coin age spent (coin-days)
 int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees)
 {
-if (pindexBest->nHeight > (YEARLY_BLOCKCOUNT*9000)) // Over 9000 years.
+if (pindexBest->nHeight > (YEARLY_BLOCKCOUNT*9000)) // It's over 9000!![years] - Vegeta
 return nFees;
 
 int64_t nRewardCoinYear;
@@ -2241,8 +2245,7 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
      int64_t nFees = 0;
      for (unsigned int i = 0; i < vin.size(); i++)
      {
-         if (nVersion == ANON_TXN_VERSION
-             && vin[i].IsAnonInput())
+       if (nVersion == ANON_TXN_VERSION && vin[i].IsAnonInput())
              continue;
          COutPoint prevout = vin[i].prevout;
          assert(inputs.count(prevout.hash) > 0);
@@ -2326,8 +2329,9 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                     // vTxPrev.push_back(txPrev);
                     // vTxindex.push_back(txindex);
                     }
+                    //vector<nameTempProxy>& vName
                     //If it can't connect inputs return false to the Name DB
-                    // if (!hooks->ConnectInputs(txdb, mapTestPool, *this, posThisTx, pindexBlock, fBlock, fMiner, flags)) {
+                    // if (!hooks->ConnectInputs(txdb, mapTestPool, *this, posThisTx, pindexBlock, fBlock, fMiner, flags, vName)) {
                     //     return false;
                     // }
 
@@ -2978,14 +2982,15 @@ GetFortunastakeRanks(pindexBest);
 
     // innova: collect valid name tx
     // NOTE: tx.UpdateCoins should not affect this loop, probably...
-    vector<nameTempProxy> vName;
-    for (unsigned int i=0; i<vtx.size(); i++)
-    {
-      if (fDebug) printf("ConnectBlock() for Name Index\n");
-        const CTransaction &tx = vtx[i];
-        if (!tx.IsCoinBase()) //|| !tx.IsCoinStake()
-            hooks->CheckInputs(tx, pindex, vName, vPos[i].second, vFees[i]); // collect valid name tx to vName
-    }
+    // vector<nameTempProxy> vName;
+    // for (unsigned int i=0; i<vtx.size(); i++)
+    // {
+    //     if (fDebug) printf("ConnectBlock() for Name Index\n");
+    //     const CTransaction &tx = vtx[i];
+    //     //if (!tx.IsCoinBase()) //|| !tx.IsCoinStake()
+    //     //hooks->CheckInputs(tx, pindex, vName, vPos[i].second, vFees[i]); // collect valid name tx to vName
+    //     // hooks->CheckInputs(txdb, mapTestPool, tx, vPos[i].second, pindexBlock)
+    // }
 
     if (!txdb.WriteBlockIndex(CDiskBlockIndex(pindex)))
         return error("Connect() : WriteBlockIndex for pindex failed");
@@ -3057,12 +3062,12 @@ if(BuildAddrIndex(atxout.scriptPubKey, addrIds))
       return error("ConnectBlock() : WriteBlockIndex failed");
 }
 
-// add names to innovanames.dat
-  hooks->ConnectBlock(pindex, vName);
+// add names to innovanamesindex.dat
+    hooks->ConnectBlock(txdb, pindex);
 
 // Watch for transactions paying to me
-BOOST_FOREACH(CTransaction& tx, vtx)
-SyncWithWallets(tx, this, true);
+    BOOST_FOREACH(CTransaction& tx, vtx)
+    SyncWithWallets(tx, this, true);
 
 // update the UI about the new block
     uiInterface.NotifyRanksUpdated();

@@ -65,7 +65,7 @@ int inet_pton(int af, const char *src, void *dst)
   strncpy (src_copy, src, INET6_ADDRSTRLEN+1);
   src_copy[INET6_ADDRSTRLEN] = 0;
 
-  if (WSAStringToAddress(src_copy, af, NULL, (struct sockaddr *)&ss, &size) == 0) {
+  if (WSAStringToAddressA(src_copy, af, NULL, (struct sockaddr *)&ss, &size) == 0) {
     switch(af) {
       case AF_INET:
     *(struct in_addr *)dst = ((struct sockaddr_in *)&ss)->sin_addr;
@@ -76,6 +76,21 @@ int inet_pton(int af, const char *src, void *dst)
     }
   }
   return 0;
+}
+
+char *strsep(char **s, const char *ct)
+{
+    char *sstart = *s;
+    char *end;
+
+    if (sstart == NULL)
+        return NULL;
+
+    end = strpbrk(sstart, ct);
+    if (end)
+        *end++ = '\0';
+    *s = end;
+    return sstart;
 }
 #endif
 
@@ -181,7 +196,7 @@ IDns::IDns(const char *bind_ip, uint16_t port_no,
       if(p[1] > 040) { // if allowed domain is not empty - save it into ht
         step |= 1;
         if(m_verbose > 3)
-          LogPrintf("\tIDns::IDns: Insert TLD=%s: pos=%u step=%u\n", p + 1, pos, step);
+          printf("\tIDns::IDns: Insert TLD=%s: pos=%u step=%u\n", p + 1, pos, step);
         do
           pos += step;
             while(m_ht_offset[pos] != 0);
@@ -212,7 +227,7 @@ IDns::IDns(const char *bind_ip, uint16_t port_no,
         } // while
     step |= 1;
     if(m_verbose > 3)
-      LogPrintf("\tIDns::IDns: Insert Local:[%s]->[%s] pos=%u step=%u\n", p, p_eq, pos, step);
+      printf("\tIDns::IDns: Insert Local:[%s]->[%s] pos=%u step=%u\n", p, p_eq, pos, step);
     do
       pos += step;
         while(m_ht_offset[pos] != 0);
@@ -222,7 +237,7 @@ IDns::IDns(const char *bind_ip, uint16_t port_no,
     } //  if(local_len)
 
     if(m_verbose > 0)
-     LogPrintf("IDns::IDns: Created/Attached: %s:%u; Qty=%u:%u\n",
+     printf("IDns::IDns: Created/Attached: %s:%u; Qty=%u:%u\n",
          m_address.sin_addr.s_addr == INADDR_ANY? "INADDR_ANY" : bind_ip,
          port_no, m_allowed_qty, local_qty);
 
@@ -242,7 +257,7 @@ IDns::~IDns() {
     free(m_value);
     free(m_dap_ht);
     if(m_verbose > 0)
-     LogPrintf("IDns::~IDns: Destroyed OK\n");
+     printf("IDns::~IDns: Destroyed OK\n");
 } // IDns::~IDns
 
 
@@ -256,7 +271,7 @@ void IDns::StatRun(void *p) {
 
 /*---------------------------------------------------*/
 void IDns::Run() {
-  if(m_verbose > 2) LogPrintf("IDns::Run: started\n");
+  if(m_verbose > 2) printf("IDns::Run: started\n");
 
   while(m_status == 0)
       MilliSleep(133);
@@ -282,14 +297,14 @@ void IDns::Run() {
     } // dap check
   } // for
 
-  if(m_verbose > 2) LogPrintf("IDns::Run: Received Exit packet_len=%d\n", m_rcvlen);
+  if(m_verbose > 2) printf("IDns::Run: Received Exit packet_len=%d\n", m_rcvlen);
 
 } //  IDns::Run
 
 /*---------------------------------------------------*/
 
 void IDns::HandlePacket() {
-  if(m_verbose > 2) LogPrintf("IDns::HandlePacket: Handle packet_len=%d\n", m_rcvlen);
+  if(m_verbose > 2) printf("IDns::HandlePacket: Handle packet_len=%d\n", m_rcvlen);
 
   m_hdr = (DNSHeader *)m_buf;
   // Decode input header from network format
@@ -299,12 +314,12 @@ void IDns::HandlePacket() {
   m_rcvend = m_snd = m_buf + m_rcvlen;
 
   if(m_verbose > 3) {
-    LogPrintf("\tIDns::HandlePacket: msgID  : %d\n", m_hdr->msgID);
-    LogPrintf("\tIDns::HandlePacket: Bits   : %04x\n", m_hdr->Bits);
-    LogPrintf("\tIDns::HandlePacket: QDCount: %d\n", m_hdr->QDCount);
-    LogPrintf("\tIDns::HandlePacket: ANCount: %d\n", m_hdr->ANCount);
-    LogPrintf("\tIDns::HandlePacket: NSCount: %d\n", m_hdr->NSCount);
-    LogPrintf("\tIDns::HandlePacket: ARCount: %d\n", m_hdr->ARCount);
+    printf("\tIDns::HandlePacket: msgID  : %d\n", m_hdr->msgID);
+    printf("\tIDns::HandlePacket: Bits   : %04x\n", m_hdr->Bits);
+    printf("\tIDns::HandlePacket: QDCount: %d\n", m_hdr->QDCount);
+    printf("\tIDns::HandlePacket: ANCount: %d\n", m_hdr->ANCount);
+    printf("\tIDns::HandlePacket: NSCount: %d\n", m_hdr->NSCount);
+    printf("\tIDns::HandlePacket: ARCount: %d\n", m_hdr->ARCount);
   }
   // Assert following 3 counters and bits are zero
 //*  uint16_t zCount = m_hdr->ANCount | m_hdr->NSCount | m_hdr->ARCount | (m_hdr->Bits & (m_hdr->QR_MASK | m_hdr->TC_MASK));
@@ -393,13 +408,13 @@ uint16_t IDns::HandleQuery() {
   *--key_end = 0; // Remove last dot, set EOLN
 
   if(m_verbose > 3)
-    LogPrintf("IDns::HandleQuery: Translated domain name: [%s]; DomainsQty=%d\n", key, (int)(domain_ndx_p - domain_ndx));
+    printf("IDns::HandleQuery: Translated domain name: [%s]; DomainsQty=%d\n", key, (int)(domain_ndx_p - domain_ndx));
 
   uint16_t qtype  = *m_rcv++; qtype  = (qtype  << 8) + *m_rcv++;
   uint16_t qclass = *m_rcv++; qclass = (qclass << 8) + *m_rcv++;
 
   if(m_verbose > 0)
-    LogPrintf("IDns::HandleQuery: Key=%s QType=%x QClass=%x\n", key, qtype, qclass);
+    printf("IDns::HandleQuery: Key=%s QType=%x QClass=%x\n", key, qtype, qclass);
 
   if(qclass != 1)
     return 4; // Not implemented - support INET only
@@ -433,7 +448,7 @@ uint16_t IDns::HandleQuery() {
   uint8_t *p = key_end;
 
   if(m_verbose > 3)
-    LogPrintf("IDns::HandleQuery: After TLD-suffix cut: [%s]\n", key);
+    printf("IDns::HandleQuery: After TLD-suffix cut: [%s]\n", key);
 
   while(p > key) {
     uint8_t c = *--p;
@@ -457,7 +472,7 @@ uint16_t IDns::HandleQuery() {
     if(m_allowed_qty) { // Activated TLD-filter
       if(*p != '.') {
         if(m_verbose > 3)
-      LogPrintf("IDns::HandleQuery: TLD-suffix=[.%s] is not specified in given key=%s; return NXDOMAIN\n", p, key);
+      printf("IDns::HandleQuery: TLD-suffix=[.%s] is not specified in given key=%s; return NXDOMAIN\n", p, key);
     return 3; // TLD-suffix is not specified, so NXDOMAIN
       }
       p++; // Set PTR after dot, to the suffix
@@ -465,7 +480,7 @@ uint16_t IDns::HandleQuery() {
         pos += step;
         if(m_ht_offset[pos] == 0) {
           if(m_verbose > 3)
-        LogPrintf("IDns::HandleQuery: TLD-suffix=[.%s] in given key=%s is not allowed; return NXDOMAIN\n", p, key);
+        printf("IDns::HandleQuery: TLD-suffix=[.%s] in given key=%s is not allowed; return NXDOMAIN\n", p, key);
       return 3; // Reached EndOfList, so NXDOMAIN
         }
       } while(m_ht_offset[pos] < 0 || strcmp((const char *)p, m_allowed_base + m_ht_offset[pos]) != 0);
@@ -541,7 +556,7 @@ int IDns::TryMakeref(uint16_t label_ref) {
   m_label_ref = orig_label_ref;
   m_hdr->NSCount = m_hdr->ANCount;
   m_hdr->ANCount = 0;
-  LogPrintf("IDns::TryMakeref: Generated REF NS=%u\n", m_hdr->NSCount);
+  printf("IDns::TryMakeref: Generated REF NS=%u\n", m_hdr->NSCount);
   return m_hdr->NSCount;
 } //  IDns::TryMakeref
 /*---------------------------------------------------*/
@@ -572,7 +587,7 @@ int IDns::Tokenize(const char *key, const char *sep2, char **tokens, char *buf) 
       }
       val++;
       // Uplevel token found, tokenize value if needed
-      // LogPrintf("Found: key=%s; val=%s\n", key, val);
+      // printf("Found: key=%s; val=%s\n", key, val);
       if(sep2 == NULL || *sep2 == 0) {
     tokens[tokensN++] = val;
     break;
@@ -590,7 +605,7 @@ int IDns::Tokenize(const char *key, const char *sep2, char **tokens, char *buf) 
       for(token = strtok(val, sep2);
      token != NULL && tokensN < MAX_TOK;
        token = strtok(NULL, sep2)) {
-      // LogPrintf("Subtoken=%s\n", token);
+      // printf("Subtoken=%s\n", token);
       tokens[tokensN++] = token;
       }
       break;
@@ -616,7 +631,7 @@ void IDns::Answer_ALL(uint16_t qtype, char *buf) {
   char *tokens[MAX_TOK];
   int tokQty = Tokenize(key, ",", tokens, buf);
 
-  if(m_verbose > 0) LogPrintf("IDns::Answer_ALL(QT=%d, key=%s); TokenQty=%d\n", qtype, key, tokQty);
+  if(m_verbose > 0) printf("IDns::Answer_ALL(QT=%d, key=%s); TokenQty=%d\n", qtype, key, tokQty);
 
   // Shuffle tokens for randomization output order
   for(int i = tokQty; i > 1; ) {
@@ -629,7 +644,7 @@ void IDns::Answer_ALL(uint16_t qtype, char *buf) {
 
   for(int tok_no = 0; tok_no < tokQty; tok_no++) {
       if(m_verbose > 1)
-    LogPrintf("\tIDns::Answer_ALL: Token:%u=[%s]\n", tok_no, tokens[tok_no]);
+    printf("\tIDns::Answer_ALL: Token:%u=[%s]\n", tok_no, tokens[tok_no]);
       Out2(m_label_ref);
       Out2(qtype); // A record, or maybe something else
       Out2(1); //  INET
@@ -716,7 +731,7 @@ void IDns::Fill_RD_DName(char *txt, uint8_t mxsz, int8_t txtcor) {
 
 int IDns::Search(uint8_t *key) {
   if(m_verbose > 1)
-    LogPrintf("IDns::Search(%s)\n", key);
+    printf("IDns::Search(%s)\n", key);
 
   string value;
   if (!hooks->getNameValue(string("dns:") + (const char *)key, value))
@@ -730,12 +745,12 @@ int IDns::Search(uint8_t *key) {
 
 int IDns::LocalSearch(const uint8_t *key, uint8_t pos, uint8_t step) {
   if(m_verbose > 1)
-    LogPrintf("IDns::LocalSearch(%s, %u, %u) called\n", key, pos, step);
+    printf("IDns::LocalSearch(%s, %u, %u) called\n", key, pos, step);
     do {
       pos += step;
       if(m_ht_offset[pos] == 0) {
         if(m_verbose > 3)
-      LogPrintf("IDns::LocalSearch: Local key=[%s] not found; go to nameindex search\n", key);
+      printf("IDns::LocalSearch: Local key=[%s] not found; go to nameindex search\n", key);
          return 0; // Reached EndOfList
       }
     } while(m_ht_offset[pos] > 0 || strcmp((const char *)key, m_local_base - m_ht_offset[pos]) != 0);
