@@ -76,8 +76,8 @@ static const unsigned int DEFAULT_MAX_ORPHAN_TRANSACTIONS = 100; // Was 10k
 static const unsigned int DEFAULT_MAX_ORPHAN_BLOCKS = 750; //Default 750, try testing with 1000
 static const unsigned int MAX_INV_SZ = 50000;
 static const int64_t MIN_TX_FEE = 1000;
-static const int64_t MIN_NAME_FEE = 90000000; // 0.9 INN Name OP
-static const int64_t NAME_FEE = 10000000; // 0.1 INN Name
+static const int64_t MIN_NAME_FEE = 9000000; // 0.09 INN Name OP Miner Fee
+static const int64_t NAME_FEE = 1000000; // 0.01 INN Name
 static const CAmount MIN_TXOUT_AMOUNT = NAME_FEE;
 static const int64_t MIN_TX_FEE_ANON = 10000;
 static const int64_t MIN_RELAY_TX_FEE = MIN_TX_FEE;
@@ -440,6 +440,8 @@ public:
     int64_t GetValueIn(const MapPrevTx& mapInputs) const;
 
     int64_t GetMinFee(unsigned int nBlockSize=1, enum GetMinFee_mode mode=GMF_BLOCK, unsigned int nBytes = 0) const;
+
+    bool ReadFromTDisk(const CDiskTxPos& postx);
 
     bool ReadFromDisk(CDiskTxPos pos, FILE** pfileRet=NULL)
     {
