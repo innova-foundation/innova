@@ -411,6 +411,7 @@ static const CRPCCommand vRPCCommands[] =
     { "name_filter",            &name_filter,            false,  false },
     { "name_show",              &name_show,              false,  false },
     { "name_debug",             &name_debug,             false,  false },
+    { "name_count",             &name_count,             false,  false },
 
 };
 

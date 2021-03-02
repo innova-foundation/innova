@@ -3062,8 +3062,11 @@ if(BuildAddrIndex(atxout.scriptPubKey, addrIds))
       return error("ConnectBlock() : WriteBlockIndex failed");
 }
 
-// add names to innovanamesindex.dat
-    hooks->ConnectBlock(txdb, pindex);
+// Check Name Release Height to Connect Blocks
+    if (pindex->nHeight >= RELEASE_HEIGHT) {
+        // add names to innovanamesindex.dat
+        hooks->ConnectBlock(txdb, pindex);
+    }
 
 // Watch for transactions paying to me
     BOOST_FOREACH(CTransaction& tx, vtx)

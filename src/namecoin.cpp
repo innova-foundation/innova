@@ -101,7 +101,7 @@ bool CalculateExpiresAt(CNameRecord& nameRec)
         if (!DecodeNameTx(tx, nti, false))
             return error("CalculateExpiresAt() : %s is not namecoin tx, this should never happen", tx.GetHash().GetHex().c_str());
 
-        sum += nti.nRentalDays * 2880; //days to blocks. 2880 is average number of blocks per day
+        sum += nti.nRentalDays * 5760; //days to blocks. 5760 is average number of blocks per day
     }
 
     //limit to INT_MAX value
@@ -327,7 +327,7 @@ bool CreateTransactionWithInputTx(const vector<pair<CScript, int64_t> >& vecSend
 
                 int64_t nWtxinCredit = wtxIn.vout[nTxOut].nValue;
 
-                // vouts to the payees with UTXO splitter - D E N A R I U S
+                // vouts to the payees with UTXO splitter - I n n o v a
                 if(coinControl && !coinControl->fSplitBlock)
                 {
                     BOOST_FOREACH (const PAIRTYPE(CScript, int64_t)& s, vecSend)
@@ -545,7 +545,7 @@ string SendMoneyWithInputTx(CScript scriptPubKey, int64_t nValue, int64_t nNetFe
     return "";
 }
 
-// scans nameindex.dat and return names with their last CNameIndex
+// scans innovanamesindex.dat and return names with their last CNameIndex
 bool CNameDB::ScanNames(
         const vector<unsigned char>& vchName,
         unsigned int nMax,
@@ -604,8 +604,8 @@ CHooks* InitHook()
 // version for connectInputs. Used when accepting blocks.
 bool IsNameFeeEnough(CTxDB& txdb, const CTransaction& tx, const NameTxInfo& nti, const CBlockIndex* pindexBlock, const map<uint256, CTxIndex>& mapTestPool, bool fBlock, bool fMiner)
 {
-// get tx fee
-// Note: if fBlock and fMiner equal false then FetchInputs will search mempool
+    // get tx fee
+    // Note: if fBlock and fMiner equal false then FetchInputs will search mempool
     int64_t txFee;
     MapPrevTx mapInputs;
     bool fInvalid = false;
@@ -1134,7 +1134,7 @@ Value name_mempool (const Array& params, bool fHelp)
             "    \"address\": \"xxxx\",         (string) address to which transaction was sent"
             "    \"address_is_mine\": \"xxxx\", (string) shows \"true\" if this is your address, otherwise not visible"
             "    \"operation\": \"xxxx\",       (string) name operation that was performed in this transaction"
-            "    \"days_added\": xxxx,          (numeric) days added (1 day = 2880 blocks) to name expiration time, not visible if 0"
+            "    \"days_added\": xxxx,          (numeric) days added (1 day = 5760 blocks) to name expiration time, not visible if 0"
             "    \"value\": xxxx,               (numeric) name value in this transaction; not visible when name_delete was used"
             "  }\n"
             "]\n"
@@ -1267,7 +1267,7 @@ Value name_filter(const Array& params, bool fHelp)
             oName.push_back(Pair("name", name));
 
             string value = stringFromVch(txName.vchValue);
-            oName.push_back(Pair("value", limitString(value, 300, "\n...(value too large - use name_show to see full value)")));
+            oName.push_back(Pair("value", limitString(value, -1, "\n...(value too large - use name_show to see full value)")));
 
             oName.push_back(Pair("registered_at", nHeight)); // pos = 2 in comparison function (above name_filter)
 
@@ -1317,7 +1317,7 @@ Value name_scan(const Array& params, bool fHelp)
 
     vector<unsigned char> vchName;
     int nMax = 500;
-    int mMaxShownValue = -1;
+    int mMaxShownValue = 10; // -1 for unlimited values
     if (params.size() > 0)
     {
         vchName = vchFromValue(params[0]);
@@ -1356,7 +1356,7 @@ Value name_scan(const Array& params, bool fHelp)
         vector<unsigned char> vchValue = txName.vchValue;
 
         string value = stringFromVch(vchValue);
-        oName.push_back(Pair("value", limitString(value, mMaxShownValue, "\n...(value too large - use name_show to see full value)")));
+        oName.push_back(Pair("value", limitString(value, mMaxShownValue, "\n...(value redacted - use name_show to see full value)")));
         oName.push_back(Pair("expires_in", nExpiresAt - pindexBest->nHeight));
         if (nExpiresAt - pindexBest->nHeight <= 0)
             oName.push_back(Pair("expired", true));
@@ -1365,6 +1365,37 @@ Value name_scan(const Array& params, bool fHelp)
     }
 
     return oRes;
+}
+
+Value name_count(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 0)
+        throw runtime_error(
+                "name_count\n"
+                "Scan all names and return the current total count\n"
+                );
+
+    if (!IsSynchronized())
+        throw runtime_error("Blockchain is still downloading - wait until it is done.");
+
+    vector<unsigned char> vchName;
+    int nMax = 100000000; // Maximum names to scan -1 for unlimited
+
+    CNameDB dbName("r");
+
+    vector<pair<vector<unsigned char>, pair<CNameIndex,int> > > nameScan;
+    if (!dbName.ScanNames(vchName, nMax, nameScan))
+        throw JSONRPCError(RPC_WALLET_ERROR, "count scan failed");
+
+    //Object oNameCount;
+    int nCount = 0;
+    pair<vector<unsigned char>, pair<CNameIndex,int> > pairScan;
+    BOOST_FOREACH(pairScan, nameScan)
+    {
+        nCount++;
+    }
+    //oNameCount.push_back(Pair("count", nCount));
+    return nCount;
 }
 
 bool createNameScript(CScript& nameScript, const vector<unsigned char> &vchName, const vector<unsigned char> &vchValue, int nRentalDays, int op, string& err_msg)
@@ -1436,7 +1467,7 @@ Value name_new(const Array& params, bool fHelp)
                 "Creates new key->value pair which expires after specified number of days.\n"
                 "[address] to register the name to\n"
                 "If [valueAsFilepath] is non-zero it will interpret <value> as a filepath and try to write file contents in binary format\n"
-                "Cost is 0.9 D To TX Fees and 0.01 To Name Registration."
+                "Cost is 0.09 INN To TX Fees and 0.01 To Name Registration."
                 + HelpRequiringPassphrase());
 
     if (!IsSynchronized())
@@ -1531,14 +1562,14 @@ NameTxReturn name_new(const vector<unsigned char> &vchName,
         CTransaction prevTx;
         if (GetLastTxOfName(dbName, vchName, prevTx))
         {
-            ret.err_msg = "Found D Name TX with this name already.";
+            ret.err_msg = "Found INN Name TX with this name already.";
             return ret;
         }
 
         uint256 wtxInHash = prevTx.GetHash();
         if (pwalletMain->mapWallet.count(wtxInHash))
         {
-            ret.err_msg = "This D Name TX is in your wallet: " + wtxInHash.GetHex();
+            ret.err_msg = "This INN Name TX is in your wallet: " + wtxInHash.GetHex();
             return ret;
         }
 
@@ -1547,7 +1578,7 @@ NameTxReturn name_new(const vector<unsigned char> &vchName,
 
         // if (::IsMine(*pwalletMain, wtxIn.vout[nTxOut].scriptPubKey) != ISMINE_SPENDABLE)
         // {
-        //     ret.err_msg = "This D Name TX is not yours or is not spendable: " + wtxInHash.GetHex();
+        //     ret.err_msg = "This INN Name TX is not yours or is not spendable: " + wtxInHash.GetHex();
         //     return ret;
         // }
 
@@ -2380,7 +2411,7 @@ bool CNamecoinHooks::DisconnectInputs(const CTransaction& tx)
         // be empty, since a reorg cannot go that far back.  Be safe anyway and do not try to pop if empty.
         if (nameRec.vtxPos.size() > 0)
         {
-            // check if tx matches last tx in nameindex.dat
+            // check if tx matches last tx in innovanamesindex.dat
             CTransaction lastTx;
             lastTx.ReadFromDisk(nameRec.vtxPos.back().txPos);
             assert(lastTx.GetHash() == tx.GetHash());
@@ -2507,7 +2538,7 @@ bool CNamecoinHooks::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex)
     BOOST_FOREACH(const nameTempProxy &i, vName)
     {
         string info = "ConnectBlock(): trying to write " + nameFromOp(i.op) + " " + stringFromVch(i.vchName) +
-            " in block " + boost::lexical_cast<string>(pindex->nHeight) + " to D name index...";
+            " in block " + boost::lexical_cast<string>(pindex->nHeight) + " to INN name index...";
 
         CNameRecord nameRec;
         if (dbName.ExistsName(i.vchName) && !dbName.ReadName(i.vchName, nameRec))

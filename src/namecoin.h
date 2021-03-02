@@ -69,7 +69,7 @@ public:
 class CNameDB : public CDB
 {
 public:
-    CNameDB(const char* pszMode="r+") : CDB("denariusnamesindex.dat", pszMode) {}
+    CNameDB(const char* pszMode="r+") : CDB("innovanamesindex.dat", pszMode) {}
 
     bool WriteName(const std::vector<unsigned char>& name, const CNameRecord &rec)
     {
