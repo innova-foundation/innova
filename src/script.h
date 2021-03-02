@@ -539,8 +539,9 @@ protected:
         }
         else
         {
-            CBigNum bn(n);
-            *this << bn.getvch();
+            // CBigNum bn(n);
+            // *this << bn.getvch();
+            *this << CScriptNum::serialize(n);
         }
         return *this;
     }
@@ -553,8 +554,9 @@ protected:
         }
         else
         {
-            CBigNum bn(n);
-            *this << bn.getvch();
+            // CBigNum bn(n);
+            // *this << bn.getvch();
+            *this << CScriptNum::serialize(n);
         }
         return *this;
     }
@@ -839,12 +841,12 @@ public:
 
     void SetDestination(const CTxDestination& address);
     void SetMultisig(int nRequired, const std::vector<CKey>& keys);
-	void SetMultisigpub(int nRequired, const std::vector<CPubKey>& keys);
+	  void SetMultisigpub(int nRequired, const std::vector<CPubKey>& keys);
 
-  bool IsUnspendable() const
-      {
-          return (size() > 0 && *begin() == OP_RETURN);
-      }
+    bool IsUnspendable() const
+    {
+        return (size() > 0 && *begin() == OP_RETURN);
+    }
 
     std::string ToString(bool fShort=false) const
     {

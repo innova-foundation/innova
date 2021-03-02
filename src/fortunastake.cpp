@@ -1499,7 +1499,7 @@ void CFortunaPayments::update(const CBlockIndex *pindex, bool force)
     }
     if (fDebug) printf("Calculating payrates (%d ms)\n",GetTimeMillis() - nStart);
 
-    // do pay rate loops
+    // do pay rate loops, already do this in connectblock()
     BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes)
     {
         mn.SetPayRate(pindex->nHeight);
