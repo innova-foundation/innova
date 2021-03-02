@@ -2545,10 +2545,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
             std::vector<CAmount> vFees (vtx.size(), 0);
 
-            //BOOST_FOREACH(CTransaction& tx, vtx)
-            for (unsigned int i = 0; i < vtx.size(); i++)
+            BOOST_FOREACH(CTransaction& tx, vtx)
+
         {
-            const CTransaction &tx = vtx[i];
+            //const CTransaction &tx = vtx[i];
             uint256 hashTx = tx.GetHash();
 
             // Do not allow blocks that contain transactions which 'overwrite' older transactions,
@@ -2614,7 +2614,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                 nAmountBurned += out.nValue;
               }
               if (!tx.IsCoinStake()) {
-                  vFees[i] = nTxValueIn - nTxValueOut;
+                  for (unsigned int i = 0; i < vtx.size(); i++)
+                  {
+                    vFees[i] = nTxValueIn - nTxValueOut;
+                  }
                   nFees += nTxValueIn - nTxValueOut;
                 }
               if (tx.IsCoinStake())
