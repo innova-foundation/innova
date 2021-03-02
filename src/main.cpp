@@ -795,6 +795,21 @@ bool CTransaction::CheckTransaction() const
     set<COutPoint> vInOutPoints;
     BOOST_FOREACH(const CTxIn& txin, vin)
     {
+      //burn addresses cannot spend
+      if (txin.prevout.hash != 0) {
+          CTransaction txPrev;
+          uint256 hashBlock;
+          CTxDestination dest;
+          if (GetTransaction(txin.prevout.hash, txPrev, hashBlock, true) && ExtractDestination(txPrev.vout[txin.prevout.n].scriptPubKey, dest)) {
+              std::string address = CBitcoinAddress(dest).ToString(); //could also compare prevout scriptpubkey directly against burnscripts
+              for (const std::string& burnAddress : vBurnAddresses) {
+                  if (address == burnAddress)
+                      return DoS(100, error("%s : Burn address attempted to spend in %s", __func__, GetHash().ToString().c_str()));
+              }
+          } else
+              return DoS(100, error("%s : Output %s not found", __func__, GetHash().ToString().c_str()));
+      };
+
         if (nVersion == ANON_TXN_VERSION
             && txin.IsAnonInput())
         {
@@ -2614,7 +2629,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
               nValueIn += nTxValueIn;
               nValueOut += nTxValueOut;
               for (const CTxOut& out : tx.vout) {
-                if (out.scriptPubKey.IsUnspendable())
+                if (out.scriptPubKey.IsUnspendable() || out.scriptPubKey.IsUnspendable() == burnAddressScript)
                 nAmountBurned += out.nValue;
               }
               if (!tx.IsCoinStake()) {
