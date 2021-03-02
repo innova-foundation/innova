@@ -154,7 +154,7 @@ bool DecodeNameScript(const CScript& script, NameTxInfo& ret, CScript::const_ite
 bool DecodeNameScript(const CScript& script, NameTxInfo& ret);
 bool RemoveNameScriptPrefix(const CScript& scriptIn, CScript& scriptOut);
 
-bool SignNameSignatureD(const CKeyStore& keystore, const CTransaction& txFrom, CTransaction& txTo, unsigned int nIn, int nHashType=SIGHASH_ALL);
+bool SignNameSignatureINN(const CKeyStore& keystore, const CTransaction& txFrom, CTransaction& txTo, unsigned int nIn, int nHashType=SIGHASH_ALL);
 struct NameTxReturn
 {
      bool ok;
