@@ -1,7 +1,7 @@
 /*
  * Simple DNS server for Innova
  *
- * Lookup for names like "dns:some-name" in the local nameindex database.
+ * Lookup for names like "dns:some-name.i" in the local inameindex database.
  * Database is updated from Innova's blockchain, and keeps NMC styled-transactions.
  *
  * Supports standard RFC1034 UDP DNS protocol only
@@ -485,7 +485,7 @@ uint16_t IDns::HandleQuery() {
 #if 0
     else {
       // 2+ domain level.
-      // Try to adjust TLD suffix for peering GW-site, like opennic.coin
+      // Try to adjust TLD suffix for peering GW-site, like opennic.i
       if(strncmp((const char *)(*prev_ndx_p), "opennic.", 8) == 0)
         strcpy((char*)domain_ndx_p[-1], "*"); // substitute TLD to '*'; don't modify domain_ndx_p[0], for keep TLD size for REF
     }
@@ -723,11 +723,14 @@ void IDns::Fill_RD_DName(char *txt, uint8_t mxsz, int8_t txtcor) {
 /*---------------------------------------------------*/
 
 int IDns::Search(uint8_t *key) {
-  if(m_verbose > 1)
+  //if(m_verbose > 1)
     printf("IDns::Search(%s)\n", key);
 
   string value;
   if (!hooks->getNameValue(string("dns:") + (const char *)key, value))
+    return 0;
+
+  if (!hooks->getNameValue(string("") + (const char *)key, value)) //dns: and regular non flagged name values
     return 0;
 
   strcpy(m_value, value.c_str());
@@ -743,7 +746,7 @@ int IDns::LocalSearch(const uint8_t *key, uint8_t pos, uint8_t step) {
       pos += step;
       if(m_ht_offset[pos] == 0) {
         if(m_verbose > 3)
-  	  printf("IDns::LocalSearch: Local key=[%s] not found; go to nameindex search\n", key);
+  	     printf("IDns::LocalSearch: Local key=[%s] not found; go to nameindex search\n", key);
          return 0; // Reached EndOfList
       }
     } while(m_ht_offset[pos] > 0 || strcmp((const char *)key, m_local_base - m_ht_offset[pos]) != 0);

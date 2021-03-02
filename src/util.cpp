@@ -8,7 +8,9 @@
 #include "strlcpy.h"
 #include "version.h"
 #include "state.h"
+#include "main.h"
 #include "ui_interface.h"
+#include "tinyformat.h"
 #include <boost/algorithm/string/join.hpp>
 
 // Work around clang compilation problem in Boost 1.46:
@@ -1210,6 +1212,7 @@ void WriteConfigFile(FILE* configFile)
     fputs ("fortunastake=0\n", configFile); //default
     fputs ("fortunastakeaddr=\n", configFile);
     fputs ("fortunastakeprivkey=\n", configFile);
+    fputs ("idns=1\n", configFile);
     fputs ("addnode=innseeder.circuitbreaker.online\n", configFile);
     fclose(configFile);
     ReadConfigFile(mapArgs, mapMultiArgs);

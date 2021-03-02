@@ -1,18 +1,18 @@
 #include <vector>
-using namespace std;
-
+#include "namecoin.h"
+#include "coincontrol.h"
 #include "script.h"
 #include "wallet.h"
+#include "innovarpc.h"
+
 extern CWallet* pwalletMain;
 extern std::map<uint256, CTransaction> mapTransactions;
-
-#include "namecoin.h"
-#include "hooks.h"
 
 #include <boost/xpressive/xpressive_dynamic.hpp>
 #include <boost/lexical_cast.hpp>
 #include <fstream>
 
+using namespace std;
 using namespace json_spirit;
 
 template<typename T> void ConvertTo(Value& value, bool fAllowNull=false);
@@ -139,14 +139,15 @@ bool NameActive(const vector<unsigned char> &vchName, int currentBlockHeight = -
 int64_t GetNameOpFee(const CBlockIndex* pindexBlock, const int nRentalDays, int op, const vector<unsigned char> &vchName, const vector<unsigned char> &vchValue)
 {
     if (op == OP_NAME_DELETE)
-        return MIN_TX_FEE;
+        return MIN_NAME_FEE;
 
     const CBlockIndex* lastPoW = GetLastBlockIndex(pindexBlock, false);
 
     int64_t txMinFee = nRentalDays * lastPoW->nMint / (365 * 100); // 1% PoW per 365 days
 
     if (op == OP_NAME_NEW)
-        txMinFee += lastPoW->nMint / 100; // +1% PoW per operation itself
+        txMinFee += lastPoW->nMint; // +10% PoW per operation itself
+        printf('TX FEE: %s', txMinFee);
 
     txMinFee = sqrt(txMinFee / CENT) * CENT; // square root is taken of the number of cents.
     txMinFee += (int)((vchName.size() + vchValue.size()) / 128) * CENT; // 1 cent per 128 bytes
@@ -156,7 +157,32 @@ int64_t GetNameOpFee(const CBlockIndex* pindexBlock, const int nRentalDays, int 
     txMinFee = (txMinFee / CENT) * CENT;
 
     // Fee should be at least MIN_TX_FEE
-    txMinFee = max(txMinFee, MIN_TX_FEE);
+    txMinFee = max(txMinFee, MIN_NAME_FEE); //100000000 = 1.0 INN
+
+    return txMinFee;
+}
+
+CAmount GetNameOpFee2(const CBlockIndex* pindexBlock, const int nRentalDays, int op, const vector<unsigned char> &vchName, const vector<unsigned char> &vchValue)
+{
+    if (op == OP_NAME_DELETE)
+        return MIN_NAME_FEE;
+
+    const CBlockIndex* lastPoW = GetLastBlockIndex(pindexBlock, false);
+
+    CAmount txMinFee = nRentalDays * lastPoW->nMint / (365 * 100); // 1% PoW per 365 days
+
+    if (op == OP_NAME_NEW)
+        txMinFee += lastPoW->nMint; // +1% PoW per operation itself
+
+    txMinFee = sqrt(txMinFee / CENT) * CENT; // square root is taken of the number of cents.
+    txMinFee += (int)((vchName.size() + vchValue.size()) / 128) * CENT; // 1 cent per 128 bytes
+
+    // Round up to CENT
+    txMinFee += CENT - 1;
+    txMinFee = (txMinFee / CENT) * CENT;
+
+    // Fee should be at least MIN_NAME_FEE
+    txMinFee = max(txMinFee, MIN_NAME_FEE);
 
     return txMinFee;
 }
@@ -173,7 +199,37 @@ bool RemoveNameScriptPrefix(const CScript& scriptIn, CScript& scriptOut)
     return true;
 }
 
-bool SignNameSignature(const CTransaction& txFrom, CTransaction& txTo, unsigned int nIn, int nHashType=SIGHASH_ALL, CScript scriptPrereq=CScript())
+// bool SignNameSignature(const CTransaction& txFrom, CTransaction& txTo, unsigned int nIn, int nHashType, CScript scriptPrereq=CScript())
+// {
+//     assert(nIn < txTo.vin.size());
+//     CTxIn& txin = txTo.vin[nIn];
+//     assert(txin.prevout.n < txFrom.vout.size());
+//     const CTxOut& txout = txFrom.vout[txin.prevout.n];
+
+//     // Leave out the signature from the hash, since a signature can't sign itself.
+//     // The checksig op will also drop the signatures from its hash.
+
+//     CScript scriptPubKey;
+//     if (!RemoveNameScriptPrefix(txout.scriptPubKey, scriptPubKey))
+//         return error("SignNameSignature(): failed to remove name script prefix");
+
+//     uint256 hash = SignatureHash(scriptPrereq + txout.scriptPubKey, txTo, nIn, nHashType);
+
+//     txnouttype whichType;
+//     if (!Solver(*pwalletMain, scriptPubKey, hash, nHashType, txin.scriptSig, whichType))
+//         return false;
+
+//     txin.scriptSig = scriptPrereq + txin.scriptSig;
+
+//     // Test solution
+//     if (scriptPrereq.empty())
+//         if (!VerifyScript(txin.scriptSig, txout.scriptPubKey, txTo, nIn, STANDARD_SCRIPT_VERIFY_FLAGS, 0))
+//             return false;
+
+//     return true;
+// }
+
+bool SignNameSignatureINN(const CKeyStore& keystore, const CTransaction& txFrom, CTransaction& txTo, unsigned int nIn, int nHashType)
 {
     assert(nIn < txTo.vin.size());
     CTxIn& txin = txTo.vin[nIn];
@@ -183,30 +239,50 @@ bool SignNameSignature(const CTransaction& txFrom, CTransaction& txTo, unsigned 
     // Leave out the signature from the hash, since a signature can't sign itself.
     // The checksig op will also drop the signatures from its hash.
 
+    uint256 hash = SignatureHash(txout.scriptPubKey, txTo, nIn, nHashType);
+
     CScript scriptPubKey;
     if (!RemoveNameScriptPrefix(txout.scriptPubKey, scriptPubKey))
-        return error("SignNameSignature(): failed to remove name script prefix");
-
-    uint256 hash = SignatureHash(scriptPrereq + txout.scriptPubKey, txTo, nIn, nHashType);
+        return error("SignNameSignatureINN(): failed to remove name script prefix");
 
     txnouttype whichType;
-    if (!Solver(*pwalletMain, scriptPubKey, hash, nHashType, txin.scriptSig, whichType))
+    if (!Solver(keystore, scriptPubKey, hash, nHashType, txin.scriptSig, whichType))
         return false;
 
-    txin.scriptSig = scriptPrereq + txin.scriptSig;
-
     // Test solution
-    if (scriptPrereq.empty())
-        if (!VerifyScript(txin.scriptSig, txout.scriptPubKey, txTo, nIn, STANDARD_SCRIPT_VERIFY_FLAGS, 0))
-            return false;
-
-    return true;
+    // return VerifyScript(txin.scriptSig, txout.scriptPubKey, STANDARD_SCRIPT_VERIFY_FLAGS, MutableTransactionSignatureChecker(&txTo, nIn), NULL, txTo.nVersion == NAMECOIN_TX_VERSION);
+    //!VerifyScript(txin.scriptSig, txout.scriptPubKey, txTo, nIn, STANDARD_SCRIPT_VERIFY_FLAGS, 0))
+    return VerifyScript(txin.scriptSig, txout.scriptPubKey, txTo, nIn, STANDARD_SCRIPT_VERIFY_FLAGS, 0);
 }
 
+
+// bool SignNameSignature(const CKeyStore& keystore, const CTransaction& txFrom, CTransaction& txTo, unsigned int nIn, int nHashType)
+// {
+//     assert(nIn < txTo.vin.size());
+//     CTxIn& txin = txTo.vin[nIn];
+//     assert(txin.prevout.n < txFrom.vout.size());
+//     const CTxOut& txout = txFrom.vout[txin.prevout.n];
+
+//     // Leave out the signature from the hash, since a signature can't sign itself.
+//     // The checksig op will also drop the signatures from its hash.
+
+//     uint256 hash = SignatureHash(txout.scriptPubKey, txTo, nIn, nHashType);
+
+//     CScript scriptPubKey;
+//     if (!RemoveNameScriptPrefix(txout.scriptPubKey, scriptPubKey))
+//         return error("SignNameSignature(): failed to remove name script prefix");
+
+//     txnouttype whichType;
+//     if (!Solver(keystore, scriptPubKey, hash, nHashType, txin.scriptSig, whichType))
+//         return false;
+
+//     // Test solution
+//     return VerifyScript(txin.scriptSig, txout.scriptPubKey, STANDARD_SCRIPT_VERIFY_FLAGS, MutableTransactionSignatureChecker(&txTo, nIn), NULL, txTo.nVersion == NAMECOIN_TX_VERSION);
+// }
+
 // Just like CreateTransaction, but with addition of having 1 input already addded.
-bool CreateTransactionWithInputTx(const vector<pair<CScript, int64_t> >& vecSend, CWalletTx& wtxIn, int nTxOut, CWalletTx& wtxNew, CReserveKey& reservekey, int64_t& nFeeRet, string& strFailReason)
+bool CreateTransactionWithInputTx(const vector<pair<CScript, int64_t> >& vecSend, CWalletTx& wtxIn, int nTxOut, CWalletTx& wtxNew, CReserveKey& reservekey, int64_t& nFeeRet, string& strFailReason, int32_t& nChangePos, const CCoinControl* coinControl)
 {
-    const CCoinControl* coinControl;
     int64_t nValue = 0;
     BOOST_FOREACH (const PAIRTYPE(CScript, int64_t)& s, vecSend)
     {
@@ -230,36 +306,81 @@ bool CreateTransactionWithInputTx(const vector<pair<CScript, int64_t> >& vecSend
         LOCK2(cs_main, pwalletMain->cs_wallet);
         {
             nFeeRet = nTransactionFee;
-            for ( ; ; )
+            while (true)
             {
+                // wtxNew.vin.clear();
+                // wtxNew.vout.clear();
+                // wtxNew.fFromMe = true;
+
+                // int64_t nTotalValue = nValue + nFeeRet;
+                // double dPriority = 0;
+
+                // // vouts to the payees
+                // BOOST_FOREACH(const PAIRTYPE(CScript, int64)& s, vecSend)
+                //     wtxNew.vout.push_back(CTxOut(s.second, s.first));
                 wtxNew.vin.clear();
                 wtxNew.vout.clear();
                 wtxNew.fFromMe = true;
 
                 int64_t nTotalValue = nValue + nFeeRet;
                 double dPriority = 0;
-                // vouts to the payees
-                BOOST_FOREACH(const PAIRTYPE(CScript, int64_t)& s, vecSend)
-                    wtxNew.vout.push_back(CTxOut(s.second, s.first));
 
                 int64_t nWtxinCredit = wtxIn.vout[nTxOut].nValue;
 
-                // Choose coins to use
-                set<pair<const CWalletTx*, unsigned int> > setCoins;
-                int64_t nValueIn = 0;
-                if (nTotalValue - nWtxinCredit > 0)
-                    if (!pwalletMain->SelectCoins(nTotalValue - nWtxinCredit, wtxNew.nTime, setCoins, nValueIn, coinControl))
+                // vouts to the payees with UTXO splitter - I n n o v a
+                if(coinControl && !coinControl->fSplitBlock)
+                {
+                    BOOST_FOREACH (const PAIRTYPE(CScript, int64_t)& s, vecSend)
                     {
-                        strFailReason = _("Insufficient funds");
-                        return false;
+                        wtxNew.vout.push_back(CTxOut(s.second, s.first));
                     }
+                }
+                else //UTXO Splitter Transaction
+                {
+                    int nSplitBlock;
+                    if(coinControl)
+                        nSplitBlock = coinControl->nSplitBlock;
+                    else
+                        nSplitBlock = 1;
+
+                    BOOST_FOREACH (const PAIRTYPE(CScript, int64_t)& s, vecSend)
+                    {
+                        for(int i = 0; i < nSplitBlock; i++)
+                        {
+                            if(i == nSplitBlock - 1)
+                            {
+                                uint64_t nRemainder = s.second % nSplitBlock;
+                                wtxNew.vout.push_back(CTxOut((s.second / nSplitBlock) + nRemainder, s.first));
+                            }
+                            else
+                                wtxNew.vout.push_back(CTxOut(s.second / nSplitBlock, s.first));
+                        }
+                    }
+                }
+
+                // Choose coins to use
+                set<pair<const CWalletTx*,unsigned int> > setCoins;
+
+                int64_t nValueIn = 0;
+
+                if (nTotalValue - nWtxinCredit > 0)
+                    if (!pwalletMain->SelectCoins2(nTotalValue - nWtxinCredit, wtxNew.nTime, setCoins, nValueIn, coinControl))
+                        return false;
 
                 vector<pair<const CWalletTx*, unsigned int> > vecCoins(setCoins.begin(), setCoins.end());
 
-                BOOST_FOREACH(PAIRTYPE(const CWalletTx*, unsigned int)& coin, vecCoins)
+                BOOST_FOREACH(PAIRTYPE(const CWalletTx*, unsigned int) pcoin, setCoins)
                 {
-                    int64_t nCredit = coin.first->vout[coin.second].nValue;
-                    dPriority += (double)nCredit * coin.first->GetDepthInMainChain();
+                    //Fix priority calculation in CreateTransaction
+                    //Make this projection of priority in 1 block match the
+                    //calculation in the low priority reject code.
+                    int64_t nCredit = pcoin.first->vout[pcoin.second].nValue;
+                    //But mempool inputs might still be in the mempool, so their age stays 0
+                    int age = pcoin.first->GetDepthInMainChain();
+                    if (age != 0)
+                        age += 1;
+                    //dPriority += (double)nCredit * pcoin.first->GetDepthInMainChain();
+                    dPriority += (double)nCredit * age;
                 }
 
                 // Input tx always at first position
@@ -268,42 +389,67 @@ bool CreateTransactionWithInputTx(const vector<pair<CScript, int64_t> >& vecSend
                 nValueIn += nWtxinCredit;
                 dPriority += (double)nWtxinCredit * wtxIn.GetDepthInMainChain();
 
-                // Fill a vout back to self with any change
-                int64_t nChange = nValueIn - nTotalValue;
-                if (nChange >= CENT)
+                int64_t nChange = nValueIn - nValue - nFeeRet;
+                // if sub-cent change is required, the fee must be raised to at least MIN_TX_FEE
+                // or until nChange becomes zero
+                // NOTE: this depends on the exact behaviour of GetMinFee
+                if (nFeeRet < MIN_TX_FEE && nChange > 0 && nChange < CENT)
                 {
-                    // Note: We use a new key here to keep it from being obvious which side is the change.
-                    //  The drawback is that by not reusing a previous key, the change may be lost if a
-                    //  backup is restored, if the backup doesn't have the new private key for the change.
-                    //  If we reused the old key, it would be possible to add code to look for and
-                    //  rediscover unknown transactions that were written with keys of ours to recover
-                    //  post-backup change.
+                    int64_t nMoveToFee = min(nChange, MIN_TX_FEE - nFeeRet);
+                    nChange -= nMoveToFee;
+                    nFeeRet += nMoveToFee;
+                }
 
-                    // Reserve a new key pair from key pool
-					CPubKey vchPubKey;
-                    assert(reservekey.GetReservedKey(vchPubKey));
-                    assert(pwalletMain->HaveKey(vchPubKey.GetID()));
-
-                    // -------------- Fill a vout to ourself, using same address type as the payment
-                    // Now sending always to hash160 (GetBitcoinAddressHash160 will return hash160, even if pubkey is used)
+                if (nChange > 0)
+                {
+                    // Fill a vout to ourself
+                    // TODO: pass in scriptChange instead of reservekey so
+                    // change transaction isn't always pay-to-bitcoin-address
                     CScript scriptChange;
-                    //NOTE: look at bf798734db4539a39edd6badf54a1c3aecf193e5 commit in src/wallet.cpp
-                    //if (vecSend[0].first.GetBitcoinAddressHash160() != 0)
-                    //    scriptChange.SetBitcoinAddress(vchPubKey);
-                    //else
-                     //   scriptChange << vchPubKey << OP_CHECKSIG;
-                    scriptChange.SetDestination(vchPubKey.GetID());
+
+                    // coin control: send change to custom address
+                    if (coinControl && !boost::get<CNoDestination>(&coinControl->destChange))
+                        scriptChange.SetDestination(coinControl->destChange);
+
+                    // no coin control: send change to newly generated address
+                    else
+                    {
+                        // Note: We use a new key here to keep it from being obvious which side is the change.
+                        //  The drawback is that by not reusing a previous key, the change may be lost if a
+                        //  backup is restored, if the backup doesn't have the new private key for the change.
+                        //  If we reused the old key, it would be possible to add code to look for and
+                        //  rediscover unknown transactions that were written with keys of ours to recover
+                        //  post-backup change.
+
+                        // Reserve a new key pair from key pool
+                        CPubKey vchPubKey;
+                        assert(reservekey.GetReservedKey(vchPubKey)); // should never fail, as we just unlocked
+
+                        scriptChange.SetDestination(vchPubKey.GetID());
+                    }
 
                     // Insert change txn at random position:
-                    vector<CTxOut>::iterator position = wtxNew.vout.begin()+GetRandInt(wtxNew.vout.size());
+                    vector<CTxOut>::iterator position = wtxNew.vout.begin()+GetRandInt(wtxNew.vout.size() + 1);
+
+                    // -- don't put change output between value and narration outputs
+                    if (position > wtxNew.vout.begin() && position < wtxNew.vout.end())
+                    {
+                        while (position > wtxNew.vout.begin())
+                        {
+                            if (position->nValue != 0)
+                                break;
+                            position--;
+                        };
+                    };
                     wtxNew.vout.insert(position, CTxOut(nChange, scriptChange));
+                    nChangePos = std::distance(wtxNew.vout.begin(), position);
                 }
                 else
                     reservekey.ReturnKey();
 
                 // Fill vin
-                BOOST_FOREACH(PAIRTYPE(const CWalletTx*, unsigned int)& coin, vecCoins)
-                    wtxNew.vin.push_back(CTxIn(coin.first->GetHash(), coin.second));
+                BOOST_FOREACH(PAIRTYPE(const CWalletTx*,unsigned int)& coin, vecCoins)
+                    wtxNew.vin.push_back(CTxIn(coin.first->GetHash(),coin.second));
 
                 // Sign
                 int nIn = 0;
@@ -311,14 +457,12 @@ bool CreateTransactionWithInputTx(const vector<pair<CScript, int64_t> >& vecSend
                 {
                     if (coin.first == &wtxIn && coin.second == nTxOut)
                     {
-                        if (!SignNameSignature(*coin.first, wtxNew, nIn++))
+                        if (!SignNameSignatureINN(*pwalletMain, *coin.first, wtxNew, nIn++))
                         {
                             strFailReason = _("Signing name input failed");
                             return false;
                         }
-                    }
-                    else
-                    {
+                    } else {
                         if (!SignSignature(*pwalletMain, *coin.first, wtxNew, nIn++))
                         {
                             strFailReason = _("Signing transaction failed");
@@ -336,9 +480,10 @@ bool CreateTransactionWithInputTx(const vector<pair<CScript, int64_t> >& vecSend
                 }
                 dPriority /= nBytes;
 
-                // Check that enough fee is included (at least MIN_TX_FEE per 1000 bytes)
-                int64_t nPayFee = max(nTransactionFee, MIN_TX_FEE * (1 + (int64_t)nBytes / 1000));
-                int64_t nMinFee = wtxNew.GetMinFee(1, nBytes);
+                // Check that enough fee is included
+                int64_t nPayFee = nTransactionFee * (1 + (int64_t)nBytes / 1000);
+                int64_t nMinFee = wtxNew.GetMinFee(1, GMF_SEND, nBytes);
+
                 if (nFeeRet < max(nPayFee, nMinFee))
                 {
                     nFeeRet = max(nPayFee, nMinFee);
@@ -382,7 +527,8 @@ string SendMoneyWithInputTx(CScript scriptPubKey, int64_t nValue, int64_t nNetFe
     }
 
     string failReason;
-    if (!CreateTransactionWithInputTx(vecSend, wtxIn, nTxOut, wtxNew, reservekey, nFeeRequired, failReason))
+    int nChangePos;
+    if (!CreateTransactionWithInputTx(vecSend, wtxIn, nTxOut, wtxNew, reservekey, nFeeRequired, failReason, nChangePos, nullptr))
     {
         string strError;
         if (nValue + nFeeRequired > pwalletMain->GetBalance())
@@ -415,7 +561,7 @@ bool CNameDB::ScanNames(
         return false;
 
     unsigned int fFlags = DB_SET_RANGE;
-    for ( ; ; )
+    while (true)
     {
         // Read next record
         CDataStream ssKey(SER_DISK, CLIENT_VERSION);
@@ -492,6 +638,7 @@ bool IsNameFeeEnough(CTxDB& txdb, const CTransaction& tx, const NameTxInfo& nti,
 bool CNamecoinHooks::IsNameFeeEnough(CTxDB& txdb, const CTransaction &tx)
 {
     if (tx.nVersion != NAMECOIN_TX_VERSION)
+        printf('IsNameFeeEnough() Not Name TX Version, Returning False');
         return false;
 
     NameTxInfo nti;
@@ -721,8 +868,8 @@ Value sendtoname(const Array& params, bool fHelp)
         throw JSONRPCError(RPC_WALLET_ERROR, strError);
 
     Object res;
-    res.push_back(Pair("sending to", address.ToString()));
-    res.push_back(Pair("transaction", wtx.GetHash().GetHex()));
+    res.push_back(Pair("SENTTO", address.ToString()));
+    res.push_back(Pair("TX", wtx.GetHash().GetHex()));
     return res;
 }
 
@@ -1221,7 +1368,7 @@ bool IsWalletLocked(NameTxReturn& ret)
     if (fWalletUnlockStakingOnly)
     {
         ret.err_code = RPC_WALLET_UNLOCK_NEEDED;
-        ret.err_msg = "Error: Wallet unlocked for block minting only, unable to create transaction.";
+        ret.err_msg = "Error: Wallet unlocked for block staking only, unable to create transaction.";
         return true;
     }
     return false;
@@ -1233,9 +1380,9 @@ Value name_new(const Array& params, bool fHelp)
         throw runtime_error(
                 "name_new <name> <value> <days> [address] [valueAsFilepath]\n"
                 "Creates new key->value pair which expires after specified number of days.\n"
-                "[address] does not currently work but will be added in the future\n"
+                "[address] to register the name to\n"
                 "If [valueAsFilepath] is non-zero it will interpret <value> as a filepath and try to write file contents in binary format\n"
-                "Cost is square root of (1% of last PoW + 1% per year of last PoW)."
+                "Cost is 0.9 INN To TX Fees and 0.01 To Name Registration."
                 + HelpRequiringPassphrase());
 
     if (!IsSynchronized())
@@ -1244,6 +1391,9 @@ Value name_new(const Array& params, bool fHelp)
     vector<unsigned char> vchName = vchFromValue(params[0]);
     vector<unsigned char> vchValue = vchFromValue(params[1]);
     int nRentalDays = params[2].get_int();
+    string strAddress = "";
+    if (params.size() == 4)
+        string strAddress = params[3].get_str();
 
     bool fValueAsFilepath = false;
     if (params.size() > 4)
@@ -1268,7 +1418,7 @@ Value name_new(const Array& params, bool fHelp)
             throw JSONRPCError(RPC_INTERNAL_ERROR, "failed to read file");
     }
 
-    NameTxReturn ret = name_new(vchName, vchValue, nRentalDays);
+    NameTxReturn ret = name_new(vchName, vchValue, nRentalDays, strAddress);
     if (!ret.ok)
         throw JSONRPCError(ret.err_code, ret.err_msg);
     return ret.hex.GetHex();
@@ -1276,7 +1426,7 @@ Value name_new(const Array& params, bool fHelp)
 
 NameTxReturn name_new(const vector<unsigned char> &vchName,
               const vector<unsigned char> &vchValue,
-              const int nRentalDays)
+              const int nRentalDays, string strAddress)
 {
     NameTxReturn ret;
     ret.err_code = RPC_INTERNAL_ERROR; //default value
@@ -1287,11 +1437,16 @@ NameTxReturn name_new(const vector<unsigned char> &vchName,
 
     CWalletTx wtx;
     wtx.nVersion = NAMECOIN_TX_VERSION;
+
+    //wtx.mapValue["comment"] = "New Name";
+    std::string sNarr = "";
+    //wtx.mapValue["to"] = "IDNS";
+
     stringstream ss;
     CScript scriptPubKey;
 
     {
-        LOCK(cs_main);
+        LOCK2(cs_main, pwalletMain->cs_wallet);
 
         if (mapNamePending.count(vchName) && mapNamePending[vchName].size())
         {
@@ -1308,32 +1463,99 @@ NameTxReturn name_new(const vector<unsigned char> &vchName,
             return ret;
         }
 
-        CPubKey vchPubKey;
-        if (!pwalletMain->GetKeyFromPool(vchPubKey, true))
+        // CPubKey vchPubKey;
+        // if (!pwalletMain->GetKeyFromPool(vchPubKey, true))
+        // {
+        //     ret.err_msg = "failed to get key from pool";
+        //     return ret;
+        // }
+        // scriptPubKey.SetDestination(vchPubKey.GetID());
+
+        // grab last tx in name chain and check if it can be spent by us
+        CWalletTx wtxIn = CWalletTx();
+        CNameDB dbName("r");
+        CTransaction prevTx;
+        if (GetLastTxOfName(dbName, vchName, prevTx))
         {
-            ret.err_msg = "failed to get key from pool";
+            ret.err_msg = "Found INN Name TX with this name already.";
             return ret;
         }
-        scriptPubKey.SetDestination(vchPubKey.GetID());
+
+        uint256 wtxInHash = prevTx.GetHash();
+        if (pwalletMain->mapWallet.count(wtxInHash))
+        {
+            ret.err_msg = "This INN Name TX is in your wallet: " + wtxInHash.GetHex();
+            return ret;
+        }
+
+        wtxIn = pwalletMain->mapWallet[wtxInHash];
+        // int nTxOut = IndexOfNameOutput(wtxIn);
+
+        // if (::IsMine(*pwalletMain, wtxIn.vout[nTxOut].scriptPubKey) != ISMINE_SPENDABLE)
+        // {
+        //     ret.err_msg = "This INN Name TX is not yours or is not spendable: " + wtxInHash.GetHex();
+        //     return ret;
+        // }
 
         CScript nameScript;
         if (!createNameScript(nameScript, vchName, vchValue, nRentalDays, OP_NAME_NEW, ret.err_msg))
             return ret;
 
-        nameScript += scriptPubKey;
-		std::string sNarr;
-
-        int64_t prevFee = nTransactionFee;
-        nTransactionFee = GetNameOpFee(pindexBest, nRentalDays, OP_NAME_NEW, vchName, vchValue);
-        string strError = pwalletMain->SendMoney(nameScript, CENT, sNarr, wtx, false);
-        nTransactionFee = prevFee;
-
-        if (strError != "")
+        // add destination to namescript
+        if (strAddress != "")
         {
-            ret.err_code = RPC_WALLET_ERROR;
-            ret.err_msg = strError;
-            return ret;
+            CBitcoinAddress address(strAddress);
+            if (!address.IsValid())
+            {
+                ret.err_code = RPC_INVALID_ADDRESS_OR_KEY;
+                ret.err_msg = "Innova address is invalid";
+                return ret;
+            }
+            scriptPubKey = GetScriptForDestination(address.Get());
+        } else {
+            CPubKey vchPubKey;
+            if(!pwalletMain->GetKeyFromPool(vchPubKey))
+            {
+                ret.err_msg = "failed to get key from pool";
+                return ret;
+            }
+            scriptPubKey = GetScriptForDestination(vchPubKey.GetID());
         }
+
+        nameScript += scriptPubKey;
+		//std::string strError = "CreateNameTransaction() failed.";
+        CReserveKey reservekey(pwalletMain);
+        int64_t nFeeRequired;
+
+        // CBitcoinAddress address = CBitcoinAddress(vchPubKey.GetID());
+        // nameScript.SetDestination(address);
+
+        //int64_t prevFee = nTransactionFee;
+        //nTransactionFee = GetNameOpFee(pindexBest, nRentalDays, OP_NAME_NEW, vchName, vchValue);
+        //std::string strError = pwalletMain->SendMoney(nameScript, CENT, sNarr, wtx, false);
+
+        CAmount nameFee = GetNameOpFee2(pindexBest, nRentalDays, OP_NAME_NEW, vchName, vchValue);
+        SendName(nameScript, MIN_TXOUT_AMOUNT, wtx, wtxIn, nameFee);
+        // std::string strError = pwalletMain->SendMoneyToDestination(address.Get(), CENT, sNarr, wtx);
+        //string strError = pwalletMain->CreateTransaction(nameScript, CENT, sNarr, wtx, reservekey, nFeeRequired, nullptr);
+        //nTransactionFee = prevFee;
+
+        // if (!pwalletMain->CreateTransaction(nameScript, CENT, sNarr, wtx, reservekey, nFeeRequired, nullptr)) {
+        //     if (CENT + nFeeRequired > pwalletMain->GetBalance())
+        //         strError = "Error: This transaction requires a transaction fee of at least " + FormatMoney(nFeeRequired) + " because of its amount, complexity, or use of recently received funds!";
+        //     LogPrintf("name_new() : %s\n", strError);
+        //     throw JSONRPCError(RPC_WALLET_ERROR, strError);
+        // }
+        // if (!pwalletMain->CommitTransaction(wtx, reservekey))
+        //     throw JSONRPCError(RPC_WALLET_ERROR, "Error: The transaction was rejected! This might happen if some of the coins in your wallet were already spent, such as if you used a copy of wallet.dat and coins were spent in the copy but not marked as spent here.");
+
+
+        // if (strError != "")
+        // {
+        //     ret.err_code = RPC_WALLET_ERROR;
+        //     ret.err_msg = strError;
+        //     return ret;
+        // }
     }
 
     //success! collect info and return
@@ -1342,7 +1564,7 @@ NameTxReturn name_new(const vector<unsigned char> &vchName,
     {
         ret.address = CBitcoinAddress(address).ToString();
     }
-    ret.hex = wtx.GetHash();
+    ret.hex = wtx.GetHash(); //wtx.GetHash().GetHex();
     ret.ok = true;
     return ret;
 }
@@ -1409,6 +1631,7 @@ NameTxReturn name_update(const vector<unsigned char> &vchName,
 
     CWalletTx wtx;
     wtx.nVersion = NAMECOIN_TX_VERSION;
+
     stringstream ss;
     CScript scriptPubKey;
 
@@ -1561,6 +1784,7 @@ NameTxReturn name_delete(const vector<unsigned char> &vchName)
 
     CWalletTx wtx;
     wtx.nVersion = NAMECOIN_TX_VERSION;
+
     stringstream ss;
     CScript scriptPubKey;
 
@@ -1672,10 +1896,8 @@ void createNameIndexFile()
 {
     printf("Scanning Innova's chain for names to create a fast index...\n");
 
-    // create empty nameindex.dat
-    {
-        CNameDB dbName("cr+");
-    }
+    // create empty inameindex.dat
+    CNameDB dbName("cr+");
 
     // scan blockchain to fill inameindex.dat
     CTxDB txdb("r");
@@ -1688,6 +1910,7 @@ void createNameIndexFile()
             pindex = pindex->pnext;
         }
     }
+    printf("Scanned Innova for names successfully!\n");
 }
 
 // Check that the last entry in name history matches the given tx pos
