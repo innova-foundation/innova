@@ -16,6 +16,7 @@
         <file alias="mark">res/icons/mark.png</file>
         <file alias="btc">res/icons/btc.png</file>
         <file alias="mn">res/icons/mn.png</file>
+        <file alias="names">res/icons/names.png</file>
         <file alias="denominate">res/icons/multi.png</file>
         <file alias="connect_0">res/icons/connect0_16.png</file>
         <file alias="connect_1">res/icons/connect1_16.png</file>
@@ -50,7 +51,7 @@
         <file alias="tx_inout">res/icons/tx_inout.png</file>
         <file alias="lock_closed">res/icons/lock_closed.png</file>
         <file alias="lock_open">res/icons/lock_open.png</file>
-		<file alias="lock_staking">res/icons/lock_staking.png</file>
+		    <file alias="lock_staking">res/icons/lock_staking.png</file>
         <file alias="key">res/icons/key.png</file>
         <file alias="filesave">res/icons/filesave.png</file>
         <file alias="qrcode">res/icons/qrcode.png</file>
@@ -65,6 +66,7 @@
         <file alias="data">res/icons/data.png</file>
         <file alias="jupiter">res/icons/jupiter.png</file>
         <file alias="trade">res/icons/trade.png</file>
+        <file alias="goldname">res/icons/goldnames.png</file>
     </qresource>
     <qresource prefix="/images">
         <file alias="about">res/images/about.png</file>
