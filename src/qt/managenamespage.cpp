@@ -419,7 +419,7 @@ void ManageNamesPage::on_submitNameButton_clicked()
         ChangeType status;
         if (txType == "name_new")
         {
-            nHeight = NameTableEntry::name_new;
+            nHeight = NameTableEntry::NAME_NEW;
             status = CT_NEW;
             res = walletModel->nameNew(name, vchValue, days, address);
         }
