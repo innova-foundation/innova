@@ -84,15 +84,15 @@ extern int64_t nLastCoinStakeSearchInterval;
 double GetPoSKernelPS();
 
 #define VERTICAL_TOOBAR_STYLESHEET "QToolBar {\
-border:none;\
+border: 1px solid #1c1c28;\
 height:100%;\
 padding-top:20px;\
 text-align: left;\
 }\
 QToolButton {\
 min-width:180px;\
-background-color: transparent;\
-border: 1px solid #707070;\
+background-color: #1c1c28;\
+border: 1px solid #1c1c28;\
 border-radius: 3px;\
 margin: 3px;\
 padding-left: 5px;\
@@ -103,16 +103,16 @@ text-align: left;\
 padding-bottom:5px;\
 }\
 QToolButton:pressed {\
-background-color: #31363B;\
-border: 1px solid silver;\
+background-color: #66a0c3;\
+border: 1px solid #01619b;\
 }\
 QToolButton:hover {\
-background-color: #31363B;\
+background-color: #01619b;\
 border: 1px solid #707070;\
 }"
 #define HORIZONTAL_TOOLBAR_STYLESHEET "QToolBar {\
-    border: 1px solid #707070;\
-    background: 1px solid #31363B;\
+    border: 1px solid #1c1c28;\
+    background: 1px solid #1c1c28;\
     font-weight: bold;\
 }"
 
@@ -143,8 +143,8 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     nBlocksInLastPeriod(0),
     nLastBlocks(0)
 {
-  resize(600, 400);
-  setWindowTitle(tr("Innova") + " - " + tr("Wallet"));
+    resize(600, 400);
+    setWindowTitle(tr("Innova") + " - " + tr("Wallet"));
 
 #ifndef Q_OS_MAC
     qApp->setWindowIcon(QIcon(":icons/innova"));
