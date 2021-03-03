@@ -393,9 +393,9 @@ void ManageNamesPage::on_submitNameButton_clicked()
         vector<unsigned char> vchName(strName.begin(), strName.end());
 
         if (txType == "name_new")
-            txFee = GetNameOpFee(pindexBest, days, OP_name_new, vchName, vchValue);
+            txFee = GetNameOpFee(pindexBest, days, OP_NAME_NEW, vchName, vchValue);
         else if (txType == "name_update")
-            txFee = GetNameOpFee(pindexBest, days, OP_name_update, vchName, vchValue);
+            txFee = GetNameOpFee(pindexBest, days, OP_NAME_UPDATE, vchName, vchValue);
     }
 
     if (QMessageBox::Yes != QMessageBox::question(this, tr("Confirm name registration"),
