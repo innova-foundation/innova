@@ -52,7 +52,7 @@
            <string/>
           </property>
           <property name="pixmap">
-           <pixmap resource="../bitcoin.qrc">:/icons/hyperfile</pixmap>
+           <pixmap resource="../bitcoin.qrc">:/icons/hyperfile-gradient</pixmap>
           </property>
           <property name="scaledContents">
            <bool>false</bool>
@@ -163,7 +163,7 @@
                 </property>
                 <property name="icon">
                  <iconset resource="../bitcoin.qrc">
-                  <normaloff>:/icons/hyperfile</normaloff>:/icons/hyperfile</iconset>
+                  <normaloff>:/icons/hyperfile-gradient</normaloff>:/icons/hyperfile-gradient</iconset>
                 </property>
                 <property name="iconSize">
                  <size>
@@ -192,7 +192,7 @@
                 </property>
                 <property name="icon">
                  <iconset resource="../bitcoin.qrc">
-                  <normaloff>:/icons/innova128</normaloff>:/icons/innova128</iconset>
+                  <normaloff>:/icons/hyperfile-gradient</normaloff>:/icons/hyperfile-gradient</iconset>
                 </property>
                 <property name="iconSize">
                  <size>
