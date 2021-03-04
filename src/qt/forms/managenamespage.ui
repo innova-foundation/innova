@@ -275,7 +275,7 @@
             </sizepolicy>
            </property>
            <property name="text">
-            <string>D Address (leave blank for default):</string>
+            <string>INN Address (leave blank for default):</string>
            </property>
            <property name="alignment">
             <set>Qt::AlignLeading|Qt::AlignLeft|Qt::AlignVCenter</set>

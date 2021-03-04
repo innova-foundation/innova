@@ -108,7 +108,7 @@ border: 1px solid #01619b;\
 }\
 QToolButton:hover {\
 background-color: #01619b;\
-border: 1px solid #707070;\
+border: 1px solid #1c1c28;\
 }"
 #define HORIZONTAL_TOOLBAR_STYLESHEET "QToolBar {\
     border: 1px solid #1c1c28;\
