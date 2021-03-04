@@ -593,7 +593,7 @@ bool AppInit2()
 
     fDebug = GetBoolArg("-debug");
 
-    // - debug implies fDebug*, unless otherwise specified, except net/fs/smsg since they are -really- noisy.
+    // - debug implies fDebug*, unless otherwise specified, except net/cn/smsg since they are -really- noisy.
     if (fDebug)
     {
         SoftSetBoolArg("-debugnet", false);

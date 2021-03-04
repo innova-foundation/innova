@@ -291,7 +291,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     QString curStyle = qApp->style()->metaObject()->className();
     if(curStyle == "QWindowsStyle" || curStyle == "QWindowsXPStyle")
     {
-        progressBar->setStyleSheet("QProgressBar { background-color: #e8e8e8; border: 1px solid grey; border-radius: 7px; padding: 1px; text-align: center; } QProgressBar::chunk { background: QLinearGradient(x1: 0, y1: 0, x2: 1, y2: 0, stop: 0 #FF8000, stop: 1 orange); border-radius: 7px; margin: 0px; }");
+        progressBar->setStyleSheet("QProgressBar { background-color: #66a0c3; border: 1px solid light-blue; border-radius: 7px; padding: 1px; text-align: center; } QProgressBar::chunk { background: QLinearGradient(x1: 0, y1: 0, x2: 1, y2: 0, stop: 0 #FF8000, stop: 1 orange); border-radius: 7px; margin: 0px; }");
     }
 
     statusBar()->addWidget(progressBarLabel);
@@ -841,7 +841,7 @@ void BitcoinGUI::setNumConnections(int count)
         labelConnectTypeIcon->setToolTip(tr("Not Connected via the Tor Network, Start Innova with the flag nativetor=1"));
     }
     if (fCNLock == true) {
-        labelCNLockIcon->setPixmap(QIcon(":/icons/fs").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
+        labelCNLockIcon->setPixmap(QIcon(":/icons/cn").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
     }
 }
 
