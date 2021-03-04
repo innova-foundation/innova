@@ -269,13 +269,13 @@ extern json_spirit::Value gettxout(const json_spirit::Array& params, bool fHelp)
 extern json_spirit::Value importaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value proofofdata(const json_spirit::Array& params, bool fHelp);
 
-extern json_spirit::Value jupiterversion(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value jupiterupload(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value jupiterpod(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value jupiterduo(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value jupiterduopod(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value jupitergetblock(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value jupitergetstat(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value hyperfileversion(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value hyperfileupload(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value hyperfilepod(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value hyperfileduo(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value hyperfileduopod(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value hyperfilegetblock(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value hyperfilegetstat(const json_spirit::Array& params, bool fHelp);
 
 extern json_spirit::Value burn(const json_spirit::Array& params, bool fHelp);
 

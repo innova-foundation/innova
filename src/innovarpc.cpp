@@ -390,14 +390,14 @@ static const CRPCCommand vRPCCommands[] =
 
     { "proofofdata",            &proofofdata,            false,  true },
 
-    // Innova Jupiter IPFS
-    { "jupiterversion",       &jupiterversion,           true,   false },
-    { "jupiterupload",        &jupiterupload,            false,  false },
-    { "jupiterpod",           &jupiterpod,               false,  true },
-    { "jupiterduo",           &jupiterduo,               false,  false },
-    { "jupiterduopod",        &jupiterduopod,            false,  true },
-    { "jupitergetblock",      &jupitergetblock,          false,  false },
-    { "jupitergetstat",       &jupitergetstat,           false,  false },
+    // Innova Hyperfile IPFS
+    { "hyperfileversion",       &hyperfileversion,           true,   false },
+    { "hyperfileupload",        &hyperfileupload,            false,  false },
+    { "hyperfilepod",           &hyperfilepod,               false,  true },
+    { "hyperfileduo",           &hyperfileduo,               false,  false },
+    { "hyperfileduopod",        &hyperfileduopod,            false,  true },
+    { "hyperfilegetblock",      &hyperfilegetblock,          false,  false },
+    { "hyperfilegetstat",       &hyperfilegetstat,           false,  false },
 
     // Innova Name Commands
     { "name_new",               &name_new,               false,  true },

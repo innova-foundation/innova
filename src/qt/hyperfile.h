@@ -1,21 +1,21 @@
-#ifndef JUPITER_H
-#define JUPITER_H
+#ifndef HYPERFILE_H
+#define HYPERFILE_H
 
 #include <QWidget>
 //#include <QWebView>
 
 namespace Ui {
-    class Jupiter;
+    class Hyperfile;
 }
 
-/** Jupiter page widget */
-class Jupiter : public QWidget
+/** Hyperfile page widget */
+class Hyperfile : public QWidget
 {
     Q_OBJECT
 
 public:
-    explicit Jupiter(QWidget *parent = 0);
-    ~Jupiter();
+    explicit Hyperfile(QWidget *parent = 0);
+    ~Hyperfile();
     QString fileName;
     QString fileCont;
 
@@ -24,7 +24,7 @@ public slots:
 signals:
 
 private:
-    Ui::Jupiter *ui;
+    Ui::Hyperfile *ui;
     void noImageSelected();
 
 private slots:
@@ -35,4 +35,4 @@ private slots:
     void on_checkButtonCloudflare_clicked();
     void on_checkHashButton_clicked();};
 
-#endif // JUPITER_H
+#endif // HYPERFILE_H

@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>Jupiter</class>
- <widget class="QWidget" name="Jupiter">
+ <class>Hyperfile</class>
+ <widget class="QWidget" name="Hyperfile">
   <property name="geometry">
    <rect>
     <x>0</x>
@@ -29,13 +29,13 @@
       <bool>true</bool>
      </property>
      <property name="title">
-      <string>Jupiter IPFS File Upload</string>
+      <string>Hyperfile IPFS File Upload</string>
      </property>
      <layout class="QGridLayout" name="gridLayout_3">
       <item row="0" column="0">
        <layout class="QHBoxLayout" name="horizontalLayout">
         <item>
-          <widget class="QLabel" name="jupitericon">
+          <widget class="QLabel" name="hyperfileicon">
            <property name="sizePolicy">
             <sizepolicy hsizetype="Fixed" vsizetype="Fixed">
              <horstretch>0</horstretch>
@@ -52,7 +52,7 @@
            <string/>
           </property>
           <property name="pixmap">
-           <pixmap resource="../bitcoin.qrc">:/icons/jupiter</pixmap>
+           <pixmap resource="../bitcoin.qrc">:/icons/hyperfile</pixmap>
           </property>
           <property name="scaledContents">
            <bool>false</bool>
@@ -65,7 +65,7 @@
         <item>
           <widget class="QLabel" name="label_2">
            <property name="text">
-             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p align=&quot;center&quot;&gt;Innova's &lt;span style=&quot; font-weight:600;&quot;&gt;Jupiter&lt;/span&gt; is our&lt;span style=&quot; font-weight:600;&quot;&gt; decentralized file uploading service&lt;/span&gt; using IPFS. IPFS is the Interplanetary Decentralized File System, Jupiter utilizes the IPFS APIs, Public Gateways, and Infura's API to upload and pin files into space free and forever. You can utilize Jupiter POD to upload files and also timestamp them with the Innova blockchain.&lt;/p&gt;&lt;p align=&quot;center&quot;&gt;Use this on the decentralized web at: &lt;a href=&quot;https://ipfs.infura.io/ipfs/QmdfxKo6HVgnegahHCXn4X3HoMg7NR3LwCTjCAyxgmCZic&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#ffea00;&quot;&gt;Infury&lt;/span&gt;&lt;/a&gt; | &lt;a href=&quot;https://github.com/carsenk/infury&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#fbff00;&quot;&gt;Infury Github&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;p align=&quot;center&quot;&gt;More Information on IPFS: &lt;a href=&quot;https://ipfs.io&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#fff700;&quot;&gt;https://ipfs.io&lt;/span&gt;&lt;/a&gt; | &lt;a href=&quot;https://infura.io&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#f3ff00;&quot;&gt;https://infura.io&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p align=&quot;center&quot;&gt;Innova's &lt;span style=&quot; font-weight:600;&quot;&gt;Hyperfile&lt;/span&gt; is our&lt;span style=&quot; font-weight:600;&quot;&gt; decentralized file uploading service&lt;/span&gt; using IPFS. IPFS is the Interplanetary Decentralized File System, Hyperfile utilizes the IPFS APIs, Public Gateways, and Infura's API to upload and pin files into space free and forever. You can utilize Hyperfile POD to upload files and also timestamp them with the Innova blockchain.&lt;/p&gt;&lt;p align=&quot;center&quot;&gt;Use this on the decentralized web at: &lt;a href=&quot;https://ipfs.infura.io/ipfs/QmdfxKo6HVgnegahHCXn4X3HoMg7NR3LwCTjCAyxgmCZic&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#ffea00;&quot;&gt;Infury&lt;/span&gt;&lt;/a&gt; | &lt;a href=&quot;https://github.com/carsenk/infury&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#fbff00;&quot;&gt;Infury Github&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;p align=&quot;center&quot;&gt;More Information on IPFS: &lt;a href=&quot;https://ipfs.io&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#fff700;&quot;&gt;https://ipfs.io&lt;/span&gt;&lt;/a&gt; | &lt;a href=&quot;https://infura.io&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#f3ff00;&quot;&gt;https://infura.io&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
           </property>
           <property name="wordWrap">
            <bool>true</bool>
@@ -163,7 +163,7 @@
                 </property>
                 <property name="icon">
                  <iconset resource="../bitcoin.qrc">
-                  <normaloff>:/icons/jupiter</normaloff>:/icons/jupiter</iconset>
+                  <normaloff>:/icons/hyperfile</normaloff>:/icons/hyperfile</iconset>
                 </property>
                 <property name="iconSize">
                  <size>
@@ -230,7 +230,7 @@
          <item>
           <widget class="QLabel" name="hashLabel_2">
            <property name="text">
-            <string>Innova Jupiter POD Address:</string>
+            <string>Innova Hyperfile POD Address:</string>
            </property>
           </widget>
          </item>
@@ -244,7 +244,7 @@
          <item>
           <widget class="QLabel" name="hashLabel_3">
            <property name="text">
-            <string>Innova Jupiter POD Transaction ID:</string>
+            <string>Innova Hyperfile POD Transaction ID:</string>
            </property>
           </widget>
          </item>

@@ -157,7 +157,7 @@ int64_t GetNameOpFee(const CBlockIndex* pindexBlock, const int nRentalDays, int 
     txMinFee = (txMinFee / CENT) * CENT;
 
     // Fee should be at least MIN_TX_FEE
-    txMinFee = max(txMinFee, MIN_NAME_FEE); //100000000 = 1.0 D
+    txMinFee = max(txMinFee, MIN_NAME_FEE); //100000000 = 1.0 INN
 
     return txMinFee;
 }
