@@ -4,9 +4,9 @@
 // Copyright (c) 2019-2021 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#include "fortunastake.h"
-#include "activefortunastake.h"
-#include "fortuna.h"
+#include "collateralnode.h"
+#include "activecollateralnode.h"
+#include "collateral.h"
 #include "txdb.h"
 #include "main.h"
 #include "util.h"
@@ -15,54 +15,54 @@
 #include "core.h"
 #include <boost/lexical_cast.hpp>
 
-int CFortunaStake::minProtoVersion = MIN_MN_PROTO_VERSION;
+int CCollateralNode::minProtoVersion = MIN_MN_PROTO_VERSION;
 
-CCriticalSection cs_fortunastakes;
+CCriticalSection cs_collateralnodes;
 
-/** The list of active fortunastakes */
-std::vector<CFortunaStake> vecFortunastakes;
-std::vector<pair<int, CFortunaStake*> > vecFortunastakeScores;
-std::vector<CFortunaStake> vecFortunastakeScoresList;
-CFortunaPayments ranks;
-uint256 vecFortunastakeScoresListHash;
-std::vector<pair<int, CFortunaStake> > vecFortunastakeRanks;
+/** The list of active collateralnodes */
+std::vector<CCollateralNode> vecCollateralnodes;
+std::vector<pair<int, CCollateralNode*> > vecCollateralnodeScores;
+std::vector<CCollateralNode> vecCollateralnodeScoresList;
+CCollateralNPayments ranks;
+uint256 vecCollateralnodeScoresListHash;
+std::vector<pair<int, CCollateralNode> > vecCollateralnodeRanks;
 /** Object for who's going to get paid on which blocks */
-CFortunastakePayments fortunastakePayments;
-// keep track of fortunastake votes I've seen
-map<uint256, CFortunastakePaymentWinner> mapSeenFortunastakeVotes;
+CCollateralnodePayments collateralnodePayments;
+// keep track of collateralnode votes I've seen
+map<uint256, CCollateralnodePaymentWinner> mapSeenCollateralnodeVotes;
 // keep track of the scanning errors I've seen
-map<uint256, int> mapSeenFortunastakeScanningErrors;
-// who's asked for the fortunastake list and the last time
-std::map<CNetAddr, int64_t> askedForFortunastakeList;
-// which fortunastakes we've asked for
-std::map<COutPoint, int64_t> askedForFortunastakeListEntry;
+map<uint256, int> mapSeenCollateralnodeScanningErrors;
+// who's asked for the collateralnode list and the last time
+std::map<CNetAddr, int64_t> askedForCollateralnodeList;
+// which collateralnodes we've asked for
+std::map<COutPoint, int64_t> askedForCollateralnodeListEntry;
 // cache block hashes as we calculate them
 std::map<int64_t, uint256> mapCacheBlockHashes;
 CMedianFilter<unsigned int> mnMedianCount(10, 0);
 unsigned int mnCount = 0;
-int64_t nAverageFSIncome;
+int64_t nAverageCNIncome;
 int64_t nAveragePayCount;
 
-// manage the fortunastake connections
-void ProcessFortunastakeConnections(){
+// manage the collateralnode connections
+void ProcessCollateralnodeConnections(){
     LOCK(cs_vNodes);
 
     BOOST_FOREACH(CNode* pnode, vNodes)
     {
-        //if it's our fortunastake, let it be
-        if(forTunaPool.submittedToFortunastake == pnode->addr) continue;
+        //if it's our collateralnode, let it be
+        if(forTunaPool.submittedToCollateralnode == pnode->addr) continue;
 
         if( pnode->fForTunaMaster ||
-            (pnode->addr.GetPort() == 14539 && pnode->nChainHeight > (nBestHeight - 120)) // disconnect fortunastakes that were in sync when they connected recently
+            (pnode->addr.GetPort() == 14539 && pnode->nChainHeight > (nBestHeight - 120)) // disconnect collateralnodes that were in sync when they connected recently
                 )
         {
-            printf("Closing fortunastake connection %s \n", pnode->addr.ToString().c_str());
+            printf("Closing collateralnode connection %s \n", pnode->addr.ToString().c_str());
             pnode->CloseSocketDisconnect();
         }
     }
 }
 
-void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStream& vRecv)
+void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataStream& vRecv)
 {
 
     if (strCommand == "dsee") { //ForTuna Election Entry
@@ -88,7 +88,7 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
 
         // make sure signature isn't in the future (past is OK)
         if (sigTime > pindexBest->GetBlockTime() + 30 * 30) {
-            if (fDebugFS) printf("dsee - Signature rejected, too far into the future %s\n", vin.ToString().c_str());
+            if (fDebugCN) printf("dsee - Signature rejected, too far into the future %s\n", vin.ToString().c_str());
             return;
         }
 
@@ -101,7 +101,7 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
         strMessage = addr.ToString() + boost::lexical_cast<std::string>(sigTime) + vchPubKey + vchPubKey2 + boost::lexical_cast<std::string>(protocolVersion);
 
         if(protocolVersion < MIN_MN_PROTO_VERSION) {
-            if (fDebugFS) printf("dsee - ignoring outdated fortunastake %s protocol version %d\n", vin.ToString().c_str(), protocolVersion);
+            if (fDebugCN) printf("dsee - ignoring outdated collateralnode %s protocol version %d\n", vin.ToString().c_str(), protocolVersion);
             return;
         }
 
@@ -109,7 +109,7 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
         pubkeyScript = GetScriptForDestination(pubkey.GetID());
 
         if(pubkeyScript.size() != 25) {
-            if (fDebugFS) printf("dsee - pubkey the wrong size\n");
+            if (fDebugCN) printf("dsee - pubkey the wrong size\n");
             Misbehaving(pfrom->GetId(), 100);
             return;
         }
@@ -118,23 +118,23 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
         pubkeyScript2 =GetScriptForDestination(pubkey2.GetID());
 
         if(pubkeyScript2.size() != 25) {
-            if (fDebugFS) printf("dsee - pubkey2 the wrong size\n");
+            if (fDebugCN) printf("dsee - pubkey2 the wrong size\n");
             Misbehaving(pfrom->GetId(), 100);
             return;
         }
 
         std::string errorMessage = "";
         if(!forTunaSigner.VerifyMessage(pubkey, vchSig, strMessage, errorMessage)){
-            if (fDebugFS) printf("dsee - Got bad fortunastake address signature\n");
+            if (fDebugCN) printf("dsee - Got bad collateralnode address signature\n");
             Misbehaving(pfrom->GetId(), 100);
             return;
         }
 
         if((fTestNet && addr.GetPort() != 15539) || (!fTestNet && addr.GetPort() != 14539)) return;
 
-        //search existing fortunastake list, this is where we update existing fortunastakes with new dsee broadcasts
-        LOCK(cs_fortunastakes);
-        BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes) {
+        //search existing collateralnode list, this is where we update existing collateralnodes with new dsee broadcasts
+        LOCK(cs_collateralnodes);
+        BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes) {
             if(mn.vin.prevout == vin.prevout) {
                 // count == -1 when it's a new entry
                 //   e.g. We don't want the entry relayed/time updated when we're syncing the list
@@ -145,7 +145,7 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
                     //mn.UpdateLastSeen(); // update last seen without the sigTime since it's a new entry
 
                     if(mn.now < sigTime){ //take the newest entry
-                        if (fDebugFS & fDebugNet) printf("dsee - Got updated entry for %s\n", addr.ToString().c_str());
+                        if (fDebugCN & fDebugNet) printf("dsee - Got updated entry for %s\n", addr.ToString().c_str());
                         mn.UpdateLastSeen(); // update with current time (i.e. the time we received this 'new' dsee
                         mn.pubkey2 = pubkey2;
                         mn.now = sigTime;
@@ -161,33 +161,33 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
             }
         }
 
-        sort(vecFortunastakes.begin(), vecFortunastakes.end());
-        vecFortunastakes.erase(unique(vecFortunastakes.begin(), vecFortunastakes.end() ), vecFortunastakes.end());
-        // printf("Sorted and removed duplicate FS out of the vector!!\n");
+        sort(vecCollateralnodes.begin(), vecCollateralnodes.end());
+        vecCollateralnodes.erase(unique(vecCollateralnodes.begin(), vecCollateralnodes.end() ), vecCollateralnodes.end());
+        // printf("Sorted and removed duplicate CN out of the vector!!\n");
 
         if (count > 0) {
             mnMedianCount.input(count);
             mnCount = mnMedianCount.median();
         }
 
-        // make sure the vout that was signed is related to the transaction that spawned the fortunastake
-        //  - this is expensive, so it's only done once per fortunastake
+        // make sure the vout that was signed is related to the transaction that spawned the collateralnode
+        //  - this is expensive, so it's only done once per collateralnode
         //  - if sigTime is newer than our chain, this will probably never work, so don't bother.
         if(sigTime < pindexBest->GetBlockTime() && !forTunaSigner.IsVinAssociatedWithPubkey(vin, pubkey)) {
-            if (fDebugFS) printf("dsee - Got mismatched pubkey and vin\n");
+            if (fDebugCN) printf("dsee - Got mismatched pubkey and vin\n");
             return;
         }
 
-        if(fDebugFS) printf("dsee - Got NEW fortunastake entry %s\n", addr.ToString().c_str());
+        if(fDebugCN) printf("dsee - Got NEW collateralnode entry %s\n", addr.ToString().c_str());
 
         // make sure it's still unspent
         //  - this is checked later by .check() in many places and by ThreadCheckForTunaPool()
         std::string vinError;
-        if(CheckFortunastakeVin(vin,vinError,pindexBest)){
-            if (fDebugFS && fDebugNet) printf("dsee - Accepted input for fortunastake entry %i %i\n", count, current);
+        if(CheckCollateralnodeVin(vin,vinError,pindexBest)){
+            if (fDebugCN && fDebugNet) printf("dsee - Accepted input for collateralnode entry %i %i\n", count, current);
 
             //if(GetInputAge(vin, pindexBest) < (nBestHeight > BLOCK_START_FORTUNASTAKE_DELAYPAY ? FORTUNASTAKE_MIN_CONFIRMATIONS_NOPAY : FORTUNASTAKE_MIN_CONFIRMATIONS)){
-            //    if (fDebugFS && fDebugNet) printf("dsee - Input must have least %d confirmations\n", (nBestHeight > BLOCK_START_FORTUNASTAKE_DELAYPAY ? FORTUNASTAKE_MIN_CONFIRMATIONS_NOPAY : FORTUNASTAKE_MIN_CONFIRMATIONS));
+            //    if (fDebugCN && fDebugNet) printf("dsee - Input must have least %d confirmations\n", (nBestHeight > BLOCK_START_FORTUNASTAKE_DELAYPAY ? FORTUNASTAKE_MIN_CONFIRMATIONS_NOPAY : FORTUNASTAKE_MIN_CONFIRMATIONS));
             //    Misbehaving(pfrom->GetId(), 20);
             //    return;
             //}
@@ -195,31 +195,31 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
             // use this as a peer
             addrman.Add(CAddress(addr), pfrom->addr, 2*60*60);
 
-            // add our fortunastake
-            CFortunaStake mn(addr, vin, pubkey, vchSig, sigTime, pubkey2, protocolVersion);
+            // add our collateralnode
+            CCollateralNode mn(addr, vin, pubkey, vchSig, sigTime, pubkey2, protocolVersion);
             mn.UpdateLastSeen(lastUpdated);
             CBlockIndex* pindex = pindexBest;
 
-            // if it matches our fortunastakeprivkey, then we've been remotely activated
-            if(pubkey2 == activeFortunastake.pubKeyFortunastake && protocolVersion == PROTOCOL_VERSION){
-                activeFortunastake.EnableHotColdFortunaStake(vin, addr);
+            // if it matches our collateralnodeprivkey, then we've been remotely activated
+            if(pubkey2 == activeCollateralnode.pubKeyCollateralnode && protocolVersion == PROTOCOL_VERSION){
+                activeCollateralnode.EnableHotColdCollateralNode(vin, addr);
             }
 
             if(count == -1 && !isLocal)
                 RelayForTunaElectionEntry(vin, addr, vchSig, sigTime, pubkey, pubkey2, count, current, lastUpdated, protocolVersion);
 
             // no need to look up the payment amounts right now, they aren't eligible for payment now anyway
-            //int payments = mn.UpdateLastPaidAmounts(pindex, 1000, value); // do a search back 1000 blocks when receiving a new fortunastake to find their last payment, payments = number of payments received, value = amount
+            //int payments = mn.UpdateLastPaidAmounts(pindex, 1000, value); // do a search back 1000 blocks when receiving a new collateralnode to find their last payment, payments = number of payments received, value = amount
 
 
             //TODO: Set a timer to update ranks after a second
 
-            if (fDebugFS) printf("Registered new fortunastake %s (%i/%i)\n", addr.ToString().c_str(), count, current);
+            if (fDebugCN) printf("Registered new collateralnode %s (%i/%i)\n", addr.ToString().c_str(), count, current);
 
-            vecFortunastakes.push_back(mn);
+            vecCollateralnodes.push_back(mn);
 
         } else {
-            if (fDebugFS) printf("dsee - Rejected fortunastake entry %s: %s\n", addr.ToString().c_str(),vinError.c_str());
+            if (fDebugCN) printf("dsee - Rejected collateralnode entry %s: %s\n", addr.ToString().c_str(),vinError.c_str());
         }
     }
 
@@ -234,20 +234,20 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
         bool stop;
         vRecv >> vin >> vchSig >> sigTime >> stop;
 
-        if (fDebugFS & fDebugSmsg) printf("dseep - Received: vin: %s sigTime: %lld stop: %s\n", vin.ToString().c_str(), sigTime, stop ? "true" : "false");
+        if (fDebugCN & fDebugSmsg) printf("dseep - Received: vin: %s sigTime: %lld stop: %s\n", vin.ToString().c_str(), sigTime, stop ? "true" : "false");
         if (sigTime > pindexBest->GetBlockTime() + (60 * 60)*2) {
-            if (fDebugFS) printf("dseep - Signature rejected, too far into the future %s, sig %d local %d \n", vin.ToString().c_str(), sigTime, GetAdjustedTime());
+            if (fDebugCN) printf("dseep - Signature rejected, too far into the future %s, sig %d local %d \n", vin.ToString().c_str(), sigTime, GetAdjustedTime());
             return;
         }
 
         if (sigTime <= pindexBest->GetBlockTime() - (60 * 60)*2) {
-            if (fDebugFS) printf("dseep - Signature rejected, too far into the past %s - sig %d local %d \n", vin.ToString().c_str(), sigTime, GetAdjustedTime());
+            if (fDebugCN) printf("dseep - Signature rejected, too far into the past %s - sig %d local %d \n", vin.ToString().c_str(), sigTime, GetAdjustedTime());
             return;
         }
 
-        // see if we have this fortunastake
-	      LOCK(cs_fortunastakes);
-        BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes) {
+        // see if we have this collateralnode
+	      LOCK(cs_collateralnodes);
+        BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes) {
             if(mn.vin.prevout == vin.prevout) {
             	// printf("dseep - Found corresponding mn for vin: %s\n", vin.ToString().c_str());
             	// take this only if it's newer
@@ -256,7 +256,7 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
 
                     std::string errorMessage = "";
                     if(!forTunaSigner.VerifyMessage(mn.pubkey2, vchSig, strMessage, errorMessage)){
-                        if (fDebugFS) printf("dseep - Got bad fortunastake address signature %s \n", vin.ToString().c_str());
+                        if (fDebugCN) printf("dseep - Got bad collateralnode address signature %s \n", vin.ToString().c_str());
                         //Misbehaving(pfrom->GetId(), 100);
                         return;
                     }
@@ -276,10 +276,10 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
             }
         }
 
-        if (fDebugFS) printf("dseep - Couldn't find fortunastake entry %s\n", vin.ToString().c_str());
+        if (fDebugCN) printf("dseep - Couldn't find collateralnode entry %s\n", vin.ToString().c_str());
 
-        std::map<COutPoint, int64_t>::iterator i = askedForFortunastakeListEntry.find(vin.prevout);
-        if (i != askedForFortunastakeListEntry.end()){
+        std::map<COutPoint, int64_t>::iterator i = askedForCollateralnodeListEntry.find(vin.prevout);
+        if (i != askedForCollateralnodeListEntry.end()){
             int64_t t = (*i).second;
             if (GetTime() < t) {
                 // we've asked recently
@@ -289,12 +289,12 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
 
         // ask for the dsee info once from the node that sent dseep
 
-        if (fDebugFS && fDebugNet) printf("dseep - Asking source node for missing entry %s\n", vin.ToString().c_str());
+        if (fDebugCN && fDebugNet) printf("dseep - Asking source node for missing entry %s\n", vin.ToString().c_str());
         pfrom->PushMessage("dseg", vin);
         int64_t askAgain = GetTime()+(60*1); // only ask for each dsee once per minute
-        askedForFortunastakeListEntry[vin.prevout] = askAgain;
+        askedForCollateralnodeListEntry[vin.prevout] = askAgain;
 
-    } else if (strCommand == "dseg") { //Get fortunastake list or specific entry
+    } else if (strCommand == "dseg") { //Get collateralnode list or specific entry
         bool fIsInitialDownload = IsInitialBlockDownload();
         if(fIsInitialDownload) return;
 
@@ -308,8 +308,8 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
             //{
               if(!pfrom->addr.IsRFC1918())
               {
-                std::map<CNetAddr, int64_t>::iterator i = askedForFortunastakeList.find(pfrom->addr);
-                if (i != askedForFortunastakeList.end())
+                std::map<CNetAddr, int64_t>::iterator i = askedForCollateralnodeList.find(pfrom->addr);
+                if (i != askedForCollateralnodeList.end())
                 {
                     int64_t t = (*i).second;
                     if (GetTime() < t) {
@@ -323,38 +323,38 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
                 }
 
                 int64_t askAgain = GetTime()+(60*1); // only allow nodes to do a dseg all once per minute
-                askedForFortunastakeList[pfrom->addr] = askAgain;
+                askedForCollateralnodeList[pfrom->addr] = askAgain;
             //}
               }
         } //else, asking for a specific node which is ok
 
-	      LOCK(cs_fortunastakes);
-        int count = vecFortunastakes.size();
+	      LOCK(cs_collateralnodes);
+        int count = vecCollateralnodes.size();
         int i = 0;
 
-        BOOST_FOREACH(CFortunaStake mn, vecFortunastakes) {
+        BOOST_FOREACH(CCollateralNode mn, vecCollateralnodes) {
 
             if(mn.addr.IsRFC1918()) continue; //local network
 
             if(vin == CTxIn()){
                 mn.Check(true);
                 if(mn.IsEnabled()) {
-                    if(fDebugFS && fDebugNet) printf("dseg - Sending fortunastake entry - %s \n", mn.addr.ToString().c_str());
+                    if(fDebugCN && fDebugNet) printf("dseg - Sending collateralnode entry - %s \n", mn.addr.ToString().c_str());
                     pfrom->PushMessage("dsee", mn.vin, mn.addr, mn.sig, mn.now, mn.pubkey, mn.pubkey2, count, i, mn.lastTimeSeen, mn.protocolVersion);
                 }
             } else if (vin == mn.vin) {
-                if(fDebugFS && fDebugNet) printf("dseg - Sending fortunastake entry - %s \n", mn.addr.ToString().c_str());
+                if(fDebugCN && fDebugNet) printf("dseg - Sending collateralnode entry - %s \n", mn.addr.ToString().c_str());
                 pfrom->PushMessage("dsee", mn.vin, mn.addr, mn.sig, mn.now, mn.pubkey, mn.pubkey2, count, i, mn.lastTimeSeen, mn.protocolVersion);
-                printf("dseg - Sent 1 fortunastake entries to %s\n", pfrom->addr.ToString().c_str());
+                printf("dseg - Sent 1 collateralnode entries to %s\n", pfrom->addr.ToString().c_str());
                 return;
             }
             i++;
         }
 
-        printf("dseg - Sent %d fortunastake entries to %s\n", count, pfrom->addr.ToString().c_str());
+        printf("dseg - Sent %d collateralnode entries to %s\n", count, pfrom->addr.ToString().c_str());
     }
 
-    else if (strCommand == "mnget") { //Fortunastake Payments Request Sync
+    else if (strCommand == "mnget") { //Collateralnode Payments Request Sync
         bool fIsInitialDownload = IsInitialBlockDownload();
         if(fIsInitialDownload) return;
 
@@ -365,21 +365,21 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
         }
 
         pfrom->FulfilledRequest("mnget");
-        fortunastakePayments.Sync(pfrom);
-        printf("mnget - Sent fortunastake winners to %s\n", pfrom->addr.ToString().c_str());
+        collateralnodePayments.Sync(pfrom);
+        printf("mnget - Sent collateralnode winners to %s\n", pfrom->addr.ToString().c_str());
     }
-    else if (strCommand == "mnw") { //Fortunastake Payments Declare Winner
+    else if (strCommand == "mnw") { //Collateralnode Payments Declare Winner
         bool fIsInitialDownload = IsInitialBlockDownload();
         if(fIsInitialDownload) return;
 
-        CFortunastakePaymentWinner winner;
+        CCollateralnodePaymentWinner winner;
         int a = 0;
         vRecv >> winner >> a;
 
         if(pindexBest == NULL) return;
 
         uint256 hash = winner.GetHash();
-        if(mapSeenFortunastakeVotes.count(hash)) {
+        if(mapSeenCollateralnodeVotes.count(hash)) {
             if(fDebug) printf("mnw - seen vote %s Height %d bestHeight %d\n", hash.ToString().c_str(), winner.nBlockHeight, pindexBest->nHeight);
             return;
         }
@@ -397,16 +397,16 @@ void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStre
 
         printf("mnw - winning vote  %s Height %d bestHeight %d\n", winner.vin.ToString().c_str(), winner.nBlockHeight, pindexBest->nHeight);
 
-        if(!fortunastakePayments.CheckSignature(winner)){
+        if(!collateralnodePayments.CheckSignature(winner)){
             printf("mnw - invalid signature\n");
             Misbehaving(pfrom->GetId(), 100);
             return;
         }
 
-        mapSeenFortunastakeVotes.insert(make_pair(hash, winner));
+        mapSeenCollateralnodeVotes.insert(make_pair(hash, winner));
 
-        if(fortunastakePayments.AddWinningFortunastake(winner)){
-            fortunastakePayments.Relay(winner);
+        if(collateralnodePayments.AddWinningCollateralnode(winner)){
+            collateralnodePayments.Relay(winner);
         }
     }
 }
@@ -422,8 +422,8 @@ struct CompareValueOnly
 
 struct CompareLastPaidBlock
 {
-    bool operator()(const pair<int, CFortunaStake*>& t1,
-                    const pair<int, CFortunaStake*>& t2) const
+    bool operator()(const pair<int, CCollateralNode*>& t1,
+                    const pair<int, CCollateralNode*>& t2) const
     {
         return (t1.first != t2.first ? t1.first > t2.first : t1.second->CalculateScore(1, pindexBest->nHeight) > t1.second->CalculateScore(1, pindexBest->nHeight));
     }
@@ -431,8 +431,8 @@ struct CompareLastPaidBlock
 
 struct CompareLastPayRate
 {
-    bool operator()(const pair<int, CFortunaStake*>& t1,
-                    const pair<int, CFortunaStake*>& t2) const
+    bool operator()(const pair<int, CCollateralNode*>& t1,
+                    const pair<int, CCollateralNode*>& t2) const
     {
         return (t1.second->payRate == t2.second->payRate ? t1.first > t2.first : t1.second->payRate > t2.second->payRate);
     }
@@ -441,8 +441,8 @@ struct CompareLastPayRate
 struct CompareLastPay
 {
     CompareLastPay(CBlockIndex* pindex) { this->pindex = pindex; }
-    bool operator()(const pair<int, CFortunaStake*>& t1,
-                    const pair<int, CFortunaStake*>& t2) const
+    bool operator()(const pair<int, CCollateralNode*>& t1,
+                    const pair<int, CCollateralNode*>& t2) const
     {
         if (t1.second->IsActive() == t2.second->IsActive()) {
             return (t1.second->payValue == t2.second->payValue ? t1.second->pubkey.GetHash() > t2.second->pubkey.GetHash() : t1.second->payValue > t2.second->payValue);
@@ -457,8 +457,8 @@ struct CompareLastPay
 struct CompareSigTimeTo
 {
     CompareSigTimeTo(CBlockIndex* pindex) { this->pindex = pindex; }
-    bool operator()(const pair<int, CFortunaStake*>& t1,
-                    const pair<int, CFortunaStake*>& t2) const
+    bool operator()(const pair<int, CCollateralNode*>& t1,
+                    const pair<int, CCollateralNode*>& t2) const
     {
         return (t2.second->nTimeRegistered > pindex->GetBlockTime() && t1.second->nTimeRegistered == t2.second->nTimeRegistered ? t1.second->CalculateScore(1, pindex->nHeight) > t2.second->CalculateScore(1, pindex->nHeight) : t2.second->nTimeRegistered > pindex->GetBlockTime());
     }
@@ -467,8 +467,8 @@ struct CompareSigTimeTo
 
 struct CompareLastPayValue
 {
-    bool operator()(const pair<int, CFortunaStake*>& t1,
-                    const pair<int, CFortunaStake*>& t2) const
+    bool operator()(const pair<int, CCollateralNode*>& t1,
+                    const pair<int, CCollateralNode*>& t2) const
     {
         return (t1.second->payValue == t2.second->payValue ? t1.first > t2.first : t1.second->payValue > t2.second->payValue);
     }
@@ -483,11 +483,11 @@ struct CompareValueOnly2
     }
 };
 
-int CountFortunastakesAboveProtocol(int protocolVersion)
+int CountCollateralnodesAboveProtocol(int protocolVersion)
 {
     int i = 0;
-    LOCK(cs_fortunastakes);
-    BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes) {
+    LOCK(cs_collateralnodes);
+    BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes) {
         if(mn.protocolVersion < protocolVersion) continue;
         i++;
     }
@@ -496,11 +496,11 @@ int CountFortunastakesAboveProtocol(int protocolVersion)
 }
 
 
-int GetFortunastakeByVin(CTxIn& vin)
+int GetCollateralnodeByVin(CTxIn& vin)
 {
     int i = 0;
-    LOCK(cs_fortunastakes);
-    BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes) {
+    LOCK(cs_collateralnodes);
+    BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes) {
         if (mn.vin == vin) return i;
         i++;
     }
@@ -508,15 +508,15 @@ int GetFortunastakeByVin(CTxIn& vin)
     return -1;
 }
 
-int GetCurrentFortunaStake(int mod, int64_t nBlockHeight, int minProtocol)
+int GetCurrentCollateralNode(int mod, int64_t nBlockHeight, int minProtocol)
 {
     if (IsInitialBlockDownload()) return 0;
     int i = 0;
     unsigned int score = 0;
     int winner = -1;
-    LOCK(cs_fortunastakes);
+    LOCK(cs_collateralnodes);
     // scan for winner
-    BOOST_FOREACH(CFortunaStake mn, vecFortunastakes) {
+    BOOST_FOREACH(CCollateralNode mn, vecCollateralnodes) {
         mn.Check();
         if(mn.protocolVersion < minProtocol) continue;
         if(!mn.IsEnabled()) {
@@ -524,7 +524,7 @@ int GetCurrentFortunaStake(int mod, int64_t nBlockHeight, int minProtocol)
             continue;
         }
 
-        // calculate the score for each fortunastake
+        // calculate the score for each collateralnode
         uint256 n = mn.CalculateScore(mod, nBlockHeight);
         unsigned int n2 = 0;
         memcpy(&n2, &n, sizeof(n2));
@@ -540,34 +540,34 @@ int GetCurrentFortunaStake(int mod, int64_t nBlockHeight, int minProtocol)
     return winner;
 }
 
-bool GetFortunastakeRanks(CBlockIndex* pindex)
+bool GetCollateralnodeRanks(CBlockIndex* pindex)
 {
-    LOCK(cs_fortunastakes);
+    LOCK(cs_collateralnodes);
     int64_t nStartTime = GetTimeMillis();
-    if (fDebug) printf("GetFortunastakeRanks: ");
-    if (!pindex || pindex == NULL || pindex->pprev == NULL || IsInitialBlockDownload() || vecFortunastakes.size() == 0) return true;
+    if (fDebug) printf("GetCollateralnodeRanks: ");
+    if (!pindex || pindex == NULL || pindex->pprev == NULL || IsInitialBlockDownload() || vecCollateralnodes.size() == 0) return true;
 
     int i = 0;
-    vecFortunastakeScores.clear();
-    if (vecFortunastakeScoresListHash.size() > 0 && vecFortunastakeScoresListHash == pindex->GetBlockHash()) {
+    vecCollateralnodeScores.clear();
+    if (vecCollateralnodeScoresListHash.size() > 0 && vecCollateralnodeScoresListHash == pindex->GetBlockHash()) {
         // if ScoresList was calculated for the current pindex hash, then just use that list
         // TODO: make a vector of these somehow
         if (fDebug) printf(" STARTCOPY (%" PRId64"ms)", GetTimeMillis() - nStartTime);
-        BOOST_FOREACH(CFortunaStake& mn, vecFortunastakeScoresList)
+        BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodeScoresList)
         {
             i++;
-            vecFortunastakeScores.push_back(make_pair(i, &mn));
+            vecCollateralnodeScores.push_back(make_pair(i, &mn));
         }
     } else {
-        vecFortunastakeScoresList.clear();
+        vecCollateralnodeScoresList.clear();
         // now we've put the data in, let's recalculate the ranks.
         if (GetBoolArg("-newranksystem",false)) ranks.initialize(pindex);
-        ranks.update(pindex,FortunaReorgBlock); // this should be set true the first time this is run
-        FortunaReorgBlock = false; // reset reorg flag, we can check now it's updated
+        ranks.update(pindex,CollateralNReorgBlock); // this should be set true the first time this is run
+        CollateralNReorgBlock = false; // reset reorg flag, we can check now it's updated
 
         // now we build the list for sorting
         if (fDebug) printf(" STARTLOOP (%" PRId64"ms)", GetTimeMillis() - nStartTime);
-        BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes) {
+        BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes) {
 
             mn.Check();
             if(mn.protocolVersion < MIN_MN_PROTO_VERSION) continue;
@@ -578,26 +578,26 @@ bool GetFortunastakeRanks(CBlockIndex* pindex)
 
             int value = -1;
             // CBlockIndex* pindex = pindexBest; // don't use the best chain, use the chain we're asking about!
-            // int payments = mn.UpdateLastPaidAmounts(pindex, max(FORTUNASTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * FORTUNASTAKE_FAIR_PAYMENT_ROUNDS, value); // do a search back 1000 blocks when receiving a new fortunastake to find their last payment, payments = number of payments received, value = amount
+            // int payments = mn.UpdateLastPaidAmounts(pindex, max(FORTUNASTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * FORTUNASTAKE_FAIR_PAYMENT_ROUNDS, value); // do a search back 1000 blocks when receiving a new collateralnode to find their last payment, payments = number of payments received, value = amount
 
 
-            vecFortunastakeScores.push_back(make_pair(value, &mn));
-            vecFortunastakeScoresList.push_back(mn);
+            vecCollateralnodeScores.push_back(make_pair(value, &mn));
+            vecCollateralnodeScoresList.push_back(mn);
 
         }
 
-        vecFortunastakeScoresListHash = pindex->GetBlockHash();
+        vecCollateralnodeScoresListHash = pindex->GetBlockHash();
     }
 
     // TODO: Store the whole Scores vector in a caching hash map, maybe need hashPrev as well to make sure it re calculates any different chains with the same end block?
-    //vecFortunastakeScoresCache.insert(make_pair(pindex->GetBlockHash(), vecFortunastakeScoresList));
+    //vecCollateralnodeScoresCache.insert(make_pair(pindex->GetBlockHash(), vecCollateralnodeScoresList));
 
     if (fDebug) printf(" SORT (%" PRId64"ms)", GetTimeMillis() - nStartTime);
-    sort(vecFortunastakeScores.rbegin(), vecFortunastakeScores.rend(), CompareLastPay(pindex)); // sort requires current pindex for modulus as pindexBest is different between clients
+    sort(vecCollateralnodeScores.rbegin(), vecCollateralnodeScores.rend(), CompareLastPay(pindex)); // sort requires current pindex for modulus as pindexBest is different between clients
 
     i = 0;
     // set ranks
-    BOOST_FOREACH(PAIRTYPE(int, CFortunaStake*)& s, vecFortunastakeScores)
+    BOOST_FOREACH(PAIRTYPE(int, CCollateralNode*)& s, vecCollateralnodeScores)
     {
         i++;
         s.first = i;
@@ -607,14 +607,14 @@ bool GetFortunastakeRanks(CBlockIndex* pindex)
     return true;
 }
 
-int GetFortunastakeRank(CFortunaStake &tmn, CBlockIndex* pindex, int minProtocol)
+int GetCollateralnodeRank(CCollateralNode &tmn, CBlockIndex* pindex, int minProtocol)
 {
     if (IsInitialBlockDownload()) return 0;
-    LOCK(cs_fortunastakes);
-    GetFortunastakeRanks(pindex);
+    LOCK(cs_collateralnodes);
+    GetCollateralnodeRanks(pindex);
     unsigned int i = 0;
 
-    BOOST_FOREACH(PAIRTYPE(int, CFortunaStake*)& s, vecFortunastakeScores)
+    BOOST_FOREACH(PAIRTYPE(int, CCollateralNode*)& s, vecCollateralnodeScores)
     {
         i++;
         if (s.second->vin == tmn.vin)
@@ -623,17 +623,17 @@ int GetFortunastakeRank(CFortunaStake &tmn, CBlockIndex* pindex, int minProtocol
     return 0;
 }
 
-bool CheckFSPayment(CBlockIndex* pindex, int64_t value, CFortunaStake &mn) {
+bool CheckCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn) {
     if (mn.nBlockLastPaid == 0) return true; // if we didn't find a payment for this MN, let it through regardless of rate
 
-    //if (mn.nBlockLastPaid - vFortunastakes.count()) return false;
+    //if (mn.nBlockLastPaid - vCollateralnodes.count()) return false;
 
     // find height
-    // calculate average payment across all FS
+    // calculate average payment across all CN
     // check if value is > 25% higher
-    nAverageFSIncome = avg2(vecFortunastakeScoresList);
-    if (nAverageFSIncome < 1 * COIN) return true; // if we can't calculate a decent average, then let the payment through
-    int64_t max = nAverageFSIncome * 10 / 8;
+    nAverageCNIncome = avg2(vecCollateralnodeScoresList);
+    if (nAverageCNIncome < 1 * COIN) return true; // if we can't calculate a decent average, then let the payment through
+    int64_t max = nAverageCNIncome * 10 / 8;
     if (value > max) {
         return false;
     }
@@ -644,28 +644,28 @@ bool CheckFSPayment(CBlockIndex* pindex, int64_t value, CFortunaStake &mn) {
     ExtractDestination(pubScript, address1);
     CBitcoinAddress address2(address1);
 
-    // calculate pay count average across FS
+    // calculate pay count average across CN
     // check if pay count is > 50% higher than the avg
-    nAveragePayCount = avgCount(vecFortunastakeScoresList);
+    nAveragePayCount = avgCount(vecCollateralnodeScoresList);
     if (nAveragePayCount < 1) return true; // if the pay count is less than 1 just let it through
     int64_t maxed = nAveragePayCount * 12 / 8;
     if (mn.payCount > maxed) {
-        printf("CheckFSPayment() Current payCount of %s FS is %d - payCount Overall Average %d\n", address2.ToString().c_str(), mn.payCount, nAveragePayCount);
+        printf("CheckCNPayment() Current payCount of %s CN is %d - payCount Overall Average %d\n", address2.ToString().c_str(), mn.payCount, nAveragePayCount);
         return false;
     }
 
     return true;
 }
 
-bool CheckPoSFSPayment(CBlockIndex* pindex, int64_t value, CFortunaStake &mn) {
+bool CheckPoSCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn) {
     if (mn.nBlockLastPaid == 0) return true; // if we didn't find a payment for this MN, let it through regardless of rate
 
     // find height
-    // calculate average payment across all FS
+    // calculate average payment across all CN
     // check if value is > 25% higher
-    nAverageFSIncome = avg2(vecFortunastakeScoresList);
-    if (nAverageFSIncome < 1 * COIN) return true; // if we can't calculate a decent average, then let the payment through
-    //int64_t max = nAverageFSIncome * 10 / 8;
+    nAverageCNIncome = avg2(vecCollateralnodeScoresList);
+    if (nAverageCNIncome < 1 * COIN) return true; // if we can't calculate a decent average, then let the payment through
+    //int64_t max = nAverageCNIncome * 10 / 8;
     /* // Dont check if value is > 25% higher since PoS
     if (value > max) {
         return false;
@@ -677,20 +677,20 @@ bool CheckPoSFSPayment(CBlockIndex* pindex, int64_t value, CFortunaStake &mn) {
     ExtractDestination(pubScript, address1);
     CBitcoinAddress address2(address1);
 
-    // calculate pay count average across FS
+    // calculate pay count average across CN
     // check if pay count is > 50% higher than the avg
-    nAveragePayCount = avgCount(vecFortunastakeScoresList);
+    nAveragePayCount = avgCount(vecCollateralnodeScoresList);
     if (nAveragePayCount < 1) return true; // if the pay count is less than 1 just let it through
     int64_t maxed = nAveragePayCount * 12 / 8;
     if (mn.payCount > maxed) {
-        printf("CheckPoSFSPayment() Current payCount of %s is %d - payCount Overall Average %d\n", address2.ToString().c_str(), mn.payCount, nAveragePayCount);
+        printf("CheckPoSCNPayment() Current payCount of %s is %d - payCount Overall Average %d\n", address2.ToString().c_str(), mn.payCount, nAveragePayCount);
         return false;
     }
 
     return true;
 }
 
-int64_t avg2(std::vector<CFortunaStake> const& v) {
+int64_t avg2(std::vector<CCollateralNode> const& v) {
     int n = 0;
     int64_t mean = 0;
     for (int i = 0; i < v.size(); i++) {
@@ -704,7 +704,7 @@ int64_t avg2(std::vector<CFortunaStake> const& v) {
     return mean;
 }
 
-int64_t avgCount(std::vector<CFortunaStake> const& v) {
+int64_t avgCount(std::vector<CCollateralNode> const& v) {
     int n = 0;
     int64_t mean = 0;
     for (int i = 0; i < v.size(); i++) {
@@ -717,14 +717,14 @@ int64_t avgCount(std::vector<CFortunaStake> const& v) {
     return mean;
 }
 
-int GetFortunastakeByRank(int findRank, int64_t nBlockHeight, int minProtocol)
+int GetCollateralnodeByRank(int findRank, int64_t nBlockHeight, int minProtocol)
 {
     if (IsInitialBlockDownload()) return 0;
-    LOCK(cs_fortunastakes);
-    GetFortunastakeRanks(pindexBest);
+    LOCK(cs_collateralnodes);
+    GetCollateralnodeRanks(pindexBest);
     unsigned int i = 0;
 
-    BOOST_FOREACH(PAIRTYPE(int, CFortunaStake*)& s, vecFortunastakeScores)
+    BOOST_FOREACH(PAIRTYPE(int, CCollateralNode*)& s, vecCollateralnodeScores)
     {
         i++;
         if (i == findRank)
@@ -771,18 +771,18 @@ bool GetBlockHash(uint256& hash, int nBlockHeight)
     return false;
 }
 
-bool CFortunaStake::GetPaymentInfo(const CBlockIndex *pindex, int64_t &totalValue, double &actualRate)
+bool CCollateralNode::GetPaymentInfo(const CBlockIndex *pindex, int64_t &totalValue, double &actualRate)
 {
     int scanBack = max(FORTUNASTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * FORTUNASTAKE_FAIR_PAYMENT_ROUNDS;
     double requiredRate = scanBack / (int)mnCount;
     int actualPayments = GetPaymentAmount(pindex, scanBack, totalValue);
     actualRate = actualPayments / requiredRate;
-    // TODO: stop payment if fortunastake vin age is under mnCount*30 old
+    // TODO: stop payment if collateralnode vin age is under mnCount*30 old
     if (actualRate > 0) return true;
     return false;
 }
 
-float CFortunaStake::GetPaymentRate(const CBlockIndex *pindex)
+float CCollateralNode::GetPaymentRate(const CBlockIndex *pindex)
 {
     int scanBack = max(FORTUNASTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * FORTUNASTAKE_FAIR_PAYMENT_ROUNDS;
     double requiredRate = scanBack / (int)mnCount;
@@ -792,7 +792,7 @@ float CFortunaStake::GetPaymentRate(const CBlockIndex *pindex)
     return actualRate;
 }
 
-int CFortunaStake::SetPayRate(int nHeight)
+int CCollateralNode::SetPayRate(int nHeight)
 {
      int scanBack = max(FORTUNASTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * FORTUNASTAKE_FAIR_PAYMENT_ROUNDS;
      if (nHeight > pindexBest->nHeight) {
@@ -805,11 +805,11 @@ int CFortunaStake::SetPayRate(int nHeight)
      payRate = 0;
 
      if (payData.size()>0) {
-         // printf("Using fortunastake cached payments data for pay rate");
+         // printf("Using collateralnode cached payments data for pay rate");
          // printf(" (payInfo:%d@%f)...", payCount, payRate);
          int64_t amount = 0;
          int matches = 0;
-         BOOST_FOREACH(CFortunaPayData &item, payData)
+         BOOST_FOREACH(CCollateralNPayData &item, payData)
          {
              if (item.height > nHeight - scanBack && mapBlockIndex.count(item.hash)) { // find payments in last scanrange
                 amount += item.amount;
@@ -828,7 +828,7 @@ int CFortunaStake::SetPayRate(int nHeight)
      }
 }
 
-int CFortunaStake::GetPaymentAmount(const CBlockIndex *pindex, int nMaxBlocksToScanBack, int64_t &totalValue)
+int CCollateralNode::GetPaymentAmount(const CBlockIndex *pindex, int nMaxBlocksToScanBack, int64_t &totalValue)
 {
     if(!pindex) return 0;
     CScript mnpayee = GetScriptForDestination(pubkey.GetID());
@@ -837,11 +837,11 @@ int CFortunaStake::GetPaymentAmount(const CBlockIndex *pindex, int nMaxBlocksToS
     CBitcoinAddress address2(address1);
     totalValue = 0;
     if (payData.size()>0) {
-        //printf("Using fortunastake cached payments data");
+        //printf("Using collateralnode cached payments data");
         //printf("(payInfo:%d@%f)...", payCount, payRate);
         int64_t amount = 0;
         int matches = 0;
-        BOOST_FOREACH(CFortunaPayData &item, payData)
+        BOOST_FOREACH(CCollateralNPayData &item, payData)
         {
             if (item.height > pindex->nHeight - nMaxBlocksToScanBack && mapBlockIndex.count(item.hash)) { // find payments in last scanrange
                amount += item.amount;
@@ -887,7 +887,7 @@ int CFortunaStake::GetPaymentAmount(const CBlockIndex *pindex, int nMaxBlocksToS
 
 }
 
-int CFortunaStake::UpdateLastPaidAmounts(const CBlockIndex *pindex, int nMaxBlocksToScanBack, int &value)
+int CCollateralNode::UpdateLastPaidAmounts(const CBlockIndex *pindex, int nMaxBlocksToScanBack, int &value)
 {
     if (!pindex || IsInitialBlockDownload()) return 0;
     const CBlockIndex *BlockReading = pindex;
@@ -911,13 +911,13 @@ int CFortunaStake::UpdateLastPaidAmounts(const CBlockIndex *pindex, int nMaxBloc
                        ++it;
                     } else {
                         // remove it from payData
-                        if (fDebug) { printf("Removing old payData for FS %s at height %d\n",addr.ToString().c_str(),(*it).first); }
+                        if (fDebug) { printf("Removing old payData for CN %s at height %d\n",addr.ToString().c_str(),(*it).first); }
                         it = payData.erase(it);
                     }
                 }
         */
         // all of that doesn't matter if we pay attention to the hash of the payment!
-        BOOST_FOREACH(CFortunaPayData &item, payData)
+        BOOST_FOREACH(CCollateralNPayData &item, payData)
         {
             if (mapBlockIndex.count(item.hash)) {
                 if (item.height > pindex->nHeight - nMaxBlocksToScanBack) { // find payments in last scanrange
@@ -947,7 +947,7 @@ int CFortunaStake::UpdateLastPaidAmounts(const CBlockIndex *pindex, int nMaxBloc
     payCount = 0;
     payValue = 0;
 
-    LOCK(cs_fortunastakes);
+    LOCK(cs_collateralnodes);
     for (int i = 0; i < scanBack; i++) {
             val = 0;
             CBlock block;
@@ -964,7 +964,7 @@ int CFortunaStake::UpdateLastPaidAmounts(const CBlockIndex *pindex, int nMaxBloc
                         int height = BlockReading->nHeight;
                         int64_t amount = txout.nValue;
                         uint256 hash = BlockReading->GetBlockHash();
-                        CFortunaPayData data;
+                        CCollateralNPayData data;
 
                         data.height = height;
                         data.amount = amount;
@@ -1000,7 +1000,7 @@ int CFortunaStake::UpdateLastPaidAmounts(const CBlockIndex *pindex, int nMaxBloc
         // set the node's current 'reward rate' - pay per day
         payRate = ((payValue / scanBack) / 30) * 86400;
 
-        if (fDebugFS) printf("CFortunaStake::UpdateLastPaidAmounts -- MN %s in last %d blocks was paid %d times for %s D, rateperday:%s count:%d val:%s\n", address2.ToString().c_str(), scanBack, rewardCount, FormatMoney(rewardValue).c_str(), FormatMoney(payRate).c_str(), payCount, FormatMoney(payValue).c_str());
+        if (fDebugCN) printf("CCollateralNode::UpdateLastPaidAmounts -- MN %s in last %d blocks was paid %d times for %s D, rateperday:%s count:%d val:%s\n", address2.ToString().c_str(), scanBack, rewardCount, FormatMoney(rewardValue).c_str(), FormatMoney(payRate).c_str(), payCount, FormatMoney(payValue).c_str());
 
         return rewardCount;
     } else {
@@ -1013,7 +1013,7 @@ int CFortunaStake::UpdateLastPaidAmounts(const CBlockIndex *pindex, int nMaxBloc
 
 }
 
-void CFortunaStake::UpdateLastPaidBlock(const CBlockIndex *pindex, int nMaxBlocksToScanBack)
+void CCollateralNode::UpdateLastPaidBlock(const CBlockIndex *pindex, int nMaxBlocksToScanBack)
 {
     if(!pindex) return;
 
@@ -1032,34 +1032,34 @@ void CFortunaStake::UpdateLastPaidBlock(const CBlockIndex *pindex, int nMaxBlock
 
     /*  no amount checking for now
      * TODO: Scan block for payments to calculate reward
-            // Calculate Coin Age for Fortunastake Reward Calculation
+            // Calculate Coin Age for Collateralnode Reward Calculation
             if (!block.vtx[1].GetCoinAge(txdb, nCoinAge))
-                return error("CheckBlock-POS : %s unable to get coin age for coinstake, Can't Calculate Fortunastake Reward\n", block.vtx[1].GetHash().ToString().substr(0,10).c_str());
+                return error("CheckBlock-POS : %s unable to get coin age for coinstake, Can't Calculate Collateralnode Reward\n", block.vtx[1].GetHash().ToString().substr(0,10).c_str());
             int64_t nCalculatedStakeReward = GetProofOfStakeReward(nCoinAge, nFees);
-            int64_t nFortunastakePayment = GetFortunastakePayment(BlockReading->nHeight, block.IsProofOfStake() ? nCalculatedStakeReward : block.vtx[0].GetValueOut());
+            int64_t nCollateralnodePayment = GetCollateralnodePayment(BlockReading->nHeight, block.IsProofOfStake() ? nCalculatedStakeReward : block.vtx[0].GetValueOut());
     */
             if (block.IsProofOfWork())
             {
-                // TODO HERE: Scan the block for fortunastake payment amount
+                // TODO HERE: Scan the block for collateralnode payment amount
                 BOOST_FOREACH(CTxOut txout, block.vtx[0].vout)
                     if(mnpayee == txout.scriptPubKey) {
                         nBlockLastPaid = BlockReading->nHeight;
                         int lastPay = pindexBest->nHeight - nBlockLastPaid;
                         int value = txout.nValue;
-                        // TODO HERE: Check the nValue for the fortunastake payment amount
-                        if (fDebug) printf("CFortunaStake::UpdateLastPaidBlock -- searching for block with payment to %s -- found pow %d (%d blocks ago)\n", address2.ToString().c_str(), nBlockLastPaid, lastPay);
+                        // TODO HERE: Check the nValue for the collateralnode payment amount
+                        if (fDebug) printf("CCollateralNode::UpdateLastPaidBlock -- searching for block with payment to %s -- found pow %d (%d blocks ago)\n", address2.ToString().c_str(), nBlockLastPaid, lastPay);
                         return;
                     }
             } else if (block.IsProofOfStake())
             {
-                // TODO HERE: Scan the block for fortunastake payment amount
+                // TODO HERE: Scan the block for collateralnode payment amount
                 BOOST_FOREACH(CTxOut txout, block.vtx[1].vout)
                     if(mnpayee == txout.scriptPubKey) {
                         nBlockLastPaid = BlockReading->nHeight;
                         int lastPay = pindexBest->nHeight - nBlockLastPaid;
                         int value = txout.nValue;
-                        // TODO HERE: Check the nValue for the fortunastake payment amount
-                        if (fDebug) printf("CFortunaStake::UpdateLastPaidBlock -- searching for block with payment to %s -- found pos %d (%d blocks ago)\n", address2.ToString().c_str(), nBlockLastPaid, lastPay);
+                        // TODO HERE: Check the nValue for the collateralnode payment amount
+                        if (fDebug) printf("CCollateralNode::UpdateLastPaidBlock -- searching for block with payment to %s -- found pos %d (%d blocks ago)\n", address2.ToString().c_str(), nBlockLastPaid, lastPay);
                         return;
                     }
             }
@@ -1070,17 +1070,17 @@ void CFortunaStake::UpdateLastPaidBlock(const CBlockIndex *pindex, int nMaxBlock
     }
     if (!nBlockLastPaid)
     {
-        if (fDebug) printf("CFortunastake::UpdateLastPaidBlock -- searching for block with payment to %s e.g. %s -- NOT FOUND\n", vin.prevout.ToString().c_str(),address2.ToString().c_str());
+        if (fDebug) printf("CCollateralnode::UpdateLastPaidBlock -- searching for block with payment to %s e.g. %s -- NOT FOUND\n", vin.prevout.ToString().c_str(),address2.ToString().c_str());
         nBlockLastPaid = 1;
     }
 }
 
 //
-// Deterministically calculate a given "score" for a fortunastake with tribus depending on how close it's hash is to
+// Deterministically calculate a given "score" for a collateralnode with tribus depending on how close it's hash is to
 // the proof of work for that block. The further away they are the better, the furthest will win the election
 // and get paid this block
 //
-uint256 CFortunaStake::CalculateScore(int mod, int64_t nBlockHeight)
+uint256 CCollateralNode::CalculateScore(int mod, int64_t nBlockHeight)
 {
     if(pindexBest == NULL) return 0;
 
@@ -1097,7 +1097,7 @@ uint256 CFortunaStake::CalculateScore(int mod, int64_t nBlockHeight)
     return r;
 }
 
-void CFortunaStake::Check(bool forceCheck)
+void CCollateralNode::Check(bool forceCheck)
 {
     if(!forceCheck && (GetTime() - lastTimeChecked < FORTUNASTAKE_CHECK_SECONDS)) return;
     lastTimeChecked = GetTime();
@@ -1121,9 +1121,9 @@ void CFortunaStake::Check(bool forceCheck)
 
     if(!unitTest){
         std::string vinError;
-        if(!CheckFortunastakeVin(vin,vinError,pindexBest)) {
+        if(!CheckCollateralnodeVin(vin,vinError,pindexBest)) {
                 enabled = 3; //MN input was spent, disable checks for this MN
-                if (fDebug) printf("error checking fortunastake %s: %s\n", vin.prevout.ToString().c_str(), vinError.c_str());
+                if (fDebug) printf("error checking collateralnode %s: %s\n", vin.prevout.ToString().c_str(), vinError.c_str());
                 status = "vin was spent";
                 return;
             }
@@ -1132,7 +1132,7 @@ void CFortunaStake::Check(bool forceCheck)
     enabled = 1; // OK
 }
 
-bool CheckFortunastakeVin(CTxIn& vin, std::string& errorMessage, CBlockIndex* pindex) {
+bool CheckCollateralnodeVin(CTxIn& vin, std::string& errorMessage, CBlockIndex* pindex) {
     CTxDB txdb("r");
     CTxIndex txindex;
     CTransaction ctx;
@@ -1156,7 +1156,7 @@ bool CheckFortunastakeVin(CTxIn& vin, std::string& errorMessage, CBlockIndex* pi
     CTxOut vout = ctx.vout[vin.prevout.n];
     if (vout.nValue != GetMNCollateral()*COIN)
     {
-        errorMessage = "specified vin was not a fortunastake capable transaction";
+        errorMessage = "specified vin was not a collateralnode capable transaction";
         return false;
     }
 
@@ -1173,7 +1173,7 @@ bool CheckFortunastakeVin(CTxIn& vin, std::string& errorMessage, CBlockIndex* pi
     return false;
 }
 
-bool CFortunastakePayments::CheckSignature(CFortunastakePaymentWinner& winner)
+bool CCollateralnodePayments::CheckSignature(CCollateralnodePaymentWinner& winner)
 {
     //note: need to investigate why this is failing
     std::string strMessage = winner.vin.ToString().c_str() + boost::lexical_cast<std::string>(winner.nBlockHeight) + winner.payee.ToString();
@@ -1188,7 +1188,7 @@ bool CFortunastakePayments::CheckSignature(CFortunastakePaymentWinner& winner)
     return true;
 }
 
-bool CFortunastakePayments::Sign(CFortunastakePaymentWinner& winner)
+bool CCollateralnodePayments::Sign(CCollateralnodePaymentWinner& winner)
 {
     std::string strMessage = winner.vin.ToString().c_str() + boost::lexical_cast<std::string>(winner.nBlockHeight) + winner.payee.ToString();
 
@@ -1198,40 +1198,40 @@ bool CFortunastakePayments::Sign(CFortunastakePaymentWinner& winner)
 
     if(!forTunaSigner.SetKey(strMasterPrivKey, errorMessage, key2, pubkey2))
     {
-        printf("CFortunastakePayments::Sign - ERROR: Invalid fortunastakeprivkey: '%s'\n", errorMessage.c_str());
+        printf("CCollateralnodePayments::Sign - ERROR: Invalid collateralnodeprivkey: '%s'\n", errorMessage.c_str());
         return false;
     }
 
     if(!forTunaSigner.SignMessage(strMessage, errorMessage, winner.vchSig, key2)) {
-        printf("CFortunastakePayments::Sign - Sign message failed");
+        printf("CCollateralnodePayments::Sign - Sign message failed");
         return false;
     }
 
     if(!forTunaSigner.VerifyMessage(pubkey2, winner.vchSig, strMessage, errorMessage)) {
-        printf("CFortunastakePayments::Sign - Verify message failed");
+        printf("CCollateralnodePayments::Sign - Verify message failed");
         return false;
     }
 
     return true;
 }
 
-uint64_t CFortunastakePayments::CalculateScore(uint256 blockHash, CTxIn& vin)
+uint64_t CCollateralnodePayments::CalculateScore(uint256 blockHash, CTxIn& vin)
 {
     uint256 n1 = blockHash;
     uint256 n2 = Tribus(BEGIN(n1), END(n1));
     uint256 n3 = Tribus(BEGIN(vin.prevout.hash), END(vin.prevout.hash));
     uint256 n4 = n3 > n2 ? (n3 - n2) : (n2 - n3);
 
-    //printf(" -- CFortunastakePayments CalculateScore() n2 = %d \n", n2.Get64());
-    //printf(" -- CFortunastakePayments CalculateScore() n3 = %d \n", n3.Get64());
-    //printf(" -- CFortunastakePayments CalculateScore() n4 = %d \n", n4.Get64());
+    //printf(" -- CCollateralnodePayments CalculateScore() n2 = %d \n", n2.Get64());
+    //printf(" -- CCollateralnodePayments CalculateScore() n3 = %d \n", n3.Get64());
+    //printf(" -- CCollateralnodePayments CalculateScore() n4 = %d \n", n4.Get64());
 
     return n4.Get64();
 }
 
-bool CFortunastakePayments::GetBlockPayee(int nBlockHeight, CScript& payee)
+bool CCollateralnodePayments::GetBlockPayee(int nBlockHeight, CScript& payee)
 {
-    BOOST_FOREACH(CFortunastakePaymentWinner& winner, vWinning){
+    BOOST_FOREACH(CCollateralnodePaymentWinner& winner, vWinning){
         if(winner.nBlockHeight == nBlockHeight) {
             CTransaction tx;
             uint256 hash;
@@ -1249,9 +1249,9 @@ bool CFortunastakePayments::GetBlockPayee(int nBlockHeight, CScript& payee)
     return false;
 }
 
-bool CFortunastakePayments::GetWinningFortunastake(int nBlockHeight, CTxIn& vinOut)
+bool CCollateralnodePayments::GetWinningCollateralnode(int nBlockHeight, CTxIn& vinOut)
 {
-    BOOST_FOREACH(CFortunastakePaymentWinner& winner, vWinning){
+    BOOST_FOREACH(CCollateralnodePaymentWinner& winner, vWinning){
         if(winner.nBlockHeight == nBlockHeight) {
             vinOut = winner.vin;
             return true;
@@ -1261,7 +1261,7 @@ bool CFortunastakePayments::GetWinningFortunastake(int nBlockHeight, CTxIn& vinO
     return false;
 }
 
-bool CFortunastakePayments::AddWinningFortunastake(CFortunastakePaymentWinner& winnerIn)
+bool CCollateralnodePayments::AddWinningCollateralnode(CCollateralnodePaymentWinner& winnerIn)
 {
     uint256 blockHash = 0;
     if(!GetBlockHash(blockHash, winnerIn.nBlockHeight-576)) {
@@ -1271,7 +1271,7 @@ bool CFortunastakePayments::AddWinningFortunastake(CFortunastakePaymentWinner& w
     winnerIn.score = CalculateScore(blockHash, winnerIn.vin);
 
     bool foundBlock = false;
-    BOOST_FOREACH(CFortunastakePaymentWinner& winner, vWinning){
+    BOOST_FOREACH(CCollateralnodePaymentWinner& winner, vWinning){
         if(winner.nBlockHeight == winnerIn.nBlockHeight) {
             foundBlock = true;
             if(winner.score < winnerIn.score){
@@ -1288,7 +1288,7 @@ bool CFortunastakePayments::AddWinningFortunastake(CFortunastakePaymentWinner& w
     // if it's not in the vector
     if(!foundBlock){
         vWinning.push_back(winnerIn);
-        mapSeenFortunastakeVotes.insert(make_pair(winnerIn.GetHash(), winnerIn));
+        mapSeenCollateralnodeVotes.insert(make_pair(winnerIn.GetHash(), winnerIn));
 
         return true;
     }
@@ -1296,30 +1296,30 @@ bool CFortunastakePayments::AddWinningFortunastake(CFortunastakePaymentWinner& w
     return false;
 }
 
-void CFortunastakePayments::CleanPaymentList()
+void CCollateralnodePayments::CleanPaymentList()
 {
-    LOCK(cs_fortunastakes);
+    LOCK(cs_collateralnodes);
     if(pindexBest == NULL) return;
 
-    int nLimit = std::max(((int)vecFortunastakes.size())*2, 5000);
+    int nLimit = std::max(((int)vecCollateralnodes.size())*2, 5000);
 
-    vector<CFortunastakePaymentWinner>::iterator it;
+    vector<CCollateralnodePaymentWinner>::iterator it;
     for(it=vWinning.begin();it<vWinning.end();it++){
         if(pindexBest->nHeight - (*it).nBlockHeight > nLimit){
-            if(fDebug) printf("CFortunastakePayments::CleanPaymentList - Removing old fortunastake payment - block %d\n", (*it).nBlockHeight);
+            if(fDebug) printf("CCollateralnodePayments::CleanPaymentList - Removing old collateralnode payment - block %d\n", (*it).nBlockHeight);
             vWinning.erase(it);
             break;
         }
     }
 }
 
-int CFortunastakePayments::LastPayment(CFortunaStake& mn)
+int CCollateralnodePayments::LastPayment(CCollateralNode& mn)
 {
     if(pindexBest == NULL) return 0;
 
-    int ret = mn.GetFortunastakeInputAge();
+    int ret = mn.GetCollateralnodeInputAge();
 
-    BOOST_FOREACH(CFortunastakePaymentWinner& winner, vWinning){
+    BOOST_FOREACH(CCollateralnodePaymentWinner& winner, vWinning){
         if(winner.vin == mn.vin && pindexBest->nHeight - winner.nBlockHeight < ret)
             ret = pindexBest->nHeight - winner.nBlockHeight;
     }
@@ -1327,22 +1327,22 @@ int CFortunastakePayments::LastPayment(CFortunaStake& mn)
     return ret;
 }
 
-bool CFortunastakePayments::ProcessBlock(int nBlockHeight)
+bool CCollateralnodePayments::ProcessBlock(int nBlockHeight)
 {
-    LOCK(cs_fortunastakes);
-    if(!enabled) return false; // don't process blocks for fortunastake winners if we aren't signing a winner list
-    CFortunastakePaymentWinner winner;
+    LOCK(cs_collateralnodes);
+    if(!enabled) return false; // don't process blocks for collateralnode winners if we aren't signing a winner list
+    CCollateralnodePaymentWinner winner;
 
     std::vector<CTxIn> vecLastPayments;
     int c = 0;
-    BOOST_REVERSE_FOREACH(CFortunastakePaymentWinner& winner, vWinning){
+    BOOST_REVERSE_FOREACH(CCollateralnodePaymentWinner& winner, vWinning){
         vecLastPayments.push_back(winner.vin);
         //if we have one full payment cycle, break
-        if(++c > (int)vecFortunastakes.size()) break;
+        if(++c > (int)vecCollateralnodes.size()) break;
     }
 
-    std::random_shuffle ( vecFortunastakes.begin(), vecFortunastakes.end() );
-    BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes) {
+    std::random_shuffle ( vecCollateralnodes.begin(), vecCollateralnodes.end() );
+    BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes) {
         bool found = false;
         BOOST_FOREACH(CTxIn& vin, vecLastPayments)
             if(mn.vin == vin) found = true;
@@ -1363,16 +1363,16 @@ bool CFortunastakePayments::ProcessBlock(int nBlockHeight)
     }
 
     //if we can't find someone to get paid, pick randomly
-    if(winner.nBlockHeight == 0 && vecFortunastakes.size() > 0) {
+    if(winner.nBlockHeight == 0 && vecCollateralnodes.size() > 0) {
         winner.score = 0;
         winner.nBlockHeight = nBlockHeight;
-        winner.vin = vecFortunastakes[0].vin;
-        winner.payee =GetScriptForDestination(vecFortunastakes[0].pubkey.GetID());
+        winner.vin = vecCollateralnodes[0].vin;
+        winner.payee =GetScriptForDestination(vecCollateralnodes[0].pubkey.GetID());
     }
 
 
-    if(CFortunastakePayments::enabled && Sign(winner)){
-        if(AddWinningFortunastake(winner)){
+    if(CCollateralnodePayments::enabled && Sign(winner)){
+        if(AddWinningCollateralnode(winner)){
             Relay(winner);
             return true;
         }
@@ -1381,7 +1381,7 @@ bool CFortunastakePayments::ProcessBlock(int nBlockHeight)
     return false;
 }
 
-void CFortunastakePayments::Relay(CFortunastakePaymentWinner& winner)
+void CCollateralnodePayments::Relay(CCollateralnodePaymentWinner& winner)
 {
     CInv inv(MSG_FORTUNASTAKE_WINNER, winner.GetHash());
 
@@ -1393,18 +1393,18 @@ void CFortunastakePayments::Relay(CFortunastakePaymentWinner& winner)
     }
 }
 
-void CFortunastakePayments::Sync(CNode* node)
+void CCollateralnodePayments::Sync(CNode* node)
 {
     int a = 0;
-    BOOST_FOREACH(CFortunastakePaymentWinner& winner, vWinning)
+    BOOST_FOREACH(CCollateralnodePaymentWinner& winner, vWinning)
         if(winner.nBlockHeight >= pindexBest->nHeight-10 && winner.nBlockHeight <= pindexBest->nHeight + 20)
             node->PushMessage("mnw", winner, a);
 }
 
 
-bool CFortunastakePayments::SetPrivKey(std::string strPrivKey)
+bool CCollateralnodePayments::SetPrivKey(std::string strPrivKey)
 {
-    CFortunastakePaymentWinner winner;
+    CCollateralnodePaymentWinner winner;
 
     // Test signing successful, proceed
     strMasterPrivKey = strPrivKey;
@@ -1412,7 +1412,7 @@ bool CFortunastakePayments::SetPrivKey(std::string strPrivKey)
     Sign(winner);
 
     if(CheckSignature(winner)){
-        printf("CFortunastakePayments::SetPrivKey - Successfully initialized as fortunastake payments master\n");
+        printf("CCollateralnodePayments::SetPrivKey - Successfully initialized as collateralnode payments master\n");
         enabled = true;
         return true;
     } else {
@@ -1423,7 +1423,7 @@ bool CFortunastakePayments::SetPrivKey(std::string strPrivKey)
 struct MatchPubkey
 {
  MatchPubkey(const CScript& s) : s_(s) {}
- bool operator()(const CFortunaStake& mn) const
+ bool operator()(const CCollateralNode& mn) const
  {
    return GetScriptForDestination(mn.pubkey.GetID()) == s_;
  }
@@ -1431,7 +1431,7 @@ struct MatchPubkey
    const CScript& s_;
 };
 
-void CFortunaPayments::update(const CBlockIndex *pindex, bool force)
+void CCollateralNPayments::update(const CBlockIndex *pindex, bool force)
 {
     if (!pindex || IsInitialBlockDownload()) return; //return 0 should not return value
     const CBlockIndex *BlockReading = pindex;
@@ -1446,10 +1446,10 @@ void CFortunaPayments::update(const CBlockIndex *pindex, bool force)
     // - update is called from GetForunstakeRanks which is called with new pindex, or pindexBest
     // we only want to update this on a reorg
     if (force) {
-    LOCK(cs_fortunastakes);
+    LOCK(cs_collateralnodes);
 
         // clear existing pay data
-        BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes)
+        BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
         {
             mn.payData.clear();
         }
@@ -1467,14 +1467,14 @@ void CFortunaPayments::update(const CBlockIndex *pindex, bool force)
                 {
                     BOOST_FOREACH(CTxOut txout, block.vtx[block.IsProofOfWork() ? 0 : 1].vout)
                     {
-                        BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes)
+                        BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
                         {
                             if (GetScriptForDestination(mn.pubkey.GetID()) == txout.scriptPubKey)
                             {
                                   int height = BlockReading->nHeight;
                                   int64_t amount = txout.nValue;
                                   uint256 hash = BlockReading->GetBlockHash();
-                                  CFortunaPayData data;
+                                  CCollateralNPayData data;
 
                                   data.height = height;
                                   data.amount = amount;
@@ -1500,19 +1500,19 @@ void CFortunaPayments::update(const CBlockIndex *pindex, bool force)
     if (fDebug) printf("Calculating payrates (%d ms)\n",GetTimeMillis() - nStart);
 
     // do pay rate loops, already do this in connectblock()
-    BOOST_FOREACH(CFortunaStake& mn, vecFortunastakes)
+    BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
     {
         mn.SetPayRate(pindex->nHeight);
     }
 
-    if (fDebug) printf("Finished FS payments. (%d ms)\n",GetTimeMillis() - nStart);
+    if (fDebug) printf("Finished CN payments. (%d ms)\n",GetTimeMillis() - nStart);
 
 }
 
-bool CFortunaPayments::initialize(const CBlockIndex *pindex)
+bool CCollateralNPayments::initialize(const CBlockIndex *pindex)
 {
     if (vCollaterals.size() > 0) return 0; //return should return value here
-    printf("Setting up FS payment validation...\n");
+    printf("Setting up CN payment validation...\n");
     CTxDB txdb("r");
     const CBlockIndex *BlockReading = pindex;
     int blocksFound = 0;
@@ -1540,7 +1540,7 @@ bool CFortunaPayments::initialize(const CBlockIndex *pindex)
                             txCollateral.vin.push_back(vin);
                             txCollateral.vout.push_back(vout);
 
-                            CFortunaCollateral data;
+                            CCollateralNCollateral data;
                             data.vin = vin;
                             data.blockHash = block.GetHash();
                             data.height = nHeight;
@@ -1549,7 +1549,7 @@ bool CFortunaPayments::initialize(const CBlockIndex *pindex)
                             // if data is already in the vector for this script, let's just skip
                             if (std::find(vScripts.begin(), vScripts.end(), mnpayee) != vScripts.end()) { continue; }
 
-                            //if (fDebug) printf("Found FS payment at height %d - TX %s\n TXOut %s\n",nHeight,tx.ToString().c_str(),txout.ToString().c_str());
+                            //if (fDebug) printf("Found CN payment at height %d - TX %s\n TXOut %s\n",nHeight,tx.ToString().c_str(),txout.ToString().c_str());
                             // TODO: check spent with fetch inputs?
                             bool* pfMissingInputs;
                             //if(fDebug) printf("CForTunaPool::IsCollateralValid - Testing TX %s\n",txCollateral.ToString().c_str());
@@ -1558,7 +1558,7 @@ bool CFortunaPayments::initialize(const CBlockIndex *pindex)
                                 continue;
                             } else {
                                 // show addy?
-                                if(fDebug) printf("CForTunaPool::IsCollateralValid - Valid FS Collateral found for outpoint %s\n",vin.ToString().c_str());
+                                if(fDebug) printf("CForTunaPool::IsCollateralValid - Valid CN Collateral found for outpoint %s\n",vin.ToString().c_str());
 
                                 vCollaterals.push_back(data);
                                 vScripts.push_back(mnpayee);
@@ -1574,7 +1574,7 @@ bool CFortunaPayments::initialize(const CBlockIndex *pindex)
 
             BlockReading = BlockReading->pprev;
         }
-    } else { //For mainnet FS checking
+    } else { //For mainnet CN checking
         for (int i = 0; BlockReading && BlockReading->nHeight > BLOCK_START_FORTUNASTAKE_PAYMENTS; i++) {
                 CBlock block;
                 if(!block.ReadFromDisk(BlockReading, true)) // shouldn't really happen
@@ -1597,7 +1597,7 @@ bool CFortunaPayments::initialize(const CBlockIndex *pindex)
                                 txCollateral.vin.push_back(vin);
                                 txCollateral.vout.push_back(vout);
 
-                                CFortunaCollateral data;
+                                CCollateralNCollateral data;
                                 data.vin = vin;
                                 data.blockHash = block.GetHash();
                                 data.height = nHeight;
@@ -1606,7 +1606,7 @@ bool CFortunaPayments::initialize(const CBlockIndex *pindex)
                                 // if data is already in the vector for this script, let's just skip
                                 if (std::find(vScripts.begin(), vScripts.end(), mnpayee) != vScripts.end()) { continue; }
 
-                                //if (fDebug) printf("Found FS payment at height %d - TX %s\n TXOut %s\n",nHeight,tx.ToString().c_str(),txout.ToString().c_str());
+                                //if (fDebug) printf("Found CN payment at height %d - TX %s\n TXOut %s\n",nHeight,tx.ToString().c_str(),txout.ToString().c_str());
                                 // TODO: check spent with fetch inputs?
                                 bool* pfMissingInputs;
                                 //if(fDebug) printf("CForTunaPool::IsCollateralValid - Testing TX %s\n",txCollateral.ToString().c_str());
@@ -1615,7 +1615,7 @@ bool CFortunaPayments::initialize(const CBlockIndex *pindex)
                                     continue;
                                 } else {
                                     // show addy?
-                                    if(fDebug) printf("CForTunaPool::IsCollateralValid - Valid FS Collateral found for outpoint %s\n",vin.ToString().c_str());
+                                    if(fDebug) printf("CForTunaPool::IsCollateralValid - Valid CN Collateral found for outpoint %s\n",vin.ToString().c_str());
 
                                     vCollaterals.push_back(data);
                                     vScripts.push_back(mnpayee);
@@ -1634,7 +1634,7 @@ bool CFortunaPayments::initialize(const CBlockIndex *pindex)
     }
     if (fDebug){
         printf("finished at height %d\n-----------%d collaterals------------",nHeight,vCollaterals.size());
-        BOOST_FOREACH(CFortunaCollateral& rec, vCollaterals)
+        BOOST_FOREACH(CCollateralNCollateral& rec, vCollaterals)
         {
             CTxDestination address1;
             ExtractDestination(rec.scriptPubKey, address1);
@@ -1647,9 +1647,9 @@ bool CFortunaPayments::initialize(const CBlockIndex *pindex)
 
 }
 
-bool FindFSPayment(CScript& payee, CBlockIndex* pindex)
+bool FindCNPayment(CScript& payee, CBlockIndex* pindex)
 {
-    if (fDebug) printf("Searching for FS collateral...\n");
+    if (fDebug) printf("Searching for CN collateral...\n");
     CTxDB txdb("r");
     const CBlockIndex *BlockReading = pindex;
     int blocksFound = 0;
@@ -1670,7 +1670,7 @@ bool FindFSPayment(CScript& payee, CBlockIndex* pindex)
                     BOOST_FOREACH(const CTxOut& txout, tx.vout)
                     {
                         if(payee == txout.scriptPubKey && txout.nValue == GetMNCollateral() * COIN) {
-                            if (fDebug) printf("Found FS payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
+                            if (fDebug) printf("Found CN payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
                             // TODO: check spent with fetch inputs?
                             CTransaction txCollateral;
                             COutPoint cout = COutPoint(tx.GetHash(),n);
@@ -1704,9 +1704,9 @@ bool FindFSPayment(CScript& payee, CBlockIndex* pindex)
 
 }
 
-bool FindFSPayments(CScript& payee, CBlockIndex* pindex)
+bool FindCNPayments(CScript& payee, CBlockIndex* pindex)
 {
-    printf("FSPayment:");
+    printf("CNPayment:");
     CTxDB txdb("r");
     const CBlockIndex *BlockReading = pindex;
     int blocksFound = 0;
@@ -1726,7 +1726,7 @@ bool FindFSPayments(CScript& payee, CBlockIndex* pindex)
                         BOOST_FOREACH(const CTxOut& txout, tx.vout)
                         {
                             if(payee == txout.scriptPubKey && txout.nValue == GetMNCollateral() * COIN) {
-                                if (fDebug) printf("Found FS payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
+                                if (fDebug) printf("Found CN payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
                                 // TODO: check spent with fetch inputs?
                                 CTransaction txCollateral;
                                 CTxOut vout = CTxOut((GetMNCollateral() - 1)* COIN, forTunaPool.collateralPubKey);
@@ -1765,7 +1765,7 @@ bool FindFSPayments(CScript& payee, CBlockIndex* pindex)
                         BOOST_FOREACH(const CTxOut& txout, tx.vout)
                         {
                             if(payee == txout.scriptPubKey && txout.nValue == GetMNCollateral() * COIN) {
-                                if (fDebug) printf("Found FS payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
+                                if (fDebug) printf("Found CN payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
                                 // TODO: check spent with fetch inputs?
                                 CTransaction txCollateral;
                                 CTxOut vout = CTxOut((GetMNCollateral() - 1)* COIN, forTunaPool.collateralPubKey);

@@ -3748,7 +3748,7 @@ finish_daemon(const char *desired_cwd)
 
   if (!desired_cwd)
     desired_cwd = "/";
-   /* Don't hold the wrong FS mounted */
+   /* Don't hold the wrong CN mounted */
   if (chdir(desired_cwd) < 0) {
     log_err(LD_GENERAL,"chdir to \"%s\" failed. Exiting.",desired_cwd);
     exit(1);

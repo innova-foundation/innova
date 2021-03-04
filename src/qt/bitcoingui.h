@@ -13,7 +13,7 @@ class MessageModel;
 class TransactionView;
 class MintingView;
 class ManageNamesPage;
-class FortunastakeManager;
+class CollateralnodeManager;
 class MultisigDialog;
 class OverviewPage;
 class AddressBookPage;
@@ -104,7 +104,7 @@ private:
 	  MultisigDialog *multisigPage;
 	  ProofOfImage *proofOfImagePage;
     Hyperfile *hyperfilePage;
-	  FortunastakeManager *fortunastakeManagerPage;
+	  CollateralnodeManager *collateralnodeManagerPage;
     AddressBookPage *addressBookPage;
     AddressBookPage *receiveCoinsPage;
     MessagePage *messagePage;
@@ -116,7 +116,7 @@ private:
     QLabel *labelConnectionsIcon;
     QLabel *labelBlocksIcon;
     QLabel *labelConnectTypeIcon;
-    QLabel *labelFSLockIcon;
+    QLabel *labelCNLockIcon;
     QLabel *progressBarLabel;
     QLabel *mainIcon;
     QToolBar *mainToolbar;
@@ -134,7 +134,7 @@ private:
     QAction *proofOfImageAction;
     QAction *hyperfileAction;
     QAction *manageNamesAction;
-	  QAction *fortunastakeManagerAction;
+	  QAction *collateralnodeManagerAction;
     QAction *quitAction;
     QAction *sendCoinsAction;
     QAction *addressBookAction;
@@ -239,8 +239,8 @@ private slots:
     void gotoSendCoinsPage();
     /** Switch to message page */
     void gotoMessagePage();
-	/** Switch to fortunastake manager page */
-	void gotoFortunastakeManagerPage();
+	/** Switch to collateralnode manager page */
+	void gotoCollateralnodeManagerPage();
 	/** Switch to proof of image page */
 	void gotoProofOfImagePage();
   /** Switch to Hyperfile page */
@@ -265,7 +265,7 @@ private slots:
 
     /** Open external (default) editor with innova.conf */
     void showConfEditor();
-    /** Open external (default) editor with fortunastake.conf */
+    /** Open external (default) editor with collateralnode.conf */
     void showMNConfEditor();
 
     /** Show configuration dialog */

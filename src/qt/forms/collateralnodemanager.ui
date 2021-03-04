@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>FortunastakeManager</class>
- <widget class="QWidget" name="FortunastakeManager">
+ <class>CollateralnodeManager</class>
+ <widget class="QWidget" name="CollateralnodeManager">
   <property name="geometry">
    <rect>
     <x>0</x>
@@ -98,7 +98,7 @@
            <item>
             <widget class="QLabel" name="label_2">
              <property name="text">
-              <string>Innova Fortuna Stake Count:</string>
+              <string>Innova Collateral Node Count:</string>
              </property>
             </widget>
            </item>
@@ -128,7 +128,7 @@
        </widget>
        <widget class="QWidget" name="tab_2">
         <attribute name="title">
-         <string>My Innova Fortuna Stakes</string>
+         <string>My Innova Collateral Nodes</string>
         </attribute>
         <layout class="QGridLayout" name="gridLayout_2">
          <item row="0" column="0">

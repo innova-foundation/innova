@@ -387,7 +387,7 @@ Value setdebug(const Array& params, bool fHelp)
 
 
     fDebug = strType == "all" && strOn == "on";
-    fDebugFS = (strType == "all" || strType == "fs") && strOn == "on";
+    fDebugCN = (strType == "all" || strType == "fs") && strOn == "on";
     fDebugChain = (strType == "all" || strType == "chain") && strOn == "on";
     fDebugNet = (strType == "all" || strType == "net") && strOn == "on";
     fDebugRingSig = (strType == "all" || strType == "ringsig") && strOn == "on";

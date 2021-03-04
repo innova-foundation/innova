@@ -3,21 +3,21 @@
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #include "net.h"
-#include "fortunastakeconfig.h"
+#include "collateralnodeconfig.h"
 #include "util.h"
 
-CFortunastakeConfig fortunastakeConfig;
+CCollateralnodeConfig collateralnodeConfig;
 
-void CFortunastakeConfig::add(std::string alias, std::string ip, std::string privKey, std::string txHash, std::string outputIndex) {
-    CFortunastakeEntry cme(alias, ip, privKey, txHash, outputIndex);
+void CCollateralnodeConfig::add(std::string alias, std::string ip, std::string privKey, std::string txHash, std::string outputIndex) {
+    CCollateralnodeEntry cme(alias, ip, privKey, txHash, outputIndex);
     entries.push_back(cme);
 }
 
-void CFortunastakeConfig::purge(CFortunastakeEntry cme) {
+void CCollateralnodeConfig::purge(CCollateralnodeEntry cme) {
     std::string line;
     std::string errMsg;
-    boost::filesystem::path confPath(GetFortunastakeConfigFile());
-    boost::filesystem::path tempPath(GetFortunastakeConfigFile().replace_extension(".temp"));
+    boost::filesystem::path confPath(GetCollateralnodeConfigFile());
+    boost::filesystem::path tempPath(GetCollateralnodeConfigFile().replace_extension(".temp"));
     boost::filesystem::ifstream fin(confPath);
     boost::filesystem::ofstream temp(tempPath);
 
@@ -44,10 +44,10 @@ void CFortunastakeConfig::purge(CFortunastakeEntry cme) {
     read(errMsg);
 }
 
-bool CFortunastakeConfig::read(std::string& strErr) {
-    boost::filesystem::ifstream streamConfig(GetFortunastakeConfigFile());
+bool CCollateralnodeConfig::read(std::string& strErr) {
+    boost::filesystem::ifstream streamConfig(GetCollateralnodeConfigFile());
     if (!streamConfig.good()) {
-        return true; // No fortunastake.conf file is OK
+        return true; // No collateralnode.conf file is OK
     }
 
     for(std::string line; std::getline(streamConfig, line); )
@@ -60,14 +60,14 @@ bool CFortunastakeConfig::read(std::string& strErr) {
         iss.str(line);
         iss.clear();
         if (!(iss >> alias >> ip >> privKey >> txHash >> outputIndex)) {
-            //strErr = "Could not parse fortunastake.conf line: " + line;
-            printf("Could not parse fortunastake.conf line: %s\n", line.c_str());
+            //strErr = "Could not parse collateralnode.conf line: " + line;
+            printf("Could not parse collateralnode.conf line: %s\n", line.c_str());
             streamConfig.close();
             return false;
         }
 
         if(CService(ip).GetPort() != 15539 && CService(ip).GetPort() != 14539)  {
-            strErr = "Invalid port (must be 14539 for mainnet or 15539 for testnet) detected in fortunastake.conf: " + line;
+            strErr = "Invalid port (must be 14539 for mainnet or 15539 for testnet) detected in collateralnode.conf: " + line;
             streamConfig.close();
             return false;
         }

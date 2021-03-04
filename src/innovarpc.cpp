@@ -368,10 +368,10 @@ static const CRPCCommand vRPCCommands[] =
     { "anoninfo",               &anoninfo,               false,  false},
     { "reloadanondata",         &reloadanondata,         false,  false},
 
-    /* Fortunastake features */
+    /* Collateralnode features */
     { "getpoolinfo",            &getpoolinfo,            true,   false},
     { "masternode",           	&masternode,             true,   false},
-    { "fortunastake",           &fortunastake,           true,   false},
+    { "collateralnode",           &collateralnode,           true,   false},
 
     { "smsgenable",             &smsgenable,             false,  false},
     { "smsgdisable",            &smsgdisable,            false,  false},

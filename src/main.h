@@ -19,8 +19,8 @@
 
 class CValidationState;
 
-#define BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET 550 // Testnet Fortunastake payments enabled block 800
-#define BLOCK_START_FORTUNASTAKE_PAYMENTS 800 //Mainnet Fortunastake payments not enabled until block 800
+#define BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET 550 // Testnet Collateralnode payments enabled block 800
+#define BLOCK_START_FORTUNASTAKE_PAYMENTS 800 //Mainnet Collateralnode payments not enabled until block 800
 #define BLOCK_START_FORTUNASTAKE_DELAYPAY 2500 // Unused
 
 //#define START_FORTUNASTAKE_PAYMENTS_TESTNET 1519430400  //Sat, 24 Feb 2018 00:00:00 GMT
@@ -86,8 +86,8 @@ static const int64_t COIN_YEAR_REWARD = 0.06 * COIN; // 6% per year
 static const int64_t BURN_CHECK = 1500000;
 
 static const int64_t MAINNET_POSFIX = 500; //Mainnet Proof of Stake update not enabled until block 500
-static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 4500; // Enforce fortunastake payments after this height - BLOCK 4500
-static const int MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET = 551; //Enforce FS payments after this height for Innova Testnet!
+static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 4500; // Enforce collateralnode payments after this height - BLOCK 4500
+static const int MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET = 551; //Enforce CN payments after this height for Innova Testnet!
 
 inline bool MoneyRange(int64_t nValue) { return (nValue >= 0 && nValue <= MAX_MONEY); }
 
@@ -127,7 +127,7 @@ extern unsigned int nStakeMinAge;
 extern unsigned int nStakeMaxAge;
 extern int64_t nLastCoinStakeSearchTime;
 extern unsigned int nNodeLifespan;
-extern bool FortunaReorgBlock;
+extern bool CollateralNReorgBlock;
 extern int nCoinbaseMaturity;
 extern int nBestHeight;
 extern uint256 nBestChainTrust;
@@ -220,7 +220,7 @@ int GetIXConfirmations(uint256 nTXHash);
 bool AbortNode(const std::string &msg, const std::string &userMessage="");
 /** Increase a node's misbehavior score. */
 void Misbehaving(NodeId nodeid, int howmuch);
-int64_t GetFortunastakePayment(int nHeight, int64_t blockValue);
+int64_t GetCollateralnodePayment(int nHeight, int64_t blockValue);
 
 
 bool IsStandardTx(const CTransaction& tx, std::string& reason);

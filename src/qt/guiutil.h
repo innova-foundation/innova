@@ -99,7 +99,7 @@ namespace GUIUtil
 	// Open innova.conf
     void openConfigfile();
 
-    // Open fortunastake.conf
+    // Open collateralnode.conf
     void openMNConfigfile();
 
     /** Qt event filter that intercepts ToolTipChange events, and replaces the tooltip with a rich text
