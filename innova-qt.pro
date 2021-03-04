@@ -474,10 +474,10 @@ HEADERS += src/qt/bitcoingui.h \
     src/idns.h \
     src/hooks.h \
 	  src/namecoin.h \
-    src/fortuna.h \
-    src/activefortunastake.h \
-    src/fortunastake.h \
-    src/fortunastakeconfig.h \
+    src/collateral.h \
+    src/activecollateralnode.h \
+    src/collateralnode.h \
+    src/collateralnodeconfig.h \
     src/spork.h \
     src/init.h \
     src/mruset.h \
@@ -524,7 +524,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/statisticspage.h \
     src/qt/marketbrowser.h \
     src/qt/qcustomplot.h \
-    src/qt/fortunastakemanager.h \
+    src/qt/collateralnodemanager.h \
     src/qt/addeditadrenalinenode.h \
     src/qt/adrenalinenodeconfigdialog.h \
     src/qt/termsofuse.h \
@@ -618,7 +618,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/rpcnet.cpp \
     src/rpcmining.cpp \
     src/rpcwallet.cpp \
-    src/rpcfortuna.cpp \
+    src/rpccollateral.cpp \
     src/rpchyperfile.cpp \
     src/rpcblockchain.cpp \
     src/rpcrawtransaction.cpp \
@@ -645,7 +645,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/sendmessagesentry.cpp \
     src/qt/qvalidatedtextedit.cpp \
     src/qt/plugins/mrichtexteditor/mrichtextedit.cpp \
-    src/qt/fortunastakemanager.cpp \
+    src/qt/collateralnodemanager.cpp \
     src/qt/addeditadrenalinenode.cpp \
     src/qt/adrenalinenodeconfigdialog.cpp \
     src/noui.cpp \
@@ -658,10 +658,10 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/stealth.cpp \
     src/idns.cpp \
 	  src/namecoin.cpp \
-    src/fortuna.cpp \
-    src/activefortunastake.cpp \
-    src/fortunastake.cpp \
-    src/fortunastakeconfig.cpp \
+    src/collateral.cpp \
+    src/activecollateralnode.cpp \
+    src/collateralnode.cpp \
+    src/collateralnodeconfig.cpp \
     src/spork.cpp
 
 #### I n n o v a sources
@@ -691,7 +691,7 @@ FORMS += \
     src/qt/forms/proofofimage.ui \
     src/qt/forms/hyperfile.ui \
     src/qt/forms/termsofuse.ui \
-    src/qt/forms/fortunastakemanager.ui \
+    src/qt/forms/collateralnodemanager.ui \
     src/qt/forms/addeditadrenalinenode.ui \
     src/qt/forms/adrenalinenodeconfigdialog.ui \
     src/qt/forms/multisigaddressentry.ui \

@@ -85,7 +85,7 @@ public:
     int nVersion;
     std::string sAlias;
     std::string sAddress;
-    std::string sFortunastakePrivKey;
+    std::string sCollateralnodePrivKey;
     std::string sTxHash;
     std::string sOutputIndex;
 
@@ -98,7 +98,7 @@ public:
         nVersion = 0;
         sAlias = alias;
         sAddress = address;
-        sFortunastakePrivKey = privKey;
+        sCollateralnodePrivKey = privKey;
         sTxHash = txHash;
         sOutputIndex = outputIndex;
     }
@@ -107,7 +107,7 @@ public:
         READWRITE(nVersion);
         READWRITE(sAlias);
         READWRITE(sAddress);
-        READWRITE(sFortunastakePrivKey);
+        READWRITE(sCollateralnodePrivKey);
         READWRITE(sTxHash);
         READWRITE(sOutputIndex);
     )

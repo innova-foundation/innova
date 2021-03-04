@@ -40,8 +40,8 @@ public:
     //! Return true if client connected to Tor
     bool isNativeTor() const;
 
-    //! Return true if client has locked FS inputs
-    bool isFSLock() const;
+    //! Return true if client has locked CN inputs
+    bool isCNLock() const;
 
     //! Return true if core is doing initial block download
     bool inInitialBlockDownload() const;

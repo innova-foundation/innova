@@ -3,7 +3,7 @@
 // Copyright (c) 2019-2021 The Innova Developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-// Original OG - credits to carsenk for original IPFS code & Denarius Hyperfile Commands
+// Original OG - credits to carsenk for original IPFS code & Denarius Jupiter Commands
 
 #include "main.h"
 #include "innovarpc.h"
