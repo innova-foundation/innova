@@ -67,7 +67,7 @@
         <file alias="hyperfile">res/icons/hyperfile.png</file>
         <file alias="hyperfile-gradient">res/icons/hyperfile-gradient.png</file>
         <file alias="trade">res/icons/trade.png</file>
-        <file alias="goldname">res/icons/goldnames.png</file>
+        <file alias="platinumname">res/icons/platinumnames.png</file>
     </qresource>
     <qresource prefix="/images">
         <file alias="about">res/images/about.png</file>
