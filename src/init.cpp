@@ -527,7 +527,7 @@ bool AppInit2()
 
     fFSLock = GetBoolArg("-fsconflock");
     fNativeTor = GetBoolArg("-nativetor");
-    fJupiterLocal = GetBoolArg("-jupiterlocal");
+    fHyperfileLocal = GetBoolArg("-hyperfilelocal");
 
 
     if (mapArgs.count("-bind"))

@@ -26,7 +26,7 @@ class SignVerifyMessageDialog;
 class Notificator;
 class RPCConsole;
 class ProofOfImage;
-class Jupiter;
+class Hyperfile;
 
 QT_BEGIN_NAMESPACE
 class QLabel;
@@ -103,7 +103,7 @@ private:
 	  QWidget *mintingPage;
 	  MultisigDialog *multisigPage;
 	  ProofOfImage *proofOfImagePage;
-    Jupiter *jupiterPage;
+    Hyperfile *hyperfilePage;
 	  FortunastakeManager *fortunastakeManagerPage;
     AddressBookPage *addressBookPage;
     AddressBookPage *receiveCoinsPage;
@@ -132,7 +132,7 @@ private:
 	  QAction *mintingAction;
 	  QAction *multisigAction;
     QAction *proofOfImageAction;
-    QAction *jupiterAction;
+    QAction *hyperfileAction;
     QAction *manageNamesAction;
 	  QAction *fortunastakeManagerAction;
     QAction *quitAction;
@@ -243,8 +243,8 @@ private slots:
 	void gotoFortunastakeManagerPage();
 	/** Switch to proof of image page */
 	void gotoProofOfImagePage();
-  /** Switch to Jupiter page */
-  void gotoJupiterPage();
+  /** Switch to Hyperfile page */
+  void gotoHyperfilePage();
 
 
     //void gotoChatPage();

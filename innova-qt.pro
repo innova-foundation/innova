@@ -438,7 +438,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/mintingtablemodel.h \
     src/qt/mintingview.h \
     src/qt/proofofimage.h \
-    src/qt/jupiter.h \
+    src/qt/hyperfile.h \
     src/qt/multisigaddressentry.h \
     src/qt/multisiginputentry.h \
     src/qt/multisigdialog.h \
@@ -574,7 +574,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/multisiginputentry.cpp \
     src/qt/multisigdialog.cpp \
     src/qt/proofofimage.cpp \
-    src/qt/jupiter.cpp \
+    src/qt/hyperfile.cpp \
     src/qt/termsofuse.cpp \
     src/alert.cpp \
     src/stun.cpp \
@@ -619,7 +619,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/rpcmining.cpp \
     src/rpcwallet.cpp \
     src/rpcfortuna.cpp \
-    src/rpcjupiter.cpp \
+    src/rpchyperfile.cpp \
     src/rpcblockchain.cpp \
     src/rpcrawtransaction.cpp \
     src/rpcsmessage.cpp \
@@ -689,7 +689,7 @@ FORMS += \
     src/qt/forms/blockbrowser.ui \
     src/qt/forms/marketbrowser.ui \
     src/qt/forms/proofofimage.ui \
-    src/qt/forms/jupiter.ui \
+    src/qt/forms/hyperfile.ui \
     src/qt/forms/termsofuse.ui \
     src/qt/forms/fortunastakemanager.ui \
     src/qt/forms/addeditadrenalinenode.ui \
