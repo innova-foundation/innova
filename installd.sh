@@ -23,12 +23,12 @@ sudo yes | cp -rf innovad /usr/bin/
 
 echo "Copied to /usr/bin for ease of use"
 
-#echo "Get Chaindata"
-#cd ~/.innova || exit
-#rm -rf database txleveldb smsgDB
-#wget https://github.com/innova-foundation/innova/releases/download/v3.3.7/chaindata1701122.zip
-#unzip chaindata1701122.zip
-#rm -rf chaindata1701122.zip
+echo "Get Chaindata"
+cd ~/.innova || exit
+rm -rf database txleveldb smsgDB
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
+unzip innovabootstrap.zip
+rm -rf innovabootstrap.zip
 echo "Back to Compiled innovad Binary Folder"
 cd ~/innova/src
                 ;;
@@ -69,7 +69,7 @@ openssl version -v
 echo "Installing Innova Wallet"
 git clone https://github.com/innova-foundation/innova
 cd innova
-git checkout master
+git checkout development
 git pull
 
 cd src
@@ -79,12 +79,12 @@ sudo yes | cp -rf innovad /usr/bin/
 
 echo "Copied to /usr/bin for ease of use"
 
-#echo "Get Chaindata"
-#cd ~/.innova
-#rm -rf database txleveldb smsgDB
-#wget https://github.com/innova-foundation/innova/releases/download/v3.3.7/chaindata1701122.zip
-#unzip chaindata1701122.zip
-#rm -rf chaindata1701122.zip
+echo "Get Chaindata"
+cd ~/.innova
+rm -rf database txleveldb smsgDB
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
+unzip innovabootstrap.zip
+rm -rf innovabootstrap.zip
 echo "Back to Compiled innovad Binary Folder"
 cd ~/innova/src
                 ;;
