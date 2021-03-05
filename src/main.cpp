@@ -3825,7 +3825,7 @@ if (!mapBlockIndex.count(pblock->hashPrevBlock)) //pblock->hashPrevBlock != 0 &&
     }
 
     //After block 1.5m, The Minimum CollateralNode Protocol Version is 43890
-    if(nBestHeight >= 15000000 || fTestNet) {
+    if(nBestHeight >= 1750000 || fTestNet) {
         MIN_MN_PROTO_VERSION = 43890;
     }
 
