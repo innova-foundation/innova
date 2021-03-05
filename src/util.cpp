@@ -1213,12 +1213,21 @@ void WriteConfigFile(FILE* configFile)
     fputs ("collateralnodeaddr=\n", configFile);
     fputs ("collateralnodeprivkey=\n", configFile);
     fputs ("idns=1\n", configFile);
-    fputs ("addnode=innseeder.circuitbreaker.online\n", configFile);
+    fputs ("addnode=innseeder.circuitbreaker.online\n", configFile); 
     fputs ("addnode=innseeder.circuitbreaker.dev\n", configFile);
     fputs ("addnode=innseeder.innovai.cloud\n", configFile);
     fputs ("addnode=94.130.52.227\n", configFile);
     fputs ("addnode=94.253.188.194\n", configFile);
     fputs ("addnode=94.253.236.197\n", configFile);
+    fputs ("addnode=94.130.49.89\n", configFile);
+    fputs ("addnode=80.57.237.145\n", configFile);
+    fputs ("addnode=135.181.183.40\n", configFile);
+    fputs ("addnode=134.3.131.119\n", configFile);
+    fputs ("addnode=95.216.26.26\n", configFile);
+    fputs ("addnode=178.254.43.126\n", configFile);
+    fputs ("addnode=218.214.99.111\n", configFile);
+    fputs ("addnode=95.217.119.238\n", configFile);
+    fputs ("addnode=209.250.255.129\n", configFile);
     fclose(configFile);
     ReadConfigFile(mapArgs, mapMultiArgs);
 }
