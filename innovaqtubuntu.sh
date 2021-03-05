@@ -75,6 +75,7 @@ git pull
 qmake "USE_UPNP=1" "USE_QRCODE=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
 make
 
+
 echo "Get Chaindata"
 cd ~/.innova
 rm -rf database txleveldb smsgDB
