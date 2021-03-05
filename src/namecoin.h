@@ -18,7 +18,7 @@ static const int OP_NAME_UPDATE = 0x02;
 static const int OP_NAME_DELETE = 0x03;
 static const unsigned int NAMEINDEX_CHAIN_SIZE = 1000;
 
-static const int RELEASE_HEIGHT = 1150000;
+static const int RELEASE_HEIGHT = 1200000;
 
 class CNameIndex
 {

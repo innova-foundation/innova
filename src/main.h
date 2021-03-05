@@ -83,7 +83,7 @@ static const int64_t MIN_TX_FEE_ANON = 10000;
 static const int64_t MIN_RELAY_TX_FEE = MIN_TX_FEE;
 static const int64_t MAX_MONEY = 18000000 * COIN; // 18,000,000 INN Innova Max
 static const int64_t COIN_YEAR_REWARD = 0.06 * COIN; // 6% per year
-static const int64_t BURN_CHECK = 1150000;
+static const int64_t BURN_CHECK = 1750000;
 
 static const int64_t MAINNET_POSFIX = 500; //Mainnet Proof of Stake update not enabled until block 500
 static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 4500; // Enforce collateralnode payments after this height - BLOCK 4500
