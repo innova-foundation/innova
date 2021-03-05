@@ -1531,13 +1531,9 @@ void ThreadOnionSeed(void* parg)
 // The second name should resolve to a list of seed addresses.
 
 static const char *strDNSSeed[][2] = {
-    {"104.207.147.210:14530", "104.207.147.210:14530"},
-    {"140.82.25.108:14530", "140.82.25.108:14530"},
-    {"144.202.40.17:14530", "144.202.40.17:14530"},
-    {"207.246.64.66:14530", "207.246.64.66:14530"},
-    {"45.77.114.67:14530", "45.77.114.67:14530"},
-    {"51.15.27.10:14530", "51.15.27.10:14530"},
-    {"51.15.27.72:14530", "51.15.27.72:14530"},
+    {"innseeder.circuitbreaker.online", "innseeder.circuitbreaker.online"},
+    {"innseeder.circuitbreaker.dev", "innseeder.circuitbreaker.dev"},
+    {"innseeder.innovai.cloud", "innseeder.innovai.cloud"},
 };
 
 void ThreadDNSAddressSeed(void* parg)
