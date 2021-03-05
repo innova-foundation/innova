@@ -12,6 +12,7 @@
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/resource.h>
+typedef int pid_t; /* define for windows compatiblity */
 #endif
 
 #include <map>
@@ -36,6 +37,8 @@
 #include <stdint.h>
 #include <inttypes.h>
 
+typedef int64_t CAmount;
+
 static const int32_t nOneHour = 60 * 60;
 static const int32_t nOneDay = 24 * 60 * 60;
 static const int64_t nOneWeek = 7 * 24 * 60 * 60;
@@ -43,8 +46,9 @@ static const int64_t nOneWeek = 7 * 24 * 60 * 60;
 static const int64_t COIN = 100000000;
 static const int64_t CENT = 1000000;
 
-typedef int64_t CAmount;
+static const CAmount SUBCENT = 100;
 
+//#define loop                for (;;)
 #define BEGIN(a)            ((char*)&(a))
 #define END(a)              ((char*)&((&(a))[1]))
 #define UBEGIN(a)           ((unsigned char*)&(a))
@@ -93,7 +97,7 @@ T* alignup(T* p)
     return u.ptr;
 }
 
-boost::filesystem::path GetFortunastakeConfigFile();
+boost::filesystem::path GetCollateralnodeConfigFile();
 
 #ifdef WIN32
 #define MSG_NOSIGNAL        0
@@ -161,18 +165,18 @@ static inline int LogPrint(const char* category, const char* format)
     return LogPrintStr(format);
 }
 
-/*
-static inline bool error(const char* format)
-{
-    LogPrintStr(std::string("ERROR: ") + format + "\n");
-    return false;
-}
+
+//static inline bool error(const char* format)
+//{
+//    LogPrintStr(std::string("ERROR: ") + format + "\n");
+//    return false;
+//}
 static inline int errorN(int n, const char* format)
 {
     LogPrintStr(std::string("ERROR: ") + format + "\n");
     return n;
 }
-*/
+
 
 /* This GNU C extension enables the compiler to check the format string against the parameters provided.
  * X is the number of the "format string" parameter, and Y is the number of the first variadic parameter.
@@ -186,15 +190,15 @@ static inline int errorN(int n, const char* format)
 
 
 
-//Fortunastake features
+//Collateralnode features
 
-extern bool fFortunaStake;
-extern int nFortunaRounds;
+extern bool fCollateralNode;
+extern int nCollateralNRounds;
 
 extern int nMinStakeInterval;
 
-extern int64_t enforceFortunastakePaymentsTime;
-extern std::string strFortunaStakeAddr;
+extern int64_t enforceCollateralnodePaymentsTime;
+extern std::string strCollateralNodeAddr;
 extern int keysLoaded;
 extern bool fSuccessfullyLoaded;
 extern std::vector<int64_t> forTunaDenominations;
@@ -205,7 +209,7 @@ extern std::map<std::string, std::vector<std::string> > mapMultiArgs;
 extern bool fDebug;
 extern bool fDebugNet;
 extern bool fDebugSmsg;
-extern bool fDebugFS;
+extern bool fDebugCN;
 extern bool fDebugChain;
 extern bool fDebugRingSig;
 extern bool fNoSmsg;
@@ -220,7 +224,8 @@ extern bool fCommandLine;
 extern std::string strMiscWarning;
 extern bool fTestNet;
 extern bool fNativeTor;
-extern bool fFSLock;
+extern bool fHyperfileLocal;
+extern bool fCNLock;
 extern bool fNoListen;
 extern bool fLogTimestamps;
 extern bool fReopenDebugLog;
@@ -258,6 +263,7 @@ bool ATTR_WARN_PRINTF(1,2) error(const char *format, ...);
 void PrintException(std::exception* pex, const char* pszThread);
 void PrintExceptionContinue(std::exception* pex, const char* pszThread);
 void ParseString(const std::string& str, char c, std::vector<std::string>& v);
+std::string SanatizeString(const std::string& str);
 std::string FormatMoney(int64_t n, bool fPlus=false);
 bool ParseMoney(const std::string& str, int64_t& nRet);
 bool ParseMoney(const char* pszIn, int64_t& nRet);
@@ -275,8 +281,10 @@ std::string EncodeBase32(const std::string& str);
 void ParseParameters(int argc, const char*const argv[]);
 bool WildcardMatch(const char* psz, const char* mask);
 bool WildcardMatch(const std::string& str, const std::string& mask);
+
 void FileCommit(FILE *fileout);
 bool RenameOver(boost::filesystem::path src, boost::filesystem::path dest);
+
 boost::filesystem::path GetDefaultDataDir();
 const boost::filesystem::path &GetDataDir(bool fNetSpecific = true);
 boost::filesystem::path GetConfigFile();
@@ -284,13 +292,20 @@ boost::filesystem::path GetPidFile();
 #ifndef WIN32
 void CreatePidFile(const boost::filesystem::path &path, pid_t pid);
 #endif
+
 void ReadConfigFile(std::map<std::string, std::string>& mapSettingsRet, std::map<std::string, std::vector<std::string> >& mapMultiSettingsRet);
 void WriteConfigFile(FILE* configFile);
+
+
 #ifdef WIN32
 boost::filesystem::path GetSpecialFolderPath(int nFolder, bool fCreate = true);
 #endif
+
+std::string bytesReadable(uint64_t nBytes);
+
 void ShrinkDebugFile();
 int GetRandInt(int nMax);
+uint32_t GetRandUInt32();
 void GetRandBytes(unsigned char* buf, int num);
 uint64_t GetRand(uint64_t nMax);
 uint256 GetRandHash();
@@ -303,13 +318,10 @@ std::string FormatSubVersion(const std::string& name, int nClientVersion, const 
 void AddTimeData(const CNetAddr& ip, int64_t nTime);
 void runCommand(std::string strCommand);
 
-
-
-
-
-
-
-
+namespace d
+{
+    void* memrchr(const void *s, int c, size_t n);
+}
 
 inline std::string i64tostr(int64_t n)
 {
@@ -486,6 +498,21 @@ bool GetBoolArg(const std::string& strArg, bool fDefault=false);
  * @return true if argument gets set, false if it already had a value
  */
 bool SoftSetArg(const std::string& strArg, const std::string& strValue);
+
+/**
+ * Set an argument
+ * for boolean arguments use "1" / "0"
+ *
+ * @param strArg Argument to set (e.g. "-foo")
+ * @param strValue Value (e.g. "1")
+ * @return true
+ */
+bool SetArg(const std::string& strArg, const std::string& strValue);
+
+inline bool SetBoolArg(const std::string& strArg, bool fValue)
+{
+    return SetArg(strArg, fValue ? "1" : "0");
+};
 
 /**
  * Set a boolean argument if it doesn't already have a value

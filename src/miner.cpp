@@ -7,7 +7,7 @@
 #include "txdb.h"
 #include "miner.h"
 #include "kernel.h"
-#include "fortunastake.h"
+#include "collateralnode.h"
 
 using namespace std;
 
@@ -172,22 +172,22 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
     unsigned int nBlockMinSize = GetArg("-blockminsize", 0);
     nBlockMinSize = std::min(nBlockMaxSize, nBlockMinSize);
 
-    // start fortunastake payments
-    bool bFortunaStakePayment = false;
+    // start collateralnode payments
+    bool bCollateralNodePayment = false;
 
 	//Only if it isn't Proof of Stake?
 	if (!fProofOfStake)
     {
-		if (fTestNet){
+		if (fTestNet) {
 			if (nHeight >= BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET){
-				bFortunaStakePayment = true;
+				bCollateralNodePayment = true;
 			}
-		}else{
+		} else {
 			if (nHeight >= BLOCK_START_FORTUNASTAKE_PAYMENTS){
-				bFortunaStakePayment = true;
+				bCollateralNodePayment = true;
 			}
 		}
-        if(fDebug && fDebugFS) { printf("CreateNewBlock(): Fortunastake Payments : %i\n", bFortunaStakePayment); }
+        if(fDebug && fDebugCN) { printf("CreateNewBlock(): Collateralnode Payments : %i\n", bCollateralNodePayment); }
 	}
 
     // Fee-per-kilobyte amount considered the same as "free"
@@ -199,6 +199,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
     if (mapArgs.count("-mintxfee"))
         ParseMoney(mapArgs["-mintxfee"], nMinTxFee);
 
+
     pblock->nBits = GetNextTargetRequired(pindexPrev, fProofOfStake);
 
     // Collect memory pool transactions into the block
@@ -207,16 +208,16 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         LOCK2(cs_main, mempool.cs);
         CTxDB txdb("r");
 
-        if(bFortunaStakePayment) {
+        if(bCollateralNodePayment) {
             bool hasPayment = true;
             //spork
             bool found;
             CScript payee;
-            if(!fortunastakePayments.GetBlockPayee(pindexPrev->nHeight+1, payee)){
+            if(!collateralnodePayments.GetBlockPayee(pindexPrev->nHeight+1, payee)){
                 bool found;
-                if (vecFortunastakes.size() > 0) {
-                GetFortunastakeRanks(pindexBest);
-                BOOST_FOREACH(PAIRTYPE(int, CFortunaStake*)& s, vecFortunastakeScores)
+                if (vecCollateralnodes.size() > 0) {
+                GetCollateralnodeRanks(pindexBest);
+                BOOST_FOREACH(PAIRTYPE(int, CCollateralNode*)& s, vecCollateralnodeScores)
                 {
                         if (s.second->nBlockLastPaid < pindexBest->nHeight - 10) {
                                 payee.SetDestination(s.second->pubkey.GetID());
@@ -226,11 +227,11 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 }
                 }
                 if (found) {
-                    if (fDebug && fDebugFS) printf("CreateNewBlock: Found a fortunastake to pay: %s\n",payee.ToString(true).c_str());
+                    if (fDebug && fDebugCN) printf("CreateNewBlock: Found a collateralnode to pay: %s\n",payee.ToString(true).c_str());
                 } else {
-                    printf("CreateNewBlock: Failed to detect fortunastake to pay\n");
+                    printf("CreateNewBlock: Failed to detect collateralnode to pay\n");
                     // pay the burn address if it can't detect
-                    if (fDebug) printf("CreateNewBlock(): Failed to detect fortunastake to pay, burning coins.");
+                    if (fDebug) printf("CreateNewBlock(): Failed to detect collateralnode to pay, burning coins.");
                     std::string burnAddress;
                     if (fTestNet) std::string burnAddress = "8TestXXXXXXXXXXXXXXXXXXXXXXXXbCvpq";
                     else std::string burnAddress = "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw";
@@ -252,7 +253,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 ExtractDestination(payee, address1);
                 CBitcoinAddress address2(address1);
 
-                if (fDebug && fDebugFS) printf("CreateNewBlock(): Fortunastake payment to %s\n", address2.ToString().c_str());
+                if (fDebug && fDebugCN) printf("CreateNewBlock(): Collateralnode payment to %s\n", address2.ToString().c_str());
             }
         }
 
@@ -484,16 +485,16 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         nLastBlockSize = nBlockSize;
 
         int64_t blockValue = GetProofOfWorkReward(nHeight, nFees);
-        int64_t fortunastakePayment = GetFortunastakePayment(pindexPrev->nHeight+1, blockValue);
+        int64_t collateralnodePayment = GetCollateralnodePayment(pindexPrev->nHeight+1, blockValue);
 
-        //create fortunastake payment
+        //create collateralnode payment
         if(payments > 1){
-            pblock->vtx[0].vout[payments-1].nValue = fortunastakePayment;
-            blockValue -= fortunastakePayment;
+            pblock->vtx[0].vout[payments-1].nValue = collateralnodePayment;
+            blockValue -= collateralnodePayment;
         }
 
         if (fDebug && GetBoolArg("-printpriority"))
-            printf("CreateNewBlock(): total size %"PRIu64"\n", nBlockSize);
+            printf("CreateNewBlock(): total size %" PRIu64"\n", nBlockSize);
 
         if (!fProofOfStake){
             pblock->vtx[0].vout[0].nValue = blockValue;
@@ -722,9 +723,9 @@ void StakeMiner(CWallet *pwallet)
             continue;
         };
 
-        if (vecFortunastakes.size() == 0)
+        if (vecCollateralnodes.size() == 0 && !fTestNet)
         {
-            if (fDebug && GetBoolArg("-printcoinstake")) printf("StakeMiner() waiting for FS list.");
+            if (fDebug && GetBoolArg("-printcoinstake")) printf("StakeMiner() waiting for CN list.");
             vnThreadsRunning[THREAD_STAKE_MINER]--;
             MilliSleep(10000);
             vnThreadsRunning[THREAD_STAKE_MINER]++;

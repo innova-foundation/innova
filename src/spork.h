@@ -37,7 +37,7 @@ class CSporkManager;
 #include "key.h"
 #include "util.h"
 #include "protocol.h"
-#include "fortuna.h"
+#include "collateral.h"
 #include <boost/lexical_cast.hpp>
 
 using namespace std;
@@ -95,7 +95,7 @@ private:
 public:
 
     CSporkManager() {
-        strMainPubKey = "invalid"; //Sporks deprecated for dFPS Decentralized Innova Fortuna Stake system
+        strMainPubKey = "invalid"; //Sporks deprecated for dFPS Decentralized Innova Collateral Node system
         strTestPubKey = "invalid";
     }
 

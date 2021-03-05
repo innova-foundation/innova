@@ -8,7 +8,7 @@
 #include "txdb.h"
 #include "init.h"
 #include "miner.h"
-#include "fortunastake.h"
+#include "collateralnode.h"
 #include "innovarpc.h"
 
 
@@ -56,13 +56,15 @@ Value getmininginfo(const Array& params, bool fHelp)
     obj.push_back(Pair("currentblocksize",(uint64_t)nLastBlockSize));
     obj.push_back(Pair("currentblocktx",(uint64_t)nLastBlockTx));
 
-    diff.push_back(Pair("proof-of-work",        GetDifficulty()));
-    diff.push_back(Pair("proof-of-stake",       GetDifficulty(GetLastBlockIndex(pindexBest, true))));
+    diff.push_back(Pair("proof-of-work",  GetDifficulty()));
+    diff.push_back(Pair("proof-of-stake", GetDifficulty(GetLastBlockIndex(pindexBest, true))));
+
     diff.push_back(Pair("search-interval",      (int)nLastCoinStakeSearchInterval));
     obj.push_back(Pair("difficulty",    diff));
 
     obj.push_back(Pair("blockvalue",    (uint64_t)GetProofOfWorkReward(nBestHeight+1, 0)));
     obj.push_back(Pair("netmhashps",     GetPoWMHashPS()));
+
     obj.push_back(Pair("netstakeweight", GetPoSKernelPS()));
     obj.push_back(Pair("errors",        GetWarnings("statusbar")));
     obj.push_back(Pair("pooledtx",      (uint64_t)mempool.size()));
@@ -126,8 +128,8 @@ Value getworkex(const Array& params, bool fHelp)
     if (IsInitialBlockDownload())
         throw JSONRPCError(-10, "Innova is downloading blocks...");
 
-    if (pindexBest->nHeight >= LAST_POW_BLOCK)
-        throw JSONRPCError(RPC_MISC_ERROR, "No more PoW blocks");
+  //  if (pindexBest->nHeight >= LAST_POW_BLOCK)
+  //      throw JSONRPCError(RPC_MISC_ERROR, "No more PoW blocks");
 
     typedef map<uint256, pair<CBlock*, CScript> > mapNewBlock_t;
     static mapNewBlock_t mapNewBlock;
@@ -260,8 +262,8 @@ Value getwork(const Array& params, bool fHelp)
     if (IsInitialBlockDownload())
         throw JSONRPCError(RPC_CLIENT_IN_INITIAL_DOWNLOAD, "Innova is downloading blocks...");
 
-    if (pindexBest->nHeight >= LAST_POW_BLOCK)
-        throw JSONRPCError(RPC_MISC_ERROR, "No more PoW blocks");
+  //  if (pindexBest->nHeight >= LAST_POW_BLOCK)
+  //      throw JSONRPCError(RPC_MISC_ERROR, "No more PoW blocks");
 
     typedef map<uint256, pair<CBlock*, CScript> > mapNewBlock_t;
     static mapNewBlock_t mapNewBlock;    // FIXME: thread safety
@@ -380,10 +382,10 @@ Value getblocktemplate(const Array& params, bool fHelp)
             "  \"height\" : height of the next block\n"
             "  \"payee\" : required payee\n"
             "  \"payee_amount\" : required amount to pay\n"
-			      "  \"fortunastake_payments\" : true|false,         (boolean) true, if fortunastake payments are enabled"
-            "  \"enforce_fortunastake_payments\" : true|false  (boolean) true, if fortunastake payments are enforced"
-            "  \"masternode_payments\" : true|false,         (boolean) true, if fortunastake payments are enabled"
-            "  \"enforce_masternode_payments\" : true|false  (boolean) true, if fortunastake payments are enforced"
+			      "  \"collateralnode_payments\" : true|false,         (boolean) true, if collateralnode payments are enabled"
+            "  \"enforce_collateralnode_payments\" : true|false  (boolean) true, if collateralnode payments are enforced"
+            "  \"masternode_payments\" : true|false,         (boolean) true, if collateralnode payments are enabled"
+            "  \"enforce_masternode_payments\" : true|false  (boolean) true, if collateralnode payments are enforced"
             "See https://en.bitcoin.it/wiki/BIP_0022 for full specification.");
 
     std::string strMode = "template";
@@ -410,8 +412,8 @@ Value getblocktemplate(const Array& params, bool fHelp)
     if (IsInitialBlockDownload())
         throw JSONRPCError(RPC_CLIENT_IN_INITIAL_DOWNLOAD, "Innova is downloading blocks...");
 
-    if (pindexBest->nHeight >= LAST_POW_BLOCK)
-        throw JSONRPCError(RPC_MISC_ERROR, "No more PoW blocks");
+  //  if (pindexBest->nHeight >= LAST_POW_BLOCK)
+  //      throw JSONRPCError(RPC_MISC_ERROR, "No more PoW blocks");
 
     static CReserveKey reservekey(pwalletMain);
 
@@ -524,23 +526,23 @@ Value getblocktemplate(const Array& params, bool fHelp)
     result.push_back(Pair("height", (int64_t)(pindexPrev->nHeight+1)));
 
 
-    // ---- Fortunastake info ---
+    // ---- Collateralnode info ---
 
-    bool bFortunastakePayments = false;
+    bool bCollateralnodePayments = false;
 
-    if(fTestNet){
-        if(pindexPrev->nHeight+1 >= BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET) bFortunastakePayments = true;
+    if(fTestNet) {
+        if(pindexPrev->nHeight+1 >= BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET) bCollateralnodePayments = true;
     } else {
-        if(pindexPrev->nHeight+1 >= BLOCK_START_FORTUNASTAKE_PAYMENTS) bFortunastakePayments = true;
+        if(pindexPrev->nHeight+1 >= BLOCK_START_FORTUNASTAKE_PAYMENTS) bCollateralnodePayments = true;
     }
-    if(fDebug && fDebugFS) { printf("GetBlockTemplate(): Fortunastake Payments : %i\n", bFortunastakePayments); }
+    if(fDebug && fDebugCN) { printf("GetBlockTemplate(): Collateralnode Payments : %i\n", bCollateralnodePayments); }
 
-    if(!fortunastakePayments.GetBlockPayee(pindexPrev->nHeight+1, payee)){
-        //no fortunastake detected
+    if(!collateralnodePayments.GetBlockPayee(pindexPrev->nHeight+1, payee)){
+        //no collateralnode detected
 		bool found;
-                if (vecFortunastakes.size() > 0) {
-                GetFortunastakeRanks(pindexBest);
-                BOOST_FOREACH(PAIRTYPE(int, CFortunaStake*)& s, vecFortunastakeScores)
+                if (vecCollateralnodes.size() > 0) {
+                GetCollateralnodeRanks(pindexBest);
+                BOOST_FOREACH(PAIRTYPE(int, CCollateralNode*)& s, vecCollateralnodeScores)
                 {
                         if (s.second->nBlockLastPaid < pindexBest->nHeight - 10) {
                                 payee.SetDestination(s.second->pubkey.GetID());
@@ -550,11 +552,11 @@ Value getblocktemplate(const Array& params, bool fHelp)
                 }
                 }
                 if (found) {
-                    printf("CreateNewBlock: Found a fortunastake to pay: %s\n",payee.ToString(true).c_str());
+                    printf("CreateNewBlock: Found a collateralnode to pay: %s\n",payee.ToString(true).c_str());
                 } else {
-                    printf("CreateNewBlock: Failed to detect fortunastake to pay\n");
+                    printf("CreateNewBlock: Failed to detect collateralnode to pay\n");
                     // pay the burn address if it can't detect
-                    if (fDebug) printf("CreateNewBlock(): Failed to detect fortunastake to pay, burning coins.");
+                    if (fDebug) printf("CreateNewBlock(): Failed to detect collateralnode to pay, burning coins.");
                     std::string burnAddress;
                     if (fTestNet) std::string burnAddress = "8TestXXXXXXXXXXXXXXXXXXXXXXXXbCvpq";
                     else std::string burnAddress = "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw";
@@ -563,22 +565,22 @@ Value getblocktemplate(const Array& params, bool fHelp)
                     payee = GetScriptForDestination(burnAddr.Get());
                 }
     }
-    if (fDebug && fDebugNet) printf("getblock : payee = %i, bFortunastake = %i\n",payee != CScript(),bFortunastakePayments);
+    if (fDebug && fDebugNet) printf("getblock : payee = %i, bCollateralnode = %i\n",payee != CScript(),bCollateralnodePayments);
     if(payee != CScript()){
 		CTxDestination address1;
 		ExtractDestination(payee, address1);
 		CBitcoinAddress address2(address1);
 		result.push_back(Pair("payee", address2.ToString().c_str()));
-		result.push_back(Pair("payee_amount", (int64_t)GetFortunastakePayment(pindexPrev->nHeight+1, pblock->vtx[0].GetValueOut())));
+		result.push_back(Pair("payee_amount", (int64_t)GetCollateralnodePayment(pindexPrev->nHeight+1, pblock->vtx[0].GetValueOut())));
 	  } else {
         result.push_back(Pair("payee", "DNRXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw"));
-	result.push_back(Pair("payee_amount", (int64_t)GetFortunastakePayment(pindexPrev->nHeight+1, pblock->vtx[0].GetValueOut())));
+	result.push_back(Pair("payee_amount", (int64_t)GetCollateralnodePayment(pindexPrev->nHeight+1, pblock->vtx[0].GetValueOut())));
     }
 
-	  result.push_back(Pair("fortunastake_payments", bFortunastakePayments));
-    result.push_back(Pair("enforce_fortunastake_payments", bFortunastakePayments));
-    result.push_back(Pair("masternode_payments", bFortunastakePayments));
-    result.push_back(Pair("enforce_masternode_payments", bFortunastakePayments));
+	  result.push_back(Pair("collateralnode_payments", bCollateralnodePayments));
+    result.push_back(Pair("enforce_collateralnode_payments", bCollateralnodePayments));
+    result.push_back(Pair("masternode_payments", bCollateralnodePayments));
+    result.push_back(Pair("enforce_masternode_payments", bCollateralnodePayments));
 
     return result;
 }

@@ -3116,7 +3116,7 @@ dirserv_get_routerdesc_fingerprints(smartlist_t *fps_out, const char *key,
  *   - "/tor/server/all" for all the routerinfos we have, concatenated;
  *   - "/tor/server/fp/FP" where FP is a plus-separated sequence of
  *     hex identity digests; or
- *   - "/tor/server/d/D" where D is a plus-separated sequence
+ *   - "/tor/server/d/D" where INN is a plus-separated sequence
  *     of server descriptor digests, in hex.
  *
  * Return 0 if we found some matching descriptors, or -1 if we do not
@@ -3867,4 +3867,3 @@ dirserv_free_all(void)
 
   dirserv_clear_measured_bw_cache();
 }
-

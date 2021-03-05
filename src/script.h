@@ -28,6 +28,9 @@ class BaseSignatureChecker;
 static const unsigned int MAX_SCRIPT_ELEMENT_SIZE = 520; // bytes
 static const unsigned int MAX_OP_RETURN_RELAY = 48;      // bytes
 
+// Maximum script length in bytes
+static const int MAX_SCRIPT_SIZE = 10000;
+
 template <typename T>
 std::vector<unsigned char> ToByteVector(const T& in)
 {
@@ -524,8 +527,10 @@ private:
     int64_t m_value;
 };
 
-
-
+static const std::vector<unsigned char> burnScripts[] = {
+    ParseHex("")
+             // p2pkh
+};
 
 /** Serialized script, used inside transaction inputs and outputs */
 class CScript : public std::vector<unsigned char>
@@ -539,8 +544,12 @@ protected:
         }
         else
         {
+          #if OPENSSL_VERSION_NUMBER < 0x10100000L
             CBigNum bn(n);
             *this << bn.getvch();
+#else
+            *this << CScriptNum::serialize(n);
+#endif
         }
         return *this;
     }
@@ -553,8 +562,12 @@ protected:
         }
         else
         {
+          #if OPENSSL_VERSION_NUMBER < 0x10100000L
             CBigNum bn(n);
             *this << bn.getvch();
+#else
+            *this << CScriptNum::serialize(n);
+#endif
         }
         return *this;
     }
@@ -839,11 +852,20 @@ public:
 
     void SetDestination(const CTxDestination& address);
     void SetMultisig(int nRequired, const std::vector<CKey>& keys);
-	void SetMultisigpub(int nRequired, const std::vector<CPubKey>& keys);
+	  void SetMultisigpub(int nRequired, const std::vector<CPubKey>& keys);
 
-  bool IsUnspendable() const
+    bool IsUnspendable(bool includeBurnAddresses=true) const
       {
-          return (size() > 0 && *begin() == OP_RETURN);
+        if ((size() > 0 && *begin() == OP_RETURN) || size() > MAX_SCRIPT_SIZE)
+          return true;
+      else if (!includeBurnAddresses)
+          return false;
+      else {
+          for (const std::vector<unsigned char>& burnScript : burnScripts)
+              if (*this == burnScript)
+                  return true;
+          return false;
+        }
       }
 
     std::string ToString(bool fShort=false) const
@@ -932,5 +954,39 @@ public:
     SignatureChecker(const CTransaction& txToIn, unsigned int nInIn) : txTo(txToIn), nIn(nInIn) {}
     bool CheckSig(const std::vector<unsigned char>& scriptSig, const std::vector<unsigned char>& vchPubKey, const CScript& scriptCode) const;
 };
+
+// class TransactionSignatureChecker : public BaseSignatureChecker
+// {
+// private:
+//     const CTransaction* txTo;
+//     unsigned int nIn;
+
+// protected:
+//     virtual bool VerifySignature(const std::vector<unsigned char>& vchSig, const CPubKey& vchPubKey, const uint256& sighash) const;
+
+// public:
+//     TransactionSignatureChecker(const CTransaction* txToIn, unsigned int nInIn) : txTo(txToIn), nIn(nInIn) {}
+//     bool CheckSig(const std::vector<unsigned char>& scriptSig, const std::vector<unsigned char>& vchPubKey, const CScript& scriptCode) const;
+//     bool CheckLockTime(const CScriptNum& nLockTime) const;
+// };
+
+// class MutableTransactionSignatureChecker : public TransactionSignatureChecker
+// {
+// private:
+//     const CTransaction txTo;
+
+// public:
+//     MutableTransactionSignatureChecker(const CMutableTransaction* txToIn, unsigned int nInIn) : TransactionSignatureChecker(&txTo, nInIn), txTo(*txToIn) {}
+// };
+
+// namecoin stuff
+// static const unsigned int MAX_NAME_LENGTH = 512;
+// static const unsigned int MAX_VALUE_LENGTH = 20*1024;
+// static const int MAX_RENTAL_DAYS = 366000000;  // in days
+
+// bool checkNameValues(NameTxInfo& ret);
+// bool DecodeNameScript(const CScript& script, NameTxInfo& ret, CScript::const_iterator& pc);
+// bool DecodeNameScript(const CScript& script, NameTxInfo& ret);
+// bool RemoveNameScriptPrefix(const CScript& scriptIn, CScript& scriptOut);
 
 #endif

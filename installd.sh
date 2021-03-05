@@ -8,7 +8,7 @@ case $choice in
 echo "Updating linux packages"
 sudo apt-get update -y && sudo apt-get upgrade -y
 
-sudo apt-get --assume-yes install git unzip build-essential libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev obfs4proxy
+sudo apt-get --assume-yes install git unzip build-essential libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev obfs4proxy libcurl4-openssl-dev
 
 echo "Installing Innova Wallet"
 git clone https://github.com/innova-foundation/innova
@@ -23,12 +23,12 @@ sudo yes | cp -rf innovad /usr/bin/
 
 echo "Copied to /usr/bin for ease of use"
 
-#echo "Get Chaindata"
-#cd ~/.innova || exit
-#rm -rf database txleveldb smsgDB
-#wget https://github.com/innova-foundation/innova/releases/download/v3.3.7/chaindata1701122.zip
-#unzip chaindata1701122.zip
-#rm -rf chaindata1701122.zip
+echo "Get Chaindata"
+cd ~/.innova || exit
+rm -rf database txleveldb smsgDB
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
+unzip innovabootstrap.zip
+rm -rf innovabootstrap.zip
 echo "Back to Compiled innovad Binary Folder"
 cd ~/innova/src
                 ;;
@@ -52,7 +52,7 @@ cd ~/innova/src
 echo "Updating linux packages"
 sudo apt-get update -y && sudo apt-get upgrade -y
 
-sudo apt-get --assume-yes install git unzip build-essential libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev obfs4proxy libssl-dev
+sudo apt-get --assume-yes install git unzip build-essential libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev obfs4proxy libssl-dev libcurl4-openssl-dev
 
 echo "Downgrade libssl-dev"
 sudo apt-get install make
@@ -69,7 +69,7 @@ openssl version -v
 echo "Installing Innova Wallet"
 git clone https://github.com/innova-foundation/innova
 cd innova
-git checkout master
+git checkout development
 git pull
 
 cd src
@@ -79,12 +79,12 @@ sudo yes | cp -rf innovad /usr/bin/
 
 echo "Copied to /usr/bin for ease of use"
 
-#echo "Get Chaindata"
-#cd ~/.innova
-#rm -rf database txleveldb smsgDB
-#wget https://github.com/innova-foundation/innova/releases/download/v3.3.7/chaindata1701122.zip
-#unzip chaindata1701122.zip
-#rm -rf chaindata1701122.zip
+echo "Get Chaindata"
+cd ~/.innova
+rm -rf database txleveldb smsgDB
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
+unzip innovabootstrap.zip
+rm -rf innovabootstrap.zip
 echo "Back to Compiled innovad Binary Folder"
 cd ~/innova/src
                 ;;
