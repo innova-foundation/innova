@@ -146,17 +146,17 @@ bool CSporkManager::Sign(CSporkMessage& spork)
 
     if(!forTunaSigner.SetKey(strMasterPrivKey, errorMessage, key2, pubkey2))
     {
-        printf("CFortunastakePayments::Sign - ERROR: Invalid fortunastakeprivkey: '%s'\n", errorMessage.c_str());
+        printf("CCollateralnodePayments::Sign - ERROR: Invalid collateralnodeprivkey: '%s'\n", errorMessage.c_str());
         return false;
     }
 
     if(!forTunaSigner.SignMessage(strMessage, errorMessage, spork.vchSig, key2)) {
-        printf("CFortunastakePayments::Sign - Sign message failed");
+        printf("CCollateralnodePayments::Sign - Sign message failed");
         return false;
     }
 
     if(!forTunaSigner.VerifyMessage(pubkey2, spork.vchSig, strMessage, errorMessage)) {
-        printf("CFortunastakePayments::Sign - Verify message failed");
+        printf("CCollateralnodePayments::Sign - Verify message failed");
         return false;
     }
 

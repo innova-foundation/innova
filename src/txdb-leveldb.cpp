@@ -43,7 +43,7 @@ void init_blockindex(leveldb::Options& options, bool fRemoveOld = false) {
 
         while (true)
         {
-            filesystem::path strBlockFile = GetDataDir() / strprintf("blk%04u.dat", nFile);
+          filesystem::path strBlockFile = GetDataDir() / strprintf("blk%04u.dat", nFile);
 
             // Break if no such file
             if( !filesystem::exists( strBlockFile ) )
@@ -463,7 +463,7 @@ bool CTxDB::LoadBlockIndex()
         // NovaCoin: calculate stake modifier checksum
         pindex->nStakeModifierChecksum = GetStakeModifierChecksum(pindex);
         if (!CheckStakeModifierCheckpoints(pindex->nHeight, pindex->nStakeModifierChecksum))
-            return error("CTxDB::LoadBlockIndex() : Failed stake modifier checkpoint height=%d, modifier=0x%016"PRIx64, pindex->nHeight, pindex->nStakeModifier);
+            return error("CTxDB::LoadBlockIndex() : Failed stake modifier checkpoint height=%d, modifier=0x%016" PRIx64, pindex->nHeight, pindex->nStakeModifier);
     }
 
     // Load hashBestChain pointer to end of best chain

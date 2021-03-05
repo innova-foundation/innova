@@ -41,6 +41,7 @@ int ClientModel::getNumConnections() const
 
 int ClientModel::getNumBlocks() const
 {
+    LOCK(cs_main);
     return nBestHeight;
 }
 
@@ -64,8 +65,10 @@ QDateTime ClientModel::getLastBlockDate() const
 {
     if (pindexBest)
         return QDateTime::fromTime_t(pindexBest->GetBlockTime());
-    else
-        return QDateTime::fromTime_t(1576002227); // I n n o v a - Genesis block's time
+    else if (!isTestNet())
+        return QDateTime::fromTime_t(1576002227); // I n n o v a - MAINNET Genesis Block Coinbase Time
+    else if (isTestNet())
+        return QDateTime::fromTime_t(1614593682); // I n n o v a TESTNET Genesis Block Coinbase Time
 }
 
 void ClientModel::updateTimer()
@@ -73,16 +76,16 @@ void ClientModel::updateTimer()
     // Get required lock upfront. This avoids the GUI from getting stuck on
     // periodical polls if the core is holding the locks for a longer time -
     // for example, during a wallet rescan.
-  //  TRY_LOCK(cs_main, lockMain);
-  //  if(!lockMain)
-  //      return;
+    TRY_LOCK(cs_main, lockMain);
+    if(!lockMain)
+        return;
 
     // Some quantities (such as number of blocks) change so fast that we don't want to be notified for each change.
     // Periodically check and update with a timer.
     int newNumBlocks = getNumBlocks();
     int newNumBlocksOfPeers = getNumBlocksOfPeers();
 
-    if(cachedNumBlocks != newNumBlocks || cachedNumBlocksOfPeers != newNumBlocksOfPeers)
+    if (cachedNumBlocks != newNumBlocks || cachedNumBlocksOfPeers != newNumBlocksOfPeers)
     {
         cachedNumBlocks = newNumBlocks;
         cachedNumBlocksOfPeers = newNumBlocksOfPeers;
@@ -140,9 +143,9 @@ bool ClientModel::isNativeTor() const
     return fNativeTor;
 }
 
-bool ClientModel::isFSLock() const
+bool ClientModel::isCNLock() const
 {
-    return fFSLock;
+    return fCNLock;
 }
 
 bool ClientModel::inInitialBlockDownload() const

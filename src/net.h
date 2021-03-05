@@ -191,7 +191,7 @@ public:
     int nTypeInd;
     std::string strSubVer;
     bool fInbound;
-    int nStartingHeight;
+    int nChainHeight;
     int nMisbehavior;
     bool fSyncNode;
     double dPingTime;
@@ -338,9 +338,9 @@ public:
     std::vector<CBlockIndex*> getBlocksIndex;
     std::vector<uint256> getBlocksHash;
     uint256 hashLastGetBlocksEnd;
-    int nStartingHeight;
-	bool fStartSync;
-	int nMisbehavior;
+    int nChainHeight;
+	  bool fStartSync;
+	  int nMisbehavior;
 
     // flood relay
     std::vector<CAddress> vAddrToSend;
@@ -395,7 +395,7 @@ public:
         hashContinue = 0;
         pindexLastGetBlocksBegin = 0;
         hashLastGetBlocksEnd = 0;
-        nStartingHeight = -1;
+        nChainHeight = -1;
 		    fStartSync = false;
         fGetAddr = false;
         nMisbehavior = 0;
@@ -791,7 +791,7 @@ template<typename T1, typename T2, typename T3, typename T4, typename T5, typena
     void Subscribe(unsigned int nChannel, unsigned int nHops=0);
     void CancelSubscribe(unsigned int nChannel);
     void CloseSocketDisconnect();
-	void Cleanup();
+	  void Cleanup();
 
     // Denial-of-service detection/prevention
     // The idea is to detect peers that are behaving
@@ -841,7 +841,6 @@ template<typename T1, typename T2, typename T3, typename T4, typename T5, typena
     // in case of no limit, it will always response 0
     static uint64_t GetMaxOutboundTimeLeftInCycle();
 };
-
 inline void RelayInventory(const CInv& inv)
 {
     // Put on lists to offer to the other nodes
@@ -864,6 +863,6 @@ void SendForTunaElectionEntry(const CTxIn vin, const CService addr, const std::v
 void RelayForTunaElectionEntryPing(const CTxIn vin, const std::vector<unsigned char> vchSig, const int64_t nNow, const bool stop);
 void SendForTunaElectionEntryPing(const CTxIn vin, const std::vector<unsigned char> vchSig, const int64_t nNow, const bool stop);
 void RelayForTunaCompletedTransaction(const int sessionID, const bool error, const std::string errorMessage);
-void RelayForTunaFortunaStakeContestant();
+void RelayForTunaCollateralNodeContestant();
 
 #endif

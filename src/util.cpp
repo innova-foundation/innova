@@ -7,7 +7,10 @@
 #include "sync.h"
 #include "strlcpy.h"
 #include "version.h"
+#include "state.h"
+#include "main.h"
 #include "ui_interface.h"
+#include "tinyformat.h"
 #include <boost/algorithm/string/join.hpp>
 
 // Work around clang compilation problem in Boost 1.46:
@@ -57,19 +60,19 @@ namespace boost {
 
 using namespace std;
 
-//Fortunastake  features
-bool fFortunaStake = false;
-string strFortunaStakePrivKey = "";
-string strFortunaStakeAddr = "";
-int nFortunaRounds = 2;
+//Collateralnode  features
+bool fCollateralNode = false;
+string strCollateralNodePrivKey = "";
+string strCollateralNodeAddr = "";
+int nCollateralNRounds = 2;
 
-int nMinStakeInterval = 0;         // in seconds, min time between successful stakes
+int nMinStakeInterval = 30;         // in seconds, min time between successful stakes
 
 /** Spork enforcement enabled time */
-int64_t enforceFortunastakePaymentsTime = 4085657524;
+int64_t enforceCollateralnodePaymentsTime = 4085657524;
 bool fSuccessfullyLoaded = false;
 
-/** All denominations used by fortuna */
+/** All denominations used by collateral */
 std::vector<int64_t> forTunaDenominations;
 
 map<string, string> mapArgs;
@@ -77,7 +80,7 @@ map<string, vector<string> > mapMultiArgs;
 bool fDebug = false;
 bool fDebugNet = false;
 bool fDebugSmsg = false;
-bool fDebugFS = false;
+bool fDebugCN = false;
 bool fDebugChain = false;
 bool fDebugRingSig = false;
 bool fNoSmsg = false;
@@ -92,7 +95,8 @@ bool fCommandLine = false;
 string strMiscWarning;
 bool fTestNet = false;
 bool fNativeTor = false;
-bool fFSLock = false;
+bool fHyperfileLocal = false;
+bool fCNLock = false;
 bool fNoListen = false;
 bool fLogTimestamps = false;
 CMedianFilter<int64_t> vTimeOffsets(200,0);
@@ -204,6 +208,11 @@ uint64_t GetRand(uint64_t nMax)
 int GetRandInt(int nMax)
 {
     return GetRand(nMax);
+}
+
+uint32_t GetRandUInt32()
+{
+    return GetRand(numeric_limits<uint32_t>::max());
 }
 
 uint256 GetRandHash()
@@ -495,7 +504,7 @@ string FormatMoney(int64_t n, bool fPlus)
     int64_t n_abs = (n > 0 ? n : -n);
     int64_t quotient = n_abs/COIN;
     int64_t remainder = n_abs%COIN;
-    string str = strprintf("%"PRId64".%08"PRId64, quotient, remainder);
+    string str = strprintf("%" PRId64".%08" PRId64, quotient, remainder);
 
     // Right-trim excess zeros before the decimal point:
     int nTrim = 0;
@@ -555,6 +564,20 @@ bool ParseMoney(const char* pszIn, int64_t& nRet)
 
     nRet = nValue;
     return true;
+}
+
+// safeChars chosen to allow simple messages/URLs/email addresses, but avoid anything
+// even possibly remotely dangerous like & or >
+static string safeChars("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890 .,;_/:?@");
+string SanitizeString(const string& str)
+{
+    string strResult;
+    for (std::string::size_type i = 0; i < str.size(); i++)
+    {
+        if (safeChars.find(str[i]) != std::string::npos)
+            strResult.push_back(str[i]);
+    }
+    return strResult;
 }
 
 
@@ -713,6 +736,11 @@ bool SoftSetBoolArg(const std::string& strArg, bool fValue)
         return SoftSetArg(strArg, std::string("0"));
 }
 
+bool SetArg(const std::string& strArg, const std::string& strValue)
+{
+    mapArgs[strArg] = strValue;
+    return true;
+}
 
 string EncodeBase64(const unsigned char* pch, size_t len)
 {
@@ -1175,41 +1203,31 @@ void WriteConfigFile(FILE* configFile)
     fputs (sUserID.c_str(), configFile);
     fputs (sRPCpassword.c_str(), configFile);
     fputs ("rpcport=14531\n", configFile);
+    fputs ("rpcallowip=127.0.0.1\n", configFile);
     fputs ("port=14530\n", configFile);
     fputs ("daemon=1\n", configFile);
     fputs ("listen=1\n", configFile);
     fputs ("server=1\n", configFile);
     fputs ("staking=1\n", configFile);
-    fputs ("fortunastake=0\n", configFile); //default
-    fputs ("fortunastakeaddr=\n", configFile);
-    fputs ("fortunastakeprivkey=\n", configFile);
-    fputs ("addnode=innseeder.circuitbreaker.online\n", configFile);
-    fputs ("addnode=104.207.147.210:14530\n", configFile);
-    fputs ("addnode=140.82.25.108:14530\n", configFile);
-    fputs ("addnode=144.202.40.17:14530\n", configFile);
-    fputs ("addnode=207.246.64.66:14530\n", configFile);
-    fputs ("addnode=45.77.114.67:14530\n", configFile);
-    fputs ("addnode=45.32.29.200:14530\n", configFile);
-    fputs ("addnode=104.156.239.127:14530\n", configFile);
-    fputs ("addnode=51.15.27.72:14530\n", configFile);
-    fputs ("addnode=51.15.27.10:14530\n", configFile);
-    fputs ("addnode=46.246.31.35\n", configFile);
-    fputs ("addnode=109.104.165.34\n", configFile);
-    fputs ("addnode=68.205.126.50\n", configFile);
-    fputs ("addnode=109.175.105.121\n", configFile);
-    fputs ("addnode=62.210.251.30\n", configFile);
-    fputs ("addnode=192.40.57.230\n", configFile);
-    fputs ("addnode=37.97.173.133\n", configFile);
-    fputs ("addnode=51.38.113.123:14530\n", configFile);
-    fputs ("addnode=37.187.180.53:14530\n", configFile);
-    fputs ("addnode=62.210.245.190\n", configFile);
-    fputs ("addnode=195.154.146.17\n", configFile);
-    fputs ("addnode=51.15.174.178\n", configFile);
-    fputs ("addnode=144.202.40.17\n", configFile);
-    fputs ("addnode=62.210.251.30\n", configFile);
-    fputs ("addnode=195.154.146.17\n", configFile);
-    fputs ("addnode=144.202.40.17\n", configFile);
-    fputs ("addnode=45.77.114.67\n", configFile);
+    fputs ("collateralnode=0\n", configFile); //default
+    fputs ("collateralnodeaddr=\n", configFile);
+    fputs ("collateralnodeprivkey=\n", configFile);
+    fputs ("idns=1\n", configFile);
+    fputs ("addnode=innseeder.circuitbreaker.online\n", configFile); 
+    fputs ("addnode=innseeder.circuitbreaker.dev\n", configFile);
+    fputs ("addnode=innseeder.innovai.cloud\n", configFile);
+    fputs ("addnode=94.130.52.227\n", configFile);
+    fputs ("addnode=94.253.188.194\n", configFile);
+    fputs ("addnode=94.253.236.197\n", configFile);
+    fputs ("addnode=94.130.49.89\n", configFile);
+    fputs ("addnode=80.57.237.145\n", configFile);
+    fputs ("addnode=135.181.183.40\n", configFile);
+    fputs ("addnode=134.3.131.119\n", configFile);
+    fputs ("addnode=95.216.26.26\n", configFile);
+    fputs ("addnode=178.254.43.126\n", configFile);
+    fputs ("addnode=218.214.99.111\n", configFile);
+    fputs ("addnode=95.217.119.238\n", configFile);
+    fputs ("addnode=209.250.255.129\n", configFile);
     fclose(configFile);
     ReadConfigFile(mapArgs, mapMultiArgs);
 }
@@ -1256,9 +1274,9 @@ boost::filesystem::path GetConfigFile()
     return pathConfigFile;
 }
 
-boost::filesystem::path GetFortunastakeConfigFile()
+boost::filesystem::path GetCollateralnodeConfigFile()
 {
-    boost::filesystem::path pathConfigFile(GetArg("-fsconf", "fortunastake.conf"));
+    boost::filesystem::path pathConfigFile(GetArg("-cnconf", "collateralnode.conf"));
     if (!pathConfigFile.is_complete()) pathConfigFile = GetDataDir(false) / pathConfigFile;
     return pathConfigFile;
 }
@@ -1338,6 +1356,25 @@ void FileCommit(FILE *fileout)
 #endif
 }
 
+std::string bytesReadable(uint64_t nBytes)
+{
+    char buffer[128];
+    if (nBytes >= 1024ll*1024ll*1024ll*1024ll)
+        snprintf(buffer, sizeof(buffer), "%.2f TB", nBytes/1024.0/1024.0/1024.0/1024.0);
+    else
+    if (nBytes >= 1024*1024*1024)
+        snprintf(buffer, sizeof(buffer), "%.2f GB", nBytes/1024.0/1024.0/1024.0);
+    else
+    if (nBytes >= 1024*1024)
+        snprintf(buffer, sizeof(buffer), "%.2f MB", nBytes/1024.0/1024.0);
+    else
+    if (nBytes >= 1024)
+        snprintf(buffer, sizeof(buffer), "%.2f KB", nBytes/1024.0);
+    else
+        snprintf(buffer, sizeof(buffer), "%" PRIu64" B", nBytes);
+    return std::string(buffer);
+};
+
 void ShrinkDebugFile()
 {
     // Scroll debug.log if it's getting too big
@@ -1404,7 +1441,7 @@ void AddTimeData(const CNetAddr& ip, int64_t nTime)
 
     // Add data
     vTimeOffsets.input(nOffsetSample);
-    printf("Added time data, samples %d, offset %+"PRId64" (%+"PRId64" minutes)\n", vTimeOffsets.size(), nOffsetSample, nOffsetSample/60);
+    printf("Added time data, samples %d, offset %+" PRId64" (%+" PRId64" minutes)\n", vTimeOffsets.size(), nOffsetSample, nOffsetSample/60);
     if (vTimeOffsets.size() >= 5 && vTimeOffsets.size() % 2 == 1)
     {
         int64_t nMedian = vTimeOffsets.median();
@@ -1439,10 +1476,10 @@ void AddTimeData(const CNetAddr& ip, int64_t nTime)
         }
         if (fDebug) {
             BOOST_FOREACH(int64_t n, vSorted)
-                printf("%+"PRId64"  ", n);
+                printf("%+" PRId64"  ", n);
             printf("|  ");
         }
-        printf("nTimeOffset = %+"PRId64"  (%+"PRId64" minutes)\n", nTimeOffset, nTimeOffset/60);
+        printf("nTimeOffset = %+" PRId64"  (%+" PRId64" minutes)\n", nTimeOffset, nTimeOffset/60);
     }
 }
 

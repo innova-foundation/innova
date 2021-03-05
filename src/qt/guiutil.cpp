@@ -120,6 +120,9 @@ QString formatServicesStr(quint64 mask)
             //case NODE_GETUTXO:
             //    strList.append("GETUTXO");
             //    break;
+            case SMSG_RELAY:
+                strList.append("SMSG_RELAY");
+                break;
             default:
                 strList.append(QString("%1[%2]").arg("UNKNOWN").arg(check));
         };
@@ -350,9 +353,9 @@ void openConfigfile()
 
 void openMNConfigfile()
 {
-    boost::filesystem::path pathMNConfig = GetFortunastakeConfigFile();
+    boost::filesystem::path pathMNConfig = GetCollateralnodeConfigFile();
 
-    /* Open fortunastake.conf with the associated application */
+    /* Open collateralnode.conf with the associated application */
     if (boost::filesystem::exists(pathMNConfig))
         QDesktopServices::openUrl(QUrl::fromLocalFile(boostPathToQString(pathMNConfig)));
 }

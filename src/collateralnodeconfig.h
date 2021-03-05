@@ -11,14 +11,14 @@
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
 
-class CFortunastakeConfig;
-extern CFortunastakeConfig fortunastakeConfig;
+class CCollateralnodeConfig;
+extern CCollateralnodeConfig collateralnodeConfig;
 
-class CFortunastakeConfig
+class CCollateralnodeConfig
 {
 
 public:
-	class CFortunastakeEntry {
+	class CCollateralnodeEntry {
 
 	private:
 		std::string alias;
@@ -29,7 +29,7 @@ public:
 
 	public:
 
-		CFortunastakeEntry(std::string alias, std::string ip, std::string privKey, std::string txHash, std::string outputIndex) {
+		CCollateralnodeEntry(std::string alias, std::string ip, std::string privKey, std::string txHash, std::string outputIndex) {
 			this->alias = alias;
 			this->ip = ip;
 			this->privKey = privKey;
@@ -78,21 +78,21 @@ public:
 		}
 	};
 
-	CFortunastakeConfig() {
-		entries = std::vector<CFortunastakeEntry>();
+	CCollateralnodeConfig() {
+		entries = std::vector<CCollateralnodeEntry>();
 	}
 
 	void clear();
     bool read(std::string& strErr);
 	void add(std::string alias, std::string ip, std::string privKey, std::string txHash, std::string outputIndex);
-    void purge(CFortunastakeEntry cme);
+    void purge(CCollateralnodeEntry cme);
 
-	std::vector<CFortunastakeEntry>& getEntries() {
+	std::vector<CCollateralnodeEntry>& getEntries() {
 		return entries;
 	}
 
 private:
-	std::vector<CFortunastakeEntry> entries;
+	std::vector<CCollateralnodeEntry> entries;
 
 
 };

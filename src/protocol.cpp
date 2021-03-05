@@ -16,6 +16,7 @@ static const char* ppszTypeName[] =
     "ERROR",
     "tx",
     "block",
+    "filtered block"
 };
 
 CMessageHeader::CMessageHeader()
@@ -147,4 +148,3 @@ void CInv::print() const
 {
     printf("CInv(%s)\n", ToString().c_str());
 }
-

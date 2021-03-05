@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
-// Copyright (c) 2017-2018 The Denarius developers
-// Copyright (c) 2019 The Innova developers
+// Copyright (c) 2017-2021 The Denarius developers
+// Copyright (c) 2019-2021 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -15,11 +15,12 @@
 #include "util.h"
 #include "ui_interface.h"
 #include "checkpoints.h"
-#include "activefortunastake.h"
-#include "fortunastakeconfig.h"
+#include "activecollateralnode.h"
+#include "collateralnodeconfig.h"
 #include "spork.h"
 #include "smessage.h"
 #include "ringsig.h"
+#include "idns.h"
 
 #ifdef USE_NATIVETOR
 #include "tor/anonymize.h" //Tor native optional integration (Flag -nativetor=1)
@@ -32,7 +33,10 @@
 #include <boost/algorithm/string/predicate.hpp>
 #include <openssl/crypto.h>
 
-
+#include <string>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
 
 #ifndef WIN32
 #include <signal.h>
@@ -43,6 +47,7 @@ using namespace std;
 using namespace boost;
 
 CWallet* pwalletMain = NULL;
+IDns* idns = NULL;
 CClientUIInterface uiInterface;
 bool fConfChange;
 bool fEnforceCanonical;
@@ -109,6 +114,9 @@ void Shutdown(void* parg)
     {
         fShutdown = true;
 
+        if(idns) {
+            delete idns;
+        }
         Finalise();
         /*
         SecureMsgShutdown();
@@ -384,13 +392,13 @@ std::string HelpMessage()
         "  -rpcsslprivatekeyfile=<file.pem>         " + _("Server private key (default: server.pem)") + "\n" +
         "  -rpcsslciphers=<ciphers>                 " + _("Acceptable ciphers (default: TLSv1+HIGH:!SSLv2:!aNULL:!eNULL:!AH:!3DES:@STRENGTH)") + "\n" +
 
-        "\n" + _("Fortunastake options:") + "\n" +
-        "  -fortunastake=<n>            " + _("Enable the client to act as a fortunastake (0-1, default: 0)") + "\n" +
-        "  -mnconf=<file>             " + _("Specify fortunastake configuration file (default: fortunastake.conf)") + "\n" +
-        "  -fsconflock=<n>            " + _("Lock fortunastakes from fortunastake configuration file (default: 1)") +
-        "  -fortunastakeprivkey=<n>     " + _("Set the fortunastake private key") + "\n" +
-        "  -fortunastakeaddr=<n>        " + _("Set external address:port to get to this fortunastake (example: address:port)") + "\n" +
-        "  -fortunastakeminprotocol=<n> " + _("Ignore fortunastakes less than version (example: 70007; default : 0)") + "\n" +
+        "\n" + _("Collateralnode options:") + "\n" +
+        "  -collateralnode=<n>            " + _("Enable the client to act as a collateralnode (0-1, default: 0)") + "\n" +
+        "  -mnconf=<file>             " + _("Specify collateralnode configuration file (default: collateralnode.conf)") + "\n" +
+        "  -cnconflock=<n>            " + _("Lock collateralnodes from collateralnode configuration file (default: 1)") +
+        "  -collateralnodeprivkey=<n>     " + _("Set the collateralnode private key") + "\n" +
+        "  -collateralnodeaddr=<n>        " + _("Set external address:port to get to this collateralnode (example: address:port)") + "\n" +
+        "  -collateralnodeminprotocol=<n> " + _("Ignore collateralnodes less than version (example: 70007; default : 0)") + "\n" +
 
         "\n" + _("Secure messaging options:") + "\n" +
         "  -nosmsg                                  " + _("Disable secure messaging.") + "\n" +
@@ -517,10 +525,10 @@ bool AppInit2()
 
     fTestNet = GetBoolArg("-testnet");
 
-    fFSLock = GetBoolArg("-fsconflock");
+    fCNLock = GetBoolArg("-cnconflock");
     fNativeTor = GetBoolArg("-nativetor");
+    fHyperfileLocal = GetBoolArg("-hyperfilelocal");
 
-    //if (fTestNet)
 
     if (mapArgs.count("-bind"))
     {
@@ -568,11 +576,11 @@ bool AppInit2()
             printf("AppInit2 : parameter interaction: -zapwallettxes=1 -> setting -rescan=1\n");
     }
 
-    // Process Fortunastake config
+    // Process Collateralnode config
     std::string err;
-    fortunastakeConfig.read(err);
+    collateralnodeConfig.read(err);
     if (!err.empty())
-        InitError("error while parsing fortunastake.conf Error: " + err);
+        InitError("error while parsing collateralnode.conf Error: " + err);
 
     if (mapArgs.count("-connect") && mapMultiArgs["-connect"].size() > 0) {
         // when only connecting to trusted nodes, do not seed via DNS, or listen by default
@@ -585,7 +593,7 @@ bool AppInit2()
 
     fDebug = GetBoolArg("-debug");
 
-    // - debug implies fDebug*, unless otherwise specified, except net/fs/smsg since they are -really- noisy.
+    // - debug implies fDebug*, unless otherwise specified, except net/cn/smsg since they are -really- noisy.
     if (fDebug)
     {
         SoftSetBoolArg("-debugnet", false);
@@ -598,7 +606,7 @@ bool AppInit2()
     fDebugNet = GetBoolArg("-debugnet");
     fDebugSmsg = GetBoolArg("-debugsmsg");
     fDebugChain = GetBoolArg("-debugchain");
-    fDebugFS = GetBoolArg("-debugfs");
+    fDebugCN = GetBoolArg("-debugfs");
     fDebugRingSig = GetBoolArg("-debugringsig");
 
     fNoSmsg = GetBoolArg("-nosmsg");
@@ -661,7 +669,7 @@ bool AppInit2()
     if (strWalletFileName != boost::filesystem::basename(strWalletFileName) + boost::filesystem::extension(strWalletFileName))
         return InitError(strprintf(_("Wallet %s resides outside data directory %s."), strWalletFileName.c_str(), strDataDir.c_str()));
 
-    // Make sure only a single Bitcoin process is using the data directory.
+    // Make sure only a single Innova process is using the data directory.
     boost::filesystem::path pathLockFile = GetDataDir() / ".lock";
     FILE* file = fopen(pathLockFile.string().c_str(), "a"); // empty lock file; created if it doesn't exist.
     if (file)
@@ -669,29 +677,34 @@ bool AppInit2()
 
     static boost::interprocess::file_lock lock(pathLockFile.string().c_str());
     if (!lock.try_lock())
-        return InitError(strprintf(_("Cannot obtain a lock on data directory %s.  Innova is probably already running."), strDataDir.c_str()));
+        return InitError(strprintf(_("Cannot obtain a lock on data directory %s. Innova is probably already running."), strDataDir.c_str()));
 
+    hooks = InitHook(); //Initialized Innova Name Hooks
     if (GetBoolArg("-shrinkdebugfile", !fDebug))
         ShrinkDebugFile();
     printf("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
     printf("Innova version %s (%s)\n", FormatFullVersion().c_str(), CLIENT_DATE.c_str());
+    #if (OPENSSL_VERSION_NUMBER < 0x10100000L) //WIP OpenSSL 1.0.x only, OpenSSL 1.1 not supported yet
     printf("Using OpenSSL version %s\n", SSLeay_version(SSLEAY_VERSION));
+  #else
+    printf("Using OpenSSL version %s\n", OpenSSL_version(OPENSSL_VERSION));
+  #endif
     if (!fLogTimestamps)
         printf("Startup time: %s\n", DateTimeStrFormat("%x %H:%M:%S", GetTime()).c_str());
     printf("Default data directory %s\n", GetDefaultDataDir().string().c_str());
     printf("Used data directory %s\n", strDataDir.c_str());
     std::ostringstream strErrors;
 
-    if (mapArgs.count("-fortunastakepaymentskey")) // fortunastake payments priv key
+    if (mapArgs.count("-collateralnodepaymentskey")) // collateralnode payments priv key
     {
-        if (!fortunastakePayments.SetPrivKey(GetArg("-fortunastakepaymentskey", "")))
-            return InitError(_("Unable to sign fortunastake payment winner, wrong key?"));
-        if (!sporkManager.SetPrivKey(GetArg("-fortunastakepaymentskey", "")))
+        if (!collateralnodePayments.SetPrivKey(GetArg("-collateralnodepaymentskey", "")))
+            return InitError(_("Unable to sign collateralnode payment winner, wrong key?"));
+        if (!sporkManager.SetPrivKey(GetArg("-collateralnodepaymentskey", "")))
             return InitError(_("Unable to sign spork message, wrong key?"));
     }
 
-    //ignore fortunastakes below protocol version
-    CFortunaStake::minProtoVersion = GetArg("-fortunastakeminprotocol", MIN_MN_PROTO_VERSION);
+    //ignore collateralnodes below protocol version
+    CCollateralNode::minProtoVersion = GetArg("-collateralnodeminprotocol", MIN_MN_PROTO_VERSION);
 
     // Added maxuploadtarget=MB Tries to keep outbound traffic under the given target (in MiB per 24h), 0 = no limit
     if (mapArgs.count("-maxuploadtarget")) {
@@ -702,6 +715,11 @@ bool AppInit2()
         fprintf(stdout, "Innova server starting\n");
 
     int64_t nStart;
+    int64_t nStart2;
+
+    // SMSG_RELAY Node Enum
+    if (fNoSmsg)
+        nLocalServices &= ~(SMSG_RELAY);
 
     // Anonymous Ring Signatures ~ I n n o v a - v3.0.0.0
     if (initialiseRingSigs() != 0)
@@ -745,7 +763,7 @@ bool AppInit2()
 
     // ********************************************************* Step 6: network initialization
 
-    //nBloomFilterElements = GetArg("-bloomfilterelements", 1536);
+    nBloomFilterElements = GetArg("-bloomfilterelements", 1536);
 
     int nSocksVersion = GetArg("-socks", 5);
 
@@ -975,7 +993,21 @@ bool AppInit2()
         printf("Shutdown requested. Exiting.\n");
         return false;
     };
-    printf(" block index %15"PRId64"ms\n", GetTimeMillis() - nStart);
+    printf(" block index %15" PRId64"ms\n", GetTimeMillis() - nStart);
+
+    //Create Innova Name index - this must happen before ReacceptWalletTransactions()
+    uiInterface.InitMessage(_("Loading name index..."));
+    printf("Loading Innova name index...\n");
+    nStart2 = GetTimeMillis();
+
+    extern bool createNameIndexFile();
+   if (!filesystem::exists(GetDataDir() / "innovanames.dat") && !createNameIndexFile())
+   {
+       printf("Fatal error: Failed to create innovanames.dat\n");
+       return false;
+     }
+
+    printf("Loaded Name DB %15" PRId64"ms\n", GetTimeMillis() - nStart2);
 
     if (GetBoolArg("-printblockindex") || GetBoolArg("-printblocktree"))
     {
@@ -1088,7 +1120,7 @@ bool AppInit2()
     };
 
     printf("%s", strErrors.str().c_str());
-    printf(" wallet      %15"PRId64"ms\n", GetTimeMillis() - nStart);
+    printf("Innova Wallet %15" PRId64"ms\n", GetTimeMillis() - nStart);
 
     RegisterWallet(pwalletMain);
 
@@ -1110,11 +1142,14 @@ bool AppInit2()
         printf("Rescanning last %i blocks (from block %i)...\n", pindexBest->nHeight - pindexRescan->nHeight, pindexRescan->nHeight);
         nStart = GetTimeMillis();
         pwalletMain->ScanForWalletTransactions(pindexRescan, true);
-        printf(" rescan      %15"PRId64"ms\n", GetTimeMillis() - nStart);
+        printf(" rescan      %15" PRId64"ms\n", GetTimeMillis() - nStart);
     };
 
     // Add wallet transactions that aren't already in a block to mapTransactions
     pwalletMain->ReacceptWalletTransactions();
+
+    // Init Bloom Filters
+    //pwalletMain->InitBloomFilter();
 
     // ********************************************************* Step 9: import blocks
 
@@ -1155,7 +1190,7 @@ bool AppInit2()
             printf("Invalid or missing peers.dat; recreating\n");
     }
 
-    printf("Loaded %i addresses from peers.dat  %"PRId64"ms\n",
+    printf("Loaded %i addresses from peers.dat  %" PRId64"ms\n",
            addrman.size(), GetTimeMillis() - nStart);
 
 
@@ -1173,45 +1208,45 @@ bool AppInit2()
     if (!strErrors.str().empty())
         return InitError(strErrors.str());
 
-    fFortunaStake = GetBoolArg("-fortunastake", false);
-    strFortunaStakePrivKey = GetArg("-fortunastakeprivkey", "");
-    if(fFortunaStake) {
-        printf("Fortunastake Enabled\n");
-        strFortunaStakeAddr = GetArg("-fortunastakeaddr", "");
+    fCollateralNode = GetBoolArg("-collateralnode", false);
+    strCollateralNodePrivKey = GetArg("-collateralnodeprivkey", "");
+    if(fCollateralNode) {
+        printf("Collateralnode Enabled\n");
+        strCollateralNodeAddr = GetArg("-collateralnodeaddr", "");
 
-        printf("Fortunastake address: %s\n", strFortunaStakeAddr.c_str());
+        printf("Collateralnode address: %s\n", strCollateralNodeAddr.c_str());
 
-        if(!strFortunaStakeAddr.empty()){
-            CService addrTest = CService(strFortunaStakeAddr);
+        if(!strCollateralNodeAddr.empty()){
+            CService addrTest = CService(strCollateralNodeAddr);
             if (!addrTest.IsValid()) {
-                return InitError("Invalid -fortunastakeaddr address: " + strFortunaStakeAddr);
+                return InitError("Invalid -collateralnodeaddr address: " + strCollateralNodeAddr);
             }
         }
 
-        if(strFortunaStakePrivKey.empty()){
-            return InitError(_("You must specify a fortunastakeprivkey in the configuration. Please see documentation for help."));
+        if(strCollateralNodePrivKey.empty()){
+            return InitError(_("You must specify a collateralnodeprivkey in the configuration. Please see documentation for help."));
         }
     }
 
-        if(!strFortunaStakePrivKey.empty()){
+        if(!strCollateralNodePrivKey.empty()){
           std::string errorMessage;
 
           CKey key;
           CPubKey pubkey;
-          if(!forTunaSigner.SetKey(strFortunaStakePrivKey, errorMessage, key, pubkey))
+          if(!forTunaSigner.SetKey(strCollateralNodePrivKey, errorMessage, key, pubkey))
             {
-                return InitError(_("Invalid fortunastakeprivkey. Please see documenation."));
+                return InitError(_("Invalid collateralnodeprivkey. Please see documenation."));
         }
-        activeFortunastake.pubKeyFortunastake = pubkey;
+        activeCollateralnode.pubKeyCollateralnode = pubkey;
     }
 
     if (pwalletMain) {
-        if(GetBoolArg("-fsconflock", true)) {
+        if(GetBoolArg("-cnconflock", true)) {
             LOCK(pwalletMain->cs_wallet);
-            printf("Locking Fortunastakes:\n");
+            printf("Locking Collateralnodes:\n");
             uint256 mnTxHash;
             int outputIndex;
-            BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries()) {
+            BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry mne, collateralnodeConfig.getEntries()) {
                 mnTxHash.SetHex(mne.getTxHash());
                 outputIndex = boost::lexical_cast<unsigned int>(mne.getOutputIndex());
                 COutPoint outpoint = COutPoint(mnTxHash, outputIndex);
@@ -1225,8 +1260,8 @@ bool AppInit2()
         }
     }
 
-    // Add any fortunastake.conf fortunastakes to the adrenaline nodes
-    BOOST_FOREACH(CFortunastakeConfig::CFortunastakeEntry mne, fortunastakeConfig.getEntries())
+    // Add any collateralnode.conf collateralnodes to the adrenaline nodes
+    BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry mne, collateralnodeConfig.getEntries())
     {
         CAdrenalineNodeConfig c(mne.getAlias(), mne.getIp(), mne.getPrivKey(), mne.getTxHash(), mne.getOutputIndex());
         CWalletDB walletdb(strWalletFileName);
@@ -1235,7 +1270,7 @@ bool AppInit2()
         if (!walletdb.ReadAdrenalineNodeConfig(c.sAddress, c))
         {
             if (!walletdb.WriteAdrenalineNodeConfig(c.sAddress, c))
-                printf("Could not add fortunastake config %s to adrenaline nodes.", c.sAddress.c_str());
+                printf("Could not add collateralnode config %s to adrenaline nodes.", c.sAddress.c_str());
         }
         // add it to adrenaline nodes if it doesn't exist already
         if (!pwalletMain->mapMyAdrenalineNodes.count(c.sAddress))
@@ -1266,32 +1301,50 @@ bool AppInit2()
         pblockAddrIndex = pblockAddrIndex->pprev;
     }
 
-    printf("Rebuilt address index of %i blocks in %"PRId64"ms\n",
+    printf("Rebuilt address index of %i blocks in %" PRId64"ms\n",
            pblockAddrIndex->nHeight, GetTimeMillis() - nStart);
     }
 
+
     //// debug print
-    printf("mapBlockIndex.size() = %"PRIszu"\n",   mapBlockIndex.size());
+    printf("mapBlockIndex.size() = %" PRIszu"\n",   mapBlockIndex.size());
     printf("nBestHeight = %d\n",            nBestHeight);
-    printf("setKeyPool.size() = %"PRIszu"\n",      pwalletMain->setKeyPool.size());
-    printf("mapWallet.size() = %"PRIszu"\n",       pwalletMain->mapWallet.size());
-    printf("mapAddressBook.size() = %"PRIszu"\n",  pwalletMain->mapAddressBook.size());
+    printf("setKeyPool.size() = %" PRIszu"\n",      pwalletMain->setKeyPool.size());
+    printf("mapWallet.size() = %" PRIszu"\n",       pwalletMain->mapWallet.size());
+    printf("mapAddressBook.size() = %" PRIszu"\n",  pwalletMain->mapAddressBook.size());
 
     if(fNativeTor)
-        printf("Native Tor Onion Relay Node Enabled");
+        printf("Native Tor Onion Relay Node Enabled\n");
     else
-        printf("Native Tor Onion Relay Disabled, Using Regular Peers...");
+        printf("Native Tor Onion Relay Disabled, Using Regular Peers...\n");
 
     if (fDebug)
-        printf("Debugging is Enabled.");
+        printf("Debugging is Enabled.\n");
 	else
-        printf("Debugging is not enabled.");
+        printf("Debugging is not enabled.\n");
 
     if (!NewThread(StartNode, NULL))
         InitError(_("Error: could not start node"));
 
     if (fServer)
         NewThread(ThreadRPCServer, NULL);
+
+    // Init Innova INS.
+    if (GetBoolArg("-idns", true))
+    {
+        #define IDNS_PORT 6565
+        int port = GetArg("-idnsport", IDNS_PORT);
+        int verbose = GetArg("-idnsverbose", 1);
+        if (port <= 0)
+            port = IDNS_PORT;
+        string suffix  = GetArg("-idnssuffix", "");
+        string bind_ip = GetArg("-idnsbindip", "");
+        string allowed = GetArg("-idnsallowed", "");
+        string localcf = GetArg("-idnslocalcf", "");
+        idns = new IDns(bind_ip.c_str(), port,
+        suffix.c_str(), allowed.c_str(), localcf.c_str(), verbose);
+        printf("Innova DNS Server started on %d!\n", port);
+    }
 
     // ********************************************************* Step 12: finished
 
@@ -1304,6 +1357,9 @@ bool AppInit2()
 #if !defined(QT_GUI)
     // Loop until process is exit()ed from shutdown() function,
     // called from ThreadRPCServer thread when a "stop" command is received.
+    if(idns) {
+	    idns->Run();
+    }
     while (1)
         //MilliSleep(5000);
         sleep(5);

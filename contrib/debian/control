@@ -19,7 +19,7 @@ Build-Depends: debhelper,
  libqt4-dev,
  libqrencode-dev
 Standards-Version: 1.0.7.0
-Homepage: http://www.innovacoin.io
+Homepage: http://www.innova-foundation.com
 Vcs-Git: git://github.com/innova-foundation/innova.git
 Vcs-Browser: http://github.com/innova-foundation/innova
 

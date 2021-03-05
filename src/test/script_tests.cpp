@@ -203,7 +203,7 @@ sign_multisig(CScript scriptPubKey, std::vector<CKey> keys, CTransaction transac
 
     CScript result;
     //
-    // NOTE: CHECKMULTISIG has an unfortunate bug; it requires
+    // NOTE: CHECKMULTISIG has an uncollateralte bug; it requires
     // one extra item on the stack, before the signatures.
     // Putting OP_0 on the stack is the workaround;
     // fixing the bug would mean splitting the blockchain (old

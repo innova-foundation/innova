@@ -1,8 +1,8 @@
 TEMPLATE = app
 TARGET = Innova
-VERSION = 4.3.8.8
+VERSION = 4.3.8.9
 INCLUDEPATH += src src/json src/qt src/qt/plugins/mrichtexteditor
-DEFINES += QT_GUI BOOST_THREAD_USE_LIB BOOST_SPIRIT_THREADSAFE
+DEFINES += QT_GUI BOOST_THREAD_USE_LIB BOOST_SPIRIT_THREADSAFE CURL_STATICLIB
 CONFIG += no_include_pwd
 CONFIG += thread
 CONFIG += static
@@ -24,21 +24,24 @@ linux {
 }
 
 win32 {
-BOOST_LIB_SUFFIX=-mgw49-mt-s-1_57
+BOOST_LIB_SUFFIX=-mt
+BOOST_THREAD_LIB_SUFFIX=_win32-mt
 BOOST_INCLUDE_PATH=C:/deps/boost_1_57_0
 BOOST_LIB_PATH=C:/deps/boost_1_57_0/stage/lib
 BDB_INCLUDE_PATH=C:/deps/db-4.8.30.NC/build_unix
 BDB_LIB_PATH=C:/deps/db-4.8.30.NC/build_unix
-OPENSSL_INCLUDE_PATH=C:/deps/openssl-1.0.1j/include
-OPENSSL_LIB_PATH=C:/deps/openssl-1.0.1j
-MINIUPNPC_INCLUDE_PATH=C:/deps/
-MINIUPNPC_LIB_PATH=C:/deps/miniupnpc
+OPENSSL_INCLUDE_PATH=/mnt/deps/openssl/include
+OPENSSL_LIB_PATH=/mnt/deps/openssl
+MINIUPNPC_INCLUDE_PATH=/mnt/deps/miniupnp/miniupnpc
+MINIUPNPC_LIB_PATH=/mnt/deps/miniupnp/miniupnpc
 LIBPNG_INCLUDE_PATH=C:/deps/libpng-1.6.16
 LIBPNG_LIB_PATH=C:/deps/libpng-1.6.16/.libs
 QRENCODE_INCLUDE_PATH=C:/deps/qrencode-3.4.4
 QRENCODE_LIB_PATH=C:/deps/qrencode-3.4.4/.libs
 LIBEVENT_INCLUDE_PATH=C:/deps/libevent/include
 LIBEVENT_LIB_PATH=C:/deps/libevent/.libs
+LIBCURL_INCLUDE_PATH=C:/deps/libcurl/include
+LIBCURL_LIB_PATH=C:/deps/libcurl/lib
 }
 
 # for boost 1.37, add -mt to the boost libraries
@@ -58,7 +61,7 @@ UI_DIR = build
 # use: qmake "RELEASE=1"
 contains(RELEASE, 1) {
     # Mac: compile for maximum compatibility (10.6, 32-bit)
-    macx:QMAKE_CXXFLAGS += -mmacosx-version-min=10.6 -arch x86_64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.6.sdk
+    macx:QMAKE_CXXFLAGS += -mmacosx-version-min=11 -arch x86_64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX10.15.sdk/
 
     !windows:!macx {
         # Linux: static link
@@ -79,6 +82,25 @@ win32:QMAKE_LFLAGS *= -static
 #win32:QMAKE_LFLAGS *= -Wl,--dynamicbase -Wl,--nxcompat
 #win32:QMAKE_LFLAGS += -static-libgcc -static-libstdc++
 lessThan(QT_MAJOR_VERSION, 5): win32: QMAKE_LFLAGS *= -static
+
+# use: qmake "USE_IPFS=1" ( enabled by default; default)
+#  or: qmake "USE_IPFS=0" (disabled by default)
+#  or: qmake "USE_IPFS=-" (not supported)
+# I n n o v a IPFS - USE_IPFS=- to not compile with the IPFS C Library located in src/ipfs
+contains(USE_IPFS, -) {
+    message(Building without IPFS support)
+} else {
+    message(Building with IPFS support)
+    count(USE_IPFS, 0) {
+        USE_IPFS=1
+    }
+    DEFINES += USE_IPFS=$$USE_IPFS
+    INCLUDEPATH += src/ipfs
+
+	###IPFS C Library native integration sources
+	SOURCES += src/ipfs.cc \
+		src/ipfscurl.cc
+}
 
 
 # use: qmake "USE_NATIVETOR=1" ( enabled by default; default)
@@ -285,7 +307,7 @@ contains(USE_UPNP, -) {
     count(USE_UPNP, 0) {
         USE_UPNP=1
     }
-    DEFINES += USE_UPNP=$$USE_UPNP STATICLIB
+    DEFINES += USE_UPNP=$$USE_UPNP MINIUPNP_STATICLIB
     INCLUDEPATH += $$MINIUPNPC_INCLUDE_PATH
     LIBS += $$join(MINIUPNPC_LIB_PATH,,-L,) -lminiupnpc
     win32:LIBS += -liphlpapi
@@ -325,7 +347,6 @@ contains(USE_LEVELDB, -) {
 	message(Building with Berkeley DB transaction index)
 
 	    SOURCES += src/txdb-bdb.cpp \
-		src/bloom.cpp \
 		src/hash.cpp \
 		src/aes_helper.c \
 		src/echo.c \
@@ -343,7 +364,6 @@ contains(USE_LEVELDB, -) {
     INCLUDEPATH += src/leveldb/include src/leveldb/helpers
 	LIBS += $$PWD/src/leveldb/libleveldb.a $$PWD/src/leveldb/libmemenv.a
 	SOURCES += src/txdb-leveldb.cpp \
-		src/bloom.cpp \
 		src/hash.cpp \
 		src/aes_helper.c \
 		src/echo.c \
@@ -418,6 +438,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/mintingtablemodel.h \
     src/qt/mintingview.h \
     src/qt/proofofimage.h \
+    src/qt/hyperfile.h \
     src/qt/multisigaddressentry.h \
     src/qt/multisiginputentry.h \
     src/qt/multisigdialog.h \
@@ -440,6 +461,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/smessage.h \
     src/main.h \
     src/core.h \
+    src/state.h \
     src/ringsig.h \
     src/miner.h \
     src/net.h \
@@ -449,10 +471,13 @@ HEADERS += src/qt/bitcoingui.h \
     src/walletdb.h \
     src/script.h \
     src/stealth.h \
-    src/fortuna.h \
-    src/activefortunastake.h \
-    src/fortunastake.h \
-    src/fortunastakeconfig.h \
+    src/idns.h \
+    src/hooks.h \
+	  src/namecoin.h \
+    src/collateral.h \
+    src/activecollateralnode.h \
+    src/collateralnode.h \
+    src/collateralnodeconfig.h \
     src/spork.h \
     src/init.h \
     src/mruset.h \
@@ -499,7 +524,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/statisticspage.h \
     src/qt/marketbrowser.h \
     src/qt/qcustomplot.h \
-    src/qt/fortunastakemanager.h \
+    src/qt/collateralnodemanager.h \
     src/qt/addeditadrenalinenode.h \
     src/qt/adrenalinenodeconfigdialog.h \
     src/qt/termsofuse.h \
@@ -515,6 +540,8 @@ HEADERS += src/qt/bitcoingui.h \
     src/sph_types.h \
     src/threadsafety.h \
     src/eccryptoverify.h \
+    src/qt/nametablemodel.h \
+    src/qt/managenamespage.h \
     src/qt/messagepage.h \
     src/qt/messagemodel.h \
     src/qt/sendmessagesdialog.h \
@@ -547,6 +574,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/multisiginputentry.cpp \
     src/qt/multisigdialog.cpp \
     src/qt/proofofimage.cpp \
+    src/qt/hyperfile.cpp \
     src/qt/termsofuse.cpp \
     src/alert.cpp \
     src/stun.cpp \
@@ -560,6 +588,8 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/script.cpp \
     src/main.cpp \
     src/core.cpp \
+    src/bloom.cpp \
+    src/state.cpp \
     src/ringsig.cpp \
     src/miner.cpp \
     src/init.cpp \
@@ -588,7 +618,8 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/rpcnet.cpp \
     src/rpcmining.cpp \
     src/rpcwallet.cpp \
-    src/rpcfortuna.cpp \
+    src/rpccollateral.cpp \
+    src/rpchyperfile.cpp \
     src/rpcblockchain.cpp \
     src/rpcrawtransaction.cpp \
     src/rpcsmessage.cpp \
@@ -605,6 +636,8 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/qtipcserver.cpp \
     src/qt/rpcconsole.cpp \
     src/qt/trafficgraphwidget.cpp \
+    src/qt/nametablemodel.cpp \
+    src/qt/managenamespage.cpp \
     src/qt/messagepage.cpp \
     src/qt/messagemodel.cpp \
     src/qt/qcustomplot.cpp \
@@ -612,7 +645,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/sendmessagesentry.cpp \
     src/qt/qvalidatedtextedit.cpp \
     src/qt/plugins/mrichtexteditor/mrichtextedit.cpp \
-    src/qt/fortunastakemanager.cpp \
+    src/qt/collateralnodemanager.cpp \
     src/qt/addeditadrenalinenode.cpp \
     src/qt/adrenalinenodeconfigdialog.cpp \
     src/noui.cpp \
@@ -623,10 +656,12 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/scrypt.cpp \
     src/pbkdf2.cpp \
     src/stealth.cpp \
-    src/fortuna.cpp \
-    src/activefortunastake.cpp \
-    src/fortunastake.cpp \
-    src/fortunastakeconfig.cpp \
+    src/idns.cpp \
+	  src/namecoin.cpp \
+    src/collateral.cpp \
+    src/activecollateralnode.cpp \
+    src/collateralnode.cpp \
+    src/collateralnodeconfig.cpp \
     src/spork.cpp
 
 #### I n n o v a sources
@@ -654,13 +689,15 @@ FORMS += \
     src/qt/forms/blockbrowser.ui \
     src/qt/forms/marketbrowser.ui \
     src/qt/forms/proofofimage.ui \
+    src/qt/forms/hyperfile.ui \
     src/qt/forms/termsofuse.ui \
-    src/qt/forms/fortunastakemanager.ui \
+    src/qt/forms/collateralnodemanager.ui \
     src/qt/forms/addeditadrenalinenode.ui \
     src/qt/forms/adrenalinenodeconfigdialog.ui \
     src/qt/forms/multisigaddressentry.ui \
     src/qt/forms/multisiginputentry.ui \
     src/qt/forms/multisigdialog.ui \
+    src/qt/forms/managenamespage.ui \
     src/qt/forms/sendmessagesentry.ui \
     src/qt/forms/sendmessagesdialog.ui \
     src/qt/plugins/mrichtexteditor/mrichtextedit.ui
@@ -671,8 +708,6 @@ SOURCES += src/qt/qrcodedialog.cpp
 FORMS += src/qt/forms/qrcodedialog.ui
 }
 
-
-
 CODECFORTR = UTF-8
 
 # for lrelease/lupdate
@@ -680,7 +715,7 @@ CODECFORTR = UTF-8
 TRANSLATIONS = $$files(src/qt/locale/bitcoin_*.ts)
 
 isEmpty(QMAKE_LRELEASE) {
-    win32:QMAKE_LRELEASE = $$[QT_INSTALL_BINS]\\lrelease.exe
+    win32:QMAKE_LRELEASE = $$[QT_INSTALL_BINS]/lrelease.exe
     else:QMAKE_LRELEASE = $$[QT_INSTALL_BINS]/lrelease
 }
 isEmpty(QM_DIR):QM_DIR = $$PWD/src/qt/locale
@@ -726,6 +761,9 @@ isEmpty(BOOST_INCLUDE_PATH) {
     macx:BOOST_INCLUDE_PATH = /opt/local/include
 }
 
+macx:OPENSSL_LIB_PATH = /opt/local/lib/openssl-1.0
+macx:OPENSSL_INCLUDE_PATH = /opt/local/include/openssl-1.0
+
 windows:DEFINES += WIN32
 windows:RC_FILE = src/qt/res/bitcoin-qt.rc
 
@@ -753,17 +791,17 @@ macx:ICON = src/qt/res/icons/innova.icns
 macx:TARGET = "Innova"
 macx:QMAKE_CFLAGS_THREAD += -pthread
 macx:QMAKE_LFLAGS_THREAD += -pthread
-macx:QMAKE_MACOSX_DEPLOYMENT_TARGET = 10.9
-macx:QMAKE_MAC_SDK = macosx10.14
+macx:QMAKE_MACOSX_DEPLOYMENT_TARGET = 11
+macx:QMAKE_MAC_SDK = macosx11.1
 macx:QMAKE_CXXFLAGS_THREAD += -pthread
 macx:QMAKE_RPATHDIR = @executable_path/../Frameworks
 macx:QMAKE_CXXFLAGS += -stdlib=libc++
 
 
 # Set libraries and includes at end, to use platform-defined defaults if not overridden
-INCLUDEPATH += $$BOOST_INCLUDE_PATH $$BDB_INCLUDE_PATH $$OPENSSL_INCLUDE_PATH $$QRENCODE_INCLUDE_PATH $$LIBEVENT_INCLUDE_PATH
-LIBS += $$join(BOOST_LIB_PATH,,-L,) $$join(BDB_LIB_PATH,,-L,) $$join(OPENSSL_LIB_PATH,,-L,) $$join(QRENCODE_LIB_PATH,,-L,) $$join(LIBEVENT_LIB_PATH,,-L,)
-LIBS += -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX
+INCLUDEPATH += $$BOOST_INCLUDE_PATH $$BDB_INCLUDE_PATH $$OPENSSL_INCLUDE_PATH $$QRENCODE_INCLUDE_PATH $$LIBEVENT_INCLUDE_PATH $$LIBCURL_INCLUDE_PATH
+LIBS += $$join(BOOST_LIB_PATH,,-L,) $$join(BDB_LIB_PATH,,-L,) $$join(OPENSSL_LIB_PATH,,-L,) $$join(QRENCODE_LIB_PATH,,-L,) $$join(LIBEVENT_LIB_PATH,,-L,) $$join(LIBCURL_LIB_PATH,,-L,)
+LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX
 LIBS += -lz -levent
 
 # -lgdi32 has to happen after -lcrypto (see  #681)

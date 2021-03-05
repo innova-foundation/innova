@@ -14,6 +14,9 @@
 #include "netbase.h"
 #include <string>
 #include "uint256.h"
+#include "state.h"
+
+#define IDNS_PORT 6565
 
 extern bool fTestNet;
 static inline unsigned short GetDefaultPort(const bool testnet = fTestNet)
@@ -65,11 +68,6 @@ class CMessageHeader
         unsigned int nChecksum;
 };
 
-/** nServices flags */
-enum
-{
-    NODE_NETWORK = (1 << 0),
-};
 
 /** A CService with information about it as peer */
 class CAddress : public CService
@@ -129,10 +127,19 @@ class CInv
         std::string ToString() const;
         void print() const;
 
-    // TODO: make private (improves encapsulation)
-    public:
         int type;
         uint256 hash;
+};
+
+class CPendingFilteredChunk
+{
+    public:
+        CPendingFilteredChunk(uint256 _startHash, uint256 _endHash, int64_t _nTime)
+             : startHash(_startHash), endHash(_endHash), nTime(_nTime) {};
+
+        uint256 startHash;
+        uint256 endHash;
+        int64_t nTime;
 };
 
 #endif // __INCLUDED_PROTOCOL_H__

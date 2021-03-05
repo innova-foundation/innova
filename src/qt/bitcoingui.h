@@ -12,7 +12,8 @@ class WalletModel;
 class MessageModel;
 class TransactionView;
 class MintingView;
-class FortunastakeManager;
+class ManageNamesPage;
+class CollateralnodeManager;
 class MultisigDialog;
 class OverviewPage;
 class AddressBookPage;
@@ -25,6 +26,7 @@ class SignVerifyMessageDialog;
 class Notificator;
 class RPCConsole;
 class ProofOfImage;
+class Hyperfile;
 
 QT_BEGIN_NAMESPACE
 class QLabel;
@@ -95,12 +97,14 @@ private:
     OverviewPage *overviewPage;
 	  StatisticsPage *statisticsPage;
 	  BlockBrowser *blockBrowser;
+    ManageNamesPage *manageNamesPage;
 	  MarketBrowser *marketBrowser;
     QWidget *transactionsPage;
 	  QWidget *mintingPage;
 	  MultisigDialog *multisigPage;
 	  ProofOfImage *proofOfImagePage;
-	  FortunastakeManager *fortunastakeManagerPage;
+    Hyperfile *hyperfilePage;
+	  CollateralnodeManager *collateralnodeManagerPage;
     AddressBookPage *addressBookPage;
     AddressBookPage *receiveCoinsPage;
     MessagePage *messagePage;
@@ -112,7 +116,7 @@ private:
     QLabel *labelConnectionsIcon;
     QLabel *labelBlocksIcon;
     QLabel *labelConnectTypeIcon;
-    QLabel *labelFSLockIcon;
+    QLabel *labelCNLockIcon;
     QLabel *progressBarLabel;
     QLabel *mainIcon;
     QToolBar *mainToolbar;
@@ -128,7 +132,9 @@ private:
 	  QAction *mintingAction;
 	  QAction *multisigAction;
     QAction *proofOfImageAction;
-	  QAction *fortunastakeManagerAction;
+    QAction *hyperfileAction;
+    QAction *manageNamesAction;
+	  QAction *collateralnodeManagerAction;
     QAction *quitAction;
     QAction *sendCoinsAction;
     QAction *addressBookAction;
@@ -219,6 +225,8 @@ private slots:
     void gotoBlockBrowser();
 	/** Switch to market*/
     void gotoMarketBrowser();
+  /** Switch to manage names page */
+    void gotoManageNamesPage();
 	/** Switch to minting page */
     void gotoMintingPage();
     /** Switch to history (transactions) page */
@@ -231,10 +239,13 @@ private slots:
     void gotoSendCoinsPage();
     /** Switch to message page */
     void gotoMessagePage();
-	/** Switch to fortunastake manager page */
-	void gotoFortunastakeManagerPage();
+	/** Switch to collateralnode manager page */
+	void gotoCollateralnodeManagerPage();
 	/** Switch to proof of image page */
 	void gotoProofOfImagePage();
+  /** Switch to Hyperfile page */
+  void gotoHyperfilePage();
+
 
     //void gotoChatPage();
 
@@ -254,7 +265,7 @@ private slots:
 
     /** Open external (default) editor with innova.conf */
     void showConfEditor();
-    /** Open external (default) editor with fortunastake.conf */
+    /** Open external (default) editor with collateralnode.conf */
     void showMNConfEditor();
 
     /** Show configuration dialog */
