@@ -22,18 +22,12 @@ git pull
 qmake "USE_QRCODE=1" "USE_UPNP=1" innova-qt.pro
 make
 
-echo "Populate innova.conf"
-mkdir ~/.innova
-echo -e "nativetor=0\naddnode=innova.host\naddnode=innova.win\naddnode=innova.pro\naddnode=triforce.black" > ~/.innova/innova.conf
-
-#echo "Get Chaindata"
-#cd ~/.innova || exit
-#rm -rf database txleveldb smsgDB
-#wget http://d.hashbag.cc/chaindata.zip
-#unzip chaindata.zip
-#wget https://github.com/innova-foundation/innova/releases/download/v3.3.7/chaindata1799510.zip
-#unzip chaindata1799510.zip
-#rm chaindata1799510.zip
+echo "Get Chaindata"
+cd ~/.innova || exit
+rm -rf database txleveldb smsgDB
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
+unzip innovabootstrap.zip
+rm innovabootstrap.zip
 Echo "Back to Compiled QT Binary Folder"
 cd ~/innova/src
                 ;;
@@ -81,18 +75,12 @@ git pull
 qmake "USE_UPNP=1" "USE_QRCODE=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
 make
 
-echo "Populate innova.conf"
-mkdir ~/.innova
-echo -e "nativetor=0\naddnode=innova.host\naddnode=innova.win\naddnode=innova.pro\naddnode=triforce.black" > ~/.innova/innova.conf
-
-#echo "Get Chaindata"
-#cd ~/.innova
-#rm -rf database txleveldb smsgDB
-#wget http://d.hashbag.cc/chaindata.zip
-#unzip chaindata.zip
-#wget https://github.com/innova-foundation/innova/releases/download/v3.3.7/chaindata1799510.zip
-#unzip chaindata1799510.zip
-#rm chaindata1799510.zip
+echo "Get Chaindata"
+cd ~/.innova
+rm -rf database txleveldb smsgDB
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
+unzip innovabootstrap.zip
+rm innovabootstrap.zip
 Echo "Back to Compiled QT Binary Folder"
 cd ~/innova/src
                 ;;
