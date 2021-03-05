@@ -528,7 +528,8 @@ private:
 };
 
 static const std::vector<unsigned char> burnScripts[] = {
-    ParseHex("76a914a996cc59f751964a8f4c60b0caca57724ad5e4c988ac"), //p2pkh 8WYZa29o2Kps14H9jSrr92pqHaPVFubbMY
+    ParseHex("")
+             // p2pkh
 };
 
 /** Serialized script, used inside transaction inputs and outputs */
