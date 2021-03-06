@@ -1,6 +1,6 @@
 #!/bin/bash
 TEMP=/tmp/answer$$
-whiptail --title "Innova [INN]"  --menu  "Ubuntu 16.04/18.04 Daemon Node :" 20 0 0 1 "Compile innovad Ubuntu 16.04" 2 "Update innovad 16.04 to latest" 3 "Compile innovad Ubuntu 18.04" 4 "Update innovad 18.04 to latest" 4 "Compile innovad Ubuntu 20.04" 5 "Update innovad 20.04 to latest" 2>$TEMP
+whiptail --title "Innova [INN]"  --menu  "Ubuntu 16.04/18.04/20.04 Daemon Node :" 20 0 0 1 "Compile innovad Ubuntu 16.04" 2 "Update innovad 16.04 to latest" 3 "Compile innovad Ubuntu 18.04" 4 "Update innovad 18.04 to latest" 5 "Compile innovad Ubuntu 20.04" 6 "Update innovad 20.04 to latest" 2>$TEMP
 choice=`cat $TEMP`
 case $choice in
 1) echo 1 "Compiling innovad Ubuntu 16.04"
@@ -106,7 +106,7 @@ echo "Copied to /usr/bin for ease of use"
 echo "Back to Compiled innovad Binary Folder"
 cd ~/innova/src
                 ;;
-4) echo 3 "Compile innovad Ubuntu 20.04"
+5) echo 5 "Compile innovad Ubuntu 20.04"
 echo "Updating linux packages"
 sudo apt-get update -y && sudo apt-get upgrade -y
 
@@ -147,7 +147,7 @@ rm -rf innovabootstrap.zip
 echo "Back to Compiled innovad Binary Folder"
 cd ~/innova/src
                 ;;
-6) echo 4 "Update innovad 20.04"
+6) echo 6 "Update innovad 20.04"
 echo "Updating Innova Wallet"
 cd ~/innova || exit
 git checkout master
