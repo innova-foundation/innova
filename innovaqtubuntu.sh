@@ -19,6 +19,9 @@ git pull
 #echo "Change line in innova-qt.pro from stdlib=c99 to stdlib=gnu99"
 #sed -i 's/c99/gnu99/' ~/innova/innova-qt.pro
 
+echo "Change line in innova-qt.pro"
+sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
+
 qmake "USE_QRCODE=1" "USE_UPNP=1" innova-qt.pro
 make
 
@@ -39,6 +42,9 @@ git pull
 
 #echo "Change line in innova-qt.pro from stdlib=c99 to stdlib=gnu99"
 #sed -i 's/c99/gnu99/' ~/innova/innova-qt.pro
+
+echo "Change line in innova-qt.pro"
+sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
 
 qmake "USE_QRCODE=1" "USE_UPNP=1" innova-qt.pro
 make
@@ -72,6 +78,9 @@ git pull
 #echo "Change line in innova-qt.pro from stdlib=c99 to stdlib=gnu99"
 #sed -i 's/c99/gnu99/' ~/innova/innova-qt.pro
 
+echo "Change line in innova-qt.pro"
+sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
+
 qmake "USE_UPNP=1" "USE_QRCODE=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
 make
 
@@ -93,6 +102,9 @@ git pull
 
 #echo "Change line in innova-qt.pro from stdlib=c99 to stdlib=gnu99"
 #sed -i 's/c99/gnu99/' ~/innova/innova-qt.pro
+
+echo "Change line in innova-qt.pro"
+sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
 
 qmake "USE_UPNP=1" "USE_QRCODE=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
 make
