@@ -26,6 +26,7 @@ qmake "USE_QRCODE=1" "USE_UPNP=1" innova-qt.pro
 make
 
 echo "Get Chaindata"
+mkdir ~/.innova
 cd ~/.innova || exit
 rm -rf database txleveldb smsgDB
 wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
@@ -86,6 +87,7 @@ make
 
 
 echo "Get Chaindata"
+mkdir ~/.innova
 cd ~/.innova
 rm -rf database txleveldb smsgDB
 wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
@@ -146,6 +148,7 @@ make
 
 
 echo "Get Chaindata"
+mkdir ~/.innova
 cd ~/.innova
 rm -rf database txleveldb smsgDB
 wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
