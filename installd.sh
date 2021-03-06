@@ -24,6 +24,7 @@ sudo yes | cp -rf innovad /usr/bin/
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
+mkdir ~/.innova
 cd ~/.innova || exit
 rm -rf database txleveldb smsgDB
 wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
@@ -80,6 +81,7 @@ sudo yes | cp -rf innovad /usr/bin/
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
+mkdir ~/.innova
 cd ~/.innova
 rm -rf database txleveldb smsgDB
 wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
@@ -136,6 +138,7 @@ sudo yes | cp -rf innovad /usr/bin/
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
+mkdir ~/.innova
 cd ~/.innova
 rm -rf database txleveldb smsgDB
 wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
