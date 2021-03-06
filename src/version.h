@@ -33,7 +33,7 @@ static const int DATABASE_VERSION = 21212;
 static const int PROTOCOL_VERSION = 43890; //Protocol is now 43890
 
 // intial proto version, to be increased after version/verack negotiation
-static const int INIT_PROTO_VERSION = 43890;
+static const int INIT_PROTO_VERSION = 21212;
 
 // disconnect from peers older than this proto version
 static const int MIN_PEER_PROTO_VERSION = 43890;
@@ -43,7 +43,7 @@ extern int MIN_MN_PROTO_VERSION;
 
 // nTime field added to CAddress, starting with this version;
 // if possible, avoid requesting addresses nodes older than this
-static const int CADDR_TIME_VERSION = 43890; // start sharing node timeinfo with this proto version 43500
+static const int CADDR_TIME_VERSION = 43500; // start sharing node timeinfo with this proto version 43500
 
 // only request blocks from nodes outside this range of versions
 static const int NOBLKS_VERSION_START = 70002;
