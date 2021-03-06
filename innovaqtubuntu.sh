@@ -111,7 +111,6 @@ make
 echo "Back to Compiled QT Binary Folder"
 cd ~/innova
                 ;;
-sd
 5) echo 5 "Compile Innova QT Ubuntu 20.04"
 echo "Updating linux packages"
 sudo apt-get update -y && sudo apt-get upgrade -y
