@@ -22,7 +22,8 @@ git pull
 echo "Change line in innova-qt.pro"
 sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
 
-qmake "USE_QRCODE=1" "USE_UPNP=1" innova-qt.pro
+echo "Building Qt Wallet"
+qmake "USE_UPNP=1" "USE_QRCODE=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
 make
 
 echo "Get Chaindata"
@@ -47,8 +48,10 @@ git pull
 echo "Change line in innova-qt.pro"
 sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
 
-qmake "USE_QRCODE=1" "USE_UPNP=1" innova-qt.pro
+echo "Building Qt Wallet"
+qmake "USE_UPNP=1" "USE_QRCODE=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
 make
+
 echo "Back to Compiled QT Binary Folder"
 cd ~/innova
                 ;;
@@ -82,9 +85,9 @@ git pull
 echo "Change line in innova-qt.pro"
 sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
 
+echo "Building Qt Wallet"
 qmake "USE_UPNP=1" "USE_QRCODE=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
 make
-
 
 echo "Get Chaindata"
 mkdir ~/.innova
@@ -108,8 +111,10 @@ git pull
 echo "Change line in innova-qt.pro"
 sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
 
+echo "Building Qt Wallet"
 qmake "USE_UPNP=1" "USE_QRCODE=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
 make
+
 echo "Back to Compiled QT Binary Folder"
 cd ~/innova
                 ;;
@@ -143,6 +148,10 @@ git pull
 echo "Change line in innova-qt.pro"
 sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
 
+echo "Fix Qt in Ubuntu 20.04 WSLv1"
+sudo strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5
+
+echo "Building Qt Wallet"
 qmake "USE_UPNP=1" "USE_QRCODE=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
 make
 
@@ -169,8 +178,13 @@ git pull
 echo "Change line in innova-qt.pro"
 sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
 
+echo "Fix Qt in Ubuntu 20.04 WSLv1"
+sudo strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5
+
+echo "Building Qt Wallet"
 qmake "USE_UPNP=1" "USE_QRCODE=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
 make
+
 echo "Back to Compiled QT Binary Folder"
 cd ~/innova
                 ;;

@@ -72,6 +72,7 @@ parts:
     source: https://github.com/innova-foundation/innova.git
     source-type: git
     source-tag: master
+    prepare: ./snapcraft.sh
     plugin: nil
     build-packages:
       - g++
@@ -139,6 +140,7 @@ parts:
     source: https://github.com/innova-foundation/innova.git
     source-type: git
     source-tag: master
+    prepare: ./stage_binaries.sh
     plugin: qmake
     qt-version: qt5
     build-packages:
