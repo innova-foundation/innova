@@ -70,12 +70,11 @@ openssl version -v
 echo "Installing Innova Wallet"
 git clone https://github.com/innova-foundation/innova
 cd innova
-git checkout development
+git checkout master
 git pull
 
 cd src
-make OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib -f makefile.unix
-
+make OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib -f makefile.unix -j8
 sudo yes | cp -rf innovad /usr/bin/
 
 echo "Copied to /usr/bin for ease of use"
