@@ -3829,6 +3829,10 @@ if (!mapBlockIndex.count(pblock->hashPrevBlock)) //pblock->hashPrevBlock != 0 &&
         MIN_MN_PROTO_VERSION = 43890;
     }
 
+    // If turned on Auto Combine will scan wallet for dust to combine
+    if (pwalletMain->fCombineDust)
+        pwalletMain->AutoCombineDust();
+
     // ppcoin: if responsible for sync-checkpoint send it
     if (pfrom && !CSyncCheckpoint::strMasterPrivKey.empty())
       Checkpoints::SendSyncCheckpoint(Checkpoints::AutoSelectSyncCheckpoint()->GetBlockHash());
@@ -3887,10 +3891,6 @@ if (!mapBlockIndex.count(pblock->hashPrevBlock)) //pblock->hashPrevBlock != 0 &&
               nLastCoinStakeSearchTime = nSearchTime;
               if (fDebug && GetBoolArg("-printcoinstake")) printf ("CreateCoinStake failed at %ld. Try again in %ld\n",nLastCoinStakeSearchTime,nLastCoinStakeSearchInterval);
             }
-
-      // If turned on Auto Combine will scan wallet for dust to combine
-      if (pwalletMain->fCombineDust)
-          pwalletMain->AutoCombineDust();
 
       return false;
   }
