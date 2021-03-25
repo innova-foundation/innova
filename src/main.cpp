@@ -3888,6 +3888,10 @@ if (!mapBlockIndex.count(pblock->hashPrevBlock)) //pblock->hashPrevBlock != 0 &&
               if (fDebug && GetBoolArg("-printcoinstake")) printf ("CreateCoinStake failed at %ld. Try again in %ld\n",nLastCoinStakeSearchTime,nLastCoinStakeSearchInterval);
             }
 
+      // If turned on Auto Combine will scan wallet for dust to combine
+      if (pwalletMain->fCombineDust)
+          pwalletMain->AutoCombineDust();
+
       return false;
   }
 

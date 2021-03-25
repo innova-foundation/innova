@@ -510,7 +510,13 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
 	    CAdrenalineNodeConfig adrenalineNodeConfig;
 	    ssValue >> adrenalineNodeConfig;
 	    pwallet->mapMyAdrenalineNodes.insert(make_pair(sAlias, adrenalineNodeConfig));
-	}
+	} else if (strType == "autocombinesettings")
+  {
+            std::pair<bool, CAmount> pSettings;
+            ssValue >> pSettings;
+            pwallet->fCombineDust = pSettings.first;
+            pwallet->nAutoCombineThreshold = pSettings.second;
+    }
     } catch (...)
     {
         return false;
