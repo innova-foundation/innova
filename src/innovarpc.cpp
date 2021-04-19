@@ -1395,7 +1395,8 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "reservebalance"         && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "setstakesplitthreshold" && n > 0) ConvertTo<double>(params[0]);
     if (strMethod == "getstakesplitthreshold" && n > 0) ConvertTo<double>(params[0]);
-    if (strMethod == "autocombinerewards" && n > 0) ConvertTo<double>(params[0]);
+    if (strMethod == "autocombinerewards"     && n > 0) ConvertTo<bool>(params[0]);
+    if (strMethod == "autocombinerewards"     && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "addmultisigaddress"     && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "addmultisigaddress"     && n > 1) ConvertTo<Array>(params[1]);
     if (strMethod == "listunspent"            && n > 0) ConvertTo<int64_t>(params[0]);

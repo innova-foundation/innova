@@ -2115,10 +2115,10 @@ Value reservebalance(const Array& params, bool fHelp)
     return result;
 }
 
-UniValue setstakesplitthreshold(const UniValue& params, bool fHelp)
+Value setstakesplitthreshold(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() != 1)
-        throw runtime_error(
+        throw std::runtime_error(
             "setstakesplitthreshold value\n"
             "\nThis will set the output size of your stakes to never be below this number\n"
 
@@ -2129,8 +2129,8 @@ UniValue setstakesplitthreshold(const UniValue& params, bool fHelp)
             "  \"threshold\": n,    (numeric) Threshold value set\n"
             "  \"saved\": true|false    (boolean) 'true' if successfully saved to the wallet file\n"
             "}\n"
-            "\nExamples:\n" +
-            HelpExampleCli("setstakesplitthreshold", "5000") + HelpExampleRpc("setstakesplitthreshold", "5000"));
+            "\nExamples:\n"
+            );
 
     uint64_t nStakeSplitThreshold = params[0].get_int();
     if (pwalletMain->IsLocked())
@@ -2143,7 +2143,7 @@ UniValue setstakesplitthreshold(const UniValue& params, bool fHelp)
     {
         bool fFileBacked = pwalletMain->fFileBacked;
 
-        UniValue result(UniValue::VOBJ);
+        Object result;
         pwalletMain->nStakeSplitThreshold = nStakeSplitThreshold;
         result.push_back(Pair("threshold", int(pwalletMain->nStakeSplitThreshold)));
         if (fFileBacked) {
@@ -2156,41 +2156,41 @@ UniValue setstakesplitthreshold(const UniValue& params, bool fHelp)
     }
 }
 
-UniValue getstakesplitthreshold(const UniValue& params, bool fHelp)
+Value getstakesplitthreshold(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() != 0)
-        throw runtime_error(
+        throw std::runtime_error(
             "getstakesplitthreshold\n"
             "Returns the threshold for stake splitting\n"
             "\nResult:\n"
             "n      (numeric) Threshold value\n"
-            "\nExamples:\n" +
-            HelpExampleCli("getstakesplitthreshold", "") + HelpExampleRpc("getstakesplitthreshold", ""));
+            "\nExamples:\n"
+            );
 
     return int(pwalletMain->nStakeSplitThreshold);
 }
 
-UniValue autocombinerewards(const UniValue& params, bool fHelp)
+Value autocombinerewards(const Array& params, bool fHelp)
 {
     bool fEnable;
     if (params.size() >= 1)
         fEnable = params[0].get_bool();
 
     if (fHelp || params.size() < 1 || (fEnable && params.size() != 2) || params.size() > 2)
-        throw runtime_error(
+        throw std::runtime_error(
             "autocombinerewards true|false ( threshold )\n"
-            "\nWallet will automatically monitor for any coins with value below the threshold amount, and combine them if they reside with the same XDNA address\n"
+            "\nWallet will automatically monitor for any coins with value below the threshold amount, and combine them if they reside with the same INN address\n"
             "When autocombinerewards runs it will create a transaction, and therefore will be subject to transaction fees.\n"
 
             "\nArguments:\n"
             "1. true|false      (boolean, required) Enable auto combine (true) or disable (false)\n"
             "2. threshold       (numeric, optional) Threshold amount (default: 0)\n"
-            "\nExamples:\n" +
-            HelpExampleCli("autocombinerewards", "true 500") + HelpExampleRpc("autocombinerewards", "true 500"));
+            "\nExamples:\n"
+            );
 
     CWalletDB walletdb(pwalletMain->strWalletFile);
     CAmount nThreshold = 0;
-
+    Object result;
     if (fEnable)
         nThreshold = params[1].get_int();
 
@@ -2200,7 +2200,9 @@ UniValue autocombinerewards(const UniValue& params, bool fHelp)
     if (!walletdb.WriteAutoCombineSettings(fEnable, nThreshold))
         throw runtime_error("Changed settings in wallet but failed to save to database\n");
 
-    return NullUniValue;
+    result.push_back(Pair("autocombine", fEnable));
+    result.push_back(Pair("threshhold", nThreshold));
+    return result;
 }
 
 // ppcoin: check wallet integrity
@@ -3280,7 +3282,7 @@ Value txnreport(const Array& params, bool fHelp)
                     };
                 } else
                 {
-                    entry.push_back("D out");
+                    entry.push_back("INN out");
                     entry.push_back(fCoinBase ? "coinbase" : fCoinStake ? "coinstake" : "");
 
 

@@ -1666,6 +1666,26 @@ void CWallet::AvailableCoins(vector<COutput>& vCoins, bool fOnlyConfirmed, const
     }
 }
 
+map<CBitcoinAddress, vector<COutput> > CWallet::AvailableCoinsByAddress(bool fConfirmed, CAmount maxCoinValue)
+{
+    vector<COutput> vCoins;
+    AvailableCoins(vCoins, fConfirmed);
+
+    map<CBitcoinAddress, vector<COutput> > mapCoins;
+    BOOST_FOREACH (COutput out, vCoins) {
+        if (maxCoinValue > 0 && out.tx->vout[out.i].nValue > maxCoinValue)
+            continue;
+
+        CTxDestination address;
+        if (!ExtractDestination(out.tx->vout[out.i].scriptPubKey, address))
+            continue;
+
+        mapCoins[CBitcoinAddress(address)].push_back(out);
+    }
+
+    return mapCoins;
+}
+
 void CWallet::AvailableCoinsMN(vector<COutput>& vCoins, bool fOnlyConfirmed, bool fOnlyUnlocked, const CCoinControl *coinControl, AvailableCoinsType coin_type) const
 {
     vCoins.clear();
@@ -3190,7 +3210,7 @@ void CWallet::AutoCombineDust()
         CAmount nTotalRewardsValue = 0;
         BOOST_FOREACH (const COutput& out, vCoins) {
             //no coins should get this far if they dont have proper maturity, this is double checking
-            if (out.tx->IsCoinStake() && out.tx->GetDepthInMainChain() < COINBASE_MATURITY + 1)
+            if (out.tx->IsCoinStake() && out.tx->GetDepthInMainChain() < nCoinbaseMaturity + 1)
                 continue;
 
             if (out.Value() > nAutoCombineThreshold * COIN)
@@ -3206,10 +3226,6 @@ void CWallet::AutoCombineDust()
         if (!coinControl->HasSelected())
             continue;
 
-        //we cannot combine one coin with itself
-        if (vRewardCoins.size() <= 1)
-            continue;
-
         vector<pair<CScript, CAmount> > vecSend;
         CScript scriptPubKey = GetScriptForDestination(it->first.Get());
         vecSend.push_back(make_pair(scriptPubKey, nTotalRewardsValue));
@@ -3218,14 +3234,16 @@ void CWallet::AutoCombineDust()
         CWalletTx wtx;
         CReserveKey keyChange(this); // this change address does not end up being used, because change is returned with coin control switch
         string strErr;
-        CAmount nFeeRet = 0;
+        int64_t nFeeRequired;
 
         //get the fee amount
         CWalletTx wtxdummy;
-        CreateTransaction(vecSend, wtxdummy, keyChange, nFeeRet, strErr, coinControl, ALL_COINS, false, CAmount(0));
-        vecSend[0].second = nTotalRewardsValue - nFeeRet - 500;
+        int32_t nChangePos;
+    //  CreateTransaction(vecSend, wtxdummy, keyChange, nFeeRequired,nChangePos, strErr, coinControl);
+        CreateTransaction(vecSend, wtxdummy, keyChange, nFeeRequired,nChangePos, coinControl);
+        vecSend[0].second = nTotalRewardsValue - nFeeRequired - 500;
 
-        if (!CreateTransaction(vecSend, wtx, keyChange, nFeeRet, strErr, coinControl, ALL_COINS, false, CAmount(0))) {
+        if (!CreateTransaction(vecSend, wtxdummy, keyChange, nFeeRequired,nChangePos, coinControl)) {
             LogPrintf("AutoCombineDust createtransaction failed, reason: %s\n", strErr);
             continue;
         }
@@ -3899,6 +3917,12 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
 
                 if (GetWeight(block.GetBlockTime(), (int64_t)txNew.nTime) < nStakeSplitAge)
                     txNew.vout.push_back(CTxOut(0, scriptPubKeyOut)); //split stake
+
+                const CBlockIndex* pIndex0 = pindexBest->nHeight;
+                uint64_t nTotalSize = pcoin.first->vout[pcoin.second].nValue + GetProofOfStakeReward(pIndex0->nHeight + 1, (int64_t)txNew.nTime);
+
+                if (nTotalSize / 2 > nStakeSplitThreshold * COIN)
+                    txNew.vout.push_back(CTxOut(0, scriptPubKeyOut)); //split stake
                 if (fDebug && GetBoolArg("-printcoinstake"))
                     printf("CreateCoinStake() : added kernel type=%d\n", whichType);
                 fKernelFound = true;
@@ -4050,6 +4074,13 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
         blockValue -= collateralnodePayment;
         txNew.vout[1].nValue = blockValue;
     }
+
+    if (nCredit / 2 > nStakeSplitThreshold * COIN) {
+            txNew.vout[1].nValue = (nCredit / 2 / CENT) * CENT;
+            txNew.vout.push_back(CTxOut(nCredit - txNew.vout[1].nValue, txNew.vout[1].scriptPubKey));
+        } else {
+            txNew.vout[1].nValue = nCredit;
+        }
 
     // Sign
     int nIn = 0;
