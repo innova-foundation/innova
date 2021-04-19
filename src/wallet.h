@@ -322,6 +322,9 @@ public:
     bool CreateNameTx(CScript scriptPubKey, const CAmount& nValue, const CWalletTx& wtxNameIn, CAmount nFeeInput, CWalletTx& wtxNew, CReserveKey& reservekey, CAmount& nFeeRet, std::string& strFailReason, const CCoinControl *coinControl = NULL);
     bool CommitTransaction(CWalletTx& wtxNew, CReserveKey& reservekey);
 
+    // Stake Settings
+    uint64_t nStakeSplitThreshold;
+
     bool GetStakeWeight(const CKeyStore& keystore, uint64_t& nMinWeight, uint64_t& nMaxWeight, uint64_t& nWeight);
     bool CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int64_t nSearchInterval, int64_t nFees, CTransaction& txNew, CKey& key);
 
