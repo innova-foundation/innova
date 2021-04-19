@@ -34,6 +34,21 @@ bool CWalletDB::EraseName(const string& strAddress)
     return Erase(make_pair(string("name"), strAddress));
 }
 
+bool CWalletDB::WriteStakeSplitThreshold(uint64_t nStakeSplitThreshold)
+{
+    nWalletDBUpdated++;
+    return Write(std::string("stakeSplitThreshold"), nStakeSplitThreshold);
+}
+
+bool CWalletDB::WriteAutoCombineSettings(bool fEnable, CAmount nCombineThreshold)
+{
+    nWalletDBUpdated++;
+    std::pair<bool, CAmount> pSettings;
+    pSettings.first = fEnable;
+    pSettings.second = nCombineThreshold;
+    return Write(std::string("autocombinesettings"), pSettings, true);
+}
+
 bool CWalletDB::WritePurpose(const string& strAddress, const string& strPurpose)
 {
     nWalletDBUpdated++;
@@ -502,8 +517,10 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
         else if (strType == "orderposnext")
         {
             ssValue >> pwallet->nOrderPosNext;
-        }
-        else if (strType == "adrenaline")
+        } else if (strType == "stakeSplitThreshold")
+        {
+            ssValue >> pwallet->nStakeSplitThreshold;
+        } else if (strType == "adrenaline")
 	{
 	    std::string sAlias;
 	    ssKey >> sAlias;

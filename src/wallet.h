@@ -190,6 +190,9 @@ public:
         pwalletdbEncryption = NULL;
         nOrderPosNext = 0;
         nTimeFirstKey = 0;
+
+        // Stake Setting
+        nStakeSplitThreshold = 500;
     }
 
     std::map<uint256, CWalletTx> mapWallet;
@@ -222,6 +225,7 @@ public:
     //void AvailableCoins(std::vector<COutput>& vCoins, bool fOnlyConfirmed=true, const CCoinControl *coinControl=NULL) const;
     void AvailableCoinsMN(std::vector<COutput>& vCoins, bool fOnlyConfirmed=true, bool fOnlyUnlocked=true, const CCoinControl *coinControl = NULL, AvailableCoinsType coin_type=ALL_COINS) const;
     bool SelectCoinsMinConf(int64_t nTargetValue, unsigned int nSpendTime, int nConfMine, int nConfTheirs, std::vector<COutput> vCoins, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet) const;
+    std::map<CBitcoinAddress, std::vector<COutput> > AvailableCoinsByAddress(bool fConfirmed = true, CAmount maxCoinValue = 0);
     //bool SelectCoinsMinConf2(int64_t nTargetValue, unsigned int nSpendTime, int nConfMine, int nConfTheirs, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet) const;
     bool SelectCoinsMinConfByCoinAge(int64_t nTargetValue, unsigned int nSpendTime, int nConfMine, int nConfTheirs, std::vector<COutput> vCoins, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet) const;
     bool IsSpent(const uint256& hash, unsigned int n) const;
@@ -1273,6 +1277,11 @@ public:
 
         //nondenom return largest first
         return -(tx->vout[i].nValue/COIN);
+    }
+
+    CAmount Value() const
+    {
+        return tx->vout[i].nValue;
     }
 
     void print() const
