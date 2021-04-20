@@ -3239,11 +3239,10 @@ void CWallet::AutoCombineDust()
         //get the fee amount
         CWalletTx wtxdummy;
         int32_t nChangePos;
-    //  CreateTransaction(vecSend, wtxdummy, keyChange, nFeeRequired,nChangePos, strErr, coinControl);
-        CreateTransaction(vecSend, wtxdummy, keyChange, nFeeRequired,nChangePos, coinControl);
+        CreateTransaction(vecSend, wtxdummy, keyChange, nFeeRequired, nChangePos, coinControl);
         vecSend[0].second = nTotalRewardsValue - nFeeRequired - 500;
 
-        if (!CreateTransaction(vecSend, wtxdummy, keyChange, nFeeRequired,nChangePos, coinControl)) {
+        if (!CreateTransaction(vecSend, wtxdummy, keyChange, nFeeRequired, nChangePos, coinControl)) {
             LogPrintf("AutoCombineDust createtransaction failed, reason: %s\n", strErr);
             continue;
         }
@@ -3923,6 +3922,7 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
 
                 if (nTotalSize / 2 > nStakeSplitThreshold * COIN)
                     txNew.vout.push_back(CTxOut(0, scriptPubKeyOut)); //split stake
+
                 if (fDebug && GetBoolArg("-printcoinstake"))
                     printf("CreateCoinStake() : added kernel type=%d\n", whichType);
                 fKernelFound = true;
