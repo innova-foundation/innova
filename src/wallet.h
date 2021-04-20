@@ -192,7 +192,7 @@ public:
         nTimeFirstKey = 0;
 
         // Stake Setting
-        nStakeSplitThreshold = 500;
+        nStakeSplitThreshold = 5;
     }
 
     std::map<uint256, CWalletTx> mapWallet;

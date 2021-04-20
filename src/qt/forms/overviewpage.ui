@@ -350,7 +350,7 @@
             </property>
            </widget>
           </item>
-          <item row="14" column="1" colspan="2">
+          <item row="15" column="1" colspan="2">
            <widget class="QLabel" name="labelBTCTotal">
             <property name="font">
              <font>
@@ -470,7 +470,7 @@
             </property>
            </widget>
           </item>
-          <item row="14" column="0">
+          <item row="15" column="0">
            <widget class="QLabel" name="btctotal">
             <property name="text">
              <string>Est. BTC Total:</string>
