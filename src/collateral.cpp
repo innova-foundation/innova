@@ -43,7 +43,7 @@ int RequestedCollateralNodeList = 0;
 //MIN_MN_PROTO_VERSION
 int MIN_MN_PROTO_VERSION = 31000;
 
-/* *** BEGIN FORTUNA MAGIC  **********
+/* *** BEGIN COLLATERAL MAGIC  **********
     Copyright 2014, Darkcoin Developers
         eduffield - evan@darkcoin.io
     Copyright 2018, Denarius Developers
