@@ -2691,7 +2691,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
     bool fIsInitialDownload = IsInitialBlockDownload();
 
     if (fTestNet) {
-        if (pindex->nHeight > BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET){ // Block 551 Testnet
+        if (pindex->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET){ // Block 551 Testnet
             CollateralnodePayments = true;
             if(fDebug) { printf("CheckBlock() : Collateralnode payments enabled\n"); }
         }else{
@@ -2699,7 +2699,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
             if(fDebug) { printf("CheckBlock() : Collateralnode payments disabled\n"); }
         }
     } else {
-        if (pindex->nHeight > BLOCK_START_FORTUNASTAKE_PAYMENTS){ //Block 645k Mainnet
+        if (pindex->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS){ //Block 645k Mainnet
             CollateralnodePayments = true;
             if(fDebug) { printf("CheckBlock() : Collateralnode payments enabled\n"); }
         }else{
@@ -4380,7 +4380,7 @@ bool static AlreadyHave(CTxDB& txdb, const CInv& inv)
                      mapOrphanBlocks.count(inv.hash);
           case MSG_SPORK:
               return mapSporks.count(inv.hash);
-          case MSG_FORTUNASTAKE_WINNER:
+          case MSG_COLLATERALNODE_WINNER:
               return mapSeenCollateralnodeVotes.count(inv.hash);
           }
           // Don't know what it is, just say we already got one
@@ -4486,7 +4486,7 @@ if (!pushed && inv.type == MSG_SPORK) {
         pushed = true;
     }
 }
-if (!pushed && inv.type == MSG_FORTUNASTAKE_WINNER) {
+if (!pushed && inv.type == MSG_COLLATERALNODE_WINNER) {
     if(mapSeenCollateralnodeVotes.count(inv.hash)){
         CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
         int a = 0;

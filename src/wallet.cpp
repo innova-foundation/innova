@@ -2357,7 +2357,7 @@ bool CWallet::SelectCoinsCollateral(std::vector<CTxIn>& setCoinsRet, int64_t& nV
 
     BOOST_FOREACH(const COutput& out, vCoins)
     {
-        // collateral inputs will always be a multiple of FORTUNA_COLLATERAL, up to five
+        // collateral inputs will always be a multiple of COLLATERALN_COLLATERAL, up to five
         if(IsCollateralAmount(out.tx->vout[out.i].nValue))
         {
             CTxIn vin = CTxIn(out.tx->GetHash(),out.i);
@@ -2419,7 +2419,7 @@ bool CWallet::HasCollateralInputs() const
 
 bool CWallet::IsCollateralAmount(int64_t nInputAmount) const
 {
-	return nInputAmount != 0 && nInputAmount % FORTUNA_COLLATERAL == 0 && nInputAmount < FORTUNA_COLLATERAL * 5 && nInputAmount > FORTUNA_COLLATERAL;
+	return nInputAmount != 0 && nInputAmount % COLLATERALN_COLLATERAL == 0 && nInputAmount < COLLATERALN_COLLATERAL * 5 && nInputAmount > COLLATERALN_COLLATERAL;
 }
 
 bool CWallet::CreateCollateralTransaction(CTransaction& txCollateral, std::string strReason)
@@ -2453,9 +2453,9 @@ bool CWallet::CreateCollateralTransaction(CTransaction& txCollateral, std::strin
     BOOST_FOREACH(CTxIn v, vCoinsCollateral)
         txCollateral.vin.push_back(v);
 
-    if(nValueIn2 - FORTUNA_COLLATERAL - nFeeRet > 0) {
+    if(nValueIn2 - COLLATERALN_COLLATERAL - nFeeRet > 0) {
         //pay collateral charge in fees
-        CTxOut vout3 = CTxOut(nValueIn2 - FORTUNA_COLLATERAL, scriptChange);
+        CTxOut vout3 = CTxOut(nValueIn2 - COLLATERALN_COLLATERAL, scriptChange);
         txCollateral.vout.push_back(vout3);
     }
 
@@ -3991,11 +3991,11 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
     bool bCollateralNodePayment = false;
 
     if (fTestNet) {
-        if (pindexPrev->nHeight+1 > BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET ) {
+        if (pindexPrev->nHeight+1 > BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET ) {
             bCollateralNodePayment = true;
         }
     } else {
-        if (pindexPrev->nHeight+1 > BLOCK_START_FORTUNASTAKE_PAYMENTS){
+        if (pindexPrev->nHeight+1 > BLOCK_START_COLLATERALNODE_PAYMENTS){
             bCollateralNodePayment = true;
         }
     }
