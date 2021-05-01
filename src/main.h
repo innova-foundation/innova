@@ -100,13 +100,13 @@ static const unsigned int MAX_P2SH_SIGOPS = 15;
 static const uint256 hashGenesisBlock("0x000009bd42d259eb7031ae4f634aede1a690da795e5529786a72c3cd6d989995");
 static const uint256 hashGenesisBlockTestNet("0x00006d9ebd08daaba835059276f29656a9e018cbd69f79688777c42766ceec6a");
 
-static const std::string vBurnAddresses[] = {"iP34KRRhTCFvW87yrHSWj8m1L4vqRdUhDw", "iLvHHkKoKQsqcACaV15pZtoyBNzUYFxAvG", "iKsZNKLPkCHqoiJgYfRFDEK8uT4xmdK483", "iHZb3rMLnZWctfKxcCQRMHg8eCnALwYqxo"};
+static const std::string vBurnAddresses[] = {"iP34KRRhTCFvW87yrHSWj8m1L4vqRdUhDw",
+                                             "iLvHHkKoKQsqcACaV15pZtoyBNzUYFxAvG",
+                                             "iKsZNKLPkCHqoiJgYfRFDEK8uT4xmdK483",
+                                             "iHZb3rMLnZWctfKxcCQRMHg8eCnALwYqxo"};
 
 static const std::vector<unsigned char> burnAddressScript[] = {
-    ParseHex("OP_DUP OP_HASH160 d6917b7dc295bb42d1f7b4f960c6fba9eaeab9cc OP_EQUALVERIFY OP_CHECKSIG",
-             "OP_DUP OP_HASH160 b3dd31efc695c49e8ff361a0bd6f44097c5848ae OP_EQUALVERIFY OP_CHECKSIG",
-             "OP_DUP OP_HASH160 9a86dc25301c1ad773a74955dd0ca9f6eaf5853b OP_EQUALVERIFY OP_CHECKSIG",
-             "OP_DUP OP_HASH160 bf592597b0e632f1831b68d35a2dd66788cfd32c OP_EQUALVERIFY OP_CHECKSIG")
+    ParseHex("OP_DUP OP_HASH160 d6917b7dc295bb42d1f7b4f960c6fba9eaeab9cc OP_EQUALVERIFY OP_CHECKSIG, OP_DUP OP_HASH160 b3dd31efc695c49e8ff361a0bd6f44097c5848ae OP_EQUALVERIFY OP_CHECKSIG, OP_DUP OP_HASH160 9a86dc25301c1ad773a74955dd0ca9f6eaf5853b OP_EQUALVERIFY OP_CHECKSIG, OP_DUP OP_HASH160 bf592597b0e632f1831b68d35a2dd66788cfd32c OP_EQUALVERIFY OP_CHECKSIG")
 };
 
 //inline bool IsProtocolV1RetargetingFixed(int nHeight) { return fTestNet || nHeight > 0; }

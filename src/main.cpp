@@ -3738,7 +3738,7 @@ uint256 CBlockIndex::GetBlockTrust() const
     if (!fImporting && !fReindex && pindexBest->nHeight > Checkpoints::GetTotalBlocksEstimate()){
         if(collateralnodePayments.GetBlockPayee(pindexBest->nHeight, payee)){
             // MAYBE NEEDS TO BE REWORKED
-            //UPDATE FORTUNASTAKE LAST PAID TIME
+            //UPDATE COLLATERALNODE LAST PAID TIME
             // CCollateralnode* pmn = mnodeman.Find(vin);
             // if(pmn != NULL) {
             //     pmn->nLastPaid = GetAdjustedTime();
