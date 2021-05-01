@@ -3,8 +3,8 @@
 // Copyright (c) 2009-2012 The Darkcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#ifndef FORTUNA_H
-#define FORTUNA_H
+#ifndef COLLATERALN_H
+#define COLLATERALN_H
 
 #include "main.h"
 #include "collateralnode.h"
@@ -31,12 +31,12 @@ class CActiveCollateralnode;
 #define POOL_STATUS_SUCCESS                    8 // success
 
 // status update message constants
-#define FORTUNASTAKE_ACCEPTED                    1
-#define FORTUNASTAKE_REJECTED                    0
-#define FORTUNASTAKE_RESET                       -1
+#define COLLATERALNODE_ACCEPTED                    1
+#define COLLATERALNODE_REJECTED                    0
+#define COLLATERALNODE_RESET                       -1
 
-#define FORTUNA_QUEUE_TIMEOUT                 120
-#define FORTUNA_SIGNING_TIMEOUT               30
+#define COLLATERALN_QUEUE_TIMEOUT                 120
+#define COLLATERALN_SIGNING_TIMEOUT               30
 
 extern CForTunaPool forTunaPool;
 extern CForTunaSigner forTunaSigner;
@@ -121,7 +121,7 @@ public:
 
     bool IsExpired()
     {
-        return (GetTime() - addedTime) > FORTUNA_QUEUE_TIMEOUT;// 120 seconds
+        return (GetTime() - addedTime) > COLLATERALN_QUEUE_TIMEOUT;// 120 seconds
     }
 };
 
@@ -185,7 +185,7 @@ public:
 
     bool IsExpired()
     {
-        return (GetTime() - time) > FORTUNA_QUEUE_TIMEOUT;// 120 seconds
+        return (GetTime() - time) > COLLATERALN_QUEUE_TIMEOUT;// 120 seconds
     }
 
     bool CheckSignature();
@@ -351,7 +351,7 @@ public:
         if(state != newState){
             lastTimeChanged = GetTimeMillis();
             if(fCollateralNode) {
-                RelayForTunaStatus(forTunaPool.sessionID, forTunaPool.GetState(), forTunaPool.GetEntriesCount(), FORTUNASTAKE_RESET);
+                RelayForTunaStatus(forTunaPool.sessionID, forTunaPool.GetState(), forTunaPool.GetEntriesCount(), COLLATERALNODE_RESET);
             }
         }
         state = newState;

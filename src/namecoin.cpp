@@ -1525,7 +1525,7 @@ NameTxReturn name_new(const vector<unsigned char> &vchName,
 
     //wtx.mapValue["comment"] = "New Name";
     std::string sNarr = "";
-    //wtx.mapValue["to"] = "DDNS";
+    //wtx.mapValue["to"] = "IDNS";
 
     stringstream ss;
     CScript scriptPubKey;

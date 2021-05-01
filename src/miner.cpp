@@ -179,11 +179,11 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 	if (!fProofOfStake)
     {
 		if (fTestNet) {
-			if (nHeight >= BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET){
+			if (nHeight >= BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET){
 				bCollateralNodePayment = true;
 			}
 		} else {
-			if (nHeight >= BLOCK_START_FORTUNASTAKE_PAYMENTS){
+			if (nHeight >= BLOCK_START_COLLATERALNODE_PAYMENTS){
 				bCollateralNodePayment = true;
 			}
 		}

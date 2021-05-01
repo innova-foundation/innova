@@ -140,7 +140,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
                 //   e.g. We don't want the entry relayed/time updated when we're syncing the list
                 // mn.pubkey = pubkey, IsVinAssociatedWithPubkey is validated once below,
                 //   after that they just need to match
-                if(count == -1 && mn.pubkey == pubkey && !mn.UpdatedWithin(FORTUNASTAKE_MIN_DSEE_SECONDS)){
+                if(count == -1 && mn.pubkey == pubkey && !mn.UpdatedWithin(COLLATERALNODE_MIN_DSEE_SECONDS)){
 					mn.UpdateLastSeen(sigTime); // Updated UpdateLastSeen with sigTime
                     //mn.UpdateLastSeen(); // update last seen without the sigTime since it's a new entry
 
@@ -186,8 +186,8 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         if(CheckCollateralnodeVin(vin,vinError,pindexBest)){
             if (fDebugCN && fDebugNet) printf("dsee - Accepted input for collateralnode entry %i %i\n", count, current);
 
-            //if(GetInputAge(vin, pindexBest) < (nBestHeight > BLOCK_START_FORTUNASTAKE_DELAYPAY ? FORTUNASTAKE_MIN_CONFIRMATIONS_NOPAY : FORTUNASTAKE_MIN_CONFIRMATIONS)){
-            //    if (fDebugCN && fDebugNet) printf("dsee - Input must have least %d confirmations\n", (nBestHeight > BLOCK_START_FORTUNASTAKE_DELAYPAY ? FORTUNASTAKE_MIN_CONFIRMATIONS_NOPAY : FORTUNASTAKE_MIN_CONFIRMATIONS));
+            //if(GetInputAge(vin, pindexBest) < (nBestHeight > BLOCK_START_COLLATERALNODE_DELAYPAY ? COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY : COLLATERALNODE_MIN_CONFIRMATIONS)){
+            //    if (fDebugCN && fDebugNet) printf("dsee - Input must have least %d confirmations\n", (nBestHeight > BLOCK_START_COLLATERALNODE_DELAYPAY ? COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY : COLLATERALNODE_MIN_CONFIRMATIONS));
             //    Misbehaving(pfrom->GetId(), 20);
             //    return;
             //}
@@ -263,7 +263,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 
                     mn.lastDseep = sigTime;
 
-                    if(!mn.UpdatedWithin(FORTUNASTAKE_MIN_DSEEP_SECONDS)){
+                    if(!mn.UpdatedWithin(COLLATERALNODE_MIN_DSEEP_SECONDS)){
                         mn.UpdateLastSeen();
                         if(stop) {
                             mn.Disable();
@@ -578,7 +578,7 @@ bool GetCollateralnodeRanks(CBlockIndex* pindex)
 
             int value = -1;
             // CBlockIndex* pindex = pindexBest; // don't use the best chain, use the chain we're asking about!
-            // int payments = mn.UpdateLastPaidAmounts(pindex, max(FORTUNASTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * FORTUNASTAKE_FAIR_PAYMENT_ROUNDS, value); // do a search back 1000 blocks when receiving a new collateralnode to find their last payment, payments = number of payments received, value = amount
+            // int payments = mn.UpdateLastPaidAmounts(pindex, max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALNODE_FAIR_PAYMENT_ROUNDS, value); // do a search back 1000 blocks when receiving a new collateralnode to find their last payment, payments = number of payments received, value = amount
 
 
             vecCollateralnodeScores.push_back(make_pair(value, &mn));
@@ -773,7 +773,7 @@ bool GetBlockHash(uint256& hash, int nBlockHeight)
 
 bool CCollateralNode::GetPaymentInfo(const CBlockIndex *pindex, int64_t &totalValue, double &actualRate)
 {
-    int scanBack = max(FORTUNASTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * FORTUNASTAKE_FAIR_PAYMENT_ROUNDS;
+    int scanBack = max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALNODE_FAIR_PAYMENT_ROUNDS;
     double requiredRate = scanBack / (int)mnCount;
     int actualPayments = GetPaymentAmount(pindex, scanBack, totalValue);
     actualRate = actualPayments / requiredRate;
@@ -784,7 +784,7 @@ bool CCollateralNode::GetPaymentInfo(const CBlockIndex *pindex, int64_t &totalVa
 
 float CCollateralNode::GetPaymentRate(const CBlockIndex *pindex)
 {
-    int scanBack = max(FORTUNASTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * FORTUNASTAKE_FAIR_PAYMENT_ROUNDS;
+    int scanBack = max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALNODE_FAIR_PAYMENT_ROUNDS;
     double requiredRate = scanBack / (int)mnCount;
     int64_t totalValue;
     int actualPayments = GetPaymentAmount(pindex, scanBack, totalValue);
@@ -794,7 +794,7 @@ float CCollateralNode::GetPaymentRate(const CBlockIndex *pindex)
 
 int CCollateralNode::SetPayRate(int nHeight)
 {
-     int scanBack = max(FORTUNASTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * FORTUNASTAKE_FAIR_PAYMENT_ROUNDS;
+     int scanBack = max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALNODE_FAIR_PAYMENT_ROUNDS;
      if (nHeight > pindexBest->nHeight) {
          scanBack += nHeight - pindexBest->nHeight;
      } // if going past current height, add to scan back height to account for how far it is - e.g. 200 in front will get 200 more blocks to smooth it out
@@ -895,7 +895,7 @@ int CCollateralNode::UpdateLastPaidAmounts(const CBlockIndex *pindex, int nMaxBl
     int64_t rewardValue = 0;
     int64_t val = 0;
     value = 0;
-    int scanBack = max(FORTUNASTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * FORTUNASTAKE_FAIR_PAYMENT_ROUNDS;
+    int scanBack = max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALNODE_FAIR_PAYMENT_ROUNDS;
 
     //if (now > pindex->GetBlockTime()) return 0; // don't update paid amounts for nodes before the block they broadcasted on
     if (payData.size()) {
@@ -1099,7 +1099,7 @@ uint256 CCollateralNode::CalculateScore(int mod, int64_t nBlockHeight)
 
 void CCollateralNode::Check(bool forceCheck)
 {
-    if(!forceCheck && (GetTime() - lastTimeChecked < FORTUNASTAKE_CHECK_SECONDS)) return;
+    if(!forceCheck && (GetTime() - lastTimeChecked < COLLATERALNODE_CHECK_SECONDS)) return;
     lastTimeChecked = GetTime();
 
 
@@ -1107,13 +1107,13 @@ void CCollateralNode::Check(bool forceCheck)
     if(enabled==3) return;
 
 
-    if(!UpdatedWithin(FORTUNASTAKE_REMOVAL_SECONDS)){
+    if(!UpdatedWithin(COLLATERALNODE_REMOVAL_SECONDS)){
         status = "Expired";
         enabled = 4;
         return;
     }
 
-    if(!UpdatedWithin(FORTUNASTAKE_EXPIRATION_SECONDS)){
+    if(!UpdatedWithin(COLLATERALNODE_EXPIRATION_SECONDS)){
         status = "Inactive, expiring soon";
         enabled = 2;
         return;
@@ -1146,8 +1146,8 @@ bool CheckCollateralnodeVin(CTxIn& vin, std::string& errorMessage, CBlockIndex* 
         if(mapBlockIndex.find(hashBlock) != mapBlockIndex.end())
         {
             int confirms = pindex->nHeight - mapBlockIndex[hashBlock]->nHeight;
-            if (confirms < FORTUNASTAKE_MIN_CONFIRMATIONS_NOPAY) {
-                errorMessage = strprintf("specified vin has only %d/%d more confirms",confirms,FORTUNASTAKE_MIN_CONFIRMATIONS_NOPAY);
+            if (confirms < COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY) {
+                errorMessage = strprintf("specified vin has only %d/%d more confirms",confirms,COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY);
                 return false;
             }
         }
@@ -1383,7 +1383,7 @@ bool CCollateralnodePayments::ProcessBlock(int nBlockHeight)
 
 void CCollateralnodePayments::Relay(CCollateralnodePaymentWinner& winner)
 {
-    CInv inv(MSG_FORTUNASTAKE_WINNER, winner.GetHash());
+    CInv inv(MSG_COLLATERALNODE_WINNER, winner.GetHash());
 
     vector<CInv> vInv;
     vInv.push_back(inv);
@@ -1438,7 +1438,7 @@ void CCollateralNPayments::update(const CBlockIndex *pindex, bool force)
     int rewardCount = 0;
     int64_t rewardValue = 0;
     int64_t val = 0;
-    int scanBack = max(FORTUNASTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * FORTUNASTAKE_FAIR_PAYMENT_ROUNDS;
+    int scanBack = max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALNODE_FAIR_PAYMENT_ROUNDS;
 
     int64_t nStart = GetTimeMillis();
 
@@ -1518,7 +1518,7 @@ bool CCollateralNPayments::initialize(const CBlockIndex *pindex)
     int blocksFound = 0;
     int nHeight = 0;
     if (fTestNet) {
-        for (int i = 0; BlockReading && BlockReading->nHeight > BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET; i++) {
+        for (int i = 0; BlockReading && BlockReading->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET; i++) {
             CBlock block;
             if(!block.ReadFromDisk(BlockReading, true)) // shouldn't really happen
                 continue;
@@ -1575,7 +1575,7 @@ bool CCollateralNPayments::initialize(const CBlockIndex *pindex)
             BlockReading = BlockReading->pprev;
         }
     } else { //For mainnet CN checking
-        for (int i = 0; BlockReading && BlockReading->nHeight > BLOCK_START_FORTUNASTAKE_PAYMENTS; i++) {
+        for (int i = 0; BlockReading && BlockReading->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS; i++) {
                 CBlock block;
                 if(!block.ReadFromDisk(BlockReading, true)) // shouldn't really happen
                     continue;

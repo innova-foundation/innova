@@ -98,8 +98,8 @@ Value collateralnode(const Array& params, bool fHelp)
         }
         pwalletMain->Lock();
 
-        if(activeCollateralnode.status == FORTUNASTAKE_STOPPED) return "Successfully Stopped Collateralnode";
-        if(activeCollateralnode.status == FORTUNASTAKE_NOT_CAPABLE) return "Not a capable Collateralnode";
+        if(activeCollateralnode.status == COLLATERALNODE_STOPPED) return "Successfully Stopped Collateralnode";
+        if(activeCollateralnode.status == COLLATERALNODE_NOT_CAPABLE) return "Not a capable Collateralnode";
 
         return "unknown";
     }
@@ -309,19 +309,19 @@ Value collateralnode(const Array& params, bool fHelp)
             }
         }
 
-        if(activeCollateralnode.status != FORTUNASTAKE_REMOTELY_ENABLED && activeCollateralnode.status != FORTUNASTAKE_IS_CAPABLE){
-            activeCollateralnode.status = FORTUNASTAKE_NOT_PROCESSED; // TODO: consider better way
+        if(activeCollateralnode.status != COLLATERALNODE_REMOTELY_ENABLED && activeCollateralnode.status != COLLATERALNODE_IS_CAPABLE){
+            activeCollateralnode.status = COLLATERALNODE_NOT_PROCESSED; // TODO: consider better way
             std::string errorMessage;
             activeCollateralnode.ManageStatus();
             pwalletMain->Lock();
         }
 
-        if(activeCollateralnode.status == FORTUNASTAKE_REMOTELY_ENABLED) return "collateralnode started remotely";
-        if(activeCollateralnode.status == FORTUNASTAKE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
-        if(activeCollateralnode.status == FORTUNASTAKE_STOPPED) return "collateralnode is stopped";
-        if(activeCollateralnode.status == FORTUNASTAKE_IS_CAPABLE) return "successfully started collateralnode";
-        if(activeCollateralnode.status == FORTUNASTAKE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
-        if(activeCollateralnode.status == FORTUNASTAKE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
+        if(activeCollateralnode.status == COLLATERALNODE_REMOTELY_ENABLED) return "collateralnode started remotely";
+        if(activeCollateralnode.status == COLLATERALNODE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
+        if(activeCollateralnode.status == COLLATERALNODE_STOPPED) return "collateralnode is stopped";
+        if(activeCollateralnode.status == COLLATERALNODE_IS_CAPABLE) return "successfully started collateralnode";
+        if(activeCollateralnode.status == COLLATERALNODE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
+        if(activeCollateralnode.status == COLLATERALNODE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
 
         return "unknown";
     }
@@ -438,12 +438,12 @@ Value collateralnode(const Array& params, bool fHelp)
 
     if (strCommand == "debug")
     {
-        if(activeCollateralnode.status == FORTUNASTAKE_REMOTELY_ENABLED) return "collateralnode started remotely";
-        if(activeCollateralnode.status == FORTUNASTAKE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
-        if(activeCollateralnode.status == FORTUNASTAKE_IS_CAPABLE) return "successfully started collateralnode";
-        if(activeCollateralnode.status == FORTUNASTAKE_STOPPED) return "collateralnode is stopped";
-        if(activeCollateralnode.status == FORTUNASTAKE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
-        if(activeCollateralnode.status == FORTUNASTAKE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
+        if(activeCollateralnode.status == COLLATERALNODE_REMOTELY_ENABLED) return "collateralnode started remotely";
+        if(activeCollateralnode.status == COLLATERALNODE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
+        if(activeCollateralnode.status == COLLATERALNODE_IS_CAPABLE) return "successfully started collateralnode";
+        if(activeCollateralnode.status == COLLATERALNODE_STOPPED) return "collateralnode is stopped";
+        if(activeCollateralnode.status == COLLATERALNODE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
+        if(activeCollateralnode.status == COLLATERALNODE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
 
         CTxIn vin = CTxIn();
         CPubKey pubkey = CScript();
@@ -601,12 +601,12 @@ Value collateralnode(const Array& params, bool fHelp)
                     }
                 }
                 string reason;
-                if(activeCollateralnode.status == FORTUNASTAKE_REMOTELY_ENABLED) reason = "collateralnode started remotely";
-                if(activeCollateralnode.status == FORTUNASTAKE_INPUT_TOO_NEW) reason = "collateralnode input must have at least 15 confirmations";
-                if(activeCollateralnode.status == FORTUNASTAKE_IS_CAPABLE) reason = "successfully started collateralnode";
-                if(activeCollateralnode.status == FORTUNASTAKE_STOPPED) reason = "collateralnode is stopped";
-                if(activeCollateralnode.status == FORTUNASTAKE_NOT_CAPABLE) reason = "not capable collateralnode: " + activeCollateralnode.notCapableReason;
-                if(activeCollateralnode.status == FORTUNASTAKE_SYNC_IN_PROCESS) reason = "sync in process. Must wait until client is synced to start.";
+                if(activeCollateralnode.status == COLLATERALNODE_REMOTELY_ENABLED) reason = "collateralnode started remotely";
+                if(activeCollateralnode.status == COLLATERALNODE_INPUT_TOO_NEW) reason = "collateralnode input must have at least 15 confirmations";
+                if(activeCollateralnode.status == COLLATERALNODE_IS_CAPABLE) reason = "successfully started collateralnode";
+                if(activeCollateralnode.status == COLLATERALNODE_STOPPED) reason = "collateralnode is stopped";
+                if(activeCollateralnode.status == COLLATERALNODE_NOT_CAPABLE) reason = "not capable collateralnode: " + activeCollateralnode.notCapableReason;
+                if(activeCollateralnode.status == COLLATERALNODE_SYNC_IN_PROCESS) reason = "sync in process. Must wait until client is synced to start.";
 
                 if (!found) {
                     localObj.push_back(Pair("network_status", "unregistered"));
@@ -813,8 +813,8 @@ Value masternode(const Array& params, bool fHelp)
         }
         pwalletMain->Lock();
 
-        if(activeCollateralnode.status == FORTUNASTAKE_STOPPED) return "Successfully Stopped Collateralnode";
-        if(activeCollateralnode.status == FORTUNASTAKE_NOT_CAPABLE) return "Not a capable Collateralnode";
+        if(activeCollateralnode.status == COLLATERALNODE_STOPPED) return "Successfully Stopped Collateralnode";
+        if(activeCollateralnode.status == COLLATERALNODE_NOT_CAPABLE) return "Not a capable Collateralnode";
 
         return "unknown";
     }
@@ -1015,19 +1015,19 @@ Value masternode(const Array& params, bool fHelp)
             }
         }
 
-        if(activeCollateralnode.status != FORTUNASTAKE_REMOTELY_ENABLED && activeCollateralnode.status != FORTUNASTAKE_IS_CAPABLE){
-            activeCollateralnode.status = FORTUNASTAKE_NOT_PROCESSED; // TODO: consider better way
+        if(activeCollateralnode.status != COLLATERALNODE_REMOTELY_ENABLED && activeCollateralnode.status != COLLATERALNODE_IS_CAPABLE){
+            activeCollateralnode.status = COLLATERALNODE_NOT_PROCESSED; // TODO: consider better way
             std::string errorMessage;
             activeCollateralnode.ManageStatus();
             pwalletMain->Lock();
         }
 
-        if(activeCollateralnode.status == FORTUNASTAKE_REMOTELY_ENABLED) return "collateralnode started remotely";
-        if(activeCollateralnode.status == FORTUNASTAKE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
-        if(activeCollateralnode.status == FORTUNASTAKE_STOPPED) return "collateralnode is stopped";
-        if(activeCollateralnode.status == FORTUNASTAKE_IS_CAPABLE) return "successfully started collateralnode";
-        if(activeCollateralnode.status == FORTUNASTAKE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
-        if(activeCollateralnode.status == FORTUNASTAKE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
+        if(activeCollateralnode.status == COLLATERALNODE_REMOTELY_ENABLED) return "collateralnode started remotely";
+        if(activeCollateralnode.status == COLLATERALNODE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
+        if(activeCollateralnode.status == COLLATERALNODE_STOPPED) return "collateralnode is stopped";
+        if(activeCollateralnode.status == COLLATERALNODE_IS_CAPABLE) return "successfully started collateralnode";
+        if(activeCollateralnode.status == COLLATERALNODE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
+        if(activeCollateralnode.status == COLLATERALNODE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
 
         return "unknown";
     }
@@ -1144,12 +1144,12 @@ Value masternode(const Array& params, bool fHelp)
 
     if (strCommand == "debug")
     {
-        if(activeCollateralnode.status == FORTUNASTAKE_REMOTELY_ENABLED) return "collateralnode started remotely";
-        if(activeCollateralnode.status == FORTUNASTAKE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
-        if(activeCollateralnode.status == FORTUNASTAKE_IS_CAPABLE) return "successfully started collateralnode";
-        if(activeCollateralnode.status == FORTUNASTAKE_STOPPED) return "collateralnode is stopped";
-        if(activeCollateralnode.status == FORTUNASTAKE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
-        if(activeCollateralnode.status == FORTUNASTAKE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
+        if(activeCollateralnode.status == COLLATERALNODE_REMOTELY_ENABLED) return "collateralnode started remotely";
+        if(activeCollateralnode.status == COLLATERALNODE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
+        if(activeCollateralnode.status == COLLATERALNODE_IS_CAPABLE) return "successfully started collateralnode";
+        if(activeCollateralnode.status == COLLATERALNODE_STOPPED) return "collateralnode is stopped";
+        if(activeCollateralnode.status == COLLATERALNODE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
+        if(activeCollateralnode.status == COLLATERALNODE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
 
         CTxIn vin = CTxIn();
         CPubKey pubkey = CScript();
@@ -1302,12 +1302,12 @@ Value masternode(const Array& params, bool fHelp)
                       }
                   }
                   string reason;
-                  if(activeCollateralnode.status == FORTUNASTAKE_REMOTELY_ENABLED) reason = "collateralnode started remotely";
-                  if(activeCollateralnode.status == FORTUNASTAKE_INPUT_TOO_NEW) reason = "collateralnode input must have at least 15 confirmations";
-                  if(activeCollateralnode.status == FORTUNASTAKE_IS_CAPABLE) reason = "successfully started collateralnode";
-                  if(activeCollateralnode.status == FORTUNASTAKE_STOPPED) reason = "collateralnode is stopped";
-                  if(activeCollateralnode.status == FORTUNASTAKE_NOT_CAPABLE) reason = "not capable collateralnode: " + activeCollateralnode.notCapableReason;
-                  if(activeCollateralnode.status == FORTUNASTAKE_SYNC_IN_PROCESS) reason = "sync in process. Must wait until client is synced to start.";
+                  if(activeCollateralnode.status == COLLATERALNODE_REMOTELY_ENABLED) reason = "collateralnode started remotely";
+                  if(activeCollateralnode.status == COLLATERALNODE_INPUT_TOO_NEW) reason = "collateralnode input must have at least 15 confirmations";
+                  if(activeCollateralnode.status == COLLATERALNODE_IS_CAPABLE) reason = "successfully started collateralnode";
+                  if(activeCollateralnode.status == COLLATERALNODE_STOPPED) reason = "collateralnode is stopped";
+                  if(activeCollateralnode.status == COLLATERALNODE_NOT_CAPABLE) reason = "not capable collateralnode: " + activeCollateralnode.notCapableReason;
+                  if(activeCollateralnode.status == COLLATERALNODE_SYNC_IN_PROCESS) reason = "sync in process. Must wait until client is synced to start.";
 
                   if (!found) {
                       localObj.push_back(Pair("network_status", "unregistered"));

@@ -67,7 +67,7 @@ int GetInputCollateralNRounds(CTxIn in, int rounds)
         // bounds check
         if(in.prevout.n >= tx.vout.size()) return -4;
 
-        if(tx.vout[in.prevout.n].nValue == FORTUNA_FEE) return -3;
+        if(tx.vout[in.prevout.n].nValue == COLLATERALN_FEE) return -3;
 
         //make sure the final output is non-denominate
         if(rounds == 0 && !pwalletMain->IsDenominatedAmount(tx.vout[in.prevout.n].nValue)) return -2; //NOT DENOM
@@ -220,14 +220,14 @@ void CForTunaPool::CheckTimeout(){
                     UnlockCoins();
                 }
                 if(fCollateralNode){
-                    RelayForTunaStatus(forTunaPool.sessionID, forTunaPool.GetState(), forTunaPool.GetEntriesCount(), FORTUNASTAKE_RESET);
+                    RelayForTunaStatus(forTunaPool.sessionID, forTunaPool.GetState(), forTunaPool.GetEntriesCount(), COLLATERALNODE_RESET);
                 }
                 break;
             }
             c++;
         }
 
-        if(GetTimeMillis()-lastTimeChanged >= (FORTUNA_QUEUE_TIMEOUT*1000)+addLagTime){
+        if(GetTimeMillis()-lastTimeChanged >= (COLLATERALN_QUEUE_TIMEOUT*1000)+addLagTime){
             lastTimeChanged = GetTimeMillis();
 
             // reset session information for the queue query stage (before entering a collateralnode, clients will send a queue request to make sure they're compatible denomination wise)
@@ -238,7 +238,7 @@ void CForTunaPool::CheckTimeout(){
 
             UpdateState(POOL_STATUS_ACCEPTING_ENTRIES);
         }
-    } else if(GetTimeMillis()-lastTimeChanged >= (FORTUNA_QUEUE_TIMEOUT*1000)+addLagTime){
+    } else if(GetTimeMillis()-lastTimeChanged >= (COLLATERALN_QUEUE_TIMEOUT*1000)+addLagTime){
         if(fDebug) printf("CForTunaPool::CheckTimeout() -- Session timed out (30s) -- resetting\n");
         SetNull();
         UnlockCoins();
@@ -247,7 +247,7 @@ void CForTunaPool::CheckTimeout(){
         lastMessage = _("Session timed out (30 seconds), please resubmit.");
     }
 
-    if(state == POOL_STATUS_SIGNING && GetTimeMillis()-lastTimeChanged >= (FORTUNA_SIGNING_TIMEOUT*1000)+addLagTime ) {
+    if(state == POOL_STATUS_SIGNING && GetTimeMillis()-lastTimeChanged >= (COLLATERALN_SIGNING_TIMEOUT*1000)+addLagTime ) {
         if(fDebug) printf("CForTunaPool::CheckTimeout() -- Session timed out -- restting\n");
         SetNull();
         UnlockCoins();
@@ -333,8 +333,8 @@ bool CForTunaPool::IsCollateralValid(const CTransaction& txCollateral){
         return false;
     }
 
-    //collateral transactions are required to pay out FORTUNA_COLLATERAL as a fee to the miners
-    if(nValueIn-nValueOut < FORTUNA_COLLATERAL) {
+    //collateral transactions are required to pay out COLLATERALN_COLLATERAL as a fee to the miners
+    if(nValueIn-nValueOut < COLLATERALN_COLLATERAL) {
         if(fDebug) printf("CForTunaPool::IsCollateralValid - did not include enough fees in transaction %lu\n%s\n", nValueOut-nValueIn, txCollateral.ToString().c_str());
         return false;
     }
@@ -1016,7 +1016,7 @@ void ThreadCheckForTunaPool(void* parg)
             }
         }
 
-        if(c % FORTUNASTAKE_PING_SECONDS == 0){
+        if(c % COLLATERALNODE_PING_SECONDS == 0){
             activeCollateralnode.ManageStatus();
         }
 

@@ -631,7 +631,7 @@ Value hyperfileduopod(const Array& params, bool fHelp)
         "hyperfileduopod\n"
         "\nArguments:\n"
         "1. \"filelocation\"          (string, required) The file location of the file to upload (e.g. /home/name/file.jpg)\n"
-        "Returns the uploaded IPFS file CID/Hashes of the uploaded file and public gateway links if successful from submission to two IPFS API nodes and PODs with D");
+        "Returns the uploaded IPFS file CID/Hashes of the uploaded file and public gateway links if successful from submission to two IPFS API nodes and PODs with INN");
 
     Object obj, second, first;
     std::string userFile = params[0].get_str();
