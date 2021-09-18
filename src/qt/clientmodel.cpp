@@ -68,7 +68,7 @@ QDateTime ClientModel::getLastBlockDate() const
     else if (!isTestNet())
         return QDateTime::fromTime_t(1576002227); // I n n o v a - MAINNET Genesis Block Coinbase Time
     else if (isTestNet())
-        return QDateTime::fromTime_t(1614593682); // I n n o v a TESTNET Genesis Block Coinbase Time
+        return QDateTime::fromTime_t(1631971785); // I n n o v a TESTNET Genesis Block Coinbase Time
 }
 
 void ClientModel::updateTimer()
