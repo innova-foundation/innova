@@ -98,7 +98,7 @@ static const unsigned int LOCKTIME_THRESHOLD = 500000000; // Tue Nov  5 00:53:20
 static const unsigned int MAX_P2SH_SIGOPS = 15;
 
 static const uint256 hashGenesisBlock("0x000009bd42d259eb7031ae4f634aede1a690da795e5529786a72c3cd6d989995");
-static const uint256 hashGenesisBlockTestNet("0x00006d9ebd08daaba835059276f29656a9e018cbd69f79688777c42766ceec6a");
+static const uint256 hashGenesisBlockTestNet("0x0000abd414802bce2f1ad3f056dcc42081bb423485098b84bf8f608217aef596");
 
 static const std::string vBurnAddresses[] = {"iP34KRRhTCFvW87yrHSWj8m1L4vqRdUhDw",
                                              "iLvHHkKoKQsqcACaV15pZtoyBNzUYFxAvG",

@@ -3987,13 +3987,13 @@ FILE* OpenBlockFile(unsigned int nFile, unsigned int nBlockPos, const char* pszM
 
       if (fTestNet)
     {
-      pchMessageStart[0] = 0x17;
-      pchMessageStart[1] = 0x21;
-      pchMessageStart[2] = 0x15;
-      pchMessageStart[3] = 0x1b;
+      pchMessageStart[0] = 0x27;
+      pchMessageStart[1] = 0x43;
+      pchMessageStart[2] = 0x35;
+      pchMessageStart[3] = 0x4b;
 
       bnProofOfWorkLimit = bnProofOfWorkLimitTestNet; // 16 bits PoW target limit for testnet
-      nStakeMinAge = 10 * 60 * 60; // test net min age is 10 hours
+      nStakeMinAge = 1 * 60 * 60; // test net min age is 1 hours
       nCoinbaseMaturity = 65; // test maturity is 65 blocks
   };
 
@@ -4016,10 +4016,10 @@ FILE* OpenBlockFile(unsigned int nFile, unsigned int nBlockPos, const char* pszM
 
             if(fTestNet)
         {
-            const char* pszTimestampTestNet = "Innova Test Blockchain | CircuitBreaker";
+            const char* pszTimestampTestNet = "Innova Test Blockchain for Public Development | CircuitBreaker";
             CTransaction txNewTestNet;
 
-            txNewTestNet.nTime = 1614593682;
+            txNewTestNet.nTime = 1631971785;
             txNewTestNet.vin.resize(1);
             txNewTestNet.vout.resize(1);
             txNewTestNet.vin[0].scriptSig = CScript() << 0 << CBigNum(42) << vector<unsigned char>((const unsigned char*)pszTimestampTestNet, (const unsigned char*)pszTimestampTestNet + strlen(pszTimestampTestNet));
@@ -4029,10 +4029,10 @@ FILE* OpenBlockFile(unsigned int nFile, unsigned int nBlockPos, const char* pszM
             blocktest.vtx.push_back(txNewTestNet);
             blocktest.hashPrevBlock = 0;
             blocktest.hashMerkleRoot = blocktest.BuildMerkleTree();
-            blocktest.nTime    = 1614593682;
+            blocktest.nTime    = 1631971785;
             blocktest.nVersion = 1;
             blocktest.nBits    = bnProofOfWorkLimit.GetCompact();
-            blocktest.nNonce   = 25640;
+            blocktest.nNonce   = 86680208;
 
             if (false && (blocktest.GetHash() != hashGenesisBlockTestNet)) {
             // This will figure out a valid hash and Nonce if you're
@@ -4056,7 +4056,7 @@ FILE* OpenBlockFile(unsigned int nFile, unsigned int nBlockPos, const char* pszM
 
 
             //// debug print
-            assert(blocktest.hashMerkleRoot == uint256("0x844eb990208614fa067144c1dc036af20be4b80192a4cd6937ceb37a32d361e0"));
+            assert(blocktest.hashMerkleRoot == uint256("0x8fb693e29578265c607ab08099eb8b834b09436e5f89c839813d4a7f4072185c"));
             blocktest.print();
             assert(blocktest.GetHash() == hashGenesisBlockTestNet);
             assert(blocktest.CheckBlock());
