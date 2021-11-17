@@ -191,7 +191,7 @@ bool CActiveCollateralnode::Dseep(CTxIn vin, CService service, CKey keyCollatera
 
     // Update Last Seen timestamp in collateralnode list
     bool found = false;
-    BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes) {
+    for (CCollateralNode& mn : vecCollateralnodes) {
         //printf(" -- %s\n", mn.vin.ToString().c_str());
         if(mn.vin == vin) {
             found = true;
@@ -209,8 +209,8 @@ bool CActiveCollateralnode::Dseep(CTxIn vin, CService service, CKey keyCollatera
     }
 
     //send to all peers
-    printf("CActiveCollateralnode::Dseep() - SendForTunaElectionEntryPing vin = %s\n", vin.ToString().c_str());
-    SendForTunaElectionEntryPing(vin, vchCollateralNodeSignature, masterNodeSignatureTime, stop);
+    printf("CActiveCollateralnode::Dseep() - SendCollaTeralElectionEntryPing vin = %s\n", vin.ToString().c_str());
+    SendCollaTeralElectionEntryPing(vin, vchCollateralNodeSignature, masterNodeSignatureTime, stop);
 
     return true;
 }
@@ -281,7 +281,7 @@ bool CActiveCollateralnode::Register(CTxIn vin, CService service, CKey keyCollat
     bool found = false;
     bool dup = false;
     LOCK(cs_collateralnodes);
-    BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
+    for (CCollateralNode& mn : vecCollateralnodes)
     {
       if(mn.pubkey == pubKeyCollateralAddress) {
               dup = true;
@@ -292,7 +292,7 @@ bool CActiveCollateralnode::Register(CTxIn vin, CService service, CKey keyCollat
       printf("CActiveCollateralnode::Register() FAILED! CN Already in List. Change your collateral address to a different address for this CN.\n", retErrorMessage.c_str());
           return false;
       }
-      BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
+      for (CCollateralNode& mn : vecCollateralnodes)
       {
           if(mn.vin == vin) {
               printf("Found CN VIN in CollateralNodes List\n");
@@ -308,8 +308,8 @@ bool CActiveCollateralnode::Register(CTxIn vin, CService service, CKey keyCollat
     }
 
     //send to all peers
-    printf("CActiveCollateralnode::Register() - SendForTunaElectionEntry vin = %s\n", vin.ToString().c_str());
-    SendForTunaElectionEntry(vin, service, vchCollateralNodeSignature, masterNodeSignatureTime, pubKeyCollateralAddress, pubKeyCollateralnode, -1, -1, masterNodeSignatureTime, PROTOCOL_VERSION);
+    printf("CActiveCollateralnode::Register() - SendCollaTeralElectionEntry vin = %s\n", vin.ToString().c_str());
+    SendCollaTeralElectionEntry(vin, service, vchCollateralNodeSignature, masterNodeSignatureTime, pubKeyCollateralAddress, pubKeyCollateralnode, -1, -1, masterNodeSignatureTime, PROTOCOL_VERSION);
 
     return true;
 }

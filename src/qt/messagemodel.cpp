@@ -20,6 +20,14 @@
 #include <QFont>
 #include <QColor>
 
+#if BOOST_VERSION >= 107300
+#include <boost/bind/bind.hpp>
+using boost::placeholders::_1;
+using boost::placeholders::_2;
+#else
+#include <boost/bind.hpp>
+#endif
+
 Q_DECLARE_METATYPE(std::vector<unsigned char>);
 
 QList<QString> ambiguous; /**< Specifies Ambiguous addresses */
@@ -47,7 +55,7 @@ public:
     void refreshMessageTable()
     {
         cachedMessageTable.clear();
-        
+
         if (parent->getWalletModel()->getEncryptionStatus() == WalletModel::Locked)
         {
             // -- messages are stored encrypted, can't load them without the private keys
@@ -84,7 +92,7 @@ public:
 
                     sent_datetime    .setTime_t(msg.timestamp);
                     received_datetime.setTime_t(smsgStored.timeReceived);
-                    
+
                     memcpy(&vchKey[0], chKey, 18);
 
                     addMessageEntry(MessageTableEntry(vchKey,
@@ -112,7 +120,7 @@ public:
 
                     sent_datetime    .setTime_t(msg.timestamp);
                     received_datetime.setTime_t(smsgStored.timeReceived);
-                    
+
                     memcpy(&vchKey[0], chKey, 18);
 
                     addMessageEntry(MessageTableEntry(vchKey,
@@ -150,7 +158,7 @@ public:
 
             std::string sPrefix("im");
             SecureMessage* psmsg = (SecureMessage*) &smsgStored.vchMessage[0];
-            
+
             std::vector<unsigned char> vchKey;
             vchKey.resize(18);
             memcpy(&vchKey[0],  sPrefix.data(),  2);
@@ -210,9 +218,9 @@ public:
     {
         // -- wallet is unlocked, can get at the private keys now
         refreshMessageTable();
-        
+
         parent->reset(); // reload table view
-        
+
         if (parent->proxyModel)
         {
             parent->proxyModel->setFilterRole(false);
@@ -221,10 +229,10 @@ public:
             parent->proxyModel->setFilterRole(MessageModel::Ambiguous);
             parent->proxyModel->setFilterFixedString("true");
         }
-        
+
         //invalidateFilter()
     }
-    
+
     void setEncryptionStatus(int status)
     {
         if (status == WalletModel::Locked)
@@ -308,9 +316,9 @@ MessageModel::MessageModel(CWallet *wallet, WalletModel *walletModel, QObject *p
     QAbstractTableModel(parent), wallet(wallet), walletModel(walletModel), optionsModel(0), priv(0)
 {
     columns << tr("Type") << tr("Sent Date Time") << tr("Received Date Time") << tr("Label") << tr("To Address") << tr("From Address") << tr("Message");
-    
+
     proxyModel = NULL;
-    
+
     optionsModel = walletModel->getOptionsModel();
 
     priv = new MessageTablePriv(this);
@@ -323,7 +331,7 @@ MessageModel::~MessageModel()
 {
     if (proxyModel)
         delete proxyModel;
-    
+
     delete priv;
     unsubscribeFromCoreSignals();
 }
@@ -385,14 +393,14 @@ MessageModel::StatusCode MessageModel::sendMessages(const QList<SendMessagesReci
 
         SecureMsgAddAddress(sendTo, pubkey);
         setAddress.insert(rcp.address);
-        
+
         std::string sError;
         if (SecureMsgSend(addFrom, sendTo, message, sError) != 0)
         {
             QMessageBox::warning(NULL, tr("Send Secure Message"),
                 tr("Send failed: %1.").arg(sError.c_str()),
                 QMessageBox::Ok, QMessageBox::Ok);
-            
+
             return FailedErrorShown;
         };
 
@@ -604,7 +612,7 @@ void MessageModel::subscribeToCoreSignals()
     NotifySecMsgInboxChanged.connect(boost::bind(NotifySecMsgInbox, this, _1));
     NotifySecMsgOutboxChanged.connect(boost::bind(NotifySecMsgOutbox, this, _1));
     NotifySecMsgWalletUnlocked.connect(boost::bind(NotifySecMsgWallet, this));
-    
+
     connect(walletModel, SIGNAL(encryptionStatusChanged(int)), this, SLOT(setEncryptionStatus(int)));
 }
 
@@ -614,6 +622,6 @@ void MessageModel::unsubscribeFromCoreSignals()
     NotifySecMsgInboxChanged.disconnect(boost::bind(NotifySecMsgInbox, this, _1));
     NotifySecMsgOutboxChanged.disconnect(boost::bind(NotifySecMsgOutbox, this, _1));
     NotifySecMsgWalletUnlocked.disconnect(boost::bind(NotifySecMsgWallet, this));
-    
+
     disconnect(walletModel, SIGNAL(encryptionStatusChanged(int)), this, SLOT(setEncryptionStatus(int)));
 }

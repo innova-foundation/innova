@@ -60,7 +60,7 @@ class CNode;
 // General Innova Block Values
 
 // extern CFeeRate minRelayTxFee;
-static const int LAST_POW_BLOCK = 50000; // 50k blocks before Proof of Stake consensus kicks in
+static const int ZERO_POW_BLOCK = 50000; // 50k blocks before Proof of Stake consensus, now 0.0001 INN reward per block
 static const int FAIR_LAUNCH_BLOCK = 490; // Last Block until full block reward starts
 static const unsigned int MAX_BLOCK_SIZE = 1000000; // 1MB block hard limit, double the size of Bitcoin
 static const unsigned int MAX_BLOCK_SIZE_GEN = MAX_BLOCK_SIZE/2; // 512kb block soft limit, ditto
@@ -76,8 +76,8 @@ static const unsigned int DEFAULT_MAX_ORPHAN_TRANSACTIONS = 100; // Was 10k
 static const unsigned int DEFAULT_MAX_ORPHAN_BLOCKS = 750; //Default 750, try testing with 1000
 static const unsigned int MAX_INV_SZ = 50000;
 static const int64_t MIN_TX_FEE = 1000;
-static const int64_t MIN_NAME_FEE = 9000000; // 0.09 INN Name OP Miner Fee
-static const int64_t NAME_FEE = 1000000; // 0.01 INN Name
+static const int64_t MIN_NAME_FEE = 90000000; // 0.9 INN Name OP Miner Fee
+static const int64_t NAME_FEE = 10000000; // 0.1 INN Name
 static const CAmount MIN_TXOUT_AMOUNT = NAME_FEE;
 static const int64_t MIN_TX_FEE_ANON = 10000;
 static const int64_t MIN_RELAY_TX_FEE = MIN_TX_FEE;
@@ -355,7 +355,7 @@ public:
             nBlockTime = GetAdjustedTime();
         if ((int64_t)nLockTime < ((int64_t)nLockTime < LOCKTIME_THRESHOLD ? (int64_t)nBlockHeight : nBlockTime))
             return true;
-        BOOST_FOREACH(const CTxIn& txin, vin)
+        for (const CTxIn& txin : vin)
             if (!txin.IsFinal())
                 return false;
         return true;
@@ -430,7 +430,7 @@ public:
     int64_t GetValueOut() const
     {
         int64_t nValueOut = 0;
-        BOOST_FOREACH(const CTxOut& txout, vout)
+        for (const CTxOut& txout : vout)
         {
             nValueOut += txout.nValue;
             if (!MoneyRange(txout.nValue) || !MoneyRange(nValueOut))
@@ -859,7 +859,7 @@ public:
     int64_t GetMaxTransactionTime() const
     {
         int64_t maxTransactionTime = 0;
-        BOOST_FOREACH(const CTransaction& tx, vtx)
+        for (const CTransaction& tx : vtx)
             maxTransactionTime = std::max(maxTransactionTime, (int64_t)tx.nTime);
         return maxTransactionTime;
     }
@@ -867,7 +867,7 @@ public:
     uint256 BuildMerkleTree() const
     {
         vMerkleTree.clear();
-        BOOST_FOREACH(const CTransaction& tx, vtx)
+        for (const CTransaction& tx : vtx)
             vMerkleTree.push_back(tx.GetHash());
         int j = 0;
         for (int nSize = vtx.size(); nSize > 1; nSize = (nSize + 1) / 2)
@@ -903,7 +903,7 @@ public:
     {
         if (nIndex == -1)
             return 0;
-        BOOST_FOREACH(const uint256& otherside, vMerkleBranch)
+        for (const uint256& otherside : vMerkleBranch)
         {
             if (nIndex & 1)
                 hash = Hash(BEGIN(otherside), END(otherside), BEGIN(hash), END(hash));
@@ -1421,7 +1421,7 @@ public:
         // Retrace how far back it was in the sender's branch
         int nDistance = 0;
         int nStep = 1;
-        BOOST_FOREACH(const uint256& hash, vHave)
+        for (const uint256& hash : vHave)
         {
             std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hash);
             if (mi != mapBlockIndex.end())
@@ -1440,7 +1440,7 @@ public:
     CBlockIndex* GetBlockIndex()
     {
         // Find the first block the caller has in the main chain
-        BOOST_FOREACH(const uint256& hash, vHave)
+        for (const uint256& hash : vHave)
         {
             std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hash);
             if (mi != mapBlockIndex.end())
@@ -1456,7 +1456,7 @@ public:
     uint256 GetBlockHash()
     {
         // Find the first block the caller has in the main chain
-        BOOST_FOREACH(const uint256& hash, vHave)
+        for (const uint256& hash : vHave)
         {
             std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hash);
             if (mi != mapBlockIndex.end())
