@@ -714,5 +714,5 @@ void ManageNamesPage::on_registerValue_textChanged()
     else
         byteSize = importedAsBinaryFile.size();
 
-    ui->labelValue->setText(tr("Value(%1%)").arg(int(100 * byteSize / MAX_VALUE_LENGTH)));
+    ui->labelValue->setText(tr("Value (%1%)").arg(int(100 * byteSize / MAX_VALUE_LENGTH)));
 }

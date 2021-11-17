@@ -134,7 +134,7 @@ Value collateralnode(const Array& params, bool fHelp)
 		Object statusObj;
 		statusObj.push_back(Pair("alias", alias));
 
-    	BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry mne, collateralnodeConfig.getEntries()) {
+    	for (CCollateralnodeConfig::CCollateralnodeEntry mne : collateralnodeConfig.getEntries()) {
     		if(mne.getAlias() == alias) {
     			found = true;
     			std::string errorMessage;
@@ -226,7 +226,7 @@ Value collateralnode(const Array& params, bool fHelp)
         }
 
         Object obj;
-        BOOST_FOREACH(CCollateralNode mn, vecCollateralnodes) {
+        for (CCollateralNode mn : vecCollateralnodes) {
             mn.Check();
 
             if(strCommand == "active"){
@@ -628,7 +628,7 @@ Value collateralnode(const Array& params, bool fHelp)
                 mnObj.push_back(Pair("local",localObj));
             }
 
-            BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry& mne, collateralnodeConfig.getEntries()) {
+            for (CCollateralnodeConfig::CCollateralnodeEntry& mne : collateralnodeConfig.getEntries()) {
                 Object remoteObj;
                 std::string address = mne.getIp();
 
@@ -682,7 +682,7 @@ Value collateralnode(const Array& params, bool fHelp)
                 //INNOVA - Q0lSQ1VJVEJSRUFLRVI=
 
                 bool mnfound = false;
-                BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
+                for (CCollateralNode& mn : vecCollateralnodes)
                 {
                     if (mn.addr.ToString() == mne.getIp()) {
                       //remoteObj.push_back(Pair("status", "online"));

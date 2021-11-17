@@ -342,6 +342,7 @@ OBJS= \
     obj/namecoin.o \
     obj/ipfs.o \
     obj/ipfscurl.o  \
+    obj/utiltime.o \
     obj/stun.o
 
 
