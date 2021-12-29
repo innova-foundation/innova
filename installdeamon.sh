@@ -69,7 +69,7 @@ openssl version -v
 echo "Installing Innova Wallet"
 git clone https://github.com/innova-foundation/innova
 cd innova
-git checkout development
+git checkout master
 git pull
 
 cd src
