@@ -1390,7 +1390,7 @@ Value name_count(const Array& params, bool fHelp)
     //Object oNameCount;
     int nCount = 0;
     pair<vector<unsigned char>, pair<CNameIndex,int> > pairScan;
-    for (pairScan : nameScan)
+    BOOST_FOREACH(pairScan, nameScan)
     {
         nCount++;
     }
