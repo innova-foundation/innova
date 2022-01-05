@@ -1693,9 +1693,9 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
     	nSubsidy = 0.165 * COIN;
     else if (pindexBest->nHeight <= 50000)
     	nSubsidy = 0.0825 * COIN;
-    else if (pindexBest->nHeight > ZERO_POW_BLOCK && pindexBest->nHeight < 2500000) // Block 50k
+    else if (pindexBest->nHeight > ZERO_POW_BLOCK && pindexBest->nHeight < 1850000)
       nSubsidy = 0; // PoW Reward
-    else if (pindexBest->nHeight > 2500000) // Block 2.5m, Start PoW Rewards again -0.0001 INN per block- ~200 INN per year to prevent unspendable UTXOs
+    else if (pindexBest->nHeight > 1850000) // Block 1.85m, Start PoW Rewards again -0.0001 INN per block- ~200 INN per year to prevent unspendable UTXOs
       nSubsidy = 10000; // PoW Reward 0.0001 INN
 
     if (fDebug && GetBoolArg("-printcreation"))
