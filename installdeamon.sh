@@ -138,7 +138,7 @@ echo "Copied to /usr/bin for ease of use"
 echo "Get Chaindata"
 cd ~/.innova
 rm -rf database txleveldb smsgDB
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.9/innovabootstrap.zip
 unzip innovabootstrap.zip
 rm -rf innovabootstrap.zip
 echo "Back to Compiled innovad Binary Folder"
