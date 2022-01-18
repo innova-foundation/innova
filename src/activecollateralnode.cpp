@@ -22,20 +22,20 @@ void CActiveCollateralnode::ManageStatus()
     //need correct adjusted time to send ping
     bool fIsInitialDownload = IsInitialBlockDownload();
     if(fIsInitialDownload) {
-        status = FORTUNASTAKE_SYNC_IN_PROCESS;
+        status = COLLATERALNODE_SYNC_IN_PROCESS;
         printf("CActiveCollateralnode::ManageStatus() - Sync in progress. Must wait until sync is complete to start collateralnode.\n");
         return;
     }
 
-    if(status == FORTUNASTAKE_INPUT_TOO_NEW || status == FORTUNASTAKE_NOT_CAPABLE || status == FORTUNASTAKE_SYNC_IN_PROCESS){
-        status = FORTUNASTAKE_NOT_PROCESSED;
+    if(status == COLLATERALNODE_INPUT_TOO_NEW || status == COLLATERALNODE_NOT_CAPABLE || status == COLLATERALNODE_SYNC_IN_PROCESS){
+        status = COLLATERALNODE_NOT_PROCESSED;
     }
 
-    if(status == FORTUNASTAKE_NOT_PROCESSED) {
+    if(status == COLLATERALNODE_NOT_PROCESSED) {
         if(strCollateralNodeAddr.empty()) {
             if(!GetLocal(service)) {
                 notCapableReason = "Can't detect external address. Please use the collateralnodeaddr configuration option.";
-                status = FORTUNASTAKE_NOT_CAPABLE;
+                status = COLLATERALNODE_NOT_CAPABLE;
                 printf("CActiveCollateralnode::ManageStatus() - not capable: %s\n", notCapableReason.c_str());
                 return;
             }
@@ -47,20 +47,20 @@ void CActiveCollateralnode::ManageStatus()
 
             if(!ConnectNode((CAddress)service, service.ToString().c_str())){
                 notCapableReason = "Could not connect to " + service.ToString();
-                status = FORTUNASTAKE_NOT_CAPABLE;
+                status = COLLATERALNODE_NOT_CAPABLE;
                 printf("CActiveCollateralnode::ManageStatus() - not capable: %s\n", notCapableReason.c_str());
                 return;
             }
 
         if(pwalletMain->IsLocked()){
             notCapableReason = "Wallet is locked.";
-            status = FORTUNASTAKE_NOT_CAPABLE;
+            status = COLLATERALNODE_NOT_CAPABLE;
             printf("CActiveCollateralnode::ManageStatus() - not capable: %s\n", notCapableReason.c_str());
             return;
         }
 
         // Set defaults
-        status = FORTUNASTAKE_NOT_CAPABLE;
+        status = COLLATERALNODE_NOT_CAPABLE;
         notCapableReason = "Unknown. Check debug.log for more information.\n";
 
         // Choose coins to use
@@ -69,15 +69,15 @@ void CActiveCollateralnode::ManageStatus()
 
         if(GetCollateralNodeVin(vin, pubKeyCollateralAddress, keyCollateralAddress)) {
 
-            //if(GetInputAge(vin, pindexBest) < (nBestHeight > BLOCK_START_FORTUNASTAKE_DELAYPAY ? FORTUNASTAKE_MIN_CONFIRMATIONS_NOPAY : FORTUNASTAKE_MIN_CONFIRMATIONS)){
-            //    printf("CActiveCollateralnode::ManageStatus() - Input must have least %d confirmations - %d confirmations\n", (nBestHeight > BLOCK_START_FORTUNASTAKE_DELAYPAY ? FORTUNASTAKE_MIN_CONFIRMATIONS_NOPAY : FORTUNASTAKE_MIN_CONFIRMATIONS), GetInputAge(vin, pindexBest));
-            //    status = FORTUNASTAKE_INPUT_TOO_NEW;
+            //if(GetInputAge(vin, pindexBest) < (nBestHeight > BLOCK_START_COLLATERALNODE_DELAYPAY ? COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY : COLLATERALNODE_MIN_CONFIRMATIONS)){
+            //    printf("CActiveCollateralnode::ManageStatus() - Input must have least %d confirmations - %d confirmations\n", (nBestHeight > BLOCK_START_COLLATERALNODE_DELAYPAY ? COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY : COLLATERALNODE_MIN_CONFIRMATIONS), GetInputAge(vin, pindexBest));
+            //    status = COLLATERALNODE_INPUT_TOO_NEW;
             //    return;
             //}
 
             printf("CActiveCollateralnode::ManageStatus() - Is a capable CollateralNode.\n");
 
-            status = FORTUNASTAKE_IS_CAPABLE;
+            status = COLLATERALNODE_IS_CAPABLE;
             notCapableReason = "";
 
             pwalletMain->LockCoin(vin.prevout);
@@ -124,13 +124,13 @@ bool CActiveCollateralnode::StopCollateralNode(std::string strService, std::stri
 
 // Send stop dseep to network for main collateralnode
 bool CActiveCollateralnode::StopCollateralNode(std::string& errorMessage) {
-    if(status != FORTUNASTAKE_IS_CAPABLE && status != FORTUNASTAKE_REMOTELY_ENABLED) {
+    if(status != COLLATERALNODE_IS_CAPABLE && status != COLLATERALNODE_REMOTELY_ENABLED) {
         errorMessage = "collateralnode is not in a running status";
         printf("CActiveCollateralnode::StopCollateralNode() - Error: %s\n", errorMessage.c_str());
         return false;
     }
 
-    status = FORTUNASTAKE_STOPPED;
+    status = COLLATERALNODE_STOPPED;
 
     CPubKey pubKeyCollateralnode;
     CKey keyCollateralnode;
@@ -151,7 +151,7 @@ bool CActiveCollateralnode::StopCollateralNode(CTxIn vin, CService service, CKey
 }
 
 bool CActiveCollateralnode::Dseep(std::string& errorMessage) {
-    if(status != FORTUNASTAKE_IS_CAPABLE && status != FORTUNASTAKE_REMOTELY_ENABLED) {
+    if(status != COLLATERALNODE_IS_CAPABLE && status != COLLATERALNODE_REMOTELY_ENABLED) {
         errorMessage = "collateralnode is not in a running status";
         printf("CActiveCollateralnode::Dseep() - Error: %s\n", errorMessage.c_str());
         return false;
@@ -191,7 +191,7 @@ bool CActiveCollateralnode::Dseep(CTxIn vin, CService service, CKey keyCollatera
 
     // Update Last Seen timestamp in collateralnode list
     bool found = false;
-    BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes) {
+    for (CCollateralNode& mn : vecCollateralnodes) {
         //printf(" -- %s\n", mn.vin.ToString().c_str());
         if(mn.vin == vin) {
             found = true;
@@ -203,14 +203,14 @@ bool CActiveCollateralnode::Dseep(CTxIn vin, CService service, CKey keyCollatera
         // Seems like we are trying to send a ping while the collateralnode is not registered in the network
         retErrorMessage = "CollateralN Collateralnode List doesn't include our collateralnode, Shutting down collateralnode pinging service! " + vin.ToString();
         printf("CActiveCollateralnode::Dseep() - Error: %s\n", retErrorMessage.c_str());
-        status = FORTUNASTAKE_NOT_CAPABLE;
+        status = COLLATERALNODE_NOT_CAPABLE;
         notCapableReason = retErrorMessage;
         return false;
     }
 
     //send to all peers
-    printf("CActiveCollateralnode::Dseep() - SendForTunaElectionEntryPing vin = %s\n", vin.ToString().c_str());
-    SendForTunaElectionEntryPing(vin, vchCollateralNodeSignature, masterNodeSignatureTime, stop);
+    printf("CActiveCollateralnode::Dseep() - SendCollaTeralElectionEntryPing vin = %s\n", vin.ToString().c_str());
+    SendCollaTeralElectionEntryPing(vin, vchCollateralNodeSignature, masterNodeSignatureTime, stop);
 
     return true;
 }
@@ -281,7 +281,7 @@ bool CActiveCollateralnode::Register(CTxIn vin, CService service, CKey keyCollat
     bool found = false;
     bool dup = false;
     LOCK(cs_collateralnodes);
-    BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
+    for (CCollateralNode& mn : vecCollateralnodes)
     {
       if(mn.pubkey == pubKeyCollateralAddress) {
               dup = true;
@@ -292,7 +292,7 @@ bool CActiveCollateralnode::Register(CTxIn vin, CService service, CKey keyCollat
       printf("CActiveCollateralnode::Register() FAILED! CN Already in List. Change your collateral address to a different address for this CN.\n", retErrorMessage.c_str());
           return false;
       }
-      BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
+      for (CCollateralNode& mn : vecCollateralnodes)
       {
           if(mn.vin == vin) {
               printf("Found CN VIN in CollateralNodes List\n");
@@ -308,8 +308,8 @@ bool CActiveCollateralnode::Register(CTxIn vin, CService service, CKey keyCollat
     }
 
     //send to all peers
-    printf("CActiveCollateralnode::Register() - SendForTunaElectionEntry vin = %s\n", vin.ToString().c_str());
-    SendForTunaElectionEntry(vin, service, vchCollateralNodeSignature, masterNodeSignatureTime, pubKeyCollateralAddress, pubKeyCollateralnode, -1, -1, masterNodeSignatureTime, PROTOCOL_VERSION);
+    printf("CActiveCollateralnode::Register() - SendCollaTeralElectionEntry vin = %s\n", vin.ToString().c_str());
+    SendCollaTeralElectionEntry(vin, service, vchCollateralNodeSignature, masterNodeSignatureTime, pubKeyCollateralAddress, pubKeyCollateralnode, -1, -1, masterNodeSignatureTime, PROTOCOL_VERSION);
 
     return true;
 }
@@ -342,13 +342,13 @@ bool CActiveCollateralnode::GetCollateralNodeVin(CTxIn& vin, CPubKey& pubkey, CK
             printf("CActiveCollateralnode::GetCollateralNodeVin - Could not locate valid vin\n");
             return false;
         }
-        if (selectedOutput->nDepth < FORTUNASTAKE_MIN_CONFIRMATIONS_NOPAY) {
+        if (selectedOutput->nDepth < COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY) {
             CScript mn;
             mn = GetScriptForDestination(pubkey.GetID());
             CTxDestination address1;
             ExtractDestination(mn, address1);
             CBitcoinAddress address2(address1);
-            int remain = FORTUNASTAKE_MIN_CONFIRMATIONS_NOPAY - selectedOutput->nDepth;
+            int remain = COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY - selectedOutput->nDepth;
             printf("CActiveCollateralnode::GetCollateralNodeVin - Transaction for MN %s is too young (%d more confirms required)", address2.ToString().c_str(), remain);
             return false;
         }
@@ -415,8 +415,8 @@ bool CActiveCollateralnode::GetCollateralNodeVin(CTxIn& vin, CPubKey& pubkey, CK
             errorMessage = "Could not locate valid vin";
             return false;
         }
-        if (selectedOutput->nDepth < FORTUNASTAKE_MIN_CONFIRMATIONS_NOPAY) {
-            int remain = FORTUNASTAKE_MIN_CONFIRMATIONS_NOPAY - selectedOutput->nDepth;
+        if (selectedOutput->nDepth < COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY) {
+            int remain = COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY - selectedOutput->nDepth;
             errorMessage = strprintf("%d more confirms required", remain);
             return false;
         }
@@ -575,7 +575,7 @@ bool CActiveCollateralnode::EnableHotColdCollateralNode(CTxIn& newVin, CService&
 {
     if(!fCollateralNode) fCollateralNode = true;
 
-    status = FORTUNASTAKE_REMOTELY_ENABLED;
+    status = COLLATERALNODE_REMOTELY_ENABLED;
 
     //The values below are needed for signing dseep messages going forward
     this->vin = newVin;

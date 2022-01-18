@@ -190,6 +190,9 @@ public:
         pwalletdbEncryption = NULL;
         nOrderPosNext = 0;
         nTimeFirstKey = 0;
+
+        // Stake Setting
+        nStakeSplitThreshold = 5;
     }
 
     std::map<uint256, CWalletTx> mapWallet;
@@ -210,6 +213,10 @@ public:
 
 	  std::set<COutPoint> setLockedCoins;
 
+    //Auto Combine Inputs
+    bool fCombineDust;
+    CAmount nAutoCombineThreshold;
+
     // check whether we are allowed to upgrade (or already support) to the named feature
     bool CanSupportFeature(enum WalletFeature wf) { AssertLockHeld(cs_wallet); return nWalletMaxVersion >= wf; }
 
@@ -218,6 +225,7 @@ public:
     //void AvailableCoins(std::vector<COutput>& vCoins, bool fOnlyConfirmed=true, const CCoinControl *coinControl=NULL) const;
     void AvailableCoinsMN(std::vector<COutput>& vCoins, bool fOnlyConfirmed=true, bool fOnlyUnlocked=true, const CCoinControl *coinControl = NULL, AvailableCoinsType coin_type=ALL_COINS) const;
     bool SelectCoinsMinConf(int64_t nTargetValue, unsigned int nSpendTime, int nConfMine, int nConfTheirs, std::vector<COutput> vCoins, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet) const;
+    std::map<CBitcoinAddress, std::vector<COutput> > AvailableCoinsByAddress(bool fConfirmed = true, CAmount maxCoinValue = 0);
     //bool SelectCoinsMinConf2(int64_t nTargetValue, unsigned int nSpendTime, int nConfMine, int nConfTheirs, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet) const;
     bool SelectCoinsMinConfByCoinAge(int64_t nTargetValue, unsigned int nSpendTime, int nConfMine, int nConfTheirs, std::vector<COutput> vCoins, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet) const;
     bool IsSpent(const uint256& hash, unsigned int n) const;
@@ -314,6 +322,9 @@ public:
     bool CreateNameTx(CScript scriptPubKey, const CAmount& nValue, const CWalletTx& wtxNameIn, CAmount nFeeInput, CWalletTx& wtxNew, CReserveKey& reservekey, CAmount& nFeeRet, std::string& strFailReason, const CCoinControl *coinControl = NULL);
     bool CommitTransaction(CWalletTx& wtxNew, CReserveKey& reservekey);
 
+    // Stake Settings
+    uint64_t nStakeSplitThreshold;
+
     bool GetStakeWeight(const CKeyStore& keystore, uint64_t& nMinWeight, uint64_t& nMaxWeight, uint64_t& nWeight);
     bool CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int64_t nSearchInterval, int64_t nFees, CTransaction& txNew, CKey& key);
 
@@ -329,6 +340,8 @@ public:
     std::string SendStealthMoney(CScript scriptPubKey, int64_t nValue, std::vector<uint8_t>& P, std::vector<uint8_t>& narr, std::string& sNarr, CWalletTx& wtxNew, bool fAskFee=false);
     bool SendStealthMoneyToDestination(CStealthAddress& sxAddress, int64_t nValue, std::string& sNarr, CWalletTx& wtxNew, std::string& sError, bool fAskFee=false);
     bool FindStealthTransactions(const CTransaction& tx, mapValue_t& mapNarr);
+
+    void AutoCombineDust();
 
     // Ring Sigs - v3 I n n o v a
     bool UpdateAnonTransaction(CTxDB* ptxdb, const CTransaction& tx, const uint256& blockHash);
@@ -1260,13 +1273,18 @@ public:
     //Used with CollateralN. Will return fees, then denominations, everything else, then very small inputs that aren't fees
     int Priority() const
     {
-        if(tx->vout[i].nValue == FORTUNA_FEE) return -20000;
+        if(tx->vout[i].nValue == COLLATERALN_FEE) return -20000;
         BOOST_FOREACH(int64_t d, forTunaDenominations)
             if(tx->vout[i].nValue == d) return 10000;
         if(tx->vout[i].nValue < 1*COIN) return 20000;
 
         //nondenom return largest first
         return -(tx->vout[i].nValue/COIN);
+    }
+
+    CAmount Value() const
+    {
+        return tx->vout[i].nValue;
     }
 
     void print() const

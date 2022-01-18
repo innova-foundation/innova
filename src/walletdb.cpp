@@ -34,6 +34,21 @@ bool CWalletDB::EraseName(const string& strAddress)
     return Erase(make_pair(string("name"), strAddress));
 }
 
+bool CWalletDB::WriteStakeSplitThreshold(uint64_t nStakeSplitThreshold)
+{
+    nWalletDBUpdated++;
+    return Write(std::string("stakeSplitThreshold"), nStakeSplitThreshold);
+}
+
+bool CWalletDB::WriteAutoCombineSettings(bool fEnable, CAmount nCombineThreshold)
+{
+    nWalletDBUpdated++;
+    std::pair<bool, CAmount> pSettings;
+    pSettings.first = fEnable;
+    pSettings.second = nCombineThreshold;
+    return Write(std::string("autocombinesettings"), pSettings, true);
+}
+
 bool CWalletDB::WritePurpose(const string& strAddress, const string& strPurpose)
 {
     nWalletDBUpdated++;
@@ -502,15 +517,23 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
         else if (strType == "orderposnext")
         {
             ssValue >> pwallet->nOrderPosNext;
-        }
-        else if (strType == "adrenaline")
+        } else if (strType == "stakeSplitThreshold")
+        {
+            ssValue >> pwallet->nStakeSplitThreshold;
+        } else if (strType == "adrenaline")
 	{
 	    std::string sAlias;
 	    ssKey >> sAlias;
 	    CAdrenalineNodeConfig adrenalineNodeConfig;
 	    ssValue >> adrenalineNodeConfig;
 	    pwallet->mapMyAdrenalineNodes.insert(make_pair(sAlias, adrenalineNodeConfig));
-	}
+	} else if (strType == "autocombinesettings")
+  {
+            std::pair<bool, CAmount> pSettings;
+            ssValue >> pSettings;
+            pwallet->fCombineDust = pSettings.first;
+            pwallet->nAutoCombineThreshold = pSettings.second;
+    }
     } catch (...)
     {
         return false;
@@ -723,6 +746,24 @@ void ThreadFlushWalletDB(void* parg)
     while (!fShutdown)
     {
         MilliSleep(500);
+
+        // Loop through current peer nodes and check their current Sent Bytes, should be okay on performance even with lots of peers
+        // If peer node has sent over 10MB of data, then disconnect it and add it to our banned list for 24 hours
+        // -maxpp=10000000 (10MB)
+        // -maxpptime=600 (10 minutes)
+        LOCK(cs_vNodes);
+        for (CNode* pnode : vNodes)
+        {
+            // check if the peer has been connected for more than 10 minutes -maxpptime default 600 for 10 mins, if so, dont disconnect/ban it
+            if (pnode->nSendBytes >= GetArg("-maxpp", 10000000) && GetTime() - pnode->nTimeConnected < GetArg("-maxpptime", 10*60)) //10000000 = 10MB -maxpp=10000000 flag default
+            {
+                printf("Disconnecting and Banning Node: %s, Too Many SendBytes = %" PRIszu"\n", pnode->addr.ToString().c_str(), pnode->nSendBytes);
+                pnode->fDisconnect = true;
+                int bantime = 60*60*24*99999999;
+                CNode::Ban(pnode->addr, BanReasonNodeMisbehaving, bantime);
+                pnode->CloseSocketDisconnect();
+            }
+        }
 
         if (nLastSeen != nWalletDBUpdated)
         {

@@ -1,6 +1,6 @@
 TEMPLATE = app
 TARGET = Innova
-VERSION = 4.3.8.9
+VERSION = 4.3.9.0
 INCLUDEPATH += src src/json src/qt src/qt/plugins/mrichtexteditor
 DEFINES += QT_GUI BOOST_THREAD_USE_LIB BOOST_SPIRIT_THREADSAFE CURL_STATICLIB
 CONFIG += no_include_pwd
@@ -442,6 +442,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/multisigaddressentry.h \
     src/qt/multisiginputentry.h \
     src/qt/multisigdialog.h \
+    src/qt/bantablemodel.h \
     src/alert.h \
     src/addrman.h \
     src/base58.h \
@@ -481,6 +482,8 @@ HEADERS += src/qt/bitcoingui.h \
     src/spork.h \
     src/init.h \
     src/mruset.h \
+    src/utiltime.h \
+    src/openssl_compat.h \
     src/json/json_spirit_writer_template.h \
     src/json/json_spirit_writer.h \
     src/json/json_spirit_value.h \
@@ -576,6 +579,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/proofofimage.cpp \
     src/qt/hyperfile.cpp \
     src/qt/termsofuse.cpp \
+    src/qt/bantablemodel.cpp \
     src/alert.cpp \
     src/stun.cpp \
     src/base58.cpp \
@@ -597,6 +601,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/checkpoints.cpp \
     src/addrman.cpp \
     src/db.cpp \
+    src/utiltime.cpp \
     src/eccryptoverify.cpp \
     src/walletdb.cpp \
     src/qt/clientmodel.cpp \

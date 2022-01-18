@@ -19,30 +19,30 @@
 
 class CValidationState;
 
-#define BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET 550 // Testnet Collateralnode payments enabled block 800
-#define BLOCK_START_FORTUNASTAKE_PAYMENTS 800 //Mainnet Collateralnode payments not enabled until block 800
-#define BLOCK_START_FORTUNASTAKE_DELAYPAY 2500 // Unused
+#define BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET 550 // Testnet Collateralnode payments enabled block 800
+#define BLOCK_START_COLLATERALNODE_PAYMENTS 800 //Mainnet Collateralnode payments not enabled until block 800
+#define BLOCK_START_COLLATERALNODE_DELAYPAY 2500 // Unused
 
-//#define START_FORTUNASTAKE_PAYMENTS_TESTNET 1519430400  //Sat, 24 Feb 2018 00:00:00 GMT
-//#define START_FORTUNASTAKE_PAYMENTS 1520985600  //Wed, 14 Mar 2018 00:00:00 GMT
+//#define START_COLLATERALNODE_PAYMENTS_TESTNET 1519430400  //Sat, 24 Feb 2018 00:00:00 GMT
+//#define START_COLLATERALNODE_PAYMENTS 1520985600  //Wed, 14 Mar 2018 00:00:00 GMT
 
-static const int64_t FORTUNA_COLLATERAL = (25000*COIN); // 25,000 INN
-static const int64_t FORTUNA_FEE = (0.010000*COIN); //0.01 INN
+static const int64_t COLLATERALN_COLLATERAL = (25000*COIN); // 25,000 INN
+static const int64_t COLLATERALN_FEE = (0.010000*COIN); //0.01 INN
 static const int64_t POOL_FEE_AMOUNT = (0.1*COIN); //0.1 INN
-static const int64_t FORTUNA_POOL_MAX = (51000*COIN); //51,000 INN
+static const int64_t COLLATERALN_POOL_MAX = (51000*COIN); //51,000 INN
 
 #define MESSAGE_START_SIZE 4
 typedef unsigned char MessageStartChars[MESSAGE_START_SIZE];
 
-#define FORTUNASTAKE_NOT_PROCESSED               0 // initial state
-#define FORTUNASTAKE_IS_CAPABLE                  1
-#define FORTUNASTAKE_NOT_CAPABLE                 2
-#define FORTUNASTAKE_STOPPED                     3
-#define FORTUNASTAKE_INPUT_TOO_NEW               4
-#define FORTUNASTAKE_PORT_NOT_OPEN               6
-#define FORTUNASTAKE_PORT_OPEN                   7
-#define FORTUNASTAKE_SYNC_IN_PROCESS             8
-#define FORTUNASTAKE_REMOTELY_ENABLED            9
+#define COLLATERALNODE_NOT_PROCESSED               0 // initial state
+#define COLLATERALNODE_IS_CAPABLE                  1
+#define COLLATERALNODE_NOT_CAPABLE                 2
+#define COLLATERALNODE_STOPPED                     3
+#define COLLATERALNODE_INPUT_TOO_NEW               4
+#define COLLATERALNODE_PORT_NOT_OPEN               6
+#define COLLATERALNODE_PORT_OPEN                   7
+#define COLLATERALNODE_SYNC_IN_PROCESS             8
+#define COLLATERALNODE_REMOTELY_ENABLED            9
 
 class CWallet;
 class CWalletTx;
@@ -60,7 +60,7 @@ class CNode;
 // General Innova Block Values
 
 // extern CFeeRate minRelayTxFee;
-static const int LAST_POW_BLOCK = 50000; // 50k blocks before Proof of Stake consensus kicks in
+static const int ZERO_POW_BLOCK = 50000; // 50k blocks before Proof of Stake consensus, now 0.0001 INN reward per block
 static const int FAIR_LAUNCH_BLOCK = 490; // Last Block until full block reward starts
 static const unsigned int MAX_BLOCK_SIZE = 1000000; // 1MB block hard limit, double the size of Bitcoin
 static const unsigned int MAX_BLOCK_SIZE_GEN = MAX_BLOCK_SIZE/2; // 512kb block soft limit, ditto
@@ -76,8 +76,8 @@ static const unsigned int DEFAULT_MAX_ORPHAN_TRANSACTIONS = 100; // Was 10k
 static const unsigned int DEFAULT_MAX_ORPHAN_BLOCKS = 750; //Default 750, try testing with 1000
 static const unsigned int MAX_INV_SZ = 50000;
 static const int64_t MIN_TX_FEE = 1000;
-static const int64_t MIN_NAME_FEE = 9000000; // 0.09 INN Name OP Miner Fee
-static const int64_t NAME_FEE = 1000000; // 0.01 INN Name
+static const int64_t MIN_NAME_FEE = 90000000; // 0.9 INN Name OP Miner Fee
+static const int64_t NAME_FEE = 10000000; // 0.1 INN Name
 static const CAmount MIN_TXOUT_AMOUNT = NAME_FEE;
 static const int64_t MIN_TX_FEE_ANON = 10000;
 static const int64_t MIN_RELAY_TX_FEE = MIN_TX_FEE;
@@ -98,12 +98,15 @@ static const unsigned int LOCKTIME_THRESHOLD = 500000000; // Tue Nov  5 00:53:20
 static const unsigned int MAX_P2SH_SIGOPS = 15;
 
 static const uint256 hashGenesisBlock("0x000009bd42d259eb7031ae4f634aede1a690da795e5529786a72c3cd6d989995");
-static const uint256 hashGenesisBlockTestNet("0x00006d9ebd08daaba835059276f29656a9e018cbd69f79688777c42766ceec6a");
+static const uint256 hashGenesisBlockTestNet("0x0000abd414802bce2f1ad3f056dcc42081bb423485098b84bf8f608217aef596");
 
-static const std::string vBurnAddresses[] = {""};
+static const std::string vBurnAddresses[] = {"iP34KRRhTCFvW87yrHSWj8m1L4vqRdUhDw",
+                                             "iLvHHkKoKQsqcACaV15pZtoyBNzUYFxAvG",
+                                             "iKsZNKLPkCHqoiJgYfRFDEK8uT4xmdK483",
+                                             "iHZb3rMLnZWctfKxcCQRMHg8eCnALwYqxo"};
 
 static const std::vector<unsigned char> burnAddressScript[] = {
-    ParseHex("")
+    ParseHex("OP_DUP OP_HASH160 d6917b7dc295bb42d1f7b4f960c6fba9eaeab9cc OP_EQUALVERIFY OP_CHECKSIG, OP_DUP OP_HASH160 b3dd31efc695c49e8ff361a0bd6f44097c5848ae OP_EQUALVERIFY OP_CHECKSIG, OP_DUP OP_HASH160 9a86dc25301c1ad773a74955dd0ca9f6eaf5853b OP_EQUALVERIFY OP_CHECKSIG, OP_DUP OP_HASH160 bf592597b0e632f1831b68d35a2dd66788cfd32c OP_EQUALVERIFY OP_CHECKSIG")
 };
 
 //inline bool IsProtocolV1RetargetingFixed(int nHeight) { return fTestNet || nHeight > 0; }
@@ -352,7 +355,7 @@ public:
             nBlockTime = GetAdjustedTime();
         if ((int64_t)nLockTime < ((int64_t)nLockTime < LOCKTIME_THRESHOLD ? (int64_t)nBlockHeight : nBlockTime))
             return true;
-        BOOST_FOREACH(const CTxIn& txin, vin)
+        for (const CTxIn& txin : vin)
             if (!txin.IsFinal())
                 return false;
         return true;
@@ -427,7 +430,7 @@ public:
     int64_t GetValueOut() const
     {
         int64_t nValueOut = 0;
-        BOOST_FOREACH(const CTxOut& txout, vout)
+        for (const CTxOut& txout : vout)
         {
             nValueOut += txout.nValue;
             if (!MoneyRange(txout.nValue) || !MoneyRange(nValueOut))
@@ -856,7 +859,7 @@ public:
     int64_t GetMaxTransactionTime() const
     {
         int64_t maxTransactionTime = 0;
-        BOOST_FOREACH(const CTransaction& tx, vtx)
+        for (const CTransaction& tx : vtx)
             maxTransactionTime = std::max(maxTransactionTime, (int64_t)tx.nTime);
         return maxTransactionTime;
     }
@@ -864,7 +867,7 @@ public:
     uint256 BuildMerkleTree() const
     {
         vMerkleTree.clear();
-        BOOST_FOREACH(const CTransaction& tx, vtx)
+        for (const CTransaction& tx : vtx)
             vMerkleTree.push_back(tx.GetHash());
         int j = 0;
         for (int nSize = vtx.size(); nSize > 1; nSize = (nSize + 1) / 2)
@@ -900,7 +903,7 @@ public:
     {
         if (nIndex == -1)
             return 0;
-        BOOST_FOREACH(const uint256& otherside, vMerkleBranch)
+        for (const uint256& otherside : vMerkleBranch)
         {
             if (nIndex & 1)
                 hash = Hash(BEGIN(otherside), END(otherside), BEGIN(hash), END(hash));
@@ -1418,7 +1421,7 @@ public:
         // Retrace how far back it was in the sender's branch
         int nDistance = 0;
         int nStep = 1;
-        BOOST_FOREACH(const uint256& hash, vHave)
+        for (const uint256& hash : vHave)
         {
             std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hash);
             if (mi != mapBlockIndex.end())
@@ -1437,7 +1440,7 @@ public:
     CBlockIndex* GetBlockIndex()
     {
         // Find the first block the caller has in the main chain
-        BOOST_FOREACH(const uint256& hash, vHave)
+        for (const uint256& hash : vHave)
         {
             std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hash);
             if (mi != mapBlockIndex.end())
@@ -1453,7 +1456,7 @@ public:
     uint256 GetBlockHash()
     {
         // Find the first block the caller has in the main chain
-        BOOST_FOREACH(const uint256& hash, vHave)
+        for (const uint256& hash : vHave)
         {
             std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hash);
             if (mi != mapBlockIndex.end())
