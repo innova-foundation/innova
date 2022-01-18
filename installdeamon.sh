@@ -1,6 +1,6 @@
 #!/bin/bash
 TEMP=/tmp/answer$$
-whiptail --title "Innova [INN]"  --menu  "Ubuntu 16.04/18.04/20.04 Daemon Node :" 20 0 0 1 "Compile innovad Ubuntu 16.04" 2 "Update innovad 16.04 to latest" 3 "Compile innovad Ubuntu 18.04" 4 "Update innovad 18.04 to latest" 5 "Compile innovad Ubuntu 20.04" 6 "Update innovad 20.04 to latest" 2>$TEMP
+whiptail --title "Innova [INN]"  --menu  "Ubuntu 16.04/18.04 Daemon Node :" 20 0 0 1 "Compile innovad Ubuntu 16.04" 2 "Update innovad 16.04 to latest" 3 "Compile innovad Ubuntu 18.04" 4 "Update innovad 18.04 to latest" 2>$TEMP
 choice=`cat $TEMP`
 case $choice in
 1) echo 1 "Compiling innovad Ubuntu 16.04"
@@ -24,7 +24,6 @@ sudo yes | cp -rf innovad /usr/bin/
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
-mkdir ~/.innova
 cd ~/.innova || exit
 rm -rf database txleveldb smsgDB
 wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
@@ -74,13 +73,13 @@ git checkout master
 git pull
 
 cd src
-make OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib -f makefile.unix -j8
+make OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib -f makefile.unix
+
 sudo yes | cp -rf innovad /usr/bin/
 
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
-mkdir ~/.innova
 cd ~/.innova
 rm -rf database txleveldb smsgDB
 wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
@@ -126,7 +125,7 @@ openssl version -v
 echo "Installing Innova Wallet"
 git clone https://github.com/innova-foundation/innova
 cd innova
-git checkout development
+git checkout master
 git pull
 
 cd src
@@ -137,10 +136,9 @@ sudo yes | cp -rf innovad /usr/bin/
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
-mkdir ~/.innova
 cd ~/.innova
 rm -rf database txleveldb smsgDB
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.9/innovabootstrap.zip
 unzip innovabootstrap.zip
 rm -rf innovabootstrap.zip
 echo "Back to Compiled innovad Binary Folder"
@@ -161,6 +159,6 @@ echo "Copied to /usr/bin for ease of use"
 
 echo "Back to Compiled innovad Binary Folder"
 cd ~/innova/src
-                ;;
+              ;;
 esac
 echo Selected $choice

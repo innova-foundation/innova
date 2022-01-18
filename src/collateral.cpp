@@ -26,9 +26,9 @@ using namespace boost;
 CCriticalSection cs_collateral;
 
 /** The main object for accessing collateral */
-CForTunaPool forTunaPool;
+CCollaTeralPool forTunaPool;
 /** A helper object for signing messages from collateralnodes */
-CForTunaSigner forTunaSigner;
+CCollaTeralSigner forTunaSigner;
 /** The current collaterals in progress on the network */
 std::vector<CCollateralNQueue> vecCollateralNQueue;
 /** Keep track of the used collateralnodes */
@@ -43,7 +43,7 @@ int RequestedCollateralNodeList = 0;
 //MIN_MN_PROTO_VERSION
 int MIN_MN_PROTO_VERSION = 31000;
 
-/* *** BEGIN FORTUNA MAGIC  **********
+/* *** BEGIN COLLATERAL MAGIC  **********
     Copyright 2014, Darkcoin Developers
         eduffield - evan@darkcoin.io
     Copyright 2018, Denarius Developers
@@ -67,13 +67,13 @@ int GetInputCollateralNRounds(CTxIn in, int rounds)
         // bounds check
         if(in.prevout.n >= tx.vout.size()) return -4;
 
-        if(tx.vout[in.prevout.n].nValue == FORTUNA_FEE) return -3;
+        if(tx.vout[in.prevout.n].nValue == COLLATERALN_FEE) return -3;
 
         //make sure the final output is non-denominate
         if(rounds == 0 && !pwalletMain->IsDenominatedAmount(tx.vout[in.prevout.n].nValue)) return -2; //NOT DENOM
 
         bool found = false;
-        BOOST_FOREACH(CTxOut out, tx.vout)
+        for (CTxOut out : tx.vout)
         {
             found = pwalletMain->IsDenominatedAmount(out.nValue);
             if(found) break; // no need to loop more
@@ -81,7 +81,7 @@ int GetInputCollateralNRounds(CTxIn in, int rounds)
         if(!found) return rounds - 1; //NOT FOUND, "-1" because of the pre-mixing creation of denominated amounts
 
         // find my vin and look that up
-        BOOST_FOREACH(CTxIn in2, tx.vin)
+        for (CTxIn in2 : tx.vin)
         {
             if(pwalletMain->IsMine(in2))
             {
@@ -95,14 +95,14 @@ int GetInputCollateralNRounds(CTxIn in, int rounds)
     return rounds-1;
 }
 
-void CForTunaPool::Reset(){
+void CCollaTeralPool::Reset(){
     cachedLastSuccess = 0;
     vecCollateralnodesUsed.clear();
     UnlockCoins();
     SetNull();
 }
 
-void CForTunaPool::SetNull(bool clearEverything){
+void CCollaTeralPool::SetNull(bool clearEverything){
     finalTransaction.vin.clear();
     finalTransaction.vout.clear();
 
@@ -139,11 +139,11 @@ void CForTunaPool::SetNull(bool clearEverything){
     std::srand(seed);
 }
 
-bool CForTunaPool::SetCollateralAddress(std::string strAddress){
+bool CCollaTeralPool::SetCollateralAddress(std::string strAddress){
     CBitcoinAddress address;
     if (!address.SetString(strAddress))
     {
-        printf("CForTunaPool::SetCollateralAddress - Invalid ForTuna collateral address\n");
+        printf("CCollaTeralPool::SetCollateralAddress - Invalid CollaTeral collateral address\n");
         return false;
     }
     collateralPubKey= GetScriptForDestination(address.Get());
@@ -153,8 +153,8 @@ bool CForTunaPool::SetCollateralAddress(std::string strAddress){
 //
 // Unlock coins after CollateralN fails or succeeds
 //
-void CForTunaPool::UnlockCoins(){
-    BOOST_FOREACH(CTxIn v, lockedCoins)
+void CCollaTeralPool::UnlockCoins(){
+    for (CTxIn v : lockedCoins)
         pwalletMain->UnlockCoin(v.prevout);
 
     lockedCoins.clear();
@@ -163,13 +163,13 @@ void CForTunaPool::UnlockCoins(){
 //
 // Check for various timeouts (queue objects, collateral, etc)
 //
-void CForTunaPool::CheckTimeout(){
+void CCollaTeralPool::CheckTimeout(){
     if(!fCollateralNode) return;
 
     // catching hanging sessions
     if(!fCollateralNode) {
         if(state == POOL_STATUS_TRANSMISSION) {
-            if(fDebug) printf("CForTunaPool::CheckTimeout() -- Session complete -- Running Check()\n");
+            if(fDebug) printf("CCollaTeralPool::CheckTimeout() -- Session complete -- Running Check()\n");
             // Check();
         }
     }
@@ -179,7 +179,7 @@ void CForTunaPool::CheckTimeout(){
     vector<CCollateralNQueue>::iterator it;
     for(it=vecCollateralNQueue.begin();it<vecCollateralNQueue.end();it++){
         if((*it).IsExpired()){
-            if(fDebug) printf("CForTunaPool::CheckTimeout() : Removing expired queue entry - %d\n", c);
+            if(fDebug) printf("CCollaTeralPool::CheckTimeout() : Removing expired queue entry - %d\n", c);
             vecCollateralNQueue.erase(it);
             break;
         }
@@ -206,28 +206,28 @@ void CForTunaPool::CheckTimeout(){
         c = 0;
 
         // if it's a collateralnode, the entries are stored in "entries", otherwise they're stored in myEntries
-        std::vector<CForTunaEntry> *vec = &myEntries;
+        std::vector<CCollaTeralEntry> *vec = &myEntries;
         if(fCollateralNode) vec = &entries;
 
         // check for a timeout and reset if needed
-        vector<CForTunaEntry>::iterator it2;
+        vector<CCollaTeralEntry>::iterator it2;
         for(it2=vec->begin();it2<vec->end();it2++){
             if((*it2).IsExpired()){
-                if(fDebug) printf("CForTunaPool::CheckTimeout() : Removing expired entry - %d\n", c);
+                if(fDebug) printf("CCollaTeralPool::CheckTimeout() : Removing expired entry - %d\n", c);
                 vec->erase(it2);
                 if(entries.size() == 0 && myEntries.size() == 0){
                     SetNull(true);
                     UnlockCoins();
                 }
                 if(fCollateralNode){
-                    RelayForTunaStatus(forTunaPool.sessionID, forTunaPool.GetState(), forTunaPool.GetEntriesCount(), FORTUNASTAKE_RESET);
+                    RelayCollaTeralStatus(forTunaPool.sessionID, forTunaPool.GetState(), forTunaPool.GetEntriesCount(), COLLATERALNODE_RESET);
                 }
                 break;
             }
             c++;
         }
 
-        if(GetTimeMillis()-lastTimeChanged >= (FORTUNA_QUEUE_TIMEOUT*1000)+addLagTime){
+        if(GetTimeMillis()-lastTimeChanged >= (COLLATERALN_QUEUE_TIMEOUT*1000)+addLagTime){
             lastTimeChanged = GetTimeMillis();
 
             // reset session information for the queue query stage (before entering a collateralnode, clients will send a queue request to make sure they're compatible denomination wise)
@@ -238,8 +238,8 @@ void CForTunaPool::CheckTimeout(){
 
             UpdateState(POOL_STATUS_ACCEPTING_ENTRIES);
         }
-    } else if(GetTimeMillis()-lastTimeChanged >= (FORTUNA_QUEUE_TIMEOUT*1000)+addLagTime){
-        if(fDebug) printf("CForTunaPool::CheckTimeout() -- Session timed out (30s) -- resetting\n");
+    } else if(GetTimeMillis()-lastTimeChanged >= (COLLATERALN_QUEUE_TIMEOUT*1000)+addLagTime){
+        if(fDebug) printf("CCollaTeralPool::CheckTimeout() -- Session timed out (30s) -- resetting\n");
         SetNull();
         UnlockCoins();
 
@@ -247,8 +247,8 @@ void CForTunaPool::CheckTimeout(){
         lastMessage = _("Session timed out (30 seconds), please resubmit.");
     }
 
-    if(state == POOL_STATUS_SIGNING && GetTimeMillis()-lastTimeChanged >= (FORTUNA_SIGNING_TIMEOUT*1000)+addLagTime ) {
-        if(fDebug) printf("CForTunaPool::CheckTimeout() -- Session timed out -- restting\n");
+    if(state == POOL_STATUS_SIGNING && GetTimeMillis()-lastTimeChanged >= (COLLATERALN_SIGNING_TIMEOUT*1000)+addLagTime ) {
+        if(fDebug) printf("CCollaTeralPool::CheckTimeout() -- Session timed out -- restting\n");
         SetNull();
         UnlockCoins();
         //add my transactions to the new session
@@ -259,7 +259,7 @@ void CForTunaPool::CheckTimeout(){
 }
 
 // check to see if the signature is valid
-bool CForTunaPool::SignatureValid(const CScript& newSig, const CTxIn& newVin){
+bool CCollaTeralPool::SignatureValid(const CScript& newSig, const CTxIn& newVin){
     CTransaction txNew;
     txNew.vin.clear();
     txNew.vout.clear();
@@ -268,11 +268,11 @@ bool CForTunaPool::SignatureValid(const CScript& newSig, const CTxIn& newVin){
     CScript sigPubKey = CScript();
     unsigned int i = 0;
 
-    BOOST_FOREACH(CForTunaEntry e, entries) {
-        BOOST_FOREACH(const CTxOut out, e.vout)
+    for (CCollaTeralEntry e : entries) {
+        for (const CTxOut out : e.vout)
             txNew.vout.push_back(out);
 
-        BOOST_FOREACH(const CForTunaEntryVin s, e.sev){
+        for (const CCollaTeralEntryVin s : e.sev){
             txNew.vin.push_back(s.vin);
 
             if(s.vin == newVin){
@@ -286,19 +286,19 @@ bool CForTunaPool::SignatureValid(const CScript& newSig, const CTxIn& newVin){
     if(found >= 0){ //might have to do this one input at a time?
         int n = found;
         txNew.vin[n].scriptSig = newSig;
-        if(fDebug) printf("CForTunaPool::SignatureValid() - Sign with sig %s\n", newSig.ToString().substr(0,24).c_str());
+        if(fDebug) printf("CCollaTeralPool::SignatureValid() - Sign with sig %s\n", newSig.ToString().substr(0,24).c_str());
         if (!VerifyScript(txNew.vin[n].scriptSig, sigPubKey, txNew, i, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC, 0)){
-            if(fDebug) printf("CForTunaPool::SignatureValid() - Signing - Error signing input %u\n", n);
+            if(fDebug) printf("CCollaTeralPool::SignatureValid() - Signing - Error signing input %u\n", n);
             return false;
         }
     }
 
-    if(fDebug) printf("CForTunaPool::SignatureValid() - Signing - Succesfully signed input\n");
+    if(fDebug) printf("CCollaTeralPool::SignatureValid() - Signing - Succesfully signed input\n");
     return true;
 }
 
 // check to make sure the collateral provided by the client is valid
-bool CForTunaPool::IsCollateralValid(const CTransaction& txCollateral){
+bool CCollaTeralPool::IsCollateralValid(const CTransaction& txCollateral){
     if(txCollateral.vout.size() < 1) return false;
     if(txCollateral.nLockTime != 0) return false;
 
@@ -306,16 +306,16 @@ bool CForTunaPool::IsCollateralValid(const CTransaction& txCollateral){
     int64_t nValueOut = 0;
     bool missingTx = false;
 
-    BOOST_FOREACH(const CTxOut o, txCollateral.vout){
+    for (const CTxOut o : txCollateral.vout){
         nValueOut += o.nValue;
 
         if(!o.scriptPubKey.IsNormalPaymentScript()){
-            printf("CForTunaPool::IsCollateralValid - Invalid Script %s\n", txCollateral.ToString().c_str());
+            printf("CCollaTeralPool::IsCollateralValid - Invalid Script %s\n", txCollateral.ToString().c_str());
             return false;
         }
     }
 
-    BOOST_FOREACH(const CTxIn i, txCollateral.vin){
+    for (const CTxIn i : txCollateral.vin){
         CTransaction tx2;
         uint256 hash;
         //if(GetTransaction(i.prevout.hash, tx2, hash, true)){
@@ -329,23 +329,23 @@ bool CForTunaPool::IsCollateralValid(const CTransaction& txCollateral){
     }
 
     if(missingTx){
-        if(fDebug) printf("CForTunaPool::IsCollateralValid - Unknown inputs in collateral transaction - %s\n", txCollateral.ToString().c_str());
+        if(fDebug) printf("CCollaTeralPool::IsCollateralValid - Unknown inputs in collateral transaction - %s\n", txCollateral.ToString().c_str());
         return false;
     }
 
-    //collateral transactions are required to pay out FORTUNA_COLLATERAL as a fee to the miners
-    if(nValueIn-nValueOut < FORTUNA_COLLATERAL) {
-        if(fDebug) printf("CForTunaPool::IsCollateralValid - did not include enough fees in transaction %lu\n%s\n", nValueOut-nValueIn, txCollateral.ToString().c_str());
+    //collateral transactions are required to pay out COLLATERALN_COLLATERAL as a fee to the miners
+    if(nValueIn-nValueOut < COLLATERALN_COLLATERAL) {
+        if(fDebug) printf("CCollaTeralPool::IsCollateralValid - did not include enough fees in transaction %lu\n%s\n", nValueOut-nValueIn, txCollateral.ToString().c_str());
         return false;
     }
 
-    if(fDebug) printf("CForTunaPool::IsCollateralValid %s\n", txCollateral.ToString().c_str());
+    if(fDebug) printf("CCollaTeralPool::IsCollateralValid %s\n", txCollateral.ToString().c_str());
 
     CValidationState state;
     //if(!AcceptableInputs(mempool, state, txCollateral)){
     bool* pfMissingInputs;
     if(!AcceptableInputs(mempool, txCollateral, false, pfMissingInputs)){
-        if(fDebug) printf("CForTunaPool::IsCollateralValid - didn't pass IsAcceptable\n");
+        if(fDebug) printf("CCollaTeralPool::IsCollateralValid - didn't pass IsAcceptable\n");
         return false;
     }
 
@@ -356,12 +356,12 @@ bool CForTunaPool::IsCollateralValid(const CTransaction& txCollateral){
 //
 // Add a clients transaction to the pool
 //
-bool CForTunaPool::AddEntry(const std::vector<CTxIn>& newInput, const int64_t& nAmount, const CTransaction& txCollateral, const std::vector<CTxOut>& newOutput, std::string& error){
+bool CCollaTeralPool::AddEntry(const std::vector<CTxIn>& newInput, const int64_t& nAmount, const CTransaction& txCollateral, const std::vector<CTxOut>& newOutput, std::string& error){
     if (!fCollateralNode) return false;
 
-    BOOST_FOREACH(CTxIn in, newInput) {
+    for (CTxIn in : newInput) {
         if (in.prevout.IsNull() || nAmount < 0) {
-            if(fDebug) printf("CForTunaPool::AddEntry - input not valid!\n");
+            if(fDebug) printf("CCollaTeralPool::AddEntry - input not valid!\n");
             error = _("Input is not valid.");
             sessionUsers--;
             return false;
@@ -369,25 +369,25 @@ bool CForTunaPool::AddEntry(const std::vector<CTxIn>& newInput, const int64_t& n
     }
 
     if (!IsCollateralValid(txCollateral)){
-        if(fDebug) printf("CForTunaPool::AddEntry - collateral not valid!\n");
+        if(fDebug) printf("CCollaTeralPool::AddEntry - collateral not valid!\n");
         error = _("Collateral is not valid.");
         sessionUsers--;
         return false;
     }
 
     if((int)entries.size() >= GetMaxPoolTransactions()){
-        if(fDebug) printf("CForTunaPool::AddEntry - entries is full!\n");
+        if(fDebug) printf("CCollaTeralPool::AddEntry - entries is full!\n");
         error = _("Entries are full.");
         sessionUsers--;
         return false;
     }
 
-    BOOST_FOREACH(CTxIn in, newInput) {
+    for (CTxIn in : newInput) {
         if(fDebug) printf("looking for vin -- %s\n", in.ToString().c_str());
-        BOOST_FOREACH(const CForTunaEntry v, entries) {
-            BOOST_FOREACH(const CForTunaEntryVin s, v.sev){
+        for (const CCollaTeralEntry v : entries) {
+            for (const CCollaTeralEntryVin s : v.sev){
                 if(s.vin == in) {
-                    if(fDebug) printf("CForTunaPool::AddEntry - found in vin\n");
+                    if(fDebug) printf("CCollaTeralPool::AddEntry - found in vin\n");
                     error = _("Already have that input.");
                     sessionUsers--;
                     return false;
@@ -397,65 +397,65 @@ bool CForTunaPool::AddEntry(const std::vector<CTxIn>& newInput, const int64_t& n
     }
 
     if(state == POOL_STATUS_ACCEPTING_ENTRIES) {
-        CForTunaEntry v;
+        CCollaTeralEntry v;
         v.Add(newInput, nAmount, txCollateral, newOutput);
         entries.push_back(v);
 
-        if(fDebug) printf("CForTunaPool::AddEntry -- adding %s\n", newInput[0].ToString().c_str());
+        if(fDebug) printf("CCollaTeralPool::AddEntry -- adding %s\n", newInput[0].ToString().c_str());
         error = "";
 
         return true;
     }
 
-    if(fDebug) printf("CForTunaPool::AddEntry - can't accept new entry, wrong state!\n");
+    if(fDebug) printf("CCollaTeralPool::AddEntry - can't accept new entry, wrong state!\n");
     error = _("Wrong state.");
     sessionUsers--;
     return false;
 }
 
-bool CForTunaPool::AddScriptSig(const CTxIn newVin){
-    if(fDebug) printf("CForTunaPool::AddScriptSig -- new sig  %s\n", newVin.scriptSig.ToString().substr(0,24).c_str());
+bool CCollaTeralPool::AddScriptSig(const CTxIn newVin){
+    if(fDebug) printf("CCollaTeralPool::AddScriptSig -- new sig  %s\n", newVin.scriptSig.ToString().substr(0,24).c_str());
 
-    BOOST_FOREACH(const CForTunaEntry v, entries) {
-        BOOST_FOREACH(const CForTunaEntryVin s, v.sev){
+    for (const CCollaTeralEntry v : entries) {
+        for (const CCollaTeralEntryVin s : v.sev){
             if(s.vin.scriptSig == newVin.scriptSig) {
-                printf("CForTunaPool::AddScriptSig - already exists \n");
+                printf("CCollaTeralPool::AddScriptSig - already exists \n");
                 return false;
             }
         }
     }
 
     if(!SignatureValid(newVin.scriptSig, newVin)){
-        if(fDebug) printf("CForTunaPool::AddScriptSig - Invalid Sig\n");
+        if(fDebug) printf("CCollaTeralPool::AddScriptSig - Invalid Sig\n");
         return false;
     }
 
-    if(fDebug) printf("CForTunaPool::AddScriptSig -- sig %s\n", newVin.ToString().c_str());
+    if(fDebug) printf("CCollaTeralPool::AddScriptSig -- sig %s\n", newVin.ToString().c_str());
 
     if(state == POOL_STATUS_SIGNING) {
-        BOOST_FOREACH(CTxIn& vin, finalTransaction.vin){
+        for (CTxIn& vin : finalTransaction.vin){
             if(newVin.prevout == vin.prevout && vin.nSequence == newVin.nSequence){
                 vin.scriptSig = newVin.scriptSig;
                 vin.prevPubKey = newVin.prevPubKey;
-                if(fDebug) printf("CForTunaPool::AddScriptSig -- adding to finalTransaction  %s\n", newVin.scriptSig.ToString().substr(0,24).c_str());
+                if(fDebug) printf("CCollaTeralPool::AddScriptSig -- adding to finalTransaction  %s\n", newVin.scriptSig.ToString().substr(0,24).c_str());
             }
         }
         for(unsigned int i = 0; i < entries.size(); i++){
             if(entries[i].AddSig(newVin)){
-                if(fDebug) printf("CForTunaPool::AddScriptSig -- adding  %s\n", newVin.scriptSig.ToString().substr(0,24).c_str());
+                if(fDebug) printf("CCollaTeralPool::AddScriptSig -- adding  %s\n", newVin.scriptSig.ToString().substr(0,24).c_str());
                 return true;
             }
         }
     }
 
-    printf("CForTunaPool::AddScriptSig -- Couldn't set sig!\n" );
+    printf("CCollaTeralPool::AddScriptSig -- Couldn't set sig!\n" );
     return false;
 }
 
 // check to make sure everything is signed
-bool CForTunaPool::SignaturesComplete(){
-    BOOST_FOREACH(const CForTunaEntry v, entries) {
-        BOOST_FOREACH(const CForTunaEntryVin s, v.sev){
+bool CCollaTeralPool::SignaturesComplete(){
+    for (const CCollaTeralEntry v : entries) {
+        for (const CCollaTeralEntryVin s : v.sev){
             if(!s.isSigSet) return false;
         }
     }
@@ -467,7 +467,7 @@ bool CForTunaPool::SignaturesComplete(){
 //                  0 means transaction was not accepted
 //                  1 means transaction was accepted
 
-bool CForTunaPool::StatusUpdate(int newState, int newEntriesCount, int newAccepted, std::string& error, int newSessionID){
+bool CCollaTeralPool::StatusUpdate(int newState, int newEntriesCount, int newAccepted, std::string& error, int newSessionID){
     if(fCollateralNode) return false;
     if(state == POOL_STATUS_ERROR || state == POOL_STATUS_SUCCESS) return false;
 
@@ -486,19 +486,19 @@ bool CForTunaPool::StatusUpdate(int newState, int newEntriesCount, int newAccept
 
         if(newAccepted == 1) {
             sessionID = newSessionID;
-            printf("CForTunaPool::StatusUpdate - set sessionID to %d\n", sessionID);
+            printf("CCollaTeralPool::StatusUpdate - set sessionID to %d\n", sessionID);
             sessionFoundCollateralnode = true;
         }
     }
 
     if(newState == POOL_STATUS_ACCEPTING_ENTRIES){
         if(newAccepted == 1){
-            printf("CForTunaPool::StatusUpdate - entry accepted! \n");
+            printf("CCollaTeralPool::StatusUpdate - entry accepted! \n");
             sessionFoundCollateralnode = true;
             //wait for other users. Collateralnode will report when ready
             UpdateState(POOL_STATUS_QUEUE);
         } else if (newAccepted == 0 && sessionID == 0 && !sessionFoundCollateralnode) {
-            printf("CForTunaPool::StatusUpdate - entry not accepted by collateralnode \n");
+            printf("CCollaTeralPool::StatusUpdate - entry not accepted by collateralnode \n");
             UnlockCoins();
             UpdateState(POOL_STATUS_ACCEPTING_ENTRIES);
         }
@@ -513,22 +513,22 @@ bool CForTunaPool::StatusUpdate(int newState, int newEntriesCount, int newAccept
 // check it to make sure it's what we want, then sign it if we agree.
 // If we refuse to sign, it's possible we'll be charged collateral
 //
-bool CForTunaPool::SignFinalTransaction(CTransaction& finalTransactionNew, CNode* node){
-    if(fDebug) printf("CForTunaPool::AddFinalTransaction - Got Finalized Transaction\n");
+bool CCollaTeralPool::SignFinalTransaction(CTransaction& finalTransactionNew, CNode* node){
+    if(fDebug) printf("CCollaTeralPool::AddFinalTransaction - Got Finalized Transaction\n");
 
     if(!finalTransaction.vin.empty()){
-        printf("CForTunaPool::AddFinalTransaction - Rejected Final Transaction!\n");
+        printf("CCollaTeralPool::AddFinalTransaction - Rejected Final Transaction!\n");
         return false;
     }
 
     finalTransaction = finalTransactionNew;
-    printf("CForTunaPool::SignFinalTransaction %s\n", finalTransaction.ToString().c_str());
+    printf("CCollaTeralPool::SignFinalTransaction %s\n", finalTransaction.ToString().c_str());
 
     vector<CTxIn> sigs;
 
     //make sure my inputs/outputs are present, otherwise refuse to sign
-    BOOST_FOREACH(const CForTunaEntry e, myEntries) {
-        BOOST_FOREACH(const CForTunaEntryVin s, e.sev) {
+    for (const CCollaTeralEntry e : myEntries) {
+        for (const CCollaTeralEntryVin s : e.sev) {
             /* Sign my transaction and all outputs */
             int mine = -1;
             CScript prevPubKey = CScript();
@@ -548,7 +548,7 @@ bool CForTunaPool::SignFinalTransaction(CTransaction& finalTransactionNew, CNode
                 int64_t nValue2 = 0;
 
                 for(unsigned int i = 0; i < finalTransaction.vout.size(); i++){
-                    BOOST_FOREACH(const CTxOut o, e.vout) {
+                    for (const CTxOut o : e.vout) {
                         if(finalTransaction.vout[i] == o){
                             foundOutputs++;
                             nValue1 += finalTransaction.vout[i].nValue;
@@ -556,20 +556,20 @@ bool CForTunaPool::SignFinalTransaction(CTransaction& finalTransactionNew, CNode
                     }
                 }
 
-                BOOST_FOREACH(const CTxOut o, e.vout)
+                for (const CTxOut o : e.vout)
                     nValue2 += o.nValue;
 
                 int targetOuputs = e.vout.size();
                 if(foundOutputs < targetOuputs || nValue1 != nValue2) {
                     // in this case, something went wrong and we'll refuse to sign. It's possible we'll be charged collateral. But that's
                     // better then signing if the transaction doesn't look like what we wanted.
-                    printf("CForTunaPool::Sign - My entries are not correct! Refusing to sign. %d entries %d target. \n", foundOutputs, targetOuputs);
+                    printf("CCollaTeralPool::Sign - My entries are not correct! Refusing to sign. %d entries %d target. \n", foundOutputs, targetOuputs);
                     return false;
                 }
 
-                if(fDebug) printf("CForTunaPool::Sign - Signing my input %i\n", mine);
+                if(fDebug) printf("CCollaTeralPool::Sign - Signing my input %i\n", mine);
                 if(!SignSignature(*pwalletMain, prevPubKey, finalTransaction, mine, int(SIGHASH_ALL|SIGHASH_ANYONECANPAY))) { // changes scriptSig
-                    if(fDebug) printf("CForTunaPool::Sign - Unable to sign my own transaction! \n");
+                    if(fDebug) printf("CCollaTeralPool::Sign - Unable to sign my own transaction! \n");
                     // not sure what to do here, it will timeout...?
                 }
 
@@ -579,7 +579,7 @@ bool CForTunaPool::SignFinalTransaction(CTransaction& finalTransactionNew, CNode
 
         }
 
-        if(fDebug) printf("CForTunaPool::Sign - txNew:\n%s", finalTransaction.ToString().c_str());
+        if(fDebug) printf("CCollaTeralPool::Sign - txNew:\n%s", finalTransaction.ToString().c_str());
     }
 
     // push all of our signatures to the collateralnode
@@ -589,9 +589,9 @@ bool CForTunaPool::SignFinalTransaction(CTransaction& finalTransactionNew, CNode
     return true;
 }
 
-void CForTunaPool::NewBlock()
+void CCollaTeralPool::NewBlock()
 {
-    if(fDebug) printf("CForTunaPool::NewBlock \n");
+    if(fDebug) printf("CCollaTeralPool::NewBlock \n");
 
     //we we're processing lots of blocks, we'll just leave
     if(GetTime() - lastNewBlock < 10) return;
@@ -609,17 +609,17 @@ void CForTunaPool::NewBlock()
     }
 }
 
-void CForTunaPool::ClearLastMessage()
+void CCollaTeralPool::ClearLastMessage()
 {
     lastMessage = "";
 }
 
-bool CForTunaPool::IsCompatibleWithSession(int64_t nDenom, CTransaction txCollateral, std::string& strReason)
+bool CCollaTeralPool::IsCompatibleWithSession(int64_t nDenom, CTransaction txCollateral, std::string& strReason)
 {
-    printf("CForTunaPool::IsCompatibleWithSession - sessionDenom %d sessionUsers %d\n", sessionDenom, sessionUsers);
+    printf("CCollaTeralPool::IsCompatibleWithSession - sessionDenom %d sessionUsers %d\n", sessionDenom, sessionUsers);
 
     if (!unitTest && !IsCollateralValid(txCollateral)){
-        if(fDebug) printf("CForTunaPool::IsCompatibleWithSession - collateral not valid!\n");
+        if(fDebug) printf("CCollaTeralPool::IsCompatibleWithSession - collateral not valid!\n");
         strReason = _("Collateral not valid.");
         return false;
     }
@@ -650,7 +650,7 @@ bool CForTunaPool::IsCompatibleWithSession(int64_t nDenom, CTransaction txCollat
     if((state != POOL_STATUS_ACCEPTING_ENTRIES && state != POOL_STATUS_QUEUE) || sessionUsers >= GetMaxPoolTransactions()){
         if((state != POOL_STATUS_ACCEPTING_ENTRIES && state != POOL_STATUS_QUEUE)) strReason = _("Incompatible mode.");
         if(sessionUsers >= GetMaxPoolTransactions()) strReason = _("Collateralnode queue is full.");
-        printf("CForTunaPool::IsCompatibleWithSession - incompatible mode, return false %d %d\n", state != POOL_STATUS_ACCEPTING_ENTRIES, sessionUsers >= GetMaxPoolTransactions());
+        printf("CCollaTeralPool::IsCompatibleWithSession - incompatible mode, return false %d %d\n", state != POOL_STATUS_ACCEPTING_ENTRIES, sessionUsers >= GetMaxPoolTransactions());
         return false;
     }
 
@@ -659,7 +659,7 @@ bool CForTunaPool::IsCompatibleWithSession(int64_t nDenom, CTransaction txCollat
         return false;
     }
 
-    printf("CForTunaPool::IsCompatibleWithSession - compatible\n");
+    printf("CCollaTeralPool::IsCompatibleWithSession - compatible\n");
 
     sessionUsers++;
     lastTimeChanged = GetTimeMillis();
@@ -669,7 +669,7 @@ bool CForTunaPool::IsCompatibleWithSession(int64_t nDenom, CTransaction txCollat
 }
 
 //create a nice string to show the denominations
-void CForTunaPool::GetDenominationsToString(int nDenom, std::string& strDenom){
+void CCollaTeralPool::GetDenominationsToString(int nDenom, std::string& strDenom){
     // Function returns as follows:
     //
     // bit 0 - 100D+1 ( bit on if present )
@@ -703,17 +703,17 @@ void CForTunaPool::GetDenominationsToString(int nDenom, std::string& strDenom){
 }
 
 // return a bitshifted integer representing the denominations in this list
-int CForTunaPool::GetDenominations(const std::vector<CTxOut>& vout){
+int CCollaTeralPool::GetDenominations(const std::vector<CTxOut>& vout){
     std::vector<pair<int64_t, int> > denomUsed;
 
     // make a list of denominations, with zero uses
-    BOOST_FOREACH(int64_t d, forTunaDenominations)
+    for (int64_t d : forTunaDenominations)
         denomUsed.push_back(make_pair(d, 0));
 
     // look for denominations and update uses to 1
-    BOOST_FOREACH(CTxOut out, vout){
+    for (CTxOut out : vout){
         bool found = false;
-        BOOST_FOREACH (PAIRTYPE(int64_t, int)& s, denomUsed){
+        for (PAIRTYPE(int64_t, int)& s : denomUsed){
             if (out.nValue == s.first){
                 s.second = 1;
                 found = true;
@@ -726,7 +726,7 @@ int CForTunaPool::GetDenominations(const std::vector<CTxOut>& vout){
     int c = 0;
     // if the denomination is used, shift the bit on.
     // then move to the next
-    BOOST_FOREACH (PAIRTYPE(int64_t, int)& s, denomUsed)
+    for (PAIRTYPE(int64_t, int)& s : denomUsed)
         denom |= s.second << c++;
 
     // Function returns as follows:
@@ -740,7 +740,7 @@ int CForTunaPool::GetDenominations(const std::vector<CTxOut>& vout){
 }
 
 
-int CForTunaPool::GetDenominationsByAmounts(std::vector<int64_t>& vecAmount){
+int CCollaTeralPool::GetDenominationsByAmounts(std::vector<int64_t>& vecAmount){
     CScript e = CScript();
     std::vector<CTxOut> vout1;
 
@@ -756,7 +756,7 @@ int CForTunaPool::GetDenominationsByAmounts(std::vector<int64_t>& vecAmount){
     return GetDenominations(vout1);
 }
 
-int CForTunaPool::GetDenominationsByAmount(int64_t nAmount, int nDenomTarget){
+int CCollaTeralPool::GetDenominationsByAmount(int64_t nAmount, int nDenomTarget){
     CScript e = CScript();
     int64_t nValueLeft = nAmount;
 
@@ -797,7 +797,7 @@ int CForTunaPool::GetDenominationsByAmount(int64_t nAmount, int nDenomTarget){
     return GetDenominations(vout1);
 }
 
-bool CForTunaSigner::IsVinAssociatedWithPubkey(CTxIn& vin, CPubKey& pubkey){
+bool CCollaTeralSigner::IsVinAssociatedWithPubkey(CTxIn& vin, CPubKey& pubkey){
 	bool fIsInitialDownload = IsInitialBlockDownload();
     if(fIsInitialDownload) return;
 
@@ -829,7 +829,7 @@ bool CForTunaSigner::IsVinAssociatedWithPubkey(CTxIn& vin, CPubKey& pubkey){
     return false;
 }
 
-bool CForTunaSigner::SetKey(std::string strSecret, std::string& errorMessage, CKey& key, CPubKey& pubkey){
+bool CCollaTeralSigner::SetKey(std::string strSecret, std::string& errorMessage, CKey& key, CPubKey& pubkey){
     CBitcoinSecret vchSecret;
     bool fGood = vchSecret.SetString(strSecret);
 
@@ -844,7 +844,7 @@ bool CForTunaSigner::SetKey(std::string strSecret, std::string& errorMessage, CK
     return true;
 }
 
-bool CForTunaSigner::SignMessage(std::string strMessage, std::string& errorMessage, vector<unsigned char>& vchSig, CKey key)
+bool CCollaTeralSigner::SignMessage(std::string strMessage, std::string& errorMessage, vector<unsigned char>& vchSig, CKey key)
 {
     CHashWriter ss(SER_GETHASH, 0);
     ss << strMessageMagic;
@@ -858,7 +858,7 @@ bool CForTunaSigner::SignMessage(std::string strMessage, std::string& errorMessa
     return true;
 }
 
-bool CForTunaSigner::VerifyMessage(CPubKey pubkey, vector<unsigned char>& vchSig, std::string strMessage, std::string& errorMessage)
+bool CCollaTeralSigner::VerifyMessage(CPubKey pubkey, vector<unsigned char>& vchSig, std::string strMessage, std::string& errorMessage)
 {
     CHashWriter ss(SER_GETHASH, 0);
     ss << strMessageMagic;
@@ -871,7 +871,7 @@ bool CForTunaSigner::VerifyMessage(CPubKey pubkey, vector<unsigned char>& vchSig
     }
 
     if (fDebug && pubkey2.GetID() != pubkey.GetID())
-        printf("CForTunaSigner::VerifyMessage -- keys don't match: %s %s", pubkey2.GetID().ToString().c_str(), pubkey.GetID().ToString().c_str());
+        printf("CCollaTeralSigner::VerifyMessage -- keys don't match: %s %s", pubkey2.GetID().ToString().c_str(), pubkey.GetID().ToString().c_str());
 
     return (pubkey2.GetID() == pubkey.GetID());
 }
@@ -909,7 +909,7 @@ bool CCollateralNQueue::Relay()
 {
 
     //LOCK(cs_vNodes);
-    BOOST_FOREACH(CNode* pnode, vNodes){
+    for (CNode* pnode : vNodes){
         // always relay to everyone
         pnode->PushMessage("dsq", (*this));
     }
@@ -919,7 +919,7 @@ bool CCollateralNQueue::Relay()
 
 bool CCollateralNQueue::CheckSignature()
 {
-    BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes) {
+    for (CCollateralNode& mn : vecCollateralnodes) {
 
         if(mn.vin == vin) {
             std::string strMessage = vin.ToString() + boost::lexical_cast<std::string>(nDenom) + boost::lexical_cast<std::string>(time) + boost::lexical_cast<std::string>(ready);
@@ -938,7 +938,7 @@ bool CCollateralNQueue::CheckSignature()
 
 
 //TODO: Rename/move to core
-void ThreadCheckForTunaPool(void* parg)
+void ThreadCheckCollaTeralPool(void* parg)
 {
     // Make this thread recognisable as the wallet flushing thread
     RenameThread("innova-mn");
@@ -951,7 +951,7 @@ void ThreadCheckForTunaPool(void* parg)
         c++;
 
         MilliSleep(1000);
-        //printf("ThreadCheckForTunaPool::check timeout\n");
+        //printf("ThreadCheckCollaTeralPool::check timeout\n");
         //forTunaPool.CheckTimeout();
 
         int mnTimeout = 150; //2.5 minutes
@@ -996,7 +996,7 @@ void ThreadCheckForTunaPool(void* parg)
             bool fIsInitialDownload = IsInitialBlockDownload();
             if(!fIsInitialDownload) {
                 LOCK(cs_vNodes);
-                BOOST_FOREACH(CNode* pnode, vNodes)
+                for (CNode* pnode : vNodes)
                 {
                     if (pnode->nVersion >= forTunaPool.PROTOCOL_VERSION) {
 
@@ -1016,7 +1016,7 @@ void ThreadCheckForTunaPool(void* parg)
             }
         }
 
-        if(c % FORTUNASTAKE_PING_SECONDS == 0){
+        if(c % COLLATERALNODE_PING_SECONDS == 0){
             activeCollateralnode.ManageStatus();
         }
 

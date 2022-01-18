@@ -14,7 +14,6 @@
 #undef printf
 #include <boost/asio.hpp>
 #include <boost/asio/ip/v6_only.hpp>
-#include <boost/bind.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/foreach.hpp>
 #include <boost/iostreams/concepts.hpp>
@@ -26,6 +25,14 @@
 #include <boost/shared_ptr.hpp>
 #include <boost/version.hpp>
 #include <list>
+
+#if BOOST_VERSION >= 107300
+#include <boost/bind/bind.hpp>
+using boost::placeholders::_1;
+using boost::placeholders::_2;
+#else
+#include <boost/bind.hpp>
+#endif
 
 #define printf OutputDebugStringF
 
@@ -60,7 +67,7 @@ void RPCTypeCheck(const Array& params,
                   bool fAllowNull)
 {
     unsigned int i = 0;
-    BOOST_FOREACH(Value_type t, typesExpected)
+    for (Value_type t : typesExpected)
     {
         if (params.size() <= i)
             break;
@@ -80,7 +87,7 @@ void RPCTypeCheck(const Object& o,
                   const map<string, Value_type>& typesExpected,
                   bool fAllowNull)
 {
-    BOOST_FOREACH(const PAIRTYPE(string, Value_type)& t, typesExpected)
+    for (const PAIRTYPE(string, Value_type)& t : typesExpected)
     {
         const Value& v = find_value(o, t.first);
         if (!fAllowNull && v.type() == null_type)
@@ -273,6 +280,9 @@ static const CRPCCommand vRPCCommands[] =
     { "getnetworkinfo",         &getnetworkinfo,         true,   false },
     { "gethashespersec",        &gethashespersec,        true,   false },
     { "addnode",                &addnode,                true,   true },
+    { "setban",                 &setban,                 true,   true },
+    { "listbanned",             &listbanned,             true,   true },
+    { "clearbanned",            &clearbanned,            true,   true },
     { "dumpbootstrap",          &dumpbootstrap,          false,  false },
     { "getdifficulty",          &getdifficulty,          true,   false },
     { "getinfo",                &getinfo,                true,   false },
@@ -341,13 +351,16 @@ static const CRPCCommand vRPCCommands[] =
     { "sendrawtransaction",     &sendrawtransaction,     false,  false },
     { "searchrawtransactions",  &searchrawtransactions,  false,  false },
     { "getcheckpoint",          &getcheckpoint,          true,   false },
-    { "reservebalance",         &reservebalance,         false,  true},
-    { "checkwallet",            &checkwallet,            false,  true},
-    { "repairwallet",           &repairwallet,           false,  true},
-    { "resendtx",               &resendtx,               false,  true},
-    { "makekeypair",            &makekeypair,            false,  true},
+    { "reservebalance",         &reservebalance,         false,  true  },
+    { "setstakesplitthreshold", &setstakesplitthreshold, false,  true  },
+    { "getstakesplitthreshold", &getstakesplitthreshold, false,  true  },
+    { "autocombinerewards",     &autocombinerewards,      false,  true },
+    { "checkwallet",            &checkwallet,            false,  true  },
+    { "repairwallet",           &repairwallet,           false,  true  },
+    { "resendtx",               &resendtx,               false,  true  },
+    { "makekeypair",            &makekeypair,            false,  true  },
     { "setdebug",               &setdebug,               true,   false },
-    { "sendalert",              &sendalert,              false,  false},
+    { "sendalert",              &sendalert,              false,  false },
     { "gettxout",               &gettxout,               true,   false },
     { "importaddress",          &importaddress,          false,  false },
     { "burn",                   &burn,                   false,  false },
@@ -407,7 +420,7 @@ static const CRPCCommand vRPCCommands[] =
     { "name_list",              &name_list,              false,  false },
     { "name_scan",              &name_scan,              false,  false },
     { "name_mempool",           &name_mempool,           false,  false },
-    //{ "name_history",           &name_history,           false,  false },
+  //{ "name_history",           &name_history,           false,  false },
     { "name_filter",            &name_filter,            false,  false },
     { "name_show",              &name_show,              false,  false },
     { "name_debug",             &name_debug,             false,  false },
@@ -452,7 +465,7 @@ string HTTPPost(const string& strMsg, const map<string,string>& mapRequestHeader
       << "Content-Length: " << strMsg.size() << "\r\n"
       << "Connection: close\r\n"
       << "Accept: application/json\r\n";
-    BOOST_FOREACH(const PAIRTYPE(string, string)& item, mapRequestHeaders)
+    for (const PAIRTYPE(string, string)& item : mapRequestHeaders)
         s << item.first << ": " << item.second << "\r\n";
     s << "\r\n" << strMsg;
 
@@ -666,7 +679,7 @@ bool ClientAllowed(const boost::asio::ip::address& address)
 
     const string strAddress = address.to_string();
     const vector<string>& vAllow = mapMultiArgs["-rpcallowip"];
-    BOOST_FOREACH(string strAllow, vAllow)
+    for (string strAllow : vAllow)
         if (WildcardMatch(strAddress, strAllow))
             return true;
     return false;
@@ -1338,7 +1351,7 @@ void ConvertTo(Value& value, bool fAllowNull=false)
 Array RPCConvertValues(const std::string &strMethod, const std::vector<std::string> &strParams)
 {
     Array params;
-    BOOST_FOREACH(const std::string &param, strParams)
+    for (const std::string &param : strParams)
         params.push_back(param);
 
     int n = params.size();
@@ -1390,6 +1403,10 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "sendmany"               && n > 2) ConvertTo<int64_t>(params[2]);
     if (strMethod == "reservebalance"         && n > 0) ConvertTo<bool>(params[0]);
     if (strMethod == "reservebalance"         && n > 1) ConvertTo<double>(params[1]);
+    if (strMethod == "setstakesplitthreshold" && n > 0) ConvertTo<double>(params[0]);
+    if (strMethod == "getstakesplitthreshold" && n > 0) ConvertTo<double>(params[0]);
+    if (strMethod == "autocombinerewards"     && n > 0) ConvertTo<bool>(params[0]);
+    if (strMethod == "autocombinerewards"     && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "addmultisigaddress"     && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "addmultisigaddress"     && n > 1) ConvertTo<Array>(params[1]);
     if (strMethod == "listunspent"            && n > 0) ConvertTo<int64_t>(params[0]);
@@ -1407,6 +1424,9 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "gettxout"               && n == 3) { ConvertTo<int64_t>(params[1]); ConvertTo<bool>(params[2]); }
     if (strMethod == "importaddress"          && n > 2) ConvertTo<bool>(params[2]);
     if (strMethod == "importprivkey"          && n > 2) ConvertTo<bool>(params[2]);
+
+    if (strMethod == "setban"                 && n > 2) ConvertTo<int64_t>(params[2]);
+    if (strMethod == "setban"                 && n == 4) ConvertTo<bool>(params[3]);
 
     if (strMethod == "sendinntoanon"         	  && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "sendanontoanon"         && n > 1) ConvertTo<double>(params[1]);

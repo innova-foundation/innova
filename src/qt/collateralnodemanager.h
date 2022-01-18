@@ -1,5 +1,5 @@
-#ifndef FORTUNASTAKEMANAGER_H
-#define FORTUNASTAKEMANAGER_H
+#ifndef COLLATERALNODEMANAGER_H
+#define COLLATERALNODEMANAGER_H
 
 #include "util.h"
 #include "sync.h"
@@ -58,4 +58,4 @@ private slots:
     void on_tableWidget_2_itemSelectionChanged();
 };
 
-#endif // FORTUNASTAKEMANAGER_H
+#endif // COLLATERALNODEMANAGER_H

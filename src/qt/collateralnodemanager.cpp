@@ -18,6 +18,15 @@
 
 #include <boost/lexical_cast.hpp>
 #include <fstream>
+
+#if BOOST_VERSION >= 107300
+#include <boost/bind/bind.hpp>
+using boost::placeholders::_1;
+using boost::placeholders::_2;
+#else
+#include <boost/bind.hpp>
+#endif
+
 using namespace json_spirit;
 using namespace std;
 
@@ -426,7 +435,7 @@ void CollateralnodeManager::updateNodeList()
     }
 
     // calc length of average round
-    int roundLengthSecs = 30 * (max(FORTUNASTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * FORTUNASTAKE_FAIR_PAYMENT_ROUNDS);
+    int roundLengthSecs = 30 * (max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALNODE_FAIR_PAYMENT_ROUNDS);
     // figure out how the average per second this round is
     int64_t roundPerSec = nAverageCNIncome / roundLengthSecs;
     // how much is that per day?
@@ -473,7 +482,7 @@ void CollateralnodeManager::on_createButton_clicked()
   if (pwalletMain->IsLocked())
   {
       QMessageBox msg;
-      msg.setText("Error: Wallet is locked, unable to create FS.");
+      msg.setText("Error: Wallet is locked, unable to create CN.");
       msg.exec();
       return;
   };
@@ -481,7 +490,7 @@ void CollateralnodeManager::on_createButton_clicked()
   if (fWalletUnlockStakingOnly)
   {
       QMessageBox msg;
-      msg.setText("Error: Wallet unlocked for staking only, unable to create FS.");
+      msg.setText("Error: Wallet unlocked for staking only, unable to create CN.");
       msg.exec();
       return;
   };

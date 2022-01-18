@@ -3,16 +3,16 @@
 // Copyright (c) 2009-2012 The Darkcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#ifndef FORTUNA_H
-#define FORTUNA_H
+#ifndef COLLATERALN_H
+#define COLLATERALN_H
 
 #include "main.h"
 #include "collateralnode.h"
 #include "activecollateralnode.h"
 
 class CTxIn;
-class CForTunaPool;
-class CForTunaSigner;
+class CCollaTeralPool;
+class CCollaTeralSigner;
 class CCollateralNodeVote;
 class CBitcoinAddress;
 class CCollateralNQueue;
@@ -31,15 +31,15 @@ class CActiveCollateralnode;
 #define POOL_STATUS_SUCCESS                    8 // success
 
 // status update message constants
-#define FORTUNASTAKE_ACCEPTED                    1
-#define FORTUNASTAKE_REJECTED                    0
-#define FORTUNASTAKE_RESET                       -1
+#define COLLATERALNODE_ACCEPTED                    1
+#define COLLATERALNODE_REJECTED                    0
+#define COLLATERALNODE_RESET                       -1
 
-#define FORTUNA_QUEUE_TIMEOUT                 120
-#define FORTUNA_SIGNING_TIMEOUT               30
+#define COLLATERALN_QUEUE_TIMEOUT                 120
+#define COLLATERALN_SIGNING_TIMEOUT               30
 
-extern CForTunaPool forTunaPool;
-extern CForTunaSigner forTunaSigner;
+extern CCollaTeralPool forTunaPool;
+extern CCollaTeralSigner forTunaSigner;
 extern std::vector<CCollateralNQueue> vecCollateralNQueue;
 extern std::string strCollateralNodePrivKey;
 extern map<uint256, CCollateralNBroadcastTx> mapCollateralNBroadcastTxes;
@@ -53,13 +53,13 @@ int GetInputCollateralNRounds(CTxIn in, int rounds=0);
 
 
 // An input in the collateral pool
-class CForTunaEntryVin
+class CCollaTeralEntryVin
 {
 public:
     bool isSigSet;
     CTxIn vin;
 
-    CForTunaEntryVin()
+    CCollaTeralEntryVin()
     {
         isSigSet = false;
         vin = CTxIn();
@@ -67,18 +67,18 @@ public:
 };
 
 // A clients transaction in the collateral pool
-class CForTunaEntry
+class CCollaTeralEntry
 {
 public:
     bool isSet;
-    std::vector<CForTunaEntryVin> sev;
+    std::vector<CCollaTeralEntryVin> sev;
     int64_t amount;
     CTransaction collateral;
     std::vector<CTxOut> vout;
     CTransaction txSupporting;
     int64_t addedTime;
 
-    CForTunaEntry()
+    CCollaTeralEntry()
     {
         isSet = false;
         collateral = CTransaction();
@@ -89,8 +89,8 @@ public:
     {
         if(isSet){return false;}
 
-        BOOST_FOREACH(const CTxIn v, vinIn) {
-            CForTunaEntryVin s = CForTunaEntryVin();
+        for (const CTxIn v : vinIn) {
+            CCollaTeralEntryVin s = CCollaTeralEntryVin();
             s.vin = v;
             sev.push_back(s);
         }
@@ -105,7 +105,7 @@ public:
 
     bool AddSig(const CTxIn& vin)
     {
-        BOOST_FOREACH(CForTunaEntryVin& s, sev) {
+        for (CCollaTeralEntryVin& s : sev) {
             if(s.vin.prevout == vin.prevout && s.vin.nSequence == vin.nSequence){
                 if(s.isSigSet){return false;}
                 s.vin.scriptSig = vin.scriptSig;
@@ -121,7 +121,7 @@ public:
 
     bool IsExpired()
     {
-        return (GetTime() - addedTime) > FORTUNA_QUEUE_TIMEOUT;// 120 seconds
+        return (GetTime() - addedTime) > COLLATERALN_QUEUE_TIMEOUT;// 120 seconds
     }
 };
 
@@ -160,7 +160,7 @@ public:
 
     bool GetAddress(CService &addr)
     {
-        BOOST_FOREACH(CCollateralNode mn, vecCollateralnodes) {
+        for (CCollateralNode mn : vecCollateralnodes) {
             if(mn.vin == vin){
                 addr = mn.addr;
                 return true;
@@ -171,7 +171,7 @@ public:
 
     bool GetProtocolVersion(int &protocolVersion)
     {
-        BOOST_FOREACH(CCollateralNode mn, vecCollateralnodes) {
+        for (CCollateralNode mn : vecCollateralnodes) {
             if(mn.vin == vin){
                 protocolVersion = mn.protocolVersion;
                 return true;
@@ -185,7 +185,7 @@ public:
 
     bool IsExpired()
     {
-        return (GetTime() - time) > FORTUNA_QUEUE_TIMEOUT;// 120 seconds
+        return (GetTime() - time) > COLLATERALN_QUEUE_TIMEOUT;// 120 seconds
     }
 
     bool CheckSignature();
@@ -205,7 +205,7 @@ public:
 //
 // Helper object for signing and checking signatures
 //
-class CForTunaSigner
+class CCollaTeralSigner
 {
 public:
     bool IsVinAssociatedWithPubkey(CTxIn& vin, CPubKey& pubkey);
@@ -222,15 +222,15 @@ class CCollateralNSession
 //
 // Used to keep track of current status of collateral pool
 //
-class CForTunaPool
+class CCollaTeralPool
 {
 public:
     static const int PROTOCOL_VERSION = 41015; //41005, INN v4.3
 
     // clients entries
-    std::vector<CForTunaEntry> myEntries;
+    std::vector<CCollaTeralEntry> myEntries;
     // collateralnode entries
-    std::vector<CForTunaEntry> entries;
+    std::vector<CCollaTeralEntry> entries;
     // the finalized transaction ready for signing
     CTransaction finalTransaction;
 
@@ -274,9 +274,9 @@ public:
     //incremented whenever a DSQ comes through
     int64_t nDsqCount;
 
-    CForTunaPool()
+    CCollaTeralPool()
     {
-        /* ForTuna uses collateral addresses to trust parties entering the pool
+        /* CollaTeral uses collateral addresses to trust parties entering the pool
             to behave themselves. If they don't it takes their money. */
 
         cachedLastSuccess = 0;
@@ -343,15 +343,15 @@ public:
     void UpdateState(unsigned int newState)
     {
         if (fCollateralNode && (newState == POOL_STATUS_ERROR || newState == POOL_STATUS_SUCCESS)){
-            printf("CForTunaPool::UpdateState() - Can't set state to ERROR or SUCCESS as a collateralnode. \n");
+            printf("CCollaTeralPool::UpdateState() - Can't set state to ERROR or SUCCESS as a collateralnode. \n");
             return;
         }
 
-        printf("CForTunaPool::UpdateState() == %d | %d \n", state, newState);
+        printf("CCollaTeralPool::UpdateState() == %d | %d \n", state, newState);
         if(state != newState){
             lastTimeChanged = GetTimeMillis();
             if(fCollateralNode) {
-                RelayForTunaStatus(forTunaPool.sessionID, forTunaPool.GetState(), forTunaPool.GetEntriesCount(), FORTUNASTAKE_RESET);
+                RelayCollaTeralStatus(forTunaPool.sessionID, forTunaPool.GetState(), forTunaPool.GetEntriesCount(), COLLATERALNODE_RESET);
             }
         }
         state = newState;
@@ -427,8 +427,8 @@ public:
 };
 
 
-void ConnectToForTunaCollateralNodeWinner();
+void ConnectToCollaTeralCollateralNodeWinner();
 
-void ThreadCheckForTunaPool(void* parg);
+void ThreadCheckCollaTeralPool(void* parg);
 
 #endif

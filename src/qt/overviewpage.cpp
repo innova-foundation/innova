@@ -248,8 +248,8 @@ void OverviewPage::getRequest3( const QString &urlString )
       curl_easy_cleanup(curl);
 
 
-        QString dnewsfeed = QString::fromStdString(readBuffer);
-        innnewsfeed = dnewsfeed;
+        QString inewsfeed = QString::fromStdString(readBuffer);
+        innnewsfeed = inewsfeed;
     }
 }
 

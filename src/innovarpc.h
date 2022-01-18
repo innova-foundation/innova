@@ -179,7 +179,9 @@ extern json_spirit::Value getaddednodeinfo(const json_spirit::Array& params, boo
 extern json_spirit::Value getnettotals(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getnetworkinfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value disconnectnode(const json_spirit::Array& params, bool fHelp);
-
+extern json_spirit::Value setban(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value listbanned(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value clearbanned(const json_spirit::Array& params, bool fHelp);
 
 extern json_spirit::Value dumpwallet(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value importwallet(const json_spirit::Array& params, bool fHelp);
@@ -234,6 +236,9 @@ extern json_spirit::Value walletstatus(const json_spirit::Array& params, bool fH
 extern json_spirit::Value validateaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getinfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value reservebalance(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value setstakesplitthreshold(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value getstakesplitthreshold(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value autocombinerewards(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value checkwallet(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value repairwallet(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value resendtx(const json_spirit::Array& params, bool fHelp);
