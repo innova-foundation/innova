@@ -1236,7 +1236,7 @@ bool AppInit2()
 
           CKey key;
           CPubKey pubkey;
-          if(!forTunaSigner.SetKey(strCollateralNodePrivKey, errorMessage, key, pubkey))
+          if(!colLateralSigner.SetKey(strCollateralNodePrivKey, errorMessage, key, pubkey))
             {
                 return InitError(_("Invalid collateralnodeprivkey. Please see documenation."));
         }

@@ -129,7 +129,7 @@ bool CSporkManager::CheckSignature(CSporkMessage& spork)
     CPubKey pubkey(ParseHex(strPubKey));
 
     std::string errorMessage = "";
-    if(!forTunaSigner.VerifyMessage(pubkey, spork.vchSig, strMessage, errorMessage)){
+    if(!colLateralSigner.VerifyMessage(pubkey, spork.vchSig, strMessage, errorMessage)){
         return false;
     }
 
@@ -144,18 +144,18 @@ bool CSporkManager::Sign(CSporkMessage& spork)
     CPubKey pubkey2;
     std::string errorMessage = "";
 
-    if(!forTunaSigner.SetKey(strMasterPrivKey, errorMessage, key2, pubkey2))
+    if(!colLateralSigner.SetKey(strMasterPrivKey, errorMessage, key2, pubkey2))
     {
         printf("CCollateralnodePayments::Sign - ERROR: Invalid collateralnodeprivkey: '%s'\n", errorMessage.c_str());
         return false;
     }
 
-    if(!forTunaSigner.SignMessage(strMessage, errorMessage, spork.vchSig, key2)) {
+    if(!colLateralSigner.SignMessage(strMessage, errorMessage, spork.vchSig, key2)) {
         printf("CCollateralnodePayments::Sign - Sign message failed");
         return false;
     }
 
-    if(!forTunaSigner.VerifyMessage(pubkey2, spork.vchSig, strMessage, errorMessage)) {
+    if(!colLateralSigner.VerifyMessage(pubkey2, spork.vchSig, strMessage, errorMessage)) {
         printf("CCollateralnodePayments::Sign - Verify message failed");
         return false;
     }

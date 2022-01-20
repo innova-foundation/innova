@@ -2827,7 +2827,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                       LOCK(cs_vNodes);
                       for (CNode* pnode : vNodes)
                   {
-                if (pnode->nVersion >= forTunaPool.PROTOCOL_VERSION) {
+                if (pnode->nVersion >= colLateralPool.PROTOCOL_VERSION) {
                     printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
                     pnode->PushMessage("dseg", CTxIn()); //request full mn list
                     pnode->nLastDseg = GetTime();
@@ -2954,7 +2954,7 @@ GetCollateralnodeRanks(pindexBest);
                LOCK(cs_vNodes);
                for (CNode* pnode : vNodes)
                {
-                   if (pnode->nVersion >= forTunaPool.PROTOCOL_VERSION) {
+                   if (pnode->nVersion >= colLateralPool.PROTOCOL_VERSION) {
                            printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
                            pnode->PushMessage("dseg", CTxIn()); //request full mn list
                            pnode->nLastDseg = GetTime();
@@ -3755,8 +3755,8 @@ uint256 CBlockIndex::GetBlockTrust() const
             printf("ProcessBlock() : Got BlockPayee for block : - %d\n", pindexBest->nHeight);
         }
 
-        forTunaPool.CheckTimeout();
-        forTunaPool.NewBlock();
+        colLateralPool.CheckTimeout();
+        colLateralPool.NewBlock();
         collateralnodePayments.ProcessBlock((pindexBest->nHeight)+10);
 
        }
@@ -3837,9 +3837,6 @@ if (!mapBlockIndex.count(pblock->hashPrevBlock)) //pblock->hashPrevBlock != 0 &&
         MIN_MN_PROTO_VERSION = 43890;
     }
 
-    // If turned on Auto Combine will scan wallet for dust to combine
-    if (pwalletMain->fCombineDust)
-        pwalletMain->AutoCombineDust();
 
     // ppcoin: if responsible for sync-checkpoint send it
     if (pfrom && !CSyncCheckpoint::strMasterPrivKey.empty())
