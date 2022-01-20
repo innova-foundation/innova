@@ -969,7 +969,7 @@ bool CWallet::IsDenominated(const CTxIn &txin) const
 
 bool CWallet::IsDenominatedAmount(int64_t nInputAmount) const
 {
-    BOOST_FOREACH(int64_t d, forTunaDenominations)
+    BOOST_FOREACH(int64_t d, colLateralDenominations)
         if(nInputAmount == d)
             return true;
     return false;
@@ -2108,7 +2108,7 @@ bool less_then_denom (const COutput& out1, const COutput& out2)
 
     bool found1 = false;
     bool found2 = false;
-    BOOST_FOREACH(int64_t d, forTunaDenominations) // loop through predefined denoms
+    BOOST_FOREACH(int64_t d, colLateralDenominations) // loop through predefined denoms
     {
         if(pcoin1->vout[out1.i].nValue == d) found1 = true;
         if(pcoin2->vout[out2.i].nValue == d) found2 = true;

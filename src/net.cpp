@@ -536,7 +536,7 @@ CNode* FindNode(const CService& addr)
     return NULL;
 }
 
-CNode* ConnectNode(CAddress addrConnect, const char *pszDest, bool forTunaMaster)
+CNode* ConnectNode(CAddress addrConnect, const char *pszDest, bool colLateralMaster)
 {
     if (pszDest == NULL) {
         if (IsLocal(addrConnect))
@@ -547,7 +547,7 @@ CNode* ConnectNode(CAddress addrConnect, const char *pszDest, bool forTunaMaster
         if (pnode)
         {
 
-        if(forTunaMaster)
+        if(colLateralMaster)
                 pnode->fCollaTeralMaster = true;
             pnode->AddRef();
 
@@ -597,7 +597,7 @@ CNode* ConnectNode(CAddress addrConnect, const char *pszDest, bool forTunaMaster
             vNodes.push_back(pnode);
         }
 
-        if(forTunaMaster)
+        if(colLateralMaster)
                 pnode->fCollaTeralMaster = true;
         pnode->nTimeConnected = GetTime();
         return pnode;
@@ -2800,7 +2800,7 @@ void RelayCollaTeralIn(const std::vector<CTxIn>& in, const int64_t& nAmount, con
 
     BOOST_FOREACH(CNode* pnode, vNodes)
     {
-        if((CNetAddr)forTunaPool.submittedToCollateralnode != (CNetAddr)pnode->addr) continue;
+        if((CNetAddr)colLateralPool.submittedToCollateralnode != (CNetAddr)pnode->addr) continue;
         printf("RelayCollaTeralIn - found master, relaying message - %s \n", pnode->addr.ToString().c_str());
         pnode->PushMessage("dsi", in, nAmount, txCollateral, out);
     }

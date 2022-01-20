@@ -73,7 +73,7 @@ int64_t enforceCollateralnodePaymentsTime = 4085657524;
 bool fSuccessfullyLoaded = false;
 
 /** All denominations used by collateral */
-std::vector<int64_t> forTunaDenominations;
+std::vector<int64_t> colLateralDenominations;
 
 map<string, string> mapArgs;
 map<string, vector<string> > mapMultiArgs;

@@ -50,7 +50,7 @@ void ProcessCollateralnodeConnections(){
     for (CNode* pnode : vNodes)
     {
         //if it's our collateralnode, let it be
-        if(forTunaPool.submittedToCollateralnode == pnode->addr) continue;
+        if(colLateralPool.submittedToCollateralnode == pnode->addr) continue;
 
         if( pnode->fCollaTeralMaster ||
             (pnode->addr.GetPort() == 14539 && pnode->nChainHeight > (nBestHeight - 120)) // disconnect collateralnodes that were in sync when they connected recently
@@ -124,7 +124,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         }
 
         std::string errorMessage = "";
-        if(!forTunaSigner.VerifyMessage(pubkey, vchSig, strMessage, errorMessage)){
+        if(!colLateralSigner.VerifyMessage(pubkey, vchSig, strMessage, errorMessage)){
             if (fDebugCN) printf("dsee - Got bad collateralnode address signature\n");
             Misbehaving(pfrom->GetId(), 100);
             return;
@@ -173,7 +173,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         // make sure the vout that was signed is related to the transaction that spawned the collateralnode
         //  - this is expensive, so it's only done once per collateralnode
         //  - if sigTime is newer than our chain, this will probably never work, so don't bother.
-        if(sigTime < pindexBest->GetBlockTime() && !forTunaSigner.IsVinAssociatedWithPubkey(vin, pubkey)) {
+        if(sigTime < pindexBest->GetBlockTime() && !colLateralSigner.IsVinAssociatedWithPubkey(vin, pubkey)) {
             if (fDebugCN) printf("dsee - Got mismatched pubkey and vin\n");
             return;
         }
@@ -255,7 +255,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
                     std::string strMessage = mn.addr.ToString() + boost::lexical_cast<std::string>(sigTime) + boost::lexical_cast<std::string>(stop);
 
                     std::string errorMessage = "";
-                    if(!forTunaSigner.VerifyMessage(mn.pubkey2, vchSig, strMessage, errorMessage)){
+                    if(!colLateralSigner.VerifyMessage(mn.pubkey2, vchSig, strMessage, errorMessage)){
                         if (fDebugCN) printf("dseep - Got bad collateralnode address signature %s \n", vin.ToString().c_str());
                         //Misbehaving(pfrom->GetId(), 100);
                         return;
@@ -1181,7 +1181,7 @@ bool CCollateralnodePayments::CheckSignature(CCollateralnodePaymentWinner& winne
     CPubKey pubkey(ParseHex(strPubKey));
 
     std::string errorMessage = "";
-    if(!forTunaSigner.VerifyMessage(pubkey, winner.vchSig, strMessage, errorMessage)){
+    if(!colLateralSigner.VerifyMessage(pubkey, winner.vchSig, strMessage, errorMessage)){
         return false;
     }
 
@@ -1196,18 +1196,18 @@ bool CCollateralnodePayments::Sign(CCollateralnodePaymentWinner& winner)
     CPubKey pubkey2;
     std::string errorMessage = "";
 
-    if(!forTunaSigner.SetKey(strMasterPrivKey, errorMessage, key2, pubkey2))
+    if(!colLateralSigner.SetKey(strMasterPrivKey, errorMessage, key2, pubkey2))
     {
         printf("CCollateralnodePayments::Sign - ERROR: Invalid collateralnodeprivkey: '%s'\n", errorMessage.c_str());
         return false;
     }
 
-    if(!forTunaSigner.SignMessage(strMessage, errorMessage, winner.vchSig, key2)) {
+    if(!colLateralSigner.SignMessage(strMessage, errorMessage, winner.vchSig, key2)) {
         printf("CCollateralnodePayments::Sign - Sign message failed");
         return false;
     }
 
-    if(!forTunaSigner.VerifyMessage(pubkey2, winner.vchSig, strMessage, errorMessage)) {
+    if(!colLateralSigner.VerifyMessage(pubkey2, winner.vchSig, strMessage, errorMessage)) {
         printf("CCollateralnodePayments::Sign - Verify message failed");
         return false;
     }
@@ -1733,7 +1733,7 @@ bool FindCNPayments(CScript& payee, CBlockIndex* pindex)
                                 if (fDebug) printf("Found CN payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
                                 // TODO: check spent with fetch inputs?
                                 CTransaction txCollateral;
-                                CTxOut vout = CTxOut((GetMNCollateral() - 1)* COIN, forTunaPool.collateralPubKey);
+                                CTxOut vout = CTxOut((GetMNCollateral() - 1)* COIN, colLateralPool.collateralPubKey);
                                 CTxIn vin = CTxIn(txout.GetHash(),n);
                                 txCollateral.vin.push_back(vin);
                                 txCollateral.vout.push_back(vout);
@@ -1772,7 +1772,7 @@ bool FindCNPayments(CScript& payee, CBlockIndex* pindex)
                                 if (fDebug) printf("Found CN payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
                                 // TODO: check spent with fetch inputs?
                                 CTransaction txCollateral;
-                                CTxOut vout = CTxOut((GetMNCollateral() - 1)* COIN, forTunaPool.collateralPubKey);
+                                CTxOut vout = CTxOut((GetMNCollateral() - 1)* COIN, colLateralPool.collateralPubKey);
                                 CTxIn vin = CTxIn(txout.GetHash(),n);
                                 txCollateral.vin.push_back(vin);
                                 txCollateral.vout.push_back(vout);

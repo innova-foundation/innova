@@ -31,9 +31,9 @@ Value getpoolinfo(const Array& params, bool fHelp)
 
     Object obj;
     obj.push_back(Pair("current_collateralnode",        GetCurrentCollateralNode()));
-    obj.push_back(Pair("state",        forTunaPool.GetState()));
-    obj.push_back(Pair("entries",      forTunaPool.GetEntriesCount()));
-    obj.push_back(Pair("entries_accepted",      forTunaPool.GetCountEntriesAccepted()));
+    obj.push_back(Pair("state",        colLateralPool.GetState()));
+    obj.push_back(Pair("entries",      colLateralPool.GetEntriesCount()));
+    obj.push_back(Pair("entries_accepted",      colLateralPool.GetCountEntriesAccepted()));
     return obj;
 }
 
@@ -640,16 +640,16 @@ Value collateralnode(const Array& params, bool fHelp)
                 CPubKey pubKeyCollateralnode;
                 CKey keyCollateralnode;
                 std::string errorMessage;
-                std::string forTunaError;
+                std::string colLateralError;
                 std::string vinError;
 
                 mnTxHash.SetHex(mne.getTxHash());
                 outputIndex = boost::lexical_cast<unsigned int>(mne.getOutputIndex());
                 COutPoint outpoint = COutPoint(mnTxHash, outputIndex);
 
-                if(!forTunaSigner.SetKey(mne.getPrivKey(), forTunaError, keyCollateralnode, pubKeyCollateralnode))
+                if(!colLateralSigner.SetKey(mne.getPrivKey(), colLateralError, keyCollateralnode, pubKeyCollateralnode))
                 {
-                    errorMessage = forTunaError;
+                    errorMessage = colLateralError;
                 }
 
                 if (!amn.GetCollateralNodeVin(vin, pubKeyCollateralAddress, keyCollateralAddress, mne.getTxHash(), mne.getOutputIndex(), vinError))
@@ -1340,12 +1340,12 @@ Value masternode(const Array& params, bool fHelp)
                 CPubKey pubKeyCollateralnode;
                 CKey keyCollateralnode;
                 std::string errorMessage;
-                std::string forTunaError;
+                std::string colLateralError;
                 std::string vinError;
 
-                if(!forTunaSigner.SetKey(mne.getPrivKey(), forTunaError, keyCollateralnode, pubKeyCollateralnode))
+                if(!colLateralSigner.SetKey(mne.getPrivKey(), colLateralError, keyCollateralnode, pubKeyCollateralnode))
               {
-                  errorMessage = forTunaError;
+                  errorMessage = colLateralError;
               }
 
               if (!amn.GetCollateralNodeVin(vin, pubKeyCollateralAddress, keyCollateralAddress, mne.getTxHash(), mne.getOutputIndex(), vinError))

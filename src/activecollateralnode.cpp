@@ -86,7 +86,7 @@ void CActiveCollateralnode::ManageStatus()
             CPubKey pubKeyCollateralnode;
             CKey keyCollateralnode;
 
-            if(!forTunaSigner.SetKey(strCollateralNodePrivKey, errorMessage, keyCollateralnode, pubKeyCollateralnode))
+            if(!colLateralSigner.SetKey(strCollateralNodePrivKey, errorMessage, keyCollateralnode, pubKeyCollateralnode))
             {
                 printf("Register::ManageStatus() - Error upon calling SetKey: %s\n", errorMessage.c_str());
                 return;
@@ -114,7 +114,7 @@ bool CActiveCollateralnode::StopCollateralNode(std::string strService, std::stri
     CKey keyCollateralnode;
     CPubKey pubKeyCollateralnode;
 
-    if(!forTunaSigner.SetKey(strKeyCollateralnode, errorMessage, keyCollateralnode, pubKeyCollateralnode)) {
+    if(!colLateralSigner.SetKey(strKeyCollateralnode, errorMessage, keyCollateralnode, pubKeyCollateralnode)) {
         printf("CActiveCollateralnode::StopCollateralNode() - Error: %s\n", errorMessage.c_str());
         return false;
     }
@@ -135,7 +135,7 @@ bool CActiveCollateralnode::StopCollateralNode(std::string& errorMessage) {
     CPubKey pubKeyCollateralnode;
     CKey keyCollateralnode;
 
-    if(!forTunaSigner.SetKey(strCollateralNodePrivKey, errorMessage, keyCollateralnode, pubKeyCollateralnode))
+    if(!colLateralSigner.SetKey(strCollateralNodePrivKey, errorMessage, keyCollateralnode, pubKeyCollateralnode))
     {
         printf("Register::ManageStatus() - Error upon calling SetKey: %s\n", errorMessage.c_str());
         return false;
@@ -160,7 +160,7 @@ bool CActiveCollateralnode::Dseep(std::string& errorMessage) {
     CPubKey pubKeyCollateralnode;
     CKey keyCollateralnode;
 
-    if(!forTunaSigner.SetKey(strCollateralNodePrivKey, errorMessage, keyCollateralnode, pubKeyCollateralnode))
+    if(!colLateralSigner.SetKey(strCollateralNodePrivKey, errorMessage, keyCollateralnode, pubKeyCollateralnode))
     {
         printf("Register::ManageStatus() - Error upon calling SetKey: %s\n", errorMessage.c_str());
         return false;
@@ -177,13 +177,13 @@ bool CActiveCollateralnode::Dseep(CTxIn vin, CService service, CKey keyCollatera
 
     std::string strMessage = service.ToString() + boost::lexical_cast<std::string>(masterNodeSignatureTime) + boost::lexical_cast<std::string>(stop);
 
-    if(!forTunaSigner.SignMessage(strMessage, errorMessage, vchCollateralNodeSignature, keyCollateralnode)) {
+    if(!colLateralSigner.SignMessage(strMessage, errorMessage, vchCollateralNodeSignature, keyCollateralnode)) {
         retErrorMessage = "sign message failed: " + errorMessage;
         printf("CActiveCollateralnode::Dseep() - Error: %s\n", retErrorMessage.c_str());
         return false;
     }
 
-    if(!forTunaSigner.VerifyMessage(pubKeyCollateralnode, vchCollateralNodeSignature, strMessage, errorMessage)) {
+    if(!colLateralSigner.VerifyMessage(pubKeyCollateralnode, vchCollateralNodeSignature, strMessage, errorMessage)) {
         retErrorMessage = "Verify message failed: " + errorMessage;
         printf("CActiveCollateralnode::Dseep() - Error: %s\n", retErrorMessage.c_str());
         return false;
@@ -222,7 +222,7 @@ bool CActiveCollateralnode::RegisterByPubKey(std::string strService, std::string
     CPubKey pubKeyCollateralnode;
     CKey keyCollateralnode;
 
-    if(!forTunaSigner.SetKey(strKeyCollateralnode, errorMessage, keyCollateralnode, pubKeyCollateralnode))
+    if(!colLateralSigner.SetKey(strKeyCollateralnode, errorMessage, keyCollateralnode, pubKeyCollateralnode))
     {
         printf("CActiveCollateralnode::RegisterByPubKey() - Error upon calling SetKey: %s\n", errorMessage.c_str());
         return false;
@@ -243,7 +243,7 @@ bool CActiveCollateralnode::Register(std::string strService, std::string strKeyC
     CPubKey pubKeyCollateralnode;
     CKey keyCollateralnode;
 
-    if(!forTunaSigner.SetKey(strKeyCollateralnode, errorMessage, keyCollateralnode, pubKeyCollateralnode))
+    if(!colLateralSigner.SetKey(strKeyCollateralnode, errorMessage, keyCollateralnode, pubKeyCollateralnode))
     {
         printf("CActiveCollateralnode::Register() - Error upon calling SetKey: %s\n", errorMessage.c_str());
         return false;
@@ -267,12 +267,12 @@ bool CActiveCollateralnode::Register(CTxIn vin, CService service, CKey keyCollat
     std::string vchPubKey2(pubKeyCollateralnode.begin(), pubKeyCollateralnode.end());
 
     std::string strMessage = service.ToString() + boost::lexical_cast<std::string>(masterNodeSignatureTime) + vchPubKey + vchPubKey2 + boost::lexical_cast<std::string>(PROTOCOL_VERSION);
-    if(!forTunaSigner.SignMessage(strMessage, errorMessage, vchCollateralNodeSignature, keyCollateralAddress)) {
+    if(!colLateralSigner.SignMessage(strMessage, errorMessage, vchCollateralNodeSignature, keyCollateralAddress)) {
         retErrorMessage = "sign message failed: " + errorMessage;
         printf("CActiveCollateralnode::Register() - Error: %s\n", retErrorMessage.c_str());
         return false;
     }
-    if(!forTunaSigner.VerifyMessage(pubKeyCollateralAddress, vchCollateralNodeSignature, strMessage, errorMessage)) {
+    if(!colLateralSigner.VerifyMessage(pubKeyCollateralAddress, vchCollateralNodeSignature, strMessage, errorMessage)) {
         retErrorMessage = "Verify message failed: " + errorMessage;
         printf("CActiveCollateralnode::Register() - Error: %s\n", retErrorMessage.c_str());
         return false;
