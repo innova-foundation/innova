@@ -26,9 +26,9 @@ using namespace boost;
 CCriticalSection cs_collateral;
 
 /** The main object for accessing collateral */
-CCollaTeralPool forTunaPool;
+CCollaTeralPool colLateralPool;
 /** A helper object for signing messages from collateralnodes */
-CCollaTeralSigner forTunaSigner;
+CCollaTeralSigner colLateralSigner;
 /** The current collaterals in progress on the network */
 std::vector<CCollateralNQueue> vecCollateralNQueue;
 /** Keep track of the used collateralnodes */
@@ -220,7 +220,7 @@ void CCollaTeralPool::CheckTimeout(){
                     UnlockCoins();
                 }
                 if(fCollateralNode){
-                    RelayCollaTeralStatus(forTunaPool.sessionID, forTunaPool.GetState(), forTunaPool.GetEntriesCount(), COLLATERALNODE_RESET);
+                    RelayCollaTeralStatus(colLateralPool.sessionID, colLateralPool.GetState(), colLateralPool.GetEntriesCount(), COLLATERALNODE_RESET);
                 }
                 break;
             }
@@ -597,7 +597,7 @@ void CCollaTeralPool::NewBlock()
     if(GetTime() - lastNewBlock < 10) return;
     lastNewBlock = GetTime();
 
-    forTunaPool.CheckTimeout();
+    colLateralPool.CheckTimeout();
 
     if(!fCollateralNode){
         //denominate all non-denominated inputs every 50 blocks (25 minutes)
@@ -707,7 +707,7 @@ int CCollaTeralPool::GetDenominations(const std::vector<CTxOut>& vout){
     std::vector<pair<int64_t, int> > denomUsed;
 
     // make a list of denominations, with zero uses
-    for (int64_t d : forTunaDenominations)
+    for (int64_t d : colLateralDenominations)
         denomUsed.push_back(make_pair(d, 0));
 
     // look for denominations and update uses to 1
@@ -763,7 +763,7 @@ int CCollaTeralPool::GetDenominationsByAmount(int64_t nAmount, int nDenomTarget)
     std::vector<CTxOut> vout1;
 
     // Make outputs by looping through denominations, from small to large
-    BOOST_REVERSE_FOREACH(int64_t v, forTunaDenominations){
+    BOOST_REVERSE_FOREACH(int64_t v, colLateralDenominations){
         if(nDenomTarget != 0){
             bool fAccepted = false;
             if((nDenomTarget & (1 << 0)) &&      v == ((100000*COIN)+100000000)) {fAccepted = true;}
@@ -886,18 +886,18 @@ bool CCollateralNQueue::Sign()
     CPubKey pubkey2;
     std::string errorMessage = "";
 
-    if(!forTunaSigner.SetKey(strCollateralNodePrivKey, errorMessage, key2, pubkey2))
+    if(!colLateralSigner.SetKey(strCollateralNodePrivKey, errorMessage, key2, pubkey2))
     {
         printf("CCollateralNQueue():Relay - ERROR: Invalid collateralnodeprivkey: '%s'\n", errorMessage.c_str());
         return false;
     }
 
-    if(!forTunaSigner.SignMessage(strMessage, errorMessage, vchSig, key2)) {
+    if(!colLateralSigner.SignMessage(strMessage, errorMessage, vchSig, key2)) {
         printf("CCollateralNQueue():Relay - Sign message failed");
         return false;
     }
 
-    if(!forTunaSigner.VerifyMessage(pubkey2, vchSig, strMessage, errorMessage)) {
+    if(!colLateralSigner.VerifyMessage(pubkey2, vchSig, strMessage, errorMessage)) {
         printf("CCollateralNQueue():Relay - Verify message failed");
         return false;
     }
@@ -925,7 +925,7 @@ bool CCollateralNQueue::CheckSignature()
             std::string strMessage = vin.ToString() + boost::lexical_cast<std::string>(nDenom) + boost::lexical_cast<std::string>(time) + boost::lexical_cast<std::string>(ready);
 
             std::string errorMessage = "";
-            if(!forTunaSigner.VerifyMessage(mn.pubkey2, vchSig, strMessage, errorMessage)){
+            if(!colLateralSigner.VerifyMessage(mn.pubkey2, vchSig, strMessage, errorMessage)){
                 return error("CCollateralNQueue::CheckSignature() - Got bad collateralnode address signature %s \n", vin.ToString().c_str());
             }
 
@@ -952,7 +952,7 @@ void ThreadCheckCollaTeralPool(void* parg)
 
         MilliSleep(1000);
         //printf("ThreadCheckCollaTeralPool::check timeout\n");
-        //forTunaPool.CheckTimeout();
+        //colLateralPool.CheckTimeout();
 
         int mnTimeout = 150; //2.5 minutes
 
@@ -998,7 +998,7 @@ void ThreadCheckCollaTeralPool(void* parg)
                 LOCK(cs_vNodes);
                 for (CNode* pnode : vNodes)
                 {
-                    if (pnode->nVersion >= forTunaPool.PROTOCOL_VERSION) {
+                    if (pnode->nVersion >= colLateralPool.PROTOCOL_VERSION) {
 
                         // re-request from each node every 120 seconds
                         if(GetTime() - pnode->nLastDseg < 120)

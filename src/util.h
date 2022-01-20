@@ -216,7 +216,7 @@ extern int64_t enforceCollateralnodePaymentsTime;
 extern std::string strCollateralNodeAddr;
 extern int keysLoaded;
 extern bool fSuccessfullyLoaded;
-extern std::vector<int64_t> forTunaDenominations;
+extern std::vector<int64_t> colLateralDenominations;
 
 
 extern std::map<std::string, std::string> mapArgs;
