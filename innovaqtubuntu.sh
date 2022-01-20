@@ -30,7 +30,7 @@ echo "Get Chaindata"
 mkdir ~/.innova
 cd ~/.innova || exit
 rm -rf database txleveldb smsgDB
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.0/innovabootstrap.zip
 unzip innovabootstrap.zip
 rm innovabootstrap.zip
 Echo "Back to Compiled QT Binary Folder"
@@ -93,7 +93,7 @@ echo "Get Chaindata"
 mkdir ~/.innova
 cd ~/.innova
 rm -rf database txleveldb smsgDB
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.0/innovabootstrap.zip
 unzip innovabootstrap.zip
 rm innovabootstrap.zip
 Echo "Back to Compiled QT Binary Folder"
@@ -160,7 +160,7 @@ echo "Get Chaindata"
 mkdir ~/.innova
 cd ~/.innova
 rm -rf database txleveldb smsgDB
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.0/innovabootstrap.zip
 unzip innovabootstrap.zip
 rm innovabootstrap.zip
 Echo "Back to Compiled QT Binary Folder"
@@ -222,7 +222,7 @@ make
 echo "Get Chaindata"
 cd ~/.innova
 rm -rf database txleveldb smsgDB
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.8.8/innovabootstrap.zip
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.0/innovabootstrap.zip
 unzip innovabootstrap.zip
 rm innovabootstrap.zip
 Echo "Back to Compiled QT Binary Folder"

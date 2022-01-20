@@ -1674,26 +1674,6 @@ void CWallet::AvailableCoins(vector<COutput>& vCoins, bool fOnlyConfirmed, const
     }
 }
 
-map<CBitcoinAddress, vector<COutput> > CWallet::AvailableCoinsByAddress(bool fConfirmed, CAmount maxCoinValue)
-{
-    vector<COutput> vCoins;
-    AvailableCoins(vCoins, fConfirmed);
-
-    map<CBitcoinAddress, vector<COutput> > mapCoins;
-    BOOST_FOREACH (COutput out, vCoins) {
-        if (maxCoinValue > 0 && out.tx->vout[out.i].nValue > maxCoinValue)
-            continue;
-
-        CTxDestination address;
-        if (!ExtractDestination(out.tx->vout[out.i].scriptPubKey, address))
-            continue;
-
-        mapCoins[CBitcoinAddress(address)].push_back(out);
-    }
-
-    return mapCoins;
-}
-
 void CWallet::AvailableCoinsMN(vector<COutput>& vCoins, bool fOnlyConfirmed, bool fOnlyUnlocked, const CCoinControl *coinControl, AvailableCoinsType coin_type) const
 {
     vCoins.clear();
@@ -3199,72 +3179,6 @@ bool CWallet::UnlockStealthAddresses(const CKeyingMaterial& vMasterKeyIn)
     return true;
 }
 
-void CWallet::AutoCombineDust()
-{
-    LOCK(cs_main);
-    if (IsInitialBlockDownload() || IsLocked()) {
-        return;
-    }
-
-    map<CBitcoinAddress, vector<COutput> > mapCoinsByAddress = AvailableCoinsByAddress(true, 0);
-
-    //coins are sectioned by address. This combination code only wants to combine inputs that belong to the same address
-    for (map<CBitcoinAddress, vector<COutput> >::iterator it = mapCoinsByAddress.begin(); it != mapCoinsByAddress.end(); it++) {
-        vector<COutput> vCoins, vRewardCoins;
-        vCoins = it->second;
-
-        //find masternode rewards that need to be combined
-        CCoinControl* coinControl = new CCoinControl();
-        CAmount nTotalRewardsValue = 0;
-        BOOST_FOREACH (const COutput& out, vCoins) {
-            //no coins should get this far if they dont have proper maturity, this is double checking
-            if (out.tx->IsCoinStake() && out.tx->GetDepthInMainChain() < nCoinbaseMaturity + 1)
-                continue;
-
-            if (out.Value() > nAutoCombineThreshold * COIN)
-                continue;
-
-            COutPoint outpt(out.tx->GetHash(), out.i);
-            coinControl->Select(outpt);
-            vRewardCoins.push_back(out);
-            nTotalRewardsValue += out.Value();
-        }
-
-        //if no inputs found then return
-        if (!coinControl->HasSelected())
-            continue;
-
-        vector<pair<CScript, CAmount> > vecSend;
-        CScript scriptPubKey = GetScriptForDestination(it->first.Get());
-        vecSend.push_back(make_pair(scriptPubKey, nTotalRewardsValue));
-
-        // Create the transaction and commit it to the network
-        CWalletTx wtx;
-        CReserveKey keyChange(this); // this change address does not end up being used, because change is returned with coin control switch
-        string strErr;
-        int64_t nFeeRequired;
-
-        //get the fee amount
-        CWalletTx wtxdummy;
-        int32_t nChangePos;
-        CreateTransaction(vecSend, wtxdummy, keyChange, nFeeRequired, nChangePos, coinControl);
-        vecSend[0].second = nTotalRewardsValue - nFeeRequired - 500;
-
-        if (!CreateTransaction(vecSend, wtxdummy, keyChange, nFeeRequired, nChangePos, coinControl)) {
-            LogPrintf("AutoCombineDust createtransaction failed, reason: %s\n", strErr);
-            continue;
-        }
-
-        if (!CommitTransaction(wtx, keyChange)) {
-            LogPrintf("AutoCombineDust transaction commit failed\n");
-            continue;
-        }
-
-        LogPrintf("AutoCombineDust sent transaction\n");
-
-        delete coinControl;
-    }
-}
 
 bool CWallet::UpdateStealthAddress(std::string &addr, std::string &label, bool addIfNotExist)
 {
@@ -3925,11 +3839,6 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                 if (GetWeight(block.GetBlockTime(), (int64_t)txNew.nTime) < nStakeSplitAge)
                     txNew.vout.push_back(CTxOut(0, scriptPubKeyOut)); //split stake
 
-                const CBlockIndex* pIndex0 = pindexBest->nHeight;
-                uint64_t nTotalSize = pcoin.first->vout[pcoin.second].nValue + GetProofOfStakeReward(pIndex0->nHeight + 1, (int64_t)txNew.nTime);
-
-                if (nTotalSize / 2 > nStakeSplitThreshold * COIN)
-                    txNew.vout.push_back(CTxOut(0, scriptPubKeyOut)); //split stake
 
                 if (fDebug && GetBoolArg("-printcoinstake"))
                     printf("CreateCoinStake() : added kernel type=%d\n", whichType);
@@ -4082,13 +3991,6 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
         blockValue -= collateralnodePayment;
         txNew.vout[1].nValue = blockValue;
     }
-
-    if (nCredit / 2 > nStakeSplitThreshold * COIN) {
-            txNew.vout[1].nValue = (nCredit / 2 / CENT) * CENT;
-            txNew.vout.push_back(CTxOut(nCredit - txNew.vout[1].nValue, txNew.vout[1].scriptPubKey));
-        } else {
-            txNew.vout[1].nValue = nCredit;
-        }
 
     // Sign
     int nIn = 0;
