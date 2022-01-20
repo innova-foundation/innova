@@ -1258,9 +1258,9 @@ void WriteConfigFile(FILE* configFile)
     fputs ("collateralnodeaddr=\n", configFile);
     fputs ("collateralnodeprivkey=\n", configFile);
     fputs ("idns=1\n", configFile);
-    fputs ("addnode=innseeder.circuitbreaker.online\n", configFile);
-    fputs ("addnode=innseeder.circuitbreaker.dev\n", configFile);
-    fputs ("addnode=innseeder.innovai.cloud\n", configFile);
+    fputs ("addnode=innseeder.circuitbreaker.online\n", configFile); // seeder
+    fputs ("addnode=innseeder.circuitbreaker.dev\n", configFile); // seeder
+    fputs ("addnode=innseeder.innovai.cloud\n", configFile); // seeder
     fputs ("addnode=94.130.52.227\n", configFile);
     fputs ("addnode=94.253.188.194\n", configFile);
     fputs ("addnode=94.253.236.197\n", configFile);
