@@ -73,7 +73,7 @@ int64_t enforceCollateralnodePaymentsTime = 4085657524;
 bool fSuccessfullyLoaded = false;
 
 /** All denominations used by collateral */
-std::vector<int64_t> forTunaDenominations;
+std::vector<int64_t> colLateralDenominations;
 
 map<string, string> mapArgs;
 map<string, vector<string> > mapMultiArgs;
@@ -1258,9 +1258,9 @@ void WriteConfigFile(FILE* configFile)
     fputs ("collateralnodeaddr=\n", configFile);
     fputs ("collateralnodeprivkey=\n", configFile);
     fputs ("idns=1\n", configFile);
-    fputs ("addnode=innseeder.circuitbreaker.online\n", configFile);
-    fputs ("addnode=innseeder.circuitbreaker.dev\n", configFile);
-    fputs ("addnode=innseeder.innovai.cloud\n", configFile);
+    fputs ("addnode=innseeder.circuitbreaker.online\n", configFile); // seeder
+    fputs ("addnode=innseeder.circuitbreaker.dev\n", configFile); // seeder
+    fputs ("addnode=innseeder.innovai.cloud\n", configFile); // seeder
     fputs ("addnode=94.130.52.227\n", configFile);
     fputs ("addnode=94.253.188.194\n", configFile);
     fputs ("addnode=94.253.236.197\n", configFile);
@@ -1273,6 +1273,19 @@ void WriteConfigFile(FILE* configFile)
     fputs ("addnode=218.214.99.111\n", configFile);
     fputs ("addnode=95.217.119.238\n", configFile);
     fputs ("addnode=209.250.255.129\n", configFile);
+    fputs ("addnode=172.58.173.106\n", configFile);
+    fputs ("addnode=207.148.80.150\n", configFile);
+    fputs ("addnode=80.240.27.104\n", configFile);
+    fputs ("addnode=118.42.144.226\n", configFile);
+    fputs ("addnode=141.101.25.131\n", configFile);
+    fputs ("addnode=167.86.84.242\n", configFile);
+    fputs ("addnode=188.122.212.138\n", configFile);
+    fputs ("addnode=188.37.75.151\n", configFile);
+    fputs ("addnode=188.75.160.36\n", configFile);
+    fputs ("addnode=207.180.218.133\n", configFile);
+    fputs ("addnode=207.180.223.54\n", configFile);
+    fputs ("addnode=45.95.203.59\n", configFile);
+    fputs ("addnode=5.188.173.19\n", configFile);
     fclose(configFile);
     ReadConfigFile(mapArgs, mapMultiArgs);
 }

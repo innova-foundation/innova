@@ -38,8 +38,8 @@ class CActiveCollateralnode;
 #define COLLATERALN_QUEUE_TIMEOUT                 120
 #define COLLATERALN_SIGNING_TIMEOUT               30
 
-extern CCollaTeralPool forTunaPool;
-extern CCollaTeralSigner forTunaSigner;
+extern CCollaTeralPool colLateralPool;
+extern CCollaTeralSigner colLateralSigner;
 extern std::vector<CCollateralNQueue> vecCollateralNQueue;
 extern std::string strCollateralNodePrivKey;
 extern map<uint256, CCollateralNBroadcastTx> mapCollateralNBroadcastTxes;
@@ -351,7 +351,7 @@ public:
         if(state != newState){
             lastTimeChanged = GetTimeMillis();
             if(fCollateralNode) {
-                RelayCollaTeralStatus(forTunaPool.sessionID, forTunaPool.GetState(), forTunaPool.GetEntriesCount(), COLLATERALNODE_RESET);
+                RelayCollaTeralStatus(colLateralPool.sessionID, colLateralPool.GetState(), colLateralPool.GetEntriesCount(), COLLATERALNODE_RESET);
             }
         }
         state = newState;
