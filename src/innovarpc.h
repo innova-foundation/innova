@@ -236,9 +236,6 @@ extern json_spirit::Value walletstatus(const json_spirit::Array& params, bool fH
 extern json_spirit::Value validateaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getinfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value reservebalance(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value setstakesplitthreshold(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value getstakesplitthreshold(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value autocombinerewards(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value checkwallet(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value repairwallet(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value resendtx(const json_spirit::Array& params, bool fHelp);

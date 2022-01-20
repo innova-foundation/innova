@@ -34,21 +34,6 @@ bool CWalletDB::EraseName(const string& strAddress)
     return Erase(make_pair(string("name"), strAddress));
 }
 
-bool CWalletDB::WriteStakeSplitThreshold(uint64_t nStakeSplitThreshold)
-{
-    nWalletDBUpdated++;
-    return Write(std::string("stakeSplitThreshold"), nStakeSplitThreshold);
-}
-
-bool CWalletDB::WriteAutoCombineSettings(bool fEnable, CAmount nCombineThreshold)
-{
-    nWalletDBUpdated++;
-    std::pair<bool, CAmount> pSettings;
-    pSettings.first = fEnable;
-    pSettings.second = nCombineThreshold;
-    return Write(std::string("autocombinesettings"), pSettings, true);
-}
-
 bool CWalletDB::WritePurpose(const string& strAddress, const string& strPurpose)
 {
     nWalletDBUpdated++;
@@ -517,9 +502,6 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
         else if (strType == "orderposnext")
         {
             ssValue >> pwallet->nOrderPosNext;
-        } else if (strType == "stakeSplitThreshold")
-        {
-            ssValue >> pwallet->nStakeSplitThreshold;
         } else if (strType == "adrenaline")
 	{
 	    std::string sAlias;
@@ -527,13 +509,7 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
 	    CAdrenalineNodeConfig adrenalineNodeConfig;
 	    ssValue >> adrenalineNodeConfig;
 	    pwallet->mapMyAdrenalineNodes.insert(make_pair(sAlias, adrenalineNodeConfig));
-	} else if (strType == "autocombinesettings")
-  {
-            std::pair<bool, CAmount> pSettings;
-            ssValue >> pSettings;
-            pwallet->fCombineDust = pSettings.first;
-            pwallet->nAutoCombineThreshold = pSettings.second;
-    }
+	}
     } catch (...)
     {
         return false;

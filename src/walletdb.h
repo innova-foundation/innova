@@ -321,9 +321,6 @@ public:
     bool WriteWatchOnly(const CScript &script);
     bool EraseWatchOnly(const CScript &script);
 
-    bool WriteStakeSplitThreshold(uint64_t nStakeSplitThreshold);
-    bool WriteAutoCombineSettings(bool fEnable, CAmount nCombineThreshold);
-
     bool WriteKey(const CPubKey& vchPubKey, const CPrivKey& vchPrivKey, const CKeyMetadata &keyMeta)
     {
         nWalletDBUpdated++;
