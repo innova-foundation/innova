@@ -52,7 +52,7 @@ void ProcessCollateralnodeConnections(){
         //if it's our collateralnode, let it be
         if(colLateralPool.submittedToCollateralnode == pnode->addr) continue;
 
-        if( pnode->fCollaTeralMaster ||
+        if( pnode->fColLateralMaster ||
             (pnode->addr.GetPort() == 14539 && pnode->nChainHeight > (nBestHeight - 120)) // disconnect collateralnodes that were in sync when they connected recently
                 )
         {
@@ -65,7 +65,7 @@ void ProcessCollateralnodeConnections(){
 void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataStream& vRecv)
 {
 
-    if (strCommand == "dsee") { // CollaTeral Election Entry
+    if (strCommand == "isee") { // CollaTeral Election Entry
         // if (nBestHeight < (GetNumBlocksOfPeers() - 300)) return; // don't process these until near completion
         bool fIsInitialDownload = IsInitialBlockDownload();
         if(fIsInitialDownload) return;
@@ -88,7 +88,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 
         // make sure signature isn't in the future (past is OK)
         if (sigTime > pindexBest->GetBlockTime() + 30 * 30) {
-            if (fDebugCN) printf("dsee - Signature rejected, too far into the future %s\n", vin.ToString().c_str());
+            if (fDebugCN) printf("isee - Signature rejected, too far into the future %s\n", vin.ToString().c_str());
             return;
         }
 
@@ -101,7 +101,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         strMessage = addr.ToString() + boost::lexical_cast<std::string>(sigTime) + vchPubKey + vchPubKey2 + boost::lexical_cast<std::string>(protocolVersion);
 
         if(protocolVersion < MIN_MN_PROTO_VERSION) {
-            if (fDebugCN) printf("dsee - ignoring outdated collateralnode %s protocol version %d\n", vin.ToString().c_str(), protocolVersion);
+            if (fDebugCN) printf("isee - ignoring outdated collateralnode %s protocol version %d\n", vin.ToString().c_str(), protocolVersion);
             return;
         }
 
@@ -109,7 +109,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         pubkeyScript = GetScriptForDestination(pubkey.GetID());
 
         if(pubkeyScript.size() != 25) {
-            if (fDebugCN) printf("dsee - pubkey the wrong size\n");
+            if (fDebugCN) printf("isee - pubkey the wrong size\n");
             Misbehaving(pfrom->GetId(), 100);
             return;
         }
@@ -118,14 +118,14 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         pubkeyScript2 =GetScriptForDestination(pubkey2.GetID());
 
         if(pubkeyScript2.size() != 25) {
-            if (fDebugCN) printf("dsee - pubkey2 the wrong size\n");
+            if (fDebugCN) printf("isee - pubkey2 the wrong size\n");
             Misbehaving(pfrom->GetId(), 100);
             return;
         }
 
         std::string errorMessage = "";
         if(!colLateralSigner.VerifyMessage(pubkey, vchSig, strMessage, errorMessage)){
-            if (fDebugCN) printf("dsee - Got bad collateralnode address signature\n");
+            if (fDebugCN) printf("isee - Got bad collateralnode address signature\n");
             Misbehaving(pfrom->GetId(), 100);
             return;
         }
@@ -145,7 +145,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
                     //mn.UpdateLastSeen(); // update last seen without the sigTime since it's a new entry
 
                     if(mn.now < sigTime){ //take the newest entry
-                        if (fDebugCN & fDebugNet) printf("dsee - Got updated entry for %s\n", addr.ToString().c_str());
+                        if (fDebugCN & fDebugNet) printf("isee - Got updated entry for %s\n", addr.ToString().c_str());
                         mn.UpdateLastSeen(); // update with current time (i.e. the time we received this 'new' dsee
                         mn.pubkey2 = pubkey2;
                         mn.now = sigTime;
@@ -174,20 +174,20 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         //  - this is expensive, so it's only done once per collateralnode
         //  - if sigTime is newer than our chain, this will probably never work, so don't bother.
         if(sigTime < pindexBest->GetBlockTime() && !colLateralSigner.IsVinAssociatedWithPubkey(vin, pubkey)) {
-            if (fDebugCN) printf("dsee - Got mismatched pubkey and vin\n");
+            if (fDebugCN) printf("isee - Got mismatched pubkey and vin\n");
             return;
         }
 
-        if(fDebugCN) printf("dsee - Got NEW collateralnode entry %s\n", addr.ToString().c_str());
+        if(fDebugCN) printf("isee - Got NEW collateralnode entry %s\n", addr.ToString().c_str());
 
         // make sure it's still unspent
         //  - this is checked later by .check() in many places and by ThreadCheckCollaTeralPool()
         std::string vinError;
         if(CheckCollateralnodeVin(vin,vinError,pindexBest)){
-            if (fDebugCN && fDebugNet) printf("dsee - Accepted input for collateralnode entry %i %i\n", count, current);
+            if (fDebugCN && fDebugNet) printf("isee - Accepted input for collateralnode entry %i %i\n", count, current);
 
             //if(GetInputAge(vin, pindexBest) < (nBestHeight > BLOCK_START_COLLATERALNODE_DELAYPAY ? COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY : COLLATERALNODE_MIN_CONFIRMATIONS)){
-            //    if (fDebugCN && fDebugNet) printf("dsee - Input must have least %d confirmations\n", (nBestHeight > BLOCK_START_COLLATERALNODE_DELAYPAY ? COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY : COLLATERALNODE_MIN_CONFIRMATIONS));
+            //    if (fDebugCN && fDebugNet) printf("isee - Input must have least %d confirmations\n", (nBestHeight > BLOCK_START_COLLATERALNODE_DELAYPAY ? COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY : COLLATERALNODE_MIN_CONFIRMATIONS));
             //    Misbehaving(pfrom->GetId(), 20);
             //    return;
             //}
@@ -219,11 +219,11 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
             vecCollateralnodes.push_back(mn);
 
         } else {
-            if (fDebugCN) printf("dsee - Rejected collateralnode entry %s: %s\n", addr.ToString().c_str(),vinError.c_str());
+            if (fDebugCN) printf("isee - Rejected collateralnode entry %s: %s\n", addr.ToString().c_str(),vinError.c_str());
         }
     }
 
-    else if (strCommand == "dseep") { //CollaTeral Election Entry Ping
+    else if (strCommand == "iseep") { //CollaTeral Election Entry Ping
         //if (nBestHeight < (GetNumBlocksOfPeers() - 300)) return; // don't process these until near completion
         bool fIsInitialDownload = IsInitialBlockDownload();
         if(fIsInitialDownload) return;
@@ -234,14 +234,14 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         bool stop;
         vRecv >> vin >> vchSig >> sigTime >> stop;
 
-        if (fDebugCN & fDebugSmsg) printf("dseep - Received: vin: %s sigTime: %lld stop: %s\n", vin.ToString().c_str(), sigTime, stop ? "true" : "false");
+        if (fDebugCN & fDebugSmsg) printf("iseep - Received: vin: %s sigTime: %lld stop: %s\n", vin.ToString().c_str(), sigTime, stop ? "true" : "false");
         if (sigTime > pindexBest->GetBlockTime() + (60 * 60)*2) {
-            if (fDebugCN) printf("dseep - Signature rejected, too far into the future %s, sig %d local %d \n", vin.ToString().c_str(), sigTime, GetAdjustedTime());
+            if (fDebugCN) printf("iseep - Signature rejected, too far into the future %s, sig %d local %d \n", vin.ToString().c_str(), sigTime, GetAdjustedTime());
             return;
         }
 
         if (sigTime <= pindexBest->GetBlockTime() - (60 * 60)*2) {
-            if (fDebugCN) printf("dseep - Signature rejected, too far into the past %s - sig %d local %d \n", vin.ToString().c_str(), sigTime, GetAdjustedTime());
+            if (fDebugCN) printf("iseep - Signature rejected, too far into the past %s - sig %d local %d \n", vin.ToString().c_str(), sigTime, GetAdjustedTime());
             return;
         }
 
@@ -249,14 +249,14 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 	      LOCK(cs_collateralnodes);
         for (CCollateralNode& mn : vecCollateralnodes) {
             if(mn.vin.prevout == vin.prevout) {
-            	// printf("dseep - Found corresponding mn for vin: %s\n", vin.ToString().c_str());
+            	// printf("iseep - Found corresponding mn for vin: %s\n", vin.ToString().c_str());
             	// take this only if it's newer
                 if(mn.lastDseep < sigTime){
                     std::string strMessage = mn.addr.ToString() + boost::lexical_cast<std::string>(sigTime) + boost::lexical_cast<std::string>(stop);
 
                     std::string errorMessage = "";
                     if(!colLateralSigner.VerifyMessage(mn.pubkey2, vchSig, strMessage, errorMessage)){
-                        if (fDebugCN) printf("dseep - Got bad collateralnode address signature %s \n", vin.ToString().c_str());
+                        if (fDebugCN) printf("iseep - Got bad collateralnode address signature %s \n", vin.ToString().c_str());
                         //Misbehaving(pfrom->GetId(), 100);
                         return;
                     }
@@ -276,7 +276,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
             }
         }
 
-        if (fDebugCN) printf("dseep - Couldn't find collateralnode entry %s\n", vin.ToString().c_str());
+        if (fDebugCN) printf("iseep - Couldn't find collateralnode entry %s\n", vin.ToString().c_str());
 
         std::map<COutPoint, int64_t>::iterator i = askedForCollateralnodeListEntry.find(vin.prevout);
         if (i != askedForCollateralnodeListEntry.end()){
@@ -289,7 +289,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 
         // ask for the dsee info once from the node that sent dseep
 
-        if (fDebugCN && fDebugNet) printf("dseep - Asking source node for missing entry %s\n", vin.ToString().c_str());
+        if (fDebugCN && fDebugNet) printf("iseep - Asking source node for missing entry %s\n", vin.ToString().c_str());
         pfrom->PushMessage("dseg", vin);
         int64_t askAgain = GetTime()+(60*1); // only ask for each dsee once per minute
         askedForCollateralnodeListEntry[vin.prevout] = askAgain;
@@ -340,11 +340,11 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
                 mn.Check(true);
                 if(mn.IsEnabled()) {
                     if(fDebugCN && fDebugNet) printf("dseg - Sending collateralnode entry - %s \n", mn.addr.ToString().c_str());
-                    pfrom->PushMessage("dsee", mn.vin, mn.addr, mn.sig, mn.now, mn.pubkey, mn.pubkey2, count, i, mn.lastTimeSeen, mn.protocolVersion);
+                    pfrom->PushMessage("isee", mn.vin, mn.addr, mn.sig, mn.now, mn.pubkey, mn.pubkey2, count, i, mn.lastTimeSeen, mn.protocolVersion);
                 }
             } else if (vin == mn.vin) {
                 if(fDebugCN && fDebugNet) printf("dseg - Sending collateralnode entry - %s \n", mn.addr.ToString().c_str());
-                pfrom->PushMessage("dsee", mn.vin, mn.addr, mn.sig, mn.now, mn.pubkey, mn.pubkey2, count, i, mn.lastTimeSeen, mn.protocolVersion);
+                pfrom->PushMessage("isee", mn.vin, mn.addr, mn.sig, mn.now, mn.pubkey, mn.pubkey2, count, i, mn.lastTimeSeen, mn.protocolVersion);
                 printf("dseg - Sent 1 collateralnode entries to %s\n", pfrom->addr.ToString().c_str());
                 return;
             }
