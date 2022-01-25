@@ -52,7 +52,7 @@ void ProcessCollateralnodeConnections(){
         //if it's our collateralnode, let it be
         if(colLateralPool.submittedToCollateralnode == pnode->addr) continue;
 
-        if( pnode->fCollaTeralMaster ||
+        if( pnode->fColLateralMaster ||
             (pnode->addr.GetPort() == 14539 && pnode->nChainHeight > (nBestHeight - 120)) // disconnect collateralnodes that were in sync when they connected recently
                 )
         {
