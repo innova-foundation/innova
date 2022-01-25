@@ -377,7 +377,7 @@ public:
     // b) the peer may tell us in their version message that we should not relay tx invs
     //    until they have initialized their bloom filter.
     bool fRelayTxes;
-    bool fCollaTeralMaster;
+    bool fColLateralMaster;
     CSemaphoreGrant grantOutbound;
     int nRefCount;
 	NodeId id;
@@ -477,7 +477,7 @@ public:
         nPingUsecStart = 0;
         nPingUsecTime = 0;
         fPingQueued = false;
-        fCollaTeralMaster = false;
+        fColLateralMaster = false;
         fRelayTxes = false;
         nLastDseg = GetTime();
 

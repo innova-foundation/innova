@@ -548,7 +548,7 @@ CNode* ConnectNode(CAddress addrConnect, const char *pszDest, bool colLateralMas
         {
 
         if(colLateralMaster)
-                pnode->fCollaTeralMaster = true;
+                pnode->fColLateralMaster = true;
             pnode->AddRef();
 
             pnode->PushMessage("mktinv", GetTime() - (7 * 24 * 60 * 60));
@@ -598,7 +598,7 @@ CNode* ConnectNode(CAddress addrConnect, const char *pszDest, bool colLateralMas
         }
 
         if(colLateralMaster)
-                pnode->fCollaTeralMaster = true;
+                pnode->fColLateralMaster = true;
         pnode->nTimeConnected = GetTime();
         return pnode;
     } else if (!proxyConnectionFailed) {
