@@ -235,7 +235,7 @@ RPCConsole::RPCConsole(QWidget *parent) :
     ui->openSSLVersion->setText(OpenSSL_version(OPENSSL_VERSION));
 #endif
 
-    ui->boostVersion->setText(QString("%1 . %2 . %3").arg(BOOST_VERSION / 100000).arg(BOOST_VERSION / 100 % 1000).arg(BOOST_VERSION % 100));
+    //ui->boostVersion->setText(QString("%1 . %2 . %3").arg(BOOST_VERSION / 100000).arg(BOOST_VERSION / 100 % 1000).arg(BOOST_VERSION % 100));
 
 
 
@@ -362,15 +362,15 @@ void RPCConsole::setClientModel(ClientModel *model)
         connect(model->getPeerTableModel(), SIGNAL(layoutAboutToBeChanged()), this, SLOT(peerLayoutAboutToChange()));
 
         // set up ban table
-        ui->banlistWidget->setModel(model->getBanTableModel());
-        ui->banlistWidget->verticalHeader()->hide();
-        ui->banlistWidget->setEditTriggers(QAbstractItemView::NoEditTriggers);
-        ui->banlistWidget->setSelectionBehavior(QAbstractItemView::SelectRows);
-        ui->banlistWidget->setSelectionMode(QAbstractItemView::SingleSelection);
-        ui->banlistWidget->setContextMenuPolicy(Qt::CustomContextMenu);
-        ui->banlistWidget->setColumnWidth(BanTableModel::Address, BANSUBNET_COLUMN_WIDTH);
-        ui->banlistWidget->setColumnWidth(BanTableModel::Bantime, BANTIME_COLUMN_WIDTH);
-        ui->banlistWidget->horizontalHeader()->setStretchLastSection(true);
+        //ui->banlistWidget->setModel(model->getBanTableModel());
+        //ui->banlistWidget->verticalHeader()->hide();
+        //ui->banlistWidget->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        //ui->banlistWidget->setSelectionBehavior(QAbstractItemView::SelectRows);
+        //ui->banlistWidget->setSelectionMode(QAbstractItemView::SingleSelection);
+        //ui->banlistWidget->setContextMenuPolicy(Qt::CustomContextMenu);
+        //ui->banlistWidget->setColumnWidth(BanTableModel::Address, BANSUBNET_COLUMN_WIDTH);
+        //ui->banlistWidget->setColumnWidth(BanTableModel::Bantime, BANTIME_COLUMN_WIDTH);
+        //ui->banlistWidget->horizontalHeader()->setStretchLastSection(true);
 
         // create ban table context menu action
         QAction* unbanAction = new QAction(tr("&Unban Node"), this);
@@ -380,26 +380,26 @@ void RPCConsole::setClientModel(ClientModel *model)
         banTableContextMenu->addAction(unbanAction);
 
         // context menu signals
-        connect(ui->banlistWidget, SIGNAL(customContextMenuRequested(const QPoint&)), this, SLOT(showBanTableContextMenu(const QPoint&)));
+        //connect(ui->banlistWidget, SIGNAL(customContextMenuRequested(const QPoint&)), this, SLOT(showBanTableContextMenu(const QPoint&)));
         connect(unbanAction, SIGNAL(triggered()), this, SLOT(unbanSelectedNode()));
 
         // ban table signal handling - clear peer details when clicking a peer in the ban table
-        connect(ui->banlistWidget, SIGNAL(clicked(const QModelIndex&)), this, SLOT(clearSelectedNode()));
+        //connect(ui->banlistWidget, SIGNAL(clicked(const QModelIndex&)), this, SLOT(clearSelectedNode()));
         // ban table signal handling - ensure ban table is shown or hidden (if empty)
         connect(model->getBanTableModel(), SIGNAL(layoutChanged()), this, SLOT(showOrHideBanTableIfRequired()));
         showOrHideBanTableIfRequired();
 
         // Wallet Repair Buttons in QT
-        connect(ui->btn_salvagewallet, SIGNAL(clicked()), this, SLOT(walletSalvage()));
-        connect(ui->btn_rescan, SIGNAL(clicked()), this, SLOT(walletRescan()));
-        connect(ui->btn_zapwallettxes1, SIGNAL(clicked()), this, SLOT(walletZaptxes1()));
-        connect(ui->btn_zapwallettxes2, SIGNAL(clicked()), this, SLOT(walletZaptxes2()));
-        connect(ui->btn_upgradewallet, SIGNAL(clicked()), this, SLOT(walletUpgrade()));
-        connect(ui->btn_reindex, SIGNAL(clicked()), this, SLOT(walletReindex()));
+        //connect(ui->btn_salvagewallet, SIGNAL(clicked()), this, SLOT(walletSalvage()));
+        //connect(ui->btn_rescan, SIGNAL(clicked()), this, SLOT(walletRescan()));
+        //connect(ui->btn_zapwallettxes1, SIGNAL(clicked()), this, SLOT(walletZaptxes1()));
+        //connect(ui->btn_zapwallettxes2, SIGNAL(clicked()), this, SLOT(walletZaptxes2()));
+        //connect(ui->btn_upgradewallet, SIGNAL(clicked()), this, SLOT(walletUpgrade()));
+        //connect(ui->btn_reindex, SIGNAL(clicked()), this, SLOT(walletReindex()));
 
         std::string walletPath = QString(tr("Wallet Location: ")).toStdString() + GetDataDir().string();
         walletPath += QDir::separator().toLatin1() + GetArg("-wallet", "wallet.dat");
-        ui->wallet_path->setText(QString::fromStdString(walletPath));
+        //ui->wallet_path->setText(QString::fromStdString(walletPath));
 
         // Provide initial values
         ui->clientVersion->setText(model->formatFullVersion());
@@ -734,7 +734,7 @@ void RPCConsole::updateNodeDetail(const CNodeCombinedStats *stats)
     ui->peerBytesRecv->setText(FormatBytes(stats->nodeStats.nRecvBytes));
     ui->peerConnTime->setText(GUIUtil::formatDurationStr(GetTime() - stats->nodeStats.nTimeConnected));
     ui->peerPingTime->setText(GUIUtil::formatPingTime(stats->nodeStats.dPingTime));
-    ui->peerPingWait->setText(GUIUtil::formatPingTime(stats->nodeStats.dPingWait));
+    //ui->peerPingWait->setText(GUIUtil::formatPingTime(stats->nodeStats.dPingWait));
     ui->peerVersion->setText(QString("%1").arg(stats->nodeStats.nVersion));
     ui->peerSubversion->setText(QString::fromStdString(stats->nodeStats.strSubVer));
     ui->peerId->setText(QString("%1").arg(stats->nodeStats.nodeid));
@@ -754,13 +754,13 @@ void RPCConsole::updateNodeDetail(const CNodeCombinedStats *stats)
         else
             ui->peerSyncHeight->setText(tr("Unknown"));
             // Common height is init to -1
-            if (stats->nodeStateStats.nCommonHeight > -1)
-                ui->peerCommonHeight->setText(QString("%1").arg(stats->nodeStateStats.nCommonHeight));
-            else
-                ui->peerCommonHeight->setText(tr("Unknown"));
-        // } else {
-        //     ui->peerBanScore->setText(tr("Fetching..."));
-        //     ui->peerSyncHeight->setText(tr("Fetching..."));
+            //if (stats->nodeStateStats.nCommonHeight > -1)
+                //ui->peerCommonHeight->setText(QString("%1").arg(stats->nodeStateStats.nCommonHeight));
+            //else
+                //ui->peerCommonHeight->setText(tr("Unknown"));
+         } else {
+             ui->peerBanScore->setText(tr("Fetching..."));
+             ui->peerSyncHeight->setText(tr("Fetching..."));
          }
 
     ui->detailWidget->show();
@@ -849,7 +849,7 @@ void RPCConsole::banSelectedNode(int bantime)
 void RPCConsole::unbanSelectedNode()
 {
     // Get currently selected ban address
-    QString strNode = GUIUtil::getEntryData(ui->banlistWidget, 0, BanTableModel::Address);
+    //QString strNode = GUIUtil::getEntryData(ui->banlistWidget, 0, BanTableModel::Address);
     CSubNet possibleSubnet(strNode.toStdString());
 
     if (possibleSubnet.IsValid())
@@ -876,8 +876,8 @@ void RPCConsole::showOrHideBanTableIfRequired()
         return;
 
     bool visible = clientModel->getBanTableModel()->shouldShow();
-    ui->banlistWidget->setVisible(visible);
-    ui->banHeading->setVisible(visible);
+    //ui->banlistWidget->setVisible(visible);
+    //ui->banHeading->setVisible(visible);
 }
 
 
