@@ -1,6 +1,6 @@
 #!/bin/bash
 TEMP=/tmp/answer$$
-whiptail --title "Innova [INN]"  --menu  "Ubuntu 16.04/18.04/20.04 QT Wallet :" 20 0 0 1 "Compile Innova QT Ubuntu 16.04" 2 "Update Innova QT 16.04 to v3.4 latest" 3 "Compile Innova QT Ubuntu 18.04" 4 "Update Innova QT 18.04 to v3.4 latest" 5 "Compile Innova QT Ubuntu 20.04" 6 "Update Innova QT 20.04 to v3.4 latest" 2>$TEMP
+whiptail --title "Innova [INN]"  --menu  "Ubuntu 16.04/18.04/20.04 QT Wallet :" 20 0 0 1 "Compile Innova QT Ubuntu 16.04" 2 "Update Innova QT 16.04 to latest" 3 "Compile Innova QT Ubuntu 18.04" 4 "Update Innova QT 18.04 to latest" 5 "Compile Innova QT Ubuntu 20.04" 6 "Update Innova QT 20.04 to latest" 2>$TEMP
 choice=`cat $TEMP`
 case $choice in
 1) echo 1 "Compiling Innova QT Ubuntu 16.04"
