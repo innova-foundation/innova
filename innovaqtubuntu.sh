@@ -220,6 +220,7 @@ make
 
 
 echo "Get Chaindata"
+mkdir ~/.innova
 cd ~/.innova
 rm -rf database txleveldb smsgDB
 wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.1/innovabootstrap.zip
