@@ -41,6 +41,7 @@ sudo yes | cp -rf innovad /usr/bin/
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
+mkdir ~/.innova
 cd ~/innova
 chmod ugo+x bootstrap.sh
 ./bootstrap.sh
@@ -119,6 +120,7 @@ sudo yes | cp -rf innovad /usr/bin/
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
+mkdir ~/.innova
 cd ~/innova
 chmod ugo+x bootstrap.sh
 ./bootstrap.sh
@@ -197,6 +199,7 @@ sudo yes | cp -rf innovad /usr/bin/
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
+mkdir ~/.innova
 cd ~/innova
 chmod ugo+x bootstrap.sh
 ./bootstrap.sh
