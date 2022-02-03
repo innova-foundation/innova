@@ -3,13 +3,13 @@
 sudo apt-get install unzip -y
 
 wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.1/innovabootstrap.zip
-mv innovabootstrap.zip /root/.innova/innovabootstrap.zip
+mv innovabootstrap.zip ~/.innova/innovabootstrap.zip
 killall -9 innovad
 
 sleep 10
 
-mkdir /root/.innova
-cd /root/.innova
+mkdir ~/.innova
+cd ~/.innova
 rm -R ./database &>/dev/null &
 rm -R ./smsgDB &>/dev/null &
 rm -R ./txleveldb	&>/dev/null &
@@ -25,9 +25,9 @@ rm db.log &>/dev/null &
 sleep 10
 
 unzip innovabootstrap.zip
-mv /root/.innova/innovabootstrap/* /root/.innova/
+mv ~/.innova/innovabootstrap/* ~/.innova/
 rm ./innovabootstrap.zip
-rm -rf /root/.innova/innovabootstrap
+rm -rf ~/.innova/innovabootstrap
 sleep 5
 echo Starting Innova daemon
 innovad -daemon
