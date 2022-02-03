@@ -8,16 +8,19 @@ killall -9 innovad
 
 sleep 10
 
+mkdir /root/.innova
 cd /root/.innova
 rm -R ./database &>/dev/null &
 rm -R ./smsgDB &>/dev/null &
 rm -R ./txleveldb	&>/dev/null &
 rm banlist.dat  &>/dev/null &
 rm blk0001.dat  &>/dev/null &
+rm banlist.dat &>/dev/null &
 rm innovanamesindex.dat  &>/dev/null &
 rm peers.dat  &>/dev/null &
 rm smsg.ini &>/dev/null &
 rm debug.log &>/dev/null &
+rm db.log &>/dev/null &
 
 sleep 10
 
