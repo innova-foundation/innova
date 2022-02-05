@@ -20,6 +20,8 @@
 
 #include <openssl/ec.h> // for EC_KEY definition
 
+#include <stdint.h>
+
 // secp160k1
 // const unsigned int PRIVATE_KEY_SIZE = 192;
 // const unsigned int PUBLIC_KEY_SIZE  = 41;
@@ -198,6 +200,14 @@ public:
     // Verify a compact signature (~65 bytes).
     // See CKey::SignCompact.
     bool VerifyCompact(const uint256 &hash, const std::vector<unsigned char>& vchSig) const;
+
+    #ifdef WIN32
+    #else
+    /**
+     * Check whether a signature is normalized (lower-S).
+     */
+    static bool CheckLowS(const std::vector<unsigned char>& vchSig);
+    #endif
 
 	// Recover a public key from a compact signature.
     bool RecoverCompact(const uint256 &hash, const std::vector<unsigned char>& vchSig);
@@ -418,5 +428,38 @@ struct CExtKey {
 bool ECC_InitSanityCheck(void);
 
 bool TweakSecret(unsigned char vchSecretOut[32], const unsigned char vchSecretIn[32], const unsigned char vchTweak[32]);
+
+#ifdef WIN32
+#else
+/** Users of this module must hold an ECCVerifyHandle. The constructor and
+ *  destructor of these are not allowed to run in parallel, though. */
+class ECCVerifyHandle
+{
+    static int refcount;
+
+public:
+    ECCVerifyHandle();
+    ~ECCVerifyHandle();
+};
+
+struct ECCryptoClosure
+{
+    ECCVerifyHandle handle;
+};
+
+void static inline WriteLE32(unsigned char* ptr, uint32_t x)
+{
+    *((uint32_t*)ptr) = htole32(x);
+}
+
+/** Initialize the elliptic curve support. May not be called twice without calling ECC_Stop first. */
+void ECC_Start(void);
+
+/** Deinitialize the elliptic curve support. No-op if ECC_Start wasn't called first. */
+void ECC_Stop(void);
+
+
+// ECCryptoClosure instance_of_eccryptoclosure;
+#endif
 
 #endif

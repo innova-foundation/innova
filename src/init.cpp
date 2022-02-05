@@ -26,11 +26,13 @@
 #include "tor/anonymize.h" //Tor native optional integration (Flag -nativetor=1)
 #endif
 
-#include <boost/filesystem.hpp>
-#include <boost/filesystem/fstream.hpp>
-#include <boost/filesystem/convenience.hpp>
-#include <boost/interprocess/sync/file_lock.hpp>
 #include <boost/algorithm/string/predicate.hpp>
+#include <boost/algorithm/string/replace.hpp>
+#include <boost/bind.hpp>
+#include <boost/filesystem.hpp>
+#include <boost/function.hpp>
+#include <boost/interprocess/sync/file_lock.hpp>
+#include <boost/thread.hpp>
 #include <openssl/crypto.h>
 
 #include <string>
@@ -65,6 +67,11 @@ int64_t nMinTxFee = MIN_TX_FEE;
 
 bool fUseFastIndex;
 enum Checkpoints::CPMode CheckpointsMode;
+
+#ifdef WIN32
+#else
+static boost::scoped_ptr<ECCVerifyHandle> globalVerifyHandle;
+#endif
 
 //////////////////////////////////////////////////////////////////////////////
 //
@@ -132,6 +139,11 @@ void Shutdown(void* parg)
         */
         NewThread(ExitTimeout, NULL);
         MilliSleep(50);
+        #ifdef WIN32
+        #else
+        ECC_Stop();
+        globalVerifyHandle.reset();
+        #endif
         printf("Innova exited\n\n");
         fExit = true;
 #ifndef QT_GUI
@@ -529,6 +541,12 @@ bool AppInit2()
     fNativeTor = GetBoolArg("-nativetor");
     fHyperfileLocal = GetBoolArg("-hyperfilelocal");
 
+    #ifdef WIN32
+    #else
+    // Initialize elliptic curve code
+    ECC_Start();
+    globalVerifyHandle.reset(new ECCVerifyHandle()); // Init LibSecp256k1 verify handle
+    #endif
 
     if (mapArgs.count("-bind"))
     {

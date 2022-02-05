@@ -1500,7 +1500,7 @@ void CCollateralNPayments::update(const CBlockIndex *pindex, bool force)
     if (fDebug) printf("Calculating payrates (%d ms)\n",GetTimeMillis() - nStart);
 
     // do pay rate loops, already do this in connectblock()
-    for (CCollateralNode& mn : vecCollateralnodes)
+    for (CCollateralNode mn : vecCollateralnodes)
     {
         CCollateralNPayData data;
         data.height = pindex->nHeight;

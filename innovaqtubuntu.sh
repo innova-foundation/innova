@@ -8,7 +8,7 @@ case $choice in
 echo "Updating linux packages"
 sudo apt-get update -y && sudo apt-get upgrade -y
 
-sudo apt-get install -y git unzip build-essential libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake  libtool libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools qt5-default libcurl4-openssl-dev
+sudo apt-get install -y git unzip build-essential libgmp-dev libsecp256k1-dev libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake  libtool libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools qt5-default libcurl4-openssl-dev
 
 echo "Installing Innova Wallet"
 git clone https://github.com/innova-foundation/innova
@@ -30,7 +30,7 @@ echo "Get Chaindata"
 mkdir ~/.innova
 cd ~/innova
 chmod ugo+x bootstrap.sh
-./bootstrap.sh
+sudo ./bootstrap.sh
 
 #mkdir ~/.innova
 #cd ~/.innova
@@ -64,7 +64,7 @@ cd ~/innova
 echo "Updating linux packages"
 sudo apt-get update -y && sudo apt-get upgrade -y
 
-sudo apt-get install -y git unzip build-essential libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake libtool libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools qt5-default libcurl4-openssl-dev
+sudo apt-get install -y git unzip build-essential libgmp-dev libsecp256k1-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake libtool libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools qt5-default libcurl4-openssl-dev
 
 echo "Downgrade libssl-dev"
 sudo apt-get install make
@@ -98,7 +98,7 @@ echo "Get Chaindata"
 mkdir ~/.innova
 cd ~/innova
 chmod ugo+x bootstrap.sh
-./bootstrap.sh
+sudo ./bootstrap.sh
 
 #mkdir ~/.innova
 #cd ~/.innova
@@ -132,7 +132,7 @@ cd ~/innova
 echo "Updating linux packages"
 sudo apt-get update -y && sudo apt-get upgrade -y
 
-sudo apt-get install -y git unzip build-essential libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake libtool libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools qt5-default libcurl4-openssl-dev
+sudo apt-get install -y git unzip build-essential libgmp-dev libsecp256k1-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake libtool libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools qt5-default libcurl4-openssl-dev
 
 echo "Downgrade libssl-dev"
 sudo apt-get install make
@@ -169,7 +169,7 @@ echo "Get Chaindata"
 mkdir ~/.innova
 cd ~/innova
 chmod ugo+x bootstrap.sh
-./bootstrap.sh
+sudo ./bootstrap.sh
 
 #mkdir ~/.innova
 #cd ~/.innova
@@ -206,7 +206,7 @@ cd ~/innova
 echo "Updating linux packages"
 sudo apt-get update -y && sudo apt-get upgrade -y
 
-sudo apt-get install -y git unzip build-essential libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake libtool libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools qt5-default libcurl4-openssl-dev
+sudo apt-get install -y git unzip build-essential libgmp-dev libsecp256k1-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake libtool libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools qt5-default libcurl4-openssl-dev
 
 echo "Downgrade libssl-dev"
 sudo apt-get install make
@@ -237,7 +237,7 @@ echo "Get Chaindata"
 mkdir ~/.innova
 cd ~/innova
 chmod ugo+x bootstrap.sh
-./bootstrap.sh
+sudo ./bootstrap.sh
 
 #mkdir ~/.innova
 #cd ~/.innova

@@ -8,7 +8,7 @@ case $choice in
 echo "Updating linux packages"
 sudo apt-get update -y && sudo apt-get upgrade -y
 
-sudo apt-get --assume-yes install git unzip build-essential libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev obfs4proxy libcurl4-openssl-dev
+sudo apt-get --assume-yes install git unzip build-essential libgmp-dev libsecp256k1-dev libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev obfs4proxy libcurl4-openssl-dev
 
 echo "Add Firewall Rules"
 sudo apt-get install ufw
@@ -44,7 +44,7 @@ echo "Get Chaindata"
 mkdir ~/.innova
 cd ~/innova
 chmod ugo+x bootstrap.sh
-./bootstrap.sh
+sudo ./bootstrap.sh
 
 #mkdir ~/.innova
 #cd ~/.innova || exit
@@ -75,7 +75,7 @@ cd ~/innova/src
 echo "Updating linux packages"
 sudo apt-get update -y && sudo apt-get upgrade -y
 
-sudo apt-get --assume-yes install git unzip build-essential libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev obfs4proxy libssl-dev libcurl4-openssl-dev
+sudo apt-get --assume-yes install git unzip build-essential libgmp-dev libsecp256k1-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev obfs4proxy libssl-dev libcurl4-openssl-dev
 
 echo "Add Firewall Rules"
 sudo apt-get install ufw
@@ -123,7 +123,7 @@ echo "Get Chaindata"
 mkdir ~/.innova
 cd ~/innova
 chmod ugo+x bootstrap.sh
-./bootstrap.sh
+sudo ./bootstrap.sh
 
 #mkdir ~/.innova
 #cd ~/.innova
@@ -154,7 +154,7 @@ cd ~/innova/src
 echo "Updating linux packages"
 sudo apt-get update -y && sudo apt-get upgrade -y
 
-sudo apt-get --assume-yes install git unzip build-essential libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev obfs4proxy libssl-dev libcurl4-openssl-dev
+sudo apt-get --assume-yes install git unzip build-essential libgmp-dev libsecp256k1-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev obfs4proxy libssl-dev libcurl4-openssl-dev
 
 echo "Add Firewall Rules"
 sudo apt-get install ufw
@@ -202,7 +202,7 @@ echo "Get Chaindata"
 mkdir ~/.innova
 cd ~/innova
 chmod ugo+x bootstrap.sh
-./bootstrap.sh
+sudo ./bootstrap.sh
 
 #mkdir ~/.innova
 #cd ~/.innova

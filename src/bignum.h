@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
 // Copyright (c) 2017-2021 The Denarius developers
-// Copyright (c) 2019-2021 Innova developers
+// Copyright (c) 2017-2022 Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -16,8 +16,9 @@
 
 #include <stdexcept>
 #include <vector>
-
 #include <stdint.h>
+
+#include "util.h" // for uint64
 
 /** Errors thrown by the bignum class */
 class bignum_error : public std::runtime_error
@@ -60,16 +61,16 @@ class CBigNum
 {
 #if OPENSSL_VERSION_NUMBER > 0x10100000L
 private:
-    BIGNUM *self = NULL;
+    BIGNUM *self = nullptr;
 
     void init()
     {
-        if (self)
-            BN_clear_free(self);
+        if (self) BN_clear_free(self);
         self = BN_new();
         if (!self)
             throw bignum_error("CBigNum::init(): BN_new() returned NULL");
     }
+
 #endif
 public:
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
@@ -125,7 +126,7 @@ public:
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
         BN_clear_free(this->pbn);
 #else
-        BN_clear_free(self);
+        if (self) BN_clear_free(self);
 #endif
     }
 
