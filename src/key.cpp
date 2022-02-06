@@ -317,6 +317,7 @@ static int ecdsa_signature_parse_der_lax(const secp256k1_context* ctx, secp256k1
     return 1;
 }
 #endif
+
 // Generate a private key from just the secret parameter
 int EC_KEY_regenerate_key(EC_KEY *eckey, BIGNUM *priv_key)
 {
@@ -660,6 +661,7 @@ CPubKey CKey::GetPubKey() const
 // Create a DER-serialized signature.
 bool CKey::Sign(uint256 hash, std::vector<unsigned char>& vchSig) const
 {
+#ifdef WIN32
     if (!fValid)
         return false;
     CECKey key;
@@ -1178,5 +1180,4 @@ void ECC_Stop() {
         secp256k1_context_destroy(ctx);
     }
 }
-
 #endif
