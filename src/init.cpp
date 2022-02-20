@@ -1004,9 +1004,9 @@ bool AppInit2()
     nStart2 = GetTimeMillis();
 
     extern bool createNameIndexFile();
-   if (!filesystem::exists(GetDataDir() / "innovanames.dat") && !createNameIndexFile())
+   if (!filesystem::exists(GetDataDir() / "innovanamesindex.dat") && !createNameIndexFile())
    {
-       printf("Fatal error: Failed to create innovanames.dat\n");
+       printf("Fatal error: Failed to create innovanamesindex.dat\n");
        return false;
      }
 
