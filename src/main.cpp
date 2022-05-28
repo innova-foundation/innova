@@ -1639,12 +1639,12 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
            nSubsidy = 3000000 * COIN;  // 10m INN Premine for Testnet for testing
        else if (pindexBest->nHeight <= FAIR_LAUNCH_BLOCK) // Block 490, Instamine prevention
            nSubsidy = 1 * COIN/2;
-       else if (pindexBest->nHeight <= 500)
+       else if (pindexBest->nHeight <= 5000)
            nSubsidy = 10 * COIN;
-       else if (pindexBest->nHeight > 500) // Block 500
-           nSubsidy = 0; // PoW Reward 0.0001
-     //else if (pindexBest->nHeight > 10000)
-         //nSubsidy = 10000; // PoW Reward 0.0001
+       else if (pindexBest->nHeight > 5000) // Block 5000
+           nSubsidy = 0;
+     else if (pindexBest->nHeight > 10000)
+          nSubsidy = 10000; // PoW Reward 0.0001
 
        if (fDebug && GetBoolArg("-printcreation"))
            printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
@@ -1685,10 +1685,18 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
     	nSubsidy = 0.165 * COIN;
     else if (pindexBest->nHeight <= 50000)
     	nSubsidy = 0.0825 * COIN;
-    else if (pindexBest->nHeight > ZERO_POW_BLOCK) // Block 50k
-     nSubsidy = 0; // PoW Reward
-  else if (pindexBest->nHeight > 2000000) // Block 2m, Start PoW Rewards again as 0.0001 INN per block, ~200 INN per year
-   nSubsidy = 10000; // PoW Reward 0.0001 INN
+    else if (pindexBest->nHeight > ZERO_POW_BLOCK && pindexBest->nHeight < 2000000)
+     nSubsidy = 0; // PoW Reactivates
+    else if (pindexBest->nHeight > 2000000)
+     nSubsidy = 10000;
+    else if (pindexBest->nHeight > 2100000)
+    nSubsidy = 1 * COIN;
+    else if (pindexBest->nHeight > 2150000)
+     nSubsidy = 0.5 * COIN;
+    else if (pindexBest->nHeight > 2400000)
+     nSubsidy = 0.1 * COIN;
+    else if (pindexBest->nHeight > 2750000)
+     nSubsidy = 0.0001 * COIN; // PoW Reward 0.0001 INN
 
     if (fDebug && GetBoolArg("-printcreation"))
         printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
@@ -1700,23 +1708,23 @@ const int YEARLY_BLOCKCOUNT = 2103792; // Amount of Blocks per year
 // Proof of Stake miner's coin stake reward based on coin age spent (coin-days)
 int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees)
 {
-if (pindexBest->nHeight > (YEARLY_BLOCKCOUNT*9000)) // It's over 9000!![years] - Vegeta
-return nFees;
+        if (pindexBest->nHeight > (YEARLY_BLOCKCOUNT*9000)) // It's over 9000!![years] - Vegeta
+        return nFees;
 
-int64_t nRewardCoinYear;
-nRewardCoinYear = COIN_YEAR_REWARD; // 0.06 6%
+        int64_t nRewardCoinYear;
+          nRewardCoinYear = COIN_YEAR_REWARD; // 0.06 6%
 
-int64_t nSubsidy;
-nSubsidy = nCoinAge * nRewardCoinYear / 365; // Updated on block 500
+        int64_t nSubsidy;
+          nSubsidy = nCoinAge * nRewardCoinYear / 365; // Updated on block 500
 
-// PoS Fixed on Block 500
-if (pindexBest->nHeight >= MAINNET_POSFIX || fTestNet)
-nSubsidy = nCoinAge * nRewardCoinYear / 365;
+        // PoS Fixed on Block 500
+        if (pindexBest->nHeight >= MAINNET_POSFIX || fTestNet)
+          nSubsidy = nCoinAge * nRewardCoinYear / 365;
 
-if (fDebug && GetBoolArg("-printcreation"))
-   printf("GetProofOfStakeReward(): create=%s nCoinAge=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nCoinAge);
+        if (fDebug && GetBoolArg("-printcreation"))
+          printf("GetProofOfStakeReward(): create=%s nCoinAge=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nCoinAge);
 
-   return nSubsidy + nFees;
+        return nSubsidy + nFees;
 }
 
 static const int64_t nTargetTimespan = 30;
