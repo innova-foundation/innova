@@ -690,7 +690,7 @@ Value collateralnode(const Array& params, bool fHelp)
                           //nstatus = QString::fromStdString("Active for payment");
                           remoteObj.push_back(Pair("status", "online"));
                       } else if (mn.status == "OK") {
-                          if (mn.lastDseep > 0) {
+                          if (mn.lastIseep > 0) {
                               //nstatus = QString::fromStdString("Verified");
                               remoteObj.push_back(Pair("status", "verified"));
                           } else {
