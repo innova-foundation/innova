@@ -146,7 +146,7 @@ Value getinfo(const Array& params, bool fHelp)
 
     obj.push_back(Pair("testnet",       fTestNet));
     obj.push_back(Pair("collateralnode",  fCollateralNode));
-    obj.push_back(Pair("fslock",        fCNLock));
+    obj.push_back(Pair("cnlock",        fCNLock));
     obj.push_back(Pair("nativetor",     fNativeTor));
     obj.push_back(Pair("keypoololdest", (int64_t)pwalletMain->GetOldestKeyPoolTime()));
     obj.push_back(Pair("keypoolsize",   (int)pwalletMain->GetKeyPoolSize()));
