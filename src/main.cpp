@@ -3891,6 +3891,10 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
         MIN_MN_PROTO_VERSION = 43980;
     }
 
+    // After block 2.08m, The Minimum Peer Protocol Version is 4392-
+    if(nBestHeight >= 2080000 || fTestNet) {
+        MIN_PEER_PROTO_VERSION = 43920;
+    }
     // ppcoin: if responsible for sync-checkpoint send it
     if (pfrom && !CSyncCheckpoint::strMasterPrivKey.empty())
         Checkpoints::SendSyncCheckpoint(Checkpoints::AutoSelectSyncCheckpoint()->GetBlockHash());
