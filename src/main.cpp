@@ -69,6 +69,8 @@ bool CollateralNReorgBlock = true;
 uint256 nBestChainTrust = 0;
 uint256 nBestInvalidTrust = 0;
 
+int MIN_PEER_PROTO_VERSION = 43910;
+
 uint256 hashBestChain = 0;
 CBlockIndex* pindexBest = NULL;
 int64_t nTimeBestReceived = 0;
