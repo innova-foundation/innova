@@ -251,7 +251,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
             if(mn.vin.prevout == vin.prevout) {
             	// printf("iseep - Found corresponding mn for vin: %s\n", vin.ToString().c_str());
             	// take this only if it's newer
-                if(mn.lastIseep < sigTime){
+                if(mn.lastDseep < sigTime){
                     std::string strMessage = mn.addr.ToString() + boost::lexical_cast<std::string>(sigTime) + boost::lexical_cast<std::string>(stop);
 
                     std::string errorMessage = "";
@@ -261,7 +261,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
                         return;
                     }
 
-                    mn.lastIseep = sigTime;
+                    mn.lastDseep = sigTime;
 
                     if(!mn.UpdatedWithin(COLLATERALNODE_MIN_DSEEP_SECONDS)){
                         mn.UpdateLastSeen();

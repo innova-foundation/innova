@@ -103,7 +103,7 @@ void CActiveCollateralnode::ManageStatus()
     }
 
     //send to all peers
-    if(!Iseep(errorMessage)) {
+    if(!Dseep(errorMessage)) {
         printf("CActiveCollateralnode::ManageStatus() - Error on Ping: %s", errorMessage.c_str());
     }
 }
@@ -147,13 +147,13 @@ bool CActiveCollateralnode::StopCollateralNode(std::string& errorMessage) {
 // Send stop iseep to network for any collateralnode
 bool CActiveCollateralnode::StopCollateralNode(CTxIn vin, CService service, CKey keyCollateralnode, CPubKey pubKeyCollateralnode, std::string& errorMessage) {
        pwalletMain->UnlockCoin(vin.prevout);
-    return Iseep(vin, service, keyCollateralnode, pubKeyCollateralnode, errorMessage, true);
+    return Dseep(vin, service, keyCollateralnode, pubKeyCollateralnode, errorMessage, true);
 }
 
-bool CActiveCollateralnode::Iseep(std::string& errorMessage) {
+bool CActiveCollateralnode::Dseep(std::string& errorMessage) {
     if(status != COLLATERALNODE_IS_CAPABLE && status != COLLATERALNODE_REMOTELY_ENABLED) {
         errorMessage = "collateralnode is not in a running status";
-        printf("CActiveCollateralnode::Iseep() - Error: %s\n", errorMessage.c_str());
+        printf("CActiveCollateralnode::Dseep() - Error: %s\n", errorMessage.c_str());
         return false;
     }
 
@@ -166,10 +166,10 @@ bool CActiveCollateralnode::Iseep(std::string& errorMessage) {
         return false;
     }
 
-    return Iseep(vin, service, keyCollateralnode, pubKeyCollateralnode, errorMessage, false);
+    return Dseep(vin, service, keyCollateralnode, pubKeyCollateralnode, errorMessage, false);
 }
 
-bool CActiveCollateralnode::Iseep(CTxIn vin, CService service, CKey keyCollateralnode, CPubKey pubKeyCollateralnode, std::string &retErrorMessage, bool stop) {
+bool CActiveCollateralnode::Dseep(CTxIn vin, CService service, CKey keyCollateralnode, CPubKey pubKeyCollateralnode, std::string &retErrorMessage, bool stop) {
     std::string errorMessage;
     std::vector<unsigned char> vchCollateralNodeSignature;
     std::string strCollateralNodeSignMessage;
@@ -179,13 +179,13 @@ bool CActiveCollateralnode::Iseep(CTxIn vin, CService service, CKey keyCollatera
 
     if(!colLateralSigner.SignMessage(strMessage, errorMessage, vchCollateralNodeSignature, keyCollateralnode)) {
         retErrorMessage = "sign message failed: " + errorMessage;
-        printf("CActiveCollateralnode::Iseep() - Error: %s\n", retErrorMessage.c_str());
+        printf("CActiveCollateralnode::Dseep() - Error: %s\n", retErrorMessage.c_str());
         return false;
     }
 
     if(!colLateralSigner.VerifyMessage(pubKeyCollateralnode, vchCollateralNodeSignature, strMessage, errorMessage)) {
         retErrorMessage = "Verify message failed: " + errorMessage;
-        printf("CActiveCollateralnode::Iseep() - Error: %s\n", retErrorMessage.c_str());
+        printf("CActiveCollateralnode::Dseep() - Error: %s\n", retErrorMessage.c_str());
         return false;
     }
 
@@ -202,14 +202,14 @@ bool CActiveCollateralnode::Iseep(CTxIn vin, CService service, CKey keyCollatera
     if(!found){
         // Seems like we are trying to send a ping while the collateralnode is not registered in the network
         retErrorMessage = "CollateralN Collateralnode List doesn't include our collateralnode, Shutting down collateralnode pinging service! " + vin.ToString();
-        printf("CActiveCollateralnode::Iseep() - Error: %s\n", retErrorMessage.c_str());
+        printf("CActiveCollateralnode::Dseep() - Error: %s\n", retErrorMessage.c_str());
         status = COLLATERALNODE_NOT_CAPABLE;
         notCapableReason = retErrorMessage;
         return false;
     }
 
     //send to all peers
-    printf("CActiveCollateralnode::Iseep() - SendCollaTeralElectionEntryPing vin = %s\n", vin.ToString().c_str());
+    printf("CActiveCollateralnode::Dseep() - SendCollaTeralElectionEntryPing vin = %s\n", vin.ToString().c_str());
     SendCollaTeralElectionEntryPing(vin, vchCollateralNodeSignature, masterNodeSignatureTime, stop);
 
     return true;
