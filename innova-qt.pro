@@ -63,6 +63,8 @@ contains(RELEASE, 1) {
     # Mac: compile for maximum compatibility (10.6, 32-bit)
     macx:QMAKE_CXXFLAGS += -mmacosx-version-min=11 -arch x86_64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX10.15.sdk/
 
+
+
     !windows:!macx {
         # Linux: static link
         LIBS += -Wl,-Bstatic
@@ -106,7 +108,7 @@ contains(USE_IPFS, -) {
 # use: qmake "USE_NATIVETOR=1" ( enabled by default; default)
 #  or: qmake "USE_NATIVETOR=0" (disabled by default)
 #  or: qmake "USE_NATIVETOR=-" (not supported)
-# I n n o v a Native Tor - USE_NATIVETOR=- to not compile with the Tor C Library by Tor Project located in src/tor
+# I n n o v a Native Tor - USE_NATIVETOR=- to not compile with the Tor C Library by Tor Project located in src/tor OpenSSL 1.1 Compat not available with Native Tor
 contains(USE_NATIVETOR, -) {
     message(Building without Native Tor support)
 } else {
@@ -420,7 +422,7 @@ QMAKE_CXXFLAGS_WARN_ON = -fdiagnostics-show-option -Wall -Wextra -Wno-ignored-qu
 # Input
 DEPENDPATH += src src/json src/qt
 HEADERS += src/qt/bitcoingui.h \
-	src/qt/intro.h \
+    src/qt/intro.h \
     src/qt/transactiontablemodel.h \
     src/qt/addresstablemodel.h \
     src/qt/peertablemodel.h \
@@ -474,7 +476,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/stealth.h \
     src/idns.h \
     src/hooks.h \
-	  src/namecoin.h \
+    src/namecoin.h \
     src/collateral.h \
     src/activecollateralnode.h \
     src/collateralnode.h \
@@ -662,7 +664,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/pbkdf2.cpp \
     src/stealth.cpp \
     src/idns.cpp \
-	  src/namecoin.cpp \
+	src/namecoin.cpp \
     src/collateral.cpp \
     src/activecollateralnode.cpp \
     src/collateralnode.cpp \
@@ -768,6 +770,7 @@ isEmpty(BOOST_INCLUDE_PATH) {
 
 macx:OPENSSL_LIB_PATH = /opt/local/lib/openssl-1.0
 macx:OPENSSL_INCLUDE_PATH = /opt/local/include/openssl-1.0
+
 
 windows:DEFINES += WIN32
 windows:RC_FILE = src/qt/res/bitcoin-qt.rc

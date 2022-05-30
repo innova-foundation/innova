@@ -64,7 +64,6 @@ enum RPCErrorCode
     RPC_DESERIALIZATION_ERROR       = -22, // Error parsing or validating structure in raw format
     RPC_SERVER_NOT_STARTED          = -18, // RPC server was not started (StartRPCThreads() not called)
 
-
     // P2P client errors
     RPC_CLIENT_NOT_CONNECTED        = -9,  // Bitcoin is not connected
     RPC_CLIENT_IN_INITIAL_DOWNLOAD  = -10, // Still downloading initial blocks
@@ -210,7 +209,7 @@ extern json_spirit::Value signmessage(const json_spirit::Array& params, bool fHe
 extern json_spirit::Value verifymessage(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getreceivedbyaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getreceivedbyaccount(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value fetchbalance(const json_spirit::Array& params, bool fHelp); // I n n o v a - Q0lSQ1VJVEJSRUFLRVI=
+extern json_spirit::Value fetchbalance(const json_spirit::Array& params, bool fHelp); // I n n o v a - Q0FSU0VOIEtMT0NL
 extern json_spirit::Value getbalance(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value movecmd(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value sendfrom(const json_spirit::Array& params, bool fHelp);
@@ -232,7 +231,7 @@ extern json_spirit::Value walletpassphrase(const json_spirit::Array& params, boo
 extern json_spirit::Value walletpassphrasechange(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value walletlock(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value encryptwallet(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value walletstatus(const json_spirit::Array& params, bool fHelp); //Q0lSQ1VJVEJSRUFLRVI=
+extern json_spirit::Value walletstatus(const json_spirit::Array& params, bool fHelp); //Q0FSU0VOIEtMT0NL
 extern json_spirit::Value validateaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getinfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value reservebalance(const json_spirit::Array& params, bool fHelp);
@@ -253,7 +252,7 @@ extern json_spirit::Value signrawtransaction(const json_spirit::Array& params, b
 extern json_spirit::Value sendrawtransaction(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value searchrawtransactions(const json_spirit::Array& params, bool fHelp);
 
-extern json_spirit::Value getbestblockhash(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value getbestblockhash(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value getblockcount(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getblockchaininfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getdifficulty(const json_spirit::Array& params, bool fHelp);
@@ -269,9 +268,10 @@ extern json_spirit::Value getblockbynumber(const json_spirit::Array& params, boo
 extern json_spirit::Value getcheckpoint(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value gettxout(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value importaddress(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value proofofdata(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value burn(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value proofofdata(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 
-extern json_spirit::Value hyperfileversion(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value hyperfileversion(const json_spirit::Array& params, bool fHelp); // in rpchyperfile.cpp Innova HyperFile
 extern json_spirit::Value hyperfileupload(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value hyperfilepod(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value hyperfileduo(const json_spirit::Array& params, bool fHelp);
@@ -279,9 +279,7 @@ extern json_spirit::Value hyperfileduopod(const json_spirit::Array& params, bool
 extern json_spirit::Value hyperfilegetblock(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value hyperfilegetstat(const json_spirit::Array& params, bool fHelp);
 
-extern json_spirit::Value burn(const json_spirit::Array& params, bool fHelp);
-
-extern json_spirit::Value name_new(const json_spirit::Array& params, bool fHelp); // in namecoin.cpp Innova Name commands
+extern json_spirit::Value name_new(const json_spirit::Array& params, bool fHelp); // in namecoin.cpp Denairus Name commands
 extern json_spirit::Value name_update(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value name_delete(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value sendtoname(const json_spirit::Array& params, bool fHelp);
@@ -289,7 +287,7 @@ extern json_spirit::Value name_list(const json_spirit::Array& params, bool fHelp
 extern json_spirit::Value name_scan(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value name_filter(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value name_count(const json_spirit::Array& params, bool fHelp);
-//extern json_spirit::Value name_history(const json_spirit::Array& params, bool fHelp);
+// extern json_spirit::Value name_history(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value name_mempool(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value name_show(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value name_debug(const json_spirit::Array& params, bool fHelp);

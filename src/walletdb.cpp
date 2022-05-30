@@ -502,7 +502,8 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
         else if (strType == "orderposnext")
         {
             ssValue >> pwallet->nOrderPosNext;
-        } else if (strType == "adrenaline")
+        }
+        else if (strType == "adrenaline")
 	{
 	    std::string sAlias;
 	    ssKey >> sAlias;
@@ -701,7 +702,6 @@ DBErrors CWalletDB::ZapWalletTx(CWallet* pwallet)
 
     return DB_LOAD_OK;
 }
-
 
 void ThreadFlushWalletDB(void* parg)
 {
