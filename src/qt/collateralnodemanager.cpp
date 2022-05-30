@@ -363,7 +363,7 @@ void CollateralnodeManager::updateNodeList()
                 if (mn.IsActive()) {
                     nstatus = QString::fromStdString("Active for payment");
                 } else if (mn.status == "OK") {
-                    if (mn.lastIseep > 0) {
+                    if (mn.lastDseep > 0) {
                         nstatus = QString::fromStdString("Verified");
                     } else {
                         nstatus = QString::fromStdString("Registered");
