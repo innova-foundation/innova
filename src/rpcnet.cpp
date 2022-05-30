@@ -79,7 +79,7 @@ Value getpeerinfo(const Array& params, bool fHelp)
         obj.push_back(Pair("bytessend", (int64_t)stats.nSendBytes));
         obj.push_back(Pair("bytesrecv", (int64_t)stats.nRecvBytes));
         obj.push_back(Pair("conntime", (int64_t)stats.nTimeConnected));
-        obj.push_back(Pair("pingtime", stats.dPingTime));
+        obj.push_back(Pair("pingtime", stats.dPingTime)); //return nodes ping time
         if (stats.dPingWait > 0.0)
             obj.push_back(Pair("pingwait", stats.dPingWait));
         obj.push_back(Pair("version", stats.nVersion));
@@ -100,7 +100,7 @@ Value addnode(const Array& params, bool fHelp)
     if (params.size() == 2)
         strCommand = params[1].get_str();
     if (fHelp || params.size() != 2 ||
-    (strCommand != "onetry" && strCommand != "add" && strCommand != "remove" && strCommand != "ban"))
+        (strCommand != "onetry" && strCommand != "add" && strCommand != "remove" && strCommand != "ban"))
         throw runtime_error(
             "addnode <node> <add|remove|onetry|ban>\n"
             "Attempts add or remove <node> from the addnode list or try a connection to <node> once, 'ban' to ban connected node\n");
@@ -113,7 +113,6 @@ Value addnode(const Array& params, bool fHelp)
         ConnectNode(addr, strNode.c_str());
         return Value::null;
     }
-
     else if(strCommand == "ban")
     {
         CNode* pnode = FindNode(strNode);
@@ -145,6 +144,7 @@ Value addnode(const Array& params, bool fHelp)
             throw JSONRPCError(-24, "Error: Node has not been added.");
         vAddedNodes.erase(it);
     }
+
 
     return Value::null;
 }
@@ -194,7 +194,7 @@ static const string SingleAlertSubVersionsString( const std::set<std::string>& s
 {
     std::string strSetSubVer;
     BOOST_FOREACH(std::string str, setVersions) {
-        if(strSetSubVer.size())
+        if(strSetSubVer.size())                 // Must be more than one
             strSetSubVer += " or ";
         strSetSubVer += str;
     }

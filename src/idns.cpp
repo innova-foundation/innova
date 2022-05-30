@@ -576,7 +576,7 @@ int IDns::Tokenize(const char *key, const char *sep2, char **tokens, char *buf) 
   for(char *token = strtok(buf, mainsep);
     token != NULL;
       token = strtok(NULL, mainsep)) {
-      // LogPrintf("Token:%s\n", token);
+      // printf("Token:%s\n", token);
       char *val = strchr(token, '=');
       if(val == NULL)
       continue;

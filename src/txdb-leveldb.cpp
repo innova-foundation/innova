@@ -43,7 +43,7 @@ void init_blockindex(leveldb::Options& options, bool fRemoveOld = false) {
 
         while (true)
         {
-          filesystem::path strBlockFile = GetDataDir() / strprintf("blk%04u.dat", nFile);
+            filesystem::path strBlockFile = GetDataDir() / strprintf("blk%04u.dat", nFile);
 
             // Break if no such file
             if( !filesystem::exists( strBlockFile ) )
@@ -79,7 +79,7 @@ CTxDB::CTxDB(const char* pszMode)
     bool fCreate = strchr(pszMode, 'c');
 
     options = GetOptions();
-    options.create_if_missing = true; //fCreate;
+    options.create_if_missing = true; //fCreate
     options.filter_policy = leveldb::NewBloomFilterPolicy(10);
 
     init_blockindex(options); // Init directory
@@ -594,7 +594,7 @@ bool CTxDB::LoadBlockIndex()
                 // check level 5: check whether all prevouts are marked spent
                 if (nCheckLevel>4)
                 {
-                      for (const CTxIn &txin : tx.vin)
+                     for (const CTxIn &txin : tx.vin)
                      {
                           CTxIndex txindex;
                           if (ReadTxIndex(txin.prevout.hash, txindex))

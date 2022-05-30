@@ -19,18 +19,18 @@ namespace Checkpoints
     //typedef std::map<int, uint256> MapCheckpoints;
 
     // How many times we expect transactions after the last checkpoint to
-   // be slower. This number is a compromise, as it can't be accurate for
-   // every system. When reindexing from a fast disk with a slow CPU, it
-   // can be up to 20, while when downloading from a slow network with a
-   // fast multicore CPU, it won't be much higher than 1.
-   static const double SIGCHECK_VERIFICATION_FACTOR = 5.0;
+    // be slower. This number is a compromise, as it can't be accurate for
+    // every system. When reindexing from a fast disk with a slow CPU, it
+    // can be up to 20, while when downloading from a slow network with a
+    // fast multicore CPU, it won't be much higher than 1.
+    static const double SIGCHECK_VERIFICATION_FACTOR = 5.0;
 
-   struct CCheckpointData {
-       const MapCheckpoints *mapCheckpoints;
-       int64_t nTimeLastCheckpoint;
-       int64_t nTransactionsLastCheckpoint;
-       double fTransactionsPerDay;
-   };
+    struct CCheckpointData {
+        const MapCheckpoints *mapCheckpoints;
+        int64_t nTimeLastCheckpoint;
+        int64_t nTransactionsLastCheckpoint;
+        double fTransactionsPerDay;
+    };
 
     //
     // What makes a good checkpoint block?
@@ -118,7 +118,6 @@ namespace Checkpoints
         return hash == i->second;
     }
 
-
     int GetTotalBlocksEstimate()
     {
         MapCheckpoints& checkpoints = (fTestNet ? mapCheckpointsTestnet : mapCheckpoints);
@@ -200,10 +199,10 @@ namespace Checkpoints
         {
             hashInvalidCheckpoint = hashCheckpoint;
             return error("ValidateSyncCheckpoint: new sync-checkpoint %s is not a descendant of current sync-checkpoint %s", hashCheckpoint.ToString().c_str(), hashSyncCheckpoint.ToString().c_str());
-          };
+        };
 
-          return true;
-      }
+        return true;
+    }
 
     bool WriteSyncCheckpoint(const uint256& hashCheckpoint)
     {
@@ -240,6 +239,7 @@ namespace Checkpoints
                 CBlock block;
                 if (!block.ReadFromDisk(pindexCheckpoint))
                     return error("AcceptPendingSyncCheckpoint: ReadFromDisk failed for sync checkpoint %s", hashPendingCheckpoint.ToString().c_str());
+
                 if (!block.SetBestChain(txdb, pindexCheckpoint))
                 {
                     hashInvalidCheckpoint = hashPendingCheckpoint;
@@ -340,9 +340,9 @@ namespace Checkpoints
             if (!block.SetBestChain(txdb, mapBlockIndex[hash]))
             {
                 return error("ResetSyncCheckpoint: SetBestChain failed for hardened checkpoint %s", hash.ToString().c_str());
-              };
-          } else
-          if (!mapBlockIndex.count(hash))
+            };
+        } else
+        if (!mapBlockIndex.count(hash))
         {
             // checkpoint block not yet accepted
             hashPendingCheckpoint = hash;
@@ -359,11 +359,11 @@ namespace Checkpoints
                     return error("ResetSyncCheckpoint: failed to write sync checkpoint %s", hash.ToString().c_str());
                 printf("ResetSyncCheckpoint: sync-checkpoint reset to %s\n", hashSyncCheckpoint.ToString().c_str());
                 return true;
-              };
-          };
+            };
+        };
 
-          return false;
-      }
+        return false;
+    }
 
     void AskForPendingSyncCheckpoint(CNode* pfrom)
     {

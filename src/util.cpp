@@ -95,7 +95,7 @@ bool fCommandLine = false;
 string strMiscWarning;
 bool fTestNet = false;
 bool fNativeTor = false;
-bool fHyperfileLocal = false;
+bool fHyperFileLocal = false;
 bool fCNLock = false;
 bool fNoListen = false;
 bool fLogTimestamps = false;
@@ -580,7 +580,6 @@ string SanitizeString(const string& str)
     return strResult;
 }
 
-
 static const signed char phexdigit[256] =
 { -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
   -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
@@ -741,6 +740,7 @@ bool SetArg(const std::string& strArg, const std::string& strValue)
     mapArgs[strArg] = strValue;
     return true;
 }
+
 
 string EncodeBase64(const unsigned char* pch, size_t len)
 {
@@ -1142,6 +1142,7 @@ void PrintExceptionContinue(std::exception* pex, const char* pszThread)
 boost::filesystem::path GetDefaultDataDir()
 {
     namespace fs = boost::filesystem;
+
     // Windows < Vista: C:\Documents and Settings\Username\Application Data\Innova
     // Windows >= Vista: C:\Users\Username\AppData\Roaming\Innova
     // Mac: ~/Library/Application Support/Innova
@@ -1163,7 +1164,7 @@ boost::filesystem::path GetDefaultDataDir()
     return pathRet / "Innova";
 #else
     // Unix
-return pathRet / ".innova";
+    return pathRet / ".innova";
 #endif
 #endif
 }
@@ -1195,6 +1196,7 @@ static unsigned int RandomIntegerRange(unsigned int nMin, unsigned int nMax)
     srand(time(NULL) + nMax); //seed srand before using
     return nMin + rand() % (nMax - nMin) + 1;
 }
+
 
 static bool ParsePrechecks(const std::string& str)
 {
@@ -1239,8 +1241,6 @@ bool ParseInt64(const std::string& str, int64_t *out)
         n <= std::numeric_limits<int64_t>::max();
 }
 
-
-
 void WriteConfigFile(FILE* configFile)
 {
     std::string sRPCpassword = "rpcpassword=" + GenerateRandomString(RandomIntegerRange(18, 24)) + "\n";
@@ -1282,6 +1282,7 @@ void WriteConfigFile(FILE* configFile)
     fputs ("addnode=91.46.36.65\n", configFile);
     fputs ("addnode=94.253.189.202\n", configFile);
     fputs ("addnode=94.253.191.159\n", configFile);
+    fclose(configFile);
     ReadConfigFile(mapArgs, mapMultiArgs);
 }
 
@@ -1339,18 +1340,18 @@ void ReadConfigFile(map<string, string>& mapSettingsRet,
 {
     boost::filesystem::ifstream streamConfig(GetConfigFile());
     if (!streamConfig.good()){
-         // Create empty innova.conf if it does not exist
-         FILE* configFile = fopen(GetConfigFile().string().c_str(), "a");
-         if (configFile != NULL) {
-             WriteConfigFile(configFile);
-            // fclose(configFile);
-             printf("WriteConfigFile() Innova.conf Setup Successfully!");
-             ReadConfigFile(mapSettingsRet, mapMultiSettingsRet);
-         } else {
-             printf("WriteConfigFile() innova.conf file could not be created");
-             return; // Nothing to read, so just return
-         }
-     }
+        // Create empty innova.conf if it does not exist
+        FILE* configFile = fopen(GetConfigFile().string().c_str(), "a");
+        if (configFile != NULL) {
+            WriteConfigFile(configFile);
+            //fclose(configFile);
+            printf("WriteConfigFile() Innova.conf Setup Successfully!");
+            ReadConfigFile(mapSettingsRet, mapMultiSettingsRet);
+        } else {
+            printf("WriteConfigFile() innova.conf file could not be created");
+            return; // Nothing to read, so just return
+        }
+    }
 
     set<string> setOptions;
     setOptions.insert("*");

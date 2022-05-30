@@ -1167,6 +1167,7 @@ void CService::SetPort(unsigned short portIn)
     port = portIn;
 }
 
+
 #ifdef WIN32
 std::string NetworkErrorString(int err)
 {
@@ -1345,4 +1346,4 @@ bool operator!=(const CSubNet& a, const CSubNet& b)
 bool operator<(const CSubNet& a, const CSubNet& b)
 {
     return (a.network < b.network || (a.network == b.network && memcmp(a.netmask, b.netmask, 16) < 0));
-} 
+}

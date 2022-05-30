@@ -3179,7 +3179,6 @@ bool CWallet::UnlockStealthAddresses(const CKeyingMaterial& vMasterKeyIn)
     return true;
 }
 
-
 bool CWallet::UpdateStealthAddress(std::string &addr, std::string &label, bool addIfNotExist)
 {
     if (fDebug)
@@ -3838,8 +3837,6 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
 
                 if (GetWeight(block.GetBlockTime(), (int64_t)txNew.nTime) < nStakeSplitAge)
                     txNew.vout.push_back(CTxOut(0, scriptPubKeyOut)); //split stake
-
-
                 if (fDebug && GetBoolArg("-printcoinstake"))
                     printf("CreateCoinStake() : added kernel type=%d\n", whichType);
                 fKernelFound = true;
