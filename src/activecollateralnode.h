@@ -36,8 +36,8 @@ public:
 
     void ManageStatus(); // manage status of main collateralnode
 
-    bool Dseep(std::string& errorMessage); // ping for main collateralnode
-    bool Dseep(CTxIn vin, CService service, CKey key, CPubKey pubKey, std::string &retErrorMessage, bool stop); // ping for any collateralnode
+    bool Iseep(std::string& errorMessage); // ping for main collateralnode
+    bool Iseep(CTxIn vin, CService service, CKey key, CPubKey pubKey, std::string &retErrorMessage, bool stop); // ping for any collateralnode
 
     bool StopCollateralNode(std::string& errorMessage); // stop main collateralnode
     bool StopCollateralNode(std::string strService, std::string strKeyCollateralnode, std::string& errorMessage); // stop remote collateralnode

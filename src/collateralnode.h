@@ -147,7 +147,7 @@ public:
     int payCount;
     int64_t payValue;
     int64_t now; //dsee message times
-    int64_t lastDseep;
+    int64_t lastIseep;
     int cacheInputAge;
     int cacheInputAgeBlock;
     int enabled;
@@ -178,7 +178,7 @@ public:
         cacheInputAge = 0;
         cacheInputAgeBlock = 0;
         nLastDsq = 0;
-        lastDseep = 0;
+        lastIseep = 0;
         allowFreeTx = true;
         protocolVersion = protocolVersionIn;
         lastTimeChecked = 0;
