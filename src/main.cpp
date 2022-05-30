@@ -4668,7 +4668,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         {
           printf("Partner %s using obsolete version %i; DISCONNECTING\n", pfrom->addr.ToString().c_str(), pfrom->nVersion);
           pfrom->fDisconnect = true;
-          if (pfrom->fCollaTeralMaster)
+          if (pfrom->fColLateralMaster)
               printf("Masternode hosting node version was obsolete. This masternode should be removed from the list\n");
           return false;
         }
