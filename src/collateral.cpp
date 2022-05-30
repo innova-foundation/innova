@@ -1,5 +1,4 @@
-// Copyright (c) 2017-2021 The Denarius developers
-// Copyright (c) 2019-2021 The Innova developers
+// Copyright (c) 2017 The Innova developers
 // Copyright (c) 2009-2012 The Darkcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
@@ -26,9 +25,9 @@ using namespace boost;
 CCriticalSection cs_collateral;
 
 /** The main object for accessing collateral */
-CCollaTeralPool colLateralPool;
+CColLateralPool colLateralPool;
 /** A helper object for signing messages from collateralnodes */
-CCollaTeralSigner colLateralSigner;
+CColLateralSigner colLateralSigner;
 /** The current collaterals in progress on the network */
 std::vector<CCollateralNQueue> vecCollateralNQueue;
 /** Keep track of the used collateralnodes */
@@ -41,14 +40,14 @@ CActiveCollateralnode activeCollateralnode;
 int RequestedCollateralNodeList = 0;
 
 //MIN_MN_PROTO_VERSION
-int MIN_MN_PROTO_VERSION = 31000;
+int MIN_MN_PROTO_VERSION = 33933; // INN v3.3.9.9 - Proto - 33933
 
-/* *** BEGIN COLLATERAL MAGIC  **********
+/* *** BEGIN COLLATERALN MAGIC  **********
     Copyright 2014, Darkcoin Developers
         eduffield - evan@darkcoin.io
-    Copyright 2018, Denarius Developers
-        carsenk - admin@denarius.io
-        enkayz - enkayz@denarius.io
+    Copyright 2018-2020, Innova Developers
+        carsenk - admin@innova.io
+        enkayz - enkayz@innova.io
 */
 
 int randomizeList (int i) { return std::rand()%i;}
@@ -95,14 +94,14 @@ int GetInputCollateralNRounds(CTxIn in, int rounds)
     return rounds-1;
 }
 
-void CCollaTeralPool::Reset(){
+void CColLateralPool::Reset(){
     cachedLastSuccess = 0;
     vecCollateralnodesUsed.clear();
     UnlockCoins();
     SetNull();
 }
 
-void CCollaTeralPool::SetNull(bool clearEverything){
+void CColLateralPool::SetNull(bool clearEverything){
     finalTransaction.vin.clear();
     finalTransaction.vout.clear();
 
@@ -139,11 +138,11 @@ void CCollaTeralPool::SetNull(bool clearEverything){
     std::srand(seed);
 }
 
-bool CCollaTeralPool::SetCollateralAddress(std::string strAddress){
+bool CColLateralPool::SetCollateralAddress(std::string strAddress){
     CBitcoinAddress address;
     if (!address.SetString(strAddress))
     {
-        printf("CCollaTeralPool::SetCollateralAddress - Invalid CollaTeral collateral address\n");
+        printf("CColLateralPool::SetCollateralAddress - Invalid ColLateral collateral address\n");
         return false;
     }
     collateralPubKey= GetScriptForDestination(address.Get());
@@ -153,7 +152,7 @@ bool CCollaTeralPool::SetCollateralAddress(std::string strAddress){
 //
 // Unlock coins after CollateralN fails or succeeds
 //
-void CCollaTeralPool::UnlockCoins(){
+void CColLateralPool::UnlockCoins(){
     for (CTxIn v : lockedCoins)
         pwalletMain->UnlockCoin(v.prevout);
 
@@ -163,13 +162,13 @@ void CCollaTeralPool::UnlockCoins(){
 //
 // Check for various timeouts (queue objects, collateral, etc)
 //
-void CCollaTeralPool::CheckTimeout(){
+void CColLateralPool::CheckTimeout(){
     if(!fCollateralNode) return;
 
     // catching hanging sessions
     if(!fCollateralNode) {
         if(state == POOL_STATUS_TRANSMISSION) {
-            if(fDebug) printf("CCollaTeralPool::CheckTimeout() -- Session complete -- Running Check()\n");
+            if(fDebug) printf("CColLateralPool::CheckTimeout() -- Session complete -- Running Check()\n");
             // Check();
         }
     }
@@ -179,7 +178,7 @@ void CCollaTeralPool::CheckTimeout(){
     vector<CCollateralNQueue>::iterator it;
     for(it=vecCollateralNQueue.begin();it<vecCollateralNQueue.end();it++){
         if((*it).IsExpired()){
-            if(fDebug) printf("CCollaTeralPool::CheckTimeout() : Removing expired queue entry - %d\n", c);
+            if(fDebug) printf("CColLateralPool::CheckTimeout() : Removing expired queue entry - %d\n", c);
             vecCollateralNQueue.erase(it);
             break;
         }
@@ -206,21 +205,21 @@ void CCollaTeralPool::CheckTimeout(){
         c = 0;
 
         // if it's a collateralnode, the entries are stored in "entries", otherwise they're stored in myEntries
-        std::vector<CCollaTeralEntry> *vec = &myEntries;
+        std::vector<CColLateralEntry> *vec = &myEntries;
         if(fCollateralNode) vec = &entries;
 
         // check for a timeout and reset if needed
-        vector<CCollaTeralEntry>::iterator it2;
+        vector<CColLateralEntry>::iterator it2;
         for(it2=vec->begin();it2<vec->end();it2++){
             if((*it2).IsExpired()){
-                if(fDebug) printf("CCollaTeralPool::CheckTimeout() : Removing expired entry - %d\n", c);
+                if(fDebug) printf("CColLateralPool::CheckTimeout() : Removing expired entry - %d\n", c);
                 vec->erase(it2);
                 if(entries.size() == 0 && myEntries.size() == 0){
                     SetNull(true);
                     UnlockCoins();
                 }
                 if(fCollateralNode){
-                    RelayCollaTeralStatus(colLateralPool.sessionID, colLateralPool.GetState(), colLateralPool.GetEntriesCount(), COLLATERALNODE_RESET);
+                    RelayColLateralStatus(colLateralPool.sessionID, colLateralPool.GetState(), colLateralPool.GetEntriesCount(), COLLATERALNODE_RESET);
                 }
                 break;
             }
@@ -239,7 +238,7 @@ void CCollaTeralPool::CheckTimeout(){
             UpdateState(POOL_STATUS_ACCEPTING_ENTRIES);
         }
     } else if(GetTimeMillis()-lastTimeChanged >= (COLLATERALN_QUEUE_TIMEOUT*1000)+addLagTime){
-        if(fDebug) printf("CCollaTeralPool::CheckTimeout() -- Session timed out (30s) -- resetting\n");
+        if(fDebug) printf("CColLateralPool::CheckTimeout() -- Session timed out (30s) -- resetting\n");
         SetNull();
         UnlockCoins();
 
@@ -248,7 +247,7 @@ void CCollaTeralPool::CheckTimeout(){
     }
 
     if(state == POOL_STATUS_SIGNING && GetTimeMillis()-lastTimeChanged >= (COLLATERALN_SIGNING_TIMEOUT*1000)+addLagTime ) {
-        if(fDebug) printf("CCollaTeralPool::CheckTimeout() -- Session timed out -- restting\n");
+        if(fDebug) printf("CColLateralPool::CheckTimeout() -- Session timed out -- restting\n");
         SetNull();
         UnlockCoins();
         //add my transactions to the new session
@@ -259,7 +258,7 @@ void CCollaTeralPool::CheckTimeout(){
 }
 
 // check to see if the signature is valid
-bool CCollaTeralPool::SignatureValid(const CScript& newSig, const CTxIn& newVin){
+bool CColLateralPool::SignatureValid(const CScript& newSig, const CTxIn& newVin){
     CTransaction txNew;
     txNew.vin.clear();
     txNew.vout.clear();
@@ -268,11 +267,11 @@ bool CCollaTeralPool::SignatureValid(const CScript& newSig, const CTxIn& newVin)
     CScript sigPubKey = CScript();
     unsigned int i = 0;
 
-    for (CCollaTeralEntry e : entries) {
+    for (CColLateralEntry e : entries) {
         for (const CTxOut out : e.vout)
             txNew.vout.push_back(out);
 
-        for (const CCollaTeralEntryVin s : e.sev){
+        for (const CColLateralEntryVin s : e.sev){
             txNew.vin.push_back(s.vin);
 
             if(s.vin == newVin){
@@ -286,19 +285,19 @@ bool CCollaTeralPool::SignatureValid(const CScript& newSig, const CTxIn& newVin)
     if(found >= 0){ //might have to do this one input at a time?
         int n = found;
         txNew.vin[n].scriptSig = newSig;
-        if(fDebug) printf("CCollaTeralPool::SignatureValid() - Sign with sig %s\n", newSig.ToString().substr(0,24).c_str());
+        if(fDebug) printf("CColLateralPool::SignatureValid() - Sign with sig %s\n", newSig.ToString().substr(0,24).c_str());
         if (!VerifyScript(txNew.vin[n].scriptSig, sigPubKey, txNew, i, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC, 0)){
-            if(fDebug) printf("CCollaTeralPool::SignatureValid() - Signing - Error signing input %u\n", n);
+            if(fDebug) printf("CColLateralPool::SignatureValid() - Signing - Error signing input %u\n", n);
             return false;
         }
     }
 
-    if(fDebug) printf("CCollaTeralPool::SignatureValid() - Signing - Succesfully signed input\n");
+    if(fDebug) printf("CColLateralPool::SignatureValid() - Signing - Succesfully signed input\n");
     return true;
 }
 
 // check to make sure the collateral provided by the client is valid
-bool CCollaTeralPool::IsCollateralValid(const CTransaction& txCollateral){
+bool CColLateralPool::IsCollateralValid(const CTransaction& txCollateral){
     if(txCollateral.vout.size() < 1) return false;
     if(txCollateral.nLockTime != 0) return false;
 
@@ -310,7 +309,7 @@ bool CCollaTeralPool::IsCollateralValid(const CTransaction& txCollateral){
         nValueOut += o.nValue;
 
         if(!o.scriptPubKey.IsNormalPaymentScript()){
-            printf("CCollaTeralPool::IsCollateralValid - Invalid Script %s\n", txCollateral.ToString().c_str());
+            printf("CColLateralPool::IsCollateralValid - Invalid Script %s\n", txCollateral.ToString().c_str());
             return false;
         }
     }
@@ -329,23 +328,23 @@ bool CCollaTeralPool::IsCollateralValid(const CTransaction& txCollateral){
     }
 
     if(missingTx){
-        if(fDebug) printf("CCollaTeralPool::IsCollateralValid - Unknown inputs in collateral transaction - %s\n", txCollateral.ToString().c_str());
+        if(fDebug) printf("CColLateralPool::IsCollateralValid - Unknown inputs in collateral transaction - %s\n", txCollateral.ToString().c_str());
         return false;
     }
 
     //collateral transactions are required to pay out COLLATERALN_COLLATERAL as a fee to the miners
     if(nValueIn-nValueOut < COLLATERALN_COLLATERAL) {
-        if(fDebug) printf("CCollaTeralPool::IsCollateralValid - did not include enough fees in transaction %lu\n%s\n", nValueOut-nValueIn, txCollateral.ToString().c_str());
+        if(fDebug) printf("CColLateralPool::IsCollateralValid - did not include enough fees in transaction %lu\n%s\n", nValueOut-nValueIn, txCollateral.ToString().c_str());
         return false;
     }
 
-    if(fDebug) printf("CCollaTeralPool::IsCollateralValid %s\n", txCollateral.ToString().c_str());
+    if(fDebug) printf("CColLateralPool::IsCollateralValid %s\n", txCollateral.ToString().c_str());
 
     CValidationState state;
     //if(!AcceptableInputs(mempool, state, txCollateral)){
     bool* pfMissingInputs;
     if(!AcceptableInputs(mempool, txCollateral, false, pfMissingInputs)){
-        if(fDebug) printf("CCollaTeralPool::IsCollateralValid - didn't pass IsAcceptable\n");
+        if(fDebug) printf("CColLateralPool::IsCollateralValid - didn't pass IsAcceptable\n");
         return false;
     }
 
@@ -356,12 +355,12 @@ bool CCollaTeralPool::IsCollateralValid(const CTransaction& txCollateral){
 //
 // Add a clients transaction to the pool
 //
-bool CCollaTeralPool::AddEntry(const std::vector<CTxIn>& newInput, const int64_t& nAmount, const CTransaction& txCollateral, const std::vector<CTxOut>& newOutput, std::string& error){
+bool CColLateralPool::AddEntry(const std::vector<CTxIn>& newInput, const int64_t& nAmount, const CTransaction& txCollateral, const std::vector<CTxOut>& newOutput, std::string& error){
     if (!fCollateralNode) return false;
 
     for (CTxIn in : newInput) {
         if (in.prevout.IsNull() || nAmount < 0) {
-            if(fDebug) printf("CCollaTeralPool::AddEntry - input not valid!\n");
+            if(fDebug) printf("CColLateralPool::AddEntry - input not valid!\n");
             error = _("Input is not valid.");
             sessionUsers--;
             return false;
@@ -369,14 +368,14 @@ bool CCollaTeralPool::AddEntry(const std::vector<CTxIn>& newInput, const int64_t
     }
 
     if (!IsCollateralValid(txCollateral)){
-        if(fDebug) printf("CCollaTeralPool::AddEntry - collateral not valid!\n");
+        if(fDebug) printf("CColLateralPool::AddEntry - collateral not valid!\n");
         error = _("Collateral is not valid.");
         sessionUsers--;
         return false;
     }
 
     if((int)entries.size() >= GetMaxPoolTransactions()){
-        if(fDebug) printf("CCollaTeralPool::AddEntry - entries is full!\n");
+        if(fDebug) printf("CColLateralPool::AddEntry - entries is full!\n");
         error = _("Entries are full.");
         sessionUsers--;
         return false;
@@ -384,10 +383,10 @@ bool CCollaTeralPool::AddEntry(const std::vector<CTxIn>& newInput, const int64_t
 
     for (CTxIn in : newInput) {
         if(fDebug) printf("looking for vin -- %s\n", in.ToString().c_str());
-        for (const CCollaTeralEntry v : entries) {
-            for (const CCollaTeralEntryVin s : v.sev){
+        for (const CColLateralEntry v : entries) {
+            for (const CColLateralEntryVin s : v.sev){
                 if(s.vin == in) {
-                    if(fDebug) printf("CCollaTeralPool::AddEntry - found in vin\n");
+                    if(fDebug) printf("CColLateralPool::AddEntry - found in vin\n");
                     error = _("Already have that input.");
                     sessionUsers--;
                     return false;
@@ -397,65 +396,65 @@ bool CCollaTeralPool::AddEntry(const std::vector<CTxIn>& newInput, const int64_t
     }
 
     if(state == POOL_STATUS_ACCEPTING_ENTRIES) {
-        CCollaTeralEntry v;
+        CColLateralEntry v;
         v.Add(newInput, nAmount, txCollateral, newOutput);
         entries.push_back(v);
 
-        if(fDebug) printf("CCollaTeralPool::AddEntry -- adding %s\n", newInput[0].ToString().c_str());
+        if(fDebug) printf("CColLateralPool::AddEntry -- adding %s\n", newInput[0].ToString().c_str());
         error = "";
 
         return true;
     }
 
-    if(fDebug) printf("CCollaTeralPool::AddEntry - can't accept new entry, wrong state!\n");
+    if(fDebug) printf("CColLateralPool::AddEntry - can't accept new entry, wrong state!\n");
     error = _("Wrong state.");
     sessionUsers--;
     return false;
 }
 
-bool CCollaTeralPool::AddScriptSig(const CTxIn newVin){
-    if(fDebug) printf("CCollaTeralPool::AddScriptSig -- new sig  %s\n", newVin.scriptSig.ToString().substr(0,24).c_str());
+bool CColLateralPool::AddScriptSig(const CTxIn newVin){
+    if(fDebug) printf("CColLateralPool::AddScriptSig -- new sig  %s\n", newVin.scriptSig.ToString().substr(0,24).c_str());
 
-    for (const CCollaTeralEntry v : entries) {
-        for (const CCollaTeralEntryVin s : v.sev){
+    for (const CColLateralEntry v : entries) {
+        for (const CColLateralEntryVin s : v.sev){
             if(s.vin.scriptSig == newVin.scriptSig) {
-                printf("CCollaTeralPool::AddScriptSig - already exists \n");
+                printf("CColLateralPool::AddScriptSig - already exists \n");
                 return false;
             }
         }
     }
 
     if(!SignatureValid(newVin.scriptSig, newVin)){
-        if(fDebug) printf("CCollaTeralPool::AddScriptSig - Invalid Sig\n");
+        if(fDebug) printf("CColLateralPool::AddScriptSig - Invalid Sig\n");
         return false;
     }
 
-    if(fDebug) printf("CCollaTeralPool::AddScriptSig -- sig %s\n", newVin.ToString().c_str());
+    if(fDebug) printf("CColLateralPool::AddScriptSig -- sig %s\n", newVin.ToString().c_str());
 
     if(state == POOL_STATUS_SIGNING) {
         for (CTxIn& vin : finalTransaction.vin){
             if(newVin.prevout == vin.prevout && vin.nSequence == newVin.nSequence){
                 vin.scriptSig = newVin.scriptSig;
                 vin.prevPubKey = newVin.prevPubKey;
-                if(fDebug) printf("CCollaTeralPool::AddScriptSig -- adding to finalTransaction  %s\n", newVin.scriptSig.ToString().substr(0,24).c_str());
+                if(fDebug) printf("CColLateralPool::AddScriptSig -- adding to finalTransaction  %s\n", newVin.scriptSig.ToString().substr(0,24).c_str());
             }
         }
         for(unsigned int i = 0; i < entries.size(); i++){
             if(entries[i].AddSig(newVin)){
-                if(fDebug) printf("CCollaTeralPool::AddScriptSig -- adding  %s\n", newVin.scriptSig.ToString().substr(0,24).c_str());
+                if(fDebug) printf("CColLateralPool::AddScriptSig -- adding  %s\n", newVin.scriptSig.ToString().substr(0,24).c_str());
                 return true;
             }
         }
     }
 
-    printf("CCollaTeralPool::AddScriptSig -- Couldn't set sig!\n" );
+    printf("CColLateralPool::AddScriptSig -- Couldn't set sig!\n" );
     return false;
 }
 
 // check to make sure everything is signed
-bool CCollaTeralPool::SignaturesComplete(){
-    for (const CCollaTeralEntry v : entries) {
-        for (const CCollaTeralEntryVin s : v.sev){
+bool CColLateralPool::SignaturesComplete(){
+    for (const CColLateralEntry v : entries) {
+        for (const CColLateralEntryVin s : v.sev){
             if(!s.isSigSet) return false;
         }
     }
@@ -467,7 +466,7 @@ bool CCollaTeralPool::SignaturesComplete(){
 //                  0 means transaction was not accepted
 //                  1 means transaction was accepted
 
-bool CCollaTeralPool::StatusUpdate(int newState, int newEntriesCount, int newAccepted, std::string& error, int newSessionID){
+bool CColLateralPool::StatusUpdate(int newState, int newEntriesCount, int newAccepted, std::string& error, int newSessionID){
     if(fCollateralNode) return false;
     if(state == POOL_STATUS_ERROR || state == POOL_STATUS_SUCCESS) return false;
 
@@ -486,19 +485,19 @@ bool CCollaTeralPool::StatusUpdate(int newState, int newEntriesCount, int newAcc
 
         if(newAccepted == 1) {
             sessionID = newSessionID;
-            printf("CCollaTeralPool::StatusUpdate - set sessionID to %d\n", sessionID);
+            printf("CColLateralPool::StatusUpdate - set sessionID to %d\n", sessionID);
             sessionFoundCollateralnode = true;
         }
     }
 
     if(newState == POOL_STATUS_ACCEPTING_ENTRIES){
         if(newAccepted == 1){
-            printf("CCollaTeralPool::StatusUpdate - entry accepted! \n");
+            printf("CColLateralPool::StatusUpdate - entry accepted! \n");
             sessionFoundCollateralnode = true;
             //wait for other users. Collateralnode will report when ready
             UpdateState(POOL_STATUS_QUEUE);
         } else if (newAccepted == 0 && sessionID == 0 && !sessionFoundCollateralnode) {
-            printf("CCollaTeralPool::StatusUpdate - entry not accepted by collateralnode \n");
+            printf("CColLateralPool::StatusUpdate - entry not accepted by collateralnode \n");
             UnlockCoins();
             UpdateState(POOL_STATUS_ACCEPTING_ENTRIES);
         }
@@ -513,22 +512,22 @@ bool CCollaTeralPool::StatusUpdate(int newState, int newEntriesCount, int newAcc
 // check it to make sure it's what we want, then sign it if we agree.
 // If we refuse to sign, it's possible we'll be charged collateral
 //
-bool CCollaTeralPool::SignFinalTransaction(CTransaction& finalTransactionNew, CNode* node){
-    if(fDebug) printf("CCollaTeralPool::AddFinalTransaction - Got Finalized Transaction\n");
+bool CColLateralPool::SignFinalTransaction(CTransaction& finalTransactionNew, CNode* node){
+    if(fDebug) printf("CColLateralPool::AddFinalTransaction - Got Finalized Transaction\n");
 
     if(!finalTransaction.vin.empty()){
-        printf("CCollaTeralPool::AddFinalTransaction - Rejected Final Transaction!\n");
+        printf("CColLateralPool::AddFinalTransaction - Rejected Final Transaction!\n");
         return false;
     }
 
     finalTransaction = finalTransactionNew;
-    printf("CCollaTeralPool::SignFinalTransaction %s\n", finalTransaction.ToString().c_str());
+    printf("CColLateralPool::SignFinalTransaction %s\n", finalTransaction.ToString().c_str());
 
     vector<CTxIn> sigs;
 
     //make sure my inputs/outputs are present, otherwise refuse to sign
-    for (const CCollaTeralEntry e : myEntries) {
-        for (const CCollaTeralEntryVin s : e.sev) {
+    for (const CColLateralEntry e : myEntries) {
+        for (const CColLateralEntryVin s : e.sev) {
             /* Sign my transaction and all outputs */
             int mine = -1;
             CScript prevPubKey = CScript();
@@ -563,13 +562,13 @@ bool CCollaTeralPool::SignFinalTransaction(CTransaction& finalTransactionNew, CN
                 if(foundOutputs < targetOuputs || nValue1 != nValue2) {
                     // in this case, something went wrong and we'll refuse to sign. It's possible we'll be charged collateral. But that's
                     // better then signing if the transaction doesn't look like what we wanted.
-                    printf("CCollaTeralPool::Sign - My entries are not correct! Refusing to sign. %d entries %d target. \n", foundOutputs, targetOuputs);
+                    printf("CColLateralPool::Sign - My entries are not correct! Refusing to sign. %d entries %d target. \n", foundOutputs, targetOuputs);
                     return false;
                 }
 
-                if(fDebug) printf("CCollaTeralPool::Sign - Signing my input %i\n", mine);
+                if(fDebug) printf("CColLateralPool::Sign - Signing my input %i\n", mine);
                 if(!SignSignature(*pwalletMain, prevPubKey, finalTransaction, mine, int(SIGHASH_ALL|SIGHASH_ANYONECANPAY))) { // changes scriptSig
-                    if(fDebug) printf("CCollaTeralPool::Sign - Unable to sign my own transaction! \n");
+                    if(fDebug) printf("CColLateralPool::Sign - Unable to sign my own transaction! \n");
                     // not sure what to do here, it will timeout...?
                 }
 
@@ -579,7 +578,7 @@ bool CCollaTeralPool::SignFinalTransaction(CTransaction& finalTransactionNew, CN
 
         }
 
-        if(fDebug) printf("CCollaTeralPool::Sign - txNew:\n%s", finalTransaction.ToString().c_str());
+        if(fDebug) printf("CColLateralPool::Sign - txNew:\n%s", finalTransaction.ToString().c_str());
     }
 
     // push all of our signatures to the collateralnode
@@ -589,9 +588,9 @@ bool CCollaTeralPool::SignFinalTransaction(CTransaction& finalTransactionNew, CN
     return true;
 }
 
-void CCollaTeralPool::NewBlock()
+void CColLateralPool::NewBlock()
 {
-    if(fDebug) printf("CCollaTeralPool::NewBlock \n");
+    if(fDebug) printf("CColLateralPool::NewBlock \n");
 
     //we we're processing lots of blocks, we'll just leave
     if(GetTime() - lastNewBlock < 10) return;
@@ -609,17 +608,17 @@ void CCollaTeralPool::NewBlock()
     }
 }
 
-void CCollaTeralPool::ClearLastMessage()
+void CColLateralPool::ClearLastMessage()
 {
     lastMessage = "";
 }
 
-bool CCollaTeralPool::IsCompatibleWithSession(int64_t nDenom, CTransaction txCollateral, std::string& strReason)
+bool CColLateralPool::IsCompatibleWithSession(int64_t nDenom, CTransaction txCollateral, std::string& strReason)
 {
-    printf("CCollaTeralPool::IsCompatibleWithSession - sessionDenom %d sessionUsers %d\n", sessionDenom, sessionUsers);
+    printf("CColLateralPool::IsCompatibleWithSession - sessionDenom %d sessionUsers %d\n", sessionDenom, sessionUsers);
 
     if (!unitTest && !IsCollateralValid(txCollateral)){
-        if(fDebug) printf("CCollaTeralPool::IsCompatibleWithSession - collateral not valid!\n");
+        if(fDebug) printf("CColLateralPool::IsCompatibleWithSession - collateral not valid!\n");
         strReason = _("Collateral not valid.");
         return false;
     }
@@ -650,7 +649,7 @@ bool CCollaTeralPool::IsCompatibleWithSession(int64_t nDenom, CTransaction txCol
     if((state != POOL_STATUS_ACCEPTING_ENTRIES && state != POOL_STATUS_QUEUE) || sessionUsers >= GetMaxPoolTransactions()){
         if((state != POOL_STATUS_ACCEPTING_ENTRIES && state != POOL_STATUS_QUEUE)) strReason = _("Incompatible mode.");
         if(sessionUsers >= GetMaxPoolTransactions()) strReason = _("Collateralnode queue is full.");
-        printf("CCollaTeralPool::IsCompatibleWithSession - incompatible mode, return false %d %d\n", state != POOL_STATUS_ACCEPTING_ENTRIES, sessionUsers >= GetMaxPoolTransactions());
+        printf("CColLateralPool::IsCompatibleWithSession - incompatible mode, return false %d %d\n", state != POOL_STATUS_ACCEPTING_ENTRIES, sessionUsers >= GetMaxPoolTransactions());
         return false;
     }
 
@@ -659,7 +658,7 @@ bool CCollaTeralPool::IsCompatibleWithSession(int64_t nDenom, CTransaction txCol
         return false;
     }
 
-    printf("CCollaTeralPool::IsCompatibleWithSession - compatible\n");
+    printf("CColLateralPool::IsCompatibleWithSession - compatible\n");
 
     sessionUsers++;
     lastTimeChanged = GetTimeMillis();
@@ -669,7 +668,7 @@ bool CCollaTeralPool::IsCompatibleWithSession(int64_t nDenom, CTransaction txCol
 }
 
 //create a nice string to show the denominations
-void CCollaTeralPool::GetDenominationsToString(int nDenom, std::string& strDenom){
+void CColLateralPool::GetDenominationsToString(int nDenom, std::string& strDenom){
     // Function returns as follows:
     //
     // bit 0 - 100D+1 ( bit on if present )
@@ -703,7 +702,7 @@ void CCollaTeralPool::GetDenominationsToString(int nDenom, std::string& strDenom
 }
 
 // return a bitshifted integer representing the denominations in this list
-int CCollaTeralPool::GetDenominations(const std::vector<CTxOut>& vout){
+int CColLateralPool::GetDenominations(const std::vector<CTxOut>& vout){
     std::vector<pair<int64_t, int> > denomUsed;
 
     // make a list of denominations, with zero uses
@@ -740,7 +739,7 @@ int CCollaTeralPool::GetDenominations(const std::vector<CTxOut>& vout){
 }
 
 
-int CCollaTeralPool::GetDenominationsByAmounts(std::vector<int64_t>& vecAmount){
+int CColLateralPool::GetDenominationsByAmounts(std::vector<int64_t>& vecAmount){
     CScript e = CScript();
     std::vector<CTxOut> vout1;
 
@@ -756,7 +755,7 @@ int CCollaTeralPool::GetDenominationsByAmounts(std::vector<int64_t>& vecAmount){
     return GetDenominations(vout1);
 }
 
-int CCollaTeralPool::GetDenominationsByAmount(int64_t nAmount, int nDenomTarget){
+int CColLateralPool::GetDenominationsByAmount(int64_t nAmount, int nDenomTarget){
     CScript e = CScript();
     int64_t nValueLeft = nAmount;
 
@@ -797,9 +796,9 @@ int CCollaTeralPool::GetDenominationsByAmount(int64_t nAmount, int nDenomTarget)
     return GetDenominations(vout1);
 }
 
-bool CCollaTeralSigner::IsVinAssociatedWithPubkey(CTxIn& vin, CPubKey& pubkey){
+bool CColLateralSigner::IsVinAssociatedWithPubkey(CTxIn& vin, CPubKey& pubkey){
 	bool fIsInitialDownload = IsInitialBlockDownload();
-    if(fIsInitialDownload) return;
+    if(fIsInitialDownload) return nullptr; // Needs to return a value, so returns null pointer v3.3.9.1 - macOS
 
     CScript payee2;
     payee2= GetScriptForDestination(pubkey.GetID());
@@ -829,7 +828,7 @@ bool CCollaTeralSigner::IsVinAssociatedWithPubkey(CTxIn& vin, CPubKey& pubkey){
     return false;
 }
 
-bool CCollaTeralSigner::SetKey(std::string strSecret, std::string& errorMessage, CKey& key, CPubKey& pubkey){
+bool CColLateralSigner::SetKey(std::string strSecret, std::string& errorMessage, CKey& key, CPubKey& pubkey){
     CBitcoinSecret vchSecret;
     bool fGood = vchSecret.SetString(strSecret);
 
@@ -844,7 +843,7 @@ bool CCollaTeralSigner::SetKey(std::string strSecret, std::string& errorMessage,
     return true;
 }
 
-bool CCollaTeralSigner::SignMessage(std::string strMessage, std::string& errorMessage, vector<unsigned char>& vchSig, CKey key)
+bool CColLateralSigner::SignMessage(std::string strMessage, std::string& errorMessage, vector<unsigned char>& vchSig, CKey key)
 {
     CHashWriter ss(SER_GETHASH, 0);
     ss << strMessageMagic;
@@ -858,7 +857,7 @@ bool CCollaTeralSigner::SignMessage(std::string strMessage, std::string& errorMe
     return true;
 }
 
-bool CCollaTeralSigner::VerifyMessage(CPubKey pubkey, vector<unsigned char>& vchSig, std::string strMessage, std::string& errorMessage)
+bool CColLateralSigner::VerifyMessage(CPubKey pubkey, vector<unsigned char>& vchSig, std::string strMessage, std::string& errorMessage)
 {
     CHashWriter ss(SER_GETHASH, 0);
     ss << strMessageMagic;
@@ -871,7 +870,7 @@ bool CCollaTeralSigner::VerifyMessage(CPubKey pubkey, vector<unsigned char>& vch
     }
 
     if (fDebug && pubkey2.GetID() != pubkey.GetID())
-        printf("CCollaTeralSigner::VerifyMessage -- keys don't match: %s %s", pubkey2.GetID().ToString().c_str(), pubkey.GetID().ToString().c_str());
+        printf("CColLateralSigner::VerifyMessage -- keys don't match: %s %s", pubkey2.GetID().ToString().c_str(), pubkey.GetID().ToString().c_str());
 
     return (pubkey2.GetID() == pubkey.GetID());
 }
@@ -938,7 +937,7 @@ bool CCollateralNQueue::CheckSignature()
 
 
 //TODO: Rename/move to core
-void ThreadCheckCollaTeralPool(void* parg)
+void ThreadCheckColLateralPool(void* parg)
 {
     // Make this thread recognisable as the wallet flushing thread
     RenameThread("innova-mn");
@@ -951,7 +950,7 @@ void ThreadCheckCollaTeralPool(void* parg)
         c++;
 
         MilliSleep(1000);
-        //printf("ThreadCheckCollaTeralPool::check timeout\n");
+        //printf("ThreadCheckColLateralPool::check timeout\n");
         //colLateralPool.CheckTimeout();
 
         int mnTimeout = 150; //2.5 minutes
@@ -1023,8 +1022,8 @@ void ThreadCheckCollaTeralPool(void* parg)
         //if(c % (60*5) == 0){
         if(c % 60 == 0 && vecCollateralnodes.size()) {
             //let's connect to a random collateralnode every minute!
-            int cn = rand() % vecCollateralnodes.size();
-            CService addr = vecCollateralnodes[cn].addr;
+            int fs = rand() % vecCollateralnodes.size();
+            CService addr = vecCollateralnodes[fs].addr;
             AddOneShot(addr.ToStringIPPort());
             if (fDebug) printf("added collateralnode at %s to connection attempts\n",addr.ToStringIPPort().c_str());
 
@@ -1033,8 +1032,8 @@ void ThreadCheckCollaTeralPool(void* parg)
             if (GetArg("-maxconnections", 125) > 16 && vNodes.size() < min(25, (int)GetArg("-maxconnections", 125)) && vecCollateralnodes.size() > 25) {
                 int x = 25 - vNodes.size();
                 for (int i = x; i-- > 0; ) {
-                    int cn = rand() % vecCollateralnodes.size();
-                    CService addr = vecCollateralnodes[cn].addr;
+                    int fs = rand() % vecCollateralnodes.size();
+                    CService addr = vecCollateralnodes[fs].addr;
                     if (addr.IsIPv4() && !addr.IsLocal()) {
                         AddOneShot(addr.ToStringIPPort());
                     }
