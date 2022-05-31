@@ -1682,17 +1682,17 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
     else if (pindexBest->nHeight <= 50000)
     	nSubsidy = 0.0825 * COIN;
     else if (pindexBest->nHeight > ZERO_POW_BLOCK && pindexBest->nHeight < 2000000)
-     nSubsidy = 0; // PoW Reactivates
-    else if (pindexBest->nHeight > 2000000)
-     nSubsidy = 10000;
+      nSubsidy = 0 * COIN; // PoW Reactivates
+    else if (pindexBest->nHeight <= 2000000)
+      nSubsidy = 0.0001 * COIN;
     else if (pindexBest->nHeight <= 2080000) // Hard Fork roll back - Innova Foundation Fund hack
-    nSubsidy = 1 * COIN;
+      nSubsidy = 1 * COIN;
     else if (pindexBest->nHeight <= 2150000)
-     nSubsidy = 0.5 * COIN;
+      nSubsidy = 0.5 * COIN;
     else if (pindexBest->nHeight <= 2400000)
-     nSubsidy = 0.1 * COIN;
+      nSubsidy = 0.1 * COIN;
     else if (pindexBest->nHeight <= 2750000)
-     nSubsidy = 0.0001 * COIN; // PoW Reward 0.0001 INN
+      nSubsidy = 0.0001 * COIN; // PoW Reward 0.0001 INN
 
         if (fDebug && GetBoolArg("-printcreation"))
             printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
