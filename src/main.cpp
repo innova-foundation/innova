@@ -3637,6 +3637,10 @@ bool CBlock::AcceptBlock()
     if (nVersion > CURRENT_VERSION)
         return DoS(100, error("AcceptBlock() : reject unknown block version %d", nVersion));
 
+    if (pindexBest->nHeight <= 2080001)
+        return DoS(100, error("AcceptBlock() : reject block "));
+
+
     // Check for duplicate
     uint256 hash = GetHash();
     if (mapBlockIndex.count(hash))
@@ -3888,15 +3892,6 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
         if (fDebug) printf("ProcessBlock: ACCEPTED\n");
     }
 
-    // After block 1.5m, The Minimum CollateralNode Protocol Version is 43980
-    if(nBestHeight >= 1700000 || fTestNet) {
-      int  MIN_MN_PROTO_VERSION = 43980;
-    }
-
-    // After block 2.08m, The Minimum Peer Protocol Version is 4392-
-    if(nBestHeight >= 2080000 || fTestNet) {
-      int  MIN_PEER_PROTO_VERSION = 43920;
-    }
     // ppcoin: if responsible for sync-checkpoint send it
     if (pfrom && !CSyncCheckpoint::strMasterPrivKey.empty())
         Checkpoints::SendSyncCheckpoint(Checkpoints::AutoSelectSyncCheckpoint()->GetBlockHash());
