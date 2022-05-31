@@ -3638,10 +3638,6 @@ bool CBlock::AcceptBlock()
     if (nVersion > CURRENT_VERSION)
         return DoS(100, error("AcceptBlock() : reject unknown block version %d", nVersion));
 
-    if (pindex->nHeight == 2080000 && GetHash() == uint256("0x000000001f9f67efdef5c02fc3da51f308011443c9e5dae6a79a11dba88525e8"))
-        return DoS(100, error("AcceptBlock() : reject block "));
-
-
     // Check for duplicate
     uint256 hash = GetHash();
     if (mapBlockIndex.count(hash))
