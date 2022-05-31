@@ -60,7 +60,7 @@ class CNode;
 // General Innova Block Values
 
 // extern CFeeRate minRelayTxFee;
-static const int ZERO_POW_BLOCK = 50000; // 50k blocks before Proof of Stake consensus, now 0.0001 INN reward per block
+//static const int ZERO_POW_BLOCK = 50000; // 50k blocks before Proof of Stake consensus, now 0.0001 INN reward per block
 static const int FAIR_LAUNCH_BLOCK = 490; // Last Block until full block reward starts
 static const unsigned int MAX_BLOCK_SIZE = 1000000; // 1MB block hard limit, double the size of Bitcoin
 static const unsigned int MAX_BLOCK_SIZE_GEN = MAX_BLOCK_SIZE/2; // 512kb block soft limit, ditto
