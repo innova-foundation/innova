@@ -1681,8 +1681,6 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
     	nSubsidy = 0.165 * COIN;
     else if (pindexBest->nHeight <= 50000)
     	nSubsidy = 0.0825 * COIN;
-    else if (pindexBest->nHeight > ZERO_POW_BLOCK && pindexBest->nHeight < 2000000)
-      nSubsidy = 0 * COIN; // PoW Reactivates
     else if (pindexBest->nHeight <= 2000000)
       nSubsidy = 0.0001 * COIN;
     else if (pindexBest->nHeight <= 2080000) // Hard Fork roll back - Innova Foundation Fund hack
