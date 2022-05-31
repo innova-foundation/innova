@@ -2568,6 +2568,9 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
     if (!CheckBlock(!fJustCheck, !fJustCheck, false))
         return false;
 
+    if (pindex->nHeight == 2080000)
+        return DoS(100, error("ConnectBlock() : reject block "));
+
     unsigned int flags = SCRIPT_VERIFY_NOCACHE;
 
     /* // Currently don't need
