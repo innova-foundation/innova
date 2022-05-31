@@ -96,7 +96,7 @@
        </property>
       </widget>
      </item>
-    <item>
+     <item>
       <widget class="QPushButton" name="deleteButton">
        <property name="toolTip">
         <string>Delete the currently selected address from the list</string>

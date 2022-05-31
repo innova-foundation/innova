@@ -91,10 +91,10 @@
         <string>Enter a short note to send with payment (max 24 characters)</string>
        </property>
     </widget>
-    
+
    </item>
-   
-   
+
+
    <item row="4" column="0">
     <widget class="QLabel" name="label_4">
      <property name="text">
@@ -116,7 +116,7 @@
      <item>
       <widget class="QValidatedLineEdit" name="payTo">
        <property name="toolTip">
-        <string>The address to send the payment to  (e.g. igYcNv4Zp7g4ysSpdFUuzn6VaxvzAZAxsd)</string>
+        <string>The address to send the payment to  (e.g. DyvGBZBowrppUwwNUo1GCRDTibzJi7g2M)</string>
        </property>
        <property name="maxLength">
         <number>34</number>
