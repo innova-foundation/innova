@@ -57,14 +57,14 @@ MintingView::MintingView(QWidget *parent) :
     legendLayout->addWidget(oldColor);
     legendLayout->addWidget(oldLegend);
     legendLayout->insertStretch(-1);
-	
+
 	QLabel *label1 = new QLabel(this);
 	label1->setText("Staking Estimations");
 	label1->setAlignment(Qt::AlignLeft);
 	QFont font( "Arial", 16, QFont::Bold);
 	label1->setFont(font);
 	label1->setFixedWidth(250);
-	
+
 	QLabel *mintingLabel = new QLabel(tr("Check the arrow icon below for more staking information. *BETA*"));
 
     QLabel *mintingLabel2 = new QLabel(tr(" [Display staking probability within]: "));
@@ -252,13 +252,13 @@ void MintingView::copyAddress()
 
 void MintingView::showHideAddress()
 {
-    mintingView->horizontalHeader()->setSectionHidden(MintingTableModel::Address, 
+    mintingView->horizontalHeader()->setSectionHidden(MintingTableModel::Address,
         !(mintingView->horizontalHeader()->isSectionHidden(MintingTableModel::Address)));
 }
 
 void MintingView::showHideTxID()
 {
-    mintingView->horizontalHeader()->setSectionHidden(MintingTableModel::TxHash, 
+    mintingView->horizontalHeader()->setSectionHidden(MintingTableModel::TxHash,
         !(mintingView->horizontalHeader()->isSectionHidden(MintingTableModel::TxHash)));
 }
 

@@ -42,7 +42,7 @@ public slots:
 private:
     Ui::MessagePage *ui;
     MessageModel *model;
-    
+
     QMenu *contextMenu;
     QAction *replyAction;
     QAction *copyFromAddressAction;

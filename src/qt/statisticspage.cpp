@@ -19,9 +19,8 @@ StatisticsPage::StatisticsPage(QWidget *parent) :
     ui->setupUi(this);
 
     setFixedSize(400, 420);
-
     connect(ui->startButton, SIGNAL(pressed()), this, SLOT(updateStatistics()));
-    }
+}
 
 int heightPrevious = -1;
 int connectionPrevious = -1;

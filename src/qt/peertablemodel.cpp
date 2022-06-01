@@ -118,7 +118,7 @@ public:
 PeerTableModel::PeerTableModel(ClientModel *parent) :
     QAbstractTableModel(parent),
     clientModel(parent),
-    timer(5)
+    timer(nullptr) // Fix QTimer error with int, needs nullptr or 0
 {
     columns << tr("Address:Port") << tr("User Agent") << tr("Sent") << tr("Recv") << tr("Ping");
     priv.reset(new PeerTablePriv());
@@ -260,7 +260,6 @@ void PeerTableModel::sort(int column, Qt::SortOrder order)
     priv->sortOrder = order;
     refresh();
 }
-
 
 PeerTableModel::~PeerTableModel()
 {

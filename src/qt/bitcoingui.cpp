@@ -182,7 +182,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
 
     fCNLock = GetBoolArg("-cnconflock");
     fNativeTor = GetBoolArg("-nativetor");
-    fHyperfileLocal = GetBoolArg("-hyperfilelocal");
+    fHyperFileLocal = GetBoolArg("-hyperfilelocal");
 
     // Create tabs
     overviewPage = new OverviewPage();
@@ -191,7 +191,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     marketBrowser = new MarketBrowser(this);
 	multisigPage = new MultisigDialog(this);
     proofOfImagePage = new ProofOfImage(this);
-    hyperfilePage = new Hyperfile(this);
+    hyperfilePage = new HyperFile(this);
     manageNamesPage = new ManageNamesPage(this);
 	//chatWindow = new ChatWindow(this);
 
@@ -222,7 +222,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     centralWidget->addWidget(overviewPage);
     centralWidget->addWidget(transactionsPage);
 	centralWidget->addWidget(mintingPage);
-  centralWidget->addWidget(manageNamesPage);
+    centralWidget->addWidget(manageNamesPage);
     centralWidget->addWidget(addressBookPage);
     centralWidget->addWidget(receiveCoinsPage);
     centralWidget->addWidget(sendCoinsPage);
@@ -421,10 +421,10 @@ void BitcoinGUI::createActions()
 	proofOfImageAction->setStatusTip(tr("PoD: Timestamp files"));
     tabGroup->addAction(proofOfImageAction);
 
-    hyperfileAction = new QAction(QIcon(":/icons/hyperfile"), tr("&Hyperfile"), this);
+    hyperfileAction = new QAction(QIcon(":/icons/hyperfile"), tr("&HyperFile"), this);
     hyperfileAction ->setToolTip(tr("Decentralized your files, upload to IPFS!"));
     hyperfileAction ->setCheckable(true);
-	  hyperfileAction->setStatusTip(tr("Decentralized File Uploads"));
+	hyperfileAction->setStatusTip(tr("Decentralized File Uploads"));
     tabGroup->addAction(hyperfileAction);
 
 	multisigAction = new QAction(QIcon(":/icons/multi"), tr("Multisig"), this);
@@ -458,7 +458,7 @@ void BitcoinGUI::createActions()
     connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(gotoProofOfImagePage()));
     connect(hyperfileAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
-    connect(hyperfileAction, SIGNAL(triggered()), this, SLOT(gotoHyperfilePage()));
+    connect(hyperfileAction, SIGNAL(triggered()), this, SLOT(gotoHyperFilePage()));
 
     quitAction = new QAction(QIcon(":/icons/quit"), tr("E&xit"), this);
     quitAction->setToolTip(tr("Quit application"));
@@ -590,19 +590,19 @@ void BitcoinGUI::createToolBars()
     mainToolbar->addWidget(mainIcon);
 
     mainToolbar->addAction(overviewAction);
-  mainToolbar->addAction(sendCoinsAction);
-  mainToolbar->addAction(receiveCoinsAction);
-  mainToolbar->addAction(historyAction);
-  mainToolbar->addAction(addressBookAction);
-  mainToolbar->addAction(statisticsAction);
-  mainToolbar->addAction(collateralnodeManagerAction);
-  mainToolbar->addAction(manageNamesAction);
-  mainToolbar->addAction(hyperfileAction);
-  mainToolbar->addAction(proofOfImageAction);
-  mainToolbar->addAction(marketAction);
-  mainToolbar->addAction(blockAction);
-  mainToolbar->addAction(messageAction);
-  mainToolbar->addAction(mintingAction);
+    mainToolbar->addAction(sendCoinsAction);
+    mainToolbar->addAction(receiveCoinsAction);
+    mainToolbar->addAction(historyAction);
+    mainToolbar->addAction(addressBookAction);
+    mainToolbar->addAction(statisticsAction);
+    mainToolbar->addAction(collateralnodeManagerAction);
+    mainToolbar->addAction(manageNamesAction);
+    mainToolbar->addAction(hyperfileAction);
+    mainToolbar->addAction(proofOfImageAction);
+    mainToolbar->addAction(marketAction);
+    mainToolbar->addAction(blockAction);
+    mainToolbar->addAction(messageAction);
+    mainToolbar->addAction(mintingAction);
 
     secondaryToolbar = addToolBar(tr("Actions toolbar"));
     secondaryToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -708,7 +708,7 @@ void BitcoinGUI::setWalletModel(WalletModel *walletModel)
 		marketBrowser->setModel(clientModel);
         collateralnodeManagerPage->setWalletModel(walletModel);
 		multisigPage->setModel(walletModel);
-    manageNamesPage->setModel(walletModel);
+        manageNamesPage->setModel(walletModel);
 		//chatWindow->setModel(clientModel);
 
         setEncryptionStatus(walletModel->getEncryptionStatus());
@@ -863,50 +863,51 @@ void BitcoinGUI::setNumBlocks(int count, int nTotalBlocks)
     if (nLastBlocks == 0)
         nLastBlocks = pindexBest->nHeight;
 
-        if (count > nLastBlocks && GetTime() - nClientUpdateTime > BPS_PERIOD) {
-            nBlocksInLastPeriod = count - nLastBlocks;
-            nLastBlocks = count;
-            nClientUpdateTime = GetTime();
-        }
-        if (nBlocksInLastPeriod>0)
-            nBlocksPerSec = nBlocksInLastPeriod / BPS_PERIOD;
-        else
-            nBlocksPerSec = 0;
+    if (count > nLastBlocks && GetTime() - nClientUpdateTime > BPS_PERIOD) {
+        nBlocksInLastPeriod = count - nLastBlocks;
+        nLastBlocks = count;
+        nClientUpdateTime = GetTime();
+    }
+    if (nBlocksInLastPeriod>0)
+        nBlocksPerSec = nBlocksInLastPeriod / BPS_PERIOD;
+    else
+        nBlocksPerSec = 0;
 
-            if (nBlocksPerSec>0) {
-              nRemainingTime = QDateTime::fromTime_t((nTotalBlocks - count) / nBlocksPerSec).toUTC().toString("hh'h'mm'm'");
-          }
+    if (nBlocksPerSec>0) {
+        nRemainingTime = QDateTime::fromTime_t((nTotalBlocks - count) / nBlocksPerSec).toUTC().toString("hh'h'mm'm'");
+    }
 
-          QDateTime lastBlockDate = clientModel->getLastBlockDate();
-          int secs = lastBlockDate.secsTo(QDateTime::currentDateTime());
-          QString text;
-          // Represent time from last generated block in human readable text
-          if(secs <= 0)
-          {
-              // Fully up to date. Leave text empty.
-          }
-          else if(secs < 60)
-          {
-              text = tr("%n second(s) ago","",secs);
-          }
-          else if(secs < 60*60)
-          {
-              text = tr("%n minute(s) ago","",secs/60);
-          }
-          else if(secs < 24*60*60)
-          {
-              text = tr("%n hour(s) ago","",secs/(60*60));
-          }
-          else
-          {
-              text = tr("%n day(s) ago","",secs/(60*60*24));
-          }
+    QDateTime lastBlockDate = clientModel->getLastBlockDate();
+    int secs = lastBlockDate.secsTo(QDateTime::currentDateTime());
+    QString text;
 
-          if (IsInitialBlockDownload() || count < nTotalBlocks-30) // if we're in initial download or more than 30 blocks behind
-          {
-              int nRemainingBlocks = nTotalBlocks - count;
-              float nPercentageDone = count / (nTotalBlocks * 0.01f);
-              if (strStatusBarWarnings.isEmpty())
+    // Represent time from last generated block in human readable text
+    if(secs <= 0)
+    {
+        // Fully up to date. Leave text empty.
+    }
+    else if(secs < 60)
+    {
+        text = tr("%n second(s) ago","",secs);
+    }
+    else if(secs < 60*60)
+    {
+        text = tr("%n minute(s) ago","",secs/60);
+    }
+    else if(secs < 24*60*60)
+    {
+        text = tr("%n hour(s) ago","",secs/(60*60));
+    }
+    else
+    {
+        text = tr("%n day(s) ago","",secs/(60*60*24));
+    }
+
+    if (IsInitialBlockDownload() || count < nTotalBlocks-30) // if we're in initial download or more than 30 blocks behind
+    {
+        int nRemainingBlocks = nTotalBlocks - count;
+        float nPercentageDone = count / (nTotalBlocks * 0.01f);
+        if (strStatusBarWarnings.isEmpty())
         {
             progressBarLabel->setText(tr("Synchronizing with the network..."));
             progressBarLabel->setVisible(true);
@@ -936,33 +937,33 @@ void BitcoinGUI::setNumBlocks(int count, int nTotalBlocks)
         if (strStatusBarWarnings.isEmpty())
             progressBarLabel->setVisible(false);
 
-            tooltip = tr("Up to date") + QString(".<br>") + tooltip;
-            labelBlocksIcon->setPixmap(QIcon(":/icons/synced").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
-            overviewPage->showOutOfSyncWarning(false);
-            progressBar->setVisible(false);
-            tooltip = tr("Downloaded %1 blocks of transaction history.").arg(count);
-        }
+        tooltip = tr("Up to date") + QString(".<br>") + tooltip;
+        labelBlocksIcon->setPixmap(QIcon(":/icons/synced").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
+        overviewPage->showOutOfSyncWarning(false);
+        progressBar->setVisible(false);
+        tooltip = tr("Downloaded %1 blocks of transaction history.").arg(count);
+    }
 
-        // Override progressBarLabel text and hide progress bar, when we have warnings to display
-        if (!strStatusBarWarnings.isEmpty())
-        {
-            progressBarLabel->setText(strStatusBarWarnings);
-            progressBarLabel->setVisible(true);
-            progressBar->setVisible(false);
-        }
+    // Override progressBarLabel text and hide progress bar, when we have warnings to display
+    if (!strStatusBarWarnings.isEmpty())
+    {
+        progressBarLabel->setText(strStatusBarWarnings);
+        progressBarLabel->setVisible(true);
+        progressBar->setVisible(false);
+    }
 
-        if(!text.isEmpty())
-        {
-            tooltip += QString("<br>");
-            tooltip += tr("Last received block was generated %1.").arg(text);
-        }
+    if(!text.isEmpty())
+    {
+        tooltip += QString("<br>");
+        tooltip += tr("Last received block was generated %1.").arg(text);
+    }
 
-        // Don't word-wrap this (fixed-width) tooltip
-        tooltip = QString("<nobr>") + tooltip + QString("</nobr>");
+    // Don't word-wrap this (fixed-width) tooltip
+    tooltip = QString("<nobr>") + tooltip + QString("</nobr>");
 
-        labelBlocksIcon->setToolTip(tooltip);
-        progressBarLabel->setToolTip(tooltip);
-        progressBar->setToolTip(tooltip);
+    labelBlocksIcon->setToolTip(tooltip);
+    progressBarLabel->setToolTip(tooltip);
+    progressBar->setToolTip(tooltip);
 }
 
 void BitcoinGUI::error(const QString &title, const QString &message, bool modal)
@@ -1188,7 +1189,7 @@ void BitcoinGUI::gotoProofOfImagePage()
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
 }
 
-void BitcoinGUI::gotoHyperfilePage()
+void BitcoinGUI::gotoHyperFilePage()
 {
     hyperfileAction->setChecked(true);
     centralWidget->setCurrentWidget(hyperfilePage);
@@ -1463,6 +1464,7 @@ void BitcoinGUI::backupWallet()
             QMessageBox::warning(this, tr("Backup Successful!"), tr("Successfully saved your wallet data to %1.").arg(filename));
         }
     }
+
 }
 
 void BitcoinGUI::changePassphrase()

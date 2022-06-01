@@ -31,9 +31,9 @@ class StatisticsPage : public QWidget
 public:
     explicit StatisticsPage(QWidget *parent = 0);
     ~StatisticsPage();
-    
+
     void setModel(ClientModel *model);
-    
+
     int heightPrevious;
     int connectionPrevious;
     int volumePrevious;
@@ -46,7 +46,7 @@ public:
     double hardnessPrevious;
     double hardnessPrevious2;
 	int64_t marketcapPrevious;
-    
+
 public slots:
 
     void updateStatistics();
@@ -57,7 +57,7 @@ private slots:
 private:
     Ui::StatisticsPage *ui;
     ClientModel *model;
-    
+
 };
 
 #endif // STATISTICSPAGE_H

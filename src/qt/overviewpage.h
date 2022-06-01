@@ -66,7 +66,6 @@ private:
     int cachedNumBlocks;
     TxViewDelegate *txdelegate;
     TransactionFilterProxy *filter;
-	QNetworkAccessManager m_nam;
 
 private slots:
     void updateDisplayUnit();

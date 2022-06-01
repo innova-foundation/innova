@@ -5,9 +5,11 @@
 #include "bantablemodel.h"
 #include "addresstablemodel.h"
 #include "transactiontablemodel.h"
+
 #include "alert.h"
 #include "main.h"
 #include "ui_interface.h"
+
 #include <QDateTime>
 #include <QTimer>
 
@@ -109,9 +111,9 @@ void ClientModel::updateNumBlocks(int newNumBlocks, int newNumBlocksOfPeers)
     // Get required lock upfront. This avoids the GUI from getting stuck on
     // periodical polls if the core is holding the locks for a longer time -
     // for example, during a wallet rescan.
-  //  TRY_LOCK(cs_main, lockMain);
-  //  if(!lockMain)
-  //      return;
+//    TRY_LOCK(cs_main, lockMain);
+//    if(!lockMain)
+//        return;
 
     emit numBlocksChanged(newNumBlocks, newNumBlocksOfPeers);
     emit bytesChanged(getTotalBytesRecv(), getTotalBytesSent());

@@ -509,7 +509,6 @@ NameTxReturn WalletModel::nameDelete(const QString &name)
     return name_delete(vchName);
 }
 
-
 OptionsModel *WalletModel::getOptionsModel()
 {
     return optionsModel;

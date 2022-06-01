@@ -219,14 +219,15 @@ void TransactionRecord::updateStatus(const CWalletTx &wtx)
     std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(wtx.hashBlock);
     if (mi != mapBlockIndex.end())
     {
-      pindex = (*mi).second;
-      nHeight = pindex->nHeight;
+        pindex = (*mi).second;
+        nHeight = pindex->nHeight;
     };
+
 
     // Sort order, unrecorded transactions sort to the top
     status.sortKey = strprintf("%010d-%01d-%010u-%03d",
         nHeight,
-       (wtx.IsCoinBase() ? 1 : 0),
+        (wtx.IsCoinBase() ? 1 : 0),
         wtx.nTimeReceived,
         idx);
 
