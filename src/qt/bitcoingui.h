@@ -12,7 +12,8 @@ class WalletModel;
 class MessageModel;
 class TransactionView;
 class MintingView;
-class FortunastakeManager;
+class ManageNamesPage;
+class CollateralnodeManager;
 class MultisigDialog;
 class OverviewPage;
 class AddressBookPage;
@@ -25,6 +26,7 @@ class SignVerifyMessageDialog;
 class Notificator;
 class RPCConsole;
 class ProofOfImage;
+class HyperFile;
 
 QT_BEGIN_NAMESPACE
 class QLabel;
@@ -93,14 +95,16 @@ private:
     QStackedWidget *centralWidget;
 
     OverviewPage *overviewPage;
-	  StatisticsPage *statisticsPage;
-	  BlockBrowser *blockBrowser;
-	  MarketBrowser *marketBrowser;
+	StatisticsPage *statisticsPage;
+	BlockBrowser *blockBrowser;
+    ManageNamesPage *manageNamesPage;
+	MarketBrowser *marketBrowser;
     QWidget *transactionsPage;
-	  QWidget *mintingPage;
-	  MultisigDialog *multisigPage;
-	  ProofOfImage *proofOfImagePage;
-	  FortunastakeManager *fortunastakeManagerPage;
+	QWidget *mintingPage;
+	MultisigDialog *multisigPage;
+	ProofOfImage *proofOfImagePage;
+    HyperFile *hyperfilePage;
+	CollateralnodeManager *collateralnodeManagerPage;
     AddressBookPage *addressBookPage;
     AddressBookPage *receiveCoinsPage;
     MessagePage *messagePage;
@@ -112,7 +116,7 @@ private:
     QLabel *labelConnectionsIcon;
     QLabel *labelBlocksIcon;
     QLabel *labelConnectTypeIcon;
-    QLabel *labelFSLockIcon;
+    QLabel *labelCNLockIcon;
     QLabel *progressBarLabel;
     QLabel *mainIcon;
     QToolBar *mainToolbar;
@@ -121,14 +125,16 @@ private:
 
     QMenuBar *appMenuBar;
     QAction *overviewAction;
-	  QAction *statisticsAction;
-	  QAction *blockAction;
-	  QAction *marketAction;
+	QAction *statisticsAction;
+	QAction *blockAction;
+	QAction *marketAction;
     QAction *historyAction;
-	  QAction *mintingAction;
-	  QAction *multisigAction;
+	QAction *mintingAction;
+	QAction *multisigAction;
     QAction *proofOfImageAction;
-	  QAction *fortunastakeManagerAction;
+    QAction *hyperfileAction;
+    QAction *manageNamesAction;
+	QAction *collateralnodeManagerAction;
     QAction *quitAction;
     QAction *sendCoinsAction;
     QAction *addressBookAction;
@@ -148,7 +154,7 @@ private:
     QAction *aboutQtAction;
     QAction *openRPCConsoleAction;
 
-	  QAction *openInfoAction;
+	QAction *openInfoAction;
     QAction *openGraphAction;
     QAction *openPeerAction;
     QAction *openConfEditorAction;
@@ -157,7 +163,7 @@ private:
     QSystemTrayIcon *trayIcon;
     Notificator *notificator;
     TransactionView *transactionView;
-	  MintingView *mintingView;
+	MintingView *mintingView;
     RPCConsole *rpcConsole;
 
     QMovie *syncIconMovie;
@@ -219,6 +225,8 @@ private slots:
     void gotoBlockBrowser();
 	/** Switch to market*/
     void gotoMarketBrowser();
+    /** Switch to manage names page */
+    void gotoManageNamesPage();
 	/** Switch to minting page */
     void gotoMintingPage();
     /** Switch to history (transactions) page */
@@ -231,10 +239,13 @@ private slots:
     void gotoSendCoinsPage();
     /** Switch to message page */
     void gotoMessagePage();
-	/** Switch to fortunastake manager page */
-	void gotoFortunastakeManagerPage();
+	/** Switch to collateralnode manager page */
+	void gotoCollateralnodeManagerPage();
 	/** Switch to proof of image page */
 	void gotoProofOfImagePage();
+	/** Switch to HyperFile page */
+	void gotoHyperFilePage();
+
 
     //void gotoChatPage();
 
@@ -254,7 +265,7 @@ private slots:
 
     /** Open external (default) editor with innova.conf */
     void showConfEditor();
-    /** Open external (default) editor with fortunastake.conf */
+    /** Open external (default) editor with collateralnode.conf */
     void showMNConfEditor();
 
     /** Show configuration dialog */

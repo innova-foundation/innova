@@ -1,11 +1,10 @@
-// Copyright (c) 2017-2018 The Denarius developers
-// Copyright (c) 2017-2019 The Denarius developers
-// Copyright (c) 2017-2019 The Innova developers
+// Copyright (c) 2017-2021 The Denarius developers
+// Copyright (c) 2019-2022 The Innova developers
 // Copyright (c) 2009-2012 The Darkcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#ifndef FORTUNASTAKE_H
-#define FORTUNASTAKE_H
+#ifndef COLLATERALNODE_H
+#define COLLATERALNODE_H
 
 #include "uint256.h"
 #include "uint256.h"
@@ -18,64 +17,64 @@
 #include "main.h"
 #include "script.h"
 
-class CFortunaStake;
-class CFortunastakePayments;
+class CCollateralNode;
+class CCollateralnodePayments;
 class uint256;
 
-#define FORTUNASTAKE_NOT_PROCESSED               0 // initial state
-#define FORTUNASTAKE_IS_CAPABLE                  1
-#define FORTUNASTAKE_NOT_CAPABLE                 2
-#define FORTUNASTAKE_STOPPED                     3
-#define FORTUNASTAKE_INPUT_TOO_NEW               4
-#define FORTUNASTAKE_PORT_NOT_OPEN               6
-#define FORTUNASTAKE_PORT_OPEN                   7
-#define FORTUNASTAKE_SYNC_IN_PROCESS             8
-#define FORTUNASTAKE_REMOTELY_ENABLED            9
+#define COLLATERALNODE_NOT_PROCESSED               0 // initial state
+#define COLLATERALNODE_IS_CAPABLE                  1
+#define COLLATERALNODE_NOT_CAPABLE                 2
+#define COLLATERALNODE_STOPPED                     3
+#define COLLATERALNODE_INPUT_TOO_NEW               4
+#define COLLATERALNODE_PORT_NOT_OPEN               6
+#define COLLATERALNODE_PORT_OPEN                   7
+#define COLLATERALNODE_SYNC_IN_PROCESS             8
+#define COLLATERALNODE_REMOTELY_ENABLED            9
 
-#define FORTUNASTAKE_MIN_CONFIRMATIONS           15
-#define FORTUNASTAKE_MIN_CONFIRMATIONS_NOPAY     500
-#define FORTUNASTAKE_MIN_DSEEP_SECONDS           (10*60)
-#define FORTUNASTAKE_MIN_DSEE_SECONDS            (5*60)
-#define FORTUNASTAKE_PING_SECONDS                (1*60)
-#define FORTUNASTAKE_EXPIRATION_SECONDS          (120*60)
-#define FORTUNASTAKE_REMOVAL_SECONDS             (130*60)
-#define FORTUNASTAKE_CHECK_SECONDS               10
+#define COLLATERALNODE_MIN_CONFIRMATIONS           15
+#define COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY     500
+#define COLLATERALNODE_MIN_DSEEP_SECONDS           (10*60)
+#define COLLATERALNODE_MIN_DSEE_SECONDS            (5*60)
+#define COLLATERALNODE_PING_SECONDS                (1*60)
+#define COLLATERALNODE_EXPIRATION_SECONDS          (120*60)
+#define COLLATERALNODE_REMOVAL_SECONDS             (130*60)
+#define COLLATERALNODE_CHECK_SECONDS               10
 
-#define FORTUNASTAKE_FAIR_PAYMENT_MINIMUM         200
-#define FORTUNASTAKE_FAIR_PAYMENT_ROUNDS          3
+#define COLLATERALNODE_FAIR_PAYMENT_MINIMUM         200
+#define COLLATERALNODE_FAIR_PAYMENT_ROUNDS          3
 
 using namespace std;
 
-class CFortunastakePaymentWinner;
+class CCollateralnodePaymentWinner;
 
-extern CCriticalSection cs_fortunastakes;
-extern std::vector<CFortunaStake> vecFortunastakes;
-extern std::vector<pair<int, CFortunaStake*> > vecFortunastakeScores;
-extern std::vector<pair<int, CFortunaStake> > vecFortunastakeRanks;
-extern CFortunastakePayments fortunastakePayments;
-extern std::vector<CTxIn> vecFortunastakeAskedFor;
-extern map<uint256, CFortunastakePaymentWinner> mapSeenFortunastakeVotes;
+extern CCriticalSection cs_collateralnodes;
+extern std::vector<CCollateralNode> vecCollateralnodes;
+extern std::vector<pair<int, CCollateralNode*> > vecCollateralnodeScores;
+extern std::vector<pair<int, CCollateralNode> > vecCollateralnodeRanks;
+extern CCollateralnodePayments collateralnodePayments;
+extern std::vector<CTxIn> vecCollateralnodeAskedFor;
+extern map<uint256, CCollateralnodePaymentWinner> mapSeenCollateralnodeVotes;
 extern map<int64_t, uint256> mapCacheBlockHashes;
 extern unsigned int mnCount;
 
 
-// manage the fortunastake connections
-void ProcessFortunastakeConnections();
-int CountFortunastakesAboveProtocol(int protocolVersion);
+// manage the collateralnode connections
+void ProcessCollateralnodeConnections();
+int CountCollateralnodesAboveProtocol(int protocolVersion);
 
 
-void ProcessMessageFortunastake(CNode* pfrom, std::string& strCommand, CDataStream& vRecv);
-bool CheckFortunastakeVin(CTxIn& vin, std::string& errorMessage, CBlockIndex *pindex);
+void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataStream& vRecv);
+bool CheckCollateralnodeVin(CTxIn& vin, std::string& errorMessage, CBlockIndex *pindex);
 
 // For storing payData
-class CFortunaPayData
+class CCollateralNPayData
 {
 public:
     int height;
     uint256 hash;
     int64_t amount;
 
-    CFortunaPayData() {
+    CCollateralNPayData() {
         height = 0;
         hash = 0;
         amount = 0;
@@ -83,7 +82,7 @@ public:
 
 };
 
-class CFortunaCollateral
+class CCollateralNCollateral
 {
 public:
     CTxIn vin;
@@ -91,33 +90,33 @@ public:
     int height;
     uint256 blockHash;
 
-    CFortunaCollateral() {
+    CCollateralNCollateral() {
         height = 0;
         blockHash = 0;
     }
 };
 
 // For storing payData
-class CFortunaPayments
+class CCollateralNPayments
 {
 public:
-    std::vector<CFortunaStake> vStakes; // this array should be sorted
-    std::vector<CFortunaPayData> vPayments; // this array just contains our scanned data
+    std::vector<CCollateralNode> vStakes; // this array should be sorted
+    std::vector<CCollateralNPayData> vPayments; // this array just contains our scanned data
     //std::vector<CTxIn> vCollaterals;
-    std::vector<CFortunaCollateral> vCollaterals;
+    std::vector<CCollateralNCollateral> vCollaterals;
     std::vector<CScript> vScripts;
 
-    CFortunaPayments() {
-        // fill vStakes array with pointers to MN's from vecFortunastakes
+    CCollateralNPayments() {
+        // fill vStakes array with pointers to MN's from vecCollateralnodes
     }
 
-    bool add(CFortunaStake* mn)
+    bool add(CCollateralNode* mn)
     {
         // add address of pointer into the payments array
         return true;
     }
 
-    bool remove(CFortunaStake* mn)
+    bool remove(CCollateralNode* mn)
     {
         // remove address of pointer from the payments array
         return true;
@@ -129,10 +128,10 @@ public:
 };
 
 //
-// The Fortunastake Class. For managing the fortuna process. It contains the input of the 25000 INN, signature to prove
+// The Collateralnode Class. For managing the collateral process. It contains the input of the 25000 INN, signature to prove
 // it's the one who own that ip address and code for calculating the payment election.
 //
-class CFortunaStake
+class CCollateralNode
 {
 public:
 	static int minProtoVersion;
@@ -142,12 +141,12 @@ public:
     CPubKey pubkey;
     CPubKey pubkey2;
     std::vector<unsigned char> sig;
-    std::vector<CFortunaPayData> payData;
+    std::vector<CCollateralNPayData> payData;
     pair<int, int64_t> payInfo;
     int64_t payRate;
     int payCount;
     int64_t payValue;
-    int64_t now; //dsee message times
+    int64_t now; //isee message times
     int64_t lastDseep;
     int cacheInputAge;
     int cacheInputAgeBlock;
@@ -165,7 +164,7 @@ public:
 
     //the dsq count from the last dsq broadcast of this node
     int64_t nLastDsq;
-    CFortunaStake(CService newAddr, CTxIn newVin, CPubKey newPubkey, std::vector<unsigned char> newSig, int64_t newNow, CPubKey newPubkey2, int protocolVersionIn)
+    CCollateralNode(CService newAddr, CTxIn newVin, CPubKey newPubkey, std::vector<unsigned char> newSig, int64_t newNow, CPubKey newPubkey2, int protocolVersionIn)
     {
         addr = newAddr;
         vin = newVin;
@@ -211,8 +210,8 @@ public:
     }
 
     bool IsActive() {
-        if (lastTimeSeen - now > (max(FORTUNASTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * 30))
-        { // dsee broadcast is more than a round old, let's consider it active
+        if (lastTimeSeen - now > (max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * 30))
+        { // isee broadcast is more than a round old, let's consider it active
                 return true;
         }
         return false;
@@ -244,7 +243,7 @@ public:
         return enabled == 1;
     }
 
-    int GetFortunastakeInputAge(CBlockIndex* pindex=pindexBest)
+    int GetCollateralnodeInputAge(CBlockIndex* pindex=pindexBest)
     {
         if(pindex == NULL) return 0;
 
@@ -260,19 +259,20 @@ public:
 
 
 // Get the current winner for this block
-int GetCurrentFortunaStake(int mod=1, int64_t nBlockHeight=0, int minProtocol=CFortunaStake::minProtoVersion);
-bool CheckFSPayment(CBlockIndex* pindex, int64_t value, CFortunaStake &mn);
-bool CheckPoSFSPayment(CBlockIndex* pindex, int64_t value, CFortunaStake &mn);
-int64_t avg2(std::vector<CFortunaStake> const& v);
-int GetFortunastakeByVin(CTxIn& vin);
-int GetFortunastakeRank(CFortunaStake& tmn, CBlockIndex* pindex, int minProtocol=CFortunaStake::minProtoVersion);
-int GetFortunastakeByRank(int findRank, int64_t nBlockHeight=0, int minProtocol=CFortunaStake::minProtoVersion);
-bool GetFortunastakeRanks(CBlockIndex* pindex=pindexBest);
-extern int64_t nAverageFSIncome;
-bool FindFSPayment(CScript& payee, CBlockIndex* pindex=pindexBest);
+int GetCurrentCollateralNode(int mod=1, int64_t nBlockHeight=0, int minProtocol=CCollateralNode::minProtoVersion);
+bool CheckCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn);
+bool CheckPoSCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn);
+int64_t avg2(std::vector<CCollateralNode> const& v);
+int64_t avgCount(std::vector<CCollateralNode> const& v);
+int GetCollateralnodeByVin(CTxIn& vin);
+int GetCollateralnodeRank(CCollateralNode& tmn, CBlockIndex* pindex, int minProtocol=CCollateralNode::minProtoVersion);
+int GetCollateralnodeByRank(int findRank, int64_t nBlockHeight=0, int minProtocol=CCollateralNode::minProtoVersion);
+bool GetCollateralnodeRanks(CBlockIndex* pindex=pindexBest);
+extern int64_t nAverageCNIncome;
+bool FindCNPayment(CScript& payee, CBlockIndex* pindex=pindexBest);
 
 // for storing the winning payments
-class CFortunastakePaymentWinner
+class CCollateralnodePaymentWinner
 {
 public:
     int nBlockHeight;
@@ -281,7 +281,7 @@ public:
     std::vector<unsigned char> vchSig;
     uint64_t score;
 
-    CFortunastakePaymentWinner() {
+    CCollateralnodePaymentWinner() {
         nBlockHeight = 0;
         score = 0;
         vin = CTxIn();
@@ -308,32 +308,32 @@ public:
      }
 };
 
-inline bool operator==(const CFortunaStake& a, const CFortunaStake& b)
+inline bool operator==(const CCollateralNode& a, const CCollateralNode& b)
 {
     return a.vin == b.vin;
 }
-inline bool operator!=(const CFortunaStake& a, const CFortunaStake& b)
+inline bool operator!=(const CCollateralNode& a, const CCollateralNode& b)
 {
     return !(a.vin == b.vin);
 }
-inline bool operator<(const CFortunaStake& a, const CFortunaStake& b)
+inline bool operator<(const CCollateralNode& a, const CCollateralNode& b)
 {
     return (a.nBlockLastPaid < b.nBlockLastPaid);
 }
-inline bool operator>(const CFortunaStake& a, const CFortunaStake& b)
+inline bool operator>(const CCollateralNode& a, const CCollateralNode& b)
 {
     return (a.nBlockLastPaid > b.nBlockLastPaid);
 }
 
 //
-// Fortunastake Payments Class
+// Collateralnode Payments Class
 // Keeps track of who should get paid for which blocks
 //
 
-class CFortunastakePayments
+class CCollateralnodePayments
 {
 private:
-    std::vector<CFortunastakePaymentWinner> vWinning;
+    std::vector<CCollateralnodePaymentWinner> vWinning;
     int nSyncedFromPeer;
     std::string strMasterPrivKey;
     std::string strTestPubKey;
@@ -342,30 +342,30 @@ private:
 
 public:
 
-    CFortunastakePayments() {
+    CCollateralnodePayments() {
         strMainPubKey = "";
         strTestPubKey = "";
         enabled = false;
     }
 
     bool SetPrivKey(std::string strPrivKey);
-    bool CheckSignature(CFortunastakePaymentWinner& winner);
-    bool Sign(CFortunastakePaymentWinner& winner);
+    bool CheckSignature(CCollateralnodePaymentWinner& winner);
+    bool Sign(CCollateralnodePaymentWinner& winner);
 
-    // Deterministically calculate a given "score" for a fortunastake depending on how close it's hash is
+    // Deterministically calculate a given "score" for a collateralnode depending on how close it's hash is
     // to the blockHeight. The further away they are the better, the furthest will win the election
     // and get paid this block
     //
 
-    uint256 vecFortunastakeRanksLastUpdated;
+    uint256 vecCollateralnodeRanksLastUpdated;
     uint64_t CalculateScore(uint256 blockHash, CTxIn& vin);
-    bool GetWinningFortunastake(int nBlockHeight, CTxIn& vinOut);
-    bool AddWinningFortunastake(CFortunastakePaymentWinner& winner);
+    bool GetWinningCollateralnode(int nBlockHeight, CTxIn& vinOut);
+    bool AddWinningCollateralnode(CCollateralnodePaymentWinner& winner);
     bool ProcessBlock(int nBlockHeight);
-    void Relay(CFortunastakePaymentWinner& winner);
+    void Relay(CCollateralnodePaymentWinner& winner);
     void Sync(CNode* node);
     void CleanPaymentList();
-    int LastPayment(CFortunaStake& mn);
+    int LastPayment(CCollateralNode& mn);
 
     //slow
     bool GetBlockPayee(int nBlockHeight, CScript& payee);

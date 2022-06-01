@@ -69,6 +69,12 @@ namespace GUIUtil
      */
     void copyEntryData(QAbstractItemView *view, int column, int role=Qt::EditRole);
 
+    QString getEntryData(QAbstractItemView *view, int column, int role);
+
+    void copyEntryDataFromList(QAbstractItemView *view, int role=Qt::EditRole);
+
+    void setClipboard(const QString& str);
+
     /** Get save filename, mimics QFileDialog::getSaveFileName, except that it appends a default suffix
         when no suffix is provided by the user.
 
@@ -99,7 +105,7 @@ namespace GUIUtil
 	// Open innova.conf
     void openConfigfile();
 
-    // Open fortunastake.conf
+    // Open collateralnode.conf
     void openMNConfigfile();
 
     /** Qt event filter that intercepts ToolTipChange events, and replaces the tooltip with a rich text

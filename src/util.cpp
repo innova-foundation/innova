@@ -7,7 +7,10 @@
 #include "sync.h"
 #include "strlcpy.h"
 #include "version.h"
+#include "state.h"
+#include "main.h"
 #include "ui_interface.h"
+#include "tinyformat.h"
 #include <boost/algorithm/string/join.hpp>
 
 // Work around clang compilation problem in Boost 1.46:
@@ -57,27 +60,27 @@ namespace boost {
 
 using namespace std;
 
-//Fortunastake  features
-bool fFortunaStake = false;
-string strFortunaStakePrivKey = "";
-string strFortunaStakeAddr = "";
-int nFortunaRounds = 2;
+//Collateralnode  features
+bool fCollateralNode = false;
+string strCollateralNodePrivKey = "";
+string strCollateralNodeAddr = "";
+int nCollateralNRounds = 2;
 
-int nMinStakeInterval = 0;         // in seconds, min time between successful stakes
+int nMinStakeInterval = 30;         // in seconds, min time between successful stakes
 
 /** Spork enforcement enabled time */
-int64_t enforceFortunastakePaymentsTime = 4085657524;
+int64_t enforceCollateralnodePaymentsTime = 4085657524;
 bool fSuccessfullyLoaded = false;
 
-/** All denominations used by fortuna */
-std::vector<int64_t> forTunaDenominations;
+/** All denominations used by collateral */
+std::vector<int64_t> colLateralDenominations;
 
 map<string, string> mapArgs;
 map<string, vector<string> > mapMultiArgs;
 bool fDebug = false;
 bool fDebugNet = false;
 bool fDebugSmsg = false;
-bool fDebugFS = false;
+bool fDebugCN = false;
 bool fDebugChain = false;
 bool fDebugRingSig = false;
 bool fNoSmsg = false;
@@ -92,7 +95,8 @@ bool fCommandLine = false;
 string strMiscWarning;
 bool fTestNet = false;
 bool fNativeTor = false;
-bool fFSLock = false;
+bool fHyperFileLocal = false;
+bool fCNLock = false;
 bool fNoListen = false;
 bool fLogTimestamps = false;
 CMedianFilter<int64_t> vTimeOffsets(200,0);
@@ -204,6 +208,11 @@ uint64_t GetRand(uint64_t nMax)
 int GetRandInt(int nMax)
 {
     return GetRand(nMax);
+}
+
+uint32_t GetRandUInt32()
+{
+    return GetRand(numeric_limits<uint32_t>::max());
 }
 
 uint256 GetRandHash()
@@ -557,6 +566,19 @@ bool ParseMoney(const char* pszIn, int64_t& nRet)
     return true;
 }
 
+// safeChars chosen to allow simple messages/URLs/email addresses, but avoid anything
+// even possibly remotely dangerous like & or >
+static string safeChars("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234567890 .,;_/:?@");
+string SanitizeString(const string& str)
+{
+    string strResult;
+    for (std::string::size_type i = 0; i < str.size(); i++)
+    {
+        if (safeChars.find(str[i]) != std::string::npos)
+            strResult.push_back(str[i]);
+    }
+    return strResult;
+}
 
 static const signed char phexdigit[256] =
 { -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
@@ -578,7 +600,7 @@ static const signed char phexdigit[256] =
 
 bool IsHex(const string& str)
 {
-    BOOST_FOREACH(unsigned char c, str)
+    for (unsigned char c : str)
     {
         if (phexdigit[c] < 0)
             return false;
@@ -654,7 +676,7 @@ void ParseParameters(int argc, const char* const argv[])
     }
 
     // New 0.6 features:
-    BOOST_FOREACH(const PAIRTYPE(string,string)& entry, mapArgs)
+    for (const PAIRTYPE(string,string)& entry : mapArgs)
     {
         string name = entry.first;
 
@@ -711,6 +733,12 @@ bool SoftSetBoolArg(const std::string& strArg, bool fValue)
         return SoftSetArg(strArg, std::string("1"));
     else
         return SoftSetArg(strArg, std::string("0"));
+}
+
+bool SetArg(const std::string& strArg, const std::string& strValue)
+{
+    mapArgs[strArg] = strValue;
+    return true;
 }
 
 
@@ -1114,6 +1142,7 @@ void PrintExceptionContinue(std::exception* pex, const char* pszThread)
 boost::filesystem::path GetDefaultDataDir()
 {
     namespace fs = boost::filesystem;
+
     // Windows < Vista: C:\Documents and Settings\Username\Application Data\Innova
     // Windows >= Vista: C:\Users\Username\AppData\Roaming\Innova
     // Mac: ~/Library/Application Support/Innova
@@ -1135,7 +1164,7 @@ boost::filesystem::path GetDefaultDataDir()
     return pathRet / "Innova";
 #else
     // Unix
-return pathRet / ".innova";
+    return pathRet / ".innova";
 #endif
 #endif
 }
@@ -1168,6 +1197,50 @@ static unsigned int RandomIntegerRange(unsigned int nMin, unsigned int nMax)
     return nMin + rand() % (nMax - nMin) + 1;
 }
 
+
+static bool ParsePrechecks(const std::string& str)
+{
+    if (str.empty()) // No empty string allowed
+        return false;
+    if (str.size() >= 1 && (isspace(str[0]) || isspace(str[str.size()-1]))) // No padding allowed
+        return false;
+    if (str.size() != strlen(str.c_str())) // No embedded NUL characters allowed
+        return false;
+    return true;
+}
+
+bool ParseInt32(const std::string& str, int32_t *out)
+{
+	if (!ParsePrechecks(str))
+		return false;
+	char *endp = NULL;
+
+    errno = 0; // strtol will not set errno if valid
+    long int n = strtol(str.c_str(), &endp, 10);
+    if(out) *out = (int32_t)n;
+    // Note that strtol returns a *long int*, so even if strtol doesn't report a over/underflow
+    // we still have to check that the returned value is within the range of an *int32_t*. On 64-bit
+    // platforms the size of these types may be different.
+    return endp && *endp == 0 && !errno &&
+        n >= std::numeric_limits<int32_t>::min() &&
+        n <= std::numeric_limits<int32_t>::max();
+}
+
+bool ParseInt64(const std::string& str, int64_t *out)
+{
+    if (!ParsePrechecks(str))
+        return false;
+    char *endp = NULL;
+    errno = 0; // strtoll will not set errno if valid
+    long long int n = strtoll(str.c_str(), &endp, 10);
+    if(out) *out = (int64_t)n;
+    // Note that strtoll returns a *long long int*, so even if strtol doesn't report a over/underflow
+    // we still have to check that the returned value is within the range of an *int64_t*.
+    return endp && *endp == 0 && !errno &&
+        n >= std::numeric_limits<int64_t>::min() &&
+        n <= std::numeric_limits<int64_t>::max();
+}
+
 void WriteConfigFile(FILE* configFile)
 {
     std::string sRPCpassword = "rpcpassword=" + GenerateRandomString(RandomIntegerRange(18, 24)) + "\n";
@@ -1175,21 +1248,40 @@ void WriteConfigFile(FILE* configFile)
     fputs (sUserID.c_str(), configFile);
     fputs (sRPCpassword.c_str(), configFile);
     fputs ("rpcport=14531\n", configFile);
+    fputs ("rpcallowip=127.0.0.1\n", configFile);
     fputs ("port=14530\n", configFile);
     fputs ("daemon=1\n", configFile);
     fputs ("listen=1\n", configFile);
     fputs ("server=1\n", configFile);
     fputs ("staking=1\n", configFile);
-    fputs ("fortunastake=0\n", configFile); //default
-    fputs ("fortunastakeaddr=\n", configFile);
-    fputs ("fortunastakeprivkey=\n", configFile);
-    fputs ("addnode=104.207.147.210:14530\n", configFile);
-    fputs ("addnode=140.82.25.108:14530\n", configFile);
-    fputs ("addnode=144.202.40.17:14530\n", configFile);
-    fputs ("addnode=207.246.64.66:14530\n", configFile);
-    fputs ("addnode=45.77.114.67:14530\n", configFile);
-    fputs ("addnode=45.32.29.200:14530\n", configFile);
-    fputs ("addnode=104.156.239.127:14530\n", configFile);
+    fputs ("collateralnode=0\n", configFile); //default
+    fputs ("collateralnodeaddr=\n", configFile);
+    fputs ("collateralnodeprivkey=\n", configFile);
+    fputs ("idns=1\n", configFile);
+    fputs ("addnode=innseeder.circuitbreaker.online\n", configFile); // seeder
+    fputs ("addnode=innseeder.circuitbreaker.dev\n", configFile); // seeder
+    fputs ("addnode=innseeder.innovai.cloud\n", configFile); // seeder
+    fputs ("addnode=159.65.67.220\n", configFile);
+    fputs ("addnode=167.86.103.117\n", configFile);
+    fputs ("addnode=167.86.124.246\n", configFile);
+    fputs ("addnode=167.86.84.242\n", configFile);
+    fputs ("addnode=167.86.91.194\n", configFile);
+    fputs ("addnode=167.86.96.109\n", configFile);
+    fputs ("addnode=167.86.96.5\n", configFile);
+    fputs ("addnode=167.86.97.16\n", configFile);
+    fputs ("addnode=173.249.24.50\n", configFile);
+    fputs ("addnode=173.249.38.251\n", configFile);
+    fputs ("addnode=173.249.46.109\n", configFile);
+    fputs ("addnode=185.62.81.135\n", configFile);
+    fputs ("addnode=188.0.175.212\n", configFile);
+    fputs ("addnode=188.0.188.250\n", configFile);
+    fputs ("addnode=188.122.212.138\n", configFile);
+    fputs ("addnode=51.222.152.238\n", configFile);
+    fputs ("addnode=62.171.132.112\n", configFile);
+    fputs ("addnode=77.78.204.210\n", configFile);
+    fputs ("addnode=91.46.36.65\n", configFile);
+    fputs ("addnode=94.253.189.202\n", configFile);
+    fputs ("addnode=94.253.191.159\n", configFile);
     fclose(configFile);
     ReadConfigFile(mapArgs, mapMultiArgs);
 }
@@ -1236,9 +1328,9 @@ boost::filesystem::path GetConfigFile()
     return pathConfigFile;
 }
 
-boost::filesystem::path GetFortunastakeConfigFile()
+boost::filesystem::path GetCollateralnodeConfigFile()
 {
-    boost::filesystem::path pathConfigFile(GetArg("-fsconf", "fortunastake.conf"));
+    boost::filesystem::path pathConfigFile(GetArg("-cnconf", "collateralnode.conf"));
     if (!pathConfigFile.is_complete()) pathConfigFile = GetDataDir(false) / pathConfigFile;
     return pathConfigFile;
 }
@@ -1248,18 +1340,18 @@ void ReadConfigFile(map<string, string>& mapSettingsRet,
 {
     boost::filesystem::ifstream streamConfig(GetConfigFile());
     if (!streamConfig.good()){
-         // Create empty innova.conf if it does not exist
-         FILE* configFile = fopen(GetConfigFile().string().c_str(), "a");
-         if (configFile != NULL) {
-             WriteConfigFile(configFile);
-            // fclose(configFile);
-             printf("WriteConfigFile() Innova.conf Setup Successfully!");
-             ReadConfigFile(mapSettingsRet, mapMultiSettingsRet);
-         } else {
-             printf("WriteConfigFile() innova.conf file could not be created");
-             return; // Nothing to read, so just return
-         }
-     }
+        // Create empty innova.conf if it does not exist
+        FILE* configFile = fopen(GetConfigFile().string().c_str(), "a");
+        if (configFile != NULL) {
+            WriteConfigFile(configFile);
+            //fclose(configFile);
+            printf("WriteConfigFile() Innova.conf Setup Successfully!");
+            ReadConfigFile(mapSettingsRet, mapMultiSettingsRet);
+        } else {
+            printf("WriteConfigFile() innova.conf file could not be created");
+            return; // Nothing to read, so just return
+        }
+    }
 
     set<string> setOptions;
     setOptions.insert("*");
@@ -1317,6 +1409,25 @@ void FileCommit(FILE *fileout)
     fsync(fileno(fileout));
 #endif
 }
+
+std::string bytesReadable(uint64_t nBytes)
+{
+    char buffer[128];
+    if (nBytes >= 1024ll*1024ll*1024ll*1024ll)
+        snprintf(buffer, sizeof(buffer), "%.2f TB", nBytes/1024.0/1024.0/1024.0/1024.0);
+    else
+    if (nBytes >= 1024*1024*1024)
+        snprintf(buffer, sizeof(buffer), "%.2f GB", nBytes/1024.0/1024.0/1024.0);
+    else
+    if (nBytes >= 1024*1024)
+        snprintf(buffer, sizeof(buffer), "%.2f MB", nBytes/1024.0/1024.0);
+    else
+    if (nBytes >= 1024)
+        snprintf(buffer, sizeof(buffer), "%.2f KB", nBytes/1024.0);
+    else
+        snprintf(buffer, sizeof(buffer), "%" PRIu64" B", nBytes);
+    return std::string(buffer);
+};
 
 void ShrinkDebugFile()
 {
@@ -1403,7 +1514,7 @@ void AddTimeData(const CNetAddr& ip, int64_t nTime)
             {
                 // If nobody has a time different than ours but within 5 minutes of ours, give a warning
                 bool fMatch = false;
-                BOOST_FOREACH(int64_t nOffset, vSorted)
+                for (int64_t nOffset : vSorted)
                     if (nOffset != 0 && abs64(nOffset) < 5 * 60)
                         fMatch = true;
 

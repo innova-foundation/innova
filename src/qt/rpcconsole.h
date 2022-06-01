@@ -1,5 +1,5 @@
-#ifndef DENARIUS_QT_RPCCONSOLE_H
-#define DENARIUS_QT_RPCCONSOLE_H
+#ifndef INNOVA_QT_RPCCONSOLE_H
+#define INNOVA_QT_RPCCONSOLE_H
 
 #include "guiutil.h"
 #include "peertablemodel.h"
@@ -7,6 +7,7 @@
 #include "net.h"
 
 #include <QDialog>
+#include <QCompleter>
 
 class ClientModel;
 
@@ -103,6 +104,7 @@ private:
     ClientModel *clientModel;
     QStringList history;
     int historyPtr;
+    QCompleter *autoCompleter;
     NodeId cachedNodeid;
     void startExecutor();
 };

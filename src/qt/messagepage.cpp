@@ -80,8 +80,8 @@ MessagePage::MessagePage(QWidget *parent) :
     messageTextEdit(new MRichTextEdit())
 {
     ui->setupUi(this);
-   
-    
+
+
 #ifdef Q_OS_MAC // Icons on push buttons are very uncommon on Mac
     ui->deleteButton->setIcon(QIcon());
 #endif
@@ -123,7 +123,7 @@ void MessagePage::setModel(MessageModel *model)
     this->model = model;
     if(!model)
         return;
-    
+
     if (model->proxyModel)
         delete model->proxyModel;
     model->proxyModel = new QSortFilterProxyModel(this);
@@ -426,4 +426,3 @@ void MessagePage::contextualMenu(const QPoint &point)
         contextMenu->exec(QCursor::pos());
     }
 }
-

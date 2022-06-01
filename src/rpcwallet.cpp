@@ -1,6 +1,7 @@
 // Copyright (c) 2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
-// Copyright (c) 2017-2018 Innova developers
+// Copyright (c) 2017-2020 Denarius developers
+// Copyright (c) 2019-2022 Innova Developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -57,6 +58,7 @@ void EnsureWalletIsUnlocked()
 
 void WalletTxToJSON(const CWalletTx& wtx, Object& entry)
 {
+    entry.push_back(Pair("version", wtx.nVersion));
     int confirms = wtx.GetDepthInMainChain();
     entry.push_back(Pair("confirmations", confirms));
     if (wtx.IsCoinBase() || wtx.IsCoinStake())
@@ -65,8 +67,11 @@ void WalletTxToJSON(const CWalletTx& wtx, Object& entry)
     {
         entry.push_back(Pair("blockhash", wtx.hashBlock.GetHex()));
         entry.push_back(Pair("blockindex", wtx.nIndex));
-        entry.push_back(Pair("blocktime", (int64_t)(mapBlockIndex[wtx.hashBlock]->nTime)));
-    }
+        int64_t nTime = 0;
+        nTime = mapBlockIndex[wtx.hashBlock]->nTime;
+
+        entry.push_back(Pair("blocktime", nTime));
+    };
     entry.push_back(Pair("txid", wtx.GetHash().GetHex()));
     entry.push_back(Pair("time", (int64_t)wtx.GetTxTime()));
     entry.push_back(Pair("timereceived", (int64_t)wtx.nTimeReceived));
@@ -93,21 +98,26 @@ Value getinfo(const Array& params, bool fHelp)
     proxyType proxy;
     GetProxy(NET_IPV4, proxy);
 
+	uint64_t nMinWeight = 0, nMaxWeight = 0, nWeight = 0;
+    pwalletMain->GetStakeWeight(*pwalletMain, nMinWeight, nMaxWeight, nWeight);
+
     Object obj, diff;
     obj.push_back(Pair("version",       FormatFullVersion()));
     obj.push_back(Pair("protocolversion",(int)PROTOCOL_VERSION));
     obj.push_back(Pair("walletversion", pwalletMain->GetVersion()));
     obj.push_back(Pair("balance",       ValueFromAmount(pwalletMain->GetBalance())));
     obj.push_back(Pair("anonbalance",   ValueFromAmount(pwalletMain->GetAnonBalance())));
+    obj.push_back(Pair("reserve",       ValueFromAmount(nReserveBalance)));
     obj.push_back(Pair("newmint",       ValueFromAmount(pwalletMain->GetNewMint())));
     obj.push_back(Pair("stake",         ValueFromAmount(pwalletMain->GetStake())));
-    obj.push_back(Pair("reserve",       ValueFromAmount(nReserveBalance)));
     obj.push_back(Pair("unconfirmed",   ValueFromAmount(pwalletMain->GetUnconfirmedBalance())));
     obj.push_back(Pair("immature",      ValueFromAmount(pwalletMain->GetImmatureBalance())));
     obj.push_back(Pair("blocks",        (int)nBestHeight));
     obj.push_back(Pair("timeoffset",    (int64_t)GetTimeOffset()));
     obj.push_back(Pair("moneysupply",   ValueFromAmount(pindexBest->nMoneySupply)));
     obj.push_back(Pair("connections",   (int)vNodes.size()));
+    obj.push_back(Pair("datareceived",  bytesReadable(CNode::GetTotalBytesRecv())));
+    obj.push_back(Pair("datasent",      bytesReadable(CNode::GetTotalBytesSent())));
     obj.push_back(Pair("proxy",         (proxy.first.IsValid() ? proxy.first.ToStringIPPort() : string())));
     if(fNativeTor)
     {
@@ -120,29 +130,77 @@ Value getinfo(const Array& params, bool fHelp)
 
         ifstream file(hostname_path.string().c_str());
         file >> automatic_onion;
-        obj.push_back(Pair("tor",       (automatic_onion)));
+        obj.push_back(Pair("ip",       (automatic_onion)));
     }
     if(!fNativeTor)
         obj.push_back(Pair("ip",            addrSeenByPeer.ToStringIP()));
 
     diff.push_back(Pair("proof-of-work",  GetDifficulty()));
     diff.push_back(Pair("proof-of-stake", GetDifficulty(GetLastBlockIndex(pindexBest, true))));
+
     obj.push_back(Pair("difficulty",    diff));
+	obj.push_back(Pair("netmhashps",     GetPoWMHashPS()));
+	obj.push_back(Pair("netstakeweight", GetPoSKernelPS()));
+
+	obj.push_back(Pair("weight", (uint64_t)nWeight));
 
     obj.push_back(Pair("testnet",       fTestNet));
-    obj.push_back(Pair("fortunastake",    fFortunaStake));
-    obj.push_back(Pair("fslock",        fFSLock));
+    obj.push_back(Pair("collateralnode",  fCollateralNode));
+    obj.push_back(Pair("cnlock",        fCNLock));
     obj.push_back(Pair("nativetor",     fNativeTor));
     obj.push_back(Pair("keypoololdest", (int64_t)pwalletMain->GetOldestKeyPoolTime()));
     obj.push_back(Pair("keypoolsize",   (int)pwalletMain->GetKeyPoolSize()));
     obj.push_back(Pair("paytxfee",      ValueFromAmount(nTransactionFee)));
     obj.push_back(Pair("mininput",      ValueFromAmount(nMinimumInputValue)));
-    if (pwalletMain->IsCrypted())
+    obj.push_back(Pair("datadir",       GetDataDir().string()));
+	obj.push_back(Pair("initialblockdownload",  IsInitialBlockDownload()));
+    if(fDebug)
+	{
+    	obj.push_back(Pair("debug",             fDebug));
+        obj.push_back(Pair("debugnet",          fDebugNet));
+        obj.push_back(Pair("debugchain",        fDebugChain));
+        obj.push_back(Pair("debugringsig",      fDebugRingSig));
+	}
+  //Q0lSQ1VJVEJSRUFLRVI=
+	if (pwalletMain->IsCrypted())
         obj.push_back(Pair("unlocked_until", (int64_t)nWalletUnlockTime / 1000));
+	if (!pwalletMain->IsCrypted())
+        obj.push_back(Pair("wallet_status", "unencrypted"));
+	if (!pwalletMain->IsLocked() && pwalletMain->IsCrypted() && !fWalletUnlockStakingOnly)
+		obj.push_back(Pair("wallet_status", "unlocked"));
+	if (!pwalletMain->IsLocked() && pwalletMain->IsCrypted() && fWalletUnlockStakingOnly)
+		obj.push_back(Pair("wallet_status", "stakingonly"));
+	if (pwalletMain->IsLocked() && pwalletMain->IsCrypted())
+		obj.push_back(Pair("wallet_status", "locked"));
     obj.push_back(Pair("errors",        GetWarnings("statusbar")));
     return obj;
 }
 
+
+// Innova (INN) Wallet Lock Status RPC
+// Credit to Carsenk - Original Legatus Legionis - Q0FSU0VOIEtMT0NL
+// Q0lSQ1VJVEJSRUFLRVI=
+Value walletstatus(const Array& params, bool fHelp)
+{
+	if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "walletstatus\n"
+			             "Returns the current wallet lock and encryption status.");
+
+	Object obj;
+  if (pwalletMain->IsCrypted())
+        obj.push_back(Pair("unlocked_until", (int64_t)nWalletUnlockTime / 1000));
+	if (!pwalletMain->IsCrypted())
+        obj.push_back(Pair("wallet_status", "unencrypted"));
+	if (!pwalletMain->IsLocked() && pwalletMain->IsCrypted() && !fWalletUnlockStakingOnly)
+		obj.push_back(Pair("wallet_status", "unlocked"));
+	if (!pwalletMain->IsLocked() && pwalletMain->IsCrypted() && fWalletUnlockStakingOnly)
+		obj.push_back(Pair("wallet_status", "stakingonly"));
+	if (pwalletMain->IsLocked() && pwalletMain->IsCrypted())
+		obj.push_back(Pair("wallet_status", "locked"));
+
+	return obj;
+}
 
 Value getnewpubkey(const Array& params, bool fHelp)
 {
@@ -337,7 +395,13 @@ Value sendtoaddress(const Array& params, bool fHelp)
             "<amount> is a real and is rounded to the nearest 0.000001"
             + HelpRequiringPassphrase());
 
-    //EnsureWalletIsUnlocked();
+    EnsureWalletIsUnlocked();
+
+    /*
+    if (params[0].get_str().length() > 75
+        && IsStealthAddress(params[0].get_str()))
+        return sendtostealthaddress(params, false);
+    */
 
     CBitcoinAddress address(params[0].get_str());
     if (!address.IsValid())
@@ -375,6 +439,62 @@ Value sendtoaddress(const Array& params, bool fHelp)
     return wtx.GetHash().GetHex();
 }
 
+Value burn(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 1 || params.size() > 2)
+        throw std::runtime_error(
+            "burn amount ( \"comment\" )\n"
+            "\nBurn an amount of coins. The amount is a real and is rounded to the nearest 0.00000001\n" +
+            HelpRequiringPassphrase() + "\n"
+
+            "\nArguments:\n"
+            "1. \"amount\"      (numeric, required) The amount in INN to burn. eg 0.1\n"
+            "2. \"comment\"     (string, optional) A comment embedded in the transaction on the blockchain.\n"
+
+            "\nResult:\n"
+            "\"transactionid\"  (string) The transaction id.\n"
+
+            "\nExamples:\n" +
+
+            ("burn", "0.1") +
+            ("burn", "0.1 \"burn test\"") +
+            ("burn", "0.1, \"burn test\""));
+
+    LOCK2(cs_main, pwalletMain->cs_wallet);
+
+    // Amount
+    CAmount nAmount = AmountFromValue(params[0]);
+    if (nAmount > pwalletMain->GetBalance())
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, "Insufficient funds");
+
+    // Comment
+    CWalletTx wtx;
+    CScript burnScript = CScript() << OP_RETURN;
+    if (params.size() > 1 && !params[1].is_null() && !params[1].get_str().empty()) {
+        if (params[1].get_str().length() > MAX_OP_RETURN_RELAY - 3) // Max 45 Bytes
+            throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Comment cannot be longer than %u characters", MAX_OP_RETURN_RELAY - 3));
+        burnScript << ToByteVector(params[1].get_str());
+    }
+
+    EnsureWalletIsUnlocked();
+    CReserveKey reservekey(pwalletMain);
+    int64_t nFeeRequired;
+    std::string strError = "CreateTransaction() failed.";
+    std::string sNarr = "";
+
+    if (!pwalletMain->CreateTransaction(burnScript, nAmount, sNarr, wtx, reservekey, nFeeRequired, nullptr)) {
+        if (nAmount + nFeeRequired > pwalletMain->GetBalance())
+            strError = "Error: This transaction requires a transaction fee of at least " + FormatMoney(nFeeRequired) + " because of its amount, complexity, or use of recently received funds!";
+        printf("BurnCoins() : %s\n", strError.c_str());
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+    }
+    if (!pwalletMain->CommitTransaction(wtx, reservekey))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: The transaction was rejected! This might happen if some of the coins in your wallet were already spent, such as if you used a copy of wallet.dat and coins were spent in the copy but not marked as spent here.");
+
+    return wtx.GetHash().GetHex();
+}
+
+
 Value listaddressgroupings(const Array& params, bool fHelp)
 {
     if (fHelp)
@@ -404,6 +524,31 @@ Value listaddressgroupings(const Array& params, bool fHelp)
         jsonGroupings.push_back(jsonGrouping);
     }
     return jsonGroupings;
+}
+
+Value listaddressgroups(const Array& params, bool fHelp)
+{
+    if (fHelp)
+        throw runtime_error(
+            "listaddressgroups\n"
+            "Lists groups of addresses which have had their common ownership\n"
+            "made public by common use as inputs or as the resulting change\n"
+            "in past transactions");
+
+
+	Object obj, addr;
+	Array ret;
+    map<CTxDestination, int64_t> balances = pwalletMain->GetAddressBalances();
+    BOOST_FOREACH(set<CTxDestination> grouping, pwalletMain->GetAddressGroupings())
+    {
+        BOOST_FOREACH(CTxDestination address, grouping)
+        {
+			obj.push_back(Pair("address", CBitcoinAddress(address).ToString()));
+			obj.push_back(Pair("amount", ValueFromAmount(balances[address])));
+        }
+    }
+	ret.push_back(obj);
+    return ret;
 }
 
 Value signmessage(const Array& params, bool fHelp)
@@ -560,7 +705,12 @@ Value getreceivedbyaccount(const Array& params, bool fHelp)
             CTxDestination address;
             if (ExtractDestination(txout.scriptPubKey, address) && IsMine(*pwalletMain, address) && setAddress.count(address))
                 if (wtx.GetDepthInMainChain() >= nMinDepth)
+                {
+                    // ignore namecoin TxOut
+                    if (hooks->IsNameTx(wtx.nVersion) && hooks->IsNameScript(txout.scriptPubKey))
+                        continue; //note: this will never execute, because ExtractDestination will not exctract nameTx address. Maybe fix this?
                     nAmount += txout.nValue;
+                }
         }
     }
 
@@ -1131,6 +1281,62 @@ Value listreceivedbyaccount(const Array& params, bool fHelp)
     return ListReceived(params, true);
 }
 
+Value deletetransaction(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 1)
+        throw runtime_error(
+                "deletetransaction <txid>\nNormally used when a transaction cannot be confirmed due to a double spend.\n"
+                );
+
+    if (params.size() != 1)
+        throw runtime_error("missing txid");
+
+    LOCK2(cs_main, pwalletMain->cs_wallet);
+    uint256 hash;
+    hash.SetHex(params[0].get_str());
+    if (!pwalletMain->mapWallet.count(hash))
+        throw runtime_error("transaction not in wallet");
+
+    if (!mempool.exists(hash))
+    {
+        CTransaction tx;
+        uint256 hashBlock = 0;
+        if (GetTransaction(hash, tx, hashBlock) && hashBlock != 0)
+            throw runtime_error("transaction is already in blockchain");
+    }
+    CWalletTx wtx = pwalletMain->mapWallet[hash];
+
+    Object result;
+    bool ret;
+
+    ret = mempool.remove(wtx);
+    result.push_back(Pair("removing tx from memory pool", ret));
+
+    ret = pwalletMain->EraseFromWallet(wtx.GetHash());
+    result.push_back(Pair("erasing tx from wallet.dat", ret));
+
+    ret = hooks->deletePendingName(wtx);
+    result.push_back(Pair("removing name tx (if this is name tx) from pending name operations", ret));
+
+    int nMismatchSpent;
+    int64_t nBalanceInQuestion;
+    pwalletMain->FixSpentCoins(nMismatchSpent, nBalanceInQuestion);
+
+    if (nMismatchSpent != 0)
+    {
+        result.push_back(Pair("mismatched spent coins", nMismatchSpent));
+        result.push_back(Pair("amount affected by repair", ValueFromAmount(nBalanceInQuestion)));
+    }
+    result.push_back(Pair("done", "true"));
+
+#ifdef QT_GUI
+    // notify GUI
+    pwalletMain->UpdatedTransaction(wtx.GetHash());
+#endif
+
+    return result;
+}
+
 static void MaybePushAddress(Object & entry, const CTxDestination &dest)
 {
     CBitcoinAddress addr;
@@ -1216,7 +1422,7 @@ void ListTransactions(const CWalletTx& wtx, const string& strAccount, int nMinDe
 					entry.push_back(Pair("amount", ValueFromAmount(r.amount)));
 					entry.push_back(Pair("reward", ValueFromAmount(-nFee)));
                     stop = true;
-				//FortunaStake PoS Reward - I n n o v a
+				//CollateralNode PoS Reward - I n n o v a
                 } else if (wtx.IsCoinStake() && nFee == 0) {
 					entry.push_back(Pair("reward", ValueFromAmount(r.amount)));
 					stop = true;
@@ -1630,6 +1836,7 @@ Value walletpassphrase(const Array& params, bool fHelp)
 
     if (!pwalletMain->IsLocked())
         throw JSONRPCError(RPC_WALLET_ALREADY_UNLOCKED, "Error: Wallet is already unlocked, use walletlock first if need to change unlock settings.");
+
     // Note that the walletpassphrase is stored in params[0] which is not mlock()ed
     SecureString strWalletPass;
     strWalletPass.reserve(100);
@@ -1649,10 +1856,16 @@ Value walletpassphrase(const Array& params, bool fHelp)
 
     NewThread(ThreadTopUpKeyPool, NULL);
     int64_t* pnSleepTime = new int64_t(params[1].get_int64());
+	//LOCK(cs_nWalletUnlockTime);
+	//nWalletUnlockTime = GetTime() + pnSleepTime;
     NewThread(ThreadCleanWalletPassphrase, pnSleepTime);
 
-    // ppcoin: if user OS account compromised prevent trivial sendmoney commands
-    if (params.size() > 2)
+    //fWalletUnlockStakingOnly = false;
+
+    // Innova: if user OS account compromised prevent trivial sendmoney commands
+    // if (params.size() > 2 && params[2].get_bool() == true)
+        // fWalletUnlockStakingOnly = true;
+	if (params.size() > 2)
         fWalletUnlockStakingOnly = params[2].get_bool();
     else
         fWalletUnlockStakingOnly = false;
@@ -2078,6 +2291,10 @@ Value importstealthaddress(const Array& params, bool fHelp)
     std::string sSpendSecret = params[1].get_str();
     std::string sLabel;
 
+    if (pwalletMain->IsLocked())
+    {
+        throw runtime_error("Failed: Wallet must be unlocked.");
+    }
 
     if (params.size() > 2)
     {
@@ -2714,6 +2931,7 @@ Value anoninfo(const Array& params, bool fHelp)
     return result;
 }
 
+
 Value reloadanondata(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() > 0)
@@ -2854,7 +3072,7 @@ Value txnreport(const Array& params, bool fHelp)
                 if (pwtx->nVersion == ANON_TXN_VERSION
                     && txin.IsAnonInput())
                 {
-                    entry.push_back("DENARIUS in");
+                    entry.push_back("INNOVA in");
                     entry.push_back("");
                     std::vector<uint8_t> vchImage;
                     txin.ExtractKeyImage(vchImage);
@@ -2887,7 +3105,7 @@ Value txnreport(const Array& params, bool fHelp)
                     if (txin.prevout.IsNull()) // coinbase
                         continue;
 
-                    entry.push_back("D in");
+                    entry.push_back("INN in");
                     entry.push_back(fCoinBase ? "coinbase" : fCoinStake ? "coinstake" : "");
 
                     if (pwalletMain->IsMine(txin))
@@ -2954,7 +3172,7 @@ Value txnreport(const Array& params, bool fHelp)
                 if (pwtx->nVersion == ANON_TXN_VERSION
                     && txout.IsAnonOutput())
                 {
-                    entry.push_back("DENARIUS out");
+                    entry.push_back("INNOVA out");
                     entry.push_back("");
 
                     CPubKey pkCoin    = txout.ExtractAnonPk();
@@ -2981,7 +3199,7 @@ Value txnreport(const Array& params, bool fHelp)
                     };
                 } else
                 {
-                    entry.push_back("D out");
+                    entry.push_back("INN out");
                     entry.push_back(fCoinBase ? "coinbase" : fCoinStake ? "coinstake" : "");
 
 

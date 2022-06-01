@@ -16,21 +16,21 @@ static const int nCheckpointSpan = nCoinbaseMaturity * 2; // twice of coin matur
 
 namespace Checkpoints
 {
-    typedef std::map<int, uint256> MapCheckpoints;
+    //typedef std::map<int, uint256> MapCheckpoints;
 
     // How many times we expect transactions after the last checkpoint to
-   // be slower. This number is a compromise, as it can't be accurate for
-   // every system. When reindexing from a fast disk with a slow CPU, it
-   // can be up to 20, while when downloading from a slow network with a
-   // fast multicore CPU, it won't be much higher than 1.
-   static const double SIGCHECK_VERIFICATION_FACTOR = 5.0;
+    // be slower. This number is a compromise, as it can't be accurate for
+    // every system. When reindexing from a fast disk with a slow CPU, it
+    // can be up to 20, while when downloading from a slow network with a
+    // fast multicore CPU, it won't be much higher than 1.
+    static const double SIGCHECK_VERIFICATION_FACTOR = 5.0;
 
-   struct CCheckpointData {
-       const MapCheckpoints *mapCheckpoints;
-       int64_t nTimeLastCheckpoint;
-       int64_t nTransactionsLastCheckpoint;
-       double fTransactionsPerDay;
-   };
+    struct CCheckpointData {
+        const MapCheckpoints *mapCheckpoints;
+        int64_t nTimeLastCheckpoint;
+        int64_t nTransactionsLastCheckpoint;
+        double fTransactionsPerDay;
+    };
 
     //
     // What makes a good checkpoint block?
@@ -39,9 +39,9 @@ namespace Checkpoints
     //    timestamp before)
     // + Contains no strange transactions
     //
-    static MapCheckpoints mapCheckpoints =
+    MapCheckpoints mapCheckpoints =
         boost::assign::map_list_of
-        ( 0,       hashGenesisBlock )
+        ( 0,       uint256("0x000009bd42d259eb7031ae4f634aede1a690da795e5529786a72c3cd6d989995") )
         ( 2000,    uint256("0x000000007e4fbd38a6072a2725273901d2eafdadbe9ce2e28f22882db6e76817") )
         ( 5000,    uint256("0x0000000090efedc86969fcd821ee8fdde179796547a4bd07c643800d75c1ddbd") )
         ( 10000,   uint256("0x00000000026e6c5aca75f2c3b288f5f68907dbf7fe4525cc39bffc3d40234984") )
@@ -50,28 +50,56 @@ namespace Checkpoints
         ( 50000,   uint256("0x00000000062440c503446206ea2b49472b5096dfdcbfa94fd2d60ac2babe7f8d") )
         ( 75000,   uint256("0xa18904ad0c2997b421e1e71375f5d0195d40a0bf5672ce63e387d8d0a794134d") )
         ( 90000,   uint256("0xb173dd04c9a979196bf2eb35764214464ef418013c7cb9306bf1a421865c8d7a") )
-      //
+        ( 100000,  uint256("0xf20e568304e357a1b47edb451ddeaaa60c41ce16cedc7b3b203cd0b29052955d") )
+        ( 150000,  uint256("0xa6396410d82ddb43420d61e8aaa6e99549cc0309517d72b09d26eccda40ac440") )
+        ( 200000,  uint256("0x83aff3e1e000dd4429fe6e43fba3d6a18fc1fcdb82088c347851457a00164779") )
+        ( 300000,  uint256("0x035f2afd77f628d533e0445bc615deeff181d0618a1857b59328a9828614d1e5") )
+        ( 400000,  uint256("0xbc36f854e8a329704dee481edd1ffeb1bcc7fe00b0dcd0e2273ff59510fcff5d") )
+        ( 500000,  uint256("0x597cb4a8b906c4a68c91d68b7315c2d22a3374cbbe1f8dd51f7fc1d26ffa39f8") )
+        ( 600000,  uint256("0x2bafd6a6b6013062d2e13ec848b31cc051f6b77ef6894689110929a52fde4743") )
+        ( 700000,  uint256("0x1a6e5dbcb406c34f93ec89d7dd26cbc97b89b9cb97312d2c08d23fdc92d42a0e") )
+        ( 800000,  uint256("0x000dee38aaf0072e3ef0813e8ee55b7621d04f2ffe30198e715fceef47d2accf") )
+        ( 900000,  uint256("0x4f71ab6407626c619e5d2dfcd528da4a8fc8fec35f08ff151059ac27ccc87f78") )
+        ( 1000000, uint256("0x4e9e1d81e2eac234189d293608b6873b1f341158278e8a3ecaebfa9cf5b04a54") )
+        ( 1100000, uint256("0x4dd971be6ab9087558f9870b46361a0a846270525b3af49dedcacc8ae16fbca7") )
+        ( 1110000, uint256("0x5368ef0d8c9c931137b129ac729df887de41be6ee1e2d3cb37a214baf5ea1203") )
+        ( 1120000, uint256("0x803877c47a918f136c04f2cd3e2e06ec892e4e125a999ce8cdb35ad7f8b8ff50") )
+        ( 1130000, uint256("0x077eae09473d73956e0da6452b569d0cabbddeea7657351b115551df44b4b34c") )
+        ( 1140000, uint256("0x36676d18d540a72a0c3a94e408405a2a4dcc53fbeeba17809189568a8be08cb3") )
+        ( 1150000, uint256("0xf86cc40fb6ff191e577e9386f7d9dba56fd34c5183ac372647b93cc7428a2553") )
+        ( 1160000, uint256("0x06b9dac23681f4eb66cd2269259c449b1cd8b938bae8f6a73dbf57d154d2492b") )
+        ( 1170000, uint256("0x1b5e51d5b548e7e47d2f70b866bcbfc9558420b82fd016f97d5663a60aabbe94") )
+        ( 1108000, uint256("0xc94f1deedee3413ea301b78d15b46e53a6ff1eaee110fceb1b0fec51f202a307") )
+        ( 1190000, uint256("0x18dd50254ef59d8ac1987e39af097c24be959abefd12d43027860e9f944ba677") )
+        ( 1200000, uint256("0x879fe371bbe58f9b333b99ebf6403d438fe3be4a8f19e599e5aebd87674be54a") )
+        ( 1210000, uint256("0x8bd87d74bc13df35504c4b8d5d091a9ff25111e0b78f5f694b0b66b591a7de9b") )
+        ( 1500000, uint256("0x188abe5b815d27f3d02ba59efc8b600ff21607a27d29bed5c2e5cc996b702b04") )
+        ( 1750000, uint256("0xf702251416b21ac460830b469367d90aa493007b3c1f2ae5bd6cd605e80c2403") )
+        ( 1840000, uint256("0x69c472731a4d4815f1689b571c0943068be7e074d71083d280a0d83538c40b2e") )
+        ( 1848418, uint256("0x5c4effd70e19cbe733119a21578121f74f88013ea7843d0a1bc77d31f82062da") )
+        ( 1848420, uint256("0x414eedde45efae3607abd5daa800b16a5a8e4e0da6349c3cd50273bbed4aed90") )
+
 	;
 
   static const CCheckpointData data = {
         &mapCheckpoints,
-        1578570403, // * UNIX timestamp of last checkpoint block above ^^
-        5033897,   // * total number of transactions between genesis and last checkpoint
+        1591451953, // * UNIX timestamp of last checkpoint block above ^^
+        5034897,   // * total number of transactions between genesis and last checkpoint
                     //   (the tx=... number in the SetBestChain debug.log lines)
         5000.0     // * estimated number of transactions per day after checkpoint
     };
 
     // TestNet has no checkpoints
-    static MapCheckpoints mapCheckpointsTestnet =
+    MapCheckpoints mapCheckpointsTestnet =
         boost::assign::map_list_of
         ( 0, hashGenesisBlockTestNet )
     ;
 
     static const CCheckpointData dataTestnet = {
         &mapCheckpointsTestnet,
-        1338180505,
-        16341,
-        300
+        1631971785,
+        25640,
+        0
     };
 
     const CCheckpointData &Checkpoints() {
@@ -89,38 +117,6 @@ namespace Checkpoints
         if (i == checkpoints.end()) return true;
         return hash == i->second;
     }
-
-    // Guess how far we are in the verification process at the given block index
-       double GuessVerificationProgress(CBlockIndex *pindex, bool fSigchecks) {
-           if (pindex==NULL)
-               return 0.0;
-
-           int64_t nNow = time(NULL);
-
-           double fSigcheckVerificationFactor = fSigchecks ? SIGCHECK_VERIFICATION_FACTOR : 1.0;
-           double fWorkBefore = 0.0; // Amount of work done before pindex
-           double fWorkAfter = 0.0;  // Amount of work left after pindex (estimated)
-           // Work is defined as: 1.0 per transaction before the last checkpoint, and
-           // fSigcheckVerificationFactor per transaction after.
-
-           const CCheckpointData &data = Checkpoints();
-   
-           if (pindex->nChainTx <= data.nTransactionsLastCheckpoint) {
-               double nCheapBefore = pindex->nChainTx;
-               double nCheapAfter = data.nTransactionsLastCheckpoint - pindex->nChainTx;
-               double nExpensiveAfter = (nNow - data.nTimeLastCheckpoint)/86400.0*data.fTransactionsPerDay;
-               fWorkBefore = nCheapBefore;
-               fWorkAfter = nCheapAfter + nExpensiveAfter*fSigcheckVerificationFactor;
-           } else {
-               double nCheapBefore = data.nTransactionsLastCheckpoint;
-               double nExpensiveBefore = pindex->nChainTx - data.nTransactionsLastCheckpoint;
-               double nExpensiveAfter = (nNow - pindex->nTime)/86400.0*data.fTransactionsPerDay;
-               fWorkBefore = nCheapBefore + nExpensiveBefore*fSigcheckVerificationFactor;
-               fWorkAfter = nExpensiveAfter*fSigcheckVerificationFactor;
-           }
-
-           return fWorkBefore / (fWorkBefore + fWorkAfter);
-       }
 
     int GetTotalBlocksEstimate()
     {
@@ -203,7 +199,8 @@ namespace Checkpoints
         {
             hashInvalidCheckpoint = hashCheckpoint;
             return error("ValidateSyncCheckpoint: new sync-checkpoint %s is not a descendant of current sync-checkpoint %s", hashCheckpoint.ToString().c_str(), hashSyncCheckpoint.ToString().c_str());
-        }
+        };
+
         return true;
     }
 
@@ -242,12 +239,13 @@ namespace Checkpoints
                 CBlock block;
                 if (!block.ReadFromDisk(pindexCheckpoint))
                     return error("AcceptPendingSyncCheckpoint: ReadFromDisk failed for sync checkpoint %s", hashPendingCheckpoint.ToString().c_str());
+
                 if (!block.SetBestChain(txdb, pindexCheckpoint))
                 {
                     hashInvalidCheckpoint = hashPendingCheckpoint;
                     return error("AcceptPendingSyncCheckpoint: SetBestChain failed for sync checkpoint %s", hashPendingCheckpoint.ToString().c_str());
-                }
-            }
+                };
+            };
 
             if (!WriteSyncCheckpoint(hashPendingCheckpoint))
                 return error("AcceptPendingSyncCheckpoint(): failed to write sync checkpoint %s", hashPendingCheckpoint.ToString().c_str());
@@ -303,7 +301,8 @@ namespace Checkpoints
                         return error("CheckSync: pprev null - block index structure failure");
                 if (pindex->nHeight < pindexSync->nHeight || pindex->GetBlockHash() != hashSyncCheckpoint)
                     return false; // only descendant of sync-checkpoint can pass check
-            }
+            };
+
             if (nHeight == pindexSync->nHeight && hashBlock != hashSyncCheckpoint)
                 return false; // same height with sync-checkpoint
             if (nHeight < pindexSync->nHeight && !mapBlockIndex.count(hashBlock))
@@ -341,15 +340,15 @@ namespace Checkpoints
             if (!block.SetBestChain(txdb, mapBlockIndex[hash]))
             {
                 return error("ResetSyncCheckpoint: SetBestChain failed for hardened checkpoint %s", hash.ToString().c_str());
-            }
-        }
-        else if(!mapBlockIndex.count(hash))
+            };
+        } else
+        if (!mapBlockIndex.count(hash))
         {
             // checkpoint block not yet accepted
             hashPendingCheckpoint = hash;
             checkpointMessagePending.SetNull();
             printf("ResetSyncCheckpoint: pending for sync-checkpoint %s\n", hashPendingCheckpoint.ToString().c_str());
-        }
+        };
 
         BOOST_REVERSE_FOREACH(const MapCheckpoints::value_type& i, mapCheckpoints)
         {
@@ -360,8 +359,8 @@ namespace Checkpoints
                     return error("ResetSyncCheckpoint: failed to write sync checkpoint %s", hash.ToString().c_str());
                 printf("ResetSyncCheckpoint: sync-checkpoint reset to %s\n", hashSyncCheckpoint.ToString().c_str());
                 return true;
-            }
-        }
+            };
+        };
 
         return false;
     }
@@ -419,7 +418,7 @@ namespace Checkpoints
         {
             printf("WARNING: SendSyncCheckpoint: Failed to process checkpoint.\n");
             return false;
-        }
+        };
 
         // Relay checkpoint
         {
@@ -481,9 +480,9 @@ bool CSyncCheckpoint::ProcessSyncCheckpoint(CNode* pfrom)
             // ask directly as well in case rejected earlier by duplicate
             // proof-of-stake because getblocks may not get it this time
             pfrom->AskFor(CInv(MSG_BLOCK, mapOrphanBlocks.count(hashCheckpoint)? WantedByOrphan(mapOrphanBlocks[hashCheckpoint]) : hashCheckpoint));
-        }
+        };
         return false;
-    }
+    };
 
     if (!Checkpoints::ValidateSyncCheckpoint(hashCheckpoint))
         return false;
@@ -500,8 +499,8 @@ bool CSyncCheckpoint::ProcessSyncCheckpoint(CNode* pfrom)
         {
             Checkpoints::hashInvalidCheckpoint = hashCheckpoint;
             return error("ProcessSyncCheckpoint: SetBestChain failed for sync checkpoint %s", hashCheckpoint.ToString().c_str());
-        }
-    }
+        };
+    };
 
     if (!Checkpoints::WriteSyncCheckpoint(hashCheckpoint))
         return error("ProcessSyncCheckpoint(): failed to write sync checkpoint %s", hashCheckpoint.ToString().c_str());

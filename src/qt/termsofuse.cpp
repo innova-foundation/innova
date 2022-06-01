@@ -11,7 +11,7 @@
 #include <QSettings>
 
 #include <iostream>
-#include <fstream>  
+#include <fstream>
 
 TermsOfUse::TermsOfUse(QWidget *parent) :
     QDialog(parent),
@@ -36,7 +36,7 @@ void TermsOfUse::clickAgree()
     std::ofstream outfile (pathDebug.string().c_str());
     outfile << "I Agree!" << std::endl;
     outfile.close();
-    
+
     close();
 }
 

@@ -37,7 +37,7 @@ public:
 public slots:
     void setRemoveEnabled(bool enabled);
     void clear();
-    
+
 signals:
     void removeEntry(SendMessagesEntry *entry);
 

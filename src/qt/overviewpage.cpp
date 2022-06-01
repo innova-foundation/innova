@@ -9,6 +9,7 @@
 #include "guiutil.h"
 #include "guiconstants.h"
 #include "marketbrowser.h"
+#include <curl/curl.h>
 
 #include <QAbstractItemDelegate>
 #include <QPainter>
@@ -20,11 +21,19 @@
 #define DECORATION_SIZE 36
 #define NUM_ITEMS 7
 
-const QString BaseURL = "http://innovacoin.io/dnrusd.php";
-const QString BaseURL2 = "http://innovacoin.io/dnrbtc.php";
-const QString BaseURL3 = "http://innovacoin.io/newsfeed.php";
+const QString BaseURL = "https://innova-foundation.com/innusd.php";
+const QString BaseURL2 = "https://innova-foundation.com/innbitcoin.php";
+const QString BaseURL3 = "https://innova-foundation.com/newsfeed.php";
+const QString BaseURL4 = "https://innova-foundation.com/inneur.php";
+const QString BaseURL5 = "https://innova-foundation.com/inngbp.php";
+const QString BaseURL6 = "https://innova-foundation.com/innrub.php";
+const QString BaseURL7 = "https://innova-foundation.com/innjpy.php";
 double innovax;
-double dnrbtcx;
+double inneurx;
+double inngbpx;
+double innrubx;
+double innjpyx;
+double innbtcx;
 
 class TxViewDelegate : public QAbstractItemDelegate
 {
@@ -112,13 +121,13 @@ OverviewPage::OverviewPage(QWidget *parent) :
     filter(0)
 {
     ui->setupUi(this);
-	
-	
 
-    PriceRequest();
-	QObject::connect(&m_nam, SIGNAL(finished(QNetworkReply*)), this, SLOT(parseNetworkResponse(QNetworkReply*)));
+
+
+    PriceRequest(); //Segfault 20.04/18.04
+	//QObject::connect(&m_nam, SIGNAL(finished(QNetworkReply*)), this, SLOT(parseNetworkResponse(QNetworkReply*)));
 	connect(ui->refreshButton, SIGNAL(pressed()), this, SLOT( PriceRequest()));
-	
+
 	//Refresh the Est. Balances and News automatically
 	refreshbtnTimer = new QTimer(this);
     connect(refreshbtnTimer, SIGNAL(timeout()), this, SLOT( PriceRequest()));
@@ -147,63 +156,225 @@ OverviewPage::OverviewPage(QWidget *parent) :
 
 void OverviewPage::PriceRequest()
 {
-	getRequest(BaseURL);
-	getRequest(BaseURL2);
-	getRequest(BaseURL3);
+	getRequest1(BaseURL);
+	getRequest2(BaseURL2);
+	getRequest3(BaseURL3);
+  getRequest4(BaseURL4);
+  getRequest5(BaseURL5);
+  getRequest6(BaseURL6);
+  getRequest7(BaseURL7);
     //updateDisplayUnit(); //Segfault Fix
 }
 
-void OverviewPage::getRequest( const QString &urlString )
+static size_t WriteCallback(void *contents, size_t size, size_t nmemb, void *userp)
 {
-    QUrl url ( urlString );
-    QNetworkRequest req ( url );
-    req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json; charset=utf-8");
-    m_nam.get(req);
+    ((std::string*)userp)->append((char*)contents, size * nmemb);
+    return size * nmemb;
 }
 
-void OverviewPage::parseNetworkResponse(QNetworkReply *finished )
+void OverviewPage::getRequest1( const QString &urlString )
 {
+    CURL *curl;
+    CURLcode res;
+    std::string readBuffer;
 
-    QUrl what = finished->url();
+    curl = curl_easy_init();
+    if(curl) {
+      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
+      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+      res = curl_easy_perform(curl);
+      if(res != CURLE_OK){
+            qWarning("curl_easy_perform() failed: \n");
+      }
+      curl_easy_cleanup(curl);
 
-    if ( finished->error() != QNetworkReply::NoError )
-    {
-        // A communication error has occurred
-        emit networkError( finished->error() );
-        return;
+      //std::cout << readBuffer << std::endl;
+
+      //qDebug(readBuffer);
+      //qDebug("cURL Request: %s", readBuffer.c_str());
+
+        QString innova = QString::fromStdString(readBuffer);
+        innovax = (innova.toDouble());
+        innova = QString::number(innovax, 'f', 2);
+
+        dollarg = innova;
     }
-
-if (what == BaseURL) // Innova Price
-{
-
-    // QNetworkReply is a QIODevice. So we read from it just like it was a file
-    QString innova = finished->readAll();
-    innovax = (innova.toDouble());
-    innova = QString::number(innovax, 'f', 2);
-
-	dollarg = innova;
 }
-if (what == BaseURL2) // Innova BTC Price
+
+void OverviewPage::getRequest2( const QString &urlString )
 {
+    CURL *curl;
+    CURLcode res;
+    std::string readBuffer;
 
-    // QNetworkReply is a QIODevice. So we read from it just like it was a file
-    QString dnrbtc = finished->readAll();
-    dnrbtcx = (dnrbtc.toDouble());
-    dnrbtc = QString::number(dnrbtcx, 'f', 8);
+    curl = curl_easy_init();
+    if(curl) {
+      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
+      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+      res = curl_easy_perform(curl);
+      if(res != CURLE_OK){
+            qWarning("curl_easy_perform() failed: \n");
+      }
+      curl_easy_cleanup(curl);
 
-	bitcoing = dnrbtc;
+        QString innbtc = QString::fromStdString(readBuffer);
+        innbtcx = (innbtc.toDouble());
+        innbtc = QString::number(innbtcx, 'f', 8);
+
+        bitcoing = innbtc;
+    }
 }
-if (what == BaseURL3) // Innova News Feed
+
+void OverviewPage::getRequest3( const QString &urlString )
 {
+    CURL *curl;
+    CURLcode res;
+    std::string readBuffer;
 
-    // QNetworkReply is a QIODevice. So we read from it just like it was a file
-    QString dnewsfeed = finished->readAll();
-    //dnewsfeedx = (dnewsfeed.toDouble());
-    //dnewsfeed = QString::number(dnewsfeedx, 'f', 8);
+    curl = curl_easy_init();
+    if(curl) {
+      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
+      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+      res = curl_easy_perform(curl);
+      if(res != CURLE_OK){
+            qWarning("curl_easy_perform() failed: \n");
+      }
+      curl_easy_cleanup(curl);
 
-	dnrnewsfeed = dnewsfeed;
+
+        QString inewsfeed = QString::fromStdString(readBuffer);
+        innnewsfeed = inewsfeed;
+    }
 }
-finished->deleteLater();
+
+void OverviewPage::getRequest4( const QString &urlString )
+{
+    CURL *curl;
+    CURLcode res;
+    std::string readBuffer;
+
+    curl = curl_easy_init();
+    if(curl) {
+      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
+      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+      res = curl_easy_perform(curl);
+      if(res != CURLE_OK){
+            qWarning("curl_easy_perform() failed: \n");
+      }
+      curl_easy_cleanup(curl);
+
+      //std::cout << readBuffer << std::endl;
+
+      //qDebug(readBuffer);
+      //qDebug("cURL Request: %s", readBuffer.c_str());
+
+        QString inneur = QString::fromStdString(readBuffer);
+        inneurx = (inneur.toDouble());
+        inneur = QString::number(inneurx, 'f', 4);
+
+        eurog = inneur;
+    }
+}
+
+void OverviewPage::getRequest5( const QString &urlString )
+{
+    CURL *curl;
+    CURLcode res;
+    std::string readBuffer;
+
+    curl = curl_easy_init();
+    if(curl) {
+      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
+      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+      res = curl_easy_perform(curl);
+      if(res != CURLE_OK){
+            qWarning("curl_easy_perform() failed: \n");
+      }
+      curl_easy_cleanup(curl);
+
+      //std::cout << readBuffer << std::endl;
+
+      //qDebug(readBuffer);
+      //qDebug("cURL Request: %s", readBuffer.c_str());
+
+        QString inngbp = QString::fromStdString(readBuffer);
+        inngbpx = (inngbp.toDouble());
+        inngbp = QString::number(inngbpx, 'f', 6);
+
+        poundg = inngbp;
+    }
+}
+
+void OverviewPage::getRequest6( const QString &urlString )
+{
+    CURL *curl;
+    CURLcode res;
+    std::string readBuffer;
+
+    curl = curl_easy_init();
+    if(curl) {
+      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
+      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+      res = curl_easy_perform(curl);
+      if(res != CURLE_OK){
+            qWarning("curl_easy_perform() failed: \n");
+      }
+      curl_easy_cleanup(curl);
+
+      //std::cout << readBuffer << std::endl;
+
+      //qDebug(readBuffer);
+      //qDebug("cURL Request: %s", readBuffer.c_str());
+
+        QString innrub = QString::fromStdString(readBuffer);
+        innrubx = (innrub.toDouble());
+        innrub = QString::number(innrubx, 'f', 10);
+
+        rubleg = innrub;
+    }
+}
+
+void OverviewPage::getRequest7( const QString &urlString )
+{
+    CURL *curl;
+    CURLcode res;
+    std::string readBuffer;
+
+    curl = curl_easy_init();
+    if(curl) {
+      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
+      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+      res = curl_easy_perform(curl);
+      if(res != CURLE_OK){
+            qWarning("curl_easy_perform() failed: \n");
+      }
+      curl_easy_cleanup(curl);
+
+      //std::cout << readBuffer << std::endl;
+
+      //qDebug(readBuffer);
+      //qDebug("cURL Request: %s", readBuffer.c_str());
+
+        QString innjpy = QString::fromStdString(readBuffer);
+        innjpyx = (innjpy.toDouble());
+        innjpy = QString::number(innjpyx, 'f', 12);
+
+        yeng = innjpy;
+    }
 }
 
 void OverviewPage::handleTransactionClicked(const QModelIndex &index)
@@ -248,23 +419,38 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
 
 
   	QString total;
-    double dollarg2 = (dollarg.toDouble() * totalBalance / 100000000);
-  	total = QString::number(dollarg2, 'f', 2);
+    double dollarg1 = (dollarg.toDouble() * totalBalance / 100000000);
+  	total = QString::number(dollarg1, 'f', 2);
   	ui->labelUSDTotal->setText("$" + total + " USD");
-	
-	QString eurtotal;
-	double dollarg1 = (dollarg.toDouble() * totalBalance * 0.886 / 100000000); 
-  	eurtotal = QString::number(dollarg1, 'f', 2);
+
+	  QString eurtotal;
+	  double eurog1 = (eurog.toDouble() * totalBalance / 100000000);
+  	eurtotal = QString::number(eurog1, 'f', 4);
   	ui->labelEURTotal->setText("€" + eurtotal + " EUR");
 
-    ui->labelBTCTotal->setText(BitcoinUnits::formatWithUnit(unitdBTC, bitcoing.toDouble() * totalBalance));
+    QString gbptotal;
+    double poundg1 = (poundg.toDouble() * totalBalance / 100000000);
+    gbptotal = QString::number(poundg1, 'f', 6);
+    ui->labelGBPTotal->setText("£" + gbptotal + " GBP");
+
+    QString rubtotal;
+    double rubleg1 = (rubleg.toDouble() * totalBalance / 100000000);
+    rubtotal = QString::number(rubleg1, 'f', 10);
+    ui->labelRUBTotal->setText("₽" + rubtotal + " RUB");
+
+    QString jpytotal;
+    double yeng1 = (yeng.toDouble() * totalBalance / 100000000);
+    jpytotal = QString::number(yeng1, 'f', 12);
+    ui->labelJPYTotal->setText("¥" + jpytotal + " JPY");
+
+    ui->labelBTCTotal->setText("Ƀ" + BitcoinUnits::formatWithUnit(unitdBTC, bitcoing.toDouble() * totalBalance));
     ui->labelTradeLink->setTextFormat(Qt::RichText);
     ui->labelTradeLink->setTextInteractionFlags(Qt::TextBrowserInteraction);
     ui->labelTradeLink->setOpenExternalLinks(true);
-	
+
 	QString news;
-	news = dnrnewsfeed;
-	ui->labelNewsFeed->setText(news);
+	news = innnewsfeed;
+  ui->labelNewsFeed->setText(news);
 
     // only show immature (newly mined) balance if it's non-zero, so as not to complicate things
     // for the non-mining users
@@ -292,7 +478,7 @@ void OverviewPage::updateWatchOnlyLabels(bool showWatchOnly)
     ui->labelWatchAvailable->setVisible(showWatchOnly); // show watch-only available balance
     ui->labelWatchPending->setVisible(showWatchOnly);   // show watch-only pending balance
     ui->labelWatchTotal->setVisible(showWatchOnly);     // show watch-only total balance
-	
+
 	ui->watch1->setVisible(showWatchOnly);
 	ui->watch2->setVisible(showWatchOnly);
     ui->labelWatchImmatureText->setVisible(showWatchOnly);

@@ -2,6 +2,7 @@
 #include "guiconstants.h"
 #include "optionsmodel.h"
 #include "peertablemodel.h"
+#include "bantablemodel.h"
 #include "addresstablemodel.h"
 #include "transactiontablemodel.h"
 
@@ -12,6 +13,14 @@
 #include <QDateTime>
 #include <QTimer>
 
+#if BOOST_VERSION >= 107300
+#include <boost/bind/bind.hpp>
+using boost::placeholders::_1;
+using boost::placeholders::_2;
+#else
+#include <boost/bind.hpp>
+#endif
+
 static const int64_t nClientStartupTime = GetTime();
 
 ClientModel::ClientModel(OptionsModel *optionsModel, QObject *parent) :
@@ -19,6 +28,7 @@ ClientModel::ClientModel(OptionsModel *optionsModel, QObject *parent) :
     cachedNumBlocks(0), cachedNumBlocksOfPeers(0), pollTimer(0)
 {
     peerTableModel = new PeerTableModel(this);
+    banTableModel = new BanTableModel(this);
 
     numBlocksAtStartup = -1;
 
@@ -41,6 +51,7 @@ int ClientModel::getNumConnections() const
 
 int ClientModel::getNumBlocks() const
 {
+    LOCK(cs_main);
     return nBestHeight;
 }
 
@@ -64,8 +75,10 @@ QDateTime ClientModel::getLastBlockDate() const
 {
     if (pindexBest)
         return QDateTime::fromTime_t(pindexBest->GetBlockTime());
-    else
-        return QDateTime::fromTime_t(1576002227); // I n n o v a - Genesis block's time
+    else if (!isTestNet())
+        return QDateTime::fromTime_t(1576002227); // I n n o v a - MAINNET Genesis Block Coinbase Time
+    else if (isTestNet())
+        return QDateTime::fromTime_t(1631971785); // I n n o v a TESTNET Genesis Block Coinbase Time
 }
 
 void ClientModel::updateTimer()
@@ -73,16 +86,16 @@ void ClientModel::updateTimer()
     // Get required lock upfront. This avoids the GUI from getting stuck on
     // periodical polls if the core is holding the locks for a longer time -
     // for example, during a wallet rescan.
-  //  TRY_LOCK(cs_main, lockMain);
-  //  if(!lockMain)
-  //      return;
+    TRY_LOCK(cs_main, lockMain);
+    if(!lockMain)
+        return;
 
     // Some quantities (such as number of blocks) change so fast that we don't want to be notified for each change.
     // Periodically check and update with a timer.
     int newNumBlocks = getNumBlocks();
     int newNumBlocksOfPeers = getNumBlocksOfPeers();
 
-    if(cachedNumBlocks != newNumBlocks || cachedNumBlocksOfPeers != newNumBlocksOfPeers)
+    if (cachedNumBlocks != newNumBlocks || cachedNumBlocksOfPeers != newNumBlocksOfPeers)
     {
         cachedNumBlocks = newNumBlocks;
         cachedNumBlocksOfPeers = newNumBlocksOfPeers;
@@ -98,9 +111,9 @@ void ClientModel::updateNumBlocks(int newNumBlocks, int newNumBlocksOfPeers)
     // Get required lock upfront. This avoids the GUI from getting stuck on
     // periodical polls if the core is holding the locks for a longer time -
     // for example, during a wallet rescan.
-  //  TRY_LOCK(cs_main, lockMain);
-  //  if(!lockMain)
-  //      return;
+//    TRY_LOCK(cs_main, lockMain);
+//    if(!lockMain)
+//        return;
 
     emit numBlocksChanged(newNumBlocks, newNumBlocksOfPeers);
     emit bytesChanged(getTotalBytesRecv(), getTotalBytesSent());
@@ -140,9 +153,9 @@ bool ClientModel::isNativeTor() const
     return fNativeTor;
 }
 
-bool ClientModel::isFSLock() const
+bool ClientModel::isCNLock() const
 {
-    return fFSLock;
+    return fCNLock;
 }
 
 bool ClientModel::inInitialBlockDownload() const
@@ -168,6 +181,11 @@ OptionsModel *ClientModel::getOptionsModel()
 PeerTableModel *ClientModel::getPeerTableModel()
 {
     return peerTableModel;
+}
+
+BanTableModel *ClientModel::getBanTableModel()
+{
+    return banTableModel;
 }
 
 QString ClientModel::formatFullVersion() const
@@ -214,12 +232,25 @@ static void NotifyAlertChanged(ClientModel *clientmodel, const uint256 &hash, Ch
                               Q_ARG(int, status));
 }
 
+void ClientModel::updateBanlist()
+{
+    banTableModel->refresh();
+    emit banListChanged();
+}
+
+static void BannedListChanged(ClientModel *clientmodel)
+{
+    // qDebug() << "BannedListChanged";
+    QMetaObject::invokeMethod(clientmodel, "updateBanlist", Qt::QueuedConnection);
+}
+
 void ClientModel::subscribeToCoreSignals()
 {
     // Connect signals to client
     uiInterface.NotifyBlocksChanged.connect(boost::bind(NotifyBlocksChanged, this, _1, _2));
     uiInterface.NotifyNumConnectionsChanged.connect(boost::bind(NotifyNumConnectionsChanged, this, _1));
     uiInterface.NotifyAlertChanged.connect(boost::bind(NotifyAlertChanged, this, _1, _2));
+    uiInterface.BannedListChanged.connect(boost::bind(BannedListChanged, this));
 }
 
 void ClientModel::unsubscribeFromCoreSignals()
@@ -228,4 +259,5 @@ void ClientModel::unsubscribeFromCoreSignals()
     uiInterface.NotifyBlocksChanged.disconnect(boost::bind(NotifyBlocksChanged, this, _1, _2));
     uiInterface.NotifyNumConnectionsChanged.disconnect(boost::bind(NotifyNumConnectionsChanged, this, _1));
     uiInterface.NotifyAlertChanged.disconnect(boost::bind(NotifyAlertChanged, this, _1, _2));
+    uiInterface.BannedListChanged.disconnect(boost::bind(BannedListChanged, this));
 }

@@ -120,6 +120,9 @@ QString formatServicesStr(quint64 mask)
             //case NODE_GETUTXO:
             //    strList.append("GETUTXO");
             //    break;
+            case SMSG_RELAY:
+                strList.append("SMSG_RELAY");
+                break;
             default:
                 strList.append(QString("%1[%2]").arg("UNKNOWN").arg(check));
         };
@@ -256,6 +259,38 @@ void copyEntryData(QAbstractItemView *view, int column, int role)
     }
 }
 
+void copyEntryDataFromList(QAbstractItemView *view, int role)
+{
+    if(!view || !view->selectionModel())
+        return;
+    QModelIndexList selection = view->selectionModel()->selectedIndexes();
+
+    if(!selection.isEmpty())
+    {
+        // Copy first item
+        setClipboard(selection.at(0).data(role).toString());
+    }
+}
+
+void setClipboard(const QString& str)
+{
+    QApplication::clipboard()->setText(str, QClipboard::Clipboard);
+    QApplication::clipboard()->setText(str, QClipboard::Selection);
+}
+
+QString getEntryData(QAbstractItemView *view, int column, int role)
+{
+    if(!view || !view->selectionModel())
+        return QString();
+    QModelIndexList selection = view->selectionModel()->selectedRows(column);
+
+    if(!selection.isEmpty()) {
+        // Return first item
+        return (selection.at(0).data(role).toString());
+    }
+return QString();
+}
+
 QString getSaveFileName(QWidget *parent, const QString &caption,
                                  const QString &dir,
                                  const QString &filter,
@@ -350,9 +385,9 @@ void openConfigfile()
 
 void openMNConfigfile()
 {
-    boost::filesystem::path pathMNConfig = GetFortunastakeConfigFile();
+    boost::filesystem::path pathMNConfig = GetCollateralnodeConfigFile();
 
-    /* Open fortunastake.conf with the associated application */
+    /* Open collateralnode.conf with the associated application */
     if (boost::filesystem::exists(pathMNConfig))
         QDesktopServices::openUrl(QUrl::fromLocalFile(boostPathToQString(pathMNConfig)));
 }

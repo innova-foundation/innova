@@ -65,7 +65,7 @@ std::vector<char> imageContents((std::istreambuf_iterator<char>(imageFile)),
 
     ui->lineEdit->setText(QString::fromStdString(addr));
 
-    CAmount nAmount = 0.001 * COIN; // 0.001 D Fee
+    CAmount nAmount = 0.001 * COIN; // 0.001 INN Fee
 
     // Wallet comments
     CWalletTx wtx;
@@ -83,9 +83,9 @@ std::vector<char> imageContents((std::istreambuf_iterator<char>(imageFile)),
     else if(pwalletMain->GetBalance() < 0.001)
     {
 	  QMessageBox error2box;
-	  error2box.setText("Error, You need at least 0.001 D to send proof of data!");
+	  error2box.setText("Error, You need at least 0.001 INN to send proof of data!");
 	  error2box.exec();
-      ui->txLineEdit->setText("ERROR: You need at least a 0.001 D balance to send proof of data.");
+      ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send proof of data.");
     }
     else
     {
@@ -127,7 +127,7 @@ std::vector<char> imageContents((std::istreambuf_iterator<char>(imageFile)),
     std::string addr = CBitcoinAddress(keyid).ToString();
 
     //go to block explorer
-    std::string bexp = "https://explorer.innovacoin.io/address/";
+    std::string bexp = "https://explorer.innova-foundation.com/address/";
     //open url
     QString link = QString::fromStdString(bexp + addr);
     QDesktopServices::openUrl(QUrl(link));
@@ -136,7 +136,7 @@ std::vector<char> imageContents((std::istreambuf_iterator<char>(imageFile)),
 void ProofOfImage::on_checkTxButton_clicked()
 {
   //go to block explorer
-    std::string bexp = "https://explorer.innovacoin.io/tx/";
+    std::string bexp = "https://explorer.innova-foundation.com/tx/";
     //open url
     QString link = QString::fromStdString(bexp + ui->txLineEdit->text().toStdString());
     QDesktopServices::openUrl(QUrl(link));

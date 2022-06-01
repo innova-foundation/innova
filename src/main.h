@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
-// Copyright (c) 2017-2018 The Denarius developers
-// Copyright (c) 2019 The Innova developers
+// Copyright (c) 2017-2021 The Denarius developers
+// Copyright (c) 2019-2022 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #ifndef BITCOIN_MAIN_H
@@ -19,30 +19,30 @@
 
 class CValidationState;
 
-#define BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET 550 // Testnet Fortunastake payments enabled block 800
-#define BLOCK_START_FORTUNASTAKE_PAYMENTS 800 //Mainnet Fortunastake payments not enabled until block 800
-#define BLOCK_START_FORTUNASTAKE_DELAYPAY 2500 //Activates a delay in payment for MNs - I n n o v a Block 2500
+#define BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET 550 // Testnet Collateralnode payments enabled block 800
+#define BLOCK_START_COLLATERALNODE_PAYMENTS 800 //Mainnet Collateralnode payments not enabled until block 800
+#define BLOCK_START_COLLATERALNODE_DELAYPAY 2500 // Unused
 
-//#define START_FORTUNASTAKE_PAYMENTS_TESTNET 1519430400  //Sat, 24 Feb 2018 00:00:00 GMT
-//#define START_FORTUNASTAKE_PAYMENTS 1520985600  //Wed, 14 Mar 2018 00:00:00 GMT
+//#define START_COLLATERALNODE_PAYMENTS_TESTNET 1519430400  //Sat, 24 Feb 2018 00:00:00 GMT
+//#define START_COLLATERALNODE_PAYMENTS 1520985600  //Wed, 14 Mar 2018 00:00:00 GMT
 
-static const int64_t FORTUNA_COLLATERAL = (25000*COIN); // 25,000 INN
-static const int64_t FORTUNA_FEE = (0.010000*COIN); //0.01 INN
+static const int64_t COLLATERALN_COLLATERAL = (25000*COIN); // 25,000 INN
+static const int64_t COLLATERALN_FEE = (0.010000*COIN); //0.01 INN
 static const int64_t POOL_FEE_AMOUNT = (0.1*COIN); //0.1 INN
-static const int64_t FORTUNA_POOL_MAX = (51000*COIN); //51,000 INN
+static const int64_t COLLATERALN_POOL_MAX = (51000*COIN); //51,000 INN
 
 #define MESSAGE_START_SIZE 4
 typedef unsigned char MessageStartChars[MESSAGE_START_SIZE];
 
-#define FORTUNASTAKE_NOT_PROCESSED               0 // initial state
-#define FORTUNASTAKE_IS_CAPABLE                  1
-#define FORTUNASTAKE_NOT_CAPABLE                 2
-#define FORTUNASTAKE_STOPPED                     3
-#define FORTUNASTAKE_INPUT_TOO_NEW               4
-#define FORTUNASTAKE_PORT_NOT_OPEN               6
-#define FORTUNASTAKE_PORT_OPEN                   7
-#define FORTUNASTAKE_SYNC_IN_PROCESS             8
-#define FORTUNASTAKE_REMOTELY_ENABLED            9
+#define COLLATERALNODE_NOT_PROCESSED               0 // initial state
+#define COLLATERALNODE_IS_CAPABLE                  1
+#define COLLATERALNODE_NOT_CAPABLE                 2
+#define COLLATERALNODE_STOPPED                     3
+#define COLLATERALNODE_INPUT_TOO_NEW               4
+#define COLLATERALNODE_PORT_NOT_OPEN               6
+#define COLLATERALNODE_PORT_OPEN                   7
+#define COLLATERALNODE_SYNC_IN_PROCESS             8
+#define COLLATERALNODE_REMOTELY_ENABLED            9
 
 class CWallet;
 class CWalletTx;
@@ -59,7 +59,8 @@ class CNode;
 
 // General Innova Block Values
 
-static const int LAST_POW_BLOCK = 50000; // 50k blocks before Proof of Stake consensus kicks in
+// extern CFeeRate minRelayTxFee;
+//static const int ZERO_POW_BLOCK = 50000; // 50k blocks before Proof of Stake consensus, now 0.0001 INN reward per block
 static const int FAIR_LAUNCH_BLOCK = 490; // Last Block until full block reward starts
 static const unsigned int MAX_BLOCK_SIZE = 1000000; // 1MB block hard limit, double the size of Bitcoin
 static const unsigned int MAX_BLOCK_SIZE_GEN = MAX_BLOCK_SIZE/2; // 512kb block soft limit, ditto
@@ -70,18 +71,22 @@ static const unsigned int MAX_BLOCK_SIGOPS = MAX_BLOCK_SIZE/50;
 static const unsigned int MAX_TX_SIGOPS = MAX_BLOCK_SIGOPS/5;
 //static const unsigned int MAX_ORPHAN_TRANSACTIONS = MAX_BLOCK_SIZE/100; deprecated
 /** Default for -maxorphantx, maximum number of orphan transactions kept in memory */
-static const unsigned int DEFAULT_MAX_ORPHAN_TRANSACTIONS = 10000;
+static const unsigned int DEFAULT_MAX_ORPHAN_TRANSACTIONS = 100; // Was 10k
 /** Default for -maxorphanblocks, maximum number of orphan blocks kept in memory */
-static const unsigned int DEFAULT_MAX_ORPHAN_BLOCKS = 1000;
+static const unsigned int DEFAULT_MAX_ORPHAN_BLOCKS = 750; //Default 750, try testing with 1000
 static const unsigned int MAX_INV_SZ = 50000;
 static const int64_t MIN_TX_FEE = 1000;
+static const int64_t MIN_NAME_FEE = 90000000; // 0.9 INN Name OP Miner Fee
+static const int64_t NAME_FEE = 10000000; // 0.1 INN Name
+static const CAmount MIN_TXOUT_AMOUNT = NAME_FEE;
 static const int64_t MIN_TX_FEE_ANON = 10000;
 static const int64_t MIN_RELAY_TX_FEE = MIN_TX_FEE;
-static const int64_t MAX_MONEY = 25000000 * COIN; // 25,000,000 INN Innova Max
+static const int64_t MAX_MONEY = 18000000 * COIN; // 18,000,000 INN Innova Max
 static const int64_t COIN_YEAR_REWARD = 0.06 * COIN; // 6% per year
 
 static const int64_t MAINNET_POSFIX = 500; //Mainnet Proof of Stake update not enabled until block 500
-static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 4500; // Enforce fortunastake payments after this height - BLOCK 4500
+static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 4500; // Enforce collateralnode payments after this height - BLOCK 4500
+static const int MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET = 551; //Enforce CN payments after this height for Innova Testnet!
 
 inline bool MoneyRange(int64_t nValue) { return (nValue >= 0 && nValue <= MAX_MONEY); }
 
@@ -92,7 +97,7 @@ static const unsigned int LOCKTIME_THRESHOLD = 500000000; // Tue Nov  5 00:53:20
 static const unsigned int MAX_P2SH_SIGOPS = 15;
 
 static const uint256 hashGenesisBlock("0x000009bd42d259eb7031ae4f634aede1a690da795e5529786a72c3cd6d989995");
-static const uint256 hashGenesisBlockTestNet("0x00006d9ebd08daaba835059276f29656a9e018cbd69f79688777c42766ceec6a");
+static const uint256 hashGenesisBlockTestNet("0x0000abd414802bce2f1ad3f056dcc42081bb423485098b84bf8f608217aef596");
 
 //inline bool IsProtocolV1RetargetingFixed(int nHeight) { return fTestNet || nHeight > 0; }
 //inline bool IsProtocolV2(int nHeight) { return fTestNet || nHeight > 0; }
@@ -115,7 +120,7 @@ extern unsigned int nStakeMinAge;
 extern unsigned int nStakeMaxAge;
 extern int64_t nLastCoinStakeSearchTime;
 extern unsigned int nNodeLifespan;
-extern bool FortunaReorgBlock;
+extern bool CollateralNReorgBlock;
 extern int nCoinbaseMaturity;
 extern int nBestHeight;
 extern uint256 nBestChainTrust;
@@ -185,6 +190,7 @@ int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees);
 unsigned int ComputeMinWork(unsigned int nBase, int64_t nTime);
 unsigned int ComputeMinStake(unsigned int nBase, int64_t nTime, unsigned int nBlockTime);
 int GetNumBlocksOfPeers();
+bool IsSynchronized();
 bool IsInitialBlockDownload();
 std::string GetWarnings(std::string strFor);
 bool GetTransaction(const uint256 &hash, CTransaction &tx, uint256 &hashBlock, bool s=false);
@@ -207,7 +213,7 @@ int GetIXConfirmations(uint256 nTXHash);
 bool AbortNode(const std::string &msg, const std::string &userMessage="");
 /** Increase a node's misbehavior score. */
 void Misbehaving(NodeId nodeid, int howmuch);
-int64_t GetFortunastakePayment(int nHeight, int64_t blockValue);
+int64_t GetCollateralnodePayment(int nHeight, int64_t blockValue);
 
 
 bool IsStandardTx(const CTransaction& tx, std::string& reason);
@@ -271,6 +277,7 @@ public:
 
 typedef std::map<uint256, std::pair<CTxIndex, CTransaction> > MapPrevTx;
 
+//struct CMutableTransaction;
 /** The basic transaction that is broadcasted on the network and contained in
  * blocks.  A transaction can contain multiple inputs and outputs.
  */
@@ -279,7 +286,7 @@ class CTransaction
 public:
     static const int CURRENT_VERSION=1;
     int nVersion;
-    unsigned int nTime;
+    unsigned int nTime; // Innova TXs require nTime
     std::vector<CTxIn> vin;
     std::vector<CTxOut> vout;
     unsigned int nLockTime;
@@ -292,6 +299,9 @@ public:
     {
         SetNull();
     }
+
+    /** Convert a CMutableTransaction into a CTransaction. */
+    //CTransaction(const CMutableTransaction &tx);
 
     IMPLEMENT_SERIALIZE
     (
@@ -335,7 +345,7 @@ public:
             nBlockTime = GetAdjustedTime();
         if ((int64_t)nLockTime < ((int64_t)nLockTime < LOCKTIME_THRESHOLD ? (int64_t)nBlockHeight : nBlockTime))
             return true;
-        BOOST_FOREACH(const CTxIn& txin, vin)
+        for (const CTxIn& txin : vin)
             if (!txin.IsFinal())
                 return false;
         return true;
@@ -410,7 +420,7 @@ public:
     int64_t GetValueOut() const
     {
         int64_t nValueOut = 0;
-        BOOST_FOREACH(const CTxOut& txout, vout)
+        for (const CTxOut& txout : vout)
         {
             nValueOut += txout.nValue;
             if (!MoneyRange(txout.nValue) || !MoneyRange(nValueOut))
@@ -430,6 +440,8 @@ public:
     int64_t GetValueIn(const MapPrevTx& mapInputs) const;
 
     int64_t GetMinFee(unsigned int nBlockSize=1, enum GetMinFee_mode mode=GMF_BLOCK, unsigned int nBytes = 0) const;
+
+    bool ReadFromTDisk(const CDiskTxPos& postx);
 
     bool ReadFromDisk(CDiskTxPos pos, FILE** pfileRet=NULL)
     {
@@ -506,6 +518,7 @@ public:
     bool ReadFromDisk(CTxDB& txdb, COutPoint prevout, CTxIndex& txindexRet);
     bool ReadFromDisk(CTxDB& txdb, COutPoint prevout);
     bool ReadFromDisk(COutPoint prevout);
+
     bool DisconnectInputs(CTxDB& txdb);
 
     /** Fetch from memory and/or disk. inputsRet keys are transaction hashes.
@@ -538,14 +551,52 @@ public:
                        std::map<uint256, CTxIndex>& mapTestPool, const CDiskTxPos& posThisTx,
                        const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, unsigned int flags = STANDARD_SCRIPT_VERIFY_FLAGS, bool fValidateSig = true);
     bool CheckTransaction() const;
-    bool AcceptToMemoryPool(CTxDB& txdb, bool* pfMissingInputs=NULL);
+    bool AcceptToMemoryPool(CTxDB& txdb, bool fCheckInputs=true, bool* pfMissingInputs=NULL, bool fOnlyCheckWithoutAdding=false);
     bool GetCoinAge(CTxDB& txdb, uint64_t& nCoinAge) const;  // ppcoin: get transaction coin age
 
     const CTxOut& GetOutputFor(const CTxIn& input, const MapPrevTx& inputs) const;
 };
 
 
+/** A mutable version of CTransaction. */
+// struct CMutableTransaction
+// {
+//     int32_t nVersion;
+//     uint32_t nTime;                    // Innova: transaction timestamp
+//     std::vector<CTxIn> vin;
+//     std::vector<CTxOut> vout;
+//     uint32_t nLockTime;
 
+//     IMPLEMENT_SERIALIZE
+//     (
+//         //nSerSize += SerReadWrite(s, *(CTransaction*)this, nType, nVersion, ser_action); maybe?
+//         READWRITE(this->nVersion);
+//         nVersion = this->nVersion;
+//         READWRITE(nTime);
+//         READWRITE(vin);
+//         READWRITE(vout);
+//         READWRITE(nLockTime);
+//     )
+
+//     CMutableTransaction();
+//     CMutableTransaction(const CTransaction& tx);
+//     CMutableTransaction(int nVersion, unsigned int nTime, const std::vector<CTxIn> vin, const std::vector<CTxOut> vout, unsigned int nLockTime)
+//              : nVersion(nVersion), nTime(nTime), vin(vin), vout(vout), nLockTime(nLockTime)
+//     {
+//     }
+
+//     /** Compute the hash of this CMutableTransaction. This is computed on the
+//      * fly, as opposed to GetHash() in CTransaction, which uses a cached result.
+//      */
+//     uint256 GetHash() const;
+
+//     CAmount GetMinFee(size_t nBlockSize=1) const
+//     {
+//         CTransaction tmp(*this);
+//         size_t nBytes = ::GetSerializeSize(tmp, SER_NETWORK, PROTOCOL_VERSION);
+//         return ::GetMinFee(nBytes, nBlockSize);
+//     }
+// };
 
 
 /** A transaction with a merkle branch linking it to the block chain. */
@@ -801,7 +852,7 @@ public:
     int64_t GetMaxTransactionTime() const
     {
         int64_t maxTransactionTime = 0;
-        BOOST_FOREACH(const CTransaction& tx, vtx)
+        for (const CTransaction& tx : vtx)
             maxTransactionTime = std::max(maxTransactionTime, (int64_t)tx.nTime);
         return maxTransactionTime;
     }
@@ -809,7 +860,7 @@ public:
     uint256 BuildMerkleTree() const
     {
         vMerkleTree.clear();
-        BOOST_FOREACH(const CTransaction& tx, vtx)
+        for (const CTransaction& tx : vtx)
             vMerkleTree.push_back(tx.GetHash());
         int j = 0;
         for (int nSize = vtx.size(); nSize > 1; nSize = (nSize + 1) / 2)
@@ -845,7 +896,7 @@ public:
     {
         if (nIndex == -1)
             return 0;
-        BOOST_FOREACH(const uint256& otherside, vMerkleBranch)
+        for (const uint256& otherside : vMerkleBranch)
         {
             if (nIndex & 1)
                 hash = Hash(BEGIN(otherside), END(otherside), BEGIN(hash), END(hash));
@@ -933,8 +984,8 @@ public:
     }
 
 
-    bool DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex);
-    bool ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck=false);
+    bool DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames = true);
+    bool ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck=false, bool fWriteNames = true);
     bool ReadFromDisk(const CBlockIndex* pindex, bool fReadTransactions=true);
     bool SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew);
     bool AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const uint256& hashProof);
@@ -950,7 +1001,8 @@ private:
 };
 
 
-
+// bool ReadBlockFromDisk(CBlock& block, const CDiskBlockPos& pos);
+// bool ReadBlockFromDisk(CBlock& block, const CBlockIndex* pindex);
 
 
 
@@ -975,16 +1027,12 @@ public:
     int64_t nMint;
     int64_t nMoneySupply;
 
-    // (memory only) Total amount of work (expected number of hashes) in the chain up to and including this block
-    uint256 nChainWork;
-
     // Number of transactions in this block.
     // Note: in a potential headers-first mode, this number cannot be relied upon
     unsigned int nTx;
 
     // (memory only) Number of transactions in the chain up to and including this block
     unsigned int nChainTx; // change to 64-bit type when necessary; won't happen before 2030
-
 
     unsigned int nFlags;  // ppcoin: block index flags
     enum
@@ -1019,9 +1067,6 @@ public:
         nBlockPos = 0;
         nHeight = 0;
         nChainTrust = 0;
-        nChainWork = 0;
-        nTx = 0;
-        nChainTx = 0;
         nMint = 0;
         nMoneySupply = 0;
         nFlags = 0;
@@ -1047,9 +1092,6 @@ public:
         nBlockPos = nBlockPosIn;
         nHeight = 0;
         nChainTrust = 0;
-        nChainWork = 0;
-        nTx = 0;
-        nChainTx = 0;
         nMint = 0;
         nMoneySupply = 0;
         nFlags = 0;
@@ -1370,6 +1412,7 @@ public:
                 pindex = pindex->pprev;
             if (vHave.size() > 10)
                 nStep *= 2;
+            // build a shorter locator to save cpu time on large chains: LNK CR B82REZ 2G4
             if (nStep > 1024) break;
         }
         vHave.push_back((!fTestNet ? hashGenesisBlock : hashGenesisBlockTestNet));
@@ -1380,7 +1423,7 @@ public:
         // Retrace how far back it was in the sender's branch
         int nDistance = 0;
         int nStep = 1;
-        BOOST_FOREACH(const uint256& hash, vHave)
+        for (const uint256& hash : vHave)
         {
             std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hash);
             if (mi != mapBlockIndex.end())
@@ -1399,7 +1442,7 @@ public:
     CBlockIndex* GetBlockIndex()
     {
         // Find the first block the caller has in the main chain
-        BOOST_FOREACH(const uint256& hash, vHave)
+        for (const uint256& hash : vHave)
         {
             std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hash);
             if (mi != mapBlockIndex.end())
@@ -1415,7 +1458,7 @@ public:
     uint256 GetBlockHash()
     {
         // Find the first block the caller has in the main chain
-        BOOST_FOREACH(const uint256& hash, vHave)
+        for (const uint256& hash : vHave)
         {
             std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hash);
             if (mi != mapBlockIndex.end())
@@ -1504,6 +1547,7 @@ public:
 class CTxMemPool
 {
 private:
+    // CTransaction tx;
     unsigned int nTransactionsUpdated;
 public:
     mutable CCriticalSection cs;
@@ -1513,7 +1557,7 @@ public:
     std::map<std::vector<uint8_t>, CKeyImageSpent> mapKeyImage;
 
     bool accept(CTxDB& txdb, CTransaction &tx,
-                bool* pfMissingInputs);
+                bool fCheckInputs, bool* pfMissingInputs, bool fOnlyCheckWithoutAdding=false);
     bool addUnchecked(const uint256& hash, CTransaction &tx);
     bool remove(const CTransaction &tx, bool fRecursive = false);
     bool removeConflicts(const CTransaction &tx);

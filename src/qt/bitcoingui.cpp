@@ -24,8 +24,8 @@
 #include "statisticspage.h"
 #include "blockbrowser.h"
 #include "marketbrowser.h"
-#include "fortunastakemanager.h"
-#include "fortuna.h"
+#include "collateralnodemanager.h"
+#include "collateral.h"
 #include "mintingview.h"
 #include "multisigdialog.h"
 #include "bitcoinunits.h"
@@ -37,6 +37,8 @@
 #include "wallet.h"
 #include "termsofuse.h"
 #include "proofofimage.h"
+#include "hyperfile.h"
+#include "managenamespage.h"
 
 #ifdef Q_OS_MAC
 #include "macdockiconhandler.h"
@@ -106,7 +108,7 @@ border: 1px solid #01619b;\
 }\
 QToolButton:hover {\
 background-color: #01619b;\
-border: 1px solid #707070;\
+border: 1px solid #1c1c28;\
 }"
 #define HORIZONTAL_TOOLBAR_STYLESHEET "QToolBar {\
     border: 1px solid #1c1c28;\
@@ -143,6 +145,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
 {
     resize(600, 400);
     setWindowTitle(tr("Innova") + " - " + tr("Wallet"));
+
 #ifndef Q_OS_MAC
     qApp->setWindowIcon(QIcon(":icons/innova"));
     setWindowIcon(QIcon(":icons/innova"));
@@ -177,17 +180,20 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     // Create the tray icon (or setup the dock icon)
     createTrayIcon();
 
+    fCNLock = GetBoolArg("-cnconflock");
+    fNativeTor = GetBoolArg("-nativetor");
+    fHyperFileLocal = GetBoolArg("-hyperfilelocal");
+
     // Create tabs
     overviewPage = new OverviewPage();
-	  statisticsPage = new StatisticsPage(this);
-	  blockBrowser = new BlockBrowser(this);
+	statisticsPage = new StatisticsPage(this);
+	blockBrowser = new BlockBrowser(this);
     marketBrowser = new MarketBrowser(this);
-	  multisigPage = new MultisigDialog(this);
+	multisigPage = new MultisigDialog(this);
     proofOfImagePage = new ProofOfImage(this);
+    hyperfilePage = new HyperFile(this);
+    manageNamesPage = new ManageNamesPage(this);
 	//chatWindow = new ChatWindow(this);
-
-    fFSLock = GetBoolArg("-fsconflock");
-    fNativeTor = GetBoolArg("-nativetor");
 
     transactionsPage = new QWidget(this);
     QVBoxLayout *vbox = new QVBoxLayout();
@@ -195,7 +201,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     vbox->addWidget(transactionView);
     transactionsPage->setLayout(vbox);
 
-	  mintingPage = new QWidget(this);
+	mintingPage = new QWidget(this);
     QVBoxLayout *vboxMinting = new QVBoxLayout();
     mintingView = new MintingView(this);
     vboxMinting->addWidget(mintingView);
@@ -208,7 +214,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     sendCoinsPage = new SendCoinsDialog(this);
     messagePage = new MessagePage(this);
 
-    fortunastakeManagerPage = new FortunastakeManager(this);
+    collateralnodeManagerPage = new CollateralnodeManager(this);
 
     signVerifyMessageDialog = new SignVerifyMessageDialog(this);
 
@@ -216,15 +222,17 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     centralWidget->addWidget(overviewPage);
     centralWidget->addWidget(transactionsPage);
 	centralWidget->addWidget(mintingPage);
+    centralWidget->addWidget(manageNamesPage);
     centralWidget->addWidget(addressBookPage);
     centralWidget->addWidget(receiveCoinsPage);
     centralWidget->addWidget(sendCoinsPage);
     centralWidget->addWidget(messagePage);
-	centralWidget->addWidget(statisticsPage);
+    centralWidget->addWidget(statisticsPage);
 	centralWidget->addWidget(blockBrowser);
-    centralWidget->addWidget(fortunastakeManagerPage);
+    centralWidget->addWidget(collateralnodeManagerPage);
 	centralWidget->addWidget(marketBrowser);
     centralWidget->addWidget(proofOfImagePage);
+    centralWidget->addWidget(hyperfilePage);
 	//centralWidget->addWidget(chatWindow);
     setCentralWidget(centralWidget);
 
@@ -244,14 +252,14 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     labelConnectionsIcon = new QLabel();
     labelBlocksIcon = new QLabel();
     labelConnectTypeIcon = new QLabel();
-    labelFSLockIcon = new QLabel();
+    labelCNLockIcon = new QLabel();
     frameBlocksLayout->addStretch();
     frameBlocksLayout->addWidget(labelEncryptionIcon);
     frameBlocksLayout->addStretch();
     frameBlocksLayout->addWidget(labelConnectTypeIcon);
     frameBlocksLayout->addStretch();
-    if (fFSLock)
-        frameBlocksLayout->addWidget(labelFSLockIcon);
+    if (fCNLock)
+        frameBlocksLayout->addWidget(labelCNLockIcon);
         frameBlocksLayout->addStretch();
     frameBlocksLayout->addWidget(labelStakingIcon);
     frameBlocksLayout->addStretch();
@@ -264,7 +272,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     {
         QTimer *timerStakingIcon = new QTimer(labelStakingIcon);
         connect(timerStakingIcon, SIGNAL(timeout()), this, SLOT(updateStakingIcon()));
-        timerStakingIcon->start(1000); // Update once every second
+        timerStakingIcon->start(5 * 1000); // Set to update every 5 * 1000ms (5 seconds) better CPU usage
         updateStakingIcon();
     }
 
@@ -283,7 +291,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     QString curStyle = qApp->style()->metaObject()->className();
     if(curStyle == "QWindowsStyle" || curStyle == "QWindowsXPStyle")
     {
-        progressBar->setStyleSheet("QProgressBar { background-color: #e8e8e8; border: 1px solid grey; border-radius: 7px; padding: 1px; text-align: center; } QProgressBar::chunk { background: QLinearGradient(x1: 0, y1: 0, x2: 1, y2: 0, stop: 0 #FF8000, stop: 1 orange); border-radius: 7px; margin: 0px; }");
+        progressBar->setStyleSheet("QProgressBar { background-color: #66a0c3; border: 1px solid light-blue; border-radius: 7px; padding: 1px; text-align: center; } QProgressBar::chunk { background: QLinearGradient(x1: 0, y1: 0, x2: 1, y2: 0, stop: 0 #FF8000, stop: 1 orange); border-radius: 7px; margin: 0px; }");
     }
 
     statusBar()->addWidget(progressBarLabel);
@@ -348,6 +356,12 @@ void BitcoinGUI::createActions()
     marketAction->setCheckable(true);
     tabGroup->addAction(marketAction);
 
+    manageNamesAction = new QAction(QIcon(":/icons/names"), tr("&NVS"), this);
+    manageNamesAction->setToolTip(tr("Manage Innova NVS"));
+    manageNamesAction->setCheckable(true);
+    manageNamesAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_0));
+    tabGroup->addAction(manageNamesAction);
+
 	//chatAction = new QAction(QIcon(":/icons/msg"), tr("&Social"), this);
     //chatAction->setToolTip(tr("View chat"));
     //chatAction->setCheckable(true);
@@ -395,17 +409,23 @@ void BitcoinGUI::createActions()
     mintingAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_9));
     tabGroup->addAction(mintingAction);
 
-    fortunastakeManagerAction = new QAction(QIcon(":/icons/mn"), tr("&Fortuna Stakes"), this);
-    fortunastakeManagerAction->setToolTip(tr("Show Innova Fortuna Stakes status and configure your nodes."));
-    fortunastakeManagerAction->setCheckable(true);
-	fortunastakeManagerAction->setStatusTip(tr("Fortuna Stakes"));
-    tabGroup->addAction(fortunastakeManagerAction);
+    collateralnodeManagerAction = new QAction(QIcon(":/icons/mn"), tr("&Collateral Nodes"), this);
+    collateralnodeManagerAction->setToolTip(tr("Show Innova Collateral Nodes status and configure your nodes."));
+    collateralnodeManagerAction->setCheckable(true);
+	collateralnodeManagerAction->setStatusTip(tr("Collateral Nodes"));
+    tabGroup->addAction(collateralnodeManagerAction);
 
     proofOfImageAction = new QAction(QIcon(":/icons/data"), tr("&Proof of Data"), this);
     proofOfImageAction ->setToolTip(tr("Timestamp Files on the Innova blockchain."));
     proofOfImageAction ->setCheckable(true);
 	proofOfImageAction->setStatusTip(tr("PoD: Timestamp files"));
     tabGroup->addAction(proofOfImageAction);
+
+    hyperfileAction = new QAction(QIcon(":/icons/hyperfile"), tr("&HyperFile"), this);
+    hyperfileAction ->setToolTip(tr("Decentralized your files, upload to IPFS!"));
+    hyperfileAction ->setCheckable(true);
+	hyperfileAction->setStatusTip(tr("Decentralized File Uploads"));
+    tabGroup->addAction(hyperfileAction);
 
 	multisigAction = new QAction(QIcon(":/icons/multi"), tr("Multisig"), this);
     tabGroup->addAction(multisigAction);
@@ -421,10 +441,12 @@ void BitcoinGUI::createActions()
     connect(sendCoinsAction, SIGNAL(triggered()), this, SLOT(gotoSendCoinsPage()));
     connect(receiveCoinsAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(receiveCoinsAction, SIGNAL(triggered()), this, SLOT(gotoReceiveCoinsPage()));
+    connect(manageNamesAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
+    connect(manageNamesAction, SIGNAL(triggered()), this, SLOT(gotoManageNamesPage()));
 	connect(mintingAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(mintingAction, SIGNAL(triggered()), this, SLOT(gotoMintingPage()));
-    connect(fortunastakeManagerAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
-    connect(fortunastakeManagerAction, SIGNAL(triggered()), this, SLOT(gotoFortunastakeManagerPage()));
+    connect(collateralnodeManagerAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
+    connect(collateralnodeManagerAction, SIGNAL(triggered()), this, SLOT(gotoCollateralnodeManagerPage()));
     connect(historyAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(historyAction, SIGNAL(triggered()), this, SLOT(gotoHistoryPage()));
     connect(addressBookAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
@@ -435,6 +457,8 @@ void BitcoinGUI::createActions()
     connect(multisigAction, SIGNAL(triggered()), this, SLOT(gotoMultisigPage()));
     connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(gotoProofOfImagePage()));
+    connect(hyperfileAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
+    connect(hyperfileAction, SIGNAL(triggered()), this, SLOT(gotoHyperFilePage()));
 
     quitAction = new QAction(QIcon(":/icons/quit"), tr("E&xit"), this);
     quitAction->setToolTip(tr("Quit application"));
@@ -483,8 +507,8 @@ void BitcoinGUI::createActions()
     openPeerAction->setStatusTip(tr("Show Innova network peers"));
     openConfEditorAction = new QAction(QIcon(":/icons/edit"), tr("Open Wallet &Configuration File"), this);
     openConfEditorAction->setStatusTip(tr("Open configuration file"));
-    openMNConfEditorAction = new QAction(QIcon(":/icons/edit"), tr("Open &Fortunastake Configuration File"), this);
-    openMNConfEditorAction->setStatusTip(tr("Open Fortunastake configuration file"));
+    openMNConfEditorAction = new QAction(QIcon(":/icons/edit"), tr("Open &Collateralnode Configuration File"), this);
+    openMNConfEditorAction->setStatusTip(tr("Open Collateralnode configuration file"));
 
     connect(quitAction, SIGNAL(triggered()), qApp, SLOT(quit()));
     connect(aboutAction, SIGNAL(triggered()), this, SLOT(aboutClicked()));
@@ -564,18 +588,21 @@ void BitcoinGUI::createToolBars()
     mainToolbar = addToolBar(tr("Tabs toolbar"));
     mainToolbar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
     mainToolbar->addWidget(mainIcon);
+
     mainToolbar->addAction(overviewAction);
     mainToolbar->addAction(sendCoinsAction);
     mainToolbar->addAction(receiveCoinsAction);
     mainToolbar->addAction(historyAction);
     mainToolbar->addAction(addressBookAction);
     mainToolbar->addAction(statisticsAction);
-	mainToolbar->addAction(fortunastakeManagerAction);
-	mainToolbar->addAction(proofOfImageAction);
-	mainToolbar->addAction(marketAction);
+    mainToolbar->addAction(collateralnodeManagerAction);
+    mainToolbar->addAction(manageNamesAction);
+    mainToolbar->addAction(hyperfileAction);
+    mainToolbar->addAction(proofOfImageAction);
+    mainToolbar->addAction(marketAction);
     mainToolbar->addAction(blockAction);
-	mainToolbar->addAction(messageAction);
-	mainToolbar->addAction(mintingAction);
+    mainToolbar->addAction(messageAction);
+    mainToolbar->addAction(mintingAction);
 
     secondaryToolbar = addToolBar(tr("Actions toolbar"));
     secondaryToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -669,8 +696,7 @@ void BitcoinGUI::setWalletModel(WalletModel *walletModel)
 
         // Put transaction list in tabs
         transactionView->setModel(walletModel);
-
-		mintingView->setModel(walletModel);
+        mintingView->setModel(walletModel);
 
         overviewPage->setModel(walletModel);
         addressBookPage->setModel(walletModel->getAddressTableModel());
@@ -680,8 +706,9 @@ void BitcoinGUI::setWalletModel(WalletModel *walletModel)
 		statisticsPage->setModel(clientModel);
 		blockBrowser->setModel(clientModel);
 		marketBrowser->setModel(clientModel);
-        fortunastakeManagerPage->setWalletModel(walletModel);
+        collateralnodeManagerPage->setWalletModel(walletModel);
 		multisigPage->setModel(walletModel);
+        manageNamesPage->setModel(walletModel);
 		//chatWindow->setModel(clientModel);
 
         setEncryptionStatus(walletModel->getEncryptionStatus());
@@ -813,9 +840,9 @@ void BitcoinGUI::setNumConnections(int count)
         labelConnectTypeIcon->setPixmap(QIcon(":/icons/toroff").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
         labelConnectTypeIcon->setToolTip(tr("Not Connected via the Tor Network, Start Innova with the flag nativetor=1"));
     }
-    if (fFSLock == true) {
-       labelFSLockIcon->setPixmap(QIcon(":/icons/fs").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
-   }
+    if (fCNLock == true) {
+        labelCNLockIcon->setPixmap(QIcon(":/icons/cn").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
+    }
 }
 
 void BitcoinGUI::setNumBlocks(int count, int nTotalBlocks)
@@ -1111,14 +1138,14 @@ void BitcoinGUI::showConfEditor()
 
 void BitcoinGUI::showMNConfEditor()
 {
-    boost::filesystem::path pathMNConfig = GetFortunastakeConfigFile();
+    boost::filesystem::path pathMNConfig = GetCollateralnodeConfigFile();
 
-    /* Open fortunastake.conf with the associated application */
+    /* Open collateralnode.conf with the associated application */
     if (boost::filesystem::exists(pathMNConfig)) {
         QDesktopServices::openUrl(QUrl::fromLocalFile(QString::fromStdString(pathMNConfig.string())));
 	} else {
-		QMessageBox::warning(this, tr("No fortunastake.conf"),
-        tr("Your fortunastake.conf does not exist! Please create one in your Innova data directory."),
+		QMessageBox::warning(this, tr("No collateralnode.conf"),
+        tr("Your collateralnode.conf does not exist! Please create one in your Innova data directory."),
         QMessageBox::Ok, QMessageBox::Ok);
 	}
     //GUIUtil::openMNConfigfile();
@@ -1143,6 +1170,16 @@ void BitcoinGUI::gotoMarketBrowser()
 
 }
 
+void BitcoinGUI::gotoManageNamesPage()
+{
+    manageNamesAction->setChecked(true);
+    centralWidget->setCurrentWidget(manageNamesPage);
+
+    exportAction->setEnabled(true);
+    disconnect(exportAction, SIGNAL(triggered()), 0, 0);
+    connect(exportAction, SIGNAL(triggered()), manageNamesPage, SLOT(exportClicked()));
+}
+
 void BitcoinGUI::gotoProofOfImagePage()
 {
     proofOfImageAction->setChecked(true);
@@ -1152,10 +1189,19 @@ void BitcoinGUI::gotoProofOfImagePage()
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
 }
 
-void BitcoinGUI::gotoFortunastakeManagerPage()
+void BitcoinGUI::gotoHyperFilePage()
 {
-    fortunastakeManagerAction->setChecked(true);
-    centralWidget->setCurrentWidget(fortunastakeManagerPage);
+    hyperfileAction->setChecked(true);
+    centralWidget->setCurrentWidget(hyperfilePage);
+
+    exportAction->setEnabled(false);
+    disconnect(exportAction, SIGNAL(triggered()), 0, 0);
+}
+
+void BitcoinGUI::gotoCollateralnodeManagerPage()
+{
+    collateralnodeManagerAction->setChecked(true);
+    centralWidget->setCurrentWidget(collateralnodeManagerPage);
 
     exportAction->setEnabled(false);
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
@@ -1410,13 +1456,15 @@ void BitcoinGUI::backupWallet()
 {
     QString saveDir = QDesktopServices::storageLocation(QDesktopServices::DocumentsLocation);
     QString filename = QFileDialog::getSaveFileName(this, tr("Backup Wallet"), saveDir, tr("Wallet Data (*.dat)"));
+
     if(!filename.isEmpty()) {
         if(!walletModel->backupWallet(filename)) {
-          QMessageBox::warning(this, tr("Backup Failed"), tr("There was an error trying to save your wallet data to %1.").arg(filename));
-    } else {
-        QMessageBox::warning(this, tr("Backup Successful!"), tr("Successfully saved your wallet data to %1.").arg(filename));
+            QMessageBox::warning(this, tr("Backup Failed"), tr("There was an error trying to save your wallet data to %1.").arg(filename));
+        } else {
+            QMessageBox::warning(this, tr("Backup Successful!"), tr("Successfully saved your wallet data to %1.").arg(filename));
         }
     }
+
 }
 
 void BitcoinGUI::changePassphrase()

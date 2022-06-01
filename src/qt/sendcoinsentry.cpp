@@ -62,8 +62,8 @@ void SendCoinsEntry::on_payTo_textChanged(const QString &address)
 {
     if(!model)
         return;
-    
-    
+
+
     // Fill in label from address book, if address has an associated label
     QString associatedLabel = model->getAddressTableModel()->labelForAddress(address);
     if(!associatedLabel.isEmpty())
@@ -139,15 +139,15 @@ SendCoinsRecipient SendCoinsEntry::getValue()
     rv.address = ui->payTo->text();
     rv.label = ui->addAsLabel->text();
     rv.narration = ui->narration->text();
-    
-    if (rv.address.length() > 75 
+
+    if (rv.address.length() > 75
         && IsStealthAddress(rv.address.toStdString()))
         rv.typeInd = AddressTableModel::AT_Stealth;
     else
         rv.typeInd = AddressTableModel::AT_Normal;
-    
+
     rv.amount = ui->payAmount->value();
-    
+
     return rv;
 }
 

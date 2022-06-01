@@ -2,8 +2,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#ifndef DENARIUS_QT_PEERTABLEMODEL_H
-#define DENARIUS_QT_PEERTABLEMODEL_H
+#ifndef INNOVA_QT_PEERTABLEMODEL_H
+#define INNOVA_QT_PEERTABLEMODEL_H
 
 #include "main.h"
 #include "net.h"
@@ -46,6 +46,8 @@ class PeerTableModel : public QAbstractTableModel
 
 public:
     explicit PeerTableModel(ClientModel *parent = 0);
+    ~PeerTableModel();
+
     const CNodeCombinedStats *getNodeStats(int idx);
     int getRowByNodeId(NodeId nodeid);
     void startAutoRefresh();
@@ -54,7 +56,9 @@ public:
     enum ColumnIndex {
         Address = 0,
         Subversion = 1,
-        Ping = 2
+        BytesSent = 2,
+        BytesRecv = 3,
+        Ping = 4
     };
 
     /** @name Methods overridden from QAbstractTableModel
@@ -74,8 +78,9 @@ public slots:
 private:
     ClientModel *clientModel;
     QStringList columns;
-    PeerTablePriv *priv;
+    std::unique_ptr<PeerTablePriv> priv;
     QTimer *timer;
+    static QString FormatBytes(quint64 bytes);
 };
 
 #endif // BITCOIN_QT_PEERTABLEMODEL_H

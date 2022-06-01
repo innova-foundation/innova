@@ -10,11 +10,12 @@ Tribus Algo PoW/PoS Hybrid Cryptocurrency
 [![Join the chat at https://discord.gg/QeVx8cU](https://img.shields.io/badge/Discord-Chat-blue.svg?logo=discord)](https://discord.gg/QeVx8cU)
 
 [![HitCount](http://hits.dwyl.io/innova-foundation/innova.svg)](http://hits.dwyl.io/innova-foundation/innova)
+
 <a href="https://discord.gg/QeVx8cU"><img src="https://discordapp.com/api/guilds/391676334956347395/embed.png" alt="Discord server" /></a>
 
 ![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/innova-foundation/innova.svg) ![GitHub repo size in bytes](https://img.shields.io/github/repo-size/innova-foundation/innova.svg)
 
-[![Snap Status](https://build.snapcraft.io/badge/innova-foundation/innova.svg)](https://build.snapcraft.io/user/innova-foundation/innova)
+[![Innova Snapcraft](https://snapcraft.io/innova/badge.svg)](https://snapcraft.io/innova)
 
 [![Build Status](https://travis-ci.org/innova-foundation/innova.svg?branch=master)](https://travis-ci.org/innova-foundation/innova)
 
@@ -44,18 +45,18 @@ Install Innova with Snap on any Linux Distro
 
 Specifications
 ==========================
-* Total number of coins: 25,000,000 INN
+* Total number of coins: 18,000,000 INN
 * Ideal block time: ~15 seconds
 * Stake interest: 6% annual static inflation
 * Confirmations: 10 blocks
 * Maturity: 75 blocks
 * Min stake age: 10 hours
 
-* Cost of Hybrid Fortuna Stakes: 25,000 INN
-* Hybrid Fortuna Stake Reward: 65% of the current block reward
+* Cost of Hybrid Collateral Nodes: 25,000 INN
+* Hybrid Collateral Node Reward: 65% of the current block reward
 * P2P Port: 14530, Testnet Port: 15530
 * RPC Port: 14531, Testnet RPC Port: 15531
-* Fortuna Stake Port: 14539, Testnet Port: 15539
+* Collateral Node Port: 14539, Testnet Port: 15539
 
 * INN Magic Number: 0xb73ff4fa
 * BIP44 CoinType: 116
@@ -65,7 +66,7 @@ Specifications
 
 Technology
 ==========================
-* Hybrid PoW/PoS Fortuna Stakes
+* Hybrid PoW/PoS Collateral Nodes
 * Stealth addresses
 * Ring Signatures (16 Recommended)
 * Native Optional Tor Onion Node (-nativetor=1)
@@ -78,10 +79,11 @@ Technology
 * Tribus PoW Algorithm comprising of 3 NIST5 algorithms
 * Tribus PoW/PoS Hybrid
 * Full decentralization
+* Hyperfile - IPFS API Implementation with Anonymous Decentralized File Uploads (UI and RPC)
 
 LINKS
 ==========================
-* Official Website(https://innovacoin.io/)
+* Official Website(https://innova-foundation.com/)
 * Innova Twitter(https://twitter.com/innovacoin)
 * Innova Discord Chat(https://discord.gg/QeVx8cU)
 

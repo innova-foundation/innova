@@ -5,7 +5,12 @@
 
 #include "main.h"
 #include "innovarpc.h"
-#include "spork.h"
+#include "init.h"
+#include "txdb.h"
+#include <errno.h>
+
+#include <boost/filesystem.hpp>
+#include <fstream>
 
 using namespace json_spirit;
 using namespace std;
@@ -14,42 +19,44 @@ extern void TxToJSON(const CTransaction& tx, const uint256 hashBlock, json_spiri
 extern enum Checkpoints::CPMode CheckpointsMode;
 extern void spj(const CScript& scriptPubKey, Object& out, bool fIncludeHex);
 
-double GetDifficulty(const CBlockIndex* blockindex)
+double BitsToDouble(unsigned int nBits)
 {
     // Floating point number that is a multiple of the minimum difficulty,
     // minimum difficulty = 1.0.
+    int nShift = (nBits >> 24) & 0xff;
+
+    double dDiff = (double)0x0000ffff / (double)(nBits & 0x00ffffff);
+
+    while (nShift < 29)
+    {
+        dDiff *= 256.0;
+        nShift++;
+    };
+
+    while (nShift > 29)
+    {
+        dDiff /= 256.0;
+        nShift--;
+    };
+
+    return dDiff;
+};
+
+double GetDifficulty(const CBlockIndex* blockindex)
+{
     if (blockindex == NULL)
     {
         if (pindexBest == NULL)
             return 1.0;
         else
             blockindex = GetLastBlockIndex(pindexBest, false);
-    }
+    };
 
-    int nShift = (blockindex->nBits >> 24) & 0xff;
-
-    double dDiff =
-        (double)0x0000ffff / (double)(blockindex->nBits & 0x00ffffff);
-
-    while (nShift < 29)
-    {
-        dDiff *= 256.0;
-        nShift++;
-    }
-    while (nShift > 29)
-    {
-        dDiff /= 256.0;
-        nShift--;
-    }
-
-    return dDiff;
+    return BitsToDouble(blockindex->nBits);
 }
 
 double GetPoWMHashPS()
 {
-    if (pindexBest->nHeight >= LAST_POW_BLOCK)
-        return 0;
-
     int nPoWInterval = 72;
     int64_t nTargetSpacingWorkMin = 30, nTargetSpacingWork = 30;
 
@@ -89,31 +96,13 @@ double GetPoSKernelPS()
             nStakesTime += pindexPrevStake ? (pindexPrevStake->nTime - pindex->nTime) : 0;
             pindexPrevStake = pindex;
             nStakesHandled++;
-        }
+        };
 
         pindex = pindex->pprev;
-    }
+    };
 
     return nStakesTime ? dStakeKernelsTriedAvg / nStakesTime : 0;
 }
-/*
-Object blockheaderToJSON(const CBlockIndex* blockindex)
-{
-    Object result;
-    result.push_back(Pair("hash", blockindex->GetBlockHash().GetHex()));
-	//CMerkleTx txGen(blockindex->vtx[0]);
-    //txGen.SetMerkleBranch(&blockindex);
-    //result.push_back(Pair("confirmations", (int)txGen.GetDepthInMainChain()));
-    result.push_back(Pair("height", blockindex->nHeight));
-    result.push_back(Pair("version", blockindex->nVersion));
-    result.push_back(Pair("merkleroot", blockindex->hashMerkleRoot.GetHex()));
-    result.push_back(Pair("time", (int64_t)blockindex->nTime));
-    result.push_back(Pair("mediantime", (int64_t)blockindex->GetMedianTimePast()));
-    result.push_back(Pair("nonce", (uint64_t)blockindex->nNonce));
-    result.push_back(Pair("bits", strprintf("%08x", blockindex->nBits)));
-    result.push_back(Pair("difficulty", GetDifficulty(blockindex)));
-	result.push_back(Pair("blocktrust", leftTrim(blockindex->GetBlockTrust().GetHex(), '0')));
-	result.push_back(Pair("chaintrust", leftTrim(blockindex->nChainTrust.GetHex(), '0')));
 
     if (blockindex->pprev)
         result.push_back(Pair("previousblockhash", blockindex->pprev->GetBlockHash().GetHex()));
@@ -159,7 +148,6 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
     result.push_back(Pair("difficulty", GetDifficulty(blockindex)));
     result.push_back(Pair("blocktrust", leftTrim(blockindex->GetBlockTrust().GetHex(), '0')));
     result.push_back(Pair("chaintrust", leftTrim(blockindex->nChainTrust.GetHex(), '0')));
-    result.push_back(Pair("chainwork", leftTrim(blockindex->nChainWork.GetHex(), '0')));
     if (blockindex->pprev)
         result.push_back(Pair("previousblockhash", blockindex->pprev->GetBlockHash().GetHex()));
     if (blockindex->pnext)
@@ -171,7 +159,7 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
     result.push_back(Pair("modifier", strprintf("%016" PRIx64, blockindex->nStakeModifier)));
     result.push_back(Pair("modifierchecksum", strprintf("%08x", blockindex->nStakeModifierChecksum)));
     Array txinfo;
-    BOOST_FOREACH (const CTransaction& tx, block.vtx)
+    for (const CTransaction& tx : block.vtx)
     {
         if (fPrintTransactionDetail)
         {
@@ -231,6 +219,83 @@ Value dumpbootstrap(const Array& params, bool fHelp)
     }
 
     return Value::null;
+}
+
+Value proofofdata(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 1)
+    throw runtime_error(
+        "proofofdata\n"
+        "\nArguments:\n"
+        "1. \"filelocation\"          (string, required) The file location of the file to upload (e.g. /home/name/file.jpg)\n"
+        "Returns the Innova address and transaction ID of the proof of data submission of the file hashed into an INN address");
+
+    Object obj;
+    std::string userFile = params[0].get_str();
+    std::ifstream dataFile;
+
+    if(userFile == "")
+    {
+        return 0; //return with no value prev
+    }
+
+    std::string filename = userFile.c_str();
+
+    boost::filesystem::path p(filename);
+    std::string basename = p.filename().string();
+
+    dataFile.open(userFile.c_str(), std::ios::binary);
+    std::vector<char> dataContents((std::istreambuf_iterator<char>(dataFile)), std::istreambuf_iterator<char>());
+
+    printf("POD Upload File Start: %s\n", basename.c_str());
+
+    //Hash the file for Innova POD
+    uint256 datahash = SerializeHash(dataContents);
+    CKeyID keyid(Hash160(datahash.begin(), datahash.end()));
+    CBitcoinAddress baddr = CBitcoinAddress(keyid);
+    std::string addr = baddr.ToString();
+
+    CAmount nAmount = 0.001 * COIN; // 0.001 INN Fee
+
+    // Wallet comments
+    CWalletTx wtx;
+    wtx.mapValue["comment"] = basename.c_str();
+    std::string sNarr = "POD";
+    wtx.mapValue["to"]      = "Proof of Data";
+
+    // Comment
+    // CWalletTx wtx;
+    // CScript podScript = CScript() << OP_RETURN; //CScript()
+    // if (!basename.c_str().empty()) {
+    //     if (basename.c_str().length() > MAX_OP_RETURN_RELAY - 3) //Max 45 Bytes
+    //         throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Comment cannot be longer than %u characters", MAX_OP_RETURN_RELAY - 3));
+    //     podScript << ToByteVector("POD: " + basename.c_str());
+    // }
+
+    if (pwalletMain->IsLocked())
+    {
+        obj.push_back(Pair("error",  "Error, Your wallet is locked! Please unlock your wallet!"));
+        //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send POD. Unlock your wallet!");
+    } else if (pwalletMain->GetBalance() < 0.001) {
+        obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send POD!"));
+        //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send POD.");
+    } else {
+        //std::string sNarr;
+        std::string strError = pwalletMain->SendMoneyToDestination(baddr.Get(), nAmount, sNarr, wtx);
+
+        if(strError != "")
+        {
+            obj.push_back(Pair("error",  strError.c_str()));
+        }
+
+        obj.push_back(Pair("filename",           basename.c_str()));
+        //obj.push_back(Pair("sizebytes",        size));
+        obj.push_back(Pair("podaddress",         addr.c_str()));
+        obj.push_back(Pair("podtxid",            wtx.GetHash().GetHex()));
+    }
+
+    return obj;
+
 }
 
 Value getbestblockhash(const Array& params, bool fHelp)
@@ -293,7 +358,7 @@ Value getrawmempool(const Array& params, bool fHelp)
     mempool.queryHashes(vtxid);
 
     Array a;
-    BOOST_FOREACH(const uint256& hash, vtxid)
+    for (const uint256& hash : vtxid)
         a.push_back(hash.ToString());
 
     return a;
@@ -348,7 +413,6 @@ Value getblock(const Array& params, bool fHelp)
             "  \"nonce\" : n,           (numeric) The nonce\n"
             "  \"bits\" : \"1d00ffff\", (string) The bits\n"
             "  \"difficulty\" : x.xxx,  (numeric) The difficulty\n"
-            "  \"chainwork\" : \"xxxx\",  (string) Expected number of hashes required to produce the chain up to this block (in hex)\n"
             "  \"previousblockhash\" : \"hash\",  (string) The hash of the previous block\n"
             "  \"nextblockhash\" : \"hash\"       (string) The hash of the next block\n"
             "}\n"
@@ -366,7 +430,7 @@ Value getblock(const Array& params, bool fHelp)
     LOCK(cs_main);
 
     std::string strHash = params[0].get_str();
-    	uint256 hash(strHash);
+    uint256 hash(strHash);
     //std::string strHash = params[0].get_str();
 	//uint256 hash(uint256S(strHash));
 
@@ -460,7 +524,7 @@ Value getblockheader(const Array& params, bool fHelp)
         return strHex;
     }
 
-    return blockHeaderToJSON(block, pblockindex);
+    return blockHeader2ToJSON(block, pblockindex);
 }
 
 //Old getblock RPC Command, Not deprecated
@@ -510,6 +574,44 @@ Value getblockbynumber(const Array& params, bool fHelp)
     return blockToJSON(block, pblockindex, params.size() > 1 ? params[1].get_bool() : false);
 }
 
+Value setbestblockbyheight(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 1 || params.size() > 2)
+        throw runtime_error(
+            "setbestblockbyheight <height>\n"
+            "Sets the tip of the chain with a block at <height>.");
+
+    int nHeight = params[0].get_int();
+    if (nHeight < 0 || nHeight > nBestHeight)
+        throw runtime_error("Block height out of range.");
+
+    CBlock block;
+    CBlockIndex* pblockindex = mapBlockIndex[hashBestChain];
+    while (pblockindex->nHeight > nHeight)
+        pblockindex = pblockindex->pprev;
+
+    uint256 hash = *pblockindex->phashBlock;
+
+    pblockindex = mapBlockIndex[hash];
+    block.ReadFromDisk(pblockindex, true);
+
+
+    Object result;
+
+    CTxDB txdb;
+    {
+        LOCK(cs_main);
+
+        if (!block.SetBestChain(txdb, pblockindex))
+            result.push_back(Pair("result", "failure"));
+        else
+            result.push_back(Pair("result", "success"));
+
+    };
+
+    return result;
+}
+
 // ppcoin: get information of sync-checkpoint
 Value getcheckpoint(const Array& params, bool fHelp)
 {
@@ -541,7 +643,6 @@ Value getcheckpoint(const Array& params, bool fHelp)
 
     return result;
 }
-
 
 Value gettxout(const Array& params, bool fHelp)
 {
@@ -612,9 +713,9 @@ Value gettxout(const Array& params, bool fHelp)
             CBlock block;
             CBlockIndex* pblockindex = mapBlockIndex[p->GetBlockHash()];
             block.ReadFromDisk(pblockindex, true);
-            BOOST_FOREACH(const CTransaction& tx, block.vtx)
+            for (const CTransaction& tx : block.vtx)
             {
-              BOOST_FOREACH(const CTxIn& txin, tx.vin)
+              for (const CTxIn& txin : tx.vin)
               {
                 if( hash == txin.prevout.hash &&
                    (int64_t)txin.prevout.n )
@@ -648,45 +749,42 @@ Value gettxout(const Array& params, bool fHelp)
     ret.push_back(Pair("coinstake", tx.IsCoinStake()));
 
     return ret;
-  }
+}
 
 Value getblockchaininfo(const Array& params, bool fHelp)
 {
-  if (fHelp || params.size() != 0)
-      throw runtime_error(
-              "getblockchaininfo\n"
-              "Returns an object containing various state info regarding block chain processing.\n"
-              "\nResult:\n"
-              "{\n"
-              "  \"chain\": \"xxxx\",        (string) current chain (main, testnet)\n"
-              "  \"blocks\": xxxxxx,         (numeric) the current number of blocks processed in the server\n"
-              "  \"bestblockhash\": \"...\", (string) the hash of the currently best block\n"
-              "  \"difficulty\": xxxxxx,     (numeric) the current difficulty\n"
-              "  \"initialblockdownload\": xxxx, (bool) estimate of whether this INN node is in Initial Block Download mode.\n"
-              "  \"verificationprogress\": xxxx, (numeric) estimate of verification progress [0..1]\n"
-              "  \"chainwork\": \"xxxx\"     (string) total amount of work in active chain, in hexadecimal\n"
-              "  \"moneysupply\": xxxx, (numeric) the current supply of INN in circulation\n"
-              "}\n"
-      );
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+                "getblockchaininfo\n"
+                "Returns an object containing various state info regarding block chain processing.\n"
+                "\nResult:\n"
+                "{\n"
+                "  \"chain\": \"xxxx\",        (string) current chain (main, testnet)\n"
+                "  \"blocks\": xxxxxx,         (numeric) the current number of blocks processed in the server\n"
+                "  \"bestblockhash\": \"...\", (string) the hash of the currently best block\n"
+                "  \"difficulty\": xxxxxx,     (numeric) the current difficulty\n"
+                "  \"initialblockdownload\": xxxx, (bool) estimate of whether this INN node is in Initial Block Download mode.\n"
+                "  \"moneysupply\": xxxx, (numeric) the current supply of INN in circulation\n"
+                "}\n"
+        );
 
-  proxyType proxy;
-  GetProxy(NET_IPV4, proxy);
+    proxyType proxy;
+    GetProxy(NET_IPV4, proxy);
 
-  Object obj, diff;
-  std::string chain = "testnet";
-  if(!fTestNet)
-      chain = "main";
-      obj.push_back(Pair("chain",          chain));
+    Object obj, diff;
+    std::string chain = "testnet";
+    if(!fTestNet)
+        chain = "main";
+    obj.push_back(Pair("chain",          chain));
     obj.push_back(Pair("blocks",         (int)nBestHeight));
-    //obj.push_back(Pair("headers",      pindexBestHeader ? pindexBestHeader->nHeight : -1));
     obj.push_back(Pair("bestblockhash",  hashBestChain.GetHex()));
+
     diff.push_back(Pair("proof-of-work",  GetDifficulty()));
     diff.push_back(Pair("proof-of-stake", GetDifficulty(GetLastBlockIndex(pindexBest, true))));
+
     obj.push_back(Pair("difficulty",     diff));
     obj.push_back(Pair("initialblockdownload",  IsInitialBlockDownload()));
-    obj.push_back(Pair("verificationprogress", Checkpoints::GuessVerificationProgress(pindexBest)));
-    obj.push_back(Pair("chainwork",      leftTrim(pindexBest->nChainWork.GetHex(), '0')));
-    obj.push_back(Pair("moneysupply",    ValueFromAmount(pindexBest->nMoneySupply)));
+    obj.push_back(Pair("moneysupply",   ValueFromAmount(pindexBest->nMoneySupply)));
     //obj.push_back(Pair("size_on_disk",   CalculateCurrentUsage()));
     return obj;
 }

@@ -63,7 +63,7 @@ std::string static EncodeDumpTime(int64_t nTime) {
 
 std::string static EncodeDumpString(const std::string &str) {
     std::stringstream ret;
-    BOOST_FOREACH(unsigned char c, str) {
+    for (unsigned char c : str) {
         if (c <= 32 || c >= 128 || c == '%') {
             ret << '%' << HexStr(&c, &c + 1);
         } else {
@@ -112,13 +112,13 @@ Value importprivkey(const Array& params, bool fHelp)
             "importprivkey <innovaprivkey> [label] [rescan=true]\n"
             "Adds a private key (as returned by dumpprivkey) to your wallet.");
 
-      bool fRescan = true;
+	bool fRescan = true;
     string strSecret = params[0].get_str();
     string strLabel = "";
     if (params.size() > 1)
         strLabel = params[1].get_str();
-      if (params.size() > 2)
-  		fRescan = params[2].get_bool();
+	if (params.size() > 2)
+		fRescan = params[2].get_bool();
     CBitcoinSecret vchSecret;
     bool fGood = vchSecret.SetString(strSecret);
 
@@ -144,12 +144,12 @@ Value importprivkey(const Array& params, bool fHelp)
         if (!pwalletMain->AddKey(key))
             throw JSONRPCError(RPC_WALLET_ERROR, "Error adding key to wallet");
 
-            // if rescan is true, we need to scan the whole chain
-    		if(fRescan){
-    			pwalletMain->nTimeFirstKey = 1; // 0 would be considered 'no value'
-    			pwalletMain->ScanForWalletTransactions(pindexGenesisBlock, true);
-    			pwalletMain->ReacceptWalletTransactions();
-    		}
+        // if rescan is true, we need to scan the whole chain
+		if(fRescan){
+			pwalletMain->nTimeFirstKey = 1; // 0 would be considered 'no value'
+			pwalletMain->ScanForWalletTransactions(pindexGenesisBlock, true);
+			pwalletMain->ReacceptWalletTransactions();
+		}
     }
 
     return Value::null;

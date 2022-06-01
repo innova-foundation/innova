@@ -224,7 +224,7 @@ void SignVerifyMessageDialog::on_verifyMessageButton_VM_clicked()
     //CKey key;
     //if (!key.SetCompactSignature(Hash(ss.begin(), ss.end()), vchSig))
 	CPubKey pubkey;
-    if (!pubkey.RecoverCompact(Hash(ss.begin(), ss.end()), vchSig))	
+    if (!pubkey.RecoverCompact(Hash(ss.begin(), ss.end()), vchSig))
     {
         ui->signatureIn_VM->setValid(false);
         ui->statusLabel_VM->setStyleSheet("QLabel { color: red; }");

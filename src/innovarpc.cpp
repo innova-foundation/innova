@@ -14,7 +14,6 @@
 #undef printf
 #include <boost/asio.hpp>
 #include <boost/asio/ip/v6_only.hpp>
-#include <boost/bind.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/foreach.hpp>
 #include <boost/iostreams/concepts.hpp>
@@ -26,6 +25,14 @@
 #include <boost/shared_ptr.hpp>
 #include <boost/version.hpp>
 #include <list>
+
+#if BOOST_VERSION >= 107300
+#include <boost/bind/bind.hpp>
+using boost::placeholders::_1;
+using boost::placeholders::_2;
+#else
+#include <boost/bind.hpp>
+#endif
 
 #define printf OutputDebugStringF
 
@@ -60,7 +67,7 @@ void RPCTypeCheck(const Array& params,
                   bool fAllowNull)
 {
     unsigned int i = 0;
-    BOOST_FOREACH(Value_type t, typesExpected)
+    for (Value_type t : typesExpected)
     {
         if (params.size() <= i)
             break;
@@ -80,7 +87,7 @@ void RPCTypeCheck(const Object& o,
                   const map<string, Value_type>& typesExpected,
                   bool fAllowNull)
 {
-    BOOST_FOREACH(const PAIRTYPE(string, Value_type)& t, typesExpected)
+    for (const PAIRTYPE(string, Value_type)& t : typesExpected)
     {
         const Value& v = find_value(o, t.first);
         if (!fAllowNull && v.type() == null_type)
@@ -174,7 +181,7 @@ vector<unsigned char> ParseHexO(const Object& o, string strKey)
 
 string CRPCTable::help(string strCommand) const
 {
-    //Ring Sigs - I n n o v a
+    //Ring Sigs - I n n o v a - Q0lSQ1VJVEJSRUFLRVI=
     bool fAllAnon = strCommand == "anon" ? true : false;
     printf("fAllAnon %d %s\n", fAllAnon, strCommand.c_str());
 
@@ -273,9 +280,13 @@ static const CRPCCommand vRPCCommands[] =
     { "getnetworkinfo",         &getnetworkinfo,         true,   false },
     { "gethashespersec",        &gethashespersec,        true,   false },
     { "addnode",                &addnode,                true,   true },
+    { "setban",                 &setban,                 true,   true },
+    { "listbanned",             &listbanned,             true,   true },
+    { "clearbanned",            &clearbanned,            true,   true },
     { "dumpbootstrap",          &dumpbootstrap,          false,  false },
     { "getdifficulty",          &getdifficulty,          true,   false },
     { "getinfo",                &getinfo,                true,   false },
+	{ "walletstatus",           &walletstatus,           true,   false },
     { "getsubsidy",             &getsubsidy,             true,   false },
     { "getmininginfo",          &getmininginfo,          true,   false },
     { "getstakinginfo",         &getstakinginfo,         true,   false },
@@ -290,6 +301,7 @@ static const CRPCCommand vRPCCommands[] =
     { "getreceivedbyaccount",   &getreceivedbyaccount,   false,  false },
     { "listreceivedbyaddress",  &listreceivedbyaddress,  false,  false },
     { "listreceivedbyaccount",  &listreceivedbyaccount,  false,  false },
+    { "deletetransaction",      &deletetransaction,      false,  false },
     { "backupwallet",           &backupwallet,           true,   false },
     { "keypoolrefill",          &keypoolrefill,          true,   false },
     { "walletpassphrase",       &walletpassphrase,       true,   false },
@@ -307,13 +319,15 @@ static const CRPCCommand vRPCCommands[] =
     { "addredeemscript",        &addredeemscript,        false,  false },
     { "getrawmempool",          &getrawmempool,          true,   false },
     { "getblock",               &getblock,               false,  false },
-	  { "getblockheader",         &getblockheader,         false,  false },
+	{ "getblockheader",         &getblockheader,         false,  false },
+    { "setbestblockbyheight",   &setbestblockbyheight,   false,  false },
     { "getblock_old",           &getblock_old,           false,  false },
     { "getblockbynumber",       &getblockbynumber,       false,  false },
     { "getblockhash",           &getblockhash,           false,  false },
     { "gettransaction",         &gettransaction,         false,  false },
     { "listtransactions",       &listtransactions,       false,  false },
     { "listaddressgroupings",   &listaddressgroupings,   false,  false },
+	{ "listaddressgroups",      &listaddressgroups,      false,  false },
     { "signmessage",            &signmessage,            false,  false },
     { "verifymessage",          &verifymessage,          false,  false },
     { "getwork",                &getwork,                true,   false },
@@ -346,6 +360,7 @@ static const CRPCCommand vRPCCommands[] =
     { "sendalert",              &sendalert,              false,  false},
     { "gettxout",               &gettxout,               true,   false },
     { "importaddress",          &importaddress,          false,  false },
+    { "burn",                   &burn,                   false,  false },
 
     { "getnewstealthaddress",   &getnewstealthaddress,   false,  false},
     { "liststealthaddresses",   &liststealthaddresses,   false,  false},
@@ -363,10 +378,10 @@ static const CRPCCommand vRPCCommands[] =
     { "anoninfo",               &anoninfo,               false,  false},
     { "reloadanondata",         &reloadanondata,         false,  false},
 
-    /* Fortunastake features */
+    /* Collateralnode features */
     { "getpoolinfo",            &getpoolinfo,            true,   false},
     { "masternode",           	&masternode,             true,   false},
-    { "fortunastake",           &fortunastake,           true,   false},
+    { "collateralnode",           &collateralnode,           true,   false},
 
     { "smsgenable",             &smsgenable,             false,  false},
     { "smsgdisable",            &smsgdisable,            false,  false},
@@ -382,6 +397,30 @@ static const CRPCCommand vRPCCommands[] =
     { "smsgoutbox",             &smsgoutbox,             false,  false},
     { "smsgbuckets",            &smsgbuckets,            false,  false},
 
+    { "proofofdata",          &proofofdata,              false,  true  },
+
+    // Innova HyperFile IPFS
+    { "hyperfileversion",       &hyperfileversion,           true,   false },
+    { "hyperfileupload",        &hyperfileupload,            false,  false },
+    { "hyperfilepod",           &hyperfilepod,               false,  true  },
+    { "hyperfileduo",           &hyperfileduo,               false,  false },
+    { "hyperfileduopod",        &hyperfileduopod,            false,  true  },
+    { "hyperfilegetblock",      &hyperfilegetblock,          false,  false },
+    { "hyperfilegetstat",       &hyperfilegetstat,           false,  false },
+
+    // Innova Name Commands
+    { "name_new",               &name_new,               false,  true },
+    { "name_update",            &name_update,            false,  true },
+    { "name_delete",            &name_delete,            false,  true },
+    { "sendtoname",             &sendtoname,             false,  true },
+    { "name_list",              &name_list,              false,  false },
+    { "name_scan",              &name_scan,              false,  false },
+    { "name_mempool",           &name_mempool,           false,  false },
+    // { "name_history",           &name_history,           false,  false },
+    { "name_filter",            &name_filter,            false,  false },
+    { "name_show",              &name_show,              false,  false },
+    { "name_debug",             &name_debug,             false,  false },
+    { "name_count",             &name_count,             false,  false },
 
 
 };
@@ -423,7 +462,7 @@ string HTTPPost(const string& strMsg, const map<string,string>& mapRequestHeader
       << "Content-Length: " << strMsg.size() << "\r\n"
       << "Connection: close\r\n"
       << "Accept: application/json\r\n";
-    BOOST_FOREACH(const PAIRTYPE(string, string)& item, mapRequestHeaders)
+    for (const PAIRTYPE(string, string)& item : mapRequestHeaders)
         s << item.first << ": " << item.second << "\r\n";
     s << "\r\n" << strMsg;
 
@@ -637,7 +676,7 @@ bool ClientAllowed(const boost::asio::ip::address& address)
 
     const string strAddress = address.to_string();
     const vector<string>& vAllow = mapMultiArgs["-rpcallowip"];
-    BOOST_FOREACH(string strAllow, vAllow)
+    for (string strAllow : vAllow)
         if (WildcardMatch(strAddress, strAllow))
             return true;
     return false;
@@ -675,7 +714,7 @@ public:
     }
     bool connect(const std::string& server, const std::string& port)
     {
-        ip::tcp::resolver resolver(stream.get_io_service());
+        ip::tcp::resolver resolver(GetIOService(stream));
         ip::tcp::resolver::query query(server.c_str(), port.c_str());
         ip::tcp::resolver::iterator endpoint_iterator = resolver.resolve(query);
         ip::tcp::resolver::iterator end;
@@ -797,7 +836,7 @@ static void RPCListen(boost::shared_ptr< basic_socket_acceptor<Protocol, SocketA
 #endif
 {
     // Accept connection
-    AcceptedConnectionImpl<Protocol>* conn = new AcceptedConnectionImpl<Protocol>(acceptor->get_io_service(), context, fUseSSL);
+    AcceptedConnectionImpl<Protocol>* conn = new AcceptedConnectionImpl<Protocol>(GetIOServiceFromPtr(acceptor), context, fUseSSL);
 
     acceptor->async_accept(
             conn->sslStream.lowest_layer(),
@@ -1213,6 +1252,18 @@ json_spirit::Value CRPCTable::execute(const std::string &strMethod, const json_s
     }
 }
 
+//I n n o v a - Autocomplete in Debug Window
+
+std::vector<std::string> CRPCTable::listCommands() const
+{
+    std::vector<std::string> commandList;
+    typedef std::map<std::string, const CRPCCommand*> commandMap;
+
+    std::transform( mapCommands.begin(), mapCommands.end(),
+                   std::back_inserter(commandList),
+                   boost::bind(&commandMap::value_type::first,_1) );
+    return commandList;
+}
 
 Object CallRPC(const string& strMethod, const Array& params)
 {
@@ -1297,7 +1348,7 @@ void ConvertTo(Value& value, bool fAllowNull=false)
 Array RPCConvertValues(const std::string &strMethod, const std::vector<std::string> &strParams)
 {
     Array params;
-    BOOST_FOREACH(const std::string &param, strParams)
+    for (const std::string &param : strParams)
         params.push_back(param);
 
     int n = params.size();
@@ -1307,6 +1358,7 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     //
     if (strMethod == "stop"                   && n > 0) ConvertTo<bool>(params[0]);
     if (strMethod == "sendtoaddress"          && n > 1) ConvertTo<double>(params[1]);
+    if (strMethod == "burn"                   && n > 0) ConvertTo<double>(params[0]);
     if (strMethod == "settxfee"               && n > 0) ConvertTo<double>(params[0]);
     if (strMethod == "getreceivedbyaddress"   && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "getreceivedbyaccount"   && n > 1) ConvertTo<int64_t>(params[1]);
@@ -1319,7 +1371,7 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "getbalance"             && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "getbalance"             && n > 2) ConvertTo<bool>(params[2]);
     if (strMethod == "getblock"               && n > 1) ConvertTo<bool>(params[1]);
-	  if (strMethod == "getblockheader"         && n > 1) ConvertTo<bool>(params[1]);
+	if (strMethod == "getblockheader"         && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "getblock_old"           && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "getblockbynumber"       && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "getblockbynumber"       && n > 1) ConvertTo<bool>(params[1]);
@@ -1364,14 +1416,18 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "gettxout"               && n == 2) ConvertTo<int64_t>(params[1]);
     if (strMethod == "gettxout"               && n == 3) { ConvertTo<int64_t>(params[1]); ConvertTo<bool>(params[2]); }
     if (strMethod == "importaddress"          && n > 2) ConvertTo<bool>(params[2]);
+	if (strMethod == "importprivkey"          && n > 2) ConvertTo<bool>(params[2]);
+
+    if (strMethod == "setban"                 && n > 2) ConvertTo<int64_t>(params[2]);
+    if (strMethod == "setban"                 && n == 4) ConvertTo<bool>(params[3]);
 
     if (strMethod == "sendinntoanon"         	  && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "sendanontoanon"         && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "sendanontoanon"         && n > 2) ConvertTo<int64_t>(params[2]);
     if (strMethod == "sendanontoinn"        	  && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "sendanontoinn"        	  && n > 2) ConvertTo<int64_t>(params[2]);
-	  if (strMethod == "estimateanonfee"        && n > 0) ConvertTo<double>(params[0]);
-	  if (strMethod == "estimateanonfee"        && n > 1) ConvertTo<int64_t>(params[1]);
+	if (strMethod == "estimateanonfee"        && n > 0) ConvertTo<double>(params[0]);
+	if (strMethod == "estimateanonfee"        && n > 1) ConvertTo<int64_t>(params[1]);
 
     if (strMethod == "getpoolinfo"            && n > 0) ConvertTo<int64_t>(params[0]);
 
@@ -1382,6 +1438,18 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
 
     if (strMethod == "scanforalltxns"         && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "scanforstealthtxns"     && n > 0) ConvertTo<int64_t>(params[0]);
+
+    if (strMethod == "setbestblockbyheight"   && n > 0) ConvertTo<int64_t>(params[0]);
+
+    //Innova Name Commands
+    if (strMethod == "name_new"               && n > 2) ConvertTo<boost::int64_t>(params[2]);
+    if (strMethod == "name_new"               && n > 4) ConvertTo<boost::int64_t>(params[4]);
+    if (strMethod == "name_update"            && n > 2) ConvertTo<boost::int64_t>(params[2]);
+    if (strMethod == "name_update"            && n > 4) ConvertTo<boost::int64_t>(params[4]);
+    if (strMethod == "name_filter"            && n > 1) ConvertTo<boost::int64_t>(params[1]);
+    if (strMethod == "name_filter"            && n > 2) ConvertTo<boost::int64_t>(params[2]);
+    if (strMethod == "name_filter"            && n > 3) ConvertTo<boost::int64_t>(params[3]);
+    if (strMethod == "sendtoname"             && n > 1) ConvertTo<double>(params[1]);
 
     return params;
 }

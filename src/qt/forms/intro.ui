@@ -55,7 +55,7 @@
        <item>
         <widget class="QLabel" name="sizeWarningLabel">
          <property name="text">
-          <string>Innova will download and store a copy of the Innova block chain. At least &lt;strong&gt;%1GB&lt;/strong&gt; of data will need to be available to be stored in this directory, as it will grow over time. The wallet data will also be stored in this directory.</string>
+          <string>Innova will download and store a copy of the Innova block chain. At least &lt;strong&gt;%3GB+&lt;/strong&gt; of data will need to be available to be stored in this directory, as it will grow over time. The wallet data will also be stored in this directory.</string>
          </property>
          <property name="wordWrap">
           <bool>true</bool>

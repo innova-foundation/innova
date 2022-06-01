@@ -28,7 +28,7 @@
 #include <sys/types.h>
 #endif
 #ifdef HAVE_SYS_SYSCTL_H
-#include <sys/sysctl.h>
+#include <linux/sysctl.h>
 #endif
 #ifdef HAVE_SYS_STAT_H
 #include <sys/stat.h>
@@ -3515,4 +3515,3 @@ tor_get_avail_disk_space(const char *path)
   return -1;
 #endif
 }
-

@@ -5,6 +5,7 @@
 
 class OptionsModel;
 class PeerTableModel;
+class BanTableModel;
 class AddressTableModel;
 class TransactionTableModel;
 class CWallet;
@@ -24,6 +25,7 @@ public:
 
     OptionsModel *getOptionsModel();
     PeerTableModel *getPeerTableModel();
+    BanTableModel *getBanTableModel();
 
     int getNumConnections() const;
     int getNumBlocks() const;
@@ -40,8 +42,8 @@ public:
     //! Return true if client connected to Tor
     bool isNativeTor() const;
 
-    //! Return true if client has locked FS inputs
-    bool isFSLock() const;
+    //! Return true if client has locked CN inputs
+    bool isCNLock() const;
 
     //! Return true if core is doing initial block download
     bool inInitialBlockDownload() const;
@@ -58,6 +60,7 @@ public:
 private:
     OptionsModel *optionsModel;
     PeerTableModel *peerTableModel;
+    BanTableModel *banTableModel;
 
     int cachedNumBlocks;
     int cachedNumBlocksOfPeers;
@@ -76,11 +79,14 @@ signals:
     //! Asynchronous error notification
     void error(const QString &title, const QString &message, bool modal);
 
+    void banListChanged();
+
 public slots:
     void updateTimer();
     void updateNumConnections(int numConnections);
     void updateNumBlocks(int newNumBlocks, int newNumBlocksOfPeers);
     void updateAlert(const QString &hash, int status);
+    void updateBanlist();
 };
 
 #endif // CLIENTMODEL_H
