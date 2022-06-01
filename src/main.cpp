@@ -2870,8 +2870,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                                     {
                                         if (pnode->nVersion >= colLateralPool.PROTOCOL_VERSION) {
                                                 printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
-                                                pnode->PushMessage("dseg", CTxIn()); //request full mn list
-                                                pnode->nLastDseg = GetTime();
+                                                pnode->PushMessage("iseg", CTxIn()); //request full mn list
+                                                pnode->nLastIseg = GetTime();
                                         }
                                     }
                             return error("CheckBlock-POS() : Did not find this payee in the collateralnode list. Requesting list update and rejecting block.");
@@ -2997,8 +2997,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                                 {
                                     if (pnode->nVersion >= colLateralPool.PROTOCOL_VERSION) {
                                             printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
-                                            pnode->PushMessage("dseg", CTxIn()); //request full mn list
-                                            pnode->nLastDseg = GetTime();
+                                            pnode->PushMessage("iseg", CTxIn()); //request full mn list
+                                            pnode->nLastIseg = GetTime();
                                     }
                                 }
                                 return error("CheckBlock-POW() : Did not find this payee in the collateralnode list, rejecting block.");
@@ -4734,7 +4734,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         }
 
         // Ask every node for the collateralnode list straight away
-        pfrom->PushMessage("dseg", CTxIn());
+        pfrom->PushMessage("iseg", CTxIn());
 
         // Ask the first connected node for block updates
         static int nAskedForBlocks = 0;

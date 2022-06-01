@@ -993,13 +993,13 @@ void ThreadCheckCollaTeralPool(void* parg)
                     if (pnode->nVersion >= colLateralPool.PROTOCOL_VERSION) {
 
                         // re-request from each node every 120 seconds
-                        if(GetTime() - pnode->nLastDseg < 120)
+                        if(GetTime() - pnode->nLastIseg < 120)
                         {
                             continue;
                         } else {
                             printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
-                            pnode->PushMessage("dseg", CTxIn()); //request full mn list
-                            pnode->nLastDseg = GetTime();
+                            pnode->PushMessage("iseg", CTxIn()); //request full mn list
+                            pnode->nLastIseg = GetTime();
                             pnode->PushMessage("getsporks"); //get current network sporks
                             RequestedCollateralNodeList++;
                         }
