@@ -18,6 +18,15 @@
 
 #include <boost/lexical_cast.hpp>
 #include <fstream>
+
+#if BOOST_VERSION >= 107300
+#include <boost/bind/bind.hpp>
+using boost::placeholders::_1;
+using boost::placeholders::_2;
+#else
+#include <boost/bind.hpp>
+#endif
+
 using namespace json_spirit;
 using namespace std;
 
@@ -55,19 +64,22 @@ CollateralnodeManager::CollateralnodeManager(QWidget *parent) :
 
     subscribeToCoreSignals();
 
-    timer = new QTimer(this);
+	timer = new QTimer(this);
+    //connect(timer, SIGNAL(timeout()), this, SLOT(updateNodeList(pindexBest)));
+    //if(!GetBoolArg("-reindexaddr", false))
+    //    timer->start(30000);
 
     QTimer::singleShot(1000, this, SLOT(updateNodeList()));
     QTimer::singleShot(5000, this, SLOT(updateNodeList()));
     QTimer::singleShot(10000, this, SLOT(updateNodeList()));
-    QTimer::singleShot(30000, this, SLOT(updateNodeList()));
-    QTimer::singleShot(60000, this, SLOT(updateNodeList()));
+    QTimer::singleShot(30000, this, SLOT(updateNodeList())); // try to load the node list ASAP for the user
+	QTimer::singleShot(60000, this, SLOT(updateNodeList()));
 
-  /*
+	/*
 	timer = new QTimer(this);
     connect(timer, SIGNAL(timeout()), this, SLOT(updateNodeList()));
-        timer->start(); // No 1000 ms to do heavy work and be snappy
-        */
+        timer->start(1000); // 1000 ms to do heavy work and be snappy
+		*/
 }
 
 CollateralnodeManager::~CollateralnodeManager()
@@ -426,7 +438,7 @@ void CollateralnodeManager::updateNodeList()
     }
 
     // calc length of average round
-    int roundLengthSecs = 30 * (max(FORTUNASTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * FORTUNASTAKE_FAIR_PAYMENT_ROUNDS);
+    int roundLengthSecs = 30 * (max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * COLLATERALNODE_FAIR_PAYMENT_ROUNDS);
     // figure out how the average per second this round is
     int64_t roundPerSec = nAverageCNIncome / roundLengthSecs;
     // how much is that per day?
@@ -470,21 +482,21 @@ void CollateralnodeManager::setWalletModel(WalletModel *model)
 
 void CollateralnodeManager::on_createButton_clicked()
 {
-  if (pwalletMain->IsLocked())
-  {
-      QMessageBox msg;
-      msg.setText("Error: Wallet is locked, unable to create FS.");
-      msg.exec();
-      return;
-  };
+    if (pwalletMain->IsLocked())
+    {
+        QMessageBox msg;
+        msg.setText("Error: Wallet is locked, unable to create CN.");
+        msg.exec();
+        return;
+    };
 
-  if (fWalletUnlockStakingOnly)
-  {
-      QMessageBox msg;
-      msg.setText("Error: Wallet unlocked for staking only, unable to create FS.");
-      msg.exec();
-      return;
-  };
+    if (fWalletUnlockStakingOnly)
+    {
+        QMessageBox msg;
+        msg.setText("Error: Wallet unlocked for staking only, unable to create CN.");
+        msg.exec();
+        return;
+    };
 
     AddEditAdrenalineNode* aenode = new AddEditAdrenalineNode();
     aenode->exec();
@@ -544,41 +556,41 @@ void CollateralnodeManager::on_startButton_clicked()
     {
         results = "Wallet failed to unlock.\n";
 
-      } else {
-          // start the node
-          QItemSelectionModel *selectionModel = ui->tableWidget_2->selectionModel();
-          QModelIndexList selected = selectionModel->selectedRows();
-          if (selected.count() == 0)
-              return;
+    } else {
+        // start the node
+        QItemSelectionModel *selectionModel = ui->tableWidget_2->selectionModel();
+        QModelIndexList selected = selectionModel->selectedRows();
+        if (selected.count() == 0)
+            return;
 
-          int successful = 0;
-          int fail = 0;
+        int successful = 0;
+        int fail = 0;
 
-          QModelIndex index = selected.at(0);
-          int r = index.row();
-          std::string sAddress = ui->tableWidget_2->item(r, 1)->text().toStdString();
-          CAdrenalineNodeConfig c = pwalletMain->mapMyAdrenalineNodes[sAddress];
+        QModelIndex index = selected.at(0);
+        int r = index.row();
+        std::string sAddress = ui->tableWidget_2->item(r, 1)->text().toStdString();
+        CAdrenalineNodeConfig c = pwalletMain->mapMyAdrenalineNodes[sAddress];
 
-          std::string errorMessage;
-          bool result = activeCollateralnode.Register(c.sAddress, c.sCollateralnodePrivKey, c.sTxHash, c.sOutputIndex,
-                                                    errorMessage);
+        std::string errorMessage;
+        bool result = activeCollateralnode.Register(c.sAddress, c.sCollateralnodePrivKey, c.sTxHash, c.sOutputIndex,
+                                                  errorMessage);
 
-          if (result)
-          {
-              results += "Hybrid Collateralnode at " + QString::fromStdString(c.sAddress) + " started.";
-              successful++;
-          }
-          else
-          {
-              results += "Error: " + QString::fromStdString(errorMessage);
-              fail++;
-          }
-      }
+        if (result)
+        {
+            results += "Hybrid Collateralnode at " + QString::fromStdString(c.sAddress) + " started.";
+            successful++;
+        }
+        else
+        {
+            results += "Error: " + QString::fromStdString(errorMessage);
+            fail++;
+        }
+    }
 
-      if(ctx.isValid())
-      {
-          pwalletMain->Lock();
-      }
+    if(ctx.isValid())
+    {
+        pwalletMain->Lock();
+    }
 
     QMessageBox msg;
     msg.setWindowTitle("Innova Message");

@@ -19,9 +19,8 @@ StatisticsPage::StatisticsPage(QWidget *parent) :
     ui->setupUi(this);
 
     setFixedSize(400, 420);
-
     connect(ui->startButton, SIGNAL(pressed()), this, SLOT(updateStatistics()));
-    }
+}
 
 int heightPrevious = -1;
 int connectionPrevious = -1;
@@ -128,9 +127,9 @@ void StatisticsPage::updateStatistics()
     {
         subsidy = "0.0825 INN per block";
     }
-  else if (nHeight > 50000)
+  else if (nHeight > 2000000)
     {
-        subsidy = "No PoW Reward";
+        subsidy = "0.0001 INN per block";
     }
     QString hardness = QString::number(pHardness, 'f', 6);
     QString hardness2 = QString::number(pHardness2, 'f', 6);

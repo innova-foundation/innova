@@ -1,6 +1,6 @@
 // Copyright (c) 2012-2013 The Peercoin developers
 // Copyright (c) 2017-2021 The Denarius developers
-// Copyright (c) 2019-2021 The Innova developers
+// Copyright (c) 2019-2022 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -28,12 +28,17 @@ static std::map<int, unsigned int> mapStakeModifierCheckpoints =
         ( 800000, 0x81c6576c )
         ( 900000, 0xa9cc8eb9 )
         ( 1000000, 0x5e1a8a47 )
+        ( 1250000, 0xac256c99 )
+        ( 1500000, 0xfa70e840 )
+        ( 1840000, 0xda8d97e2 )
+        ( 1848420, 0x628c1cb7 )
+        //( 640106, 0x491697be ) Example of bad modifier checkpoint, must have proof-of-stake flag
     ;
 
 // Hard checkpoints of stake modifiers to ensure they are deterministic (testNet)
 static std::map<int, unsigned int> mapStakeModifierCheckpointsTestNet =
     boost::assign::map_list_of
-        ( 9999999999, 0x4038ad82 )
+        ( 9999999999, 0x4038ad82 ) //technically two
     ;
 
 // Get time weight
@@ -85,7 +90,7 @@ static bool SelectBlockFromCandidates(vector<pair<int64_t, uint256> >& vSortedBy
     bool fSelected = false;
     uint256 hashBest = 0;
     *pindexSelected = (const CBlockIndex*) 0;
-    BOOST_FOREACH(const PAIRTYPE(int64_t, uint256)& item, vSortedByTimestamp)
+    for (const PAIRTYPE(int64_t, uint256)& item : vSortedByTimestamp)
     {
         if (!mapBlockIndex.count(item.second))
             return error("SelectBlockFromCandidates: failed to find block index for candidate block %s", item.second.ToString().c_str());
@@ -203,7 +208,7 @@ bool ComputeNextStakeModifier(const CBlockIndex* pindexPrev, uint64_t& nStakeMod
                 strSelectionMap.replace(pindex->nHeight - nHeightFirstCandidate, 1, "=");
             pindex = pindex->pprev;
         }
-        BOOST_FOREACH(const PAIRTYPE(uint256, const CBlockIndex*)& item, mapSelectedBlocks)
+        for (const PAIRTYPE(uint256, const CBlockIndex*)& item : mapSelectedBlocks)
         {
             // 'S' indicates selected proof-of-stake blocks
             // 'W' indicates selected proof-of-work blocks
@@ -244,21 +249,21 @@ static bool GetKernelStakeModifier(uint256 hashBlockFrom, uint64_t& nStakeModifi
             {
                 return error("GetKernelStakeModifier() : reached best block %s at height %d from block %s",
                     pindex->GetBlockHash().ToString().c_str(), pindex->nHeight, hashBlockFrom.ToString().c_str());
-          }  else {
+            } else {
                 return false;
-              };
-          };
+            };
+        };
         pindex = pindex->pnext;
         if (pindex->GeneratedStakeModifier())
         {
             nStakeModifierHeight = pindex->nHeight;
             nStakeModifierTime = pindex->GetBlockTime();
         }
-      };
+ };
 
-      nStakeModifier = pindex->nStakeModifier;
-      return true;
-  };
+    nStakeModifier = pindex->nStakeModifier;
+    return true;
+};
 
 // Innova kernel protocol
 // coinstake must meet hash target according to the protocol:
@@ -327,10 +332,10 @@ bool CheckStakeKernelHash(unsigned int nBits, const CBlock& blockFrom, unsigned 
             nTimeBlockFrom, nTxPrevOffset, txPrev.nTime, prevout.n, nTimeTx,
             hashProofOfStake.ToString().c_str());
 
-            CBigNum nTry = CBigNum(hashProofOfStake);
-            CBigNum nTar = bnCoinDayWeight * bnTargetPerCoinDay;
-            printf("try    %s\n                    target %s\n", nTry.ToString().c_str(), nTar.ToString().c_str());
-            };
+        CBigNum nTry = CBigNum(hashProofOfStake);
+        CBigNum nTar = bnCoinDayWeight * bnTargetPerCoinDay;
+        printf("try    %s\n                    target %s\n", nTry.ToString().c_str(), nTar.ToString().c_str());
+    };
 
     // Now check if proof-of-stake hash meets target protocol
     if (CBigNum(hashProofOfStake) > bnCoinDayWeight * bnTargetPerCoinDay)

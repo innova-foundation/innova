@@ -31,9 +31,9 @@ Value getpoolinfo(const Array& params, bool fHelp)
 
     Object obj;
     obj.push_back(Pair("current_collateralnode",        GetCurrentCollateralNode()));
-    obj.push_back(Pair("state",        forTunaPool.GetState()));
-    obj.push_back(Pair("entries",      forTunaPool.GetEntriesCount()));
-    obj.push_back(Pair("entries_accepted",      forTunaPool.GetCountEntriesAccepted()));
+    obj.push_back(Pair("state",        colLateralPool.GetState()));
+    obj.push_back(Pair("entries",      colLateralPool.GetEntriesCount()));
+    obj.push_back(Pair("entries_accepted",      colLateralPool.GetCountEntriesAccepted()));
     return obj;
 }
 
@@ -98,8 +98,8 @@ Value collateralnode(const Array& params, bool fHelp)
         }
         pwalletMain->Lock();
 
-        if(activeCollateralnode.status == FORTUNASTAKE_STOPPED) return "Successfully Stopped Collateralnode";
-        if(activeCollateralnode.status == FORTUNASTAKE_NOT_CAPABLE) return "Not a capable Collateralnode";
+        if(activeCollateralnode.status == COLLATERALNODE_STOPPED) return "Successfully Stopped Collateralnode";
+        if(activeCollateralnode.status == COLLATERALNODE_NOT_CAPABLE) return "Not a capable Collateralnode";
 
         return "unknown";
     }
@@ -134,7 +134,7 @@ Value collateralnode(const Array& params, bool fHelp)
 		Object statusObj;
 		statusObj.push_back(Pair("alias", alias));
 
-    	BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry mne, collateralnodeConfig.getEntries()) {
+    	for (CCollateralnodeConfig::CCollateralnodeEntry mne : collateralnodeConfig.getEntries()) {
     		if(mne.getAlias() == alias) {
     			found = true;
     			std::string errorMessage;
@@ -226,7 +226,7 @@ Value collateralnode(const Array& params, bool fHelp)
         }
 
         Object obj;
-        BOOST_FOREACH(CCollateralNode mn, vecCollateralnodes) {
+        for (CCollateralNode mn : vecCollateralnodes) {
             mn.Check();
 
             if(strCommand == "active"){
@@ -262,10 +262,10 @@ Value collateralnode(const Array& params, bool fHelp)
             }
 			else if (strCommand == "full") {
                 Object list;
-                list.push_back(Pair("active",          (int)mn.IsActive()));
-                list.push_back(Pair("txid",            mn.vin.prevout.hash.ToString().c_str()));
-                list.push_back(Pair("n",               (int64_t)mn.vin.prevout.n));
-                list.push_back(Pair("ip",              mn.addr.ToString().c_str()));
+                list.push_back(Pair("active",        (int)mn.IsActive()));
+                list.push_back(Pair("txid",           mn.vin.prevout.hash.ToString().c_str()));
+                list.push_back(Pair("n",       (int64_t)mn.vin.prevout.n));
+				list.push_back(Pair("ip",       		mn.addr.ToString().c_str()));
 
                 CScript pubkey;
                 pubkey =GetScriptForDestination(mn.pubkey.GetID());
@@ -309,19 +309,19 @@ Value collateralnode(const Array& params, bool fHelp)
             }
         }
 
-        if(activeCollateralnode.status != FORTUNASTAKE_REMOTELY_ENABLED && activeCollateralnode.status != FORTUNASTAKE_IS_CAPABLE){
-            activeCollateralnode.status = FORTUNASTAKE_NOT_PROCESSED; // TODO: consider better way
+        if(activeCollateralnode.status != COLLATERALNODE_REMOTELY_ENABLED && activeCollateralnode.status != COLLATERALNODE_IS_CAPABLE){
+            activeCollateralnode.status = COLLATERALNODE_NOT_PROCESSED; // TODO: consider better way
             std::string errorMessage;
             activeCollateralnode.ManageStatus();
             pwalletMain->Lock();
         }
 
-        if(activeCollateralnode.status == FORTUNASTAKE_REMOTELY_ENABLED) return "collateralnode started remotely";
-        if(activeCollateralnode.status == FORTUNASTAKE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
-        if(activeCollateralnode.status == FORTUNASTAKE_STOPPED) return "collateralnode is stopped";
-        if(activeCollateralnode.status == FORTUNASTAKE_IS_CAPABLE) return "successfully started collateralnode";
-        if(activeCollateralnode.status == FORTUNASTAKE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
-        if(activeCollateralnode.status == FORTUNASTAKE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
+        if(activeCollateralnode.status == COLLATERALNODE_REMOTELY_ENABLED) return "collateralnode started remotely";
+        if(activeCollateralnode.status == COLLATERALNODE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
+        if(activeCollateralnode.status == COLLATERALNODE_STOPPED) return "collateralnode is stopped";
+        if(activeCollateralnode.status == COLLATERALNODE_IS_CAPABLE) return "successfully started collateralnode";
+        if(activeCollateralnode.status == COLLATERALNODE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
+        if(activeCollateralnode.status == COLLATERALNODE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
 
         return "unknown";
     }
@@ -438,12 +438,12 @@ Value collateralnode(const Array& params, bool fHelp)
 
     if (strCommand == "debug")
     {
-        if(activeCollateralnode.status == FORTUNASTAKE_REMOTELY_ENABLED) return "collateralnode started remotely";
-        if(activeCollateralnode.status == FORTUNASTAKE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
-        if(activeCollateralnode.status == FORTUNASTAKE_IS_CAPABLE) return "successfully started collateralnode";
-        if(activeCollateralnode.status == FORTUNASTAKE_STOPPED) return "collateralnode is stopped";
-        if(activeCollateralnode.status == FORTUNASTAKE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
-        if(activeCollateralnode.status == FORTUNASTAKE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
+        if(activeCollateralnode.status == COLLATERALNODE_REMOTELY_ENABLED) return "collateralnode started remotely";
+        if(activeCollateralnode.status == COLLATERALNODE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
+        if(activeCollateralnode.status == COLLATERALNODE_IS_CAPABLE) return "successfully started collateralnode";
+        if(activeCollateralnode.status == COLLATERALNODE_STOPPED) return "collateralnode is stopped";
+        if(activeCollateralnode.status == COLLATERALNODE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
+        if(activeCollateralnode.status == COLLATERALNODE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
 
         CTxIn vin = CTxIn();
         CPubKey pubkey = CScript();
@@ -568,8 +568,8 @@ Value collateralnode(const Array& params, bool fHelp)
             ExtractDestination(pubkey, address1);
             CBitcoinAddress address2(address1);
 
-            uint256 mnTxHash;
-            int outputIndex;
+			uint256 mnTxHash;
+			int outputIndex;
 
 
             if (activeCollateralnode.pubKeyCollateralnode.IsFullyValid()) {
@@ -601,12 +601,12 @@ Value collateralnode(const Array& params, bool fHelp)
                     }
                 }
                 string reason;
-                if(activeCollateralnode.status == FORTUNASTAKE_REMOTELY_ENABLED) reason = "collateralnode started remotely";
-                if(activeCollateralnode.status == FORTUNASTAKE_INPUT_TOO_NEW) reason = "collateralnode input must have at least 15 confirmations";
-                if(activeCollateralnode.status == FORTUNASTAKE_IS_CAPABLE) reason = "successfully started collateralnode";
-                if(activeCollateralnode.status == FORTUNASTAKE_STOPPED) reason = "collateralnode is stopped";
-                if(activeCollateralnode.status == FORTUNASTAKE_NOT_CAPABLE) reason = "not capable collateralnode: " + activeCollateralnode.notCapableReason;
-                if(activeCollateralnode.status == FORTUNASTAKE_SYNC_IN_PROCESS) reason = "sync in process. Must wait until client is synced to start.";
+                if(activeCollateralnode.status == COLLATERALNODE_REMOTELY_ENABLED) reason = "collateralnode started remotely";
+                if(activeCollateralnode.status == COLLATERALNODE_INPUT_TOO_NEW) reason = "collateralnode input must have at least 15 confirmations";
+                if(activeCollateralnode.status == COLLATERALNODE_IS_CAPABLE) reason = "successfully started collateralnode";
+                if(activeCollateralnode.status == COLLATERALNODE_STOPPED) reason = "collateralnode is stopped";
+                if(activeCollateralnode.status == COLLATERALNODE_NOT_CAPABLE) reason = "not capable collateralnode: " + activeCollateralnode.notCapableReason;
+                if(activeCollateralnode.status == COLLATERALNODE_SYNC_IN_PROCESS) reason = "sync in process. Must wait until client is synced to start.";
 
                 if (!found) {
                     localObj.push_back(Pair("network_status", "unregistered"));
@@ -628,7 +628,7 @@ Value collateralnode(const Array& params, bool fHelp)
                 mnObj.push_back(Pair("local",localObj));
             }
 
-            BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry& mne, collateralnodeConfig.getEntries()) {
+            for (CCollateralnodeConfig::CCollateralnodeEntry& mne : collateralnodeConfig.getEntries()) {
                 Object remoteObj;
                 std::string address = mne.getIp();
 
@@ -640,16 +640,16 @@ Value collateralnode(const Array& params, bool fHelp)
                 CPubKey pubKeyCollateralnode;
                 CKey keyCollateralnode;
                 std::string errorMessage;
-                std::string forTunaError;
+                std::string colLateralError;
                 std::string vinError;
 
-                mnTxHash.SetHex(mne.getTxHash());
-                outputIndex = boost::lexical_cast<unsigned int>(mne.getOutputIndex());
-                COutPoint outpoint = COutPoint(mnTxHash, outputIndex);
+				mnTxHash.SetHex(mne.getTxHash());
+				outputIndex = boost::lexical_cast<unsigned int>(mne.getOutputIndex());
+				COutPoint outpoint = COutPoint(mnTxHash, outputIndex);
 
-                if(!forTunaSigner.SetKey(mne.getPrivKey(), forTunaError, keyCollateralnode, pubKeyCollateralnode))
+                if(!colLateralSigner.SetKey(mne.getPrivKey(), colLateralError, keyCollateralnode, pubKeyCollateralnode))
                 {
-                    errorMessage = forTunaError;
+                    errorMessage = colLateralError;
                 }
 
                 if (!amn.GetCollateralNodeVin(vin, pubKeyCollateralAddress, keyCollateralAddress, mne.getTxHash(), mne.getOutputIndex(), vinError))
@@ -664,69 +664,69 @@ Value collateralnode(const Array& params, bool fHelp)
                 remoteObj.push_back(Pair("alias", mne.getAlias()));
                 remoteObj.push_back(Pair("ipaddr", address));
 
-                // if(pwalletMain->IsLocked() || fWalletUnlockStakingOnly) {
-                // remoteObj.push_back(Pair("collateral1", "Wallet is Locked"));
-                // } else {
-                // remoteObj.push_back(Pair("collateral1", address2.ToString())); //Incorrect address?
-                // }
+				// if(pwalletMain->IsLocked() || fWalletUnlockStakingOnly) {
+					// remoteObj.push_back(Pair("collateral1", "Wallet is Locked"));
+				// } else {
+					// remoteObj.push_back(Pair("collateral1", address2.ToString())); //Incorrect address?
+				// }
 
-                // CWalletTx tx;
-                // if (pwalletMain->GetTransaction(mnTxHash, tx))
-                // {
-                // CTxOut vout = tx.vout[outputIndex];
-                // }
+				// CWalletTx tx;
+				// if (pwalletMain->GetTransaction(mnTxHash, tx))
+				// {
+					// CTxOut vout = tx.vout[outputIndex];
+				// }
 
                 //remoteObj.push_back(Pair("collateral", address2.ToString()));
-				        //remoteObj.push_back(Pair("collateral", CBitcoinAddress(mn->pubKeyCollateralAddress.GetID()).ToString()));
+				//remoteObj.push_back(Pair("collateral", CBitcoinAddress(mne->pubKeyCollateralAddress.GetID()).ToString()));
 
-                //INNOVA - Q0lSQ1VJVEJSRUFLRVI=
+                // INNOVA - Q0lSQ1VJVEJSRUFLRVI=
 
                 bool mnfound = false;
-                BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
+                for (CCollateralNode& mn : vecCollateralnodes)
                 {
                     if (mn.addr.ToString() == mne.getIp()) {
-                      //remoteObj.push_back(Pair("status", "online"));
-                      if (mn.IsActive()) {
-                          //nstatus = QString::fromStdString("Active for payment");
-                          remoteObj.push_back(Pair("status", "online"));
-                      } else if (mn.status == "OK") {
-                          if (mn.lastDseep > 0) {
-                              //nstatus = QString::fromStdString("Verified");
-                              remoteObj.push_back(Pair("status", "verified"));
-                          } else {
-                              //nstatus = QString::fromStdString("Registered");
-                              remoteObj.push_back(Pair("status", "registered"));
-                          }
-                      } else if (mn.status == "Expired") {
-                          //nstatus = QString::fromStdString("Expired");
-                          remoteObj.push_back(Pair("status", "expired"));
-                      } else if (mn.status == "Inactive, expiring soon") {
-                          //nstatus = QString::fromStdString("Inactive, expiring soon");
-                          remoteObj.push_back(Pair("status", "inactive"));
-                      } else {
-                          //nstatus = QString::fromStdString(mn.status);
-                          remoteObj.push_back(Pair("status", mn.status));
-                      }
+                        //remoteObj.push_back(Pair("status", "online"));
+                        if (mn.IsActive()) {
+                            //nstatus = QString::fromStdString("Active for payment");
+                            remoteObj.push_back(Pair("status", "online"));
+                        } else if (mn.status == "OK") {
+                            if (mn.lastDseep > 0) {
+                                //nstatus = QString::fromStdString("Verified");
+                                remoteObj.push_back(Pair("status", "verified"));
+                            } else {
+                                //nstatus = QString::fromStdString("Registered");
+                                remoteObj.push_back(Pair("status", "registered"));
+                            }
+                        } else if (mn.status == "Expired") {
+                            //nstatus = QString::fromStdString("Expired");
+                            remoteObj.push_back(Pair("status", "expired"));
+                        } else if (mn.status == "Inactive, expiring soon") {
+                            //nstatus = QString::fromStdString("Inactive, expiring soon");
+                            remoteObj.push_back(Pair("status", "inactive"));
+                        } else {
+                            //nstatus = QString::fromStdString(mn.status);
+                            remoteObj.push_back(Pair("status", mn.status));
+                        }
                         remoteObj.push_back(Pair("lastpaidblock",mn.nBlockLastPaid));
-						            CScript pubkey;
-						            pubkey =GetScriptForDestination(mn.pubkey.GetID());
-						            CTxDestination address3;
-						            ExtractDestination(pubkey, address3);
-						            CBitcoinAddress address4(address3);
-						            if(pwalletMain->IsLocked() || fWalletUnlockStakingOnly) {
-							                   remoteObj.push_back(Pair("collateral", "Wallet is Locked"));
-							                   remoteObj.push_back(Pair("txid", "Wallet is Locked"));
-						            } else {
-							                   remoteObj.push_back(Pair("collateral", address4.ToString().c_str()));
-							                   remoteObj.push_back(Pair("txid",mn.vin.prevout.hash.ToString().c_str()));
-						            }
-						         //remoteObj.push_back(Pair("txid",mn.vin.prevout.hash.ToString().c_str()));
-						          remoteObj.push_back(Pair("outputindex", (int64_t)mn.vin.prevout.n));
-						          remoteObj.push_back(Pair("rank", GetCollateralnodeRank(mn, pindexBest)));
-						          remoteObj.push_back(Pair("roundpayments", mn.payCount));
-						          remoteObj.push_back(Pair("earnings", mn.payValue));
-						          remoteObj.push_back(Pair("daily", mn.payRate));
-                      remoteObj.push_back(Pair("version",mn.protocolVersion));
+						CScript pubkey;
+						pubkey =GetScriptForDestination(mn.pubkey.GetID());
+						CTxDestination address3;
+						ExtractDestination(pubkey, address3);
+						CBitcoinAddress address4(address3);
+						if(pwalletMain->IsLocked() || fWalletUnlockStakingOnly) {
+							remoteObj.push_back(Pair("collateral", "Wallet is Locked"));
+							remoteObj.push_back(Pair("txid", "Wallet is Locked"));
+						} else {
+							remoteObj.push_back(Pair("collateral", address4.ToString().c_str()));
+							remoteObj.push_back(Pair("txid",mn.vin.prevout.hash.ToString().c_str()));
+						}
+						//remoteObj.push_back(Pair("txid",mn.vin.prevout.hash.ToString().c_str()));
+						remoteObj.push_back(Pair("outputindex", (int64_t)mn.vin.prevout.n));
+						remoteObj.push_back(Pair("rank", GetCollateralnodeRank(mn, pindexBest)));
+						remoteObj.push_back(Pair("roundpayments", mn.payCount));
+						remoteObj.push_back(Pair("earnings", mn.payValue));
+						remoteObj.push_back(Pair("daily", mn.payRate));
+                        remoteObj.push_back(Pair("version",mn.protocolVersion));
 
 						//printf("CollateralnodeSTATUS:: %s %s - found %s - %s for alias %s\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str(), address4.ToString().c_str(), address2.ToString().c_str(), mne.getAlias().c_str());
                         mnfound = true;
@@ -813,8 +813,8 @@ Value masternode(const Array& params, bool fHelp)
         }
         pwalletMain->Lock();
 
-        if(activeCollateralnode.status == FORTUNASTAKE_STOPPED) return "Successfully Stopped Collateralnode";
-        if(activeCollateralnode.status == FORTUNASTAKE_NOT_CAPABLE) return "Not a capable Collateralnode";
+        if(activeCollateralnode.status == COLLATERALNODE_STOPPED) return "Successfully Stopped Collateralnode";
+        if(activeCollateralnode.status == COLLATERALNODE_NOT_CAPABLE) return "Not a capable Collateralnode";
 
         return "unknown";
     }
@@ -971,10 +971,10 @@ Value masternode(const Array& params, bool fHelp)
             }
 			else if (strCommand == "full") {
                 Object list;
-                list.push_back(Pair("active",        (int)mn.IsEnabled()));
-                list.push_back(Pair("txid",           mn.vin.prevout.hash.ToString().c_str()));
-                list.push_back(Pair("n",       (int64_t)mn.vin.prevout.n));
-                list.push_back(Pair("ip",       		mn.addr.ToString().c_str()));
+                list.push_back(Pair("active",             (int)mn.IsEnabled()));
+                list.push_back(Pair("txid",               mn.vin.prevout.hash.ToString().c_str()));
+                list.push_back(Pair("n",                  (int64_t)mn.vin.prevout.n));
+                //list.push_back(Pair("ip",               mn.addr.ToString().c_str()));
 
                 CScript pubkey;
                 pubkey =GetScriptForDestination(mn.pubkey.GetID());
@@ -1015,19 +1015,19 @@ Value masternode(const Array& params, bool fHelp)
             }
         }
 
-        if(activeCollateralnode.status != FORTUNASTAKE_REMOTELY_ENABLED && activeCollateralnode.status != FORTUNASTAKE_IS_CAPABLE){
-            activeCollateralnode.status = FORTUNASTAKE_NOT_PROCESSED; // TODO: consider better way
+        if(activeCollateralnode.status != COLLATERALNODE_REMOTELY_ENABLED && activeCollateralnode.status != COLLATERALNODE_IS_CAPABLE){
+            activeCollateralnode.status = COLLATERALNODE_NOT_PROCESSED; // TODO: consider better way
             std::string errorMessage;
             activeCollateralnode.ManageStatus();
             pwalletMain->Lock();
         }
 
-        if(activeCollateralnode.status == FORTUNASTAKE_REMOTELY_ENABLED) return "collateralnode started remotely";
-        if(activeCollateralnode.status == FORTUNASTAKE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
-        if(activeCollateralnode.status == FORTUNASTAKE_STOPPED) return "collateralnode is stopped";
-        if(activeCollateralnode.status == FORTUNASTAKE_IS_CAPABLE) return "successfully started collateralnode";
-        if(activeCollateralnode.status == FORTUNASTAKE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
-        if(activeCollateralnode.status == FORTUNASTAKE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
+        if(activeCollateralnode.status == COLLATERALNODE_REMOTELY_ENABLED) return "collateralnode started remotely";
+        if(activeCollateralnode.status == COLLATERALNODE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
+        if(activeCollateralnode.status == COLLATERALNODE_STOPPED) return "collateralnode is stopped";
+        if(activeCollateralnode.status == COLLATERALNODE_IS_CAPABLE) return "successfully started collateralnode";
+        if(activeCollateralnode.status == COLLATERALNODE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
+        if(activeCollateralnode.status == COLLATERALNODE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
 
         return "unknown";
     }
@@ -1144,12 +1144,12 @@ Value masternode(const Array& params, bool fHelp)
 
     if (strCommand == "debug")
     {
-        if(activeCollateralnode.status == FORTUNASTAKE_REMOTELY_ENABLED) return "collateralnode started remotely";
-        if(activeCollateralnode.status == FORTUNASTAKE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
-        if(activeCollateralnode.status == FORTUNASTAKE_IS_CAPABLE) return "successfully started collateralnode";
-        if(activeCollateralnode.status == FORTUNASTAKE_STOPPED) return "collateralnode is stopped";
-        if(activeCollateralnode.status == FORTUNASTAKE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
-        if(activeCollateralnode.status == FORTUNASTAKE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
+        if(activeCollateralnode.status == COLLATERALNODE_REMOTELY_ENABLED) return "collateralnode started remotely";
+        if(activeCollateralnode.status == COLLATERALNODE_INPUT_TOO_NEW) return "collateralnode input must have at least 15 confirmations";
+        if(activeCollateralnode.status == COLLATERALNODE_IS_CAPABLE) return "successfully started collateralnode";
+        if(activeCollateralnode.status == COLLATERALNODE_STOPPED) return "collateralnode is stopped";
+        if(activeCollateralnode.status == COLLATERALNODE_NOT_CAPABLE) return "not capable collateralnode: " + activeCollateralnode.notCapableReason;
+        if(activeCollateralnode.status == COLLATERALNODE_SYNC_IN_PROCESS) return "sync in process. Must wait until client is synced to start.";
 
         CTxIn vin = CTxIn();
         CPubKey pubkey = CScript();
@@ -1269,11 +1269,11 @@ Value masternode(const Array& params, bool fHelp)
         Object mnObj;
 
         CScript pubkey;
-      pubkey = GetScriptForDestination(activeCollateralnode.pubKeyCollateralnode.GetID());
-      CTxDestination address1;
-      ExtractDestination(pubkey, address1);
-      CBitcoinAddress address2(address1);
-      if (activeCollateralnode.pubKeyCollateralnode.IsFullyValid()) {
+        pubkey = GetScriptForDestination(activeCollateralnode.pubKeyCollateralnode.GetID());
+        CTxDestination address1;
+        ExtractDestination(pubkey, address1);
+        CBitcoinAddress address2(address1);
+        if (activeCollateralnode.pubKeyCollateralnode.IsFullyValid()) {
             CScript pubkey;
             CTxDestination address1;
             std::string address = "";
@@ -1295,102 +1295,104 @@ Value masternode(const Array& params, bool fHelp)
                     if (mn.IsActive()) {
                         localObj.push_back(Pair("activetime",(mn.lastTimeSeen - mn.now)));
 
-                      }
-                          localObj.push_back(Pair("earnings", mn.payValue));
-                          found = true;
-                          break;
-                      }
-                  }
-                  string reason;
-                  if(activeCollateralnode.status == FORTUNASTAKE_REMOTELY_ENABLED) reason = "collateralnode started remotely";
-                  if(activeCollateralnode.status == FORTUNASTAKE_INPUT_TOO_NEW) reason = "collateralnode input must have at least 15 confirmations";
-                  if(activeCollateralnode.status == FORTUNASTAKE_IS_CAPABLE) reason = "successfully started collateralnode";
-                  if(activeCollateralnode.status == FORTUNASTAKE_STOPPED) reason = "collateralnode is stopped";
-                  if(activeCollateralnode.status == FORTUNASTAKE_NOT_CAPABLE) reason = "not capable collateralnode: " + activeCollateralnode.notCapableReason;
-                  if(activeCollateralnode.status == FORTUNASTAKE_SYNC_IN_PROCESS) reason = "sync in process. Must wait until client is synced to start.";
+                    }
+                    localObj.push_back(Pair("earnings", mn.payValue));
+                    found = true;
+                    break;
+                }
+            }
+            string reason;
+            if(activeCollateralnode.status == COLLATERALNODE_REMOTELY_ENABLED) reason = "collateralnode started remotely";
+            if(activeCollateralnode.status == COLLATERALNODE_INPUT_TOO_NEW) reason = "collateralnode input must have at least 15 confirmations";
+            if(activeCollateralnode.status == COLLATERALNODE_IS_CAPABLE) reason = "successfully started collateralnode";
+            if(activeCollateralnode.status == COLLATERALNODE_STOPPED) reason = "collateralnode is stopped";
+            if(activeCollateralnode.status == COLLATERALNODE_NOT_CAPABLE) reason = "not capable collateralnode: " + activeCollateralnode.notCapableReason;
+            if(activeCollateralnode.status == COLLATERALNODE_SYNC_IN_PROCESS) reason = "sync in process. Must wait until client is synced to start.";
 
-                  if (!found) {
-                      localObj.push_back(Pair("network_status", "unregistered"));
-                      if (activeCollateralnode.status != 9 && activeCollateralnode.status != 7)
-                      {
-                          localObj.push_back(Pair("notCapableReason", reason));
-                      }
+            if (!found) {
+                localObj.push_back(Pair("network_status", "unregistered"));
+                if (activeCollateralnode.status != 9 && activeCollateralnode.status != 7)
+                {
+                    localObj.push_back(Pair("notCapableReason", reason));
+                }
             } else {
                 localObj.push_back(Pair("local_status", reason));
             }
 
-              //localObj.push_back(Pair("address", address2.ToString().c_str()));
 
-              mnObj.push_back(Pair("local",localObj));
+            //localObj.push_back(Pair("address", address2.ToString().c_str()));
+
+            mnObj.push_back(Pair("local",localObj));
+        } else {
+            Object localObj;
+            localObj.push_back(Pair("status", "unconfigured"));
+            mnObj.push_back(Pair("local",localObj));
+        }
+
+        BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry& mne, collateralnodeConfig.getEntries()) {
+            Object remoteObj;
+            std::string address = mne.getIp();
+
+            CTxIn vin;
+            CTxDestination address1;
+            CActiveCollateralnode amn;
+            CPubKey pubKeyCollateralAddress;
+            CKey keyCollateralAddress;
+            CPubKey pubKeyCollateralnode;
+            CKey keyCollateralnode;
+            std::string errorMessage;
+            std::string colLateralError;
+            std::string vinError;
+
+            if(!colLateralSigner.SetKey(mne.getPrivKey(), colLateralError, keyCollateralnode, pubKeyCollateralnode))
+            {
+                errorMessage = colLateralError;
+            }
+
+            if (!amn.GetCollateralNodeVin(vin, pubKeyCollateralAddress, keyCollateralAddress, mne.getTxHash(), mne.getOutputIndex(), vinError))
+            {
+                errorMessage = vinError;
+            }
+
+            CScript pubkey = GetScriptForDestination(pubKeyCollateralAddress.GetID());
+            ExtractDestination(pubkey, address1);
+            CBitcoinAddress address2(address1);
+
+            remoteObj.push_back(Pair("alias", mne.getAlias()));
+            remoteObj.push_back(Pair("ipaddr", address));
+
+            if(pwalletMain->IsLocked() || fWalletUnlockStakingOnly) {
+                remoteObj.push_back(Pair("collateral", "Wallet is Locked"));
+            } else {
+                remoteObj.push_back(Pair("collateral", address2.ToString()));
+            }
+            //remoteObj.push_back(Pair("collateral", address2.ToString()));
+            //remoteObj.push_back(Pair("collateral", CBitcoinAddress(mn->pubKeyCollateralAddress.GetID()).ToString()));
+
+            bool mnfound = false;
+            BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
+            {
+                if (mn.addr.ToString() == mne.getIp()) {
+                    remoteObj.push_back(Pair("status", "online"));
+                    remoteObj.push_back(Pair("lastpaidblock",mn.nBlockLastPaid));
+                    remoteObj.push_back(Pair("version",mn.protocolVersion));
+                    mnfound = true;
+                    break;
+                }
+            }
+            if (!mnfound)
+            {
+                if (!errorMessage.empty()) {
+                    remoteObj.push_back(Pair("status", "error"));
+                    remoteObj.push_back(Pair("error", errorMessage));
                 } else {
-                  Object localObj;
-                  localObj.push_back(Pair("status", "unconfigured"));
-                  mnObj.push_back(Pair("local",localObj));
-                }
-
-                BOOST_FOREACH(CCollateralnodeConfig::CCollateralnodeEntry& mne, collateralnodeConfig.getEntries()) {
-                  Object remoteObj;
-                  std::string address = mne.getIp();
-
-                CTxIn vin;
-                CTxDestination address1;
-                CActiveCollateralnode amn;
-                CPubKey pubKeyCollateralAddress;
-                CKey keyCollateralAddress;
-                CPubKey pubKeyCollateralnode;
-                CKey keyCollateralnode;
-                std::string errorMessage;
-                std::string forTunaError;
-                std::string vinError;
-
-                if(!forTunaSigner.SetKey(mne.getPrivKey(), forTunaError, keyCollateralnode, pubKeyCollateralnode))
-              {
-                  errorMessage = forTunaError;
-              }
-
-              if (!amn.GetCollateralNodeVin(vin, pubKeyCollateralAddress, keyCollateralAddress, mne.getTxHash(), mne.getOutputIndex(), vinError))
-          {
-              errorMessage = vinError;
-          }
-
-          CScript pubkey = GetScriptForDestination(pubKeyCollateralAddress.GetID());
-          ExtractDestination(pubkey, address1);
-          CBitcoinAddress address2(address1);
-
-          remoteObj.push_back(Pair("alias", mne.getAlias()));
-          remoteObj.push_back(Pair("ipaddr", address));
-
-          if(pwalletMain->IsLocked() || fWalletUnlockStakingOnly) {
-              remoteObj.push_back(Pair("collateral", "Wallet is Locked"));
-          } else {
-              remoteObj.push_back(Pair("collateral", address2.ToString()));
-          }
-          //remoteObj.push_back(Pair("collateral", address2.ToString()));
-          //remoteObj.push_back(Pair("collateral", CBitcoinAddress(mn->pubKeyCollateralAddress.GetID()).ToString()));
-
-          bool mnfound = false;
-          BOOST_FOREACH(CCollateralNode& mn, vecCollateralnodes)
-          {
-              if (mn.addr.ToString() == mne.getIp()) {
-                  remoteObj.push_back(Pair("status", "online"));
-                  remoteObj.push_back(Pair("lastpaidblock",mn.nBlockLastPaid));
-                  remoteObj.push_back(Pair("version",mn.protocolVersion));
-                  mnfound = true;
-                  break;
-                }
-              }
-          if (!mnfound)
-          {
-              if (!errorMessage.empty()) {
-                  remoteObj.push_back(Pair("status", "error"));
-                  remoteObj.push_back(Pair("error", errorMessage));
-              } else {
-                  remoteObj.push_back(Pair("status", "notfound"));
+                    remoteObj.push_back(Pair("status", "notfound"));
                 }
             }
             mnObj.push_back(Pair(mne.getAlias(),remoteObj));
-       }
-            return mnObj;
+        }
+
+        return mnObj;
     }
 
 

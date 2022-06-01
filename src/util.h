@@ -45,8 +45,22 @@ static const int64_t nOneWeek = 7 * 24 * 60 * 60;
 
 static const int64_t COIN = 100000000;
 static const int64_t CENT = 1000000;
-
 static const CAmount SUBCENT = 100;
+
+/**
+ * Convert string to signed 32-bit integer with strict parse error feedback.
+ * @returns true if the entire string could be parsed as valid integer,
+ *   false if not the entire string could be parsed or when overflow or underflow occurred.
+ */
+
+bool ParseInt32(const std::string& str, int32_t *out);
+
+/**
+ * Convert string to signed 64-bit integer with strict parse error feedback.
+ * @returns true if the entire string could be parsed as valid integer,
+ *   false if not the entire string could be parsed or when overflow or underflow occurred.
+ */
+bool ParseInt64(const std::string& str, int64_t *out);
 
 //#define loop                for (;;)
 #define BEGIN(a)            ((char*)&(a))
@@ -166,17 +180,16 @@ static inline int LogPrint(const char* category, const char* format)
 }
 
 
-//static inline bool error(const char* format)
-//{
-//    LogPrintStr(std::string("ERROR: ") + format + "\n");
-//    return false;
-//}
+// static inline bool error(const char* format)
+// {
+    // LogPrintStr(std::string("ERROR: ") + format + "\n");
+    // return false;
+// }
 static inline int errorN(int n, const char* format)
 {
     LogPrintStr(std::string("ERROR: ") + format + "\n");
     return n;
 }
-
 
 /* This GNU C extension enables the compiler to check the format string against the parameters provided.
  * X is the number of the "format string" parameter, and Y is the number of the first variadic parameter.
@@ -201,7 +214,7 @@ extern int64_t enforceCollateralnodePaymentsTime;
 extern std::string strCollateralNodeAddr;
 extern int keysLoaded;
 extern bool fSuccessfullyLoaded;
-extern std::vector<int64_t> forTunaDenominations;
+extern std::vector<int64_t> colLateralDenominations;
 
 
 extern std::map<std::string, std::string> mapArgs;
@@ -224,7 +237,7 @@ extern bool fCommandLine;
 extern std::string strMiscWarning;
 extern bool fTestNet;
 extern bool fNativeTor;
-extern bool fHyperfileLocal;
+extern bool fHyperFileLocal;
 extern bool fCNLock;
 extern bool fNoListen;
 extern bool fLogTimestamps;
@@ -263,7 +276,7 @@ bool ATTR_WARN_PRINTF(1,2) error(const char *format, ...);
 void PrintException(std::exception* pex, const char* pszThread);
 void PrintExceptionContinue(std::exception* pex, const char* pszThread);
 void ParseString(const std::string& str, char c, std::vector<std::string>& v);
-std::string SanatizeString(const std::string& str);
+std::string SanitizeString(const std::string& str);
 std::string FormatMoney(int64_t n, bool fPlus=false);
 bool ParseMoney(const std::string& str, int64_t& nRet);
 bool ParseMoney(const char* pszIn, int64_t& nRet);
@@ -317,6 +330,7 @@ std::string FormatFullVersion();
 std::string FormatSubVersion(const std::string& name, int nClientVersion, const std::vector<std::string>& comments);
 void AddTimeData(const CNetAddr& ip, int64_t nTime);
 void runCommand(std::string strCommand);
+
 
 namespace d
 {
@@ -500,6 +514,15 @@ bool GetBoolArg(const std::string& strArg, bool fDefault=false);
 bool SoftSetArg(const std::string& strArg, const std::string& strValue);
 
 /**
+ * Set a boolean argument if it doesn't already have a value
+ *
+ * @param strArg Argument to set (e.g. "-foo")
+ * @param fValue Value (e.g. false)
+ * @return true if argument gets set, false if it already had a value
+ */
+bool SoftSetBoolArg(const std::string& strArg, bool fValue);
+
+/**
  * Set an argument
  * for boolean arguments use "1" / "0"
  *
@@ -513,15 +536,6 @@ inline bool SetBoolArg(const std::string& strArg, bool fValue)
 {
     return SetArg(strArg, fValue ? "1" : "0");
 };
-
-/**
- * Set a boolean argument if it doesn't already have a value
- *
- * @param strArg Argument to set (e.g. "-foo")
- * @param fValue Value (e.g. false)
- * @return true if argument gets set, false if it already had a value
- */
-bool SoftSetBoolArg(const std::string& strArg, bool fValue);
 
 /**
  * MWC RNG of George Marsaglia

@@ -1,7 +1,7 @@
 // Copyright (c) 2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
 // Copyright (c) 2017-2020 Denarius developers
-// Copyright (c) 2019-2020 Innova Developers
+// Copyright (c) 2019-2022 Innova Developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -94,10 +94,11 @@ Value getinfo(const Array& params, bool fHelp)
         throw runtime_error(
             "getinfo\n"
             "Returns an object containing various state info.");
+
     proxyType proxy;
     GetProxy(NET_IPV4, proxy);
 
-    uint64_t nMinWeight = 0, nMaxWeight = 0, nWeight = 0;
+	uint64_t nMinWeight = 0, nMaxWeight = 0, nWeight = 0;
     pwalletMain->GetStakeWeight(*pwalletMain, nMinWeight, nMaxWeight, nWeight);
 
     Object obj, diff;
@@ -122,23 +123,26 @@ Value getinfo(const Array& params, bool fHelp)
     {
         string automatic_onion;
         fs::path const hostname_path = GetDefaultDataDir() / "onion" / "hostname";
+
         if (!fs::exists(hostname_path)) {
             printf("No external address found.");
         }
+
         ifstream file(hostname_path.string().c_str());
         file >> automatic_onion;
         obj.push_back(Pair("ip",       (automatic_onion)));
     }
     if(!fNativeTor)
-    obj.push_back(Pair("ip",            addrSeenByPeer.ToStringIP()));
+        obj.push_back(Pair("ip",            addrSeenByPeer.ToStringIP()));
+
     diff.push_back(Pair("proof-of-work",  GetDifficulty()));
     diff.push_back(Pair("proof-of-stake", GetDifficulty(GetLastBlockIndex(pindexBest, true))));
 
     obj.push_back(Pair("difficulty",    diff));
-    obj.push_back(Pair("netmhashps",     GetPoWMHashPS()));
-	  obj.push_back(Pair("netstakeweight", GetPoSKernelPS()));
+	obj.push_back(Pair("netmhashps",     GetPoWMHashPS()));
+	obj.push_back(Pair("netstakeweight", GetPoSKernelPS()));
 
-	  obj.push_back(Pair("weight", (uint64_t)nWeight));
+	obj.push_back(Pair("weight", (uint64_t)nWeight));
 
     obj.push_back(Pair("testnet",       fTestNet));
     obj.push_back(Pair("collateralnode",  fCollateralNode));
@@ -149,7 +153,7 @@ Value getinfo(const Array& params, bool fHelp)
     obj.push_back(Pair("paytxfee",      ValueFromAmount(nTransactionFee)));
     obj.push_back(Pair("mininput",      ValueFromAmount(nMinimumInputValue)));
     obj.push_back(Pair("datadir",       GetDataDir().string()));
-    obj.push_back(Pair("initialblockdownload",  IsInitialBlockDownload()));
+	obj.push_back(Pair("initialblockdownload",  IsInitialBlockDownload()));
     if(fDebug)
 	{
     	obj.push_back(Pair("debug",             fDebug));
@@ -195,7 +199,7 @@ Value walletstatus(const Array& params, bool fHelp)
 	if (pwalletMain->IsLocked() && pwalletMain->IsCrypted())
 		obj.push_back(Pair("wallet_status", "locked"));
 
-	  return obj;
+	return obj;
 }
 
 Value getnewpubkey(const Array& params, bool fHelp)
@@ -395,8 +399,8 @@ Value sendtoaddress(const Array& params, bool fHelp)
 
     /*
     if (params[0].get_str().length() > 75
-      && IsStealthAddress(params[0].get_str()))
-      return sendtostealthaddress(params, false);
+        && IsStealthAddress(params[0].get_str()))
+        return sendtostealthaddress(params, false);
     */
 
     CBitcoinAddress address(params[0].get_str());
@@ -481,7 +485,7 @@ Value burn(const Array& params, bool fHelp)
     if (!pwalletMain->CreateTransaction(burnScript, nAmount, sNarr, wtx, reservekey, nFeeRequired, nullptr)) {
         if (nAmount + nFeeRequired > pwalletMain->GetBalance())
             strError = "Error: This transaction requires a transaction fee of at least " + FormatMoney(nFeeRequired) + " because of its amount, complexity, or use of recently received funds!";
-            printf("BurnCoins() : %s\n", strError.c_str());
+        printf("BurnCoins() : %s\n", strError.c_str());
         throw JSONRPCError(RPC_WALLET_ERROR, strError);
     }
     if (!pwalletMain->CommitTransaction(wtx, reservekey))
@@ -489,6 +493,7 @@ Value burn(const Array& params, bool fHelp)
 
     return wtx.GetHash().GetHex();
 }
+
 
 Value listaddressgroupings(const Array& params, bool fHelp)
 {
@@ -703,9 +708,9 @@ Value getreceivedbyaccount(const Array& params, bool fHelp)
                 {
                     // ignore namecoin TxOut
                     if (hooks->IsNameTx(wtx.nVersion) && hooks->IsNameScript(txout.scriptPubKey))
-                        continue; //note: this will never execute, because ExtractDestination will not exctract nameTx address.
+                        continue; //note: this will never execute, because ExtractDestination will not exctract nameTx address. Maybe fix this?
                     nAmount += txout.nValue;
-            }
+                }
         }
     }
 
@@ -1851,15 +1856,15 @@ Value walletpassphrase(const Array& params, bool fHelp)
 
     NewThread(ThreadTopUpKeyPool, NULL);
     int64_t* pnSleepTime = new int64_t(params[1].get_int64());
-    //LOCK(cs_nWalletUnlockTime);
-	  //nWalletUnlockTime = GetTime() + pnSleepTime;
+	//LOCK(cs_nWalletUnlockTime);
+	//nWalletUnlockTime = GetTime() + pnSleepTime;
     NewThread(ThreadCleanWalletPassphrase, pnSleepTime);
 
     //fWalletUnlockStakingOnly = false;
 
     // Innova: if user OS account compromised prevent trivial sendmoney commands
     // if (params.size() > 2 && params[2].get_bool() == true)
-    //     fWalletUnlockStakingOnly = true;
+        // fWalletUnlockStakingOnly = true;
 	if (params.size() > 2)
         fWalletUnlockStakingOnly = params[2].get_bool();
     else
@@ -2926,6 +2931,7 @@ Value anoninfo(const Array& params, bool fHelp)
     return result;
 }
 
+
 Value reloadanondata(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() > 0)
@@ -3193,7 +3199,7 @@ Value txnreport(const Array& params, bool fHelp)
                     };
                 } else
                 {
-                    entry.push_back("D out");
+                    entry.push_back("INN out");
                     entry.push_back(fCoinBase ? "coinbase" : fCoinStake ? "coinstake" : "");
 
 

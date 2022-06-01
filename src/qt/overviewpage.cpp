@@ -124,14 +124,14 @@ OverviewPage::OverviewPage(QWidget *parent) :
 
 
 
-  PriceRequest(); //Segfault 20.04/18.04
+    PriceRequest(); //Segfault 20.04/18.04
 	//QObject::connect(&m_nam, SIGNAL(finished(QNetworkReply*)), this, SLOT(parseNetworkResponse(QNetworkReply*)));
 	connect(ui->refreshButton, SIGNAL(pressed()), this, SLOT( PriceRequest()));
 
 	//Refresh the Est. Balances and News automatically
-	  refreshbtnTimer = new QTimer(this);
+	refreshbtnTimer = new QTimer(this);
     connect(refreshbtnTimer, SIGNAL(timeout()), this, SLOT( PriceRequest()));
-    refreshbtnTimer->start(120000); // 120 second timer
+    refreshbtnTimer->start(160000); // 160 second timer
 
     //Handle refreshing updateDisplayUnit() more often instead of every tx change
     updateDisplayTimer = new QTimer(this);
@@ -248,8 +248,8 @@ void OverviewPage::getRequest3( const QString &urlString )
       curl_easy_cleanup(curl);
 
 
-        QString dnewsfeed = QString::fromStdString(readBuffer);
-        innnewsfeed = dnewsfeed;
+        QString inewsfeed = QString::fromStdString(readBuffer);
+        innnewsfeed = inewsfeed;
     }
 }
 

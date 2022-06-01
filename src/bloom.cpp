@@ -109,15 +109,15 @@ bool CBloomFilter::IsRelevantAndUpdate(const CTransaction& tx)
     if (isEmpty)
         return false;
 
-        const uint256& hash = tx.GetHash();
+    const uint256& hash = tx.GetHash();
 
 
-        if (((nFlags & BLOOM_ACCEPT_STEALTH) && tx.HasStealthOutput())
-            || contains(hash))
-        {
+    if (((nFlags & BLOOM_ACCEPT_STEALTH) && tx.HasStealthOutput())
+        || contains(hash))
+    {
         fFound = true;
         // -- don't return here!
-      };
+    };
 
 
     for (unsigned int i = 0; i < tx.vout.size(); i++)
@@ -141,15 +141,15 @@ bool CBloomFilter::IsRelevantAndUpdate(const CTransaction& tx)
                 vector<unsigned char> dataHash160(pkHash.begin(), pkHash.end());
 
                 if (dataHash160.size() != 0 && contains(dataHash160))
-                  fFound = true;
-                };
+                    fFound = true;
+            };
 
-              if (!fFound
+            if (!fFound
                 && data.size() != 0 && contains(data))
                 fFound = true;
 
-              if (fFound)
-              {
+            if (fFound)
+            {
                 if ((nFlags & BLOOM_UPDATE_MASK) == BLOOM_UPDATE_ALL)
                 {
                     insert(COutPoint(hash, i));
@@ -170,7 +170,7 @@ bool CBloomFilter::IsRelevantAndUpdate(const CTransaction& tx)
     if (fFound)
         return true;
 
-    BOOST_FOREACH(const CTxIn& txin, tx.vin)
+    for (const CTxIn& txin : tx.vin)
     {
         // Match if the filter contains an outpoint tx spends
         if (contains(txin.prevout))

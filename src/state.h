@@ -1,5 +1,5 @@
 // Copyright (c) 2020 The Denarius Developers
-// Copyright (c) 2020 The Innova Developers
+// Copyright (c) 2022 The Innova Developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file license.txt or http://www.opensource.org/licenses/mit-license.php.
 

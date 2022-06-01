@@ -1,12 +1,15 @@
 /* Copyright (c) 2016-2019, The C++ IPFS client library developers
+
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the "Software"), to deal in
 the Software without restriction, including without limitation the rights to
 use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
 the Software, and to permit persons to whom the Software is furnished to do so,
 subject to the following conditions:
+
 The above copyright notice and this permission notice shall be included in all
 copies or substantial portions of the Software.
+
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
 FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
@@ -95,7 +98,9 @@ void Client::ConfigGet(const std::string& key, Json* config) {
       "Key": "Datastore",
       "Value": { "BloomFilterSize": 0, "GCPeriod": "1h", ... }
     }
+
     to
+
     { "BloomFilterSize": 0, "GCPeriod": "1h", ... }
     */
     GetProperty(*config, "Value", 0, config);
@@ -123,7 +128,9 @@ void Client::DhtFindPeer(const std::string& peer_id, Json* addresses) {
 
   /* Find the addresses of the requested peer in the response. It consists
   of many lines like this:
+
   {..., "Responses":[{"Addrs":["...","..."],"ID":"peer_id"}], ...}
+
   */
   std::string line;
   while (std::getline(body, line)) {
@@ -152,10 +159,13 @@ void Client::DhtFindProvs(const std::string& hash, Json* providers) {
 
   /* The reply consists of multiple lines, each one of which is a JSON, for
   example:
+
   {"Extra":"","ID":"QmfPZcnVAEjXABiA7StETRUKkS8FzNt968Z8HynbJR7oci","Responses":null,"Type":6}
   {"Extra":"","ID":"QmfSUo8FkKDTE8T3uhXfQUiyTz7JuMrkUFpTwLM7LLidXG","Responses":null,"Type":6}
   {"Extra":"","ID":"QmWmJvCpjMuBZX4MYWupb9GB3qNYVa1igYCsAQfSHmFJde","Responses":null,"Type":0}
+
   we convert that into a single JSON like:
+
   [
     {"Extra":"","ID":"QmfPZcnVAEjXABiA7StETRUKkS8FzNt968Z8HynbJR7oci","Responses":null,"Type":6},
     {"Extra":"","ID":"QmfSUo8FkKDTE8T3uhXfQUiyTz7JuMrkUFpTwLM7LLidXG","Responses":null,"Type":6},
@@ -197,15 +207,19 @@ void Client::FilesAdd(const std::vector<http::FileUpload>& files,
 
   /* The reply consists of multiple lines, each one of which is a JSON, for
   example:
+
   {"Name":"foo.txt","Bytes":4}
   {"Name":"foo.txt","Hash":"QmWPyMW2u7J2Zyzut7TcBMT8pG6F2cB4hmZk1vBJFBt1nP"}
   {"Name":"bar.txt","Bytes":1176}
   {"Name":"bar.txt","Hash":"QmVjQsMgtRsRKpNM8amTCDRuUPriY8tGswsTpo137jPWwL"}
+
   we convert that into a single JSON like:
+
   [
     { "path": "foo.txt", "hash": "QmWP...", "size": 4 },
     { "path": "bar.txt", "hash": "QmVj...", "size": 1176 }
   ]
+
   and return it to the caller. */
 
   /* A temporary JSON object to facilitate creating the result in case the

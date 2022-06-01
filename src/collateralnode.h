@@ -1,10 +1,10 @@
 // Copyright (c) 2017-2021 The Denarius developers
-// Copyright (c) 2019-2021 The Innova developers
+// Copyright (c) 2019-2022 The Innova developers
 // Copyright (c) 2009-2012 The Darkcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#ifndef FORTUNASTAKE_H
-#define FORTUNASTAKE_H
+#ifndef COLLATERALNODE_H
+#define COLLATERALNODE_H
 
 #include "uint256.h"
 #include "uint256.h"
@@ -21,27 +21,27 @@ class CCollateralNode;
 class CCollateralnodePayments;
 class uint256;
 
-#define FORTUNASTAKE_NOT_PROCESSED               0 // initial state
-#define FORTUNASTAKE_IS_CAPABLE                  1
-#define FORTUNASTAKE_NOT_CAPABLE                 2
-#define FORTUNASTAKE_STOPPED                     3
-#define FORTUNASTAKE_INPUT_TOO_NEW               4
-#define FORTUNASTAKE_PORT_NOT_OPEN               6
-#define FORTUNASTAKE_PORT_OPEN                   7
-#define FORTUNASTAKE_SYNC_IN_PROCESS             8
-#define FORTUNASTAKE_REMOTELY_ENABLED            9
+#define COLLATERALNODE_NOT_PROCESSED               0 // initial state
+#define COLLATERALNODE_IS_CAPABLE                  1
+#define COLLATERALNODE_NOT_CAPABLE                 2
+#define COLLATERALNODE_STOPPED                     3
+#define COLLATERALNODE_INPUT_TOO_NEW               4
+#define COLLATERALNODE_PORT_NOT_OPEN               6
+#define COLLATERALNODE_PORT_OPEN                   7
+#define COLLATERALNODE_SYNC_IN_PROCESS             8
+#define COLLATERALNODE_REMOTELY_ENABLED            9
 
-#define FORTUNASTAKE_MIN_CONFIRMATIONS           15
-#define FORTUNASTAKE_MIN_CONFIRMATIONS_NOPAY     500
-#define FORTUNASTAKE_MIN_DSEEP_SECONDS           (10*60)
-#define FORTUNASTAKE_MIN_DSEE_SECONDS            (5*60)
-#define FORTUNASTAKE_PING_SECONDS                (1*60)
-#define FORTUNASTAKE_EXPIRATION_SECONDS          (120*60)
-#define FORTUNASTAKE_REMOVAL_SECONDS             (130*60)
-#define FORTUNASTAKE_CHECK_SECONDS               10
+#define COLLATERALNODE_MIN_CONFIRMATIONS           15
+#define COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY     500
+#define COLLATERALNODE_MIN_DSEEP_SECONDS           (10*60)
+#define COLLATERALNODE_MIN_DSEE_SECONDS            (5*60)
+#define COLLATERALNODE_PING_SECONDS                (1*60)
+#define COLLATERALNODE_EXPIRATION_SECONDS          (120*60)
+#define COLLATERALNODE_REMOVAL_SECONDS             (130*60)
+#define COLLATERALNODE_CHECK_SECONDS               10
 
-#define FORTUNASTAKE_FAIR_PAYMENT_MINIMUM         200
-#define FORTUNASTAKE_FAIR_PAYMENT_ROUNDS          3
+#define COLLATERALNODE_FAIR_PAYMENT_MINIMUM         200
+#define COLLATERALNODE_FAIR_PAYMENT_ROUNDS          3
 
 using namespace std;
 
@@ -146,7 +146,7 @@ public:
     int64_t payRate;
     int payCount;
     int64_t payValue;
-    int64_t now; //dsee message times
+    int64_t now; //isee message times
     int64_t lastDseep;
     int cacheInputAge;
     int cacheInputAgeBlock;
@@ -210,8 +210,8 @@ public:
     }
 
     bool IsActive() {
-        if (lastTimeSeen - now > (max(FORTUNASTAKE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * 30))
-        { // dsee broadcast is more than a round old, let's consider it active
+        if (lastTimeSeen - now > (max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * 30))
+        { // isee broadcast is more than a round old, let's consider it active
                 return true;
         }
         return false;

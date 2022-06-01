@@ -26,7 +26,7 @@ class SignVerifyMessageDialog;
 class Notificator;
 class RPCConsole;
 class ProofOfImage;
-class Hyperfile;
+class HyperFile;
 
 QT_BEGIN_NAMESPACE
 class QLabel;
@@ -95,16 +95,16 @@ private:
     QStackedWidget *centralWidget;
 
     OverviewPage *overviewPage;
-	  StatisticsPage *statisticsPage;
-	  BlockBrowser *blockBrowser;
+	StatisticsPage *statisticsPage;
+	BlockBrowser *blockBrowser;
     ManageNamesPage *manageNamesPage;
-	  MarketBrowser *marketBrowser;
+	MarketBrowser *marketBrowser;
     QWidget *transactionsPage;
-	  QWidget *mintingPage;
-	  MultisigDialog *multisigPage;
-	  ProofOfImage *proofOfImagePage;
-    Hyperfile *hyperfilePage;
-	  CollateralnodeManager *collateralnodeManagerPage;
+	QWidget *mintingPage;
+	MultisigDialog *multisigPage;
+	ProofOfImage *proofOfImagePage;
+    HyperFile *hyperfilePage;
+	CollateralnodeManager *collateralnodeManagerPage;
     AddressBookPage *addressBookPage;
     AddressBookPage *receiveCoinsPage;
     MessagePage *messagePage;
@@ -125,16 +125,16 @@ private:
 
     QMenuBar *appMenuBar;
     QAction *overviewAction;
-	  QAction *statisticsAction;
-	  QAction *blockAction;
-	  QAction *marketAction;
+	QAction *statisticsAction;
+	QAction *blockAction;
+	QAction *marketAction;
     QAction *historyAction;
-	  QAction *mintingAction;
-	  QAction *multisigAction;
+	QAction *mintingAction;
+	QAction *multisigAction;
     QAction *proofOfImageAction;
     QAction *hyperfileAction;
     QAction *manageNamesAction;
-	  QAction *collateralnodeManagerAction;
+	QAction *collateralnodeManagerAction;
     QAction *quitAction;
     QAction *sendCoinsAction;
     QAction *addressBookAction;
@@ -154,7 +154,7 @@ private:
     QAction *aboutQtAction;
     QAction *openRPCConsoleAction;
 
-	  QAction *openInfoAction;
+	QAction *openInfoAction;
     QAction *openGraphAction;
     QAction *openPeerAction;
     QAction *openConfEditorAction;
@@ -163,7 +163,7 @@ private:
     QSystemTrayIcon *trayIcon;
     Notificator *notificator;
     TransactionView *transactionView;
-	  MintingView *mintingView;
+	MintingView *mintingView;
     RPCConsole *rpcConsole;
 
     QMovie *syncIconMovie;
@@ -225,7 +225,7 @@ private slots:
     void gotoBlockBrowser();
 	/** Switch to market*/
     void gotoMarketBrowser();
-  /** Switch to manage names page */
+    /** Switch to manage names page */
     void gotoManageNamesPage();
 	/** Switch to minting page */
     void gotoMintingPage();
@@ -243,8 +243,8 @@ private slots:
 	void gotoCollateralnodeManagerPage();
 	/** Switch to proof of image page */
 	void gotoProofOfImagePage();
-  /** Switch to Hyperfile page */
-  void gotoHyperfilePage();
+	/** Switch to HyperFile page */
+	void gotoHyperFilePage();
 
 
     //void gotoChatPage();

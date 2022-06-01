@@ -30,15 +30,15 @@ static const int DATABASE_VERSION = 21212;
 // network protocol versioning
 //
 
-static const int PROTOCOL_VERSION = 43890; //Protocol is now 43890
+static const int PROTOCOL_VERSION = 43910; //Protocol is now 43920
 
 // intial proto version, to be increased after version/verack negotiation
-static const int INIT_PROTO_VERSION = 21212;
+static const int INIT_PROTO_VERSION = 21212; // Bumped up from 21212 to 43920 v4.3.9.2
 
 // disconnect from peers older than this proto version
-static const int MIN_PEER_PROTO_VERSION = 43890;
+static const int MIN_PEER_PROTO_VERSION = 43910;
 
-// Don't forget to change proto in FORTUNA.h as well!! On Block 1.5m this will be 31005
+// Don't forget to change proto in COLLATERAL.h as well!! On Block 1.5m this will be 31005
 extern int MIN_MN_PROTO_VERSION;
 
 // nTime field added to CAddress, starting with this version;

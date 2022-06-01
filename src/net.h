@@ -31,7 +31,7 @@ static const int PING_INTERVAL = 2 * 60;
 /** Time after which to disconnect, after waiting for a ping response (or inactivity). */
 static const int TIMEOUT_INTERVAL = 20 * 60;
 
-inline unsigned int ReceiveFloodSize() { return 1000*GetArg("-maxreceivebuffer", 1*1000); }
+inline unsigned int ReceiveFloodSize() { return 1000*GetArg("-maxreceivebuffer", 5*1000); }
 inline unsigned int SendBufferSize() { return 1000*GetArg("-maxsendbuffer", 1*1000); }
 
 void AddOneShot(std::string strDest);
@@ -39,13 +39,14 @@ bool RecvLine(SOCKET hSocket, std::string& strLine);
 bool GetMyExternalIP(CNetAddr& ipRet);
 void AddressCurrentlyConnected(const CService& addr);
 CNode* FindNode(const CNetAddr& ip);
+CNode* FindNode(const CSubNet& subNet);
 CNode* FindNode(const std::string& addrName);
 CNode* FindNode(const CService& ip);
 //CNode* ConnectNode(CAddress addrConnect, const char *strDest = NULL);
-CNode* ConnectNode(CAddress addrConnect, const char *strDest = NULL, bool forTunaMaster=false);
+CNode* ConnectNode(CAddress addrConnect, const char *strDest = NULL, bool colLateralMaster=false);
 void MapPort();
 unsigned short GetListenPort();
-bool BindListenPort(const CService &bindAddr, std::string& strError=REF(std::string()));
+bool BindListenPort(const CService &bindAddr, std::string& strError=REF(std::string()), bool fWhitelisted = false);
 void StartTor(void* parg);
 void StartNode(void* parg);
 bool StopNode();
@@ -99,7 +100,7 @@ enum
     MSG_TXLOCK_REQUEST,
     MSG_TXLOCK_VOTE,
     MSG_SPORK,
-    MSG_FORTUNASTAKE_WINNER
+    MSG_COLLATERALNODE_WINNER
 };
 
 class CRequestTracker
@@ -194,6 +195,7 @@ public:
     int nChainHeight;
     int nMisbehavior;
     bool fSyncNode;
+    bool fWhitelisted;
     double dPingTime;
     double dPingWait;
     std::string addrLocal;
@@ -267,6 +269,68 @@ public:
 
 };
 
+typedef enum BanReason
+{
+    BanReasonUnknown          = 0,
+    BanReasonNodeMisbehaving  = 1,
+    BanReasonManuallyAdded    = 2
+} BanReason;
+
+class CBanEntry
+{
+public:
+    static const int CURRENT_VERSION=1;
+    int nVersion;
+    int64_t nCreateTime;
+    int64_t nBanUntil;
+    uint8_t banReason;
+
+    CBanEntry()
+    {
+        SetNull();
+    }
+
+    CBanEntry(int64_t nCreateTimeIn)
+    {
+        SetNull();
+        nCreateTime = nCreateTimeIn;
+    }
+
+    ADD_SERIALIZE_METHODS;
+
+    template <typename Stream, typename Operation>
+    inline void SerializationOp(Stream& s, Operation ser_action, int nType, int nVersion) {
+        unsigned int nSerSize = 0;
+        READWRITE(this->nVersion);
+        nVersion = this->nVersion;
+        READWRITE(nCreateTime);
+        READWRITE(nBanUntil);
+        READWRITE(banReason);
+    }
+
+    void SetNull()
+    {
+        nVersion = CBanEntry::CURRENT_VERSION;
+        nCreateTime = 0;
+        nBanUntil = 0;
+        banReason = BanReasonUnknown;
+    }
+
+    std::string banReasonToString()
+    {
+        switch (banReason) {
+            case BanReasonNodeMisbehaving:
+                return "node misbehaving";
+            case BanReasonManuallyAdded:
+                return "manually added";
+            default:
+                return "unknown";
+        }
+    }
+};
+
+typedef std::map<CSubNet, CBanEntry> banmap_t;
+
 /** Information about a peer */
 class CNode
 {
@@ -279,7 +343,7 @@ public:
     size_t nSendOffset; // offset inside the first vSendMsg already sent
     std::deque<CSerializeData> vSendMsg;
     CCriticalSection cs_vSend;
-
+    CCriticalSection cs_vRecv;
 	std::deque<CInv> vRecvGetData;
     std::deque<CNetMessage> vRecvMsg;
     CCriticalSection cs_vRecvMsg;
@@ -293,13 +357,13 @@ public:
 
     int64_t nLastSendEmpty;
     int64_t nTimeConnected;
-    int64_t nLastDseg;
+    int64_t nLastIseg;
     CAddress addr;
     std::string addrName;
     CService addrLocal;
     int nVersion;
     std::string strSubVer;
-    //bool fWhitelisted; // This peer can bypass DoS banning.
+    bool fWhitelisted; // This peer can bypass DoS banning.
     bool fOneShot;
     bool fClient;
     bool fInbound;
@@ -312,16 +376,21 @@ public:
     // b) the peer may tell us in their version message that we should not relay tx invs
     //    until they have initialized their bloom filter.
     bool fRelayTxes;
-    bool fForTunaMaster;
+    bool fColLateralMaster;
     CSemaphoreGrant grantOutbound;
     int nRefCount;
 	NodeId id;
 protected:
-
     // Denial-of-service detection/prevention
     // Key is IP address, value is banned-until-time
-    static std::map<CNetAddr, int64_t> setBanned;
+    static banmap_t setBanned;
     static CCriticalSection cs_setBanned;
+    static bool setBannedIsDirty;
+
+    // Whitelisted ranges. Any node connecting from these is automatically
+    // whitelisted (as well as those connecting to whitelisted binds).
+    static std::vector<CSubNet> vWhitelistedRange;
+    static CCriticalSection cs_vWhitelistedRange;
 
     // Whitelisted ranges. Any node connecting from these is automatically
     // whitelisted (as well as those connecting to whitelisted binds).
@@ -339,8 +408,8 @@ public:
     std::vector<uint256> getBlocksHash;
     uint256 hashLastGetBlocksEnd;
     int nChainHeight;
-	  bool fStartSync;
-	  int nMisbehavior;
+	bool fStartSync;
+	int nMisbehavior;
 
     // flood relay
     std::vector<CAddress> vAddrToSend;
@@ -386,6 +455,7 @@ public:
         fClient = false; // set by version message
         fInbound = fInboundIn;
         fVerified = false;
+        fWhitelisted = false;
         fNetworkNode = false;
         fSuccessfullyConnected = false;
         fDisconnect = false;
@@ -396,7 +466,7 @@ public:
         pindexLastGetBlocksBegin = 0;
         hashLastGetBlocksEnd = 0;
         nChainHeight = -1;
-		    fStartSync = false;
+		fStartSync = false;
         fGetAddr = false;
         nMisbehavior = 0;
         hashCheckpointKnown = 0;
@@ -405,9 +475,9 @@ public:
         nPingUsecStart = 0;
         nPingUsecTime = 0;
         fPingQueued = false;
-        fForTunaMaster = false;
+        fColLateralMaster = false;
         fRelayTxes = false;
-        nLastDseg = GetTime();
+        nLastIseg = GetTime();
 
         // Be shy and don't send version until we hear
         if (hSocket != INVALID_SOCKET && !fInbound)
@@ -434,10 +504,10 @@ private:
     static uint64_t nTotalBytesSent;
 
     // outbound limit & stats
-   static uint64_t nMaxOutboundTotalBytesSentInCycle;
-   static uint64_t nMaxOutboundCycleStartTime;
-   static uint64_t nMaxOutboundLimit;
-   static uint64_t nMaxOutboundTimeframe;
+    static uint64_t nMaxOutboundTotalBytesSentInCycle;
+    static uint64_t nMaxOutboundCycleStartTime;
+    static uint64_t nMaxOutboundLimit;
+    static uint64_t nMaxOutboundTimeframe;
 public:
 	NodeId GetId() const {
       return id;
@@ -453,7 +523,7 @@ public:
     unsigned int GetTotalRecvSize()
     {
         unsigned int total = 0;
-        BOOST_FOREACH(const CNetMessage &msg, vRecvMsg)
+        for (const CNetMessage &msg : vRecvMsg)
             total += msg.vRecv.size() + 24;
         return total;
     }
@@ -465,7 +535,7 @@ public:
     void SetRecvVersion(int nVersionIn)
     {
         nRecvVersion = nVersionIn;
-        BOOST_FOREACH(CNetMessage &msg, vRecvMsg)
+        for (CNetMessage &msg : vRecvMsg)
             msg.SetVersion(nVersionIn);
     }
 
@@ -772,7 +842,7 @@ template<typename T1, typename T2, typename T3, typename T4, typename T5, typena
 
     bool HasFulfilledRequest(std::string strRequest)
     {
-        BOOST_FOREACH(std::string& type, vecRequestsFulfilled)
+        for (std::string& type : vecRequestsFulfilled)
         {
             if(type == strRequest) return true;
         }
@@ -791,7 +861,7 @@ template<typename T1, typename T2, typename T3, typename T4, typename T5, typena
     void Subscribe(unsigned int nChannel, unsigned int nHops=0);
     void CancelSubscribe(unsigned int nChannel);
     void CloseSocketDisconnect();
-	  void Cleanup();
+	void Cleanup();
 
     // Denial-of-service detection/prevention
     // The idea is to detect peers that are behaving
@@ -809,9 +879,27 @@ template<typename T1, typename T2, typename T3, typename T4, typename T5, typena
     // new code.
     static void ClearBanned(); // needed for unit testing
     static bool IsBanned(CNetAddr ip);
-    static bool Ban(const CNetAddr &ip); //new addnode ban command
+    static bool IsBanned(CSubNet subnet);
+    static void Ban(const CNetAddr &ip, const BanReason &banReason, int64_t bantimeoffset = 0, bool sinceUnixEpoch = false);
+    static void Ban(const CSubNet &subNet, const BanReason &banReason, int64_t bantimeoffset = 0, bool sinceUnixEpoch = false);
+    static bool Unban(const CNetAddr &ip);
+    static bool Unban(const CSubNet &ip);
+    static void GetBanned(banmap_t &banmap);
+    static void SetBanned(const banmap_t &banmap);
+
+    //!check is the banlist has unwritten changes
+    static bool BannedSetIsDirty();
+    //!set the "dirty" flag for the banlist
+    static void SetBannedSetDirty(bool dirty=true);
+    //!clean unused entires (if bantime has expired)
+    static void SweepBanned();
+
     bool Misbehaving(int howmuch); // 1 == a little, 100 == a lot
+
     void copyStats(CNodeStats &stats);
+
+    static bool IsWhitelistedRange(const CNetAddr& ip);
+    static void AddWhitelistedRange(const CSubNet& subnet);
 
     // Network stats
     static void RecordBytesRecv(uint64_t bytes);
@@ -841,12 +929,13 @@ template<typename T1, typename T2, typename T3, typename T4, typename T5, typena
     // in case of no limit, it will always response 0
     static uint64_t GetMaxOutboundTimeLeftInCycle();
 };
+
 inline void RelayInventory(const CInv& inv)
 {
     // Put on lists to offer to the other nodes
     {
         LOCK(cs_vNodes);
-        BOOST_FOREACH(CNode* pnode, vNodes)
+        for (CNode* pnode : vNodes)
             pnode->PushInventory(inv);
     }
 }
@@ -855,14 +944,28 @@ class CTransaction;
 void RelayTransaction(const CTransaction& tx, const uint256& hash);
 void RelayTransaction(const CTransaction& tx, const uint256& hash, const CDataStream& ss);
 void RelayTransactionLockReq(const CTransaction& tx, const uint256& hash, bool relayToAll=false);
-void RelayForTunaFinalTransaction(const int sessionID, const CTransaction& txNew);
-void RelayForTunaIn(const std::vector<CTxIn>& in, const int64_t& nAmount, const CTransaction& txCollateral, const std::vector<CTxOut>& out);
-void RelayForTunaStatus(const int sessionID, const int newState, const int newEntriesCount, const int newAccepted, const std::string error="");
-void RelayForTunaElectionEntry(const CTxIn vin, const CService addr, const std::vector<unsigned char> vchSig, const int64_t nNow, const CPubKey pubkey, const CPubKey pubkey2, const int count, const int current, const int64_t lastUpdated, const int protocolVersion);
-void SendForTunaElectionEntry(const CTxIn vin, const CService addr, const std::vector<unsigned char> vchSig, const int64_t nNow, const CPubKey pubkey, const CPubKey pubkey2, const int count, const int current, const int64_t lastUpdated, const int protocolVersion);
-void RelayForTunaElectionEntryPing(const CTxIn vin, const std::vector<unsigned char> vchSig, const int64_t nNow, const bool stop);
-void SendForTunaElectionEntryPing(const CTxIn vin, const std::vector<unsigned char> vchSig, const int64_t nNow, const bool stop);
-void RelayForTunaCompletedTransaction(const int sessionID, const bool error, const std::string errorMessage);
-void RelayForTunaCollateralNodeContestant();
+void RelayCollaTeralFinalTransaction(const int sessionID, const CTransaction& txNew);
+void RelayCollaTeralIn(const std::vector<CTxIn>& in, const int64_t& nAmount, const CTransaction& txCollateral, const std::vector<CTxOut>& out);
+void RelayCollaTeralStatus(const int sessionID, const int newState, const int newEntriesCount, const int newAccepted, const std::string error="");
+void RelayCollaTeralElectionEntry(const CTxIn vin, const CService addr, const std::vector<unsigned char> vchSig, const int64_t nNow, const CPubKey pubkey, const CPubKey pubkey2, const int count, const int current, const int64_t lastUpdated, const int protocolVersion);
+void SendCollaTeralElectionEntry(const CTxIn vin, const CService addr, const std::vector<unsigned char> vchSig, const int64_t nNow, const CPubKey pubkey, const CPubKey pubkey2, const int count, const int current, const int64_t lastUpdated, const int protocolVersion);
+void RelayCollaTeralElectionEntryPing(const CTxIn vin, const std::vector<unsigned char> vchSig, const int64_t nNow, const bool stop);
+void SendCollaTeralElectionEntryPing(const CTxIn vin, const std::vector<unsigned char> vchSig, const int64_t nNow, const bool stop);
+void RelayCollaTeralCompletedTransaction(const int sessionID, const bool error, const std::string errorMessage);
+void RelayCollaTeralCollateralNodeContestant();
+
+
+/** Access to the banlist database (banlist.dat) */
+class CBanDB
+{
+private:
+    boost::filesystem::path pathBanlist;
+public:
+    CBanDB();
+    bool Write(const banmap_t& banSet);
+    bool Read(banmap_t& banSet);
+};
+
+void DumpBanlist();
 
 #endif

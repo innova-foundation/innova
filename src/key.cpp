@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2021 Innova developers
+// Copyright (c) 2019-202\21 Innova developers
 // Copyright (c) 2018-2021 Denarius developers
 // Copyright (c) 2009-2012 The Bitcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
@@ -10,6 +10,7 @@
 #include <openssl/rand.h>
 #include <openssl/obj_mac.h>
 #include <openssl/bn.h>
+#include "openssl_compat.h"
 
 #include "key.h"
 #include "hash.h"
@@ -103,8 +104,8 @@ int ECDSA_SIG_recover_key_GFp(EC_KEY *eckey, ECDSA_SIG *ecsig, const unsigned ch
     BIGNUM *zero = NULL;
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 #else
-    BIGNUM *s = 0;
-    BIGNUM *r = 0;
+    const BIGNUM *r = NULL;
+    const BIGNUM *s = NULL;
 #endif
     int n = 0;
     int i = recid / 2;
@@ -120,6 +121,7 @@ int ECDSA_SIG_recover_key_GFp(EC_KEY *eckey, ECDSA_SIG *ecsig, const unsigned ch
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
     if (!BN_add(x, x, ecsig->r)) { ret=-1; goto err; }
 #else
+    ECDSA_SIG_get0(ecsig, &r, &s);
     if (!BN_add(x, x, r)) { ret=-1; goto err; }
 #endif
     field = BN_CTX_get(ctx);
@@ -145,7 +147,7 @@ int ECDSA_SIG_recover_key_GFp(EC_KEY *eckey, ECDSA_SIG *ecsig, const unsigned ch
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
     if (!BN_mod_inverse(rr, ecsig->r, order, ctx)) { ret=-1; goto err; }
 #else
-    if (!BN_mod_inverse(rr, r, order, ctx)) { ret=-1; goto err; } // Was ->s?
+    if (!BN_mod_inverse(rr, r, order, ctx)) { ret=-1; goto err; } //Was ->s?
 #endif
     sor = BN_CTX_get(ctx);
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
@@ -681,8 +683,8 @@ bool CECKey::SignCompact(const uint256 &hash, unsigned char *p64, int &rec) {
     bool fOk = false;
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 #else
-    BIGNUM *s = 0;
-    BIGNUM *r = 0;
+    const BIGNUM *s = NULL;
+    const BIGNUM *r = NULL;
 #endif
     ECDSA_SIG *sig = ECDSA_do_sign((unsigned char*)&hash, sizeof(hash), pkey);
     if (sig==NULL)
@@ -692,6 +694,7 @@ bool CECKey::SignCompact(const uint256 &hash, unsigned char *p64, int &rec) {
     int nBitsR = BN_num_bits(sig->r);
     int nBitsS = BN_num_bits(sig->s);
 #else
+    ECDSA_SIG_get0(sig, &r, &s);
     int nBitsR = BN_num_bits(r);
     int nBitsS = BN_num_bits(s);
 #endif
@@ -734,14 +737,15 @@ bool CECKey::Recover(const uint256 &hash, const unsigned char *p64, int rec)
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 
 #else
-    BIGNUM *s = 0;
-    BIGNUM *r = 0;
+    const BIGNUM *s = NULL;
+    const BIGNUM *r = NULL;
 #endif
     ECDSA_SIG *sig = ECDSA_SIG_new();
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
     BN_bin2bn(&p64[0],  32, sig->r);
     BN_bin2bn(&p64[32], 32, sig->s);
 #else
+    ECDSA_SIG_get0(sig, &r, &s);
     BN_bin2bn(&p64[0],  32, r);
     BN_bin2bn(&p64[32], 32, s);
 #endif

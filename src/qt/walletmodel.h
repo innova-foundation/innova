@@ -70,7 +70,7 @@ public:
     AddressTableModel *getAddressTableModel();
     TransactionTableModel *getTransactionTableModel();
 	MintingTableModel *getMintingTableModel();
-  NameTableModel *getNameTableModel();
+    NameTableModel *getNameTableModel();
 
     qint64 getBalance() const;
     qint64 getLockedBalance() const;
@@ -161,7 +161,7 @@ private:
 
     AddressTableModel *addressTableModel;
     TransactionTableModel *transactionTableModel;
-    MintingTableModel *mintingTableModel;
+	MintingTableModel *mintingTableModel;
     NameTableModel *nameTableModel;
 
     //Watch Only

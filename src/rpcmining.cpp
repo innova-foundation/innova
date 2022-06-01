@@ -128,9 +128,6 @@ Value getworkex(const Array& params, bool fHelp)
     if (IsInitialBlockDownload())
         throw JSONRPCError(-10, "Innova is downloading blocks...");
 
-  //  if (pindexBest->nHeight >= LAST_POW_BLOCK)
-  //      throw JSONRPCError(RPC_MISC_ERROR, "No more PoW blocks");
-
     typedef map<uint256, pair<CBlock*, CScript> > mapNewBlock_t;
     static mapNewBlock_t mapNewBlock;
     static vector<CBlock*> vNewBlock;
@@ -261,9 +258,6 @@ Value getwork(const Array& params, bool fHelp)
 
     if (IsInitialBlockDownload())
         throw JSONRPCError(RPC_CLIENT_IN_INITIAL_DOWNLOAD, "Innova is downloading blocks...");
-
-  //  if (pindexBest->nHeight >= LAST_POW_BLOCK)
-  //      throw JSONRPCError(RPC_MISC_ERROR, "No more PoW blocks");
 
     typedef map<uint256, pair<CBlock*, CScript> > mapNewBlock_t;
     static mapNewBlock_t mapNewBlock;    // FIXME: thread safety
@@ -412,9 +406,6 @@ Value getblocktemplate(const Array& params, bool fHelp)
     if (IsInitialBlockDownload())
         throw JSONRPCError(RPC_CLIENT_IN_INITIAL_DOWNLOAD, "Innova is downloading blocks...");
 
-  //  if (pindexBest->nHeight >= LAST_POW_BLOCK)
-  //      throw JSONRPCError(RPC_MISC_ERROR, "No more PoW blocks");
-
     static CReserveKey reservekey(pwalletMain);
 
     // Update block
@@ -455,7 +446,7 @@ Value getblocktemplate(const Array& params, bool fHelp)
     map<uint256, int64_t> setTxIndex;
     int i = 0;
     CTxDB txdb("r");
-    BOOST_FOREACH (CTransaction& tx, pblock->vtx)
+    for (CTransaction& tx : pblock->vtx)
     {
         uint256 txHash = tx.GetHash();
         setTxIndex[txHash] = i++;
@@ -531,9 +522,9 @@ Value getblocktemplate(const Array& params, bool fHelp)
     bool bCollateralnodePayments = false;
 
     if(fTestNet) {
-        if(pindexPrev->nHeight+1 >= BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET) bCollateralnodePayments = true;
+        if(pindexPrev->nHeight+1 >= BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET) bCollateralnodePayments = true;
     } else {
-        if(pindexPrev->nHeight+1 >= BLOCK_START_FORTUNASTAKE_PAYMENTS) bCollateralnodePayments = true;
+        if(pindexPrev->nHeight+1 >= BLOCK_START_COLLATERALNODE_PAYMENTS) bCollateralnodePayments = true;
     }
     if(fDebug && fDebugCN) { printf("GetBlockTemplate(): Collateralnode Payments : %i\n", bCollateralnodePayments); }
 

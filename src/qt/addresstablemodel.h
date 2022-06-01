@@ -14,17 +14,17 @@ class WalletModel;
 class AddressTableModel : public QAbstractTableModel
 {
     Q_OBJECT
-	
+
 public:
     explicit AddressTableModel(CWallet *wallet, WalletModel *parent = 0);
     ~AddressTableModel();
-    
+
     enum AddressType {
         AT_Unknown = 0, /**< User specified label */
         AT_Normal = 1,  /**< Bitcoin address */
         AT_Stealth = 2  /**< Stealth address */
     };
-    
+
     enum ColumnIndex {
         Label = 0,   /**< User specified label */
         Address = 1,  /**< Bitcoin address */

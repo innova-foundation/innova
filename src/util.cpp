@@ -73,7 +73,7 @@ int64_t enforceCollateralnodePaymentsTime = 4085657524;
 bool fSuccessfullyLoaded = false;
 
 /** All denominations used by collateral */
-std::vector<int64_t> forTunaDenominations;
+std::vector<int64_t> colLateralDenominations;
 
 map<string, string> mapArgs;
 map<string, vector<string> > mapMultiArgs;
@@ -95,7 +95,7 @@ bool fCommandLine = false;
 string strMiscWarning;
 bool fTestNet = false;
 bool fNativeTor = false;
-bool fHyperfileLocal = false;
+bool fHyperFileLocal = false;
 bool fCNLock = false;
 bool fNoListen = false;
 bool fLogTimestamps = false;
@@ -580,7 +580,6 @@ string SanitizeString(const string& str)
     return strResult;
 }
 
-
 static const signed char phexdigit[256] =
 { -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
   -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
@@ -601,7 +600,7 @@ static const signed char phexdigit[256] =
 
 bool IsHex(const string& str)
 {
-    BOOST_FOREACH(unsigned char c, str)
+    for (unsigned char c : str)
     {
         if (phexdigit[c] < 0)
             return false;
@@ -677,7 +676,7 @@ void ParseParameters(int argc, const char* const argv[])
     }
 
     // New 0.6 features:
-    BOOST_FOREACH(const PAIRTYPE(string,string)& entry, mapArgs)
+    for (const PAIRTYPE(string,string)& entry : mapArgs)
     {
         string name = entry.first;
 
@@ -741,6 +740,7 @@ bool SetArg(const std::string& strArg, const std::string& strValue)
     mapArgs[strArg] = strValue;
     return true;
 }
+
 
 string EncodeBase64(const unsigned char* pch, size_t len)
 {
@@ -1142,6 +1142,7 @@ void PrintExceptionContinue(std::exception* pex, const char* pszThread)
 boost::filesystem::path GetDefaultDataDir()
 {
     namespace fs = boost::filesystem;
+
     // Windows < Vista: C:\Documents and Settings\Username\Application Data\Innova
     // Windows >= Vista: C:\Users\Username\AppData\Roaming\Innova
     // Mac: ~/Library/Application Support/Innova
@@ -1163,7 +1164,7 @@ boost::filesystem::path GetDefaultDataDir()
     return pathRet / "Innova";
 #else
     // Unix
-return pathRet / ".innova";
+    return pathRet / ".innova";
 #endif
 #endif
 }
@@ -1196,6 +1197,50 @@ static unsigned int RandomIntegerRange(unsigned int nMin, unsigned int nMax)
     return nMin + rand() % (nMax - nMin) + 1;
 }
 
+
+static bool ParsePrechecks(const std::string& str)
+{
+    if (str.empty()) // No empty string allowed
+        return false;
+    if (str.size() >= 1 && (isspace(str[0]) || isspace(str[str.size()-1]))) // No padding allowed
+        return false;
+    if (str.size() != strlen(str.c_str())) // No embedded NUL characters allowed
+        return false;
+    return true;
+}
+
+bool ParseInt32(const std::string& str, int32_t *out)
+{
+	if (!ParsePrechecks(str))
+		return false;
+	char *endp = NULL;
+
+    errno = 0; // strtol will not set errno if valid
+    long int n = strtol(str.c_str(), &endp, 10);
+    if(out) *out = (int32_t)n;
+    // Note that strtol returns a *long int*, so even if strtol doesn't report a over/underflow
+    // we still have to check that the returned value is within the range of an *int32_t*. On 64-bit
+    // platforms the size of these types may be different.
+    return endp && *endp == 0 && !errno &&
+        n >= std::numeric_limits<int32_t>::min() &&
+        n <= std::numeric_limits<int32_t>::max();
+}
+
+bool ParseInt64(const std::string& str, int64_t *out)
+{
+    if (!ParsePrechecks(str))
+        return false;
+    char *endp = NULL;
+    errno = 0; // strtoll will not set errno if valid
+    long long int n = strtoll(str.c_str(), &endp, 10);
+    if(out) *out = (int64_t)n;
+    // Note that strtoll returns a *long long int*, so even if strtol doesn't report a over/underflow
+    // we still have to check that the returned value is within the range of an *int64_t*.
+    return endp && *endp == 0 && !errno &&
+        n >= std::numeric_limits<int64_t>::min() &&
+        n <= std::numeric_limits<int64_t>::max();
+}
+
 void WriteConfigFile(FILE* configFile)
 {
     std::string sRPCpassword = "rpcpassword=" + GenerateRandomString(RandomIntegerRange(18, 24)) + "\n";
@@ -1213,21 +1258,30 @@ void WriteConfigFile(FILE* configFile)
     fputs ("collateralnodeaddr=\n", configFile);
     fputs ("collateralnodeprivkey=\n", configFile);
     fputs ("idns=1\n", configFile);
-    fputs ("addnode=innseeder.circuitbreaker.online\n", configFile); 
-    fputs ("addnode=innseeder.circuitbreaker.dev\n", configFile);
-    fputs ("addnode=innseeder.innovai.cloud\n", configFile);
-    fputs ("addnode=94.130.52.227\n", configFile);
-    fputs ("addnode=94.253.188.194\n", configFile);
-    fputs ("addnode=94.253.236.197\n", configFile);
-    fputs ("addnode=94.130.49.89\n", configFile);
-    fputs ("addnode=80.57.237.145\n", configFile);
-    fputs ("addnode=135.181.183.40\n", configFile);
-    fputs ("addnode=134.3.131.119\n", configFile);
-    fputs ("addnode=95.216.26.26\n", configFile);
-    fputs ("addnode=178.254.43.126\n", configFile);
-    fputs ("addnode=218.214.99.111\n", configFile);
-    fputs ("addnode=95.217.119.238\n", configFile);
-    fputs ("addnode=209.250.255.129\n", configFile);
+    fputs ("addnode=innseeder.circuitbreaker.online\n", configFile); // seeder
+    fputs ("addnode=innseeder.circuitbreaker.dev\n", configFile); // seeder
+    fputs ("addnode=innseeder.innovai.cloud\n", configFile); // seeder
+    fputs ("addnode=159.65.67.220\n", configFile);
+    fputs ("addnode=167.86.103.117\n", configFile);
+    fputs ("addnode=167.86.124.246\n", configFile);
+    fputs ("addnode=167.86.84.242\n", configFile);
+    fputs ("addnode=167.86.91.194\n", configFile);
+    fputs ("addnode=167.86.96.109\n", configFile);
+    fputs ("addnode=167.86.96.5\n", configFile);
+    fputs ("addnode=167.86.97.16\n", configFile);
+    fputs ("addnode=173.249.24.50\n", configFile);
+    fputs ("addnode=173.249.38.251\n", configFile);
+    fputs ("addnode=173.249.46.109\n", configFile);
+    fputs ("addnode=185.62.81.135\n", configFile);
+    fputs ("addnode=188.0.175.212\n", configFile);
+    fputs ("addnode=188.0.188.250\n", configFile);
+    fputs ("addnode=188.122.212.138\n", configFile);
+    fputs ("addnode=51.222.152.238\n", configFile);
+    fputs ("addnode=62.171.132.112\n", configFile);
+    fputs ("addnode=77.78.204.210\n", configFile);
+    fputs ("addnode=91.46.36.65\n", configFile);
+    fputs ("addnode=94.253.189.202\n", configFile);
+    fputs ("addnode=94.253.191.159\n", configFile);
     fclose(configFile);
     ReadConfigFile(mapArgs, mapMultiArgs);
 }
@@ -1286,18 +1340,18 @@ void ReadConfigFile(map<string, string>& mapSettingsRet,
 {
     boost::filesystem::ifstream streamConfig(GetConfigFile());
     if (!streamConfig.good()){
-         // Create empty innova.conf if it does not exist
-         FILE* configFile = fopen(GetConfigFile().string().c_str(), "a");
-         if (configFile != NULL) {
-             WriteConfigFile(configFile);
-            // fclose(configFile);
-             printf("WriteConfigFile() Innova.conf Setup Successfully!");
-             ReadConfigFile(mapSettingsRet, mapMultiSettingsRet);
-         } else {
-             printf("WriteConfigFile() innova.conf file could not be created");
-             return; // Nothing to read, so just return
-         }
-     }
+        // Create empty innova.conf if it does not exist
+        FILE* configFile = fopen(GetConfigFile().string().c_str(), "a");
+        if (configFile != NULL) {
+            WriteConfigFile(configFile);
+            //fclose(configFile);
+            printf("WriteConfigFile() Innova.conf Setup Successfully!");
+            ReadConfigFile(mapSettingsRet, mapMultiSettingsRet);
+        } else {
+            printf("WriteConfigFile() innova.conf file could not be created");
+            return; // Nothing to read, so just return
+        }
+    }
 
     set<string> setOptions;
     setOptions.insert("*");
@@ -1460,7 +1514,7 @@ void AddTimeData(const CNetAddr& ip, int64_t nTime)
             {
                 // If nobody has a time different than ours but within 5 minutes of ours, give a warning
                 bool fMatch = false;
-                BOOST_FOREACH(int64_t nOffset, vSorted)
+                for (int64_t nOffset : vSorted)
                     if (nOffset != 0 && abs64(nOffset) < 5 * 60)
                         fMatch = true;
 
@@ -1475,7 +1529,7 @@ void AddTimeData(const CNetAddr& ip, int64_t nTime)
             }
         }
         if (fDebug) {
-            BOOST_FOREACH(int64_t n, vSorted)
+            for (int64_t n : vSorted)
                 printf("%+" PRId64"  ", n);
             printf("|  ");
         }

@@ -2,8 +2,8 @@
 // Copyright (c) 2009-2012 The DarkCoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#ifndef ACTIVEFORTUNASTAKE_H
-#define ACTIVEFORTUNASTAKE_H
+#ifndef ACTIVECOLLATERALNODE_H
+#define ACTIVECOLLATERALNODE_H
 
 #include "uint256.h"
 #include "sync.h"
@@ -31,7 +31,7 @@ public:
 
     CActiveCollateralnode()
     {
-        status = FORTUNASTAKE_NOT_PROCESSED;
+        status = COLLATERALNODE_NOT_PROCESSED;
     }
 
     void ManageStatus(); // manage status of main collateralnode
@@ -47,7 +47,7 @@ public:
     bool Register(CTxIn vin, CService service, CKey key, CPubKey pubKey, CKey keyCollateralnode, CPubKey pubKeyCollateralnode, std::string &retErrorMessage); // register any collateralnode
     bool RegisterByPubKey(std::string strService, std::string strKeyCollateralnode, std::string collateralAddress, std::string& errorMessage); // register for a specific collateral address
 
-    // get 25000INN input that can be used for the collateralnode
+    // get 25000 INN input that can be used for the collateralnode
     bool GetCollateralNodeVin(CTxIn& vin, CPubKey& pubkey, CKey& secretKey);
     bool GetCollateralNodeVin(CTxIn& vin, CPubKey& pubkey, CKey& secretKey, std::string strTxHash, std::string strOutputIndex);
     bool GetCollateralNodeVin(CTxIn& vin, CPubKey& pubkey, CKey& secretKey, std::string strTxHash, std::string strOutputIndex, std::string& errorMessage);

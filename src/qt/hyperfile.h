@@ -5,17 +5,17 @@
 //#include <QWebView>
 
 namespace Ui {
-    class Hyperfile;
+    class HyperFile;
 }
 
-/** Hyperfile page widget */
-class Hyperfile : public QWidget
+/** HyperFile page widget */
+class HyperFile : public QWidget
 {
     Q_OBJECT
 
 public:
-    explicit Hyperfile(QWidget *parent = 0);
-    ~Hyperfile();
+    explicit HyperFile(QWidget *parent = 0);
+    ~HyperFile();
     QString fileName;
     QString fileCont;
 
@@ -24,7 +24,7 @@ public slots:
 signals:
 
 private:
-    Ui::Hyperfile *ui;
+    Ui::HyperFile *ui;
     void noImageSelected();
 
 private slots:
@@ -33,6 +33,7 @@ private slots:
     void on_createPodButton_clicked();
     void on_checkButton_clicked();
     void on_checkButtonCloudflare_clicked();
-    void on_checkHashButton_clicked();};
+    void on_checkHashButton_clicked();
+};
 
 #endif // HYPERFILE_H

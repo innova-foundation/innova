@@ -76,7 +76,7 @@ static void ipcThread(void* pArg)
 {
     // Make this thread recognisable as the GUI-IPC thread
     RenameThread("innova-gui-ipc");
-	
+
     try
     {
         ipcThread2(pArg);

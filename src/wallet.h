@@ -117,7 +117,7 @@ private:
     bool SelectCoinsForStaking(int64_t nTargetValue, unsigned int nSpendTime, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet) const;
     bool SelectCoins(int64_t nTargetValue, unsigned int nSpendTime, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet, const CCoinControl *coinControl=NULL) const;
     bool CreateTransactionInner(const std::vector<std::pair<CScript, CAmount> >& vecSend, const CWalletTx& wtxNameIn, CAmount nFeeInput, CWalletTx& wtxNew, CReserveKey& reservekey, CAmount& nFeeRet, std::string& strFailReason, const CCoinControl *coinControl = NULL);
-    //bool SelectCoins(CAmount nTargetValue, unsigned int nSpendTime, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet, const CCoinControl *coinControl = NULL) const;
+    // bool SelectCoins(CAmount nTargetValue, unsigned int nSpendTime, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet, const CCoinControl *coinControl = NULL) const;
     CWalletDB *pwalletdbEncryption;
 
     // the current wallet version: clients below this version are not able to load the wallet
@@ -138,8 +138,8 @@ public:
     mutable CCriticalSection cs_wallet;
     //public for names
     bool SelectCoins2(int64_t nTargetValue, unsigned int nSpendTime, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet, const CCoinControl *coinControl=NULL) const;
-	  //CollateralNodes
-	  bool SelectCoinsCollateralN(int64_t nValueMin, int64_t nValueMax, std::vector<CTxIn>& setCoinsRet, int64_t& nValueRet, int nCollateralNRoundsMin, int nCollateralNRoundsMax) const;
+	//CollateralNodes
+	bool SelectCoinsCollateralN(int64_t nValueMin, int64_t nValueMax, std::vector<CTxIn>& setCoinsRet, int64_t& nValueRet, int nCollateralNRoundsMin, int nCollateralNRoundsMax) const;
     bool SelectCoinsByDenominations(int nDenom, int64_t nValueMin, int64_t nValueMax, std::vector<CTxIn>& setCoinsRet, std::vector<COutput>& vCoins, int64_t& nValueRet, int nCollateralNRoundsMin, int nCollateralNRoundsMax);
     bool SelectCoinsDarkDenominated(int64_t nTargetValue, std::vector<CTxIn>& setCoinsRet, int64_t& nValueRet) const;
     bool SelectCoinsCollateralnode(CTxIn& vin, int64_t& nValueRet, CScript& pubScript) const;
@@ -147,10 +147,10 @@ public:
     bool IsCollateralAmount(int64_t nInputAmount) const;
     int  CountInputsWithAmount(int64_t nInputAmount);
 
-	  bool SelectCoinsCollateral(std::vector<CTxIn>& setCoinsRet, int64_t& nValueRet) const ;
+	bool SelectCoinsCollateral(std::vector<CTxIn>& setCoinsRet, int64_t& nValueRet) const ;
     bool SelectCoinsWithoutDenomination(int64_t nTargetValue, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet) const;
 
-	  std::string Denominate();
+	std::string Denominate();
 
     bool fFileBacked;
     std::string strWalletFile;
@@ -180,7 +180,6 @@ public:
         strWalletFile = strWalletFileIn;
         fFileBacked = true;
     }
-
     void SetNull()
     {
         nWalletVersion = FEATURE_BASE;
@@ -193,11 +192,11 @@ public:
     }
 
     std::map<uint256, CWalletTx> mapWallet;
-	  std::vector<uint256> vMintingWalletUpdated;
+	std::vector<uint256> vMintingWalletUpdated;
     int64_t nOrderPosNext;
     std::map<uint256, int> mapRequestCount;
 
-    // Innova Name DB
+    //Innova Name DB
     std::vector<uint256> vWalletUpdated;
     std::vector<uint256> vCheckNewNames;
 
@@ -421,7 +420,7 @@ public:
     bool IsMine(const CTransaction& tx) const
     {
         BOOST_FOREACH(const CTxOut& txout, tx.vout)
-          if (IsMine(txout) && txout.nValue >= nMinimumInputValue || hooks->IsMine(txout))
+            if (IsMine(txout) && txout.nValue >= nMinimumInputValue || hooks->IsMine(txout))
                 return true;
         return false;
     }
@@ -499,7 +498,7 @@ public:
     DBErrors LoadWallet(bool& fFirstRunRet);
     DBErrors ZapWalletTx();
 
-    //I n n o v a
+    //I N N O V A
     bool SetAddressBookName(const CTxDestination& address, const std::string& strName);
     bool DelAddressBookName(const CTxDestination& address);
 
@@ -1135,7 +1134,7 @@ public:
     }
 
     void GetAmounts(std::list<COutputEntry>& listReceived,
-      std::list<COutputEntry>& listSent, int64_t& nFee, std::string& strSentAccount, const isminefilter& filter, bool ignoreNameTx = true) const;
+                    std::list<COutputEntry>& listSent, int64_t& nFee, std::string& strSentAccount, const isminefilter& filter, bool ignoreNameTx = true) const;
 
     void GetAccountAmounts(const std::string& strAccount, int64_t& nReceived,
                            int64_t& nSent, int64_t& nFee, const isminefilter& filter) const;
@@ -1150,7 +1149,6 @@ public:
         // Quick answer in most cases
         if (!IsFinal())
             return false;
-
         // Coins newer than our current chain can't be trusted
         if (nTime > pindexBest->GetBlockTime())
             return false;
@@ -1225,14 +1223,17 @@ public:
     const CWalletTx *tx;
     int i;
     int nDepth;
+
     COutput(const CWalletTx *txIn, int iIn, int nDepthIn)
     {
         tx = txIn; i = iIn; nDepth = nDepthIn;
     }
+
     std::string ToString() const
     {
         return strprintf("COutput(%s, %d, %d) [%s]", tx->GetHash().ToString().substr(0,10).c_str(), i, nDepth, FormatMoney(tx->vout[i].nValue).c_str());
     }
+
     void print() const
     {
         printf("%s\n", ToString().c_str());
@@ -1260,8 +1261,8 @@ public:
     //Used with CollateralN. Will return fees, then denominations, everything else, then very small inputs that aren't fees
     int Priority() const
     {
-        if(tx->vout[i].nValue == FORTUNA_FEE) return -20000;
-        BOOST_FOREACH(int64_t d, forTunaDenominations)
+        if(tx->vout[i].nValue == COLLATERALN_FEE) return -20000;
+        BOOST_FOREACH(int64_t d, colLateralDenominations)
             if(tx->vout[i].nValue == d) return 10000;
         if(tx->vout[i].nValue < 1*COIN) return 20000;
 

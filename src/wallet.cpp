@@ -20,6 +20,14 @@
 #include <boost/range/algorithm.hpp>
 #include <boost/numeric/ublas/matrix.hpp>
 
+#if BOOST_VERSION >= 107300
+#include <boost/bind/bind.hpp>
+using boost::placeholders::_1;
+using boost::placeholders::_2;
+#else
+#include <boost/bind.hpp>
+#endif
+
 using namespace std;
 
 unsigned int nStakeSplitAge = 1 * 24 * 60 * 60;
@@ -961,7 +969,7 @@ bool CWallet::IsDenominated(const CTxIn &txin) const
 
 bool CWallet::IsDenominatedAmount(int64_t nInputAmount) const
 {
-    BOOST_FOREACH(int64_t d, forTunaDenominations)
+    BOOST_FOREACH(int64_t d, colLateralDenominations)
         if(nInputAmount == d)
             return true;
     return false;
@@ -2100,7 +2108,7 @@ bool less_then_denom (const COutput& out1, const COutput& out2)
 
     bool found1 = false;
     bool found2 = false;
-    BOOST_FOREACH(int64_t d, forTunaDenominations) // loop through predefined denoms
+    BOOST_FOREACH(int64_t d, colLateralDenominations) // loop through predefined denoms
     {
         if(pcoin1->vout[out1.i].nValue == d) found1 = true;
         if(pcoin2->vout[out2.i].nValue == d) found2 = true;
@@ -2337,7 +2345,7 @@ bool CWallet::SelectCoinsCollateral(std::vector<CTxIn>& setCoinsRet, int64_t& nV
 
     BOOST_FOREACH(const COutput& out, vCoins)
     {
-        // collateral inputs will always be a multiple of FORTUNA_COLLATERAL, up to five
+        // collateral inputs will always be a multiple of COLLATERALN_COLLATERAL, up to five
         if(IsCollateralAmount(out.tx->vout[out.i].nValue))
         {
             CTxIn vin = CTxIn(out.tx->GetHash(),out.i);
@@ -2399,7 +2407,7 @@ bool CWallet::HasCollateralInputs() const
 
 bool CWallet::IsCollateralAmount(int64_t nInputAmount) const
 {
-	return nInputAmount != 0 && nInputAmount % FORTUNA_COLLATERAL == 0 && nInputAmount < FORTUNA_COLLATERAL * 5 && nInputAmount > FORTUNA_COLLATERAL;
+	return nInputAmount != 0 && nInputAmount % COLLATERALN_COLLATERAL == 0 && nInputAmount < COLLATERALN_COLLATERAL * 5 && nInputAmount > COLLATERALN_COLLATERAL;
 }
 
 bool CWallet::CreateCollateralTransaction(CTransaction& txCollateral, std::string strReason)
@@ -2433,9 +2441,9 @@ bool CWallet::CreateCollateralTransaction(CTransaction& txCollateral, std::strin
     BOOST_FOREACH(CTxIn v, vCoinsCollateral)
         txCollateral.vin.push_back(v);
 
-    if(nValueIn2 - FORTUNA_COLLATERAL - nFeeRet > 0) {
+    if(nValueIn2 - COLLATERALN_COLLATERAL - nFeeRet > 0) {
         //pay collateral charge in fees
-        CTxOut vout3 = CTxOut(nValueIn2 - FORTUNA_COLLATERAL, scriptChange);
+        CTxOut vout3 = CTxOut(nValueIn2 - COLLATERALN_COLLATERAL, scriptChange);
         txCollateral.vout.push_back(vout3);
     }
 
@@ -2445,7 +2453,7 @@ bool CWallet::CreateCollateralTransaction(CTransaction& txCollateral, std::strin
             BOOST_FOREACH(CTxIn v, vCoinsCollateral)
                 UnlockCoin(v.prevout);
 
-            strReason = "CForTunaPool::Sign - Unable to sign collateral transaction! \n";
+            strReason = "CCollaTeralPool::Sign - Unable to sign collateral transaction! \n";
             return false;
         }
         vinNumber++;
@@ -3897,11 +3905,11 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
     bool bCollateralNodePayment = false;
 
     if (fTestNet) {
-        if (pindexPrev->nHeight+1 > BLOCK_START_FORTUNASTAKE_PAYMENTS_TESTNET ) {
+        if (pindexPrev->nHeight+1 > BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET ) {
             bCollateralNodePayment = true;
         }
     } else {
-        if (pindexPrev->nHeight+1 > BLOCK_START_FORTUNASTAKE_PAYMENTS){
+        if (pindexPrev->nHeight+1 > BLOCK_START_COLLATERALNODE_PAYMENTS){
             bCollateralNodePayment = true;
         }
     }

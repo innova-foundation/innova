@@ -19,18 +19,18 @@ namespace Checkpoints
     //typedef std::map<int, uint256> MapCheckpoints;
 
     // How many times we expect transactions after the last checkpoint to
-   // be slower. This number is a compromise, as it can't be accurate for
-   // every system. When reindexing from a fast disk with a slow CPU, it
-   // can be up to 20, while when downloading from a slow network with a
-   // fast multicore CPU, it won't be much higher than 1.
-   static const double SIGCHECK_VERIFICATION_FACTOR = 5.0;
+    // be slower. This number is a compromise, as it can't be accurate for
+    // every system. When reindexing from a fast disk with a slow CPU, it
+    // can be up to 20, while when downloading from a slow network with a
+    // fast multicore CPU, it won't be much higher than 1.
+    static const double SIGCHECK_VERIFICATION_FACTOR = 5.0;
 
-   struct CCheckpointData {
-       const MapCheckpoints *mapCheckpoints;
-       int64_t nTimeLastCheckpoint;
-       int64_t nTransactionsLastCheckpoint;
-       double fTransactionsPerDay;
-   };
+    struct CCheckpointData {
+        const MapCheckpoints *mapCheckpoints;
+        int64_t nTimeLastCheckpoint;
+        int64_t nTransactionsLastCheckpoint;
+        double fTransactionsPerDay;
+    };
 
     //
     // What makes a good checkpoint block?
@@ -62,6 +62,23 @@ namespace Checkpoints
         ( 900000,  uint256("0x4f71ab6407626c619e5d2dfcd528da4a8fc8fec35f08ff151059ac27ccc87f78") )
         ( 1000000, uint256("0x4e9e1d81e2eac234189d293608b6873b1f341158278e8a3ecaebfa9cf5b04a54") )
         ( 1100000, uint256("0x4dd971be6ab9087558f9870b46361a0a846270525b3af49dedcacc8ae16fbca7") )
+        ( 1110000, uint256("0x5368ef0d8c9c931137b129ac729df887de41be6ee1e2d3cb37a214baf5ea1203") )
+        ( 1120000, uint256("0x803877c47a918f136c04f2cd3e2e06ec892e4e125a999ce8cdb35ad7f8b8ff50") )
+        ( 1130000, uint256("0x077eae09473d73956e0da6452b569d0cabbddeea7657351b115551df44b4b34c") )
+        ( 1140000, uint256("0x36676d18d540a72a0c3a94e408405a2a4dcc53fbeeba17809189568a8be08cb3") )
+        ( 1150000, uint256("0xf86cc40fb6ff191e577e9386f7d9dba56fd34c5183ac372647b93cc7428a2553") )
+        ( 1160000, uint256("0x06b9dac23681f4eb66cd2269259c449b1cd8b938bae8f6a73dbf57d154d2492b") )
+        ( 1170000, uint256("0x1b5e51d5b548e7e47d2f70b866bcbfc9558420b82fd016f97d5663a60aabbe94") )
+        ( 1108000, uint256("0xc94f1deedee3413ea301b78d15b46e53a6ff1eaee110fceb1b0fec51f202a307") )
+        ( 1190000, uint256("0x18dd50254ef59d8ac1987e39af097c24be959abefd12d43027860e9f944ba677") )
+        ( 1200000, uint256("0x879fe371bbe58f9b333b99ebf6403d438fe3be4a8f19e599e5aebd87674be54a") )
+        ( 1210000, uint256("0x8bd87d74bc13df35504c4b8d5d091a9ff25111e0b78f5f694b0b66b591a7de9b") )
+        ( 1500000, uint256("0x188abe5b815d27f3d02ba59efc8b600ff21607a27d29bed5c2e5cc996b702b04") )
+        ( 1750000, uint256("0xf702251416b21ac460830b469367d90aa493007b3c1f2ae5bd6cd605e80c2403") )
+        ( 1840000, uint256("0x69c472731a4d4815f1689b571c0943068be7e074d71083d280a0d83538c40b2e") )
+        ( 1848418, uint256("0x5c4effd70e19cbe733119a21578121f74f88013ea7843d0a1bc77d31f82062da") )
+        ( 1848420, uint256("0x414eedde45efae3607abd5daa800b16a5a8e4e0da6349c3cd50273bbed4aed90") )
+
 	;
 
   static const CCheckpointData data = {
@@ -80,7 +97,7 @@ namespace Checkpoints
 
     static const CCheckpointData dataTestnet = {
         &mapCheckpointsTestnet,
-        1614593682,
+        1631971785,
         25640,
         0
     };
@@ -100,7 +117,6 @@ namespace Checkpoints
         if (i == checkpoints.end()) return true;
         return hash == i->second;
     }
-
 
     int GetTotalBlocksEstimate()
     {
@@ -183,10 +199,10 @@ namespace Checkpoints
         {
             hashInvalidCheckpoint = hashCheckpoint;
             return error("ValidateSyncCheckpoint: new sync-checkpoint %s is not a descendant of current sync-checkpoint %s", hashCheckpoint.ToString().c_str(), hashSyncCheckpoint.ToString().c_str());
-          };
+        };
 
-          return true;
-      }
+        return true;
+    }
 
     bool WriteSyncCheckpoint(const uint256& hashCheckpoint)
     {
@@ -223,6 +239,7 @@ namespace Checkpoints
                 CBlock block;
                 if (!block.ReadFromDisk(pindexCheckpoint))
                     return error("AcceptPendingSyncCheckpoint: ReadFromDisk failed for sync checkpoint %s", hashPendingCheckpoint.ToString().c_str());
+
                 if (!block.SetBestChain(txdb, pindexCheckpoint))
                 {
                     hashInvalidCheckpoint = hashPendingCheckpoint;
@@ -323,9 +340,9 @@ namespace Checkpoints
             if (!block.SetBestChain(txdb, mapBlockIndex[hash]))
             {
                 return error("ResetSyncCheckpoint: SetBestChain failed for hardened checkpoint %s", hash.ToString().c_str());
-              };
-          } else
-          if (!mapBlockIndex.count(hash))
+            };
+        } else
+        if (!mapBlockIndex.count(hash))
         {
             // checkpoint block not yet accepted
             hashPendingCheckpoint = hash;
@@ -342,11 +359,11 @@ namespace Checkpoints
                     return error("ResetSyncCheckpoint: failed to write sync checkpoint %s", hash.ToString().c_str());
                 printf("ResetSyncCheckpoint: sync-checkpoint reset to %s\n", hashSyncCheckpoint.ToString().c_str());
                 return true;
-              };
-          };
+            };
+        };
 
-          return false;
-      }
+        return false;
+    }
 
     void AskForPendingSyncCheckpoint(CNode* pfrom)
     {
