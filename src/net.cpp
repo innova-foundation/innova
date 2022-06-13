@@ -701,7 +701,7 @@ void CNode::Ban(const CSubNet& subNet, const BanReason &banReason, int64_t banti
     banEntry.banReason = banReason;
     if (bantimeoffset <= 0)
     {
-        bantimeoffset = GetArg("-bantime", 60*60*24); // Default 24-hour ban
+        bantimeoffset = GetArg("-bantime", 60);//*60*24); // Default 24-hour ban temp 60 seconds ban
         sinceUnixEpoch = false;
     }
     banEntry.nBanUntil = (sinceUnixEpoch ? 0 : GetTime() )+bantimeoffset;
@@ -825,9 +825,9 @@ bool CNode::Misbehaving(int howmuch)
     }
 
     nMisbehavior += howmuch;
-    if (nMisbehavior >= GetArg("-banscore", 100))
+    if (nMisbehavior >= GetArg("-banscore", 10000)) //temp bump way too high, lower after hardfork
     {
-        int64_t banTime = GetTime()+GetArg("-bantime", 60*60*24);  // Default 24-hour ban
+        int64_t banTime = GetTime()+GetArg("-bantime", 60);//*60*24);  // Default 24-hour ban
         printf("Misbehaving: %s (%d -> %d) DISCONNECTING\n", addr.ToString().c_str(), nMisbehavior-howmuch, nMisbehavior);
         {
             LOCK(cs_setBanned);
@@ -1719,9 +1719,15 @@ void ThreadOnionSeed(void* parg)
 // The second name should resolve to a list of seed addresses.
 
 static const char *strDNSSeed[][2] = {
-    {"innseeder.circuitbreaker.online", "innseeder.circuitbreaker.online"},
-    {"innseeder.circuitbreaker.dev", "innseeder.circuitbreaker.dev"},
-    {"innseeder.innovai.cloud", "innseeder.innovai.cloud"},
+    {"78.44.255.171:14539", "78.44.255.171:14539"},
+    {"140.82.59.2", "140.82.59.2"},
+    {"65.20.76.208", "65.20.76.208"},
+    {"65.20.75.98", "65.20.75.98"},
+    {"65.20.76.230", "65.20.76.230"},
+    {"65.20.77.76", "65.20.77.76"},
+    {"65.20.67.249", "65.20.67.249"},
+    {"65.20.76.122", "65.20.76.122"}
+//    {"", ""}
 };
 
 void ThreadDNSAddressSeed(void* parg)
