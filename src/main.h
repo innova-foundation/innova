@@ -20,7 +20,7 @@
 class CValidationState;
 
 #define BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET 550 // Testnet Collateralnode payments enabled block 800
-#define BLOCK_START_COLLATERALNODE_PAYMENTS 800 //Mainnet Collateralnode payments not enabled until block 800
+#define BLOCK_START_COLLATERALNODE_PAYMENTS 208500 //Mainnet Collateralnode payments not enabled until block 800
 #define BLOCK_START_COLLATERALNODE_DELAYPAY 2500 // Unused
 
 //#define START_COLLATERALNODE_PAYMENTS_TESTNET 1519430400  //Sat, 24 Feb 2018 00:00:00 GMT
