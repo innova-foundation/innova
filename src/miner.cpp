@@ -183,7 +183,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 				bCollateralNodePayment = true;
 			}
 		} else {
-			if (nHeight >= BLOCK_START_COLLATERALNODE_PAYMENTS){
+			if (nHeight >= BLOCK_START_COLLATERALNODE_PAYMENTS && nHeight >= 2085000){
 				bCollateralNodePayment = true;
 			}
 		}
@@ -628,7 +628,7 @@ bool CheckStake(CBlock* pblock, CWallet& wallet)
     if(!pblock->IsProofOfStake())
         return error("CheckStake() : %s is not a proof-of-stake block", hashBlock.GetHex().c_str());
 
-   // verify hash target and signature of coinstake tx
+   // verify hash target and signature of coinstake tx -
     //if (!CheckProofOfStake(mapBlockIndex[pblock->hashPrevBlock], pblock->vtx[1], pblock->nBits, proofHash, hashTarget))
 	if (!CheckProofOfStake(pblock->vtx[1], pblock->nBits, proofHash, hashTarget))
         return error("CheckStake() : proof-of-stake checking failed");
