@@ -1261,19 +1261,17 @@ void WriteConfigFile(FILE* configFile)
     fputs ("addnode=innseeder.circuitbreaker.online\n", configFile); // seeder
     fputs ("addnode=innseeder.circuitbreaker.dev\n", configFile); // seeder
     fputs ("addnode=innseeder.innovai.cloud\n", configFile); // seeder
-    fputs ("addnode=173.249.31.227\n", configFile);
-    fputs ("addnode=185.62.81.135\n", configFile);
-    fputs ("addnode=51.195.234.88\n", configFile);
-    fputs ("addnode=51.222.152.238\n", configFile);
-    fputs ("addnode=62.171.132.112\n", configFile);
-    fputs ("addnode=77.78.204.210\n", configFile);
-    fputs ("addnode=88.207.82.170\n", configFile);
-    fputs ("addnode=91.17.211.12\n", configFile);
-    fputs ("addnode=94.253.190.187\n", configFile);
-    fputs ("addnode=155.138.164.54\n", configFile);
-    fputs ("addnode=155.138.214.56\n", configFile);
-    fputs ("addnode=144.202.19.175\n", configFile);
-    fputs ("addnode=155.138.214.93\n", configFile);
+    fputs ("addnode=165.22.181.170\n", configFile);
+    fputs ("addnode=159.223.114.4\n", configFile);
+    fputs ("addnode=165.22.187.43\n", configFile);
+    fputs ("addnode=68.183.110.135\n", configFile);
+    fputs ("addnode=157.245.139.16\n", configFile);
+    fputs ("addnode=167.71.19.57\n", configFile);
+    fputs ("addnode=165.227.206.77\n", configFile);
+    fputs ("addnode=159.223.100.10\n", configFile);
+    fputs ("addnode=159.223.104.83\n", configFile);
+    fputs ("addnode=159.223.104.144\n", configFile);
+    fputs ("addnode=45.77.164.87\n", configFile);
     fputs ("\n", configFile);
     fclose(configFile);
     ReadConfigFile(mapArgs, mapMultiArgs);
