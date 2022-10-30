@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
 // Copyright (c) 2017-2021 The Denarius developers
-// Copyright (c) 2019-2021 The Innova developers
+// Copyright (c) 2019-2022 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #ifndef BITCOIN_MAIN_H
@@ -60,7 +60,7 @@ class CNode;
 // General Innova Block Values
 
 // extern CFeeRate minRelayTxFee;
-static const int ZERO_POW_BLOCK = 50000; // 50k blocks before Proof of Stake consensus, now 0.0001 INN reward per block
+//static const int ZERO_POW_BLOCK = 50000; // 50k blocks before Proof of Stake consensus, now 0.0001 INN reward per block
 static const int FAIR_LAUNCH_BLOCK = 490; // Last Block until full block reward starts
 static const unsigned int MAX_BLOCK_SIZE = 1000000; // 1MB block hard limit, double the size of Bitcoin
 static const unsigned int MAX_BLOCK_SIZE_GEN = MAX_BLOCK_SIZE/2; // 512kb block soft limit, ditto
@@ -83,7 +83,6 @@ static const int64_t MIN_TX_FEE_ANON = 10000;
 static const int64_t MIN_RELAY_TX_FEE = MIN_TX_FEE;
 static const int64_t MAX_MONEY = 18000000 * COIN; // 18,000,000 INN Innova Max
 static const int64_t COIN_YEAR_REWARD = 0.06 * COIN; // 6% per year
-static const int64_t BURN_CHECK = 1750000;
 
 static const int64_t MAINNET_POSFIX = 500; //Mainnet Proof of Stake update not enabled until block 500
 static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 4500; // Enforce collateralnode payments after this height - BLOCK 4500
@@ -99,15 +98,6 @@ static const unsigned int MAX_P2SH_SIGOPS = 15;
 
 static const uint256 hashGenesisBlock("0x000009bd42d259eb7031ae4f634aede1a690da795e5529786a72c3cd6d989995");
 static const uint256 hashGenesisBlockTestNet("0x0000abd414802bce2f1ad3f056dcc42081bb423485098b84bf8f608217aef596");
-
-static const std::string vBurnAddresses[] = {"iP34KRRhTCFvW87yrHSWj8m1L4vqRdUhDw",
-                                             "iLvHHkKoKQsqcACaV15pZtoyBNzUYFxAvG",
-                                             "iKsZNKLPkCHqoiJgYfRFDEK8uT4xmdK483",
-                                             "iHZb3rMLnZWctfKxcCQRMHg8eCnALwYqxo"};
-
-static const std::vector<unsigned char> burnAddressScript[] = {
-    ParseHex("OP_DUP OP_HASH160 d6917b7dc295bb42d1f7b4f960c6fba9eaeab9cc OP_EQUALVERIFY OP_CHECKSIG, OP_DUP OP_HASH160 b3dd31efc695c49e8ff361a0bd6f44097c5848ae OP_EQUALVERIFY OP_CHECKSIG, OP_DUP OP_HASH160 9a86dc25301c1ad773a74955dd0ca9f6eaf5853b OP_EQUALVERIFY OP_CHECKSIG, OP_DUP OP_HASH160 bf592597b0e632f1831b68d35a2dd66788cfd32c OP_EQUALVERIFY OP_CHECKSIG")
-};
 
 //inline bool IsProtocolV1RetargetingFixed(int nHeight) { return fTestNet || nHeight > 0; }
 //inline bool IsProtocolV2(int nHeight) { return fTestNet || nHeight > 0; }
@@ -671,6 +661,9 @@ public:
     void setAbandoned() { hashBlock = ABANDON_HASH; }
 };
 
+
+
+
 /**  A txdb record that contains the disk location of a transaction and the
  * locations of transactions that spend its outputs.  vSpent is really only
  * used as a flag, but having the location is very helpful for debugging.
@@ -771,13 +764,13 @@ public:
 
     IMPLEMENT_SERIALIZE
     (
-      READWRITE(this->nVersion);
-      nVersion = this->nVersion;
-      READWRITE(hashPrevBlock);
-      READWRITE(hashMerkleRoot);
-      READWRITE(nTime);
-      READWRITE(nBits);
-      READWRITE(nNonce);
+        READWRITE(this->nVersion);
+        nVersion = this->nVersion;
+        READWRITE(hashPrevBlock);
+        READWRITE(hashMerkleRoot);
+        READWRITE(nTime);
+        READWRITE(nBits);
+        READWRITE(nNonce);
 
         // ConnectBlock depends on vtx following header to generate CDiskTxPos
         if (!(nType & (SER_GETHASH|SER_BLOCKHEADERONLY)))
@@ -1041,7 +1034,6 @@ public:
     // (memory only) Number of transactions in the chain up to and including this block
     unsigned int nChainTx; // change to 64-bit type when necessary; won't happen before 2030
 
-
     unsigned int nFlags;  // ppcoin: block index flags
     enum
     {
@@ -1257,15 +1249,17 @@ public:
     }
 };
 
-  /** Used to marshal pointers into hashes for db storage. */
-  class CDiskBlockIndex : public CBlockIndex
-  {
-  private:
-      uint256 blockHash;
 
-  public:
-      uint256 hashPrev;
-      uint256 hashNext;
+
+/** Used to marshal pointers into hashes for db storage. */
+class CDiskBlockIndex : public CBlockIndex
+{
+private:
+    uint256 blockHash;
+
+public:
+    uint256 hashPrev;
+    uint256 hashNext;
 
     CDiskBlockIndex()
     {
@@ -1350,6 +1344,13 @@ public:
     }
 };
 
+
+
+
+
+
+
+
 /** Describes a place in the block chain to another node such that if the
  * other node doesn't have the same branch, it can find a recent common trunk.
  * The further back it is, the further before the fork it may be.
@@ -1411,6 +1412,7 @@ public:
                 pindex = pindex->pprev;
             if (vHave.size() > 10)
                 nStep *= 2;
+            // build a shorter locator to save cpu time on large chains: LNK CR B82REZ 2G4
             if (nStep > 1024) break;
         }
         vHave.push_back((!fTestNet ? hashGenesisBlock : hashGenesisBlockTestNet));

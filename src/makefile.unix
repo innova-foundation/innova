@@ -1,6 +1,6 @@
 # Copyright (c) 2009-2010 Satoshi Nakamoto
 # Copyright (c) 2017-2021 D e n a r i u s [D]
-# Copyright (c) 2019-2021 I n n o v a [INN]
+# Copyright (c) 2019-2022 I n n o v a [INN]
 # Distributed under the MIT/X11 software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -35,6 +35,7 @@ LIBS += \
    -l boost_filesystem$(BOOST_LIB_SUFFIX) \
    -l boost_program_options$(BOOST_LIB_SUFFIX) \
    -l boost_thread$(BOOST_LIB_SUFFIX) \
+   -l boost_chrono$(BOOST_LIB_SUFFIX) \
    -l db_cxx$(BDB_LIB_SUFFIX) \
    -l curl \
    -l ssl \
@@ -123,8 +124,8 @@ xLDFLAGS=$(LDHARDENING) $(LDFLAGS)
 
 ifeq (${USE_IPFS}, 1)
 OBJS= \
-	obj/ipfs.o \
-	obj/ipfscurl.o
+     obj/ipfs.o \
+     obj/ipfscurl.o
 endif
 
 ifeq (${USE_NATIVETOR}, 1)
@@ -310,7 +311,7 @@ OBJS= \
     obj/rpcwallet.o \
     obj/rpcblockchain.o \
     obj/rpcrawtransaction.o \
-    obj/rpchyperfile.o \
+	obj/rpchyperfile.o \
     obj/rpcsmessage.o \
     obj/script.o \
     obj/sync.o \
@@ -336,11 +337,11 @@ OBJS= \
     obj/ringsig.o \
     obj/bloom.o \
     obj/state.o \
-    obj/idns.o \
-  	obj/namecoin.o \
+	obj/idns.o \
+	obj/namecoin.o \
     obj/ipfs.o \
     obj/ipfscurl.o  \
-    obj/utiltime.o \
+	obj/utiltime.o \
     obj/stun.o
 else
 OBJS= \
@@ -372,7 +373,7 @@ OBJS= \
     obj/rpcblockchain.o \
     obj/rpcrawtransaction.o \
     obj/rpcsmessage.o \
-    obj/rpchyperfile.o \
+	obj/rpchyperfile.o \
     obj/script.o \
     obj/sync.o \
     obj/util.o \
@@ -397,10 +398,11 @@ OBJS= \
     obj/ringsig.o \
     obj/bloom.o \
     obj/state.o \
-    obj/idns.o \
-    obj/namecoin.o \
+	obj/idns.o \
+	obj/namecoin.o \
     obj/ipfs.o \
     obj/ipfscurl.o  \
+	obj/utiltime.o \
     obj/stun.o
 endif
 

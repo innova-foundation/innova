@@ -195,4 +195,3 @@ uint256 scrypt_blockhash(const void* input)
     unsigned char scratchpad[SCRYPT_BUFFER_SIZE];
     return scrypt_nosalt(input, 80, scratchpad);
 }
-

@@ -10,6 +10,23 @@ sudo apt-get update -y && sudo apt-get upgrade -y
 
 sudo apt-get --assume-yes install git unzip build-essential libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev obfs4proxy libcurl4-openssl-dev
 
+echo "Add Firewall Rules"
+sudo apt-get install ufw
+sudo ufw allow ssh
+sudo ufw limit ssh/tcp
+sudo ufw allow 14530/tcp
+sudo ufw allow 14531/tcp
+sudo ufw allow 14539/tcp
+sudo ufw default allow outgoing
+sudo ufw enable
+
+echo "Setting Swap File"
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
 echo "Installing Innova Wallet"
 git clone https://github.com/innova-foundation/innova
 cd innova || exit
@@ -24,11 +41,17 @@ sudo yes | cp -rf innovad /usr/bin/
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
-cd ~/.innova || exit
-rm -rf database txleveldb smsgDB
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.1/innovabootstrap.zip
-unzip innovabootstrap.zip
-rm -rf innovabootstrap.zip
+mkdir ~/.innova
+cd ~/innova
+chmod ugo+x bootstrap.sh
+./bootstrap.sh
+
+#mkdir ~/.innova
+#cd ~/.innova || exit
+#rm -rf database txleveldb smsgDB
+#wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.1/innovabootstrap.zip
+#unzip innovabootstrap.zip
+#rm -rf innovabootstrap.zip
 echo "Back to Compiled innovad Binary Folder"
 cd ~/innova/src
                 ;;
@@ -54,6 +77,23 @@ sudo apt-get update -y && sudo apt-get upgrade -y
 
 sudo apt-get --assume-yes install git unzip build-essential libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev obfs4proxy libssl-dev libcurl4-openssl-dev
 
+echo "Add Firewall Rules"
+sudo apt-get install ufw
+sudo ufw allow ssh
+sudo ufw limit ssh/tcp
+sudo ufw allow 14530/tcp
+sudo ufw allow 14531/tcp
+sudo ufw allow 14539/tcp
+sudo ufw default allow outgoing
+sudo ufw enable
+
+echo "Setting Swap File"
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
 echo "Downgrade libssl-dev"
 sudo apt-get install make
 wget https://www.openssl.org/source/openssl-1.0.1j.tar.gz
@@ -80,11 +120,17 @@ sudo yes | cp -rf innovad /usr/bin/
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
-cd ~/.innova
-rm -rf database txleveldb smsgDB blk0001.dat peers.dat banlist.dat
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.1/innovabootstrap.zip
-unzip innovabootstrap.zip
-rm -rf innovabootstrap.zip
+mkdir ~/.innova
+cd ~/innova
+chmod ugo+x bootstrap.sh
+./bootstrap.sh
+
+#mkdir ~/.innova
+#cd ~/.innova
+#rm -rf database txleveldb smsgDB
+#wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.1/innovabootstrap.zip
+#unzip innovabootstrap.zip
+#rm -rf innovabootstrap.zip
 echo "Back to Compiled innovad Binary Folder"
 cd ~/innova/src
                 ;;
@@ -110,6 +156,23 @@ sudo apt-get update -y && sudo apt-get upgrade -y
 
 sudo apt-get --assume-yes install git unzip build-essential libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev obfs4proxy libssl-dev libcurl4-openssl-dev
 
+echo "Add Firewall Rules"
+sudo apt-get install ufw
+sudo ufw allow ssh
+sudo ufw limit ssh/tcp
+sudo ufw allow 14530/tcp
+sudo ufw allow 14531/tcp
+sudo ufw allow 14539/tcp
+sudo ufw default allow outgoing
+sudo ufw enable
+
+echo "Setting Swap File"
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
 echo "Downgrade libssl-dev"
 sudo apt-get install make
 wget https://www.openssl.org/source/openssl-1.0.1j.tar.gz
@@ -136,11 +199,17 @@ sudo yes | cp -rf innovad /usr/bin/
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
-cd ~/.innova
-rm -rf database txleveldb smsgDB
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.0/innovabootstrap.zip
-unzip innovabootstrap.zip
-rm -rf innovabootstrap.zip
+mkdir ~/.innova
+cd ~/innova
+chmod ugo+x bootstrap.sh
+./bootstrap.sh
+
+#mkdir ~/.innova
+#cd ~/.innova
+#rm -rf database txleveldb smsgDB
+#wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.1/innovabootstrap.zip
+#unzip innovabootstrap.zip
+#rm -rf innovabootstrap.zip
 echo "Back to Compiled innovad Binary Folder"
 cd ~/innova/src
                 ;;

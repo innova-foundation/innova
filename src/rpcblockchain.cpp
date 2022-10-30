@@ -44,21 +44,19 @@ double BitsToDouble(unsigned int nBits)
 
 double GetDifficulty(const CBlockIndex* blockindex)
 {
-  if (blockindex == NULL)
-  {
-    if (pindexBest == NULL)
-    return 1.0;
-  else
-    blockindex = GetLastBlockIndex(pindexBest, false);
-  };
+    if (blockindex == NULL)
+    {
+        if (pindexBest == NULL)
+            return 1.0;
+        else
+            blockindex = GetLastBlockIndex(pindexBest, false);
+    };
 
-  return BitsToDouble(blockindex->nBits);
-
+    return BitsToDouble(blockindex->nBits);
 }
 
 double GetPoWMHashPS()
 {
-
     int nPoWInterval = 72;
     int64_t nTargetSpacingWorkMin = 30, nTargetSpacingWork = 30;
 
@@ -88,19 +86,20 @@ double GetPoSKernelPS()
     int nStakesHandled = 0, nStakesTime = 0;
 
     CBlockIndex* pindex = pindexBest;;
-  CBlockIndex* pindexPrevStake = NULL;
+    CBlockIndex* pindexPrevStake = NULL;
 
-  while (pindex && nStakesHandled < nPoSInterval)
-  {
-      if (pindex->IsProofOfStake())
+    while (pindex && nStakesHandled < nPoSInterval)
+    {
+        if (pindex->IsProofOfStake())
         {
-          dStakeKernelsTriedAvg += GetDifficulty(pindex) * 4294967296.0;
-          nStakesTime += pindexPrevStake ? (pindexPrevStake->nTime - pindex->nTime) : 0;
-          pindexPrevStake = pindex;
-          nStakesHandled++;
+            dStakeKernelsTriedAvg += GetDifficulty(pindex) * 4294967296.0;
+            nStakesTime += pindexPrevStake ? (pindexPrevStake->nTime - pindex->nTime) : 0;
+            pindexPrevStake = pindex;
+            nStakesHandled++;
+        };
+
+        pindex = pindex->pprev;
     };
-    pindex = pindex->pprev;
- };
 
     return nStakesTime ? dStakeKernelsTriedAvg / nStakesTime : 0;
 }
@@ -224,7 +223,7 @@ Value proofofdata(const Array& params, bool fHelp)
 
     if(userFile == "")
     {
-      return 0; //return with no value prev
+        return 0; //return with no value prev
     }
 
     std::string filename = userFile.c_str();
@@ -420,7 +419,7 @@ Value getblock(const Array& params, bool fHelp)
     std::string strHash = params[0].get_str();
     uint256 hash(strHash);
     //std::string strHash = params[0].get_str();
-	  //uint256 hash(uint256S(strHash));
+	//uint256 hash(uint256S(strHash));
 
     int verbosity = 1;
     if (params.size() > 1) {
@@ -632,7 +631,6 @@ Value getcheckpoint(const Array& params, bool fHelp)
     return result;
 }
 
-
 Value gettxout(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 2 || params.size() > 3)
@@ -738,33 +736,33 @@ Value gettxout(const Array& params, bool fHelp)
     ret.push_back(Pair("coinstake", tx.IsCoinStake()));
 
     return ret;
-  }
+}
 
 Value getblockchaininfo(const Array& params, bool fHelp)
 {
-  if (fHelp || params.size() != 0)
-      throw runtime_error(
-              "getblockchaininfo\n"
-              "Returns an object containing various state info regarding block chain processing.\n"
-              "\nResult:\n"
-              "{\n"
-              "  \"chain\": \"xxxx\",        (string) current chain (main, testnet)\n"
-              "  \"blocks\": xxxxxx,         (numeric) the current number of blocks processed in the server\n"
-              "  \"bestblockhash\": \"...\", (string) the hash of the currently best block\n"
-              "  \"difficulty\": xxxxxx,     (numeric) the current difficulty\n"
-              "  \"initialblockdownload\": xxxx, (bool) estimate of whether this INN node is in Initial Block Download mode.\n"
-              "  \"moneysupply\": xxxx, (numeric) the current supply of INN in circulation\n"
-              "}\n"
-      );
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+                "getblockchaininfo\n"
+                "Returns an object containing various state info regarding block chain processing.\n"
+                "\nResult:\n"
+                "{\n"
+                "  \"chain\": \"xxxx\",        (string) current chain (main, testnet)\n"
+                "  \"blocks\": xxxxxx,         (numeric) the current number of blocks processed in the server\n"
+                "  \"bestblockhash\": \"...\", (string) the hash of the currently best block\n"
+                "  \"difficulty\": xxxxxx,     (numeric) the current difficulty\n"
+                "  \"initialblockdownload\": xxxx, (bool) estimate of whether this INN node is in Initial Block Download mode.\n"
+                "  \"moneysupply\": xxxx, (numeric) the current supply of INN in circulation\n"
+                "}\n"
+        );
 
-  proxyType proxy;
-  GetProxy(NET_IPV4, proxy);
+    proxyType proxy;
+    GetProxy(NET_IPV4, proxy);
 
-  Object obj, diff;
-  std::string chain = "testnet";
-  if(!fTestNet)
-      chain = "main";
-      obj.push_back(Pair("chain",          chain));
+    Object obj, diff;
+    std::string chain = "testnet";
+    if(!fTestNet)
+        chain = "main";
+    obj.push_back(Pair("chain",          chain));
     obj.push_back(Pair("blocks",         (int)nBestHeight));
     obj.push_back(Pair("bestblockhash",  hashBestChain.GetHex()));
 
