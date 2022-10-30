@@ -72,14 +72,14 @@ public:
         nPayload = 0;
         pPayload = NULL;
     };
-    
+
     ~SecureMessage()
     {
         if (pPayload)
             delete[] pPayload;
         pPayload = NULL;
     };
-    
+
     unsigned char   hash[4];
     unsigned char   version[2];
     unsigned char   flags;
@@ -90,7 +90,7 @@ public:
     unsigned char   nonse[4];
     uint32_t        nPayload;
     unsigned char*  pPayload;
-        
+
 };
 #pragma pack(pop)
 
@@ -112,18 +112,18 @@ public:
     SecMsgToken(int64_t ts, unsigned char* p, int np, long int o)
     {
         timestamp = ts;
-        
+
         if (np < 8) // payload will always be > 8, just make sure
             memset(sample, 0, 8);
         else
             memcpy(sample, p, 8);
         offset = o;
     };
-    
+
     SecMsgToken() {};
-    
+
     ~SecMsgToken() {};
-    
+
     bool operator <(const SecMsgToken& y) const
     {
         // pack and memcmp from timesent?
@@ -131,11 +131,11 @@ public:
             return memcmp(sample, y.sample, 8) < 0;
         return timestamp < y.timestamp;
     }
-    
+
     int64_t                     timestamp;    // doesn't need to be full 64 bytes?
     unsigned char               sample[8];    // first 8 bytes of payload - a hash
     int64_t                     offset;       // offset
-    
+
 };
 
 
@@ -150,15 +150,15 @@ public:
         nLockPeerId     = 0;
     };
     ~SecMsgBucket() {};
-    
+
     void hashBucket();
-    
+
     int64_t                     timeChanged;
     uint32_t                    hash;           // token set should get ordered the same on each node
     uint32_t                    nLockCount;     // set when smsgWant first sent, unset at end of smsgMsg, ticks down in ThreadSecureMsg()
     uint32_t                    nLockPeerId;    // id of peer that bucket is locked for
     std::set<SecMsgToken>       setTokens;
-    
+
 };
 
 
@@ -192,11 +192,11 @@ public:
         fReceiveEnabled     = receiveOn;
         fReceiveAnon        = receiveAnon;
     };
-    
+
     std::string     sAddress;
     bool            fReceiveEnabled;
     bool            fReceiveAnon;
-    
+
     IMPLEMENT_SERIALIZE
     (
         READWRITE(this->sAddress);
@@ -214,7 +214,7 @@ public:
         fNewAddressRecv = true;
         fNewAddressAnon = true;
     }
-    
+
     bool fNewAddressRecv;
     bool fNewAddressAnon;
 };
@@ -227,7 +227,7 @@ private:
     unsigned char chIV[16];
     bool fKeySet;
 public:
-    
+
     SecMsgCrypter()
     {
         // Try to keep the key data out of swap (and be a bit over-careful to keep the IV that we don't even use out of swap)
@@ -237,18 +237,18 @@ public:
         LockedPageManager::instance.LockRange(&chIV[0], sizeof chIV);
         fKeySet = false;
     }
-    
+
     ~SecMsgCrypter()
     {
         // clean key
         memset(&chKey, 0, sizeof chKey);
         memset(&chIV, 0, sizeof chIV);
         fKeySet = false;
-        
+
         LockedPageManager::instance.UnlockRange(&chKey[0], sizeof chKey);
         LockedPageManager::instance.UnlockRange(&chIV[0], sizeof chIV);
     }
-    
+
     bool SetKey(const std::vector<unsigned char>& vchNewKey, unsigned char* chNewIV);
     bool SetKey(const unsigned char* chNewKey, unsigned char* chNewIV);
     bool Encrypt(unsigned char* chPlaintext, uint32_t nPlain, std::vector<unsigned char> &vchCiphertext);
@@ -265,7 +265,7 @@ public:
     std::string                     sAddrTo;        // when in owned addr, when sent remote addr
     std::string                     sAddrOutbox;    // owned address this copy was encrypted with
     std::vector<unsigned char>      vchMessage;     // message header + encryped payload
-    
+
     IMPLEMENT_SERIALIZE
     (
         READWRITE(this->timeReceived);
@@ -284,37 +284,37 @@ public:
     {
         activeBatch = NULL;
     };
-    
+
     ~SecMsgDB()
     {
         // -- deletes only data scoped to this TxDB object.
-        
+
         if (activeBatch)
             delete activeBatch;
     };
-    
+
     bool Open(const char* pszMode="r+");
-    
+
     bool ScanBatch(const CDataStream& key, std::string* value, bool* deleted) const;
-    
+
     bool TxnBegin();
     bool TxnCommit();
     bool TxnAbort();
-    
+
     bool ReadPK(CKeyID& addr, CPubKey& pubkey);
     bool WritePK(CKeyID& addr, CPubKey& pubkey);
     bool ExistsPK(CKeyID& addr);
-    
+
     bool NextSmesg(leveldb::Iterator* it, std::string& prefix, unsigned char* vchKey, SecMsgStored& smsgStored);
     bool NextSmesgKey(leveldb::Iterator* it, std::string& prefix, unsigned char* vchKey);
     bool ReadSmesg(unsigned char* chKey, SecMsgStored& smsgStored);
     bool WriteSmesg(unsigned char* chKey, SecMsgStored& smsgStored);
     bool ExistsSmesg(unsigned char* chKey);
     bool EraseSmesg(unsigned char* chKey);
-    
+
     leveldb::DB *pdb;       // points to the global instance
     leveldb::WriteBatch *activeBatch;
-    
+
 };
 
 std::string getTimeString(int64_t timestamp, char *buffer, size_t nBuffer);
@@ -377,4 +377,3 @@ int SecureMsgDecrypt(bool fTestOnly, std::string& address, SecureMessage& smsg, 
 
 
 #endif // SEC_MESSAGE_H
-

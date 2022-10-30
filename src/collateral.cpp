@@ -1,5 +1,5 @@
+// Copyright (c) 2019-2022 The Innova developers
 // Copyright (c) 2017-2021 The Denarius developers
-// Copyright (c) 2019-2021 The Innova developers
 // Copyright (c) 2009-2012 The Darkcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
@@ -42,14 +42,6 @@ int RequestedCollateralNodeList = 0;
 
 //MIN_MN_PROTO_VERSION
 int MIN_MN_PROTO_VERSION = 31000;
-
-/* *** BEGIN COLLATERAL MAGIC  **********
-    Copyright 2014, Darkcoin Developers
-        eduffield - evan@darkcoin.io
-    Copyright 2018, Denarius Developers
-        carsenk - admin@denarius.io
-        enkayz - enkayz@denarius.io
-*/
 
 int randomizeList (int i) { return std::rand()%i;}
 
