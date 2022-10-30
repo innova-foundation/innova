@@ -95,7 +95,7 @@ bool fCommandLine = false;
 string strMiscWarning;
 bool fTestNet = false;
 bool fNativeTor = false;
-bool fHyperFileLocal = false;
+bool fHyperfileLocal = false;
 bool fCNLock = false;
 bool fNoListen = false;
 bool fLogTimestamps = false;
