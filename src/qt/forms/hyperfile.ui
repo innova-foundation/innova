@@ -192,7 +192,7 @@
                 </property>
                 <property name="icon">
                  <iconset resource="../bitcoin.qrc">
-                  <normaloff>:/icons/hyperfile-gradient</normaloff>:/icons/hyperfile-gradient</iconset>
+                  <normaloff>:/icons/hyperfile</normaloff>:/icons/hyperfile</iconset>
                 </property>
                 <property name="iconSize">
                  <size>
