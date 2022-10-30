@@ -31,7 +31,7 @@ vector<KernelRecord> KernelRecord::decomposeOutput(const CWallet *wallet, const 
     uint256 hash = wtx.GetHash();
     std::map<std::string, std::string> mapValue = wtx.mapValue;
     int64_t nDayWeight = (min((GetAdjustedTime() - nTime), (int64_t)(nStakeMaxAge+nStakeMinAge)) - nStakeMinAge); // DayWeight * 86400
-	
+
     if (showTransaction(wtx))
     {
         for (unsigned int nOut = 0; nOut < wtx.vout.size(); nOut++)

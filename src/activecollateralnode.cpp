@@ -75,7 +75,7 @@ void CActiveCollateralnode::ManageStatus()
             //    return;
             //}
 
-            printf("CActiveCollateralnode::ManageStatus() - Is a capable CollateralNode.\n");
+            printf("CActiveCollateralnode::ManageStatus() - Is a capable CollateralNode!\n");
 
             status = COLLATERALNODE_IS_CAPABLE;
             notCapableReason = "";
@@ -108,7 +108,7 @@ void CActiveCollateralnode::ManageStatus()
     }
 }
 
-// Send stop dseep to network for remote collateralnode
+// Send stop iseep to network for remote collateralnode
 bool CActiveCollateralnode::StopCollateralNode(std::string strService, std::string strKeyCollateralnode, std::string& errorMessage) {
     CTxIn vin;
     CKey keyCollateralnode;
@@ -122,7 +122,7 @@ bool CActiveCollateralnode::StopCollateralNode(std::string strService, std::stri
     return StopCollateralNode(vin, CService(strService), keyCollateralnode, pubKeyCollateralnode, errorMessage);
 }
 
-// Send stop dseep to network for main collateralnode
+// Send stop iseep to network for main collateralnode
 bool CActiveCollateralnode::StopCollateralNode(std::string& errorMessage) {
     if(status != COLLATERALNODE_IS_CAPABLE && status != COLLATERALNODE_REMOTELY_ENABLED) {
         errorMessage = "collateralnode is not in a running status";
@@ -144,7 +144,7 @@ bool CActiveCollateralnode::StopCollateralNode(std::string& errorMessage) {
     return StopCollateralNode(vin, service, keyCollateralnode, pubKeyCollateralnode, errorMessage);
 }
 
-// Send stop dseep to network for any collateralnode
+// Send stop iseep to network for any collateralnode
 bool CActiveCollateralnode::StopCollateralNode(CTxIn vin, CService service, CKey keyCollateralnode, CPubKey pubKeyCollateralnode, std::string& errorMessage) {
        pwalletMain->UnlockCoin(vin.prevout);
     return Dseep(vin, service, keyCollateralnode, pubKeyCollateralnode, errorMessage, true);
@@ -283,21 +283,21 @@ bool CActiveCollateralnode::Register(CTxIn vin, CService service, CKey keyCollat
     LOCK(cs_collateralnodes);
     for (CCollateralNode& mn : vecCollateralnodes)
     {
-      if(mn.pubkey == pubKeyCollateralAddress) {
-              dup = true;
-          }
-      }
-      if (dup) {
+        if(mn.pubkey == pubKeyCollateralAddress) {
+            dup = true;
+        }
+    }
+    if (dup) {
         retErrorMessage = "Failed, CN already in list, use a different pubkey";
-      printf("CActiveCollateralnode::Register() FAILED! CN Already in List. Change your collateral address to a different address for this CN.\n", retErrorMessage.c_str());
-          return false;
-      }
-      for (CCollateralNode& mn : vecCollateralnodes)
-      {
-          if(mn.vin == vin) {
-              printf("Found CN VIN in CollateralNodes List\n");
-              found = true;
-      }
+        printf("CActiveCollateralnode::Register() FAILED! CN Already in List. Change your collateral address to a different address for this CN.\n", retErrorMessage.c_str());
+        return false;
+    }
+    for (CCollateralNode& mn : vecCollateralnodes)
+    {
+        if(mn.vin == vin) {
+            printf("Found CN VIN in CollateralNodes List\n");
+            found = true;
+        }
     }
 
     if(!found) {
@@ -382,11 +382,11 @@ bool CActiveCollateralnode::GetCollateralNodeVin(CTxIn& vin, CPubKey& pubkey, CK
 
 bool CActiveCollateralnode::GetCollateralNodeVin(CTxIn& vin, CPubKey& pubkey, CKey& secretKey, std::string strTxHash, std::string strOutputIndex, std::string& errorMessage) {
 
-  if (pwalletMain->IsLocked())
-  {
-      errorMessage = "Error: Your wallet is locked! Please unlock your wallet!";
-      return false;
-  }
+    if (pwalletMain->IsLocked())
+    {
+        errorMessage = "Error: Your wallet is locked! Please unlock your wallet!";
+        return false;
+    }
 
     // Find possible candidates
     vector<COutput> possibleCoins = SelectCoinsCollateralnode(false);
@@ -577,7 +577,7 @@ bool CActiveCollateralnode::EnableHotColdCollateralNode(CTxIn& newVin, CService&
 
     status = COLLATERALNODE_REMOTELY_ENABLED;
 
-    //The values below are needed for signing dseep messages going forward
+    //The values below are needed for signing iseep messages going forward
     this->vin = newVin;
     this->service = newService;
 

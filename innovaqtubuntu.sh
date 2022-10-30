@@ -1,6 +1,6 @@
 #!/bin/bash
 TEMP=/tmp/answer$$
-whiptail --title "Innova [INN]"  --menu  "Ubuntu 16.04/18.04/20.04 QT Wallet :" 20 0 0 1 "Compile Innova QT Ubuntu 16.04" 2 "Update Innova QT 16.04 to v3.4 latest" 3 "Compile Innova QT Ubuntu 18.04" 4 "Update Innova QT 18.04 to v3.4 latest" 5 "Compile Innova QT Ubuntu 20.04" 6 "Update Innova QT 20.04 to v3.4 latest" 2>$TEMP
+whiptail --title "Innova [INN]"  --menu  "Ubuntu 16.04/18.04/20.04 QT Wallet :" 20 0 0 1 "Compile Innova QT Ubuntu 16.04" 2 "Update Innova QT 16.04 to latest" 3 "Compile Innova QT Ubuntu 18.04" 4 "Update Innova QT 18.04 to latest" 5 "Compile Innova QT Ubuntu 20.04" 6 "Update Innova QT 20.04 to latest" 2>$TEMP
 choice=`cat $TEMP`
 case $choice in
 1) echo 1 "Compiling Innova QT Ubuntu 16.04"
@@ -28,11 +28,16 @@ make
 
 echo "Get Chaindata"
 mkdir ~/.innova
-cd ~/.innova || exit
-rm -rf database txleveldb smsgDB
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.0/innovabootstrap.zip
-unzip innovabootstrap.zip
-rm innovabootstrap.zip
+cd ~/innova
+chmod ugo+x bootstrap.sh
+./bootstrap.sh
+
+#mkdir ~/.innova
+#cd ~/.innova
+#rm -rf database txleveldb smsgDB
+#wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.1/innovabootstrap.zip
+#unzip innovabootstrap.zip
+#rm -rf innovabootstrap.zip
 Echo "Back to Compiled QT Binary Folder"
 cd ~/innova/src
                 ;;
@@ -91,11 +96,16 @@ make
 
 echo "Get Chaindata"
 mkdir ~/.innova
-cd ~/.innova
-rm -rf database txleveldb smsgDB
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.0/innovabootstrap.zip
-unzip innovabootstrap.zip
-rm innovabootstrap.zip
+cd ~/innova
+chmod ugo+x bootstrap.sh
+./bootstrap.sh
+
+#mkdir ~/.innova
+#cd ~/.innova
+#rm -rf database txleveldb smsgDB
+#wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.1/innovabootstrap.zip
+#unzip innovabootstrap.zip
+#rm -rf innovabootstrap.zip
 Echo "Back to Compiled QT Binary Folder"
 cd ~/innova/src
                 ;;
@@ -155,14 +165,18 @@ echo "Building Qt Wallet"
 qmake "USE_UPNP=1" "USE_QRCODE=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
 make
 
-
 echo "Get Chaindata"
 mkdir ~/.innova
-cd ~/.innova
-rm -rf database txleveldb smsgDB
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.0/innovabootstrap.zip
-unzip innovabootstrap.zip
-rm innovabootstrap.zip
+cd ~/innova
+chmod ugo+x bootstrap.sh
+./bootstrap.sh
+
+#mkdir ~/.innova
+#cd ~/.innova
+#rm -rf database txleveldb smsgDB
+#wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.1/innovabootstrap.zip
+#unzip innovabootstrap.zip
+#rm -rf innovabootstrap.zip
 Echo "Back to Compiled QT Binary Folder"
 cd ~/innova/src
                 ;;
@@ -220,11 +234,17 @@ make
 
 
 echo "Get Chaindata"
-cd ~/.innova
-rm -rf database txleveldb smsgDB
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.0/innovabootstrap.zip
-unzip innovabootstrap.zip
-rm innovabootstrap.zip
+mkdir ~/.innova
+cd ~/innova
+chmod ugo+x bootstrap.sh
+./bootstrap.sh
+
+#mkdir ~/.innova
+#cd ~/.innova
+#rm -rf database txleveldb smsgDB
+#wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.1/innovabootstrap.zip
+#unzip innovabootstrap.zip
+#rm -rf innovabootstrap.zip
 Echo "Back to Compiled QT Binary Folder"
 cd ~/innova/src
               ;;

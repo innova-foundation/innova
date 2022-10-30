@@ -117,7 +117,7 @@ bool CCryptoKeyStore::Unlock(const CKeyingMaterial& vMasterKeyIn)
         if (!SetCrypted())
             return false;
 
-            int nUnlocked = 0;
+        int nUnlocked = 0;
 
         CryptedKeyMap::const_iterator mi = mapCryptedKeys.begin();
         for (; mi != mapCryptedKeys.end(); ++mi)
@@ -138,6 +138,7 @@ bool CCryptoKeyStore::Unlock(const CKeyingMaterial& vMasterKeyIn)
                 printf("DecryptSecret() failed.\n");
                 return false;
             };
+
             if (vchSecret.size() != 32)
                 return false;
 

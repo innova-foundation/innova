@@ -16,6 +16,7 @@
 #include "uint256.h"
 #include "state.h"
 
+
 #define IDNS_PORT 6565
 
 extern bool fTestNet;
@@ -67,7 +68,6 @@ class CMessageHeader
         unsigned int nMessageSize;
         unsigned int nChecksum;
 };
-
 
 /** A CService with information about it as peer */
 class CAddress : public CService

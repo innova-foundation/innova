@@ -6,7 +6,6 @@
 #ifndef BITCOIN_STEALTH_H
 #define BITCOIN_STEALTH_H
 
-
 #include <stdlib.h>
 #include <stdio.h>
 #include <vector>

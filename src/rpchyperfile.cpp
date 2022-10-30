@@ -1,6 +1,6 @@
 // Copyright (c) 2010 Satoshi Nakamoto
 // Copyright (c) 2017-2021 The Denarius developers
-// Copyright (c) 2019-2021 The Innova Developers
+// Copyright (c) 2019-2022 The Innova Developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 // Original OG - credits to carsenk for original IPFS code & Denarius Jupiter Commands
@@ -37,9 +37,9 @@ Value hyperfilegetstat(const Array& params, bool fHelp)
     std::string userHash = params[0].get_str();
     ipfs::Json stat_result;
 
-    fHyperfileLocal = GetBoolArg("-hyperfilelocal");
+    fHyperFileLocal = GetBoolArg("-hyperfilelocal");
 
-    if (fHyperfileLocal) {
+    if (fHyperFileLocal) {
         std::string ipfsip = GetArg("-hyperfileip", "localhost:5001"); //Default Localhost
 
         ipfs::Client client(ipfsip);
@@ -78,9 +78,9 @@ Value hyperfilegetblock(const Array& params, bool fHelp)
     std::string userHash = params[0].get_str();
     std::stringstream block_contents;
 
-    fHyperfileLocal = GetBoolArg("-hyperfilelocal");
+    fHyperFileLocal = GetBoolArg("-hyperfilelocal");
 
-    if (fHyperfileLocal) {
+    if (fHyperFileLocal) {
         std::string ipfsip = GetArg("-hyperfileip", "localhost:5001"); //Default Localhost
 
         ipfs::Client client(ipfsip);
@@ -108,23 +108,23 @@ Value hyperfileversion(const Array& params, bool fHelp)
     if (fHelp || params.size() != 0)
         throw runtime_error(
             "hyperfileversion\n"
-            "Returns the version of the connected IPFS node within the Innova Hyperfile");
+            "Returns the version of the connected IPFS node within the Innova HyperFile");
 
     ipfs::Json version;
     ipfs::Json id;
     bool connected = false;
     Object obj, peerinfo;
 
-    fHyperfileLocal = GetBoolArg("-hyperfilelocal");
+    fHyperFileLocal = GetBoolArg("-hyperfilelocal");
 
-    if (fHyperfileLocal) {
+    if (fHyperFileLocal) {
         std::string ipfsip = GetArg("-hyperfileip", "localhost:5001"); //Default Localhost
 
         ipfs::Client client(ipfsip);
 
         client.Version(&version);
         const std::string& vv = version["Version"].dump();
-        printf("Hyperfile: IPFS Peer Version: %s\n", vv.c_str());
+        printf("HyperFile: IPFS Peer Version: %s\n", vv.c_str());
         std::string versionj = version["Version"].dump();
 
         if (version["Version"].dump() != "") {
@@ -149,7 +149,7 @@ Value hyperfileversion(const Array& params, bool fHelp)
 
         client.Version(&version);
         const std::string& vv = version["Version"].dump();
-        printf("Hyperfile: IPFS Peer Version: %s\n", vv.c_str());
+        printf("HyperFile: IPFS Peer Version: %s\n", vv.c_str());
         std::string versionj = version["Version"].dump();
 
         if (version["Version"].dump() != "") {
@@ -173,16 +173,16 @@ Value hyperfilepod(const Array& params, bool fHelp)
         "hyperfilepod\n"
         "\nArguments:\n"
         "1. \"filelocation\"          (string, required) The file location of the file to upload (e.g. /home/name/file.jpg)\n"
-        "Returns the uploaded IPFS file CID/Hash of the uploaded file and public gateway link if successful, along with the Hyperfile POD TX ID Timestamp.");
+        "Returns the uploaded IPFS file CID/Hash of the uploaded file and public gateway link if successful, along with the HyperFile POD TX ID Timestamp.");
 
     Object obj;
     std::string userFile = params[0].get_str();
 
 
     //Ensure IPFS connected
-    fHyperfileLocal = GetBoolArg("-hyperfilelocal");
+    fHyperFileLocal = GetBoolArg("-hyperfilelocal");
 
-    if (fHyperfileLocal) {
+    if (fHyperFileLocal) {
         try {
             ipfs::Json add_result;
 
@@ -192,7 +192,7 @@ Value hyperfilepod(const Array& params, bool fHelp)
 
             if(userFile == "")
             {
-              return 0;
+                return 0;
             }
 
             std::string filename = userFile.c_str();
@@ -200,8 +200,8 @@ Value hyperfilepod(const Array& params, bool fHelp)
             boost::filesystem::path p(filename);
             std::string basename = p.filename().string();
 
-            printf("Hyperfile Upload File Start: %s\n", basename.c_str());
-            //printf("Hyperfile File Contents: %s\n", ipfsC.c_str());
+            printf("HyperFile Upload File Start: %s\n", basename.c_str());
+            //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
             client.FilesAdd(
             {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, userFile.c_str()}},
@@ -211,11 +211,11 @@ Value hyperfilepod(const Array& params, bool fHelp)
             int size = add_result[0]["size"];
 
             std::string r = add_result.dump();
-            printf("Hyperfile POD Successfully Added IPFS File(s): %s\n", r.c_str());
+            printf("HyperFile POD Successfully Added IPFS File(s): %s\n", r.c_str());
 
-            //Hyperfile POD
+            //HyperFile POD
             if (hash != "") {
-                //Hash the file for Innova Hyperfile POD
+                //Hash the file for Innova HyperFile POD
                 //uint256 imagehash = SerializeHash(ipfsContents);
                 CKeyID keyid(Hash160(hash.begin(), hash.end()));
                 CBitcoinAddress baddr = CBitcoinAddress(keyid);
@@ -228,16 +228,16 @@ Value hyperfilepod(const Array& params, bool fHelp)
                 // Wallet comments
                 CWalletTx wtx;
                 wtx.mapValue["comment"] = hash;
-                std::string sNarr = "Hyperfile POD";
-                wtx.mapValue["to"]      = "Hyperfile POD";
+                std::string sNarr = "HyperFile POD";
+                wtx.mapValue["to"]      = "HyperFile POD";
 
                 if (pwalletMain->IsLocked())
                 {
                     obj.push_back(Pair("error",  "Error, Your wallet is locked! Please unlock your wallet!"));
-                    //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send Hyperfile POD. Unlock your wallet!");
+                    //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send HyperFile POD. Unlock your wallet!");
                 } else if (pwalletMain->GetBalance() < 0.001) {
-                    obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send Hyperfile POD!"));
-                    //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send Hyperfile POD.");
+                    obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send HyperFile POD!"));
+                    //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send HyperFile POD.");
                 } else {
                     //std::string sNarr;
                     std::string strError = pwalletMain->SendMoneyToDestination(baddr.Get(), nAmount, sNarr, wtx);
@@ -288,7 +288,7 @@ Value hyperfilepod(const Array& params, bool fHelp)
 
                 if(userFile == "")
                 {
-                  return 0;
+                    return 0;
                 }
 
                 std::string filename = userFile.c_str();
@@ -296,8 +296,8 @@ Value hyperfilepod(const Array& params, bool fHelp)
                 boost::filesystem::path p(filename);
                 std::string basename = p.filename().string();
 
-                printf("Hyperfile Upload File Start: %s\n", basename.c_str());
-                //printf("Hyperfile File Contents: %s\n", ipfsC.c_str());
+                printf("HyperFile Upload File Start: %s\n", basename.c_str());
+                //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
                 client.FilesAdd(
                 {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, userFile.c_str()}},
@@ -307,11 +307,11 @@ Value hyperfilepod(const Array& params, bool fHelp)
                 int size = add_result[0]["size"];
 
                 std::string r = add_result.dump();
-                printf("Hyperfile POD Successfully Added IPFS File(s): %s\n", r.c_str());
+                printf("HyperFile POD Successfully Added IPFS File(s): %s\n", r.c_str());
 
-                //Hyperfile POD
+                //HyperFile POD
                 if (hash != "") {
-                    //Hash the file for Innova Hyperfile POD
+                    //Hash the file for Innova HyperFile POD
                     //uint256 imagehash = SerializeHash(ipfsContents);
                     CKeyID keyid(Hash160(hash.begin(), hash.end()));
                     CBitcoinAddress baddr = CBitcoinAddress(keyid);
@@ -324,16 +324,16 @@ Value hyperfilepod(const Array& params, bool fHelp)
                     // Wallet comments
                     CWalletTx wtx;
                     wtx.mapValue["comment"] = hash;
-                    std::string sNarr = "Hyperfile POD";
-                    wtx.mapValue["to"]      = "Hyperfile POD";
+                    std::string sNarr = "HyperFile POD";
+                    wtx.mapValue["to"]      = "HyperFile POD";
 
                     if (pwalletMain->IsLocked())
                     {
                         obj.push_back(Pair("error",  "Error, Your wallet is locked! Please unlock your wallet!"));
-                        //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send Hyperfile POD. Unlock your wallet!");
+                        //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send HyperFile POD. Unlock your wallet!");
                     } else if (pwalletMain->GetBalance() < 0.001) {
-                        obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send Hyperfile POD!"));
-                        //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send Hyperfile POD.");
+                        obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send HyperFile POD!"));
+                        //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send HyperFile POD.");
                     } else {
                         //std::string sNarr;
                         std::string strError = pwalletMain->SendMoneyToDestination(baddr.Get(), nAmount, sNarr, wtx);
@@ -383,9 +383,9 @@ Value hyperfileupload(const Array& params, bool fHelp)
 
 
     //Ensure IPFS connected
-    fHyperfileLocal = GetBoolArg("-hyperfilelocal");
+    fHyperFileLocal = GetBoolArg("-hyperfilelocal");
 
-    if (fHyperfileLocal) {
+    if (fHyperFileLocal) {
         try {
             ipfs::Json add_result;
 
@@ -395,7 +395,7 @@ Value hyperfileupload(const Array& params, bool fHelp)
 
             if(userFile == "")
             {
-              return 0;
+                return 0;
             }
 
             std::string filename = userFile.c_str();
@@ -403,8 +403,8 @@ Value hyperfileupload(const Array& params, bool fHelp)
             boost::filesystem::path p(filename);
             std::string basename = p.filename().string();
 
-            printf("Hyperfile Upload File Start: %s\n", basename.c_str());
-            //printf("Hyperfile File Contents: %s\n", ipfsC.c_str());
+            printf("HyperFile Upload File Start: %s\n", basename.c_str());
+            //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
             client.FilesAdd(
             {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, userFile.c_str()}},
@@ -414,7 +414,7 @@ Value hyperfileupload(const Array& params, bool fHelp)
             int size = add_result[0]["size"];
 
             std::string r = add_result.dump();
-            printf("Hyperfile Successfully Added IPFS File(s): %s\n", r.c_str());
+            printf("HyperFile Successfully Added IPFS File(s): %s\n", r.c_str());
 
             std::string filelink = "https://ipfs.infura.io/ipfs/" + hash;
             std::string cloudlink = "https://cloudflare-ipfs.com/ipfs/" + hash;
@@ -440,7 +440,7 @@ Value hyperfileupload(const Array& params, bool fHelp)
 
                 if(userFile == "")
                 {
-                  return 0;
+                    return 0;
                 }
 
                 std::string filename = userFile.c_str();
@@ -448,8 +448,8 @@ Value hyperfileupload(const Array& params, bool fHelp)
                 boost::filesystem::path p(filename);
                 std::string basename = p.filename().string();
 
-                printf("Hyperfile Upload File Start: %s\n", basename.c_str());
-                //printf("Hyperfile File Contents: %s\n", ipfsC.c_str());
+                printf("HyperFile Upload File Start: %s\n", basename.c_str());
+                //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
                 client.FilesAdd(
                 {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, userFile.c_str()}},
@@ -459,7 +459,7 @@ Value hyperfileupload(const Array& params, bool fHelp)
                 int size = add_result[0]["size"];
 
                 std::string r = add_result.dump();
-                printf("Hyperfile Successfully Added IPFS File(s): %s\n", r.c_str());
+                printf("HyperFile Successfully Added IPFS File(s): %s\n", r.c_str());
 
                 std::string filelink = "https://ipfs.infura.io/ipfs/" + hash;
                 std::string cloudlink = "https://cloudflare-ipfs.com/ipfs/" + hash;
@@ -506,9 +506,9 @@ Value hyperfileduo(const Array& params, bool fHelp)
 
 
     //Ensure IPFS connected
-    fHyperfileLocal = GetBoolArg("-hyperfilelocal");
+    fHyperFileLocal = GetBoolArg("-hyperfilelocal");
 
-    if (fHyperfileLocal) {
+    if (fHyperFileLocal) {
         try {
             ipfs::Json add_result;
 
@@ -518,7 +518,7 @@ Value hyperfileduo(const Array& params, bool fHelp)
 
             if(userFile == "")
             {
-              return 0;
+                return 0;
             }
 
             std::string filename = userFile.c_str();
@@ -526,8 +526,8 @@ Value hyperfileduo(const Array& params, bool fHelp)
             boost::filesystem::path p(filename);
             std::string basename = p.filename().string();
 
-            printf("Hyperfile Upload File Start: %s\n", basename.c_str());
-            //printf("Hyperfile File Contents: %s\n", ipfsC.c_str());
+            printf("HyperFile Upload File Start: %s\n", basename.c_str());
+            //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
             client.FilesAdd(
             {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, userFile.c_str()}},
@@ -537,7 +537,7 @@ Value hyperfileduo(const Array& params, bool fHelp)
             int size = add_result[0]["size"];
 
             std::string r = add_result.dump();
-            printf("Hyperfile Duo Successfully Added IPFS File(s): %s\n", r.c_str());
+            printf("HyperFile Duo Successfully Added IPFS File(s): %s\n", r.c_str());
 
             std::string filelink = "https://ipfs.infura.io/ipfs/" + hash;
             std::string cloudlink = "https://cloudflare-ipfs.com/ipfs/" + hash;
@@ -565,7 +565,7 @@ Value hyperfileduo(const Array& params, bool fHelp)
 
                 if(userFile == "")
                 {
-                  return 0;
+                    return 0;
                 }
 
                 std::string filename = userFile.c_str();
@@ -573,8 +573,8 @@ Value hyperfileduo(const Array& params, bool fHelp)
                 boost::filesystem::path p(filename);
                 std::string basename = p.filename().string();
 
-                printf("Hyperfile Upload File Start: %s\n", basename.c_str());
-                //printf("Hyperfile File Contents: %s\n", ipfsC.c_str());
+                printf("HyperFile Upload File Start: %s\n", basename.c_str());
+                //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
                 client.FilesAdd(
                 {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, userFile.c_str()}},
@@ -584,7 +584,7 @@ Value hyperfileduo(const Array& params, bool fHelp)
                 int size = add_result[0]["size"];
 
                 std::string r = add_result.dump();
-                printf("Hyperfile Duo Successfully Added IPFS File(s): %s\n", r.c_str());
+                printf("HyperFile Duo Successfully Added IPFS File(s): %s\n", r.c_str());
 
                 std::string filelink = "https://ipfs.infura.io/ipfs/" + hash;
                 std::string cloudlink = "https://cloudflare-ipfs.com/ipfs/" + hash;
@@ -631,16 +631,16 @@ Value hyperfileduopod(const Array& params, bool fHelp)
         "hyperfileduopod\n"
         "\nArguments:\n"
         "1. \"filelocation\"          (string, required) The file location of the file to upload (e.g. /home/name/file.jpg)\n"
-        "Returns the uploaded IPFS file CID/Hashes of the uploaded file and public gateway links if successful from submission to two IPFS API nodes and PODs with INN");
+        "Returns the uploaded IPFS file CID/Hashes of the uploaded file and public gateway links if successful from submission to two IPFS API nodes and PODs with D");
 
     Object obj, second, first;
     std::string userFile = params[0].get_str();
 
 
     //Ensure IPFS connected
-    fHyperfileLocal = GetBoolArg("-hyperfilelocal");
+    fHyperFileLocal = GetBoolArg("-hyperfilelocal");
 
-    if (fHyperfileLocal) {
+    if (fHyperFileLocal) {
         try {
             ipfs::Json add_result;
 
@@ -650,7 +650,7 @@ Value hyperfileduopod(const Array& params, bool fHelp)
 
             if(userFile == "")
             {
-              return 0;
+                return 0;
             }
 
             std::string filename = userFile.c_str();
@@ -658,8 +658,8 @@ Value hyperfileduopod(const Array& params, bool fHelp)
             boost::filesystem::path p(filename);
             std::string basename = p.filename().string();
 
-            printf("Hyperfile Upload File Start: %s\n", basename.c_str());
-            //printf("Hyperfile File Contents: %s\n", ipfsC.c_str());
+            printf("HyperFile Upload File Start: %s\n", basename.c_str());
+            //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
             client.FilesAdd(
             {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, userFile.c_str()}},
@@ -669,11 +669,11 @@ Value hyperfileduopod(const Array& params, bool fHelp)
             int size = add_result[0]["size"];
 
             std::string r = add_result.dump();
-            printf("Hyperfile Duo Pod Successfully Added IPFS File(s): %s\n", r.c_str());
+            printf("HyperFile Duo Pod Successfully Added IPFS File(s): %s\n", r.c_str());
 
-            //Hyperfile POD for Duo
+            //HyperFile POD for Duo
             if (hash != "") {
-                //Hash the file for Innova Hyperfile POD
+                //Hash the file for Innova HyperFile POD
                 //uint256 imagehash = SerializeHash(ipfsContents);
                 CKeyID keyid(Hash160(hash.begin(), hash.end()));
                 CBitcoinAddress baddr = CBitcoinAddress(keyid);
@@ -681,21 +681,21 @@ Value hyperfileduopod(const Array& params, bool fHelp)
 
                 //ui->lineEdit_2->setText(QString::fromStdString(addr));
 
-                CAmount nAmount = 0.0005 * COIN; // 0.0005 INN Fee - 0.001 INN Total for Hyperfile Duo Pod
+                CAmount nAmount = 0.0005 * COIN; // 0.0005 INN Fee - 0.001 INN Total for HyperFile Duo Pod
 
                 // Wallet comments
                 CWalletTx wtx;
                 wtx.mapValue["comment"] = hash;
-                std::string sNarr = "Hyperfile Duo POD";
-                wtx.mapValue["to"]      = "Hyperfile Duo POD";
+                std::string sNarr = "HyperFile Duo POD";
+                wtx.mapValue["to"]      = "HyperFile Duo POD";
 
                 if (pwalletMain->IsLocked())
                 {
                     obj.push_back(Pair("error",  "Error, Your wallet is locked! Please unlock your wallet!"));
-                    //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send Hyperfile POD. Unlock your wallet!");
+                    //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send HyperFile POD. Unlock your wallet!");
                 } else if (pwalletMain->GetBalance() < 0.001) {
-                    obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send Hyperfile POD!"));
-                    //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send Hyperfile POD.");
+                    obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send HyperFile POD!"));
+                    //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send HyperFile POD.");
                 } else {
                     //std::string sNarr;
                     std::string strError = pwalletMain->SendMoneyToDestination(baddr.Get(), nAmount, sNarr, wtx);
@@ -736,7 +736,7 @@ Value hyperfileduopod(const Array& params, bool fHelp)
 
                 if(userFile == "")
                 {
-                  return 0;
+                    return 0;
                 }
 
                 std::string filename = userFile.c_str();
@@ -744,8 +744,8 @@ Value hyperfileduopod(const Array& params, bool fHelp)
                 boost::filesystem::path p(filename);
                 std::string basename = p.filename().string();
 
-                printf("Hyperfile Upload File Start: %s\n", basename.c_str());
-                //printf("Hyperfile File Contents: %s\n", ipfsC.c_str());
+                printf("HyperFile Upload File Start: %s\n", basename.c_str());
+                //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
 
                 client.FilesAdd(
                 {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, userFile.c_str()}},
@@ -755,11 +755,11 @@ Value hyperfileduopod(const Array& params, bool fHelp)
                 int size = add_result[0]["size"];
 
                 std::string r = add_result.dump();
-                printf("Hyperfile Duo POD Successfully Added IPFS File(s): %s\n", r.c_str());
+                printf("HyperFile Duo POD Successfully Added IPFS File(s): %s\n", r.c_str());
 
-                //Hyperfile POD for Duo
+                //HyperFile POD for Duo
                 if (hash != "") {
-                    //Hash the file for Innova Hyperfile POD
+                    //Hash the file for Innova HyperFile POD
                     //uint256 imagehash = SerializeHash(ipfsContents);
                     CKeyID keyid(Hash160(hash.begin(), hash.end()));
                     CBitcoinAddress baddr = CBitcoinAddress(keyid);
@@ -767,21 +767,21 @@ Value hyperfileduopod(const Array& params, bool fHelp)
 
                     //ui->lineEdit_2->setText(QString::fromStdString(addr));
 
-                    CAmount nAmount = 0.0005 * COIN; // 0.0005 INN Fee - 0.001 INN Total for Hyperfile Duo Pod
+                    CAmount nAmount = 0.0005 * COIN; // 0.0005 INN Fee - 0.001 INN Total for HyperFile Duo Pod
 
                     // Wallet comments
                     CWalletTx wtx;
                     wtx.mapValue["comment"] = hash;
-                    std::string sNarr = "Hyperfile Duo POD";
-                    wtx.mapValue["to"]      = "Hyperfile Duo POD";
+                    std::string sNarr = "HyperFile Duo POD";
+                    wtx.mapValue["to"]      = "HyperFile Duo POD";
 
                     if (pwalletMain->IsLocked())
                     {
                         obj.push_back(Pair("error",  "Error, Your wallet is locked! Please unlock your wallet!"));
-                        //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send Hyperfile POD. Unlock your wallet!");
+                        //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send HyperFile POD. Unlock your wallet!");
                     } else if (pwalletMain->GetBalance() < 0.001) {
-                        obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send Hyperfile POD!"));
-                        //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send Hyperfile POD.");
+                        obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send HyperFile POD!"));
+                        //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send HyperFile POD.");
                     } else {
                         //std::string sNarr;
                         std::string strError = pwalletMain->SendMoneyToDestination(baddr.Get(), nAmount, sNarr, wtx);

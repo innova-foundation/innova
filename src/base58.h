@@ -106,10 +106,10 @@ class CBitcoinAddress : public CBase58Data
 public:
     enum
     {
-        PUBKEY_ADDRESS = 102,
-        SCRIPT_ADDRESS = 137,
-        PUBKEY_ADDRESS_TEST = 65,
-        SCRIPT_ADDRESS_TEST = 75,
+      PUBKEY_ADDRESS = 102, // Mainnet Addresses start with i - 66
+      SCRIPT_ADDRESS = 137, // Miannet Scripthash Multisig start with x - 89
+      PUBKEY_ADDRESS_TEST = 65, // Testnet Addresses start with T - 41
+      SCRIPT_ADDRESS_TEST = 75, // Testnet Addresses start with X - 4B
     };
 
     bool Set(const CKeyID &id);
