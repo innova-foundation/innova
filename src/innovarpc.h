@@ -271,7 +271,7 @@ extern json_spirit::Value importaddress(const json_spirit::Array& params, bool f
 extern json_spirit::Value burn(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value proofofdata(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 
-extern json_spirit::Value hyperfileversion(const json_spirit::Array& params, bool fHelp); // in rpchyperfile.cpp Innova HyperFile
+extern json_spirit::Value hyperfileversion(const json_spirit::Array& params, bool fHelp); // in rpchyperfile.cpp Innova Hyperfile
 extern json_spirit::Value hyperfileupload(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value hyperfilepod(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value hyperfileduo(const json_spirit::Array& params, bool fHelp);
