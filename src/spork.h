@@ -24,6 +24,7 @@ using namespace boost;
 #define SPORK_3_REPLAY_BLOCKS                                 10003
 
 
+
 #define SPORK_1_COLLATERALNODE_PAYMENTS_ENFORCEMENT_DEFAULT   1515900783  //2018-1-14 03:33:03 GMT
 #define SPORK_2_MAX_VALUE_DEFAULT                             25000        //25000 INN
 #define SPORK_3_REPLAY_BLOCKS_DEFAULT                         0

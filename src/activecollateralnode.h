@@ -47,7 +47,7 @@ public:
     bool Register(CTxIn vin, CService service, CKey key, CPubKey pubKey, CKey keyCollateralnode, CPubKey pubKeyCollateralnode, std::string &retErrorMessage); // register any collateralnode
     bool RegisterByPubKey(std::string strService, std::string strKeyCollateralnode, std::string collateralAddress, std::string& errorMessage); // register for a specific collateral address
 
-    // get 25000INN input that can be used for the collateralnode
+    // get 25000 INN input that can be used for the collateralnode
     bool GetCollateralNodeVin(CTxIn& vin, CPubKey& pubkey, CKey& secretKey);
     bool GetCollateralNodeVin(CTxIn& vin, CPubKey& pubkey, CKey& secretKey, std::string strTxHash, std::string strOutputIndex);
     bool GetCollateralNodeVin(CTxIn& vin, CPubKey& pubkey, CKey& secretKey, std::string strTxHash, std::string strOutputIndex, std::string& errorMessage);

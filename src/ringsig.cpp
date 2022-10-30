@@ -1,4 +1,5 @@
-// Copyright (c) 2018 The Denarius developers
+// Copyright (c) 2019-2022 The Innova developers
+// Copyright (c) 2017-2021 The Denarius developers
 // Copyright (c) 2014-2016 The ShadowCoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file license.txt or http://www.opensource.org/licenses/mit-license.php.
@@ -1177,7 +1178,7 @@ int verifyRingSignatureAB(data_chunk &keyImage, uint256 &txnHash, int nRingSize,
     EC_POINT_free(ptT1);
     EC_POINT_free(ptT2);
     EC_POINT_free(ptT3);
-	  EC_POINT_free(ptT4);
+	EC_POINT_free(ptT4);
     EC_POINT_free(ptPk);
 
     return rv;

@@ -343,7 +343,6 @@ public:
     size_t nSendOffset; // offset inside the first vSendMsg already sent
     std::deque<CSerializeData> vSendMsg;
     CCriticalSection cs_vSend;
-
     CCriticalSection cs_vRecv;
 	std::deque<CInv> vRecvGetData;
     std::deque<CNetMessage> vRecvMsg;
@@ -372,7 +371,7 @@ public:
     bool fNetworkNode;
     bool fSuccessfullyConnected;
     bool fDisconnect;
-	  // We use fRelayTxes for two purposes -
+	// We use fRelayTxes for two purposes -
     // a) it allows us to not relay tx invs before receiving the peer's version message
     // b) the peer may tell us in their version message that we should not relay tx invs
     //    until they have initialized their bloom filter.
@@ -382,7 +381,6 @@ public:
     int nRefCount;
 	NodeId id;
 protected:
-
     // Denial-of-service detection/prevention
     // Key is IP address, value is banned-until-time
     static banmap_t setBanned;
@@ -410,8 +408,8 @@ public:
     std::vector<uint256> getBlocksHash;
     uint256 hashLastGetBlocksEnd;
     int nChainHeight;
-	  bool fStartSync;
-	  int nMisbehavior;
+	bool fStartSync;
+	int nMisbehavior;
 
     // flood relay
     std::vector<CAddress> vAddrToSend;
@@ -468,7 +466,7 @@ public:
         pindexLastGetBlocksBegin = 0;
         hashLastGetBlocksEnd = 0;
         nChainHeight = -1;
-		    fStartSync = false;
+		fStartSync = false;
         fGetAddr = false;
         nMisbehavior = 0;
         hashCheckpointKnown = 0;
@@ -506,10 +504,10 @@ private:
     static uint64_t nTotalBytesSent;
 
     // outbound limit & stats
-   static uint64_t nMaxOutboundTotalBytesSentInCycle;
-   static uint64_t nMaxOutboundCycleStartTime;
-   static uint64_t nMaxOutboundLimit;
-   static uint64_t nMaxOutboundTimeframe;
+    static uint64_t nMaxOutboundTotalBytesSentInCycle;
+    static uint64_t nMaxOutboundCycleStartTime;
+    static uint64_t nMaxOutboundLimit;
+    static uint64_t nMaxOutboundTimeframe;
 public:
 	NodeId GetId() const {
       return id;
@@ -863,7 +861,7 @@ template<typename T1, typename T2, typename T3, typename T4, typename T5, typena
     void Subscribe(unsigned int nChannel, unsigned int nHops=0);
     void CancelSubscribe(unsigned int nChannel);
     void CloseSocketDisconnect();
-	  void Cleanup();
+	void Cleanup();
 
     // Denial-of-service detection/prevention
     // The idea is to detect peers that are behaving
@@ -931,6 +929,7 @@ template<typename T1, typename T2, typename T3, typename T4, typename T5, typena
     // in case of no limit, it will always response 0
     static uint64_t GetMaxOutboundTimeLeftInCycle();
 };
+
 inline void RelayInventory(const CInv& inv)
 {
     // Put on lists to offer to the other nodes
@@ -954,6 +953,7 @@ void RelayCollaTeralElectionEntryPing(const CTxIn vin, const std::vector<unsigne
 void SendCollaTeralElectionEntryPing(const CTxIn vin, const std::vector<unsigned char> vchSig, const int64_t nNow, const bool stop);
 void RelayCollaTeralCompletedTransaction(const int sessionID, const bool error, const std::string errorMessage);
 void RelayCollaTeralCollateralNodeContestant();
+
 
 /** Access to the banlist database (banlist.dat) */
 class CBanDB

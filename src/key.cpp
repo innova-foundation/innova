@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2021 Innova developers
+// Copyright (c) 2019-202\21 Innova developers
 // Copyright (c) 2018-2021 Denarius developers
 // Copyright (c) 2009-2012 The Bitcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
@@ -104,8 +104,8 @@ int ECDSA_SIG_recover_key_GFp(EC_KEY *eckey, ECDSA_SIG *ecsig, const unsigned ch
     BIGNUM *zero = NULL;
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 #else
-    BIGNUM *r = NULL;
-    BIGNUM *s = NULL;
+    const BIGNUM *r = NULL;
+    const BIGNUM *s = NULL;
 #endif
     int n = 0;
     int i = recid / 2;
@@ -147,7 +147,7 @@ int ECDSA_SIG_recover_key_GFp(EC_KEY *eckey, ECDSA_SIG *ecsig, const unsigned ch
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
     if (!BN_mod_inverse(rr, ecsig->r, order, ctx)) { ret=-1; goto err; }
 #else
-    if (!BN_mod_inverse(rr, r, order, ctx)) { ret=-1; goto err; } // Was ->s?
+    if (!BN_mod_inverse(rr, r, order, ctx)) { ret=-1; goto err; } //Was ->s?
 #endif
     sor = BN_CTX_get(ctx);
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
