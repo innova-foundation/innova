@@ -701,7 +701,7 @@ void CNode::Ban(const CSubNet& subNet, const BanReason &banReason, int64_t banti
     banEntry.banReason = banReason;
     if (bantimeoffset <= 0)
     {
-        bantimeoffset = GetArg("-bantime", 60*60*24); // Default 24-hour ban
+        bantimeoffset = GetArg("-bantime", 60);//*60*24); // Default 24-hour ban temp 60 seconds ban
         sinceUnixEpoch = false;
     }
     banEntry.nBanUntil = (sinceUnixEpoch ? 0 : GetTime() )+bantimeoffset;
@@ -825,9 +825,9 @@ bool CNode::Misbehaving(int howmuch)
     }
 
     nMisbehavior += howmuch;
-    if (nMisbehavior >= GetArg("-banscore", 100))
+    if (nMisbehavior >= GetArg("-banscore", 10000)) //temp bump way too high, lower after hardfork
     {
-        int64_t banTime = GetTime()+GetArg("-bantime", 60*60*24);  // Default 24-hour ban
+        int64_t banTime = GetTime()+GetArg("-bantime", 60);//*60*24);  // Default 24-hour ban
         printf("Misbehaving: %s (%d -> %d) DISCONNECTING\n", addr.ToString().c_str(), nMisbehavior-howmuch, nMisbehavior);
         {
             LOCK(cs_setBanned);
@@ -1718,12 +1718,18 @@ void ThreadOnionSeed(void* parg)
 // The second name should resolve to a list of seed addresses.
 
 static const char *strDNSSeed[][2] = {
-    {"dnsseed.hashbag.cc", "dnsseed.hashbag.cc"},
-    {"seed.innova.host", "seed.innova.host"},
-    {"dnsseed.innova.guide", "dnsseed.innova.guide"},
-    {"dnsseed.innova.pro", "dnsseed.innova.pro"},
-    {"mseed.innova.guide", "mseed.innova.guide"},
-    {"bseed.innova.guide", "bseed.innova.guide"}
+    {"45.77.164.87", "45.77.164.87"},
+    {"165.22.181.170", "165.22.181.170"},
+    {"159.223.114.4", "159.223.114.4"},
+    {"165.22.187.43", "165.22.187.43"},
+    {"157.245.139.16", "157.245.139.16"},
+    {"167.71.19.57", "167.71.19.57"},
+    {"68.183.110.135", "68.183.110.135"},
+    {"165.227.206.77:14539", "165.227.206.77:14539"},
+    {"159.223.100.10:14539", "159.223.100.10:14539"},
+    {"159.223.104.144:14539", "159.223.104.144:14539"},
+    {"159.223.104.83:14539", "159.223.104.83:14539"}
+//    {"", ""}
 };
 
 

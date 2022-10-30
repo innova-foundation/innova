@@ -2571,6 +2571,9 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
     unsigned int flags = SCRIPT_VERIFY_NOCACHE;
 
+
+      if (pindex->nHeight == 2080000 && GetHash() == uint256("0x000000001f9f67efdef5c02fc3da51f308011443c9e5dae6a79a11dba88525e8"))
+          return DoS(100, error("ConnectBlock() : reject block from bad chain - Block 2080000"));
     /* // Currently don't need
     if(V3(nTime))
     {
@@ -2745,7 +2748,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
             if(fDebug) { printf("CheckBlock() : Collateralnode payments disabled\n"); }
         }
     } else {
-        if (pindex->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS){ //Block 645k Mainnet
+        if (pindex->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS && pindex->nHeight > 2085000){ //Block 645k Mainnet
             CollateralnodePayments = true;
             if(fDebug) { printf("CheckBlock() : Collateralnode payments enabled\n"); }
         }else{

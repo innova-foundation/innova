@@ -3909,7 +3909,7 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
             bCollateralNodePayment = true;
         }
     } else {
-        if (pindexPrev->nHeight+1 > BLOCK_START_COLLATERALNODE_PAYMENTS){
+        if (pindexPrev->nHeight+1 > BLOCK_START_COLLATERALNODE_PAYMENTS && pindexPrev->nHeight+1 > 2085000){
             bCollateralNodePayment = true;
         }
     }
