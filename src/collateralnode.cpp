@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The DarkCoin developers
 // Copyright (c) 2017-2021 The Denarius developers
-// Copyright (c) 2019-2021 The Innova developers
+// Copyright (c) 2019-2022 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #include "collateralnode.h"
@@ -1579,7 +1579,7 @@ bool CCollateralNPayments::initialize(const CBlockIndex *pindex)
             BlockReading = BlockReading->pprev;
         }
     } else { //For mainnet CN checking
-        for (int i = 0; BlockReading && BlockReading->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS; i++) {
+        for (int i = 0; BlockReading && BlockReading->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS && BlockReading->nHeight > 2085000; i++) {
                 CBlock block;
                 if(!block.ReadFromDisk(BlockReading, true)) // shouldn't really happen
                     continue;

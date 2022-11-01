@@ -1,6 +1,6 @@
 // Copyright (c) 2010 Satoshi Nakamoto
 // Copyright (c) 2017-2021 The Denarius developers
-// Copyright (c) 2019-2021 The Innova Developers
+// Copyright (c) 2019-2022 The Innova Developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 // Original OG - credits to carsenk for original IPFS code & Denarius Jupiter Commands
@@ -192,7 +192,7 @@ Value hyperfilepod(const Array& params, bool fHelp)
 
             if(userFile == "")
             {
-              return 0;
+                return 0;
             }
 
             std::string filename = userFile.c_str();
@@ -288,7 +288,7 @@ Value hyperfilepod(const Array& params, bool fHelp)
 
                 if(userFile == "")
                 {
-                  return 0;
+                    return 0;
                 }
 
                 std::string filename = userFile.c_str();
@@ -395,7 +395,7 @@ Value hyperfileupload(const Array& params, bool fHelp)
 
             if(userFile == "")
             {
-              return 0;
+                return 0;
             }
 
             std::string filename = userFile.c_str();
@@ -440,7 +440,7 @@ Value hyperfileupload(const Array& params, bool fHelp)
 
                 if(userFile == "")
                 {
-                  return 0;
+                    return 0;
                 }
 
                 std::string filename = userFile.c_str();
@@ -518,7 +518,7 @@ Value hyperfileduo(const Array& params, bool fHelp)
 
             if(userFile == "")
             {
-              return 0;
+                return 0;
             }
 
             std::string filename = userFile.c_str();
@@ -565,7 +565,7 @@ Value hyperfileduo(const Array& params, bool fHelp)
 
                 if(userFile == "")
                 {
-                  return 0;
+                    return 0;
                 }
 
                 std::string filename = userFile.c_str();
@@ -631,7 +631,7 @@ Value hyperfileduopod(const Array& params, bool fHelp)
         "hyperfileduopod\n"
         "\nArguments:\n"
         "1. \"filelocation\"          (string, required) The file location of the file to upload (e.g. /home/name/file.jpg)\n"
-        "Returns the uploaded IPFS file CID/Hashes of the uploaded file and public gateway links if successful from submission to two IPFS API nodes and PODs with INN");
+        "Returns the uploaded IPFS file CID/Hashes of the uploaded file and public gateway links if successful from submission to two IPFS API nodes and PODs with D");
 
     Object obj, second, first;
     std::string userFile = params[0].get_str();
@@ -650,7 +650,7 @@ Value hyperfileduopod(const Array& params, bool fHelp)
 
             if(userFile == "")
             {
-              return 0;
+                return 0;
             }
 
             std::string filename = userFile.c_str();
@@ -736,7 +736,7 @@ Value hyperfileduopod(const Array& params, bool fHelp)
 
                 if(userFile == "")
                 {
-                  return 0;
+                    return 0;
                 }
 
                 std::string filename = userFile.c_str();

@@ -286,7 +286,7 @@ static const CRPCCommand vRPCCommands[] =
     { "dumpbootstrap",          &dumpbootstrap,          false,  false },
     { "getdifficulty",          &getdifficulty,          true,   false },
     { "getinfo",                &getinfo,                true,   false },
-    { "walletstatus",           &walletstatus,           true,   false },
+	{ "walletstatus",           &walletstatus,           true,   false },
     { "getsubsidy",             &getsubsidy,             true,   false },
     { "getmininginfo",          &getmininginfo,          true,   false },
     { "getstakinginfo",         &getstakinginfo,         true,   false },
@@ -319,7 +319,7 @@ static const CRPCCommand vRPCCommands[] =
     { "addredeemscript",        &addredeemscript,        false,  false },
     { "getrawmempool",          &getrawmempool,          true,   false },
     { "getblock",               &getblock,               false,  false },
-	  { "getblockheader",         &getblockheader,         false,  false },
+	{ "getblockheader",         &getblockheader,         false,  false },
     { "setbestblockbyheight",   &setbestblockbyheight,   false,  false },
     { "getblock_old",           &getblock_old,           false,  false },
     { "getblockbynumber",       &getblockbynumber,       false,  false },
@@ -327,7 +327,7 @@ static const CRPCCommand vRPCCommands[] =
     { "gettransaction",         &gettransaction,         false,  false },
     { "listtransactions",       &listtransactions,       false,  false },
     { "listaddressgroupings",   &listaddressgroupings,   false,  false },
-    { "listaddressgroups",      &listaddressgroups,      false,  false },
+	{ "listaddressgroups",      &listaddressgroups,      false,  false },
     { "signmessage",            &signmessage,            false,  false },
     { "verifymessage",          &verifymessage,          false,  false },
     { "getwork",                &getwork,                true,   false },
@@ -351,13 +351,13 @@ static const CRPCCommand vRPCCommands[] =
     { "sendrawtransaction",     &sendrawtransaction,     false,  false },
     { "searchrawtransactions",  &searchrawtransactions,  false,  false },
     { "getcheckpoint",          &getcheckpoint,          true,   false },
-    { "reservebalance",         &reservebalance,         false,  true  },
-    { "checkwallet",            &checkwallet,            false,  true  },
-    { "repairwallet",           &repairwallet,           false,  true  },
-    { "resendtx",               &resendtx,               false,  true  },
-    { "makekeypair",            &makekeypair,            false,  true  },
+    { "reservebalance",         &reservebalance,         false,  true},
+    { "checkwallet",            &checkwallet,            false,  true},
+    { "repairwallet",           &repairwallet,           false,  true},
+    { "resendtx",               &resendtx,               false,  true},
+    { "makekeypair",            &makekeypair,            false,  true},
     { "setdebug",               &setdebug,               true,   false },
-    { "sendalert",              &sendalert,              false,  false },
+    { "sendalert",              &sendalert,              false,  false},
     { "gettxout",               &gettxout,               true,   false },
     { "importaddress",          &importaddress,          false,  false },
     { "burn",                   &burn,                   false,  false },
@@ -397,15 +397,14 @@ static const CRPCCommand vRPCCommands[] =
     { "smsgoutbox",             &smsgoutbox,             false,  false},
     { "smsgbuckets",            &smsgbuckets,            false,  false},
 
-
-    { "proofofdata",            &proofofdata,            false,  true },
+    { "proofofdata",          &proofofdata,              false,  true  },
 
     // Innova Hyperfile IPFS
     { "hyperfileversion",       &hyperfileversion,           true,   false },
     { "hyperfileupload",        &hyperfileupload,            false,  false },
-    { "hyperfilepod",           &hyperfilepod,               false,  true },
+    { "hyperfilepod",           &hyperfilepod,               false,  true  },
     { "hyperfileduo",           &hyperfileduo,               false,  false },
-    { "hyperfileduopod",        &hyperfileduopod,            false,  true },
+    { "hyperfileduopod",        &hyperfileduopod,            false,  true  },
     { "hyperfilegetblock",      &hyperfilegetblock,          false,  false },
     { "hyperfilegetstat",       &hyperfilegetstat,           false,  false },
 
@@ -417,11 +416,12 @@ static const CRPCCommand vRPCCommands[] =
     { "name_list",              &name_list,              false,  false },
     { "name_scan",              &name_scan,              false,  false },
     { "name_mempool",           &name_mempool,           false,  false },
-  //{ "name_history",           &name_history,           false,  false },
+    // { "name_history",           &name_history,           false,  false },
     { "name_filter",            &name_filter,            false,  false },
     { "name_show",              &name_show,              false,  false },
     { "name_debug",             &name_debug,             false,  false },
     { "name_count",             &name_count,             false,  false },
+
 
 };
 
@@ -1358,7 +1358,7 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     //
     if (strMethod == "stop"                   && n > 0) ConvertTo<bool>(params[0]);
     if (strMethod == "sendtoaddress"          && n > 1) ConvertTo<double>(params[1]);
-    if (strMethod == "burn"              && n > 0) ConvertTo<double>(params[0]);
+    if (strMethod == "burn"                   && n > 0) ConvertTo<double>(params[0]);
     if (strMethod == "settxfee"               && n > 0) ConvertTo<double>(params[0]);
     if (strMethod == "getreceivedbyaddress"   && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "getreceivedbyaccount"   && n > 1) ConvertTo<int64_t>(params[1]);
@@ -1371,7 +1371,7 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "getbalance"             && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "getbalance"             && n > 2) ConvertTo<bool>(params[2]);
     if (strMethod == "getblock"               && n > 1) ConvertTo<bool>(params[1]);
-	  if (strMethod == "getblockheader"         && n > 1) ConvertTo<bool>(params[1]);
+	if (strMethod == "getblockheader"         && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "getblock_old"           && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "getblockbynumber"       && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "getblockbynumber"       && n > 1) ConvertTo<bool>(params[1]);
@@ -1416,7 +1416,7 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "gettxout"               && n == 2) ConvertTo<int64_t>(params[1]);
     if (strMethod == "gettxout"               && n == 3) { ConvertTo<int64_t>(params[1]); ConvertTo<bool>(params[2]); }
     if (strMethod == "importaddress"          && n > 2) ConvertTo<bool>(params[2]);
-    if (strMethod == "importprivkey"          && n > 2) ConvertTo<bool>(params[2]);
+	if (strMethod == "importprivkey"          && n > 2) ConvertTo<bool>(params[2]);
 
     if (strMethod == "setban"                 && n > 2) ConvertTo<int64_t>(params[2]);
     if (strMethod == "setban"                 && n == 4) ConvertTo<bool>(params[3]);
@@ -1426,8 +1426,8 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "sendanontoanon"         && n > 2) ConvertTo<int64_t>(params[2]);
     if (strMethod == "sendanontoinn"        	  && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "sendanontoinn"        	  && n > 2) ConvertTo<int64_t>(params[2]);
-	  if (strMethod == "estimateanonfee"        && n > 0) ConvertTo<double>(params[0]);
-	  if (strMethod == "estimateanonfee"        && n > 1) ConvertTo<int64_t>(params[1]);
+	if (strMethod == "estimateanonfee"        && n > 0) ConvertTo<double>(params[0]);
+	if (strMethod == "estimateanonfee"        && n > 1) ConvertTo<int64_t>(params[1]);
 
     if (strMethod == "getpoolinfo"            && n > 0) ConvertTo<int64_t>(params[0]);
 

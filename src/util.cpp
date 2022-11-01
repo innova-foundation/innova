@@ -580,7 +580,6 @@ string SanitizeString(const string& str)
     return strResult;
 }
 
-
 static const signed char phexdigit[256] =
 { -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
   -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
@@ -741,6 +740,7 @@ bool SetArg(const std::string& strArg, const std::string& strValue)
     mapArgs[strArg] = strValue;
     return true;
 }
+
 
 string EncodeBase64(const unsigned char* pch, size_t len)
 {
@@ -1142,6 +1142,7 @@ void PrintExceptionContinue(std::exception* pex, const char* pszThread)
 boost::filesystem::path GetDefaultDataDir()
 {
     namespace fs = boost::filesystem;
+
     // Windows < Vista: C:\Documents and Settings\Username\Application Data\Innova
     // Windows >= Vista: C:\Users\Username\AppData\Roaming\Innova
     // Mac: ~/Library/Application Support/Innova
@@ -1163,7 +1164,7 @@ boost::filesystem::path GetDefaultDataDir()
     return pathRet / "Innova";
 #else
     // Unix
-return pathRet / ".innova";
+    return pathRet / ".innova";
 #endif
 #endif
 }
@@ -1195,6 +1196,7 @@ static unsigned int RandomIntegerRange(unsigned int nMin, unsigned int nMax)
     srand(time(NULL) + nMax); //seed srand before using
     return nMin + rand() % (nMax - nMin) + 1;
 }
+
 
 static bool ParsePrechecks(const std::string& str)
 {
@@ -1239,8 +1241,6 @@ bool ParseInt64(const std::string& str, int64_t *out)
         n <= std::numeric_limits<int64_t>::max();
 }
 
-
-
 void WriteConfigFile(FILE* configFile)
 {
     std::string sRPCpassword = "rpcpassword=" + GenerateRandomString(RandomIntegerRange(18, 24)) + "\n";
@@ -1255,73 +1255,25 @@ void WriteConfigFile(FILE* configFile)
     fputs ("server=1\n", configFile);
     fputs ("staking=1\n", configFile);
     fputs ("collateralnode=0\n", configFile); //default
-    fputs ("collateralnodeaddr=\n", configFile);
-    fputs ("collateralnodeprivkey=\n", configFile);
+    fputs ("#collateralnodeaddr=\n", configFile);
+    fputs ("#collateralnodeprivkey=\n", configFile);
     fputs ("idns=1\n", configFile);
     fputs ("addnode=innseeder.circuitbreaker.online\n", configFile); // seeder
     fputs ("addnode=innseeder.circuitbreaker.dev\n", configFile); // seeder
     fputs ("addnode=innseeder.innovai.cloud\n", configFile); // seeder
-    fputs ("addnode=94.130.52.227\n", configFile);
-    fputs ("addnode=94.253.188.194\n", configFile);
-    fputs ("addnode=94.253.236.197\n", configFile);
-    fputs ("addnode=94.130.49.89\n", configFile);
-    fputs ("addnode=80.57.237.145\n", configFile);
-    fputs ("addnode=135.181.183.40\n", configFile);
-    fputs ("addnode=134.3.131.119\n", configFile);
-    fputs ("addnode=95.216.26.26\n", configFile);
-    fputs ("addnode=178.254.43.126\n", configFile);
-    fputs ("addnode=218.214.99.111\n", configFile);
-    fputs ("addnode=95.217.119.238\n", configFile);
-    fputs ("addnode=209.250.255.129\n", configFile);
-    fputs ("addnode=172.58.173.106\n", configFile);
-    fputs ("addnode=207.148.80.150\n", configFile);
-    fputs ("addnode=80.240.27.104\n", configFile);
-    fputs ("addnode=118.42.144.226\n", configFile);
-    fputs ("addnode=141.101.25.131\n", configFile);
-    fputs ("addnode=167.86.84.242\n", configFile);
-    fputs ("addnode=188.122.212.138\n", configFile);
-    fputs ("addnode=188.37.75.151\n", configFile);
-    fputs ("addnode=188.75.160.36\n", configFile);
-    fputs ("addnode=207.180.218.133\n", configFile);
-    fputs ("addnode=207.180.223.54\n", configFile);
-    fputs ("addnode=45.95.203.59\n", configFile);
-    fputs ("addnode=5.188.173.19\n", configFile);
-    fputs ("addnode=95.208.123.156\n", configFile);
-    fputs ("addnode=95.179.247.107\n", configFile);
-    fputs ("addnode=94.253.190.223\n", configFile);
-    fputs ("addnode=88.207.113.10\n", configFile);
-    fputs ("addnode=87.128.127.203\n", configFile);
-    fputs ("addnode=84.162.73.92\n", configFile);
-    fputs ("addnode=77.78.204.210\n", configFile);
-    fputs ("addnode=51.222.152.238\n", configFile);
-    fputs ("addnode=51.195.234.88\n", configFile);
-    fputs ("addnode=5.45.110.154\n", configFile);
-    fputs ("addnode=5.188.173.19\n", configFile);
-    fputs ("addnode=24.229.158.108\n", configFile);
-    fputs ("addnode=207.180.223.54\n", configFile);
-    fputs ("addnode=188.75.160.36\n", configFile);
-    fputs ("addnode=188.37.75.151\n", configFile);
-    fputs ("addnode=188.122.212.138\n", configFile);
-    fputs ("addnode=185.62.81.135\n", configFile);
-    fputs ("addnode=185.180.12.48\n", configFile);
-    fputs ("addnode=173.249.23.243\n", configFile);
-    fputs ("addnode=167.86.84.242\n", configFile);
-    fputs ("addnode=165.225.228.95\n", configFile);
-    fputs ("addnode=141.101.25.131\n", configFile);
-    fputs ("addnode=118.42.144.226\n", configFile);
-    fputs ("addnode=188.0.175.122\n", configFile);
-    fputs ("addnode=167.86.97.16\n", configFile);
-    fputs ("addnode=173.249.53.47\n", configFile);
-    fputs ("addnode=174.84.1.1\n", configFile);
-    fputs ("addnode=175.158.46.79\n", configFile);
-    fputs ("addnode=182.180.76.130\n", configFile);
-    fputs ("addnode=185.62.81.130\n", configFile);
-    fputs ("addnode=185.73.235.114\n", configFile);
-    fputs ("addnode=188.0.169.14\n", configFile);
-    fputs ("addnode=188.0.175.164\n", configFile);
-    fputs ("addnode=192.162.140.57\n", configFile);
-    fputs ("addnode=207.148.80.150\n", configFile);
+    fputs ("addnode=165.22.181.170\n", configFile);
+    fputs ("addnode=159.223.114.4\n", configFile);
+    fputs ("addnode=165.22.187.43\n", configFile);
+    fputs ("addnode=68.183.110.135\n", configFile);
+    fputs ("addnode=157.245.139.16\n", configFile);
+    fputs ("addnode=167.71.19.57\n", configFile);
+    fputs ("addnode=165.227.206.77\n", configFile);
+    fputs ("addnode=159.223.100.10\n", configFile);
+    fputs ("addnode=159.223.104.83\n", configFile);
+    fputs ("addnode=159.223.104.144\n", configFile);
+    fputs ("addnode=45.77.164.87\n", configFile);
     fputs ("\n", configFile);
+    fclose(configFile);
     ReadConfigFile(mapArgs, mapMultiArgs);
 }
 
@@ -1379,18 +1331,18 @@ void ReadConfigFile(map<string, string>& mapSettingsRet,
 {
     boost::filesystem::ifstream streamConfig(GetConfigFile());
     if (!streamConfig.good()){
-         // Create empty innova.conf if it does not exist
-         FILE* configFile = fopen(GetConfigFile().string().c_str(), "a");
-         if (configFile != NULL) {
-             WriteConfigFile(configFile);
-            // fclose(configFile);
-             printf("WriteConfigFile() Innova.conf Setup Successfully!");
-             ReadConfigFile(mapSettingsRet, mapMultiSettingsRet);
-         } else {
-             printf("WriteConfigFile() innova.conf file could not be created");
-             return; // Nothing to read, so just return
-         }
-     }
+        // Create empty innova.conf if it does not exist
+        FILE* configFile = fopen(GetConfigFile().string().c_str(), "a");
+        if (configFile != NULL) {
+            WriteConfigFile(configFile);
+            //fclose(configFile);
+            printf("WriteConfigFile() Innova.conf Setup Successfully!");
+            ReadConfigFile(mapSettingsRet, mapMultiSettingsRet);
+        } else {
+            printf("WriteConfigFile() innova.conf file could not be created");
+            return; // Nothing to read, so just return
+        }
+    }
 
     set<string> setOptions;
     setOptions.insert("*");

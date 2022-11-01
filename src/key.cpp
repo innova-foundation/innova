@@ -1,4 +1,4 @@
-// Copyright (c) 2017-2022 The Innova Developers
+// Copyright (c) 2019-202\21 Innova developers
 // Copyright (c) 2018-2021 Denarius developers
 // Copyright (c) 2009-2012 The Bitcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying

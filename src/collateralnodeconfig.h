@@ -99,4 +99,3 @@ private:
 
 
 #endif /* SRC_COLLATERALNODECONFIG_H_ */
-

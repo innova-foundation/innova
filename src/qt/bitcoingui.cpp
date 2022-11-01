@@ -272,7 +272,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     {
         QTimer *timerStakingIcon = new QTimer(labelStakingIcon);
         connect(timerStakingIcon, SIGNAL(timeout()), this, SLOT(updateStakingIcon()));
-        timerStakingIcon->start(5 * 1000); // Set to update every 5 * 1000ms (5 seconds) instead of 1000ms (1 second) for better CPU usage
+        timerStakingIcon->start(5 * 1000); // Set to update every 5 * 1000ms (5 seconds) better CPU usage
         updateStakingIcon();
     }
 

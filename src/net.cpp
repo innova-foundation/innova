@@ -649,13 +649,13 @@ void CNode::PushVersion()
 
 banmap_t CNode::setBanned;
 CCriticalSection CNode::cs_setBanned;
- bool CNode::setBannedIsDirty;
+bool CNode::setBannedIsDirty;
 
 void CNode::ClearBanned()
 {
-  LOCK(cs_setBanned);
-  setBanned.clear();
-  setBannedIsDirty = true;
+    LOCK(cs_setBanned);
+    setBanned.clear();
+    setBannedIsDirty = true;
 }
 
 bool CNode::IsBanned(CNetAddr ip)
@@ -665,10 +665,10 @@ bool CNode::IsBanned(CNetAddr ip)
         LOCK(cs_setBanned);
         for (banmap_t::iterator it = setBanned.begin(); it != setBanned.end(); it++)
         {
-          CSubNet subNet = (*it).first;
-          CBanEntry banEntry = (*it).second;
+            CSubNet subNet = (*it).first;
+            CBanEntry banEntry = (*it).second;
 
-          if(subNet.Match(ip) && GetTime() < banEntry.nBanUntil)
+            if(subNet.Match(ip) && GetTime() < banEntry.nBanUntil)
                 fResult = true;
         }
     }
@@ -701,7 +701,7 @@ void CNode::Ban(const CSubNet& subNet, const BanReason &banReason, int64_t banti
     banEntry.banReason = banReason;
     if (bantimeoffset <= 0)
     {
-        bantimeoffset = GetArg("-bantime", 60*60*24); // Default 24-hour ban
+        bantimeoffset = GetArg("-bantime", 60);//*60*24); // Default 24-hour ban temp 60 seconds ban
         sinceUnixEpoch = false;
     }
     banEntry.nBanUntil = (sinceUnixEpoch ? 0 : GetTime() )+bantimeoffset;
@@ -762,18 +762,18 @@ void CNode::SweepBanned()
         else
             ++it;
     }
-  }
+}
 
 bool CNode::BannedSetIsDirty()
 {
-  LOCK(cs_setBanned);
-  return setBannedIsDirty;
+    LOCK(cs_setBanned);
+    return setBannedIsDirty;
 }
 
 void CNode::SetBannedSetDirty(bool dirty)
 {
-  LOCK(cs_setBanned); //reuse setBanned lock for the isDirty flag
-  setBannedIsDirty = dirty;
+    LOCK(cs_setBanned); //reuse setBanned lock for the isDirty flag
+    setBannedIsDirty = dirty;
 }
 
 
@@ -782,18 +782,18 @@ CCriticalSection CNode::cs_vWhitelistedRange;
 
 bool CNode::IsWhitelistedRange(const CNetAddr& addr)
 {
-  LOCK(cs_vWhitelistedRange);
-  for (const CSubNet& subnet : vWhitelistedRange) {
-      if (subnet.Match(addr))
-          return true;
-  }
-  return false;
+    LOCK(cs_vWhitelistedRange);
+    for (const CSubNet& subnet : vWhitelistedRange) {
+        if (subnet.Match(addr))
+            return true;
+    }
+    return false;
 }
 
 void CNode::AddWhitelistedRange(const CSubNet& subnet)
 {
-  LOCK(cs_vWhitelistedRange);
-  vWhitelistedRange.push_back(subnet);
+    LOCK(cs_vWhitelistedRange);
+    vWhitelistedRange.push_back(subnet);
 }
 
 //Whitelisted peers/nodes
@@ -825,16 +825,16 @@ bool CNode::Misbehaving(int howmuch)
     }
 
     nMisbehavior += howmuch;
-    if (nMisbehavior >= GetArg("-banscore", 100))
+    if (nMisbehavior >= GetArg("-banscore", 10000)) //temp bump way too high, lower after hardfork
     {
-        int64_t banTime = GetTime()+GetArg("-bantime", 60*60*24);  // Default 24-hour ban
+        int64_t banTime = GetTime()+GetArg("-bantime", 60);//*60*24);  // Default 24-hour ban
         printf("Misbehaving: %s (%d -> %d) DISCONNECTING\n", addr.ToString().c_str(), nMisbehavior-howmuch, nMisbehavior);
         {
             LOCK(cs_setBanned);
             // if (setBanned[addr] < banTime)
             //     setBanned[addr] = banTime;
             if (setBanned[subNet].nBanUntil < banTime)
-                   setBanned[subNet] = banTime;
+                setBanned[subNet] = banTime;
         }
         CloseSocketDisconnect();
         return true;
@@ -918,9 +918,8 @@ void CNode::SetMaxOutboundTarget(uint64_t limit)
     nMaxOutboundLimit = limit;
 
     if (limit < recommendedMinimum)
-    printf("Max outbound target is very small (%d) and will be overshot. Recommended minimum is %d\n.", nMaxOutboundLimit, recommendedMinimum);
-
-    }
+        printf("Max outbound target is very small (%d) and will be overshot. Recommended minimum is %d\n.", nMaxOutboundLimit, recommendedMinimum);
+}
 
 uint64_t CNode::GetMaxOutboundTarget()
 {
@@ -1120,15 +1119,15 @@ void SocketSendData(CNode *pnode)
             }
             else if (nBytes > 100000) // 100,000 Bytes
             {
-               // error
-               int nErr = WSAGetLastError();
-               if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE && nErr != WSAEINTR && nErr != WSAEINPROGRESS)
-               {
-                  if (!pnode->fDisconnect)
-                  printf("Closing send socket, output too large %d\n", nErr);
-                  pnode->CloseSocketDisconnect();
+                // error
+                int nErr = WSAGetLastError();
+                if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE && nErr != WSAEINTR && nErr != WSAEINPROGRESS)
+                {
+                    if (!pnode->fDisconnect)
+                        printf("Closing send socket, output too large %d\n", nErr);
+                    pnode->CloseSocketDisconnect();
                 }
-              }
+            }
             // couldn't send anything at all
             break;
         }
@@ -1719,10 +1718,20 @@ void ThreadOnionSeed(void* parg)
 // The second name should resolve to a list of seed addresses.
 
 static const char *strDNSSeed[][2] = {
-    {"innseeder.circuitbreaker.online", "innseeder.circuitbreaker.online"},
-    {"innseeder.circuitbreaker.dev", "innseeder.circuitbreaker.dev"},
-    {"innseeder.innovai.cloud", "innseeder.innovai.cloud"},
+    {"45.77.164.87", "45.77.164.87"},
+    {"165.22.181.170", "165.22.181.170"},
+    {"159.223.114.4", "159.223.114.4"},
+    {"165.22.187.43", "165.22.187.43"},
+    {"157.245.139.16", "157.245.139.16"},
+    {"167.71.19.57", "167.71.19.57"},
+    {"68.183.110.135", "68.183.110.135"},
+    {"165.227.206.77:14539", "165.227.206.77:14539"},
+    {"159.223.100.10:14539", "159.223.100.10:14539"},
+    {"159.223.104.144:14539", "159.223.104.144:14539"},
+    {"159.223.104.83:14539", "159.223.104.83:14539"}
+//    {"", ""}
 };
+
 
 void ThreadDNSAddressSeed(void* parg)
 {
@@ -2275,11 +2284,11 @@ void ThreadMessageHandler2(void* parg)
                     if (!ProcessMessages(pnode))
                         pnode->CloseSocketDisconnect();
 
-                      if (pnode->nSendSize < SendBufferSize()) {
-                          if (!pnode->vRecvGetData.empty() || (!pnode->vRecvMsg.empty() && pnode->vRecvMsg[0].complete())) {
-                              fSleep = false; // no sleep for the weak
-                      }
-                   }
+                    if (pnode->nSendSize < SendBufferSize()) {
+                        if (!pnode->vRecvGetData.empty() || (!pnode->vRecvMsg.empty() && pnode->vRecvMsg[0].complete())) {
+                            fSleep = false; // no sleep for the weak
+                        }
+                    }
                 }
             }
 
@@ -2575,19 +2584,19 @@ void StartNode(void* parg)
     CBanDB bandb;
     banmap_t banmap;
     if (bandb.Read(banmap)) {
-      CNode::SetBanned(banmap); // thread save setter
-      CNode::SetBannedSetDirty(false); // no need to write down, just read data
-      CNode::SweepBanned(); // sweep out unused entries
+        CNode::SetBanned(banmap); // thread save setter
+        CNode::SetBannedSetDirty(false); // no need to write down, just read data
+        CNode::SweepBanned(); // sweep out unused entries
 
-      printf("Loaded %d banned node ips/subnets from banlist.dat  %" PRId64"ms\n",
-             banmap.size(), GetTimeMillis() - nStart);
+        printf("Loaded %d banned node ips/subnets from banlist.dat %" PRId64"ms\n",
+                 banmap.size(), GetTimeMillis() - nStart);
     } else {
         printf("Invalid or missing banlist.dat...recreating\n");
         CNode::SetBannedSetDirty(true);
         DumpBanlist();
-      }
+    }
 
-      fAddressesInitialized = true;
+    fAddressesInitialized = true;
 
     if (semOutbound == NULL) {
         // initialize semaphore
@@ -2656,7 +2665,6 @@ void StartNode(void* parg)
 
     // Dump network addresses and bans upon bootup
     // DumpData();
-
 }
 
 bool StopNode()
@@ -2715,7 +2723,7 @@ public:
         // Close sockets
         for (CNode* pnode : vNodes)
             if (pnode->hSocket != INVALID_SOCKET)
-            CloseSocket(pnode->hSocket);
+                CloseSocket(pnode->hSocket);
         for (ListenSocket& hListenSocket : vhListenSocket)
             if (hListenSocket.socket != INVALID_SOCKET)
                 if (!CloseSocket(hListenSocket.socket))
@@ -2873,125 +2881,124 @@ void RelayCollaTeralCompletedTransaction(const int sessionID, const bool error, 
     {
         pnode->PushMessage("dsc", sessionID, error, errorMessage);
     }
+}
 
-  }
+//
+// CBanListDB
+//
 
-  //
-  // CBanListDB
-  //
+CBanDB::CBanDB()
+{
+    pathBanlist = GetDataDir() / "banlist.dat";
+}
 
-  CBanDB::CBanDB()
-  {
-      pathBanlist = GetDataDir() / "banlist.dat";
-  }
+bool CBanDB::Write(const banmap_t& banSet)
+{
+    // Generate random temporary filename
+    unsigned short randv = 0;
+    GetRandBytes((unsigned char*)&randv, sizeof(randv));
+    std::string tmpfn = strprintf("banlist.dat.%04x", randv);
 
-  bool CBanDB::Write(const banmap_t& banSet)
-  {
-      // Generate random temporary filename
-      unsigned short randv = 0;
-      GetRandBytes((unsigned char*)&randv, sizeof(randv));
-      std::string tmpfn = strprintf("banlist.dat.%04x", randv);
+    // serialize banlist, checksum data up to that point, then append csum
+    CDataStream ssBanlist(SER_DISK, CLIENT_VERSION);
+    ssBanlist << FLATDATA(pchMessageStart);
+    ssBanlist << banSet;
+    uint256 hash = Hash(ssBanlist.begin(), ssBanlist.end());
+    ssBanlist << hash;
 
-      // serialize banlist, checksum data up to that point, then append csum
-      CDataStream ssBanlist(SER_DISK, CLIENT_VERSION);
-      ssBanlist << FLATDATA(pchMessageStart);
-      ssBanlist << banSet;
-      uint256 hash = Hash(ssBanlist.begin(), ssBanlist.end());
-      ssBanlist << hash;
+    // open temp output file, and associate with CAutoFile
+    boost::filesystem::path pathTmp = GetDataDir() / tmpfn;
+    FILE *file = fopen(pathTmp.string().c_str(), "wb");
+    CAutoFile fileout(file, SER_DISK, CLIENT_VERSION);
+    if (fileout.IsNull())
+        return error("%s: Failed to open file %s", __func__, pathTmp.string());
 
-      // open temp output file, and associate with CAutoFile
-      boost::filesystem::path pathTmp = GetDataDir() / tmpfn;
-      FILE *file = fopen(pathTmp.string().c_str(), "wb");
-      CAutoFile fileout(file, SER_DISK, CLIENT_VERSION);
-      if (fileout.IsNull())
-          return error("%s: Failed to open file %s", __func__, pathTmp.string());
+    // Write and commit header, data
+    try {
+        fileout << ssBanlist;
+    }
+    catch (const std::exception& e) {
+        return error("%s: Serialize or I/O error - %s", __func__, e.what());
+    }
+    FileCommit(fileout.Get());
+    fileout.fclose();
 
-      // Write and commit header, data
-      try {
-          fileout << ssBanlist;
-      }
-      catch (const std::exception& e) {
-          return error("%s: Serialize or I/O error - %s", __func__, e.what());
-      }
-      FileCommit(fileout.Get());
-      fileout.fclose();
+    // replace existing banlist.dat, if any, with new banlist.dat.XXXX
+    if (!RenameOver(pathTmp, pathBanlist))
+        return error("%s: Rename-into-place failed", __func__);
 
-      // replace existing banlist.dat, if any, with new banlist.dat.XXXX
-      if (!RenameOver(pathTmp, pathBanlist))
-          return error("%s: Rename-into-place failed", __func__);
+    return true;
+}
 
-      return true;
-  }
+bool CBanDB::Read(banmap_t& banSet)
+{
+    // open input file, and associate with CAutoFile
+    FILE *file = fopen(pathBanlist.string().c_str(), "rb");
+    CAutoFile filein(file, SER_DISK, CLIENT_VERSION);
+    if (filein.IsNull())
+        return error("%s: Failed to open file %s", __func__, pathBanlist.string());
 
-  bool CBanDB::Read(banmap_t& banSet)
-  {
-      // open input file, and associate with CAutoFile
-      FILE *file = fopen(pathBanlist.string().c_str(), "rb");
-      CAutoFile filein(file, SER_DISK, CLIENT_VERSION);
-      if (filein.IsNull())
-          return error("%s: Failed to open file %s", __func__, pathBanlist.string());
+    // use file size to size memory buffer
+    uint64_t fileSize = boost::filesystem::file_size(pathBanlist);
+    uint64_t dataSize = 0;
+    // Don't try to resize to a negative number if file is small
+    if (fileSize >= sizeof(uint256))
+        dataSize = fileSize - sizeof(uint256);
+    vector<unsigned char> vchData;
+    vchData.resize(dataSize);
+    uint256 hashIn;
 
-      // use file size to size memory buffer
-      uint64_t fileSize = boost::filesystem::file_size(pathBanlist);
-      uint64_t dataSize = 0;
-      // Don't try to resize to a negative number if file is small
-      if (fileSize >= sizeof(uint256))
-          dataSize = fileSize - sizeof(uint256);
-      vector<unsigned char> vchData;
-      vchData.resize(dataSize);
-      uint256 hashIn;
+    // read data and checksum from file
+    try {
+        filein.read((char *)&vchData[0], dataSize);
+        filein >> hashIn;
+    }
+    catch (const std::exception& e) {
+        return error("%s: Deserialize or I/O error - %s", __func__, e.what());
+    }
+    filein.fclose();
 
-      // read data and checksum from file
-      try {
-          filein.read((char *)&vchData[0], dataSize);
-          filein >> hashIn;
-      }
-      catch (const std::exception& e) {
-          return error("%s: Deserialize or I/O error - %s", __func__, e.what());
-      }
-      filein.fclose();
+    CDataStream ssBanlist(vchData, SER_DISK, CLIENT_VERSION);
 
-      CDataStream ssBanlist(vchData, SER_DISK, CLIENT_VERSION);
+    // verify stored checksum matches input data
+    uint256 hashTmp = Hash(ssBanlist.begin(), ssBanlist.end());
+    if (hashIn != hashTmp)
+        return error("%s: Checksum mismatch, data corrupted", __func__);
 
-      // verify stored checksum matches input data
-      uint256 hashTmp = Hash(ssBanlist.begin(), ssBanlist.end());
-      if (hashIn != hashTmp)
-          return error("%s: Checksum mismatch, data corrupted", __func__);
+    unsigned char pchMsgTmp[4];
+    try {
+        // de-serialize file header (network specific magic number) and ..
+        ssBanlist >> FLATDATA(pchMsgTmp);
 
-      unsigned char pchMsgTmp[4];
-      try {
-          // de-serialize file header (network specific magic number) and ..
-          ssBanlist >> FLATDATA(pchMsgTmp);
+        // ... verify the network matches ours
+        if (memcmp(pchMsgTmp, pchMessageStart, sizeof(pchMsgTmp)))
+            return error("%s: Invalid network magic number", __func__);
 
-          // ... verify the network matches ours
-          if (memcmp(pchMsgTmp, pchMessageStart, sizeof(pchMsgTmp)))
-              return error("%s: Invalid network magic number", __func__);
+        // de-serialize address data into one CAddrMan object
+        ssBanlist >> banSet;
+    }
+    catch (const std::exception& e) {
+        return error("%s: Deserialize or I/O error - %s", __func__, e.what());
+    }
 
-          // de-serialize address data into one CAddrMan object
-          ssBanlist >> banSet;
-      }
-      catch (const std::exception& e) {
-          return error("%s: Deserialize or I/O error - %s", __func__, e.what());
-      }
+    return true;
+}
 
-      return true;
-  }
+void DumpBanlist()
+{
+    CNode::SweepBanned(); // clean unused entries (if bantime has expired)
 
-  void DumpBanlist()
-  {
-      CNode::SweepBanned(); // clean unused entries (if bantime has expired)
+    if (!CNode::BannedSetIsDirty())
+        return;
 
-      if (!CNode::BannedSetIsDirty())
-          return;
+    int64_t nStart = GetTimeMillis();
 
-      int64_t nStart = GetTimeMillis();
+    CBanDB bandb;
+    banmap_t banmap;
+    CNode::GetBanned(banmap);
+    if (bandb.Write(banmap))
+        CNode::SetBannedSetDirty(false);
 
-      CBanDB bandb;
-      banmap_t banmap;
-      CNode::GetBanned(banmap);
-      if (bandb.Write(banmap))
-          CNode::SetBannedSetDirty(false);
-
-      printf("Flushed %d banned node ips/subnets to banlist.dat  %" PRId64"ms\n",
-               banmap.size(), GetTimeMillis() - nStart);
+    printf("Flushed %d banned node ips/subnets to banlist.dat  %" PRId64"ms\n",
+             banmap.size(), GetTimeMillis() - nStart);
 }

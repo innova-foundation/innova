@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
 // Copyright (c) 2017-2021 The Denarius developers
-// Copyright (c) 2019-2021 The Innova developers
+// Copyright (c) 2019-2022 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -611,7 +611,7 @@ bool AppInit2()
 
     fDebug = GetBoolArg("-debug");
 
-    // - debug implies fDebug*, unless otherwise specified, except net/cn/smsg since they are -really- noisy.
+    // - debug implies fDebug*, unless otherwise specified, except net/fs/smsg since they are -really- noisy.
     if (fDebug)
     {
         SoftSetBoolArg("-debugnet", false);
@@ -702,11 +702,11 @@ bool AppInit2()
         ShrinkDebugFile();
     printf("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
     printf("Innova version %s (%s)\n", FormatFullVersion().c_str(), CLIENT_DATE.c_str());
-    #if (OPENSSL_VERSION_NUMBER < 0x10100000L) //WIP OpenSSL 1.0.x only, OpenSSL 1.1 not supported yet
+#if (OPENSSL_VERSION_NUMBER < 0x10100000L) //WIP OpenSSL 1.0.x only, OpenSSL 1.1 not supported yet
     printf("Using OpenSSL version %s\n", SSLeay_version(SSLEAY_VERSION));
-  #else
+#else
     printf("Using OpenSSL version %s\n", OpenSSL_version(OPENSSL_VERSION));
-  #endif
+#endif
 
     printf("Using Boost Version %d.%d.%d\n", BOOST_VERSION / 100000, BOOST_VERSION / 100 % 1000, BOOST_VERSION % 100);
 
@@ -1022,13 +1022,14 @@ bool AppInit2()
     nStart2 = GetTimeMillis();
 
     extern bool createNameIndexFile();
-   if (!filesystem::exists(GetDataDir() / "innovanames.dat") && !createNameIndexFile())
-   {
-       printf("Fatal error: Failed to create innovanames.dat\n");
-       return false;
-     }
+    if (!filesystem::exists(GetDataDir() / "innovanamesindex.dat") && !createNameIndexFile())
+    {
+        printf("Fatal error: Failed to create innovanamesindex.dat\n");
+        return false;
+    }
 
     printf("Loaded Name DB %15" PRId64"ms\n", GetTimeMillis() - nStart2);
+
 
     if (GetBoolArg("-printblockindex") || GetBoolArg("-printblocktree"))
     {
@@ -1249,16 +1250,19 @@ bool AppInit2()
         }
     }
 
-        if(!strCollateralNodePrivKey.empty()){
-          std::string errorMessage;
+    if(!strCollateralNodePrivKey.empty()){
+        std::string errorMessage;
 
-          CKey key;
-          CPubKey pubkey;
-          if(!colLateralSigner.SetKey(strCollateralNodePrivKey, errorMessage, key, pubkey))
-            {
-                return InitError(_("Invalid collateralnodeprivkey. Please see documenation."));
+        CKey key;
+        CPubKey pubkey;
+
+        if(!colLateralSigner.SetKey(strCollateralNodePrivKey, errorMessage, key, pubkey))
+        {
+            return InitError(_("Invalid collateralnodeprivkey. Please see documenation."));
         }
+
         activeCollateralnode.pubKeyCollateralnode = pubkey;
+
     }
 
     if (pwalletMain) {
@@ -1271,6 +1275,7 @@ bool AppInit2()
                 mnTxHash.SetHex(mne.getTxHash());
                 outputIndex = boost::lexical_cast<unsigned int>(mne.getOutputIndex());
                 COutPoint outpoint = COutPoint(mnTxHash, outputIndex);
+                // don't lock non-spendable outpoint (i.e. it's already spent or it's not from this wallet at all)
                 if(pwalletMain->IsMine(CTxIn(outpoint)) != ISMINE_SPENDABLE) {
                     printf("  %s %s - IS NOT SPENDABLE, was not locked\n", mne.getTxHash().c_str(), mne.getOutputIndex().c_str());
                     continue;
@@ -1326,7 +1331,6 @@ bool AppInit2()
            pblockAddrIndex->nHeight, GetTimeMillis() - nStart);
     }
 
-
     //// debug print
     printf("mapBlockIndex.size() = %" PRIszu"\n",   mapBlockIndex.size());
     printf("nBestHeight = %d\n",            nBestHeight);
@@ -1350,7 +1354,7 @@ bool AppInit2()
     if (fServer)
         NewThread(ThreadRPCServer, NULL);
 
-    // Init Innova INS.
+    // Init Innova DNS.
     if (GetBoolArg("-idns", true))
     {
         #define IDNS_PORT 6565

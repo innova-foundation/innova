@@ -25,7 +25,7 @@ GLOBAL sph_echo512_context      z_echo;
     sph_keccak512_init(&z_keccak); \
     sph_echo512_init(&z_echo); \
 } while (0)
-	
+
 
 #define ZJH (memcpy(&ctx_jh, &z_jh, sizeof(z_jh)))
 #define ZKECCAK (memcpy(&ctx_keccak, &z_keccak, sizeof(z_keccak)))
@@ -44,7 +44,7 @@ inline uint256 Tribus(const T1 pbegin, const T1 pend)
     //std::string strhash;
     //strhash = "";
 #endif
-    
+
     uint512 hash[17];
 
     sph_jh512_init(&ctx_jh);
@@ -58,7 +58,7 @@ inline uint256 Tribus(const T1 pbegin, const T1 pend)
     sph_echo512_init(&ctx_echo);
     sph_echo512 (&ctx_echo, static_cast<const void*>(&hash[1]), 64);
     sph_echo512_close(&ctx_echo, static_cast<void*>(&hash[2]));
-	
+
     return hash[2].trim256();
 }
 
