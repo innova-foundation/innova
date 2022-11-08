@@ -28,7 +28,7 @@ sudo swapon /swapfile
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
 echo "Installing Innova Wallet"
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.3/innovad-16.zip
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.4/innovad-16.zip
 unzip innovad-16.zip
 mv innovad-16/innovad innovad
 rm -r innovad-16
@@ -51,7 +51,7 @@ cd ~/innova/src
                 ;;
 2) echo 2 "Update innovad 16.04 from Github"
 echo "Updating Innova Wallet"
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.3/innovad-16.zip
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.4/innovad-16.zip
 unzip innovad-16.zip
 mv innovad-16/innovad innovad
 rm -r innovad-16
@@ -86,7 +86,7 @@ sudo swapon /swapfile
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
 echo "Installing Innova Wallet"
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.3/innovad-18.zip
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.4/innovad-18.zip
 unzip innovad-18.zip
 mv innovad-18/innovad innovad
 rm -r innovad-18
@@ -111,7 +111,7 @@ cd ~/innova/src
                 ;;
 4) echo 4 "Update innovad 18.04 from Github"
 echo "Updating Innova Wallet"
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.3/innovad-18.zip
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.4/innovad-18.zip
 unzip innovad-18.zip
 mv innovad-18/innovad innovad
 rm -r innovad-18
@@ -145,7 +145,7 @@ sudo swapon /swapfile
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
 echo "Installing Innova Wallet"
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.3/innovad-20.zip
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.4/innovad-20.zip
 unzip innovad-20.zip
 mv innovad-20/innovad innovad
 rm -r innovad-20
@@ -170,7 +170,7 @@ cd ~/innova/src
                 ;;
 6) echo 6 "Update innovad 20.04 from Github"
 echo "Updating Innova Wallet"
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.3/innovad-20.zip
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.4/innovad-20.zip
 unzip innovad-20.zip
 mv innovad-20/innovad innovad
 rm -r innovad-20
