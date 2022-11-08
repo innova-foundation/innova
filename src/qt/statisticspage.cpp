@@ -66,6 +66,10 @@ void StatisticsPage::updateStatistics()
   {
       phase = "Proof of Stake";
   }
+  else if (nHeight > 2000000)
+  {
+      phase = "Tribus Proof of Work with Proof of Stake";
+  }
 
   QString subsidy = "";
   if (nHeight < 5000)
@@ -129,6 +133,22 @@ void StatisticsPage::updateStatistics()
         subsidy = "0.0825 INN per block";
     }
   else if (nHeight > 2000000)
+    {
+        subsidy = "0.0001 INN per block";
+    }
+  else if (nHeight < 2080000)
+    {
+        subsidy = "1 INN per block";
+    }
+  else if (nHeight < 2150000)
+    {
+        subsidy = "0.5 INN per block";
+    }
+  else if (nHeight < 2400000)
+    {
+        subsidy = "0.1 INN per block";
+    }
+  else if (nHeight < 2750000)
     {
         subsidy = "0.0001 INN per block";
     }

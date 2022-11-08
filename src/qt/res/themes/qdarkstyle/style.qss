@@ -360,14 +360,14 @@ QScrollBar:horizontal
 {
     height: 15px;
     margin: 3px 15px 3px 15px;
-    border: 1px transparent #2A2929;
+    border: 1px transparent #00436c;
     border-radius: 4px;
-    background-color: #2A2929;
+    background-color: #00436c;
 }
 
 QScrollBar::handle:horizontal
 {
-    background-color: #605F5F;
+    background-color: #01619b;
     min-width: 5px;
     border-radius: 4px;
 }
@@ -424,16 +424,16 @@ QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal
 
 QScrollBar:vertical
 {
-    background-color: #2A2929;
+    background-color: #00436c;
     width: 15px;
     margin: 15px 3px 15px 3px;
-    border: 1px transparent #2A2929;
+    border: 1px transparent #00436c;
     border-radius: 4px;
 }
 
 QScrollBar::handle:vertical
 {
-    background-color: #605F5F;
+    background-color: #01619b;
     min-height: 5px;
     border-radius: 4px;
 }
@@ -980,7 +980,7 @@ QTreeView::branch:open:has-children:has-siblings:hover  {
 QListView::item:!selected:hover, QTreeView::item:!selected:hover  {
     background: #01619b;
     outline: 0;
-    color: #333
+    color: #fff
 }
 
 QListView::item:selected:hover, QTreeView::item:selected:hover  {
