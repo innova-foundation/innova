@@ -2,7 +2,7 @@
 
 sudo apt-get install unzip -y
 
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.1/innovabootstrap.zip
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.3/innovabootstrap.zip
 mv innovabootstrap.zip ~/.innova/innovabootstrap.zip
 killall -9 innovad
 

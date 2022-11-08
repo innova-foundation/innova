@@ -468,7 +468,7 @@ void Hyperfile::on_checkHashButton_clicked()
    }
 
    //go to public IPFS gateway
-   std::string linkurl3 = "https://chainz.cryptoid.info/d/tx.dws?";
+   std::string linkurl3 = "https://chainz.cryptoid.info/inn/tx.dws?";
    //open url
    QString link3 = QString::fromStdString(linkurl3 + ui->lineEdit_3->text().toStdString());
    QDesktopServices::openUrl(QUrl(link3));
