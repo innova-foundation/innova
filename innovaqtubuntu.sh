@@ -156,7 +156,7 @@ make
 mkdir ~/.innova
 cd ~/.innova
 rm -rf database txleveldb smsgDB
-wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.3/innovabootstrap.zip
+wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.4/innovabootstrap.zip
 unzip innovabootstrap.zip
 rm -rf innovabootstrap.zip
 
