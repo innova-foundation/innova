@@ -628,6 +628,7 @@ QPushButton:pressed
     background-color: #01619b;
     padding-top: -15px;
     padding-bottom: -17px;
+    color: #fff;
 }
 
 QComboBox
