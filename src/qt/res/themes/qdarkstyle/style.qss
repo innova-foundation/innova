@@ -623,14 +623,6 @@ QPushButton:focus {
     color: #fff;
 }
 
-QPushButton:pressed
-{
-    background-color: #01619b;
-    padding-top: -15px;
-    padding-bottom: -17px;
-    color: #fff;
-}
-
 QComboBox
 {
     selection-background-color: #6b6b6b;
@@ -650,6 +642,14 @@ QPushButton:hover
 {
     border: 1px solid #00436c;
     color: #01619b;
+}
+
+QPushButton:pressed
+{
+    background-color: #01619b;
+    padding-top: -15px;
+    padding-bottom: -17px;
+    color: #fff;
 }
 
 QComboBox:hover
