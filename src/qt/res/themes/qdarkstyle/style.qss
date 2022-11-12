@@ -645,7 +645,13 @@ QPushButton:checked{
     border-color: #6A6969;
 }
 
-QComboBox:hover,QPushButton:hover
+QPushButton:hover
+{
+    border: 1px solid #00436c;
+    color: #01619b;
+}
+
+QComboBox:hover
 {
     border: 1px solid #00436c;
     color: #01619b;
