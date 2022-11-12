@@ -132,7 +132,7 @@ void StatisticsPage::updateStatistics()
     {
         subsidy = "0.0825 INN per block";
     }
-  else if (nHeight > 2000000)
+  else if (nHeight < 2000000)
     {
         subsidy = "0.0001 INN per block";
     }
