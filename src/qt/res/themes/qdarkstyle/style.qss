@@ -594,7 +594,7 @@ QToolButton#qt_toolbar_ext_button {
 
 QPushButton
 {
-    color: #01619b;
+    color: #fff;
     background-color: #1c1c28;
     border-width: 1px;
     border-color: #01619b;
@@ -625,7 +625,7 @@ QPushButton:focus {
 
 QPushButton:pressed
 {
-    background-color: #66a0c3;
+    background-color: #01619b;
     padding-top: -15px;
     padding-bottom: -17px;
 }
@@ -648,7 +648,7 @@ QPushButton:checked{
 QComboBox:hover,QPushButton:hover
 {
     border: 1px solid #00436c;
-    color: #00436c;
+    color: #01619b;
 }
 
 QAbstractView:hover,QAbstractSpinBox:hover,QTreeView:hover,QTextEdit:hover,QPlainTextEdit:hover,QLineEdit:hover
