@@ -65,7 +65,6 @@
         <file alias="cn">res/icons/cn.png</file>
         <file alias="data">res/icons/data.png</file>
         <file alias="hyperfile">res/icons/hyperfile.png</file>
-        <file alias="hyperfile-gradient">res/icons/hyperfile-gradient.png</file>
         <file alias="trade">res/icons/trade.png</file>
         <file alias="platinumname">res/icons/platinumnames.png</file>
     </qresource>
