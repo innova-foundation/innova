@@ -146,7 +146,7 @@ public:
     int64_t payRate;
     int payCount;
     int64_t payValue;
-    int64_t now; //dsee message times
+    int64_t now; //isee message times
     int64_t lastDseep;
     int cacheInputAge;
     int cacheInputAgeBlock;
@@ -211,7 +211,7 @@ public:
 
     bool IsActive() {
         if (lastTimeSeen - now > (max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * 30))
-        { // dsee broadcast is more than a round old, let's consider it active
+        { // isee broadcast is more than a round old, let's consider it active
                 return true;
         }
         return false;

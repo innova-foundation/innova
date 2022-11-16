@@ -1,8 +1,8 @@
-.TH DENARIUSD "7" "October 2017" "innovad 3.19" 
+.TH INNOVAD "7" "October 2017" "innovad 3.19" 
 .SH NAME
 innovad \- peer-to-peer network based digital currency
 .SH SYNOPSIS
-innova [options] <command> [params]  
+innova [options] <command> [params]
 .TP
 innova [options] help <command> - Get help for a command
 .SH DESCRIPTION
@@ -181,13 +181,13 @@ Moves funds between accounts.
 .TP
 \fBsendfrom* <'account'> <'innovaaddress'> <'amount'> ['minconf=1'] ['comment'] ['comment-to']\fR
 Sends amount from account's balance to 'innovaaddress'. This method will fail if there is less than amount innovas with ['minconf'] confirmations in the account's balance (unless account is the empty-string-named default account; it behaves like the *sendtoaddress* method). Returns transaction ID on success.
-.TP     
+.TP
 \fBsendtoaddress 'innovaaddress' 'amount' ['comment'] ['comment-to']\fR
 Sends amount from the server's available balance to 'innovaaddress'. amount is a real and is rounded to the nearest 0.01. Returns transaction id on success.
-.TP    
+.TP
 \fBstop\fR
 Stops the innova server.
-.TP    
+.TP
 \fBvalidateaddress 'innovaaddress'\fR
 Checks that 'innovaaddress' looks like a proper innova address. Returns an object containing:
 
@@ -203,4 +203,3 @@ innova.conf(5)
 This manual page was written by Micah Anderson <micah@debian.org> for the Debian system (but may be used by others). Permission is granted to copy, distribute and/or modify this document under the terms of the GNU General Public License, Version 3 or any later version published by the Free Software Foundation.
 
 On Debian systems, the complete text of the GNU General Public License can be found in /usr/share/common-licenses/GPL.
-
