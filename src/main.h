@@ -20,16 +20,16 @@
 class CValidationState;
 
 #define BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET 550 // Testnet Collateralnode payments enabled block 800
-#define BLOCK_START_COLLATERALNODE_PAYMENTS 800 //Mainnet Collateralnode payments not enabled until block 800
+#define BLOCK_START_COLLATERALNODE_PAYMENTS 800 // Mainnet Collateralnode payments not enabled until block 800
 #define BLOCK_START_COLLATERALNODE_DELAYPAY 2500 // Unused
 
 //#define START_COLLATERALNODE_PAYMENTS_TESTNET 1519430400  //Sat, 24 Feb 2018 00:00:00 GMT
 //#define START_COLLATERALNODE_PAYMENTS 1520985600  //Wed, 14 Mar 2018 00:00:00 GMT
 
 static const int64_t COLLATERALN_COLLATERAL = (25000*COIN); // 25,000 INN
-static const int64_t COLLATERALN_FEE = (0.010000*COIN); //0.01 INN
-static const int64_t POOL_FEE_AMOUNT = (0.1*COIN); //0.1 INN
-static const int64_t COLLATERALN_POOL_MAX = (51000*COIN); //51,000 INN
+static const int64_t COLLATERALN_FEE = (0.010000*COIN); // 0.01 INN
+static const int64_t POOL_FEE_AMOUNT = (0.1*COIN); // 0.1 INN
+static const int64_t COLLATERALN_POOL_MAX = (51000*COIN); // 51,000 INN
 
 #define MESSAGE_START_SIZE 4
 typedef unsigned char MessageStartChars[MESSAGE_START_SIZE];
@@ -60,7 +60,7 @@ class CNode;
 // General Innova Block Values
 
 // extern CFeeRate minRelayTxFee;
-//static const int ZERO_POW_BLOCK = 50000; // 50k blocks before Proof of Stake consensus, now 0.0001 INN reward per block
+static const int ZERO_POW_BLOCK = 50000; // 50k blocks before Proof of Stake consensus, back to hybrid PoW/PoS at block 2000000, final reward 0.0001 INN per block
 static const int FAIR_LAUNCH_BLOCK = 490; // Last Block until full block reward starts
 static const unsigned int MAX_BLOCK_SIZE = 1000000; // 1MB block hard limit, double the size of Bitcoin
 static const unsigned int MAX_BLOCK_SIZE_GEN = MAX_BLOCK_SIZE/2; // 512kb block soft limit, ditto
@@ -73,7 +73,7 @@ static const unsigned int MAX_TX_SIGOPS = MAX_BLOCK_SIGOPS/5;
 /** Default for -maxorphantx, maximum number of orphan transactions kept in memory */
 static const unsigned int DEFAULT_MAX_ORPHAN_TRANSACTIONS = 100; // Was 10k
 /** Default for -maxorphanblocks, maximum number of orphan blocks kept in memory */
-static const unsigned int DEFAULT_MAX_ORPHAN_BLOCKS = 750; //Default 750, try testing with 1000
+static const unsigned int DEFAULT_MAX_ORPHAN_BLOCKS = 750; // Default 750, try testing with 1000
 static const unsigned int MAX_INV_SZ = 50000;
 static const int64_t MIN_TX_FEE = 1000;
 static const int64_t MIN_NAME_FEE = 90000000; // 0.9 INN Name OP Miner Fee
@@ -84,9 +84,9 @@ static const int64_t MIN_RELAY_TX_FEE = MIN_TX_FEE;
 static const int64_t MAX_MONEY = 18000000 * COIN; // 18,000,000 INN Innova Max
 static const int64_t COIN_YEAR_REWARD = 0.06 * COIN; // 6% per year
 
-static const int64_t MAINNET_POSFIX = 500; //Mainnet Proof of Stake update not enabled until block 500
+static const int64_t MAINNET_POSFIX = 500; // Mainnet Proof of Stake update not enabled until block 500
 static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 4500; // Enforce collateralnode payments after this height - BLOCK 4500
-static const int MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET = 551; //Enforce CN payments after this height for Innova Testnet!
+static const int MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET = 551; // Enforce CN payments after this height for Innova Testnet!
 
 inline bool MoneyRange(int64_t nValue) { return (nValue >= 0 && nValue <= MAX_MONEY); }
 
@@ -161,7 +161,7 @@ extern bool fMinimizeCoinAge;
 extern int64_t nMinTxFee;
 
 // Minimum disk space required - used in CheckDiskSpace()
-static const uint64_t nMinDiskSpace = 52428800; //52 MB Minimum, Raise?
+static const uint64_t nMinDiskSpace = 1073741824; // 1 GB Minimum, Raise to 2GB?
 
 class CReserveKey;
 class CTxDB;

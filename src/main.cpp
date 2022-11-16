@@ -1632,7 +1632,7 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
 
   if (fTestNet) {
        if (pindexBest->nHeight == 1)
-           nSubsidy = 3000000 * COIN;  // 10m INN Premine for Testnet for testing
+           nSubsidy = 1000000 * COIN;  // 10m INN Premine for Testnet for testing
        else if (pindexBest->nHeight <= FAIR_LAUNCH_BLOCK) // Block 490, Instamine prevention
            nSubsidy = 1 * COIN/2;
        else if (pindexBest->nHeight <= 5000)
@@ -1681,16 +1681,22 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
     	nSubsidy = 0.165 * COIN;
     else if (pindexBest->nHeight <= 50000)
     	nSubsidy = 0.0825 * COIN;
-    else if (pindexBest->nHeight <= 2000000)
-      nSubsidy = 0.0001 * COIN;
-    else if (pindexBest->nHeight <= 2080000) // Hard Fork roll back - Innova Foundation Fund hack
+    else if (pindexBest->nHeight > ZERO_POW_BLOCK && pindexBest->nHeight < 2000000)
+      nSubsidy = 0 * COIN;
+    else if (pindexBest->nHeight > 2000000 && pindexBest->nHeight <= 2080000) // Hard Fork roll back - Innova Foundation Fund hack
       nSubsidy = 1 * COIN;
     else if (pindexBest->nHeight <= 2150000)
       nSubsidy = 0.5 * COIN;
-    else if (pindexBest->nHeight <= 2400000)
+    else if (pindexBest->nHeight <= 2500000)
       nSubsidy = 0.1 * COIN;
     else if (pindexBest->nHeight <= 2750000)
-      nSubsidy = 0.0001 * COIN; // PoW Reward 0.0001 INN
+      nSubsidy = 0.075 * COIN;
+    else if (pindexBest->nHeight <= 3000000)
+      nSubsidy = 0.05 * COIN;
+    else if (pindexBest->nHeight <= 3250000)
+      nSubsidy = 0.025 * COIN;
+    else if (pindexBest->nHeight >= 4000000)
+      nSubsidy = 0.0001 * COIN; // Final PoW Reward 0.0001 INN @ block 4 mln
 
         if (fDebug && GetBoolArg("-printcreation"))
             printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
@@ -2873,7 +2879,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                                     {
                                         if (pnode->nVersion >= colLateralPool.PROTOCOL_VERSION) {
                                                 printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
-                                                pnode->PushMessage("dseg", CTxIn()); //request full mn list
+                                                pnode->PushMessage("iseg", CTxIn()); //request full mn list
                                                 pnode->nLastDseg = GetTime();
                                         }
                                     }
@@ -3000,7 +3006,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                                 {
                                     if (pnode->nVersion >= colLateralPool.PROTOCOL_VERSION) {
                                             printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
-                                            pnode->PushMessage("dseg", CTxIn()); //request full mn list
+                                            pnode->PushMessage("iseg", CTxIn()); //request full mn list
                                             pnode->nLastDseg = GetTime();
                                     }
                                 }
@@ -4737,7 +4743,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         }
 
         // Ask every node for the collateralnode list straight away
-        pfrom->PushMessage("dseg", CTxIn());
+        pfrom->PushMessage("iseg", CTxIn());
 
         // Ask the first connected node for block updates
         static int nAskedForBlocks = 0;

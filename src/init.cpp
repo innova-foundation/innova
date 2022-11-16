@@ -1057,8 +1057,8 @@ bool AppInit2()
         pwalletMain = NULL;
     }
 
-    uiInterface.InitMessage(_("Loading INN wallet..."));
-    printf("Loading INN wallet...\n");
+    uiInterface.InitMessage(_("Loading your Innova wallet..."));
+    printf("Loading your Innova wallet...\n");
     nStart = GetTimeMillis();
     bool fFirstRun = true;
     pwalletMain = new CWallet(strWalletFileName);

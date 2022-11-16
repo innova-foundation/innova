@@ -132,7 +132,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 
         if((fTestNet && addr.GetPort() != 15539) || (!fTestNet && addr.GetPort() != 14539)) return;
 
-        //search existing collateralnode list, this is where we update existing collateralnodes with new dsee broadcasts
+        //search existing collateralnode list, this is where we update existing collateralnodes with new isee broadcasts
         LOCK(cs_collateralnodes);
         for (CCollateralNode& mn : vecCollateralnodes) {
             if(mn.vin.prevout == vin.prevout) {
@@ -146,7 +146,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 
                     if(mn.now < sigTime){ //take the newest entry
                         if (fDebugCN & fDebugNet) printf("isee - Got updated entry for %s\n", addr.ToString().c_str());
-                        mn.UpdateLastSeen(); // update with current time (i.e. the time we received this 'new' dsee
+                        mn.UpdateLastSeen(); // update with current time (i.e. the time we received this 'new' isee
                         mn.pubkey2 = pubkey2;
                         mn.now = sigTime;
                         mn.sig = vchSig;
@@ -287,14 +287,14 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
             }
         }
 
-        // ask for the dsee info once from the node that sent dseep
+        // ask for the isee info once from the node that sent iseep
 
         if (fDebugCN && fDebugNet) printf("iseep - Asking source node for missing entry %s\n", vin.ToString().c_str());
-        pfrom->PushMessage("dseg", vin);
-        int64_t askAgain = GetTime()+(60*1); // only ask for each dsee once per minute
+        pfrom->PushMessage("iseg", vin);
+        int64_t askAgain = GetTime()+(60*1); // only ask for each isee once per minute
         askedForCollateralnodeListEntry[vin.prevout] = askAgain;
 
-    } else if (strCommand == "dseg") { //Get collateralnode list or specific entry
+    } else if (strCommand == "iseg") { //Get collateralnode list or specific entry
         bool fIsInitialDownload = IsInitialBlockDownload();
         if(fIsInitialDownload) return;
 
@@ -314,15 +314,15 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
                     int64_t t = (*i).second;
                     if (GetTime() < t) {
                         //Misbehaving(pfrom->GetId(), 34);
-                        //printf("dseg - peer already asked me for the list\n");
+                        //printf("iseg - peer already asked me for the list\n");
                         //return;
                         //Misbehaving(pfrom->GetId(), 34);
-                        printf("dseg - peer already asked me for the list\n");
+                        printf("iseg - peer already asked me for the list\n");
                         return;
                     }
                 }
 
-                int64_t askAgain = GetTime()+(60*1); // only allow nodes to do a dseg all once per minute
+                int64_t askAgain = GetTime()+(60*1); // only allow nodes to do a iseg all once per minute
                 askedForCollateralnodeList[pfrom->addr] = askAgain;
             //}
               }
@@ -339,19 +339,19 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
             if(vin == CTxIn()){
                 mn.Check(true);
                 if(mn.IsEnabled()) {
-                    if(fDebugCN && fDebugNet) printf("dseg - Sending collateralnode entry - %s \n", mn.addr.ToString().c_str());
+                    if(fDebugCN && fDebugNet) printf("iseg - Sending collateralnode entry - %s \n", mn.addr.ToString().c_str());
                     pfrom->PushMessage("isee", mn.vin, mn.addr, mn.sig, mn.now, mn.pubkey, mn.pubkey2, count, i, mn.lastTimeSeen, mn.protocolVersion);
                 }
             } else if (vin == mn.vin) {
-                if(fDebugCN && fDebugNet) printf("dseg - Sending collateralnode entry - %s \n", mn.addr.ToString().c_str());
+                if(fDebugCN && fDebugNet) printf("iseg - Sending collateralnode entry - %s \n", mn.addr.ToString().c_str());
                 pfrom->PushMessage("isee", mn.vin, mn.addr, mn.sig, mn.now, mn.pubkey, mn.pubkey2, count, i, mn.lastTimeSeen, mn.protocolVersion);
-                printf("dseg - Sent 1 collateralnode entries to %s\n", pfrom->addr.ToString().c_str());
+                printf("iseg - Sent 1 collateralnode entries to %s\n", pfrom->addr.ToString().c_str());
                 return;
             }
             i++;
         }
 
-        printf("dseg - Sent %d collateralnode entries to %s\n", count, pfrom->addr.ToString().c_str());
+        printf("iseg - Sent %d collateralnode entries to %s\n", count, pfrom->addr.ToString().c_str());
     }
 
     else if (strCommand == "mnget") { //Collateralnode Payments Request Sync
