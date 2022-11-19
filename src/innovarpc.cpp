@@ -399,7 +399,7 @@ static const CRPCCommand vRPCCommands[] =
 
     { "proofofdata",          &proofofdata,              false,  true  },
 
-    // Innova HyperFile IPFS
+    // Innova Hyperfile IPFS
     { "hyperfileversion",       &hyperfileversion,           true,   false },
     { "hyperfileupload",        &hyperfileupload,            false,  false },
     { "hyperfilepod",           &hyperfilepod,               false,  true  },

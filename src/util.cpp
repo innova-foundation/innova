@@ -95,7 +95,7 @@ bool fCommandLine = false;
 string strMiscWarning;
 bool fTestNet = false;
 bool fNativeTor = false;
-bool fHyperFileLocal = false;
+bool fHyperfileLocal = false;
 bool fCNLock = false;
 bool fNoListen = false;
 bool fLogTimestamps = false;
@@ -1255,33 +1255,24 @@ void WriteConfigFile(FILE* configFile)
     fputs ("server=1\n", configFile);
     fputs ("staking=1\n", configFile);
     fputs ("collateralnode=0\n", configFile); //default
-    fputs ("collateralnodeaddr=\n", configFile);
-    fputs ("collateralnodeprivkey=\n", configFile);
+    fputs ("#collateralnodeaddr=\n", configFile);
+    fputs ("#collateralnodeprivkey=\n", configFile);
     fputs ("idns=1\n", configFile);
     fputs ("addnode=innseeder.circuitbreaker.online\n", configFile); // seeder
     fputs ("addnode=innseeder.circuitbreaker.dev\n", configFile); // seeder
     fputs ("addnode=innseeder.innovai.cloud\n", configFile); // seeder
-    fputs ("addnode=159.65.67.220\n", configFile);
-    fputs ("addnode=167.86.103.117\n", configFile);
-    fputs ("addnode=167.86.124.246\n", configFile);
-    fputs ("addnode=167.86.84.242\n", configFile);
-    fputs ("addnode=167.86.91.194\n", configFile);
-    fputs ("addnode=167.86.96.109\n", configFile);
-    fputs ("addnode=167.86.96.5\n", configFile);
-    fputs ("addnode=167.86.97.16\n", configFile);
-    fputs ("addnode=173.249.24.50\n", configFile);
-    fputs ("addnode=173.249.38.251\n", configFile);
-    fputs ("addnode=173.249.46.109\n", configFile);
-    fputs ("addnode=185.62.81.135\n", configFile);
-    fputs ("addnode=188.0.175.212\n", configFile);
-    fputs ("addnode=188.0.188.250\n", configFile);
-    fputs ("addnode=188.122.212.138\n", configFile);
-    fputs ("addnode=51.222.152.238\n", configFile);
-    fputs ("addnode=62.171.132.112\n", configFile);
-    fputs ("addnode=77.78.204.210\n", configFile);
-    fputs ("addnode=91.46.36.65\n", configFile);
-    fputs ("addnode=94.253.189.202\n", configFile);
-    fputs ("addnode=94.253.191.159\n", configFile);
+    fputs ("addnode=165.22.181.170\n", configFile);
+    fputs ("addnode=159.223.114.4\n", configFile);
+    fputs ("addnode=165.22.187.43\n", configFile);
+    fputs ("addnode=68.183.110.135\n", configFile);
+    fputs ("addnode=157.245.139.16\n", configFile);
+    fputs ("addnode=167.71.19.57\n", configFile);
+    fputs ("addnode=165.227.206.77\n", configFile);
+    fputs ("addnode=159.223.100.10\n", configFile);
+    fputs ("addnode=159.223.104.83\n", configFile);
+    fputs ("addnode=159.223.104.144\n", configFile);
+    fputs ("addnode=45.77.164.87\n", configFile);
+    fputs ("\n", configFile);
     fclose(configFile);
     ReadConfigFile(mapArgs, mapMultiArgs);
 }

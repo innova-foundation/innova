@@ -527,7 +527,7 @@ bool AppInit2()
 
     fCNLock = GetBoolArg("-cnconflock");
     fNativeTor = GetBoolArg("-nativetor");
-    fHyperFileLocal = GetBoolArg("-hyperfilelocal");
+    fHyperfileLocal = GetBoolArg("-hyperfilelocal");
 
     if (mapArgs.count("-bind"))
     {
