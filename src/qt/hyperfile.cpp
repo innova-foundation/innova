@@ -32,9 +32,9 @@
 #include <stdexcept>
 
 
-HyperFile::HyperFile(QWidget *parent) :
+Hyperfile::Hyperfile(QWidget *parent) :
     QWidget(parent),
-    ui(new Ui::HyperFile)
+    ui(new Ui::Hyperfile)
 {
     ui->setupUi(this);
     fileName = "";
@@ -52,12 +52,12 @@ HyperFile::HyperFile(QWidget *parent) :
     ui->checkButtonCloudflare->setHidden(true);
 }
 
-HyperFile::~HyperFile()
+Hyperfile::~Hyperfile()
 {
     delete ui;
 }
 
-void HyperFile::on_filePushButton_clicked()
+void Hyperfile::on_filePushButton_clicked()
 {
   //Upload a file
 	fileName = QFileDialog::getOpenFileName(this,
@@ -68,18 +68,18 @@ void HyperFile::on_filePushButton_clicked()
   ui->labelFile->setText(fileName);
 }
 
-void HyperFile::on_createPodButton_clicked()
+void Hyperfile::on_createPodButton_clicked()
 {
 
 #ifdef USE_IPFS
-fHyperFileLocal = GetBoolArg("-hyperfilelocal");
+fHyperfileLocal = GetBoolArg("-hyperfilelocal");
 
-if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova HyperFile POD", "Warning: This costs 0.001 INN to timestamp your IPFS file hash on the Innova blockchain.", QMessageBox::Yes|QMessageBox::No).exec())
+if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova Hyperfile POD", "Warning: This costs 0.001 INN to timestamp your IPFS file hash on the Innova blockchain.", QMessageBox::Yes|QMessageBox::No).exec())
 {
     //qDebug() << "Yes was clicked";
 
     //Ensure IPFS connected
-    if (fHyperFileLocal) {
+    if (fHyperfileLocal) {
       try {
         std::stringstream contents;
         ipfs::Json add_result;
@@ -108,8 +108,8 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova HyperFile 
 
         std::string fileContents = ipfsC.c_str();
 
-        printf("HyperFile Upload File Start: %s\n", basename.c_str());
-        //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
+        printf("Hyperfile Upload File Start: %s\n", basename.c_str());
+        //printf("Hyperfile File Contents: %s\n", ipfsC.c_str());
 
         client.FilesAdd(
         {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, fileName.toStdString().c_str()}},
@@ -120,11 +120,11 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova HyperFile 
         ui->lineEdit->setText(QString::fromStdString(hash));
 
         std::string r = add_result.dump();
-        printf("HyperFile POD Successfully Added IPFS File(s): %s\n", r.c_str());
+        printf("Hyperfile POD Successfully Added IPFS File(s): %s\n", r.c_str());
 
-        //HyperFile POD
+        //Hyperfile POD
         if (hash != "") {
-          //Hash the file for Innova HyperFile POD
+          //Hash the file for Innova Hyperfile POD
           //uint256 imagehash = SerializeHash(ipfsContents);
           CKeyID keyid(Hash160(hash.begin(), hash.end()));
           CBitcoinAddress baddr = CBitcoinAddress(keyid);
@@ -137,20 +137,20 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova HyperFile 
           // Wallet comments
           CWalletTx wtx;
           wtx.mapValue["comment"] = hash;
-          std::string sNarr = "HyperFile POD";
-          wtx.mapValue["to"]      = "HyperFile POD";
+          std::string sNarr = "Hyperfile POD";
+          wtx.mapValue["to"]      = "Hyperfile POD";
 
           if (pwalletMain->IsLocked())
           {
             QMessageBox unlockbox;
             unlockbox.setText("Error, Your wallet is locked! Please unlock your wallet!");
             unlockbox.exec();
-            //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send HyperFile POD. Unlock your wallet!");
+            //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send Hyperfile POD. Unlock your wallet!");
           } else if (pwalletMain->GetBalance() < 0.001) {
             QMessageBox error2box;
-            error2box.setText("Error, You need at least 0.001 INN to send HyperFile POD!");
+            error2box.setText("Error, You need at least 0.001 INN to send Hyperfile POD!");
             error2box.exec();
-            //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send HyperFile POD.");
+            //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send Hyperfile POD.");
           } else {
             //std::string sNarr;
             std::string strError = pwalletMain->SendMoneyToDestination(baddr.Get(), nAmount, sNarr, wtx);
@@ -162,7 +162,7 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova HyperFile 
                 infobox.exec();
             }
             QMessageBox successbox;
-            successbox.setText("HyperFile POD Timestamp Successful!");
+            successbox.setText("Hyperfile POD Timestamp Successful!");
             successbox.exec();
             ui->lineEdit_3->setText(QString::fromStdString(wtx.GetHash().GetHex()));
           }
@@ -214,8 +214,8 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova HyperFile 
 
         std::string fileContents = ipfsC.c_str();
 
-        printf("HyperFile Upload File Start: %s\n", basename.c_str());
-        //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
+        printf("Hyperfile Upload File Start: %s\n", basename.c_str());
+        //printf("Hyperfile File Contents: %s\n", ipfsC.c_str());
 
         client.FilesAdd(
         {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, fileName.toStdString().c_str()}},
@@ -226,11 +226,11 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova HyperFile 
         ui->lineEdit->setText(QString::fromStdString(hash));
 
         std::string r = add_result.dump();
-        printf("HyperFile POD Successfully Added IPFS File(s): %s\n", r.c_str());
+        printf("Hyperfile POD Successfully Added IPFS File(s): %s\n", r.c_str());
 
-        //HyperFile POD
+        //Hyperfile POD
         if (hash != "") {
-          //Hash the file for Innova HyperFile POD
+          //Hash the file for Innova Hyperfile POD
           //uint256 imagehash = SerializeHash(ipfsContents);
           CKeyID keyid(Hash160(hash.begin(), hash.end()));
           CBitcoinAddress baddr = CBitcoinAddress(keyid);
@@ -243,20 +243,20 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova HyperFile 
           // Wallet comments
           CWalletTx wtx;
           wtx.mapValue["comment"] = hash;
-          std::string sNarr = "HyperFile POD";
-          wtx.mapValue["to"]      = "HyperFile POD";
+          std::string sNarr = "Hyperfile POD";
+          wtx.mapValue["to"]      = "Hyperfile POD";
 
           if (pwalletMain->IsLocked())
           {
             QMessageBox unlockbox;
             unlockbox.setText("Error, Your wallet is locked! Please unlock your wallet!");
             unlockbox.exec();
-            //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send HyperFile POD. Unlock your wallet!");
+            //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send Hyperfile POD. Unlock your wallet!");
           } else if (pwalletMain->GetBalance() < 0.001) {
             QMessageBox error2box;
-            error2box.setText("Error, You need at least 0.001 INN to send HyperFile POD!");
+            error2box.setText("Error, You need at least 0.001 INN to send Hyperfile POD!");
             error2box.exec();
-            //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send HyperFile POD.");
+            //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send Hyperfile POD.");
           } else {
             //std::string sNarr;
             std::string strError = pwalletMain->SendMoneyToDestination(baddr.Get(), nAmount, sNarr, wtx);
@@ -268,7 +268,7 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova HyperFile 
                 infobox.exec();
             }
             QMessageBox successbox;
-            successbox.setText("HyperFile POD Timestamp Successful!");
+            successbox.setText("Hyperfile POD Timestamp Successful!");
             successbox.exec();
             ui->lineEdit_3->setText(QString::fromStdString(wtx.GetHash().GetHex()));
           }
@@ -303,14 +303,14 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova HyperFile 
 
 }
 
-void HyperFile::on_createPushButton_clicked()
+void Hyperfile::on_createPushButton_clicked()
 {
 
 #ifdef USE_IPFS
-fHyperFileLocal = GetBoolArg("-hyperfilelocal");
+fHyperfileLocal = GetBoolArg("-hyperfilelocal");
 
 //Ensure IPFS connected
-if (fHyperFileLocal) {
+if (fHyperfileLocal) {
   try {
     std::stringstream contents;
     ipfs::Json add_result;
@@ -339,8 +339,8 @@ if (fHyperFileLocal) {
 
     std::string fileContents = ipfsC.c_str();
 
-    printf("HyperFile Upload File Start: %s\n", basename.c_str());
-    //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
+    printf("Hyperfile Upload File Start: %s\n", basename.c_str());
+    //printf("Hyperfile File Contents: %s\n", ipfsC.c_str());
 
     client.FilesAdd(
     {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, fileName.toStdString().c_str()}},
@@ -351,7 +351,7 @@ if (fHyperFileLocal) {
     ui->lineEdit->setText(QString::fromStdString(hash));
 
     std::string r = add_result.dump();
-    printf("HyperFile Successfully Added IPFS File(s): %s\n", r.c_str());
+    printf("Hyperfile Successfully Added IPFS File(s): %s\n", r.c_str());
 
     if (hash != "") {
       ui->checkButton->setHidden(false);
@@ -394,8 +394,8 @@ if (fHyperFileLocal) {
 
     std::string fileContents = ipfsC.c_str();
 
-    printf("HyperFile Upload File Start: %s\n", basename.c_str());
-    //printf("HyperFile File Contents: %s\n", ipfsC.c_str());
+    printf("Hyperfile Upload File Start: %s\n", basename.c_str());
+    //printf("Hyperfile File Contents: %s\n", ipfsC.c_str());
 
     client.FilesAdd(
     {{basename.c_str(), ipfs::http::FileUpload::Type::kFileName, fileName.toStdString().c_str()}},
@@ -406,7 +406,7 @@ if (fHyperFileLocal) {
     ui->lineEdit->setText(QString::fromStdString(hash));
 
     std::string r = add_result.dump();
-    printf("HyperFile Successfully Added IPFS File(s): %s\n", r.c_str());
+    printf("Hyperfile Successfully Added IPFS File(s): %s\n", r.c_str());
 
     if (hash != "") {
       ui->checkButton->setHidden(false);
@@ -428,7 +428,7 @@ if (fHyperFileLocal) {
 
 }
 
-void HyperFile::on_checkButton_clicked()
+void Hyperfile::on_checkButton_clicked()
 {
     if(fileName == "")
     {
@@ -444,7 +444,7 @@ void HyperFile::on_checkButton_clicked()
 
 }
 
-void HyperFile::on_checkButtonCloudflare_clicked()
+void Hyperfile::on_checkButtonCloudflare_clicked()
 {
     if(fileName == "")
     {
@@ -459,7 +459,7 @@ void HyperFile::on_checkButtonCloudflare_clicked()
     QDesktopServices::openUrl(QUrl(link2));
 }
 
-void HyperFile::on_checkHashButton_clicked()
+void Hyperfile::on_checkHashButton_clicked()
 {
     if(fileName == "")
     {
@@ -474,7 +474,7 @@ void HyperFile::on_checkHashButton_clicked()
     QDesktopServices::openUrl(QUrl(link3));
 }
 
-void HyperFile::noImageSelected()
+void Hyperfile::noImageSelected()
 {
   //err message
   QMessageBox errorbox;

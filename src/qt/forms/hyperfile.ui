@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>HyperFile</class>
- <widget class="QWidget" name="HyperFile">
+ <class>Hyperfile</class>
+ <widget class="QWidget" name="Hyperfile">
   <property name="geometry">
    <rect>
     <x>0</x>
@@ -29,7 +29,7 @@
       <bool>true</bool>
      </property>
      <property name="title">
-      <string>HyperFile IPFS File Upload</string>
+      <string>Hyperfile IPFS File Upload</string>
      </property>
      <layout class="QGridLayout" name="gridLayout_3">
       <item row="0" column="0">
@@ -230,7 +230,7 @@
           <item>
            <widget class="QLabel" name="hashLabel_2">
             <property name="text">
-             <string>Innova HyperFile POD Address:</string>
+             <string>Innova Hyperfile POD Address:</string>
             </property>
            </widget>
           </item>
@@ -244,7 +244,7 @@
           <item>
            <widget class="QLabel" name="hashLabel_3">
             <property name="text">
-             <string>Innova HyperFile POD Transaction ID:</string>
+             <string>Innova Hyperfile POD Transaction ID:</string>
             </property>
            </widget>
           </item>

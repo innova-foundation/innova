@@ -5,17 +5,17 @@
 //#include <QWebView>
 
 namespace Ui {
-    class HyperFile;
+    class Hyperfile;
 }
 
-/** HyperFile page widget */
-class HyperFile : public QWidget
+/** Hyperfile page widget */
+class Hyperfile : public QWidget
 {
     Q_OBJECT
 
 public:
-    explicit HyperFile(QWidget *parent = 0);
-    ~HyperFile();
+    explicit Hyperfile(QWidget *parent = 0);
+    ~Hyperfile();
     QString fileName;
     QString fileCont;
 
@@ -24,7 +24,7 @@ public slots:
 signals:
 
 private:
-    Ui::HyperFile *ui;
+    Ui::Hyperfile *ui;
     void noImageSelected();
 
 private slots:
