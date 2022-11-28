@@ -1718,7 +1718,7 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
     else if (pindexBest->nHeight <= 5750000) // 0.01 Coin PoW Reward to release 2,500 INN in 250,000 blocks
       nSubsidy = 0.01 * COIN;
     else if (pindexBest->nHeight >= 5000000) // 0.0001 Coin PoW Reward to release ~200 INN per year
-      nSubsidy = 0.0001 * COIN; // Final PoW Reward 0.0001 INN @ block 4 mln
+      nSubsidy = 0.0001 * COIN; // Final PoW Reward 0.0001 INN @ block 5 mln
 
         if (fDebug && GetBoolArg("-printcreation"))
             printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
