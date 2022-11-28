@@ -21,7 +21,8 @@ sudo ufw default allow outgoing
 sudo ufw enable
 
 echo "Setting Swap File"
-sudo fallocate -l 2G /swapfile
+sudo swapoff -a
+sudo fallocate -l 4G /swapfile
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
 sudo swapon /swapfile
@@ -32,13 +33,13 @@ wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.3/inno
 unzip innovad-16.zip
 mv innovad-16/innovad innovad
 rm -r innovad-16
+rm -r innovad-16.zip
+chmod ugo+x innovad
 sudo yes | cp -rf innovad /usr/bin/
-
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
 bash -c "$(wget -O - https://raw.githubusercontent.com/innova-foundation/innova/master/bootstrap.sh)"
-
 
 #mkdir ~/.innova
 #cd ~/.innova || exit
@@ -55,8 +56,9 @@ wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.3/inno
 unzip innovad-16.zip
 mv innovad-16/innovad innovad
 rm -r innovad-16
+rm -r innovad-16.zip
+chmod ugo+x innovad
 sudo yes | cp -rf innovad /usr/bin/
-
 echo "Copied to /usr/bin for ease of use"
 
 echo "Back to Compiled innovad Binary Folder"
@@ -79,7 +81,8 @@ sudo ufw default allow outgoing
 sudo ufw enable
 
 echo "Setting Swap File"
-sudo fallocate -l 2G /swapfile
+sudo swapoff -a
+sudo fallocate -l 4G /swapfile
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
 sudo swapon /swapfile
@@ -93,13 +96,11 @@ rm -r innovad-18
 rm -r innovad-18.zip
 chmod ugo+x innovad
 sudo yes | cp -rf innovad /usr/bin/
-
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
 bash -c "$(wget -O - https://raw.githubusercontent.com/innova-foundation/innova/master/bootstrap.sh)"
 
-pIQDrBIZou9E9yAOFdiVL
 #mkdir ~/.innova
 #cd ~/.innova
 #rm -rf database txleveldb smsgDB
@@ -115,6 +116,8 @@ wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.3/inno
 unzip innovad-18.zip
 mv innovad-18/innovad innovad
 rm -r innovad-18
+rm -r innovad-18.zip
+chmod ugo+x innovad
 sudo yes | cp -rf innovad /usr/bin/
 echo "Copied to /usr/bin for ease of use"
 
@@ -138,7 +141,8 @@ sudo ufw default allow outgoing
 sudo ufw enable
 
 echo "Setting Swap File"
-sudo fallocate -l 2G /swapfile
+sudo swapoff -a
+sudo fallocate -l 4G /swapfile
 sudo chmod 600 /swapfile
 sudo mkswap /swapfile
 sudo swapon /swapfile
@@ -149,8 +153,9 @@ wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.3/inno
 unzip innovad-20.zip
 mv innovad-20/innovad innovad
 rm -r innovad-20
+rm -r innovad-20.zip
+chmod ugo+x innovad
 sudo yes | cp -rf innovad /usr/bin/
-
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
@@ -174,8 +179,9 @@ wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.3/inno
 unzip innovad-20.zip
 mv innovad-20/innovad innovad
 rm -r innovad-20
+rm -r innovad-20.zip
+chmod ugo+x innovad
 sudo yes | cp -rf innovad /usr/bin/
-
 echo "Copied to /usr/bin for ease of use"
 
 echo "Back to Compiled innovad Binary Folder"
