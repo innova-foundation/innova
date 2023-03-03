@@ -701,7 +701,7 @@ void CNode::Ban(const CSubNet& subNet, const BanReason &banReason, int64_t banti
     banEntry.banReason = banReason;
     if (bantimeoffset <= 0)
     {
-        bantimeoffset = GetArg("-bantime", 60);//*60*24); // Default 24-hour ban temp 60 seconds ban
+        bantimeoffset = GetArg("-bantime", 60*60*24); // Default 24-hour ban
         sinceUnixEpoch = false;
     }
     banEntry.nBanUntil = (sinceUnixEpoch ? 0 : GetTime() )+bantimeoffset;
@@ -825,9 +825,9 @@ bool CNode::Misbehaving(int howmuch)
     }
 
     nMisbehavior += howmuch;
-    if (nMisbehavior >= GetArg("-banscore", 10000)) //temp bump way too high, lower after hardfork
+    if (nMisbehavior >= GetArg("-banscore", 100))
     {
-        int64_t banTime = GetTime()+GetArg("-bantime", 60);//*60*24);  // Default 24-hour ban
+        int64_t banTime = GetTime()+GetArg("-bantime", 60*60*24);  // Default 24-hour ban
         printf("Misbehaving: %s (%d -> %d) DISCONNECTING\n", addr.ToString().c_str(), nMisbehavior-howmuch, nMisbehavior);
         {
             LOCK(cs_setBanned);

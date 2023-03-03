@@ -80,6 +80,7 @@ Technology
 * Tribus PoW/PoS Hybrid
 * Full decentralization
 * Hyperfile - IPFS API Implementation with Anonymous Decentralized File Uploads (UI and RPC)
+* Name Value System supporting the IDNS for fully & truly decentralized blockchain domains
 
 LINKS
 ==========================

@@ -998,7 +998,7 @@ void ThreadCheckCollaTeralPool(void* parg)
                             continue;
                         } else {
                             printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
-                            pnode->PushMessage("dseg", CTxIn()); //request full mn list
+                            pnode->PushMessage("iseg", CTxIn()); //request full mn list
                             pnode->nLastDseg = GetTime();
                             pnode->PushMessage("getsporks"); //get current network sporks
                             RequestedCollateralNodeList++;

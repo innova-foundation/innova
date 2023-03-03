@@ -1249,14 +1249,17 @@ void WriteConfigFile(FILE* configFile)
     fputs (sRPCpassword.c_str(), configFile);
     fputs ("rpcport=14531\n", configFile);
     fputs ("rpcallowip=127.0.0.1\n", configFile);
+    fputs ("\n", configFile);
     fputs ("port=14530\n", configFile);
     fputs ("daemon=1\n", configFile);
     fputs ("listen=1\n", configFile);
     fputs ("server=1\n", configFile);
     fputs ("staking=1\n", configFile);
+    fputs ("\n", configFile);
     fputs ("collateralnode=0\n", configFile); //default
     fputs ("#collateralnodeaddr=\n", configFile);
     fputs ("#collateralnodeprivkey=\n", configFile);
+    fputs ("\n", configFile);
     fputs ("idns=1\n", configFile);
     fputs ("addnode=innseeder.circuitbreaker.online\n", configFile); // seeder
     fputs ("addnode=innseeder.circuitbreaker.dev\n", configFile); // seeder

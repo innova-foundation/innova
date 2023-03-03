@@ -1632,7 +1632,7 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
 
   if (fTestNet) {
        if (pindexBest->nHeight == 1)
-           nSubsidy = 3000000 * COIN;  // 10m INN Premine for Testnet for testing
+           nSubsidy = 1000000 * COIN;  // 10m INN Premine for Testnet for testing
        else if (pindexBest->nHeight <= FAIR_LAUNCH_BLOCK) // Block 490, Instamine prevention
            nSubsidy = 1 * COIN/2;
        else if (pindexBest->nHeight <= 5000)
@@ -1680,17 +1680,83 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
     else if (pindexBest->nHeight <= 47500)
     	nSubsidy = 0.165 * COIN;
     else if (pindexBest->nHeight <= 50000)
-    	nSubsidy = 0.0825 * COIN;
-    else if (pindexBest->nHeight <= 2000000)
-      nSubsidy = 0.0001 * COIN;
-    else if (pindexBest->nHeight <= 2080000) // Hard Fork roll back - Innova Foundation Fund hack
+      nSubsidy = 0.0825 * COIN;
+    else if (pindexBest->nHeight > ZERO_POW_BLOCK && pindexBest->nHeight < 2000000)
+      nSubsidy = 0 * COIN;
+    else if (pindexBest->nHeight > 2000000 && pindexBest->nHeight <= 2080000) // Hard Fork roll back - Innova Foundation Fund hack
       nSubsidy = 1 * COIN;
     else if (pindexBest->nHeight <= 2150000)
       nSubsidy = 0.5 * COIN;
     else if (pindexBest->nHeight <= 2400000)
       nSubsidy = 0.1 * COIN;
-    else if (pindexBest->nHeight <= 2750000)
-      nSubsidy = 0.0001 * COIN; // PoW Reward 0.0001 INN
+    else if (pindexBest->nHeight <= 2650000) // New PoW Structure restarts here
+      nSubsidy = 0.0001 * COIN;
+    else if (pindexBest->nHeight <= 2750000) // 0.15 Coin PoW Reward to release 15,000 INN in 100,000 blocks
+      nSubsidy = 0.15 * COIN;
+    else if (pindexBest->nHeight <= 3000000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
+      nSubsidy = 0.2 * COIN;
+    else if (pindexBest->nHeight <= 3250000) // 0.25 Coin PoW Reward to release 62,500 INN in 250,000 blocks
+      nSubsidy = 0.25 * COIN;
+    else if (pindexBest->nHeight <= 3500000) // 0.5 Coin PoW Reward to release 125,000 INN in 250,000 blocks
+      nSubsidy = 0.5 * COIN;
+    else if (pindexBest->nHeight <= 3750000) // 0.75 Coin PoW Reward to release 187,500 INN in 250,000 blocks
+      nSubsidy = 0.75 * COIN;
+    else if (pindexBest->nHeight <= 4000000) // 1 Coin PoW Reward for peak payout in new cycle to release 1 CollateralNode in 25,000 blocks
+      nSubsidy = 1 * COIN;
+    else if (pindexBest->nHeight <= 4025000) // 0.75 Coin PoW Reward to release 168,750 INN in 225,000 blocks
+      nSubsidy = 0.75 * COIN;
+    else if (pindexBest->nHeight <= 4250000) // 0.5 Coin PoW Reward to release 125,000 INN in 250,000 blocks
+      nSubsidy = 0.5 * COIN;
+    else if (pindexBest->nHeight <= 4500000) // 0.25 Coin PoW Reward to release 62,500 INN in 250,000 blocks
+      nSubsidy = 0.25 * COIN;
+    else if (pindexBest->nHeight <= 4750000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
+      nSubsidy = 0.2 * COIN;
+    else if (pindexBest->nHeight <= 5000000) // 0.15 Coin PoW Reward to release 37,500 INN in 250,000 blocks
+      nSubsidy = 0.15 * COIN;
+    else if (pindexBest->nHeight <= 5250000) // 0.1 Coin PoW Reward to release 1 CollateralNode in 250,000 blocks
+      nSubsidy = 0.1 * COIN;
+    else if (pindexBest->nHeight <= 5500000) // 0.05 Coin PoW Reward to release 12,500 INN in 250,000 blocks
+      nSubsidy = 0.05 * COIN;
+    else if (pindexBest->nHeight <= 5750000) // 0.01 Coin PoW Reward to release 2,500 INN in 250,000 blocks
+      nSubsidy = 0.01 * COIN;
+    else if (pindexBest->nHeight <= 6000000) // 0.1 Coin PoW Reward for peak payout in new cycle to release 1 Collateral Node in 250,000 blocks
+      nSubsidy = 0.1 * COIN;
+    else if (pindexBest->nHeight <= 6250000) // 0.15 Coin PoW Reward to release 37,500 INN in 250,000 blocks
+      nSubsidy = 0.15 * COIN;
+    else if (pindexBest->nHeight <= 6500000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
+      nSubsidy = 0.2 * COIN;
+    else if (pindexBest->nHeight <= 6750000) // 0.25 Coin PoW Reward to release 62,500 INN in 250,000 blocks
+      nSubsidy = 0.25 * COIN;
+    else if (pindexBest->nHeight <= 7000000) // 0.5 Coin PoW Reward to release 125,000 INN in 250,000 blocks
+      nSubsidy = 0.5 * COIN;
+    else if (pindexBest->nHeight <= 7250000) // 0.75 Coin PoW Reward to release 187,500 INN in 250,000 blocks
+      nSubsidy = 0.75 * COIN;
+    else if (pindexBest->nHeight <= 7500000) // 1 Coin PoW Reward for peak payout in new cycle to release 1 CollateralNode in 25,000 blocks
+      nSubsidy = 1 * COIN;
+    else if (pindexBest->nHeight <= 7525000) // 0.75 Coin PoW Reward to release 168,750 INN in 225,000 blocks
+      nSubsidy = 0.75 * COIN;
+    else if (pindexBest->nHeight <= 7750000) // 0.5 Coin PoW Reward to release 125,000 INN in 250,000 blocks
+      nSubsidy = 0.5 * COIN;
+    else if (pindexBest->nHeight <= 8000000) // 0.25 Coin PoW Reward to release 62,500 INN in 250,000 blocks
+      nSubsidy = 0.25 * COIN;
+    else if (pindexBest->nHeight <= 8250000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
+      nSubsidy = 0.2 * COIN;
+    else if (pindexBest->nHeight <= 8500000) // 0.15 Coin PoW Reward to release 37,500 INN in 250,000 blocks
+      nSubsidy = 0.15 * COIN;
+    else if (pindexBest->nHeight <= 8750000) // 0.1 Coin PoW Reward to release 1 CollateralNode in 250,000 blocks
+      nSubsidy = 0.1 * COIN;
+    else if (pindexBest->nHeight <= 9000000) // 0.05 Coin PoW Reward to release 12,500 INN in 250,000 blocks
+      nSubsidy = 0.05 * COIN;
+    else if (pindexBest->nHeight <= 9250000) // 0.01 Coin PoW Reward to release 2,500 INN in 250,000 blocks
+      nSubsidy = 0.01 * COIN;
+    else if (pindexBest->nHeight <= 9500000) // 0.05 Coin PoW Reward to release 12,500 INN in 250,000 blocks
+      nSubsidy = 0.05 * COIN;
+    else if (pindexBest->nHeight <= 9750000) // 0.1 Coin PoW Reward to release 1 CollateralNode in 250,000 blocks
+      nSubsidy = 0.1 * COIN;
+    else if (pindexBest->nHeight <= 10000000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
+      nSubsidy = 0.2 * COIN;
+    else if (pindexBest->nHeight >= 10250000) // 0.0001 Coin PoW Reward to release ~200 INN per year
+      nSubsidy = 0.0001 * COIN; // Final PoW Reward 0.0001 INN @ block 10.25 mln
 
         if (fDebug && GetBoolArg("-printcreation"))
             printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
@@ -2873,7 +2939,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                                     {
                                         if (pnode->nVersion >= colLateralPool.PROTOCOL_VERSION) {
                                                 printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
-                                                pnode->PushMessage("dseg", CTxIn()); //request full mn list
+                                                pnode->PushMessage("iseg", CTxIn()); //request full mn list
                                                 pnode->nLastDseg = GetTime();
                                         }
                                     }
@@ -2978,7 +3044,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                                     paymentOK = true;
                                     break;
                                 } else if (payee == burnPayee) {
-                                    printf("CheckBlock-POW() : Found collateralnode payment: %s INN to burn address.\n", FormatMoney(vtx[1].vout[i].nValue).c_str());
+                                    printf("CheckBlock-POW() : Found collateralnode payment: %s INN to burn address.\n", FormatMoney(vtx[0].vout[i].nValue).c_str());
                                     foundPayee = true;
                                 }
                             }
@@ -3000,7 +3066,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                                 {
                                     if (pnode->nVersion >= colLateralPool.PROTOCOL_VERSION) {
                                             printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
-                                            pnode->PushMessage("dseg", CTxIn()); //request full mn list
+                                            pnode->PushMessage("iseg", CTxIn()); //request full mn list
                                             pnode->nLastDseg = GetTime();
                                     }
                                 }
@@ -4737,7 +4803,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         }
 
         // Ask every node for the collateralnode list straight away
-        pfrom->PushMessage("dseg", CTxIn());
+        pfrom->PushMessage("iseg", CTxIn());
 
         // Ask the first connected node for block updates
         static int nAskedForBlocks = 0;
