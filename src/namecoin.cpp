@@ -739,7 +739,7 @@ bool DecodeNameScript(const CScript& script, NameTxInfo& ret, CScript::const_ite
     ret.nRentalDays = CBigNum(vch).getint();
 
     // read OP_2DROP after name and rentalDays
-    ret.err_msg = "failed to read delimeter d in: name << rental << d << value";
+    ret.err_msg = "failed to read delimeter i in: name << rental << i << value";
     if (!script.GetOp(pc, opcode))
         return false;
     if (opcode != OP_2DROP)

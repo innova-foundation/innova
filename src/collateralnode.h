@@ -1,5 +1,5 @@
 // Copyright (c) 2017-2021 The Denarius developers
-// Copyright (c) 2019-2021 The Innova developers
+// Copyright (c) 2019-2022 The Innova developers
 // Copyright (c) 2009-2012 The Darkcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
@@ -146,7 +146,7 @@ public:
     int64_t payRate;
     int payCount;
     int64_t payValue;
-    int64_t now; //dsee message times
+    int64_t now; //isee message times
     int64_t lastDseep;
     int cacheInputAge;
     int cacheInputAgeBlock;
@@ -211,7 +211,7 @@ public:
 
     bool IsActive() {
         if (lastTimeSeen - now > (max(COLLATERALNODE_FAIR_PAYMENT_MINIMUM, (int)mnCount) * 30))
-        { // dsee broadcast is more than a round old, let's consider it active
+        { // isee broadcast is more than a round old, let's consider it active
                 return true;
         }
         return false;
