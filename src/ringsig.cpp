@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2022 The Innova developers
+// Copyright (c) 2019-2023 The Innova developers
 // Copyright (c) 2017-2021 The Denarius developers
 // Copyright (c) 2014-2016 The ShadowCoin developers
 // Distributed under the MIT/X11 software license, see the accompanying

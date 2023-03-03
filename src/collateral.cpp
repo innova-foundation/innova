@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2022 The Innova developers
+// Copyright (c) 2019-2023 The Innova developers
 // Copyright (c) 2017-2021 The Denarius developers
 // Copyright (c) 2009-2012 The Darkcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
@@ -999,7 +999,7 @@ void ThreadCheckCollaTeralPool(void* parg)
                             continue;
                         } else {
                             printf("Asking for Collateralnode list from %s\n",pnode->addr.ToStringIPPort().c_str());
-                            pnode->PushMessage("dseg", CTxIn()); //request full mn list
+                            pnode->PushMessage("iseg", CTxIn()); //request full mn list
                             pnode->nLastDseg = GetTime();
                             pnode->PushMessage("getsporks"); //get current network sporks
                             RequestedCollateralNodeList++;

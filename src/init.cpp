@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
 // Copyright (c) 2017-2021 The Denarius developers
-// Copyright (c) 2019-2022 The Innova developers
+// Copyright (c) 2019-2023 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -1076,8 +1076,8 @@ bool AppInit2()
         pwalletMain = NULL;
     }
 
-    uiInterface.InitMessage(_("Loading INN wallet..."));
-    printf("Loading INN wallet...\n");
+    uiInterface.InitMessage(_("Loading your Innova wallet..."));
+    printf("Loading your Innova wallet...\n");
     nStart = GetTimeMillis();
     bool fFirstRun = true;
     pwalletMain = new CWallet(strWalletFileName);
