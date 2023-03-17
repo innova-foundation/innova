@@ -1680,7 +1680,7 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
     else if (pindexBest->nHeight <= 47500)
     	nSubsidy = 0.165 * COIN;
     else if (pindexBest->nHeight <= 50000)
-    	nSubsidy = 0.0825 * COIN;
+      nSubsidy = 0.0825 * COIN;
     else if (pindexBest->nHeight > ZERO_POW_BLOCK && pindexBest->nHeight < 2000000)
       nSubsidy = 0 * COIN;
     else if (pindexBest->nHeight > 2000000 && pindexBest->nHeight <= 2080000) // Hard Fork roll back - Innova Foundation Fund hack
@@ -1689,9 +1689,9 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
       nSubsidy = 0.5 * COIN;
     else if (pindexBest->nHeight <= 2400000)
       nSubsidy = 0.1 * COIN;
-    else if (pindexBest->nHeight <= 2650000) // New PoW Structure restarts here
+    else if (pindexBest->nHeight <= 2655000) // New PoW Structure restarts here
       nSubsidy = 0.0001 * COIN;
-    else if (pindexBest->nHeight <= 2750000) // 0.15 Coin PoW Reward to release 15,000 INN in 100,000 blocks
+    else if (pindexBest->nHeight <= 2750000) // 0.15 Coin PoW Reward to release 14,250 INN in 95,000 blocks
       nSubsidy = 0.15 * COIN;
     else if (pindexBest->nHeight <= 3000000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
       nSubsidy = 0.2 * COIN;
@@ -1755,13 +1755,13 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
       nSubsidy = 0.1 * COIN;
     else if (pindexBest->nHeight <= 10000000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
       nSubsidy = 0.2 * COIN;
-    else if (pindexBest->nHeight >= 10250000) // 0.0001 Coin PoW Reward to release ~200 INN per year
-      nSubsidy = 0.0001 * COIN; // Final PoW Reward 0.0001 INN @ block 10.25 mln
+    else if (pindexBest->nHeight >= 10000000) // 0.0001 Coin PoW Reward to release ~200 INN per year
+      nSubsidy = 0.0001 * COIN; // Final PoW Reward 0.0001 INN @ block 10 mln
 
-        if (fDebug && GetBoolArg("-printcreation"))
-            printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
+    if (fDebug && GetBoolArg("-printcreation"))
+      printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
 
-        return nSubsidy + nFees;
+      return nSubsidy + nFees;
     }
 }
 

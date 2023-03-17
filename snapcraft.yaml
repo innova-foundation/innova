@@ -3,7 +3,7 @@
 # https://github.com/innova-foundation/innova
 # By Carsen Klock - Edited by CircuitBreaker
 name: innova
-version: '4.3.9.4'
+version: '4.3.9.5'
 summary: Innova
 description: |
   An open source hybrid cryptocurrency called Innova, which features Collateral Nodes (Masternodes), Staking, Mining, Multisig, and much more!
@@ -223,6 +223,7 @@ parts:
       elif [[ "$ARCH" == "ppc64" ]]; then
           MF="USE_NATIVETOR=-"
       fi
+      sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' $SNAPCRAFT_PART_BUILD/innova-qt.pro
       qmake "USE_UPNP=1" "USE_QRCODE=1" "${MF}" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
       OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib make -j4
       cp Innova $SNAPCRAFT_PART_INSTALL/bin
