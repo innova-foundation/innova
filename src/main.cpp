@@ -1689,9 +1689,9 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
       nSubsidy = 0.5 * COIN;
     else if (pindexBest->nHeight <= 2400000)
       nSubsidy = 0.1 * COIN;
-    else if (pindexBest->nHeight <= 2655000) // New PoW Structure restarts here
+    else if (pindexBest->nHeight <= 2700000) // New PoW Structure restarts here
       nSubsidy = 0.0001 * COIN;
-    else if (pindexBest->nHeight <= 2750000) // 0.15 Coin PoW Reward to release 14,250 INN in 95,000 blocks
+    else if (pindexBest->nHeight <= 2750000) // 0.15 Coin PoW Reward to release 7,500 INN in 50,000 blocks
       nSubsidy = 0.15 * COIN;
     else if (pindexBest->nHeight <= 3000000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
       nSubsidy = 0.2 * COIN;
@@ -1701,11 +1701,11 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
       nSubsidy = 0.5 * COIN;
     else if (pindexBest->nHeight <= 3750000) // 0.75 Coin PoW Reward to release 187,500 INN in 250,000 blocks
       nSubsidy = 0.75 * COIN;
-    else if (pindexBest->nHeight <= 4000000) // 1 Coin PoW Reward for peak payout in new cycle to release 1 CollateralNode in 25,000 blocks
+    else if (pindexBest->nHeight <= 4000000) // 0.5 Coin PoW Reward to release 125,000 INN in 250,000 blocks
+      nSubsidy = 0.5 * COIN;
+    else if (pindexBest->nHeight <= 4025000) // 1 Coin PoW Reward for peak payout in new cycle to release 1 CollateralNode in 25,000 blocks!!
       nSubsidy = 1 * COIN;
-    else if (pindexBest->nHeight <= 4025000) // 0.75 Coin PoW Reward to release 168,750 INN in 225,000 blocks
-      nSubsidy = 0.75 * COIN;
-    else if (pindexBest->nHeight <= 4250000) // 0.5 Coin PoW Reward to release 125,000 INN in 250,000 blocks
+    else if (pindexBest->nHeight <= 4250000) // 0.5 Coin PoW Reward to release 112,500 INN in 225,000 blocks
       nSubsidy = 0.5 * COIN;
     else if (pindexBest->nHeight <= 4500000) // 0.25 Coin PoW Reward to release 62,500 INN in 250,000 blocks
       nSubsidy = 0.25 * COIN;
@@ -1731,11 +1731,11 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
       nSubsidy = 0.5 * COIN;
     else if (pindexBest->nHeight <= 7250000) // 0.75 Coin PoW Reward to release 187,500 INN in 250,000 blocks
       nSubsidy = 0.75 * COIN;
-    else if (pindexBest->nHeight <= 7500000) // 1 Coin PoW Reward for peak payout in new cycle to release 1 CollateralNode in 25,000 blocks
+    else if (pindexBest->nHeight <= 7500000) // 0.5 Coin PoW Reward to release 125,000 INN in 250,000 blocks
+      nSubsidy = 0.5 * COIN;
+    else if (pindexBest->nHeight <= 7525000) // 1 Coin PoW Reward for peak payout in new cycle to release 1 CollateralNode in 25,000 blocks!!
       nSubsidy = 1 * COIN;
-    else if (pindexBest->nHeight <= 7525000) // 0.75 Coin PoW Reward to release 168,750 INN in 225,000 blocks
-      nSubsidy = 0.75 * COIN;
-    else if (pindexBest->nHeight <= 7750000) // 0.5 Coin PoW Reward to release 125,000 INN in 250,000 blocks
+    else if (pindexBest->nHeight <= 7750000) // 0.5 Coin PoW Reward to release 112,500 INN in 225,000 blocks
       nSubsidy = 0.5 * COIN;
     else if (pindexBest->nHeight <= 8000000) // 0.25 Coin PoW Reward to release 62,500 INN in 250,000 blocks
       nSubsidy = 0.25 * COIN;
@@ -2632,14 +2632,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
     if (!CheckBlock(!fJustCheck, !fJustCheck, false))
         return false;
 
-    if (pindex->nHeight == 2080000 && GetHash() == uint256("0x000000001f9f67efdef5c02fc3da51f308011443c9e5dae6a79a11dba88525e8"))
-        return DoS(100, error("ConnectBlock() : reject block "));
-
     unsigned int flags = SCRIPT_VERIFY_NOCACHE;
 
-
-      if (pindex->nHeight == 2080000 && GetHash() == uint256("0x000000001f9f67efdef5c02fc3da51f308011443c9e5dae6a79a11dba88525e8"))
-          return DoS(100, error("ConnectBlock() : reject block from bad chain - Block 2080000"));
+    if (pindex->nHeight == 2080000 && GetHash() == uint256("0x000000001f9f67efdef5c02fc3da51f308011443c9e5dae6a79a11dba88525e8"))
+        return DoS(100, error("ConnectBlock() : reject block from bad chain - Block 2080000"));
     /* // Currently don't need
     if(V3(nTime))
     {
