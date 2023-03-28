@@ -2810,7 +2810,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
             if(fDebug) { printf("CheckBlock() : Collateralnode payments disabled\n"); }
         }
     } else {
-        if (pindex->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS && pindex->nHeight > 2085000 && pindex->nHeight > 2750000){
+        if (pindex->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS && pindex->nHeight > 2750000){
             CollateralnodePayments = true;
             if(fDebug) { printf("CheckBlock() : Collateralnode payments enabled\n"); }
         }else{
