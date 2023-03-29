@@ -2802,7 +2802,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
     bool fIsInitialDownload = IsInitialBlockDownload();
 
     if (fTestNet) {
-        if (pindex->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET){ // Block 551 Testnet
+        if (pindex->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET){
             CollateralnodePayments = true;
             if(fDebug) { printf("CheckBlock() : Collateralnode payments enabled\n"); }
         }else{
@@ -2810,7 +2810,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
             if(fDebug) { printf("CheckBlock() : Collateralnode payments disabled\n"); }
         }
     } else {
-        if (pindex->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS && pindex->nHeight > 2085000){ //Block 645k Mainnet
+        if (pindex->nHeight > BLOCK_START_COLLATERALNODE_PAYMENTS && pindex->nHeight > 2750000){
             CollateralnodePayments = true;
             if(fDebug) { printf("CheckBlock() : Collateralnode payments enabled\n"); }
         }else{
