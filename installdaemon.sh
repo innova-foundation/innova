@@ -37,22 +37,15 @@ git pull
 cd src
 make -f makefile.unix
 
-sudo yes | cp -rf innovad /usr/bin/
+sudo cp -f innovad /usr/bin/
 
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
 mkdir ~/.innova
 cd ~/innova
-chmod ugo+x bootstrap.sh
-./bootstrap.sh
+bash bootstrap.sh
 
-#mkdir ~/.innova
-#cd ~/.innova || exit
-#rm -rf database txleveldb smsgDB
-#wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.1/innovabootstrap.zip
-#unzip innovabootstrap.zip
-#rm -rf innovabootstrap.zip
 echo "Back to Compiled innovad Binary Folder"
 cd ~/innova/src
                 ;;
@@ -65,7 +58,7 @@ git pull
 cd src
 make -f makefile.unix
 
-sudo yes | cp -rf innovad /usr/bin/
+sudo cp -f innovad /usr/bin/
 
 echo "Copied to /usr/bin for ease of use"
 
@@ -117,22 +110,15 @@ git pull
 cd src
 make OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib -f makefile.unix
 
-sudo yes | cp -rf innovad /usr/bin/
+sudo cp -f innovad /usr/bin/
 
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
 mkdir ~/.innova
 cd ~/innova
-chmod ugo+x bootstrap.sh
-./bootstrap.sh
+bash bootstrap.sh
 
-#mkdir ~/.innova
-#cd ~/.innova
-#rm -rf database txleveldb smsgDB
-#wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.1/innovabootstrap.zip
-#unzip innovabootstrap.zip
-#rm -rf innovabootstrap.zip
 echo "Back to Compiled innovad Binary Folder"
 cd ~/innova/src
                 ;;
@@ -145,7 +131,7 @@ git pull
 cd src
 make OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib -f makefile.unix
 
-sudo yes | cp -rf innovad /usr/bin/
+sudo cp -f innovad /usr/bin/
 
 echo "Copied to /usr/bin for ease of use"
 
@@ -184,22 +170,15 @@ git pull
 cd src
 make "USE_NATIVETOR=-" -f makefile.unix
 
-sudo yes | cp -rf innovad /usr/bin/
+sudo cp -f innovad /usr/bin/
 
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
 mkdir ~/.innova
 cd ~/innova
-chmod ugo+x bootstrap.sh
-./bootstrap.sh
+bash bootstrap.sh
 
-#mkdir ~/.innova
-#cd ~/.innova
-#rm -rf database txleveldb smsgDB
-#wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.1/innovabootstrap.zip
-#unzip innovabootstrap.zip
-#rm -rf innovabootstrap.zip
 echo "Back to Compiled innovad Binary Folder"
 cd ~/innova/src
                 ;;
@@ -211,7 +190,7 @@ git pull
 cd src
 make "USE_NATIVETOR=-" -f makefile.unix
 
-sudo yes | cp -rf innovad /usr/bin/
+sudo cp -f innovad /usr/bin/
 
 echo "Copied to /usr/bin for ease of use"
 
