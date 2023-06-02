@@ -4,12 +4,14 @@ on:
   push:
     branches:
       - master
+      - secp256k1
   pull_request:
     branches:
       - master
+      - secp256k1
 
 jobs:
-  build:
+  build_ubuntu_20:
     runs-on: ubuntu-20.04
 
     steps:
@@ -17,7 +19,7 @@ jobs:
         uses: actions/checkout@v2
         with:
           fetch-depth: 0
-          ref: master
+          ref: secp256k1
 
       - name: Install Dependencies
         run: |
@@ -47,8 +49,7 @@ jobs:
           qmake "USE_UPNP=1" "USE_QRCODE=1" "USE_NATIVETOR=-" innova-qt.pro
           make -j4
 
-jobs:
-  build:
+  build_ubuntu_18:
     runs-on: ubuntu-18.04
 
     steps:
