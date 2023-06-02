@@ -35,7 +35,7 @@ mv innovad-16/innovad innovad
 rm -r innovad-16
 rm -r innovad-16.zip
 chmod ugo+x innovad
-sudo yes | cp -rf innovad /usr/bin/
+sudo cp -rf innovad /usr/bin/
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
@@ -58,7 +58,7 @@ mv innovad-16/innovad innovad
 rm -r innovad-16
 rm -r innovad-16.zip
 chmod ugo+x innovad
-sudo yes | cp -rf innovad /usr/bin/
+sudo cp -rf innovad /usr/bin/
 echo "Copied to /usr/bin for ease of use"
 
 echo "Back to Compiled innovad Binary Folder"
@@ -95,7 +95,7 @@ mv innovad-18/innovad innovad
 rm -r innovad-18
 rm -r innovad-18.zip
 chmod ugo+x innovad
-sudo yes | cp -rf innovad /usr/bin/
+sudo cp -rf innovad /usr/bin/
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
@@ -118,7 +118,7 @@ mv innovad-18/innovad innovad
 rm -r innovad-18
 rm -r innovad-18.zip
 chmod ugo+x innovad
-sudo yes | cp -rf innovad /usr/bin/
+sudo cp -f innovad /usr/bin/
 echo "Copied to /usr/bin for ease of use"
 
 echo "Back to Compiled innovad Binary Folder"
@@ -155,7 +155,7 @@ mv innovad-20/innovad innovad
 rm -r innovad-20
 rm -r innovad-20.zip
 chmod ugo+x innovad
-sudo yes | cp -rf innovad /usr/bin/
+sudo cp -f innovad /usr/bin/
 echo "Copied to /usr/bin for ease of use"
 
 echo "Get Chaindata"
@@ -181,7 +181,7 @@ mv innovad-20/innovad innovad
 rm -r innovad-20
 rm -r innovad-20.zip
 chmod ugo+x innovad
-sudo yes | cp -rf innovad /usr/bin/
+sudo cp -f innovad /usr/bin/
 echo "Copied to /usr/bin for ease of use"
 
 echo "Back to Compiled innovad Binary Folder"
