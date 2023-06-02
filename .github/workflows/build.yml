@@ -92,11 +92,6 @@ jobs:
           sudo apt-get update -y
           sudo apt-get upgrade -y
           sudo apt-get install -y git curl pwgen build-essential libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake libtool
-          
-          # Increase swapfile size
-          sudo sed -i 's/CONF_SWAPSIZE=100/CONF_SWAPSIZE=2048/' /etc/dphys-swapfile
-          sudo /etc/init.d/dphys-swapfile stop
-          sudo /etc/init.d/dphys-swapfile start
 
           # Build OpenSSL
           wget https://ftp.openssl.org/source/old/1.0.1/openssl-1.0.1j.tar.gz
