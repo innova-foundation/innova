@@ -106,4 +106,4 @@ jobs:
 
           # Build Innova daemon
           cd src
-          OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib make -f makefile.arm
+          make "USE_NATIVETOR=-" -f makefile.arm -j$(nproc)
