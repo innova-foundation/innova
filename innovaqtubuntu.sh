@@ -29,15 +29,8 @@ make
 echo "Get Chaindata"
 mkdir ~/.innova
 cd ~/innova
-chmod ugo+x bootstrap.sh
-sudo ./bootstrap.sh
+bash bootstrap.sh
 
-#mkdir ~/.innova
-#cd ~/.innova
-#rm -rf database txleveldb smsgDB
-#wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.1/innovabootstrap.zip
-#unzip innovabootstrap.zip
-#rm -rf innovabootstrap.zip
 Echo "Back to Compiled QT Binary Folder"
 cd ~/innova/src
                 ;;
@@ -97,15 +90,8 @@ make
 echo "Get Chaindata"
 mkdir ~/.innova
 cd ~/innova
-chmod ugo+x bootstrap.sh
-sudo ./bootstrap.sh
+bash bootstrap.sh
 
-#mkdir ~/.innova
-#cd ~/.innova
-#rm -rf database txleveldb smsgDB
-#wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.1/innovabootstrap.zip
-#unzip innovabootstrap.zip
-#rm -rf innovabootstrap.zip
 Echo "Back to Compiled QT Binary Folder"
 cd ~/innova/src
                 ;;
@@ -153,10 +139,10 @@ echo "Building Qt Wallet"
 qmake "USE_UPNP=1" "USE_QRCODE=1" "USE_NATIVETOR=-" innova-qt.pro
 make
 
+echo "Get Chaindata"
 mkdir ~/.innova
 cd ~/innova
-chmod ugo+x bootstrap.sh
-sudo ./bootstrap.sh
+bash bootstrap.sh
 
 Echo "Back to Compiled QT Binary Folder"
 cd ~/innova/src
