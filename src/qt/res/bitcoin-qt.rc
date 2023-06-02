@@ -22,7 +22,7 @@ BEGIN
             VALUE "FileDescription",    "Innova-Qt (OSS GUI client for Innova)"
             VALUE "FileVersion",        VER_FILEVERSION_STR
             VALUE "InternalName",       "innova-qt"
-            VALUE "LegalCopyright",     "2009-2014 The Bitcoin developers, 2014 The NovaCoin & PPCoin developers, 2017-2021 The Denarius developers, 2019-2022 The Innova developers"
+            VALUE "LegalCopyright",     "2009-2014 The Bitcoin developers, 2014 The NovaCoin & PPCoin developers, 2017-2021 The Denarius developers, 2019-2023 The Innova developers"
             VALUE "LegalTrademarks1",   "Distributed under the MIT/X11 software license, see the accompanying file COPYING or http://www.opensource.org/licenses/mit-license.php."
             VALUE "OriginalFilename",   "innova-qt.exe"
             VALUE "ProductName",        "Innova-Qt"
