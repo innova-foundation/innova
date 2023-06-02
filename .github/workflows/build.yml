@@ -11,44 +11,6 @@ on:
       - secp256k1
 
 jobs:
-  build_ubuntu_20:
-    runs-on: ubuntu-20.04
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v2
-        with:
-          fetch-depth: 0
-          ref: secp256k1
-
-      - name: Install Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libtool autotools-dev automake pkg-config libssl-dev libevent-dev bsdmainutils python3 libboost-all-dev libdb++-dev libminiupnpc-dev libqrencode-dev 
-
-      - name: Build OpenSSL
-        run: |
-          wget https://www.openssl.org/source/openssl-1.0.1j.tar.gz
-          tar -xf openssl-1.0.1j.tar.gz
-          cd openssl-1.0.1j
-          ./config
-          make -j4
-          sudo make install
-          sudo ln -sf /usr/local/ssl/bin/openssl `which openssl`
-
-      - name: Build Innova daemon
-        run: |
-          cd src
-          make "USE_NATIVETOR=-" -f makefile.unix -j4
-
-      - name: Build Innova QT
-        run: |
-          sudo apt-get install -y libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools libprotobuf-dev protobuf-compiler libqrencode-dev
-          sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
-          sudo strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5
-          qmake "USE_UPNP=1" "USE_QRCODE=1" "USE_NATIVETOR=-" innova-qt.pro
-          make -j4
-
   build_ubuntu_18:
     runs-on: ubuntu-18.04
 
@@ -67,12 +29,13 @@ jobs:
       - name: Build OpenSSL
         run: |
           wget https://www.openssl.org/source/openssl-1.0.1j.tar.gz
-          tar -xf openssl-1.0.1j.tar.gz
+          tar -xzvf openssl-1.0.1j.tar.gz
           cd openssl-1.0.1j
           ./config
-          make -j4
+          make depend
           sudo make install
           sudo ln -sf /usr/local/ssl/bin/openssl `which openssl`
+          openssl version -v
 
       - name: Build Innova daemon
         run: |
@@ -85,3 +48,67 @@ jobs:
           sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
           qmake "USE_UPNP=1" "USE_QRCODE=1" "USE_NATIVETOR=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
           OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib make -j4
+
+  build_ubuntu_20:
+    runs-on: ubuntu-20.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+          ref: secp256k1
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libtool autotools-dev automake pkg-config libssl-dev libevent-dev bsdmainutils python3 libboost-all-dev libdb++-dev libminiupnpc-dev libqrencode-dev 
+
+      - name: Build Innova daemon
+        run: |
+          cd src
+          make "USE_NATIVETOR=-" -f makefile.unix -j4
+
+      - name: Build Innova QT
+        run: |
+          sudo apt-get install -y libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools libprotobuf-dev protobuf-compiler libqrencode-dev
+          sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/innova/innova-qt.pro
+          sudo strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5
+          qmake "USE_UPNP=1" "USE_QRCODE=1" "USE_NATIVETOR=-" innova-qt.pro
+          make -j4
+
+  build-arm:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+          ref: master
+
+      - name: Install dependencies and build Innova
+        run: |
+          # Install dependencies
+          sudo apt-get update -y
+          sudo apt-get upgrade -y
+          sudo apt-get install -y git curl pwgen build-essential libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake libtool
+          
+          # Increase swapfile size
+          sudo sed -i 's/CONF_SWAPSIZE=100/CONF_SWAPSIZE=2048/' /etc/dphys-swapfile
+          sudo /etc/init.d/dphys-swapfile stop
+          sudo /etc/init.d/dphys-swapfile start
+
+          # Build OpenSSL
+          wget https://ftp.openssl.org/source/old/1.0.1/openssl-1.0.1j.tar.gz
+          tar -xzvf openssl-1.0.1j.tar.gz
+          cd openssl-1.0.1j
+          ./config
+          make depend
+          make
+          sudo make install
+          sudo ln -sf /usr/local/ssl/bin/openssl `which openssl`
+          cd ~
+
+          # Build Innova daemon
+          cd src
+          OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib make -f makefile.arm
