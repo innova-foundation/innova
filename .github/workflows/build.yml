@@ -24,7 +24,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libtool autotools-dev automake pkg-config libssl-dev libevent-dev bsdmainutils python3 libboost-all-dev libdb++-dev libminiupnpc-dev libqrencode-dev 
+          sudo apt-get install -y build-essential libtool autotools-dev automake pkg-config libssl-dev libevent-dev bsdmainutils python3 libboost-all-dev libdb++-dev libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev 
 
       - name: Build OpenSSL
         run: |
@@ -62,7 +62,7 @@ jobs:
       - name: Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential libtool autotools-dev automake pkg-config libssl-dev libevent-dev bsdmainutils python3 libboost-all-dev libdb++-dev libminiupnpc-dev libqrencode-dev libgmp-dev libsecp256k1-dev
+          sudo apt-get install -y build-essential libtool autotools-dev automake pkg-config libssl-dev libevent-dev bsdmainutils python3 libboost-all-dev libdb++-dev libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev libsecp256k1-dev
 
       - name: Build Innova daemon
         run: |
@@ -84,14 +84,14 @@ jobs:
         uses: actions/checkout@v2
         with:
           fetch-depth: 0
-          ref: master
+          ref: secp256k1
 
       - name: Install dependencies and build Innova
         run: |
           # Install dependencies
           sudo apt-get update -y
           sudo apt-get upgrade -y
-          sudo apt-get install -y git curl pwgen build-essential libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake libtool
+          sudo apt-get install -y git curl pwgen build-essential libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake libtool libcurl4-openssl-dev libgmp-dev libsecp256k1-dev
 
           # Build OpenSSL
           wget https://ftp.openssl.org/source/old/1.0.1/openssl-1.0.1j.tar.gz
