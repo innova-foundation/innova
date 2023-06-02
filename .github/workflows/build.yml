@@ -93,17 +93,6 @@ jobs:
           sudo apt-get upgrade -y
           sudo apt-get install -y git curl pwgen build-essential libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake libtool libcurl4-openssl-dev libgmp-dev libsecp256k1-dev
 
-          # Build OpenSSL
-          wget https://ftp.openssl.org/source/old/1.0.1/openssl-1.0.1j.tar.gz
-          tar -xzvf openssl-1.0.1j.tar.gz
-          cd openssl-1.0.1j
-          ./config
-          make depend
-          make
-          sudo make install
-          sudo ln -sf /usr/local/ssl/bin/openssl `which openssl`
-          cd ~
-
           # Build Innova daemon
           cd src
           make "USE_NATIVETOR=-" -f makefile.arm -j$(nproc)
