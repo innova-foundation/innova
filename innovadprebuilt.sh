@@ -95,12 +95,6 @@ echo "Copied to /usr/bin for ease of use"
 echo "Get Chaindata"
 bash -c "$(wget -O - https://raw.githubusercontent.com/innova-foundation/innova/master/bootstrap.sh)"
 
-#mkdir ~/.innova
-#cd ~/.innova
-#rm -rf database txleveldb smsgDB
-#wget https://github.com/innova-foundation/innova/releases/download/v4.3.9.3/innovabootstrap.zip
-#unzip innovabootstrap.zip
-#rm -rf innovabootstrap.zip
 echo "Back to Compiled innovad Binary Folder"
 cd ~/innova/src
                 ;;
