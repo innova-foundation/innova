@@ -5,10 +5,12 @@ on:
     branches:
       - master
       - secp256k1
+      - dev
   pull_request:
     branches:
       - master
       - secp256k1
+      - dev
 
 jobs:
   build_ubuntu_18:
