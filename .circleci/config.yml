@@ -1,13 +1,13 @@
 version: 2.1
 executors:
-  Innova-build:
+  cpp-build:
     docker:
       - image: circleci/buildpack-deps:bionic
     environment:
       MAKEFLAGS: "-j 4"
 jobs:
   build:
-    executor: Innova-build
+    executor: cpp-build
     resource_class: large
     steps:
       - checkout
