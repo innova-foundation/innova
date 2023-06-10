@@ -4,47 +4,48 @@ Tribus Algo PoW/PoS Hybrid Cryptocurrency
 ![logo](https://i.imgur.com/Zo0uzw9.png)
 
 [![GitHub version](https://img.shields.io/github/release/innova-foundation/innova.svg)](https://badge.fury.io/gh/innova-foundation%2Finnova)
+[![GitHub Commit Activity](https://img.shields.io/github/commit-activity/m/innova-foundation/innova)](https://github.com/innova-foundation/innova/pulse)
 [![License: GPL v3](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/innova-foundation/innova/blob/master/COPYING)
 [![Innova downloads](https://img.shields.io/github/downloads/innova-foundation/innova/total.svg)](https://github.com/innova-foundation/innova/releases)
-[![Innova lateat release downloads](https://img.shields.io/github/downloads/innova-foundation/innova/latest/total)](https://github.com/innova-foundation/innova/releases)
-[![Join the chat at https://discord.gg/QeVx8cU](https://img.shields.io/badge/Discord-Chat-blue.svg?logo=discord)](https://discord.gg/QeVx8cU)
+[![Innova latest release downloads](https://img.shields.io/github/downloads/innova-foundation/innova/latest/total)](https://github.com/innova-foundation/innova/releases)
 
-[![HitCount](http://hits.dwyl.io/innova-foundation/innova.svg)](http://hits.dwyl.io/innova-foundation/innova)
+[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2Finnova-foundation%2Finnova&count_bg=%2346C019&title_bg=%23555555&icon=&icon_color=%23E7E7E7&title=Hits+-+Daily%2FTotal&edge_flat=false)](https://hits.seeyoufarm.com)
 
-<a href="https://discord.gg/QeVx8cU"><img src="https://discordapp.com/api/guilds/391676334956347395/embed.png" alt="Discord server" /></a>
+![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/innova-foundation/innova.svg)
+![GitHub repo size in bytes](https://img.shields.io/github/repo-size/innova-foundation/innova.svg)
+![Join the chat at https://discord.gg/mNM59znzNG](https://img.shields.io/discord/391676334956347395?label=Discord)
 
-![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/innova-foundation/innova.svg) ![GitHub repo size in bytes](https://img.shields.io/github/repo-size/innova-foundation/innova.svg)
+<a href="https://twitter.com/intent/follow?screen_name=Innova_Fdn"><img src="https://img.shields.io/twitter/follow/Innova_Fdn?style=social&logo=twitter" alt="follow on Twitter"></a>
 
 [![Innova Snapcraft](https://snapcraft.io/innova/badge.svg)](https://snapcraft.io/innova)
 
-[![Build Status](https://travis-ci.org/innova-foundation/innova.svg?branch=master)](https://travis-ci.org/innova-foundation/innova)
 
-[![Build history](https://buildstats.info/travisci/chart/innova-foundation/innova?branch=master)](https://travis-ci.org/innova-foundation/innova?branch=master)
+[Links](#links)
 
-Intro
-==========================
+## Intro
+
 Innova is a true optionally anonymous, untraceable, and secure hybrid cryptocurrency.
 
 Ticker: INN
 
 Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Tribus Algorithm created by carsenk) and Proof-of-Stake cryptocurrency.
 
-Supported Operating Systems
-==========================
+## Supported Operating Systems
+
 * Linux 64-bit
 * Windows 64-bit
 * macOS 10.11+
 
-Install Innova with Snap on any Linux Distro
-==========================
+## Install Innova with Snap on any Linux Distro
+
 * `sudo apt install snapd`
 * `sudo snap install innova`
 
 * `innova` for running the QT
 * `innova.daemon` for running innovad
 
-Specifications
-==========================
+## Specifications
+
 * Total number of coins: 18,000,000 INN
 * Ideal block time: ~15 seconds
 * Stake interest: 6% annual static inflation
@@ -64,8 +65,8 @@ Specifications
 * Base58 Scriptkey Decimal: 137
 * Base58 Privkey Decimal: 230
 
-Technology
-==========================
+## Technology
+
 * Hybrid PoW/PoS Collateral Nodes
 * Stealth addresses
 * Ring Signatures (16 Recommended)
@@ -82,14 +83,15 @@ Technology
 * Hyperfile - IPFS API Implementation with Anonymous Decentralized File Uploads (UI and RPC)
 * Name Value System supporting the IDNS for fully & truly decentralized blockchain domains
 
-LINKS
-==========================
+## Links
+
 * Official Website(https://innova-foundation.com/)
 * Innova Twitter(https://twitter.com/innovacoin)
-* Innova Discord Chat(https://discord.gg/QeVx8cU)
+* Innova Discord Chat(https://discord.gg/mNM59znzNG)
+* Innova Telegram Chat(https://t.me/innova_foundation)
 
-innovaqtubuntu.sh
-===========================
+## innovaqtubuntu.sh
+
 Compile the latest Innova QT (Graphical Wallet) Ubuntu 16.04 or Ubuntu 18.04+
 
 Credits to Buzzkillb for the creation of this bash script, original repository: https://github.com/buzzkillb/denarius-qt/
@@ -100,8 +102,8 @@ Compiles Innova QT Ubuntu 16.04 or 18.04, Grabs latest chaindata, and populates 
 To turn on nativetor in innova.conf  
 ```nativetor=1```   
 
-Development process
-===========================
+## Development process
+
 
 Developers work in their own trees, then submit pull requests when
 they think their feature or bug fix is ready.
