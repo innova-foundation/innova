@@ -40,7 +40,6 @@ jobs:
           name: 'Innova QT Build'
           command: |
             sudo apt-get install -y libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qt5-default qttools5-dev-tools libprotobuf-dev protobuf-compiler libqrencode-dev
-            sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/project/innova/innova-qt.pro
             qmake "USE_UPNP=1" "USE_QRCODE=1" "USE_NATIVETOR=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
             make
       - run:
