@@ -46,6 +46,7 @@ jobs:
           name: 'Generate Checksum'
           command: |
             echo "Generating Checksum..."
+            cd ${BUILD_DIR}
             for file in innovad InnovaQt; do
               if [ -f "$file" ]; then
                 shasum "$file" >> checksums.txt
