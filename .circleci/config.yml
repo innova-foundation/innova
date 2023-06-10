@@ -43,19 +43,6 @@ jobs:
             qmake "USE_UPNP=1" "USE_QRCODE=1" "USE_NATIVETOR=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
             make
       - run:
-          name: 'Generate Checksum'
-          command: |
-            echo "Generating Checksum..."
-            cd ${BUILD_DIR}
-            for file in innovad InnovaQt; do
-              if [ -f "$file" ]; then
-                shasum "$file" >> checksums.txt
-                sha256sum "$file" >> checksums.txt
-              fi
-            done
-            cat checksums.txt
-
-      - run:
           name: 'Build Docker Image'
           command: |
             echo "Building Docker image..."
