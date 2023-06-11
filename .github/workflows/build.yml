@@ -90,8 +90,8 @@ jobs:
       - name: Strip Binaries
         run: |
           mkdir -p ${BUILD_DIR} ${BUILD_DIR}_not_strip ${TEST_DIR}
-          cp src/{innovad,InnovaQt} ${BUILD_DIR}/
-          mv src/{innovad,InnovaQt} ${BUILD_DIR}_not_strip/
+          cp src/innovad InnovaQt ${BUILD_DIR}/
+          mv src/innovad InnovaQt ${BUILD_DIR}_not_strip/
           strip ${BUILD_DIR}/*
 
       - name: Generate Checksum and Compress
@@ -153,7 +153,7 @@ jobs:
           make "USE_NATIVETOR=-" -f makefile.arm -j$(nproc)
 
           mkdir -p ${BUILD_DIR}_debug
-          mv {innovad} ${BUILD_DIR}_debug/
+          mv innovad ${BUILD_DIR}_debug/
 
 
       - name: Generate Checksum and Compress
