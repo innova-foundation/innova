@@ -143,7 +143,7 @@ jobs:
           ref: secp256k1
 
       - name: Install Dependencies
-          run: |
+        run: |
           sudo apt-get update && apt-get upgrade -y
           sudo apt-get install -y git curl pwgen build-essential libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake libtool libcurl4-openssl-dev libgmp-dev libsecp256k1-dev
 
