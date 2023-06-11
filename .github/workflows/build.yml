@@ -144,7 +144,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          sudo apt-get update -y && apt-get upgrade -y
+          sudo apt-get update -y && sudo apt-get upgrade -y
           sudo apt-get install -y git curl pwgen build-essential libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake libtool libcurl4-openssl-dev libgmp-dev libsecp256k1-dev
 
       - name: Build Innova
