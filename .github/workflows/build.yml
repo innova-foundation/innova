@@ -86,6 +86,7 @@ jobs:
           sudo strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5
           qmake "USE_UPNP=1" "USE_QRCODE=1" "USE_NATIVETOR=-" innova-qt.pro
           make -j$(nproc)
+          mv Innova ../${BUILD_DIR}/
 
       - name: Strip Binaries
         run: |
@@ -147,6 +148,10 @@ jobs:
           sudo apt-get update -y && sudo apt-get upgrade -y
           sudo apt-get install -y git curl pwgen build-essential libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake libtool libcurl4-openssl-dev libgmp-dev libsecp256k1-dev
 
+      - name: Create Build Directory
+        run: |
+          mkdir -p ${BUILD_DIR}
+
       - name: Build Innova
         run: |
           cd src
@@ -154,7 +159,6 @@ jobs:
 
           mkdir -p ${BUILD_DIR}_debug
           mv innovad ${BUILD_DIR}_debug/
-
 
       - name: Generate Checksum and Compress
         run: |
