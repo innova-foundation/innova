@@ -1,24 +1,31 @@
 # Innova [INN]
 Tribus Algo PoW/PoS Hybrid Cryptocurrency
 
-![logo](https://i.imgur.com/Zo0uzw9.png)
+![logo](https://i.imgur.com/0ieINKm.png)
+
+[![License: GPL v3](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/innova-foundation/innova/blob/master/COPYING)
 
 [![GitHub version](https://img.shields.io/github/release/innova-foundation/innova.svg)](https://badge.fury.io/gh/innova-foundation%2Finnova)
-[![GitHub Commit Activity](https://img.shields.io/github/commit-activity/m/innova-foundation/innova)](https://github.com/innova-foundation/innova/pulse)
-[![License: GPL v3](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/innova-foundation/innova/blob/master/COPYING)
-[![Innova downloads](https://img.shields.io/github/downloads/innova-foundation/innova/total.svg)](https://github.com/innova-foundation/innova/releases)
-[![Innova latest release downloads](https://img.shields.io/github/downloads/innova-foundation/innova/latest/total)](https://github.com/innova-foundation/innova/releases)
 
-[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2Finnova-foundation%2Finnova&count_bg=%2346C019&title_bg=%23555555&icon=&icon_color=%23E7E7E7&title=Hits+-+Daily%2FTotal&edge_flat=false)](https://hits.seeyoufarm.com)
+[![GitHub Commit Activity](https://img.shields.io/github/commit-activity/m/innova-foundation/innova)](https://github.com/innova-foundation/innova/pulse)
+
+[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2Finnova-foundation%2Finnova&count_bg=%231283C4&title_bg=%23555555&icon=&icon_color=%231283C4&title=Hits+-+Daily%2FTotal&edge_flat=false)](https://hits.seeyoufarm.com)
+
+![Discord Online Users](https://img.shields.io/discord/391676334956347395?label=Discord&color=%230F80C1)
+[![Join Discord](https://img.shields.io/badge/Discord-Chat-blue.svg?logo=discord)](https://discord.gg/mNM59znzNG)
 
 ![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/innova-foundation/innova.svg)
 ![GitHub repo size in bytes](https://img.shields.io/github/repo-size/innova-foundation/innova.svg)
-![Join the chat at https://discord.gg/mNM59znzNG](https://img.shields.io/discord/391676334956347395?label=Discord)
 
-<a href="https://twitter.com/intent/follow?screen_name=Innova_Fdn"><img src="https://img.shields.io/twitter/follow/Innova_Fdn?style=social&logo=twitter" alt="follow on Twitter"></a>
+[![Innova downloads](https://img.shields.io/github/downloads/innova-foundation/innova/total.svg?color=blue)](https://github.com/innova-foundation/innova/releases)
+[![Innova latest release downloads](https://img.shields.io/github/downloads/innova-foundation/innova/latest/total?color=blue)](https://github.com/innova-foundation/innova/releases)
 
 [![Innova Snapcraft](https://snapcraft.io/innova/badge.svg)](https://snapcraft.io/innova)
 
+[![Github Actions](https://github.com/innova-foundation/innova/actions/workflows/build.yml/badge.svg)](https://github.com/innova-foundation/innova/actions)
+[![CircleCI](https://circleci.com/gh/innova-foundation/innova.svg?style=shield)](https://app.circleci.com/pipelines/github/innova-foundation/innova)
+
+<a href="https://twitter.com/intent/follow?screen_name=Innova_Fdn"><img src="https://img.shields.io/twitter/follow/Innova_Fdn?style=social&logo=twitter" alt="follow on Twitter"></a>
 
 [Links](#links)
 
@@ -90,13 +97,23 @@ Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Trib
 * Innova Discord Chat(https://discord.gg/mNM59znzNG)
 * Innova Telegram Chat(https://t.me/innova_foundation)
 
+## installdaemon.sh
+
+Compile the latest Innova Daemon (Headless Wallet) Ubuntu 16.04, Ubuntu 18.04, or 20.04
+
+Compiles Innova Daemon Ubuntu 16.04, 18.04 or 20.04, Grabs latest chaindata, and populates innova.conf with addnodes or can update a previous compile to the latest master branch.  
+```bash -c "$(wget -O - https://raw.githubusercontent.com/innova-foundation/innova/master/installdaemon.sh)"```  
+
+To turn on nativetor in innova.conf  
+```nativetor=1```  
+
 ## innovaqtubuntu.sh
 
-Compile the latest Innova QT (Graphical Wallet) Ubuntu 16.04 or Ubuntu 18.04+
+Compile the latest Innova QT (Graphical Wallet) Ubuntu 16.04, Ubuntu 18.04, or 20.04
 
 Credits to Buzzkillb for the creation of this bash script, original repository: https://github.com/buzzkillb/denarius-qt/
 
-Compiles Innova QT Ubuntu 16.04 or 18.04, Grabs latest chaindata, and populates innova.conf with addnodes or can update a previous compile to the latest master branch.  
+Compiles Innova QT Ubuntu 16.04, 18.04 or 20.04, Grabs latest chaindata, and populates innova.conf with addnodes or can update a previous compile to the latest master branch.  
 ```bash -c "$(wget -O - https://raw.githubusercontent.com/innova-foundation/innova/master/innovaqtubuntu.sh)"```  
 
 To turn on nativetor in innova.conf  
