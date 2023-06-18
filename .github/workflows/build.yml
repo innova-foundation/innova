@@ -90,8 +90,8 @@ jobs:
       - name: Strip Binaries
         run: |
           mkdir -p ${BUILD_DIR} ${BUILD_DIR}_not_strip ${TEST_DIR}
-          cp src/innovad InnovaQt ${BUILD_DIR}/
-          mv src/innovad InnovaQt ${BUILD_DIR}_not_strip/
+          cp src/innovad Innova ${BUILD_DIR}/
+          mv src/innovad Innova ${BUILD_DIR}_not_strip/
           strip ${BUILD_DIR}/*
 
       - name: Generate Checksum and Compress
