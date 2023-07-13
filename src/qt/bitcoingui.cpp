@@ -36,7 +36,6 @@
 #include "rpcconsole.h"
 #include "wallet.h"
 #include "termsofuse.h"
-#include "proofofimage.h"
 #include "managenamespage.h"
 
 #ifdef Q_OS_MAC
@@ -188,7 +187,6 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
 	blockBrowser = new BlockBrowser(this);
     marketBrowser = new MarketBrowser(this);
 	multisigPage = new MultisigDialog(this);
-    proofOfImagePage = new ProofOfImage(this);
     manageNamesPage = new ManageNamesPage(this);
 	//chatWindow = new ChatWindow(this);
 
@@ -228,7 +226,6 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
 	centralWidget->addWidget(blockBrowser);
     centralWidget->addWidget(collateralnodeManagerPage);
 	centralWidget->addWidget(marketBrowser);
-    centralWidget->addWidget(proofOfImagePage);
 	//centralWidget->addWidget(chatWindow);
     setCentralWidget(centralWidget);
 
@@ -411,12 +408,6 @@ void BitcoinGUI::createActions()
 	collateralnodeManagerAction->setStatusTip(tr("Collateral Nodes"));
     tabGroup->addAction(collateralnodeManagerAction);
 
-    proofOfImageAction = new QAction(QIcon(":/icons/data"), tr("&Proof of Data"), this);
-    proofOfImageAction ->setToolTip(tr("Timestamp Files on the Innova blockchain."));
-    proofOfImageAction ->setCheckable(true);
-	proofOfImageAction->setStatusTip(tr("PoD: Timestamp files"));
-    tabGroup->addAction(proofOfImageAction);
-
 	multisigAction = new QAction(QIcon(":/icons/multi"), tr("Multisig"), this);
     tabGroup->addAction(multisigAction);
 	multisigAction->setStatusTip(tr("Multisig Interface"));
@@ -445,8 +436,6 @@ void BitcoinGUI::createActions()
     connect(messageAction, SIGNAL(triggered()), this, SLOT(gotoMessagePage()));
 	connect(multisigAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(multisigAction, SIGNAL(triggered()), this, SLOT(gotoMultisigPage()));
-    connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
-    connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(gotoProofOfImagePage()));
 
     quitAction = new QAction(QIcon(":/icons/quit"), tr("E&xit"), this);
     quitAction->setToolTip(tr("Quit application"));
@@ -585,7 +574,6 @@ void BitcoinGUI::createToolBars()
   mainToolbar->addAction(statisticsAction);
   mainToolbar->addAction(collateralnodeManagerAction);
   mainToolbar->addAction(manageNamesAction);
-  mainToolbar->addAction(proofOfImageAction);
   mainToolbar->addAction(marketAction);
   mainToolbar->addAction(blockAction);
   mainToolbar->addAction(messageAction);
@@ -1164,15 +1152,6 @@ void BitcoinGUI::gotoManageNamesPage()
     exportAction->setEnabled(true);
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
     connect(exportAction, SIGNAL(triggered()), manageNamesPage, SLOT(exportClicked()));
-}
-
-void BitcoinGUI::gotoProofOfImagePage()
-{
-    proofOfImageAction->setChecked(true);
-    centralWidget->setCurrentWidget(proofOfImagePage);
-
-    exportAction->setEnabled(false);
-    disconnect(exportAction, SIGNAL(triggered()), 0, 0);
 }
 
 void BitcoinGUI::gotoCollateralnodeManagerPage()

@@ -25,8 +25,6 @@ class SendCoinsDialog;
 class SignVerifyMessageDialog;
 class Notificator;
 class RPCConsole;
-class ProofOfImage;
-class Hyperfile;
 
 QT_BEGIN_NAMESPACE
 class QLabel;
@@ -102,7 +100,6 @@ private:
     QWidget *transactionsPage;
 	  QWidget *mintingPage;
 	  MultisigDialog *multisigPage;
-	  ProofOfImage *proofOfImagePage;
 	  CollateralnodeManager *collateralnodeManagerPage;
     AddressBookPage *addressBookPage;
     AddressBookPage *receiveCoinsPage;
@@ -130,8 +127,6 @@ private:
     QAction *historyAction;
 	  QAction *mintingAction;
 	  QAction *multisigAction;
-    QAction *proofOfImageAction;
-    QAction *hyperfileAction;
     QAction *manageNamesAction;
 	  QAction *collateralnodeManagerAction;
     QAction *quitAction;
@@ -240,8 +235,6 @@ private slots:
     void gotoMessagePage();
 	/** Switch to collateralnode manager page */
 	void gotoCollateralnodeManagerPage();
-	/** Switch to proof of image page */
-	void gotoProofOfImagePage();
 
     //void gotoChatPage();
 
