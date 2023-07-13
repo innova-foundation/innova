@@ -6,7 +6,6 @@
 #include "base58.h"
 #include "clientmodel.h"
 #include "innovarpc.h"
-#include "marketbrowser.h"
 #include <sstream>
 #include <string>
 
@@ -32,7 +31,6 @@ double hardnessPrevious = -1;
 double hardnessPrevious2 = -1;
 int stakeminPrevious = -1;
 int stakemaxPrevious = -1;
-int64_t marketcapPrevious = -1;
 QString stakecPrevious = "";
 QString rewardPrevious = "";
 
@@ -50,7 +48,6 @@ void StatisticsPage::updateStatistics()
 
     pwalletMain->GetStakeWeight(*pwalletMain, nMinWeight, nMaxWeight, nWeight);
     uint64_t nNetworkWeight = GetPoSKernelPS();
-	  int64_t marketcap = innmarket.toDouble();
     int peers = this->model->getNumConnections();
 
     QString height = QString::number(nHeight);
@@ -340,15 +337,6 @@ void StatisticsPage::updateStatistics()
         ui->diffBox->setText("<b><font color=\"light blue\">" + hardness + "</font></b>");
     }
 
-    if(marketcap > marketcapPrevious)
-    {
-        ui->marketcap->setText("<b><font color=\"yellow\">$" + QString::number(marketcap) + " USD</font></b>");
-    } else if(marketcap < marketcapPrevious) {
-        ui->marketcap->setText("<b><font color=\"red\">$" + QString::number(marketcap) + " USD</font></b>");
-    } else {
-        ui->marketcap->setText("<b><font color=\"light blue\">$"+QString::number(marketcap)+" USD</font></b>");
-    }
-
     if(pHardness2 > hardnessPrevious2)
     {
         ui->diffBox2->setText("<b><font color=\"yellow\">" + hardness2 + "</font></b>");
@@ -392,10 +380,10 @@ void StatisticsPage::updateStatistics()
         ui->volumeBox->setText("<b><font color=\"light blue\">" + qVolume + " INN" + "</font></b>");
     }
 
-    updatePrevious(nHeight, nMinWeight, nNetworkWeight, phase, subsidy, pHardness, pHardness2, pPawrate2, Qlpawrate, peers, volume, marketcap);
+    updatePrevious(nHeight, nMinWeight, nNetworkWeight, phase, subsidy, pHardness, pHardness2, pPawrate2, Qlpawrate, peers, volume);
 }
 
-void StatisticsPage::updatePrevious(int nHeight, int nMinWeight, int nNetworkWeight, QString phase, QString subsidy, double pHardness, double pHardness2, double pPawrate2, QString Qlpawrate, int peers, int volume, int64_t marketcap)
+void StatisticsPage::updatePrevious(int nHeight, int nMinWeight, int nNetworkWeight, QString phase, QString subsidy, double pHardness, double pHardness2, double pPawrate2, QString Qlpawrate, int peers, int volume)
 {
     heightPrevious = nHeight;
     stakeminPrevious = nMinWeight;
@@ -408,7 +396,6 @@ void StatisticsPage::updatePrevious(int nHeight, int nMinWeight, int nNetworkWei
     pawratePrevious = Qlpawrate;
     connectionPrevious = peers;
     volumePrevious = volume;
-	marketcapPrevious = marketcap;
 }
 
 void StatisticsPage::setModel(ClientModel *model)

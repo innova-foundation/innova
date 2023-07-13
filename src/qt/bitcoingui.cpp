@@ -23,7 +23,6 @@
 #include "overviewpage.h"
 #include "statisticspage.h"
 #include "blockbrowser.h"
-#include "marketbrowser.h"
 #include "collateralnodemanager.h"
 #include "collateral.h"
 #include "mintingview.h"
@@ -35,7 +34,6 @@
 #include "guiutil.h"
 #include "rpcconsole.h"
 #include "wallet.h"
-#include "termsofuse.h"
 #include "managenamespage.h"
 
 #ifdef Q_OS_MAC
@@ -185,7 +183,6 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     overviewPage = new OverviewPage();
 	statisticsPage = new StatisticsPage(this);
 	blockBrowser = new BlockBrowser(this);
-    marketBrowser = new MarketBrowser(this);
 	multisigPage = new MultisigDialog(this);
     manageNamesPage = new ManageNamesPage(this);
 	//chatWindow = new ChatWindow(this);
@@ -225,7 +222,6 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     centralWidget->addWidget(statisticsPage);
 	centralWidget->addWidget(blockBrowser);
     centralWidget->addWidget(collateralnodeManagerPage);
-	centralWidget->addWidget(marketBrowser);
 	//centralWidget->addWidget(chatWindow);
     setCentralWidget(centralWidget);
 
@@ -342,13 +338,6 @@ void BitcoinGUI::createActions()
     blockAction->setCheckable(true);
     tabGroup->addAction(blockAction);
 
-	marketAction = new QAction(QIcon(":/icons/mark"), tr("&Market"), this);
-    marketAction->setToolTip(tr("Market Data"));
-    marketAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_7));
-	marketAction->setStatusTip(tr("Innova Market Data"));
-    marketAction->setCheckable(true);
-    tabGroup->addAction(marketAction);
-
     manageNamesAction = new QAction(QIcon(":/icons/names"), tr("&NVS"), this);
     manageNamesAction->setToolTip(tr("Manage Innova NVS"));
     manageNamesAction->setCheckable(true);
@@ -416,7 +405,6 @@ void BitcoinGUI::createActions()
     connect(overviewAction, SIGNAL(triggered()), this, SLOT(gotoOverviewPage()));
 	connect(blockAction, SIGNAL(triggered()), this, SLOT(gotoBlockBrowser()));
 	connect(statisticsAction, SIGNAL(triggered()), this, SLOT(gotoStatisticsPage()));
-	connect(marketAction, SIGNAL(triggered()), this, SLOT(gotoMarketBrowser()));
 	//connect(chatAction, SIGNAL(triggered()), this, SLOT(gotoChatPage()));
     connect(sendCoinsAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(sendCoinsAction, SIGNAL(triggered()), this, SLOT(gotoSendCoinsPage()));
@@ -574,7 +562,6 @@ void BitcoinGUI::createToolBars()
   mainToolbar->addAction(statisticsAction);
   mainToolbar->addAction(collateralnodeManagerAction);
   mainToolbar->addAction(manageNamesAction);
-  mainToolbar->addAction(marketAction);
   mainToolbar->addAction(blockAction);
   mainToolbar->addAction(messageAction);
   mainToolbar->addAction(mintingAction);
@@ -611,10 +598,6 @@ void BitcoinGUI::checkTOU()
         agreed_to_tou = true;
     }
 
-    if(!agreed_to_tou){
-        TermsOfUse dlg(this);
-        dlg.exec();
-    }
 }
 
 void BitcoinGUI::setClientModel(ClientModel *clientModel)
@@ -680,7 +663,6 @@ void BitcoinGUI::setWalletModel(WalletModel *walletModel)
         signVerifyMessageDialog->setModel(walletModel);
 		statisticsPage->setModel(clientModel);
 		blockBrowser->setModel(clientModel);
-		marketBrowser->setModel(clientModel);
         collateralnodeManagerPage->setWalletModel(walletModel);
 		multisigPage->setModel(walletModel);
     manageNamesPage->setModel(walletModel);
@@ -1132,16 +1114,6 @@ void BitcoinGUI::gotoOverviewPage()
 
     exportAction->setEnabled(false);
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
-}
-
-void BitcoinGUI::gotoMarketBrowser()
-{
-    marketAction->setChecked(true);
-    centralWidget->setCurrentWidget(marketBrowser);
-
-    exportAction->setEnabled(false);
-    disconnect(exportAction, SIGNAL(triggered()), 0, 0);
-
 }
 
 void BitcoinGUI::gotoManageNamesPage()

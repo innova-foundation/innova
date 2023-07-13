@@ -525,12 +525,10 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/trafficgraphwidget.h \
     src/qt/blockbrowser.h \
     src/qt/statisticspage.h \
-    src/qt/marketbrowser.h \
     src/qt/qcustomplot.h \
     src/qt/collateralnodemanager.h \
     src/qt/addeditadrenalinenode.h \
     src/qt/adrenalinenodeconfigdialog.h \
-    src/qt/termsofuse.h \
     src/version.h \
     src/bloom.h \
     src/netbase.h \
@@ -568,7 +566,6 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/bitcoinaddressvalidator.cpp \
     src/qt/statisticspage.cpp \
     src/qt/blockbrowser.cpp \
-    src/qt/marketbrowser.cpp \
     src/kernelrecord.cpp \
     src/qt/mintingfilterproxy.cpp \
     src/qt/mintingtablemodel.cpp \
@@ -576,7 +573,6 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/multisigaddressentry.cpp \
     src/qt/multisiginputentry.cpp \
     src/qt/multisigdialog.cpp \
-    src/qt/termsofuse.cpp \
     src/qt/bantablemodel.cpp \
     src/alert.cpp \
     src/stun.cpp \
@@ -689,8 +685,6 @@ FORMS += \
     src/qt/forms/messagepage.ui \
     src/qt/forms/statisticspage.ui \
     src/qt/forms/blockbrowser.ui \
-    src/qt/forms/marketbrowser.ui \
-    src/qt/forms/termsofuse.ui \
     src/qt/forms/collateralnodemanager.ui \
     src/qt/forms/addeditadrenalinenode.ui \
     src/qt/forms/adrenalinenodeconfigdialog.ui \

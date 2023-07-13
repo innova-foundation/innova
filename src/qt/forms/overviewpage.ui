@@ -6,8 +6,8 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>666</width>
-    <height>453</height>
+    <width>678</width>
+    <height>572</height>
    </rect>
   </property>
   <property name="palette">
@@ -221,23 +221,7 @@
             </property>
            </widget>
           </item>
-          <item row="16" column="0">
-           <spacer name="verticalSpacer_3">
-            <property name="orientation">
-             <enum>Qt::Vertical</enum>
-            </property>
-            <property name="sizeType">
-             <enum>QSizePolicy::Fixed</enum>
-            </property>
-            <property name="sizeHint" stdset="0">
-             <size>
-              <width>20</width>
-              <height>40</height>
-             </size>
-            </property>
-           </spacer>
-          </item>
-          <item row="21" column="1">
+          <item row="14" column="1">
            <widget class="QLabel" name="labelWatchTotal">
             <property name="font">
              <font>
@@ -262,7 +246,7 @@
             </property>
            </widget>
           </item>
-          <item row="18" column="1">
+          <item row="11" column="1">
            <widget class="QLabel" name="labelWatchAvailable">
             <property name="font">
              <font>
@@ -287,21 +271,21 @@
             </property>
            </widget>
           </item>
-          <item row="19" column="0">
+          <item row="12" column="0">
            <widget class="QLabel" name="watch2">
             <property name="text">
              <string>Pending:</string>
             </property>
            </widget>
           </item>
-          <item row="20" column="0">
+          <item row="13" column="0">
            <widget class="QLabel" name="labelWatchImmatureText">
             <property name="text">
              <string>Immature:</string>
             </property>
            </widget>
           </item>
-          <item row="20" column="1">
+          <item row="13" column="1">
            <widget class="QLabel" name="labelWatchImmature">
             <property name="font">
              <font>
@@ -326,7 +310,7 @@
             </property>
            </widget>
           </item>
-          <item row="17" column="0" colspan="2">
+          <item row="10" column="0" colspan="2">
            <widget class="QLabel" name="labelWatchonly">
             <property name="font">
              <font>
@@ -350,36 +334,14 @@
             </property>
            </widget>
           </item>
-          <item row="15" column="1" colspan="2">
-           <widget class="QLabel" name="labelBTCTotal">
-            <property name="font">
-             <font>
-              <weight>75</weight>
-              <bold>true</bold>
-             </font>
-            </property>
-            <property name="cursor">
-             <cursorShape>IBeamCursor</cursorShape>
-            </property>
-            <property name="toolTip">
-             <string>Your current total balance estimated in BTC</string>
-            </property>
-            <property name="text">
-             <string>0 BTC</string>
-            </property>
-            <property name="textInteractionFlags">
-             <set>Qt::LinksAccessibleByMouse|Qt::TextSelectableByKeyboard|Qt::TextSelectableByMouse</set>
-            </property>
-           </widget>
-          </item>
-          <item row="21" column="0">
+          <item row="14" column="0">
            <widget class="QLabel" name="watch4">
             <property name="text">
              <string>Total:</string>
             </property>
            </widget>
           </item>
-          <item row="19" column="1">
+          <item row="12" column="1">
            <widget class="QLabel" name="labelWatchPending">
             <property name="font">
              <font>
@@ -404,30 +366,7 @@
             </property>
            </widget>
           </item>
-          <item row="10" column="1" colspan="2">
-           <widget class="QLabel" name="labelUSDTotal">
-            <property name="font">
-             <font>
-              <pointsize>8</pointsize>
-              <weight>75</weight>
-              <bold>true</bold>
-             </font>
-            </property>
-            <property name="cursor">
-             <cursorShape>IBeamCursor</cursorShape>
-            </property>
-            <property name="toolTip">
-             <string>Your current total balance estimated in USD</string>
-            </property>
-            <property name="text">
-             <string>0 USD</string>
-            </property>
-            <property name="textInteractionFlags">
-             <set>Qt::LinksAccessibleByMouse|Qt::TextSelectableByKeyboard|Qt::TextSelectableByMouse</set>
-            </property>
-           </widget>
-          </item>
-          <item row="18" column="0">
+          <item row="11" column="0">
            <widget class="QLabel" name="watch1">
             <property name="text">
              <string>Available:</string>
@@ -463,142 +402,8 @@
             </property>
            </widget>
           </item>
-          <item row="10" column="0">
-           <widget class="QLabel" name="usdtotal">
-            <property name="text">
-             <string>Est. USD Total:</string>
-            </property>
-           </widget>
-          </item>
-          <item row="15" column="0">
-           <widget class="QLabel" name="btctotal">
-            <property name="text">
-             <string>Est. BTC Total:</string>
-            </property>
-           </widget>
-          </item>
-          <item row="11" column="1">
-           <widget class="QLabel" name="labelEURTotal">
-            <property name="font">
-             <font>
-              <pointsize>8</pointsize>
-              <weight>75</weight>
-              <bold>true</bold>
-             </font>
-            </property>
-            <property name="cursor">
-             <cursorShape>IBeamCursor</cursorShape>
-            </property>
-            <property name="toolTip">
-             <string>Your current total balance estimated in EUR</string>
-            </property>
-            <property name="text">
-             <string>0 EUR</string>
-            </property>
-            <property name="textInteractionFlags">
-             <set>Qt::LinksAccessibleByMouse|Qt::TextSelectableByKeyboard|Qt::TextSelectableByMouse</set>
-            </property>
-           </widget>
-          </item>
-          <item row="11" column="0">
-           <widget class="QLabel" name="eurtotal">
-            <property name="text">
-             <string>Est. EUR Total:</string>
-            </property>
-           </widget>
-          </item>
-          <item row="12" column="1">
-           <widget class="QLabel" name="labelGBPTotal">
-            <property name="font">
-             <font>
-              <pointsize>8</pointsize>
-              <weight>75</weight>
-              <bold>true</bold>
-             </font>
-            </property>
-            <property name="cursor">
-             <cursorShape>IBeamCursor</cursorShape>
-            </property>
-            <property name="toolTip">
-             <string>Your current total balance estimated in GBP</string>
-            </property>
-            <property name="text">
-             <string>0 GBP</string>
-            </property>
-            <property name="textInteractionFlags">
-             <set>Qt::LinksAccessibleByMouse|Qt::TextSelectableByKeyboard|Qt::TextSelectableByMouse</set>
-            </property>
-           </widget>
-          </item>
-          <item row="12" column="0">
-           <widget class="QLabel" name="gbptotal">
-            <property name="text">
-             <string>Est. GBP Total:</string>
-            </property>
-           </widget>
-          </item>
-          <item row="13" column="1">
-           <widget class="QLabel" name="labelRUBTotal">
-            <property name="font">
-             <font>
-              <pointsize>8</pointsize>
-              <weight>75</weight>
-              <bold>true</bold>
-             </font>
-            </property>
-            <property name="cursor">
-             <cursorShape>IBeamCursor</cursorShape>
-            </property>
-            <property name="toolTip">
-             <string>Your current total balance estimated in RUB</string>
-            </property>
-            <property name="text">
-             <string>0 RUB</string>
-            </property>
-            <property name="textInteractionFlags">
-             <set>Qt::LinksAccessibleByMouse|Qt::TextSelectableByKeyboard|Qt::TextSelectableByMouse</set>
-            </property>
-           </widget>
-          </item>
-          <item row="13" column="0">
-           <widget class="QLabel" name="rubtotal">
-            <property name="text">
-             <string>Est. RUB Total:</string>
-            </property>
-           </widget>
-          </item>
-          <item row="14" column="1">
-           <widget class="QLabel" name="labelJPYTotal">
-            <property name="font">
-             <font>
-              <pointsize>8</pointsize>
-              <weight>75</weight>
-              <bold>true</bold>
-             </font>
-            </property>
-            <property name="cursor">
-             <cursorShape>IBeamCursor</cursorShape>
-            </property>
-            <property name="toolTip">
-             <string>Your current total balance estimated in JPY</string>
-            </property>
-            <property name="text">
-             <string>0 JPY</string>
-            </property>
-            <property name="textInteractionFlags">
-             <set>Qt::LinksAccessibleByMouse|Qt::TextSelectableByKeyboard|Qt::TextSelectableByMouse</set>
-            </property>
-           </widget>
-          </item>
-          <item row="14" column="0">
-           <widget class="QLabel" name="jpytotal">
-            <property name="text">
-             <string>Est. JPY Total:</string>
-            </property>
-           </widget>
-          </item>
-        </layout>
-       </item>
+         </layout>
+        </item>
         <item row="6" column="0">
          <spacer name="verticalSpacer">
           <property name="orientation">
@@ -726,7 +531,7 @@
    </item>
    <item row="0" column="1">
     <widget class="QFrame" name="frame_2">
-      <property name="enabled">
+     <property name="enabled">
       <bool>true</bool>
      </property>
      <property name="frameShape">

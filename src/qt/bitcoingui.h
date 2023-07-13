@@ -19,7 +19,6 @@ class OverviewPage;
 class AddressBookPage;
 class MessagePage;
 class StatisticsPage;
-class MarketBrowser;
 class BlockBrowser;
 class SendCoinsDialog;
 class SignVerifyMessageDialog;
@@ -96,7 +95,6 @@ private:
 	  StatisticsPage *statisticsPage;
 	  BlockBrowser *blockBrowser;
     ManageNamesPage *manageNamesPage;
-	  MarketBrowser *marketBrowser;
     QWidget *transactionsPage;
 	  QWidget *mintingPage;
 	  MultisigDialog *multisigPage;
@@ -123,7 +121,6 @@ private:
     QAction *overviewAction;
 	  QAction *statisticsAction;
 	  QAction *blockAction;
-	  QAction *marketAction;
     QAction *historyAction;
 	  QAction *mintingAction;
 	  QAction *multisigAction;
@@ -217,8 +214,6 @@ private slots:
 	void gotoStatisticsPage();
 	/** Switch to block explorer*/
     void gotoBlockBrowser();
-	/** Switch to market*/
-    void gotoMarketBrowser();
   /** Switch to manage names page */
     void gotoManageNamesPage();
 	/** Switch to minting page */
