@@ -103,7 +103,7 @@ private:
 	  QWidget *mintingPage;
 	  MultisigDialog *multisigPage;
 	  ProofOfImage *proofOfImagePage;
-    Hyperfile *hyperfilePage;
+//    Hyperfile *hyperfilePage;
 	  CollateralnodeManager *collateralnodeManagerPage;
     AddressBookPage *addressBookPage;
     AddressBookPage *receiveCoinsPage;
@@ -244,7 +244,7 @@ private slots:
 	/** Switch to proof of image page */
 	void gotoProofOfImagePage();
   /** Switch to Hyperfile page */
-  void gotoHyperfilePage();
+//  void gotoHyperfilePage();
 
 
     //void gotoChatPage();
