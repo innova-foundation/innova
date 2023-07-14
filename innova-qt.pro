@@ -85,25 +85,6 @@ win32:QMAKE_LFLAGS *= -static
 #win32:QMAKE_LFLAGS += -static-libgcc -static-libstdc++
 lessThan(QT_MAJOR_VERSION, 5): win32: QMAKE_LFLAGS *= -static
 
-# use: qmake "USE_IPFS=1" ( enabled by default; default)
-#  or: qmake "USE_IPFS=0" (disabled by default)
-#  or: qmake "USE_IPFS=-" (not supported)
-# I n n o v a IPFS - USE_IPFS=- to not compile with the IPFS C Library located in src/ipfs
-contains(USE_IPFS, -) {
-    message(Building without IPFS support)
-} else {
-    message(Building with IPFS support)
-    count(USE_IPFS, 0) {
-        USE_IPFS=1
-    }
-    DEFINES += USE_IPFS=$$USE_IPFS
-    INCLUDEPATH += src/ipfs
-
-	###IPFS C Library native integration sources
-	SOURCES += src/ipfs.cc \
-		src/ipfscurl.cc
-}
-
 
 # use: qmake "USE_NATIVETOR=1" ( enabled by default; default)
 #  or: qmake "USE_NATIVETOR=0" (disabled by default)
