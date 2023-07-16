@@ -4,7 +4,6 @@
 #include "addresstablemodel.h"
 #include "mintingtablemodel.h"
 #include "transactiontablemodel.h"
-#include "nametablemodel.h"
 
 #include "ui_interface.h"
 #include "wallet.h"
@@ -41,7 +40,6 @@ WalletModel::WalletModel(CWallet *wallet, OptionsModel *optionsModel, QObject *p
 
     addressTableModel = new AddressTableModel(wallet, this);
     mintingTableModel = new MintingTableModel(wallet, this);
-    nameTableModel = new NameTableModel(wallet, this);
     transactionTableModel = new TransactionTableModel(wallet, this);
 
     // This timer will be fired repeatedly to update the balance
@@ -146,12 +144,6 @@ void WalletModel::pollBalanceChanged()
         cachedNumBlocks = nBestHeight;
 
         checkBalanceChanged();
-
-        //if(transactionTableModel)
-            //transactionTableModel->updateConfirmations();
-        //TODO: perhaps redo this. Currently it rescans all tx available in wallet - idealy we do not need such scan.
-        if (nameTableModel)
-            nameTableModel->update();
     }
 
     fForceBalanceCheck = false;
@@ -518,11 +510,6 @@ OptionsModel *WalletModel::getOptionsModel()
 AddressTableModel *WalletModel::getAddressTableModel()
 {
     return addressTableModel;
-}
-
-NameTableModel *WalletModel::getNameTableModel()
-{
-    return nameTableModel;
 }
 
 MintingTableModel *WalletModel::getMintingTableModel()

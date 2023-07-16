@@ -12,7 +12,6 @@ class WalletModel;
 class MessageModel;
 class TransactionView;
 class MintingView;
-class ManageNamesPage;
 class CollateralnodeManager;
 class MultisigDialog;
 class OverviewPage;
@@ -94,7 +93,6 @@ private:
     OverviewPage *overviewPage;
 	  StatisticsPage *statisticsPage;
 	  BlockBrowser *blockBrowser;
-    ManageNamesPage *manageNamesPage;
     QWidget *transactionsPage;
 	  QWidget *mintingPage;
 	  MultisigDialog *multisigPage;
@@ -214,8 +212,6 @@ private slots:
 	void gotoStatisticsPage();
 	/** Switch to block explorer*/
     void gotoBlockBrowser();
-  /** Switch to manage names page */
-    void gotoManageNamesPage();
 	/** Switch to minting page */
     void gotoMintingPage();
     /** Switch to history (transactions) page */

@@ -34,7 +34,6 @@
 #include "guiutil.h"
 #include "rpcconsole.h"
 #include "wallet.h"
-#include "managenamespage.h"
 
 #ifdef Q_OS_MAC
 #include "macdockiconhandler.h"
@@ -73,7 +72,6 @@
 #include <iostream>
 #include <fstream>
 
-namespace fs = boost::filesystem;
 
 extern CWallet* pwalletMain;
 extern int64_t nLastCoinStakeSearchInterval;
@@ -177,14 +175,12 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     createTrayIcon();
 
     fCNLock = GetBoolArg("-cnconflock");
-    fNativeTor = GetBoolArg("-nativetor");
 
     // Create tabs
     overviewPage = new OverviewPage();
 	statisticsPage = new StatisticsPage(this);
 	blockBrowser = new BlockBrowser(this);
 	multisigPage = new MultisigDialog(this);
-    manageNamesPage = new ManageNamesPage(this);
 	//chatWindow = new ChatWindow(this);
 
     transactionsPage = new QWidget(this);
@@ -214,7 +210,6 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     centralWidget->addWidget(overviewPage);
     centralWidget->addWidget(transactionsPage);
 	centralWidget->addWidget(mintingPage);
-  centralWidget->addWidget(manageNamesPage);
     centralWidget->addWidget(addressBookPage);
     centralWidget->addWidget(receiveCoinsPage);
     centralWidget->addWidget(sendCoinsPage);
@@ -338,11 +333,6 @@ void BitcoinGUI::createActions()
     blockAction->setCheckable(true);
     tabGroup->addAction(blockAction);
 
-    manageNamesAction = new QAction(QIcon(":/icons/names"), tr("&NVS"), this);
-    manageNamesAction->setToolTip(tr("Manage Innova NVS"));
-    manageNamesAction->setCheckable(true);
-    manageNamesAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_0));
-    tabGroup->addAction(manageNamesAction);
 
 	//chatAction = new QAction(QIcon(":/icons/msg"), tr("&Social"), this);
     //chatAction->setToolTip(tr("View chat"));
@@ -405,13 +395,10 @@ void BitcoinGUI::createActions()
     connect(overviewAction, SIGNAL(triggered()), this, SLOT(gotoOverviewPage()));
 	connect(blockAction, SIGNAL(triggered()), this, SLOT(gotoBlockBrowser()));
 	connect(statisticsAction, SIGNAL(triggered()), this, SLOT(gotoStatisticsPage()));
-	//connect(chatAction, SIGNAL(triggered()), this, SLOT(gotoChatPage()));
     connect(sendCoinsAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(sendCoinsAction, SIGNAL(triggered()), this, SLOT(gotoSendCoinsPage()));
     connect(receiveCoinsAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(receiveCoinsAction, SIGNAL(triggered()), this, SLOT(gotoReceiveCoinsPage()));
-    connect(manageNamesAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
-    connect(manageNamesAction, SIGNAL(triggered()), this, SLOT(gotoManageNamesPage()));
 	connect(mintingAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(mintingAction, SIGNAL(triggered()), this, SLOT(gotoMintingPage()));
     connect(collateralnodeManagerAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
@@ -561,7 +548,6 @@ void BitcoinGUI::createToolBars()
   mainToolbar->addAction(addressBookAction);
   mainToolbar->addAction(statisticsAction);
   mainToolbar->addAction(collateralnodeManagerAction);
-  mainToolbar->addAction(manageNamesAction);
   mainToolbar->addAction(blockAction);
   mainToolbar->addAction(messageAction);
   mainToolbar->addAction(mintingAction);
@@ -665,7 +651,6 @@ void BitcoinGUI::setWalletModel(WalletModel *walletModel)
 		blockBrowser->setModel(clientModel);
         collateralnodeManagerPage->setWalletModel(walletModel);
 		multisigPage->setModel(walletModel);
-    manageNamesPage->setModel(walletModel);
 		//chatWindow->setModel(clientModel);
 
         setEncryptionStatus(walletModel->getEncryptionStatus());
@@ -778,25 +763,6 @@ void BitcoinGUI::setNumConnections(int count)
     labelConnectionsIcon->setPixmap(QIcon(icon).pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
     labelConnectionsIcon->setToolTip(tr("%n active connection(s) to Innova network", "", count));
 
-    if(fNativeTor)
-    {
-        labelConnectTypeIcon->setPixmap(QIcon(":/icons/tor").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
-
-        string automatic_onion;
-        fs::path const hostname_path = GetDefaultDataDir() / "onion" / "hostname";
-        if (!fs::exists(hostname_path)) {
-            printf("No external address found.");
-        }
-        ifstream file(hostname_path.string().c_str());
-        file >> automatic_onion;
-
-        QString onionauto;
-        onionauto = tr("Connected via the Tor Network - ") + QString::fromStdString(automatic_onion);
-        labelConnectTypeIcon->setToolTip(onionauto);
-    } else {
-        labelConnectTypeIcon->setPixmap(QIcon(":/icons/toroff").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
-        labelConnectTypeIcon->setToolTip(tr("Not Connected via the Tor Network, Start Innova with the flag nativetor=1"));
-    }
     if (fCNLock == true) {
         labelCNLockIcon->setPixmap(QIcon(":/icons/cn").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
     }
@@ -1116,15 +1082,6 @@ void BitcoinGUI::gotoOverviewPage()
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
 }
 
-void BitcoinGUI::gotoManageNamesPage()
-{
-    manageNamesAction->setChecked(true);
-    centralWidget->setCurrentWidget(manageNamesPage);
-
-    exportAction->setEnabled(true);
-    disconnect(exportAction, SIGNAL(triggered()), 0, 0);
-    connect(exportAction, SIGNAL(triggered()), manageNamesPage, SLOT(exportClicked()));
-}
 
 void BitcoinGUI::gotoCollateralnodeManagerPage()
 {
