@@ -2634,8 +2634,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
     unsigned int flags = SCRIPT_VERIFY_NOCACHE;
 
-    if (pindex->nHeight == 2080000 && GetHash() == uint256("0x000000001f9f67efdef5c02fc3da51f308011443c9e5dae6a79a11dba88525e8"))
-        return DoS(100, error("ConnectBlock() : reject block from bad chain - Block 2080000"));
+    // if (pindex->nHeight == 2080000 && GetHash() == uint256("0x000000001f9f67efdef5c02fc3da51f308011443c9e5dae6a79a11dba88525e8"))
+    //     return DoS(100, error("ConnectBlock() : reject block from bad chain - Block 2080000"));
     /* // Currently don't need
     if(V3(nTime))
     {
