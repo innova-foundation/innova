@@ -1,0 +1,55 @@
+version: 2.1
+executors:
+  cpp-build:
+    docker:
+      - image: circleci/buildpack-deps:bionic
+    environment:
+      MAKEFLAGS: "-j 4"
+jobs:
+  build:
+    executor: cpp-build
+    resource_class: large
+    steps:
+      - checkout
+      - run:
+          name: 'Install Dependencies'
+          command: |
+            sudo apt-get update -y && sudo apt-get upgrade -y
+            sudo apt-get install -y git unzip build-essential libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake libtool libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools qt5-default libcurl4-openssl-dev
+            sudo apt-get install ufw make
+            wget https://www.openssl.org/source/openssl-1.0.1j.tar.gz
+            tar -xzvf openssl-1.0.1j.tar.gz
+            cd openssl-1.0.1j
+            ./config
+            make depend
+            sudo make install
+            sudo ln -sf /usr/local/ssl/bin/openssl `which openssl`
+            cd ~
+            openssl version -v
+
+      - run:
+          name: 'innovad Build'
+          command: |
+            git clone https://github.com/innova-foundation/innova
+            cd innova
+            git checkout master
+            git pull
+            cd src
+            make OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib -f makefile.unix
+      - run:
+          name: 'Innova QT Build'
+          command: |
+            sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' ~/project/innova-qt.pro
+            qmake "USE_UPNP=1" "USE_QRCODE=1" "USE_NATIVETOR=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
+            make
+workflows:
+  version: 2
+  build-deploy:
+    jobs:
+      - build:
+          filters:
+            branches:
+              only:
+                - master
+                - secp256k1
+                - dev

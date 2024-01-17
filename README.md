@@ -1,50 +1,58 @@
 # Innova [INN]
 Tribus Algo PoW/PoS Hybrid Cryptocurrency
 
-![logo](https://i.imgur.com/Zo0uzw9.png)
+![logo](https://i.imgur.com/0ieINKm.png)
+
+[![License: GPL v3](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/innova-foundation/innova/blob/master/COPYING)
 
 [![GitHub version](https://img.shields.io/github/release/innova-foundation/innova.svg)](https://badge.fury.io/gh/innova-foundation%2Finnova)
-[![License: GPL v3](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/innova-foundation/innova/blob/master/COPYING)
-[![Innova downloads](https://img.shields.io/github/downloads/innova-foundation/innova/total.svg)](https://github.com/innova-foundation/innova/releases)
-[![Innova lateat release downloads](https://img.shields.io/github/downloads/innova-foundation/innova/latest/total)](https://github.com/innova-foundation/innova/releases)
-[![Join the chat at https://discord.gg/QeVx8cU](https://img.shields.io/badge/Discord-Chat-blue.svg?logo=discord)](https://discord.gg/QeVx8cU)
 
-[![HitCount](http://hits.dwyl.io/innova-foundation/innova.svg)](http://hits.dwyl.io/innova-foundation/innova)
+[![GitHub Commit Activity](https://img.shields.io/github/commit-activity/m/innova-foundation/innova)](https://github.com/innova-foundation/innova/pulse)
 
-<a href="https://discord.gg/QeVx8cU"><img src="https://discordapp.com/api/guilds/391676334956347395/embed.png" alt="Discord server" /></a>
+[![Hits](https://hits.seeyoufarm.com/api/count/incr/badge.svg?url=https%3A%2F%2Fgithub.com%2Finnova-foundation%2Finnova&count_bg=%231283C4&title_bg=%23555555&icon=&icon_color=%231283C4&title=Hits+-+Daily%2FTotal&edge_flat=false)](https://hits.seeyoufarm.com)
 
-![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/innova-foundation/innova.svg) ![GitHub repo size in bytes](https://img.shields.io/github/repo-size/innova-foundation/innova.svg)
+![Discord Online Users](https://img.shields.io/discord/391676334956347395?label=Discord&color=%230F80C1)
+[![Join Discord](https://img.shields.io/badge/Discord-Chat-blue.svg?logo=discord)](https://discord.gg/mNM59znzNG)
+
+![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/innova-foundation/innova.svg)
+![GitHub repo size in bytes](https://img.shields.io/github/repo-size/innova-foundation/innova.svg)
+
+[![Innova downloads](https://img.shields.io/github/downloads/innova-foundation/innova/total.svg?color=blue)](https://github.com/innova-foundation/innova/releases)
+[![Innova latest release downloads](https://img.shields.io/github/downloads/innova-foundation/innova/latest/total?color=blue)](https://github.com/innova-foundation/innova/releases)
 
 [![Innova Snapcraft](https://snapcraft.io/innova/badge.svg)](https://snapcraft.io/innova)
 
-[![Build Status](https://travis-ci.org/innova-foundation/innova.svg?branch=master)](https://travis-ci.org/innova-foundation/innova)
+[![Github Actions](https://github.com/innova-foundation/innova/actions/workflows/build.yml/badge.svg)](https://github.com/innova-foundation/innova/actions)
+[![CircleCI](https://circleci.com/gh/innova-foundation/innova.svg?style=shield)](https://app.circleci.com/pipelines/github/innova-foundation/innova)
 
-[![Build history](https://buildstats.info/travisci/chart/innova-foundation/innova?branch=master)](https://travis-ci.org/innova-foundation/innova?branch=master)
+<a href="https://twitter.com/intent/follow?screen_name=Innova_Fdn"><img src="https://img.shields.io/twitter/follow/Innova_Fdn?style=social&logo=twitter" alt="follow on Twitter"></a>
 
-Intro
-==========================
+[Links](#links)
+
+## Intro
+
 Innova is a true optionally anonymous, untraceable, and secure hybrid cryptocurrency.
 
 Ticker: INN
 
 Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Tribus Algorithm created by carsenk) and Proof-of-Stake cryptocurrency.
 
-Supported Operating Systems
-==========================
+## Supported Operating Systems
+
 * Linux 64-bit
 * Windows 64-bit
 * macOS 10.11+
 
-Install Innova with Snap on any Linux Distro
-==========================
+## Install Innova with Snap on any Linux Distro
+
 * `sudo apt install snapd`
 * `sudo snap install innova`
 
 * `innova` for running the QT
 * `innova.daemon` for running innovad
 
-Specifications
-==========================
+## Specifications
+
 * Total number of coins: 18,000,000 INN
 * Ideal block time: ~15 seconds
 * Stake interest: 6% annual static inflation
@@ -64,8 +72,8 @@ Specifications
 * Base58 Scriptkey Decimal: 137
 * Base58 Privkey Decimal: 230
 
-Technology
-==========================
+## Technology
+
 * Hybrid PoW/PoS Collateral Nodes
 * Stealth addresses
 * Ring Signatures (16 Recommended)
@@ -82,26 +90,37 @@ Technology
 * Hyperfile - IPFS API Implementation with Anonymous Decentralized File Uploads (UI and RPC)
 * Name Value System supporting the IDNS for fully & truly decentralized blockchain domains
 
-LINKS
-==========================
+## Links
+
 * Official Website(https://innova-foundation.com/)
 * Innova Twitter(https://twitter.com/innovacoin)
-* Innova Discord Chat(https://discord.gg/QeVx8cU)
+* Innova Discord Chat(https://discord.gg/mNM59znzNG)
+* Innova Telegram Chat(https://t.me/innova_foundation)
 
-innovaqtubuntu.sh
-===========================
-Compile the latest Innova QT (Graphical Wallet) Ubuntu 16.04 or Ubuntu 18.04+
+## installdaemon.sh
+
+Compile the latest Innova Daemon (Headless Wallet) Ubuntu 16.04, Ubuntu 18.04, or 20.04
+
+Compiles Innova Daemon Ubuntu 16.04, 18.04 or 20.04, Grabs latest chaindata, and populates innova.conf with addnodes or can update a previous compile to the latest master branch.  
+```bash -c "$(wget -O - https://raw.githubusercontent.com/innova-foundation/innova/master/installdaemon.sh)"```  
+
+To turn on nativetor in innova.conf  
+```nativetor=1```  
+
+## innovaqtubuntu.sh
+
+Compile the latest Innova QT (Graphical Wallet) Ubuntu 16.04, Ubuntu 18.04, or 20.04
 
 Credits to Buzzkillb for the creation of this bash script, original repository: https://github.com/buzzkillb/denarius-qt/
 
-Compiles Innova QT Ubuntu 16.04 or 18.04, Grabs latest chaindata, and populates innova.conf with addnodes or can update a previous compile to the latest master branch.  
+Compiles Innova QT Ubuntu 16.04, 18.04 or 20.04, Grabs latest chaindata, and populates innova.conf with addnodes or can update a previous compile to the latest master branch.  
 ```bash -c "$(wget -O - https://raw.githubusercontent.com/innova-foundation/innova/master/innovaqtubuntu.sh)"```  
 
 To turn on nativetor in innova.conf  
 ```nativetor=1```   
 
-Development process
-===========================
+## Development process
+
 
 Developers work in their own trees, then submit pull requests when
 they think their feature or bug fix is ready.

@@ -5,56 +5,64 @@ on:
     branches:
       - master
       - secp256k1
+      - dev
   pull_request:
     branches:
       - master
       - secp256k1
+      - dev
+
+env:
+  COIN_NAME: "innova"
+  BUILD_DIR: "build"
+  TEST_DIR: "test"
+  COMPRESS_DIR: "compress"
 
 jobs:
-  build_ubuntu_18:
-    runs-on: ubuntu-18.04
-
+  get-version:
+    runs-on: ubuntu-20.04
     steps:
+      - name: Triggered By
+        run: |
+          echo "checking out $GITHUB_REF triggered by $GITHUB_EVENT_NAME"
+
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
+
+      - name: Read versions
+        id: versions
+        uses: christian-draeger/read-properties@1.1.1
         with:
-          fetch-depth: 0
-          ref: master
+          path: build.properties
+          properties: 'release-version candidate-version snapshot-version'
 
-      - name: Install Dependencies
+      - name: Choose version
+        id: selected-version
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential libtool autotools-dev automake pkg-config libssl-dev libevent-dev bsdmainutils python3 libboost-all-dev libdb++-dev libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev 
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]] || [[ "$GITHUB_REF" == *develop ]] || [[ "$GITHUB_REF" == *ft/* ]] || [[ "$GITHUB_REF" == *bug/* ]]; then
+              version=${{ steps.versions.outputs.snapshot-version }}
+          elif [[ "$GITHUB_EVENT_NAME" != "pull_request" ]] && [[ "$GITHUB_REF" == *"release/"* ]]; then
+              version=${{ steps.versions.outputs.candidate-version }}
+          elif [[ "$GITHUB_EVENT_NAME" != "pull_request" ]] && [[ "$GITHUB_REF" == "refs/heads/master" ]]; then
+              version=${{ steps.versions.outputs.release-version }}
+          fi
+          echo "version is: [$version]"
+          echo "::set-output name=version::$version"
+          echo "BUILD_VERSION=$version" > version.txt
 
-      - name: Build OpenSSL
-        run: |
-          wget https://www.openssl.org/source/openssl-1.0.1j.tar.gz
-          tar -xzvf openssl-1.0.1j.tar.gz
-          cd openssl-1.0.1j
-          ./config
-          make depend
-          sudo make install
-          sudo ln -sf /usr/local/ssl/bin/openssl `which openssl`
-          openssl version -v
-
-      - name: Build Innova daemon
-        run: |
-          cd src
-          OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib make -f makefile.unix -j$(nproc)
-
-      - name: Build Innova QT
-        run: |
-          sudo apt-get install -y libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools libprotobuf-dev protobuf-compiler libqrencode-dev
-          sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' /home/runner/work/innova/innova/innova-qt.pro
-          qmake "USE_UPNP=1" "USE_QRCODE=1" "USE_NATIVETOR=1" OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib innova-qt.pro
-          OPENSSL_INCLUDE_PATH=/usr/local/ssl/include OPENSSL_LIB_PATH=/usr/local/ssl/lib make -j$(nproc)
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: version
+          path: version.txt
 
   build_ubuntu_20:
     runs-on: ubuntu-20.04
+    needs: get-version
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           fetch-depth: 0
           ref: secp256k1
@@ -78,23 +86,115 @@ jobs:
           sudo strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5
           qmake "USE_UPNP=1" "USE_QRCODE=1" "USE_NATIVETOR=-" innova-qt.pro
           make -j$(nproc)
+          mv Innova ../${BUILD_DIR}/
+
+      - name: Strip Binaries
+        run: |
+          mkdir -p ${BUILD_DIR} ${BUILD_DIR}_not_strip ${TEST_DIR}
+          cp src/innovad Innova ${BUILD_DIR}/
+          mv src/innovad Innova ${BUILD_DIR}_not_strip/
+          strip ${BUILD_DIR}/*
+
+      - name: Generate Checksum and Compress
+        run: |
+          mkdir -p ${COMPRESS_DIR}
+          cd ${BUILD_DIR}
+          echo "sha256:" >> checksums.txt
+          echo "------------------------------------" >> checksums.txt
+          shasum * >> checksums.txt
+          echo "------------------------------------" >> checksums.txt
+          echo "openssl-sha256:" >> checksums.txt
+          echo "------------------------------------" >> checksums.txt
+          sha256sum * >> checksums.txt
+          cat checksums.txt
+          tar -cvzf ../${COIN_NAME}-ubuntu20-${{ needs.get-version.outputs.version }}.tar.gz *
+          cd ../${BUILD_DIR}_not_strip
+          echo "sha256:" >> checksums.txt
+          echo "------------------------------------" >> checksums.txt
+          shasum * >> checksums.txt
+          echo "------------------------------------" >> checksums.txt
+          echo "openssl-sha256:" >> checksums.txt
+          echo "------------------------------------" >> checksums.txt
+          sha256sum * >> checksums.txt
+          cat checksums.txt
+          tar -cvzf ../${COIN_NAME}-ubuntu20-not_strip-${{ needs.get-version.outputs.version }}.tar.gz *
+          cd ..
+          mv *.tar.gz ${COMPRESS_DIR}/
+          cd ${COMPRESS_DIR}
+          echo "sha256: `shasum ${COIN_NAME}-ubuntu20-${{ needs.get-version.outputs.version }}.tar.gz`" >> checksums.txt
+          echo "openssl-sha256: `sha256sum ${COIN_NAME}-ubuntu20-${{ needs.get-version.outputs.version }}.tar.gz`" >> checksums.txt
+          echo "sha256: `shasum ${COIN_NAME}-ubuntu20-not_strip-${{ needs.get-version.outputs.version }}.tar.gz`" >> checksums.txt
+          echo "openssl-sha256: `sha256sum ${COIN_NAME}-ubuntu20-not_strip-${{ needs.get-version.outputs.version }}.tar.gz`" >> checksums.txt
+          cd ..
+          cat ${COMPRESS_DIR}/checksums.txt
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ env.COIN_NAME }}-ubuntu20-${{ needs.get-version.outputs.version }}
+          path: ${{ env.COMPRESS_DIR }}
 
   build-arm:
     runs-on: ubuntu-20.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v3
         with:
           fetch-depth: 0
           ref: secp256k1
 
-      - name: Install dependencies and build Innova
+      - name: Install Dependencies
         run: |
-          # Install dependencies
-          sudo apt-get update -y
-          sudo apt-get upgrade -y
+          sudo apt-get update -y && sudo apt-get upgrade -y
           sudo apt-get install -y git curl pwgen build-essential libssl-dev libdb++-dev libboost-all-dev libqrencode-dev libminiupnpc-dev libevent-dev autogen automake libtool libcurl4-openssl-dev libgmp-dev libsecp256k1-dev
 
-          # Build Innova daemon
+      - name: Create Build Directory
+        run: |
+          mkdir -p ${BUILD_DIR}
+
+      - name: Build Innova
+        run: |
           cd src
           make "USE_NATIVETOR=-" -f makefile.arm -j$(nproc)
+
+          mkdir -p ${BUILD_DIR}_debug
+          mv innovad ${BUILD_DIR}_debug/
+
+      - name: Generate Checksum and Compress
+        run: |
+          mkdir -p ${COMPRESS_DIR}
+          cd ${BUILD_DIR}
+          echo "sha256:" >> checksums.txt
+          echo "------------------------------------" >> checksums.txt
+          shasum * >> checksums.txt
+          echo "------------------------------------" >> checksums.txt
+          echo "openssl-sha256:" >> checksums.txt
+          echo "------------------------------------" >> checksums.txt
+          sha256sum * >> checksums.txt
+          cat checksums.txt
+          tar -cvzf ../${COIN_NAME}-arm64-${{ needs.get-version.outputs.version }}.tar.gz *
+          cd ../${BUILD_DIR}_debug
+          echo "sha256:" >> checksums.txt
+          echo "------------------------------------" >> checksums.txt
+          shasum * >> checksums.txt
+          echo "------------------------------------" >> checksums.txt
+          echo "openssl-sha256:" >> checksums.txt
+          echo "------------------------------------" >> checksums.txt
+          sha256sum * >> checksums.txt
+          cat checksums.txt
+          tar -cvzf ../${COIN_NAME}-arm64-debug-${{ needs.get-version.outputs.version }}.tar.gz *
+          cd ..
+          mv *.tar.gz ${COMPRESS_DIR}/
+          cd ${COMPRESS_DIR}
+          echo "sha256: `shasum ${COIN_NAME}-arm64-${{ needs.get-version.outputs.version }}.tar.gz`" >> checksums.txt
+          echo "openssl-sha256: `sha256sum ${COIN_NAME}-arm64-${{ needs.get-version.outputs.version }}.tar.gz`" >> checksums.txt
+          echo "sha256: `shasum ${COIN_NAME}-arm64-debug-${{ needs.get-version.outputs.version }}.tar.gz`" >> checksums.txt
+          echo "openssl-sha256: `sha256sum ${COIN_NAME}-arm64-debug-${{ needs.get-version.outputs.version }}.tar.gz`" >> checksums.txt
+          cd ..
+          cat ${COMPRESS_DIR}/checksums.txt
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ env.COIN_NAME }}-arm64-${{ needs.get-version.outputs.version }}
+          path: ${{ env.COMPRESS_DIR }}
