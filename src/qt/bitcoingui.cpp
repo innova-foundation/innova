@@ -23,7 +23,7 @@
 #include "overviewpage.h"
 #include "statisticspage.h"
 #include "blockbrowser.h"
-#include "marketbrowser.h"
+// #include "marketbrowser.h"
 #include "collateralnodemanager.h"
 #include "collateral.h"
 #include "mintingview.h"
@@ -35,10 +35,10 @@
 #include "guiutil.h"
 #include "rpcconsole.h"
 #include "wallet.h"
-#include "termsofuse.h"
-#include "proofofimage.h"
+// #include "termsofuse.h"
+// #include "proofofimage.h"
 // #include "hyperfile.h"
-#include "managenamespage.h"
+// #include "managenamespage.h"
 
 #ifdef Q_OS_MAC
 #include "macdockiconhandler.h"
@@ -77,7 +77,7 @@
 #include <iostream>
 #include <fstream>
 
-namespace fs = boost::filesystem;
+// namespace fs = boost::filesystem;
 
 extern CWallet* pwalletMain;
 extern int64_t nLastCoinStakeSearchInterval;
@@ -180,19 +180,19 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     // Create the tray icon (or setup the dock icon)
     createTrayIcon();
 
-    fCNLock = GetBoolArg("-cnconflock");
-    fNativeTor = GetBoolArg("-nativetor");
+    // fCNLock = GetBoolArg("-cnconflock");
+    // fNativeTor = GetBoolArg("-nativetor");
     // fHyperfileLocal = GetBoolArg("-hyperfilelocal");
 
     // Create tabs
     overviewPage = new OverviewPage();
 	statisticsPage = new StatisticsPage(this);
 	blockBrowser = new BlockBrowser(this);
-    marketBrowser = new MarketBrowser(this);
+    // marketBrowser = new MarketBrowser(this);
 	multisigPage = new MultisigDialog(this);
-    proofOfImagePage = new ProofOfImage(this);
+    // proofOfImagePage = new ProofOfImage(this);
     // hyperfilePage = new Hyperfile(this);
-    manageNamesPage = new ManageNamesPage(this);
+    // manageNamesPage = new ManageNamesPage(this);
 	//chatWindow = new ChatWindow(this);
 
     transactionsPage = new QWidget(this);
@@ -222,7 +222,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     centralWidget->addWidget(overviewPage);
     centralWidget->addWidget(transactionsPage);
 	centralWidget->addWidget(mintingPage);
-  centralWidget->addWidget(manageNamesPage);
+//   centralWidget->addWidget(manageNamesPage);
     centralWidget->addWidget(addressBookPage);
     centralWidget->addWidget(receiveCoinsPage);
     centralWidget->addWidget(sendCoinsPage);
@@ -230,8 +230,8 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     centralWidget->addWidget(statisticsPage);
 	centralWidget->addWidget(blockBrowser);
     centralWidget->addWidget(collateralnodeManagerPage);
-	centralWidget->addWidget(marketBrowser);
-    centralWidget->addWidget(proofOfImagePage);
+	// centralWidget->addWidget(marketBrowser);
+    // centralWidget->addWidget(proofOfImagePage);
     // centralWidget->addWidget(hyperfilePage);
 	//centralWidget->addWidget(chatWindow);
     setCentralWidget(centralWidget);
@@ -349,18 +349,18 @@ void BitcoinGUI::createActions()
     blockAction->setCheckable(true);
     tabGroup->addAction(blockAction);
 
-	marketAction = new QAction(QIcon(":/icons/mark"), tr("&Market"), this);
-    marketAction->setToolTip(tr("Market Data"));
-    marketAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_7));
-	marketAction->setStatusTip(tr("Innova Market Data"));
-    marketAction->setCheckable(true);
-    tabGroup->addAction(marketAction);
+	// marketAction = new QAction(QIcon(":/icons/mark"), tr("&Market"), this);
+    // marketAction->setToolTip(tr("Market Data"));
+    // marketAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_7));
+	// marketAction->setStatusTip(tr("Innova Market Data"));
+    // marketAction->setCheckable(true);
+    // tabGroup->addAction(marketAction);
 
-    manageNamesAction = new QAction(QIcon(":/icons/names"), tr("&NVS"), this);
-    manageNamesAction->setToolTip(tr("Manage Innova NVS"));
-    manageNamesAction->setCheckable(true);
-    manageNamesAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_0));
-    tabGroup->addAction(manageNamesAction);
+    // manageNamesAction = new QAction(QIcon(":/icons/names"), tr("&NVS"), this);
+    // manageNamesAction->setToolTip(tr("Manage Innova NVS"));
+    // manageNamesAction->setCheckable(true);
+    // manageNamesAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_0));
+    // tabGroup->addAction(manageNamesAction);
 
 	//chatAction = new QAction(QIcon(":/icons/msg"), tr("&Social"), this);
     //chatAction->setToolTip(tr("View chat"));
@@ -415,11 +415,11 @@ void BitcoinGUI::createActions()
 	collateralnodeManagerAction->setStatusTip(tr("Collateral Nodes"));
     tabGroup->addAction(collateralnodeManagerAction);
 
-    proofOfImageAction = new QAction(QIcon(":/icons/data"), tr("&Proof of Data"), this);
-    proofOfImageAction ->setToolTip(tr("Timestamp Files on the Innova blockchain."));
-    proofOfImageAction ->setCheckable(true);
-	proofOfImageAction->setStatusTip(tr("PoD: Timestamp files"));
-    tabGroup->addAction(proofOfImageAction);
+    // proofOfImageAction = new QAction(QIcon(":/icons/data"), tr("&Proof of Data"), this);
+    // proofOfImageAction ->setToolTip(tr("Timestamp Files on the Innova blockchain."));
+    // proofOfImageAction ->setCheckable(true);
+	// proofOfImageAction->setStatusTip(tr("PoD: Timestamp files"));
+    // tabGroup->addAction(proofOfImageAction);
 
     // hyperfileAction = new QAction(QIcon(":/icons/hyperfile"), tr("&Hyperfile"), this);
     // hyperfileAction ->setToolTip(tr("Decentralized your files, upload to IPFS!"));
@@ -435,14 +435,14 @@ void BitcoinGUI::createActions()
     connect(overviewAction, SIGNAL(triggered()), this, SLOT(gotoOverviewPage()));
 	connect(blockAction, SIGNAL(triggered()), this, SLOT(gotoBlockBrowser()));
 	connect(statisticsAction, SIGNAL(triggered()), this, SLOT(gotoStatisticsPage()));
-	connect(marketAction, SIGNAL(triggered()), this, SLOT(gotoMarketBrowser()));
+	// connect(marketAction, SIGNAL(triggered()), this, SLOT(gotoMarketBrowser()));
 	//connect(chatAction, SIGNAL(triggered()), this, SLOT(gotoChatPage()));
     connect(sendCoinsAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(sendCoinsAction, SIGNAL(triggered()), this, SLOT(gotoSendCoinsPage()));
     connect(receiveCoinsAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(receiveCoinsAction, SIGNAL(triggered()), this, SLOT(gotoReceiveCoinsPage()));
-    connect(manageNamesAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
-    connect(manageNamesAction, SIGNAL(triggered()), this, SLOT(gotoManageNamesPage()));
+    // connect(manageNamesAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
+    // connect(manageNamesAction, SIGNAL(triggered()), this, SLOT(gotoManageNamesPage()));
 	connect(mintingAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(mintingAction, SIGNAL(triggered()), this, SLOT(gotoMintingPage()));
     connect(collateralnodeManagerAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
@@ -455,8 +455,8 @@ void BitcoinGUI::createActions()
     connect(messageAction, SIGNAL(triggered()), this, SLOT(gotoMessagePage()));
 	connect(multisigAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(multisigAction, SIGNAL(triggered()), this, SLOT(gotoMultisigPage()));
-    connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
-    connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(gotoProofOfImagePage()));
+    // connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
+    // connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(gotoProofOfImagePage()));
     // connect(hyperfileAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     // connect(hyperfileAction, SIGNAL(triggered()), this, SLOT(gotoHyperfilePage()));
 
@@ -596,10 +596,10 @@ void BitcoinGUI::createToolBars()
   mainToolbar->addAction(addressBookAction);
   mainToolbar->addAction(statisticsAction);
   mainToolbar->addAction(collateralnodeManagerAction);
-  mainToolbar->addAction(manageNamesAction);
+//   mainToolbar->addAction(manageNamesAction);
 //   mainToolbar->addAction(hyperfileAction);
-  mainToolbar->addAction(proofOfImageAction);
-  mainToolbar->addAction(marketAction);
+//   mainToolbar->addAction(proofOfImageAction);
+//   mainToolbar->addAction(marketAction);
   mainToolbar->addAction(blockAction);
   mainToolbar->addAction(messageAction);
   mainToolbar->addAction(mintingAction);
@@ -636,10 +636,10 @@ void BitcoinGUI::checkTOU()
         agreed_to_tou = true;
     }
 
-    if(!agreed_to_tou){
-        TermsOfUse dlg(this);
-        dlg.exec();
-    }
+    // if(!agreed_to_tou){
+    //     TermsOfUse dlg(this);
+    //     dlg.exec();
+    // }
 }
 
 void BitcoinGUI::setClientModel(ClientModel *clientModel)
@@ -705,10 +705,10 @@ void BitcoinGUI::setWalletModel(WalletModel *walletModel)
         signVerifyMessageDialog->setModel(walletModel);
 		statisticsPage->setModel(clientModel);
 		blockBrowser->setModel(clientModel);
-		marketBrowser->setModel(clientModel);
+		// marketBrowser->setModel(clientModel);
         collateralnodeManagerPage->setWalletModel(walletModel);
 		multisigPage->setModel(walletModel);
-    manageNamesPage->setModel(walletModel);
+    // manageNamesPage->setModel(walletModel);
 		//chatWindow->setModel(clientModel);
 
         setEncryptionStatus(walletModel->getEncryptionStatus());
@@ -821,25 +821,25 @@ void BitcoinGUI::setNumConnections(int count)
     labelConnectionsIcon->setPixmap(QIcon(icon).pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
     labelConnectionsIcon->setToolTip(tr("%n active connection(s) to Innova network", "", count));
 
-    if(fNativeTor)
-    {
-        labelConnectTypeIcon->setPixmap(QIcon(":/icons/tor").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
+    // if(fNativeTor)
+    // {
+    //     labelConnectTypeIcon->setPixmap(QIcon(":/icons/tor").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
 
-        string automatic_onion;
-        fs::path const hostname_path = GetDefaultDataDir() / "onion" / "hostname";
-        if (!fs::exists(hostname_path)) {
-            printf("No external address found.");
-        }
-        ifstream file(hostname_path.string().c_str());
-        file >> automatic_onion;
+    //     string automatic_onion;
+    //     fs::path const hostname_path = GetDefaultDataDir() / "onion" / "hostname";
+    //     if (!fs::exists(hostname_path)) {
+    //         printf("No external address found.");
+    //     }
+    //     ifstream file(hostname_path.string().c_str());
+    //     file >> automatic_onion;
 
-        QString onionauto;
-        onionauto = tr("Connected via the Tor Network - ") + QString::fromStdString(automatic_onion);
-        labelConnectTypeIcon->setToolTip(onionauto);
-    } else {
-        labelConnectTypeIcon->setPixmap(QIcon(":/icons/toroff").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
-        labelConnectTypeIcon->setToolTip(tr("Not Connected via the Tor Network, Start Innova with the flag nativetor=1"));
-    }
+    //     QString onionauto;
+    //     onionauto = tr("Connected via the Tor Network - ") + QString::fromStdString(automatic_onion);
+    //     labelConnectTypeIcon->setToolTip(onionauto);
+    // } else {
+    //     labelConnectTypeIcon->setPixmap(QIcon(":/icons/toroff").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
+    //     labelConnectTypeIcon->setToolTip(tr("Not Connected via the Tor Network, Start Innova with the flag nativetor=1"));
+    // }
     if (fCNLock == true) {
         labelCNLockIcon->setPixmap(QIcon(":/icons/cn").pixmap(STATUSBAR_ICONSIZE, STATUSBAR_ICONSIZE));
     }
@@ -1159,34 +1159,34 @@ void BitcoinGUI::gotoOverviewPage()
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
 }
 
-void BitcoinGUI::gotoMarketBrowser()
-{
-    marketAction->setChecked(true);
-    centralWidget->setCurrentWidget(marketBrowser);
+// void BitcoinGUI::gotoMarketBrowser()
+// {
+//     marketAction->setChecked(true);
+//     centralWidget->setCurrentWidget(marketBrowser);
 
-    exportAction->setEnabled(false);
-    disconnect(exportAction, SIGNAL(triggered()), 0, 0);
+//     exportAction->setEnabled(false);
+//     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
 
-}
+// }
 
-void BitcoinGUI::gotoManageNamesPage()
-{
-    manageNamesAction->setChecked(true);
-    centralWidget->setCurrentWidget(manageNamesPage);
+// void BitcoinGUI::gotoManageNamesPage()
+// {
+//     manageNamesAction->setChecked(true);
+//     centralWidget->setCurrentWidget(manageNamesPage);
 
-    exportAction->setEnabled(true);
-    disconnect(exportAction, SIGNAL(triggered()), 0, 0);
-    connect(exportAction, SIGNAL(triggered()), manageNamesPage, SLOT(exportClicked()));
-}
+//     exportAction->setEnabled(true);
+//     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
+//     connect(exportAction, SIGNAL(triggered()), manageNamesPage, SLOT(exportClicked()));
+// }
 
-void BitcoinGUI::gotoProofOfImagePage()
-{
-    proofOfImageAction->setChecked(true);
-    centralWidget->setCurrentWidget(proofOfImagePage);
+// void BitcoinGUI::gotoProofOfImagePage()
+// {
+//     proofOfImageAction->setChecked(true);
+//     centralWidget->setCurrentWidget(proofOfImagePage);
 
-    exportAction->setEnabled(false);
-    disconnect(exportAction, SIGNAL(triggered()), 0, 0);
-}
+//     exportAction->setEnabled(false);
+//     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
+// }
 
 // void BitcoinGUI::gotoHyperfilePage()
 // {
