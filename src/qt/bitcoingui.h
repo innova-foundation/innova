@@ -26,7 +26,7 @@ class SignVerifyMessageDialog;
 class Notificator;
 class RPCConsole;
 class ProofOfImage;
-class Hyperfile;
+// class Hyperfile;
 
 QT_BEGIN_NAMESPACE
 class QLabel;
@@ -103,7 +103,7 @@ private:
 	  QWidget *mintingPage;
 	  MultisigDialog *multisigPage;
 	  ProofOfImage *proofOfImagePage;
-    Hyperfile *hyperfilePage;
+    // Hyperfile *hyperfilePage;
 	  CollateralnodeManager *collateralnodeManagerPage;
     AddressBookPage *addressBookPage;
     AddressBookPage *receiveCoinsPage;
@@ -132,7 +132,7 @@ private:
 	  QAction *mintingAction;
 	  QAction *multisigAction;
     QAction *proofOfImageAction;
-    QAction *hyperfileAction;
+    // QAction *hyperfileAction;
     QAction *manageNamesAction;
 	  QAction *collateralnodeManagerAction;
     QAction *quitAction;
@@ -244,7 +244,7 @@ private slots:
 	/** Switch to proof of image page */
 	void gotoProofOfImagePage();
   /** Switch to Hyperfile page */
-  void gotoHyperfilePage();
+//   void gotoHyperfilePage();
 
 
     //void gotoChatPage();
