@@ -37,7 +37,7 @@
 #include "wallet.h"
 #include "termsofuse.h"
 #include "proofofimage.h"
-#include "hyperfile.h"
+// #include "hyperfile.h"
 #include "managenamespage.h"
 
 #ifdef Q_OS_MAC
@@ -182,7 +182,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
 
     fCNLock = GetBoolArg("-cnconflock");
     fNativeTor = GetBoolArg("-nativetor");
-    fHyperfileLocal = GetBoolArg("-hyperfilelocal");
+    // fHyperfileLocal = GetBoolArg("-hyperfilelocal");
 
     // Create tabs
     overviewPage = new OverviewPage();
@@ -191,7 +191,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     marketBrowser = new MarketBrowser(this);
 	multisigPage = new MultisigDialog(this);
     proofOfImagePage = new ProofOfImage(this);
-    hyperfilePage = new Hyperfile(this);
+    // hyperfilePage = new Hyperfile(this);
     manageNamesPage = new ManageNamesPage(this);
 	//chatWindow = new ChatWindow(this);
 
@@ -232,7 +232,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     centralWidget->addWidget(collateralnodeManagerPage);
 	centralWidget->addWidget(marketBrowser);
     centralWidget->addWidget(proofOfImagePage);
-    centralWidget->addWidget(hyperfilePage);
+    // centralWidget->addWidget(hyperfilePage);
 	//centralWidget->addWidget(chatWindow);
     setCentralWidget(centralWidget);
 
@@ -421,11 +421,11 @@ void BitcoinGUI::createActions()
 	proofOfImageAction->setStatusTip(tr("PoD: Timestamp files"));
     tabGroup->addAction(proofOfImageAction);
 
-    hyperfileAction = new QAction(QIcon(":/icons/hyperfile"), tr("&Hyperfile"), this);
-    hyperfileAction ->setToolTip(tr("Decentralized your files, upload to IPFS!"));
-    hyperfileAction ->setCheckable(true);
-	  hyperfileAction->setStatusTip(tr("Decentralized File Uploads"));
-    tabGroup->addAction(hyperfileAction);
+    // hyperfileAction = new QAction(QIcon(":/icons/hyperfile"), tr("&Hyperfile"), this);
+    // hyperfileAction ->setToolTip(tr("Decentralized your files, upload to IPFS!"));
+    // hyperfileAction ->setCheckable(true);
+	//   hyperfileAction->setStatusTip(tr("Decentralized File Uploads"));
+    // tabGroup->addAction(hyperfileAction);
 
 	multisigAction = new QAction(QIcon(":/icons/multi"), tr("Multisig"), this);
     tabGroup->addAction(multisigAction);
@@ -457,8 +457,8 @@ void BitcoinGUI::createActions()
     connect(multisigAction, SIGNAL(triggered()), this, SLOT(gotoMultisigPage()));
     connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(gotoProofOfImagePage()));
-    connect(hyperfileAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
-    connect(hyperfileAction, SIGNAL(triggered()), this, SLOT(gotoHyperfilePage()));
+    // connect(hyperfileAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
+    // connect(hyperfileAction, SIGNAL(triggered()), this, SLOT(gotoHyperfilePage()));
 
     quitAction = new QAction(QIcon(":/icons/quit"), tr("E&xit"), this);
     quitAction->setToolTip(tr("Quit application"));
@@ -597,7 +597,7 @@ void BitcoinGUI::createToolBars()
   mainToolbar->addAction(statisticsAction);
   mainToolbar->addAction(collateralnodeManagerAction);
   mainToolbar->addAction(manageNamesAction);
-  mainToolbar->addAction(hyperfileAction);
+//   mainToolbar->addAction(hyperfileAction);
   mainToolbar->addAction(proofOfImageAction);
   mainToolbar->addAction(marketAction);
   mainToolbar->addAction(blockAction);
@@ -1188,14 +1188,14 @@ void BitcoinGUI::gotoProofOfImagePage()
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
 }
 
-void BitcoinGUI::gotoHyperfilePage()
-{
-    hyperfileAction->setChecked(true);
-    centralWidget->setCurrentWidget(hyperfilePage);
+// void BitcoinGUI::gotoHyperfilePage()
+// {
+//     hyperfileAction->setChecked(true);
+//     centralWidget->setCurrentWidget(hyperfilePage);
 
-    exportAction->setEnabled(false);
-    disconnect(exportAction, SIGNAL(triggered()), 0, 0);
-}
+//     exportAction->setEnabled(false);
+//     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
+// }
 
 void BitcoinGUI::gotoCollateralnodeManagerPage()
 {

@@ -399,15 +399,6 @@ static const CRPCCommand vRPCCommands[] =
 
     { "proofofdata",          &proofofdata,              false,  true  },
 
-    // Innova Hyperfile IPFS
-    { "hyperfileversion",       &hyperfileversion,           true,   false },
-    { "hyperfileupload",        &hyperfileupload,            false,  false },
-    { "hyperfilepod",           &hyperfilepod,               false,  true  },
-    { "hyperfileduo",           &hyperfileduo,               false,  false },
-    { "hyperfileduopod",        &hyperfileduopod,            false,  true  },
-    { "hyperfilegetblock",      &hyperfilegetblock,          false,  false },
-    { "hyperfilegetstat",       &hyperfilegetstat,           false,  false },
-
     // Innova Name Commands
     { "name_new",               &name_new,               false,  true },
     { "name_update",            &name_update,            false,  true },
