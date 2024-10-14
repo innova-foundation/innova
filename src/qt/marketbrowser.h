@@ -1,61 +1,61 @@
-#ifndef MARKETBROWSER_H
-#define MARKETBROWSER_H
+// #ifndef MARKETBROWSER_H
+// #define MARKETBROWSER_H
 
-#include "clientmodel.h"
-#include "main.h"
-#include "wallet.h"
-#include "base58.h"
+// #include "clientmodel.h"
+// #include "main.h"
+// #include "wallet.h"
+// #include "base58.h"
 
-#include <QWidget>
-#include <QObject>
-#include <QtNetwork/QtNetwork>
-#include <curl/curl.h>
-
-
-extern QString bitcoing;
-extern QString dollarg;
-extern QString eurog;
-extern QString poundg;
-extern QString rubleg;
-extern QString yeng;
-extern QString innmarket;
-extern QString innnewsfeed;
-
-namespace Ui {
-class MarketBrowser;
-}
-class ClientModel;
+// #include <QWidget>
+// #include <QObject>
+// #include <QtNetwork/QtNetwork>
+// #include <curl/curl.h>
 
 
-class MarketBrowser : public QWidget
-{
-    Q_OBJECT
+// extern QString bitcoing;
+// extern QString dollarg;
+// extern QString eurog;
+// extern QString poundg;
+// extern QString rubleg;
+// extern QString yeng;
+// extern QString innmarket;
+// extern QString innnewsfeed;
 
-public:
-    explicit MarketBrowser(QWidget *parent = 0);
-    ~MarketBrowser();
+// namespace Ui {
+// class MarketBrowser;
+// }
+// class ClientModel;
 
-    void setModel(ClientModel *model);
 
-private:
-  void getRequest1( const QString &url );
-  void getRequest2( const QString &url );
-  void getRequest3( const QString &url );
-  void getRequest4( const QString &url );
+// class MarketBrowser : public QWidget
+// {
+//     Q_OBJECT
 
-signals:
-    //void networkError( QNetworkReply::NetworkError err );
+// public:
+//     explicit MarketBrowser(QWidget *parent = 0);
+//     ~MarketBrowser();
 
-public slots:
-    //void parseNetworkResponse(QNetworkReply *finished );
-    void requests();
-    void update();
+//     void setModel(ClientModel *model);
 
-private:
-    //QNetworkAccessManager m_nam;
-    Ui::MarketBrowser *ui;
-    ClientModel *model;
+// private:
+//   void getRequest1( const QString &url );
+//   void getRequest2( const QString &url );
+//   void getRequest3( const QString &url );
+//   void getRequest4( const QString &url );
 
-};
+// signals:
+//     //void networkError( QNetworkReply::NetworkError err );
 
-#endif // MARKETBROWSER_H
+// public slots:
+//     //void parseNetworkResponse(QNetworkReply *finished );
+//     void requests();
+//     void update();
+
+// private:
+//     //QNetworkAccessManager m_nam;
+//     Ui::MarketBrowser *ui;
+//     ClientModel *model;
+
+// };
+
+// #endif // MARKETBROWSER_H
