@@ -180,7 +180,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     // Create the tray icon (or setup the dock icon)
     createTrayIcon();
 
-    // fCNLock = GetBoolArg("-cnconflock");
+    fCNLock = GetBoolArg("-cnconflock");
     // fNativeTor = GetBoolArg("-nativetor");
     // fHyperfileLocal = GetBoolArg("-hyperfilelocal");
 

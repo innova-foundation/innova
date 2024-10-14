@@ -497,7 +497,11 @@ clean:
 	-rm -f obj/*.o
 	-rm -f obj/*.P
 	-rm -f obj/*.d
-	-rm -f obj/build.h -rm -f obj/tor/*.o -rm -f obj/tor/*.P -rm -f obj/ipfs/*.o -rm -f obj/ipfs/*.P
+	-rm -f obj/build.h 
+	-rm -f obj/tor/*.o 
+	-rm -f obj/tor/*.P 
+	-rm -f obj/ipfs/*.o 
+	-rm -f obj/ipfs/*.P
 	-cd leveldb && $(MAKE) clean || true
 
 FORCE:

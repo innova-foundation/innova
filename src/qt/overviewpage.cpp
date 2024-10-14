@@ -108,7 +108,7 @@
 // 	int unitUSD;
 
 // };
- #include "overviewpage.moc"
+ //#include "overviewpage.moc"
 
 OverviewPage::OverviewPage(QWidget *parent) :
     QWidget(parent),

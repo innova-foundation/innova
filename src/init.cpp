@@ -47,7 +47,7 @@ using namespace std;
 using namespace boost;
 
 CWallet* pwalletMain = NULL;
-IDns* idns = NULL;
+//IDns* idns = NULL;
 CClientUIInterface uiInterface;
 bool fConfChange;
 bool fEnforceCanonical;
@@ -114,9 +114,9 @@ void Shutdown(void* parg)
     {
         fShutdown = true;
 
-        if(idns) {
-            delete idns;
-        }
+        // if(idns) {
+        //     delete idns;
+        // }
         Finalise();
         /*
         SecureMsgShutdown();
