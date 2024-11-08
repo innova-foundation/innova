@@ -8,7 +8,7 @@
 #include "transactionfilterproxy.h"
 #include "guiutil.h"
 #include "guiconstants.h"
-#include "marketbrowser.h"
+// #include "marketbrowser.h"
 #include <curl/curl.h>
 
 #include <QAbstractItemDelegate>
@@ -18,97 +18,97 @@
 #include <QScrollArea>
 //#include <QScroller>
 
-#define DECORATION_SIZE 36
-#define NUM_ITEMS 7
+// #define DECORATION_SIZE 36
+// #define NUM_ITEMS 7
 
-const QString BaseURL = "https://innova-foundation.com/innusd.php";
-const QString BaseURL2 = "https://innova-foundation.com/innbitcoin.php";
-const QString BaseURL3 = "https://innova-foundation.com/newsfeed.php";
-const QString BaseURL4 = "https://innova-foundation.com/inneur.php";
-const QString BaseURL5 = "https://innova-foundation.com/inngbp.php";
-const QString BaseURL6 = "https://innova-foundation.com/innrub.php";
-const QString BaseURL7 = "https://innova-foundation.com/innjpy.php";
-double innovax;
-double inneurx;
-double inngbpx;
-double innrubx;
-double innjpyx;
-double innbtcx;
+// const QString BaseURL = "https://innova-foundation.com/innusd.php";
+// const QString BaseURL2 = "https://innova-foundation.com/innbitcoin.php";
+// const QString BaseURL3 = "https://innova-foundation.com/newsfeed.php";
+// const QString BaseURL4 = "https://innova-foundation.com/inneur.php";
+// const QString BaseURL5 = "https://innova-foundation.com/inngbp.php";
+// const QString BaseURL6 = "https://innova-foundation.com/innrub.php";
+// const QString BaseURL7 = "https://innova-foundation.com/innjpy.php";
+// double innovax;
+// double inneurx;
+// double inngbpx;
+// double innrubx;
+// double innjpyx;
+// double innbtcx;
 
-class TxViewDelegate : public QAbstractItemDelegate
-{
-    Q_OBJECT
-public:
-    TxViewDelegate(): QAbstractItemDelegate(), unit(BitcoinUnits::BTC), unitUSD(BitcoinUnits::USD)
-    {
+// class TxViewDelegate : public QAbstractItemDelegate
+// {
+//     Q_OBJECT
+// public:
+//     TxViewDelegate(): QAbstractItemDelegate(), unit(BitcoinUnits::BTC), unitUSD(BitcoinUnits::USD)
+//     {
 
-    }
+//     }
 
-    inline void paint(QPainter *painter, const QStyleOptionViewItem &option,
-                      const QModelIndex &index ) const
-    {
-        painter->save();
+//     inline void paint(QPainter *painter, const QStyleOptionViewItem &option,
+//                       const QModelIndex &index ) const
+//     {
+//         painter->save();
 
-        QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
-        QRect mainRect = option.rect;
-        QRect decorationRect(mainRect.topLeft(), QSize(DECORATION_SIZE, DECORATION_SIZE));
-        int xspace = DECORATION_SIZE + 8;
-        int ypad = 6;
-        int halfheight = (mainRect.height() - 2*ypad)/2;
-        QRect amountRect(mainRect.left() + xspace, mainRect.top()+ypad, mainRect.width() - xspace, halfheight);
-        QRect addressRect(mainRect.left() + xspace, mainRect.top()+ypad+halfheight, mainRect.width() - xspace, halfheight);
-        icon.paint(painter, decorationRect);
+//         QIcon icon = qvariant_cast<QIcon>(index.data(Qt::DecorationRole));
+//         QRect mainRect = option.rect;
+//         QRect decorationRect(mainRect.topLeft(), QSize(DECORATION_SIZE, DECORATION_SIZE));
+//         int xspace = DECORATION_SIZE + 8;
+//         int ypad = 6;
+//         int halfheight = (mainRect.height() - 2*ypad)/2;
+//         QRect amountRect(mainRect.left() + xspace, mainRect.top()+ypad, mainRect.width() - xspace, halfheight);
+//         QRect addressRect(mainRect.left() + xspace, mainRect.top()+ypad+halfheight, mainRect.width() - xspace, halfheight);
+//         icon.paint(painter, decorationRect);
 
-        QDateTime date = index.data(TransactionTableModel::DateRole).toDateTime();
-        QString address = index.data(Qt::DisplayRole).toString();
-        qint64 amount = index.data(TransactionTableModel::AmountRole).toLongLong();
-        bool confirmed = index.data(TransactionTableModel::ConfirmedRole).toBool();
-        QVariant value = index.data(Qt::ForegroundRole);
-        QColor foreground = option.palette.color(QPalette::Text);
-        if(qVariantCanConvert<QColor>(value))
-        {
-            foreground = qvariant_cast<QColor>(value);
-        }
+//         QDateTime date = index.data(TransactionTableModel::DateRole).toDateTime();
+//         QString address = index.data(Qt::DisplayRole).toString();
+//         qint64 amount = index.data(TransactionTableModel::AmountRole).toLongLong();
+//         bool confirmed = index.data(TransactionTableModel::ConfirmedRole).toBool();
+//         QVariant value = index.data(Qt::ForegroundRole);
+//         QColor foreground = option.palette.color(QPalette::Text);
+//         if(qVariantCanConvert<QColor>(value))
+//         {
+//             foreground = qvariant_cast<QColor>(value);
+//         }
 
-        painter->setPen(foreground);
-        painter->drawText(addressRect, Qt::AlignLeft|Qt::AlignVCenter, address);
+//         painter->setPen(foreground);
+//         painter->drawText(addressRect, Qt::AlignLeft|Qt::AlignVCenter, address);
 
-        if(amount < 0)
-        {
-            foreground = COLOR_NEGATIVE;
-        }
-        else if(!confirmed)
-        {
-            foreground = COLOR_UNCONFIRMED;
-        }
-        else
-        {
-            foreground = option.palette.color(QPalette::Text);
-        }
-        painter->setPen(foreground);
-        QString amountText = BitcoinUnits::formatWithUnit(unit, amount, true);
-        if(!confirmed)
-        {
-            amountText = QString("[") + amountText + QString("]");
-        }
-        painter->drawText(amountRect, Qt::AlignRight|Qt::AlignVCenter, amountText);
+//         if(amount < 0)
+//         {
+//             foreground = COLOR_NEGATIVE;
+//         }
+//         else if(!confirmed)
+//         {
+//             foreground = COLOR_UNCONFIRMED;
+//         }
+//         else
+//         {
+//             foreground = option.palette.color(QPalette::Text);
+//         }
+//         painter->setPen(foreground);
+//         QString amountText = BitcoinUnits::formatWithUnit(unit, amount, true);
+//         if(!confirmed)
+//         {
+//             amountText = QString("[") + amountText + QString("]");
+//         }
+//         painter->drawText(amountRect, Qt::AlignRight|Qt::AlignVCenter, amountText);
 
-        painter->setPen(option.palette.color(QPalette::Text));
-        painter->drawText(amountRect, Qt::AlignLeft|Qt::AlignVCenter, GUIUtil::dateTimeStr(date));
+//         painter->setPen(option.palette.color(QPalette::Text));
+//         painter->drawText(amountRect, Qt::AlignLeft|Qt::AlignVCenter, GUIUtil::dateTimeStr(date));
 
-        painter->restore();
-    }
+//         painter->restore();
+//     }
 
-    inline QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const
-    {
-        return QSize(DECORATION_SIZE, DECORATION_SIZE);
-    }
+//     inline QSize sizeHint(const QStyleOptionViewItem &option, const QModelIndex &index) const
+//     {
+//         return QSize(DECORATION_SIZE, DECORATION_SIZE);
+//     }
 
-    int unit;
-	int unitUSD;
+//     int unit;
+// 	int unitUSD;
 
-};
-#include "overviewpage.moc"
+// };
+ //#include "overviewpage.moc"
 
 OverviewPage::OverviewPage(QWidget *parent) :
     QWidget(parent),
@@ -117,31 +117,31 @@ OverviewPage::OverviewPage(QWidget *parent) :
     currentStake(0),
     currentUnconfirmedBalance(-1),
     currentImmatureBalance(-1),
-    txdelegate(new TxViewDelegate()),
+    // txdelegate(new TxViewDelegate()),
     filter(0)
 {
     ui->setupUi(this);
 
 
 
-  PriceRequest(); //Segfault 20.04/18.04
-	//QObject::connect(&m_nam, SIGNAL(finished(QNetworkReply*)), this, SLOT(parseNetworkResponse(QNetworkReply*)));
-	connect(ui->refreshButton, SIGNAL(pressed()), this, SLOT( PriceRequest()));
+//   PriceRequest(); //Segfault 20.04/18.04
+// 	//QObject::connect(&m_nam, SIGNAL(finished(QNetworkReply*)), this, SLOT(parseNetworkResponse(QNetworkReply*)));
+// 	connect(ui->refreshButton, SIGNAL(pressed()), this, SLOT( PriceRequest()));
 
-	//Refresh the Est. Balances and News automatically
-	  refreshbtnTimer = new QTimer(this);
-    connect(refreshbtnTimer, SIGNAL(timeout()), this, SLOT( PriceRequest()));
-    refreshbtnTimer->start(120000); // 120 second timer
+// 	//Refresh the Est. Balances and News automatically
+// 	  refreshbtnTimer = new QTimer(this);
+//     connect(refreshbtnTimer, SIGNAL(timeout()), this, SLOT( PriceRequest()));
+//     refreshbtnTimer->start(120000); // 120 second timer
 
-    //Handle refreshing updateDisplayUnit() more often instead of every tx change
-    updateDisplayTimer = new QTimer(this);
-    connect(updateDisplayTimer, SIGNAL(timeout()), this, SLOT( updateDisplayUnit()));
-    updateDisplayTimer->start(120000); // Multithreaded, when a thread is available refresh all overview displays
+//     //Handle refreshing updateDisplayUnit() more often instead of every tx change
+//     updateDisplayTimer = new QTimer(this);
+//     connect(updateDisplayTimer, SIGNAL(timeout()), this, SLOT( updateDisplayUnit()));
+//     updateDisplayTimer->start(120000); // Multithreaded, when a thread is available refresh all overview displays
 
     // Recent transactions
-    ui->listTransactions->setItemDelegate(txdelegate);
-    ui->listTransactions->setIconSize(QSize(DECORATION_SIZE, DECORATION_SIZE));
-    ui->listTransactions->setMinimumHeight(NUM_ITEMS * (DECORATION_SIZE + 2));
+    // ui->listTransactions->setItemDelegate(txdelegate);
+    // ui->listTransactions->setIconSize(QSize(DECORATION_SIZE, DECORATION_SIZE));
+    // ui->listTransactions->setMinimumHeight(NUM_ITEMS * (DECORATION_SIZE + 2));
     ui->listTransactions->setAttribute(Qt::WA_MacShowFocusRect, false);
 
     connect(ui->listTransactions, SIGNAL(clicked(QModelIndex)), this, SLOT(handleTransactionClicked(QModelIndex)));
@@ -154,17 +154,17 @@ OverviewPage::OverviewPage(QWidget *parent) :
     showOutOfSyncWarning(true);
 }
 
-void OverviewPage::PriceRequest()
-{
-	getRequest1(BaseURL);
-	getRequest2(BaseURL2);
-	getRequest3(BaseURL3);
-  getRequest4(BaseURL4);
-  getRequest5(BaseURL5);
-  getRequest6(BaseURL6);
-  getRequest7(BaseURL7);
-    //updateDisplayUnit(); //Segfault Fix
-}
+// void OverviewPage::PriceRequest()
+// {
+// 	getRequest1(BaseURL);
+// 	getRequest2(BaseURL2);
+// 	getRequest3(BaseURL3);
+//   getRequest4(BaseURL4);
+//   getRequest5(BaseURL5);
+//   getRequest6(BaseURL6);
+//   getRequest7(BaseURL7);
+//     //updateDisplayUnit(); //Segfault Fix
+// }
 
 static size_t WriteCallback(void *contents, size_t size, size_t nmemb, void *userp)
 {
@@ -172,210 +172,210 @@ static size_t WriteCallback(void *contents, size_t size, size_t nmemb, void *use
     return size * nmemb;
 }
 
-void OverviewPage::getRequest1( const QString &urlString )
-{
-    CURL *curl;
-    CURLcode res;
-    std::string readBuffer;
+// void OverviewPage::getRequest1( const QString &urlString )
+// {
+//     CURL *curl;
+//     CURLcode res;
+//     std::string readBuffer;
 
-    curl = curl_easy_init();
-    if(curl) {
-      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
-      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
-      res = curl_easy_perform(curl);
-      if(res != CURLE_OK){
-            qWarning("curl_easy_perform() failed: \n");
-      }
-      curl_easy_cleanup(curl);
+//     curl = curl_easy_init();
+//     if(curl) {
+//       curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
+//       curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+//       curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+//       curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+//       res = curl_easy_perform(curl);
+//       if(res != CURLE_OK){
+//             qWarning("curl_easy_perform() failed: \n");
+//       }
+//       curl_easy_cleanup(curl);
 
-      //std::cout << readBuffer << std::endl;
+//       //std::cout << readBuffer << std::endl;
 
-      //qDebug(readBuffer);
-      //qDebug("cURL Request: %s", readBuffer.c_str());
+//       //qDebug(readBuffer);
+//       //qDebug("cURL Request: %s", readBuffer.c_str());
 
-        QString innova = QString::fromStdString(readBuffer);
-        innovax = (innova.toDouble());
-        innova = QString::number(innovax, 'f', 2);
+//         QString innova = QString::fromStdString(readBuffer);
+//         innovax = (innova.toDouble());
+//         innova = QString::number(innovax, 'f', 2);
 
-        dollarg = innova;
-    }
-}
+//         dollarg = innova;
+//     }
+// }
 
-void OverviewPage::getRequest2( const QString &urlString )
-{
-    CURL *curl;
-    CURLcode res;
-    std::string readBuffer;
+// void OverviewPage::getRequest2( const QString &urlString )
+// {
+//     CURL *curl;
+//     CURLcode res;
+//     std::string readBuffer;
 
-    curl = curl_easy_init();
-    if(curl) {
-      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
-      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
-      res = curl_easy_perform(curl);
-      if(res != CURLE_OK){
-            qWarning("curl_easy_perform() failed: \n");
-      }
-      curl_easy_cleanup(curl);
+//     curl = curl_easy_init();
+//     if(curl) {
+//       curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
+//       curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+//       curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+//       curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+//       res = curl_easy_perform(curl);
+//       if(res != CURLE_OK){
+//             qWarning("curl_easy_perform() failed: \n");
+//       }
+//       curl_easy_cleanup(curl);
 
-        QString innbtc = QString::fromStdString(readBuffer);
-        innbtcx = (innbtc.toDouble());
-        innbtc = QString::number(innbtcx, 'f', 8);
+//         QString innbtc = QString::fromStdString(readBuffer);
+//         innbtcx = (innbtc.toDouble());
+//         innbtc = QString::number(innbtcx, 'f', 8);
 
-        bitcoing = innbtc;
-    }
-}
+//         bitcoing = innbtc;
+//     }
+// }
 
-void OverviewPage::getRequest3( const QString &urlString )
-{
-    CURL *curl;
-    CURLcode res;
-    std::string readBuffer;
+// void OverviewPage::getRequest3( const QString &urlString )
+// {
+//     CURL *curl;
+//     CURLcode res;
+//     std::string readBuffer;
 
-    curl = curl_easy_init();
-    if(curl) {
-      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
-      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
-      res = curl_easy_perform(curl);
-      if(res != CURLE_OK){
-            qWarning("curl_easy_perform() failed: \n");
-      }
-      curl_easy_cleanup(curl);
+//     curl = curl_easy_init();
+//     if(curl) {
+//       curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
+//       curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+//       curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+//       curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+//       res = curl_easy_perform(curl);
+//       if(res != CURLE_OK){
+//             qWarning("curl_easy_perform() failed: \n");
+//       }
+//       curl_easy_cleanup(curl);
 
 
-        QString inewsfeed = QString::fromStdString(readBuffer);
-        innnewsfeed = inewsfeed;
-    }
-}
+//         QString inewsfeed = QString::fromStdString(readBuffer);
+//         innnewsfeed = inewsfeed;
+//     }
+// }
 
-void OverviewPage::getRequest4( const QString &urlString )
-{
-    CURL *curl;
-    CURLcode res;
-    std::string readBuffer;
+// void OverviewPage::getRequest4( const QString &urlString )
+// {
+//     CURL *curl;
+//     CURLcode res;
+//     std::string readBuffer;
 
-    curl = curl_easy_init();
-    if(curl) {
-      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
-      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
-      res = curl_easy_perform(curl);
-      if(res != CURLE_OK){
-            qWarning("curl_easy_perform() failed: \n");
-      }
-      curl_easy_cleanup(curl);
+//     curl = curl_easy_init();
+//     if(curl) {
+//       curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
+//       curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+//       curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+//       curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+//       res = curl_easy_perform(curl);
+//       if(res != CURLE_OK){
+//             qWarning("curl_easy_perform() failed: \n");
+//       }
+//       curl_easy_cleanup(curl);
 
-      //std::cout << readBuffer << std::endl;
+//       //std::cout << readBuffer << std::endl;
 
-      //qDebug(readBuffer);
-      //qDebug("cURL Request: %s", readBuffer.c_str());
+//       //qDebug(readBuffer);
+//       //qDebug("cURL Request: %s", readBuffer.c_str());
 
-        QString inneur = QString::fromStdString(readBuffer);
-        inneurx = (inneur.toDouble());
-        inneur = QString::number(inneurx, 'f', 4);
+//         QString inneur = QString::fromStdString(readBuffer);
+//         inneurx = (inneur.toDouble());
+//         inneur = QString::number(inneurx, 'f', 4);
 
-        eurog = inneur;
-    }
-}
+//         eurog = inneur;
+//     }
+// }
 
-void OverviewPage::getRequest5( const QString &urlString )
-{
-    CURL *curl;
-    CURLcode res;
-    std::string readBuffer;
+// void OverviewPage::getRequest5( const QString &urlString )
+// {
+//     CURL *curl;
+//     CURLcode res;
+//     std::string readBuffer;
 
-    curl = curl_easy_init();
-    if(curl) {
-      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
-      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
-      res = curl_easy_perform(curl);
-      if(res != CURLE_OK){
-            qWarning("curl_easy_perform() failed: \n");
-      }
-      curl_easy_cleanup(curl);
+//     curl = curl_easy_init();
+//     if(curl) {
+//       curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
+//       curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+//       curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+//       curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+//       res = curl_easy_perform(curl);
+//       if(res != CURLE_OK){
+//             qWarning("curl_easy_perform() failed: \n");
+//       }
+//       curl_easy_cleanup(curl);
 
-      //std::cout << readBuffer << std::endl;
+//       //std::cout << readBuffer << std::endl;
 
-      //qDebug(readBuffer);
-      //qDebug("cURL Request: %s", readBuffer.c_str());
+//       //qDebug(readBuffer);
+//       //qDebug("cURL Request: %s", readBuffer.c_str());
 
-        QString inngbp = QString::fromStdString(readBuffer);
-        inngbpx = (inngbp.toDouble());
-        inngbp = QString::number(inngbpx, 'f', 6);
+//         QString inngbp = QString::fromStdString(readBuffer);
+//         inngbpx = (inngbp.toDouble());
+//         inngbp = QString::number(inngbpx, 'f', 6);
 
-        poundg = inngbp;
-    }
-}
+//         poundg = inngbp;
+//     }
+// }
 
-void OverviewPage::getRequest6( const QString &urlString )
-{
-    CURL *curl;
-    CURLcode res;
-    std::string readBuffer;
+// void OverviewPage::getRequest6( const QString &urlString )
+// {
+//     CURL *curl;
+//     CURLcode res;
+//     std::string readBuffer;
 
-    curl = curl_easy_init();
-    if(curl) {
-      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
-      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
-      res = curl_easy_perform(curl);
-      if(res != CURLE_OK){
-            qWarning("curl_easy_perform() failed: \n");
-      }
-      curl_easy_cleanup(curl);
+//     curl = curl_easy_init();
+//     if(curl) {
+//       curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
+//       curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+//       curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+//       curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+//       res = curl_easy_perform(curl);
+//       if(res != CURLE_OK){
+//             qWarning("curl_easy_perform() failed: \n");
+//       }
+//       curl_easy_cleanup(curl);
 
-      //std::cout << readBuffer << std::endl;
+//       //std::cout << readBuffer << std::endl;
 
-      //qDebug(readBuffer);
-      //qDebug("cURL Request: %s", readBuffer.c_str());
+//       //qDebug(readBuffer);
+//       //qDebug("cURL Request: %s", readBuffer.c_str());
 
-        QString innrub = QString::fromStdString(readBuffer);
-        innrubx = (innrub.toDouble());
-        innrub = QString::number(innrubx, 'f', 10);
+//         QString innrub = QString::fromStdString(readBuffer);
+//         innrubx = (innrub.toDouble());
+//         innrub = QString::number(innrubx, 'f', 10);
 
-        rubleg = innrub;
-    }
-}
+//         rubleg = innrub;
+//     }
+// }
 
-void OverviewPage::getRequest7( const QString &urlString )
-{
-    CURL *curl;
-    CURLcode res;
-    std::string readBuffer;
+// void OverviewPage::getRequest7( const QString &urlString )
+// {
+//     CURL *curl;
+//     CURLcode res;
+//     std::string readBuffer;
 
-    curl = curl_easy_init();
-    if(curl) {
-      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
-      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
-      res = curl_easy_perform(curl);
-      if(res != CURLE_OK){
-            qWarning("curl_easy_perform() failed: \n");
-      }
-      curl_easy_cleanup(curl);
+//     curl = curl_easy_init();
+//     if(curl) {
+//       curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
+//       curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+//       curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+//       curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+//       res = curl_easy_perform(curl);
+//       if(res != CURLE_OK){
+//             qWarning("curl_easy_perform() failed: \n");
+//       }
+//       curl_easy_cleanup(curl);
 
-      //std::cout << readBuffer << std::endl;
+//       //std::cout << readBuffer << std::endl;
 
-      //qDebug(readBuffer);
-      //qDebug("cURL Request: %s", readBuffer.c_str());
+//       //qDebug(readBuffer);
+//       //qDebug("cURL Request: %s", readBuffer.c_str());
 
-        QString innjpy = QString::fromStdString(readBuffer);
-        innjpyx = (innjpy.toDouble());
-        innjpy = QString::number(innjpyx, 'f', 12);
+//         QString innjpy = QString::fromStdString(readBuffer);
+//         innjpyx = (innjpy.toDouble());
+//         innjpy = QString::number(innjpyx, 'f', 12);
 
-        yeng = innjpy;
-    }
-}
+//         yeng = innjpy;
+//     }
+// }
 
 void OverviewPage::handleTransactionClicked(const QModelIndex &index)
 {
@@ -418,39 +418,39 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
     ui->labelWatchTotal->setText(BitcoinUnits::formatWithUnit(unit, watchOnlyBalance + watchUnconfBalance + watchImmatureBalance));
 
 
-  	QString total;
-    double dollarg1 = (dollarg.toDouble() * totalBalance / 100000000);
-  	total = QString::number(dollarg1, 'f', 2);
-  	ui->labelUSDTotal->setText("$" + total + " USD");
+//   	QString total;
+//     double dollarg1 = (dollarg.toDouble() * totalBalance / 100000000);
+//   	total = QString::number(dollarg1, 'f', 2);
+//   	ui->labelUSDTotal->setText("$" + total + " USD");
 
-	  QString eurtotal;
-	  double eurog1 = (eurog.toDouble() * totalBalance / 100000000);
-  	eurtotal = QString::number(eurog1, 'f', 4);
-  	ui->labelEURTotal->setText("€" + eurtotal + " EUR");
+// 	  QString eurtotal;
+// 	  double eurog1 = (eurog.toDouble() * totalBalance / 100000000);
+//   	eurtotal = QString::number(eurog1, 'f', 4);
+//   	ui->labelEURTotal->setText("€" + eurtotal + " EUR");
 
-    QString gbptotal;
-    double poundg1 = (poundg.toDouble() * totalBalance / 100000000);
-    gbptotal = QString::number(poundg1, 'f', 6);
-    ui->labelGBPTotal->setText("£" + gbptotal + " GBP");
+//     QString gbptotal;
+//     double poundg1 = (poundg.toDouble() * totalBalance / 100000000);
+//     gbptotal = QString::number(poundg1, 'f', 6);
+//     ui->labelGBPTotal->setText("£" + gbptotal + " GBP");
 
-    QString rubtotal;
-    double rubleg1 = (rubleg.toDouble() * totalBalance / 100000000);
-    rubtotal = QString::number(rubleg1, 'f', 10);
-    ui->labelRUBTotal->setText("₽" + rubtotal + " RUB");
+//     QString rubtotal;
+//     double rubleg1 = (rubleg.toDouble() * totalBalance / 100000000);
+//     rubtotal = QString::number(rubleg1, 'f', 10);
+//     ui->labelRUBTotal->setText("₽" + rubtotal + " RUB");
 
-    QString jpytotal;
-    double yeng1 = (yeng.toDouble() * totalBalance / 100000000);
-    jpytotal = QString::number(yeng1, 'f', 12);
-    ui->labelJPYTotal->setText("¥" + jpytotal + " JPY");
+//     QString jpytotal;
+//     double yeng1 = (yeng.toDouble() * totalBalance / 100000000);
+//     jpytotal = QString::number(yeng1, 'f', 12);
+//     ui->labelJPYTotal->setText("¥" + jpytotal + " JPY");
 
-    ui->labelBTCTotal->setText("Ƀ" + BitcoinUnits::formatWithUnit(unitdBTC, bitcoing.toDouble() * totalBalance));
-    ui->labelTradeLink->setTextFormat(Qt::RichText);
-    ui->labelTradeLink->setTextInteractionFlags(Qt::TextBrowserInteraction);
-    ui->labelTradeLink->setOpenExternalLinks(true);
+//     ui->labelBTCTotal->setText("Ƀ" + BitcoinUnits::formatWithUnit(unitdBTC, bitcoing.toDouble() * totalBalance));
+//     ui->labelTradeLink->setTextFormat(Qt::RichText);
+//     ui->labelTradeLink->setTextInteractionFlags(Qt::TextBrowserInteraction);
+//     ui->labelTradeLink->setOpenExternalLinks(true);
 
-	QString news;
-	news = innnewsfeed;
-  ui->labelNewsFeed->setText(news);
+// 	QString news;
+// 	news = innnewsfeed;
+//   ui->labelNewsFeed->setText(news);
 
     // only show immature (newly mined) balance if it's non-zero, so as not to complicate things
     // for the non-mining users
@@ -496,7 +496,7 @@ void OverviewPage::setModel(WalletModel *model)
         // Set up transaction list
         filter = new TransactionFilterProxy();
         filter->setSourceModel(model->getTransactionTableModel());
-        filter->setLimit(NUM_ITEMS);
+        // filter->setLimit(NUM_ITEMS);
         filter->setDynamicSortFilter(true);
         filter->setSortRole(Qt::EditRole);
         filter->setShowInactive(false);
@@ -528,7 +528,7 @@ void OverviewPage::updateDisplayUnit()
             setBalance(currentBalance, currentLockedBalance, model->getStakeAmount(), currentUnconfirmedBalance, currentImmatureBalance, currentWatchOnlyBalance, currentWatchUnconfBalance, currentWatchImmatureBalance);
 
         // Update txdelegate->unit with the current unit
-        txdelegate->unit = model->getOptionsModel()->getDisplayUnit();
+        // txdelegate->unit = model->getOptionsModel()->getDisplayUnit();
 
         ui->listTransactions->update();
     }

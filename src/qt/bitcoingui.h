@@ -12,20 +12,20 @@ class WalletModel;
 class MessageModel;
 class TransactionView;
 class MintingView;
-class ManageNamesPage;
+// class ManageNamesPage;
 class CollateralnodeManager;
 class MultisigDialog;
 class OverviewPage;
 class AddressBookPage;
 class MessagePage;
 class StatisticsPage;
-class MarketBrowser;
+// class MarketBrowser;
 class BlockBrowser;
 class SendCoinsDialog;
 class SignVerifyMessageDialog;
 class Notificator;
 class RPCConsole;
-class ProofOfImage;
+// class ProofOfImage;
 // class Hyperfile;
 
 QT_BEGIN_NAMESPACE
@@ -97,12 +97,12 @@ private:
     OverviewPage *overviewPage;
 	  StatisticsPage *statisticsPage;
 	  BlockBrowser *blockBrowser;
-    ManageNamesPage *manageNamesPage;
-	  MarketBrowser *marketBrowser;
+    // ManageNamesPage *manageNamesPage;
+	//   MarketBrowser *marketBrowser;
     QWidget *transactionsPage;
 	  QWidget *mintingPage;
 	  MultisigDialog *multisigPage;
-	  ProofOfImage *proofOfImagePage;
+	//   ProofOfImage *proofOfImagePage;
     // Hyperfile *hyperfilePage;
 	  CollateralnodeManager *collateralnodeManagerPage;
     AddressBookPage *addressBookPage;
@@ -127,11 +127,11 @@ private:
     QAction *overviewAction;
 	  QAction *statisticsAction;
 	  QAction *blockAction;
-	  QAction *marketAction;
+	//   QAction *marketAction;
     QAction *historyAction;
 	  QAction *mintingAction;
 	  QAction *multisigAction;
-    QAction *proofOfImageAction;
+    // QAction *proofOfImageAction;
     // QAction *hyperfileAction;
     QAction *manageNamesAction;
 	  QAction *collateralnodeManagerAction;
@@ -224,9 +224,9 @@ private slots:
 	/** Switch to block explorer*/
     void gotoBlockBrowser();
 	/** Switch to market*/
-    void gotoMarketBrowser();
+    // void gotoMarketBrowser();
   /** Switch to manage names page */
-    void gotoManageNamesPage();
+    // void gotoManageNamesPage();
 	/** Switch to minting page */
     void gotoMintingPage();
     /** Switch to history (transactions) page */
@@ -242,9 +242,9 @@ private slots:
 	/** Switch to collateralnode manager page */
 	void gotoCollateralnodeManagerPage();
 	/** Switch to proof of image page */
-	void gotoProofOfImagePage();
-  /** Switch to Hyperfile page */
-//   void gotoHyperfilePage();
+	// void gotoProofOfImagePage();
+    /** Switch to Hyperfile page */
+    // void gotoHyperfilePage();
 
 
     //void gotoChatPage();

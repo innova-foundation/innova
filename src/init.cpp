@@ -20,11 +20,11 @@
 #include "spork.h"
 #include "smessage.h"
 #include "ringsig.h"
-#include "idns.h"
+// #include "idns.h"
 
-#ifdef USE_NATIVETOR
-#include "tor/anonymize.h" //Tor native optional integration (Flag -nativetor=1)
-#endif
+// #ifdef USE_NATIVETOR
+// #include "tor/anonymize.h" //Tor native optional integration (Flag -nativetor=1)
+// #endif
 
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
@@ -47,7 +47,7 @@ using namespace std;
 using namespace boost;
 
 CWallet* pwalletMain = NULL;
-IDns* idns = NULL;
+//IDns* idns = NULL;
 CClientUIInterface uiInterface;
 bool fConfChange;
 bool fEnforceCanonical;
@@ -114,9 +114,9 @@ void Shutdown(void* parg)
     {
         fShutdown = true;
 
-        if(idns) {
-            delete idns;
-        }
+        // if(idns) {
+        //     delete idns;
+        // }
         Finalise();
         /*
         SecureMsgShutdown();
@@ -323,7 +323,7 @@ std::string HelpMessage()
         "  -bind=<addr>           " + _("Bind to given address. Use [host]:port notation for IPv6") + "\n" +
         "  -dnsseed               " + _("Find peers using DNS lookup (default: 1)") + "\n" +
         "  -onionseed             " + _("Find peers using .onion seeds (default: 0 unless -connect)") + "\n" +
-        "  -nativetor=<n>         " + _("Enable or disable Native Tor Onion Node (default: 0)") +
+        // "  -nativetor=<n>         " + _("Enable or disable Native Tor Onion Node (default: 0)") +
         "  -staking               " + _("Stake your coins to support network and gain reward (default: 1)") + "\n" +
         "  -minstakeinterval=<n>  " + _("Minimum time in seconds between successful stakes (default: 30)") + "\n" +
         "  -minersleep=<n>        " + _("Milliseconds between stake attempts. Lowering this param will not result in more stakes. (default: 1000)") + "\n" +
@@ -526,8 +526,8 @@ bool AppInit2()
     fTestNet = GetBoolArg("-testnet");
 
     fCNLock = GetBoolArg("-cnconflock");
-    fNativeTor = GetBoolArg("-nativetor");
-    fHyperfileLocal = GetBoolArg("-hyperfilelocal");
+    // fNativeTor = GetBoolArg("-nativetor");
+    // fHyperfileLocal = GetBoolArg("-hyperfilelocal");
 
     if (mapArgs.count("-bind"))
     {
@@ -773,93 +773,93 @@ bool AppInit2()
         return InitError(strprintf(_("Unknown -socks proxy version requested: %i"), nSocksVersion));
 
     // Native Tor Onion Relay Integration
-    if(fNativeTor)
-    {
-        do {
-            std::set<enum Network> nets;
-            nets.insert(NET_TOR);
+    // if(fNativeTor)
+    // {
+    //     do {
+    //         std::set<enum Network> nets;
+    //         nets.insert(NET_TOR);
 
-            for (int n = 0; n < NET_MAX; n++) {
-                enum Network net = (enum Network)n;
-                if (!nets.count(net))
-                    SetLimited(net);
-            }
-        } while (false);
-    };
+    //         for (int n = 0; n < NET_MAX; n++) {
+    //             enum Network net = (enum Network)n;
+    //             if (!nets.count(net))
+    //                 SetLimited(net);
+    //         }
+    //     } while (false);
+    // };
 
-    if(!fNativeTor)
-    {
-        if (mapArgs.count("-onlynet"))
-        {
-            std::set<enum Network> nets;
-            for (std::string snet : mapMultiArgs["-onlynet"])
-            {
-                enum Network net = ParseNetwork(snet);
-                if (net == NET_UNROUTABLE)
-                    return InitError(strprintf(_("Unknown network specified in -onlynet: '%s'"), snet.c_str()));
-                nets.insert(net);
-            };
-            for (int n = 0; n < NET_MAX; n++)
-            {
-                enum Network net = (enum Network)n;
-                if (!nets.count(net))
-                    SetLimited(net);
-            };
-        };
+    // if(!fNativeTor)
+    // {
+    //     if (mapArgs.count("-onlynet"))
+    //     {
+    //         std::set<enum Network> nets;
+    //         for (std::string snet : mapMultiArgs["-onlynet"])
+    //         {
+    //             enum Network net = ParseNetwork(snet);
+    //             if (net == NET_UNROUTABLE)
+    //                 return InitError(strprintf(_("Unknown network specified in -onlynet: '%s'"), snet.c_str()));
+    //             nets.insert(net);
+    //         };
+    //         for (int n = 0; n < NET_MAX; n++)
+    //         {
+    //             enum Network net = (enum Network)n;
+    //             if (!nets.count(net))
+    //                 SetLimited(net);
+    //         };
+    //     };
 
-        CService addrProxy;
-        bool fProxy = false;
-        if (mapArgs.count("-proxy"))
-        {
-            addrProxy = CService(mapArgs["-proxy"], 9089);
-            if (!addrProxy.IsValid())
-                return InitError(strprintf(_("Invalid -proxy address: '%s'"), mapArgs["-proxy"].c_str()));
+    //     CService addrProxy;
+    //     bool fProxy = false;
+    //     if (mapArgs.count("-proxy"))
+    //     {
+    //         addrProxy = CService(mapArgs["-proxy"], 9089);
+    //         if (!addrProxy.IsValid())
+    //             return InitError(strprintf(_("Invalid -proxy address: '%s'"), mapArgs["-proxy"].c_str()));
 
-            if (!IsLimited(NET_IPV4))
-                SetProxy(NET_IPV4, addrProxy, nSocksVersion);
-            if (nSocksVersion > 4)
-            {
-                if (!IsLimited(NET_IPV6))
-                    SetProxy(NET_IPV6, addrProxy, nSocksVersion);
-                SetNameProxy(addrProxy, nSocksVersion);
-            };
-            fProxy = true;
-        };
+    //         if (!IsLimited(NET_IPV4))
+    //             SetProxy(NET_IPV4, addrProxy, nSocksVersion);
+    //         if (nSocksVersion > 4)
+    //         {
+    //             if (!IsLimited(NET_IPV6))
+    //                 SetProxy(NET_IPV6, addrProxy, nSocksVersion);
+    //             SetNameProxy(addrProxy, nSocksVersion);
+    //         };
+    //         fProxy = true;
+    //     };
 
-        // -tor can override normal proxy, -notor disables tor entirely
-        if (!(mapArgs.count("-tor") && mapArgs["-tor"] == "0") && (fProxy || mapArgs.count("-tor")))
-        {
-            CService addrOnion;
-            if (!mapArgs.count("-tor"))
-                addrOnion = addrProxy;
-            else
-                addrOnion = CService(mapArgs["-tor"], onion_port);
+    //     // -tor can override normal proxy, -notor disables tor entirely
+    //     if (!(mapArgs.count("-tor") && mapArgs["-tor"] == "0") && (fProxy || mapArgs.count("-tor")))
+    //     {
+    //         CService addrOnion;
+    //         if (!mapArgs.count("-tor"))
+    //             addrOnion = addrProxy;
+    //         else
+    //             addrOnion = CService(mapArgs["-tor"], onion_port);
 
-            if (!addrOnion.IsValid())
-                return InitError(strprintf(_("Invalid -tor address: '%s'"), mapArgs["-tor"].c_str()));
-            SetProxy(NET_TOR, addrOnion, 5);
-            SetReachable(NET_TOR);
-        };
+    //         if (!addrOnion.IsValid())
+    //             return InitError(strprintf(_("Invalid -tor address: '%s'"), mapArgs["-tor"].c_str()));
+    //         SetProxy(NET_TOR, addrOnion, 5);
+    //         SetReachable(NET_TOR);
+    //     };
 
-    };
+    // };
 
-    // Native Tor Onion and -tor flag integration
-    if(fNativeTor)
-    {
-        if (mapArgs.count("-tor") && mapArgs["-tor"] != "0")
-        {
-            CService addrOnion;
-            if (mapArgs.count("-tor"))
-                addrOnion = CService(mapArgs["-tor"], onion_port);
-            else
-                addrOnion = CService("127.0.0.1", onion_port);
+    // // Native Tor Onion and -tor flag integration
+    // if(fNativeTor)
+    // {
+    //     if (mapArgs.count("-tor") && mapArgs["-tor"] != "0")
+    //     {
+    //         CService addrOnion;
+    //         if (mapArgs.count("-tor"))
+    //             addrOnion = CService(mapArgs["-tor"], onion_port);
+    //         else
+    //             addrOnion = CService("127.0.0.1", onion_port);
 
-            if (!addrOnion.IsValid())
-                return InitError(strprintf(_("Invalid -tor address: '%s'"), mapArgs["-tor"].c_str()));
-            SetProxy(NET_TOR, addrOnion);
-            SetReachable(NET_TOR);
-        };
-    };
+    //         if (!addrOnion.IsValid())
+    //             return InitError(strprintf(_("Invalid -tor address: '%s'"), mapArgs["-tor"].c_str()));
+    //         SetProxy(NET_TOR, addrOnion);
+    //         SetReachable(NET_TOR);
+    //     };
+    // };
 
     // see Step 2: parameter interactions for more information about these
     if(!fNativeTor) // Available if nativetor is disabled
@@ -873,65 +873,65 @@ bool AppInit2()
     fUseUPnP = GetBoolArg("-upnp", USE_UPNP);
 #endif
 
-    bool fBound = false;
-    if(!fNativeTor)
-    {
-        if (!fNoListen)
-        {
-            std::string strError;
-            if (mapArgs.count("-bind"))
-            {
-                for (std::string strBind : mapMultiArgs["-bind"]) {
-                    CService addrBind;
-                    if (!Lookup(strBind.c_str(), addrBind, GetListenPort(), false))
-                        return InitError(strprintf(_("Cannot resolve -bind address: '%s'"), strBind.c_str()));
-                    fBound |= Bind(addrBind);
-                }
-            } else
-            {
-                struct in_addr inaddr_any;
-                inaddr_any.s_addr = INADDR_ANY;
-                if (!IsLimited(NET_IPV6))
-                    fBound |= Bind(CService(in6addr_any, GetListenPort()), false);
-                if (!IsLimited(NET_IPV4))
-                    fBound |= Bind(CService(inaddr_any, GetListenPort()), !fBound);
-            };
-            if (!fBound)
-                return InitError(_("Failed to listen on any port. Use -listen=0 if you want this."));
-        };
-    };
+//     bool fBound = false;
+//     if(!fNativeTor)
+//     {
+//         if (!fNoListen)
+//         {
+//             std::string strError;
+//             if (mapArgs.count("-bind"))
+//             {
+//                 for (std::string strBind : mapMultiArgs["-bind"]) {
+//                     CService addrBind;
+//                     if (!Lookup(strBind.c_str(), addrBind, GetListenPort(), false))
+//                         return InitError(strprintf(_("Cannot resolve -bind address: '%s'"), strBind.c_str()));
+//                     fBound |= Bind(addrBind);
+//                 }
+//             } else
+//             {
+//                 struct in_addr inaddr_any;
+//                 inaddr_any.s_addr = INADDR_ANY;
+//                 if (!IsLimited(NET_IPV6))
+//                     fBound |= Bind(CService(in6addr_any, GetListenPort()), false);
+//                 if (!IsLimited(NET_IPV4))
+//                     fBound |= Bind(CService(inaddr_any, GetListenPort()), !fBound);
+//             };
+//             if (!fBound)
+//                 return InitError(_("Failed to listen on any port. Use -listen=0 if you want this."));
+//         };
+//     };
 
-#ifdef USE_NATIVETOR
-    // Native Tor Integration Continued - I n n o v a v3
-    if(fNativeTor)
-    {
-        CService addrBind;
-        if (!Lookup("127.0.0.1", addrBind, GetListenPort(), false))
-            return InitError(strprintf(_("Cannot resolve binding address: '%s'"), "127.0.0.1"));
+// #ifdef USE_NATIVETOR
+//     // Native Tor Integration Continued - I n n o v a v3
+//     if(fNativeTor)
+//     {
+//         CService addrBind;
+//         if (!Lookup("127.0.0.1", addrBind, GetListenPort(), false))
+//             return InitError(strprintf(_("Cannot resolve binding address: '%s'"), "127.0.0.1"));
 
-        fBound |= Bind(addrBind);
+//         fBound |= Bind(addrBind);
 
-        if (!fBound)
-            return InitError(_("Failed to listen on any port."));
+//         if (!fBound)
+//             return InitError(_("Failed to listen on any port."));
 
-        if (!(mapArgs.count("-tor") && mapArgs["-tor"] != "0")) {
-              if (!NewThread(StartTor, NULL))
-                      return InitError(_("Error: Could Not Start Tor Onion Node"));
-        }
-        wait_initialized();
+//         if (!(mapArgs.count("-tor") && mapArgs["-tor"] != "0")) {
+//               if (!NewThread(StartTor, NULL))
+//                       return InitError(_("Error: Could Not Start Tor Onion Node"));
+//         }
+//         wait_initialized();
 
-        string automatic_onion;
-        filesystem::path const hostname_path = GetDefaultDataDir() / "onion" / "hostname";
+//         string automatic_onion;
+//         filesystem::path const hostname_path = GetDefaultDataDir() / "onion" / "hostname";
 
-        if (!filesystem::exists(hostname_path)) {
-            return InitError(_("No external address found."));
-        }
+//         if (!filesystem::exists(hostname_path)) {
+//             return InitError(_("No external address found."));
+//         }
 
-        ifstream file(hostname_path.string().c_str());
-        file >> automatic_onion;
-        AddLocal(CService(automatic_onion, GetListenPort(), fNameLookup), LOCAL_MANUAL);
-    };
-#endif
+//         ifstream file(hostname_path.string().c_str());
+//         file >> automatic_onion;
+//         AddLocal(CService(automatic_onion, GetListenPort(), fNameLookup), LOCAL_MANUAL);
+//     };
+// #endif
 
     if (mapArgs.count("-externalip"))
     {
@@ -998,18 +998,18 @@ bool AppInit2()
     printf(" block index %15" PRId64"ms\n", GetTimeMillis() - nStart);
 
     //Create Innova Name index - this must happen before ReacceptWalletTransactions()
-    uiInterface.InitMessage(_("Loading name index..."));
-    printf("Loading Innova name index...\n");
-    nStart2 = GetTimeMillis();
+    // uiInterface.InitMessage(_("Loading name index..."));
+    // printf("Loading Innova name index...\n");
+    // nStart2 = GetTimeMillis();
 
-    extern bool createNameIndexFile();
-    if (!filesystem::exists(GetDataDir() / "innovanamesindex.dat") && !createNameIndexFile())
-    {
-        printf("Fatal error: Failed to create innovanamesindex.dat\n");
-        return false;
-    }
+    // extern bool createNameIndexFile();
+    // if (!filesystem::exists(GetDataDir() / "innovanamesindex.dat") && !createNameIndexFile())
+    // {
+    //     printf("Fatal error: Failed to create innovanamesindex.dat\n");
+    //     return false;
+    // }
 
-    printf("Loaded Name DB %15" PRId64"ms\n", GetTimeMillis() - nStart2);
+    // printf("Loaded Name DB %15" PRId64"ms\n", GetTimeMillis() - nStart2);
 
 
     if (GetBoolArg("-printblockindex") || GetBoolArg("-printblocktree"))
@@ -1319,10 +1319,10 @@ bool AppInit2()
     printf("mapWallet.size() = %" PRIszu"\n",       pwalletMain->mapWallet.size());
     printf("mapAddressBook.size() = %" PRIszu"\n",  pwalletMain->mapAddressBook.size());
 
-    if(fNativeTor)
-        printf("Native Tor Onion Relay Node Enabled\n");
-    else
-        printf("Native Tor Onion Relay Disabled, Using Regular Peers...\n");
+    // if(fNativeTor)
+    //     printf("Native Tor Onion Relay Node Enabled\n");
+    // else
+    //     printf("Native Tor Onion Relay Disabled, Using Regular Peers...\n");
 
     if (fDebug)
         printf("Debugging is Enabled.\n");
@@ -1336,21 +1336,21 @@ bool AppInit2()
         NewThread(ThreadRPCServer, NULL);
 
     // Init Innova DNS.
-    if (GetBoolArg("-idns", true))
-    {
-        #define IDNS_PORT 6565
-        int port = GetArg("-idnsport", IDNS_PORT);
-        int verbose = GetArg("-idnsverbose", 1);
-        if (port <= 0)
-            port = IDNS_PORT;
-        string suffix  = GetArg("-idnssuffix", "");
-        string bind_ip = GetArg("-idnsbindip", "");
-        string allowed = GetArg("-idnsallowed", "");
-        string localcf = GetArg("-idnslocalcf", "");
-        idns = new IDns(bind_ip.c_str(), port,
-        suffix.c_str(), allowed.c_str(), localcf.c_str(), verbose);
-        printf("Innova DNS Server started on %d!\n", port);
-    }
+    // if (GetBoolArg("-idns", true))
+    // {
+    //     #define IDNS_PORT 6565
+    //     int port = GetArg("-idnsport", IDNS_PORT);
+    //     int verbose = GetArg("-idnsverbose", 1);
+    //     if (port <= 0)
+    //         port = IDNS_PORT;
+    //     string suffix  = GetArg("-idnssuffix", "");
+    //     string bind_ip = GetArg("-idnsbindip", "");
+    //     string allowed = GetArg("-idnsallowed", "");
+    //     string localcf = GetArg("-idnslocalcf", "");
+    //     idns = new IDns(bind_ip.c_str(), port,
+    //     suffix.c_str(), allowed.c_str(), localcf.c_str(), verbose);
+    //     printf("Innova DNS Server started on %d!\n", port);
+    // }
 
     // ********************************************************* Step 12: finished
 
@@ -1360,16 +1360,16 @@ bool AppInit2()
     if (!strErrors.str().empty())
         return InitError(strErrors.str());
 
-#if !defined(QT_GUI)
-    // Loop until process is exit()ed from shutdown() function,
-    // called from ThreadRPCServer thread when a "stop" command is received.
-    if(idns) {
-	    idns->Run();
-    }
-    while (1)
-        //MilliSleep(5000);
-        sleep(5);
-#endif
+// #if !defined(QT_GUI)
+//     // Loop until process is exit()ed from shutdown() function,
+//     // called from ThreadRPCServer thread when a "stop" command is received.
+//     if(idns) {
+// 	    idns->Run();
+//     }
+//     while (1)
+//         //MilliSleep(5000);
+//         sleep(5);
+// #endif
 
     fSuccessfullyLoaded = true;
 
