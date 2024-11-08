@@ -242,7 +242,7 @@
 #define HAVE_MACRO__func__ 1
 
 /* Define to 1 if you have the `mallinfo' function. */
-//#define HAVE_MALLINFO 1
+#define HAVE_MALLINFO 1
 
 /* Define to 1 if you have the <malloc.h> header file. */
 #define HAVE_MALLOC_H 1
