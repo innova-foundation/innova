@@ -19,13 +19,13 @@ class OverviewPage;
 class AddressBookPage;
 class MessagePage;
 class StatisticsPage;
-// class MarketBrowser;
+class MarketBrowser;
 class BlockBrowser;
 class SendCoinsDialog;
 class SignVerifyMessageDialog;
 class Notificator;
 class RPCConsole;
-// class ProofOfImage;
+class ProofOfImage;
 // class Hyperfile;
 
 QT_BEGIN_NAMESPACE
