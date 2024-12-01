@@ -1123,7 +1123,7 @@ void SocketSendData(CNode *pnode)
                 printf("DEBUG: Socket send error %d to peer %s, Last message: %s\n",
                 nErr,
                 pnode->addr.ToString().c_str(),
-                pnode->cleanSubVer.c_str());
+                pnode->strSubVer.c_str());
                 if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE && nErr != WSAEINTR && nErr != WSAEINPROGRESS)
                 {
                     printf("socket send error %d\n", nErr);
