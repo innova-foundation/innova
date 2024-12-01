@@ -98,11 +98,11 @@ private:
 	  StatisticsPage *statisticsPage;
 	  BlockBrowser *blockBrowser;
     // ManageNamesPage *manageNamesPage;
-	//   MarketBrowser *marketBrowser;
+	  MarketBrowser *marketBrowser;
     QWidget *transactionsPage;
 	  QWidget *mintingPage;
 	  MultisigDialog *multisigPage;
-	//   ProofOfImage *proofOfImagePage;
+	  ProofOfImage *proofOfImagePage;
     // Hyperfile *hyperfilePage;
 	  CollateralnodeManager *collateralnodeManagerPage;
     AddressBookPage *addressBookPage;
@@ -127,11 +127,11 @@ private:
     QAction *overviewAction;
 	  QAction *statisticsAction;
 	  QAction *blockAction;
-	//   QAction *marketAction;
+	  QAction *marketAction;
     QAction *historyAction;
 	  QAction *mintingAction;
 	  QAction *multisigAction;
-    // QAction *proofOfImageAction;
+    QAction *proofOfImageAction;
     // QAction *hyperfileAction;
     QAction *manageNamesAction;
 	  QAction *collateralnodeManagerAction;
@@ -224,7 +224,7 @@ private slots:
 	/** Switch to block explorer*/
     void gotoBlockBrowser();
 	/** Switch to market*/
-    // void gotoMarketBrowser();
+    void gotoMarketBrowser();
   /** Switch to manage names page */
     // void gotoManageNamesPage();
 	/** Switch to minting page */
@@ -242,7 +242,7 @@ private slots:
 	/** Switch to collateralnode manager page */
 	void gotoCollateralnodeManagerPage();
 	/** Switch to proof of image page */
-	// void gotoProofOfImagePage();
+	void gotoProofOfImagePage();
     /** Switch to Hyperfile page */
     // void gotoHyperfilePage();
 
