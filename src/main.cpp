@@ -4682,6 +4682,9 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
     if (strCommand == "version")
     {
+        printf("DEBUG: Version negotiation started - Local Version: %d, Peer: %s\n",
+        PROTOCOL_VERSION,
+        pfrom->addr.ToString().c_str());
         // Each connection can only send one version message
         if (pfrom->nVersion != 0)
         {
@@ -4698,7 +4701,18 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         // Old Node Versioning with Block Height Code
         bool oldVersion = false;
 
-        if (pfrom->nVersion < MIN_PEER_PROTO_VERSION)
+        printf("DEBUG: Version details - Peer: %s, Their Version: %d, Their SubVer: %s, Required: %d\n",
+        pfrom->addr.ToString().c_str(),
+        pfrom->nVersion,
+        pfrom->strSubVer.c_str(), 
+        MIN_PEER_PROTO_VERSION);
+
+        if (pfrom->nVersion < MIN_PEER_PROTO_VERSION) {
+            printf("DEBUG: Version negotiation failed - Peer: %s, Their Version: %d, Required: %d\n",
+            pfrom->addr.ToString().c_str(),
+            pfrom->nVersion,
+            MIN_PEER_PROTO_VERSION);
+        }
             oldVersion = true;
 
         /*
@@ -4726,6 +4740,12 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
         // print the current pfrom->strSubVer
         printf("ProcessMessage(): peer=%s using SubVer=%s, oldVersion=%s\n", pfrom->addr.ToString().c_str(), pfrom->strSubVer.c_str(), oldVersion ? "true" : "false");
+
+        printf("DEBUG: Version handshake - Local Version: %d, Peer Version: %d, Min Required: %d, Peer: %s\n",
+        PROTOCOL_VERSION,
+        pfrom->nVersion,
+        MIN_PEER_PROTO_VERSION,
+        pfrom->addr.ToString().c_str());
 
         if (oldVersion == true)
         {

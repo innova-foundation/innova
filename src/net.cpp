@@ -633,12 +633,21 @@ void CNode::Cleanup()
 
 void CNode::PushVersion()
 {
-    /// when NTP implemented, change to just nTime = GetAdjustedTime()
-    int64_t nTime = (fInbound ? GetAdjustedTime() : GetTime());
+    //int64_t nTime = (fInbound ? GetAdjustedTime() : GetTime());
+    int64_t nTime = GetAdjustedTime(); // Use adjusted time always
     CAddress addrYou = (addr.IsRoutable() && !IsProxy(addr) ? addr : CAddress(CService("0.0.0.0",0)));
     CAddress addrMe = GetLocalAddress(&addr);
     RAND_bytes((unsigned char*)&nLocalHostNonce, sizeof(nLocalHostNonce));
-    printf("send version message: version %d, blocks=%d, us=%s, them=%s, peer=%s\n", PROTOCOL_VERSION, nBestHeight, addrMe.ToString().c_str(), addrYou.ToString().c_str(), addr.ToString().c_str());
+
+    printf("DEBUG: Sending version - Protocol: %d, AddrMe: %s, AddrYou: %s\n",
+           PROTOCOL_VERSION, 
+           addrMe.ToString().c_str(),
+           addrYou.ToString().c_str());
+           
+    if (!addrMe.IsValid()) {
+        addrMe = CAddress(CService("0.0.0.0", GetListenPort()));
+    }
+    
     PushMessage("version", PROTOCOL_VERSION, nLocalServices, nTime, addrYou, addrMe,
                 nLocalHostNonce, FormatSubVersion(CLIENT_NAME, CLIENT_VERSION, std::vector<string>()), nBestHeight);
 }
@@ -1111,6 +1120,10 @@ void SocketSendData(CNode *pnode)
             if (nBytes < 0) {
                 // error
                 int nErr = WSAGetLastError();
+                printf("DEBUG: Socket send error %d to peer %s, Last message: %s\n",
+                nErr,
+                pnode->addr.ToString().c_str(),
+                pnode->cleanSubVer.c_str());
                 if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE && nErr != WSAEINTR && nErr != WSAEINPROGRESS)
                 {
                     printf("socket send error %d\n", nErr);

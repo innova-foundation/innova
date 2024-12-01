@@ -36,7 +36,7 @@ static const int PROTOCOL_VERSION = 43960; // Protocol is now 43940 for v4.3.9.4
 static const int INIT_PROTO_VERSION = 21212;
 
 // disconnect from peers older than this proto version
-static const int MIN_PEER_PROTO_VERSION = 43960; // Allow min v4.3.9.5 remove old nodes without new PoW Rewards
+static const int MIN_PEER_PROTO_VERSION = 43950; // Allow min v4.3.9.5 remove old nodes without new PoW Rewards
 
 // Don't forget to change proto in COLLATERAL.h as well!! On Block 1.5m this will be 31005
 extern int MIN_MN_PROTO_VERSION;

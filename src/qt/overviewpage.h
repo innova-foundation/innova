@@ -29,10 +29,10 @@ public:
     void setModel(WalletModel *model);
     void showOutOfSyncWarning(bool fShow);
 
-// private:
-//     void getRequest1( const QString &url );
-//     void getRequest2( const QString &url );
-//     void getRequest3( const QString &url );
+private:
+    void getRequest1( const QString &url );
+    void getRequest2( const QString &url );
+    void getRequest3( const QString &url );
 //     void getRequest4( const QString &url );
 //     void getRequest5( const QString &url );
 //     void getRequest6( const QString &url );
@@ -40,7 +40,7 @@ public:
 
 public slots:
     void setBalance(qint64 balance, qint64 lockedbalance, qint64 stake, qint64 unconfirmedBalance, qint64 immatureBalance, qint64 watchOnlyBalance, qint64 watchUnconfBalance, qint64 watchImmatureBalance);
-    //void PriceRequest();
+    void PriceRequest();
 
 signals:
     void transactionClicked(const QModelIndex &index);

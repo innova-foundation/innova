@@ -329,6 +329,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/trafficgraphwidget.h \
     src/qt/blockbrowser.h \
     src/qt/statisticspage.h \
+    src/qt/marketbrowser.h \
     src/qt/qcustomplot.h \
     src/qt/collateralnodemanager.h \
     src/qt/addeditadrenalinenode.h \
