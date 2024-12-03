@@ -193,7 +193,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     proofOfImagePage = new ProofOfImage(this);
     // hyperfilePage = new Hyperfile(this);
     // manageNamesPage = new ManageNamesPage(this);
-	//chatWindow = new ChatWindow(this);
+	// chatWindow = new ChatWindow(this);
 
     transactionsPage = new QWidget(this);
     QVBoxLayout *vbox = new QVBoxLayout();
@@ -222,7 +222,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     centralWidget->addWidget(overviewPage);
     centralWidget->addWidget(transactionsPage);
 	centralWidget->addWidget(mintingPage);
-//   centralWidget->addWidget(manageNamesPage);
+    // centralWidget->addWidget(manageNamesPage);
     centralWidget->addWidget(addressBookPage);
     centralWidget->addWidget(receiveCoinsPage);
     centralWidget->addWidget(sendCoinsPage);
@@ -233,7 +233,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
 	centralWidget->addWidget(marketBrowser);
     centralWidget->addWidget(proofOfImagePage);
     // centralWidget->addWidget(hyperfilePage);
-	//centralWidget->addWidget(chatWindow);
+	// centralWidget->addWidget(chatWindow);
     setCentralWidget(centralWidget);
 
     // Create status bar
@@ -272,7 +272,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     {
         QTimer *timerStakingIcon = new QTimer(labelStakingIcon);
         connect(timerStakingIcon, SIGNAL(timeout()), this, SLOT(updateStakingIcon()));
-        timerStakingIcon->start(5 * 1000); // Set to update every 5 * 1000ms (5 seconds) better CPU usage
+        timerStakingIcon->start(7 * 1000); // Set to update every 7 * 1000ms (7 seconds) better CPU usage
         updateStakingIcon();
     }
 

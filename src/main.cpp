@@ -4712,9 +4712,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             pfrom->addr.ToString().c_str(),
             pfrom->nVersion,
             MIN_PEER_PROTO_VERSION);
-        }
             oldVersion = true;
-
+            printf("DEBUG: Old Version pfrom->nVersion: %d, oldVersion: %s\n", pfrom->nVersion, oldVersion ? "true" : "false");
+        }
+    
         /*
         if (pfrom->nVersion < PROTO_VERSION)
         {

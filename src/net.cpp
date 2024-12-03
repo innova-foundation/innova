@@ -634,7 +634,7 @@ void CNode::Cleanup()
 void CNode::PushVersion()
 {
     //int64_t nTime = (fInbound ? GetAdjustedTime() : GetTime());
-    int64_t nTime = GetAdjustedTime(); // Use adjusted time always
+    int64_t nTime = GetAdjustedTime();
     CAddress addrYou = (addr.IsRoutable() && !IsProxy(addr) ? addr : CAddress(CService("0.0.0.0",0)));
     CAddress addrMe = GetLocalAddress(&addr);
     RAND_bytes((unsigned char*)&nLocalHostNonce, sizeof(nLocalHostNonce));
@@ -644,10 +644,13 @@ void CNode::PushVersion()
            addrMe.ToString().c_str(),
            addrYou.ToString().c_str());
            
+    printf("DEBUG: Version handshake - Local Version: %d, Required: %d\n",
+           PROTOCOL_VERSION, MIN_PEER_PROTO_VERSION);
+           
     if (!addrMe.IsValid()) {
         addrMe = CAddress(CService("0.0.0.0", GetListenPort()));
     }
-    
+
     PushMessage("version", PROTOCOL_VERSION, nLocalServices, nTime, addrYou, addrMe,
                 nLocalHostNonce, FormatSubVersion(CLIENT_NAME, CLIENT_VERSION, std::vector<string>()), nBestHeight);
 }
