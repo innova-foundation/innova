@@ -639,13 +639,16 @@ void CNode::PushVersion()
     CAddress addrMe = GetLocalAddress(&addr);
     RAND_bytes((unsigned char*)&nLocalHostNonce, sizeof(nLocalHostNonce));
 
-    printf("DEBUG: Sending version - Protocol: %d, AddrMe: %s, AddrYou: %s\n",
+    printf("DEBUG: Sending version - Protocol: %d, Peer Version: %d, AddrMe: %s, AddrYou: %s\n",
            PROTOCOL_VERSION, 
+           pfrom->nVersion,
            addrMe.ToString().c_str(),
            addrYou.ToString().c_str());
            
-    printf("DEBUG: Version handshake - Local Version: %d, Required: %d\n",
-           PROTOCOL_VERSION, MIN_PEER_PROTO_VERSION);
+    printf("DEBUG: Version handshake - Local Version: %d, Peer Version: %d, Required: %d\n",
+           PROTOCOL_VERSION, 
+           pfrom->nVersion,
+           MIN_PEER_PROTO_VERSION);
            
     if (!addrMe.IsValid()) {
         addrMe = CAddress(CService("0.0.0.0", GetListenPort()));
@@ -1647,7 +1650,7 @@ void ThreadMapPort2(void* parg)
                     printf("AddPortMapping(%s, %s, %s) failed with code %d (%s)\n",
                         port.c_str(), port.c_str(), lanaddr, r, strupnperror(r));
                 else
-                    printf("UPnP Port Mapping successful.\n");;
+                    printf("UPnP Port Mapping successful.\n");
             }
             MilliSleep(2000);
             i++;
