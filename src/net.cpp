@@ -641,13 +641,13 @@ void CNode::PushVersion()
 
     printf("DEBUG: Sending version - Protocol: %d, Peer Version: %d, AddrMe: %s, AddrYou: %s\n",
            PROTOCOL_VERSION, 
-           pfrom->nVersion,
+           nVersion,
            addrMe.ToString().c_str(),
            addrYou.ToString().c_str());
            
     printf("DEBUG: Version handshake - Local Version: %d, Peer Version: %d, Required: %d\n",
            PROTOCOL_VERSION, 
-           pfrom->nVersion,
+           nVersion,
            MIN_PEER_PROTO_VERSION);
            
     if (!addrMe.IsValid()) {
