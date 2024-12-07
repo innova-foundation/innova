@@ -3739,6 +3739,7 @@ bool CBlock::AcceptBlock()
 {
     uint256 targetProofOfStake;
     if (!CheckProofOfStake(vtx[1], nBits, hashProof, targetProofOfStake))
+    //if (!CheckProofOfStake(pindexPrev, vtx[1], nBits, hashProof, targetProofOfStake))
     {
         printf("WARNING: AcceptBlock(): check proof-of-stake failed for block %s\n"
                "  - nBits: %08x\n"
