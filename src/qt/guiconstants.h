@@ -41,6 +41,6 @@ static const int MAX_URI_LENGTH = 255;
 
 // Should be set to MAX_VALUE_LENGTH (from namecoin.h) when it's supported by the network
 // (currently due to limitations of CScript the limit is 519 bytes)
-static const int GUI_MAX_VALUE_LENGTH = 519;
+//static const int GUI_MAX_VALUE_LENGTH = 519;
 
 #endif // GUICONSTANTS_H

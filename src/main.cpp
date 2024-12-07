@@ -17,7 +17,7 @@
 #include "collateralnode.h"
 #include "spork.h"
 #include "smessage.h"
-#include "namecoin.h"
+//#include "namecoin.h"
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
@@ -104,7 +104,7 @@ extern enum Checkpoints::CPMode CheckpointsMode;
 
 std::set<uint256> setValidatedTx;
 
-CHooks* hooks; // This adds Innova Name DB hooks which allow splicing of code inside standard Innova functions.
+//CHooks* hooks; // This adds Innova Name DB hooks which allow splicing of code inside standard Innova functions.
 
 //////////////////////////////////////////////////////////////////////////////
 //
@@ -463,7 +463,7 @@ bool CTransaction::ReadFromDisk(COutPoint prevout)
 
 bool IsStandardTx(const CTransaction& tx, string& reason)
 {
-    if (tx.nVersion > CTransaction::CURRENT_VERSION && tx.nVersion != ANON_TXN_VERSION && tx.nVersion != NAMECOIN_TX_VERSION) { //WIP
+    if (tx.nVersion > CTransaction::CURRENT_VERSION && tx.nVersion != ANON_TXN_VERSION) { //&& tx.nVersion != NAMECOIN_TX_VERSION) { //WIP
         reason = "version";
         return false;
     }
@@ -930,10 +930,10 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
         return tx.DoS(100, error("CTxMemPool::accept() : coinstake as individual tx"));
 
     //bool isNameTx = hooks->IsNameFeeEnough(txdb, tx); //accept name tx with correct fee.
-    bool isNameTx = tx.nVersion == NAMECOIN_TX_VERSION;
+    //bool isNameTx = tx.nVersion == NAMECOIN_TX_VERSION;
     // Rather not work on nonstandard transactions (unless -testnet)
     string reason;
-    if (!fTestNet && !IsStandardTx(tx, reason) && !isNameTx) //!IsStandardTx(tx, reason)
+    if (!fTestNet && !IsStandardTx(tx, reason)) //&& !isNameTx) //!IsStandardTx(tx, reason)
         return error("CTxMemPool::accept() : nonstandard transaction type");
 
     // Do we already have it?
@@ -995,7 +995,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
             return false;
         }
             // Check for non-standard pay-to-script-hash in inputs
-            if (!AreInputsStandard(tx, mapInputs) && !fTestNet && !isNameTx)
+            if (!AreInputsStandard(tx, mapInputs) && !fTestNet) //&& !isNameTx)
                 return error("CTxMemPool::accept() : nonstandard transaction input");
 
             nFees = tx.GetValueIn(mapInputs) - tx.GetValueOut();
@@ -1027,7 +1027,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
 
             int64_t txMinFee = tx.GetMinFee(1000, feeMode, nSize);
 
-            if (nFees < txMinFee && !isNameTx)
+            if (nFees < txMinFee) //&& !isNameTx)
             {
                 return error("CTxMemPool::accept() : not enough fees %s, %" PRId64" < %" PRId64,
                              hash.ToString().c_str(),
@@ -1079,7 +1079,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
             }
             addUnchecked(hash, tx);
             //Add the TX to our Pending Names in Name DB
-            hooks->AddToPendingNames(tx);
+            //hooks->AddToPendingNames(tx);
         }
 
         ///// are we sure this is ok when loading transactions or restoring block txes
@@ -2503,8 +2503,8 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
     }
 
     // innova: undo name transactions in reverse order
-    for (int i = vtx.size() - 1; i >= 0; i--)
-        hooks->DisconnectInputs(vtx[i]);
+    // for (int i = vtx.size() - 1; i >= 0; i--)
+    //     hooks->DisconnectInputs(vtx[i]);
 
     // ppcoin: clean up wallet after disconnecting coinstake
     for (CTransaction& tx : vtx)
@@ -3198,11 +3198,11 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
             return error("ConnectBlock() : WriteBlockIndex failed");
     }
 
-    // Check Name Release Height to Connect Blocks
-    if (pindex->nHeight >= RELEASE_HEIGHT) {
-        // add names to innovanamesindex.dat
-        hooks->ConnectBlock(txdb, pindex);
-    }
+    // // Check Name Release Height to Connect Blocks
+    // if (pindex->nHeight >= RELEASE_HEIGHT) {
+    //     // add names to innovanamesindex.dat
+    //     hooks->ConnectBlock(txdb, pindex);
+    // }
 
     // Watch for transactions paying to me
     for (CTransaction& tx : vtx)
@@ -3736,14 +3736,23 @@ bool CBlock::AcceptBlock()
     uint256 hashProof;
     // Verify hash target and signature of coinstake tx
     if (IsProofOfStake())
+{
+    uint256 targetProofOfStake;
+    if (!CheckProofOfStake(vtx[1], nBits, hashProof, targetProofOfStake))
     {
-        uint256 targetProofOfStake;
-        //if (!CheckProofOfStake(pindexPrev, vtx[1], nBits, hashProof, targetProofOfStake))
-		if (!CheckProofOfStake(vtx[1], nBits, hashProof, targetProofOfStake))
-        {
-			printf("WARNING: AcceptBlock(): check proof-of-stake failed for block %s\n", hash.ToString().c_str());
-            //return error("AcceptBlock() : check proof-of-stake failed for block %s", hash.ToString().c_str());
-			return false; // do not error here as we expect this during initial block download
+        printf("WARNING: AcceptBlock(): check proof-of-stake failed for block %s\n"
+               "  - nBits: %08x\n"
+               "  - hashProof: %s\n" 
+               "  - targetPoS: %s\n"
+               "  - block time: %u\n"
+               "  - prev block time: %u\n",
+               hash.ToString().c_str(),
+               nBits,
+               hashProof.ToString().c_str(),
+               targetProofOfStake.ToString().c_str(),
+               GetBlockTime(),
+               pindexPrev->GetBlockTime());
+        return false; // do not error here as we expect this during initial block download
         }
     }
     // PoW is checked in CheckBlock()

@@ -1260,7 +1260,7 @@ void WriteConfigFile(FILE* configFile)
     fputs ("#collateralnodeaddr=\n", configFile);
     fputs ("#collateralnodeprivkey=\n", configFile);
     fputs ("\n", configFile);
-    fputs ("idns=1\n", configFile);
+    //fputs ("idns=1\n", configFile);
     fputs ("addnode=innseeder.circuitbreaker.online\n", configFile); // seeder
     fputs ("addnode=innseeder.circuitbreaker.dev\n", configFile); // seeder
     fputs ("addnode=innseeder.innovai.cloud\n", configFile); // seeder

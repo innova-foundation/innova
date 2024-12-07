@@ -313,7 +313,7 @@ OBJS= \
     obj/rpcblockchain.o \
     obj/rpcrawtransaction.o \
     obj/rpcsmessage.o \
-    obj/rpchyperfile.o \
+    #obj/rpchyperfile.o \
     obj/script.o \
     obj/sync.o \
     obj/util.o \
@@ -338,8 +338,8 @@ OBJS= \
     obj/ringsig.o \
     obj/bloom.o \
   	obj/state.o \
-    obj/idns.o \
-    obj/namecoin.o \
+    #obj/idns.o \
+    #obj/namecoin.o \
     obj/ipfs.o \
     obj/ipfscurl.o  \
     obj/utiltime.o \

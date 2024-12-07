@@ -7,7 +7,7 @@
 
 #include "allocators.h" /* for SecureString */
 #include "wallet.h"
-#include "namecoin.h"
+//#include "namecoin.h"
 
 class OptionsModel;
 class AddressTableModel;
@@ -108,9 +108,9 @@ public:
 
     // Register new name or update it
     // Requires unlocked wallet; can throw exception instead of returning error
-    NameTxReturn nameNew(const QString &name, const std::vector<unsigned char> &vchValue, int days, QString address = "");
-    NameTxReturn nameUpdate(const QString &name, const std::vector<unsigned char> &vchValue, int days, QString newAddress = "");
-    NameTxReturn nameDelete(const QString &name);
+    // NameTxReturn nameNew(const QString &name, const std::vector<unsigned char> &vchValue, int days, QString address = "");
+    // NameTxReturn nameUpdate(const QString &name, const std::vector<unsigned char> &vchValue, int days, QString newAddress = "");
+    // NameTxReturn nameDelete(const QString &name);
 
     // Wallet encryption
     bool setWalletEncrypted(bool encrypted, const SecureString &passphrase);

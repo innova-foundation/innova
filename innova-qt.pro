@@ -277,9 +277,9 @@ HEADERS += src/qt/bitcoingui.h \
     src/walletdb.h \
     src/script.h \
     src/stealth.h \
-    src/idns.h \
-    src/hooks.h \
-    src/namecoin.h \
+    #src/idns.h \
+    #src/hooks.h \
+    #src/namecoin.h \
     src/collateral.h \
     src/activecollateralnode.h \
     src/collateralnode.h \
@@ -460,8 +460,8 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/scrypt.cpp \
     src/pbkdf2.cpp \
     src/stealth.cpp \
-    src/idns.cpp \
-	src/namecoin.cpp \
+    #src/idns.cpp \
+	#src/namecoin.cpp \
     src/collateral.cpp \
     src/activecollateralnode.cpp \
     src/collateralnode.cpp \

@@ -678,7 +678,7 @@ bool AppInit2()
     if (!lock.try_lock())
         return InitError(strprintf(_("Cannot obtain a lock on data directory %s. Innova is probably already running."), strDataDir.c_str()));
 
-    hooks = InitHook(); //Initialized Innova Name Hooks
+    //hooks = InitHook(); //Initialized Innova Name Hooks
     if (GetBoolArg("-shrinkdebugfile", !fDebug))
         ShrinkDebugFile();
     printf("\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n");
