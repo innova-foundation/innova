@@ -13,6 +13,7 @@ greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 lessThan(QT_MAJOR_VERSION, 5): CONFIG += static
 QMAKE_CXXFLAGS += -fpermissive -Wno-literal-suffix
 QMAKE_CFLAGS += -std=c99
+unix|macx:QMAKE_MAKE = $$PWD/contrib/innova_make.sh
 
 greaterThan(QT_MAJOR_VERSION, 4) {
     QT += widgets printsupport
@@ -60,8 +61,8 @@ UI_DIR = build
 
 # use: qmake "RELEASE=1"
 contains(RELEASE, 1) {
-    # Mac: compile for maximum compatibility (10.6, 32-bit)
-    macx:QMAKE_CXXFLAGS += -mmacosx-version-min=11 -arch x86_64 -isysroot /Library/Developer/CommandLineTools/SDKs/MacOSX10.15.sdk/
+    # Mac: compile for modern macOS
+    macx:QMAKE_CXXFLAGS += -mmacosx-version-min=12.0
 
 
 
@@ -108,7 +109,15 @@ contains(USE_IPFS, -) {
 # use: qmake "USE_NATIVETOR=1" ( enabled by default; default)
 #  or: qmake "USE_NATIVETOR=0" (disabled by default)
 #  or: qmake "USE_NATIVETOR=-" (not supported)
-# I n n o v a Native Tor - USE_NATIVETOR=- to not compile with the Tor C Library by Tor Project located in src/tor OpenSSL 1.1 Compat not available with Native Tor
+# I n n o v a Native Tor - USE_NATIVETOR=- to not compile with the Tor C Library by Tor Project located in src/tor
+# NOTE: Native Tor requires OpenSSL 1.x and is NOT compatible with OpenSSL 3.x
+# On macOS with Homebrew (which provides OpenSSL 3.x), Native Tor is disabled by default
+macx {
+    isEmpty(USE_NATIVETOR) {
+        USE_NATIVETOR = -
+        message(macOS detected: Disabling Native Tor due to OpenSSL 3.x incompatibility)
+    }
+}
 contains(USE_NATIVETOR, -) {
     message(Building without Native Tor support)
 } else {
@@ -311,7 +320,9 @@ contains(USE_UPNP, -) {
     }
     DEFINES += USE_UPNP=$$USE_UPNP MINIUPNP_STATICLIB
     INCLUDEPATH += $$MINIUPNPC_INCLUDE_PATH
+    macx:INCLUDEPATH += /opt/homebrew/opt/miniupnpc/include
     LIBS += $$join(MINIUPNPC_LIB_PATH,,-L,) -lminiupnpc
+    macx:LIBS += -L/opt/homebrew/opt/miniupnpc/lib
     win32:LIBS += -liphlpapi
 }
 
@@ -440,6 +451,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/mintingtablemodel.h \
     src/qt/mintingview.h \
     src/qt/proofofimage.h \
+    src/qt/hyperfile.h \
     src/qt/multisigaddressentry.h \
     src/qt/multisiginputentry.h \
     src/qt/multisigdialog.h \
@@ -550,10 +562,12 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/messagemodel.h \
     src/qt/sendmessagesdialog.h \
     src/qt/sendmessagesentry.h \
+    src/qt/initexecutor.h \
     src/qt/plugins/mrichtexteditor/mrichtextedit.h \
     src/qt/qvalidatedtextedit.h
 
 SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
+    src/qt/initexecutor.cpp \
     src/qt/intro.cpp \
     src/qt/transactiontablemodel.cpp \
     src/qt/addresstablemodel.cpp \
@@ -578,6 +592,8 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/multisiginputentry.cpp \
     src/qt/multisigdialog.cpp \
     src/qt/proofofimage.cpp \
+    src/qt/hyperfile.cpp \
+    src/rpchyperfile.cpp \
     src/qt/termsofuse.cpp \
     src/qt/bantablemodel.cpp \
     src/alert.cpp \
@@ -693,6 +709,7 @@ FORMS += \
     src/qt/forms/blockbrowser.ui \
     src/qt/forms/marketbrowser.ui \
     src/qt/forms/proofofimage.ui \
+    src/qt/forms/hyperfile.ui \
     src/qt/forms/termsofuse.ui \
     src/qt/forms/collateralnodemanager.ui \
     src/qt/forms/addeditadrenalinenode.ui \
@@ -735,8 +752,17 @@ OTHER_FILES += \
     doc/*.rst doc/*.txt doc/README README.md res/bitcoin-qt.rc
 
 # platform specific defaults, if not overridden on command line
+# macOS: Homebrew paths (arm64 uses /opt/homebrew, x86_64 uses /usr/local)
+macx {
+    # Detect architecture and set Homebrew prefix
+    HOMEBREW_PREFIX = /opt/homebrew
+    exists(/usr/local/bin/brew):!exists(/opt/homebrew/bin/brew) {
+        HOMEBREW_PREFIX = /usr/local
+    }
+}
+
 isEmpty(BOOST_LIB_SUFFIX) {
-    macx:BOOST_LIB_SUFFIX = -mt
+    macx:BOOST_LIB_SUFFIX =
     windows:BOOST_LIB_SUFFIX = -mgw48-mt-s-1_55
 }
 
@@ -745,27 +771,33 @@ isEmpty(BOOST_THREAD_LIB_SUFFIX) {
 }
 
 isEmpty(BDB_LIB_PATH) {
-    macx:BDB_LIB_PATH = /opt/local/lib/db48
+    macx:BDB_LIB_PATH = $$HOMEBREW_PREFIX/opt/berkeley-db@5/lib
 }
 
 isEmpty(BDB_LIB_SUFFIX) {
-    macx:BDB_LIB_SUFFIX = -4.8
+    macx:BDB_LIB_SUFFIX =
 }
 
 isEmpty(BDB_INCLUDE_PATH) {
-    macx:BDB_INCLUDE_PATH = /opt/local/include/db48
+    macx:BDB_INCLUDE_PATH = $$HOMEBREW_PREFIX/opt/berkeley-db@5/include
 }
 
 isEmpty(BOOST_LIB_PATH) {
-    macx:BOOST_LIB_PATH = /opt/local/lib
+    macx:BOOST_LIB_PATH = $$HOMEBREW_PREFIX/opt/boost/lib
 }
 
 isEmpty(BOOST_INCLUDE_PATH) {
-    macx:BOOST_INCLUDE_PATH = /opt/local/include
+    macx:BOOST_INCLUDE_PATH = $$HOMEBREW_PREFIX/opt/boost/include
 }
 
-macx:OPENSSL_LIB_PATH = /opt/local/lib/openssl-1.0
-macx:OPENSSL_INCLUDE_PATH = /opt/local/include/openssl-1.0
+macx:OPENSSL_LIB_PATH = $$HOMEBREW_PREFIX/opt/openssl@3/lib
+macx:OPENSSL_INCLUDE_PATH = $$HOMEBREW_PREFIX/opt/openssl@3/include
+macx:LIBEVENT_LIB_PATH = $$HOMEBREW_PREFIX/opt/libevent/lib
+macx:LIBEVENT_INCLUDE_PATH = $$HOMEBREW_PREFIX/opt/libevent/include
+macx:LIBCURL_LIB_PATH = $$HOMEBREW_PREFIX/opt/curl/lib
+macx:LIBCURL_INCLUDE_PATH = $$HOMEBREW_PREFIX/opt/curl/include
+macx:MINIUPNPC_INCLUDE_PATH = $$HOMEBREW_PREFIX/opt/miniupnpc/include
+macx:MINIUPNPC_LIB_PATH = $$HOMEBREW_PREFIX/opt/miniupnpc/lib
 
 
 windows:DEFINES += WIN32
@@ -789,17 +821,16 @@ windows:!contains(MINGW_THREAD_BUGFIX, 0) {
 
 macx:HEADERS += src/qt/macdockiconhandler.h src/qt/macnotificationhandler.h
 macx:OBJECTIVE_SOURCES += src/qt/macdockiconhandler.mm src/qt/macnotificationhandler.mm
-macx:LIBS += -framework Foundation -framework ApplicationServices -framework AppKit
+macx:LIBS += -framework Foundation -framework ApplicationServices -framework AppKit -framework IOKit
 macx:DEFINES += MAC_OSX MSG_NOSIGNAL=0
 macx:ICON = src/qt/res/icons/innova.icns
 macx:TARGET = "Innova"
 macx:QMAKE_CFLAGS_THREAD += -pthread
 macx:QMAKE_LFLAGS_THREAD += -pthread
-macx:QMAKE_MACOSX_DEPLOYMENT_TARGET = 11
-macx:QMAKE_MAC_SDK = macosx11.1
+macx:QMAKE_MACOSX_DEPLOYMENT_TARGET = 12.0
 macx:QMAKE_CXXFLAGS_THREAD += -pthread
 macx:QMAKE_RPATHDIR = @executable_path/../Frameworks
-macx:QMAKE_CXXFLAGS += -stdlib=libc++
+macx:QMAKE_CXXFLAGS += -stdlib=libc++ -Wno-deprecated-declarations
 
 
 # Set libraries and includes at end, to use platform-defined defaults if not overridden
@@ -810,7 +841,7 @@ LIBS += -lz -levent
 
 # -lgdi32 has to happen after -lcrypto (see  #681)
 windows:LIBS += -lws2_32 -lshlwapi -lmswsock -lole32 -loleaut32 -luuid -lgdi32
-LIBS += -lboost_system$$BOOST_LIB_SUFFIX -lboost_filesystem$$BOOST_LIB_SUFFIX -lboost_program_options$$BOOST_LIB_SUFFIX -lboost_thread$$BOOST_THREAD_LIB_SUFFIX -lboost_chrono$$BOOST_LIB_SUFFIX
+LIBS += -lboost_filesystem$$BOOST_LIB_SUFFIX -lboost_program_options$$BOOST_LIB_SUFFIX -lboost_thread$$BOOST_THREAD_LIB_SUFFIX -lboost_chrono$$BOOST_LIB_SUFFIX
 windows:LIBS += -lboost_chrono$$BOOST_LIB_SUFFIX
 
 contains(RELEASE, 1) {

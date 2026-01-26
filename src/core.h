@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2017-2021 The Denarius developers
-// Copyright (c) 2019-2023 The Innova developers
+// Copyright (c) 2019-2026 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #ifndef D_CORE_H
@@ -321,7 +321,7 @@ public:
     COutPoint outpoint;
     int64_t nValue;         // rather store 2 bytes, digit + power 10 ?
     int nBlockHeight;
-    uint8_t nCompromised;   // TODO: mark if output can be identified (spent with ringsig 1)
+    uint8_t nCompromised; 
     IMPLEMENT_SERIALIZE
     (
         READWRITE(outpoint);

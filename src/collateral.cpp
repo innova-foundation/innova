@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2023 The Innova developers
+// Copyright (c) 2019-2026 The Innova developers
 // Copyright (c) 2017-2021 The Denarius developers
 // Copyright (c) 2009-2012 The Darkcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
@@ -23,6 +23,21 @@
 using namespace std;
 using namespace boost;
 
+static uint32_t SecureRand(uint32_t max) {
+    if (max <= 1) return 0;
+
+    uint32_t rand_val;
+    uint32_t limit = UINT32_MAX - (UINT32_MAX % max);
+
+    do {
+        if (RAND_bytes((unsigned char*)&rand_val, sizeof(rand_val)) != 1) {
+            GetRandBytes((unsigned char*)&rand_val, sizeof(rand_val));
+        }
+    } while (rand_val >= limit);
+
+    return rand_val % max;
+}
+
 CCriticalSection cs_collateral;
 
 /** The main object for accessing collateral */
@@ -43,7 +58,7 @@ int RequestedCollateralNodeList = 0;
 //MIN_MN_PROTO_VERSION
 int MIN_MN_PROTO_VERSION = 31000;
 
-int randomizeList (int i) { return std::rand()%i;}
+int randomizeList (int i) { return (int)SecureRand((uint32_t)i); }
 
 // Recursively determine the rounds of a given input (How deep is the collateral chain for a given input)
 int GetInputCollateralNRounds(CTxIn in, int rounds)
@@ -119,16 +134,12 @@ void CCollaTeralPool::SetNull(bool clearEverything){
         myEntries.clear();
 
         if(fCollateralNode){
-            sessionID = 1 + (rand() % 999999);
+            sessionID = 1 + SecureRand(999999);
         } else {
             sessionID = 0;
         }
     }
 
-    // -- seed random number generator (used for ordering output lists)
-    unsigned int seed = 0;
-    GetRandBytes((unsigned char*)&seed, sizeof(seed));
-    std::srand(seed);
 }
 
 bool CCollaTeralPool::SetCollateralAddress(std::string strAddress){
@@ -791,7 +802,7 @@ int CCollaTeralPool::GetDenominationsByAmount(int64_t nAmount, int nDenomTarget)
 
 bool CCollaTeralSigner::IsVinAssociatedWithPubkey(CTxIn& vin, CPubKey& pubkey){
 	bool fIsInitialDownload = IsInitialBlockDownload();
-    if(fIsInitialDownload) return;
+    if(fIsInitialDownload) return false;
 
     CScript payee2;
     payee2= GetScriptForDestination(pubkey.GetID());
@@ -1015,7 +1026,7 @@ void ThreadCheckCollaTeralPool(void* parg)
         //if(c % (60*5) == 0){
         if(c % 60 == 0 && vecCollateralnodes.size()) {
             //let's connect to a random collateralnode every minute!
-            int cn = rand() % vecCollateralnodes.size();
+            int cn = (int)SecureRand((uint32_t)vecCollateralnodes.size());
             CService addr = vecCollateralnodes[cn].addr;
             AddOneShot(addr.ToStringIPPort());
             if (fDebug) printf("added collateralnode at %s to connection attempts\n",addr.ToStringIPPort().c_str());
@@ -1025,7 +1036,7 @@ void ThreadCheckCollaTeralPool(void* parg)
             if (GetArg("-maxconnections", 125) > 16 && vNodes.size() < min(25, (int)GetArg("-maxconnections", 125)) && vecCollateralnodes.size() > 25) {
                 int x = 25 - vNodes.size();
                 for (int i = x; i-- > 0; ) {
-                    int cn = rand() % vecCollateralnodes.size();
+                    int cn = (int)SecureRand((uint32_t)vecCollateralnodes.size());
                     CService addr = vecCollateralnodes[cn].addr;
                     if (addr.IsIPv4() && !addr.IsLocal()) {
                         AddOneShot(addr.ToStringIPPort());

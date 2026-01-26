@@ -57,7 +57,8 @@ private slots:
 private:
     Ui::StatisticsPage *ui;
     ClientModel *model;
-    
+    qint64 lastUpdateTime;
+
 };
 
 #endif // STATISTICSPAGE_H

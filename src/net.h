@@ -19,6 +19,7 @@
 #include "netbase.h"
 #include "protocol.h"
 #include "addrman.h"
+#include "bloom.h"
 
 class CRequestTracker;
 class CNode;
@@ -376,7 +377,10 @@ public:
     // b) the peer may tell us in their version message that we should not relay tx invs
     //    until they have initialized their bloom filter.
     bool fRelayTxes;
+    bool fPreferHeaders;
     bool fColLateralMaster;
+    CBloomFilter* pfilter;
+    CCriticalSection cs_filter;
     CSemaphoreGrant grantOutbound;
     int nRefCount;
 	NodeId id;
@@ -409,6 +413,11 @@ public:
     uint256 hashLastGetBlocksEnd;
     int nChainHeight;
 	bool fStartSync;
+
+    int nBlocksReceivedInBatch;
+    int nExpectedBatchSize;
+    bool fPrefetchSent;
+    uint256 hashLastBlockInBatch;
 	int nMisbehavior;
 
     // flood relay
@@ -467,6 +476,10 @@ public:
         hashLastGetBlocksEnd = 0;
         nChainHeight = -1;
 		fStartSync = false;
+        nBlocksReceivedInBatch = 0;
+        nExpectedBatchSize = 0;
+        fPrefetchSent = false;
+        hashLastBlockInBatch = 0;
         fGetAddr = false;
         nMisbehavior = 0;
         hashCheckpointKnown = 0;
@@ -477,6 +490,8 @@ public:
         fPingQueued = false;
         fColLateralMaster = false;
         fRelayTxes = false;
+        fPreferHeaders = false;
+        pfilter = NULL;
         nLastDseg = GetTime();
 
         // Be shy and don't send version until we hear
@@ -490,6 +505,11 @@ public:
         {
             closesocket(hSocket);
             hSocket = INVALID_SOCKET;
+        }
+        if (pfilter)
+        {
+            delete pfilter;
+            pfilter = NULL;
         }
     }
 
@@ -599,8 +619,7 @@ public:
         nNow = std::max(nNow, nLastTime);
         nLastTime = nNow;
 
-        // Each retry is 2 minutes after the last
-        nRequestTime = std::max(nRequestTime + 2 * 60 * 1000000, nNow);
+        nRequestTime = std::max(nRequestTime + 10 * 1000000, nNow);
         mapAskFor.insert(std::make_pair(nRequestTime, inv));
     }
 
@@ -967,5 +986,7 @@ public:
 };
 
 void DumpBanlist();
+
+bool FetchBlockForStaking(const uint256& hashBlock);
 
 #endif

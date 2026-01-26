@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
 // Copyright (c) 2017-2021 The Denarius developers
-// Copyright (c) 2019-2023 The Innova developers
+// Copyright (c) 2019-2026 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #ifndef BITCOIN_MAIN_H
@@ -73,7 +73,9 @@ static const unsigned int MAX_TX_SIGOPS = MAX_BLOCK_SIGOPS/5;
 /** Default for -maxorphantx, maximum number of orphan transactions kept in memory */
 static const unsigned int DEFAULT_MAX_ORPHAN_TRANSACTIONS = 100; // Was 10k
 /** Default for -maxorphanblocks, maximum number of orphan blocks kept in memory */
-static const unsigned int DEFAULT_MAX_ORPHAN_BLOCKS = 750; // Default 750, try testing with 1000
+static const unsigned int DEFAULT_MAX_ORPHAN_BLOCKS = 2500; // Increased for faster parallel sync
+/** Default for -maxmempool, maximum mempool size in MB */
+static const unsigned int DEFAULT_MAX_MEMPOOL_SIZE = 300; // 300MB default
 static const unsigned int MAX_INV_SZ = 50000;
 static const int64_t MIN_TX_FEE = 1000;
 static const int64_t MIN_NAME_FEE = 90000000; // 0.9 INN Name OP Miner Fee
@@ -98,11 +100,42 @@ static const unsigned int MAX_P2SH_SIGOPS = 15;
 
 static const uint256 hashGenesisBlock("0x000009bd42d259eb7031ae4f634aede1a690da795e5529786a72c3cd6d989995");
 static const uint256 hashGenesisBlockTestNet("0x0000abd414802bce2f1ad3f056dcc42081bb423485098b84bf8f608217aef596");
+static const uint256 hashGenesisBlockRegTest("0x7d9f2da2e66d3ee806dce8231f5854a526a32db9c8b509410f652a101089c7d5");
+
+inline const uint256& GetGenesisBlockHash()
+{
+    if (fRegTest) return hashGenesisBlockRegTest;
+    if (fTestNet) return hashGenesisBlockTestNet;
+    return hashGenesisBlock;
+}
 
 //inline bool IsProtocolV1RetargetingFixed(int nHeight) { return fTestNet || nHeight > 0; }
 //inline bool IsProtocolV2(int nHeight) { return fTestNet || nHeight > 0; }
 //inline bool V3(int64_t nTime) { return fTestNet || nTime > 1524196491; } //nTime April 20th 2018
 
+// Hard fork height for tighter timestamp drift rules (2 min instead of 10 min)
+static const int FORK_HEIGHT_TIGHTER_DRIFT = 7250000;
+
+// Hard fork height for collateralnode payment validation enhancements
+static const int FORK_HEIGHT_CN_PAYMENT_VALIDATION = 7000000;
+
+// Minimum CN protocol version after fork (requires v4.3.9.5+)
+// Forces CN operators to update to current software for continued payments
+static const int FORK_MIN_CN_PROTO_VERSION = 43950;
+
+inline int64_t PastDrift(int64_t nTime, int nHeight) {
+    if (nHeight >= FORK_HEIGHT_TIGHTER_DRIFT)
+        return nTime - 2 * 60;  // 2 minutes after fork
+    return nTime - 10 * 60;     // 10 minutes before fork
+}
+
+inline int64_t FutureDrift(int64_t nTime, int nHeight) {
+    if (nHeight >= FORK_HEIGHT_TIGHTER_DRIFT)
+        return nTime + 2 * 60;
+    return nTime + 10 * 60;
+}
+
+// Legacy drift - use when height is unknown
 inline int64_t PastDrift(int64_t nTime)   { return nTime - 10 * 60; } // up to 10 minutes from the past
 inline int64_t FutureDrift(int64_t nTime) { return nTime + 10 * 60; } // up to 10 minutes from the future
 
@@ -137,6 +170,8 @@ extern CCriticalSection cs_setpwalletRegistered;
 extern std::set<CWallet*> setpwalletRegistered;
 extern unsigned char pchMessageStart[4];
 extern std::map<uint256, CBlock*> mapOrphanBlocks;
+extern std::map<uint256, NodeId> mapOrphanBlocksByNode;
+extern std::map<NodeId, int> mapOrphanCountByNode;
 extern std::map<int64_t, CAnonOutputCount> mapAnonOutputStats;
 
 extern CBigNum bnProofOfWorkLimit;
@@ -158,10 +193,17 @@ extern bool fEnforceCanonical;
 
 extern bool fMinimizeCoinAge;
 
+extern bool fSPVMode;
+extern bool fSPVHeadersOnly;
+extern int nSPVStartHeight;
+
+extern bool fHybridSPV;
+extern bool fSPVStakingEnabled;
+
 extern int64_t nMinTxFee;
 
 // Minimum disk space required - used in CheckDiskSpace()
-static const uint64_t nMinDiskSpace = 1073741824; // 1 GB Minimum, Raise to 2GB?
+static const uint64_t nMinDiskSpace = 13958643712; // 13 GB Minimum
 
 class CReserveKey;
 class CTxDB;
@@ -1415,7 +1457,7 @@ public:
             // build a shorter locator to save cpu time on large chains: LNK CR B82REZ 2G4
             if (nStep > 1024) break;
         }
-        vHave.push_back((!fTestNet ? hashGenesisBlock : hashGenesisBlockTestNet));
+        vHave.push_back(GetGenesisBlockHash());
     }
 
     int GetDistanceBack()
@@ -1468,7 +1510,7 @@ public:
                     return hash;
             }
         }
-        return (!fTestNet ? hashGenesisBlock : hashGenesisBlockTestNet);
+        return GetGenesisBlockHash();
     }
 
     int GetHeight()
@@ -1570,6 +1612,15 @@ public:
     {
         LOCK(cs);
         return mapTx.size();
+    }
+
+    size_t GetTotalMemoryUsage() const
+    {
+        LOCK(cs);
+        size_t usage = 0;
+        for (std::map<uint256, CTransaction>::const_iterator it = mapTx.begin(); it != mapTx.end(); ++it)
+            usage += ::GetSerializeSize(it->second, SER_NETWORK, PROTOCOL_VERSION);
+        return usage;
     }
 
     bool exists(uint256 hash) const

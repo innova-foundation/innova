@@ -12,6 +12,7 @@
 
 class COutPoint;
 class CTransaction;
+class CBlock;
 
 // 20,000 items with fp rate < 0.1% or 10,000 items and <0.0001%
 static const unsigned int MAX_BLOOM_FILTER_SIZE = 36000; // bytes
@@ -91,6 +92,105 @@ public:
 
     // Checks for empty and full filters to avoid wasting cpu
     void UpdateEmptyFull();
+};
+
+class CPartialMerkleTree
+{
+protected:
+    unsigned int nTransactions;
+    std::vector<bool> vBits;
+    std::vector<uint256> vHash;
+    bool fBad;
+
+    unsigned int CalcTreeWidth(int height) {
+        return (nTransactions + (1 << height) - 1) >> height;
+    }
+
+    uint256 CalcHash(int height, unsigned int pos, const std::vector<uint256> &vTxid);
+    void TraverseAndBuild(int height, unsigned int pos, const std::vector<uint256> &vTxid, const std::vector<bool> &vMatch);
+    uint256 TraverseAndExtract(int height, unsigned int pos, unsigned int &nBitsUsed, unsigned int &nHashUsed, std::vector<uint256> &vMatch);
+
+public:
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(nTransactions);
+        READWRITE(vHash);
+        std::vector<unsigned char> vBytes;
+        if (fRead) {
+            READWRITE(vBytes);
+            CPartialMerkleTree &us = *(const_cast<CPartialMerkleTree*>(this));
+            us.vBits.resize(vBytes.size() * 8);
+            for (unsigned int p = 0; p < us.vBits.size(); p++)
+                us.vBits[p] = (vBytes[p / 8] & (1 << (p % 8))) != 0;
+            us.fBad = false;
+        } else {
+            vBytes.resize((vBits.size()+7)/8);
+            for (unsigned int p = 0; p < vBits.size(); p++)
+                vBytes[p / 8] |= vBits[p] << (p % 8);
+            READWRITE(vBytes);
+        }
+    )
+
+    CPartialMerkleTree(const std::vector<uint256> &vTxid, const std::vector<bool> &vMatch);
+    CPartialMerkleTree();
+    uint256 ExtractMatches(std::vector<uint256> &vMatch);
+};
+
+
+class CBlockHeaderForMerkle
+{
+public:
+    int nVersion;
+    uint256 hashPrevBlock;
+    uint256 hashMerkleRoot;
+    unsigned int nTime;
+    unsigned int nBits;
+    unsigned int nNonce;
+
+    CBlockHeaderForMerkle()
+    {
+        SetNull();
+    }
+
+    void SetNull()
+    {
+        nVersion = 1;
+        hashPrevBlock = 0;
+        hashMerkleRoot = 0;
+        nTime = 0;
+        nBits = 0;
+        nNonce = 0;
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(this->nVersion);
+        nVersion = this->nVersion;
+        READWRITE(hashPrevBlock);
+        READWRITE(hashMerkleRoot);
+        READWRITE(nTime);
+        READWRITE(nBits);
+        READWRITE(nNonce);
+    )
+};
+
+class CMerkleBlock
+{
+public:
+    CBlockHeaderForMerkle header;
+    CPartialMerkleTree txn;
+
+public:
+    std::vector<std::pair<unsigned int, uint256> > vMatchedTxn;
+    CMerkleBlock(const CBlock& block, CBloomFilter& filter);
+    CMerkleBlock() {}
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(header);
+        READWRITE(txn);
+    )
 };
 
 #endif /* BITCOIN_BLOOM_H */

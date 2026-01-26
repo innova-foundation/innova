@@ -7,6 +7,7 @@
 #include "innovarpc.h"
 #include "init.h"
 #include "txdb.h"
+#include "bootstrap.h"
 #include <errno.h>
 
 #include <boost/filesystem.hpp>
@@ -58,22 +59,33 @@ double GetDifficulty(const CBlockIndex* blockindex)
 double GetPoWMHashPS()
 {
     int nPoWInterval = 72;
+    int nPoWBlocksToCheck = 100000; // Only look at last 100000 blocks max
     int64_t nTargetSpacingWorkMin = 30, nTargetSpacingWork = 30;
 
-    CBlockIndex* pindex = pindexGenesisBlock;
-    CBlockIndex* pindexPrevWork = pindexGenesisBlock;
+    CBlockIndex* pindex = pindexBest;
+    CBlockIndex* pindexPrevWork = NULL;
+    int nBlocksChecked = 0;
+    int nPoWBlocksFound = 0;
 
-    while (pindex)
+    while (pindex && nBlocksChecked < nPoWBlocksToCheck && nPoWBlocksFound < nPoWInterval)
     {
         if (pindex->IsProofOfWork())
         {
-            int64_t nActualSpacingWork = pindex->GetBlockTime() - pindexPrevWork->GetBlockTime();
-            nTargetSpacingWork = ((nPoWInterval - 1) * nTargetSpacingWork + nActualSpacingWork + nActualSpacingWork) / (nPoWInterval + 1);
-            nTargetSpacingWork = max(nTargetSpacingWork, nTargetSpacingWorkMin);
+            if (pindexPrevWork)
+            {
+                int64_t nActualSpacingWork = pindexPrevWork->GetBlockTime() - pindex->GetBlockTime();
+                if (nActualSpacingWork > 0)
+                {
+                    nTargetSpacingWork = ((nPoWInterval - 1) * nTargetSpacingWork + nActualSpacingWork + nActualSpacingWork) / (nPoWInterval + 1);
+                    nTargetSpacingWork = max(nTargetSpacingWork, nTargetSpacingWorkMin);
+                }
+            }
             pindexPrevWork = pindex;
+            nPoWBlocksFound++;
         }
 
-        pindex = pindex->pnext;
+        pindex = pindex->pprev;
+        nBlocksChecked++;
     }
 
     return GetDifficulty() * 4294.967296 / nTargetSpacingWork;
@@ -774,4 +786,208 @@ Value getblockchaininfo(const Array& params, bool fHelp)
     obj.push_back(Pair("moneysupply",   ValueFromAmount(pindexBest->nMoneySupply)));
     //obj.push_back(Pair("size_on_disk",   CalculateCurrentUsage()));
     return obj;
+}
+
+Value getspvinfo(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "getspvinfo\n"
+            "Returns information about SPV (light client) mode.\n");
+
+    Object obj;
+    obj.push_back(Pair("spv_enabled", fSPVMode));
+    obj.push_back(Pair("spv_headers_only", fSPVHeadersOnly));
+    obj.push_back(Pair("spv_start_height", nSPVStartHeight));
+    obj.push_back(Pair("headers_synced", nBestHeight));
+
+    if (fSPVMode)
+    {
+        obj.push_back(Pair("mode", "light"));
+        obj.push_back(Pair("description", "Operating in SPV mode - headers only, no full block validation"));
+    }
+    else
+    {
+        obj.push_back(Pair("mode", "full"));
+        obj.push_back(Pair("description", "Operating as full node with complete block validation"));
+    }
+
+    return obj;
+}
+
+Value spvrescan(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 1)
+        throw runtime_error(
+            "spvrescan [startheight]\n"
+            "Rescan blockchain for wallet transactions in SPV mode.\n"
+            "Arguments:\n"
+            "1. startheight  (numeric, optional) Height to start scanning from (default: 0)\n");
+
+    if (!fSPVMode)
+        throw runtime_error("spvrescan is only available in SPV mode. Start with -spv flag.");
+
+    int nStartHeight = 0;
+    if (params.size() > 0)
+        nStartHeight = params[0].get_int();
+
+    if (nStartHeight < 0)
+        throw runtime_error("Invalid start height");
+
+    CNode* pnode = NULL;
+    {
+        LOCK(cs_vNodes);
+        for (CNode* pn : vNodes)
+        {
+            if (pn->fSuccessfullyConnected && !pn->fDisconnect)
+            {
+                pnode = pn;
+                break;
+            }
+        }
+    }
+
+    if (!pnode)
+        throw runtime_error("No connected peers available for SPV rescan");
+
+    pwalletMain->RequestSPVTransactions(pnode, nStartHeight);
+
+    Object obj;
+    obj.push_back(Pair("status", "started"));
+    obj.push_back(Pair("start_height", nStartHeight));
+    obj.push_back(Pair("peer", pnode->addr.ToString()));
+
+    return obj;
+}
+
+Value getstakemodifiercheckpoints(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 2)
+        throw runtime_error(
+            "getstakemodifiercheckpoints [startheight] [interval]\n"
+            "Generate stake modifier checkpoints for kernel.cpp.\n"
+            "Arguments:\n"
+            "1. startheight  (numeric, optional) Height to start from (default: 2250000)\n"
+            "2. interval     (numeric, optional) Interval between checkpoints (default: 250000)\n"
+            "\nResult:\n"
+            "Returns checkpoint data in C++ format ready to paste into kernel.cpp\n");
+
+    int nStartHeight = 2250000;  
+    int nInterval = 250000;      
+
+    if (params.size() > 0)
+        nStartHeight = params[0].get_int();
+    if (params.size() > 1)
+        nInterval = params[1].get_int();
+
+    if (nStartHeight < 0 || nInterval < 1000)
+        throw runtime_error("Invalid parameters: startheight must be >= 0, interval must be >= 1000");
+
+    LOCK(cs_main);
+
+    if (!pindexBest)
+        throw runtime_error("Block index not available");
+
+    Object result;
+    Array checkpoints;
+    std::string cppOutput = "// Stake modifier checkpoints - generated by getstakemodifiercheckpoints\n";
+
+    int nCurrentHeight = nStartHeight;
+    int nBestHeight = pindexBest->nHeight;
+
+    while (nCurrentHeight <= nBestHeight)
+    {
+        CBlockIndex* pindex = FindBlockByHeight(nCurrentHeight);
+        if (!pindex)
+        {
+            nCurrentHeight += nInterval;
+            continue;
+        }
+
+        unsigned int nChecksum = pindex->nStakeModifierChecksum;
+
+        Object checkpoint;
+        checkpoint.push_back(Pair("height", nCurrentHeight));
+        checkpoint.push_back(Pair("checksum", strprintf("0x%08x", nChecksum)));
+        checkpoints.push_back(checkpoint);
+
+        cppOutput += strprintf("        ( %d, 0x%08x )\n", nCurrentHeight, nChecksum);
+
+        nCurrentHeight += nInterval;
+    }
+
+    result.push_back(Pair("start_height", nStartHeight));
+    result.push_back(Pair("end_height", nBestHeight));
+    result.push_back(Pair("interval", nInterval));
+    result.push_back(Pair("count", (int)checkpoints.size()));
+    result.push_back(Pair("checkpoints", checkpoints));
+    result.push_back(Pair("cpp_output", cppOutput));
+
+    return result;
+}
+
+Value downloadbootstrap(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 2)
+        throw runtime_error(
+            "downloadbootstrap [url] [force]\n"
+            "Download and apply blockchain bootstrap.\n"
+            "This downloads the bootstrap from the latest GitHub release.\n"
+            "Requires restart after completion.\n"
+            "\nWARNING: This will overwrite existing blockchain data!\n"
+            "\nArguments:\n"
+            "1. url    (string, optional) Custom bootstrap URL. Default: latest GitHub release\n"
+            "2. force  (bool, optional) Force download even if blockchain data exists. Default: false\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"status\": \"success|failed\",\n"
+            "  \"message\": \"description\"\n"
+            "}\n");
+
+    std::string url = params.size() > 0 ? params[0].get_str() : "";
+    bool force = params.size() > 1 ? params[1].get_bool() : false;
+
+    if (!Bootstrap::IsNeeded(GetDataDir()) && !force) {
+        throw runtime_error(
+            "Blockchain data already exists. This command would overwrite existing data.\n"
+            "If you really want to do this, call with force=true:\n"
+            "  downloadbootstrap \"\" true\n"
+            "WARNING: Your existing blockchain data will be overwritten!");
+    }
+
+    if (!url.empty()) {
+        printf("Bootstrap: WARNING - Using custom URL: %s\n", url.c_str());
+        printf("Bootstrap: Only use URLs from trusted sources!\n");
+    }
+
+    printf("Bootstrap: Starting download via RPC...\n");
+
+    int64_t lastPercent = -1;
+    auto progressCallback = [&lastPercent](int64_t downloaded, int64_t total) {
+        if (total > 0) {
+            int64_t percent = static_cast<int64_t>((static_cast<double>(downloaded) / total) * 100.0);
+            if (percent > 100) percent = 100;
+            if (percent < 0) percent = 0;
+            if (percent != lastPercent && percent % 10 == 0) {
+                printf("Bootstrap download: %lld%% (%lld MB / %lld MB)\n",
+                       (long long)percent,
+                       (long long)(downloaded / 1048576),
+                       (long long)(total / 1048576));
+                lastPercent = percent;
+            }
+        }
+    };
+
+    bool success = Bootstrap::DownloadAndApply(url, GetDataDir(), progressCallback);
+
+    Object result;
+    if (success) {
+        result.push_back(Pair("status", "success"));
+        result.push_back(Pair("message", "Bootstrap applied successfully. Please restart Innova to load the new blockchain data."));
+    } else {
+        result.push_back(Pair("status", "failed"));
+        result.push_back(Pair("message", "Bootstrap download or extraction failed. Check debug.log for details."));
+    }
+
+    return result;
 }

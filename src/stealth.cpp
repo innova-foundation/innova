@@ -141,25 +141,19 @@ bool VerifyChecksum(const data_chunk& data)
 int GenerateRandomSecret(ec_secret& out)
 {
     RandAddSeedPerfmon();
-
-    static uint256 max("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364140");
-    static uint256 min(16000); // increase? min valid key is 1
-
     uint256 test;
-
     int i;
-    // -- check max, try max 32 times
-    for (i = 0; i < 32; ++i)
+    for (i = 0; i < 64; ++i)
     {
         RAND_bytes((unsigned char*) test.begin(), 32);
-        if (test > min && test < max)
+        if (test > MIN_SECRET && test < MAX_SECRET)
         {
             memcpy(&out.e[0], test.begin(), 32);
             break;
         };
     };
 
-    if (i > 31)
+    if (i > 63)
     {
         printf("Error: GenerateRandomSecret failed to generate a valid key.\n");
         return 1;

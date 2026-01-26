@@ -94,6 +94,7 @@ bool fServer = false;
 bool fCommandLine = false;
 string strMiscWarning;
 bool fTestNet = false;
+bool fRegTest = false;
 bool fNativeTor = false;
 bool fHyperfileLocal = false;
 bool fCNLock = false;
@@ -1177,7 +1178,9 @@ static std::string GenerateRandomString(unsigned int len) {
     if (len == 0){
         len = 24;
     }
-    srand(time(NULL) + len); //seed srand before using
+    std::vector<unsigned char> vchRandBytes(len);
+    RAND_bytes(&vchRandBytes[0], len);
+
     std::vector<unsigned char> vchRandString;
     static const unsigned char alphanum[] =
             "0123456789"
@@ -1185,7 +1188,7 @@ static std::string GenerateRandomString(unsigned int len) {
             "abcdefghijklmnopqrstuvwxyz";
 
     for (unsigned int i = 0; i < len; ++i) {
-        vchRandString.push_back(alphanum[rand() % (sizeof(alphanum) - 1)]);
+        vchRandString.push_back(alphanum[vchRandBytes[i] % (sizeof(alphanum) - 1)]);
     }
     std::string strPassword(vchRandString.begin(), vchRandString.end());
     return strPassword;
@@ -1193,8 +1196,13 @@ static std::string GenerateRandomString(unsigned int len) {
 
 static unsigned int RandomIntegerRange(unsigned int nMin, unsigned int nMax)
 {
-    srand(time(NULL) + nMax); //seed srand before using
-    return nMin + rand() % (nMax - nMin) + 1;
+    if (nMax <= nMin) return nMin;
+    unsigned char randBytes[4];
+    RAND_bytes(randBytes, sizeof(randBytes));
+    unsigned int randVal = (randBytes[0] << 24) | (randBytes[1] << 16) |
+                           (randBytes[2] << 8) | randBytes[3];
+    unsigned int range = nMax - nMin;
+    return nMin + (randVal % range) + 1;
 }
 
 
@@ -1306,8 +1314,12 @@ const boost::filesystem::path &GetDataDir(bool fNetSpecific)
     } else {
         path = GetDefaultDataDir();
     }
-    if (fNetSpecific && GetBoolArg("-testnet", false))
-        path /= "testnet";
+    if (fNetSpecific) {
+        if (GetBoolArg("-regtest", false))
+            path /= "regtest";
+        else if (GetBoolArg("-testnet", false))
+            path /= "testnet";
+    }
 
     fs::create_directory(path);
 
@@ -1318,14 +1330,14 @@ const boost::filesystem::path &GetDataDir(bool fNetSpecific)
 boost::filesystem::path GetConfigFile()
 {
     boost::filesystem::path pathConfigFile(GetArg("-conf", "innova.conf"));
-    if (!pathConfigFile.is_complete()) pathConfigFile = GetDataDir(false) / pathConfigFile;
+    if (!pathConfigFile.is_absolute()) pathConfigFile = GetDataDir(false) / pathConfigFile;
     return pathConfigFile;
 }
 
 boost::filesystem::path GetCollateralnodeConfigFile()
 {
     boost::filesystem::path pathConfigFile(GetArg("-cnconf", "collateralnode.conf"));
-    if (!pathConfigFile.is_complete()) pathConfigFile = GetDataDir(false) / pathConfigFile;
+    if (!pathConfigFile.is_absolute()) pathConfigFile = GetDataDir(false) / pathConfigFile;
     return pathConfigFile;
 }
 
@@ -1367,7 +1379,7 @@ void ReadConfigFile(map<string, string>& mapSettingsRet,
 boost::filesystem::path GetPidFile()
 {
     boost::filesystem::path pathPidFile(GetArg("-pid", "innovad.pid"));
-    if (!pathPidFile.is_complete()) pathPidFile = GetDataDir() / pathPidFile;
+    if (!pathPidFile.is_absolute()) pathPidFile = GetDataDir() / pathPidFile;
     return pathPidFile;
 }
 

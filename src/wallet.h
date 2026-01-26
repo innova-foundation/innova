@@ -21,6 +21,7 @@
 #include "stealth.h"
 #include "smessage.h"
 #include "hooks.h"
+#include "bloom.h"
 
 static const int NAME_TX_VERSION = 0x0333;
 //static const int NAMECOIN_TX_VERSION = 0x0333; //0x0333 is initial version
@@ -108,6 +109,52 @@ public:
     )
 };
 
+struct SPVUtxo
+{
+    uint256 txhash;         // tx hash
+    uint32_t n;             // Output index
+    int64_t nValue;         // Output value
+    int nHeight;            // Block height containing this UTXO
+    uint256 hashBlock;      // Block hash containing this UTXO
+    uint256 hashMerkleRoot; // Merkle root from block header for verification
+    std::vector<uint256> vMerkleBranch;  // Merkle proof for tx inclusion
+    int nTxIndex;           // tx index in block for merkle verification
+    bool fHaveBlock;        // Whether we have the full block cached
+    bool fSpent;            // Whether this UTXO has been spent
+    bool fVerified;         // Whether merkle proof has been verified
+    int64_t nTime;          // Time of the tx
+    int64_t nLastBlockRequest; // Last time we requested this block (rate limiting)
+    CScript scriptPubKey;   // The scriptPubKey for this output
+
+    SPVUtxo() : n(0), nValue(0), nHeight(0), nTxIndex(0), fHaveBlock(false),
+                fSpent(false), fVerified(false), nTime(0), nLastBlockRequest(0) {}
+
+    SPVUtxo(const uint256& txhashIn, uint32_t nIn, int64_t nValueIn,
+            int nHeightIn, const uint256& hashBlockIn, int64_t nTimeIn,
+            const CScript& scriptIn)
+        : txhash(txhashIn), n(nIn), nValue(nValueIn), nHeight(nHeightIn),
+          hashBlock(hashBlockIn), nTxIndex(0), fHaveBlock(false), fSpent(false),
+          fVerified(false), nTime(nTimeIn), nLastBlockRequest(0),
+          scriptPubKey(scriptIn) {}
+
+    bool VerifyMerkleProof() const
+    {
+        if (vMerkleBranch.empty())
+            return false;
+        uint256 hashCheck = txhash;
+        int nIndex = nTxIndex;
+        for (const uint256& hash : vMerkleBranch)
+        {
+            if (nIndex & 1)
+                hashCheck = Hash(BEGIN(hash), END(hash), BEGIN(hashCheck), END(hashCheck));
+            else
+                hashCheck = Hash(BEGIN(hashCheck), END(hashCheck), BEGIN(hash), END(hash));
+            nIndex >>= 1;
+        }
+        return hashCheck == hashMerkleRoot;
+    }
+};
+
 /** A CWallet is an extension of a keystore, which also maintains a set of transactions and balances,
  * and provides the ability to create new transactions.
  */
@@ -115,8 +162,9 @@ class CWallet : public CCryptoKeyStore
 {
 private:
     bool SelectCoinsForStaking(int64_t nTargetValue, unsigned int nSpendTime, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet) const;
+    bool SelectCoinsForStakingSPV(std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet) const;
     bool SelectCoins(int64_t nTargetValue, unsigned int nSpendTime, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet, const CCoinControl *coinControl=NULL) const;
-    bool CreateTransactionInner(const std::vector<std::pair<CScript, CAmount> >& vecSend, const CWalletTx& wtxNameIn, CAmount nFeeInput, CWalletTx& wtxNew, CReserveKey& reservekey, CAmount& nFeeRet, std::string& strFailReason, const CCoinControl *coinControl = NULL);
+    bool CreateTransactionInner(const std::vector<std::pair<CScript, CAmount> >& vecSend, const CWalletTx& wtxNameIn, CAmount nFeeInput, CWalletTx& wtxNew, CReserveKey& reservekey, CAmount& nFeeRet, std::string& strFailReason, const CCoinControl *coinControl = NULL, const CScript* scriptChange = NULL);
     // bool SelectCoins(CAmount nTargetValue, unsigned int nSpendTime, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet, const CCoinControl *coinControl = NULL) const;
     CWalletDB *pwalletdbEncryption;
 
@@ -196,6 +244,9 @@ public:
     int64_t nOrderPosNext;
     std::map<uint256, int> mapRequestCount;
 
+    std::map<COutPoint, SPVUtxo> mapSPVUtxos;
+    mutable CCriticalSection cs_spvutxos;
+
     //Innova Name DB
     std::vector<uint256> vWalletUpdated;
     std::vector<uint256> vCheckNewNames;
@@ -214,6 +265,19 @@ public:
 
     void AvailableCoinsForStaking(std::vector<COutput>& vCoins, unsigned int nSpendTime) const;
     void AvailableCoins(std::vector<COutput>& vCoins, bool fOnlyConfirmed=true, const CCoinControl *coinControl = NULL) const;
+
+    void UpdateSPVUtxo(const COutPoint& outpoint, const SPVUtxo& utxo);
+    void RemoveSPVUtxo(const COutPoint& outpoint);
+    void MarkSPVUtxoSpent(const COutPoint& outpoint);
+    void AvailableCoinsForStakingSPV(std::vector<COutPoint>& vCoins) const;
+    bool RequestBlockForStaking(const uint256& hashBlock, bool fWait = false);
+    void MarkSPVBlockAvailable(const uint256& hashBlock);
+    void PopulateSPVUtxosFromWallet();
+    void PruneSPVUtxos();
+    bool IsSPVUtxoSpent(const COutPoint& outpoint) const;
+    size_t GetSPVUtxoCount() const { LOCK(cs_spvutxos); return mapSPVUtxos.size(); }
+    bool SaveSPVUtxoCache();
+    bool LoadSPVUtxoCache();
     //void AvailableCoins(std::vector<COutput>& vCoins, bool fOnlyConfirmed=true, const CCoinControl *coinControl=NULL) const;
     void AvailableCoinsMN(std::vector<COutput>& vCoins, bool fOnlyConfirmed=true, bool fOnlyUnlocked=true, const CCoinControl *coinControl = NULL, AvailableCoinsType coin_type=ALL_COINS) const;
     bool SelectCoinsMinConf(int64_t nTargetValue, unsigned int nSpendTime, int nConfMine, int nConfTheirs, std::vector<COutput> vCoins, std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet, int64_t& nValueRet) const;
@@ -305,11 +369,15 @@ public:
     int64_t GetUnconfirmedWatchOnlyBalance() const;
     int64_t GetImmatureWatchOnlyBalance() const;
 
+    CBloomFilter* CreateSPVBloomFilter(double nFPRate = 0.0001, unsigned int nFlags = 0) const;
+    bool ProcessMerkleBlock(const CMerkleBlock& merkleBlock, std::vector<uint256>& vMatch);
+    void RequestSPVTransactions(CNode* pnode, int nStartHeight = 0);
+
     int64_t GetStake() const;
     int64_t GetStakeAmount() const;
     int64_t GetNewMint() const;
-    bool CreateTransaction(const std::vector<std::pair<CScript, int64_t> >& vecSend, CWalletTx& wtxNew, CReserveKey& reservekey, int64_t& nFeeRet, int32_t& nChangePos, const CCoinControl *coinControl=NULL);
-    bool CreateTransaction(CScript scriptPubKey, int64_t nValue, std::string& sNarr, CWalletTx& wtxNew, CReserveKey& reservekey, int64_t& nFeeRet, const CCoinControl *coinControl=NULL);
+    bool CreateTransaction(const std::vector<std::pair<CScript, int64_t> >& vecSend, CWalletTx& wtxNew, CReserveKey& reservekey, int64_t& nFeeRet, int32_t& nChangePos, const CCoinControl *coinControl=NULL, const CScript* scriptChange = NULL);
+    bool CreateTransaction(CScript scriptPubKey, int64_t nValue, std::string& sNarr, CWalletTx& wtxNew, CReserveKey& reservekey, int64_t& nFeeRet, const CCoinControl *coinControl=NULL, const CScript* scriptChange = NULL);
     bool CreateNameTx(CScript scriptPubKey, const CAmount& nValue, const CWalletTx& wtxNameIn, CAmount nFeeInput, CWalletTx& wtxNew, CReserveKey& reservekey, CAmount& nFeeRet, std::string& strFailReason, const CCoinControl *coinControl = NULL);
     bool CommitTransaction(CWalletTx& wtxNew, CReserveKey& reservekey);
 

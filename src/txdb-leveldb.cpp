@@ -21,13 +21,41 @@
 #include "main.h"
 
 using namespace std;
-using namespace boost;
+namespace fs = boost::filesystem;
 
 leveldb::DB *txdb; // global pointer for LevelDB object instance
 
+static int nIBDBatchSize = 0;
+static int nIBDBatchCount = 0;
+static bool fIBDBatchPending = false;
+static CCriticalSection cs_IBDBatch;
+
+void InitIBDBatching()
+{
+    nIBDBatchSize = GetArg("-ibdbatchsize", 50);
+    if (nIBDBatchSize < 0) nIBDBatchSize = 0;
+    if (nIBDBatchSize > 1000) nIBDBatchSize = 1000;
+    if (nIBDBatchSize > 0)
+        printf("IBD batching enabled: committing every %d blocks\n", nIBDBatchSize);
+}
+
+void FlushIBDBatch()
+{
+    LOCK(cs_IBDBatch);
+    if (fIBDBatchPending && txdb)
+    {
+        printf("Flushing pending IBD batch (%d blocks)...\n", nIBDBatchCount);
+        CTxDB txdbFlush;
+        txdbFlush.TxnBegin();
+        txdbFlush.TxnCommit();
+        fIBDBatchPending = false;
+        nIBDBatchCount = 0;
+    }
+}
+
 static leveldb::Options GetOptions() {
     leveldb::Options options;
-    int nCacheSizeMB = GetArg("-dbcache", 25);
+    int nCacheSizeMB = GetArg("-dbcache", 300);
     options.block_cache = leveldb::NewLRUCache(nCacheSizeMB * 1048576);
     options.filter_policy = leveldb::NewBloomFilterPolicy(10);
     return options;
@@ -35,27 +63,27 @@ static leveldb::Options GetOptions() {
 
 void init_blockindex(leveldb::Options& options, bool fRemoveOld = false) {
     // First time init.
-    filesystem::path directory = GetDataDir() / "txleveldb";
+    fs::path directory = GetDataDir() / "txleveldb";
 
     if (fRemoveOld) {
-        filesystem::remove_all(directory); // remove directory
+        fs::remove_all(directory);
         unsigned int nFile = 1;
 
         while (true)
         {
-            filesystem::path strBlockFile = GetDataDir() / strprintf("blk%04u.dat", nFile);
+            fs::path strBlockFile = GetDataDir() / strprintf("blk%04u.dat", nFile);
 
             // Break if no such file
-            if( !filesystem::exists( strBlockFile ) )
+            if( !fs::exists( strBlockFile ) )
                 break;
 
-            filesystem::remove(strBlockFile);
+            fs::remove(strBlockFile);
 
             nFile++;
         }
     }
 
-    filesystem::create_directory(directory);
+    fs::create_directory(directory);
     printf("Opening LevelDB in %s\n", directory.string().c_str());
     leveldb::Status status = leveldb::DB::Open(options, directory.string(), &txdb);
     if (!status.ok()) {
@@ -142,7 +170,17 @@ bool CTxDB::TxnBegin()
 bool CTxDB::TxnCommit()
 {
     assert(activeBatch);
-    leveldb::Status status = pdb->Write(leveldb::WriteOptions(), activeBatch);
+
+    leveldb::WriteOptions writeOptions;
+    if (IsInitialBlockDownload() && nIBDBatchSize > 0)
+    {
+        writeOptions.sync = false;
+        LOCK(cs_IBDBatch);
+        fIBDBatchPending = true;
+        nIBDBatchCount++;
+    }
+
+    leveldb::Status status = pdb->Write(writeOptions, activeBatch);
     delete activeBatch;
     activeBatch = NULL;
     if (!status.ok()) {
@@ -428,7 +466,7 @@ bool CTxDB::LoadBlockIndex()
         pindexNew->nNonce         = diskindex.nNonce;
 
         // Watch for genesis block
-        if (pindexGenesisBlock == NULL && blockHash == (!fTestNet ? hashGenesisBlock : hashGenesisBlockTestNet))
+        if (pindexGenesisBlock == NULL && blockHash == GetGenesisBlockHash())
             pindexGenesisBlock = pindexNew;
 
         if (!pindexNew->CheckIndex()) {

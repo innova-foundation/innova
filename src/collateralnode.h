@@ -1,5 +1,5 @@
 // Copyright (c) 2017-2021 The Denarius developers
-// Copyright (c) 2019-2023 The Innova developers
+// Copyright (c) 2019-2026 The Innova developers
 // Copyright (c) 2009-2012 The Darkcoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
@@ -262,8 +262,8 @@ public:
 int GetCurrentCollateralNode(int mod=1, int64_t nBlockHeight=0, int minProtocol=CCollateralNode::minProtoVersion);
 bool CheckCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn);
 bool CheckPoSCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn);
-int64_t avg2(std::vector<CCollateralNode> const& v);
-int64_t avgCount(std::vector<CCollateralNode> const& v);
+int64_t avg2(std::vector<CCollateralNode> const& v, int nHeight);
+int64_t avgCount(std::vector<CCollateralNode> const& v, int nHeight);
 int GetCollateralnodeByVin(CTxIn& vin);
 int GetCollateralnodeRank(CCollateralNode& tmn, CBlockIndex* pindex, int minProtocol=CCollateralNode::minProtoVersion);
 int GetCollateralnodeByRank(int findRank, int64_t nBlockHeight=0, int minProtocol=CCollateralNode::minProtoVersion);

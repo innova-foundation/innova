@@ -1,52 +1,97 @@
 # -*- mode: Makefile; -*-
 # Copyright (c) 2011 Bitcoin Developers
+# Copyright (c) 2019-2026 Innova Developers
 # Distributed under the MIT/X11 software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 # Mac OS X makefile for innova
-# Originally by Laszlo Hanyecz (solar@heliacal.net)
 
-CXX=llvm-g++
-DEPSDIR=/opt/local
+CXX=clang++
+CC=clang
+
+# Homebrew paths (arm64 uses /opt/homebrew, x86_64 uses /usr/local)
+UNAME_M := $(shell uname -m)
+ifeq ($(UNAME_M),arm64)
+    HOMEBREW_PREFIX=/opt/homebrew
+else
+    HOMEBREW_PREFIX=/usr/local
+endif
+
+DEPSDIR=$(HOMEBREW_PREFIX)
+
+# Feature flags - disable Native Tor by default for OpenSSL 3 compatibility
+USE_LEVELDB:=1
+USE_UPNP:=1
+USE_NATIVETOR:=-
+USE_IPFS:=1
 
 INCLUDEPATHS= \
  -I"$(CURDIR)" \
  -I"$(CURDIR)"/obj \
+ -I"$(CURDIR)"/json \
  -I"$(DEPSDIR)/include" \
- -I"$(DEPSDIR)/include/db48"
+ -I"$(DEPSDIR)/opt/boost/include" \
+ -I"$(DEPSDIR)/opt/berkeley-db@5/include" \
+ -I"$(DEPSDIR)/opt/openssl@3/include" \
+ -I"$(DEPSDIR)/opt/libevent/include" \
+ -I"$(DEPSDIR)/opt/curl/include"
 
 LIBPATHS= \
- -L"$(DEPSDIR)/lib" \
- -L"$(DEPSDIR)/lib/db48"
-
-USE_LEVELDB:=1
-USE_UPNP:=1
-USE_NATIVETOR:=1
-USE_IPFS:=1
+ -L"$(DEPSDIR)/opt/openssl@3/lib" \
+ -L"$(DEPSDIR)/opt/boost/lib" \
+ -L"$(DEPSDIR)/opt/berkeley-db@5/lib" \
+ -L"$(DEPSDIR)/opt/libevent/lib" \
+ -L"$(DEPSDIR)/opt/curl/lib" \
+ -L"$(DEPSDIR)/lib"
 
 LIBS= -dead_strip
 
 ifdef STATIC
 # Build STATIC if you are redistributing the innovad binary
 LIBS += \
- $(DEPSDIR)/lib/db48/libdb_cxx-4.8.a \
- $(DEPSDIR)/lib/libboost_system-mt.a \
- $(DEPSDIR)/lib/libboost_filesystem-mt.a \
- $(DEPSDIR)/lib/libboost_program_options-mt.a \
- $(DEPSDIR)/lib/libboost_thread-mt.a \
- $(DEPSDIR)/lib/libssl.a \
- $(DEPSDIR)/lib/libcrypto.a
+ $(DEPSDIR)/opt/berkeley-db@5/lib/libdb_cxx.a \
+ $(DEPSDIR)/opt/boost/lib/libboost_filesystem.a \
+ $(DEPSDIR)/opt/boost/lib/libboost_program_options.a \
+ $(DEPSDIR)/opt/boost/lib/libboost_thread.a \
+ $(DEPSDIR)/opt/boost/lib/libboost_chrono.a \
+ $(DEPSDIR)/opt/openssl@3/lib/libssl.a \
+ $(DEPSDIR)/opt/openssl@3/lib/libcrypto.a \
+ $(DEPSDIR)/opt/libevent/lib/libevent.a \
+ $(DEPSDIR)/opt/curl/lib/libcurl.a
 else
 LIBS += \
- -ldb_cxx-4.8 \
- -lboost_system-mt \
- -lboost_filesystem-mt \
- -lboost_program_options-mt \
- -lboost_thread-mt \
+ -ldb_cxx \
+ -lboost_filesystem \
+ -lboost_program_options \
+ -lboost_thread \
+ -lboost_chrono \
  -lssl \
- -lcrypto
+ -lcrypto \
+ -levent \
+ -lcurl
 endif
 
+DEFS=-DMAC_OSX -DMSG_NOSIGNAL=0 -DBOOST_SPIRIT_THREADSAFE
+
+ifdef RELEASE
+OPT_FLAGS = -O3
+else
+OPT_FLAGS = -g -O2
+endif
+
+# Common warning flags
+WARN_FLAGS = -Wall -Wextra -Wformat -Wno-ignored-qualifiers -Wformat-security -Wno-unused-parameter \
+    -Wno-deprecated-declarations
+
+# C flags (for .c files)
+CFLAGS = $(OPT_FLAGS) -std=c99 $(WARN_FLAGS) $(DEBUGFLAGS) $(DEFS) $(INCLUDEPATHS)
+
+# C++ flags (for .cpp files)
+CXXFLAGS = $(OPT_FLAGS) -std=c++11 -stdlib=libc++ $(WARN_FLAGS) $(DEBUGFLAGS) $(DEFS) $(INCLUDEPATHS)
+
+LDFLAGS = -stdlib=libc++ $(LIBPATHS)
+
+# Native Tor support (disabled by default for OpenSSL 3)
 ifndef USE_NATIVETOR
   override USE_NATIVETOR = -
 endif
@@ -54,6 +99,7 @@ ifneq (${USE_NATIVETOR}, -)
   DEFS += $(addprefix -I,$(CURDIR)/tor) -DUSE_NATIVETOR=$(USE_NATIVETOR)
 endif
 
+# IPFS support
 ifndef USE_IPFS
   override USE_IPFS = -
 endif
@@ -61,315 +107,105 @@ ifneq (${USE_IPFS}, -)
   DEFS += $(addprefix -I,$(CURDIR)/ipfs) -DUSE_IPFS=$(USE_IPFS)
 endif
 
-DEFS=-DMAC_OSX -DMSG_NOSIGNAL=0 -DBOOST_SPIRIT_THREADSAFE
-
-ifdef RELEASE
-# Compile for maximum compatibility and smallest size.
-# This requires that dependencies are compiled
-# the same way.
-CFLAGS = -mmacosx-version-min=10.5 -arch x86_64 -O3 -msse2
-else
-CFLAGS = -g -msse2
-endif
-
-# ppc doesn't work because we don't support big-endian
-CFLAGS += -Wall -Wextra -Wformat -Wno-ignored-qualifiers -Wformat-security -Wno-unused-parameter \
-    $(DEBUGFLAGS) $(DEFS) $(INCLUDEPATHS)
-
-ifeq (${USE_IPFS}, 1)
-OBJS= \
-     obj/ipfs.o \
-     obj/ipfscurl.o
-endif
-
-ifeq (${USE_NATIVETOR}, 1)
-OBJS= \
-	obj/address.o \
-	obj/addressmap.o \
-	obj/aes.o \
-	obj/anonymize.o \
-	obj/backtrace.o \
-	obj/blinding.o \
-	obj/bridges.o \
-	obj/buffers.o \
-	obj/cell_common.o \
-	obj/cell_establish_intro.o \
-	obj/cell_introduce1.o \
-	obj/channel.o \
-	obj/channeltls.o \
-	obj/circpathbias.o \
-	obj/circuitbuild.o \
-	obj/circuitlist.o \
-	obj/circuitmux.o \
-	obj/circuitmux_ewma.o \
-	obj/circuitstats.o \
-	obj/circuituse.o \
-	obj/command.o \
-	obj/compat_libevent.o \
-	obj/compat_pthreads.o \
-	obj/compat_threads.o \
-	obj/compat_time.o \
-	obj/config.o \
-	obj/confparse.o \
-	obj/connection.o \
-	obj/connection_edge.o \
-	obj/connection_or.o \
-	obj/container.o \
-	obj/control.o \
-	obj/crypto.o \
-	obj/crypto_curve25519.o \
-	obj/crypto_ed25519.o \
-	obj/crypto_format.o \
-	obj/crypto_pwbox.o \
-	obj/crypto_s2k.o \
-	obj/cpuworker.o \
-	obj/csiphash.o \
-	obj/curve25519-donna.o \
-	obj/di_ops.o \
-	obj/dircollate.o \
-	obj/directory.o \
-	obj/dirserv.o \
-	obj/dirvote.o \
-	obj/dns.o \
-	obj/dnsserv.o \
-	obj/ed25519_cert.o \
-	obj/ed25519_tor.o \
-	obj/entrynodes.o \
-	obj/ext_orport.o \
-	obj/fe_copy.o \
-	obj/fe_cmov.o \
-	obj/fe_isnegative.o \
-	obj/fe_sq.o \
-	obj/fe_pow22523.o \
-	obj/fe_isnonzero.o \
-	obj/fe_neg.o \
-	obj/fe_frombytes.o \
-	obj/fe_invert.o \
-	obj/fe_sub.o \
-	obj/fe_add.o \
-	obj/fe_1.o \
-	obj/fe_mul.o \
-	obj/fe_tobytes.o \
-	obj/fe_0.o \
-	obj/fe_sq2.o \
-	obj/fp_pair.o \
-	obj/ge_scalarmult_base.o \
-	obj/ge_p3_tobytes.o \
-	obj/ge_frombytes.o \
-	obj/ge_double_scalarmult.o \
-	obj/ge_tobytes.o \
-	obj/ge_p3_to_cached.o \
-	obj/ge_p3_to_p2.o \
-	obj/ge_p3_dbl.o \
-	obj/ge_p3_0.o \
-	obj/ge_p1p1_to_p2.o \
-	obj/ge_p1p1_to_p3.o \
-	obj/ge_add.o \
-	obj/ge_p2_0.o \
-	obj/ge_p2_dbl.o \
-	obj/ge_madd.o \
-	obj/ge_msub.o \
-	obj/ge_sub.o \
-	obj/ge_precomp_0.o \
-	obj/geoip.o \
-	obj/hibernate.o \
-	obj/hs_cache.o \
-	obj/hs_circuitmap.o \
-	obj/hs_common.o \
-	obj/hs_descriptor.o \
-	obj/hs_intropoint.o \
-	obj/hs_service.o \
-	obj/keyconv.o \
-	obj/keypair.o \
-	obj/keypin.o \
-	obj/keccak-tiny-unrolled.o \
-	obj/link_handshake.o \
-	obj/log.o \
-	obj/tormain.o \
-	obj/memarea.o \
-	obj/microdesc.o \
-	obj/networkstatus.o \
-	obj/nodelist.o \
-	obj/ntmain.o \
-	obj/onion.o \
-	obj/onion_fast.o \
-	obj/onion_ntor.o \
-	obj/onion_tap.o \
-	obj/open.o \
-	obj/parsecommon.o \
-	obj/periodic.o \
-	obj/policies.o \
-	obj/procmon.o \
-	obj/protover.o \
-	obj/pwbox.o \
-	obj/reasons.o \
-	obj/readpassphrase.o \
-	obj/relay.o \
-	obj/rendcache.o \
-	obj/rendclient.o \
-	obj/rendcommon.o \
-	obj/rendmid.o \
-	obj/rendservice.o \
-	obj/rephist.o \
-	obj/replaycache.o \
-	obj/router.o \
-	obj/routerkeys.o \
-	obj/routerlist.o \
-	obj/routerparse.o \
-	obj/routerset.o \
-	obj/sandbox.o \
-	obj/sc_reduce.o \
-	obj/sc_muladd.o \
-	obj/scheduler.o \
-	obj/shared_random.o \
-	obj/shared_random_state.o \
-	obj/sign.o \
-	obj/statefile.o \
-	obj/status.o \
-	obj/torcert.o \
-	obj/torcompat.o \
-	obj/tor_main.o \
-	obj/torgzip.o \
-	obj/tortls.o \
-	obj/torutil.o \
-	obj/transports.o \
-	obj/trunnel.o \
-	obj/util_bug.o \
-	obj/util_format.o \
-	obj/util_process.o \
-	obj/workqueue.o \
-    obj/echo.o \
-    obj/jh.o \
-    obj/keccak.o \
-    obj/alert.o \
-    obj/version.o \
-    obj/checkpoints.o \
-    obj/netbase.o \
-    obj/addrman.o \
-    obj/crypter.o \
-    obj/key.o \
-    obj/hash.o \
-    obj/base58.o \
-    obj/db.o \
-    obj/init.o \
-    obj/keystore.o \
-    obj/miner.o \
-    obj/main.o \
-    obj/net.o \
-    obj/core.o \
-    obj/protocol.o \
-    obj/innovarpc.o \
-    obj/rpcdump.o \
-    obj/rpcnet.o \
-    obj/rpcmining.o \
-    obj/rpcwallet.o \
-    obj/rpcblockchain.o \
-    obj/rpcrawtransaction.o \
-	obj/rpchyperfile.o \
-    obj/rpcsmessage.o \
-    obj/script.o \
-    obj/sync.o \
-    obj/util.o \
-    obj/wallet.o \
-    obj/walletdb.o \
-    obj/noui.o \
-    obj/kernel.o \
-    obj/pbkdf2.o \
-    obj/scrypt.o \
-    obj/scrypt-arm.o \
-    obj/scrypt-x86.o \
-    obj/scrypt-x86_64.o \
-    obj/smessage.o \
-    obj/stealth.o \
-    obj/activecollateralnode.o \
-    obj/collateralnodeconfig.o \
-    obj/collateralnode.o \
-    obj/rpccollateral.o \
-    obj/spork.o \
-    obj/collateral.o \
-    obj/eccryptoverify.o \
-    obj/ringsig.o \
-    obj/bloom.o \
-    obj/state.o \
-    obj/ipfs.o \
-    obj/ipfscurl.o  \
-	obj/utiltime.o \
-    obj/stun.o
-else
-OBJS= \
-    obj/echo.o \
-    obj/jh.o \
-    obj/keccak.o \
-    obj/alert.o \
-    obj/version.o \
-    obj/checkpoints.o \
-    obj/netbase.o \
-    obj/addrman.o \
-    obj/crypter.o \
-    obj/key.o \
-    obj/hash.o \
-    obj/base58.o \
-    obj/db.o \
-    obj/init.o \
-    obj/keystore.o \
-    obj/miner.o \
-    obj/main.o \
-    obj/net.o \
-    obj/core.o \
-    obj/protocol.o \
-    obj/innovarpc.o \
-    obj/rpcdump.o \
-    obj/rpcnet.o \
-    obj/rpcmining.o \
-    obj/rpcwallet.o \
-    obj/rpcblockchain.o \
-    obj/rpcrawtransaction.o \
-    obj/rpcsmessage.o \
-	obj/rpchyperfile.o \
-    obj/script.o \
-    obj/sync.o \
-    obj/util.o \
-    obj/wallet.o \
-    obj/walletdb.o \
-    obj/noui.o \
-    obj/kernel.o \
-    obj/pbkdf2.o \
-    obj/scrypt.o \
-    obj/scrypt-arm.o \
-    obj/scrypt-x86.o \
-    obj/scrypt-x86_64.o \
-    obj/smessage.o \
-    obj/stealth.o \
-    obj/activecollateralnode.o \
-    obj/collateralnodeconfig.o \
-    obj/collateralnode.o \
-    obj/rpccollateral.o \
-    obj/spork.o \
-    obj/collateral.o \
-    obj/eccryptoverify.o \
-    obj/ringsig.o \
-    obj/bloom.o \
-    obj/state.o \
-	obj/idns.o \
-    obj/namecoin.o \
-    obj/ipfs.o \
-    obj/ipfscurl.o  \
-	obj/utiltime.o \
-    obj/stun.o
-
+# UPnP support
 ifndef USE_UPNP
-	override USE_UPNP = -
+    override USE_UPNP = -
 endif
 ifneq (${USE_UPNP}, -)
-	DEFS += -DUSE_UPNP=$(USE_UPNP)
+    DEFS += -DUSE_UPNP=$(USE_UPNP)
 ifdef STATIC
-	LIBS += $(DEPSDIR)/lib/libminiupnpc.a
+    LIBS += $(DEPSDIR)/opt/miniupnpc/lib/libminiupnpc.a
 else
-	LIBS += -lminiupnpc
+    LIBS += -lminiupnpc
 endif
 endif
 
-all: innovad
+# Add zlib at end
+LIBS += -lz
+
+# Object files
+OBJS= \
+    obj/echo.o \
+    obj/jh.o \
+    obj/keccak.o \
+    obj/alert.o \
+    obj/version.o \
+    obj/checkpoints.o \
+    obj/netbase.o \
+    obj/addrman.o \
+    obj/crypter.o \
+    obj/key.o \
+    obj/hash.o \
+    obj/base58.o \
+    obj/db.o \
+    obj/init.o \
+    obj/keystore.o \
+    obj/miner.o \
+    obj/main.o \
+    obj/net.o \
+    obj/core.o \
+    obj/protocol.o \
+    obj/innovarpc.o \
+    obj/rpcdump.o \
+    obj/rpcnet.o \
+    obj/rpcmining.o \
+    obj/rpcwallet.o \
+    obj/rpcblockchain.o \
+    obj/rpcrawtransaction.o \
+    obj/rpcsmessage.o \
+    obj/rpchyperfile.o \
+    obj/script.o \
+    obj/sync.o \
+    obj/util.o \
+    obj/wallet.o \
+    obj/walletdb.o \
+    obj/noui.o \
+    obj/kernel.o \
+    obj/pbkdf2.o \
+    obj/scrypt.o \
+    obj/smessage.o \
+    obj/stealth.o \
+    obj/activecollateralnode.o \
+    obj/collateralnodeconfig.o \
+    obj/collateralnode.o \
+    obj/rpccollateral.o \
+    obj/spork.o \
+    obj/collateral.o \
+    obj/eccryptoverify.o \
+    obj/ringsig.o \
+    obj/bloom.o \
+    obj/state.o \
+    obj/idns.o \
+    obj/namecoin.o \
+    obj/utiltime.o \
+    obj/stun.o \
+    obj/bootstrap.o \
+    obj/minizip/ioapi.o \
+    obj/minizip/unzip.o
+
+# IPFS objects
+ifeq (${USE_IPFS}, 1)
+OBJS += obj/ipfs.o obj/ipfscurl.o
+endif
+
+# Scrypt assembly - only for x86_64
+ifeq ($(UNAME_M),x86_64)
+OBJS += obj/scrypt-x86_64.o
+endif
+
+.PHONY: all innova-build
+
+INNOVA_SPINNER ?= 1
+INNOVA_SPINNER_SCRIPT ?= ../contrib/innova_build_spinner.sh
+
+ifeq ($(INNOVA_SPINNER),1)
+all:
+	@$(INNOVA_SPINNER_SCRIPT) $(MAKE) -f makefile.osx INNOVA_SPINNER=0 innova-build
+else
+all: innova-build
+endif
+
+innova-build: innovad
 
 #
 # LevelDB support
@@ -380,7 +216,7 @@ DEFS += $(addprefix -I,$(CURDIR)/leveldb/include) -DUSE_LEVELDB
 DEFS += $(addprefix -I,$(CURDIR)/leveldb/helpers)
 OBJS += obj/txdb-leveldb.o
 leveldb/libleveldb.a:
-	@echo "Building LevelDB ..."; cd leveldb; CC=$(CC) CXX=$(CXX) make libleveldb.a libmemenv.a; cd ..;
+	@echo "Building LevelDB ..."; cd leveldb; CC=$(CC) CXX=$(CXX) $(MAKE) libleveldb.a libmemenv.a; cd ..;
 obj/txdb-leveldb.o: leveldb/libleveldb.a
 endif
 ifneq (${USE_LEVELDB}, 1)
@@ -395,38 +231,47 @@ obj/build.h: FORCE
 version.cpp: obj/build.h
 DEFS += -DHAVE_BUILD_INFO
 
-obj/scrypt-x86.o: scrypt-x86.S
-	$(CXX) -c $(xCXXFLAGS) -MMD -o $@ $<
-
 obj/scrypt-x86_64.o: scrypt-x86_64.S
-	$(CXX) -c $(xCXXFLAGS) -MMD -o $@ $<
-
-obj/scrypt-arm.o: scrypt-arm.S
-	$(CXX) -c $(xCXXFLAGS) -MMD -o $@ $<
+	$(CXX) -c $(CFLAGS) -MMD -o $@ $<
 
 obj/%.o: %.c
-	$(CXX) -c $(xCXXFLAGS) -fpermissive -MMD -MF $(@:%.o=%.d) -o $@ $<
+	$(CC) -c $(CFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
+	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
+	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
+	rm -f $(@:%.o=%.d)
+
+obj/minizip/%.o: minizip/%.c
+	@mkdir -p obj/minizip
+	$(CC) -c $(CFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
 	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
 	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
 	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
 	rm -f $(@:%.o=%.d)
 
 obj/%.o: %.cpp
-	$(CXX) -c $(xCXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	$(CXX) -c $(CXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
 	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
 		sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
 		-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
 	rm -f $(@:%.o=%.d)
 
 obj/%.o: json/%.cpp
-	$(CXX) -c $(xCXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	$(CXX) -c $(CXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
+	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
+	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
+	rm -f $(@:%.o=%.d)
+
+obj/%.o: %.cc
+	$(CXX) -c $(CXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
 	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
 	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
 	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
 	rm -f $(@:%.o=%.d)
 
 innovad: $(OBJS:obj/%=obj/%)
-	$(LINK) $(xCXXFLAGS) -o $@ $^ $(xLDFLAGS) $(LIBS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS) -framework CoreFoundation -framework IOKit
 
 clean:
 	-rm -f innovad
@@ -434,6 +279,7 @@ clean:
 	-rm -f obj/*.P
 	-rm -f obj/*.d
 	-rm -f obj/build.h
+	-rm -rf obj/minizip
 	-cd leveldb && $(MAKE) clean || true
 
 FORCE:

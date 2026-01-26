@@ -27,6 +27,11 @@
 #define OPENSSL_1_1_API
 #endif
 
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L && \
+   ! defined(LIBRESSL_VERSION_NUMBER)
+#define OPENSSL_3_0_API
+#endif
+
 #ifndef OPENSSL_1_1_API
 #define OPENSSL_VERSION SSLEAY_VERSION
 #define OpenSSL_version(v) SSLeay_version(v)

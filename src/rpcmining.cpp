@@ -11,6 +11,7 @@
 #include "collateralnode.h"
 #include "innovarpc.h"
 
+static CCriticalSection cs_getwork;
 
 using namespace json_spirit;
 using namespace std;
@@ -128,6 +129,8 @@ Value getworkex(const Array& params, bool fHelp)
     if (IsInitialBlockDownload())
         throw JSONRPCError(-10, "Innova is downloading blocks...");
 
+    LOCK(cs_getwork);
+
     typedef map<uint256, pair<CBlock*, CScript> > mapNewBlock_t;
     static mapNewBlock_t mapNewBlock;
     static vector<CBlock*> vNewBlock;
@@ -232,7 +235,17 @@ Value getworkex(const Array& params, bool fHelp)
         if(coinbase.size() == 0)
             pblock->vtx[0].vin[0].scriptSig = mapNewBlock[pdata->hashMerkleRoot].second;
         else
-            CDataStream(coinbase, SER_NETWORK, PROTOCOL_VERSION) >> pblock->vtx[0]; // FIXME - HACK!
+        {
+            // Deserialize miner-provided coinbase. Security: CheckWork validates the block.
+            try {
+                CDataStream ss(coinbase, SER_NETWORK, PROTOCOL_VERSION);
+                ss >> pblock->vtx[0];
+                if (!pblock->vtx[0].IsCoinBase())
+                    throw JSONRPCError(-8, "Invalid coinbase transaction");
+            } catch (const std::exception& e) {
+                throw JSONRPCError(-8, std::string("Coinbase deserialization failed: ") + e.what());
+            }
+        }
 
         pblock->hashMerkleRoot = pblock->BuildMerkleTree();
 
@@ -259,8 +272,10 @@ Value getwork(const Array& params, bool fHelp)
     if (IsInitialBlockDownload())
         throw JSONRPCError(RPC_CLIENT_IN_INITIAL_DOWNLOAD, "Innova is downloading blocks...");
 
+    LOCK(cs_getwork);
+
     typedef map<uint256, pair<CBlock*, CScript> > mapNewBlock_t;
-    static mapNewBlock_t mapNewBlock;    // FIXME: thread safety
+    static mapNewBlock_t mapNewBlock;
     static vector<CBlock*> vNewBlock;
     static CReserveKey reservekey(pwalletMain);
 
@@ -530,7 +545,7 @@ Value getblocktemplate(const Array& params, bool fHelp)
 
     if(!collateralnodePayments.GetBlockPayee(pindexPrev->nHeight+1, payee)){
         //no collateralnode detected
-		bool found;
+		bool found = false;
                 if (vecCollateralnodes.size() > 0) {
                 GetCollateralnodeRanks(pindexBest);
                 BOOST_FOREACH(PAIRTYPE(int, CCollateralNode*)& s, vecCollateralnodeScores)
@@ -549,8 +564,8 @@ Value getblocktemplate(const Array& params, bool fHelp)
                     // pay the burn address if it can't detect
                     if (fDebug) printf("CreateNewBlock(): Failed to detect collateralnode to pay, burning coins.");
                     std::string burnAddress;
-                    if (fTestNet) std::string burnAddress = "8TestXXXXXXXXXXXXXXXXXXXXXXXXbCvpq";
-                    else std::string burnAddress = "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw";
+                    if (fTestNet) burnAddress = "8TestXXXXXXXXXXXXXXXXXXXXXXXXbCvpq";
+                    else burnAddress = "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw";
                     CBitcoinAddress burnAddr;
                     burnAddr.SetString(burnAddress);
                     payee = GetScriptForDestination(burnAddr.Get());
@@ -564,7 +579,7 @@ Value getblocktemplate(const Array& params, bool fHelp)
 		result.push_back(Pair("payee", address2.ToString().c_str()));
 		result.push_back(Pair("payee_amount", (int64_t)GetCollateralnodePayment(pindexPrev->nHeight+1, pblock->vtx[0].GetValueOut())));
 	  } else {
-        result.push_back(Pair("payee", "DNRXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw"));
+        result.push_back(Pair("payee", fTestNet ? "8TestXXXXXXXXXXXXXXXXXXXXXXXXbCvpq" : "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw"));
 	result.push_back(Pair("payee_amount", (int64_t)GetCollateralnodePayment(pindexPrev->nHeight+1, pblock->vtx[0].GetValueOut())));
     }
 

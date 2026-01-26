@@ -118,6 +118,7 @@ bool CCryptoKeyStore::Unlock(const CKeyingMaterial& vMasterKeyIn)
             return false;
 
         int nUnlocked = 0;
+        int nFailed = 0;
 
         CryptedKeyMap::const_iterator mi = mapCryptedKeys.begin();
         for (; mi != mapCryptedKeys.end(); ++mi)
@@ -126,7 +127,7 @@ bool CCryptoKeyStore::Unlock(const CKeyingMaterial& vMasterKeyIn)
             const std::vector<unsigned char> &vchCryptedSecret = (*mi).second.second;
             CKeyingMaterial vchSecret;
 
-            if (vchCryptedSecret.size() < 1) // key was recieved from stealth/anon txn with wallet locked, will be expanded after this
+            if (vchCryptedSecret.size() < 1)
             {
                 if (fDebug)
                     printf("Skipping unexpanded key %s.\n", vchPubKey.GetHash().ToString().c_str());
@@ -135,12 +136,17 @@ bool CCryptoKeyStore::Unlock(const CKeyingMaterial& vMasterKeyIn)
 
             if (!DecryptSecret(vMasterKeyIn, vchCryptedSecret, vchPubKey.GetHash(), vchSecret))
             {
-                printf("DecryptSecret() failed.\n");
-                return false;
+                printf("DecryptSecret() failed for key %s.\n", vchPubKey.GetHash().ToString().c_str());
+                nFailed++;
+                continue;
             };
 
             if (vchSecret.size() != 32)
-                return false;
+            {
+                printf("Unlock failed: Invalid secret size for key %s.\n", vchPubKey.GetHash().ToString().c_str());
+                nFailed++;
+                continue;
+            }
 
             CKey key;
             key.Set(vchSecret.begin(), vchSecret.end(), vchPubKey.IsCompressed());
@@ -148,12 +154,18 @@ bool CCryptoKeyStore::Unlock(const CKeyingMaterial& vMasterKeyIn)
             if (key.GetPubKey() != vchPubKey)
             {
                 printf("Unlock failed: PubKey mismatch %s.\n", vchPubKey.GetHash().ToString().c_str());
-                return false;
+                nFailed++;
+                continue;
             };
 
             nUnlocked++;
-            break;
         };
+
+        if (nFailed > 0)
+        {
+            printf("Unlock failed: %d keys failed validation.\n", nFailed);
+            return false;
+        }
 
         if (nUnlocked < 1) // at least 1 key must pass the test
         {

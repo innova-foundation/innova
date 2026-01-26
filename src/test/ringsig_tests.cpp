@@ -166,10 +166,10 @@ BOOST_AUTO_TEST_CASE(ringsig)
     totalVerify = 0;
     BOOST_MESSAGE("testRingSigABs");
 
-    for (int k = 0; k < 32; ++k)
+    for (int k = 1; k < 4; ++k)
     {
         //BOOST_MESSAGE("ringSize " << (k % 126 + 2));
-        //testRingSigABs(k % 126 + 2);
+        testRingSigABs(k % 126 + 2);
     };
     //testRingSigABs(16);
 

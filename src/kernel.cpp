@@ -1,6 +1,6 @@
 // Copyright (c) 2012-2013 The Peercoin developers
 // Copyright (c) 2017-2021 The Denarius developers
-// Copyright (c) 2019-2023 The Innova developers
+// Copyright (c) 2019-2026 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -8,6 +8,7 @@
 
 #include "kernel.h"
 #include "txdb.h"
+#include "main.h" 
 
 using namespace std;
 
@@ -35,7 +36,26 @@ static std::map<int, unsigned int> mapStakeModifierCheckpoints =
         ( 2000000, 0x38a611f6 )
         ( 2080000, 0xae3db09c )
         ( 2198000, 0xd404caf7 )
-        //( 640106, 0x491697be ) Example of bad modifier checkpoint, must have proof-of-stake flag
+        // Stake modifier checkpoints added January 2025
+        ( 2250000, 0x182e564d )
+        ( 2500000, 0xd4445400 )
+        ( 2750000, 0x316254f2 )
+        ( 3000000, 0x0388f231 )
+        ( 3250000, 0xb1ad3c9a )
+        ( 3500000, 0x5173956c )
+        ( 3750000, 0x85f34d15 )
+        ( 4000000, 0x766ad216 )
+        ( 4250000, 0xb279f13e )
+        ( 4500000, 0x7660d0c4 )
+        ( 4750000, 0x6f190913 )
+        ( 5000000, 0xc8bcbfb6 )
+        ( 5250000, 0x6d6f1999 )
+        ( 5500000, 0x09e3eb62 )
+        ( 5750000, 0x1098297b )
+        ( 6000000, 0xb69b2173 )
+        ( 6250000, 0x26326c94 )
+        ( 6500000, 0x475ef328 )
+        ( 6750000, 0xc3c3435a )
     ;
 
 // Hard checkpoints of stake modifiers to ensure they are deterministic (testNet)
@@ -43,6 +63,44 @@ static std::map<int, unsigned int> mapStakeModifierCheckpointsTestNet =
     boost::assign::map_list_of
         ( 9999999999, 0x4038ad82 ) //technically two
     ;
+
+static std::map<int, uint64_t> mapStakeModifierCache;
+static CCriticalSection cs_stakeModifierCache;
+
+void CacheStakeModifier(int nHeight, uint64_t nStakeModifier)
+{
+    int nCheckpoint = (nHeight / 1000) * 1000;
+    LOCK(cs_stakeModifierCache);
+    if (mapStakeModifierCache.find(nCheckpoint) == mapStakeModifierCache.end())
+    {
+        mapStakeModifierCache[nCheckpoint] = nStakeModifier;
+        if (fDebug && fHybridSPV)
+            printf("HybridSPV: Cached stake modifier at height %d: 0x%016" PRIx64"\n",
+                   nCheckpoint, nStakeModifier);
+    }
+}
+
+bool GetCachedStakeModifier(int nHeight, uint64_t& nStakeModifier)
+{
+    int nCheckpoint = (nHeight / 1000) * 1000;
+    LOCK(cs_stakeModifierCache);
+
+    auto it = mapStakeModifierCache.find(nCheckpoint);
+    if (it != mapStakeModifierCache.end())
+    {
+        nStakeModifier = it->second;
+        return true;
+    }
+
+    auto checkpointIt = mapStakeModifierCheckpoints.find(nCheckpoint);
+    if (checkpointIt != mapStakeModifierCheckpoints.end())
+    {
+        nStakeModifier = checkpointIt->second;
+        return true;
+    }
+
+    return false;
+}
 
 // Get time weight
 int64_t GetWeight(int64_t nIntervalBeginning, int64_t nIntervalEnd)
@@ -243,6 +301,17 @@ static bool GetKernelStakeModifier(uint256 hashBlockFrom, uint64_t& nStakeModifi
     int64_t nStakeModifierSelectionInterval = GetStakeModifierSelectionInterval();
     const CBlockIndex* pindex = pindexFrom;
 
+    if (fHybridSPV)
+    {
+        int nTargetHeight = pindexFrom->nHeight + (nStakeModifierSelectionInterval / 180);  // ~3 min blocks
+        if (GetCachedStakeModifier(nTargetHeight, nStakeModifier))
+        {
+            if (fDebug)
+                printf("GetKernelStakeModifier() : using cached modifier for height %d\n", nTargetHeight);
+            return true;
+        }
+    }
+
     // loop to find the stake modifier later by a selection interval
     while (nStakeModifierTime < pindexFrom->GetBlockTime() + nStakeModifierSelectionInterval)
     {
@@ -262,9 +331,15 @@ static bool GetKernelStakeModifier(uint256 hashBlockFrom, uint64_t& nStakeModifi
             nStakeModifierHeight = pindex->nHeight;
             nStakeModifierTime = pindex->GetBlockTime();
         }
- };
+    };
 
     nStakeModifier = pindex->nStakeModifier;
+
+    if (fHybridSPV)
+    {
+        CacheStakeModifier(pindex->nHeight, nStakeModifier);
+    }
+
     return true;
 };
 
@@ -298,8 +373,15 @@ bool CheckStakeKernelHash(unsigned int nBits, const CBlock& blockFrom, unsigned 
     if (nTimeBlockFrom + nStakeMinAge > nTimeTx) // Min age requirement
         return error("CheckStakeKernelHash() : min age violation");
 
+    if (nStakeMaxAge > 0 && nStakeMaxAge != (unsigned int)-1) {
+        if (nTimeTx > nTimeBlockFrom + nStakeMaxAge)
+            return error("CheckStakeKernelHash() : max age violation");
+    }
+
     CBigNum bnTargetPerCoinDay;
     bnTargetPerCoinDay.SetCompact(nBits);
+    if (bnTargetPerCoinDay <= 0)
+        return error("CheckStakeKernelHash() : invalid nBits");
     int64_t nValueIn = txPrev.vout[prevout.n].nValue;
 
     uint256 hashBlockFrom = blockFrom.GetHash();
@@ -401,7 +483,7 @@ bool CheckCoinStakeTimestamp(int64_t nTimeBlock, int64_t nTimeTx)
 // Get stake modifier checksum
 unsigned int GetStakeModifierChecksum(const CBlockIndex* pindex)
 {
-    assert (pindex->pprev || pindex->GetBlockHash() == (!fTestNet ? hashGenesisBlock : hashGenesisBlockTestNet));
+    assert (pindex->pprev || pindex->GetBlockHash() == GetGenesisBlockHash());
 
     // Hash previous checksum with flags, hashProofOfStake and nStakeModifier
     CDataStream ss(SER_GETHASH, 0);

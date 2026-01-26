@@ -74,7 +74,17 @@ fi
 case "$TARGET_OS" in
     Darwin)
         PLATFORM=OS_MACOSX
-        COMMON_FLAGS="$MEMCMP_FLAG -DOS_MACOSX -arch x86_64 -mmacosx-version-min=10.7"
+        ARCH=$(uname -m)
+        if [ "$ARCH" = "arm64" ]; then
+            COMMON_FLAGS="$MEMCMP_FLAG -DOS_MACOSX -arch arm64 -mmacosx-version-min=11.0"
+        else
+            COMMON_FLAGS="$MEMCMP_FLAG -DOS_MACOSX -arch x86_64 -mmacosx-version-min=10.7"
+        fi
+        # Add sysroot for Xcode SDK to find C++ standard library headers
+        SYSROOT=$(xcrun --show-sdk-path 2>/dev/null)
+        if [ -n "$SYSROOT" ]; then
+            COMMON_FLAGS="$COMMON_FLAGS -isysroot $SYSROOT -stdlib=libc++"
+        fi
         PLATFORM_SHARED_EXT=dylib
         [ -z "$INSTALL_PATH" ] && INSTALL_PATH=`pwd`
         PLATFORM_SHARED_LDFLAGS="-dynamiclib -install_name $INSTALL_PATH/"

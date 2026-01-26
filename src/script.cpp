@@ -2415,8 +2415,7 @@ public:
 
     bool operator()(const CStealthAddress &stxAddr) const {
         script->clear();
-        //*script << OP_HASH160 << scriptID << OP_EQUAL;
-        printf("TODO\n");
+        printf("Error: CStealthAddress cannot be used directly as script destination. Use CreateStealthOutput() instead.\n");
         return false;
     }
 };

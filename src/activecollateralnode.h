@@ -34,6 +34,12 @@ public:
         status = COLLATERALNODE_NOT_PROCESSED;
     }
 
+    void ResetStatus()
+    {
+        status = COLLATERALNODE_NOT_PROCESSED;
+        notCapableReason.clear();
+    }
+
     void ManageStatus(); // manage status of main collateralnode
 
     bool Dseep(std::string& errorMessage); // ping for main collateralnode

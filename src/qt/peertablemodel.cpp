@@ -118,7 +118,7 @@ public:
 PeerTableModel::PeerTableModel(ClientModel *parent) :
     QAbstractTableModel(parent),
     clientModel(parent),
-    timer(5)
+    timer(nullptr)
 {
     columns << tr("Address:Port") << tr("User Agent") << tr("Sent") << tr("Recv") << tr("Ping");
     priv.reset(new PeerTablePriv());

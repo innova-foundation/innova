@@ -1,6 +1,6 @@
 # Copyright (c) 2009-2010 Satoshi Nakamoto
 # Copyright (c) 2017-2021 D e n a r i u s [D]
-# Copyright (c) 2019-2023 I n n o v a [INN]
+# Copyright (c) 2019-2026 I n n o v a [INN]
 # Distributed under the MIT/X11 software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -346,7 +346,19 @@ OBJS= \
     obj/stun.o
 
 
-all: innovad
+.PHONY: all innova-build
+
+INNOVA_SPINNER ?= 1
+INNOVA_SPINNER_SCRIPT ?= ../contrib/innova_build_spinner.sh
+
+ifeq ($(INNOVA_SPINNER),1)
+all:
+	@$(INNOVA_SPINNER_SCRIPT) $(MAKE) -f makefile.arm INNOVA_SPINNER=0 innova-build
+else
+all: innova-build
+endif
+
+innova-build: innovad
 
 #
 # LevelDB support

@@ -109,9 +109,10 @@ public:
 class SecMsgToken
 {
 public:
-    SecMsgToken(int64_t ts, unsigned char* p, int np, long int o)
+    SecMsgToken(int64_t ts, unsigned char* p, int np, long int o, uint16_t fileNo=1)
     {
         timestamp = ts;
+        fileId = fileNo;
 
         if (np < 8) // payload will always be > 8, just make sure
             memset(sample, 0, 8);
@@ -120,7 +121,13 @@ public:
         offset = o;
     };
 
-    SecMsgToken() {};
+    SecMsgToken()
+    {
+        timestamp = 0;
+        fileId = 1;
+        memset(sample, 0, 8);
+        offset = 0;
+    };
 
     ~SecMsgToken() {};
 
@@ -133,6 +140,7 @@ public:
     }
 
     int64_t                     timestamp;    // doesn't need to be full 64 bytes?
+    uint16_t                    fileId;
     unsigned char               sample[8];    // first 8 bytes of payload - a hash
     int64_t                     offset;       // offset
 
@@ -148,16 +156,27 @@ public:
         hash            = 0;
         nLockCount      = 0;
         nLockPeerId     = 0;
+        nTokenCount     = 0;
+        fCompacted      = false;
     };
     ~SecMsgBucket() {};
 
     void hashBucket();
+
+    bool compact(int64_t nBucketTime);
+    bool expand(int64_t nBucketTime);
+    bool isCompacted() const { return fCompacted; }
+    uint32_t getTokenCount() const { return fCompacted ? nTokenCount : (uint32_t)setTokens.size(); }
 
     int64_t                     timeChanged;
     uint32_t                    hash;           // token set should get ordered the same on each node
     uint32_t                    nLockCount;     // set when smsgWant first sent, unset at end of smsgMsg, ticks down in ThreadSecureMsg()
     uint32_t                    nLockPeerId;    // id of peer that bucket is locked for
     std::set<SecMsgToken>       setTokens;
+
+private:
+    uint32_t                    nTokenCount;    // Token count when compacted (memory optimization)
+    bool                        fCompacted;     // True if setTokens has been cleared to save memory
 
 };
 

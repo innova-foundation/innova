@@ -82,17 +82,27 @@ namespace Checkpoints
         ( 2250000, uint256("0x00000000020bd81f16b6735604e1cfcfdc48e33452fb1efbe12f0b57d291b1f6") )
         ( 2500000, uint256("0x000000000789135978f2518fffe7f7e1c514713ffffa4b6377097a74b41d85fe") )
         ( 2750000, uint256("0x00000000487bc235e814fa7449a4ddd4fe8e3a952be2e85e224cbf6e0dba7801") )
-        ( 2000000, uint256("0x69c472731a4d4815f1689b571c0943068be7e074d71083d280a0d83538c40b2e") )
         ( 3000000, uint256("0x000000000371241dd6d41b824653a2bcfcf245cef68103e2627c4db900d3a057") )
         ( 4000000, uint256("0x0000000017616bc0c07d126eee9148634ba408772e06a0423f8d08da3458c7dd") )
+        ( 4250000, uint256("0x00000000049b6e69fc658a8031fb6f56b87c46dd06680ed979898cf002be7d03") )
+        ( 4500000, uint256("0x00000000090633f2e4c2c69ee88c441b44e4c4e93ebbe82e2804e49b06dd6bb8") )
+        ( 4750000, uint256("0x00000007975cd663b5fe9e846a6da1ce1a82fb38962a2c81fe1c2dcf5217d10a") )
+        ( 5000000, uint256("0x00000000fe96fc559e716b99d3ba4fafbb961154b3f9a73d5ad30db22a0d860a") )
+        ( 5250000, uint256("0xc733eb696b8444fb8a9bdb59aca0e6b233fd9e20450b152de574590b0343934a") )
+        ( 5500000, uint256("0x00000000ae6f26383b0cd2dc97599249cddb0fc660817ab6a267d1cd739dab57") )
+        ( 5750000, uint256("0x00000000c4b7a28e0fb2b69a23a886a13841d107461373c63f7d90e56fad2864") )
+        ( 6000000, uint256("0x00000003da828e507f76dfdcd210ec60c1badf55c9320119631328eec3a9302c") )
+        ( 6250000, uint256("0x000000d85b4e0798609a31c9e9272e0e1f776cc9ce61d2bc516eaba2068685f0") )
+        ( 6500000, uint256("0x0000000072362d64a180a6f36407b0b0ba014d9146d7e67899a6b6a42643d38f") )
+        ( 6750000, uint256("0x000000a86c88b161a6c013963911d4bcd5e6a65fd7ba81c3474f5cfa1a384c64") )
 	;
 
   static const CCheckpointData data = {
         &mapCheckpoints,
-        1705315059, // * UNIX timestamp of last checkpoint block above ^^
-        5034897,   // * total number of transactions between genesis and last checkpoint
+        1737676800, // * UNIX timestamp of last checkpoint block (approx Jan 24, 2025)
+        8500000,    // * total number of transactions between genesis and last checkpoint
                     //   (the tx=... number in the SetBestChain debug.log lines)
-        5000.0     // * estimated number of transactions per day after checkpoint
+        5000.0      // * estimated number of transactions per day after checkpoint
     };
 
     // TestNet has no checkpoints
@@ -335,20 +345,21 @@ namespace Checkpoints
     {
         LOCK(cs_hashSyncCheckpoint);
         const uint256& hash = mapCheckpoints.rbegin()->second;
-        if (mapBlockIndex.count(hash) && !mapBlockIndex[hash]->IsInMainChain())
+        std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hash);
+        if (mi != mapBlockIndex.end() && !mi->second->IsInMainChain())
         {
             // checkpoint block accepted but not yet in main chain
             printf("ResetSyncCheckpoint: SetBestChain to hardened checkpoint %s\n", hash.ToString().c_str());
             CTxDB txdb;
             CBlock block;
-            if (!block.ReadFromDisk(mapBlockIndex[hash]))
+            if (!block.ReadFromDisk(mi->second))
                 return error("ResetSyncCheckpoint: ReadFromDisk failed for hardened checkpoint %s", hash.ToString().c_str());
-            if (!block.SetBestChain(txdb, mapBlockIndex[hash]))
+            if (!block.SetBestChain(txdb, mi->second))
             {
                 return error("ResetSyncCheckpoint: SetBestChain failed for hardened checkpoint %s", hash.ToString().c_str());
             };
         } else
-        if (!mapBlockIndex.count(hash))
+        if (mi == mapBlockIndex.end())
         {
             // checkpoint block not yet accepted
             hashPendingCheckpoint = hash;
@@ -359,7 +370,8 @@ namespace Checkpoints
         BOOST_REVERSE_FOREACH(const MapCheckpoints::value_type& i, mapCheckpoints)
         {
             const uint256& hash = i.second;
-            if (mapBlockIndex.count(hash) && mapBlockIndex[hash]->IsInMainChain())
+            std::map<uint256, CBlockIndex*>::iterator it = mapBlockIndex.find(hash);
+            if (it != mapBlockIndex.end() && it->second->IsInMainChain())
             {
                 if (!WriteSyncCheckpoint(hash))
                     return error("ResetSyncCheckpoint: failed to write sync checkpoint %s", hash.ToString().c_str());
@@ -385,7 +397,7 @@ namespace Checkpoints
 
         // Test signing a sync-checkpoint with genesis block
         CSyncCheckpoint checkpoint;
-        checkpoint.hashCheckpoint = !fTestNet ? hashGenesisBlock : hashGenesisBlockTestNet;
+        checkpoint.hashCheckpoint = GetGenesisBlockHash();
         CDataStream sMsg(SER_NETWORK, PROTOCOL_VERSION);
         sMsg << (CUnsignedSyncCheckpoint)checkpoint;
         checkpoint.vchMsg = std::vector<unsigned char>(sMsg.begin(), sMsg.end());
@@ -485,7 +497,8 @@ bool CSyncCheckpoint::ProcessSyncCheckpoint(CNode* pfrom)
             //PushGetBlocks(pfrom, pindexBest, hashCheckpoint);
             // ask directly as well in case rejected earlier by duplicate
             // proof-of-stake because getblocks may not get it this time
-            pfrom->AskFor(CInv(MSG_BLOCK, mapOrphanBlocks.count(hashCheckpoint)? WantedByOrphan(mapOrphanBlocks[hashCheckpoint]) : hashCheckpoint));
+            std::map<uint256, CBlock*>::iterator orphanIt = mapOrphanBlocks.find(hashCheckpoint);
+            pfrom->AskFor(CInv(MSG_BLOCK, orphanIt != mapOrphanBlocks.end() ? WantedByOrphan(orphanIt->second) : hashCheckpoint));
         };
         return false;
     };
