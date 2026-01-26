@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The Bitcoin developers
 // Copyright (c) 2017-2021 The Denarius developers
-// Copyright (c) 2019-2023 The Innova developers
+// Copyright (c) 2019-2026 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -19,8 +19,10 @@
 #include "collateralnodeconfig.h"
 #include "spork.h"
 #include "smessage.h"
+#include "innova_spinner_frames.h"
 #include "ringsig.h"
 #include "idns.h"
+#include "bootstrap.h"
 
 #ifdef USE_NATIVETOR
 #include "tor/anonymize.h" //Tor native optional integration (Flag -nativetor=1)
@@ -28,23 +30,31 @@
 
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
-#include <boost/filesystem/convenience.hpp>
 #include <boost/interprocess/sync/file_lock.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 #include <openssl/crypto.h>
+#include <openssl/opensslv.h>
+#include <openssl/rand.h>
+#include <openssl/ssl.h>
 
 #include <string>
 #include <iostream>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
+#include <atomic>
+#include <vector>
+#include <cstring>
 
 #ifndef WIN32
 #include <signal.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 #endif
 
 
 using namespace std;
-using namespace boost;
+namespace fs = boost::filesystem;
 
 CWallet* pwalletMain = NULL;
 IDns* idns = NULL;
@@ -114,6 +124,14 @@ void Shutdown(void* parg)
     {
         fShutdown = true;
 
+        if (fHybridSPV && pwalletMain)
+        {
+            printf("Saving SPV UTXO cache...\n");
+            pwalletMain->SaveSPVUtxoCache();
+        }
+
+        FlushIBDBatch();
+
         if(idns) {
             delete idns;
         }
@@ -126,7 +144,7 @@ void Shutdown(void* parg)
         bitdb.Flush(false);
         StopNode();
         bitdb.Flush(true);
-        boost::filesystem::remove(GetPidFile());
+        fs::remove(GetPidFile());
         UnregisterWallet(pwalletMain);
         delete pwalletMain;
         */
@@ -166,6 +184,174 @@ void HandleSIGHUP(int)
 // Start
 //
 #if !defined(QT_GUI)
+namespace
+{
+class CStartupSpinner
+{
+public:
+    CStartupSpinner() : fEnabled(false), fStop(false), nPrintedLines(0)
+    {
+#ifndef WIN32
+        if (fDaemon)
+            return;
+        if (!isatty(STDERR_FILENO))
+            return;
+#endif
+        fEnabled = true;
+        spinnerThread = std::thread(&CStartupSpinner::Run, this);
+    }
+
+    ~CStartupSpinner()
+    {
+        Stop();
+    }
+
+private:
+    static const int kSpinnerLineCount = INNOVA_SPINNER_LINE_COUNT;
+
+    int GetFrameWidth(int frame) const
+    {
+        int width = 0;
+        for (int i = 0; i < kSpinnerLineCount; ++i)
+        {
+            int lineWidth = static_cast<int>(strlen(INNOVA_SPINNER_FRAMES[frame][i]));
+            if (lineWidth > width)
+                width = lineWidth;
+        }
+        return width;
+    }
+
+    void GetTerminalSize(int& rows, int& cols) const
+    {
+        rows = 0;
+        cols = 0;
+#ifndef WIN32
+        struct winsize ws;
+        if (ioctl(STDERR_FILENO, TIOCGWINSZ, &ws) == 0)
+        {
+            if (ws.ws_row > 0)
+                rows = ws.ws_row;
+            if (ws.ws_col > 0)
+                cols = ws.ws_col;
+        }
+#endif
+    }
+
+    void BuildScaledFrame(int frame, int targetWidth, int targetHeight, std::vector<std::string>& out) const
+    {
+        int srcHeight = kSpinnerLineCount;
+        int srcWidth = GetFrameWidth(frame);
+        if (targetWidth < 1)
+            targetWidth = 1;
+        if (targetHeight < 1)
+            targetHeight = 1;
+        out.clear();
+        out.reserve(targetHeight);
+        for (int y = 0; y < targetHeight; ++y)
+        {
+            int srcY = (y * srcHeight) / targetHeight;
+            const char* srcLine = INNOVA_SPINNER_FRAMES[frame][srcY];
+            int srcLineWidth = static_cast<int>(strlen(srcLine));
+            std::string line;
+            line.reserve(targetWidth);
+            for (int x = 0; x < targetWidth; ++x)
+            {
+                int srcX = (x * srcWidth) / targetWidth;
+                char ch = ' ';
+                if (srcX < srcLineWidth)
+                    ch = srcLine[srcX];
+                line.push_back(ch);
+            }
+            out.push_back(line);
+        }
+    }
+
+    void Stop()
+    {
+        if (!fEnabled)
+            return;
+
+        fStop = true;
+        if (spinnerThread.joinable())
+            spinnerThread.join();
+        Clear();
+    }
+
+    void Clear()
+    {
+        int lines = nPrintedLines > 0 ? nPrintedLines : kSpinnerLineCount;
+        for (int i = 0; i < lines; ++i)
+        {
+            fprintf(stderr, "\r\033[2K");
+            if (i + 1 < lines)
+                fprintf(stderr, "\n");
+        }
+        if (lines > 1)
+            fprintf(stderr, "\033[%dA", lines - 1);
+        fprintf(stderr, "\r");
+        fflush(stderr);
+    }
+
+    void PrintFrame(int frame)
+    {
+        int rows = 0;
+        int cols = 0;
+        GetTerminalSize(rows, cols);
+        int srcHeight = kSpinnerLineCount;
+        int srcWidth = GetFrameWidth(frame);
+        int maxRows = rows > 1 ? rows - 1 : rows;
+        int maxCols = cols > 0 ? cols : srcWidth;
+        double scale = 1.0;
+        if ((maxRows > 0 && srcHeight > maxRows) || (maxCols > 0 && srcWidth > maxCols))
+        {
+            double scaleH = maxRows > 0 ? static_cast<double>(maxRows) / srcHeight : 1.0;
+            double scaleW = maxCols > 0 ? static_cast<double>(maxCols) / srcWidth : 1.0;
+            scale = scaleH < scaleW ? scaleH : scaleW;
+            if (scale > 1.0)
+                scale = 1.0;
+        }
+        int targetHeight = static_cast<int>(srcHeight * scale + 0.5);
+        int targetWidth = static_cast<int>(srcWidth * scale + 0.5);
+        if (targetHeight < 2)
+            targetHeight = 2;
+        if (targetWidth < 2)
+            targetWidth = 2;
+        if (nPrintedLines > 0 && nPrintedLines != targetHeight)
+            Clear();
+        if (targetHeight != srcHeight || targetWidth != srcWidth)
+        {
+            std::vector<std::string> scaled;
+            BuildScaledFrame(frame, targetWidth, targetHeight, scaled);
+            for (int i = 0; i < targetHeight; ++i)
+                fprintf(stderr, "\r\033[2K%s\n", scaled[i].c_str());
+        } else
+        {
+            for (int i = 0; i < kSpinnerLineCount; ++i)
+                fprintf(stderr, "\r\033[2K%s\n", INNOVA_SPINNER_FRAMES[frame][i]);
+        }
+        nPrintedLines = targetHeight;
+        fprintf(stderr, "\033[%dA", targetHeight);
+        fflush(stderr);
+    }
+
+    void Run()
+    {
+        int frame = 0;
+        while (!fStop)
+        {
+            PrintFrame(frame);
+            frame = (frame + 1) % INNOVA_SPINNER_FRAME_COUNT;
+            MilliSleep(97);
+        }
+    }
+
+    bool fEnabled;
+    std::atomic<bool> fStop;
+    std::thread spinnerThread;
+    int nPrintedLines;
+};
+}
+
 bool AppInit(int argc, char* argv[])
 {
     bool fRet = false;
@@ -176,7 +362,7 @@ bool AppInit(int argc, char* argv[])
         //
         // If Qt is used, parameters/bitcoin.conf are parsed in qt/bitcoin.cpp's main()
         ParseParameters(argc, argv);
-        if (!boost::filesystem::is_directory(GetDataDir(false)))
+        if (!fs::is_directory(GetDataDir(false)))
         {
             fprintf(stderr, "Error: Specified directory does not exist\n");
             Shutdown(NULL);
@@ -214,7 +400,6 @@ bool AppInit(int argc, char* argv[])
     fDaemon = GetBoolArg("-daemon", false);
     if (fDaemon)
     {
-        // Daemonize
         pid_t pid = fork();
         if (pid < 0)
         {
@@ -227,12 +412,19 @@ bool AppInit(int argc, char* argv[])
             return true;
         }
 
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+        OPENSSL_init_ssl(OPENSSL_INIT_LOAD_SSL_STRINGS |
+                         OPENSSL_INIT_LOAD_CRYPTO_STRINGS, NULL);
+        RAND_poll();
+#endif
+
         pid_t sid = setsid();
         if (sid < 0)
             fprintf(stderr, "Error: setsid() returned %d errno %d\n", sid, errno);
     }
 #endif
 
+        CStartupSpinner startupSpinner;
         fRet = AppInit2();
     } catch (std::exception& e)
     {
@@ -303,7 +495,7 @@ std::string HelpMessage()
         "  -pid=<file>            " + _("Specify pid file (default: innovad.pid)") + "\n" +
         "  -datadir=<dir>         " + _("Specify data directory") + "\n" +
         "  -wallet=<dir>          " + _("Specify wallet file (within data directory)") + "\n" +
-        "  -dbcache=<n>           " + _("Set database cache size in megabytes (default: 25)") + "\n" +
+        "  -dbcache=<n>           " + _("Set database cache size in megabytes (default: 300)") + "\n" +
         "  -dblogsize=<n>         " + _("Set database disk log size in megabytes (default: 100)") + "\n" +
         "  -timeout=<n>           " + _("Specify connection timeout in milliseconds (default: 5000)") + "\n" +
         "  -proxy=<ip:port>       " + _("Connect through socks proxy") + "\n" +
@@ -325,6 +517,10 @@ std::string HelpMessage()
         "  -onionseed             " + _("Find peers using .onion seeds (default: 0 unless -connect)") + "\n" +
         "  -nativetor=<n>         " + _("Enable or disable Native Tor Onion Node (default: 0)") +
         "  -staking               " + _("Stake your coins to support network and gain reward (default: 1)") + "\n" +
+
+        "\n" + _("SPV (Light Client) options:") + "\n" +
+        "  -spv                   " + _("Run in SPV mode (light client, headers only)") + "\n" +
+        "  -spvstartheight=<n>    " + _("Start SPV mode from block height <n> (default: 0)") + "\n" +
         "  -minstakeinterval=<n>  " + _("Minimum time in seconds between successful stakes (default: 30)") + "\n" +
         "  -minersleep=<n>        " + _("Milliseconds between stake attempts. Lowering this param will not result in more stakes. (default: 1000)") + "\n" +
         "  -synctime              " + _("Sync time with other nodes. Disable if time on your system is precise e.g. syncing with NTP (default: 1)") + "\n" +
@@ -351,6 +547,7 @@ std::string HelpMessage()
         "  -daemon                " + _("Run in the background as a daemon and accept commands") + "\n" +
 #endif
         "  -testnet               " + _("Use the test network") + "\n" +
+        "  -regtest               " + _("Enter regression test mode (instant blocks, no stake age)") + "\n" +
         "  -debug                 " + _("Output extra debugging information. Implies all other -debug* options") + "\n" +
         "  -debugnet              " + _("Output extra network debugging information") + "\n" +
         "  -debugchain            " + _("Output extra blockchain debugging information") + "\n" +
@@ -385,6 +582,7 @@ std::string HelpMessage()
         "  -blockprioritysize=<n> "   + _("Set maximum size of high-priority/low-fee transactions in bytes (default: 27000)") + "\n" +
         "  -maxorphantx=<n>       "   + strprintf(_("Keep at most <n> unconnectable transactions in memory (default: %u)"), DEFAULT_MAX_ORPHAN_TRANSACTIONS) + "\n" +
         "  -maxorphanblocks=<n>   "   + strprintf(_("Keep at most <n> unconnectable blocks in memory (default: %u)"), DEFAULT_MAX_ORPHAN_BLOCKS) + "\n" +
+        "  -maxmempool=<n>        "   + strprintf(_("Keep the transaction memory pool below <n> megabytes (default: %u)"), DEFAULT_MAX_MEMPOOL_SIZE) + "\n" +
 
         "\n" + _("SSL options: (see the Bitcoin Wiki for SSL setup instructions)") + "\n" +
         "  -rpcssl                                  " + _("Use OpenSSL (https) for JSON-RPC connections") + "\n" +
@@ -480,8 +678,8 @@ bool AppInit2()
 
     nNodeLifespan = GetArg("-addrlifespan", 7);
     fUseFastIndex = GetBoolArg("-fastindex", true);
-    nMinStakeInterval = GetArg("-minstakeinterval", 60); // 2 blocks, don't make pos chains!
-    nMinerSleep = GetArg("-minersleep", 10000); //default 10seconds, higher=more cpu usage
+    nMinStakeInterval = GetArg("-minstakeinterval", 30); // 2 blocks at 15s = 30s, don't make pos chains!
+    nMinerSleep = GetArg("-minersleep", 5000); // default 5 seconds for 15-second block time (1/3 of block time)
 
     // Largest block you're willing to create.
     // Limit to betweeen 1K and MAX_BLOCK_SIZE-1K for sanity:
@@ -524,6 +722,19 @@ bool AppInit2()
     nDerivationMethodIndex = 0;
 
     fTestNet = GetBoolArg("-testnet");
+    fRegTest = GetBoolArg("-regtest");
+
+    if (fTestNet && fRegTest)
+    {
+        return InitError(_("Cannot use -testnet and -regtest together"));
+    }
+
+    if (fRegTest)
+    {
+        SoftSetBoolArg("-dnsseed", false);
+        SoftSetBoolArg("-onionseed", false);
+        SoftSetBoolArg("-listen", true);
+    }
 
     fCNLock = GetBoolArg("-cnconflock");
     fNativeTor = GetBoolArg("-nativetor");
@@ -611,6 +822,31 @@ bool AppInit2()
     fNoSmsg = GetBoolArg("-nosmsg");
     fDisableStealth = GetBoolArg("-disablestealth"); // force-disable stealth transaction scanning
 
+    fSPVMode = GetBoolArg("-spv", false);
+    nSPVStartHeight = GetArg("-spvstartheight", 0);
+    fHybridSPV = GetBoolArg("-hybridspv", false);
+
+    if (fHybridSPV)
+    {
+        printf("Hybrid SPV mode enabled - headers + wallet blocks only\n");
+        printf("  Optimized for low-memory devices (Pi Zero/3, 256-512MB RAM)\n");
+        fSPVMode = true;
+        fSPVHeadersOnly = false;
+        fSPVStakingEnabled = GetBoolArg("-staking", true);
+        if (!mapArgs.count("-dbcache"))
+            SoftSetArg("-dbcache", "50");
+        if (!mapArgs.count("-maxconnections"))
+            SoftSetArg("-maxconnections", "16");
+        printf("  Staking: %s\n", fSPVStakingEnabled ? "enabled" : "disabled");
+    }
+    else if (fSPVMode)
+    {
+        printf("SPV mode enabled - operating as light client\n");
+        fSPVHeadersOnly = true;
+        SoftSetBoolArg("-staking", false);
+        SoftSetBoolArg("-listen", false);
+    }
+
     bitdb.SetDetach(GetBoolArg("-detachdb", false));
 
 #if !defined(WIN32) && !defined(QT_GUI)
@@ -665,11 +901,12 @@ bool AppInit2()
     std::string strWalletFileName = GetArg("-wallet", "wallet.dat");
 
     // strWalletFileName must be a plain filename without a directory
-    if (strWalletFileName != boost::filesystem::basename(strWalletFileName) + boost::filesystem::extension(strWalletFileName))
+    fs::path walletPath(strWalletFileName);
+    if (strWalletFileName != (walletPath.stem().string() + walletPath.extension().string()))
         return InitError(strprintf(_("Wallet %s resides outside data directory %s."), strWalletFileName.c_str(), strDataDir.c_str()));
 
     // Make sure only a single Innova process is using the data directory.
-    boost::filesystem::path pathLockFile = GetDataDir() / ".lock";
+    fs::path pathLockFile = GetDataDir() / ".lock";
     FILE* file = fopen(pathLockFile.string().c_str(), "a"); // empty lock file; created if it doesn't exist.
     if (file)
         fclose(file);
@@ -747,7 +984,7 @@ bool AppInit2()
             return false;
     };
 
-    if (filesystem::exists(GetDataDir() / strWalletFileName))
+    if (fs::exists(GetDataDir() / strWalletFileName))
     {
         CDBEnv::VerifyResult r = bitdb.Verify(strWalletFileName, CWalletDB::Recover);
         if (r == CDBEnv::RECOVER_OK)
@@ -921,9 +1158,9 @@ bool AppInit2()
         wait_initialized();
 
         string automatic_onion;
-        filesystem::path const hostname_path = GetDefaultDataDir() / "onion" / "hostname";
+        fs::path const hostname_path = GetDefaultDataDir() / "onion" / "hostname";
 
-        if (!filesystem::exists(hostname_path)) {
+        if (!fs::exists(hostname_path)) {
             return InitError(_("No external address found."));
         }
 
@@ -962,6 +1199,67 @@ bool AppInit2()
     for (string strDest : mapMultiArgs["-seednode"])
         AddOneShot(strDest);
 
+    // ********************************************************* Step 6.5: Bootstrap download (optional)
+
+    if (Bootstrap::IsNeeded(GetDataDir()))
+    {
+        bool fGetBootstrap = GetBoolArg("-getbootstrap", false);
+        bool fNoBootstrap = GetBoolArg("-nobootstrap", false);
+
+        if (!fNoBootstrap && !fGetBootstrap && !fDaemon)
+        {
+            // Interactive prompt for first-time users
+            printf("\n");
+            printf("===============================================================\n");
+            printf("  Innova Core - First Time Setup\n");
+            printf("===============================================================\n");
+            printf("\n");
+            printf("  No blockchain data found. How would you like to sync?\n\n");
+            printf("  [1] Download bootstrap (faster, ~4GB download)\n");
+            printf("  [2] Sync from genesis block (slower, full verification)\n");
+            printf("\n");
+            printf("  Enter choice [1/2]: ");
+            fflush(stdout);
+
+            char choice = '2';  // Default to genesis sync
+            if (scanf(" %c", &choice) != 1) {
+                choice = '2';
+            }
+            fGetBootstrap = (choice == '1');
+        }
+
+        if (fGetBootstrap)
+        {
+            std::string url = GetArg("-bootstrapurl", "");
+            printf("\n");
+
+            // Progress callback for console output
+            int64_t lastPercent = -1;
+            auto progressCallback = [&lastPercent](int64_t downloaded, int64_t total) {
+                if (total > 0) {
+                    // Use double to avoid integer overflow for very large files
+                    int64_t percent = static_cast<int64_t>((static_cast<double>(downloaded) / total) * 100.0);
+                    if (percent > 100) percent = 100;
+                    if (percent < 0) percent = 0;
+                    if (percent != lastPercent && percent % 5 == 0) {
+                        printf("Bootstrap download: %lld%% (%lld MB / %lld MB)\n",
+                               (long long)percent,
+                               (long long)(downloaded / 1048576),
+                               (long long)(total / 1048576));
+                        fflush(stdout);
+                        lastPercent = percent;
+                    }
+                }
+            };
+
+            if (!Bootstrap::DownloadAndApply(url, GetDataDir(), progressCallback))
+            {
+                printf("Bootstrap download failed. Starting normal sync from genesis block.\n");
+            }
+            printf("\n");
+        }
+    }
+
     // ********************************************************* Step 7: load blockchain
 
     if (!bitdb.Open(GetDataDir()))
@@ -979,6 +1277,8 @@ bool AppInit2()
         PrintBlockTree();
         return false;
     };
+
+    InitIBDBatching();
 
     uiInterface.InitMessage(_("Loading block index..."));
     printf("Loading block index...\n");
@@ -1003,7 +1303,7 @@ bool AppInit2()
     nStart2 = GetTimeMillis();
 
     extern bool createNameIndexFile();
-    if (!filesystem::exists(GetDataDir() / "innovanamesindex.dat") && !createNameIndexFile())
+    if (!fs::exists(GetDataDir() / "innovanamesindex.dat") && !createNameIndexFile())
     {
         printf("Fatal error: Failed to create innovanamesindex.dat\n");
         return false;
@@ -1151,6 +1451,16 @@ bool AppInit2()
     // Add wallet transactions that aren't already in a block to mapTransactions
     pwalletMain->ReacceptWalletTransactions();
 
+    if (fHybridSPV)
+    {
+        uiInterface.InitMessage(_("Loading SPV UTXO cache..."));
+        if (!pwalletMain->LoadSPVUtxoCache())
+        {
+            uiInterface.InitMessage(_("Building SPV UTXO cache..."));
+            pwalletMain->PopulateSPVUtxosFromWallet();
+        }
+    }
+
     // Init Bloom Filters
     //pwalletMain->InitBloomFilter();
 
@@ -1169,13 +1479,13 @@ bool AppInit2()
         exit(0);
     }
 
-    filesystem::path pathBootstrap = GetDataDir() / "bootstrap.dat";
-    if (filesystem::exists(pathBootstrap)) {
+    fs::path pathBootstrap = GetDataDir() / "bootstrap.dat";
+    if (fs::exists(pathBootstrap)) {
         uiInterface.InitMessage(_("Importing bootstrap blockchain data file."));
 
         FILE *file = fopen(pathBootstrap.string().c_str(), "rb");
         if (file) {
-            filesystem::path pathBootstrapOld = GetDataDir() / "bootstrap.dat.old";
+            fs::path pathBootstrapOld = GetDataDir() / "bootstrap.dat.old";
             LoadExternalBlockFile(file);
             RenameOver(pathBootstrap, pathBootstrapOld);
         }

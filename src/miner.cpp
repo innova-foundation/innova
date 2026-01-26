@@ -232,8 +232,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                     // pay the burn address if it can't detect
                     if (fDebug) printf("CreateNewBlock(): Failed to detect collateralnode to pay, burning coins.");
                     std::string burnAddress;
-                    if (fTestNet) std::string burnAddress = "8TestXXXXXXXXXXXXXXXXXXXXXXXXbCvpq";
-                    else std::string burnAddress = "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw";
+                    if (fTestNet) burnAddress = "8TestXXXXXXXXXXXXXXXXXXXXXXXXbCvpq";
+                    else burnAddress = "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw";
                     CBitcoinAddress burnAddr;
                     burnAddr.SetString(burnAddress);
                     payee = GetScriptForDestination(burnAddr.Get());
@@ -505,7 +505,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         // Fill in header
         pblock->hashPrevBlock  = pindexPrev->GetBlockHash();
         pblock->nTime          = max(pindexPrev->GetPastTimeLimit()+1, pblock->GetMaxTransactionTime());
-        pblock->nTime          = max(pblock->GetBlockTime(), PastDrift(pindexPrev->GetBlockTime()));
+        pblock->nTime          = max(pblock->GetBlockTime(), PastDrift(pindexPrev->GetBlockTime(), pindexPrev->nHeight + 1));
         if (!fProofOfStake)
             pblock->UpdateTime(pindexPrev);
         pblock->nNonce         = 0;
@@ -680,7 +680,8 @@ void StakeMiner(CWallet *pwallet)
                 return;
         }
 
-        while (vNodes.empty() || IsInitialBlockDownload())
+        bool fWaitForSync = vNodes.empty() || (IsInitialBlockDownload() && !fHybridSPV);
+        while (fWaitForSync)
         {
             nLastCoinStakeSearchInterval = 0;
             fTryToSync = true;
@@ -689,6 +690,7 @@ void StakeMiner(CWallet *pwallet)
             MilliSleep(2000);
             if (fShutdown)
                 return;
+            fWaitForSync = vNodes.empty() || (IsInitialBlockDownload() && !fHybridSPV);
         }
 
         if (fTryToSync)
@@ -706,7 +708,7 @@ void StakeMiner(CWallet *pwallet)
             }
         }
 
-        if (nBestHeight < GetNumBlocksOfPeers()-1)
+        if (!fHybridSPV && nBestHeight < GetNumBlocksOfPeers()-1)
         {
             if (fDebug  && GetBoolArg("-printcoinstake"))
                 printf("StakeMiner() nBestHeight < GetNumBlocksOfPeers()\n");

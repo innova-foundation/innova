@@ -281,7 +281,7 @@ bool SignNameSignatureINN(const CKeyStore& keystore, const CTransaction& txFrom,
 // }
 
 // Just like CreateTransaction, but with addition of having 1 input already addded.
-bool CreateTransactionWithInputTx(const vector<pair<CScript, int64_t> >& vecSend, CWalletTx& wtxIn, int nTxOut, CWalletTx& wtxNew, CReserveKey& reservekey, int64_t& nFeeRet, string& strFailReason, int32_t& nChangePos, const CCoinControl* coinControl)
+bool CreateTransactionWithInputTx(const vector<pair<CScript, int64_t> >& vecSend, CWalletTx& wtxIn, int nTxOut, CWalletTx& wtxNew, CReserveKey& reservekey, int64_t& nFeeRet, string& strFailReason, int32_t& nChangePos, const CCoinControl* coinControl, const CScript* scriptChangeOverride)
 {
     int64_t nValue = 0;
     for (const PAIRTYPE(CScript, int64_t)& s : vecSend)
@@ -402,13 +402,14 @@ bool CreateTransactionWithInputTx(const vector<pair<CScript, int64_t> >& vecSend
 
                 if (nChange > 0)
                 {
-                    // Fill a vout to ourself
-                    // TODO: pass in scriptChange instead of reservekey so
-                    // change transaction isn't always pay-to-bitcoin-address
                     CScript scriptChange;
 
+                    if (scriptChangeOverride && !scriptChangeOverride->empty())
+                    {
+                        scriptChange = *scriptChangeOverride;
+                    }
                     // coin control: send change to custom address
-                    if (coinControl && !boost::get<CNoDestination>(&coinControl->destChange))
+                    else if (coinControl && !boost::get<CNoDestination>(&coinControl->destChange))
                         scriptChange.SetDestination(coinControl->destChange);
 
                     // no coin control: send change to newly generated address
@@ -528,7 +529,7 @@ string SendMoneyWithInputTx(CScript scriptPubKey, int64_t nValue, int64_t nNetFe
 
     string failReason;
     int nChangePos;
-    if (!CreateTransactionWithInputTx(vecSend, wtxIn, nTxOut, wtxNew, reservekey, nFeeRequired, failReason, nChangePos, nullptr))
+    if (!CreateTransactionWithInputTx(vecSend, wtxIn, nTxOut, wtxNew, reservekey, nFeeRequired, failReason, nChangePos, nullptr, NULL))
     {
         string strError;
         if (nValue + nFeeRequired > pwalletMain->GetBalance())
@@ -609,7 +610,7 @@ bool IsNameFeeEnough(CTxDB& txdb, const CTransaction& tx, const NameTxInfo& nti,
     int64_t txFee;
     MapPrevTx mapInputs;
     bool fInvalid = false;
-    if (!tx.FetchInputs(txdb, mapTestPool, fBlock, fMiner, mapInputs, fInvalid))
+    if (!const_cast<CTransaction&>(tx).FetchInputs(txdb, mapTestPool, fBlock, fMiner, mapInputs, fInvalid))
         return false;
     txFee = tx.GetValueIn(mapInputs) - tx.GetValueOut();
 
@@ -836,43 +837,6 @@ bool GetLastTxOfName(CNameDB& dbName, const vector<unsigned char> &vchName, CTra
 }
 
 
-Value sendtoname(const Array& params, bool fHelp)
-{
-    if (fHelp || params.size() < 2 || params.size() > 4)
-        throw runtime_error(
-            "sendtoname <name> <amount> [comment] [comment-to]\n"
-            "<amount> is a real and is rounded to the nearest 0.01"
-            + HelpRequiringPassphrase());
-
-    if (!IsSynchronized())
-        throw runtime_error("Blockchain is still downloading - wait until it is done.");
-
-    vector<unsigned char> vchName = vchFromValue(params[0]);
-    int64_t nAmount = AmountFromValue(params[1]);
-
-    // Wallet comments
-    CWalletTx wtx;
-    if (params.size() > 2 && params[2].type() != null_type && !params[2].get_str().empty())
-        wtx.mapValue["comment"] = params[2].get_str();
-    if (params.size() > 3 && params[3].type() != null_type && !params[3].get_str().empty())
-        wtx.mapValue["to"]      = params[3].get_str();
-
-    string error;
-    CBitcoinAddress address;
-    if (!GetNameCurrentAddress(vchName, address, error))
-        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, error);
-
-	std::string sNarr;
-    string strError = pwalletMain->SendMoneyToDestination(address.Get(), nAmount, sNarr, wtx);
-    if (strError != "")
-        throw JSONRPCError(RPC_WALLET_ERROR, strError);
-
-    Object res;
-    res.push_back(Pair("SENTTO", address.ToString()));
-    res.push_back(Pair("TX", wtx.GetHash().GetHex()));
-    return res;
-}
-
 bool GetNameCurrentAddress(const vector<unsigned char> &vchName, CBitcoinAddress &address, string &error)
 {
     CNameDB dbName("r");
@@ -1054,7 +1018,145 @@ Value name_debug(const Array& params, bool fHelp)
     return true;
 }
 
-//TODO: name_history, sendtoname
+Value sendtoname(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 2 || params.size() > 5)
+        throw runtime_error(
+            "sendtoname <name> <amount> [comment] [comment-to] [narration]\n"
+            "<amount> is a real and is rounded to the nearest 0.000001"
+            + HelpRequiringPassphrase());
+
+    if (!IsSynchronized())
+        throw runtime_error("Blockchain is still downloading - wait until it is done.");
+
+    EnsureWalletIsUnlocked();
+
+    vector<unsigned char> vchName = vchFromValue(params[0]);
+    NameTxInfo nti;
+    {
+        LOCK(cs_main);
+        CNameRecord nameRec;
+        CNameDB dbName("r");
+        if (!dbName.ReadName(vchName, nameRec))
+            throw JSONRPCError(RPC_WALLET_ERROR, "failed to read from name DB");
+
+        if (nameRec.vtxPos.size() < 1)
+            throw JSONRPCError(RPC_WALLET_ERROR, "no result returned");
+
+        if (nameRec.deleted())
+            throw JSONRPCError(RPC_WALLET_ERROR, "name is deleted");
+
+        if (nameRec.nExpiresAt - pindexBest->nHeight <= 0)
+            throw JSONRPCError(RPC_WALLET_ERROR, "name is expired");
+
+        CTransaction tx;
+        if (!tx.ReadFromDisk(nameRec.vtxPos.back().txPos))
+            throw JSONRPCError(RPC_WALLET_ERROR, "failed to read from disk");
+
+        if (!DecodeNameTx(tx, nti, false, true))
+            throw JSONRPCError(RPC_WALLET_ERROR, "failed to decode name");
+    }
+
+    if (nti.strAddress.empty())
+        throw JSONRPCError(RPC_WALLET_ERROR, "name has no address");
+
+    CBitcoinAddress address(nti.strAddress);
+    if (!address.IsValid())
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "invalid name address");
+
+    int64_t nAmount = AmountFromValue(params[1]);
+
+    CWalletTx wtx;
+
+    std::string sNarr;
+    if (params.size() > 2 && params[2].type() != null_type && !params[2].get_str().empty())
+        sNarr = params[2].get_str();
+    if (sNarr.length() > 24)
+        throw runtime_error("Narration must be 24 characters or less.");
+
+    if (params.size() > 2 && params[2].type() != null_type && !params[2].get_str().empty())
+        wtx.mapValue["comment"] = params[2].get_str();
+    if (params.size() > 3 && params[3].type() != null_type && !params[3].get_str().empty())
+        wtx.mapValue["to"]      = params[3].get_str();
+    if (params.size() > 4 && params[4].type() != null_type && !params[4].get_str().empty())
+        sNarr                   = params[4].get_str();
+    if (sNarr.length() > 24)
+        throw runtime_error("Narration must be 24 characters or less.");
+
+    string strError = pwalletMain->SendMoneyToDestination(address.Get(), nAmount, sNarr, wtx);
+    if (strError != "")
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+
+    return wtx.GetHash().GetHex();
+}
+
+Value name_history(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 1)
+        throw runtime_error(
+            "name_history <name>\n"
+            "List all transactions for a name, showing its complete history.\n"
+            );
+
+    if (!IsSynchronized())
+        throw runtime_error("Blockchain is still downloading - wait until it is done.");
+
+    vector<unsigned char> vchName = vchFromValue(params[0]);
+    string name = stringFromVch(vchName);
+
+    Array history;
+    {
+        LOCK(cs_main);
+        CNameRecord nameRec;
+        CNameDB dbName("r");
+        if (!dbName.ReadName(vchName, nameRec))
+            throw JSONRPCError(RPC_WALLET_ERROR, "failed to read from name DB");
+
+        if (nameRec.vtxPos.empty())
+            throw JSONRPCError(RPC_WALLET_ERROR, "no history found for this name");
+
+        // Iterate through all txs
+        for (unsigned int i = 0; i < nameRec.vtxPos.size(); i++)
+        {
+            CTransaction tx;
+            if (!tx.ReadFromDisk(nameRec.vtxPos[i].txPos))
+                continue;
+
+            NameTxInfo nti;
+            if (!DecodeNameTx(tx, nti, false, true))
+                continue;
+
+            Object entry;
+            entry.push_back(Pair("name", name));
+            entry.push_back(Pair("value", stringFromVch(nti.vchValue)));
+            entry.push_back(Pair("txid", tx.GetHash().GetHex()));
+            entry.push_back(Pair("address", nti.strAddress));
+            entry.push_back(Pair("height", nameRec.vtxPos[i].nHeight));
+            entry.push_back(Pair("time", (boost::int64_t)tx.nTime));
+
+            string opName;
+            switch (nameRec.vtxPos[i].op) {
+                case OP_NAME_NEW: opName = "name_new"; break;
+                case OP_NAME_UPDATE: opName = "name_update"; break;
+                case OP_NAME_DELETE: opName = "name_delete"; break;
+                default: opName = "unknown"; break;
+            }
+            entry.push_back(Pair("op", opName));
+
+            history.push_back(entry);
+        }
+
+        Object status;
+        status.push_back(Pair("total_transactions", (int)nameRec.vtxPos.size()));
+        status.push_back(Pair("expires_at", nameRec.nExpiresAt));
+        status.push_back(Pair("expires_in", nameRec.nExpiresAt - pindexBest->nHeight));
+        status.push_back(Pair("deleted", nameRec.deleted()));
+        status.push_back(Pair("expired", nameRec.nExpiresAt - pindexBest->nHeight <= 0));
+        history.push_back(status);
+    }
+
+    return history;
+}
 
 Value name_show(const Array& params, bool fHelp)
 {
@@ -1548,46 +1650,7 @@ NameTxReturn name_new(const vector<unsigned char> &vchName,
             return ret;
         }
 
-        // CPubKey vchPubKey;
-        // if (!pwalletMain->GetKeyFromPool(vchPubKey, true))
-        // {
-        //     ret.err_msg = "failed to get key from pool";
-        //     return ret;
-        // }
-        // scriptPubKey.SetDestination(vchPubKey.GetID());
-
-        // grab last tx in name chain and check if it can be spent by us
         CWalletTx wtxIn = CWalletTx();
-        CNameDB dbName("r");
-        CTransaction prevTx;
-        if (GetLastTxOfName(dbName, vchName, prevTx))
-        {
-            ret.err_msg = "Found INN Name TX with this name already.";
-            return ret;
-        }
-
-        uint256 wtxInHash = prevTx.GetHash();
-        if (pwalletMain->mapWallet.count(wtxInHash))
-        {
-            ret.err_msg = "This INN Name TX is in your wallet: " + wtxInHash.GetHex();
-            return ret;
-        }
-
-        wtxIn = pwalletMain->mapWallet[wtxInHash];
-        // int nTxOut = IndexOfNameOutput(wtxIn);
-
-        // if (::IsMine(*pwalletMain, wtxIn.vout[nTxOut].scriptPubKey) != ISMINE_SPENDABLE)
-        // {
-        //     ret.err_msg = "This INN Name TX is not yours or is not spendable: " + wtxInHash.GetHex();
-        //     return ret;
-        // }
-
-        // if (!hooks->IsMine(wtxIn.vout[nTxOut]))
-        // {
-        //     ss << "this name is not yours or is not spendable: " << wtxInHash.GetHex().c_str();
-        //     ret.err_msg = ss.str();
-        //     return ret;
-        // }
 
         CScript nameScript;
         if (!createNameScript(nameScript, vchName, vchValue, nRentalDays, OP_NAME_NEW, ret.err_msg))
@@ -1864,7 +1927,6 @@ Value name_delete(const Array& params, bool fHelp)
 
 }
 
-//TODO: finish name_delete
 NameTxReturn name_delete(const vector<unsigned char> &vchName)
 {
     NameTxReturn ret;

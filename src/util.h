@@ -236,6 +236,7 @@ extern bool fServer;
 extern bool fCommandLine;
 extern std::string strMiscWarning;
 extern bool fTestNet;
+extern bool fRegTest;
 extern bool fNativeTor;
 extern bool fHyperfileLocal;
 extern bool fCNLock;

@@ -1,7 +1,7 @@
 // Copyright (c) 2009-2010 Satoshi Nakamoto
 // Copyright (c) 2009-2012 The DarkCoin developers
 // Copyright (c) 2017-2021 The Denarius developers
-// Copyright (c) 2019-2023 The Innova developers
+// Copyright (c) 2019-2026 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #include "collateralnode.h"
@@ -13,6 +13,7 @@
 #include "addrman.h"
 #include "sync.h"
 #include "core.h"
+#include <deque>
 #include <boost/lexical_cast.hpp>
 
 int CCollateralNode::minProtoVersion = MIN_MN_PROTO_VERSION;
@@ -26,6 +27,9 @@ std::vector<CCollateralNode> vecCollateralnodeScoresList;
 CCollateralNPayments ranks;
 uint256 vecCollateralnodeScoresListHash;
 std::vector<pair<int, CCollateralNode> > vecCollateralnodeRanks;
+std::map<uint256, std::vector<CCollateralNode> > mapCollateralnodeScoresCache;
+std::deque<uint256> vecCollateralnodeScoresCacheOrder;
+const size_t COLLATERALNODE_RANK_CACHE_MAX = 4;
 /** Object for who's going to get paid on which blocks */
 CCollateralnodePayments collateralnodePayments;
 // keep track of collateralnode votes I've seen
@@ -212,11 +216,13 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
             //int payments = mn.UpdateLastPaidAmounts(pindex, 1000, value); // do a search back 1000 blocks when receiving a new collateralnode to find their last payment, payments = number of payments received, value = amount
 
 
-            //TODO: Set a timer to update ranks after a second
-
             if (fDebugCN) printf("Registered new collateralnode %s (%i/%i)\n", addr.ToString().c_str(), count, current);
 
             vecCollateralnodes.push_back(mn);
+            vecCollateralnodeScoresListHash = uint256();
+            vecCollateralnodeScoresList.clear();
+            mapCollateralnodeScoresCache.clear();
+            vecCollateralnodeScoresCacheOrder.clear();
 
         } else {
             if (fDebugCN) printf("isee - Rejected collateralnode entry %s: %s\n", addr.ToString().c_str(),vinError.c_str());
@@ -549,9 +555,10 @@ bool GetCollateralnodeRanks(CBlockIndex* pindex)
 
     int i = 0;
     vecCollateralnodeScores.clear();
-    if (vecCollateralnodeScoresListHash.size() > 0 && vecCollateralnodeScoresListHash == pindex->GetBlockHash()) {
-        // if ScoresList was calculated for the current pindex hash, then just use that list
-        // TODO: make a vector of these somehow
+    uint256 blockHash = pindex->GetBlockHash();
+    if (mapCollateralnodeScoresCache.count(blockHash)) {
+        vecCollateralnodeScoresList = mapCollateralnodeScoresCache[blockHash];
+        vecCollateralnodeScoresListHash = blockHash;
         if (fDebug) printf(" STARTCOPY (%" PRId64"ms)", GetTimeMillis() - nStartTime);
         for (CCollateralNode& mn : vecCollateralnodeScoresList)
         {
@@ -570,7 +577,9 @@ bool GetCollateralnodeRanks(CBlockIndex* pindex)
         for (CCollateralNode& mn : vecCollateralnodes) {
 
             mn.Check();
-            if(mn.protocolVersion < MIN_MN_PROTO_VERSION) continue;
+            int nMinProto = (pindex->nHeight >= FORK_HEIGHT_CN_PAYMENT_VALIDATION)
+                          ? FORK_MIN_CN_PROTO_VERSION : MIN_MN_PROTO_VERSION;
+            if(mn.protocolVersion < nMinProto) continue;
 
             // check the block time against the entry and don't use it if it's newer than the current block time + 600 secs
             // stops new stakes from being calculated in rank lists until the time of their first seen broadcast
@@ -586,11 +595,17 @@ bool GetCollateralnodeRanks(CBlockIndex* pindex)
 
         }
 
-        vecCollateralnodeScoresListHash = pindex->GetBlockHash();
+        vecCollateralnodeScoresListHash = blockHash;
+        mapCollateralnodeScoresCache[blockHash] = vecCollateralnodeScoresList;
+        vecCollateralnodeScoresCacheOrder.push_back(blockHash);
+        if (vecCollateralnodeScoresCacheOrder.size() > COLLATERALNODE_RANK_CACHE_MAX)
+        {
+            uint256 dropHash = vecCollateralnodeScoresCacheOrder.front();
+            vecCollateralnodeScoresCacheOrder.pop_front();
+            mapCollateralnodeScoresCache.erase(dropHash);
+        }
     }
 
-    // TODO: Store the whole Scores vector in a caching hash map, maybe need hashPrev as well to make sure it re calculates any different chains with the same end block?
-    //vecCollateralnodeScoresCache.insert(make_pair(pindex->GetBlockHash(), vecCollateralnodeScoresList));
 
     if (fDebug) printf(" SORT (%" PRId64"ms)", GetTimeMillis() - nStartTime);
     sort(vecCollateralnodeScores.rbegin(), vecCollateralnodeScores.rend(), CompareLastPay(pindex)); // sort requires current pindex for modulus as pindexBest is different between clients
@@ -626,12 +641,11 @@ int GetCollateralnodeRank(CCollateralNode &tmn, CBlockIndex* pindex, int minProt
 bool CheckCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn) {
     if (mn.nBlockLastPaid == 0) return true; // if we didn't find a payment for this MN, let it through regardless of rate
 
-    //if (mn.nBlockLastPaid - vCollateralnodes.count()) return false;
+    int nHeight = pindex ? pindex->nHeight : 0;
 
-    // find height
     // calculate average payment across all CN
     // check if value is > 25% higher
-    nAverageCNIncome = avg2(vecCollateralnodeScoresList);
+    nAverageCNIncome = avg2(vecCollateralnodeScoresList, nHeight);
     if (nAverageCNIncome < 1 * COIN) return true; // if we can't calculate a decent average, then let the payment through
     int64_t max = nAverageCNIncome * 10 / 8;
     if (value > max) {
@@ -646,7 +660,7 @@ bool CheckCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn) {
 
     // calculate pay count average across CN
     // check if pay count is > 50% higher than the avg
-    nAveragePayCount = avgCount(vecCollateralnodeScoresList);
+    nAveragePayCount = avgCount(vecCollateralnodeScoresList, nHeight);
     if (nAveragePayCount < 1) return true; // if the pay count is less than 1 just let it through
     int64_t maxed = nAveragePayCount * 12 / 8;
     if (mn.payCount > maxed) {
@@ -660,17 +674,12 @@ bool CheckCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn) {
 bool CheckPoSCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn) {
     if (mn.nBlockLastPaid == 0) return true; // if we didn't find a payment for this MN, let it through regardless of rate
 
-    // find height
+    int nHeight = pindex ? pindex->nHeight : 0;
+
     // calculate average payment across all CN
-    // check if value is > 25% higher
-    nAverageCNIncome = avg2(vecCollateralnodeScoresList);
+    nAverageCNIncome = avg2(vecCollateralnodeScoresList, nHeight);
     if (nAverageCNIncome < 1 * COIN) return true; // if we can't calculate a decent average, then let the payment through
-    //int64_t max = nAverageCNIncome * 10 / 8;
-    /* // Dont check if value is > 25% higher since PoS
-    if (value > max) {
-        return false;
-    }
-    */
+
     CScript pubScript;
     pubScript = GetScriptForDestination(mn.pubkey.GetID());
     CTxDestination address1;
@@ -679,7 +688,7 @@ bool CheckPoSCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn) 
 
     // calculate pay count average across CN
     // check if pay count is > 50% higher than the avg
-    nAveragePayCount = avgCount(vecCollateralnodeScoresList);
+    nAveragePayCount = avgCount(vecCollateralnodeScoresList, nHeight);
     if (nAveragePayCount < 1) return true; // if the pay count is less than 1 just let it through
     int64_t maxed = nAveragePayCount * 12 / 8;
     if (mn.payCount > maxed) {
@@ -690,28 +699,31 @@ bool CheckPoSCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn) 
     return true;
 }
 
-int64_t avg2(std::vector<CCollateralNode> const& v) {
+int64_t avg2(std::vector<CCollateralNode> const& v, int nHeight) {
     int n = 0;
     int64_t mean = 0;
     for (int i = 0; i < v.size(); i++) {
         int64_t x = v[i].payValue;
         int64_t delta = x - mean;
-        //TODO: implement in mandatory update, will reduce average & lead to rejections
-        //if (v[i].payValue > 2*COIN) { continue; } // don't consider payees above 2.00000000D (pos only / lucky payees)
-        if (v[i].payValue < 1*COIN) { continue; } // don't consider payees below 1.00000000D (pos only / new payees)
+        // Skip new/minimal payees to avoid skewing average down
+        // Note: No upper threshold - large stakers (100k+ coins) legitimately generate
+        // high CN payments (65% of variable PoS reward). Average naturally handles this.
+        if (v[i].payValue < 1*COIN) { continue; }
         mean += delta/++n;
     }
     return mean;
 }
 
-int64_t avgCount(std::vector<CCollateralNode> const& v) {
+int64_t avgCount(std::vector<CCollateralNode> const& v, int nHeight) {
     int n = 0;
     int64_t mean = 0;
     for (int i = 0; i < v.size(); i++) {
         int64_t x = v[i].payCount;
         int64_t delta = x - mean;
-        //TODO: implement in mandatory update, will reduce average & lead to rejections
-        if (v[i].payCount < 1) { continue; } // don't consider payees below 1 payment (pos only / new payees)
+        if (nHeight >= FORK_HEIGHT_CN_PAYMENT_VALIDATION) {
+            if (v[i].payCount > 100) { continue; } // skip nodes with excessive payment count
+        }
+        if (v[i].payCount < 1) { continue; } // skip nodes with no payments yet
         mean += delta/++n;
     }
     return mean;
@@ -777,7 +789,9 @@ bool CCollateralNode::GetPaymentInfo(const CBlockIndex *pindex, int64_t &totalVa
     double requiredRate = scanBack / (int)mnCount;
     int actualPayments = GetPaymentAmount(pindex, scanBack, totalValue);
     actualRate = actualPayments / requiredRate;
-    // TODO: stop payment if collateralnode vin age is under mnCount*30 old
+    int minAge = max(1, (int)mnCount) * 30;
+    if (GetCollateralnodeInputAge(const_cast<CBlockIndex*>(pindex)) < minAge)
+        return false;
     if (actualRate > 0) return true;
     return false;
 }
@@ -1030,36 +1044,40 @@ void CCollateralNode::UpdateLastPaidBlock(const CBlockIndex *pindex, int nMaxBlo
             if(!block.ReadFromDisk(BlockReading, true)) // shouldn't really happen
                 continue;
 
-    /*  no amount checking for now
-     * TODO: Scan block for payments to calculate reward
-            // Calculate Coin Age for Collateralnode Reward Calculation
-            if (!block.vtx[1].GetCoinAge(txdb, nCoinAge))
-                return error("CheckBlock-POS : %s unable to get coin age for coinstake, Can't Calculate Collateralnode Reward\n", block.vtx[1].GetHash().ToString().substr(0,10).c_str());
-            int64_t nCalculatedStakeReward = GetProofOfStakeReward(nCoinAge, nFees);
-            int64_t nCollateralnodePayment = GetCollateralnodePayment(BlockReading->nHeight, block.IsProofOfStake() ? nCalculatedStakeReward : block.vtx[0].GetValueOut());
-    */
             if (block.IsProofOfWork())
             {
-                // TODO HERE: Scan the block for collateralnode payment amount
+                int64_t nBlockValue = block.vtx[0].GetValueOut();
+                int64_t nExpectedPayment = GetCollateralnodePayment(BlockReading->nHeight, nBlockValue);
+
                 for (CTxOut txout : block.vtx[0].vout)
                     if(mnpayee == txout.scriptPubKey) {
+                        int lastPay = pindexBest->nHeight - BlockReading->nHeight;
+                        bool validPayment = (txout.nValue >= (nExpectedPayment * 95 / 100));
+                        if (fDebug) printf("CCollateralNode::UpdateLastPaidBlock -- found pow payment to %s at %d (%d blocks ago), amount=%lld, expected=%lld, valid=%s\n",
+                            address2.ToString().c_str(), BlockReading->nHeight, lastPay, txout.nValue, nExpectedPayment, validPayment ? "yes" : "no");
+                        if (BlockReading->nHeight >= FORK_HEIGHT_CN_PAYMENT_VALIDATION && !validPayment) {
+                            if (fDebug) printf("CCollateralNode::UpdateLastPaidBlock -- invalid payment amount, skipping\n");
+                            continue;
+                        }
                         nBlockLastPaid = BlockReading->nHeight;
-                        int lastPay = pindexBest->nHeight - nBlockLastPaid;
-                        int value = txout.nValue;
-                        // TODO HERE: Check the nValue for the collateralnode payment amount
-                        if (fDebug) printf("CCollateralNode::UpdateLastPaidBlock -- searching for block with payment to %s -- found pow %d (%d blocks ago)\n", address2.ToString().c_str(), nBlockLastPaid, lastPay);
                         return;
                     }
             } else if (block.IsProofOfStake())
             {
-                // TODO HERE: Scan the block for collateralnode payment amount
+                int64_t nBlockValue = block.vtx[1].GetValueOut();
+                int64_t nExpectedPayment = GetCollateralnodePayment(BlockReading->nHeight, nBlockValue);
+
                 for (CTxOut txout : block.vtx[1].vout)
                     if(mnpayee == txout.scriptPubKey) {
+                        int lastPay = pindexBest->nHeight - BlockReading->nHeight;
+                        bool validPayment = (txout.nValue >= (nExpectedPayment * 95 / 100));
+                        if (fDebug) printf("CCollateralNode::UpdateLastPaidBlock -- found pos payment to %s at %d (%d blocks ago), amount=%lld, expected=%lld, valid=%s\n",
+                            address2.ToString().c_str(), BlockReading->nHeight, lastPay, txout.nValue, nExpectedPayment, validPayment ? "yes" : "no");
+                        if (BlockReading->nHeight >= FORK_HEIGHT_CN_PAYMENT_VALIDATION && !validPayment) {
+                            if (fDebug) printf("CCollateralNode::UpdateLastPaidBlock -- invalid payment amount, skipping\n");
+                            continue;
+                        }
                         nBlockLastPaid = BlockReading->nHeight;
-                        int lastPay = pindexBest->nHeight - nBlockLastPaid;
-                        int value = txout.nValue;
-                        // TODO HERE: Check the nValue for the collateralnode payment amount
-                        if (fDebug) printf("CCollateralNode::UpdateLastPaidBlock -- searching for block with payment to %s -- found pos %d (%d blocks ago)\n", address2.ToString().c_str(), nBlockLastPaid, lastPay);
                         return;
                     }
             }
@@ -1337,7 +1355,6 @@ bool CCollateralnodePayments::ProcessBlock(int nBlockHeight)
     int c = 0;
     BOOST_REVERSE_FOREACH(CCollateralnodePaymentWinner& winner, vWinning){
         vecLastPayments.push_back(winner.vin);
-        //if we have one full payment cycle, break
         if(++c > (int)vecCollateralnodes.size()) break;
     }
 
@@ -1353,6 +1370,9 @@ bool CCollateralnodePayments::ProcessBlock(int nBlockHeight)
         if(!mn.IsEnabled()) {
             continue;
         }
+        int minAge = max(1, (int)mnCount) * 30;
+        if (mn.GetCollateralnodeInputAge() < minAge)
+            continue;
 
         winner.score = 0;
         winner.nBlockHeight = nBlockHeight;
@@ -1362,12 +1382,21 @@ bool CCollateralnodePayments::ProcessBlock(int nBlockHeight)
         break;
     }
 
-    //if we can't find someone to get paid, pick randomly
     if(winner.nBlockHeight == 0 && vecCollateralnodes.size() > 0) {
-        winner.score = 0;
-        winner.nBlockHeight = nBlockHeight;
-        winner.vin = vecCollateralnodes[0].vin;
-        winner.payee =GetScriptForDestination(vecCollateralnodes[0].pubkey.GetID());
+        int minAge = max(1, (int)mnCount) * 30;
+        for (CCollateralNode& mn : vecCollateralnodes) {
+            mn.Check();
+            if(!mn.IsEnabled())
+                continue;
+            if (mn.GetCollateralnodeInputAge() < minAge)
+                continue;
+
+            winner.score = 0;
+            winner.nBlockHeight = nBlockHeight;
+            winner.vin = mn.vin;
+            winner.payee =GetScriptForDestination(mn.pubkey.GetID());
+            break;
+        }
     }
 
 
@@ -1554,8 +1583,8 @@ bool CCollateralNPayments::initialize(const CBlockIndex *pindex)
                             if (std::find(vScripts.begin(), vScripts.end(), mnpayee) != vScripts.end()) { continue; }
 
                             //if (fDebug) printf("Found CN payment at height %d - TX %s\n TXOut %s\n",nHeight,tx.ToString().c_str(),txout.ToString().c_str());
-                            // TODO: check spent with fetch inputs?
-                            bool* pfMissingInputs;
+                            bool fMissingInputs = false;
+                            bool* pfMissingInputs = &fMissingInputs;
                             //if(fDebug) printf("CCollaTeralPool::IsCollateralValid - Testing TX %s\n",txCollateral.ToString().c_str());
                             if(!AcceptableInputs(mempool, txCollateral, false, pfMissingInputs)){
                                 //if(fDebug) printf("CCollaTeralPool::IsCollateralValid - didn't pass IsAcceptable\n");
@@ -1611,8 +1640,9 @@ bool CCollateralNPayments::initialize(const CBlockIndex *pindex)
                                 if (std::find(vScripts.begin(), vScripts.end(), mnpayee) != vScripts.end()) { continue; }
 
                                 //if (fDebug) printf("Found CN payment at height %d - TX %s\n TXOut %s\n",nHeight,tx.ToString().c_str(),txout.ToString().c_str());
-                                // TODO: check spent with fetch inputs?
-                                bool* pfMissingInputs;
+                                // Note: AcceptableInputs checks spent status via FetchInputs/ConnectInputs
+                                bool fMissingInputs = false;
+                            bool* pfMissingInputs = &fMissingInputs;
                                 //if(fDebug) printf("CCollaTeralPool::IsCollateralValid - Testing TX %s\n",txCollateral.ToString().c_str());
                                 if(!AcceptableInputs(mempool, txCollateral, false, pfMissingInputs)){
                                     //if(fDebug) printf("CCollaTeralPool::IsCollateralValid - didn't pass IsAcceptable\n");
@@ -1675,7 +1705,7 @@ bool FindCNPayment(CScript& payee, CBlockIndex* pindex)
                     {
                         if(payee == txout.scriptPubKey && txout.nValue == GetMNCollateral() * COIN) {
                             if (fDebug) printf("Found CN payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
-                            // TODO: check spent with fetch inputs?
+                            // Note: AcceptableInputs checks spent status via FetchInputs/ConnectInputs
                             CTransaction txCollateral;
                             COutPoint cout = COutPoint(tx.GetHash(),n);
                             CTxOut vout = CTxOut(1 * COIN, txout.scriptPubKey);
@@ -1683,7 +1713,8 @@ bool FindCNPayment(CScript& payee, CBlockIndex* pindex)
                             txCollateral.vin.push_back(vin);
                             txCollateral.vout.push_back(vout);
                             //if(fDebug) printf("CCollaTeralPool::IsCollateralValid - Testing TX %s\n",txCollateral.ToString().c_str());
-                            bool* pfMissingInputs;
+                            bool fMissingInputs = false;
+                            bool* pfMissingInputs = &fMissingInputs;
                             if(!AcceptableInputs(mempool, txCollateral, false, pfMissingInputs)){
                                 if(fDebug) printf("CCollaTeralPool::IsCollateralValid - didn't pass IsAcceptable\n");
                                 continue;
@@ -1731,13 +1762,14 @@ bool FindCNPayments(CScript& payee, CBlockIndex* pindex)
                         {
                             if(payee == txout.scriptPubKey && txout.nValue == GetMNCollateral() * COIN) {
                                 if (fDebug) printf("Found CN payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
-                                // TODO: check spent with fetch inputs?
+                                // Note: AcceptableInputs checks spent status via FetchInputs/ConnectInputs
                                 CTransaction txCollateral;
                                 CTxOut vout = CTxOut((GetMNCollateral() - 1)* COIN, colLateralPool.collateralPubKey);
                                 CTxIn vin = CTxIn(txout.GetHash(),n);
                                 txCollateral.vin.push_back(vin);
                                 txCollateral.vout.push_back(vout);
-                                bool* pfMissingInputs;
+                                bool fMissingInputs = false;
+                            bool* pfMissingInputs = &fMissingInputs;
                                 if(!AcceptableInputs(mempool, txCollateral, false, pfMissingInputs)){
                                     if(fDebug) printf("CCollaTeralPool::IsCollateralValid - didn't pass IsAcceptable\n");
                                     continue;
@@ -1770,13 +1802,14 @@ bool FindCNPayments(CScript& payee, CBlockIndex* pindex)
                         {
                             if(payee == txout.scriptPubKey && txout.nValue == GetMNCollateral() * COIN) {
                                 if (fDebug) printf("Found CN payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
-                                // TODO: check spent with fetch inputs?
+                                // Note: AcceptableInputs checks spent status via FetchInputs/ConnectInputs
                                 CTransaction txCollateral;
                                 CTxOut vout = CTxOut((GetMNCollateral() - 1)* COIN, colLateralPool.collateralPubKey);
                                 CTxIn vin = CTxIn(txout.GetHash(),n);
                                 txCollateral.vin.push_back(vin);
                                 txCollateral.vout.push_back(vout);
-                                bool* pfMissingInputs;
+                                bool fMissingInputs = false;
+                            bool* pfMissingInputs = &fMissingInputs;
                                 if(!AcceptableInputs(mempool, txCollateral, false, pfMissingInputs)){
                                     if(fDebug) printf("CCollaTeralPool::IsCollateralValid - didn't pass IsAcceptable\n");
                                     continue;

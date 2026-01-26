@@ -499,7 +499,7 @@ Value setban(const Array& params, bool fHelp)
             throw JSONRPCError(RPC_CLIENT_NODE_ALREADY_ADDED, "Error: IP/Subnet already banned");
 
         int64_t banTime = 0; //use standard bantime if not specified
-        if (params.size() >= 3 && !(params[2] == NULL))
+        if (params.size() >= 3 && params[2].type() != json_spirit::null_type)
             banTime = params[2].get_int64();
 
         bool absolute = false;

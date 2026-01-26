@@ -20,9 +20,12 @@
 #define IDNS_PORT 6565
 
 extern bool fTestNet;
-static inline unsigned short GetDefaultPort(const bool testnet = fTestNet)
+extern bool fRegTest;
+static inline unsigned short GetDefaultPort()
 {
-    return testnet ? 15530 : 14530;
+    if (fRegTest) return 18444;
+    if (fTestNet) return 15530;
+    return 14530;
 }
 
 

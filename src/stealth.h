@@ -28,7 +28,7 @@ typedef struct ec_secret { uint8_t e[ec_secret_size]; } ec_secret;
 typedef data_chunk ec_point;
 
 const uint256 MAX_SECRET("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364140");
-const uint256 MIN_SECRET(16000); // increase? min valid key is 1
+const uint256 MIN_SECRET(1);
 
 typedef uint32_t stealth_bitfield;
 

@@ -15,6 +15,8 @@
 #include "ringsig.h"
 #include "txdb.h"
 
+#include <openssl/crypto.h>
+
 #include <sstream>
 #include <fstream>
 #include <sys/stat.h>
@@ -397,11 +399,9 @@ Value sendtoaddress(const Array& params, bool fHelp)
 
     EnsureWalletIsUnlocked();
 
-    /*
     if (params[0].get_str().length() > 75
         && IsStealthAddress(params[0].get_str()))
         return sendtostealthaddress(params, false);
-    */
 
     CBitcoinAddress address(params[0].get_str());
     if (!address.IsValid())
@@ -1840,9 +1840,9 @@ Value walletpassphrase(const Array& params, bool fHelp)
     // Note that the walletpassphrase is stored in params[0] which is not mlock()ed
     SecureString strWalletPass;
     strWalletPass.reserve(100);
-    // TODO: get rid of this .c_str() by implementing SecureString::operator=(std::string)
-    // Alternately, find a way to make params[0] mlock()'d to begin with.
-    strWalletPass = params[0].get_str().c_str();
+    std::string strPass = params[0].get_str();
+    strWalletPass = strPass.c_str();
+    OPENSSL_cleanse(&strPass[0], strPass.size());
 
     if (strWalletPass.length() > 0)
     {
@@ -1885,15 +1885,17 @@ Value walletpassphrasechange(const Array& params, bool fHelp)
     if (!pwalletMain->IsCrypted())
         throw JSONRPCError(RPC_WALLET_WRONG_ENC_STATE, "Error: running with an unencrypted wallet, but walletpassphrasechange was called.");
 
-    // TODO: get rid of these .c_str() calls by implementing SecureString::operator=(std::string)
-    // Alternately, find a way to make params[0] mlock()'d to begin with.
     SecureString strOldWalletPass;
     strOldWalletPass.reserve(100);
-    strOldWalletPass = params[0].get_str().c_str();
+    std::string strOldPass = params[0].get_str();
+    strOldWalletPass = strOldPass.c_str();
+    OPENSSL_cleanse(&strOldPass[0], strOldPass.size());
 
     SecureString strNewWalletPass;
     strNewWalletPass.reserve(100);
-    strNewWalletPass = params[1].get_str().c_str();
+    std::string strNewPass = params[1].get_str();
+    strNewWalletPass = strNewPass.c_str();
+    OPENSSL_cleanse(&strNewPass[0], strNewPass.size());
 
     if (strOldWalletPass.length() < 1 || strNewWalletPass.length() < 1)
         throw runtime_error(
@@ -1941,11 +1943,11 @@ Value encryptwallet(const Array& params, bool fHelp)
     if (pwalletMain->IsCrypted())
         throw JSONRPCError(RPC_WALLET_WRONG_ENC_STATE, "Error: running with an encrypted wallet, but encryptwallet was called.");
 
-    // TODO: get rid of this .c_str() by implementing SecureString::operator=(std::string)
-    // Alternately, find a way to make params[0] mlock()'d to begin with.
     SecureString strWalletPass;
     strWalletPass.reserve(100);
-    strWalletPass = params[0].get_str().c_str();
+    std::string strPass = params[0].get_str();
+    strWalletPass = strPass.c_str();
+    OPENSSL_cleanse(&strPass[0], strPass.size());
 
     if (strWalletPass.length() < 1)
         throw runtime_error(
@@ -2389,6 +2391,54 @@ Value importstealthaddress(const Array& params, bool fHelp)
     return result;
 }
 
+Value sendtostealthaddress(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 2 || params.size() > 5)
+        throw runtime_error(
+            "sendtostealthaddress <stealth_address> <amount> [narration] [comment] [comment-to]\n"
+            "Send funds to a stealth address.\n"
+            "<stealth_address> is the recipient's stealth address\n"
+            "<amount> is a real number and is rounded to the nearest 0.000001\n"
+            "[narration] is an optional 24 character narration stored in the transaction"
+            + HelpRequiringPassphrase());
+
+    if (pwalletMain->IsLocked())
+        throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
+
+    std::string sEncoded = params[0].get_str();
+
+    if (!IsStealthAddress(sEncoded))
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid Innova stealth address.");
+
+    int64_t nAmount = AmountFromValue(params[1]);
+
+    std::string sNarr;
+    if (params.size() > 2 && params[2].type() != null_type && !params[2].get_str().empty())
+        sNarr = params[2].get_str();
+
+    if (sNarr.length() > 24)
+        throw runtime_error("Narration must be 24 characters or less.");
+
+    CStealthAddress sxAddr;
+    if (!sxAddr.SetEncoded(sEncoded))
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Could not decode stealth address.");
+
+    CWalletTx wtx;
+    if (params.size() > 3 && params[3].type() != null_type && !params[3].get_str().empty())
+        wtx.mapValue["comment"] = params[3].get_str();
+    if (params.size() > 4 && params[4].type() != null_type && !params[4].get_str().empty())
+        wtx.mapValue["to"]      = params[4].get_str();
+
+    std::string sError;
+    if (!pwalletMain->SendStealthMoneyToDestination(sxAddr, nAmount, sNarr, wtx, sError))
+    {
+        printf("SendStealthMoneyToDestination failed: %s\n", sError.c_str());
+        throw JSONRPCError(RPC_WALLET_ERROR, sError);
+    }
+
+    return wtx.GetHash().GetHex();
+}
+
 Value clearwallettransactions(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() > 0)
@@ -2620,8 +2670,9 @@ Value sendanontoanon(const Array& params, bool fHelp)
 
     Object result;
     std::ostringstream ssThrow;
+    
     if (nRingSize < MIN_RING_SIZE)
-        result.push_back(Pair("warning", "Ring size was below the recommended size, your existing will be marked as compromised."));
+        ssThrow << "Ring size must be >= " << MIN_RING_SIZE << " for anonymity. Ring size " << nRingSize << " would compromise privacy.", throw std::runtime_error(ssThrow.str());
 
     if (nRingSize > MAX_RING_SIZE)
         ssThrow << "Ring size must be >= " << MIN_RING_SIZE << " and <= " << MAX_RING_SIZE << ".", throw std::runtime_error(ssThrow.str());
@@ -2679,8 +2730,8 @@ Value sendanontoinn(const Array& params, bool fHelp)
     uint32_t nRingSize = (uint32_t)params[2].get_int();
 
     std::ostringstream ssThrow;
-    if (nRingSize < 1 || nRingSize > MAX_RING_SIZE)
-        ssThrow << "Ring size must be >= 1 and <= " << MAX_RING_SIZE << ".", throw std::runtime_error(ssThrow.str());
+    if (nRingSize < MIN_RING_SIZE || nRingSize > MAX_RING_SIZE)
+        ssThrow << "Ring size must be >= " << MIN_RING_SIZE << " and <= " << MAX_RING_SIZE << ".", throw std::runtime_error(ssThrow.str());
 
 
     std::string sNarr;
@@ -2753,6 +2804,115 @@ Value estimateanonfee(const Array& params, bool fHelp)
     result.push_back(Pair("Estimated inputs", (int)wtx.vin.size()));
     result.push_back(Pair("Estimated outputs", (int)wtx.vout.size()));
     result.push_back(Pair("Estimated fee", ValueFromAmount(nFee)));
+
+    return result;
+}
+
+Value checkanonbalance(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 1 || params.size() > 2)
+        throw std::runtime_error(
+            "checkanonbalance <amount> [ring_size]\n"
+            "Pre-flight check before sending anonymous transactions.\n"
+            "Verifies that enough ring members are available for the specified amount.\n"
+            "<amount> is a real number and is rounded to the nearest 0.000001\n"
+            "[ring_size] defaults to " + std::to_string(MIN_RING_SIZE) + " (minimum for anonymity)");
+
+    int64_t nAmount = AmountFromValue(params[0]);
+    uint32_t nRingSize = MIN_RING_SIZE;
+
+    if (params.size() > 1)
+        nRingSize = (uint32_t)params[1].get_int();
+
+    if (nRingSize < MIN_RING_SIZE || nRingSize > MAX_RING_SIZE)
+        throw std::runtime_error("Ring size must be >= " + std::to_string(MIN_RING_SIZE) +
+                                 " and <= " + std::to_string(MAX_RING_SIZE));
+
+    Object result;
+
+    LOCK(cs_main);
+    CTxDB txdb("r");
+
+    leveldb::DB* pdb = txdb.GetInstance();
+    if (!pdb)
+        throw std::runtime_error("checkanonbalance: cannot get leveldb instance");
+
+    leveldb::Iterator *iterator = pdb->NewIterator(leveldb::ReadOptions());
+
+    int nMatureOutputs = 0;
+    int nImmatureOutputs = 0;
+    int nCompromisedOutputs = 0;
+
+    CPubKey pkZero;
+    pkZero.SetZero();
+
+    CDataStream ssStartKey(SER_DISK, CLIENT_VERSION);
+    ssStartKey << make_pair(string("ao"), pkZero);
+    iterator->Seek(ssStartKey.str());
+
+    while (iterator->Valid())
+    {
+        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        ssKey.write(iterator->key().data(), iterator->key().size());
+        string strType;
+        ssKey >> strType;
+
+        if (strType != "ao")
+            break;
+
+        CDataStream ssValue(SER_DISK, CLIENT_VERSION);
+        ssValue.write(iterator->value().data(), iterator->value().size());
+
+        CAnonOutput anonOutput;
+        ssValue >> anonOutput;
+
+        if (anonOutput.nValue == nAmount)
+        {
+            if (anonOutput.nCompromised != 0)
+            {
+                nCompromisedOutputs++;
+            }
+            else if (anonOutput.nBlockHeight > 0 && nBestHeight - anonOutput.nBlockHeight >= MIN_ANON_SPEND_DEPTH)
+            {
+                nMatureOutputs++;
+            }
+            else
+            {
+                nImmatureOutputs++;
+            }
+        }
+
+        iterator->Next();
+    }
+
+    delete iterator;
+
+    int nNeeded = nRingSize - 1;
+    bool fCanSpend = (nMatureOutputs >= nNeeded);
+
+    result.push_back(Pair("amount", ValueFromAmount(nAmount)));
+    result.push_back(Pair("ring_size", (int)nRingSize));
+    result.push_back(Pair("mature_outputs", nMatureOutputs));
+    result.push_back(Pair("immature_outputs", nImmatureOutputs));
+    result.push_back(Pair("compromised_outputs", nCompromisedOutputs));
+    result.push_back(Pair("ring_members_needed", nNeeded));
+    result.push_back(Pair("can_spend", fCanSpend));
+
+    if (!fCanSpend)
+    {
+        int nShortage = nNeeded - nMatureOutputs;
+        result.push_back(Pair("shortage", nShortage));
+        if (nImmatureOutputs > 0)
+        {
+            result.push_back(Pair("note", "There are " + std::to_string(nImmatureOutputs) +
+                                          " immature outputs. Wait " + std::to_string(MIN_ANON_SPEND_DEPTH) +
+                                          " blocks for maturity."));
+        }
+        else
+        {
+            result.push_back(Pair("note", "Not enough outputs of this denomination exist in the system."));
+        }
+    }
 
     return result;
 }
@@ -2957,6 +3117,370 @@ Value reloadanondata(const Array& params, bool fHelp)
 
     Object result;
     result.push_back(Pair("result", "reloadanondata complete."));
+    return result;
+}
+
+Value getanonoutputinfo(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 1 || params.size() > 1)
+        throw runtime_error(
+            "getanonoutputinfo <pubkey_hex>\n"
+            "Returns information about an anonymous output including compromise status.\n"
+            "<pubkey_hex> is the compressed public key of the anonymous output (66 hex chars).");
+
+    std::string sPubKey = params[0].get_str();
+    if (sPubKey.length() != 66)
+        throw JSONRPCError(RPC_INVALID_PARAMS, "Public key must be 66 hex characters (33 bytes compressed).");
+
+    std::vector<uint8_t> vchPubKey = ParseHex(sPubKey);
+    if (vchPubKey.size() != 33)
+        throw JSONRPCError(RPC_INVALID_PARAMS, "Invalid public key hex.");
+
+    CPubKey pkCoin(vchPubKey);
+    if (!pkCoin.IsValid())
+        throw JSONRPCError(RPC_INVALID_PARAMS, "Invalid public key.");
+
+    Object result;
+    {
+        LOCK(cs_main);
+        CTxDB txdb("r");
+        CAnonOutput ao;
+
+        if (!txdb.ReadAnonOutput(pkCoin, ao))
+        {
+            result.push_back(Pair("found", false));
+            result.push_back(Pair("error", "Anonymous output not found in database."));
+            return result;
+        }
+
+        result.push_back(Pair("found", true));
+        result.push_back(Pair("pubkey", sPubKey));
+        result.push_back(Pair("txid", ao.outpoint.hash.GetHex()));
+        result.push_back(Pair("vout", (int)ao.outpoint.n));
+        result.push_back(Pair("value", ValueFromAmount(ao.nValue)));
+        result.push_back(Pair("block_height", ao.nBlockHeight));
+        result.push_back(Pair("compromised", ao.nCompromised > 0));
+        result.push_back(Pair("compromise_level", (int)ao.nCompromised));
+
+        int nDepth = 0;
+        if (ao.nBlockHeight > 0 && nBestHeight >= ao.nBlockHeight)
+            nDepth = nBestHeight - ao.nBlockHeight + 1;
+        result.push_back(Pair("depth", nDepth));
+        result.push_back(Pair("mature", nDepth >= MIN_ANON_SPEND_DEPTH));
+
+        std::string privacyStatus;
+        if (ao.nCompromised > 0)
+            privacyStatus = "COMPROMISED - output was spent with ring size 1, fully traceable";
+        else if (nDepth < MIN_ANON_SPEND_DEPTH)
+            privacyStatus = "IMMATURE - not yet spendable";
+        else
+            privacyStatus = "PRIVATE - available for anonymous spending";
+        result.push_back(Pair("privacy_status", privacyStatus));
+    }
+
+    return result;
+}
+
+Value listcompromisedoutputs(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 2)
+        throw runtime_error(
+            "listcompromisedoutputs [include_all=false] [max_results=1000]\n"
+            "Lists anonymous outputs that have been compromised (spent with ring size 1).\n"
+            "\nArguments:\n"
+            "  include_all   (bool, optional, default=false) If true, scans entire database;\n"
+            "                otherwise only shows wallet's owned outputs.\n"
+            "  max_results   (int, optional, default=1000) Maximum number of results to return.\n"
+            "                Use 0 for unlimited (warning: may be slow on large databases).\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"owned_compromised\": [        (array) Compromised outputs owned by this wallet\n"
+            "    {\n"
+            "      \"pubkey\": \"hex\",         (string) Public key of the output\n"
+            "      \"txid\": \"hex\",           (string) Transaction ID\n"
+            "      \"vout\": n,                (numeric) Output index\n"
+            "      \"value\": x.xxx,           (numeric) Value in INN\n"
+            "      \"block_height\": n,        (numeric) Block height when created\n"
+            "      \"compromise_level\": n,    (numeric) Level of compromise (1=ring size 1)\n"
+            "      \"depth\": n,               (numeric) Current confirmation depth\n"
+            "      \"spent\": true|false       (bool) Whether output has been spent\n"
+            "    }, ...\n"
+            "  ],\n"
+            "  \"all_compromised\": [          (array, only if include_all=true)\n"
+            "    ... same structure ...\n"
+            "  ],\n"
+            "  \"summary\": {\n"
+            "    \"owned_total\": n,           (numeric) Total owned anon outputs checked\n"
+            "    \"owned_compromised\": n,     (numeric) Number of owned compromised outputs\n"
+            "    \"all_total\": n,             (numeric) Total outputs scanned (if include_all)\n"
+            "    \"all_compromised\": n        (numeric) Total compromised found (if include_all)\n"
+            "  }\n"
+            "}\n");
+
+    bool fIncludeAll = false;
+    int nMaxResults = 1000;
+
+    if (params.size() > 0)
+        fIncludeAll = params[0].get_bool();
+    if (params.size() > 1)
+        nMaxResults = params[1].get_int();
+
+    if (nMaxResults < 0)
+        nMaxResults = 0;
+    if (nMaxResults > 100000)
+        nMaxResults = 100000;
+
+    Array ownedCompromised;
+    Array allCompromised;
+    int nOwnedTotal = 0;
+    int nOwnedCompromisedCount = 0;
+    int nAllTotal = 0;
+    int nAllCompromisedCount = 0;
+
+    std::set<std::string> setOwnedPubkeys;
+
+    {
+        LOCK2(cs_main, pwalletMain->cs_wallet);
+        CTxDB txdb("r");
+
+
+        {
+            CWalletDB walletdb(pwalletMain->strWalletFile, "r");
+            Dbc* pcursor = walletdb.GetAtCursor();
+
+            if (pcursor)
+            {
+                try
+                {
+                    unsigned int fFlags = DB_SET_RANGE;
+                    while (true)
+                    {
+                        if (nMaxResults > 0 && nOwnedCompromisedCount >= nMaxResults)
+                            break;
+
+                        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+                        if (fFlags == DB_SET_RANGE)
+                            ssKey << std::string("oao");
+                        CDataStream ssValue(SER_DISK, CLIENT_VERSION);
+
+                        int ret = walletdb.ReadAtCursor(pcursor, ssKey, ssValue, fFlags);
+                        fFlags = DB_NEXT;
+
+                        if (ret == DB_NOTFOUND)
+                            break;
+                        if (ret != 0)
+                        {
+                            printf("listcompromisedoutputs: error reading wallet db\n");
+                            break;
+                        }
+
+                        string strType;
+                        ssKey >> strType;
+                        if (strType != "oao")
+                            break;
+
+                        std::vector<uint8_t> vchImage;
+                        ssKey >> vchImage;
+
+                        COwnedAnonOutput oao;
+                        ssValue >> oao;
+                        nOwnedTotal++;
+
+                        std::map<uint256, CWalletTx>::iterator mi = pwalletMain->mapWallet.find(oao.outpoint.hash);
+                        if (mi == pwalletMain->mapWallet.end())
+                            continue;
+                        if (mi->second.nVersion != ANON_TXN_VERSION)
+                            continue;
+                        if (mi->second.vout.size() <= oao.outpoint.n)
+                            continue;
+
+                        const CTxOut& txout = mi->second.vout[oao.outpoint.n];
+
+                        const CScript& script = txout.scriptPubKey;
+                        if (script.size() < 35)
+                            continue;
+
+                        CScript::const_iterator pc = script.begin();
+                        opcodetype opcode;
+                        std::vector<unsigned char> vchPubKey;
+
+                        if (!script.GetOp(pc, opcode) || opcode != OP_RETURN)
+                            continue;
+                        if (!script.GetOp(pc, opcode))
+                            continue;
+                        if (!script.GetOp(pc, opcode))
+                            continue;
+                        if (!script.GetOp(pc, opcode, vchPubKey))
+                            continue;
+
+                        if (vchPubKey.size() != 33)
+                            continue;
+
+                        CPubKey pkCoin(vchPubKey);
+                        if (!pkCoin.IsValid())
+                            continue;
+
+                        CAnonOutput ao;
+                        if (!txdb.ReadAnonOutput(pkCoin, ao))
+                            continue;
+
+                        if (ao.nCompromised > 0)
+                        {
+                            nOwnedCompromisedCount++;
+
+                            Object entry;
+                            entry.push_back(Pair("pubkey", HexStr(pkCoin.begin(), pkCoin.end())));
+                            entry.push_back(Pair("txid", ao.outpoint.hash.GetHex()));
+                            entry.push_back(Pair("vout", (int)ao.outpoint.n));
+                            entry.push_back(Pair("value", ValueFromAmount(ao.nValue)));
+                            entry.push_back(Pair("block_height", ao.nBlockHeight));
+                            entry.push_back(Pair("compromise_level", (int)ao.nCompromised));
+
+                            int nDepth = 0;
+                            if (ao.nBlockHeight > 0 && nBestHeight >= ao.nBlockHeight)
+                                nDepth = nBestHeight - ao.nBlockHeight + 1;
+                            entry.push_back(Pair("depth", nDepth));
+                            entry.push_back(Pair("spent", oao.fSpent));
+
+                            std::string sWarning;
+                            if (ao.nCompromised == 1)
+                                sWarning = "CRITICAL: Spent with ring size 1 - fully traceable";
+                            else
+                                sWarning = "WARNING: Privacy reduced - compromise level " + std::to_string(ao.nCompromised);
+                            entry.push_back(Pair("warning", sWarning));
+
+                            ownedCompromised.push_back(entry);
+
+                            setOwnedPubkeys.insert(HexStr(pkCoin.begin(), pkCoin.end()));
+                        }
+                    }
+                }
+                catch (...)
+                {
+                    pcursor->close();
+                    throw;
+                }
+                pcursor->close();
+            }
+        }
+
+        if (fIncludeAll)
+        {
+            leveldb::DB* pdb = txdb.GetInstance();
+            if (!pdb)
+                throw runtime_error("listcompromisedoutputs: cannot get leveldb instance");
+
+            std::unique_ptr<leveldb::Iterator> iterator(pdb->NewIterator(leveldb::ReadOptions()));
+            if (!iterator)
+                throw runtime_error("listcompromisedoutputs: cannot create leveldb iterator");
+
+            CPubKey pkZero;
+            pkZero.SetZero();
+            CDataStream ssStartKey(SER_DISK, CLIENT_VERSION);
+            ssStartKey << make_pair(string("ao"), pkZero);
+            iterator->Seek(ssStartKey.str());
+
+            int nProgressInterval = 10000;
+            int64_t nStartTime = GetTimeMillis();
+
+            while (iterator->Valid())
+            {
+                if (nMaxResults > 0 && nAllCompromisedCount >= nMaxResults)
+                    break;
+
+                if (GetTimeMillis() - nStartTime > 60000)
+                {
+                    printf("listcompromisedoutputs: scan timeout after 60 seconds\n");
+                    break;
+                }
+
+                CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+                ssKey.write(iterator->key().data(), iterator->key().size());
+
+                string strType;
+                ssKey >> strType;
+
+                if (strType != "ao")
+                    break;
+
+                CPubKey pkCoin;
+                ssKey >> pkCoin;
+
+                CDataStream ssValue(SER_DISK, CLIENT_VERSION);
+                ssValue.write(iterator->value().data(), iterator->value().size());
+
+                CAnonOutput ao;
+                ssValue >> ao;
+
+                nAllTotal++;
+
+                if (nAllTotal % nProgressInterval == 0)
+                {
+                    printf("listcompromisedoutputs: scanned %d outputs, found %d compromised\n",
+                           nAllTotal, nAllCompromisedCount);
+                }
+
+                if (ao.nCompromised > 0)
+                {
+                    nAllCompromisedCount++;
+
+                    Object entry;
+                    entry.push_back(Pair("pubkey", HexStr(pkCoin.begin(), pkCoin.end())));
+                    entry.push_back(Pair("txid", ao.outpoint.hash.GetHex()));
+                    entry.push_back(Pair("vout", (int)ao.outpoint.n));
+                    entry.push_back(Pair("value", ValueFromAmount(ao.nValue)));
+                    entry.push_back(Pair("block_height", ao.nBlockHeight));
+                    entry.push_back(Pair("compromise_level", (int)ao.nCompromised));
+
+                    int nDepth = 0;
+                    if (ao.nBlockHeight > 0 && nBestHeight >= ao.nBlockHeight)
+                        nDepth = nBestHeight - ao.nBlockHeight + 1;
+                    entry.push_back(Pair("depth", nDepth));
+
+                    std::string sPubKeyHex = HexStr(pkCoin.begin(), pkCoin.end());
+                    bool fOwned = setOwnedPubkeys.count(sPubKeyHex) > 0;
+                    entry.push_back(Pair("owned", fOwned));
+
+                    allCompromised.push_back(entry);
+                }
+
+                iterator->Next();
+            }
+
+            printf("listcompromisedoutputs: full scan complete - %d total, %d compromised\n",
+                   nAllTotal, nAllCompromisedCount);
+        }
+    }
+
+    Object result;
+    result.push_back(Pair("owned_compromised", ownedCompromised));
+
+    if (fIncludeAll)
+        result.push_back(Pair("all_compromised", allCompromised));
+
+    Object summary;
+    summary.push_back(Pair("owned_total", nOwnedTotal));
+    summary.push_back(Pair("owned_compromised", nOwnedCompromisedCount));
+    if (fIncludeAll)
+    {
+        summary.push_back(Pair("all_total", nAllTotal));
+        summary.push_back(Pair("all_compromised", nAllCompromisedCount));
+
+        double fCompromiseRate = nAllTotal > 0 ? (double)nAllCompromisedCount / nAllTotal * 100.0 : 0.0;
+        summary.push_back(Pair("compromise_rate_percent", fCompromiseRate));
+    }
+    result.push_back(Pair("summary", summary));
+
+    if (nOwnedCompromisedCount > 0)
+    {
+        Array recommendations;
+        recommendations.push_back("Compromised outputs have reduced privacy - their spending history may be traceable.");
+        recommendations.push_back("Consider consolidating remaining funds to new stealth addresses.");
+        recommendations.push_back("Always use ring size >= 5 for future anonymous transactions.");
+        recommendations.push_back("Run 'anoninfo' to check overall anonymity set health.");
+        result.push_back(Pair("security_recommendations", recommendations));
+    }
+
     return result;
 }
 

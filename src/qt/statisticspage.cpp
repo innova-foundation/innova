@@ -9,19 +9,21 @@
 #include "marketbrowser.h"
 #include <sstream>
 #include <string>
+#include <QDateTime>
 
 using namespace json_spirit;
 
 StatisticsPage::StatisticsPage(QWidget *parent) :
     QWidget(parent),
-    ui(new Ui::StatisticsPage)
+    ui(new Ui::StatisticsPage),
+    lastUpdateTime(0)
 {
     ui->setupUi(this);
 
     setFixedSize(400, 420);
 
     connect(ui->startButton, SIGNAL(pressed()), this, SLOT(updateStatistics()));
-    }
+}
 
 int heightPrevious = -1;
 int connectionPrevious = -1;
@@ -38,6 +40,12 @@ QString rewardPrevious = "";
 
 void StatisticsPage::updateStatistics()
 {
+    qint64 currentTime = QDateTime::currentMSecsSinceEpoch();
+    if (currentTime - lastUpdateTime < 500) {
+        return;
+    }
+    lastUpdateTime = currentTime;
+
     uint64_t nMinWeight = 0, nMaxWeight = 0, nWeight = 0;
 
     double pHardness = GetDifficulty();

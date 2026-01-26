@@ -123,9 +123,11 @@ void ExecuteSpork(int nSporkID, int nValue)
 
 bool CSporkManager::CheckSignature(CSporkMessage& spork)
 {
-    //note: need to investigate why this is failing
+    std::string strPubKey = fTestNet ? strTestPubKey : strMainPubKey;
+    if (strPubKey == "invalid")
+        return false;
+
     std::string strMessage = boost::lexical_cast<std::string>(spork.nSporkID) + boost::lexical_cast<std::string>(spork.nValue) + boost::lexical_cast<std::string>(spork.nTimeSigned);
-    std::string strPubKey = strMainPubKey;
     CPubKey pubkey(ParseHex(strPubKey));
 
     std::string errorMessage = "";

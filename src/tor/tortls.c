@@ -358,7 +358,8 @@ tor_tls_init(void)
     SSL_load_error_strings();
 
 #if (SIZEOF_VOID_P >= 8 &&                              \
-     OPENSSL_VERSION_NUMBER >= OPENSSL_V_SERIES(1,0,1))
+     OPENSSL_VERSION_NUMBER >= OPENSSL_V_SERIES(1,0,1) && \
+     !defined(OPENSSL_3_0_API))
     long version = OpenSSL_version_num();
 
     /* LCOV_EXCL_START : we can't test these lines on the same machine */
@@ -1220,18 +1221,22 @@ tor_tls_context_new(crypto_pk_t *identity, unsigned int key_lifetime,
   }
   if (! is_client) {
     int nid;
-    EC_KEY *ec_key;
     if (flags & TOR_TLS_CTX_USE_ECDHE_P224)
       nid = NID_secp224r1;
     else if (flags & TOR_TLS_CTX_USE_ECDHE_P256)
       nid = NID_X9_62_prime256v1;
     else
       nid = NID_tor_default_ecdhe_group;
+#ifdef OPENSSL_3_0_API
+    SSL_CTX_set1_groups(result->ctx, &nid, 1);
+#else
     /* Use P-256 for ECDHE. */
+    EC_KEY *ec_key;
     ec_key = EC_KEY_new_by_curve_name(nid);
     if (ec_key != NULL) /*XXXX Handle errors? */
       SSL_CTX_set_tmp_ecdh(result->ctx, ec_key);
     EC_KEY_free(ec_key);
+#endif
   }
   SSL_CTX_set_verify(result->ctx, SSL_VERIFY_PEER,
                      always_accept_verify_cb);
@@ -2568,7 +2573,6 @@ tor_tls_get_buffer_sizes(tor_tls_t *tls,
 int
 evaluate_ecgroup_for_tls(const char *ecgroup)
 {
-  EC_KEY *ec_key;
   int nid;
   int ret;
 
@@ -2581,9 +2585,16 @@ evaluate_ecgroup_for_tls(const char *ecgroup)
   else
     return 0;
 
+#ifdef OPENSSL_3_0_API
+  EC_GROUP *group = EC_GROUP_new_by_curve_name(nid);
+  ret = (group != NULL);
+  EC_GROUP_free(group);
+#else
+  EC_KEY *ec_key;
   ec_key = EC_KEY_new_by_curve_name(nid);
   ret = (ec_key != NULL);
   EC_KEY_free(ec_key);
+#endif
 
   return ret;
 }

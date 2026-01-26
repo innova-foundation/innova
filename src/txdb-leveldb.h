@@ -226,5 +226,7 @@ private:
     bool LoadBlockIndexGuts();
 };
 
+void InitIBDBatching();
+void FlushIBDBatch();
 
 #endif // BITCOIN_DB_H

@@ -39,6 +39,7 @@ using boost::placeholders::_2;
 using namespace std;
 using namespace boost;
 using namespace boost::asio;
+namespace bfs = boost::filesystem;
 using namespace json_spirit;
 
 void ThreadRPCServer2(void* parg);
@@ -365,6 +366,7 @@ static const CRPCCommand vRPCCommands[] =
     { "getnewstealthaddress",   &getnewstealthaddress,   false,  false},
     { "liststealthaddresses",   &liststealthaddresses,   false,  false},
     { "importstealthaddress",   &importstealthaddress,   false,  false},
+    { "sendtostealthaddress",   &sendtostealthaddress,   false,  true},
     { "clearwallettransactions",&clearwallettransactions,false,  false},
     { "scanforalltxns",         &scanforalltxns,         false,  false},
 
@@ -373,10 +375,19 @@ static const CRPCCommand vRPCCommands[] =
     { "sendanontoanon",         &sendanontoanon,         false,  false},
     { "sendanontoinn",          	&sendanontoinn,         	 false,  false},
     { "estimateanonfee",        &estimateanonfee,        false,  false},
+    { "checkanonbalance",       &checkanonbalance,       true,   false},
     { "txnreport",              &txnreport,              false,  false},
     { "anonoutputs",            &anonoutputs,            false,  false},
     { "anoninfo",               &anoninfo,               false,  false},
     { "reloadanondata",         &reloadanondata,         false,  false},
+    { "getanonoutputinfo",      &getanonoutputinfo,      false,  false},
+    { "listcompromisedoutputs", &listcompromisedoutputs, false,  false},
+
+    /* SPV (Light Client) mode */
+    { "getspvinfo",             &getspvinfo,             true,   false},
+    { "spvrescan",              &spvrescan,              false,  false},
+    { "getstakemodifiercheckpoints", &getstakemodifiercheckpoints, true, false},
+    { "downloadbootstrap",      &downloadbootstrap,      false,  false},
 
     /* Collateralnode features */
     { "getpoolinfo",            &getpoolinfo,            true,   false},
@@ -407,12 +418,22 @@ static const CRPCCommand vRPCCommands[] =
     { "name_list",              &name_list,              false,  false },
     { "name_scan",              &name_scan,              false,  false },
     { "name_mempool",           &name_mempool,           false,  false },
-    // { "name_history",           &name_history,           false,  false },
+    { "name_history",           &name_history,           false,  false },
     { "name_filter",            &name_filter,            false,  false },
     { "name_show",              &name_show,              false,  false },
     { "name_debug",             &name_debug,             false,  false },
     { "name_count",             &name_count,             false,  false },
 
+#ifdef USE_IPFS
+    /* Hyperfile / IPFS commands */
+    { "hyperfileversion",       &hyperfileversion,       true,   false },
+    { "hyperfileupload",        &hyperfileupload,        false,  false },
+    { "hyperfilepod",           &hyperfilepod,           false,  false },
+    { "hyperfileduo",           &hyperfileduo,           false,  false },
+    { "hyperfileduopod",        &hyperfileduopod,        false,  false },
+    { "hyperfilegetblock",      &hyperfilegetblock,      true,   false },
+    { "hyperfilegetstat",       &hyperfilegetstat,       true,   false },
+#endif
 
 };
 
@@ -551,7 +572,15 @@ int ReadHTTPHeader(std::basic_istream<char>& stream, map<string, string>& mapHea
             boost::trim(strValue);
             mapHeadersRet[strHeader] = strValue;
             if (strHeader == "content-length")
-                nLen = atoi(strValue.c_str());
+            {
+                char* endptr = NULL;
+                errno = 0;
+                long nParsed = strtol(strValue.c_str(), &endptr, 10);
+                if (errno == ERANGE || nParsed < 0 || nParsed > INT_MAX || endptr == strValue.c_str())
+                    nLen = -1;
+                else
+                    nLen = static_cast<int>(nParsed);
+            }
         }
     }
     return nLen;
@@ -595,9 +624,10 @@ int ReadHTTP(std::basic_istream<char>& stream, map<string, string>& mapHeadersRe
 bool HTTPAuthorized(map<string, string>& mapHeaders)
 {
     string strAuth = mapHeaders["authorization"];
-    if (strAuth.substr(0,6) != "Basic ")
+    if (strAuth.size() < 6 || strAuth.substr(0,6) != "Basic ")
         return false;
-    string strUserPass64 = strAuth.substr(6); boost::trim(strUserPass64);
+    string strUserPass64 = strAuth.substr(6);
+    boost::trim(strUserPass64);
     string strUserPass = DecodeBase64(strUserPass64);
     return TimingResistantEqual(strUserPass, strRPCUserColonPass);
 }
@@ -653,16 +683,26 @@ void ErrorReply(std::ostream& stream, const Object& objError, const Value& id)
 bool ClientAllowed(const boost::asio::ip::address& address)
 {
     // Make sure that IPv4-compatible and IPv4-mapped IPv6 addresses are treated as IPv4 addresses
+#if BOOST_VERSION >= 107300
+    if (address.is_v6() && address.to_v6().is_v4_mapped()) {
+        return ClientAllowed(boost::asio::ip::make_address_v4(boost::asio::ip::v4_mapped, address.to_v6()));
+    }
+#else
     if (address.is_v6()
      && (address.to_v6().is_v4_compatible()
       || address.to_v6().is_v4_mapped()))
         return ClientAllowed(address.to_v6().to_v4());
+#endif
 
     if (address == asio::ip::address_v4::loopback()
      || address == asio::ip::address_v6::loopback()
      || (address.is_v4()
          // Check whether IPv4 addresses match 127.0.0.0/8 (loopback subnet)
+#if BOOST_VERSION >= 106600
+      && (address.to_v4().to_uint() & 0xff000000) == 0x7f000000))
+#else
       && (address.to_v4().to_ulong() & 0xff000000) == 0x7f000000))
+#endif
         return true;
 
     const string strAddress = address.to_string();
@@ -706,6 +746,20 @@ public:
     bool connect(const std::string& server, const std::string& port)
     {
         ip::tcp::resolver resolver(GetIOService(stream));
+#if BOOST_VERSION >= 106600
+        boost::system::error_code error = asio::error::host_not_found;
+        auto results = resolver.resolve(server, port, error);
+        if (error)
+            return false;
+        for (const auto& endpoint : results)
+        {
+            stream.lowest_layer().close();
+            stream.lowest_layer().connect(endpoint, error);
+            if (!error)
+                return true;
+        }
+        return false;
+#else
         ip::tcp::resolver::query query(server.c_str(), port.c_str());
         ip::tcp::resolver::iterator endpoint_iterator = resolver.resolve(query);
         ip::tcp::resolver::iterator end;
@@ -718,6 +772,7 @@ public:
         if (error)
             return false;
         return true;
+#endif
     }
 
 private:
@@ -741,7 +796,7 @@ class AcceptedConnectionImpl : public AcceptedConnection
 {
 public:
     AcceptedConnectionImpl(
-            asio::io_service& io_service,
+            ioContext& io_service,
             ssl::context &context,
             bool fUseSSL) :
         sslStream(io_service, context),
@@ -872,9 +927,10 @@ static void RPCAcceptHandler(boost::shared_ptr< basic_socket_acceptor<Protocol, 
 
     AcceptedConnectionImpl<ip::tcp>* tcp_conn = dynamic_cast< AcceptedConnectionImpl<ip::tcp>* >(conn);
 
-    // TODO: Actually handle errors
     if (error)
     {
+        if (fDebug)
+            printf("RPC accept error: %s\n", error.message().c_str());
         delete conn;
     }
 
@@ -934,7 +990,7 @@ void ThreadRPCServer2(void* parg)
 
     const bool fUseSSL = GetBoolArg("-rpcssl");
 
-    asio::io_service io_service;
+    ioContext io_service;
 #if defined BOOST_VERSION && BOOST_VERSION >= 106600
     ssl::context context(ssl::context::sslv23);
 #else
@@ -945,14 +1001,14 @@ void ThreadRPCServer2(void* parg)
     {
         context.set_options(ssl::context::no_sslv2);
 
-        filesystem::path pathCertFile(GetArg("-rpcsslcertificatechainfile", "server.cert"));
-        if (!pathCertFile.is_complete()) pathCertFile = filesystem::path(GetDataDir()) / pathCertFile;
-        if (filesystem::exists(pathCertFile)) context.use_certificate_chain_file(pathCertFile.string());
+        bfs::path pathCertFile(GetArg("-rpcsslcertificatechainfile", "server.cert"));
+        if (!pathCertFile.is_absolute()) pathCertFile = bfs::path(GetDataDir()) / pathCertFile;
+        if (bfs::exists(pathCertFile)) context.use_certificate_chain_file(pathCertFile.string());
         else printf("ThreadRPCServer ERROR: missing server certificate file %s\n", pathCertFile.string().c_str());
 
-        filesystem::path pathPKFile(GetArg("-rpcsslprivatekeyfile", "server.pem"));
-        if (!pathPKFile.is_complete()) pathPKFile = filesystem::path(GetDataDir()) / pathPKFile;
-        if (filesystem::exists(pathPKFile)) context.use_private_key_file(pathPKFile.string(), ssl::context::pem);
+        bfs::path pathPKFile(GetArg("-rpcsslprivatekeyfile", "server.pem"));
+        if (!pathPKFile.is_absolute()) pathPKFile = bfs::path(GetDataDir()) / pathPKFile;
+        if (bfs::exists(pathPKFile)) context.use_private_key_file(pathPKFile.string(), ssl::context::pem);
         else printf("ThreadRPCServer ERROR: missing server private key file %s\n", pathPKFile.string().c_str());
 
         string strCiphers = GetArg("-rpcsslciphers", "TLSv1+HIGH:!SSLv2:!aNULL:!eNULL:!AH:!3DES:@STRENGTH");
@@ -983,7 +1039,7 @@ void ThreadRPCServer2(void* parg)
         acceptor->set_option(boost::asio::ip::v6_only(loopback), v6_only_error);
 
         acceptor->bind(endpoint);
-        acceptor->listen(socket_base::max_connections);
+        acceptor->listen(asio::socket_base::max_listen_connections);
 
         RPCListen(acceptor, context, fUseSSL);
         // Cancel outstanding listen-requests for this acceptor when shutting down
@@ -1009,7 +1065,7 @@ void ThreadRPCServer2(void* parg)
             acceptor->open(endpoint.protocol());
             acceptor->set_option(boost::asio::ip::tcp::acceptor::reuse_address(true));
             acceptor->bind(endpoint);
-            acceptor->listen(socket_base::max_connections);
+            acceptor->listen(asio::socket_base::max_listen_connections);
 
             RPCListen(acceptor, context, fUseSSL);
             // Cancel outstanding listen-requests for this acceptor when shutting down
@@ -1151,13 +1207,17 @@ void ThreadRPCServer3(void* parg)
         }
         if (!HTTPAuthorized(mapHeaders))
         {
-            printf("ThreadRPCServer incorrect password attempt from %s\n", conn->peer_address_to_string().c_str());
-            /* Deter brute-forcing short passwords.
-               If this results in a DOS the user really
-               shouldn't have their RPC port exposed.*/
-            if (mapArgs["-rpcpassword"].size() < 20)
-                MilliSleep(250);
-
+            static std::map<std::string, std::pair<int, int64_t>> mapFailedAttempts;
+            std::string strPeer = conn->peer_address_to_string();
+            int64_t nNow = GetTime();
+            auto& attemptInfo = mapFailedAttempts[strPeer];
+            if (nNow - attemptInfo.second > 600)
+                attemptInfo.first = 0;
+            attemptInfo.first++;
+            attemptInfo.second = nNow;
+            printf("ThreadRPCServer incorrect password attempt %d from %s\n", attemptInfo.first, strPeer.c_str());
+            int nDelay = std::min(500 * (1 << std::min(attemptInfo.first - 1, 6)), 30000);
+            MilliSleep(nDelay);
             conn->stream() << HTTPReply(HTTP_UNAUTHORIZED, "", false) << std::flush;
             break;
         }
@@ -1266,7 +1326,7 @@ Object CallRPC(const string& strMethod, const Array& params)
 
     // Connect to localhost
     bool fUseSSL = GetBoolArg("-rpcssl");
-    asio::io_service io_service;
+    ioContext io_service;
 #if defined BOOST_VERSION && BOOST_VERSION >= 106600
     ssl::context context(ssl::context::sslv23);
 #else
@@ -1349,6 +1409,7 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     //
     if (strMethod == "stop"                   && n > 0) ConvertTo<bool>(params[0]);
     if (strMethod == "sendtoaddress"          && n > 1) ConvertTo<double>(params[1]);
+    if (strMethod == "sendtoname"             && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "burn"                   && n > 0) ConvertTo<double>(params[0]);
     if (strMethod == "settxfee"               && n > 0) ConvertTo<double>(params[0]);
     if (strMethod == "getreceivedbyaddress"   && n > 1) ConvertTo<int64_t>(params[1]);
@@ -1367,6 +1428,9 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "getblockbynumber"       && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "getblockbynumber"       && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "getblockhash"           && n > 0) ConvertTo<int64_t>(params[0]);
+    if (strMethod == "getstakemodifiercheckpoints" && n > 0) ConvertTo<int64_t>(params[0]);
+    if (strMethod == "getstakemodifiercheckpoints" && n > 1) ConvertTo<int64_t>(params[1]);
+    if (strMethod == "downloadbootstrap"      && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "dumpbootstrap"          && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "move"                   && n > 2) ConvertTo<double>(params[2]);
     if (strMethod == "move"                   && n > 3) ConvertTo<int64_t>(params[3]);
@@ -1419,6 +1483,8 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "sendanontoinn"        	  && n > 2) ConvertTo<int64_t>(params[2]);
 	if (strMethod == "estimateanonfee"        && n > 0) ConvertTo<double>(params[0]);
 	if (strMethod == "estimateanonfee"        && n > 1) ConvertTo<int64_t>(params[1]);
+    if (strMethod == "checkanonbalance"       && n > 0) ConvertTo<double>(params[0]);
+    if (strMethod == "checkanonbalance"       && n > 1) ConvertTo<int64_t>(params[1]);
 
     if (strMethod == "getpoolinfo"            && n > 0) ConvertTo<int64_t>(params[0]);
 

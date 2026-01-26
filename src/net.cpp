@@ -69,6 +69,7 @@ static bool vfReachable[NET_MAX] = {};
 static bool vfLimited[NET_MAX] = {};
 static CNode* pnodeLocalHost = NULL;
 static CNode* pnodeSync = NULL;
+static CCriticalSection cs_pnodeSync;  // Protects pnodeSync pointer
 CAddress addrSeenByPeer(CService("0.0.0.0", 0), nLocalServices);
 uint64_t nLocalHostNonce = 0;
 boost::array<int, THREAD_MAX> vnThreadsRunning;
@@ -111,11 +112,17 @@ unsigned short GetListenPort()
 
 void CNode::PushGetBlocks(CBlockIndex* pindexBegin, uint256 hashEnd)
 {
-    // Filter out duplicate requests
-    if (pindexBegin == pindexLastGetBlocksBegin && hashEnd == hashLastGetBlocksEnd)
-        return;
+    static int64_t nLastGetBlocksTime = 0;
+    int64_t nNow = GetTime();
+
+    if (pindexBegin == pindexLastGetBlocksBegin && hashEnd == hashLastGetBlocksEnd) {
+        if (nNow - nLastGetBlocksTime < 5)
+            return;
+    }
+
     pindexLastGetBlocksBegin = pindexBegin;
     hashLastGetBlocksEnd = hashEnd;
+    nLastGetBlocksTime = nNow;
 
     getBlocksIndex.push_back(pindexBegin);
     getBlocksHash.push_back(hashEnd);
@@ -1567,8 +1574,9 @@ void ThreadMapPort2(void* parg)
     struct UPNPUrls urls;
     struct IGDdatas data;
     int r;
+    char wanaddr[40] = "";
 
-    r = UPNP_GetValidIGD(devlist, &urls, &data, lanaddr, sizeof(lanaddr));
+    r = UPNP_GetValidIGD(devlist, &urls, &data, lanaddr, sizeof(lanaddr), wanaddr, sizeof(wanaddr));
     if (r == 1)
     {
         if (fDiscover) {
@@ -2215,7 +2223,10 @@ void static StartSync(const vector<CNode*> &vNodes) {
     // if a new sync candidate was found, start sync!
     if (pnodeNewSync) {
         pnodeNewSync->fStartSync = true;
-        pnodeSync = pnodeNewSync;
+        {
+            LOCK(cs_pnodeSync);
+            pnodeSync = pnodeNewSync;
+        }
     }
 }
 
@@ -2252,12 +2263,17 @@ void ThreadMessageHandler2(void* parg)
 		bool fHaveSyncNode = false;
 
         vector<CNode*> vNodesCopy;
+        CNode* pnodeSyncCopy = NULL;
+        {
+            LOCK(cs_pnodeSync);
+            pnodeSyncCopy = pnodeSync;
+        }
         {
             LOCK(cs_vNodes);
             vNodesCopy = vNodes;
 			BOOST_FOREACH(CNode* pnode, vNodesCopy) {
                 pnode->AddRef();
-                if (pnode == pnodeSync && pnode->nLastRecv > GetTime() - 5) // only accept a node who has replied in last 5 secs, if they stop then swap nodes
+                if (pnode == pnodeSyncCopy && pnode->nLastRecv > GetTime() - 5) // only accept a node who has replied in last 5 secs, if they stop then swap nodes
                     fHaveSyncNode = true;
             }
         }
@@ -3001,4 +3017,45 @@ void DumpBanlist()
 
     printf("Flushed %d banned node ips/subnets to banlist.dat  %" PRId64"ms\n",
              banmap.size(), GetTimeMillis() - nStart);
+}
+
+// ============================================================================
+// Hybrid SPV Staking - On-demand block fetching
+// ============================================================================
+
+bool FetchBlockForStaking(const uint256& hashBlock)
+{
+    if (mapBlockIndex.count(hashBlock))
+    {
+        CBlockIndex* pindex = mapBlockIndex[hashBlock];
+        if (pindex->nFile > 0)
+            return true;
+    }
+
+    LOCK(cs_vNodes);
+    int nRequested = 0;
+    const int MAX_PEERS_TO_REQUEST = 3;
+
+    for (CNode* pnode : vNodes)
+    {
+        if (nRequested >= MAX_PEERS_TO_REQUEST)
+            break;
+
+        if (!pnode->fSuccessfullyConnected)
+            continue;
+        if (pnode->nVersion < MIN_PEER_PROTO_VERSION)
+            continue;
+
+        std::vector<CInv> vGetData;
+        vGetData.push_back(CInv(MSG_BLOCK, hashBlock));
+        pnode->PushMessage("getdata", vGetData);
+        nRequested++;
+
+        if (fDebug)
+            printf("HybridSPV: Requested block %s from peer %s for staking (%d/%d)\n",
+                   hashBlock.ToString().c_str(), pnode->addrName.c_str(),
+                   nRequested, MAX_PEERS_TO_REQUEST);
+    }
+
+    return nRequested > 0;
 }

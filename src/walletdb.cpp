@@ -10,7 +10,7 @@
 #include <boost/filesystem.hpp>
 
 using namespace std;
-using namespace boost;
+namespace fs = boost::filesystem;
 
 
 static uint64_t nAccountingEntryNumber = 0;
@@ -723,21 +723,19 @@ void ThreadFlushWalletDB(void* parg)
     {
         MilliSleep(500);
 
-        // Loop through current peer nodes and check their current Sent Bytes, should be okay on performance even with lots of peers
-        // If peer node has sent over 10MB of data, then disconnect it and add it to our banned list for 24 hours
-        // -maxpp=10000000 (10MB)
-        // -maxpptime=600 (10 minutes)
-        LOCK(cs_vNodes);
-        for (CNode* pnode : vNodes)
+        if (!IsInitialBlockDownload())
         {
-            // check if the peer has been connected for more than 10 minutes -maxpptime default 600 for 10 mins, if so, dont disconnect/ban it
-            if (pnode->nSendBytes >= GetArg("-maxpp", 10000000) && GetTime() - pnode->nTimeConnected < GetArg("-maxpptime", 10*60)) //10000000 = 10MB -maxpp=10000000 flag default
+            LOCK(cs_vNodes);
+            for (CNode* pnode : vNodes)
             {
-                printf("Disconnecting and Banning Node: %s, Too Many SendBytes = %" PRIszu"\n", pnode->addr.ToString().c_str(), pnode->nSendBytes);
-                pnode->fDisconnect = true;
-                int bantime = 60*60*24*99999999;
-                CNode::Ban(pnode->addr, BanReasonNodeMisbehaving, bantime);
-                pnode->CloseSocketDisconnect();
+                if (pnode->nSendBytes >= GetArg("-maxpp", 10000000) && GetTime() - pnode->nTimeConnected < GetArg("-maxpptime", 10*60))
+                {
+                    printf("Disconnecting and Banning Node: %s, Too Many SendBytes = %" PRIszu"\n", pnode->addr.ToString().c_str(), pnode->nSendBytes);
+                    pnode->fDisconnect = true;
+                    int bantime = 60*60*24;
+                    CNode::Ban(pnode->addr, BanReasonNodeMisbehaving, bantime);
+                    pnode->CloseSocketDisconnect();
+                }
             }
         }
 
@@ -799,20 +797,22 @@ bool BackupWallet(const CWallet& wallet, const string& strDest)
                 bitdb.mapFileUseCount.erase(wallet.strWalletFile);
 
                 // Copy wallet.dat
-                filesystem::path pathSrc = GetDataDir() / wallet.strWalletFile;
-                filesystem::path pathDest(strDest);
-                if (filesystem::is_directory(pathDest))
+                fs::path pathSrc = GetDataDir() / wallet.strWalletFile;
+                fs::path pathDest(strDest);
+                if (fs::is_directory(pathDest))
                     pathDest /= wallet.strWalletFile;
 
                 try {
-#if BOOST_VERSION >= 104000
-                    filesystem::copy_file(pathSrc, pathDest, filesystem::copy_option::overwrite_if_exists);
+#if BOOST_VERSION >= 108700
+                    fs::copy_file(pathSrc, pathDest, fs::copy_options::overwrite_existing);
+#elif BOOST_VERSION >= 104000
+                    fs::copy_file(pathSrc, pathDest, fs::copy_option::overwrite_if_exists);
 #else
-                    filesystem::copy_file(pathSrc, pathDest);
+                    fs::copy_file(pathSrc, pathDest);
 #endif
                     printf("copied wallet.dat to %s\n", pathDest.string().c_str());
                     return true;
-                } catch(const filesystem::filesystem_error &e) {
+                } catch(const fs::filesystem_error &e) {
                     printf("error copying wallet.dat to %s - %s\n", pathDest.string().c_str(), e.what());
                     return false;
                 }

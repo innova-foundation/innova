@@ -154,227 +154,113 @@ OverviewPage::OverviewPage(QWidget *parent) :
     showOutOfSyncWarning(true);
 }
 
-void OverviewPage::PriceRequest()
-{
-	getRequest1(BaseURL);
-	getRequest2(BaseURL2);
-	getRequest3(BaseURL3);
-  getRequest4(BaseURL4);
-  getRequest5(BaseURL5);
-  getRequest6(BaseURL6);
-  getRequest7(BaseURL7);
-    //updateDisplayUnit(); //Segfault Fix
-}
-
-static size_t WriteCallback(void *contents, size_t size, size_t nmemb, void *userp)
+static size_t PriceWriteCallback(void *contents, size_t size, size_t nmemb, void *userp)
 {
     ((std::string*)userp)->append((char*)contents, size * nmemb);
     return size * nmemb;
 }
 
-void OverviewPage::getRequest1( const QString &urlString )
+void OverviewPage::PriceRequest()
 {
-    CURL *curl;
-    CURLcode res;
-    std::string readBuffer;
+    CURLM *multi_handle;
+    CURL *handles[7];
+    std::string buffers[7];
 
-    curl = curl_easy_init();
-    if(curl) {
-      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
-      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
-      res = curl_easy_perform(curl);
-      if(res != CURLE_OK){
-            qWarning("curl_easy_perform() failed: \n");
-      }
-      curl_easy_cleanup(curl);
+    std::string urlStrings[7];
+    urlStrings[0] = BaseURL.toStdString();
+    urlStrings[1] = BaseURL2.toStdString();
+    urlStrings[2] = BaseURL3.toStdString();
+    urlStrings[3] = BaseURL4.toStdString();
+    urlStrings[4] = BaseURL5.toStdString();
+    urlStrings[5] = BaseURL6.toStdString();
+    urlStrings[6] = BaseURL7.toStdString();
 
-      //std::cout << readBuffer << std::endl;
-
-      //qDebug(readBuffer);
-      //qDebug("cURL Request: %s", readBuffer.c_str());
-
-        QString innova = QString::fromStdString(readBuffer);
-        innovax = (innova.toDouble());
-        innova = QString::number(innovax, 'f', 2);
-
-        dollarg = innova;
+    multi_handle = curl_multi_init();
+    if (!multi_handle) {
+        qWarning("curl_multi_init() failed");
+        return;
     }
-}
 
-void OverviewPage::getRequest2( const QString &urlString )
-{
-    CURL *curl;
-    CURLcode res;
-    std::string readBuffer;
-
-    curl = curl_easy_init();
-    if(curl) {
-      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
-      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
-      res = curl_easy_perform(curl);
-      if(res != CURLE_OK){
-            qWarning("curl_easy_perform() failed: \n");
-      }
-      curl_easy_cleanup(curl);
-
-        QString innbtc = QString::fromStdString(readBuffer);
-        innbtcx = (innbtc.toDouble());
-        innbtc = QString::number(innbtcx, 'f', 8);
-
-        bitcoing = innbtc;
+    for (int i = 0; i < 7; i++) {
+        handles[i] = curl_easy_init();
+        if (handles[i]) {
+            curl_easy_setopt(handles[i], CURLOPT_URL, urlStrings[i].c_str());
+            curl_easy_setopt(handles[i], CURLOPT_WRITEFUNCTION, PriceWriteCallback);
+            curl_easy_setopt(handles[i], CURLOPT_WRITEDATA, &buffers[i]);
+            curl_easy_setopt(handles[i], CURLOPT_SSL_VERIFYPEER, 0);
+            curl_easy_setopt(handles[i], CURLOPT_TIMEOUT, 10L);
+            curl_easy_setopt(handles[i], CURLOPT_CONNECTTIMEOUT, 5L);
+            curl_multi_add_handle(multi_handle, handles[i]);
+        }
     }
-}
 
-void OverviewPage::getRequest3( const QString &urlString )
-{
-    CURL *curl;
-    CURLcode res;
-    std::string readBuffer;
+    int still_running = 0;
+    curl_multi_perform(multi_handle, &still_running);
 
-    curl = curl_easy_init();
-    if(curl) {
-      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
-      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
-      res = curl_easy_perform(curl);
-      if(res != CURLE_OK){
-            qWarning("curl_easy_perform() failed: \n");
-      }
-      curl_easy_cleanup(curl);
-
-
-        QString inewsfeed = QString::fromStdString(readBuffer);
-        innnewsfeed = inewsfeed;
+    while (still_running) {
+        int numfds;
+        CURLMcode mc = curl_multi_wait(multi_handle, NULL, 0, 1000, &numfds);
+        if (mc != CURLM_OK) {
+            qWarning("curl_multi_wait() failed");
+            break;
+        }
+        curl_multi_perform(multi_handle, &still_running);
     }
-}
 
-void OverviewPage::getRequest4( const QString &urlString )
-{
-    CURL *curl;
-    CURLcode res;
-    std::string readBuffer;
-
-    curl = curl_easy_init();
-    if(curl) {
-      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
-      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
-      res = curl_easy_perform(curl);
-      if(res != CURLE_OK){
-            qWarning("curl_easy_perform() failed: \n");
-      }
-      curl_easy_cleanup(curl);
-
-      //std::cout << readBuffer << std::endl;
-
-      //qDebug(readBuffer);
-      //qDebug("cURL Request: %s", readBuffer.c_str());
-
-        QString inneur = QString::fromStdString(readBuffer);
-        inneurx = (inneur.toDouble());
-        inneur = QString::number(inneurx, 'f', 4);
-
-        eurog = inneur;
+    // USD price
+    if (!buffers[0].empty()) {
+        QString innova = QString::fromStdString(buffers[0]);
+        innovax = innova.toDouble();
+        dollarg = QString::number(innovax, 'f', 2);
     }
-}
 
-void OverviewPage::getRequest5( const QString &urlString )
-{
-    CURL *curl;
-    CURLcode res;
-    std::string readBuffer;
-
-    curl = curl_easy_init();
-    if(curl) {
-      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
-      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
-      res = curl_easy_perform(curl);
-      if(res != CURLE_OK){
-            qWarning("curl_easy_perform() failed: \n");
-      }
-      curl_easy_cleanup(curl);
-
-      //std::cout << readBuffer << std::endl;
-
-      //qDebug(readBuffer);
-      //qDebug("cURL Request: %s", readBuffer.c_str());
-
-        QString inngbp = QString::fromStdString(readBuffer);
-        inngbpx = (inngbp.toDouble());
-        inngbp = QString::number(inngbpx, 'f', 6);
-
-        poundg = inngbp;
+    // BTC price
+    if (!buffers[1].empty()) {
+        QString innbtc = QString::fromStdString(buffers[1]);
+        innbtcx = innbtc.toDouble();
+        bitcoing = QString::number(innbtcx, 'f', 8);
     }
-}
 
-void OverviewPage::getRequest6( const QString &urlString )
-{
-    CURL *curl;
-    CURLcode res;
-    std::string readBuffer;
-
-    curl = curl_easy_init();
-    if(curl) {
-      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
-      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
-      res = curl_easy_perform(curl);
-      if(res != CURLE_OK){
-            qWarning("curl_easy_perform() failed: \n");
-      }
-      curl_easy_cleanup(curl);
-
-      //std::cout << readBuffer << std::endl;
-
-      //qDebug(readBuffer);
-      //qDebug("cURL Request: %s", readBuffer.c_str());
-
-        QString innrub = QString::fromStdString(readBuffer);
-        innrubx = (innrub.toDouble());
-        innrub = QString::number(innrubx, 'f', 10);
-
-        rubleg = innrub;
+    // News feed
+    if (!buffers[2].empty()) {
+        innnewsfeed = QString::fromStdString(buffers[2]);
     }
-}
 
-void OverviewPage::getRequest7( const QString &urlString )
-{
-    CURL *curl;
-    CURLcode res;
-    std::string readBuffer;
-
-    curl = curl_easy_init();
-    if(curl) {
-      curl_easy_setopt(curl, CURLOPT_URL, urlString.toStdString().c_str());
-      curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-      curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-      curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
-      res = curl_easy_perform(curl);
-      if(res != CURLE_OK){
-            qWarning("curl_easy_perform() failed: \n");
-      }
-      curl_easy_cleanup(curl);
-
-      //std::cout << readBuffer << std::endl;
-
-      //qDebug(readBuffer);
-      //qDebug("cURL Request: %s", readBuffer.c_str());
-
-        QString innjpy = QString::fromStdString(readBuffer);
-        innjpyx = (innjpy.toDouble());
-        innjpy = QString::number(innjpyx, 'f', 12);
-
-        yeng = innjpy;
+    // EUR price
+    if (!buffers[3].empty()) {
+        QString inneur = QString::fromStdString(buffers[3]);
+        inneurx = inneur.toDouble();
+        eurog = QString::number(inneurx, 'f', 4);
     }
+
+    // GBP price
+    if (!buffers[4].empty()) {
+        QString inngbp = QString::fromStdString(buffers[4]);
+        inngbpx = inngbp.toDouble();
+        poundg = QString::number(inngbpx, 'f', 6);
+    }
+
+    // RUB price
+    if (!buffers[5].empty()) {
+        QString innrub = QString::fromStdString(buffers[5]);
+        innrubx = innrub.toDouble();
+        rubleg = QString::number(innrubx, 'f', 10);
+    }
+
+    // JPY price
+    if (!buffers[6].empty()) {
+        QString innjpy = QString::fromStdString(buffers[6]);
+        innjpyx = innjpy.toDouble();
+        yeng = QString::number(innjpyx, 'f', 12);
+    }
+
+    for (int i = 0; i < 7; i++) {
+        if (handles[i]) {
+            curl_multi_remove_handle(multi_handle, handles[i]);
+            curl_easy_cleanup(handles[i]);
+        }
+    }
+    curl_multi_cleanup(multi_handle);
 }
 
 void OverviewPage::handleTransactionClicked(const QModelIndex &index)
@@ -444,9 +330,10 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
     ui->labelJPYTotal->setText("¥" + jpytotal + " JPY");
 
     ui->labelBTCTotal->setText("Ƀ" + BitcoinUnits::formatWithUnit(unitdBTC, bitcoing.toDouble() * totalBalance));
-    ui->labelTradeLink->setTextFormat(Qt::RichText);
-    ui->labelTradeLink->setTextInteractionFlags(Qt::TextBrowserInteraction);
-    ui->labelTradeLink->setOpenExternalLinks(true);
+    // Trade link hidden - No exchanges for now
+    // ui->labelTradeLink->setTextFormat(Qt::RichText);
+    // ui->labelTradeLink->setTextInteractionFlags(Qt::TextBrowserInteraction);
+    // ui->labelTradeLink->setOpenExternalLinks(true);
 
 	QString news;
 	news = innnewsfeed;

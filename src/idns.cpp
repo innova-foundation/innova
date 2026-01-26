@@ -179,12 +179,18 @@ IDns::IDns(const char *bind_ip, uint16_t port_no,
     m_bufend = m_buf + MAX_OUT;
     char *varbufs = m_value + VAL_SIZE + BUF_SIZE + 2;
 
-    m_gw_suffix = m_gw_suf_len?
-      strcpy(varbufs, gw_suffix) : NULL;
+    if(m_gw_suf_len && gw_suffix) {
+      snprintf(varbufs, m_gw_suf_len + 1, "%s", gw_suffix);
+      m_gw_suffix = varbufs;
+    } else {
+      m_gw_suffix = NULL;
+    }
 
     // Create array of allowed TLD-suffixes
     if(allowed_len) {
-      m_allowed_base = strcpy(varbufs + m_gw_suf_len + 1, allowed_suff);
+      char *dest = varbufs + m_gw_suf_len + 1;
+      snprintf(dest, allowed_len + 1, "%s", allowed_suff);
+      m_allowed_base = dest;
       uint8_t pos = 0, step = 0; // pos, step for double hashing
       for(char *p = m_allowed_base + allowed_len; p > m_allowed_base; ) {
     char c = *--p;
@@ -513,7 +519,8 @@ uint16_t IDns::HandleQuery() {
       char val2[VAL_SIZE];
       char *tokens[MAX_TOK];
       step_next = false;
-      int sdqty = Tokenize("SD", ",", tokens, strcpy(val2, m_value));
+      snprintf(val2, VAL_SIZE, "%s", m_value);
+      int sdqty = Tokenize("SD", ",", tokens, val2);
       while(--sdqty >= 0 && !step_next)
         step_next = strncmp((const char *)*prev_ndx_p, tokens[sdqty], domain_len) == 0;
 
@@ -529,7 +536,8 @@ uint16_t IDns::HandleQuery() {
   { // Extract TTL
     char val2[VAL_SIZE];
     char *tokens[MAX_TOK];
-    int ttlqty = Tokenize("TTL", NULL, tokens, strcpy(val2, m_value));
+    snprintf(val2, VAL_SIZE, "%s", m_value);
+    int ttlqty = Tokenize("TTL", NULL, tokens, val2);
     m_ttl = ttlqty? atoi(tokens[0]) : 24 * 3600;
   }
 
@@ -537,8 +545,10 @@ uint16_t IDns::HandleQuery() {
     char val2[VAL_SIZE];
     // List values for ANY:    A NS CNA PTR MX AAAA
     const uint16_t q_all[] = { 1, 2, 5, 12, 15, 28, 0 };
-    for(const uint16_t *q = q_all; *q; q++)
-      Answer_ALL(*q, strcpy(val2, m_value));
+    for(const uint16_t *q = q_all; *q; q++) {
+      snprintf(val2, VAL_SIZE, "%s", m_value);
+      Answer_ALL(*q, val2);
+    }
   } else
       Answer_ALL(qtype, m_value);
   return 0;
@@ -548,11 +558,13 @@ uint16_t IDns::HandleQuery() {
 int IDns::TryMakeref(uint16_t label_ref) {
   char val2[VAL_SIZE];
   char *tokens[MAX_TOK];
-  int ttlqty = Tokenize("TTL", NULL, tokens, strcpy(val2, m_value));
+  snprintf(val2, VAL_SIZE, "%s", m_value);
+  int ttlqty = Tokenize("TTL", NULL, tokens, val2);
   m_ttl = ttlqty? atoi(tokens[0]) : 24 * 3600;
   uint16_t orig_label_ref = m_label_ref;
   m_label_ref = label_ref;
-  Answer_ALL(2, strcpy(val2, m_value));
+  snprintf(val2, VAL_SIZE, "%s", m_value);
+  Answer_ALL(2, val2);
   m_label_ref = orig_label_ref;
   m_hdr->NSCount = m_hdr->ANCount;
   m_hdr->ANCount = 0;
@@ -737,7 +749,7 @@ int IDns::Search(uint8_t *key) {
   if (!hooks->getNameValue(string("dns:") + (const char *)key, value))
     return 0;
 
-  strcpy(m_value, value.c_str());
+  snprintf(m_value, VAL_SIZE, "%s", value.c_str());
   return 1;
 } //  IDns::Search
 
@@ -755,7 +767,8 @@ int IDns::LocalSearch(const uint8_t *key, uint8_t pos, uint8_t step) {
       }
     } while(m_ht_offset[pos] > 0 || strcmp((const char *)key, m_local_base - m_ht_offset[pos]) != 0);
 
-  strcpy(m_value, strchr(m_local_base - m_ht_offset[pos], 0) + 1);
+  const char *src = strchr(m_local_base - m_ht_offset[pos], 0) + 1;
+  snprintf(m_value, VAL_SIZE, "%s", src);
 
   return 1;
 } // IDns::LocalSearch

@@ -142,7 +142,7 @@ int ECDSA_SIG_recover_key_GFp(EC_KEY *eckey, ECDSA_SIG *ecsig, const unsigned ch
     if (!BN_bin2bn(msg, msglen, e)) { ret=-1; goto err; }
     if (8*msglen > n) BN_rshift(e, e, 8-(n & 7));
     zero = BN_CTX_get(ctx);
-    if (!BN_zero(zero)) { ret=-1; goto err; };
+    BN_zero(zero); 
     if (!BN_mod_sub(e, zero, e, order, ctx)) { ret=-1; goto err; }
     rr = BN_CTX_get(ctx);
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
@@ -336,12 +336,15 @@ bool CKey::SetPrivKey(const CPrivKey &privkey, bool fCompressedIn) {
     return true;
 }
 
-// Generate a new private key using a cryptographic PRNG.
 void CKey::MakeNewKey(bool fCompressedIn)
 {
-    RandAddSeedPerfmon();
+    int nAttempts = 0;
     do {
-        RAND_bytes(vch, sizeof(vch));
+        RandAddSeedPerfmon();
+        if (RAND_bytes(vch, sizeof(vch)) != 1)
+            throw std::runtime_error("CKey::MakeNewKey() : RAND_bytes failed");
+        if (++nAttempts >= 256)
+            throw std::runtime_error("CKey::MakeNewKey() : max attempts exceeded");
     } while (!Check(vch));
     fValid = true;
     fCompressed = fCompressedIn;
@@ -733,22 +736,22 @@ bool CECKey::SignCompact(const uint256 &hash, unsigned char *p64, int &rec) {
 // (the signature is a valid signature of the given data for that key)
 bool CECKey::Recover(const uint256 &hash, const unsigned char *p64, int rec)
 {
-    if (rec<0 || rec>=3)
+    if (rec<0 || rec>=4)
         return false;
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
 
 #else
-    const BIGNUM *s = NULL;
-    const BIGNUM *r = NULL;
+    BIGNUM *sig_r = BN_new();
+    BIGNUM *sig_s = BN_new();
 #endif
     ECDSA_SIG *sig = ECDSA_SIG_new();
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
     BN_bin2bn(&p64[0],  32, sig->r);
     BN_bin2bn(&p64[32], 32, sig->s);
 #else
-    ECDSA_SIG_get0(sig, &r, &s);
-    BN_bin2bn(&p64[0],  32, r);
-    BN_bin2bn(&p64[32], 32, s);
+    BN_bin2bn(&p64[0],  32, sig_r);
+    BN_bin2bn(&p64[32], 32, sig_s);
+    ECDSA_SIG_set0(sig, sig_r, sig_s);
 #endif
     bool ret = ECDSA_SIG_recover_key_GFp(pkey, sig, (unsigned char*)&hash, sizeof(hash), rec, 0) == 1;
     ECDSA_SIG_free(sig);

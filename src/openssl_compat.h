@@ -1,7 +1,13 @@
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
+#ifndef OPENSSL_COMPAT_H
+#define OPENSSL_COMPAT_H
 
 #include <cstdlib>
 #include <cstring>
+#include <openssl/opensslv.h>
+#include <openssl/evp.h>
+
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+
 #include <openssl/engine.h>
 #include <openssl/hmac.h>
 
@@ -34,6 +40,15 @@ inline EVP_CIPHER_CTX *EVP_CIPHER_CTX_new()
     return ctx;
 }
 
+inline void EVP_CIPHER_CTX_free(EVP_CIPHER_CTX *ctx)
+{
+    if (ctx != NULL)
+    {
+        EVP_CIPHER_CTX_cleanup(ctx);
+        OPENSSL_free(ctx);
+    }
+}
+
 inline HMAC_CTX *HMAC_CTX_new()
 {
     HMAC_CTX *ctx = (HMAC_CTX *)OPENSSL_malloc(sizeof(*ctx));
@@ -52,4 +67,7 @@ inline void HMAC_CTX_free(HMAC_CTX *ctx)
         OPENSSL_free(ctx);
     }
 }
-#endif
+
+#endif /* OPENSSL_VERSION_NUMBER < 0x10100000L */
+
+#endif /* OPENSSL_COMPAT_H */

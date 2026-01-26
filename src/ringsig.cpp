@@ -1,4 +1,4 @@
-// Copyright (c) 2019-2023 The Innova developers
+// Copyright (c) 2019-2026 The Innova developers
 // Copyright (c) 2017-2021 The Denarius developers
 // Copyright (c) 2014-2016 The ShadowCoin developers
 // Distributed under the MIT/X11 software license, see the accompanying
@@ -20,6 +20,8 @@
 static EC_GROUP *ecGrp   = NULL;
 static BN_CTX   *bnCtx   = NULL;
 static BIGNUM   *bnOrder = NULL;
+#include "sync.h"
+static CCriticalSection cs_ringsig;
 
 
 void printBigNum(BIGNUM *b)
@@ -31,18 +33,14 @@ void printBigNum(BIGNUM *b)
 
 int initialiseRingSigs()
 {
+    LOCK(cs_ringsig);
     int rv = 0;
-
     if (fDebugRingSig)
         printf("initialiseRingSigs()\n");
+    if (ecGrp != NULL && bnCtx != NULL && bnOrder != NULL)
+        return 0;
 
-    // if (!(ecGrp = EC_GROUP_new_by_curve_name(NID_secp256k1)))
-        // printf("initialiseRingSigs(): EC_GROUP_new_by_curve_name failed.");
-
-    // if (!(bnCtx = BN_CTX_new()))
-        // printf("initialiseRingSigs(): BN_CTX_new failed.");
-
-	if (!(ecGrp = EC_GROUP_new_by_curve_name(NID_secp256k1)))
+    if (!(ecGrp = EC_GROUP_new_by_curve_name(NID_secp256k1)))
         return errorN(1, "initialiseRingSigs(): EC_GROUP_new_by_curve_name failed.");
 
     if (!(bnCtx = BN_CTX_new()))
@@ -63,12 +61,12 @@ int initialiseRingSigs()
 
 int finaliseRingSigs()
 {
+    LOCK(cs_ringsig);
     if (fDebugRingSig)
         printf("finaliseRingSigs()\n");
-
-    BN_free(bnOrder);
-    BN_CTX_free(bnCtx);
-    EC_GROUP_clear_free(ecGrp);
+    if (bnOrder) BN_free(bnOrder);
+    if (bnCtx) BN_CTX_free(bnCtx);
+    if (ecGrp) EC_GROUP_clear_free(ecGrp);
 
     ecGrp   = NULL;
     bnCtx   = NULL;
@@ -212,6 +210,7 @@ static int hashToEC(const uint8_t *p, uint32_t len, BIGNUM *bnTmp, EC_POINT *ptR
 
 int generateKeyImage(ec_point &publicKey, ec_secret secret, ec_point &keyImage)
 {
+    LOCK(cs_ringsig);
    // - keyImage = secret * hash(publicKey) * G
 
     if (publicKey.size() != EC_COMPRESSED_SIZE)
@@ -264,6 +263,7 @@ int generateKeyImage(ec_point &publicKey, ec_secret secret, ec_point &keyImage)
 
 int generateRingSignature(data_chunk &keyImage, uint256 &txnHash, int nRingSize, int nSecretOffset, ec_secret secret, const uint8_t *pPubkeys, uint8_t *pSigc, uint8_t *pSigr)
 {
+    LOCK(cs_ringsig);
      if (fDebugRingSig)
         printf("%s: Ring size %d.\n", __func__, nRingSize);
 
@@ -336,6 +336,17 @@ int generateRingSignature(data_chunk &keyImage, uint256 &txnHash, int nRingSize,
     if (!EC_POINT_oct2point(ecGrp, ptKi, &keyImage[0], EC_COMPRESSED_SIZE, bnCtx)
       &&(rv = errorN(1, "%s: extract ptKi failed.", __func__)))
         goto End;
+
+    if (EC_POINT_is_at_infinity(ecGrp, ptKi))
+    {
+        rv = errorN(1, "%s: keyImage is point at infinity.", __func__);
+        goto End;
+    }
+    if (!EC_POINT_is_on_curve(ecGrp, ptKi, bnCtx))
+    {
+        rv = errorN(1, "%s: keyImage is not on curve.", __func__);
+        goto End;
+    }
 
     for (int i = 0; i < nRingSize; ++i)
     {
@@ -497,10 +508,16 @@ int generateRingSignature(data_chunk &keyImage, uint256 &txnHash, int nRingSize,
         rv = 1; goto End;
     }
 
-    // bnT = sigc[nSecretOffset] * bnSecret , TODO: mod N ?
+    // bnT = sigc[nSecretOffset] * bnSecret
     if (!BN_mul(bnT, bnT, bnH, bnCtx))
     {
         printf("%s: BN_mul failed.\n", __func__);
+        rv = 1; goto End;
+    }
+
+    if (!BN_mod(bnT, bnT, bnOrder, bnCtx))
+    {
+        printf("%s: BN_mod failed.\n", __func__);
         rv = 1; goto End;
     }
 
@@ -533,6 +550,7 @@ int generateRingSignature(data_chunk &keyImage, uint256 &txnHash, int nRingSize,
 
 int verifyRingSignature(data_chunk &keyImage, uint256 &txnHash, int nRingSize, const uint8_t *pPubkeys, const uint8_t *pSigc, const uint8_t *pSigr)
 {
+    LOCK(cs_ringsig);
     int rv = 0;
 
     BN_CTX_start(bnCtx);
@@ -580,6 +598,18 @@ int verifyRingSignature(data_chunk &keyImage, uint256 &txnHash, int nRingSize, c
     if (!EC_POINT_oct2point(ecGrp, ptKi, &keyImage[0], EC_COMPRESSED_SIZE, bnCtx)
       &&(rv = errorN(1, "%s: extract ptKi failed.", __func__)))
         goto End;
+
+    
+    if (EC_POINT_is_at_infinity(ecGrp, ptKi))
+    {
+        rv = errorN(1, "%s: keyImage is point at infinity.", __func__);
+        goto End;
+    }
+    if (!EC_POINT_is_on_curve(ecGrp, ptKi, bnCtx))
+    {
+        rv = errorN(1, "%s: keyImage is not on curve.", __func__);
+        goto End;
+    }
 
     for (int i = 0; i < nRingSize; ++i)
     {
@@ -714,6 +744,7 @@ int verifyRingSignature(data_chunk &keyImage, uint256 &txnHash, int nRingSize, c
 
 int generateRingSignatureAB(data_chunk &keyImage, uint256 &txnHash, int nRingSize, int nSecretOffset, ec_secret secret, const uint8_t *pPubkeys, data_chunk &sigC, uint8_t *pSigS)
 {
+    LOCK(cs_ringsig);
     // https://bitcointalk.org/index.php?topic=972541.msg10619684
 
     if (fDebugRingSig)
@@ -795,6 +826,18 @@ int generateRingSignatureAB(data_chunk &keyImage, uint256 &txnHash, int nRingSiz
     if (!EC_POINT_oct2point(ecGrp, ptKi, &keyImage[0], EC_COMPRESSED_SIZE, bnCtx)
       &&(rv = errorN(1, "%s: extract ptKi failed.", __func__)))
         goto End;
+
+    
+    if (EC_POINT_is_at_infinity(ecGrp, ptKi))
+    {
+        rv = errorN(1, "%s: keyImage is point at infinity.", __func__);
+        goto End;
+    }
+    if (!EC_POINT_is_on_curve(ecGrp, ptKi, bnCtx))
+    {
+        rv = errorN(1, "%s: keyImage is not on curve.", __func__);
+        goto End;
+    }
 
     // c_{j+1} = h(P_1,...,P_n,alpha*G,alpha*H(P_j))
     if (!bnA || !(BN_bin2bn(&sAlpha.e[0], EC_SECRET_SIZE, bnA)))
@@ -989,6 +1032,7 @@ int generateRingSignatureAB(data_chunk &keyImage, uint256 &txnHash, int nRingSiz
 
 int verifyRingSignatureAB(data_chunk &keyImage, uint256 &txnHash, int nRingSize, const uint8_t *pPubkeys, const data_chunk &sigC, const uint8_t *pSigS)
 {
+    LOCK(cs_ringsig);
     // https://bitcointalk.org/index.php?topic=972541.msg10619684
 
     // forall_{i=1..n} compute e_i=s_i*G+c_i*P_i and E_i=s_i*H(P_i)+c_i*I_j and c_{i+1}=h(P_1,...,P_n,e_i,E_i)
@@ -1044,6 +1088,18 @@ int verifyRingSignatureAB(data_chunk &keyImage, uint256 &txnHash, int nRingSize,
       &&(rv = errorN(1, "%s: extract ptKi failed.", __func__)))
         goto End;
 
+    
+    if (EC_POINT_is_at_infinity(ecGrp, ptKi))
+    {
+        rv = errorN(1, "%s: keyImage is point at infinity.", __func__);
+        goto End;
+    }
+    if (!EC_POINT_is_on_curve(ecGrp, ptKi, bnCtx))
+    {
+        rv = errorN(1, "%s: keyImage is not on curve.", __func__);
+        goto End;
+    }
+
     // test ECC validity with: keyimage * order == infinity/identity
     if (!EC_POINT_mul(ecGrp, ptT4, NULL, ptKi, bnOrder, bnCtx)
             &&(rv = errorN(1, "%s: EC_POINT_mul failed.\n", __func__)))
@@ -1064,9 +1120,9 @@ int verifyRingSignatureAB(data_chunk &keyImage, uint256 &txnHash, int nRingSize,
         rv = 1; goto End;
     }
 
-    printf("\n RingDbg: Starting with bnC1 which is\n");
-    printBigNum(bnC1);
-    printf("\n");
+    // printf("\n RingDbg: Starting with bnC1 which is\n");
+    // printBigNum(bnC1);
+    // printf("\n");
 
    for (int i = 0; i < nRingSize; ++i)
     {
@@ -1143,9 +1199,9 @@ int verifyRingSignatureAB(data_chunk &keyImage, uint256 &txnHash, int nRingSize,
             printf("%s: tmpHash -> bnC failed.\n", __func__);
             rv = 1; goto End;
         }
-        printf("\n RingDbg: Iteration %d, so bnC%d follows\n", i, i+1);
-        printBigNum(bnC);
-        printf("\n");
+        // printf("\n RingDbg: Iteration %d, so bnC%d follows\n", i, i+1);
+        // printBigNum(bnC);
+        // printf("\n");
     }
 
 	// bnT = (bnC - bnC1) % N
@@ -1162,13 +1218,13 @@ int verifyRingSignatureAB(data_chunk &keyImage, uint256 &txnHash, int nRingSize,
         rv = 2;
     }
 
-    printf("\n RingSignatureDebug: End result, bnC:\n");
-    printBigNum(bnC);
-    printf("\n bnC1 old is: \n");
-    printBigNum(bnC1);
-    printf("\n So bnT (bnT = (bnC - bnC1) % N) should == 0 but is: \n");
-    printBigNum(bnT);
-    printf("\n");
+    // printf("\n RingSignatureDebug: End result, bnC:\n");
+    // printBigNum(bnC);
+    // printf("\n bnC1 old is: \n");
+    // printBigNum(bnC1);
+    // printf("\n So bnT (bnT = (bnC - bnC1) % N) should == 0 but is: \n");
+    // printBigNum(bnT);
+    // printf("\n");
 
     End:
 

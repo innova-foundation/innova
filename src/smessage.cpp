@@ -71,6 +71,7 @@ Notes:
 #define PRIx64  "lx"
 #endif // IS_ARCH_64
 
+namespace fs = boost::filesystem;
 
 // TODO: For buckets older than current, only need to store no. messages and hash in memory
 
@@ -93,8 +94,99 @@ CCriticalSection cs_smsgDB;
 
 leveldb::DB *smsgDB = NULL;
 
+static inline int SecureMemcmp(const void *a, const void *b, size_t len)
+{
+    return CRYPTO_memcmp(a, b, len);
+}
 
-namespace fs = boost::filesystem;
+namespace
+{
+    CCriticalSection cs_smsgThreadState;
+    int nSmsgThreads = 0;
+    const int SMSG_THREAD_STOP_WAIT_MS = 5000;
+
+    class SmsgThreadGuard
+    {
+    public:
+        SmsgThreadGuard()
+        {
+            LOCK(cs_smsgThreadState);
+            nSmsgThreads++;
+        }
+
+        ~SmsgThreadGuard()
+        {
+            LOCK(cs_smsgThreadState);
+            if (nSmsgThreads > 0)
+                nSmsgThreads--;
+        }
+    };
+
+    bool WaitForSmsgThreads(int waitMs)
+    {
+        int waited = 0;
+        while (waited < waitMs)
+        {
+            {
+                LOCK(cs_smsgThreadState);
+                if (nSmsgThreads == 0)
+                    return true;
+            }
+            MilliSleep(100);
+            waited += 100;
+        }
+        return false;
+    }
+}
+
+static const uint64_t SMSG_FILE_MAX_BYTES = 2147483647ULL;
+static const unsigned int SMSG_FILE_MAX_INDEX = 10000;
+
+static std::string BuildSmsgFileName(int64_t bucket, unsigned int fileId, bool walletLocked)
+{
+    char buf[64];
+    if (walletLocked)
+        snprintf(buf, sizeof(buf), "%" PRId64"_%02u_wl.dat", bucket, fileId);
+    else
+        snprintf(buf, sizeof(buf), "%" PRId64"_%02u.dat", bucket, fileId);
+    return std::string(buf);
+}
+
+static bool SelectSmsgFile(const fs::path& pathSmsgDir, int64_t bucket, uint32_t payloadBytes, bool walletLocked, unsigned int& fileId, fs::path& fullpath)
+{
+    uint64_t nNeed = SMSG_HDR_LEN + payloadBytes;
+    for (unsigned int i = 1; i < SMSG_FILE_MAX_INDEX; ++i)
+    {
+        std::string fileName = BuildSmsgFileName(bucket, i, walletLocked);
+        fs::path candidate = pathSmsgDir / fileName;
+        uint64_t existing = 0;
+
+        if (fs::exists(candidate))
+        {
+            if (!fs::is_regular_file(candidate))
+                continue;
+            try {
+                existing = fs::file_size(candidate);
+            } catch (const fs::filesystem_error&)
+            {
+                continue;
+            };
+        }
+
+        if (existing > SMSG_FILE_MAX_BYTES)
+            continue;
+
+        if (existing + nNeed > SMSG_FILE_MAX_BYTES)
+            continue;
+
+        fileId = i;
+        fullpath = candidate;
+        return true;
+    }
+
+    return false;
+}
+
 
 bool SecMsgCrypter::SetKey(const std::vector<unsigned char>& vchNewKey, unsigned char* chNewIV)
 {
@@ -126,26 +218,15 @@ bool SecMsgCrypter::Encrypt(unsigned char* chPlaintext, uint32_t nPlain, std::ve
     int nCLen = nLen + AES_BLOCK_SIZE, nFLen = 0;
     vchCiphertext = std::vector<unsigned char> (nCLen);
 
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-    EVP_CIPHER_CTX ctx;
-#else
-    EVP_CIPHER_CTX *ctx;
-#endif
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (!ctx)
+        return false;
 
     bool fOk = true;
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-    EVP_CIPHER_CTX_init(&ctx);
-    if (fOk) fOk = EVP_EncryptInit_ex(&ctx, EVP_aes_256_cbc(), NULL, &chKey[0], &chIV[0]);
-    if (fOk) fOk = EVP_EncryptUpdate(&ctx, &vchCiphertext[0], &nCLen, chPlaintext, nLen);
-    if (fOk) fOk = EVP_EncryptFinal_ex(&ctx, (&vchCiphertext[0])+nCLen, &nFLen);
-    EVP_CIPHER_CTX_cleanup(&ctx);
-#else
-    EVP_CIPHER_CTX_init(ctx);
     if (fOk) fOk = EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, &chKey[0], &chIV[0]);
     if (fOk) fOk = EVP_EncryptUpdate(ctx, &vchCiphertext[0], &nCLen, chPlaintext, nLen);
     if (fOk) fOk = EVP_EncryptFinal_ex(ctx, (&vchCiphertext[0])+nCLen, &nFLen);
-    EVP_CIPHER_CTX_cleanup(ctx);
-#endif
+    EVP_CIPHER_CTX_free(ctx);
 
     if (!fOk)
         return false;
@@ -165,26 +246,15 @@ bool SecMsgCrypter::Decrypt(unsigned char* chCiphertext, uint32_t nCipher, std::
 
     vchPlaintext.resize(nCipher);
 
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-    EVP_CIPHER_CTX ctx;
-#else
-    EVP_CIPHER_CTX *ctx;
-#endif
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (!ctx)
+        return false;
 
     bool fOk = true;
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-    EVP_CIPHER_CTX_init(&ctx);
-    if (fOk) fOk = EVP_DecryptInit_ex(&ctx, EVP_aes_256_cbc(), NULL, &chKey[0], &chIV[0]);
-    if (fOk) fOk = EVP_DecryptUpdate(&ctx, &vchPlaintext[0], &nPLen, &chCiphertext[0], nCipher);
-    if (fOk) fOk = EVP_DecryptFinal_ex(&ctx, (&vchPlaintext[0])+nPLen, &nFLen);
-    EVP_CIPHER_CTX_cleanup(&ctx);
-#else
-    EVP_CIPHER_CTX_init(ctx);
     if (fOk) fOk = EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, &chKey[0], &chIV[0]);
     if (fOk) fOk = EVP_DecryptUpdate(ctx, &vchPlaintext[0], &nPLen, &chCiphertext[0], nCipher);
     if (fOk) fOk = EVP_DecryptFinal_ex(ctx, (&vchPlaintext[0])+nPLen, &nFLen);
-    EVP_CIPHER_CTX_cleanup(ctx);
-#endif
+    EVP_CIPHER_CTX_free(ctx);
 
     if (!fOk)
         return false;
@@ -215,6 +285,124 @@ void SecMsgBucket::hashBucket()
     if (fDebugSmsg)
         printf("Hashed %" PRIszu" messages, hash %u\n", setTokens.size(), hash);
 };
+
+bool SecMsgBucket::compact(int64_t nBucketTime)
+{
+    if (fCompacted)
+        return false;
+
+    nTokenCount = (uint32_t)setTokens.size();
+
+    setTokens.clear();
+
+    fCompacted = true;
+
+    if (fDebugSmsg)
+        printf("Compacted bucket %" PRId64", stored count %u, freed token memory.\n", nBucketTime, nTokenCount);
+
+    return true;
+}
+
+bool SecMsgBucket::expand(int64_t nBucketTime)
+{
+    if (!fCompacted)
+        return true;
+
+    if (fDebugSmsg)
+        printf("Expanding bucket %" PRId64" from disk.\n", nBucketTime);
+
+    fs::path pathSmsgDir = GetDataDir() / "smsgStore";
+
+    for (unsigned int fileId = 1; fileId < SMSG_FILE_MAX_INDEX; ++fileId)
+    {
+        char buf[64];
+        snprintf(buf, sizeof(buf), "%" PRId64"_%02u.dat", nBucketTime, fileId);
+        std::string fileName(buf);
+        fs::path fullPath = pathSmsgDir / fileName;
+
+        if (!fs::exists(fullPath))
+        {
+            if (fileId == 1)
+            {
+                if (fDebugSmsg)
+                    printf("No bucket file found for %" PRId64".\n", nBucketTime);
+            }
+            break;
+        }
+
+        FILE *fp;
+        if (!(fp = fopen(fullPath.string().c_str(), "rb")))
+        {
+            printf("SecMsgBucket::expand() - Error opening file %s: %s\n", fileName.c_str(), strerror(errno));
+            continue;
+        }
+
+        SecureMessage smsg;
+        for (;;)
+        {
+            long int ofs = ftell(fp);
+            SecMsgToken token;
+            token.offset = ofs;
+            token.fileId = fileId;
+            errno = 0;
+
+            if (fread(&smsg.hash[0], sizeof(unsigned char), SMSG_HDR_LEN, fp) != (size_t)SMSG_HDR_LEN)
+            {
+                if (errno != 0)
+                    printf("SecMsgBucket::expand() - fread header failed: %s\n", strerror(errno));
+                break;
+            }
+
+            token.timestamp = smsg.timestamp;
+
+            if (smsg.nPayload < 8)
+            {
+                printf("SecMsgBucket::expand() - nPayload %u too small, file may be corrupted\n", smsg.nPayload);
+                break;
+            }
+
+            if (smsg.nPayload > SMSG_MAX_MSG_WORST)
+            {
+                printf("SecMsgBucket::expand() - nPayload %u exceeds max %u, file may be corrupted\n",
+                       smsg.nPayload, SMSG_MAX_MSG_WORST);
+                break;
+            }
+
+            if (fread(token.sample, sizeof(unsigned char), 8, fp) != 8)
+            {
+                printf("SecMsgBucket::expand() - fread sample failed: %s\n", strerror(errno));
+                break;
+            }
+
+            if (fseek(fp, smsg.nPayload - 8, SEEK_CUR) != 0)
+            {
+                printf("SecMsgBucket::expand() - fseek failed: %s\n", strerror(errno));
+                break;
+            }
+
+            setTokens.insert(token);
+
+            if (setTokens.size() >= 100000)
+            {
+                printf("SecMsgBucket::expand() - token limit reached (100000), stopping load\n");
+                fclose(fp);
+                fCompacted = false;
+                nTokenCount = 0;
+                return true;
+            }
+        }
+
+        fclose(fp);
+    }
+
+    fCompacted = false;
+    nTokenCount = 0;
+
+    if (fDebugSmsg)
+        printf("Expanded bucket %" PRId64", loaded %" PRIszu" tokens.\n", nBucketTime, setTokens.size());
+
+    return true;
+}
 
 
 bool SecMsgDB::Open(const char* pszMode)
@@ -612,6 +800,7 @@ void ThreadSecureMsg(void* parg)
 {
     // -- bucket management thread
     RenameThread("innova-smsg"); // Make this thread recognisable
+    SmsgThreadGuard threadGuard;
 
     uint32_t delay = 0;
 
@@ -634,6 +823,7 @@ void ThreadSecureMsg(void* parg)
             printf("SecureMsgThread %" PRId64" \n", now);
 
         int64_t cutoffTime = now - SMSG_RETENTION;
+        int64_t currentBucket = now - (now % SMSG_BUCKET_LEN);
 
         {
             LOCK(cs_smsg);
@@ -643,7 +833,7 @@ void ThreadSecureMsg(void* parg)
             while (it != smsgBuckets.end())
             {
                 //if (fDebugSmsg)
-                //    printf("Checking bucket %" PRId64", size %" PRIszu" \n", it->first, it->second.setTokens.size());
+                //    printf("Checking bucket %" PRId64", size %" PRIszu" \n", it->first, it->second.getTokenCount());
                 if (it->first < cutoffTime)
                 {
                     if (fDebugSmsg)
@@ -710,6 +900,12 @@ void ThreadSecureMsg(void* parg)
                             it->second.nLockPeerId = 0;
                         }; // if (it->second.nLockCount == 0)
                     };
+
+                    if (it->first < currentBucket && it->second.nLockCount == 0)
+                    {
+                        it->second.compact(it->first);
+                    }
+
                     ++it;
                 }; // ! if (it->first < cutoffTime)
             };
@@ -723,6 +919,7 @@ void ThreadSecureMsgPow(void* parg)
 {
     // -- proof of work thread
     RenameThread("innova-smsg-pow"); // Make this thread recognisable
+    SmsgThreadGuard threadGuard;
 
     int rv;
     std::vector<unsigned char> vchKey;
@@ -881,13 +1078,28 @@ int SecureMsgBuildBucketSet()
 
         nFiles++;
 
-        // TODO files must be split if > 2GB
         // time_noFile.dat
         size_t sep = fileName.find_first_of("_");
         if (sep == std::string::npos)
             continue;
 
+        size_t ext = fileName.rfind(".dat");
+        if (ext == std::string::npos || ext <= sep + 1)
+            continue;
+
         std::string stime = fileName.substr(0, sep);
+        std::string sFileId = fileName.substr(sep + 1, ext - (sep + 1));
+
+        if (boost::algorithm::ends_with(sFileId, "_wl"))
+            continue;
+
+        unsigned int fileId = 1;
+        try {
+            fileId = boost::lexical_cast<unsigned int>(sFileId);
+        } catch (const boost::bad_lexical_cast&)
+        {
+            continue;
+        }
 
         int64_t fileTime = boost::lexical_cast<int64_t>(stime);
 
@@ -929,6 +1141,7 @@ int SecureMsgBuildBucketSet()
                 long int ofs = ftell(fp);
                 SecMsgToken token;
                 token.offset = ofs;
+                token.fileId = fileId;
                 errno = 0;
                 if (fread(&smsg.hash[0], sizeof(unsigned char), SMSG_HDR_LEN, fp) != (size_t)SMSG_HDR_LEN)
                 {
@@ -943,8 +1156,12 @@ int SecureMsgBuildBucketSet()
                 };
                 token.timestamp = smsg.timestamp;
 
+                // FILE-001 FIX: If nPayload < 8, file is corrupt - break instead of continue
                 if (smsg.nPayload < 8)
-                    continue;
+                {
+                    printf("SecureMsgBuildBucketSet() - nPayload %u too small, file may be corrupted\n", smsg.nPayload);
+                    break;
+                }
 
                 if (fread(token.sample, sizeof(unsigned char), 8, fp) != 8)
                 {
@@ -1008,8 +1225,8 @@ int SecureMsgAddWalletAddresses()
         if (fExists)
             continue;
 
-        bool recvEnabled    = 1;
-        bool recvAnon       = 1;
+        bool recvEnabled    = smsgOptions.fNewAddressRecv;
+        bool recvAnon       = smsgOptions.fNewAddressAnon;
 
         smsgAddresses.push_back(SecMsgAddress(address, recvEnabled, recvAnon));
         nAdded++;
@@ -1329,9 +1546,8 @@ bool SecureMsgDisable()
 
     }; // LOCK(cs_smsg);
 
-    // -- allow time for threads to stop
-    MilliSleep(3000); // milliseconds
-    // TODO be certain that threads have stopped
+    if (!WaitForSmsgThreads(SMSG_THREAD_STOP_WAIT_MS))
+        printf("SecureMsgDisable: timed out waiting for threads to stop.\n");
 
     if (smsgDB)
     {
@@ -1365,10 +1581,10 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
             std::vector<unsigned char> vchData;
             vRecv >> vchData;
 
-            if (vchData.size() < 4)
+            if (vchData.size() < 4 || vchData.size() > 8192)
             {
                 pfrom->Misbehaving(1);
-                return false; // not enough data received to be a valid smsgInv
+                return false; // invalid smsgInv size (min 4, max 8KB)
             };
 
             int64_t now = GetTime();
@@ -1448,7 +1664,7 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
                 if (fDebugSmsg)
                 {
                     printf("peer bucket %" PRId64" %u %u.\n", time, ncontent, hash);
-                    printf("this bucket %" PRId64" %" PRIszu" %u.\n", time, smsgBuckets[time].setTokens.size(), smsgBuckets[time].hash);
+                    printf("this bucket %" PRId64" %u %u.\n", time, smsgBuckets[time].getTokenCount(), smsgBuckets[time].hash);
                 };
 
                 if (smsgBuckets[time].nLockCount > 0)
@@ -1461,8 +1677,10 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
 
                 // -- if this node has more than the peer node, peer node will pull from this
                 //    if then peer node has more this node will pull fom peer
-                if (smsgBuckets[time].setTokens.size() < ncontent
-                    || (smsgBuckets[time].setTokens.size() == ncontent
+                // Use getTokenCount() to work with compacted buckets
+                uint32_t nThisCount = smsgBuckets[time].getTokenCount();
+                if (nThisCount < ncontent
+                    || (nThisCount == ncontent
                         && smsgBuckets[time].hash != hash)) // if same amount in buckets check hash
                 {
                     if (fDebugSmsg)
@@ -1529,6 +1747,9 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
                     continue;
                 };
 
+                // Expand compacted bucket if needed before accessing tokens
+                (*itb).second.expand(time);
+
                 std::set<SecMsgToken>& tokenSet = (*itb).second.setTokens;
 
                 try {
@@ -1591,6 +1812,9 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
 
             if (fDebugSmsg)
                 printf("Sifting through bucket %" PRId64".\n", time);
+
+            // Expand compacted bucket if needed before accessing tokens
+            smsgBuckets[time].expand(time);
 
             std::vector<unsigned char> vchDataOut;
             vchDataOut.resize(8);
@@ -1663,6 +1887,9 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
                 return false;
             };
 
+            // Expand compacted bucket if needed before accessing tokens
+            itb->second.expand(time);
+
             std::set<SecMsgToken>& tokenSet = itb->second.setTokens;
             std::set<SecMsgToken>::iterator it;
             SecMsgToken token;
@@ -1681,6 +1908,7 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
                 {
                     //printf("Have message at %" PRId64".\n", it->offset); // DEBUG
                     token.offset = it->offset;
+                    token.fileId = it->fileId;
                     //printf("winb before SecureMsgRetrieve %" PRId64".\n", token.timestamp);
 
                     // -- place in vchOne so if SecureMsgRetrieve fails it won't corrupt vchBunch
@@ -1869,7 +2097,8 @@ bool SecureMsgSendData(CNode* pto, bool fSendTrickle)
             {
                 SecMsgBucket &bkt = it->second;
 
-                uint32_t nMessages = bkt.setTokens.size();
+                // Use getTokenCount() to work with compacted buckets
+                uint32_t nMessages = bkt.getTokenCount();
 
                 if (bkt.timeChanged < pto->smsgData.lastMatched     // peer has this bucket
                     || nMessages < 1)                               // this bucket is empty
@@ -2222,7 +2451,6 @@ bool SecureMsgScanBuckets()
 
         nFiles++;
 
-        // TODO files must be split if > 2GB
         // time_noFile.dat
         size_t sep = fileName.find_first_of("_");
         if (sep == std::string::npos)
@@ -2376,7 +2604,6 @@ int SecureMsgWalletUnlocked()
 
         nFiles++;
 
-        // TODO files must be split if > 2GB
         // time_noFile_wl.dat
         size_t sep = fileName.find_first_of("_");
         if (sep == std::string::npos)
@@ -2482,14 +2709,17 @@ int SecureMsgWalletKeyChanged(std::string sAddress, std::string sLabel, ChangeTy
 
     printf("SecureMsgWalletKeyChanged()\n");
 
-    // TODO: default recv and recvAnon
-
     {
         LOCK(cs_smsg);
 
         switch(mode)
         {
             case CT_NEW:
+                for (const SecMsgAddress& addr : smsgAddresses)
+                {
+                    if (addr.sAddress == sAddress)
+                        return 0;
+                }
                 smsgAddresses.push_back(SecMsgAddress(sAddress, smsgOptions.fNewAddressRecv, smsgOptions.fNewAddressAnon));
                 break;
             case CT_DELETED:
@@ -2773,7 +3003,8 @@ int SecureMsgRetrieve(SecMsgToken &token, std::vector<unsigned char>& vchData)
 
     //printf("token.offset %" PRId64".\n", token.offset); // DEBUG
     int64_t bucket = token.timestamp - (token.timestamp % SMSG_BUCKET_LEN);
-    std::string fileName = boost::lexical_cast<std::string>(bucket) + "_01.dat";
+    unsigned int fileId = token.fileId > 0 ? token.fileId : 1;
+    std::string fileName = BuildSmsgFileName(bucket, fileId, false);
     fs::path fullpath = pathSmsgDir / fileName;
 
     //printf("bucket %" PRId64".\n", bucket);
@@ -2976,8 +3207,13 @@ int SecureMsgStoreUnscanned(unsigned char *pHeader, unsigned char *pPayload, uin
 
     int64_t bucket = psmsg->timestamp - (psmsg->timestamp % SMSG_BUCKET_LEN);
 
-    std::string fileName = boost::lexical_cast<std::string>(bucket) + "_01_wl.dat";
-    fs::path fullpath = pathSmsgDir / fileName;
+    unsigned int fileId = 1;
+    fs::path fullpath;
+    if (!SelectSmsgFile(pathSmsgDir, bucket, nPayload, true, fileId, fullpath))
+    {
+        printf("SecureMsgStoreUnscanned: could not select storage file.\n");
+        return 1;
+    }
 
     FILE *fp;
     errno = 0;
@@ -2995,6 +3231,13 @@ int SecureMsgStoreUnscanned(unsigned char *pHeader, unsigned char *pPayload, uin
         return 1;
     };
 
+    // FILE-003 FIX: Ensure data is flushed to disk before closing
+    fflush(fp);
+#ifndef WIN32
+    fsync(fileno(fp));
+#else
+    _commit(_fileno(fp));
+#endif
     fclose(fp);
 
     return 0;
@@ -3045,7 +3288,18 @@ int SecureMsgStore(unsigned char *pHeader, unsigned char *pPayload, uint32_t nPa
         // -- must lock cs_smsg before calling
         //LOCK(cs_smsg);
 
-        SecMsgToken token(psmsg->timestamp, pPayload, nPayload, 0);
+        unsigned int fileId = 1;
+        fs::path fullpath;
+        if (!SelectSmsgFile(pathSmsgDir, bucket, nPayload, false, fileId, fullpath))
+        {
+            printf("SecureMsgStore: could not select storage file.\n");
+            return 1;
+        }
+
+        SecMsgToken token(psmsg->timestamp, pPayload, nPayload, 0, fileId);
+
+        // Expand compacted bucket if needed before accessing tokens
+        smsgBuckets[bucket].expand(bucket);
 
         std::set<SecMsgToken>& tokenSet = smsgBuckets[bucket].setTokens;
         std::set<SecMsgToken>::iterator it;
@@ -3077,9 +3331,6 @@ int SecureMsgStore(unsigned char *pHeader, unsigned char *pPayload, uint32_t nPa
             return 1;
         };
 
-        std::string fileName = boost::lexical_cast<std::string>(bucket) + "_01.dat";
-        fs::path fullpath = pathSmsgDir / fileName;
-
         FILE *fp;
         errno = 0;
         if (!(fp = fopen(fullpath.string().c_str(), "ab")))
@@ -3093,26 +3344,45 @@ int SecureMsgStore(unsigned char *pHeader, unsigned char *pPayload, uint32_t nPa
         if (fseek(fp, 0, SEEK_END) != 0)
         {
             printf("Error fseek failed: %s\n", strerror(errno));
+            fclose(fp);  // FILE-002 FIX: Close file handle before returning
             return 1;
         };
 
 
         ofs = ftell(fp);
 
+        // FILE-004 FIX: Insert token into memory BEFORE writing to file
+        // This ensures atomicity - if insert throws, file is unchanged
+        // If write fails, we remove the token from memory
+        token.offset = ofs;
+        std::pair<std::set<SecMsgToken>::iterator, bool> insertResult;
+        try {
+            insertResult = tokenSet.insert(token);
+        } catch (const std::exception& e) {
+            printf("SecureMsgStore: token insert failed: %s\n", e.what());
+            fclose(fp);
+            return 1;
+        }
+
         if (fwrite(pHeader, sizeof(unsigned char), SMSG_HDR_LEN, fp) != (size_t)SMSG_HDR_LEN
             || fwrite(pPayload, sizeof(unsigned char), nPayload, fp) != nPayload)
         {
             printf("fwrite failed: %s\n", strerror(errno));
+            // FILE-004 FIX: Remove token from memory since file write failed
+            if (insertResult.second)
+                tokenSet.erase(insertResult.first);
             fclose(fp);
             return 1;
         };
 
+        // FILE-003 FIX: Ensure data is flushed to disk before closing
+        fflush(fp);
+#ifndef WIN32
+        fsync(fileno(fp));
+#else
+        _commit(_fileno(fp));
+#endif
         fclose(fp);
-
-        token.offset = ofs;
-
-        //printf("token.offset: %" PRId64"\n", token.offset); // DEBUG
-        tokenSet.insert(token);
 
         if (fUpdateBucket)
             smsgBuckets[bucket].hashBucket();
@@ -3186,7 +3456,7 @@ int SecureMsgValidate(unsigned char *pHeader, unsigned char *pPayload, uint32_t 
             rv = 0; // smsg is valid
         };
 
-        if (memcmp(psmsg->hash, sha256Hash, 4) != 0)
+        if (SecureMemcmp(psmsg->hash, sha256Hash, 4) != 0)
         {
             if (fDebugSmsg)
                 printf("Checksum mismatch.\n");
@@ -3220,7 +3490,7 @@ int SecureMsgValidate(unsigned char *pHeader, unsigned char *pPayload, uint32_t 
             rv = 0; // smsg is valid
         };
 
-        if (memcmp(psmsg->hash, sha256Hash, 4) != 0)
+        if (SecureMemcmp(psmsg->hash, sha256Hash, 4) != 0)
         {
             if (fDebugSmsg)
                 printf("Checksum mismatch.\n");
@@ -4020,7 +4290,7 @@ int SecureMsgDecrypt(bool fTestOnly, std::string& address, unsigned char *pHeade
         return 1;
     };
 
-    if (memcmp(MAC, psmsg->mac, 32) != 0)
+    if (SecureMemcmp(MAC, psmsg->mac, 32) != 0)
     {
         if (fDebugSmsg)
             printf("MAC does not match.\n"); // expected if message is not to address on node

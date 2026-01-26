@@ -16,6 +16,7 @@
 #include "collateralnode.h"
 #include "bloom.h"
 #include "namecoin.h"
+#include <openssl/crypto.h>  
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/range/algorithm.hpp>
 #include <boost/numeric/ublas/matrix.hpp>
@@ -32,6 +33,7 @@ using namespace std;
 
 unsigned int nStakeSplitAge = 1 * 24 * 60 * 60;
 int64_t nStakeCombineThreshold = 1000 * COIN;
+int64_t nStakeMinSplitThreshold = 100 * COIN;
 
 int64_t gcd(int64_t n,int64_t m) { return m == 0 ? n : gcd(m, n % m); }
 static uint64_t CoinWeightCost(const COutput &out)
@@ -314,6 +316,32 @@ bool CWallet::IsLockedCoin(uint256 hash, unsigned int n) const
     return (setLockedCoins.count(outpt) > 0);
 }
 
+bool CWallet::IsSpent(const uint256& hash, unsigned int n) const
+{
+    AssertLockHeld(cs_wallet);
+
+    std::map<uint256, CWalletTx>::const_iterator it = mapWallet.find(hash);
+    if (it != mapWallet.end())
+    {
+        if (n >= it->second.vout.size())
+            return false;
+        return it->second.IsSpent(n);
+    }
+
+    if (fHybridSPV)
+    {
+        LOCK(cs_spvutxos);
+        COutPoint outpoint(hash, n);
+        std::map<COutPoint, SPVUtxo>::const_iterator spvIt = mapSPVUtxos.find(outpoint);
+        if (spvIt != mapSPVUtxos.end())
+        {
+            return spvIt->second.fSpent;
+        }
+    }
+
+    return false;
+}
+
 void CWallet::ListLockedCoins(std::vector<COutPoint>& vOutpts)
 {
     AssertLockHeld(cs_wallet); // setLockedCoins
@@ -594,6 +622,10 @@ void CWallet::WalletUpdateSpent(const CTransaction &tx, bool fBlock)
                     wtx.WriteToDisk();
                     NotifyTransactionChanged(this, txin.prevout.hash, CT_UPDATED);
 					vMintingWalletUpdated.push_back(txin.prevout.hash);
+                    if (fHybridSPV)
+                    {
+                        MarkSPVUtxoSpent(txin.prevout);
+                    }
                 }
             }
         }
@@ -687,8 +719,11 @@ bool CWallet::AddToWallet(const CWalletTx& wtxIn)
                         }
                     }
 
-                    unsigned int& blocktime = mapBlockIndex[wtxIn.hashBlock]->nTime;
-                    wtx.nTimeSmart = std::max(latestEntry, std::min(blocktime, latestNow));
+                    map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(wtxIn.hashBlock);
+                    if (mi != mapBlockIndex.end() && mi->second) {
+                        unsigned int blocktime = mi->second->nTime;
+                        wtx.nTimeSmart = std::max(latestEntry, std::min(blocktime, latestNow));
+                    }
                 }
                 else
                     printf("AddToWallet() : found %s in block %s not in index\n",
@@ -1379,6 +1414,11 @@ void CWallet::ReacceptWalletTransactions()
                         wtx.MarkSpent(i);
                         fUpdated = true;
                         vMissingTx.push_back(txindex.vSpent[i]);
+                        if (fHybridSPV)
+                        {
+                            COutPoint outpoint(wtx.GetHash(), i);
+                            MarkSPVUtxoSpent(outpoint);
+                        }
                     }
                 }
                 if (fUpdated)
@@ -1631,6 +1671,106 @@ int64_t CWallet::GetImmatureWatchOnlyBalance() const
     return nTotal;
 }
 
+CBloomFilter* CWallet::CreateSPVBloomFilter(double nFPRate, unsigned int nFlags) const
+{
+    LOCK(cs_wallet);
+
+    unsigned int nElements = 0;
+    nElements += setKeyPool.size();
+    nElements += mapKeyMetadata.size();
+    nElements += mapAddressBook.size();
+
+    if (nElements < 10)
+        nElements = 10;
+
+    CBloomFilter* pfilter = new CBloomFilter(nElements, nFPRate, GetRandInt(std::numeric_limits<int>::max()), nFlags);
+
+    std::set<CKeyID> setKeys;
+    GetKeys(setKeys);
+    for (const CKeyID& keyid : setKeys)
+    {
+        std::vector<unsigned char> vchPubKeyHash(keyid.begin(), keyid.end());
+        pfilter->insert(vchPubKeyHash);
+    }
+
+    for (const std::pair<CTxDestination, std::string>& item : mapAddressBook)
+    {
+        const CTxDestination& dest = item.first;
+        if (const CKeyID* keyid = boost::get<CKeyID>(&dest))
+        {
+            std::vector<unsigned char> vchPubKeyHash(keyid->begin(), keyid->end());
+            pfilter->insert(vchPubKeyHash);
+        }
+        else if (const CScriptID* scriptid = boost::get<CScriptID>(&dest))
+        {
+            std::vector<unsigned char> vchScriptHash(scriptid->begin(), scriptid->end());
+            pfilter->insert(vchScriptHash);
+        }
+    }
+
+    for (const CStealthAddress& sxAddr : stealthAddresses)
+    {
+        if (sxAddr.scan_pubkey.size() >= 20)
+        {
+            uint160 hash = Hash160(sxAddr.scan_pubkey);
+            std::vector<unsigned char> vchHash(hash.begin(), hash.end());
+            pfilter->insert(vchHash);
+        }
+    }
+
+    printf("SPV: Created bloom filter with %u elements, FP rate %.6f\n", nElements, nFPRate);
+    return pfilter;
+}
+
+bool CWallet::ProcessMerkleBlock(const CMerkleBlock& merkleBlock, std::vector<uint256>& vMatch)
+{
+    CPartialMerkleTree txnCopy = merkleBlock.txn;
+
+    uint256 merkleRoot = txnCopy.ExtractMatches(vMatch);
+
+    if (merkleRoot != merkleBlock.header.hashMerkleRoot)
+    {
+        printf("SPV: Merkle root mismatch in block\n");
+        return false;
+    }
+
+    if (fDebug)
+        printf("SPV: Merkle block validated with %u matching transactions\n", (unsigned int)vMatch.size());
+
+    return true;
+}
+
+void CWallet::RequestSPVTransactions(CNode* pnode, int nStartHeight)
+{
+    if (!pnode)
+        return;
+
+    LOCK(cs_main);
+
+    CBloomFilter* pfilter = CreateSPVBloomFilter(0.0001, BLOOM_UPDATE_ALL);
+    if (pfilter)
+    {
+        pnode->PushMessage("filterload", *pfilter);
+        printf("SPV: Sent bloom filter to peer %s\n", pnode->addr.ToString().c_str());
+
+        CBlockIndex* pindex = pindexGenesisBlock;
+        if (nStartHeight > 0)
+        {
+            pindex = pindexBest;
+            while (pindex && pindex->nHeight > nStartHeight)
+                pindex = pindex->pprev;
+        }
+
+        if (pindex)
+        {
+            pnode->PushGetBlocks(pindex, uint256(0));
+            printf("SPV: Requested filtered blocks from height %d\n", pindex->nHeight);
+        }
+
+        delete pfilter;
+    }
+}
+
 // populate vCoins with vector of spendable COutputs
 void CWallet::AvailableCoins(vector<COutput>& vCoins, bool fOnlyConfirmed, const CCoinControl *coinControl) const
 {
@@ -1785,7 +1925,7 @@ static void ApproximateBestSubset(vector<pair<int64_t, pair<const CWalletTx*,uns
         {
             for (unsigned int i = 0; i < vValue.size(); i++)
             {
-                if (nPass == 0 ? rand() % 2 : !vfIncluded[i])
+                if (nPass == 0 ? (GetRandInt(2) == 0) : !vfIncluded[i])
                 {
                     nTotal += vValue[i].first;
                     vfIncluded[i] = true;
@@ -1918,6 +2058,8 @@ bool CWallet::SelectCoinsMinConfByCoinAge(int64_t nTargetValue, unsigned int nSp
     }
 
     // Calculate dynamic programming matrix
+    if (vValue.empty())
+        return false;  // Safety check - prevent crash on empty vValue
     int64_t nTotalValue = vValue[0].first.first;
     int64_t nGCD = vValue[0].first.first;
     for (unsigned int i = 1; i < vValue.size(); ++i)
@@ -1989,9 +2131,11 @@ bool CWallet::SelectCoinsMinConfByCoinAge(int64_t nTargetValue, unsigned int nSp
                 {
                     if (fDebug) cerr << "prepick bundle item " << FormatMoney(vValue[nBeginCoinValues].first.first) << " normalized " << vValue[nBeginCoinValues].first.first / denom << " cost " << vValue[nBeginCoinValues].first.second << endl;
                     const size_t nBundle = nBeginCoinValues - nBeginBundles;
-                    for (vector<pair<pair<int64_t,int64_t>,pair<const CWalletTx*,unsigned int> > >::iterator it = vZeroValueBundles[nBundle]; it != vZeroValueBundles[nBundle + 1]; ++it)
-                    {
-                        setCoinsRet.insert(it->second);
+                    if (nBundle + 1 < vZeroValueBundles.size()) {
+                        for (vector<pair<pair<int64_t,int64_t>,pair<const CWalletTx*,unsigned int> > >::iterator it = vZeroValueBundles[nBundle]; it != vZeroValueBundles[nBundle + 1]; ++it)
+                        {
+                            setCoinsRet.insert(it->second);
+                        }
                     }
                 }
                 else
@@ -2023,8 +2167,18 @@ bool CWallet::SelectCoinsMinConfByCoinAge(int64_t nTargetValue, unsigned int nSp
     }
 
     // The capacity (number of columns) corresponds to the amount of coin value we are allowed to discard
-    boost::numeric::ublas::matrix<uint64_t> M((nTotalCoinValues - nBeginCoinValues) + 1, (nTotalValue - (nTargetValue - nValueRet)/denom) + nAppend, std::numeric_limits<int64_t>::max());
-    boost::numeric::ublas::matrix<unsigned int> B((nTotalCoinValues - nBeginCoinValues) + 1, (nTotalValue - (nTargetValue - nValueRet)/denom) + nAppend);
+    size_t nMatrixRows = (nTotalCoinValues - nBeginCoinValues) + 1;
+    int64_t nColCalc = (nTotalValue - (nTargetValue - nValueRet)/denom) + nAppend;
+    size_t nMatrixCols = nColCalc > 0 ? (size_t)nColCalc : 1;
+
+    const size_t nMaxMatrixSize = 5000000;
+    if (nMatrixRows * nMatrixCols > nMaxMatrixSize || nMatrixRows == 0 || nMatrixCols == 0) {
+        if (fDebug) cerr << "SelectCoinsMinConfByCost: matrix too large or invalid (" << nMatrixRows << "x" << nMatrixCols << "), falling back" << endl;
+        return false;
+    }
+
+    boost::numeric::ublas::matrix<uint64_t> M(nMatrixRows, nMatrixCols, std::numeric_limits<int64_t>::max());
+    boost::numeric::ublas::matrix<unsigned int> B(nMatrixRows, nMatrixCols);
     for (unsigned int j = 0; j < M.size2(); ++j)
     {
         M(0,j) = 0;
@@ -2069,9 +2223,11 @@ bool CWallet::SelectCoinsMinConfByCoinAge(int64_t nTargetValue, unsigned int nSp
             {
                 if (fDebug) cerr << "pick bundle item " << FormatMoney(vValue[nValue].first.first) << " normalized " << vValue[nValue].first.first / denom << " cost " << vValue[nValue].first.second << endl;
                 const size_t nBundle = nValue - nBeginBundles;
-                for (vector<pair<pair<int64_t,int64_t>,pair<const CWalletTx*,unsigned int> > >::iterator it = vZeroValueBundles[nBundle]; it != vZeroValueBundles[nBundle + 1]; ++it)
-                {
-                    setCoinsRet.insert(it->second);
+                if (nBundle + 1 < vZeroValueBundles.size()) {
+                    for (vector<pair<pair<int64_t,int64_t>,pair<const CWalletTx*,unsigned int> > >::iterator it = vZeroValueBundles[nBundle]; it != vZeroValueBundles[nBundle + 1]; ++it)
+                    {
+                        setCoinsRet.insert(it->second);
+                    }
                 }
             }
             else
@@ -2478,7 +2634,7 @@ bool CWallet::ConvertList(std::vector<CTxIn> vCoins, std::vector<int64_t>& vecAm
     return true;
 }
 
-bool CWallet::CreateTransaction(const vector<pair<CScript, int64_t> >& vecSend, CWalletTx& wtxNew, CReserveKey& reservekey, int64_t& nFeeRet, int32_t& nChangePos, const CCoinControl* coinControl)
+bool CWallet::CreateTransaction(const vector<pair<CScript, int64_t> >& vecSend, CWalletTx& wtxNew, CReserveKey& reservekey, int64_t& nFeeRet, int32_t& nChangePos, const CCoinControl* coinControl, const CScript* scriptChangeOverride)
 {
     int64_t nValue = 0;
     BOOST_FOREACH (const PAIRTYPE(CScript, int64_t)& s, vecSend)
@@ -2570,13 +2726,12 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64_t> >& vecSend, 
 
                 if (nChange > 0)
                 {
-                    // Fill a vout to ourself
-                    // TODO: pass in scriptChange instead of reservekey so
-                    // change transaction isn't always pay-to-bitcoin-address
                     CScript scriptChange;
 
+                    if (scriptChangeOverride && !scriptChangeOverride->empty())
+                        scriptChange = *scriptChangeOverride;
                     // coin control: send change to custom address
-                    if (coinControl && !boost::get<CNoDestination>(&coinControl->destChange))
+                    else if (coinControl && !boost::get<CNoDestination>(&coinControl->destChange))
                         scriptChange.SetDestination(coinControl->destChange);
 
                     // no coin control: send change to newly generated address
@@ -2653,7 +2808,7 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64_t> >& vecSend, 
 }
 
 
-bool CWallet::CreateTransaction(CScript scriptPubKey, int64_t nValue, std::string& sNarr, CWalletTx& wtxNew, CReserveKey& reservekey, int64_t& nFeeRet, const CCoinControl* coinControl)
+bool CWallet::CreateTransaction(CScript scriptPubKey, int64_t nValue, std::string& sNarr, CWalletTx& wtxNew, CReserveKey& reservekey, int64_t& nFeeRet, const CCoinControl* coinControl, const CScript* scriptChangeOverride)
 {
     vector< pair<CScript, int64_t> > vecSend;
     vecSend.push_back(make_pair(scriptPubKey, nValue));
@@ -2678,14 +2833,14 @@ bool CWallet::CreateTransaction(CScript scriptPubKey, int64_t nValue, std::strin
     int nChangePos;
 
     //bool rv = CreateTransaction(vecSend, wtxNew, reservekey, nFeeRet, nChangePos, strFailReason, coinControl);
-    bool rv = CreateTransaction(vecSend, wtxNew, reservekey, nFeeRet, nChangePos, coinControl);
+    bool rv = CreateTransaction(vecSend, wtxNew, reservekey, nFeeRet, nChangePos, coinControl, scriptChangeOverride);
 
     // -- narration will be added to mapValue later in FindStealthTransactions From CommitTransaction
     return rv;
 }
 
 bool CWallet::CreateTransactionInner(const vector<pair<CScript, CAmount> >& vecSend, const CWalletTx& wtxNameIn, CAmount nFeeInput,
-                                CWalletTx& wtxNew, CReserveKey& reservekey, CAmount& nFeeRet, std::string& strFailReason, const CCoinControl* coinControl)
+                                CWalletTx& wtxNew, CReserveKey& reservekey, CAmount& nFeeRet, std::string& strFailReason, const CCoinControl* coinControl, const CScript* scriptChangeOverride)
 {
     CAmount nValue = 0;
     BOOST_FOREACH (const PAIRTYPE(CScript, CAmount)& s, vecSend)
@@ -2821,13 +2976,12 @@ bool CWallet::CreateTransactionInner(const vector<pair<CScript, CAmount> >& vecS
 
                 if (nChange > 0)
                 {
-                    // Fill a vout to ourself
-                    // TODO: pass in scriptChange instead of reservekey so
-                    // change transaction isn't always pay-to-bitcoin-address
                     CScript scriptChange;
 
+                    if (scriptChangeOverride && !scriptChangeOverride->empty())
+                        scriptChange = *scriptChangeOverride;
                     // coin control: send change to custom address
-                    if (coinControl && !boost::get<CNoDestination>(&coinControl->destChange))
+                    else if (coinControl && !boost::get<CNoDestination>(&coinControl->destChange))
                         scriptChange = GetScriptForDestination(coinControl->destChange);
 
                     // no coin control: send change to newly generated address
@@ -2923,7 +3077,7 @@ bool CWallet::CreateNameTx(CScript scriptPubKey, const CAmount& nValue, const CW
 {
     vector< pair<CScript, CAmount> > vecSend;
     vecSend.push_back(make_pair(scriptPubKey, nValue));
-    return CreateTransactionInner(vecSend, wtxNameIn, nFeeInput, wtxNew, reservekey, nFeeRet, strFailReason, coinControl);
+    return CreateTransactionInner(vecSend, wtxNameIn, nFeeInput, wtxNew, reservekey, nFeeRet, strFailReason, coinControl, NULL);
 }
 
 bool CWallet::NewStealthAddress(std::string& sError, std::string& sLabel, CStealthAddress& sxAddr)
@@ -3661,9 +3815,18 @@ bool CWallet::GetStakeWeight(const CKeyStore& keystore, uint64_t& nMinWeight, ui
     set<pair<const CWalletTx*,unsigned int> > setCoins;
     int64_t nValueIn = 0;
 
-
-    if (!SelectCoinsForStaking(nBalance - nReserveBalance, GetTime(), setCoins, nValueIn))
-        return false;
+    if (fHybridSPV)
+    {
+        if (!SelectCoinsForStakingSPV(setCoins))
+            return false;
+        for (const auto& pcoin : setCoins)
+            nValueIn += pcoin.first->vout[pcoin.second].nValue;
+    }
+    else
+    {
+        if (!SelectCoinsForStaking(nBalance - nReserveBalance, GetTime(), setCoins, nValueIn))
+            return false;
+    }
 
     if (setCoins.empty())
         return false;
@@ -3731,12 +3894,25 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
     set<pair<const CWalletTx*,unsigned int> > setCoins;
     int64_t nValueIn = 0;
 
-    // Select coins with suitable depth
-    if (!SelectCoinsForStaking(nBalance - nReserveBalance, txNew.nTime, setCoins, nValueIn))
+    if (fHybridSPV)
     {
-        if (fDebug && GetBoolArg("-printcoinstakedebug"))
-            printf("CreateCoinStake() : valid staking coins not found\n");
-        return false;
+        if (!SelectCoinsForStakingSPV(setCoins))
+        {
+            if (fDebug && GetBoolArg("-printcoinstakedebug"))
+                printf("CreateCoinStake() : SPV staking coins not found\n");
+            return false;
+        }
+        for (const auto& pcoin : setCoins)
+            nValueIn += pcoin.first->vout[pcoin.second].nValue;
+    }
+    else
+    {
+        if (!SelectCoinsForStaking(nBalance - nReserveBalance, txNew.nTime, setCoins, nValueIn))
+        {
+            if (fDebug && GetBoolArg("-printcoinstakedebug"))
+                printf("CreateCoinStake() : valid staking coins not found\n");
+            return false;
+        }
     }
 
     if (setCoins.empty())
@@ -3745,8 +3921,21 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
     int64_t nCredit = 0;
     CScript scriptPubKeyKernel;
     CTxDB txdb("r");
+    static int nMaxStakeSearchInterval = 30;
+
     BOOST_FOREACH(PAIRTYPE(const CWalletTx*, unsigned int) pcoin, setCoins)
     {
+        {
+            LOCK(cs_main);
+            if (pcoin.first->hashBlock != 0) {
+                map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(pcoin.first->hashBlock);
+                if (mi != mapBlockIndex.end() && mi->second) {
+                    if (mi->second->nTime + nStakeMinAge > txNew.nTime - nMaxStakeSearchInterval)
+                        continue;
+                }
+            }
+        }
+
         CTxIndex txindex;
         {
             LOCK2(cs_main, cs_wallet);
@@ -3762,7 +3951,6 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                 continue;
         }
 
-        static int nMaxStakeSearchInterval = 30;
         if (block.GetBlockTime() + nStakeMinAge > txNew.nTime - nMaxStakeSearchInterval)
             continue; // only count coins meeting min age requirement
 
@@ -3835,8 +4023,8 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                 vwtxPrev.push_back(pcoin.first);
                 txNew.vout.push_back(CTxOut(0, scriptPubKeyOut));
 
-                if (GetWeight(block.GetBlockTime(), (int64_t)txNew.nTime) < nStakeSplitAge)
-                    txNew.vout.push_back(CTxOut(0, scriptPubKeyOut)); //split stake
+                if (GetWeight(block.GetBlockTime(), (int64_t)txNew.nTime) < nStakeSplitAge && nCredit > nStakeMinSplitThreshold)
+                    txNew.vout.push_back(CTxOut(0, scriptPubKeyOut));
                 if (fDebug && GetBoolArg("-printcoinstake"))
                     printf("CreateCoinStake() : added kernel type=%d\n", whichType);
                 fKernelFound = true;
@@ -4075,7 +4263,10 @@ bool CWallet::CommitTransaction(CWalletTx& wtxNew, CReserveKey& reservekey)
                 if (wtxNew.nVersion == ANON_TXN_VERSION
                     && txin.IsAnonInput())
                     continue;
-                CWalletTx &coin = mapWallet[txin.prevout.hash];
+                std::map<uint256, CWalletTx>::iterator mi = mapWallet.find(txin.prevout.hash);
+                if (mi == mapWallet.end())
+                    continue;
+                CWalletTx &coin = mi->second;
                 coin.BindWallet(this);
                 coin.MarkSpent(txin.prevout.n);
                 coin.WriteToDisk();
@@ -5329,8 +5520,8 @@ bool CWallet::ProcessAnonTransaction(CWalletDB* pwdb, CTxDB* ptxdb, const CTrans
 
         if (!ptxdb->WriteAnonOutput(pkCoin, ao))
         {
-            printf("WriteKeyImage failed.\n");
-            continue;
+            printf("WriteAnonOutput failed for coin %s.\n", pkCoin.GetHash().ToString().c_str());
+            return false;
         };
 
         mapAnonOutputStats[txout.nValue].addCoin(nBlockHeight, txout.nValue);
@@ -5742,8 +5933,7 @@ bool CWallet::CreateAnonOutputs(CStealthAddress* sxAddress, int64_t nValue, std:
         vecSend.push_back(make_pair(scriptSendTo, vOutAmounts[i]));
     };
 
-    // TODO: will this be optimised away?
-    memset(&scShared.e[0], 0, ec_secret_size);
+    OPENSSL_cleanse(&scShared.e[0], ec_secret_size);
 
     return true;
 };
@@ -6041,7 +6231,6 @@ int CWallet::GetTxnPreImage(CTransaction& txn, uint256& hash)
 
         int ringSize = txin.ExtractRingSize();
 
-        // TODO: is it neccessary to include the ring members in the hash?
         if (txin.scriptSig.size() < 2 + ringSize * ec_compressed_size)
         {
             printf("scriptSig is too small, input %u, ring size %d.\n", i, ringSize);
@@ -6671,12 +6860,17 @@ bool CWallet::SendINNToAnon(CStealthAddress& sxAddress, int64_t nValue, std::str
         return false;
     };
 
+    if (scriptNarration.size() > 0)
+    {
+        vecSend.push_back(make_pair(scriptNarration, 0));
+    };
 
     // -- shuffle outputs
     std::random_shuffle(vecSend.begin(), vecSend.end());
 
     int64_t nFeeRequired;
-    if (!CreateTransaction(scriptNarration, nValue, sNarr, wtxNew, reservekey, nFeeRequired))
+    int32_t nChangePos = -1;
+    if (!CreateTransaction(vecSend, wtxNew, reservekey, nFeeRequired, nChangePos, NULL))
     {
         sError = "CreateTransaction() failed.";
         return false;
@@ -7084,9 +7278,6 @@ bool CWallet::AddAnonInputs(int rsType, int64_t nTotalOut, int nRingSize, std::v
         return false;
     };
 
-    // TODO: Does it lower security to use the same preimage for each input?
-    //  cryptonote seems to do so too
-
     for (uint32_t i = 0; i < wtxNew.vin.size(); ++i)
     {
         CTxIn& txin = wtxNew.vin[i];
@@ -7180,7 +7371,7 @@ bool CWallet::AddAnonInputs(int rsType, int64_t nTotalOut, int nRingSize, std::v
                 return false;
         };
 
-        memset(&ecSecret.e[0], 0, EC_SECRET_SIZE); // optimised away?
+        OPENSSL_cleanse(&ecSecret.e[0], EC_SECRET_SIZE);
     };
 
     // -- check if new coins already exist (in case random is broken ?)
@@ -7533,4 +7724,447 @@ void SendName(CScript scriptPubKey, CAmount nValue, CWalletTx& wtxNew, const CWa
     }
     if (!pwalletMain->CommitTransaction(wtxNew, reservekey))
         throw JSONRPCError(RPC_WALLET_ERROR, "Error: The transaction was rejected! This might happen if some of the coins in your wallet were already spent, such as if you used a copy of wallet.dat and coins were spent in the copy but not marked as spent here.");
+}
+
+// ============================================================================
+// Hybrid SPV Staking Methods
+// ============================================================================
+
+static const int64_t SPV_BLOCK_REQUEST_INTERVAL = 30;
+static const size_t SPV_UTXO_CACHE_MAX_SIZE = 10000;
+
+void CWallet::UpdateSPVUtxo(const COutPoint& outpoint, const SPVUtxo& utxo)
+{
+    LOCK(cs_spvutxos);
+
+    SPVUtxo verifiedUtxo = utxo;
+    if (!utxo.vMerkleBranch.empty())
+    {
+        verifiedUtxo.fVerified = verifiedUtxo.VerifyMerkleProof();
+        if (!verifiedUtxo.fVerified)
+        {
+            printf("SPV: Rejected UTXO %s:%d - merkle proof verification failed\n",
+                   outpoint.hash.ToString().c_str(), outpoint.n);
+            return;
+        }
+    }
+
+    mapSPVUtxos[outpoint] = verifiedUtxo;
+
+    if (mapSPVUtxos.size() > SPV_UTXO_CACHE_MAX_SIZE)
+    {
+        PruneSPVUtxos();
+    }
+}
+
+void CWallet::RemoveSPVUtxo(const COutPoint& outpoint)
+{
+    LOCK(cs_spvutxos);
+    mapSPVUtxos.erase(outpoint);
+}
+
+void CWallet::MarkSPVUtxoSpent(const COutPoint& outpoint)
+{
+    LOCK(cs_spvutxos);
+    auto it = mapSPVUtxos.find(outpoint);
+    if (it != mapSPVUtxos.end())
+    {
+        it->second.fSpent = true;
+    }
+}
+
+bool CWallet::IsSPVUtxoSpent(const COutPoint& outpoint) const
+{
+    LOCK(cs_spvutxos);
+    auto it = mapSPVUtxos.find(outpoint);
+    if (it != mapSPVUtxos.end())
+    {
+        return it->second.fSpent;
+    }
+    return IsSpent(outpoint.hash, outpoint.n);
+}
+
+void CWallet::PruneSPVUtxos()
+{
+    std::vector<COutPoint> toRemove;
+    for (const auto& item : mapSPVUtxos)
+    {
+        if (item.second.fSpent)
+        {
+            toRemove.push_back(item.first);
+        }
+    }
+    for (const COutPoint& outpoint : toRemove)
+    {
+        mapSPVUtxos.erase(outpoint);
+    }
+    if (!toRemove.empty() && fDebug)
+    {
+        printf("SPV: Pruned %zu spent UTXOs from cache\n", toRemove.size());
+    }
+}
+
+void CWallet::PopulateSPVUtxosFromWallet()
+{
+    LOCK2(cs_main, cs_wallet);
+    LOCK(cs_spvutxos);
+
+    printf("SPV: Populating UTXO cache from wallet...\n");
+    int nCount = 0;
+    int nVerified = 0;
+
+    std::map<uint256, CBlock> mapBlockCache;
+
+    for (const auto& item : mapWallet)
+    {
+        const CWalletTx& wtx = item.second;
+        const uint256& txhash = item.first;
+
+        if (wtx.GetDepthInMainChain() < 1)
+            continue;
+
+        if (wtx.GetBlocksToMaturity() > 0)
+            continue;
+
+        uint256 hashBlock = wtx.hashBlock;
+        int nHeight = 0;
+        CBlockIndex* pindex = NULL;
+        if (mapBlockIndex.count(hashBlock))
+        {
+            pindex = mapBlockIndex[hashBlock];
+            nHeight = pindex->nHeight;
+        }
+
+        for (unsigned int i = 0; i < wtx.vout.size(); i++)
+        {
+            if (wtx.IsSpent(i))
+                continue;
+
+            if (!IsMine(wtx.vout[i]))
+                continue;
+
+            if (wtx.nVersion == ANON_TXN_VERSION && wtx.vout[i].IsAnonOutput())
+                continue;
+
+            if (IsLockedCoin(txhash, i))
+                continue;
+
+            COutPoint outpoint(txhash, i);
+
+            SPVUtxo utxo;
+            utxo.txhash = txhash;
+            utxo.n = i;
+            utxo.nValue = wtx.vout[i].nValue;
+            utxo.nHeight = nHeight;
+            utxo.hashBlock = hashBlock;
+            utxo.nTime = wtx.nTime;
+            utxo.scriptPubKey = wtx.vout[i].scriptPubKey;
+            utxo.fHaveBlock = true;
+            utxo.fSpent = false;
+            utxo.fVerified = false;
+            utxo.nLastBlockRequest = 0;
+            utxo.nTxIndex = -1;
+
+            if (pindex && pindex->nFile > 0)
+            {
+                if (mapBlockCache.find(hashBlock) == mapBlockCache.end())
+                {
+                    CBlock block;
+                    if (block.ReadFromDisk(pindex, true))
+                    {
+                        block.BuildMerkleTree();
+                        mapBlockCache[hashBlock] = block;
+                    }
+                }
+
+                if (mapBlockCache.count(hashBlock))
+                {
+                    CBlock& block = mapBlockCache[hashBlock];
+
+                    int nTxIndex = -1;
+                    for (size_t j = 0; j < block.vtx.size(); j++)
+                    {
+                        if (block.vtx[j].GetHash() == txhash)
+                        {
+                            nTxIndex = j;
+                            break;
+                        }
+                    }
+
+                    if (nTxIndex >= 0)
+                    {
+                        utxo.nTxIndex = nTxIndex;
+                        utxo.hashMerkleRoot = block.hashMerkleRoot;
+                        utxo.vMerkleBranch = block.GetMerkleBranch(nTxIndex);
+                        utxo.fVerified = utxo.VerifyMerkleProof();
+                        if (utxo.fVerified)
+                            nVerified++;
+                    }
+                }
+            }
+
+            if (!utxo.fVerified)
+            {
+                utxo.fVerified = true;
+            }
+
+            mapSPVUtxos[outpoint] = utxo;
+            nCount++;
+        }
+    }
+
+    printf("SPV: Populated %d UTXOs into cache (%d with merkle proofs)\n", nCount, nVerified);
+}
+
+bool CWallet::SaveSPVUtxoCache()
+{
+    if (!fHybridSPV)
+        return true;
+
+    LOCK(cs_spvutxos);
+
+    boost::filesystem::path pathCache = GetDataDir() / "spvutxos.dat";
+    FILE* file = fopen(pathCache.string().c_str(), "wb");
+    if (!file)
+    {
+        printf("SPV: Failed to open %s for writing\n", pathCache.string().c_str());
+        return false;
+    }
+
+    CAutoFile fileout(file, SER_DISK, CLIENT_VERSION);
+
+    try {
+        fileout << (uint32_t)mapSPVUtxos.size();
+        for (const auto& item : mapSPVUtxos)
+        {
+            fileout << item.first;
+            fileout << item.second.txhash;
+            fileout << item.second.n;
+            fileout << item.second.nValue;
+            fileout << item.second.nHeight;
+            fileout << item.second.hashBlock;
+            fileout << item.second.hashMerkleRoot;
+            fileout << item.second.vMerkleBranch;
+            fileout << item.second.nTxIndex;
+            fileout << item.second.fHaveBlock;
+            fileout << item.second.fSpent;
+            fileout << item.second.fVerified;
+            fileout << item.second.nTime;
+            fileout << item.second.scriptPubKey;
+        }
+    }
+    catch (std::exception& e) {
+        printf("SPV: Error saving UTXO cache: %s\n", e.what());
+        return false;
+    }
+
+    printf("SPV: Saved %zu UTXOs to cache file\n", mapSPVUtxos.size());
+    return true;
+}
+
+bool CWallet::LoadSPVUtxoCache()
+{
+    if (!fHybridSPV)
+        return true;
+
+    boost::filesystem::path pathCache = GetDataDir() / "spvutxos.dat";
+    if (!boost::filesystem::exists(pathCache))
+    {
+        printf("SPV: No cached UTXO file found, will rebuild from wallet\n");
+        return false;
+    }
+
+    FILE* file = fopen(pathCache.string().c_str(), "rb");
+    if (!file)
+        return false;
+
+    CAutoFile filein(file, SER_DISK, CLIENT_VERSION);
+
+    LOCK(cs_spvutxos);
+    mapSPVUtxos.clear();
+
+    try {
+        uint32_t nCount;
+        filein >> nCount;
+
+        for (uint32_t i = 0; i < nCount; i++)
+        {
+            COutPoint outpoint;
+            SPVUtxo utxo;
+
+            filein >> outpoint;
+            filein >> utxo.txhash;
+            filein >> utxo.n;
+            filein >> utxo.nValue;
+            filein >> utxo.nHeight;
+            filein >> utxo.hashBlock;
+            filein >> utxo.hashMerkleRoot;
+            filein >> utxo.vMerkleBranch;
+            filein >> utxo.nTxIndex;
+            filein >> utxo.fHaveBlock;
+            filein >> utxo.fSpent;
+            filein >> utxo.fVerified;
+            filein >> utxo.nTime;
+            filein >> utxo.scriptPubKey;
+
+            utxo.nLastBlockRequest = 0;
+            mapSPVUtxos[outpoint] = utxo;
+        }
+    }
+    catch (std::exception& e) {
+        printf("SPV: Error loading UTXO cache: %s\n", e.what());
+        mapSPVUtxos.clear();
+        return false;
+    }
+
+    printf("SPV: Loaded %zu UTXOs from cache file\n", mapSPVUtxos.size());
+    return true;
+}
+
+void CWallet::AvailableCoinsForStakingSPV(std::vector<COutPoint>& vCoins) const
+{
+    vCoins.clear();
+    unsigned int nSpendTime = GetAdjustedTime();
+
+    LOCK(cs_spvutxos);
+    for (const auto& item : mapSPVUtxos)
+    {
+        const SPVUtxo& utxo = item.second;
+
+        if (utxo.fSpent)
+            continue;
+
+        if (utxo.nTime + nStakeMinAge > nSpendTime)
+            continue;
+
+        if (utxo.nValue < nMinimumInputValue)
+            continue;
+
+        if (!utxo.fVerified && !utxo.fHaveBlock)
+        {
+            continue;
+        }
+
+        vCoins.push_back(item.first);
+    }
+}
+
+void CWallet::MarkSPVBlockAvailable(const uint256& hashBlock)
+{
+    LOCK(cs_spvutxos);
+    for (auto& item : mapSPVUtxos)
+    {
+        if (item.second.hashBlock == hashBlock)
+        {
+            item.second.fHaveBlock = true;
+            item.second.fVerified = true;
+        }
+    }
+}
+
+bool CWallet::RequestBlockForStaking(const uint256& hashBlock, bool fWait)
+{
+    int64_t nNow = GetTime();
+
+    {
+        LOCK(cs_spvutxos);
+        for (auto& item : mapSPVUtxos)
+        {
+            if (item.second.hashBlock == hashBlock)
+            {
+                if (nNow - item.second.nLastBlockRequest < SPV_BLOCK_REQUEST_INTERVAL)
+                {
+                    return false;
+                }
+                item.second.nLastBlockRequest = nNow;
+                break;
+            }
+        }
+    }
+
+    extern bool FetchBlockForStaking(const uint256& hashBlock);
+    bool fRequested = FetchBlockForStaking(hashBlock);
+
+    if (fWait && fRequested)
+    {
+        int64_t nWaitUntil = GetTime() + 10;
+        while (GetTime() < nWaitUntil)
+        {
+            MilliSleep(100);
+
+            {
+                LOCK(cs_main);
+                if (mapBlockIndex.count(hashBlock))
+                {
+                    CBlockIndex* pindex = mapBlockIndex[hashBlock];
+                    if (pindex->nFile > 0)
+                    {
+                        MarkSPVBlockAvailable(hashBlock);
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    return fRequested;
+}
+
+bool CWallet::SelectCoinsForStakingSPV(std::set<std::pair<const CWalletTx*,unsigned int> >& setCoinsRet) const
+{
+    std::vector<COutPoint> vSPVCoins;
+    AvailableCoinsForStakingSPV(vSPVCoins);
+
+    setCoinsRet.clear();
+
+    LOCK2(cs_main, cs_wallet);
+
+    std::vector<uint256> vBlocksNeeded;
+
+    for (const COutPoint& outpoint : vSPVCoins)
+    {
+        if (IsSpent(outpoint.hash, outpoint.n))
+        {
+            const_cast<CWallet*>(this)->MarkSPVUtxoSpent(outpoint);
+            continue;
+        }
+
+        std::map<uint256, CWalletTx>::const_iterator it = mapWallet.find(outpoint.hash);
+        if (it != mapWallet.end())
+        {
+            const CWalletTx* pcoin = &(it->second);
+            if (outpoint.n < pcoin->vout.size())
+            {
+                if (pcoin->hashBlock != 0 && mapBlockIndex.count(pcoin->hashBlock))
+                {
+                    CBlockIndex* pindex = mapBlockIndex[pcoin->hashBlock];
+                    if (pindex->nFile > 0)
+                    {
+                        setCoinsRet.insert(std::make_pair(pcoin, outpoint.n));
+                    }
+                    else
+                    {
+                        vBlocksNeeded.push_back(pcoin->hashBlock);
+                    }
+                }
+            }
+        }
+        else
+        {
+            LOCK(cs_spvutxos);
+            auto spvIt = mapSPVUtxos.find(outpoint);
+            if (spvIt != mapSPVUtxos.end() && !spvIt->second.fHaveBlock)
+            {
+                vBlocksNeeded.push_back(spvIt->second.hashBlock);
+            }
+        }
+    }
+
+    for (const uint256& hashBlock : vBlocksNeeded)
+    {
+        const_cast<CWallet*>(this)->RequestBlockForStaking(hashBlock, false);
+    }
+
+    return !setCoinsRet.empty();
 }

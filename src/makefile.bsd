@@ -139,7 +139,19 @@ OBJS= \
     obj/namecoin.o \
     obj/stealth.o
 
-all: innovad
+.PHONY: all innova-build
+
+INNOVA_SPINNER ?= 1
+INNOVA_SPINNER_SCRIPT ?= ../contrib/innova_build_spinner.sh
+
+ifeq ($(INNOVA_SPINNER),1)
+all:
+	@$(INNOVA_SPINNER_SCRIPT) $(MAKE) -f makefile.bsd INNOVA_SPINNER=0 innova-build
+else
+all: innova-build
+endif
+
+innova-build: innovad
 
 #
 # LevelDB support

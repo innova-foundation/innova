@@ -674,6 +674,7 @@
             </property>
            </widget>
           </item>
+          <!-- Trade link hidden - Innova no longer on exchanges
           <item>
            <widget class="QLabel" name="labelTradeLink">
             <property name="cursor">
@@ -687,6 +688,7 @@
             </property>
            </widget>
           </item>
+          -->
           <item>
            <spacer name="horizontalSpacer_2">
             <property name="orientation">

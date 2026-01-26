@@ -9,6 +9,7 @@
 #include "guiutil.h"
 #include "guiconstants.h"
 #include "intro.h"
+#include "initexecutor.h"
 #include "ringsig.h"
 #include "init.h"
 #include "ui_interface.h"
@@ -21,6 +22,8 @@
 #include <QTranslator>
 #include <QSplashScreen>
 #include <QLibraryInfo>
+#include <QEventLoop>
+#include <QThread>
 
 #if defined(BITCOIN_NEED_QT_PLUGINS) && !defined(_BITCOIN_QT_PLUGINS_INCLUDED)
 #define _BITCOIN_QT_PLUGINS_INCLUDED
@@ -85,8 +88,10 @@ static void InitMessage(const std::string &message)
 {
     if(splashref)
     {
-        splashref->showMessage(QString::fromStdString(message), Qt::AlignBottom|Qt::AlignHCenter, QColor(255,255,255));
-        QApplication::instance()->processEvents();
+        QMetaObject::invokeMethod(splashref, "showMessage", Qt::QueuedConnection,
+                                  Q_ARG(QString, QString::fromStdString(message)),
+                                  Q_ARG(int, Qt::AlignBottom|Qt::AlignHCenter),
+                                  Q_ARG(QColor, QColor(255,255,255)));
     }
 }
 
@@ -222,7 +227,26 @@ int main(int argc, char *argv[])
 
         BitcoinGUI window;
         guiref = &window;
-        if(AppInit2())
+        bool fStartMin = GetBoolArg("-min");
+        window.setEnabled(false);
+        if (fStartMin)
+            window.showMinimized();
+        else
+            window.show();
+        app.processEvents();
+
+        InitExecutor executor;
+        QThread initThread;
+        executor.moveToThread(&initThread);
+        QObject::connect(&initThread, SIGNAL(started()), &executor, SLOT(initialize()));
+        QEventLoop initLoop;
+        QObject::connect(&executor, SIGNAL(initializeResult(bool)), &initLoop, SLOT(quit()));
+        initThread.start();
+        initLoop.exec();
+        initThread.quit();
+        initThread.wait();
+
+        if(executor.success())
         {
             {
                 // Put this in a block, so that the Model objects are cleaned up before
@@ -248,14 +272,11 @@ int main(int argc, char *argv[])
                 window.setMessageModel(&messageModel);
 
                 // If -min option passed, start window minimized.
-                if(GetBoolArg("-min"))
-                {
+                window.setEnabled(true);
+                if (fStartMin)
                     window.showMinimized();
-                }
                 else
-                {
                     window.show();
-                }
 
                 // Place this here as guiref has to be defined if we don't want to lose URIs
                 ipcInit(argc, argv);

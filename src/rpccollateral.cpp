@@ -310,7 +310,7 @@ Value collateralnode(const Array& params, bool fHelp)
         }
 
         if(activeCollateralnode.status != COLLATERALNODE_REMOTELY_ENABLED && activeCollateralnode.status != COLLATERALNODE_IS_CAPABLE){
-            activeCollateralnode.status = COLLATERALNODE_NOT_PROCESSED; // TODO: consider better way
+            activeCollateralnode.ResetStatus();
             std::string errorMessage;
             activeCollateralnode.ManageStatus();
             pwalletMain->Lock();
@@ -1016,7 +1016,7 @@ Value masternode(const Array& params, bool fHelp)
         }
 
         if(activeCollateralnode.status != COLLATERALNODE_REMOTELY_ENABLED && activeCollateralnode.status != COLLATERALNODE_IS_CAPABLE){
-            activeCollateralnode.status = COLLATERALNODE_NOT_PROCESSED; // TODO: consider better way
+            activeCollateralnode.ResetStatus();
             std::string errorMessage;
             activeCollateralnode.ManageStatus();
             pwalletMain->Lock();

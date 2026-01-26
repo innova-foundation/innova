@@ -1,6 +1,6 @@
 # Copyright (c) 2009-2010 Satoshi Nakamoto
 # Copyright (c) 2017-2021 D e n a r i u s [D]
-# Copyright (c) 2019-2023 I n n o v a [INN]
+# Copyright (c) 2019-2026 I n n o v a [INN]
 # Distributed under the MIT/X11 software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
@@ -8,6 +8,9 @@ USE_LEVELDB:=1
 USE_UPNP:=1
 USE_NATIVETOR:=1
 USE_IPFS:=1
+UNAME_S := $(shell uname -s)
+HOMEBREW_PREFIX := $(shell brew --prefix 2>/dev/null)
+BDB_BREW_PREFIX := $(shell brew --prefix berkeley-db@4 2>/dev/null)
 
 LINK:=$(CXX)
 ARCH:=$(system lscpu | head -n 1 | awk '{print $2}')
@@ -15,9 +18,37 @@ ARCH:=$(system lscpu | head -n 1 | awk '{print $2}')
 DEFS=-DBOOST_SPIRIT_THREADSAFE
 
 DEFS += $(addprefix -I,$(CURDIR) $(CURDIR)/obj $(CURDIR)/json $(BOOST_INCLUDE_PATH) $(BDB_INCLUDE_PATH) $(OPENSSL_INCLUDE_PATH))
+OPENSSL_PKGCONF := $(shell pkg-config --cflags openssl 2>/dev/null)
+ifneq ($(OPENSSL_PKGCONF),)
+    DEFS += $(OPENSSL_PKGCONF)
+endif
+LIBEVENT_PKGCONF := $(shell pkg-config --cflags libevent 2>/dev/null)
+ifneq ($(LIBEVENT_PKGCONF),)
+    DEFS += $(LIBEVENT_PKGCONF)
+endif
 LIBS = $(addprefix -L,$(BOOST_LIB_PATH) $(BDB_LIB_PATH) $(OPENSSL_LIB_PATH))
 
 DEFS += -DIS_ARCH_64
+
+ifneq ($(HOMEBREW_PREFIX),)
+    DEFS += -I$(HOMEBREW_PREFIX)/include
+    LIBS += -L$(HOMEBREW_PREFIX)/lib
+endif
+ifneq ($(BDB_BREW_PREFIX),)
+    DEFS += -I$(BDB_BREW_PREFIX)/include
+    LIBS += -L$(BDB_BREW_PREFIX)/lib
+endif
+
+OPENSSL_VERSION := $(shell pkg-config --modversion openssl 2>/dev/null)
+ifeq ($(UNAME_S),Darwin)
+ifneq ($(OPENSSL_VERSION),)
+ifeq ($(origin USE_NATIVETOR), file)
+ifneq ($(filter 3.%,$(OPENSSL_VERSION)),)
+    USE_NATIVETOR := -
+endif
+endif
+endif
+endif
 
 LMODE = dynamic
 LMODE2 = dynamic
@@ -117,6 +148,9 @@ endif
 # adds some defaults in front. Unfortunately, CXXFLAGS=... $(CXXFLAGS) does not work.
 xCXXFLAGS=-O2 $(EXT_OPTIONS) -pthread -Wall -Wextra -Wno-ignored-qualifiers -Wno-format -Wno-unused-parameter -Wno-literal-suffix -std=c++11 \
     $(DEBUGFLAGS) $(DEFS) $(HARDENING) $(CXXFLAGS)
+
+xCFLAGS=-O2 $(EXT_OPTIONS) -pthread -Wall -Wextra -Wno-ignored-qualifiers -Wno-format -Wno-unused-parameter \
+    $(DEBUGFLAGS) $(DEFS) $(HARDENING) $(CFLAGS)
 
 # LDFLAGS can be specified on the make command line, so we use xLDFLAGS that only
 # adds some defaults in front. Unfortunately, LDFLAGS=... $(LDFLAGS) does not work.
@@ -342,7 +376,10 @@ OBJS= \
     obj/ipfs.o \
     obj/ipfscurl.o  \
 	obj/utiltime.o \
-    obj/stun.o
+    obj/stun.o \
+    obj/bootstrap.o \
+    obj/minizip/ioapi.o \
+    obj/minizip/unzip.o
 else
 OBJS= \
     obj/echo.o \
@@ -403,11 +440,26 @@ OBJS= \
     obj/ipfs.o \
     obj/ipfscurl.o  \
 	obj/utiltime.o \
-    obj/stun.o
+    obj/stun.o \
+    obj/bootstrap.o \
+    obj/minizip/ioapi.o \
+    obj/minizip/unzip.o
 endif
 
 
-all: innovad
+.PHONY: all innova-build
+
+INNOVA_SPINNER ?= 1
+INNOVA_SPINNER_SCRIPT ?= ../contrib/innova_build_spinner.sh
+
+ifeq ($(INNOVA_SPINNER),1)
+all:
+	@$(INNOVA_SPINNER_SCRIPT) $(MAKE) -f makefile.unix INNOVA_SPINNER=0 innova-build
+else
+all: innova-build
+endif
+
+innova-build: innovad
 
 #
 # LevelDB support
@@ -443,7 +495,15 @@ obj/scrypt-arm.o: scrypt-arm.S
 	$(CXX) -c $(xCXXFLAGS) -MMD -o $@ $<
 
 obj/%.o: %.c
-	$(CXX) -c $(xCXXFLAGS) -fpermissive -MMD -MF $(@:%.o=%.d) -o $@ $<
+	$(CC) -c $(xCFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
+	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
+	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
+	rm -f $(@:%.o=%.d)
+
+obj/minizip/%.o: minizip/%.c
+	@mkdir -p obj/minizip
+	$(CC) -c $(xCFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
 	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
 	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
 	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
@@ -465,7 +525,7 @@ obj/%.o: json/%.cpp
 
 ifeq (${USE_NATIVETOR}, 1)
 obj/%.o: tor/%.c
-	$(CC) -c $(xCXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	$(CC) -c $(xCFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
 	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
 	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
 	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
@@ -481,7 +541,7 @@ endif
 
 ifeq (${USE_IPFS}, 1)
 obj/%.o: %.cc
-	$(CC) -c $(xCXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	$(CXX) -c $(xCXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
 	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
 	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
 	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
@@ -496,11 +556,12 @@ clean:
 	-rm -f obj/*.o
 	-rm -f obj/*.P
 	-rm -f obj/*.d
-	-rm -f obj/build.h 
-	-rm -f obj/tor/*.o 
-	-rm -f obj/tor/*.P 
-	-rm -f obj/ipfs/*.o 
+	-rm -f obj/build.h
+	-rm -f obj/tor/*.o
+	-rm -f obj/tor/*.P
+	-rm -f obj/ipfs/*.o
 	-rm -f obj/ipfs/*.P
+	-rm -rf obj/minizip
 	-cd leveldb && $(MAKE) clean || true
 
 FORCE:

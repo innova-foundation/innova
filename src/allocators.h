@@ -226,7 +226,7 @@ struct secure_allocator : public std::allocator<T>
     {
         if (p != NULL)
         {
-            memset(p, 0, sizeof(T) * n);
+            OPENSSL_cleanse(p, sizeof(T) * n);
             LockedPageManager::instance.UnlockRange(p, sizeof(T) * n);
         }
         std::allocator<T>::deallocate(p, n);
