@@ -369,6 +369,61 @@ Value getwork(const Array& params, bool fHelp)
 }
 
 
+Value setgenerate(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 1 || params.size() > 2)
+        throw runtime_error(
+            "setgenerate <generate> [genproclimit]\n"
+            "Mine blocks immediately (regtest only).\n"
+            "<generate> true to mine, false to stop.\n"
+            "[genproclimit] number of blocks to generate (default: 1).");
+
+    bool fGenerate = params[0].get_bool();
+    int nGenerate = 1;
+    if (params.size() > 1)
+        nGenerate = params[1].get_int();
+
+    if (!fGenerate || nGenerate <= 0)
+        return Value::null;
+
+    if (!fRegTest)
+        throw JSONRPCError(RPC_METHOD_NOT_FOUND, "setgenerate is only available in regtest mode");
+
+    Array blockHashes;
+    unsigned int nExtraNonce = 0;
+
+    for (int i = 0; i < nGenerate; i++)
+    {
+        CBlock* pblock = CreateNewBlock(pwalletMain);
+        if (!pblock)
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "CreateNewBlock failed");
+
+        {
+            LOCK(cs_main);
+            IncrementExtraNonce(pblock, pindexBest, nExtraNonce);
+        }
+
+        while (!CheckProofOfWork(pblock->GetPoWHash(), pblock->nBits))
+        {
+            ++pblock->nNonce;
+            if (pblock->nNonce == 0)
+                pblock->nTime++;
+        }
+
+        CBlock* psubmit = new CBlock(*pblock);
+        if (!ProcessBlock(NULL, psubmit))
+        {
+            delete pblock;
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "ProcessBlock failed");
+        }
+
+        blockHashes.push_back(pblock->GetHash().GetHex());
+        delete pblock;
+    }
+
+    return blockHashes;
+}
+
 Value getblocktemplate(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() > 1)

@@ -196,6 +196,7 @@ extern json_spirit::Value gethashespersec(const json_spirit::Array& params, bool
 extern json_spirit::Value getstakinginfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getwork(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getworkex(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value setgenerate(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getblocktemplate(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value submitblock(const json_spirit::Array& params, bool fHelp);
 
@@ -313,6 +314,13 @@ extern json_spirit::Value txnreport(const json_spirit::Array& params, bool fHelp
 extern json_spirit::Value getanonoutputinfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value listcompromisedoutputs(const json_spirit::Array& params, bool fHelp);
 
+// cold staking
+extern json_spirit::Value getnewstakingaddress(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value delegatestake(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value listcoldutxos(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value getcoldstakinginfo(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value revokecoldstaking(const json_spirit::Array& params, bool fHelp);
+
 extern json_spirit::Value getspvinfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value spvrescan(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getstakemodifiercheckpoints(const json_spirit::Array& params, bool fHelp);
@@ -322,6 +330,11 @@ extern json_spirit::Value downloadbootstrap(const json_spirit::Array& params, bo
 extern json_spirit::Value getpoolinfo(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value masternode(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value collateralnode(const json_spirit::Array& params, bool fHelp);
+
+// Enhanced CoinJoin mixing (rpcwallet.cpp)
+extern json_spirit::Value startmixing(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value stopmixing(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value getmixingstatus(const json_spirit::Array& params, bool fHelp);
 
 extern json_spirit::Value smsgenable(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value smsgdisable(const json_spirit::Array& params, bool fHelp);

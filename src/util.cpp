@@ -1606,8 +1606,43 @@ boost::filesystem::path GetSpecialFolderPath(int nFolder, bool fCreate)
 }
 #endif
 
+static bool IsHexString(const std::string& str)
+{
+    for (size_t i = 0; i < str.size(); i++)
+    {
+        char c = str[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')))
+            return false;
+    }
+    return true;
+}
+
+static std::string SanitizeShellArg(const std::string& str)
+{
+    std::string result;
+    result.reserve(str.size());
+    for (size_t i = 0; i < str.size(); i++)
+    {
+        char c = str[i];
+        if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') ||
+            (c >= 'A' && c <= 'Z') || c == '-' || c == '_' || c == '.' || c == '/')
+            result += c;
+    }
+    return result;
+}
+
 void runCommand(std::string strCommand)
 {
+    static const std::string dangerousChars = "`$;|&<>(){}";
+    for (size_t i = 0; i < strCommand.size(); i++)
+    {
+        if (dangerousChars.find(strCommand[i]) != std::string::npos)
+        {
+            printf("runCommand warning: potentially unsafe character '%c' in command\n", strCommand[i]);
+            break;
+        }
+    }
+
     int nErr = ::system(strCommand.c_str());
     if (nErr)
         printf("runCommand error: system(%s) returned %d\n", strCommand.c_str(), nErr);

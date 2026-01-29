@@ -10,6 +10,7 @@
 #include "addrman.h"
 #include "ui_interface.h"
 #include "collateral.h"
+#include "collateralnode.h"
 #include <sys/stat.h>
 
 #ifdef WIN32
@@ -1417,7 +1418,8 @@ void ThreadSocketHandler2(void* parg)
                 {
                     if (pnode->GetTotalRecvSize() > ReceiveFloodSize()) {
                         if (!pnode->fDisconnect)
-                            printf("socket recv flood control disconnect (%u bytes)\n", pnode->GetTotalRecvSize());
+                            if (fDebug)
+                                printf("socket recv flood control disconnect (%u bytes)\n", pnode->GetTotalRecvSize());
                         pnode->CloseSocketDisconnect();
                     }
                     else {
@@ -2010,6 +2012,45 @@ void ThreadOpenConnections2(void* parg)
         }
 
         int64_t nANow = GetAdjustedTime();
+
+        if (IsInitialBlockDownload())
+        {
+            int nCNSyncSlots = GetArg("-cnsyncslots", 4);
+            int nCNConnected = 0;
+            {
+                LOCK(cs_vNodes);
+                for (CNode* pnode : vNodes)
+                {
+                    if (pnode->fColLateralMaster && !pnode->fInbound)
+                        nCNConnected++;
+                }
+            }
+
+            if (nCNConnected < nCNSyncSlots)
+            {
+                // Try to connect to a known collateral node for faster sync
+                LOCK(cs_collateralnodes);
+                for (CCollateralNode& mn : vecCollateralnodes)
+                {
+                    if (!mn.IsEnabled())
+                        continue;
+                    if (setConnected.count(mn.addr.GetGroup()))
+                        continue;
+
+                    addrConnect = CAddress(mn.addr);
+                    if (addrConnect.IsValid())
+                    {
+                        if (fDebug)
+                            printf("CN-assisted sync: connecting to collateral node %s\n", addrConnect.ToString().c_str());
+                        OpenNetworkConnection(addrConnect, &grant, NULL, false);
+                        break;
+                    }
+                }
+                // If we connected to a CN, continue the outer loop
+                if (addrConnect.IsValid())
+                    continue;
+            }
+        }
 
         int nTries = 0;
         while (true)
@@ -3025,11 +3066,14 @@ void DumpBanlist()
 
 bool FetchBlockForStaking(const uint256& hashBlock)
 {
-    if (mapBlockIndex.count(hashBlock))
     {
-        CBlockIndex* pindex = mapBlockIndex[hashBlock];
-        if (pindex->nFile > 0)
-            return true;
+        LOCK(cs_main);
+        if (mapBlockIndex.count(hashBlock))
+        {
+            CBlockIndex* pindex = mapBlockIndex[hashBlock];
+            if (pindex->nFile > 0)
+                return true;
+        }
     }
 
     LOCK(cs_vNodes);

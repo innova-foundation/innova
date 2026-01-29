@@ -10,8 +10,10 @@
 #include "innovarpc.h"
 #include "init.h"
 #include "base58.h"
+#include "main.h"
 #include "stealth.h"
 #include "smessage.h"
+#include "collateral.h"
 #include "ringsig.h"
 #include "txdb.h"
 
@@ -3768,5 +3770,433 @@ Value txnreport(const Array& params, bool fHelp)
 
 
     result.push_back(Pair("result", "txnreport complete."));
+    return result;
+}
+
+Value getnewstakingaddress(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 0)
+        throw runtime_error(
+            "getnewstakingaddress\n"
+            "Returns a new Innova staking address for receiving cold staking delegations.\n");
+
+    if (pwalletMain->IsLocked())
+        throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
+
+    CPubKey newKey;
+    if (!pwalletMain->GetKeyFromPool(newKey, false))
+        throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out, please call keypoolrefill first");
+
+    CKeyID keyID = newKey.GetID();
+
+    CBitcoinAddress stakingAddr;
+    stakingAddr.SetStaking(keyID);
+
+    return stakingAddr.ToString();
+}
+
+Value delegatestake(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 2 || params.size() > 3)
+        throw runtime_error(
+            "delegatestake <stakeraddress> <amount> [owneraddress]\n"
+            "Delegate coins to a staker for cold staking.\n"
+            "<stakeraddress> is the staking address of the hot node.\n"
+            "<amount> is the amount to delegate.\n"
+            "[owneraddress] optional, defaults to a new address from this wallet.\n"
+            "Returns the transaction ID.\n");
+
+    if (pwalletMain->IsLocked())
+        throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
+
+    CBitcoinAddress stakerAddr(params[0].get_str());
+    if (!stakerAddr.IsValid())
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid staker address");
+
+    CKeyID stakerKeyID;
+    if (!stakerAddr.GetKeyID(stakerKeyID))
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Staker address must be a key address, not a script address");
+
+    int64_t nAmount = AmountFromValue(params[1]);
+    if (nAmount <= 0)
+        throw JSONRPCError(RPC_TYPE_ERROR, "Invalid amount");
+
+    CKeyID ownerKeyID;
+    if (params.size() > 2)
+    {
+        CBitcoinAddress ownerAddr(params[2].get_str());
+        if (!ownerAddr.IsValid())
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid owner address");
+        if (!ownerAddr.GetKeyID(ownerKeyID))
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Owner address must be a key address");
+    }
+    else
+    {
+        CPubKey newKey;
+        if (!pwalletMain->GetKeyFromPool(newKey, false))
+            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out, please call keypoolrefill first");
+        ownerKeyID = newKey.GetID();
+    }
+
+    CWalletTx wtx;
+    string strError;
+    if (!pwalletMain->CreateColdStakeDelegation(stakerKeyID, ownerKeyID, nAmount, wtx, strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+
+    Object result;
+    result.push_back(Pair("txid", wtx.GetHash().GetHex()));
+
+    CBitcoinAddress ownerAddrOut;
+    ownerAddrOut.Set(ownerKeyID);
+    result.push_back(Pair("owner_address", ownerAddrOut.ToString()));
+
+    CBitcoinAddress stakerAddrOut;
+    stakerAddrOut.SetStaking(stakerKeyID);
+    result.push_back(Pair("staker_address", stakerAddrOut.ToString()));
+
+    return result;
+}
+
+Value listcoldutxos(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 1)
+        throw runtime_error(
+            "listcoldutxos [onlystaker]\n"
+            "List cold staking UTXOs in the wallet.\n"
+            "[onlystaker] if true, only show UTXOs where this wallet is the staker (default: false)\n");
+
+    bool fOnlyStaker = false;
+    if (params.size() > 0)
+        fOnlyStaker = params[0].get_bool();
+
+    Array results;
+    {
+        LOCK2(cs_main, pwalletMain->cs_wallet);
+        for (map<uint256, CWalletTx>::const_iterator it = pwalletMain->mapWallet.begin();
+             it != pwalletMain->mapWallet.end(); ++it)
+        {
+            const CWalletTx* pcoin = &(*it).second;
+            if (!pcoin->IsFinal() || !pcoin->IsTrusted())
+                continue;
+
+            for (unsigned int i = 0; i < pcoin->vout.size(); i++)
+            {
+                if (pcoin->IsSpent(i))
+                    continue;
+
+                if (!IsPayToColdStaking(pcoin->vout[i].scriptPubKey))
+                    continue;
+
+                CKeyID stakerKeyID, ownerKeyID;
+                if (!ExtractColdStakeKeys(pcoin->vout[i].scriptPubKey, stakerKeyID, ownerKeyID))
+                    continue;
+
+                bool fIsStaker = pwalletMain->HaveKey(stakerKeyID);
+                bool fIsOwner = pwalletMain->HaveKey(ownerKeyID);
+
+                if (fOnlyStaker && !fIsStaker)
+                    continue;
+
+                if (!fIsStaker && !fIsOwner)
+                    continue;
+
+                Object entry;
+                entry.push_back(Pair("txid", pcoin->GetHash().GetHex()));
+                entry.push_back(Pair("vout", (int)i));
+                entry.push_back(Pair("amount", ValueFromAmount(pcoin->vout[i].nValue)));
+
+                CBitcoinAddress stakerAddr;
+                stakerAddr.SetStaking(stakerKeyID);
+                entry.push_back(Pair("staker_address", stakerAddr.ToString()));
+
+                CBitcoinAddress ownerAddr;
+                ownerAddr.Set(ownerKeyID);
+                entry.push_back(Pair("owner_address", ownerAddr.ToString()));
+
+                entry.push_back(Pair("is_staker", fIsStaker));
+                entry.push_back(Pair("is_owner", fIsOwner));
+
+                int nDepth = pcoin->GetDepthInMainChain();
+                entry.push_back(Pair("confirmations", nDepth));
+
+                results.push_back(entry);
+            }
+        }
+    }
+    return results;
+}
+
+Value getcoldstakinginfo(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "getcoldstakinginfo\n"
+            "Returns information about cold staking.\n");
+
+    Object result;
+    result.push_back(Pair("enabled", (int)nBestHeight >= FORK_HEIGHT_COLD_STAKING));
+    result.push_back(Pair("fork_height", FORK_HEIGHT_COLD_STAKING));
+    result.push_back(Pair("current_height", (int)nBestHeight));
+
+    int64_t nColdStakingBalance = pwalletMain->GetColdStakingBalance();
+    result.push_back(Pair("cold_staking_balance", ValueFromAmount(nColdStakingBalance)));
+
+    int nStakerCount = 0;
+    int nOwnerCount = 0;
+    {
+        LOCK2(cs_main, pwalletMain->cs_wallet);
+        for (map<uint256, CWalletTx>::const_iterator it = pwalletMain->mapWallet.begin();
+             it != pwalletMain->mapWallet.end(); ++it)
+        {
+            const CWalletTx* pcoin = &(*it).second;
+            if (!pcoin->IsFinal() || !pcoin->IsTrusted())
+                continue;
+
+            for (unsigned int i = 0; i < pcoin->vout.size(); i++)
+            {
+                if (pcoin->IsSpent(i))
+                    continue;
+                if (!IsPayToColdStaking(pcoin->vout[i].scriptPubKey))
+                    continue;
+
+                CKeyID stakerKeyID, ownerKeyID;
+                if (!ExtractColdStakeKeys(pcoin->vout[i].scriptPubKey, stakerKeyID, ownerKeyID))
+                    continue;
+
+                if (pwalletMain->HaveKey(stakerKeyID))
+                    nStakerCount++;
+                if (pwalletMain->HaveKey(ownerKeyID))
+                    nOwnerCount++;
+            }
+        }
+    }
+
+    result.push_back(Pair("staker_utxo_count", nStakerCount));
+    result.push_back(Pair("owner_utxo_count", nOwnerCount));
+
+    return result;
+}
+
+Value revokecoldstaking(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 2 || params.size() > 3)
+        throw runtime_error(
+            "revokecoldstaking <txid> <vout> [toaddress]\n"
+            "Revoke a cold staking delegation and send funds back to owner.\n"
+            "<txid> is the transaction ID of the P2CS UTXO.\n"
+            "<vout> is the output index of the P2CS UTXO.\n"
+            "[toaddress] optional destination address (default: new address from wallet).\n");
+
+    if (pwalletMain->IsLocked())
+        throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
+
+    uint256 txid;
+    txid.SetHex(params[0].get_str());
+    unsigned int nVout = params[1].get_int();
+
+    CWalletTx wtxPrev;
+    if (!pwalletMain->GetTransaction(txid, wtxPrev))
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Transaction not found in wallet");
+
+    if (nVout >= wtxPrev.vout.size())
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid vout index");
+
+    const CTxOut& prevOut = wtxPrev.vout[nVout];
+    if (!IsPayToColdStaking(prevOut.scriptPubKey))
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Output is not a cold staking (P2CS) output");
+
+    if (wtxPrev.IsSpent(nVout))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Output is already spent");
+
+    CKeyID stakerKeyID, ownerKeyID;
+    if (!ExtractColdStakeKeys(prevOut.scriptPubKey, stakerKeyID, ownerKeyID))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Failed to extract cold stake keys");
+
+    if (!pwalletMain->HaveKey(ownerKeyID))
+        throw JSONRPCError(RPC_WALLET_ERROR, "This wallet does not own the cold stake owner key");
+
+    CScript scriptDest;
+    if (params.size() > 2)
+    {
+        CBitcoinAddress destAddr(params[2].get_str());
+        if (!destAddr.IsValid())
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid destination address");
+        scriptDest = GetScriptForDestination(destAddr.Get());
+    }
+    else
+    {
+        CPubKey newKey;
+        if (!pwalletMain->GetKeyFromPool(newKey, false))
+            throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out, please call keypoolrefill first");
+        scriptDest = GetScriptForDestination(newKey.GetID());
+    }
+
+    CTransaction txNew;
+    txNew.vin.push_back(CTxIn(txid, nVout));
+
+    int64_t nFee = MIN_TX_FEE;
+    int64_t nValue = prevOut.nValue - nFee;
+    if (nValue <= 0)
+        throw JSONRPCError(RPC_WALLET_ERROR, "Output value too small to cover fee");
+
+    txNew.vout.push_back(CTxOut(nValue, scriptDest));
+
+    if (!SignSignature(*pwalletMain, wtxPrev, txNew, 0))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Failed to sign revocation transaction");
+
+    if (!VerifyScript(txNew.vin[0].scriptSig, prevOut.scriptPubKey, txNew, 0, STANDARD_SCRIPT_VERIFY_FLAGS, 0))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Revocation transaction signature verification failed");
+
+    CWalletTx wtxNew;
+    wtxNew.fFromMe = true;
+    *static_cast<CTransaction*>(&wtxNew) = txNew;
+
+    CReserveKey reservekey(pwalletMain);
+    if (!pwalletMain->CommitTransaction(wtxNew, reservekey))
+        throw JSONRPCError(RPC_WALLET_ERROR, "Error: The revocation transaction was rejected");
+
+    Object result;
+    result.push_back(Pair("txid", wtxNew.GetHash().GetHex()));
+
+    CBitcoinAddress ownerAddr;
+    ownerAddr.Set(ownerKeyID);
+    result.push_back(Pair("owner_address", ownerAddr.ToString()));
+    result.push_back(Pair("revoked_amount", ValueFromAmount(prevOut.nValue)));
+    result.push_back(Pair("fee", ValueFromAmount(nFee)));
+
+    return result;
+}
+
+Value startmixing(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 1 || params.size() > 2)
+        throw runtime_error(
+            "startmixing <amount> [rounds]\n"
+            "Start CoinJoin mixing for the specified amount.\n"
+            "<amount> is the total amount to mix.\n"
+            "[rounds] is the number of mixing rounds (default: 4, max: 16).\n"
+            "Uses standard denominations: 10, 100, 1000, 10000 INN.\n"
+            "Collateral nodes coordinate the mixing process.\n");
+
+    if (pwalletMain->IsLocked())
+        throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
+
+    int64_t nAmount = AmountFromValue(params[0]);
+    if (nAmount <= 0)
+        throw JSONRPCError(RPC_TYPE_ERROR, "Invalid amount");
+
+    int nRounds = COLLATERALN_DEFAULT_MIXING_ROUNDS;
+    if (params.size() > 1)
+    {
+        nRounds = params[1].get_int();
+        if (nRounds < 1 || nRounds > COLLATERALN_MAX_MIXING_ROUNDS)
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                strprintf("Mixing rounds must be between 1 and %d", COLLATERALN_MAX_MIXING_ROUNDS));
+    }
+
+    if (nAmount > pwalletMain->GetBalance())
+        throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, "Insufficient funds for mixing");
+
+    int64_t nRemaining = nAmount;
+    std::vector<int64_t> vecDenoms;
+
+    static const int64_t denominations[] = {
+        COLLATERALN_DENOM_10000, COLLATERALN_DENOM_1000,
+        COLLATERALN_DENOM_100, COLLATERALN_DENOM_10
+    };
+
+    static const size_t MAX_MIXING_DENOMS = 1000;
+
+    for (int i = 0; i < 4; i++)
+    {
+        while (nRemaining >= denominations[i] && vecDenoms.size() < MAX_MIXING_DENOMS)
+        {
+            vecDenoms.push_back(denominations[i]);
+            nRemaining -= denominations[i];
+        }
+    }
+
+    if (vecDenoms.empty())
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Amount too small for any standard denomination (minimum: 10 INN)");
+
+    colLateralPool.cachedNumBlocks = 0;
+    colLateralPool.SetNull(true);
+
+    Object result;
+    result.push_back(Pair("status", "mixing_started"));
+    result.push_back(Pair("amount", ValueFromAmount(nAmount)));
+    result.push_back(Pair("rounds", nRounds));
+    result.push_back(Pair("denominations", (int)vecDenoms.size()));
+    result.push_back(Pair("pool_size", colLateralPool.GetMaxPoolTransactions()));
+
+    Array denomArray;
+    for (int64_t d : vecDenoms)
+        denomArray.push_back(ValueFromAmount(d));
+    result.push_back(Pair("denomination_breakdown", denomArray));
+
+    if (nRemaining > 0)
+        result.push_back(Pair("remainder_unmixed", ValueFromAmount(nRemaining)));
+
+    return result;
+}
+
+Value stopmixing(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "stopmixing\n"
+            "Stop any in-progress CoinJoin mixing.\n");
+
+    colLateralPool.SetNull(true);
+    colLateralPool.UnlockCoins();
+
+    Object result;
+    result.push_back(Pair("status", "mixing_stopped"));
+    return result;
+}
+
+Value getmixingstatus(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "getmixingstatus\n"
+            "Returns the current status of CoinJoin mixing.\n");
+
+    Object result;
+
+    std::string strState;
+    switch (colLateralPool.GetState())
+    {
+        case POOL_STATUS_UNKNOWN:                strState = "unknown"; break;
+        case POOL_STATUS_IDLE:                   strState = "idle"; break;
+        case POOL_STATUS_QUEUE:                  strState = "queue"; break;
+        case POOL_STATUS_ACCEPTING_ENTRIES:       strState = "accepting_entries"; break;
+        case POOL_STATUS_FINALIZE_TRANSACTION:    strState = "finalizing"; break;
+        case POOL_STATUS_SIGNING:                strState = "signing"; break;
+        case POOL_STATUS_TRANSMISSION:           strState = "transmitting"; break;
+        case POOL_STATUS_ERROR:                  strState = "error"; break;
+        case POOL_STATUS_SUCCESS:                strState = "success"; break;
+        default:                                 strState = "unknown"; break;
+    }
+
+    result.push_back(Pair("state", strState));
+    result.push_back(Pair("entries", colLateralPool.GetEntriesCount()));
+    result.push_back(Pair("max_pool_size", colLateralPool.GetMaxPoolTransactions()));
+    result.push_back(Pair("session_id", colLateralPool.sessionID));
+    result.push_back(Pair("session_users", colLateralPool.sessionUsers));
+    result.push_back(Pair("session_denom", colLateralPool.sessionDenom));
+    result.push_back(Pair("queue_size", (int)vecCollateralNQueue.size()));
+    result.push_back(Pair("mixing_rounds_default", COLLATERALN_DEFAULT_MIXING_ROUNDS));
+
+    Array denomsAvail;
+    denomsAvail.push_back(ValueFromAmount(COLLATERALN_DENOM_10));
+    denomsAvail.push_back(ValueFromAmount(COLLATERALN_DENOM_100));
+    denomsAvail.push_back(ValueFromAmount(COLLATERALN_DENOM_1000));
+    denomsAvail.push_back(ValueFromAmount(COLLATERALN_DENOM_10000));
+    result.push_back(Pair("available_denominations", denomsAvail));
+
+    if (!colLateralPool.lastMessage.empty())
+        result.push_back(Pair("last_message", colLateralPool.lastMessage));
+
     return result;
 }

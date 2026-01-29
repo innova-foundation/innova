@@ -518,9 +518,13 @@ int GetCurrentCollateralNode(int mod, int64_t nBlockHeight, int minProtocol)
 {
     if (IsInitialBlockDownload()) return 0;
     int i = 0;
-    unsigned int score = 0;
     int winner = -1;
     LOCK(cs_collateralnodes);
+
+    bool fUseFullHash = (nBlockHeight >= FORK_HEIGHT_COLD_STAKING);
+    uint256 score256 = 0;
+    unsigned int score32 = 0;
+
     // scan for winner
     for (CCollateralNode mn : vecCollateralnodes) {
         mn.Check();
@@ -532,13 +536,22 @@ int GetCurrentCollateralNode(int mod, int64_t nBlockHeight, int minProtocol)
 
         // calculate the score for each collateralnode
         uint256 n = mn.CalculateScore(mod, nBlockHeight);
-        unsigned int n2 = 0;
-        memcpy(&n2, &n, sizeof(n2));
 
-        // determine the winner
-        if(n2 > score){
-            score = n2;
-            winner = i;
+        if (fUseFullHash)
+        {
+            if (n > score256) {
+                score256 = n;
+                winner = i;
+            }
+        }
+        else
+        {
+            unsigned int n2 = 0;
+            memcpy(&n2, &n, sizeof(n2));
+            if (n2 > score32) {
+                score32 = n2;
+                winner = i;
+            }
         }
         i++;
     }
@@ -1640,7 +1653,6 @@ bool CCollateralNPayments::initialize(const CBlockIndex *pindex)
                                 if (std::find(vScripts.begin(), vScripts.end(), mnpayee) != vScripts.end()) { continue; }
 
                                 //if (fDebug) printf("Found CN payment at height %d - TX %s\n TXOut %s\n",nHeight,tx.ToString().c_str(),txout.ToString().c_str());
-                                // Note: AcceptableInputs checks spent status via FetchInputs/ConnectInputs
                                 bool fMissingInputs = false;
                             bool* pfMissingInputs = &fMissingInputs;
                                 //if(fDebug) printf("CCollaTeralPool::IsCollateralValid - Testing TX %s\n",txCollateral.ToString().c_str());
@@ -1705,7 +1717,6 @@ bool FindCNPayment(CScript& payee, CBlockIndex* pindex)
                     {
                         if(payee == txout.scriptPubKey && txout.nValue == GetMNCollateral() * COIN) {
                             if (fDebug) printf("Found CN payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
-                            // Note: AcceptableInputs checks spent status via FetchInputs/ConnectInputs
                             CTransaction txCollateral;
                             COutPoint cout = COutPoint(tx.GetHash(),n);
                             CTxOut vout = CTxOut(1 * COIN, txout.scriptPubKey);
@@ -1762,7 +1773,6 @@ bool FindCNPayments(CScript& payee, CBlockIndex* pindex)
                         {
                             if(payee == txout.scriptPubKey && txout.nValue == GetMNCollateral() * COIN) {
                                 if (fDebug) printf("Found CN payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
-                                // Note: AcceptableInputs checks spent status via FetchInputs/ConnectInputs
                                 CTransaction txCollateral;
                                 CTxOut vout = CTxOut((GetMNCollateral() - 1)* COIN, colLateralPool.collateralPubKey);
                                 CTxIn vin = CTxIn(txout.GetHash(),n);
@@ -1802,7 +1812,6 @@ bool FindCNPayments(CScript& payee, CBlockIndex* pindex)
                         {
                             if(payee == txout.scriptPubKey && txout.nValue == GetMNCollateral() * COIN) {
                                 if (fDebug) printf("Found CN payment at height %d - to %s\n",nHeight,txout.ToString().c_str());
-                                // Note: AcceptableInputs checks spent status via FetchInputs/ConnectInputs
                                 CTransaction txCollateral;
                                 CTxOut vout = CTxOut((GetMNCollateral() - 1)* COIN, colLateralPool.collateralPubKey);
                                 CTxIn vin = CTxIn(txout.GetHash(),n);

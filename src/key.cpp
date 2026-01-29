@@ -122,7 +122,7 @@ int ECDSA_SIG_recover_key_GFp(EC_KEY *eckey, ECDSA_SIG *ecsig, const unsigned ch
     if (!BN_add(x, x, ecsig->r)) { ret=-1; goto err; }
 #else
     ECDSA_SIG_get0(ecsig, &r, &s);
-    //if ((r == NULL) || (s == NULL)) { ret=-1; goto err; }
+    if ((r == NULL) || (s == NULL)) { ret=-1; goto err; }
     if (!BN_add(x, x, r)) { ret=-1; goto err; }
 #endif
     field = BN_CTX_get(ctx);
@@ -647,11 +647,6 @@ bool CECKey::Sign(const uint256 &hash, std::vector<unsigned char>& vchSig) {
     const EC_GROUP *group = EC_KEY_get0_group(pkey);
     BIGNUM *order = BN_CTX_get(ctx);
     BIGNUM *halforder = BN_CTX_get(ctx);
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-
-#else
-    BIGNUM *s = 0;
-#endif
     EC_GROUP_get_order(group, order, ctx);
     BN_rshift1(halforder, order);
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
@@ -660,9 +655,14 @@ bool CECKey::Sign(const uint256 &hash, std::vector<unsigned char>& vchSig) {
         BN_sub(sig->s, order, sig->s);
     }
 #else
-    if (BN_cmp(s, halforder) > 0) {
+    const BIGNUM *r_ptr = NULL, *s_ptr = NULL;
+    ECDSA_SIG_get0(sig, &r_ptr, &s_ptr);
+    if (BN_cmp(s_ptr, halforder) > 0) {
         // enforce low S values, by negating the value (modulo the order) if above order/2.
-        BN_sub(s, order, s);
+        BIGNUM *s_new = BN_new();
+        BN_sub(s_new, order, s_ptr);
+        BIGNUM *r_dup = BN_dup(r_ptr);
+        ECDSA_SIG_set0(sig, r_dup, s_new);
     }
 #endif
     BN_CTX_end(ctx);

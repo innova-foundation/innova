@@ -8,7 +8,9 @@
 
 #include "kernel.h"
 #include "txdb.h"
-#include "main.h" 
+#include "main.h"
+#include "wallet.h"
+#include "init.h"
 
 using namespace std;
 
@@ -456,7 +458,51 @@ bool CheckProofOfStake(const CTransaction& tx, unsigned int nBits, uint256& hash
     CTransaction txPrev;
     CTxIndex txindex;
     if (!txPrev.ReadFromDisk(txdb, txin.prevout, txindex))
+    {
+        if (fHybridSPV && pwalletMain)
+        {
+            LOCK(pwalletMain->cs_wallet);
+            std::map<uint256, CWalletTx>::iterator wit = pwalletMain->mapWallet.find(txin.prevout.hash);
+            if (wit != pwalletMain->mapWallet.end())
+            {
+                const CWalletTx& wtx = wit->second;
+                if (wtx.hashBlock != 0 && mapBlockIndex.count(wtx.hashBlock))
+                {
+                    CBlockIndex* pindex = mapBlockIndex[wtx.hashBlock];
+                    CBlock block;
+                    if (block.ReadFromDisk(pindex, true))
+                    {
+                        unsigned int nTxPos = ::GetSerializeSize(CBlock(), SER_DISK, CLIENT_VERSION)
+                                            - (2 * GetSizeOfCompactSize(0))
+                                            + GetSizeOfCompactSize(block.vtx.size());
+                        bool fFound = false;
+                        for (unsigned int i = 0; i < block.vtx.size(); i++)
+                        {
+                            if (block.vtx[i].GetHash() == txin.prevout.hash)
+                            {
+                                txPrev = block.vtx[i];
+                                fFound = true;
+                                break;
+                            }
+                            nTxPos += ::GetSerializeSize(block.vtx[i], SER_DISK, CLIENT_VERSION);
+                        }
+
+                        if (fFound)
+                        {
+                            if (!VerifySignature(txPrev, tx, 0, SCRIPT_VERIFY_NONE, 0))
+                                return tx.DoS(100, error("CheckProofOfStake() : SPV VerifySignature failed on coinstake %s", tx.GetHash().ToString().c_str()));
+
+                            if (!CheckStakeKernelHash(nBits, block, nTxPos, txPrev, txin.prevout, tx.nTime, hashProofOfStake, targetProofOfStake, fDebug))
+                                return tx.DoS(1, error("CheckProofOfStake() : SPV check kernel failed on coinstake %s", tx.GetHash().ToString().c_str()));
+
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
         return tx.DoS(1, error("CheckProofOfStake() : INFO: read txPrev failed"));  // previous transaction not in main chain, may occur during initial download
+    }
 
     // Verify signature
     if (!VerifySignature(txPrev, tx, 0, SCRIPT_VERIFY_NONE, 0))

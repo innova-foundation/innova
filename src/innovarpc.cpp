@@ -335,6 +335,7 @@ static const CRPCCommand vRPCCommands[] =
     { "getworkex",              &getworkex,              true,   false },
     { "listaccounts",           &listaccounts,           false,  false },
     { "settxfee",               &settxfee,               false,  false },
+    { "setgenerate",            &setgenerate,            true,   false },
     { "getblocktemplate",       &getblocktemplate,       true,   false },
     { "submitblock",            &submitblock,            false,  false },
     { "listsinceblock",         &listsinceblock,         false,  false },
@@ -383,6 +384,13 @@ static const CRPCCommand vRPCCommands[] =
     { "getanonoutputinfo",      &getanonoutputinfo,      false,  false},
     { "listcompromisedoutputs", &listcompromisedoutputs, false,  false},
 
+    /* Cold Staking */
+    { "getnewstakingaddress",   &getnewstakingaddress,   false,  false},
+    { "delegatestake",          &delegatestake,          false,  true},
+    { "listcoldutxos",          &listcoldutxos,          false,  false},
+    { "getcoldstakinginfo",     &getcoldstakinginfo,     true,   false},
+    { "revokecoldstaking",      &revokecoldstaking,      false,  true},
+
     /* SPV (Light Client) mode */
     { "getspvinfo",             &getspvinfo,             true,   false},
     { "spvrescan",              &spvrescan,              false,  false},
@@ -393,6 +401,11 @@ static const CRPCCommand vRPCCommands[] =
     { "getpoolinfo",            &getpoolinfo,            true,   false},
     { "masternode",           	&masternode,             true,   false},
     { "collateralnode",           &collateralnode,           true,   false},
+
+    /* Enhanced CoinJoin Mixing */
+    { "startmixing",            &startmixing,            false,  true},
+    { "stopmixing",             &stopmixing,             false,  false},
+    { "getmixingstatus",        &getmixingstatus,        true,   false},
 
     { "smsgenable",             &smsgenable,             false,  false},
     { "smsgdisable",            &smsgdisable,            false,  false},
@@ -1221,6 +1234,34 @@ void ThreadRPCServer3(void* parg)
             conn->stream() << HTTPReply(HTTP_UNAUTHORIZED, "", false) << std::flush;
             break;
         }
+        {
+            static CCriticalSection cs_rpcRateLimit;
+            static std::map<std::string, std::pair<int, int64_t>> mapRPCRateLimit;
+            LOCK(cs_rpcRateLimit);
+
+            std::string strPeer = conn->peer_address_to_string();
+            int64_t nNow = GetTime();
+            int nMaxPerSec = GetArg("-rpcratelimit", 100);
+
+            auto& rateInfo = mapRPCRateLimit[strPeer];
+            if (nNow != rateInfo.second)
+            {
+                rateInfo.first = 0;
+                rateInfo.second = nNow;
+            }
+            rateInfo.first++;
+
+            if (nMaxPerSec > 0 && rateInfo.first > nMaxPerSec)
+            {
+                printf("RPC rate limit exceeded for %s (%d req/s, limit %d)\n",
+                       strPeer.c_str(), rateInfo.first, nMaxPerSec);
+                conn->stream() << HTTPReply(HTTP_INTERNAL_SERVER_ERROR,
+                    "{\"result\":null,\"error\":{\"code\":-32600,\"message\":\"Rate limit exceeded\"},\"id\":null}\n",
+                    fRun) << std::flush;
+                break;
+            }
+        }
+
         if (mapHeaders["connection"] == "close")
             fRun = false;
 
@@ -1408,6 +1449,10 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     // Special case non-string parameter types
     //
     if (strMethod == "stop"                   && n > 0) ConvertTo<bool>(params[0]);
+    if (strMethod == "setgenerate"            && n > 0) ConvertTo<bool>(params[0]);
+    if (strMethod == "setgenerate"            && n > 1) ConvertTo<int64_t>(params[1]);
+    if (strMethod == "delegatestake"          && n > 1) ConvertTo<double>(params[1]);
+    if (strMethod == "listcoldutxos"          && n > 0) ConvertTo<bool>(params[0]);
     if (strMethod == "sendtoaddress"          && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "sendtoname"             && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "burn"                   && n > 0) ConvertTo<double>(params[0]);

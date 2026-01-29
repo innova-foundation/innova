@@ -3980,13 +3980,24 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                 }
                 if (fDebug && GetBoolArg("-printcoinstake"))
                     printf("CreateCoinStake() : parsed kernel type=%d\n", whichType);
-                if (whichType != TX_PUBKEY && whichType != TX_PUBKEYHASH)
+                if (whichType != TX_PUBKEY && whichType != TX_PUBKEYHASH && whichType != TX_COLDSTAKE)
                 {
                     if (fDebug && GetBoolArg("-printcoinstake"))
                         printf("CreateCoinStake() : no support for kernel type=%d\n", whichType);
-                    break;  // only support pay to public key and pay to address
+                    break;
                 }
-                if (whichType == TX_PUBKEYHASH) // pay to address type
+                if (whichType == TX_COLDSTAKE)
+                {
+                    CKeyID stakerKeyID = CKeyID(uint160(vSolutions[0]));
+                    if (!keystore.GetKey(stakerKeyID, key))
+                    {
+                        if (fDebug && GetBoolArg("-printcoinstake"))
+                            printf("CreateCoinStake() : failed to get staker key for cold stake\n");
+                        break;
+                    }
+                    scriptPubKeyOut = scriptPubKeyKernel;
+                }
+                else if (whichType == TX_PUBKEYHASH)
                 {
                     // convert to pay to public key type
                     if (!keystore.GetKey(uint160(vSolutions[0]), key))
@@ -3997,7 +4008,7 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                     }
                     scriptPubKeyOut << key.GetPubKey() << OP_CHECKSIG;
                 }
-                if (whichType == TX_PUBKEY)
+                else if (whichType == TX_PUBKEY)
                 {
                     valtype& vchPubKey = vSolutions[0];
                     if (!keystore.GetKey(Hash160(vchPubKey), key))
@@ -7726,18 +7737,95 @@ void SendName(CScript scriptPubKey, CAmount nValue, CWalletTx& wtxNew, const CWa
         throw JSONRPCError(RPC_WALLET_ERROR, "Error: The transaction was rejected! This might happen if some of the coins in your wallet were already spent, such as if you used a copy of wallet.dat and coins were spent in the copy but not marked as spent here.");
 }
 
-// ============================================================================
-// Hybrid SPV Staking Methods
-// ============================================================================
+static const int64_t MIN_COLD_STAKE_AMOUNT = 100 * COIN; // 100 min
+
+bool CWallet::CreateColdStakeDelegation(const CKeyID& stakerKeyID, const CKeyID& ownerKeyID,
+                                        int64_t nValue, CWalletTx& wtxNew, std::string& strError)
+{
+    if (nValue <= 0)
+    {
+        strError = "Invalid amount";
+        return false;
+    }
+
+    if (nValue < MIN_COLD_STAKE_AMOUNT)
+    {
+        strError = strprintf("Minimum cold stake delegation is %s INN", FormatMoney(MIN_COLD_STAKE_AMOUNT).c_str());
+        return false;
+    }
+
+    if (nValue + nTransactionFee > GetBalance())
+    {
+        strError = "Insufficient funds";
+        return false;
+    }
+
+    CScript scriptColdStake = GetScriptForColdStaking(stakerKeyID, ownerKeyID);
+
+    CReserveKey reservekey(this);
+    int64_t nFeeRequired;
+    int32_t nChangePos;
+
+    vector<pair<CScript, int64_t> > vecSend;
+    vecSend.push_back(make_pair(scriptColdStake, nValue));
+
+    if (!CreateTransaction(vecSend, wtxNew, reservekey, nFeeRequired, nChangePos))
+    {
+        if (nValue + nFeeRequired > GetBalance())
+            strError = strprintf("Error: This transaction requires a fee of at least %s", FormatMoney(nFeeRequired).c_str());
+        else
+            strError = "Transaction creation failed";
+        return false;
+    }
+
+    if (!CommitTransaction(wtxNew, reservekey))
+    {
+        strError = "Error: The transaction was rejected";
+        return false;
+    }
+
+    return true;
+}
+
+int64_t CWallet::GetColdStakingBalance() const
+{
+    int64_t nTotal = 0;
+    {
+        LOCK2(cs_main, cs_wallet);
+        for (map<uint256, CWalletTx>::const_iterator it = mapWallet.begin(); it != mapWallet.end(); ++it)
+        {
+            const CWalletTx* pcoin = &(*it).second;
+            if (!pcoin->IsFinal() || !pcoin->IsTrusted())
+                continue;
+
+            for (unsigned int i = 0; i < pcoin->vout.size(); i++)
+            {
+                if (pcoin->IsSpent(i))
+                    continue;
+                if (IsPayToColdStaking(pcoin->vout[i].scriptPubKey))
+                {
+                    isminetype mine = IsMine(pcoin->vout[i]);
+                    if (mine != MINE_NO)
+                        nTotal += pcoin->vout[i].nValue;
+                }
+            }
+        }
+    }
+    return nTotal;
+}
 
 static const int64_t SPV_BLOCK_REQUEST_INTERVAL = 30;
-static const size_t SPV_UTXO_CACHE_MAX_SIZE = 10000;
+static size_t GetSPVUtxoCacheMaxSize()
+{
+    return (size_t)GetArg("-spvutxocachesize", 10000);
+}
 
 void CWallet::UpdateSPVUtxo(const COutPoint& outpoint, const SPVUtxo& utxo)
 {
     LOCK(cs_spvutxos);
 
     SPVUtxo verifiedUtxo = utxo;
+
     if (!utxo.vMerkleBranch.empty())
     {
         verifiedUtxo.fVerified = verifiedUtxo.VerifyMerkleProof();
@@ -7748,10 +7836,21 @@ void CWallet::UpdateSPVUtxo(const COutPoint& outpoint, const SPVUtxo& utxo)
             return;
         }
     }
+    else if (utxo.fVerified)
+    {
+        LOCK(cs_main);
+        if (!mapBlockIndex.count(utxo.hashBlock))
+        {
+            printf("SPV: Rejected UTXO %s:%d - claimed verified but block %s not in index\n",
+                   outpoint.hash.ToString().c_str(), outpoint.n,
+                   utxo.hashBlock.ToString().c_str());
+            verifiedUtxo.fVerified = false;
+        }
+    }
 
     mapSPVUtxos[outpoint] = verifiedUtxo;
 
-    if (mapSPVUtxos.size() > SPV_UTXO_CACHE_MAX_SIZE)
+    if (mapSPVUtxos.size() > GetSPVUtxoCacheMaxSize())
     {
         PruneSPVUtxos();
     }
@@ -7786,6 +7885,8 @@ bool CWallet::IsSPVUtxoSpent(const COutPoint& outpoint) const
 
 void CWallet::PruneSPVUtxos()
 {
+    size_t nMaxSize = GetSPVUtxoCacheMaxSize();
+
     std::vector<COutPoint> toRemove;
     for (const auto& item : mapSPVUtxos)
     {
@@ -7798,6 +7899,28 @@ void CWallet::PruneSPVUtxos()
     {
         mapSPVUtxos.erase(outpoint);
     }
+
+    if (mapSPVUtxos.size() > nMaxSize)
+    {
+        std::vector<std::pair<int, COutPoint>> vecByPriority; // (priority, outpoint)
+        for (const auto& item : mapSPVUtxos)
+        {
+            int nPriority = item.second.fVerified ? 1000000 : 0;
+            nPriority += item.second.nHeight;
+            vecByPriority.push_back(std::make_pair(nPriority, item.first));
+        }
+        std::sort(vecByPriority.begin(), vecByPriority.end());
+
+        size_t nToEvict = mapSPVUtxos.size() - nMaxSize;
+        for (size_t i = 0; i < nToEvict && i < vecByPriority.size(); i++)
+        {
+            mapSPVUtxos.erase(vecByPriority[i].second);
+        }
+
+        if (fDebug)
+            printf("SPV: LRU-evicted %zu UTXOs from cache (limit: %zu)\n", nToEvict, nMaxSize);
+    }
+
     if (!toRemove.empty() && fDebug)
     {
         printf("SPV: Pruned %zu spent UTXOs from cache\n", toRemove.size());
@@ -8154,9 +8277,45 @@ bool CWallet::SelectCoinsForStakingSPV(std::set<std::pair<const CWalletTx*,unsig
         {
             LOCK(cs_spvutxos);
             auto spvIt = mapSPVUtxos.find(outpoint);
-            if (spvIt != mapSPVUtxos.end() && !spvIt->second.fHaveBlock)
+            if (spvIt != mapSPVUtxos.end())
             {
-                vBlocksNeeded.push_back(spvIt->second.hashBlock);
+                if (spvIt->second.fHaveBlock && spvIt->second.fVerified)
+                {
+                    if (mapBlockIndex.count(spvIt->second.hashBlock))
+                    {
+                        CBlockIndex* pindex = mapBlockIndex[spvIt->second.hashBlock];
+                        if (pindex->nFile > 0)
+                        {
+                            CBlock block;
+                            if (block.ReadFromDisk(pindex, true))
+                            {
+                                for (const CTransaction& tx : block.vtx)
+                                {
+                                    if (tx.GetHash() == outpoint.hash)
+                                    {
+                                        CWalletTx wtx(const_cast<CWallet*>(this), tx);
+                                        wtx.hashBlock = spvIt->second.hashBlock;
+                                        wtx.nTime = spvIt->second.nTime;
+                                        const_cast<CWallet*>(this)->AddToWallet(wtx);
+
+                                        auto newIt = mapWallet.find(outpoint.hash);
+                                        if (newIt != mapWallet.end())
+                                        {
+                                            const CWalletTx* pcoin = &(newIt->second);
+                                            if (outpoint.n < pcoin->vout.size())
+                                                setCoinsRet.insert(std::make_pair(pcoin, outpoint.n));
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                else if (!spvIt->second.fHaveBlock)
+                {
+                    vBlocksNeeded.push_back(spvIt->second.hashBlock);
+                }
             }
         }
     }

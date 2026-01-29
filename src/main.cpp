@@ -12,6 +12,7 @@
 #include "txdb.h"
 #include "net.h"
 #include "init.h"
+#include "wallet.h"
 #include "ui_interface.h"
 #include "kernel.h"
 #include "collateral.h"
@@ -2821,11 +2822,95 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
         if (nStakeReward > nCalculatedStakeReward)
             return DoS(100, error("ConnectBlock() : coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
-    }
 
-    // ----- Innova collateral stakes, the fair payment edition  -----
-    // proudly presented by enkayz
-    // credits to carsenk
+        if (pindex->nHeight >= FORK_HEIGHT_COLD_STAKING)
+        {
+            CTransaction& coinstake = vtx[1];
+
+            bool fHasColdStakeInput = false;
+            CScript coldStakeScript;
+            int64_t nP2CSInputValue = 0;
+
+            MapPrevTx mapColdInputs;
+            bool fInvalid = false;
+            if (coinstake.FetchInputs(txdb, mapQueuedChanges, true, false, mapColdInputs, fInvalid))
+            {
+                for (unsigned int j = 0; j < coinstake.vin.size(); j++)
+                {
+                    const COutPoint& prevout = coinstake.vin[j].prevout;
+                    if (mapColdInputs.count(prevout.hash))
+                    {
+                        const CTransaction& txPrev = mapColdInputs[prevout.hash].second;
+                        if (prevout.n < txPrev.vout.size())
+                        {
+                            const CScript& prevScript = txPrev.vout[prevout.n].scriptPubKey;
+                            if (IsPayToColdStaking(prevScript))
+                            {
+                                if (!fHasColdStakeInput)
+                                {
+                                    fHasColdStakeInput = true;
+                                    coldStakeScript = prevScript;
+                                }
+                                else if (prevScript != coldStakeScript)
+                                {
+                                    return DoS(100, error("ConnectBlock() : cold stake inputs use different P2CS scripts"));
+                                }
+                                if (txPrev.vout[prevout.n].nValue < 0 || nP2CSInputValue + txPrev.vout[prevout.n].nValue < nP2CSInputValue)
+                                    return DoS(100, error("ConnectBlock() : cold stake input value overflow"));
+                                nP2CSInputValue += txPrev.vout[prevout.n].nValue;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (fHasColdStakeInput)
+            {
+                int64_t nP2CSOutputValue = 0;
+
+                for (unsigned int i = 1; i < coinstake.vout.size(); i++)
+                {
+                    if (coinstake.vout[i].IsEmpty())
+                        continue;
+
+                    if (coinstake.vout[i].scriptPubKey == coldStakeScript)
+                    {
+                        if (coinstake.vout[i].nValue < 0 || nP2CSOutputValue + coinstake.vout[i].nValue < nP2CSOutputValue)
+                            return DoS(100, error("ConnectBlock() : cold stake output value overflow"));
+                        nP2CSOutputValue += coinstake.vout[i].nValue;
+                        continue;
+                    }
+
+                    if (i == coinstake.vout.size() - 1 && !IsPayToColdStaking(coinstake.vout[i].scriptPubKey))
+                    {
+                        int64_t nCNPayment = coinstake.vout[i].nValue;
+                        int64_t nTotalOutput = nP2CSOutputValue + nCNPayment;
+                        int64_t nReward = nTotalOutput - nP2CSInputValue;
+
+                        if (nReward > 0 && nCNPayment > nReward * 30 / 100)
+                            return DoS(100, error("ConnectBlock() : cold stake CN payment %" PRId64 " exceeds 30%% of reward %" PRId64,
+                                                  nCNPayment, nReward));
+                        continue;
+                    }
+
+                    return DoS(100, error("ConnectBlock() : cold stake output %u does not match P2CS input script", i));
+                }
+
+                if (nP2CSOutputValue < nP2CSInputValue)
+                    return DoS(100, error("ConnectBlock() : cold stake P2CS output value (%" PRId64 ") less than input value (%" PRId64 ")",
+                                          nP2CSOutputValue, nP2CSInputValue));
+            }
+        }
+        else
+        {
+            const CTransaction& coinstake = vtx[1];
+            for (unsigned int i = 0; i < coinstake.vout.size(); i++)
+            {
+                if (IsPayToColdStaking(coinstake.vout[i].scriptPubKey))
+                    return DoS(100, error("ConnectBlock() : cold staking output not allowed before fork height %d", FORK_HEIGHT_COLD_STAKING));
+            }
+        }
+    }
 
     bool CollateralnodePayments = false;
     bool fIsInitialDownload = IsInitialBlockDownload();
@@ -4098,6 +4183,31 @@ bool CBlock::CheckBlockSignature() const
         return CPubKey(vchPubKey).Verify(GetHash(), vchBlockSig);
     }
 
+    if (whichType == TX_COLDSTAKE)
+    {
+        const CScript& scriptSig = vtx[1].vin[0].scriptSig;
+        CScript::const_iterator pc = scriptSig.begin();
+        opcodetype opcode;
+        valtype vchSig, vchFlag, vchPubKey;
+
+        if (!scriptSig.GetOp(pc, opcode, vchSig))
+            return false;
+        if (!scriptSig.GetOp(pc, opcode, vchFlag))
+            return false;
+        if (!scriptSig.GetOp(pc, opcode, vchPubKey))
+            return false;
+
+        CPubKey pubkey(vchPubKey);
+        if (!pubkey.IsValid())
+            return false;
+
+        CKeyID stakerKeyID = CKeyID(uint160(vSolutions[0]));
+        if (pubkey.GetID() != stakerKeyID)
+            return false;
+
+        return pubkey.Verify(GetHash(), vchBlockSig);
+    }
+
     return false;
 }
 
@@ -4105,7 +4215,7 @@ bool CheckDiskSpace(uint64_t nAdditionalBytes)
 {
     uint64_t nFreeBytesAvailable = fs::space(GetDataDir()).available;
 
-    // Check for nMinDiskSpace bytes (currently 50MB)
+    // Check for nMinDiskSpace bytes
     if (nFreeBytesAvailable < nMinDiskSpace + nAdditionalBytes)
     {
         fShutdown = true;
@@ -5740,6 +5850,76 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
         if (fDebug)
             printf("SPV: Received merkleblock with %u matched transactions\n", (unsigned int)vMatch.size());
+
+        if (fHybridSPV && pwalletMain)
+        {
+            uint256 hashBlock = Tribus(BEGIN(merkleBlock.header.nVersion), END(merkleBlock.header.nNonce));
+
+            int nHeight = 0;
+            bool fBlockInBestChain = false;
+            {
+                LOCK(cs_main);
+                if (mapBlockIndex.count(hashBlock))
+                {
+                    CBlockIndex* pblockindex = mapBlockIndex[hashBlock];
+                    nHeight = pblockindex->nHeight;
+                    if (pindexBest && nHeight <= pindexBest->nHeight)
+                    {
+                        CBlockIndex* pcheck = pindexBest;
+                        while (pcheck && pcheck->nHeight > nHeight)
+                            pcheck = pcheck->pprev;
+                        fBlockInBestChain = (pcheck && pcheck->GetBlockHash() == hashBlock);
+                    }
+                }
+            }
+
+            if (!fBlockInBestChain)
+            {
+                if (fDebug)
+                    printf("SPV: Ignoring merkleblock for block not in best chain: %s\n", hashBlock.ToString().c_str());
+            }
+            else
+            {
+                CPartialMerkleTree txnCopy = merkleBlock.txn;
+                std::vector<uint256> vMatchCopy;
+                txnCopy.ExtractMatches(vMatchCopy);
+
+                for (const uint256& txhash : vMatch)
+                {
+                    int nTxIndex = -1;
+                    for (int i = 0; i < (int)vMatchCopy.size(); i++)
+                    {
+                        if (vMatchCopy[i] == txhash)
+                        {
+                            nTxIndex = i;
+                            break;
+                        }
+                    }
+
+                    LOCK(pwalletMain->cs_wallet);
+                    std::map<uint256, CWalletTx>::iterator wit = pwalletMain->mapWallet.find(txhash);
+                    if (wit != pwalletMain->mapWallet.end())
+                    {
+                        const CWalletTx& wtx = wit->second;
+                        for (unsigned int n = 0; n < wtx.vout.size(); n++)
+                        {
+                            if (pwalletMain->IsMine(wtx.vout[n]))
+                            {
+                                COutPoint outpoint(txhash, n);
+                                SPVUtxo utxo(txhash, n, wtx.vout[n].nValue,
+                                             nHeight, hashBlock, wtx.nTime,
+                                             wtx.vout[n].scriptPubKey);
+                                utxo.hashMerkleRoot = merkleBlock.header.hashMerkleRoot;
+                                utxo.nTxIndex = nTxIndex;
+                                utxo.fHaveBlock = true;
+                                utxo.fVerified = (nTxIndex >= 0 && nHeight > 0);
+                                pwalletMain->UpdateSPVUtxo(outpoint, utxo);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
 

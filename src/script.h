@@ -181,6 +181,7 @@ enum txnouttype
     TX_SCRIPTHASH,
     TX_MULTISIG,
     TX_NULL_DATA,
+    TX_COLDSTAKE,
 };
 
 const char* GetTxnOutputType(txnouttype t);
@@ -321,7 +322,8 @@ enum opcodetype
     OP_NOP9 = 0xb8,
     OP_ANON_MARKER = 0xb9, //OP_NOP10
 
-
+    // cold staking
+    OP_CHECKCOLDSTAKEVERIFY = 0xd1,
 
     // template matching params
     OP_SMALLDATA = 0xf9,
@@ -964,6 +966,11 @@ public:
 // public:
 //     MutableTransactionSignatureChecker(const CMutableTransaction* txToIn, unsigned int nInIn) : TransactionSignatureChecker(&txTo, nInIn), txTo(*txToIn) {}
 // };
+
+// cold staking helpers
+bool IsPayToColdStaking(const CScript& script);
+bool ExtractColdStakeKeys(const CScript& script, CKeyID& stakerKeyID, CKeyID& ownerKeyID);
+CScript GetScriptForColdStaking(const CKeyID& stakerKeyID, const CKeyID& ownerKeyID);
 
 // namecoin stuff
 // static const unsigned int MAX_NAME_LENGTH = 512;

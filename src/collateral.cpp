@@ -134,7 +134,7 @@ void CCollaTeralPool::SetNull(bool clearEverything){
         myEntries.clear();
 
         if(fCollateralNode){
-            sessionID = 1 + SecureRand(999999);
+            sessionID = 1 + SecureRand(UINT32_MAX - 1);
         } else {
             sessionID = 0;
         }

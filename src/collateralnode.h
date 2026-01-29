@@ -217,13 +217,6 @@ public:
         return false;
     }
 
-    inline uint64_t SliceHash(uint256& hash, int slice)
-    {
-        uint64_t n = 0;
-        memcpy(&n, &hash+slice*64, 64);
-        return n;
-    }
-
     void Check(bool forceCheck=false);
 
     bool UpdatedWithin(int seconds)

@@ -123,6 +123,14 @@ static const int FORK_HEIGHT_CN_PAYMENT_VALIDATION = 7000000;
 // Forces CN operators to update to current software for continued payments
 static const int FORK_MIN_CN_PROTO_VERSION = 43950;
 
+// Hard fork height for cold staking (P2CS) support
+// In regtest mode, cold staking activates at block 1
+inline int GetForkHeightColdStaking() {
+    extern bool fRegTest;
+    return fRegTest ? 1 : 7100000;
+}
+#define FORK_HEIGHT_COLD_STAKING (GetForkHeightColdStaking())
+
 inline int64_t PastDrift(int64_t nTime, int nHeight) {
     if (nHeight >= FORK_HEIGHT_TIGHTER_DRIFT)
         return nTime - 2 * 60;  // 2 minutes after fork
@@ -203,7 +211,8 @@ extern bool fSPVStakingEnabled;
 extern int64_t nMinTxFee;
 
 // Minimum disk space required - used in CheckDiskSpace()
-static const uint64_t nMinDiskSpace = 13958643712; // 13 GB Minimum
+// static const uint64_t nMinDiskSpace = 13958643712; // 13 GB Minimum (revert for production - Innova chain is ~11.5-12.5GB)
+static const uint64_t nMinDiskSpace = 524288000; // 500 MB Minimum (temporary for regtest/testing)
 
 class CReserveKey;
 class CTxDB;

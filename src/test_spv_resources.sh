@@ -13,9 +13,10 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATADIR="${DATADIR:-$HOME/.innova-spv-test}"
-DAEMON="./innovad"
-CLI="./innova-cli"
+DAEMON="${SCRIPT_DIR}/innovad"
+CLI="${SCRIPT_DIR}/innova-cli"
 RPC_PORT=15532
 LOG_FILE="$DATADIR/resource_monitor.log"
 RESULTS_FILE="$DATADIR/spv_test_results.txt"
@@ -129,7 +130,7 @@ start_daemon_spv() {
             return 0
         fi
         sleep 1
-        ((attempts++))
+        ((attempts++)) || true
     done
 
     log_error "SPV Daemon failed to start"
@@ -148,7 +149,7 @@ start_daemon_normal() {
             return 0
         fi
         sleep 1
-        ((attempts++))
+        ((attempts++)) || true
     done
 
     log_error "Normal Daemon failed to start"
@@ -166,7 +167,7 @@ stop_daemon() {
             return 0
         fi
         sleep 1
-        ((attempts++))
+        ((attempts++)) || true
     done
 
     pkill -9 -f "innovad.*$DATADIR" 2>/dev/null || true
@@ -221,7 +222,7 @@ monitor_resources() {
         local cpu_int=${cpu%.*}
         if [ "$cpu_int" -gt "$max_cpu" ]; then max_cpu=$cpu_int; fi
 
-        ((samples++))
+        ((samples++)) || true
 
         echo "$elapsed, $mem, $vmem, $cpu, $disk, $blocks, $conns" >> "$output_file"
 

@@ -221,3 +221,15 @@ void fill_fopen64_filefunc (zlib_filefunc64_def* pzlib_filefunc_def)
     pzlib_filefunc_def->zerror_file = ferror_file_func;
     pzlib_filefunc_def->opaque = NULL;
 }
+
+void fill_zlib_filefunc64_32_def_from_filefunc32(zlib_filefunc64_def* p_filefunc64, const zlib_filefunc_def* p_filefunc32)
+{
+    p_filefunc64->zopen64_file = (open64_file_func)p_filefunc32->zopen_file;
+    p_filefunc64->zread_file = p_filefunc32->zread_file;
+    p_filefunc64->zwrite_file = p_filefunc32->zwrite_file;
+    p_filefunc64->ztell64_file = (tell64_file_func)p_filefunc32->ztell_file;
+    p_filefunc64->zseek64_file = (seek64_file_func)p_filefunc32->zseek_file;
+    p_filefunc64->zclose_file = p_filefunc32->zclose_file;
+    p_filefunc64->zerror_file = p_filefunc32->zerror_file;
+    p_filefunc64->opaque = p_filefunc32->opaque;
+}

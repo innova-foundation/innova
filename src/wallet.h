@@ -266,6 +266,10 @@ public:
     void AvailableCoinsForStaking(std::vector<COutput>& vCoins, unsigned int nSpendTime) const;
     void AvailableCoins(std::vector<COutput>& vCoins, bool fOnlyConfirmed=true, const CCoinControl *coinControl = NULL) const;
 
+    bool CreateColdStakeDelegation(const CKeyID& stakerKeyID, const CKeyID& ownerKeyID,
+                                   int64_t nValue, CWalletTx& wtxNew, std::string& strError);
+    int64_t GetColdStakingBalance() const;
+
     void UpdateSPVUtxo(const COutPoint& outpoint, const SPVUtxo& utxo);
     void RemoveSPVUtxo(const COutPoint& outpoint);
     void MarkSPVUtxoSpent(const COutPoint& outpoint);
