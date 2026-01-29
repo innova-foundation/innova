@@ -267,6 +267,13 @@ int generateRingSignature(data_chunk &keyImage, uint256 &txnHash, int nRingSize,
      if (fDebugRingSig)
         printf("%s: Ring size %d.\n", __func__, nRingSize);
 
+    if (nRingSize < (int)MIN_RING_SIZE || nRingSize > (int)MAX_RING_SIZE)
+        return errorN(1, "%s: nRingSize %d out of range [%u, %u].", __func__, nRingSize, MIN_RING_SIZE, MAX_RING_SIZE);
+    if (nSecretOffset < 0 || nSecretOffset >= nRingSize)
+        return errorN(1, "%s: nSecretOffset %d out of range.", __func__, nSecretOffset);
+    if (!pPubkeys || !pSigc || !pSigr)
+        return errorN(1, "%s: null input buffer.", __func__);
+
     int rv = 0;
     int nBytes;
 
@@ -551,6 +558,17 @@ int generateRingSignature(data_chunk &keyImage, uint256 &txnHash, int nRingSize,
 int verifyRingSignature(data_chunk &keyImage, uint256 &txnHash, int nRingSize, const uint8_t *pPubkeys, const uint8_t *pSigc, const uint8_t *pSigr)
 {
     LOCK(cs_ringsig);
+
+    if (nBestHeight >= FORK_HEIGHT_COLD_STAKING)
+    {
+        if (nRingSize < (int)MIN_RING_SIZE || nRingSize > (int)MAX_RING_SIZE)
+            return errorN(1, "%s: nRingSize %d out of range [%u, %u].", __func__, nRingSize, MIN_RING_SIZE, MAX_RING_SIZE);
+        if (!pPubkeys || !pSigc || !pSigr)
+            return errorN(1, "%s: null input buffer.", __func__);
+        if (keyImage.size() != EC_COMPRESSED_SIZE)
+            return errorN(1, "%s: keyImage size != EC_COMPRESSED_SIZE.", __func__);
+    }
+
     int rv = 0;
 
     BN_CTX_start(bnCtx);
@@ -750,7 +768,12 @@ int generateRingSignatureAB(data_chunk &keyImage, uint256 &txnHash, int nRingSiz
     if (fDebugRingSig)
         printf("%s: Ring size %d.\n", __func__, nRingSize);
 
-    assert(nRingSize < 200);
+    if (nRingSize < (int)MIN_RING_SIZE || nRingSize > (int)MAX_RING_SIZE)
+        return errorN(1, "%s: nRingSize %d out of range [%u, %u].", __func__, nRingSize, MIN_RING_SIZE, MAX_RING_SIZE);
+    if (nSecretOffset < 0 || nSecretOffset >= nRingSize)
+        return errorN(1, "%s: nSecretOffset %d out of range.", __func__, nSecretOffset);
+    if (!pPubkeys || !pSigS)
+        return errorN(1, "%s: null input buffer.", __func__);
 
     RandAddSeedPerfmon();
 
@@ -1037,6 +1060,14 @@ int verifyRingSignatureAB(data_chunk &keyImage, uint256 &txnHash, int nRingSize,
 
     // forall_{i=1..n} compute e_i=s_i*G+c_i*P_i and E_i=s_i*H(P_i)+c_i*I_j and c_{i+1}=h(P_1,...,P_n,e_i,E_i)
     // check c_{n+1}=c_1
+
+    if (nBestHeight >= FORK_HEIGHT_COLD_STAKING)
+    {
+        if (nRingSize < (int)MIN_RING_SIZE || nRingSize > (int)MAX_RING_SIZE)
+            return errorN(1, "%s: nRingSize %d out of range [%u, %u].", __func__, nRingSize, MIN_RING_SIZE, MAX_RING_SIZE);
+        if (!pPubkeys || !pSigS)
+            return errorN(1, "%s: null input buffer.", __func__);
+    }
 
     if (sigC.size() != EC_SECRET_SIZE)
         return errorN(1, "%s: sigC size !=  EC_SECRET_SIZE.", __func__);

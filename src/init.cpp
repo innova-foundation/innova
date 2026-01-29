@@ -521,6 +521,12 @@ std::string HelpMessage()
         "\n" + _("SPV (Light Client) options:") + "\n" +
         "  -spv                   " + _("Run in SPV mode (light client, headers only)") + "\n" +
         "  -spvstartheight=<n>    " + _("Start SPV mode from block height <n> (default: 0)") + "\n" +
+        "  -hybridspv             " + _("Run in hybrid SPV mode (optimized for constrained devices like Pi)") + "\n" +
+        "  -maxheaders=<n>       " + _("Maximum block headers to keep in memory in SPV mode (default: 50000)") + "\n" +
+        "  -spvutxocachesize=<n> " + _("Maximum SPV UTXO cache entries (default: 10000, Pi: 1000)") + "\n" +
+        "  -cnsyncslots=<n>      " + _("Collateral node slots reserved for sync during IBD (default: 4)") + "\n" +
+        "  -mixingpoolsize=<n>   " + _("CoinJoin mixing pool size (3-8, default: 5)") + "\n" +
+        "  -rpcratelimit=<n>     " + _("RPC requests per second per IP (0=disabled, default: 100)") + "\n" +
         "  -minstakeinterval=<n>  " + _("Minimum time in seconds between successful stakes (default: 30)") + "\n" +
         "  -minersleep=<n>        " + _("Milliseconds between stake attempts. Lowering this param will not result in more stakes. (default: 1000)") + "\n" +
         "  -synctime              " + _("Sync time with other nodes. Disable if time on your system is precise e.g. syncing with NTP (default: 1)") + "\n" +
@@ -833,11 +839,31 @@ bool AppInit2()
         fSPVMode = true;
         fSPVHeadersOnly = false;
         fSPVStakingEnabled = GetBoolArg("-staking", true);
+
+        // Constrained device defaults: reduce memory footprint
         if (!mapArgs.count("-dbcache"))
             SoftSetArg("-dbcache", "50");
         if (!mapArgs.count("-maxconnections"))
             SoftSetArg("-maxconnections", "16");
+        if (!mapArgs.count("-maxmempool"))
+            SoftSetArg("-maxmempool", "10");       // 10MB mempool (vs 300MB default)
+        if (!mapArgs.count("-maxorphantx"))
+            SoftSetArg("-maxorphantx", "10");       // Reduce orphan tx limit
+        if (!mapArgs.count("-maxorphanblocks"))
+            SoftSetArg("-maxorphanblocks", "100");  // Reduce orphan block limit
+
+        // Disable non-essential features for constrained devices
+        if (!mapArgs.count("-nosmsg"))
+            SoftSetBoolArg("-nosmsg", true);        // Disable secure messaging
+        if (!mapArgs.count("-nohyperfile"))
+            SoftSetBoolArg("-nohyperfile", true);   // Disable IPFS/Hyperfile
+
+        // Header pruning: keep only recent headers to save memory
+        int nMaxHeaders = GetArg("-maxheaders", 50000);
+        printf("  Max headers in memory: %d\n", nMaxHeaders);
+        printf("  Mempool limit: %s MB\n", GetArg("-maxmempool", "10").c_str());
         printf("  Staking: %s\n", fSPVStakingEnabled ? "enabled" : "disabled");
+        printf("  Secure messaging: disabled (constrained mode)\n");
     }
     else if (fSPVMode)
     {
@@ -845,6 +871,11 @@ bool AppInit2()
         fSPVHeadersOnly = true;
         SoftSetBoolArg("-staking", false);
         SoftSetBoolArg("-listen", false);
+
+        if (!mapArgs.count("-maxmempool"))
+            SoftSetArg("-maxmempool", "10");
+        if (!mapArgs.count("-maxorphantx"))
+            SoftSetArg("-maxorphantx", "10");
     }
 
     bitdb.SetDetach(GetBoolArg("-detachdb", false));
@@ -1208,7 +1239,6 @@ bool AppInit2()
 
         if (!fNoBootstrap && !fGetBootstrap && !fDaemon)
         {
-            // Interactive prompt for first-time users
             printf("\n");
             printf("===============================================================\n");
             printf("  Innova Core - First Time Setup\n");
@@ -1221,7 +1251,7 @@ bool AppInit2()
             printf("  Enter choice [1/2]: ");
             fflush(stdout);
 
-            char choice = '2';  // Default to genesis sync
+            char choice = '2';
             if (scanf(" %c", &choice) != 1) {
                 choice = '2';
             }
@@ -1233,11 +1263,9 @@ bool AppInit2()
             std::string url = GetArg("-bootstrapurl", "");
             printf("\n");
 
-            // Progress callback for console output
             int64_t lastPercent = -1;
             auto progressCallback = [&lastPercent](int64_t downloaded, int64_t total) {
                 if (total > 0) {
-                    // Use double to avoid integer overflow for very large files
                     int64_t percent = static_cast<int64_t>((static_cast<double>(downloaded) / total) * 100.0);
                     if (percent > 100) percent = 100;
                     if (percent < 0) percent = 0;

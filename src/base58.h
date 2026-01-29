@@ -110,6 +110,8 @@ public:
       SCRIPT_ADDRESS = 137, // Miannet Scripthash Multisig start with x - 89
       PUBKEY_ADDRESS_TEST = 65, // Testnet Addresses start with T - 41
       SCRIPT_ADDRESS_TEST = 75, // Testnet Addresses start with X - 4B
+      COLDSTAKE_ADDRESS = 63, // Mainnet cold staking addresses start with S
+      COLDSTAKE_ADDRESS_TEST = 73, // Testnet cold staking addresses start with V
     };
 
     bool Set(const CKeyID &id);
@@ -139,6 +141,9 @@ public:
     CTxDestination Get() const;
     bool GetKeyID(CKeyID &keyID) const;
     bool IsScript() const;
+
+    bool SetStaking(const CKeyID &id);
+    bool IsStaking() const;
 };
 
 bool inline CBitcoinAddressVisitor::operator()(const CKeyID &id) const         { return addr->Set(id); }

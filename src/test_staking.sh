@@ -12,9 +12,10 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DATADIR="${DATADIR:-$HOME/.innova-test}"
-DAEMON="./innovad"
-CLI="./innova-cli"
+DAEMON="${SCRIPT_DIR}/innovad"
+CLI="${SCRIPT_DIR}/innova-cli"
 RPC_PORT=15531
 TESTNET=1
 
@@ -82,7 +83,7 @@ start_daemon() {
             return 0
         fi
         sleep 1
-        ((attempts++))
+        ((attempts++)) || true
     done
 
     log_error "Daemon failed to start"

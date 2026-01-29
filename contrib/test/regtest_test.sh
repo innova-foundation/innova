@@ -29,8 +29,8 @@ PASSED=0
 FAILED=0
 
 log() { echo -e "${BLUE}[REGTEST]${NC} $1"; }
-success() { echo -e "${GREEN}[PASS]${NC} $1"; ((PASSED++)); }
-fail() { echo -e "${RED}[FAIL]${NC} $1"; ((FAILED++)); }
+success() { echo -e "${GREEN}[PASS]${NC} $1"; ((PASSED++)) || true; }
+fail() { echo -e "${RED}[FAIL]${NC} $1"; ((FAILED++)) || true; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 
 cleanup() {

@@ -290,6 +290,15 @@ bool CBitcoinAddress::IsValid() const
             fExpectTestNet = true;
             break;
 
+        case COLDSTAKE_ADDRESS:
+            nExpectedSize = 20;
+            fExpectTestNet = false;
+            break;
+        case COLDSTAKE_ADDRESS_TEST:
+            nExpectedSize = 20;
+            fExpectTestNet = true;
+            break;
+
         default:
             return false;
     }
@@ -301,7 +310,9 @@ CTxDestination CBitcoinAddress::Get() const {
         return CNoDestination();
     switch (nVersion) {
     case PUBKEY_ADDRESS:
-    case PUBKEY_ADDRESS_TEST: {
+    case PUBKEY_ADDRESS_TEST:
+    case COLDSTAKE_ADDRESS:
+    case COLDSTAKE_ADDRESS_TEST: {
         uint160 id;
         memcpy(&id, &vchData[0], 20);
         return CKeyID(id);
@@ -321,7 +332,9 @@ bool CBitcoinAddress::GetKeyID(CKeyID &keyID) const {
         return false;
     switch (nVersion) {
     case PUBKEY_ADDRESS:
-    case PUBKEY_ADDRESS_TEST: {
+    case PUBKEY_ADDRESS_TEST:
+    case COLDSTAKE_ADDRESS:
+    case COLDSTAKE_ADDRESS_TEST: {
         uint160 id;
         memcpy(&id, &vchData[0], 20);
         keyID = CKeyID(id);
@@ -339,6 +352,23 @@ bool CBitcoinAddress::IsScript() const {
     case SCRIPT_ADDRESS_TEST: {
         return true;
     }
+    default: return false;
+    }
+}
+
+bool CBitcoinAddress::SetStaking(const CKeyID &id)
+{
+    SetData(fTestNet ? COLDSTAKE_ADDRESS_TEST : COLDSTAKE_ADDRESS, &id, 20);
+    return true;
+}
+
+bool CBitcoinAddress::IsStaking() const {
+    if (!IsValid())
+        return false;
+    switch (nVersion) {
+    case COLDSTAKE_ADDRESS:
+    case COLDSTAKE_ADDRESS_TEST:
+        return true;
     default: return false;
     }
 }

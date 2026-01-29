@@ -191,6 +191,7 @@ const char* GetTxnOutputType(txnouttype t)
     case TX_SCRIPTHASH: return "scripthash";
     case TX_MULTISIG: return "multisig";
     case TX_NULL_DATA: return "nulldata";
+    case TX_COLDSTAKE: return "coldstake";
     }
     return NULL;
 }
@@ -326,6 +327,9 @@ const char* GetOpName(opcodetype opcode)
     case OP_NOP8                   : return "OP_NOP8";
     case OP_NOP9                   : return "OP_NOP9";
     case OP_ANON_MARKER            : return "OP_ANON_MARKER"; // Ring Sigs
+
+    // cold staking
+    case OP_CHECKCOLDSTAKEVERIFY   : return "OP_CHECKCOLDSTAKEVERIFY";
 
     case OP_INVALIDOPCODE          : return "OP_INVALIDOPCODE";
 
@@ -601,6 +605,52 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
                 case OP_NOP6: case OP_NOP7: case OP_NOP8: case OP_NOP9:
                 {
                     if (flags & SCRIPT_VERIFY_DISCOURAGE_UPGRADABLE_NOPS)
+                        return false;
+                }
+                break;
+
+                case OP_CHECKCOLDSTAKEVERIFY:
+                {
+                    if (!txTo.IsCoinStake())
+                        return false;
+
+                    const CScript& inputScript = script;
+
+                    int64_t nP2CSOutputValue = 0;
+                    int64_t nLastOutputValue = 0;
+                    bool fLastOutputExempt = false;
+
+                    for (unsigned int i = 1; i < txTo.vout.size(); i++)
+                    {
+                        if (txTo.vout[i].IsEmpty())
+                            continue;
+
+                        if (txTo.vout[i].scriptPubKey == inputScript)
+                        {
+                            if (txTo.vout[i].nValue < 0 || nP2CSOutputValue + txTo.vout[i].nValue < nP2CSOutputValue)
+                                return false;
+                            nP2CSOutputValue += txTo.vout[i].nValue;
+                            continue;
+                        }
+
+                        if (i == txTo.vout.size() - 1 && !IsPayToColdStaking(txTo.vout[i].scriptPubKey))
+                        {
+                            fLastOutputExempt = true;
+                            nLastOutputValue = txTo.vout[i].nValue;
+                            continue;
+                        }
+
+                        return false;
+                    }
+
+                    if (fLastOutputExempt)
+                    {
+                        int64_t nTotalOutputValue = nP2CSOutputValue + nLastOutputValue;
+                        if (nTotalOutputValue > 0 && nLastOutputValue > nTotalOutputValue * 30 / 100)
+                            return false;
+                    }
+
+                    if (nP2CSOutputValue <= 0)
                         return false;
                 }
                 break;
@@ -1651,6 +1701,22 @@ bool Solver(const CScript& scriptPubKey, txnouttype& typeRet, vector<vector<unsi
         return true;
     }
 
+    // Shortcut for pay-to-cold-staking (P2CS):
+    // OP_DUP OP_HASH160 OP_ROT OP_IF OP_CHECKCOLDSTAKEVERIFY [20-byte stakerKeyHash]
+    // OP_ELSE [20-byte ownerKeyHash] OP_ENDIF OP_EQUALVERIFY OP_CHECKSIG
+    if (IsPayToColdStaking(scriptPubKey))
+    {
+        typeRet = TX_COLDSTAKE;
+        CKeyID stakerKeyID, ownerKeyID;
+        if (ExtractColdStakeKeys(scriptPubKey, stakerKeyID, ownerKeyID))
+        {
+            vSolutionsRet.push_back(vector<unsigned char>(stakerKeyID.begin(), stakerKeyID.end()));
+            vSolutionsRet.push_back(vector<unsigned char>(ownerKeyID.begin(), ownerKeyID.end()));
+            return true;
+        }
+        return false;
+    }
+
     // Scan templates
     const CScript& script1 = scriptPubKey;
     BOOST_FOREACH(const PAIRTYPE(txnouttype, CScript)& tplate, mTemplates)
@@ -1813,6 +1879,34 @@ bool Solver(const CKeyStore& keystore, const CScript& scriptPubKey, uint256 hash
     case TX_MULTISIG:
         scriptSigRet << OP_0; // workaround CHECKMULTISIG bug
         return (SignN(vSolutions, keystore, hash, nHashType, scriptSigRet));
+    case TX_COLDSTAKE:
+    {
+        CKeyID stakerKeyID = CKeyID(uint160(vSolutions[0]));
+        CKeyID ownerKeyID = CKeyID(uint160(vSolutions[1]));
+
+        if (keystore.HaveKey(stakerKeyID))
+        {
+            if (!Sign1(stakerKeyID, keystore, hash, nHashType, scriptSigRet))
+                return false;
+            scriptSigRet << OP_TRUE;
+            CPubKey vch;
+            keystore.GetPubKey(stakerKeyID, vch);
+            scriptSigRet << vch;
+            return true;
+        }
+
+        if (keystore.HaveKey(ownerKeyID))
+        {
+            if (!Sign1(ownerKeyID, keystore, hash, nHashType, scriptSigRet))
+                return false;
+            scriptSigRet << OP_FALSE;
+            CPubKey vch;
+            keystore.GetPubKey(ownerKeyID, vch);
+            scriptSigRet << vch;
+            return true;
+        }
+        return false;
+    }
     }
     return false;
 }
@@ -1834,6 +1928,8 @@ int ScriptSigArgsExpected(txnouttype t, const std::vector<std::vector<unsigned c
         return vSolutions[0][0] + 1;
     case TX_SCRIPTHASH:
         return 1; // doesn't include args needed by the script
+    case TX_COLDSTAKE:
+        return 3;
     }
     return -1;
 }
@@ -1943,6 +2039,16 @@ isminetype IsMine(const CKeyStore &keystore, const CScript& scriptPubKey)
             return MINE_SPENDABLE;
         break;
     }
+    case TX_COLDSTAKE:
+    {
+        CKeyID ownerKeyID = CKeyID(uint160(vSolutions[1]));
+        if (keystore.HaveKey(ownerKeyID))
+            return MINE_SPENDABLE;
+        CKeyID stakerKeyID = CKeyID(uint160(vSolutions[0]));
+        if (keystore.HaveKey(stakerKeyID))
+            return MINE_WATCH_ONLY;
+        break;
+    }
     }
 
     if (keystore.HaveWatchOnly(scriptPubKey))
@@ -1970,6 +2076,11 @@ bool ExtractDestination(const CScript& scriptPubKey, CTxDestination& addressRet)
     else if (whichType == TX_SCRIPTHASH)
     {
         addressRet = CScriptID(uint160(vSolutions[0]));
+        return true;
+    }
+    else if (whichType == TX_COLDSTAKE)
+    {
+        addressRet = CKeyID(uint160(vSolutions[1]));
         return true;
     }
     // Multisig txns have more than one address...
@@ -2450,6 +2561,48 @@ CScript GetScriptForDestination(const CTxDestination& dest)
     CScript script;
 
     boost::apply_visitor(CScriptVisitor(&script), dest);
+    return script;
+}
+
+bool IsPayToColdStaking(const CScript& script)
+{
+    return (script.size() == 51 &&
+            script[0] == OP_DUP &&
+            script[1] == OP_HASH160 &&
+            script[2] == OP_ROT &&
+            script[3] == OP_IF &&
+            script[4] == OP_CHECKCOLDSTAKEVERIFY &&
+            script[5] == 0x14 &&
+            script[26] == OP_ELSE &&
+            script[27] == 0x14 &&
+            script[48] == OP_ENDIF &&
+            script[49] == OP_EQUALVERIFY &&
+            script[50] == OP_CHECKSIG);
+}
+
+bool ExtractColdStakeKeys(const CScript& script, CKeyID& stakerKeyID, CKeyID& ownerKeyID)
+{
+    if (!IsPayToColdStaking(script))
+        return false;
+
+    uint160 stakerHash, ownerHash;
+    memcpy(&stakerHash, &script[6], 20);
+    memcpy(&ownerHash, &script[28], 20);
+    stakerKeyID = CKeyID(stakerHash);
+    ownerKeyID = CKeyID(ownerHash);
+    return true;
+}
+
+CScript GetScriptForColdStaking(const CKeyID& stakerKeyID, const CKeyID& ownerKeyID)
+{
+    CScript script;
+    script << OP_DUP << OP_HASH160 << OP_ROT << OP_IF;
+    script << OP_CHECKCOLDSTAKEVERIFY;
+    script << ToByteVector(stakerKeyID);
+    script << OP_ELSE;
+    script << ToByteVector(ownerKeyID);
+    script << OP_ENDIF;
+    script << OP_EQUALVERIFY << OP_CHECKSIG;
     return script;
 }
 

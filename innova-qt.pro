@@ -105,6 +105,10 @@ contains(USE_IPFS, -) {
 		src/ipfscurl.cc
 }
 
+INCLUDEPATH += src/minizip
+SOURCES += src/minizip/ioapi.c \
+    src/minizip/unzip.c
+
 
 # use: qmake "USE_NATIVETOR=1" ( enabled by default; default)
 #  or: qmake "USE_NATIVETOR=0" (disabled by default)
@@ -494,6 +498,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/collateralnodeconfig.h \
     src/spork.h \
     src/init.h \
+    src/bootstrap.h \
     src/mruset.h \
     src/utiltime.h \
     src/openssl_compat.h \
@@ -613,6 +618,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/ringsig.cpp \
     src/miner.cpp \
     src/init.cpp \
+    src/bootstrap.cpp \
     src/net.cpp \
     src/checkpoints.cpp \
     src/addrman.cpp \

@@ -19,7 +19,22 @@ class CCollateralNQueue;
 class CCollateralNBroadcastTx;
 class CActiveCollateralnode;
 
-#define POOL_MAX_TRANSACTIONS                  3 // wait for X transactions to merge and publish
+// Default pool size (can be overridden via -mixingpoolsize=N)
+#define POOL_MAX_TRANSACTIONS                  3 // legacy default for compatibility
+#define POOL_MAX_TRANSACTIONS_ENHANCED         5 // enhanced default (5-8 participants)
+#define POOL_MIN_TRANSACTIONS_ENHANCED         3 // minimum participants for enhanced mixing
+#define POOL_MAX_TRANSACTIONS_LIMIT            8 // absolute maximum participants
+
+// Standard mixing denominations (in sats)
+static const int64_t COLLATERALN_DENOM_10     = 10 * COIN;
+static const int64_t COLLATERALN_DENOM_100    = 100 * COIN;
+static const int64_t COLLATERALN_DENOM_1000   = 1000 * COIN;
+static const int64_t COLLATERALN_DENOM_10000  = 10000 * COIN;
+
+// Default number of mixing rounds
+#define COLLATERALN_DEFAULT_MIXING_ROUNDS      4
+#define COLLATERALN_MAX_MIXING_ROUNDS          16
+
 #define POOL_STATUS_UNKNOWN                    0 // waiting for update
 #define POOL_STATUS_IDLE                       1 // waiting for update
 #define POOL_STATUS_QUEUE                      2 // waiting in a queue
@@ -136,6 +151,9 @@ public:
     int nDenom;
     bool ready; //ready for submit
     std::vector<unsigned char> vchSig;
+    int64_t nDenomAmount;
+    int nMixingRound;
+    int nPoolSize;
 
     CCollateralNQueue()
     {
@@ -144,6 +162,9 @@ public:
         time = 0;
         vchSig.clear();
         ready = false;
+        nDenomAmount = 0;
+        nMixingRound = 0;
+        nPoolSize = POOL_MAX_TRANSACTIONS_ENHANCED;
     }
 
     ADD_SERIALIZE_METHODS;
@@ -359,9 +380,12 @@ public:
 
     int GetMaxPoolTransactions()
     {
-
-        //use the production amount
-        return POOL_MAX_TRANSACTIONS;
+        int nPoolSize = GetArg("-mixingpoolsize", POOL_MAX_TRANSACTIONS_ENHANCED);
+        if (nPoolSize < POOL_MIN_TRANSACTIONS_ENHANCED)
+            nPoolSize = POOL_MIN_TRANSACTIONS_ENHANCED;
+        if (nPoolSize > POOL_MAX_TRANSACTIONS_LIMIT)
+            nPoolSize = POOL_MAX_TRANSACTIONS_LIMIT;
+        return nPoolSize;
     }
 
     //Do we have enough users to take entries?
