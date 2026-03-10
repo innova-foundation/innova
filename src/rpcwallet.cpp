@@ -31,6 +31,46 @@ namespace fs = boost::filesystem;
 int64_t nWalletUnlockTime;
 static CCriticalSection cs_nWalletUnlockTime;
 
+static fs::path SanitizeWalletPath(const std::string& strPath, const std::string& strSubDir = "backups")
+{
+    fs::path dataDir = GetDataDir();
+    fs::path targetDir = dataDir / strSubDir;
+
+    if (!fs::exists(targetDir))
+        fs::create_directories(targetDir);
+
+    fs::path inputPath(strPath);
+    std::string filename = inputPath.filename().string();
+
+    if (filename.empty())
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid filename");
+
+    for (size_t i = 0; i < filename.size(); i++)
+    {
+        unsigned char c = (unsigned char)filename[i];
+        if (c < 0x20 || c == 0x7F)
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Filename contains control characters");
+    }
+
+    if (filename.find("..") != std::string::npos ||
+        filename.find("/") != std::string::npos ||
+        filename.find("\\") != std::string::npos)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid characters in filename");
+
+    fs::path safePath = targetDir / filename;
+
+    fs::path canonicalPath = fs::absolute(safePath);
+    fs::path canonicalDataDir = fs::absolute(dataDir);
+
+    std::string pathStr = canonicalPath.string();
+    std::string dataDirStr = canonicalDataDir.string();
+
+    if (pathStr.substr(0, dataDirStr.length()) != dataDirStr)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Path traversal attempt detected");
+
+    return safePath;
+}
+
 extern void TxToJSON(const CTransaction& tx, const uint256 hashBlock, json_spirit::Object& entry);
 
 static void accountingDeprecationCheck()
@@ -58,6 +98,25 @@ void EnsureWalletIsUnlocked()
         throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
     if (fWalletUnlockStakingOnly)
         throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Wallet is unlocked for staking only.");
+}
+
+// Extract passphrase to SecureString and cleanse the source Value
+SecureString SecureExtractPassphrase(const Value& val)
+{
+    const std::string& strRef = val.get_str();
+
+    SecureString result;
+    result.reserve(strRef.size() + 1);
+    result = strRef.c_str();
+
+    std::string& strMutable = const_cast<std::string&>(strRef);
+    if (!strMutable.empty())
+    {
+        OPENSSL_cleanse(&strMutable[0], strMutable.size());
+        strMutable.clear();
+    }
+
+    return result;
 }
 
 void WalletTxToJSON(const CWalletTx& wtx, Object& entry)
@@ -167,7 +226,10 @@ Value getinfo(const Array& params, bool fHelp)
 	}
   //Q0lSQ1VJVEJSRUFLRVI=
 	if (pwalletMain->IsCrypted())
+    {
+        LOCK(cs_nWalletUnlockTime);
         obj.push_back(Pair("unlocked_until", (int64_t)nWalletUnlockTime / 1000));
+    }
 	if (!pwalletMain->IsCrypted())
         obj.push_back(Pair("wallet_status", "unencrypted"));
 	if (!pwalletMain->IsLocked() && pwalletMain->IsCrypted() && !fWalletUnlockStakingOnly)
@@ -193,7 +255,10 @@ Value walletstatus(const Array& params, bool fHelp)
 
 	Object obj;
   if (pwalletMain->IsCrypted())
+    {
+        LOCK(cs_nWalletUnlockTime);
         obj.push_back(Pair("unlocked_until", (int64_t)nWalletUnlockTime / 1000));
+    }
 	if (!pwalletMain->IsCrypted())
         obj.push_back(Pair("wallet_status", "unencrypted"));
 	if (!pwalletMain->IsLocked() && pwalletMain->IsCrypted() && !fWalletUnlockStakingOnly)
@@ -973,10 +1038,10 @@ Value sendmany(const Array& params, bool fHelp)
     {
         CBitcoinAddress address(s.name_);
         if (!address.IsValid())
-            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, string("Invalid Innova address: ")+s.name_);
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid Innova address");
 
         if (setAddress.count(address))
-            throw JSONRPCError(RPC_INVALID_PARAMETER, string("Invalid parameter, duplicated address: ")+s.name_);
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid parameter, duplicated address");
         setAddress.insert(address);
 
         CScript scriptPubKey;
@@ -1735,14 +1800,36 @@ Value backupwallet(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() != 1)
         throw runtime_error(
-            "backupwallet <destination>\n"
-            "Safely copies wallet.dat to destination, which can be a directory or a path with filename.");
+            "backupwallet <filename>\n"
+            "Safely copies wallet.dat to the backups subdirectory.\n"
+            "Only filename is accepted (no paths) for security.\n"
+            "Example: backupwallet \"my_backup.dat\"");
 
-    string strDest = params[0].get_str();
-    if (!BackupWallet(*pwalletMain, strDest))
+    string strFilename = params[0].get_str();
+    fs::path safePath = SanitizeWalletPath(strFilename, "backups");
+
+    // Lock wallet during backup to avoid capturing in-flight key material
+    bool fWasLocked = true;
+    bool fWasEncrypted = pwalletMain->IsCrypted();
+    if (fWasEncrypted)
+    {
+        fWasLocked = pwalletMain->IsLocked();
+        if (!fWasLocked)
+        {
+            pwalletMain->Lock();
+        }
+    }
+
+    bool fBackupSuccess = BackupWallet(*pwalletMain, safePath.string());
+
+    if (!fBackupSuccess)
         throw JSONRPCError(RPC_WALLET_ERROR, "Error: Wallet backup failed!");
 
-    return Value::null;
+    Object result;
+    result.push_back(Pair("path", safePath.string()));
+    if (fWasEncrypted && !fWasLocked)
+        result.push_back(Pair("warning", "Wallet was locked for backup. Please unlock with walletpassphrase to resume operations."));
+    return result;
 }
 
 
@@ -1839,12 +1926,7 @@ Value walletpassphrase(const Array& params, bool fHelp)
     if (!pwalletMain->IsLocked())
         throw JSONRPCError(RPC_WALLET_ALREADY_UNLOCKED, "Error: Wallet is already unlocked, use walletlock first if need to change unlock settings.");
 
-    // Note that the walletpassphrase is stored in params[0] which is not mlock()ed
-    SecureString strWalletPass;
-    strWalletPass.reserve(100);
-    std::string strPass = params[0].get_str();
-    strWalletPass = strPass.c_str();
-    OPENSSL_cleanse(&strPass[0], strPass.size());
+    SecureString strWalletPass = SecureExtractPassphrase(params[0]);
 
     if (strWalletPass.length() > 0)
     {
@@ -1887,17 +1969,8 @@ Value walletpassphrasechange(const Array& params, bool fHelp)
     if (!pwalletMain->IsCrypted())
         throw JSONRPCError(RPC_WALLET_WRONG_ENC_STATE, "Error: running with an unencrypted wallet, but walletpassphrasechange was called.");
 
-    SecureString strOldWalletPass;
-    strOldWalletPass.reserve(100);
-    std::string strOldPass = params[0].get_str();
-    strOldWalletPass = strOldPass.c_str();
-    OPENSSL_cleanse(&strOldPass[0], strOldPass.size());
-
-    SecureString strNewWalletPass;
-    strNewWalletPass.reserve(100);
-    std::string strNewPass = params[1].get_str();
-    strNewWalletPass = strNewPass.c_str();
-    OPENSSL_cleanse(&strNewPass[0], strNewPass.size());
+    SecureString strOldWalletPass = SecureExtractPassphrase(params[0]);
+    SecureString strNewWalletPass = SecureExtractPassphrase(params[1]);
 
     if (strOldWalletPass.length() < 1 || strNewWalletPass.length() < 1)
         throw runtime_error(
@@ -1945,11 +2018,7 @@ Value encryptwallet(const Array& params, bool fHelp)
     if (pwalletMain->IsCrypted())
         throw JSONRPCError(RPC_WALLET_WRONG_ENC_STATE, "Error: running with an encrypted wallet, but encryptwallet was called.");
 
-    SecureString strWalletPass;
-    strWalletPass.reserve(100);
-    std::string strPass = params[0].get_str();
-    strWalletPass = strPass.c_str();
-    OPENSSL_cleanse(&strPass[0], strPass.size());
+    SecureString strWalletPass = SecureExtractPassphrase(params[0]);
 
     if (strWalletPass.length() < 1)
         throw runtime_error(
@@ -2662,6 +2731,9 @@ Value sendanontoanon(const Array& params, bool fHelp)
             "  warning: using a ring_size less than 5 is not recommended"
             + HelpRequiringPassphrase());
 
+    if (nBestHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)
+        throw JSONRPCError(RPC_METHOD_NOT_FOUND, "Ring signatures deprecated after fork. Use z_shield/z_unshield for private transactions, or z_migrateanon to migrate existing anon balances.");
+
     if (pwalletMain->IsLocked())
         throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
 
@@ -2723,6 +2795,9 @@ Value sendanontoinn(const Array& params, bool fHelp)
             "<ring_size> is a number of outputs of the same amount to include in the signature"
             + HelpRequiringPassphrase());
 
+    if (nBestHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)
+        throw JSONRPCError(RPC_METHOD_NOT_FOUND, "Ring signatures deprecated after fork. Use z_shield/z_unshield for private transactions, or z_migrateanon to migrate existing anon balances.");
+
     if (pwalletMain->IsLocked())
         throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
 
@@ -2771,6 +2846,9 @@ Value estimateanonfee(const Array& params, bool fHelp)
             "estimateanonfee <amount> <ring_size> [narration]\n"
             "<amount>is a real number and is rounded to the nearest 0.000001\n"
             "<ring_size> is a number of outputs of the same amount to include in the signature");
+
+    if (nBestHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)
+        throw JSONRPCError(RPC_METHOD_NOT_FOUND, "Ring signatures deprecated after fork. Use z_shield/z_unshield for private transactions.");
 
     int64_t nAmount = AmountFromValue(params[0]);
 
@@ -3809,6 +3887,12 @@ Value delegatestake(const Array& params, bool fHelp)
     if (pwalletMain->IsLocked())
         throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
 
+    {
+        LOCK(cs_main);
+        if (!pindexBest || pindexBest->nHeight < FORK_HEIGHT_COLD_STAKING)
+            throw JSONRPCError(RPC_MISC_ERROR, "Cold staking is not yet active on this chain");
+    }
+
     CBitcoinAddress stakerAddr(params[0].get_str());
     if (!stakerAddr.IsValid())
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid staker address");
@@ -3837,6 +3921,9 @@ Value delegatestake(const Array& params, bool fHelp)
             throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Error: Keypool ran out, please call keypoolrefill first");
         ownerKeyID = newKey.GetID();
     }
+
+    if (stakerKeyID == ownerKeyID)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Staker address and owner address must be different");
 
     CWalletTx wtx;
     string strError;
@@ -4034,6 +4121,12 @@ Value revokecoldstaking(const Array& params, bool fHelp)
     CTransaction txNew;
     txNew.vin.push_back(CTxIn(txid, nVout));
 
+    {
+        LOCK(cs_main);
+        if (pindexBest)
+            txNew.nLockTime = pindexBest->nHeight;
+    }
+
     int64_t nFee = MIN_TX_FEE;
     int64_t nValue = prevOut.nValue - nFee;
     if (nValue <= 0)
@@ -4072,7 +4165,7 @@ Value startmixing(const Array& params, bool fHelp)
     if (fHelp || params.size() < 1 || params.size() > 2)
         throw runtime_error(
             "startmixing <amount> [rounds]\n"
-            "Start CoinJoin mixing for the specified amount.\n"
+            "Start NullSend mixing for the specified amount.\n"
             "<amount> is the total amount to mix.\n"
             "[rounds] is the number of mixing rounds (default: 4, max: 16).\n"
             "Uses standard denominations: 10, 100, 1000, 10000 INN.\n"
@@ -4145,7 +4238,7 @@ Value stopmixing(const Array& params, bool fHelp)
     if (fHelp || params.size() != 0)
         throw runtime_error(
             "stopmixing\n"
-            "Stop any in-progress CoinJoin mixing.\n");
+            "Stop any in-progress NullSend mixing.\n");
 
     colLateralPool.SetNull(true);
     colLateralPool.UnlockCoins();
@@ -4160,7 +4253,7 @@ Value getmixingstatus(const Array& params, bool fHelp)
     if (fHelp || params.size() != 0)
         throw runtime_error(
             "getmixingstatus\n"
-            "Returns the current status of CoinJoin mixing.\n");
+            "Returns the current status of NullSend mixing.\n");
 
     Object result;
 

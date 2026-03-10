@@ -17,12 +17,17 @@
 #include "kernel.h"
 #include "collateral.h"
 #include "collateralnode.h"
+#include "nullsend.h"
 #include "spork.h"
 #include "smessage.h"
 #include "namecoin.h"
+#include "dandelion.h"
+#include "lelantus.h"
+#include "curvetree.h"
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
+#include <algorithm>
 
 #if BOOST_VERSION >= 107300
 #include <boost/bind/bind.hpp>
@@ -61,7 +66,7 @@ CBigNum bnProofOfWorkLimitTestNet(~uint256(0) >> 16);
 
 unsigned int nTargetSpacing     = 15;               // 15 seconds
 unsigned int nStakeMinAge       = 10 * 60 * 60;     // 10 hour min stake age
-unsigned int nStakeMaxAge       = -1;               // unlimited
+unsigned int nStakeMaxAge       = -1;               // unlimited (original behavior)
 unsigned int nModifierInterval  = 10 * 60;          // time to elapse before new modifier is computed
 int64_t nLastCoinStakeSearchTime = GetAdjustedTime();
 int nCoinbaseMaturity = 65; //75 on Mainnet I n n o v a
@@ -85,6 +90,8 @@ int nSPVStartHeight = 0;
 
 bool fHybridSPV = false;
 bool fSPVStakingEnabled = false;
+StakingMode nStakingMode = STAKE_TRANSPARENT;
+CCriticalSection cs_stakingMode;
 
 CMedianFilter<int> cPeerBlockCounts(5, 0); // Amount of blocks that other nodes claim to have
 
@@ -96,6 +103,15 @@ map<uint256, NodeId> mapOrphanBlocksByNode;
 map<NodeId, int> mapOrphanCountByNode;
 static const int MAX_ORPHAN_BLOCKS_PER_PEER = 750;
 set<pair<COutPoint, unsigned int> > setStakeSeenOrphan;
+
+// per-peer rate limiting for PoS block submissions
+map<NodeId, vector<int64_t> > mapPoSBlockTimesPerPeer;
+static const int MAX_POS_BLOCKS_PER_PEER = 10;      // Max PoS blocks per peer per window
+static const int64_t POS_RATE_LIMIT_WINDOW = 60;    // Window size in seconds
+
+map<COutPoint, vector<int64_t> > mapStakeAttemptsPerUTXO;
+static const int MAX_STAKE_ATTEMPTS_PER_UTXO = 3;    // Max stakes per UTXO per window
+static const int64_t STAKE_GRINDING_WINDOW = 300;    // 5 minute window
 
 map<uint256, CTransaction> mapOrphanTransactions;
 map<uint256, set<uint256> > mapOrphanTransactionsByPrev;
@@ -475,7 +491,7 @@ bool CTransaction::ReadFromDisk(COutPoint prevout)
 
 bool IsStandardTx(const CTransaction& tx, string& reason)
 {
-    if (tx.nVersion > CTransaction::CURRENT_VERSION && tx.nVersion != ANON_TXN_VERSION && tx.nVersion != NAMECOIN_TX_VERSION) { //WIP
+    if (tx.nVersion > CTransaction::CURRENT_VERSION && tx.nVersion != ANON_TXN_VERSION && tx.nVersion != NAMECOIN_TX_VERSION && !tx.IsShielded()) { //WIP
         reason = "version";
         return false;
     }
@@ -777,6 +793,9 @@ int CMerkleTx::SetMerkleBranch(const CBlock* pblock)
     if (!pindex || !pindex->IsInMainChain())
         return 0;
 
+    if (!pindexBest)
+        return 0;
+
     return pindexBest->nHeight - pindex->nHeight + 1;
 }
 
@@ -789,9 +808,9 @@ int CMerkleTx::SetMerkleBranch(const CBlock* pblock)
 bool CTransaction::CheckTransaction() const
 {
     // Basic checks that don't depend on any context
-    if (vin.empty())
+    if (vin.empty() && !IsShielded())
         return DoS(10, error("CTransaction::CheckTransaction() : vin empty"));
-    if (vout.empty())
+    if (vout.empty() && !IsShielded())
         return DoS(10, error("CTransaction::CheckTransaction() : vout empty"));
     // Size limits
     if (::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION) > MAX_BLOCK_SIZE)
@@ -857,6 +876,101 @@ bool CTransaction::CheckTransaction() const
         };
     };
 
+    if (IsShielded())
+    {
+        if (IsCoinBase())
+            return DoS(100, error("CTransaction::CheckTransaction() : shielded transaction cannot be coinbase"));
+        if (IsCoinStake() && nVersion != SHIELDED_TX_VERSION_NULLSTAKE && nVersion != SHIELDED_TX_VERSION_NULLSTAKE_V2 && nVersion != SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+            return DoS(100, error("CTransaction::CheckTransaction() : shielded transaction cannot be coinstake"));
+
+        if (vShieldedSpend.empty() && vShieldedOutput.empty())
+            return DoS(100, error("CTransaction::CheckTransaction() : shielded tx has no shielded components"));
+
+        if (vShieldedSpend.size() > MAX_SHIELDED_INPUTS)
+            return DoS(100, error("CTransaction::CheckTransaction() : too many shielded spends (%u > %u)",
+                                  (unsigned int)vShieldedSpend.size(), (unsigned int)MAX_SHIELDED_INPUTS));
+        if (vShieldedOutput.size() > MAX_SHIELDED_OUTPUTS)
+            return DoS(100, error("CTransaction::CheckTransaction() : too many shielded outputs (%u > %u)",
+                                  (unsigned int)vShieldedOutput.size(), (unsigned int)MAX_SHIELDED_OUTPUTS));
+
+        if (nValueBalance < -MAX_MONEY || nValueBalance > MAX_MONEY)
+            return DoS(100, error("CTransaction::CheckTransaction() : shielded nValueBalance out of range"));
+
+        set<uint256> vNullifiers;
+        for (const CShieldedSpendDescription& spend : vShieldedSpend)
+        {
+            if (spend.nullifier == 0)
+                return DoS(100, error("CTransaction::CheckTransaction() : zero shielded nullifier"));
+
+            if (vNullifiers.count(spend.nullifier))
+                return DoS(100, error("CTransaction::CheckTransaction() : duplicate shielded nullifier"));
+            vNullifiers.insert(spend.nullifier);
+        }
+
+        if (IsDSP())
+        {
+            if (nBestHeight < FORK_HEIGHT_DSP)
+                return DoS(100, error("CTransaction::CheckTransaction() : DSP transactions not active until height %d", FORK_HEIGHT_DSP));
+
+            if (nPrivacyMode > PRIVACY_MODE_MASK)
+                return DoS(100, error("CTransaction::CheckTransaction() : invalid privacy mode %d (max 7)", nPrivacyMode));
+
+            bool fHideAmount   = DSP_HideAmount(nPrivacyMode);
+            bool fHideSender   = DSP_HideSender(nPrivacyMode);
+            bool fHideReceiver = DSP_HideReceiver(nPrivacyMode);
+
+            for (size_t i = 0; i < vShieldedSpend.size(); i++)
+            {
+                const CShieldedSpendDescription& spend = vShieldedSpend[i];
+                if (!fHideAmount)
+                {
+                    if (spend.nPlaintextValue < 0 || spend.nPlaintextValue > MAX_MONEY)
+                        return DoS(100, error("CTransaction::CheckTransaction() : DSP spend %u invalid plaintext value", (unsigned int)i));
+                    if (spend.vchPlaintextBlind.size() != 32)
+                        return DoS(100, error("CTransaction::CheckTransaction() : DSP spend %u missing blinding factor", (unsigned int)i));
+                }
+                else
+                {
+                    if (spend.nPlaintextValue != -1)
+                        return DoS(100, error("CTransaction::CheckTransaction() : DSP spend %u has plaintext value in hidden-amount mode", (unsigned int)i));
+                    if (!spend.vchPlaintextBlind.empty())
+                        return DoS(100, error("CTransaction::CheckTransaction() : DSP spend %u has blinding factor in hidden-amount mode", (unsigned int)i));
+                }
+                if (!fHideSender)
+                {
+                    if (!spend.vchLelantusProof.empty() || !spend.vAnonSet.empty())
+                        return DoS(100, error("CTransaction::CheckTransaction() : DSP spend %u has Lelantus proof in public-sender mode", (unsigned int)i));
+                }
+            }
+
+            for (size_t i = 0; i < vShieldedOutput.size(); i++)
+            {
+                const CShieldedOutputDescription& output = vShieldedOutput[i];
+                if (!fHideAmount)
+                {
+                    if (output.nPlaintextValue < 0 || output.nPlaintextValue > MAX_MONEY)
+                        return DoS(100, error("CTransaction::CheckTransaction() : DSP output %u invalid plaintext value", (unsigned int)i));
+                    if (output.vchPlaintextBlind.size() != 32)
+                        return DoS(100, error("CTransaction::CheckTransaction() : DSP output %u missing blinding factor", (unsigned int)i));
+                }
+                else
+                {
+                    if (output.nPlaintextValue != -1)
+                        return DoS(100, error("CTransaction::CheckTransaction() : DSP output %u has plaintext value in hidden-amount mode", (unsigned int)i));
+                    if (!output.vchPlaintextBlind.empty())
+                        return DoS(100, error("CTransaction::CheckTransaction() : DSP output %u has blinding factor in hidden-amount mode", (unsigned int)i));
+                }
+                if (!fHideReceiver)
+                {
+                    if (!output.vchEncCiphertext.empty())
+                        return DoS(100, error("CTransaction::CheckTransaction() : DSP output %u has ciphertext in public-receiver mode", (unsigned int)i));
+                    if (output.vchRecipientScript.empty())
+                        return DoS(100, error("CTransaction::CheckTransaction() : DSP output %u missing recipient in public-receiver mode", (unsigned int)i));
+                }
+            }
+        }
+    };
+
     if (IsCoinBase())
     {
         if (vin[0].scriptSig.size() < 2 || vin[0].scriptSig.size() > 100)
@@ -886,8 +1000,7 @@ int64_t CTransaction::GetMinFee(unsigned int nBlockSize, enum GetMinFee_mode mod
 {
     // Base fee is either MIN_TX_FEE or MIN_RELAY_TX_FEE for standard txns, and MIN_TX_FEE_ANON for anon txns
 
-    // -- force GMF_ANON if anon txn
-    if (nVersion == ANON_TXN_VERSION)
+    if (nVersion == ANON_TXN_VERSION || IsShielded())
         mode = GMF_ANON;
 
     int64_t nBaseFee;
@@ -926,7 +1039,9 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                         bool* pfMissingInputs, bool fOnlyCheckWithoutAdding)
 {
     AssertLockHeld(cs_main);
-    printf("CTxMemPool::accept, fCheckInputs = %d, fOnlyCheckWithoutAdding = %d\n", fCheckInputs, fOnlyCheckWithoutAdding);
+    printf("CTxMemPool::accept, fCheckInputs = %d, fOnlyCheckWithoutAdding = %d, ver=%d, vin=%u, vout=%u, vSS=%u, vSO=%u\n",
+           fCheckInputs, fOnlyCheckWithoutAdding, tx.nVersion, (unsigned)tx.vin.size(),
+           (unsigned)tx.vout.size(), (unsigned)tx.vShieldedSpend.size(), (unsigned)tx.vShieldedOutput.size());
     if (pfMissingInputs)
         *pfMissingInputs = false;
 
@@ -1016,10 +1131,16 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
 
             nFees = tx.GetValueIn(mapInputs) - tx.GetValueOut();
 
+            if (tx.IsShielded() && tx.nValueBalance != 0)
+                nFees += tx.nValueBalance;
+
             GetMinFee_mode feeMode = GMF_RELAY;
 
             if (tx.nVersion == ANON_TXN_VERSION)
             {
+                if (nBestHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)
+                    return error("CTxMemPool::accept() : ring signature transactions (ANON_TXN_VERSION) deprecated after height %d. Use shielded transactions.", FORK_HEIGHT_RINGSIG_DEPRECATION);
+
                 int64_t nSumAnon;
                 if (!tx.CheckAnonInputs(txdb, nSumAnon, fInvalid, true))
                 {
@@ -1034,6 +1155,227 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
 
                 feeMode = GMF_ANON;
             };
+
+            if (tx.IsShielded())
+            {
+                if (pindexBest && pindexBest->nHeight < FORK_HEIGHT_SHIELDED)
+                    return error("CTxMemPool::accept() : shielded tx rejected before fork height %d", FORK_HEIGHT_SHIELDED);
+
+                for (const CShieldedSpendDescription& spend : tx.vShieldedSpend)
+                {
+                    CShieldedNullifierSpent nfs;
+                    if (txdb.ReadShieldedNullifier(spend.nullifier, nfs))
+                        return error("CTxMemPool::accept() : shielded nullifier %s already spent",
+                                     spend.nullifier.ToString().substr(0,10).c_str());
+
+                    CShieldedNullifierSpent nfsMem;
+                    if (lookupShieldedNullifier(spend.nullifier, nfsMem))
+                        return error("CTxMemPool::accept() : shielded nullifier %s already in mempool",
+                                     spend.nullifier.ToString().substr(0,10).c_str());
+
+                    if (!txdb.ReadShieldedAnchor(spend.anchor))
+                        return error("CTxMemPool::accept() : shielded anchor %s not found",
+                                     spend.anchor.ToString().substr(0,10).c_str());
+                    int nAnchorHeight = 0;
+                    if (txdb.ReadShieldedAnchorHeight(spend.anchor, nAnchorHeight))
+                    {
+                        if (nBestHeight - nAnchorHeight < MIN_SHIELDED_SPEND_DEPTH)
+                            return error("CTxMemPool::accept() : shielded anchor %s too recent (height=%d, need %d confirmations)",
+                                         spend.anchor.ToString().substr(0,10).c_str(),
+                                         nAnchorHeight, MIN_SHIELDED_SPEND_DEPTH);
+                    }
+                }
+
+                int64_t nTransparentIn = tx.GetValueIn(mapInputs);
+                int64_t nTransparentOut = tx.GetValueOut();
+
+                int64_t nEffectiveIn = nTransparentIn;
+                if (tx.nValueBalance > 0)
+                {
+                    if (nEffectiveIn > MAX_MONEY - tx.nValueBalance)
+                        return error("CTxMemPool::accept() : nEffectiveIn overflow");
+                    nEffectiveIn += tx.nValueBalance;
+                }
+
+                int64_t nEffectiveOut = nTransparentOut;
+                if (tx.nValueBalance < 0)
+                {
+                    if (tx.nValueBalance == std::numeric_limits<int64_t>::min())
+                        return error("CTxMemPool::accept() : nValueBalance is INT64_MIN");
+                    int64_t nAbsBalance = -tx.nValueBalance;
+                    if (nEffectiveOut > MAX_MONEY - nAbsBalance)
+                        return error("CTxMemPool::accept() : nEffectiveOut overflow");
+                    nEffectiveOut += nAbsBalance;
+                }
+
+                if (nEffectiveIn < nEffectiveOut)
+                    return error("CTxMemPool::accept() : shielded value balance mismatch (in=%" PRId64 " out=%" PRId64 ")",
+                                 nEffectiveIn, nEffectiveOut);
+
+                nFees = nEffectiveIn - nEffectiveOut;
+
+                if (!CZKContext::IsInitialized())
+                    return error("CTxMemPool::accept() : ZK context not initialized, cannot validate shielded tx");
+
+                {
+                    uint256 sighash = tx.GetBindingSigHash();
+
+                    bool fHideAmount   = tx.IsDSP() ? DSP_HideAmount(tx.nPrivacyMode)   : true;
+                    bool fHideSender   = tx.IsDSP() ? DSP_HideSender(tx.nPrivacyMode)   : true;
+
+                    if (nBestHeight >= FORK_HEIGHT_FCMP_VALIDATION && !tx.vShieldedSpend.empty()
+                        && tx.nVersion < SHIELDED_TX_VERSION_FCMP)
+                    {
+                        return error("CTxMemPool::accept() : tx version %d with shielded spends rejected after FCMP fork (need version >= %d)",
+                                     tx.nVersion, SHIELDED_TX_VERSION_FCMP);
+                    }
+
+                    if (tx.nVersion >= SHIELDED_TX_VERSION_FCMP && nBestHeight >= FORK_HEIGHT_FCMP_VALIDATION
+                        && !tx.vShieldedSpend.empty())
+                    {
+                        for (size_t j = 0; j < tx.vShieldedSpend.size(); j++)
+                        {
+                            if (tx.vShieldedSpend[j].fcmpProof.IsNull())
+                                return error("CTxMemPool::accept() : FCMP version tx spend %u missing mandatory FCMP proof", (unsigned)j);
+                        }
+                    }
+
+                    CCurveTreeNode fcmpRootNode;
+                    if (tx.nVersion >= SHIELDED_TX_VERSION_FCMP && nBestHeight >= FORK_HEIGHT_FCMP_VALIDATION
+                        && !tx.vShieldedSpend.empty())
+                    {
+                        CCurveTree memCurveTree;
+                        CTxDB txdb("r");
+                        txdb.ReadCurveTree(memCurveTree);
+                        memCurveTree.RebuildParentNodes();
+                        fcmpRootNode = memCurveTree.GetRootNode();
+                    }
+
+                    for (size_t i = 0; i < tx.vShieldedSpend.size(); i++)
+                    {
+                        if (fHideAmount)
+                        {
+                            if (!VerifyBulletproofRangeProof(tx.vShieldedSpend[i].cv, tx.vShieldedSpend[i].rangeProof))
+                                return error("CTxMemPool::accept() : shielded spend %d range proof failed", (int)i);
+                        }
+                        else
+                        {
+                            if (!VerifyPedersenCommitment(tx.vShieldedSpend[i].cv,
+                                                           tx.vShieldedSpend[i].nPlaintextValue,
+                                                           tx.vShieldedSpend[i].vchPlaintextBlind))
+                                return error("CTxMemPool::accept() : DSP spend %d commitment opening proof failed", (int)i);
+                        }
+
+                        if (tx.vShieldedSpend[i].vchSpendAuthSig.empty() || tx.vShieldedSpend[i].vchRk.empty())
+                            return error("CTxMemPool::accept() : shielded spend %d missing spend auth signature or rk", (int)i);
+
+                        if (!VerifySpendAuthSignature(tx.vShieldedSpend[i].vchRk, sighash, tx.vShieldedSpend[i].vchSpendAuthSig))
+                            return error("CTxMemPool::accept() : shielded spend %d spend auth signature failed", (int)i);
+
+                        if (fHideSender)
+                        {
+                            if (tx.vShieldedSpend[i].vchLelantusProof.empty() || tx.vShieldedSpend[i].vAnonSet.empty())
+                                return error("CTxMemPool::accept() : shielded spend %d missing mandatory Lelantus proof", (int)i);
+
+                            if ((int)tx.vShieldedSpend[i].vAnonSet.size() < LELANTUS_MIN_SET_SIZE)
+                                return error("CTxMemPool::accept() : shielded spend %d anonymity set size %d below minimum %d",
+                                             (int)i, (int)tx.vShieldedSpend[i].vAnonSet.size(), LELANTUS_MIN_SET_SIZE);
+
+                            {
+                                // Verify all vAnonSet commitments exist on-chain
+                                {
+                                    CTxDB txdb("r");
+                                    std::set<std::vector<unsigned char>> setChainCommitments;
+                                    uint64_t nCommitCount = 0;
+                                    txdb.ReadShieldedCommitmentCount(nCommitCount);
+                                    for (uint64_t ci = 0; ci < nCommitCount; ci++)
+                                    {
+                                        CPedersenCommitment chainCommit;
+                                        if (txdb.ReadShieldedCommitment(ci, chainCommit))
+                                            setChainCommitments.insert(chainCommit.vchCommitment);
+                                    }
+
+                                    for (size_t j = 0; j < tx.vShieldedSpend[i].vAnonSet.size(); j++)
+                                    {
+                                        if (setChainCommitments.find(tx.vShieldedSpend[i].vAnonSet[j].vchCommitment) == setChainCommitments.end())
+                                            return error("CTxMemPool::accept() : shielded spend %d anonymity set commitment %d not found in chain state", (int)i, (int)j);
+                                    }
+                                }
+
+                                CAnonymitySet anonSet;
+                                anonSet.vCommitments = tx.vShieldedSpend[i].vAnonSet;
+                                CLelantusProof proof;
+                                proof.vchProof = tx.vShieldedSpend[i].vchLelantusProof;
+                                proof.serialNumber = tx.vShieldedSpend[i].lelantusSerial;
+
+                                if (!VerifyLelantusProof(anonSet, proof, tx.vShieldedSpend[i].cv))
+                                    return error("CTxMemPool::accept() : shielded spend %d Lelantus proof failed", (int)i);
+                            }
+                        }
+
+                        // FCMP++ proof: required after FORK_HEIGHT_FCMP_VALIDATION for FCMP tx versions
+                        if (tx.nVersion >= SHIELDED_TX_VERSION_FCMP && nBestHeight >= FORK_HEIGHT_FCMP_VALIDATION)
+                        {
+                            if (tx.vShieldedSpend[i].fcmpProof.IsNull())
+                                return error("CTxMemPool::accept() : shielded spend %d missing FCMP++ proof (required post-fork)", (int)i);
+
+                            if (!VerifyFCMPProof(fcmpRootNode, tx.vShieldedSpend[i].fcmpProof, tx.vShieldedSpend[i].cv))
+                                return error("CTxMemPool::accept() : shielded spend %d FCMP++ proof failed", (int)i);
+                        }
+
+                        if (fDebug)
+                            printf("CTxMemPool::accept() : spend %d passed all checks\n", (int)i);
+                    }
+
+                    if (fDebug)
+                        printf("CTxMemPool::accept() : verifying output proofs\n");
+                    for (size_t i = 0; i < tx.vShieldedOutput.size(); i++)
+                    {
+                        if (fHideAmount)
+                        {
+                            if (!VerifyBulletproofRangeProof(tx.vShieldedOutput[i].cv, tx.vShieldedOutput[i].rangeProof))
+                                return error("CTxMemPool::accept() : shielded output %d range proof failed", (int)i);
+                        }
+                        else
+                        {
+                            if (!VerifyPedersenCommitment(tx.vShieldedOutput[i].cv,
+                                                           tx.vShieldedOutput[i].nPlaintextValue,
+                                                           tx.vShieldedOutput[i].vchPlaintextBlind))
+                                return error("CTxMemPool::accept() : DSP output %d commitment opening proof failed", (int)i);
+                        }
+                    }
+
+                    if (!fHideAmount)
+                    {
+                        int64_t nPlainIn = 0, nPlainOut = 0;
+                        for (size_t i = 0; i < tx.vShieldedSpend.size(); i++)
+                            nPlainIn += tx.vShieldedSpend[i].nPlaintextValue;
+                        for (size_t i = 0; i < tx.vShieldedOutput.size(); i++)
+                            nPlainOut += tx.vShieldedOutput[i].nPlaintextValue;
+                        if (nPlainIn - nPlainOut != tx.nValueBalance)
+                            return error("CTxMemPool::accept() : DSP plaintext value balance mismatch (in=%" PRId64 " out=%" PRId64 " balance=%" PRId64 ")",
+                                         nPlainIn, nPlainOut, tx.nValueBalance);
+                    }
+
+                    if (fDebug)
+                        printf("CTxMemPool::accept() : output proofs passed\n");
+
+                    if (tx.bindingSig.IsNull())
+                        return error("CTxMemPool::accept() : shielded tx missing mandatory binding signature");
+
+                    {
+                        std::vector<CPedersenCommitment> vInCommits, vOutCommits;
+                        for (size_t i = 0; i < tx.vShieldedSpend.size(); i++)
+                            vInCommits.push_back(tx.vShieldedSpend[i].cv);
+                        for (size_t i = 0; i < tx.vShieldedOutput.size(); i++)
+                            vOutCommits.push_back(tx.vShieldedOutput[i].cv);
+
+                        if (!VerifyBindingSignature(vInCommits, vOutCommits, tx.nValueBalance, sighash, tx.bindingSig.bindingSig))
+                            return error("CTxMemPool::accept() : shielded binding signature verification failed");
+                    }
+                }
+            };
+
             // Note: if you modify this code to accept non-standard transactions, then
             // you should add code here to check that the transaction does a
             // reasonable number of ECDSA signature verifications.
@@ -1077,6 +1419,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
 
             // Check against previous transactions
             // This is done last to help prevent CPU exhaustion denial-of-service attacks.
+            printf("CTxMemPool::accept() : calling ConnectInputs for %s\n", hash.ToString().substr(0,10).c_str());
             if (!tx.ConnectInputs(txdb, mapInputs, mapUnused, CDiskTxPos(1,1,1), pindexBest, false, false))
             {
                 return error("CTxMemPool::accept() : ConnectInputs failed %s", hash.ToString().substr(0,10).c_str());
@@ -1094,6 +1437,18 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                 remove(*ptxOld);
             }
             addUnchecked(hash, tx);
+
+            if (tx.IsShielded())
+            {
+                for (unsigned int i = 0; i < tx.vShieldedSpend.size(); i++)
+                {
+                    CShieldedNullifierSpent nfs;
+                    nfs.txnHash = hash;
+                    nfs.nIndex = i;
+                    insertShieldedNullifier(tx.vShieldedSpend[i].nullifier, nfs);
+                }
+            }
+
             //Add the TX to our Pending Names in Name DB
             hooks->AddToPendingNames(tx);
         }
@@ -1124,6 +1479,9 @@ bool AcceptableInputs(CTxMemPool& pool, const CTransaction &txo, bool fLimitFree
 
     if (!tx.CheckTransaction())
         return error("AcceptableInputs : CheckTransaction failed");
+
+    if (tx.IsShielded())
+        return error("AcceptableInputs : shielded transactions require full validation");
 
     // Coinbase is only valid in a block, not as a loose transaction
     if (tx.IsCoinBase())
@@ -1326,6 +1684,14 @@ bool CTxMemPool::remove(const CTransaction &tx, bool fRecursive)
                 };
             };
 
+            if (tx.IsShielded())
+            {
+                for (const CShieldedSpendDescription& spend : tx.vShieldedSpend)
+                {
+                    removeShieldedNullifier(spend.nullifier);
+                }
+            };
+
             nTransactionsUpdated++;
         };
     }
@@ -1344,6 +1710,40 @@ bool CTxMemPool::removeConflicts(const CTransaction &tx)
                 remove(txConflict, true);
         }
     }
+
+    if (tx.IsShielded())
+    {
+        for (const CShieldedSpendDescription& spend : tx.vShieldedSpend)
+        {
+            for (std::map<uint256, CTransaction>::iterator mi = mapTx.begin(); mi != mapTx.end(); )
+            {
+                const CTransaction& txPool = mi->second;
+                if (txPool.GetHash() == tx.GetHash()) { ++mi; continue; }
+                if (!txPool.IsShielded()) { ++mi; continue; }
+
+                bool fConflict = false;
+                for (const CShieldedSpendDescription& poolSpend : txPool.vShieldedSpend)
+                {
+                    if (poolSpend.nullifier == spend.nullifier)
+                    {
+                        fConflict = true;
+                        break;
+                    }
+                }
+                if (fConflict)
+                {
+                    CTransaction txToRemove = txPool;
+                    ++mi;
+                    remove(txToRemove, true);
+                }
+                else
+                {
+                    ++mi;
+                }
+            }
+        }
+    }
+
     return true;
 }
 
@@ -1353,6 +1753,7 @@ void CTxMemPool::clear()
     mapTx.clear();
     mapNextTx.clear();
     mapKeyImage.clear();
+    mapShieldedNullifier.clear();
     ++nTransactionsUpdated;
 }
 
@@ -1389,6 +1790,8 @@ int CMerkleTx::GetDepthInMainChainINTERNAL(CBlockIndex* &pindexRet) const
     }
 
     pindexRet = pindex;
+    if (!pindexBest)
+        return 0;
     return pindexBest->nHeight - pindex->nHeight + 1;
 }
 
@@ -1659,16 +2062,29 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
 {
   int64_t nSubsidy = 1 * COIN;
 
-  if (fTestNet) {
-       if (pindexBest->nHeight == 1)
+  // use nHeight parameter instead of pindexBest->nHeight
+  // to correctly compute reward during validation of non-tip blocks
+  if (fRegTest) {
+       // Regtest: simple flat reward for easy testing (similar to Bitcoin regtest)
+       if (nHeight == 0)
+           nSubsidy = 0;  // Genesis block has no spendable reward
+       else
+           nSubsidy = 50 * COIN;  // 50 INN per block
+
+       if (fDebug && GetBoolArg("-printcreation"))
+           printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
+
+       return nSubsidy + nFees;
+  } else if (fTestNet) {
+       if (nHeight == 1)
            nSubsidy = 1000000 * COIN;  // 10m INN Premine for Testnet for testing
-       else if (pindexBest->nHeight <= FAIR_LAUNCH_BLOCK) // Block 490, Instamine prevention
+       else if (nHeight <= FAIR_LAUNCH_BLOCK) // Block 490, Instamine prevention
            nSubsidy = 1 * COIN/2;
-       else if (pindexBest->nHeight <= 5000)
+       else if (nHeight <= 5000)
            nSubsidy = 10 * COIN;
-       else if (pindexBest->nHeight > 5000) // Block 5000
+       else if (nHeight > 5000) // Block 5000
            nSubsidy = 0;
-     else if (pindexBest->nHeight > 10000)
+     else if (nHeight > 10000)
           nSubsidy = 10000; // PoW Reward 0.0001
 
        if (fDebug && GetBoolArg("-printcreation"))
@@ -1676,115 +2092,116 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
 
        return nSubsidy + nFees;
    } else {
-  if (pindexBest->nHeight == 1)
+  // use nHeight parameter throughout (was pindexBest->nHeight)
+  if (nHeight == 1)
   		nSubsidy = 10350000 * COIN;  //Swap amount for Innova Chain v0.12 + Founders Fund 2.25 million
-  	else if (pindexBest->nHeight <= FAIR_LAUNCH_BLOCK) // Block 490, Instamine prevention
+  	else if (nHeight <= FAIR_LAUNCH_BLOCK) // Block 490, Instamine prevention
       nSubsidy = 0.165 * COIN/2;
-  	else if (pindexBest->nHeight <= 5000)
+  	else if (nHeight <= 5000)
   		nSubsidy = 0.33 * COIN;
-    else if (pindexBest->nHeight <= 10000)
+    else if (nHeight <= 10000)
     	nSubsidy = 0.66 * COIN;
-    else if (pindexBest->nHeight <= 15000)
+    else if (nHeight <= 15000)
       nSubsidy = 0.99 * COIN;
-    else if (pindexBest->nHeight <= 20000)
+    else if (nHeight <= 20000)
     	nSubsidy = 1.32 * COIN;
-    else if (pindexBest->nHeight <= 25000)
+    else if (nHeight <= 25000)
       nSubsidy = 1.65 * COIN;
-  	else if (pindexBest->nHeight <= 27500)
+  	else if (nHeight <= 27500)
   		nSubsidy = 1.485 * COIN;
-    else if (pindexBest->nHeight <= 30000)
+    else if (nHeight <= 30000)
     	nSubsidy = 1.32 * COIN;
-    else if (pindexBest->nHeight <= 32500)
+    else if (nHeight <= 32500)
       nSubsidy = 1.155 * COIN;
-    else if (pindexBest->nHeight <= 35000)
+    else if (nHeight <= 35000)
       nSubsidy = 0.99 * COIN;
-    else if (pindexBest->nHeight <= 37500)
+    else if (nHeight <= 37500)
       nSubsidy = 0.825 * COIN;
-  	else if (pindexBest->nHeight <= 40000)
+  	else if (nHeight <= 40000)
   		nSubsidy = 0.66 * COIN;
-    else if (pindexBest->nHeight <= 42500)
+    else if (nHeight <= 42500)
     	nSubsidy = 0.495 * COIN;
-    else if (pindexBest->nHeight <= 45000)
+    else if (nHeight <= 45000)
     	nSubsidy = 0.33 * COIN;
-    else if (pindexBest->nHeight <= 47500)
+    else if (nHeight <= 47500)
     	nSubsidy = 0.165 * COIN;
-    else if (pindexBest->nHeight <= 50000)
+    else if (nHeight <= 50000)
       nSubsidy = 0.0825 * COIN;
-    else if (pindexBest->nHeight > ZERO_POW_BLOCK && pindexBest->nHeight < 2000000)
+    else if (nHeight > ZERO_POW_BLOCK && nHeight < 2000000)
       nSubsidy = 0 * COIN;
-    else if (pindexBest->nHeight > 2000000 && pindexBest->nHeight <= 2080000) // Hard Fork roll back - Innova Foundation Fund hack
+    else if (nHeight > 2000000 && nHeight <= 2080000) // Hard Fork roll back - Innova Foundation Fund hack
       nSubsidy = 1 * COIN;
-    else if (pindexBest->nHeight <= 2150000)
+    else if (nHeight <= 2150000)
       nSubsidy = 0.5 * COIN;
-    else if (pindexBest->nHeight <= 2400000)
+    else if (nHeight <= 2400000)
       nSubsidy = 0.1 * COIN;
-    else if (pindexBest->nHeight <= 2700000) // New PoW Structure restarts here
+    else if (nHeight <= 2700000) // New PoW Structure restarts here
       nSubsidy = 0.0001 * COIN;
-    else if (pindexBest->nHeight <= 2750000) // 0.15 Coin PoW Reward to release 7,500 INN in 50,000 blocks
+    else if (nHeight <= 2750000) // 0.15 Coin PoW Reward to release 7,500 INN in 50,000 blocks
       nSubsidy = 0.15 * COIN;
-    else if (pindexBest->nHeight <= 3000000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
+    else if (nHeight <= 3000000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
       nSubsidy = 0.2 * COIN;
-    else if (pindexBest->nHeight <= 3250000) // 0.25 Coin PoW Reward to release 62,500 INN in 250,000 blocks
+    else if (nHeight <= 3250000) // 0.25 Coin PoW Reward to release 62,500 INN in 250,000 blocks
       nSubsidy = 0.25 * COIN;
-    else if (pindexBest->nHeight <= 3500000) // 0.5 Coin PoW Reward to release 125,000 INN in 250,000 blocks
+    else if (nHeight <= 3500000) // 0.5 Coin PoW Reward to release 125,000 INN in 250,000 blocks
       nSubsidy = 0.5 * COIN;
-    else if (pindexBest->nHeight <= 3750000) // 0.75 Coin PoW Reward to release 187,500 INN in 250,000 blocks
+    else if (nHeight <= 3750000) // 0.75 Coin PoW Reward to release 187,500 INN in 250,000 blocks
       nSubsidy = 0.75 * COIN;
-    else if (pindexBest->nHeight <= 4000000) // 0.5 Coin PoW Reward to release 125,000 INN in 250,000 blocks
+    else if (nHeight <= 4000000) // 0.5 Coin PoW Reward to release 125,000 INN in 250,000 blocks
       nSubsidy = 0.5 * COIN;
-    else if (pindexBest->nHeight <= 4025000) // 1 Coin PoW Reward for peak payout in new cycle to release 1 CollateralNode in 25,000 blocks!!
+    else if (nHeight <= 4025000) // 1 Coin PoW Reward for peak payout in new cycle to release 1 CollateralNode in 25,000 blocks!!
       nSubsidy = 1 * COIN;
-    else if (pindexBest->nHeight <= 4250000) // 0.5 Coin PoW Reward to release 112,500 INN in 225,000 blocks
+    else if (nHeight <= 4250000) // 0.5 Coin PoW Reward to release 112,500 INN in 225,000 blocks
       nSubsidy = 0.5 * COIN;
-    else if (pindexBest->nHeight <= 4500000) // 0.25 Coin PoW Reward to release 62,500 INN in 250,000 blocks
+    else if (nHeight <= 4500000) // 0.25 Coin PoW Reward to release 62,500 INN in 250,000 blocks
       nSubsidy = 0.25 * COIN;
-    else if (pindexBest->nHeight <= 4750000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
+    else if (nHeight <= 4750000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
       nSubsidy = 0.2 * COIN;
-    else if (pindexBest->nHeight <= 5000000) // 0.15 Coin PoW Reward to release 37,500 INN in 250,000 blocks
+    else if (nHeight <= 5000000) // 0.15 Coin PoW Reward to release 37,500 INN in 250,000 blocks
       nSubsidy = 0.15 * COIN;
-    else if (pindexBest->nHeight <= 5250000) // 0.1 Coin PoW Reward to release 1 CollateralNode in 250,000 blocks
+    else if (nHeight <= 5250000) // 0.1 Coin PoW Reward to release 1 CollateralNode in 250,000 blocks
       nSubsidy = 0.1 * COIN;
-    else if (pindexBest->nHeight <= 5500000) // 0.05 Coin PoW Reward to release 12,500 INN in 250,000 blocks
+    else if (nHeight <= 5500000) // 0.05 Coin PoW Reward to release 12,500 INN in 250,000 blocks
       nSubsidy = 0.05 * COIN;
-    else if (pindexBest->nHeight <= 5750000) // 0.01 Coin PoW Reward to release 2,500 INN in 250,000 blocks
+    else if (nHeight <= 5750000) // 0.01 Coin PoW Reward to release 2,500 INN in 250,000 blocks
       nSubsidy = 0.01 * COIN;
-    else if (pindexBest->nHeight <= 6000000) // 0.1 Coin PoW Reward for peak payout in new cycle to release 1 Collateral Node in 250,000 blocks
+    else if (nHeight <= 6000000) // 0.1 Coin PoW Reward for peak payout in new cycle to release 1 Collateral Node in 250,000 blocks
       nSubsidy = 0.1 * COIN;
-    else if (pindexBest->nHeight <= 6250000) // 0.15 Coin PoW Reward to release 37,500 INN in 250,000 blocks
+    else if (nHeight <= 6250000) // 0.15 Coin PoW Reward to release 37,500 INN in 250,000 blocks
       nSubsidy = 0.15 * COIN;
-    else if (pindexBest->nHeight <= 6500000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
+    else if (nHeight <= 6500000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
       nSubsidy = 0.2 * COIN;
-    else if (pindexBest->nHeight <= 6750000) // 0.25 Coin PoW Reward to release 62,500 INN in 250,000 blocks
+    else if (nHeight <= 6750000) // 0.25 Coin PoW Reward to release 62,500 INN in 250,000 blocks
       nSubsidy = 0.25 * COIN;
-    else if (pindexBest->nHeight <= 7000000) // 0.5 Coin PoW Reward to release 125,000 INN in 250,000 blocks
+    else if (nHeight <= 7000000) // 0.5 Coin PoW Reward to release 125,000 INN in 250,000 blocks
       nSubsidy = 0.5 * COIN;
-    else if (pindexBest->nHeight <= 7250000) // 0.75 Coin PoW Reward to release 187,500 INN in 250,000 blocks
+    else if (nHeight <= 7250000) // 0.75 Coin PoW Reward to release 187,500 INN in 250,000 blocks
       nSubsidy = 0.75 * COIN;
-    else if (pindexBest->nHeight <= 7500000) // 0.5 Coin PoW Reward to release 125,000 INN in 250,000 blocks
+    else if (nHeight <= 7500000) // 0.5 Coin PoW Reward to release 125,000 INN in 250,000 blocks
       nSubsidy = 0.5 * COIN;
-    else if (pindexBest->nHeight <= 7525000) // 1 Coin PoW Reward for peak payout in new cycle to release 1 CollateralNode in 25,000 blocks!!
+    else if (nHeight <= 7525000) // 1 Coin PoW Reward for peak payout in new cycle to release 1 CollateralNode in 25,000 blocks!!
       nSubsidy = 1 * COIN;
-    else if (pindexBest->nHeight <= 7750000) // 0.5 Coin PoW Reward to release 112,500 INN in 225,000 blocks
+    else if (nHeight <= 7750000) // 0.5 Coin PoW Reward to release 112,500 INN in 225,000 blocks
       nSubsidy = 0.5 * COIN;
-    else if (pindexBest->nHeight <= 8000000) // 0.25 Coin PoW Reward to release 62,500 INN in 250,000 blocks
+    else if (nHeight <= 8000000) // 0.25 Coin PoW Reward to release 62,500 INN in 250,000 blocks
       nSubsidy = 0.25 * COIN;
-    else if (pindexBest->nHeight <= 8250000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
+    else if (nHeight <= 8250000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
       nSubsidy = 0.2 * COIN;
-    else if (pindexBest->nHeight <= 8500000) // 0.15 Coin PoW Reward to release 37,500 INN in 250,000 blocks
+    else if (nHeight <= 8500000) // 0.15 Coin PoW Reward to release 37,500 INN in 250,000 blocks
       nSubsidy = 0.15 * COIN;
-    else if (pindexBest->nHeight <= 8750000) // 0.1 Coin PoW Reward to release 1 CollateralNode in 250,000 blocks
+    else if (nHeight <= 8750000) // 0.1 Coin PoW Reward to release 1 CollateralNode in 250,000 blocks
       nSubsidy = 0.1 * COIN;
-    else if (pindexBest->nHeight <= 9000000) // 0.05 Coin PoW Reward to release 12,500 INN in 250,000 blocks
+    else if (nHeight <= 9000000) // 0.05 Coin PoW Reward to release 12,500 INN in 250,000 blocks
       nSubsidy = 0.05 * COIN;
-    else if (pindexBest->nHeight <= 9250000) // 0.01 Coin PoW Reward to release 2,500 INN in 250,000 blocks
+    else if (nHeight <= 9250000) // 0.01 Coin PoW Reward to release 2,500 INN in 250,000 blocks
       nSubsidy = 0.01 * COIN;
-    else if (pindexBest->nHeight <= 9500000) // 0.05 Coin PoW Reward to release 12,500 INN in 250,000 blocks
+    else if (nHeight <= 9500000) // 0.05 Coin PoW Reward to release 12,500 INN in 250,000 blocks
       nSubsidy = 0.05 * COIN;
-    else if (pindexBest->nHeight <= 9750000) // 0.1 Coin PoW Reward to release 1 CollateralNode in 250,000 blocks
+    else if (nHeight <= 9750000) // 0.1 Coin PoW Reward to release 1 CollateralNode in 250,000 blocks
       nSubsidy = 0.1 * COIN;
-    else if (pindexBest->nHeight <= 10000000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
+    else if (nHeight <= 10000000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
       nSubsidy = 0.2 * COIN;
-    else if (pindexBest->nHeight >= 10000000) // 0.0001 Coin PoW Reward to release ~200 INN per year
+    else if (nHeight >= 10000000) // 0.0001 Coin PoW Reward to release ~200 INN per year
       nSubsidy = 0.0001 * COIN; // Final PoW Reward 0.0001 INN @ block 10 mln
 
     if (fDebug && GetBoolArg("-printcreation"))
@@ -1799,18 +2216,21 @@ const int YEARLY_BLOCKCOUNT = 2103792; // Amount of Blocks per year
 // Proof of Stake miner's coin stake reward based on coin age spent (coin-days)
 int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees)
 {
-	if (pindexBest->nHeight > (YEARLY_BLOCKCOUNT*9000)) // It's Over 9000!! [years] - Vegeta
+    // CON-AUDIT-2: Guard pindexBest NULL, use nBestHeight for reward calculation
+    int nHeight = 0;
+    {
+        LOCK(cs_main);
+        if (pindexBest)
+            nHeight = pindexBest->nHeight;
+    }
+    if (nHeight > (YEARLY_BLOCKCOUNT*9000)) // It's Over 9000!! [years] - Vegeta
         return nFees;
 
     int64_t nRewardCoinYear;
     nRewardCoinYear = COIN_YEAR_REWARD; // 0.06 6%
 
     int64_t nSubsidy;
-    nSubsidy = nCoinAge * nRewardCoinYear / 365; // Updated on block 500
-
-    // PoS Fixed InNoVa
-    if (pindexBest->nHeight >= MAINNET_POSFIX || fTestNet)
-        nSubsidy = nCoinAge * nRewardCoinYear / 365;
+    nSubsidy = nCoinAge / 365 * nRewardCoinYear + nCoinAge % 365 * nRewardCoinYear / 365;
 
     if (fDebug && GetBoolArg("-printcreation"))
         printf("GetProofOfStakeReward(): create=%s nCoinAge=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nCoinAge);
@@ -1881,8 +2301,30 @@ unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfS
         return bnTargetLimit.GetCompact(); // second block
 
     int64_t nActualSpacing = pindexPrev->GetBlockTime() - pindexPrevPrev->GetBlockTime();
-    if (nActualSpacing < 0)
-        nActualSpacing = nTargetSpacing;
+
+    // Clamp nActualSpacing (tighter bounds post-fork, negative-only pre-fork)
+    int nNextHeight = pindexLast->nHeight + 1;
+    if (nNextHeight < FORK_HEIGHT_TIGHTER_DRIFT)
+    {
+        if (nActualSpacing < 0)
+            nActualSpacing = nTargetSpacing;
+    }
+    else
+    {
+        int64_t nMinSpacing = (int64_t)nTargetSpacing / 10;
+        if (nMinSpacing < 1) nMinSpacing = 1;
+        int64_t nMaxSpacing = (int64_t)nTargetSpacing * 10;
+
+        if (nActualSpacing < nMinSpacing)
+        {
+            if (nActualSpacing < 0)
+                printf("WARNING: GetNextTargetRequired() : negative actual spacing %" PRId64 " (clamping to %" PRId64 ")\n",
+                       nActualSpacing, nMinSpacing);
+            nActualSpacing = nMinSpacing;
+        }
+        if (nActualSpacing > nMaxSpacing)
+            nActualSpacing = nMaxSpacing;
+    }
 
     // ppcoin: target change every block
     // ppcoin: retarget with exponential moving toward target spacing
@@ -1894,6 +2336,15 @@ unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfS
 
     if (bnNew <= 0 || bnNew > bnTargetLimit)
         bnNew = bnTargetLimit;
+
+    // Testnet PoW difficulty cap so CPU mining stays feasible
+    if (fTestNet && !fProofOfStake)
+    {
+        CBigNum bnTestnetCap;
+        bnTestnetCap.SetCompact(0x1e0fffff);
+        if (bnNew < bnTestnetCap)
+            bnNew = bnTestnetCap;
+    }
 
     return bnNew.GetCompact();
 }
@@ -1928,6 +2379,8 @@ bool IsSynchronized() {
 
 bool IsInitialBlockDownload()
 {
+    if (fRegTest && pindexBest != NULL)
+        return false;
     if (pindexBest == NULL || nBestHeight < Checkpoints::GetTotalBlocksEstimate() || nBestHeight < (GetNumBlocksOfPeers() - nCoinbaseMaturity*2))
         return true;
     static int64_t nLastUpdate;
@@ -1960,21 +2413,33 @@ void static InvalidChainFound(CBlockIndex* pindexNew)
     {
         nBestInvalidTrust = pindexNew->nChainTrust;
         CTxDB().WriteBestInvalidTrust(CBigNum(nBestInvalidTrust));
-        uiInterface.NotifyBlocksChanged(pindexBest->nHeight, GetNumBlocksOfPeers());
+        if (pindexBest)
+        {
+            static int64_t nLastInvalidChainNotify = 0;
+            int64_t nNow = GetTime();
+            if (nNow - nLastInvalidChainNotify >= 5)
+            {
+                nLastInvalidChainNotify = nNow;
+                uiInterface.NotifyBlocksChanged(pindexBest->nHeight, GetNumBlocksOfPeers());
+            }
+        }
     }
 
-    uint256 nBestInvalidBlockTrust = pindexNew->nChainTrust - pindexNew->pprev->nChainTrust;
-    uint256 nBestBlockTrust = pindexBest->nHeight != 0 ? (pindexBest->nChainTrust - pindexBest->pprev->nChainTrust) : pindexBest->nChainTrust;
+    uint256 nBestInvalidBlockTrust = (pindexNew->nHeight != 0 && pindexNew->pprev != NULL) ? (pindexNew->nChainTrust - pindexNew->pprev->nChainTrust) : pindexNew->nChainTrust;
 
     printf("InvalidChainFound: invalid block=%s  height=%d  trust=%s  blocktrust=%" PRId64"  date=%s\n",
       pindexNew->GetBlockHash().ToString().substr(0,20).c_str(), pindexNew->nHeight,
       CBigNum(pindexNew->nChainTrust).ToString().c_str(), nBestInvalidBlockTrust.Get64(),
       DateTimeStrFormat("%x %H:%M:%S", pindexNew->GetBlockTime()).c_str());
-    printf("InvalidChainFound:  current best=%s  height=%d  trust=%s  blocktrust=%" PRId64"  date=%s\n",
-      hashBestChain.ToString().substr(0,20).c_str(), nBestHeight,
-      CBigNum(pindexBest->nChainTrust).ToString().c_str(),
-      nBestBlockTrust.Get64(),
-      DateTimeStrFormat("%x %H:%M:%S", pindexBest->GetBlockTime()).c_str());
+    if (pindexBest)
+    {
+        uint256 nBestBlockTrust = (pindexBest->nHeight != 0 && pindexBest->pprev != NULL) ? (pindexBest->nChainTrust - pindexBest->pprev->nChainTrust) : pindexBest->nChainTrust;
+        printf("InvalidChainFound:  current best=%s  height=%d  trust=%s  blocktrust=%" PRId64"  date=%s\n",
+          hashBestChain.ToString().substr(0,20).c_str(), nBestHeight,
+          CBigNum(pindexBest->nChainTrust).ToString().c_str(),
+          nBestBlockTrust.Get64(),
+          DateTimeStrFormat("%x %H:%M:%S", pindexBest->GetBlockTime()).c_str());
+    }
 }
 
 
@@ -1998,6 +2463,7 @@ void Misbehaving(NodeId pnode, int howmuch)
     {
         if(pn->GetId() == pnode)
         {
+            LOCK(pn->cs_nMisbehavior);
             pn->nMisbehavior += howmuch;
             int banscore = GetArg("-banscore", 100);
             if (pn->nMisbehavior >= banscore)
@@ -2119,7 +2585,8 @@ bool CTransaction::FetchInputs(CTxDB& txdb, const map<uint256, CTxIndex>& mapTes
             continue;
 
         const COutPoint prevout = vin[i].prevout;
-        assert(inputsRet.count(prevout.hash) != 0);
+        if (inputsRet.count(prevout.hash) == 0)
+            return DoS(100, error("ConnectInputs() : missing input %s", prevout.hash.ToString().substr(0,10).c_str()));
         const CTxIndex& txindex = inputsRet[prevout.hash].first;
         const CTransaction& txPrev = inputsRet[prevout.hash].second;
         if (prevout.n >= txPrev.vout.size() || prevout.n >= txindex.vSpent.size())
@@ -2368,7 +2835,7 @@ unsigned int CTransaction::GetP2SHSigOpCount(const MapPrevTx& inputs) const
 }
 
 bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTxIndex>& mapTestPool, const CDiskTxPos& posThisTx,
-    const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, unsigned int flags, bool fValidateSig)
+    const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, unsigned int flags, bool fValidateSig, bool fSkipFCMP)
 {
     // Take over previous transactions' spent pointers
     // fBlock is true when this is called from AcceptBlock when a new best-block is added to the blockchain
@@ -2385,7 +2852,8 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
             if (nVersion == ANON_TXN_VERSION && vin[i].IsAnonInput())
                 continue;
             COutPoint prevout = vin[i].prevout;
-            assert(inputs.count(prevout.hash) > 0);
+            if (inputs.count(prevout.hash) == 0)
+                return DoS(100, error("ConnectInputs() : missing input %s", prevout.hash.ToString().c_str()));
             CTxIndex& txindex = inputs[prevout.hash].first;
             CTransaction& txPrev = inputs[prevout.hash].second;
 
@@ -2417,7 +2885,8 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                 && vin[i].IsAnonInput())
                 continue;
             COutPoint prevout = vin[i].prevout;
-            assert(inputs.count(prevout.hash) > 0);
+            if (inputs.count(prevout.hash) == 0)
+                return DoS(100, error("ConnectInputs() : missing input %s", prevout.hash.ToString().c_str()));
             CTxIndex& txindex = inputs[prevout.hash].first;
             CTransaction& txPrev = inputs[prevout.hash].second;
 
@@ -2428,7 +2897,7 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
             {
                 printf("WARNING: ConnectInputs() : %s double-spend attempt at %s\n",
                        GetHash().ToString().substr(0,10).c_str(), txindex.vSpent[prevout.n].ToString().c_str());
-                return fMiner ? false : error("ConnectInputs() : %s prev tx already used at %s", GetHash().ToString().substr(0,10).c_str(), txindex.vSpent[prevout.n].ToString().c_str());
+                return DoS(100, error("ConnectInputs() : %s prev tx already used at %s", GetHash().ToString().substr(0,10).c_str(), txindex.vSpent[prevout.n].ToString().c_str()));
             }
 
             {
@@ -2481,6 +2950,9 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
 
         if (nVersion == ANON_TXN_VERSION)
         {
+            if (pindexBlock && pindexBlock->nHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)
+                return DoS(100, error("ConnectInputs() : ring signature transactions deprecated after height %d", FORK_HEIGHT_RINGSIG_DEPRECATION));
+
             int64_t nSumAnon;
             bool fInvalid;
             if (!CheckAnonInputs(txdb, nSumAnon, fInvalid, true))
@@ -2492,13 +2964,211 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
             nValueIn += nSumAnon;
         };
 
+        if (IsShielded())
+        {
+            if (pindexBlock && pindexBlock->nHeight < FORK_HEIGHT_SHIELDED)
+                return DoS(100, error("ConnectInputs() : shielded tx before activation height %d", FORK_HEIGHT_SHIELDED));
+
+            for (const CShieldedSpendDescription& spend : vShieldedSpend)
+            {
+                CShieldedNullifierSpent nfs;
+                if (txdb.ReadShieldedNullifier(spend.nullifier, nfs))
+                    return DoS(100, error("ConnectInputs() : shielded nullifier %s already spent in tx %s",
+                                          spend.nullifier.ToString().substr(0,10).c_str(),
+                                          nfs.txnHash.ToString().substr(0,10).c_str()));
+
+                if (!txdb.ReadShieldedAnchor(spend.anchor))
+                    return DoS(100, error("ConnectInputs() : shielded anchor %s not found",
+                                          spend.anchor.ToString().substr(0,10).c_str()));
+                int nAnchorHeight = 0;
+                if (pindexBlock && txdb.ReadShieldedAnchorHeight(spend.anchor, nAnchorHeight))
+                {
+                    if (pindexBlock->nHeight - nAnchorHeight < MIN_SHIELDED_SPEND_DEPTH)
+                        return DoS(100, error("ConnectInputs() : shielded anchor %s too recent (height=%d, block=%d, need %d)",
+                                              spend.anchor.ToString().substr(0,10).c_str(),
+                                              nAnchorHeight, pindexBlock->nHeight, MIN_SHIELDED_SPEND_DEPTH));
+                }
+            }
+
+            if (nValueBalance > 0)
+            {
+                if (nValueIn > MAX_MONEY - nValueBalance)
+                    return DoS(100, error("ConnectInputs() : nValueIn overflow with shielded balance"));
+                nValueIn += nValueBalance;
+            }
+            if (nValueBalance == std::numeric_limits<int64_t>::min())
+                return DoS(100, error("ConnectInputs() : nValueBalance is INT64_MIN"));
+            int64_t nShieldedAbsorbed = (nValueBalance < 0) ? (-nValueBalance) : 0;
+
+            if (GetValueOut() > MAX_MONEY - nShieldedAbsorbed)
+                return DoS(100, error("ConnectInputs() : GetValueOut + nShieldedAbsorbed overflow"));
+
+            // NullStake coinstakes are exempt: the reward enters the shielded pool
+            // from block subsidy, not from transparent inputs. The reward amount
+            // is validated separately in ConnectBlock() against GetProofOfStakeReward().
+            if ((nVersion != SHIELDED_TX_VERSION_NULLSTAKE && nVersion != SHIELDED_TX_VERSION_NULLSTAKE_V2 && nVersion != SHIELDED_TX_VERSION_NULLSTAKE_COLD) || !IsCoinStake())
+            {
+                if (nValueIn < GetValueOut() + nShieldedAbsorbed)
+                    return DoS(100, error("ConnectInputs() : %s shielded value balance failed (in=%" PRId64 " out=%" PRId64 " shielded=%" PRId64 ")",
+                                          GetHash().ToString().substr(0,10).c_str(),
+                                          nValueIn, GetValueOut(), nShieldedAbsorbed));
+            }
+
+            // use DoS(100) to ban peers sending shielded tx when ZK unavailable
+            if (!CZKContext::IsInitialized())
+                return DoS(100, error("ConnectInputs() : ZK context not initialized, cannot validate shielded tx"));
+
+            {
+                uint256 sighash = GetBindingSigHash();
+
+                // DSP mode flags (default to fully private for v2000)
+                bool fHideAmount   = IsDSP() ? DSP_HideAmount(nPrivacyMode)   : true;
+                bool fHideSender   = IsDSP() ? DSP_HideSender(nPrivacyMode)   : true;
+
+                int nBlockHeight = pindexBlock ? pindexBlock->nHeight : nBestHeight;
+
+                // Post-fork enforcement: after FCMP fork, reject old tx versions with shielded spends
+                if (nBlockHeight >= FORK_HEIGHT_FCMP_VALIDATION && !vShieldedSpend.empty()
+                    && nVersion < SHIELDED_TX_VERSION_FCMP)
+                {
+                    return DoS(100, error("ConnectInputs() : tx version %d with shielded spends rejected after FCMP fork (need version >= %d)",
+                                          nVersion, SHIELDED_TX_VERSION_FCMP));
+                }
+
+                CCurveTreeNode ciRootNode;
+                if (nVersion >= SHIELDED_TX_VERSION_FCMP && nBlockHeight >= FORK_HEIGHT_FCMP_VALIDATION
+                    && !vShieldedSpend.empty())
+                {
+                    CCurveTree ciCurveTree;
+                    txdb.ReadCurveTree(ciCurveTree);
+                    ciCurveTree.RebuildParentNodes();
+                    ciRootNode = ciCurveTree.GetRootNode();
+                }
+
+                for (size_t i = 0; i < vShieldedSpend.size(); i++)
+                {
+                    if (fHideAmount)
+                    {
+                        if (!VerifyBulletproofRangeProof(vShieldedSpend[i].cv, vShieldedSpend[i].rangeProof))
+                            return DoS(100, error("ConnectInputs() : shielded spend %d range proof failed", (int)i));
+                    }
+                    else
+                    {
+                        if (!VerifyPedersenCommitment(vShieldedSpend[i].cv,
+                                                       vShieldedSpend[i].nPlaintextValue,
+                                                       vShieldedSpend[i].vchPlaintextBlind))
+                            return DoS(100, error("ConnectInputs() : DSP spend %d commitment opening proof failed", (int)i));
+                    }
+
+                    if (vShieldedSpend[i].vchSpendAuthSig.empty() || vShieldedSpend[i].vchRk.empty())
+                        return DoS(100, error("ConnectInputs() : shielded spend %d missing spend auth sig or rk", (int)i));
+
+                    if (!VerifySpendAuthSignature(vShieldedSpend[i].vchRk, sighash, vShieldedSpend[i].vchSpendAuthSig))
+                        return DoS(100, error("ConnectInputs() : shielded spend %d spend auth sig failed", (int)i));
+
+                    if (fHideSender)
+                    {
+                        if (vShieldedSpend[i].vchLelantusProof.empty() || vShieldedSpend[i].vAnonSet.empty())
+                            return DoS(100, error("ConnectInputs() : shielded spend %d missing mandatory Lelantus proof", (int)i));
+
+                        if ((int)vShieldedSpend[i].vAnonSet.size() < LELANTUS_MIN_SET_SIZE)
+                            return DoS(100, error("ConnectInputs() : shielded spend %d anonymity set size %d below minimum %d",
+                                                  (int)i, (int)vShieldedSpend[i].vAnonSet.size(), LELANTUS_MIN_SET_SIZE));
+
+                        {
+                            {
+                                std::set<std::vector<unsigned char>> setChainCommitments;
+                                uint64_t nCommitCount = 0;
+                                txdb.ReadShieldedCommitmentCount(nCommitCount);
+                                for (uint64_t ci = 0; ci < nCommitCount; ci++)
+                                {
+                                    CPedersenCommitment chainCommit;
+                                    if (txdb.ReadShieldedCommitment(ci, chainCommit))
+                                        setChainCommitments.insert(chainCommit.vchCommitment);
+                                }
+
+                                for (size_t j = 0; j < vShieldedSpend[i].vAnonSet.size(); j++)
+                                {
+                                    if (setChainCommitments.find(vShieldedSpend[i].vAnonSet[j].vchCommitment) == setChainCommitments.end())
+                                        return DoS(100, error("ConnectInputs() : shielded spend %d anonymity set commitment %d not in chain state", (int)i, (int)j));
+                                }
+                            }
+
+                            CAnonymitySet anonSet;
+                            anonSet.vCommitments = vShieldedSpend[i].vAnonSet;
+                            CLelantusProof proof;
+                            proof.vchProof = vShieldedSpend[i].vchLelantusProof;
+                            proof.serialNumber = vShieldedSpend[i].lelantusSerial;
+
+                            if (!VerifyLelantusProof(anonSet, proof, vShieldedSpend[i].cv))
+                                return DoS(100, error("ConnectInputs() : shielded spend %d Lelantus proof failed", (int)i));
+                        }
+                    }
+
+                    // FCMP++ proof: required after FORK_HEIGHT_FCMP_VALIDATION for FCMP tx versions
+                    if (!fSkipFCMP && nVersion >= SHIELDED_TX_VERSION_FCMP && nBlockHeight >= FORK_HEIGHT_FCMP_VALIDATION)
+                    {
+                        if (vShieldedSpend[i].fcmpProof.IsNull())
+                            return DoS(100, error("ConnectInputs() : shielded spend %d missing FCMP++ proof (required post-fork)", (int)i));
+
+                        if (!VerifyFCMPProof(ciRootNode, vShieldedSpend[i].fcmpProof, vShieldedSpend[i].cv))
+                            return DoS(100, error("ConnectInputs() : shielded spend %d FCMP++ proof failed", (int)i));
+                    }
+                }
+                for (size_t i = 0; i < vShieldedOutput.size(); i++)
+                {
+                    if (fHideAmount)
+                    {
+                        if (!VerifyBulletproofRangeProof(vShieldedOutput[i].cv, vShieldedOutput[i].rangeProof))
+                            return DoS(100, error("ConnectInputs() : shielded output %d range proof failed", (int)i));
+                    }
+                    else
+                    {
+                        if (!VerifyPedersenCommitment(vShieldedOutput[i].cv,
+                                                       vShieldedOutput[i].nPlaintextValue,
+                                                       vShieldedOutput[i].vchPlaintextBlind))
+                            return DoS(100, error("ConnectInputs() : DSP output %d commitment opening proof failed", (int)i));
+                    }
+                }
+
+                if (!fHideAmount)
+                {
+                    int64_t nPlainIn = 0, nPlainOut = 0;
+                    for (size_t i = 0; i < vShieldedSpend.size(); i++)
+                        nPlainIn += vShieldedSpend[i].nPlaintextValue;
+                    for (size_t i = 0; i < vShieldedOutput.size(); i++)
+                        nPlainOut += vShieldedOutput[i].nPlaintextValue;
+                    if (nPlainIn - nPlainOut != nValueBalance)
+                        return DoS(100, error("ConnectInputs() : DSP plaintext value balance mismatch"));
+                }
+
+                if (bindingSig.IsNull())
+                    return DoS(100, error("ConnectInputs() : shielded tx missing mandatory binding signature"));
+
+                {
+                    std::vector<CPedersenCommitment> vInCommits, vOutCommits;
+                    for (size_t i = 0; i < vShieldedSpend.size(); i++)
+                        vInCommits.push_back(vShieldedSpend[i].cv);
+                    for (size_t i = 0; i < vShieldedOutput.size(); i++)
+                        vOutCommits.push_back(vShieldedOutput[i].cv);
+
+                    if (!VerifyBindingSignature(vInCommits, vOutCommits, nValueBalance, sighash, bindingSig.bindingSig))
+                        return DoS(100, error("ConnectInputs() : shielded binding signature verification failed"));
+                }
+            }
+        };
+
         if (!IsCoinStake())
         {
-            if (nValueIn < GetValueOut())
+            int64_t nEffectiveOut = GetValueOut();
+            if (IsShielded() && nValueBalance < 0)
+                nEffectiveOut += (-nValueBalance); // shielded value absorbed from transparent
+
+            if (nValueIn < nEffectiveOut)
                 return DoS(100, error("ConnectInputs() : %s value in < value out", GetHash().ToString().substr(0,10).c_str()));
 
             // Tally transaction fees
-            int64_t nTxFee = nValueIn - GetValueOut();
+            int64_t nTxFee = nValueIn - nEffectiveOut;
             if (nTxFee < 0)
                 return DoS(100, error("ConnectInputs() : %s nTxFee < 0", GetHash().ToString().substr(0,10).c_str()));
 
@@ -2521,6 +3191,65 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
     for (int i = vtx.size()-1; i >= 0; i--)
         if (!vtx[i].DisconnectInputs(txdb))
             return false;
+
+    if (pindex->nHeight >= FORK_HEIGHT_SHIELDED)
+    {
+        for (const CTransaction& tx : vtx)
+        {
+            if (!tx.IsShielded())
+                continue;
+
+            for (const CShieldedSpendDescription& spend : tx.vShieldedSpend)
+            {
+                txdb.EraseShieldedNullifier(spend.nullifier);
+            }
+
+            int64_t nShieldedPool = 0;
+            txdb.ReadShieldedPoolValue(nShieldedPool);
+            nShieldedPool += tx.nValueBalance; // reverse the subtraction done in ConnectBlock
+            txdb.WriteShieldedPoolValue(nShieldedPool);
+            nShieldedPoolValue = nShieldedPool;
+        }
+
+        CIncrementalMerkleTree currentTree;
+        if (txdb.ReadShieldedTree(currentTree))
+        {
+            uint256 currentRoot = currentTree.Root();
+            txdb.EraseShieldedAnchor(currentRoot);
+        }
+
+        CIncrementalMerkleTree prevTree;
+        if (txdb.ReadShieldedTreeAtBlock(pindex->GetBlockHash(), prevTree))
+        {
+            txdb.WriteShieldedTree(prevTree);
+
+            txdb.WriteShieldedCommitmentCount(prevTree.Size());
+        }
+
+        if (pindex->nHeight >= FORK_HEIGHT_FCMP)
+        {
+            CCurveTree restoredCurveTree;
+            if (txdb.ReadCurveTreeAtBlock(pindex->GetBlockHash(), restoredCurveTree))
+            {
+                txdb.WriteCurveTree(restoredCurveTree);
+            }
+            else
+            {
+                // fallback: O(n) rebuild
+                printf("DisconnectBlock() : WARNING - Curve Tree snapshot not found for block %s, falling back to O(n) rebuild\n",
+                       pindex->GetBlockHash().ToString().substr(0,16).c_str());
+                uint64_t nRestoredCount = prevTree.Size();
+                for (uint64_t i = 0; i < nRestoredCount; i++)
+                {
+                    CPedersenCommitment commit;
+                    if (txdb.ReadShieldedCommitment(i, commit))
+                        restoredCurveTree.InsertLeaf(commit);
+                }
+                txdb.WriteCurveTree(restoredCurveTree);
+            }
+            txdb.EraseCurveTreeAtBlock(pindex->GetBlockHash());
+        }
+    }
 
     // Update block index on disk without changing it in memory.
     // The memory index structure will be changed after the db commits.
@@ -2656,26 +3385,65 @@ static int64_t nTimeIndex = 0;
 static int64_t nTimeCallbacks = 0;
 static int64_t nTimeTotal = 0;
 
+// Seed deterministic unspendable commitments at fork height for Lelantus anonymity set.
+// Each seed: blind_i = SHA256("Innova_Genesis_Seed_" || i), cv_i = blind_i * G (zero value),
+// cmu_i = SHA256("Innova_Genesis_Seed_CMU_" || i). Unspendable: no spending key, no nullifier derivation.
+bool SeedGenesisCommitments(CTxDB& txdb, CIncrementalMerkleTree& shieldedTree, CCurveTree* pCurveTree)
+{
+    for (int i = 0; i < LELANTUS_GENESIS_SEED_COUNT; i++)
+    {
+        // Deterministic blinding factor
+        CHashWriter ssBlind(SER_GETHASH, 0);
+        ssBlind << std::string("Innova_Genesis_Seed_");
+        ssBlind << i;
+        uint256 blindHash = ssBlind.GetHash();
+        std::vector<unsigned char> vchBlind(blindHash.begin(), blindHash.begin() + 32);
+
+        CPedersenCommitment cv;
+        if (!CreateBlindCommitment(vchBlind, cv))
+            return error("SeedGenesisCommitments() : CreateBlindCommitment failed for seed %d", i);
+
+        // Deterministic note commitment (Merkle leaf)
+        CHashWriter ssCmu(SER_GETHASH, 0);
+        ssCmu << std::string("Innova_Genesis_Seed_CMU_");
+        ssCmu << i;
+        uint256 cmu = ssCmu.GetHash();
+
+        // Append to Merkle tree and write to commitment DB
+        shieldedTree.Append(cmu);
+        uint64_t nCommitIdx = shieldedTree.Size() - 1;
+        if (!txdb.WriteShieldedCommitment(nCommitIdx, cv))
+            return error("SeedGenesisCommitments() : WriteShieldedCommitment failed for seed %d", i);
+
+        if (pCurveTree)
+            pCurveTree->InsertLeaf(cv);
+    }
+
+    if (fDebug)
+        printf("SeedGenesisCommitments() : seeded %d genesis commitments for Lelantus anonymity set\n",
+               LELANTUS_GENESIS_SEED_COUNT);
+    return true;
+}
+
 bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, bool fWriteNames)
 {
     // Check it again in case a previous version let a bad block in, but skip BlockSig checking
     if (!CheckBlock(!fJustCheck, !fJustCheck, false))
         return false;
 
-    unsigned int flags = 0;
+    // strict script verification post-fork
+    unsigned int flags = SCRIPT_VERIFY_NONE;
 
     if (pindex->nHeight == 2080000 && GetHash() == uint256("0x000000001f9f67efdef5c02fc3da51f308011443c9e5dae6a79a11dba88525e8"))
         return DoS(100, error("ConnectBlock() : reject block from bad chain"));
-    /* // Currently don't need
-    if(V3(nTime))
+
+    // Strict script verification after fork height
+    if (pindex->nHeight >= FORK_HEIGHT_TIGHTER_DRIFT)
     {
-      flags |= SCRIPT_VERIFY_NULLDUMMY |
-               SCRIPT_VERIFY_STRICTENC |
-               SCRIPT_VERIFY_ALLOW_EMPTY_SIG |
-               SCRIPT_VERIFY_FIX_HASHTYPE |
-               SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
+        flags = MANDATORY_SCRIPT_VERIFY_FLAGS |
+                SCRIPT_VERIFY_STRICTENC |
+                SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
     }
-    */
 
     //// issue here: it doesn't know the version
     unsigned int nTxPos;
@@ -2701,6 +3469,50 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
     vPos.reserve(vtx.size());
 
     std::vector<CAmount> vFees (vtx.size(), 0);
+
+    bool fFCMPBatchVerified = false;
+    if (pindex->nHeight >= FORK_HEIGHT_FCMP_VALIDATION)
+    {
+        std::vector<CFCMPProof> vBlockProofs;
+        std::vector<CPedersenCommitment> vBlockCommitments;
+
+        for (unsigned int i = 1; i < vtx.size(); i++)
+        {
+            if (vtx[i].nVersion >= SHIELDED_TX_VERSION_FCMP)
+            {
+                if (vtx[i].vShieldedSpend.size() > 1000)
+                    return DoS(100, error("ConnectBlock() : tx %d has too many shielded spends (%u)", i, (unsigned int)vtx[i].vShieldedSpend.size()));
+
+                for (const auto& spend : vtx[i].vShieldedSpend)
+                {
+                    if (spend.fcmpProof.IsNull())
+                        return DoS(100, error("ConnectBlock() : tx %d spend missing FCMP++ proof", i));
+                    vBlockProofs.push_back(spend.fcmpProof);
+                    vBlockCommitments.push_back(spend.cv);
+                }
+            }
+        }
+
+        if (!vBlockProofs.empty())
+        {
+            CCurveTree curveTree;
+            // check ReadCurveTree return value
+            if (!txdb.ReadCurveTree(curveTree))
+                return DoS(100, error("ConnectBlock() : failed to read curve tree from database"));
+            curveTree.RebuildParentNodes();
+            CCurveTreeNode root = curveTree.GetRootNode();
+
+            if (!BatchVerifyFCMPProofs(root, vBlockProofs, vBlockCommitments))
+                return DoS(100, error("ConnectBlock() : batch FCMP++ proof verification failed"));
+
+            fFCMPBatchVerified = true;
+
+            if (fDebug)
+                printf("ConnectBlock() : batch verified %d FCMP++ proofs\n", (int)vBlockProofs.size());
+        }
+    }
+
+    std::set<uint256> setBlockNullifiers;
 
     for (CTransaction& tx : vtx)
     {
@@ -2736,12 +3548,27 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
         MapPrevTx mapInputs;
         if (tx.IsCoinBase())
-            nValueOut += tx.GetValueOut();
+        {
+            int64_t nCoinbaseValue;
+            try {
+                nCoinbaseValue = tx.GetValueOut();
+            } catch (const std::runtime_error& e) {
+                return DoS(100, error("ConnectBlock() : coinbase GetValueOut overflow: %s", e.what()));
+            }
+            nValueOut += nCoinbaseValue;
+        }
         else
         {
             bool fInvalid;
             if (!tx.FetchInputs(txdb, mapQueuedChanges, true, false, mapInputs, fInvalid))
                 return false;
+
+            for (const CShieldedSpendDescription& spend : tx.vShieldedSpend)
+            {
+                if (!setBlockNullifiers.insert(spend.nullifier).second)
+                    return DoS(100, error("ConnectBlock() : duplicate nullifier %s across txs in block",
+                                          spend.nullifier.ToString().substr(0,10).c_str()));
+            }
 
             // Add in sigops done by pay-to-script-hash inputs;
             // this is to prevent a "rogue miner" from creating
@@ -2755,6 +3582,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
             if (tx.nVersion == ANON_TXN_VERSION)
             {
+                // reject ring sig txs in blocks after deprecation fork
+                if (pindex->nHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)
+                    return DoS(100, error("ConnectBlock() : ring signature transactions deprecated after height %d", FORK_HEIGHT_RINGSIG_DEPRECATION));
+
                 int64_t nSumAnon;
                 if (!tx.CheckAnonInputs(txdb, nSumAnon, fInvalid, true))
                 {
@@ -2766,6 +3597,29 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                 nTxValueIn += nSumAnon;
             };
 
+            if (tx.IsShielded())
+            {
+                if (tx.nValueBalance > 0)
+                {
+                    if (tx.nValueBalance > std::numeric_limits<int64_t>::max() - nTxValueIn)
+                        return DoS(100, error("ConnectBlock() : shielded value balance overflow (unshield)"));
+                    nTxValueIn += tx.nValueBalance;
+                }
+                else if (tx.nValueBalance < 0)
+                {
+                    if (tx.nValueBalance == std::numeric_limits<int64_t>::min())
+                        return DoS(100, error("ConnectBlock() : shielded value balance INT64_MIN"));
+                    int64_t nAbsBalance = -tx.nValueBalance;
+                    if (nAbsBalance > std::numeric_limits<int64_t>::max() - nTxValueOut)
+                        return DoS(100, error("ConnectBlock() : shielded value balance overflow (shield)"));
+                    nTxValueOut += nAbsBalance;
+                }
+            }
+
+            if (nTxValueIn > std::numeric_limits<int64_t>::max() - nValueIn)
+                return DoS(100, error("ConnectBlock() : block value-in overflow"));
+            if (nTxValueOut > std::numeric_limits<int64_t>::max() - nValueOut)
+                return DoS(100, error("ConnectBlock() : block value-out overflow"));
             nValueIn += nTxValueIn;
             nValueOut += nTxValueOut;
             for (const CTxOut& out : tx.vout) {
@@ -2773,16 +3627,12 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                 nAmountBurned += out.nValue;
             }
             if (!tx.IsCoinStake()) {
-                for (unsigned int i = 0; i < vtx.size(); i++)
-                {
-                    vFees[i] = nTxValueIn - nTxValueOut;
-                }
                 nFees += nTxValueIn - nTxValueOut;
             }
             if (tx.IsCoinStake())
                 nStakeReward = nTxValueOut - nTxValueIn;
 
-            if (!tx.ConnectInputs(txdb, mapInputs, mapQueuedChanges, posThisTx, pindex, true, false, flags))
+            if (!tx.ConnectInputs(txdb, mapInputs, mapQueuedChanges, posThisTx, pindex, true, false, flags, true, fFCMPBatchVerified))
                 return false;
         }
 
@@ -2804,7 +3654,14 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
     if (IsProofOfWork())
     {
-        int64_t nReward = GetProofOfWorkReward(pindex->nHeight, nFees);
+        // Historical compatibility: the original code used pindexBest->nHeight
+        // (which equals pindex->nHeight - 1 during sequential block connection)
+        // instead of the block's own height. The entire reward schedule was built
+        // with this off-by-one behavior. Preserve it for historical blocks.
+        int nRewardHeight = pindex->nHeight;
+        if (pindex->nHeight < FORK_HEIGHT_TIGHTER_DRIFT && pindex->nHeight > 0)
+            nRewardHeight = pindex->nHeight - 1;
+        int64_t nReward = GetProofOfWorkReward(nRewardHeight, nFees);
         // Check coinbase reward
         if (vtx[0].GetValueOut() > nReward)
             return DoS(50, error("ConnectBlock() : coinbase reward exceeded (actual=%" PRId64" vs calculated=%" PRId64")",
@@ -2813,15 +3670,241 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
     }
     if (IsProofOfStake())
     {
-        // ppcoin: coin stake tx earns reward instead of paying fee
-        uint64_t nCoinAge;
-        if (!vtx[1].GetCoinAge(txdb, nCoinAge))
-            return error("ConnectBlock() : %s unable to get coin age for coinstake", vtx[1].GetHash().ToString().substr(0,10).c_str());
+        if (nStakeReward == 0 && !vtx[1].IsCoinStake())
+            return DoS(100, error("ConnectBlock() : PoS block but vtx[1] is not coinstake"));
 
-        int64_t nCalculatedStakeReward = GetProofOfStakeReward(nCoinAge, nFees);
+        if (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2)
+        {
+            if (pindex->nHeight < FORK_HEIGHT_NULLSTAKE_V2)
+                return DoS(100, error("ConnectBlock() : NullStake V2 coinstake before fork height"));
 
-        if (nStakeReward > nCalculatedStakeReward)
-            return DoS(100, error("ConnectBlock() : coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
+            if (vtx[1].nullstakeProofV2.IsNull())
+                return DoS(100, error("ConnectBlock() : NullStake V2 kernel proof missing"));
+
+            if (vtx[1].vShieldedSpend.empty())
+                return DoS(100, error("ConnectBlock() : NullStake V2 coinstake has no shielded spends"));
+
+            if (vtx[1].nullstakeProofV2.nTimeTx != nTime)
+                return DoS(100, error("ConnectBlock() : NullStake V2 nTimeTx %" PRId64 " != block time %" PRId64,
+                                       (int64_t)vtx[1].nullstakeProofV2.nTimeTx, (int64_t)nTime));
+
+            if (pindex->pprev)
+            {
+                if (vtx[1].nullstakeProofV2.nStakeModifier != pindex->pprev->nStakeModifier)
+                    return DoS(100, error("ConnectBlock() : NullStake V2 stake modifier mismatch (proof=0x%016" PRIx64 " chain=0x%016" PRIx64 ")",
+                                           vtx[1].nullstakeProofV2.nStakeModifier, pindex->pprev->nStakeModifier));
+            }
+
+            if (!VerifyNullStakeKernelProofV2(vtx[1].nullstakeProofV2,
+                                              vtx[1].vShieldedSpend[0].cv,
+                                              nBits))
+                return DoS(100, error("ConnectBlock() : NullStake V2 kernel proof invalid"));
+
+            CCurveTree nullstakeTree;
+            if (!txdb.ReadCurveTree(nullstakeTree))
+                return DoS(100, error("ConnectBlock() : failed to read curve tree for NullStake V2"));
+            nullstakeTree.RebuildParentNodes();
+
+            CCurveTreeNode nullstakeRoot = nullstakeTree.GetRootNode();
+            if (vtx[1].vShieldedSpend[0].fcmpProof.IsNull())
+                return DoS(100, error("ConnectBlock() : NullStake V2 stake FCMP proof missing"));
+            if (!VerifyFCMPProof(nullstakeRoot, vtx[1].vShieldedSpend[0].fcmpProof,
+                                  vtx[1].vShieldedSpend[0].cv))
+                return DoS(100, error("ConnectBlock() : NullStake V2 stake FCMP proof invalid"));
+
+            uint64_t nCoinAge = 1;  // Minimum coin-day for V2
+            int64_t nCalculatedStakeReward = GetProofOfStakeReward(nCoinAge, nFees);
+            if (nStakeReward > nCalculatedStakeReward)
+                return DoS(100, error("ConnectBlock() : NullStake V2 coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
+        }
+        else if (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+        {
+            if (pindex->nHeight < FORK_HEIGHT_NULLSTAKE_V3)
+                return DoS(100, error("ConnectBlock() : NullStake V3 cold stake coinstake before fork height"));
+
+            if (vtx[1].nullstakeProofV3.IsNull())
+                return DoS(100, error("ConnectBlock() : NullStake V3 kernel proof missing"));
+
+            if (vtx[1].vShieldedSpend.empty())
+                return DoS(100, error("ConnectBlock() : NullStake V3 coinstake has no shielded spends"));
+
+            // V3 proof size limit: 1024-constraint circuit → ~1,082 byte proof max
+            if (vtx[1].nullstakeProofV3.acProof.GetProofSize() > 2048)
+                return DoS(100, error("ConnectBlock() : NullStake V3 proof exceeds size limit (%u > 2048)",
+                                       (unsigned int)vtx[1].nullstakeProofV3.acProof.GetProofSize()));
+
+            if (vtx[1].nullstakeProofV3.nTimeTx != nTime)
+                return DoS(100, error("ConnectBlock() : NullStake V3 nTimeTx %" PRId64 " != block time %" PRId64,
+                                       (int64_t)vtx[1].nullstakeProofV3.nTimeTx, (int64_t)nTime));
+
+            {
+                uint256 zeroHash;
+                memset(zeroHash.begin(), 0, 32);
+                if (vtx[1].nullstakeProofV3.delegationHash == zeroHash)
+                    return DoS(100, error("ConnectBlock() : NullStake V3 delegation hash is zero"));
+            }
+
+            if (vtx[1].nullstakeProofV3.vchPkStake.size() != 33)
+                return DoS(100, error("ConnectBlock() : NullStake V3 pk_stake invalid size"));
+
+            if (pindex->pprev)
+            {
+                if (vtx[1].nullstakeProofV3.nStakeModifier != pindex->pprev->nStakeModifier)
+                    return DoS(100, error("ConnectBlock() : NullStake V3 stake modifier mismatch (proof=0x%016" PRIx64 " chain=0x%016" PRIx64 ")",
+                                           vtx[1].nullstakeProofV3.nStakeModifier, pindex->pprev->nStakeModifier));
+            }
+
+            if (!VerifyNullStakeKernelProofV3(vtx[1].nullstakeProofV3,
+                                              vtx[1].vShieldedSpend[0].cv,
+                                              nBits))
+                return DoS(100, error("ConnectBlock() : NullStake V3 kernel proof invalid"));
+
+            CCurveTree nullstakeV3Tree;
+            if (!txdb.ReadCurveTree(nullstakeV3Tree))
+                return DoS(100, error("ConnectBlock() : failed to read curve tree for NullStake V3"));
+            nullstakeV3Tree.RebuildParentNodes();
+
+            CCurveTreeNode nullstakeV3Root = nullstakeV3Tree.GetRootNode();
+            if (vtx[1].vShieldedSpend[0].fcmpProof.IsNull())
+                return DoS(100, error("ConnectBlock() : NullStake V3 stake FCMP proof missing"));
+            if (!VerifyFCMPProof(nullstakeV3Root, vtx[1].vShieldedSpend[0].fcmpProof,
+                                  vtx[1].vShieldedSpend[0].cv))
+                return DoS(100, error("ConnectBlock() : NullStake V3 stake FCMP proof invalid"));
+
+            // V3 reward: same conservative approach as V2
+            uint64_t nCoinAge = 1;
+            int64_t nCalculatedStakeReward = GetProofOfStakeReward(nCoinAge, nFees);
+            if (nStakeReward > nCalculatedStakeReward)
+                return DoS(100, error("ConnectBlock() : NullStake V3 coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
+        }
+        else if (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE)
+        {
+            if (pindex->nHeight < FORK_HEIGHT_NULLSTAKE)
+                return DoS(100, error("ConnectBlock() : NullStake coinstake before fork height"));
+
+            if (vtx[1].nullstakeProof.IsNull())
+                return DoS(100, error("ConnectBlock() : NullStake kernel proof missing"));
+
+            if (vtx[1].vShieldedSpend.empty())
+                return DoS(100, error("ConnectBlock() : NullStake coinstake has no shielded spends"));
+
+            if (vtx[1].nullstakeProof.nTimeTx != nTime)
+                return DoS(100, error("ConnectBlock() : NullStake nTimeTx %" PRId64 " != block time %" PRId64,
+                                       (int64_t)vtx[1].nullstakeProof.nTimeTx, (int64_t)nTime));
+
+            if (vtx[1].nullstakeProof.nBlockTimeFrom >= vtx[1].nullstakeProof.nTimeTx)
+                return DoS(100, error("ConnectBlock() : NullStake nBlockTimeFrom >= nTimeTx"));
+
+            {
+                int64_t nStakeAge = (int64_t)vtx[1].nullstakeProof.nTimeTx - (int64_t)vtx[1].nullstakeProof.nBlockTimeFrom;
+                if (nStakeAge < nStakeMinAge)
+                    return DoS(100, error("ConnectBlock() : NullStake stake age %" PRId64 " < minimum %" PRId64, nStakeAge, (int64_t)nStakeMinAge));
+                if (nStakeAge > 365 * 24 * 60 * 60)
+                    return DoS(50, error("ConnectBlock() : NullStake stake age %" PRId64 " exceeds 1 year", nStakeAge));
+            }
+
+            {
+                bool fFoundBlockTime = false;
+                CBlockIndex* pBlockFrom = NULL;
+                CBlockIndex* pWalk = pindex->pprev;
+                // increase lookback to cover nStakeMaxAge (90 days)
+                // With 15s blocks: 90 days = 518,400 blocks. Use 600,000 for margin.
+                // Was 1000 which only covered ~4.2 hours -- far less than 10-hour nStakeMinAge
+                for (int i = 0; i < 600000 && pWalk != NULL; i++, pWalk = pWalk->pprev)
+                {
+                    if ((int64_t)pWalk->nTime == (int64_t)vtx[1].nullstakeProof.nBlockTimeFrom)
+                    {
+                        fFoundBlockTime = true;
+                        pBlockFrom = pWalk;
+                        break;
+                    }
+                }
+                if (!fFoundBlockTime || pBlockFrom == NULL)
+                    return DoS(100, error("ConnectBlock() : NullStake nBlockTimeFrom does not match any recent block"));
+
+                // verify stake modifier matches chain state
+                uint64_t nExpectedStakeModifier = 0;
+                int nStakeModifierHeight = 0;
+                int64_t nStakeModifierTime = 0;
+                if (!GetKernelStakeModifier(pBlockFrom->GetBlockHash(), nExpectedStakeModifier,
+                                            nStakeModifierHeight, nStakeModifierTime, false))
+                    return DoS(100, error("ConnectBlock() : Failed to get stake modifier for NullStake proof"));
+
+                if (vtx[1].nullstakeProof.nStakeModifier != nExpectedStakeModifier)
+                    return DoS(100, error("ConnectBlock() : NullStake stake modifier mismatch (proof=0x%016" PRIx64 " chain=0x%016" PRIx64 ")",
+                                          vtx[1].nullstakeProof.nStakeModifier, nExpectedStakeModifier));
+            }
+
+            int64_t nWeight = GetWeight((int64_t)vtx[1].nullstakeProof.nBlockTimeFrom,
+                                         (int64_t)vtx[1].nullstakeProof.nTimeTx);
+
+            if (!VerifyNullStakeKernelProof(vtx[1].nullstakeProof,
+                                            vtx[1].vShieldedSpend[0].cv,
+                                            nBits, nWeight))
+                return DoS(100, error("ConnectBlock() : NullStake kernel proof invalid"));
+
+            CCurveTree nullstakeTree;
+            if (!txdb.ReadCurveTree(nullstakeTree))
+                return DoS(100, error("ConnectBlock() : failed to read curve tree for NullStake"));
+            nullstakeTree.RebuildParentNodes();
+
+            CCurveTreeNode nullstakeRoot = nullstakeTree.GetRootNode();
+            if (vtx[1].vShieldedSpend[0].fcmpProof.IsNull())
+                return DoS(100, error("ConnectBlock() : NullStake stake FCMP proof missing"));
+            if (!VerifyFCMPProof(nullstakeRoot, vtx[1].vShieldedSpend[0].fcmpProof,
+                                  vtx[1].vShieldedSpend[0].cv))
+                return DoS(100, error("ConnectBlock() : NullStake stake FCMP proof invalid"));
+
+            uint64_t nCoinAge = nWeight > 0 ? (uint64_t)nWeight : 1;
+            int64_t nCalculatedStakeReward = GetProofOfStakeReward(nCoinAge, nFees);
+            if (nStakeReward > nCalculatedStakeReward)
+                return DoS(100, error("ConnectBlock() : NullStake coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
+        }
+        else
+        {
+            uint64_t nCoinAge;
+            if (!vtx[1].GetCoinAge(txdb, nCoinAge))
+                return error("ConnectBlock() : %s unable to get coin age for coinstake", vtx[1].GetHash().ToString().substr(0,10).c_str());
+
+            int64_t nCalculatedStakeReward = GetProofOfStakeReward(nCoinAge, nFees);
+
+            if (nStakeReward > nCalculatedStakeReward)
+                return DoS(100, error("ConnectBlock() : coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
+        }
+
+        // Reject shielded coinstake unless NullStake version is allowed
+        if (pindex->nHeight >= FORK_HEIGHT_SHIELDED)
+        {
+            if (vtx[1].IsShielded())
+            {
+                // PRIV-AUDIT-3: After V2 fork, reject V1 proofs (they leak UTXO identity)
+                bool fNullStakeAllowed = (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE && pindex->nHeight >= FORK_HEIGHT_NULLSTAKE && pindex->nHeight < FORK_HEIGHT_NULLSTAKE_V2)
+                    || (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 && pindex->nHeight >= FORK_HEIGHT_NULLSTAKE_V2)
+                    || (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD && pindex->nHeight >= FORK_HEIGHT_NULLSTAKE_V3);
+                if (!fNullStakeAllowed)
+                    return DoS(100, error("ConnectBlock() : shielded transaction cannot be coinstake (Layer 2)"));
+            }
+
+            // Reject coinstake inputs from shielded transactions
+            if (vtx[1].nVersion != SHIELDED_TX_VERSION_NULLSTAKE && vtx[1].nVersion != SHIELDED_TX_VERSION_NULLSTAKE_V2 && vtx[1].nVersion != SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+            {
+                MapPrevTx mapShieldedCheck;
+                bool fShieldedInvalid = false;
+                if (vtx[1].FetchInputs(txdb, mapQueuedChanges, true, false, mapShieldedCheck, fShieldedInvalid))
+                {
+                    for (unsigned int j = 0; j < vtx[1].vin.size(); j++)
+                    {
+                        const COutPoint& prevout = vtx[1].vin[j].prevout;
+                        if (mapShieldedCheck.count(prevout.hash))
+                        {
+                            const CTransaction& txPrev = mapShieldedCheck[prevout.hash].second;
+                            if (txPrev.IsShielded())
+                                return DoS(100, error("ConnectBlock() : coinstake input from shielded transaction (Layer 3)"));
+                        }
+                    }
+                }
+            }
+        }
 
         if (pindex->nHeight >= FORK_HEIGHT_COLD_STAKING)
         {
@@ -2884,12 +3967,54 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                     if (i == coinstake.vout.size() - 1 && !IsPayToColdStaking(coinstake.vout[i].scriptPubKey))
                     {
                         int64_t nCNPayment = coinstake.vout[i].nValue;
+                        if (nCNPayment < 0 || !MoneyRange(nCNPayment))
+                            return DoS(100, error("ConnectBlock() : cold stake CN payment out of range"));
+                        if (nP2CSOutputValue > MAX_MONEY - nCNPayment)
+                            return DoS(100, error("ConnectBlock() : cold stake total output overflow"));
                         int64_t nTotalOutput = nP2CSOutputValue + nCNPayment;
+                        if (nTotalOutput < nP2CSInputValue)
+                            return DoS(100, error("ConnectBlock() : cold stake output less than input"));
                         int64_t nReward = nTotalOutput - nP2CSInputValue;
+                        if (!MoneyRange(nReward))
+                            return DoS(100, error("ConnectBlock() : cold stake reward out of range"));
 
-                        if (nReward > 0 && nCNPayment > nReward * 30 / 100)
+                        if (nReward > 0 && nCNPayment > 0 && (nCNPayment / 3 > nReward / 10 + 1))
                             return DoS(100, error("ConnectBlock() : cold stake CN payment %" PRId64 " exceeds 30%% of reward %" PRId64,
                                                   nCNPayment, nReward));
+
+                        // Verify CN payment goes to a legitimate collateralnode (post-fork only)
+                        if (nCNPayment > 0 && pindex->nHeight >= FORK_HEIGHT_CN_PAYMENT_VALIDATION)
+                        {
+                            CScript expectedPayee;
+                            bool fValidCNPayee = false;
+
+                            if (collateralnodePayments.GetBlockPayee(pindex->nHeight, expectedPayee))
+                            {
+                                fValidCNPayee = (coinstake.vout[i].scriptPubKey == expectedPayee);
+                            }
+
+                            // Fallback: check against active collateralnodes
+                            if (!fValidCNPayee && vecCollateralnodes.size() > 0)
+                            {
+                                LOCK(cs_collateralnodes);
+                                for (CCollateralNode& mn : vecCollateralnodes)
+                                {
+                                    if (mn.IsEnabled())
+                                    {
+                                        CScript mnPayee;
+                                        mnPayee.SetDestination(mn.pubkey.GetID());
+                                        if (coinstake.vout[i].scriptPubKey == mnPayee)
+                                        {
+                                            fValidCNPayee = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (!fValidCNPayee)
+                                return DoS(100, error("ConnectBlock() : cold stake CN payment to invalid payee (not a registered collateralnode)"));
+                        }
                         continue;
                     }
 
@@ -2933,7 +4058,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         }
     }
 
-    if(!fJustCheck && pindex->GetBlockTime() > GetTime() - 20*nCoinbaseMaturity && (pindex->nHeight < pindexBest->nHeight+5) && CollateralnodePayments == true)
+    if(!fJustCheck && pindex->GetBlockTime() > GetTime() - 20*nCoinbaseMaturity && CollateralnodePayments == true)
     {
         LOCK2(cs_main, mempool.cs);
 
@@ -2943,7 +4068,12 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         burnPayee = GetScriptForDestination(burnDestination.Get());
 
         if(IsProofOfStake() && pindexBest != NULL){
-            if(pindexBest->GetBlockHash() == hashPrevBlock){
+            // (reward goes entirely to shielded pool, no MN payment)
+            if (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE || vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 || vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+            {
+                // NullStake/V3: no collateralnode payments
+            }
+            else if(pindexBest->GetBlockHash() == hashPrevBlock){
 
                 // make sure the ranks are updated to prev block
                 GetCollateralnodeRanks(pindexBest);
@@ -3003,8 +4133,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                                         if (!fIsInitialDownload) {
                                             if (!CheckPoSCNPayment(pindex, vtx[1].vout[i].nValue, mn)) // CheckPoSCNPayment()
                                             {
-                                                if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) { //Update PoS CN Payments to not go out of sync
-													//printf("CheckBlock-POS() : Out-of-cycle collateralnode payment detected, rejecting block.");
+                                                if (pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) {
                                                     printf("CheckBlock-POS() : Out-of-cycle CollateralNode payment detected, rejecting block. rank:%d value:%s avg:%s payRate:%s payCount:%d\n",mn.nRank,FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageCNIncome).c_str(),FormatMoney(mn.payRate).c_str(), mn.payCount);
                                                 } else {
                                                     printf("CheckBlock-POS(): This collateralnode payment is too aggressive and will be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
@@ -3043,7 +4172,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
 
                     if (!foundPayee) {
-                        if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) {
+                        if (pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) {
                                     LOCK(cs_vNodes);
                                     for (CNode* pnode : vNodes)
                                     {
@@ -3059,7 +4188,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                             foundPayee = true;
                         }
                     } else if (paymentOK) {
-                        if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) {
+                        if (pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) {
                             if (fDebug) printf("CheckBlock-POS() : This payment has been determined as legitimate, and will be allowed.\n");
                         } else {
                             if (fDebug) printf("CheckBlock-POS() : This payment has been determined as legitimate, and will be allowed after block %d.\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
@@ -3070,10 +4199,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                         CTxDestination address1;
                         ExtractDestination(payee, address1);
                         CBitcoinAddress address2(address1);
-                        if(fDebug) { printf("CheckBlock-POS() : Couldn't find collateralnode payment(%d|%ld) or payee(%d|%s) nHeight %ld. \n", foundPaymentAmount, collateralnodePaymentAmount, foundPayee, address2.ToString().c_str(), pindexBest->nHeight+1); }
+                        if(fDebug) { printf("CheckBlock-POS() : Couldn't find collateralnode payment(%d|%ld) or payee(%d|%s) nHeight %d. \n", foundPaymentAmount, collateralnodePaymentAmount, foundPayee, address2.ToString().c_str(), pindex->nHeight+1); }
                         return DoS(100, error("CheckBlock-POS() : Couldn't find collateralnode payment or payee"));
                     } else {
-                        if(fDebug) { printf("CheckBlock-POS() : Found collateralnode payment %d\n", pindexBest->nHeight+1); }
+                        if(fDebug) { printf("CheckBlock-POS() : Found collateralnode payment %d\n", pindex->nHeight+1); }
                     }
                 } else {
                     if(fDebug) { printf("CheckBlock-POS() : Is initial download, skipping collateralnode payment check %ld\n", pindexBest->nHeight+1); }
@@ -3129,7 +4258,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                                     if (!fIsInitialDownload) {
                                         if (!CheckCNPayment(pindex, vtx[0].vout[i].nValue, mn)) // if MN is being paid and it's bottom 50% ranked, don't let it be paid.
                                         {
-                                            if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET)
+                                            if (pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET)
                                             {
                                                 printf("CheckBlock-POW() : Collateralnode overpayment detected, rejecting block. rank:%d value:%s avg:%s payRate:%s payCount:%d\n",mn.nRank,FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageCNIncome).c_str(),FormatMoney(mn.payRate).c_str(), mn.payCount);
                                             } else {
@@ -3170,7 +4299,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                     }
 
                     if (!foundPayee) {
-                        if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) {
+                        if (pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) {
                                 LOCK(cs_vNodes);
                                 for (CNode* pnode : vNodes)
                                 {
@@ -3186,7 +4315,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                             foundPayee = true;
                         }
                     } else if (paymentOK) {
-                        if (pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindexBest->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) {
+                        if (pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) {
                             if (fDebug) printf("CheckBlock-POW() : This payment has been determined as legitimate, and will be allowed.\n");
                         } else {
                             if (fDebug) printf("CheckBlock-POW() : This payment has been determined as legitimate, and will be allowed after block %d.\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
@@ -3199,16 +4328,16 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                         CTxDestination address1;
                         ExtractDestination(payee, address1);
                         CBitcoinAddress address2(address1);
-                        if(fDebug) { printf("CheckBlock-POW() : Couldn't find collateralnode payment(%d|%ld) or payee(%d|%s) nHeight %d. \n", foundPaymentAmount, collateralnodePaymentAmount, foundPayee, address2.ToString().c_str(), pindexBest->nHeight+1); }
+                        if(fDebug) { printf("CheckBlock-POW() : Couldn't find collateralnode payment(%d|%ld) or payee(%d|%s) nHeight %d. \n", foundPaymentAmount, collateralnodePaymentAmount, foundPayee, address2.ToString().c_str(), pindex->nHeight+1); }
                         return DoS(100, error("CheckBlock-POW() : Couldn't find collateralnode payment or payee"));
                     } else {
-                        if(fDebug) { printf("CheckBlock-POW() : Found collateralnode payment %ld\n", pindexBest->nHeight+1); }
+                        if(fDebug) { printf("CheckBlock-POW() : Found collateralnode payment %d\n", pindex->nHeight+1); }
                     }
                 } else {
-                    if(fDebug) { printf("CheckBlock-POW() : Is initial download, skipping collateralnode payment check %ld\n", pindexBest->nHeight+1); }
+                    if(fDebug) { printf("CheckBlock-POW() : Is initial download, skipping collateralnode payment check %d\n", pindex->nHeight+1); }
                 }
             } else {
-                if(fDebug) { printf("CheckBlock-POW() : Skipping collateralnode payment check - nHeight %ld Hash %s\n", pindexBest->nHeight+1, GetHash().ToString().c_str()); }
+                if(fDebug) { printf("CheckBlock-POW() : Skipping collateralnode payment check - nHeight %d Hash %s\n", pindex->nHeight+1, GetHash().ToString().c_str()); }
             }
         }
 
@@ -3221,11 +4350,120 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         }
     }
 
+    if (pindex->nHeight >= FORK_HEIGHT_SHIELDED && !fJustCheck)
+    {
+        CIncrementalMerkleTree shieldedTree;
+        if (pindex->pprev)
+            txdb.ReadShieldedTree(shieldedTree); // OK if not found (empty tree)
+
+        txdb.WriteShieldedTreeAtBlock(pindex->GetBlockHash(), shieldedTree);
+
+        CCurveTree curveTree;
+        if (pindex->nHeight >= FORK_HEIGHT_FCMP && pindex->pprev)
+            txdb.ReadCurveTree(curveTree); // OK if not found (empty)
+
+        if (pindex->nHeight >= FORK_HEIGHT_FCMP)
+            txdb.WriteCurveTreeAtBlock(pindex->GetBlockHash(), curveTree);
+
+        // Seed genesis commitments at the fork activation block
+        // These provide the initial Lelantus anonymity set (16 unspendable decoys)
+        if (pindex->nHeight == FORK_HEIGHT_SHIELDED)
+        {
+            CCurveTree* pCurveTreePtr = (pindex->nHeight >= FORK_HEIGHT_FCMP) ? &curveTree : nullptr;
+            if (!SeedGenesisCommitments(txdb, shieldedTree, pCurveTreePtr))
+                return error("ConnectBlock() : SeedGenesisCommitments failed");
+        }
+
+        int64_t nShieldedPool = 0;
+        txdb.ReadShieldedPoolValue(nShieldedPool); // OK if not found (zero)
+
+        // Catch cross-tx nullifier duplicates within this block
+        std::set<uint256> setBlockNullifiers;
+
+        for (const CTransaction& tx : vtx)
+        {
+            if (!tx.IsShielded())
+                continue;
+
+            for (unsigned int i = 0; i < tx.vShieldedSpend.size(); i++)
+            {
+                if (!setBlockNullifiers.insert(tx.vShieldedSpend[i].nullifier).second)
+                    return error("ConnectBlock() : duplicate nullifier %s across transactions in block",
+                                 tx.vShieldedSpend[i].nullifier.ToString().substr(0,10).c_str());
+
+                CShieldedNullifierSpent nfs;
+                nfs.txnHash = tx.GetHash();
+                nfs.nIndex = i;
+                if (!txdb.WriteShieldedNullifier(tx.vShieldedSpend[i].nullifier, nfs))
+                    return error("ConnectBlock() : WriteShieldedNullifier failed");
+            }
+
+            // Append note commitments to the Merkle tree and commitment index
+            for (const CShieldedOutputDescription& output : tx.vShieldedOutput)
+            {
+                shieldedTree.Append(output.cmu);
+
+                // Index Pedersen commitment for Lelantus anonymity set construction
+                uint64_t nCommitIdx = shieldedTree.Size() - 1;
+                if (!txdb.WriteShieldedCommitment(nCommitIdx, output.cv))
+                    return error("ConnectBlock() : WriteShieldedCommitment failed");
+
+                if (!txdb.WriteShieldedCommitmentHeight(nCommitIdx, pindex->nHeight))
+                    return error("ConnectBlock() : WriteShieldedCommitmentHeight failed");
+                // Reverse index for spend validation
+                if (!txdb.WriteShieldedCommitmentIndex(output.cv.vchCommitment, nCommitIdx))
+                    return error("ConnectBlock() : WriteShieldedCommitmentIndex failed");
+
+                if (pindex->nHeight >= FORK_HEIGHT_FCMP)
+                    curveTree.InsertLeaf(output.cv);
+            }
+
+            nShieldedPool -= tx.nValueBalance;
+
+            if (nShieldedPool < 0)
+                return error("ConnectBlock() : shielded pool would go negative (%" PRId64 "), inflation detected", nShieldedPool);
+        }
+
+        if (!txdb.WriteShieldedTree(shieldedTree))
+            return error("ConnectBlock() : WriteShieldedTree failed");
+        if (!txdb.WriteShieldedCommitmentCount(shieldedTree.Size()))
+            return error("ConnectBlock() : WriteShieldedCommitmentCount failed");
+
+        if (pindex->nHeight >= FORK_HEIGHT_FCMP)
+        {
+            if (!txdb.WriteCurveTree(curveTree))
+                return error("ConnectBlock() : WriteCurveTree failed");
+        }
+
+        uint256 treeRoot = shieldedTree.Root();
+        if (!txdb.WriteShieldedAnchor(treeRoot))
+            return error("ConnectBlock() : WriteShieldedAnchor failed");
+        // Only write anchor height for NEW anchors (don't reset age each block)
+        {
+            int nExistingHeight = 0;
+            if (!txdb.ReadShieldedAnchorHeight(treeRoot, nExistingHeight))
+            {
+                if (!txdb.WriteShieldedAnchorHeight(treeRoot, pindex->nHeight))
+                    return error("ConnectBlock() : WriteShieldedAnchorHeight failed");
+            }
+        }
+
+        if (!txdb.WriteShieldedPoolValue(nShieldedPool))
+            return error("ConnectBlock() : WriteShieldedPoolValue failed");
+
+        nShieldedPoolValue = nShieldedPool;
+
+        if (fDebug)
+            printf("ConnectBlock() : shielded tree root=%s, pool=%" PRId64 "\n",
+                   treeRoot.ToString().substr(0,10).c_str(), nShieldedPool);
+    }
+
     // ppcoin: track money supply and mint amount info
     pindex->nMint = nValueOut - nValueIn + nFees;
     pindex->nMoneySupply = (pindex->pprev? pindex->pprev->nMoneySupply : 0) + nValueOut - nValueIn;
     pindex->nMoneySupply -= nAmountBurned;
-    assert(pindex->nMoneySupply >= 0);
+    if (pindex->nMoneySupply < 0)
+        return error("ConnectBlock() : negative money supply at height %d", pindex->nHeight);
 
     // innova: collect valid name tx
     // NOTE: tx.UpdateCoins should not affect this loop, probably...
@@ -3406,6 +4644,13 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
     if (!txdb.TxnCommit())
         return error("Reorganize() : TxnCommit failed");
 
+    // Clear setStakeSeen so disconnected stakes don't block the new branch
+    for (CBlockIndex* pindex : vDisconnect)
+    {
+        if (pindex->IsProofOfStake())
+            setStakeSeen.erase(make_pair(pindex->prevoutStake, pindex->nStakeTime));
+    }
+
     // Disconnect shorter branch
     for (CBlockIndex* pindex : vDisconnect)
         if (pindex->pprev)
@@ -3416,9 +4661,29 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
         if (pindex->pprev)
             pindex->pprev->pnext = pindex;
 
-    // Resurrect memory transactions that were in the disconnected branch
+    // Resurrect memory transactions, re-validate shielded anchors
     for (CTransaction& tx : vResurrect)
+    {
+        if (tx.IsShielded())
+        {
+            bool fValidAnchors = true;
+            for (const CShieldedSpendDescription& spend : tx.vShieldedSpend)
+            {
+                if (!txdb.ReadShieldedAnchor(spend.anchor))
+                {
+                    fValidAnchors = false;
+                    if (fDebug)
+                        printf("Reorganize() : dropping shielded tx %s - anchor %s no longer valid\n",
+                               tx.GetHash().ToString().substr(0,10).c_str(),
+                               spend.anchor.ToString().substr(0,10).c_str());
+                    break;
+                }
+            }
+            if (!fValidAnchors)
+                continue; // Don't resurrect this tx - anchors are invalid
+        }
         tx.AcceptToMemoryPool(txdb);
+    }
 
     // Delete redundant memory transactions that are in the connected branch
     for (CTransaction& tx : vDelete) {
@@ -3448,8 +4713,8 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew)
     if (!txdb.TxnCommit())
         return error("SetBestChain() : TxnCommit failed");
 
-    // Add to current best branch
-    pindexNew->pprev->pnext = pindexNew;
+    if (pindexNew->pprev)
+        pindexNew->pprev->pnext = pindexNew;
 
     // Delete redundant memory transactions
     for (CTransaction& tx : vtx)
@@ -3541,7 +4806,7 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
     nTimeBestReceived = GetTime();
     mempool.AddTransactionsUpdated(1);
 
-    uint256 nBestBlockTrust = pindexBest->nHeight != 0 ? (pindexBest->nChainTrust - pindexBest->pprev->nChainTrust) : pindexBest->nChainTrust;
+    uint256 nBestBlockTrust = (pindexBest->nHeight != 0 && pindexBest->pprev != NULL) ? (pindexBest->nChainTrust - pindexBest->pprev->nChainTrust) : pindexBest->nChainTrust;
 
     printf("SetBestChain: new best=%s  height=%d  trust=%s  blocktrust=%" PRId64"  date=%s\n",
       hashBestChain.ToString().substr(0,20).c_str(), nBestHeight,
@@ -3611,7 +4876,11 @@ bool CTransaction::GetCoinAge(CTxDB& txdb, uint64_t& nCoinAge) const
             continue; // only count coins meeting min age requirement
 
         int64_t nValueIn = txPrev.vout[txin.prevout.n].nValue;
-        bnCentSecond += CBigNum(nValueIn) * (nTime-txPrev.nTime) / CENT;
+        // Cap coin age to 1 year (post-fork only)
+        int64_t nTimeDiff = nTime - txPrev.nTime;
+        if (nBestHeight >= FORK_HEIGHT_TIGHTER_DRIFT && nTimeDiff > 365 * 24 * 60 * 60)
+            nTimeDiff = 365 * 24 * 60 * 60;
+        bnCentSecond += CBigNum(nValueIn) * nTimeDiff / CENT;
 
         if (fDebug && GetBoolArg("-printcoinage"))
             printf("coin age nValueIn=%" PRId64" nTimeDiff=%d bnCentSecond=%s\n", nValueIn, nTime - txPrev.nTime, bnCentSecond.ToString().c_str());
@@ -3662,6 +4931,8 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
     if (miPrev != mapBlockIndex.end())
     {
         pindexNew->pprev = (*miPrev).second;
+        if (pindexNew->pprev->nHeight < 0)
+            return error("AddToBlockIndex() : pprev has invalid height %d", pindexNew->pprev->nHeight);
         pindexNew->nHeight = pindexNew->pprev->nHeight + 1;
     }
 
@@ -3714,7 +4985,21 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
         hashPrevBestCoinBase = vtx[0].GetHash();
     }
 
-    uiInterface.NotifyBlocksChanged(pindexNew->nHeight, GetNumBlocksOfPeers());
+    {
+        static int64_t nLastNotifyTime = 0;
+        static int nLastNotifyHeight = 0;
+        int64_t nNow = GetTimeMillis();
+        int nHeight = pindexNew->nHeight;
+        bool fNotify = !IsInitialBlockDownload()
+                       || (nNow - nLastNotifyTime > 2000)   // at least every 2 seconds
+                       || (nHeight - nLastNotifyHeight >= 500); // or every 500 blocks
+        if (fNotify)
+        {
+            uiInterface.NotifyBlocksChanged(nHeight, GetNumBlocksOfPeers());
+            nLastNotifyTime = nNow;
+            nLastNotifyHeight = nHeight;
+        }
+    }
     return true;
 }
 
@@ -3852,15 +5137,31 @@ bool CBlock::AcceptBlock()
         //if (!CheckProofOfStake(pindexPrev, vtx[1], nBits, hashProof, targetProofOfStake))
 		if (!CheckProofOfStake(vtx[1], nBits, hashProof, targetProofOfStake))
         {
-			printf("WARNING: AcceptBlock(): check proof-of-stake failed for block %s\n", hash.ToString().c_str());
-            //return error("AcceptBlock() : check proof-of-stake failed for block %s", hash.ToString().c_str());
-			return false; // do not error here as we expect this during initial block download
+            // Only penalize outside IBD (PoS verification needs UTXOs)
+            if (!IsInitialBlockDownload())
+            {
+                return DoS(50, error("AcceptBlock() : check proof-of-stake failed for block %s (peer penalized)",
+                                     hash.ToString().c_str()));
+            }
+			printf("WARNING: AcceptBlock(): check proof-of-stake failed for block %s (IBD - no penalty)\n", hash.ToString().c_str());
+			return false;
         }
     }
     // PoW is checked in CheckBlock()
     if (IsProofOfWork())
     {
         hashProof = GetPoWHash();
+    }
+
+    // Reject ring signature transactions after deprecation height
+    if (nHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)
+    {
+        for (unsigned int i = 0; i < vtx.size(); i++)
+        {
+            if (vtx[i].nVersion == ANON_TXN_VERSION)
+                return DoS(100, error("AcceptBlock() : ring signature transaction (ANON_TXN_VERSION) in block at height %d after deprecation height %d",
+                                       nHeight, FORK_HEIGHT_RINGSIG_DEPRECATION));
+        }
     }
 
     bool cpSatisfies = Checkpoints::CheckSync(hash, pindexPrev);
@@ -3944,6 +5245,65 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
     // Duplicate stake allowed only when there is orphan child block
     if (pblock->IsProofOfStake() && setStakeSeen.count(pblock->GetProofOfStake()) && !mapOrphanBlocksByPrev.count(hash) && !Checkpoints::WantedByPendingSyncCheckpoint(hash))
         return error("ProcessBlock() : duplicate proof-of-stake (%s, %d) for block %s", pblock->GetProofOfStake().first.ToString().c_str(), pblock->GetProofOfStake().second, hash.ToString().c_str());
+
+    // per-peer PoS rate limiting
+    if (pblock->IsProofOfStake() && pfrom != NULL && !IsInitialBlockDownload())
+    {
+        int64_t nNow = GetTime();
+        NodeId nPeerId = pfrom->GetId();
+
+        vector<int64_t>& vTimes = mapPoSBlockTimesPerPeer[nPeerId];
+        vTimes.erase(std::remove_if(vTimes.begin(), vTimes.end(),
+            [nNow](int64_t t) { return (nNow - t) > POS_RATE_LIMIT_WINDOW; }), vTimes.end());
+        if ((int)vTimes.size() >= MAX_POS_BLOCKS_PER_PEER)
+        {
+            pfrom->Misbehaving(10);
+            return error("ProcessBlock() : peer %d exceeded PoS block rate limit (%d blocks in %d seconds)",
+                         nPeerId, MAX_POS_BLOCKS_PER_PEER, (int)POS_RATE_LIMIT_WINDOW);
+        }
+
+        vTimes.push_back(nNow);
+    }
+
+    // per-UTXO rate limiting to detect stake grinding
+    if (pblock->IsProofOfStake() && !IsInitialBlockDownload())
+    {
+        std::pair<COutPoint, unsigned int> proofOfStake = pblock->GetProofOfStake();
+        COutPoint stakeUtxo = proofOfStake.first;
+
+        if (!stakeUtxo.IsNull())
+        {
+            int64_t nNow = GetTime();
+
+            vector<int64_t>& vUtxoTimes = mapStakeAttemptsPerUTXO[stakeUtxo];
+            vUtxoTimes.erase(std::remove_if(vUtxoTimes.begin(), vUtxoTimes.end(),
+                [nNow](int64_t t) { return (nNow - t) > STAKE_GRINDING_WINDOW; }), vUtxoTimes.end());
+
+            if ((int)vUtxoTimes.size() >= MAX_STAKE_ATTEMPTS_PER_UTXO)
+            {
+                if (pfrom != NULL)
+                    pfrom->Misbehaving(25);  // Higher penalty for grinding attempts
+                return error("ProcessBlock() : UTXO %s stake grinding detected (%d attempts in %d seconds)",
+                             stakeUtxo.ToString().c_str(), MAX_STAKE_ATTEMPTS_PER_UTXO, (int)STAKE_GRINDING_WINDOW);
+            }
+
+            vUtxoTimes.push_back(nNow);
+
+            // Periodic cleanup
+            static int64_t nLastCleanup = 0;
+            if (nNow - nLastCleanup > STAKE_GRINDING_WINDOW)
+            {
+                for (auto it = mapStakeAttemptsPerUTXO.begin(); it != mapStakeAttemptsPerUTXO.end(); )
+                {
+                    if (it->second.empty())
+                        it = mapStakeAttemptsPerUTXO.erase(it);
+                    else
+                        ++it;
+                }
+                nLastCleanup = nNow;
+            }
+        }
+    }
 
     // Preliminary checks
     if (!pblock->CheckBlock())
@@ -4168,6 +5528,41 @@ bool CBlock::CheckBlockSignature() const
 {
     if (IsProofOfWork())
         return vchBlockSig.empty();
+
+    // NullStake V1/V2: verify block signature against rk from the first shielded spend
+    if (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE || vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2)
+    {
+        if (vchBlockSig.empty())
+            return false;
+
+        if (vtx[1].vShieldedSpend.empty() || vtx[1].vShieldedSpend[0].vchRk.empty())
+            return false;
+
+        if (vtx[1].vShieldedSpend[0].vchRk.size() != 33 && vtx[1].vShieldedSpend[0].vchRk.size() != 65)
+            return false;
+
+        CPubKey rkPubKey(vtx[1].vShieldedSpend[0].vchRk);
+        if (!rkPubKey.IsValid() || !rkPubKey.IsFullyValid())
+            return false;
+
+        return rkPubKey.Verify(GetHash(), vchBlockSig);
+    }
+
+    // NullStake V3 (Private Cold Staking): verify block signature against pk_stake
+    if (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+    {
+        if (vchBlockSig.empty())
+            return false;
+
+        if (vtx[1].nullstakeProofV3.vchPkStake.size() != 33)
+            return false;
+
+        CPubKey pkStake(vtx[1].nullstakeProofV3.vchPkStake);
+        if (!pkStake.IsValid() || !pkStake.IsFullyValid())
+            return false;
+
+        return pkStake.Verify(GetHash(), vchBlockSig);
+    }
 
     vector<valtype> vSolutions;
     txnouttype whichType;
@@ -5197,6 +6592,27 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             return error("message inv size() = %" PRIszu"", vInv.size());
         }
 
+        if (!pfrom->fWhitelisted)
+        {
+            int64_t nNow = GetTime();
+            if (nNow - pfrom->nInvWindowStart >= (int64_t)INV_RATE_LIMIT_WINDOW)
+            {
+                pfrom->nInvCount = 0;
+                pfrom->nInvWindowStart = nNow;
+            }
+            pfrom->nInvCount += vInv.size();
+
+            // Skip during IBD (high inv rates expected when syncing)
+            if (pfrom->nInvCount > INV_RATE_LIMIT_ITEMS && !IsInitialBlockDownload())
+            {
+                pfrom->Misbehaving(25);
+                if (fDebug)
+                    printf("inv rate limit exceeded: peer=%s count=%" PRIu64" in %" PRId64"s\n",
+                           pfrom->addr.ToString().c_str(), pfrom->nInvCount,
+                           nNow - pfrom->nInvWindowStart + INV_RATE_LIMIT_WINDOW);
+            }
+        }
+
         unsigned int nLastBlock = (unsigned int)(-1);
         int nBlockCount = 0;
         for (unsigned int nInv = 0; nInv < vInv.size(); nInv++) {
@@ -5388,10 +6804,11 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
         LOCK(cs_main);
 
-        if (fDebugNet)
+        if (fDebug)
             printf("Received %u headers from peer %s\n", (unsigned int)vHeaders.size(), pfrom->addr.ToString().c_str());
 
         CBlockIndex* pindexLast = NULL;
+        std::vector<CInv> vGetData;
         for (const CBlock& header : vHeaders)
         {
             uint256 hash = header.GetHash();
@@ -5404,11 +6821,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
             if (mapBlockIndex.count(header.hashPrevBlock) == 0)
             {
-                if (fDebugNet)
-                    printf("Header %s has unknown parent %s\n",
-                           hash.ToString().substr(0,20).c_str(),
-                           header.hashPrevBlock.ToString().substr(0,20).c_str());
-                pfrom->PushMessage("getheaders", CBlockLocator(pindexBest), hash);
+                if (fDebug) printf("Header %s has unknown parent %s, waiting for in-flight blocks\n",
+                       hash.ToString().substr(0,20).c_str(),
+                       header.hashPrevBlock.ToString().substr(0,20).c_str());
+                // Rely on post-block-acceptance getheaders to chain sync forward
                 break;
             }
 
@@ -5462,13 +6878,38 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             }
             else
             {
+                // Request full block data, skip if already in-flight
+                if (pfrom->setBlocksInFlight.count(hash))
+                {
+                    if (fDebug)
+                        printf("Header block %s already in-flight, skipping\n",
+                               hash.ToString().substr(0,20).c_str());
+                    pindexLast = pindexPrev;
+                    continue;
+                }
+                if (fDebug)
+                    printf("Header announced block %s (parent height %d), requesting full block\n",
+                           hash.ToString().substr(0,20).c_str(), pindexPrev->nHeight);
+                vGetData.push_back(CInv(MSG_BLOCK, hash));
+                pfrom->setBlocksInFlight.insert(hash);
                 pindexLast = pindexPrev;
             }
         }
 
+        // In full node mode, request full blocks for announced headers
+        if (!fSPVMode && !vGetData.empty())
+        {
+            if (fDebug)
+                printf("Requesting %u full blocks from peer %s via getdata\n",
+                       (unsigned int)vGetData.size(), pfrom->addr.ToString().c_str());
+            pfrom->PushMessage("getdata", vGetData);
+        }
+
+        // Only request more headers for large batches (IBD catch-up)
         if (pindexLast && !IsInitialBlockDownload())
         {
-            pfrom->PushMessage("getheaders", CBlockLocator(pindexLast), uint256(0));
+            if (vHeaders.size() >= 2000)
+                pfrom->PushMessage("getheaders", CBlockLocator(pindexBest), uint256(0));
         }
 
         if (fSPVMode && pindexLast && pindexLast == pindexBest)
@@ -5493,7 +6934,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         {
             SyncWithWallets(tx, NULL, true);
             RelayTransaction(tx, inv.hash);
-            mapAlreadyAskedFor.erase(inv);
+            {
+                LOCK(cs_mapAlreadyAskedFor);
+                mapAlreadyAskedFor.erase(inv);
+            }
             vWorkQueue.push_back(inv.hash);
             vEraseQueue.push_back(inv.hash);
 
@@ -5512,9 +6956,12 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                     if (orphanTx.AcceptToMemoryPool(txdb, &fMissingInputs2))
                     {
                         printf("   accepted orphan tx %s\n", orphanTxHash.ToString().substr(0,10).c_str());
-                        SyncWithWallets(tx, NULL, true);
+                        SyncWithWallets(orphanTx, NULL, true);
                         RelayTransaction(orphanTx, orphanTxHash);
-                        mapAlreadyAskedFor.erase(CInv(MSG_TX, orphanTxHash));
+                        {
+                            LOCK(cs_mapAlreadyAskedFor);
+                            mapAlreadyAskedFor.erase(CInv(MSG_TX, orphanTxHash));
+                        }
                         vWorkQueue.push_back(orphanTxHash);
                         vEraseQueue.push_back(orphanTxHash);
                     }
@@ -5558,12 +7005,22 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         CInv inv(MSG_BLOCK, hashBlock);
         pfrom->AddInventoryKnown(inv);
 
+        pfrom->setBlocksInFlight.erase(hashBlock);
+
         LOCK(cs_main);
-        if (ProcessBlock(pfrom, &block))
+        bool fAccepted = ProcessBlock(pfrom, &block);
+        if (fAccepted)
+        {
+            LOCK(cs_mapAlreadyAskedFor);
             mapAlreadyAskedFor.erase(inv);
+        }
 
         if (block.nDoS)
             pfrom->Misbehaving(block.nDoS);
+
+        // Chain sync forward after accepting a new block
+        if (fAccepted && pfrom->fPreferHeaders)
+            pfrom->PushMessage("getheaders", CBlockLocator(pindexBest), uint256(0));
 
         if (fSecMsgEnabled)
             SecureMsgScanBlock(block);
@@ -5786,6 +7243,11 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
     else if (strCommand == "filterload")
     {
+        if (vRecv.size() > MAX_BLOOM_FILTER_SIZE + 100)  // +100 for serialization overhead
+        {
+            pfrom->Misbehaving(100);
+            return false;
+        }
         CBloomFilter filter;
         vRecv >> filter;
 
@@ -5930,6 +7392,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
         //ProcessMessageCollateralN(pfrom, strCommand, vRecv);
         ProcessMessageCollateralnode(pfrom, strCommand, vRecv);
+        ProcessMessageNullSend(pfrom, strCommand, vRecv);
         //ProcessSpork(pfrom, strCommand, vRecv);
 
         // Ignore unknown commands for extensibility
@@ -6036,9 +7499,15 @@ bool ProcessMessages(CNode* pfrom)
             }
             else if (strstr(e.what(), "size too large"))
             {
-				if(fDebug)
-					// Allow exceptions from over-long size
-					printf("ProcessMessages(%s, %u bytes) : Exception '%s' caught\n", strCommand.c_str(), nMessageSize, e.what());
+                printf("ProcessMessages(%s, %u bytes) : Oversized data from peer=%s - '%s'\n",
+                       strCommand.c_str(), nMessageSize, pfrom->addr.ToString().c_str(), e.what());
+                Misbehaving(pfrom->GetId(), 50);  // Severe penalty for oversized messages
+            }
+            else if (strstr(e.what(), "non-canonical"))
+            {
+                printf("ProcessMessages(%s, %u bytes) : Non-canonical encoding from peer=%s - '%s'\n",
+                       strCommand.c_str(), nMessageSize, pfrom->addr.ToString().c_str(), e.what());
+                Misbehaving(pfrom->GetId(), 20);  // Penalty for non-canonical encoding
             }
             else
             {
@@ -6075,6 +7544,26 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         // Don't send anything until we get their version message
         if (pto->nVersion == 0)
             return true;
+
+        if (dandelionState.IsEnabled())
+        {
+            std::vector<int> vPeerIds;
+            {
+                LOCK(cs_vNodes);
+                for (CNode* pnode : vNodes)
+                    vPeerIds.push_back(pnode->GetId());
+            }
+            dandelionRouter.UpdateEpoch(GetTime(), vPeerIds);
+
+            std::vector<uint256> vFluff = dandelionState.CheckStemTimeouts(GetTime());
+            for (const uint256& txHash : vFluff)
+            {
+                LOCK(cs_mapRelay);
+                CInv inv(MSG_TX, txHash);
+                if (mapRelay.count(inv))
+                    RelayInventory(inv);
+            }
+        }
 
         //
         // Message: ping
@@ -6276,7 +7765,10 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
                     pto->PushMessage("getdata", vGetData);
                     vGetData.clear();
                 }
-                mapAlreadyAskedFor[inv] = nNow;
+                {
+                    LOCK(cs_mapAlreadyAskedFor);
+                    mapAlreadyAskedFor[inv] = nNow;
+                }
             }
             pto->mapAskFor.erase(pto->mapAskFor.begin());
         }

@@ -125,7 +125,13 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
     if (!pblock.get())
         return NULL;
 
-    CBlockIndex* pindexPrev = pindexBest;
+    CBlockIndex* pindexPrev;
+    {
+        LOCK(cs_main);
+        pindexPrev = pindexBest;
+    }
+    if (!pindexPrev)
+        return NULL;
 
     int payments = 1;
     // Create coinbase tx
@@ -149,7 +155,11 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
     {
         // Height first in coinbase required for block.version=2
         txNew.vin[0].scriptSig = (CScript() << nHeight) + COINBASE_FLAGS;
-        assert(txNew.vin[0].scriptSig.size() <= 100);
+        if (txNew.vin[0].scriptSig.size() > 100)
+        {
+            printf("CreateNewBlock() : coinbase scriptSig too large (%d bytes)\n", (int)txNew.vin[0].scriptSig.size());
+            return NULL;
+        }
 
         txNew.vout[0].SetEmpty();
     }
@@ -210,10 +220,10 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         if(bCollateralNodePayment) {
             bool hasPayment = true;
             //spork
-            bool found;
+            bool found = false;
             CScript payee;
             if(!collateralnodePayments.GetBlockPayee(pindexPrev->nHeight+1, payee)){
-                bool found;
+                found = false;
                 if (vecCollateralnodes.size() > 0) {
                 GetCollateralnodeRanks(pindexBest);
                 BOOST_FOREACH(PAIRTYPE(int, CCollateralNode*)& s, vecCollateralnodeScores)
@@ -289,7 +299,6 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                     if (!mempool.mapTx.count(txin.prevout.hash))
                     {
                         printf("ERROR: mempool transaction missing input\n");
-                        if (fDebug) assert("mempool transaction missing input" == 0);
                         fMissingInputs = true;
                         if (porphan)
                             vOrphan.pop_back();
@@ -341,6 +350,16 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             // client code rounds up the size to the nearest 1K. That's good, because it gives an
             // incentive to create smaller transactions.
             int64_t nFee = nTotalIn-tx.GetValueOut();
+            if (tx.IsShielded() && tx.nValueBalance != 0)
+            {
+                if ((tx.nValueBalance > 0 && nFee > std::numeric_limits<int64_t>::max() - tx.nValueBalance) ||
+                    (tx.nValueBalance < 0 && nFee < std::numeric_limits<int64_t>::min() - tx.nValueBalance))
+                {
+                    printf("CreateNewBlock: fee overflow with shielded value balance, skipping tx\n");
+                    continue;
+                }
+                nFee += tx.nValueBalance;
+            }
             double dFeePerKb =  double(nFee) / (double(nTxSize)/1000.0);
 
             if (porphan)
@@ -431,6 +450,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
                     nTxFees += nSumAnon;
                 };
+                if (tx.IsShielded() && tx.nValueBalance != 0)
+                    nTxFees += tx.nValueBalance;
                 nFee = nTxFees;
             };
             // TODO: must this be done twice!?
@@ -483,11 +504,25 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         nLastBlockTx = nBlockTx;
         nLastBlockSize = nBlockSize;
 
-        int64_t blockValue = GetProofOfWorkReward(nHeight, nFees);
+        int nRewardHeight = nHeight;
+        if (nHeight < FORK_HEIGHT_TIGHTER_DRIFT && nHeight > 0)
+            nRewardHeight = nHeight - 1;
+        int64_t blockValue = GetProofOfWorkReward(nRewardHeight, nFees);
+        if (!MoneyRange(blockValue))
+        {
+            printf("CreateNewBlock: ERROR: blockValue %" PRId64 " out of MoneyRange\n", blockValue);
+            return NULL;
+        }
         int64_t collateralnodePayment = GetCollateralnodePayment(pindexPrev->nHeight+1, blockValue);
 
         //create collateralnode payment
         if(payments > 1){
+            if (collateralnodePayment > blockValue)
+            {
+                printf("CreateNewBlock: WARNING: collateralnodePayment %" PRId64 " > blockValue %" PRId64 ", clamping\n",
+                       collateralnodePayment, blockValue);
+                collateralnodePayment = blockValue;
+            }
             pblock->vtx[0].vout[payments-1].nValue = collateralnodePayment;
             blockValue -= collateralnodePayment;
         }
@@ -528,7 +563,11 @@ void IncrementExtraNonce(CBlock* pblock, CBlockIndex* pindexPrev, unsigned int& 
 
     unsigned int nHeight = pindexPrev->nHeight+1; // Height first in coinbase required for block.version=2
     pblock->vtx[0].vin[0].scriptSig = (CScript() << nHeight << CBigNum(nExtraNonce)) + COINBASE_FLAGS;
-    assert(pblock->vtx[0].vin[0].scriptSig.size() <= 100);
+    if (pblock->vtx[0].vin[0].scriptSig.size() > 100)
+    {
+        printf("IncrementExtraNonce() : coinbase scriptSig too large (%d bytes)\n", (int)pblock->vtx[0].vin[0].scriptSig.size());
+        return;
+    }
 
     pblock->hashMerkleRoot = pblock->BuildMerkleTree();
 }
@@ -680,7 +719,11 @@ void StakeMiner(CWallet *pwallet)
                 return;
         }
 
-        bool fWaitForSync = vNodes.empty() || (IsInitialBlockDownload() && !fHybridSPV);
+        bool fWaitForSync;
+        {
+            LOCK(cs_vNodes);
+            fWaitForSync = (!fRegTest && vNodes.empty()) || (!fRegTest && IsInitialBlockDownload() && !fHybridSPV);
+        }
         while (fWaitForSync)
         {
             nLastCoinStakeSearchInterval = 0;
@@ -690,13 +733,21 @@ void StakeMiner(CWallet *pwallet)
             MilliSleep(2000);
             if (fShutdown)
                 return;
-            fWaitForSync = vNodes.empty() || (IsInitialBlockDownload() && !fHybridSPV);
+            {
+                LOCK(cs_vNodes);
+                fWaitForSync = vNodes.empty() || (IsInitialBlockDownload() && !fHybridSPV);
+            }
         }
 
         if (fTryToSync)
         {
             fTryToSync = false;
-            if (vNodes.size() < 3 || nBestHeight < GetNumBlocksOfPeers())
+            bool fTooFewNodes;
+            {
+                LOCK(cs_vNodes);
+                fTooFewNodes = vNodes.size() < 3;
+            }
+            if (fTooFewNodes || nBestHeight < GetNumBlocksOfPeers())
             {
                 if (fDebug  && GetBoolArg("-printcoinstake"))
                     printf("StakeMiner() vNodes.size() < 3 || nBestHeight < GetNumBlocksOfPeers()\n");
@@ -708,7 +759,7 @@ void StakeMiner(CWallet *pwallet)
             }
         }
 
-        if (!fHybridSPV && nBestHeight < GetNumBlocksOfPeers()-1)
+        if (!fRegTest && !fHybridSPV && nBestHeight < GetNumBlocksOfPeers()-1)
         {
             if (fDebug  && GetBoolArg("-printcoinstake"))
                 printf("StakeMiner() nBestHeight < GetNumBlocksOfPeers()\n");
@@ -724,7 +775,7 @@ void StakeMiner(CWallet *pwallet)
             continue;
         };
 
-        if (vecCollateralnodes.size() == 0 && !fTestNet)
+        if (vecCollateralnodes.size() == 0 && !fTestNet && !fRegTest)
         {
             if (fDebug && GetBoolArg("-printcoinstake")) printf("StakeMiner() waiting for CN list.");
             vnThreadsRunning[THREAD_STAKE_MINER]--;
@@ -769,4 +820,138 @@ void StakeMiner(CWallet *pwallet)
             MilliSleep(nMinerSleep);
         }
     }
+}
+
+bool fCPUMining = false;
+int nCPUMinerThreads = 1;
+
+void CPUMiner(CWallet* pwallet)
+{
+    printf("CPUMiner started with %d thread(s)\n", nCPUMinerThreads);
+    SetThreadPriority(THREAD_PRIORITY_LOWEST);
+    RenameThread("innova-cpuminer");
+
+    unsigned int nExtraNonce = 0;
+    CReserveKey reservekey(pwallet);
+
+    while (fCPUMining && !fShutdown)
+    {
+        if (fShutdown)
+            return;
+
+        if (!fTestNet && !fRegTest)
+        {
+            bool fNoNodes;
+            {
+                LOCK(cs_vNodes);
+                fNoNodes = vNodes.empty();
+            }
+            while (fNoNodes || IsInitialBlockDownload())
+            {
+                MilliSleep(1000);
+                if (!fCPUMining || fShutdown)
+                    return;
+            }
+        }
+
+        CBlock* pblock = CreateNewBlock(pwallet);
+        if (!pblock)
+        {
+            printf("CPUMiner: CreateNewBlock failed, retrying...\n");
+            MilliSleep(5000);
+            continue;
+        }
+
+        {
+            LOCK(cs_main);
+            IncrementExtraNonce(pblock, pindexBest, nExtraNonce);
+        }
+
+        int nHeight = pindexBest->nHeight + 1;
+        printf("CPUMiner: Mining block at height %d, target bits=0x%08x\n",
+               nHeight, pblock->nBits);
+
+        CBigNum bnTarget;
+        bnTarget.SetCompact(pblock->nBits);
+        uint256 hashTarget = bnTarget.getuint256();
+
+        int64_t nStart = GetTime();
+        uint64_t nHashesDone = 0;
+
+        while (fCPUMining && !fShutdown)
+        {
+            uint256 hash = pblock->GetPoWHash();
+            if (hash <= hashTarget)
+            {
+                printf("CPUMiner: Found block! height=%d nonce=%u\n",
+                       nHeight, pblock->nNonce);
+
+                SetThreadPriority(THREAD_PRIORITY_NORMAL);
+                {
+                    LOCK(cs_main);
+                    CBlock* psubmit = new CBlock(*pblock);
+                    if (!ProcessBlock(NULL, psubmit))
+                        printf("CPUMiner: ProcessBlock failed\n");
+                    else
+                        printf("CPUMiner: Block accepted at height %d\n", pindexBest->nHeight);
+                }
+                SetThreadPriority(THREAD_PRIORITY_LOWEST);
+
+                break;
+            }
+
+            nHashesDone++;
+
+            ++pblock->nNonce;
+            if (pblock->nNonce == 0)
+            {
+                ++pblock->nTime;
+                {
+                    LOCK(cs_main);
+                    IncrementExtraNonce(pblock, pindexBest, nExtraNonce);
+                }
+            }
+
+            if ((nHashesDone % 500000) == 0)
+            {
+                int64_t nElapsed = GetTime() - nStart;
+                if (nElapsed > 0)
+                    printf("CPUMiner: %.0f H/s (height %d, %llu hashes)\n",
+                           (double)nHashesDone / nElapsed, nHeight, (unsigned long long)nHashesDone);
+            }
+
+            if ((nHashesDone % 50000) == 0)
+            {
+                            LOCK(cs_main);
+                if (pindexBest && pindexBest->nHeight >= nHeight)
+                    break; // Tip advanced, restart with new template
+            }
+        }
+
+        delete pblock;
+
+        MilliSleep(100);
+    }
+
+    printf("CPUMiner stopped\n");
+}
+
+void ThreadCPUMiner(void* parg)
+{
+    printf("ThreadCPUMiner started\n");
+    CWallet* pwallet = (CWallet*)parg;
+    try
+    {
+        vnThreadsRunning[THREAD_STAKE_MINER]++;  // Reuse stake miner slot for counting
+        CPUMiner(pwallet);
+        vnThreadsRunning[THREAD_STAKE_MINER]--;
+    }
+    catch (std::exception& e) {
+        vnThreadsRunning[THREAD_STAKE_MINER]--;
+        PrintException(&e, "ThreadCPUMiner()");
+    } catch (...) {
+        vnThreadsRunning[THREAD_STAKE_MINER]--;
+        PrintException(NULL, "ThreadCPUMiner()");
+    }
+    printf("ThreadCPUMiner exiting\n");
 }

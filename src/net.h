@@ -156,6 +156,7 @@ extern std::map<CInv, CDataStream> mapRelay;
 extern std::deque<std::pair<int64_t, CInv> > vRelayExpiration;
 extern CCriticalSection cs_mapRelay;
 extern std::map<CInv, int64_t> mapAlreadyAskedFor;
+extern CCriticalSection cs_mapAlreadyAskedFor;
 
 extern NodeId nLastNodeId;
 extern CCriticalSection cs_nLastNodeId;
@@ -419,6 +420,7 @@ public:
     bool fPrefetchSent;
     uint256 hashLastBlockInBatch;
 	int nMisbehavior;
+    mutable CCriticalSection cs_nMisbehavior;
 
     // flood relay
     std::vector<CAddress> vAddrToSend;
@@ -433,6 +435,8 @@ public:
     CCriticalSection cs_inventory;
     std::multimap<int64_t, CInv> mapAskFor;
 
+    std::set<uint256> setBlocksInFlight;
+
     SecMsgNode smsgData;
 
     // Ping time measurement:
@@ -444,6 +448,9 @@ public:
     int64_t nPingUsecTime;
     // Whether a ping is requested.
     bool fPingQueued;
+
+    uint64_t nInvCount;        // Count of inv items in current window
+    int64_t nInvWindowStart;   // Start time of current rate limit window (seconds)
 
     CNode(SOCKET hSocketIn, CAddress addrIn, std::string addrNameIn = "", bool fInboundIn=false) : ssSend(SER_NETWORK, INIT_PROTO_VERSION), setAddrKnown(5000)
     {
@@ -488,6 +495,8 @@ public:
         nPingUsecStart = 0;
         nPingUsecTime = 0;
         fPingQueued = false;
+        nInvCount = 0;
+        nInvWindowStart = GetTime();
         fColLateralMaster = false;
         fRelayTxes = false;
         fPreferHeaders = false;
@@ -582,7 +591,8 @@ public:
         // Known checking here is only to save space from duplicates.
         // SendMessages will filter it again for knowns that were added
         // after addresses were pushed.
-        if (addr.IsValid() && !setAddrKnown.count(addr))
+        static const size_t MAX_ADDR_TO_SEND = 1000;
+        if (addr.IsValid() && !setAddrKnown.count(addr) && vAddrToSend.size() < MAX_ADDR_TO_SEND)
             vAddrToSend.push_back(addr);
     }
 
@@ -599,13 +609,24 @@ public:
     {
         {
             LOCK(cs_inventory);
-            if (!setInventoryKnown.count(inv))
+            static const size_t MAX_INV_TO_SEND = 50000;
+            if (!setInventoryKnown.count(inv) && vInventoryToSend.size() < MAX_INV_TO_SEND)
                 vInventoryToSend.push_back(inv);
         }
     }
 
     void AskFor(const CInv& inv)
     {
+        LOCK(cs_mapAlreadyAskedFor);
+        static const size_t MAX_ASKFOR_SIZE = 50000;
+        if (mapAlreadyAskedFor.size() >= MAX_ASKFOR_SIZE)
+        {
+            if (fDebugNet)
+                printf("AskFor: mapAlreadyAskedFor full (%u entries), skipping %s\n",
+                       (unsigned int)mapAlreadyAskedFor.size(), inv.ToString().c_str());
+            return;
+        }
+
         // We're using mapAskFor as a priority queue,
         // the key is the earliest time the request can be sent
         int64_t& nRequestTime = mapAlreadyAskedFor[inv];

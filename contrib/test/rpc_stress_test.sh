@@ -93,7 +93,6 @@ rpc_err() {
 test_info_rpcs() {
     section "Information RPCs"
 
-    # getinfo
     local info=$(rpc getinfo || echo "")
     if echo "$info" | tr '\n' ' ' | grep -q '"version"'; then
         success "getinfo returns valid data"
@@ -101,7 +100,6 @@ test_info_rpcs() {
         fail "getinfo failed"
     fi
 
-    # getblockchaininfo (may not exist in older codebase)
     local bci=$(rpc getblockchaininfo 2>/dev/null || echo "")
     if [ -n "$bci" ] && echo "$bci" | tr '\n' ' ' | grep -q '"chain"\|"blocks"'; then
         success "getblockchaininfo available"
@@ -109,7 +107,6 @@ test_info_rpcs() {
         log "getblockchaininfo not available (older codebase)"
     fi
 
-    # getmininginfo
     local mining=$(rpc getmininginfo || echo "")
     if echo "$mining" | tr '\n' ' ' | grep -q '"blocks"\|"difficulty"'; then
         success "getmininginfo returns valid data"
@@ -117,7 +114,6 @@ test_info_rpcs() {
         fail "getmininginfo failed"
     fi
 
-    # getdifficulty
     local diff=$(rpc getdifficulty || echo "")
     if [ -n "$diff" ] && echo "$diff" | tr '\n' ' ' | grep -q '"proof-of-work"\|[0-9]'; then
         success "getdifficulty returns value"
@@ -125,7 +121,6 @@ test_info_rpcs() {
         warn "getdifficulty result: $diff"
     fi
 
-    # getbestblockhash
     local best=$(rpc getbestblockhash || echo "")
     if [ -n "$best" ] && [ ${#best} -ge 60 ]; then
         success "getbestblockhash returns hash (${best:0:16}...)"
@@ -133,7 +128,6 @@ test_info_rpcs() {
         fail "getbestblockhash failed"
     fi
 
-    # getblockcount
     local count=$(rpc getblockcount || echo "")
     if [ -n "$count" ] && echo "$count" | grep -q '^[0-9]'; then
         success "getblockcount returns: $count"
@@ -145,7 +139,6 @@ test_info_rpcs() {
 test_network_rpcs() {
     section "Network RPCs"
 
-    # getconnectioncount
     local conns=$(rpc getconnectioncount || echo "")
     if echo "$conns" | grep -q '^[0-9]'; then
         success "getconnectioncount: $conns"
@@ -153,7 +146,6 @@ test_network_rpcs() {
         fail "getconnectioncount failed"
     fi
 
-    # getpeerinfo
     local peers=$(rpc getpeerinfo || echo "")
     if echo "$peers" | tr '\n' ' ' | grep -q '^\['; then
         success "getpeerinfo returns array"
@@ -161,17 +153,14 @@ test_network_rpcs() {
         fail "getpeerinfo failed"
     fi
 
-    # getnettotals
     local totals=$(rpc getnettotals || echo "")
     if echo "$totals" | tr '\n' ' ' | grep -q '"totalbytesrecv"\|"totalbytesSent"'; then
         success "getnettotals returns data"
     else
-        # Might be named differently
         log "getnettotals response: $(echo "$totals" | head -3)"
         warn "getnettotals format unclear"
     fi
 
-    # getnetworkinfo (may not exist)
     local netinfo=$(rpc getnetworkinfo 2>/dev/null || echo "")
     if [ -n "$netinfo" ] && echo "$netinfo" | tr '\n' ' ' | grep -q '"version"\|"subversion"'; then
         success "getnetworkinfo available"
@@ -183,7 +172,6 @@ test_network_rpcs() {
 test_wallet_rpcs() {
     section "Wallet RPCs"
 
-    # getbalance
     local balance=$(rpc getbalance || echo "")
     if echo "$balance" | grep -q '^[0-9]'; then
         success "getbalance: $balance"
@@ -191,7 +179,6 @@ test_wallet_rpcs() {
         fail "getbalance failed"
     fi
 
-    # getnewaddress
     local addr=$(rpc getnewaddress || echo "")
     if [ -n "$addr" ] && [ ${#addr} -ge 20 ]; then
         success "getnewaddress: ${addr:0:16}..."
@@ -199,7 +186,6 @@ test_wallet_rpcs() {
         fail "getnewaddress failed"
     fi
 
-    # validateaddress
     local valid=$(rpc validateaddress "$addr" || echo "{}")
     if echo "$valid" | tr '\n' ' ' | grep -q '"isvalid" *: *true'; then
         success "validateaddress confirms valid"
@@ -207,7 +193,6 @@ test_wallet_rpcs() {
         fail "validateaddress failed for generated address"
     fi
 
-    # getaccount / getaccountaddress (legacy)
     local account=$(rpc getaccount "$addr" 2>/dev/null || echo "ERROR")
     if ! echo "$account" | grep -qi "error"; then
         success "getaccount works"
@@ -215,7 +200,6 @@ test_wallet_rpcs() {
         log "getaccount not available (may be deprecated)"
     fi
 
-    # listunspent
     local utxos=$(rpc listunspent || echo "[]")
     if echo "$utxos" | tr '\n' ' ' | grep -q '^\['; then
         success "listunspent returns array"
@@ -223,7 +207,6 @@ test_wallet_rpcs() {
         fail "listunspent failed"
     fi
 
-    # listtransactions
     local txs=$(rpc listtransactions || echo "[]")
     if echo "$txs" | tr '\n' ' ' | grep -q '^\['; then
         success "listtransactions returns array"
@@ -231,7 +214,6 @@ test_wallet_rpcs() {
         fail "listtransactions failed"
     fi
 
-    # getwalletinfo (may not exist)
     local winfo=$(rpc getwalletinfo 2>/dev/null || echo "")
     if [ -n "$winfo" ] && echo "$winfo" | tr '\n' ' ' | grep -q '"walletname"\|"balance"'; then
         success "getwalletinfo available"
@@ -239,7 +221,6 @@ test_wallet_rpcs() {
         log "getwalletinfo not available"
     fi
 
-    # dumpprivkey
     local privkey=$(rpc dumpprivkey "$addr" || echo "")
     if [ -n "$privkey" ] && [ ${#privkey} -ge 40 ]; then
         success "dumpprivkey works (${#privkey} chars)"
@@ -251,11 +232,9 @@ test_wallet_rpcs() {
 test_block_rpcs() {
     section "Block RPCs"
 
-    # Generate blocks first
     rpc setgenerate true 100 >/dev/null 2>&1 || true
     sleep 2
 
-    # getblockhash
     local hash=$(rpc getblockhash 1 || echo "")
     if [ -n "$hash" ] && [ ${#hash} -ge 60 ]; then
         success "getblockhash(1): ${hash:0:16}..."
@@ -264,7 +243,6 @@ test_block_rpcs() {
         return 0
     fi
 
-    # getblock (verbose)
     local block=$(rpc getblock "$hash" || echo "")
     if echo "$block" | tr '\n' ' ' | grep -q '"hash".*"height"'; then
         success "getblock returns verbose data"
@@ -272,7 +250,6 @@ test_block_rpcs() {
         fail "getblock verbose failed"
     fi
 
-    # getblock (raw hex)
     local rawhex=$(rpc getblock "$hash" false || echo "")
     if [ -n "$rawhex" ] && echo "$rawhex" | grep -q '^[0-9a-f]'; then
         success "getblock raw hex: ${#rawhex} chars"
@@ -280,7 +257,6 @@ test_block_rpcs() {
         warn "getblock raw hex format unclear"
     fi
 
-    # getblockheader (if available)
     local header=$(rpc getblockheader "$hash" 2>/dev/null || echo "")
     if [ -n "$header" ] && echo "$header" | tr '\n' ' ' | grep -q '"hash"'; then
         success "getblockheader available"
@@ -288,8 +264,6 @@ test_block_rpcs() {
         log "getblockheader not available"
     fi
 
-    # gettxout (if available)
-    # Get a txid from block 1
     local block1_tx=$(echo "$block" | tr '\n' ' ' | grep -o '"tx" *: *\[.*\]' | grep -o '"[a-f0-9]\{64\}"' | head -1 | tr -d '"')
     if [ -n "$block1_tx" ]; then
         local txout=$(rpc gettxout "$block1_tx" 0 2>/dev/null || echo "")
@@ -304,7 +278,6 @@ test_block_rpcs() {
 test_mining_rpcs() {
     section "Mining RPCs"
 
-    # setgenerate (our custom implementation)
     local before=$(rpc getblockcount || echo "0")
     rpc setgenerate true 5 >/dev/null 2>&1 || true
     sleep 2
@@ -316,13 +289,11 @@ test_mining_rpcs() {
         fail "setgenerate did not produce blocks"
     fi
 
-    # getmininginfo
     local minfo=$(rpc getmininginfo || echo "")
     if echo "$minfo" | tr '\n' ' ' | grep -q '"blocks"'; then
         success "getmininginfo shows block count"
     fi
 
-    # getstakinginfo
     local sinfo=$(rpc getstakinginfo 2>/dev/null || echo "")
     if echo "$sinfo" | tr '\n' ' ' | grep -q '"staking"\|"enabled"'; then
         success "getstakinginfo available"
@@ -334,11 +305,9 @@ test_mining_rpcs() {
 test_raw_tx_rpcs() {
     section "Raw Transaction RPCs"
 
-    # Need coins first
     rpc setgenerate true 20 >/dev/null 2>&1 || true
     sleep 1
 
-    # Get UTXO
     local utxo_list=$(rpc listunspent 1 9999999 || echo "[]")
     local txid=$(echo "$utxo_list" | tr '\n' ' ' | grep -o '"txid" *: *"[a-f0-9]\{64\}"' | head -1 | grep -o '[a-f0-9]\{64\}')
     local vout=$(echo "$utxo_list" | tr '\n' ' ' | grep -o '"vout" *: *[0-9]*' | head -1 | grep -o '[0-9]*$')
@@ -350,7 +319,6 @@ test_raw_tx_rpcs() {
 
     local addr=$(rpc getnewaddress || echo "")
 
-    # createrawtransaction
     local rawtx=$(rpc createrawtransaction "[{\"txid\":\"$txid\",\"vout\":$vout}]" "{\"$addr\":49.99}" 2>/dev/null || echo "")
     if [ -n "$rawtx" ] && echo "$rawtx" | grep -q '^[0-9a-f]'; then
         success "createrawtransaction: ${#rawtx} hex chars"
@@ -359,7 +327,6 @@ test_raw_tx_rpcs() {
         return 0
     fi
 
-    # decoderawtransaction
     local decoded=$(rpc decoderawtransaction "$rawtx" || echo "")
     if echo "$decoded" | tr '\n' ' ' | grep -q '"txid".*"vout"'; then
         success "decoderawtransaction works"
@@ -367,7 +334,6 @@ test_raw_tx_rpcs() {
         fail "decoderawtransaction failed"
     fi
 
-    # signrawtransaction
     local signed=$(rpc signrawtransaction "$rawtx" || echo "")
     if echo "$signed" | tr '\n' ' ' | grep -q '"complete" *: *true'; then
         success "signrawtransaction completed"
@@ -375,7 +341,6 @@ test_raw_tx_rpcs() {
         warn "signrawtransaction incomplete"
     fi
 
-    # getrawtransaction (on a known tx)
     local known_hash=$(rpc getblockhash 1 || echo "")
     local known_block=$(rpc getblock "$known_hash" || echo "{}")
     local known_txid=$(echo "$known_block" | tr '\n' ' ' | grep -o '"tx" *: *\[.*\]' | grep -o '"[a-f0-9]\{64\}"' | head -1 | tr -d '"')
@@ -388,7 +353,6 @@ test_raw_tx_rpcs() {
             log "getrawtransaction requires -txindex"
         fi
 
-        # getrawtransaction verbose
         local rawtxverbose=$(rpc getrawtransaction "$known_txid" 1 2>/dev/null || echo "")
         if echo "$rawtxverbose" | tr '\n' ' ' | grep -q '"txid"'; then
             success "getrawtransaction verbose works"
@@ -401,7 +365,6 @@ test_raw_tx_rpcs() {
 test_mempool_rpcs() {
     section "Mempool RPCs"
 
-    # getrawmempool
     local mempool=$(rpc getrawmempool || echo "[]")
     if echo "$mempool" | tr '\n' ' ' | grep -q '^\['; then
         success "getrawmempool returns array"
@@ -409,12 +372,10 @@ test_mempool_rpcs() {
         fail "getrawmempool failed"
     fi
 
-    # Create a tx to put in mempool
     local addr=$(rpc getnewaddress || echo "")
     local txid=$(rpc sendtoaddress "$addr" 10.0 2>/dev/null || echo "")
 
     if [ -n "$txid" ] && [ ${#txid} -eq 64 ]; then
-        # getrawmempool verbose
         local verbose_pool=$(rpc getrawmempool true 2>/dev/null || echo "{}")
         if echo "$verbose_pool" | tr '\n' ' ' | grep -q '"size"\|"fee"\|"time"'; then
             success "getrawmempool verbose returns details"
@@ -422,7 +383,6 @@ test_mempool_rpcs() {
             log "Verbose mempool data format unclear"
         fi
 
-        # Mine to clear
         rpc setgenerate true 1 >/dev/null 2>&1 || true
         sleep 1
     fi
@@ -434,7 +394,6 @@ test_rapid_rpc_calls() {
     local count=0
     local start_time=$(date +%s)
 
-    # Rapid-fire 50 getinfo calls
     for i in $(seq 1 50); do
         if rpc getblockcount >/dev/null 2>&1; then
             ((count++)) || true
@@ -452,7 +411,6 @@ test_rapid_rpc_calls() {
         fail "Rapid RPC: all calls failed"
     fi
 
-    # Mixed rapid calls
     local mixed=0
     for i in $(seq 1 20); do
         rpc getblockcount >/dev/null 2>&1 && ((mixed++)) || true
@@ -472,7 +430,6 @@ test_rapid_rpc_calls() {
 test_error_handling() {
     section "RPC Error Handling"
 
-    # Invalid method
     local result=$(rpc_err nonexistentmethod 2>&1 || echo "")
     if echo "$result" | grep -qi "error\|not found\|unknown"; then
         success "Invalid method correctly rejected"
@@ -480,7 +437,6 @@ test_error_handling() {
         warn "Invalid method response unclear: $result"
     fi
 
-    # Invalid params to getblockhash
     result=$(rpc_err getblockhash -1 2>&1 || echo "")
     if echo "$result" | grep -qi "error\|out of range\|invalid"; then
         success "Invalid block height correctly rejected"
@@ -488,7 +444,6 @@ test_error_handling() {
         warn "Invalid block height response: $result"
     fi
 
-    # Invalid address to validateaddress
     result=$(rpc validateaddress "NOTANADDRESS" || echo "{}")
     if echo "$result" | tr '\n' ' ' | grep -q '"isvalid" *: *false'; then
         success "Invalid address correctly identified"
@@ -496,7 +451,6 @@ test_error_handling() {
         warn "Invalid address validation unclear"
     fi
 
-    # sendtoaddress with no funds scenario (to invalid addr)
     result=$(rpc_err sendtoaddress "BADADDR" 1.0 2>&1 || echo "")
     if echo "$result" | grep -qi "error\|invalid"; then
         success "Send to invalid address rejected"
@@ -508,7 +462,6 @@ test_error_handling() {
 test_cold_staking_rpcs() {
     section "Cold Staking RPCs"
 
-    # getcoldstakinginfo
     local csinfo=$(rpc getcoldstakinginfo 2>/dev/null || echo "")
     if echo "$csinfo" | tr '\n' ' ' | grep -q '"enabled"\|"cold_staking"'; then
         success "getcoldstakinginfo available"
@@ -516,7 +469,6 @@ test_cold_staking_rpcs() {
         log "getcoldstakinginfo not available or different format"
     fi
 
-    # getnewstakingaddress
     local saddr=$(rpc getnewstakingaddress 2>/dev/null || echo "")
     if [ -n "$saddr" ] && [ ${#saddr} -ge 20 ]; then
         success "getnewstakingaddress: ${saddr:0:16}..."
@@ -524,7 +476,6 @@ test_cold_staking_rpcs() {
         log "getnewstakingaddress not available"
     fi
 
-    # listcoldutxos
     local cutxos=$(rpc listcoldutxos 2>/dev/null || echo "")
     if echo "$cutxos" | tr '\n' ' ' | grep -q '^\['; then
         success "listcoldutxos returns array"

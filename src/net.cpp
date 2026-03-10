@@ -11,7 +11,10 @@
 #include "ui_interface.h"
 #include "collateral.h"
 #include "collateralnode.h"
+#include "dandelion.h"
+#include "shielded.h"
 #include <sys/stat.h>
+#include <algorithm>
 
 #ifdef WIN32
 #include <string.h>
@@ -39,6 +42,13 @@ extern "C" {
 #define DUMP_DATA_INTERVAL 900
 
 static const int MAX_OUTBOUND_CONNECTIONS = 16;
+
+static const int CONNECTION_RATE_LIMIT_WINDOW = 60;      // Window size in seconds
+static const int CONNECTION_RATE_LIMIT_MAX = 5;          // Max connections per IP per window
+static CCriticalSection cs_connectionRateLimit;
+static std::map<CNetAddr, std::vector<int64_t> > mapConnectionAttempts;
+
+static const int MAX_INBOUND_PER_NETGROUP = 4;           // Max inbound connections per /16 subnet
 
 void ThreadMessageHandler2(void* parg);
 void ThreadSocketHandler2(void* parg);
@@ -83,6 +93,8 @@ map<CInv, CDataStream> mapRelay;
 deque<pair<int64_t, CInv> > vRelayExpiration;
 CCriticalSection cs_mapRelay;
 map<CInv, int64_t> mapAlreadyAskedFor;
+// mutex for mapAlreadyAskedFor
+CCriticalSection cs_mapAlreadyAskedFor;
 
 static deque<string> vOneShots;
 CCriticalSection cs_vOneShots;
@@ -621,6 +633,9 @@ CNode* ConnectNode(CAddress addrConnect, const char *pszDest, bool colLateralMas
 void CNode::CloseSocketDisconnect()
 {
     fDisconnect = true;
+
+    dandelionRouter.OnStemPeerDisconnect(GetId());
+
     if (hSocket != INVALID_SOCKET)
     {
         printf("Net() Disconnecting node %s\n", addrName.c_str());
@@ -832,22 +847,26 @@ bool CNode::Misbehaving(int howmuch)
         return false;
     }
 
-    nMisbehavior += howmuch;
-    if (nMisbehavior >= GetArg("-banscore", 100))
+    int nCurrentMisbehavior;
+    {
+        LOCK(cs_nMisbehavior);
+        nMisbehavior += howmuch;
+        nCurrentMisbehavior = nMisbehavior;
+    }
+
+    if (nCurrentMisbehavior >= GetArg("-banscore", 100))
     {
         int64_t banTime = GetTime()+GetArg("-bantime", 60*60*24);  // Default 24-hour ban
-        printf("Misbehaving: %s (%d -> %d) DISCONNECTING\n", addr.ToString().c_str(), nMisbehavior-howmuch, nMisbehavior);
+        printf("Misbehaving: %s (%d -> %d) DISCONNECTING\n", addr.ToString().c_str(), nCurrentMisbehavior-howmuch, nCurrentMisbehavior);
         {
             LOCK(cs_setBanned);
-            // if (setBanned[addr] < banTime)
-            //     setBanned[addr] = banTime;
             if (setBanned[subNet].nBanUntil < banTime)
                 setBanned[subNet] = banTime;
         }
         CloseSocketDisconnect();
         return true;
     } else
-        printf("Misbehaving: %s (%d -> %d)\n", addr.ToString().c_str(), nMisbehavior-howmuch, nMisbehavior);
+        printf("Misbehaving: %s (%d -> %d)\n", addr.ToString().c_str(), nCurrentMisbehavior-howmuch, nCurrentMisbehavior);
     return false;
 }
 
@@ -1074,10 +1093,13 @@ int CNetMessage::readHeader(const char *pch, unsigned int nBytes)
 
 int CNetMessage::readData(const char *pch, unsigned int nBytes)
 {
+    if (nDataPos >= hdr.nMessageSize)
+        return -1;
     unsigned int nRemaining = hdr.nMessageSize - nDataPos;
     unsigned int nCopy = std::min(nRemaining, nBytes);
 
-    memcpy(&vRecv[nDataPos], pch, nCopy);
+    if (nCopy > 0)
+        memcpy(&vRecv[nDataPos], pch, nCopy);
     nDataPos += nCopy;
 
     return nCopy;
@@ -1098,7 +1120,13 @@ void SocketSendData(CNode *pnode)
 
     while (it != pnode->vSendMsg.end()) {
         const CSerializeData &data = *it;
-        assert(data.size() > pnode->nSendOffset);
+        if (data.size() <= pnode->nSendOffset)
+        {
+            printf("SocketSendData: corrupt state - data.size()=%zu <= nSendOffset=%zu, disconnecting\n",
+                   data.size(), (size_t)pnode->nSendOffset);
+            pnode->CloseSocketDisconnect();
+            return;
+        }
         int nBytes = send(pnode->hSocket, &data[pnode->nSendOffset], data.size() - pnode->nSendOffset, MSG_NOSIGNAL | MSG_DONTWAIT);
         if (nBytes > 0) {
             pnode->nLastSend = GetTime();
@@ -1142,8 +1170,13 @@ void SocketSendData(CNode *pnode)
     }
 
     if (it == pnode->vSendMsg.end()) {
-        assert(pnode->nSendOffset == 0);
-        assert(pnode->nSendSize == 0);
+        if (pnode->nSendOffset != 0 || pnode->nSendSize != 0)
+        {
+            printf("SocketSendData: warning - queue empty but nSendOffset=%zu nSendSize=%zu, resetting\n",
+                   (size_t)pnode->nSendOffset, (size_t)pnode->nSendSize);
+            pnode->nSendOffset = 0;
+            pnode->nSendSize = 0;
+        }
     }
     pnode->vSendMsg.erase(pnode->vSendMsg.begin(), it);
 }
@@ -1157,8 +1190,9 @@ static void AcceptConnection(const ListenSocket& hListenSocket) {
     SOCKET hSocket = accept(hListenSocket.socket, (struct sockaddr *) &sockaddr, &len);
     CAddress addr;
     int nInbound = 0;
-    int nMaxOutbound = 0;
-    int nMaxInbound = GetArg("-maxconnections", 125) - (nMaxOutbound);
+    // Reserve outbound slots to prevent eclipse attacks
+    int nMaxOutbound = GetArg("-maxoutbound", 8);
+    int nMaxInbound = GetArg("-maxconnections", 125) - nMaxOutbound;
 
     if (hSocket != INVALID_SOCKET)
         if (!addr.SetSockAddr((const struct sockaddr *) &sockaddr))
@@ -1195,6 +1229,40 @@ static void AcceptConnection(const ListenSocket& hListenSocket) {
         return;
     }
 
+    if (!whitelisted)
+    {
+        LOCK(cs_connectionRateLimit);
+        int64_t nNow = GetTime();
+        CNetAddr netAddr = addr;
+
+        std::vector<int64_t>& vAttempts = mapConnectionAttempts[netAddr];
+        vAttempts.erase(std::remove_if(vAttempts.begin(), vAttempts.end(),
+            [nNow](int64_t t) { return (nNow - t) > CONNECTION_RATE_LIMIT_WINDOW; }), vAttempts.end());
+
+        if ((int)vAttempts.size() >= CONNECTION_RATE_LIMIT_MAX)
+        {
+            printf("connection from %s dropped (rate limit: %d connections in %d seconds)\n",
+                   addr.ToString().c_str(), CONNECTION_RATE_LIMIT_MAX, CONNECTION_RATE_LIMIT_WINDOW);
+            CloseSocket(hSocket);
+            return;
+        }
+
+        vAttempts.push_back(nNow);
+
+        static int64_t nLastCleanup = 0;
+        if (nNow - nLastCleanup > 300)
+        {
+            for (auto it = mapConnectionAttempts.begin(); it != mapConnectionAttempts.end(); )
+            {
+                if (it->second.empty())
+                    it = mapConnectionAttempts.erase(it);
+                else
+                    ++it;
+            }
+            nLastCleanup = nNow;
+        }
+    }
+
     if (nInbound >= nMaxInbound) {
         printf("connection from %s dropped (full)\n", addr.ToString().c_str());
         CloseSocket(hSocket);
@@ -1207,11 +1275,39 @@ static void AcceptConnection(const ListenSocket& hListenSocket) {
         return;
     }
 
+    if (!whitelisted)
+    {
+        std::vector<unsigned char> vchNetGroup = addr.GetGroup();
+        int nSameNetGroup = 0;
+
+        {
+            LOCK(cs_vNodes);
+            for (CNode* pnode : vNodes)
+            {
+                if (pnode && pnode->fInbound)
+                {
+                    std::vector<unsigned char> vchPeerGroup = pnode->addr.GetGroup();
+                    if (vchPeerGroup == vchNetGroup)
+                        nSameNetGroup++;
+                }
+            }
+        }
+
+        if (nSameNetGroup >= MAX_INBOUND_PER_NETGROUP)
+        {
+            printf("connection from %s dropped (too many from same /16 subnet: %d/%d)\n",
+                   addr.ToString().c_str(), nSameNetGroup, MAX_INBOUND_PER_NETGROUP);
+            CloseSocket(hSocket);
+            return;
+        }
+    }
+
         CNode *pnode = new CNode(hSocket, addr, "", true);
         if(!pnode) return;
 
         pnode->AddRef();
         pnode->fWhitelisted = whitelisted;
+        pnode->nTimeConnected = GetTime();
         {
             LOCK(cs_vNodes);
             vNodes.push_back(pnode);
@@ -1488,6 +1584,12 @@ void ThreadSocketHandler2(void* parg)
                 if (pnode->nLastRecv == 0 || pnode->nLastSend == 0)
                 {
                     printf("socket no message in first 60 seconds, %d %d\n", pnode->nLastRecv != 0, pnode->nLastSend != 0);
+                    pnode->fDisconnect = true;
+                }
+                else if (pnode->nVersion == 0 && nTime - pnode->nTimeConnected > 30)
+                {
+                    printf("socket handshake timeout: peer %s did not send version within 30s\n",
+                           pnode->addr.ToString().c_str());
                     pnode->fDisconnect = true;
                 }
                 else if (nTime - pnode->nLastSend > TIMEOUT_INTERVAL)
@@ -2556,8 +2658,10 @@ void static Discover()
 }
 
 static char *convert_str(const std::string &s) {
-    char *pc = new char[s.size()+1];
-    std::strcpy(pc, s.c_str());
+    size_t len = s.size() + 1;
+    char *pc = new char[len];
+    std::strncpy(pc, s.c_str(), len);
+    pc[len - 1] = '\0';
     return pc;
 }
 
@@ -2826,9 +2930,58 @@ void RelayTransaction(const CTransaction& tx, const uint256& hash, const CDataSt
             vRelayExpiration.pop_front();
         }
 
+        static const size_t MAX_RELAY_SIZE = 100000;
+        if (mapRelay.size() >= MAX_RELAY_SIZE)
+        {
+            if (!vRelayExpiration.empty())
+            {
+                mapRelay.erase(vRelayExpiration.front().second);
+                vRelayExpiration.pop_front();
+            }
+        }
+
         // Save original serialized message so newer versions are preserved
         mapRelay.insert(std::make_pair(inv, ss));
         vRelayExpiration.push_back(std::make_pair(GetTime() + 15 * 60, inv));
+    }
+
+    bool fShielded = tx.IsShielded();
+    if (dandelionState.IsEnabled())
+    {
+        if (dandelionState.AddTransaction(hash, fShielded, false))
+        {
+            std::vector<int> vPeerIds;
+            {
+                LOCK(cs_vNodes);
+                for (CNode* pnode : vNodes)
+                    vPeerIds.push_back(pnode->GetId());
+            }
+            dandelionRouter.UpdateEpoch(GetTime(), vPeerIds);
+
+            CDandelionTxState txState;
+            if (!dandelionState.GetTxState(hash, txState))
+            {
+                txState.fShielded = fShielded;
+            }
+            if (!dandelionRouter.ShouldFluff(txState))
+            {
+                int nStemPeerId = dandelionRouter.GetStemPeer(hash);
+                if (nStemPeerId >= 0)
+                {
+                    LOCK(cs_vNodes);
+                    for (CNode* pnode : vNodes)
+                    {
+                        if (pnode->GetId() == nStemPeerId)
+                        {
+                            pnode->PushInventory(inv);
+                            break;
+                        }
+                    }
+                    return; // Stem relay done, do not broadcast to all
+                }
+            }
+            dandelionState.TransitionToFluff(hash);
+        }
     }
 
     RelayInventory(inv);
@@ -3059,10 +3212,6 @@ void DumpBanlist()
     printf("Flushed %d banned node ips/subnets to banlist.dat  %" PRId64"ms\n",
              banmap.size(), GetTimeMillis() - nStart);
 }
-
-// ============================================================================
-// Hybrid SPV Staking - On-demand block fetching
-// ============================================================================
 
 bool FetchBlockForStaking(const uint256& hashBlock)
 {

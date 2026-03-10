@@ -327,6 +327,7 @@ const char* GetOpName(opcodetype opcode)
     case OP_NOP8                   : return "OP_NOP8";
     case OP_NOP9                   : return "OP_NOP9";
     case OP_ANON_MARKER            : return "OP_ANON_MARKER"; // Ring Sigs
+    case OP_SHIELDED_MARKER        : return "OP_SHIELDED_MARKER"; // Shielded Txs
 
     // cold staking
     case OP_CHECKCOLDSTAKEVERIFY   : return "OP_CHECKCOLDSTAKEVERIFY";
@@ -493,6 +494,14 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
                 opcode == OP_RSHIFT)
                 return false;
 
+            if (opcode == OP_RESERVED ||
+                opcode == OP_VER ||
+                opcode == OP_VERIF ||
+                opcode == OP_VERNOTIF ||
+                opcode == OP_RESERVED1 ||
+                opcode == OP_RESERVED2)
+                return false;
+
             if (fExec && 0 <= opcode && opcode <= OP_PUSHDATA4)
                 stack.push_back(vchPushValue);
             else if (fExec || (OP_IF <= opcode && opcode <= OP_ENDIF))
@@ -558,7 +567,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
         // Thus as a special case we tell CScriptNum to accept up
         // to 5-byte bignums, which are good until 2**32-1, the
         // same limit as the nLockTime field itself.
-        const CScriptNum nLockTime(stacktop(-1), 5);
+        const CScriptNum nLockTime(stacktop(-1), true, 5);
 
         // In the rare event that the argument may be < 0 due to
         // some arithmetic being done first, you can always use
@@ -609,6 +618,13 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
                 }
                 break;
 
+                case OP_ANON_MARKER:
+                case OP_SHIELDED_MARKER:
+                {
+                    return false;
+                }
+                break;
+
                 case OP_CHECKCOLDSTAKEVERIFY:
                 {
                     if (!txTo.IsCoinStake())
@@ -645,9 +661,35 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
 
                     if (fLastOutputExempt)
                     {
-                        int64_t nTotalOutputValue = nP2CSOutputValue + nLastOutputValue;
-                        if (nTotalOutputValue > 0 && nLastOutputValue > nTotalOutputValue * 30 / 100)
+                        if (nP2CSOutputValue < 0 || nLastOutputValue < 0)
                             return false;
+
+                        if (nP2CSOutputValue > 0 && nLastOutputValue > INT64_MAX - nP2CSOutputValue)
+                            return false;
+
+                        int64_t nTotalOutputValue = nP2CSOutputValue + nLastOutputValue;
+
+                        if (nTotalOutputValue > 0)
+                        {
+                            if (nTotalOutputValue > INT64_MAX / 3)
+                            {
+                                if (nLastOutputValue / 3 > nTotalOutputValue / 10)
+                                    return false;
+                            }
+                            else
+                            {
+                                if (nLastOutputValue > INT64_MAX / 10)
+                                {
+                                    if (nLastOutputValue / 3 > nTotalOutputValue / 10)
+                                        return false;
+                                }
+                                else
+                                {
+                                    if (nLastOutputValue * 10 > nTotalOutputValue * 3)
+                                        return false;
+                                }
+                            }
+                        }
                     }
 
                     if (nP2CSOutputValue <= 0)
@@ -659,6 +701,8 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
                 case OP_NOTIF:
                 {
                     // <expression> if [statements] [else [statements]] endif
+                    if (vfExec.size() >= 100)
+                        return false;
                     bool fValue = false;
                     if (fExec)
                     {
@@ -915,6 +959,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
                 //
                 case OP_CAT:
                 {
+                    return false;
                     // (x1 x2 -- out)
                     if (stack.size() < 2)
                         return false;
@@ -929,6 +974,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
 
                 case OP_SUBSTR:
                 {
+                    return false;
                     // (in begin size -- out)
                     if (stack.size() < 3)
                         return false;
@@ -951,6 +997,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
                 case OP_LEFT:
                 case OP_RIGHT:
                 {
+                    return false;
                     // (in size -- out)
                     if (stack.size() < 2)
                         return false;
@@ -984,6 +1031,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
                 //
                 case OP_INVERT:
                 {
+                    return false;
                     // (in - out)
                     if (stack.size() < 1)
                         return false;
@@ -1002,6 +1050,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
                 case OP_OR:
                 case OP_XOR:
                 {
+                    return false;
                     // (x1 x2 - out)
                     if (stack.size() < 2)
                         return false;
@@ -1076,13 +1125,11 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
                     {
                     case OP_1ADD:       bn += bnOne; break;
                     case OP_1SUB:       bn -= bnOne; break;
-                    case OP_2MUL:       bn <<= 1; break;
-                    case OP_2DIV:       bn >>= 1; break;
-                    case OP_NEGATE:     bn = -bn; break;
+                    case OP_2MUL:       return false;                    case OP_2DIV:       return false;                    case OP_NEGATE:     bn = -bn; break;
                     case OP_ABS:        if (bn < bnZero) bn = -bn; break;
                     case OP_NOT:        bn = (bn == bnZero); break;
                     case OP_0NOTEQUAL:  bn = (bn != bnZero); break;
-                    default:            assert(!"invalid opcode"); break;
+                    default:            return false;
                     }
                     popstack(stack);
                     stack.push_back(bn.getvch());
@@ -1125,47 +1172,15 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
                         break;
 
                     case OP_MUL:
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-                        if (!BN_mul(bn.pbn, bn1.pbn, bn2.pbn, pctx))
-                            return false;
-#else
-                        if (!BN_mul(&bn, &bn1, &bn2, pctx))
-                            return false;
-#endif
-                        break;
-
+                        return false;
                     case OP_DIV:
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-                        if (!BN_div(bn.pbn, NULL, bn1.pbn, bn2.pbn, pctx))
-                            return false;
-#else
-                        if (!BN_div(&bn, NULL, &bn1, &bn2, pctx))
-                            return false;
-#endif
-                        break;
-
+                        return false;
                     case OP_MOD:
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-                        if (!BN_mod(bn.pbn, bn1.pbn, bn2.pbn, pctx))
-                            return false;
-#else
-                        if (!BN_mod(&bn, &bn1, &bn2, pctx))
-                            return false;
-#endif
-                        break;
-
+                        return false;
                     case OP_LSHIFT:
-                        if (bn2 < bnZero || bn2 > CBigNum(2048))
-                            return false;
-                        bn = bn1 << bn2.getulong();
-                        break;
-
+                        return false;
                     case OP_RSHIFT:
-                        if (bn2 < bnZero || bn2 > CBigNum(2048))
-                            return false;
-                        bn = bn1 >> bn2.getulong();
-                        break;
-
+                        return false;
                     case OP_BOOLAND:             bn = (bn1 != bnZero && bn2 != bnZero); break;
                     case OP_BOOLOR:              bn = (bn1 != bnZero || bn2 != bnZero); break;
                     case OP_NUMEQUAL:            bn = (bn1 == bn2); break;
@@ -1177,7 +1192,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
                     case OP_GREATERTHANOREQUAL:  bn = (bn1 >= bn2); break;
                     case OP_MIN:                 bn = (bn1 < bn2 ? bn1 : bn2); break;
                     case OP_MAX:                 bn = (bn1 > bn2 ? bn1 : bn2); break;
-                    default:                     assert(!"invalid opcode"); break;
+                    default:                     return false;
                     }
                     popstack(stack);
                     popstack(stack);
@@ -1465,9 +1480,14 @@ uint256 SignatureHash(CScript scriptCode, const CTransaction& txTo, unsigned int
     if (nIn >= txTo.vin.size())
     {
         printf("ERROR: SignatureHash() : nIn=%d out of range\n", nIn);
-        return 1;
+        CHashWriter ssError(SER_GETHASH, 0);
+        ssError << txTo.GetHash() << nIn << (uint32_t)0xDEADBEEF;
+        return ssError.GetHash();
     }
     CTransaction txTmp(txTo);
+
+    if (txTmp.IsShielded())
+        txTmp.bindingSig.bindingSig.vchSignature.clear();
 
     // In case concatenating two scripts ends up with two codeseparators,
     // or an extra one at the end, this prevents all those possible incompatibilities.
@@ -1496,7 +1516,9 @@ uint256 SignatureHash(CScript scriptCode, const CTransaction& txTo, unsigned int
         if (nOut >= txTmp.vout.size())
         {
             printf("ERROR: SignatureHash() : nOut=%d out of range\n", nOut);
-            return 1;
+            CHashWriter ssError(SER_GETHASH, 0);
+            ssError << txTo.GetHash() << nOut << (uint32_t)0xBADC0DE1;
+            return ssError.GetHash();
         }
         txTmp.vout.resize(nOut+1);
         for (unsigned int i = 0; i < nOut; i++)
@@ -1524,7 +1546,8 @@ uint256 SignatureHash(CScript scriptCode, const CTransaction& txTo, unsigned int
 
 bool SignSignature(const CKeyStore &keystore, const CScript& fromPubKey, CTransaction& txTo, unsigned int nIn, int nHashType)
 {
-    assert(nIn < txTo.vin.size());
+    if (nIn >= txTo.vin.size())
+        return false;
     CTxIn& txin = txTo.vin[nIn];
 
     // Leave out the signature from the hash, since a signature can't sign itself.
@@ -1560,9 +1583,11 @@ bool SignSignature(const CKeyStore &keystore, const CScript& fromPubKey, CTransa
 
 bool SignSignature(const CKeyStore &keystore, const CTransaction& txFrom, CTransaction& txTo, unsigned int nIn, int nHashType)
 {
-    assert(nIn < txTo.vin.size());
+    if (nIn >= txTo.vin.size())
+        return false;
     CTxIn& txin = txTo.vin[nIn];
-    assert(txin.prevout.n < txFrom.vout.size());
+    if (txin.prevout.n >= txFrom.vout.size())
+        return false;
     const CTxOut& txout = txFrom.vout[txin.prevout.n];
 
     return SignSignature(keystore, txout.scriptPubKey, txTo, nIn, nHashType);
@@ -2255,7 +2280,8 @@ bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, unsigne
 
 bool VerifySignature(const CTransaction& txFrom, const CTransaction& txTo, unsigned int nIn, unsigned int flags, int nHashType)
 {
-    assert(nIn < txTo.vin.size());
+    if (nIn >= txTo.vin.size())
+        return false;
     const CTxIn& txin = txTo.vin[nIn];
     if (txin.prevout.n >= txFrom.vout.size())
         return false;
@@ -2293,7 +2319,8 @@ static CScript CombineMultisig(CScript scriptPubKey, const CTransaction& txTo, u
     }
 
     // Build a map of pubkey -> signature by matching sigs to pubkeys:
-    assert(vSolutions.size() > 1);
+    if (vSolutions.size() <= 1)
+        return CScript();
     unsigned int nSigsRequired = vSolutions.front()[0];
     unsigned int nPubKeys = vSolutions.size()-2;
     map<valtype, valtype> sigs;
@@ -2585,9 +2612,18 @@ bool ExtractColdStakeKeys(const CScript& script, CKeyID& stakerKeyID, CKeyID& ow
     if (!IsPayToColdStaking(script))
         return false;
 
+    if (script.size() < 48)
+        return false;
     uint160 stakerHash, ownerHash;
     memcpy(&stakerHash, &script[6], 20);
     memcpy(&ownerHash, &script[28], 20);
+
+    if (stakerHash == 0 || ownerHash == 0)
+        return false;
+
+    if (stakerHash == ownerHash)
+        return false;
+
     stakerKeyID = CKeyID(stakerHash);
     ownerKeyID = CKeyID(ownerHash);
     return true;

@@ -229,10 +229,12 @@ int main(int argc, char *argv[])
         guiref = &window;
         bool fStartMin = GetBoolArg("-min");
         window.setEnabled(false);
-        if (fStartMin)
-            window.showMinimized();
-        else
-            window.show();
+        // Prevent the window from appearing during initialization.
+        // On macOS the constructor's calls to setUnifiedTitleAndToolBarOnMac,
+        // createMenuBar, statusBar, and createTrayIcon can trigger implicit
+        // visibility. Hide it and block any show events until init completes.
+        window.setAttribute(Qt::WA_DontShowOnScreen, true);
+        window.hide();
         app.processEvents();
 
         InitExecutor executor;
@@ -252,13 +254,15 @@ int main(int argc, char *argv[])
                 // Put this in a block, so that the Model objects are cleaned up before
                 // calling Shutdown().
 
-                QString finishMessage = QString::fromStdString(_("Done loading"));
-                while (splashref->message() != finishMessage)
+                if (splashref)
                 {
-                    MilliSleep(200);
+                    QString finishMessage = QString::fromStdString(_("Done loading"));
+                    while (splashref->message() != finishMessage)
+                    {
+                        MilliSleep(200);
+                    }
+                    splashref->finish(&window);
                 }
-
-                splashref->finish(&window);
 
                 //make sure user has agreed to TOU
                 window.checkTOU();
@@ -271,7 +275,8 @@ int main(int argc, char *argv[])
                 window.setWalletModel(&walletModel);
                 window.setMessageModel(&messageModel);
 
-                // If -min option passed, start window minimized.
+                // Init complete — allow the window to appear on screen
+                window.setAttribute(Qt::WA_DontShowOnScreen, false);
                 window.setEnabled(true);
                 if (fStartMin)
                     window.showMinimized();

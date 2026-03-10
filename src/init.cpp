@@ -21,8 +21,11 @@
 #include "smessage.h"
 #include "innova_spinner_frames.h"
 #include "ringsig.h"
+#include "nullsend.h"
 #include "idns.h"
 #include "bootstrap.h"
+#include "zkproof.h"
+#include "dandelion.h"
 
 #ifdef USE_NATIVETOR
 #include "tor/anonymize.h" //Tor native optional integration (Flag -nativetor=1)
@@ -123,6 +126,8 @@ void Shutdown(void* parg)
     if (fFirstThread)
     {
         fShutdown = true;
+
+        CZKContext::Shutdown();
 
         if (fHybridSPV && pwalletMain)
         {
@@ -517,6 +522,7 @@ std::string HelpMessage()
         "  -onionseed             " + _("Find peers using .onion seeds (default: 0 unless -connect)") + "\n" +
         "  -nativetor=<n>         " + _("Enable or disable Native Tor Onion Node (default: 0)") +
         "  -staking               " + _("Stake your coins to support network and gain reward (default: 1)") + "\n" +
+        "  -stakingmode=<mode>    " + _("Staking mode: transparent, nullstake, cold, coldprivate (default: transparent)") + "\n" +
 
         "\n" + _("SPV (Light Client) options:") + "\n" +
         "  -spv                   " + _("Run in SPV mode (light client, headers only)") + "\n" +
@@ -525,7 +531,7 @@ std::string HelpMessage()
         "  -maxheaders=<n>       " + _("Maximum block headers to keep in memory in SPV mode (default: 50000)") + "\n" +
         "  -spvutxocachesize=<n> " + _("Maximum SPV UTXO cache entries (default: 10000, Pi: 1000)") + "\n" +
         "  -cnsyncslots=<n>      " + _("Collateral node slots reserved for sync during IBD (default: 4)") + "\n" +
-        "  -mixingpoolsize=<n>   " + _("CoinJoin mixing pool size (3-8, default: 5)") + "\n" +
+        "  -mixingpoolsize=<n>   " + _("NullSend mixing pool size (2-16, default: 5)") + "\n" +
         "  -rpcratelimit=<n>     " + _("RPC requests per second per IP (0=disabled, default: 100)") + "\n" +
         "  -minstakeinterval=<n>  " + _("Minimum time in seconds between successful stakes (default: 30)") + "\n" +
         "  -minersleep=<n>        " + _("Milliseconds between stake attempts. Lowering this param will not result in more stakes. (default: 1000)") + "\n" +
@@ -568,6 +574,7 @@ std::string HelpMessage()
         "  -rpcport=<port>        " + _("Listen for JSON-RPC connections on <port> (default: 32339 or testnet: 32338)") + "\n" +
         "  -rpcallowip=<ip>       " + _("Allow JSON-RPC connections from specified IP address") + "\n" +
         "  -rpcconnect=<ip>       " + _("Send commands to node running on <ip> (default: 127.0.0.1)") + "\n" +
+        "  -disablerpchelp        " + _("Disable full RPC command listing in help (security)") + "\n" +
         "  -blocknotify=<cmd>     " + _("Execute command when the best block changes (%s in cmd is replaced by block hash)") + "\n" +
         "  -walletnotify=<cmd>    " + _("Execute command when a wallet transaction changes (%s in cmd is replaced by TxID)") + "\n" +
         "  -confchange            " + _("Require a confirmations for change (default: 0)") + "\n" +
@@ -684,8 +691,8 @@ bool AppInit2()
 
     nNodeLifespan = GetArg("-addrlifespan", 7);
     fUseFastIndex = GetBoolArg("-fastindex", true);
-    nMinStakeInterval = GetArg("-minstakeinterval", 30); // 2 blocks at 15s = 30s, don't make pos chains!
-    nMinerSleep = GetArg("-minersleep", 5000); // default 5 seconds for 15-second block time (1/3 of block time)
+    nMinStakeInterval = std::max((int64_t)0, std::min((int64_t)600, GetArg("-minstakeinterval", 30)));
+    nMinerSleep = std::max((int64_t)100, std::min((int64_t)60000, GetArg("-minersleep", 5000)));
 
     // Largest block you're willing to create.
     // Limit to betweeen 1K and MAX_BLOCK_SIZE-1K for sanity:
@@ -876,6 +883,24 @@ bool AppInit2()
             SoftSetArg("-maxmempool", "10");
         if (!mapArgs.count("-maxorphantx"))
             SoftSetArg("-maxorphantx", "10");
+    }
+
+    {
+        string strStakingMode = GetArg("-stakingmode", "transparent");
+        LOCK(cs_stakingMode);
+        if (strStakingMode == "nullstake" || strStakingMode == "private")
+            nStakingMode = STAKE_NULLSTAKE;
+        else if (strStakingMode == "cold")
+            nStakingMode = STAKE_COLD;
+        else if (strStakingMode == "coldprivate" || strStakingMode == "nullstakecold")
+            nStakingMode = STAKE_NULLSTAKE_COLD;
+        else if (strStakingMode == "transparent")
+            nStakingMode = STAKE_TRANSPARENT;
+        else
+        {
+            printf("WARNING: Unknown -stakingmode '%s', using transparent\n", strStakingMode.c_str());
+            nStakingMode = STAKE_TRANSPARENT;
+        }
     }
 
     bitdb.SetDetach(GetBoolArg("-detachdb", false));
@@ -1239,6 +1264,9 @@ bool AppInit2()
 
         if (!fNoBootstrap && !fGetBootstrap && !fDaemon)
         {
+#ifdef QT_GUI
+            fGetBootstrap = false;
+#else
             printf("\n");
             printf("===============================================================\n");
             printf("  Innova Core - First Time Setup\n");
@@ -1256,6 +1284,7 @@ bool AppInit2()
                 choice = '2';
             }
             fGetBootstrap = (choice == '1');
+#endif
         }
 
         if (fGetBootstrap)
@@ -1331,10 +1360,53 @@ bool AppInit2()
     nStart2 = GetTimeMillis();
 
     extern bool createNameIndexFile();
-    if (!fs::exists(GetDataDir() / "innovanamesindex.dat") && !createNameIndexFile())
+
     {
-        printf("Fatal error: Failed to create innovanamesindex.dat\n");
-        return false;
+        fs::path pathNamesDB = GetDataDir() / "innovanamesindex.dat";
+        fs::path pathNamesVer = GetDataDir() / "innovanamesindex.version";
+        int nResetHeight = FORK_HEIGHT_IDNS_RESET;
+        bool fNeedRebuild = false;
+
+        if (fs::exists(pathNamesDB))
+        {
+            if (nResetHeight > 0)
+            {
+                int nStoredReset = 0;
+                FILE* fVer = fopen(pathNamesVer.string().c_str(), "r");
+                if (fVer)
+                {
+                    fscanf(fVer, "%d", &nStoredReset);
+                    fclose(fVer);
+                }
+                if (nStoredReset < nResetHeight)
+                {
+                    printf("IDNS reset: database era %d < reset height %d, rebuilding...\n",
+                           nStoredReset, nResetHeight);
+                    fs::remove(pathNamesDB);
+                    fNeedRebuild = true;
+                }
+            }
+        }
+        else
+        {
+            fNeedRebuild = true;
+        }
+
+        if (fNeedRebuild && !createNameIndexFile())
+        {
+            printf("Fatal error: Failed to create innovanamesindex.dat\n");
+            return false;
+        }
+
+        if (nResetHeight > 0)
+        {
+            FILE* fVer = fopen(pathNamesVer.string().c_str(), "w");
+            if (fVer)
+            {
+                fprintf(fVer, "%d\n", nResetHeight);
+                fclose(fVer);
+            }
+        }
     }
 
     printf("Loaded Name DB %15" PRId64"ms\n", GetTimeMillis() - nStart2);
@@ -1627,6 +1699,8 @@ bool AppInit2()
     //Threading still needs reworking
     NewThread(ThreadCheckCollaTeralPool, NULL);
 
+    NewThread(ThreadNullSend, NULL);
+
     RandAddSeedPerfmon();
 
     // reindex addresses found in blockchain
@@ -1685,9 +1759,34 @@ bool AppInit2()
         string bind_ip = GetArg("-idnsbindip", "");
         string allowed = GetArg("-idnsallowed", "");
         string localcf = GetArg("-idnslocalcf", "");
-        idns = new IDns(bind_ip.c_str(), port,
-        suffix.c_str(), allowed.c_str(), localcf.c_str(), verbose);
-        printf("Innova DNS Server started on %d!\n", port);
+        try {
+            idns = new IDns(bind_ip.c_str(), port,
+            suffix.c_str(), allowed.c_str(), localcf.c_str(), verbose);
+            printf("Innova DNS Server started on %d!\n", port);
+        } catch (const std::exception& e) {
+            printf("WARNING: IDNS failed to start: %s\n", e.what());
+            printf("         Node will continue without IDNS service.\n");
+            idns = NULL;
+        }
+    }
+
+    // Step 11.5: ZK proof context
+    if (!CZKContext::Initialize())
+    {
+        printf("ERROR: Failed to initialize ZK proof context. Shielded transactions will be rejected.\n");
+        printf("       This node will not be able to validate shielded blocks post fork height.\n");
+    }
+
+    // Step 11.6: Dandelion++
+    if (GetBoolArg("-dandelion", true))
+    {
+        dandelionState.SetEnabled(true);
+        printf("Dandelion++ network privacy enabled\n");
+    }
+    else
+    {
+        dandelionState.SetEnabled(false);
+        printf("Dandelion++ network privacy disabled\n");
     }
 
     // ********************************************************* Step 12: finished
@@ -1697,6 +1796,8 @@ bool AppInit2()
 
     if (!strErrors.str().empty())
         return InitError(strErrors.str());
+
+    fSuccessfullyLoaded = true;
 
 #if !defined(QT_GUI)
     // Loop until process is exit()ed from shutdown() function,
@@ -1708,8 +1809,6 @@ bool AppInit2()
         //MilliSleep(5000);
         sleep(5);
 #endif
-
-    fSuccessfullyLoaded = true;
 
     return true;
 }

@@ -14,6 +14,7 @@
 #include "util.h"
 #include "base58.h"
 #include "hashblock.h"
+#include "hash.h"
 #include "main.h"
 #include "script.h"
 
@@ -282,10 +283,12 @@ public:
     }
 
     uint256 GetHash(){
-        uint256 n2 = Tribus(BEGIN(nBlockHeight), END(nBlockHeight));
-        uint256 n3 = vin.prevout.hash > n2 ? (vin.prevout.hash - n2) : (n2 - vin.prevout.hash);
-
-        return n3;
+        CHashWriter ss(SER_GETHASH, PROTOCOL_VERSION);
+        ss << nBlockHeight;
+        ss << vin;
+        ss << payee;
+        ss << vchSig;
+        return ss.GetHash();
     }
 
     ADD_SERIALIZE_METHODS;

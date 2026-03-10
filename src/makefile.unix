@@ -13,7 +13,8 @@ HOMEBREW_PREFIX := $(shell brew --prefix 2>/dev/null)
 BDB_BREW_PREFIX := $(shell brew --prefix berkeley-db@4 2>/dev/null)
 
 LINK:=$(CXX)
-ARCH:=$(system lscpu | head -n 1 | awk '{print $2}')
+UNAME_M := $(shell uname -m)
+ARCH:=$(shell lscpu 2>/dev/null | head -n 1 | awk '{print $$2}')
 
 DEFS=-DBOOST_SPIRIT_THREADSAFE
 
@@ -40,12 +41,10 @@ ifneq ($(BDB_BREW_PREFIX),)
 endif
 
 OPENSSL_VERSION := $(shell pkg-config --modversion openssl 2>/dev/null)
-ifeq ($(UNAME_S),Darwin)
 ifneq ($(OPENSSL_VERSION),)
 ifeq ($(origin USE_NATIVETOR), file)
 ifneq ($(filter 3.%,$(OPENSSL_VERSION)),)
     USE_NATIVETOR := -
-endif
 endif
 endif
 endif
@@ -155,12 +154,6 @@ xCFLAGS=-O2 $(EXT_OPTIONS) -pthread -Wall -Wextra -Wno-ignored-qualifiers -Wno-f
 # LDFLAGS can be specified on the make command line, so we use xLDFLAGS that only
 # adds some defaults in front. Unfortunately, LDFLAGS=... $(LDFLAGS) does not work.
 xLDFLAGS=$(LDHARDENING) $(LDFLAGS)
-
-ifeq (${USE_IPFS}, 1)
-OBJS= \
-     obj/ipfs.o \
-     obj/ipfscurl.o
-endif
 
 ifeq (${USE_NATIVETOR}, 1)
 OBJS= \
@@ -346,6 +339,20 @@ OBJS= \
     obj/rpcblockchain.o \
     obj/rpcrawtransaction.o \
 	obj/rpchyperfile.o \
+    obj/rpcshielded.o \
+    obj/nullsend.o \
+    obj/shieldedcoinjoin.o \
+    obj/shielded.o \
+    obj/zkproof.o \
+    obj/lelantus.o \
+    obj/curvetree.o \
+    obj/ipa.o \
+    obj/ed25519_zk.o \
+    obj/nullstake.o \
+    obj/poseidon2.o \
+    obj/bulletproof_ac.o \
+    obj/silentpayments.o \
+    obj/dandelion.o \
     obj/rpcsmessage.o \
     obj/script.o \
     obj/sync.o \
@@ -356,9 +363,6 @@ OBJS= \
     obj/kernel.o \
     obj/pbkdf2.o \
     obj/scrypt.o \
-    obj/scrypt-arm.o \
-    obj/scrypt-x86.o \
-    obj/scrypt-x86_64.o \
     obj/smessage.o \
     obj/stealth.o \
     obj/activecollateralnode.o \
@@ -373,8 +377,6 @@ OBJS= \
     obj/state.o \
 	obj/idns.o \
 	obj/namecoin.o \
-    obj/ipfs.o \
-    obj/ipfscurl.o  \
 	obj/utiltime.o \
     obj/stun.o \
     obj/bootstrap.o \
@@ -411,6 +413,20 @@ OBJS= \
     obj/rpcrawtransaction.o \
     obj/rpcsmessage.o \
 	obj/rpchyperfile.o \
+    obj/rpcshielded.o \
+    obj/nullsend.o \
+    obj/shieldedcoinjoin.o \
+    obj/shielded.o \
+    obj/zkproof.o \
+    obj/lelantus.o \
+    obj/curvetree.o \
+    obj/ipa.o \
+    obj/ed25519_zk.o \
+    obj/nullstake.o \
+    obj/poseidon2.o \
+    obj/bulletproof_ac.o \
+    obj/silentpayments.o \
+    obj/dandelion.o \
     obj/script.o \
     obj/sync.o \
     obj/util.o \
@@ -420,9 +436,6 @@ OBJS= \
     obj/kernel.o \
     obj/pbkdf2.o \
     obj/scrypt.o \
-    obj/scrypt-arm.o \
-    obj/scrypt-x86.o \
-    obj/scrypt-x86_64.o \
     obj/smessage.o \
     obj/stealth.o \
     obj/activecollateralnode.o \
@@ -437,8 +450,6 @@ OBJS= \
     obj/state.o \
 	obj/idns.o \
 	obj/namecoin.o \
-    obj/ipfs.o \
-    obj/ipfscurl.o  \
 	obj/utiltime.o \
     obj/stun.o \
     obj/bootstrap.o \
@@ -446,6 +457,19 @@ OBJS= \
     obj/minizip/unzip.o
 endif
 
+# IPFS objects
+ifeq (${USE_IPFS}, 1)
+OBJS += obj/ipfs.o obj/ipfscurl.o
+endif
+
+# Scrypt assembly - architecture-conditional
+ifeq ($(UNAME_M),x86_64)
+OBJS += obj/scrypt-x86_64.o
+else ifeq ($(UNAME_M),i686)
+OBJS += obj/scrypt-x86.o
+else ifneq (,$(filter arm% aarch64,$(UNAME_M)))
+OBJS += obj/scrypt-arm.o
+endif
 
 .PHONY: all innova-build
 

@@ -76,9 +76,9 @@ Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Trib
 
 * Hybrid PoW/PoS Collateral Nodes
 * Stealth addresses
-* Ring Signatures (16 Recommended)
+* Ring Signatures (16 Recommended, deprecated at IIP-0003)
 * Native Optional Tor Onion Node (-nativetor=1)
-* Encrypted Messaging
+* Encrypted Messaging (SecureMsg)
 * Multi-Signature Addresses & TXs
 * Atomic Swaps using UTXOs (BIP65 CLTV)
 * BIP39 Support (Coin Type 116)
@@ -89,6 +89,23 @@ Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Trib
 * Full decentralization
 * Hyperfile - IPFS API Implementation with Anonymous Decentralized File Uploads (UI and RPC)
 * Name Value System supporting the IDNS for fully & truly decentralized blockchain domains
+
+## Privacy & Protocol Innovations (IIPs)
+
+Innova Improvement Proposals (IIPs) formalize all protocol innovations. See [IIP_INDEX.md](IIP_INDEX.md) for full specifications.
+
+| IIP | Title | Status | Fork Height |
+|-----|-------|--------|-------------|
+| [IIP-0001](IIP_INDEX.md#iip-0001-cold-staking-p2cs) | Cold Staking (P2CS) | Active | 7,100,000 |
+| [IIP-0002](IIP_INDEX.md#iip-0002-shielded-transactions) | Shielded Transactions (Pedersen + Bulletproofs + Lelantus) | Active | 8,000,000 |
+| [IIP-0003](IIP_INDEX.md#iip-0003-ring-signature-deprecation) | Ring Signature Deprecation | Active | 8,500,000 |
+| [IIP-0004](IIP_INDEX.md#iip-0004-dynamic-selective-privacy) | Dynamic Selective Privacy (8 modes) | Active | 8,600,000 |
+| [IIP-0005](IIP_INDEX.md#iip-0005-confidential-coinjoin) | Confidential CoinJoin | Active | 8,700,000 |
+| [IIP-0006](IIP_INDEX.md#iip-0006-fcmp-full-chain-membership-proofs) | FCMP++ Full-Chain Membership Proofs | Active | 9,000,000 |
+| [IIP-0007](IIP_INDEX.md#iip-0007-silent-payments-and-silent-shielding) | Silent Payments + Silent Shielding | Active | 8,000,000 |
+| [IIP-0008](IIP_INDEX.md#iip-0008-dandelion-network-privacy) | Dandelion++ Network Privacy | Active | 8,000,000 |
+| [IIP-0009](IIP_INDEX.md#iip-0009-nullstake-v1) | NullStake V1 (ZK Private Staking) | Active | 9,500,000 |
+| [IIP-0010](IIP_INDEX.md#iip-0010-nullstake-v2) | NullStake V2 (Poseidon2 + Bulletproof AC) | Proposed | 10,000,000 |
 
 ## Links
 

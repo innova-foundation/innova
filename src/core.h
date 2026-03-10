@@ -3,8 +3,8 @@
 // Copyright (c) 2019-2026 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-#ifndef D_CORE_H
-#define D_CORE_H
+#ifndef INN_CORE_H
+#define INN_CORE_H
 
 #include "uint256.h"
 #include "serialize.h"

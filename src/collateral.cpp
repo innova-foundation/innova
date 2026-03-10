@@ -9,6 +9,7 @@
 #include "util.h"
 #include "collateralnode.h"
 #include "ui_interface.h"
+#include "txdb.h"
 
 #include <openssl/rand.h>
 
@@ -29,8 +30,12 @@ static uint32_t SecureRand(uint32_t max) {
     uint32_t rand_val;
     uint32_t limit = UINT32_MAX - (UINT32_MAX % max);
 
+    static int nRandFailures = 0;
     do {
         if (RAND_bytes((unsigned char*)&rand_val, sizeof(rand_val)) != 1) {
+            nRandFailures++;
+            if (nRandFailures >= 10)
+                printf("SecureRand: WARNING: %d RAND_bytes failures, falling back to GetRandBytes\n", nRandFailures);
             GetRandBytes((unsigned char*)&rand_val, sizeof(rand_val));
         }
     } while (rand_val >= limit);
@@ -64,6 +69,7 @@ int randomizeList (int i) { return (int)SecureRand((uint32_t)i); }
 int GetInputCollateralNRounds(CTxIn in, int rounds)
 {
     if(rounds >= 17) return rounds;
+    if(rounds < 0 || rounds > 100) return rounds;
 
     std::string padding = "";
     padding.insert(0, ((rounds+1)*5)+3, ' ');
@@ -73,6 +79,10 @@ int GetInputCollateralNRounds(CTxIn in, int rounds)
     {
         // bounds check
         if(in.prevout.n >= tx.vout.size()) return -4;
+
+        if(tx.IsSpent(in.prevout.n)) return -6;
+
+        if(tx.GetDepthInMainChain() < 6) return -5;
 
         if(tx.vout[in.prevout.n].nValue == COLLATERALN_FEE) return -3;
 
@@ -290,7 +300,7 @@ bool CCollaTeralPool::SignatureValid(const CScript& newSig, const CTxIn& newVin)
         int n = found;
         txNew.vin[n].scriptSig = newSig;
         if(fDebug) printf("CCollaTeralPool::SignatureValid() - Sign with sig %s\n", newSig.ToString().substr(0,24).c_str());
-        if (!VerifyScript(txNew.vin[n].scriptSig, sigPubKey, txNew, i, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC, 0)){
+        if (!VerifyScript(txNew.vin[n].scriptSig, sigPubKey, txNew, n, SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_STRICTENC, 0)){
             if(fDebug) printf("CCollaTeralPool::SignatureValid() - Signing - Error signing input %u\n", n);
             return false;
         }
@@ -309,7 +319,14 @@ bool CCollaTeralPool::IsCollateralValid(const CTransaction& txCollateral){
     int64_t nValueOut = 0;
     bool missingTx = false;
 
+    static const int64_t MAX_MONEY = 21000000LL * 100000000LL; // 21M INN in innovais <satoshis>
+
     for (const CTxOut o : txCollateral.vout){
+        if (o.nValue < 0 || o.nValue > MAX_MONEY || nValueOut > MAX_MONEY - o.nValue)
+        {
+            printf("CCollaTeralPool::IsCollateralValid - value overflow in outputs\n");
+            return false;
+        }
         nValueOut += o.nValue;
 
         if(!o.scriptPubKey.IsNormalPaymentScript()){
@@ -321,10 +338,15 @@ bool CCollaTeralPool::IsCollateralValid(const CTransaction& txCollateral){
     for (const CTxIn i : txCollateral.vin){
         CTransaction tx2;
         uint256 hash;
-        //if(GetTransaction(i.prevout.hash, tx2, hash, true)){
-    if(GetTransaction(i.prevout.hash, tx2, hash)){
+        if(GetTransaction(i.prevout.hash, tx2, hash)){
             if(tx2.vout.size() > i.prevout.n) {
-                nValueIn += tx2.vout[i.prevout.n].nValue;
+                int64_t nVal = tx2.vout[i.prevout.n].nValue;
+                if (nVal < 0 || nVal > MAX_MONEY || nValueIn > MAX_MONEY - nVal)
+                {
+                    printf("CCollaTeralPool::IsCollateralValid - value overflow in inputs\n");
+                    return false;
+                }
+                nValueIn += nVal;
             }
         } else{
             missingTx = true;
@@ -346,7 +368,8 @@ bool CCollaTeralPool::IsCollateralValid(const CTransaction& txCollateral){
 
     CValidationState state;
     //if(!AcceptableInputs(mempool, state, txCollateral)){
-    bool* pfMissingInputs;
+    bool fMissingInputs = false;
+    bool* pfMissingInputs = &fMissingInputs;
     if(!AcceptableInputs(mempool, txCollateral, false, pfMissingInputs)){
         if(fDebug) printf("CCollaTeralPool::IsCollateralValid - didn't pass IsAcceptable\n");
         return false;
@@ -362,8 +385,9 @@ bool CCollaTeralPool::IsCollateralValid(const CTransaction& txCollateral){
 bool CCollaTeralPool::AddEntry(const std::vector<CTxIn>& newInput, const int64_t& nAmount, const CTransaction& txCollateral, const std::vector<CTxOut>& newOutput, std::string& error){
     if (!fCollateralNode) return false;
 
+    static const int64_t MAX_MONEY = 21000000LL * 100000000LL;
     for (CTxIn in : newInput) {
-        if (in.prevout.IsNull() || nAmount < 0) {
+        if (in.prevout.IsNull() || nAmount < 0 || nAmount > MAX_MONEY) {
             if(fDebug) printf("CCollaTeralPool::AddEntry - input not valid!\n");
             error = _("Input is not valid.");
             sessionUsers--;
@@ -801,7 +825,7 @@ int CCollaTeralPool::GetDenominationsByAmount(int64_t nAmount, int nDenomTarget)
 }
 
 bool CCollaTeralSigner::IsVinAssociatedWithPubkey(CTxIn& vin, CPubKey& pubkey){
-	bool fIsInitialDownload = IsInitialBlockDownload();
+    bool fIsInitialDownload = IsInitialBlockDownload();
     if(fIsInitialDownload) return false;
 
     CScript payee2;
@@ -811,24 +835,46 @@ bool CCollaTeralSigner::IsVinAssociatedWithPubkey(CTxIn& vin, CPubKey& pubkey){
     uint256 hash;
 
     if(GetTransaction(vin.prevout.hash, txVin, hash)){
+        // Bounds check on prevout index
+        if (vin.prevout.n >= txVin.vout.size())
+        {
+            if (fDebug)
+                printf("IsVinAssociatedWithPubKey:: prevout.n %u out of range (vout size %u) for %s\n",
+                       vin.prevout.n, (unsigned int)txVin.vout.size(), vin.prevout.hash.ToString().c_str());
+            return false;
+        }
+
         CTxOut out = txVin.vout[vin.prevout.n];
-		if ((out.nValue == GetMNCollateral()*COIN) && (out.scriptPubKey == payee2))
-		{
-			return true;
-		}
+        if ((out.nValue == GetMNCollateral()*COIN) && (out.scriptPubKey == payee2))
+        {
+            // Verify the UTXO is actually unspent via the tx index
+            CTxDB txdb("r");
+            CTxIndex txindex;
+            if (txdb.ReadTxIndex(vin.prevout.hash, txindex))
+            {
+                if (vin.prevout.n < txindex.vSpent.size() && !txindex.vSpent[vin.prevout.n].IsNull())
+                {
+                    if (fDebug)
+                        printf("IsVinAssociatedWithPubKey:: collateral UTXO %s:%u is already spent\n",
+                               vin.prevout.hash.ToString().c_str(), vin.prevout.n);
+                    return false;
+                }
+            }
+            return true;
+        }
     } else {
-		if (fDebug) {
-			printf("IsVinAssociatedWithPubKey:: GetTransaction failed for %s\n",vin.prevout.hash.ToString().c_str());
-		}
-	}
+        if (fDebug) {
+            printf("IsVinAssociatedWithPubKey:: GetTransaction failed for %s\n",vin.prevout.hash.ToString().c_str());
+        }
+    }
 
     CTxDestination address1;
     ExtractDestination(payee2, address1);
     CBitcoinAddress address2(address1);
-	if (fDebug) {
-		printf("IsVinAssociatedWithPubKey:: vin %s is not associated with pubkey %s for address %s\n",
-			   vin.ToString().c_str(), pubkey.GetHash().ToString().c_str(), address2.ToString().c_str());
-	}
+    if (fDebug) {
+        printf("IsVinAssociatedWithPubKey:: vin %s is not associated with pubkey %s for address %s\n",
+               vin.ToString().c_str(), pubkey.GetHash().ToString().c_str(), address2.ToString().c_str());
+    }
     return false;
 }
 
@@ -911,7 +957,7 @@ bool CCollateralNQueue::Sign()
 bool CCollateralNQueue::Relay()
 {
 
-    //LOCK(cs_vNodes);
+    LOCK(cs_vNodes);
     for (CNode* pnode : vNodes){
         // always relay to everyone
         pnode->PushMessage("dsq", (*this));
@@ -1024,7 +1070,9 @@ void ThreadCheckCollaTeralPool(void* parg)
         }
 
         //if(c % (60*5) == 0){
-        if(c % 60 == 0 && vecCollateralnodes.size()) {
+        if(c % 60 == 0) {
+            LOCK(cs_collateralnodes);
+            if (vecCollateralnodes.size()) {
             //let's connect to a random collateralnode every minute!
             int cn = (int)SecureRand((uint32_t)vecCollateralnodes.size());
             CService addr = vecCollateralnodes[cn].addr;
@@ -1047,6 +1095,7 @@ void ThreadCheckCollaTeralPool(void* parg)
             //if we've used 1/5 of the collateralnode list, then clear the list.
             if((int)vecCollateralnodesUsed.size() > (int)vecCollateralnodes.size() / 5)
                 vecCollateralnodesUsed.clear();
+            } // if (vecCollateralnodes.size())
         }
     }
 }

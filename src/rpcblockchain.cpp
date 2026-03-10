@@ -193,6 +193,13 @@ Value dumpbootstrap(const Array& params, bool fHelp)
     if (nBlocks < 0 || nBlocks > nBestHeight)
         throw runtime_error("Block number out of range.");
 
+    // Sanitize destination path — confine to data directory
+    for (size_t ci = 0; ci < strDest.size(); ci++)
+    {
+        char c = strDest[ci];
+        if (c < 0x20 || c == 0x7F)
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Destination path contains control characters");
+    }
     boost::filesystem::path pathDest(strDest);
     if (boost::filesystem::is_directory(pathDest))
         pathDest /= "bootstrap.dat";
@@ -578,11 +585,28 @@ Value setbestblockbyheight(const Array& params, bool fHelp)
     if (fHelp || params.size() < 1 || params.size() > 2)
         throw runtime_error(
             "setbestblockbyheight <height>\n"
-            "Sets the tip of the chain with a block at <height>.");
+            "Sets the tip of the chain with a block at <height>.\n"
+            "WARNING: This command is restricted and can only be used for\n"
+            "minor rollbacks (max 10 blocks) in regtest mode only.\n"
+            "Use 'invalidateblock' for reorg recovery in production.");
+
+    // Regtest only
+    extern bool fRegTest;
+    if (!fRegTest)
+        throw runtime_error(
+            "setbestblockbyheight is disabled in production.\n"
+            "Use 'invalidateblock' followed by 'reconsiderblock' for chain recovery.");
 
     int nHeight = params[0].get_int();
     if (nHeight < 0 || nHeight > nBestHeight)
         throw runtime_error("Block height out of range.");
+
+    static const int MAX_ROLLBACK_DEPTH = 10;
+    if (nBestHeight - nHeight > MAX_ROLLBACK_DEPTH)
+        throw runtime_error(
+            strprintf("Rollback too deep: %d blocks (max %d).\n"
+                      "Use 'invalidateblock' for larger rollbacks.",
+                      nBestHeight - nHeight, MAX_ROLLBACK_DEPTH));
 
     CBlock block;
     CBlockIndex* pblockindex = mapBlockIndex[hashBestChain];
@@ -600,6 +624,9 @@ Value setbestblockbyheight(const Array& params, bool fHelp)
     CTxDB txdb;
     {
         LOCK(cs_main);
+
+        printf("setbestblockbyheight: rolling back from %d to %d (regtest mode)\n",
+               nBestHeight, nHeight);
 
         if (!block.SetBestChain(txdb, pblockindex))
             result.push_back(Pair("result", "failure"));

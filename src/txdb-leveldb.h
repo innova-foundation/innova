@@ -8,6 +8,7 @@
 
 #include "main.h"
 #include "ringsig.h"
+#include "curvetree.h"
 
 #include <map>
 #include <string>
@@ -94,6 +95,8 @@ protected:
             ssValue >> value;
         }
         catch (std::exception &e) {
+            printf("LevelDB deserialization failure: %s (value size=%zu)\n",
+                   e.what(), strValue.size());
             return false;
         }
         return true;
@@ -103,7 +106,10 @@ protected:
     bool Write(const K& key, const T& value)
     {
         if (fReadOnly)
-            assert(!"Write called on database in read-only mode");
+        {
+            printf("ERROR: Write called on database in read-only mode\n");
+            return false;
+        }
 
         CDataStream ssKey(SER_DISK, CLIENT_VERSION);
         ssKey.reserve(1000);
@@ -130,7 +136,10 @@ protected:
         if (!pdb)
             return false;
         if (fReadOnly)
-            assert(!"Erase called on database in read-only mode");
+        {
+            printf("ERROR: Erase called on database in read-only mode\n");
+            return false;
+        }
 
         CDataStream ssKey(SER_DISK, CLIENT_VERSION);
         ssKey.reserve(1000);
@@ -197,6 +206,42 @@ public:
     bool WriteAnonOutput(CPubKey& pkCoin, CAnonOutput& ao);
     bool ReadAnonOutput(CPubKey& pkCoin, CAnonOutput& ao);
     bool EraseAnonOutput(CPubKey& pkCoin);
+
+    bool WriteShieldedNullifier(const uint256& nullifier, const CShieldedNullifierSpent& nfs);
+    bool ReadShieldedNullifier(const uint256& nullifier, CShieldedNullifierSpent& nfs);
+    bool EraseShieldedNullifier(const uint256& nullifier);
+
+    bool WriteShieldedAnchor(const uint256& anchor);
+    bool ReadShieldedAnchor(const uint256& anchor);
+    bool EraseShieldedAnchor(const uint256& anchor);
+    bool WriteShieldedAnchorHeight(const uint256& anchor, int nHeight);
+    bool ReadShieldedAnchorHeight(const uint256& anchor, int& nHeight);
+
+    bool WriteShieldedTree(const CIncrementalMerkleTree& tree);
+    bool ReadShieldedTree(CIncrementalMerkleTree& tree);
+
+    bool WriteShieldedTreeAtBlock(const uint256& blockHash, const CIncrementalMerkleTree& tree);
+    bool ReadShieldedTreeAtBlock(const uint256& blockHash, CIncrementalMerkleTree& tree);
+
+    bool WriteShieldedPoolValue(int64_t nValue);
+    bool ReadShieldedPoolValue(int64_t& nValue);
+
+    bool WriteShieldedCommitment(uint64_t nIndex, const CPedersenCommitment& commit);
+    bool ReadShieldedCommitment(uint64_t nIndex, CPedersenCommitment& commit);
+    bool ReadAllShieldedCommitments(std::vector<CPedersenCommitment>& vCommitments);
+    bool ReadShieldedCommitmentCount(uint64_t& nCount);
+    bool WriteShieldedCommitmentCount(uint64_t nCount);
+
+    bool WriteShieldedCommitmentHeight(uint64_t nIndex, int nHeight);
+    bool ReadShieldedCommitmentHeight(uint64_t nIndex, int& nHeight);
+    bool WriteShieldedCommitmentIndex(const std::vector<unsigned char>& vchCommitment, uint64_t nIndex);
+    bool ReadShieldedCommitmentIndex(const std::vector<unsigned char>& vchCommitment, uint64_t& nIndex);
+
+    bool WriteCurveTree(const CCurveTree& tree);
+    bool ReadCurveTree(CCurveTree& tree);
+    bool WriteCurveTreeAtBlock(const uint256& blockHash, const CCurveTree& tree);
+    bool ReadCurveTreeAtBlock(const uint256& blockHash, CCurveTree& tree);
+    bool EraseCurveTreeAtBlock(const uint256& blockHash);
 
 	bool ReadAddrIndex(uint160 addrHash, std::vector<uint256>& txHashes);
     bool WriteAddrIndex(uint160 addrHash, uint256 txHash);

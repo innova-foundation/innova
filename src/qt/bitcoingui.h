@@ -27,6 +27,7 @@ class Notificator;
 class RPCConsole;
 class ProofOfImage;
 class Hyperfile;
+class StakingPage;
 
 QT_BEGIN_NAMESPACE
 class QLabel;
@@ -104,6 +105,7 @@ private:
 	  MultisigDialog *multisigPage;
 	  ProofOfImage *proofOfImagePage;
     Hyperfile *hyperfilePage;
+    StakingPage *stakingPage;
 	  CollateralnodeManager *collateralnodeManagerPage;
     AddressBookPage *addressBookPage;
     AddressBookPage *receiveCoinsPage;
@@ -133,6 +135,7 @@ private:
 	  QAction *multisigAction;
     QAction *proofOfImageAction;
     QAction *hyperfileAction;
+    QAction *stakingAction;
     QAction *manageNamesAction;
 	  QAction *collateralnodeManagerAction;
     QAction *quitAction;
@@ -245,6 +248,8 @@ private slots:
 	void gotoProofOfImagePage();
   /** Switch to Hyperfile page */
    void gotoHyperfilePage();
+    /** Switch to Staking page */
+    void gotoStakingPage();
 
 
     //void gotoChatPage();

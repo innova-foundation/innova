@@ -100,8 +100,8 @@ IDns::IDns(const char *bind_ip, uint16_t port_no,
       const char *gw_suffix, const char *allowed_suff, const char *local_fname, uint8_t verbose)
     : m_status(0), m_thread(StatRun, this) {
 
-    // Set object to a new state
-    memset(this, 0, sizeof(IDns)); // Clear previous state
+    // Zero individual POD fields instead of blanket memset
+    // (memset(this) would destroy the already-constructed m_thread handle)
     m_verbose = verbose;
 
     struct sockaddr_in m_address;
@@ -127,7 +127,7 @@ IDns::IDns(const char *bind_ip, uint16_t port_no,
 //    if(bind(m_sockfd, (struct sockaddr *) &m_address,
 //                     sizeof (struct sockaddr_in)) < 0) {
       char buf[80];
-      sprintf(buf, "IDns::IDns: Cannot bind to port %u", port_no);
+      snprintf(buf, sizeof(buf), "IDns::IDns: Cannot bind to port %u", port_no);
       throw runtime_error(buf);
     }
 
@@ -356,7 +356,7 @@ void IDns::HandlePacket() {
     }
 
     // Handle questions here
-    for(uint16_t qno = 0; qno < m_hdr->QDCount && m_snd < m_bufend; qno--) {
+    for(uint16_t qno = 0; qno < m_hdr->QDCount && m_snd < m_bufend; qno++) {
       uint16_t rc = HandleQuery();
       if(rc) {
     m_hdr->Bits |= rc;

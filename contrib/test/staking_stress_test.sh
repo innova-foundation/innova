@@ -30,7 +30,6 @@ PASSED=0
 FAILED=0
 WARNINGS=0
 
-# Test duration for long-running tests (seconds)
 STAKE_WAIT_TIME=${STAKE_WAIT_TIME:-120}
 NUM_SPLIT_UTXOS=${NUM_SPLIT_UTXOS:-20}
 
@@ -40,7 +39,6 @@ fail() { echo -e "${RED}[FAIL]${NC} $1"; ((FAILED++)) || true; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; ((WARNINGS++)) || true; }
 section() { echo -e "\n${CYAN}=== $1 ===${NC}"; }
 
-# Safe JSON field extraction (handles multiline JSON output)
 get_json_int() {
     local json="$1"
     local field="$2"
@@ -150,7 +148,6 @@ rpc_validator() {
 test_basic_staking_setup() {
     section "Basic Staking Setup"
 
-    # Verify nodes are up
     if rpc_staker getinfo >/dev/null 2>&1; then
         success "Staker node responds"
     else
@@ -165,12 +162,10 @@ test_basic_staking_setup() {
         return 1
     fi
 
-    # Check staking is enabled on staker
     local sinfo=$(rpc_staker getstakinginfo 2>/dev/null || echo "{}")
     local staking_status=$(get_json_val "$sinfo" "staking")
     log "Staker staking status: $staking_status"
 
-    # Generate initial PoW blocks for coinbase maturity
     log "Generating 150 PoW blocks for coinbase maturity..."
     rpc_staker setgenerate true 150 >/dev/null 2>&1 || true
     sleep 2
@@ -183,7 +178,6 @@ test_basic_staking_setup() {
         fail "Only generated $blocks blocks (need >= 100)"
     fi
 
-    # Check balance
     local balance=$(rpc_staker getbalance 2>/dev/null | tr -d ' \n')
     log "Staker balance: $balance INN"
     if [ -n "$balance" ] && [ "$(echo "$balance > 0" | bc 2>/dev/null)" = "1" ] 2>/dev/null; then
@@ -217,11 +211,9 @@ test_utxo_splitting() {
     done
     log "Sent $sent split transactions"
 
-    # Mine blocks to confirm remaining
     rpc_staker setgenerate true 2 >/dev/null 2>&1 || true
     sleep 3
 
-    # Count UTXOs safely (grep -c on single-line collapsed output)
     local utxo_list=$(rpc_staker listunspent 2>/dev/null || echo "[]")
     local utxo_count=$(echo "$utxo_list" | tr '\n' ' ' | grep -o '"txid"' | wc -l | tr -d ' ')
 
@@ -253,7 +245,6 @@ test_staking_activation() {
             break
         fi
 
-        # Check staking info periodically
         if [ $((elapsed % 20)) -eq 0 ] && [ $elapsed -gt 0 ]; then
             local sinfo=$(rpc_staker getstakinginfo 2>/dev/null || echo "{}")
             local weight=$(get_json_int "$sinfo" "weight")
@@ -273,7 +264,6 @@ test_staking_activation() {
 test_stake_split_combine() {
     section "Stake Split and Combine Test"
 
-    # Check that stake splitting works by examining coinstake outputs
     local info=$(rpc_staker getinfo 2>/dev/null || echo "{}")
     local blocks=$(get_json_int "$info" "blocks")
     local hash=$(rpc_staker getblockhash "$blocks" 2>/dev/null || echo "")
@@ -303,7 +293,6 @@ test_concurrent_staking() {
         done
         success "Sent $tx_count transactions while staking"
 
-        # Mine to confirm and check state
         rpc_staker setgenerate true 1 >/dev/null 2>&1 || true
         sleep 2
     else
@@ -336,10 +325,8 @@ test_node_sync() {
 test_memory_stability() {
     section "Memory Stability Check"
 
-    # Match the staker data directory in the process list
     local pid=$(pgrep -f "innovad.*staking_stress/staker" | head -1 || echo "")
     if [ -z "$pid" ]; then
-        # Fallback: try broader match
         pid=$(pgrep -f "innovad.*19500" | head -1 || echo "")
     fi
 

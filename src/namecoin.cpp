@@ -15,7 +15,7 @@ extern std::map<uint256, CTransaction> mapTransactions;
 using namespace std;
 using namespace json_spirit;
 
-template<typename T> void ConvertTo(Value& value, bool fAllowNull=false);
+template<typename T> void ConvertTo(Value& value, bool fAllowNull=false, int nDepth=0);
 
 map<vector<unsigned char>, uint256> mapMyNames;
 map<vector<unsigned char>, set<uint256> > mapNamePending; // for pending tx
@@ -119,10 +119,23 @@ bool NameActive(CNameDB& dbName, const vector<unsigned char> &vchName, int curre
         return false;
 
     if (currentBlockHeight < 0)
+    {
+        if (!pindexBest)
+            return false;
         currentBlockHeight = pindexBest->nHeight;
+    }
 
     if (nameRec.deleted()) // last name op was name_delete
         return false;
+
+    // IDNS Reset: names whose last OP_NAME_NEW was registered before the reset
+    // height are treated as expired, allowing clean re-registration.
+    if (FORK_HEIGHT_IDNS_RESET > 0 && !nameRec.vtxPos.empty())
+    {
+        int nRegistrationHeight = nameRec.vtxPos[nameRec.nLastActiveChainIndex].nHeight;
+        if (nRegistrationHeight < FORK_HEIGHT_IDNS_RESET)
+            return false;
+    }
 
     return currentBlockHeight <= nameRec.nExpiresAt;
 }
@@ -231,9 +244,11 @@ bool RemoveNameScriptPrefix(const CScript& scriptIn, CScript& scriptOut)
 
 bool SignNameSignatureINN(const CKeyStore& keystore, const CTransaction& txFrom, CTransaction& txTo, unsigned int nIn, int nHashType)
 {
-    assert(nIn < txTo.vin.size());
+    if (nIn >= txTo.vin.size())
+        return false;
     CTxIn& txin = txTo.vin[nIn];
-    assert(txin.prevout.n < txFrom.vout.size());
+    if (txin.prevout.n >= txFrom.vout.size())
+        return false;
     const CTxOut& txout = txFrom.vout[txin.prevout.n];
 
     // Leave out the signature from the hash, since a signature can't sign itself.
@@ -424,7 +439,8 @@ bool CreateTransactionWithInputTx(const vector<pair<CScript, int64_t> >& vecSend
 
                         // Reserve a new key pair from key pool
                         CPubKey vchPubKey;
-                        assert(reservekey.GetReservedKey(vchPubKey)); // should never fail, as we just unlocked
+                        if (!reservekey.GetReservedKey(vchPubKey))
+                            return false;
 
                         scriptChange.SetDestination(vchPubKey.GetID());
                     }
@@ -639,8 +655,10 @@ bool IsNameFeeEnough(CTxDB& txdb, const CTransaction& tx, const NameTxInfo& nti,
 bool CNamecoinHooks::IsNameFeeEnough(CTxDB& txdb, const CTransaction &tx)
 {
     if (tx.nVersion != NAMECOIN_TX_VERSION)
-        printf("IsNameFeeEnough() Not Name TX Version, Returning False");
+    {
+        printf("IsNameFeeEnough() Not Name TX Version, Returning False\n");
         return false;
+    }
 
     NameTxInfo nti;
     if (!DecodeNameTx(tx, nti))
@@ -2080,7 +2098,17 @@ bool createNameIndexFile()
         return true;
     int reportDone = 0;
 
-    for (int nHeight=RELEASE_HEIGHT; nHeight<=maxHeight; nHeight++) // Change from Height 0 as start to RELEASE_HEIGHT of names
+    // Start scanning from RELEASE_HEIGHT or IDNS reset height, whichever is later.
+    // When FORK_HEIGHT_IDNS_RESET > RELEASE_HEIGHT, old names are effectively wiped
+    // since we skip scanning pre-reset blocks entirely.
+    int nStartHeight = RELEASE_HEIGHT;
+    if (FORK_HEIGHT_IDNS_RESET > nStartHeight)
+    {
+        nStartHeight = FORK_HEIGHT_IDNS_RESET;
+        printf("IDNS reset active: scanning names from height %d (skipping pre-reset names)\n", nStartHeight);
+    }
+
+    for (int nHeight=nStartHeight; nHeight<=maxHeight; nHeight++)
     {
         int percentageDone = (100*nHeight / maxHeight);
         if (reportDone < percentageDone/10) {
@@ -2090,7 +2118,9 @@ bool createNameIndexFile()
         }
         //uiInterface.InitMessage(strprintf("Creating name index... %i", percentageDone));
 
-        CBlockIndex* pindex = pindexBest; //nHeight maybe should be = pindexBest
+        CBlockIndex* pindex = FindBlockByHeight(nHeight);
+        if (!pindex)
+            continue;
         CBlock block;
 
         if(!block.ReadFromDisk(pindex, true)) { // shouldn't really happen
@@ -2477,7 +2507,8 @@ bool CNamecoinHooks::DisconnectInputs(const CTransaction& tx)
             // check if tx matches last tx in innovanamesindex.dat
             CTransaction lastTx;
             lastTx.ReadFromDisk(nameRec.vtxPos.back().txPos);
-            assert(lastTx.GetHash() == tx.GetHash());
+            if (lastTx.GetHash() != tx.GetHash())
+                return error("DisconnectInputsHook() : name DB inconsistency - tx hash mismatch");
 
             // remove tx
             nameRec.vtxPos.pop_back();
@@ -2626,7 +2657,8 @@ bool CNamecoinHooks::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex)
             int d = nameRec.vtxPos.size() - NAMEINDEX_CHAIN_SIZE; // number of elements to delete
             nameRec.vtxPos.erase(nameRec.vtxPos.begin(), nameRec.vtxPos.begin() + d);
             nameRec.nLastActiveChainIndex -= d; // move last index backwards by d elements
-            assert(nameRec.nLastActiveChainIndex >= 0);
+            if (nameRec.nLastActiveChainIndex < 0)
+                return error("ConnectBlockHook() : invalid nLastActiveChainIndex");
         }
 
         // save name op

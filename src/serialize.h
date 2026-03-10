@@ -28,6 +28,12 @@ class CScript;
 
 static const unsigned int MAX_SIZE = 0x02000000;
 
+// Per-type size limits for network deserialization (DoS protection)
+static const unsigned int MAX_SCRIPT_SIZE = 10000;         // 10KB per script
+static const unsigned int MAX_TX_SIZE = 1000000;           // 1MB per transaction
+static const unsigned int MAX_BLOCK_SIZE_SERIALIZE = 4000000; // 4MB per block
+static const unsigned int MAX_VECTOR_SIZE = 5000000;       // 5MB for vectors
+
 // Used to bypass the rule against non-const reference to temporary
 // where it makes sense with wrappers such as CFlatData or CTxDB
 template<typename T>
@@ -302,6 +308,53 @@ uint64_t ReadCompactSize(Stream& is)
     return nSizeRet;
 }
 
+// limited version of ReadCompactSize for security-critical paths
+template<typename Stream>
+bool ReadCompactSizeLimited(Stream& is, uint64_t& nSizeRet, uint64_t nMaxSize)
+{
+    nSizeRet = 0;
+    unsigned char chSize;
+    try {
+        READDATA(is, chSize);
+    } catch (...) {
+        return false;
+    }
+
+    if (chSize < 253)
+    {
+        nSizeRet = chSize;
+    }
+    else if (chSize == 253)
+    {
+        unsigned short xSize;
+        try { READDATA(is, xSize); } catch (...) { return false; }
+        nSizeRet = xSize;
+        if (nSizeRet < 253)
+            return false;  // non-canonical
+    }
+    else if (chSize == 254)
+    {
+        unsigned int xSize;
+        try { READDATA(is, xSize); } catch (...) { return false; }
+        nSizeRet = xSize;
+        if (nSizeRet < 0x10000u)
+            return false;  // non-canonical
+    }
+    else
+    {
+        uint64_t xSize;
+        try { READDATA(is, xSize); } catch (...) { return false; }
+        nSizeRet = xSize;
+        if (nSizeRet < 0x100000000ULL)
+            return false;  // non-canonical
+    }
+
+    if (nSizeRet > nMaxSize)
+        return false;
+
+    return true;
+}
+
 // Variable-length integers: bytes are a MSB base-128 encoding of the number.
 // The high bit in each byte signifies whether another digit follows. To make
 // the encoding is one-to-one, one is subtracted from all but the last digit.
@@ -358,7 +411,8 @@ template<typename Stream, typename I>
 I ReadVarInt(Stream& is)
 {
     I n = 0;
-    while(true) {
+    // PROTO-4: Bound loop to prevent unbounded read on malformed data
+    for (int nIter = 0; nIter < 10; nIter++) {
         unsigned char chData;
         READDATA(is, chData);
         n = (n << 7) | (chData & 0x7F);
@@ -367,6 +421,7 @@ I ReadVarInt(Stream& is)
         else
             return n;
     }
+    throw std::ios_base::failure("ReadVarInt(): too many bytes");
 }
 
 #define FLATDATA(obj)  REF(CFlatData((char*)&(obj), (char*)&(obj) + sizeof(obj)))
@@ -533,6 +588,8 @@ template<typename Stream, typename C>
 void Unserialize(Stream& is, std::basic_string<C>& str, int, int)
 {
     unsigned int nSize = ReadCompactSize(is);
+    if (nSize * sizeof(C) > MAX_VECTOR_SIZE)
+        throw std::ios_base::failure("string size too large");
     str.resize(nSize);
     if (nSize != 0)
         is.read((char*)&str[0], nSize * sizeof(str[0]));
@@ -594,6 +651,8 @@ void Unserialize_impl(Stream& is, std::vector<T, A>& v, int nType, int nVersion,
     // Limit size per read so bogus size value won't cause out of memory
     v.clear();
     unsigned int nSize = ReadCompactSize(is);
+    if (nSize * sizeof(T) > MAX_VECTOR_SIZE)
+        throw std::ios_base::failure("vector size too large");
     unsigned int i = 0;
     while (i < nSize)
     {
@@ -609,6 +668,8 @@ void Unserialize_impl(Stream& is, std::vector<T, A>& v, int nType, int nVersion,
 {
     v.clear();
     unsigned int nSize = ReadCompactSize(is);
+    if (nSize * sizeof(T) > MAX_VECTOR_SIZE)
+        throw std::ios_base::failure("vector size too large");
     unsigned int i = 0;
     unsigned int nMid = 0;
     while (nMid < nSize)

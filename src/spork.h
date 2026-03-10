@@ -66,8 +66,11 @@ public:
     int64_t nTimeSigned;
 
     uint256 GetHash(){
-        uint256 n = Hash(BEGIN(nSporkID), END(nTimeSigned));
-        return n;
+        CHashWriter ss(SER_GETHASH, 0);
+        ss << nSporkID;
+        ss << nValue;
+        ss << nTimeSigned;
+        return ss.GetHash();
     }
 
     ADD_SERIALIZE_METHODS;
@@ -97,6 +100,10 @@ public:
     CSporkManager() {
         strMainPubKey = "invalid"; //Sporks deprecated for dFPS Decentralized Innova Collateral Node system
         strTestPubKey = "invalid";
+    }
+
+    bool IsConfigured() const {
+        return strMainPubKey != "invalid" || strTestPubKey != "invalid";
     }
 
     std::string GetSporkNameByID(int id);

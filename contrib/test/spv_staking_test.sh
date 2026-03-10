@@ -63,7 +63,6 @@ setup_nodes() {
     rm -rf "$TEST_DIR"
     mkdir -p "$FULL_DIR" "$SPV_DIR" "$VALIDATOR_DIR"
 
-    # Full node: provides block data and bloom filter service
     cat > "$FULL_DIR/innova.conf" << EOF
 regtest=1
 server=1
@@ -84,7 +83,6 @@ debug=1
 printtoconsole=0
 EOF
 
-    # SPV node: light client with HybridSPV staking
     cat > "$SPV_DIR/innova.conf" << EOF
 regtest=1
 server=1
@@ -108,7 +106,6 @@ debugspv=1
 printtoconsole=0
 EOF
 
-    # Validator: independent full node
     cat > "$VALIDATOR_DIR/innova.conf" << EOF
 regtest=1
 server=1
@@ -158,7 +155,6 @@ rpc_validator() {
 test_spv_initialization() {
     section "SPV Mode Initialization"
 
-    # Check full node
     if rpc_full getinfo >/dev/null 2>&1; then
         success "Full node responds to RPC"
     else
@@ -166,7 +162,6 @@ test_spv_initialization() {
         return 0
     fi
 
-    # Check SPV node
     if rpc_spv getinfo >/dev/null 2>&1; then
         success "SPV node responds to RPC"
     else
@@ -174,7 +169,6 @@ test_spv_initialization() {
         return 0
     fi
 
-    # Check SPV-specific info
     local spv_info=$(rpc_spv getspvinfo 2>/dev/null || echo "")
     if [ -n "$spv_info" ]; then
         success "SPV info available"
@@ -191,7 +185,6 @@ test_spv_initialization() {
 test_spv_header_sync() {
     section "SPV Header Synchronization"
 
-    # Generate blocks on full node
     log "Generating 200 blocks on full node..."
     rpc_full setgenerate true 200 >/dev/null 2>&1 || true
     sleep 2
@@ -199,7 +192,6 @@ test_spv_header_sync() {
     local full_blocks=$(rpc_full getinfo | grep -o '"blocks" *: *[0-9]*' | grep -o '[0-9]*')
     log "Full node at block $full_blocks"
 
-    # Wait for SPV node to sync headers
     log "Waiting for SPV header sync (max 60s)..."
     local elapsed=0
     while [ $elapsed -lt 60 ]; do
@@ -224,7 +216,6 @@ test_spv_header_sync() {
 test_spv_bloom_filter() {
     section "SPV Bloom Filter Test"
 
-    # Generate addresses on SPV node and send coins to them
     local spv_addr=$(rpc_spv getnewaddress 2>/dev/null || echo "")
     if [ -z "$spv_addr" ]; then
         fail "Could not generate SPV address"
@@ -232,7 +223,6 @@ test_spv_bloom_filter() {
     fi
     log "SPV address: $spv_addr"
 
-    # Send from full node to SPV address
     local txid=$(rpc_full sendtoaddress "$spv_addr" 1000.0 2>/dev/null || echo "")
     if [ -n "$txid" ]; then
         success "Sent 1000 INN to SPV node: $txid"
@@ -241,11 +231,9 @@ test_spv_bloom_filter() {
         return
     fi
 
-    # Mine to confirm
     rpc_full setgenerate true 2 2>/dev/null || true
     sleep 5
 
-    # Check SPV node received the transaction
     local spv_balance=$(rpc_spv getbalance 2>/dev/null | tr -d ' ')
     log "SPV node balance: $spv_balance"
 
@@ -259,7 +247,6 @@ test_spv_bloom_filter() {
 test_spv_utxo_cache() {
     section "SPV UTXO Cache Test"
 
-    # Send multiple transactions to SPV node to populate UTXO cache
     local spv_addr=$(rpc_spv getnewaddress 2>/dev/null || echo "")
     local sent=0
 
@@ -278,15 +265,12 @@ test_spv_utxo_cache() {
         return
     fi
 
-    # Mine to confirm
     rpc_full setgenerate true 2 2>/dev/null || true
     sleep 5
 
-    # Check SPV balance reflects all deposits
     local balance=$(rpc_spv getbalance 2>/dev/null | tr -d ' ')
     log "SPV balance after deposits: $balance"
 
-    # Trigger SPV rescan if available
     if rpc_spv spvrescan 2>/dev/null; then
         log "SPV rescan triggered"
         sleep 5
@@ -299,7 +283,6 @@ test_spv_staking() {
     local start_blocks=$(rpc_spv getinfo 2>/dev/null | grep -o '"blocks" *: *[0-9]*' | grep -o '[0-9]*' || echo 0)
     log "SPV node at block $start_blocks, waiting for staking (max ${STAKE_WAIT_TIME}s)..."
 
-    # Check staking info
     local sinfo=$(rpc_spv getstakinginfo 2>/dev/null || echo "{}")
     log "SPV staking info: $sinfo"
 
@@ -332,14 +315,12 @@ test_spv_staking() {
 test_spv_block_verification() {
     section "SPV Block Verification"
 
-    # Verify SPV and full node agree on chain
     local full_blocks=$(rpc_full getinfo 2>/dev/null | grep -o '"blocks" *: *[0-9]*' | grep -o '[0-9]*' || echo 0)
     local spv_blocks=$(rpc_spv getinfo 2>/dev/null | grep -o '"blocks" *: *[0-9]*' | grep -o '[0-9]*' || echo 0)
     local val_blocks=$(rpc_validator getinfo 2>/dev/null | grep -o '"blocks" *: *[0-9]*' | grep -o '[0-9]*' || echo 0)
 
     log "Heights - Full: $full_blocks, SPV: $spv_blocks, Validator: $val_blocks"
 
-    # Check block hash agreement at a common height
     local check_height=$((spv_blocks < full_blocks ? spv_blocks : full_blocks))
     if [ "$check_height" -gt 0 ]; then
         local hash_full=$(rpc_full getblockhash "$check_height" 2>/dev/null || echo "")
@@ -358,7 +339,6 @@ test_spv_block_verification() {
 test_spv_transaction_relay() {
     section "SPV Transaction Relay Test"
 
-    # Send from SPV node to full node
     local full_addr=$(rpc_full getnewaddress 2>/dev/null || echo "")
     local spv_balance=$(rpc_spv getbalance 2>/dev/null | tr -d ' ')
 
@@ -367,7 +347,6 @@ test_spv_transaction_relay() {
         if [ -n "$txid" ]; then
             success "SPV node sent transaction: $txid"
 
-            # Verify full node sees it
             sleep 3
             if rpc_full gettransaction "$txid" >/dev/null 2>&1; then
                 success "Full node received SPV transaction"

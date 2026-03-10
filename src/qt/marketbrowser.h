@@ -8,9 +8,7 @@
 
 #include <QWidget>
 #include <QObject>
-#include <QtNetwork/QtNetwork>
-#include <curl/curl.h>
-
+#include <QFutureWatcher>
 
 extern QString bitcoing;
 extern QString dollarg;
@@ -26,6 +24,14 @@ class MarketBrowser;
 }
 class ClientModel;
 
+struct MarketData {
+    double innUsd;
+    double btcUsd;
+    double innMcap;
+    double innBtc;
+    bool success;
+    MarketData() : innUsd(0), btcUsd(0), innMcap(0), innBtc(0), success(false) {}
+};
 
 class MarketBrowser : public QWidget
 {
@@ -37,25 +43,27 @@ public:
 
     void setModel(ClientModel *model);
 
-private:
-  void getRequest1( const QString &url );
-  void getRequest2( const QString &url );
-  void getRequest3( const QString &url );
-  void getRequest4( const QString &url );
-
 signals:
-    //void networkError( QNetworkReply::NetworkError err );
 
 public slots:
-    //void parseNetworkResponse(QNetworkReply *finished );
     void requests();
     void update();
 
 private:
-    //QNetworkAccessManager m_nam;
     Ui::MarketBrowser *ui;
     ClientModel *model;
+    QFutureWatcher<MarketData> *marketWatcher;
+    bool fetchInProgress;
 
+    QString innovap;
+    QString bitcoinp;
+    QString innmcp;
+    QString innbtcp;
+
+    static MarketData fetchMarketWorker();
+
+private slots:
+    void onMarketFetched();
 };
 
 #endif // MARKETBROWSER_H

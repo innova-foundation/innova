@@ -13,6 +13,7 @@
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/variant/get.hpp>
 #include <boost/algorithm/string.hpp>
+#include <boost/filesystem.hpp>
 
 #define printf OutputDebugStringF
 
@@ -22,6 +23,40 @@ using namespace std;
 void EnsureWalletIsUnlocked();
 
 namespace bt = boost::posix_time;
+namespace fs = boost::filesystem;
+
+static fs::path SanitizeDumpPath(const std::string& strPath, const std::string& strSubDir)
+{
+    fs::path dataDir = GetDataDir();
+    fs::path targetDir = dataDir / strSubDir;
+
+    if (!fs::exists(targetDir))
+        fs::create_directories(targetDir);
+
+    fs::path inputPath(strPath);
+    std::string filename = inputPath.filename().string();
+
+    if (filename.empty())
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid filename");
+
+    if (filename.find("..") != std::string::npos ||
+        filename.find("/") != std::string::npos ||
+        filename.find("\\") != std::string::npos)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid characters in filename");
+
+    fs::path safePath = targetDir / filename;
+
+    fs::path canonicalPath = fs::absolute(safePath);
+    fs::path canonicalDataDir = fs::absolute(dataDir);
+
+    std::string pathStr = canonicalPath.string();
+    std::string dataDirStr = canonicalDataDir.string();
+
+    if (pathStr.substr(0, dataDirStr.length()) != dataDirStr)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Path traversal attempt detected");
+
+    return safePath;
+}
 
 // Extended DecodeDumpTime implementation, see this page for details:
 // http://stackoverflow.com/questions/3786201/parsing-of-date-time-from-string-boost
@@ -215,14 +250,19 @@ Value importwallet(const Array& params, bool fHelp)
     if (fHelp || params.size() != 1)
         throw runtime_error(
             "importwallet <filename>\n"
-            "Imports keys from a wallet dump file (see dumpwallet).");
+            "Imports keys from a wallet dump file (see dumpwallet).\n"
+            "Only filename is accepted (no paths) for security.\n"
+            "Files must be in the 'walletdumps' subdirectory.");
 
     EnsureWalletIsUnlocked();
 
+    string strFilename = params[0].get_str();
+    fs::path safePath = SanitizeDumpPath(strFilename, "walletdumps");
+
     ifstream file;
-    file.open(params[0].get_str().c_str());
+    file.open(safePath.string().c_str());
     if (!file.is_open())
-        throw JSONRPCError(RPC_INVALID_PARAMETER, "Cannot open wallet dump file");
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Cannot open wallet dump file (must be in walletdumps directory)");
 
     int64_t nTimeBegin = pindexBest->nTime;
 
@@ -316,7 +356,7 @@ Value dumpprivkey(const Array& params, bool fHelp)
         throw JSONRPCError(RPC_TYPE_ERROR, "Address does not refer to a key");
     CKey vchSecret;
     if (!pwalletMain->GetKey(keyID, vchSecret))
-        throw JSONRPCError(RPC_WALLET_ERROR, "Private key for address " + strAddress + " is not known");
+        throw JSONRPCError(RPC_WALLET_ERROR, "Private key for specified address is not known");
     return CBitcoinSecret(vchSecret).ToString();
 }
 
@@ -325,12 +365,17 @@ Value dumpwallet(const Array& params, bool fHelp)
     if (fHelp || params.size() != 1)
         throw runtime_error(
             "dumpwallet <filename>\n"
-            "Dumps all wallet keys in a human-readable format.");
+            "Dumps all wallet keys in a human-readable format.\n"
+            "Only filename is accepted (no paths) for security.\n"
+            "Files are saved to the 'walletdumps' subdirectory.");
 
     EnsureWalletIsUnlocked();
 
+    string strFilename = params[0].get_str();
+    fs::path safePath = SanitizeDumpPath(strFilename, "walletdumps");
+
     ofstream file;
-    file.open(params[0].get_str().c_str());
+    file.open(safePath.string().c_str());
     if (!file.is_open())
         throw JSONRPCError(RPC_INVALID_PARAMETER, "Cannot open wallet dump file");
 

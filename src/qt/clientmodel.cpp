@@ -44,12 +44,17 @@ ClientModel::~ClientModel()
 
 int ClientModel::getNumConnections() const
 {
+    TRY_LOCK(cs_vNodes, lockNodes);
+    if (!lockNodes)
+        return 0;
     return vNodes.size();
 }
 
 int ClientModel::getNumBlocks() const
 {
-    LOCK(cs_main);
+    // nBestHeight is an atomic int — safe to read without lock.
+    // Using LOCK(cs_main) here was blocking the UI thread when the
+    // consensus thread held cs_main during block processing.
     return nBestHeight;
 }
 
@@ -72,10 +77,14 @@ quint64 ClientModel::getTotalBytesSent() const
 QDateTime ClientModel::getLastBlockDate() const
 {
     if (pindexBest)
-        return QDateTime::fromTime_t(pindexBest->GetBlockTime());
-    else if (!isTestNet())
+    {
+        TRY_LOCK(cs_main, lockMain);
+        if (lockMain && pindexBest)
+            return QDateTime::fromTime_t(pindexBest->GetBlockTime());
+    }
+    if (!isTestNet())
         return QDateTime::fromTime_t(1576002227); // I n n o v a - MAINNET Genesis Block Coinbase Time
-    else if (isTestNet())
+    else
         return QDateTime::fromTime_t(1631971785); // I n n o v a TESTNET Genesis Block Coinbase Time
 }
 
