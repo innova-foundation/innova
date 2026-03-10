@@ -92,7 +92,7 @@ static const int64_t COIN_YEAR_REWARD = 0.06 * COIN; // 6% per year
 
 static const int64_t MAINNET_POSFIX = 500; // Mainnet Proof of Stake update not enabled until block 500
 static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 4500; // Enforce collateralnode payments after this height - BLOCK 4500
-static const int MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET = 551; // Enforce CN payments after this height for Innova Testnet!
+static const int MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET = 999999; // Enforce CN payments after this height for Innova Testnet!
 
 inline bool MoneyRange(int64_t nValue) { return (nValue >= 0 && nValue <= MAX_MONEY); }
 
