@@ -1227,13 +1227,17 @@ QSplitter::handle:vertical {
 }
 
 QProgressBar {
-    border: 1px solid #01619b;
+    border: 2px solid #01619b;
     border-radius: 5px;
     text-align: center;
+    background-color: #1c1c28;
+    max-height: 18px;
 }
 
 QProgressBar::chunk {
     background-color: #7e7e7e;
+    border-radius: 3px;
+    margin: 1px;
 }
 
 QDateEdit

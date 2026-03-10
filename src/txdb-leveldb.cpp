@@ -25,6 +25,8 @@ namespace fs = boost::filesystem;
 
 leveldb::DB *txdb; // global pointer for LevelDB object instance
 
+static CCriticalSection cs_txdb;
+
 static int nIBDBatchSize = 0;
 static int nIBDBatchCount = 0;
 static bool fIBDBatchPending = false;
@@ -58,6 +60,9 @@ static leveldb::Options GetOptions() {
     int nCacheSizeMB = GetArg("-dbcache", 300);
     options.block_cache = leveldb::NewLRUCache(nCacheSizeMB * 1048576);
     options.filter_policy = leveldb::NewBloomFilterPolicy(10);
+    options.write_buffer_size = 64 * 1048576; // 64MB write buffer (default 4MB) for smoother IBD
+    options.max_open_files = 1000;
+    options.compression = leveldb::kSnappyCompression;
     return options;
 }
 
@@ -99,6 +104,8 @@ CTxDB::CTxDB(const char* pszMode)
     activeBatch = NULL;
     fReadOnly = (!strchr(pszMode, '+') && !strchr(pszMode, 'w'));
 
+    LOCK(cs_txdb);
+
     if (txdb) {
         pdb = txdb;
         return;
@@ -120,6 +127,28 @@ CTxDB::CTxDB(const char* pszMode)
 
         if (nVersion < DATABASE_VERSION)
         {
+            printf("CTxDB() : database version %d is older than expected %d, creating backup\n",
+                   nVersion, DATABASE_VERSION);
+            bool fBackupOk = false;
+            try {
+                boost::filesystem::path backupPath = GetDataDir() / "txleveldb_backup";
+                if (boost::filesystem::exists(backupPath))
+                    boost::filesystem::remove_all(backupPath);
+                boost::filesystem::rename(GetDataDir() / "txleveldb", backupPath);
+                printf("CTxDB() : backed up old database to %s\n", backupPath.filename().string().c_str());
+                fBackupOk = true;
+            } catch (const boost::filesystem::filesystem_error& e) {
+                printf("CTxDB() : CRITICAL - failed to backup database: %s\n", e.what());
+                printf("CTxDB() : Database reset aborted. Please manually backup txleveldb and restart.\n");
+            }
+
+            if (!fBackupOk)
+            {
+                printf("CTxDB() : Continuing with old database version %d\n", nVersion);
+            }
+            else
+            {
+
             printf("Required index version is %d, removing old database\n", DATABASE_VERSION);
 
             // Leveldb instance destruction
@@ -135,6 +164,7 @@ CTxDB::CTxDB(const char* pszMode)
             fReadOnly = false;
             WriteVersion(DATABASE_VERSION); // Save transaction index version
             fReadOnly = fTmp;
+            } // end fBackupOk else block
         }
     }
     else if (fCreate)
@@ -150,6 +180,7 @@ CTxDB::CTxDB(const char* pszMode)
 
 void CTxDB::Close()
 {
+    LOCK(cs_txdb);
     delete txdb;
     txdb = pdb = NULL;
     delete options.filter_policy;
@@ -162,14 +193,16 @@ void CTxDB::Close()
 
 bool CTxDB::TxnBegin()
 {
-    assert(!activeBatch);
+    if (activeBatch)
+        return false;
     activeBatch = new leveldb::WriteBatch();
     return true;
 }
 
 bool CTxDB::TxnCommit()
 {
-    assert(activeBatch);
+    if (!activeBatch)
+        return false;
 
     leveldb::WriteOptions writeOptions;
     if (IsInitialBlockDownload() && nIBDBatchSize > 0)
@@ -218,7 +251,161 @@ bool CTxDB::ReadAnonOutput(CPubKey& pkCoin, CAnonOutput& ao)
 bool CTxDB::EraseAnonOutput(CPubKey& pkCoin)
 {
     return Erase(make_pair(string("ao"), pkCoin));
+}
+
+bool CTxDB::WriteShieldedNullifier(const uint256& nullifier, const CShieldedNullifierSpent& nfs)
+{
+    return Write(make_pair(string("sn"), nullifier), nfs);
+}
+
+bool CTxDB::ReadShieldedNullifier(const uint256& nullifier, CShieldedNullifierSpent& nfs)
+{
+    return Read(make_pair(string("sn"), nullifier), nfs);
+}
+
+bool CTxDB::EraseShieldedNullifier(const uint256& nullifier)
+{
+    return Erase(make_pair(string("sn"), nullifier));
+}
+
+bool CTxDB::WriteShieldedAnchor(const uint256& anchor)
+{
+    return Write(make_pair(string("sa"), anchor), true);
+}
+
+bool CTxDB::ReadShieldedAnchor(const uint256& anchor)
+{
+    bool fValid = false;
+    if (!Read(make_pair(string("sa"), anchor), fValid))
+        return false;
+    return fValid;
+}
+
+bool CTxDB::EraseShieldedAnchor(const uint256& anchor)
+{
+    return Erase(make_pair(string("sa"), anchor));
+}
+
+bool CTxDB::WriteShieldedAnchorHeight(const uint256& anchor, int nHeight)
+{
+    return Write(make_pair(string("sah"), anchor), nHeight);
+}
+
+bool CTxDB::ReadShieldedAnchorHeight(const uint256& anchor, int& nHeight)
+{
+    return Read(make_pair(string("sah"), anchor), nHeight);
+}
+
+bool CTxDB::WriteShieldedTree(const CIncrementalMerkleTree& tree)
+{
+    return Write(string("st"), tree);
+}
+
+bool CTxDB::ReadShieldedTree(CIncrementalMerkleTree& tree)
+{
+    return Read(string("st"), tree);
+}
+
+bool CTxDB::WriteShieldedTreeAtBlock(const uint256& blockHash, const CIncrementalMerkleTree& tree)
+{
+    return Write(make_pair(string("sb"), blockHash), tree);
+}
+
+bool CTxDB::ReadShieldedTreeAtBlock(const uint256& blockHash, CIncrementalMerkleTree& tree)
+{
+    return Read(make_pair(string("sb"), blockHash), tree);
+}
+
+bool CTxDB::WriteShieldedPoolValue(int64_t nValue)
+{
+    return Write(string("sv"), nValue);
+}
+
+bool CTxDB::ReadShieldedPoolValue(int64_t& nValue)
+{
+    return Read(string("sv"), nValue);
 };
+
+bool CTxDB::WriteShieldedCommitment(uint64_t nIndex, const CPedersenCommitment& commit)
+{
+    return Write(make_pair(string("sc"), nIndex), commit);
+}
+
+bool CTxDB::ReadShieldedCommitment(uint64_t nIndex, CPedersenCommitment& commit)
+{
+    return Read(make_pair(string("sc"), nIndex), commit);
+}
+
+bool CTxDB::WriteShieldedCommitmentCount(uint64_t nCount)
+{
+    return Write(string("scc"), nCount);
+}
+
+bool CTxDB::ReadShieldedCommitmentCount(uint64_t& nCount)
+{
+    return Read(string("scc"), nCount);
+}
+
+bool CTxDB::WriteShieldedCommitmentHeight(uint64_t nIndex, int nHeight)
+{
+    return Write(make_pair(string("sch"), nIndex), nHeight);
+}
+
+bool CTxDB::ReadShieldedCommitmentHeight(uint64_t nIndex, int& nHeight)
+{
+    return Read(make_pair(string("sch"), nIndex), nHeight);
+}
+
+bool CTxDB::WriteShieldedCommitmentIndex(const std::vector<unsigned char>& vchCommitment, uint64_t nIndex)
+{
+    return Write(make_pair(string("sci"), vchCommitment), nIndex);
+}
+
+bool CTxDB::ReadShieldedCommitmentIndex(const std::vector<unsigned char>& vchCommitment, uint64_t& nIndex)
+{
+    return Read(make_pair(string("sci"), vchCommitment), nIndex);
+}
+
+bool CTxDB::ReadAllShieldedCommitments(std::vector<CPedersenCommitment>& vCommitments)
+{
+    vCommitments.clear();
+    uint64_t nCount = 0;
+    if (!ReadShieldedCommitmentCount(nCount))
+        return false;
+    vCommitments.reserve(nCount);
+    for (uint64_t i = 0; i < nCount; i++)
+    {
+        CPedersenCommitment commit;
+        if (ReadShieldedCommitment(i, commit))
+            vCommitments.push_back(commit);
+    }
+    return true;
+}
+
+bool CTxDB::WriteCurveTree(const CCurveTree& tree)
+{
+    return Write(string("ct"), tree);
+}
+
+bool CTxDB::ReadCurveTree(CCurveTree& tree)
+{
+    return Read(string("ct"), tree);
+}
+
+bool CTxDB::WriteCurveTreeAtBlock(const uint256& blockHash, const CCurveTree& tree)
+{
+    return Write(make_pair(string("cb"), blockHash), tree);
+}
+
+bool CTxDB::ReadCurveTreeAtBlock(const uint256& blockHash, CCurveTree& tree)
+{
+    return Read(make_pair(string("cb"), blockHash), tree);
+}
+
+bool CTxDB::EraseCurveTreeAtBlock(const uint256& blockHash)
+{
+    return Erase(make_pair(string("cb"), blockHash));
+}
 
 class CBatchScanner : public leveldb::WriteBatch::Handler {
 public:

@@ -7,7 +7,7 @@ CONFIG += no_include_pwd
 CONFIG += thread
 CONFIG += static
 CONFIG += c++11
-QT += core gui network widgets
+QT += core gui network widgets concurrent
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 lessThan(QT_MAJOR_VERSION, 5): CONFIG += static
@@ -82,8 +82,9 @@ QMAKE_LFLAGS *= -fstack-protector-all --param ssp-buffer-size=1
 # for extra security on Windows: enable ASLR and DEP via GCC linker flags
 # win32:QMAKE_LFLAGS *= -Wl,--large-address-aware -static
 win32:QMAKE_LFLAGS *= -static
-#win32:QMAKE_LFLAGS *= -Wl,--dynamicbase -Wl,--nxcompat
-#win32:QMAKE_LFLAGS += -static-libgcc -static-libstdc++
+# enable Windows ASLR and DEP for security hardening
+win32:QMAKE_LFLAGS *= -Wl,--dynamicbase -Wl,--nxcompat
+win32:QMAKE_LFLAGS += -static-libgcc -static-libstdc++
 lessThan(QT_MAJOR_VERSION, 5): win32: QMAKE_LFLAGS *= -static
 
 # use: qmake "USE_IPFS=1" ( enabled by default; default)
@@ -456,6 +457,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/mintingview.h \
     src/qt/proofofimage.h \
     src/qt/hyperfile.h \
+    src/qt/stakingpage.h \
     src/qt/multisigaddressentry.h \
     src/qt/multisiginputentry.h \
     src/qt/multisigdialog.h \
@@ -497,6 +499,19 @@ HEADERS += src/qt/bitcoingui.h \
     src/collateralnode.h \
     src/collateralnodeconfig.h \
     src/spork.h \
+    src/shielded.h \
+    src/nullsend.h \
+    src/shieldedcoinjoin.h \
+    src/zkproof.h \
+    src/lelantus.h \
+    src/curvetree.h \
+    src/ipa.h \
+    src/ed25519_zk.h \
+    src/nullstake.h \
+    src/poseidon2.h \
+    src/bulletproof_ac.h \
+    src/silentpayments.h \
+    src/dandelion.h \
     src/init.h \
     src/bootstrap.h \
     src/mruset.h \
@@ -598,6 +613,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/multisigdialog.cpp \
     src/qt/proofofimage.cpp \
     src/qt/hyperfile.cpp \
+    src/qt/stakingpage.cpp \
     src/rpchyperfile.cpp \
     src/qt/termsofuse.cpp \
     src/qt/bantablemodel.cpp \
@@ -688,7 +704,21 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/activecollateralnode.cpp \
     src/collateralnode.cpp \
     src/collateralnodeconfig.cpp \
-    src/spork.cpp
+    src/spork.cpp \
+    src/shielded.cpp \
+    src/nullsend.cpp \
+    src/shieldedcoinjoin.cpp \
+    src/rpcshielded.cpp \
+    src/zkproof.cpp \
+    src/lelantus.cpp \
+    src/curvetree.cpp \
+    src/ipa.cpp \
+    src/ed25519_zk.cpp \
+    src/nullstake.cpp \
+    src/poseidon2.cpp \
+    src/bulletproof_ac.cpp \
+    src/silentpayments.cpp \
+    src/dandelion.cpp
 
 #### I n n o v a sources
 

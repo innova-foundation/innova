@@ -255,7 +255,7 @@ bool CKey::Check(const unsigned char *vch) {
 
 
 // Construct an invalid private key.
-CKey::CKey() : fValid(false)
+CKey::CKey() : fValid(false), pkey(NULL), fSet(false), fCompressedPubKey(false), fCompressed(false)
 {
     LockObject(vch);
 }
@@ -271,6 +271,7 @@ CKey::CKey(const CKey& b) : fValid(b.fValid), fCompressed(b.fCompressed)
 CKey::~CKey()
 {
 //    EC_KEY_free(pkey);
+    OPENSSL_cleanse(vch, 32);
     UnlockObject(vch);
 }
 
@@ -310,18 +311,14 @@ bool CKey::SetSecret(const CSecret& vchSecret, bool fCompressed)
     return true;
 }
 
-CSecret CKey::GetSecret(bool &fCompressed) const
+CSecret CKey::GetSecret(bool &fCompressedOut) const
 {
     CSecret vchRet;
+    if (!fValid)
+        throw key_error("CKey::GetSecret() : key is not valid");
     vchRet.resize(32);
-    const BIGNUM *bn = EC_KEY_get0_private_key(pkey);
-    int nBytes = BN_num_bytes(bn);
-    if (bn == NULL)
-        throw key_error("CKey::GetSecret() : EC_KEY_get0_private_key failed");
-    int n=BN_bn2bin(bn,&vchRet[32 - nBytes]);
-    if (n != nBytes)
-        throw key_error("CKey::GetSecret(): BN_bn2bin failed");
-    fCompressed = fCompressedPubKey;
+    memcpy(&vchRet[0], vch, 32);
+    fCompressedOut = fCompressed;
     return vchRet;
 }
 
@@ -354,7 +351,8 @@ void CKey::MakeNewKey(bool fCompressedIn)
 // This is expensive.
 CPrivKey CKey::GetPrivKey() const
 {
-    assert(fValid);
+    if (!fValid)
+        throw key_error("CKey::GetPrivKey: key is not valid");
     CPrivKey privkey;
     CECKey key;
     key.SetSecretBytes(vch);
@@ -366,7 +364,8 @@ CPrivKey CKey::GetPrivKey() const
 // This is expensive.
 CPubKey CKey::GetPubKey() const
 {
-    assert(fValid);
+    if (!fValid)
+        throw key_error("CKey::GetPubKey: key is not valid");
     CPubKey pubkey;
     CECKey key;
     key.SetSecretBytes(vch);
@@ -399,23 +398,26 @@ bool CKey::SignCompact(const uint256 &hash, std::vector<unsigned char>& vchSig) 
     key.SetSecretBytes(vch);
     if (!key.SignCompact(hash, &vchSig[1], rec))
         return false;
-    assert(rec != -1);
+    if (rec == -1)
+        return false;
     vchSig[0] = 27 + rec + (fCompressed ? 4 : 0);
     return true;
 }
 
 // Derive BIP32 child key.
 bool CKey::Derive(CKey& keyChild, unsigned char ccChild[32], unsigned int nChild, const unsigned char cc[32]) const {
-    assert(IsValid());
-    assert(IsCompressed());
+    if (!IsValid() || !IsCompressed())
+        return false;
     unsigned char out[64];
     LockObject(out);
     if ((nChild >> 31) == 0) {
         CPubKey pubkey = GetPubKey();
-        assert(pubkey.begin() + 33 == pubkey.end());
+        if (pubkey.begin() + 33 != pubkey.end())
+            return false;
         BIP32Hash(cc, nChild, *pubkey.begin(), pubkey.begin()+1, out);
     } else {
-        assert(begin() + 32 == end());
+        if (begin() + 32 != end())
+            return false;
         BIP32Hash(cc, nChild, 0, begin(), out);
     }
     memcpy(ccChild, out+32, 32);
@@ -573,10 +575,12 @@ bool CPubKey::Derive(CPubKey& pubkeyChild, unsigned char ccChild[32], unsigned i
 
 void CECKey::GetSecretBytes(unsigned char vch[32]) const {
     const BIGNUM *bn = EC_KEY_get0_private_key(pkey);
-    assert(bn);
+    if (!bn)
+        throw key_error("CECKey::GetSecretBytes: no private key");
     int nBytes = BN_num_bytes(bn);
     int n=BN_bn2bin(bn,&vch[32 - nBytes]);
-    assert(n == nBytes);
+    if (n != nBytes)
+        throw key_error("CECKey::GetSecretBytes: BN_bn2bin size mismatch");
     memset(vch, 0, 32 - nBytes);
 }
 
@@ -584,14 +588,27 @@ void CECKey::SetSecretBytes(const unsigned char vch[32]) {
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
     BIGNUM bn;
     BN_init(&bn);
-    assert(BN_bin2bn(vch, 32, &bn));
-    assert(EC_KEY_regenerate_key(pkey, &bn));
+    if (!BN_bin2bn(vch, 32, &bn))
+        throw key_error("CECKey::SetSecretBytes: BN_bin2bn failed");
+    if (!EC_KEY_regenerate_key(pkey, &bn))
+    {
+        BN_clear_free(&bn);
+        throw key_error("CECKey::SetSecretBytes: EC_KEY_regenerate_key failed");
+    }
     BN_clear_free(&bn);
 #else
     BIGNUM *bn;
     bn = BN_new();
-    assert(BN_bin2bn(vch, 32, bn));
-    assert(EC_KEY_regenerate_key(pkey, bn));
+    if (!BN_bin2bn(vch, 32, bn))
+    {
+        BN_clear_free(bn);
+        throw key_error("CECKey::SetSecretBytes: BN_bin2bn failed");
+    }
+    if (!EC_KEY_regenerate_key(pkey, bn))
+    {
+        BN_clear_free(bn);
+        throw key_error("CECKey::SetSecretBytes: EC_KEY_regenerate_key failed");
+    }
     BN_clear_free(bn);
 #endif
 }
@@ -599,11 +616,13 @@ void CECKey::SetSecretBytes(const unsigned char vch[32]) {
 void CECKey::GetPrivKey(CPrivKey &privkey, bool fCompressed) {
     EC_KEY_set_conv_form(pkey, fCompressed ? POINT_CONVERSION_COMPRESSED : POINT_CONVERSION_UNCOMPRESSED);
     int nSize = i2d_ECPrivateKey(pkey, NULL);
-    assert(nSize);
+    if (!nSize)
+        throw key_error("CECKey::GetPrivKey: i2d_ECPrivateKey failed (size=0)");
     privkey.resize(nSize);
     unsigned char* pbegin = &privkey[0];
     int nSize2 = i2d_ECPrivateKey(pkey, &pbegin);
-    assert(nSize == nSize2);
+    if (nSize != nSize2)
+        throw key_error("CECKey::GetPrivKey: i2d_ECPrivateKey size mismatch");
 }
 
 bool CECKey::SetPrivKey(const CPrivKey &privkey, bool fSkipCheck) {
@@ -623,12 +642,13 @@ bool CECKey::SetPrivKey(const CPrivKey &privkey, bool fSkipCheck) {
 void CECKey::GetPubKey(CPubKey &pubkey, bool fCompressed) {
     EC_KEY_set_conv_form(pkey, fCompressed ? POINT_CONVERSION_COMPRESSED : POINT_CONVERSION_UNCOMPRESSED);
     int nSize = i2o_ECPublicKey(pkey, NULL);
-    assert(nSize);
-    assert(nSize <= 65);
+    if (!nSize || nSize > 65)
+        throw key_error("CECKey::GetPubKey: i2o_ECPublicKey failed");
     unsigned char c[65];
     unsigned char *pbegin = c;
     int nSize2 = i2o_ECPublicKey(pkey, &pbegin);
-    assert(nSize == nSize2);
+    if (nSize != nSize2)
+        throw key_error("CECKey::GetPubKey: i2o_ECPublicKey size mismatch");
     pubkey.Set(&c[0], &c[nSize]);
 }
 
@@ -717,7 +737,11 @@ bool CECKey::SignCompact(const uint256 &hash, unsigned char *p64, int &rec) {
                 }
             }
         }
-        assert(fOk);
+        if (!fOk)
+        {
+            ECDSA_SIG_free(sig);
+            return false;
+        }
 #if OPENSSL_VERSION_NUMBER < 0x10100000L
         BN_bn2bin(sig->r,&p64[32-(nBitsR+7)/8]);
         BN_bn2bin(sig->s,&p64[64-(nBitsS+7)/8]);

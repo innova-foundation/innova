@@ -5,46 +5,89 @@
 USE_LEVELDB:=1
 USE_UPNP:=0
 
+# Dependency paths - override these on the command line or via environment
+# e.g.: make -f makefile.mingw BOOST_ROOT=C:\msys64\mingw64
+BOOST_ROOT ?= C:\deps\boost
+BDB_ROOT ?= C:\deps\db
+OPENSSL_ROOT ?= C:\deps\openssl
+LIBEVENT_ROOT ?= C:\deps\libevent
+CURL_ROOT ?= C:\deps\curl
+
 INCLUDEPATHS= \
- -I"C:\boost-1.50.0-mgw" \
- -I"C:\db-4.8.30.NC-mgw\build_unix" \
- -I"C:\openssl-1.0.1c-mgw\include"
+ -I"$(CURDIR)" \
+ -I"$(CURDIR)/obj" \
+ -I"$(CURDIR)/json" \
+ -I"$(BOOST_ROOT)/include" \
+ -I"$(BDB_ROOT)/include" \
+ -I"$(OPENSSL_ROOT)/include" \
+ -I"$(LIBEVENT_ROOT)/include" \
+ -I"$(CURL_ROOT)/include"
 
 LIBPATHS= \
- -L"C:\boost-1.50.0-mgw\stage\lib" \
- -L"C:\db-4.8.30.NC-mgw\build_unix" \
- -L"C:\openssl-1.0.1c-mgw"
+ -L"$(BOOST_ROOT)/lib" \
+ -L"$(BDB_ROOT)/lib" \
+ -L"$(OPENSSL_ROOT)/lib" \
+ -L"$(LIBEVENT_ROOT)/lib" \
+ -L"$(CURL_ROOT)/lib"
 
 LIBS= \
- -l boost_system-mgw44-mt-1_53 \
- -l boost_filesystem-mgw44-mt-1_53 \
- -l boost_program_options-mgw44-mt-1_53 \
- -l boost_thread-mgw44-mt-1_53 \
- -l boost_chrono-mgw44-mt-1_53 \
+ -l boost_system$(BOOST_LIB_SUFFIX) \
+ -l boost_filesystem$(BOOST_LIB_SUFFIX) \
+ -l boost_program_options$(BOOST_LIB_SUFFIX) \
+ -l boost_thread$(BOOST_LIB_SUFFIX) \
+ -l boost_chrono$(BOOST_LIB_SUFFIX) \
  -l db_cxx \
  -l ssl \
- -l crypto
+ -l crypto \
+ -l event \
+ -l curl
 
-DEFS=-DWIN32 -D_WINDOWS -DBOOST_THREAD_USE_LIB -DBOOST_SPIRIT_THREADSAFE
+DEFS=-DWIN32 -D_WINDOWS -DWIN32_LEAN_AND_MEAN -DBOOST_THREAD_USE_LIB -DBOOST_SPIRIT_THREADSAFE
 DEBUGFLAGS=-g
-CFLAGS=-mthreads -O3 -msse2 -w -Wall -Wextra -Wno-ignored-qualifiers -Wformat -Wformat-security -Wno-unused-parameter $(DEBUGFLAGS) $(DEFS) $(INCLUDEPATHS)
-LDFLAGS=-Wl,--dynamicbase -Wl,--nxcompat
+HARDENING_FLAGS = -fstack-protector-strong -D_FORTIFY_SOURCE=2
+
+# Architecture detection for conditional flags
+UNAME_M := $(shell uname -m 2>/dev/null || echo x86_64)
+ifeq ($(UNAME_M),i686)
+    EXT_OPTIONS=-msse2
+else
+    EXT_OPTIONS=
+endif
+
+xCXXFLAGS=-mthreads -O3 $(EXT_OPTIONS) -std=c++11 -Wall -Wextra -Wno-ignored-qualifiers -Wformat -Wformat-security -Wno-unused-parameter $(HARDENING_FLAGS) $(DEBUGFLAGS) $(DEFS) $(INCLUDEPATHS) $(CXXFLAGS)
+xCFLAGS=-mthreads -O3 $(EXT_OPTIONS) -Wall -Wextra -Wno-ignored-qualifiers -Wformat -Wformat-security -Wno-unused-parameter $(HARDENING_FLAGS) $(DEBUGFLAGS) $(DEFS) $(INCLUDEPATHS) $(CFLAGS)
+LDFLAGS=-Wl,--dynamicbase -Wl,--nxcompat -Wl,--high-entropy-va
+xLDFLAGS=$(LDFLAGS)
 
 TESTDEFS = -DTEST_DATA_DIR=$(abspath test/data)
 
 ifndef USE_UPNP
 	override USE_UPNP = -
 endif
+MINIUPNPC_ROOT ?= C:\deps\miniupnpc
 ifneq (${USE_UPNP}, -)
- INCLUDEPATHS += -I"C:\miniupnpc-1.6-mgw"
- LIBPATHS += -L"C:\miniupnpc-1.6-mgw"
+ INCLUDEPATHS += -I"$(MINIUPNPC_ROOT)"
+ LIBPATHS += -L"$(MINIUPNPC_ROOT)"
  LIBS += -l miniupnpc -l iphlpapi
  DEFS += -DSTATICLIB -DUSE_UPNP=$(USE_UPNP)
 endif
 
-LIBS += -l kernel32 -l user32 -l gdi32 -l comdlg32 -l winspool -l winmm -l shell32 -l comctl32 -l ole32 -l oleaut32 -l uuid -l rpcrt4 -l advapi32 -l ws2_32 -l mswsock -l shlwapi
+ifndef USE_NATIVETOR
+    override USE_NATIVETOR = -
+endif
+ifneq (${USE_NATIVETOR}, -)
+    DEFS += $(addprefix -I,$(CURDIR)/tor) -DUSE_NATIVETOR=$(USE_NATIVETOR)
+endif
 
-# TODO: make the mingw builds smarter about dependencies, like the linux/osx builds are
+ifndef USE_IPFS
+    override USE_IPFS = -
+endif
+ifneq (${USE_IPFS}, -)
+    DEFS += $(addprefix -I,$(CURDIR)/ipfs) -DUSE_IPFS=$(USE_IPFS)
+endif
+
+LIBS += -l kernel32 -l user32 -l gdi32 -l comdlg32 -l winspool -l winmm -l shell32 -l comctl32 -l ole32 -l oleaut32 -l uuid -l rpcrt4 -l advapi32 -l ws2_32 -l mswsock -l shlwapi -l z
+
 HEADERS = $(wildcard *.h)
 
 OBJS= \
@@ -76,6 +119,21 @@ OBJS= \
     obj/rpcblockchain.o \
     obj/rpcrawtransaction.o \
     obj/rpcsmessage.o \
+    obj/rpchyperfile.o \
+    obj/rpcshielded.o \
+    obj/nullsend.o \
+    obj/shieldedcoinjoin.o \
+    obj/shielded.o \
+    obj/zkproof.o \
+    obj/lelantus.o \
+    obj/curvetree.o \
+    obj/ipa.o \
+    obj/ed25519_zk.o \
+    obj/nullstake.o \
+    obj/poseidon2.o \
+    obj/bulletproof_ac.o \
+    obj/silentpayments.o \
+    obj/dandelion.o \
     obj/script.o \
     obj/sync.o \
     obj/util.o \
@@ -85,13 +143,37 @@ OBJS= \
     obj/kernel.o \
     obj/pbkdf2.o \
     obj/scrypt.o \
-    obj/scrypt-arm.o \
-    obj/scrypt-x86.o \
-    obj/scrypt-x86_64.o \
     obj/smessage.o \
+    obj/stealth.o \
+    obj/activecollateralnode.o \
+    obj/collateralnodeconfig.o \
+    obj/collateralnode.o \
+    obj/rpccollateral.o \
+    obj/spork.o \
+    obj/collateral.o \
+    obj/eccryptoverify.o \
+    obj/ringsig.o \
+    obj/bloom.o \
+    obj/state.o \
     obj/idns.o \
     obj/namecoin.o \
-    obj/stealth.o
+    obj/utiltime.o \
+    obj/stun.o \
+    obj/bootstrap.o \
+    obj/minizip/ioapi.o \
+    obj/minizip/unzip.o
+
+# IPFS objects
+ifeq (${USE_IPFS}, 1)
+OBJS += obj/ipfs.o obj/ipfscurl.o
+endif
+
+# Scrypt assembly - architecture-conditional (MinGW cross-compile)
+ifeq ($(UNAME_M),x86_64)
+OBJS += obj/scrypt-x86_64.o
+else ifeq ($(UNAME_M),i686)
+OBJS += obj/scrypt-x86.o
+endif
 
 .PHONY: all innova-build
 
@@ -123,8 +205,13 @@ ifneq (${USE_LEVELDB}, 1)
 OBJS += obj/txdb-bdb.o
 endif
 
-obj/%.o: %.cpp $(HEADERS)
-	g++ -c $(CFLAGS) -o $@ $<
+# auto-generated dependencies:
+-include obj/*.P
+
+obj/build.h: FORCE
+	/bin/sh ../share/genbuild.sh obj/build.h
+version.cpp: obj/build.h
+DEFS += -DHAVE_BUILD_INFO
 
 obj/scrypt-x86.o: scrypt-x86.S
 	$(CXX) -c $(xCXXFLAGS) -MMD -o $@ $<
@@ -136,7 +223,15 @@ obj/scrypt-arm.o: scrypt-arm.S
 	$(CXX) -c $(xCXXFLAGS) -MMD -o $@ $<
 
 obj/%.o: %.c
-	$(CXX) -c $(xCXXFLAGS) -fpermissive -MMD -MF $(@:%.o=%.d) -o $@ $<
+	$(CC) -c $(xCFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
+	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
+	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
+	rm -f $(@:%.o=%.d)
+
+obj/minizip/%.o: minizip/%.c
+	@mkdir -p obj/minizip
+	$(CC) -c $(xCFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
 	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
 	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
 	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
@@ -156,11 +251,25 @@ obj/%.o: json/%.cpp
 	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
 	rm -f $(@:%.o=%.d)
 
+ifeq (${USE_IPFS}, 1)
+obj/%.o: %.cc
+	$(CXX) -c $(xCXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
+	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
+	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
+	rm -f $(@:%.o=%.d)
+endif
+
 innovad.exe: $(OBJS:obj/%=obj/%)
-	g++ $(CFLAGS) $(LDFLAGS) -o $@ $(LIBPATHS) $^ $(LIBS)
+	$(CXX) $(xCXXFLAGS) $(xLDFLAGS) -o $@ $(LIBPATHS) $^ $(LIBS)
 
 clean:
-	-del /Q innovad
-	-del /Q obj\*
+	-del /Q innovad.exe
+	-del /Q obj\*.o
+	-del /Q obj\*.P
+	-del /Q obj\*.d
+	-del /Q obj\build.h
+	-rmdir /S /Q obj\minizip 2>nul || true
+	-cd leveldb && $(MAKE) clean || true
 
 FORCE:

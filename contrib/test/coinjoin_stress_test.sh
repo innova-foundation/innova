@@ -123,7 +123,6 @@ rpc3() {
 test_mixing_rpc_availability() {
     section "CoinJoin RPC Command Availability"
 
-    # Test startmixing help
     local result=$(rpc1_err help startmixing 2>&1 || echo "")
     if echo "$result" | grep -qi "startmixing\|amount\|denomination"; then
         success "startmixing RPC registered"
@@ -131,7 +130,6 @@ test_mixing_rpc_availability() {
         fail "startmixing RPC not available"
     fi
 
-    # Test stopmixing help
     result=$(rpc1_err help stopmixing 2>&1 || echo "")
     if echo "$result" | grep -qi "stopmixing\|stop\|mixing"; then
         success "stopmixing RPC registered"
@@ -139,7 +137,6 @@ test_mixing_rpc_availability() {
         fail "stopmixing RPC not available"
     fi
 
-    # Test getmixingstatus help
     result=$(rpc1_err help getmixingstatus 2>&1 || echo "")
     if echo "$result" | grep -qi "getmixingstatus\|status\|mixing"; then
         success "getmixingstatus RPC registered"
@@ -156,7 +153,6 @@ test_mixing_status_initial() {
         success "getmixingstatus responds"
         log "Status: $status"
 
-        # Check for expected fields
         if echo "$status" | grep -q '"mixing_active"'; then
             success "Status includes mixing_active field"
         else
@@ -182,7 +178,6 @@ test_mixing_status_initial() {
 test_denomination_validation() {
     section "Denomination Validation"
 
-    # Test valid denominations: 10, 100, 1000, 10000
     for denom in 10 100 1000 10000; do
         local result=$(rpc1_err startmixing $denom 2>&1 || echo "")
         if echo "$result" | grep -qi "error.*denomination\|invalid.*denomination"; then
@@ -194,7 +189,6 @@ test_denomination_validation() {
         fi
     done
 
-    # Test invalid denomination
     local result=$(rpc1_err startmixing 50 2>&1 || echo "")
     if echo "$result" | grep -qi "error\|invalid\|denomination"; then
         success "Invalid denomination 50 rejected"
@@ -202,7 +196,6 @@ test_denomination_validation() {
         warn "Invalid denomination 50 response: ${result:0:80}"
     fi
 
-    # Test zero amount
     result=$(rpc1_err startmixing 0 2>&1 || echo "")
     if echo "$result" | grep -qi "error\|invalid"; then
         success "Zero amount rejected"
@@ -210,7 +203,6 @@ test_denomination_validation() {
         warn "Zero amount response: ${result:0:80}"
     fi
 
-    # Test negative amount
     result=$(rpc1_err startmixing -100 2>&1 || echo "")
     if echo "$result" | grep -qi "error\|invalid\|negative"; then
         success "Negative amount rejected"
@@ -238,15 +230,12 @@ test_large_denomination_cap() {
 test_start_stop_mixing() {
     section "Start/Stop Mixing Lifecycle"
 
-    # Start mixing
     local result=$(rpc1_err startmixing 100 2>&1 || echo "")
     log "Start mixing result: ${result:0:120}"
 
-    # Check status
     local status=$(rpc1 getmixingstatus 2>/dev/null || echo "")
     log "Status after start: $status"
 
-    # Stop mixing
     result=$(rpc1 stopmixing 2>/dev/null || echo "")
     if [ -n "$result" ]; then
         success "stopmixing executed"
@@ -255,7 +244,6 @@ test_start_stop_mixing() {
         warn "stopmixing returned empty"
     fi
 
-    # Status after stop
     status=$(rpc1 getmixingstatus 2>/dev/null || echo "")
     if echo "$status" | grep -q '"mixing_active"'; then
         local active=$(echo "$status" | grep -o '"mixing_active" *: *[a-z]*' | grep -o '[a-z]*$')
@@ -270,20 +258,17 @@ test_start_stop_mixing() {
 test_double_start() {
     section "Double Start/Stop Edge Cases"
 
-    # Start mixing twice
     rpc1 startmixing 100 >/dev/null 2>&1 || true
     local result=$(rpc1_err startmixing 100 2>&1 || echo "")
     log "Double start response: ${result:0:80}"
     # Should either succeed idempotently or return "already mixing"
     success "Double start handled without crash"
 
-    # Stop twice
     rpc1 stopmixing >/dev/null 2>&1 || true
     result=$(rpc1_err stopmixing 2>&1 || echo "")
     log "Double stop response: ${result:0:80}"
     success "Double stop handled without crash"
 
-    # Stop without start
     result=$(rpc1_err stopmixing 2>&1 || echo "")
     log "Stop without start: ${result:0:80}"
     success "Stop without start handled without crash"
@@ -295,7 +280,6 @@ test_concurrent_mixing_requests() {
     local pids=()
     local succeeded=0
 
-    # Send concurrent startmixing requests
     for i in $(seq 1 5); do
         rpc1 startmixing 100 >/dev/null 2>&1 &
         pids+=($!)
@@ -331,7 +315,6 @@ test_mixing_with_insufficient_funds() {
 test_pool_size_config() {
     section "Pool Size Configuration"
 
-    # Check that mixing pool size is configurable
     local status=$(rpc1 getmixingstatus 2>/dev/null || echo "")
     if echo "$status" | grep -q '"pool_size"'; then
         local pool_size=$(echo "$status" | grep -o '"pool_size" *: *[0-9]*' | grep -o '[0-9]*$')
@@ -348,7 +331,6 @@ test_pool_size_config() {
 test_multi_node_status() {
     section "Multi-Node Mixing Status"
 
-    # Check all nodes can report mixing status
     for i in 1 2 3; do
         local status=$(eval "rpc${i} getmixingstatus 2>/dev/null || echo ''")
         if [ -n "$status" ]; then

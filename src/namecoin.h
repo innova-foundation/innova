@@ -18,7 +18,16 @@ static const int OP_NAME_UPDATE = 0x02;
 static const int OP_NAME_DELETE = 0x03;
 static const unsigned int NAMEINDEX_CHAIN_SIZE = 1000;
 
-static const int RELEASE_HEIGHT = 1200000;
+// Height at which IDNS name operations become active.
+// Regtest/Testnet: active from genesis for easy testing.
+// Mainnet: 1,200,000 (original Innova DNS launch height).
+inline int GetIDNSReleaseHeight() {
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest || fTestNet) return 0;
+    return 1200000;
+}
+#define RELEASE_HEIGHT (GetIDNSReleaseHeight())
 
 class CNameIndex
 {

@@ -3,8 +3,7 @@
 
 #include <QWidget>
 #include <QTimer>
-#include <QtNetwork/QtNetwork>
-#include <curl/curl.h>
+#include <QFutureWatcher>
 
 QT_BEGIN_NAMESPACE
 class QModelIndex;
@@ -16,6 +15,18 @@ namespace Ui {
 class WalletModel;
 class TxViewDelegate;
 class TransactionFilterProxy;
+
+struct PriceData {
+    double usd;
+    double btc;
+    double eur;
+    double gbp;
+    double rub;
+    double jpy;
+    QString newsfeed;
+    bool success;
+    PriceData() : usd(0), btc(0), eur(0), gbp(0), rub(0), jpy(0), success(false) {}
+};
 
 /** Overview ("home") page widget */
 class OverviewPage : public QWidget
@@ -35,12 +46,11 @@ public slots:
 
 signals:
     void transactionClicked(const QModelIndex &index);
-	void networkError( QNetworkReply::NetworkError err );
 
 private:
     QTimer *timer;
-	QTimer *refreshbtnTimer;
-	QTimer *updateDisplayTimer;
+    QTimer *refreshbtnTimer;
+    QTimer *updateDisplayTimer;
     Ui::OverviewPage *ui;
     WalletModel *model;
     qint64 currentBalance;
@@ -57,12 +67,16 @@ private:
     int cachedNumBlocks;
     TxViewDelegate *txdelegate;
     TransactionFilterProxy *filter;
-	QNetworkAccessManager m_nam;
+    QFutureWatcher<PriceData> *priceWatcher;
+    bool priceFetchInProgress;
+
+    static PriceData fetchPricesWorker();
 
 private slots:
     void updateDisplayUnit();
     void handleTransactionClicked(const QModelIndex &index);
     void updateWatchOnlyLabels(bool showWatchOnly);
+    void onPricesFetched();
 };
 
 #endif // OVERVIEWPAGE_H

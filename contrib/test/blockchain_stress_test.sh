@@ -61,7 +61,6 @@ setup_nodes() {
     rm -rf "$TEST_DIR"
     mkdir -p "$NODE_A_DIR" "$NODE_B_DIR" "$NODE_C_DIR"
 
-    # Node A: Primary miner
     cat > "$NODE_A_DIR/innova.conf" << EOF
 regtest=1
 server=1
@@ -79,7 +78,6 @@ debug=1
 printtoconsole=0
 EOF
 
-    # Node B: Secondary miner (for reorg tests)
     cat > "$NODE_B_DIR/innova.conf" << EOF
 regtest=1
 server=1
@@ -97,7 +95,6 @@ debug=1
 printtoconsole=0
 EOF
 
-    # Node C: Observer (validates consensus)
     cat > "$NODE_C_DIR/innova.conf" << EOF
 regtest=1
 server=1
@@ -159,7 +156,6 @@ test_genesis_block() {
         fail "Genesis block mismatch: A=$hash_a B=$hash_b C=$hash_c"
     fi
 
-    # Verify genesis
     local genesis=$(rpc_a getblock "$hash_a" 2>/dev/null || echo "")
     if echo "$genesis" | tr '\n' ' ' | grep -q '"height" *: *0'; then
         success "Genesis block has correct height (0)"
@@ -175,7 +171,6 @@ test_genesis_block() {
 test_block_generation() {
     section "Block Generation and Propagation"
 
-    # Generate blocks on node A
     log "Generating 50 blocks on Node A..."
     rpc_a setgenerate true 50 >/dev/null 2>&1 || true
     sleep 2
@@ -189,7 +184,6 @@ test_block_generation() {
         fail "Only $blocks_a blocks generated"
     fi
 
-    # Connect A to C and check propagation
     rpc_a addnode "127.0.0.1:$NODE_C_PORT" onetry >/dev/null 2>&1 || true
     rpc_c addnode "127.0.0.1:$NODE_A_PORT" onetry >/dev/null 2>&1 || true
     sleep 5
@@ -207,23 +201,17 @@ test_block_generation() {
 test_chain_fork_and_reorg() {
     section "Chain Fork and Reorganization"
 
-    # Disconnect all nodes (A, B mine separately to create a fork)
-    # A and B already have no addnode to each other
-
-    # Mine 5 blocks on A
     local start_a=$(rpc_a getinfo 2>/dev/null | tr '\n' ' ' | grep -o '"blocks" *: *[0-9]*' | grep -o '[0-9]*$' || echo "0")
     rpc_a setgenerate true 5 >/dev/null 2>&1 || true
     sleep 2
     local end_a=$(rpc_a getinfo 2>/dev/null | tr '\n' ' ' | grep -o '"blocks" *: *[0-9]*' | grep -o '[0-9]*$' || echo "0")
 
-    # Mine 3 blocks on B (shorter chain)
     rpc_b setgenerate true 3 >/dev/null 2>&1 || true
     sleep 2
     local end_b=$(rpc_b getinfo 2>/dev/null | tr '\n' ' ' | grep -o '"blocks" *: *[0-9]*' | grep -o '[0-9]*$' || echo "0")
 
     log "Fork state: Node A at $end_a, Node B at $end_b"
 
-    # Verify they have different chain tips
     local tip_a=$(rpc_a getbestblockhash 2>/dev/null || echo "")
     local tip_b=$(rpc_b getbestblockhash 2>/dev/null || echo "")
 
@@ -235,7 +223,6 @@ test_chain_fork_and_reorg() {
         log "Nodes may share chain (same tips) - fork test limited in regtest"
     fi
 
-    # Now connect A and B - B should reorg to A's longer chain
     rpc_a addnode "127.0.0.1:$NODE_B_PORT" onetry >/dev/null 2>&1 || true
     rpc_b addnode "127.0.0.1:$NODE_A_PORT" onetry >/dev/null 2>&1 || true
     sleep 8
@@ -251,7 +238,6 @@ test_chain_fork_and_reorg() {
         warn "Node B at $new_b (expected >= $end_a after reorg)"
     fi
 
-    # Verify they now agree on the chain tip
     local final_tip_a=$(rpc_a getbestblockhash 2>/dev/null || echo "")
     local final_tip_b=$(rpc_b getbestblockhash 2>/dev/null || echo "")
     if [ -n "$final_tip_a" ] && [ "$final_tip_a" = "$final_tip_b" ]; then
@@ -266,7 +252,6 @@ test_block_structure() {
 
     local height=$(rpc_a getinfo 2>/dev/null | tr '\n' ' ' | grep -o '"blocks" *: *[0-9]*' | grep -o '[0-9]*$' || echo "0")
 
-    # Check a few blocks
     for h in 1 10 "$height"; do
         local hash=$(rpc_a getblockhash "$h" 2>/dev/null || echo "")
         if [ -z "$hash" ]; then continue; fi
@@ -274,7 +259,6 @@ test_block_structure() {
         local block=$(rpc_a getblock "$hash" 2>/dev/null || echo "")
         if [ -z "$block" ]; then continue; fi
 
-        # Verify essential fields exist
         local has_hash=$(echo "$block" | tr '\n' ' ' | grep -c '"hash"' || echo "0")
         local has_height=$(echo "$block" | tr '\n' ' ' | grep -c '"height"' || echo "0")
         local has_time=$(echo "$block" | tr '\n' ' ' | grep -c '"time"' || echo "0")
@@ -329,7 +313,6 @@ test_difficulty() {
         success "PoW difficulty available"
     fi
 
-    # Generate more blocks and check difficulty changes
     local diff_before=$pow_diff
     rpc_a setgenerate true 20 >/dev/null 2>&1 || true
     sleep 2
@@ -344,7 +327,6 @@ test_difficulty() {
 test_invalid_block_hash() {
     section "Invalid Block Hash Rejection"
 
-    # Try to get a block with invalid hash
     local result=$(rpc_a getblock "0000000000000000000000000000000000000000000000000000000000000000" 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|not found"; then
         success "Invalid block hash correctly rejected"
@@ -352,7 +334,6 @@ test_invalid_block_hash() {
         fail "Invalid block hash was accepted"
     fi
 
-    # Try invalid height
     local max_height=$(rpc_a getinfo 2>/dev/null | tr '\n' ' ' | grep -o '"blocks" *: *[0-9]*' | grep -o '[0-9]*$' || echo "0")
     result=$(rpc_a getblockhash "$((max_height + 1000))" 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|out of range"; then
@@ -365,7 +346,6 @@ test_invalid_block_hash() {
 test_chain_state_info() {
     section "Chain State Information"
 
-    # getblockchaininfo or similar
     local mining_info=$(rpc_a getmininginfo 2>/dev/null || echo "{}")
     if echo "$mining_info" | tr '\n' ' ' | grep -q '"blocks"'; then
         success "Mining info available"
@@ -373,7 +353,6 @@ test_chain_state_info() {
         warn "Mining info unavailable"
     fi
 
-    # Get best block hash
     local best=$(rpc_a getbestblockhash 2>/dev/null || echo "")
     if [ -n "$best" ] && [ ${#best} -eq 64 ]; then
         success "Best block hash: ${best:0:16}..."
@@ -381,7 +360,6 @@ test_chain_state_info() {
         fail "Could not get best block hash"
     fi
 
-    # Get block count
     local count=$(rpc_a getblockcount 2>/dev/null || echo "0")
     if [ "$count" -gt 0 ]; then
         success "Block count: $count"
@@ -393,7 +371,6 @@ test_chain_state_info() {
 test_three_node_consensus() {
     section "Three-Node Consensus Verification"
 
-    # Ensure all nodes are connected
     rpc_a addnode "127.0.0.1:$NODE_B_PORT" onetry >/dev/null 2>&1 || true
     rpc_a addnode "127.0.0.1:$NODE_C_PORT" onetry >/dev/null 2>&1 || true
     rpc_b addnode "127.0.0.1:$NODE_A_PORT" onetry >/dev/null 2>&1 || true
@@ -401,7 +378,6 @@ test_three_node_consensus() {
     rpc_c addnode "127.0.0.1:$NODE_A_PORT" onetry >/dev/null 2>&1 || true
     rpc_c addnode "127.0.0.1:$NODE_B_PORT" onetry >/dev/null 2>&1 || true
 
-    # Mine some blocks and wait for sync
     rpc_a setgenerate true 5 >/dev/null 2>&1 || true
     sleep 8
 
@@ -411,7 +387,6 @@ test_three_node_consensus() {
 
     log "Heights: A=$blocks_a, B=$blocks_b, C=$blocks_c"
 
-    # Check best block hashes
     local tip_a=$(rpc_a getbestblockhash 2>/dev/null || echo "")
     local tip_b=$(rpc_b getbestblockhash 2>/dev/null || echo "")
     local tip_c=$(rpc_c getbestblockhash 2>/dev/null || echo "")

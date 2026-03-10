@@ -77,6 +77,8 @@ Value getmininginfo(const Array& params, bool fHelp)
 
     obj.push_back(Pair("stakeinterest",    (uint64_t)COIN_YEAR_REWARD));
     obj.push_back(Pair("testnet",       fTestNet));
+    obj.push_back(Pair("cpumining",     fCPUMining));
+    obj.push_back(Pair("cputhreads",    nCPUMinerThreads));
     return obj;
 }
 
@@ -374,7 +376,7 @@ Value setgenerate(const Array& params, bool fHelp)
     if (fHelp || params.size() < 1 || params.size() > 2)
         throw runtime_error(
             "setgenerate <generate> [genproclimit]\n"
-            "Mine blocks immediately (regtest only).\n"
+            "Mine blocks immediately (regtest/testnet only).\n"
             "<generate> true to mine, false to stop.\n"
             "[genproclimit] number of blocks to generate (default: 1).");
 
@@ -386,8 +388,8 @@ Value setgenerate(const Array& params, bool fHelp)
     if (!fGenerate || nGenerate <= 0)
         return Value::null;
 
-    if (!fRegTest)
-        throw JSONRPCError(RPC_METHOD_NOT_FOUND, "setgenerate is only available in regtest mode");
+    if (!fRegTest && !fTestNet)
+        throw JSONRPCError(RPC_METHOD_NOT_FOUND, "setgenerate is only available in regtest/testnet mode");
 
     Array blockHashes;
     unsigned int nExtraNonce = 0;
@@ -403,7 +405,10 @@ Value setgenerate(const Array& params, bool fHelp)
             IncrementExtraNonce(pblock, pindexBest, nExtraNonce);
         }
 
-        while (!CheckProofOfWork(pblock->GetPoWHash(), pblock->nBits))
+        CBigNum bnMineTarget;
+        bnMineTarget.SetCompact(pblock->nBits);
+        uint256 hashMineTarget = bnMineTarget.getuint256();
+        while (pblock->GetPoWHash() > hashMineTarget)
         {
             ++pblock->nNonce;
             if (pblock->nNonce == 0)
@@ -422,6 +427,61 @@ Value setgenerate(const Array& params, bool fHelp)
     }
 
     return blockHashes;
+}
+
+Value startmining(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 1)
+        throw runtime_error(
+            "startmining [threads]\n"
+            "Start background CPU PoW mining (testnet/regtest only).\n"
+            "[threads] Number of mining threads (default: 1).");
+
+    if (!fRegTest && !fTestNet)
+        throw JSONRPCError(RPC_METHOD_NOT_FOUND, "startmining is only available in regtest/testnet mode");
+
+    if (fCPUMining)
+        throw JSONRPCError(RPC_MISC_ERROR, "CPU mining is already running");
+
+    int nThreads = 1;
+    if (params.size() > 0)
+        nThreads = params[0].get_int();
+    if (nThreads < 1)
+        nThreads = 1;
+    if (nThreads > 16)
+        nThreads = 16;
+
+    nCPUMinerThreads = nThreads;
+    fCPUMining = true;
+
+    for (int i = 0; i < nThreads; i++)
+    {
+        if (!NewThread(ThreadCPUMiner, pwalletMain))
+            printf("Error: NewThread(ThreadCPUMiner) failed for thread %d\n", i);
+    }
+
+    Object result;
+    result.push_back(Pair("mining", true));
+    result.push_back(Pair("threads", nThreads));
+    result.push_back(Pair("network", fTestNet ? "testnet" : "regtest"));
+    return result;
+}
+
+Value stopmining(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 0)
+        throw runtime_error(
+            "stopmining\n"
+            "Stop background CPU PoW mining.");
+
+    if (!fCPUMining)
+        throw JSONRPCError(RPC_MISC_ERROR, "CPU mining is not running");
+
+    fCPUMining = false;
+
+    Object result;
+    result.push_back(Pair("mining", false));
+    return result;
 }
 
 Value getblocktemplate(const Array& params, bool fHelp)

@@ -272,6 +272,7 @@ namespace Checkpoints
             // relay the checkpoint
             if (!checkpointMessage.IsNull())
             {
+                LOCK(cs_vNodes);
                 BOOST_FOREACH(CNode* pnode, vNodes)
                     checkpointMessage.RelayTo(pnode);
             }
@@ -285,6 +286,8 @@ namespace Checkpoints
     const CBlockIndex*  AutoSelectSyncCheckpoint()
     {
         const CBlockIndex *pindex = pindexBest;
+        if (!pindex)
+            return pindexGenesisBlock;
         // Search backward for a block within max span and maturity window
         while (pindex->pprev && (pindex->GetBlockTime() + nCheckpointSpan * nTargetSpacing > pindexBest->GetBlockTime() || pindex->nHeight + nCheckpointSpan > pindexBest->nHeight))
             pindex = pindex->pprev;
@@ -305,7 +308,8 @@ namespace Checkpoints
         } else { // do a more thorough check when we are already synced
             LOCK(cs_hashSyncCheckpoint);
             // sync-checkpoint should always be accepted block
-            assert(mapBlockIndex.count(hashSyncCheckpoint));
+            if (!mapBlockIndex.count(hashSyncCheckpoint))
+                return error("CheckSync: sync-checkpoint not in block index");
             const CBlockIndex* pindexSync = mapBlockIndex[hashSyncCheckpoint];
 
             if (nHeight > pindexSync->nHeight)
@@ -452,7 +456,8 @@ namespace Checkpoints
     {
         LOCK(cs_hashSyncCheckpoint);
         // sync-checkpoint should always be accepted block
-        assert(mapBlockIndex.count(hashSyncCheckpoint));
+        if (!mapBlockIndex.count(hashSyncCheckpoint))
+            return true;
         const CBlockIndex* pindexSync = mapBlockIndex[hashSyncCheckpoint];
         return (nBestHeight >= pindexSync->nHeight + nCoinbaseMaturity ||
                 pindexSync->GetBlockTime() + nStakeMinAge < GetAdjustedTime());
@@ -467,7 +472,23 @@ std::string CSyncCheckpoint::strMasterPrivKey = "";
 // ppcoin: verify signature of sync-checkpoint message
 bool CSyncCheckpoint::CheckSignature()
 {
-    CPubKey key(ParseHex(CSyncCheckpoint::strMasterPubKey));
+    const std::string& strPubKey = CSyncCheckpoint::strMasterPubKey;
+
+    if (strPubKey.size() != 66 && strPubKey.size() != 130)
+        return error("CSyncCheckpoint::CheckSignature() : invalid pubkey hex length %u", (unsigned int)strPubKey.size());
+
+    for (size_t i = 0; i < strPubKey.size(); i++)
+    {
+        char c = strPubKey[i];
+        bool isValidHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        if (!isValidHex)
+            return error("CSyncCheckpoint::CheckSignature() : invalid hex char '%c' at position %u", c, (unsigned int)i);
+    }
+
+    CPubKey key(ParseHex(strPubKey));
+    if (!key.IsValid())
+        return error("CSyncCheckpoint::CheckSignature() : invalid checkpoint pubkey");
+
     if (!key.Verify(Hash(vchMsg.begin(), vchMsg.end()), vchSig))
         return error("CSyncCheckpoint::CheckSignature() : verify signature failed");
 

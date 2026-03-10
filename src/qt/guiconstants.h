@@ -2,7 +2,7 @@
 #define GUICONSTANTS_H
 
 /* Milliseconds between model updates */
-static const int MODEL_UPDATE_DELAY = 250; // 500 previously
+static const int MODEL_UPDATE_DELAY = 1000; // Reduced from 250ms to prevent UI thread lock contention
 
 /* Number of seconds for blocks/sec rate in progress bar */
 static const int BPS_PERIOD = 10;

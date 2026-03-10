@@ -38,6 +38,7 @@
 #include "termsofuse.h"
 #include "proofofimage.h"
 #include "hyperfile.h"
+#include "stakingpage.h"
 #include "managenamespage.h"
 
 #ifdef Q_OS_MAC
@@ -71,6 +72,7 @@
 #include <QStyle>
 #include <QStyleFactory>
 #include <QTextStream>
+#include <QScreen>
 #include <QTextDocument>
 #include <QGraphicsScene>
 
@@ -143,7 +145,11 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     nBlocksInLastPeriod(0),
     nLastBlocks(0)
 {
-    resize(600, 400);
+    // Size window to fit 13" screens: use 85% of available screen height, max 750px
+    QScreen *screen = QApplication::primaryScreen();
+    int screenH = screen ? screen->availableGeometry().height() : 900;
+    int startH = qMin((int)(screenH * 0.85), 750);
+    resize(850, startH);
     setWindowTitle(tr("Innova") + " - " + tr("Wallet"));
 
 #ifndef Q_OS_MAC
@@ -168,16 +174,9 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     // Accept D&D of URIs
     setAcceptDrops(true);
 
-    // Create actions for the toolbar, menu bar and tray/dock icon
     createActions();
-
-    // Create application menu bar
     createMenuBar();
-
-    // Create the toolbars
     createToolBars();
-
-    // Create the tray icon (or setup the dock icon)
     createTrayIcon();
 
     fCNLock = GetBoolArg("-cnconflock");
@@ -192,6 +191,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
 	multisigPage = new MultisigDialog(this);
     proofOfImagePage = new ProofOfImage(this);
     hyperfilePage = new Hyperfile(this);
+    stakingPage = new StakingPage(this);
     manageNamesPage = new ManageNamesPage(this);
 	//chatWindow = new ChatWindow(this);
 
@@ -233,6 +233,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
 	centralWidget->addWidget(marketBrowser);
     centralWidget->addWidget(proofOfImagePage);
     centralWidget->addWidget(hyperfilePage);
+    centralWidget->addWidget(stakingPage);
 	//centralWidget->addWidget(chatWindow);
     setCentralWidget(centralWidget);
 
@@ -272,7 +273,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     {
         QTimer *timerStakingIcon = new QTimer(labelStakingIcon);
         connect(timerStakingIcon, SIGNAL(timeout()), this, SLOT(updateStakingIcon()));
-        timerStakingIcon->start(5 * 1000); // Set to update every 5 * 1000ms (5 seconds) better CPU usage
+        timerStakingIcon->start(30 * 1000); // Update every 30 seconds to reduce UI thread lock contention
         updateStakingIcon();
     }
 
@@ -298,19 +299,15 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     statusBar()->addWidget(progressBar);
     statusBar()->addPermanentWidget(frameBlocks);
 
-    // Clicking on a transaction on the overview page simply sends you to transaction history page
     connect(overviewPage, SIGNAL(transactionClicked(QModelIndex)), this, SLOT(gotoHistoryPage()));
     connect(overviewPage, SIGNAL(transactionClicked(QModelIndex)), transactionView, SLOT(focusTransaction(QModelIndex)));
 
-    // Double-clicking on a transaction on the transaction history page shows details
     connect(transactionView, SIGNAL(doubleClicked(QModelIndex)), transactionView, SLOT(showDetails()));
 
     rpcConsole = new RPCConsole(this);
     connect(openRPCConsoleAction, SIGNAL(triggered()), rpcConsole, SLOT(show()));
 
-    // Clicking on "Verify Message" in the address book sends you to the verify message tab
     connect(addressBookPage, SIGNAL(verifyMessage(QString)), this, SLOT(gotoVerifyMessageTab(QString)));
-    // Clicking on "Sign Message" in the receive coins page sends you to the sign message tab
     connect(receiveCoinsPage, SIGNAL(signMessage(QString)), this, SLOT(gotoSignMessageTab(QString)));
 
     gotoOverviewPage();
@@ -427,6 +424,12 @@ void BitcoinGUI::createActions()
     hyperfileAction->setStatusTip(tr("Decentralized File Uploads"));
     tabGroup->addAction(hyperfileAction);
 
+    stakingAction = new QAction(QIcon(":/icons/stake"), tr("S&taking"), this);
+    stakingAction->setToolTip(tr("Manage staking mode, cold staking, and privacy staking"));
+    stakingAction->setCheckable(true);
+    stakingAction->setStatusTip(tr("Staking Control Panel"));
+    tabGroup->addAction(stakingAction);
+
 	multisigAction = new QAction(QIcon(":/icons/multi"), tr("Multisig"), this);
     tabGroup->addAction(multisigAction);
 	multisigAction->setStatusTip(tr("Multisig Interface"));
@@ -459,6 +462,8 @@ void BitcoinGUI::createActions()
     connect(proofOfImageAction, SIGNAL(triggered()), this, SLOT(gotoProofOfImagePage()));
     connect(hyperfileAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(hyperfileAction, SIGNAL(triggered()), this, SLOT(gotoHyperfilePage()));
+    connect(stakingAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
+    connect(stakingAction, SIGNAL(triggered()), this, SLOT(gotoStakingPage()));
 
     quitAction = new QAction(QIcon(":/icons/quit"), tr("E&xit"), this);
     quitAction->setToolTip(tr("Quit application"));
@@ -603,6 +608,7 @@ void BitcoinGUI::createToolBars()
   mainToolbar->addAction(blockAction);
   mainToolbar->addAction(messageAction);
   mainToolbar->addAction(mintingAction);
+  mainToolbar->addAction(stakingAction);
 
     secondaryToolbar = addToolBar(tr("Actions toolbar"));
     secondaryToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -676,7 +682,6 @@ void BitcoinGUI::setClientModel(ClientModel *clientModel)
         setNumBlocks(clientModel->getNumBlocks(), clientModel->getNumBlocksOfPeers());
         connect(clientModel, SIGNAL(numBlocksChanged(int,int)), this, SLOT(setNumBlocks(int,int)));
 
-        // Report errors from network/worker thread
         connect(clientModel, SIGNAL(error(QString,QString,bool)), this, SLOT(error(QString,QString,bool)));
 
         rpcConsole->setClientModel(clientModel);
@@ -709,6 +714,7 @@ void BitcoinGUI::setWalletModel(WalletModel *walletModel)
         collateralnodeManagerPage->setWalletModel(walletModel);
 		multisigPage->setModel(walletModel);
     manageNamesPage->setModel(walletModel);
+        stakingPage->setModel(walletModel);
 		//chatWindow->setModel(clientModel);
 
         setEncryptionStatus(walletModel->getEncryptionStatus());
@@ -759,7 +765,6 @@ void BitcoinGUI::createTrayIcon()
     trayIconMenu = dockIconHandler->dockMenu();
 #endif
 
-    // Configuration of the tray icon (or dock icon) icon menu
     trayIconMenu->addAction(toggleHideAction);
     trayIconMenu->addSeparator();
     trayIconMenu->addAction(sendCoinsAction);
@@ -785,7 +790,6 @@ void BitcoinGUI::trayIconActivated(QSystemTrayIcon::ActivationReason reason)
 {
     if(reason == QSystemTrayIcon::Trigger)
     {
-        // Click on system tray icon triggers show/hide of the main window
         toggleHideAction->trigger();
     }
 }
@@ -880,7 +884,6 @@ void BitcoinGUI::setNumBlocks(int count, int nTotalBlocks)
           QDateTime lastBlockDate = clientModel->getLastBlockDate();
           int secs = lastBlockDate.secsTo(QDateTime::currentDateTime());
           QString text;
-          // Represent time from last generated block in human readable text
           if(secs <= 0)
           {
               // Fully up to date. Leave text empty.
@@ -943,7 +946,6 @@ void BitcoinGUI::setNumBlocks(int count, int nTotalBlocks)
             tooltip = tr("Downloaded %1 blocks of transaction history.").arg(count);
         }
 
-        // Override progressBarLabel text and hide progress bar, when we have warnings to display
         if (!strStatusBarWarnings.isEmpty())
         {
             progressBarLabel->setText(strStatusBarWarnings);
@@ -967,7 +969,6 @@ void BitcoinGUI::setNumBlocks(int count, int nTotalBlocks)
 
 void BitcoinGUI::error(const QString &title, const QString &message, bool modal)
 {
-    // Report errors from network/worker thread
     if(modal)
     {
         QMessageBox::critical(this, title, message, QMessageBox::Ok, QMessageBox::Ok);
@@ -1032,8 +1033,6 @@ void BitcoinGUI::incomingTransaction(const QModelIndex & parent, int start, int 
                     .data(Qt::EditRole).toULongLong();
     if(!clientModel->inInitialBlockDownload())
     {
-        // On new transaction, make an info balloon
-        // Unless the initial block download is in progress, to prevent balloon-spam
         QString date = ttm->index(start, TransactionTableModel::Date, parent)
                         .data().toString();
         QString type = ttm->index(start, TransactionTableModel::Type, parent)
@@ -1192,6 +1191,15 @@ void BitcoinGUI::gotoHyperfilePage()
 {
     hyperfileAction->setChecked(true);
     centralWidget->setCurrentWidget(hyperfilePage);
+
+    exportAction->setEnabled(false);
+    disconnect(exportAction, SIGNAL(triggered()), 0, 0);
+}
+
+void BitcoinGUI::gotoStakingPage()
+{
+    stakingAction->setChecked(true);
+    centralWidget->setCurrentWidget(stakingPage);
 
     exportAction->setEnabled(false);
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
@@ -1476,7 +1484,6 @@ void BitcoinGUI::unlockWallet()
 {
     if(!walletModel)
         return;
-    // Unlock wallet when requested by wallet model
     if(walletModel->getEncryptionStatus() == WalletModel::Locked)
     {
         AskPassphraseDialog::Mode mode = sender() == unlockWalletAction ?
@@ -1543,7 +1550,17 @@ void BitcoinGUI::updateStakingIcon()
 {
     updateWeight();
 
-    if (nWeight && GetBoolArg("-staking", true) && !pwalletMain->IsLocked() && !vNodes.empty() && !IsInitialBlockDownload())
+    if (!pwalletMain)
+        return;
+
+    bool fHasPeers;
+    {
+        TRY_LOCK(cs_vNodes, lockNodes);
+        if (!lockNodes)
+            return; // Skip this update if lock is contended
+        fHasPeers = !vNodes.empty();
+    }
+    if (nWeight && GetBoolArg("-staking", true) && !pwalletMain->IsLocked() && fHasPeers && !IsInitialBlockDownload())
     {
         uint64_t nNetworkWeight = GetPoSKernelPS();
         unsigned nEstimateTime = (10 * nTargetSpacing) * nNetworkWeight / nWeight;
@@ -1574,12 +1591,14 @@ void BitcoinGUI::updateStakingIcon()
         labelStakingIcon->setPixmap(QIcon(":/icons/staking_off").pixmap(STATUSBAR_ICONSIZE,STATUSBAR_ICONSIZE));
         if (pwalletMain && pwalletMain->IsLocked())
             labelStakingIcon->setToolTip(tr("Not staking because wallet is locked"));
-        else if (vNodes.empty())
+        else if (!fHasPeers)
             labelStakingIcon->setToolTip(tr("Not staking because wallet is offline"));
         else if (IsInitialBlockDownload())
             labelStakingIcon->setToolTip(tr("Not staking because wallet is syncing"));
         else if (!nWeight)
             labelStakingIcon->setToolTip(tr("Not staking because you don't have mature coins<br>Coins take 10 hours to mature."));
+        else if (!GetBoolArg("-staking", true))
+            labelStakingIcon->setToolTip(tr("Not staking because staking is disabled"));
         else
             labelStakingIcon->setToolTip(tr("Not staking"));
     }

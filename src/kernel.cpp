@@ -11,6 +11,7 @@
 #include "main.h"
 #include "wallet.h"
 #include "init.h"
+#include "nullstake.h"
 
 using namespace std;
 
@@ -22,8 +23,8 @@ static std::map<int, unsigned int> mapStakeModifierCheckpoints =
         //( 0, 0x0e00670b )
         ( 100000, 0xcf12d0aa )
         ( 150000, 0xf82ed306 )
-		    ( 200000, 0xc4bdc2b5 )
-		    ( 300000, 0x277bdc9c )
+		( 200000, 0xc4bdc2b5 )
+		( 300000, 0x277bdc9c )
         ( 400000, 0x4acf11a7 )
         ( 500000, 0xe7031a9d )
         ( 600000, 0x3a2dc65d )
@@ -38,7 +39,6 @@ static std::map<int, unsigned int> mapStakeModifierCheckpoints =
         ( 2000000, 0x38a611f6 )
         ( 2080000, 0xae3db09c )
         ( 2198000, 0xd404caf7 )
-        // Stake modifier checkpoints added January 2025
         ( 2250000, 0x182e564d )
         ( 2500000, 0xd4445400 )
         ( 2750000, 0x316254f2 )
@@ -111,7 +111,10 @@ int64_t GetWeight(int64_t nIntervalBeginning, int64_t nIntervalEnd)
     // this change increases active coins participating the hash and helps
     // to secure the network when proof-of-stake difficulty is low
 
-    return min(nIntervalEnd - nIntervalBeginning - nStakeMinAge, (int64_t)nStakeMaxAge);
+    int64_t nWeight = nIntervalEnd - nIntervalBeginning - nStakeMinAge;
+    if (nWeight < 0)
+        return 0;
+    return min(nWeight, (int64_t)nStakeMaxAge);
 }
 
 // Get the last stake modifier and its generation time from a given block
@@ -131,7 +134,8 @@ static bool GetLastStakeModifier(const CBlockIndex* pindex, uint64_t& nStakeModi
 // Get selection interval section (in seconds)
 static int64_t GetStakeModifierSelectionIntervalSection(int nSection)
 {
-    assert (nSection >= 0 && nSection < 64);
+    if (nSection < 0 || nSection >= 64)
+        return 0;
     return (nModifierInterval * 63 / (63 + ((63 - nSection) * (MODIFIER_INTERVAL_RATIO - 1))));
 }
 
@@ -291,7 +295,7 @@ bool ComputeNextStakeModifier(const CBlockIndex* pindexPrev, uint64_t& nStakeMod
 
 // The stake modifier used to hash for a stake kernel is chosen as the stake
 // modifier about a selection interval later than the coin generating the kernel
-static bool GetKernelStakeModifier(uint256 hashBlockFrom, uint64_t& nStakeModifier, int& nStakeModifierHeight, int64_t& nStakeModifierTime, bool fPrintProofOfStake)
+bool GetKernelStakeModifier(uint256 hashBlockFrom, uint64_t& nStakeModifier, int& nStakeModifierHeight, int64_t& nStakeModifierTime, bool fPrintProofOfStake)
 {
     nStakeModifier = 0;
     std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashBlockFrom);
@@ -375,9 +379,12 @@ bool CheckStakeKernelHash(unsigned int nBits, const CBlock& blockFrom, unsigned 
     if (nTimeBlockFrom + nStakeMinAge > nTimeTx) // Min age requirement
         return error("CheckStakeKernelHash() : min age violation");
 
-    if (nStakeMaxAge > 0 && nStakeMaxAge != (unsigned int)-1) {
-        if (nTimeTx > nTimeBlockFrom + nStakeMaxAge)
-            return error("CheckStakeKernelHash() : max age violation");
+    if (nBestHeight >= FORK_HEIGHT_TIGHTER_DRIFT)
+    {
+        unsigned int nMaxAge = 90 * 24 * 60 * 60; // 90 days
+        if (nTimeTx > nTimeBlockFrom + nMaxAge)
+            return error("CheckStakeKernelHash() : max age violation (coin too old: %u > %u + %u)",
+                         nTimeTx, nTimeBlockFrom, nMaxAge);
     }
 
     CBigNum bnTargetPerCoinDay;
@@ -450,7 +457,63 @@ bool CheckProofOfStake(const CTransaction& tx, unsigned int nBits, uint256& hash
     if (!tx.IsCoinStake())
         return error("CheckProofOfStake() : called on non-coinstake %s", tx.GetHash().ToString().c_str());
 
-    // Kernel (input 0) must match the stake hash target per coin age (nBits)
+    if (tx.nVersion == SHIELDED_TX_VERSION_NULLSTAKE)
+    {
+        if (tx.nullstakeProof.IsNull() || tx.vShieldedSpend.empty())
+            return tx.DoS(100, error("CheckProofOfStake() : NullStake proof missing or no spends"));
+
+        int64_t nWeight = GetWeight((int64_t)tx.nullstakeProof.nBlockTimeFrom,
+                                     (int64_t)tx.nullstakeProof.nTimeTx);
+
+        if (!VerifyNullStakeKernelProof(tx.nullstakeProof, tx.vShieldedSpend[0].cv, nBits, nWeight))
+            return tx.DoS(1, error("CheckProofOfStake() : NullStake kernel proof verification failed"));
+
+        hashProofOfStake = PedersenKernelHash(tx.nullstakeProof.nStakeModifier,
+                                               tx.nullstakeProof.nBlockTimeFrom,
+                                               tx.nullstakeProof.nTxPrevOffset,
+                                               tx.nullstakeProof.nTxTimePrev,
+                                               tx.nullstakeProof.nVoutN,
+                                               tx.nullstakeProof.nTimeTx);
+        targetProofOfStake = 0;
+        return true;
+    }
+
+    if (tx.nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2)
+    {
+        if (tx.nullstakeProofV2.IsNull() || tx.vShieldedSpend.empty())
+            return tx.DoS(100, error("CheckProofOfStake() : NullStake V2 proof missing or no spends"));
+
+        if (!VerifyNullStakeKernelProofV2(tx.nullstakeProofV2, tx.vShieldedSpend[0].cv, nBits))
+            return tx.DoS(1, error("CheckProofOfStake() : NullStake V2 kernel proof verification failed"));
+
+        {
+            CDataStream ss(SER_GETHASH, 0);
+            ss << tx.nullstakeProofV2;
+            hashProofOfStake = Hash(ss.begin(), ss.end());
+        }
+        targetProofOfStake = 0;
+        return true;
+    }
+
+    if (tx.nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+    {
+        if (tx.nullstakeProofV3.IsNull() || tx.vShieldedSpend.empty())
+            return tx.DoS(100, error("CheckProofOfStake() : NullStake V3 proof missing or no spends"));
+
+        if (!VerifyNullStakeKernelProofV3(tx.nullstakeProofV3, tx.vShieldedSpend[0].cv, nBits))
+            return tx.DoS(1, error("CheckProofOfStake() : NullStake V3 kernel proof verification failed"));
+
+        {
+            CDataStream ss(SER_GETHASH, 0);
+            ss << tx.nullstakeProofV3;
+            hashProofOfStake = Hash(ss.begin(), ss.end());
+        }
+        targetProofOfStake = 0;
+        return true;
+    }
+
+    if (tx.vin.empty())
+        return error("CheckProofOfStake() : no inputs for transparent coinstake %s", tx.GetHash().ToString().c_str());
     const CTxIn& txin = tx.vin[0];
 
     // First try finding the previous transaction in database
@@ -466,6 +529,9 @@ bool CheckProofOfStake(const CTransaction& tx, unsigned int nBits, uint256& hash
             if (wit != pwalletMain->mapWallet.end())
             {
                 const CWalletTx& wtx = wit->second;
+                if (wtx.GetDepthInMainChain() < nCoinbaseMaturity)
+                    return tx.DoS(10, error("CheckProofOfStake() : SPV stake input needs %d confirmations, has %d",
+                                            nCoinbaseMaturity, wtx.GetDepthInMainChain()));
                 if (wtx.hashBlock != 0 && mapBlockIndex.count(wtx.hashBlock))
                 {
                     CBlockIndex* pindex = mapBlockIndex[wtx.hashBlock];
@@ -529,7 +595,8 @@ bool CheckCoinStakeTimestamp(int64_t nTimeBlock, int64_t nTimeTx)
 // Get stake modifier checksum
 unsigned int GetStakeModifierChecksum(const CBlockIndex* pindex)
 {
-    assert (pindex->pprev || pindex->GetBlockHash() == GetGenesisBlockHash());
+    if (!pindex->pprev && pindex->GetBlockHash() != GetGenesisBlockHash())
+        return 0;
 
     // Hash previous checksum with flags, hashProofOfStake and nStakeModifier
     CDataStream ss(SER_GETHASH, 0);
@@ -541,6 +608,8 @@ unsigned int GetStakeModifierChecksum(const CBlockIndex* pindex)
     return hashChecksum.Get64();
 }
 
+static const int MAX_CHECKPOINT_DISTANCE = 175000;
+
 // Check stake modifier hard checkpoints
 bool CheckStakeModifierCheckpoints(int nHeight, unsigned int nStakeModifierChecksum)
 {
@@ -548,5 +617,49 @@ bool CheckStakeModifierCheckpoints(int nHeight, unsigned int nStakeModifierCheck
 
     if (checkpoints.count(nHeight))
         return nStakeModifierChecksum == checkpoints[nHeight];
+
+    extern bool fRegTest;
+    if (!fTestNet && !fRegTest && !checkpoints.empty())
+    {
+        int nNearestDist = INT_MAX;
+        int nNearestHeight = 0;
+        int nLowestCheckpoint = INT_MAX;
+        int nHighestCheckpoint = 0;
+
+        for (const auto& cp : checkpoints)
+        {
+            int dist = abs(nHeight - cp.first);
+            if (dist < nNearestDist)
+            {
+                nNearestDist = dist;
+                nNearestHeight = cp.first;
+            }
+            if (cp.first < nLowestCheckpoint)
+                nLowestCheckpoint = cp.first;
+            if (cp.first > nHighestCheckpoint)
+                nHighestCheckpoint = cp.first;
+        }
+
+        if (nHeight >= nLowestCheckpoint && nHeight <= nHighestCheckpoint && nNearestDist > MAX_CHECKPOINT_DISTANCE)
+        {
+            return error("CheckStakeModifierCheckpoints() : block height %d is %d blocks from nearest "
+                         "checkpoint (%d), exceeds max distance %d — potential stake modifier manipulation",
+                         nHeight, nNearestDist, nNearestHeight, MAX_CHECKPOINT_DISTANCE);
+        }
+
+        if (nHeight > nHighestCheckpoint && nNearestDist > MAX_CHECKPOINT_DISTANCE)
+        {
+            static int64_t nLastWarnTime = 0;
+            int64_t nNow = GetTime();
+            if (nNow - nLastWarnTime > 600)
+            {
+                printf("WARNING: Block height %d is %d blocks from nearest stake modifier checkpoint (%d). "
+                       "Consider adding denser checkpoints for security.\n",
+                       nHeight, nNearestDist, nNearestHeight);
+                nLastWarnTime = nNow;
+            }
+        }
+    }
+
     return true;
 }

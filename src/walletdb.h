@@ -9,6 +9,7 @@
 #include "base58.h"
 #include "stealth.h"
 #include "ringsig.h"
+#include "shielded.h"
 
 class CKeyPool;
 class CAccount;
@@ -167,6 +168,23 @@ public:
 
 };
 
+class CShieldedNoteData
+{
+public:
+    CShieldedNote note;
+    bool fSpent;
+    int nHeight;
+
+    CShieldedNoteData() : fSpent(false), nHeight(0) {}
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(note);
+        READWRITE(fSpent);
+        READWRITE(nHeight);
+    )
+};
+
 /** Access to the wallet database (wallet.dat) */
 class CWalletDB : public CDB
 {
@@ -314,6 +332,57 @@ public:
         return Read(std::make_pair(std::string("sxAddr"), sxAddr.scan_pubkey), sxAddr);
     }
 
+    bool WriteShieldedKey(const CShieldedPaymentAddress& addr, const CShieldedSpendingKey& key)
+    {
+        nWalletDBUpdated++;
+        return Write(std::make_pair(std::string("shkey"), addr), key, true);
+    }
+
+    bool EraseShieldedKey(const CShieldedPaymentAddress& addr)
+    {
+        nWalletDBUpdated++;
+        return Erase(std::make_pair(std::string("shkey"), addr));
+    }
+
+    bool WriteShieldedViewingKey(const CShieldedPaymentAddress& addr, const CShieldedIncomingViewingKey& ivk)
+    {
+        nWalletDBUpdated++;
+        return Write(std::make_pair(std::string("shvk"), addr), ivk, true);
+    }
+
+    bool EraseShieldedViewingKey(const CShieldedPaymentAddress& addr)
+    {
+        nWalletDBUpdated++;
+        return Erase(std::make_pair(std::string("shvk"), addr));
+    }
+
+    bool WriteShieldedNote(const uint256& txhash, uint32_t nPosition,
+                           const CShieldedNote& note, bool fSpent, int nHeight)
+    {
+        nWalletDBUpdated++;
+        CShieldedNoteData data;
+        data.note = note;
+        data.fSpent = fSpent;
+        data.nHeight = nHeight;
+        return Write(std::make_pair(std::string("shnote"), std::make_pair(txhash, nPosition)), data, true);
+    }
+
+    bool EraseShieldedNote(const uint256& txhash, uint32_t nPosition)
+    {
+        nWalletDBUpdated++;
+        return Erase(std::make_pair(std::string("shnote"), std::make_pair(txhash, nPosition)));
+    }
+
+    bool WriteShieldedNoteSpent(const uint256& txhash, uint32_t nPosition, bool fSpent)
+    {
+        CShieldedNoteData data;
+        if (!Read(std::make_pair(std::string("shnote"), std::make_pair(txhash, nPosition)), data))
+            return false;
+        data.fSpent = fSpent;
+        nWalletDBUpdated++;
+        return Write(std::make_pair(std::string("shnote"), std::make_pair(txhash, nPosition)), data, true);
+    }
+
 	bool WriteAdrenalineNodeConfig(std::string sAlias, const CAdrenalineNodeConfig& nodeConfig);
     bool ReadAdrenalineNodeConfig(std::string sAlias, CAdrenalineNodeConfig& nodeConfig);
     bool EraseAdrenalineNodeConfig(std::string sAlias);
@@ -404,6 +473,18 @@ public:
     bool WriteMinVersion(int nVersion)
     {
         return Write(std::string("minversion"), nVersion);
+    }
+
+    bool WriteColdStakeDelegation(const uint256& hashOwner, const CColdStakeDelegation& deleg)
+    {
+        nWalletDBUpdated++;
+        return Write(std::make_pair(std::string("csdeleg"), hashOwner), deleg, true);
+    }
+
+    bool EraseColdStakeDelegation(const uint256& hashOwner)
+    {
+        nWalletDBUpdated++;
+        return Erase(std::make_pair(std::string("csdeleg"), hashOwner));
     }
 
     bool ReadAccount(const std::string& strAccount, CAccount& account);

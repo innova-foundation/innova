@@ -9,6 +9,7 @@
 #include "guiutil.h"
 #include "guiconstants.h"
 #include "marketbrowser.h"
+#include "main.h"
 #include <curl/curl.h>
 
 #include <QAbstractItemDelegate>
@@ -16,7 +17,7 @@
 #include <QTimer>
 #include <QDebug>
 #include <QScrollArea>
-//#include <QScroller>
+#include <QtConcurrent/QtConcurrent>
 
 #define DECORATION_SIZE 36
 #define NUM_ITEMS 7
@@ -118,25 +119,27 @@ OverviewPage::OverviewPage(QWidget *parent) :
     currentUnconfirmedBalance(-1),
     currentImmatureBalance(-1),
     txdelegate(new TxViewDelegate()),
-    filter(0)
+    filter(0),
+    priceFetchInProgress(false)
 {
     ui->setupUi(this);
 
+    // Set up async price fetcher
+    priceWatcher = new QFutureWatcher<PriceData>(this);
+    connect(priceWatcher, SIGNAL(finished()), this, SLOT(onPricesFetched()));
 
+    PriceRequest();
+    connect(ui->refreshButton, SIGNAL(pressed()), this, SLOT(PriceRequest()));
 
-  PriceRequest(); //Segfault 20.04/18.04
-	//QObject::connect(&m_nam, SIGNAL(finished(QNetworkReply*)), this, SLOT(parseNetworkResponse(QNetworkReply*)));
-	connect(ui->refreshButton, SIGNAL(pressed()), this, SLOT( PriceRequest()));
-
-	//Refresh the Est. Balances and News automatically
-	  refreshbtnTimer = new QTimer(this);
-    connect(refreshbtnTimer, SIGNAL(timeout()), this, SLOT( PriceRequest()));
+    // Refresh the Est. Balances and News automatically
+    refreshbtnTimer = new QTimer(this);
+    connect(refreshbtnTimer, SIGNAL(timeout()), this, SLOT(PriceRequest()));
     refreshbtnTimer->start(120000); // 120 second timer
 
-    //Handle refreshing updateDisplayUnit() more often instead of every tx change
+    // Handle refreshing updateDisplayUnit() more often instead of every tx change
     updateDisplayTimer = new QTimer(this);
-    connect(updateDisplayTimer, SIGNAL(timeout()), this, SLOT( updateDisplayUnit()));
-    updateDisplayTimer->start(120000); // Multithreaded, when a thread is available refresh all overview displays
+    connect(updateDisplayTimer, SIGNAL(timeout()), this, SLOT(updateDisplayUnit()));
+    updateDisplayTimer->start(120000);
 
     // Recent transactions
     ui->listTransactions->setItemDelegate(txdelegate);
@@ -160,31 +163,31 @@ static size_t PriceWriteCallback(void *contents, size_t size, size_t nmemb, void
     return size * nmemb;
 }
 
-void OverviewPage::PriceRequest()
+PriceData OverviewPage::fetchPricesWorker()
 {
-    CURLM *multi_handle;
+    PriceData result;
+
+    std::string urls[7] = {
+        BaseURL.toStdString(),
+        BaseURL2.toStdString(),
+        BaseURL3.toStdString(),
+        BaseURL4.toStdString(),
+        BaseURL5.toStdString(),
+        BaseURL6.toStdString(),
+        BaseURL7.toStdString()
+    };
+
+    CURLM *multi_handle = curl_multi_init();
+    if (!multi_handle)
+        return result;
+
     CURL *handles[7];
     std::string buffers[7];
-
-    std::string urlStrings[7];
-    urlStrings[0] = BaseURL.toStdString();
-    urlStrings[1] = BaseURL2.toStdString();
-    urlStrings[2] = BaseURL3.toStdString();
-    urlStrings[3] = BaseURL4.toStdString();
-    urlStrings[4] = BaseURL5.toStdString();
-    urlStrings[5] = BaseURL6.toStdString();
-    urlStrings[6] = BaseURL7.toStdString();
-
-    multi_handle = curl_multi_init();
-    if (!multi_handle) {
-        qWarning("curl_multi_init() failed");
-        return;
-    }
 
     for (int i = 0; i < 7; i++) {
         handles[i] = curl_easy_init();
         if (handles[i]) {
-            curl_easy_setopt(handles[i], CURLOPT_URL, urlStrings[i].c_str());
+            curl_easy_setopt(handles[i], CURLOPT_URL, urls[i].c_str());
             curl_easy_setopt(handles[i], CURLOPT_WRITEFUNCTION, PriceWriteCallback);
             curl_easy_setopt(handles[i], CURLOPT_WRITEDATA, &buffers[i]);
             curl_easy_setopt(handles[i], CURLOPT_SSL_VERIFYPEER, 0);
@@ -200,59 +203,18 @@ void OverviewPage::PriceRequest()
     while (still_running) {
         int numfds;
         CURLMcode mc = curl_multi_wait(multi_handle, NULL, 0, 1000, &numfds);
-        if (mc != CURLM_OK) {
-            qWarning("curl_multi_wait() failed");
+        if (mc != CURLM_OK)
             break;
-        }
         curl_multi_perform(multi_handle, &still_running);
     }
 
-    // USD price
-    if (!buffers[0].empty()) {
-        QString innova = QString::fromStdString(buffers[0]);
-        innovax = innova.toDouble();
-        dollarg = QString::number(innovax, 'f', 2);
-    }
-
-    // BTC price
-    if (!buffers[1].empty()) {
-        QString innbtc = QString::fromStdString(buffers[1]);
-        innbtcx = innbtc.toDouble();
-        bitcoing = QString::number(innbtcx, 'f', 8);
-    }
-
-    // News feed
-    if (!buffers[2].empty()) {
-        innnewsfeed = QString::fromStdString(buffers[2]);
-    }
-
-    // EUR price
-    if (!buffers[3].empty()) {
-        QString inneur = QString::fromStdString(buffers[3]);
-        inneurx = inneur.toDouble();
-        eurog = QString::number(inneurx, 'f', 4);
-    }
-
-    // GBP price
-    if (!buffers[4].empty()) {
-        QString inngbp = QString::fromStdString(buffers[4]);
-        inngbpx = inngbp.toDouble();
-        poundg = QString::number(inngbpx, 'f', 6);
-    }
-
-    // RUB price
-    if (!buffers[5].empty()) {
-        QString innrub = QString::fromStdString(buffers[5]);
-        innrubx = innrub.toDouble();
-        rubleg = QString::number(innrubx, 'f', 10);
-    }
-
-    // JPY price
-    if (!buffers[6].empty()) {
-        QString innjpy = QString::fromStdString(buffers[6]);
-        innjpyx = innjpy.toDouble();
-        yeng = QString::number(innjpyx, 'f', 12);
-    }
+    if (!buffers[0].empty()) result.usd = QString::fromStdString(buffers[0]).toDouble();
+    if (!buffers[1].empty()) result.btc = QString::fromStdString(buffers[1]).toDouble();
+    if (!buffers[2].empty()) result.newsfeed = QString::fromStdString(buffers[2]);
+    if (!buffers[3].empty()) result.eur = QString::fromStdString(buffers[3]).toDouble();
+    if (!buffers[4].empty()) result.gbp = QString::fromStdString(buffers[4]).toDouble();
+    if (!buffers[5].empty()) result.rub = QString::fromStdString(buffers[5]).toDouble();
+    if (!buffers[6].empty()) result.jpy = QString::fromStdString(buffers[6]).toDouble();
 
     for (int i = 0; i < 7; i++) {
         if (handles[i]) {
@@ -261,6 +223,56 @@ void OverviewPage::PriceRequest()
         }
     }
     curl_multi_cleanup(multi_handle);
+
+    result.success = true;
+    return result;
+}
+
+void OverviewPage::PriceRequest()
+{
+    if (priceFetchInProgress)
+        return; // Don't stack requests
+
+    priceFetchInProgress = true;
+    QFuture<PriceData> future = QtConcurrent::run(fetchPricesWorker);
+    priceWatcher->setFuture(future);
+}
+
+void OverviewPage::onPricesFetched()
+{
+    priceFetchInProgress = false;
+
+    PriceData data = priceWatcher->result();
+    if (!data.success)
+        return;
+
+    if (data.usd > 0) {
+        innovax = data.usd;
+        dollarg = QString::number(innovax, 'f', 2);
+    }
+    if (data.btc > 0) {
+        innbtcx = data.btc;
+        bitcoing = QString::number(innbtcx, 'f', 8);
+    }
+    if (!data.newsfeed.isEmpty()) {
+        innnewsfeed = data.newsfeed;
+    }
+    if (data.eur > 0) {
+        inneurx = data.eur;
+        eurog = QString::number(inneurx, 'f', 4);
+    }
+    if (data.gbp > 0) {
+        inngbpx = data.gbp;
+        poundg = QString::number(inngbpx, 'f', 6);
+    }
+    if (data.rub > 0) {
+        innrubx = data.rub;
+        rubleg = QString::number(innrubx, 'f', 10);
+    }
+    if (data.jpy > 0) {
+        innjpyx = data.jpy;
+        yeng = QString::number(innjpyx, 'f', 12);
+    }
 }
 
 void OverviewPage::handleTransactionClicked(const QModelIndex &index)
@@ -276,6 +288,8 @@ OverviewPage::~OverviewPage()
 
 void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake, qint64 unconfirmedBalance, qint64 immatureBalance, qint64 watchOnlyBalance, qint64 watchUnconfBalance, qint64 watchImmatureBalance)
 {
+    if (!model || !model->getOptionsModel())
+        return;
     int unit = model->getOptionsModel()->getDisplayUnit();
     int unitdBTC = BitcoinUnits::dBTC;
     currentBalance = balance;
@@ -293,6 +307,8 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
     ui->labelLocked->setText(BitcoinUnits::formatWithUnit(unit, lockedbalance));
 
     ui->labelStake->setText(BitcoinUnits::formatWithUnit(unit, stake));
+    ui->labelStake->setToolTip(tr("Stake balance"));
+
     ui->labelUnconfirmed->setText(BitcoinUnits::formatWithUnit(unit, unconfirmedBalance));
     ui->labelImmature->setText(BitcoinUnits::formatWithUnit(unit, immatureBalance));
     ui->labelTotal->setText(BitcoinUnits::formatWithUnit(unit, totalBalance));

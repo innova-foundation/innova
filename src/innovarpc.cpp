@@ -25,6 +25,8 @@
 #include <boost/shared_ptr.hpp>
 #include <boost/version.hpp>
 #include <list>
+#include <deque>
+#include <limits>
 
 #if BOOST_VERSION >= 107300
 #include <boost/bind/bind.hpp>
@@ -106,8 +108,15 @@ void RPCTypeCheck(const Object& o,
 int64_t AmountFromValue(const Value& value)
 {
     double dAmount = value.get_real();
-    if (dAmount <= 0.0 || dAmount > MAX_MONEY)
+    static const double dMaxCoins = (double)MAX_MONEY / (double)COIN;
+
+    if (dAmount <= 0.0 || dAmount > dMaxCoins)
         throw JSONRPCError(RPC_TYPE_ERROR, "Invalid amount");
+
+    static const double dSafeMax = (double)std::numeric_limits<int64_t>::max() / (double)COIN;
+    if (dAmount > dSafeMax)
+        throw JSONRPCError(RPC_TYPE_ERROR, "Amount too large");
+
     int64_t nAmount = roundint64(dAmount * COIN);
     if (!MoneyRange(nAmount))
         throw JSONRPCError(RPC_TYPE_ERROR, "Invalid amount");
@@ -239,6 +248,13 @@ Value help(const Array& params, bool fHelp)
     if (params.size() > 0)
         strCommand = params[0].get_str();
 
+    if (strCommand.empty() && GetBoolArg("-disablerpchelp", false))
+    {
+        return "Full command listing disabled for security.\n"
+               "Use 'help <command>' for specific command help.\n"
+               "Contact your administrator for available commands.";
+    }
+
     return tableRPC.help(strCommand);
 }
 
@@ -336,6 +352,8 @@ static const CRPCCommand vRPCCommands[] =
     { "listaccounts",           &listaccounts,           false,  false },
     { "settxfee",               &settxfee,               false,  false },
     { "setgenerate",            &setgenerate,            true,   false },
+    { "startmining",            &startmining,            true,   false },
+    { "stopmining",             &stopmining,             true,   false },
     { "getblocktemplate",       &getblocktemplate,       true,   false },
     { "submitblock",            &submitblock,            false,  false },
     { "listsinceblock",         &listsinceblock,         false,  false },
@@ -402,7 +420,7 @@ static const CRPCCommand vRPCCommands[] =
     { "masternode",           	&masternode,             true,   false},
     { "collateralnode",           &collateralnode,           true,   false},
 
-    /* Enhanced CoinJoin Mixing */
+    /* NullSend Mixing */
     { "startmixing",            &startmixing,            false,  true},
     { "stopmixing",             &stopmixing,             false,  false},
     { "getmixingstatus",        &getmixingstatus,        true,   false},
@@ -436,6 +454,36 @@ static const CRPCCommand vRPCCommands[] =
     { "name_show",              &name_show,              false,  false },
     { "name_debug",             &name_debug,             false,  false },
     { "name_count",             &name_count,             false,  false },
+
+    /* Shielded Transaction Commands */
+    { "z_getnewaddress",        &z_getnewaddress,        false,  true },
+    { "z_listaddresses",        &z_listaddresses,        true,   false },
+    { "z_getbalance",           &z_getbalance,           true,   false },
+    { "z_gettotalbalance",      &z_gettotalbalance,      true,   false },
+    { "z_shield",               &z_shield,               false,  true },
+    { "z_unshield",             &z_unshield,             false,  true },
+    { "z_listunspent",          &z_listunspent,          true,   false },
+    { "z_validateaddress",      &z_validateaddress,      true,   false },
+    { "z_exportkey",            &z_exportkey,            false,  true },
+    { "z_importkey",            &z_importkey,            false,  true },
+    { "z_exportviewingkey",     &z_exportviewingkey,     false,  true },
+    { "z_importviewingkey",     &z_importviewingkey,     false,  true },
+    { "z_getshieldedinfo",      &z_getshieldedinfo,      true,   false },
+    { "z_migrateanon",          &z_migrateanon,          false,  true },
+    { "z_send",                 &z_send,                 false,  true },
+    { "z_nullsend",             &z_nullsend,             false,  true },
+    { "z_nullsendinfo",         &z_nullsendinfo,         true,   false },
+
+    /* Cold Staking Delegation Commands (NullStake V3) */
+    { "n_delegatestake",        &n_delegatestake,        false,  true },
+    { "n_importdelegation",     &n_importdelegation,     false,  true },
+    { "n_revokecoldstake",      &n_revokecoldstake,      false,  true },
+    { "n_coldstakeinfo",        &n_coldstakeinfo,        true,   false },
+
+    /* Silent Payment Commands */
+    { "sp_getnewaddress",       &sp_getnewaddress,       false,  true },
+    { "sp_listaddresses",       &sp_listaddresses,       true,   false },
+    { "sp_send",                &sp_send,                false,  true },
 
 #ifdef USE_IPFS
     /* Hyperfile / IPFS commands */
@@ -512,7 +560,7 @@ static string HTTPReply(int nStatus, const string& strMsg, bool keepalive)
     if (nStatus == HTTP_UNAUTHORIZED)
         return strprintf("HTTP/1.0 401 Authorization Required\r\n"
             "Date: %s\r\n"
-            "Server: innova-json-rpc/%s\r\n"
+            "Server: innova-json-rpc\r\n"
             "WWW-Authenticate: Basic realm=\"jsonrpc\"\r\n"
             "Content-Type: text/html\r\n"
             "Content-Length: 296\r\n"
@@ -525,7 +573,7 @@ static string HTTPReply(int nStatus, const string& strMsg, bool keepalive)
             "<META HTTP-EQUIV='Content-Type' CONTENT='text/html; charset=ISO-8859-1'>\r\n"
             "</HEAD>\r\n"
             "<BODY><H1>401 Unauthorized.</H1></BODY>\r\n"
-            "</HTML>\r\n", rfc1123Time().c_str(), FormatFullVersion().c_str());
+            "</HTML>\r\n", rfc1123Time().c_str());
     const char *cStatus;
          if (nStatus == HTTP_OK) cStatus = "OK";
     else if (nStatus == HTTP_BAD_REQUEST) cStatus = "Bad Request";
@@ -539,7 +587,10 @@ static string HTTPReply(int nStatus, const string& strMsg, bool keepalive)
             "Connection: %s\r\n"
             "Content-Length: %" PRIszu"\r\n"
             "Content-Type: application/json\r\n"
-            "Server: innova-json-rpc/%s\r\n"
+            "Server: innova-json-rpc\r\n"
+            "X-Content-Type-Options: nosniff\r\n"
+            "X-Frame-Options: DENY\r\n"
+            "Content-Security-Policy: default-src 'none'\r\n"
             "\r\n"
             "%s",
         nStatus,
@@ -547,7 +598,6 @@ static string HTTPReply(int nStatus, const string& strMsg, bool keepalive)
         rfc1123Time().c_str(),
         keepalive ? "keep-alive" : "close",
         strMsg.size(),
-        FormatFullVersion().c_str(),
         strMsg.c_str());
 }
 
@@ -637,12 +687,31 @@ int ReadHTTP(std::basic_istream<char>& stream, map<string, string>& mapHeadersRe
 bool HTTPAuthorized(map<string, string>& mapHeaders)
 {
     string strAuth = mapHeaders["authorization"];
-    if (strAuth.size() < 6 || strAuth.substr(0,6) != "Basic ")
-        return false;
-    string strUserPass64 = strAuth.substr(6);
+
+    bool fValidFormat = true;
+    string strUserPass64;
+
+    if (strAuth.size() < 6)
+    {
+        fValidFormat = false;
+        strUserPass64 = "ZHVtbXk6ZHVtbXk=";  // base64("dummy:dummy")
+    }
+    else if (strAuth.substr(0, 6) != "Basic ")
+    {
+        fValidFormat = false;
+        strUserPass64 = "ZHVtbXk6ZHVtbXk=";
+    }
+    else
+    {
+        strUserPass64 = strAuth.substr(6);
+    }
+
     boost::trim(strUserPass64);
     string strUserPass = DecodeBase64(strUserPass64);
-    return TimingResistantEqual(strUserPass, strRPCUserColonPass);
+
+    bool fCredentialsMatch = TimingResistantEqual(strUserPass, strRPCUserColonPass);
+
+    return fValidFormat && fCredentialsMatch;
 }
 
 //
@@ -1220,7 +1289,9 @@ void ThreadRPCServer3(void* parg)
         }
         if (!HTTPAuthorized(mapHeaders))
         {
+            static CCriticalSection cs_authAttempts;
             static std::map<std::string, std::pair<int, int64_t>> mapFailedAttempts;
+            LOCK(cs_authAttempts);
             std::string strPeer = conn->peer_address_to_string();
             int64_t nNow = GetTime();
             auto& attemptInfo = mapFailedAttempts[strPeer];
@@ -1229,35 +1300,81 @@ void ThreadRPCServer3(void* parg)
             attemptInfo.first++;
             attemptInfo.second = nNow;
             printf("ThreadRPCServer incorrect password attempt %d from %s\n", attemptInfo.first, strPeer.c_str());
-            int nDelay = std::min(500 * (1 << std::min(attemptInfo.first - 1, 6)), 30000);
+            static const int CONSTANT_AUTH_DELAY_MS = 2000;
+            int nDelay = CONSTANT_AUTH_DELAY_MS;
+            if (attemptInfo.first > 3)
+                nDelay = std::min(CONSTANT_AUTH_DELAY_MS * (1 << std::min(attemptInfo.first - 3, 5)), 60000);
             MilliSleep(nDelay);
             conn->stream() << HTTPReply(HTTP_UNAUTHORIZED, "", false) << std::flush;
             break;
         }
         {
             static CCriticalSection cs_rpcRateLimit;
-            static std::map<std::string, std::pair<int, int64_t>> mapRPCRateLimit;
+            static std::map<std::string, std::deque<int64_t>> mapRPCRequestTimes;
             LOCK(cs_rpcRateLimit);
 
             std::string strPeer = conn->peer_address_to_string();
             int64_t nNow = GetTime();
-            int nMaxPerSec = GetArg("-rpcratelimit", 100);
+            int nMaxPerWindow = GetArg("-rpcratelimit", 100);  // Max requests per window
+            static const int64_t RATE_LIMIT_WINDOW = 10;  // 10-second sliding window
 
-            auto& rateInfo = mapRPCRateLimit[strPeer];
-            if (nNow != rateInfo.second)
+            auto& requestTimes = mapRPCRequestTimes[strPeer];
+
+            while (!requestTimes.empty() && requestTimes.front() < nNow - RATE_LIMIT_WINDOW)
             {
-                rateInfo.first = 0;
-                rateInfo.second = nNow;
+                requestTimes.pop_front();
             }
-            rateInfo.first++;
 
-            if (nMaxPerSec > 0 && rateInfo.first > nMaxPerSec)
+            int nMaxInWindow = nMaxPerWindow * RATE_LIMIT_WINDOW;  // e.g., 100/sec * 10sec = 1000 max
+            if (nMaxPerWindow > 0 && (int)requestTimes.size() >= nMaxInWindow)
             {
-                printf("RPC rate limit exceeded for %s (%d req/s, limit %d)\n",
-                       strPeer.c_str(), rateInfo.first, nMaxPerSec);
+                printf("RPC rate limit exceeded for %s (%d requests in %d seconds, limit %d)\n",
+                       strPeer.c_str(), (int)requestTimes.size(), (int)RATE_LIMIT_WINDOW, nMaxInWindow);
                 conn->stream() << HTTPReply(HTTP_INTERNAL_SERVER_ERROR,
                     "{\"result\":null,\"error\":{\"code\":-32600,\"message\":\"Rate limit exceeded\"},\"id\":null}\n",
                     fRun) << std::flush;
+                break;
+            }
+
+            requestTimes.push_back(nNow);
+
+            static int nCleanupCounter = 0;
+            if (++nCleanupCounter >= 100)
+            {
+                nCleanupCounter = 0;
+                for (auto it = mapRPCRequestTimes.begin(); it != mapRPCRequestTimes.end(); )
+                {
+                    while (!it->second.empty() && it->second.front() < nNow - RATE_LIMIT_WINDOW * 2)
+                        it->second.pop_front();
+                    if (it->second.empty())
+                        it = mapRPCRequestTimes.erase(it);
+                    else
+                        ++it;
+                }
+            }
+        }
+
+        if (mapHeaders.count("origin") > 0)
+        {
+            std::string strOrigin = mapHeaders["origin"];
+            std::string strOriginLower = strOrigin;
+            std::transform(strOriginLower.begin(), strOriginLower.end(), strOriginLower.begin(), ::tolower);
+            bool fAllowedOrigin = false;
+            if (strOriginLower.find("http://127.0.0.1") == 0 ||
+                strOriginLower.find("https://127.0.0.1") == 0 ||
+                strOriginLower.find("http://localhost") == 0 ||
+                strOriginLower.find("https://localhost") == 0 ||
+                strOriginLower.find("http://[::1]") == 0 ||
+                strOriginLower.find("https://[::1]") == 0)
+            {
+                fAllowedOrigin = true;
+            }
+            if (!fAllowedOrigin)
+            {
+                printf("RPC CSRF protection: rejected request with Origin: %s\n", strOrigin.c_str());
+                conn->stream() << HTTPReply(HTTP_FORBIDDEN,
+                    "{\"result\":null,\"error\":{\"code\":-32600,\"message\":\"CSRF protection: invalid origin\"},\"id\":null}\n",
+                    false) << std::flush;
                 break;
             }
         }
@@ -1416,8 +1533,10 @@ Object CallRPC(const string& strMethod, const Array& params)
 
 
 template<typename T>
-void ConvertTo(Value& value, bool fAllowNull=false)
+void ConvertTo(Value& value, bool fAllowNull=false, int nDepth=0)
 {
+    if (nDepth > 3)
+        throw runtime_error("ConvertTo: maximum JSON nesting depth exceeded");
     if (fAllowNull && value.type() == null_type)
         return;
     if (value.type() == str_type)
@@ -1427,7 +1546,7 @@ void ConvertTo(Value& value, bool fAllowNull=false)
         string strJSON = value.get_str();
         if (!read_string(strJSON, value2))
             throw runtime_error(string("Error parsing JSON:")+strJSON);
-        ConvertTo<T>(value2, fAllowNull);
+        ConvertTo<T>(value2, fAllowNull, nDepth + 1);
         value = value2;
     }
     else
@@ -1451,6 +1570,7 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "stop"                   && n > 0) ConvertTo<bool>(params[0]);
     if (strMethod == "setgenerate"            && n > 0) ConvertTo<bool>(params[0]);
     if (strMethod == "setgenerate"            && n > 1) ConvertTo<int64_t>(params[1]);
+    if (strMethod == "startmining"           && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "delegatestake"          && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "listcoldutxos"          && n > 0) ConvertTo<bool>(params[0]);
     if (strMethod == "sendtoaddress"          && n > 1) ConvertTo<double>(params[1]);
@@ -1489,6 +1609,18 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "walletpassphrase"       && n > 2) ConvertTo<bool>(params[2]);
     if (strMethod == "getblocktemplate"       && n > 0) ConvertTo<Object>(params[0]);
     if (strMethod == "listsinceblock"         && n > 1) ConvertTo<int64_t>(params[1]);
+
+    if (strMethod == "z_shield"              && n > 1) ConvertTo<double>(params[1]);
+    if (strMethod == "z_unshield"            && n > 2) ConvertTo<double>(params[2]);
+    if (strMethod == "z_send"                && n > 2) ConvertTo<double>(params[2]);
+    if (strMethod == "z_send"                && n > 3) ConvertTo<int64_t>(params[3]);
+    if (strMethod == "n_delegatestake"       && n > 1) ConvertTo<double>(params[1]);
+    if (strMethod == "z_nullsend"            && n > 1) ConvertTo<double>(params[1]);
+    if (strMethod == "z_nullsend"            && n > 2) ConvertTo<int64_t>(params[2]);
+    if (strMethod == "z_nullsend"            && n > 3) ConvertTo<int64_t>(params[3]);
+    if (strMethod == "z_nullsend"            && n > 4) ConvertTo<int64_t>(params[4]);
+
+    if (strMethod == "sp_send"                && n > 1) ConvertTo<double>(params[1]);
 
     if (strMethod == "sendalert"              && n > 2) ConvertTo<int64_t>(params[2]);
     if (strMethod == "sendalert"              && n > 3) ConvertTo<int64_t>(params[3]);
@@ -1538,6 +1670,7 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "createmultisig"         && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "createmultisig"         && n > 1) ConvertTo<Array>(params[1]);
 
+    if (strMethod == "sendtostealthaddress"   && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "scanforalltxns"         && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "scanforstealthtxns"     && n > 0) ConvertTo<int64_t>(params[0]);
 

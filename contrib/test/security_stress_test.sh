@@ -123,7 +123,6 @@ rpc2() {
 test_double_spend_prevention() {
     section "Double-Spend Prevention"
 
-    # Get a UTXO
     local utxo_list=$(rpc1 listunspent 1 9999999 || echo "[]")
     local txid=$(echo "$utxo_list" | tr '\n' ' ' | grep -o '"txid" *: *"[a-f0-9]\{64\}"' | head -1 | grep -o '[a-f0-9]\{64\}')
     local vout=$(echo "$utxo_list" | tr '\n' ' ' | grep -o '"vout" *: *[0-9]*' | head -1 | grep -o '[0-9]*$')
@@ -136,7 +135,6 @@ test_double_spend_prevention() {
     local addr1=$(rpc1 getnewaddress || echo "")
     local addr2=$(rpc1 getnewaddress || echo "")
 
-    # Create first raw transaction spending the UTXO
     local raw1=$(rpc1 createrawtransaction "[{\"txid\":\"$txid\",\"vout\":$vout}]" "{\"$addr1\":49.99}" 2>/dev/null || echo "")
     local raw2=$(rpc1 createrawtransaction "[{\"txid\":\"$txid\",\"vout\":$vout}]" "{\"$addr2\":49.99}" 2>/dev/null || echo "")
 
@@ -145,7 +143,6 @@ test_double_spend_prevention() {
         return 0
     fi
 
-    # Sign both
     local signed1=$(rpc1 signrawtransaction "$raw1" || echo "")
     local hex1=$(echo "$signed1" | tr '\n' ' ' | grep -o '"hex" *: *"[a-f0-9]*"' | head -1 | sed 's/.*: *"//;s/"$//')
 
@@ -157,7 +154,6 @@ test_double_spend_prevention() {
         return 0
     fi
 
-    # Send first transaction
     local result1=$(rpc1 sendrawtransaction "$hex1" 2>/dev/null || echo "")
     if [ -n "$result1" ] && [ ${#result1} -eq 64 ]; then
         success "First transaction accepted: ${result1:0:16}..."
@@ -166,7 +162,6 @@ test_double_spend_prevention() {
         return 0
     fi
 
-    # Try to send the double-spend
     local result2=$(rpc1_err sendrawtransaction "$hex2" 2>&1 || echo "ERROR")
     if echo "$result2" | grep -qi "error\|conflict\|already\|inputs.*spent\|missing\|double"; then
         success "Double-spend correctly REJECTED"
@@ -178,11 +173,9 @@ test_double_spend_prevention() {
         fi
     fi
 
-    # Mine to confirm first tx
     rpc1 setgenerate true 1 >/dev/null 2>&1 || true
     sleep 1
 
-    # Try double-spend after confirmation
     local result3=$(rpc1_err sendrawtransaction "$hex2" 2>&1 || echo "ERROR")
     if echo "$result3" | grep -qi "error\|conflict\|already\|inputs.*spent\|missing\|double"; then
         success "Post-confirmation double-spend rejected"
@@ -194,7 +187,6 @@ test_double_spend_prevention() {
 test_invalid_transaction_rejection() {
     section "Invalid Transaction Rejection"
 
-    # Malformed raw transaction (random hex)
     local result=$(rpc1_err sendrawtransaction "deadbeef0123456789abcdef" 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|deserialization\|invalid\|decode"; then
         success "Malformed transaction hex rejected"
@@ -202,7 +194,6 @@ test_invalid_transaction_rejection() {
         warn "Malformed tx response: ${result:0:80}"
     fi
 
-    # Empty transaction
     result=$(rpc1_err sendrawtransaction "" 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|invalid\|parameter"; then
         success "Empty transaction rejected"
@@ -210,7 +201,6 @@ test_invalid_transaction_rejection() {
         warn "Empty tx response: ${result:0:80}"
     fi
 
-    # Decode malformed transaction
     result=$(rpc1_err decoderawtransaction "0000000000" 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|decode\|invalid"; then
         success "Malformed decode correctly rejected"
@@ -222,7 +212,6 @@ test_invalid_transaction_rejection() {
 test_invalid_address_handling() {
     section "Invalid Address Handling"
 
-    # Send to empty address
     local result=$(rpc1_err sendtoaddress "" 10.0 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|invalid"; then
         success "Empty address rejected"
@@ -230,7 +219,6 @@ test_invalid_address_handling() {
         warn "Empty address response: ${result:0:80}"
     fi
 
-    # Send to random string
     result=$(rpc1_err sendtoaddress "NOTAVALIDADDRESS12345" 10.0 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|invalid"; then
         success "Random string address rejected"
@@ -238,7 +226,6 @@ test_invalid_address_handling() {
         warn "Random string address response: ${result:0:80}"
     fi
 
-    # Import invalid private key
     result=$(rpc1_err importprivkey "NOTAVALIDPRIVATEKEY" "test" false 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|invalid"; then
         success "Invalid private key import rejected"
@@ -246,7 +233,6 @@ test_invalid_address_handling() {
         warn "Invalid privkey response: ${result:0:80}"
     fi
 
-    # Validate various invalid addresses
     local invalid=$(rpc1 validateaddress "1111111111111111111111111" || echo "{}")
     if echo "$invalid" | tr '\n' ' ' | grep -q '"isvalid" *: *false'; then
         success "Numeric-only address correctly invalidated"
@@ -258,7 +244,6 @@ test_overflow_and_edge_values() {
 
     local addr=$(rpc1 getnewaddress || echo "")
 
-    # Maximum coin supply exceeded
     local result=$(rpc1_err sendtoaddress "$addr" 99999999999 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|invalid\|amount\|insufficient"; then
         success "Excessive amount correctly rejected"
@@ -266,7 +251,6 @@ test_overflow_and_edge_values() {
         warn "Excessive amount response: ${result:0:80}"
     fi
 
-    # Negative amount
     result=$(rpc1_err sendtoaddress "$addr" -1 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|invalid\|negative"; then
         success "Negative amount rejected"
@@ -274,7 +258,6 @@ test_overflow_and_edge_values() {
         warn "Negative amount response: ${result:0:80}"
     fi
 
-    # Zero amount
     result=$(rpc1_err sendtoaddress "$addr" 0 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|invalid"; then
         success "Zero amount rejected"
@@ -282,7 +265,6 @@ test_overflow_and_edge_values() {
         warn "Zero amount response: ${result:0:80}"
     fi
 
-    # Very precise amount (many decimals)
     result=$(rpc1_err sendtoaddress "$addr" 0.123456789 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|invalid\|precision"; then
         success "Over-precision amount rejected"
@@ -291,7 +273,6 @@ test_overflow_and_edge_values() {
         log "Over-precision amount: ${result:0:80}"
     fi
 
-    # settxfee with negative
     result=$(rpc1_err settxfee -0.001 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|invalid"; then
         success "Negative fee rejected"
@@ -303,7 +284,6 @@ test_overflow_and_edge_values() {
 test_signature_validation() {
     section "Signature and Script Validation"
 
-    # Create a transaction, modify it, try to submit
     local utxo_list=$(rpc1 listunspent 1 9999999 || echo "[]")
     local txid=$(echo "$utxo_list" | tr '\n' ' ' | grep -o '"txid" *: *"[a-f0-9]\{64\}"' | head -1 | grep -o '[a-f0-9]\{64\}')
     local vout=$(echo "$utxo_list" | tr '\n' ' ' | grep -o '"vout" *: *[0-9]*' | head -1 | grep -o '[0-9]*$')
@@ -323,7 +303,7 @@ test_signature_validation() {
         return 0
     fi
 
-    # Tamper with the signed transaction (flip a byte in the middle)
+    # Flip a byte in the middle to tamper with the signed transaction
     local mid=$((${#hex} / 2))
     local char="${hex:$mid:1}"
     local flipped
@@ -341,7 +321,6 @@ test_signature_validation() {
         fi
     fi
 
-    # Try unsigned transaction
     local unsigned_result=$(rpc1_err sendrawtransaction "$raw" 2>&1 || echo "ERROR")
     if echo "$unsigned_result" | grep -qi "error\|invalid\|script\|signature"; then
         success "Unsigned transaction correctly rejected"
@@ -353,7 +332,6 @@ test_signature_validation() {
 test_block_validation() {
     section "Block Validation Rules"
 
-    # Get a valid block hash and verify structure
     local hash=$(rpc1 getblockhash 1 || echo "")
     if [ -z "$hash" ]; then
         warn "No blocks available for validation test"
@@ -362,7 +340,6 @@ test_block_validation() {
 
     local block=$(rpc1 getblock "$hash" || echo "")
 
-    # Verify block has required fields
     local has_hash=$(echo "$block" | tr '\n' ' ' | grep -c '"hash"')
     local has_merkle=$(echo "$block" | tr '\n' ' ' | grep -c '"merkleroot"')
     local has_time=$(echo "$block" | tr '\n' ' ' | grep -c '"time"')
@@ -376,13 +353,11 @@ test_block_validation() {
         fail "Block missing consensus fields (only $fields/5)"
     fi
 
-    # Verify genesis block immutability
     local genesis=$(rpc1 getblockhash 0 || echo "")
     if [ -n "$genesis" ] && [ ${#genesis} -ge 60 ]; then
         success "Genesis block hash retrievable"
     fi
 
-    # Query non-existent block
     local fake_hash="0000000000000000000000000000000000000000000000000000000000000001"
     local result=$(rpc1_err getblock "$fake_hash" 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|not found"; then
@@ -395,12 +370,10 @@ test_block_validation() {
 test_rpc_authentication() {
     section "RPC Authentication Security"
 
-    # Try with wrong credentials
     local result=$("$INNOVAD" -datadir="$NODE1_DIR" -rpcuser=wronguser -rpcpassword=wrongpass -rpcport=$NODE1_RPC getinfo 2>&1 || echo "AUTH_FAIL")
     if echo "$result" | grep -qi "error\|auth\|incorrect\|forbidden\|401\|couldn't connect\|fail"; then
         success "Wrong credentials correctly rejected"
     else
-        # If getinfo returns data, authentication was bypassed
         if echo "$result" | tr '\n' ' ' | grep -q '"version"'; then
             fail "Wrong credentials were ACCEPTED (critical!)"
         else
@@ -408,7 +381,6 @@ test_rpc_authentication() {
         fi
     fi
 
-    # Try with no credentials
     result=$("$INNOVAD" -datadir="$NODE1_DIR" -rpcport=$NODE1_RPC getinfo 2>&1 || echo "AUTH_FAIL")
     if echo "$result" | grep -qi "error\|auth\|incorrect\|fail\|couldn't"; then
         success "No credentials correctly rejected"
@@ -424,7 +396,6 @@ test_rpc_authentication() {
 test_concurrent_operations() {
     section "Concurrent Operation Safety"
 
-    # Send multiple transactions concurrently
     local addr=$(rpc1 getnewaddress || echo "")
     local pids=()
     local succeeded=0
@@ -434,7 +405,6 @@ test_concurrent_operations() {
         pids+=($!)
     done
 
-    # Wait for all
     for pid in "${pids[@]}"; do
         if wait "$pid" 2>/dev/null; then
             ((succeeded++)) || true
@@ -449,11 +419,9 @@ test_concurrent_operations() {
         warn "No concurrent sends succeeded (may be UTXO contention)"
     fi
 
-    # Mine to confirm
     rpc1 setgenerate true 1 >/dev/null 2>&1 || true
     sleep 1
 
-    # Concurrent info queries
     local info_ok=0
     pids=()
     for i in $(seq 1 20); do

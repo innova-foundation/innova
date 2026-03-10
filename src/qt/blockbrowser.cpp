@@ -46,6 +46,8 @@ const CBlockIndex* getBlockIndex(int height)
 {
     std::string hex = getBlockHash(height);
     uint256 hash(hex);
+    if (mapBlockIndex.count(hash) == 0)
+        return NULL;
     return mapBlockIndex[hash];
 }
 
@@ -53,15 +55,13 @@ std::string getBlockHash(int Height)
 {
     if(Height > pindexBest->nHeight) { return "00000d5dbbda01621cfc16bbc1f9bf3264d641a5dbf0de89fd0182c2c4828fcd"; }
     if(Height < 0) { return "00000d5dbbda01621cfc16bbc1f9bf3264d641a5dbf0de89fd0182c2c4828fcd"; }
-    int desiredheight;
-    desiredheight = Height;
-    if (desiredheight < 0 || desiredheight > nBestHeight)
-        return 0;
+    if (Height > nBestHeight)
+        return "00000d5dbbda01621cfc16bbc1f9bf3264d641a5dbf0de89fd0182c2c4828fcd";
 
-    CBlock block;
-    CBlockIndex* pblockindex = mapBlockIndex[hashBestChain];
-    while (pblockindex->nHeight > desiredheight)
-        pblockindex = pblockindex->pprev;
+    // Use O(1) indexed lookup instead of O(n) pprev walk
+    CBlockIndex* pblockindex = FindBlockByHeight(Height);
+    if (!pblockindex || !pblockindex->phashBlock)
+        return "00000d5dbbda01621cfc16bbc1f9bf3264d641a5dbf0de89fd0182c2c4828fcd";
     return pblockindex->phashBlock->GetHex();
 }
 
@@ -132,25 +132,27 @@ std::string getBlockDebug(int Height)
 
 int blocksInPastHours(int hours)
 {
+    if (!pindexBest)
+        return 0;
+
     int wayback = hours * 3600;
-    bool check = true;
     int height = pindexBest->nHeight;
-    int heightHour = pindexBest->nHeight;
+    int heightHour = height;
     int utime = (int)time(NULL);
     int target = utime - wayback;
 
-    while(check)
+    // Limit iterations to prevent unbounded loop on UI thread
+    int maxIter = std::min(height, 50000);
+    for (int i = 0; i < maxIter; i++)
     {
-        if(getBlockTime(heightHour) < target)
-        {
-            check = false;
+        if (heightHour <= 0)
+            return height;
+        if (getBlockTime(heightHour) < target)
             return height - heightHour;
-        } else {
-            heightHour = heightHour - 1;
-        }
+        heightHour--;
     }
 
-    return 0;
+    return height - heightHour;
 }
 
 double getTxTotalValue(std::string txid)

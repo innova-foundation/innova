@@ -14,6 +14,8 @@
 #include "script.h"
 #include "scrypt.h"
 #include "hashblock.h"
+#include "shielded.h"
+#include "nullstake.h"
 
 #include <list>
 
@@ -77,6 +79,8 @@ static const unsigned int DEFAULT_MAX_ORPHAN_BLOCKS = 2500; // Increased for fas
 /** Default for -maxmempool, maximum mempool size in MB */
 static const unsigned int DEFAULT_MAX_MEMPOOL_SIZE = 300; // 300MB default
 static const unsigned int MAX_INV_SZ = 50000;
+static const unsigned int INV_RATE_LIMIT_WINDOW = 60;    // Time window in seconds
+static const unsigned int INV_RATE_LIMIT_ITEMS = 2000;   // Max inv items per window (generous for sync)
 static const int64_t MIN_TX_FEE = 1000;
 static const int64_t MIN_NAME_FEE = 90000000; // 0.9 INN Name OP Miner Fee
 static const int64_t NAME_FEE = 10000000; // 0.1 INN Name
@@ -114,22 +118,120 @@ inline const uint256& GetGenesisBlockHash()
 //inline bool V3(int64_t nTime) { return fTestNet || nTime > 1524196491; } //nTime April 20th 2018
 
 // Hard fork height for tighter timestamp drift rules (2 min instead of 10 min)
-static const int FORK_HEIGHT_TIGHTER_DRIFT = 7250000;
+// CON-AUDIT-4: Made network-aware so regtest/testnet can test post-fork behavior
+inline int GetForkHeightTighterDrift() {
+    extern bool fRegTest;
+    extern bool fTestNet;
+    return (fRegTest || fTestNet) ? 1 : 8500000;
+}
+#define FORK_HEIGHT_TIGHTER_DRIFT (GetForkHeightTighterDrift())
 
 // Hard fork height for collateralnode payment validation enhancements
-static const int FORK_HEIGHT_CN_PAYMENT_VALIDATION = 7000000;
+inline int GetForkHeightCNPaymentValidation() {
+    extern bool fRegTest;
+    extern bool fTestNet;
+    return (fRegTest || fTestNet) ? 1 : 7250000;
+}
+#define FORK_HEIGHT_CN_PAYMENT_VALIDATION (GetForkHeightCNPaymentValidation())
 
 // Minimum CN protocol version after fork (requires v4.3.9.5+)
 // Forces CN operators to update to current software for continued payments
 static const int FORK_MIN_CN_PROTO_VERSION = 43950;
 
 // Hard fork height for cold staking (P2CS) support
-// In regtest mode, cold staking activates at block 1
+// In regtest/testnet mode, cold staking activates at block 1
 inline int GetForkHeightColdStaking() {
     extern bool fRegTest;
-    return fRegTest ? 1 : 7100000;
+    extern bool fTestNet;
+    return (fRegTest || fTestNet) ? 1 : 8000000;
 }
 #define FORK_HEIGHT_COLD_STAKING (GetForkHeightColdStaking())
+
+// Hard fork height for shielded transactions (zk-SNARK privacy)
+// In regtest/testnet mode, shielded transactions activate at block 1
+inline int GetForkHeightShielded() {
+    extern bool fRegTest;
+    extern bool fTestNet;
+    return (fRegTest || fTestNet) ? 1 : 9500000;
+}
+#define FORK_HEIGHT_SHIELDED (GetForkHeightShielded())
+
+// Hard fork height for ring signature deprecation
+// ANON_TXN_VERSION (1000) rejected after this height
+inline int GetForkHeightRingSigDeprecation() {
+    extern bool fRegTest;
+    extern bool fTestNet;
+    return (fRegTest || fTestNet) ? 1 : 10000000;
+}
+#define FORK_HEIGHT_RINGSIG_DEPRECATION (GetForkHeightRingSigDeprecation())
+
+// Hard fork height for Dynamic Selective Privacy
+// 3-bit nPrivacyMode field in SHIELDED_TX_VERSION_DSP (2001)
+inline int GetForkHeightDSP() {
+    extern bool fRegTest;
+    extern bool fTestNet;
+    return (fRegTest || fTestNet) ? 2 : 10500000;
+}
+#define FORK_HEIGHT_DSP (GetForkHeightDSP())
+
+// Hard fork height for NullSend
+inline int GetForkHeightNullSend() {
+    extern bool fRegTest;
+    extern bool fTestNet;
+    return (fRegTest || fTestNet) ? 2 : 11000000;
+}
+#define FORK_HEIGHT_NULLSEND (GetForkHeightNullSend())
+#define FORK_HEIGHT_CJOIN FORK_HEIGHT_NULLSEND
+
+// Hard fork height for FCMP++ validation
+// same height as FORK_HEIGHT_FCMP (curvetree.h)
+#define FORK_HEIGHT_FCMP_VALIDATION (FORK_HEIGHT_FCMP)
+
+// Hard fork height for NullStake private staking
+// shielded PoS via ZK kernel proofs
+inline int GetForkHeightNullStake() {
+    extern bool fRegTest;
+    extern bool fTestNet;
+    return (fRegTest || fTestNet) ? 3 : 12000000;
+}
+#define FORK_HEIGHT_NULLSTAKE (GetForkHeightNullStake())
+
+// Hard fork height for NullStake V2 ZK kernel privacy
+// hides kernel params in AC proof
+inline int GetForkHeightNullStakeV2() {
+    extern bool fRegTest;
+    extern bool fTestNet;
+    return (fRegTest || fTestNet) ? 5 : 12500000;
+}
+#define FORK_HEIGHT_NULLSTAKE_V2 (GetForkHeightNullStakeV2())
+
+// Hard fork height for NullStake V3: Private Cold Staking
+inline int GetForkHeightNullStakeV3() {
+    extern bool fRegTest;
+    extern bool fTestNet;
+    return (fRegTest || fTestNet) ? 7 : 13000000;
+}
+#define FORK_HEIGHT_NULLSTAKE_V3 (GetForkHeightNullStakeV3())
+
+// Hard fork height for Chaumian CoinJoin/NullSend (blind signature protocol upgrade)
+inline int GetForkHeightChaumianCJ()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    return (fRegTest || fTestNet) ? 8 : 13500000;
+}
+#define FORK_HEIGHT_CHAUMIAN_CJ (GetForkHeightChaumianCJ())
+
+// Hard fork height for IDNS name reset
+// names before this height treated as expired; 0 = no reset
+inline int GetForkHeightIDNSReset() {
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest) return 0;     // No reset in regtest (clean chain)
+    if (fTestNet) return 0;     // No reset in testnet (clean chain)
+    return 7250000;             // Mainnet: wipe all names before this height
+}
+#define FORK_HEIGHT_IDNS_RESET (GetForkHeightIDNSReset())
 
 inline int64_t PastDrift(int64_t nTime, int nHeight) {
     if (nHeight >= FORK_HEIGHT_TIGHTER_DRIFT)
@@ -208,6 +310,15 @@ extern int nSPVStartHeight;
 extern bool fHybridSPV;
 extern bool fSPVStakingEnabled;
 
+enum StakingMode {
+    STAKE_TRANSPARENT = 0,
+    STAKE_NULLSTAKE = 1,
+    STAKE_COLD = 2,
+    STAKE_NULLSTAKE_COLD = 3
+};
+extern StakingMode nStakingMode;
+extern CCriticalSection cs_stakingMode;
+
 extern int64_t nMinTxFee;
 
 // Minimum disk space required - used in CheckDiskSpace()
@@ -217,6 +328,11 @@ static const uint64_t nMinDiskSpace = 524288000; // 500 MB Minimum (temporary fo
 class CReserveKey;
 class CTxDB;
 class CTxIndex;
+class CIncrementalMerkleTree;
+class CCurveTree;
+
+// Seed deterministic unspendable commitments at fork height for Lelantus anonymity set
+bool SeedGenesisCommitments(CTxDB& txdb, CIncrementalMerkleTree& shieldedTree, CCurveTree* pCurveTree);
 
 void RegisterWallet(CWallet* pwalletIn);
 void UnregisterWallet(CWallet* pwalletIn);
@@ -342,6 +458,22 @@ public:
     std::vector<CTxOut> vout;
     unsigned int nLockTime;
 
+    // Shielded transaction components (populated when IsShielded())
+    std::vector<CShieldedSpendDescription> vShieldedSpend;
+    std::vector<CShieldedOutputDescription> vShieldedOutput;
+    int64_t nValueBalance;  // Net value balance: positive = value leaving shielded pool (unshield), negative = value entering shielded pool (shield)
+    CShieldedBindingSig bindingSig;
+    uint8_t nPrivacyMode;   // DSP: 3-bit privacy mode (0-7), default 7 (fully private)
+
+    // NullStake coinstake — only for SHIELDED_TX_VERSION_NULLSTAKE
+    CNullStakeKernelProof nullstakeProof;
+
+    // NullStake V2 coinstake — only for SHIELDED_TX_VERSION_NULLSTAKE_V2
+    CNullStakeKernelProofV2 nullstakeProofV2;
+
+    // NullStake V3 coinstake — only for SHIELDED_TX_VERSION_NULLSTAKE_COLD
+    CNullStakeKernelProofV3 nullstakeProofV3;
+
     // Denial-of-service detection:
     mutable int nDoS;
     bool DoS(int nDoSIn, bool fIn) const { nDoS += nDoSIn; return fIn; }
@@ -362,6 +494,45 @@ public:
         READWRITE(vin);
         READWRITE(vout);
         READWRITE(nLockTime);
+        if (this->nVersion == SHIELDED_TX_VERSION || this->nVersion == SHIELDED_TX_VERSION_DSP
+            || this->nVersion == SHIELDED_TX_VERSION_FCMP || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE
+            || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+        {
+            READWRITE(vShieldedSpend);
+            READWRITE(vShieldedOutput);
+            READWRITE(nValueBalance);
+            if (this->nVersion >= SHIELDED_TX_VERSION_DSP)
+            {
+                READWRITE(nPrivacyMode);
+                for (size_t i = 0; i < vShieldedSpend.size(); i++)
+                {
+                    READWRITE(vShieldedSpend[i].nPlaintextValue);
+                    READWRITE(vShieldedSpend[i].vchPlaintextBlind);
+                }
+                for (size_t i = 0; i < vShieldedOutput.size(); i++)
+                {
+                    READWRITE(vShieldedOutput[i].nPlaintextValue);
+                    READWRITE(vShieldedOutput[i].vchPlaintextBlind);
+                    READWRITE(vShieldedOutput[i].vchRecipientScript);
+                }
+            }
+            READWRITE(bindingSig);
+            // NullStake V1 kernel proof (version 2003)
+            if (this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE)
+            {
+                READWRITE(nullstakeProof);
+            }
+            // NullStake V2 kernel proof (version 2004)
+            if (this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2)
+            {
+                READWRITE(nullstakeProofV2);
+            }
+            // NullStake V3 kernel proof (version 2005 — private cold staking)
+            if (this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+            {
+                READWRITE(nullstakeProofV3);
+            }
+        }
     )
 
     void SetNull()
@@ -372,6 +543,11 @@ public:
         vout.clear();
         nLockTime = 0;
         nDoS = 0;  // Denial-of-service prevention
+        vShieldedSpend.clear();
+        vShieldedOutput.clear();
+        nValueBalance = 0;
+        nPrivacyMode = PRIVACY_MODE_FULL;
+        bindingSig.bindingSig.vchSignature.clear();
     }
 
     bool IsNull() const
@@ -382,6 +558,79 @@ public:
     uint256 GetHash() const
     {
         return SerializeHash(*this);
+    }
+
+    // Hash excluding the binding signature, used as sighash for binding sig creation/verification
+    uint256 GetBindingSigHash() const
+    {
+        CHashWriter ss(SER_GETHASH, 0);
+        ss << nVersion;
+        ss << nTime;
+        ss << vin;
+        ss << vout;
+        ss << nLockTime;
+        if (nVersion == SHIELDED_TX_VERSION || nVersion == SHIELDED_TX_VERSION_DSP
+            || nVersion == SHIELDED_TX_VERSION_FCMP || nVersion == SHIELDED_TX_VERSION_NULLSTAKE
+            || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+        {
+            ss << (unsigned int)vShieldedSpend.size();
+            for (size_t i = 0; i < vShieldedSpend.size(); i++)
+            {
+                ss << vShieldedSpend[i].cv;
+                ss << vShieldedSpend[i].anchor;
+                ss << vShieldedSpend[i].nullifier;
+                ss << vShieldedSpend[i].rangeProof;
+                ss << vShieldedSpend[i].vchLelantusProof;
+                ss << vShieldedSpend[i].vAnonSet;
+                ss << vShieldedSpend[i].lelantusSerial;
+                // DSP fields included in sighash to prevent mode malleability
+                if (nVersion == SHIELDED_TX_VERSION_DSP || nVersion == SHIELDED_TX_VERSION_FCMP
+                    || nVersion == SHIELDED_TX_VERSION_NULLSTAKE)
+                {
+                    ss << vShieldedSpend[i].nPlaintextValue;
+                    ss << vShieldedSpend[i].vchPlaintextBlind;
+                }
+                // FCMP++ proof committed to binding sig hash
+                if (nVersion == SHIELDED_TX_VERSION_FCMP || nVersion == SHIELDED_TX_VERSION_NULLSTAKE)
+                {
+                    ss << vShieldedSpend[i].fcmpProof;
+                }
+            }
+            // Output descriptions (includes DSP fields via serialization)
+            ss << (unsigned int)vShieldedOutput.size();
+            for (size_t i = 0; i < vShieldedOutput.size(); i++)
+            {
+                ss << vShieldedOutput[i].cv;
+                ss << vShieldedOutput[i].cmu;
+                ss << vShieldedOutput[i].vchEphemeralKey;
+                ss << vShieldedOutput[i].vchEncCiphertext;
+                ss << vShieldedOutput[i].vchOutCiphertext;
+                ss << vShieldedOutput[i].rangeProof;
+                if (nVersion == SHIELDED_TX_VERSION_DSP || nVersion == SHIELDED_TX_VERSION_FCMP
+                    || nVersion == SHIELDED_TX_VERSION_NULLSTAKE || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+                {
+                    ss << vShieldedOutput[i].nPlaintextValue;
+                    ss << vShieldedOutput[i].vchPlaintextBlind;
+                    ss << vShieldedOutput[i].vchRecipientScript;
+                }
+            }
+            ss << nValueBalance;
+            if (nVersion == SHIELDED_TX_VERSION_DSP || nVersion == SHIELDED_TX_VERSION_FCMP
+                || nVersion == SHIELDED_TX_VERSION_NULLSTAKE || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2
+                || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+                ss << nPrivacyMode;
+            // NullStake V1 coinstake proof committed to binding sig hash
+            if (nVersion == SHIELDED_TX_VERSION_NULLSTAKE)
+                ss << nullstakeProof;
+            // NullStake V2 coinstake proof committed to binding sig hash
+            if (nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2)
+                ss << nullstakeProofV2;
+            // NullStake V3 coinstake proof committed to binding sig hash
+            if (nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+                ss << nullstakeProofV3;
+            // Deliberately omit bindingSig
+        }
+        return ss.GetHash();
     }
 
     bool IsFinal(int nBlockHeight=0, int64_t nBlockTime=0) const
@@ -439,10 +688,44 @@ public:
     bool IsCoinStake() const
     {
         // ppcoin: the coin stake transaction is marked with the first output empty
+        // NullStake: shielded coinstake has no transparent inputs but has shielded spends
+        if ((nVersion == SHIELDED_TX_VERSION_NULLSTAKE || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2
+             || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+            && !vShieldedSpend.empty() && vout.size() >= 1 && vout[0].IsEmpty())
+            return true;
         return (vin.size() > 0 && (!vin[0].prevout.IsNull()) && vout.size() >= 2 && vout[0].IsEmpty());
     }
 
     bool HasStealthOutput() const;
+
+    bool IsShielded() const
+    {
+        return (nVersion == SHIELDED_TX_VERSION || nVersion == SHIELDED_TX_VERSION_DSP
+                || nVersion == SHIELDED_TX_VERSION_FCMP || nVersion == SHIELDED_TX_VERSION_NULLSTAKE
+                || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2
+                || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD);
+    }
+
+    bool IsDSP() const
+    {
+        // All versions >= DSP support DSP privacy modes
+        return (nVersion >= SHIELDED_TX_VERSION_DSP);
+    }
+
+    bool IsFCMP() const
+    {
+        return (nVersion >= SHIELDED_TX_VERSION_FCMP);
+    }
+
+    bool HasShieldedSpend() const
+    {
+        return !vShieldedSpend.empty();
+    }
+
+    bool HasShieldedOutput() const
+    {
+        return !vShieldedOutput.empty();
+    }
 
     /** Check for standard transaction types
         @param[in] mapInputs	Map of previous transactions that have outputs we're spending
@@ -527,7 +810,11 @@ public:
                 a.nTime     == b.nTime &&
                 a.vin       == b.vin &&
                 a.vout      == b.vout &&
-                a.nLockTime == b.nLockTime);
+                a.nLockTime == b.nLockTime &&
+                // compare full shielded contents (not just sizes)
+                // and include binding signature for consensus correctness
+                a.nValueBalance == b.nValueBalance &&
+                a.GetHash() == b.GetHash());
     }
 
     friend bool operator!=(const CTransaction& a, const CTransaction& b)
@@ -600,7 +887,7 @@ public:
      */
     bool ConnectInputs(CTxDB& txdb, MapPrevTx inputs,
                        std::map<uint256, CTxIndex>& mapTestPool, const CDiskTxPos& posThisTx,
-                       const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, unsigned int flags = STANDARD_SCRIPT_VERIFY_FLAGS, bool fValidateSig = true);
+                       const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, unsigned int flags = STANDARD_SCRIPT_VERIFY_FLAGS, bool fValidateSig = true, bool fSkipFCMP = false);
     bool CheckTransaction() const;
     bool AcceptToMemoryPool(CTxDB& txdb, bool fCheckInputs=true, bool* pfMissingInputs=NULL, bool fOnlyCheckWithoutAdding=false);
     bool GetCoinAge(CTxDB& txdb, uint64_t& nCoinAge) const;  // ppcoin: get transaction coin age
@@ -873,7 +1160,10 @@ public:
 
     void UpdateTime(const CBlockIndex* pindexPrev);
 
-    // entropy bit for stake modifier if chosen by modifier
+    // entropy bit derived from block hash last bit.
+    // Stakers have partial control over this bit via timestamp grinding.
+    // This is a known limitation of NovaCoin-derived PoS (shared by all forks).
+    // Mitigation: stake modifier checkpoint enforcement (MIN-NEW-1) limits impact.
     unsigned int GetStakeEntropyBit() const
     {
         // Take last bit of block hash as entropy bit
@@ -896,7 +1186,16 @@ public:
 
     std::pair<COutPoint, unsigned int> GetProofOfStake() const
     {
-        return IsProofOfStake()? std::make_pair(vtx[1].vin[0].prevout, vtx[1].nTime) : std::make_pair(COutPoint(), (unsigned int)0);
+        if (!IsProofOfStake())
+            return std::make_pair(COutPoint(), (unsigned int)0);
+        // NullStake V1/V2/V3: no transparent inputs, use nullifier-derived outpoint
+        if (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE
+            || vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2
+            || vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+            return std::make_pair(COutPoint(vtx[1].GetHash(), 0), vtx[1].nTime);
+        if (vtx[1].vin.empty())
+            return std::make_pair(COutPoint(), (unsigned int)0);
+        return std::make_pair(vtx[1].vin[0].prevout, vtx[1].nTime);
     }
 
     // ppcoin: get max transaction timestamp
@@ -945,7 +1244,8 @@ public:
 
     static uint256 CheckMerkleBranch(uint256 hash, const std::vector<uint256>& vMerkleBranch, int nIndex)
     {
-        if (nIndex == -1)
+        // reject negative nIndex values
+        if (nIndex < 0)
             return 0;
         for (const uint256& otherside : vMerkleBranch)
         {
@@ -1152,7 +1452,15 @@ public:
         if (block.IsProofOfStake())
         {
             SetProofOfStake();
-            prevoutStake = block.vtx[1].vin[0].prevout;
+            if (block.vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE)
+            {
+                // NullStake: no transparent inputs, use tx hash as prevout identifier
+                prevoutStake = COutPoint(block.vtx[1].GetHash(), 0);
+            }
+            else
+            {
+                prevoutStake = block.vtx[1].vin[0].prevout;
+            }
             nStakeTime = block.vtx[1].nTime;
         }
         else
@@ -1607,6 +1915,9 @@ public:
 
     std::map<std::vector<uint8_t>, CKeyImageSpent> mapKeyImage;
 
+    // Shielded nullifier tracking (prevents double-spend in mempool)
+    std::map<uint256, CShieldedNullifierSpent> mapShieldedNullifier;
+
     bool accept(CTxDB& txdb, CTransaction &tx,
                 bool fCheckInputs, bool* pfMissingInputs, bool fOnlyCheckWithoutAdding=false);
     bool addUnchecked(const uint256& hash, CTransaction &tx);
@@ -1665,6 +1976,30 @@ public:
 
         result = it->second;
 
+        return true;
+    }
+
+    bool insertShieldedNullifier(const uint256& nullifier, const CShieldedNullifierSpent& nfs)
+    {
+        LOCK(cs);
+        mapShieldedNullifier[nullifier] = nfs;
+        return true;
+    }
+
+    bool lookupShieldedNullifier(const uint256& nullifier, CShieldedNullifierSpent& result) const
+    {
+        LOCK(cs);
+        std::map<uint256, CShieldedNullifierSpent>::const_iterator it = mapShieldedNullifier.find(nullifier);
+        if (it == mapShieldedNullifier.end())
+            return false;
+        result = it->second;
+        return true;
+    }
+
+    bool removeShieldedNullifier(const uint256& nullifier)
+    {
+        LOCK(cs);
+        mapShieldedNullifier.erase(nullifier);
         return true;
     }
 };

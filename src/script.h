@@ -95,9 +95,9 @@ enum
 enum
 {
     SCRIPT_VERIFY_NONE      = 0,
-    SCRIPT_VERIFY_NOCACHE   = (1U << 0),
     // Evaluate P2SH subscripts (softfork safe, BIP16).
     SCRIPT_VERIFY_P2SH      = (1U << 0),
+    SCRIPT_VERIFY_NOCACHE   = (1U << 9),
 
     // Passing a non-strict-DER signature or one with undefined hashtype to a checksig operation causes script failure.
     // Evaluating a pubkey that is not (0x04 + 64 bytes) or (0x02 or 0x03 + 32 bytes) by checksig causes script failure.
@@ -144,7 +144,10 @@ enum
 //
 // Failing one of these tests may trigger a DoS ban - see ConnectInputs() for
 // details.
-static const unsigned int MANDATORY_SCRIPT_VERIFY_FLAGS = SCRIPT_VERIFY_NONE;
+static const unsigned int MANDATORY_SCRIPT_VERIFY_FLAGS = SCRIPT_VERIFY_P2SH |
+                                                         SCRIPT_VERIFY_DERSIG |
+                                                         SCRIPT_VERIFY_LOW_S |
+                                                         SCRIPT_VERIFY_NULLDUMMY;
 
 // Standard script verification flags that standard transactions will comply
 // with. However scripts violating these flags may still be present in valid
@@ -182,6 +185,7 @@ enum txnouttype
     TX_MULTISIG,
     TX_NULL_DATA,
     TX_COLDSTAKE,
+    TX_SHIELDED,
 };
 
 const char* GetTxnOutputType(txnouttype t);
@@ -321,6 +325,7 @@ enum opcodetype
     OP_NOP8 = 0xb7,
     OP_NOP9 = 0xb8,
     OP_ANON_MARKER = 0xb9, //OP_NOP10
+    OP_SHIELDED_MARKER = 0xba,
 
     // cold staking
     OP_CHECKCOLDSTAKEVERIFY = 0xd1,
@@ -380,9 +385,10 @@ public:
         m_value = n;
     }
 
-    explicit CScriptNum(const std::vector<unsigned char>& vch, bool fRequireMinimal)
+    explicit CScriptNum(const std::vector<unsigned char>& vch, bool fRequireMinimal,
+                        const size_t nMaxSize = nMaxNumSize)
     {
-        if (vch.size() > nMaxNumSize) {
+        if (vch.size() > nMaxSize) {
             throw scriptnum_error("script number overflow");
         }
         if (fRequireMinimal && vch.size() > 0) {
@@ -657,6 +663,9 @@ public:
 
     CScript& operator<<(const std::vector<unsigned char>& b)
     {
+        if (b.size() > 0xFFFFFFFFU)
+            throw std::runtime_error("CScript::operator<< : push data too large");
+
         if (b.size() < OP_PUSHDATA1)
         {
             insert(end(), (unsigned char)b.size());
@@ -669,13 +678,13 @@ public:
         else if (b.size() <= 0xffff)
         {
             insert(end(), OP_PUSHDATA2);
-            unsigned short nSize = b.size();
+            unsigned short nSize = (unsigned short)b.size();
             insert(end(), (unsigned char*)&nSize, (unsigned char*)&nSize + sizeof(nSize));
         }
         else
         {
             insert(end(), OP_PUSHDATA4);
-            unsigned int nSize = b.size();
+            unsigned int nSize = (unsigned int)b.size();
             insert(end(), (unsigned char*)&nSize, (unsigned char*)&nSize + sizeof(nSize));
         }
         insert(end(), b.begin(), b.end());
@@ -760,6 +769,8 @@ public:
                 memcpy(&nSize, &pc[0], 4);
                 pc += 4;
             }
+            if (nSize > MAX_SCRIPT_ELEMENT_SIZE)
+                return false;
             if (end() - pc < 0 || (unsigned int)(end() - pc) < nSize)
                 return false;
             if (pvchRet)
@@ -792,14 +803,48 @@ public:
         int nFound = 0;
         if (b.empty())
             return nFound;
+
+        // Verify pattern contains complete opcodes
+        opcodetype bopcode;
+        CScript::const_iterator bpc = b.begin();
+        while (bpc < b.end())
+        {
+            if (!b.GetOp(bpc, bopcode))
+                return nFound;  // Pattern contains incomplete opcodes, refuse to match
+        }
+
         iterator pc = begin();
         opcodetype opcode;
         do
         {
-            while (end() - pc >= (long)b.size() && memcmp(&pc[0], &b[0], b.size()) == 0)
+            if (end() - pc >= (long)b.size() && memcmp(&pc[0], &b[0], b.size()) == 0)
             {
-                erase(pc, pc + b.size());
-                ++nFound;
+                // Verify match ends at opcode boundary
+                iterator matchEnd = pc + b.size();
+                iterator checkPc = pc;
+                opcodetype checkOp;
+                bool isCompleteMatch = true;
+
+                while (checkPc < matchEnd)
+                {
+                    if (!GetOp(checkPc, checkOp))
+                    {
+                        isCompleteMatch = false;
+                        break;
+                    }
+                    if (checkPc > matchEnd)
+                    {
+                        isCompleteMatch = false;
+                        break;
+                    }
+                }
+
+                if (isCompleteMatch && checkPc == matchEnd)
+                {
+                    erase(pc, pc + b.size());
+                    ++nFound;
+                    continue;  // Check for another match at same position
+                }
             }
         }
         while (GetOp(pc, opcode));

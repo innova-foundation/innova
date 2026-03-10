@@ -114,7 +114,9 @@ int WalletModel::getNumTransactions() const
 {
     int numTransactions = 0;
     {
-        LOCK(wallet->cs_wallet);
+        TRY_LOCK(wallet->cs_wallet, lockWallet);
+        if (!lockWallet)
+            return cachedNumTransactions; // Return cached value if lock contended
         numTransactions = wallet->mapWallet.size();
     }
     return numTransactions;
@@ -142,15 +144,14 @@ void WalletModel::pollBalanceChanged()
 
     if(fForceBalanceCheck && nBestHeight != cachedNumBlocks)
     {
+        int prevCachedBlocks = cachedNumBlocks;
         // Balance and number of transactions might have changed
         cachedNumBlocks = nBestHeight;
 
         checkBalanceChanged();
 
-        //if(transactionTableModel)
-            //transactionTableModel->updateConfirmations();
-        //TODO: perhaps redo this. Currently it rescans all tx available in wallet - idealy we do not need such scan.
-        if (nameTableModel)
+        // Only refresh name table every 10 blocks to reduce DB scan pressure
+        if (nameTableModel && (nBestHeight - prevCachedBlocks >= 10 || prevCachedBlocks == 0))
             nameTableModel->update();
     }
 

@@ -200,9 +200,10 @@ uint64_t GetRand(uint64_t nMax)
     // to give every possible output value an equal possibility
     uint64_t nRange = (std::numeric_limits<uint64_t>::max() / nMax) * nMax;
     uint64_t nRand = 0;
-    do
-        RAND_bytes((unsigned char*)&nRand, sizeof(nRand));
-    while (nRand >= nRange);
+    do {
+        if (RAND_bytes((unsigned char*)&nRand, sizeof(nRand)) != 1)
+            throw std::runtime_error("GetRand: RAND_bytes failed");
+    } while (nRand >= nRange);
     return (nRand % nMax);
 }
 
@@ -227,8 +228,8 @@ uint256 GetRandHash()
 void GetRandBytes(unsigned char* buf, int num)
 {
     if (RAND_bytes(buf, num) != 1) {
-        //printf("%s: OpenSSL RAND_bytes() failed with error: %s\n", __func__, ERR_error_string(ERR_get_error(), NULL));
-        assert(false);
+        printf("CRITICAL: OpenSSL RAND_bytes() failed - RNG unavailable\n");
+        throw std::runtime_error("GetRandBytes: OpenSSL RAND_bytes() failed");
     }
 }
 
@@ -438,6 +439,10 @@ string vstrprintf(const char *format, va_list ap)
             break;
         if (p != buffer)
             delete[] p;
+        if (limit > (2 * 1024 * 1024) / 2) // Will exceed 2MB after doubling
+        {
+            return std::string();
+        }
         limit *= 2;
         p = new char[limit];
         if (p == NULL)
@@ -1283,6 +1288,30 @@ void WriteConfigFile(FILE* configFile)
     fputs ("addnode=159.223.104.83\n", configFile);
     fputs ("addnode=159.223.104.144\n", configFile);
     fputs ("addnode=45.77.164.87\n", configFile);
+    fputs ("addnode=109.227.110.99\n", configFile);
+    fputs ("addnode=144.91.99.72\n", configFile);
+    fputs ("addnode=153.66.173.193\n", configFile);
+    fputs ("addnode=153.66.173.9\n", configFile);
+    fputs ("addnode=161.142.152.54\n", configFile);
+    fputs ("addnode=161.97.182.56\n", configFile);
+    fputs ("addnode=176.67.27.136\n", configFile);
+    fputs ("addnode=182.253.59.43\n", configFile);
+    fputs ("addnode=185.62.81.130\n", configFile);
+    fputs ("addnode=185.62.81.131\n", configFile);
+    fputs ("addnode=186.205.23.165\n", configFile);
+    fputs ("addnode=188.122.212.138\n", configFile);
+    fputs ("addnode=195.26.248.22\n", configFile);
+    fputs ("addnode=207.180.228.107\n", configFile);
+    fputs ("addnode=213.147.165.188\n", configFile);
+    fputs ("addnode=51.222.152.238\n", configFile);
+    fputs ("addnode=62.171.132.112\n", configFile);
+    fputs ("addnode=66.70.182.1\n", configFile);
+    fputs ("addnode=75.119.152.38\n", configFile);
+    fputs ("addnode=77.78.204.210\n", configFile);
+    fputs ("addnode=78.137.19.89\n", configFile);
+    fputs ("addnode=79.115.92.93\n", configFile);
+    fputs ("addnode=85.19.25.38\n", configFile);
+    fputs ("addnode=93.228.101.127\n", configFile);
     fputs ("\n", configFile);
     fclose(configFile);
     ReadConfigFile(mapArgs, mapMultiArgs);
@@ -1386,7 +1415,14 @@ boost::filesystem::path GetPidFile()
 #ifndef WIN32
 void CreatePidFile(const boost::filesystem::path &path, pid_t pid)
 {
-    FILE* file = fopen(path.string().c_str(), "w");
+    std::string pathStr = path.string();
+    if (pathStr.find("..") != std::string::npos)
+    {
+        printf("CreatePidFile() : path contains '..', rejecting: %s\n", pathStr.c_str());
+        return;
+    }
+
+    FILE* file = fopen(pathStr.c_str(), "w");
     if (file)
     {
         fprintf(file, "%d\n", pid);
@@ -1490,6 +1526,10 @@ int64_t GetAdjustedTime()
     return GetTime() + GetTimeOffset();
 }
 
+static const int64_t MAX_PEER_TIME_OFFSET = 10 * 60;  // 10 min
+static const int64_t MAX_TIME_ADJUSTMENT = 5 * 60;    // 5 min
+static const int MIN_TIME_SAMPLES = 11;
+
 void AddTimeData(const CNetAddr& ip, int64_t nTime)
 {
     int64_t nOffsetSample = nTime - GetTime();
@@ -1499,15 +1539,22 @@ void AddTimeData(const CNetAddr& ip, int64_t nTime)
     if (!setKnown.insert(ip).second)
         return;
 
+    if (abs64(nOffsetSample) > MAX_PEER_TIME_OFFSET)
+    {
+        printf("WARNING: AddTimeData() : peer %s reported extreme time offset %+" PRId64" seconds, ignoring\n",
+               ip.ToString().c_str(), nOffsetSample);
+        return;
+    }
+
     // Add data
     vTimeOffsets.input(nOffsetSample);
     printf("Added time data, samples %d, offset %+" PRId64" (%+" PRId64" minutes)\n", vTimeOffsets.size(), nOffsetSample, nOffsetSample/60);
-    if (vTimeOffsets.size() >= 5 && vTimeOffsets.size() % 2 == 1)
+
+    if (vTimeOffsets.size() >= MIN_TIME_SAMPLES && vTimeOffsets.size() % 2 == 1)
     {
         int64_t nMedian = vTimeOffsets.median();
         std::vector<int64_t> vSorted = vTimeOffsets.sorted();
-        // Only let other nodes change our time by so much
-        if (abs64(nMedian) < 70 * 60)
+        if (abs64(nMedian) < MAX_TIME_ADJUSTMENT)
         {
             nTimeOffset = nMedian;
         }

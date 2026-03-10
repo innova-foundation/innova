@@ -66,7 +66,9 @@ public:
     //bool SelectCoinsCollateralnode(CTxIn& vin, int64& nValueIn, CScript& pubScript, std::string strTxHash, std::string strOutputIndex);
 
     // enable hot wallet mode (run a collateralnode with no funds)
-    bool EnableHotColdCollateralNode(CTxIn& vin, CService& addr);
+    bool EnableHotColdCollateralNode(CTxIn& vin, CService& addr, CPubKey& pubkey,
+                                     std::vector<unsigned char>& vchSig, int64_t sigTime,
+                                     CPubKey& pubkey2, int protocolVersion);
 };
 
 #endif

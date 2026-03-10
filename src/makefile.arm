@@ -12,7 +12,8 @@ USE_NATIVETOR:=-
 USE_IPFS:=1
 
 LINK:=$(CXX)
-ARCH:=$(system lscpu | head -n 1 | awk '{print $2}')
+UNAME_M := $(shell uname -m)
+ARCH:=$(shell lscpu 2>/dev/null | head -n 1 | awk '{print $$2}')
 
 DEFS=-DBOOST_SPIRIT_THREADSAFE
 
@@ -94,9 +95,9 @@ LIBS+= \
     LDHARDENING+=-Wl,-z,relro -Wl,-z,now
 
     # Build position independent code to take advantage of Address Space Layout Randomization
-    # offered by some kernels.
+    # offered by some kernels. Enabled by default on ARM for security.
     # see doc/build-unix.txt for more information.
-    ifdef PIE
+    ifndef NO_PIE
         HARDENING+=-fPIE
         LDHARDENING+=-pie
     endif
@@ -110,24 +111,20 @@ LIBS+= \
 DEBUGFLAGS=-g
 
 
-ifeq (${ARCH}, i686)
-    EXT_OPTIONS=-msse2
-endif
-
-
 # CXXFLAGS can be specified on the make command line, so we use xCXXFLAGS that only
 # adds some defaults in front. Unfortunately, CXXFLAGS=... $(CXXFLAGS) does not work.
-xCXXFLAGS=-O2 $(EXT_OPTIONS) -pthread -Wall -Wextra -Wno-ignored-qualifiers -Wno-format -Wno-unused-parameter -std=c++11 -Wno-literal-suffix \
+xCXXFLAGS=-O2 -pthread -Wall -Wextra -Wno-ignored-qualifiers -Wno-format -Wno-unused-parameter -std=c++11 -Wno-literal-suffix \
     $(DEBUGFLAGS) $(DEFS) $(HARDENING) $(CXXFLAGS)
+
+xCFLAGS=-O2 -pthread -Wall -Wextra -Wno-ignored-qualifiers -Wno-format -Wno-unused-parameter \
+    $(DEBUGFLAGS) $(DEFS) $(HARDENING) $(CFLAGS)
 
 # LDFLAGS can be specified on the make command line, so we use xLDFLAGS that only
 # adds some defaults in front. Unfortunately, LDFLAGS=... $(LDFLAGS) does not work.
 xLDFLAGS=$(LDHARDENING) $(LDFLAGS)
 
-# Tor C Library Sources
 ifeq (${USE_NATIVETOR}, 1)
-  @echo "Building with Native Tor Support ...";
-  OBJS= \
+OBJS= \
     obj/address.o \
     obj/addressmap.o \
     obj/aes.o \
@@ -281,14 +278,11 @@ ifeq (${USE_NATIVETOR}, 1)
     obj/util_bug.o \
     obj/util_format.o \
     obj/util_process.o \
-    obj/workqueue.o
-endif
-
-OBJS= \
+    obj/workqueue.o \
     obj/echo.o \
     obj/jh.o \
     obj/keccak.o \
-	  obj/alert.o \
+    obj/alert.o \
     obj/version.o \
     obj/checkpoints.o \
     obj/netbase.o \
@@ -303,7 +297,7 @@ OBJS= \
     obj/miner.o \
     obj/main.o \
     obj/net.o \
-	  obj/core.o \
+    obj/core.o \
     obj/protocol.o \
     obj/innovarpc.o \
     obj/rpcdump.o \
@@ -314,6 +308,20 @@ OBJS= \
     obj/rpcrawtransaction.o \
     obj/rpcsmessage.o \
     obj/rpchyperfile.o \
+    obj/rpcshielded.o \
+    obj/nullsend.o \
+    obj/shieldedcoinjoin.o \
+    obj/shielded.o \
+    obj/zkproof.o \
+    obj/lelantus.o \
+    obj/curvetree.o \
+    obj/ipa.o \
+    obj/ed25519_zk.o \
+    obj/nullstake.o \
+    obj/poseidon2.o \
+    obj/bulletproof_ac.o \
+    obj/silentpayments.o \
+    obj/dandelion.o \
     obj/script.o \
     obj/sync.o \
     obj/util.o \
@@ -324,27 +332,105 @@ OBJS= \
     obj/pbkdf2.o \
     obj/scrypt.o \
     obj/scrypt-arm.o \
-    obj/scrypt-x86.o \
-    obj/scrypt-x86_64.o \
     obj/smessage.o \
     obj/stealth.o \
-  	obj/activecollateralnode.o \
-  	obj/collateralnodeconfig.o \
+    obj/activecollateralnode.o \
+    obj/collateralnodeconfig.o \
     obj/collateralnode.o \
     obj/rpccollateral.o \
     obj/spork.o \
     obj/collateral.o \
-  	obj/eccryptoverify.o \
+    obj/eccryptoverify.o \
     obj/ringsig.o \
     obj/bloom.o \
-  	obj/state.o \
+    obj/state.o \
     obj/idns.o \
     obj/namecoin.o \
-    obj/ipfs.o \
-    obj/ipfscurl.o  \
     obj/utiltime.o \
-    obj/stun.o
+    obj/stun.o \
+    obj/bootstrap.o \
+    obj/minizip/ioapi.o \
+    obj/minizip/unzip.o
+else
+OBJS= \
+    obj/echo.o \
+    obj/jh.o \
+    obj/keccak.o \
+    obj/alert.o \
+    obj/version.o \
+    obj/checkpoints.o \
+    obj/netbase.o \
+    obj/addrman.o \
+    obj/crypter.o \
+    obj/key.o \
+    obj/hash.o \
+    obj/base58.o \
+    obj/db.o \
+    obj/init.o \
+    obj/keystore.o \
+    obj/miner.o \
+    obj/main.o \
+    obj/net.o \
+    obj/core.o \
+    obj/protocol.o \
+    obj/innovarpc.o \
+    obj/rpcdump.o \
+    obj/rpcnet.o \
+    obj/rpcmining.o \
+    obj/rpcwallet.o \
+    obj/rpcblockchain.o \
+    obj/rpcrawtransaction.o \
+    obj/rpcsmessage.o \
+    obj/rpchyperfile.o \
+    obj/rpcshielded.o \
+    obj/nullsend.o \
+    obj/shieldedcoinjoin.o \
+    obj/shielded.o \
+    obj/zkproof.o \
+    obj/lelantus.o \
+    obj/curvetree.o \
+    obj/ipa.o \
+    obj/ed25519_zk.o \
+    obj/nullstake.o \
+    obj/poseidon2.o \
+    obj/bulletproof_ac.o \
+    obj/silentpayments.o \
+    obj/dandelion.o \
+    obj/script.o \
+    obj/sync.o \
+    obj/util.o \
+    obj/wallet.o \
+    obj/walletdb.o \
+    obj/noui.o \
+    obj/kernel.o \
+    obj/pbkdf2.o \
+    obj/scrypt.o \
+    obj/scrypt-arm.o \
+    obj/smessage.o \
+    obj/stealth.o \
+    obj/activecollateralnode.o \
+    obj/collateralnodeconfig.o \
+    obj/collateralnode.o \
+    obj/rpccollateral.o \
+    obj/spork.o \
+    obj/collateral.o \
+    obj/eccryptoverify.o \
+    obj/ringsig.o \
+    obj/bloom.o \
+    obj/state.o \
+    obj/idns.o \
+    obj/namecoin.o \
+    obj/utiltime.o \
+    obj/stun.o \
+    obj/bootstrap.o \
+    obj/minizip/ioapi.o \
+    obj/minizip/unzip.o
+endif
 
+# IPFS objects
+ifeq (${USE_IPFS}, 1)
+OBJS += obj/ipfs.o obj/ipfscurl.o
+endif
 
 .PHONY: all innova-build
 
@@ -384,17 +470,11 @@ obj/build.h: FORCE
 version.cpp: obj/build.h
 DEFS += -DHAVE_BUILD_INFO
 
-obj/scrypt-x86.o: scrypt-x86.S
-	$(CXX) -c $(xCXXFLAGS) -MMD -o $@ $<
-
-obj/scrypt-x86_64.o: scrypt-x86_64.S
-	$(CXX) -c $(xCXXFLAGS) -MMD -o $@ $<
-
 obj/scrypt-arm.o: scrypt-arm.S
 	$(CXX) -c $(xCXXFLAGS) -MMD -o $@ $<
 
 obj/%.o: %.c
-	$(CXX) -c $(xCXXFLAGS) -fpermissive -MMD -MF $(@:%.o=%.d) -o $@ $<
+	$(CC) -c $(xCFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
 	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
 	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
 	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
@@ -414,25 +494,33 @@ obj/%.o: json/%.cpp
 	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
 	rm -f $(@:%.o=%.d)
 
-ifeq (${USE_NATIVETOR}, 1)
-	obj/%.o: tor/%.c
-    $(CC) -c $(xCXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
-    @cp $(@:%.o=%.d) $(@:%.o=%.P); \
-    sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
-    -e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
-    rm -f $(@:%.o=%.d)
+obj/minizip/%.o: minizip/%.c
+	@mkdir -p obj/minizip
+	$(CC) -c $(xCFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
+	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
+	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
+	rm -f $(@:%.o=%.d)
 
-	obj/anonymize.o: tor/anonymize.cpp
-    $(CXX) -c $(xCXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
-    @cp $(@:%.o=%.d) $(@:%.o=%.P); \
-    sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
-    -e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
-    rm -f $(@:%.o=%.d)
+ifeq (${USE_NATIVETOR}, 1)
+obj/%.o: tor/%.c
+	$(CC) -c $(xCFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
+	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
+	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
+	rm -f $(@:%.o=%.d)
+
+obj/anonymize.o: tor/anonymize.cpp
+	$(CXX) -c $(xCXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
+	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
+	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
+	rm -f $(@:%.o=%.d)
 endif
 
 ifeq (${USE_IPFS}, 1)
 obj/%.o: %.cc
-	$(CC) -c $(xCXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	$(CXX) -c $(xCXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
 	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
 	sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
 	-e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
@@ -447,7 +535,12 @@ clean:
 	-rm -f obj/*.o
 	-rm -f obj/*.P
 	-rm -f obj/*.d
-	-rm -f obj/build.h -rm -f obj/tor/*.o -rm -f obj/tor/*.P -rm -f obj/ipfs/*.o -rm -f obj/ipfs/*.P
+	-rm -f obj/build.h
+	-rm -f obj/tor/*.o
+	-rm -f obj/tor/*.P
+	-rm -f obj/ipfs/*.o
+	-rm -f obj/ipfs/*.P
+	-rm -rf obj/minizip
 	-cd leveldb && $(MAKE) clean || true
 
 FORCE:

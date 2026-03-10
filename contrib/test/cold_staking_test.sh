@@ -63,7 +63,6 @@ setup_nodes() {
     rm -rf "$TEST_DIR"
     mkdir -p "$OWNER_DIR" "$STAKER_DIR" "$VALIDATOR_DIR"
 
-    # Owner: has coins, delegates staking, does NOT stake
     cat > "$OWNER_DIR/innova.conf" << EOF
 regtest=1
 server=1
@@ -83,7 +82,6 @@ debug=1
 printtoconsole=0
 EOF
 
-    # Staker: hot staking node, receives delegation
     cat > "$STAKER_DIR/innova.conf" << EOF
 regtest=1
 server=1
@@ -105,7 +103,6 @@ debug=1
 printtoconsole=0
 EOF
 
-    # Validator: independent node to verify consensus
     cat > "$VALIDATOR_DIR/innova.conf" << EOF
 regtest=1
 server=1
@@ -151,22 +148,17 @@ rpc_validator() {
     "$INNOVAD" -datadir="$VALIDATOR_DIR" -rpcuser=cstest -rpcpassword=cspass -rpcport=$VALIDATOR_RPC "$@" 2>/dev/null
 }
 
-# TEST SUITES
 test_rpc_commands() {
     section "Cold Staking RPC Commands"
 
-    # Test getnewstakingaddress
     local staking_addr=$(rpc_staker getnewstakingaddress 2>/dev/null || echo "")
     if [ -n "$staking_addr" ]; then
         success "getnewstakingaddress returned: $staking_addr"
-
-        # Verify it starts with 'S' (mainnet) or appropriate testnet prefix
         log "Staking address: $staking_addr"
     else
         fail "getnewstakingaddress failed"
     fi
 
-    # Test getcoldstakinginfo
     local cs_info=$(rpc_owner getcoldstakinginfo 2>/dev/null || echo "")
     if [ -n "$cs_info" ]; then
         success "getcoldstakinginfo responds"
@@ -175,7 +167,6 @@ test_rpc_commands() {
         fail "getcoldstakinginfo failed"
     fi
 
-    # Test listcoldutxos (should be empty initially)
     local cold_utxos=$(rpc_owner listcoldutxos 2>/dev/null || echo "")
     if [ "$cold_utxos" = "[]" ] || [ -n "$cold_utxos" ]; then
         success "listcoldutxos responds (empty initially)"
@@ -187,7 +178,6 @@ test_rpc_commands() {
 test_delegation_creation() {
     section "Cold Staking Delegation"
 
-    # Generate PoW blocks on owner to get coins
     log "Mining 150 blocks on owner node..."
     rpc_owner setgenerate true 150 >/dev/null 2>&1 || true
     sleep 2
@@ -195,7 +185,6 @@ test_delegation_creation() {
     local balance=$(rpc_owner getbalance 2>/dev/null | tr -d ' ')
     log "Owner balance: $balance INN"
 
-    # Get staker address for delegation
     local staker_addr=$(rpc_staker getnewstakingaddress 2>/dev/null || echo "")
     if [ -z "$staker_addr" ]; then
         fail "Could not get staking address from staker node"
@@ -203,7 +192,6 @@ test_delegation_creation() {
     fi
     log "Staker address: $staker_addr"
 
-    # Create delegation
     local delegation_amount="5000"
     log "Delegating $delegation_amount INN to staker..."
     local result=$(rpc_owner delegatestake "$staker_addr" "$delegation_amount" 2>/dev/null || echo "ERROR")
@@ -219,11 +207,9 @@ test_delegation_creation() {
         return 0
     fi
 
-    # Mine to confirm
     rpc_owner setgenerate true 2 2>/dev/null || true
     sleep 3
 
-    # Verify cold UTXOs exist
     local cold_utxos=$(rpc_owner listcoldutxos 2>/dev/null || echo "[]")
     if echo "$cold_utxos" | grep -q "txid"; then
         success "Cold staking UTXOs visible on owner node"
@@ -231,7 +217,6 @@ test_delegation_creation() {
         warn "Cold UTXOs not yet visible on owner (may need sync)"
     fi
 
-    # Check on staker node
     local staker_utxos=$(rpc_staker listcoldutxos true 2>/dev/null || echo "[]")
     if echo "$staker_utxos" | grep -q "txid"; then
         success "Cold staking UTXOs visible on staker node"
@@ -279,7 +264,6 @@ test_multiple_delegations() {
         warn "Only created $delegated/3 delegations"
     fi
 
-    # Mine to confirm
     rpc_owner setgenerate true 2 2>/dev/null || true
     sleep 2
 }
@@ -287,7 +271,6 @@ test_multiple_delegations() {
 test_cold_stake_security() {
     section "Cold Staking Security Checks"
 
-    # Test 1: Verify delegation with invalid address fails
     local result=$(rpc_owner delegatestake "invalidaddress" 100 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "invalid\|error"; then
         success "Invalid staker address correctly rejected"
@@ -295,7 +278,6 @@ test_cold_stake_security() {
         fail "Invalid staker address was accepted"
     fi
 
-    # Test 2: Verify zero amount fails
     local staker_addr=$(rpc_staker getnewstakingaddress 2>/dev/null || echo "")
     if [ -n "$staker_addr" ]; then
         result=$(rpc_owner delegatestake "$staker_addr" 0 2>&1 || echo "ERROR")
@@ -305,7 +287,6 @@ test_cold_stake_security() {
             fail "Zero delegation amount was accepted"
         fi
 
-        # Test 3: Verify negative amount fails
         result=$(rpc_owner delegatestake "$staker_addr" -100 2>&1 || echo "ERROR")
         if echo "$result" | grep -qi "invalid\|error\|negative"; then
             success "Negative delegation amount correctly rejected"
@@ -318,10 +299,8 @@ test_cold_stake_security() {
 test_revocation() {
     section "Delegation Revocation Test"
 
-    # Owner should be able to spend P2CS UTXOs back to themselves
     local cold_utxos=$(rpc_owner listcoldutxos 2>/dev/null || echo "[]")
     if echo "$cold_utxos" | grep -q "txid"; then
-        # Get the first cold UTXO details
         local first_txid=$(echo "$cold_utxos" | grep -o '"txid" *: *"[a-f0-9]*"' | head -1 | grep -o '[a-f0-9]\{64\}')
         local first_vout=$(echo "$cold_utxos" | grep -o '"vout" *: *[0-9]*' | head -1 | grep -o '[0-9]*$')
         local first_amount=$(echo "$cold_utxos" | grep -o '"amount" *: *[0-9.]*' | head -1 | grep -o '[0-9.]*$')
@@ -329,7 +308,6 @@ test_revocation() {
         if [ -n "$first_txid" ] && [ -n "$first_amount" ]; then
             log "Attempting revocation of $first_amount INN (txid: $first_txid)"
 
-            # Try to send the cold staked coins back to owner
             local revoke_addr=$(rpc_owner getnewaddress)
             local revoke_result=$(rpc_owner sendtoaddress "$revoke_addr" "$first_amount" 2>&1 || echo "ERROR")
 
@@ -348,7 +326,6 @@ test_revocation() {
 test_revokecoldstaking_rpc() {
     section "revokecoldstaking RPC Test"
 
-    # Create a delegation for this test
     local staker_addr=$(rpc_staker getnewstakingaddress 2>/dev/null || echo "")
     if [ -z "$staker_addr" ]; then
         warn "Could not get staking address"
@@ -366,15 +343,12 @@ test_revokecoldstaking_rpc() {
         return
     fi
 
-    # Mine to confirm
     rpc_owner setgenerate true 2 2>/dev/null || true
     sleep 2
 
-    # Test revokecoldstaking RPC
     local revoke_result=$(rpc_owner revokecoldstaking "$txid" 1 2>&1 || echo "")
     if echo "$revoke_result" | grep -q '[a-f0-9]\{64\}'; then
         success "revokecoldstaking RPC returned txid"
-        # Mine the revocation
         rpc_owner setgenerate true 2 2>/dev/null || true
         sleep 2
     else
@@ -382,7 +356,6 @@ test_revokecoldstaking_rpc() {
         warn "revokecoldstaking may need specific vout index"
     fi
 
-    # Test revokecoldstaking with invalid txid
     local bad_result=$(rpc_owner revokecoldstaking "0000000000000000000000000000000000000000000000000000000000000000" 0 2>&1 || echo "ERROR")
     if echo "$bad_result" | grep -qi "error\|not found\|invalid"; then
         success "revokecoldstaking rejects invalid txid"
@@ -394,7 +367,6 @@ test_revokecoldstaking_rpc() {
 test_large_delegation() {
     section "Large Delegation Amounts"
 
-    # Generate many blocks to accumulate coins
     log "Mining additional blocks for large balance..."
     rpc_owner setgenerate true 200 >/dev/null 2>&1 || true
     sleep 3
@@ -408,7 +380,6 @@ test_large_delegation() {
         return
     fi
 
-    # Test large delegation (should succeed)
     local large_amount="50000"
     local result=$(rpc_owner delegatestake "$staker_addr" "$large_amount" 2>/dev/null || echo "ERROR")
     if echo "$result" | grep -q "txid"; then
@@ -417,7 +388,6 @@ test_large_delegation() {
         warn "Large delegation failed: ${result:0:80}"
     fi
 
-    # Test below minimum (100 INN)
     local result=$(rpc_owner delegatestake "$staker_addr" 50 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|minimum\|100"; then
         success "Below-minimum delegation (50 INN) correctly rejected"
@@ -425,7 +395,6 @@ test_large_delegation() {
         warn "Below-minimum delegation response: ${result:0:80}"
     fi
 
-    # Test exactly minimum (100 INN)
     result=$(rpc_owner delegatestake "$staker_addr" 100 2>/dev/null || echo "ERROR")
     if echo "$result" | grep -q "txid"; then
         success "Minimum delegation (100 INN) accepted"
@@ -440,19 +409,15 @@ test_large_delegation() {
 test_cn_payment_cap_large_stake() {
     section "CN Payment Cap with Large Stakes"
 
-    # This tests that the reward-based 30% cap works correctly
-    # For large stakers, the reward (not principal) determines the cap
+    # Reward-based 30% cap: for large stakers, the reward (not principal) determines the cap
     log "Testing that large cold stake amounts produce valid blocks..."
 
-    # Mine more blocks to mature the large delegation
     rpc_staker setgenerate true 10 2>/dev/null || true
     sleep 5
 
-    # Check cold staking info for reward data
     local cs_info=$(rpc_owner getcoldstakinginfo 2>/dev/null || echo "")
     log "Cold staking info: $cs_info"
 
-    # Check all nodes are in consensus
     local blocks_owner=$(rpc_owner getinfo 2>/dev/null | grep -o '"blocks" *: *[0-9]*' | grep -o '[0-9]*' || echo 0)
     local blocks_staker=$(rpc_staker getinfo 2>/dev/null | grep -o '"blocks" *: *[0-9]*' | grep -o '[0-9]*' || echo 0)
     local blocks_validator=$(rpc_validator getinfo 2>/dev/null | grep -o '"blocks" *: *[0-9]*' | grep -o '[0-9]*' || echo 0)
@@ -482,7 +447,6 @@ test_consensus_validation() {
 
     log "Block heights - Owner: $blocks_owner, Staker: $blocks_staker, Validator: $blocks_validator"
 
-    # All nodes should agree on the chain
     local max_diff=2
     local diff_os=$((blocks_owner - blocks_staker))
     if [ $diff_os -lt 0 ]; then diff_os=$((-diff_os)); fi
@@ -495,7 +459,6 @@ test_consensus_validation() {
         warn "Nodes not fully synchronized (OS diff: $diff_os, OV diff: $diff_ov)"
     fi
 
-    # Check for chain forks
     local hash_owner=$(rpc_owner getblockhash "$blocks_validator" 2>/dev/null || echo "")
     local hash_validator=$(rpc_validator getblockhash "$blocks_validator" 2>/dev/null || echo "")
 

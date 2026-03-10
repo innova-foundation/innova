@@ -52,6 +52,12 @@ void CActiveCollateralnode::ManageStatus()
                 return;
             }
 
+        if(!pwalletMain){
+            notCapableReason = "Wallet not initialized.";
+            status = COLLATERALNODE_NOT_CAPABLE;
+            printf("CActiveCollateralnode::ManageStatus() - not capable: %s\n", notCapableReason.c_str());
+            return;
+        }
         if(pwalletMain->IsLocked()){
             notCapableReason = "Wallet is locked.";
             status = COLLATERALNODE_NOT_CAPABLE;
@@ -146,7 +152,7 @@ bool CActiveCollateralnode::StopCollateralNode(std::string& errorMessage) {
 
 // Send stop iseep to network for any collateralnode
 bool CActiveCollateralnode::StopCollateralNode(CTxIn vin, CService service, CKey keyCollateralnode, CPubKey pubKeyCollateralnode, std::string& errorMessage) {
-       pwalletMain->UnlockCoin(vin.prevout);
+       if(pwalletMain) pwalletMain->UnlockCoin(vin.prevout);
     return Dseep(vin, service, keyCollateralnode, pubKeyCollateralnode, errorMessage, true);
 }
 
@@ -382,6 +388,11 @@ bool CActiveCollateralnode::GetCollateralNodeVin(CTxIn& vin, CPubKey& pubkey, CK
 
 bool CActiveCollateralnode::GetCollateralNodeVin(CTxIn& vin, CPubKey& pubkey, CKey& secretKey, std::string strTxHash, std::string strOutputIndex, std::string& errorMessage) {
 
+    if (!pwalletMain)
+    {
+        errorMessage = "Error: Wallet not initialized!";
+        return false;
+    }
     if (pwalletMain->IsLocked())
     {
         errorMessage = "Error: Your wallet is locked! Please unlock your wallet!";
@@ -571,8 +582,37 @@ vector<COutput> CActiveCollateralnode::SelectCoinsCollateralnodeForPubKey(std::s
 }
 
 // when starting a collateralnode, this can enable to run as a hot wallet with no funds
-bool CActiveCollateralnode::EnableHotColdCollateralNode(CTxIn& newVin, CService& newService)
+bool CActiveCollateralnode::EnableHotColdCollateralNode(CTxIn& newVin, CService& newService,
+                                                        CPubKey& pubkey, std::vector<unsigned char>& vchSig,
+                                                        int64_t sigTime, CPubKey& pubkey2, int protocolVersion)
 {
+    if (pubkey2 != pubKeyCollateralnode)
+    {
+        printf("CActiveCollateralnode::EnableHotColdCollateralNode() - ERROR: pubkey2 does not match our collateralnode key\n");
+        return false;
+    }
+
+    if (protocolVersion != PROTOCOL_VERSION)
+    {
+        printf("CActiveCollateralnode::EnableHotColdCollateralNode() - ERROR: protocol version mismatch (%d vs %d)\n",
+               protocolVersion, PROTOCOL_VERSION);
+        return false;
+    }
+
+    std::string strVerifyMessage = newService.ToString() +
+                                   boost::lexical_cast<std::string>(sigTime) +
+                                   std::string(pubkey.begin(), pubkey.end()) +
+                                   std::string(pubkey2.begin(), pubkey2.end()) +
+                                   boost::lexical_cast<std::string>(protocolVersion);
+    std::string strVerifyError;
+
+    if (!colLateralSigner.VerifyMessage(pubkey, vchSig, strVerifyMessage, strVerifyError))
+    {
+        printf("CActiveCollateralnode::EnableHotColdCollateralNode() - ERROR: Signature verification failed: %s\n",
+               strVerifyError.c_str());
+        return false;
+    }
+
     if(!fCollateralNode) fCollateralNode = true;
 
     status = COLLATERALNODE_REMOTELY_ENABLED;

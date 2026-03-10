@@ -118,7 +118,6 @@ rpc_recv() {
 test_basic_transactions() {
     section "Basic Transaction Types"
 
-    # Standard P2PKH send
     local addr=$(rpc_recv getnewaddress 2>/dev/null)
     local txid=$(rpc_send sendtoaddress "$addr" 500.0 2>/dev/null || echo "")
 
@@ -129,11 +128,9 @@ test_basic_transactions() {
         return 0
     fi
 
-    # Confirm
     rpc_send setgenerate true 1 >/dev/null 2>&1 || true
     sleep 2
 
-    # Verify transaction details
     local tx_data=$(rpc_send gettransaction "$txid" 2>/dev/null || echo "")
     if echo "$tx_data" | tr '\n' ' ' | grep -q '"confirmations" *: *[1-9]'; then
         success "Transaction confirmed in block"
@@ -141,7 +138,6 @@ test_basic_transactions() {
         warn "Transaction not yet confirmed"
     fi
 
-    # Check amount
     if echo "$tx_data" | tr '\n' ' ' | grep -q '"amount"'; then
         success "Transaction has valid amount field"
     fi
@@ -157,14 +153,12 @@ test_self_send() {
     if [ -n "$txid" ]; then
         success "Self-send transaction created"
 
-        # Confirm
         rpc_send setgenerate true 1 >/dev/null 2>&1 || true
         sleep 2
 
         local balance_after=$(rpc_send getbalance 2>/dev/null | tr -d ' \n')
         log "Balance before: $balance_before, after: $balance_after"
 
-        # Balance should decrease by fee only (self-send)
         success "Self-send completed (balance change = tx fee)"
     else
         fail "Self-send failed"
@@ -176,7 +170,6 @@ test_dust_transactions() {
 
     local addr=$(rpc_recv getnewaddress 2>/dev/null)
 
-    # Try very small amount (should fail as dust)
     local result=$(rpc_send sendtoaddress "$addr" 0.00000001 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|dust\|small\|amount"; then
         success "Dust transaction correctly rejected"
@@ -184,7 +177,6 @@ test_dust_transactions() {
         warn "Dust transaction result: $result"
     fi
 
-    # Try minimum viable amount
     local min_result=$(rpc_send sendtoaddress "$addr" 0.001 2>/dev/null || echo "")
     if [ -n "$min_result" ] && [ ${#min_result} -eq 64 ]; then
         success "Minimum viable transaction accepted"
@@ -221,11 +213,9 @@ test_rapid_transactions() {
         fail "No rapid transactions succeeded"
     fi
 
-    # Mine to confirm
     rpc_send setgenerate true 2 >/dev/null 2>&1 || true
     sleep 2
 
-    # Check mempool is clear
     local mempool=$(rpc_send getrawmempool 2>/dev/null || echo "[]")
     local mempool_count=$(echo "$mempool" | tr '\n' ' ' | grep -o '"[a-f0-9]\{64\}"' | wc -l | tr -d ' ')
     log "Mempool after mining: $mempool_count txs"
@@ -240,7 +230,6 @@ test_rapid_transactions() {
 test_raw_transactions() {
     section "Raw Transaction Creation"
 
-    # Get an unspent output
     local utxo_list=$(rpc_send listunspent 1 9999999 2>/dev/null || echo "[]")
     local first_txid=$(echo "$utxo_list" | tr '\n' ' ' | grep -o '"txid" *: *"[a-f0-9]\{64\}"' | head -1 | grep -o '[a-f0-9]\{64\}')
     local first_vout=$(echo "$utxo_list" | tr '\n' ' ' | grep -o '"vout" *: *[0-9]*' | head -1 | grep -o '[0-9]*$')
@@ -253,7 +242,6 @@ test_raw_transactions() {
     local recv_addr=$(rpc_recv getnewaddress 2>/dev/null)
     local change_addr=$(rpc_send getnewaddress 2>/dev/null)
 
-    # Create raw transaction (send 50, change the rest minus fee)
     local raw_tx=$(rpc_send createrawtransaction "[{\"txid\":\"$first_txid\",\"vout\":$first_vout}]" "{\"$recv_addr\":50.0,\"$change_addr\":49.99}" 2>/dev/null || echo "")
 
     if [ -n "$raw_tx" ]; then
@@ -264,7 +252,6 @@ test_raw_transactions() {
         return 0
     fi
 
-    # Decode and verify
     local decoded=$(rpc_send decoderawtransaction "$raw_tx" 2>/dev/null || echo "")
     if echo "$decoded" | tr '\n' ' ' | grep -q '"vout"'; then
         success "Raw transaction decoded successfully"
@@ -272,15 +259,12 @@ test_raw_transactions() {
         fail "Raw transaction decode failed"
     fi
 
-    # Sign raw transaction
     local signed=$(rpc_send signrawtransaction "$raw_tx" 2>/dev/null || echo "")
     if echo "$signed" | tr '\n' ' ' | grep -q '"complete" *: *true'; then
         success "Raw transaction signed completely"
 
-        # Extract signed hex
         local signed_hex=$(echo "$signed" | tr '\n' ' ' | grep -o '"hex" *: *"[a-f0-9]*"' | head -1 | sed 's/.*: *"//;s/"$//')
 
-        # Send it
         local send_result=$(rpc_send sendrawtransaction "$signed_hex" 2>/dev/null || echo "")
         if [ -n "$send_result" ] && [ ${#send_result} -eq 64 ]; then
             success "Signed raw transaction broadcast: ${send_result:0:16}..."
@@ -297,12 +281,10 @@ test_raw_transactions() {
 test_fee_estimation() {
     section "Transaction Fee Handling"
 
-    # Check current tx fee
     local info=$(rpc_send getinfo 2>/dev/null || echo "{}")
     local paytxfee=$(echo "$info" | tr '\n' ' ' | grep -o '"paytxfee" *: *[0-9.]*' | grep -o '[0-9.]*$' || echo "unknown")
     log "Current paytxfee: $paytxfee"
 
-    # Set a custom fee
     local fee_result=$(rpc_send settxfee 0.0001 2>&1 || echo "ERROR")
     if ! echo "$fee_result" | grep -qi "error"; then
         success "Custom transaction fee set"
@@ -310,7 +292,6 @@ test_fee_estimation() {
         warn "settxfee result: $fee_result"
     fi
 
-    # Send with custom fee and verify it's applied
     local addr=$(rpc_recv getnewaddress 2>/dev/null)
     local txid=$(rpc_send sendtoaddress "$addr" 10.0 2>/dev/null || echo "")
     if [ -n "$txid" ]; then
@@ -322,23 +303,19 @@ test_fee_estimation() {
         sleep 1
     fi
 
-    # Reset fee
     rpc_send settxfee 0.00001 >/dev/null 2>&1 || true
 }
 
 test_mempool_operations() {
     section "Mempool Operations"
 
-    # Get mempool info
     local mempool=$(rpc_send getrawmempool 2>/dev/null || echo "[]")
     log "Mempool entries: $(echo "$mempool" | tr '\n' ' ' | grep -o '"[a-f0-9]\{64\}"' | wc -l | tr -d ' ')"
 
-    # Create a transaction but don't mine it
     local addr=$(rpc_recv getnewaddress 2>/dev/null)
     local txid=$(rpc_send sendtoaddress "$addr" 5.0 2>/dev/null || echo "")
 
     if [ -n "$txid" ]; then
-        # Check it's in the mempool
         mempool=$(rpc_send getrawmempool 2>/dev/null || echo "[]")
         if echo "$mempool" | grep -q "$txid"; then
             success "Unconfirmed tx visible in mempool"
@@ -346,13 +323,11 @@ test_mempool_operations() {
             warn "Tx not found in mempool (may have been mined already)"
         fi
 
-        # Get raw mempool with verbose info
         local verbose_pool=$(rpc_send getrawmempool true 2>/dev/null || echo "{}")
         if echo "$verbose_pool" | tr '\n' ' ' | grep -q '"size"\|"fee"'; then
             success "Verbose mempool info available"
         fi
 
-        # Mine to clear
         rpc_send setgenerate true 1 >/dev/null 2>&1 || true
         sleep 1
     fi
@@ -361,14 +336,12 @@ test_mempool_operations() {
 test_large_amount_transactions() {
     section "Large Amount Transaction Test"
 
-    # Generate more blocks for more coins
     rpc_send setgenerate true 50 >/dev/null 2>&1 || true
     sleep 2
 
     local balance=$(rpc_send getbalance 2>/dev/null | tr -d ' \n')
     log "Available balance: $balance INN"
 
-    # Send a large transaction
     local addr=$(rpc_recv getnewaddress 2>/dev/null)
     local large_amount="100000"
     local txid=$(rpc_send sendtoaddress "$addr" "$large_amount" 2>/dev/null || echo "")
@@ -387,7 +360,6 @@ test_zero_and_negative() {
 
     local addr=$(rpc_recv getnewaddress 2>/dev/null)
 
-    # Zero amount
     local result=$(rpc_send sendtoaddress "$addr" 0 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|invalid"; then
         success "Zero amount correctly rejected"
@@ -395,7 +367,6 @@ test_zero_and_negative() {
         fail "Zero amount accepted"
     fi
 
-    # Negative amount
     result=$(rpc_send sendtoaddress "$addr" -100 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|invalid\|negative"; then
         success "Negative amount correctly rejected"
@@ -403,7 +374,6 @@ test_zero_and_negative() {
         fail "Negative amount accepted"
     fi
 
-    # Amount exceeding balance
     result=$(rpc_send sendtoaddress "$addr" 999999999999 2>&1 || echo "ERROR")
     if echo "$result" | grep -qi "error\|insufficient\|funds"; then
         success "Excessive amount correctly rejected"

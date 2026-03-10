@@ -340,7 +340,8 @@ private:
 public:
     CECKey() {
         pkey = EC_KEY_new_by_curve_name(NID_secp256k1);
-        assert(pkey != NULL);
+        if (pkey == NULL)
+            throw std::runtime_error("CECKey: EC_KEY_new_by_curve_name failed");
     }
 
     ~CECKey() {

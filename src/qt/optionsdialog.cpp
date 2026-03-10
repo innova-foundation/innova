@@ -83,6 +83,14 @@ OptionsDialog::OptionsDialog(QWidget *parent) :
 
     ui->unit->setModel(new BitcoinUnits(this));
 
+    /* Staking elements init */
+    ui->stakingMode->addItem(tr("Transparent (Standard)"), 0);
+    ui->stakingMode->addItem(tr("NullStake (Private)"), 1);
+    ui->stakingMode->addItem(tr("Cold Staking (Delegated)"), 2);
+    ui->stakingMode->addItem(tr("NullStake Cold Staking (Private Delegated)"), 3);
+    ui->stakingMode->setCurrentIndex(0);
+    connect(ui->stakingMode, SIGNAL(valueChanged()), this, SLOT(updateStakingModeDescription()));
+
     /* Widget-to-option mapper */
     mapper = new MonitoredDataMapper(this);
     mapper->setSubmitPolicy(QDataWidgetMapper::ManualSubmit);
@@ -145,6 +153,9 @@ void OptionsDialog::setMapper()
     mapper->addMapping(ui->minimizeToTray, OptionsModel::MinimizeToTray);
     mapper->addMapping(ui->minimizeOnClose, OptionsModel::MinimizeOnClose);
 #endif
+
+    /* Staking */
+    mapper->addMapping(ui->stakingMode, OptionsModel::StakingModeOpt);
 
     /* Display */
     mapper->addMapping(ui->lang, OptionsModel::Language);
@@ -222,6 +233,29 @@ void OptionsDialog::updateDisplayUnit()
     {
         /* Update transactionFee with the current unit */
         ui->transactionFee->setDisplayUnit(model->getDisplayUnit());
+    }
+}
+
+void OptionsDialog::updateStakingModeDescription()
+{
+    int mode = ui->stakingMode->value().toInt();
+    switch(mode)
+    {
+    case 0:
+        ui->stakingModeDescLabel->setText(tr("Transparent: Stakes with regular coins. Standard Proof-of-Stake."));
+        break;
+    case 1:
+        ui->stakingModeDescLabel->setText(tr("NullStake: Stakes with shielded coins for full privacy. Requires shielded balance. If you have transparent coins, use 'Shield Coins' from the Staking page."));
+        break;
+    case 2:
+        ui->stakingModeDescLabel->setText(tr("Cold Staking: Delegates staking to a hot VPS node. Your spending keys stay offline and secure. Set up delegation from the Staking page."));
+        break;
+    case 3:
+        ui->stakingModeDescLabel->setText(tr("NullStake Cold Staking: Delegates staking with full privacy. Amounts, UTXO identity, and ownership are hidden inside ZK proofs. The staker can only stake, never spend your coins."));
+        break;
+    default:
+        ui->stakingModeDescLabel->setText(tr("Unknown staking mode."));
+        break;
     }
 }
 

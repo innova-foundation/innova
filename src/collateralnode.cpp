@@ -13,12 +13,23 @@
 #include "addrman.h"
 #include "sync.h"
 #include "core.h"
+#include "hash.h"
 #include <deque>
 #include <boost/lexical_cast.hpp>
 
 int CCollateralNode::minProtoVersion = MIN_MN_PROTO_VERSION;
 
 CCriticalSection cs_collateralnodes;
+
+// Anti-replay state
+static CCriticalSection cs_pingReplay;
+static std::map<uint256, int64_t> mapSeenPingSigs;  // sig hash -> timestamp
+static const int64_t PING_REPLAY_WINDOW = 180;  // 3 minutes
+static const int64_t PING_SIG_TOLERANCE = 180;  // 3 minutes
+
+static CCriticalSection cs_iseeReplay;
+static std::map<uint256, int64_t> mapSeenIseeSigs;  // sig hash -> timestamp
+static const int64_t ISEE_REPLAY_WINDOW = 300;  // 5-minute replay window
 
 /** The list of active collateralnodes */
 std::vector<CCollateralNode> vecCollateralnodes;
@@ -90,8 +101,8 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         // 70047 and greater
         vRecv >> vin >> addr >> vchSig >> sigTime >> pubkey >> pubkey2 >> count >> current >> lastUpdated >> protocolVersion;
 
-        // make sure signature isn't in the future (past is OK)
-        if (sigTime > pindexBest->GetBlockTime() + 30 * 30) {
+        // 2-minute future timestamp tolerance
+        if (sigTime > pindexBest->GetBlockTime() + 120) {
             if (fDebugCN) printf("isee - Signature rejected, too far into the future %s\n", vin.ToString().c_str());
             return;
         }
@@ -132,6 +143,28 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
             if (fDebugCN) printf("isee - Got bad collateralnode address signature\n");
             Misbehaving(pfrom->GetId(), 100);
             return;
+        }
+
+        uint256 sigHash = Hash(vchSig.begin(), vchSig.end());
+        {
+            LOCK(cs_iseeReplay);
+            int64_t nNow = GetTime();
+
+            for (auto it = mapSeenIseeSigs.begin(); it != mapSeenIseeSigs.end(); )
+            {
+                if (nNow - it->second > ISEE_REPLAY_WINDOW)
+                    it = mapSeenIseeSigs.erase(it);
+                else
+                    ++it;
+            }
+
+            if (mapSeenIseeSigs.count(sigHash))
+            {
+                if (fDebugCN) printf("isee - Duplicate signature detected (replay attack prevented) %s\n", vin.ToString().c_str());
+                return;
+            }
+
+            mapSeenIseeSigs[sigHash] = nNow;
         }
 
         if((fTestNet && addr.GetPort() != 15539) || (!fTestNet && addr.GetPort() != 14539)) return;
@@ -177,7 +210,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         // make sure the vout that was signed is related to the transaction that spawned the collateralnode
         //  - this is expensive, so it's only done once per collateralnode
         //  - if sigTime is newer than our chain, this will probably never work, so don't bother.
-        if(sigTime < pindexBest->GetBlockTime() && !colLateralSigner.IsVinAssociatedWithPubkey(vin, pubkey)) {
+        if(!colLateralSigner.IsVinAssociatedWithPubkey(vin, pubkey)) {
             if (fDebugCN) printf("isee - Got mismatched pubkey and vin\n");
             return;
         }
@@ -206,7 +239,9 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 
             // if it matches our collateralnodeprivkey, then we've been remotely activated
             if(pubkey2 == activeCollateralnode.pubKeyCollateralnode && protocolVersion == PROTOCOL_VERSION){
-                activeCollateralnode.EnableHotColdCollateralNode(vin, addr);
+                if (!activeCollateralnode.EnableHotColdCollateralNode(vin, addr, pubkey, vchSig, sigTime, pubkey2, protocolVersion)) {
+                    if (fDebugCN) printf("isee - Remote activation failed internal verification\n");
+                }
             }
 
             if(count == -1 && !isLocal)
@@ -215,14 +250,24 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
             // no need to look up the payment amounts right now, they aren't eligible for payment now anyway
             //int payments = mn.UpdateLastPaidAmounts(pindex, 1000, value); // do a search back 1000 blocks when receiving a new collateralnode to find their last payment, payments = number of payments received, value = amount
 
+            // Re-verify UTXO under cs_main before registration
+            {
+                LOCK(cs_main);
 
-            if (fDebugCN) printf("Registered new collateralnode %s (%i/%i)\n", addr.ToString().c_str(), count, current);
+                std::string finalError;
+                if (!CheckCollateralnodeVin(vin, finalError, pindexBest)) {
+                    if (fDebugCN) printf("isee - Final UTXO check failed (TOCTOU prevented): %s\n", finalError.c_str());
+                    return;
+                }
 
-            vecCollateralnodes.push_back(mn);
-            vecCollateralnodeScoresListHash = uint256();
-            vecCollateralnodeScoresList.clear();
-            mapCollateralnodeScoresCache.clear();
-            vecCollateralnodeScoresCacheOrder.clear();
+                if (fDebugCN) printf("Registered new collateralnode %s (%i/%i)\n", addr.ToString().c_str(), count, current);
+
+                vecCollateralnodes.push_back(mn);
+                vecCollateralnodeScoresListHash = uint256();
+                vecCollateralnodeScoresList.clear();
+                mapCollateralnodeScoresCache.clear();
+                vecCollateralnodeScoresCacheOrder.clear();
+            }
 
         } else {
             if (fDebugCN) printf("isee - Rejected collateralnode entry %s: %s\n", addr.ToString().c_str(),vinError.c_str());
@@ -241,21 +286,50 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         vRecv >> vin >> vchSig >> sigTime >> stop;
 
         if (fDebugCN & fDebugSmsg) printf("iseep - Received: vin: %s sigTime: %lld stop: %s\n", vin.ToString().c_str(), sigTime, stop ? "true" : "false");
-        if (sigTime > pindexBest->GetBlockTime() + (60 * 60)*2) {
+        // 3-minute future timestamp tolerance
+        if (sigTime > pindexBest->GetBlockTime() + PING_SIG_TOLERANCE) {
             if (fDebugCN) printf("iseep - Signature rejected, too far into the future %s, sig %d local %d \n", vin.ToString().c_str(), sigTime, GetAdjustedTime());
             return;
         }
 
-        if (sigTime <= pindexBest->GetBlockTime() - (60 * 60)*2) {
+        if (sigTime <= pindexBest->GetBlockTime() - PING_SIG_TOLERANCE) {
             if (fDebugCN) printf("iseep - Signature rejected, too far into the past %s - sig %d local %d \n", vin.ToString().c_str(), sigTime, GetAdjustedTime());
             return;
+        }
+
+        {
+            LOCK(cs_pingReplay);
+            CHashWriter ss(SER_GETHASH, 0);
+            ss << vchSig << sigTime << vin.prevout;
+            uint256 sigHash = ss.GetHash();
+
+            int64_t nNow = GetTime();
+            for (auto it = mapSeenPingSigs.begin(); it != mapSeenPingSigs.end(); )
+            {
+                if (nNow - it->second > PING_REPLAY_WINDOW * 2)
+                    it = mapSeenPingSigs.erase(it);
+                else
+                    ++it;
+            }
+
+            if (mapSeenPingSigs.count(sigHash))
+            {
+                if (fDebugCN) printf("iseep - Replay attack detected, duplicate signature for %s\n", vin.ToString().c_str());
+                return;
+            }
+
+            mapSeenPingSigs[sigHash] = nNow;
         }
 
         // see if we have this collateralnode
 	      LOCK(cs_collateralnodes);
         for (CCollateralNode& mn : vecCollateralnodes) {
             if(mn.vin.prevout == vin.prevout) {
-            	// printf("iseep - Found corresponding mn for vin: %s\n", vin.ToString().c_str());
+            	if(mn.lastDseep > 0 && sigTime - mn.lastDseep < 300){
+                    if (fDebugCN) printf("iseep - Ping too frequent for %s (interval: %ds)\n",
+                                         vin.ToString().c_str(), (int)(sigTime - mn.lastDseep));
+                    return;
+                }
             	// take this only if it's newer
                 if(mn.lastDseep < sigTime){
                     std::string strMessage = mn.addr.ToString() + boost::lexical_cast<std::string>(sigTime) + boost::lexical_cast<std::string>(stop);
@@ -431,7 +505,7 @@ struct CompareLastPaidBlock
     bool operator()(const pair<int, CCollateralNode*>& t1,
                     const pair<int, CCollateralNode*>& t2) const
     {
-        return (t1.first != t2.first ? t1.first > t2.first : t1.second->CalculateScore(1, pindexBest->nHeight) > t1.second->CalculateScore(1, pindexBest->nHeight));
+        return (t1.first != t2.first ? t1.first > t2.first : t1.second->CalculateScore(1, pindexBest->nHeight) > t2.second->CalculateScore(1, pindexBest->nHeight));
     }
 };
 
@@ -778,7 +852,7 @@ bool GetBlockHash(uint256& hash, int nBlockHeight)
 
     int nBlocksAgo = 0;
     if(nBlockHeight > 0) nBlocksAgo = (pindexBest->nHeight+1)-nBlockHeight;
-    assert(nBlocksAgo >= 0);
+    if (nBlocksAgo < 0) return -1;
 
     int n = 0;
     for (unsigned int i = 1; BlockReading && BlockReading->nHeight > 0; i++) {
@@ -789,7 +863,7 @@ bool GetBlockHash(uint256& hash, int nBlockHeight)
         }
         n++;
 
-        if (BlockReading->pprev == NULL) { assert(BlockReading); break; }
+        if (BlockReading->pprev == NULL) { break; }
         BlockReading = BlockReading->pprev;
     }
 
@@ -906,7 +980,7 @@ int CCollateralNode::GetPaymentAmount(const CBlockIndex *pindex, int nMaxBlocksT
                     }
             }
 
-        if (BlockReading->pprev == NULL) { assert(BlockReading); break; }
+        if (BlockReading->pprev == NULL) { break; }
 
         BlockReading = BlockReading->pprev;
     }
@@ -1012,7 +1086,7 @@ int CCollateralNode::UpdateLastPaidAmounts(const CBlockIndex *pindex, int nMaxBl
                 }
             }
 
-        if (BlockReading->pprev == NULL) { assert(BlockReading); break; }
+        if (BlockReading->pprev == NULL) { break; }
 
         BlockReading = BlockReading->pprev;
     }
@@ -1095,7 +1169,7 @@ void CCollateralNode::UpdateLastPaidBlock(const CBlockIndex *pindex, int nMaxBlo
                     }
             }
 
-        if (BlockReading->pprev == NULL) { assert(BlockReading); break; }
+        if (BlockReading->pprev == NULL) { break; }
 
         BlockReading = BlockReading->pprev;
     }
@@ -1184,6 +1258,12 @@ bool CheckCollateralnodeVin(CTxIn& vin, std::string& errorMessage, CBlockIndex* 
         }
     }
 
+    if (vin.prevout.n >= ctx.vout.size())
+    {
+        errorMessage = "vin output index out of range";
+        return false;
+    }
+
     CTxOut vout = ctx.vout[vin.prevout.n];
     if (vout.nValue != GetMNCollateral()*COIN)
     {
@@ -1193,6 +1273,11 @@ bool CheckCollateralnodeVin(CTxIn& vin, std::string& errorMessage, CBlockIndex* 
 
     if (txdb.ReadTxIndex(vin.prevout.hash, txindex))
     {
+        if (vin.prevout.n >= txindex.vSpent.size())
+        {
+            errorMessage = "vin output index out of range for spent tracking";
+            return false;
+        }
         if (txindex.vSpent[vin.prevout.n].nTxPos != 0) {
             errorMessage = "vin was spent";
             return false;
@@ -1207,9 +1292,48 @@ bool CheckCollateralnodeVin(CTxIn& vin, std::string& errorMessage, CBlockIndex* 
 bool CCollateralnodePayments::CheckSignature(CCollateralnodePaymentWinner& winner)
 {
     //note: need to investigate why this is failing
-    std::string strMessage = winner.vin.ToString().c_str() + boost::lexical_cast<std::string>(winner.nBlockHeight) + winner.payee.ToString();
+    std::string strMessage = winner.vin.ToString() + boost::lexical_cast<std::string>(winner.nBlockHeight) + winner.payee.ToString();
     std::string strPubKey = fTestNet? strTestPubKey : strMainPubKey;
-    CPubKey pubkey(ParseHex(strPubKey));
+
+    if (strPubKey.empty())
+    {
+        printf("CCollateralnodePayments::CheckSignature - ERROR: Payment pubkey not configured\n");
+        return false;
+    }
+
+    if (strPubKey.size() != 66 && strPubKey.size() != 130)
+    {
+        printf("CCollateralnodePayments::CheckSignature - ERROR: Invalid payment pubkey hex length %u (expected 66 or 130)\n",
+               (unsigned int)strPubKey.size());
+        return false;
+    }
+
+    for (size_t i = 0; i < strPubKey.size(); i++)
+    {
+        char c = strPubKey[i];
+        bool isValidHex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        if (!isValidHex)
+        {
+            printf("CCollateralnodePayments::CheckSignature - ERROR: Invalid hex character '%c' at position %u in payment pubkey\n",
+                   c, (unsigned int)i);
+            return false;
+        }
+    }
+
+    std::vector<unsigned char> vchPubKey = ParseHex(strPubKey);
+    if (vchPubKey.size() != 33 && vchPubKey.size() != 65)
+    {
+        printf("CCollateralnodePayments::CheckSignature - ERROR: ParseHex returned unexpected size %u\n",
+               (unsigned int)vchPubKey.size());
+        return false;
+    }
+
+    CPubKey pubkey(vchPubKey);
+    if (!pubkey.IsValid())
+    {
+        printf("CCollateralnodePayments::CheckSignature - ERROR: Invalid payment pubkey\n");
+        return false;
+    }
 
     std::string errorMessage = "";
     if(!colLateralSigner.VerifyMessage(pubkey, winner.vchSig, strMessage, errorMessage)){
@@ -1221,7 +1345,7 @@ bool CCollateralnodePayments::CheckSignature(CCollateralnodePaymentWinner& winne
 
 bool CCollateralnodePayments::Sign(CCollateralnodePaymentWinner& winner)
 {
-    std::string strMessage = winner.vin.ToString().c_str() + boost::lexical_cast<std::string>(winner.nBlockHeight) + winner.payee.ToString();
+    std::string strMessage = winner.vin.ToString() + boost::lexical_cast<std::string>(winner.nBlockHeight) + winner.payee.ToString();
 
     CKey key2;
     CPubKey pubkey2;
@@ -1534,7 +1658,7 @@ void CCollateralNPayments::update(const CBlockIndex *pindex, bool force)
                         if (found) break;
                     }
                 }
-            if (BlockReading->pprev == NULL) { assert(BlockReading); break; }
+            if (BlockReading->pprev == NULL) { break; }
             BlockReading = BlockReading->pprev;
         }
 
@@ -1616,7 +1740,7 @@ bool CCollateralNPayments::initialize(const CBlockIndex *pindex)
                 }
             }
 
-            if (BlockReading->pprev == NULL) { assert(BlockReading); break; }
+            if (BlockReading->pprev == NULL) { break; }
 
             BlockReading = BlockReading->pprev;
         }
@@ -1673,7 +1797,7 @@ bool CCollateralNPayments::initialize(const CBlockIndex *pindex)
                     }
                 }
 
-            if (BlockReading->pprev == NULL) { assert(BlockReading); break; }
+            if (BlockReading->pprev == NULL) { break; }
 
             BlockReading = BlockReading->pprev;
         }
@@ -1741,7 +1865,7 @@ bool FindCNPayment(CScript& payee, CBlockIndex* pindex)
                 }
             }
 
-        if (BlockReading->pprev == NULL) { assert(BlockReading); break; }
+        if (BlockReading->pprev == NULL) { break; }
 
         BlockReading = BlockReading->pprev;
     }
@@ -1792,7 +1916,7 @@ bool FindCNPayments(CScript& payee, CBlockIndex* pindex)
                     }
                 }
 
-            if (BlockReading->pprev == NULL) { assert(BlockReading); break; }
+            if (BlockReading->pprev == NULL) { break; }
 
             BlockReading = BlockReading->pprev;
         }
@@ -1831,7 +1955,7 @@ bool FindCNPayments(CScript& payee, CBlockIndex* pindex)
                     }
                 }
 
-            if (BlockReading->pprev == NULL) { assert(BlockReading); break; }
+            if (BlockReading->pprev == NULL) { break; }
 
             BlockReading = BlockReading->pprev;
         }

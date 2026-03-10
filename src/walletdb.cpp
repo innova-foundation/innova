@@ -503,6 +503,73 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
         {
             ssValue >> pwallet->nOrderPosNext;
         }
+        else if (strType == "shkey")
+        {
+            CShieldedPaymentAddress addr;
+            ssKey >> addr;
+            CShieldedSpendingKey key;
+            ssValue >> key;
+
+            LOCK(pwallet->cs_shielded);
+            pwallet->mapShieldedSpendingKeys[addr] = key;
+
+            CShieldedFullViewingKey fvk;
+            DeriveShieldedFullViewingKey(key, fvk);
+            CShieldedIncomingViewingKey ivk;
+            DeriveShieldedIncomingViewingKey(fvk, ivk);
+            pwallet->mapShieldedViewingKeys[addr] = ivk;
+        }
+        else if (strType == "shvk")
+        {
+            CShieldedPaymentAddress addr;
+            ssKey >> addr;
+            CShieldedIncomingViewingKey ivk;
+            ssValue >> ivk;
+
+            LOCK(pwallet->cs_shielded);
+            if (pwallet->mapShieldedSpendingKeys.count(addr) == 0)
+                pwallet->mapShieldedViewingKeys[addr] = ivk;
+        }
+        else if (strType == "shnote")
+        {
+            uint256 txhash;
+            uint32_t nPosition;
+            ssKey >> txhash;
+            ssKey >> nPosition;
+            CShieldedNoteData data;
+            ssValue >> data;
+
+            LOCK(pwallet->cs_shielded);
+            bool fDuplicate = false;
+            for (const auto& existing : pwallet->vShieldedNotes)
+            {
+                if (existing.txhash == txhash && existing.nPosition == nPosition)
+                {
+                    fDuplicate = true;
+                    break;
+                }
+            }
+            if (!fDuplicate)
+            {
+                CWallet::CShieldedWalletNote wnote;
+                wnote.note = data.note;
+                wnote.txhash = txhash;
+                wnote.nPosition = nPosition;
+                wnote.fSpent = data.fSpent;
+                wnote.nHeight = data.nHeight;
+                pwallet->vShieldedNotes.push_back(wnote);
+            }
+        }
+        else if (strType == "csdeleg")
+        {
+            uint256 hashOwner;
+            ssKey >> hashOwner;
+            CColdStakeDelegation deleg;
+            ssValue >> deleg;
+
+            LOCK(pwallet->cs_shielded);
+            pwallet->mapColdStakeDelegations[hashOwner] = deleg;
+        }
         else if (strType == "adrenaline")
 	{
 	    std::string sAlias;

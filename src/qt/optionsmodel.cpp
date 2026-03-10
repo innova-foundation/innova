@@ -3,6 +3,7 @@
 #include <QSettings>
 
 #include "init.h"
+#include "main.h"
 #include "walletdb.h"
 #include "guiutil.h"
 #include "ringsig.h"
@@ -48,6 +49,18 @@ void OptionsModel::Init()
     nTransactionFee = settings.value("nTransactionFee").toLongLong();
     nReserveBalance = settings.value("nReserveBalance").toLongLong();
     language = settings.value("language", "").toString();
+    nStakingModeOption = settings.value("nStakingMode", 0).toInt();
+    if (nStakingModeOption >= 0 && nStakingModeOption <= 3)
+    {
+        LOCK(cs_stakingMode);
+        nStakingMode = (StakingMode)nStakingModeOption;
+    }
+    else
+    {
+        nStakingModeOption = 0;
+        LOCK(cs_stakingMode);
+        nStakingMode = STAKE_TRANSPARENT;
+    }
 
     // These are shared with core Bitcoin; we want
     // command-line options to override the GUI settings:
@@ -115,6 +128,8 @@ QVariant OptionsModel::data(const QModelIndex & index, int role) const
             return settings.value("language", "");
         case CoinControlFeatures:
             return QVariant(fCoinControlFeatures);
+        case StakingModeOpt:
+            return QVariant(nStakingModeOption);
         default:
             return QVariant();
         }
@@ -215,6 +230,19 @@ bool OptionsModel::setData(const QModelIndex & index, const QVariant & value, in
             emit coinControlFeaturesChanged(fCoinControlFeatures);
             }
             break;
+        case StakingModeOpt: {
+            int nMode = value.toInt();
+            if (nMode >= 0 && nMode <= 3) {
+                nStakingModeOption = nMode;
+                {
+                    LOCK(cs_stakingMode);
+                    nStakingMode = (StakingMode)nMode;
+                }
+                settings.setValue("nStakingMode", nMode);
+                emit stakingModeChanged(nMode);
+            }
+            }
+            break;
         default:
             break;
         }
@@ -257,4 +285,9 @@ int OptionsModel::getDisplayUnit()
 bool OptionsModel::getDisplayAddresses()
 {
     return bDisplayAddresses;
+}
+
+int OptionsModel::getStakingMode()
+{
+    return nStakingModeOption;
 }

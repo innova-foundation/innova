@@ -46,6 +46,19 @@ void StatisticsPage::updateStatistics()
     }
     lastUpdateTime = currentTime;
 
+    if (!pindexBest || !pwalletMain)
+        return;
+
+    // Use TRY_LOCK to avoid blocking the UI thread when consensus/wallet
+    // threads hold these locks during block processing or staking
+    TRY_LOCK(cs_main, lockMain);
+    if (!lockMain)
+        return;
+
+    TRY_LOCK(pwalletMain->cs_wallet, lockWallet);
+    if (!lockWallet)
+        return;
+
     uint64_t nMinWeight = 0, nMaxWeight = 0, nWeight = 0;
 
     double pHardness = GetDifficulty();
@@ -58,7 +71,7 @@ void StatisticsPage::updateStatistics()
 
     pwalletMain->GetStakeWeight(*pwalletMain, nMinWeight, nMaxWeight, nWeight);
     uint64_t nNetworkWeight = GetPoSKernelPS();
-	  int64_t marketcap = innmarket.toDouble();
+    int64_t marketcap = innmarket.toDouble();
     int peers = this->model->getNumConnections();
 
     QString height = QString::number(nHeight);
@@ -421,9 +434,8 @@ void StatisticsPage::updatePrevious(int nHeight, int nMinWeight, int nNetworkWei
 
 void StatisticsPage::setModel(ClientModel *model)
 {
-    updateStatistics();
-
     this->model = model;
+    updateStatistics();
 }
 
 
