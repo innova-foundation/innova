@@ -311,7 +311,6 @@ jobs:
             OPENSSL_ROOT=/mingw64 \
             LIBEVENT_ROOT=/mingw64 \
             CURL_ROOT=/mingw64 \
-            BOOST_LIB_SUFFIX=-mt \
             INNOVA_SPINNER=0 \
             -j$(nproc)
 
