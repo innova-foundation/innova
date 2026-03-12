@@ -264,51 +264,6 @@ jobs:
           path: innova-macOS-arm64.dmg
 
   # ─────────────────────────────────────────────────────────
-  # macOS x86_64 (Intel) — daemon + Qt
-  # ─────────────────────────────────────────────────────────
-  build-macos-x86_64:
-    runs-on: macos-13
-    needs: get-version
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install dependencies
-        run: |
-          brew install boost openssl@3 berkeley-db@5 miniupnpc libevent qt@5 qrencode \
-            curl gmp secp256k1
-
-      - name: Build daemon
-        run: |
-          cd src
-          make -f makefile.osx -j$(sysctl -n hw.ncpu)
-
-      - name: Build Qt wallet
-        run: |
-          /usr/local/opt/qt@5/bin/qmake USE_UPNP=1 USE_QRCODE=1 innova-qt.pro
-          make -j$(sysctl -n hw.ncpu)
-
-      - name: Create DMG
-        run: |
-          mkdir -p dmg_contents
-          cp src/innovad dmg_contents/
-          if [ -d "Innova.app" ]; then
-            cp -R Innova.app dmg_contents/
-          elif [ -f "Innova" ]; then
-            cp Innova dmg_contents/
-          fi
-          strip dmg_contents/innovad || true
-          cd dmg_contents && shasum -a 256 * > checksums.txt && cd ..
-          hdiutil create -volname "Innova" -srcfolder dmg_contents \
-            -ov -format UDZO innova-macOS-x86_64.dmg
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: innova-macOS-x86_64
-          path: innova-macOS-x86_64.dmg
-
-  # ─────────────────────────────────────────────────────────
   # Windows x86_64 — daemon + Qt via MSYS2
   # ─────────────────────────────────────────────────────────
   build-windows:
@@ -396,7 +351,6 @@ jobs:
       - build-debian-12
       - build-linux-arm64
       - build-macos-arm64
-      - build-macos-x86_64
       - build-windows
     permissions:
       contents: write
@@ -433,7 +387,6 @@ jobs:
             | Debian 12 x86_64 | `innova-debian12-x86_64.tar.gz` |
             | Linux aarch64 | `innova-linux-aarch64.tar.gz` |
             | macOS ARM64 | `innova-macOS-arm64.dmg` |
-            | macOS x86_64 | `innova-macOS-x86_64.dmg` |
             | Windows x86_64 | `innova-win64.zip` |
 
             ### Verify Downloads
