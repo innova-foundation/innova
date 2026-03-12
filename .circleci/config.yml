@@ -35,7 +35,7 @@ jobs:
           name: 'Innova QT Build'
           command: |
             sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
-            qmake "USE_UPNP=1" "USE_QRCODE=1" "USE_NATIVETOR=1" innova-qt.pro
+            qmake "USE_UPNP=1" "USE_QRCODE=1" "USE_NATIVETOR=-" innova-qt.pro
             make -j4
 workflows:
   build-deploy:

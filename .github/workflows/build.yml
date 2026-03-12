@@ -339,7 +339,6 @@ jobs:
             mingw-w64-x86_64-qt5-base
             mingw-w64-x86_64-qt5-tools
             mingw-w64-x86_64-protobuf
-            mingw-w64-x86_64-libsecp256k1
             make
             git
 

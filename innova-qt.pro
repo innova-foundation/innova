@@ -9,6 +9,14 @@ CONFIG += static
 CONFIG += c++11
 QT += core gui network widgets concurrent
 
+# macOS: Detect Homebrew prefix early (arm64 uses /opt/homebrew, x86_64 uses /usr/local)
+macx {
+    HOMEBREW_PREFIX = /opt/homebrew
+    exists(/usr/local/bin/brew):!exists(/opt/homebrew/bin/brew) {
+        HOMEBREW_PREFIX = /usr/local
+    }
+}
+
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 lessThan(QT_MAJOR_VERSION, 5): CONFIG += static
 QMAKE_CXXFLAGS += -fpermissive -Wno-literal-suffix
@@ -300,6 +308,10 @@ contains(USE_NATIVETOR, -) {
 contains(USE_QRCODE, 1) {
     message(Building with QRCode support)
     DEFINES += USE_QRCODE
+    macx {
+        INCLUDEPATH += $$HOMEBREW_PREFIX/opt/qrencode/include $$HOMEBREW_PREFIX/include
+        LIBS += -L$$HOMEBREW_PREFIX/opt/qrencode/lib
+    }
     LIBS += -lqrencode
 }
 contains(USE_PROFILER, 1) {
@@ -788,14 +800,6 @@ OTHER_FILES += \
     doc/*.rst doc/*.txt doc/README README.md res/bitcoin-qt.rc
 
 # platform specific defaults, if not overridden on command line
-# macOS: Homebrew paths (arm64 uses /opt/homebrew, x86_64 uses /usr/local)
-macx {
-    # Detect architecture and set Homebrew prefix
-    HOMEBREW_PREFIX = /opt/homebrew
-    exists(/usr/local/bin/brew):!exists(/opt/homebrew/bin/brew) {
-        HOMEBREW_PREFIX = /usr/local
-    }
-}
 
 isEmpty(BOOST_LIB_SUFFIX) {
     macx:BOOST_LIB_SUFFIX =
