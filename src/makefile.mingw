@@ -55,7 +55,7 @@ else
 endif
 
 xCXXFLAGS=-mthreads -O3 $(EXT_OPTIONS) -std=c++11 -Wall -Wextra -Wno-ignored-qualifiers -Wformat -Wformat-security -Wno-unused-parameter -Wno-deprecated-declarations -Wno-deprecated-copy $(HARDENING_FLAGS) $(DEBUGFLAGS) $(DEFS) $(INCLUDEPATHS) $(CXXFLAGS)
-xCFLAGS=-mthreads -O3 $(EXT_OPTIONS) -Wall -Wextra -Wno-ignored-qualifiers -Wformat -Wformat-security -Wno-unused-parameter -Wno-deprecated-declarations $(HARDENING_FLAGS) $(DEBUGFLAGS) $(DEFS) $(INCLUDEPATHS) $(CFLAGS)
+xCFLAGS=-mthreads -O3 $(EXT_OPTIONS) -Wall -Wextra -Wno-ignored-qualifiers -Wformat -Wformat-security -Wno-unused-parameter -Wno-deprecated-declarations -Wno-incompatible-pointer-types $(HARDENING_FLAGS) $(DEBUGFLAGS) $(DEFS) $(INCLUDEPATHS) $(CFLAGS)
 LDFLAGS=-Wl,--dynamicbase -Wl,--nxcompat -Wl,--high-entropy-va
 xLDFLAGS=$(LDFLAGS)
 
