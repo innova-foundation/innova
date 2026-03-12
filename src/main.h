@@ -122,7 +122,7 @@ inline const uint256& GetGenesisBlockHash()
 inline int GetForkHeightTighterDrift() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 7200000;
+    return (fRegTest || fTestNet) ? 1 : 7300000;
 }
 #define FORK_HEIGHT_TIGHTER_DRIFT (GetForkHeightTighterDrift())
 
@@ -130,7 +130,7 @@ inline int GetForkHeightTighterDrift() {
 inline int GetForkHeightCNPaymentValidation() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 7200000;
+    return (fRegTest || fTestNet) ? 1 : 7300000;
 }
 #define FORK_HEIGHT_CN_PAYMENT_VALIDATION (GetForkHeightCNPaymentValidation())
 
@@ -143,7 +143,7 @@ static const int FORK_MIN_CN_PROTO_VERSION = 43950;
 inline int GetForkHeightColdStaking() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 7200000;
+    return (fRegTest || fTestNet) ? 1 : 7300000;
 }
 #define FORK_HEIGHT_COLD_STAKING (GetForkHeightColdStaking())
 
@@ -152,7 +152,7 @@ inline int GetForkHeightColdStaking() {
 inline int GetForkHeightShielded() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 7210000;
+    return (fRegTest || fTestNet) ? 1 : 7310000;
 }
 #define FORK_HEIGHT_SHIELDED (GetForkHeightShielded())
 
@@ -161,7 +161,7 @@ inline int GetForkHeightShielded() {
 inline int GetForkHeightRingSigDeprecation() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 7215000;
+    return (fRegTest || fTestNet) ? 1 : 7315000;
 }
 #define FORK_HEIGHT_RINGSIG_DEPRECATION (GetForkHeightRingSigDeprecation())
 
@@ -170,7 +170,7 @@ inline int GetForkHeightRingSigDeprecation() {
 inline int GetForkHeightDSP() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 2 : 7215000;
+    return (fRegTest || fTestNet) ? 2 : 7315000;
 }
 #define FORK_HEIGHT_DSP (GetForkHeightDSP())
 
@@ -178,7 +178,7 @@ inline int GetForkHeightDSP() {
 inline int GetForkHeightNullSend() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 2 : 7220000;
+    return (fRegTest || fTestNet) ? 2 : 7320000;
 }
 #define FORK_HEIGHT_NULLSEND (GetForkHeightNullSend())
 #define FORK_HEIGHT_CJOIN FORK_HEIGHT_NULLSEND
@@ -192,7 +192,7 @@ inline int GetForkHeightNullSend() {
 inline int GetForkHeightNullStake() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 3 : 7225000;
+    return (fRegTest || fTestNet) ? 3 : 7325000;
 }
 #define FORK_HEIGHT_NULLSTAKE (GetForkHeightNullStake())
 
@@ -201,7 +201,7 @@ inline int GetForkHeightNullStake() {
 inline int GetForkHeightNullStakeV2() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 5 : 7230000;
+    return (fRegTest || fTestNet) ? 5 : 7330000;
 }
 #define FORK_HEIGHT_NULLSTAKE_V2 (GetForkHeightNullStakeV2())
 
@@ -209,7 +209,7 @@ inline int GetForkHeightNullStakeV2() {
 inline int GetForkHeightNullStakeV3() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 7 : 7235000;
+    return (fRegTest || fTestNet) ? 7 : 7335000;
 }
 #define FORK_HEIGHT_NULLSTAKE_V3 (GetForkHeightNullStakeV3())
 
@@ -218,7 +218,7 @@ inline int GetForkHeightChaumianCJ()
 {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 8 : 7240000;
+    return (fRegTest || fTestNet) ? 8 : 7340000;
 }
 #define FORK_HEIGHT_CHAUMIAN_CJ (GetForkHeightChaumianCJ())
 
@@ -229,7 +229,7 @@ inline int GetForkHeightIDNSReset() {
     extern bool fTestNet;
     if (fRegTest) return 0;     // No reset in regtest (clean chain)
     if (fTestNet) return 0;     // No reset in testnet (clean chain)
-    return 7200000;             // Mainnet: wipe all names before this height
+    return 7300000;             // Mainnet: wipe all names before this height
 }
 #define FORK_HEIGHT_IDNS_RESET (GetForkHeightIDNSReset())
 

@@ -22,7 +22,7 @@ static const int LELANTUS_GENESIS_SEED_COUNT = LELANTUS_MIN_SET_SIZE;
 inline int GetForkHeightSerialV2() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 2 : 7220000;
+    return (fRegTest || fTestNet) ? 2 : 7320000;
 }
 #define FORK_HEIGHT_SERIAL_V2 (GetForkHeightSerialV2())
 
