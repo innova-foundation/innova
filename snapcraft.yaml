@@ -139,10 +139,7 @@ parts:
     override-build: |
       set -x
       ARCH=$(uname -m)
-      TOROPT="USE_NATIVETOR=1"
-      if [ "$ARCH" != "x86_64" ]; then
-          TOROPT="USE_NATIVETOR=-"
-      fi
+      TOROPT="USE_NATIVETOR=-"
       sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' $SNAPCRAFT_PART_BUILD/innova-qt.pro
       qmake "USE_UPNP=1" "USE_QRCODE=1" "${TOROPT}" innova-qt.pro
       make -j4
