@@ -254,7 +254,7 @@ jobs:
             cp Innova dmg_contents/
           fi
           strip dmg_contents/innovad || true
-          cd dmg_contents && shasum -a 256 * > checksums.txt && cd ..
+          cd dmg_contents && find . -maxdepth 1 -type f ! -name checksums.txt -exec shasum -a 256 {} + > checksums.txt && cd ..
           hdiutil create -volname "Innova" -srcfolder dmg_contents \
             -ov -format UDZO innova-macOS-arm64.dmg
 
