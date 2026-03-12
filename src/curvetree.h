@@ -18,7 +18,7 @@ static const size_t FCMP_PROOF_MAX_SIZE = 4096;
 inline int GetForkHeightFCMP() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 2 : 7220000;
+    return (fRegTest || fTestNet) ? 2 : 7320000;
 }
 #define FORK_HEIGHT_FCMP (GetForkHeightFCMP())
 
