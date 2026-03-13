@@ -112,6 +112,8 @@ if [[ $BUILD_DAEMON -eq 1 ]]; then
         CURL_ROOT="$PREFIX" \
         MINIUPNPC_ROOT="$PREFIX" \
         BOOST_LIB_SUFFIX="$BOOST_SUFFIX" \
+        BDB_LIB_SUFFIX="-6.0" \
+        STATIC=1 \
         LDFLAGS="-static -Wl,--dynamicbase -Wl,--nxcompat -Wl,--high-entropy-va" \
         USE_NATIVETOR=- \
         USE_IPFS=1 \
@@ -141,6 +143,8 @@ if [[ $BUILD_WALLET -eq 1 ]]; then
     "$QMAKE" \
         "BOOST_LIB_SUFFIX=$BOOST_SUFFIX" \
         "BOOST_THREAD_LIB_SUFFIX=$BOOST_SUFFIX" \
+        "BDB_LIB_SUFFIX=-6.0" \
+        "STATIC_LINK=1" \
         "USE_UPNP=1" \
         "USE_NATIVETOR=-" \
         innova-qt.pro

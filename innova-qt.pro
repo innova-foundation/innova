@@ -2,7 +2,7 @@ TEMPLATE = app
 TARGET = Innova
 VERSION = 4.3.9.6
 INCLUDEPATH += src src/json src/qt src/qt/plugins/mrichtexteditor
-DEFINES += QT_GUI BOOST_THREAD_USE_LIB BOOST_SPIRIT_THREADSAFE CURL_STATICLIB
+DEFINES += QT_GUI BOOST_THREAD_USE_LIB BOOST_SPIRIT_THREADSAFE
 CONFIG += no_include_pwd
 CONFIG += thread
 CONFIG += static
@@ -40,7 +40,6 @@ isEmpty(MSYS2_MINGW64): MSYS2_MINGW64 = C:/msys64/mingw64
 exists($$MSYS2_MINGW64/include/boost/version.hpp) {
     message(Auto-detected MSYS2 MINGW64 at $$MSYS2_MINGW64)
     BOOST_THREAD_LIB_SUFFIX = -mt
-    BDB_LIB_SUFFIX = -6.0
     BOOST_INCLUDE_PATH = $$MSYS2_MINGW64/include
     BOOST_LIB_PATH = $$MSYS2_MINGW64/lib
     BDB_INCLUDE_PATH = $$MSYS2_MINGW64/include
@@ -111,7 +110,8 @@ QMAKE_LFLAGS *= -fstack-protector-all --param ssp-buffer-size=1
 }
 # for extra security on Windows: enable ASLR and DEP via GCC linker flags
 # win32:QMAKE_LFLAGS *= -Wl,--large-address-aware -static
-win32:QMAKE_LFLAGS *= -static
+# For fully static builds, pass "STATIC_LINK=1" to qmake
+win32:contains(STATIC_LINK, 1): QMAKE_LFLAGS *= -static
 # enable Windows ASLR and DEP for security hardening
 win32:QMAKE_LFLAGS *= -Wl,--dynamicbase -Wl,--nxcompat
 win32:QMAKE_LFLAGS += -static-libgcc -static-libstdc++
@@ -905,8 +905,11 @@ LIBS += -lboost_filesystem$$BOOST_LIB_SUFFIX -lboost_program_options$$BOOST_LIB_
 # -lgdi32 has to happen after -lcrypto (see  #681)
 windows:LIBS += -lws2_32 -lshlwapi -lmswsock -lole32 -loleaut32 -luuid -lgdi32
 windows:LIBS += -lboost_chrono$$BOOST_LIB_SUFFIX
-windows:LIBS += -lssh2 -lbcrypt -lcrypt32 -lwldap32 -lbrotlidec -lbrotlicommon -lzstd
-windows:LIBS += -lnghttp2 -lnghttp3 -lpsl -lidn2 -lunistring -liconv -liphlpapi
+win32:contains(STATIC_LINK, 1) {
+    DEFINES += CURL_STATICLIB
+    LIBS += -lssh2 -lbcrypt -lcrypt32 -lwldap32 -lbrotlidec -lbrotlicommon -lzstd
+    LIBS += -lnghttp2 -lnghttp3 -lpsl -lidn2 -lunistring -liconv
+}
 
 contains(RELEASE, 1) {
     !windows:!macx {
