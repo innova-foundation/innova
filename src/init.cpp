@@ -26,6 +26,7 @@
 #include "bootstrap.h"
 #include "zkproof.h"
 #include "dandelion.h"
+#include "finality.h"
 
 #ifdef USE_NATIVETOR
 #include "tor/anonymize.h" //Tor native optional integration (Flag -nativetor=1)
@@ -1700,6 +1701,9 @@ bool AppInit2()
     NewThread(ThreadCheckCollaTeralPool, NULL);
 
     NewThread(ThreadNullSend, NULL);
+
+    if (!GetBoolArg("-nofinalityvoting", false))
+        NewThread(ThreadFinalityVoter, NULL);
 
     RandAddSeedPerfmon();
 

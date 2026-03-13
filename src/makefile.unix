@@ -353,6 +353,7 @@ OBJS= \
     obj/bulletproof_ac.o \
     obj/silentpayments.o \
     obj/dandelion.o \
+    obj/finality.o \
     obj/rpcsmessage.o \
     obj/script.o \
     obj/sync.o \
@@ -427,6 +428,7 @@ OBJS= \
     obj/bulletproof_ac.o \
     obj/silentpayments.o \
     obj/dandelion.o \
+    obj/finality.o \
     obj/script.o \
     obj/sync.o \
     obj/util.o \

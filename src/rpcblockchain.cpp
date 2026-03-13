@@ -8,6 +8,7 @@
 #include "init.h"
 #include "txdb.h"
 #include "bootstrap.h"
+#include "finality.h"
 #include <errno.h>
 
 #include <boost/filesystem.hpp>
@@ -155,6 +156,18 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
     result.push_back(Pair("flags", strprintf("%s%s", blockindex->IsProofOfStake()? "proof-of-stake" : "proof-of-work", blockindex->GeneratedStakeModifier()? " stake-modifier": "")));
     result.push_back(Pair("proofhash", blockindex->hashProof.GetHex()));
     result.push_back(Pair("entropybit", (int)blockindex->GetStakeEntropyBit()));
+
+    if (blockindex->nHeight >= FORK_HEIGHT_POEM)
+    {
+        uint256 hashProofVal = blockindex->IsProofOfStake() ? blockindex->hashProof : block.GetHash();
+        result.push_back(Pair("entropy", GetBlockEntropy(hashProofVal).GetHex()));
+    }
+
+    if (blockindex->nHeight >= FORK_HEIGHT_FINALITY)
+    {
+        result.push_back(Pair("finalized", g_finalityTracker.IsFinalized(blockindex->nHeight)));
+    }
+
     result.push_back(Pair("modifier", strprintf("%016" PRIx64, blockindex->nStakeModifier)));
     result.push_back(Pair("modifierchecksum", strprintf("%08x", blockindex->nStakeModifierChecksum)));
     Array txinfo;
@@ -1015,6 +1028,75 @@ Value downloadbootstrap(const Array& params, bool fHelp)
         result.push_back(Pair("status", "failed"));
         result.push_back(Pair("message", "Bootstrap download or extraction failed. Check debug.log for details."));
     }
+
+    return result;
+}
+
+
+Value getfinalityinfo(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "getfinalityinfo\n"
+            "Returns information about the PoS finality gadget.\n");
+
+    Object result;
+
+    int nCurrentHeight = 0;
+    int64_t nSupply = 0;
+    {
+        LOCK(cs_main);
+        if (pindexBest)
+        {
+            nCurrentHeight = pindexBest->nHeight;
+            nSupply = pindexBest->nMoneySupply;
+        }
+    }
+
+    int nCurrentEpoch = nCurrentHeight / FINALITY_EPOCH_INTERVAL;
+    int nFinalizedHeight = g_finalityTracker.GetFinalizedHeight();
+    uint256 hashFinalized = g_finalityTracker.GetFinalizedHash();
+    int nVoteCount = g_finalityTracker.GetEpochVoteCount(nCurrentEpoch);
+    int64_t nVoteWeight = g_finalityTracker.GetEpochVoteWeight(nCurrentEpoch);
+
+    result.push_back(Pair("height", nCurrentHeight));
+    result.push_back(Pair("epoch", nCurrentEpoch));
+    result.push_back(Pair("epoch_interval", FINALITY_EPOCH_INTERVAL));
+    result.push_back(Pair("finalized_height", nFinalizedHeight));
+    result.push_back(Pair("finalized_hash", hashFinalized.GetHex()));
+    result.push_back(Pair("current_epoch_votes", nVoteCount));
+    result.push_back(Pair("current_epoch_weight", FormatMoney(nVoteWeight)));
+    result.push_back(Pair("money_supply", FormatMoney(nSupply)));
+    result.push_back(Pair("fork_active", nCurrentHeight >= FORK_HEIGHT_FINALITY));
+
+    return result;
+}
+
+
+Value isblockfinalized(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 1)
+        throw runtime_error(
+            "isblockfinalized <hash>\n"
+            "Returns whether a block is below the finalized height.\n");
+
+    uint256 hash;
+    hash.SetHex(params[0].get_str());
+
+    LOCK(cs_main);
+
+    std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hash);
+    if (mi == mapBlockIndex.end())
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Block not found");
+
+    CBlockIndex* pindex = mi->second;
+    bool fFinalized = g_finalityTracker.IsFinalized(pindex->nHeight);
+
+    Object result;
+    result.push_back(Pair("hash", hash.GetHex()));
+    result.push_back(Pair("height", pindex->nHeight));
+    result.push_back(Pair("finalized", fFinalized));
+    result.push_back(Pair("finalized_height", g_finalityTracker.GetFinalizedHeight()));
 
     return result;
 }

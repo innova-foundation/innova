@@ -546,6 +546,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/bulletproof_ac.h \
     src/silentpayments.h \
     src/dandelion.h \
+    src/finality.h \
     src/init.h \
     src/bootstrap.h \
     src/mruset.h \
@@ -752,7 +753,8 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/poseidon2.cpp \
     src/bulletproof_ac.cpp \
     src/silentpayments.cpp \
-    src/dandelion.cpp
+    src/dandelion.cpp \
+    src/finality.cpp
 
 #### I n n o v a sources
 
