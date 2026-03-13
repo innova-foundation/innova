@@ -60,7 +60,7 @@ jobs:
       - name: Build daemon
         run: |
           cd src
-          make USE_NATIVETOR=- STATIC=1 -f makefile.unix -j$(nproc)
+          make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
 
       - name: Build Qt wallet
         run: |
@@ -71,18 +71,19 @@ jobs:
 
       - name: Package
         run: |
-          strip src/innovad Innova
-          cp src/innovad innovad-ubuntu2204
-          cp Innova Innova-ubuntu2204-qt
+          mkdir -p innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64
+          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64/
+          strip innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64/*
+          cd innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+          tar -czf innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64.tar.gz \
+            innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: innovad-ubuntu2204
-          path: innovad-ubuntu2204
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Innova-ubuntu2204-qt
-          path: Innova-ubuntu2204-qt
+          name: innova-ubuntu2204-x86_64
+          path: innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64.tar.gz
 
   # ─────────────────────────────────────────────────────────
   # Ubuntu 24.04 x86_64 (daemon + Qt)
@@ -108,7 +109,7 @@ jobs:
       - name: Build daemon
         run: |
           cd src
-          make USE_NATIVETOR=- STATIC=1 -f makefile.unix -j$(nproc)
+          make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
 
       - name: Build Qt wallet
         run: |
@@ -119,18 +120,19 @@ jobs:
 
       - name: Package
         run: |
-          strip src/innovad Innova
-          cp src/innovad innovad-ubuntu2404
-          cp Innova Innova-ubuntu2404-qt
+          mkdir -p innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64
+          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64/
+          strip innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64/*
+          cd innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+          tar -czf innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64.tar.gz \
+            innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: innovad-ubuntu2404
-          path: innovad-ubuntu2404
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Innova-ubuntu2404-qt
-          path: Innova-ubuntu2404-qt
+          name: innova-ubuntu2404-x86_64
+          path: innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64.tar.gz
 
   # ─────────────────────────────────────────────────────────
   # Debian 12 x86_64 (daemon + Qt) via Docker container
@@ -159,7 +161,7 @@ jobs:
       - name: Build daemon
         run: |
           cd src
-          make USE_NATIVETOR=- STATIC=1 -f makefile.unix -j$(nproc)
+          make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
 
       - name: Build Qt wallet
         run: |
@@ -170,18 +172,19 @@ jobs:
 
       - name: Package
         run: |
-          strip src/innovad Innova
-          cp src/innovad innovad-debian12
-          cp Innova Innova-debian12-qt
+          mkdir -p innova-${{ needs.get-version.outputs.version }}-debian12-x86_64
+          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-debian12-x86_64/
+          strip innova-${{ needs.get-version.outputs.version }}-debian12-x86_64/*
+          cd innova-${{ needs.get-version.outputs.version }}-debian12-x86_64
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+          tar -czf innova-${{ needs.get-version.outputs.version }}-debian12-x86_64.tar.gz \
+            innova-${{ needs.get-version.outputs.version }}-debian12-x86_64/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: innovad-debian12
-          path: innovad-debian12
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Innova-debian12-qt
-          path: Innova-debian12-qt
+          name: innova-debian12-x86_64
+          path: innova-${{ needs.get-version.outputs.version }}-debian12-x86_64.tar.gz
 
   # ─────────────────────────────────────────────────────────
   # Linux aarch64 (daemon only)
@@ -205,17 +208,23 @@ jobs:
       - name: Build daemon
         run: |
           cd src
-          make USE_NATIVETOR=- STATIC=1 -f makefile.arm -j$(nproc)
+          make USE_NATIVETOR=- -f makefile.arm -j$(nproc)
 
       - name: Package
         run: |
-          strip src/innovad || true
-          cp src/innovad innovad-linux-aarch64
+          mkdir -p innova-${{ needs.get-version.outputs.version }}-linux-aarch64
+          cp src/innovad innova-${{ needs.get-version.outputs.version }}-linux-aarch64/
+          strip innova-${{ needs.get-version.outputs.version }}-linux-aarch64/innovad || true
+          cd innova-${{ needs.get-version.outputs.version }}-linux-aarch64
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+          tar -czf innova-${{ needs.get-version.outputs.version }}-linux-aarch64.tar.gz \
+            innova-${{ needs.get-version.outputs.version }}-linux-aarch64/
 
       - uses: actions/upload-artifact@v4
         with:
-          name: innovad-linux-aarch64
-          path: innovad-linux-aarch64
+          name: innova-linux-aarch64
+          path: innova-${{ needs.get-version.outputs.version }}-linux-aarch64.tar.gz
 
   # ─────────────────────────────────────────────────────────
   # macOS ARM64 (Apple Silicon) — daemon + Qt
@@ -236,7 +245,7 @@ jobs:
       - name: Build daemon
         run: |
           cd src
-          make STATIC=1 -f makefile.osx -j$(sysctl -n hw.ncpu)
+          make -f makefile.osx -j$(sysctl -n hw.ncpu)
 
       - name: Build Qt wallet
         run: |
@@ -246,28 +255,23 @@ jobs:
       - name: Package
         run: |
           strip src/innovad || true
-          cp src/innovad innovad-macOS-arm64
-          # Qt wallet — create DMG if .app bundle exists, otherwise copy binary
+          mkdir -p dmg_contents
+          cp src/innovad dmg_contents/
           if [ -d "Innova.app" ]; then
             strip Innova.app/Contents/MacOS/Innova || true
-            hdiutil create -volname "Innova" -srcfolder Innova.app \
-              -ov -format UDZO Innova-macOS-arm64.dmg
+            cp -R Innova.app dmg_contents/
           elif [ -f "Innova" ]; then
             strip Innova || true
-            mkdir -p dmg_contents
             cp Innova dmg_contents/
-            hdiutil create -volname "Innova" -srcfolder dmg_contents \
-              -ov -format UDZO Innova-macOS-arm64.dmg
           fi
+          cd dmg_contents && shasum -a 256 * > SHA256SUMS.txt 2>/dev/null || true && cd ..
+          hdiutil create -volname "Innova" -srcfolder dmg_contents \
+            -ov -format UDZO innova-${{ needs.get-version.outputs.version }}-macOS-arm64.dmg
 
       - uses: actions/upload-artifact@v4
         with:
-          name: innovad-macOS-arm64
-          path: innovad-macOS-arm64
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Innova-macOS-arm64.dmg
-          path: Innova-macOS-arm64.dmg
+          name: innova-macOS-arm64
+          path: innova-${{ needs.get-version.outputs.version }}-macOS-arm64.dmg
 
   # ─────────────────────────────────────────────────────────
   # Windows x86_64 — fully static daemon + Qt via MSYS2
@@ -378,18 +382,21 @@ jobs:
 
       - name: Package
         run: |
-          strip src/innovad.exe release/Innova.exe 2>/dev/null || true
-          cp src/innovad.exe innovad-win64.exe
-          cp release/Innova.exe Innova-win64-qt.exe
+          PKGDIR="innova-${{ needs.get-version.outputs.version }}-win64"
+          mkdir -p "$PKGDIR"
+          cp src/innovad.exe "$PKGDIR/"
+          cp release/Innova.exe "$PKGDIR/" 2>/dev/null || true
+          [ -f "Innova.exe" ] && cp Innova.exe "$PKGDIR/" || true
+          strip "$PKGDIR"/*.exe 2>/dev/null || true
+          cd "$PKGDIR"
+          sha256sum *.exe > SHA256SUMS.txt 2>/dev/null || true
+          cd ..
+          "/c/Program Files/7-Zip/7z.exe" a innova-${{ needs.get-version.outputs.version }}-win64.zip "$PKGDIR"/*
 
       - uses: actions/upload-artifact@v4
         with:
-          name: innovad-win64.exe
-          path: innovad-win64.exe
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Innova-win64-qt.exe
-          path: Innova-win64-qt.exe
+          name: innova-win64
+          path: innova-${{ needs.get-version.outputs.version }}-win64.zip
 
   # ─────────────────────────────────────────────────────────
   # Create GitHub Release (only on version tags)
@@ -418,7 +425,8 @@ jobs:
       - name: Collect release assets
         run: |
           mkdir -p release-assets
-          find artifacts -type f ! -name "*.txt" -exec cp {} release-assets/ \;
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.dmg" -o -name "*.zip" \) \
+            -exec cp {} release-assets/ \;
           cd release-assets
           sha256sum * > SHA256SUMS.txt
           echo "=== Release Assets ==="
@@ -430,10 +438,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           name: "Innova v${{ needs.get-version.outputs.version }}"
-          body: |
-            Innova v${{ needs.get-version.outputs.version }}
-
-            See release notes above for full details.
+          body: "Official release binaries for Innova v${{ needs.get-version.outputs.version }}. See release notes above for details."
           files: release-assets/*
           draft: false
           prerelease: true
