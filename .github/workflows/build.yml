@@ -448,4 +448,4 @@ jobs:
             ```
           files: release-assets/*
           draft: false
-          prerelease: false
+          prerelease: true
