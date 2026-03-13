@@ -15,7 +15,7 @@ static const std::string GITHUB_API_LATEST = "https://api.github.com/repos/innov
 
 static const std::string BOOTSTRAP_FILENAME = "innovabootstrap.zip";
 
-static const std::string FALLBACK_BOOTSTRAP_URL = "https://github.com/innova-foundation/innova/releases/download/v4.3.9.6/innovabootstrap.zip";
+static const std::string FALLBACK_BOOTSTRAP_URL = "https://github.com/innova-foundation/innova/releases/download/v5.0.0.0/innovabootstrap.zip";
 
 typedef std::function<void(int64_t, int64_t)> ProgressCallback;
 
