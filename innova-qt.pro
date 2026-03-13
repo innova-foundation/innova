@@ -923,6 +923,7 @@ win32:contains(STATIC_LINK, 1) {
     DEFINES += CURL_STATICLIB
     LIBS += -lssh2 -lbcrypt -lcrypt32 -lwldap32 -lbrotlidec -lbrotlicommon -lzstd
     LIBS += -lnghttp2 -lnghttp3 -lngtcp2_crypto_ossl -lngtcp2 -lpsl -lidn2 -lunistring -liconv -lsecur32
+    LIBS += -lssl -lcrypto -lws2_32 -lz -lcrypt32
 }
 
 contains(RELEASE, 1) {

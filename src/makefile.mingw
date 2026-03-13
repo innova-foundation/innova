@@ -95,7 +95,7 @@ endif
 # Static curl deps (pass STATIC=1 for fully-static builds)
 ifeq ($(STATIC),1)
 DEFS += -DCURL_STATICLIB
-LIBS += -l ssh2 -l bcrypt -l crypt32 -l wldap32 -l brotlidec -l brotlicommon -l zstd -l nghttp2 -l nghttp3 -l ngtcp2_crypto_ossl -l ngtcp2 -l psl -l idn2 -l unistring -l iconv -l secur32
+LIBS += -l ssh2 -l bcrypt -l crypt32 -l wldap32 -l brotlidec -l brotlicommon -l zstd -l nghttp2 -l nghttp3 -l ngtcp2_crypto_ossl -l ngtcp2 -l psl -l idn2 -l unistring -l iconv -l secur32 -l ssl -l crypto -l ws2_32 -l z -l crypt32
 endif
 
 LIBS += -l kernel32 -l user32 -l gdi32 -l comdlg32 -l winspool -l winmm -l shell32 -l comctl32 -l ole32 -l oleaut32 -l uuid -l rpcrt4 -l advapi32 -l ws2_32 -l mswsock -l shlwapi -l z
