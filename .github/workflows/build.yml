@@ -60,7 +60,7 @@ jobs:
       - name: Build daemon
         run: |
           cd src
-          make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
+          make USE_NATIVETOR=- STATIC=1 -f makefile.unix -j$(nproc)
 
       - name: Build Qt wallet
         run: |
@@ -71,17 +71,18 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p release
-          cp src/innovad Innova release/
-          strip release/innovad release/Innova
-          cd release
-          sha256sum innovad Innova > checksums.txt
-          tar -czf ../innova-ubuntu2204-x86_64.tar.gz *
+          strip src/innovad Innova
+          cp src/innovad innovad-ubuntu2204
+          cp Innova Innova-ubuntu2204-qt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: innova-ubuntu2204-x86_64
-          path: innova-ubuntu2204-x86_64.tar.gz
+          name: innovad-ubuntu2204
+          path: innovad-ubuntu2204
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Innova-ubuntu2204-qt
+          path: Innova-ubuntu2204-qt
 
   # ─────────────────────────────────────────────────────────
   # Ubuntu 24.04 x86_64 (daemon + Qt)
@@ -107,7 +108,7 @@ jobs:
       - name: Build daemon
         run: |
           cd src
-          make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
+          make USE_NATIVETOR=- STATIC=1 -f makefile.unix -j$(nproc)
 
       - name: Build Qt wallet
         run: |
@@ -118,17 +119,18 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p release
-          cp src/innovad Innova release/
-          strip release/innovad release/Innova
-          cd release
-          sha256sum innovad Innova > checksums.txt
-          tar -czf ../innova-ubuntu2404-x86_64.tar.gz *
+          strip src/innovad Innova
+          cp src/innovad innovad-ubuntu2404
+          cp Innova Innova-ubuntu2404-qt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: innova-ubuntu2404-x86_64
-          path: innova-ubuntu2404-x86_64.tar.gz
+          name: innovad-ubuntu2404
+          path: innovad-ubuntu2404
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Innova-ubuntu2404-qt
+          path: Innova-ubuntu2404-qt
 
   # ─────────────────────────────────────────────────────────
   # Debian 12 x86_64 (daemon + Qt) via Docker container
@@ -157,7 +159,7 @@ jobs:
       - name: Build daemon
         run: |
           cd src
-          make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
+          make USE_NATIVETOR=- STATIC=1 -f makefile.unix -j$(nproc)
 
       - name: Build Qt wallet
         run: |
@@ -168,17 +170,18 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p release
-          cp src/innovad Innova release/
-          strip release/innovad release/Innova
-          cd release
-          sha256sum innovad Innova > checksums.txt
-          tar -czf ../innova-debian12-x86_64.tar.gz *
+          strip src/innovad Innova
+          cp src/innovad innovad-debian12
+          cp Innova Innova-debian12-qt
 
       - uses: actions/upload-artifact@v4
         with:
-          name: innova-debian12-x86_64
-          path: innova-debian12-x86_64.tar.gz
+          name: innovad-debian12
+          path: innovad-debian12
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Innova-debian12-qt
+          path: Innova-debian12-qt
 
   # ─────────────────────────────────────────────────────────
   # Linux aarch64 (daemon only)
@@ -202,21 +205,17 @@ jobs:
       - name: Build daemon
         run: |
           cd src
-          make USE_NATIVETOR=- -f makefile.arm -j$(nproc)
+          make USE_NATIVETOR=- STATIC=1 -f makefile.arm -j$(nproc)
 
       - name: Package
         run: |
-          mkdir -p release
-          cp src/innovad release/
-          strip release/innovad || true
-          cd release
-          sha256sum innovad > checksums.txt
-          tar -czf ../innova-linux-aarch64.tar.gz *
+          strip src/innovad || true
+          cp src/innovad innovad-linux-aarch64
 
       - uses: actions/upload-artifact@v4
         with:
-          name: innova-linux-aarch64
-          path: innova-linux-aarch64.tar.gz
+          name: innovad-linux-aarch64
+          path: innovad-linux-aarch64
 
   # ─────────────────────────────────────────────────────────
   # macOS ARM64 (Apple Silicon) — daemon + Qt
@@ -237,34 +236,41 @@ jobs:
       - name: Build daemon
         run: |
           cd src
-          make -f makefile.osx -j$(sysctl -n hw.ncpu)
+          make STATIC=1 -f makefile.osx -j$(sysctl -n hw.ncpu)
 
       - name: Build Qt wallet
         run: |
           /opt/homebrew/opt/qt@5/bin/qmake USE_UPNP=1 USE_QRCODE=1 innova-qt.pro
           make -j$(sysctl -n hw.ncpu)
 
-      - name: Create DMG
+      - name: Package
         run: |
-          mkdir -p dmg_contents
-          cp src/innovad dmg_contents/
+          strip src/innovad || true
+          cp src/innovad innovad-macOS-arm64
+          # Qt wallet — create DMG if .app bundle exists, otherwise copy binary
           if [ -d "Innova.app" ]; then
-            cp -R Innova.app dmg_contents/
+            strip Innova.app/Contents/MacOS/Innova || true
+            hdiutil create -volname "Innova" -srcfolder Innova.app \
+              -ov -format UDZO Innova-macOS-arm64.dmg
           elif [ -f "Innova" ]; then
+            strip Innova || true
+            mkdir -p dmg_contents
             cp Innova dmg_contents/
+            hdiutil create -volname "Innova" -srcfolder dmg_contents \
+              -ov -format UDZO Innova-macOS-arm64.dmg
           fi
-          strip dmg_contents/innovad || true
-          cd dmg_contents && find . -maxdepth 1 -type f ! -name checksums.txt -exec shasum -a 256 {} + > checksums.txt && cd ..
-          hdiutil create -volname "Innova" -srcfolder dmg_contents \
-            -ov -format UDZO innova-macOS-arm64.dmg
 
       - uses: actions/upload-artifact@v4
         with:
-          name: innova-macOS-arm64
-          path: innova-macOS-arm64.dmg
+          name: innovad-macOS-arm64
+          path: innovad-macOS-arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Innova-macOS-arm64.dmg
+          path: Innova-macOS-arm64.dmg
 
   # ─────────────────────────────────────────────────────────
-  # Windows x86_64 — daemon + Qt via MSYS2
+  # Windows x86_64 — fully static daemon + Qt via MSYS2
   # ─────────────────────────────────────────────────────────
   build-windows:
     runs-on: windows-latest
@@ -325,7 +331,7 @@ jobs:
           fi
           echo "boost_suffix=$BOOST_SUFFIX" >> "$GITHUB_OUTPUT"
 
-          # Detect BDB suffix (prefer .dll.a for dynamic linking)
+          # Detect BDB suffix
           BDB_LIB=$(find /mingw64/lib -maxdepth 1 -name "libdb_cxx*.dll.a" -print -quit 2>/dev/null)
           if [ -z "$BDB_LIB" ]; then
             BDB_LIB=$(find /mingw64/lib -maxdepth 1 -name "libdb_cxx*.a" -print -quit 2>/dev/null)
@@ -339,7 +345,7 @@ jobs:
           fi
           echo "bdb_suffix=$BDB_SUFFIX" >> "$GITHUB_OUTPUT"
 
-      - name: Build daemon
+      - name: Build daemon (fully static)
         run: |
           cd src
           make -f makefile.mingw \
@@ -351,12 +357,14 @@ jobs:
             MINIUPNPC_ROOT=/mingw64 \
             BOOST_LIB_SUFFIX="${{ steps.libs.outputs.boost_suffix }}" \
             BDB_LIB_SUFFIX="${{ steps.libs.outputs.bdb_suffix }}" \
+            STATIC=1 \
+            LDFLAGS="-static -Wl,--dynamicbase -Wl,--nxcompat -Wl,--high-entropy-va" \
             USE_NATIVETOR=- \
             USE_IPFS=1 \
             INNOVA_SPINNER=0 \
             -j$(nproc)
 
-      - name: Build Qt wallet
+      - name: Build Qt wallet (fully static)
         run: |
           /mingw64/qt5-static/bin/qmake \
             "BOOST_LIB_SUFFIX=${{ steps.libs.outputs.boost_suffix }}" \
@@ -370,26 +378,18 @@ jobs:
 
       - name: Package
         run: |
-          mkdir -p release
-          cp src/innovad.exe release/ 2>/dev/null || true
-          # Qt static build outputs directly to release/Innova.exe
-          [ -f "Innova.exe" ] && cp Innova.exe release/ || true
-          # Bundle required MINGW64 DLLs for dynamically-linked binaries
-          for exe in release/*.exe; do
-            ldd "$exe" 2>/dev/null | grep -i '/mingw64/' | awk '{print $3}' | sort -u | while read dll; do
-              [ -f "$dll" ] && cp -n "$dll" release/ 2>/dev/null || true
-            done || true
-          done
-          strip release/*.exe 2>/dev/null || true
-          cd release
-          sha256sum *.exe > checksums.txt 2>/dev/null || true
-          cd ..
-          "/c/Program Files/7-Zip/7z.exe" a innova-win64.zip ./release/*
+          strip src/innovad.exe release/Innova.exe 2>/dev/null || true
+          cp src/innovad.exe innovad-win64.exe
+          cp release/Innova.exe Innova-win64-qt.exe
 
       - uses: actions/upload-artifact@v4
         with:
-          name: innova-win64
-          path: innova-win64.zip
+          name: innovad-win64.exe
+          path: innovad-win64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Innova-win64-qt.exe
+          path: Innova-win64-qt.exe
 
   # ─────────────────────────────────────────────────────────
   # Create GitHub Release (only on version tags)
@@ -418,10 +418,12 @@ jobs:
       - name: Collect release assets
         run: |
           mkdir -p release-assets
-          find artifacts -type f \( -name "*.tar.gz" -o -name "*.dmg" -o -name "*.zip" \) \
-            -exec cp {} release-assets/ \;
+          find artifacts -type f ! -name "*.txt" -exec cp {} release-assets/ \;
           cd release-assets
           sha256sum * > SHA256SUMS.txt
+          echo "=== Release Assets ==="
+          ls -lh
+          echo ""
           cat SHA256SUMS.txt
 
       - name: Create release
@@ -429,80 +431,9 @@ jobs:
         with:
           name: "Innova v${{ needs.get-version.outputs.version }}"
           body: |
-            # Pre-Release — Testnet Only!
-            This is a **pre-release** build for testing purposes. Do NOT use on mainnet yet.
+            Innova v${{ needs.get-version.outputs.version }}
 
-            ## Innova v${{ needs.get-version.outputs.version }} Release Notes
-
-            * New Privacy Technology — Shielded Transactions, NullSend, ShieldedCoinJoin
-            * Lelantus, Curve Trees, IPA, Poseidon2 Hash
-            * Bulletproof AC Range Proofs, Ed25519 ZK
-            * Silent Payments Support
-            * Dandelion++ Transaction Routing
-            * NullStake — Private Staking
-            * New Protocol 50000
-            * New Min Protocol 43960
-            * Multi-platform CI/CD with GitHub Actions
-
-            ### Testnet Instructions
-
-            To run in testnet mode, add the following to your `innova.conf`:
-            ```
-            testnet=1
-            ```
-            Or launch with the `-testnet` flag:
-            ```
-            ./innovad -testnet
-            ./Innova -testnet
-            ```
-
-            ### Downloads
-
-            | Platform | File |
-            |----------|------|
-            | Ubuntu 22.04 x86_64 | `innova-ubuntu2204-x86_64.tar.gz` |
-            | Ubuntu 24.04 x86_64 | `innova-ubuntu2404-x86_64.tar.gz` |
-            | Debian 12 x86_64 | `innova-debian12-x86_64.tar.gz` |
-            | Linux aarch64 | `innova-linux-aarch64.tar.gz` |
-            | macOS ARM64 | `innova-macOS-arm64.dmg` |
-            | Windows x86_64 | `innova-win64.zip` |
-
-            ### Update Instructions
-
-            ## Linux — CollateralNode Bootstrap
-            Run the following commands:
-            ```
-            wget https://raw.githubusercontent.com/innova-foundation/innova/master/bootstrap.sh
-            bash bootstrap.sh
-            ```
-            **Note:**
-            - Synchronization time may vary based on your VPS hardware and network performance.
-            - bootstrap.sh updates your wallet at the default **/root/.innova/** folder. Modify if using a different folder.
-            - It will also remove peers.dat and debug.log from your .innova folder.
-
-            ### If you get a St_13runtime_error relating to innovanamesindex.dat
-
-            1. Head to your Innova Core folder:
-               - **Linux:** `~/.innova/`
-               - **macOS:** `~/Library/Application Support/Innova/`
-               - **Windows:** `%APPDATA%\Innova`
-            2. Backup your `wallet.dat` (and `collateralnode.conf` if applicable).
-            3. Delete the Innova Core folder.
-            4. Download v${{ needs.get-version.outputs.version }} and run. Allow the software to regenerate all files and begin syncing.
-            5. You can shutdown during sync and replace `wallet.dat` with your backup, and restore your `collateralnode.conf`.
-            6. Re-run the wallet.
-
-            ### Snap Store
-            https://snapcraft.io/innova
-            ```
-            sudo apt install snapd
-            sudo snap install innova
-            ```
-
-            ### Verify Downloads
-            ```
-            sha256sum -c SHA256SUMS.txt
-            ```
+            See release notes above for full details.
           files: release-assets/*
           draft: false
           prerelease: true
