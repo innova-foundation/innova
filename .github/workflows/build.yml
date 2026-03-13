@@ -429,7 +429,32 @@ jobs:
         with:
           name: "Innova v${{ needs.get-version.outputs.version }}"
           body: |
-            ## Innova v${{ needs.get-version.outputs.version }}
+            # Pre-Release — Testnet Only!
+            This is a **pre-release** build for testing purposes. Do NOT use on mainnet yet.
+
+            ## Innova v${{ needs.get-version.outputs.version }} Release Notes
+
+            * New Privacy Technology — Shielded Transactions, NullSend, ShieldedCoinJoin
+            * Lelantus, Curve Trees, IPA, Poseidon2 Hash
+            * Bulletproof AC Range Proofs, Ed25519 ZK
+            * Silent Payments Support
+            * Dandelion++ Transaction Routing
+            * NullStake — Private Staking
+            * New Protocol 50000
+            * New Min Protocol 43960
+            * Multi-platform CI/CD with GitHub Actions
+
+            ### Testnet Instructions
+
+            To run in testnet mode, add the following to your `innova.conf`:
+            ```
+            testnet=1
+            ```
+            Or launch with the `-testnet` flag:
+            ```
+            ./innovad -testnet
+            ./Innova -testnet
+            ```
 
             ### Downloads
 
@@ -441,6 +466,38 @@ jobs:
             | Linux aarch64 | `innova-linux-aarch64.tar.gz` |
             | macOS ARM64 | `innova-macOS-arm64.dmg` |
             | Windows x86_64 | `innova-win64.zip` |
+
+            ### Update Instructions
+
+            ## Linux — CollateralNode Bootstrap
+            Run the following commands:
+            ```
+            wget https://raw.githubusercontent.com/innova-foundation/innova/master/bootstrap.sh
+            bash bootstrap.sh
+            ```
+            **Note:**
+            - Synchronization time may vary based on your VPS hardware and network performance.
+            - bootstrap.sh updates your wallet at the default **/root/.innova/** folder. Modify if using a different folder.
+            - It will also remove peers.dat and debug.log from your .innova folder.
+
+            ### If you get a St_13runtime_error relating to innovanamesindex.dat
+
+            1. Head to your Innova Core folder:
+               - **Linux:** `~/.innova/`
+               - **macOS:** `~/Library/Application Support/Innova/`
+               - **Windows:** `%APPDATA%\Innova`
+            2. Backup your `wallet.dat` (and `collateralnode.conf` if applicable).
+            3. Delete the Innova Core folder.
+            4. Download v${{ needs.get-version.outputs.version }} and run. Allow the software to regenerate all files and begin syncing.
+            5. You can shutdown during sync and replace `wallet.dat` with your backup, and restore your `collateralnode.conf`.
+            6. Re-run the wallet.
+
+            ### Snap Store
+            https://snapcraft.io/innova
+            ```
+            sudo apt install snapd
+            sudo snap install innova
+            ```
 
             ### Verify Downloads
             ```
