@@ -30,13 +30,13 @@ static const int DATABASE_VERSION = 21212;
 // network protocol versioning
 //
 
-static const int PROTOCOL_VERSION = 43960; // Protocol 43960
+static const int PROTOCOL_VERSION = 50000; // Protocol 50000
 
 // intial proto version, to be increased after version/verack negotiation
 static const int INIT_PROTO_VERSION = 21212;
 
 // disconnect from peers older than this proto version
-static const int MIN_PEER_PROTO_VERSION = 43950; // Allow min v4.3.9.5
+static const int MIN_PEER_PROTO_VERSION = 43960; // Allow min v4.3.9.6
 
 // Don't forget to change proto in COLLATERAL.h as well!! On Block 1.5m this will be 31005
 extern int MIN_MN_PROTO_VERSION;
