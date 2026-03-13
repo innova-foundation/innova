@@ -24,6 +24,7 @@
 #include "dandelion.h"
 #include "lelantus.h"
 #include "curvetree.h"
+#include "finality.h"
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
@@ -92,6 +93,10 @@ bool fHybridSPV = false;
 bool fSPVStakingEnabled = false;
 StakingMode nStakingMode = STAKE_TRANSPARENT;
 CCriticalSection cs_stakingMode;
+
+int nLastFinalizedHeight = 0;
+uint256 hashLastFinalized = 0;
+CCriticalSection cs_finality;
 
 CMedianFilter<int> cPeerBlockCounts(5, 0); // Amount of blocks that other nodes claim to have
 
@@ -4568,6 +4573,29 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
 {
     printf("REORGANIZE\n");
 
+    {
+        int nFinalHeight = g_finalityTracker.GetFinalizedHeight();
+        if (nFinalHeight > 0 && pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
+        {
+            CBlockIndex* pCheck = pindexBest;
+            CBlockIndex* pLonger = pindexNew;
+            while (pCheck != pLonger)
+            {
+                while (pLonger && pLonger->nHeight > pCheck->nHeight)
+                    pLonger = pLonger->pprev;
+                if (pCheck == pLonger)
+                    break;
+                if (pCheck)
+                    pCheck = pCheck->pprev;
+            }
+            if (pCheck && pCheck->nHeight < nFinalHeight)
+            {
+                return error("Reorganize() : rejected — fork point height %d is below finalized height %d",
+                             pCheck->nHeight, nFinalHeight);
+            }
+        }
+    }
+
     // Find the fork
     CBlockIndex* pfork = pindexBest;
     CBlockIndex* plonger = pindexNew;
@@ -4743,6 +4771,34 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
     }
     else
     {
+        {
+            int nFinalHeight = g_finalityTracker.GetFinalizedHeight();
+            if (nFinalHeight > 0 && pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
+            {
+                CBlockIndex* pWalk = pindexNew;
+                while (pWalk && pWalk->nHeight > nBestHeight)
+                    pWalk = pWalk->pprev;
+                CBlockIndex* pOld = pindexBest;
+                while (pOld && pWalk && pOld != pWalk)
+                {
+                    if (pOld->nHeight > pWalk->nHeight)
+                        pOld = pOld->pprev;
+                    else if (pWalk->nHeight > pOld->nHeight)
+                        pWalk = pWalk->pprev;
+                    else
+                    {
+                        pOld = pOld->pprev;
+                        pWalk = pWalk->pprev;
+                    }
+                }
+                if (pOld && pOld->nHeight < nFinalHeight)
+                {
+                    txdb.TxnAbort();
+                    return error("SetBestChain() : rejected reorg — fork below finalized height %d", nFinalHeight);
+                }
+            }
+        }
+
         // the first block in the new chain that will cause it to become the new best chain
         CBlockIndex *pindexIntermediate = pindexNew;
 
@@ -5212,6 +5268,9 @@ uint256 CBlockIndex::GetBlockTrust() const
 
     if (bnTarget <= 0)
         return 0;
+
+    if (nHeight >= FORK_HEIGHT_POEM)
+        return GetBlockEntropy(IsProofOfStake() ? hashProof : *phashBlock);
 
     return ((CBigNum(1)<<256) / (bnTarget+1)).getuint256();
 }
@@ -7393,6 +7452,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         //ProcessMessageCollateralN(pfrom, strCommand, vRecv);
         ProcessMessageCollateralnode(pfrom, strCommand, vRecv);
         ProcessMessageNullSend(pfrom, strCommand, vRecv);
+        ProcessMessageFinality(pfrom, strCommand, vRecv);
         //ProcessSpork(pfrom, strCommand, vRecv);
 
         // Ignore unknown commands for extensibility

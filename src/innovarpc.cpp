@@ -485,6 +485,10 @@ static const CRPCCommand vRPCCommands[] =
     { "sp_listaddresses",       &sp_listaddresses,       true,   false },
     { "sp_send",                &sp_send,                false,  true },
 
+    /* IDAG Phase 1: Finality commands */
+    { "getfinalityinfo",        &getfinalityinfo,        true,   false },
+    { "isblockfinalized",       &isblockfinalized,       true,   false },
+
 #ifdef USE_IPFS
     /* Hyperfile / IPFS commands */
     { "hyperfileversion",       &hyperfileversion,       true,   false },

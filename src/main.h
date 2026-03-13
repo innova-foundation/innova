@@ -222,6 +222,24 @@ inline int GetForkHeightChaumianCJ()
 }
 #define FORK_HEIGHT_CHAUMIAN_CJ (GetForkHeightChaumianCJ())
 
+// POEM entropy weighting
+inline int GetForkHeightPoem()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    return (fRegTest || fTestNet) ? 9 : 7345000;
+}
+#define FORK_HEIGHT_POEM (GetForkHeightPoem())
+
+// PoS finality gadget
+inline int GetForkHeightFinality()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    return (fRegTest || fTestNet) ? 10 : 7350000;
+}
+#define FORK_HEIGHT_FINALITY (GetForkHeightFinality())
+
 // Hard fork height for IDNS name reset
 // names before this height treated as expired; 0 = no reset
 inline int GetForkHeightIDNSReset() {
@@ -283,6 +301,10 @@ extern std::map<uint256, CBlock*> mapOrphanBlocks;
 extern std::map<uint256, NodeId> mapOrphanBlocksByNode;
 extern std::map<NodeId, int> mapOrphanCountByNode;
 extern std::map<int64_t, CAnonOutputCount> mapAnonOutputStats;
+
+extern int nLastFinalizedHeight;
+extern uint256 hashLastFinalized;
+extern CCriticalSection cs_finality;
 
 extern CBigNum bnProofOfWorkLimit;
 extern CBigNum bnProofOfWorkLimitTestNet;
