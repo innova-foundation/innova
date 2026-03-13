@@ -378,7 +378,7 @@ jobs:
           for exe in release/*.exe; do
             ldd "$exe" 2>/dev/null | grep -i '/mingw64/' | awk '{print $3}' | sort -u | while read dll; do
               [ -f "$dll" ] && cp -n "$dll" release/ 2>/dev/null || true
-            done
+            done || true
           done
           strip release/*.exe 2>/dev/null || true
           cd release
