@@ -27,6 +27,7 @@
 #include "zkproof.h"
 #include "dandelion.h"
 #include "finality.h"
+#include "dag.h"
 
 #ifdef USE_NATIVETOR
 #include "tor/anonymize.h" //Tor native optional integration (Flag -nativetor=1)
@@ -1704,6 +1705,14 @@ bool AppInit2()
 
     if (!GetBoolArg("-nofinalityvoting", false))
         NewThread(ThreadFinalityVoter, NULL);
+
+    // IDAG Phase 2: DAG manager initialized via global constructor
+    // Links loaded during LoadBlockIndex() in txdb-leveldb.cpp
+    if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_DAG)
+    {
+        std::vector<uint256> vTips = g_dagManager.GetDAGTips();
+        printf("IDAG: DAG active at height %d, %d tips\n", pindexBest->nHeight, (int)vTips.size());
+    }
 
     RandAddSeedPerfmon();
 

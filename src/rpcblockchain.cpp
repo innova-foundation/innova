@@ -9,6 +9,7 @@
 #include "txdb.h"
 #include "bootstrap.h"
 #include "finality.h"
+#include "dag.h"
 #include <errno.h>
 
 #include <boost/filesystem.hpp>
@@ -166,6 +167,28 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
     if (blockindex->nHeight >= FORK_HEIGHT_FINALITY)
     {
         result.push_back(Pair("finalized", g_finalityTracker.IsFinalized(blockindex->nHeight)));
+    }
+
+    // IDAG Phase 2: DAG metadata
+    if (blockindex->nHeight >= FORK_HEIGHT_DAG && blockindex->phashBlock)
+    {
+        const CBlockDAGData* pDAGData = g_dagManager.GetDAGData(blockindex->GetBlockHash());
+        if (pDAGData)
+        {
+            Array dagparents;
+            for (const uint256& hp : pDAGData->vDAGParents)
+                dagparents.push_back(hp.GetHex());
+            result.push_back(Pair("dagparents", dagparents));
+
+            Array dagchildren;
+            for (const uint256& hc : pDAGData->vDAGChildren)
+                dagchildren.push_back(hc.GetHex());
+            result.push_back(Pair("dagchildren", dagchildren));
+
+            result.push_back(Pair("dagblue", pDAGData->fBlue));
+            result.push_back(Pair("dagscore", pDAGData->nDAGScore.GetHex()));
+            result.push_back(Pair("dagorder", pDAGData->nDAGOrder));
+        }
     }
 
     result.push_back(Pair("modifier", strprintf("%016" PRIx64, blockindex->nStakeModifier)));
@@ -1097,6 +1120,130 @@ Value isblockfinalized(const Array& params, bool fHelp)
     result.push_back(Pair("height", pindex->nHeight));
     result.push_back(Pair("finalized", fFinalized));
     result.push_back(Pair("finalized_height", g_finalityTracker.GetFinalizedHeight()));
+
+    return result;
+}
+
+
+// ---------------------------------------------------------------------------
+// IDAG Phase 2: DAG RPC commands
+// ---------------------------------------------------------------------------
+
+Value getdaginfo(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "getdaginfo\n"
+            "Returns information about the DAG consensus state.\n");
+
+    LOCK(cs_main);
+
+    Object result;
+
+    int nCurrentHeight = pindexBest ? pindexBest->nHeight : 0;
+    result.push_back(Pair("dag_active", nCurrentHeight >= FORK_HEIGHT_DAG));
+    result.push_back(Pair("fork_height", FORK_HEIGHT_DAG));
+    result.push_back(Pair("current_height", nCurrentHeight));
+
+    std::vector<uint256> vTips = g_dagManager.GetDAGTips();
+    result.push_back(Pair("dag_tips", (int)vTips.size()));
+
+    result.push_back(Pair("ghostdag_k", GHOSTDAG_K));
+    result.push_back(Pair("max_parents", MAX_DAG_PARENTS));
+    result.push_back(Pair("merge_depth", DAG_MERGE_DEPTH));
+
+    CBlockIndex* pBestTip = g_dagManager.SelectBestDAGTip();
+    if (pBestTip && pBestTip->phashBlock)
+    {
+        result.push_back(Pair("best_dag_tip", pBestTip->GetBlockHash().GetHex()));
+        uint256 nScore = g_dagManager.ComputeDAGScore(pBestTip);
+        result.push_back(Pair("best_dag_score", nScore.GetHex()));
+    }
+
+    return result;
+}
+
+Value getdagtips(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 0)
+        throw runtime_error(
+            "getdagtips\n"
+            "Returns the current DAG tip block hashes.\n");
+
+    LOCK(cs_main);
+
+    std::vector<uint256> vTips = g_dagManager.GetDAGTips();
+
+    Array result;
+    for (const uint256& hash : vTips)
+    {
+        Object tip;
+        tip.push_back(Pair("hash", hash.GetHex()));
+
+        std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hash);
+        if (mi != mapBlockIndex.end())
+        {
+            CBlockIndex* pindex = mi->second;
+            tip.push_back(Pair("height", pindex->nHeight));
+            tip.push_back(Pair("time", (int64_t)pindex->nTime));
+
+            const CBlockDAGData* pData = g_dagManager.GetDAGData(hash);
+            if (pData)
+            {
+                tip.push_back(Pair("blue", pData->fBlue));
+                tip.push_back(Pair("score", pData->nDAGScore.GetHex()));
+                tip.push_back(Pair("parents", (int)pData->vDAGParents.size()));
+            }
+        }
+        result.push_back(tip);
+    }
+
+    return result;
+}
+
+Value getdagorder(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 1)
+        throw runtime_error(
+            "getdagorder [count]\n"
+            "Returns the GHOSTDAG linear ordering of blocks from the best tip.\n"
+            "Optional count limits the number of blocks returned (default: 100).\n");
+
+    int nCount = 100;
+    if (params.size() > 0)
+        nCount = params[0].get_int();
+    if (nCount <= 0 || nCount > 1000)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "count must be 1-1000");
+
+    LOCK(cs_main);
+
+    CBlockIndex* pBestTip = g_dagManager.SelectBestDAGTip();
+    if (!pBestTip || !pBestTip->phashBlock)
+        throw JSONRPCError(RPC_MISC_ERROR, "No DAG tips available");
+
+    std::vector<uint256> vOrder = g_dagManager.GetDAGLinearOrder(pBestTip->GetBlockHash());
+
+    Array result;
+    int nStart = (int)vOrder.size() > nCount ? (int)vOrder.size() - nCount : 0;
+    for (int i = nStart; i < (int)vOrder.size(); i++)
+    {
+        Object entry;
+        entry.push_back(Pair("order", i));
+        entry.push_back(Pair("hash", vOrder[i].GetHex()));
+
+        std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(vOrder[i]);
+        if (mi != mapBlockIndex.end())
+        {
+            entry.push_back(Pair("height", mi->second->nHeight));
+            entry.push_back(Pair("is_pow", mi->second->IsProofOfWork()));
+        }
+
+        const CBlockDAGData* pData = g_dagManager.GetDAGData(vOrder[i]);
+        if (pData)
+            entry.push_back(Pair("blue", pData->fBlue));
+
+        result.push_back(entry);
+    }
 
     return result;
 }

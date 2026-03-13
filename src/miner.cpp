@@ -8,6 +8,7 @@
 #include "miner.h"
 #include "kernel.h"
 #include "collateralnode.h"
+#include "dag.h"
 
 using namespace std;
 
@@ -164,6 +165,55 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         txNew.vout[0].SetEmpty();
     }
 
+    // IDAG Phase 2: Add DAG parent commitment to coinbase
+    if (nHeight >= FORK_HEIGHT_DAG)
+    {
+        std::vector<uint256> vDAGParents;
+
+        // Primary parent = pindexPrev
+        if (pindexPrev->phashBlock)
+            vDAGParents.push_back(pindexPrev->GetBlockHash());
+
+        // Collect merge parents from DAG tips
+        {
+            LOCK(g_dagManager.cs_dag);
+            std::vector<uint256> vTips = g_dagManager.GetDAGTips();
+            for (const uint256& hashTip : vTips)
+            {
+                if (vDAGParents.size() >= (unsigned int)MAX_DAG_PARENTS)
+                    break;
+
+                // Skip if already the primary parent
+                if (pindexPrev->phashBlock && hashTip == pindexPrev->GetBlockHash())
+                    continue;
+
+                // Merge parent must exist and be within DAG_MERGE_DEPTH
+                std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashTip);
+                if (mi == mapBlockIndex.end())
+                    continue;
+                CBlockIndex* pTip = mi->second;
+                if (pTip->nHeight < pindexPrev->nHeight - DAG_MERGE_DEPTH)
+                    continue;
+                if (pTip->nHeight >= nHeight)
+                    continue;
+
+                vDAGParents.push_back(hashTip);
+            }
+        }
+
+        if (!vDAGParents.empty())
+        {
+            CScript dagScript = BuildDAGParentScript(vDAGParents);
+            if (dagScript.size() > 0)
+            {
+                CTxOut dagOut;
+                dagOut.nValue = 0;
+                dagOut.scriptPubKey = dagScript;
+                txNew.vout.push_back(dagOut);
+            }
+        }
+    }
+
     // Add our coinbase tx as first transaction
     pblock->vtx.push_back(txNew);
 
@@ -270,6 +320,24 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         list<COrphan> vOrphan; // list memory doesn't move
         map<uint256, vector<COrphan*> > mapDependers;
 
+        // IDAG Phase 2: Collect txids from DAG sibling blocks to avoid duplicates
+        std::set<uint256> setDAGSiblingTxids;
+        if (nHeight >= FORK_HEIGHT_DAG && pindexPrev->phashBlock)
+        {
+            std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(pindexPrev->GetBlockHash());
+            for (const uint256& hashSib : siblings)
+            {
+                std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashSib);
+                if (mi == mapBlockIndex.end())
+                    continue;
+                CBlock sibBlock;
+                if (!sibBlock.ReadFromDisk(mi->second))
+                    continue;
+                for (const CTransaction& sibTx : sibBlock.vtx)
+                    setDAGSiblingTxids.insert(sibTx.GetHash());
+            }
+        }
+
         // This vector will be sorted into a priority queue:
         vector<TxPriority> vecPriority;
         vecPriority.reserve(mempool.mapTx.size());
@@ -277,6 +345,10 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         {
             CTransaction& tx = (*mi).second;
             if (tx.IsCoinBase() || tx.IsCoinStake() || !tx.IsFinal())
+                continue;
+
+            // IDAG: Skip transactions already in DAG sibling blocks
+            if (!setDAGSiblingTxids.empty() && setDAGSiblingTxids.count(tx.GetHash()))
                 continue;
 
             COrphan* porphan = NULL;

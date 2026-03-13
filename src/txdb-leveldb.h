@@ -7,6 +7,7 @@
 #define BITCOIN_LEVELDB_H
 
 #include "main.h"
+#include "dag.h"
 #include "ringsig.h"
 #include "curvetree.h"
 
@@ -267,6 +268,10 @@ public:
     bool ReadCheckpointPubKey(std::string& strPubKey);
     bool WriteCheckpointPubKey(const std::string& strPubKey);
     bool LoadBlockIndex();
+
+    // IDAG Phase 2: DAG link persistence
+    bool WriteDAGLinks(const uint256& hash, const CBlockDAGData& data);
+    bool ReadDAGLinks(const uint256& hash, CBlockDAGData& data);
 private:
     bool LoadBlockIndexGuts();
 };

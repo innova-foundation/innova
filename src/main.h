@@ -240,6 +240,15 @@ inline int GetForkHeightFinality()
 }
 #define FORK_HEIGHT_FINALITY (GetForkHeightFinality())
 
+// IDAG Phase 2: Full DAG consensus
+inline int GetForkHeightDAG()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    return (fRegTest || fTestNet) ? 11 : 7355000;
+}
+#define FORK_HEIGHT_DAG (GetForkHeightDAG())
+
 // Hard fork height for IDNS name reset
 // names before this height treated as expired; 0 = no reset
 inline int GetForkHeightIDNSReset() {
