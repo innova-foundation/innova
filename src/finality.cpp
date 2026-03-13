@@ -8,6 +8,7 @@
 #include "wallet.h"
 #include "net.h"
 #include "util.h"
+#include "dag.h"
 
 #include <openssl/sha.h>
 
@@ -377,8 +378,24 @@ bool ProduceFinalityVote()
     int nCurrentHeight = pindexBest->nHeight;
     int nCurrentEpoch = nCurrentHeight / FINALITY_EPOCH_INTERVAL;
 
+    // IDAG Phase 2: If DAG is active, vote for DAG-selected best tip
     int nEpochHeight = nCurrentEpoch * FINALITY_EPOCH_INTERVAL;
-    CBlockIndex* pEpochBlock = FindBlockByHeight(nEpochHeight);
+    CBlockIndex* pEpochBlock = NULL;
+    if (nCurrentHeight >= FORK_HEIGHT_DAG)
+    {
+        CBlockIndex* pDAGTip = g_dagManager.SelectBestDAGTip();
+        if (pDAGTip)
+        {
+            // Walk back to epoch boundary from DAG tip
+            CBlockIndex* pWalk = pDAGTip;
+            while (pWalk && pWalk->nHeight > nEpochHeight)
+                pWalk = pWalk->pprev;
+            if (pWalk && pWalk->nHeight == nEpochHeight)
+                pEpochBlock = pWalk;
+        }
+    }
+    if (!pEpochBlock)
+        pEpochBlock = FindBlockByHeight(nEpochHeight);
     if (!pEpochBlock)
         return false;
 

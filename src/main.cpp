@@ -25,6 +25,7 @@
 #include "lelantus.h"
 #include "curvetree.h"
 #include "finality.h"
+#include "dag.h"
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
@@ -3519,6 +3520,41 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
     std::set<uint256> setBlockNullifiers;
 
+    // IDAG Phase 2: Collect spent outputs from DAG sibling blocks (earlier in GHOSTDAG order)
+    // Transactions conflicting with already-spent outputs from siblings are skipped
+    std::set<COutPoint> setDAGSpentOutputs;
+    bool fDAGActive = (pindex->nHeight >= FORK_HEIGHT_DAG);
+    if (fDAGActive && pindex->phashBlock)
+    {
+        std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(pindex->GetBlockHash());
+        for (const uint256& hashSibling : siblings)
+        {
+            // Only consider siblings that are earlier in GHOSTDAG linear order
+            const CBlockDAGData* pSibData = g_dagManager.GetDAGData(hashSibling);
+            const CBlockDAGData* pMyData = g_dagManager.GetDAGData(pindex->GetBlockHash());
+            if (!pSibData || !pMyData)
+                continue;
+            if (pSibData->nDAGOrder >= pMyData->nDAGOrder)
+                continue; // this sibling comes after us, skip
+
+            // Load sibling block and collect its spent outputs
+            std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashSibling);
+            if (mi == mapBlockIndex.end())
+                continue;
+            CBlock sibBlock;
+            if (!sibBlock.ReadFromDisk(mi->second))
+                continue;
+
+            for (const CTransaction& sibTx : sibBlock.vtx)
+            {
+                if (sibTx.IsCoinBase() || sibTx.IsCoinStake())
+                    continue;
+                for (const CTxIn& txin : sibTx.vin)
+                    setDAGSpentOutputs.insert(txin.prevout);
+            }
+        }
+    }
+
     for (CTransaction& tx : vtx)
     {
         //const CTransaction &tx = vtx[i];
@@ -3564,6 +3600,30 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         }
         else
         {
+            // IDAG Phase 2: Skip transactions whose inputs conflict with DAG siblings
+            if (fDAGActive && !tx.IsCoinStake())
+            {
+                bool fConflict = false;
+                for (const CTxIn& txin : tx.vin)
+                {
+                    if (setDAGSpentOutputs.count(txin.prevout))
+                    {
+                        fConflict = true;
+                        break;
+                    }
+                }
+                if (fConflict)
+                {
+                    if (fDebug)
+                        printf("ConnectBlock() : DAG conflict skip tx %s (inputs spent by sibling)\n",
+                               hashTx.ToString().substr(0, 20).c_str());
+                    // Skip this tx but don't fail the block
+                    nTxPos += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
+                    pos.nTxPos += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
+                    continue;
+                }
+            }
+
             bool fInvalid;
             if (!tx.FetchInputs(txdb, mapQueuedChanges, true, false, mapInputs, fInvalid))
                 return false;
@@ -5026,6 +5086,39 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
     if (!txdb.TxnCommit())
         return false;
 
+    // IDAG Phase 2: Initialize DAG data for post-fork blocks
+    if (pindexNew->nHeight >= FORK_HEIGHT_DAG)
+    {
+        // Extract DAG parents from coinbase OP_RETURN
+        std::vector<uint256> vDAGParents;
+        for (unsigned int i = 0; i < vtx[0].vout.size(); i++)
+        {
+            vDAGParents = ExtractDAGParents(vtx[0].vout[i].scriptPubKey);
+            if (!vDAGParents.empty())
+                break;
+        }
+
+        if (!vDAGParents.empty())
+        {
+            g_dagManager.InitBlockDAGData(pindexNew, vDAGParents);
+            g_dagManager.ColorBlock(pindexNew);
+
+            CTxDB txdbDAG;
+            if (txdbDAG.TxnBegin())
+            {
+                g_dagManager.WriteDAGLinks(txdbDAG, hash);
+                // Also update parent entries (new child link)
+                for (const uint256& hashParent : vDAGParents)
+                    g_dagManager.WriteDAGLinks(txdbDAG, hashParent);
+                txdbDAG.TxnCommit();
+            }
+
+            // Use DAG score for best-chain comparison
+            uint256 nDAGScore = g_dagManager.ComputeDAGScore(pindexNew);
+            pindexNew->nChainTrust = nDAGScore;
+        }
+    }
+
     LOCK(cs_main);
 
     // New best
@@ -5235,6 +5328,62 @@ bool CBlock::AcceptBlock()
         !std::equal(expect.begin(), expect.end(), vtx[0].vin[0].scriptSig.begin()))
         return DoS(100, error("AcceptBlock() : block height mismatch in coinbase"));
 
+    // IDAG Phase 2: Validate DAG parent commitment in coinbase OP_RETURN
+    if (nHeight >= FORK_HEIGHT_DAG)
+    {
+        // Search coinbase outputs for DAG parent commitment
+        std::vector<uint256> vDAGParents;
+        for (unsigned int i = 0; i < vtx[0].vout.size(); i++)
+        {
+            vDAGParents = ExtractDAGParents(vtx[0].vout[i].scriptPubKey);
+            if (!vDAGParents.empty())
+                break;
+        }
+
+        if (vDAGParents.empty())
+            return DoS(100, error("AcceptBlock() : post-DAG-fork block missing DAG parent commitment"));
+
+        if (vDAGParents.size() > (unsigned int)MAX_DAG_PARENTS)
+            return DoS(100, error("AcceptBlock() : too many DAG parents (%d > %d)", (int)vDAGParents.size(), MAX_DAG_PARENTS));
+
+        // Primary parent (index 0) must match hashPrevBlock
+        if (vDAGParents[0] != hashPrevBlock)
+            return DoS(100, error("AcceptBlock() : DAG primary parent %s != hashPrevBlock %s",
+                                   vDAGParents[0].ToString().substr(0, 20).c_str(),
+                                   hashPrevBlock.ToString().substr(0, 20).c_str()));
+
+        // Validate merge parents
+        for (unsigned int i = 1; i < vDAGParents.size(); i++)
+        {
+            // No self-reference
+            if (vDAGParents[i] == hash)
+                return DoS(100, error("AcceptBlock() : DAG parent[%d] is self-reference", i));
+
+            // Must exist in block index
+            if (!mapBlockIndex.count(vDAGParents[i]))
+                return DoS(10, error("AcceptBlock() : DAG merge parent[%d] %s not found",
+                                      i, vDAGParents[i].ToString().substr(0, 20).c_str()));
+
+            // Merge parent must have lower height
+            CBlockIndex* pMergeParent = mapBlockIndex[vDAGParents[i]];
+            if (pMergeParent->nHeight >= nHeight)
+                return DoS(100, error("AcceptBlock() : DAG merge parent[%d] height %d >= block height %d",
+                                       i, pMergeParent->nHeight, nHeight));
+
+            // Merge parent within DAG_MERGE_DEPTH of primary parent
+            if (pindexPrev->nHeight - pMergeParent->nHeight > DAG_MERGE_DEPTH)
+                return DoS(50, error("AcceptBlock() : DAG merge parent[%d] too deep (%d below primary)",
+                                      i, pindexPrev->nHeight - pMergeParent->nHeight));
+
+            // No duplicate parents
+            for (unsigned int j = 0; j < i; j++)
+            {
+                if (vDAGParents[j] == vDAGParents[i])
+                    return DoS(100, error("AcceptBlock() : duplicate DAG parent at index %d and %d", j, i));
+            }
+        }
+    }
+
     // Write block to history file
     if (!CheckDiskSpace(::GetSerializeSize(*this, SER_DISK, CLIENT_VERSION)))
         return error("AcceptBlock() : out of disk space");
@@ -5415,6 +5564,30 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
 
         }
 
+    }
+
+    // IDAG Phase 2: Request missing merge parents without orphaning the block
+    if (pindexBest && pindexBest->nHeight + 1 >= FORK_HEIGHT_DAG && mapBlockIndex.count(pblock->hashPrevBlock))
+    {
+        // Primary parent exists — check merge parents in coinbase OP_RETURN
+        for (unsigned int i = 0; i < pblock->vtx[0].vout.size(); i++)
+        {
+            std::vector<uint256> vDAGParents = ExtractDAGParents(pblock->vtx[0].vout[i].scriptPubKey);
+            if (!vDAGParents.empty())
+            {
+                for (unsigned int j = 1; j < vDAGParents.size(); j++)
+                {
+                    if (!mapBlockIndex.count(vDAGParents[j]) && pfrom)
+                    {
+                        pfrom->AskFor(CInv(MSG_BLOCK, vDAGParents[j]));
+                        if (fDebug)
+                            printf("ProcessBlock: requesting missing DAG merge parent %s\n",
+                                   vDAGParents[j].ToString().substr(0, 20).c_str());
+                    }
+                }
+                break;
+            }
+        }
     }
 
     // If don't already have its previous block, shunt it off to holding area until we get it
@@ -7454,6 +7627,36 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         ProcessMessageNullSend(pfrom, strCommand, vRecv);
         ProcessMessageFinality(pfrom, strCommand, vRecv);
         //ProcessSpork(pfrom, strCommand, vRecv);
+
+        // IDAG Phase 2: DAG tips exchange
+        if (strCommand == "getdagtips")
+        {
+            LOCK(cs_main);
+            if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_DAG)
+            {
+                std::vector<uint256> vTips = g_dagManager.GetDAGTips();
+                pfrom->PushMessage("dagtips", vTips);
+            }
+        }
+        else if (strCommand == "dagtips")
+        {
+            std::vector<uint256> vTips;
+            vRecv >> vTips;
+
+            if (vTips.size() > 100)
+            {
+                pfrom->Misbehaving(20);
+            }
+            else
+            {
+                LOCK(cs_main);
+                for (const uint256& hashTip : vTips)
+                {
+                    if (!mapBlockIndex.count(hashTip))
+                        pfrom->AskFor(CInv(MSG_BLOCK, hashTip));
+                }
+            }
+        }
 
         // Ignore unknown commands for extensibility
     }

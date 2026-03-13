@@ -489,6 +489,11 @@ static const CRPCCommand vRPCCommands[] =
     { "getfinalityinfo",        &getfinalityinfo,        true,   false },
     { "isblockfinalized",       &isblockfinalized,       true,   false },
 
+    /* IDAG Phase 2: DAG consensus commands */
+    { "getdaginfo",             &getdaginfo,             true,   false },
+    { "getdagtips",             &getdagtips,             true,   false },
+    { "getdagorder",            &getdagorder,            true,   false },
+
 #ifdef USE_IPFS
     /* Hyperfile / IPFS commands */
     { "hyperfileversion",       &hyperfileversion,       true,   false },

@@ -407,6 +407,17 @@ bool CTxDB::EraseCurveTreeAtBlock(const uint256& blockHash)
     return Erase(make_pair(string("cb"), blockHash));
 }
 
+// IDAG Phase 2: DAG link persistence
+bool CTxDB::WriteDAGLinks(const uint256& hash, const CBlockDAGData& data)
+{
+    return Write(make_pair(string("daglinks"), hash), data);
+}
+
+bool CTxDB::ReadDAGLinks(const uint256& hash, CBlockDAGData& data)
+{
+    return Read(make_pair(string("daglinks"), hash), data);
+}
+
 class CBatchScanner : public leveldb::WriteBatch::Handler {
 public:
     std::string needle;
@@ -690,6 +701,11 @@ bool CTxDB::LoadBlockIndex()
         if (!CheckStakeModifierCheckpoints(pindex->nHeight, pindex->nStakeModifierChecksum))
             return error("CTxDB::LoadBlockIndex() : Failed stake modifier checkpoint height=%d, modifier=0x%016" PRIx64, pindex->nHeight, pindex->nStakeModifier);
     }
+
+    // IDAG Phase 2: Load DAG links and rebuild ordering
+    g_dagManager.LoadDAGLinks(*this);
+    if (!g_dagManager.GetDAGTips().empty())
+        g_dagManager.RebuildDAGOrder();
 
     // Load hashBestChain pointer to end of best chain
     if (!ReadHashBestChain(hashBestChain))

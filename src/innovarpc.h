@@ -275,6 +275,9 @@ extern json_spirit::Value burn(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value proofofdata(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value getfinalityinfo(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value isblockfinalized(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
+extern json_spirit::Value getdaginfo(const json_spirit::Array& params, bool fHelp);      // in rpcblockchain.cpp
+extern json_spirit::Value getdagtips(const json_spirit::Array& params, bool fHelp);      // in rpcblockchain.cpp
+extern json_spirit::Value getdagorder(const json_spirit::Array& params, bool fHelp);     // in rpcblockchain.cpp
 
 extern json_spirit::Value hyperfileversion(const json_spirit::Array& params, bool fHelp); // in rpchyperfile.cpp Innova Hyperfile
 extern json_spirit::Value hyperfileupload(const json_spirit::Array& params, bool fHelp);
