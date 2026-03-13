@@ -31,18 +31,18 @@ LIBPATHS= \
  -L"$(CURL_ROOT)/lib"
 
 LIBS= \
+ -l curl \
+ -l event \
  -l boost_system$(BOOST_LIB_SUFFIX) \
  -l boost_filesystem$(BOOST_LIB_SUFFIX) \
  -l boost_program_options$(BOOST_LIB_SUFFIX) \
  -l boost_thread$(BOOST_LIB_SUFFIX) \
  -l boost_chrono$(BOOST_LIB_SUFFIX) \
- -l db_cxx \
+ -l db_cxx-6.0 \
  -l ssl \
- -l crypto \
- -l event \
- -l curl
+ -l crypto
 
-DEFS=-DWIN32 -D_WINDOWS -DWIN32_LEAN_AND_MEAN -DBOOST_THREAD_USE_LIB -DBOOST_SPIRIT_THREADSAFE
+DEFS=-DWIN32 -D_WINDOWS -DWIN32_LEAN_AND_MEAN -DBOOST_THREAD_USE_LIB -DBOOST_SPIRIT_THREADSAFE -DCURL_STATICLIB
 DEBUGFLAGS=-g
 HARDENING_FLAGS = -fstack-protector-strong -D_FORTIFY_SOURCE=2
 
@@ -66,10 +66,10 @@ ifndef USE_UPNP
 endif
 MINIUPNPC_ROOT ?= C:\deps\miniupnpc
 ifneq (${USE_UPNP}, -)
- INCLUDEPATHS += -I"$(MINIUPNPC_ROOT)"
- LIBPATHS += -L"$(MINIUPNPC_ROOT)"
+ INCLUDEPATHS += -I"$(MINIUPNPC_ROOT)/include"
+ LIBPATHS += -L"$(MINIUPNPC_ROOT)/lib"
  LIBS += -l miniupnpc -l iphlpapi
- DEFS += -DSTATICLIB -DUSE_UPNP=$(USE_UPNP)
+ DEFS += -DSTATICLIB -DMINIUPNP_STATICLIB -DUSE_UPNP=$(USE_UPNP)
 endif
 
 ifndef USE_NATIVETOR
@@ -85,6 +85,9 @@ endif
 ifneq (${USE_IPFS}, -)
     DEFS += $(addprefix -I,$(CURDIR)/ipfs) -DUSE_IPFS=$(USE_IPFS)
 endif
+
+# Static curl deps
+LIBS += -l ssh2 -l bcrypt -l crypt32 -l wldap32 -l brotlidec -l brotlicommon -l zstd -l nghttp2 -l nghttp3 -l psl -l idn2 -l unistring -l iconv
 
 LIBS += -l kernel32 -l user32 -l gdi32 -l comdlg32 -l winspool -l winmm -l shell32 -l comctl32 -l ole32 -l oleaut32 -l uuid -l rpcrt4 -l advapi32 -l ws2_32 -l mswsock -l shlwapi -l z
 
@@ -193,7 +196,7 @@ innova-build: innovad.exe
 # LevelDB support
 #
 ifeq (${USE_LEVELDB}, 1)
-LIBS += $(CURDIR)/leveldb/libleveldb.a $(CURDIR)/leveldb/libmemenv.a
+LEVELDB_LIBS = $(CURDIR)/leveldb/libleveldb.a $(CURDIR)/leveldb/libmemenv.a
 DEFS += $(addprefix -I,$(CURDIR)/leveldb/include) -DUSE_LEVELDB
 DEFS += $(addprefix -I,$(CURDIR)/leveldb/helpers)
 OBJS += obj/txdb-leveldb.o
@@ -262,7 +265,7 @@ obj/%.o: %.cc
 endif
 
 innovad.exe: $(OBJS:obj/%=obj/%)
-	$(CXX) $(xCXXFLAGS) $(xLDFLAGS) -o $@ $(LIBPATHS) $^ $(LIBS)
+	$(CXX) $(xCXXFLAGS) $(xLDFLAGS) -o $@ $(LIBPATHS) $^ $(LEVELDB_LIBS) $(LIBS)
 
 clean:
 	-del /Q innovad.exe
