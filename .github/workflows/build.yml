@@ -372,8 +372,9 @@ jobs:
         run: |
           mkdir -p release
           cp src/innovad.exe release/ 2>/dev/null || true
+          # Qt static build outputs directly to release/Innova.exe
           [ -f "Innova.exe" ] && cp Innova.exe release/ || true
-          # Bundle required MINGW64 DLLs
+          # Bundle required MINGW64 DLLs for dynamically-linked binaries
           for exe in release/*.exe; do
             ldd "$exe" 2>/dev/null | grep -i '/mingw64/' | awk '{print $3}' | sort -u | while read dll; do
               [ -f "$dll" ] && cp -n "$dll" release/ 2>/dev/null || true
@@ -381,9 +382,9 @@ jobs:
           done
           strip release/*.exe 2>/dev/null || true
           cd release
-          sha256sum * > checksums.txt 2>/dev/null || true
+          sha256sum *.exe > checksums.txt 2>/dev/null || true
           cd ..
-          7z a innova-win64.zip ./release/*
+          "/c/Program Files/7-Zip/7z.exe" a innova-win64.zip ./release/*
 
       - uses: actions/upload-artifact@v4
         with:
