@@ -908,7 +908,7 @@ windows:LIBS += -lboost_chrono$$BOOST_LIB_SUFFIX
 win32:contains(STATIC_LINK, 1) {
     DEFINES += CURL_STATICLIB
     LIBS += -lssh2 -lbcrypt -lcrypt32 -lwldap32 -lbrotlidec -lbrotlicommon -lzstd
-    LIBS += -lnghttp2 -lnghttp3 -lpsl -lidn2 -lunistring -liconv
+    LIBS += -lnghttp2 -lnghttp3 -lngtcp2_crypto_ossl -lngtcp2 -lpsl -lidn2 -lunistring -liconv -lsecur32
 }
 
 contains(RELEASE, 1) {
