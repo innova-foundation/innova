@@ -362,6 +362,7 @@ jobs:
             "BOOST_LIB_SUFFIX=${{ steps.libs.outputs.boost_suffix }}" \
             "BOOST_THREAD_LIB_SUFFIX=${{ steps.libs.outputs.boost_suffix }}" \
             "BDB_LIB_SUFFIX=${{ steps.libs.outputs.bdb_suffix }}" \
+            "STATIC_LINK=1" \
             "USE_UPNP=1" \
             "USE_NATIVETOR=-" \
             innova-qt.pro
