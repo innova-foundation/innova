@@ -264,7 +264,7 @@ jobs:
           path: innova-macOS-arm64.dmg
 
   # ─────────────────────────────────────────────────────────
-  # Windows x86_64 — daemon + Qt via MSYS2
+  # Windows x86_64 — daemon + Qt via MSYS2 (fully static)
   # ─────────────────────────────────────────────────────────
   build-windows:
     runs-on: windows-latest
@@ -289,10 +289,8 @@ jobs:
             mingw-w64-x86_64-miniupnpc
             mingw-w64-x86_64-libevent
             mingw-w64-x86_64-curl
-            mingw-w64-x86_64-qrencode
             mingw-w64-x86_64-gmp
-            mingw-w64-x86_64-qt5-base
-            mingw-w64-x86_64-qt5-tools
+            mingw-w64-x86_64-qt5-static
             mingw-w64-x86_64-protobuf
             make
             git
@@ -305,23 +303,17 @@ jobs:
       - name: Detect Boost library suffix
         id: boost
         run: |
-          echo "--- Boost files in /mingw64/lib ---"
-          find /mingw64/lib -maxdepth 1 -name "*boost_system*" 2>/dev/null || true
-          echo "--- Boost files via pacman ---"
-          pacman -Ql mingw-w64-x86_64-boost 2>/dev/null | grep -i "system" | head -10 || true
-          pacman -Ql mingw-w64-x86_64-boost-libs 2>/dev/null | grep -i "system" | head -10 || true
-          # Detect the suffix after 'libboost_system'
-          BOOST_LIB=$(find /mingw64/lib -maxdepth 1 -name "libboost_system*" -print -quit 2>/dev/null || true)
+          BOOST_LIB=$(find /mingw64/lib -maxdepth 1 -name "libboost_system*.a" ! -name "*.dll.a" -print -quit 2>/dev/null || true)
           if [ -n "$BOOST_LIB" ]; then
-            SUFFIX=$(basename "$BOOST_LIB" | sed 's/^libboost_system//; s/\.dll\.a$//; s/\.a$//')
+            SUFFIX=$(basename "$BOOST_LIB" | sed 's/^libboost_system//; s/\.a$//')
             echo "Detected boost suffix: '$SUFFIX'"
             echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
           else
-            echo "WARNING: No boost_system library found, trying default"
-            echo "suffix=" >> "$GITHUB_OUTPUT"
+            echo "WARNING: No boost_system library found, using default -mt"
+            echo "suffix=-mt" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build daemon
+      - name: Build daemon (static)
         run: |
           cd src
           make -f makefile.mingw \
@@ -330,21 +322,28 @@ jobs:
             OPENSSL_ROOT=/mingw64 \
             LIBEVENT_ROOT=/mingw64 \
             CURL_ROOT=/mingw64 \
+            MINIUPNPC_ROOT=/mingw64 \
             BOOST_LIB_SUFFIX=${{ steps.boost.outputs.suffix }} \
+            LDFLAGS="-static -Wl,--dynamicbase -Wl,--nxcompat -Wl,--high-entropy-va" \
+            USE_NATIVETOR=- \
+            USE_IPFS=1 \
             INNOVA_SPINNER=0 \
             -j$(nproc)
 
-      - name: Build Qt wallet
+      - name: Build Qt wallet (static)
         run: |
-          sed -i 's|LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX|LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX|' innova-qt.pro
-          qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+          /mingw64/qt5-static/bin/qmake \
+            "BOOST_LIB_SUFFIX=${{ steps.boost.outputs.suffix }}" \
+            "BOOST_THREAD_LIB_SUFFIX=${{ steps.boost.outputs.suffix }}" \
+            "USE_UPNP=1" \
+            "USE_NATIVETOR=-" \
+            innova-qt.pro
           make -j$(nproc)
 
       - name: Package
         run: |
           mkdir -p release
           cp src/innovad.exe release/ 2>/dev/null || true
-          cp Innova.exe release/ 2>/dev/null || true
           cp release/Innova.exe release/ 2>/dev/null || true
           strip release/*.exe 2>/dev/null || true
           cd release

@@ -20,7 +20,7 @@ macx {
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 lessThan(QT_MAJOR_VERSION, 5): CONFIG += static
 QMAKE_CXXFLAGS += -fpermissive -Wno-literal-suffix
-QMAKE_CFLAGS += -std=c99
+QMAKE_CFLAGS += -std=c99 -Wno-incompatible-pointer-types
 unix|macx:QMAKE_MAKE = $$PWD/contrib/innova_make.sh
 
 greaterThan(QT_MAJOR_VERSION, 4) {
@@ -34,23 +34,45 @@ linux {
 
 win32 {
 BOOST_LIB_SUFFIX=-mt
-BOOST_THREAD_LIB_SUFFIX=_win32-mt
-BOOST_INCLUDE_PATH=C:/deps/boost_1_57_0
-BOOST_LIB_PATH=C:/deps/boost_1_57_0/stage/lib
-BDB_INCLUDE_PATH=C:/deps/db-4.8.30.NC/build_unix
-BDB_LIB_PATH=C:/deps/db-4.8.30.NC/build_unix
-OPENSSL_INCLUDE_PATH=/mnt/deps/openssl/include
-OPENSSL_LIB_PATH=/mnt/deps/openssl
-MINIUPNPC_INCLUDE_PATH=/mnt/deps/miniupnp
-MINIUPNPC_LIB_PATH=/mnt/deps/miniupnp/miniupnpc
-LIBPNG_INCLUDE_PATH=C:/deps/libpng-1.6.16
-LIBPNG_LIB_PATH=C:/deps/libpng-1.6.16/.libs
-QRENCODE_INCLUDE_PATH=C:/deps/qrencode-3.4.4
-QRENCODE_LIB_PATH=C:/deps/qrencode-3.4.4/.libs
-LIBEVENT_INCLUDE_PATH=C:/deps/libevent/include
-LIBEVENT_LIB_PATH=C:/deps/libevent/.libs
-LIBCURL_INCLUDE_PATH=C:/deps/libcurl/include
-LIBCURL_LIB_PATH=C:/deps/libcurl/lib
+
+MSYS2_MINGW64 = $$(MINGW_PREFIX)
+isEmpty(MSYS2_MINGW64): MSYS2_MINGW64 = C:/msys64/mingw64
+exists($$MSYS2_MINGW64/include/boost/version.hpp) {
+    message(Auto-detected MSYS2 MINGW64 at $$MSYS2_MINGW64)
+    BOOST_THREAD_LIB_SUFFIX = -mt
+    BDB_LIB_SUFFIX = -6.0
+    BOOST_INCLUDE_PATH = $$MSYS2_MINGW64/include
+    BOOST_LIB_PATH = $$MSYS2_MINGW64/lib
+    BDB_INCLUDE_PATH = $$MSYS2_MINGW64/include
+    BDB_LIB_PATH = $$MSYS2_MINGW64/lib
+    OPENSSL_INCLUDE_PATH = $$MSYS2_MINGW64/include
+    OPENSSL_LIB_PATH = $$MSYS2_MINGW64/lib
+    MINIUPNPC_INCLUDE_PATH = $$MSYS2_MINGW64/include
+    MINIUPNPC_LIB_PATH = $$MSYS2_MINGW64/lib
+    QRENCODE_INCLUDE_PATH = $$MSYS2_MINGW64/include
+    QRENCODE_LIB_PATH = $$MSYS2_MINGW64/lib
+    LIBEVENT_INCLUDE_PATH = $$MSYS2_MINGW64/include
+    LIBEVENT_LIB_PATH = $$MSYS2_MINGW64/lib
+    LIBCURL_INCLUDE_PATH = $$MSYS2_MINGW64/include
+    LIBCURL_LIB_PATH = $$MSYS2_MINGW64/lib
+} else {
+    # Legacy manual dependency paths (C:/deps/ layout)
+    BOOST_THREAD_LIB_SUFFIX = _win32-mt
+    BOOST_INCLUDE_PATH = C:/deps/boost_1_57_0
+    BOOST_LIB_PATH = C:/deps/boost_1_57_0/stage/lib
+    BDB_INCLUDE_PATH = C:/deps/db-4.8.30.NC/build_unix
+    BDB_LIB_PATH = C:/deps/db-4.8.30.NC/build_unix
+    OPENSSL_INCLUDE_PATH = C:/deps/openssl/include
+    OPENSSL_LIB_PATH = C:/deps/openssl
+    MINIUPNPC_INCLUDE_PATH = C:/deps/miniupnp
+    MINIUPNPC_LIB_PATH = C:/deps/miniupnp/miniupnpc
+    QRENCODE_INCLUDE_PATH = C:/deps/qrencode-3.4.4
+    QRENCODE_LIB_PATH = C:/deps/qrencode-3.4.4/.libs
+    LIBEVENT_INCLUDE_PATH = C:/deps/libevent/include
+    LIBEVENT_LIB_PATH = C:/deps/libevent/.libs
+    LIBCURL_INCLUDE_PATH = C:/deps/libcurl/include
+    LIBCURL_LIB_PATH = C:/deps/libcurl/lib
+}
 }
 
 # for boost 1.37, add -mt to the boost libraries
@@ -878,11 +900,13 @@ INCLUDEPATH += $$BOOST_INCLUDE_PATH $$BDB_INCLUDE_PATH $$OPENSSL_INCLUDE_PATH $$
 LIBS += $$join(BOOST_LIB_PATH,,-L,) $$join(BDB_LIB_PATH,,-L,) $$join(OPENSSL_LIB_PATH,,-L,) $$join(QRENCODE_LIB_PATH,,-L,) $$join(LIBEVENT_LIB_PATH,,-L,) $$join(LIBCURL_LIB_PATH,,-L,)
 LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX
 LIBS += -lz -levent
+LIBS += -lboost_filesystem$$BOOST_LIB_SUFFIX -lboost_program_options$$BOOST_LIB_SUFFIX -lboost_thread$$BOOST_THREAD_LIB_SUFFIX -lboost_chrono$$BOOST_LIB_SUFFIX
 
 # -lgdi32 has to happen after -lcrypto (see  #681)
 windows:LIBS += -lws2_32 -lshlwapi -lmswsock -lole32 -loleaut32 -luuid -lgdi32
-LIBS += -lboost_filesystem$$BOOST_LIB_SUFFIX -lboost_program_options$$BOOST_LIB_SUFFIX -lboost_thread$$BOOST_THREAD_LIB_SUFFIX -lboost_chrono$$BOOST_LIB_SUFFIX
 windows:LIBS += -lboost_chrono$$BOOST_LIB_SUFFIX
+windows:LIBS += -lssh2 -lbcrypt -lcrypt32 -lwldap32 -lbrotlidec -lbrotlicommon -lzstd
+windows:LIBS += -lnghttp2 -lnghttp3 -lpsl -lidn2 -lunistring -liconv -liphlpapi
 
 contains(RELEASE, 1) {
     !windows:!macx {
