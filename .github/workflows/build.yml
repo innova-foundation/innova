@@ -303,23 +303,25 @@ jobs:
       - name: Detect library suffixes
         id: libs
         run: |
-          echo "=== Available boost libraries ==="
-          ls /mingw64/lib/libboost_system* 2>/dev/null || echo "  (none found)"
+          echo "=== Available boost libraries (sample) ==="
+          ls /mingw64/lib/libboost_system* 2>/dev/null || echo "  boost_system: (none - header-only)"
+          ls /mingw64/lib/libboost_filesystem* 2>/dev/null || echo "  boost_filesystem: (none found)"
+          ls /mingw64/lib/libboost_thread* 2>/dev/null || echo "  boost_thread: (none found)"
           echo "=== Available BDB libraries ==="
           ls /mingw64/lib/libdb_cxx* 2>/dev/null || echo "  (none found)"
           echo ""
 
-          # Detect boost suffix (prefer .dll.a for dynamic linking)
-          BOOST_LIB=$(find /mingw64/lib -maxdepth 1 -name "libboost_system*.dll.a" -print -quit 2>/dev/null)
+          # Detect boost suffix from boost_filesystem (boost_system is header-only since 1.69)
+          BOOST_LIB=$(find /mingw64/lib -maxdepth 1 -name "libboost_filesystem*.dll.a" -print -quit 2>/dev/null)
           if [ -z "$BOOST_LIB" ]; then
-            BOOST_LIB=$(find /mingw64/lib -maxdepth 1 -name "libboost_system*.a" -print -quit 2>/dev/null)
+            BOOST_LIB=$(find /mingw64/lib -maxdepth 1 -name "libboost_filesystem*.a" -print -quit 2>/dev/null)
           fi
           if [ -n "$BOOST_LIB" ]; then
-            BOOST_SUFFIX=$(basename "$BOOST_LIB" | sed 's/^libboost_system//; s/\.dll\.a$//; s/\.a$//')
+            BOOST_SUFFIX=$(basename "$BOOST_LIB" | sed 's/^libboost_filesystem//; s/\.dll\.a$//; s/\.a$//')
             echo "Detected boost suffix: '$BOOST_SUFFIX'"
           else
             BOOST_SUFFIX="-mt"
-            echo "WARNING: No boost_system library found, using default '$BOOST_SUFFIX'"
+            echo "WARNING: No boost_filesystem library found, using default '$BOOST_SUFFIX'"
           fi
           echo "boost_suffix=$BOOST_SUFFIX" >> "$GITHUB_OUTPUT"
 

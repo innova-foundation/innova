@@ -31,10 +31,15 @@ LIBPATHS= \
  -L"$(LIBEVENT_ROOT)/lib" \
  -L"$(CURL_ROOT)/lib"
 
+# boost_system is header-only since Boost 1.69; only link if library exists
+ifneq ($(wildcard $(BOOST_ROOT)/lib/libboost_system*),)
+BOOST_SYSTEM_LIB = -l boost_system$(BOOST_LIB_SUFFIX)
+endif
+
 LIBS= \
  -l curl \
  -l event \
- -l boost_system$(BOOST_LIB_SUFFIX) \
+ $(BOOST_SYSTEM_LIB) \
  -l boost_filesystem$(BOOST_LIB_SUFFIX) \
  -l boost_program_options$(BOOST_LIB_SUFFIX) \
  -l boost_thread$(BOOST_LIB_SUFFIX) \

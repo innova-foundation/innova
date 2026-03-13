@@ -89,9 +89,9 @@ fi
 
 echo ">> [3/6] Detecting Boost library suffix..."
 
-BOOST_LIB=$(find "$PREFIX/lib" -maxdepth 1 -name "libboost_system*.a" ! -name "*.dll.a" -print -quit 2>/dev/null)
+BOOST_LIB=$(find "$PREFIX/lib" -maxdepth 1 -name "libboost_filesystem*.a" ! -name "*.dll.a" -print -quit 2>/dev/null)
 if [[ -n "$BOOST_LIB" ]]; then
-    BOOST_SUFFIX=$(basename "$BOOST_LIB" | sed 's/^libboost_system//; s/\.a$//')
+    BOOST_SUFFIX=$(basename "$BOOST_LIB" | sed 's/^libboost_filesystem//; s/\.a$//')
     echo "   Boost suffix: '$BOOST_SUFFIX'"
 else
     BOOST_SUFFIX="-mt"
