@@ -64,11 +64,31 @@ class CNode;
 // extern CFeeRate minRelayTxFee;
 static const int ZERO_POW_BLOCK = 50000; // 50k blocks before Proof of Stake consensus, back to hybrid PoW/PoS at block 2000000, final reward 0.0001 INN per block
 static const int FAIR_LAUNCH_BLOCK = 490; // Last Block until full block reward starts
-static const unsigned int MAX_BLOCK_SIZE = 1000000; // 1MB block hard limit, double the size of Bitcoin
-static const unsigned int MAX_BLOCK_SIZE_GEN = MAX_BLOCK_SIZE/2; // 512kb block soft limit, ditto
+// Pre-DAG: fixed 1 MB block size (legacy compatibility)
+static const unsigned int MAX_BLOCK_SIZE_LEGACY = 1000000;
+
+// Post-DAG: adaptive block size (Monero-inspired, tuned for 1s blocks)
+static const unsigned int ADAPTIVE_BLOCK_CEILING = 8000000;       // 8 MB absolute hard ceiling
+static const unsigned int ADAPTIVE_BLOCK_FLOOR = 300000;          // 300 KB penalty-free zone
+static const unsigned int ADAPTIVE_MEDIAN_WINDOW = 1000;          // 1000-block short-term median (~17 min at 1s)
+static const unsigned int ADAPTIVE_LONG_MEDIAN_WINDOW = 100000;   // 100K-block long-term anchor (~28h at 1s)
+static const unsigned int ADAPTIVE_LONG_MEDIAN_CAP = 50;          // short-term median <= 50x long-term median
+
+// Effective block size: pre-DAG uses legacy, post-DAG uses adaptive
+inline unsigned int GetMaxBlockSize(int nHeight)
+{
+    extern int GetForkHeightDAG();
+    if (nHeight >= GetForkHeightDAG())
+        return ADAPTIVE_BLOCK_CEILING;
+    return MAX_BLOCK_SIZE_LEGACY;
+}
+
+// For backward compat — MAX_BLOCK_SIZE used throughout codebase
+static const unsigned int MAX_BLOCK_SIZE = ADAPTIVE_BLOCK_CEILING;
+static const unsigned int MAX_BLOCK_SIZE_GEN = MAX_BLOCK_SIZE / 2;
 /** The maximum size for transactions we're willing to relay/mine **/
-static const unsigned int MAX_STANDARD_TX_SIZE = MAX_BLOCK_SIZE_GEN/5;
-static const unsigned int MAX_BLOCK_SIGOPS = MAX_BLOCK_SIZE/50;
+static const unsigned int MAX_STANDARD_TX_SIZE = MAX_BLOCK_SIZE_GEN / 5;
+static const unsigned int MAX_BLOCK_SIGOPS = MAX_BLOCK_SIZE / 50;
 /** The maximum number of sigops we're willing to relay/mine in a single tx */
 static const unsigned int MAX_TX_SIGOPS = MAX_BLOCK_SIGOPS/5;
 //static const unsigned int MAX_ORPHAN_TRANSACTIONS = MAX_BLOCK_SIZE/100; deprecated
@@ -95,6 +115,17 @@ static const int MN_ENFORCEMENT_ACTIVE_HEIGHT = 4500; // Enforce collateralnode 
 static const int MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET = 999999; // Enforce CN payments after this height for Innova Testnet!
 
 inline bool MoneyRange(int64_t nValue) { return (nValue >= 0 && nValue <= MAX_MONEY); }
+
+/** Get the adaptive effective block size limit for a given height.
+ *  Uses the median of recent block sizes with a penalty-free floor. */
+unsigned int GetAdaptiveBlockSizeLimit(const CBlockIndex* pindex);
+
+/** Calculate the block reward penalty for an oversized block (Monero-style quadratic).
+ *  Returns the fraction of reward lost (0 = no penalty, COIN = 100% penalty). */
+int64_t GetBlockSizePenalty(unsigned int nBlockSize, unsigned int nMedianSize);
+
+/** Apply adaptive block size penalty to a reward amount. */
+int64_t ApplyBlockSizePenalty(int64_t nReward, const CBlock& block, const CBlockIndex* pindexPrev);
 
 // Threshold for nLockTime: below this value it is interpreted as block number, otherwise as UNIX timestamp.
 static const unsigned int LOCKTIME_THRESHOLD = 500000000; // Tue Nov  5 00:53:20 1985 UTC
@@ -222,32 +253,59 @@ inline int GetForkHeightChaumianCJ()
 }
 #define FORK_HEIGHT_CHAUMIAN_CJ (GetForkHeightChaumianCJ())
 
-// POEM entropy weighting
+// IDAG Phase 1a: POEM entropy weighting
 inline int GetForkHeightPoem()
 {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 9 : 7345000;
+    if (fRegTest) return 9;
+    if (fTestNet) return 500;       // testnet: early activation for testing
+    return 7345000;                  // mainnet: ~170K blocks after tip 7.175M (~29 days at 15s)
 }
 #define FORK_HEIGHT_POEM (GetForkHeightPoem())
 
-// PoS finality gadget
+// IDAG Phase 1b: PoS finality gadget
 inline int GetForkHeightFinality()
 {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 10 : 7350000;
+    if (fRegTest) return 10;
+    if (fTestNet) return 600;       // testnet: 100 blocks after POEM
+    return 7350000;                  // mainnet: 5,000 blocks after POEM
 }
 #define FORK_HEIGHT_FINALITY (GetForkHeightFinality())
 
-// IDAG Phase 2: Full DAG consensus
+// IDAG Phase 2+3: Full DAG consensus + throughput scaling
 inline int GetForkHeightDAG()
 {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 11 : 7355000;
+    if (fRegTest) return 11;
+    if (fTestNet) return 700;       // testnet: 100 blocks after finality
+    return 7355000;                  // mainnet: 5,000 blocks after finality
 }
 #define FORK_HEIGHT_DAG (GetForkHeightDAG())
+
+// IDAG Phase 4: DAGKNIGHT adaptive ordering (replaces GHOSTDAG)
+inline int GetForkHeightDAGKnight()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest) return 13;
+    if (fTestNet) return 1000;      // testnet: 300 blocks of GHOSTDAG before DAGKNIGHT
+    return 7400000;                  // mainnet: 45,000 blocks after FORK_HEIGHT_DAG (~12.5h at post-DAG 1s blocks)
+}
+#define FORK_HEIGHT_DAGKNIGHT (GetForkHeightDAGKnight())
+
+// IDAG: Fork-gated block time — 15s pre-DAG, 1s post-DAG
+inline unsigned int GetTargetSpacingForHeight(int nHeight)
+{
+    extern bool fRegTest;
+    extern unsigned int nTargetSpacing;
+    if (fRegTest) return 1; // regtest always 1s
+    if (nHeight >= FORK_HEIGHT_DAG) return 1; // 1-second blocks post-DAG
+    return nTargetSpacing; // 15 seconds pre-DAG
+}
 
 // Hard fork height for IDNS name reset
 // names before this height treated as expired; 0 = no reset
@@ -1439,6 +1497,7 @@ public:
     unsigned int nTime;
     unsigned int nBits;
     unsigned int nNonce;
+    unsigned int nSize;   // serialized block size (for adaptive block sizing)
 
     CBlockIndex()
     {
@@ -1457,6 +1516,7 @@ public:
         hashProof = 0;
         prevoutStake.SetNull();
         nStakeTime = 0;
+        nSize = 0;
 
         nVersion       = 0;
         hashMerkleRoot = 0;
@@ -1505,6 +1565,7 @@ public:
         nTime          = block.nTime;
         nBits          = block.nBits;
         nNonce         = block.nNonce;
+        nSize          = ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION);
     }
 
     CBlock GetBlockHeader() const
@@ -1697,6 +1758,8 @@ public:
         READWRITE(nBits);
         READWRITE(nNonce);
         READWRITE(blockHash);
+        // Adaptive block sizing (post-Phase 3): block size for median calculation
+        READWRITE(nSize);
     )
 
     uint256 GetBlockHash() const
@@ -1954,6 +2017,11 @@ public:
     bool addUnchecked(const uint256& hash, CTransaction &tx);
     bool remove(const CTransaction &tx, bool fRecursive = false);
     bool removeConflicts(const CTransaction &tx);
+
+    // IDAG Phase 3: DAG-aware mempool coordination
+    std::set<uint256> setDAGSeenTxids;
+    void RemoveDAGConflicts(const uint256& hashBlock);
+
     void clear();
     void queryHashes(std::vector<uint256>& vtxid);
     unsigned int GetTransactionsUpdated() const;

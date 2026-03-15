@@ -4240,7 +4240,15 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
 
     CScript scriptPubKeyKernel;
     CTxDB txdb("r");
-    static int nMaxStakeSearchInterval = 10;
+    // Post-DAG: reduce search interval to match 1-second block time
+    // Pre-DAG: 10 timestamps (~0.67 block slots at 15s blocks)
+    // Post-DAG: 2 timestamps (2 block slots at 1s blocks)
+    int nMaxStakeSearchInterval = 10;
+    {
+        LOCK(cs_main);
+        if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_DAG)
+            nMaxStakeSearchInterval = 2;
+    }
 
     if (fTryTransparent && !setCoins.empty())
     BOOST_FOREACH(PAIRTYPE(const CWalletTx*, unsigned int) pcoin, setCoins)

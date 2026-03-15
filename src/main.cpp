@@ -811,6 +811,127 @@ int CMerkleTx::SetMerkleBranch(const CBlock* pblock)
 
 
 
+// ---------------------------------------------------------------------------
+// Adaptive Block Size (Monero-inspired, tuned for 1s DAG blocks)
+// ---------------------------------------------------------------------------
+
+unsigned int GetAdaptiveBlockSizeLimit(const CBlockIndex* pindex)
+{
+    if (!pindex)
+        return MAX_BLOCK_SIZE_LEGACY;
+
+    // Pre-DAG: fixed 1 MB
+    if (pindex->nHeight < FORK_HEIGHT_DAG)
+        return MAX_BLOCK_SIZE_LEGACY;
+
+    // Walk back ADAPTIVE_MEDIAN_WINDOW blocks and collect sizes
+    std::vector<unsigned int> vSizes;
+    vSizes.reserve(ADAPTIVE_MEDIAN_WINDOW);
+    const CBlockIndex* pWalk = pindex;
+
+    for (unsigned int i = 0; i < ADAPTIVE_MEDIAN_WINDOW && pWalk; i++)
+    {
+        vSizes.push_back(pWalk->nSize > 0 ? pWalk->nSize : 1);
+        pWalk = pWalk->pprev;
+    }
+
+    if (vSizes.empty())
+        return ADAPTIVE_BLOCK_FLOOR;
+
+    // Short-term median
+    std::sort(vSizes.begin(), vSizes.end());
+    unsigned int nShortMedian = vSizes[vSizes.size() / 2];
+
+    // Apply floor: penalty-free zone
+    if (nShortMedian < ADAPTIVE_BLOCK_FLOOR)
+        nShortMedian = ADAPTIVE_BLOCK_FLOOR;
+
+    // Long-term median anchor (independent window, starts after short-term window)
+    std::vector<unsigned int> vLongSizes;
+    // pWalk is already at the end of the short-term window — continue from there
+    unsigned int nLongSamples = std::min(ADAPTIVE_LONG_MEDIAN_WINDOW, (unsigned int)50000);
+    for (unsigned int i = 0; i < nLongSamples && pWalk; i++)
+    {
+        vLongSizes.push_back(pWalk->nSize > 0 ? pWalk->nSize : 1);
+        pWalk = pWalk->pprev;
+    }
+
+    if (!vLongSizes.empty())
+    {
+        std::sort(vLongSizes.begin(), vLongSizes.end());
+        unsigned int nLongMedian = vLongSizes[vLongSizes.size() / 2];
+        if (nLongMedian < ADAPTIVE_BLOCK_FLOOR)
+            nLongMedian = ADAPTIVE_BLOCK_FLOOR;
+
+        // Cap short-term median at ADAPTIVE_LONG_MEDIAN_CAP * long-term median (overflow-safe)
+        uint64_t nCap64 = (uint64_t)nLongMedian * ADAPTIVE_LONG_MEDIAN_CAP;
+        unsigned int nCap = (nCap64 > ADAPTIVE_BLOCK_CEILING) ? ADAPTIVE_BLOCK_CEILING : (unsigned int)nCap64;
+        if (nShortMedian > nCap)
+            nShortMedian = nCap;
+    }
+
+    // Effective limit = 2x median (max allowed size, matches Monero) — overflow-safe
+    uint64_t nEffective64 = (uint64_t)nShortMedian * 2;
+    unsigned int nEffectiveLimit = (nEffective64 > ADAPTIVE_BLOCK_CEILING) ? ADAPTIVE_BLOCK_CEILING : (unsigned int)nEffective64;
+
+    // Clamp to ceiling
+    if (nEffectiveLimit > ADAPTIVE_BLOCK_CEILING)
+        nEffectiveLimit = ADAPTIVE_BLOCK_CEILING;
+
+    return nEffectiveLimit;
+}
+
+int64_t GetBlockSizePenalty(unsigned int nBlockSize, unsigned int nMedianSize)
+{
+    // No penalty if block is at or below the median
+    if (nBlockSize <= nMedianSize || nMedianSize == 0)
+        return 0;
+
+    // Quadratic penalty: penalty = baseReward * ((blockSize / median) - 1)^2
+    // Returns the penalty as a fraction of COIN (COIN = 100% of block reward lost)
+    // At blockSize == 2 * median: penalty = COIN (100% — miner gets nothing)
+    // Clamp ratio: block can't exceed 2x median by consensus, so cap at 2*COIN
+    int64_t nRatio = ((int64_t)nBlockSize * COIN) / nMedianSize;
+    if (nRatio > 2 * COIN)
+        nRatio = 2 * COIN;
+    int64_t nExcess = nRatio - COIN; // (blockSize/median - 1) * COIN
+    if (nExcess <= 0)
+        return 0;
+
+    // penalty = excess^2 / COIN (quadratic, overflow-safe with clamped nExcess <= COIN)
+    int64_t nPenalty = (nExcess * nExcess) / COIN;
+
+    // Cap at COIN (100% penalty)
+    if (nPenalty > COIN)
+        nPenalty = COIN;
+
+    return nPenalty;
+}
+
+/** Apply adaptive block size penalty to a reward. Returns adjusted reward.
+ *  Must be called with the block being validated and its parent index. */
+int64_t ApplyBlockSizePenalty(int64_t nReward, const CBlock& block, const CBlockIndex* pindexPrev)
+{
+    if (!pindexPrev || pindexPrev->nHeight + 1 < FORK_HEIGHT_DAG)
+        return nReward;
+
+    unsigned int nBlockBytes = ::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION);
+    // The adaptive limit is 2x median; the median is limit/2
+    unsigned int nMedian = GetAdaptiveBlockSizeLimit(pindexPrev) / 2;
+    if (nMedian < ADAPTIVE_BLOCK_FLOOR)
+        nMedian = ADAPTIVE_BLOCK_FLOOR;
+
+    int64_t nPenalty = GetBlockSizePenalty(nBlockBytes, nMedian);
+    if (nPenalty > 0 && nReward > 0)
+    {
+        int64_t nPenaltyAmount = (nReward * nPenalty) / COIN;
+        nReward -= nPenaltyAmount;
+        if (nReward < 0) nReward = 0;
+    }
+    return nReward;
+}
+
+
 bool CTransaction::CheckTransaction() const
 {
     // Basic checks that don't depend on any context
@@ -1079,6 +1200,9 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
         LOCK(cs);
         if (mapTx.count(hash))
             return false;
+        // IDAG Phase 3: Reject txids already included in a DAG sibling block
+        if (setDAGSeenTxids.count(hash))
+            return error("CTxMemPool::accept() : tx %s already in DAG sibling block", hash.ToString().substr(0, 20).c_str());
     }
 
     if (txdb.ContainsTx(hash))
@@ -1753,6 +1877,53 @@ bool CTxMemPool::removeConflicts(const CTransaction &tx)
     return true;
 }
 
+// IDAG Phase 3: Remove mempool transactions that appear in a DAG sibling block
+void CTxMemPool::RemoveDAGConflicts(const uint256& hashBlock)
+{
+    CBlock block;
+    std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashBlock);
+    if (mi == mapBlockIndex.end())
+        return;
+
+    if (!block.ReadFromDisk(mi->second))
+        return;
+
+    LOCK(cs);
+
+    // Cap setDAGSeenTxids to prevent unbounded memory growth
+    static const size_t MAX_DAG_SEEN_TXIDS = 100000;
+    if (setDAGSeenTxids.size() > MAX_DAG_SEEN_TXIDS)
+        setDAGSeenTxids.clear(); // periodic reset when cap exceeded
+
+    int nRemoved = 0;
+    for (const CTransaction& tx : block.vtx)
+    {
+        uint256 txHash = tx.GetHash();
+        setDAGSeenTxids.insert(txHash);
+
+        if (mapTx.count(txHash))
+        {
+            // Full cleanup: mapTx, mapNextTx, mapShieldedNullifier
+            CTransaction txCopy = mapTx[txHash];
+
+            for (const CTxIn& txin : txCopy.vin)
+                mapNextTx.erase(txin.prevout);
+
+            // Clean up shielded nullifiers
+            for (const CShieldedSpendDescription& spend : txCopy.vShieldedSpend)
+                mapShieldedNullifier.erase(spend.nullifier);
+
+            mapTx.erase(txHash);
+            nRemoved++;
+            ++nTransactionsUpdated;
+        }
+    }
+
+    if (nRemoved > 0)
+        printf("RemoveDAGConflicts: removed %d txs from mempool (sibling block %s)\n",
+               nRemoved, hashBlock.ToString().substr(0, 20).c_str());
+}
+
 void CTxMemPool::clear()
 {
     LOCK(cs);
@@ -1760,6 +1931,7 @@ void CTxMemPool::clear()
     mapNextTx.clear();
     mapKeyImage.clear();
     mapShieldedNullifier.clear();
+    setDAGSeenTxids.clear();
     ++nTransactionsUpdated;
 }
 
@@ -2310,16 +2482,18 @@ unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfS
 
     // Clamp nActualSpacing (tighter bounds post-fork, negative-only pre-fork)
     int nNextHeight = pindexLast->nHeight + 1;
+    unsigned int nEffectiveSpacing = GetTargetSpacingForHeight(nNextHeight);
+
     if (nNextHeight < FORK_HEIGHT_TIGHTER_DRIFT)
     {
         if (nActualSpacing < 0)
-            nActualSpacing = nTargetSpacing;
+            nActualSpacing = nEffectiveSpacing;
     }
     else
     {
-        int64_t nMinSpacing = (int64_t)nTargetSpacing / 10;
+        int64_t nMinSpacing = (int64_t)nEffectiveSpacing / 10;
         if (nMinSpacing < 1) nMinSpacing = 1;
-        int64_t nMaxSpacing = (int64_t)nTargetSpacing * 10;
+        int64_t nMaxSpacing = (int64_t)nEffectiveSpacing * 10;
 
         if (nActualSpacing < nMinSpacing)
         {
@@ -2336,9 +2510,9 @@ unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfS
     // ppcoin: retarget with exponential moving toward target spacing
     CBigNum bnNew;
     bnNew.SetCompact(pindexPrev->nBits);
-    int64_t nInterval = nTargetTimespan / nTargetSpacing;
-    bnNew *= ((nInterval - 1) * nTargetSpacing + nActualSpacing + nActualSpacing);
-    bnNew /= ((nInterval + 1) * nTargetSpacing);
+    int64_t nInterval = nTargetTimespan / nEffectiveSpacing;
+    bnNew *= ((nInterval - 1) * nEffectiveSpacing + nActualSpacing + nActualSpacing);
+    bnNew /= ((nInterval + 1) * nEffectiveSpacing);
 
     if (bnNew <= 0 || bnNew > bnTargetLimit)
         bnNew = bnTargetLimit;
@@ -3520,7 +3694,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
     std::set<uint256> setBlockNullifiers;
 
-    // IDAG Phase 2: Collect spent outputs from DAG sibling blocks (earlier in GHOSTDAG order)
+    // IDAG: Collect spent outputs from DAG sibling blocks (lower hash = canonical earlier)
     // Transactions conflicting with already-spent outputs from siblings are skipped
     std::set<COutPoint> setDAGSpentOutputs;
     bool fDAGActive = (pindex->nHeight >= FORK_HEIGHT_DAG);
@@ -3529,13 +3703,9 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(pindex->GetBlockHash());
         for (const uint256& hashSibling : siblings)
         {
-            // Only consider siblings that are earlier in GHOSTDAG linear order
-            const CBlockDAGData* pSibData = g_dagManager.GetDAGData(hashSibling);
-            const CBlockDAGData* pMyData = g_dagManager.GetDAGData(pindex->GetBlockHash());
-            if (!pSibData || !pMyData)
-                continue;
-            if (pSibData->nDAGOrder >= pMyData->nDAGOrder)
-                continue; // this sibling comes after us, skip
+            // Only consider siblings with lower block hash (deterministic canonical ordering)
+            if (hashSibling >= pindex->GetBlockHash())
+                continue; // this sibling comes after us in canonical order, skip
 
             // Load sibling block and collect its spent outputs
             std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashSibling);
@@ -3727,6 +3897,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         if (pindex->nHeight < FORK_HEIGHT_TIGHTER_DRIFT && pindex->nHeight > 0)
             nRewardHeight = pindex->nHeight - 1;
         int64_t nReward = GetProofOfWorkReward(nRewardHeight, nFees);
+
+        // Adaptive block size penalty (post-DAG): reduce allowed reward for oversized blocks
+        nReward = ApplyBlockSizePenalty(nReward, *this, pindex->pprev);
+
         // Check coinbase reward
         if (vtx[0].GetValueOut() > nReward)
             return DoS(50, error("ConnectBlock() : coinbase reward exceeded (actual=%" PRId64" vs calculated=%" PRId64")",
@@ -3778,7 +3952,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                 return DoS(100, error("ConnectBlock() : NullStake V2 stake FCMP proof invalid"));
 
             uint64_t nCoinAge = 1;  // Minimum coin-day for V2
-            int64_t nCalculatedStakeReward = GetProofOfStakeReward(nCoinAge, nFees);
+            int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees), *this, pindex->pprev);
             if (nStakeReward > nCalculatedStakeReward)
                 return DoS(100, error("ConnectBlock() : NullStake V2 coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
         }
@@ -3838,7 +4012,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
             // V3 reward: same conservative approach as V2
             uint64_t nCoinAge = 1;
-            int64_t nCalculatedStakeReward = GetProofOfStakeReward(nCoinAge, nFees);
+            int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees), *this, pindex->pprev);
             if (nStakeReward > nCalculatedStakeReward)
                 return DoS(100, error("ConnectBlock() : NullStake V3 coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
         }
@@ -3921,7 +4095,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                 return DoS(100, error("ConnectBlock() : NullStake stake FCMP proof invalid"));
 
             uint64_t nCoinAge = nWeight > 0 ? (uint64_t)nWeight : 1;
-            int64_t nCalculatedStakeReward = GetProofOfStakeReward(nCoinAge, nFees);
+            int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees), *this, pindex->pprev);
             if (nStakeReward > nCalculatedStakeReward)
                 return DoS(100, error("ConnectBlock() : NullStake coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
         }
@@ -3931,7 +4105,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
             if (!vtx[1].GetCoinAge(txdb, nCoinAge))
                 return error("ConnectBlock() : %s unable to get coin age for coinstake", vtx[1].GetHash().ToString().substr(0,10).c_str());
 
-            int64_t nCalculatedStakeReward = GetProofOfStakeReward(nCoinAge, nFees);
+            int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees), *this, pindex->pprev);
 
             if (nStakeReward > nCalculatedStakeReward)
                 return DoS(100, error("ConnectBlock() : coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
@@ -4146,7 +4320,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                 uint64_t nCoinAge;
                 if (!vtx[1].GetCoinAge(txdb, nCoinAge))
                     return error("CheckBlock-POS : %s unable to get coin age for coinstake, Can't Calculate Collateralnode Reward\n", vtx[1].GetHash().ToString().substr(0,10).c_str());
-                int64_t nCalculatedStakeReward = GetProofOfStakeReward(nCoinAge, nFees);
+                int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees), *this, pindex->pprev);
 
                 // Calculate expected collateralnodePaymentAmmount
                 int64_t collateralnodePaymentAmount = GetCollateralnodePayment(pindex->nHeight, nCalculatedStakeReward);
@@ -4739,6 +4913,34 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
             setStakeSeen.erase(make_pair(pindex->prevoutStake, pindex->nStakeTime));
     }
 
+    // IDAG: Clean up DAG data for disconnected blocks
+    // Phase 1: Batch all LevelDB erasures atomically
+    {
+        CTxDB txdbDAGClean;
+        txdbDAGClean.TxnBegin();
+        for (auto rit = vDisconnect.rbegin(); rit != vDisconnect.rend(); ++rit)
+        {
+            CBlockIndex* pindex = *rit;
+            if (pindex->nHeight >= FORK_HEIGHT_DAG && pindex->phashBlock)
+                txdbDAGClean.EraseDAGLinks(pindex->GetBlockHash());
+        }
+        txdbDAGClean.TxnCommit();
+    }
+    // Phase 2: Memory cleanup after LevelDB commit (reverse order: children first)
+    bool fDAGReorg = false;
+    for (auto rit = vDisconnect.rbegin(); rit != vDisconnect.rend(); ++rit)
+    {
+        CBlockIndex* pindex = *rit;
+        if (pindex->nHeight >= FORK_HEIGHT_DAG && pindex->phashBlock)
+        {
+            g_dagManager.RemoveBlockDAGData(pindex->GetBlockHash());
+            fDAGReorg = true;
+        }
+    }
+    // Re-color DAG blocks above fork point to ensure consistency with fresh-synced nodes
+    if (fDAGReorg && pfork)
+        g_dagManager.RebuildDAGOrderIncremental(pfork->nHeight);
+
     // Disconnect shorter branch
     for (CBlockIndex* pindex : vDisconnect)
         if (pindex->pprev)
@@ -4807,6 +5009,14 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew)
     // Delete redundant memory transactions
     for (CTransaction& tx : vtx)
         mempool.remove(tx);
+
+    // IDAG Phase 3: Remove txs from DAG sibling blocks
+    if (pindexNew->nHeight >= FORK_HEIGHT_DAG)
+    {
+        std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(hash);
+        for (const uint256& hashSibling : siblings)
+            mempool.RemoveDAGConflicts(hashSibling);
+    }
 
     return true;
 }
@@ -5101,7 +5311,12 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
         if (!vDAGParents.empty())
         {
             g_dagManager.InitBlockDAGData(pindexNew, vDAGParents);
-            g_dagManager.ColorBlock(pindexNew);
+
+            // IDAG Phase 4: Fork-gate between GHOSTDAG and DAGKNIGHT coloring
+            if (pindexNew->nHeight >= FORK_HEIGHT_DAGKNIGHT)
+                g_dagManager.ColorBlockDAGKnight(pindexNew);
+            else
+                g_dagManager.ColorBlock(pindexNew);
 
             CTxDB txdbDAG;
             if (txdbDAG.TxnBegin())
@@ -5116,6 +5331,33 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
             // Use DAG score for best-chain comparison
             uint256 nDAGScore = g_dagManager.ComputeDAGScore(pindexNew);
             pindexNew->nChainTrust = nDAGScore;
+
+            // IDAG Phase 3: Remove DAG sibling txs from mempool
+            std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(hash);
+            for (const uint256& hashSibling : siblings)
+                mempool.RemoveDAGConflicts(hashSibling);
+
+            // IDAG Phase 3: Epoch state computation + pruning at epoch boundaries
+            int nEpochInterval = GetEpochInterval(pindexNew->nHeight);
+            if (pindexNew->nHeight % nEpochInterval == 0 && pindexNew->nHeight > 0)
+            {
+                int nCompletedEpoch = (pindexNew->nHeight / nEpochInterval) - 1;
+                if (nCompletedEpoch >= 0)
+                {
+                    g_dagManager.ComputeEpochState(nCompletedEpoch, nEpochInterval);
+
+                    CTxDB txdbEpoch;
+                    if (txdbEpoch.TxnBegin())
+                    {
+                        g_dagManager.WriteEpochState(txdbEpoch, nCompletedEpoch);
+                        txdbEpoch.TxnCommit();
+                    }
+                }
+
+                // Prune old DAG data periodically
+                CTxDB txdbPrune;
+                g_dagManager.PruneDAGData(txdbPrune, pindexNew->nHeight);
+            }
         }
     }
 
@@ -5186,8 +5428,23 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
     if (IsProofOfStake())
     {
         // Coinbase output should be empty if proof-of-stake block
-        if (vtx[0].vout.size() != 1 || !vtx[0].vout[0].IsEmpty())
-            return DoS(100, error("CheckBlock() : coinbase output not empty for proof-of-stake block"));
+        // Post-DAG: allow additional zero-value OP_RETURN outputs for DAG parent commitment
+        if (!vtx[0].vout[0].IsEmpty())
+            return DoS(100, error("CheckBlock() : coinbase vout[0] not empty for proof-of-stake block"));
+        // Cap extra outputs (1 empty + up to 2 OP_RETURN for DAG/data)
+        if (vtx[0].vout.size() > 3)
+            return DoS(100, error("CheckBlock() : too many coinbase outputs (%d) for proof-of-stake block", (int)vtx[0].vout.size()));
+        if (vtx[0].vout.size() > 1)
+        {
+            for (unsigned int i = 1; i < vtx[0].vout.size(); i++)
+            {
+                if (vtx[0].vout[i].nValue != 0)
+                    return DoS(100, error("CheckBlock() : non-zero coinbase output[%d] in proof-of-stake block", i));
+                // Must be OP_RETURN (DAG commitment or similar data-carrying output)
+                if (vtx[0].vout[i].scriptPubKey.size() < 1 || vtx[0].vout[i].scriptPubKey[0] != OP_RETURN)
+                    return DoS(100, error("CheckBlock() : non-OP_RETURN extra coinbase output[%d] in proof-of-stake block", i));
+            }
+        }
 
         // Second transaction must be coinstake, the rest must not be
         if (vtx.empty() || !vtx[1].IsCoinStake())
@@ -5260,6 +5517,16 @@ bool CBlock::AcceptBlock()
         return DoS(10, error("AcceptBlock() : prev block not found"));
     CBlockIndex* pindexPrev = (*mi).second;
     int nHeight = pindexPrev->nHeight+1;
+
+    // Adaptive block size check (post-DAG)
+    if (nHeight >= FORK_HEIGHT_DAG)
+    {
+        unsigned int nBlockBytes = ::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION);
+        unsigned int nAdaptiveLimit = GetAdaptiveBlockSizeLimit(pindexPrev);
+        if (nBlockBytes > nAdaptiveLimit)
+            return DoS(50, error("AcceptBlock() : block size %u exceeds adaptive limit %u at height %d",
+                                  nBlockBytes, nAdaptiveLimit, nHeight));
+    }
 
     // Check proof-of-work or proof-of-stake
     if (nBits != GetNextTargetRequired(pindexPrev, IsProofOfStake()))
@@ -7643,7 +7910,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             std::vector<uint256> vTips;
             vRecv >> vTips;
 
-            if (vTips.size() > 100)
+            if (vTips.size() > (unsigned int)(MAX_DAG_PARENTS * 3))
             {
                 pfrom->Misbehaving(20);
             }

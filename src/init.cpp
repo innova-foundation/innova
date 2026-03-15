@@ -137,6 +137,14 @@ void Shutdown(void* parg)
             pwalletMain->SaveSPVUtxoCache();
         }
 
+        // IDAG Phase 3: Save DAG clean height for incremental rebuild on restart
+        if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_DAG)
+        {
+            CTxDB txdbClean;
+            txdbClean.WriteDAGCleanHeight(pindexBest->nHeight);
+            printf("IDAG: Saved DAG clean height %d\n", pindexBest->nHeight);
+        }
+
         FlushIBDBatch();
 
         if(idns) {
@@ -696,10 +704,9 @@ bool AppInit2()
     nMinStakeInterval = std::max((int64_t)0, std::min((int64_t)600, GetArg("-minstakeinterval", 30)));
     nMinerSleep = std::max((int64_t)100, std::min((int64_t)60000, GetArg("-minersleep", 5000)));
 
-    // Largest block you're willing to create.
-    // Limit to betweeen 1K and MAX_BLOCK_SIZE-1K for sanity:
-    nBlockMaxSize = GetArg("-blockmaxsize", MAX_BLOCK_SIZE_GEN/2);
-    nBlockMaxSize = std::max((unsigned int)1000, std::min((unsigned int)(MAX_BLOCK_SIZE-1000), nBlockMaxSize));
+    // Largest block you're willing to create (adaptive post-DAG, default half of ceiling)
+    nBlockMaxSize = GetArg("-blockmaxsize", ADAPTIVE_BLOCK_CEILING / 2);
+    nBlockMaxSize = std::max((unsigned int)1000, std::min((unsigned int)(ADAPTIVE_BLOCK_CEILING - 1000), nBlockMaxSize));
 
     // How much of the block should be dedicated to high-priority transactions,
     // included regardless of the fees they pay
@@ -1706,12 +1713,42 @@ bool AppInit2()
     if (!GetBoolArg("-nofinalityvoting", false))
         NewThread(ThreadFinalityVoter, NULL);
 
-    // IDAG Phase 2: DAG manager initialized via global constructor
+    // IDAG Phase 2+3: DAG manager initialized via global constructor
     // Links loaded during LoadBlockIndex() in txdb-leveldb.cpp
     if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_DAG)
     {
+        // IDAG Phase 3: Check for clean height — use incremental rebuild if available
+        // Also restore nPrunedBelowHeight for GetBlueSet boundary detection
+        CTxDB txdbDAGInit;
+        int nDAGCleanHeight = -1;
+        if (txdbDAGInit.ReadDAGCleanHeight(nDAGCleanHeight) && nDAGCleanHeight > 0)
+        {
+            // Clean height may also serve as prune boundary
+            int nPruneBelow = nDAGCleanHeight - DAG_PRUNE_DEPTH;
+            if (nPruneBelow > 0)
+                g_dagManager.SetPrunedBelowHeight(nPruneBelow);
+        }
+        if (nDAGCleanHeight > 0)
+        {
+            printf("IDAG: Found DAG clean height %d, using incremental rebuild\n", nDAGCleanHeight);
+            g_dagManager.RebuildDAGOrderIncremental(nDAGCleanHeight);
+        }
+        else if (!g_dagManager.GetDAGTips().empty())
+        {
+            printf("IDAG: No clean height found, full DAG rebuild\n");
+            g_dagManager.RebuildDAGOrder();
+        }
+
         std::vector<uint256> vTips = g_dagManager.GetDAGTips();
-        printf("IDAG: DAG active at height %d, %d tips\n", pindexBest->nHeight, (int)vTips.size());
+        printf("IDAG: DAG active at height %d, %d tips, %d entries\n",
+               pindexBest->nHeight, (int)vTips.size(), g_dagManager.GetDAGEntryCount());
+
+        // IDAG Phase 4: DAGKNIGHT status
+        if (pindexBest->nHeight >= FORK_HEIGHT_DAGKNIGHT)
+            printf("IDAG Phase 4: DAGKNIGHT adaptive ordering active (no fixed k)\n");
+        else
+            printf("IDAG: GHOSTDAG ordering active (k=%d), DAGKNIGHT activates at height %d\n",
+                   GHOSTDAG_K, FORK_HEIGHT_DAGKNIGHT);
     }
 
     RandAddSeedPerfmon();
