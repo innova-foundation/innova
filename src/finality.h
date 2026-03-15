@@ -20,12 +20,64 @@
 class CNode;
 class CDataStream;
 
-static const int FINALITY_EPOCH_INTERVAL = 60;   // blocks per epoch
+static const int FINALITY_EPOCH_INTERVAL_PRE_DAG = 60;    // blocks per epoch pre-DAG
+static const int FINALITY_EPOCH_INTERVAL_POST_DAG = 300;  // blocks per epoch post-DAG (5 min at 1s blocks)
 static const int FINALITY_THRESHOLD_NUM = 2;      // 2/3 threshold numerator
 static const int FINALITY_THRESHOLD_DEN = 3;      // 2/3 threshold denominator
 static const int64_t FINALITY_VOTE_MAX_AGE = 3600; // 1 hour max vote age
 static const int FINALITY_MAX_VOTES = 10000;       // max votes per epoch
 static const int FINALITY_VOTE_WINDOW = 5;         // blocks after epoch boundary to vote
+static const int FINALITY_MIN_VOTERS = 2;          // minimum unique voters for finality
+static const int64_t FINALITY_MIN_STAKE_DEFAULT = 25000 * COIN; // default minimum stake floor (configurable via -minfinalitystake)
+static const int FINALITY_CONFIRMATION_EPOCHS = 3;  // consecutive HARD epochs before binding finality (P2P propagation safety)
+
+/** Finality tier levels */
+enum FinalityTier
+{
+    FINALITY_NONE      = 0,   // below minimum stake or too few voters
+    FINALITY_TENTATIVE = 1,   // >= 1/3 of epoch vote weight
+    FINALITY_SOFT      = 2,   // >= 1/2 of epoch vote weight
+    FINALITY_HARD      = 3    // >= 2/3 of epoch vote weight
+};
+
+/** Get epoch interval for a given height: 60 pre-DAG, 300 post-DAG */
+inline int GetEpochInterval(int nHeight)
+{
+    extern int GetForkHeightDAG();
+    if (nHeight >= GetForkHeightDAG())
+        return FINALITY_EPOCH_INTERVAL_POST_DAG;
+    return FINALITY_EPOCH_INTERVAL_PRE_DAG;
+}
+
+/** Get the epoch number for a given height.
+ *  Post-DAG epochs are numbered continuously from pre-DAG epoch count. */
+inline int GetEpochForHeight(int nHeight)
+{
+    extern int GetForkHeightDAG();
+    int nDAGFork = GetForkHeightDAG();
+    if (nHeight >= nDAGFork)
+    {
+        // Post-DAG: continue epoch numbering from where pre-DAG left off
+        // Use ceiling division to avoid epoch number collision at boundary
+        int nPreDAGEpochs = (nDAGFork + FINALITY_EPOCH_INTERVAL_PRE_DAG - 1) / FINALITY_EPOCH_INTERVAL_PRE_DAG;
+        return nPreDAGEpochs + (nHeight - nDAGFork) / FINALITY_EPOCH_INTERVAL_POST_DAG;
+    }
+    return nHeight / FINALITY_EPOCH_INTERVAL_PRE_DAG;
+}
+
+/** Get the block height of an epoch boundary */
+inline int GetEpochBoundaryHeight(int nEpoch, int nHeight)
+{
+    extern int GetForkHeightDAG();
+    int nDAGFork = GetForkHeightDAG();
+    int nPreDAGEpochs = (nDAGFork + FINALITY_EPOCH_INTERVAL_PRE_DAG - 1) / FINALITY_EPOCH_INTERVAL_PRE_DAG;
+    if (nEpoch >= nPreDAGEpochs)
+    {
+        // Post-DAG epoch: compute relative to DAG fork
+        return nDAGFork + (nEpoch - nPreDAGEpochs) * FINALITY_EPOCH_INTERVAL_POST_DAG;
+    }
+    return nEpoch * FINALITY_EPOCH_INTERVAL_PRE_DAG;
+}
 
 /** Compute POEM entropy weight for a block hash.
  *  Returns a uint256 that is the approximate log2(2^256 - hash) with 32 sub-bits of precision.
@@ -87,6 +139,10 @@ public:
     {
         nLastFinalizedHeight = 0;
         hashLastFinalized = 0;
+        nLastFinalityTier = FINALITY_NONE;
+        nConsecutiveHardEpochs = 0;
+        nPendingFinalizedHeight = 0;
+        hashPendingFinalized = 0;
     }
 
     /** Add a vote to the tracker. Returns true if vote was accepted. */
@@ -121,16 +177,31 @@ public:
     /** Get number of votes for an epoch */
     int GetEpochVoteCount(int nEpoch) const;
 
+    /** Get number of unique voters for an epoch */
+    int GetEpochVoterCount(int nEpoch) const;
+
+    /** Get the finality tier for the current state */
+    FinalityTier GetFinalityTier() const
+    {
+        LOCK(cs_finality);
+        return nLastFinalityTier;
+    }
+
     /** Prune old epochs (keep only last 10) */
     void PruneOldEpochs(int nCurrentEpoch);
 
 private:
     int nLastFinalizedHeight;
     uint256 hashLastFinalized;
+    FinalityTier nLastFinalityTier;
+    int nConsecutiveHardEpochs;      // consecutive HARD epochs (for confirmation delay)
+    int nPendingFinalizedHeight;     // height waiting for confirmation
+    uint256 hashPendingFinalized;    // hash waiting for confirmation
 
     std::map<int, std::vector<CFinalityVote>> mapEpochVotes;
     std::map<int, int64_t> mapEpochVoteWeight;
     std::set<uint256> setVoteNullifiers;
+    std::map<int, std::set<CKeyID>> mapEpochVoters;  // one vote per key per epoch
 };
 
 

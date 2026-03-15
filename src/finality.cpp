@@ -9,6 +9,8 @@
 #include "net.h"
 #include "util.h"
 #include "dag.h"
+#include "txdb.h"
+#include "base58.h"
 
 #include <openssl/sha.h>
 
@@ -137,12 +139,124 @@ bool CFinalityTracker::AddVote(const CFinalityVote& vote)
     if (setVoteNullifiers.count(vote.nullifier))
         return false;
 
+    // Verify nullifier matches H(pubkey || epoch) — prevents same key voting multiple times
+    {
+        CHashWriter expectedNullifier(SER_GETHASH, 0);
+        expectedNullifier << vote.vchPubKey;
+        expectedNullifier << vote.nEpoch;
+        if (vote.nullifier != expectedNullifier.GetHash())
+            return false;
+    }
+
+    // Reject duplicate keyIDs within an epoch (prevents spend-then-re-vote under new key)
+    {
+        CPubKey checkPubKey(vote.vchPubKey);
+        if (checkPubKey.IsValid())
+        {
+            CKeyID voterKeyID = checkPubKey.GetID();
+            if (mapEpochVoters.count(vote.nEpoch) && mapEpochVoters[vote.nEpoch].count(voterKeyID))
+                return false;
+        }
+    }
+
+    // Reject votes for epochs far beyond current chain tip (DoS protection)
+    {
+        int nCurrentEpoch = 0;
+        CBlockIndex* pBest = pindexBest;
+        if (pBest)
+            nCurrentEpoch = GetEpochForHeight(pBest->nHeight);
+        if (vote.nEpoch > nCurrentEpoch + 2)
+            return false;
+    }
+
+    // Validate vote weight: verify pubkey controls UTXOs worth at least nVoteWeight
+    {
+        CPubKey votePubKey(vote.vchPubKey);
+        if (!votePubKey.IsValid())
+            return false;
+
+        if (vote.nVoteWeight > MAX_MONEY)
+            return false;
+
+        CKeyID keyID = votePubKey.GetID();
+        int64_t nVerifiedBalance = 0;
+        bool fHasAddrIndex = false;
+
+        // Verify on-chain balance via address index + tx index
+        {
+            CTxDB txdb("r");
+            std::vector<uint256> vTxHashes;
+            if (txdb.ReadAddrIndex(keyID, vTxHashes))
+            {
+                fHasAddrIndex = true;
+                for (const uint256& txHash : vTxHashes)
+                {
+                    CTransaction tx;
+                    CTxIndex txindex;
+                    if (!txdb.ReadDiskTx(txHash, tx, txindex))
+                        continue;
+
+                    for (unsigned int i = 0; i < tx.vout.size(); i++)
+                    {
+                        // Check if output pays to this key
+                        CTxDestination dest;
+                        if (!ExtractDestination(tx.vout[i].scriptPubKey, dest))
+                            continue;
+                        CKeyID outKeyID;
+                        if (!CBitcoinAddress(dest).GetKeyID(outKeyID))
+                            continue;
+                        if (outKeyID != keyID)
+                            continue;
+
+                        // Check if output is unspent
+                        if (i < txindex.vSpent.size() && !txindex.vSpent[i].IsNull())
+                            continue; // spent
+
+                        int64_t nValue = tx.vout[i].nValue;
+                        if (nValue > 0 && nVerifiedBalance <= MAX_MONEY - nValue)
+                            nVerifiedBalance += nValue;
+                    }
+
+                    // Early exit if we've verified enough
+                    if (nVerifiedBalance >= vote.nVoteWeight)
+                        break;
+                }
+            }
+        }
+
+        // Reject if claimed weight exceeds verified on-chain balance
+        if (fHasAddrIndex && vote.nVoteWeight > nVerifiedBalance)
+        {
+            if (fDebug)
+                printf("AddVote: rejected vote with weight %s > verified balance %s\n",
+                       FormatMoney(vote.nVoteWeight).c_str(),
+                       FormatMoney(nVerifiedBalance).c_str());
+            return false;
+        }
+
+        // If address index unavailable, reject ALL votes — cannot verify weight
+        // Nodes without -reindexaddr cannot participate in finality voting
+        if (!fHasAddrIndex)
+        {
+            if (fDebug)
+                printf("AddVote: rejected (no address index, cannot verify weight)\n");
+            return false;
+        }
+    }
+
     if (mapEpochVotes.count(vote.nEpoch) &&
         (int)mapEpochVotes[vote.nEpoch].size() >= FINALITY_MAX_VOTES)
         return false;
 
     setVoteNullifiers.insert(vote.nullifier);
     mapEpochVotes[vote.nEpoch].push_back(vote);
+
+    // Track voter keyID to prevent same key voting under different nullifiers
+    {
+        CPubKey regPubKey(vote.vchPubKey);
+        if (regPubKey.IsValid())
+            mapEpochVoters[vote.nEpoch].insert(regPubKey.GetID());
+    }
 
     int64_t nPrevWeight = mapEpochVoteWeight.count(vote.nEpoch)
                               ? mapEpochVoteWeight[vote.nEpoch]
@@ -168,38 +282,125 @@ bool CFinalityTracker::CheckFinalityThreshold(int nEpoch)
     if (!mapEpochVoteWeight.count(nEpoch))
         return false;
 
-    int64_t nVoteWeight = mapEpochVoteWeight[nEpoch];
+    int64_t nEpochVoteWeight = mapEpochVoteWeight[nEpoch];
 
-    int64_t nSupply = 0;
+    // Participation-relative finality: threshold is based on THIS EPOCH's
+    // total vote weight, not total money supply. This ensures finality works
+    // even with low staking participation.
+
+    // Check minimum absolute stake floor (configurable via -minfinalitystake)
+    int64_t nMinStakeCoins = GetArg("-minfinalitystake", FINALITY_MIN_STAKE_DEFAULT / COIN);
+    if (nMinStakeCoins < 0) nMinStakeCoins = 0;
+    if (nMinStakeCoins > MAX_MONEY / COIN) nMinStakeCoins = MAX_MONEY / COIN;
+    int64_t nMinStake = nMinStakeCoins * COIN;
+    if (nEpochVoteWeight < nMinStake)
     {
-        CBlockIndex* pBest = pindexBest;
-        if (pBest)
-            nSupply = pBest->nMoneySupply;
+        nLastFinalityTier = FINALITY_NONE;
+        return false; // not enough total stake for finality to be meaningful
     }
 
-    if (nSupply <= 0)
+    // Check minimum unique voter count
+    int nVoterCount = mapEpochVoters.count(nEpoch) ? (int)mapEpochVoters[nEpoch].size() : 0;
+    if (nVoterCount < FINALITY_MIN_VOTERS)
+    {
+        nLastFinalityTier = FINALITY_NONE;
+        return false; // need at least 2 unique voters
+    }
+
+    if (!mapEpochVotes.count(nEpoch) || mapEpochVotes[nEpoch].empty())
         return false;
 
-    // nVoteWeight * 3 >= nSupply * 2 (overflow-safe: both <= MAX_MONEY, *3 fits int64_t)
-    if (nVoteWeight * FINALITY_THRESHOLD_DEN >= nSupply * FINALITY_THRESHOLD_NUM)
+    // Select block with highest cumulative vote weight (deterministic tiebreaker by hash)
+    std::map<uint256, int64_t> mapBlockVoteWeight;
+    std::map<uint256, int> mapBlockHeight;
+    for (const CFinalityVote& v : mapEpochVotes[nEpoch])
     {
-        if (!mapEpochVotes.count(nEpoch) || mapEpochVotes[nEpoch].empty())
-            return false;
+        if (v.nVoteWeight > 0 && mapBlockVoteWeight[v.hashBlock] <= MAX_MONEY - v.nVoteWeight)
+            mapBlockVoteWeight[v.hashBlock] += v.nVoteWeight;
+        mapBlockHeight[v.hashBlock] = v.nHeight;
+    }
 
-        int nFinalHeight = mapEpochVotes[nEpoch][0].nHeight;
-        uint256 hashFinal = mapEpochVotes[nEpoch][0].hashBlock;
-
-        if (nFinalHeight > nLastFinalizedHeight)
+    uint256 hashFinal = 0;
+    int64_t nBestBlockWeight = 0;
+    for (const auto& p : mapBlockVoteWeight)
+    {
+        if (p.second > nBestBlockWeight ||
+            (p.second == nBestBlockWeight && (hashFinal == 0 || p.first < hashFinal)))
         {
-            nLastFinalizedHeight = nFinalHeight;
-            hashLastFinalized = hashFinal;
-            printf("FINALITY: Epoch %d finalized at height %d (hash=%s, weight=%s/%s)\n",
-                   nEpoch, nFinalHeight,
-                   hashFinal.ToString().substr(0, 20).c_str(),
-                   FormatMoney(nVoteWeight).c_str(),
-                   FormatMoney(nSupply).c_str());
+            nBestBlockWeight = p.second;
+            hashFinal = p.first;
         }
-        return true;
+    }
+
+    if (hashFinal == 0)
+        return false;
+
+    // Determine finality tier based on the winning block's weight vs total epoch weight
+    // Thresholds are relative to nEpochVoteWeight (participation-relative)
+    FinalityTier tier = FINALITY_NONE;
+    if (nBestBlockWeight * 3 >= nEpochVoteWeight * 2)      // >= 2/3
+        tier = FINALITY_HARD;
+    else if (nBestBlockWeight * 2 >= nEpochVoteWeight)       // >= 1/2
+        tier = FINALITY_SOFT;
+    else if (nBestBlockWeight * 3 >= nEpochVoteWeight)       // >= 1/3
+        tier = FINALITY_TENTATIVE;
+
+    nLastFinalityTier = tier;
+
+    int nFinalHeight = mapBlockHeight.count(hashFinal) ? mapBlockHeight[hashFinal] : 0;
+
+    if (tier >= FINALITY_HARD)
+    {
+        // Track consecutive HARD epochs for confirmation delay
+        // This prevents chain splits from P2P vote propagation differences:
+        // finality only becomes binding after N consecutive HARD epochs agree
+        nConsecutiveHardEpochs++;
+
+        if (nFinalHeight > nPendingFinalizedHeight)
+        {
+            nPendingFinalizedHeight = nFinalHeight;
+            hashPendingFinalized = hashFinal;
+        }
+
+        if (nConsecutiveHardEpochs >= FINALITY_CONFIRMATION_EPOCHS &&
+            nPendingFinalizedHeight > nLastFinalizedHeight)
+        {
+            nLastFinalizedHeight = nPendingFinalizedHeight;
+            hashLastFinalized = hashPendingFinalized;
+            printf("FINALITY: CONFIRMED at height %d after %d consecutive HARD epochs (hash=%s, voters=%d)\n",
+                   nLastFinalizedHeight, nConsecutiveHardEpochs,
+                   hashLastFinalized.ToString().substr(0, 20).c_str(),
+                   nVoterCount);
+        }
+        else
+        {
+            printf("FINALITY: Epoch %d HARD (%d/%d confirmations) at height %d (block_weight=%s, epoch_weight=%s, voters=%d)\n",
+                   nEpoch, nConsecutiveHardEpochs, FINALITY_CONFIRMATION_EPOCHS,
+                   nFinalHeight,
+                   FormatMoney(nBestBlockWeight).c_str(),
+                   FormatMoney(nEpochVoteWeight).c_str(),
+                   nVoterCount);
+        }
+        return nConsecutiveHardEpochs >= FINALITY_CONFIRMATION_EPOCHS;
+    }
+    else
+    {
+        // Non-HARD epoch breaks the consecutive streak
+        nConsecutiveHardEpochs = 0;
+
+        if (tier >= FINALITY_SOFT)
+        {
+            printf("FINALITY: Epoch %d SOFT at height %d (block_weight=%s, epoch_weight=%s, voters=%d)\n",
+                   nEpoch, nFinalHeight,
+                   FormatMoney(nBestBlockWeight).c_str(),
+                   FormatMoney(nEpochVoteWeight).c_str(),
+                   nVoterCount);
+        }
+        else if (tier >= FINALITY_TENTATIVE && fDebug)
+        {
+            printf("FINALITY: Epoch %d tentative at height %d (voters=%d)\n",
+                   nEpoch, nFinalHeight, nVoterCount);
+        }
     }
 
     return false;
@@ -232,6 +433,15 @@ int CFinalityTracker::GetEpochVoteCount(int nEpoch) const
     return 0;
 }
 
+int CFinalityTracker::GetEpochVoterCount(int nEpoch) const
+{
+    LOCK(cs_finality);
+    auto it = mapEpochVoters.find(nEpoch);
+    if (it != mapEpochVoters.end())
+        return (int)it->second.size();
+    return 0;
+}
+
 void CFinalityTracker::PruneOldEpochs(int nCurrentEpoch)
 {
     LOCK(cs_finality);
@@ -246,6 +456,7 @@ void CFinalityTracker::PruneOldEpochs(int nCurrentEpoch)
             for (const CFinalityVote& vote : it->second)
                 setVoteNullifiers.erase(vote.nullifier);
             mapEpochVoteWeight.erase(it->first);
+            mapEpochVoters.erase(it->first);
             it = mapEpochVotes.erase(it);
         }
         else
@@ -267,15 +478,34 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
         CFinalityVote vote;
         vRecv >> vote;
 
+        // Cheap checks first (before expensive ECDSA signature verification)
+        if (vote.nEpoch < 0 || vote.nHeight < 0 || vote.nVoteWeight <= 0)
+            return false;
+        if (vote.hashBlock == 0 || vote.nullifier == 0 || vote.vchPubKey.empty())
+            return false;
+        // Reject future-timestamped votes (prevents permanent nullifier squatting)
+        if (vote.nTime > GetAdjustedTime() + 300)
+            return false;
+        if (vote.IsExpired(GetAdjustedTime()))
+            return false;
+
+        // Epoch range check (cheap — avoids ECDSA on far-future votes)
+        {
+            int nCurrentEpoch = 0;
+            CBlockIndex* pBest = pindexBest;
+            if (pBest)
+                nCurrentEpoch = GetEpochForHeight(pBest->nHeight);
+            if (vote.nEpoch > nCurrentEpoch + 2)
+                return false;
+        }
+
+        // Now do expensive ECDSA signature verification
         if (!vote.IsValid())
         {
             printf("ProcessMessageFinality: invalid vote from peer %s\n",
                    pfrom->addr.ToString().c_str());
             return false;
         }
-
-        if (vote.IsExpired(GetAdjustedTime()))
-            return false;
 
         if (g_finalityTracker.AddVote(vote))
         {
@@ -294,6 +524,27 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
     {
         int nEpoch;
         vRecv >> nEpoch;
+
+        // Validate epoch range (prevent amplification from arbitrary epoch requests)
+        int nCurrentEpoch = 0;
+        {
+            CBlockIndex* pBest = pindexBest;
+            if (pBest)
+                nCurrentEpoch = GetEpochForHeight(pBest->nHeight);
+        }
+        if (nEpoch < 0 || nEpoch > nCurrentEpoch + 1)
+            return false;
+
+        // Rate limit: max 1 fvreq per 5 seconds per peer
+        static std::map<CAddress, int64_t> mapLastFvreq;
+        int64_t nNow = GetTimeMillis();
+        if (mapLastFvreq.count(pfrom->addr) && nNow - mapLastFvreq[pfrom->addr] < 5000)
+            return false;
+        mapLastFvreq[pfrom->addr] = nNow;
+
+        // Bound map size to prevent memory growth from many peers
+        if (mapLastFvreq.size() > 1000)
+            mapLastFvreq.clear();
 
         std::vector<CFinalityVote> votes = g_finalityTracker.GetEpochVotes(nEpoch);
         for (const CFinalityVote& vote : votes)
@@ -345,8 +596,8 @@ void ThreadFinalityVoter(void* parg)
         if (nCurrentHeight < FORK_HEIGHT_FINALITY)
             continue;
 
-        int nCurrentEpoch = nCurrentHeight / FINALITY_EPOCH_INTERVAL;
-        int nEpochProgress = nCurrentHeight % FINALITY_EPOCH_INTERVAL;
+        int nCurrentEpoch = GetEpochForHeight(nCurrentHeight);
+        int nEpochProgress = nCurrentHeight % GetEpochInterval(nCurrentHeight);
 
         if (nEpochProgress >= FINALITY_VOTE_WINDOW)
             continue;
@@ -376,10 +627,10 @@ bool ProduceFinalityVote()
         return false;
 
     int nCurrentHeight = pindexBest->nHeight;
-    int nCurrentEpoch = nCurrentHeight / FINALITY_EPOCH_INTERVAL;
+    int nCurrentEpoch = GetEpochForHeight(nCurrentHeight);
 
     // IDAG Phase 2: If DAG is active, vote for DAG-selected best tip
-    int nEpochHeight = nCurrentEpoch * FINALITY_EPOCH_INTERVAL;
+    int nEpochHeight = GetEpochBoundaryHeight(nCurrentEpoch, nCurrentHeight);
     CBlockIndex* pEpochBlock = NULL;
     if (nCurrentHeight >= FORK_HEIGHT_DAG)
     {

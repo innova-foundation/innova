@@ -418,6 +418,93 @@ bool CTxDB::ReadDAGLinks(const uint256& hash, CBlockDAGData& data)
     return Read(make_pair(string("daglinks"), hash), data);
 }
 
+bool CTxDB::EraseDAGLinks(const uint256& hash)
+{
+    return Erase(make_pair(string("daglinks"), hash));
+}
+
+// IDAG Phase 3: Epoch state persistence
+bool CTxDB::WriteEpochState(int nEpoch, const CEpochState& state)
+{
+    return Write(make_pair(string("epochstate"), nEpoch), state);
+}
+
+bool CTxDB::ReadEpochState(int nEpoch, CEpochState& state)
+{
+    return Read(make_pair(string("epochstate"), nEpoch), state);
+}
+
+bool CTxDB::WriteDAGCleanHeight(int nHeight)
+{
+    return Write(string("dagcleanheight"), nHeight);
+}
+
+bool CTxDB::ReadDAGCleanHeight(int& nHeight)
+{
+    return Read(string("dagcleanheight"), nHeight);
+}
+
+bool CTxDB::IterateDAGLinks(std::map<uint256, CBlockDAGData>& mapOut)
+{
+    mapOut.clear();
+    leveldb::DB* db = GetInstance();
+    if (!db)
+        return false;
+
+    // Build the serialized prefix for "daglinks" key type
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << string("daglinks");
+    std::string strPrefix = ssPrefix.str();
+
+    leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
+    it->Seek(strPrefix);
+
+    while (it->Valid())
+    {
+        std::string strKey = it->key().ToString();
+        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
+            break;
+
+        try {
+            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
+            std::pair<std::string, uint256> keyPair;
+            ssKey >> keyPair;
+
+            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
+            CBlockDAGData data;
+
+            // Phase 4 compat: deserialize core fields first, then try nInferredK
+            ssValue >> data.vDAGParents;
+            ssValue >> data.vDAGChildren;
+            ssValue >> data.fBlue;
+            ssValue >> data.nDAGScore;
+            ssValue >> data.nDAGOrder;
+
+            // nInferredK may not exist in pre-Phase 4 entries
+            if (ssValue.size() > 0)
+            {
+                try { ssValue >> data.nInferredK; }
+                catch (const std::exception&) { data.nInferredK = -1; }
+            }
+            else
+            {
+                data.nInferredK = -1;
+            }
+
+            mapOut[keyPair.second] = data;
+        }
+        catch (const std::exception&)
+        {
+            // Skip malformed entries
+        }
+
+        it->Next();
+    }
+
+    delete it;
+    return true;
+}
+
 class CBatchScanner : public leveldb::WriteBatch::Handler {
 public:
     std::string needle;
@@ -662,6 +749,7 @@ bool CTxDB::LoadBlockIndex()
         pindexNew->nTime          = diskindex.nTime;
         pindexNew->nBits          = diskindex.nBits;
         pindexNew->nNonce         = diskindex.nNonce;
+        pindexNew->nSize          = diskindex.nSize;
 
         // Watch for genesis block
         if (pindexGenesisBlock == NULL && blockHash == GetGenesisBlockHash())
@@ -702,10 +790,8 @@ bool CTxDB::LoadBlockIndex()
             return error("CTxDB::LoadBlockIndex() : Failed stake modifier checkpoint height=%d, modifier=0x%016" PRIx64, pindex->nHeight, pindex->nStakeModifier);
     }
 
-    // IDAG Phase 2: Load DAG links and rebuild ordering
+    // IDAG Phase 2+3: Load DAG links (ordering deferred to init.cpp for incremental support)
     g_dagManager.LoadDAGLinks(*this);
-    if (!g_dagManager.GetDAGTips().empty())
-        g_dagManager.RebuildDAGOrder();
 
     // Load hashBestChain pointer to end of best chain
     if (!ReadHashBestChain(hashBestChain))

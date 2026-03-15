@@ -174,9 +174,9 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         if (pindexPrev->phashBlock)
             vDAGParents.push_back(pindexPrev->GetBlockHash());
 
-        // Collect merge parents from DAG tips
+        // Collect merge parents from DAG tips (cs_main for mapBlockIndex access)
         {
-            LOCK(g_dagManager.cs_dag);
+            LOCK2(cs_main, g_dagManager.cs_dag);
             std::vector<uint256> vTips = g_dagManager.GetDAGTips();
             for (const uint256& hashTip : vTips)
             {
@@ -217,10 +217,12 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
     // Add our coinbase tx as first transaction
     pblock->vtx.push_back(txNew);
 
-    // Largest block you're willing to create:
-    unsigned int nBlockMaxSize = GetArg("-blockmaxsize", MAX_BLOCK_SIZE_GEN/2);
-    // Limit to betweeen 1K and MAX_BLOCK_SIZE-1K for sanity:
-    nBlockMaxSize = std::max((unsigned int)1000, std::min((unsigned int)(MAX_BLOCK_SIZE-1000), nBlockMaxSize));
+    // Largest block you're willing to create (adaptive post-DAG):
+    unsigned int nAdaptiveLimit = GetAdaptiveBlockSizeLimit(pindexPrev);
+    unsigned int nBlockMaxSize = GetArg("-blockmaxsize", nAdaptiveLimit / 2);
+    // Limit to between 1K and the adaptive ceiling (underflow-safe)
+    unsigned int nMaxAllowed = (nAdaptiveLimit > 1000) ? (nAdaptiveLimit - 1000) : 1000;
+    nBlockMaxSize = std::max((unsigned int)1000, std::min(nMaxAllowed, nBlockMaxSize));
 
     // How much of the block should be dedicated to high-priority transactions,
     // included regardless of the fees they pay
@@ -839,11 +841,19 @@ void StakeMiner(CWallet *pwallet)
             continue;
         };
 
-        if (nMinStakeInterval > 0 && nTimeLastStake + (int64_t)nMinStakeInterval > GetTime())
+        // Post-DAG: reduce stake interval to match nMaxStakeSearchInterval (2s)
+        // This ensures no timestamp slots are skipped between staking attempts
+        int64_t nEffectiveStakeInterval = nMinStakeInterval;
+        {
+            LOCK(cs_main);
+            if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_DAG)
+                nEffectiveStakeInterval = std::min(nEffectiveStakeInterval, (int64_t)2);
+        }
+        if (nEffectiveStakeInterval > 0 && nTimeLastStake + nEffectiveStakeInterval > GetTime())
         {
             if (fDebug && GetBoolArg("-printcoinstake"))
-                printf("StakeMiner() Rate limited to 1 / %d seconds.\n", nMinStakeInterval);
-            MilliSleep(nMinStakeInterval * 1000); // nMinStakeInterval / 2 seconds
+                printf("StakeMiner() Rate limited to 1 / %d seconds.\n", (int)nEffectiveStakeInterval);
+            MilliSleep(nEffectiveStakeInterval * 1000);
             continue;
         };
 

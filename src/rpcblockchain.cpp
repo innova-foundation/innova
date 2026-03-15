@@ -172,22 +172,22 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
     // IDAG Phase 2: DAG metadata
     if (blockindex->nHeight >= FORK_HEIGHT_DAG && blockindex->phashBlock)
     {
-        const CBlockDAGData* pDAGData = g_dagManager.GetDAGData(blockindex->GetBlockHash());
-        if (pDAGData)
+        CBlockDAGData dagData;
+        if (g_dagManager.GetDAGData(blockindex->GetBlockHash(), dagData))
         {
             Array dagparents;
-            for (const uint256& hp : pDAGData->vDAGParents)
+            for (const uint256& hp : dagData.vDAGParents)
                 dagparents.push_back(hp.GetHex());
             result.push_back(Pair("dagparents", dagparents));
 
             Array dagchildren;
-            for (const uint256& hc : pDAGData->vDAGChildren)
+            for (const uint256& hc : dagData.vDAGChildren)
                 dagchildren.push_back(hc.GetHex());
             result.push_back(Pair("dagchildren", dagchildren));
 
-            result.push_back(Pair("dagblue", pDAGData->fBlue));
-            result.push_back(Pair("dagscore", pDAGData->nDAGScore.GetHex()));
-            result.push_back(Pair("dagorder", pDAGData->nDAGOrder));
+            result.push_back(Pair("dagblue", dagData.fBlue));
+            result.push_back(Pair("dagscore", dagData.nDAGScore.GetHex()));
+            result.push_back(Pair("dagorder", dagData.nDAGOrder));
         }
     }
 
@@ -1076,20 +1076,39 @@ Value getfinalityinfo(const Array& params, bool fHelp)
         }
     }
 
-    int nCurrentEpoch = nCurrentHeight / FINALITY_EPOCH_INTERVAL;
+    int nCurrentEpoch = GetEpochForHeight(nCurrentHeight);
     int nFinalizedHeight = g_finalityTracker.GetFinalizedHeight();
     uint256 hashFinalized = g_finalityTracker.GetFinalizedHash();
     int nVoteCount = g_finalityTracker.GetEpochVoteCount(nCurrentEpoch);
     int64_t nVoteWeight = g_finalityTracker.GetEpochVoteWeight(nCurrentEpoch);
 
+    int nVoterCount = g_finalityTracker.GetEpochVoterCount(nCurrentEpoch);
+    FinalityTier tier = g_finalityTracker.GetFinalityTier();
+
     result.push_back(Pair("height", nCurrentHeight));
     result.push_back(Pair("epoch", nCurrentEpoch));
-    result.push_back(Pair("epoch_interval", FINALITY_EPOCH_INTERVAL));
+    result.push_back(Pair("epoch_interval", GetEpochInterval(nCurrentHeight)));
     result.push_back(Pair("finalized_height", nFinalizedHeight));
     result.push_back(Pair("finalized_hash", hashFinalized.GetHex()));
     result.push_back(Pair("current_epoch_votes", nVoteCount));
+    result.push_back(Pair("current_epoch_voters", nVoterCount));
     result.push_back(Pair("current_epoch_weight", FormatMoney(nVoteWeight)));
     result.push_back(Pair("money_supply", FormatMoney(nSupply)));
+
+    // Finality tier info
+    std::string strTier = "none";
+    if (tier == FINALITY_HARD) strTier = "hard";
+    else if (tier == FINALITY_SOFT) strTier = "soft";
+    else if (tier == FINALITY_TENTATIVE) strTier = "tentative";
+    result.push_back(Pair("finality_tier", strTier));
+    result.push_back(Pair("finality_model", std::string("participation-relative")));
+    {
+        int64_t nMinStakeCoins = GetArg("-minfinalitystake", FINALITY_MIN_STAKE_DEFAULT / COIN);
+        if (nMinStakeCoins < 0) nMinStakeCoins = 0;
+        if (nMinStakeCoins > MAX_MONEY / COIN) nMinStakeCoins = MAX_MONEY / COIN;
+        result.push_back(Pair("min_stake_floor", FormatMoney(nMinStakeCoins * COIN)));
+    }
+    result.push_back(Pair("min_voters", FINALITY_MIN_VOTERS));
     result.push_back(Pair("fork_active", nCurrentHeight >= FORK_HEIGHT_FINALITY));
 
     return result;
@@ -1148,9 +1167,33 @@ Value getdaginfo(const Array& params, bool fHelp)
     std::vector<uint256> vTips = g_dagManager.GetDAGTips();
     result.push_back(Pair("dag_tips", (int)vTips.size()));
 
-    result.push_back(Pair("ghostdag_k", GHOSTDAG_K));
     result.push_back(Pair("max_parents", MAX_DAG_PARENTS));
     result.push_back(Pair("merge_depth", DAG_MERGE_DEPTH));
+
+    // IDAG Phase 4: DAGKNIGHT info
+    bool fDAGKnightActive = nCurrentHeight >= FORK_HEIGHT_DAGKNIGHT;
+    result.push_back(Pair("dagknight_active", fDAGKnightActive));
+    result.push_back(Pair("dagknight_fork_height", FORK_HEIGHT_DAGKNIGHT));
+
+    if (fDAGKnightActive)
+        result.push_back(Pair("ordering_algorithm", std::string("DAGKNIGHT")));
+    else
+        result.push_back(Pair("ordering_algorithm", std::string("GHOSTDAG")));
+
+    result.push_back(Pair("ghostdag_k", GHOSTDAG_K));
+
+    // IDAG Phase 3: Epoch and pruning info
+    result.push_back(Pair("epoch_interval", GetEpochInterval(nCurrentHeight)));
+    result.push_back(Pair("current_epoch", GetEpochForHeight(nCurrentHeight)));
+    result.push_back(Pair("dag_entries", g_dagManager.GetDAGEntryCount()));
+    int nPrunedBelow = g_dagManager.GetPrunedBelowHeight();
+    result.push_back(Pair("pruned_below", nPrunedBelow));
+
+    // Adaptive block size info
+    unsigned int nAdaptiveLimit = pindexBest ? GetAdaptiveBlockSizeLimit(pindexBest) : MAX_BLOCK_SIZE_LEGACY;
+    result.push_back(Pair("adaptive_block_limit", (int)nAdaptiveLimit));
+    result.push_back(Pair("adaptive_block_ceiling", (int)ADAPTIVE_BLOCK_CEILING));
+    result.push_back(Pair("adaptive_block_floor", (int)ADAPTIVE_BLOCK_FLOOR));
 
     CBlockIndex* pBestTip = g_dagManager.SelectBestDAGTip();
     if (pBestTip && pBestTip->phashBlock)
@@ -1158,6 +1201,85 @@ Value getdaginfo(const Array& params, bool fHelp)
         result.push_back(Pair("best_dag_tip", pBestTip->GetBlockHash().GetHex()));
         uint256 nScore = g_dagManager.ComputeDAGScore(pBestTip);
         result.push_back(Pair("best_dag_score", nScore.GetHex()));
+
+        if (fDAGKnightActive)
+        {
+            CBlockDAGData tipData;
+            if (g_dagManager.GetDAGData(pBestTip->GetBlockHash(), tipData))
+                result.push_back(Pair("inferred_k", tipData.nInferredK));
+        }
+    }
+
+    return result;
+}
+
+Value getepochinfo(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 1)
+        throw runtime_error(
+            "getepochinfo [epoch]\n"
+            "Returns information about a DAG epoch.\n"
+            "If epoch is omitted, returns the current epoch.\n");
+
+    LOCK(cs_main);
+
+    int nCurrentHeight = pindexBest ? pindexBest->nHeight : 0;
+    int nEpoch;
+
+    if (params.size() > 0)
+    {
+        nEpoch = params[0].get_int();
+        if (nEpoch < 0 || nEpoch > 100000000)
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "epoch out of range (0-100000000)");
+    }
+    else
+        nEpoch = GetEpochForHeight(nCurrentHeight);
+
+    Object result;
+    result.push_back(Pair("epoch", nEpoch));
+    result.push_back(Pair("epoch_interval", GetEpochInterval(nCurrentHeight)));
+
+    CEpochState state;
+    if (g_dagManager.GetEpochState(nEpoch, state))
+    {
+        result.push_back(Pair("height_start", state.nHeightStart));
+        result.push_back(Pair("height_end", state.nHeightEnd));
+        result.push_back(Pair("boundary_block", state.hashBoundaryBlock.GetHex()));
+        result.push_back(Pair("block_count", state.nBlockCount));
+
+        // Tx count computed on demand (deferred from epoch computation for performance)
+        int nTxCount = state.nTxCount;
+        if (nTxCount < 0)
+        {
+            nTxCount = 0;
+            for (const uint256& bh : state.vBlockHashes)
+            {
+                std::map<uint256, CBlockIndex*>::iterator bmi = mapBlockIndex.find(bh);
+                if (bmi != mapBlockIndex.end())
+                {
+                    CBlock block;
+                    if (block.ReadFromDisk(bmi->second))
+                        nTxCount += (int)block.vtx.size();
+                }
+            }
+        }
+        result.push_back(Pair("tx_count", nTxCount));
+        result.push_back(Pair("total_trust", state.nTotalTrust.GetHex()));
+        result.push_back(Pair("finalized", state.fFinalized));
+
+        Array blocks;
+        for (const uint256& hash : state.vBlockHashes)
+            blocks.push_back(hash.GetHex());
+        result.push_back(Pair("blocks", blocks));
+    }
+    else
+    {
+        // Epoch not yet computed — return estimated range
+        int nInterval = GetEpochInterval(nCurrentHeight);
+        int nEstStart = GetEpochBoundaryHeight(nEpoch, nCurrentHeight);
+        result.push_back(Pair("height_start", nEstStart));
+        result.push_back(Pair("height_end", nEstStart + nInterval - 1));
+        result.push_back(Pair("status", "not_computed"));
     }
 
     return result;
@@ -1187,12 +1309,12 @@ Value getdagtips(const Array& params, bool fHelp)
             tip.push_back(Pair("height", pindex->nHeight));
             tip.push_back(Pair("time", (int64_t)pindex->nTime));
 
-            const CBlockDAGData* pData = g_dagManager.GetDAGData(hash);
-            if (pData)
+            CBlockDAGData tipData;
+            if (g_dagManager.GetDAGData(hash, tipData))
             {
-                tip.push_back(Pair("blue", pData->fBlue));
-                tip.push_back(Pair("score", pData->nDAGScore.GetHex()));
-                tip.push_back(Pair("parents", (int)pData->vDAGParents.size()));
+                tip.push_back(Pair("blue", tipData.fBlue));
+                tip.push_back(Pair("score", tipData.nDAGScore.GetHex()));
+                tip.push_back(Pair("parents", (int)tipData.vDAGParents.size()));
             }
         }
         result.push_back(tip);
@@ -1206,7 +1328,7 @@ Value getdagorder(const Array& params, bool fHelp)
     if (fHelp || params.size() > 1)
         throw runtime_error(
             "getdagorder [count]\n"
-            "Returns the GHOSTDAG linear ordering of blocks from the best tip.\n"
+            "Returns the DAG linear ordering of blocks from the best tip.\n"
             "Optional count limits the number of blocks returned (default: 100).\n");
 
     int nCount = 100;
@@ -1221,7 +1343,7 @@ Value getdagorder(const Array& params, bool fHelp)
     if (!pBestTip || !pBestTip->phashBlock)
         throw JSONRPCError(RPC_MISC_ERROR, "No DAG tips available");
 
-    std::vector<uint256> vOrder = g_dagManager.GetDAGLinearOrder(pBestTip->GetBlockHash());
+    std::vector<uint256> vOrder = g_dagManager.GetDAGLinearOrder(pBestTip->GetBlockHash(), nCount);
 
     Array result;
     int nStart = (int)vOrder.size() > nCount ? (int)vOrder.size() - nCount : 0;
@@ -1238,11 +1360,61 @@ Value getdagorder(const Array& params, bool fHelp)
             entry.push_back(Pair("is_pow", mi->second->IsProofOfWork()));
         }
 
-        const CBlockDAGData* pData = g_dagManager.GetDAGData(vOrder[i]);
-        if (pData)
-            entry.push_back(Pair("blue", pData->fBlue));
+        CBlockDAGData orderData;
+        if (g_dagManager.GetDAGData(vOrder[i], orderData))
+        {
+            entry.push_back(Pair("blue", orderData.fBlue));
+            if (orderData.nInferredK >= 0)
+                entry.push_back(Pair("inferred_k", orderData.nInferredK));
+        }
 
         result.push_back(entry);
+    }
+
+    return result;
+}
+
+Value getdagconfidence(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 1 || params.size() > 2)
+        throw runtime_error(
+            "getdagconfidence <blockhash> [comparehash]\n"
+            "Returns DAGKNIGHT confidence information for a block.\n"
+            "If comparehash is provided, returns pairwise ordering confidence.\n");
+
+    LOCK(cs_main);
+
+    if (!pindexBest || pindexBest->nHeight < FORK_HEIGHT_DAGKNIGHT)
+        throw JSONRPCError(RPC_MISC_ERROR, "DAGKNIGHT not yet active");
+
+    uint256 hashBlock;
+    hashBlock.SetHex(params[0].get_str());
+
+    Object result;
+    result.push_back(Pair("block", hashBlock.GetHex()));
+
+    CBlockDAGData blockData;
+    if (!g_dagManager.GetDAGData(hashBlock, blockData))
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Block not found in DAG");
+
+    result.push_back(Pair("blue", blockData.fBlue));
+    result.push_back(Pair("score", blockData.nDAGScore.GetHex()));
+    result.push_back(Pair("inferred_k", blockData.nInferredK));
+    result.push_back(Pair("order_confidence", g_dagManager.GetOrderConfidence(hashBlock)));
+
+    if (params.size() > 1)
+    {
+        uint256 hashCompare;
+        hashCompare.SetHex(params[1].get_str());
+
+        int nConfidence = 0;
+        int nOrder = g_dagManager.CompareBlockOrder(hashBlock, hashCompare, nConfidence);
+
+        Object compare;
+        compare.push_back(Pair("compare_block", hashCompare.GetHex()));
+        compare.push_back(Pair("order", nOrder == -1 ? "before" : (nOrder == 1 ? "after" : "unordered")));
+        compare.push_back(Pair("confidence", nConfidence));
+        result.push_back(Pair("pairwise", compare));
     }
 
     return result;

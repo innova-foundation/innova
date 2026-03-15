@@ -45,7 +45,7 @@ rpc2() { "$INNOVAD" -datadir="$NODE2_DIR" -regtest -rpcuser=$RPCUSER -rpcpasswor
 
 get_blocks() {
     local result=$($1 getinfo 2>/dev/null)
-    echo "$result" | grep -o '"blocks" *: *[0-9]*' | grep -o '[0-9]*'
+    echo "$result" | grep -oE '"blocks" *: *[0-9]+' | grep -oE '[0-9]+'
 }
 
 mine_blocks() {
@@ -59,8 +59,9 @@ mine_blocks() {
 
 cleanup() {
     log "Cleaning up..."
-    pkill -f "innovad.*dagtest" 2>/dev/null || true
-    sleep 2
+    pkill -f "innovad.*dag_test" 2>/dev/null || true
+    pkill -f "innovad.*dag_debug" 2>/dev/null || true
+    sleep 3
     rm -rf "$TEST_DIR"
 }
 
@@ -293,22 +294,22 @@ GHOSTDAG_K=$(echo "$DAG_INFO" | grep -o '"ghostdag_k" *: *[0-9]*' | grep -o '[0-
 MAX_PARENTS=$(echo "$DAG_INFO" | grep -o '"max_parents" *: *[0-9]*' | grep -o '[0-9]*$')
 MERGE_DEPTH=$(echo "$DAG_INFO" | grep -o '"merge_depth" *: *[0-9]*' | grep -o '[0-9]*$')
 
-if [ "$GHOSTDAG_K" = "3" ]; then
-    success "DAG constants: GHOSTDAG_K=3"
+if [ "$GHOSTDAG_K" = "18" ]; then
+    success "DAG constants: GHOSTDAG_K=18"
 else
-    fail "DAG constants: expected GHOSTDAG_K=3, got $GHOSTDAG_K"
+    fail "DAG constants: expected GHOSTDAG_K=18, got $GHOSTDAG_K"
 fi
 
-if [ "$MAX_PARENTS" = "8" ]; then
-    success "DAG constants: MAX_DAG_PARENTS=8"
+if [ "$MAX_PARENTS" = "32" ]; then
+    success "DAG constants: MAX_DAG_PARENTS=32"
 else
-    fail "DAG constants: expected MAX_DAG_PARENTS=8, got $MAX_PARENTS"
+    fail "DAG constants: expected MAX_DAG_PARENTS=32, got $MAX_PARENTS"
 fi
 
-if [ "$MERGE_DEPTH" = "10" ]; then
-    success "DAG constants: DAG_MERGE_DEPTH=10"
+if [ "$MERGE_DEPTH" = "64" ]; then
+    success "DAG constants: DAG_MERGE_DEPTH=64"
 else
-    fail "DAG constants: expected DAG_MERGE_DEPTH=10, got $MERGE_DEPTH"
+    fail "DAG constants: expected DAG_MERGE_DEPTH=64, got $MERGE_DEPTH"
 fi
 
 

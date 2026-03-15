@@ -31,7 +31,7 @@ static const unsigned int MAX_SIZE = 0x02000000;
 // Per-type size limits for network deserialization (DoS protection)
 static const unsigned int MAX_SCRIPT_SIZE = 10000;         // 10KB per script
 static const unsigned int MAX_TX_SIZE = 1000000;           // 1MB per transaction
-static const unsigned int MAX_BLOCK_SIZE_SERIALIZE = 4000000; // 4MB per block
+static const unsigned int MAX_BLOCK_SIZE_SERIALIZE = 16000000; // 16MB max deserialization (2x adaptive ceiling for safety)
 static const unsigned int MAX_VECTOR_SIZE = 5000000;       // 5MB for vectors
 
 // Used to bypass the rule against non-const reference to temporary
