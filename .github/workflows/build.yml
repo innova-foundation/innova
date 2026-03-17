@@ -7,6 +7,7 @@ on:
     branches:
       - master
       - dev
+      - idag
   pull_request:
     branches:
       - master
