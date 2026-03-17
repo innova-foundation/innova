@@ -41,9 +41,10 @@ enum FinalityTier
 };
 
 /** Get epoch interval for a given height: 60 pre-DAG, 300 post-DAG */
+int GetForkHeightDAG(); // defined in main.h (inline)
+
 inline int GetEpochInterval(int nHeight)
 {
-    extern int GetForkHeightDAG();
     if (nHeight >= GetForkHeightDAG())
         return FINALITY_EPOCH_INTERVAL_POST_DAG;
     return FINALITY_EPOCH_INTERVAL_PRE_DAG;
@@ -53,7 +54,7 @@ inline int GetEpochInterval(int nHeight)
  *  Post-DAG epochs are numbered continuously from pre-DAG epoch count. */
 inline int GetEpochForHeight(int nHeight)
 {
-    extern int GetForkHeightDAG();
+    // GetForkHeightDAG declared above
     int nDAGFork = GetForkHeightDAG();
     if (nHeight >= nDAGFork)
     {
@@ -68,7 +69,7 @@ inline int GetEpochForHeight(int nHeight)
 /** Get the block height of an epoch boundary */
 inline int GetEpochBoundaryHeight(int nEpoch, int nHeight)
 {
-    extern int GetForkHeightDAG();
+    // GetForkHeightDAG declared above
     int nDAGFork = GetForkHeightDAG();
     int nPreDAGEpochs = (nDAGFork + FINALITY_EPOCH_INTERVAL_PRE_DAG - 1) / FINALITY_EPOCH_INTERVAL_PRE_DAG;
     if (nEpoch >= nPreDAGEpochs)
