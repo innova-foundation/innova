@@ -12,6 +12,12 @@
 #include "spork.h"
 #include "base58.h"
 #include "smessage.h"
+#include "shielded.h"
+#include "silentpayments.h"
+#include "innovarpc.h"
+#include "json/json_spirit_value.h"
+#include "walletworker.h"
+#include <sstream>
 
 #include <QSet>
 #include <QTimer>
@@ -31,13 +37,16 @@ using boost::placeholders::_5;
 WalletModel::WalletModel(CWallet *wallet, OptionsModel *optionsModel, QObject *parent) :
     QObject(parent), wallet(wallet), optionsModel(optionsModel), addressTableModel(0),
     transactionTableModel(0),
-    cachedBalance(0), cachedStake(0), cachedUnconfirmedBalance(0), cachedImmatureBalance(0),
+    cachedBalance(0), cachedStake(0), cachedUnconfirmedBalance(0), cachedImmatureBalance(0), cachedShieldedBalance(0),
     cachedNumTransactions(0),
     cachedEncryptionStatus(Unencrypted),
     cachedNumBlocks(0)
 {
 
     fHaveWatchOnly = wallet->HaveWatchOnly();
+
+    // Start background wallet worker thread
+    walletThread = new WalletThread(wallet, this);
 
     addressTableModel = new AddressTableModel(wallet, this);
     mintingTableModel = new MintingTableModel(wallet, this);
@@ -165,6 +174,7 @@ void WalletModel::checkBalanceChanged()
     qint64 newStake = getStakeAmount();
     qint64 newUnconfirmedBalance = getUnconfirmedBalance();
     qint64 newImmatureBalance = getImmatureBalance();
+    qint64 newShieldedBalance = getShieldedBalance();
     // Watch Only
     qint64 newWatchOnlyBalance = 0;
     qint64 newWatchUnconfBalance = 0;
@@ -176,15 +186,189 @@ void WalletModel::checkBalanceChanged()
         newWatchImmatureBalance = getWatchImmatureBalance();
     }
 
-    if(cachedBalance != newBalance || cachedLockedBalance != newLockedBalance || cachedStake != newStake || cachedUnconfirmedBalance != newUnconfirmedBalance || cachedImmatureBalance != newImmatureBalance)
+    if(cachedBalance != newBalance || cachedLockedBalance != newLockedBalance || cachedStake != newStake || cachedUnconfirmedBalance != newUnconfirmedBalance || cachedImmatureBalance != newImmatureBalance || cachedShieldedBalance != newShieldedBalance)
     {
         cachedBalance = newBalance;
         cachedStake = newStake;
         cachedUnconfirmedBalance = newUnconfirmedBalance;
         cachedImmatureBalance = newImmatureBalance;
+        cachedShieldedBalance = newShieldedBalance;
 
-        emit balanceChanged(newBalance, newLockedBalance, newStake, newUnconfirmedBalance, newImmatureBalance, newWatchOnlyBalance, newWatchUnconfBalance, newWatchImmatureBalance);
+        emit balanceChanged(newBalance, newLockedBalance, newStake, newUnconfirmedBalance, newImmatureBalance, newWatchOnlyBalance, newWatchUnconfBalance, newWatchImmatureBalance, newShieldedBalance);
     }
+}
+
+qint64 WalletModel::getShieldedBalance() const
+{
+    return wallet->GetShieldedBalance();
+}
+
+// Helper: serialize shielded address to base58 string (same as rpcshielded.cpp)
+static std::string ShieldedAddrToString(const CShieldedPaymentAddress& addr)
+{
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << addr;
+    std::vector<unsigned char> vch(ss.begin(), ss.end());
+    return EncodeBase58Check(vch);
+}
+
+QString WalletModel::getNewShieldedAddress()
+{
+    if (!wallet)
+        return QString();
+
+    CShieldedPaymentAddress addr = wallet->GenerateNewShieldedAddress();
+    return QString::fromStdString(ShieldedAddrToString(addr));
+}
+
+QStringList WalletModel::getShieldedAddresses() const
+{
+    QStringList list;
+    if (!wallet)
+        return list;
+
+    LOCK(wallet->cs_wallet);
+    for (const auto& pair : wallet->mapShieldedSpendingKeys)
+        list.append(QString::fromStdString(ShieldedAddrToString(pair.first)));
+
+    return list;
+}
+
+QString WalletModel::getNewSilentPaymentAddress()
+{
+    if (!wallet)
+        return QString();
+
+    CSilentPaymentAddress addr;
+    if (!wallet->GenerateNewSilentPaymentKey(addr))
+        return QString();
+
+    return QString::fromStdString(addr.ToString());
+}
+
+QStringList WalletModel::getSilentPaymentAddresses() const
+{
+    QStringList list;
+    if (!wallet)
+        return list;
+
+    LOCK(wallet->cs_shielded);
+    for (const CSilentPaymentKey& key : wallet->vSilentPaymentKeys)
+    {
+        CSilentPaymentAddress addr;
+        if (key.GetAddress(addr))
+            list.append(QString::fromStdString(addr.ToString()));
+    }
+    return list;
+}
+
+// RPC method whitelist for GUI
+static const char* allowedRPCMethods[] = {
+    "z_shield", "z_unshield", "z_send", "z_getnewaddress",
+    "z_listaddresses", "z_getbalance", "sp_getnewaddress",
+    "sp_listaddresses", "sp_send", "getnewaddress",
+    "getnewstakingaddress", "getinfo", NULL
+};
+
+static bool isRPCMethodAllowed(const std::string& method)
+{
+    for (int i = 0; allowedRPCMethods[i] != NULL; i++)
+        if (method == allowedRPCMethods[i])
+            return true;
+    return false;
+}
+
+QString WalletModel::executeRPC(const QString& method, const std::vector<std::string>& params, QString& errorOut)
+{
+    errorOut.clear();
+
+    std::string strMethod = method.toStdString();
+
+    if (!isRPCMethodAllowed(strMethod))
+    {
+        errorOut = QString("RPC method '%1' not allowed from GUI").arg(method);
+        return QString();
+    }
+
+    try {
+        json_spirit::Value result = tableRPC.execute(strMethod, RPCConvertValues(strMethod, params));
+
+        if (result.type() == json_spirit::null_type)
+            return QString();
+        if (result.type() == json_spirit::str_type)
+            return QString::fromStdString(result.get_str());
+        return QString::fromStdString(json_spirit::write_string(result, true));
+    }
+    catch (json_spirit::Object& objError)
+    {
+        try {
+            errorOut = QString::fromStdString(json_spirit::find_value(objError, "message").get_str());
+        } catch (...) {
+            errorOut = "Unknown RPC error";
+        }
+        return QString();
+    }
+    catch (std::exception& e)
+    {
+        errorOut = QString::fromStdString(e.what());
+        return QString();
+    }
+}
+
+WalletModel::StatusCode WalletModel::shieldCoins(const QString& fromAddr, const QString& amount, QString& resultOut)
+{
+    std::vector<std::string> params;
+    params.push_back(fromAddr.isEmpty() ? "*" : fromAddr.toStdString());
+    params.push_back(amount.toStdString());
+
+    QString error;
+    resultOut = executeRPC("z_shield", params, error);
+    if (!error.isEmpty())
+    {
+        resultOut = error;
+        return TransactionCreationFailed;
+    }
+    return OK;
+}
+
+WalletModel::StatusCode WalletModel::unshieldCoins(const QString& fromZAddr, const QString& toAddr, const QString& amount, QString& resultOut)
+{
+    std::vector<std::string> params;
+    params.push_back(fromZAddr.toStdString());
+    params.push_back(toAddr.toStdString());
+    params.push_back(amount.toStdString());
+
+    QString error;
+    resultOut = executeRPC("z_unshield", params, error);
+    if (!error.isEmpty())
+    {
+        resultOut = error;
+        return TransactionCreationFailed;
+    }
+    return OK;
+}
+
+WalletModel::StatusCode WalletModel::sendShielded(const QString& fromAddr, const QString& toAddr, const QString& amount, int privacyMode, QString& resultOut)
+{
+    std::vector<std::string> params;
+    params.push_back(fromAddr.toStdString());
+    params.push_back(toAddr.toStdString());
+    params.push_back(amount.toStdString());
+    params.push_back(std::to_string(privacyMode));
+
+    QString error;
+    resultOut = executeRPC("z_send", params, error);
+    if (!error.isEmpty())
+    {
+        resultOut = error;
+        return TransactionCreationFailed;
+    }
+    return OK;
+}
+
+WalletWorker* WalletModel::getWorker() const
+{
+    return walletThread ? walletThread->worker() : 0;
 }
 
 void WalletModel::updateTransaction(const QString &hash, int status)

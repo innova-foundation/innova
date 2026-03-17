@@ -76,6 +76,9 @@ public:
 
     EditStatus getEditStatus() const { return editStatus; }
 
+    /** Force a full refresh of the address table from wallet state. */
+    void refresh();
+
 private:
     WalletModel *walletModel;
     CWallet *wallet;

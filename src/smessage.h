@@ -30,6 +30,9 @@ const unsigned int SMSG_MAX_MSG_BYTES   = 4096;              // the user input p
 // max size of payload worst case compression
 const unsigned int SMSG_MAX_MSG_WORST = LZ4_COMPRESSBOUND(SMSG_MAX_MSG_BYTES+SMSG_PL_HDR_LEN);
 
+// Dandelion++ for smsg: stem relay timeout before fluff fallback
+const unsigned int SMSG_STEM_TIMEOUT = 45;  // seconds — shorter than tx stem (messages are less frequent)
+
 
 
 #define SMSG_MASK_UNREAD            (1 << 0)
@@ -48,6 +51,9 @@ extern boost::signals2::signal<void (SecMsgStored& outboxHdr)> NotifySecMsgOutbo
 
 // Wallet Unlocked, called after all messages received while locked have been processed.
 extern boost::signals2::signal<void ()> NotifySecMsgWalletUnlocked;
+
+// Typing notification received from a peer.
+extern boost::signals2::signal<void (const std::string& senderAddr)> NotifySecMsgTyping;
 
 
 class SecMsgBucket;
@@ -384,6 +390,32 @@ int SecureMsgStore(SecureMessage& smsg, bool fUpdateBucket);
 
 
 int SecureMsgSend(std::string& addressFrom, std::string& addressTo, std::string& message, std::string& sError);
+
+/** Dandelion++ stem relay for a single PoW'd message.
+ *  Returns true if stem relay succeeded, false if should fluff immediately. */
+bool SecureMsgStemRelay(unsigned char* pHeader, unsigned char* pPayload, uint32_t nPayload);
+
+/** Process an incoming smsgStem message (Dandelion++ stem phase). */
+bool SecureMsgHandleStem(CNode* pfrom, std::vector<unsigned char>& vchData);
+
+/** Check stem timeouts and fluff expired messages. */
+void SecureMsgCheckStemTimeouts();
+
+/** Stem state: tracks messages in the Dandelion++ stem phase */
+struct SmsgStemEntry {
+    std::vector<unsigned char> vchMessage;  // header + payload
+    int64_t nStemStartTime;
+    bool fRelayed;  // true if we've already relayed to our stem peer
+};
+
+extern CCriticalSection cs_smsgStem;
+extern std::map<uint256, SmsgStemEntry> mapSmsgStemState;
+
+/** Send an ephemeral typing notification via P2P. */
+bool SecureMsgSendTyping(const std::string& addrFrom, const std::string& addrTo);
+
+/** Handle incoming smsgTyping message. Returns the sender address if valid. */
+bool SecureMsgHandleTyping(CNode* pfrom, std::vector<unsigned char>& vchData, std::string& senderAddrOut);
 
 int SecureMsgValidate(unsigned char *pHeader, unsigned char *pPayload, uint32_t nPayload);
 int SecureMsgSetHash(unsigned char *pHeader, unsigned char *pPayload, uint32_t nPayload);

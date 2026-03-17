@@ -28,6 +28,8 @@ class RPCConsole;
 class ProofOfImage;
 class Hyperfile;
 class StakingPage;
+class PrivacyPage;
+class ChatWidget;
 
 QT_BEGIN_NAMESPACE
 class QLabel;
@@ -106,10 +108,13 @@ private:
 	  ProofOfImage *proofOfImagePage;
     Hyperfile *hyperfilePage;
     StakingPage *stakingPage;
+    PrivacyPage *privacyPage;
+    QWidget *nullsendPage;
 	  CollateralnodeManager *collateralnodeManagerPage;
     AddressBookPage *addressBookPage;
     AddressBookPage *receiveCoinsPage;
     MessagePage *messagePage;
+    ChatWidget *chatWidget;
     SendCoinsDialog *sendCoinsPage;
     SignVerifyMessageDialog *signVerifyMessageDialog;
 
@@ -136,6 +141,8 @@ private:
     QAction *proofOfImageAction;
     QAction *hyperfileAction;
     QAction *stakingAction;
+    QAction *privacyAction;
+    QAction *nullsendAction;
     QAction *manageNamesAction;
 	  QAction *collateralnodeManagerAction;
     QAction *quitAction;
@@ -250,6 +257,10 @@ private slots:
    void gotoHyperfilePage();
     /** Switch to Staking page */
     void gotoStakingPage();
+    /** Switch to Privacy page */
+    void gotoPrivacyPage();
+    /** Switch to NullSend page */
+    void gotoNullSendPage();
 
 
     //void gotoChatPage();

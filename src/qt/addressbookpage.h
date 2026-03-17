@@ -8,6 +8,7 @@ namespace Ui {
 }
 class AddressTableModel;
 class OptionsModel;
+class WalletModel;
 
 QT_BEGIN_NAMESPACE
 class QTableView;
@@ -39,6 +40,7 @@ public:
 
     void setModel(AddressTableModel *model);
     void setOptionsModel(OptionsModel *optionsModel);
+    void setWalletModel(WalletModel *walletModel);
     const QString &getReturnValue() const { return returnValue; }
 
 public slots:
@@ -49,6 +51,7 @@ private:
     Ui::AddressBookPage *ui;
     AddressTableModel *model;
     OptionsModel *optionsModel;
+    WalletModel *walletModel;
     Mode mode;
     Tabs tab;
     QString returnValue;
@@ -66,6 +69,9 @@ private slots:
     void on_verifyMessage_clicked();
     void selectionChanged();
     void on_showQRCode_clicked();
+    void onNewShieldedAddressClicked();
+    void onNewSPAddressClicked();
+    void onNewStakingAddressClicked();
     /** Spawn contextual menu (right mouse menu) for address book entry */
     void contextualMenu(const QPoint &point);
 

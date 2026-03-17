@@ -3870,6 +3870,9 @@ Value getnewstakingaddress(const Array& params, bool fHelp)
     CBitcoinAddress stakingAddr;
     stakingAddr.SetStaking(keyID);
 
+    // Register in address book so it persists and shows in receive list
+    pwalletMain->SetAddressBookName(keyID, "Staking Address");
+
     return stakingAddr.ToString();
 }
 

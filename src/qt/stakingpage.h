@@ -10,6 +10,7 @@ class QLineEdit;
 class QStackedWidget;
 class QVBoxLayout;
 class QTableWidget;
+class QTabWidget;
 class WalletModel;
 class OptionsModel;
 
@@ -33,11 +34,13 @@ private slots:
     void onDelegateClicked();
     void onRevokeDelegation();
     void onRefreshDelegations();
+    void onNullColdDelegateClicked();
 
 private:
     void setupTransparentPanel();
     void setupNullStakePanel();
     void setupColdStakingPanel();
+    void setupNullStakeColdPanel();
     void updateModeDescription(int mode);
 
     WalletModel *model;
@@ -46,9 +49,8 @@ private:
     QLabel *labelStakingStatus;
     QLabel *labelStakingBalance;
     QLabel *labelEstimatedTime;
-    QComboBox *comboStakingMode;
 
-    QStackedWidget *stackedPanels;
+    QTabWidget *stakingTabs;
 
     QWidget *transparentPanel;
     QLabel *labelTransparentUTXOs;
@@ -57,6 +59,7 @@ private:
     QWidget *nullstakePanel;
     QLabel *labelShieldedBalance;
     QLabel *labelShieldedStatus;
+    QLineEdit *editShieldAmount;
     QPushButton *btnShieldCoins;
 
     QWidget *coldStakingPanel;
@@ -68,6 +71,11 @@ private:
     QPushButton *btnDelegate;
     QPushButton *btnRefreshDelegations;
     QTableWidget *tableDelegations;
+
+    QWidget *nullstakeColdPanel;
+    QLineEdit *editNullColdStakerAddr;
+    QLineEdit *editNullColdAmount;
+    QPushButton *btnNullColdDelegate;
 
     QTimer *updateTimer;
 };

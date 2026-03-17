@@ -15,6 +15,8 @@ class TransactionTableModel;
 class MintingTableModel;
 class NameTableModel;
 class CWallet;
+class WalletThread;
+class WalletWorker;
 class CKeyID;
 class CPubKey;
 class COutput;
@@ -87,6 +89,29 @@ public:
     qint64 getWatchBalance() const;
     qint64 getWatchUnconfirmedBalance() const;
     qint64 getWatchImmatureBalance() const;
+
+    // Privacy/Shielded operations
+    qint64 getShieldedBalance() const;
+    QString getNewShieldedAddress();
+    QStringList getShieldedAddresses() const;
+    /** Execute a whitelisted RPC command and return the result string. Returns empty on error. */
+    QString executeRPC(const QString& method, const std::vector<std::string>& params, QString& errorOut);
+
+    /** Get the background wallet worker for async operations. */
+    WalletWorker* getWorker() const;
+
+    /** Silent Payment address management */
+    QString getNewSilentPaymentAddress();
+    QStringList getSilentPaymentAddresses() const;
+
+    /** Shield coins — calls z_shield internally. Auto-creates z-address if toAddr is empty. */
+    StatusCode shieldCoins(const QString& fromAddr, const QString& amount, QString& resultOut);
+
+    /** Unshield coins — calls z_unshield internally. */
+    StatusCode unshieldCoins(const QString& fromZAddr, const QString& toAddr, const QString& amount, QString& resultOut);
+
+    /** Send shielded — calls z_send internally. */
+    StatusCode sendShielded(const QString& fromAddr, const QString& toAddr, const QString& amount, int privacyMode, QString& resultOut);
 
     // Check address for validity
     bool validateAddress(const QString &address);
@@ -177,6 +202,8 @@ private:
     qint64 cachedWatchOnlyBalance;
     qint64 cachedWatchUnconfBalance;
     qint64 cachedWatchImmatureBalance;
+    qint64 cachedShieldedBalance;
+    WalletThread *walletThread;
 
     qint64 cachedNumTransactions;
     int cachedTxLocks;
@@ -205,7 +232,7 @@ public slots:
 
 signals:
     // Signal that balance in wallet changed
-    void balanceChanged(qint64 balance, qint64 lockedbalance, qint64 stake, qint64 unconfirmedBalance, qint64 immatureBalance,  qint64 watchOnlyBalance, qint64 watchUnconfBalance, qint64 watchImmatureBalance);
+    void balanceChanged(qint64 balance, qint64 lockedbalance, qint64 stake, qint64 unconfirmedBalance, qint64 immatureBalance, qint64 watchOnlyBalance, qint64 watchUnconfBalance, qint64 watchImmatureBalance, qint64 shieldedBalance);
 
     // Number of transactions in wallet changed
     void numTransactionsChanged(int count);

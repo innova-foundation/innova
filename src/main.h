@@ -148,8 +148,7 @@ inline const uint256& GetGenesisBlockHash()
 //inline bool IsProtocolV2(int nHeight) { return fTestNet || nHeight > 0; }
 //inline bool V3(int64_t nTime) { return fTestNet || nTime > 1524196491; } //nTime April 20th 2018
 
-// Hard fork height for tighter timestamp drift rules (2 min instead of 10 min)
-// CON-AUDIT-4: Made network-aware so regtest/testnet can test post-fork behavior
+// Hard fork height for tighter timestamp drift rules
 inline int GetForkHeightTighterDrift() {
     extern bool fRegTest;
     extern bool fTestNet;
@@ -259,8 +258,8 @@ inline int GetForkHeightPoem()
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 9;
-    if (fTestNet) return 500;       // testnet: early activation for testing
-    return 7345000;                  // mainnet: ~170K blocks after tip 7.175M (~29 days at 15s)
+    if (fTestNet) return 100000;    // testnet: block 100K
+    return 7440000;                  // mainnet: 100K blocks after last privacy fork (7,340,000)
 }
 #define FORK_HEIGHT_POEM (GetForkHeightPoem())
 
@@ -270,8 +269,8 @@ inline int GetForkHeightFinality()
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 10;
-    if (fTestNet) return 600;       // testnet: 100 blocks after POEM
-    return 7350000;                  // mainnet: 5,000 blocks after POEM
+    if (fTestNet) return 100500;    // testnet: 500 blocks after POEM
+    return 7445000;                  // mainnet: 5,000 blocks after POEM
 }
 #define FORK_HEIGHT_FINALITY (GetForkHeightFinality())
 
@@ -281,8 +280,8 @@ inline int GetForkHeightDAG()
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 11;
-    if (fTestNet) return 700;       // testnet: 100 blocks after finality
-    return 7355000;                  // mainnet: 5,000 blocks after finality
+    if (fTestNet) return 101000;    // testnet: 500 blocks after finality
+    return 7450000;                  // mainnet: 5,000 blocks after finality
 }
 #define FORK_HEIGHT_DAG (GetForkHeightDAG())
 
@@ -292,8 +291,8 @@ inline int GetForkHeightDAGKnight()
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 13;
-    if (fTestNet) return 1000;      // testnet: 300 blocks of GHOSTDAG before DAGKNIGHT
-    return 7400000;                  // mainnet: 45,000 blocks after FORK_HEIGHT_DAG (~12.5h at post-DAG 1s blocks)
+    if (fTestNet) return 102000;    // testnet: 1,000 blocks of GHOSTDAG before DAGKNIGHT
+    return 7500000;                  // mainnet: 50,000 blocks after DAG (~14h at 1s post-DAG blocks)
 }
 #define FORK_HEIGHT_DAGKNIGHT (GetForkHeightDAGKnight())
 
@@ -1758,8 +1757,8 @@ public:
         READWRITE(nBits);
         READWRITE(nNonce);
         READWRITE(blockHash);
-        // Adaptive block sizing (post-Phase 3): block size for median calculation
-        READWRITE(nSize);
+        // nSize is NOT serialized here for backward compatibility with existing DB.
+        // It is populated during LoadBlockIndex from the block data on disk.
     )
 
     uint256 GetBlockHash() const

@@ -5,9 +5,12 @@
 #include "wallet.h"
 #include "base58.h"
 #include "stealth.h"
+#include "shielded.h"
+#include "silentpayments.h"
 
 #include <QFont>
 #include <QColor>
+#include <QSettings>
 
 const QString AddressTableModel::Send = "S";
 const QString AddressTableModel::Receive = "R";
@@ -23,10 +26,11 @@ struct AddressTableEntry
     QString label;
     QString address;
     bool stealth;
+    QString addressTypeStr; // "Transparent", "Stealth", "Shielded", "Silent Payment", "Staking"
 
     AddressTableEntry() {}
-    AddressTableEntry(Type type, const QString &label, const QString &address, const bool &stealth = false):
-        type(type), label(label), address(address), stealth(stealth) {}
+    AddressTableEntry(Type type, const QString &label, const QString &address, const bool &stealth = false, const QString &addrType = "Transparent"):
+        type(type), label(label), address(address), stealth(stealth), addressTypeStr(addrType) {}
 };
 
 struct AddressTableEntryLessThan
@@ -66,9 +70,19 @@ public:
                 const CBitcoinAddress& address = item.first;
                 const std::string& strName = item.second;
                 bool fMine = IsMine(*wallet, address.Get());
+
+                // Detect address type for the Type column
+                QString addrType = "Transparent";
+                QString qLabel = QString::fromStdString(strName);
+                if (address.IsStaking())
+                    addrType = "Staking";
+                else if (qLabel.contains("Staking", Qt::CaseInsensitive))
+                    addrType = "Staking";
+
                 cachedAddressTable.append(AddressTableEntry(fMine ? AddressTableEntry::Receiving : AddressTableEntry::Sending,
                                   QString::fromStdString(strName),
-                                  QString::fromStdString(address.ToString())));
+                                  QString::fromStdString(address.ToString()),
+                                  false, addrType));
             }
 
             std::set<CStealthAddress>::iterator it;
@@ -78,8 +92,41 @@ public:
                 cachedAddressTable.append(AddressTableEntry(fMine ? AddressTableEntry::Receiving : AddressTableEntry::Sending,
                                   QString::fromStdString(it->label),
                                   QString::fromStdString(it->Encoded()),
-                                  true));
+                                  true, "Stealth"));
             };
+
+            // Load shielded (z-) and Silent Payment addresses (safely — may not exist in all wallets)
+            try {
+                QSettings settings;
+                LOCK(wallet->cs_shielded);
+                for (const auto& pair : wallet->mapShieldedSpendingKeys)
+                {
+                    try {
+                        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+                        ss << pair.first;
+                        std::vector<unsigned char> vch(ss.begin(), ss.end());
+                        std::string addrStr = EncodeBase58Check(vch);
+                        QString qAddr = QString::fromStdString(addrStr);
+                        QString label = settings.value("addrLabel/" + qAddr, "Shielded Address").toString();
+                        cachedAddressTable.append(AddressTableEntry(AddressTableEntry::Receiving,
+                                          label, qAddr, false, "Shielded"));
+                    } catch (...) {} // Skip malformed entries
+                }
+
+                for (const CSilentPaymentKey& key : wallet->vSilentPaymentKeys)
+                {
+                    try {
+                        CSilentPaymentAddress addr;
+                        if (key.GetAddress(addr))
+                        {
+                            QString qAddr = QString::fromStdString(addr.ToString());
+                            QString label = settings.value("addrLabel/" + qAddr, "Silent Payment Address").toString();
+                            cachedAddressTable.append(AddressTableEntry(AddressTableEntry::Receiving,
+                                              label, qAddr, false, "Silent Payment"));
+                        }
+                    } catch (...) {}
+                }
+            } catch (...) {} // cs_shielded may not exist in older wallets
         }
         // qLowerBound() and qUpperBound() require our cachedAddressTable list to be sorted in asc order
         qSort(cachedAddressTable.begin(), cachedAddressTable.end(), AddressTableEntryLessThan());
@@ -153,7 +200,7 @@ public:
 AddressTableModel::AddressTableModel(CWallet *wallet, WalletModel *parent) :
     QAbstractTableModel(parent),walletModel(parent),wallet(wallet),priv(0)
 {
-    columns << tr("Label") << tr("Address");
+    columns << tr("Label") << tr("Address") << tr("Type");
     priv = new AddressTablePriv(wallet, this);
     priv->refreshAddressTable();
 }
@@ -197,7 +244,20 @@ QVariant AddressTableModel::data(const QModelIndex &index, int role) const
             }
         case Address:
             return rec->address;
+        case Type:
+            return rec->addressTypeStr;
         }
+    }
+    else if (role == Qt::ForegroundRole)
+    {
+        if (index.column() == Type)
+        {
+            if (rec->addressTypeStr == "Shielded") return QColor("#4CAF50");
+            if (rec->addressTypeStr == "Silent Payment") return QColor("#9C27B0");
+            if (rec->addressTypeStr == "Staking") return QColor("#FF9800");
+            if (rec->addressTypeStr == "Stealth") return QColor("#2196F3");
+        }
+        return QVariant();
     }
     else if (role == Qt::FontRole)
     {
@@ -516,4 +576,11 @@ int AddressTableModel::lookupAddress(const QString &address) const
 void AddressTableModel::emitDataChanged(int idx)
 {
     emit dataChanged(index(idx, 0, QModelIndex()), index(idx, columns.length()-1, QModelIndex()));
+}
+
+void AddressTableModel::refresh()
+{
+    beginResetModel();
+    priv->refreshAddressTable();
+    endResetModel();
 }
