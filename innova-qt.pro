@@ -137,6 +137,7 @@ contains(USE_IPFS, -) {
 }
 
 INCLUDEPATH += src/minizip
+QMAKE_CFLAGS += -Wno-incompatible-pointer-types
 SOURCES += src/minizip/ioapi.c \
     src/minizip/unzip.c
 
