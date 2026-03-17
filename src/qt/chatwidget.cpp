@@ -319,10 +319,14 @@ ChatWidget::ChatWidget(QWidget *parent) :
 
 // Bridge: boost signal -> Qt slot (thread-safe via mutex + QMetaObject::invokeMethod)
 #include <QMutex>
+#include <boost/bind/bind.hpp>
+using boost::placeholders::_1;
 static QMutex g_chatWidgetMutex;
 static ChatWidget* g_chatWidget = NULL;
 
-static void NotifyTypingCallback(std::string senderAddr)
+static boost::signals2::connection g_typingConnection;
+
+static void NotifyTypingCallbackImpl(std::string senderAddr)
 {
     QMutexLocker lock(&g_chatWidgetMutex);
     if (g_chatWidget)
@@ -336,7 +340,7 @@ static void NotifyTypingCallback(std::string senderAddr)
 ChatWidget::~ChatWidget()
 {
     QMutexLocker lock(&g_chatWidgetMutex);
-    NotifySecMsgTyping.disconnect(NotifyTypingCallback);
+    g_typingConnection.disconnect();
     g_chatWidget = NULL;
 }
 
@@ -356,7 +360,7 @@ void ChatWidget::setModel(MessageModel *msgModel, WalletModel *walletModel)
         QMutexLocker lock(&g_chatWidgetMutex);
         g_chatWidget = this;
     }
-    NotifySecMsgTyping.connect(NotifyTypingCallback);
+    g_typingConnection = NotifySecMsgTyping.connect(boost::bind(&NotifyTypingCallbackImpl, _1));
 
     // Check IPFS gateway connectivity on startup (async, caches result)
     QtConcurrent::run([this]() {

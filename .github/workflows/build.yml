@@ -497,7 +497,7 @@ jobs:
           path: innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64.tar.gz
 
   # ─────────────────────────────────────────────────────────
-  # Raspberry Pi (armhf/armv7) — daemon only via cross-compile
+  # Raspberry Pi (armhf/armv7) — daemon only via QEMU emulation
   # ─────────────────────────────────────────────────────────
   build-linux-armhf:
     runs-on: ubuntu-22.04
@@ -507,28 +507,36 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install dependencies
-        run: |
-          sudo dpkg --add-architecture armhf
-          sudo apt-get update
-          sudo apt-get install -y build-essential libtool autotools-dev automake pkg-config \
-            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
-            libssl-dev:armhf libevent-dev:armhf libboost-all-dev:armhf \
-            libdb++-dev:armhf libminiupnpc-dev:armhf libcurl4-openssl-dev:armhf \
-            libgmp-dev:armhf
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
 
-      - name: Build daemon
+      - name: Build in ARM container
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          file: /dev/stdin
+          platforms: linux/arm/v7
+          tags: innova-armhf:build
+        # Use inline Dockerfile
+      - name: Build daemon via Docker
         run: |
-          cd src
-          make USE_NATIVETOR=- -f makefile.arm \
-            CROSS=arm-linux-gnueabihf- \
-            -j$(nproc) || make USE_NATIVETOR=- -f makefile.arm -j$(nproc)
+          docker run --rm --platform linux/arm/v7 \
+            -v ${{ github.workspace }}:/build -w /build \
+            debian:11 bash -c "
+              apt-get update && \
+              apt-get install -y build-essential libtool automake pkg-config \
+                libssl-dev libevent-dev libboost-all-dev libdb++-dev \
+                libminiupnpc-dev libcurl4-openssl-dev libgmp-dev git && \
+              cd src && \
+              make USE_NATIVETOR=- USE_IPFS=- -f makefile.unix -j\$(nproc)
+            "
 
       - name: Package
         run: |
           mkdir -p innova-${{ needs.get-version.outputs.version }}-linux-armhf
           cp src/innovad innova-${{ needs.get-version.outputs.version }}-linux-armhf/ 2>/dev/null || true
-          arm-linux-gnueabihf-strip innova-${{ needs.get-version.outputs.version }}-linux-armhf/innovad 2>/dev/null || true
           cd innova-${{ needs.get-version.outputs.version }}-linux-armhf
           sha256sum * > SHA256SUMS.txt 2>/dev/null || true
           cd ..
