@@ -79,7 +79,7 @@ namespace fs = boost::filesystem;
 boost::signals2::signal<void (SecMsgStored& inboxHdr)>  NotifySecMsgInboxChanged;
 boost::signals2::signal<void (SecMsgStored& outboxHdr)> NotifySecMsgOutboxChanged;
 boost::signals2::signal<void ()> NotifySecMsgWalletUnlocked;
-boost::signals2::signal<void (const std::string&)> NotifySecMsgTyping;
+boost::signals2::signal<void (std::string)> NotifySecMsgTyping;
 
 bool fSecMsgEnabled = false;
 

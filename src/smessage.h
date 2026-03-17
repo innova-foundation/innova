@@ -53,7 +53,7 @@ extern boost::signals2::signal<void (SecMsgStored& outboxHdr)> NotifySecMsgOutbo
 extern boost::signals2::signal<void ()> NotifySecMsgWalletUnlocked;
 
 // Typing notification received from a peer.
-extern boost::signals2::signal<void (const std::string& senderAddr)> NotifySecMsgTyping;
+extern boost::signals2::signal<void (std::string senderAddr)> NotifySecMsgTyping;
 
 
 class SecMsgBucket;
