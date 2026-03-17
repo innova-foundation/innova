@@ -322,7 +322,7 @@ ChatWidget::ChatWidget(QWidget *parent) :
 static QMutex g_chatWidgetMutex;
 static ChatWidget* g_chatWidget = NULL;
 
-static void NotifyTypingCallback(const std::string& senderAddr)
+static void NotifyTypingCallback(std::string senderAddr)
 {
     QMutexLocker lock(&g_chatWidgetMutex);
     if (g_chatWidget)
