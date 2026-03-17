@@ -399,6 +399,148 @@ jobs:
           path: innova-${{ needs.get-version.outputs.version }}-win64.zip
 
   # ─────────────────────────────────────────────────────────
+  # Debian 11 (Bullseye) x86_64 (daemon + Qt) via Docker
+  # ─────────────────────────────────────────────────────────
+  build-debian-11:
+    runs-on: ubuntu-22.04
+    needs: get-version
+    container:
+      image: debian:11
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y build-essential libtool autotools-dev automake pkg-config \
+            libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb++-dev \
+            libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
+            libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools \
+            libprotobuf-dev protobuf-compiler git
+
+      - name: Build daemon
+        run: |
+          cd src
+          make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
+
+      - name: Build Qt wallet
+        run: |
+          sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
+          strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5 || true
+          qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+          make -j$(nproc)
+
+      - name: Package
+        run: |
+          mkdir -p innova-${{ needs.get-version.outputs.version }}-debian11-x86_64
+          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-debian11-x86_64/
+          strip innova-${{ needs.get-version.outputs.version }}-debian11-x86_64/*
+          cd innova-${{ needs.get-version.outputs.version }}-debian11-x86_64
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+          tar -czf innova-${{ needs.get-version.outputs.version }}-debian11-x86_64.tar.gz \
+            innova-${{ needs.get-version.outputs.version }}-debian11-x86_64/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: innova-debian11-x86_64
+          path: innova-${{ needs.get-version.outputs.version }}-debian11-x86_64.tar.gz
+
+  # ─────────────────────────────────────────────────────────
+  # Fedora 41 x86_64 (daemon + Qt) via Docker
+  # ─────────────────────────────────────────────────────────
+  build-fedora-41:
+    runs-on: ubuntu-22.04
+    needs: get-version
+    container:
+      image: fedora:41
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          dnf install -y gcc-c++ make libtool automake pkgconfig \
+            openssl-devel libevent-devel boost-devel libdb-cxx-devel \
+            miniupnpc-devel qrencode-devel libcurl-devel gmp-devel \
+            qt5-qtbase-devel qt5-qttools-devel \
+            protobuf-devel protobuf-compiler git
+
+      - name: Build daemon
+        run: |
+          cd src
+          make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
+
+      - name: Build Qt wallet
+        run: |
+          sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
+          qmake-qt5 USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+          make -j$(nproc)
+
+      - name: Package
+        run: |
+          mkdir -p innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64
+          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64/
+          strip innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64/*
+          cd innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+          tar -czf innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64.tar.gz \
+            innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: innova-fedora41-x86_64
+          path: innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64.tar.gz
+
+  # ─────────────────────────────────────────────────────────
+  # Raspberry Pi (armhf/armv7) — daemon only via cross-compile
+  # ─────────────────────────────────────────────────────────
+  build-linux-armhf:
+    runs-on: ubuntu-22.04
+    needs: get-version
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo dpkg --add-architecture armhf
+          sudo apt-get update
+          sudo apt-get install -y build-essential libtool autotools-dev automake pkg-config \
+            gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
+            libssl-dev:armhf libevent-dev:armhf libboost-all-dev:armhf \
+            libdb++-dev:armhf libminiupnpc-dev:armhf libcurl4-openssl-dev:armhf \
+            libgmp-dev:armhf
+
+      - name: Build daemon
+        run: |
+          cd src
+          make USE_NATIVETOR=- -f makefile.arm \
+            CROSS=arm-linux-gnueabihf- \
+            -j$(nproc) || make USE_NATIVETOR=- -f makefile.arm -j$(nproc)
+
+      - name: Package
+        run: |
+          mkdir -p innova-${{ needs.get-version.outputs.version }}-linux-armhf
+          cp src/innovad innova-${{ needs.get-version.outputs.version }}-linux-armhf/ 2>/dev/null || true
+          arm-linux-gnueabihf-strip innova-${{ needs.get-version.outputs.version }}-linux-armhf/innovad 2>/dev/null || true
+          cd innova-${{ needs.get-version.outputs.version }}-linux-armhf
+          sha256sum * > SHA256SUMS.txt 2>/dev/null || true
+          cd ..
+          tar -czf innova-${{ needs.get-version.outputs.version }}-linux-armhf.tar.gz \
+            innova-${{ needs.get-version.outputs.version }}-linux-armhf/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: innova-linux-armhf
+          path: innova-${{ needs.get-version.outputs.version }}-linux-armhf.tar.gz
+
+  # ─────────────────────────────────────────────────────────
   # Create GitHub Release (only on version tags)
   # ─────────────────────────────────────────────────────────
   release:
@@ -408,8 +550,11 @@ jobs:
       - get-version
       - build-ubuntu-2204
       - build-ubuntu-2404
+      - build-debian-11
       - build-debian-12
+      - build-fedora-41
       - build-linux-arm64
+      - build-linux-armhf
       - build-macos-arm64
       - build-windows
     permissions:
