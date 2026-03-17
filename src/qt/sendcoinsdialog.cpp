@@ -22,6 +22,13 @@
 #include <QScrollBar>
 #include <QClipboard>
 #include <QSettings>
+#include <QVBoxLayout>
+#include <QWidget>
+#include <QFrame>
+#include <QGridLayout>
+#include <QToolButton>
+#include <QApplication>
+#include <QTabWidget>
 
 SendCoinsDialog::SendCoinsDialog(QWidget *parent) :
     QDialog(parent),
@@ -29,6 +36,69 @@ SendCoinsDialog::SendCoinsDialog(QWidget *parent) :
     model(0)
 {
     ui->setupUi(this);
+
+    // === Tab-based send modes ===
+    sendTabs = new QTabWidget();
+    sendTabs->setDocumentMode(true);
+
+    // Shielded balance label (shown above tabs)
+    labelShieldedBal = new QLabel(tr("Shielded: ..."));
+    labelShieldedBal->setStyleSheet("color: #4CAF50; font-weight: bold; margin: 4px 0;");
+    qobject_cast<QVBoxLayout*>(layout())->insertWidget(0, labelShieldedBal);
+
+    // --- Tab 0: Transparent (uses existing UI from .ui file) ---
+    // The existing scrollArea + coin control stays in place as the first tab content
+    // We'll reparent it into the tab widget below
+
+    // --- Tab 1: Shield ---
+    {
+        QWidget *tab = createPrivacyTab(
+            tr("Move coins from transparent to shielded pool. Your coins become hidden from the public ledger."),
+            false, true, true, false, false, // from=no, to=yes(z-addr), amount=yes, memo=no, dsp=no
+            tr("Your z-address (leave empty to auto-select)"), tr("0.00000000"));
+        sendTabs->addTab(tab, tr("Shield"));
+    }
+
+    // --- Tab 2: Private Send (FCMP++) ---
+    {
+        QWidget *tab = createPrivacyTab(
+            tr("<b>FCMP++ Private Send with Dynamic Selective Privacy.</b> Choose which parts of the transaction to hide."),
+            true, true, true, true, true, // from=yes, to=yes, amount=yes, memo=yes, dsp=yes
+            tr("Recipient z-address or t-address"), tr("0.00000000"));
+        sendTabs->addTab(tab, tr("Private"));
+    }
+
+    // --- Tab 3: Unshield ---
+    {
+        QWidget *tab = createPrivacyTab(
+            tr("Move coins from shielded pool back to a transparent address."),
+            true, true, true, false, false, // from=yes(z-addr), to=yes(t-addr), amount=yes, memo=no, dsp=no
+            tr("Transparent address to receive"), tr("0.00000000"));
+        sendTabs->addTab(tab, tr("Unshield"));
+    }
+
+    // --- Tab 4: Silent Payment ---
+    {
+        QWidget *tab = createPrivacyTab(
+            tr("<b>BIP-352 Silent Payment.</b> Send to a static public key that generates a unique one-time address."),
+            false, true, true, false, false, // from=no, to=yes(sp1...), amount=yes, memo=no, dsp=no
+            tr("Silent Payment address (sp1...)"), tr("0.00000000"));
+        sendTabs->addTab(tab, tr("Silent Pay"));
+    }
+
+    // Reparent the existing transparent send UI into tab 0
+    // The .ui file's scrollArea contains the transparent entries
+    QWidget *transparentTab = new QWidget();
+    QVBoxLayout *tLayout = new QVBoxLayout(transparentTab);
+    tLayout->setContentsMargins(0, 0, 0, 0);
+    tLayout->addWidget(ui->frameCoinControl);
+    tLayout->addWidget(ui->scrollArea);
+    sendTabs->insertTab(0, transparentTab, tr("Send"));
+    sendTabs->setCurrentIndex(0);
+
+    qobject_cast<QVBoxLayout*>(layout())->insertWidget(1, sendTabs);
+
+    connect(sendTabs, SIGNAL(currentChanged(int)), this, SLOT(onTabChanged(int)));
 
 #ifdef Q_OS_MAC // Icons on push buttons are very uncommon on Mac
     ui->addButton->setIcon(QIcon());
@@ -100,7 +170,7 @@ void SendCoinsDialog::setModel(WalletModel *model)
     if(model && model->getOptionsModel())
     {
         setBalance(model->getUnlockedBalance(), model->getLockedBalance(), model->getStakeAmount(), model->getUnconfirmedBalance(), model->getImmatureBalance(), model->getWatchBalance(), model->getWatchUnconfirmedBalance(), model->getWatchImmatureBalance());
-        connect(model, SIGNAL(balanceChanged(qint64, qint64, qint64, qint64, qint64, qint64, qint64, qint64)), this, SLOT(setBalance(qint64, qint64, qint64, qint64, qint64, qint64, qint64, qint64)));
+        connect(model, SIGNAL(balanceChanged(qint64, qint64, qint64, qint64, qint64, qint64, qint64, qint64, qint64)), this, SLOT(setBalance(qint64, qint64, qint64, qint64, qint64, qint64, qint64, qint64)));
         connect(model->getOptionsModel(), SIGNAL(displayUnitChanged(int)), this, SLOT(updateDisplayUnit()));
 
         // Coin Control
@@ -119,6 +189,13 @@ SendCoinsDialog::~SendCoinsDialog()
 
 void SendCoinsDialog::on_sendButton_clicked()
 {
+    // If a privacy tab is selected, route to the privacy handler
+    if (sendTabs->currentIndex() > 0)
+    {
+        onPrivacySendClicked();
+        return;
+    }
+
     QList<SendCoinsRecipient> recipients;
     bool valid = true;
 
@@ -440,11 +517,18 @@ void SendCoinsDialog::setBalance(qint64 balance, qint64 lockedbalance, qint64 st
     if(!model || !model->getOptionsModel())
         return;
 
-	int unit = model->getOptionsModel()->getDisplayUnit();
+    int unit = model->getOptionsModel()->getDisplayUnit();
 
     uint64_t bal = balance;
 
     ui->labelBalance->setText(BitcoinUnits::formatWithUnit(unit, bal));
+
+    // Update shielded balance label
+    if (labelShieldedBal)
+    {
+        qint64 shielded = model->getShieldedBalance();
+        labelShieldedBal->setText(tr("Shielded: %1").arg(BitcoinUnits::formatWithUnit(unit, shielded)));
+    }
 }
 
 void SendCoinsDialog::updateDisplayUnit()
@@ -610,4 +694,271 @@ void SendCoinsDialog::coinControlUpdateLabels()
         ui->widgetCoinControl->hide();
         ui->labelCoinControlInsuffFunds->hide();
     }
+}
+
+QWidget* SendCoinsDialog::createPrivacyTab(const QString& desc, bool showFrom, bool showTo,
+    bool showAmount, bool showMemo, bool showDSP,
+    const QString& toPlaceholder, const QString& amtPlaceholder)
+{
+    QWidget *tab = new QWidget();
+    QVBoxLayout *tabLayout = new QVBoxLayout(tab);
+
+    // Description
+    QLabel *descLabel = new QLabel(desc);
+    descLabel->setWordWrap(true);
+    descLabel->setStyleSheet("color: #888; font-size: 11px; padding: 4px 0 8px 0;");
+    descLabel->setTextFormat(Qt::RichText);
+    tabLayout->addWidget(descLabel);
+
+    // Form in a styled frame (matches transparent send)
+    QFrame *formFrame = new QFrame();
+    formFrame->setFrameShape(QFrame::StyledPanel);
+    formFrame->setFrameShadow(QFrame::Sunken);
+    QGridLayout *grid = new QGridLayout(formFrame);
+    grid->setSpacing(12);
+    int row = 0;
+
+    QLineEdit *fromEdit = NULL;
+    QLineEdit *toEdit = NULL;
+    QLineEdit *amountEdit = NULL;
+    QLineEdit *memoEdit = NULL;
+    QComboBox *dspCombo = NULL;
+
+    if (showFrom)
+    {
+        QLabel *lbl = new QLabel(tr("From:"));
+        lbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        fromEdit = new QLineEdit();
+        fromEdit->setPlaceholderText(tr("Source address (z-address or * for all)"));
+        fromEdit->setFont(GUIUtil::bitcoinAddressFont());
+        QToolButton *pasteBtn = new QToolButton();
+        pasteBtn->setIcon(QIcon(":/icons/editpaste"));
+        pasteBtn->setToolTip(tr("Paste from clipboard"));
+        connect(pasteBtn, &QToolButton::clicked, [fromEdit]() {
+            fromEdit->setText(QApplication::clipboard()->text());
+        });
+        QHBoxLayout *r = new QHBoxLayout(); r->setSpacing(0);
+        r->addWidget(fromEdit); r->addWidget(pasteBtn);
+        grid->addWidget(lbl, row, 0);
+        grid->addLayout(r, row, 1);
+        row++;
+    }
+
+    if (showTo)
+    {
+        QLabel *lbl = new QLabel(tr("Pay &To:"));
+        lbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        toEdit = new QLineEdit();
+        toEdit->setPlaceholderText(toPlaceholder);
+        toEdit->setFont(GUIUtil::bitcoinAddressFont());
+        QToolButton *bookBtn = new QToolButton();
+        bookBtn->setIcon(QIcon(":/icons/address-book"));
+        bookBtn->setToolTip(tr("Choose from address book"));
+        QToolButton *pasteBtn = new QToolButton();
+        pasteBtn->setIcon(QIcon(":/icons/editpaste"));
+        pasteBtn->setToolTip(tr("Paste from clipboard"));
+        connect(pasteBtn, &QToolButton::clicked, [toEdit]() {
+            toEdit->setText(QApplication::clipboard()->text());
+        });
+        QHBoxLayout *r = new QHBoxLayout(); r->setSpacing(0);
+        r->addWidget(toEdit); r->addWidget(bookBtn); r->addWidget(pasteBtn);
+        grid->addWidget(lbl, row, 0);
+        grid->addLayout(r, row, 1);
+        row++;
+    }
+
+    if (showAmount)
+    {
+        QLabel *lbl = new QLabel(tr("A&mount:"));
+        lbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        amountEdit = new QLineEdit();
+        amountEdit->setPlaceholderText(amtPlaceholder);
+        amountEdit->setMaximumWidth(220);
+        grid->addWidget(lbl, row, 0);
+        grid->addWidget(amountEdit, row, 1);
+        row++;
+    }
+
+    if (showMemo)
+    {
+        QLabel *lbl = new QLabel(tr("Memo:"));
+        lbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        memoEdit = new QLineEdit();
+        memoEdit->setPlaceholderText(tr("Optional encrypted memo (max 512 chars)"));
+        grid->addWidget(lbl, row, 0);
+        grid->addWidget(memoEdit, row, 1);
+        row++;
+    }
+
+    if (showDSP)
+    {
+        QLabel *lbl = new QLabel(tr("Privacy Level:"));
+        lbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        dspCombo = new QComboBox();
+        dspCombo->addItem(tr("7 — Full Privacy (hide sender + receiver + amount)"), 7);
+        dspCombo->addItem(tr("6 — Hide amount + sender"), 6);
+        dspCombo->addItem(tr("5 — Hide amount + receiver"), 5);
+        dspCombo->addItem(tr("4 — Hide amount only"), 4);
+        dspCombo->addItem(tr("3 — Hide sender + receiver"), 3);
+        dspCombo->addItem(tr("2 — Hide sender only"), 2);
+        dspCombo->addItem(tr("1 — Hide receiver only"), 1);
+        dspCombo->addItem(tr("0 — Transparent (nothing hidden)"), 0);
+        grid->addWidget(lbl, row, 0);
+        grid->addWidget(dspCombo, row, 1);
+        row++;
+    }
+
+    tabLayout->addWidget(formFrame);
+    tabLayout->addStretch();
+
+    // Store widget pointers for retrieval during send
+    tab->setProperty("fromEdit", QVariant::fromValue((void*)fromEdit));
+    tab->setProperty("toEdit", QVariant::fromValue((void*)toEdit));
+    tab->setProperty("amountEdit", QVariant::fromValue((void*)amountEdit));
+    tab->setProperty("memoEdit", QVariant::fromValue((void*)memoEdit));
+    tab->setProperty("dspCombo", QVariant::fromValue((void*)dspCombo));
+
+    return tab;
+}
+
+void SendCoinsDialog::onTabChanged(int index)
+{
+    // Update the send button text and style based on tab
+    QString btnText;
+    QString btnStyle = "";
+    switch (index)
+    {
+    case 0: btnText = tr("&Send"); break;
+    case 1: btnText = tr("Shield Coins"); btnStyle = "QPushButton { background-color: #4CAF50; color: white; }"; break;
+    case 2: btnText = tr("Send Privately"); btnStyle = "QPushButton { background-color: #2196F3; color: white; }"; break;
+    case 3: btnText = tr("Unshield Coins"); btnStyle = "QPushButton { background-color: #FF9800; color: white; }"; break;
+    case 4: btnText = tr("Send Silent Payment"); btnStyle = "QPushButton { background-color: #00BCD4; color: white; }"; break;
+    default: btnText = tr("&Send"); break;
+    }
+    ui->sendButton->setText(btnText);
+    ui->sendButton->setStyleSheet(btnStyle);
+}
+
+void SendCoinsDialog::onPrivacySendClicked()
+{
+    if (!model)
+        return;
+
+    int tabIdx = sendTabs->currentIndex();
+    QWidget *tab = sendTabs->currentWidget();
+
+    // Extract field values from tab properties
+    QLineEdit *fromEdit = (QLineEdit*)tab->property("fromEdit").value<void*>();
+    QLineEdit *toEdit = (QLineEdit*)tab->property("toEdit").value<void*>();
+    QLineEdit *amountEdit = (QLineEdit*)tab->property("amountEdit").value<void*>();
+    QLineEdit *memoEdit = (QLineEdit*)tab->property("memoEdit").value<void*>();
+    QComboBox *dspCombo = (QComboBox*)tab->property("dspCombo").value<void*>();
+
+    QString from = fromEdit ? fromEdit->text().trimmed() : "";
+    QString to = toEdit ? toEdit->text().trimmed() : "";
+    QString amount = amountEdit ? amountEdit->text().trimmed() : "";
+    QString memo = memoEdit ? memoEdit->text().trimmed() : "";
+    int privLevel = dspCombo ? dspCombo->currentData().toInt() : 7;
+
+    // Map tab index to mode: 0=transparent, 1=shield, 2=private, 3=unshield, 4=silent
+    int mode = tabIdx; // 1=shield, 2=private, 3=unshield, 4=silent(mapped to 5)
+
+    if (amount.isEmpty())
+    {
+        QMessageBox::warning(this, tr("Privacy Send"), tr("Please enter an amount."));
+        return;
+    }
+
+    // Build the appropriate RPC command
+    QString rpcCmd;
+    QString confirmMsg;
+
+    switch (mode)
+    {
+    case 1: // Shield — directly execute via WalletModel
+    {
+        confirmMsg = tr("Shield %1 INN to the shielded pool?\n\nA z-address will be created automatically if needed.").arg(amount);
+
+        QMessageBox::StandardButton reply2 = QMessageBox::question(this, tr("Confirm Shield"), confirmMsg, QMessageBox::Yes | QMessageBox::No);
+        if (reply2 != QMessageBox::Yes) { fNewRecipientAllowed = true; return; }
+
+        WalletModel::UnlockContext ctx2(model->requestUnlock());
+        if (!ctx2.isValid()) { fNewRecipientAllowed = true; return; }
+
+        QString fromAddr = from.isEmpty() ? "*" : from;
+        QString resultOut;
+        WalletModel::StatusCode status = model->shieldCoins(fromAddr, amount, resultOut);
+        if (status == WalletModel::OK)
+            QMessageBox::information(this, tr("Shield Coins"), tr("Coins shielded successfully!\n\n%1").arg(resultOut));
+        else
+            QMessageBox::warning(this, tr("Shield Coins"), tr("Failed:\n\n%1").arg(resultOut));
+        fNewRecipientAllowed = true;
+        return;
+    }
+    case 2: // Private Send — directly execute via WalletModel
+    {
+        if (to.isEmpty()) { QMessageBox::warning(this, tr("Private Send"), tr("Enter a recipient address.")); return; }
+        confirmMsg = tr("Send %1 INN privately to %2?\n\nPrivacy Level: %3").arg(amount, to.left(30) + "...").arg(privLevel);
+
+        QMessageBox::StandardButton reply2 = QMessageBox::question(this, tr("Confirm Private Send"), confirmMsg, QMessageBox::Yes | QMessageBox::No);
+        if (reply2 != QMessageBox::Yes) { fNewRecipientAllowed = true; return; }
+
+        WalletModel::UnlockContext ctx2(model->requestUnlock());
+        if (!ctx2.isValid()) { fNewRecipientAllowed = true; return; }
+
+        QString resultOut;
+        WalletModel::StatusCode status = model->sendShielded(from, to, amount, privLevel, resultOut);
+        if (status == WalletModel::OK)
+            QMessageBox::information(this, tr("Private Send"), tr("Sent successfully!\n\n%1").arg(resultOut));
+        else
+            QMessageBox::warning(this, tr("Private Send"), tr("Failed:\n\n%1").arg(resultOut));
+        fNewRecipientAllowed = true;
+        return;
+    }
+    case 3: // Unshield — directly execute via WalletModel
+    {
+        if (from.isEmpty() || to.isEmpty()) { QMessageBox::warning(this, tr("Unshield"), tr("Enter both source z-address and destination t-address.")); return; }
+        confirmMsg = tr("Unshield %1 INN to %2?").arg(amount, to.left(30) + "...");
+
+        QMessageBox::StandardButton reply2 = QMessageBox::question(this, tr("Confirm Unshield"), confirmMsg, QMessageBox::Yes | QMessageBox::No);
+        if (reply2 != QMessageBox::Yes) { fNewRecipientAllowed = true; return; }
+
+        WalletModel::UnlockContext ctx2(model->requestUnlock());
+        if (!ctx2.isValid()) { fNewRecipientAllowed = true; return; }
+
+        QString resultOut;
+        WalletModel::StatusCode status = model->unshieldCoins(from, to, amount, resultOut);
+        if (status == WalletModel::OK)
+            QMessageBox::information(this, tr("Unshield"), tr("Unshielded successfully!\n\n%1").arg(resultOut));
+        else
+            QMessageBox::warning(this, tr("Unshield"), tr("Failed:\n\n%1").arg(resultOut));
+        fNewRecipientAllowed = true;
+        return;
+    }
+    case 4: // Silent Payment (tab index 4)
+    case 5:
+        if (to.isEmpty()) { QMessageBox::warning(this, tr("Silent Payment"), tr("Enter a Silent Payment address.")); return; }
+        rpcCmd = QString("sp_send \"%1\" %2").arg(to, amount);
+        confirmMsg = tr("Send %1 INN via Silent Payment to %2?").arg(amount, to.left(20) + "...");
+        break;
+    default:
+        return;
+    }
+
+    // Confirm
+    QMessageBox::StandardButton reply = QMessageBox::question(this, tr("Confirm Privacy Transaction"),
+        confirmMsg, QMessageBox::Yes | QMessageBox::No);
+    if (reply != QMessageBox::Yes)
+        return;
+
+    // Unlock wallet
+    WalletModel::UnlockContext ctx(model->requestUnlock());
+    if (!ctx.isValid())
+        return;
+
+    // For now, show the RPC command to execute
+    // TODO: Direct wallet integration when shielded transaction APIs are wired
+    QMessageBox::information(this, tr("Privacy Transaction"),
+        tr("Execute this command in the Debug Console (Help → Debug Window → Console):\n\n%1\n\n"
+           "Direct wallet integration coming in a future update.").arg(rpcCmd));
 }

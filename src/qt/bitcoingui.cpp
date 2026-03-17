@@ -39,6 +39,9 @@
 #include "proofofimage.h"
 #include "hyperfile.h"
 #include "stakingpage.h"
+#include "privacypage.h"
+#include "nullsendpage.h"
+#include "chatwidget.h"
 #include "managenamespage.h"
 
 #ifdef Q_OS_MAC
@@ -145,18 +148,30 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     nBlocksInLastPeriod(0),
     nLastBlocks(0)
 {
-    // Size window to fit 13" screens: use 85% of available screen height, max 750px
+    // Dynamic window sizing: adapt to actual screen dimensions
     QScreen *screen = QApplication::primaryScreen();
-    int screenH = screen ? screen->availableGeometry().height() : 900;
-    int startH = qMin((int)(screenH * 0.85), 750);
-    resize(850, startH);
+    QRect screenGeom = screen ? screen->availableGeometry() : QRect(0, 0, 1280, 800);
+    int screenW = screenGeom.width();
+    int screenH = screenGeom.height();
+
+    // Use 75% of screen width (max 1200) and 80% of screen height (max 900)
+    int startW = qMin((int)(screenW * 0.75), 1200);
+    int startH = qMin((int)(screenH * 0.80), 900);
+
+    // Minimum usable size — prevents balance/form compression on small screens
+    setMinimumSize(850, 600);
+    resize(startW, startH);
+
+    // Center on screen
+    move(screenGeom.x() + (screenW - startW) / 2, screenGeom.y() + (screenH - startH) / 2);
+
     setWindowTitle(tr("Innova") + " - " + tr("Wallet"));
 
 #ifndef Q_OS_MAC
     qApp->setWindowIcon(QIcon(":icons/innova"));
     setWindowIcon(QIcon(":icons/innova"));
 #else
-    setUnifiedTitleAndToolBarOnMac(true);
+    setUnifiedTitleAndToolBarOnMac(false);
     QApplication::setAttribute(Qt::AA_DontShowIconsInMenus);
 #endif
 
@@ -192,6 +207,9 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     proofOfImagePage = new ProofOfImage(this);
     hyperfilePage = new Hyperfile(this);
     stakingPage = new StakingPage(this);
+    privacyPage = new PrivacyPage(this);
+    nullsendPage = new NullSendPage(this);
+    chatWidget = new ChatWidget(this);
     manageNamesPage = new ManageNamesPage(this);
 	//chatWindow = new ChatWindow(this);
 
@@ -227,6 +245,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     centralWidget->addWidget(receiveCoinsPage);
     centralWidget->addWidget(sendCoinsPage);
     centralWidget->addWidget(messagePage);
+    centralWidget->addWidget(chatWidget);
     centralWidget->addWidget(statisticsPage);
 	centralWidget->addWidget(blockBrowser);
     centralWidget->addWidget(collateralnodeManagerPage);
@@ -234,6 +253,8 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     centralWidget->addWidget(proofOfImagePage);
     centralWidget->addWidget(hyperfilePage);
     centralWidget->addWidget(stakingPage);
+    centralWidget->addWidget(privacyPage);
+    centralWidget->addWidget(nullsendPage);
 	//centralWidget->addWidget(chatWindow);
     setCentralWidget(centralWidget);
 
@@ -353,6 +374,12 @@ void BitcoinGUI::createActions()
     marketAction->setCheckable(true);
     tabGroup->addAction(marketAction);
 
+    nullsendAction = new QAction(QIcon(":/icons/mark"), tr("&NullSend"), this);
+    nullsendAction->setToolTip(tr("NullSend multi-party mixing for transaction unlinkability"));
+    nullsendAction->setCheckable(true);
+    nullsendAction->setStatusTip(tr("NullSend Mixing"));
+    tabGroup->addAction(nullsendAction);
+
     manageNamesAction = new QAction(QIcon(":/icons/names"), tr("&NVS"), this);
     manageNamesAction->setToolTip(tr("Manage Innova NVS"));
     manageNamesAction->setCheckable(true);
@@ -399,10 +426,10 @@ void BitcoinGUI::createActions()
     messageAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_8));
     tabGroup->addAction(messageAction);
 
-	mintingAction = new QAction(QIcon(":/icons/stake"), tr("&Staking"), this);
-    mintingAction->setToolTip(tr("Show your staking capacity"));
+	mintingAction = new QAction(QIcon(":/icons/stake"), tr("Staking &Inputs"), this);
+    mintingAction->setToolTip(tr("View staking inputs and estimated earnings"));
     mintingAction->setCheckable(true);
-	mintingAction->setStatusTip(tr("Staking Estimations"));
+	mintingAction->setStatusTip(tr("Staking Inputs & Estimations"));
     mintingAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_9));
     tabGroup->addAction(mintingAction);
 
@@ -429,6 +456,11 @@ void BitcoinGUI::createActions()
     stakingAction->setCheckable(true);
     stakingAction->setStatusTip(tr("Staking Control Panel"));
     tabGroup->addAction(stakingAction);
+
+    // Privacy page removed — entire chain is private; address generation integrated into Receive page
+    privacyAction = new QAction(QIcon(":/icons/lock_closed"), tr("&Privacy"), this);
+    privacyAction->setCheckable(true);
+    privacyAction->setVisible(false); // Hidden — not needed as separate page
 
 	multisigAction = new QAction(QIcon(":/icons/multi"), tr("Multisig"), this);
     tabGroup->addAction(multisigAction);
@@ -464,6 +496,10 @@ void BitcoinGUI::createActions()
     connect(hyperfileAction, SIGNAL(triggered()), this, SLOT(gotoHyperfilePage()));
     connect(stakingAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(stakingAction, SIGNAL(triggered()), this, SLOT(gotoStakingPage()));
+    connect(privacyAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
+    connect(privacyAction, SIGNAL(triggered()), this, SLOT(gotoPrivacyPage()));
+    connect(nullsendAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
+    connect(nullsendAction, SIGNAL(triggered()), this, SLOT(gotoNullSendPage()));
 
     quitAction = new QAction(QIcon(":/icons/quit"), tr("E&xit"), this);
     quitAction->setToolTip(tr("Quit application"));
@@ -599,16 +635,16 @@ void BitcoinGUI::createToolBars()
   mainToolbar->addAction(receiveCoinsAction);
   mainToolbar->addAction(historyAction);
   mainToolbar->addAction(addressBookAction);
-  mainToolbar->addAction(statisticsAction);
+  mainToolbar->addAction(stakingAction);        // Staking page
+  mainToolbar->addAction(mintingAction);         // Staking Inputs
+  mainToolbar->addAction(nullsendAction);        // NullSend mixing
   mainToolbar->addAction(collateralnodeManagerAction);
+  mainToolbar->addAction(statisticsAction);
+  mainToolbar->addAction(blockAction);
   mainToolbar->addAction(manageNamesAction);
   mainToolbar->addAction(hyperfileAction);
   mainToolbar->addAction(proofOfImageAction);
-  mainToolbar->addAction(marketAction);
-  mainToolbar->addAction(blockAction);
   mainToolbar->addAction(messageAction);
-  mainToolbar->addAction(mintingAction);
-  mainToolbar->addAction(stakingAction);
 
     secondaryToolbar = addToolBar(tr("Actions toolbar"));
     secondaryToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
@@ -706,6 +742,7 @@ void BitcoinGUI::setWalletModel(WalletModel *walletModel)
         overviewPage->setModel(walletModel);
         addressBookPage->setModel(walletModel->getAddressTableModel());
         receiveCoinsPage->setModel(walletModel->getAddressTableModel());
+        receiveCoinsPage->setWalletModel(walletModel);
         sendCoinsPage->setModel(walletModel);
         signVerifyMessageDialog->setModel(walletModel);
 		statisticsPage->setModel(clientModel);
@@ -715,6 +752,8 @@ void BitcoinGUI::setWalletModel(WalletModel *walletModel)
 		multisigPage->setModel(walletModel);
     manageNamesPage->setModel(walletModel);
         stakingPage->setModel(walletModel);
+        privacyPage->setModel(walletModel);
+        qobject_cast<NullSendPage*>(nullsendPage)->setModel(walletModel);
 		//chatWindow->setModel(clientModel);
 
         setEncryptionStatus(walletModel->getEncryptionStatus());
@@ -739,6 +778,7 @@ void BitcoinGUI::setMessageModel(MessageModel *messageModel)
 
         // Put transaction list in tabs
         messagePage->setModel(messageModel);
+        chatWidget->setModel(messageModel, walletModel);
 
         // Balloon pop-up for new message
         connect(messageModel, SIGNAL(rowsInserted(QModelIndex,int,int)),
@@ -1205,6 +1245,24 @@ void BitcoinGUI::gotoStakingPage()
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
 }
 
+void BitcoinGUI::gotoPrivacyPage()
+{
+    privacyAction->setChecked(true);
+    centralWidget->setCurrentWidget(privacyPage);
+
+    exportAction->setEnabled(false);
+    disconnect(exportAction, SIGNAL(triggered()), 0, 0);
+}
+
+void BitcoinGUI::gotoNullSendPage()
+{
+    nullsendAction->setChecked(true);
+    centralWidget->setCurrentWidget(nullsendPage);
+
+    exportAction->setEnabled(false);
+    disconnect(exportAction, SIGNAL(triggered()), 0, 0);
+}
+
 void BitcoinGUI::gotoCollateralnodeManagerPage()
 {
     collateralnodeManagerAction->setChecked(true);
@@ -1290,11 +1348,10 @@ void BitcoinGUI::gotoSendCoinsPage()
 void BitcoinGUI::gotoMessagePage()
 {
     messageAction->setChecked(true);
-    centralWidget->setCurrentWidget(messagePage);
+    centralWidget->setCurrentWidget(chatWidget);
 
-    exportAction->setEnabled(true);
+    exportAction->setEnabled(false);
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
-    connect(exportAction, SIGNAL(triggered()), messagePage, SLOT(exportClicked()));
 }
 /*
 void BitcoinGUI::gotoChatPage()

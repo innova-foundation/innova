@@ -749,7 +749,7 @@ bool CTxDB::LoadBlockIndex()
         pindexNew->nTime          = diskindex.nTime;
         pindexNew->nBits          = diskindex.nBits;
         pindexNew->nNonce         = diskindex.nNonce;
-        pindexNew->nSize          = diskindex.nSize;
+        // nSize populated later during chain trust calculation pass (not serialized for backward compat)
 
         // Watch for genesis block
         if (pindexGenesisBlock == NULL && blockHash == GetGenesisBlockHash())

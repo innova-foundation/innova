@@ -22,13 +22,10 @@
 #define DECORATION_SIZE 36
 #define NUM_ITEMS 7
 
-const QString BaseURL = "https://innova-foundation.com/innusd.php";
-const QString BaseURL2 = "https://innova-foundation.com/innbitcoin.php";
-const QString BaseURL3 = "https://innova-foundation.com/newsfeed.php";
-const QString BaseURL4 = "https://innova-foundation.com/inneur.php";
-const QString BaseURL5 = "https://innova-foundation.com/inngbp.php";
-const QString BaseURL6 = "https://innova-foundation.com/innrub.php";
-const QString BaseURL7 = "https://innova-foundation.com/innjpy.php";
+// CoinGecko API for prices (replaces dead innova-foundation.com PHP endpoints)
+const QString PriceAPIURL = "https://api.coingecko.com/api/v3/simple/price?ids=innova&vs_currencies=usd,btc,eur,gbp,rub,jpy";
+// Innova Foundation news feed (fallback: shows link to website)
+const QString NewsURL = "https://innova-foundation.com/community/forum.html";
 double innovax;
 double inneurx;
 double inngbpx;
@@ -167,64 +164,117 @@ PriceData OverviewPage::fetchPricesWorker()
 {
     PriceData result;
 
-    std::string urls[7] = {
-        BaseURL.toStdString(),
-        BaseURL2.toStdString(),
-        BaseURL3.toStdString(),
-        BaseURL4.toStdString(),
-        BaseURL5.toStdString(),
-        BaseURL6.toStdString(),
-        BaseURL7.toStdString()
-    };
+    // Single CoinGecko API call returns all prices as JSON
+    std::string url = PriceAPIURL.toStdString();
+    std::string buffer;
 
-    CURLM *multi_handle = curl_multi_init();
-    if (!multi_handle)
+    CURL *curl = curl_easy_init();
+    if (!curl)
         return result;
 
-    CURL *handles[7];
-    std::string buffers[7];
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, PriceWriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Innova-Wallet/5.0");
 
-    for (int i = 0; i < 7; i++) {
-        handles[i] = curl_easy_init();
-        if (handles[i]) {
-            curl_easy_setopt(handles[i], CURLOPT_URL, urls[i].c_str());
-            curl_easy_setopt(handles[i], CURLOPT_WRITEFUNCTION, PriceWriteCallback);
-            curl_easy_setopt(handles[i], CURLOPT_WRITEDATA, &buffers[i]);
-            curl_easy_setopt(handles[i], CURLOPT_SSL_VERIFYPEER, 0);
-            curl_easy_setopt(handles[i], CURLOPT_TIMEOUT, 10L);
-            curl_easy_setopt(handles[i], CURLOPT_CONNECTTIMEOUT, 5L);
-            curl_multi_add_handle(multi_handle, handles[i]);
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK || buffer.empty())
+        return result;
+
+    // Parse JSON: {"innova":{"usd":0.0006,"btc":6e-09,"eur":0.0005,"gbp":0.0004,"rub":0.05,"jpy":0.09}}
+    QString json = QString::fromStdString(buffer);
+
+    // Simple JSON extraction (no dependency on json_spirit in Qt code)
+    auto extractDouble = [&](const QString& key) -> double {
+        int idx = json.indexOf("\"" + key + "\"");
+        if (idx < 0) return 0;
+        idx = json.indexOf(":", idx);
+        if (idx < 0) return 0;
+        // Find the end of the number (next comma or closing brace)
+        int start = idx + 1;
+        int end = start;
+        while (end < json.size() && json[end] != ',' && json[end] != '}')
+            end++;
+        if (end <= start) return 0;
+        return json.mid(start, end - start).trimmed().toDouble();
+    };
+
+    result.usd = extractDouble("usd");
+    result.btc = extractDouble("btc");
+    result.eur = extractDouble("eur");
+    result.gbp = extractDouble("gbp");
+    result.rub = extractDouble("rub");
+    result.jpy = extractDouble("jpy");
+
+    // Fetch latest GitHub release for news
+    std::string ghBuffer;
+    CURL *ghCurl = curl_easy_init();
+    if (ghCurl)
+    {
+        curl_easy_setopt(ghCurl, CURLOPT_URL, "https://api.github.com/repos/innova-foundation/innova/releases/latest");
+        curl_easy_setopt(ghCurl, CURLOPT_WRITEFUNCTION, PriceWriteCallback);
+        curl_easy_setopt(ghCurl, CURLOPT_WRITEDATA, &ghBuffer);
+        curl_easy_setopt(ghCurl, CURLOPT_SSL_VERIFYPEER, 0);
+        curl_easy_setopt(ghCurl, CURLOPT_TIMEOUT, 10L);
+        curl_easy_setopt(ghCurl, CURLOPT_CONNECTTIMEOUT, 5L);
+        curl_easy_setopt(ghCurl, CURLOPT_USERAGENT, "Innova-Wallet/5.0");
+
+        struct curl_slist *headers = NULL;
+        headers = curl_slist_append(headers, "Accept: application/vnd.github.v3+json");
+        curl_easy_setopt(ghCurl, CURLOPT_HTTPHEADER, headers);
+
+        CURLcode ghRes = curl_easy_perform(ghCurl);
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(ghCurl);
+
+        if (ghRes == CURLE_OK && !ghBuffer.empty())
+        {
+            QString ghJson = QString::fromStdString(ghBuffer);
+
+            // Extract release name and URL
+            auto extractString = [&](const QString& json, const QString& key) -> QString {
+                int idx = json.indexOf("\"" + key + "\"");
+                if (idx < 0) return "";
+                idx = json.indexOf(":", idx);
+                if (idx < 0) return "";
+                int qStart = json.indexOf("\"", idx + 1);
+                if (qStart < 0) return "";
+                int qEnd = json.indexOf("\"", qStart + 1);
+                if (qEnd < 0) return "";
+                return json.mid(qStart + 1, qEnd - qStart - 1);
+            };
+
+            QString releaseName = extractString(ghJson, "name");
+            QString releaseUrl = extractString(ghJson, "html_url");
+            QString publishedAt = extractString(ghJson, "published_at");
+
+            if (!releaseName.isEmpty())
+            {
+                // Format date
+                QString dateStr = publishedAt.left(10); // "2026-03-15"
+                result.newsfeed = QString("<b>Latest Release:</b> <a href='%1' style='color: #4CAF50;'>%2</a> (%3)<br>"
+                                         "<a href='https://innova-foundation.com/community/forum.html' style='color: #888;'>Community Forum</a> | "
+                                         "<a href='https://github.com/innova-foundation/innova' style='color: #888;'>GitHub</a>")
+                                         .arg(releaseUrl, releaseName, dateStr);
+            }
+            else
+            {
+                result.newsfeed = QString("<a href='https://innova-foundation.com/community/forum.html' style='color: #4CAF50;'>Innova Community Forum</a> | "
+                                         "<a href='https://github.com/innova-foundation/innova' style='color: #888;'>GitHub</a>");
+            }
+        }
+        else
+        {
+            result.newsfeed = QString("<a href='https://innova-foundation.com/community/forum.html' style='color: #4CAF50;'>Innova Community Forum</a>");
         }
     }
 
-    int still_running = 0;
-    curl_multi_perform(multi_handle, &still_running);
-
-    while (still_running) {
-        int numfds;
-        CURLMcode mc = curl_multi_wait(multi_handle, NULL, 0, 1000, &numfds);
-        if (mc != CURLM_OK)
-            break;
-        curl_multi_perform(multi_handle, &still_running);
-    }
-
-    if (!buffers[0].empty()) result.usd = QString::fromStdString(buffers[0]).toDouble();
-    if (!buffers[1].empty()) result.btc = QString::fromStdString(buffers[1]).toDouble();
-    if (!buffers[2].empty()) result.newsfeed = QString::fromStdString(buffers[2]);
-    if (!buffers[3].empty()) result.eur = QString::fromStdString(buffers[3]).toDouble();
-    if (!buffers[4].empty()) result.gbp = QString::fromStdString(buffers[4]).toDouble();
-    if (!buffers[5].empty()) result.rub = QString::fromStdString(buffers[5]).toDouble();
-    if (!buffers[6].empty()) result.jpy = QString::fromStdString(buffers[6]).toDouble();
-
-    for (int i = 0; i < 7; i++) {
-        if (handles[i]) {
-            curl_multi_remove_handle(multi_handle, handles[i]);
-            curl_easy_cleanup(handles[i]);
-        }
-    }
-    curl_multi_cleanup(multi_handle);
-
-    result.success = true;
+    result.success = (result.usd > 0 || result.btc > 0);
     return result;
 }
 
@@ -248,7 +298,7 @@ void OverviewPage::onPricesFetched()
 
     if (data.usd > 0) {
         innovax = data.usd;
-        dollarg = QString::number(innovax, 'f', 2);
+        dollarg = QString::number(innovax, 'f', 8); // full precision for small values
     }
     if (data.btc > 0) {
         innbtcx = data.btc;
@@ -286,7 +336,7 @@ OverviewPage::~OverviewPage()
     delete ui;
 }
 
-void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake, qint64 unconfirmedBalance, qint64 immatureBalance, qint64 watchOnlyBalance, qint64 watchUnconfBalance, qint64 watchImmatureBalance)
+void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake, qint64 unconfirmedBalance, qint64 immatureBalance, qint64 watchOnlyBalance, qint64 watchUnconfBalance, qint64 watchImmatureBalance, qint64 shieldedBalance)
 {
     if (!model || !model->getOptionsModel())
         return;
@@ -308,6 +358,16 @@ void OverviewPage::setBalance(qint64 balance, qint64 lockedbalance, qint64 stake
 
     ui->labelStake->setText(BitcoinUnits::formatWithUnit(unit, stake));
     ui->labelStake->setToolTip(tr("Stake balance"));
+
+    // Shielded (privacy) balance — always visible so users know it exists
+    if (ui->labelShielded)
+    {
+        ui->labelShielded->setText(BitcoinUnits::formatWithUnit(unit, shieldedBalance));
+        ui->labelShielded->setToolTip(tr("Shielded (private) balance — shield coins via the Send page to move funds here"));
+    }
+
+    // Include shielded in total
+    totalBalance += shieldedBalance;
 
     ui->labelUnconfirmed->setText(BitcoinUnits::formatWithUnit(unit, unconfirmedBalance));
     ui->labelImmature->setText(BitcoinUnits::formatWithUnit(unit, immatureBalance));
@@ -409,8 +469,8 @@ void OverviewPage::setModel(WalletModel *model)
         ui->listTransactions->setModelColumn(TransactionTableModel::ToAddress);
 
         // Keep up to date with wallet
-        setBalance(model->getUnlockedBalance(), model->getLockedBalance(), model->getStakeAmount(), model->getUnconfirmedBalance(), model->getImmatureBalance(), model->getWatchBalance(), model->getWatchUnconfirmedBalance(), model->getWatchImmatureBalance());
-        connect(model, SIGNAL(balanceChanged(qint64, qint64, qint64, qint64, qint64, qint64, qint64, qint64)), this, SLOT(setBalance(qint64, qint64, qint64, qint64, qint64, qint64, qint64, qint64)));
+        setBalance(model->getUnlockedBalance(), model->getLockedBalance(), model->getStakeAmount(), model->getUnconfirmedBalance(), model->getImmatureBalance(), model->getWatchBalance(), model->getWatchUnconfirmedBalance(), model->getWatchImmatureBalance(), model->getShieldedBalance());
+        connect(model, SIGNAL(balanceChanged(qint64, qint64, qint64, qint64, qint64, qint64, qint64, qint64, qint64)), this, SLOT(setBalance(qint64, qint64, qint64, qint64, qint64, qint64, qint64, qint64, qint64)));
 
         // Watch Only
         updateWatchOnlyLabels(model->haveWatchOnly());

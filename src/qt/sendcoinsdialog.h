@@ -3,6 +3,18 @@
 
 #include <QDialog>
 #include <QString>
+#include <QComboBox>
+#include <QLabel>
+#include <QHBoxLayout>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QSpinBox>
+#include <QMessageBox>
+#include <QFormLayout>
+#include <QFrame>
+#include <QGridLayout>
+#include <QToolButton>
+#include <QTabWidget>
 
 namespace Ui {
     class SendCoinsDialog;
@@ -47,6 +59,14 @@ private:
     WalletModel *model;
     bool fNewRecipientAllowed;
 
+    // Tab-based send modes
+    QTabWidget *sendTabs;
+    QLabel *labelShieldedBal;
+
+    QWidget* createPrivacyTab(const QString& desc, bool showFrom, bool showTo,
+        bool showAmount, bool showMemo, bool showDSP,
+        const QString& toPlaceholder, const QString& amtPlaceholder);
+
 private slots:
     void on_sendButton_clicked();
     void removeEntry(SendCoinsEntry* entry);
@@ -66,6 +86,8 @@ private slots:
     void coinControlClipboardChange();
     void splitBlockChecked(int);
     void splitBlockLineEditChanged(const QString & text);
+    void onTabChanged(int index);
+    void onPrivacySendClicked();
 };
 
 #endif // SENDCOINSDIALOG_H

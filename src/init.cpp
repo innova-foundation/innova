@@ -760,6 +760,10 @@ bool AppInit2()
 
     fCNLock = GetBoolArg("-cnconflock");
     fNativeTor = GetBoolArg("-nativetor");
+
+    // Default IPFS gateway (overridable in innova.conf)
+    SoftSetBoolArg("-hyperfilelocal", true);
+    SoftSetArg("-hyperfileip", "ipfs.innova-foundation.com:5001");
     fHyperfileLocal = GetBoolArg("-hyperfilelocal");
 
     if (mapArgs.count("-bind"))

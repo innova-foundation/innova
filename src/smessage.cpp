@@ -53,6 +53,7 @@ Notes:
 #include "main.h"
 #include "init.h" // pwalletMain
 #include "txdb.h"
+#include "dandelion.h"
 
 
 #include "lz4/lz4.c"
@@ -78,6 +79,7 @@ namespace fs = boost::filesystem;
 boost::signals2::signal<void (SecMsgStored& inboxHdr)>  NotifySecMsgInboxChanged;
 boost::signals2::signal<void (SecMsgStored& outboxHdr)> NotifySecMsgOutboxChanged;
 boost::signals2::signal<void ()> NotifySecMsgWalletUnlocked;
+boost::signals2::signal<void (const std::string&)> NotifySecMsgTyping;
 
 bool fSecMsgEnabled = false;
 
@@ -91,6 +93,8 @@ uint32_t nPeerIdCounter = 1;
 
 CCriticalSection cs_smsg;
 CCriticalSection cs_smsgDB;
+CCriticalSection cs_smsgStem;
+std::map<uint256, SmsgStemEntry> mapSmsgStemState;
 
 leveldb::DB *smsgDB = NULL;
 
@@ -844,6 +848,9 @@ void ThreadSecureMsg(void* parg)
         if (!fSecMsgEnabled) // check again after sleep
             break;
 
+        // Dandelion++ stem timeout check (every second)
+        SecureMsgCheckStemTimeouts();
+
         delay++;
         if (delay < SMSG_THREAD_DELAY) // check every SMSG_THREAD_DELAY seconds
             continue;
@@ -1006,8 +1013,18 @@ void ThreadSecureMsgPow(void* parg)
                 continue;
             };
 
-            // -- add to message store
+            // Dandelion++ stem relay: try stem first, fluff if stem fails
+            bool fStemmed = false;
+            if (dandelionState.IsEnabled())
             {
+                fStemmed = SecureMsgStemRelay(pHeader, pPayload, psmsg->nPayload);
+                if (fStemmed && fDebugSmsg)
+                    printf("SecMsgPow: message in Dandelion++ stem phase\n");
+            }
+
+            if (!fStemmed)
+            {
+                // No Dandelion++ or stem failed — store immediately (fluff)
                 LOCK(cs_smsg);
                 if (SecureMsgStore(pHeader, pPayload, psmsg->nPayload, true) != 0)
                 {
@@ -1984,6 +2001,18 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
 
             SecureMsgReceive(pfrom, vchData);
         } else
+        if (strCommand == "smsgStem")
+        {
+            // Dandelion++ stem message: single PoW'd message (header + payload)
+            std::vector<unsigned char> vchData;
+            vRecv >> vchData;
+
+            if (fDebugSmsg)
+                printf("smsgStem received from %s, size %" PRIszu"\n",
+                       pfrom->addrName.c_str(), vchData.size());
+
+            SecureMsgHandleStem(pfrom, vchData);
+        } else
         if (strCommand == "smsgMatch")
         {
             std::vector<unsigned char> vchData;
@@ -2059,6 +2088,32 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
             if (fDebugSmsg)
                 printf("Peer %u is ignoring this node until %" PRId64", ignore peer too.\n", pfrom->smsgData.nPeerId, time);
         } else
+        if (strCommand == "smsgTyping")
+        {
+            // Typing notifications handled outside cs_smsg lock to avoid lock ordering issues
+            // Just parse and fire signal — no lock contention
+            int64_t now = GetTime();
+            if (now - pfrom->smsgData.lastTypingReceived >= 1)
+            {
+                pfrom->smsgData.lastTypingReceived = now;
+                pfrom->smsgData.nTypingViolations = 0;
+
+                std::vector<unsigned char> vchData;
+                vRecv >> vchData;
+
+                std::string senderAddr;
+                if (SecureMsgHandleTyping(pfrom, vchData, senderAddr))
+                {
+                    NotifySecMsgTyping(senderAddr);
+                }
+            }
+            else
+            {
+                pfrom->smsgData.nTypingViolations++;
+                if (pfrom->smsgData.nTypingViolations > 5)
+                    pfrom->Misbehaving(1);
+            }
+        } else
         {
             // Unknown message
         };
@@ -2067,6 +2122,98 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
 
     return true;
 };
+
+bool SecureMsgSendTyping(const std::string& addrFrom, const std::string& addrTo)
+{
+    // Typing notification format: [addrFrom(34 bytes)] + [addrTo(34 bytes)]
+    // Sent as cleartext P2P — NOT encrypted (it's ephemeral, no PoW needed)
+    // Only the intended recipient processes it (checks addrTo against their addresses)
+
+    if (addrFrom.empty() || addrTo.empty())
+        return false;
+
+    std::vector<unsigned char> vchData;
+    // Write from address length + data
+    uint8_t nFromLen = (uint8_t)std::min(addrFrom.size(), (size_t)255);
+    uint8_t nToLen = (uint8_t)std::min(addrTo.size(), (size_t)255);
+    vchData.push_back(nFromLen);
+    vchData.insert(vchData.end(), addrFrom.begin(), addrFrom.begin() + nFromLen);
+    vchData.push_back(nToLen);
+    vchData.insert(vchData.end(), addrTo.begin(), addrTo.begin() + nToLen);
+
+    // Check if addrTo is one of our own addresses (local loopback for same-wallet testing)
+    CWallet* pwallet = pwalletMain;
+    if (pwallet)
+    {
+        CBitcoinAddress coinAddrTo(addrTo);
+        if (coinAddrTo.IsValid())
+        {
+            CKeyID keyID;
+            if (coinAddrTo.GetKeyID(keyID) && pwallet->HaveKey(keyID))
+            {
+                // Local loopback — fire signal directly without P2P
+                NotifySecMsgTyping(addrFrom);
+            }
+        }
+    }
+
+    // Broadcast to all smsg-enabled peers (they will filter by addrTo)
+    {
+        LOCK(cs_vNodes);
+        for (std::vector<CNode*>::iterator it = vNodes.begin(); it != vNodes.end(); ++it)
+        {
+            CNode* pnode = *it;
+            if (pnode->smsgData.fEnabled)
+                pnode->PushMessage("smsgTyping", vchData);
+        }
+    }
+
+    return true;
+}
+
+bool SecureMsgHandleTyping(CNode* pfrom, std::vector<unsigned char>& vchData, std::string& senderAddrOut)
+{
+    // Parse: [fromLen(1)] + [fromAddr] + [toLen(1)] + [toAddr]
+    if (vchData.size() < 4)
+        return false;
+
+    size_t pos = 0;
+    uint8_t nFromLen = vchData[pos++];
+    if (pos + nFromLen + 1 > vchData.size())
+        return false;
+
+    std::string addrFrom((char*)&vchData[pos], nFromLen);
+    pos += nFromLen;
+
+    uint8_t nToLen = vchData[pos++];
+    if (pos + nToLen > vchData.size())
+        return false;
+
+    std::string addrTo((char*)&vchData[pos], nToLen);
+
+    CWallet* pwallet = pwalletMain;
+    if (!pwallet)
+        return false;
+
+    CBitcoinAddress coinAddr(addrTo);
+    if (!coinAddr.IsValid())
+        return false;
+
+    CKeyID keyID;
+    if (!coinAddr.GetKeyID(keyID))
+        return false;
+
+    if (!pwallet->HaveKey(keyID))
+        return false; // Not for us
+
+    // Validate addrFrom
+    CBitcoinAddress coinAddrFrom(addrFrom);
+    if (!coinAddrFrom.IsValid())
+        return false;
+
+    senderAddrOut = addrFrom;
+    return true;
+}
 
 bool SecureMsgSendData(CNode* pto, bool fSendTrickle)
 {
@@ -3807,7 +3954,11 @@ int SecureMsgEncrypt(SecureMessage& smsg, std::string& addressFrom, std::string&
 
     // -- Generate 16 random bytes as IV.
     RandAddSeedPerfmon();
-    RAND_bytes(&smsg.iv[0], 16);
+    if (RAND_bytes(&smsg.iv[0], 16) != 1)
+    {
+        printf("SecureMsgEncrypt: RAND_bytes failed for IV generation\n");
+        return 11;
+    }
     {
         static CCriticalSection cs_iv_counter;
         static uint64_t nIVCounter = 0;
@@ -3831,6 +3982,16 @@ int SecureMsgEncrypt(SecureMessage& smsg, std::string& addressFrom, std::string&
         printf("Could not set pubkey for K: %s.\n", ValueString(cpkDestK.Raw()).c_str());
         return 4; // address to is invalid
     };
+
+    // Validate destination public key is on curve
+    {
+        EC_KEY *eccheck = ecKeyK.GetECKey();
+        if (eccheck && !EC_KEY_check_key(eccheck))
+        {
+            printf("SecureMsgEncrypt: destination pubkey failed on-curve validation\n");
+            return 4;
+        }
+    }
 
     std::vector<unsigned char> vchP;
     vchP.resize(32);
@@ -4012,9 +4173,213 @@ int SecureMsgEncrypt(SecureMessage& smsg, std::string& addressFrom, std::string&
         return 10;
     };
 
+    // Cleanse key material from memory
+    OPENSSL_cleanse(&vchP[0], vchP.size());
+    OPENSSL_cleanse(&vchHashed[0], vchHashed.size());
+    OPENSSL_cleanse(&key_e[0], key_e.size());
+    OPENSSL_cleanse(&key_m[0], key_m.size());
 
     return 0;
 };
+
+// ---------------------------------------------------------------------------
+// Dandelion++ Stem Relay for Secure Messages
+// ---------------------------------------------------------------------------
+
+bool SecureMsgStemRelay(unsigned char* pHeader, unsigned char* pPayload, uint32_t nPayload)
+{
+    if (!dandelionState.IsEnabled())
+        return false;
+
+    // Compute message hash for stem state tracking
+    CHashWriter hasher(SER_GETHASH, 0);
+    hasher.write((const char*)pHeader, SMSG_HDR_LEN);
+    hasher.write((const char*)pPayload, nPayload);
+    uint256 msgHash = hasher.GetHash();
+
+    // Build the stem message payload: raw header + payload (no framing)
+    std::vector<unsigned char> vchStem(SMSG_HDR_LEN + nPayload);
+    memcpy(&vchStem[0], pHeader, SMSG_HDR_LEN);
+    memcpy(&vchStem[SMSG_HDR_LEN], pPayload, nPayload);
+
+    // Track in stem state for timeout fallback (capped at 10K entries)
+    {
+        LOCK(cs_smsgStem);
+        if (mapSmsgStemState.size() >= 10000)
+            return false; // stem state full — let caller fluff directly
+        SmsgStemEntry entry;
+        entry.vchMessage = vchStem;
+        entry.nStemStartTime = GetTime();
+        // Randomize stem timeout per-message (30-60s) to prevent timing correlation
+        unsigned char rndByte[1];
+        if (RAND_bytes(rndByte, 1) == 1)
+            entry.nStemStartTime -= (rndByte[0] % 15); // effectively 30-45s timeout with base 45s
+        entry.fRelayed = false;
+        mapSmsgStemState[msgHash] = entry;
+    }
+
+    // Select stem peer and relay
+    LOCK(cs_vNodes);
+    std::vector<int> vPeerIds;
+    for (CNode* pnode : vNodes)
+        vPeerIds.push_back(pnode->GetId());
+
+    dandelionRouter.UpdateEpoch(GetTime(), vPeerIds);
+    int nStemPeerId = dandelionRouter.GetStemPeer(uint256());
+
+    if (nStemPeerId < 0)
+    {
+        // No stem peer available — clean up and let caller fluff
+        LOCK(cs_smsgStem);
+        mapSmsgStemState.erase(msgHash);
+        return false;
+    }
+
+    for (CNode* pnode : vNodes)
+    {
+        if (pnode->GetId() == nStemPeerId)
+        {
+            pnode->PushMessage("smsgStem", vchStem);
+            {
+                LOCK(cs_smsgStem);
+                if (mapSmsgStemState.count(msgHash))
+                    mapSmsgStemState[msgHash].fRelayed = true;
+            }
+            if (fDebugSmsg)
+                printf("SecureMsgStemRelay: stem to peer %d (hash=%s)\n",
+                       nStemPeerId, msgHash.ToString().substr(0, 16).c_str());
+            return true;
+        }
+    }
+
+    // Stem peer not in vNodes — clean up and let caller fluff
+    {
+        LOCK(cs_smsgStem);
+        mapSmsgStemState.erase(msgHash);
+    }
+    return false;
+}
+
+bool SecureMsgHandleStem(CNode* pfrom, std::vector<unsigned char>& vchData)
+{
+    // Validate: must be header + at least some payload
+    if (vchData.size() <= SMSG_HDR_LEN)
+    {
+        printf("SecureMsgHandleStem: message too small (%zu)\n", vchData.size());
+        return false;
+    }
+
+    unsigned char* pHeader = &vchData[0];
+    unsigned char* pPayload = &vchData[SMSG_HDR_LEN];
+    uint32_t nPayload = vchData.size() - SMSG_HDR_LEN;
+    SecureMessage* psmsg = (SecureMessage*)pHeader;
+
+    // Validate PoW (light penalty for stem — protocol upgrade tolerance)
+    if (SecureMsgValidate(pHeader, pPayload, nPayload) != 0)
+    {
+        printf("SecureMsgHandleStem: PoW validation failed\n");
+        pfrom->Misbehaving(1);
+        return false;
+    }
+
+    // Compute message hash
+    CHashWriter hasher(SER_GETHASH, 0);
+    hasher.write((const char*)pHeader, SMSG_HDR_LEN);
+    hasher.write((const char*)pPayload, nPayload);
+    uint256 msgHash = hasher.GetHash();
+
+    // Check if we've already seen this message (prevent loops)
+    {
+        LOCK(cs_smsgStem);
+        if (mapSmsgStemState.count(msgHash))
+            return true; // already processed
+    }
+
+    // Decide: continue stem or fluff?
+    CDandelionTxState dummyState;
+    bool shouldFluff = dandelionRouter.ShouldFluff(dummyState);
+
+    if (!shouldFluff && dandelionState.IsEnabled())
+    {
+        // Continue stem: forward to our stem peer
+        if (SecureMsgStemRelay(pHeader, pPayload, nPayload))
+        {
+            if (fDebugSmsg)
+                printf("SecureMsgHandleStem: stem continuation (hash=%s)\n",
+                       msgHash.ToString().substr(0, 16).c_str());
+            return true;
+        }
+        // Stem relay failed — fall through to fluff
+    }
+
+    // Fluff: store in bucket system for normal relay
+    {
+        LOCK(cs_smsg);
+        if (SecureMsgStore(pHeader, pPayload, nPayload, true) != 0)
+        {
+            printf("SecureMsgHandleStem: could not store message in buckets\n");
+            return false;
+        }
+    }
+
+    // Scan for self-delivery
+    SecureMsgScanMessage(pHeader, pPayload, nPayload, true);
+
+    if (fDebugSmsg)
+        printf("SecureMsgHandleStem: fluffed message (hash=%s)\n",
+               msgHash.ToString().substr(0, 16).c_str());
+
+    return true;
+}
+
+void SecureMsgCheckStemTimeouts()
+{
+    // Collect timed-out entries under cs_smsgStem, then release BEFORE taking cs_smsg.
+    // This prevents ABBA deadlock: P2P handler holds cs_smsg then cs_smsgStem,
+    // so we must NOT hold cs_smsgStem while taking cs_smsg.
+    // Lock ordering: cs_smsg > cs_smsgStem (always)
+
+    std::vector<SmsgStemEntry> vExpired;
+
+    {
+        LOCK(cs_smsgStem);
+        int64_t nNow = GetTime();
+
+        for (auto it = mapSmsgStemState.begin(); it != mapSmsgStemState.end(); )
+        {
+            if (nNow - it->second.nStemStartTime >= SMSG_STEM_TIMEOUT)
+            {
+                vExpired.push_back(it->second);
+                it = mapSmsgStemState.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+    }
+    // cs_smsgStem released — safe to take cs_smsg now
+
+    for (SmsgStemEntry& entry : vExpired)
+    {
+        if (entry.vchMessage.size() <= SMSG_HDR_LEN)
+            continue;
+
+        unsigned char* pH = &entry.vchMessage[0];
+        unsigned char* pP = &entry.vchMessage[SMSG_HDR_LEN];
+        uint32_t nP = entry.vchMessage.size() - SMSG_HDR_LEN;
+
+        {
+            LOCK(cs_smsg);
+            SecureMsgStore(pH, pP, nP, true);
+        }
+        SecureMsgScanMessage(pH, pP, nP, true);
+
+        if (fDebugSmsg)
+            printf("SecureMsgCheckStemTimeouts: fluffed timed-out stem\n");
+    }
+}
+
 
 int SecureMsgSend(std::string& addressFrom, std::string& addressTo, std::string& message, std::string& sError)
 {
@@ -4099,9 +4464,11 @@ int SecureMsgSend(std::string& addressFrom, std::string& addressTo, std::string&
         if (dbSendQueue.Open("cw"))
         {
             dbSendQueue.WriteSmesg(chKey, smsgSQ);
-            //NotifySecMsgSendQueueChanged(smsgOutbox);
         };
     }
+
+    // Dandelion++ stem relay happens AFTER PoW in ThreadSecureMsgPow (not here).
+    // See SecureMsgStemRelay() for the proper stem implementation.
 
     // TODO: only update outbox when proof of work thread is done.
 
@@ -4250,6 +4617,23 @@ int SecureMsgDecrypt(bool fTestOnly, std::string& address, unsigned char *pHeade
         printf("Could not get public key for key R.\n");
         return 1;
     };
+
+    // Validate ephemeral public key is on the curve (prevent invalid-curve attacks)
+    {
+        EC_KEY *eckey = EC_KEY_new_by_curve_name(NID_secp256k1);
+        if (eckey)
+        {
+            const unsigned char *pbegin = cpkR.begin();
+            if (!o2i_ECPublicKey(&eckey, &pbegin, cpkR.size()) ||
+                !EC_KEY_check_key(eckey))
+            {
+                EC_KEY_free(eckey);
+                printf("SecureMsgDecrypt: ephemeral public key failed on-curve validation\n");
+                return 1;
+            }
+            EC_KEY_free(eckey);
+        }
+    }
 
     CECKey ecKeyR;
     if (!ecKeyR.SetPubKey(cpkR))
@@ -4462,6 +4846,12 @@ int SecureMsgDecrypt(bool fTestOnly, std::string& address, unsigned char *pHeade
 
         msg.sFromAddress = coinAddrFrom.ToString();
     };
+
+    // Cleanse key material from memory
+    OPENSSL_cleanse(&vchP[0], vchP.size());
+    OPENSSL_cleanse(&vchHashedDec[0], vchHashedDec.size());
+    OPENSSL_cleanse(&key_e[0], key_e.size());
+    OPENSSL_cleanse(&key_m[0], key_m.size());
 
     if (fDebugSmsg)
         printf("Decrypted message for %s.\n", address.c_str());
