@@ -498,6 +498,100 @@ jobs:
           path: innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64.tar.gz
 
   # ─────────────────────────────────────────────────────────
+  # Arch Linux x86_64 (daemon + Qt) via Docker
+  # ─────────────────────────────────────────────────────────
+  build-archlinux:
+    runs-on: ubuntu-22.04
+    needs: get-version
+    container:
+      image: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm base-devel boost openssl libevent db \
+            miniupnpc qrencode curl gmp qt5-base qt5-tools \
+            protobuf git
+
+      - name: Build daemon
+        run: |
+          cd src
+          make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
+
+      - name: Build Qt wallet
+        run: |
+          sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
+          qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+          make -j$(nproc)
+
+      - name: Package
+        run: |
+          mkdir -p innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64
+          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64/
+          strip innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64/*
+          cd innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+          tar -czf innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64.tar.gz \
+            innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: innova-archlinux-x86_64
+          path: innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64.tar.gz
+
+  # ─────────────────────────────────────────────────────────
+  # openSUSE Tumbleweed x86_64 (daemon + Qt) via Docker
+  # ─────────────────────────────────────────────────────────
+  build-opensuse-tw:
+    runs-on: ubuntu-22.04
+    needs: get-version
+    container:
+      image: opensuse/tumbleweed:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          zypper -n install gcc-c++ make libtool automake pkg-config \
+            libopenssl-devel libevent-devel boost-devel libdb-4_8-devel \
+            libminiupnpc-devel qrencode-devel libcurl-devel gmp-devel \
+            libqt5-qtbase-devel libqt5-qttools-devel \
+            protobuf-devel git
+
+      - name: Build daemon
+        run: |
+          cd src
+          make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
+
+      - name: Build Qt wallet
+        run: |
+          sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
+          qmake-qt5 USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro || qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+          make -j$(nproc)
+
+      - name: Package
+        run: |
+          mkdir -p innova-${{ needs.get-version.outputs.version }}-opensuse-tw-x86_64
+          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-opensuse-tw-x86_64/
+          strip innova-${{ needs.get-version.outputs.version }}-opensuse-tw-x86_64/*
+          cd innova-${{ needs.get-version.outputs.version }}-opensuse-tw-x86_64
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+          tar -czf innova-${{ needs.get-version.outputs.version }}-opensuse-tw-x86_64.tar.gz \
+            innova-${{ needs.get-version.outputs.version }}-opensuse-tw-x86_64/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: innova-opensuse-tw-x86_64
+          path: innova-${{ needs.get-version.outputs.version }}-opensuse-tw-x86_64.tar.gz
+
+  # ─────────────────────────────────────────────────────────
   # Fedora 40 x86_64 (daemon + Qt) via Docker
   # ─────────────────────────────────────────────────────────
   build-fedora-40:
@@ -655,6 +749,8 @@ jobs:
       - build-debian-12
       - build-fedora-40
       - build-fedora-41
+      - build-archlinux
+      - build-opensuse-tw
       - build-linux-arm64
       - build-linux-arm64-qt
       - build-linux-armhf
