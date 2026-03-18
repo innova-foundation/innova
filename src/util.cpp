@@ -1313,6 +1313,20 @@ void WriteConfigFile(FILE* configFile)
     fputs ("addnode=85.19.25.38\n", configFile);
     fputs ("addnode=93.228.101.127\n", configFile);
     fputs ("\n", configFile);
+    fputs ("# Nyx Messaging Protocol\n", configFile);
+    fputs ("smsg=1\n", configFile);
+    fputs ("nyx=1\n", configFile);
+    fputs ("nyxanon=1\n", configFile);
+    fputs ("nyxgroups=1\n", configFile);
+    fputs ("nyxfiles=1\n", configFile);
+    fputs ("nyxchunksize=1048576\n", configFile);
+    fputs ("nyxmaxfilesize=10995116277760\n", configFile);
+    fputs ("nyxconcurrency=8\n", configFile);
+    fputs ("\n", configFile);
+    fputs ("# IPFS Hyperfile Gateway\n", configFile);
+    fputs ("hyperfilelocal=1\n", configFile);
+    fputs ("hyperfileip=ipfs.innova-foundation.com:5001\n", configFile);
+    fputs ("\n", configFile);
     fclose(configFile);
     ReadConfigFile(mapArgs, mapMultiArgs);
 }
