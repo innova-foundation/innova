@@ -7,6 +7,7 @@ on:
     branches:
       - master
       - dev
+      - idag
   pull_request:
     branches:
       - master
@@ -507,20 +508,12 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: docker/setup-qemu-action@v3
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
         with:
           platforms: arm
 
-      - name: Build in ARM container
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: false
-          file: /dev/stdin
-          platforms: linux/arm/v7
-          tags: innova-armhf:build
-        # Use inline Dockerfile
-      - name: Build daemon via Docker
+      - name: Build daemon in ARM container
         run: |
           docker run --rm --platform linux/arm/v7 \
             -v ${{ github.workspace }}:/build -w /build \
