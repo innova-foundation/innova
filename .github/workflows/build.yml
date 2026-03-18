@@ -25,7 +25,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Determine version
         id: version
         run: |
@@ -44,7 +44,7 @@ jobs:
     runs-on: ubuntu-22.04
     needs: get-version
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -81,7 +81,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: innova-ubuntu2204-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64.tar.gz
@@ -93,7 +93,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: get-version
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -130,7 +130,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: innova-ubuntu2404-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64.tar.gz
@@ -144,7 +144,7 @@ jobs:
     container:
       image: debian:12
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -182,7 +182,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-debian12-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-debian12-x86_64/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: innova-debian12-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-debian12-x86_64.tar.gz
@@ -194,7 +194,7 @@ jobs:
     runs-on: ubuntu-22.04
     needs: get-version
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -222,7 +222,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-linux-aarch64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-linux-aarch64/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: innova-linux-aarch64
           path: innova-${{ needs.get-version.outputs.version }}-linux-aarch64.tar.gz
@@ -234,7 +234,7 @@ jobs:
     runs-on: macos-14
     needs: get-version
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -269,7 +269,7 @@ jobs:
           hdiutil create -volname "Innova" -srcfolder dmg_contents \
             -ov -format UDZO innova-${{ needs.get-version.outputs.version }}-macOS-arm64.dmg
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: innova-macOS-arm64
           path: innova-${{ needs.get-version.outputs.version }}-macOS-arm64.dmg
@@ -284,7 +284,7 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -394,7 +394,7 @@ jobs:
           cd ..
           "/c/Program Files/7-Zip/7z.exe" a innova-${{ needs.get-version.outputs.version }}-win64.zip "$PKGDIR"/*
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: innova-win64
           path: innova-${{ needs.get-version.outputs.version }}-win64.zip
@@ -408,7 +408,7 @@ jobs:
     container:
       image: debian:11
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -444,7 +444,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-debian11-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-debian11-x86_64/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: innova-debian11-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-debian11-x86_64.tar.gz
@@ -458,7 +458,7 @@ jobs:
     container:
       image: fedora:41
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -492,7 +492,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: innova-fedora41-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64.tar.gz
@@ -506,24 +506,27 @@ jobs:
     container:
       image: archlinux:latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Install dependencies
         run: |
-          pacman -Syu --noconfirm base-devel boost openssl libevent db \
+          pacman -Syu --noconfirm base-devel boost boost-libs openssl libevent db \
             miniupnpc qrencode curl gmp qt5-base qt5-tools \
             protobuf git
 
       - name: Build daemon
         run: |
           cd src
+          # Boost 1.69+ made boost_system header-only; remove from link flags
+          sed -i 's/-lboost_system//' makefile.unix
           make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
 
       - name: Build Qt wallet
         run: |
           sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
+          sed -i 's/-lboost_system//' innova-qt.pro
           qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
           make -j$(nproc)
 
@@ -538,7 +541,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: innova-archlinux-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64.tar.gz
@@ -552,26 +555,29 @@ jobs:
     container:
       image: opensuse/tumbleweed:latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Install dependencies
         run: |
-          zypper -n install gcc-c++ make libtool automake pkg-config \
-            libopenssl-devel libevent-devel boost-devel libdb-4_8-devel \
-            libminiupnpc-devel qrencode-devel libcurl-devel gmp-devel \
+          zypper -n install gcc-c++ make libtool automake pkgconf-pkg-config \
+            libopenssl-devel libevent-devel libboost_system-devel libboost_filesystem-devel \
+            libboost_program_options-devel libboost_thread-devel libboost_chrono-devel \
+            libdb-4_8-devel libminiupnpc-devel qrencode-devel libcurl-devel gmp-devel \
             libqt5-qtbase-devel libqt5-qttools-devel \
-            protobuf-devel git
+            protobuf-devel git gawk which findutils
 
       - name: Build daemon
         run: |
           cd src
+          sed -i 's/-lboost_system//' makefile.unix
           make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
 
       - name: Build Qt wallet
         run: |
           sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
+          sed -i 's/-lboost_system//' innova-qt.pro
           qmake-qt5 USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro || qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
           make -j$(nproc)
 
@@ -586,7 +592,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-opensuse-tw-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-opensuse-tw-x86_64/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: innova-opensuse-tw-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-opensuse-tw-x86_64.tar.gz
@@ -600,7 +606,7 @@ jobs:
     container:
       image: fedora:40
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -634,7 +640,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: innova-fedora40-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64.tar.gz
@@ -646,7 +652,7 @@ jobs:
     runs-on: ubuntu-22.04
     needs: get-version
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -686,7 +692,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: innova-linux-aarch64-qt
           path: innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt.tar.gz
@@ -698,7 +704,7 @@ jobs:
     runs-on: ubuntu-22.04
     needs: get-version
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -730,7 +736,7 @@ jobs:
           tar -czf innova-${{ needs.get-version.outputs.version }}-linux-armhf.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-linux-armhf/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: innova-linux-armhf
           path: innova-${{ needs.get-version.outputs.version }}-linux-armhf.tar.gz
@@ -759,10 +765,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           path: artifacts
 
