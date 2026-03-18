@@ -498,6 +498,200 @@ jobs:
           path: innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64.tar.gz
 
   # ─────────────────────────────────────────────────────────
+  # Arch Linux x86_64 (daemon + Qt) via Docker
+  # ─────────────────────────────────────────────────────────
+  build-archlinux:
+    runs-on: ubuntu-22.04
+    needs: get-version
+    container:
+      image: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm base-devel boost openssl libevent db \
+            miniupnpc qrencode curl gmp qt5-base qt5-tools \
+            protobuf git
+
+      - name: Build daemon
+        run: |
+          cd src
+          make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
+
+      - name: Build Qt wallet
+        run: |
+          sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
+          qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+          make -j$(nproc)
+
+      - name: Package
+        run: |
+          mkdir -p innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64
+          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64/
+          strip innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64/*
+          cd innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+          tar -czf innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64.tar.gz \
+            innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: innova-archlinux-x86_64
+          path: innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64.tar.gz
+
+  # ─────────────────────────────────────────────────────────
+  # openSUSE Tumbleweed x86_64 (daemon + Qt) via Docker
+  # ─────────────────────────────────────────────────────────
+  build-opensuse-tw:
+    runs-on: ubuntu-22.04
+    needs: get-version
+    container:
+      image: opensuse/tumbleweed:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          zypper -n install gcc-c++ make libtool automake pkg-config \
+            libopenssl-devel libevent-devel boost-devel libdb-4_8-devel \
+            libminiupnpc-devel qrencode-devel libcurl-devel gmp-devel \
+            libqt5-qtbase-devel libqt5-qttools-devel \
+            protobuf-devel git
+
+      - name: Build daemon
+        run: |
+          cd src
+          make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
+
+      - name: Build Qt wallet
+        run: |
+          sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
+          qmake-qt5 USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro || qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+          make -j$(nproc)
+
+      - name: Package
+        run: |
+          mkdir -p innova-${{ needs.get-version.outputs.version }}-opensuse-tw-x86_64
+          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-opensuse-tw-x86_64/
+          strip innova-${{ needs.get-version.outputs.version }}-opensuse-tw-x86_64/*
+          cd innova-${{ needs.get-version.outputs.version }}-opensuse-tw-x86_64
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+          tar -czf innova-${{ needs.get-version.outputs.version }}-opensuse-tw-x86_64.tar.gz \
+            innova-${{ needs.get-version.outputs.version }}-opensuse-tw-x86_64/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: innova-opensuse-tw-x86_64
+          path: innova-${{ needs.get-version.outputs.version }}-opensuse-tw-x86_64.tar.gz
+
+  # ─────────────────────────────────────────────────────────
+  # Fedora 40 x86_64 (daemon + Qt) via Docker
+  # ─────────────────────────────────────────────────────────
+  build-fedora-40:
+    runs-on: ubuntu-22.04
+    needs: get-version
+    container:
+      image: fedora:40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          dnf install -y gcc-c++ make libtool automake pkgconfig \
+            openssl-devel libevent-devel boost-devel libdb-cxx-devel \
+            miniupnpc-devel qrencode-devel libcurl-devel gmp-devel \
+            qt5-qtbase-devel qt5-qttools-devel \
+            protobuf-devel protobuf-compiler git
+
+      - name: Build daemon
+        run: |
+          cd src
+          make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
+
+      - name: Build Qt wallet
+        run: |
+          sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
+          qmake-qt5 USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+          make -j$(nproc)
+
+      - name: Package
+        run: |
+          mkdir -p innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64
+          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64/
+          strip innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64/*
+          cd innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+          tar -czf innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64.tar.gz \
+            innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: innova-fedora40-x86_64
+          path: innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64.tar.gz
+
+  # ─────────────────────────────────────────────────────────
+  # Linux aarch64 Qt (daemon + Qt) via QEMU emulation
+  # ─────────────────────────────────────────────────────────
+  build-linux-arm64-qt:
+    runs-on: ubuntu-22.04
+    needs: get-version
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build daemon + Qt in ARM64 container
+        run: |
+          docker run --rm --platform linux/arm64 \
+            -v ${{ github.workspace }}:/build -w /build \
+            debian:12 bash -c "
+              apt-get update && \
+              apt-get install -y build-essential libtool automake pkg-config \
+                libssl-dev libevent-dev libboost-all-dev libdb++-dev \
+                libminiupnpc-dev libcurl4-openssl-dev libgmp-dev \
+                libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools \
+                libprotobuf-dev protobuf-compiler git && \
+              cd src && \
+              make USE_NATIVETOR=- USE_IPFS=- -f makefile.unix -j\$(nproc) && \
+              cd .. && \
+              sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx\$\$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx\$\$BDB_LIB_SUFFIX/' innova-qt.pro && \
+              strip --remove-section=.note.ABI-tag /usr/lib/aarch64-linux-gnu/libQt5Core.so.5 || true && \
+              qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- USE_IPFS=- innova-qt.pro && \
+              make -j\$(nproc)
+            "
+
+      - name: Package
+        run: |
+          mkdir -p innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt
+          cp src/innovad innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt/ 2>/dev/null || true
+          cp Innova innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt/ 2>/dev/null || true
+          cd innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt
+          sha256sum * > SHA256SUMS.txt 2>/dev/null || true
+          cd ..
+          tar -czf innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt.tar.gz \
+            innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: innova-linux-aarch64-qt
+          path: innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt.tar.gz
+
+  # ─────────────────────────────────────────────────────────
   # Raspberry Pi (armhf/armv7) — daemon only via QEMU emulation
   # ─────────────────────────────────────────────────────────
   build-linux-armhf:
@@ -553,8 +747,12 @@ jobs:
       - build-ubuntu-2404
       - build-debian-11
       - build-debian-12
+      - build-fedora-40
       - build-fedora-41
+      - build-archlinux
+      - build-opensuse-tw
       - build-linux-arm64
+      - build-linux-arm64-qt
       - build-linux-armhf
       - build-macos-arm64
       - build-windows
