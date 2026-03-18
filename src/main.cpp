@@ -7339,7 +7339,9 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
             CBlockIndex* pindexPrev = mapBlockIndex[header.hashPrevBlock];
 
-            if (!header.IsProofOfStake())
+            // PoS blocks have nNonce==0; can't use IsProofOfStake() here because
+            // vtx is empty in headers-only messages (no transactions to check)
+            if (header.nNonce != 0)
             {
                 if (!CheckProofOfWork(hash, header.nBits))
                 {
