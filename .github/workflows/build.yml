@@ -617,7 +617,7 @@ jobs:
               apt-get update && \
               apt-get install -y build-essential libtool automake pkg-config \
                 libssl-dev libevent-dev libboost-all-dev libdb++-dev \
-                libminiupnpc-dev libcurl4-openssl-dev libgmp-dev \
+                libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
                 libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools \
                 libprotobuf-dev protobuf-compiler git && \
               cd src && \
