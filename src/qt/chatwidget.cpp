@@ -892,13 +892,14 @@ qint64 ChatWidget::checkIPFSGateway()
 
         if (!version["Version"].dump().empty())
         {
-            // Own gateway: 500MB limit. Infura fallback: 50MB.
-            if (fLocal && ipfsip.find("innova-foundation") != std::string::npos)
-                return Q_INT64_C(10995116277760); // 10TB for Innova Foundation gateway
-            else if (fLocal)
-                return Q_INT64_C(10995116277760); // 10TB for user's own IPFS node
+            // Read max file size from conf (nyxmaxfilesize), fallback to 100MB for public gateways
+            if (fLocal)
+            {
+                std::string sMax = GetArg("-nyxmaxfilesize", "10995116277760");
+                return atoll(sMax.c_str());
+            }
             else
-                return 100 * 1024 * 1024;  // 100MB free tier (Infura fallback)
+                return 100 * 1024 * 1024;  // 100MB public gateway fallback
         }
     }
     catch (...) {}

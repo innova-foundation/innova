@@ -761,7 +761,17 @@ bool AppInit2()
     fCNLock = GetBoolArg("-cnconflock");
     fNativeTor = GetBoolArg("-nativetor");
 
-    // Default IPFS gateway (overridable in innova.conf)
+    // Nyx Messaging defaults (overridable in innova.conf)
+    SoftSetBoolArg("-smsg", true);
+    SoftSetBoolArg("-nyx", true);
+    SoftSetBoolArg("-nyxanon", true);
+    SoftSetBoolArg("-nyxgroups", true);
+    SoftSetBoolArg("-nyxfiles", true);
+    SoftSetArg("-nyxchunksize", "1048576");
+    SoftSetArg("-nyxmaxfilesize", "10995116277760");
+    SoftSetArg("-nyxconcurrency", "8");
+
+    // Default IPFS gateway
     SoftSetBoolArg("-hyperfilelocal", true);
     SoftSetArg("-hyperfileip", "ipfs.innova-foundation.com:5001");
     fHyperfileLocal = GetBoolArg("-hyperfilelocal");
