@@ -83,12 +83,14 @@ inline unsigned int GetMaxBlockSize(int nHeight)
     return MAX_BLOCK_SIZE_LEGACY;
 }
 
-// For backward compat — MAX_BLOCK_SIZE used throughout codebase
-static const unsigned int MAX_BLOCK_SIZE = ADAPTIVE_BLOCK_CEILING;
+// Pre-fork constants — used for all consensus checks before FORK_HEIGHT_DAG
+static const unsigned int MAX_BLOCK_SIZE = MAX_BLOCK_SIZE_LEGACY;       // 1MB until DAG fork
 static const unsigned int MAX_BLOCK_SIZE_GEN = MAX_BLOCK_SIZE / 2;
-/** The maximum size for transactions we're willing to relay/mine **/
 static const unsigned int MAX_STANDARD_TX_SIZE = MAX_BLOCK_SIZE_GEN / 5;
 static const unsigned int MAX_BLOCK_SIGOPS = MAX_BLOCK_SIZE / 50;
+
+// Post-fork limits (used via GetMaxBlockSize(nHeight) after DAG activation)
+static const unsigned int MAX_BLOCK_SIGOPS_ADAPTIVE = ADAPTIVE_BLOCK_CEILING / 50;
 /** The maximum number of sigops we're willing to relay/mine in a single tx */
 static const unsigned int MAX_TX_SIGOPS = MAX_BLOCK_SIGOPS/5;
 //static const unsigned int MAX_ORPHAN_TRANSACTIONS = MAX_BLOCK_SIZE/100; deprecated

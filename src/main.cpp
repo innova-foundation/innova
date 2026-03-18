@@ -5402,8 +5402,8 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
     // These are checks that are independent of context
     // that can be verified before saving an orphan block.
 
-    // Size limits
-    if (vtx.empty() || vtx.size() > MAX_BLOCK_SIZE || ::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION) > MAX_BLOCK_SIZE)
+    // Size limits (ceiling as sanity check; height-aware limit enforced in AcceptBlock)
+    if (vtx.empty() || vtx.size() > ADAPTIVE_BLOCK_CEILING || ::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION) > ADAPTIVE_BLOCK_CEILING)
         return DoS(100, error("CheckBlock() : size limits failed"));
 
     // Check proof of work matches claimed amount
@@ -5488,7 +5488,7 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
     {
         nSigOps += tx.GetLegacySigOpCount();
     }
-    if (nSigOps > MAX_BLOCK_SIGOPS)
+    if (nSigOps > MAX_BLOCK_SIGOPS_ADAPTIVE)
         return DoS(100, error("CheckBlock() : out-of-bounds SigOpCount"));
 
     // Check merkle root
@@ -5518,14 +5518,24 @@ bool CBlock::AcceptBlock()
     CBlockIndex* pindexPrev = (*mi).second;
     int nHeight = pindexPrev->nHeight+1;
 
-    // Adaptive block size check (post-DAG)
-    if (nHeight >= FORK_HEIGHT_DAG)
+    // Block size enforcement (height-aware)
     {
         unsigned int nBlockBytes = ::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION);
-        unsigned int nAdaptiveLimit = GetAdaptiveBlockSizeLimit(pindexPrev);
-        if (nBlockBytes > nAdaptiveLimit)
-            return DoS(50, error("AcceptBlock() : block size %u exceeds adaptive limit %u at height %d",
-                                  nBlockBytes, nAdaptiveLimit, nHeight));
+        if (nHeight < FORK_HEIGHT_DAG)
+        {
+            // Pre-fork: strict 1MB limit (matches old wallet consensus)
+            if (nBlockBytes > MAX_BLOCK_SIZE_LEGACY)
+                return DoS(100, error("AcceptBlock() : block size %u exceeds legacy limit %u at height %d",
+                                      nBlockBytes, MAX_BLOCK_SIZE_LEGACY, nHeight));
+        }
+        else
+        {
+            // Post-fork: adaptive limit
+            unsigned int nAdaptiveLimit = GetAdaptiveBlockSizeLimit(pindexPrev);
+            if (nBlockBytes > nAdaptiveLimit)
+                return DoS(50, error("AcceptBlock() : block size %u exceeds adaptive limit %u at height %d",
+                                      nBlockBytes, nAdaptiveLimit, nHeight));
+        }
     }
 
     // Check proof-of-work or proof-of-stake
