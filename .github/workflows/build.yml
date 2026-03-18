@@ -562,8 +562,7 @@ jobs:
       - name: Install dependencies
         run: |
           zypper -n install gcc-c++ make libtool automake pkgconf-pkg-config \
-            libopenssl-devel libevent-devel libboost_system-devel libboost_filesystem-devel \
-            libboost_program_options-devel libboost_thread-devel libboost_chrono-devel \
+            libopenssl-devel libevent-devel boost-devel \
             libdb-4_8-devel libminiupnpc-devel qrencode-devel libcurl-devel gmp-devel \
             libqt5-qtbase-devel libqt5-qttools-devel \
             protobuf-devel git gawk which findutils
