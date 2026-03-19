@@ -264,9 +264,6 @@ int main(int argc, char *argv[])
                     splashref->finish(&window);
                 }
 
-                //make sure user has agreed to TOU
-                window.checkTOU();
-
                 ClientModel clientModel(&optionsModel);
                 WalletModel walletModel(pwalletMain, &optionsModel);
                 MessageModel messageModel(pwalletMain, &walletModel);
@@ -275,13 +272,17 @@ int main(int argc, char *argv[])
                 window.setWalletModel(&walletModel);
                 window.setMessageModel(&messageModel);
 
-                // Init complete — allow the window to appear on screen
                 window.setAttribute(Qt::WA_DontShowOnScreen, false);
                 window.setEnabled(true);
                 if (fStartMin)
                     window.showMinimized();
                 else
                     window.show();
+                window.raise();
+                window.activateWindow();
+                app.processEvents();
+
+                window.checkTOU();
 
                 // Place this here as guiref has to be defined if we don't want to lose URIs
                 ipcInit(argc, argv);
