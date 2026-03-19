@@ -4303,8 +4303,11 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
         CScript burnPayee;
         CBitcoinAddress burnDestination;
-        burnDestination.SetString("INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw");
+        burnDestination.SetString(fTestNet ? "8TestXXXXXXXXXXXXXXXXXXXXXXXXbCvpq" : "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw");
         burnPayee = GetScriptForDestination(burnDestination.Get());
+
+        // Network-aware CN enforcement height
+        int nCNEnforcementHeight = fTestNet ? MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET : MN_ENFORCEMENT_ACTIVE_HEIGHT;
 
         if(IsProofOfStake() && pindexBest != NULL){
             // (reward goes entirely to shielded pool, no MN payment)
@@ -4372,10 +4375,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                                         if (!fIsInitialDownload) {
                                             if (!CheckPoSCNPayment(pindex, vtx[1].vout[i].nValue, mn)) // CheckPoSCNPayment()
                                             {
-                                                if (pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) {
+                                                if (pindex->nHeight >= nCNEnforcementHeight) {
                                                     printf("CheckBlock-POS() : Out-of-cycle CollateralNode payment detected, rejecting block. rank:%d value:%s avg:%s payRate:%s payCount:%d\n",mn.nRank,FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageCNIncome).c_str(),FormatMoney(mn.payRate).c_str(), mn.payCount);
                                                 } else {
-                                                    printf("CheckBlock-POS(): This collateralnode payment is too aggressive and will be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
+                                                    printf("CheckBlock-POS(): This collateralnode payment is too aggressive and will be accepted after block %d\n", nCNEnforcementHeight);
                                                 }
                                                 //break;
                                             } else {
@@ -4411,7 +4414,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
 
                     if (!foundPayee) {
-                        if (pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) {
+                        if (pindex->nHeight >= nCNEnforcementHeight) {
                                     LOCK(cs_vNodes);
                                     for (CNode* pnode : vNodes)
                                     {
@@ -4423,14 +4426,14 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                                     }
                             return error("CheckBlock-POS() : Did not find this payee in the collateralnode list. Requesting list update and rejecting block.");
                         } else {
-                            if (fDebug) printf("WARNING: Did not find this payee in the collateralnode list, this block will not be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
+                            if (fDebug) printf("WARNING: Did not find this payee in the collateralnode list, this block will not be accepted after block %d\n", nCNEnforcementHeight);
                             foundPayee = true;
                         }
                     } else if (paymentOK) {
-                        if (pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) {
+                        if (pindex->nHeight >= nCNEnforcementHeight) {
                             if (fDebug) printf("CheckBlock-POS() : This payment has been determined as legitimate, and will be allowed.\n");
                         } else {
-                            if (fDebug) printf("CheckBlock-POS() : This payment has been determined as legitimate, and will be allowed after block %d.\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
+                            if (fDebug) printf("CheckBlock-POS() : This payment has been determined as legitimate, and will be allowed after block %d.\n", nCNEnforcementHeight);
                         }
                     }
 
@@ -4497,11 +4500,11 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                                     if (!fIsInitialDownload) {
                                         if (!CheckCNPayment(pindex, vtx[0].vout[i].nValue, mn)) // if MN is being paid and it's bottom 50% ranked, don't let it be paid.
                                         {
-                                            if (pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET)
+                                            if (pindex->nHeight >= nCNEnforcementHeight)
                                             {
                                                 printf("CheckBlock-POW() : Collateralnode overpayment detected, rejecting block. rank:%d value:%s avg:%s payRate:%s payCount:%d\n",mn.nRank,FormatMoney(mn.payValue).c_str(),FormatMoney(nAverageCNIncome).c_str(),FormatMoney(mn.payRate).c_str(), mn.payCount);
                                             } else {
-                                                printf("WARNING: This collateralnode payment is too aggressive and will not be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
+                                                printf("WARNING: This collateralnode payment is too aggressive and will not be accepted after block %d\n", nCNEnforcementHeight);
                                             }
                                             //break;
                                         } else {
@@ -4538,7 +4541,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                     }
 
                     if (!foundPayee) {
-                        if (pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) {
+                        if (pindex->nHeight >= nCNEnforcementHeight) {
                                 LOCK(cs_vNodes);
                                 for (CNode* pnode : vNodes)
                                 {
@@ -4550,14 +4553,14 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                                 }
                                 return error("CheckBlock-POW() : Did not find this payee in the collateralnode list, rejecting block.");
                         } else {
-                            if (fDebug) printf("WARNING: Did not find this payee in  the collateralnode list, this block will not be accepted after block %d\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
+                            if (fDebug) printf("WARNING: Did not find this payee in  the collateralnode list, this block will not be accepted after block %d\n", nCNEnforcementHeight);
                             foundPayee = true;
                         }
                     } else if (paymentOK) {
-                        if (pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT || pindex->nHeight >= MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET) {
+                        if (pindex->nHeight >= nCNEnforcementHeight) {
                             if (fDebug) printf("CheckBlock-POW() : This payment has been determined as legitimate, and will be allowed.\n");
                         } else {
-                            if (fDebug) printf("CheckBlock-POW() : This payment has been determined as legitimate, and will be allowed after block %d.\n", MN_ENFORCEMENT_ACTIVE_HEIGHT);
+                            if (fDebug) printf("CheckBlock-POW() : This payment has been determined as legitimate, and will be allowed after block %d.\n", nCNEnforcementHeight);
                         }
                     }
 
