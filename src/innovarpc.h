@@ -359,6 +359,9 @@ extern json_spirit::Value smsginbox(const json_spirit::Array& params, bool fHelp
 extern json_spirit::Value smsgoutbox(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value smsgbuckets(const json_spirit::Array& params, bool fHelp);
 
+// Nyx Messaging Protocol (rpcnyx.cpp)
+extern json_spirit::Value nyx(const json_spirit::Array& params, bool fHelp);
+
 extern json_spirit::Value z_getnewaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_listaddresses(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_getbalance(const json_spirit::Array& params, bool fHelp);
