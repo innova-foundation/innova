@@ -7237,7 +7237,14 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                     pfrom->PushInventory(CInv(MSG_BLOCK, hashBestChain));
                 break;
             }
-            pfrom->PushInventory(CInv(MSG_BLOCK, pindex->GetBlockHash()));
+            // Bypass setInventoryKnown for getblocks responses so that
+            // re-requested blocks are always sent. PushInventory deduplicates
+            // against previously-sent inv items which prevents sync recovery.
+            {
+                CInv inv(MSG_BLOCK, pindex->GetBlockHash());
+                LOCK(pfrom->cs_inventory);
+                pfrom->vInventoryToSend.push_back(inv);
+            }
             if (--nLimit <= 0)
             {
                 // When this block is requested, we'll send an inv that'll make them
@@ -7525,6 +7532,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         bool fAccepted = ProcessBlock(pfrom, &block);
         if (fAccepted)
         {
+            pfrom->nLastBlockRecv = GetTime();
             LOCK(cs_mapAlreadyAskedFor);
             mapAlreadyAskedFor.erase(inv);
         }
@@ -8146,6 +8154,21 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
             pto->PushGetBlocks(pindexBest, uint256(0));
         }
 
+        // Sync stall recovery: if this peer reports a higher chain and we
+        // haven't received a block from them in 30 seconds, re-request.
+        // Also triggers if we never received a block but peer connected 30s+ ago.
+        {
+            int64_t nTimeSinceBlock = GetTime() - (pto->nLastBlockRecv > 0 ? pto->nLastBlockRecv : pto->nTimeConnected);
+            if (!fImporting && !fReindex &&
+                pto->nChainHeight > nBestHeight + 1 &&
+                nTimeSinceBlock > 30)
+            {
+                pto->nLastBlockRecv = GetTime();
+                pto->PushGetBlocks(pindexBest, uint256(0));
+                printf("Sync stall recovery: re-requesting blocks from %s (peer height %d, our height %d, stall %ds)\n",
+                       pto->addrName.c_str(), pto->nChainHeight, nBestHeight, (int)nTimeSinceBlock);
+            }
+        }
 
         // Resend wallet transactions that haven't gotten in a block yet
         // Except during reindex, importing and IBD, when old wallet

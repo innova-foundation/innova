@@ -2420,8 +2420,15 @@ void ThreadMessageHandler2(void* parg)
             vNodesCopy = vNodes;
 			BOOST_FOREACH(CNode* pnode, vNodesCopy) {
                 pnode->AddRef();
-                if (pnode == pnodeSyncCopy && pnode->nLastRecv > GetTime() - 5) // only accept a node who has replied in last 5 secs, if they stop then swap nodes
-                    fHaveSyncNode = true;
+                if (pnode == pnodeSyncCopy) {
+                    bool fNodeAlive = pnode->nLastRecv > GetTime() - 5;
+                    // Also consider stalled if peer reports higher chain
+                    // but hasn't sent us a block in 30 seconds
+                    bool fBlockStalled = pnode->nChainHeight > nBestHeight + 1 &&
+                        (GetTime() - (pnode->nLastBlockRecv > 0 ? pnode->nLastBlockRecv : pnode->nTimeConnected) > 30);
+                    if (fNodeAlive && !fBlockStalled)
+                        fHaveSyncNode = true;
+                }
             }
         }
 

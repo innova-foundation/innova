@@ -418,6 +418,7 @@ public:
     uint256 hashLastGetBlocksEnd;
     int nChainHeight;
 	bool fStartSync;
+    int64_t nLastBlockRecv;
 
     int nBlocksReceivedInBatch;
     int nExpectedBatchSize;
@@ -487,6 +488,7 @@ public:
         hashLastGetBlocksEnd = 0;
         nChainHeight = -1;
 		fStartSync = false;
+        nLastBlockRecv = 0;
         nBlocksReceivedInBatch = 0;
         nExpectedBatchSize = 0;
         fPrefetchSent = false;

@@ -227,15 +227,16 @@ Value getnetworkinfo(const Array& params, bool fHelp)
                 "}\n"
         );
 
-    LOCK(cs_main);
-
     Object obj;
     obj.push_back(Pair("version",        (int)CLIENT_VERSION));
     obj.push_back(Pair("subversion",     FormatSubVersion(CLIENT_NAME, CLIENT_VERSION, std::vector<string>())));
     obj.push_back(Pair("protocolversion",(int)PROTOCOL_VERSION));
     obj.push_back(Pair("localservices",  strprintf("%016", PRIx64, nLocalServices)));
     obj.push_back(Pair("timeoffset",     GetTimeOffset()));
-    obj.push_back(Pair("connections",    (int)vNodes.size()));
+    {
+        LOCK(cs_vNodes);
+        obj.push_back(Pair("connections",    (int)vNodes.size()));
+    }
     //obj.push_back(Pair("relayfee",       ValueFromAmount(minRelayTxFee.GetFeePerK())));
     obj.push_back(Pair("networkconnections",GetNetworksInfo()));
     Array localAddresses;

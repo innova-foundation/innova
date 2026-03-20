@@ -285,16 +285,16 @@ static const CRPCCommand vRPCCommands[] =
   //  ------------------------  -----------------------  ------  --------
     { "help",                   &help,                   true,   true },
     { "stop",                   &stop,                   true,   true },
-    { "getbestblockhash",       &getbestblockhash,       true,   false },
+    { "getbestblockhash",       &getbestblockhash,       true,   true },
     { "getblockchaininfo",      &getblockchaininfo,      true,   false },
-    { "getblockcount",          &getblockcount,          true,   false },
-    { "getconnectioncount",     &getconnectioncount,     true,   false },
-    { "getpeerinfo",            &getpeerinfo,            true,   false },
+    { "getblockcount",          &getblockcount,          true,   true },
+    { "getconnectioncount",     &getconnectioncount,     true,   true },
+    { "getpeerinfo",            &getpeerinfo,            true,   true },
     { "getaddednodeinfo",       &getaddednodeinfo,       true,   true },
     { "ping",                   &ping,                   true,   true },
-    { "getnettotals",           &getnettotals,           true,   false },
-    { "disconnectnode",         &disconnectnode,         true,   false },
-    { "getnetworkinfo",         &getnetworkinfo,         true,   false },
+    { "getnettotals",           &getnettotals,           true,   true },
+    { "disconnectnode",         &disconnectnode,         true,   true },
+    { "getnetworkinfo",         &getnetworkinfo,         true,   true },
     { "gethashespersec",        &gethashespersec,        true,   false },
     { "addnode",                &addnode,                true,   true },
     { "setban",                 &setban,                 true,   true },
@@ -438,6 +438,9 @@ static const CRPCCommand vRPCCommands[] =
     { "smsginbox",              &smsginbox,              false,  false},
     { "smsgoutbox",             &smsgoutbox,             false,  false},
     { "smsgbuckets",            &smsgbuckets,            false,  false},
+
+    /* Nyx Messaging Protocol */
+    { "nyx",                    &nyx,                    false,  false},
 
     { "proofofdata",          &proofofdata,              false,  true  },
 
