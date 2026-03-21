@@ -1586,9 +1586,9 @@ void ThreadSocketHandler2(void* parg)
                     printf("socket no message in first 60 seconds, %d %d\n", pnode->nLastRecv != 0, pnode->nLastSend != 0);
                     pnode->fDisconnect = true;
                 }
-                else if (pnode->nVersion == 0 && nTime - pnode->nTimeConnected > 30)
+                else if (pnode->nVersion == 0 && nTime - pnode->nTimeConnected > 120)
                 {
-                    printf("socket handshake timeout: peer %s did not send version within 30s\n",
+                    printf("socket handshake timeout: peer %s did not send version within 120s\n",
                            pnode->addr.ToString().c_str());
                     pnode->fDisconnect = true;
                 }
@@ -1606,6 +1606,21 @@ void ThreadSocketHandler2(void* parg)
                 {
                     printf("ping timeout: %fs\n", 0.000001 * (GetTimeMicros() - pnode->nPingUsecStart));
                     pnode->fDisconnect = true;
+                }
+
+                if (pnode->nVersion != 0 && !pnode->fDisconnect)
+                {
+                    int64_t nLastBlock = pnode->nLastBlockRecv > 0 ? pnode->nLastBlockRecv : pnode->nTimeConnected;
+                    bool fPeerAhead = pnode->nChainHeight > nBestHeight + 1;
+                    bool fBlockStall = (nTime - nLastBlock > 180);
+
+                    if (fPeerAhead && fBlockStall)
+                    {
+                        printf("sync stall: disconnecting %s (peer=%d our=%d last_block=%ds)\n",
+                               pnode->addr.ToString().c_str(), pnode->nChainHeight,
+                               nBestHeight, (int)(nTime - nLastBlock));
+                        pnode->fDisconnect = true;
+                    }
                 }
             }
         }

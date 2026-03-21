@@ -509,8 +509,7 @@ public:
         pfilter = NULL;
         nLastDseg = GetTime();
 
-        // Be shy and don't send version until we hear
-        if (hSocket != INVALID_SOCKET && !fInbound)
+        if (hSocket != INVALID_SOCKET)
             PushVersion();
     }
 

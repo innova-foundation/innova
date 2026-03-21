@@ -110,14 +110,6 @@ map<NodeId, int> mapOrphanCountByNode;
 static const int MAX_ORPHAN_BLOCKS_PER_PEER = 750;
 set<pair<COutPoint, unsigned int> > setStakeSeenOrphan;
 
-// per-peer rate limiting for PoS block submissions
-map<NodeId, vector<int64_t> > mapPoSBlockTimesPerPeer;
-static const int MAX_POS_BLOCKS_PER_PEER = 10;      // Max PoS blocks per peer per window
-static const int64_t POS_RATE_LIMIT_WINDOW = 60;    // Window size in seconds
-
-map<COutPoint, vector<int64_t> > mapStakeAttemptsPerUTXO;
-static const int MAX_STAKE_ATTEMPTS_PER_UTXO = 3;    // Max stakes per UTXO per window
-static const int64_t STAKE_GRINDING_WINDOW = 300;    // 5 minute window
 
 map<uint256, CTransaction> mapOrphanTransactions;
 map<uint256, set<uint256> > mapOrphanTransactionsByPrev;
@@ -5723,6 +5715,8 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
     int64_t nStartTime = GetTimeMillis();
     // Check for duplicate
     uint256 hash = pblock->GetHash();
+    if (pfrom != NULL && pindexBest != NULL && pindexBest->GetBlockTime() < GetTime() - 300 && fDebug)
+        printf("sync: ProcessBlock %s from %s (height %d)\n", hash.ToString().substr(0,20).c_str(), pfrom->addrName.c_str(), nBestHeight);
     if (mapBlockIndex.count(hash))
         return error("ProcessBlock() : already have block %d %s", mapBlockIndex[hash]->nHeight, hash.ToString().substr(0,20).c_str());
     if (mapOrphanBlocks.count(hash))
@@ -5734,64 +5728,6 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
     if (pblock->IsProofOfStake() && setStakeSeen.count(pblock->GetProofOfStake()) && !mapOrphanBlocksByPrev.count(hash) && !Checkpoints::WantedByPendingSyncCheckpoint(hash))
         return error("ProcessBlock() : duplicate proof-of-stake (%s, %d) for block %s", pblock->GetProofOfStake().first.ToString().c_str(), pblock->GetProofOfStake().second, hash.ToString().c_str());
 
-    // per-peer PoS rate limiting
-    if (pblock->IsProofOfStake() && pfrom != NULL && !IsInitialBlockDownload())
-    {
-        int64_t nNow = GetTime();
-        NodeId nPeerId = pfrom->GetId();
-
-        vector<int64_t>& vTimes = mapPoSBlockTimesPerPeer[nPeerId];
-        vTimes.erase(std::remove_if(vTimes.begin(), vTimes.end(),
-            [nNow](int64_t t) { return (nNow - t) > POS_RATE_LIMIT_WINDOW; }), vTimes.end());
-        if ((int)vTimes.size() >= MAX_POS_BLOCKS_PER_PEER)
-        {
-            pfrom->Misbehaving(10);
-            return error("ProcessBlock() : peer %d exceeded PoS block rate limit (%d blocks in %d seconds)",
-                         nPeerId, MAX_POS_BLOCKS_PER_PEER, (int)POS_RATE_LIMIT_WINDOW);
-        }
-
-        vTimes.push_back(nNow);
-    }
-
-    // per-UTXO rate limiting to detect stake grinding
-    if (pblock->IsProofOfStake() && !IsInitialBlockDownload())
-    {
-        std::pair<COutPoint, unsigned int> proofOfStake = pblock->GetProofOfStake();
-        COutPoint stakeUtxo = proofOfStake.first;
-
-        if (!stakeUtxo.IsNull())
-        {
-            int64_t nNow = GetTime();
-
-            vector<int64_t>& vUtxoTimes = mapStakeAttemptsPerUTXO[stakeUtxo];
-            vUtxoTimes.erase(std::remove_if(vUtxoTimes.begin(), vUtxoTimes.end(),
-                [nNow](int64_t t) { return (nNow - t) > STAKE_GRINDING_WINDOW; }), vUtxoTimes.end());
-
-            if ((int)vUtxoTimes.size() >= MAX_STAKE_ATTEMPTS_PER_UTXO)
-            {
-                if (pfrom != NULL)
-                    pfrom->Misbehaving(25);  // Higher penalty for grinding attempts
-                return error("ProcessBlock() : UTXO %s stake grinding detected (%d attempts in %d seconds)",
-                             stakeUtxo.ToString().c_str(), MAX_STAKE_ATTEMPTS_PER_UTXO, (int)STAKE_GRINDING_WINDOW);
-            }
-
-            vUtxoTimes.push_back(nNow);
-
-            // Periodic cleanup
-            static int64_t nLastCleanup = 0;
-            if (nNow - nLastCleanup > STAKE_GRINDING_WINDOW)
-            {
-                for (auto it = mapStakeAttemptsPerUTXO.begin(); it != mapStakeAttemptsPerUTXO.end(); )
-                {
-                    if (it->second.empty())
-                        it = mapStakeAttemptsPerUTXO.erase(it);
-                    else
-                        ++it;
-                }
-                nLastCleanup = nNow;
-            }
-        }
-    }
 
     // Preliminary checks
     if (!pblock->CheckBlock())
@@ -6912,9 +6848,6 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         if (addrFrom.IsRoutable() && addrMe.IsRoutable())
             addrSeenByPeer = addrMe;
 
-        // Be shy and don't send version until we hear
-        if (pfrom->fInbound)
-            pfrom->PushVersion();
 
         pfrom->fClient = !(pfrom->nServices & NODE_NETWORK);
 
@@ -7114,8 +7047,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             }
             pfrom->nInvCount += vInv.size();
 
-            // Skip during IBD (high inv rates expected when syncing)
-            if (pfrom->nInvCount > INV_RATE_LIMIT_ITEMS && !IsInitialBlockDownload())
+            // Skip during IBD or sync catchup (high inv rates expected when syncing)
+            bool fSyncing = IsInitialBlockDownload() ||
+                            (pindexBest != NULL && pindexBest->GetBlockTime() < GetTime() - 300);
+            if (pfrom->nInvCount > INV_RATE_LIMIT_ITEMS && !fSyncing)
             {
                 pfrom->Misbehaving(25);
                 if (fDebug)
@@ -7163,6 +7098,8 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             bool fAlreadyHave = AlreadyHave(txdb, inv);
             if (fDebugNet)
                 printf("  got inventory: %s  %s\n", inv.ToString().c_str(), fAlreadyHave ? "have" : "new");
+            if (inv.type == MSG_BLOCK && pindexBest != NULL && pindexBest->GetBlockTime() < GetTime() - 300 && fDebug)
+                printf("sync inv: %s %s from %s\n", inv.ToString().c_str(), fAlreadyHave ? "HAVE" : "NEW", pfrom->addrName.c_str());
 
             if (!fAlreadyHave)
                 pfrom->AskFor(inv);
@@ -7533,6 +7470,8 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         if (fAccepted)
         {
             pfrom->nLastBlockRecv = GetTime();
+            if (nBestHeight >= pfrom->nChainHeight)
+                pfrom->nChainHeight = nBestHeight + 1;
             LOCK(cs_mapAlreadyAskedFor);
             mapAlreadyAskedFor.erase(inv);
         }
@@ -8092,11 +8031,71 @@ bool ProcessMessages(CNode* pfrom)
 
 bool SendMessages(CNode* pto, bool fSendTrickle)
 {
+    if (pto->nVersion == 0)
+        return true;
+
+    bool pingSend = false;
+    if (pto->fPingQueued) {
+        pingSend = true;
+    }
+    if (pto->nPingNonceSent == 0 && pto->nPingUsecStart + PING_INTERVAL * 1000000 < GetTimeMicros()) {
+        pingSend = true;
+    }
+    if (pingSend) {
+        uint64_t nonce = 0;
+        while (nonce == 0) {
+            RAND_bytes((unsigned char*)&nonce, sizeof(nonce));
+        }
+        pto->fPingQueued = false;
+        pto->nPingUsecStart = GetTimeMicros();
+        if (pto->nVersion > BIP0031_VERSION) {
+            pto->nPingNonceSent = nonce;
+            pto->PushMessage("ping", nonce);
+        } else {
+            pto->nPingNonceSent = 0;
+            pto->PushMessage("ping");
+        }
+    }
+
+
+    // Stall recovery (lock-free, runs even when staking holds cs_main)
+    {
+        int64_t nNow = GetTime();
+        int64_t nTimeSinceBlock = nNow - (pto->nLastBlockRecv > 0 ? pto->nLastBlockRecv : pto->nTimeConnected);
+        CBlockIndex* pBest = pindexBest;
+        int nHeight = nBestHeight;
+        bool fBehind = (pBest != NULL && pBest->GetBlockTime() < nNow - 300) ||
+                       (pto->nChainHeight > nHeight + 1);
+
+        static std::map<std::string, int64_t> mapLastStallRecovery;
+        bool fThrottle = (mapLastStallRecovery.count(pto->addrName) &&
+                          nNow - mapLastStallRecovery[pto->addrName] < 15);
+
+        if (!fImporting && !fReindex && fBehind && nTimeSinceBlock > 15 && !fThrottle)
+        {
+            mapLastStallRecovery[pto->addrName] = nNow;
+            pto->nLastBlockRecv = nNow;
+            {
+                LOCK(cs_mapAlreadyAskedFor);
+                for (auto it = mapAlreadyAskedFor.begin(); it != mapAlreadyAskedFor.end(); )
+                {
+                    if (it->first.type == MSG_BLOCK)
+                        it = mapAlreadyAskedFor.erase(it);
+                    else
+                        ++it;
+                }
+            }
+            if (pBest != NULL)
+                pto->PushMessage("getblocks", CBlockLocator(pBest), uint256(0));
+            if (fDebug)
+                printf("Sync stall recovery: peer=%s ch=%d our=%d stall=%ds\n",
+                       pto->addrName.c_str(), pto->nChainHeight, nHeight, (int)nTimeSinceBlock);
+        }
+    }
+
+
     TRY_LOCK(cs_main, lockMain);
     if (lockMain) {
-        // Don't send anything until we get their version message
-        if (pto->nVersion == 0)
-            return true;
 
         if (dandelionState.IsEnabled())
         {
@@ -8118,56 +8117,9 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
             }
         }
 
-        //
-        // Message: ping
-        //
-        bool pingSend = false;
-        if (pto->fPingQueued) {
-            // RPC ping request by user
-            pingSend = true;
-        }
-        if (pto->nPingNonceSent == 0 && pto->nPingUsecStart + PING_INTERVAL * 1000000 < GetTimeMicros()) {
-            // Ping automatically sent as a latency probe & keepalive.
-            pingSend = true;
-        }
-        if (pingSend) {
-            uint64_t nonce = 0;
-            while (nonce == 0) {
-                RAND_bytes((unsigned char*)&nonce, sizeof(nonce));
-            }
-            pto->fPingQueued = false;
-            pto->nPingUsecStart = GetTimeMicros();
-            if (pto->nVersion > BIP0031_VERSION) {
-                pto->nPingNonceSent = nonce;
-                pto->PushMessage("ping", nonce);
-            } else {
-                // Peer is too old to support ping command with nonce, pong will never arrive.
-                pto->nPingNonceSent = 0;
-                pto->PushMessage("ping");
-            }
-        }
-
-
-		// Start block sync
         if (pto->fStartSync && !fImporting && !fReindex) {
             pto->fStartSync = false;
             pto->PushGetBlocks(pindexBest, uint256(0));
-        }
-
-        // Sync stall recovery: if this peer reports a higher chain and we
-        // haven't received a block from them in 30 seconds, re-request.
-        // Also triggers if we never received a block but peer connected 30s+ ago.
-        {
-            int64_t nTimeSinceBlock = GetTime() - (pto->nLastBlockRecv > 0 ? pto->nLastBlockRecv : pto->nTimeConnected);
-            if (!fImporting && !fReindex &&
-                pto->nChainHeight > nBestHeight + 1 &&
-                nTimeSinceBlock > 30)
-            {
-                pto->nLastBlockRecv = GetTime();
-                pto->PushGetBlocks(pindexBest, uint256(0));
-                printf("Sync stall recovery: re-requesting blocks from %s (peer height %d, our height %d, stall %ds)\n",
-                       pto->addrName.c_str(), pto->nChainHeight, nBestHeight, (int)nTimeSinceBlock);
-            }
         }
 
         // Resend wallet transactions that haven't gotten in a block yet

@@ -841,6 +841,20 @@ void StakeMiner(CWallet *pwallet)
             continue;
         };
 
+        // Pause staking while chain is stale to yield cs_main for sync.
+        // Staking during active sync causes cs_main contention that starves
+        // ThreadMessageHandler, preventing block/inv processing.
+        {
+            LOCK(cs_main);
+            if (pindexBest && pindexBest->GetBlockTime() < GetTime() - 300)
+            {
+                if (fDebug && GetBoolArg("-printcoinstake"))
+                    printf("StakeMiner() chain stale, pausing for sync\n");
+                MilliSleep(5000);
+                continue;
+            }
+        }
+
         // Post-DAG: reduce stake interval to match nMaxStakeSearchInterval (2s)
         // This ensures no timestamp slots are skipped between staking attempts
         int64_t nEffectiveStakeInterval = nMinStakeInterval;
@@ -921,18 +935,26 @@ void CPUMiner(CWallet* pwallet)
         if (fShutdown)
             return;
 
-        if (!fTestNet && !fRegTest)
         {
             bool fNoNodes;
             {
                 LOCK(cs_vNodes);
                 fNoNodes = vNodes.empty();
             }
-            while (fNoNodes || IsInitialBlockDownload())
+            if (fNoNodes || IsInitialBlockDownload())
             {
                 MilliSleep(1000);
-                if (!fCPUMining || fShutdown)
-                    return;
+                continue;
+            }
+        }
+
+        // Pause mining while chain is stale to yield cs_main for sync
+        {
+            LOCK(cs_main);
+            if (pindexBest && pindexBest->GetBlockTime() < GetTime() - 300)
+            {
+                MilliSleep(5000);
+                continue;
             }
         }
 
