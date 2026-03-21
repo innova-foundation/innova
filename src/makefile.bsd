@@ -155,6 +155,7 @@ OBJS= \
     obj/rpcblockchain.o \
     obj/rpcrawtransaction.o \
     obj/rpcsmessage.o \
+    obj/rpcnyx.o \
     obj/rpchyperfile.o \
     obj/rpcshielded.o \
     obj/nullsend.o \

@@ -61,7 +61,6 @@ endif
 # for boost 1.37, add -mt to the boost libraries
 LIBS += \
  -Wl,-B$(LMODE) \
-   -l boost_system$(BOOST_LIB_SUFFIX) \
    -l boost_filesystem$(BOOST_LIB_SUFFIX) \
    -l boost_program_options$(BOOST_LIB_SUFFIX) \
    -l boost_thread$(BOOST_LIB_SUFFIX) \
@@ -154,6 +153,12 @@ xCFLAGS=-O2 $(EXT_OPTIONS) -pthread -Wall -Wextra -Wno-ignored-qualifiers -Wno-f
 # LDFLAGS can be specified on the make command line, so we use xLDFLAGS that only
 # adds some defaults in front. Unfortunately, LDFLAGS=... $(LDFLAGS) does not work.
 xLDFLAGS=$(LDHARDENING) $(LDFLAGS)
+
+ifdef SANITIZE
+    xCXXFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
+    xCFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
+    xLDFLAGS += -fsanitize=$(SANITIZE)
+endif
 
 ifeq (${USE_NATIVETOR}, 1)
 OBJS= \
@@ -356,6 +361,7 @@ OBJS= \
     obj/finality.o \
     obj/dag.o \
     obj/rpcsmessage.o \
+    obj/rpcnyx.o \
     obj/script.o \
     obj/sync.o \
     obj/util.o \
@@ -414,6 +420,7 @@ OBJS= \
     obj/rpcblockchain.o \
     obj/rpcrawtransaction.o \
     obj/rpcsmessage.o \
+    obj/rpcnyx.o \
 	obj/rpchyperfile.o \
     obj/rpcshielded.o \
     obj/nullsend.o \
