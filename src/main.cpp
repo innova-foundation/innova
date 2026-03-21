@@ -2509,15 +2509,6 @@ unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfS
     if (bnNew <= 0 || bnNew > bnTargetLimit)
         bnNew = bnTargetLimit;
 
-    // Testnet PoW difficulty cap so CPU mining stays feasible
-    if (fTestNet && !fProofOfStake)
-    {
-        CBigNum bnTestnetCap;
-        bnTestnetCap.SetCompact(0x1e0fffff);
-        if (bnNew < bnTestnetCap)
-            bnNew = bnTestnetCap;
-    }
-
     return bnNew.GetCompact();
 }
 
