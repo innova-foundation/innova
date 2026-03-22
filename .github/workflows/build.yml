@@ -256,18 +256,27 @@ jobs:
       - name: Package
         run: |
           strip src/innovad || true
-          mkdir -p dmg_contents
-          cp src/innovad dmg_contents/
+          mkdir -p dmg_stage
+          cp src/innovad dmg_stage/
           if [ -d "Innova.app" ]; then
             strip Innova.app/Contents/MacOS/Innova || true
-            cp -R Innova.app dmg_contents/
+            cp -R Innova.app dmg_stage/
           elif [ -f "Innova" ]; then
             strip Innova || true
-            cp Innova dmg_contents/
+            cp Innova dmg_stage/
           fi
-          cd dmg_contents && shasum -a 256 * > SHA256SUMS.txt 2>/dev/null || true && cd ..
-          hdiutil create -volname "Innova" -srcfolder dmg_contents \
-            -ov -format UDZO innova-${{ needs.get-version.outputs.version }}-macOS-arm64.dmg
+          cd dmg_stage && shasum -a 256 * > SHA256SUMS.txt 2>/dev/null || true && cd ..
+
+          DMG_SIZE=$(du -sm dmg_stage | awk '{print int($1 + 20)}')
+          hdiutil create -size "${DMG_SIZE}m" -fs HFS+ -volname "Innova" innova-rw.dmg
+          hdiutil attach innova-rw.dmg -mountpoint /tmp/innova-dmg-mount -nobrowse -noverify
+          cp -R dmg_stage/* /tmp/innova-dmg-mount/
+          sync
+          hdiutil detach /tmp/innova-dmg-mount || hdiutil detach /tmp/innova-dmg-mount -force
+          sleep 2
+          hdiutil convert innova-rw.dmg -format UDZO \
+            -o innova-${{ needs.get-version.outputs.version }}-macOS-arm64.dmg
+          rm -f innova-rw.dmg
 
       - uses: actions/upload-artifact@v5
         with:
@@ -322,7 +331,6 @@ jobs:
           ls /mingw64/lib/libdb_cxx* 2>/dev/null || echo "  (none found)"
           echo ""
 
-          # Detect boost suffix from boost_filesystem (boost_system is header-only since 1.69)
           BOOST_LIB=$(find /mingw64/lib -maxdepth 1 -name "libboost_filesystem*.dll.a" -print -quit 2>/dev/null)
           if [ -z "$BOOST_LIB" ]; then
             BOOST_LIB=$(find /mingw64/lib -maxdepth 1 -name "libboost_filesystem*.a" -print -quit 2>/dev/null)
@@ -336,7 +344,6 @@ jobs:
           fi
           echo "boost_suffix=$BOOST_SUFFIX" >> "$GITHUB_OUTPUT"
 
-          # Detect BDB suffix
           BDB_LIB=$(find /mingw64/lib -maxdepth 1 -name "libdb_cxx*.dll.a" -print -quit 2>/dev/null)
           if [ -z "$BDB_LIB" ]; then
             BDB_LIB=$(find /mingw64/lib -maxdepth 1 -name "libdb_cxx*.a" -print -quit 2>/dev/null)
