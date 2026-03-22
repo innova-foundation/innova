@@ -4289,7 +4289,6 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         burnDestination.SetString(fTestNet ? "8TestXXXXXXXXXXXXXXXXXXXXXXXXbCvpq" : "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw");
         burnPayee = GetScriptForDestination(burnDestination.Get());
 
-        // Network-aware CN enforcement height
         int nCNEnforcementHeight = fTestNet ? MN_ENFORCEMENT_ACTIVE_HEIGHT_TESTNET : MN_ENFORCEMENT_ACTIVE_HEIGHT;
 
         if(IsProofOfStake() && pindexBest != NULL){
@@ -7038,7 +7037,6 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             }
             pfrom->nInvCount += vInv.size();
 
-            // Skip during IBD or sync catchup (high inv rates expected when syncing)
             bool fSyncing = IsInitialBlockDownload() ||
                             (pindexBest != NULL && pindexBest->GetBlockTime() < GetTime() - 300);
             if (pfrom->nInvCount > INV_RATE_LIMIT_ITEMS && !fSyncing)
@@ -7165,9 +7163,6 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                     pfrom->PushInventory(CInv(MSG_BLOCK, hashBestChain));
                 break;
             }
-            // Bypass setInventoryKnown for getblocks responses so that
-            // re-requested blocks are always sent. PushInventory deduplicates
-            // against previously-sent inv items which prevents sync recovery.
             {
                 CInv inv(MSG_BLOCK, pindex->GetBlockHash());
                 LOCK(pfrom->cs_inventory);
@@ -8048,8 +8043,6 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         }
     }
 
-
-    // Stall recovery (lock-free, runs even when staking holds cs_main)
     {
         int64_t nNow = GetTime();
         int64_t nTimeSinceBlock = nNow - (pto->nLastBlockRecv > 0 ? pto->nLastBlockRecv : pto->nTimeConnected);

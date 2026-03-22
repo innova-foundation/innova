@@ -920,6 +920,7 @@ void StakeMiner(CWallet *pwallet)
 
 bool fCPUMining = false;
 int nCPUMinerThreads = 1;
+int nCPUMineTarget = 0;
 
 void CPUMiner(CWallet* pwallet)
 {
@@ -948,8 +949,6 @@ void CPUMiner(CWallet* pwallet)
             }
         }
 
-        // Pause mining while chain is stale to yield cs_main for sync
-        // Skip this check near genesis so fresh chains can bootstrap
         {
             LOCK(cs_main);
             if (pindexBest && pindexBest->nHeight > 10 && pindexBest->GetBlockTime() < GetTime() - 300)
@@ -1002,6 +1001,14 @@ void CPUMiner(CWallet* pwallet)
                 }
                 SetThreadPriority(THREAD_PRIORITY_LOWEST);
 
+                if (nCPUMineTarget > 0)
+                {
+                    nCPUMineTarget--;
+                    if (nCPUMineTarget <= 0)
+                        fCPUMining = false;
+                }
+
+                MilliSleep(500);
                 break;
             }
 

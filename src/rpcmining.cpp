@@ -375,58 +375,45 @@ Value setgenerate(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 1 || params.size() > 2)
         throw runtime_error(
-            "setgenerate <generate> [genproclimit]\n"
-            "Mine blocks immediately (regtest/testnet only).\n"
-            "<generate> true to mine, false to stop.\n"
-            "[genproclimit] number of blocks to generate (default: 1).");
+            "setgenerate <generate> [blocks]\n"
+            "Start or stop background CPU mining (regtest/testnet only).\n"
+            "<generate> true to start mining, false to stop.\n"
+            "[blocks] number of blocks to mine (default: 0 = unlimited).\n"
+            "Returns immediately. Use getblockcount to monitor progress.");
 
     bool fGenerate = params[0].get_bool();
-    int nGenerate = 1;
-    if (params.size() > 1)
-        nGenerate = params[1].get_int();
-
-    if (!fGenerate || nGenerate <= 0)
-        return Value::null;
 
     if (!fRegTest && !fTestNet)
         throw JSONRPCError(RPC_METHOD_NOT_FOUND, "setgenerate is only available in regtest/testnet mode");
 
-    Array blockHashes;
-    unsigned int nExtraNonce = 0;
-
-    for (int i = 0; i < nGenerate; i++)
+    if (!fGenerate)
     {
-        CBlock* pblock = CreateNewBlock(pwalletMain);
-        if (!pblock)
-            throw JSONRPCError(RPC_INTERNAL_ERROR, "CreateNewBlock failed");
-
-        {
-            LOCK(cs_main);
-            IncrementExtraNonce(pblock, pindexBest, nExtraNonce);
-        }
-
-        CBigNum bnMineTarget;
-        bnMineTarget.SetCompact(pblock->nBits);
-        uint256 hashMineTarget = bnMineTarget.getuint256();
-        while (pblock->GetPoWHash() > hashMineTarget)
-        {
-            ++pblock->nNonce;
-            if (pblock->nNonce == 0)
-                pblock->nTime++;
-        }
-
-        CBlock* psubmit = new CBlock(*pblock);
-        if (!ProcessBlock(NULL, psubmit))
-        {
-            delete pblock;
-            throw JSONRPCError(RPC_INTERNAL_ERROR, "ProcessBlock failed");
-        }
-
-        blockHashes.push_back(pblock->GetHash().GetHex());
-        delete pblock;
+        fCPUMining = false;
+        nCPUMineTarget = 0;
+        Object result;
+        result.push_back(Pair("mining", false));
+        return result;
     }
 
-    return blockHashes;
+    if (fCPUMining)
+        throw JSONRPCError(RPC_MISC_ERROR, "CPU mining is already running. Use setgenerate false to stop first.");
+
+    int nBlocks = 0;
+    if (params.size() > 1)
+        nBlocks = params[1].get_int();
+
+    nCPUMineTarget = nBlocks;
+    nCPUMinerThreads = 1;
+    fCPUMining = true;
+
+    if (!NewThread(ThreadCPUMiner, pwalletMain))
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to start mining thread");
+
+    Object result;
+    result.push_back(Pair("mining", true));
+    result.push_back(Pair("target_blocks", nBlocks == 0 ? 0 : nBlocks));
+    result.push_back(Pair("height", nBestHeight));
+    return result;
 }
 
 Value startmining(const Array& params, bool fHelp)

@@ -32,5 +32,6 @@ void ThreadCPUMiner(void* parg);
 void CPUMiner(CWallet* pwallet);
 extern bool fCPUMining;
 extern int nCPUMinerThreads;
+extern int nCPUMineTarget;
 
 #endif // NOVACOIN_MINER_H
