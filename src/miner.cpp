@@ -949,9 +949,10 @@ void CPUMiner(CWallet* pwallet)
         }
 
         // Pause mining while chain is stale to yield cs_main for sync
+        // Skip this check near genesis so fresh chains can bootstrap
         {
             LOCK(cs_main);
-            if (pindexBest && pindexBest->GetBlockTime() < GetTime() - 300)
+            if (pindexBest && pindexBest->nHeight > 10 && pindexBest->GetBlockTime() < GetTime() - 300)
             {
                 MilliSleep(5000);
                 continue;
