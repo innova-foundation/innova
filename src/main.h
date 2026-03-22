@@ -136,7 +136,7 @@ static const unsigned int LOCKTIME_THRESHOLD = 500000000; // Tue Nov  5 00:53:20
 static const unsigned int MAX_P2SH_SIGOPS = 15;
 
 static const uint256 hashGenesisBlock("0x000009bd42d259eb7031ae4f634aede1a690da795e5529786a72c3cd6d989995");
-static const uint256 hashGenesisBlockTestNet("0x0000abd414802bce2f1ad3f056dcc42081bb423485098b84bf8f608217aef596");
+static const uint256 hashGenesisBlockTestNet("0x0000244650ef0aea0768f9a44d3ef0bad3da733fcf7857f21fd8b0c42a565b65");
 static const uint256 hashGenesisBlockRegTest("0x7d9f2da2e66d3ee806dce8231f5854a526a32db9c8b509410f652a101089c7d5");
 
 inline const uint256& GetGenesisBlockHash()

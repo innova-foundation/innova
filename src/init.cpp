@@ -911,13 +911,13 @@ bool AppInit2()
     {
         string strStakingMode = GetArg("-stakingmode", "transparent");
         LOCK(cs_stakingMode);
-        if (strStakingMode == "nullstake" || strStakingMode == "private")
+        if (strStakingMode == "nullstake" || strStakingMode == "private" || strStakingMode == "1")
             nStakingMode = STAKE_NULLSTAKE;
-        else if (strStakingMode == "cold")
+        else if (strStakingMode == "cold" || strStakingMode == "2")
             nStakingMode = STAKE_COLD;
-        else if (strStakingMode == "coldprivate" || strStakingMode == "nullstakecold")
+        else if (strStakingMode == "coldprivate" || strStakingMode == "nullstakecold" || strStakingMode == "3")
             nStakingMode = STAKE_NULLSTAKE_COLD;
-        else if (strStakingMode == "transparent")
+        else if (strStakingMode == "transparent" || strStakingMode == "0")
             nStakingMode = STAKE_TRANSPARENT;
         else
         {

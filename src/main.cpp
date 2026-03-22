@@ -6195,10 +6195,10 @@ bool LoadBlockIndex(bool fAllowNew)
         }
         else if(fTestNet)
         {
-            const char* pszTimestampTestNet = "Innova Test Blockchain for Public Development | CircuitBreaker";
+            const char* pszTimestampTestNet = "Innova Testnet V2 Relaunch | March 2026 | CircuitBreaker";
             CTransaction txNewTestNet;
 
-            txNewTestNet.nTime = 1631971785;
+            txNewTestNet.nTime = 1774163076;
             txNewTestNet.vin.resize(1);
             txNewTestNet.vout.resize(1);
             txNewTestNet.vin[0].scriptSig = CScript() << 0 << CBigNum(42) << vector<unsigned char>((const unsigned char*)pszTimestampTestNet, (const unsigned char*)pszTimestampTestNet + strlen(pszTimestampTestNet));
@@ -6208,10 +6208,10 @@ bool LoadBlockIndex(bool fAllowNew)
             blocktest.vtx.push_back(txNewTestNet);
             blocktest.hashPrevBlock = 0;
             blocktest.hashMerkleRoot = blocktest.BuildMerkleTree();
-            blocktest.nTime    = 1631971785;
+            blocktest.nTime    = 1774163076;
             blocktest.nVersion = 1;
             blocktest.nBits    = bnProofOfWorkLimit.GetCompact();
-            blocktest.nNonce   = 86680208;
+            blocktest.nNonce   = 161933;
 
             if (false && (blocktest.GetHash() != hashGenesisBlockTestNet)) {
             // This will figure out a valid hash and Nonce if you're
@@ -6235,7 +6235,7 @@ bool LoadBlockIndex(bool fAllowNew)
 
 
             //// debug print
-            assert(blocktest.hashMerkleRoot == uint256("0x8fb693e29578265c607ab08099eb8b834b09436e5f89c839813d4a7f4072185c"));
+            assert(blocktest.hashMerkleRoot == uint256("0x33c0940923bea3aed04ed77da7499b06ceda2c9e1f9b1ebde56ef8b2aec05fb4"));
             blocktest.print();
             assert(blocktest.GetHash() == hashGenesisBlockTestNet);
             assert(blocktest.CheckBlock());
