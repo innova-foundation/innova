@@ -18,23 +18,6 @@ using namespace std;
 extern CDandelionState dandelionState;
 extern CDandelionRouter dandelionRouter;
 
-// ─────────────────────────────────────────────────────────
-// Nyx Messaging Protocol — RPC dispatcher
-//
-// Single "nyx" entry point with subcommands:
-//   nyx send <from> <to> <message>
-//   nyx sendanon <to> <message>
-//   nyx inbox [all|unread|clear]
-//   nyx outbox [all|clear]
-//   nyx read <msgid>
-//   nyx delete <msgid>
-//   nyx markread <msgid>
-//   nyx enable
-//   nyx disable
-//   nyx status
-//   nyx peers
-// ─────────────────────────────────────────────────────────
-
 static void EnsureNyxEnabled()
 {
     if (!GetBoolArg("-nyx", true))
@@ -49,7 +32,6 @@ static void EnsureWalletUnlocked()
         throw runtime_error("Wallet is locked. Unlock with walletpassphrase first.");
 }
 
-// Convert 18-byte DB key to hex string for user-facing message IDs
 static std::string KeyToHex(const unsigned char* chKey)
 {
     std::string hex;
@@ -63,7 +45,6 @@ static std::string KeyToHex(const unsigned char* chKey)
     return hex;
 }
 
-// Convert hex message ID back to 18-byte DB key
 static bool HexToKey(const std::string& hex, unsigned char* chKey)
 {
     if (hex.size() != 36)
@@ -78,7 +59,6 @@ static bool HexToKey(const std::string& hex, unsigned char* chKey)
     return true;
 }
 
-// ─── nyx send ────────────────────────────────────────────
 static Value nyx_send(const Array& params)
 {
     if (params.size() != 4)
@@ -107,7 +87,6 @@ static Value nyx_send(const Array& params)
     return result;
 }
 
-// ─── nyx sendanon ────────────────────────────────────────
 static Value nyx_sendanon(const Array& params)
 {
     if (params.size() != 3)
@@ -136,7 +115,6 @@ static Value nyx_sendanon(const Array& params)
     return result;
 }
 
-// ─── nyx inbox ───────────────────────────────────────────
 static Value nyx_inbox(const Array& params)
 {
     EnsureNyxEnabled();
@@ -232,7 +210,6 @@ static Value nyx_inbox(const Array& params)
     return result;
 }
 
-// ─── nyx outbox ──────────────────────────────────────────
 static Value nyx_outbox(const Array& params)
 {
     EnsureNyxEnabled();
@@ -304,7 +281,6 @@ static Value nyx_outbox(const Array& params)
     return result;
 }
 
-// ─── nyx read ────────────────────────────────────────────
 static Value nyx_read(const Array& params)
 {
     if (params.size() != 2)
@@ -336,7 +312,6 @@ static Value nyx_read(const Array& params)
             nPayload, msg) != 0)
         throw runtime_error("Failed to decrypt message.");
 
-    // Mark as read
     if (smsgStored.status & SMSG_MASK_UNREAD)
     {
         smsgStored.status &= ~SMSG_MASK_UNREAD;
@@ -354,7 +329,6 @@ static Value nyx_read(const Array& params)
     return result;
 }
 
-// ─── nyx delete ──────────────────────────────────────────
 static Value nyx_delete(const Array& params)
 {
     if (params.size() != 2)
@@ -382,7 +356,6 @@ static Value nyx_delete(const Array& params)
     return result;
 }
 
-// ─── nyx markread ────────────────────────────────────────
 static Value nyx_markread(const Array& params)
 {
     if (params.size() != 2)
@@ -412,7 +385,6 @@ static Value nyx_markread(const Array& params)
     return result;
 }
 
-// ─── nyx enable / disable ────────────────────────────────
 static Value nyx_enable(const Array& params)
 {
     if (fSecMsgEnabled)
@@ -447,18 +419,15 @@ static Value nyx_disable(const Array& params)
     return result;
 }
 
-// ─── nyx status ──────────────────────────────────────────
 static Value nyx_status(const Array& params)
 {
     Object result;
 
-    // Core status
     result.push_back(Pair("nyx_enabled", GetBoolArg("-nyx", true)));
     result.push_back(Pair("smsg_enabled", fSecMsgEnabled));
     result.push_back(Pair("nyx_version", 1));
     result.push_back(Pair("encryption", "AES-256-CBC"));
 
-    // Config
     Object config;
     config.push_back(Pair("nyx", GetBoolArg("-nyx", true)));
     config.push_back(Pair("nyxanon", GetBoolArg("-nyxanon", true)));
@@ -468,7 +437,6 @@ static Value nyx_status(const Array& params)
     config.push_back(Pair("nyxconcurrency", GetArg("-nyxconcurrency", 8)));
     result.push_back(Pair("config", config));
 
-    // Messaging stats
     if (fSecMsgEnabled)
     {
         uint32_t nBuckets = 0;
@@ -485,7 +453,6 @@ static Value nyx_status(const Array& params)
             }
         }
 
-        // Count inbox and outbox
         uint32_t nInbox = 0;
         uint32_t nOutbox = 0;
         uint32_t nUnread = 0;
@@ -523,7 +490,6 @@ static Value nyx_status(const Array& params)
         messaging.push_back(Pair("network_messages", (int)nBucketMessages));
         result.push_back(Pair("messaging", messaging));
 
-        // Dandelion++ status
         Object dandel;
         dandel.push_back(Pair("enabled", dandelionState.IsEnabled()));
         {
@@ -536,7 +502,6 @@ static Value nyx_status(const Array& params)
     return result;
 }
 
-// ─── nyx peers ───────────────────────────────────────────
 static Value nyx_peers(const Array& params)
 {
     EnsureNyxEnabled();
@@ -562,7 +527,6 @@ static Value nyx_peers(const Array& params)
     return result;
 }
 
-// ─── Main dispatcher ─────────────────────────────────────
 Value nyx(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 1)
