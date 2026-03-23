@@ -2483,9 +2483,10 @@ unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfS
     }
     else
     {
-        int64_t nMinSpacing = (int64_t)nEffectiveSpacing / 10;
+        int nClampFactor = (nNextHeight >= FORK_HEIGHT_TIGHTER_DRIFT) ? 4 : 10;
+        int64_t nMinSpacing = (int64_t)nEffectiveSpacing / nClampFactor;
         if (nMinSpacing < 1) nMinSpacing = 1;
-        int64_t nMaxSpacing = (int64_t)nEffectiveSpacing * 10;
+        int64_t nMaxSpacing = (int64_t)nEffectiveSpacing * nClampFactor;
 
         if (nActualSpacing < nMinSpacing)
         {
@@ -2498,11 +2499,10 @@ unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfS
             nActualSpacing = nMaxSpacing;
     }
 
-    // ppcoin: target change every block
-    // ppcoin: retarget with exponential moving toward target spacing
     CBigNum bnNew;
     bnNew.SetCompact(pindexPrev->nBits);
-    int64_t nInterval = nTargetTimespan / nEffectiveSpacing;
+    int64_t nSmoothTimespan = (nNextHeight >= FORK_HEIGHT_TIGHTER_DRIFT) ? 180 : nTargetTimespan;
+    int64_t nInterval = nSmoothTimespan / nEffectiveSpacing;
     bnNew *= ((nInterval - 1) * nEffectiveSpacing + nActualSpacing + nActualSpacing);
     bnNew /= ((nInterval + 1) * nEffectiveSpacing);
 
