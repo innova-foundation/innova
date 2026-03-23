@@ -1002,8 +1002,6 @@ void CPUMiner(CWallet* pwallet)
                 }
                 SetThreadPriority(THREAD_PRIORITY_LOWEST);
 
-                RelayInventory(CInv(MSG_BLOCK, pblock->GetHash()));
-
                 if (nCPUMineTarget > 0)
                 {
                     nCPUMineTarget--;
@@ -1011,7 +1009,7 @@ void CPUMiner(CWallet* pwallet)
                         fCPUMining = false;
                 }
 
-                MilliSleep(2000);
+                MilliSleep(500);
                 break;
             }
 
