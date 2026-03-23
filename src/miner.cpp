@@ -942,7 +942,8 @@ void CPUMiner(CWallet* pwallet)
                 LOCK(cs_vNodes);
                 fNoNodes = vNodes.empty();
             }
-            if (fNoNodes || IsInitialBlockDownload())
+            bool fSkipIBD = (nBestHeight <= 10);
+            if (fNoNodes || (!fSkipIBD && IsInitialBlockDownload()))
             {
                 MilliSleep(1000);
                 continue;
