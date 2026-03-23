@@ -5125,14 +5125,7 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
       nBestBlockTrust.Get64(),
       DateTimeStrFormat("%x %H:%M:%S", pindexBest->GetBlockTime()).c_str());
 
-    {
-        LOCK(cs_vNodes);
-        for (CNode* pnode : vNodes)
-        {
-            if (pnode->nVersion != 0)
-                pnode->PushInventory(CInv(MSG_BLOCK, hashBestChain));
-        }
-    }
+    nTimeBestReceived = GetTime();
 
     // Check the version of the last 100 blocks to see if we need to upgrade:
     if (!fIsInitialDownload)
@@ -8114,6 +8107,7 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
             pto->fStartSync = false;
             pto->PushGetBlocks(pindexBest, uint256(0));
         }
+
 
         // Resend wallet transactions that haven't gotten in a block yet
         // Except during reindex, importing and IBD, when old wallet

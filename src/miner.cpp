@@ -942,8 +942,8 @@ void CPUMiner(CWallet* pwallet)
                 LOCK(cs_vNodes);
                 fNoNodes = vNodes.empty();
             }
-            bool fSkipIBD = (nBestHeight <= 10);
-            if (fNoNodes || (!fSkipIBD && IsInitialBlockDownload()))
+            bool fSkipBootstrap = (nBestHeight <= 10);
+            if (!fSkipBootstrap && (fNoNodes || IsInitialBlockDownload()))
             {
                 MilliSleep(1000);
                 continue;
@@ -1002,6 +1002,8 @@ void CPUMiner(CWallet* pwallet)
                 }
                 SetThreadPriority(THREAD_PRIORITY_LOWEST);
 
+                RelayInventory(CInv(MSG_BLOCK, pblock->GetHash()));
+
                 if (nCPUMineTarget > 0)
                 {
                     nCPUMineTarget--;
@@ -1009,7 +1011,7 @@ void CPUMiner(CWallet* pwallet)
                         fCPUMining = false;
                 }
 
-                MilliSleep(500);
+                MilliSleep(2000);
                 break;
             }
 
