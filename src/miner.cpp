@@ -930,11 +930,14 @@ void CPUMiner(CWallet* pwallet)
 
     unsigned int nExtraNonce = 0;
     CReserveKey reservekey(pwallet);
+    CBlock* pblock = NULL;
 
     while (fCPUMining && !fShutdown)
     {
         if (fShutdown)
             return;
+
+        if (pblock) { delete pblock; pblock = NULL; }
 
         {
             bool fNoNodes;
@@ -959,71 +962,51 @@ void CPUMiner(CWallet* pwallet)
             }
         }
 
-        CBlock* pblock = CreateNewBlock(pwallet);
-        if (!pblock)
-        {
-            printf("CPUMiner: CreateNewBlock failed, retrying...\n");
-            MilliSleep(5000);
-            continue;
-        }
+        int nHeight;
+        uint256 hashTarget;
 
         {
             LOCK(cs_main);
+
+            CBlock* ptmp = CreateNewBlock(pwallet);
+            if (!ptmp)
+            {
+                printf("CPUMiner: CreateNewBlock failed, retrying...\n");
+                MilliSleep(5000);
+                continue;
+            }
+            pblock = new CBlock(*ptmp);
+            delete ptmp;
+
             IncrementExtraNonce(pblock, pindexBest, nExtraNonce);
+            nHeight = pindexBest->nHeight + 1;
+
+            CBigNum bnTarget;
+            bnTarget.SetCompact(pblock->nBits);
+            hashTarget = bnTarget.getuint256();
         }
 
-        int nHeight = pindexBest->nHeight + 1;
         printf("CPUMiner: Mining block at height %d, target bits=0x%08x\n",
                nHeight, pblock->nBits);
 
-        CBigNum bnTarget;
-        bnTarget.SetCompact(pblock->nBits);
-        uint256 hashTarget = bnTarget.getuint256();
-
         int64_t nStart = GetTime();
         uint64_t nHashesDone = 0;
+        bool fBlockFound = false;
 
         while (fCPUMining && !fShutdown)
         {
             uint256 hash = pblock->GetPoWHash();
             if (hash <= hashTarget)
             {
-                printf("CPUMiner: Found block! height=%d nonce=%u\n",
-                       nHeight, pblock->nNonce);
-
-                SetThreadPriority(THREAD_PRIORITY_NORMAL);
-                {
-                    LOCK(cs_main);
-                    CBlock* psubmit = new CBlock(*pblock);
-                    if (!ProcessBlock(NULL, psubmit))
-                        printf("CPUMiner: ProcessBlock failed\n");
-                    else
-                        printf("CPUMiner: Block accepted at height %d\n", pindexBest->nHeight);
-                }
-                SetThreadPriority(THREAD_PRIORITY_LOWEST);
-
-                if (nCPUMineTarget > 0)
-                {
-                    nCPUMineTarget--;
-                    if (nCPUMineTarget <= 0)
-                        fCPUMining = false;
-                }
-
-                MilliSleep(500);
+                fBlockFound = true;
                 break;
             }
 
             nHashesDone++;
-
             ++pblock->nNonce;
+
             if (pblock->nNonce == 0)
-            {
                 ++pblock->nTime;
-                {
-                    LOCK(cs_main);
-                    IncrementExtraNonce(pblock, pindexBest, nExtraNonce);
-                }
-            }
 
             if ((nHashesDone % 500000) == 0)
             {
@@ -1033,18 +1016,41 @@ void CPUMiner(CWallet* pwallet)
                            (double)nHashesDone / nElapsed, nHeight, (unsigned long long)nHashesDone);
             }
 
-            if ((nHashesDone % 50000) == 0)
+            if ((nHashesDone % 100000) == 0)
             {
-                            LOCK(cs_main);
-                if (pindexBest && pindexBest->nHeight >= nHeight)
-                    break; // Tip advanced, restart with new template
+                if (nBestHeight >= nHeight)
+                    break;
             }
         }
 
-        delete pblock;
+        if (fBlockFound)
+        {
+            printf("CPUMiner: Found block! height=%d nonce=%u\n",
+                   nHeight, pblock->nNonce);
+
+            {
+                LOCK(cs_main);
+                CBlock* psubmit = new CBlock(*pblock);
+                if (!ProcessBlock(NULL, psubmit))
+                    printf("CPUMiner: ProcessBlock failed\n");
+                else
+                    printf("CPUMiner: Block accepted at height %d\n", pindexBest->nHeight);
+            }
+
+            if (nCPUMineTarget > 0)
+            {
+                nCPUMineTarget--;
+                if (nCPUMineTarget <= 0)
+                    fCPUMining = false;
+            }
+
+            MilliSleep(500);
+        }
 
         MilliSleep(100);
     }
+
+    if (pblock) delete pblock;
 
     printf("CPUMiner stopped\n");
 }
