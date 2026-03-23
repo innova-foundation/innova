@@ -396,7 +396,10 @@ Value setgenerate(const Array& params, bool fHelp)
     }
 
     if (fCPUMining)
-        throw JSONRPCError(RPC_MISC_ERROR, "CPU mining is already running. Use setgenerate false to stop first.");
+    {
+        fCPUMining = false;
+        MilliSleep(600);
+    }
 
     int nBlocks = 0;
     if (params.size() > 1)
