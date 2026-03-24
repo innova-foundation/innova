@@ -1622,6 +1622,23 @@ void ThreadSocketHandler2(void* parg)
                         pnode->fDisconnect = true;
                     }
                 }
+
+                if (!pnode->fDisconnect && pnode->nVersion != 0 &&
+                    nTime - pnode->nLastRecv > 90 && nTime - pnode->nTimeConnected > 90)
+                {
+                    char probe = 0;
+                    int nSent = send(pnode->hSocket, &probe, 0, MSG_DONTWAIT);
+                    if (nSent < 0)
+                    {
+                        int nErr = WSAGetLastError();
+                        if (nErr != WSAEWOULDBLOCK && nErr != WSAEINPROGRESS)
+                        {
+                            printf("keepalive: dead socket detected for %s (err=%d, silent=%ds), disconnecting\n",
+                                   pnode->addr.ToString().c_str(), nErr, (int)(nTime - pnode->nLastRecv));
+                            pnode->fDisconnect = true;
+                        }
+                    }
+                }
             }
         }
         {
