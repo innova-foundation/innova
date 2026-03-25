@@ -1586,9 +1586,9 @@ void ThreadSocketHandler2(void* parg)
                     printf("socket no message in first 60 seconds, %d %d\n", pnode->nLastRecv != 0, pnode->nLastSend != 0);
                     pnode->fDisconnect = true;
                 }
-                else if (pnode->nVersion == 0 && nTime - pnode->nTimeConnected > 30)
+                else if (pnode->nVersion == 0 && nTime - pnode->nTimeConnected > 90)
                 {
-                    printf("socket handshake timeout: peer %s did not send version within 30s\n",
+                    printf("socket handshake timeout: peer %s did not send version within 90s\n",
                            pnode->addr.ToString().c_str());
                     pnode->fDisconnect = true;
                 }
