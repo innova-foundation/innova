@@ -24,7 +24,7 @@ extern bool fRegTest;
 static inline unsigned short GetDefaultPort()
 {
     if (fRegTest) return 18444;
-    if (fTestNet) return 15530;
+    if (fTestNet) return 15539;
     return 14530;
 }
 
