@@ -1862,7 +1862,12 @@ static const char *strDNSSeed[][2] = {
     {"159.223.100.10:14539", "159.223.100.10:14539"},
     {"159.223.104.144:14539", "159.223.104.144:14539"},
     {"159.223.104.83:14539", "159.223.104.83:14539"}
-//    {"", ""}
+};
+
+static const char *strDNSSeedTestnet[][2] = {
+    {"45.77.164.87", "45.77.164.87"},
+    {"45.32.161.27", "45.32.161.27"},
+    {"45.77.118.217", "45.77.118.217"}
 };
 
 
@@ -1897,28 +1902,37 @@ void ThreadDNSAddressSeed2(void* parg)
         printf("ThreadDNSAddressSeed started\n");
         int found = 0;
 
-        if (!fTestNet)
         {
+            const char *(*seeds)[2];
+            unsigned int nSeeds;
+            if (fTestNet) {
+                seeds = strDNSSeedTestnet;
+                nSeeds = ARRAYLEN(strDNSSeedTestnet);
+            } else {
+                seeds = strDNSSeed;
+                nSeeds = ARRAYLEN(strDNSSeed);
+            }
+
             printf("Loading addresses from DNS seeds (could take a while)\n");
 
-            for (unsigned int seed_idx = 0; seed_idx < ARRAYLEN(strDNSSeed); seed_idx++) {
+            for (unsigned int seed_idx = 0; seed_idx < nSeeds; seed_idx++) {
                 if (HaveNameProxy()) {
-                    AddOneShot(strDNSSeed[seed_idx][1]);
+                    AddOneShot(seeds[seed_idx][1]);
                 } else {
                     vector<CNetAddr> vaddr;
                     vector<CAddress> vAdd;
-                    if (LookupHost(strDNSSeed[seed_idx][1], vaddr))
+                    if (LookupHost(seeds[seed_idx][1], vaddr))
                     {
                         for (CNetAddr& ip : vaddr)
                         {
                             int nOneDay = 24*3600;
                             CAddress addr = CAddress(CService(ip, GetDefaultPort()));
-                            addr.nTime = GetTime() - 3*nOneDay - GetRand(4*nOneDay); // use a random age between 3 and 7 days old
+                            addr.nTime = GetTime() - 3*nOneDay - GetRand(4*nOneDay);
                             vAdd.push_back(addr);
                             found++;
                         }
                     }
-                    addrman.Add(vAdd, CNetAddr(strDNSSeed[seed_idx][0], true));
+                    addrman.Add(vAdd, CNetAddr(seeds[seed_idx][0], true));
                 }
             }
         }
