@@ -70,7 +70,9 @@ public:
 #endif
         cachedWallet.clear();
         {
-            LOCK(wallet->cs_wallet);
+            // Use TRY_LOCK to avoid blocking the GUI thread during IBD.
+            TRY_LOCK(wallet->cs_wallet, lockWallet);
+            if (!lockWallet) return;
             for(std::map<uint256, CWalletTx>::iterator it = wallet->mapWallet.begin(); it != wallet->mapWallet.end(); ++it)
             {
                     std::vector<KernelRecord> txList = KernelRecord::decomposeOutput(wallet, it->second);
@@ -100,7 +102,10 @@ public:
         qSort(updated_sorted);
 
         {
-            LOCK2(cs_main, wallet->cs_wallet);
+            TRY_LOCK(cs_main, lockMain);
+            if (!lockMain) return;
+            TRY_LOCK(wallet->cs_wallet, lockWallet);
+            if (!lockWallet) return;
             for(int update_idx = updated_sorted.size()-1; update_idx >= 0; --update_idx)
             {
                 const uint256 &hash = updated_sorted.at(update_idx);

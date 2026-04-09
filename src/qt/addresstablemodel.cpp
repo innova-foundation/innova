@@ -64,7 +64,10 @@ public:
     {
         cachedAddressTable.clear();
         {
-            LOCK(wallet->cs_wallet);
+            // Use TRY_LOCK to avoid blocking the GUI thread during IBD.
+            // If lock unavailable, the table stays empty until next refresh.
+            TRY_LOCK(wallet->cs_wallet, lockWallet);
+            if (!lockWallet) return;
             BOOST_FOREACH(const PAIRTYPE(CTxDestination, std::string)& item, wallet->mapAddressBook)
             {
                 const CBitcoinAddress& address = item.first;

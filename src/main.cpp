@@ -6878,8 +6878,15 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         // Ask every node for the collateralnode list straight away
         pfrom->PushMessage("iseg", CTxIn());
 
-        // Ask the first connected node for block updates
+        // Ask connected nodes for block updates.
+        // Reset counter when we have no peers so reconnecting peers
+        // can trigger getblocks from the version handler again.
         static int nAskedForBlocks = 0;
+        {
+            LOCK(cs_vNodes);
+            if (vNodes.size() <= 1)
+                nAskedForBlocks = 0;
+        }
         if (!pfrom->fClient && !pfrom->fOneShot &&
             (pfrom->nChainHeight > (nBestHeight - 144)) &&
             (pfrom->nVersion < NOBLKS_VERSION_START ||
@@ -6888,7 +6895,6 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         {
             nAskedForBlocks++;
             pfrom->PushGetBlocks(pindexBest, uint256(0));
-			//PushGetBlocks(pfrom, pindexBest, uint256(0));
         }
 
         // Relay alerts
@@ -8080,6 +8086,28 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
     }
 
 
+    //
+    // getblocks: handled OUTSIDE cs_main to prevent IBD stall when GUI
+    // thread holds cs_main (Qt refreshWallet LOCK2).  CBlockLocator
+    // construction only reads pprev pointers — same pattern used by the
+    // sync-stall-recovery path above.
+    //
+    if (pto->fStartSync && !fImporting && !fReindex) {
+        pto->fStartSync = false;
+        pto->PushGetBlocks(pindexBest, uint256(0));
+    }
+
+    {
+        int n = pto->getBlocksIndex.size();
+        for (int i = 0; i < n; i++)
+        {
+            if (fDebugNet) printf("Pushing getblocks %s to %s\n\n",pto->getBlocksIndex[i]->ToString().c_str(),pto->getBlocksHash[i].ToString().c_str());
+            pto->PushMessage("getblocks", CBlockLocator(pto->getBlocksIndex[i]), pto->getBlocksHash[i]);
+        }
+        pto->getBlocksIndex.clear();
+        pto->getBlocksHash.clear();
+    }
+
     TRY_LOCK(cs_main, lockMain);
     if (lockMain) {
 
@@ -8102,12 +8130,6 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
                     RelayInventory(inv);
             }
         }
-
-        if (pto->fStartSync && !fImporting && !fReindex) {
-            pto->fStartSync = false;
-            pto->PushGetBlocks(pindexBest, uint256(0));
-        }
-
 
         // Resend wallet transactions that haven't gotten in a block yet
         // Except during reindex, importing and IBD, when old wallet
@@ -8166,19 +8188,6 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
             if (!vAddr.empty())
                 pto->PushMessage("addr", vAddr);
         }
-
-        //
-        // Message: getblocks
-        //
-
-        int n = pto->getBlocksIndex.size();
-        for (int i = 0; i < n; i++)
-        {
-            if (fDebugNet) printf("Pushing getblocks %s to %s\n\n",pto->getBlocksIndex[i]->ToString().c_str(),pto->getBlocksHash[i].ToString().c_str());
-            pto->PushMessage("getblocks", CBlockLocator(pto->getBlocksIndex[i]), pto->getBlocksHash[i]);
-        }
-        pto->getBlocksIndex.clear();
-        pto->getBlocksHash.clear();
 
         //
         // Message: inventory

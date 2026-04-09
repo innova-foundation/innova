@@ -73,7 +73,14 @@ std::vector<char> imageContents((std::istreambuf_iterator<char>(imageFile)),
 	std::string sNarr = ui->edit->text().toStdString();
     wtx.mapValue["to"]      = "Proof of Data";
 
-    if (pwalletMain->IsLocked())
+    if (!pwalletMain)
+    {
+	  QMessageBox errbox;
+	  errbox.setText("Error, Wallet is not available!");
+	  errbox.exec();
+      ui->txLineEdit->setText("ERROR: Wallet is not available!");
+    }
+    else if (pwalletMain->IsLocked())
     {
 	  QMessageBox unlockbox;
 	  unlockbox.setText("Error, Your wallet is locked! Please unlock your wallet!");

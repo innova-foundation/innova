@@ -76,6 +76,13 @@ void AddEditAdrenalineNode::on_okButton_clicked()
         c.sTxHash = ui->txhashLineEdit->text().toStdString();
         c.sOutputIndex = ui->outputindexLineEdit->text().toStdString();
 
+        if (!pwalletMain)
+        {
+            QMessageBox msg;
+            msg.setText("Wallet is not available.");
+            msg.exec();
+            return;
+        }
         CWalletDB walletdb(pwalletMain->strWalletFile);
 
         boost::filesystem::path pathConfigFile = GetCollateralnodeConfigFile();

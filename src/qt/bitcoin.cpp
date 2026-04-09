@@ -257,9 +257,12 @@ int main(int argc, char *argv[])
                 if (splashref)
                 {
                     QString finishMessage = QString::fromStdString(_("Done loading"));
-                    while (splashref->message() != finishMessage)
+                    int nTimeoutMs = 0;
+                    while (splashref->message() != finishMessage && nTimeoutMs < 60000)
                     {
                         MilliSleep(200);
+                        nTimeoutMs += 200;
+                        app.processEvents();
                     }
                     splashref->finish(&window);
                 }
