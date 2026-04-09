@@ -909,8 +909,8 @@ macx:QMAKE_MACOSX_DEPLOYMENT_TARGET = 12.0
 macx:QMAKE_CXXFLAGS_THREAD += -pthread
 macx:QMAKE_RPATHDIR = @executable_path/../Frameworks
 macx:QMAKE_CXXFLAGS += -stdlib=libc++ -Wno-deprecated-declarations
-# macOS 26+ requires signed binaries in .app bundles.
-macx:QMAKE_POST_LINK += codesign --force --deep -s \"Apple Development\" $${TARGET}.app
+# macOS 26+ requires signed binaries in .app bundles; ad-hoc sign for CI compatibility.
+macx:QMAKE_POST_LINK += codesign --force --deep -s - $${TARGET}.app
 
 
 # Set libraries and includes at end, to use platform-defined defaults if not overridden
