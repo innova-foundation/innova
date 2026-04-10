@@ -6879,19 +6879,19 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         pfrom->PushMessage("iseg", CTxIn());
 
         // Ask connected nodes for block updates.
-        // Reset counter when we have no peers so reconnecting peers
+        // Reset counter when we have few peers so reconnecting peers
         // can trigger getblocks from the version handler again.
+        // NOTE: read vNodes.size() without LOCK(cs_vNodes) to avoid
+        // deadlock with ThreadSocketHandler (cs_vRecvMsg held here).
         static int nAskedForBlocks = 0;
-        {
-            LOCK(cs_vNodes);
-            if (vNodes.size() <= 1)
-                nAskedForBlocks = 0;
-        }
+        unsigned int nNodeCount = vNodes.size();
+        if (nNodeCount <= 1)
+            nAskedForBlocks = 0;
         if (!pfrom->fClient && !pfrom->fOneShot &&
             (pfrom->nChainHeight > (nBestHeight - 144)) &&
             (pfrom->nVersion < NOBLKS_VERSION_START ||
              pfrom->nVersion >= NOBLKS_VERSION_END) &&
-             (nAskedForBlocks < 1 || vNodes.size() <= 1))
+             (nAskedForBlocks < 1 || nNodeCount <= 1))
         {
             nAskedForBlocks++;
             pfrom->PushGetBlocks(pindexBest, uint256(0));
@@ -8262,16 +8262,33 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
             pto->PushMessage("headers", vBlockHeaders);
 
 
-        //
-        // Message: getdata
-        //
+        // getdata moved outside cs_main (below) for IBD reliability
+
+        if (fSecMsgEnabled)
+            SecureMsgSendData(pto, fSendTrickle);
+    }
+
+    //
+    // getdata: flush pending requests outside cs_main.
+    // Uses its own TRY_LOCK for AlreadyHave; if cs_main is unavailable
+    // the request is sent anyway (duplicate receipt is harmless).
+    //
+    {
         vector<CInv> vGetData;
         int64_t nNow = GetTime() * 1000000;
-        CTxDB txdb("r");
         while (!pto->mapAskFor.empty() && (*pto->mapAskFor.begin()).first <= nNow)
         {
             const CInv& inv = (*pto->mapAskFor.begin()).second;
-            if (!AlreadyHave(txdb, inv))
+            bool fSkip = false;
+            {
+                TRY_LOCK(cs_main, lockMain);
+                if (lockMain)
+                {
+                    CTxDB txdb("r");
+                    fSkip = AlreadyHave(txdb, inv);
+                }
+            }
+            if (!fSkip)
             {
                 if (fDebugNet)
                     printf("sending getdata: %s\n", inv.ToString().c_str());
@@ -8281,18 +8298,15 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
                     pto->PushMessage("getdata", vGetData);
                     vGetData.clear();
                 }
-                {
-                    LOCK(cs_mapAlreadyAskedFor);
-                    mapAlreadyAskedFor[inv] = nNow;
-                }
+            }
+            {
+                LOCK(cs_mapAlreadyAskedFor);
+                mapAlreadyAskedFor[inv] = nNow;
             }
             pto->mapAskFor.erase(pto->mapAskFor.begin());
         }
         if (!vGetData.empty())
             pto->PushMessage("getdata", vGetData);
-
-        if (fSecMsgEnabled)
-            SecureMsgSendData(pto, fSendTrickle);
     }
 
 
