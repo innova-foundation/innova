@@ -6129,10 +6129,10 @@ bool LoadBlockIndex(bool fAllowNew)
     }
     else if (fTestNet)
     {
-        pchMessageStart[0] = 0x27;
-        pchMessageStart[1] = 0x43;
-        pchMessageStart[2] = 0x35;
-        pchMessageStart[3] = 0x4b;
+        pchMessageStart[0] = 0x9a;
+        pchMessageStart[1] = 0x77;
+        pchMessageStart[2] = 0x26;
+        pchMessageStart[3] = 0x05;
 
         bnProofOfWorkLimit = bnProofOfWorkLimitTestNet; // 16 bits PoW target limit for testnet
         nStakeMinAge = 1 * 60 * 60; // test net min age is 1 hours like mainnet
@@ -6196,10 +6196,10 @@ bool LoadBlockIndex(bool fAllowNew)
         }
         else if(fTestNet)
         {
-            const char* pszTimestampTestNet = "Innova Testnet V2 Relaunch | March 2026 | CircuitBreaker";
+            const char* pszTimestampTestNet = "Innova Testnet V3 Relaunch | May 17 2026 | Ubuntu 26 Seed Mesh";
             CTransaction txNewTestNet;
 
-            txNewTestNet.nTime = 1774163076;
+            txNewTestNet.nTime = 1778976000;
             txNewTestNet.vin.resize(1);
             txNewTestNet.vout.resize(1);
             txNewTestNet.vin[0].scriptSig = CScript() << 0 << CBigNum(42) << vector<unsigned char>((const unsigned char*)pszTimestampTestNet, (const unsigned char*)pszTimestampTestNet + strlen(pszTimestampTestNet));
@@ -6209,12 +6209,13 @@ bool LoadBlockIndex(bool fAllowNew)
             blocktest.vtx.push_back(txNewTestNet);
             blocktest.hashPrevBlock = 0;
             blocktest.hashMerkleRoot = blocktest.BuildMerkleTree();
-            blocktest.nTime    = 1774163076;
+            blocktest.nTime    = 1778976000;
             blocktest.nVersion = 1;
             blocktest.nBits    = bnProofOfWorkLimit.GetCompact();
-            blocktest.nNonce   = 161933;
+            blocktest.nNonce   = 58545;
 
-            if (false && (blocktest.GetHash() != hashGenesisBlockTestNet)) {
+            if (false && (blocktest.GetHash() != hashGenesisBlockTestNet))
+            {
             // This will figure out a valid hash and Nonce if you're
             // creating a different genesis block:
                 uint256 hashTarget = CBigNum().SetCompact(blocktest.nBits).getuint256();
@@ -6236,10 +6237,13 @@ bool LoadBlockIndex(bool fAllowNew)
 
 
             //// debug print
-            assert(blocktest.hashMerkleRoot == uint256("0x33c0940923bea3aed04ed77da7499b06ceda2c9e1f9b1ebde56ef8b2aec05fb4"));
+            if (blocktest.hashMerkleRoot != uint256("0xb19c19c32748baa18fd07046551be048bd02b97f8c8702e8aec6a37fc7d305b3"))
+                return error("TestNetLoadBlockIndex() : invalid testnet genesis merkle root %s", blocktest.hashMerkleRoot.ToString().c_str());
             blocktest.print();
-            assert(blocktest.GetHash() == hashGenesisBlockTestNet);
-            assert(blocktest.CheckBlock());
+            if (blocktest.GetHash() != hashGenesisBlockTestNet)
+                return error("TestNetLoadBlockIndex() : invalid testnet genesis hash %s", blocktest.GetHash().ToString().c_str());
+            if (!blocktest.CheckBlock())
+                return error("TestNetLoadBlockIndex() : testnet genesis block validation failed");
 
             // -- debug print
             if (fDebugChain)

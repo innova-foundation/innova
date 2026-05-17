@@ -77,11 +77,32 @@ wait_for_sync() {
     return 1
 }
 
+rpc_succeeded() {
+    [ -n "$1" ] && ! echo "$1" | grep -q '^error:'
+}
+
 mine_blocks() {
     local count=${1:-1}
+    local start_height=$(get_blocks rpc1)
+    start_height=${start_height:-0}
+    local target_height=$((start_height + count))
+
     rpc1 setgenerate true "$count" > /dev/null 2>&1
-    sleep 3
-    wait_for_sync 30
+
+    local elapsed=0
+    while [ $elapsed -lt 300 ]; do
+        local current_height=$(get_blocks rpc1)
+        current_height=${current_height:-0}
+        if [ "$current_height" -ge "$target_height" ] 2>/dev/null; then
+            wait_for_sync 30
+            return $?
+        fi
+        sleep 1
+        ((elapsed++))
+    done
+
+    warn "Timed out mining $count block(s): height=$(get_blocks rpc1) target=$target_height"
+    return 1
 }
 
 mine_to_height() {
@@ -203,12 +224,12 @@ log "Mining 25 blocks for coinbase maturity..."
 mine_blocks 25
 
 BAL1=$(get_balance rpc1)
-log "Node 1 balance after 10 blocks: $BAL1 INN"
+log "Node 1 balance after 25 blocks: $BAL1 INN"
 
 ADDR2=$(rpc2 getnewaddress 2>/dev/null)
 if [ -n "$ADDR2" ]; then
     TXID=$(rpc1 sendtoaddress "$ADDR2" 10.0 2>/dev/null)
-    if [ -n "$TXID" ]; then
+    if rpc_succeeded "$TXID"; then
         mine_blocks 1
         success "Transparent TX sent: ${TXID:0:16}..."
     else
@@ -394,12 +415,12 @@ if [ -z "$OWNER_ZADDR" ]; then
 else
     log "Owner zaddr: ${OWNER_ZADDR:0:30}..."
 
-    SHIELD_TX=$(rpc1 z_shield "*" "$OWNER_ZADDR" 100 2>/dev/null)
-    if [ -n "$SHIELD_TX" ]; then
-        mine_blocks 2
+    SHIELD_TX=$(rpc1 z_shield "*" 100 "$OWNER_ZADDR" 2>/dev/null)
+    if rpc_succeeded "$SHIELD_TX" && echo "$SHIELD_TX" | grep -q "txid"; then
+        mine_blocks 15
         success "NullStake V3: Owner shielded 100 INN for delegation"
     else
-        skip "NullStake V3: Shield for delegation failed"
+        skip "NullStake V3: Shield for delegation failed (${SHIELD_TX:0:80})"
     fi
 
     STAKER_ADDR=$(rpc2 getnewaddress 2>/dev/null)
