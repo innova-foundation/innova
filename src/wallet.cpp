@@ -4285,7 +4285,12 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
         {
             LOCK2(cs_main, cs_wallet);
             if (!txdb.ReadTxIndex(pcoin.first->GetHash(), txindex))
+            {
+                if (fDebug && GetBoolArg("-printcoinstakedebug"))
+                    printf("CreateCoinStake() : SKIP coin %s:%d value=%lld - ReadTxIndex failed\n",
+                        pcoin.first->GetHash().ToString().substr(0,16).c_str(), pcoin.second, pcoin.first->vout[pcoin.second].nValue);
                 continue;
+            }
         }
 
         // Read block header
@@ -4293,11 +4298,21 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
         {
             LOCK2(cs_main, cs_wallet);
             if (!block.ReadFromDisk(txindex.pos.nFile, txindex.pos.nBlockPos, false))
+            {
+                if (fDebug && GetBoolArg("-printcoinstakedebug"))
+                    printf("CreateCoinStake() : SKIP coin %s:%d value=%lld - ReadFromDisk failed\n",
+                        pcoin.first->GetHash().ToString().substr(0,16).c_str(), pcoin.second, pcoin.first->vout[pcoin.second].nValue);
                 continue;
+            }
         }
 
         if (block.GetBlockTime() + nStakeMinAge > txNew.nTime - nMaxStakeSearchInterval)
+        {
+            if (fDebug && GetBoolArg("-printcoinstakedebug"))
+                printf("CreateCoinStake() : SKIP coin %s:%d value=%lld - age check blktime=%u\n",
+                    pcoin.first->GetHash().ToString().substr(0,16).c_str(), pcoin.second, pcoin.first->vout[pcoin.second].nValue, block.GetBlockTime());
             continue; // only count coins meeting min age requirement
+        }
 
         bool fKernelFound = false;
         for (unsigned int n=0; n<min(nSearchInterval,(int64_t)nMaxStakeSearchInterval) && !fKernelFound && !fShutdown && pindexPrev == pindexBest; n++)
