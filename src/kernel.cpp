@@ -395,7 +395,9 @@ bool CheckStakeKernelHash(unsigned int nBits, const CBlock& blockFrom, unsigned 
 
     uint256 hashBlockFrom = blockFrom.GetHash();
 
-    CBigNum bnCoinDayWeight = CBigNum(nValueIn) * GetWeight((int64_t)txPrev.nTime, (int64_t)nTimeTx) / COIN / (24 * 60 * 60);
+    int64_t nCoinWeight = GetWeight((int64_t)txPrev.nTime, (int64_t)nTimeTx);
+    CBigNum bnTargetProduct = CBigNum(nValueIn) * nCoinWeight * bnTargetPerCoinDay;
+    CBigNum bnCoinDayWeight = CBigNum(nValueIn) * nCoinWeight / COIN / (24 * 60 * 60);
     targetProofOfStake = (bnCoinDayWeight * bnTargetPerCoinDay).getuint256();
 
     // Calculate hash
@@ -436,17 +438,18 @@ bool CheckStakeKernelHash(unsigned int nBits, const CBlock& blockFrom, unsigned 
     {
         CBigNum nTry = CBigNum(hashProofOfStake);
         CBigNum nTar = bnCoinDayWeight * bnTargetPerCoinDay;
-        printf("CheckStakeKernelHash() : try=%s target=%s coinval=%lld coinage=%s nBits=0x%08x modifier=0x%016" PRIx64 " blktime=%u txtime=%u\n",
+        printf("CheckStakeKernelHash() : try=%s target=%s coinval=%lld weight=%lld coinage=%s nBits=0x%08x modifier=0x%016" PRIx64 " blktime=%u txtime=%u\n",
             nTry.ToString().substr(0,20).c_str(),
             nTar.ToString().substr(0,20).c_str(),
             nValueIn,
+            nCoinWeight,
             bnCoinDayWeight.ToString().c_str(),
             nBits,
             nStakeModifier,
             nTimeBlockFrom,
             nTimeTx);
     }
-    if (CBigNum(hashProofOfStake) > bnCoinDayWeight * bnTargetPerCoinDay)
+    if (CBigNum(hashProofOfStake) * COIN * (24 * 60 * 60) > bnTargetProduct)
         return false;
     if (fDebug && !fPrintProofOfStake)
     {
