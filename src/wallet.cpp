@@ -4251,8 +4251,16 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
     }
 
     if (fTryTransparent && !setCoins.empty())
+    {
+    if (fDebug && GetBoolArg("-printcoinstakedebug"))
+        printf("CreateCoinStake() : setCoins has %d entries nValueIn=%lld nTargetValue=%lld\n", (int)setCoins.size(), nValueIn, nBalance - nReserveBalance);
     BOOST_FOREACH(PAIRTYPE(const CWalletTx*, unsigned int) pcoin, setCoins)
     {
+        if (fDebug && GetBoolArg("-printcoinstakedebug"))
+            printf("CreateCoinStake() : processing coin tx=%s:%d value=%lld hashBlock=%s\n",
+                pcoin.first->GetHash().ToString().substr(0,16).c_str(), pcoin.second,
+                pcoin.first->vout[pcoin.second].nValue,
+                pcoin.first->hashBlock.ToString().substr(0,16).c_str());
         {
             LOCK(cs_main);
             if (pcoin.first->hashBlock != 0) {
