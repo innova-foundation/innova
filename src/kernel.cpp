@@ -434,21 +434,10 @@ bool CheckStakeKernelHash(unsigned int nBits, const CBlock& blockFrom, unsigned 
     };
 
     // Now check if proof-of-stake hash meets target protocol
-    if (fDebug && GetBoolArg("-printcoinstakedebug"))
-    {
-        CBigNum nTry = CBigNum(hashProofOfStake);
-        CBigNum nTar = bnCoinDayWeight * bnTargetPerCoinDay;
-        printf("CheckStakeKernelHash() : try=%s target=%s coinval=%lld weight=%lld coinage=%s nBits=0x%08x modifier=0x%016" PRIx64 " blktime=%u txtime=%u\n",
-            nTry.ToString().substr(0,20).c_str(),
-            nTar.ToString().substr(0,20).c_str(),
-            nValueIn,
-            nCoinWeight,
-            bnCoinDayWeight.ToString().c_str(),
-            nBits,
-            nStakeModifier,
-            nTimeBlockFrom,
-            nTimeTx);
-    }
+    // Use cross-multiplication to avoid integer division precision loss for small coins:
+    //   hash > coinDayWeight * target  where  coinDayWeight = value * weight / COIN / 86400
+    // is equivalent to:
+    //   hash * COIN * 86400 > value * weight * target
     if (CBigNum(hashProofOfStake) * COIN * (24 * 60 * 60) > bnTargetProduct)
         return false;
     if (fDebug && !fPrintProofOfStake)
