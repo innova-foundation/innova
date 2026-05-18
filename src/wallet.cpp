@@ -4431,7 +4431,7 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
         if (fKernelFound || fShutdown)
             break; // if kernel is found stop searching
     }
-
+    } // end fTryTransparent coin selection block
 
 
     if (nCredit == 0 || nCredit > nBalance - nReserveBalance)
