@@ -1076,8 +1076,8 @@ void ThreadCheckCollaTeralPool(void* parg)
             //let's connect to a random collateralnode every minute!
             int cn = (int)SecureRand((uint32_t)vecCollateralnodes.size());
             CService addr = vecCollateralnodes[cn].addr;
-            AddOneShot(addr.ToStringIPPort());
-            if (fDebug) printf("added collateralnode at %s to connection attempts\n",addr.ToStringIPPort().c_str());
+            OpenNetworkConnectionSimple((CAddress)addr, NULL);
+            if (fDebug) printf("connected to collateralnode at %s\n",addr.ToStringIPPort().c_str());
 
 
             //if we're low on peers, let's connect to some random ipv4 collateralnodes. ipv6 probably won't route anyway
@@ -1087,7 +1087,7 @@ void ThreadCheckCollaTeralPool(void* parg)
                     int cn = (int)SecureRand((uint32_t)vecCollateralnodes.size());
                     CService addr = vecCollateralnodes[cn].addr;
                     if (addr.IsIPv4() && !addr.IsLocal()) {
-                        AddOneShot(addr.ToStringIPPort());
+                        OpenNetworkConnectionSimple((CAddress)addr, NULL);
                     }
                 }
 

@@ -84,6 +84,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         // if (nBestHeight < (GetNumBlocksOfPeers() - 300)) return; // don't process these until near completion
         bool fIsInitialDownload = IsInitialBlockDownload();
         if(fIsInitialDownload) return;
+        printf("DEBUG-ISEE start peer=%s fDisconnect=%d\n", pfrom->addr.ToString().c_str(), pfrom->fDisconnect);
 
         CTxIn vin;
         CService addr;
@@ -272,6 +273,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         } else {
             if (fDebugCN) printf("isee - Rejected collateralnode entry %s: %s\n", addr.ToString().c_str(),vinError.c_str());
         }
+        printf("DEBUG-ISEE end peer=%s fDisconnect=%d\n", pfrom->addr.ToString().c_str(), pfrom->fDisconnect);
     }
 
     else if (strCommand == "iseep") { //CollaTeral Election Entry Ping
@@ -411,6 +413,9 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 	      LOCK(cs_collateralnodes);
         int count = vecCollateralnodes.size();
         int i = 0;
+        int sent = 0;
+
+        printf("DEBUG-ISEG start peer=%s count=%d fDisconnect=%d\n", pfrom->addr.ToString().c_str(), count, pfrom->fDisconnect);
 
         for (CCollateralNode mn : vecCollateralnodes) {
 
@@ -421,17 +426,21 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
                 if(mn.IsEnabled()) {
                     if(fDebugCN && fDebugNet) printf("iseg - Sending collateralnode entry - %s \n", mn.addr.ToString().c_str());
                     pfrom->PushMessage("isee", mn.vin, mn.addr, mn.sig, mn.now, mn.pubkey, mn.pubkey2, count, i, mn.lastTimeSeen, mn.protocolVersion);
+                    sent++;
                 }
             } else if (vin == mn.vin) {
                 if(fDebugCN && fDebugNet) printf("iseg - Sending collateralnode entry - %s \n", mn.addr.ToString().c_str());
                 pfrom->PushMessage("isee", mn.vin, mn.addr, mn.sig, mn.now, mn.pubkey, mn.pubkey2, count, i, mn.lastTimeSeen, mn.protocolVersion);
+                sent++;
                 printf("iseg - Sent 1 collateralnode entries to %s\n", pfrom->addr.ToString().c_str());
+                printf("DEBUG-ISEG end peer=%s sent=%d fDisconnect=%d\n", pfrom->addr.ToString().c_str(), sent, pfrom->fDisconnect);
                 return;
             }
             i++;
         }
 
         printf("iseg - Sent %d collateralnode entries to %s\n", count, pfrom->addr.ToString().c_str());
+        printf("DEBUG-ISEG end peer=%s sent=%d fDisconnect=%d\n", pfrom->addr.ToString().c_str(), sent, pfrom->fDisconnect);
     }
 
     else if (strCommand == "mnget") { //Collateralnode Payments Request Sync

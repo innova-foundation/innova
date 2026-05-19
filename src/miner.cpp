@@ -132,7 +132,10 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         pindexPrev = pindexBest;
     }
     if (!pindexPrev)
+    {
+        printf("CreateNewBlock: ERROR: pindexPrev is NULL\n");
         return NULL;
+    }
 
     int payments = 1;
     // Create coinbase tx
@@ -584,7 +587,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         int64_t blockValue = GetProofOfWorkReward(nRewardHeight, nFees);
         if (!MoneyRange(blockValue))
         {
-            printf("CreateNewBlock: ERROR: blockValue %" PRId64 " out of MoneyRange\n", blockValue);
+            printf("CreateNewBlock: ERROR: blockValue %" PRId64 " out of MoneyRange (nHeight=%d, nFees=%" PRId64 ")\n", blockValue, nHeight, nFees);
             return NULL;
         }
         int64_t collateralnodePayment = GetCollateralnodePayment(pindexPrev->nHeight+1, blockValue);
@@ -846,7 +849,7 @@ void StakeMiner(CWallet *pwallet)
         // ThreadMessageHandler, preventing block/inv processing.
         {
             LOCK(cs_main);
-            if (pindexBest && pindexBest->GetBlockTime() < GetTime() - 300)
+            if (!fTestNet && pindexBest && pindexBest->GetBlockTime() < GetTime() - 300)
             {
                 if (fDebug && GetBoolArg("-printcoinstake"))
                     printf("StakeMiner() chain stale, pausing for sync\n");
@@ -887,7 +890,11 @@ void StakeMiner(CWallet *pwallet)
         if (fDebug && GetBoolArg("-printcoinstake")) printf ("creating block. ");
         auto_ptr<CBlock> pblock(CreateNewBlock(pwallet, true, &nFees));
         if (!pblock.get())
-            return;
+        {
+            printf("StakeMiner: CreateNewBlock failed, retrying...\n");
+            MilliSleep(5000);
+            continue;
+        }
 
         if (fDebug && GetBoolArg("-printcoinstake")) printf ("signing block. ");
         // Trying to sign a block
@@ -955,7 +962,7 @@ void CPUMiner(CWallet* pwallet)
 
         {
             LOCK(cs_main);
-            if (pindexBest && pindexBest->nHeight > 10 && pindexBest->GetBlockTime() < GetTime() - 300)
+            if (!fTestNet && pindexBest && pindexBest->nHeight > 10 && pindexBest->GetBlockTime() < GetTime() - 300)
             {
                 MilliSleep(5000);
                 continue;

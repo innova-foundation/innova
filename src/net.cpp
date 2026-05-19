@@ -1122,8 +1122,8 @@ void SocketSendData(CNode *pnode)
         const CSerializeData &data = *it;
         if (data.size() <= pnode->nSendOffset)
         {
-            printf("SocketSendData: corrupt state - data.size()=%zu <= nSendOffset=%zu, disconnecting\n",
-                   data.size(), (size_t)pnode->nSendOffset);
+            printf("DEBUG-DISCONNECT SocketSendData corrupt state data=%zu offset=%zu peer=%s\n",
+                   data.size(), (size_t)pnode->nSendOffset, pnode->addr.ToString().c_str());
             pnode->CloseSocketDisconnect();
             return;
         }
@@ -1149,7 +1149,7 @@ void SocketSendData(CNode *pnode)
                 int nErr = WSAGetLastError();
                 if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE && nErr != WSAEINTR && nErr != WSAEINPROGRESS)
                 {
-                    printf("socket send error %d\n", nErr);
+                    printf("DEBUG-DISCONNECT send-error %d peer=%s\n", nErr, pnode->addr.ToString().c_str());
                     pnode->CloseSocketDisconnect();
                 }
             }
@@ -1355,6 +1355,10 @@ void ThreadSocketHandler2(void* parg)
                 if (pnode->fDisconnect ||
                     (pnode->GetRefCount() <= 0 && pnode->vRecvMsg.empty() && pnode->nSendSize == 0 && pnode->ssSend.empty()))
                 {
+                    if (!pnode->fDisconnect)
+                        printf("DEBUG-DISCONNECT cleanup-loop ref=%d recvEmpty=%d sendSize=%zu ssEmpty=%d peer=%s\n",
+                               pnode->GetRefCount(), pnode->vRecvMsg.empty(), pnode->nSendSize, pnode->ssSend.empty(),
+                               pnode->addr.ToString().c_str());
                     // remove from vNodes
                     vNodes.erase(remove(vNodes.begin(), vNodes.end(), pnode), vNodes.end());
 
@@ -1515,7 +1519,7 @@ void ThreadSocketHandler2(void* parg)
                     if (pnode->GetTotalRecvSize() > ReceiveFloodSize()) {
                         if (!pnode->fDisconnect)
                             if (fDebug)
-                                printf("socket recv flood control disconnect (%u bytes)\n", pnode->GetTotalRecvSize());
+                                printf("DEBUG-DISCONNECT recv-flood (%u bytes) peer=%s\n", pnode->GetTotalRecvSize(), pnode->addr.ToString().c_str());
                         pnode->CloseSocketDisconnect();
                     }
                     else {
@@ -1524,8 +1528,10 @@ void ThreadSocketHandler2(void* parg)
                         int nBytes = recv(pnode->hSocket, pchBuf, sizeof(pchBuf), MSG_DONTWAIT);
                         if (nBytes > 0)
                         {
-                            if (!pnode->ReceiveMsgBytes(pchBuf, nBytes))
+                            if (!pnode->ReceiveMsgBytes(pchBuf, nBytes)) {
+                                printf("DEBUG-DISCONNECT ReceiveMsgBytes failed peer=%s\n", pnode->addr.ToString().c_str());
                                 pnode->CloseSocketDisconnect();
+                            }
                             pnode->nLastRecv = GetTime();
                             pnode->nRecvBytes += nBytes;
                             pnode->RecordBytesRecv(nBytes);
@@ -1534,7 +1540,7 @@ void ThreadSocketHandler2(void* parg)
                         {
                             // socket closed gracefully
                             if (!pnode->fDisconnect)
-                                printf("socket closed\n");
+                                printf("DEBUG-DISCONNECT socket-closed-by-peer peer=%s\n", pnode->addr.ToString().c_str());
                             pnode->CloseSocketDisconnect();
                         }
                         else if (nBytes < 0)
@@ -1544,7 +1550,7 @@ void ThreadSocketHandler2(void* parg)
                             if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE && nErr != WSAEINTR && nErr != WSAEINPROGRESS)
                             {
                                 if (!pnode->fDisconnect)
-                                    printf("socket recv error %d\n", nErr);
+                                    printf("DEBUG-DISCONNECT recv-error %d peer=%s\n", nErr, pnode->addr.ToString().c_str());
                                 pnode->CloseSocketDisconnect();
                             }
                         }
@@ -1555,7 +1561,7 @@ void ThreadSocketHandler2(void* parg)
                             if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE && nErr != WSAEINTR && nErr != WSAEINPROGRESS)
                             {
                                 if (!pnode->fDisconnect)
-                                    printf("Closing socket, output too large %d\n", nErr);
+                                    printf("DEBUG-DISCONNECT output-too-large %d peer=%s\n", nErr, pnode->addr.ToString().c_str());
                                 pnode->CloseSocketDisconnect();
                             }
                         }
@@ -2362,6 +2368,26 @@ bool OpenNetworkConnection(const CAddress& addrConnect, CSemaphoreGrant *grantOu
     if (fOneShot)
         pnode->fOneShot = true;
 
+    return true;
+}
+
+// Open a network connection without one-shot semantics (used by collateralnode auto-connect)
+bool OpenNetworkConnectionSimple(const CAddress& addrConnect, const char *strDest)
+{
+    if (fShutdown)
+        return false;
+    if (!strDest) {
+        if (IsLocal(addrConnect) ||
+            FindNode((CNetAddr) addrConnect) || CNode::IsBanned(addrConnect) ||
+            FindNode(addrConnect.ToStringIPPort()))
+            return false;
+    } else if (FindNode(strDest))
+        return false;
+
+    CNode* pnode = ConnectNode(addrConnect, strDest);
+    if (!pnode)
+        return false;
+    pnode->fNetworkNode = true;
     return true;
 }
 
