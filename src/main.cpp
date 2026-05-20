@@ -59,6 +59,7 @@ set<pair<COutPoint, unsigned int> > setStakeSeen;
 
 CBigNum bnProofOfWorkLimit(~uint256(0) >> 20);      // "standard" scrypt target limit for proof of work, results with 0,000244140625 proof-of-work difficulty
 CBigNum bnProofOfStakeLimit(~uint256(0) >> 20);
+CBigNum bnProofOfStakeLimitTestNet(~uint256(0) >> 10); // 1024x easier for testnet
 CBigNum bnProofOfWorkLimitTestNet(~uint256(0) >> 16);
 
 /** Fees smaller than this (in innovai) are considered zero fee (for relaying and mining) */
@@ -6135,7 +6136,8 @@ bool LoadBlockIndex(bool fAllowNew)
         pchMessageStart[3] = 0x05;
 
         bnProofOfWorkLimit = bnProofOfWorkLimitTestNet; // 16 bits PoW target limit for testnet
-        nStakeMinAge = 1 * 60 * 60; // test net min age is 1 hours like mainnet
+        bnProofOfStakeLimit = bnProofOfStakeLimitTestNet; // much easier PoS for testnet
+        nStakeMinAge = 1 * 60; // test net min age is 1 minute
         nCoinbaseMaturity = 65; // test maturity is 65 blocks
     };
 
