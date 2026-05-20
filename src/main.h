@@ -260,7 +260,7 @@ inline int GetForkHeightPoem()
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 9;
-    if (fTestNet) return 2800;      // testnet: lowered for live testing
+    if (fTestNet) return 2776;      // testnet: lowered for sequential live testing
     return 7440000;                  // mainnet: 100K blocks after last privacy fork (7,340,000)
 }
 #define FORK_HEIGHT_POEM (GetForkHeightPoem())
@@ -271,7 +271,7 @@ inline int GetForkHeightFinality()
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 10;
-    if (fTestNet) return 2850;      // testnet: 50 blocks after POEM
+    if (fTestNet) return 2777;      // testnet: 1 block after POEM
     return 7445000;                  // mainnet: 5,000 blocks after POEM
 }
 #define FORK_HEIGHT_FINALITY (GetForkHeightFinality())
@@ -282,7 +282,7 @@ inline int GetForkHeightDAG()
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 11;
-    if (fTestNet) return 2900;      // testnet: 50 blocks after finality
+    if (fTestNet) return 2780;      // testnet: 3 blocks after finality
     return 7450000;                  // mainnet: 5,000 blocks after finality
 }
 #define FORK_HEIGHT_DAG (GetForkHeightDAG())
@@ -293,7 +293,7 @@ inline int GetForkHeightDAGKnight()
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 13;
-    if (fTestNet) return 2950;      // testnet: 50 blocks of GHOSTDAG before DAGKNIGHT
+    if (fTestNet) return 2785;      // testnet: 5 blocks of GHOSTDAG before DAGKNIGHT
     return 7500000;                  // mainnet: 50,000 blocks after DAG (~14h at 1s post-DAG blocks)
 }
 #define FORK_HEIGHT_DAGKNIGHT (GetForkHeightDAGKnight())
