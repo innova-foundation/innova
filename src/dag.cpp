@@ -121,6 +121,19 @@ bool CDAGManager::InitBlockDAGData(CBlockIndex* pindex, const std::vector<uint25
     for (const uint256& hashParent : vParents)
         setDAGTips.erase(hashParent);
 
+    static int64_t nLastRebuildTime = 0;
+    if ((int)setDAGTips.size() > 64)
+    {
+        int64_t nNow = GetTimeMillis();
+        if (nNow - nLastRebuildTime > 60000)
+        {
+            nLastRebuildTime = nNow;
+            printf("InitBlockDAGData: tip flood detected (%d tips), triggering incremental rebuild\n",
+                   (int)setDAGTips.size());
+            RebuildDAGOrderIncremental(nPrunedBelowHeight);
+        }
+    }
+
     return true;
 }
 
@@ -153,6 +166,18 @@ CBlockIndex* CDAGManager::SelectBestDAGTip() const
             continue;
 
         CBlockIndex* pindex = mi->second;
+
+        if (pindexBest)
+        {
+            if (pindex->nHeight > pindexBest->nHeight)
+                continue;
+            const CBlockIndex* pWalk = pindexBest;
+            while (pWalk && pWalk->nHeight > pindex->nHeight)
+                pWalk = pWalk->pprev;
+            if (pWalk != pindex)
+                continue;
+        }
+
         if (it->second.nDAGScore > nBestScore ||
             (it->second.nDAGScore == nBestScore && (!pBest || hashTip < pBest->GetBlockHash())))
         {
@@ -160,6 +185,9 @@ CBlockIndex* CDAGManager::SelectBestDAGTip() const
             pBest = pindex;
         }
     }
+
+    if (!pBest && pindexBest)
+        pBest = pindexBest;
 
     return pBest;
 }
@@ -1269,7 +1297,6 @@ void CDAGManager::ColorBlockDAGKnight(CBlockIndex* pindex)
         return;
     }
 
-    // Find selected parent (highest DAG score)
     uint256 hashSelectedParent;
     uint256 nBestParentScore = 0;
 
@@ -1286,8 +1313,10 @@ void CDAGManager::ColorBlockDAGKnight(CBlockIndex* pindex)
                 nParentScore = mi->second->nChainTrust;
         }
 
+        bool fIsPrimary = (hashParent == vParents[0]);
         if (nParentScore > nBestParentScore ||
-            (nParentScore == nBestParentScore && (hashSelectedParent == 0 || hashParent < hashSelectedParent)))
+            (nParentScore == nBestParentScore && (hashSelectedParent == 0 ||
+             (fIsPrimary ? true : hashParent < hashSelectedParent))))
         {
             nBestParentScore = nParentScore;
             hashSelectedParent = hashParent;
@@ -1307,6 +1336,12 @@ void CDAGManager::ColorBlockDAGKnight(CBlockIndex* pindex)
 
     // DAGKNIGHT: Infer local k from DAG structure
     int nLocalK = InferLocalK(hash);
+    if (nLocalK < DAGKNIGHT_K_FLOOR)
+    {
+        printf("ColorBlockDAGKnight: inferred k %d below floor %d for %s, clamping\n",
+               nLocalK, DAGKNIGHT_K_FLOOR, hash.ToString().substr(0,20).c_str());
+        nLocalK = DAGKNIGHT_K_FLOOR;
+    }
     data.nInferredK = nLocalK;
 
     // Inherit blue set from selected parent

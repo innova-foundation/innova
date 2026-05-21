@@ -323,6 +323,17 @@ bool GetKernelStakeModifier(uint256 hashBlockFrom, uint64_t& nStakeModifier, int
     {
         if (!pindex->pnext)
         {   // reached best block; may happen if node is behind on block chain
+            // If best block is already past the selection interval, use its modifier
+            // (it may have inherited the modifier from an earlier block).
+            // This handles chains that stall after a burst: the tip has no generated
+            // modifier, but its inherited modifier is still valid for verification.
+            if (pindex->GetBlockTime() >= pindexFrom->GetBlockTime() + nStakeModifierSelectionInterval)
+            {
+                nStakeModifier = pindex->nStakeModifier;
+                nStakeModifierHeight = pindex->nHeight;
+                nStakeModifierTime = pindex->GetBlockTime();
+                return true;
+            }
             if (fPrintProofOfStake || (pindex->GetBlockTime() + nStakeMinAge - nStakeModifierSelectionInterval > GetAdjustedTime()))
             {
                 return error("GetKernelStakeModifier() : reached best block %s at height %d from block %s",

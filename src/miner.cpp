@@ -128,8 +128,10 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
     CBlockIndex* pindexPrev;
     {
-        LOCK(cs_main);
-        pindexPrev = pindexBest;
+        LOCK2(cs_main, g_dagManager.cs_dag);
+        pindexPrev = g_dagManager.SelectBestDAGTip();
+        if (!pindexPrev)
+            pindexPrev = pindexBest;
     }
     if (!pindexPrev)
     {
@@ -181,14 +183,28 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         {
             LOCK2(cs_main, g_dagManager.cs_dag);
             std::vector<uint256> vTips = g_dagManager.GetDAGTips();
+
+            std::vector<std::pair<uint256, uint256>> vTipScores;
             for (const uint256& hashTip : vTips)
+            {
+                if (pindexPrev->phashBlock && hashTip == pindexPrev->GetBlockHash())
+                    continue; // skip primary parent
+                uint256 nScore = g_dagManager.ComputeDAGScore(mapBlockIndex[hashTip]);
+                vTipScores.push_back(std::make_pair(nScore, hashTip));
+            }
+            std::sort(vTipScores.begin(), vTipScores.end(),
+                      [](const std::pair<uint256, uint256>& a, const std::pair<uint256, uint256>& b) {
+                          if (a.first != b.first)
+                              return a.first > b.first; // higher score first
+                          return a.second < b.second;   // deterministic tiebreak
+                      });
+
+            for (const auto& pair : vTipScores)
             {
                 if (vDAGParents.size() >= (unsigned int)MAX_DAG_PARENTS)
                     break;
 
-                // Skip if already the primary parent
-                if (pindexPrev->phashBlock && hashTip == pindexPrev->GetBlockHash())
-                    continue;
+                const uint256& hashTip = pair.second;
 
                 // Merge parent must exist and be within DAG_MERGE_DEPTH
                 std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashTip);

@@ -5527,7 +5527,8 @@ bool CBlock::AcceptBlock()
     }
 
     // Check proof-of-work or proof-of-stake
-    if (nBits != GetNextTargetRequired(pindexPrev, IsProofOfStake()))
+    unsigned int nComputedBits = GetNextTargetRequired(pindexPrev, IsProofOfStake());
+    if (nBits != nComputedBits)
         return DoS(100, error("AcceptBlock() : incorrect %s", IsProofOfWork() ? "proof-of-work" : "proof-of-stake"));
 
     if (GetBlockTime() <= pindexPrev->GetPastTimeLimit() || FutureDrift(GetBlockTime(), nHeight) < pindexPrev->GetBlockTime())
