@@ -2228,6 +2228,24 @@ void static PruneOrphanBlocks()
     }
 }
 
+static std::vector<uint256> GetDAGParentsFromBlock(const CBlock& block)
+{
+    std::vector<uint256> vDAGParents;
+
+    if (block.vtx.empty())
+        return vDAGParents;
+
+    for (unsigned int i = 0; i < block.vtx[0].vout.size(); i++)
+    {
+        vDAGParents = ExtractDAGParents(block.vtx[0].vout[i].scriptPubKey);
+        if (vDAGParents.empty())
+            continue;
+        break;
+    }
+
+    return vDAGParents;
+}
+
 static std::vector<uint256> GetMissingDAGMergeParents(const CBlock& block)
 {
     std::vector<uint256> vMissing;
@@ -2240,24 +2258,49 @@ static std::vector<uint256> GetMissingDAGMergeParents(const CBlock& block)
     if (nHeight < FORK_HEIGHT_DAG)
         return vMissing;
 
-    for (unsigned int i = 0; i < block.vtx[0].vout.size(); i++)
+    std::vector<uint256> vDAGParents = GetDAGParentsFromBlock(block);
+    for (unsigned int j = 1; j < vDAGParents.size(); j++)
     {
-        std::vector<uint256> vDAGParents = ExtractDAGParents(block.vtx[0].vout[i].scriptPubKey);
-        if (vDAGParents.empty())
+        if (mapBlockIndex.count(vDAGParents[j]))
             continue;
 
-        for (unsigned int j = 1; j < vDAGParents.size(); j++)
-        {
-            if (mapBlockIndex.count(vDAGParents[j]))
-                continue;
-
-            if (std::find(vMissing.begin(), vMissing.end(), vDAGParents[j]) == vMissing.end())
-                vMissing.push_back(vDAGParents[j]);
-        }
-        break;
+        if (std::find(vMissing.begin(), vMissing.end(), vDAGParents[j]) == vMissing.end())
+            vMissing.push_back(vDAGParents[j]);
     }
 
     return vMissing;
+}
+
+static void QueueDAGMergeParentInventories(CNode* pfrom, CBlockIndex* pindex, std::set<uint256>& setQueued)
+{
+    if (!pfrom || !pindex || pindex->nHeight < FORK_HEIGHT_DAG)
+        return;
+
+    CBlock block;
+    if (!block.ReadFromDisk(pindex))
+        return;
+
+    std::vector<uint256> vDAGParents = GetDAGParentsFromBlock(block);
+    if (vDAGParents.size() <= 1)
+        return;
+
+    for (unsigned int i = 1; i < vDAGParents.size(); i++)
+    {
+        std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(vDAGParents[i]);
+        if (mi == mapBlockIndex.end())
+            continue;
+
+        CBlockIndex* pindexParent = mi->second;
+        if (pindexParent->IsInMainChain())
+            continue;
+
+        if (!setQueued.insert(vDAGParents[i]).second)
+            continue;
+
+        CInv inv(MSG_BLOCK, vDAGParents[i]);
+        LOCK(pfrom->cs_inventory);
+        pfrom->vInventoryToSend.push_back(inv);
+    }
 }
 
 // Proof of Work miner's coin base reward
@@ -7244,6 +7287,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         if (pindex)
             pindex = pindex->pnext;
         int nLimit = 1000;
+        std::set<uint256> setQueuedDAGParents;
         if (fDebugNet) printf("getblocks %d to %s limit %d\n", (pindex ? pindex->nHeight : -1), hashStop.ToString().substr(0,20).c_str(), nLimit);
         for (; pindex; pindex = pindex->pnext)
         {
@@ -7256,6 +7300,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                     pfrom->PushInventory(CInv(MSG_BLOCK, hashBestChain));
                 break;
             }
+            QueueDAGMergeParentInventories(pfrom, pindex, setQueuedDAGParents);
             {
                 CInv inv(MSG_BLOCK, pindex->GetBlockHash());
                 LOCK(pfrom->cs_inventory);
