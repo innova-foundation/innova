@@ -135,6 +135,61 @@ jobs:
           path: innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64.tar.gz
 
   # ─────────────────────────────────────────────────────────
+  # Ubuntu 26.04 x86_64 (daemon + Qt) via Docker container
+  # ─────────────────────────────────────────────────────────
+  build-ubuntu-2604:
+    runs-on: ubuntu-22.04
+    needs: get-version
+    container:
+      image: ubuntu:26.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y ca-certificates software-properties-common
+          add-apt-repository -y universe || true
+          apt-get update
+          apt-get install -y build-essential libtool autotools-dev automake pkg-config \
+            libssl-dev libevent-dev bsdextrautils libboost-all-dev libdb++-dev \
+            libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
+            libsecp256k1-dev \
+            libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools \
+            libprotobuf-dev protobuf-compiler \
+            git
+
+      - name: Build daemon
+        run: |
+          cd src
+          make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
+
+      - name: Build Qt wallet
+        run: |
+          sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
+          strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5 || true
+          qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+          make -j$(nproc)
+
+      - name: Package
+        run: |
+          mkdir -p innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64
+          cp src/innovad Innova innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64/
+          strip innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64/*
+          cd innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64
+          sha256sum * > SHA256SUMS.txt
+          cd ..
+          tar -czf innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64.tar.gz \
+            innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64/
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: innova-ubuntu2604-x86_64
+          path: innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64.tar.gz
+
+  # ─────────────────────────────────────────────────────────
   # Debian 12 x86_64 (daemon + Qt) via Docker container
   # ─────────────────────────────────────────────────────────
   build-debian-12:
@@ -703,6 +758,7 @@ jobs:
       - get-version
       - build-ubuntu-2204
       - build-ubuntu-2404
+      - build-ubuntu-2604
       - build-debian-11
       - build-debian-12
       - build-fedora-40
