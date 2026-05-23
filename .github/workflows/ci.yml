@@ -17,9 +17,21 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Check whitespace
-        run: git diff-tree --check --no-commit-id --root -r HEAD
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            git fetch --no-tags origin "${{ github.base_ref }}"
+            base="$(git merge-base HEAD "origin/${{ github.base_ref }}")"
+            git diff --check "$base" HEAD
+          elif [[ "${{ github.event.before }}" == "0000000000000000000000000000000000000000" ]]; then
+            git diff-tree --check --no-commit-id -r HEAD
+          else
+            git diff --check "${{ github.event.before }}" HEAD
+          fi
 
       - name: Install dependencies
         run: |
