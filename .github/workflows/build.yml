@@ -4,14 +4,13 @@ on:
   push:
     tags:
       - 'v*'
-    branches:
-      - master
-      - dev
-      - idag
-  pull_request:
-    branches:
-      - master
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish a GitHub release after the full matrix completes'
+        required: false
+        type: boolean
+        default: false
 
 env:
   COIN_NAME: innova
@@ -695,10 +694,10 @@ jobs:
           path: innova-${{ needs.get-version.outputs.version }}-linux-armhf.tar.gz
 
   # ─────────────────────────────────────────────────────────
-  # Create GitHub Release (only on version tags)
+  # Create GitHub Release (version tags or explicit manual publish)
   # ─────────────────────────────────────────────────────────
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release)
     runs-on: ubuntu-22.04
     needs:
       - get-version
@@ -736,9 +735,27 @@ jobs:
           echo ""
           cat SHA256SUMS.txt
 
+      - name: Delete existing release records
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: v${{ needs.get-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          release_ids="$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate --jq ".[] | select(.tag_name == \"${TAG_NAME}\") | .id")"
+          if [ -z "$release_ids" ]; then
+            echo "No existing releases for ${TAG_NAME}"
+            exit 0
+          fi
+
+          for release_id in $release_ids; do
+            echo "Deleting release ${release_id} for ${TAG_NAME}"
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/releases/${release_id}"
+          done
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ needs.get-version.outputs.version }}
           name: "Innova v${{ needs.get-version.outputs.version }}"
           body: "Official release binaries for Innova v${{ needs.get-version.outputs.version }}. See release notes above for details."
           files: release-assets/*

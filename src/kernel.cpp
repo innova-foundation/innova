@@ -323,6 +323,17 @@ bool GetKernelStakeModifier(uint256 hashBlockFrom, uint64_t& nStakeModifier, int
     {
         if (!pindex->pnext)
         {   // reached best block; may happen if node is behind on block chain
+            // If best block is already past the selection interval, use its modifier
+            // (it may have inherited the modifier from an earlier block).
+            // This handles chains that stall after a burst: the tip has no generated
+            // modifier, but its inherited modifier is still valid for verification.
+            if (pindex->GetBlockTime() >= pindexFrom->GetBlockTime() + nStakeModifierSelectionInterval)
+            {
+                nStakeModifier = pindex->nStakeModifier;
+                nStakeModifierHeight = pindex->nHeight;
+                nStakeModifierTime = pindex->GetBlockTime();
+                return true;
+            }
             if (fPrintProofOfStake || (pindex->GetBlockTime() + nStakeMinAge - nStakeModifierSelectionInterval > GetAdjustedTime()))
             {
                 return error("GetKernelStakeModifier() : reached best block %s at height %d from block %s",
@@ -395,7 +406,9 @@ bool CheckStakeKernelHash(unsigned int nBits, const CBlock& blockFrom, unsigned 
 
     uint256 hashBlockFrom = blockFrom.GetHash();
 
-    CBigNum bnCoinDayWeight = CBigNum(nValueIn) * GetWeight((int64_t)txPrev.nTime, (int64_t)nTimeTx) / COIN / (24 * 60 * 60);
+    int64_t nCoinWeight = GetWeight((int64_t)txPrev.nTime, (int64_t)nTimeTx);
+    CBigNum bnTargetProduct = CBigNum(nValueIn) * nCoinWeight * bnTargetPerCoinDay;
+    CBigNum bnCoinDayWeight = CBigNum(nValueIn) * nCoinWeight / COIN / (24 * 60 * 60);
     targetProofOfStake = (bnCoinDayWeight * bnTargetPerCoinDay).getuint256();
 
     // Calculate hash
@@ -432,7 +445,11 @@ bool CheckStakeKernelHash(unsigned int nBits, const CBlock& blockFrom, unsigned 
     };
 
     // Now check if proof-of-stake hash meets target protocol
-    if (CBigNum(hashProofOfStake) > bnCoinDayWeight * bnTargetPerCoinDay)
+    // Use cross-multiplication to avoid integer division precision loss for small coins:
+    //   hash > coinDayWeight * target  where  coinDayWeight = value * weight / COIN / 86400
+    // is equivalent to:
+    //   hash * COIN * 86400 > value * weight * target
+    if (CBigNum(hashProofOfStake) * COIN * (24 * 60 * 60) > bnTargetProduct)
         return false;
     if (fDebug && !fPrintProofOfStake)
     {

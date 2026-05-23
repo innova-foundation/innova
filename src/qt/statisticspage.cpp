@@ -10,17 +10,40 @@
 #include <sstream>
 #include <string>
 #include <QDateTime>
+#include <QFormLayout>
+#include <QGroupBox>
+#include <QLabel>
 
 using namespace json_spirit;
 
 StatisticsPage::StatisticsPage(QWidget *parent) :
     QWidget(parent),
     ui(new Ui::StatisticsPage),
-    lastUpdateTime(0)
+    model(0),
+    lastUpdateTime(0),
+    dagStatusBox(0),
+    dagTipsBox(0),
+    dagKBox(0),
+    dagLimitBox(0),
+    dagFinalityBox(0)
 {
     ui->setupUi(this);
 
-    setFixedSize(400, 420);
+    QGroupBox *dagGroup = new QGroupBox(tr("IDAG"), this);
+    QFormLayout *dagLayout = new QFormLayout(dagGroup);
+    dagStatusBox = new QLabel(tr("N/A"), dagGroup);
+    dagTipsBox = new QLabel(tr("N/A"), dagGroup);
+    dagKBox = new QLabel(tr("N/A"), dagGroup);
+    dagLimitBox = new QLabel(tr("N/A"), dagGroup);
+    dagFinalityBox = new QLabel(tr("N/A"), dagGroup);
+    dagLayout->addRow(tr("Status"), dagStatusBox);
+    dagLayout->addRow(tr("Tips"), dagTipsBox);
+    dagLayout->addRow(tr("Inferred k"), dagKBox);
+    dagLayout->addRow(tr("Adaptive limit"), dagLimitBox);
+    dagLayout->addRow(tr("Finality"), dagFinalityBox);
+    ui->gridLayout->addWidget(dagGroup, 2, 0, 1, 2);
+
+    setFixedSize(680, 560);
 
     connect(ui->startButton, SIGNAL(pressed()), this, SLOT(updateStatistics()));
 }
@@ -45,6 +68,8 @@ void StatisticsPage::updateStatistics()
         return;
     }
     lastUpdateTime = currentTime;
+
+    updateDAGStatistics();
 
     if (!pindexBest || !pwalletMain)
         return;
@@ -434,8 +459,50 @@ void StatisticsPage::updatePrevious(int nHeight, int nMinWeight, int nNetworkWei
 
 void StatisticsPage::setModel(ClientModel *model)
 {
+    if (this->model)
+        disconnect(this->model, 0, this, 0);
+
     this->model = model;
+    if (this->model)
+        connect(this->model, SIGNAL(numBlocksChanged(int,int)), this, SLOT(updateStatistics()));
     updateStatistics();
+}
+
+void StatisticsPage::updateDAGStatistics()
+{
+    if (!model)
+        return;
+
+    ClientModel::DAGStatus dag = model->getDAGStatus();
+    if (dag.lockBusy)
+    {
+        dagStatusBox->setText("<b><font color=\"yellow\">" + tr("Updating...") + "</font></b>");
+        return;
+    }
+
+    if (!dag.valid)
+    {
+        dagStatusBox->setText("<b><font color=\"red\">" + tr("Unavailable") + "</font></b>");
+        return;
+    }
+
+    QString status = dag.active
+        ? (dag.dagKnightActive ? tr("DAGKNIGHT active") : tr("GHOSTDAG active"))
+        : tr("IDAG not active");
+    QString inferredK = dag.dagKnightActive
+        ? (dag.inferredKError ? tr("Unavailable") : QString::number(dag.inferredK))
+        : tr("N/A");
+    QString finality = tr("%1, votes %2/%3, finalized %4")
+        .arg(dag.finalityTier)
+        .arg(dag.currentEpochVotes)
+        .arg(dag.currentEpochVoters)
+        .arg(dag.finalizedHeight);
+
+    dagStatusBox->setText("<b><font color=\"light blue\">" + status + "</font></b>");
+    dagTipsBox->setText("<b><font color=\"light blue\">" + QString::number(dag.tipCount) + "</font></b>");
+    dagKBox->setText("<b><font color=\"light blue\">" + inferredK + "</font></b>");
+    dagLimitBox->setText("<b><font color=\"light blue\">" + QString::number(dag.adaptiveBlockLimit) + " bytes</font></b>");
+    dagFinalityBox->setText("<b><font color=\"light blue\">" + finality + "</font></b>");
 }
 
 

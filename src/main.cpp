@@ -59,6 +59,7 @@ set<pair<COutPoint, unsigned int> > setStakeSeen;
 
 CBigNum bnProofOfWorkLimit(~uint256(0) >> 20);      // "standard" scrypt target limit for proof of work, results with 0,000244140625 proof-of-work difficulty
 CBigNum bnProofOfStakeLimit(~uint256(0) >> 20);
+CBigNum bnProofOfStakeLimitTestNet(~uint256(0) >> 10); // 1024x easier for testnet
 CBigNum bnProofOfWorkLimitTestNet(~uint256(0) >> 16);
 
 /** Fees smaller than this (in innovai) are considered zero fee (for relaying and mining) */
@@ -2225,6 +2226,112 @@ void static PruneOrphanBlocks()
         mapOrphanCountByNode[nodeIt->second]--;
         mapOrphanBlocksByNode.erase(nodeIt);
     }
+}
+
+static std::vector<uint256> GetDAGParentsFromBlock(const CBlock& block)
+{
+    std::vector<uint256> vDAGParents;
+
+    if (block.vtx.empty())
+        return vDAGParents;
+
+    for (unsigned int i = 0; i < block.vtx[0].vout.size(); i++)
+    {
+        vDAGParents = ExtractDAGParents(block.vtx[0].vout[i].scriptPubKey);
+        if (vDAGParents.empty())
+            continue;
+        break;
+    }
+
+    return vDAGParents;
+}
+
+static std::vector<uint256> GetMissingDAGMergeParents(const CBlock& block)
+{
+    std::vector<uint256> vMissing;
+
+    std::map<uint256, CBlockIndex*>::iterator miPrev = mapBlockIndex.find(block.hashPrevBlock);
+    if (miPrev == mapBlockIndex.end())
+        return vMissing;
+
+    int nHeight = miPrev->second->nHeight + 1;
+    if (nHeight < FORK_HEIGHT_DAG)
+        return vMissing;
+
+    std::vector<uint256> vDAGParents = GetDAGParentsFromBlock(block);
+    for (unsigned int j = 1; j < vDAGParents.size(); j++)
+    {
+        if (mapBlockIndex.count(vDAGParents[j]))
+            continue;
+
+        if (std::find(vMissing.begin(), vMissing.end(), vDAGParents[j]) == vMissing.end())
+            vMissing.push_back(vDAGParents[j]);
+    }
+
+    return vMissing;
+}
+
+static void QueueBlockInventory(CNode* pfrom, const uint256& hash, std::set<uint256>& setQueued)
+{
+    if (!pfrom)
+        return;
+
+    if (!setQueued.insert(hash).second)
+        return;
+
+    CInv inv(MSG_BLOCK, hash);
+    LOCK(pfrom->cs_inventory);
+    pfrom->vInventoryToSend.push_back(inv);
+}
+
+static void QueueDAGSideBlockWithAncestors(CNode* pfrom, const uint256& hash, std::set<uint256>& setQueued, std::set<uint256>& setVisiting, int nDepth)
+{
+    if (!pfrom || nDepth > DAG_MERGE_DEPTH)
+        return;
+
+    std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hash);
+    if (mi == mapBlockIndex.end())
+        return;
+
+    CBlockIndex* pindex = mi->second;
+    if (pindex->IsInMainChain())
+        return;
+
+    if (!setVisiting.insert(hash).second)
+        return;
+
+    CBlock block;
+    if (!block.ReadFromDisk(pindex))
+    {
+        setVisiting.erase(hash);
+        return;
+    }
+
+    std::map<uint256, CBlockIndex*>::iterator miPrev = mapBlockIndex.find(block.hashPrevBlock);
+    if (miPrev != mapBlockIndex.end() && !miPrev->second->IsInMainChain())
+        QueueDAGSideBlockWithAncestors(pfrom, block.hashPrevBlock, setQueued, setVisiting, nDepth + 1);
+
+    std::vector<uint256> vDAGParents = GetDAGParentsFromBlock(block);
+    for (unsigned int i = 1; i < vDAGParents.size(); i++)
+        QueueDAGSideBlockWithAncestors(pfrom, vDAGParents[i], setQueued, setVisiting, nDepth + 1);
+
+    QueueBlockInventory(pfrom, hash, setQueued);
+    setVisiting.erase(hash);
+}
+
+static void QueueDAGMergeParentInventories(CNode* pfrom, CBlockIndex* pindex, std::set<uint256>& setQueued)
+{
+    if (!pfrom || !pindex || pindex->nHeight < FORK_HEIGHT_DAG)
+        return;
+
+    CBlock block;
+    if (!block.ReadFromDisk(pindex))
+        return;
+
+    std::vector<uint256> vDAGParents = GetDAGParentsFromBlock(block);
+    std::set<uint256> setVisiting;
+    for (unsigned int i = 1; i < vDAGParents.size(); i++)
+        QueueDAGSideBlockWithAncestors(pfrom, vDAGParents[i], setQueued, setVisiting, 0);
 }
 
 // Proof of Work miner's coin base reward
@@ -5527,7 +5634,8 @@ bool CBlock::AcceptBlock()
     }
 
     // Check proof-of-work or proof-of-stake
-    if (nBits != GetNextTargetRequired(pindexPrev, IsProofOfStake()))
+    unsigned int nComputedBits = GetNextTargetRequired(pindexPrev, IsProofOfStake());
+    if (nBits != nComputedBits)
         return DoS(100, error("AcceptBlock() : incorrect %s", IsProofOfWork() ? "proof-of-work" : "proof-of-stake"));
 
     if (GetBlockTime() <= pindexPrev->GetPastTimeLimit() || FutureDrift(GetBlockTime(), nHeight) < pindexPrev->GetBlockTime())
@@ -5626,8 +5734,17 @@ bool CBlock::AcceptBlock()
 
             // Must exist in block index
             if (!mapBlockIndex.count(vDAGParents[i]))
+            {
+                if (IsInitialBlockDownload())
+                {
+                    if (fDebug)
+                        printf("AcceptBlock() : DAG merge parent[%d] %s not found during IBD, deferring validation\n",
+                               i, vDAGParents[i].ToString().substr(0, 20).c_str());
+                    continue;
+                }
                 return DoS(10, error("AcceptBlock() : DAG merge parent[%d] %s not found",
                                       i, vDAGParents[i].ToString().substr(0, 20).c_str()));
+            }
 
             // Merge parent must have lower height
             CBlockIndex* pMergeParent = mapBlockIndex[vDAGParents[i]];
@@ -5775,27 +5892,47 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
 
     }
 
-    // IDAG Phase 2: Request missing merge parents without orphaning the block
+    // IDAG Phase 2: hold blocks whose primary parent is known but whose DAG
+    // merge parents are still in flight. Without this, live DAG sync can
+    // incorrectly DoS-score peers for ordinary out-of-order delivery.
     if (pindexBest && pindexBest->nHeight + 1 >= FORK_HEIGHT_DAG && mapBlockIndex.count(pblock->hashPrevBlock))
     {
-        // Primary parent exists — check merge parents in coinbase OP_RETURN
-        for (unsigned int i = 0; i < pblock->vtx[0].vout.size(); i++)
+        std::vector<uint256> vMissingDAGParents = GetMissingDAGMergeParents(*pblock);
+        if (!vMissingDAGParents.empty())
         {
-            std::vector<uint256> vDAGParents = ExtractDAGParents(pblock->vtx[0].vout[i].scriptPubKey);
-            if (!vDAGParents.empty())
+            if (fDebug)
+                printf("ProcessBlock: DAG ORPHAN BLOCK %s, missing merge parent=%s\n",
+                       hash.ToString().substr(0,20).c_str(),
+                       vMissingDAGParents[0].ToString().substr(0,20).c_str());
+
+            PruneOrphanBlocks();
+
+            if (pfrom)
             {
-                for (unsigned int j = 1; j < vDAGParents.size(); j++)
+                int nOrphansFromPeer = mapOrphanCountByNode[pfrom->GetId()];
+                if (nOrphansFromPeer >= MAX_ORPHAN_BLOCKS_PER_PEER)
                 {
-                    if (!mapBlockIndex.count(vDAGParents[j]) && pfrom)
-                    {
-                        pfrom->AskFor(CInv(MSG_BLOCK, vDAGParents[j]));
-                        if (fDebug)
-                            printf("ProcessBlock: requesting missing DAG merge parent %s\n",
-                                   vDAGParents[j].ToString().substr(0, 20).c_str());
-                    }
+                    pfrom->PushGetBlocks(pindexBest, uint256(0));
+
+                    if (IsInitialBlockDownload())
+                        return error("ProcessBlock() : peer %d exceeded DAG orphan limit (IBD, no penalty)", pfrom->GetId());
+                    pfrom->Misbehaving(1);
+                    return error("ProcessBlock() : peer %d exceeded DAG orphan limit", pfrom->GetId());
                 }
-                break;
             }
+
+            CBlock* pblock2 = new CBlock(*pblock);
+            mapOrphanBlocks.insert(make_pair(hash, pblock2));
+            mapOrphanBlocksByPrev.insert(make_pair(vMissingDAGParents[0], pblock2));
+
+            if (pfrom)
+            {
+                mapOrphanBlocksByNode[hash] = pfrom->GetId();
+                mapOrphanCountByNode[pfrom->GetId()]++;
+                for (const uint256& hashMissing : vMissingDAGParents)
+                    pfrom->AskFor(CInv(MSG_BLOCK, hashMissing));
+            }
+            return true;
         }
     }
 
@@ -5880,6 +6017,21 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
         {
             CBlock* pblockOrphan = (*mi).second;
             uint256 orphanHash = pblockOrphan->GetHash();
+            std::vector<uint256> vMissingDAGParents = GetMissingDAGMergeParents(*pblockOrphan);
+            if (!vMissingDAGParents.empty())
+            {
+                if (fDebug)
+                    printf("ProcessBlock: DAG orphan %s still missing merge parent %s\n",
+                           orphanHash.ToString().substr(0,20).c_str(),
+                           vMissingDAGParents[0].ToString().substr(0,20).c_str());
+                mapOrphanBlocksByPrev.insert(make_pair(vMissingDAGParents[0], pblockOrphan));
+                if (pfrom)
+                {
+                    for (const uint256& hashMissing : vMissingDAGParents)
+                        pfrom->AskFor(CInv(MSG_BLOCK, hashMissing));
+                }
+                continue;
+            }
             if (pblockOrphan->AcceptBlock())
                 vWorkQueue.push_back(orphanHash);
             mapOrphanBlocks.erase(orphanHash);
@@ -6130,14 +6282,15 @@ bool LoadBlockIndex(bool fAllowNew)
     }
     else if (fTestNet)
     {
-        pchMessageStart[0] = 0x27;
-        pchMessageStart[1] = 0x43;
-        pchMessageStart[2] = 0x35;
-        pchMessageStart[3] = 0x4b;
+        pchMessageStart[0] = 0x9a;
+        pchMessageStart[1] = 0x77;
+        pchMessageStart[2] = 0x26;
+        pchMessageStart[3] = 0x05;
 
         bnProofOfWorkLimit = bnProofOfWorkLimitTestNet; // 16 bits PoW target limit for testnet
-        nStakeMinAge = 1 * 60 * 60; // test net min age is 1 hours like mainnet
-        nCoinbaseMaturity = 65; // test maturity is 65 blocks
+        bnProofOfStakeLimit = bnProofOfStakeLimitTestNet; // much easier PoS for testnet
+        nStakeMinAge = 1 * 60; // test net min age is 1 minute
+        nCoinbaseMaturity = 15; // test maturity is 15 blocks
     };
 
     //
@@ -6197,10 +6350,10 @@ bool LoadBlockIndex(bool fAllowNew)
         }
         else if(fTestNet)
         {
-            const char* pszTimestampTestNet = "Innova Testnet V2 Relaunch | March 2026 | CircuitBreaker";
+            const char* pszTimestampTestNet = "Innova Testnet V3 Relaunch | May 17 2026 | Ubuntu 26 Seed Mesh";
             CTransaction txNewTestNet;
 
-            txNewTestNet.nTime = 1774163076;
+            txNewTestNet.nTime = 1778976000;
             txNewTestNet.vin.resize(1);
             txNewTestNet.vout.resize(1);
             txNewTestNet.vin[0].scriptSig = CScript() << 0 << CBigNum(42) << vector<unsigned char>((const unsigned char*)pszTimestampTestNet, (const unsigned char*)pszTimestampTestNet + strlen(pszTimestampTestNet));
@@ -6210,12 +6363,13 @@ bool LoadBlockIndex(bool fAllowNew)
             blocktest.vtx.push_back(txNewTestNet);
             blocktest.hashPrevBlock = 0;
             blocktest.hashMerkleRoot = blocktest.BuildMerkleTree();
-            blocktest.nTime    = 1774163076;
+            blocktest.nTime    = 1778976000;
             blocktest.nVersion = 1;
             blocktest.nBits    = bnProofOfWorkLimit.GetCompact();
-            blocktest.nNonce   = 161933;
+            blocktest.nNonce   = 58545;
 
-            if (false && (blocktest.GetHash() != hashGenesisBlockTestNet)) {
+            if (false && (blocktest.GetHash() != hashGenesisBlockTestNet))
+            {
             // This will figure out a valid hash and Nonce if you're
             // creating a different genesis block:
                 uint256 hashTarget = CBigNum().SetCompact(blocktest.nBits).getuint256();
@@ -6237,10 +6391,13 @@ bool LoadBlockIndex(bool fAllowNew)
 
 
             //// debug print
-            assert(blocktest.hashMerkleRoot == uint256("0x33c0940923bea3aed04ed77da7499b06ceda2c9e1f9b1ebde56ef8b2aec05fb4"));
+            if (blocktest.hashMerkleRoot != uint256("0xb19c19c32748baa18fd07046551be048bd02b97f8c8702e8aec6a37fc7d305b3"))
+                return error("TestNetLoadBlockIndex() : invalid testnet genesis merkle root %s", blocktest.hashMerkleRoot.ToString().c_str());
             blocktest.print();
-            assert(blocktest.GetHash() == hashGenesisBlockTestNet);
-            assert(blocktest.CheckBlock());
+            if (blocktest.GetHash() != hashGenesisBlockTestNet)
+                return error("TestNetLoadBlockIndex() : invalid testnet genesis hash %s", blocktest.GetHash().ToString().c_str());
+            if (!blocktest.CheckBlock())
+                return error("TestNetLoadBlockIndex() : testnet genesis block validation failed");
 
             // -- debug print
             if (fDebugChain)
@@ -7022,8 +7179,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         addrman.Add(vAddrOk, pfrom->addr, 2 * 60 * 60);
         if (vAddr.size() < 1000)
             pfrom->fGetAddr = false;
-        if (pfrom->fOneShot)
+        if (pfrom->fOneShot) {
+            printf("DEBUG-DISCONNECT fOneShot peer=%s\n", pfrom->addr.ToString().c_str());
             pfrom->fDisconnect = true;
+        }
     }
 
     else if (strCommand == "inv")
@@ -7160,6 +7319,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         if (pindex)
             pindex = pindex->pnext;
         int nLimit = 1000;
+        std::set<uint256> setQueuedDAGParents;
         if (fDebugNet) printf("getblocks %d to %s limit %d\n", (pindex ? pindex->nHeight : -1), hashStop.ToString().substr(0,20).c_str(), nLimit);
         for (; pindex; pindex = pindex->pnext)
         {
@@ -7172,6 +7332,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                     pfrom->PushInventory(CInv(MSG_BLOCK, hashBestChain));
                 break;
             }
+            QueueDAGMergeParentInventories(pfrom, pindex, setQueuedDAGParents);
             {
                 CInv inv(MSG_BLOCK, pindex->GetBlockHash());
                 LOCK(pfrom->cs_inventory);
@@ -8116,11 +8277,15 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         {
             std::vector<int> vPeerIds;
             {
-                LOCK(cs_vNodes);
-                for (CNode* pnode : vNodes)
-                    vPeerIds.push_back(pnode->GetId());
+                TRY_LOCK(cs_vNodes, lockNodes);
+                if (lockNodes)
+                {
+                    for (CNode* pnode : vNodes)
+                        vPeerIds.push_back(pnode->GetId());
+                }
             }
-            dandelionRouter.UpdateEpoch(GetTime(), vPeerIds);
+            if (!vPeerIds.empty())
+                dandelionRouter.UpdateEpoch(GetTime(), vPeerIds);
 
             std::vector<uint256> vFluff = dandelionState.CheckStemTimeouts(GetTime());
             for (const uint256& txHash : vFluff)
@@ -8145,23 +8310,26 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         if (!IsInitialBlockDownload() && (GetTime() - nLastRebroadcast > 24 * 60 * 60))
         {
             {
-                LOCK(cs_vNodes);
-                for (CNode* pnode : vNodes)
+                TRY_LOCK(cs_vNodes, lockNodes);
+                if (lockNodes)
                 {
-                    // Periodically clear setAddrKnown to allow refresh broadcasts
-                    if (nLastRebroadcast)
-                        pnode->setAddrKnown.clear();
-
-                    // Rebroadcast our address
-                    if (!fNoListen)
+                    for (CNode* pnode : vNodes)
                     {
-                        CAddress addr = GetLocalAddress(&pnode->addr);
-                        if (addr.IsRoutable())
-                            pnode->PushAddress(addr);
+                        // Periodically clear setAddrKnown to allow refresh broadcasts
+                        if (nLastRebroadcast)
+                            pnode->setAddrKnown.clear();
+
+                        // Rebroadcast our address
+                        if (!fNoListen)
+                        {
+                            CAddress addr = GetLocalAddress(&pnode->addr);
+                            if (addr.IsRoutable())
+                                pnode->PushAddress(addr);
+                        }
                     }
+                    nLastRebroadcast = GetTime();
                 }
             }
-            nLastRebroadcast = GetTime();
         }
 
         //

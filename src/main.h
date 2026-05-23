@@ -136,7 +136,7 @@ static const unsigned int LOCKTIME_THRESHOLD = 500000000; // Tue Nov  5 00:53:20
 static const unsigned int MAX_P2SH_SIGOPS = 15;
 
 static const uint256 hashGenesisBlock("0x000009bd42d259eb7031ae4f634aede1a690da795e5529786a72c3cd6d989995");
-static const uint256 hashGenesisBlockTestNet("0x0000244650ef0aea0768f9a44d3ef0bad3da733fcf7857f21fd8b0c42a565b65");
+static const uint256 hashGenesisBlockTestNet("0x00006b8a508519418edd9fae4e90801b4ab7bdfe34ed1e57a39260b2a230f64e");
 static const uint256 hashGenesisBlockRegTest("0x7d9f2da2e66d3ee806dce8231f5854a526a32db9c8b509410f652a101089c7d5");
 
 inline const uint256& GetGenesisBlockHash()
@@ -154,7 +154,7 @@ inline const uint256& GetGenesisBlockHash()
 inline int GetForkHeightTighterDrift() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 7300000;
+    return (fRegTest || fTestNet) ? 1 : 8000000;
 }
 #define FORK_HEIGHT_TIGHTER_DRIFT (GetForkHeightTighterDrift())
 
@@ -162,7 +162,7 @@ inline int GetForkHeightTighterDrift() {
 inline int GetForkHeightCNPaymentValidation() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 7300000;
+    return (fRegTest || fTestNet) ? 1 : 8000000;
 }
 #define FORK_HEIGHT_CN_PAYMENT_VALIDATION (GetForkHeightCNPaymentValidation())
 
@@ -175,7 +175,7 @@ static const int FORK_MIN_CN_PROTO_VERSION = 43950;
 inline int GetForkHeightColdStaking() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 7300000;
+    return (fRegTest || fTestNet) ? 1 : 8000000;
 }
 #define FORK_HEIGHT_COLD_STAKING (GetForkHeightColdStaking())
 
@@ -184,7 +184,7 @@ inline int GetForkHeightColdStaking() {
 inline int GetForkHeightShielded() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 7310000;
+    return (fRegTest || fTestNet) ? 1 : 8010000;
 }
 #define FORK_HEIGHT_SHIELDED (GetForkHeightShielded())
 
@@ -193,7 +193,7 @@ inline int GetForkHeightShielded() {
 inline int GetForkHeightRingSigDeprecation() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 7315000;
+    return (fRegTest || fTestNet) ? 1 : 8015000;
 }
 #define FORK_HEIGHT_RINGSIG_DEPRECATION (GetForkHeightRingSigDeprecation())
 
@@ -202,7 +202,7 @@ inline int GetForkHeightRingSigDeprecation() {
 inline int GetForkHeightDSP() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 2 : 7315000;
+    return (fRegTest || fTestNet) ? 2 : 8015000;
 }
 #define FORK_HEIGHT_DSP (GetForkHeightDSP())
 
@@ -210,7 +210,7 @@ inline int GetForkHeightDSP() {
 inline int GetForkHeightNullSend() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 2 : 7320000;
+    return (fRegTest || fTestNet) ? 2 : 8020000;
 }
 #define FORK_HEIGHT_NULLSEND (GetForkHeightNullSend())
 #define FORK_HEIGHT_CJOIN FORK_HEIGHT_NULLSEND
@@ -224,7 +224,7 @@ inline int GetForkHeightNullSend() {
 inline int GetForkHeightNullStake() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 3 : 7325000;
+    return (fRegTest || fTestNet) ? 3 : 8025000;
 }
 #define FORK_HEIGHT_NULLSTAKE (GetForkHeightNullStake())
 
@@ -233,7 +233,7 @@ inline int GetForkHeightNullStake() {
 inline int GetForkHeightNullStakeV2() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 5 : 7330000;
+    return (fRegTest || fTestNet) ? 5 : 8030000;
 }
 #define FORK_HEIGHT_NULLSTAKE_V2 (GetForkHeightNullStakeV2())
 
@@ -241,7 +241,7 @@ inline int GetForkHeightNullStakeV2() {
 inline int GetForkHeightNullStakeV3() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 7 : 7335000;
+    return (fRegTest || fTestNet) ? 7 : 8035000;
 }
 #define FORK_HEIGHT_NULLSTAKE_V3 (GetForkHeightNullStakeV3())
 
@@ -250,7 +250,7 @@ inline int GetForkHeightChaumianCJ()
 {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 8 : 7340000;
+    return (fRegTest || fTestNet) ? 8 : 8040000;
 }
 #define FORK_HEIGHT_CHAUMIAN_CJ (GetForkHeightChaumianCJ())
 
@@ -260,8 +260,8 @@ inline int GetForkHeightPoem()
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 9;
-    if (fTestNet) return 100000;    // testnet: block 100K
-    return 7440000;                  // mainnet: 100K blocks after last privacy fork (7,340,000)
+    if (fTestNet) return 600;       // testnet: after fair-launch/CN payment transition
+    return 8140000;                  // mainnet: 100K blocks after Chaumian CJ
 }
 #define FORK_HEIGHT_POEM (GetForkHeightPoem())
 
@@ -271,8 +271,8 @@ inline int GetForkHeightFinality()
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 10;
-    if (fTestNet) return 100500;    // testnet: 500 blocks after POEM
-    return 7445000;                  // mainnet: 5,000 blocks after POEM
+    if (fTestNet) return 625;       // testnet: 25 blocks after POEM
+    return 8145000;                  // mainnet: 5,000 blocks after POEM
 }
 #define FORK_HEIGHT_FINALITY (GetForkHeightFinality())
 
@@ -282,8 +282,8 @@ inline int GetForkHeightDAG()
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 11;
-    if (fTestNet) return 101000;    // testnet: 500 blocks after finality
-    return 7450000;                  // mainnet: 5,000 blocks after finality
+    if (fTestNet) return 650;       // testnet: 25 blocks after finality
+    return 8150000;                  // mainnet: 5,000 blocks after finality
 }
 #define FORK_HEIGHT_DAG (GetForkHeightDAG())
 
@@ -293,8 +293,8 @@ inline int GetForkHeightDAGKnight()
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 13;
-    if (fTestNet) return 102000;    // testnet: 1,000 blocks of GHOSTDAG before DAGKNIGHT
-    return 7500000;                  // mainnet: 50,000 blocks after DAG (~14h at 1s post-DAG blocks)
+    if (fTestNet) return 700;       // testnet: 50 blocks of GHOSTDAG before DAGKNIGHT
+    return 8200000;                  // mainnet: 50,000 blocks after DAG (~14h at 1s post-DAG blocks)
 }
 #define FORK_HEIGHT_DAGKNIGHT (GetForkHeightDAGKnight())
 
@@ -315,7 +315,7 @@ inline int GetForkHeightIDNSReset() {
     extern bool fTestNet;
     if (fRegTest) return 0;     // No reset in regtest (clean chain)
     if (fTestNet) return 0;     // No reset in testnet (clean chain)
-    return 7300000;             // Mainnet: wipe all names before this height
+    return 8000000;             // Mainnet: wipe all names before this height
 }
 #define FORK_HEIGHT_IDNS_RESET (GetForkHeightIDNSReset())
 

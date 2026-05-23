@@ -36,6 +36,7 @@ inline unsigned int ReceiveFloodSize() { return 1000*GetArg("-maxreceivebuffer",
 inline unsigned int SendBufferSize() { return 1000*GetArg("-maxsendbuffer", 1*1000); }
 
 void AddOneShot(std::string strDest);
+bool OpenNetworkConnectionSimple(const CAddress& addrConnect, const char *strDest = NULL);
 bool RecvLine(SOCKET hSocket, std::string& strLine);
 bool GetMyExternalIP(CNetAddr& ipRet);
 void AddressCurrentlyConnected(const CService& addr);

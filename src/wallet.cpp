@@ -4425,7 +4425,6 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
     }
 
 
-
     if (nCredit == 0 || nCredit > nBalance - nReserveBalance)
     {
         bool fTryNullStake = (eStakingMode == STAKE_NULLSTAKE);

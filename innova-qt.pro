@@ -599,6 +599,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/rpcconsole.h \
     src/qt/trafficgraphwidget.h \
     src/qt/blockbrowser.h \
+    src/qt/idagpage.h \
     src/qt/statisticspage.h \
     src/qt/marketbrowser.h \
     src/qt/qcustomplot.h \
@@ -726,6 +727,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/qtipcserver.cpp \
     src/qt/rpcconsole.cpp \
     src/qt/trafficgraphwidget.cpp \
+    src/qt/idagpage.cpp \
     src/qt/nametablemodel.cpp \
     src/qt/managenamespage.cpp \
     src/qt/messagepage.cpp \

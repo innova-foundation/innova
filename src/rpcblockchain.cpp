@@ -1206,7 +1206,18 @@ Value getdaginfo(const Array& params, bool fHelp)
         {
             CBlockDAGData tipData;
             if (g_dagManager.GetDAGData(pBestTip->GetBlockHash(), tipData))
-                result.push_back(Pair("inferred_k", tipData.nInferredK));
+            {
+                if (tipData.nInferredK < 0)
+                {
+                    result.push_back(Pair("inferred_k", -1));
+                    result.push_back(Pair("inferred_k_error", true));
+                }
+                else
+                {
+                    result.push_back(Pair("inferred_k", tipData.nInferredK));
+                    result.push_back(Pair("inferred_k_error", false));
+                }
+            }
         }
     }
 

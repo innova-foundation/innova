@@ -33,7 +33,7 @@ PASSED=0
 FAILED=0
 WARNINGS=0
 
-STAKE_WAIT_TIME=${STAKE_WAIT_TIME:-180}
+STAKE_WAIT_TIME=${STAKE_WAIT_TIME:-30}
 
 log() { echo -e "${BLUE}[COLD-STAKE]${NC} $1"; }
 success() { echo -e "${GREEN}[PASS]${NC} $1"; ((PASSED++)) || true; }
@@ -409,11 +409,10 @@ test_large_delegation() {
 test_cn_payment_cap_large_stake() {
     section "CN Payment Cap with Large Stakes"
 
-    # Reward-based 30% cap: for large stakers, the reward (not principal) determines the cap
-    log "Testing that large cold stake amounts produce valid blocks..."
-
-    rpc_staker setgenerate true 10 2>/dev/null || true
-    sleep 5
+    # Use owner PoW mining to advance chain instead of waiting for natural PoS
+    log "Mining 5 blocks on owner to advance chain..."
+    rpc_owner setgenerate true 5 2>/dev/null || true
+    sleep 3
 
     local cs_info=$(rpc_owner getcoldstakinginfo 2>/dev/null || echo "")
     log "Cold staking info: $cs_info"

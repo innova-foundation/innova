@@ -14,6 +14,10 @@
 #include <QUrl>
 #include <QScrollBar>
 #include <QStringList>
+#include <QList>
+#include <QFormLayout>
+#include <QGroupBox>
+#include <QLabel>
 
 #include <openssl/crypto.h>
 
@@ -193,9 +197,32 @@ RPCConsole::RPCConsole(QWidget *parent) :
     QDialog(parent),
     ui(new Ui::RPCConsole),
     historyPtr(0),
-    cachedNodeid(-1)
+    cachedNodeid(-1),
+    dagStatus(0),
+    dagTips(0),
+    dagInferredK(0),
+    dagAdaptiveLimit(0),
+    dagFinality(0)
 {
     ui->setupUi(this);
+
+    QGroupBox *dagGroup = new QGroupBox(tr("IDAG"), ui->tab_info);
+    QFormLayout *dagLayout = new QFormLayout(dagGroup);
+    dagStatus = new QLabel(tr("N/A"), dagGroup);
+    dagTips = new QLabel(tr("N/A"), dagGroup);
+    dagInferredK = new QLabel(tr("N/A"), dagGroup);
+    dagAdaptiveLimit = new QLabel(tr("N/A"), dagGroup);
+    dagFinality = new QLabel(tr("N/A"), dagGroup);
+    QList<QLabel*> dagLabels;
+    dagLabels << dagStatus << dagTips << dagInferredK << dagAdaptiveLimit << dagFinality;
+    for (int i = 0; i < dagLabels.size(); i++)
+        dagLabels[i]->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    dagLayout->addRow(tr("Status"), dagStatus);
+    dagLayout->addRow(tr("Tips"), dagTips);
+    dagLayout->addRow(tr("Inferred k"), dagInferredK);
+    dagLayout->addRow(tr("Adaptive limit"), dagAdaptiveLimit);
+    dagLayout->addRow(tr("Finality"), dagFinality);
+    ui->gridLayout->addWidget(dagGroup, 22, 0, 1, 2);
 
 #ifndef Q_OS_MAC
     ui->openDebugLogfileButton->setIcon(QIcon(":/icons/export"));
@@ -395,6 +422,45 @@ void RPCConsole::setNumBlocks(int count, int countOfPeers)
         ui->totalBlocks->setText(clientModel->getNumBlocksOfPeers() == 0 ? tr("N/A") : QString::number(clientModel->getNumBlocksOfPeers()));
         ui->lastBlockTime->setText(lastBlockDate.toString());
     }
+
+    updateDAGInfo();
+}
+
+void RPCConsole::updateDAGInfo()
+{
+    if (!clientModel)
+        return;
+
+    ClientModel::DAGStatus dag = clientModel->getDAGStatus();
+    if (dag.lockBusy)
+    {
+        dagStatus->setText(tr("Updating..."));
+        return;
+    }
+
+    if (!dag.valid)
+    {
+        dagStatus->setText(tr("Unavailable"));
+        return;
+    }
+
+    QString status = dag.active
+        ? (dag.dagKnightActive ? tr("DAGKNIGHT active") : tr("GHOSTDAG active"))
+        : tr("IDAG not active");
+    QString inferredK = dag.dagKnightActive
+        ? (dag.inferredKError ? tr("Unavailable") : QString::number(dag.inferredK))
+        : tr("N/A");
+    QString finality = tr("%1, votes %2/%3, finalized height %4")
+        .arg(dag.finalityTier)
+        .arg(dag.currentEpochVotes)
+        .arg(dag.currentEpochVoters)
+        .arg(dag.finalizedHeight);
+
+    dagStatus->setText(status);
+    dagTips->setText(QString::number(dag.tipCount));
+    dagInferredK->setText(inferredK);
+    dagAdaptiveLimit->setText(tr("%1 bytes").arg(dag.adaptiveBlockLimit));
+    dagFinality->setText(finality);
 }
 
 void RPCConsole::on_lineEdit_returnPressed()
