@@ -17,6 +17,7 @@ namespace Ui {
 
 QT_BEGIN_NAMESPACE
 class QItemSelection;
+class QLabel;
 QT_END_NAMESPACE
 
 /** Local Bitcoin RPC console. */
@@ -106,7 +107,13 @@ private:
     int historyPtr;
     QCompleter *autoCompleter;
     NodeId cachedNodeid;
+    QLabel *dagStatus;
+    QLabel *dagTips;
+    QLabel *dagInferredK;
+    QLabel *dagAdaptiveLimit;
+    QLabel *dagFinality;
     void startExecutor();
+    void updateDAGInfo();
 };
 
 #endif // RPCCONSOLE_H

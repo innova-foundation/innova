@@ -22,6 +22,7 @@
 #include "transactionview.h"
 #include "overviewpage.h"
 #include "statisticspage.h"
+#include "idagpage.h"
 #include "blockbrowser.h"
 #include "marketbrowser.h"
 #include "collateralnodemanager.h"
@@ -201,6 +202,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     // Create tabs
     overviewPage = new OverviewPage();
 	statisticsPage = new StatisticsPage(this);
+    idagPage = new IDAGPage(this);
 	blockBrowser = new BlockBrowser(this);
     marketBrowser = new MarketBrowser(this);
 	multisigPage = new MultisigDialog(this);
@@ -247,6 +249,7 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     centralWidget->addWidget(messagePage);
     centralWidget->addWidget(chatWidget);
     centralWidget->addWidget(statisticsPage);
+    centralWidget->addWidget(idagPage);
 	centralWidget->addWidget(blockBrowser);
     centralWidget->addWidget(collateralnodeManagerPage);
 	centralWidget->addWidget(marketBrowser);
@@ -360,6 +363,12 @@ void BitcoinGUI::createActions()
 	statisticsAction->setStatusTip(tr("Innova Statistics"));
     tabGroup->addAction(statisticsAction);
 
+    idagAction = new QAction(QIcon(":/icons/block"), tr("&IDAG"), this);
+    idagAction->setToolTip(tr("View IDAG consensus status"));
+    idagAction->setCheckable(true);
+    idagAction->setStatusTip(tr("IDAG Consensus Status"));
+    tabGroup->addAction(idagAction);
+
 	blockAction = new QAction(QIcon(":/icons/block"), tr("&Block Explorer"), this);
     blockAction->setToolTip(tr("Explore the Innova Blockchain"));
     blockAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_6));
@@ -470,6 +479,7 @@ void BitcoinGUI::createActions()
     connect(overviewAction, SIGNAL(triggered()), this, SLOT(gotoOverviewPage()));
 	connect(blockAction, SIGNAL(triggered()), this, SLOT(gotoBlockBrowser()));
 	connect(statisticsAction, SIGNAL(triggered()), this, SLOT(gotoStatisticsPage()));
+    connect(idagAction, SIGNAL(triggered()), this, SLOT(gotoIDAGPage()));
 	connect(marketAction, SIGNAL(triggered()), this, SLOT(gotoMarketBrowser()));
 	//connect(chatAction, SIGNAL(triggered()), this, SLOT(gotoChatPage()));
     connect(sendCoinsAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
@@ -640,6 +650,7 @@ void BitcoinGUI::createToolBars()
   mainToolbar->addAction(nullsendAction);        // NullSend mixing
   mainToolbar->addAction(collateralnodeManagerAction);
   mainToolbar->addAction(statisticsAction);
+  mainToolbar->addAction(idagAction);
   mainToolbar->addAction(blockAction);
   mainToolbar->addAction(manageNamesAction);
   mainToolbar->addAction(hyperfileAction);
@@ -721,6 +732,7 @@ void BitcoinGUI::setClientModel(ClientModel *clientModel)
         connect(clientModel, SIGNAL(error(QString,QString,bool)), this, SLOT(error(QString,QString,bool)));
 
         rpcConsole->setClientModel(clientModel);
+        idagPage->setModel(clientModel);
         addressBookPage->setOptionsModel(clientModel->getOptionsModel());
         receiveCoinsPage->setOptionsModel(clientModel->getOptionsModel());
     }
@@ -991,6 +1003,30 @@ void BitcoinGUI::setNumBlocks(int count, int nTotalBlocks)
             progressBarLabel->setText(strStatusBarWarnings);
             progressBarLabel->setVisible(true);
             progressBar->setVisible(false);
+        }
+
+        ClientModel::DAGStatus dagStatus = clientModel->getDAGStatus();
+        tooltip += QString("<br>");
+        if (dagStatus.lockBusy)
+        {
+            tooltip += tr("IDAG: updating...");
+        }
+        else if (dagStatus.valid)
+        {
+            if (!dagStatus.active)
+            {
+                tooltip += tr("IDAG: not active (fork height %1)").arg(dagStatus.dagForkHeight);
+            }
+            else
+            {
+                tooltip += tr("IDAG: %1 active").arg(dagStatus.orderingAlgorithm);
+                tooltip += QString("<br>") + tr("DAG tips: %1").arg(dagStatus.tipCount);
+                tooltip += QString("<br>") + tr("Inferred k: %1").arg(
+                    dagStatus.dagKnightActive
+                        ? (dagStatus.inferredKError ? tr("unavailable") : QString::number(dagStatus.inferredK))
+                        : tr("N/A"));
+                tooltip += QString("<br>") + tr("Adaptive block limit: %1 bytes").arg(dagStatus.adaptiveBlockLimit);
+            }
         }
 
         if(!text.isEmpty())
@@ -1301,6 +1337,15 @@ void BitcoinGUI::gotoStatisticsPage()
 {
     statisticsAction->setChecked(true);
     centralWidget->setCurrentWidget(statisticsPage);
+
+    exportAction->setEnabled(false);
+    disconnect(exportAction, SIGNAL(triggered()), 0, 0);
+}
+
+void BitcoinGUI::gotoIDAGPage()
+{
+    idagAction->setChecked(true);
+    centralWidget->setCurrentWidget(idagPage);
 
     exportAction->setEnabled(false);
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);

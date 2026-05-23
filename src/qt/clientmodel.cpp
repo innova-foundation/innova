@@ -6,8 +6,11 @@
 #include "addresstablemodel.h"
 #include "transactiontablemodel.h"
 #include "alert.h"
+#include "dag.h"
+#include "finality.h"
 #include "main.h"
 #include "ui_interface.h"
+#include "util.h"
 #include <QDateTime>
 #include <QTimer>
 
@@ -20,6 +23,34 @@ using boost::placeholders::_2;
 #endif
 
 static const int64_t nClientStartupTime = GetTime();
+
+ClientModel::DAGStatus::DAGStatus() :
+    valid(false),
+    lockBusy(false),
+    active(false),
+    dagKnightActive(false),
+    height(0),
+    dagForkHeight(0),
+    dagKnightForkHeight(0),
+    tipCount(0),
+    entryCount(0),
+    ghostdagK(0),
+    inferredK(-1),
+    inferredKError(false),
+    adaptiveBlockLimit(0),
+    adaptiveBlockFloor(0),
+    adaptiveBlockCeiling(0),
+    epoch(0),
+    epochInterval(0),
+    finalizedHeight(0),
+    currentEpochVotes(0),
+    currentEpochVoters(0),
+    latestBlockSize(0),
+    latestBlockTxCount(0),
+    latestBlockUtilizationPct(0.0),
+    latestBlockParentCount(-1)
+{
+}
 
 ClientModel::ClientModel(OptionsModel *optionsModel, QObject *parent) :
     QObject(parent), optionsModel(optionsModel),
@@ -178,6 +209,134 @@ int ClientModel::getNumBlocksOfPeers() const
 QString ClientModel::getStatusBarWarnings() const
 {
     return QString::fromStdString(GetWarnings("statusbar"));
+}
+
+static QString FinalityTierToString(FinalityTier tier)
+{
+    switch (tier)
+    {
+    case FINALITY_HARD:
+        return QString("hard");
+    case FINALITY_SOFT:
+        return QString("soft");
+    case FINALITY_TENTATIVE:
+        return QString("tentative");
+    case FINALITY_NONE:
+    default:
+        return QString("none");
+    }
+}
+
+ClientModel::DAGStatus ClientModel::getDAGStatus(int recentBlockCount) const
+{
+    DAGStatus status;
+
+    TRY_LOCK(cs_main, lockMain);
+    if (!lockMain)
+    {
+        status.lockBusy = true;
+        return status;
+    }
+
+    status.valid = true;
+    status.dagForkHeight = FORK_HEIGHT_DAG;
+    status.dagKnightForkHeight = FORK_HEIGHT_DAGKNIGHT;
+    status.adaptiveBlockFloor = ADAPTIVE_BLOCK_FLOOR;
+    status.adaptiveBlockCeiling = ADAPTIVE_BLOCK_CEILING;
+    status.ghostdagK = GHOSTDAG_K;
+
+    CBlockIndex* pBest = pindexBest;
+    status.height = pBest ? pBest->nHeight : 0;
+    status.active = status.height >= FORK_HEIGHT_DAG;
+    status.dagKnightActive = status.height >= FORK_HEIGHT_DAGKNIGHT;
+    status.orderingAlgorithm = status.active
+        ? (status.dagKnightActive ? QString("DAGKNIGHT") : QString("GHOSTDAG"))
+        : QString("inactive");
+    status.epoch = GetEpochForHeight(status.height);
+    status.epochInterval = GetEpochInterval(status.height);
+    status.adaptiveBlockLimit = pBest ? GetAdaptiveBlockSizeLimit(pBest) : MAX_BLOCK_SIZE_LEGACY;
+
+    std::vector<uint256> vTips = g_dagManager.GetDAGTips();
+    status.tipCount = (int)vTips.size();
+    status.entryCount = g_dagManager.GetDAGEntryCount();
+
+    CBlockIndex* pBestDAGTip = status.active ? g_dagManager.SelectBestDAGTip() : NULL;
+    if (pBestDAGTip && pBestDAGTip->phashBlock)
+    {
+        uint256 hashBestDAGTip = pBestDAGTip->GetBlockHash();
+        status.bestDAGTip = QString::fromStdString(hashBestDAGTip.GetHex());
+
+        CBlockDAGData tipData;
+        if (g_dagManager.GetDAGData(hashBestDAGTip, tipData))
+        {
+            status.bestDAGScore = QString::fromStdString(tipData.nDAGScore.GetHex());
+            if (status.dagKnightActive)
+            {
+                status.inferredK = tipData.nInferredK;
+                status.inferredKError = tipData.nInferredK < 0;
+            }
+        }
+        else if (status.dagKnightActive)
+        {
+            status.inferredKError = true;
+        }
+    }
+    else if (status.dagKnightActive)
+    {
+        status.inferredKError = true;
+    }
+
+    status.finalizedHeight = g_finalityTracker.GetFinalizedHeight();
+    status.finalizedHash = QString::fromStdString(g_finalityTracker.GetFinalizedHash().GetHex());
+    status.finalityTier = FinalityTierToString(g_finalityTracker.GetFinalityTier());
+    status.currentEpochVotes = g_finalityTracker.GetEpochVoteCount(status.epoch);
+    status.currentEpochVoters = g_finalityTracker.GetEpochVoterCount(status.epoch);
+    status.currentEpochWeight = QString::fromStdString(FormatMoney(g_finalityTracker.GetEpochVoteWeight(status.epoch)));
+
+    if (pBest && pBest->phashBlock)
+    {
+        uint256 hashBest = pBest->GetBlockHash();
+        status.latestBlockHash = QString::fromStdString(hashBest.GetHex());
+        status.latestBlockSize = pBest->nSize;
+        status.latestBlockTxCount = pBest->nTx;
+        if (status.adaptiveBlockLimit > 0)
+            status.latestBlockUtilizationPct = 100.0 * (double)status.latestBlockSize / (double)status.adaptiveBlockLimit;
+
+        CBlockDAGData latestData;
+        if (g_dagManager.GetDAGData(hashBest, latestData))
+            status.latestBlockParentCount = (int)latestData.vDAGParents.size();
+    }
+
+    if (recentBlockCount > 0 && pBest)
+    {
+        int nRows = recentBlockCount > 64 ? 64 : recentBlockCount;
+        const CBlockIndex* pWalk = pBest;
+        for (int i = 0; i < nRows && pWalk; i++, pWalk = pWalk->pprev)
+        {
+            DAGBlockActivity row;
+            row.height = pWalk->nHeight;
+            row.hash = pWalk->phashBlock ? QString::fromStdString(pWalk->GetBlockHash().GetHex()) : QString();
+            row.blockType = pWalk->IsProofOfStake() ? QString("PoS") : QString("PoW");
+            row.sizeBytes = pWalk->nSize;
+            row.txCount = pWalk->nTx;
+            row.intervalSeconds = pWalk->pprev ? (int)(pWalk->GetBlockTime() - pWalk->pprev->GetBlockTime()) : 0;
+            row.utilizationPct = status.adaptiveBlockLimit > 0
+                ? 100.0 * (double)row.sizeBytes / (double)status.adaptiveBlockLimit
+                : 0.0;
+            row.parentCount = -1;
+
+            if (pWalk->phashBlock)
+            {
+                CBlockDAGData dagData;
+                if (g_dagManager.GetDAGData(pWalk->GetBlockHash(), dagData))
+                    row.parentCount = (int)dagData.vDAGParents.size();
+            }
+
+            status.recentBlocks.append(row);
+        }
+    }
+
+    return status;
 }
 
 OptionsModel *ClientModel::getOptionsModel()

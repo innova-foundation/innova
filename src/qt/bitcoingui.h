@@ -19,6 +19,7 @@ class OverviewPage;
 class AddressBookPage;
 class MessagePage;
 class StatisticsPage;
+class IDAGPage;
 class MarketBrowser;
 class BlockBrowser;
 class SendCoinsDialog;
@@ -99,6 +100,7 @@ private:
 
     OverviewPage *overviewPage;
 	  StatisticsPage *statisticsPage;
+    IDAGPage *idagPage;
 	  BlockBrowser *blockBrowser;
     ManageNamesPage *manageNamesPage;
 	  MarketBrowser *marketBrowser;
@@ -133,6 +135,7 @@ private:
     QMenuBar *appMenuBar;
     QAction *overviewAction;
 	  QAction *statisticsAction;
+    QAction *idagAction;
 	  QAction *blockAction;
 	  QAction *marketAction;
     QAction *historyAction;
@@ -231,6 +234,8 @@ private slots:
     void gotoOverviewPage();
 	/** Switch to Statistics page */
 	void gotoStatisticsPage();
+    /** Switch to IDAG page */
+    void gotoIDAGPage();
 	/** Switch to block explorer*/
     void gotoBlockBrowser();
 	/** Switch to market*/

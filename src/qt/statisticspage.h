@@ -18,6 +18,7 @@
 #include <QSettings>
 #include <QSlider>
 
+class QLabel;
 
 namespace Ui {
 class StatisticsPage;
@@ -55,9 +56,16 @@ public slots:
 private slots:
 
 private:
+    void updateDAGStatistics();
+
     Ui::StatisticsPage *ui;
     ClientModel *model;
     qint64 lastUpdateTime;
+    QLabel *dagStatusBox;
+    QLabel *dagTipsBox;
+    QLabel *dagKBox;
+    QLabel *dagLimitBox;
+    QLabel *dagFinalityBox;
 
 };
 
