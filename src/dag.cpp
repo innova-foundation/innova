@@ -116,6 +116,33 @@ bool CDAGManager::InitBlockDAGData(CBlockIndex* pindex, const std::vector<uint25
             mapDAGData[hashParent].vDAGChildren.push_back(hash);
     }
 
+    // Retroactive: register as parent of any existing blocks that list us as a parent
+    // This handles IBD out-of-order arrival where a child was processed before its merge parent
+    for (auto& pair : mapDAGData)
+    {
+        if (pair.first == hash)
+            continue;
+        for (const uint256& hashParent : pair.second.vDAGParents)
+        {
+            if (hashParent == hash)
+            {
+                // Add pair.first as a child of hash, avoiding duplicates
+                bool fAlreadyChild = false;
+                for (const uint256& hashChild : mapDAGData[hash].vDAGChildren)
+                {
+                    if (hashChild == pair.first)
+                    {
+                        fAlreadyChild = true;
+                        break;
+                    }
+                }
+                if (!fAlreadyChild)
+                    mapDAGData[hash].vDAGChildren.push_back(pair.first);
+                break;
+            }
+        }
+    }
+
     // Update DAG tips: this block is a new tip, parents are no longer tips
     setDAGTips.insert(hash);
     for (const uint256& hashParent : vParents)

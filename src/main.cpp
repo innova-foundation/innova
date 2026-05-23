@@ -5627,8 +5627,17 @@ bool CBlock::AcceptBlock()
 
             // Must exist in block index
             if (!mapBlockIndex.count(vDAGParents[i]))
+            {
+                if (IsInitialBlockDownload())
+                {
+                    if (fDebug)
+                        printf("AcceptBlock() : DAG merge parent[%d] %s not found during IBD, deferring validation\n",
+                               i, vDAGParents[i].ToString().substr(0, 20).c_str());
+                    continue;
+                }
                 return DoS(10, error("AcceptBlock() : DAG merge parent[%d] %s not found",
                                       i, vDAGParents[i].ToString().substr(0, 20).c_str()));
+            }
 
             // Merge parent must have lower height
             CBlockIndex* pMergeParent = mapBlockIndex[vDAGParents[i]];
