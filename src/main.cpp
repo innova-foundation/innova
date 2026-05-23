@@ -2228,6 +2228,38 @@ void static PruneOrphanBlocks()
     }
 }
 
+static std::vector<uint256> GetMissingDAGMergeParents(const CBlock& block)
+{
+    std::vector<uint256> vMissing;
+
+    std::map<uint256, CBlockIndex*>::iterator miPrev = mapBlockIndex.find(block.hashPrevBlock);
+    if (miPrev == mapBlockIndex.end())
+        return vMissing;
+
+    int nHeight = miPrev->second->nHeight + 1;
+    if (nHeight < FORK_HEIGHT_DAG)
+        return vMissing;
+
+    for (unsigned int i = 0; i < block.vtx[0].vout.size(); i++)
+    {
+        std::vector<uint256> vDAGParents = ExtractDAGParents(block.vtx[0].vout[i].scriptPubKey);
+        if (vDAGParents.empty())
+            continue;
+
+        for (unsigned int j = 1; j < vDAGParents.size(); j++)
+        {
+            if (mapBlockIndex.count(vDAGParents[j]))
+                continue;
+
+            if (std::find(vMissing.begin(), vMissing.end(), vDAGParents[j]) == vMissing.end())
+                vMissing.push_back(vDAGParents[j]);
+        }
+        break;
+    }
+
+    return vMissing;
+}
+
 // Proof of Work miner's coin base reward
 int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
 {
@@ -5785,27 +5817,47 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
 
     }
 
-    // IDAG Phase 2: Request missing merge parents without orphaning the block
+    // IDAG Phase 2: hold blocks whose primary parent is known but whose DAG
+    // merge parents are still in flight. Without this, live DAG sync can
+    // incorrectly DoS-score peers for ordinary out-of-order delivery.
     if (pindexBest && pindexBest->nHeight + 1 >= FORK_HEIGHT_DAG && mapBlockIndex.count(pblock->hashPrevBlock))
     {
-        // Primary parent exists — check merge parents in coinbase OP_RETURN
-        for (unsigned int i = 0; i < pblock->vtx[0].vout.size(); i++)
+        std::vector<uint256> vMissingDAGParents = GetMissingDAGMergeParents(*pblock);
+        if (!vMissingDAGParents.empty())
         {
-            std::vector<uint256> vDAGParents = ExtractDAGParents(pblock->vtx[0].vout[i].scriptPubKey);
-            if (!vDAGParents.empty())
+            if (fDebug)
+                printf("ProcessBlock: DAG ORPHAN BLOCK %s, missing merge parent=%s\n",
+                       hash.ToString().substr(0,20).c_str(),
+                       vMissingDAGParents[0].ToString().substr(0,20).c_str());
+
+            PruneOrphanBlocks();
+
+            if (pfrom)
             {
-                for (unsigned int j = 1; j < vDAGParents.size(); j++)
+                int nOrphansFromPeer = mapOrphanCountByNode[pfrom->GetId()];
+                if (nOrphansFromPeer >= MAX_ORPHAN_BLOCKS_PER_PEER)
                 {
-                    if (!mapBlockIndex.count(vDAGParents[j]) && pfrom)
-                    {
-                        pfrom->AskFor(CInv(MSG_BLOCK, vDAGParents[j]));
-                        if (fDebug)
-                            printf("ProcessBlock: requesting missing DAG merge parent %s\n",
-                                   vDAGParents[j].ToString().substr(0, 20).c_str());
-                    }
+                    pfrom->PushGetBlocks(pindexBest, uint256(0));
+
+                    if (IsInitialBlockDownload())
+                        return error("ProcessBlock() : peer %d exceeded DAG orphan limit (IBD, no penalty)", pfrom->GetId());
+                    pfrom->Misbehaving(1);
+                    return error("ProcessBlock() : peer %d exceeded DAG orphan limit", pfrom->GetId());
                 }
-                break;
             }
+
+            CBlock* pblock2 = new CBlock(*pblock);
+            mapOrphanBlocks.insert(make_pair(hash, pblock2));
+            mapOrphanBlocksByPrev.insert(make_pair(vMissingDAGParents[0], pblock2));
+
+            if (pfrom)
+            {
+                mapOrphanBlocksByNode[hash] = pfrom->GetId();
+                mapOrphanCountByNode[pfrom->GetId()]++;
+                for (const uint256& hashMissing : vMissingDAGParents)
+                    pfrom->AskFor(CInv(MSG_BLOCK, hashMissing));
+            }
+            return true;
         }
     }
 
@@ -5890,6 +5942,21 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
         {
             CBlock* pblockOrphan = (*mi).second;
             uint256 orphanHash = pblockOrphan->GetHash();
+            std::vector<uint256> vMissingDAGParents = GetMissingDAGMergeParents(*pblockOrphan);
+            if (!vMissingDAGParents.empty())
+            {
+                if (fDebug)
+                    printf("ProcessBlock: DAG orphan %s still missing merge parent %s\n",
+                           orphanHash.ToString().substr(0,20).c_str(),
+                           vMissingDAGParents[0].ToString().substr(0,20).c_str());
+                mapOrphanBlocksByPrev.insert(make_pair(vMissingDAGParents[0], pblockOrphan));
+                if (pfrom)
+                {
+                    for (const uint256& hashMissing : vMissingDAGParents)
+                        pfrom->AskFor(CInv(MSG_BLOCK, hashMissing));
+                }
+                continue;
+            }
             if (pblockOrphan->AcceptBlock())
                 vWorkQueue.push_back(orphanHash);
             mapOrphanBlocks.erase(orphanHash);
