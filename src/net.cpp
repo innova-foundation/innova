@@ -1586,9 +1586,9 @@ void ThreadSocketHandler2(void* parg)
                     printf("socket no message in first 60 seconds, %d %d\n", pnode->nLastRecv != 0, pnode->nLastSend != 0);
                     pnode->fDisconnect = true;
                 }
-                else if (pnode->nVersion == 0 && nTime - pnode->nTimeConnected > 30)
+                else if (pnode->nVersion == 0 && nTime - pnode->nTimeConnected > 90)
                 {
-                    printf("socket handshake timeout: peer %s did not send version within 30s\n",
+                    printf("socket handshake timeout: peer %s did not send version within 90s\n",
                            pnode->addr.ToString().c_str());
                     pnode->fDisconnect = true;
                 }
@@ -1606,6 +1606,23 @@ void ThreadSocketHandler2(void* parg)
                 {
                     printf("ping timeout: %fs\n", 0.000001 * (GetTimeMicros() - pnode->nPingUsecStart));
                     pnode->fDisconnect = true;
+                }
+
+                if (!pnode->fDisconnect && pnode->nVersion != 0 &&
+                    nTime - pnode->nLastRecv > 90 && nTime - pnode->nTimeConnected > 90)
+                {
+                    char probe = 0;
+                    int nSent = send(pnode->hSocket, &probe, 0, MSG_DONTWAIT);
+                    if (nSent < 0)
+                    {
+                        int nErr = WSAGetLastError();
+                        if (nErr != WSAEWOULDBLOCK && nErr != WSAEINPROGRESS)
+                        {
+                            printf("keepalive: dead socket detected for %s (err=%d, silent=%ds), disconnecting\n",
+                                   pnode->addr.ToString().c_str(), nErr, (int)(nTime - pnode->nLastRecv));
+                            pnode->fDisconnect = true;
+                        }
+                    }
                 }
             }
         }
@@ -1845,7 +1862,12 @@ static const char *strDNSSeed[][2] = {
     {"159.223.100.10:14539", "159.223.100.10:14539"},
     {"159.223.104.144:14539", "159.223.104.144:14539"},
     {"159.223.104.83:14539", "159.223.104.83:14539"}
-//    {"", ""}
+};
+
+static const char *strDNSSeedTestnet[][2] = {
+    {"45.77.164.87", "45.77.164.87"},
+    {"45.32.161.27", "45.32.161.27"},
+    {"45.77.118.217", "45.77.118.217"}
 };
 
 
@@ -1880,28 +1902,37 @@ void ThreadDNSAddressSeed2(void* parg)
         printf("ThreadDNSAddressSeed started\n");
         int found = 0;
 
-        if (!fTestNet)
         {
+            const char *(*seeds)[2];
+            unsigned int nSeeds;
+            if (fTestNet) {
+                seeds = strDNSSeedTestnet;
+                nSeeds = ARRAYLEN(strDNSSeedTestnet);
+            } else {
+                seeds = strDNSSeed;
+                nSeeds = ARRAYLEN(strDNSSeed);
+            }
+
             printf("Loading addresses from DNS seeds (could take a while)\n");
 
-            for (unsigned int seed_idx = 0; seed_idx < ARRAYLEN(strDNSSeed); seed_idx++) {
+            for (unsigned int seed_idx = 0; seed_idx < nSeeds; seed_idx++) {
                 if (HaveNameProxy()) {
-                    AddOneShot(strDNSSeed[seed_idx][1]);
+                    AddOneShot(seeds[seed_idx][1]);
                 } else {
                     vector<CNetAddr> vaddr;
                     vector<CAddress> vAdd;
-                    if (LookupHost(strDNSSeed[seed_idx][1], vaddr))
+                    if (LookupHost(seeds[seed_idx][1], vaddr))
                     {
                         for (CNetAddr& ip : vaddr)
                         {
                             int nOneDay = 24*3600;
                             CAddress addr = CAddress(CService(ip, GetDefaultPort()));
-                            addr.nTime = GetTime() - 3*nOneDay - GetRand(4*nOneDay); // use a random age between 3 and 7 days old
+                            addr.nTime = GetTime() - 3*nOneDay - GetRand(4*nOneDay);
                             vAdd.push_back(addr);
                             found++;
                         }
                     }
-                    addrman.Add(vAdd, CNetAddr(strDNSSeed[seed_idx][0], true));
+                    addrman.Add(vAdd, CNetAddr(seeds[seed_idx][0], true));
                 }
             }
         }
@@ -2420,7 +2451,7 @@ void ThreadMessageHandler2(void* parg)
             vNodesCopy = vNodes;
 			BOOST_FOREACH(CNode* pnode, vNodesCopy) {
                 pnode->AddRef();
-                if (pnode == pnodeSyncCopy && pnode->nLastRecv > GetTime() - 5) // only accept a node who has replied in last 5 secs, if they stop then swap nodes
+                if (pnode == pnodeSyncCopy && pnode->nLastRecv > GetTime() - 5)
                     fHaveSyncNode = true;
             }
         }

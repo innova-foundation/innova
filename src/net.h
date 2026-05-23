@@ -418,6 +418,7 @@ public:
     uint256 hashLastGetBlocksEnd;
     int nChainHeight;
 	bool fStartSync;
+    int64_t nLastBlockRecv;
 
     int nBlocksReceivedInBatch;
     int nExpectedBatchSize;
@@ -487,6 +488,7 @@ public:
         hashLastGetBlocksEnd = 0;
         nChainHeight = -1;
 		fStartSync = false;
+        nLastBlockRecv = 0;
         nBlocksReceivedInBatch = 0;
         nExpectedBatchSize = 0;
         fPrefetchSent = false;
@@ -507,8 +509,7 @@ public:
         pfilter = NULL;
         nLastDseg = GetTime();
 
-        // Be shy and don't send version until we hear
-        if (hSocket != INVALID_SOCKET && !fInbound)
+        if (hSocket != INVALID_SOCKET)
             PushVersion();
     }
 

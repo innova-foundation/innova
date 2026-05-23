@@ -1617,7 +1617,7 @@ void BitcoinGUI::updateStakingIcon()
             return; // Skip this update if lock is contended
         fHasPeers = !vNodes.empty();
     }
-    if (nWeight && GetBoolArg("-staking", true) && !pwalletMain->IsLocked() && fHasPeers && !IsInitialBlockDownload())
+    if (nWeight && GetBoolArg("-staking", true) && pwalletMain && !pwalletMain->IsLocked() && fHasPeers && !IsInitialBlockDownload())
     {
         uint64_t nNetworkWeight = GetPoSKernelPS();
         unsigned nEstimateTime = (10 * nTargetSpacing) * nNetworkWeight / nWeight;

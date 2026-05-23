@@ -141,19 +141,20 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova Hyperfile 
           std::string sNarr = "Hyperfile POD";
           wtx.mapValue["to"]      = "Hyperfile POD";
 
-          if (pwalletMain->IsLocked())
+          if (!pwalletMain)
           {
+            QMessageBox errbox;
+            errbox.setText("Error, Wallet is not available!");
+            errbox.exec();
+          } else if (pwalletMain->IsLocked()) {
             QMessageBox unlockbox;
             unlockbox.setText("Error, Your wallet is locked! Please unlock your wallet!");
             unlockbox.exec();
-            //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send Hyperfile POD. Unlock your wallet!");
           } else if (pwalletMain->GetBalance() < 0.001) {
             QMessageBox error2box;
             error2box.setText("Error, You need at least 0.001 INN to send Hyperfile POD!");
             error2box.exec();
-            //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send Hyperfile POD.");
           } else {
-            //std::string sNarr;
             std::string strError = pwalletMain->SendMoneyToDestination(baddr.Get(), nAmount, sNarr, wtx);
 
             if(strError != "")
@@ -247,19 +248,20 @@ if (QMessageBox::Yes == QMessageBox(QMessageBox::Information, "Innova Hyperfile 
           std::string sNarr = "Hyperfile POD";
           wtx.mapValue["to"]      = "Hyperfile POD";
 
-          if (pwalletMain->IsLocked())
+          if (!pwalletMain)
           {
+            QMessageBox errbox;
+            errbox.setText("Error, Wallet is not available!");
+            errbox.exec();
+          } else if (pwalletMain->IsLocked()) {
             QMessageBox unlockbox;
             unlockbox.setText("Error, Your wallet is locked! Please unlock your wallet!");
             unlockbox.exec();
-            //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send Hyperfile POD. Unlock your wallet!");
           } else if (pwalletMain->GetBalance() < 0.001) {
             QMessageBox error2box;
             error2box.setText("Error, You need at least 0.001 INN to send Hyperfile POD!");
             error2box.exec();
-            //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send Hyperfile POD.");
           } else {
-            //std::string sNarr;
             std::string strError = pwalletMain->SendMoneyToDestination(baddr.Get(), nAmount, sNarr, wtx);
 
             if(strError != "")

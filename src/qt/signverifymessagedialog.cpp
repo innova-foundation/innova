@@ -134,7 +134,7 @@ void SignVerifyMessageDialog::on_signMessageButton_SM_clicked()
     }
 
     CKey key;
-    if (!pwalletMain->GetKey(keyID, key))
+    if (!pwalletMain || !pwalletMain->GetKey(keyID, key))
     {
         ui->statusLabel_SM->setStyleSheet("QLabel { color: red; }");
         ui->statusLabel_SM->setText(tr("Private key for the entered address is not available."));

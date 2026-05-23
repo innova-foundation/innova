@@ -841,6 +841,20 @@ void StakeMiner(CWallet *pwallet)
             continue;
         };
 
+        // Pause staking while chain is stale to yield cs_main for sync.
+        // Staking during active sync causes cs_main contention that starves
+        // ThreadMessageHandler, preventing block/inv processing.
+        {
+            LOCK(cs_main);
+            if (pindexBest && pindexBest->GetBlockTime() < GetTime() - 300)
+            {
+                if (fDebug && GetBoolArg("-printcoinstake"))
+                    printf("StakeMiner() chain stale, pausing for sync\n");
+                MilliSleep(5000);
+                continue;
+            }
+        }
+
         // Post-DAG: reduce stake interval to match nMaxStakeSearchInterval (2s)
         // This ensures no timestamp slots are skipped between staking attempts
         int64_t nEffectiveStakeInterval = nMinStakeInterval;
@@ -906,6 +920,7 @@ void StakeMiner(CWallet *pwallet)
 
 bool fCPUMining = false;
 int nCPUMinerThreads = 1;
+int nCPUMineTarget = 0;
 
 void CPUMiner(CWallet* pwallet)
 {
@@ -915,84 +930,83 @@ void CPUMiner(CWallet* pwallet)
 
     unsigned int nExtraNonce = 0;
     CReserveKey reservekey(pwallet);
+    CBlock* pblock = NULL;
 
     while (fCPUMining && !fShutdown)
     {
         if (fShutdown)
             return;
 
-        if (!fTestNet && !fRegTest)
+        if (pblock) { delete pblock; pblock = NULL; }
+
         {
             bool fNoNodes;
             {
                 LOCK(cs_vNodes);
                 fNoNodes = vNodes.empty();
             }
-            while (fNoNodes || IsInitialBlockDownload())
+            bool fSkipBootstrap = (nBestHeight <= 10);
+            if (!fSkipBootstrap && (fNoNodes || IsInitialBlockDownload()))
             {
                 MilliSleep(1000);
-                if (!fCPUMining || fShutdown)
-                    return;
+                continue;
             }
-        }
-
-        CBlock* pblock = CreateNewBlock(pwallet);
-        if (!pblock)
-        {
-            printf("CPUMiner: CreateNewBlock failed, retrying...\n");
-            MilliSleep(5000);
-            continue;
         }
 
         {
             LOCK(cs_main);
-            IncrementExtraNonce(pblock, pindexBest, nExtraNonce);
+            if (pindexBest && pindexBest->nHeight > 10 && pindexBest->GetBlockTime() < GetTime() - 300)
+            {
+                MilliSleep(5000);
+                continue;
+            }
         }
 
-        int nHeight = pindexBest->nHeight + 1;
+        int nHeight;
+        uint256 hashTarget;
+
+        {
+            LOCK(cs_main);
+
+            CBlock* ptmp = CreateNewBlock(pwallet);
+            if (!ptmp)
+            {
+                printf("CPUMiner: CreateNewBlock failed, retrying...\n");
+                MilliSleep(5000);
+                continue;
+            }
+            pblock = new CBlock(*ptmp);
+            delete ptmp;
+
+            IncrementExtraNonce(pblock, pindexBest, nExtraNonce);
+            nHeight = pindexBest->nHeight + 1;
+
+            CBigNum bnTarget;
+            bnTarget.SetCompact(pblock->nBits);
+            hashTarget = bnTarget.getuint256();
+        }
+
         printf("CPUMiner: Mining block at height %d, target bits=0x%08x\n",
                nHeight, pblock->nBits);
 
-        CBigNum bnTarget;
-        bnTarget.SetCompact(pblock->nBits);
-        uint256 hashTarget = bnTarget.getuint256();
-
         int64_t nStart = GetTime();
         uint64_t nHashesDone = 0;
+        bool fBlockFound = false;
 
         while (fCPUMining && !fShutdown)
         {
             uint256 hash = pblock->GetPoWHash();
             if (hash <= hashTarget)
             {
-                printf("CPUMiner: Found block! height=%d nonce=%u\n",
-                       nHeight, pblock->nNonce);
-
-                SetThreadPriority(THREAD_PRIORITY_NORMAL);
-                {
-                    LOCK(cs_main);
-                    CBlock* psubmit = new CBlock(*pblock);
-                    if (!ProcessBlock(NULL, psubmit))
-                        printf("CPUMiner: ProcessBlock failed\n");
-                    else
-                        printf("CPUMiner: Block accepted at height %d\n", pindexBest->nHeight);
-                }
-                SetThreadPriority(THREAD_PRIORITY_LOWEST);
-
+                fBlockFound = true;
                 break;
             }
 
             nHashesDone++;
-
             ++pblock->nNonce;
+
             if (pblock->nNonce == 0)
-            {
                 ++pblock->nTime;
-                {
-                    LOCK(cs_main);
-                    IncrementExtraNonce(pblock, pindexBest, nExtraNonce);
-                }
-            }
 
             if ((nHashesDone % 500000) == 0)
             {
@@ -1002,18 +1016,41 @@ void CPUMiner(CWallet* pwallet)
                            (double)nHashesDone / nElapsed, nHeight, (unsigned long long)nHashesDone);
             }
 
-            if ((nHashesDone % 50000) == 0)
+            if ((nHashesDone % 100000) == 0)
             {
-                            LOCK(cs_main);
-                if (pindexBest && pindexBest->nHeight >= nHeight)
-                    break; // Tip advanced, restart with new template
+                if (nBestHeight >= nHeight)
+                    break;
             }
         }
 
-        delete pblock;
+        if (fBlockFound)
+        {
+            printf("CPUMiner: Found block! height=%d nonce=%u\n",
+                   nHeight, pblock->nNonce);
+
+            {
+                LOCK(cs_main);
+                CBlock* psubmit = new CBlock(*pblock);
+                if (!ProcessBlock(NULL, psubmit))
+                    printf("CPUMiner: ProcessBlock failed\n");
+                else
+                    printf("CPUMiner: Block accepted at height %d\n", pindexBest->nHeight);
+            }
+
+            if (nCPUMineTarget > 0)
+            {
+                nCPUMineTarget--;
+                if (nCPUMineTarget <= 0)
+                    fCPUMining = false;
+            }
+
+            MilliSleep(500);
+        }
 
         MilliSleep(100);
     }
+
+    if (pblock) delete pblock;
 
     printf("CPUMiner stopped\n");
 }

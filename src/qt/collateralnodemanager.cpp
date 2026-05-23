@@ -151,6 +151,8 @@ void CollateralnodeManager::updateAdrenalineNode(QString alias, QString addr, QS
     CBitcoinAddress address2;
     int rank = 0;
     int outputIndex;
+    if (!pwalletMain)
+        return;
     TRY_LOCK(pwalletMain->cs_wallet, pwalletLock);
 
     if (!pwalletLock)
@@ -479,7 +481,7 @@ void CollateralnodeManager::setWalletModel(WalletModel *model)
 
 void CollateralnodeManager::on_createButton_clicked()
 {
-  if (pwalletMain->IsLocked())
+  if (pwalletMain && pwalletMain->IsLocked())
   {
       QMessageBox msg;
       msg.setText("Error: Wallet is locked, unable to create CN.");
@@ -530,6 +532,7 @@ void CollateralnodeManager::on_editButton_clicked()
 
 void CollateralnodeManager::on_getConfigButton_clicked()
 {
+    if (!pwalletMain) return;
     QItemSelectionModel* selectionModel = ui->tableWidget_2->selectionModel();
     QModelIndexList selected = selectionModel->selectedRows();
     if(selected.count() == 0)
@@ -546,6 +549,7 @@ void CollateralnodeManager::on_getConfigButton_clicked()
 
 void CollateralnodeManager::on_startButton_clicked()
 {
+    if (!pwalletMain) return;
     QString results;
     WalletModel::UnlockContext ctx(walletModel->requestUnlock());
 
@@ -597,6 +601,7 @@ void CollateralnodeManager::on_startButton_clicked()
 
 void CollateralnodeManager::on_startAllButton_clicked()
 {
+    if (!pwalletMain) return;
     QString results;
     WalletModel::UnlockContext ctx(walletModel->requestUnlock());
 
@@ -648,6 +653,7 @@ void CollateralnodeManager::on_startAllButton_clicked()
 
 void CollateralnodeManager::on_removeButton_clicked()
 {
+    if (!pwalletMain) return;
     QItemSelectionModel* selectionModel = ui->tableWidget_2->selectionModel();
     QModelIndexList selected = selectionModel->selectedRows();
     if(selected.count() == 0)
@@ -684,6 +690,7 @@ void CollateralnodeManager::on_removeButton_clicked()
 
 void CollateralnodeManager::on_stopButton_clicked()
 {
+    if (!pwalletMain) return;
     // start the node
     QItemSelectionModel* selectionModel = ui->tableWidget_2->selectionModel();
     QModelIndexList selected = selectionModel->selectedRows();
@@ -712,6 +719,7 @@ void CollateralnodeManager::on_stopButton_clicked()
 
 void CollateralnodeManager::on_stopAllButton_clicked()
 {
+    if (!pwalletMain) return;
     std::string results;
     BOOST_FOREACH(PAIRTYPE(std::string, CAdrenalineNodeConfig) adrenaline, pwalletMain->mapMyAdrenalineNodes)
     {

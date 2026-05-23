@@ -266,8 +266,13 @@ jobs:
             cp Innova dmg_contents/
           fi
           cd dmg_contents && shasum -a 256 * > SHA256SUMS.txt 2>/dev/null || true && cd ..
-          hdiutil create -volname "Innova" -srcfolder dmg_contents \
-            -ov -format UDZO innova-${{ needs.get-version.outputs.version }}-macOS-arm64.dmg
+          touch dmg_contents/.metadata_never_index
+          for attempt in 1 2 3; do
+            hdiutil create -volname "Innova" -srcfolder dmg_contents \
+              -ov -format UDZO innova-${{ needs.get-version.outputs.version }}-macOS-arm64.dmg && break
+            echo "hdiutil attempt $attempt failed, retrying in 5s..."
+            sleep 5
+          done
 
       - uses: actions/upload-artifact@v5
         with:

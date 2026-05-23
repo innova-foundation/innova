@@ -71,7 +71,13 @@ public:
         OutputDebugStringF("refreshWallet\n");
         cachedWallet.clear();
         {
-            LOCK2(cs_main, wallet->cs_wallet);
+            // Use TRY_LOCK to avoid blocking the GUI thread during IBD.
+            // If locks are unavailable, the cache stays empty and
+            // updateWallet() will populate it incrementally via signals.
+            TRY_LOCK(cs_main, lockMain);
+            if (!lockMain) return;
+            TRY_LOCK(wallet->cs_wallet, lockWallet);
+            if (!lockWallet) return;
             for(std::map<uint256, CWalletTx>::iterator it = wallet->mapWallet.begin(); it != wallet->mapWallet.end(); ++it)
             {
                 if(TransactionRecord::showTransaction(it->second))
@@ -89,7 +95,10 @@ public:
     {
         if (fDebugChain && fDebugNet) OutputDebugStringF("updateWallet %s %i\n", hash.ToString().c_str(), status);
         {
-            LOCK2(cs_main, wallet->cs_wallet);
+            TRY_LOCK(cs_main, lockMain);
+            if (!lockMain) return;
+            TRY_LOCK(wallet->cs_wallet, lockWallet);
+            if (!lockWallet) return;
 
             // Find transaction in wallet
             std::map<uint256, CWalletTx>::iterator mi = wallet->mapWallet.find(hash);
@@ -211,7 +220,10 @@ public:
     QString describe(TransactionRecord *rec)
     {
         {
-            LOCK2(cs_main, wallet->cs_wallet);
+            TRY_LOCK(cs_main, lockMain);
+            if (!lockMain) return QString("");
+            TRY_LOCK(wallet->cs_wallet, lockWallet);
+            if (!lockWallet) return QString("");
             std::map<uint256, CWalletTx>::iterator mi = wallet->mapWallet.find(rec->hash);
             if(mi != wallet->mapWallet.end())
             {
