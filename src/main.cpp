@@ -2271,6 +2271,54 @@ static std::vector<uint256> GetMissingDAGMergeParents(const CBlock& block)
     return vMissing;
 }
 
+static void QueueBlockInventory(CNode* pfrom, const uint256& hash, std::set<uint256>& setQueued)
+{
+    if (!pfrom)
+        return;
+
+    if (!setQueued.insert(hash).second)
+        return;
+
+    CInv inv(MSG_BLOCK, hash);
+    LOCK(pfrom->cs_inventory);
+    pfrom->vInventoryToSend.push_back(inv);
+}
+
+static void QueueDAGSideBlockWithAncestors(CNode* pfrom, const uint256& hash, std::set<uint256>& setQueued, std::set<uint256>& setVisiting, int nDepth)
+{
+    if (!pfrom || nDepth > DAG_MERGE_DEPTH)
+        return;
+
+    std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hash);
+    if (mi == mapBlockIndex.end())
+        return;
+
+    CBlockIndex* pindex = mi->second;
+    if (pindex->IsInMainChain())
+        return;
+
+    if (!setVisiting.insert(hash).second)
+        return;
+
+    CBlock block;
+    if (!block.ReadFromDisk(pindex))
+    {
+        setVisiting.erase(hash);
+        return;
+    }
+
+    std::map<uint256, CBlockIndex*>::iterator miPrev = mapBlockIndex.find(block.hashPrevBlock);
+    if (miPrev != mapBlockIndex.end() && !miPrev->second->IsInMainChain())
+        QueueDAGSideBlockWithAncestors(pfrom, block.hashPrevBlock, setQueued, setVisiting, nDepth + 1);
+
+    std::vector<uint256> vDAGParents = GetDAGParentsFromBlock(block);
+    for (unsigned int i = 1; i < vDAGParents.size(); i++)
+        QueueDAGSideBlockWithAncestors(pfrom, vDAGParents[i], setQueued, setVisiting, nDepth + 1);
+
+    QueueBlockInventory(pfrom, hash, setQueued);
+    setVisiting.erase(hash);
+}
+
 static void QueueDAGMergeParentInventories(CNode* pfrom, CBlockIndex* pindex, std::set<uint256>& setQueued)
 {
     if (!pfrom || !pindex || pindex->nHeight < FORK_HEIGHT_DAG)
@@ -2281,26 +2329,9 @@ static void QueueDAGMergeParentInventories(CNode* pfrom, CBlockIndex* pindex, st
         return;
 
     std::vector<uint256> vDAGParents = GetDAGParentsFromBlock(block);
-    if (vDAGParents.size() <= 1)
-        return;
-
+    std::set<uint256> setVisiting;
     for (unsigned int i = 1; i < vDAGParents.size(); i++)
-    {
-        std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(vDAGParents[i]);
-        if (mi == mapBlockIndex.end())
-            continue;
-
-        CBlockIndex* pindexParent = mi->second;
-        if (pindexParent->IsInMainChain())
-            continue;
-
-        if (!setQueued.insert(vDAGParents[i]).second)
-            continue;
-
-        CInv inv(MSG_BLOCK, vDAGParents[i]);
-        LOCK(pfrom->cs_inventory);
-        pfrom->vInventoryToSend.push_back(inv);
-    }
+        QueueDAGSideBlockWithAncestors(pfrom, vDAGParents[i], setQueued, setVisiting, 0);
 }
 
 // Proof of Work miner's coin base reward
