@@ -143,6 +143,11 @@ jobs:
     container:
       image: ubuntu:26.04
     steps:
+      - name: Install checkout dependencies
+        run: |
+          apt-get update
+          apt-get install -y ca-certificates git
+
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -150,7 +155,7 @@ jobs:
       - name: Install dependencies
         run: |
           apt-get update
-          apt-get install -y ca-certificates software-properties-common
+          apt-get install -y software-properties-common
           add-apt-repository -y universe || true
           apt-get update
           apt-get install -y build-essential libtool autotools-dev automake pkg-config \
@@ -158,19 +163,43 @@ jobs:
             libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
             libsecp256k1-dev \
             libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools \
-            libprotobuf-dev protobuf-compiler \
-            git
+            libprotobuf-dev protobuf-compiler
+
+      - name: Configure Berkeley DB paths
+        run: |
+          set -eu
+          bdb_header="$(find /usr/include -name db_cxx.h -print -quit)"
+          bdb_lib="$(find /usr/lib -name libdb_cxx.so -print -quit)"
+          if [ -z "$bdb_lib" ]; then
+            bdb_lib="$(find /usr/lib -name 'libdb_cxx*.so' -print -quit)"
+          fi
+          if [ -z "$bdb_lib" ]; then
+            bdb_lib="$(find /usr/lib -name 'libdb_cxx*.a' -print -quit)"
+          fi
+          if [ -z "$bdb_header" ] || [ -z "$bdb_lib" ]; then
+            echo "Unable to locate Berkeley DB C++ headers/libs"
+            exit 1
+          fi
+
+          bdb_suffix="$(basename "$bdb_lib")"
+          bdb_suffix="${bdb_suffix#libdb_cxx}"
+          bdb_suffix="${bdb_suffix%.so}"
+          bdb_suffix="${bdb_suffix%.a}"
+
+          echo "BDB_INCLUDE_PATH=$(dirname "$bdb_header")" >> "$GITHUB_ENV"
+          echo "BDB_LIB_PATH=$(dirname "$bdb_lib")" >> "$GITHUB_ENV"
+          echo "BDB_LIB_SUFFIX=$bdb_suffix" >> "$GITHUB_ENV"
 
       - name: Build daemon
         run: |
           cd src
-          make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
+          make USE_NATIVETOR=- BDB_INCLUDE_PATH="$BDB_INCLUDE_PATH" BDB_LIB_PATH="$BDB_LIB_PATH" BDB_LIB_SUFFIX="$BDB_LIB_SUFFIX" -f makefile.unix -j$(nproc)
 
       - name: Build Qt wallet
         run: |
           sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
           strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5 || true
-          qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+          qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- BDB_INCLUDE_PATH="$BDB_INCLUDE_PATH" BDB_LIB_PATH="$BDB_LIB_PATH" BDB_LIB_SUFFIX="$BDB_LIB_SUFFIX" innova-qt.pro
           make -j$(nproc)
 
       - name: Package
