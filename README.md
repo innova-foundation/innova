@@ -62,7 +62,7 @@ Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Trib
 
 * Cost of Hybrid Collateral Nodes: 25,000 INN
 * Hybrid Collateral Node Reward: 65% of the current block reward
-* P2P Port: 14530, Testnet Port: 15530
+* P2P Port: 14530, Testnet Port: 15539
 * RPC Port: 14531, Testnet RPC Port: 15531
 * Collateral Node Port: 14539, Testnet Port: 15539
 
