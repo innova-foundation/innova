@@ -58,7 +58,8 @@ public:
         Subversion = 1,
         BytesSent = 2,
         BytesRecv = 3,
-        Ping = 4
+        Height = 4,
+        Ping = 5
     };
 
     /** @name Methods overridden from QAbstractTableModel

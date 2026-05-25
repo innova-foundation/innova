@@ -90,6 +90,43 @@ CScript BuildDAGParentScript(const std::vector<uint256>& vParents)
 // CDAGManager: Initialization
 // ---------------------------------------------------------------------------
 
+void CDAGManager::AddChildNoDuplicate(std::vector<uint256>& vChildren, const uint256& hashChild) const
+{
+    if (std::find(vChildren.begin(), vChildren.end(), hashChild) == vChildren.end())
+        vChildren.push_back(hashChild);
+}
+
+void CDAGManager::InvalidateBlueSetCacheForBlock(const uint256& hashBlock) const
+{
+    mapBlueSetCache.erase(hashBlock);
+}
+
+void CDAGManager::RebuildPendingChildIndex()
+{
+    mapPendingChildrenByParent.clear();
+    for (auto& pair : mapDAGData)
+        pair.second.vDAGChildren.clear();
+
+    for (auto& pair : mapDAGData)
+    {
+        for (const uint256& hashParent : pair.second.vDAGParents)
+        {
+            auto pit = mapDAGData.find(hashParent);
+            if (pit != mapDAGData.end())
+                AddChildNoDuplicate(pit->second.vDAGChildren, pair.first);
+            else
+                mapPendingChildrenByParent[hashParent].insert(pair.first);
+        }
+    }
+
+    setDAGTips.clear();
+    for (const auto& pair : mapDAGData)
+    {
+        if (pair.second.vDAGChildren.empty())
+            setDAGTips.insert(pair.first);
+    }
+}
+
 bool CDAGManager::InitBlockDAGData(CBlockIndex* pindex, const std::vector<uint256>& vParents)
 {
     LOCK(cs_dag);
@@ -106,45 +143,40 @@ bool CDAGManager::InitBlockDAGData(CBlockIndex* pindex, const std::vector<uint25
     data.nDAGOrder = -1;
     data.nInferredK = -1;
 
-    // Invalidate blue set cache (new block changes ancestry relationships)
-    mapBlueSetCache.clear();
+    InvalidateBlueSetCacheForBlock(hash);
 
     // Register as child of each parent
     for (const uint256& hashParent : vParents)
     {
-        if (mapDAGData.count(hashParent))
-            mapDAGData[hashParent].vDAGChildren.push_back(hash);
-    }
-
-    // Retroactive: register as parent of any existing blocks that list us as a parent
-    // This handles IBD out-of-order arrival where a child was processed before its merge parent
-    for (auto& pair : mapDAGData)
-    {
-        if (pair.first == hash)
-            continue;
-        for (const uint256& hashParent : pair.second.vDAGParents)
+        auto pit = mapDAGData.find(hashParent);
+        if (pit != mapDAGData.end())
         {
-            if (hashParent == hash)
-            {
-                // Add pair.first as a child of hash, avoiding duplicates
-                bool fAlreadyChild = false;
-                for (const uint256& hashChild : mapDAGData[hash].vDAGChildren)
-                {
-                    if (hashChild == pair.first)
-                    {
-                        fAlreadyChild = true;
-                        break;
-                    }
-                }
-                if (!fAlreadyChild)
-                    mapDAGData[hash].vDAGChildren.push_back(pair.first);
-                break;
-            }
+            AddChildNoDuplicate(pit->second.vDAGChildren, hash);
+            InvalidateBlueSetCacheForBlock(hashParent);
+        }
+        else
+        {
+            mapPendingChildrenByParent[hashParent].insert(hash);
         }
     }
 
-    // Update DAG tips: this block is a new tip, parents are no longer tips
-    setDAGTips.insert(hash);
+    // Attach children that arrived earlier while this parent was missing.
+    auto pendingIt = mapPendingChildrenByParent.find(hash);
+    if (pendingIt != mapPendingChildrenByParent.end())
+    {
+        for (const uint256& hashChild : pendingIt->second)
+        {
+            AddChildNoDuplicate(data.vDAGChildren, hashChild);
+            InvalidateBlueSetCacheForBlock(hashChild);
+        }
+        mapPendingChildrenByParent.erase(pendingIt);
+    }
+
+    // Update DAG tips: this block is a tip only if no earlier child referenced it.
+    if (data.vDAGChildren.empty())
+        setDAGTips.insert(hash);
+    else
+        setDAGTips.erase(hash);
     for (const uint256& hashParent : vParents)
         setDAGTips.erase(hashParent);
 
@@ -804,12 +836,28 @@ void CDAGManager::RemoveBlockDAGData(const uint256& hashBlock)
             if (children.empty())
                 setDAGTips.insert(hashParent);
         }
+        else
+        {
+            auto pendingIt = mapPendingChildrenByParent.find(hashParent);
+            if (pendingIt != mapPendingChildrenByParent.end())
+            {
+                pendingIt->second.erase(hashBlock);
+                if (pendingIt->second.empty())
+                    mapPendingChildrenByParent.erase(pendingIt);
+            }
+        }
+    }
+
+    for (const uint256& hashChild : it->second.vDAGChildren)
+    {
+        mapPendingChildrenByParent[hashBlock].insert(hashChild);
+        InvalidateBlueSetCacheForBlock(hashChild);
     }
 
     // Remove from tips and data
     setDAGTips.erase(hashBlock);
     mapDAGData.erase(it);
-    mapBlueSetCache.clear();
+    InvalidateBlueSetCacheForBlock(hashBlock);
 }
 
 
@@ -834,20 +882,16 @@ bool CDAGManager::LoadDAGLinks(CTxDB& txdb)
 
     mapDAGData.clear();
     setDAGTips.clear();
+    mapPendingChildrenByParent.clear();
 
     // Load DAG links using efficient LevelDB prefix iteration
     txdb.IterateDAGLinks(mapDAGData);
 
-    // Rebuild tips: any block in mapDAGData with no children is a tip
-    for (const auto& pair : mapDAGData)
-    {
-        if (pair.second.vDAGChildren.empty())
-            setDAGTips.insert(pair.first);
-    }
+    RebuildPendingChildIndex();
 
     if (!mapDAGData.empty())
-        printf("LoadDAGLinks: loaded %d DAG entries, %d tips\n",
-               (int)mapDAGData.size(), (int)setDAGTips.size());
+        printf("LoadDAGLinks: loaded %d DAG entries, %d tips, %d pending parent links\n",
+               (int)mapDAGData.size(), (int)setDAGTips.size(), (int)mapPendingChildrenByParent.size());
 
     return true;
 }
@@ -1008,8 +1052,32 @@ bool CDAGManager::PruneDAGData(CTxDB& txdb, int nHeight)
     // Phase 2: Erase from memory only after LevelDB commit succeeds
     for (const uint256& hash : vToErase)
     {
-        mapDAGData.erase(hash);
+        auto dit = mapDAGData.find(hash);
+        if (dit != mapDAGData.end())
+        {
+            for (const uint256& hashParent : dit->second.vDAGParents)
+            {
+                auto pit = mapDAGData.find(hashParent);
+                if (pit != mapDAGData.end())
+                {
+                    auto& children = pit->second.vDAGChildren;
+                    children.erase(std::remove(children.begin(), children.end(), hash), children.end());
+                    if (children.empty())
+                        setDAGTips.insert(hashParent);
+                }
+                auto pendingIt = mapPendingChildrenByParent.find(hashParent);
+                if (pendingIt != mapPendingChildrenByParent.end())
+                {
+                    pendingIt->second.erase(hash);
+                    if (pendingIt->second.empty())
+                        mapPendingChildrenByParent.erase(pendingIt);
+                }
+            }
+            mapDAGData.erase(dit);
+        }
+        mapPendingChildrenByParent.erase(hash);
         setDAGTips.erase(hash);
+        InvalidateBlueSetCacheForBlock(hash);
         nPruned++;
     }
 

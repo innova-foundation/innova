@@ -86,6 +86,12 @@ Value getpeerinfo(const Array& params, bool fHelp)
         obj.push_back(Pair("subver", stats.strSubVer));
         obj.push_back(Pair("inbound", stats.fInbound));
         obj.push_back(Pair("chainheight", stats.nChainHeight));
+        obj.push_back(Pair("bestknownheight", stats.nBestKnownHeight));
+        obj.push_back(Pair("bestknownhash", stats.hashBestKnownBlock));
+        obj.push_back(Pair("lastblockrecv", stats.nLastBlockRecv));
+        obj.push_back(Pair("heightage", stats.nLastHeightUpdate > 0 ? GetTime() - stats.nLastHeightUpdate : -1));
+        obj.push_back(Pair("blocksinflight", stats.nBlocksInFlight));
+        obj.push_back(Pair("askqueuesize", stats.nAskForSize));
         obj.push_back(Pair("banscore", stats.nMisbehavior));
 
         ret.push_back(obj);

@@ -2638,6 +2638,21 @@ bool CheckProofOfWork(uint256 hash, unsigned int nBits)
 // Return maximum amount of blocks that other nodes claim to have
 int GetNumBlocksOfPeers()
 {
+    int nPeerHeight = -1;
+    int64_t nNow = GetTime();
+    TRY_LOCK(cs_vNodes, lockNodes);
+    if (lockNodes)
+    {
+        for (CNode* pnode : vNodes)
+        {
+            if (!pnode || pnode->fClient)
+                continue;
+            if (pnode->nBestKnownHeight > 0 && pnode->nLastHeightUpdate > 0 && nNow - pnode->nLastHeightUpdate <= 120)
+                nPeerHeight = std::max(nPeerHeight, pnode->nBestKnownHeight);
+        }
+    }
+    if (nPeerHeight >= 0)
+        return std::max(nPeerHeight, Checkpoints::GetTotalBlocksEstimate());
     return std::max(cPeerBlockCounts.median(), Checkpoints::GetTotalBlocksEstimate());
 }
 
@@ -2651,29 +2666,59 @@ bool IsInitialBlockDownload()
 {
     if (fRegTest && pindexBest != NULL)
         return false;
-    if (pindexBest == NULL || nBestHeight < Checkpoints::GetTotalBlocksEstimate() || nBestHeight < (GetNumBlocksOfPeers() - nCoinbaseMaturity*2))
+    if (fImporting || fReindex || pindexBest == NULL)
         return true;
-    static int64_t nLastUpdate;
-    static CBlockIndex* pindexLastBest;
-    static bool lockIBDState = false;
-        if (lockIBDState)
-            return false;
-    if (pindexBest != pindexLastBest)
+
+    if (nBestHeight < Checkpoints::GetTotalBlocksEstimate())
+        return true;
+
+    int64_t nNow = GetTime();
+    int nFreshPeerHeight = -1;
+    int64_t nFreshPeerLastBlockRecv = 0;
+    bool fActiveCatchup = false;
     {
-        pindexLastBest = pindexBest;
-        nLastUpdate = GetTime();
+        TRY_LOCK(cs_vNodes, lockNodes);
+        if (lockNodes)
+        {
+            for (CNode* pnode : vNodes)
+            {
+                if (!pnode || pnode->fClient)
+                    continue;
+
+                pnode->ExpireBlockInFlight(nNow);
+
+                bool fFreshHeight = pnode->nBestKnownHeight > 0 &&
+                                    pnode->nLastHeightUpdate > 0 &&
+                                    nNow - pnode->nLastHeightUpdate <= 120;
+                if (fFreshHeight)
+                    nFreshPeerHeight = std::max(nFreshPeerHeight, pnode->nBestKnownHeight);
+
+                if (pnode->nLastBlockRecv > nFreshPeerLastBlockRecv)
+                    nFreshPeerLastBlockRecv = pnode->nLastBlockRecv;
+
+                bool fPeerHasWork = fFreshHeight && pnode->nBestKnownHeight > nBestHeight + 2;
+                if (fPeerHasWork && (!pnode->setBlocksInFlight.empty() || !pnode->mapAskFor.empty()))
+                    fActiveCatchup = true;
+            }
+        }
     }
 
-    bool state = (GetTime() - nLastUpdate < 5 &&
-            pindexBest->GetBlockTime() < (GetTime() - 300)); // last block is more than 5 minutes old
+    unsigned int nTargetSpacing = GetTargetSpacingForHeight(nBestHeight + 1);
+    int nLagTolerance = (nTargetSpacing <= 1) ? (int)GetArg("-ibdheightlag", 8) : nCoinbaseMaturity * 2;
+    if (nFreshPeerHeight > nBestHeight + nLagTolerance)
+        return true;
 
-    if (state)
-    {
-        lockIBDState = true;
-        // do stuff required at end of sync
-        GetCollateralnodeRanks(pindexBest);
-    }
-    return state;
+    if (fActiveCatchup)
+        return true;
+
+    int64_t nLocalLastBlockRecv = nTimeBestReceived > 0 ? nTimeBestReceived : pindexBest->GetBlockTime();
+    int64_t nStaleSeconds = (nTargetSpacing <= 1) ? GetArg("-ibdstaleseconds", 30) : 300;
+    if (nFreshPeerHeight >= nBestHeight &&
+        nFreshPeerLastBlockRecv > nLocalLastBlockRecv + 2 &&
+        nNow - nLocalLastBlockRecv > nStaleSeconds)
+        return true;
+
+    return false;
 
 }
 
@@ -3697,9 +3742,13 @@ bool SeedGenesisCommitments(CTxDB& txdb, CIncrementalMerkleTree& shieldedTree, C
 
 bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, bool fWriteNames)
 {
+    int64_t nConnectBlockStart = GetTimeMillis();
+    int64_t nConnectCheckStart = GetTimeMillis();
+
     // Check it again in case a previous version let a bad block in, but skip BlockSig checking
     if (!CheckBlock(!fJustCheck, !fJustCheck, false))
         return false;
+    int64_t nConnectCheckMs = GetTimeMillis() - nConnectCheckStart;
 
     // strict script verification post-fork
     unsigned int flags = SCRIPT_VERIFY_NONE;
@@ -3724,7 +3773,6 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
     else
         nTxPos = pindex->nBlockPos + ::GetSerializeSize(CBlock(), SER_DISK, CLIENT_VERSION) - (2 * GetSizeOfCompactSize(0)) + GetSizeOfCompactSize(vtx.size());
 
-    int64_t nTimeStart = GetTimeMicros();
     map<uint256, CTxIndex> mapQueuedChanges;
     int64_t nFees = 0;
     int64_t nValueIn = 0;
@@ -3815,9 +3863,19 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         }
     }
 
+    int64_t nTransparentValidateMicros = 0;
+    int64_t nShieldedValidateMicros = 0;
+    int64_t nPrivateStakeValidateMicros = 0;
+    int64_t nAnonValidateMicros = 0;
+    unsigned int nTransparentValidateCount = 0;
+    unsigned int nShieldedValidateCount = 0;
+    unsigned int nPrivateStakeValidateCount = 0;
+    unsigned int nAnonValidateCount = 0;
+
     for (CTransaction& tx : vtx)
     {
         //const CTransaction &tx = vtx[i];
+        int64_t nTxValidateStart = GetTimeMicros();
         uint256 hashTx = tx.GetHash();
 
         // Do not allow blocks that contain transactions which 'overwrite' older transactions,
@@ -3959,6 +4017,30 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
             if (!tx.ConnectInputs(txdb, mapInputs, mapQueuedChanges, posThisTx, pindex, true, false, flags, true, fFCMPBatchVerified))
                 return false;
+
+            int64_t nTxValidateMicros = GetTimeMicros() - nTxValidateStart;
+            if (tx.IsCoinStake() && (tx.nVersion == SHIELDED_TX_VERSION_NULLSTAKE ||
+                                     tx.nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 ||
+                                     tx.nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD))
+            {
+                nPrivateStakeValidateMicros += nTxValidateMicros;
+                nPrivateStakeValidateCount++;
+            }
+            else if (tx.IsShielded())
+            {
+                nShieldedValidateMicros += nTxValidateMicros;
+                nShieldedValidateCount++;
+            }
+            else if (tx.nVersion == ANON_TXN_VERSION)
+            {
+                nAnonValidateMicros += nTxValidateMicros;
+                nAnonValidateCount++;
+            }
+            else
+            {
+                nTransparentValidateMicros += nTxValidateMicros;
+                nTransparentValidateCount++;
+            }
         }
 
         mapQueuedChanges[hashTx] = CTxIndex(posThisTx, tx.vout.size());
@@ -4813,7 +4895,16 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         return error("Connect() : WriteBlockIndex for pindex failed");
 
     if (fJustCheck)
+    {
+        if (fDebug && GetBoolArg("-showtimers", false))
+            printf("ConnectBlock: height=%d justcheck total=%" PRId64"ms check=%" PRId64"ms tx_transparent=%u/%" PRId64"us tx_shielded=%u/%" PRId64"us tx_anon=%u/%" PRId64"us tx_privstake=%u/%" PRId64"us\n",
+                   pindex->nHeight, GetTimeMillis() - nConnectBlockStart, nConnectCheckMs,
+                   nTransparentValidateCount, nTransparentValidateMicros,
+                   nShieldedValidateCount, nShieldedValidateMicros,
+                   nAnonValidateCount, nAnonValidateMicros,
+                   nPrivateStakeValidateCount, nPrivateStakeValidateMicros);
         return true;
+    }
 
     // Write queued txindex changes
     for (map<uint256, CTxIndex>::iterator mi = mapQueuedChanges.begin(); mi != mapQueuedChanges.end(); ++mi)
@@ -4892,6 +4983,14 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
     // update the UI about the new block
     uiInterface.NotifyRanksUpdated();
+
+    if (fDebug && GetBoolArg("-showtimers", false))
+        printf("ConnectBlock: height=%d total=%" PRId64"ms check=%" PRId64"ms tx_transparent=%u/%" PRId64"us tx_shielded=%u/%" PRId64"us tx_anon=%u/%" PRId64"us tx_privstake=%u/%" PRId64"us\n",
+               pindex->nHeight, GetTimeMillis() - nConnectBlockStart, nConnectCheckMs,
+               nTransparentValidateCount, nTransparentValidateMicros,
+               nShieldedValidateCount, nShieldedValidateMicros,
+               nAnonValidateCount, nAnonValidateMicros,
+               nPrivateStakeValidateCount, nPrivateStakeValidateMicros);
 
     return true;
 }
@@ -5338,6 +5437,11 @@ bool CBlock::GetCoinAge(uint64_t& nCoinAge) const
 
 bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const uint256& hashProof)
 {
+    int64_t nAddStart = GetTimeMillis();
+    int64_t nDAGInitMs = 0;
+    int64_t nDAGColorMs = 0;
+    int64_t nDAGWriteMs = 0;
+
     // Check for duplicate
     uint256 hash = GetHash();
     if (mapBlockIndex.count(hash))
@@ -5405,14 +5509,19 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
 
         if (!vDAGParents.empty())
         {
+            int64_t nDAGTimer = GetTimeMillis();
             g_dagManager.InitBlockDAGData(pindexNew, vDAGParents);
+            nDAGInitMs = GetTimeMillis() - nDAGTimer;
 
             // IDAG Phase 4: Fork-gate between GHOSTDAG and DAGKNIGHT coloring
+            nDAGTimer = GetTimeMillis();
             if (pindexNew->nHeight >= FORK_HEIGHT_DAGKNIGHT)
                 g_dagManager.ColorBlockDAGKnight(pindexNew);
             else
                 g_dagManager.ColorBlock(pindexNew);
+            nDAGColorMs = GetTimeMillis() - nDAGTimer;
 
+            nDAGTimer = GetTimeMillis();
             CTxDB txdbDAG;
             if (txdbDAG.TxnBegin())
             {
@@ -5422,6 +5531,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                     g_dagManager.WriteDAGLinks(txdbDAG, hashParent);
                 txdbDAG.TxnCommit();
             }
+            nDAGWriteMs = GetTimeMillis() - nDAGTimer;
 
             // Use DAG score for best-chain comparison
             uint256 nDAGScore = g_dagManager.ComputeDAGScore(pindexNew);
@@ -5486,6 +5596,11 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
             nLastNotifyHeight = nHeight;
         }
     }
+
+    if (fDebug && GetBoolArg("-showtimers", false))
+        printf("AddToBlockIndex: height=%d total=%" PRId64"ms dag_init=%" PRId64"ms dag_color=%" PRId64"ms dag_write=%" PRId64"ms\n",
+               pindexNew->nHeight, GetTimeMillis() - nAddStart, nDAGInitMs, nDAGColorMs, nDAGWriteMs);
+
     return true;
 }
 
@@ -5597,6 +5712,7 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
 bool CBlock::AcceptBlock()
 {
     AssertLockHeld(cs_main);
+    int64_t nAcceptStart = GetTimeMillis();
 
     if (nVersion > CURRENT_VERSION)
         return DoS(100, error("AcceptBlock() : reject unknown block version %d", nVersion));
@@ -5771,10 +5887,14 @@ bool CBlock::AcceptBlock()
         return error("AcceptBlock() : out of disk space");
     unsigned int nFile = -1;
     unsigned int nBlockPos = 0;
+    int64_t nWriteDiskStart = GetTimeMillis();
     if (!WriteToDisk(nFile, nBlockPos))
         return error("AcceptBlock() : WriteToDisk failed");
+    int64_t nWriteDiskMs = GetTimeMillis() - nWriteDiskStart;
+    int64_t nAddIndexStart = GetTimeMillis();
     if (!AddToBlockIndex(nFile, nBlockPos, hashProof))
         return error("AcceptBlock() : AddToBlockIndex failed");
+    int64_t nAddIndexMs = GetTimeMillis() - nAddIndexStart;
 
     // Relay inventory, but don't relay old inventory during initial block download
     int nBlockEstimate = Checkpoints::GetTotalBlocksEstimate();
@@ -5782,12 +5902,19 @@ bool CBlock::AcceptBlock()
     {
         LOCK(cs_vNodes);
         for (CNode* pnode : vNodes)
-            if (nBestHeight > (pnode->nChainHeight != -1 ? pnode->nChainHeight - 2000 : nBlockEstimate))
+        {
+            int nPeerHeight = pnode->nBestKnownHeight >= 0 ? pnode->nBestKnownHeight : pnode->nChainHeight;
+            if (nBestHeight > (nPeerHeight != -1 ? nPeerHeight - 2000 : nBlockEstimate))
                 pnode->PushInventory(CInv(MSG_BLOCK, hash));
+        }
     }
 
     // ppcoin: check pending sync-checkpoint
     Checkpoints::AcceptPendingSyncCheckpoint();
+
+    if (fDebug && GetBoolArg("-showtimers", false))
+        printf("AcceptBlock: height=%d total=%" PRId64"ms write_disk=%" PRId64"ms add_index=%" PRId64"ms\n",
+               nHeight, GetTimeMillis() - nAcceptStart, nWriteDiskMs, nAddIndexMs);
 
     return true;
 }
@@ -5840,8 +5967,10 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
 
 
     // Preliminary checks
+    int64_t nCheckStart = GetTimeMillis();
     if (!pblock->CheckBlock())
         return error("ProcessBlock() : CheckBlock FAILED");
+    int64_t nCheckMs = GetTimeMillis() - nCheckStart;
 
     CBlockIndex* pcheckpoint = Checkpoints::GetLastSyncCheckpoint();
     if (pcheckpoint && pblock->hashPrevBlock != hashBestChain && !Checkpoints::WantedByPendingSyncCheckpoint(hash))
@@ -5995,15 +6124,16 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
 			//PushGetBlocks(pfrom, pindexBest, GetOrphanRoot(pblock2));
             // ppcoin: getblocks may not obtain the ancestor block rejected
             // earlier by duplicate-stake check so we ask for it again directly
-            if (!IsInitialBlockDownload())
-                pfrom->AskFor(CInv(MSG_BLOCK, WantedByOrphan(pblock2)));
+            pfrom->AskFor(CInv(MSG_BLOCK, WantedByOrphan(pblock2)));
         }
         return true;
     }
 
     // Store to disk
+    int64_t nAcceptStart = GetTimeMillis();
     if (!pblock->AcceptBlock())
         return error("ProcessBlock() : AcceptBlock FAILED");
+    int64_t nAcceptMs = GetTimeMillis() - nAcceptStart;
 
     // Recursively process any orphan blocks that depended on this one
     vector<uint256> vWorkQueue;
@@ -6049,7 +6179,8 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
     }
 
     if (fDebug && GetBoolArg("-showtimers", false)) {
-        printf("ProcessBlock: ACCEPTED (%" PRId64"ms)\n", GetTimeMillis() - nStartTime);
+        printf("ProcessBlock: ACCEPTED total=%" PRId64"ms check=%" PRId64"ms accept=%" PRId64"ms\n",
+               GetTimeMillis() - nStartTime, nCheckMs, nAcceptMs);
     } else {
         if (fDebug) printf("ProcessBlock: ACCEPTED\n");
     }
@@ -6953,7 +7084,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                 pfrom->strSubVer.resize(256);
         }
         if (!vRecv.empty())
+        {
             vRecv >> pfrom->nChainHeight;
+            pfrom->UpdateBestKnownBlock(pfrom->nChainHeight, uint256(0));
+        }
 
         // Disconnect if the peer's subversion is < /Innovai:3.3.9.14/
         // Leaving this out for now until new update is out for a bit
@@ -7036,23 +7170,15 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         // Ask every node for the collateralnode list straight away
         pfrom->PushMessage("iseg", CTxIn());
 
-        // Ask connected nodes for block updates.
-        // Reset counter when we have few peers so reconnecting peers
-        // can trigger getblocks from the version handler again.
-        // NOTE: read vNodes.size() without LOCK(cs_vNodes) to avoid
-        // deadlock with ThreadSocketHandler (cs_vRecvMsg held here).
-        static int nAskedForBlocks = 0;
-        unsigned int nNodeCount = vNodes.size();
-        if (nNodeCount <= 1)
-            nAskedForBlocks = 0;
+        // Ask every eligible network peer for catch-up work. Per-peer
+        // PushGetBlocks throttling keeps reconnect loops from spamming.
         if (!pfrom->fClient && !pfrom->fOneShot &&
-            (pfrom->nChainHeight > (nBestHeight - 144)) &&
+            (pfrom->nBestKnownHeight < 0 || pfrom->nBestKnownHeight > (nBestHeight - 144)) &&
             (pfrom->nVersion < NOBLKS_VERSION_START ||
-             pfrom->nVersion >= NOBLKS_VERSION_END) &&
-             (nAskedForBlocks < 1 || nNodeCount <= 1))
+             pfrom->nVersion >= NOBLKS_VERSION_END))
         {
-            nAskedForBlocks++;
             pfrom->PushGetBlocks(pindexBest, uint256(0));
+            pfrom->PushMessage("getheaders", CBlockLocator(pindexBest), uint256(0));
         }
 
         // Relay alerts
@@ -7074,7 +7200,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
         printf("receive version message: version %d, blocks=%d, us=%s, them=%s, peer=%s\n", pfrom->nVersion, pfrom->nChainHeight, addrMe.ToString().c_str(), addrFrom.ToString().c_str(), pfrom->addr.ToString().c_str());
 
-        cPeerBlockCounts.input(pfrom->nChainHeight);
+        cPeerBlockCounts.input(pfrom->nBestKnownHeight >= 0 ? pfrom->nBestKnownHeight : pfrom->nChainHeight);
 
         // ppcoin: ask for pending sync-checkpoint if any
         if (!IsInitialBlockDownload())
@@ -7253,6 +7379,12 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             pfrom->AddInventoryKnown(inv);
 
             bool fAlreadyHave = AlreadyHave(txdb, inv);
+            if (inv.type == MSG_BLOCK)
+            {
+                std::map<uint256, CBlockIndex*>::iterator miKnown = mapBlockIndex.find(inv.hash);
+                if (miKnown != mapBlockIndex.end())
+                    pfrom->UpdateBestKnownBlock(miKnown->second->nHeight, inv.hash);
+            }
             if (fDebugNet)
                 printf("  got inventory: %s  %s\n", inv.ToString().c_str(), fAlreadyHave ? "have" : "new");
             if (inv.type == MSG_BLOCK && pindexBest != NULL && pindexBest->GetBlockTime() < GetTime() - 300 && fDebug)
@@ -7428,6 +7560,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             if (mapBlockIndex.count(hash))
             {
                 pindexLast = mapBlockIndex[hash];
+                pfrom->UpdateBestKnownBlock(pindexLast->nHeight, hash);
                 continue;
             }
 
@@ -7436,11 +7569,12 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                 if (fDebug) printf("Header %s has unknown parent %s, waiting for in-flight blocks\n",
                        hash.ToString().substr(0,20).c_str(),
                        header.hashPrevBlock.ToString().substr(0,20).c_str());
-                // Rely on post-block-acceptance getheaders to chain sync forward
+                pfrom->PushGetBlocks(pindexBest, uint256(0));
                 break;
             }
 
             CBlockIndex* pindexPrev = mapBlockIndex[header.hashPrevBlock];
+            pfrom->UpdateBestKnownBlock(pindexPrev->nHeight + 1, hash);
 
             // PoS blocks have nNonce==0; can't use IsProofOfStake() here because
             // vtx is empty in headers-only messages (no transactions to check)
@@ -7493,7 +7627,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             else
             {
                 // Request full block data, skip if already in-flight
-                if (pfrom->setBlocksInFlight.count(hash))
+                if (pfrom->IsBlockInFlight(hash))
                 {
                     if (fDebug)
                         printf("Header block %s already in-flight, skipping\n",
@@ -7505,7 +7639,6 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                     printf("Header announced block %s (parent height %d), requesting full block\n",
                            hash.ToString().substr(0,20).c_str(), pindexPrev->nHeight);
                 vGetData.push_back(CInv(MSG_BLOCK, hash));
-                pfrom->setBlocksInFlight.insert(hash);
                 pindexLast = pindexPrev;
             }
         }
@@ -7517,13 +7650,15 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                 printf("Requesting %u full blocks from peer %s via getdata\n",
                        (unsigned int)vGetData.size(), pfrom->addr.ToString().c_str());
             pfrom->PushMessage("getdata", vGetData);
+            for (const CInv& inv : vGetData)
+                pfrom->MarkBlockInFlight(inv.hash);
         }
 
-        // Only request more headers for large batches (IBD catch-up)
-        if (pindexLast && !IsInitialBlockDownload())
+        // Continue header sync during IBD and steady-state catch-up.
+        if (pindexLast && vHeaders.size() >= 2000)
         {
-            if (vHeaders.size() >= 2000)
-                pfrom->PushMessage("getheaders", CBlockLocator(pindexBest), uint256(0));
+            pfrom->PushMessage("getheaders", CBlockLocator(pindexBest), uint256(0));
+            pfrom->PushGetBlocks(pindexBest, uint256(0));
         }
 
         if (fSPVMode && pindexLast && pindexLast == pindexBest)
@@ -7619,15 +7754,18 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         CInv inv(MSG_BLOCK, hashBlock);
         pfrom->AddInventoryKnown(inv);
 
-        pfrom->setBlocksInFlight.erase(hashBlock);
+        pfrom->ClearBlockInFlight(hashBlock);
 
         LOCK(cs_main);
         bool fAccepted = ProcessBlock(pfrom, &block);
         if (fAccepted)
         {
             pfrom->nLastBlockRecv = GetTime();
-            if (nBestHeight >= pfrom->nChainHeight)
-                pfrom->nChainHeight = nBestHeight + 1;
+            std::map<uint256, CBlockIndex*>::iterator miAccepted = mapBlockIndex.find(hashBlock);
+            if (miAccepted != mapBlockIndex.end())
+                pfrom->UpdateBestKnownBlock(miAccepted->second->nHeight, hashBlock);
+            if (pfrom->nBestKnownHeight > pfrom->nChainHeight)
+                pfrom->nChainHeight = pfrom->nBestKnownHeight;
             LOCK(cs_mapAlreadyAskedFor);
             mapAlreadyAskedFor.erase(inv);
         }
@@ -7635,7 +7773,11 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         if (block.nDoS)
             pfrom->Misbehaving(block.nDoS);
 
-        // Chain sync forward after accepting a new block
+        // Chain sync forward after accepting a new block.
+        if (fAccepted)
+        {
+            pfrom->PushGetBlocks(pindexBest, uint256(0));
+        }
         if (fAccepted && pfrom->fPreferHeaders)
             pfrom->PushMessage("getheaders", CBlockLocator(pindexBest), uint256(0));
 
@@ -8218,8 +8360,9 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         int64_t nTimeSinceBlock = nNow - (pto->nLastBlockRecv > 0 ? pto->nLastBlockRecv : pto->nTimeConnected);
         CBlockIndex* pBest = pindexBest;
         int nHeight = nBestHeight;
+        int nPeerHeight = pto->nBestKnownHeight >= 0 ? pto->nBestKnownHeight : pto->nChainHeight;
         bool fBehind = (pBest != NULL && pBest->GetBlockTime() < nNow - 300) ||
-                       (pto->nChainHeight > nHeight + 1);
+                       (nPeerHeight > nHeight + 1);
 
         static std::map<std::string, int64_t> mapLastStallRecovery;
         bool fThrottle = (mapLastStallRecovery.count(pto->addrName) &&
@@ -8243,7 +8386,7 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
                 pto->PushMessage("getblocks", CBlockLocator(pBest), uint256(0));
             if (fDebug)
                 printf("Sync stall recovery: peer=%s ch=%d our=%d stall=%ds\n",
-                       pto->addrName.c_str(), pto->nChainHeight, nHeight, (int)nTimeSinceBlock);
+                       pto->addrName.c_str(), nPeerHeight, nHeight, (int)nTimeSinceBlock);
         }
     }
 
@@ -8445,10 +8588,28 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
     {
         vector<CInv> vGetData;
         int64_t nNow = GetTime() * 1000000;
+        static const size_t MAX_BLOCKS_IN_FLIGHT_PER_PEER = 128;
+        pto->ExpireBlockInFlight();
         while (!pto->mapAskFor.empty() && (*pto->mapAskFor.begin()).first <= nNow)
         {
-            const CInv& inv = (*pto->mapAskFor.begin()).second;
+            CInv inv = (*pto->mapAskFor.begin()).second;
             bool fSkip = false;
+            bool fBlockRequest = (inv.type == MSG_BLOCK || inv.type == MSG_FILTERED_BLOCK);
+            if (fBlockRequest)
+            {
+                if (pto->IsBlockInFlight(inv.hash))
+                {
+                    pto->mapAskFor.erase(pto->mapAskFor.begin());
+                    continue;
+                }
+                if (pto->setBlocksInFlight.size() >= MAX_BLOCKS_IN_FLIGHT_PER_PEER)
+                {
+                    int64_t nRetry = nNow + 250000;
+                    pto->mapAskFor.erase(pto->mapAskFor.begin());
+                    pto->mapAskFor.insert(std::make_pair(nRetry, inv));
+                    break;
+                }
+            }
             {
                 TRY_LOCK(cs_main, lockMain);
                 if (lockMain)
@@ -8462,6 +8623,8 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
                 if (fDebugNet)
                     printf("sending getdata: %s\n", inv.ToString().c_str());
                 vGetData.push_back(inv);
+                if (fBlockRequest)
+                    pto->MarkBlockInFlight(inv.hash);
                 if (vGetData.size() >= 1000)
                 {
                     pto->PushMessage("getdata", vGetData);

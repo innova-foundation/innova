@@ -43,9 +43,50 @@ header()  { echo -e "\n${CYAN}========================================${NC}"; ec
 rpc1() { "$INNOVAD" -datadir="$NODE1_DIR" -regtest -rpcuser=$RPCUSER -rpcpassword=$RPCPASS -rpcport=$NODE1_RPC "$@" 2>&1; }
 rpc2() { "$INNOVAD" -datadir="$NODE2_DIR" -regtest -rpcuser=$RPCUSER -rpcpassword=$RPCPASS -rpcport=$NODE2_RPC "$@" 2>&1; }
 
+json_field() {
+    local json="$1"
+    local field="$2"
+    FIELD="$field" python3 -c '
+import json
+import os
+import sys
+try:
+    value = json.load(sys.stdin).get(os.environ["FIELD"], "")
+    if isinstance(value, bool):
+        print(str(value).lower())
+    elif value is None:
+        print("")
+    else:
+        print(value)
+except Exception:
+    pass
+' <<< "$json" 2>/dev/null
+}
+
+json_path() {
+    local json="$1"
+    local path="$2"
+    PATH_EXPR="$path" python3 -c '
+import json
+import os
+import sys
+try:
+    value = json.load(sys.stdin)
+    for part in os.environ["PATH_EXPR"].split("."):
+        value = value[part]
+    if isinstance(value, bool):
+        print(str(value).lower())
+    elif value is None:
+        print("")
+    else:
+        print(value)
+except Exception:
+    pass
+' <<< "$json" 2>/dev/null
+}
+
 get_blocks() {
-    local result=$($1 getinfo 2>/dev/null)
-    echo "$result" | grep -oE '"blocks" *: *[0-9]+' | grep -oE '[0-9]+'
+    $1 getblockcount 2>/dev/null | tr -d '"[:space:]'
 }
 
 mine_blocks() {
@@ -130,14 +171,14 @@ log "Height: $BLOCKS"
 
 DAGINFO=$(rpc1 getdaginfo 2>/dev/null)
 
-DK_ACTIVE=$(echo "$DAGINFO" | grep -oE '"dagknight_active" *: *[a-z]+' | grep -oE '[a-z]+$')
+DK_ACTIVE=$(json_field "$DAGINFO" "dagknight_active")
 if [ "$DK_ACTIVE" = "false" ]; then
     success "DAGKNIGHT not yet active at height $BLOCKS"
 else
     fail "DAGKNIGHT should not be active at height $BLOCKS"
 fi
 
-ALGO=$(echo "$DAGINFO" | grep -oE '"ordering_algorithm" *: *"[^"]+"' | grep -oP ':\s*"\K[^"]+')
+ALGO=$(json_field "$DAGINFO" "ordering_algorithm")
 if [ "$ALGO" = "GHOSTDAG" ]; then
     success "Ordering algorithm is GHOSTDAG pre-activation"
 else
@@ -157,14 +198,14 @@ log "Height: $BLOCKS"
 
 DAGINFO2=$(rpc1 getdaginfo 2>/dev/null)
 
-DK_ACTIVE2=$(echo "$DAGINFO2" | grep -oE '"dagknight_active" *: *[a-z]+' | grep -oE '[a-z]+$')
+DK_ACTIVE2=$(json_field "$DAGINFO2" "dagknight_active")
 if [ "$DK_ACTIVE2" = "true" ]; then
     success "DAGKNIGHT active at height $BLOCKS"
 else
     fail "DAGKNIGHT should be active at height $BLOCKS: $DK_ACTIVE2"
 fi
 
-ALGO2=$(echo "$DAGINFO2" | grep -oP '"ordering_algorithm"\s*:\s*"\K[^"]+')
+ALGO2=$(json_field "$DAGINFO2" "ordering_algorithm")
 if [ "$ALGO2" = "DAGKNIGHT" ]; then
     success "Ordering algorithm switched to DAGKNIGHT"
 else
@@ -172,7 +213,7 @@ else
 fi
 
 # Check fork height field
-DK_FORK=$(echo "$DAGINFO2" | grep -oE '"dagknight_fork_height" *: *[0-9]+' | grep -oE '[0-9]+')
+DK_FORK=$(json_field "$DAGINFO2" "dagknight_fork_height")
 if [ "$DK_FORK" = "13" ]; then
     success "DAGKNIGHT fork height correctly reported as 13"
 else
@@ -188,7 +229,7 @@ mine_blocks rpc1 10
 sleep 2
 
 DAGINFO3=$(rpc1 getdaginfo 2>/dev/null)
-INFERRED_K=$(echo "$DAGINFO3" | grep -oE '"inferred_k" *: *[0-9]+' | grep -oE '[0-9]+')
+INFERRED_K=$(json_field "$DAGINFO3" "inferred_k")
 
 if [ -n "$INFERRED_K" ]; then
     success "Inferred k reported: $INFERRED_K"
@@ -209,7 +250,7 @@ header "Test 4: getdagconfidence RPC"
 # =======================================================================
 
 # Get a recent block hash
-BEST_HASH=$(rpc1 getbestblockhash 2>/dev/null)
+BEST_HASH=$(rpc1 getbestblockhash 2>/dev/null | tr -d '"[:space:]')
 if [ -z "$BEST_HASH" ]; then
     fail "Could not get best block hash"
 else
@@ -252,7 +293,7 @@ if [ -n "$HASH_A" ] && [ -n "$HASH_B" ]; then
         fail "Pairwise ordering missing: $PAIRWISE"
     fi
 
-    ORDER=$(echo "$PAIRWISE" | grep -oP '"order"\s*:\s*"\K[^"]+')
+    ORDER=$(json_path "$PAIRWISE" "pairwise.order")
     if [ "$ORDER" = "before" ]; then
         success "Block at height 14 ordered before block at height 16"
     elif [ "$ORDER" = "after" ]; then
@@ -261,7 +302,7 @@ if [ -n "$HASH_A" ] && [ -n "$HASH_B" ]; then
         warn "Order result: $ORDER (may be expected for non-ancestor blocks)"
     fi
 
-    PAIR_CONF=$(echo "$PAIRWISE" | grep -oP '"confidence"\s*:\s*\K[0-9]+')
+    PAIR_CONF=$(json_path "$PAIRWISE" "pairwise.confidence")
     if [ -n "$PAIR_CONF" ] && [ "$PAIR_CONF" -ge 0 ]; then
         success "Pairwise confidence: $PAIR_CONF"
     else
@@ -275,7 +316,7 @@ fi
 header "Test 6: DAG Score Accumulation with DAGKNIGHT"
 # =======================================================================
 
-SCORE=$(echo "$DAGINFO3" | grep -oP '"best_dag_score"\s*:\s*"\K[^"]+')
+SCORE=$(json_field "$DAGINFO3" "best_dag_score")
 if [ -n "$SCORE" ] && [ "$SCORE" != "0000000000000000000000000000000000000000000000000000000000000000" ]; then
     success "DAG score is non-zero: ${SCORE:0:20}..."
 else
@@ -304,7 +345,8 @@ else
 fi
 
 # Verify DAGKNIGHT also active on node 2
-DK_N2=$(rpc2 getdaginfo 2>/dev/null | grep -oP '"dagknight_active"\s*:\s*\K[a-z]+')
+DAGINFO_N2=$(rpc2 getdaginfo 2>/dev/null)
+DK_N2=$(json_field "$DAGINFO_N2" "dagknight_active")
 if [ "$DK_N2" = "true" ]; then
     success "Node 2 also reports DAGKNIGHT active"
 else

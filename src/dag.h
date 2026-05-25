@@ -225,6 +225,7 @@ public:
 private:
     std::map<uint256, CBlockDAGData> mapDAGData;
     std::set<uint256> setDAGTips;
+    std::map<uint256, std::set<uint256>> mapPendingChildrenByParent;
     std::map<int, CEpochState> mapEpochState;
     std::set<uint256> setEpochBoundaryBlocks;
     int nPrunedBelowHeight;
@@ -235,6 +236,11 @@ private:
 
     /** Internal: get blue set with caching */
     std::set<uint256> GetBlueSetCached(const uint256& hashBlock) const;
+
+    /** Internal: child/pending-child and cache maintenance helpers. */
+    void AddChildNoDuplicate(std::vector<uint256>& vChildren, const uint256& hashChild) const;
+    void InvalidateBlueSetCacheForBlock(const uint256& hashBlock) const;
+    void RebuildPendingChildIndex();
 
     /** DAGKNIGHT: Infer local k from DAG neighborhood. */
     int InferLocalK(const uint256& hashBlock) const;

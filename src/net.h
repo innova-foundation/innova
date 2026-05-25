@@ -196,6 +196,12 @@ public:
     std::string strSubVer;
     bool fInbound;
     int nChainHeight;
+    int nBestKnownHeight;
+    std::string hashBestKnownBlock;
+    int64_t nLastBlockRecv;
+    int64_t nLastHeightUpdate;
+    int nBlocksInFlight;
+    int nAskForSize;
     int nMisbehavior;
     bool fSyncNode;
     bool fWhitelisted;
@@ -417,7 +423,11 @@ public:
     std::vector<CBlockIndex*> getBlocksIndex;
     std::vector<uint256> getBlocksHash;
     uint256 hashLastGetBlocksEnd;
+    int64_t nLastGetBlocksTime;
     int nChainHeight;
+    int nBestKnownHeight;
+    uint256 hashBestKnownBlock;
+    int64_t nLastHeightUpdate;
 	bool fStartSync;
     int64_t nLastBlockRecv;
 
@@ -442,6 +452,7 @@ public:
     std::multimap<int64_t, CInv> mapAskFor;
 
     std::set<uint256> setBlocksInFlight;
+    std::map<uint256, int64_t> mapBlockInFlightSince;
 
     SecMsgNode smsgData;
 
@@ -487,8 +498,12 @@ public:
         hashContinue = 0;
         pindexLastGetBlocksBegin = 0;
         hashLastGetBlocksEnd = 0;
+        nLastGetBlocksTime = 0;
         nChainHeight = -1;
-		fStartSync = false;
+        nBestKnownHeight = -1;
+        hashBestKnownBlock = 0;
+        nLastHeightUpdate = 0;
+        fStartSync = false;
         nLastBlockRecv = 0;
         nBlocksReceivedInBatch = 0;
         nExpectedBatchSize = 0;
@@ -637,7 +652,7 @@ public:
         // the key is the earliest time the request can be sent
         int64_t& nRequestTime = mapAlreadyAskedFor[inv];
         if (fDebugNet)
-            printf("askfor %s   %d (%s)\n", inv.ToString().c_str(), nRequestTime, DateTimeStrFormat("%H:%M:%S", nRequestTime/1000000).c_str());
+            printf("askfor %s   %lld (%s)\n", inv.ToString().c_str(), (long long)nRequestTime, DateTimeStrFormat("%H:%M:%S", nRequestTime/1000000).c_str());
 
         // Make sure not to reuse time indexes to keep things in the same order
         int64_t nNow = (GetTime() - 1) * 1000000;
@@ -646,7 +661,25 @@ public:
         nNow = std::max(nNow, nLastTime);
         nLastTime = nNow;
 
-        nRequestTime = std::max(nRequestTime + 10 * 1000000, nNow);
+        bool fBlockRequest = (inv.type == MSG_BLOCK || inv.type == MSG_FILTERED_BLOCK);
+        if (fBlockRequest)
+        {
+            ExpireBlockInFlight();
+            if (setBlocksInFlight.count(inv.hash))
+                return;
+
+            static const int64_t BLOCK_ASK_RETRY_US = 1000000;
+            static const int64_t BLOCK_ASK_DEFER_US = 250000;
+            static const size_t MAX_BLOCKS_IN_FLIGHT_PER_PEER = 128;
+            if (setBlocksInFlight.size() >= MAX_BLOCKS_IN_FLIGHT_PER_PEER)
+                nRequestTime = std::max(nRequestTime + BLOCK_ASK_RETRY_US, nNow + BLOCK_ASK_DEFER_US);
+            else
+                nRequestTime = std::max(nRequestTime + BLOCK_ASK_RETRY_US, nNow);
+        }
+        else
+        {
+            nRequestTime = std::max(nRequestTime + 10 * 1000000, nNow);
+        }
         mapAskFor.insert(std::make_pair(nRequestTime, inv));
     }
 
@@ -901,7 +934,56 @@ template<typename T1, typename T2, typename T3, typename T4, typename T5, typena
         vecRequestsFulfilled.push_back(strRequest);
     }
 
-	void PushGetBlocks(CBlockIndex* pindexBegin, uint256 hashEnd);
+    void PushGetBlocks(CBlockIndex* pindexBegin, uint256 hashEnd);
+
+    void UpdateBestKnownBlock(int nHeight, const uint256& hashBlock)
+    {
+        if (nHeight < 0)
+            return;
+        if (nHeight > nBestKnownHeight || (nHeight == nBestKnownHeight && hashBlock != 0))
+        {
+            nBestKnownHeight = nHeight;
+            if (hashBlock != 0)
+                hashBestKnownBlock = hashBlock;
+            nLastHeightUpdate = GetTime();
+        }
+    }
+
+    void ExpireBlockInFlight(int64_t nNow = GetTime())
+    {
+        static const int64_t BLOCK_IN_FLIGHT_TIMEOUT = 5;
+        for (std::map<uint256, int64_t>::iterator it = mapBlockInFlightSince.begin(); it != mapBlockInFlightSince.end(); )
+        {
+            if (nNow - it->second > BLOCK_IN_FLIGHT_TIMEOUT)
+            {
+                setBlocksInFlight.erase(it->first);
+                it = mapBlockInFlightSince.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+    }
+
+    bool IsBlockInFlight(const uint256& hashBlock)
+    {
+        ExpireBlockInFlight();
+        return setBlocksInFlight.count(hashBlock) > 0;
+    }
+
+    void MarkBlockInFlight(const uint256& hashBlock)
+    {
+        ExpireBlockInFlight();
+        setBlocksInFlight.insert(hashBlock);
+        mapBlockInFlightSince[hashBlock] = GetTime();
+    }
+
+    void ClearBlockInFlight(const uint256& hashBlock)
+    {
+        setBlocksInFlight.erase(hashBlock);
+        mapBlockInFlightSince.erase(hashBlock);
+    }
 
     bool IsSubscribed(unsigned int nChannel);
     void Subscribe(unsigned int nChannel, unsigned int nHops=0);

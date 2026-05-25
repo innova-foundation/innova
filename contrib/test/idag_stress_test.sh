@@ -1,6 +1,5 @@
 #!/bin/bash
-# IDAG Heavy Stress Test v2 — 8 nodes, mature chain, PoW+PoS, TPS limit test
-# Mines slowly for maturity, distributes coins, enables staking, then pushes TPS
+# IDAG Heavy Stress Test v3 - multi-node funding, DAG/PoS, and tx flow metrics
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -13,12 +12,27 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="$INNOVA_ROOT/src/innovad"
 
-TEST_DIR="/tmp/innova_stress"
-NUM_NODES=8
-BASE_PORT=28000
-BASE_RPC=28100
-RPCUSER="stresstest"
-RPCPASS="stresstestpass"
+TEST_DIR="${TEST_DIR:-/tmp/innova_stress}"
+NUM_NODES="${NUM_NODES:-8}"
+BASE_PORT="${BASE_PORT:-28000}"
+BASE_RPC="${BASE_RPC:-28100}"
+RPCUSER="${RPCUSER:-stresstest}"
+RPCPASS="${RPCPASS:-stresstestpass}"
+
+WORKER_FUNDING="${WORKER_FUNDING:-250}"
+WORKER_MIN_BALANCE="${WORKER_MIN_BALANCE:-200}"
+STRESS_TXS="${STRESS_TXS:-300}"
+CROSS_TXS_PER_NODE="${CROSS_TXS_PER_NODE:-20}"
+MIN_CROSS_SENT="${MIN_CROSS_SENT:-50}"
+ROOT_SPLIT_UTXOS="${ROOT_SPLIT_UTXOS:-$STRESS_TXS}"
+ROOT_SPLIT_AMOUNT="${ROOT_SPLIT_AMOUNT:-0.5}"
+WORKER_SPLIT_UTXOS="${WORKER_SPLIT_UTXOS:-$((CROSS_TXS_PER_NODE + 10))}"
+WORKER_SPLIT_AMOUNT="${WORKER_SPLIT_AMOUNT:-1.0}"
+RPC_CALL_TIMEOUT="${RPC_CALL_TIMEOUT:-20}"
+POLL_RPC_TIMEOUT="${POLL_RPC_TIMEOUT:-5}"
+MINE_TIMEOUT_PER_BLOCK="${MINE_TIMEOUT_PER_BLOCK:-30}"
+COINBASE_SPEND_DELAY="${COINBASE_SPEND_DELAY:-12}"
+BOOTSTRAP_HEIGHT="${BOOTSTRAP_HEIGHT:-0}"
 
 PASSED=0
 FAILED=0
@@ -35,44 +49,155 @@ rpc() {
     "$INNOVAD" -datadir="$TEST_DIR/node$node" -regtest -rpcuser=$RPCUSER -rpcpassword=$RPCPASS -rpcport=$port "$@" 2>&1
 }
 
-jq_field() {
-    echo "$1" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('$2',''))" 2>/dev/null
+rpc_timed() {
+    local node=$1
+    local timeout=$2
+    shift 2
+    local port=$((BASE_RPC + node))
+
+    python3 - "$timeout" "$INNOVAD" "$TEST_DIR/node$node" "$RPCUSER" "$RPCPASS" "$port" "$@" <<'PY'
+import subprocess
+import sys
+
+timeout = float(sys.argv[1])
+innovad = sys.argv[2]
+datadir = sys.argv[3]
+rpcuser = sys.argv[4]
+rpcpass = sys.argv[5]
+rpcport = sys.argv[6]
+args = sys.argv[7:]
+
+cmd = [
+    innovad,
+    f"-datadir={datadir}",
+    "-regtest",
+    f"-rpcuser={rpcuser}",
+    f"-rpcpassword={rpcpass}",
+    f"-rpcport={rpcport}",
+] + args
+
+try:
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=timeout,
+    )
+    sys.stdout.write(proc.stdout)
+    sys.exit(proc.returncode)
+except subprocess.TimeoutExpired as exc:
+    if exc.stdout:
+        sys.stdout.write(exc.stdout if isinstance(exc.stdout, str) else exc.stdout.decode())
+    print(f"RPC timeout after {timeout:g}s: {' '.join(args)}")
+    sys.exit(124)
+PY
+}
+
+json_field() {
+    local json="$1"
+    local field="$2"
+    FIELD="$field" python3 -c '
+import json
+import os
+import sys
+try:
+    value = json.load(sys.stdin).get(os.environ["FIELD"], "")
+    if isinstance(value, bool):
+        print(str(value).lower())
+    elif value is None:
+        print("")
+    else:
+        print(value)
+except Exception:
+    pass
+' <<< "$json" 2>/dev/null
+}
+
+json_array_len() {
+    local json="$1"
+    local field="$2"
+    FIELD="$field" python3 -c '
+import json
+import os
+import sys
+try:
+    value = json.load(sys.stdin).get(os.environ["FIELD"], [])
+    print(len(value) if isinstance(value, list) else 0)
+except Exception:
+    print(0)
+' <<< "$json" 2>/dev/null
+}
+
+compact() {
+    echo "$1" | tr '\n' ' ' | sed 's/[[:space:]][[:space:]]*/ /g' | cut -c 1-180
+}
+
+is_int() {
+    echo "$1" | grep -qE '^[0-9]+$'
+}
+
+normalize_txid() {
+    echo "$1" | tr -d '"[:space:]' | grep -Eio '^[0-9a-f]{64}$' | head -1
+}
+
+amount_ge() {
+    python3 - "$1" "$2" <<'PY'
+from decimal import Decimal, InvalidOperation
+import sys
+try:
+    sys.exit(0 if Decimal(sys.argv[1] or "0") >= Decimal(sys.argv[2] or "0") else 1)
+except (InvalidOperation, IndexError):
+    sys.exit(1)
+PY
+}
+
+now_ms() {
+    python3 -c 'import time; print(int(time.time() * 1000))'
 }
 
 get_blocks() {
-    local r=$(rpc $1 getinfo 2>/dev/null)
-    jq_field "$r" "blocks"
+    local r
+    r=$(rpc_timed "$1" "$POLL_RPC_TIMEOUT" getblockcount 2>/dev/null | tr -d '"[:space:]')
+    if is_int "$r"; then
+        echo "$r"
+    fi
 }
 
 get_balance() {
-    rpc $1 getbalance 2>/dev/null | tr -d '"' | tr -d ' ' | tr -d '\n'
+    rpc_timed "$1" "$POLL_RPC_TIMEOUT" getbalance 2>/dev/null | tr -d '"' | tr -d ' ' | tr -d '\n'
 }
 
-wait_sync() {
-    local target_node=$1
-    local target_height=$2
-    local max_wait=$3
-    for ((w=0; w<max_wait; w++)); do
-        local h=$(get_blocks $target_node)
-        [ "$h" = "$target_height" ] && return 0
-        sleep 1
-    done
-    return 1
+get_mempool_count() {
+    rpc_timed "$1" "$POLL_RPC_TIMEOUT" getrawmempool 2>/dev/null | python3 -c '
+import json
+import sys
+try:
+    print(len(json.load(sys.stdin)))
+except Exception:
+    print(-1)
+' 2>/dev/null
 }
 
-wait_all_sync() {
-    local expected=$1
-    local max_wait=${2:-30}
-    for ((w=0; w<max_wait; w++)); do
-        local synced=0
-        for ((i=0; i<NUM_NODES; i++)); do
-            local h=$(get_blocks $i)
-            [ "$h" = "$expected" ] && ((synced++))
-        done
-        [ $synced -eq $NUM_NODES ] && return 0
-        sleep 1
-    done
-    return 1
+get_listunspent_count() {
+    local minconf=${2:-1}
+    rpc_timed "$1" "$RPC_CALL_TIMEOUT" listunspent "$minconf" 9999999 2>/dev/null | python3 -c '
+import json
+import sys
+try:
+    print(len(json.load(sys.stdin)))
+except Exception:
+    print(0)
+' 2>/dev/null
+}
+
+get_block_json() {
+    local node=$1
+    local height=$2
+    local hash
+    hash=$(rpc_timed "$node" "$POLL_RPC_TIMEOUT" getblockhash "$height" 2>/dev/null | tr -d '"[:space:]')
+    [ -z "$hash" ] && return 1
+    rpc_timed "$node" "$RPC_CALL_TIMEOUT" getblock "$hash" 2>/dev/null
 }
 
 cleanup() {
@@ -108,7 +233,6 @@ nofinalityvoting=0
 minstakeinterval=2
 minersleep=500
 EOF
-        # Mesh: everyone connects to node 0 + neighbors
         [ $i -gt 0 ] && echo "addnode=127.0.0.1:$BASE_PORT" >> "$dir/innova.conf"
         [ $i -gt 1 ] && echo "addnode=127.0.0.1:$((BASE_PORT + i - 1))" >> "$dir/innova.conf"
         [ $i -lt $((NUM_NODES - 1)) ] && echo "addnode=127.0.0.1:$((BASE_PORT + i + 1))" >> "$dir/innova.conf"
@@ -123,312 +247,699 @@ EOF
     for ((attempt=0; attempt<60; attempt++)); do
         local ready=0
         for ((i=0; i<NUM_NODES; i++)); do
-            rpc $i getinfo > /dev/null 2>&1 && ((ready++))
+            rpc "$i" getinfo > /dev/null 2>&1 && ((ready++))
         done
-        [ $ready -eq $NUM_NODES ] && log "All $NUM_NODES nodes online" && return 0
+        [ $ready -eq "$NUM_NODES" ] && log "All $NUM_NODES nodes online" && return 0
         sleep 1
     done
     fail "Nodes failed to start"
     return 1
 }
 
-mine_slow() {
-    # Mine blocks one at a time with sync pauses to keep cluster healthy
-    local count=$1
-    local sync_every=${2:-10}
-    for ((b=0; b<count; b++)); do
-        rpc 0 setgenerate true 1 > /dev/null 2>&1
-        sleep 0.2
-        # Pause for sync every N blocks
-        if [ $(((b+1) % sync_every)) -eq 0 ]; then
-            sleep 2
+wait_all_sync_at_or_above() {
+    local target_height=$1
+    local max_wait=${2:-30}
+
+    for ((w=0; w<max_wait; w++)); do
+        local synced=0
+        for ((i=0; i<NUM_NODES; i++)); do
+            local h
+            h=$(get_blocks "$i")
+            if is_int "$h" && [ "$h" -ge "$target_height" ]; then
+                ((synced++))
+            fi
+        done
+        [ $synced -eq "$NUM_NODES" ] && return 0
+        sleep 1
+    done
+    return 1
+}
+
+cluster_lag() {
+    local min=""
+    local max=""
+    for ((i=0; i<NUM_NODES; i++)); do
+        local h
+        h=$(get_blocks "$i")
+        if is_int "$h"; then
+            [ -z "$min" ] || [ "$h" -lt "$min" ] && min=$h
+            [ -z "$max" ] || [ "$h" -gt "$max" ] && max=$h
         fi
     done
+    if [ -z "$min" ] || [ -z "$max" ]; then
+        echo "unknown"
+    else
+        echo "$((max - min))"
+    fi
+}
+
+mine_until_height() {
+    local node=$1
+    local target_height=$2
+    local max_per_block=${3:-$MINE_TIMEOUT_PER_BLOCK}
+    local current
+    current=$(get_blocks "$node")
+
+    if ! is_int "$current"; then
+        fail "Cannot read current height from node $node"
+        return 1
+    fi
+
+    while [ "$current" -lt "$target_height" ]; do
+        local before=$current
+        rpc "$node" setgenerate true 1 > /dev/null 2>&1
+
+        local waited=0
+        local max_ticks=$((max_per_block * 10))
+        while [ "$waited" -lt "$max_ticks" ]; do
+            sleep 0.1
+            current=$(get_blocks "$node")
+            if is_int "$current" && [ "$current" -gt "$before" ]; then
+                break
+            fi
+            waited=$((waited + 1))
+        done
+
+        if ! is_int "$current" || [ "$current" -le "$before" ]; then
+            fail "Mining stalled at height $before while targeting $target_height"
+            return 1
+        fi
+
+        if [ $((current % 25)) -eq 0 ] || [ "$current" -eq "$target_height" ]; then
+            log "  ...height $current/$target_height"
+        fi
+    done
+
+    return 0
+}
+
+mine_blocks() {
+    local node=$1
+    local count=$2
+    local current
+    current=$(get_blocks "$node")
+    is_int "$current" || return 1
+    mine_until_height "$node" "$((current + count))"
+}
+
+wait_mempool_empty() {
+    local node=$1
+    local max_wait=${2:-30}
+
+    for ((w=0; w<max_wait; w++)); do
+        local mp
+        mp=$(get_mempool_count "$node")
+        [ "$mp" = "0" ] && return 0
+        sleep 1
+    done
+    return 1
+}
+
+wait_mempool_at_least() {
+    local node=$1
+    local target=$2
+    local max_wait=${3:-10}
+
+    for ((w=0; w<max_wait; w++)); do
+        local mp
+        mp=$(get_mempool_count "$node")
+        if [ "$mp" -ge "$target" ] 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+mine_until_mempool_empty() {
+    local node=$1
+    local max_blocks=${2:-100}
+    local rounds=0
+    local mp
+    mp=$(get_mempool_count "$node")
+
+    while [ "$mp" != "0" ] && [ "$rounds" -lt "$max_blocks" ]; do
+        mine_blocks "$node" 1 || return 1
+        rounds=$((rounds + 1))
+        mp=$(get_mempool_count "$node")
+        [ $((rounds % 10)) -eq 0 ] && log "  ...mined $rounds blocks, mempool: $mp"
+    done
+
+    [ "$mp" = "0" ]
+}
+
+create_split_outputs() {
+    local node=$1
+    local outputs=$2
+    local amount=$3
+    local label="$4"
+
+    [ "$outputs" -le 0 ] && return 0
+
+    local addrs_json="{"
+    for ((j=0; j<outputs; j++)); do
+        local addr
+        addr=$(rpc "$node" getnewaddress 2>/dev/null | tr -d '"[:space:]')
+        if [ -z "$addr" ]; then
+            fail "$label split failed: could not get address $j from node $node"
+            return 1
+        fi
+        [ "$j" -gt 0 ] && addrs_json+=","
+        addrs_json+="\"$addr\":$amount"
+    done
+    addrs_json+="}"
+
+    local result
+    local txid
+    result=$(rpc_timed "$node" "$RPC_CALL_TIMEOUT" sendmany "" "$addrs_json")
+    txid=$(normalize_txid "$result")
+    if [ -z "$txid" ]; then
+        fail "$label split failed: $(compact "$result")"
+        return 1
+    fi
+
+    log "  $label split txid=$txid outputs=$outputs amount=$amount"
+    return 0
+}
+
+analyze_block_window() {
+    local start_height=$1
+    local end_height=$2
+    local label="$3"
+    local user_txs=${4:-0}
+    local adaptive_limit=${5:-0}
+    local interval_file
+    local metrics_file
+
+    interval_file=$(mktemp "/tmp/innova_stress_intervals.XXXXXX")
+    metrics_file=$(mktemp "/tmp/innova_stress_metrics.XXXXXX")
+
+    local blocks=0
+    local total_txs=0
+    local total_user_txs=0
+    local total_size=0
+    local size_count=0
+    local max_size=0
+    local pos_blocks=0
+    local prev_time=""
+
+    if [ "$start_height" -gt 0 ] 2>/dev/null; then
+        local prev_block
+        prev_block=$(get_block_json 0 "$((start_height - 1))")
+        prev_time=$(json_field "$prev_block" "time")
+        is_int "$prev_time" || prev_time=""
+    fi
+
+    for ((h=start_height; h<=end_height; h++)); do
+        local block
+        block=$(get_block_json 0 "$h")
+        [ -z "$block" ] && continue
+
+        local tx_count
+        local user_count
+        local size
+        local btime
+        local flags
+        tx_count=$(json_array_len "$block" "tx")
+        user_count=$((tx_count > 0 ? tx_count - 1 : 0))
+        size=$(json_field "$block" "size")
+        btime=$(json_field "$block" "time")
+        flags=$(json_field "$block" "flags")
+
+        blocks=$((blocks + 1))
+        total_txs=$((total_txs + tx_count))
+        total_user_txs=$((total_user_txs + user_count))
+        if is_int "$size"; then
+            total_size=$((total_size + size))
+            size_count=$((size_count + 1))
+            [ "$size" -gt "$max_size" ] && max_size=$size
+        fi
+        echo "$flags" | grep -qi "proof-of-stake" && pos_blocks=$((pos_blocks + 1))
+
+        if is_int "$btime"; then
+            if [ -n "$prev_time" ]; then
+                echo "$((btime - prev_time))" >> "$interval_file"
+            fi
+            prev_time=$btime
+        fi
+    done
+
+    python3 - "$interval_file" "$blocks" "$total_txs" "$total_user_txs" "$user_txs" "$total_size" "$size_count" "$max_size" "$adaptive_limit" "$pos_blocks" > "$metrics_file" <<'PY'
+import sys
+
+interval_path = sys.argv[1]
+blocks = int(sys.argv[2])
+total_txs = int(sys.argv[3])
+total_user_txs = int(sys.argv[4])
+submitted_user_txs = int(sys.argv[5])
+total_size = int(sys.argv[6])
+size_count = int(sys.argv[7])
+max_size = int(sys.argv[8])
+adaptive_limit = int(sys.argv[9])
+pos_blocks = int(sys.argv[10])
+
+intervals = []
+try:
+    with open(interval_path, "r", encoding="utf-8") as handle:
+        intervals = [int(line.strip()) for line in handle if line.strip()]
+except OSError:
+    pass
+
+def percentile(values, pct):
+    if not values:
+        return 0.0
+    values = sorted(values)
+    idx = int(round((len(values) - 1) * pct))
+    return float(values[idx])
+
+avg_interval = (sum(intervals) / len(intervals)) if intervals else 0.0
+median_interval = percentile(intervals, 0.50)
+p90_interval = percentile(intervals, 0.90)
+avg_size = (total_size / size_count) if size_count else 0.0
+avg_tx_block = (total_user_txs / blocks) if blocks else 0.0
+confirmed_tx_block = (submitted_user_txs / blocks) if blocks else 0.0
+util_avg = (avg_size / adaptive_limit * 100.0) if adaptive_limit else 0.0
+util_max = (max_size / adaptive_limit * 100.0) if adaptive_limit else 0.0
+capacity_tps = (confirmed_tx_block / avg_interval) if avg_interval > 0 else 0.0
+
+print(f"WINDOW_BLOCKS={blocks}")
+print(f"WINDOW_TOTAL_TXS={total_txs}")
+print(f"WINDOW_USER_TXS={total_user_txs}")
+print(f"WINDOW_AVG_TX_BLOCK={avg_tx_block:.2f}")
+print(f"WINDOW_CONFIRMED_TX_BLOCK={confirmed_tx_block:.2f}")
+print(f"WINDOW_AVG_INTERVAL={avg_interval:.2f}")
+print(f"WINDOW_MEDIAN_INTERVAL={median_interval:.2f}")
+print(f"WINDOW_P90_INTERVAL={p90_interval:.2f}")
+print(f"WINDOW_AVG_SIZE={avg_size:.0f}")
+print(f"WINDOW_MAX_SIZE={max_size}")
+print(f"WINDOW_UTIL_AVG={util_avg:.2f}")
+print(f"WINDOW_UTIL_MAX={util_max:.2f}")
+print(f"WINDOW_CAPACITY_TPS={capacity_tps:.2f}")
+print(f"WINDOW_POS_BLOCKS={pos_blocks}")
+PY
+
+    . "$metrics_file"
+    rm -f "$interval_file" "$metrics_file"
+
+    log "$label: blocks=$WINDOW_BLOCKS, submitted_tx/block=$WINDOW_CONFIRMED_TX_BLOCK, observed_user_tx/block=$WINDOW_AVG_TX_BLOCK"
+    log "$label intervals: avg=${WINDOW_AVG_INTERVAL}s, median=${WINDOW_MEDIAN_INTERVAL}s, p90=${WINDOW_P90_INTERVAL}s"
+    log "$label block size: avg=${WINDOW_AVG_SIZE} bytes, max=${WINDOW_MAX_SIZE} bytes, util_avg=${WINDOW_UTIL_AVG}%, util_max=${WINDOW_UTIL_MAX}%"
+    log "$label observed block_capacity_tps=${WINDOW_CAPACITY_TPS}, PoS blocks=$WINDOW_POS_BLOCKS"
+}
+
+finish() {
+    local exit_code=$1
+    header "Cleanup"
+    cleanup
+    header "RESULTS"
+    echo -e "${GREEN}PASSED: $PASSED${NC}"
+    echo -e "${RED}FAILED: $FAILED${NC}"
+    exit "$exit_code"
 }
 
 # =====================================================================
-header "IDAG Stress Test v2 ($NUM_NODES nodes, mature chain)"
+header "IDAG Stress Test v3 ($NUM_NODES nodes)"
 # =====================================================================
 
-[ ! -f "$INNOVAD" ] && fail "innovad not found" && exit 1
+[ ! -f "$INNOVAD" ] && fail "innovad not found at $INNOVAD" && exit 1
 setup_cluster || exit 1
 
 # =====================================================================
-header "Phase 1: Slow mine to fork activation (height 15)"
+header "Phase 1: Mine spendable DAG-era funding"
 # =====================================================================
 
-log "Mining 15 blocks slowly (1 block + sync pause)..."
-mine_slow 15 5
-sleep 5
+REQUIRED_FUNDING=$(python3 - "$NUM_NODES" "$WORKER_FUNDING" <<'PY'
+from decimal import Decimal
+import sys
+nodes = int(sys.argv[1])
+funding = Decimal(sys.argv[2])
+print(funding * (nodes - 1))
+PY
+)
+
+COMPUTED_BOOTSTRAP=$(python3 - "$NUM_NODES" "$WORKER_FUNDING" "$COINBASE_SPEND_DELAY" <<'PY'
+from decimal import Decimal, ROUND_UP
+import sys
+nodes = int(sys.argv[1])
+funding = Decimal(sys.argv[2])
+delay = int(sys.argv[3])
+required_rewards = int(((funding * (nodes - 1)) / Decimal("50")).to_integral_value(rounding=ROUND_UP))
+print(max(15, required_rewards + delay + 5))
+PY
+)
+
+if [ "$BOOTSTRAP_HEIGHT" = "0" ]; then
+    BOOTSTRAP_HEIGHT=$COMPUTED_BOOTSTRAP
+fi
+
+log "Mining to height $BOOTSTRAP_HEIGHT for DAG activation and at least $REQUIRED_FUNDING INN spendable funding"
+mine_until_height 0 "$BOOTSTRAP_HEIGHT" || finish 1
+wait_all_sync_at_or_above "$BOOTSTRAP_HEIGHT" 60 || fail "Cluster did not sync to height $BOOTSTRAP_HEIGHT"
 
 HEIGHT=$(get_blocks 0)
-log "Node 0 at height: $HEIGHT"
+ROOT_BALANCE=$(get_balance 0)
+LAG=$(cluster_lag)
+log "Node 0 height=$HEIGHT balance=$ROOT_BALANCE INN, sync_lag=$LAG blocks"
 
-wait_all_sync "$HEIGHT" 20
-SYNCED=0
-for ((i=0; i<NUM_NODES; i++)); do
-    [ "$(get_blocks $i)" = "$HEIGHT" ] && ((SYNCED++))
-done
-log "$SYNCED/$NUM_NODES nodes synced at height $HEIGHT"
-[ $SYNCED -eq $NUM_NODES ] && success "All nodes synced past DAG fork ($HEIGHT)" || fail "Sync: $SYNCED/$NUM_NODES"
+if amount_ge "$ROOT_BALANCE" "$REQUIRED_FUNDING"; then
+    success "Node 0 has spendable funding: $ROOT_BALANCE INN"
+else
+    fail "Node 0 spendable balance $ROOT_BALANCE is below required $REQUIRED_FUNDING"
+    finish 1
+fi
 
 # =====================================================================
-header "Phase 2: Distribute coins early (before maturity mining)"
+header "Phase 2: Distribute and confirm worker funds"
 # =====================================================================
 
-log "Getting addresses from all nodes..."
 ADDRS=()
 for ((i=0; i<NUM_NODES; i++)); do
-    ADDR=$(rpc $i getnewaddress 2>/dev/null | tr -d '"')
+    ADDR=$(rpc "$i" getnewaddress 2>/dev/null | tr -d '"[:space:]')
+    if [ -z "$ADDR" ]; then
+        fail "Could not get address from node $i"
+        finish 1
+    fi
     ADDRS+=("$ADDR")
 done
 
-log "Sending 20000 INN to each of the $((NUM_NODES-1)) other nodes..."
+log "Sending $WORKER_FUNDING INN to each worker node"
+DIST_FAILED=0
 for ((i=1; i<NUM_NODES; i++)); do
-    rpc 0 sendtoaddress "${ADDRS[$i]}" 20000 > /dev/null 2>&1
+    RESULT=$(rpc_timed 0 "$RPC_CALL_TIMEOUT" sendtoaddress "${ADDRS[$i]}" "$WORKER_FUNDING")
+    TXID=$(normalize_txid "$RESULT")
+    if [ -n "$TXID" ]; then
+        log "  node $i funding txid=$TXID"
+    else
+        fail "Funding node $i failed: $(compact "$RESULT")"
+        DIST_FAILED=$((DIST_FAILED + 1))
+    fi
 done
 
-# Confirm the sends
-rpc 0 setgenerate true 1 > /dev/null 2>&1
-sleep 2
+if [ "$DIST_FAILED" -ne 0 ]; then
+    finish 1
+fi
+success "All worker funding RPCs returned txids"
 
-# =====================================================================
-header "Phase 3: Mine 200 blocks for full maturity (slow, sync-friendly)"
-# =====================================================================
-
-log "Mining 200 blocks in batches of 10 with sync pauses..."
-for ((batch=0; batch<20; batch++)); do
-    mine_slow 10 10
-    H=$(get_blocks 0)
-    [ $((batch % 5)) -eq 4 ] && log "  ...height $H (batch $((batch+1))/20)"
-    sleep 1
-done
-
-HEIGHT=$(get_blocks 0)
-log "Chain at height: $HEIGHT"
-
-# Wait for full cluster sync
-wait_all_sync "$HEIGHT" 60
-SYNCED=0
-for ((i=0; i<NUM_NODES; i++)); do
-    [ "$(get_blocks $i)" = "$HEIGHT" ] && ((SYNCED++))
-done
-[ $SYNCED -eq $NUM_NODES ] && success "Full sync after maturity mining: $SYNCED/$NUM_NODES at $HEIGHT" || fail "Sync: $SYNCED/$NUM_NODES"
-
-# =====================================================================
-header "Phase 4: Verify coin distribution + maturity"
-# =====================================================================
+MP_BEFORE_DIST=$(get_mempool_count 0)
+log "Funding mempool entries before confirmation: $MP_BEFORE_DIST"
+DIST_START_HEIGHT=$(get_blocks 0)
+mine_until_mempool_empty 0 10 || fail "Funding transactions did not fully confirm"
+DIST_END_HEIGHT=$(get_blocks 0)
+wait_all_sync_at_or_above "$DIST_END_HEIGHT" 60 || fail "Cluster did not sync after funding confirmations"
+wait_mempool_empty 0 20 || fail "Node 0 mempool not empty after funding confirmations"
 
 FUNDED=0
 for ((i=1; i<NUM_NODES; i++)); do
-    BAL=$(get_balance $i)
-    if python3 -c "exit(0 if float('${BAL:-0}') > 100 else 1)" 2>/dev/null; then
-        ((FUNDED++))
+    BAL=$(get_balance "$i")
+    if amount_ge "$BAL" "$WORKER_MIN_BALANCE"; then
+        FUNDED=$((FUNDED + 1))
         [ $i -le 3 ] && log "  Node $i balance: $BAL INN"
+    else
+        warn "  Node $i balance below threshold: ${BAL:-0} INN"
     fi
 done
-log "$FUNDED/$((NUM_NODES-1)) nodes funded with spendable balance"
-[ $FUNDED -ge $((NUM_NODES-2)) ] && success "Distribution mature: $FUNDED nodes funded" || fail "Only $FUNDED funded"
+log "$FUNDED/$((NUM_NODES - 1)) worker nodes funded above $WORKER_MIN_BALANCE INN"
+[ "$FUNDED" -eq "$((NUM_NODES - 1))" ] && success "All worker nodes have confirmed spendable funds" || fail "Only $FUNDED worker nodes funded"
 
 # =====================================================================
-header "Phase 5: DAG + DAGKNIGHT status"
+header "Phase 3: Split confirmed spam UTXOs"
+# =====================================================================
+
+log "Creating confirmed node-0 spam fuel: $ROOT_SPLIT_UTXOS outputs of $ROOT_SPLIT_AMOUNT INN"
+create_split_outputs 0 "$ROOT_SPLIT_UTXOS" "$ROOT_SPLIT_AMOUNT" "node 0" || finish 1
+
+log "Creating confirmed worker spam fuel: $WORKER_SPLIT_UTXOS outputs of $WORKER_SPLIT_AMOUNT INN per worker"
+SPLIT_FAILED=0
+for ((i=1; i<NUM_NODES; i++)); do
+    create_split_outputs "$i" "$WORKER_SPLIT_UTXOS" "$WORKER_SPLIT_AMOUNT" "node $i" || SPLIT_FAILED=$((SPLIT_FAILED + 1))
+done
+
+if [ "$SPLIT_FAILED" -ne 0 ]; then
+    finish 1
+fi
+
+EXPECTED_SPLIT_TXS=$NUM_NODES
+wait_mempool_at_least 0 "$EXPECTED_SPLIT_TXS" 15 || warn "Node 0 mempool did not see all $EXPECTED_SPLIT_TXS split txs before first split confirmation"
+SPLIT_MP=$(get_mempool_count 0)
+log "Split mempool entries before confirmation: $SPLIT_MP"
+mine_until_mempool_empty 0 30 || fail "Split transactions did not fully confirm"
+sleep 2
+SPLIT_LATE_MP=$(get_mempool_count 0)
+if [ "$SPLIT_LATE_MP" != "0" ]; then
+    log "Late split propagation left $SPLIT_LATE_MP txs; mining another split drain pass"
+    mine_until_mempool_empty 0 20 || fail "Late split transactions did not fully confirm"
+fi
+SPLIT_END_HEIGHT=$(get_blocks 0)
+wait_all_sync_at_or_above "$SPLIT_END_HEIGHT" 60 || fail "Cluster did not sync after split confirmations"
+
+ROOT_UNSPENT=$(get_listunspent_count 0 1)
+log "Node 0 spendable UTXOs after split: $ROOT_UNSPENT"
+if [ "$ROOT_UNSPENT" -ge "$ROOT_SPLIT_UTXOS" ] 2>/dev/null; then
+    success "Node 0 spam fuel confirmed: $ROOT_UNSPENT spendable UTXOs"
+else
+    fail "Node 0 has only $ROOT_UNSPENT spendable UTXOs after split"
+fi
+
+WORKER_FUEL=0
+for ((i=1; i<NUM_NODES; i++)); do
+    UTXOS=$(get_listunspent_count "$i" 1)
+    if [ "$UTXOS" -ge "$CROSS_TXS_PER_NODE" ] 2>/dev/null; then
+        WORKER_FUEL=$((WORKER_FUEL + 1))
+        [ "$i" -le 3 ] && log "  Node $i spendable UTXOs: $UTXOS"
+    else
+        warn "  Node $i has only $UTXOS spendable UTXOs"
+    fi
+done
+[ "$WORKER_FUEL" -eq "$((NUM_NODES - 1))" ] && success "All workers have enough spam UTXOs" || fail "Only $WORKER_FUEL workers have enough spam UTXOs"
+
+# =====================================================================
+header "Phase 4: DAG, DAGKNIGHT, and finality status"
 # =====================================================================
 
 DAGINFO=$(rpc 0 getdaginfo 2>/dev/null)
-DAG_ACTIVE=$(jq_field "$DAGINFO" "dag_active")
-DK_ACTIVE=$(jq_field "$DAGINFO" "dagknight_active")
-DAG_ENTRIES=$(jq_field "$DAGINFO" "dag_entries")
-ALGO=$(jq_field "$DAGINFO" "ordering_algorithm")
+DAG_ACTIVE=$(json_field "$DAGINFO" "dag_active")
+DK_ACTIVE=$(json_field "$DAGINFO" "dagknight_active")
+DAG_ENTRIES=$(json_field "$DAGINFO" "dag_entries")
+DAG_TIPS=$(json_field "$DAGINFO" "dag_tips")
+INFERRED_K=$(json_field "$DAGINFO" "inferred_k")
+ALGO=$(json_field "$DAGINFO" "ordering_algorithm")
+ADAPTIVE_LIMIT=$(json_field "$DAGINFO" "adaptive_block_limit")
 
-log "DAG: active=$DAG_ACTIVE, DAGKNIGHT=$DK_ACTIVE, entries=$DAG_ENTRIES, algo=$ALGO"
-[ "$DAG_ACTIVE" = "True" ] && success "DAG active with $DAG_ENTRIES entries" || fail "DAG not active"
-[ "$DK_ACTIVE" = "True" ] && success "DAGKNIGHT ordering active" || fail "DAGKNIGHT not active"
+log "DAG: active=$DAG_ACTIVE, DAGKNIGHT=$DK_ACTIVE, entries=$DAG_ENTRIES, tips=$DAG_TIPS, inferred_k=$INFERRED_K, algo=$ALGO"
+[ "$DAG_ACTIVE" = "true" ] && success "DAG active with $DAG_ENTRIES entries" || fail "DAG not active"
+[ "$DK_ACTIVE" = "true" ] && success "DAGKNIGHT ordering active" || fail "DAGKNIGHT not active"
+
+FININFO=$(rpc 0 getfinalityinfo 2>/dev/null)
+TIER=$(json_field "$FININFO" "finality_tier")
+VOTERS=$(json_field "$FININFO" "current_epoch_voters")
+FINALIZED_HEIGHT=$(json_field "$FININFO" "finalized_height")
+log "Finality: tier=$TIER, voters=$VOTERS, finalized_height=$FINALIZED_HEIGHT"
+success "Finality RPC responded: tier=$TIER"
 
 # =====================================================================
-header "Phase 6: Wait for PoS blocks (staking active)"
+header "Phase 5: Wait for PoS blocks"
 # =====================================================================
 
 log "Waiting up to 60s for PoS blocks to appear..."
 POS_FOUND=0
+START_POS_HEIGHT=$(get_blocks 0)
+LAST_POS_HEIGHT=$START_POS_HEIGHT
 for ((w=0; w<60; w++)); do
     H=$(get_blocks 0)
-    if [ -n "$H" ] && [ "$H" -gt "$HEIGHT" ]; then
-        # Check if new blocks are PoS
-        HASH=$(rpc 0 getblockhash $H 2>/dev/null | tr -d '"')
-        if [ -n "$HASH" ]; then
-            BLOCK=$(rpc 0 getblock "$HASH" 2>/dev/null)
-            FLAGS=$(jq_field "$BLOCK" "flags")
+    if is_int "$H" && is_int "$LAST_POS_HEIGHT" && [ "$H" -gt "$LAST_POS_HEIGHT" ]; then
+        for ((ph=LAST_POS_HEIGHT + 1; ph<=H; ph++)); do
+            BLOCK=$(get_block_json 0 "$ph")
+            FLAGS=$(json_field "$BLOCK" "flags")
             if echo "$FLAGS" | grep -qi "proof-of-stake"; then
-                ((POS_FOUND++))
-                [ $POS_FOUND -eq 1 ] && log "First PoS block at height $H!"
+                POS_FOUND=$((POS_FOUND + 1))
+                [ "$POS_FOUND" -eq 1 ] && log "First PoS block at height $ph"
             fi
-        fi
-        HEIGHT=$H
+        done
+        LAST_POS_HEIGHT=$H
     fi
-    [ $POS_FOUND -ge 3 ] && break
+    [ "$POS_FOUND" -ge 3 ] && break
     sleep 1
 done
 
 log "PoS blocks found: $POS_FOUND in 60s window"
-[ $POS_FOUND -gt 0 ] && success "PoS staking in DAG: $POS_FOUND blocks produced" || warn "No PoS blocks yet (may need longer maturity)"
+[ "$POS_FOUND" -gt 0 ] && success "PoS staking in DAG: $POS_FOUND blocks produced" || warn "No PoS blocks yet (stress continues with PoW mining)"
 
 # =====================================================================
-header "Phase 7: TPS Limit Test — 1000 rapid txs"
+header "Phase 6: RPC submission sample"
 # =====================================================================
 
 BLOCKS_BEFORE=$(get_blocks 0)
-log "Sending 1000 transactions as fast as possible..."
+log "Sending up to $STRESS_TXS node-0 transactions as fast as wallet RPC accepts them"
 
 SPAM_ADDRS=()
 for ((i=0; i<10; i++)); do
-    SPAM_ADDRS+=($(rpc 0 getnewaddress 2>/dev/null | tr -d '"'))
+    SPAM_ADDRS+=("$(rpc 0 getnewaddress 2>/dev/null | tr -d '"[:space:]')")
 done
 
 TX_SENT=0
 TX_FAILED=0
-START_TIME=$(date +%s%N)
+FAIL_STREAK=0
+START_MS=$(now_ms)
 
-for ((t=0; t<1000; t++)); do
+for ((t=0; t<STRESS_TXS; t++)); do
     TARGET=${SPAM_ADDRS[$((t % 10))]}
     RESULT=$(rpc 0 sendtoaddress "$TARGET" 0.001 2>/dev/null)
-    if echo "$RESULT" | grep -qE "^[0-9a-f]{64}$"; then
-        ((TX_SENT++))
+    TXID=$(normalize_txid "$RESULT")
+    if [ -n "$TXID" ]; then
+        TX_SENT=$((TX_SENT + 1))
+        FAIL_STREAK=0
     else
-        ((TX_FAILED++))
-        # If we hit mempool full or insufficient funds, stop early
-        [ $TX_FAILED -ge 50 ] && log "  Stopping early: $TX_FAILED failures" && break
+        TX_FAILED=$((TX_FAILED + 1))
+        FAIL_STREAK=$((FAIL_STREAK + 1))
+        [ "$FAIL_STREAK" -ge 30 ] && log "  30 consecutive failures, stopping" && break
     fi
+
+    [ $((TX_SENT % 100)) -eq 0 ] && [ "$TX_SENT" -gt 0 ] && log "  ...$TX_SENT sent"
 done
 
-END_TIME=$(date +%s%N)
-ELAPSED_MS=$(( (END_TIME - START_TIME) / 1000000 ))
-ELAPSED_S=$((ELAPSED_MS / 1000))
-[ $ELAPSED_S -eq 0 ] && ELAPSED_S=1
+END_MS=$(now_ms)
+ELAPSED_MS=$((END_MS - START_MS))
+[ "$ELAPSED_MS" -le 0 ] && ELAPSED_MS=1
+RPC_TPS=$((TX_SENT * 1000 / ELAPSED_MS))
+log "Submitted $TX_SENT txs in ${ELAPSED_MS}ms ($TX_FAILED failed)"
+log "rpc_submit_tps=$RPC_TPS"
 
-TPS=$((TX_SENT * 1000 / (ELAPSED_MS + 1)))
-log "Sent $TX_SENT txs in ${ELAPSED_MS}ms ($TX_FAILED failed)"
-log "Raw submission rate: ~$TPS TPS"
-
-# Note: this measures RPC submission speed, not on-chain confirmation
-success "TX submission: $TX_SENT txs at ~$TPS TPS (RPC throughput)"
+[ "$TX_SENT" -ge 50 ] && success "RPC submission sample: $TX_SENT txs at ~$RPC_TPS TPS" || fail "Only $TX_SENT txs submitted"
 
 # =====================================================================
-header "Phase 8: Mine the spam + measure on-chain throughput"
+header "Phase 7: Mine node-0 mempool and measure block window"
 # =====================================================================
 
-MEMPOOL_BEFORE=$(rpc 0 getrawmempool 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+MEMPOOL_BEFORE=$(get_mempool_count 0)
 log "Mempool before mining: $MEMPOOL_BEFORE txs"
-
-MINE_START=$(date +%s)
-# Mine until mempool is empty
-MINE_ROUNDS=0
-while [ $MINE_ROUNDS -lt 100 ]; do
-    rpc 0 setgenerate true 1 > /dev/null 2>&1
-    sleep 0.3
-    ((MINE_ROUNDS++))
-    MP=$(rpc 0 getrawmempool 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
-    [ "$MP" = "0" ] && break
-done
-MINE_END=$(date +%s)
-MINE_ELAPSED=$((MINE_END - MINE_START))
-
+MINE_START_MS=$(now_ms)
+mine_until_mempool_empty 0 100 || fail "Node-0 spam mempool did not fully drain"
+MINE_END_MS=$(now_ms)
 BLOCKS_AFTER=$(get_blocks 0)
+MINE_ELAPSED_MS=$((MINE_END_MS - MINE_START_MS))
+[ "$MINE_ELAPSED_MS" -le 0 ] && MINE_ELAPSED_MS=1
 BLOCKS_MINED=$((BLOCKS_AFTER - BLOCKS_BEFORE))
+CONFIRMED_WALL_CLOCK_TPS=$(python3 - "$TX_SENT" "$MINE_ELAPSED_MS" <<'PY'
+import sys
+txs = int(sys.argv[1])
+elapsed_ms = max(int(sys.argv[2]), 1)
+print(f"{txs * 1000.0 / elapsed_ms:.2f}")
+PY
+)
+MEMPOOL_AFTER=$(get_mempool_count 0)
 
-MEMPOOL_AFTER=$(rpc 0 getrawmempool 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "0")
+log "Mining complete: $BLOCKS_MINED blocks in ${MINE_ELAPSED_MS}ms"
+log "confirmed_wall_clock_tps=$CONFIRMED_WALL_CLOCK_TPS, mempool_after=$MEMPOOL_AFTER"
+[ "$MEMPOOL_AFTER" = "0" ] && success "Node-0 mempool drained" || fail "Node-0 mempool still has $MEMPOOL_AFTER txs"
 
-ON_CHAIN_TPS=0
-[ $MINE_ELAPSED -gt 0 ] && ON_CHAIN_TPS=$((TX_SENT / MINE_ELAPSED))
-AVG_TXS_PER_BLOCK=0
-[ $BLOCKS_MINED -gt 0 ] && AVG_TXS_PER_BLOCK=$((TX_SENT / BLOCKS_MINED))
-
-log "Mining complete: $BLOCKS_MINED blocks in ${MINE_ELAPSED}s"
-log "On-chain throughput: ~$ON_CHAIN_TPS TPS confirmed"
-log "Avg txs/block: ~$AVG_TXS_PER_BLOCK"
-log "Mempool after: $MEMPOOL_AFTER remaining"
-
-success "On-chain: $TX_SENT txs in $BLOCKS_MINED blocks (~$ON_CHAIN_TPS confirmed TPS, ~$AVG_TXS_PER_BLOCK tx/block)"
+if [ "$BLOCKS_AFTER" -gt "$BLOCKS_BEFORE" ] 2>/dev/null; then
+    analyze_block_window "$((BLOCKS_BEFORE + 1))" "$BLOCKS_AFTER" "Node-0 spam window" "$TX_SENT" "${ADAPTIVE_LIMIT:-0}"
+else
+    fail "No blocks mined during node-0 spam confirmation"
+fi
 
 # =====================================================================
-header "Phase 9: Cross-node tx spam"
+header "Phase 8: Cross-node transaction spam"
 # =====================================================================
 
-log "All funded nodes sending 20 txs each..."
+log "All funded worker nodes sending $CROSS_TXS_PER_NODE txs each"
+CROSS_BLOCKS_BEFORE=$(get_blocks 0)
 CROSS_SENT=0
+CROSS_FAILED=0
+
 for ((i=1; i<NUM_NODES; i++)); do
-    for ((t=0; t<20; t++)); do
-        TARGET=${ADDRS[$((RANDOM % NUM_NODES))]}
-        RESULT=$(rpc $i sendtoaddress "$TARGET" 0.001 2>/dev/null)
-        echo "$RESULT" | grep -qE "^[0-9a-f]{64}$" && ((CROSS_SENT++))
+    for ((t=0; t<CROSS_TXS_PER_NODE; t++)); do
+        TARGET=${ADDRS[$(((i + t + 1) % NUM_NODES))]}
+        RESULT=$(rpc "$i" sendtoaddress "$TARGET" 0.001 2>/dev/null)
+        TXID=$(normalize_txid "$RESULT")
+        if [ -n "$TXID" ]; then
+            CROSS_SENT=$((CROSS_SENT + 1))
+        else
+            CROSS_FAILED=$((CROSS_FAILED + 1))
+        fi
     done
 done
 
-rpc 0 setgenerate true 5 > /dev/null 2>&1
-sleep 3
+log "Cross-node submitted: $CROSS_SENT txs ($CROSS_FAILED failed)"
+wait_mempool_at_least 0 "$CROSS_SENT" 10 || warn "Node 0 mempool did not see all $CROSS_SENT cross-node txs before mining"
+mine_until_mempool_empty 0 100 || fail "Cross-node mempool did not fully drain"
+sleep 2
+CROSS_LATE_MP=$(get_mempool_count 0)
+if [ "$CROSS_LATE_MP" != "0" ]; then
+    log "Late cross-node propagation left $CROSS_LATE_MP txs; mining another drain pass"
+    mine_until_mempool_empty 0 20 || fail "Late cross-node mempool did not fully drain"
+fi
+CROSS_BLOCKS_AFTER=$(get_blocks 0)
+wait_all_sync_at_or_above "$CROSS_BLOCKS_AFTER" 60 || fail "Cluster did not sync after cross-node spam"
+CROSS_MP=$(get_mempool_count 0)
 
-log "Cross-node txs: $CROSS_SENT"
-[ $CROSS_SENT -ge 50 ] && success "Cross-node spam: $CROSS_SENT txs from $((NUM_NODES-1)) nodes" || warn "Cross-node: $CROSS_SENT txs"
+[ "$CROSS_SENT" -ge "$MIN_CROSS_SENT" ] && success "Cross-node spam: $CROSS_SENT txs from $((NUM_NODES - 1)) nodes" || fail "Cross-node spam below threshold: $CROSS_SENT"
+[ "$CROSS_MP" = "0" ] && success "Cross-node mempool drained" || fail "Cross-node mempool has $CROSS_MP txs"
+
+if [ "$CROSS_BLOCKS_AFTER" -gt "$CROSS_BLOCKS_BEFORE" ] 2>/dev/null; then
+    analyze_block_window "$((CROSS_BLOCKS_BEFORE + 1))" "$CROSS_BLOCKS_AFTER" "Cross-node window" "$CROSS_SENT" "${ADAPTIVE_LIMIT:-0}"
+fi
 
 # =====================================================================
-header "Phase 10: Final cluster sync + integrity"
+header "Phase 9: Final cluster sync and integrity"
 # =====================================================================
 
-sleep 10
+sleep 5
 FINAL_HEIGHT=$(get_blocks 0)
-wait_all_sync "$FINAL_HEIGHT" 30
-SYNCED=0
-for ((i=0; i<NUM_NODES; i++)); do
-    [ "$(get_blocks $i)" = "$FINAL_HEIGHT" ] && ((SYNCED++))
-done
+wait_all_sync_at_or_above "$FINAL_HEIGHT" 60
+SYNC_LAG=$(cluster_lag)
 
-log "$SYNCED/$NUM_NODES nodes at final height $FINAL_HEIGHT"
-[ $SYNCED -eq $NUM_NODES ] && success "Final sync: all $NUM_NODES at $FINAL_HEIGHT" || fail "Final sync: $SYNCED/$NUM_NODES"
+log "Final height node0=$FINAL_HEIGHT, sync_lag=$SYNC_LAG blocks"
+if [ "$SYNC_LAG" = "0" ]; then
+    success "Final sync: all $NUM_NODES nodes aligned at height $FINAL_HEIGHT"
+else
+    fail "Final sync lag: $SYNC_LAG blocks"
+fi
 
-# DAG integrity
 DAGINFO2=$(rpc 0 getdaginfo 2>/dev/null)
-ENTRIES2=$(jq_field "$DAGINFO2" "dag_entries")
-log "Final DAG: $ENTRIES2 entries"
+ENTRIES2=$(json_field "$DAGINFO2" "dag_entries")
+TIPS2=$(json_field "$DAGINFO2" "dag_tips")
+INFERRED_K2=$(json_field "$DAGINFO2" "inferred_k")
+ALGO2=$(json_field "$DAGINFO2" "ordering_algorithm")
+DK2=$(json_field "$DAGINFO2" "dagknight_active")
+ADAPTIVE2=$(json_field "$DAGINFO2" "adaptive_block_limit")
+log "Final DAG: entries=$ENTRIES2, tips=$TIPS2, inferred_k=$INFERRED_K2, DAGKNIGHT=$DK2, algo=$ALGO2, adaptive_limit=$ADAPTIVE2"
 [ -n "$ENTRIES2" ] && [ "$ENTRIES2" -gt 0 ] 2>/dev/null && success "DAG intact: $ENTRIES2 entries" || fail "DAG entries: $ENTRIES2"
 
-# Finality
-FININFO=$(rpc 0 getfinalityinfo 2>/dev/null)
-TIER=$(jq_field "$FININFO" "finality_tier")
-VOTERS=$(jq_field "$FININFO" "current_epoch_voters")
-log "Finality: tier=$TIER, voters=$VOTERS"
-success "Finality status: tier=$TIER"
+FININFO2=$(rpc 0 getfinalityinfo 2>/dev/null)
+TIER2=$(json_field "$FININFO2" "finality_tier")
+VOTERS2=$(json_field "$FININFO2" "current_epoch_voters")
+FINALIZED2=$(json_field "$FININFO2" "finalized_height")
+log "Finality: tier=$TIER2, voters=$VOTERS2, finalized_height=$FINALIZED2"
+success "Finality status recorded"
 
-# Final mempool
-FINAL_MP=$(rpc 0 getrawmempool 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "?")
+FINAL_MP=$(get_mempool_count 0)
 log "Final mempool: $FINAL_MP txs"
+[ "$FINAL_MP" = "0" ] && success "Final mempool empty" || fail "Final mempool has $FINAL_MP txs"
 
-# =====================================================================
-header "Cleanup"
-# =====================================================================
-cleanup
-
-# =====================================================================
-header "RESULTS"
-# =====================================================================
-echo -e "${GREEN}PASSED: $PASSED${NC}"
-echo -e "${RED}FAILED: $FAILED${NC}"
 echo ""
 echo "=== Performance Summary ==="
-echo "  Nodes:           $NUM_NODES"
-echo "  Final height:    $FINAL_HEIGHT"
-echo "  TX submitted:    $TX_SENT"
-echo "  RPC throughput:  ~$TPS TPS"
-echo "  On-chain TPS:    ~$ON_CHAIN_TPS TPS"
-echo "  Avg tx/block:    ~$AVG_TXS_PER_BLOCK"
-echo "  Blocks mined:    $BLOCKS_MINED (spam phase)"
-echo "  Cross-node txs:  $CROSS_SENT"
-echo "  PoS blocks:      $POS_FOUND"
-echo "  DAG entries:     $ENTRIES2"
+echo "  Nodes:                    $NUM_NODES"
+echo "  Final height:             $FINAL_HEIGHT"
+echo "  Worker funding:           $WORKER_FUNDING INN each"
+echo "  Node-0 TX submitted:      $TX_SENT"
+echo "  Node-0 TX failed:         $TX_FAILED"
+echo "  rpc_submit_tps:           ~$RPC_TPS"
+echo "  confirmed_wall_clock_tps: $CONFIRMED_WALL_CLOCK_TPS"
+echo "  spam blocks mined:        $BLOCKS_MINED"
+echo "  cross-node txs:           $CROSS_SENT"
+echo "  PoS blocks observed:      $POS_FOUND"
+echo "  DAG entries:              $ENTRIES2"
+echo "  DAG tips:                 $TIPS2"
+echo "  inferred_k:               $INFERRED_K2"
+echo "  adaptive limit:           $ADAPTIVE2"
+echo "  timing source:            observed block timestamps (netmhashps intentionally ignored)"
 echo ""
 
-if [ $FAILED -eq 0 ]; then
+if [ "$FAILED" -eq 0 ]; then
     echo -e "${GREEN}All stress tests passed!${NC}"
-    exit 0
+    finish 0
 else
     echo -e "${RED}$FAILED test(s) failed${NC}"
-    exit 1
+    finish 1
 fi

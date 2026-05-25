@@ -125,7 +125,6 @@ unsigned short GetListenPort()
 
 void CNode::PushGetBlocks(CBlockIndex* pindexBegin, uint256 hashEnd)
 {
-    static int64_t nLastGetBlocksTime = 0;
     int64_t nNow = GetTime();
 
     if (pindexBegin == pindexLastGetBlocksBegin && hashEnd == hashLastGetBlocksEnd) {
@@ -884,6 +883,13 @@ void CNode::copyStats(CNodeStats &stats)
     X(strSubVer);
     X(fInbound);
     X(nChainHeight);
+    X(nBestKnownHeight);
+    stats.hashBestKnownBlock = hashBestKnownBlock.ToString();
+    X(nLastBlockRecv);
+    X(nLastHeightUpdate);
+    ExpireBlockInFlight();
+    stats.nBlocksInFlight = (int)setBlocksInFlight.size();
+    stats.nAskForSize = (int)mapAskFor.size();
     X(nMisbehavior);
     {
         LOCK(cs_vSend);
