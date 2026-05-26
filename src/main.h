@@ -282,10 +282,21 @@ inline int GetForkHeightDAG()
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 11;
-    if (fTestNet) return 650;       // testnet: 25 blocks after finality
+    if (fTestNet) return 11;        // clean public IDAG testnet
     return 8150000;                  // mainnet: 5,000 blocks after finality
 }
 #define FORK_HEIGHT_DAG (GetForkHeightDAG())
+
+// IDAG privacy root transition: FCMP spends bind to the last finalized
+// epoch curve-tree snapshot instead of the mutable per-block tree.
+inline int GetForkHeightEpochRootFCMP()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest || fTestNet) return GetForkHeightDAG();
+    return 1000000000;               // mainnet disabled until a scheduled fork
+}
+#define FORK_HEIGHT_EPOCH_ROOT_FCMP (GetForkHeightEpochRootFCMP())
 
 // IDAG Phase 4: DAGKNIGHT adaptive ordering (replaces GHOSTDAG)
 inline int GetForkHeightDAGKnight()
@@ -293,7 +304,7 @@ inline int GetForkHeightDAGKnight()
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 13;
-    if (fTestNet) return 700;       // testnet: 50 blocks of GHOSTDAG before DAGKNIGHT
+    if (fTestNet) return 13;        // clean public IDAG testnet
     return 8200000;                  // mainnet: 50,000 blocks after DAG (~14h at 1s post-DAG blocks)
 }
 #define FORK_HEIGHT_DAGKNIGHT (GetForkHeightDAGKnight())

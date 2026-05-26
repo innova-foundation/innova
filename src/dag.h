@@ -9,6 +9,7 @@
 #include "serialize.h"
 #include "sync.h"
 #include "script.h"
+#include "curvetree.h"
 
 #include <vector>
 #include <map>
@@ -68,19 +69,30 @@ struct CEpochState
     int nHeightStart;
     int nHeightEnd;
     std::vector<uint256> vBlockHashes;   // DAG-ordered block hashes in this epoch
+    uint256 hashCurveRoot;
+    uint256 hashNullifierRoot;
+    uint256 hashFinalityCertificate;
     uint256 nTotalTrust;
     int nBlockCount;
     int nTxCount;
+    int nFinalityTier;
+    int nConsecutiveHardCount;
     bool fFinalized;
 
     CEpochState()
     {
         nEpoch = 0;
+        hashBoundaryBlock = 0;
+        hashCurveRoot = 0;
+        hashNullifierRoot = 0;
+        hashFinalityCertificate = 0;
         nHeightStart = 0;
         nHeightEnd = 0;
         nTotalTrust = 0;
         nBlockCount = 0;
         nTxCount = 0;
+        nFinalityTier = 0;
+        nConsecutiveHardCount = 0;
         fFinalized = false;
     }
 
@@ -91,9 +103,14 @@ struct CEpochState
         READWRITE(nHeightStart);
         READWRITE(nHeightEnd);
         READWRITE(vBlockHashes);
+        READWRITE(hashCurveRoot);
+        READWRITE(hashNullifierRoot);
+        READWRITE(hashFinalityCertificate);
         READWRITE(nTotalTrust);
         READWRITE(nBlockCount);
         READWRITE(nTxCount);
+        READWRITE(nFinalityTier);
+        READWRITE(nConsecutiveHardCount);
         READWRITE(fFinalized);
     )
 };
@@ -179,6 +196,9 @@ public:
     /** Load all DAG links from LevelDB into memory. */
     bool LoadDAGLinks(CTxDB& txdb);
 
+    /** Load persisted epoch states and curve-tree snapshots from LevelDB. */
+    bool LoadEpochStates(CTxDB& txdb);
+
     /** Rebuild DAG ordering (GHOSTDAG/DAGKNIGHT) from loaded data. */
     void RebuildDAGOrder();
 
@@ -196,6 +216,9 @@ public:
 
     /** Get epoch state (from memory cache). */
     bool GetEpochState(int nEpoch, CEpochState& stateOut) const;
+
+    /** Get the most recent finalized epoch state known to the DAG manager. */
+    bool GetLastFinalizedEpochState(CEpochState& stateOut) const;
 
     /** Get the number of in-memory DAG entries. */
     int GetDAGEntryCount() const;
@@ -227,6 +250,7 @@ private:
     std::set<uint256> setDAGTips;
     std::map<uint256, std::set<uint256>> mapPendingChildrenByParent;
     std::map<int, CEpochState> mapEpochState;
+    std::map<int, CCurveTree> mapEpochCurveTrees;
     std::set<uint256> setEpochBoundaryBlocks;
     int nPrunedBelowHeight;
 

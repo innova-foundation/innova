@@ -8,6 +8,7 @@
 
 #include "main.h"
 #include "dag.h"
+#include "finality.h"
 #include "ringsig.h"
 #include "curvetree.h"
 
@@ -243,6 +244,8 @@ public:
     bool WriteCurveTreeAtBlock(const uint256& blockHash, const CCurveTree& tree);
     bool ReadCurveTreeAtBlock(const uint256& blockHash, CCurveTree& tree);
     bool EraseCurveTreeAtBlock(const uint256& blockHash);
+    bool WriteCurveTreeAtEpoch(int nEpoch, const CCurveTree& tree);
+    bool ReadCurveTreeAtEpoch(int nEpoch, CCurveTree& tree);
 
 	bool ReadAddrIndex(uint160 addrHash, std::vector<uint256>& txHashes);
     bool WriteAddrIndex(uint160 addrHash, uint256 txHash);
@@ -278,8 +281,20 @@ public:
     // IDAG Phase 3: Epoch state persistence
     bool WriteEpochState(int nEpoch, const CEpochState& state);
     bool ReadEpochState(int nEpoch, CEpochState& state);
+    bool IterateEpochStates(std::map<int, CEpochState>& mapOut);
+    bool IterateCurveTreeEpochs(std::map<int, CCurveTree>& mapOut);
     bool WriteDAGCleanHeight(int nHeight);
     bool ReadDAGCleanHeight(int& nHeight);
+
+    // IDAG finality vote persistence
+    bool WriteFinalityVote(const uint256& nullifier, const CFinalityVote& vote);
+    bool ReadFinalityVote(const uint256& nullifier, CFinalityVote& vote);
+    bool EraseFinalityVote(const uint256& nullifier);
+    bool IterateFinalityVotes(std::map<uint256, CFinalityVote>& mapOut);
+    bool WriteFinalityTallyCertificate(const uint256& hashCert, const CFinalityTallyCertificate& cert);
+    bool ReadFinalityTallyCertificate(const uint256& hashCert, CFinalityTallyCertificate& cert);
+    bool EraseFinalityTallyCertificate(const uint256& hashCert);
+    bool IterateFinalityTallyCertificates(std::map<uint256, CFinalityTallyCertificate>& mapOut);
 private:
     bool LoadBlockIndexGuts();
 };

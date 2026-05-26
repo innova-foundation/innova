@@ -25,6 +25,7 @@
 #include "nullstake.h"
 #include "curvetree.h"
 #include "lelantus.h"
+#include "dag.h"
 #include <openssl/crypto.h>  
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/range/algorithm.hpp>
@@ -43,6 +44,46 @@ using namespace std;
 unsigned int nStakeSplitAge = 1 * 24 * 60 * 60;
 int64_t nStakeCombineThreshold = 1000 * COIN;
 int64_t nStakeMinSplitThreshold = 100 * COIN;
+
+static bool LoadWalletFCMPProofTree(CTxDB& txdb, int nBlockHeight,
+                                    CCurveTree& treeOut,
+                                    uint256& hashRootOut,
+                                    std::string& strErrorOut)
+{
+    if (nBlockHeight >= FORK_HEIGHT_EPOCH_ROOT_FCMP)
+    {
+        CEpochState finalizedEpochState;
+        if (!g_dagManager.GetLastFinalizedEpochState(finalizedEpochState))
+        {
+            strErrorOut = "No finalized epoch curve-tree root is available yet";
+            return false;
+        }
+        if (!txdb.ReadCurveTreeAtEpoch(finalizedEpochState.nEpoch, treeOut))
+        {
+            strErrorOut = "Finalized epoch curve-tree snapshot is missing";
+            return false;
+        }
+        if (!treeOut.IsEmpty())
+            treeOut.RebuildParentNodes();
+        hashRootOut = treeOut.GetRoot();
+        if (hashRootOut == 0 || hashRootOut != finalizedEpochState.hashCurveRoot)
+        {
+            strErrorOut = "Finalized epoch curve-tree snapshot root mismatch";
+            return false;
+        }
+        return true;
+    }
+
+    if (!txdb.ReadCurveTree(treeOut))
+    {
+        strErrorOut = "Mutable curve tree is missing";
+        return false;
+    }
+    if (!treeOut.IsEmpty())
+        treeOut.RebuildParentNodes();
+    hashRootOut = treeOut.GetRoot();
+    return true;
+}
 
 int64_t gcd(int64_t n,int64_t m) { return m == 0 ? n : gcd(m, n % m); }
 static uint64_t CoinWeightCost(const COutput &out)
@@ -4184,6 +4225,8 @@ bool CWallet::GetStakeWeight(const CKeyStore& keystore, uint64_t& nMinWeight, ui
 bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int64_t nSearchInterval, int64_t nFees, CTransaction& txNew, CKey& key)
 {
     CBlockIndex* pindexPrev = pindexBest;
+    if (pindexPrev && pindexPrev->nHeight + 1 >= FORK_HEIGHT_DAG)
+        return false;
     CBigNum bnTargetPerCoinDay;
     bnTargetPerCoinDay.SetCompact(nBits);
 
@@ -4240,14 +4283,19 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
 
     CScript scriptPubKeyKernel;
     CTxDB txdb("r");
-    // Post-DAG: reduce search interval to match 1-second block time
-    // Pre-DAG: 10 timestamps (~0.67 block slots at 15s blocks)
-    // Post-DAG: 2 timestamps (2 block slots at 1s blocks)
+    // Post-DAG blocks target 1-second spacing, but the staking thread may
+    // sleep longer after an unsuccessful search. Cover the elapsed search
+    // interval up to the existing 10-second cap so timestamp slots are not
+    // skipped.
     int nMaxStakeSearchInterval = 10;
     {
         LOCK(cs_main);
         if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_DAG)
-            nMaxStakeSearchInterval = 2;
+        {
+            nMaxStakeSearchInterval = (int)std::min(nSearchInterval, (int64_t)10);
+            if (nMaxStakeSearchInterval < 2)
+                nMaxStakeSearchInterval = 2;
+        }
     }
 
     if (fTryTransparent && !setCoins.empty())
@@ -4604,7 +4652,15 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
 
                         {
                             CCurveTree fcmpTree;
-                            txdb.ReadCurveTree(fcmpTree);
+                            uint256 hashFCMPRoot = 0;
+                            std::string strFCMPError;
+                            if (!LoadWalletFCMPProofTree(txdb, pindexPrev->nHeight + 1,
+                                                         fcmpTree, hashFCMPRoot, strFCMPError))
+                            {
+                                if (fDebug)
+                                    printf("CreateCoinStake() : NullStake FCMP root unavailable: %s\n", strFCMPError.c_str());
+                                continue;
+                            }
 
                             int64_t nLeafIdx = fcmpTree.FindLeafIndex(stakeSpend.cv);
                             if (nLeafIdx < 0)
@@ -4614,7 +4670,7 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                                                   wnote.note.nValue, stakeSpend.cv, stakeSpend.fcmpProof))
                                 continue;
 
-                            stakeSpend.curveTreeRoot = fcmpTree.GetRoot();
+                            stakeSpend.curveTreeRoot = hashFCMPRoot;
                         }
 
                         txNew.vShieldedSpend.push_back(stakeSpend);
@@ -4969,7 +5025,15 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
 
                             {
                                 CCurveTree fcmpTree;
-                                txdb.ReadCurveTree(fcmpTree);
+                                uint256 hashFCMPRoot = 0;
+                                std::string strFCMPError;
+                                if (!LoadWalletFCMPProofTree(txdb, pindexPrev->nHeight + 1,
+                                                             fcmpTree, hashFCMPRoot, strFCMPError))
+                                {
+                                    if (fDebug)
+                                        printf("CreateCoinStake() : NullStake V3 FCMP root unavailable: %s\n", strFCMPError.c_str());
+                                    continue;
+                                }
 
                                 int64_t nLeafIdx = fcmpTree.FindLeafIndex(stakeSpend.cv);
                                 if (nLeafIdx < 0)
@@ -4979,7 +5043,7 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                                                       wnote.note.nValue, stakeSpend.cv, stakeSpend.fcmpProof))
                                     continue;
 
-                                stakeSpend.curveTreeRoot = fcmpTree.GetRoot();
+                                stakeSpend.curveTreeRoot = hashFCMPRoot;
                             }
 
                             txNew.vShieldedSpend.push_back(stakeSpend);

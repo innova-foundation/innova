@@ -14,6 +14,8 @@
 #include "dandelion.h"
 #include "init.h"
 #include "base58.h"
+#include "dag.h"
+#include "finality.h"
 
 #include <string>
 #include <sstream>
@@ -46,6 +48,46 @@ static bool StringToShieldedAddress(const string& str, CShieldedPaymentAddress& 
     {
         return false;
     }
+    return true;
+}
+
+static bool LoadWalletFCMPProofTree(CTxDB& txdb, int nCurrentHeight,
+                                    CCurveTree& treeOut,
+                                    uint256& hashRootOut,
+                                    std::string& strErrorOut)
+{
+    if (nCurrentHeight >= FORK_HEIGHT_EPOCH_ROOT_FCMP)
+    {
+        CEpochState finalizedEpochState;
+        if (!g_dagManager.GetLastFinalizedEpochState(finalizedEpochState))
+        {
+            strErrorOut = "No finalized epoch curve-tree root is available yet";
+            return false;
+        }
+        if (!txdb.ReadCurveTreeAtEpoch(finalizedEpochState.nEpoch, treeOut))
+        {
+            strErrorOut = "Finalized epoch curve-tree snapshot is missing";
+            return false;
+        }
+        if (!treeOut.IsEmpty())
+            treeOut.RebuildParentNodes();
+        hashRootOut = treeOut.GetRoot();
+        if (hashRootOut == 0 || hashRootOut != finalizedEpochState.hashCurveRoot)
+        {
+            strErrorOut = "Finalized epoch curve-tree snapshot root mismatch";
+            return false;
+        }
+        return true;
+    }
+
+    if (!txdb.ReadCurveTree(treeOut))
+    {
+        strErrorOut = "Mutable curve tree is missing";
+        return false;
+    }
+    if (!treeOut.IsEmpty())
+        treeOut.RebuildParentNodes();
+    hashRootOut = treeOut.GetRoot();
     return true;
 }
 
@@ -514,8 +556,10 @@ Value z_unshield(const Array& params, bool fHelp)
         {
             CTxDB txdb("r");
             CCurveTree fcmpTree;
-            txdb.ReadCurveTree(fcmpTree);
-            fcmpTree.RebuildParentNodes();
+            uint256 hashFCMPRoot = 0;
+            std::string strFCMPError;
+            if (!LoadWalletFCMPProofTree(txdb, nCurrentHeight, fcmpTree, hashFCMPRoot, strFCMPError))
+                throw JSONRPCError(RPC_INTERNAL_ERROR, strFCMPError);
 
             if (fcmpTree.IsEmpty())
                 throw JSONRPCError(RPC_INTERNAL_ERROR, "Curve tree is empty, cannot create FCMP proof");
@@ -528,7 +572,7 @@ Value z_unshield(const Array& params, bool fHelp)
                                   wnote.note.nValue, spend.cv, spend.fcmpProof))
                 throw JSONRPCError(RPC_INTERNAL_ERROR, strprintf("Failed to create FCMP proof for spend %d", (int)i));
 
-            spend.curveTreeRoot = fcmpTree.GetRoot();
+            spend.curveTreeRoot = hashFCMPRoot;
 
             if (fDebug)
                 printf("z_unshield: created FCMP proof for spend %d (leaf index %ld, tree size %lu)\n",
@@ -901,8 +945,10 @@ Value z_send(const Array& params, bool fHelp)
         {
             CTxDB txdb("r");
             CCurveTree fcmpTree;
-            txdb.ReadCurveTree(fcmpTree);
-            fcmpTree.RebuildParentNodes();
+            uint256 hashFCMPRoot = 0;
+            std::string strFCMPError;
+            if (!LoadWalletFCMPProofTree(txdb, nCurrentHeight, fcmpTree, hashFCMPRoot, strFCMPError))
+                throw JSONRPCError(RPC_INTERNAL_ERROR, strFCMPError);
 
             if (fcmpTree.IsEmpty())
                 throw JSONRPCError(RPC_INTERNAL_ERROR, "Curve tree is empty, cannot create FCMP proof");
@@ -916,7 +962,7 @@ Value z_send(const Array& params, bool fHelp)
                 throw JSONRPCError(RPC_INTERNAL_ERROR, strprintf("Failed to create FCMP proof for spend %d (leaf index %ld)",
                                                                   (int)i, nLeafIdx));
 
-            spend.curveTreeRoot = fcmpTree.GetRoot();
+            spend.curveTreeRoot = hashFCMPRoot;
 
             if (fDebug)
                 printf("z_send: created FCMP proof for spend %d (leaf index %ld, tree size %lu)\n",

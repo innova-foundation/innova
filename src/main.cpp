@@ -42,6 +42,14 @@ using boost::placeholders::_2;
 using namespace std;
 namespace fs = boost::filesystem;
 
+static bool LoadFCMPValidationRoot(CTxDB& txdb, int nBlockHeight,
+                                   CCurveTreeNode& rootOut,
+                                   uint256& hashExpectedRootOut,
+                                   std::string& strErrorOut);
+static bool CheckFCMPSpendRoots(const CTransaction& tx, int nBlockHeight,
+                                const uint256& hashExpectedRoot,
+                                std::string& strErrorOut);
+
 //
 // Global state
 //
@@ -1364,14 +1372,16 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                     }
 
                     CCurveTreeNode fcmpRootNode;
+                    uint256 hashExpectedFCMPRoot = 0;
                     if (tx.nVersion >= SHIELDED_TX_VERSION_FCMP && nBestHeight >= FORK_HEIGHT_FCMP_VALIDATION
                         && !tx.vShieldedSpend.empty())
                     {
-                        CCurveTree memCurveTree;
                         CTxDB txdb("r");
-                        txdb.ReadCurveTree(memCurveTree);
-                        memCurveTree.RebuildParentNodes();
-                        fcmpRootNode = memCurveTree.GetRootNode();
+                        std::string strFCMPError;
+                        if (!LoadFCMPValidationRoot(txdb, nBestHeight, fcmpRootNode, hashExpectedFCMPRoot, strFCMPError))
+                            return error("CTxMemPool::accept() : %s", strFCMPError.c_str());
+                        if (!CheckFCMPSpendRoots(tx, nBestHeight, hashExpectedFCMPRoot, strFCMPError))
+                            return error("CTxMemPool::accept() : %s", strFCMPError.c_str());
                     }
 
                     for (size_t i = 0; i < tx.vShieldedSpend.size(); i++)
@@ -2334,6 +2344,159 @@ static void QueueDAGMergeParentInventories(CNode* pfrom, CBlockIndex* pindex, st
         QueueDAGSideBlockWithAncestors(pfrom, vDAGParents[i], setQueued, setVisiting, 0);
 }
 
+static bool CheckFinalityVoteRewardOutputs(const CBlock& block, const std::vector<CFinalityVote>& vVotes, int64_t& nFinalityRewardOut)
+{
+    nFinalityRewardOut = 0;
+    if (vVotes.empty())
+        return true;
+    if (vVotes.size() > FINALITY_MAX_BLOCK_VOTES)
+        return error("CheckFinalityVoteRewardOutputs() : too many finality votes in block");
+    if (block.vtx.empty())
+        return false;
+
+    std::set<uint256> setNullifiers;
+    std::vector<bool> vMatched(block.vtx[0].vout.size(), false);
+
+    for (const CFinalityVote& vote : vVotes)
+    {
+        if (!setNullifiers.insert(vote.nullifier).second)
+            return error("CheckFinalityVoteRewardOutputs() : duplicate finality vote nullifier");
+        if (vote.IsPrivate())
+            continue;
+        if (vote.nReward < 0 || !MoneyRange(vote.nReward))
+            return error("CheckFinalityVoteRewardOutputs() : finality reward out of range");
+        if (nFinalityRewardOut > MAX_MONEY - vote.nReward)
+            return error("CheckFinalityVoteRewardOutputs() : finality reward total overflow");
+
+        CPubKey pubkey(vote.vchPubKey);
+        if (!pubkey.IsValid())
+            return error("CheckFinalityVoteRewardOutputs() : finality vote pubkey invalid");
+        CScript rewardScript = GetScriptForDestination(pubkey.GetID());
+
+        bool fFoundReward = (vote.nReward == 0);
+        for (unsigned int i = 0; i < block.vtx[0].vout.size(); i++)
+        {
+            if (vMatched[i])
+                continue;
+            const CTxOut& out = block.vtx[0].vout[i];
+            if (out.nValue == vote.nReward && out.scriptPubKey == rewardScript)
+            {
+                vMatched[i] = true;
+                fFoundReward = true;
+                break;
+            }
+        }
+        if (!fFoundReward)
+            return error("CheckFinalityVoteRewardOutputs() : missing finality reward output for voter");
+
+        nFinalityRewardOut += vote.nReward;
+    }
+
+    return true;
+}
+
+static bool CheckFinalityStakeProofsNotSpentInBlock(const CBlock& block, const std::vector<CFinalityVote>& vVotes)
+{
+    if (vVotes.empty())
+        return true;
+
+    std::set<COutPoint> setSpentInBlock;
+    for (const CTransaction& tx : block.vtx)
+    {
+        if (tx.IsCoinBase())
+            continue;
+        for (const CTxIn& txin : tx.vin)
+            setSpentInBlock.insert(txin.prevout);
+    }
+
+    for (const CFinalityVote& vote : vVotes)
+    {
+        if (vote.IsPrivate())
+            continue;
+        for (const COutPoint& proof : vote.vStakeProof)
+        {
+            if (setSpentInBlock.count(proof))
+                return error("CheckFinalityStakeProofsNotSpentInBlock() : finality stake proof spent in same block");
+        }
+    }
+
+    return true;
+}
+
+static bool LoadFCMPValidationRoot(CTxDB& txdb, int nBlockHeight,
+                                   CCurveTreeNode& rootOut,
+                                   uint256& hashExpectedRootOut,
+                                   std::string& strErrorOut)
+{
+    CCurveTree curveTree;
+
+    if (nBlockHeight >= FORK_HEIGHT_EPOCH_ROOT_FCMP)
+    {
+        CEpochState finalizedEpochState;
+        if (!g_dagManager.GetLastFinalizedEpochState(finalizedEpochState))
+        {
+            strErrorOut = "missing finalized epoch FCMP root";
+            return false;
+        }
+        if (!txdb.ReadCurveTreeAtEpoch(finalizedEpochState.nEpoch, curveTree))
+        {
+            strErrorOut = "missing finalized epoch curve-tree snapshot";
+            return false;
+        }
+        if (!curveTree.IsEmpty())
+            curveTree.RebuildParentNodes();
+        hashExpectedRootOut = curveTree.GetRoot();
+        if (hashExpectedRootOut == 0 || hashExpectedRootOut != finalizedEpochState.hashCurveRoot)
+        {
+            strErrorOut = "finalized epoch curve-tree root mismatch";
+            return false;
+        }
+    }
+    else
+    {
+        if (!txdb.ReadCurveTree(curveTree))
+        {
+            strErrorOut = "failed to read mutable curve tree";
+            return false;
+        }
+        if (!curveTree.IsEmpty())
+            curveTree.RebuildParentNodes();
+        hashExpectedRootOut = curveTree.GetRoot();
+    }
+
+    if (curveTree.IsEmpty() || hashExpectedRootOut == 0)
+    {
+        strErrorOut = "empty curve tree";
+        return false;
+    }
+
+    rootOut = curveTree.GetRootNode();
+    return true;
+}
+
+static bool CheckFCMPSpendRoots(const CTransaction& tx, int nBlockHeight,
+                                const uint256& hashExpectedRoot,
+                                std::string& strErrorOut)
+{
+    if (nBlockHeight < FORK_HEIGHT_EPOCH_ROOT_FCMP)
+        return true;
+
+    for (size_t i = 0; i < tx.vShieldedSpend.size(); i++)
+    {
+        const CShieldedSpendDescription& spend = tx.vShieldedSpend[i];
+        if (spend.curveTreeRoot != hashExpectedRoot)
+        {
+            strErrorOut = strprintf("shielded spend %u FCMP root %s does not match finalized epoch root %s",
+                                    (unsigned)i,
+                                    spend.curveTreeRoot.ToString().substr(0,10).c_str(),
+                                    hashExpectedRoot.ToString().substr(0,10).c_str());
+            return false;
+        }
+    }
+
+    return true;
+}
+
 // Proof of Work miner's coin base reward
 int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
 {
@@ -2713,7 +2876,7 @@ bool IsInitialBlockDownload()
 
     int64_t nLocalLastBlockRecv = nTimeBestReceived > 0 ? nTimeBestReceived : pindexBest->GetBlockTime();
     int64_t nStaleSeconds = (nTargetSpacing <= 1) ? GetArg("-ibdstaleseconds", 30) : 300;
-    if (nFreshPeerHeight >= nBestHeight &&
+    if (nFreshPeerHeight > nBestHeight &&
         nFreshPeerLastBlockRecv > nLocalLastBlockRecv + 2 &&
         nNow - nLocalLastBlockRecv > nStaleSeconds)
         return true;
@@ -3351,13 +3514,15 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                 }
 
                 CCurveTreeNode ciRootNode;
+                uint256 hashExpectedFCMPRoot = 0;
                 if (nVersion >= SHIELDED_TX_VERSION_FCMP && nBlockHeight >= FORK_HEIGHT_FCMP_VALIDATION
                     && !vShieldedSpend.empty())
                 {
-                    CCurveTree ciCurveTree;
-                    txdb.ReadCurveTree(ciCurveTree);
-                    ciCurveTree.RebuildParentNodes();
-                    ciRootNode = ciCurveTree.GetRootNode();
+                    std::string strFCMPError;
+                    if (!LoadFCMPValidationRoot(txdb, nBlockHeight, ciRootNode, hashExpectedFCMPRoot, strFCMPError))
+                        return DoS(100, error("ConnectInputs() : %s", strFCMPError.c_str()));
+                    if (!CheckFCMPSpendRoots(*this, nBlockHeight, hashExpectedFCMPRoot, strFCMPError))
+                        return DoS(100, error("ConnectInputs() : %s", strFCMPError.c_str()));
                 }
 
                 for (size_t i = 0; i < vShieldedSpend.size(); i++)
@@ -3507,6 +3672,19 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
         if (!vtx[i].DisconnectInputs(txdb))
             return false;
 
+    if (pindex->nHeight >= FORK_HEIGHT_DAG)
+    {
+        std::vector<CFinalityTallyCertificate> vFinalityCerts = ExtractFinalityTallyCertificatesFromBlock(*this);
+        if (!vFinalityCerts.empty() &&
+            !g_finalityTracker.DisconnectBlockTallyCertificates(txdb, pindex->GetBlockHash(), vFinalityCerts))
+            return error("DisconnectBlock() : DisconnectBlockTallyCertificates failed");
+
+        std::vector<CFinalityVote> vFinalityVotes = ExtractFinalityVotesFromBlock(*this);
+        if (!vFinalityVotes.empty() &&
+            !g_finalityTracker.DisconnectBlockVotes(txdb, pindex->GetBlockHash(), vFinalityVotes))
+            return error("DisconnectBlock() : DisconnectBlockVotes failed");
+    }
+
     if (pindex->nHeight >= FORK_HEIGHT_SHIELDED)
     {
         for (const CTransaction& tx : vtx)
@@ -3541,7 +3719,8 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
             txdb.WriteShieldedCommitmentCount(prevTree.Size());
         }
 
-        if (pindex->nHeight >= FORK_HEIGHT_FCMP)
+        if (pindex->nHeight >= FORK_HEIGHT_FCMP &&
+            pindex->nHeight < FORK_HEIGHT_EPOCH_ROOT_FCMP)
         {
             CCurveTree restoredCurveTree;
             if (txdb.ReadCurveTreeAtBlock(pindex->GetBlockHash(), restoredCurveTree))
@@ -3750,6 +3929,16 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         return false;
     int64_t nConnectCheckMs = GetTimeMillis() - nConnectCheckStart;
 
+    if (pindex->nHeight >= FORK_HEIGHT_DAG && IsProofOfStake())
+        return DoS(100, error("ConnectBlock() : proof-of-stake blocks are not allowed after DAG fork"));
+
+    std::vector<CFinalityVote> vFinalityVotes = ExtractFinalityVotesFromBlock(*this);
+    if (!vFinalityVotes.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
+        return DoS(100, error("ConnectBlock() : finality votes are only valid in post-DAG proof-of-work blocks"));
+    std::vector<CFinalityTallyCertificate> vFinalityCerts = ExtractFinalityTallyCertificatesFromBlock(*this);
+    if (!vFinalityCerts.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
+        return DoS(100, error("ConnectBlock() : finality tally certificates are only valid in post-DAG proof-of-work blocks"));
+
     // strict script verification post-fork
     unsigned int flags = SCRIPT_VERIFY_NONE;
 
@@ -3793,6 +3982,9 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
     {
         std::vector<CFCMPProof> vBlockProofs;
         std::vector<CPedersenCommitment> vBlockCommitments;
+        CCurveTreeNode fcmpRootNode;
+        uint256 hashExpectedFCMPRoot = 0;
+        bool fHaveFCMPRoot = false;
 
         for (unsigned int i = 1; i < vtx.size(); i++)
         {
@@ -3805,6 +3997,15 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                 {
                     if (spend.fcmpProof.IsNull())
                         return DoS(100, error("ConnectBlock() : tx %d spend missing FCMP++ proof", i));
+                    if (!fHaveFCMPRoot)
+                    {
+                        std::string strFCMPError;
+                        if (!LoadFCMPValidationRoot(txdb, pindex->nHeight, fcmpRootNode, hashExpectedFCMPRoot, strFCMPError))
+                            return DoS(100, error("ConnectBlock() : %s", strFCMPError.c_str()));
+                        fHaveFCMPRoot = true;
+                    }
+                    if (pindex->nHeight >= FORK_HEIGHT_EPOCH_ROOT_FCMP && spend.curveTreeRoot != hashExpectedFCMPRoot)
+                        return DoS(100, error("ConnectBlock() : tx %d spend FCMP root does not match finalized epoch root", i));
                     vBlockProofs.push_back(spend.fcmpProof);
                     vBlockCommitments.push_back(spend.cv);
                 }
@@ -3813,14 +4014,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
         if (!vBlockProofs.empty())
         {
-            CCurveTree curveTree;
-            // check ReadCurveTree return value
-            if (!txdb.ReadCurveTree(curveTree))
-                return DoS(100, error("ConnectBlock() : failed to read curve tree from database"));
-            curveTree.RebuildParentNodes();
-            CCurveTreeNode root = curveTree.GetRootNode();
-
-            if (!BatchVerifyFCMPProofs(root, vBlockProofs, vBlockCommitments))
+            if (!BatchVerifyFCMPProofs(fcmpRootNode, vBlockProofs, vBlockCommitments))
                 return DoS(100, error("ConnectBlock() : batch FCMP++ proof verification failed"));
 
             fFCMPBatchVerified = true;
@@ -3839,11 +4033,18 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
     if (fDAGActive && pindex->phashBlock)
     {
         std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(pindex->GetBlockHash());
+        CBlockDAGData currentDagData;
+        bool fHaveCurrentDAGOrder = g_dagManager.GetDAGData(pindex->GetBlockHash(), currentDagData) &&
+                                    currentDagData.nDAGOrder >= 0;
         for (const uint256& hashSibling : siblings)
         {
-            // Only consider siblings with lower block hash (deterministic canonical ordering)
-            if (hashSibling >= pindex->GetBlockHash())
-                continue; // this sibling comes after us in canonical order, skip
+            bool fSiblingPrecedes = (hashSibling < pindex->GetBlockHash());
+            CBlockDAGData siblingDagData;
+            if (fHaveCurrentDAGOrder && g_dagManager.GetDAGData(hashSibling, siblingDagData) &&
+                siblingDagData.nDAGOrder >= 0)
+                fSiblingPrecedes = siblingDagData.nDAGOrder < currentDagData.nDAGOrder;
+            if (!fSiblingPrecedes)
+                continue;
 
             // Load sibling block and collect its spent outputs
             std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashSibling);
@@ -4059,6 +4260,30 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
     // LogPrint("bench", "    - Verify %u txins: %.2fms (%.3fms/txin) [%.2fs]\n", nInputs - 1, 0.001 * (nTime2 - nTimeStart), nInputs <= 1 ? 0 : 0.001 * (nTime2 - nTimeStart) / (nInputs-1), nTimeVerify * 0.000001);
 
 
+    int64_t nFinalityRewardOut = 0;
+    if (!vFinalityVotes.empty())
+    {
+        if (!CheckFinalityStakeProofsNotSpentInBlock(*this, vFinalityVotes))
+            return DoS(100, error("ConnectBlock() : finality stake proof spent in including block"));
+        if (!CheckFinalityVoteRewardOutputs(*this, vFinalityVotes, nFinalityRewardOut))
+            return DoS(100, error("ConnectBlock() : finality vote reward outputs invalid"));
+        for (const CFinalityVote& vote : vFinalityVotes)
+        {
+            std::string strVoteError;
+            if (!g_finalityTracker.CheckVote(vote, txdb, &strVoteError))
+                return DoS(100, error("ConnectBlock() : finality vote invalid: %s", strVoteError.c_str()));
+        }
+    }
+    for (const CFinalityTallyCertificate& cert : vFinalityCerts)
+    {
+        std::string strCertError;
+        if (!cert.IsValidBasic(&strCertError))
+            return DoS(100, error("ConnectBlock() : finality tally certificate invalid: %s", strCertError.c_str()));
+        if (GetEpochForHeight(cert.nHeight) != cert.nEpoch ||
+            GetEpochBoundaryHeight(cert.nEpoch, cert.nHeight) != cert.nHeight)
+            return DoS(100, error("ConnectBlock() : finality tally certificate has wrong epoch boundary"));
+    }
+
     if (IsProofOfWork())
     {
         // Historical compatibility: the original code used pindexBest->nHeight
@@ -4074,10 +4299,14 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         nReward = ApplyBlockSizePenalty(nReward, *this, pindex->pprev);
 
         // Check coinbase reward
-        if (vtx[0].GetValueOut() > nReward)
+        if (nReward > MAX_MONEY - nFinalityRewardOut)
+            return DoS(50, error("ConnectBlock() : finality reward overflow"));
+        int64_t nAllowedCoinbase = nReward + nFinalityRewardOut;
+
+        if (vtx[0].GetValueOut() > nAllowedCoinbase)
             return DoS(50, error("ConnectBlock() : coinbase reward exceeded (actual=%" PRId64" vs calculated=%" PRId64")",
                    vtx[0].GetValueOut(),
-                   nReward));
+                   nAllowedCoinbase));
     }
     if (IsProofOfStake())
     {
@@ -4773,17 +5002,19 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         txdb.WriteShieldedTreeAtBlock(pindex->GetBlockHash(), shieldedTree);
 
         CCurveTree curveTree;
-        if (pindex->nHeight >= FORK_HEIGHT_FCMP && pindex->pprev)
+        bool fMutableCurveTree = (pindex->nHeight >= FORK_HEIGHT_FCMP &&
+                                  pindex->nHeight < FORK_HEIGHT_EPOCH_ROOT_FCMP);
+        if (fMutableCurveTree && pindex->pprev)
             txdb.ReadCurveTree(curveTree); // OK if not found (empty)
 
-        if (pindex->nHeight >= FORK_HEIGHT_FCMP)
+        if (fMutableCurveTree)
             txdb.WriteCurveTreeAtBlock(pindex->GetBlockHash(), curveTree);
 
         // Seed genesis commitments at the fork activation block
         // These provide the initial Lelantus anonymity set (16 unspendable decoys)
         if (pindex->nHeight == FORK_HEIGHT_SHIELDED)
         {
-            CCurveTree* pCurveTreePtr = (pindex->nHeight >= FORK_HEIGHT_FCMP) ? &curveTree : nullptr;
+            CCurveTree* pCurveTreePtr = fMutableCurveTree ? &curveTree : nullptr;
             if (!SeedGenesisCommitments(txdb, shieldedTree, pCurveTreePtr))
                 return error("ConnectBlock() : SeedGenesisCommitments failed");
         }
@@ -4828,7 +5059,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                 if (!txdb.WriteShieldedCommitmentIndex(output.cv.vchCommitment, nCommitIdx))
                     return error("ConnectBlock() : WriteShieldedCommitmentIndex failed");
 
-                if (pindex->nHeight >= FORK_HEIGHT_FCMP)
+                if (fMutableCurveTree)
                     curveTree.InsertLeaf(output.cv);
             }
 
@@ -4843,7 +5074,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         if (!txdb.WriteShieldedCommitmentCount(shieldedTree.Size()))
             return error("ConnectBlock() : WriteShieldedCommitmentCount failed");
 
-        if (pindex->nHeight >= FORK_HEIGHT_FCMP)
+        if (fMutableCurveTree)
         {
             if (!txdb.WriteCurveTree(curveTree))
                 return error("ConnectBlock() : WriteCurveTree failed");
@@ -4878,6 +5109,17 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
     pindex->nMoneySupply -= nAmountBurned;
     if (pindex->nMoneySupply < 0)
         return error("ConnectBlock() : negative money supply at height %d", pindex->nHeight);
+
+    if (!fJustCheck && !vFinalityVotes.empty())
+    {
+        if (!g_finalityTracker.ConnectBlockVotes(txdb, pindex->GetBlockHash(), vFinalityVotes))
+            return error("ConnectBlock() : ConnectBlockVotes failed");
+    }
+    if (!fJustCheck && !vFinalityCerts.empty())
+    {
+        if (!g_finalityTracker.ConnectBlockTallyCertificates(txdb, pindex->GetBlockHash(), vFinalityCerts))
+            return error("ConnectBlock() : ConnectBlockTallyCertificates failed");
+    }
 
     // innova: collect valid name tx
     // NOTE: tx.UpdateCoins should not affect this loop, probably...
@@ -5016,7 +5258,7 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
             }
             if (pCheck && pCheck->nHeight < nFinalHeight)
             {
-                return error("Reorganize() : rejected — fork point height %d is below finalized height %d",
+                return error("Reorganize() : rejected - fork point height %d is below finalized height %d",
                              pCheck->nHeight, nFinalHeight);
             }
         }
@@ -5256,7 +5498,7 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
                 if (pOld && pOld->nHeight < nFinalHeight)
                 {
                     txdb.TxnAbort();
-                    return error("SetBestChain() : rejected reorg — fork below finalized height %d", nFinalHeight);
+                    return error("SetBestChain() : rejected reorg - fork below finalized height %d", nFinalHeight);
                 }
             }
         }
@@ -5461,6 +5703,9 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
         pindexNew->nHeight = pindexNew->pprev->nHeight + 1;
     }
 
+    if (pindexNew->nHeight >= FORK_HEIGHT_DAG && pindexNew->IsProofOfStake())
+        return error("AddToBlockIndex() : proof-of-stake block at post-DAG height %d", pindexNew->nHeight);
+
     // ppcoin: compute chain trust score
     pindexNew->nChainTrust = (pindexNew->pprev ? pindexNew->pprev->nChainTrust : 0) + pindexNew->GetBlockTrust();
 
@@ -5496,7 +5741,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
         return false;
 
     // IDAG Phase 2: Initialize DAG data for post-fork blocks
-    if (pindexNew->nHeight >= FORK_HEIGHT_DAG)
+    if (pindexNew->nHeight >= FORK_HEIGHT_DAG && pindexNew->IsProofOfWork())
     {
         // Extract DAG parents from coinbase OP_RETURN
         std::vector<uint256> vDAGParents;
@@ -5543,12 +5788,17 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                 mempool.RemoveDAGConflicts(hashSibling);
 
             // IDAG Phase 3: Epoch state computation + pruning at epoch boundaries
-            int nEpochInterval = GetEpochInterval(pindexNew->nHeight);
-            if (pindexNew->nHeight % nEpochInterval == 0 && pindexNew->nHeight > 0)
+            if (pindexNew->nHeight > 0)
             {
-                int nCompletedEpoch = (pindexNew->nHeight / nEpochInterval) - 1;
-                if (nCompletedEpoch >= 0)
+                int nCurrentEpoch = GetEpochForHeight(pindexNew->nHeight);
+                int nPreviousEpoch = GetEpochForHeight(pindexNew->nHeight - 1);
+                if (nCurrentEpoch > nPreviousEpoch)
                 {
+                    int nCompletedEpoch = nPreviousEpoch;
+                    int nEpochStart = GetEpochBoundaryHeight(nCompletedEpoch, pindexNew->nHeight);
+                    int nEpochEnd = GetEpochBoundaryHeight(nCompletedEpoch + 1, pindexNew->nHeight) - 1;
+                    int nEpochInterval = (nEpochEnd >= nEpochStart) ? (nEpochEnd - nEpochStart + 1) : GetEpochInterval(nEpochStart);
+
                     g_dagManager.ComputeEpochState(nCompletedEpoch, nEpochInterval);
 
                     CTxDB txdbEpoch;
@@ -5557,11 +5807,11 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                         g_dagManager.WriteEpochState(txdbEpoch, nCompletedEpoch);
                         txdbEpoch.TxnCommit();
                     }
-                }
 
-                // Prune old DAG data periodically
-                CTxDB txdbPrune;
-                g_dagManager.PruneDAGData(txdbPrune, pindexNew->nHeight);
+                    // Prune old DAG data periodically
+                    CTxDB txdbPrune;
+                    g_dagManager.PruneDAGData(txdbPrune, pindexNew->nHeight);
+                }
             }
         }
     }
@@ -5729,6 +5979,9 @@ bool CBlock::AcceptBlock()
     CBlockIndex* pindexPrev = (*mi).second;
     int nHeight = pindexPrev->nHeight+1;
 
+    if (nHeight >= FORK_HEIGHT_DAG && IsProofOfStake())
+        return DoS(100, error("AcceptBlock() : proof-of-stake blocks are not allowed after DAG fork height %d", FORK_HEIGHT_DAG));
+
     // Block size enforcement (height-aware)
     {
         unsigned int nBlockBytes = ::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION);
@@ -5867,6 +6120,8 @@ bool CBlock::AcceptBlock()
             if (pMergeParent->nHeight >= nHeight)
                 return DoS(100, error("AcceptBlock() : DAG merge parent[%d] height %d >= block height %d",
                                        i, pMergeParent->nHeight, nHeight));
+            if (pMergeParent->nHeight >= FORK_HEIGHT_DAG && pMergeParent->IsProofOfStake())
+                return DoS(100, error("AcceptBlock() : DAG merge parent[%d] is proof-of-stake", i));
 
             // Merge parent within DAG_MERGE_DEPTH of primary parent
             if (pindexPrev->nHeight - pMergeParent->nHeight > DAG_MERGE_DEPTH)
@@ -5927,8 +6182,11 @@ uint256 CBlockIndex::GetBlockTrust() const
     if (bnTarget <= 0)
         return 0;
 
+    if (nHeight >= FORK_HEIGHT_DAG && IsProofOfStake())
+        return 0;
+
     if (nHeight >= FORK_HEIGHT_POEM)
-        return GetBlockEntropy(IsProofOfStake() ? hashProof : *phashBlock);
+        return GetBlockEntropy((IsProofOfStake() && nHeight < FORK_HEIGHT_DAG) ? hashProof : *phashBlock);
 
     return ((CBigNum(1)<<256) / (bnTarget+1)).getuint256();
 }
@@ -5965,6 +6223,16 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
     if (pblock->IsProofOfStake() && setStakeSeen.count(pblock->GetProofOfStake()) && !mapOrphanBlocksByPrev.count(hash) && !Checkpoints::WantedByPendingSyncCheckpoint(hash))
         return error("ProcessBlock() : duplicate proof-of-stake (%s, %d) for block %s", pblock->GetProofOfStake().first.ToString().c_str(), pblock->GetProofOfStake().second, hash.ToString().c_str());
 
+    if (pblock->IsProofOfStake() && mapBlockIndex.count(pblock->hashPrevBlock))
+    {
+        CBlockIndex* pindexPrev = mapBlockIndex[pblock->hashPrevBlock];
+        if (pindexPrev && pindexPrev->nHeight + 1 >= FORK_HEIGHT_DAG)
+        {
+            if (pfrom)
+                pfrom->Misbehaving(100);
+            return error("ProcessBlock() : proof-of-stake block after DAG fork");
+        }
+    }
 
     // Preliminary checks
     int64_t nCheckStart = GetTimeMillis();
@@ -7576,9 +7844,9 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             CBlockIndex* pindexPrev = mapBlockIndex[header.hashPrevBlock];
             pfrom->UpdateBestKnownBlock(pindexPrev->nHeight + 1, hash);
 
-            // PoS blocks have nNonce==0; can't use IsProofOfStake() here because
-            // vtx is empty in headers-only messages (no transactions to check)
-            if (header.nNonce != 0)
+            // PoS blocks have nNonce==0 in legacy headers, but post-DAG all
+            // headers must be valid PoW headers.
+            if (pindexPrev->nHeight + 1 >= FORK_HEIGHT_DAG || header.nNonce != 0)
             {
                 if (!CheckProofOfWork(hash, header.nBits))
                 {

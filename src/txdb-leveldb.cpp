@@ -402,6 +402,16 @@ bool CTxDB::ReadCurveTreeAtBlock(const uint256& blockHash, CCurveTree& tree)
     return Read(make_pair(string("cb"), blockHash), tree);
 }
 
+bool CTxDB::WriteCurveTreeAtEpoch(int nEpoch, const CCurveTree& tree)
+{
+    return Write(make_pair(string("ce"), nEpoch), tree);
+}
+
+bool CTxDB::ReadCurveTreeAtEpoch(int nEpoch, CCurveTree& tree)
+{
+    return Read(make_pair(string("ce"), nEpoch), tree);
+}
+
 bool CTxDB::EraseCurveTreeAtBlock(const uint256& blockHash)
 {
     return Erase(make_pair(string("cb"), blockHash));
@@ -434,6 +444,88 @@ bool CTxDB::ReadEpochState(int nEpoch, CEpochState& state)
     return Read(make_pair(string("epochstate"), nEpoch), state);
 }
 
+bool CTxDB::IterateEpochStates(std::map<int, CEpochState>& mapOut)
+{
+    mapOut.clear();
+    leveldb::DB* db = GetInstance();
+    if (!db)
+        return false;
+
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << string("epochstate");
+    std::string strPrefix = ssPrefix.str();
+
+    leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
+    it->Seek(strPrefix);
+
+    while (it->Valid())
+    {
+        std::string strKey = it->key().ToString();
+        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
+            break;
+
+        try {
+            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
+            std::pair<std::string, int> keyPair;
+            ssKey >> keyPair;
+
+            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
+            CEpochState state;
+            ssValue >> state;
+            mapOut[keyPair.second] = state;
+        }
+        catch (const std::exception&)
+        {
+        }
+
+        it->Next();
+    }
+
+    delete it;
+    return true;
+}
+
+bool CTxDB::IterateCurveTreeEpochs(std::map<int, CCurveTree>& mapOut)
+{
+    mapOut.clear();
+    leveldb::DB* db = GetInstance();
+    if (!db)
+        return false;
+
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << string("ce");
+    std::string strPrefix = ssPrefix.str();
+
+    leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
+    it->Seek(strPrefix);
+
+    while (it->Valid())
+    {
+        std::string strKey = it->key().ToString();
+        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
+            break;
+
+        try {
+            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
+            std::pair<std::string, int> keyPair;
+            ssKey >> keyPair;
+
+            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
+            CCurveTree tree;
+            ssValue >> tree;
+            mapOut[keyPair.second] = tree;
+        }
+        catch (const std::exception&)
+        {
+        }
+
+        it->Next();
+    }
+
+    delete it;
+    return true;
+}
+
 bool CTxDB::WriteDAGCleanHeight(int nHeight)
 {
     return Write(string("dagcleanheight"), nHeight);
@@ -442,6 +534,120 @@ bool CTxDB::WriteDAGCleanHeight(int nHeight)
 bool CTxDB::ReadDAGCleanHeight(int& nHeight)
 {
     return Read(string("dagcleanheight"), nHeight);
+}
+
+bool CTxDB::WriteFinalityVote(const uint256& nullifier, const CFinalityVote& vote)
+{
+    return Write(make_pair(string("finalityvote"), nullifier), vote);
+}
+
+bool CTxDB::ReadFinalityVote(const uint256& nullifier, CFinalityVote& vote)
+{
+    return Read(make_pair(string("finalityvote"), nullifier), vote);
+}
+
+bool CTxDB::EraseFinalityVote(const uint256& nullifier)
+{
+    return Erase(make_pair(string("finalityvote"), nullifier));
+}
+
+bool CTxDB::IterateFinalityVotes(std::map<uint256, CFinalityVote>& mapOut)
+{
+    mapOut.clear();
+    leveldb::DB* db = GetInstance();
+    if (!db)
+        return false;
+
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << string("finalityvote");
+    std::string strPrefix = ssPrefix.str();
+
+    leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
+    it->Seek(strPrefix);
+
+    while (it->Valid())
+    {
+        std::string strKey = it->key().ToString();
+        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
+            break;
+
+        try {
+            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
+            std::pair<std::string, uint256> keyPair;
+            ssKey >> keyPair;
+
+            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
+            CFinalityVote vote;
+            ssValue >> vote;
+            mapOut[keyPair.second] = vote;
+        }
+        catch (const std::exception&)
+        {
+            // Skip malformed entries.
+        }
+
+        it->Next();
+    }
+
+    delete it;
+    return true;
+}
+
+bool CTxDB::WriteFinalityTallyCertificate(const uint256& hashCert, const CFinalityTallyCertificate& cert)
+{
+    return Write(make_pair(string("finalitycert"), hashCert), cert);
+}
+
+bool CTxDB::ReadFinalityTallyCertificate(const uint256& hashCert, CFinalityTallyCertificate& cert)
+{
+    return Read(make_pair(string("finalitycert"), hashCert), cert);
+}
+
+bool CTxDB::EraseFinalityTallyCertificate(const uint256& hashCert)
+{
+    return Erase(make_pair(string("finalitycert"), hashCert));
+}
+
+bool CTxDB::IterateFinalityTallyCertificates(std::map<uint256, CFinalityTallyCertificate>& mapOut)
+{
+    mapOut.clear();
+    leveldb::DB* db = GetInstance();
+    if (!db)
+        return false;
+
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << string("finalitycert");
+    std::string strPrefix = ssPrefix.str();
+
+    leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
+    it->Seek(strPrefix);
+
+    while (it->Valid())
+    {
+        std::string strKey = it->key().ToString();
+        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
+            break;
+
+        try {
+            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
+            std::pair<std::string, uint256> keyPair;
+            ssKey >> keyPair;
+
+            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
+            CFinalityTallyCertificate cert;
+            ssValue >> cert;
+            mapOut[keyPair.second] = cert;
+        }
+        catch (const std::exception&)
+        {
+            // Skip malformed entries.
+        }
+
+        it->Next();
+    }
+
+    delete it;
+    return true;
 }
 
 bool CTxDB::IterateDAGLinks(std::map<uint256, CBlockDAGData>& mapOut)
@@ -792,6 +998,9 @@ bool CTxDB::LoadBlockIndex()
 
     // IDAG Phase 2+3: Load DAG links (ordering deferred to init.cpp for incremental support)
     g_dagManager.LoadDAGLinks(*this);
+    g_dagManager.LoadEpochStates(*this);
+    g_finalityTracker.LoadVotes(*this);
+    g_finalityTracker.LoadTallyCertificates(*this);
 
     // Load hashBestChain pointer to end of best chain
     if (!ReadHashBestChain(hashBestChain))

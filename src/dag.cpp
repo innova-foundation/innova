@@ -133,6 +133,8 @@ bool CDAGManager::InitBlockDAGData(CBlockIndex* pindex, const std::vector<uint25
 
     if (!pindex || !pindex->phashBlock)
         return false;
+    if (pindex->nHeight >= FORK_HEIGHT_DAG && pindex->IsProofOfStake())
+        return false;
 
     uint256 hash = pindex->GetBlockHash();
 
@@ -225,6 +227,8 @@ CBlockIndex* CDAGManager::SelectBestDAGTip() const
             continue;
 
         CBlockIndex* pindex = mi->second;
+        if (pindex->nHeight >= FORK_HEIGHT_DAG && pindex->IsProofOfStake())
+            continue;
 
         if (pindexBest)
         {
@@ -262,6 +266,8 @@ void CDAGManager::ColorBlock(CBlockIndex* pindex)
 
     if (!pindex || !pindex->phashBlock)
         return;
+    if (pindex->nHeight >= FORK_HEIGHT_DAG && pindex->IsProofOfStake())
+        return;
 
     uint256 hash = pindex->GetBlockHash();
     auto it = mapDAGData.find(hash);
@@ -296,7 +302,8 @@ void CDAGManager::ColorBlock(CBlockIndex* pindex)
         {
             // Pre-DAG parent: use accumulated chain trust as base score
             std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashParent);
-            if (mi != mapBlockIndex.end())
+            if (mi != mapBlockIndex.end() &&
+                !(mi->second->nHeight >= FORK_HEIGHT_DAG && mi->second->IsProofOfStake()))
                 nParentScore = mi->second->nChainTrust;
         }
 
@@ -382,6 +389,8 @@ void CDAGManager::ColorBlock(CBlockIndex* pindex)
         std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashBlue);
         if (mi != mapBlockIndex.end())
         {
+            if (mi->second->nHeight >= FORK_HEIGHT_DAG && mi->second->IsProofOfStake())
+                continue;
             nScore = nScore + mi->second->GetBlockTrust();
         }
     }
@@ -508,6 +517,8 @@ uint256 CDAGManager::ComputeDAGScore(CBlockIndex* pindex)
 
     if (!pindex || !pindex->phashBlock)
         return 0;
+    if (pindex->nHeight >= FORK_HEIGHT_DAG && pindex->IsProofOfStake())
+        return 0;
 
     uint256 hash = pindex->GetBlockHash();
     auto it = mapDAGData.find(hash);
@@ -547,7 +558,8 @@ uint256 CDAGManager::GetSelectedParent(const uint256& hashBlock) const
         {
             // Pre-DAG parent: use chain trust
             std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashParent);
-            if (mi != mapBlockIndex.end())
+            if (mi != mapBlockIndex.end() &&
+                !(mi->second->nHeight >= FORK_HEIGHT_DAG && mi->second->IsProofOfStake()))
                 nParentScore = mi->second->nChainTrust;
         }
 
@@ -896,6 +908,34 @@ bool CDAGManager::LoadDAGLinks(CTxDB& txdb)
     return true;
 }
 
+bool CDAGManager::LoadEpochStates(CTxDB& txdb)
+{
+    LOCK(cs_dag);
+
+    std::map<int, CEpochState> mapStates;
+    if (!txdb.IterateEpochStates(mapStates))
+        return false;
+
+    std::map<int, CCurveTree> mapTrees;
+    if (!txdb.IterateCurveTreeEpochs(mapTrees))
+        return false;
+
+    mapEpochState = mapStates;
+    mapEpochCurveTrees = mapTrees;
+
+    for (const auto& pair : mapEpochState)
+    {
+        if (pair.second.hashBoundaryBlock != 0)
+            setEpochBoundaryBlocks.insert(pair.second.hashBoundaryBlock);
+    }
+
+    if (!mapEpochState.empty() || !mapEpochCurveTrees.empty())
+        printf("LoadEpochStates: loaded %d epoch states and %d curve-tree snapshots\n",
+               (int)mapEpochState.size(), (int)mapEpochCurveTrees.size());
+
+    return true;
+}
+
 
 // ---------------------------------------------------------------------------
 // CDAGManager: Rebuild Ordering
@@ -1101,23 +1141,69 @@ bool CDAGManager::ComputeEpochState(int nEpoch, int nEpochInterval)
 
     CEpochState state;
     state.nEpoch = nEpoch;
-    // Use GetEpochBoundaryHeight for correct post-DAG height computation
+    // Use adjacent epoch boundaries so the epoch that contains the DAG fork is
+    // truncated deterministically instead of extending across the fork.
     state.nHeightStart = GetEpochBoundaryHeight(nEpoch, nEpoch * nEpochInterval);
-    state.nHeightEnd = state.nHeightStart + nEpochInterval - 1;
+    int nNextEpochStart = GetEpochBoundaryHeight(nEpoch + 1, (nEpoch + 1) * nEpochInterval);
+    if (nNextEpochStart > state.nHeightStart)
+        state.nHeightEnd = nNextEpochStart - 1;
+    else
+        state.nHeightEnd = state.nHeightStart + nEpochInterval - 1;
     state.nBlockCount = 0;
     state.nTxCount = 0;
     state.nTotalTrust = 0;
     state.fFinalized = false;
 
-    // Find the boundary block (last block of this epoch)
-    CBlockIndex* pBoundary = FindBlockByHeight(state.nHeightEnd);
+    // Post-DAG epoch boundaries follow the selected-parent chain, not a
+    // height-sorted side effect of local arrival order.
+    CBlockIndex* pBoundary = NULL;
+    CBlockIndex* pBestTip = SelectBestDAGTip();
+    if (pBestTip && pBestTip->nHeight >= state.nHeightEnd)
+    {
+        CBlockIndex* pWalk = pBestTip;
+        std::set<uint256> setVisited;
+        while (pWalk && pWalk->nHeight > state.nHeightEnd && pWalk->phashBlock)
+        {
+            if (!setVisited.insert(pWalk->GetBlockHash()).second)
+                break;
+            uint256 hashParent = GetSelectedParent(pWalk->GetBlockHash());
+            std::map<uint256, CBlockIndex*>::iterator miParent = mapBlockIndex.find(hashParent);
+            if (miParent == mapBlockIndex.end())
+                break;
+            pWalk = miParent->second;
+        }
+        if (pWalk && pWalk->nHeight == state.nHeightEnd)
+            pBoundary = pWalk;
+    }
+    if (!pBoundary)
+        pBoundary = FindBlockByHeight(state.nHeightEnd);
     if (pBoundary && pBoundary->phashBlock)
     {
         state.hashBoundaryBlock = pBoundary->GetBlockHash();
         setEpochBoundaryBlocks.insert(state.hashBoundaryBlock);
     }
 
-    // Collect blocks in this epoch range that have DAG data
+    std::set<uint256> setOrdered;
+    if (pBestTip && pBestTip->phashBlock)
+    {
+        std::vector<uint256> vOrder = GetDAGLinearOrder(pBestTip->GetBlockHash());
+        for (const uint256& hashBlock : vOrder)
+        {
+            std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashBlock);
+            if (mi == mapBlockIndex.end())
+                continue;
+            if (mi->second->nHeight < state.nHeightStart || mi->second->nHeight > state.nHeightEnd)
+                continue;
+            if (mi->second->nHeight >= FORK_HEIGHT_DAG && mi->second->IsProofOfStake())
+                continue;
+            if (!setOrdered.insert(hashBlock).second)
+                continue;
+            state.vBlockHashes.push_back(hashBlock);
+        }
+    }
+
+    // Include any DAG-era blocks missing from the selected order using stored
+    // DAG order as deterministic fallback.
     std::vector<std::pair<int, uint256>> vEpochBlocks;
     for (const auto& pair : mapDAGData)
     {
@@ -1128,7 +1214,10 @@ bool CDAGManager::ComputeEpochState(int nEpoch, int nEpochInterval)
         int nBlockHeight = mi->second->nHeight;
         if (nBlockHeight >= state.nHeightStart && nBlockHeight <= state.nHeightEnd)
         {
-            vEpochBlocks.push_back(std::make_pair(nBlockHeight, pair.first));
+            if (mi->second->nHeight >= FORK_HEIGHT_DAG && mi->second->IsProofOfStake())
+                continue;
+            if (!setOrdered.count(pair.first))
+                vEpochBlocks.push_back(std::make_pair(pair.second.nDAGOrder, pair.first));
             state.nBlockCount++;
 
             if (pair.second.fBlue)
@@ -1136,10 +1225,95 @@ bool CDAGManager::ComputeEpochState(int nEpoch, int nEpochInterval)
         }
     }
 
-    // Order blocks by height within epoch (hash tiebreaker for determinism)
     std::sort(vEpochBlocks.begin(), vEpochBlocks.end());
     for (const auto& pair : vEpochBlocks)
         state.vBlockHashes.push_back(pair.second);
+
+    // Epoch-root privacy state is derived from deterministic DAG order.
+    // Starting from the previous persisted epoch snapshot avoids mutable
+    // per-block curve-tree state after the epoch-root FCMP fork.
+    CCurveTree epochCurveTree;
+    bool fHavePriorEpochSnapshot = false;
+    for (int nPrevEpoch = nEpoch - 1; nPrevEpoch >= 0; nPrevEpoch--)
+    {
+        std::map<int, CCurveTree>::const_iterator itTree = mapEpochCurveTrees.find(nPrevEpoch);
+        if (itTree != mapEpochCurveTrees.end())
+        {
+            epochCurveTree = itTree->second;
+            fHavePriorEpochSnapshot = true;
+            break;
+        }
+    }
+    if (!fHavePriorEpochSnapshot)
+    {
+        CTxDB txdb("r");
+        txdb.ReadCurveTree(epochCurveTree);
+    }
+    if (!epochCurveTree.IsEmpty())
+        epochCurveTree.RebuildParentNodes();
+
+    CHashWriter nullifierRootHasher(SER_GETHASH, 0);
+    nullifierRootHasher << std::string("Innova/IDAG/EpochNullifierRoot/v1");
+    if (nEpoch > 0 && mapEpochState.count(nEpoch - 1))
+        nullifierRootHasher << mapEpochState[nEpoch - 1].hashNullifierRoot;
+    else
+        nullifierRootHasher << uint256(0);
+    nullifierRootHasher << nEpoch;
+
+    std::set<uint256> setSeenShieldedNullifiers;
+    CFinalityTallyCertificate bestCert;
+    bool fHaveBestCert = false;
+    bool fInsertEpochOutputs = fHavePriorEpochSnapshot || state.nHeightEnd >= FORK_HEIGHT_EPOCH_ROOT_FCMP;
+
+    for (const uint256& hashBlock : state.vBlockHashes)
+    {
+        std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashBlock);
+        if (mi == mapBlockIndex.end())
+            continue;
+
+        CBlock block;
+        if (!block.ReadFromDisk(mi->second))
+            continue;
+
+        for (const CTransaction& tx : block.vtx)
+        {
+            for (const CShieldedOutputDescription& output : tx.vShieldedOutput)
+            {
+                if (fInsertEpochOutputs)
+                    epochCurveTree.InsertLeaf(output.cv);
+            }
+
+            for (const CShieldedSpendDescription& spend : tx.vShieldedSpend)
+            {
+                if (setSeenShieldedNullifiers.insert(spend.nullifier).second)
+                    nullifierRootHasher << spend.nullifier;
+            }
+        }
+
+        std::vector<CFinalityTallyCertificate> vCerts = ExtractFinalityTallyCertificatesFromBlock(block);
+        for (const CFinalityTallyCertificate& cert : vCerts)
+        {
+            if (cert.nEpoch != nEpoch)
+                continue;
+            if (!fHaveBestCert ||
+                cert.nTier > bestCert.nTier ||
+                (cert.nTier == bestCert.nTier && cert.GetHash() < bestCert.GetHash()))
+            {
+                bestCert = cert;
+                fHaveBestCert = true;
+            }
+        }
+    }
+
+    if (!epochCurveTree.IsEmpty())
+        epochCurveTree.RebuildParentNodes();
+    state.hashCurveRoot = epochCurveTree.GetRoot();
+    state.hashNullifierRoot = nullifierRootHasher.GetHash();
+    state.nFinalityTier = (int)g_finalityTracker.GetFinalityTier();
+    state.nConsecutiveHardCount = g_finalityTracker.GetConsecutiveHardEpochCount();
+    state.fFinalized = g_finalityTracker.IsFinalized(state.nHeightEnd);
+    if (fHaveBestCert)
+        state.hashFinalityCertificate = bestCert.GetHash();
 
     // Transaction counting deferred to RPC layer (getepochinfo) to avoid
     // blocking block processing with disk I/O at every epoch boundary.
@@ -1150,10 +1324,13 @@ bool CDAGManager::ComputeEpochState(int nEpoch, int nEpochInterval)
     state.fFinalized = g_finalityTracker.IsFinalized(state.nHeightEnd);
 
     mapEpochState[nEpoch] = state;
+    mapEpochCurveTrees[nEpoch] = epochCurveTree;
 
-    printf("ComputeEpochState: epoch %d (%d-%d), %d blocks, %d txs, finalized=%d\n",
+    printf("ComputeEpochState: epoch %d (%d-%d), %d blocks, %d txs, curve_root=%s, finalized=%d\n",
            nEpoch, state.nHeightStart, state.nHeightEnd,
-           state.nBlockCount, state.nTxCount, state.fFinalized);
+           state.nBlockCount, state.nTxCount,
+           state.hashCurveRoot.ToString().substr(0,10).c_str(),
+           state.fFinalized);
 
     return true;
 }
@@ -1166,7 +1343,17 @@ bool CDAGManager::WriteEpochState(CTxDB& txdb, int nEpoch)
     if (it == mapEpochState.end())
         return false;
 
-    return txdb.WriteEpochState(nEpoch, it->second);
+    if (!txdb.WriteEpochState(nEpoch, it->second))
+        return false;
+
+    auto itTree = mapEpochCurveTrees.find(nEpoch);
+    if (itTree != mapEpochCurveTrees.end())
+    {
+        if (!txdb.WriteCurveTreeAtEpoch(nEpoch, itTree->second))
+            return false;
+    }
+
+    return true;
 }
 
 bool CDAGManager::GetEpochState(int nEpoch, CEpochState& stateOut) const
@@ -1179,6 +1366,26 @@ bool CDAGManager::GetEpochState(int nEpoch, CEpochState& stateOut) const
 
     stateOut = it->second;
     return true;
+}
+
+bool CDAGManager::GetLastFinalizedEpochState(CEpochState& stateOut) const
+{
+    int nFinalizedEpoch = GetEpochForHeight(g_finalityTracker.GetFinalizedHeight());
+
+    LOCK(cs_dag);
+
+    for (int nEpoch = nFinalizedEpoch; nEpoch >= 0; nEpoch--)
+    {
+        std::map<int, CEpochState>::const_iterator it = mapEpochState.find(nEpoch);
+        if (it == mapEpochState.end())
+            continue;
+        if (it->second.hashCurveRoot == 0)
+            continue;
+        stateOut = it->second;
+        return true;
+    }
+
+    return false;
 }
 
 int CDAGManager::GetDAGEntryCount() const
@@ -1375,6 +1582,8 @@ void CDAGManager::ColorBlockDAGKnight(CBlockIndex* pindex)
 
     if (!pindex || !pindex->phashBlock)
         return;
+    if (pindex->nHeight >= FORK_HEIGHT_DAG && pindex->IsProofOfStake())
+        return;
 
     uint256 hash = pindex->GetBlockHash();
     auto it = mapDAGData.find(hash);
@@ -1404,7 +1613,8 @@ void CDAGManager::ColorBlockDAGKnight(CBlockIndex* pindex)
         else
         {
             std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashParent);
-            if (mi != mapBlockIndex.end())
+            if (mi != mapBlockIndex.end() &&
+                !(mi->second->nHeight >= FORK_HEIGHT_DAG && mi->second->IsProofOfStake()))
                 nParentScore = mi->second->nChainTrust;
         }
 
@@ -1491,7 +1701,8 @@ void CDAGManager::ColorBlockDAGKnight(CBlockIndex* pindex)
         if (selectedParentBlue.count(hashBlue))
             continue;
         std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashBlue);
-        if (mi != mapBlockIndex.end())
+        if (mi != mapBlockIndex.end() &&
+            !(mi->second->nHeight >= FORK_HEIGHT_DAG && mi->second->IsProofOfStake()))
             nScore = nScore + mi->second->GetBlockTrust();
     }
     data.nDAGScore = nScore;
