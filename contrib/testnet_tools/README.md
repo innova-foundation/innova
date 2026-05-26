@@ -4,6 +4,16 @@
 
 The tool has no Python dependencies outside the standard library. It uses the existing `innovad` CLI either locally or through SSH, so remote RPC ports do not need to be exposed.
 
+## Clean IDAG Testnet
+
+The public testnet identity is reset for the IDAG hidden-finality launch. Operators must wipe old testnet chain data before joining this network.
+
+- genesis hash: `00004f9f245acf85d86878eff8f80cf47f7e563727531c21fa175a0fe503bf6b`
+- message magic: `9b 1d fc 26`
+- P2P/RPC ports: `15539` / `15531`
+- activation heights: POEM `9`, finality `10`, DAG and epoch-root FCMP `11`, DAGKNIGHT `13`
+- seed peers: `45.32.161.27:15539`, `45.77.164.87:15539`, `144.202.37.36:15539`, `45.32.168.101:15539`, `45.77.118.217:15539`
+
 ## Read-Only Metrics
 
 Collect the latest 50 blocks plus one node snapshot:
