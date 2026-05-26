@@ -6681,10 +6681,10 @@ bool LoadBlockIndex(bool fAllowNew)
     }
     else if (fTestNet)
     {
-        pchMessageStart[0] = 0x9a;
-        pchMessageStart[1] = 0x77;
-        pchMessageStart[2] = 0x26;
-        pchMessageStart[3] = 0x05;
+        pchMessageStart[0] = 0x9b;
+        pchMessageStart[1] = 0x1d;
+        pchMessageStart[2] = 0xfc;
+        pchMessageStart[3] = 0x26;
 
         bnProofOfWorkLimit = bnProofOfWorkLimitTestNet; // 16 bits PoW target limit for testnet
         bnProofOfStakeLimit = bnProofOfStakeLimitTestNet; // much easier PoS for testnet
@@ -6749,10 +6749,10 @@ bool LoadBlockIndex(bool fAllowNew)
         }
         else if(fTestNet)
         {
-            const char* pszTimestampTestNet = "Innova Testnet V3 Relaunch | May 17 2026 | Ubuntu 26 Seed Mesh";
+            const char* pszTimestampTestNet = "Innova Public IDAG Hidden Finality Testnet | May 26 2026 | Epoch-Root FCMP";
             CTransaction txNewTestNet;
 
-            txNewTestNet.nTime = 1778976000;
+            txNewTestNet.nTime = 1779753600;
             txNewTestNet.vin.resize(1);
             txNewTestNet.vout.resize(1);
             txNewTestNet.vin[0].scriptSig = CScript() << 0 << CBigNum(42) << vector<unsigned char>((const unsigned char*)pszTimestampTestNet, (const unsigned char*)pszTimestampTestNet + strlen(pszTimestampTestNet));
@@ -6762,10 +6762,10 @@ bool LoadBlockIndex(bool fAllowNew)
             blocktest.vtx.push_back(txNewTestNet);
             blocktest.hashPrevBlock = 0;
             blocktest.hashMerkleRoot = blocktest.BuildMerkleTree();
-            blocktest.nTime    = 1778976000;
+            blocktest.nTime    = 1779753600;
             blocktest.nVersion = 1;
             blocktest.nBits    = bnProofOfWorkLimit.GetCompact();
-            blocktest.nNonce   = 58545;
+            blocktest.nNonce   = 127761;
 
             if (false && (blocktest.GetHash() != hashGenesisBlockTestNet))
             {
@@ -6790,7 +6790,7 @@ bool LoadBlockIndex(bool fAllowNew)
 
 
             //// debug print
-            if (blocktest.hashMerkleRoot != uint256("0xb19c19c32748baa18fd07046551be048bd02b97f8c8702e8aec6a37fc7d305b3"))
+            if (blocktest.hashMerkleRoot != uint256("0xa18a28c4cde90e5c637c63715018a466511dd22eccd8f371512eec3074b1b19d"))
                 return error("TestNetLoadBlockIndex() : invalid testnet genesis merkle root %s", blocktest.hashMerkleRoot.ToString().c_str());
             blocktest.print();
             if (blocktest.GetHash() != hashGenesisBlockTestNet)

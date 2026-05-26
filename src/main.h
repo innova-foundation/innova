@@ -136,7 +136,7 @@ static const unsigned int LOCKTIME_THRESHOLD = 500000000; // Tue Nov  5 00:53:20
 static const unsigned int MAX_P2SH_SIGOPS = 15;
 
 static const uint256 hashGenesisBlock("0x000009bd42d259eb7031ae4f634aede1a690da795e5529786a72c3cd6d989995");
-static const uint256 hashGenesisBlockTestNet("0x00006b8a508519418edd9fae4e90801b4ab7bdfe34ed1e57a39260b2a230f64e");
+static const uint256 hashGenesisBlockTestNet("0x00004f9f245acf85d86878eff8f80cf47f7e563727531c21fa175a0fe503bf6b");
 static const uint256 hashGenesisBlockRegTest("0x7d9f2da2e66d3ee806dce8231f5854a526a32db9c8b509410f652a101089c7d5");
 
 inline const uint256& GetGenesisBlockHash()
@@ -260,7 +260,7 @@ inline int GetForkHeightPoem()
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 9;
-    if (fTestNet) return 600;       // testnet: after fair-launch/CN payment transition
+    if (fTestNet) return 9;         // clean public IDAG testnet
     return 8140000;                  // mainnet: 100K blocks after Chaumian CJ
 }
 #define FORK_HEIGHT_POEM (GetForkHeightPoem())
@@ -271,7 +271,7 @@ inline int GetForkHeightFinality()
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 10;
-    if (fTestNet) return 625;       // testnet: 25 blocks after POEM
+    if (fTestNet) return 10;        // clean public IDAG testnet
     return 8145000;                  // mainnet: 5,000 blocks after POEM
 }
 #define FORK_HEIGHT_FINALITY (GetForkHeightFinality())
