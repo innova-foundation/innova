@@ -9,6 +9,7 @@
 #include "kernel.h"
 #include "collateralnode.h"
 #include "dag.h"
+#include "finality.h"
 
 using namespace std;
 
@@ -148,6 +149,12 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
 
     int nHeight = pindexPrev->nHeight+1; // height of new block
+    if (fProofOfStake && nHeight >= FORK_HEIGHT_DAG)
+    {
+        if (fDebug && GetBoolArg("-printcoinstake"))
+            printf("CreateNewBlock: refusing proof-of-stake block template at post-DAG height %d\n", nHeight);
+        return NULL;
+    }
 
     if (!fProofOfStake)
     {
@@ -594,6 +601,54 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             }
         }
 
+        int64_t nFinalityRewardTotal = 0;
+        if (!fProofOfStake && nHeight >= FORK_HEIGHT_DAG)
+        {
+            std::vector<CFinalityVote> vFinalityVotes = g_finalityTracker.GetPendingVotesForBlock(nHeight);
+            for (const CFinalityVote& vote : vFinalityVotes)
+            {
+                if (nFinalityRewardTotal > MAX_MONEY - vote.nReward)
+                    break;
+
+                CScript voteScript = BuildFinalityVoteScript(vote);
+                unsigned int nVoteCommitSize = ::GetSerializeSize(voteScript, SER_NETWORK, PROTOCOL_VERSION);
+                if (nBlockSize + nVoteCommitSize + 64 >= nBlockMaxSize)
+                    break;
+
+                CTxOut voteOut;
+                voteOut.nValue = 0;
+                voteOut.scriptPubKey = voteScript;
+                pblock->vtx[0].vout.push_back(voteOut);
+
+                CPubKey pubkey(vote.vchPubKey);
+                if (!pubkey.IsValid())
+                    continue;
+
+                CTxOut rewardOut;
+                rewardOut.nValue = vote.nReward;
+                rewardOut.scriptPubKey = GetScriptForDestination(pubkey.GetID());
+                pblock->vtx[0].vout.push_back(rewardOut);
+
+                nFinalityRewardTotal += vote.nReward;
+                nBlockSize += nVoteCommitSize + 64;
+            }
+
+            std::vector<CFinalityTallyCertificate> vFinalityCerts = g_finalityTracker.GetPendingTallyCertificatesForBlock(nHeight);
+            for (const CFinalityTallyCertificate& cert : vFinalityCerts)
+            {
+                CScript certScript = BuildFinalityTallyCertificateScript(cert);
+                unsigned int nCertCommitSize = ::GetSerializeSize(certScript, SER_NETWORK, PROTOCOL_VERSION);
+                if (nBlockSize + nCertCommitSize + 16 >= nBlockMaxSize)
+                    break;
+
+                CTxOut certOut;
+                certOut.nValue = 0;
+                certOut.scriptPubKey = certScript;
+                pblock->vtx[0].vout.push_back(certOut);
+                nBlockSize += nCertCommitSize + 16;
+            }
+        }
+
         nLastBlockTx = nBlockTx;
         nLastBlockSize = nBlockSize;
 
@@ -758,6 +813,11 @@ bool CheckStake(CBlock* pblock, CWallet& wallet)
 
     if(!pblock->IsProofOfStake())
         return error("CheckStake() : %s is not a proof-of-stake block", hashBlock.GetHex().c_str());
+    {
+        LOCK(cs_main);
+        if (pindexBest && pindexBest->nHeight + 1 >= FORK_HEIGHT_DAG)
+            return error("CheckStake() : proof-of-stake block production disabled after DAG fork");
+    }
 
    // verify hash target and signature of coinstake tx -
     //if (!CheckProofOfStake(mapBlockIndex[pblock->hashPrevBlock], pblock->vtx[1], pblock->nBits, proofHash, hashTarget))
@@ -798,6 +858,7 @@ void StakeMiner(CWallet *pwallet)
 
     bool fTryToSync = true;
     int64_t nTimeLastStake = 0;
+    int nLastFinalityEpochVoted = -1;
 
     while (true)
     {
@@ -863,15 +924,43 @@ void StakeMiner(CWallet *pwallet)
         // Pause staking while chain is stale to yield cs_main for sync.
         // Staking during active sync causes cs_main contention that starves
         // ThreadMessageHandler, preventing block/inv processing.
+        bool fChainStale = false;
         {
             LOCK(cs_main);
-            if (!fTestNet && pindexBest && pindexBest->GetBlockTime() < GetTime() - 300)
+            fChainStale = !fRegTest && !fTestNet && pindexBest &&
+                          pindexBest->GetBlockTime() < GetTime() - 300;
+        }
+        if (fChainStale)
+        {
+            if (fDebug && GetBoolArg("-printcoinstake"))
+                printf("StakeMiner() chain stale, pausing for sync\n");
+            MilliSleep(5000);
+            continue;
+        }
+
+        // IDAG: after the DAG fork, stakers no longer create blocks. The
+        // staking thread only produces transparent finality votes.
+        bool fPostDAGFinalityMode = false;
+        bool fShouldProduceFinalityVote = false;
+        int nFinalityEpoch = -1;
+        {
+            LOCK(cs_main);
+            if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_DAG)
             {
-                if (fDebug && GetBoolArg("-printcoinstake"))
-                    printf("StakeMiner() chain stale, pausing for sync\n");
-                MilliSleep(5000);
-                continue;
+                fPostDAGFinalityMode = true;
+                nFinalityEpoch = GetEpochForHeight(pindexBest->nHeight);
+                int nEpochBoundary = GetEpochBoundaryHeight(nFinalityEpoch, pindexBest->nHeight);
+                int nEpochProgress = pindexBest->nHeight - nEpochBoundary;
+                fShouldProduceFinalityVote = (nEpochProgress < FINALITY_VOTE_WINDOW &&
+                                              nFinalityEpoch != nLastFinalityEpochVoted);
             }
+        }
+        if (fPostDAGFinalityMode)
+        {
+            if (fShouldProduceFinalityVote && ProduceFinalityVote())
+                nLastFinalityEpochVoted = nFinalityEpoch;
+            MilliSleep(5000);
+            continue;
         }
 
         // Post-DAG: reduce stake interval to match nMaxStakeSearchInterval (2s)
@@ -976,13 +1065,16 @@ void CPUMiner(CWallet* pwallet)
             }
         }
 
+        bool fChainStale = false;
         {
             LOCK(cs_main);
-            if (!fTestNet && pindexBest && pindexBest->nHeight > 10 && pindexBest->GetBlockTime() < GetTime() - 300)
-            {
-                MilliSleep(5000);
-                continue;
-            }
+            fChainStale = !fRegTest && !fTestNet && pindexBest && pindexBest->nHeight > 10 &&
+                          pindexBest->GetBlockTime() < GetTime() - 300;
+        }
+        if (fChainStale)
+        {
+            MilliSleep(5000);
+            continue;
         }
 
         int nHeight;

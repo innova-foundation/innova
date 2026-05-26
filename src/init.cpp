@@ -533,6 +533,7 @@ std::string HelpMessage()
         "  -nativetor=<n>         " + _("Enable or disable Native Tor Onion Node (default: 0)") +
         "  -staking               " + _("Stake your coins to support network and gain reward (default: 1)") + "\n" +
         "  -stakingmode=<mode>    " + _("Staking mode: transparent, nullstake, cold, coldprivate (default: transparent)") + "\n" +
+        "  -finalityvotemode=<m>  " + _("Post-DAG finality voting mode: auto, transparent, nullstake, nullstakecold (default: auto)") + "\n" +
 
         "\n" + _("SPV (Light Client) options:") + "\n" +
         "  -spv                   " + _("Run in SPV mode (light client, headers only)") + "\n" +

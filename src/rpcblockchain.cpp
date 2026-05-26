@@ -10,6 +10,7 @@
 #include "bootstrap.h"
 #include "finality.h"
 #include "dag.h"
+#include "base58.h"
 #include <errno.h>
 
 #include <boost/filesystem.hpp>
@@ -21,6 +22,14 @@ using namespace std;
 extern void TxToJSON(const CTransaction& tx, const uint256 hashBlock, json_spirit::Object& entry);
 extern enum Checkpoints::CPMode CheckpointsMode;
 extern void spj(const CScript& scriptPubKey, Object& out, bool fIncludeHex);
+
+static std::string FinalityTierName(FinalityTier tier)
+{
+    if (tier == FINALITY_HARD) return "hard";
+    if (tier == FINALITY_SOFT) return "soft";
+    if (tier == FINALITY_TENTATIVE) return "tentative";
+    return "none";
+}
 
 double BitsToDouble(unsigned int nBits)
 {
@@ -160,18 +169,79 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
 
     if (blockindex->nHeight >= FORK_HEIGHT_POEM)
     {
-        uint256 hashProofVal = blockindex->IsProofOfStake() ? blockindex->hashProof : block.GetHash();
+        uint256 hashProofVal = (blockindex->IsProofOfStake() && blockindex->nHeight < FORK_HEIGHT_DAG) ? blockindex->hashProof : block.GetHash();
         result.push_back(Pair("entropy", GetBlockEntropy(hashProofVal).GetHex()));
     }
 
     if (blockindex->nHeight >= FORK_HEIGHT_FINALITY)
     {
         result.push_back(Pair("finalized", g_finalityTracker.IsFinalized(blockindex->nHeight)));
+        std::vector<CFinalityVote> vFinalityVotes = ExtractFinalityVotesFromBlock(block);
+        Array voteArray;
+        int64_t nFinalityReward = 0;
+        for (const CFinalityVote& vote : vFinalityVotes)
+        {
+            Object voteObj;
+            std::string strMode = "transparent";
+            if (vote.nProofMode == FINALITY_PROOF_NULLSTAKE_V2)
+                strMode = "nullstake_v2";
+            else if (vote.nProofMode == FINALITY_PROOF_NULLSTAKE_V3_COLD)
+                strMode = "nullstake_v3_cold";
+            voteObj.push_back(Pair("proof_mode", strMode));
+            voteObj.push_back(Pair("epoch", vote.nEpoch));
+            voteObj.push_back(Pair("height", vote.nHeight));
+            voteObj.push_back(Pair("block_hash", vote.hashBlock.GetHex()));
+            voteObj.push_back(Pair("nullifier", vote.nullifier.GetHex()));
+            if (vote.IsPrivate())
+            {
+                voteObj.push_back(Pair("weight_hidden", true));
+                voteObj.push_back(Pair("reward_hidden", true));
+                voteObj.push_back(Pair("curve_root", vote.privateProof.hashCurveRoot.GetHex()));
+                voteObj.push_back(Pair("nullifier_root", vote.privateProof.hashNullifierRoot.GetHex()));
+                voteObj.push_back(Pair("weight_commitment", vote.privateProof.stakeWeightCommitment.GetHash().GetHex()));
+                voteObj.push_back(Pair("reward_commitment", vote.privateProof.rewardCommitment.GetHash().GetHex()));
+            }
+            else
+            {
+                voteObj.push_back(Pair("weight", FormatMoney(vote.nVoteWeight)));
+                voteObj.push_back(Pair("reward", FormatMoney(vote.nReward)));
+                CPubKey pubkey(vote.vchPubKey);
+                if (pubkey.IsValid())
+                    voteObj.push_back(Pair("voter", CBitcoinAddress(pubkey.GetID()).ToString()));
+                voteObj.push_back(Pair("stake_utxos", (int)vote.vStakeProof.size()));
+            }
+            voteArray.push_back(voteObj);
+            if (vote.nReward > 0 && nFinalityReward <= MAX_MONEY - vote.nReward)
+                nFinalityReward += vote.nReward;
+        }
+        result.push_back(Pair("finality_votes", voteArray));
+        result.push_back(Pair("finality_reward", FormatMoney(nFinalityReward)));
+        std::vector<CFinalityTallyCertificate> vCerts = ExtractFinalityTallyCertificatesFromBlock(block);
+        Array certArray;
+        for (const CFinalityTallyCertificate& cert : vCerts)
+        {
+            Object certObj;
+            certObj.push_back(Pair("hash", cert.GetHash().GetHex()));
+            certObj.push_back(Pair("epoch", cert.nEpoch));
+            certObj.push_back(Pair("height", cert.nHeight));
+            certObj.push_back(Pair("block_hash", cert.hashBlock.GetHex()));
+            certObj.push_back(Pair("tier", FinalityTierName((FinalityTier)cert.nTier)));
+            certObj.push_back(Pair("private_weight", cert.HasPrivateWeight()));
+            certObj.push_back(Pair("vote_nullifiers", (int)cert.vVoteNullifiers.size()));
+            certObj.push_back(Pair("curve_root", cert.hashCurveRoot.GetHex()));
+            certObj.push_back(Pair("nullifier_root", cert.hashNullifierRoot.GetHex()));
+            certObj.push_back(Pair("active_weight_commitment", cert.activeWeightCommitment.GetHash().GetHex()));
+            certObj.push_back(Pair("winning_weight_commitment", cert.winningWeightCommitment.GetHash().GetHex()));
+            certArray.push_back(certObj);
+        }
+        result.push_back(Pair("finality_tally_certificates", certArray));
     }
 
     // IDAG Phase 2: DAG metadata
     if (blockindex->nHeight >= FORK_HEIGHT_DAG && blockindex->phashBlock)
     {
+        result.push_back(Pair("dag_block_producer", std::string("pow")));
+        result.push_back(Pair("pos_block_production", false));
         CBlockDAGData dagData;
         if (g_dagManager.GetDAGData(blockindex->GetBlockHash(), dagData))
         {
@@ -188,6 +258,9 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
             result.push_back(Pair("dagblue", dagData.fBlue));
             result.push_back(Pair("dagscore", dagData.nDAGScore.GetHex()));
             result.push_back(Pair("dagorder", dagData.nDAGOrder));
+            if (!dagData.vDAGParents.empty())
+                result.push_back(Pair("selected_parent", dagData.vDAGParents[0].GetHex()));
+            result.push_back(Pair("epoch", GetEpochForHeight(blockindex->nHeight)));
         }
     }
 
@@ -1084,30 +1157,79 @@ Value getfinalityinfo(const Array& params, bool fHelp)
 
     int nVoterCount = g_finalityTracker.GetEpochVoterCount(nCurrentEpoch);
     FinalityTier tier = g_finalityTracker.GetFinalityTier();
+    int nTransparentVotes = 0;
+    int nPrivateVotes = 0;
+    g_finalityTracker.GetEpochVoteModeCounts(nCurrentEpoch, nTransparentVotes, nPrivateVotes);
 
     result.push_back(Pair("height", nCurrentHeight));
     result.push_back(Pair("epoch", nCurrentEpoch));
     result.push_back(Pair("epoch_interval", GetEpochInterval(nCurrentHeight)));
     result.push_back(Pair("finalized_height", nFinalizedHeight));
     result.push_back(Pair("finalized_hash", hashFinalized.GetHex()));
+    result.push_back(Pair("finalized_epoch", GetEpochForHeight(nFinalizedHeight)));
     result.push_back(Pair("current_epoch_votes", nVoteCount));
     result.push_back(Pair("current_epoch_voters", nVoterCount));
+    result.push_back(Pair("transparent_votes", nTransparentVotes));
+    result.push_back(Pair("private_votes", nPrivateVotes));
+    result.push_back(Pair("current_epoch_transparent_weight", FormatMoney(nVoteWeight)));
     result.push_back(Pair("current_epoch_weight", FormatMoney(nVoteWeight)));
+    Array voters;
+    std::vector<CKeyID> vVoters = g_finalityTracker.GetEpochVoters(nCurrentEpoch);
+    for (const CKeyID& keyID : vVoters)
+        voters.push_back(CBitcoinAddress(keyID).ToString());
+    result.push_back(Pair("voters", voters));
+    result.push_back(Pair("pending_votes", g_finalityTracker.GetPendingVoteCount()));
+    result.push_back(Pair("pending_rewards", FormatMoney(g_finalityTracker.GetPendingRewardTotal())));
     result.push_back(Pair("money_supply", FormatMoney(nSupply)));
 
     // Finality tier info
-    std::string strTier = "none";
-    if (tier == FINALITY_HARD) strTier = "hard";
-    else if (tier == FINALITY_SOFT) strTier = "soft";
-    else if (tier == FINALITY_TENTATIVE) strTier = "tentative";
-    result.push_back(Pair("finality_tier", strTier));
-    result.push_back(Pair("finality_model", std::string("participation-relative")));
+    result.push_back(Pair("finality_tier", FinalityTierName(tier)));
+    result.push_back(Pair("consecutive_hard_epochs", g_finalityTracker.GetConsecutiveHardEpochCount()));
+    result.push_back(Pair("finality_model", std::string("active-epoch-committed-weight")));
+    result.push_back(Pair("absolute_stake_floor", false));
+    result.push_back(Pair("private_finality_mode", std::string("hidden-weight-nullstake")));
+    result.push_back(Pair("tally_certificate_required_for_private_votes", true));
+
+    std::vector<CFinalityTallyCertificate> vCerts = g_finalityTracker.GetEpochTallyCertificates(nCurrentEpoch);
+    Array certs;
+    for (const CFinalityTallyCertificate& cert : vCerts)
     {
-        int64_t nMinStakeCoins = GetArg("-minfinalitystake", FINALITY_MIN_STAKE_DEFAULT / COIN);
-        if (nMinStakeCoins < 0) nMinStakeCoins = 0;
-        if (nMinStakeCoins > MAX_MONEY / COIN) nMinStakeCoins = MAX_MONEY / COIN;
-        result.push_back(Pair("min_stake_floor", FormatMoney(nMinStakeCoins * COIN)));
+        Object certObj;
+        certObj.push_back(Pair("hash", cert.GetHash().GetHex()));
+        certObj.push_back(Pair("tier", FinalityTierName((FinalityTier)cert.nTier)));
+        certObj.push_back(Pair("private_weight", cert.HasPrivateWeight()));
+        certObj.push_back(Pair("vote_nullifiers", (int)cert.vVoteNullifiers.size()));
+        certObj.push_back(Pair("curve_root", cert.hashCurveRoot.GetHex()));
+        certObj.push_back(Pair("nullifier_root", cert.hashNullifierRoot.GetHex()));
+        certs.push_back(certObj);
     }
+    result.push_back(Pair("tally_certificates", certs));
+
+    CEpochState currentEpochState;
+    if (g_dagManager.GetEpochState(nCurrentEpoch, currentEpochState))
+    {
+        result.push_back(Pair("epoch_curve_root", currentEpochState.hashCurveRoot.GetHex()));
+        result.push_back(Pair("epoch_nullifier_root", currentEpochState.hashNullifierRoot.GetHex()));
+        result.push_back(Pair("epoch_finality_certificate", currentEpochState.hashFinalityCertificate.GetHex()));
+    }
+    else
+    {
+        uint256 hashZero = 0;
+        result.push_back(Pair("epoch_curve_root", hashZero.GetHex()));
+        result.push_back(Pair("epoch_nullifier_root", hashZero.GetHex()));
+        result.push_back(Pair("epoch_finality_certificate", hashZero.GetHex()));
+        result.push_back(Pair("epoch_root_status", std::string("not_computed")));
+    }
+    CEpochState finalizedEpochState;
+    int nFinalizedEpoch = GetEpochForHeight(nFinalizedHeight);
+    if (g_dagManager.GetEpochState(nFinalizedEpoch, finalizedEpochState))
+        result.push_back(Pair("finalized_epoch_root", finalizedEpochState.hashCurveRoot.GetHex()));
+    else
+    {
+        uint256 hashZero = 0;
+        result.push_back(Pair("finalized_epoch_root", hashZero.GetHex()));
+    }
+
     result.push_back(Pair("min_voters", FINALITY_MIN_VOTERS));
     result.push_back(Pair("fork_active", nCurrentHeight >= FORK_HEIGHT_FINALITY));
 
@@ -1163,6 +1285,8 @@ Value getdaginfo(const Array& params, bool fHelp)
     result.push_back(Pair("dag_active", nCurrentHeight >= FORK_HEIGHT_DAG));
     result.push_back(Pair("fork_height", FORK_HEIGHT_DAG));
     result.push_back(Pair("current_height", nCurrentHeight));
+    result.push_back(Pair("dag_block_producer", std::string("pow")));
+    result.push_back(Pair("pos_block_production", nCurrentHeight < FORK_HEIGHT_DAG));
 
     std::vector<uint256> vTips = g_dagManager.GetDAGTips();
     result.push_back(Pair("dag_tips", (int)vTips.size()));
@@ -1184,10 +1308,31 @@ Value getdaginfo(const Array& params, bool fHelp)
 
     // IDAG Phase 3: Epoch and pruning info
     result.push_back(Pair("epoch_interval", GetEpochInterval(nCurrentHeight)));
-    result.push_back(Pair("current_epoch", GetEpochForHeight(nCurrentHeight)));
+    int nCurrentEpoch = GetEpochForHeight(nCurrentHeight);
+    result.push_back(Pair("current_epoch", nCurrentEpoch));
     result.push_back(Pair("dag_entries", g_dagManager.GetDAGEntryCount()));
     int nPrunedBelow = g_dagManager.GetPrunedBelowHeight();
     result.push_back(Pair("pruned_below", nPrunedBelow));
+    result.push_back(Pair("finality_tier", FinalityTierName(g_finalityTracker.GetFinalityTier())));
+    result.push_back(Pair("consecutive_hard_epochs", g_finalityTracker.GetConsecutiveHardEpochCount()));
+    result.push_back(Pair("finalized_height", g_finalityTracker.GetFinalizedHeight()));
+    result.push_back(Pair("finalized_hash", g_finalityTracker.GetFinalizedHash().GetHex()));
+
+    CEpochState currentEpochState;
+    if (g_dagManager.GetEpochState(nCurrentEpoch, currentEpochState))
+    {
+        result.push_back(Pair("epoch_curve_root", currentEpochState.hashCurveRoot.GetHex()));
+        result.push_back(Pair("epoch_nullifier_root", currentEpochState.hashNullifierRoot.GetHex()));
+        result.push_back(Pair("epoch_finality_certificate", currentEpochState.hashFinalityCertificate.GetHex()));
+    }
+    else
+    {
+        uint256 hashZero = 0;
+        result.push_back(Pair("epoch_curve_root", hashZero.GetHex()));
+        result.push_back(Pair("epoch_nullifier_root", hashZero.GetHex()));
+        result.push_back(Pair("epoch_finality_certificate", hashZero.GetHex()));
+        result.push_back(Pair("epoch_root_status", std::string("not_computed")));
+    }
 
     // Adaptive block size info
     unsigned int nAdaptiveLimit = pindexBest ? GetAdaptiveBlockSizeLimit(pindexBest) : MAX_BLOCK_SIZE_LEGACY;
@@ -1277,6 +1422,11 @@ Value getepochinfo(const Array& params, bool fHelp)
         result.push_back(Pair("tx_count", nTxCount));
         result.push_back(Pair("total_trust", state.nTotalTrust.GetHex()));
         result.push_back(Pair("finalized", state.fFinalized));
+        result.push_back(Pair("curve_root", state.hashCurveRoot.GetHex()));
+        result.push_back(Pair("nullifier_root", state.hashNullifierRoot.GetHex()));
+        result.push_back(Pair("finality_certificate", state.hashFinalityCertificate.GetHex()));
+        result.push_back(Pair("finality_tier", FinalityTierName((FinalityTier)state.nFinalityTier)));
+        result.push_back(Pair("consecutive_hard_epochs", state.nConsecutiveHardCount));
 
         Array blocks;
         for (const uint256& hash : state.vBlockHashes)
@@ -1286,10 +1436,17 @@ Value getepochinfo(const Array& params, bool fHelp)
     else
     {
         // Epoch not yet computed — return estimated range
-        int nInterval = GetEpochInterval(nCurrentHeight);
         int nEstStart = GetEpochBoundaryHeight(nEpoch, nCurrentHeight);
+        int nNextStart = GetEpochBoundaryHeight(nEpoch + 1, nCurrentHeight);
+        int nEstEnd = (nNextStart > nEstStart) ? (nNextStart - 1) : (nEstStart + GetEpochInterval(nEstStart) - 1);
+        uint256 hashZero = 0;
         result.push_back(Pair("height_start", nEstStart));
-        result.push_back(Pair("height_end", nEstStart + nInterval - 1));
+        result.push_back(Pair("height_end", nEstEnd));
+        result.push_back(Pair("curve_root", hashZero.GetHex()));
+        result.push_back(Pair("nullifier_root", hashZero.GetHex()));
+        result.push_back(Pair("finality_certificate", hashZero.GetHex()));
+        result.push_back(Pair("finality_tier", std::string("none")));
+        result.push_back(Pair("consecutive_hard_epochs", 0));
         result.push_back(Pair("status", "not_computed"));
     }
 
