@@ -48,6 +48,18 @@ get_blocks() {
     echo "$result" | grep -oE '"blocks" *: *[0-9]+' | grep -oE '[0-9]+'
 }
 
+json_bool_field() {
+    local json="$1"
+    local field="$2"
+    echo "$json" | grep -o "\"$field\" *: *[a-z]*" | grep -o '[a-z]*$' | head -1
+}
+
+json_string_field() {
+    local json="$1"
+    local field="$2"
+    echo "$json" | sed -n "s/.*\"$field\" *: *\"\([^\"]*\)\".*/\1/p" | head -1
+}
+
 mine_blocks() {
     local rpc_func=$1
     local count=$2
@@ -141,7 +153,7 @@ fi
 
 # Check DAG info shows inactive
 DAG_INFO=$(rpc1 getdaginfo 2>/dev/null)
-DAG_ACTIVE=$(echo "$DAG_INFO" | grep -o '"dag_active" *: *[a-z]*' | grep -o '[a-z]*$')
+DAG_ACTIVE=$(json_bool_field "$DAG_INFO" "dag_active")
 if [ "$DAG_ACTIVE" = "false" ]; then
     success "Pre-DAG: getdaginfo shows dag_active=false"
 else
@@ -164,11 +176,25 @@ else
 fi
 
 DAG_INFO=$(rpc1 getdaginfo 2>/dev/null)
-DAG_ACTIVE=$(echo "$DAG_INFO" | grep -o '"dag_active" *: *[a-z]*' | grep -o '[a-z]*$')
+DAG_ACTIVE=$(json_bool_field "$DAG_INFO" "dag_active")
 if [ "$DAG_ACTIVE" = "true" ]; then
     success "DAG activation: getdaginfo shows dag_active=true"
 else
     fail "DAG activation: expected dag_active=true, got $DAG_ACTIVE"
+fi
+
+DAG_PRODUCER=$(json_string_field "$DAG_INFO" "dag_block_producer")
+if [ "$DAG_PRODUCER" = "pow" ]; then
+    success "DAG activation: block producer is PoW"
+else
+    fail "DAG activation: expected dag_block_producer=pow, got $DAG_PRODUCER"
+fi
+
+DAG_POS_PRODUCTION=$(json_bool_field "$DAG_INFO" "pos_block_production")
+if [ "$DAG_POS_PRODUCTION" = "false" ]; then
+    success "DAG activation: PoS block production disabled"
+else
+    fail "DAG activation: expected pos_block_production=false, got $DAG_POS_PRODUCTION"
 fi
 
 # ============================================================
@@ -199,7 +225,57 @@ else
 fi
 
 # ============================================================
-header "Test 5: GHOSTDAG ordering"
+header "Test 5: Post-DAG staking and finality RPCs"
+# ============================================================
+
+STAKING_INFO=$(rpc1 getstakinginfo 2>/dev/null)
+STAKING_ACTIVE=$(json_bool_field "$STAKING_INFO" "staking")
+STAKING_POS_PRODUCTION=$(json_bool_field "$STAKING_INFO" "pos_block_production")
+STAKING_FINALITY=$(json_bool_field "$STAKING_INFO" "finality_voting")
+
+if [ "$STAKING_ACTIVE" = "false" ]; then
+    success "getstakinginfo: legacy PoS staking inactive post-DAG"
+else
+    fail "getstakinginfo: expected staking=false post-DAG, got $STAKING_ACTIVE"
+fi
+
+if [ "$STAKING_POS_PRODUCTION" = "false" ]; then
+    success "getstakinginfo: PoS block production disabled post-DAG"
+else
+    fail "getstakinginfo: expected pos_block_production=false, got $STAKING_POS_PRODUCTION"
+fi
+
+if [ "$STAKING_FINALITY" = "false" ]; then
+    success "getstakinginfo: finality voting reflects node config disabled"
+else
+    fail "getstakinginfo: expected finality_voting=false with -nofinalityvoting=1, got $STAKING_FINALITY"
+fi
+
+FINALITY_STAKING=$(rpc1 getfinalitystakinginfo 2>/dev/null)
+FINALITY_STAKING_DAG=$(json_bool_field "$FINALITY_STAKING" "dag_active")
+FINALITY_STAKING_POS=$(json_bool_field "$FINALITY_STAKING" "pos_block_production")
+FINALITY_STAKING_ENABLED=$(json_bool_field "$FINALITY_STAKING" "enabled")
+
+if [ "$FINALITY_STAKING_DAG" = "true" ]; then
+    success "getfinalitystakinginfo: DAG active reported"
+else
+    fail "getfinalitystakinginfo: expected dag_active=true, got $FINALITY_STAKING_DAG"
+fi
+
+if [ "$FINALITY_STAKING_POS" = "false" ]; then
+    success "getfinalitystakinginfo: PoS block production disabled"
+else
+    fail "getfinalitystakinginfo: expected pos_block_production=false, got $FINALITY_STAKING_POS"
+fi
+
+if [ "$FINALITY_STAKING_ENABLED" = "false" ]; then
+    success "getfinalitystakinginfo: finality voting disabled by test config"
+else
+    fail "getfinalitystakinginfo: expected enabled=false with -nofinalityvoting=1, got $FINALITY_STAKING_ENABLED"
+fi
+
+# ============================================================
+header "Test 6: GHOSTDAG ordering"
 # ============================================================
 
 ORDER=$(rpc1 getdagorder 10 2>/dev/null)
@@ -219,7 +295,7 @@ else
 fi
 
 # ============================================================
-header "Test 6: Block DAG metadata in getblock"
+header "Test 7: Block DAG metadata in getblock"
 # ============================================================
 
 BEST_HASH=$(rpc1 getbestblockhash 2>/dev/null)
@@ -238,12 +314,33 @@ if [ -n "$BEST_HASH" ]; then
     else
         fail "Block metadata: missing dagscore in getblock"
     fi
+
+    BLOCK_PRODUCER=$(json_string_field "$BLOCK" "dag_block_producer")
+    if [ "$BLOCK_PRODUCER" = "pow" ]; then
+        success "Block metadata: dag_block_producer=pow"
+    else
+        fail "Block metadata: expected dag_block_producer=pow, got $BLOCK_PRODUCER"
+    fi
+
+    BLOCK_POS_PRODUCTION=$(json_bool_field "$BLOCK" "pos_block_production")
+    if [ "$BLOCK_POS_PRODUCTION" = "false" ]; then
+        success "Block metadata: pos_block_production=false"
+    else
+        fail "Block metadata: expected pos_block_production=false, got $BLOCK_POS_PRODUCTION"
+    fi
+
+    HAS_FINALITY_VOTES=$(echo "$BLOCK" | grep -c '"finality_votes"' || echo "0")
+    if [ "$HAS_FINALITY_VOTES" -ge "1" ]; then
+        success "Block metadata: finality_votes field present"
+    else
+        fail "Block metadata: missing finality_votes in getblock"
+    fi
 else
     skip "Block metadata: couldn't get best block hash"
 fi
 
 # ============================================================
-header "Test 7: Node sync with DAG"
+header "Test 8: Node sync with DAG"
 # ============================================================
 
 sleep 5
@@ -262,7 +359,7 @@ else
 fi
 
 # ============================================================
-header "Test 8: DAG score accumulation"
+header "Test 9: DAG score accumulation"
 # ============================================================
 
 DAG_INFO=$(rpc1 getdaginfo 2>/dev/null)
@@ -274,20 +371,54 @@ else
 fi
 
 # ============================================================
-header "Test 9: Finality still works with DAG"
+header "Test 10: Finality still works with DAG"
 # ============================================================
 
 # Finality activates at height 10, DAG at 11. Check finality info
 FIN_INFO=$(rpc1 getfinalityinfo 2>/dev/null)
-FIN_ACTIVE=$(echo "$FIN_INFO" | grep -o '"fork_active" *: *[a-z]*' | grep -o '[a-z]*$')
+FIN_ACTIVE=$(json_bool_field "$FIN_INFO" "fork_active")
 if [ "$FIN_ACTIVE" = "true" ]; then
     success "Finality: fork_active=true alongside DAG"
 else
     fail "Finality: expected fork_active=true"
 fi
 
+FIN_MODEL=$(json_string_field "$FIN_INFO" "finality_model")
+if [ "$FIN_MODEL" = "active-epoch-committed-weight" ]; then
+    success "Finality: active epoch committed-weight model reported"
+else
+    fail "Finality: expected finality_model=active-epoch-committed-weight, got $FIN_MODEL"
+fi
+
+ABS_FLOOR=$(json_bool_field "$FIN_INFO" "absolute_stake_floor")
+if [ "$ABS_FLOOR" = "false" ]; then
+    success "Finality: absolute stake floor disabled"
+else
+    fail "Finality: expected absolute_stake_floor=false, got $ABS_FLOOR"
+fi
+
+TALLY_REQUIRED=$(json_bool_field "$FIN_INFO" "tally_certificate_required_for_private_votes")
+if [ "$TALLY_REQUIRED" = "true" ]; then
+    success "Finality: private votes require tally certificates"
+else
+    fail "Finality: expected tally_certificate_required_for_private_votes=true, got $TALLY_REQUIRED"
+fi
+
+HAS_PRIVATE_VOTES=$(echo "$FIN_INFO" | grep -c '"private_votes"' || echo "0")
+HAS_EPOCH_ROOT=$(echo "$FIN_INFO" | grep -c '"epoch_curve_root"' || echo "0")
+if [ "$HAS_PRIVATE_VOTES" -ge "1" ]; then
+    success "Finality: private vote count field present"
+else
+    fail "Finality: missing private_votes field"
+fi
+if [ "$HAS_EPOCH_ROOT" -ge "1" ]; then
+    success "Finality: epoch curve root field present"
+else
+    warn "Finality: epoch_curve_root not available yet (no completed epoch state)"
+fi
+
 # ============================================================
-header "Test 10: DAG constants check"
+header "Test 11: DAG constants check"
 # ============================================================
 
 GHOSTDAG_K=$(echo "$DAG_INFO" | grep -o '"ghostdag_k" *: *[0-9]*' | grep -o '[0-9]*$')

@@ -381,8 +381,9 @@ fi
 header "Test 7: getdaginfo Enhanced Fields"
 # =======================================================================
 
-# Verify all new Phase 3 fields exist in getdaginfo
-for FIELD in "epoch_interval" "current_epoch" "dag_entries" "pruned_below"; do
+# Verify all new Phase 3 fields exist in getdaginfo, plus the post-DAG
+# production boundary fields used by finality staking.
+for FIELD in "epoch_interval" "current_epoch" "dag_entries" "pruned_below" "dag_block_producer" "pos_block_production" "finality_tier" "consecutive_hard_epochs" "epoch_curve_root" "epoch_nullifier_root"; do
     if echo "$DAGINFO3" | grep -q "\"$FIELD\""; then
         success "getdaginfo has field: $FIELD"
     else
@@ -399,8 +400,16 @@ EPOCH_INFO_CURRENT=$(rpc1 getepochinfo 2>/dev/null)
 EPOCH_NUM=$(echo "$EPOCH_INFO_CURRENT" | grep -oE '"epoch" *: *[0-9]+' | grep -oE '[0-9]+')
 H_START=$(echo "$EPOCH_INFO_CURRENT" | grep -oE '"height_start" *: *[0-9]+' | grep -oE '[0-9]+')
 H_END=$(echo "$EPOCH_INFO_CURRENT" | grep -oE '"height_end" *: *[0-9]+' | grep -oE '[0-9]+')
+CURVE_ROOT=$(echo "$EPOCH_INFO_CURRENT" | sed -n 's/.*"curve_root" *: *"\([^"]*\)".*/\1/p' | head -1)
+NULLIFIER_ROOT=$(echo "$EPOCH_INFO_CURRENT" | sed -n 's/.*"nullifier_root" *: *"\([^"]*\)".*/\1/p' | head -1)
 
-log "Current epoch: $EPOCH_NUM (height $H_START - $H_END)"
+log "Current epoch: $EPOCH_NUM (height $H_START - $H_END, curve_root=${CURVE_ROOT:0:16}..., nullifier_root=${NULLIFIER_ROOT:0:16}...)"
+
+if [ -n "$CURVE_ROOT" ] && [ -n "$NULLIFIER_ROOT" ]; then
+    success "getepochinfo exposes epoch privacy roots"
+else
+    fail "getepochinfo missing epoch privacy roots"
+fi
 
 if [ -n "$H_START" ] && [ -n "$H_END" ]; then
     RANGE=$((H_END - H_START + 1))

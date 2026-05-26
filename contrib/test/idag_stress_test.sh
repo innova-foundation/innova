@@ -1,5 +1,5 @@
 #!/bin/bash
-# IDAG Heavy Stress Test v3 - multi-node funding, DAG/PoS, and tx flow metrics
+# IDAG Heavy Stress Test v3 - multi-node funding, PoW DAG/finality, and tx flow metrics
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -724,45 +724,75 @@ DAG_TIPS=$(json_field "$DAGINFO" "dag_tips")
 INFERRED_K=$(json_field "$DAGINFO" "inferred_k")
 ALGO=$(json_field "$DAGINFO" "ordering_algorithm")
 ADAPTIVE_LIMIT=$(json_field "$DAGINFO" "adaptive_block_limit")
+DAG_PRODUCER=$(json_field "$DAGINFO" "dag_block_producer")
+DAG_POS_PRODUCTION=$(json_field "$DAGINFO" "pos_block_production")
 
-log "DAG: active=$DAG_ACTIVE, DAGKNIGHT=$DK_ACTIVE, entries=$DAG_ENTRIES, tips=$DAG_TIPS, inferred_k=$INFERRED_K, algo=$ALGO"
+log "DAG: active=$DAG_ACTIVE, DAGKNIGHT=$DK_ACTIVE, entries=$DAG_ENTRIES, tips=$DAG_TIPS, inferred_k=$INFERRED_K, algo=$ALGO, producer=$DAG_PRODUCER"
 [ "$DAG_ACTIVE" = "true" ] && success "DAG active with $DAG_ENTRIES entries" || fail "DAG not active"
 [ "$DK_ACTIVE" = "true" ] && success "DAGKNIGHT ordering active" || fail "DAGKNIGHT not active"
+[ "$DAG_PRODUCER" = "pow" ] && success "DAG producer is PoW-only" || fail "DAG producer expected pow, got $DAG_PRODUCER"
+[ "$DAG_POS_PRODUCTION" = "false" ] && success "PoS block production disabled in DAG" || fail "pos_block_production expected false, got $DAG_POS_PRODUCTION"
 
 FININFO=$(rpc 0 getfinalityinfo 2>/dev/null)
 TIER=$(json_field "$FININFO" "finality_tier")
 VOTERS=$(json_field "$FININFO" "current_epoch_voters")
 FINALIZED_HEIGHT=$(json_field "$FININFO" "finalized_height")
-log "Finality: tier=$TIER, voters=$VOTERS, finalized_height=$FINALIZED_HEIGHT"
+FIN_MODEL=$(json_field "$FININFO" "finality_model")
+ABS_FLOOR=$(json_field "$FININFO" "absolute_stake_floor")
+PRIVATE_VOTES=$(json_field "$FININFO" "private_votes")
+TALLY_REQUIRED=$(json_field "$FININFO" "tally_certificate_required_for_private_votes")
+EPOCH_CURVE_ROOT=$(json_field "$FININFO" "epoch_curve_root")
+log "Finality: tier=$TIER, voters=$VOTERS, finalized_height=$FINALIZED_HEIGHT, model=$FIN_MODEL, private_votes=$PRIVATE_VOTES"
 success "Finality RPC responded: tier=$TIER"
+[ "$FIN_MODEL" = "active-epoch-committed-weight" ] && success "Finality model is active epoch committed weight" || fail "Unexpected finality model: $FIN_MODEL"
+[ "$ABS_FLOOR" = "false" ] && success "Absolute finality stake floor disabled" || fail "absolute_stake_floor expected false, got $ABS_FLOOR"
+[ "$TALLY_REQUIRED" = "true" ] && success "Private finality tally certificate requirement reported" || fail "tally_certificate_required_for_private_votes expected true, got $TALLY_REQUIRED"
+[ -n "$PRIVATE_VOTES" ] && success "Private finality vote count reported" || fail "private_votes field missing"
+[ -n "$EPOCH_CURVE_ROOT" ] && success "Epoch curve root reported in finality info" || warn "Epoch curve root not available yet"
 
 # =====================================================================
-header "Phase 5: Wait for PoS blocks"
+header "Phase 5: Post-DAG finality staking boundary"
 # =====================================================================
 
-log "Waiting up to 60s for PoS blocks to appear..."
+SINFO=$(rpc 0 getstakinginfo 2>/dev/null)
+S_STAKING=$(json_field "$SINFO" "staking")
+S_POS_PRODUCTION=$(json_field "$SINFO" "pos_block_production")
+S_FINALITY=$(json_field "$SINFO" "finality_voting")
+log "Staking RPC: staking=$S_STAKING, pos_block_production=$S_POS_PRODUCTION, finality_voting=$S_FINALITY"
+[ "$S_STAKING" = "false" ] && success "Legacy PoS staking inactive post-DAG" || fail "staking expected false post-DAG, got $S_STAKING"
+[ "$S_POS_PRODUCTION" = "false" ] && success "getstakinginfo reports PoS block production disabled" || fail "getstakinginfo pos_block_production expected false, got $S_POS_PRODUCTION"
+[ "$S_FINALITY" = "true" ] && success "getstakinginfo reports finality voting mode" || fail "getstakinginfo finality_voting expected true, got $S_FINALITY"
+
+FSTAKING=$(rpc 0 getfinalitystakinginfo 2>/dev/null)
+F_ENABLED=$(json_field "$FSTAKING" "enabled")
+F_DAG_ACTIVE=$(json_field "$FSTAKING" "dag_active")
+F_POS_PRODUCTION=$(json_field "$FSTAKING" "pos_block_production")
+F_ELIGIBLE_UTXOS=$(json_field "$FSTAKING" "eligible_utxos")
+log "Finality staking RPC: enabled=$F_ENABLED, dag_active=$F_DAG_ACTIVE, pos_block_production=$F_POS_PRODUCTION, eligible_utxos=$F_ELIGIBLE_UTXOS"
+[ "$F_ENABLED" = "true" ] && success "Finality staking enabled" || fail "Finality staking expected enabled=true, got $F_ENABLED"
+[ "$F_DAG_ACTIVE" = "true" ] && success "Finality staking sees active DAG" || fail "Finality staking dag_active expected true, got $F_DAG_ACTIVE"
+[ "$F_POS_PRODUCTION" = "false" ] && success "Finality staking confirms no PoS block production" || fail "Finality staking pos_block_production expected false, got $F_POS_PRODUCTION"
+
+log "Mining 5 additional DAG blocks and verifying none are PoS..."
 POS_FOUND=0
 START_POS_HEIGHT=$(get_blocks 0)
-LAST_POS_HEIGHT=$START_POS_HEIGHT
-for ((w=0; w<60; w++)); do
-    H=$(get_blocks 0)
-    if is_int "$H" && is_int "$LAST_POS_HEIGHT" && [ "$H" -gt "$LAST_POS_HEIGHT" ]; then
-        for ((ph=LAST_POS_HEIGHT + 1; ph<=H; ph++)); do
-            BLOCK=$(get_block_json 0 "$ph")
-            FLAGS=$(json_field "$BLOCK" "flags")
-            if echo "$FLAGS" | grep -qi "proof-of-stake"; then
-                POS_FOUND=$((POS_FOUND + 1))
-                [ "$POS_FOUND" -eq 1 ] && log "First PoS block at height $ph"
-            fi
-        done
-        LAST_POS_HEIGHT=$H
-    fi
-    [ "$POS_FOUND" -ge 3 ] && break
-    sleep 1
-done
+mine_blocks 0 5 || fail "Post-DAG boundary mining failed"
+END_POS_HEIGHT=$(get_blocks 0)
+if is_int "$START_POS_HEIGHT" && is_int "$END_POS_HEIGHT" && [ "$END_POS_HEIGHT" -gt "$START_POS_HEIGHT" ]; then
+    for ((ph=START_POS_HEIGHT + 1; ph<=END_POS_HEIGHT; ph++)); do
+        BLOCK=$(get_block_json 0 "$ph")
+        FLAGS=$(json_field "$BLOCK" "flags")
+        if echo "$FLAGS" | grep -qi "proof-of-stake"; then
+            POS_FOUND=$((POS_FOUND + 1))
+            log "Unexpected PoS block at height $ph"
+        fi
+    done
+else
+    fail "Could not verify post-DAG mined block range"
+fi
 
-log "PoS blocks found: $POS_FOUND in 60s window"
-[ "$POS_FOUND" -gt 0 ] && success "PoS staking in DAG: $POS_FOUND blocks produced" || warn "No PoS blocks yet (stress continues with PoW mining)"
+log "PoS blocks found in post-DAG range: $POS_FOUND"
+[ "$POS_FOUND" -eq 0 ] && success "No PoS blocks produced after DAG fork" || fail "Found $POS_FOUND PoS block(s) after DAG fork"
 
 # =====================================================================
 header "Phase 6: RPC submission sample"
