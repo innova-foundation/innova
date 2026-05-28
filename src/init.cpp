@@ -534,6 +534,10 @@ std::string HelpMessage()
         "  -staking               " + _("Stake your coins to support network and gain reward (default: 1)") + "\n" +
         "  -stakingmode=<mode>    " + _("Staking mode: transparent, nullstake, cold, coldprivate (default: transparent)") + "\n" +
         "  -finalityvotemode=<m>  " + _("Post-DAG finality voting mode: auto, transparent, nullstake, nullstakecold (default: auto)") + "\n" +
+        "  -finalitytallymode=<m> " + _("Hidden finality tally mode: off, committee, auto (default: off)") + "\n" +
+        "  -finalitytallypubkey=<key> " + _("Advertise a finality tally committee public key") + "\n" +
+        "  -finalitytallyprivkey=<key> " + _("Enable local finality tally share handling with a private key") + "\n" +
+        "  -finalitytallythreshold=<m-of-n> " + _("Finality tally committee threshold descriptor") + "\n" +
 
         "\n" + _("SPV (Light Client) options:") + "\n" +
         "  -spv                   " + _("Run in SPV mode (light client, headers only)") + "\n" +
@@ -924,6 +928,21 @@ bool AppInit2()
         {
             printf("WARNING: Unknown -stakingmode '%s', using transparent\n", strStakingMode.c_str());
             nStakingMode = STAKE_TRANSPARENT;
+        }
+    }
+
+    {
+        CFinalityTallyConfig tallyConfig = GetFinalityTallyConfig();
+        if (!tallyConfig.fModeValid)
+            printf("WARNING: Unknown -finalitytallymode, using off\n");
+        if (tallyConfig.fEnabled && !tallyConfig.CanRelayPrivateVotes())
+        {
+            printf("WARNING: finality tally mode '%s' is enabled but requires ordered -finalitytallypubkey entries, a valid -finalitytallythreshold=<m-of-n>, and encrypted tally support; private finality promotion will stay disabled\n",
+                   tallyConfig.strMode.c_str());
+        }
+        if (tallyConfig.fEnabled && tallyConfig.fPrivKeyConfigured && !tallyConfig.CanProduceCertificates())
+        {
+            printf("WARNING: -finalitytallyprivkey is configured but tally certificate production is disabled until committee pubkey and threshold config are valid\n");
         }
     }
 

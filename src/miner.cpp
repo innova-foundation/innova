@@ -633,6 +633,21 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 nBlockSize += nVoteCommitSize + 64;
             }
 
+            std::vector<CFinalityTallyShare> vFinalityShares = g_finalityTracker.GetPendingTallySharesForBlock(nHeight);
+            for (const CFinalityTallyShare& share : vFinalityShares)
+            {
+                CScript shareScript = BuildFinalityTallyShareScript(share);
+                unsigned int nShareCommitSize = ::GetSerializeSize(shareScript, SER_NETWORK, PROTOCOL_VERSION);
+                if (nBlockSize + nShareCommitSize + 16 >= nBlockMaxSize)
+                    break;
+
+                CTxOut shareOut;
+                shareOut.nValue = 0;
+                shareOut.scriptPubKey = shareScript;
+                pblock->vtx[0].vout.push_back(shareOut);
+                nBlockSize += nShareCommitSize + 16;
+            }
+
             std::vector<CFinalityTallyCertificate> vFinalityCerts = g_finalityTracker.GetPendingTallyCertificatesForBlock(nHeight);
             for (const CFinalityTallyCertificate& cert : vFinalityCerts)
             {
@@ -957,6 +972,7 @@ void StakeMiner(CWallet *pwallet)
         }
         if (fPostDAGFinalityMode)
         {
+            ProcessFinalityTallyCommittee();
             if (fShouldProduceFinalityVote && ProduceFinalityVote())
                 nLastFinalityEpochVoted = nFinalityEpoch;
             MilliSleep(5000);

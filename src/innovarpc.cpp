@@ -491,6 +491,8 @@ static const CRPCCommand vRPCCommands[] =
 
     /* IDAG Phase 1: Finality commands */
     { "getfinalityinfo",        &getfinalityinfo,        true,   false },
+    { "submitfinalitytallyshare", &submitfinalitytallyshare, false, false },
+    { "submitfinalitytallycert", &submitfinalitytallycert, false, false },
     { "isblockfinalized",       &isblockfinalized,       true,   false },
 
     /* IDAG: DAG consensus commands (Phase 2-4) */

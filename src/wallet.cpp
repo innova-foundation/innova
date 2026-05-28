@@ -4884,7 +4884,6 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                  dit != mapColdStakeDelegations.end(); ++dit)
             {
                 const CColdStakeDelegation& deleg = dit->second;
-                uint256 delegHash = deleg.GetDelegationHash();
 
                 uint256 skStake;
                 if (deleg.vchSkStakeEnc.size() == 32)
@@ -5056,6 +5055,12 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                             }
 
                             CNullStakeKernelProofV3 kernelProofV3;
+                            uint256 delegHash;
+                            if (!ComputeNullStakeV3DelegationHash(wnote.note.nValue,
+                                                                  deleg.vchPkStake,
+                                                                  vchPkOwner,
+                                                                  delegHash))
+                                continue;
                             if (!CreateNullStakeKernelProofV3(wnote.note.nValue, wnote.note.vchBlind,
                                                               stakeSpend.cv, nBits,
                                                               nStakeModifier, nBlockTimeFrom,

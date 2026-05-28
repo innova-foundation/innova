@@ -725,6 +725,9 @@ SOURCES += qrc_bitcoin.cpp \
            src/test/base58_tests.cpp \
            src/test/base64_tests.cpp \
            src/test/bignum_tests.cpp \
+           src/test/bulletproof_ac_tests.cpp \
+           src/test/finality_tally_tests.cpp \
+           src/test/fcmp_root_tests.cpp \
            src/test/Checkpoints_tests.cpp \
            src/test/DoS_tests.cpp \
            src/test/getarg_tests.cpp \

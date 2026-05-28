@@ -212,7 +212,13 @@ ifeq ($(UNAME_M),x86_64)
 OBJS += obj/scrypt-x86_64.o
 endif
 
-.PHONY: all innova-build
+TEST_OBJS= \
+    obj/test/test_innova.o \
+    obj/test/bulletproof_ac_tests.o \
+    obj/test/finality_tally_tests.o \
+    obj/test/fcmp_root_tests.o
+
+.PHONY: all innova-build check-bpac check-finality-tally check-fcmp release-check
 
 INNOVA_SPINNER ?= 1
 INNOVA_SPINNER_SCRIPT ?= ../contrib/innova_build_spinner.sh
@@ -225,6 +231,17 @@ all: innova-build
 endif
 
 innova-build: innovad
+
+check-bpac: test_innova
+	./test_innova --run_test=bulletproof_ac_tests
+
+check-finality-tally: test_innova
+	./test_innova --run_test=finality_tally_tests
+
+check-fcmp: test_innova
+	./test_innova --run_test=fcmp_root_tests
+
+release-check: innova-build check-bpac check-finality-tally check-fcmp
 
 #
 # LevelDB support
@@ -270,6 +287,7 @@ obj/minizip/%.o: minizip/%.c
 	rm -f $(@:%.o=%.d)
 
 obj/%.o: %.cpp
+	@mkdir -p $(@D)
 	$(CXX) -c $(CXXFLAGS) -MMD -MF $(@:%.o=%.d) -o $@ $<
 	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
 		sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
@@ -293,11 +311,18 @@ obj/%.o: %.cc
 innovad: $(OBJS:obj/%=obj/%)
 	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS) -framework CoreFoundation -framework IOKit
 
+test_innova: $(filter-out obj/init.o,$(OBJS:obj/%=obj/%)) $(TEST_OBJS)
+	$(CXX) $(CXXFLAGS) $(LDFLAGS) -o $@ $^ $(LIBS) -lboost_unit_test_framework -framework CoreFoundation -framework IOKit
+
 clean:
 	-rm -f innovad
+	-rm -f test_innova
 	-rm -f obj/*.o
 	-rm -f obj/*.P
 	-rm -f obj/*.d
+	-rm -f obj/test/*.o
+	-rm -f obj/test/*.P
+	-rm -f obj/test/*.d
 	-rm -f obj/build.h
 	-rm -rf obj/minizip
 	-cd leveldb && $(MAKE) clean || true

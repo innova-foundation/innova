@@ -13,16 +13,17 @@
 #include <vector>
 #include <stdint.h>
 
-static const int BPAC_MAX_CONSTRAINTS = 1024;   // 2^10 (supports V3 cold staking 576-gate circuit)
-static const int BPAC_LOG_CONSTRAINTS = 10;
+static const int BPAC_MAX_CONSTRAINTS = 2048;   // 2^11 (room for NullStake integer comparison gadgets)
+static const int BPAC_LOG_CONSTRAINTS = 11;
 
-static const int BPAC_V3_MAX_CONSTRAINTS = 1024;  // 2^10
-static const int BPAC_V3_LOG_CONSTRAINTS = 10;
+static const int BPAC_V3_MAX_CONSTRAINTS = 2048;  // 2^11
+static const int BPAC_V3_LOG_CONSTRAINTS = 11;
 
 static const int BPAC_MAX_HIGH_VARS = 8;
 
 static const size_t BPAC_MAX_PROOF_SIZE = 2048;     // DoS protection
 static const size_t BPAC_V3_MAX_PROOF_SIZE = 4096;  // DoS protection
+static const int BPAC_PROOF_VERSION = 2;
 
 
 struct CSparseEntry
@@ -32,6 +33,12 @@ struct CSparseEntry
 
     CSparseEntry() : nCol(0) {}
     CSparseEntry(int col, const uint256& val) : nCol(col), value(val) {}
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(nCol);
+        READWRITE(value);
+    )
 };
 
 
@@ -89,6 +96,8 @@ public:
 class CBulletproofACProof
 {
 public:
+    int nVersion;
+
     std::vector<unsigned char> vchAI;   // 33 bytes - commitment to aL, aR
     std::vector<unsigned char> vchAO;   // 33 bytes - commitment to aO
     std::vector<unsigned char> vchS;    // 33 bytes - blinding vector commitment
@@ -105,10 +114,14 @@ public:
 
     CIPAProof ipaProof;
 
-    CBulletproofACProof() {}
+    CBulletproofACProof()
+    {
+        nVersion = BPAC_PROOF_VERSION;
+    }
 
     IMPLEMENT_SERIALIZE
     (
+        READWRITE(nVersion);
         READWRITE(vchAI);
         READWRITE(vchAO);
         READWRITE(vchS);
@@ -130,12 +143,16 @@ public:
 
     size_t GetProofSize() const
     {
-        return 8 * 33 + 3 * 32 + ipaProof.GetProofSize();
+        return sizeof(nVersion) + 8 * 33 + 3 * 32 + ipaProof.GetProofSize();
     }
 };
 
 
 CR1CSCircuit BuildNullStakeV2Circuit(uint64_t nStakeModifier,
+                                      unsigned int nBlockTimeFrom,
+                                      unsigned int nTxPrevOffset,
+                                      unsigned int nTxTimePrev,
+                                      unsigned int nVoutN,
                                       unsigned int nTimeTx,
                                       unsigned int nBits);
 
@@ -172,11 +189,30 @@ bool VerifyBulletproofACProof(const CR1CSCircuit& circuit,
                                 const std::vector<std::vector<unsigned char>>& vCommitments,
                                 const CBulletproofACProof& proof);
 
+/** Test hook used to prove verifier-side soundness against a malicious prover.
+ *  Production code must use CreateBulletproofACProof, which validates the
+ *  witness before constructing the proof transcript. */
+bool CreateBulletproofACProofUncheckedForTests(const CR1CSCircuit& circuit,
+                                               const CR1CSWitness& witness,
+                                               const std::vector<std::vector<unsigned char>>& vCommitments,
+                                               CBulletproofACProof& proofOut);
+
 
 CR1CSCircuit BuildNullStakeV3Circuit(uint64_t nStakeModifier,
+                                      unsigned int nBlockTimeFrom,
+                                      unsigned int nTxPrevOffset,
+                                      unsigned int nTxTimePrev,
+                                      unsigned int nVoutN,
                                       unsigned int nTimeTx,
                                       unsigned int nBits,
-                                      const uint256& delegationHash);
+                                      const uint256& delegationHash,
+                                      const std::vector<unsigned char>& vchPkStake,
+                                      const std::vector<unsigned char>& vchPkOwner);
+
+bool ComputeNullStakeV3DelegationHash(int64_t nValue,
+                                      const std::vector<unsigned char>& vchPkStake,
+                                      const std::vector<unsigned char>& vchPkOwner,
+                                      uint256& delegationHashOut);
 
 bool AssignNullStakeV3Witness(const CR1CSCircuit& circuit,
                               uint64_t nStakeModifier,
@@ -189,6 +225,7 @@ bool AssignNullStakeV3Witness(const CR1CSCircuit& circuit,
                               const std::vector<unsigned char>& vchValueBlind,
                               unsigned int nBits,
                               const uint256& skStake,
+                              const std::vector<unsigned char>& vchPkStake,
                               const std::vector<unsigned char>& vchPkOwner,
                               const uint256& delegationHash,
                               CR1CSWitness& witnessOut);

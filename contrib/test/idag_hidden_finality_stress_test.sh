@@ -246,6 +246,9 @@ MODEL=$(json_field "$FININFO" "finality_model")
 ABS_FLOOR=$(json_field "$FININFO" "absolute_stake_floor")
 PRIVATE_MODE=$(json_field "$FININFO" "private_finality_mode")
 TALLY_REQUIRED=$(json_field "$FININFO" "tally_certificate_required_for_private_votes")
+PRIVATE_PROMOTION=$(json_field "$FININFO" "private_promotion_enabled")
+TALLY_THRESHOLD_VALID=$(json_field "$FININFO" "tally_threshold_valid")
+TALLY_CERT_PRODUCTION=$(json_field "$FININFO" "tally_certificate_production_enabled")
 PRIVATE_VOTES=$(json_field "$FININFO" "private_votes")
 
 [ "$FORK_ACTIVE" = "true" ] && success "finality fork active" || fail "finality fork inactive"
@@ -253,6 +256,9 @@ PRIVATE_VOTES=$(json_field "$FININFO" "private_votes")
 [ "$ABS_FLOOR" = "false" ] && success "absolute stake floor disabled" || fail "absolute stake floor not disabled"
 [ "$PRIVATE_MODE" = "hidden-weight-nullstake" ] && success "hidden finality mode reported" || fail "unexpected private finality mode: $PRIVATE_MODE"
 [ "$TALLY_REQUIRED" = "true" ] && success "private votes require tally certificates" || fail "private tally gate not reported"
+[ "$PRIVATE_PROMOTION" = "false" ] && success "private promotion disabled without committee config" || fail "private promotion unexpectedly enabled"
+[ "$TALLY_THRESHOLD_VALID" = "false" ] && success "missing tally threshold reported invalid" || fail "missing tally threshold not reported invalid"
+[ "$TALLY_CERT_PRODUCTION" = "false" ] && success "tally cert production disabled without committee keys" || fail "tally cert production unexpectedly enabled"
 [ -n "$PRIVATE_VOTES" ] && success "private vote counter exposed" || fail "private vote counter missing"
 
 FSTAKING=$(rpc 0 getfinalitystakinginfo 2>/dev/null)
@@ -260,11 +266,16 @@ F_ENABLED=$(json_field "$FSTAKING" "enabled")
 F_DAG=$(json_field "$FSTAKING" "dag_active")
 F_POS=$(json_field "$FSTAKING" "pos_block_production")
 F_TALLY=$(json_field "$FSTAKING" "tally_certificate_required_for_private_votes")
+F_PROMOTION=$(json_field "$FSTAKING" "private_promotion_enabled")
 
 [ "$F_ENABLED" = "true" ] && success "finality voter enabled" || fail "finality voter disabled"
 [ "$F_DAG" = "true" ] && success "finality staking sees DAG" || fail "finality staking does not see DAG"
 [ "$F_POS" = "false" ] && success "finality staking reports no PoS blocks" || fail "finality staking reports PoS production"
 [ "$F_TALLY" = "true" ] && success "finality staking reports private tally gate" || fail "finality staking missing private tally gate"
+[ "$F_PROMOTION" = "false" ] && success "finality staking blocks private promotion without tally config" || fail "finality staking unexpectedly enables private promotion"
+
+BAD_SHARE=$(rpc 0 submitfinalitytallyshare 00 2>/dev/null || true)
+echo "$BAD_SHARE" | grep -qi "tally share" && success "malformed manual tally share rejected" || fail "malformed tally share was not rejected as expected"
 
 header "Epoch Roots And Restart Persistence"
 

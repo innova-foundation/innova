@@ -19,6 +19,7 @@
 
 #include <string>
 #include <sstream>
+#include <algorithm>
 #include <openssl/rand.h>
 
 using namespace json_spirit;
@@ -285,6 +286,11 @@ Value z_shield(const Array& params, bool fHelp)
     int64_t nValueIn = 0;
     vector<COutput> vCoins;
     pwalletMain->AvailableCoins(vCoins);
+    vCoins.erase(remove_if(vCoins.begin(), vCoins.end(), [](const COutput& out) {
+        if (!(out.tx->IsCoinBase() || out.tx->IsCoinStake()))
+            return false;
+        return out.nDepth <= nCoinbaseMaturity;
+    }), vCoins.end());
 
     if (fFilterByAddress)
     {

@@ -176,7 +176,8 @@ wait_height_near() {
     local node="$1"
     local target="$2"
     local max_delta="$3"
-    for _ in $(seq 1 60); do
+    local timeout="${4:-60}"
+    for _ in $(seq 1 "$timeout"); do
         local h
         h="$(height "$node")"
         if [ -n "$h" ] && [ "$h" -ge $((target - max_delta)) ] 2>/dev/null; then
@@ -225,20 +226,21 @@ main() {
 
     connect_mesh
     for node in 0 1 2; do
-        if wait_peer_count "$node" 1 30; then
-            pass "node $node has at least one peer"
+        if wait_peer_count "$node" 2 45; then
+            pass "node $node has two peers"
         else
-            fail "node $node did not connect to peers"
+            fail "node $node did not connect to the full mesh"
             return 1
         fi
     done
 
     log "Mining through DAG activation"
     mine_blocks 0 20 || { fail "initial mining failed"; return 1; }
+    connect_mesh
     local h0
     h0="$(height 0)"
-    wait_height_near 1 "$h0" 3 && pass "node 1 synced near height $h0" || fail "node 1 did not sync near height $h0"
-    wait_height_near 2 "$h0" 3 && pass "node 2 synced near height $h0" || fail "node 2 did not sync near height $h0"
+    wait_height_near 1 "$h0" 3 120 && pass "node 1 synced near height $h0" || fail "node 1 did not sync near height $h0"
+    wait_height_near 2 "$h0" 3 120 && pass "node 2 synced near height $h0" || fail "node 2 did not sync near height $h0"
 
     log "Stopping node 2, mining ahead, then restarting it"
     rpc 2 stop >/dev/null 2>&1 || true

@@ -46,9 +46,6 @@ static bool LoadFCMPValidationRoot(CTxDB& txdb, int nBlockHeight,
                                    CCurveTreeNode& rootOut,
                                    uint256& hashExpectedRootOut,
                                    std::string& strErrorOut);
-static bool CheckFCMPSpendRoots(const CTransaction& tx, int nBlockHeight,
-                                const uint256& hashExpectedRoot,
-                                std::string& strErrorOut);
 
 //
 // Global state
@@ -1990,7 +1987,8 @@ int CMerkleTx::GetBlocksToMaturity() const
 {
     if (!(IsCoinBase() || IsCoinStake()))
         return 0;
-    return max(0, (nCoinbaseMaturity+10) - GetDepthInMainChain());
+    int nWalletMaturity = fRegTest ? nCoinbaseMaturity : nCoinbaseMaturity + 10;
+    return max(0, nWalletMaturity - GetDepthInMainChain());
 }
 
 
@@ -2474,9 +2472,9 @@ static bool LoadFCMPValidationRoot(CTxDB& txdb, int nBlockHeight,
     return true;
 }
 
-static bool CheckFCMPSpendRoots(const CTransaction& tx, int nBlockHeight,
-                                const uint256& hashExpectedRoot,
-                                std::string& strErrorOut)
+bool CheckFCMPSpendRoots(const CTransaction& tx, int nBlockHeight,
+                         const uint256& hashExpectedRoot,
+                         std::string& strErrorOut)
 {
     if (nBlockHeight < FORK_HEIGHT_EPOCH_ROOT_FCMP)
         return true;
@@ -3679,6 +3677,11 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
             !g_finalityTracker.DisconnectBlockTallyCertificates(txdb, pindex->GetBlockHash(), vFinalityCerts))
             return error("DisconnectBlock() : DisconnectBlockTallyCertificates failed");
 
+        std::vector<CFinalityTallyShare> vFinalityShares = ExtractFinalityTallySharesFromBlock(*this);
+        if (!vFinalityShares.empty() &&
+            !g_finalityTracker.DisconnectBlockTallyShares(txdb, pindex->GetBlockHash(), vFinalityShares))
+            return error("DisconnectBlock() : DisconnectBlockTallyShares failed");
+
         std::vector<CFinalityVote> vFinalityVotes = ExtractFinalityVotesFromBlock(*this);
         if (!vFinalityVotes.empty() &&
             !g_finalityTracker.DisconnectBlockVotes(txdb, pindex->GetBlockHash(), vFinalityVotes))
@@ -3935,6 +3938,9 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
     std::vector<CFinalityVote> vFinalityVotes = ExtractFinalityVotesFromBlock(*this);
     if (!vFinalityVotes.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
         return DoS(100, error("ConnectBlock() : finality votes are only valid in post-DAG proof-of-work blocks"));
+    std::vector<CFinalityTallyShare> vFinalityShares = ExtractFinalityTallySharesFromBlock(*this);
+    if (!vFinalityShares.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
+        return DoS(100, error("ConnectBlock() : finality tally shares are only valid in post-DAG proof-of-work blocks"));
     std::vector<CFinalityTallyCertificate> vFinalityCerts = ExtractFinalityTallyCertificatesFromBlock(*this);
     if (!vFinalityCerts.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
         return DoS(100, error("ConnectBlock() : finality tally certificates are only valid in post-DAG proof-of-work blocks"));
@@ -4283,6 +4289,12 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
             GetEpochBoundaryHeight(cert.nEpoch, cert.nHeight) != cert.nHeight)
             return DoS(100, error("ConnectBlock() : finality tally certificate has wrong epoch boundary"));
     }
+    for (const CFinalityTallyShare& share : vFinalityShares)
+    {
+        std::string strShareError;
+        if (!g_finalityTracker.CheckTallyShare(share, &strShareError, &vFinalityVotes))
+            return DoS(100, error("ConnectBlock() : finality tally share invalid: %s", strShareError.c_str()));
+    }
 
     if (IsProofOfWork())
     {
@@ -4368,10 +4380,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
             if (vtx[1].vShieldedSpend.empty())
                 return DoS(100, error("ConnectBlock() : NullStake V3 coinstake has no shielded spends"));
 
-            // V3 proof size limit: 1024-constraint circuit → ~1,082 byte proof max
-            if (vtx[1].nullstakeProofV3.acProof.GetProofSize() > 2048)
-                return DoS(100, error("ConnectBlock() : NullStake V3 proof exceeds size limit (%u > 2048)",
-                                       (unsigned int)vtx[1].nullstakeProofV3.acProof.GetProofSize()));
+            if (vtx[1].nullstakeProofV3.acProof.GetProofSize() > BPAC_V3_MAX_PROOF_SIZE)
+                return DoS(100, error("ConnectBlock() : NullStake V3 proof exceeds size limit (%u > %u)",
+                                       (unsigned int)vtx[1].nullstakeProofV3.acProof.GetProofSize(),
+                                       (unsigned int)BPAC_V3_MAX_PROOF_SIZE));
 
             if (vtx[1].nullstakeProofV3.nTimeTx != nTime)
                 return DoS(100, error("ConnectBlock() : NullStake V3 nTimeTx %" PRId64 " != block time %" PRId64,
@@ -4386,6 +4398,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
             if (vtx[1].nullstakeProofV3.vchPkStake.size() != 33)
                 return DoS(100, error("ConnectBlock() : NullStake V3 pk_stake invalid size"));
+            if (vtx[1].nullstakeProofV3.vchPkOwner.size() != 33)
+                return DoS(100, error("ConnectBlock() : NullStake V3 pk_owner invalid size"));
 
             if (pindex->pprev)
             {
@@ -5114,6 +5128,11 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
     {
         if (!g_finalityTracker.ConnectBlockVotes(txdb, pindex->GetBlockHash(), vFinalityVotes))
             return error("ConnectBlock() : ConnectBlockVotes failed");
+    }
+    if (!fJustCheck && !vFinalityShares.empty())
+    {
+        if (!g_finalityTracker.ConnectBlockTallyShares(txdb, pindex->GetBlockHash(), vFinalityShares))
+            return error("ConnectBlock() : ConnectBlockTallyShares failed");
     }
     if (!fJustCheck && !vFinalityCerts.empty())
     {

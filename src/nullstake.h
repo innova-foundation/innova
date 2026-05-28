@@ -130,11 +130,19 @@ public:
     std::vector<unsigned char> vchLinkProof;
 
     uint64_t nStakeModifier;
+    unsigned int nBlockTimeFrom;
+    unsigned int nTxPrevOffset;
+    unsigned int nTxTimePrev;
+    unsigned int nVoutN;
     unsigned int nTimeTx;
 
     CNullStakeKernelProofV2()
     {
         nStakeModifier = 0;
+        nBlockTimeFrom = 0;
+        nTxPrevOffset = 0;
+        nTxTimePrev = 0;
+        nVoutN = 0;
         nTimeTx = 0;
     }
 
@@ -144,6 +152,10 @@ public:
         READWRITE(valueCommitment);
         READWRITE(vchLinkProof);
         READWRITE(nStakeModifier);
+        READWRITE(nBlockTimeFrom);
+        READWRITE(nTxPrevOffset);
+        READWRITE(nTxTimePrev);
+        READWRITE(nVoutN);
         READWRITE(nTimeTx);
     )
 
@@ -190,15 +202,24 @@ public:
     std::vector<unsigned char> vchLinkProof;
 
     uint64_t nStakeModifier;
+    unsigned int nBlockTimeFrom;
+    unsigned int nTxPrevOffset;
+    unsigned int nTxTimePrev;
+    unsigned int nVoutN;
     unsigned int nTimeTx;
 
     uint256 delegationHash;
 
     std::vector<unsigned char> vchPkStake;  // 33 bytes compressed
+    std::vector<unsigned char> vchPkOwner;  // 33 bytes compressed
 
     CNullStakeKernelProofV3()
     {
         nStakeModifier = 0;
+        nBlockTimeFrom = 0;
+        nTxPrevOffset = 0;
+        nTxTimePrev = 0;
+        nVoutN = 0;
         nTimeTx = 0;
     }
 
@@ -208,9 +229,14 @@ public:
         READWRITE(valueCommitment);
         READWRITE(vchLinkProof);
         READWRITE(nStakeModifier);
+        READWRITE(nBlockTimeFrom);
+        READWRITE(nTxPrevOffset);
+        READWRITE(nTxTimePrev);
+        READWRITE(nVoutN);
         READWRITE(nTimeTx);
         READWRITE(delegationHash);
         READWRITE(vchPkStake);
+        READWRITE(vchPkOwner);
     )
 
     bool IsNull() const { return acProof.IsNull(); }

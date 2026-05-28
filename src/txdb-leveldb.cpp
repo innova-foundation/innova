@@ -593,6 +593,63 @@ bool CTxDB::IterateFinalityVotes(std::map<uint256, CFinalityVote>& mapOut)
     return true;
 }
 
+bool CTxDB::WriteFinalityTallyShare(const uint256& hashShare, const CFinalityTallyShare& share)
+{
+    return Write(make_pair(string("finalityshare"), hashShare), share);
+}
+
+bool CTxDB::ReadFinalityTallyShare(const uint256& hashShare, CFinalityTallyShare& share)
+{
+    return Read(make_pair(string("finalityshare"), hashShare), share);
+}
+
+bool CTxDB::EraseFinalityTallyShare(const uint256& hashShare)
+{
+    return Erase(make_pair(string("finalityshare"), hashShare));
+}
+
+bool CTxDB::IterateFinalityTallyShares(std::map<uint256, CFinalityTallyShare>& mapOut)
+{
+    mapOut.clear();
+    leveldb::DB* db = GetInstance();
+    if (!db)
+        return false;
+
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << string("finalityshare");
+    std::string strPrefix = ssPrefix.str();
+
+    leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
+    it->Seek(strPrefix);
+
+    while (it->Valid())
+    {
+        std::string strKey = it->key().ToString();
+        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
+            break;
+
+        try {
+            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
+            std::pair<std::string, uint256> keyPair;
+            ssKey >> keyPair;
+
+            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
+            CFinalityTallyShare share;
+            ssValue >> share;
+            mapOut[keyPair.second] = share;
+        }
+        catch (const std::exception&)
+        {
+            // Skip malformed entries.
+        }
+
+        it->Next();
+    }
+
+    delete it;
+    return true;
+}
+
 bool CTxDB::WriteFinalityTallyCertificate(const uint256& hashCert, const CFinalityTallyCertificate& cert)
 {
     return Write(make_pair(string("finalitycert"), hashCert), cert);
@@ -1000,6 +1057,7 @@ bool CTxDB::LoadBlockIndex()
     g_dagManager.LoadDAGLinks(*this);
     g_dagManager.LoadEpochStates(*this);
     g_finalityTracker.LoadVotes(*this);
+    g_finalityTracker.LoadTallyShares(*this);
     g_finalityTracker.LoadTallyCertificates(*this);
 
     // Load hashBestChain pointer to end of best chain

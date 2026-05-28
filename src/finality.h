@@ -33,12 +33,14 @@ static const int FINALITY_EPOCH_INTERVAL_POST_DAG = 300;  // blocks per epoch po
 static const int FINALITY_THRESHOLD_NUM = 2;      // 2/3 threshold numerator
 static const int FINALITY_THRESHOLD_DEN = 3;      // 2/3 threshold denominator
 static const int64_t FINALITY_VOTE_MAX_AGE = 3600; // 1 hour max vote age
+static const unsigned int FINALITY_PRIVATE_VOTE_SEARCH_INTERVAL = 3600;
 static const int FINALITY_MAX_VOTES = 10000;       // max votes per epoch
 static const int FINALITY_VOTE_WINDOW = 5;         // blocks after epoch boundary to vote
 static const int FINALITY_MIN_VOTERS = 2;          // minimum unique voters for finality
 static const int FINALITY_CONFIRMATION_EPOCHS = 3;  // consecutive HARD epochs before binding finality (P2P propagation safety)
 static const int FINALITY_MAX_STAKE_PROOFS = 8;      // keep coinbase vote commitments under standard script element size
 static const int FINALITY_MAX_BLOCK_VOTES = 32;      // per-block vote inclusion cap
+static const int FINALITY_MAX_TALLY_COMMITTEE = 64;  // bounded m-of-n committee descriptor
 static const unsigned char FINALITY_VOTE_TAG[4] = { 0x49, 0x46, 0x56, 0x54 }; // "IFVT"
 static const unsigned char FINALITY_TALLY_CERT_TAG[4] = { 0x49, 0x46, 0x54, 0x43 }; // "IFTC"
 static const unsigned char FINALITY_TALLY_SHARE_TAG[4] = { 0x49, 0x46, 0x54, 0x53 }; // "IFTS"
@@ -60,6 +62,54 @@ enum FinalityTier
     FINALITY_SOFT      = 2,   // >= 1/2 of epoch vote weight
     FINALITY_HARD      = 3    // >= 2/3 of epoch vote weight
 };
+
+struct CFinalityTallyConfig
+{
+    std::string strMode;
+    bool fModeValid;
+    bool fEnabled;
+    bool fThresholdValid;
+    bool fPubKeyConfigured;
+    bool fCommitteeValid;
+    bool fPrivKeyConfigured;
+    bool fPrivKeyValid;
+    bool fEncryptedTallyReady;
+    int nThresholdM;
+    int nThresholdN;
+    int nLocalCommitteeIndex;
+    uint256 committeeSetHash;
+    std::vector<CPubKey> vCommitteePubKeys;
+
+    CFinalityTallyConfig()
+    {
+        strMode = "off";
+        fModeValid = true;
+        fEnabled = false;
+        fThresholdValid = false;
+        fPubKeyConfigured = false;
+        fCommitteeValid = false;
+        fPrivKeyConfigured = false;
+        fPrivKeyValid = false;
+        fEncryptedTallyReady = false;
+        nThresholdM = 0;
+        nThresholdN = 0;
+        nLocalCommitteeIndex = -1;
+    }
+
+    bool CanRelayPrivateVotes() const
+    {
+        return fEnabled && fThresholdValid && fCommitteeValid && fEncryptedTallyReady;
+    }
+
+    bool CanProduceCertificates() const
+    {
+        return CanRelayPrivateVotes() && fPrivKeyValid && nLocalCommitteeIndex >= 0;
+    }
+};
+
+bool ParseFinalityTallyThreshold(const std::string& strThreshold, int& nMOut, int& nNOut);
+uint256 ComputeFinalityTallyCommitteeHash(int nM, const std::vector<CPubKey>& vPubKeys);
+CFinalityTallyConfig GetFinalityTallyConfig();
 
 /** Get epoch interval for a given height: 60 pre-DAG, 300 post-DAG */
 int GetForkHeightDAG(); // defined in main.h (inline)
@@ -224,30 +274,126 @@ public:
     int nEpoch;
     uint256 voteNullifier;
     uint256 hashBlock;
+    uint256 hashCurveRoot;
+    uint256 hashNullifierRoot;
+    uint256 committeeSetHash;
     CPedersenCommitment stakeWeightCommitment;
     CPedersenCommitment rewardCommitment;
+    std::vector<std::vector<unsigned char> > vEncryptedRecipientShares;
     std::vector<unsigned char> vchShareProof;
 
     CFinalityTallyShare()
     {
-        nVersion = 1;
+        nVersion = 2;
         nEpoch = 0;
     }
 
     IMPLEMENT_SERIALIZE
     (
+        CFinalityTallyShare* pthis = const_cast<CFinalityTallyShare*>(this);
         READWRITE(nVersion);
         READWRITE(nEpoch);
         READWRITE(voteNullifier);
         READWRITE(hashBlock);
+        if (nVersion >= 2)
+        {
+            READWRITE(pthis->hashCurveRoot);
+            READWRITE(pthis->hashNullifierRoot);
+            READWRITE(pthis->committeeSetHash);
+        }
         READWRITE(stakeWeightCommitment);
         READWRITE(rewardCommitment);
+        if (nVersion >= 2)
+            READWRITE(pthis->vEncryptedRecipientShares);
         READWRITE(vchShareProof);
     )
 
     uint256 GetHash() const;
     bool IsValidBasic() const;
 };
+
+struct CFinalityTallyPlainShare
+{
+    int nRecipientIndex;
+    int nX;
+    uint256 evalWeight;
+    uint256 evalReward;
+    uint256 evalWeightBlind;
+    uint256 evalRewardBlind;
+
+    CFinalityTallyPlainShare()
+    {
+        nRecipientIndex = -1;
+        nX = 0;
+    }
+};
+
+/** Encrypted committee aggregate evaluation published by one tally member. */
+class CFinalityTallyAggregatePartial
+{
+public:
+    int nVersion;
+    int nEpoch;
+    uint256 hashBlock;
+    uint256 hashCurveRoot;
+    uint256 hashNullifierRoot;
+    uint256 committeeSetHash;
+    int nSourceIndex;
+    std::vector<uint256> vTallyShareHashes;
+    std::vector<std::vector<unsigned char> > vEncryptedRecipientPartials;
+
+    CFinalityTallyAggregatePartial()
+    {
+        nVersion = 2;
+        nEpoch = 0;
+        nSourceIndex = -1;
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(nVersion);
+        READWRITE(nEpoch);
+        READWRITE(hashBlock);
+        READWRITE(hashCurveRoot);
+        READWRITE(hashNullifierRoot);
+        READWRITE(committeeSetHash);
+        READWRITE(nSourceIndex);
+        READWRITE(vTallyShareHashes);
+        READWRITE(vEncryptedRecipientPartials);
+    )
+
+    uint256 GetHash() const;
+    bool IsValidBasic() const;
+};
+
+bool BuildEncryptedFinalityTallyShares(CFinalityTallyShare& share,
+                                       int64_t nWeight,
+                                       int64_t nReward,
+                                       const std::vector<unsigned char>& vchWeightBlind,
+                                       const std::vector<unsigned char>& vchRewardBlind,
+                                       const CFinalityTallyConfig& config);
+bool DecryptFinalityTallyShareForRecipient(const CFinalityTallyShare& share,
+                                           const CFinalityTallyConfig& config,
+                                           const CKey& keyRecipient,
+                                           int nRecipientIndex,
+                                           CFinalityTallyPlainShare& plainOut);
+bool AggregateFinalityTallyPlainShares(const std::vector<CFinalityTallyPlainShare>& vShares,
+                                       CFinalityTallyPlainShare& aggregateOut);
+bool RecoverFinalityTallySecrets(const std::vector<CFinalityTallyPlainShare>& vShares,
+                                 int nThreshold,
+                                 uint256& weightOut,
+                                 uint256& rewardOut,
+                                 uint256& weightBlindOut,
+                                 uint256& rewardBlindOut);
+bool BuildEncryptedFinalityTallyAggregatePartial(CFinalityTallyAggregatePartial& partial,
+                                                 const CFinalityTallyPlainShare& aggregateShare,
+                                                 const CFinalityTallyConfig& config,
+                                                 const CKey& keySource);
+bool DecryptFinalityTallyAggregatePartialForRecipient(const CFinalityTallyAggregatePartial& partial,
+                                                      const CFinalityTallyConfig& config,
+                                                      const CKey& keyRecipient,
+                                                      int nRecipientIndex,
+                                                      CFinalityTallyPlainShare& plainOut);
 
 /** Aggregate certificate proving hidden threshold and reward-budget validity. */
 class CFinalityTallyCertificate
@@ -261,6 +407,7 @@ public:
     int nConsecutiveHardCount;
     uint256 hashCurveRoot;
     uint256 hashNullifierRoot;
+    uint256 committeeSetHash;
     CPedersenCommitment activeWeightCommitment;
     CPedersenCommitment winningWeightCommitment;
     CPedersenCommitment rewardBudgetCommitment;
@@ -274,7 +421,7 @@ public:
 
     CFinalityTallyCertificate()
     {
-        nVersion = 1;
+        nVersion = 2;
         nEpoch = 0;
         nHeight = 0;
         nTier = FINALITY_NONE;
@@ -286,6 +433,7 @@ public:
 
     IMPLEMENT_SERIALIZE
     (
+        CFinalityTallyCertificate* pthis = const_cast<CFinalityTallyCertificate*>(this);
         READWRITE(nVersion);
         READWRITE(nEpoch);
         READWRITE(hashBlock);
@@ -294,6 +442,8 @@ public:
         READWRITE(nConsecutiveHardCount);
         READWRITE(hashCurveRoot);
         READWRITE(hashNullifierRoot);
+        if (nVersion >= 2)
+            READWRITE(pthis->committeeSetHash);
         READWRITE(activeWeightCommitment);
         READWRITE(winningWeightCommitment);
         READWRITE(rewardBudgetCommitment);
@@ -311,6 +461,28 @@ public:
     bool IsValidBasic(std::string* pstrError = NULL) const;
 };
 
+bool CreateFinalityAggregateThresholdProofV2(const CFinalityTallyCertificate& cert,
+                                             int64_t nPrivateActiveWeight,
+                                             int64_t nPrivateWinningWeight,
+                                             const std::vector<unsigned char>& vchActiveBlind,
+                                             const std::vector<unsigned char>& vchWinningBlind,
+                                             bool fRequireZeroPrivateWinning,
+                                             std::vector<unsigned char>& vchProofOut);
+bool VerifyFinalityAggregateThresholdProofV2(const CFinalityTallyCertificate& cert,
+                                             int64_t nMatchedTransparentActiveWeight,
+                                             int64_t nMatchedTransparentWinningWeight,
+                                             bool fRequireZeroPrivateWinning,
+                                             std::string* pstrError = NULL);
+bool CreateFinalityRewardBudgetProofV2(const CFinalityTallyCertificate& cert,
+                                       int64_t nPrivateActiveWeight,
+                                       int64_t nPrivateRewardBudget,
+                                       const std::vector<unsigned char>& vchActiveBlind,
+                                       const std::vector<unsigned char>& vchRewardBlind,
+                                       std::vector<unsigned char>& vchProofOut);
+bool VerifyFinalityRewardBudgetProofV2(const CFinalityTallyCertificate& cert,
+                                       int64_t nMatchedTransparentRewardBudget,
+                                       std::string* pstrError = NULL);
+
 /** Build/extract finality vote commitments embedded in coinbase OP_RETURN outputs. */
 CScript BuildFinalityVoteScript(const CFinalityVote& vote);
 bool ExtractFinalityVote(const CScript& scriptPubKey, CFinalityVote& voteOut);
@@ -318,6 +490,9 @@ std::vector<CFinalityVote> ExtractFinalityVotesFromBlock(const CBlock& block);
 CScript BuildFinalityTallyCertificateScript(const CFinalityTallyCertificate& cert);
 bool ExtractFinalityTallyCertificate(const CScript& scriptPubKey, CFinalityTallyCertificate& certOut);
 std::vector<CFinalityTallyCertificate> ExtractFinalityTallyCertificatesFromBlock(const CBlock& block);
+CScript BuildFinalityTallyShareScript(const CFinalityTallyShare& share);
+bool ExtractFinalityTallyShare(const CScript& scriptPubKey, CFinalityTallyShare& shareOut);
+std::vector<CFinalityTallyShare> ExtractFinalityTallySharesFromBlock(const CBlock& block);
 
 
 /** Tracks finality votes per epoch and determines when finality is achieved */
@@ -346,22 +521,42 @@ public:
     /** Stateless consensus validation of an aggregate hidden tally certificate. */
     bool CheckTallyCertificate(const CFinalityTallyCertificate& cert, CTxDB& txdb, std::string* pstrError = NULL) const;
 
+    /** Stateless validation of a relayed hidden tally share. */
+    bool CheckTallyShare(const CFinalityTallyShare& share,
+                         std::string* pstrError = NULL,
+                         const std::vector<CFinalityVote>* pvBlockVotes = NULL) const;
+
+    /** Add a relayed tally share. */
+    bool AddTallyShare(const CFinalityTallyShare& share, bool fCheck = true);
+
+    /** Stateless validation of a relayed encrypted committee aggregate partial. */
+    bool CheckTallyAggregatePartial(const CFinalityTallyAggregatePartial& partial, std::string* pstrError = NULL) const;
+
+    /** Add a relayed encrypted committee aggregate partial. */
+    bool AddTallyAggregatePartial(const CFinalityTallyAggregatePartial& partial, bool fCheck = true);
+
     /** Add a pending or connected tally certificate. */
     bool AddTallyCertificate(const CFinalityTallyCertificate& cert, bool fCheck = true, bool fRecordFinality = false);
 
     /** Return pending votes miners may include in the next PoW block. */
     std::vector<CFinalityVote> GetPendingVotesForBlock(int nBlockHeight, unsigned int nMaxVotes = FINALITY_MAX_BLOCK_VOTES) const;
+    std::vector<CFinalityTallyShare> GetPendingTallySharesForBlock(int nBlockHeight, unsigned int nMaxShares = 16) const;
     std::vector<CFinalityTallyCertificate> GetPendingTallyCertificatesForBlock(int nBlockHeight, unsigned int nMaxCerts = 4) const;
+    bool HasVoteNullifier(const uint256& nullifier) const;
 
     /** Connect/disconnect votes included in a block. */
     bool ConnectBlockVotes(CTxDB& txdb, const uint256& hashBlock, const std::vector<CFinalityVote>& vVotes);
     bool DisconnectBlockVotes(CTxDB& txdb, const uint256& hashBlock, const std::vector<CFinalityVote>& vVotes);
+    bool ConnectBlockTallyShares(CTxDB& txdb, const uint256& hashBlock, const std::vector<CFinalityTallyShare>& vShares);
+    bool DisconnectBlockTallyShares(CTxDB& txdb, const uint256& hashBlock, const std::vector<CFinalityTallyShare>& vShares);
     bool ConnectBlockTallyCertificates(CTxDB& txdb, const uint256& hashBlock, const std::vector<CFinalityTallyCertificate>& vCerts);
     bool DisconnectBlockTallyCertificates(CTxDB& txdb, const uint256& hashBlock, const std::vector<CFinalityTallyCertificate>& vCerts);
 
     /** Load persisted connected votes from LevelDB at startup. */
     bool LoadVotes(CTxDB& txdb);
+    bool LoadTallyShares(CTxDB& txdb);
     bool LoadTallyCertificates(CTxDB& txdb);
+    void RebuildFinalityState();
 
     /** Check if a block at the given height is finalized */
     bool IsFinalized(int nHeight) const;
@@ -385,6 +580,7 @@ public:
 
     /** Get votes for a given epoch */
     std::vector<CFinalityVote> GetEpochVotes(int nEpoch) const;
+    std::vector<CFinalityVote> GetKnownEpochVotes(int nEpoch) const;
 
     /** Get total vote weight for an epoch */
     int64_t GetEpochVoteWeight(int nEpoch) const;
@@ -400,6 +596,10 @@ public:
 
     /** Get current epoch tally certificates. */
     std::vector<CFinalityTallyCertificate> GetEpochTallyCertificates(int nEpoch) const;
+    std::vector<CFinalityTallyShare> GetEpochTallyShares(int nEpoch) const;
+    std::vector<CFinalityTallyAggregatePartial> GetEpochTallyAggregatePartials(int nEpoch) const;
+    int GetEpochTallyShareCount(int nEpoch) const;
+    int GetEpochTallyAggregatePartialCount(int nEpoch) const;
 
     /** Get voter key ids for RPC reporting. */
     std::vector<CKeyID> GetEpochVoters(int nEpoch) const;
@@ -443,6 +643,8 @@ private:
     std::map<int, int> mapEpochTransparentVoteCount;
     std::map<int, int> mapEpochPrivateVoteCount;
     std::map<uint256, CFinalityTallyShare> mapTallyShares;
+    std::map<uint256, CFinalityTallyAggregatePartial> mapTallyAggregatePartials;
+    std::map<uint256, std::vector<uint256>> mapBlockConnectedTallyShares;
     std::map<uint256, CFinalityTallyCertificate> mapPendingTallyCertificates;
     std::map<uint256, CFinalityTallyCertificate> mapConnectedTallyCertificates;
     std::map<int, std::vector<CFinalityTallyCertificate>> mapEpochTallyCertificates;
@@ -457,7 +659,7 @@ private:
 
 extern CFinalityTracker g_finalityTracker;
 
-/** Process finality-related P2P messages (fvote, fvreq) */
+/** Process finality-related P2P messages (fvote, ftshare, ftpart, ftcert, fvreq) */
 bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataStream& vRecv);
 
 /** Background thread that produces finality votes at epoch boundaries */
@@ -465,6 +667,12 @@ void ThreadFinalityVoter(void* parg);
 
 /** Create and broadcast a finality vote for the current epoch */
 bool ProduceFinalityVote();
+
+/** Run one hidden-finality tally committee automation pass. */
+bool ProcessFinalityTallyCommittee();
+
+/** Count locally decryptable hidden-finality tally shares for RPC status. */
+int CountDecryptableFinalityTallyShares(int nEpoch);
 
 
 #endif // INN_FINALITY_H

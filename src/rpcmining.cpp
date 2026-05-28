@@ -239,26 +239,93 @@ Value getfinalitystakinginfo(const Array& params, bool fHelp)
     obj.push_back(Pair("absolute_stake_floor", false));
     obj.push_back(Pair("private_finality_mode", std::string("hidden-weight-nullstake")));
     obj.push_back(Pair("tally_certificate_required_for_private_votes", true));
+    CFinalityTallyConfig tallyConfig = GetFinalityTallyConfig();
+    obj.push_back(Pair("private_promotion_enabled", nHeight >= FORK_HEIGHT_DAG && tallyConfig.CanRelayPrivateVotes()));
+    obj.push_back(Pair("tally_mode", tallyConfig.strMode));
+    obj.push_back(Pair("tally_mode_valid", tallyConfig.fModeValid));
+    obj.push_back(Pair("tally_pubkey_configured", tallyConfig.fPubKeyConfigured));
+    obj.push_back(Pair("tally_committee_valid", tallyConfig.fCommitteeValid));
+    obj.push_back(Pair("tally_privkey_configured", tallyConfig.fPrivKeyConfigured));
+    obj.push_back(Pair("tally_privkey_valid", tallyConfig.fPrivKeyValid));
+    obj.push_back(Pair("tally_threshold", GetArg("-finalitytallythreshold", "")));
+    obj.push_back(Pair("tally_threshold_valid", tallyConfig.fThresholdValid));
+    obj.push_back(Pair("tally_threshold_m", tallyConfig.nThresholdM));
+    obj.push_back(Pair("tally_committee_size", tallyConfig.nThresholdN));
+    obj.push_back(Pair("tally_configured_pubkeys", (int)tallyConfig.vCommitteePubKeys.size()));
+    obj.push_back(Pair("tally_committee_set_hash", tallyConfig.committeeSetHash.GetHex()));
+    obj.push_back(Pair("tally_local_committee_index", tallyConfig.nLocalCommitteeIndex));
+    obj.push_back(Pair("tally_encrypted_shares_ready", tallyConfig.fEncryptedTallyReady));
+    int nDecryptableTallyShares = CountDecryptableFinalityTallyShares(nEpoch);
+    int nTallyAggregatePartials = g_finalityTracker.GetEpochTallyAggregatePartialCount(nEpoch);
+    obj.push_back(Pair("tally_decryptable_shares", nDecryptableTallyShares));
+    obj.push_back(Pair("tally_aggregate_partials", nTallyAggregatePartials));
+    obj.push_back(Pair("tally_certificate_production_enabled", nHeight >= FORK_HEIGHT_DAG && tallyConfig.CanProduceCertificates()));
 
     int nTransparentVotes = 0;
     int nPrivateVotes = 0;
     g_finalityTracker.GetEpochVoteModeCounts(nEpoch, nTransparentVotes, nPrivateVotes);
     obj.push_back(Pair("transparent_votes", nTransparentVotes));
     obj.push_back(Pair("private_votes", nPrivateVotes));
+    obj.push_back(Pair("tally_shares", g_finalityTracker.GetEpochTallyShareCount(nEpoch)));
 
     std::vector<CFinalityTallyCertificate> vCerts = g_finalityTracker.GetEpochTallyCertificates(nEpoch);
+    std::vector<CFinalityTallyCertificate> vPendingCerts =
+        g_finalityTracker.GetPendingTallyCertificatesForBlock(nHeight + 1);
     Array certs;
+    bool fHavePrivateCert = false;
+    bool fHavePendingPrivateCert = false;
+    int nTallyCertificateVersion = 0;
+    std::string strTallyCertificateSource = "none";
     for (const CFinalityTallyCertificate& cert : vCerts)
     {
         Object certObj;
         certObj.push_back(Pair("hash", cert.GetHash().GetHex()));
+        certObj.push_back(Pair("version", cert.nVersion));
         certObj.push_back(Pair("tier", MiningFinalityTierName((FinalityTier)cert.nTier)));
         certObj.push_back(Pair("private_weight", cert.HasPrivateWeight()));
+        certObj.push_back(Pair("source", std::string("epoch-tracker")));
+        certObj.push_back(Pair("tally_share_hashes", (int)cert.vTallyShareHashes.size()));
         certObj.push_back(Pair("curve_root", cert.hashCurveRoot.GetHex()));
         certObj.push_back(Pair("nullifier_root", cert.hashNullifierRoot.GetHex()));
+        certObj.push_back(Pair("committee_set_hash", cert.committeeSetHash.GetHex()));
         certs.push_back(certObj);
+        if (cert.HasPrivateWeight())
+        {
+            fHavePrivateCert = true;
+            nTallyCertificateVersion = cert.nVersion;
+            strTallyCertificateSource = "connected";
+        }
+    }
+    for (const CFinalityTallyCertificate& cert : vPendingCerts)
+    {
+        if (cert.nEpoch != nEpoch || !cert.HasPrivateWeight())
+            continue;
+        fHavePendingPrivateCert = true;
+        if (!fHavePrivateCert)
+        {
+            nTallyCertificateVersion = cert.nVersion;
+            strTallyCertificateSource = "pending";
+        }
     }
     obj.push_back(Pair("tally_certificates", certs));
+    obj.push_back(Pair("private_certificate_present", fHavePrivateCert));
+    obj.push_back(Pair("pending_private_certificate_present", fHavePendingPrivateCert));
+    obj.push_back(Pair("tally_certificate_version", nTallyCertificateVersion));
+    obj.push_back(Pair("tally_certificate_source", strTallyCertificateSource));
+    std::string strPrivatePromotionStatus = "waiting-for-shares";
+    if (nHeight < FORK_HEIGHT_DAG)
+        strPrivatePromotionStatus = "inactive-pre-dag";
+    else if (!tallyConfig.CanRelayPrivateVotes())
+        strPrivatePromotionStatus = "committee-config-invalid";
+    else if (!tallyConfig.CanProduceCertificates())
+        strPrivatePromotionStatus = "waiting-for-local-committee-key";
+    else if (fHavePrivateCert)
+        strPrivatePromotionStatus = "connected-certificate";
+    else if (fHavePendingPrivateCert)
+        strPrivatePromotionStatus = "pending-certificate";
+    else if (nDecryptableTallyShares > 0 || nTallyAggregatePartials > 0)
+        strPrivatePromotionStatus = "collecting-partials";
+    obj.push_back(Pair("private_promotion_status", strPrivatePromotionStatus));
 
     CEpochState currentEpochState;
     if (g_dagManager.GetEpochState(nEpoch, currentEpochState))

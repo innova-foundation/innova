@@ -21,7 +21,7 @@
 
 class CValidationState;
 
-#define BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET 550 // Testnet Collateralnode payments enabled block 800
+#define BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET 999999 // Disabled for clean IDAG public testnet launch
 #define BLOCK_START_COLLATERALNODE_PAYMENTS 800 // Mainnet Collateralnode payments not enabled until block 800
 #define BLOCK_START_COLLATERALNODE_DELAYPAY 2500 // Unused
 
@@ -294,7 +294,7 @@ inline int GetForkHeightEpochRootFCMP()
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest || fTestNet) return GetForkHeightDAG();
-    return 1000000000;               // mainnet disabled until a scheduled fork
+    return GetForkHeightDAG();        // mainnet: activate with the DAG fork
 }
 #define FORK_HEIGHT_EPOCH_ROOT_FCMP (GetForkHeightEpochRootFCMP())
 
@@ -1156,6 +1156,14 @@ public:
     int GetDepthInMainChain() const;
 
 };
+
+
+
+/** Validate shielded spends against the FCMP root required at nBlockHeight. */
+bool CheckFCMPSpendRoots(const CTransaction& tx,
+                         int nBlockHeight,
+                         const uint256& hashExpectedRoot,
+                         std::string& strErrorOut);
 
 
 

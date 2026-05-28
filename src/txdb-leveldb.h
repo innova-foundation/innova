@@ -291,6 +291,10 @@ public:
     bool ReadFinalityVote(const uint256& nullifier, CFinalityVote& vote);
     bool EraseFinalityVote(const uint256& nullifier);
     bool IterateFinalityVotes(std::map<uint256, CFinalityVote>& mapOut);
+    bool WriteFinalityTallyShare(const uint256& hashShare, const CFinalityTallyShare& share);
+    bool ReadFinalityTallyShare(const uint256& hashShare, CFinalityTallyShare& share);
+    bool EraseFinalityTallyShare(const uint256& hashShare);
+    bool IterateFinalityTallyShares(std::map<uint256, CFinalityTallyShare>& mapOut);
     bool WriteFinalityTallyCertificate(const uint256& hashCert, const CFinalityTallyCertificate& cert);
     bool ReadFinalityTallyCertificate(const uint256& hashCert, CFinalityTallyCertificate& cert);
     bool EraseFinalityTallyCertificate(const uint256& hashCert);

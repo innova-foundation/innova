@@ -13,8 +13,14 @@
 #include "base58.h"
 #include "kernel.h"
 
+#include <openssl/bn.h>
+#include <openssl/ec.h>
+#include <openssl/obj_mac.h>
+#include <openssl/rand.h>
 #include <openssl/sha.h>
 #include <algorithm>
+#include <cstdlib>
+#include <cctype>
 
 CFinalityTracker g_finalityTracker;
 
@@ -61,6 +67,810 @@ int64_t GetFinalityVoteReward(int64_t nVoteWeight, int nEpochInterval)
     return (int64_t)nReward;
 }
 
+static std::string ToLowerASCII(std::string str)
+{
+    std::transform(str.begin(), str.end(), str.begin(),
+                   [](unsigned char c) { return (char)std::tolower(c); });
+    return str;
+}
+
+static bool ParsePositiveIntStrict(const std::string& strValue, int& nOut)
+{
+    if (strValue.empty())
+        return false;
+    for (char ch : strValue)
+    {
+        if (!std::isdigit((unsigned char)ch))
+            return false;
+    }
+    char* endp = NULL;
+    long nParsed = std::strtol(strValue.c_str(), &endp, 10);
+    if (!endp || *endp != '\0' || nParsed <= 0 || nParsed > FINALITY_MAX_TALLY_COMMITTEE)
+        return false;
+    nOut = (int)nParsed;
+    return true;
+}
+
+static bool ParseCompressedTallyPubKey(const std::string& strKey, CPubKey& pubKeyOut)
+{
+    if (!IsHex(strKey))
+        return false;
+    std::vector<unsigned char> vchKey = ParseHex(strKey);
+    if (vchKey.size() != 33)
+        return false;
+    CPubKey pubkey(vchKey);
+    if (!pubkey.IsValid() || !pubkey.IsCompressed())
+        return false;
+    pubKeyOut = pubkey;
+    return true;
+}
+
+static bool GetFinalityTallyPrivateKey(CKey& keyOut)
+{
+    std::string strPrivKey = GetArg("-finalitytallyprivkey", "");
+    if (strPrivKey.empty() || !IsHex(strPrivKey))
+        return false;
+
+    std::vector<unsigned char> vchSecret = ParseHex(strPrivKey);
+    if (vchSecret.size() != 32)
+        return false;
+
+    CKey key;
+    key.Set(vchSecret.begin(), vchSecret.end(), true);
+    if (!key.IsValid())
+        return false;
+
+    keyOut = key;
+    return true;
+}
+
+uint256 ComputeFinalityTallyCommitteeHash(int nM,
+                                          const std::vector<CPubKey>& vPubKeys)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("Innova/Finality/TallyCommittee/v2");
+    ss << nM;
+    ss << (int)vPubKeys.size();
+    for (const CPubKey& pubkey : vPubKeys)
+        ss << std::vector<unsigned char>(pubkey.begin(), pubkey.end());
+    return ss.GetHash();
+}
+
+bool ParseFinalityTallyThreshold(const std::string& strThreshold, int& nMOut, int& nNOut)
+{
+    nMOut = 0;
+    nNOut = 0;
+    size_t nSep = strThreshold.find("-of-");
+    if (nSep == std::string::npos)
+        return false;
+
+    int nM = 0;
+    int nN = 0;
+    if (!ParsePositiveIntStrict(strThreshold.substr(0, nSep), nM) ||
+        !ParsePositiveIntStrict(strThreshold.substr(nSep + 4), nN))
+        return false;
+    if (nM > nN)
+        return false;
+
+    nMOut = nM;
+    nNOut = nN;
+    return true;
+}
+
+CFinalityTallyConfig GetFinalityTallyConfig()
+{
+    CFinalityTallyConfig config;
+    config.strMode = ToLowerASCII(GetArg("-finalitytallymode", "off"));
+    if (config.strMode == "off")
+    {
+        config.fEnabled = false;
+    }
+    else if (config.strMode == "committee" || config.strMode == "auto")
+    {
+        config.fEnabled = true;
+    }
+    else
+    {
+        config.fModeValid = false;
+        config.strMode = "off";
+        config.fEnabled = false;
+    }
+
+    std::vector<std::string> vPubKeyArgs;
+    std::map<std::string, std::vector<std::string> >::const_iterator itPubKeys =
+        mapMultiArgs.find("-finalitytallypubkey");
+    if (itPubKeys != mapMultiArgs.end())
+        vPubKeyArgs = itPubKeys->second;
+    else
+    {
+        std::string strSinglePubKey = GetArg("-finalitytallypubkey", "");
+        if (!strSinglePubKey.empty())
+            vPubKeyArgs.push_back(strSinglePubKey);
+    }
+
+    config.fPubKeyConfigured = !vPubKeyArgs.empty();
+    std::set<CPubKey> setPubKeys;
+    bool fPubKeysValid = config.fPubKeyConfigured;
+    for (const std::string& strPubKey : vPubKeyArgs)
+    {
+        CPubKey pubkey;
+        if (!ParseCompressedTallyPubKey(strPubKey, pubkey) ||
+            !setPubKeys.insert(pubkey).second)
+        {
+            fPubKeysValid = false;
+            break;
+        }
+        config.vCommitteePubKeys.push_back(pubkey);
+    }
+
+    std::string strPrivKey = GetArg("-finalitytallyprivkey", "");
+    config.fPrivKeyConfigured = !strPrivKey.empty();
+    config.fThresholdValid = ParseFinalityTallyThreshold(
+        ToLowerASCII(GetArg("-finalitytallythreshold", "")),
+        config.nThresholdM,
+        config.nThresholdN);
+    if (config.fThresholdValid &&
+        fPubKeysValid &&
+        config.nThresholdN == (int)config.vCommitteePubKeys.size())
+    {
+        config.fCommitteeValid = true;
+        config.committeeSetHash = ComputeFinalityTallyCommitteeHash(config.nThresholdM,
+                                                                    config.vCommitteePubKeys);
+    }
+
+    if (config.fPrivKeyConfigured)
+    {
+        CKey key;
+        if (GetFinalityTallyPrivateKey(key))
+        {
+            CPubKey pubkey = key.GetPubKey();
+            if (pubkey.IsValid())
+            {
+                config.fPrivKeyValid = true;
+                for (size_t i = 0; i < config.vCommitteePubKeys.size(); i++)
+                {
+                    if (config.vCommitteePubKeys[i] == pubkey)
+                    {
+                        config.nLocalCommitteeIndex = (int)i;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    config.fEncryptedTallyReady = config.fCommitteeValid;
+    return config;
+}
+
+static uint256 FinalityScalarFromBytesBE(const std::vector<unsigned char>& vch)
+{
+    uint256 out = 0;
+    if (vch.empty())
+        return out;
+    unsigned char be[32];
+    memset(be, 0, sizeof(be));
+    size_t nCopy = std::min(vch.size(), sizeof(be));
+    memcpy(be + sizeof(be) - nCopy, &vch[vch.size() - nCopy], nCopy);
+    unsigned char* le = out.begin();
+    for (int i = 0; i < 32; i++)
+        le[i] = be[31 - i];
+    return FieldReduce(out);
+}
+
+static uint256 FieldNeg(const uint256& value)
+{
+    return FieldSub(FieldFromUint64(0), value);
+}
+
+static void FinalityScalarToBytesBE(const uint256& scalar,
+                                    std::vector<unsigned char>& vchOut)
+{
+    vchOut.assign(32, 0);
+    const unsigned char* le = scalar.begin();
+    for (int i = 0; i < 32; i++)
+        vchOut[i] = le[31 - i];
+}
+
+static bool FinalityScalarToMoney(const uint256& scalar, int64_t& nOut)
+{
+    const unsigned char* le = scalar.begin();
+    for (int i = 8; i < 32; i++)
+    {
+        if (le[i] != 0)
+            return false;
+    }
+
+    uint64_t nValue = 0;
+    for (int i = 0; i < 8; i++)
+        nValue |= ((uint64_t)le[i]) << (8 * i);
+    if (nValue > (uint64_t)MAX_MONEY)
+        return false;
+    nOut = (int64_t)nValue;
+    return true;
+}
+
+static bool FinalityRandomScalar(uint256& scalarOut)
+{
+    unsigned char buf[32];
+    if (RAND_bytes(buf, sizeof(buf)) != 1)
+        return false;
+    std::vector<unsigned char> vch(buf, buf + sizeof(buf));
+    scalarOut = FinalityScalarFromBytesBE(vch);
+    OPENSSL_cleanse(buf, sizeof(buf));
+    return true;
+}
+
+static bool FinalityBuildShamirPolynomial(const uint256& secret,
+                                          int nDegree,
+                                          std::vector<uint256>& vCoeffOut)
+{
+    if (nDegree < 0)
+        return false;
+    vCoeffOut.assign(nDegree + 1, uint256(0));
+    vCoeffOut[0] = secret;
+    for (int i = 1; i <= nDegree; i++)
+    {
+        if (!FinalityRandomScalar(vCoeffOut[i]))
+            return false;
+    }
+    return true;
+}
+
+static bool FinalityEvaluatePolynomial(const std::vector<uint256>& vCoeff,
+                                       int nX,
+                                       uint256& yOut)
+{
+    if (vCoeff.empty() || nX <= 0)
+        return false;
+    uint256 x = FieldFromUint64((uint64_t)nX);
+    uint256 power = FieldFromUint64(1);
+    yOut = vCoeff[0];
+    for (size_t i = 1; i < vCoeff.size(); i++)
+    {
+        power = FieldMul(power, x);
+        yOut = FieldAdd(yOut, FieldMul(vCoeff[i], power));
+    }
+    return true;
+}
+
+static bool FinalityDeriveECDHKey(const CKey& keyPrivate,
+                                  const CPubKey& pubECDHPeer,
+                                  const CPubKey& pubRecipient,
+                                  const CPubKey& pubEphemeral,
+                                  int nRecipientIndex,
+                                  const uint256& committeeSetHash,
+                                  std::vector<unsigned char>& vchKeyOut)
+{
+    if (!keyPrivate.IsValid() ||
+        !pubECDHPeer.IsValid() || !pubECDHPeer.IsCompressed() ||
+        !pubRecipient.IsValid() || !pubRecipient.IsCompressed() ||
+        !pubEphemeral.IsValid() || !pubEphemeral.IsCompressed())
+        return false;
+
+    EC_GROUP* group = EC_GROUP_new_by_curve_name(NID_secp256k1);
+    if (!group)
+        return false;
+    BN_CTX* ctx = BN_CTX_new();
+    if (!ctx)
+    {
+        EC_GROUP_free(group);
+        return false;
+    }
+
+    BIGNUM* bnPriv = BN_bin2bn(keyPrivate.begin(), 32, NULL);
+    EC_POINT* peerPoint = EC_POINT_new(group);
+    EC_POINT* sharedPoint = EC_POINT_new(group);
+    bool fOk = false;
+    unsigned char sharedBytes[33];
+    memset(sharedBytes, 0, sizeof(sharedBytes));
+
+    if (bnPriv && peerPoint && sharedPoint &&
+        EC_POINT_oct2point(group, peerPoint, pubECDHPeer.begin(), pubECDHPeer.size(), ctx) == 1 &&
+        EC_POINT_is_on_curve(group, peerPoint, ctx) == 1 &&
+        !EC_POINT_is_at_infinity(group, peerPoint) &&
+        EC_POINT_mul(group, sharedPoint, NULL, peerPoint, bnPriv, ctx) == 1 &&
+        !EC_POINT_is_at_infinity(group, sharedPoint) &&
+        EC_POINT_point2oct(group, sharedPoint, POINT_CONVERSION_COMPRESSED,
+                           sharedBytes, sizeof(sharedBytes), ctx) == sizeof(sharedBytes))
+    {
+        CHashWriter ss(SER_GETHASH, 0);
+        ss << std::string("Innova/Finality/TallyShareECDH/v2");
+        for (size_t i = 0; i < sizeof(sharedBytes); i++)
+            ss << sharedBytes[i];
+        ss << std::vector<unsigned char>(pubEphemeral.begin(), pubEphemeral.end());
+        ss << std::vector<unsigned char>(pubRecipient.begin(), pubRecipient.end());
+        ss << committeeSetHash;
+        ss << nRecipientIndex;
+        uint256 hashKey = ss.GetHash();
+        vchKeyOut.assign(hashKey.begin(), hashKey.begin() + 32);
+        fOk = true;
+    }
+
+    OPENSSL_cleanse(sharedBytes, sizeof(sharedBytes));
+    if (sharedPoint) EC_POINT_free(sharedPoint);
+    if (peerPoint) EC_POINT_free(peerPoint);
+    if (bnPriv) BN_clear_free(bnPriv);
+    BN_CTX_free(ctx);
+    EC_GROUP_free(group);
+    return fOk;
+}
+
+static std::vector<unsigned char> BuildFinalityTallyShareAAD(const CFinalityTallyShare& share,
+                                                             int nRecipientIndex,
+                                                             const CPubKey& pubEphemeral)
+{
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << std::string("Innova/Finality/TallyShareAAD/v2");
+    ss << share.nEpoch;
+    ss << share.voteNullifier;
+    ss << share.hashBlock;
+    ss << share.hashCurveRoot;
+    ss << share.hashNullifierRoot;
+    ss << share.stakeWeightCommitment;
+    ss << share.rewardCommitment;
+    ss << share.committeeSetHash;
+    ss << nRecipientIndex;
+    ss << std::vector<unsigned char>(pubEphemeral.begin(), pubEphemeral.end());
+    return std::vector<unsigned char>(ss.begin(), ss.end());
+}
+
+static std::vector<unsigned char> BuildFinalityTallyAggregatePartialAAD(const CFinalityTallyAggregatePartial& partial,
+                                                                        int nRecipientIndex,
+                                                                        const CPubKey& pubEphemeral)
+{
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << std::string("Innova/Finality/TallyAggregatePartialAAD/v2");
+    ss << partial.nEpoch;
+    ss << partial.hashBlock;
+    ss << partial.hashCurveRoot;
+    ss << partial.hashNullifierRoot;
+    ss << partial.committeeSetHash;
+    ss << partial.nSourceIndex;
+    ss << partial.vTallyShareHashes;
+    ss << nRecipientIndex;
+    ss << std::vector<unsigned char>(pubEphemeral.begin(), pubEphemeral.end());
+    return std::vector<unsigned char>(ss.begin(), ss.end());
+}
+
+bool BuildEncryptedFinalityTallyShares(CFinalityTallyShare& share,
+                                       int64_t nWeight,
+                                       int64_t nReward,
+                                       const std::vector<unsigned char>& vchWeightBlind,
+                                       const std::vector<unsigned char>& vchRewardBlind,
+                                       const CFinalityTallyConfig& config)
+{
+    if (!config.fCommitteeValid ||
+        config.nThresholdM <= 0 ||
+        config.nThresholdM > (int)config.vCommitteePubKeys.size() ||
+        vchWeightBlind.size() != BLINDING_FACTOR_SIZE ||
+        vchRewardBlind.size() != BLINDING_FACTOR_SIZE ||
+        nWeight < 0 || nReward < 0 ||
+        share.nVersion != 2 ||
+        share.nEpoch < 0 ||
+        share.voteNullifier == 0 ||
+        share.hashBlock == 0 ||
+        share.hashCurveRoot == 0 ||
+        share.hashNullifierRoot == 0 ||
+        share.committeeSetHash != config.committeeSetHash ||
+        share.stakeWeightCommitment.IsNull() ||
+        share.rewardCommitment.IsNull())
+        return false;
+
+    uint256 weightSecret = FieldFromUint64((uint64_t)nWeight);
+    uint256 rewardSecret = FieldFromUint64((uint64_t)nReward);
+    uint256 weightBlindSecret = FinalityScalarFromBytesBE(vchWeightBlind);
+    uint256 rewardBlindSecret = FinalityScalarFromBytesBE(vchRewardBlind);
+
+    share.vEncryptedRecipientShares.clear();
+    share.vEncryptedRecipientShares.reserve(config.vCommitteePubKeys.size());
+    int nDegree = config.nThresholdM - 1;
+    std::vector<uint256> vWeightPoly;
+    std::vector<uint256> vRewardPoly;
+    std::vector<uint256> vWeightBlindPoly;
+    std::vector<uint256> vRewardBlindPoly;
+    if (!FinalityBuildShamirPolynomial(weightSecret, nDegree, vWeightPoly) ||
+        !FinalityBuildShamirPolynomial(rewardSecret, nDegree, vRewardPoly) ||
+        !FinalityBuildShamirPolynomial(weightBlindSecret, nDegree, vWeightBlindPoly) ||
+        !FinalityBuildShamirPolynomial(rewardBlindSecret, nDegree, vRewardBlindPoly))
+        return false;
+
+    for (size_t i = 0; i < config.vCommitteePubKeys.size(); i++)
+    {
+        int nRecipientIndex = (int)i;
+        int nX = nRecipientIndex + 1;
+        uint256 evalWeight, evalReward, evalWeightBlind, evalRewardBlind;
+        if (!FinalityEvaluatePolynomial(vWeightPoly, nX, evalWeight) ||
+            !FinalityEvaluatePolynomial(vRewardPoly, nX, evalReward) ||
+            !FinalityEvaluatePolynomial(vWeightBlindPoly, nX, evalWeightBlind) ||
+            !FinalityEvaluatePolynomial(vRewardBlindPoly, nX, evalRewardBlind))
+            return false;
+
+        CKey ephemeralKey;
+        ephemeralKey.MakeNewKey(true);
+        CPubKey ephemeralPubKey = ephemeralKey.GetPubKey();
+        if (!ephemeralKey.IsValid() || !ephemeralPubKey.IsValid() || !ephemeralPubKey.IsCompressed())
+            return false;
+
+        std::vector<unsigned char> vchKey;
+        if (!FinalityDeriveECDHKey(ephemeralKey, config.vCommitteePubKeys[i],
+                                   config.vCommitteePubKeys[i],
+                                   ephemeralPubKey, nRecipientIndex,
+                                   config.committeeSetHash, vchKey))
+            return false;
+
+        CDataStream ssPlain(SER_NETWORK, PROTOCOL_VERSION);
+        ssPlain << (uint32_t)2;
+        ssPlain << nRecipientIndex;
+        ssPlain << nX;
+        ssPlain << evalWeight;
+        ssPlain << evalReward;
+        ssPlain << evalWeightBlind;
+        ssPlain << evalRewardBlind;
+        std::vector<unsigned char> vchPlain(ssPlain.begin(), ssPlain.end());
+        std::vector<unsigned char> vchAAD = BuildFinalityTallyShareAAD(share, nRecipientIndex, ephemeralPubKey);
+        std::vector<unsigned char> vchCiphertext;
+        if (!ChaCha20Poly1305Encrypt(vchKey, vchPlain, vchAAD, vchCiphertext))
+        {
+            OPENSSL_cleanse(vchKey.data(), vchKey.size());
+            return false;
+        }
+        OPENSSL_cleanse(vchKey.data(), vchKey.size());
+
+        CDataStream ssOut(SER_NETWORK, PROTOCOL_VERSION);
+        ssOut << (uint32_t)2;
+        ssOut << nRecipientIndex;
+        ssOut << std::vector<unsigned char>(ephemeralPubKey.begin(), ephemeralPubKey.end());
+        ssOut << vchCiphertext;
+        share.vEncryptedRecipientShares.push_back(std::vector<unsigned char>(ssOut.begin(), ssOut.end()));
+    }
+
+    return share.vEncryptedRecipientShares.size() == config.vCommitteePubKeys.size();
+}
+
+static bool ParseEncryptedRecipientShare(const std::vector<unsigned char>& vchEncrypted,
+                                         uint32_t& nVersionOut,
+                                         int& nRecipientIndexOut,
+                                         CPubKey& pubEphemeralOut,
+                                         std::vector<unsigned char>& vchCiphertextOut)
+{
+    try {
+        CDataStream ss(vchEncrypted, SER_NETWORK, PROTOCOL_VERSION);
+        std::vector<unsigned char> vchEphemeral;
+        ss >> nVersionOut;
+        ss >> nRecipientIndexOut;
+        ss >> vchEphemeral;
+        ss >> vchCiphertextOut;
+        if (nVersionOut != 2 ||
+            nRecipientIndexOut < 0 ||
+            vchEphemeral.size() != 33 ||
+            vchCiphertextOut.size() < 28)
+            return false;
+        pubEphemeralOut = CPubKey(vchEphemeral);
+        return pubEphemeralOut.IsValid() && pubEphemeralOut.IsCompressed();
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool DecryptFinalityTallyShareForRecipient(const CFinalityTallyShare& share,
+                                           const CFinalityTallyConfig& config,
+                                           const CKey& keyRecipient,
+                                           int nRecipientIndex,
+                                           CFinalityTallyPlainShare& plainOut)
+{
+    if (nRecipientIndex < 0 ||
+        nRecipientIndex >= (int)config.vCommitteePubKeys.size() ||
+        nRecipientIndex >= (int)share.vEncryptedRecipientShares.size() ||
+        share.nVersion != 2 ||
+        share.committeeSetHash != config.committeeSetHash ||
+        !keyRecipient.IsValid())
+        return false;
+
+    CPubKey pubRecipient = keyRecipient.GetPubKey();
+    if (!pubRecipient.IsValid() || !pubRecipient.IsCompressed() ||
+        pubRecipient != config.vCommitteePubKeys[nRecipientIndex])
+        return false;
+
+    uint32_t nEnvelopeVersion = 0;
+    int nEnvelopeRecipient = -1;
+    CPubKey pubEphemeral;
+    std::vector<unsigned char> vchCiphertext;
+    if (!ParseEncryptedRecipientShare(share.vEncryptedRecipientShares[nRecipientIndex],
+                                      nEnvelopeVersion,
+                                      nEnvelopeRecipient,
+                                      pubEphemeral,
+                                      vchCiphertext))
+        return false;
+    if (nEnvelopeRecipient != nRecipientIndex)
+        return false;
+
+    std::vector<unsigned char> vchKey;
+    if (!FinalityDeriveECDHKey(keyRecipient, pubEphemeral,
+                               pubRecipient, pubEphemeral,
+                               nRecipientIndex, config.committeeSetHash,
+                               vchKey))
+        return false;
+
+    std::vector<unsigned char> vchAAD = BuildFinalityTallyShareAAD(share, nRecipientIndex, pubEphemeral);
+    std::vector<unsigned char> vchPlain;
+    bool fOk = ChaCha20Poly1305Decrypt(vchCiphertext, vchKey, vchAAD, vchPlain);
+    OPENSSL_cleanse(vchKey.data(), vchKey.size());
+    if (!fOk)
+        return false;
+
+    try {
+        CDataStream ss(vchPlain, SER_NETWORK, PROTOCOL_VERSION);
+        uint32_t nPlainVersion = 0;
+        ss >> nPlainVersion;
+        ss >> plainOut.nRecipientIndex;
+        ss >> plainOut.nX;
+        ss >> plainOut.evalWeight;
+        ss >> plainOut.evalReward;
+        ss >> plainOut.evalWeightBlind;
+        ss >> plainOut.evalRewardBlind;
+        if (nPlainVersion != 2 ||
+            plainOut.nRecipientIndex != nRecipientIndex ||
+            plainOut.nX != nRecipientIndex + 1)
+            return false;
+    } catch (const std::exception&) {
+        return false;
+    }
+    return true;
+}
+
+bool AggregateFinalityTallyPlainShares(const std::vector<CFinalityTallyPlainShare>& vShares,
+                                       CFinalityTallyPlainShare& aggregateOut)
+{
+    if (vShares.empty())
+        return false;
+
+    aggregateOut = CFinalityTallyPlainShare();
+    aggregateOut.nRecipientIndex = vShares[0].nRecipientIndex;
+    aggregateOut.nX = vShares[0].nX;
+    for (const CFinalityTallyPlainShare& share : vShares)
+    {
+        if (share.nRecipientIndex != aggregateOut.nRecipientIndex ||
+            share.nX != aggregateOut.nX ||
+            share.nRecipientIndex < 0 ||
+            share.nX <= 0)
+            return false;
+        aggregateOut.evalWeight = FieldAdd(aggregateOut.evalWeight, share.evalWeight);
+        aggregateOut.evalReward = FieldAdd(aggregateOut.evalReward, share.evalReward);
+        aggregateOut.evalWeightBlind = FieldAdd(aggregateOut.evalWeightBlind, share.evalWeightBlind);
+        aggregateOut.evalRewardBlind = FieldAdd(aggregateOut.evalRewardBlind, share.evalRewardBlind);
+    }
+    return true;
+}
+
+static bool FinalityInterpolateAtZero(const std::vector<int>& vX,
+                                      const std::vector<uint256>& vY,
+                                      int nThreshold,
+                                      uint256& secretOut)
+{
+    if (nThreshold <= 0 ||
+        (int)vX.size() < nThreshold ||
+        vX.size() != vY.size())
+        return false;
+
+    std::set<int> setX;
+    secretOut = uint256(0);
+    for (int i = 0; i < nThreshold; i++)
+    {
+        if (vX[i] <= 0 || !setX.insert(vX[i]).second)
+            return false;
+
+        uint256 xi = FieldFromUint64((uint64_t)vX[i]);
+        uint256 coeff = FieldFromUint64(1);
+        for (int j = 0; j < nThreshold; j++)
+        {
+            if (i == j)
+                continue;
+            uint256 xj = FieldFromUint64((uint64_t)vX[j]);
+            uint256 denominator = FieldSub(xi, xj);
+            if (denominator == uint256(0))
+                return false;
+            coeff = FieldMul(coeff, FieldMul(FieldNeg(xj), FieldInv(denominator)));
+        }
+        secretOut = FieldAdd(secretOut, FieldMul(vY[i], coeff));
+    }
+    return true;
+}
+
+bool RecoverFinalityTallySecrets(const std::vector<CFinalityTallyPlainShare>& vShares,
+                                 int nThreshold,
+                                 uint256& weightOut,
+                                 uint256& rewardOut,
+                                 uint256& weightBlindOut,
+                                 uint256& rewardBlindOut)
+{
+    if (nThreshold <= 0 || (int)vShares.size() < nThreshold)
+        return false;
+
+    std::vector<int> vX;
+    std::vector<uint256> vWeight;
+    std::vector<uint256> vReward;
+    std::vector<uint256> vWeightBlind;
+    std::vector<uint256> vRewardBlind;
+    vX.reserve(vShares.size());
+    vWeight.reserve(vShares.size());
+    vReward.reserve(vShares.size());
+    vWeightBlind.reserve(vShares.size());
+    vRewardBlind.reserve(vShares.size());
+
+    for (const CFinalityTallyPlainShare& share : vShares)
+    {
+        if (share.nX <= 0)
+            return false;
+        vX.push_back(share.nX);
+        vWeight.push_back(share.evalWeight);
+        vReward.push_back(share.evalReward);
+        vWeightBlind.push_back(share.evalWeightBlind);
+        vRewardBlind.push_back(share.evalRewardBlind);
+    }
+
+    return FinalityInterpolateAtZero(vX, vWeight, nThreshold, weightOut) &&
+           FinalityInterpolateAtZero(vX, vReward, nThreshold, rewardOut) &&
+           FinalityInterpolateAtZero(vX, vWeightBlind, nThreshold, weightBlindOut) &&
+           FinalityInterpolateAtZero(vX, vRewardBlind, nThreshold, rewardBlindOut);
+}
+
+bool BuildEncryptedFinalityTallyAggregatePartial(CFinalityTallyAggregatePartial& partial,
+                                                 const CFinalityTallyPlainShare& aggregateShare,
+                                                 const CFinalityTallyConfig& config,
+                                                 const CKey& keySource)
+{
+    if (!config.fCommitteeValid ||
+        config.nThresholdM <= 0 ||
+        config.nThresholdM > (int)config.vCommitteePubKeys.size() ||
+        aggregateShare.nRecipientIndex < 0 ||
+        aggregateShare.nRecipientIndex >= (int)config.vCommitteePubKeys.size() ||
+        aggregateShare.nX != aggregateShare.nRecipientIndex + 1 ||
+        partial.nVersion != 2 ||
+        partial.nEpoch < 0 ||
+        partial.hashBlock == 0 ||
+        partial.hashCurveRoot == 0 ||
+        partial.hashNullifierRoot == 0 ||
+        partial.committeeSetHash != config.committeeSetHash ||
+        partial.vTallyShareHashes.empty() ||
+        partial.vTallyShareHashes.size() > FINALITY_MAX_VOTES ||
+        !keySource.IsValid())
+        return false;
+
+    std::set<uint256> setShareHashes;
+    for (const uint256& hashShare : partial.vTallyShareHashes)
+    {
+        if (hashShare == 0 || !setShareHashes.insert(hashShare).second)
+            return false;
+    }
+
+    CPubKey pubSource = keySource.GetPubKey();
+    if (!pubSource.IsValid() || !pubSource.IsCompressed() ||
+        pubSource != config.vCommitteePubKeys[aggregateShare.nRecipientIndex])
+        return false;
+
+    partial.nVersion = 2;
+    partial.nSourceIndex = aggregateShare.nRecipientIndex;
+    partial.vEncryptedRecipientPartials.clear();
+    partial.vEncryptedRecipientPartials.reserve(config.vCommitteePubKeys.size());
+
+    for (size_t i = 0; i < config.vCommitteePubKeys.size(); i++)
+    {
+        int nRecipientIndex = (int)i;
+        CKey ephemeralKey;
+        ephemeralKey.MakeNewKey(true);
+        CPubKey ephemeralPubKey = ephemeralKey.GetPubKey();
+        if (!ephemeralKey.IsValid() || !ephemeralPubKey.IsValid() || !ephemeralPubKey.IsCompressed())
+            return false;
+
+        std::vector<unsigned char> vchKey;
+        if (!FinalityDeriveECDHKey(ephemeralKey, config.vCommitteePubKeys[i],
+                                   config.vCommitteePubKeys[i],
+                                   ephemeralPubKey, nRecipientIndex,
+                                   config.committeeSetHash, vchKey))
+            return false;
+
+        CDataStream ssPlain(SER_NETWORK, PROTOCOL_VERSION);
+        ssPlain << (uint32_t)2;
+        ssPlain << aggregateShare.nRecipientIndex;
+        ssPlain << aggregateShare.nX;
+        ssPlain << aggregateShare.evalWeight;
+        ssPlain << aggregateShare.evalReward;
+        ssPlain << aggregateShare.evalWeightBlind;
+        ssPlain << aggregateShare.evalRewardBlind;
+        std::vector<unsigned char> vchPlain(ssPlain.begin(), ssPlain.end());
+        std::vector<unsigned char> vchAAD = BuildFinalityTallyAggregatePartialAAD(partial,
+                                                                                  nRecipientIndex,
+                                                                                  ephemeralPubKey);
+        std::vector<unsigned char> vchCiphertext;
+        if (!ChaCha20Poly1305Encrypt(vchKey, vchPlain, vchAAD, vchCiphertext))
+        {
+            OPENSSL_cleanse(vchKey.data(), vchKey.size());
+            return false;
+        }
+        OPENSSL_cleanse(vchKey.data(), vchKey.size());
+
+        CDataStream ssOut(SER_NETWORK, PROTOCOL_VERSION);
+        ssOut << (uint32_t)2;
+        ssOut << nRecipientIndex;
+        ssOut << std::vector<unsigned char>(ephemeralPubKey.begin(), ephemeralPubKey.end());
+        ssOut << vchCiphertext;
+        partial.vEncryptedRecipientPartials.push_back(std::vector<unsigned char>(ssOut.begin(), ssOut.end()));
+    }
+
+    return partial.vEncryptedRecipientPartials.size() == config.vCommitteePubKeys.size();
+}
+
+bool DecryptFinalityTallyAggregatePartialForRecipient(const CFinalityTallyAggregatePartial& partial,
+                                                      const CFinalityTallyConfig& config,
+                                                      const CKey& keyRecipient,
+                                                      int nRecipientIndex,
+                                                      CFinalityTallyPlainShare& plainOut)
+{
+    if (nRecipientIndex < 0 ||
+        nRecipientIndex >= (int)config.vCommitteePubKeys.size() ||
+        nRecipientIndex >= (int)partial.vEncryptedRecipientPartials.size() ||
+        partial.nVersion != 2 ||
+        partial.committeeSetHash != config.committeeSetHash ||
+        partial.nSourceIndex < 0 ||
+        partial.nSourceIndex >= (int)config.vCommitteePubKeys.size() ||
+        !keyRecipient.IsValid())
+        return false;
+
+    CPubKey pubRecipient = keyRecipient.GetPubKey();
+    if (!pubRecipient.IsValid() || !pubRecipient.IsCompressed() ||
+        pubRecipient != config.vCommitteePubKeys[nRecipientIndex])
+        return false;
+
+    uint32_t nEnvelopeVersion = 0;
+    int nEnvelopeRecipient = -1;
+    CPubKey pubEphemeral;
+    std::vector<unsigned char> vchCiphertext;
+    if (!ParseEncryptedRecipientShare(partial.vEncryptedRecipientPartials[nRecipientIndex],
+                                      nEnvelopeVersion,
+                                      nEnvelopeRecipient,
+                                      pubEphemeral,
+                                      vchCiphertext))
+        return false;
+    if (nEnvelopeRecipient != nRecipientIndex)
+        return false;
+
+    std::vector<unsigned char> vchKey;
+    if (!FinalityDeriveECDHKey(keyRecipient, pubEphemeral,
+                               pubRecipient, pubEphemeral,
+                               nRecipientIndex, config.committeeSetHash,
+                               vchKey))
+        return false;
+
+    std::vector<unsigned char> vchAAD = BuildFinalityTallyAggregatePartialAAD(partial,
+                                                                              nRecipientIndex,
+                                                                              pubEphemeral);
+    std::vector<unsigned char> vchPlain;
+    bool fOk = ChaCha20Poly1305Decrypt(vchCiphertext, vchKey, vchAAD, vchPlain);
+    OPENSSL_cleanse(vchKey.data(), vchKey.size());
+    if (!fOk)
+        return false;
+
+    try {
+        CDataStream ss(vchPlain, SER_NETWORK, PROTOCOL_VERSION);
+        uint32_t nPlainVersion = 0;
+        ss >> nPlainVersion;
+        ss >> plainOut.nRecipientIndex;
+        ss >> plainOut.nX;
+        ss >> plainOut.evalWeight;
+        ss >> plainOut.evalReward;
+        ss >> plainOut.evalWeightBlind;
+        ss >> plainOut.evalRewardBlind;
+        if (nPlainVersion != 2 ||
+            plainOut.nRecipientIndex != partial.nSourceIndex ||
+            plainOut.nX != partial.nSourceIndex + 1)
+            return false;
+    } catch (const std::exception&) {
+        return false;
+    }
+    return true;
+}
+
 CScript BuildFinalityVoteScript(const CFinalityVote& vote)
 {
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
@@ -76,27 +886,72 @@ CScript BuildFinalityVoteScript(const CFinalityVote& vote)
     return script;
 }
 
-bool ExtractFinalityVote(const CScript& scriptPubKey, CFinalityVote& voteOut)
+static bool ExtractTaggedOpReturnPayload(const CScript& scriptPubKey,
+                                         const unsigned char* pchTag,
+                                         std::vector<unsigned char>& vPayloadOut)
 {
-    CScript::const_iterator pc = scriptPubKey.begin();
-    if (pc >= scriptPubKey.end())
+    vPayloadOut.clear();
+    if (scriptPubKey.size() > MAX_SCRIPT_SIZE)
         return false;
 
-    opcodetype opcode;
-    std::vector<unsigned char> vchData;
-    if (!scriptPubKey.GetOp(pc, opcode, vchData))
+    CScript::const_iterator pc = scriptPubKey.begin();
+    if (pc == scriptPubKey.end() || *pc++ != OP_RETURN)
         return false;
-    if (opcode != OP_RETURN)
+    if (pc == scriptPubKey.end())
         return false;
-    if (!scriptPubKey.GetOp(pc, opcode, vchData))
+
+    unsigned int nSize = 0;
+    opcodetype opcode = (opcodetype)*pc++;
+    if (opcode < OP_PUSHDATA1)
+    {
+        nSize = opcode;
+    }
+    else if (opcode == OP_PUSHDATA1)
+    {
+        if (scriptPubKey.end() - pc < 1)
+            return false;
+        nSize = *pc++;
+    }
+    else if (opcode == OP_PUSHDATA2)
+    {
+        if (scriptPubKey.end() - pc < 2)
+            return false;
+        nSize = (unsigned int)pc[0] | ((unsigned int)pc[1] << 8);
+        pc += 2;
+    }
+    else if (opcode == OP_PUSHDATA4)
+    {
+        if (scriptPubKey.end() - pc < 4)
+            return false;
+        nSize = (unsigned int)pc[0] |
+                ((unsigned int)pc[1] << 8) |
+                ((unsigned int)pc[2] << 16) |
+                ((unsigned int)pc[3] << 24);
+        pc += 4;
+    }
+    else
+    {
         return false;
-    if (vchData.size() <= 4)
+    }
+
+    if (nSize <= 4 || nSize > MAX_SCRIPT_SIZE)
         return false;
-    if (memcmp(vchData.data(), FINALITY_VOTE_TAG, 4) != 0)
+    if ((unsigned int)(scriptPubKey.end() - pc) != nSize)
+        return false;
+    if (memcmp(&pc[0], pchTag, 4) != 0)
+        return false;
+
+    vPayloadOut.assign(pc + 4, pc + nSize);
+    return !vPayloadOut.empty();
+}
+
+bool ExtractFinalityVote(const CScript& scriptPubKey, CFinalityVote& voteOut)
+{
+    std::vector<unsigned char> vPayload;
+    if (!ExtractTaggedOpReturnPayload(scriptPubKey, FINALITY_VOTE_TAG, vPayload))
         return false;
 
     try {
-        std::vector<unsigned char> vPayload(vchData.begin() + 4, vchData.end());
         CDataStream ss(vPayload, SER_NETWORK, PROTOCOL_VERSION);
         ss >> voteOut;
     } catch (const std::exception& e) {
@@ -137,25 +992,11 @@ CScript BuildFinalityTallyCertificateScript(const CFinalityTallyCertificate& cer
 
 bool ExtractFinalityTallyCertificate(const CScript& scriptPubKey, CFinalityTallyCertificate& certOut)
 {
-    CScript::const_iterator pc = scriptPubKey.begin();
-    if (pc >= scriptPubKey.end())
-        return false;
-
-    opcodetype opcode;
-    std::vector<unsigned char> vchData;
-    if (!scriptPubKey.GetOp(pc, opcode, vchData))
-        return false;
-    if (opcode != OP_RETURN)
-        return false;
-    if (!scriptPubKey.GetOp(pc, opcode, vchData))
-        return false;
-    if (vchData.size() <= 4)
-        return false;
-    if (memcmp(vchData.data(), FINALITY_TALLY_CERT_TAG, 4) != 0)
+    std::vector<unsigned char> vPayload;
+    if (!ExtractTaggedOpReturnPayload(scriptPubKey, FINALITY_TALLY_CERT_TAG, vPayload))
         return false;
 
     try {
-        std::vector<unsigned char> vPayload(vchData.begin() + 4, vchData.end());
         CDataStream ss(vPayload, SER_NETWORK, PROTOCOL_VERSION);
         ss >> certOut;
     } catch (const std::exception&) {
@@ -179,6 +1020,51 @@ std::vector<CFinalityTallyCertificate> ExtractFinalityTallyCertificatesFromBlock
     return vCerts;
 }
 
+CScript BuildFinalityTallyShareScript(const CFinalityTallyShare& share)
+{
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << share;
+
+    std::vector<unsigned char> vchData;
+    vchData.reserve(4 + ss.size());
+    vchData.insert(vchData.end(), FINALITY_TALLY_SHARE_TAG, FINALITY_TALLY_SHARE_TAG + 4);
+    vchData.insert(vchData.end(), ss.begin(), ss.end());
+
+    CScript script;
+    script << OP_RETURN << vchData;
+    return script;
+}
+
+bool ExtractFinalityTallyShare(const CScript& scriptPubKey, CFinalityTallyShare& shareOut)
+{
+    std::vector<unsigned char> vPayload;
+    if (!ExtractTaggedOpReturnPayload(scriptPubKey, FINALITY_TALLY_SHARE_TAG, vPayload))
+        return false;
+
+    try {
+        CDataStream ss(vPayload, SER_NETWORK, PROTOCOL_VERSION);
+        ss >> shareOut;
+    } catch (const std::exception&) {
+        return false;
+    }
+    return true;
+}
+
+std::vector<CFinalityTallyShare> ExtractFinalityTallySharesFromBlock(const CBlock& block)
+{
+    std::vector<CFinalityTallyShare> vShares;
+    if (block.vtx.empty())
+        return vShares;
+
+    for (const CTxOut& out : block.vtx[0].vout)
+    {
+        CFinalityTallyShare share;
+        if (ExtractFinalityTallyShare(out.scriptPubKey, share))
+            vShares.push_back(share);
+    }
+    return vShares;
+}
+
 
 // ---------------------------------------------------------------------------
 // Private finality proof and tally certificate envelopes
@@ -191,11 +1077,448 @@ static bool FinalityReject(std::string* pstrError, const std::string& strReason)
     return false;
 }
 
-static bool AddMoneySafe(int64_t a, int64_t b, int64_t& out)
+struct CFinalityTallyGroupKey
 {
-    if (a < 0 || b < 0 || a > MAX_MONEY || b > MAX_MONEY || a > MAX_MONEY - b)
+    int nEpoch;
+    uint256 hashBlock;
+    uint256 hashCurveRoot;
+    uint256 hashNullifierRoot;
+    uint256 committeeSetHash;
+
+    CFinalityTallyGroupKey()
+        : nEpoch(0)
+    {
+    }
+
+    bool operator<(const CFinalityTallyGroupKey& other) const
+    {
+        if (nEpoch != other.nEpoch) return nEpoch < other.nEpoch;
+        if (hashCurveRoot != other.hashCurveRoot) return hashCurveRoot < other.hashCurveRoot;
+        if (hashNullifierRoot != other.hashNullifierRoot) return hashNullifierRoot < other.hashNullifierRoot;
+        if (committeeSetHash != other.committeeSetHash) return committeeSetHash < other.committeeSetHash;
+        return hashBlock < other.hashBlock;
+    }
+};
+
+struct CFinalityTallyCohortKey
+{
+    int nEpoch;
+    uint256 hashCurveRoot;
+    uint256 hashNullifierRoot;
+    uint256 committeeSetHash;
+
+    CFinalityTallyCohortKey()
+        : nEpoch(0)
+    {
+    }
+
+    bool operator<(const CFinalityTallyCohortKey& other) const
+    {
+        if (nEpoch != other.nEpoch) return nEpoch < other.nEpoch;
+        if (hashCurveRoot != other.hashCurveRoot) return hashCurveRoot < other.hashCurveRoot;
+        if (hashNullifierRoot != other.hashNullifierRoot) return hashNullifierRoot < other.hashNullifierRoot;
+        return committeeSetHash < other.committeeSetHash;
+    }
+};
+
+struct CFinalityTallyGroupWork
+{
+    CFinalityTallyGroupKey key;
+    std::vector<CFinalityTallyShare> vShares;
+    std::vector<uint256> vShareHashes;
+    std::vector<CFinalityTallyPlainShare> vLocalPlainShares;
+    bool fRecovered;
+    int64_t nWeight;
+    int64_t nReward;
+    uint256 weightBlind;
+    uint256 rewardBlind;
+    CPedersenCommitment weightCommitment;
+    CPedersenCommitment rewardCommitment;
+
+    CFinalityTallyGroupWork()
+        : fRecovered(false),
+          nWeight(0),
+          nReward(0)
+    {
+    }
+};
+
+static bool FinalitySameHashVector(std::vector<uint256> a, std::vector<uint256> b)
+{
+    std::sort(a.begin(), a.end());
+    std::sort(b.begin(), b.end());
+    return a == b;
+}
+
+static bool FinalityAddCommitment(CPedersenCommitment& aggregate,
+                                  bool& fHaveAggregate,
+                                  const CPedersenCommitment& commitment)
+{
+    if (commitment.IsNull())
         return false;
-    out = a + b;
+    if (!fHaveAggregate)
+    {
+        aggregate = commitment;
+        fHaveAggregate = true;
+        return true;
+    }
+
+    CPedersenCommitment combined;
+    if (!AddCommitments(aggregate, commitment, combined))
+        return false;
+    aggregate = combined;
+    return true;
+}
+
+static bool FinalityAggregateCommitments(const std::vector<CFinalityTallyShare>& vShares,
+                                         bool fRewardCommitment,
+                                         CPedersenCommitment& aggregateOut)
+{
+    bool fHaveAggregate = false;
+    for (const CFinalityTallyShare& share : vShares)
+    {
+        const CPedersenCommitment& commitment =
+            fRewardCommitment ? share.rewardCommitment : share.stakeWeightCommitment;
+        if (!FinalityAddCommitment(aggregateOut, fHaveAggregate, commitment))
+            return false;
+    }
+    return fHaveAggregate;
+}
+
+static FinalityTier FinalityDetermineTier(int64_t nActiveWeight, int64_t nWinningWeight)
+{
+    if (nActiveWeight <= 0 || nWinningWeight < 0 || nWinningWeight > nActiveWeight)
+        return FINALITY_NONE;
+    if (nWinningWeight * 3 >= nActiveWeight * 2)
+        return FINALITY_HARD;
+    if (nWinningWeight * 2 >= nActiveWeight)
+        return FINALITY_SOFT;
+    if (nWinningWeight * 3 >= nActiveWeight)
+        return FINALITY_TENTATIVE;
+    return FINALITY_NONE;
+}
+
+static uint256 FinalityAutomationContextHash(const std::string& strDomain,
+                                             const CFinalityTallyGroupKey& key,
+                                             int nSourceIndex,
+                                             const std::vector<uint256>& vShareHashes)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << strDomain;
+    ss << key.nEpoch;
+    ss << key.hashBlock;
+    ss << key.hashCurveRoot;
+    ss << key.hashNullifierRoot;
+    ss << key.committeeSetHash;
+    ss << nSourceIndex;
+    ss << vShareHashes;
+    return ss.GetHash();
+}
+
+static uint256 FinalityCertificateAutomationContextHash(const CFinalityTallyCertificate& cert)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("Innova/Finality/TallyCertificateAutomation/v2");
+    ss << cert.nEpoch;
+    ss << cert.hashBlock;
+    ss << cert.nHeight;
+    ss << cert.nTier;
+    ss << cert.hashCurveRoot;
+    ss << cert.hashNullifierRoot;
+    ss << cert.committeeSetHash;
+    ss << cert.activeWeightCommitment;
+    ss << cert.winningWeightCommitment;
+    ss << cert.rewardBudgetCommitment;
+    ss << cert.nTransparentActiveWeight;
+    ss << cert.nTransparentWinningWeight;
+    ss << cert.nTransparentRewardBudget;
+    ss << cert.vVoteNullifiers;
+    ss << cert.vTallyShareHashes;
+    return ss.GetHash();
+}
+
+static bool FinalityPartialMatchesGroup(const CFinalityTallyAggregatePartial& partial,
+                                        const CFinalityTallyGroupWork& group)
+{
+    return partial.nVersion == 2 &&
+           partial.nEpoch == group.key.nEpoch &&
+           partial.hashBlock == group.key.hashBlock &&
+           partial.hashCurveRoot == group.key.hashCurveRoot &&
+           partial.hashNullifierRoot == group.key.hashNullifierRoot &&
+           partial.committeeSetHash == group.key.committeeSetHash &&
+           FinalitySameHashVector(partial.vTallyShareHashes, group.vShareHashes);
+}
+
+static void RelayFinalityTallyAggregatePartial(const CFinalityTallyAggregatePartial& partial)
+{
+    LOCK(cs_vNodes);
+    for (CNode* pnode : vNodes)
+        pnode->PushMessage("ftpart", partial);
+}
+
+static void RelayFinalityTallyCertificate(const CFinalityTallyCertificate& cert)
+{
+    LOCK(cs_vNodes);
+    for (CNode* pnode : vNodes)
+        pnode->PushMessage("ftcert", cert);
+}
+
+static bool FinalityRecoverGroupFromPartials(CFinalityTallyGroupWork& group,
+                                             const std::vector<CFinalityTallyAggregatePartial>& vPartials,
+                                             const CFinalityTallyConfig& config,
+                                             const CKey& keyLocal)
+{
+    std::vector<CFinalityTallyPlainShare> vDecrypted;
+    std::set<int> setX;
+    for (const CFinalityTallyAggregatePartial& partial : vPartials)
+    {
+        if (!FinalityPartialMatchesGroup(partial, group))
+            continue;
+
+        CFinalityTallyPlainShare plain;
+        if (!DecryptFinalityTallyAggregatePartialForRecipient(partial,
+                                                              config,
+                                                              keyLocal,
+                                                              config.nLocalCommitteeIndex,
+                                                              plain))
+            continue;
+        if (plain.nX <= 0 || !setX.insert(plain.nX).second)
+            continue;
+        vDecrypted.push_back(plain);
+        if ((int)vDecrypted.size() >= config.nThresholdM)
+            break;
+    }
+
+    uint256 weight, reward, weightBlind, rewardBlind;
+    if (!RecoverFinalityTallySecrets(vDecrypted, config.nThresholdM,
+                                     weight, reward, weightBlind, rewardBlind))
+        return false;
+
+    int64_t nWeight = 0;
+    int64_t nReward = 0;
+    if (!FinalityScalarToMoney(weight, nWeight) ||
+        !FinalityScalarToMoney(reward, nReward))
+        return false;
+    if (!FinalityAggregateCommitments(group.vShares, false, group.weightCommitment) ||
+        !FinalityAggregateCommitments(group.vShares, true, group.rewardCommitment))
+        return false;
+
+    group.fRecovered = true;
+    group.nWeight = nWeight;
+    group.nReward = nReward;
+    group.weightBlind = weightBlind;
+    group.rewardBlind = rewardBlind;
+    return true;
+}
+
+static bool FinalityBuildAndRelayCertificateForCohort(
+    int nEpoch,
+    const CFinalityTallyCohortKey& cohort,
+    const std::vector<CFinalityTallyGroupKey>& vGroupKeys,
+    const std::map<CFinalityTallyGroupKey, CFinalityTallyGroupWork>& mapGroups)
+{
+    std::map<uint256, CFinalityVote> mapVotesByNullifier;
+    std::vector<CFinalityVote> vVotes = g_finalityTracker.GetKnownEpochVotes(nEpoch);
+    for (const CFinalityVote& vote : vVotes)
+        mapVotesByNullifier[vote.nullifier] = vote;
+
+    int64_t nTransparentActiveWeight = 0;
+    int64_t nTransparentRewardBudget = 0;
+    int64_t nPrivateActiveWeight = 0;
+    int64_t nPrivateRewardBudget = 0;
+    uint256 activeBlind = uint256(0);
+    uint256 rewardBlind = uint256(0);
+    CPedersenCommitment activeCommitment;
+    CPedersenCommitment rewardCommitment;
+    bool fHaveActiveCommitment = false;
+    bool fHaveRewardCommitment = false;
+    std::set<uint256> setVoteNullifiers;
+    std::vector<uint256> vTallyShareHashes;
+    std::map<uint256, int64_t> mapBlockWeight;
+    std::map<uint256, int> mapBlockHeight;
+
+    for (const CFinalityVote& vote : vVotes)
+    {
+        if (vote.IsPrivate())
+            continue;
+        setVoteNullifiers.insert(vote.nullifier);
+        if (nTransparentActiveWeight <= MAX_MONEY - vote.nVoteWeight)
+            nTransparentActiveWeight += vote.nVoteWeight;
+        else
+            nTransparentActiveWeight = MAX_MONEY;
+        if (nTransparentRewardBudget <= MAX_MONEY - vote.nReward)
+            nTransparentRewardBudget += vote.nReward;
+        else
+            nTransparentRewardBudget = MAX_MONEY;
+        if (mapBlockWeight[vote.hashBlock] <= MAX_MONEY - vote.nVoteWeight)
+            mapBlockWeight[vote.hashBlock] += vote.nVoteWeight;
+        else
+            mapBlockWeight[vote.hashBlock] = MAX_MONEY;
+        mapBlockHeight[vote.hashBlock] = vote.nHeight;
+    }
+
+    for (const CFinalityTallyGroupKey& key : vGroupKeys)
+    {
+        std::map<CFinalityTallyGroupKey, CFinalityTallyGroupWork>::const_iterator itGroup =
+            mapGroups.find(key);
+        if (itGroup == mapGroups.end() || !itGroup->second.fRecovered)
+            return false;
+        const CFinalityTallyGroupWork& group = itGroup->second;
+
+        if (nPrivateActiveWeight > MAX_MONEY - group.nWeight ||
+            nPrivateRewardBudget > MAX_MONEY - group.nReward)
+            return false;
+        nPrivateActiveWeight += group.nWeight;
+        nPrivateRewardBudget += group.nReward;
+        activeBlind = FieldAdd(activeBlind, group.weightBlind);
+        rewardBlind = FieldAdd(rewardBlind, group.rewardBlind);
+        if (!FinalityAddCommitment(activeCommitment, fHaveActiveCommitment, group.weightCommitment) ||
+            !FinalityAddCommitment(rewardCommitment, fHaveRewardCommitment, group.rewardCommitment))
+            return false;
+
+        if (mapBlockWeight[group.key.hashBlock] <= MAX_MONEY - group.nWeight)
+            mapBlockWeight[group.key.hashBlock] += group.nWeight;
+        else
+            mapBlockWeight[group.key.hashBlock] = MAX_MONEY;
+
+        std::map<uint256, CBlockIndex*>::iterator miBlock = mapBlockIndex.find(group.key.hashBlock);
+        if (miBlock == mapBlockIndex.end())
+            return false;
+        mapBlockHeight[group.key.hashBlock] = miBlock->second->nHeight;
+
+        for (const CFinalityTallyShare& share : group.vShares)
+        {
+            std::map<uint256, CFinalityVote>::const_iterator itVote =
+                mapVotesByNullifier.find(share.voteNullifier);
+            if (itVote == mapVotesByNullifier.end() ||
+                !itVote->second.IsPrivate() ||
+                itVote->second.hashBlock != share.hashBlock ||
+                itVote->second.privateProof.hashCurveRoot != cohort.hashCurveRoot ||
+                itVote->second.privateProof.hashNullifierRoot != cohort.hashNullifierRoot)
+                return false;
+            setVoteNullifiers.insert(share.voteNullifier);
+        }
+
+        vTallyShareHashes.insert(vTallyShareHashes.end(),
+                                 group.vShareHashes.begin(),
+                                 group.vShareHashes.end());
+    }
+
+    if (!fHaveActiveCommitment || !fHaveRewardCommitment ||
+        nPrivateActiveWeight <= 0 ||
+        vTallyShareHashes.empty() ||
+        setVoteNullifiers.empty())
+        return false;
+
+    uint256 hashBest = 0;
+    int64_t nBestWeight = 0;
+    for (const std::pair<const uint256, int64_t>& pair : mapBlockWeight)
+    {
+        if (pair.second > nBestWeight ||
+            (pair.second == nBestWeight && (hashBest == 0 || pair.first < hashBest)))
+        {
+            hashBest = pair.first;
+            nBestWeight = pair.second;
+        }
+    }
+    if (hashBest == 0 || !mapBlockHeight.count(hashBest))
+        return false;
+
+    int64_t nTotalActive = nTransparentActiveWeight + nPrivateActiveWeight;
+    if (nTotalActive <= 0 || nTotalActive > MAX_MONEY)
+        return false;
+    FinalityTier tier = FinalityDetermineTier(nTotalActive, nBestWeight);
+    if (tier == FINALITY_NONE)
+        return false;
+
+    uint256 winningBlind = uint256(0);
+    CPedersenCommitment winningCommitment;
+    int64_t nPrivateWinningWeight = 0;
+    bool fHavePrivateWinning = false;
+    for (const CFinalityTallyGroupKey& key : vGroupKeys)
+    {
+        if (key.hashBlock != hashBest)
+            continue;
+        const CFinalityTallyGroupWork& group = mapGroups.find(key)->second;
+        nPrivateWinningWeight = group.nWeight;
+        winningBlind = group.weightBlind;
+        winningCommitment = group.weightCommitment;
+        fHavePrivateWinning = true;
+        break;
+    }
+    std::vector<unsigned char> vchWinningBlind;
+    if (!fHavePrivateWinning)
+    {
+        if (!GenerateBlindingFactor(vchWinningBlind) ||
+            !CreatePedersenCommitment(0, vchWinningBlind, winningCommitment))
+            return false;
+    }
+    else
+    {
+        FinalityScalarToBytesBE(winningBlind, vchWinningBlind);
+    }
+
+    std::vector<unsigned char> vchActiveBlind;
+    std::vector<unsigned char> vchRewardBlind;
+    FinalityScalarToBytesBE(activeBlind, vchActiveBlind);
+    FinalityScalarToBytesBE(rewardBlind, vchRewardBlind);
+
+    CFinalityTallyCertificate cert;
+    cert.nVersion = 2;
+    cert.nEpoch = nEpoch;
+    cert.hashBlock = hashBest;
+    cert.nHeight = mapBlockHeight[hashBest];
+    cert.nTier = (int)tier;
+    cert.hashCurveRoot = cohort.hashCurveRoot;
+    cert.hashNullifierRoot = cohort.hashNullifierRoot;
+    cert.committeeSetHash = cohort.committeeSetHash;
+    cert.activeWeightCommitment = activeCommitment;
+    cert.winningWeightCommitment = winningCommitment;
+    cert.rewardBudgetCommitment = rewardCommitment;
+    cert.nTransparentActiveWeight = nTransparentActiveWeight;
+    cert.nTransparentWinningWeight = 0;
+    for (const CFinalityVote& vote : vVotes)
+    {
+        if (!vote.IsPrivate() && vote.hashBlock == hashBest)
+        {
+            if (cert.nTransparentWinningWeight <= MAX_MONEY - vote.nVoteWeight)
+                cert.nTransparentWinningWeight += vote.nVoteWeight;
+            else
+                cert.nTransparentWinningWeight = MAX_MONEY;
+        }
+    }
+    cert.nTransparentRewardBudget = nTransparentRewardBudget;
+    cert.vVoteNullifiers.assign(setVoteNullifiers.begin(), setVoteNullifiers.end());
+    std::sort(vTallyShareHashes.begin(), vTallyShareHashes.end());
+    vTallyShareHashes.erase(std::unique(vTallyShareHashes.begin(), vTallyShareHashes.end()),
+                            vTallyShareHashes.end());
+    cert.vTallyShareHashes = vTallyShareHashes;
+
+    if (!CreateFinalityAggregateThresholdProofV2(cert,
+                                                 nPrivateActiveWeight,
+                                                 nPrivateWinningWeight,
+                                                 vchActiveBlind,
+                                                 vchWinningBlind,
+                                                 !fHavePrivateWinning,
+                                                 cert.vchAggregateThresholdProof) ||
+        !CreateFinalityRewardBudgetProofV2(cert,
+                                           nPrivateActiveWeight,
+                                           nPrivateRewardBudget,
+                                           vchActiveBlind,
+                                           vchRewardBlind,
+                                           cert.vchRewardBudgetProof))
+        return false;
+
+    static std::set<uint256> setProducedCertificateContexts;
+    uint256 hashContext = FinalityCertificateAutomationContextHash(cert);
+    if (setProducedCertificateContexts.count(hashContext))
+        return false;
+
+    if (!g_finalityTracker.AddTallyCertificate(cert))
+        return false;
+
+    setProducedCertificateContexts.insert(hashContext);
+    RelayFinalityTallyCertificate(cert);
     return true;
 }
 
@@ -212,90 +1535,620 @@ static bool VerifyFinalityThresholdTier(int nTier, int64_t nActiveWeight, int64_
     return nTier == FINALITY_NONE;
 }
 
-static bool VerifyFinalityAggregateThresholdProof(const CFinalityTallyCertificate& cert,
-                                                  int64_t nMatchedTransparentActiveWeight,
-                                                  int64_t nMatchedTransparentWinningWeight,
-                                                  int64_t& nPrivateActiveWeightOut,
-                                                  int64_t& nPrivateWinningWeightOut,
-                                                  std::string* pstrError)
+static const uint32_t FINALITY_BPAC_PROOF_V2 = 2;
+static const int FINALITY_MONEY_BITS = 63;
+static const int FINALITY_TIER_SLACK_BITS = 63;
+static const int FINALITY_Q64_BITS = 64;
+static const int FINALITY_COIN_REMAINDER_BITS = 27;
+static const int FINALITY_SECONDS_REMAINDER_BITS = 17;
+static const int FINALITY_REWARD_REMAINDER_BITS = 9;
+
+static std::vector<CSparseEntry>* FinalitySelectWire(std::vector<CSparseEntry>& wl,
+                                                     std::vector<CSparseEntry>& wr,
+                                                     std::vector<CSparseEntry>& wo,
+                                                     char wire)
 {
-    try {
-        CDataStream ss(cert.vchAggregateThresholdProof, SER_NETWORK, PROTOCOL_VERSION);
-        uint32_t nVersion = 0;
-        int64_t nPrivateActiveWeight = 0;
-        int64_t nPrivateWinningWeight = 0;
-        std::vector<unsigned char> vchActiveBlind;
-        std::vector<unsigned char> vchWinningBlind;
-        ss >> nVersion;
-        ss >> nPrivateActiveWeight;
-        ss >> nPrivateWinningWeight;
-        ss >> vchActiveBlind;
-        ss >> vchWinningBlind;
+    if (wire == 'L') return &wl;
+    if (wire == 'R') return &wr;
+    if (wire == 'O') return &wo;
+    return NULL;
+}
 
-        if (nVersion != 1)
-            return FinalityReject(pstrError, "unsupported aggregate threshold proof version");
-        if (nPrivateActiveWeight < 0 || nPrivateWinningWeight < 0 ||
-            nPrivateWinningWeight > nPrivateActiveWeight ||
-            nPrivateActiveWeight > MAX_MONEY || nPrivateWinningWeight > MAX_MONEY)
-            return FinalityReject(pstrError, "aggregate threshold proof weight out of range");
-        if (vchActiveBlind.size() != BLINDING_FACTOR_SIZE ||
-            vchWinningBlind.size() != BLINDING_FACTOR_SIZE)
-            return FinalityReject(pstrError, "aggregate threshold proof has invalid blind sizes");
-        if (!VerifyPedersenCommitment(cert.activeWeightCommitment, nPrivateActiveWeight, vchActiveBlind))
-            return FinalityReject(pstrError, "aggregate active weight commitment opening failed");
-        if (!VerifyPedersenCommitment(cert.winningWeightCommitment, nPrivateWinningWeight, vchWinningBlind))
-            return FinalityReject(pstrError, "aggregate winning weight commitment opening failed");
+static void FinalityAddWireEqualityConstraint(CR1CSCircuit& circuit,
+                                              int lhsGate,
+                                              char lhsWire,
+                                              int rhsGate,
+                                              char rhsWire)
+{
+    std::vector<CSparseEntry> wl, wr, wo, wv;
+    std::vector<CSparseEntry>* pLhs = FinalitySelectWire(wl, wr, wo, lhsWire);
+    std::vector<CSparseEntry>* pRhs = FinalitySelectWire(wl, wr, wo, rhsWire);
+    if (!pLhs || !pRhs)
+        return;
+    pLhs->push_back(CSparseEntry(lhsGate, FieldFromUint64(1)));
+    pRhs->push_back(CSparseEntry(rhsGate, FieldNeg(FieldFromUint64(1))));
+    circuit.AddLinearConstraint(wl, wr, wo, wv, FieldFromUint64(0));
+}
 
-        int64_t nTotalActive = 0;
-        int64_t nTotalWinning = 0;
-        if (!AddMoneySafe(nMatchedTransparentActiveWeight, nPrivateActiveWeight, nTotalActive) ||
-            !AddMoneySafe(nMatchedTransparentWinningWeight, nPrivateWinningWeight, nTotalWinning))
-            return FinalityReject(pstrError, "aggregate threshold total overflow");
-        if (!VerifyFinalityThresholdTier(cert.nTier, nTotalActive, nTotalWinning))
-            return FinalityReject(pstrError, "aggregate threshold proof does not satisfy certificate tier");
-
-        nPrivateActiveWeightOut = nPrivateActiveWeight;
-        nPrivateWinningWeightOut = nPrivateWinningWeight;
-        return true;
-    } catch (const std::exception&) {
-        return FinalityReject(pstrError, "aggregate threshold proof parse failed");
+static void FinalityAddBooleanRangeConstraints(CR1CSCircuit& circuit, int nStart, int nCount)
+{
+    for (int i = 0; i < nCount; i++)
+    {
+        FinalityAddWireEqualityConstraint(circuit, nStart + i, 'L', nStart + i, 'O');
+        FinalityAddWireEqualityConstraint(circuit, nStart + i, 'R', nStart + i, 'O');
     }
 }
 
-static bool VerifyFinalityRewardBudgetProof(const CFinalityTallyCertificate& cert,
-                                            int64_t nPrivateActiveWeight,
-                                            int64_t nMatchedTransparentRewardBudget,
-                                            std::string* pstrError)
+static void FinalityAddBitSumTerms(std::vector<CSparseEntry>& entries,
+                                   int nStart,
+                                   int nCount,
+                                   const uint256& coeff)
+{
+    uint256 pow2 = FieldFromUint64(1);
+    uint256 two = FieldFromUint64(2);
+    for (int i = 0; i < nCount; i++)
+    {
+        entries.push_back(CSparseEntry(nStart + i, FieldMul(coeff, pow2)));
+        pow2 = FieldMul(pow2, two);
+    }
+}
+
+static void FinalityAddBitDecompositionConstraint(CR1CSCircuit& circuit,
+                                                  int nBitStart,
+                                                  int nBits,
+                                                  int nHighVar)
+{
+    std::vector<CSparseEntry> wl, wr, wo, wv;
+    FinalityAddBitSumTerms(wo, nBitStart, nBits, FieldFromUint64(1));
+    wv.push_back(CSparseEntry(nHighVar, FieldNeg(FieldFromUint64(1))));
+    circuit.AddLinearConstraint(wl, wr, wo, wv, FieldFromUint64(0));
+}
+
+static int FinalityAddBitGates(CR1CSCircuit& circuit, int nBits)
+{
+    int nStart = circuit.nMultConstraints;
+    for (int i = 0; i < nBits; i++)
+        circuit.AddMultGate();
+    return nStart;
+}
+
+static uint256 FinalityBlindScalarRaw(const std::vector<unsigned char>& vchBlind)
+{
+    uint256 out;
+    memset(out.begin(), 0, 32);
+    if (vchBlind.size() != BLINDING_FACTOR_SIZE)
+        return out;
+    for (int i = 0; i < 32; i++)
+        out.begin()[i] = vchBlind[31 - i];
+    return out;
+}
+
+static void FinalityInitWitness(const CR1CSCircuit& circuit, CR1CSWitness& witness)
+{
+    int n = circuit.nPaddedSize;
+    witness.aL.assign(n, FieldFromUint64(0));
+    witness.aR.assign(n, FieldFromUint64(0));
+    witness.aO.assign(n, FieldFromUint64(0));
+    witness.v.assign(circuit.nHighLevelVars, FieldFromUint64(0));
+    witness.vBlinds.assign(circuit.nHighLevelVars, FieldFromUint64(0));
+}
+
+static bool FinalitySetBits(CR1CSWitness& witness, int nStart, int nBits, uint64_t nValue)
+{
+    if (nBits < 0 || nBits > 64)
+        return false;
+    if (nBits < 64 && (nValue >> nBits) != 0)
+        return false;
+    for (int i = 0; i < nBits; i++)
+    {
+        uint256 bit = FieldFromUint64((nValue >> i) & 1);
+        witness.aL[nStart + i] = bit;
+        witness.aR[nStart + i] = bit;
+        witness.aO[nStart + i] = bit;
+    }
+    return true;
+}
+
+static bool FinalityTierCoefficients(int nTier, uint64_t& nWinningCoeffOut, uint64_t& nActiveCoeffOut)
+{
+    if (nTier == FINALITY_HARD)
+    {
+        nWinningCoeffOut = 3;
+        nActiveCoeffOut = 2;
+        return true;
+    }
+    if (nTier == FINALITY_SOFT)
+    {
+        nWinningCoeffOut = 2;
+        nActiveCoeffOut = 1;
+        return true;
+    }
+    if (nTier == FINALITY_TENTATIVE)
+    {
+        nWinningCoeffOut = 3;
+        nActiveCoeffOut = 1;
+        return true;
+    }
+    return false;
+}
+
+static uint256 FinalityCertificateProofContextHash(const CFinalityTallyCertificate& cert,
+                                                   const std::string& strDomain)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << strDomain;
+    ss << cert.nVersion;
+    ss << cert.nEpoch;
+    ss << cert.hashBlock;
+    ss << cert.nHeight;
+    ss << cert.nTier;
+    ss << cert.nConsecutiveHardCount;
+    ss << cert.hashCurveRoot;
+    ss << cert.hashNullifierRoot;
+    ss << cert.committeeSetHash;
+    ss << cert.nTransparentActiveWeight;
+    ss << cert.nTransparentWinningWeight;
+    ss << cert.nTransparentRewardBudget;
+    ss << cert.vVoteNullifiers;
+    ss << cert.vTallyShareHashes;
+    return FieldReduce(ss.GetHash());
+}
+
+static void FinalityAddTranscriptBinding(CR1CSCircuit& circuit, const uint256& binding)
+{
+    if (circuit.nMultConstraints <= 0)
+        return;
+
+    std::vector<CSparseEntry> wl, wr, wo, wv;
+    wl.push_back(CSparseEntry(0, binding));
+    wl.push_back(CSparseEntry(0, FieldNeg(binding)));
+    circuit.AddLinearConstraint(wl, wr, wo, wv, FieldFromUint64(0));
+}
+
+struct CFinalityThresholdCircuitLayout
+{
+    int nActiveBits;
+    int nWinningBits;
+    int nDiffBits;
+    int nActiveCapSlackBits;
+    int nWinningCapSlackBits;
+    int nTierSlackBits;
+};
+
+static CR1CSCircuit BuildFinalityAggregateThresholdCircuit(const CFinalityTallyCertificate& cert,
+                                                           bool fRequireZeroPrivateWinning,
+                                                           CFinalityThresholdCircuitLayout& layout)
+{
+    CR1CSCircuit circuit;
+    circuit.nHighLevelVars = 2; // private active, private winning
+
+    layout.nActiveBits = FinalityAddBitGates(circuit, FINALITY_MONEY_BITS);
+    layout.nWinningBits = FinalityAddBitGates(circuit, FINALITY_MONEY_BITS);
+    layout.nDiffBits = FinalityAddBitGates(circuit, FINALITY_MONEY_BITS);
+    layout.nActiveCapSlackBits = FinalityAddBitGates(circuit, FINALITY_MONEY_BITS);
+    layout.nWinningCapSlackBits = FinalityAddBitGates(circuit, FINALITY_MONEY_BITS);
+    layout.nTierSlackBits = -1;
+    if (cert.nTier != FINALITY_NONE)
+        layout.nTierSlackBits = FinalityAddBitGates(circuit, FINALITY_TIER_SLACK_BITS);
+
+    circuit.PadToNextPow2();
+    FinalityAddTranscriptBinding(circuit,
+        FinalityCertificateProofContextHash(cert, "Innova/Finality/AggregateThreshold/v2"));
+
+    FinalityAddBooleanRangeConstraints(circuit, layout.nActiveBits, FINALITY_MONEY_BITS);
+    FinalityAddBooleanRangeConstraints(circuit, layout.nWinningBits, FINALITY_MONEY_BITS);
+    FinalityAddBooleanRangeConstraints(circuit, layout.nDiffBits, FINALITY_MONEY_BITS);
+    FinalityAddBooleanRangeConstraints(circuit, layout.nActiveCapSlackBits, FINALITY_MONEY_BITS);
+    FinalityAddBooleanRangeConstraints(circuit, layout.nWinningCapSlackBits, FINALITY_MONEY_BITS);
+    if (layout.nTierSlackBits >= 0)
+        FinalityAddBooleanRangeConstraints(circuit, layout.nTierSlackBits, FINALITY_TIER_SLACK_BITS);
+
+    FinalityAddBitDecompositionConstraint(circuit, layout.nActiveBits, FINALITY_MONEY_BITS, 0);
+    FinalityAddBitDecompositionConstraint(circuit, layout.nWinningBits, FINALITY_MONEY_BITS, 1);
+
+    {
+        std::vector<CSparseEntry> wl, wr, wo, wv;
+        wv.push_back(CSparseEntry(0, FieldFromUint64(1)));
+        wv.push_back(CSparseEntry(1, FieldNeg(FieldFromUint64(1))));
+        FinalityAddBitSumTerms(wo, layout.nDiffBits, FINALITY_MONEY_BITS,
+                               FieldNeg(FieldFromUint64(1)));
+        circuit.AddLinearConstraint(wl, wr, wo, wv, FieldFromUint64(0));
+    }
+
+    {
+        std::vector<CSparseEntry> wl, wr, wo, wv;
+        wv.push_back(CSparseEntry(0, FieldFromUint64(1)));
+        FinalityAddBitSumTerms(wo, layout.nActiveCapSlackBits, FINALITY_MONEY_BITS,
+                               FieldFromUint64(1));
+        uint64_t nCap = (uint64_t)(MAX_MONEY - cert.nTransparentActiveWeight);
+        circuit.AddLinearConstraint(wl, wr, wo, wv, FieldNeg(FieldFromUint64(nCap)));
+    }
+
+    {
+        std::vector<CSparseEntry> wl, wr, wo, wv;
+        wv.push_back(CSparseEntry(1, FieldFromUint64(1)));
+        FinalityAddBitSumTerms(wo, layout.nWinningCapSlackBits, FINALITY_MONEY_BITS,
+                               FieldFromUint64(1));
+        uint64_t nCap = (uint64_t)(MAX_MONEY - cert.nTransparentWinningWeight);
+        circuit.AddLinearConstraint(wl, wr, wo, wv, FieldNeg(FieldFromUint64(nCap)));
+    }
+
+    if (fRequireZeroPrivateWinning)
+    {
+        std::vector<CSparseEntry> wl, wr, wo, wv;
+        wv.push_back(CSparseEntry(1, FieldFromUint64(1)));
+        circuit.AddLinearConstraint(wl, wr, wo, wv, FieldFromUint64(0));
+    }
+
+    if (cert.nTier != FINALITY_NONE)
+    {
+        uint64_t nWinningCoeff = 0;
+        uint64_t nActiveCoeff = 0;
+        if (FinalityTierCoefficients(cert.nTier, nWinningCoeff, nActiveCoeff))
+        {
+            std::vector<CSparseEntry> wl, wr, wo, wv;
+            wv.push_back(CSparseEntry(1, FieldFromUint64(nWinningCoeff)));
+            wv.push_back(CSparseEntry(0, FieldNeg(FieldFromUint64(nActiveCoeff))));
+            FinalityAddBitSumTerms(wo, layout.nTierSlackBits, FINALITY_TIER_SLACK_BITS,
+                                   FieldNeg(FieldFromUint64(1)));
+            uint256 c = FieldSub(FieldFromUint64((uint64_t)cert.nTransparentWinningWeight * nWinningCoeff),
+                                 FieldFromUint64((uint64_t)cert.nTransparentActiveWeight * nActiveCoeff));
+            circuit.AddLinearConstraint(wl, wr, wo, wv, c);
+        }
+    }
+
+    return circuit;
+}
+
+struct CFinalityRewardCircuitLayout
+{
+    int nActiveBits;
+    int nRewardBits;
+    int nQ1Bits;
+    int nR1Bits;
+    int nCoinAgeBits;
+    int nR2Bits;
+    int nR3Bits;
+    int nR1SlackBits;
+    int nR2SlackBits;
+    int nR3SlackBits;
+    int nRewardCapSlackBits;
+};
+
+static CR1CSCircuit BuildFinalityRewardBudgetCircuit(const CFinalityTallyCertificate& cert,
+                                                     CFinalityRewardCircuitLayout& layout)
+{
+    CR1CSCircuit circuit;
+    circuit.nHighLevelVars = 2; // private active, private reward
+
+    layout.nActiveBits = FinalityAddBitGates(circuit, FINALITY_MONEY_BITS);
+    layout.nRewardBits = FinalityAddBitGates(circuit, FINALITY_MONEY_BITS);
+    layout.nQ1Bits = FinalityAddBitGates(circuit, FINALITY_Q64_BITS);
+    layout.nR1Bits = FinalityAddBitGates(circuit, FINALITY_COIN_REMAINDER_BITS);
+    layout.nCoinAgeBits = FinalityAddBitGates(circuit, FINALITY_Q64_BITS);
+    layout.nR2Bits = FinalityAddBitGates(circuit, FINALITY_SECONDS_REMAINDER_BITS);
+    layout.nR3Bits = FinalityAddBitGates(circuit, FINALITY_REWARD_REMAINDER_BITS);
+    layout.nR1SlackBits = FinalityAddBitGates(circuit, FINALITY_COIN_REMAINDER_BITS);
+    layout.nR2SlackBits = FinalityAddBitGates(circuit, FINALITY_SECONDS_REMAINDER_BITS);
+    layout.nR3SlackBits = FinalityAddBitGates(circuit, FINALITY_REWARD_REMAINDER_BITS);
+    layout.nRewardCapSlackBits = FinalityAddBitGates(circuit, FINALITY_MONEY_BITS);
+
+    circuit.PadToNextPow2();
+    FinalityAddTranscriptBinding(circuit,
+        FinalityCertificateProofContextHash(cert, "Innova/Finality/RewardBudget/v2"));
+
+    FinalityAddBooleanRangeConstraints(circuit, layout.nActiveBits, FINALITY_MONEY_BITS);
+    FinalityAddBooleanRangeConstraints(circuit, layout.nRewardBits, FINALITY_MONEY_BITS);
+    FinalityAddBooleanRangeConstraints(circuit, layout.nQ1Bits, FINALITY_Q64_BITS);
+    FinalityAddBooleanRangeConstraints(circuit, layout.nR1Bits, FINALITY_COIN_REMAINDER_BITS);
+    FinalityAddBooleanRangeConstraints(circuit, layout.nCoinAgeBits, FINALITY_Q64_BITS);
+    FinalityAddBooleanRangeConstraints(circuit, layout.nR2Bits, FINALITY_SECONDS_REMAINDER_BITS);
+    FinalityAddBooleanRangeConstraints(circuit, layout.nR3Bits, FINALITY_REWARD_REMAINDER_BITS);
+    FinalityAddBooleanRangeConstraints(circuit, layout.nR1SlackBits, FINALITY_COIN_REMAINDER_BITS);
+    FinalityAddBooleanRangeConstraints(circuit, layout.nR2SlackBits, FINALITY_SECONDS_REMAINDER_BITS);
+    FinalityAddBooleanRangeConstraints(circuit, layout.nR3SlackBits, FINALITY_REWARD_REMAINDER_BITS);
+    FinalityAddBooleanRangeConstraints(circuit, layout.nRewardCapSlackBits, FINALITY_MONEY_BITS);
+
+    FinalityAddBitDecompositionConstraint(circuit, layout.nActiveBits, FINALITY_MONEY_BITS, 0);
+    FinalityAddBitDecompositionConstraint(circuit, layout.nRewardBits, FINALITY_MONEY_BITS, 1);
+
+    int nEpochInterval = GetEpochInterval(cert.nHeight);
+    {
+        std::vector<CSparseEntry> wl, wr, wo, wv;
+        FinalityAddBitSumTerms(wo, layout.nQ1Bits, FINALITY_Q64_BITS,
+                               FieldFromUint64((uint64_t)COIN));
+        FinalityAddBitSumTerms(wo, layout.nR1Bits, FINALITY_COIN_REMAINDER_BITS,
+                               FieldFromUint64(1));
+        wv.push_back(CSparseEntry(0, FieldNeg(FieldFromUint64((uint64_t)nEpochInterval))));
+        circuit.AddLinearConstraint(wl, wr, wo, wv, FieldFromUint64(0));
+    }
+
+    {
+        std::vector<CSparseEntry> wl, wr, wo, wv;
+        FinalityAddBitSumTerms(wo, layout.nCoinAgeBits, FINALITY_Q64_BITS,
+                               FieldFromUint64(86400));
+        FinalityAddBitSumTerms(wo, layout.nR2Bits, FINALITY_SECONDS_REMAINDER_BITS,
+                               FieldFromUint64(1));
+        FinalityAddBitSumTerms(wo, layout.nQ1Bits, FINALITY_Q64_BITS,
+                               FieldNeg(FieldFromUint64(1)));
+        circuit.AddLinearConstraint(wl, wr, wo, wv, FieldFromUint64(0));
+    }
+
+    {
+        std::vector<CSparseEntry> wl, wr, wo, wv;
+        wv.push_back(CSparseEntry(1, FieldFromUint64(365)));
+        FinalityAddBitSumTerms(wo, layout.nR3Bits, FINALITY_REWARD_REMAINDER_BITS,
+                               FieldFromUint64(1));
+        FinalityAddBitSumTerms(wo, layout.nCoinAgeBits, FINALITY_Q64_BITS,
+                               FieldNeg(FieldFromUint64((uint64_t)COIN_YEAR_REWARD)));
+        circuit.AddLinearConstraint(wl, wr, wo, wv, FieldFromUint64(0));
+    }
+
+    {
+        std::vector<CSparseEntry> wl, wr, wo, wv;
+        FinalityAddBitSumTerms(wo, layout.nR1Bits, FINALITY_COIN_REMAINDER_BITS, FieldFromUint64(1));
+        FinalityAddBitSumTerms(wo, layout.nR1SlackBits, FINALITY_COIN_REMAINDER_BITS, FieldFromUint64(1));
+        circuit.AddLinearConstraint(wl, wr, wo, wv, FieldNeg(FieldFromUint64((uint64_t)COIN - 1)));
+    }
+
+    {
+        std::vector<CSparseEntry> wl, wr, wo, wv;
+        FinalityAddBitSumTerms(wo, layout.nR2Bits, FINALITY_SECONDS_REMAINDER_BITS, FieldFromUint64(1));
+        FinalityAddBitSumTerms(wo, layout.nR2SlackBits, FINALITY_SECONDS_REMAINDER_BITS, FieldFromUint64(1));
+        circuit.AddLinearConstraint(wl, wr, wo, wv, FieldNeg(FieldFromUint64(86400 - 1)));
+    }
+
+    {
+        std::vector<CSparseEntry> wl, wr, wo, wv;
+        FinalityAddBitSumTerms(wo, layout.nR3Bits, FINALITY_REWARD_REMAINDER_BITS, FieldFromUint64(1));
+        FinalityAddBitSumTerms(wo, layout.nR3SlackBits, FINALITY_REWARD_REMAINDER_BITS, FieldFromUint64(1));
+        circuit.AddLinearConstraint(wl, wr, wo, wv, FieldNeg(FieldFromUint64(365 - 1)));
+    }
+
+    {
+        std::vector<CSparseEntry> wl, wr, wo, wv;
+        wv.push_back(CSparseEntry(1, FieldFromUint64(1)));
+        FinalityAddBitSumTerms(wo, layout.nRewardCapSlackBits, FINALITY_MONEY_BITS,
+                               FieldFromUint64(1));
+        circuit.AddLinearConstraint(wl, wr, wo, wv, FieldNeg(FieldFromUint64((uint64_t)MAX_MONEY)));
+    }
+
+    return circuit;
+}
+
+static bool FinalitySerializeBPACProofV2(const CBulletproofACProof& proof,
+                                         std::vector<unsigned char>& vchProofOut)
+{
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << FINALITY_BPAC_PROOF_V2;
+    ss << proof;
+    vchProofOut.assign(ss.begin(), ss.end());
+    return !vchProofOut.empty() && vchProofOut.size() <= BPAC_V3_MAX_PROOF_SIZE;
+}
+
+static bool FinalityParseBPACProofV2(const std::vector<unsigned char>& vchProof,
+                                     const std::string& strLegacyError,
+                                     CBulletproofACProof& proofOut,
+                                     std::string* pstrError)
 {
     try {
-        CDataStream ss(cert.vchRewardBudgetProof, SER_NETWORK, PROTOCOL_VERSION);
+        CDataStream ss(vchProof, SER_NETWORK, PROTOCOL_VERSION);
         uint32_t nVersion = 0;
-        int64_t nPrivateRewardBudget = 0;
-        std::vector<unsigned char> vchRewardBlind;
         ss >> nVersion;
-        ss >> nPrivateRewardBudget;
-        ss >> vchRewardBlind;
-
-        if (nVersion != 1)
-            return FinalityReject(pstrError, "unsupported reward-budget proof version");
-        if (nPrivateRewardBudget < 0 || nPrivateRewardBudget > MAX_MONEY)
-            return FinalityReject(pstrError, "reward-budget proof value out of range");
-        if (vchRewardBlind.size() != BLINDING_FACTOR_SIZE)
-            return FinalityReject(pstrError, "reward-budget proof has invalid blind size");
-        if (!VerifyPedersenCommitment(cert.rewardBudgetCommitment, nPrivateRewardBudget, vchRewardBlind))
-            return FinalityReject(pstrError, "reward-budget commitment opening failed");
-
-        int64_t nExpectedPrivateReward = GetFinalityVoteReward(nPrivateActiveWeight, GetEpochInterval(cert.nHeight));
-        if (nPrivateRewardBudget != nExpectedPrivateReward)
-            return FinalityReject(pstrError, "private reward budget does not match aggregate vote weight schedule");
-        if (cert.nTransparentRewardBudget != nMatchedTransparentRewardBudget)
-            return FinalityReject(pstrError, "transparent reward budget mismatch");
-        if (nMatchedTransparentRewardBudget > MAX_MONEY - nPrivateRewardBudget)
-            return FinalityReject(pstrError, "reward-budget total overflow");
+        if (nVersion == 1)
+            return FinalityReject(pstrError, strLegacyError);
+        if (nVersion != FINALITY_BPAC_PROOF_V2)
+            return FinalityReject(pstrError, "unsupported private tally BPAC proof version");
+        ss >> proofOut;
         return true;
     } catch (const std::exception&) {
-        return FinalityReject(pstrError, "reward-budget proof parse failed");
+        return FinalityReject(pstrError, "private tally BPAC proof parse failed");
     }
+}
+
+bool CreateFinalityAggregateThresholdProofV2(const CFinalityTallyCertificate& cert,
+                                             int64_t nPrivateActiveWeight,
+                                             int64_t nPrivateWinningWeight,
+                                             const std::vector<unsigned char>& vchActiveBlind,
+                                             const std::vector<unsigned char>& vchWinningBlind,
+                                             bool fRequireZeroPrivateWinning,
+                                             std::vector<unsigned char>& vchProofOut)
+{
+    if (nPrivateActiveWeight < 0 || nPrivateWinningWeight < 0 ||
+        nPrivateActiveWeight > MAX_MONEY || nPrivateWinningWeight > MAX_MONEY ||
+        nPrivateWinningWeight > nPrivateActiveWeight ||
+        vchActiveBlind.size() != BLINDING_FACTOR_SIZE ||
+        vchWinningBlind.size() != BLINDING_FACTOR_SIZE)
+        return false;
+    if (fRequireZeroPrivateWinning && nPrivateWinningWeight != 0)
+        return false;
+    if (cert.nTransparentActiveWeight < 0 || cert.nTransparentWinningWeight < 0 ||
+        cert.nTransparentActiveWeight > MAX_MONEY || cert.nTransparentWinningWeight > MAX_MONEY)
+        return false;
+    if (nPrivateActiveWeight > MAX_MONEY - cert.nTransparentActiveWeight ||
+        nPrivateWinningWeight > MAX_MONEY - cert.nTransparentWinningWeight)
+        return false;
+
+    uint64_t nWinningCoeff = 0;
+    uint64_t nActiveCoeff = 0;
+    if (cert.nTier != FINALITY_NONE)
+    {
+        if (!FinalityTierCoefficients(cert.nTier, nWinningCoeff, nActiveCoeff))
+            return false;
+        unsigned __int128 lhs = (unsigned __int128)nWinningCoeff *
+            ((uint64_t)cert.nTransparentWinningWeight + (uint64_t)nPrivateWinningWeight);
+        unsigned __int128 rhs = (unsigned __int128)nActiveCoeff *
+            ((uint64_t)cert.nTransparentActiveWeight + (uint64_t)nPrivateActiveWeight);
+        if (lhs < rhs)
+            return false;
+    }
+
+    CFinalityThresholdCircuitLayout layout;
+    CR1CSCircuit circuit = BuildFinalityAggregateThresholdCircuit(cert,
+                                                                  fRequireZeroPrivateWinning,
+                                                                  layout);
+    CR1CSWitness witness;
+    FinalityInitWitness(circuit, witness);
+    witness.v[0] = FieldFromUint64((uint64_t)nPrivateActiveWeight);
+    witness.v[1] = FieldFromUint64((uint64_t)nPrivateWinningWeight);
+    witness.vBlinds[0] = FinalityBlindScalarRaw(vchActiveBlind);
+    witness.vBlinds[1] = FinalityBlindScalarRaw(vchWinningBlind);
+
+    uint64_t nDiff = (uint64_t)(nPrivateActiveWeight - nPrivateWinningWeight);
+    uint64_t nActiveCapSlack = (uint64_t)(MAX_MONEY - cert.nTransparentActiveWeight - nPrivateActiveWeight);
+    uint64_t nWinningCapSlack = (uint64_t)(MAX_MONEY - cert.nTransparentWinningWeight - nPrivateWinningWeight);
+    if (!FinalitySetBits(witness, layout.nActiveBits, FINALITY_MONEY_BITS, (uint64_t)nPrivateActiveWeight) ||
+        !FinalitySetBits(witness, layout.nWinningBits, FINALITY_MONEY_BITS, (uint64_t)nPrivateWinningWeight) ||
+        !FinalitySetBits(witness, layout.nDiffBits, FINALITY_MONEY_BITS, nDiff) ||
+        !FinalitySetBits(witness, layout.nActiveCapSlackBits, FINALITY_MONEY_BITS, nActiveCapSlack) ||
+        !FinalitySetBits(witness, layout.nWinningCapSlackBits, FINALITY_MONEY_BITS, nWinningCapSlack))
+        return false;
+
+    if (layout.nTierSlackBits >= 0)
+    {
+        unsigned __int128 lhs = (unsigned __int128)nWinningCoeff *
+            ((uint64_t)cert.nTransparentWinningWeight + (uint64_t)nPrivateWinningWeight);
+        unsigned __int128 rhs = (unsigned __int128)nActiveCoeff *
+            ((uint64_t)cert.nTransparentActiveWeight + (uint64_t)nPrivateActiveWeight);
+        uint64_t nTierSlack = (uint64_t)(lhs - rhs);
+        if (!FinalitySetBits(witness, layout.nTierSlackBits, FINALITY_TIER_SLACK_BITS, nTierSlack))
+            return false;
+    }
+
+    std::vector<std::vector<unsigned char> > vCommitments;
+    vCommitments.push_back(cert.activeWeightCommitment.vchCommitment);
+    vCommitments.push_back(cert.winningWeightCommitment.vchCommitment);
+
+    CBulletproofACProof proof;
+    if (!CreateBulletproofACProof(circuit, witness, vCommitments, proof))
+        return false;
+    return FinalitySerializeBPACProofV2(proof, vchProofOut);
+}
+
+bool CreateFinalityRewardBudgetProofV2(const CFinalityTallyCertificate& cert,
+                                       int64_t nPrivateActiveWeight,
+                                       int64_t nPrivateRewardBudget,
+                                       const std::vector<unsigned char>& vchActiveBlind,
+                                       const std::vector<unsigned char>& vchRewardBlind,
+                                       std::vector<unsigned char>& vchProofOut)
+{
+    if (nPrivateActiveWeight < 0 || nPrivateRewardBudget < 0 ||
+        nPrivateActiveWeight > MAX_MONEY || nPrivateRewardBudget > MAX_MONEY ||
+        vchActiveBlind.size() != BLINDING_FACTOR_SIZE ||
+        vchRewardBlind.size() != BLINDING_FACTOR_SIZE)
+        return false;
+
+    int nEpochInterval = GetEpochInterval(cert.nHeight);
+    unsigned __int128 nProduct = (unsigned __int128)(uint64_t)nPrivateActiveWeight *
+        (uint64_t)nEpochInterval;
+    uint64_t nQ1 = (uint64_t)(nProduct / (uint64_t)COIN);
+    uint64_t nR1 = (uint64_t)(nProduct % (uint64_t)COIN);
+    uint64_t nCoinAge = nQ1 / 86400;
+    uint64_t nR2 = nQ1 % 86400;
+    unsigned __int128 nRewardProduct = (unsigned __int128)nCoinAge *
+        (uint64_t)COIN_YEAR_REWARD;
+    uint64_t nReward = (uint64_t)(nRewardProduct / 365);
+    uint64_t nR3 = (uint64_t)(nRewardProduct % 365);
+    if (nReward > (uint64_t)MAX_MONEY ||
+        nPrivateRewardBudget != (int64_t)nReward ||
+        nPrivateRewardBudget != GetFinalityVoteReward(nPrivateActiveWeight, nEpochInterval))
+        return false;
+
+    CFinalityRewardCircuitLayout layout;
+    CR1CSCircuit circuit = BuildFinalityRewardBudgetCircuit(cert, layout);
+    CR1CSWitness witness;
+    FinalityInitWitness(circuit, witness);
+    witness.v[0] = FieldFromUint64((uint64_t)nPrivateActiveWeight);
+    witness.v[1] = FieldFromUint64((uint64_t)nPrivateRewardBudget);
+    witness.vBlinds[0] = FinalityBlindScalarRaw(vchActiveBlind);
+    witness.vBlinds[1] = FinalityBlindScalarRaw(vchRewardBlind);
+
+    if (!FinalitySetBits(witness, layout.nActiveBits, FINALITY_MONEY_BITS, (uint64_t)nPrivateActiveWeight) ||
+        !FinalitySetBits(witness, layout.nRewardBits, FINALITY_MONEY_BITS, (uint64_t)nPrivateRewardBudget) ||
+        !FinalitySetBits(witness, layout.nQ1Bits, FINALITY_Q64_BITS, nQ1) ||
+        !FinalitySetBits(witness, layout.nR1Bits, FINALITY_COIN_REMAINDER_BITS, nR1) ||
+        !FinalitySetBits(witness, layout.nCoinAgeBits, FINALITY_Q64_BITS, nCoinAge) ||
+        !FinalitySetBits(witness, layout.nR2Bits, FINALITY_SECONDS_REMAINDER_BITS, nR2) ||
+        !FinalitySetBits(witness, layout.nR3Bits, FINALITY_REWARD_REMAINDER_BITS, nR3) ||
+        !FinalitySetBits(witness, layout.nR1SlackBits, FINALITY_COIN_REMAINDER_BITS, (uint64_t)COIN - 1 - nR1) ||
+        !FinalitySetBits(witness, layout.nR2SlackBits, FINALITY_SECONDS_REMAINDER_BITS, 86400 - 1 - nR2) ||
+        !FinalitySetBits(witness, layout.nR3SlackBits, FINALITY_REWARD_REMAINDER_BITS, 365 - 1 - nR3) ||
+        !FinalitySetBits(witness, layout.nRewardCapSlackBits, FINALITY_MONEY_BITS, (uint64_t)(MAX_MONEY - nPrivateRewardBudget)))
+        return false;
+
+    std::vector<std::vector<unsigned char> > vCommitments;
+    vCommitments.push_back(cert.activeWeightCommitment.vchCommitment);
+    vCommitments.push_back(cert.rewardBudgetCommitment.vchCommitment);
+
+    CBulletproofACProof proof;
+    if (!CreateBulletproofACProof(circuit, witness, vCommitments, proof))
+        return false;
+    return FinalitySerializeBPACProofV2(proof, vchProofOut);
+}
+
+bool VerifyFinalityAggregateThresholdProofV2(const CFinalityTallyCertificate& cert,
+                                             int64_t nMatchedTransparentActiveWeight,
+                                             int64_t nMatchedTransparentWinningWeight,
+                                             bool fRequireZeroPrivateWinning,
+                                             std::string* pstrError)
+{
+    if (cert.nTransparentActiveWeight != nMatchedTransparentActiveWeight ||
+        cert.nTransparentWinningWeight != nMatchedTransparentWinningWeight)
+        return FinalityReject(pstrError, "aggregate threshold transparent input mismatch");
+
+    CBulletproofACProof proof;
+    if (!FinalityParseBPACProofV2(cert.vchAggregateThresholdProof,
+                                  "legacy aggregate threshold opening proof rejected for private certificate",
+                                  proof, pstrError))
+        return false;
+
+    CFinalityThresholdCircuitLayout layout;
+    CR1CSCircuit circuit = BuildFinalityAggregateThresholdCircuit(cert,
+                                                                  fRequireZeroPrivateWinning,
+                                                                  layout);
+    std::vector<std::vector<unsigned char> > vCommitments;
+    vCommitments.push_back(cert.activeWeightCommitment.vchCommitment);
+    vCommitments.push_back(cert.winningWeightCommitment.vchCommitment);
+    if (!VerifyBulletproofACProof(circuit, vCommitments, proof))
+        return FinalityReject(pstrError, "aggregate threshold BPAC proof failed");
+    return true;
+}
+
+bool VerifyFinalityRewardBudgetProofV2(const CFinalityTallyCertificate& cert,
+                                       int64_t nMatchedTransparentRewardBudget,
+                                       std::string* pstrError)
+{
+    if (cert.nTransparentRewardBudget != nMatchedTransparentRewardBudget)
+        return FinalityReject(pstrError, "transparent reward budget mismatch");
+
+    CBulletproofACProof proof;
+    if (!FinalityParseBPACProofV2(cert.vchRewardBudgetProof,
+                                  "legacy reward-budget opening proof rejected for private certificate",
+                                  proof, pstrError))
+        return false;
+
+    CFinalityRewardCircuitLayout layout;
+    CR1CSCircuit circuit = BuildFinalityRewardBudgetCircuit(cert, layout);
+    std::vector<std::vector<unsigned char> > vCommitments;
+    vCommitments.push_back(cert.activeWeightCommitment.vchCommitment);
+    vCommitments.push_back(cert.rewardBudgetCommitment.vchCommitment);
+    if (!VerifyBulletproofACProof(circuit, vCommitments, proof))
+        return FinalityReject(pstrError, "reward-budget BPAC proof failed");
+    return true;
+}
+
+static bool DeserializeFinalityBindingProof(const std::vector<unsigned char>& vchProof,
+                                            CBindingSignature& sigOut)
+{
+    if (vchProof.empty() || vchProof.size() > BPAC_V3_MAX_PROOF_SIZE)
+        return false;
+    try {
+        CDataStream ss(vchProof, SER_NETWORK, PROTOCOL_VERSION);
+        ss >> sigOut;
+    } catch (const std::exception&) {
+        return false;
+    }
+    return !sigOut.IsNull() && sigOut.vchSignature.size() == BINDING_SIGNATURE_SIZE;
 }
 
 bool CPrivateFinalityVoteProof::IsNull() const
@@ -321,8 +2174,11 @@ bool CPrivateFinalityVoteProof::IsValidBasic(std::string* pstrError) const
         return FinalityReject(pstrError, "private finality proof missing FCMP proof");
     if (vchRewardOutputCommitment.empty() || vchRewardOutputCommitment.size() > 128)
         return FinalityReject(pstrError, "private finality proof invalid reward output commitment");
-    if (vchBindingProof.empty() || vchBindingProof.size() > BPAC_V3_MAX_PROOF_SIZE)
-        return FinalityReject(pstrError, "private finality proof invalid binding proof");
+    {
+        CBindingSignature bindingSig;
+        if (!DeserializeFinalityBindingProof(vchBindingProof, bindingSig))
+            return FinalityReject(pstrError, "private finality proof invalid binding proof");
+    }
     if (nProofMode == FINALITY_PROOF_NULLSTAKE_V2)
     {
         if (nullStakeV2Proof.IsNull())
@@ -343,20 +2199,77 @@ uint256 CFinalityTallyShare::GetHash() const
     ss << nEpoch;
     ss << voteNullifier;
     ss << hashBlock;
+    ss << hashCurveRoot;
+    ss << hashNullifierRoot;
+    ss << committeeSetHash;
     ss << stakeWeightCommitment;
     ss << rewardCommitment;
+    ss << vEncryptedRecipientShares;
     ss << vchShareProof;
     return ss.GetHash();
 }
 
 bool CFinalityTallyShare::IsValidBasic() const
 {
-    if (nVersion != 1 || nEpoch < 0 || voteNullifier == 0 || hashBlock == 0)
+    if (nVersion != 2 || nEpoch < 0 || voteNullifier == 0 || hashBlock == 0)
+        return false;
+    if (hashCurveRoot == 0 || hashNullifierRoot == 0 || committeeSetHash == 0)
         return false;
     if (stakeWeightCommitment.IsNull() || rewardCommitment.IsNull())
         return false;
+    if (vEncryptedRecipientShares.empty() ||
+        vEncryptedRecipientShares.size() > FINALITY_MAX_TALLY_COMMITTEE)
+        return false;
+    for (const std::vector<unsigned char>& vchCiphertext : vEncryptedRecipientShares)
+    {
+        if (vchCiphertext.empty() || vchCiphertext.size() > BPAC_V3_MAX_PROOF_SIZE)
+            return false;
+    }
     if (vchShareProof.empty() || vchShareProof.size() > BPAC_V3_MAX_PROOF_SIZE)
         return false;
+    return true;
+}
+
+uint256 CFinalityTallyAggregatePartial::GetHash() const
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << nVersion;
+    ss << nEpoch;
+    ss << hashBlock;
+    ss << hashCurveRoot;
+    ss << hashNullifierRoot;
+    ss << committeeSetHash;
+    ss << nSourceIndex;
+    ss << vTallyShareHashes;
+    ss << vEncryptedRecipientPartials;
+    return ss.GetHash();
+}
+
+bool CFinalityTallyAggregatePartial::IsValidBasic() const
+{
+    if (nVersion != 2 || nEpoch < 0 || hashBlock == 0 ||
+        hashCurveRoot == 0 || hashNullifierRoot == 0 || committeeSetHash == 0)
+        return false;
+    if (nSourceIndex < 0 || nSourceIndex >= FINALITY_MAX_TALLY_COMMITTEE)
+        return false;
+    if (vTallyShareHashes.empty() || vTallyShareHashes.size() > FINALITY_MAX_VOTES)
+        return false;
+    std::set<uint256> setShareHashes;
+    for (const uint256& hashShare : vTallyShareHashes)
+    {
+        if (hashShare == 0 || !setShareHashes.insert(hashShare).second)
+            return false;
+    }
+    if (vEncryptedRecipientPartials.empty() ||
+        vEncryptedRecipientPartials.size() > FINALITY_MAX_TALLY_COMMITTEE)
+        return false;
+    if (nSourceIndex >= (int)vEncryptedRecipientPartials.size())
+        return false;
+    for (const std::vector<unsigned char>& vchCiphertext : vEncryptedRecipientPartials)
+    {
+        if (vchCiphertext.empty() || vchCiphertext.size() > BPAC_V3_MAX_PROOF_SIZE)
+            return false;
+    }
     return true;
 }
 
@@ -371,6 +2284,8 @@ uint256 CFinalityTallyCertificate::GetHash() const
     ss << nConsecutiveHardCount;
     ss << hashCurveRoot;
     ss << hashNullifierRoot;
+    if (nVersion >= 2)
+        ss << committeeSetHash;
     ss << activeWeightCommitment;
     ss << winningWeightCommitment;
     ss << rewardBudgetCommitment;
@@ -394,7 +2309,7 @@ bool CFinalityTallyCertificate::HasPrivateWeight() const
 
 bool CFinalityTallyCertificate::IsValidBasic(std::string* pstrError) const
 {
-    if (nVersion != 1)
+    if (nVersion < 1 || nVersion > 2)
         return FinalityReject(pstrError, "unsupported tally certificate version");
     if (nEpoch < 0 || nHeight < 0)
         return FinalityReject(pstrError, "invalid tally certificate epoch or height");
@@ -419,8 +2334,12 @@ bool CFinalityTallyCertificate::IsValidBasic(std::string* pstrError) const
 
     if (HasPrivateWeight())
     {
+        if (nVersion != 2)
+            return FinalityReject(pstrError, "private tally certificates require version 2");
         if (hashCurveRoot == 0 || hashNullifierRoot == 0)
             return FinalityReject(pstrError, "private tally certificate missing epoch roots");
+        if (committeeSetHash == 0)
+            return FinalityReject(pstrError, "private tally certificate missing committee set hash");
         if (activeWeightCommitment.IsNull() || winningWeightCommitment.IsNull() || rewardBudgetCommitment.IsNull())
             return FinalityReject(pstrError, "private tally certificate missing aggregate commitments");
         if (vTallyShareHashes.empty())
@@ -597,11 +2516,13 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb, std::st
     CBlockIndex* pEpochBlock = miEpoch->second;
     if (pEpochBlock->nHeight != vote.nHeight)
         return reject("epoch block height mismatch");
+    if (pEpochBlock->nHeight < FORK_HEIGHT_DAG)
+        return reject("finality votes require DAG epoch mode");
+    if (!pEpochBlock->IsProofOfWork())
+        return reject("finality votes must target proof-of-work epoch blocks");
 
     if (vote.IsPrivate())
     {
-        if (pEpochBlock->nHeight < FORK_HEIGHT_DAG)
-            return reject("private finality votes require DAG epoch mode");
         if (vote.privateProof.hashEpochBlock != vote.hashBlock ||
             vote.privateProof.nEpoch != vote.nEpoch ||
             vote.privateProof.nullifier != vote.nullifier)
@@ -743,8 +2664,10 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
     CBlockIndex* pEpochBlock = miEpoch->second;
     if (pEpochBlock->nHeight != cert.nHeight)
         return reject("tally certificate block height mismatch");
-    if (cert.HasPrivateWeight() && pEpochBlock->nHeight < FORK_HEIGHT_DAG)
-        return reject("private tally certificates require DAG epoch mode");
+    if (pEpochBlock->nHeight < FORK_HEIGHT_DAG)
+        return reject("tally certificates require DAG epoch mode");
+    if (!pEpochBlock->IsProofOfWork())
+        return reject("tally certificates must target proof-of-work epoch blocks");
     if (cert.HasPrivateWeight())
     {
         int nFinalizedEpoch = GetEpochForHeight(GetFinalizedHeight());
@@ -822,15 +2745,26 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
                                vote.privateProof.stakeWeightCommitment))
                 return reject("private winning aggregate commitment failed");
 
-            CFinalityTallyShare expectedShare;
-            expectedShare.nVersion = 1;
-            expectedShare.nEpoch = vote.nEpoch;
-            expectedShare.voteNullifier = vote.nullifier;
-            expectedShare.hashBlock = vote.hashBlock;
-            expectedShare.stakeWeightCommitment = vote.privateProof.stakeWeightCommitment;
-            expectedShare.rewardCommitment = vote.privateProof.rewardCommitment;
-            expectedShare.vchShareProof = vote.privateProof.vchBindingProof;
-            setExpectedTallyShareHashes.insert(expectedShare.GetHash());
+            bool fFoundShare = false;
+            for (std::map<uint256, CFinalityTallyShare>::const_iterator itShare = mapTallyShares.begin();
+                 itShare != mapTallyShares.end(); ++itShare)
+            {
+                const CFinalityTallyShare& share = itShare->second;
+                if (share.nVersion != 2 ||
+                    share.nEpoch != vote.nEpoch ||
+                    share.voteNullifier != vote.nullifier ||
+                    share.hashBlock != vote.hashBlock ||
+                    share.hashCurveRoot != cert.hashCurveRoot ||
+                    share.hashNullifierRoot != cert.hashNullifierRoot ||
+                    share.committeeSetHash != cert.committeeSetHash ||
+                    !(share.stakeWeightCommitment == vote.privateProof.stakeWeightCommitment) ||
+                    !(share.rewardCommitment == vote.privateProof.rewardCommitment))
+                    continue;
+                setExpectedTallyShareHashes.insert(itShare->first);
+                fFoundShare = true;
+            }
+            if (!fFoundShare)
+                return reject("private tally certificate missing v2 tally share for vote");
         }
         if (vote.hashBlock == cert.hashBlock && !vote.IsPrivate())
         {
@@ -868,6 +2802,19 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
 
     if (cert.HasPrivateWeight())
     {
+        for (const uint256& hashShare : cert.vTallyShareHashes)
+        {
+            CFinalityTallyShare share;
+            std::map<uint256, CFinalityTallyShare>::const_iterator itShare = mapTallyShares.find(hashShare);
+            if (itShare == mapTallyShares.end())
+                return reject("private tally certificate references unknown tally share");
+            share = itShare->second;
+            if (share.committeeSetHash != cert.committeeSetHash)
+                return reject("private tally certificate share committee mismatch");
+            if (share.hashCurveRoot != cert.hashCurveRoot ||
+                share.hashNullifierRoot != cert.hashNullifierRoot)
+                return reject("private tally certificate share root mismatch");
+        }
         if (setExpectedTallyShareHashes.size() != cert.vTallyShareHashes.size())
             return reject("private tally certificate share set mismatch");
         for (const uint256& hashShare : cert.vTallyShareHashes)
@@ -875,14 +2822,12 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
             if (!setExpectedTallyShareHashes.count(hashShare))
                 return reject("private tally certificate references unknown tally share");
         }
-        int64_t nPrivateActiveWeight = 0;
-        int64_t nPrivateWinningWeight = 0;
-        if (!VerifyFinalityAggregateThresholdProof(cert,
-                                                   nTransparentActiveWeight,
-                                                   nTransparentWinningWeight,
-                                                   nPrivateActiveWeight,
-                                                   nPrivateWinningWeight,
-                                                   pstrError))
+        bool fRequireZeroPrivateWinning = !fHavePrivateWinningCommitment;
+        if (!VerifyFinalityAggregateThresholdProofV2(cert,
+                                                     nTransparentActiveWeight,
+                                                     nTransparentWinningWeight,
+                                                     fRequireZeroPrivateWinning,
+                                                     pstrError))
             return false;
         if (!fHavePrivateActiveCommitment ||
             !(cert.activeWeightCommitment == privateActiveCommitment))
@@ -895,14 +2840,9 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
             if (!(cert.winningWeightCommitment == privateWinningCommitment))
                 return reject("private winning aggregate commitment does not match tallied votes");
         }
-        else if (nPrivateWinningWeight != 0)
-        {
-            return reject("private winning aggregate has no matching votes");
-        }
-        if (!VerifyFinalityRewardBudgetProof(cert,
-                                             nPrivateActiveWeight,
-                                             nTransparentRewardBudget,
-                                             pstrError))
+        if (!VerifyFinalityRewardBudgetProofV2(cert,
+                                               nTransparentRewardBudget,
+                                               pstrError))
             return false;
     }
     else
@@ -910,6 +2850,158 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
         if (!VerifyFinalityThresholdTier(cert.nTier, nTransparentActiveWeight, nTransparentWinningWeight))
             return reject("transparent tally certificate threshold mismatch");
     }
+    return true;
+}
+
+bool CFinalityTracker::CheckTallyShare(const CFinalityTallyShare& share,
+                                       std::string* pstrError,
+                                       const std::vector<CFinalityVote>* pvBlockVotes) const
+{
+    auto reject = [&](const std::string& strReason) -> bool {
+        if (pstrError)
+            *pstrError = strReason;
+        return false;
+    };
+
+    if (!share.IsValidBasic())
+        return reject("invalid tally share structure");
+    CBindingSignature bindingSig;
+    if (!DeserializeFinalityBindingProof(share.vchShareProof, bindingSig))
+        return reject("invalid tally share proof encoding");
+
+    int nCurrentEpoch = 0;
+    CBlockIndex* pBest = pindexBest;
+    if (pBest)
+        nCurrentEpoch = GetEpochForHeight(pBest->nHeight);
+    if (share.nEpoch > nCurrentEpoch + 2)
+        return reject("tally share is too far in the future");
+
+    LOCK(cs_finality);
+    CFinalityVote vote;
+    bool fHaveVote = false;
+    auto itConnected = mapConnectedVotes.find(share.voteNullifier);
+    if (itConnected != mapConnectedVotes.end())
+    {
+        vote = itConnected->second;
+        fHaveVote = true;
+    }
+    else
+    {
+        auto itPending = mapPendingVotes.find(share.voteNullifier);
+        if (itPending != mapPendingVotes.end())
+        {
+            vote = itPending->second;
+            fHaveVote = true;
+        }
+    }
+    if (!fHaveVote && pvBlockVotes)
+    {
+        for (const CFinalityVote& blockVote : *pvBlockVotes)
+        {
+            if (blockVote.nullifier == share.voteNullifier)
+            {
+                vote = blockVote;
+                fHaveVote = true;
+                break;
+            }
+        }
+    }
+
+    if (!fHaveVote)
+        return reject("tally share references unknown vote");
+    if (!vote.IsPrivate())
+        return reject("tally share references a transparent vote");
+    if (vote.nEpoch != share.nEpoch || vote.hashBlock != share.hashBlock)
+        return reject("tally share vote binding mismatch");
+    if (vote.privateProof.hashCurveRoot != share.hashCurveRoot ||
+        vote.privateProof.hashNullifierRoot != share.hashNullifierRoot)
+        return reject("tally share root mismatch");
+    if (!(vote.privateProof.stakeWeightCommitment == share.stakeWeightCommitment) ||
+        !(vote.privateProof.rewardCommitment == share.rewardCommitment))
+        return reject("tally share commitment mismatch");
+    if (vote.privateProof.vchBindingProof != share.vchShareProof)
+        return reject("tally share proof mismatch");
+
+    return true;
+}
+
+bool CFinalityTracker::AddTallyShare(const CFinalityTallyShare& share, bool fCheck)
+{
+    if (fCheck)
+    {
+        std::string strError;
+        if (!CheckTallyShare(share, &strError))
+        {
+            if (fDebug)
+                printf("AddTallyShare: rejected tally share: %s\n", strError.c_str());
+            return false;
+        }
+    }
+
+    LOCK(cs_finality);
+    uint256 hashShare = share.GetHash();
+    if (mapTallyShares.count(hashShare))
+        return false;
+    mapTallyShares[hashShare] = share;
+    return true;
+}
+
+bool CFinalityTracker::CheckTallyAggregatePartial(const CFinalityTallyAggregatePartial& partial,
+                                                  std::string* pstrError) const
+{
+    auto reject = [&](const std::string& strReason) -> bool {
+        if (pstrError)
+            *pstrError = strReason;
+        return false;
+    };
+
+    if (!partial.IsValidBasic())
+        return reject("invalid tally aggregate partial structure");
+
+    int nCurrentEpoch = 0;
+    CBlockIndex* pBest = pindexBest;
+    if (pBest)
+        nCurrentEpoch = GetEpochForHeight(pBest->nHeight);
+    if (partial.nEpoch > nCurrentEpoch + 2)
+        return reject("tally aggregate partial is too far in the future");
+
+    LOCK(cs_finality);
+    for (const uint256& hashShare : partial.vTallyShareHashes)
+    {
+        std::map<uint256, CFinalityTallyShare>::const_iterator itShare = mapTallyShares.find(hashShare);
+        if (itShare == mapTallyShares.end())
+            return reject("tally aggregate partial references unknown tally share");
+        const CFinalityTallyShare& share = itShare->second;
+        if (share.nEpoch != partial.nEpoch ||
+            share.hashBlock != partial.hashBlock ||
+            share.hashCurveRoot != partial.hashCurveRoot ||
+            share.hashNullifierRoot != partial.hashNullifierRoot ||
+            share.committeeSetHash != partial.committeeSetHash)
+            return reject("tally aggregate partial share binding mismatch");
+    }
+
+    return true;
+}
+
+bool CFinalityTracker::AddTallyAggregatePartial(const CFinalityTallyAggregatePartial& partial,
+                                                bool fCheck)
+{
+    if (fCheck)
+    {
+        std::string strError;
+        if (!CheckTallyAggregatePartial(partial, &strError))
+        {
+            if (fDebug)
+                printf("AddTallyAggregatePartial: rejected partial: %s\n", strError.c_str());
+            return false;
+        }
+    }
+
+    LOCK(cs_finality);
+    uint256 hashPartial = partial.GetHash();
+    if (mapTallyAggregatePartials.count(hashPartial))
+        return false;
+    mapTallyAggregatePartials[hashPartial] = partial;
     return true;
 }
 
@@ -1212,6 +3304,33 @@ std::vector<CFinalityVote> CFinalityTracker::GetEpochVotes(int nEpoch) const
     return std::vector<CFinalityVote>();
 }
 
+std::vector<CFinalityVote> CFinalityTracker::GetKnownEpochVotes(int nEpoch) const
+{
+    LOCK(cs_finality);
+    std::vector<CFinalityVote> vVotes;
+    std::set<uint256> setNullifiers;
+
+    std::map<int, std::vector<CFinalityVote> >::const_iterator itEpoch =
+        mapEpochVotes.find(nEpoch);
+    if (itEpoch != mapEpochVotes.end())
+    {
+        for (const CFinalityVote& vote : itEpoch->second)
+        {
+            if (setNullifiers.insert(vote.nullifier).second)
+                vVotes.push_back(vote);
+        }
+    }
+
+    for (const std::pair<const uint256, CFinalityVote>& pair : mapPendingVotes)
+    {
+        const CFinalityVote& vote = pair.second;
+        if (vote.nEpoch == nEpoch && setNullifiers.insert(vote.nullifier).second)
+            vVotes.push_back(vote);
+    }
+
+    return vVotes;
+}
+
 int64_t CFinalityTracker::GetEpochVoteWeight(int nEpoch) const
 {
     LOCK(cs_finality);
@@ -1257,6 +3376,54 @@ std::vector<CFinalityTallyCertificate> CFinalityTracker::GetEpochTallyCertificat
     return std::vector<CFinalityTallyCertificate>();
 }
 
+std::vector<CFinalityTallyShare> CFinalityTracker::GetEpochTallyShares(int nEpoch) const
+{
+    LOCK(cs_finality);
+    std::vector<CFinalityTallyShare> vShares;
+    for (const auto& pair : mapTallyShares)
+    {
+        if (pair.second.nEpoch == nEpoch)
+            vShares.push_back(pair.second);
+    }
+    return vShares;
+}
+
+std::vector<CFinalityTallyAggregatePartial> CFinalityTracker::GetEpochTallyAggregatePartials(int nEpoch) const
+{
+    LOCK(cs_finality);
+    std::vector<CFinalityTallyAggregatePartial> vPartials;
+    for (const auto& pair : mapTallyAggregatePartials)
+    {
+        if (pair.second.nEpoch == nEpoch)
+            vPartials.push_back(pair.second);
+    }
+    return vPartials;
+}
+
+int CFinalityTracker::GetEpochTallyShareCount(int nEpoch) const
+{
+    LOCK(cs_finality);
+    int nCount = 0;
+    for (const auto& pair : mapTallyShares)
+    {
+        if (pair.second.nEpoch == nEpoch)
+            nCount++;
+    }
+    return nCount;
+}
+
+int CFinalityTracker::GetEpochTallyAggregatePartialCount(int nEpoch) const
+{
+    LOCK(cs_finality);
+    int nCount = 0;
+    for (const auto& pair : mapTallyAggregatePartials)
+    {
+        if (pair.second.nEpoch == nEpoch)
+            nCount++;
+    }
+    return nCount;
+}
+
 std::vector<CKeyID> CFinalityTracker::GetEpochVoters(int nEpoch) const
 {
     LOCK(cs_finality);
@@ -1272,6 +3439,12 @@ int CFinalityTracker::GetPendingVoteCount() const
 {
     LOCK(cs_finality);
     return (int)mapPendingVotes.size();
+}
+
+bool CFinalityTracker::HasVoteNullifier(const uint256& nullifier) const
+{
+    LOCK(cs_finality);
+    return mapVoteHashByNullifier.count(nullifier) != 0;
 }
 
 int64_t CFinalityTracker::GetPendingRewardTotal() const
@@ -1326,6 +3499,26 @@ std::vector<CFinalityTallyCertificate> CFinalityTracker::GetPendingTallyCertific
             break;
     }
     return vCerts;
+}
+
+std::vector<CFinalityTallyShare> CFinalityTracker::GetPendingTallySharesForBlock(int nBlockHeight, unsigned int nMaxShares) const
+{
+    LOCK(cs_finality);
+
+    std::vector<CFinalityTallyShare> vShares;
+    int nBlockEpoch = GetEpochForHeight(nBlockHeight);
+    for (const auto& pair : mapTallyShares)
+    {
+        const CFinalityTallyShare& share = pair.second;
+        if (share.nEpoch > nBlockEpoch)
+            continue;
+        if (share.nEpoch + 2 < nBlockEpoch)
+            continue;
+        vShares.push_back(share);
+        if (vShares.size() >= nMaxShares)
+            break;
+    }
+    return vShares;
 }
 
 bool CFinalityTracker::ConnectBlockVotes(CTxDB& txdb, const uint256& hashBlock, const std::vector<CFinalityVote>& vVotes)
@@ -1455,6 +3648,66 @@ bool CFinalityTracker::ConnectBlockTallyCertificates(CTxDB& txdb, const uint256&
     return true;
 }
 
+bool CFinalityTracker::ConnectBlockTallyShares(CTxDB& txdb, const uint256& hashBlock, const std::vector<CFinalityTallyShare>& vShares)
+{
+    if (vShares.empty())
+        return true;
+
+    std::set<uint256> setBlockShares;
+    for (const CFinalityTallyShare& share : vShares)
+    {
+        if (!setBlockShares.insert(share.GetHash()).second)
+            return false;
+    }
+
+    for (const CFinalityTallyShare& share : vShares)
+    {
+        uint256 hashShare = share.GetHash();
+
+        std::string strError;
+        if (!CheckTallyShare(share, &strError))
+        {
+            if (fDebug)
+                printf("ConnectBlockTallyShares: rejected share in block %s: %s\n",
+                       hashBlock.ToString().substr(0,20).c_str(), strError.c_str());
+            return false;
+        }
+
+        bool fHaveShare = false;
+        {
+            LOCK(cs_finality);
+            fHaveShare = mapTallyShares.count(hashShare) != 0;
+        }
+        if (!fHaveShare && !AddTallyShare(share, false))
+            return false;
+        if (!txdb.WriteFinalityTallyShare(hashShare, share))
+            return false;
+    }
+
+    LOCK(cs_finality);
+    std::vector<uint256>& vHashes = mapBlockConnectedTallyShares[hashBlock];
+    for (const CFinalityTallyShare& share : vShares)
+        vHashes.push_back(share.GetHash());
+
+    return true;
+}
+
+bool CFinalityTracker::DisconnectBlockTallyShares(CTxDB& txdb, const uint256& hashBlock, const std::vector<CFinalityTallyShare>& vShares)
+{
+    if (vShares.empty())
+        return true;
+
+    LOCK(cs_finality);
+    for (const CFinalityTallyShare& share : vShares)
+    {
+        uint256 hashShare = share.GetHash();
+        txdb.EraseFinalityTallyShare(hashShare);
+        mapTallyShares.erase(hashShare);
+    }
+    mapBlockConnectedTallyShares.erase(hashBlock);
+    return true;
+}
+
 bool CFinalityTracker::DisconnectBlockTallyCertificates(CTxDB& txdb, const uint256& hashBlock, const std::vector<CFinalityTallyCertificate>& vCerts)
 {
     if (vCerts.empty())
@@ -1492,8 +3745,24 @@ bool CFinalityTracker::LoadVotes(CTxDB& txdb)
     for (const auto& pair : mapVotes)
         AddVote(pair.second, false, true);
 
+    RebuildFinalityState();
+
     if (!mapVotes.empty())
         printf("LoadFinalityVotes: loaded %d connected finality votes\n", (int)mapVotes.size());
+    return true;
+}
+
+bool CFinalityTracker::LoadTallyShares(CTxDB& txdb)
+{
+    std::map<uint256, CFinalityTallyShare> mapShares;
+    if (!txdb.IterateFinalityTallyShares(mapShares))
+        return false;
+
+    for (const auto& pair : mapShares)
+        AddTallyShare(pair.second, false);
+
+    if (!mapShares.empty())
+        printf("LoadFinalityTallyShares: loaded %d relayed tally shares\n", (int)mapShares.size());
     return true;
 }
 
@@ -1506,9 +3775,33 @@ bool CFinalityTracker::LoadTallyCertificates(CTxDB& txdb)
     for (const auto& pair : mapCerts)
         AddTallyCertificate(pair.second, false, true);
 
+    RebuildFinalityState();
+
     if (!mapCerts.empty())
         printf("LoadFinalityTallyCertificates: loaded %d connected tally certificates\n", (int)mapCerts.size());
     return true;
+}
+
+void CFinalityTracker::RebuildFinalityState()
+{
+    LOCK(cs_finality);
+
+    nLastFinalizedHeight = 0;
+    hashLastFinalized = 0;
+    nLastFinalityTier = FINALITY_NONE;
+    nConsecutiveHardEpochs = 0;
+    nLastHardEpoch = -1;
+    nPendingFinalizedHeight = 0;
+    hashPendingFinalized = 0;
+
+    std::set<int> setEpochs;
+    for (const auto& pair : mapEpochVotes)
+        setEpochs.insert(pair.first);
+    for (const auto& pair : mapEpochTallyCertificates)
+        setEpochs.insert(pair.first);
+
+    for (int nEpoch : setEpochs)
+        CheckFinalityThreshold(nEpoch);
 }
 
 void CFinalityTracker::PruneOldEpochs(int nCurrentEpoch)
@@ -1539,6 +3832,22 @@ void CFinalityTracker::PruneOldEpochs(int nCurrentEpoch)
         {
             ++it;
         }
+    }
+
+    for (auto it = mapTallyShares.begin(); it != mapTallyShares.end(); )
+    {
+        if (it->second.nEpoch < nMinEpoch)
+            it = mapTallyShares.erase(it);
+        else
+            ++it;
+    }
+
+    for (auto it = mapTallyAggregatePartials.begin(); it != mapTallyAggregatePartials.end(); )
+    {
+        if (it->second.nEpoch < nMinEpoch)
+            it = mapTallyAggregatePartials.erase(it);
+        else
+            ++it;
     }
 }
 
@@ -1595,6 +3904,69 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
                 if (pnode == pfrom)
                     continue;
                 pnode->PushMessage("fvote", vote);
+            }
+        }
+
+        return true;
+    }
+    else if (strCommand == "ftshare")
+    {
+        CFinalityTallyShare share;
+        vRecv >> share;
+
+        if (!share.IsValidBasic())
+            return false;
+
+        int nCurrentEpoch = 0;
+        {
+            CBlockIndex* pBest = pindexBest;
+            if (pBest)
+                nCurrentEpoch = GetEpochForHeight(pBest->nHeight);
+        }
+        if (share.nEpoch > nCurrentEpoch + 2)
+            return false;
+
+        if (g_finalityTracker.AddTallyShare(share))
+        {
+            CTxDB txdb("r+");
+            txdb.WriteFinalityTallyShare(share.GetHash(), share);
+
+            LOCK(cs_vNodes);
+            for (CNode* pnode : vNodes)
+            {
+                if (pnode == pfrom)
+                    continue;
+                pnode->PushMessage("ftshare", share);
+            }
+        }
+
+        return true;
+    }
+    else if (strCommand == "ftpart")
+    {
+        CFinalityTallyAggregatePartial partial;
+        vRecv >> partial;
+
+        if (!partial.IsValidBasic())
+            return false;
+
+        int nCurrentEpoch = 0;
+        {
+            CBlockIndex* pBest = pindexBest;
+            if (pBest)
+                nCurrentEpoch = GetEpochForHeight(pBest->nHeight);
+        }
+        if (partial.nEpoch > nCurrentEpoch + 2)
+            return false;
+
+        if (g_finalityTracker.AddTallyAggregatePartial(partial))
+        {
+            LOCK(cs_vNodes);
+            for (CNode* pnode : vNodes)
+            {
+                if (pnode == pfrom)
+                    continue;
+                pnode->PushMessage("ftpart", partial);
             }
         }
 
@@ -1663,6 +4035,17 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
         {
             pfrom->PushMessage("fvote", vote);
         }
+        std::vector<CFinalityTallyShare> shares = g_finalityTracker.GetEpochTallyShares(nEpoch);
+        for (const CFinalityTallyShare& share : shares)
+        {
+            pfrom->PushMessage("ftshare", share);
+        }
+        std::vector<CFinalityTallyAggregatePartial> partials =
+            g_finalityTracker.GetEpochTallyAggregatePartials(nEpoch);
+        for (const CFinalityTallyAggregatePartial& partial : partials)
+        {
+            pfrom->PushMessage("ftpart", partial);
+        }
         std::vector<CFinalityTallyCertificate> certs = g_finalityTracker.GetEpochTallyCertificates(nEpoch);
         for (const CFinalityTallyCertificate& cert : certs)
         {
@@ -1673,6 +4056,179 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
     }
 
     return false;
+}
+
+static bool ProcessFinalityTallyCommitteeEpoch(int nEpoch,
+                                               const CFinalityTallyConfig& config,
+                                               const CKey& keyLocal)
+{
+    if (nEpoch < 0)
+        return false;
+
+    bool fDidWork = false;
+    std::map<CFinalityTallyGroupKey, CFinalityTallyGroupWork> mapGroups;
+    std::vector<CFinalityTallyShare> vShares = g_finalityTracker.GetEpochTallyShares(nEpoch);
+    for (const CFinalityTallyShare& share : vShares)
+    {
+        if (share.nVersion != 2 ||
+            share.committeeSetHash != config.committeeSetHash ||
+            !share.IsValidBasic())
+            continue;
+
+        CFinalityTallyGroupKey key;
+        key.nEpoch = share.nEpoch;
+        key.hashBlock = share.hashBlock;
+        key.hashCurveRoot = share.hashCurveRoot;
+        key.hashNullifierRoot = share.hashNullifierRoot;
+        key.committeeSetHash = share.committeeSetHash;
+        CFinalityTallyGroupWork& group = mapGroups[key];
+        group.key = key;
+        group.vShares.push_back(share);
+        group.vShareHashes.push_back(share.GetHash());
+
+        CFinalityTallyPlainShare plain;
+        if (DecryptFinalityTallyShareForRecipient(share,
+                                                  config,
+                                                  keyLocal,
+                                                  config.nLocalCommitteeIndex,
+                                                  plain))
+            group.vLocalPlainShares.push_back(plain);
+    }
+
+    std::vector<CFinalityTallyAggregatePartial> vPartials =
+        g_finalityTracker.GetEpochTallyAggregatePartials(nEpoch);
+    static std::set<uint256> setProducedPartialContexts;
+
+    for (std::pair<const CFinalityTallyGroupKey, CFinalityTallyGroupWork>& pair : mapGroups)
+    {
+        CFinalityTallyGroupWork& group = pair.second;
+        std::sort(group.vShareHashes.begin(), group.vShareHashes.end());
+        group.vShareHashes.erase(std::unique(group.vShareHashes.begin(), group.vShareHashes.end()),
+                                 group.vShareHashes.end());
+        if (group.vLocalPlainShares.empty())
+            continue;
+
+        bool fHaveLocalPartial = false;
+        for (const CFinalityTallyAggregatePartial& partial : vPartials)
+        {
+            if (partial.nSourceIndex == config.nLocalCommitteeIndex &&
+                FinalityPartialMatchesGroup(partial, group))
+            {
+                fHaveLocalPartial = true;
+                break;
+            }
+        }
+
+        uint256 hashPartialContext = FinalityAutomationContextHash(
+            "Innova/Finality/TallyPartialAutomation/v2",
+            group.key,
+            config.nLocalCommitteeIndex,
+            group.vShareHashes);
+        if (!fHaveLocalPartial && !setProducedPartialContexts.count(hashPartialContext))
+        {
+            CFinalityTallyPlainShare aggregate;
+            if (AggregateFinalityTallyPlainShares(group.vLocalPlainShares, aggregate))
+            {
+                CFinalityTallyAggregatePartial partial;
+                partial.nVersion = 2;
+                partial.nEpoch = group.key.nEpoch;
+                partial.hashBlock = group.key.hashBlock;
+                partial.hashCurveRoot = group.key.hashCurveRoot;
+                partial.hashNullifierRoot = group.key.hashNullifierRoot;
+                partial.committeeSetHash = group.key.committeeSetHash;
+                partial.vTallyShareHashes = group.vShareHashes;
+                if (BuildEncryptedFinalityTallyAggregatePartial(partial,
+                                                                 aggregate,
+                                                                 config,
+                                                                 keyLocal) &&
+                    g_finalityTracker.AddTallyAggregatePartial(partial))
+                {
+                    setProducedPartialContexts.insert(hashPartialContext);
+                    vPartials.push_back(partial);
+                    RelayFinalityTallyAggregatePartial(partial);
+                    fDidWork = true;
+                }
+            }
+        }
+    }
+
+    std::map<CFinalityTallyCohortKey, std::vector<CFinalityTallyGroupKey> > mapCohorts;
+    for (std::pair<const CFinalityTallyGroupKey, CFinalityTallyGroupWork>& pair : mapGroups)
+    {
+        CFinalityTallyGroupWork& group = pair.second;
+        if (!FinalityRecoverGroupFromPartials(group, vPartials, config, keyLocal))
+            continue;
+
+        CFinalityTallyCohortKey cohort;
+        cohort.nEpoch = group.key.nEpoch;
+        cohort.hashCurveRoot = group.key.hashCurveRoot;
+        cohort.hashNullifierRoot = group.key.hashNullifierRoot;
+        cohort.committeeSetHash = group.key.committeeSetHash;
+        mapCohorts[cohort].push_back(group.key);
+    }
+
+    for (const std::pair<const CFinalityTallyCohortKey, std::vector<CFinalityTallyGroupKey> >& pair : mapCohorts)
+    {
+        if (FinalityBuildAndRelayCertificateForCohort(nEpoch,
+                                                      pair.first,
+                                                      pair.second,
+                                                      mapGroups))
+            fDidWork = true;
+    }
+
+    return fDidWork;
+}
+
+bool ProcessFinalityTallyCommittee()
+{
+    CFinalityTallyConfig config = GetFinalityTallyConfig();
+    if (!config.CanProduceCertificates())
+        return false;
+
+    CKey keyLocal;
+    if (!GetFinalityTallyPrivateKey(keyLocal))
+        return false;
+
+    int nCurrentEpoch = -1;
+    {
+        LOCK(cs_main);
+        if (!pindexBest || pindexBest->nHeight < FORK_HEIGHT_DAG)
+            return false;
+        nCurrentEpoch = GetEpochForHeight(pindexBest->nHeight);
+    }
+
+    bool fDidWork = false;
+    if (nCurrentEpoch > 0)
+        fDidWork |= ProcessFinalityTallyCommitteeEpoch(nCurrentEpoch - 1, config, keyLocal);
+    fDidWork |= ProcessFinalityTallyCommitteeEpoch(nCurrentEpoch, config, keyLocal);
+    return fDidWork;
+}
+
+int CountDecryptableFinalityTallyShares(int nEpoch)
+{
+    CFinalityTallyConfig config = GetFinalityTallyConfig();
+    if (!config.CanProduceCertificates())
+        return 0;
+
+    CKey keyLocal;
+    if (!GetFinalityTallyPrivateKey(keyLocal))
+        return 0;
+
+    int nCount = 0;
+    std::vector<CFinalityTallyShare> vShares = g_finalityTracker.GetEpochTallyShares(nEpoch);
+    for (const CFinalityTallyShare& share : vShares)
+    {
+        if (share.committeeSetHash != config.committeeSetHash)
+            continue;
+        CFinalityTallyPlainShare plain;
+        if (DecryptFinalityTallyShareForRecipient(share,
+                                                  config,
+                                                  keyLocal,
+                                                  config.nLocalCommitteeIndex,
+                                                  plain))
+            nCount++;
+    }
+    return nCount;
 }
 
 
@@ -1735,8 +4291,7 @@ void ThreadFinalityVoter(void* parg)
 
 static std::string GetFinalityVoteModeArg()
 {
-    std::string strMode = GetArg("-finalityvotemode", "auto");
-    std::transform(strMode.begin(), strMode.end(), strMode.begin(), ::tolower);
+    std::string strMode = ToLowerASCII(GetArg("-finalityvotemode", "auto"));
     if (strMode != "auto" && strMode != "transparent" &&
         strMode != "nullstake" && strMode != "nullstakecold")
     {
@@ -1760,9 +4315,12 @@ static bool SerializeBindingProof(const CBindingSignature& sig,
 static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
                                                 CBlockIndex* pEpochBlock,
                                                 int nCurrentEpoch,
-                                                int nEpochHeight)
+                                                int nEpochHeight,
+                                                const CFinalityTallyConfig& tallyConfig)
 {
     if (!pEpochBlock)
+        return false;
+    if (!tallyConfig.CanRelayPrivateVotes())
         return false;
 
     CEpochState finalizedEpochState;
@@ -1790,9 +4348,19 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
         if (!DeriveShieldedFullViewingKey(itKey->second, fvk))
             continue;
 
+        std::vector<size_t> vNoteOrder;
+        vNoteOrder.reserve(pwalletMain->vShieldedNotes.size());
         for (size_t i = 0; i < pwalletMain->vShieldedNotes.size(); i++)
+            vNoteOrder.push_back(i);
+        std::sort(vNoteOrder.begin(), vNoteOrder.end(),
+                  [](size_t a, size_t b) {
+                      return pwalletMain->vShieldedNotes[a].note.nValue >
+                             pwalletMain->vShieldedNotes[b].note.nValue;
+                  });
+
+        for (size_t nNoteIndex : vNoteOrder)
         {
-            CWallet::CShieldedWalletNote& wnote = pwalletMain->vShieldedNotes[i];
+            CWallet::CShieldedWalletNote& wnote = pwalletMain->vShieldedNotes[nNoteIndex];
             if (wnote.fSpent || wnote.note.nValue <= 0 || wnote.nHeight <= 0)
                 continue;
 
@@ -1804,6 +4372,15 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
 
             unsigned int nBlockTimeFrom = pNoteBlock->GetBlockTime();
             if (nBlockTimeFrom + nStakeMinAge > (unsigned int)pEpochBlock->GetBlockTime())
+                continue;
+
+            uint256 baseNullifier = wnote.note.GetNullifier(fvk.nk);
+            CHashWriter nullifierHasher(SER_GETHASH, 0);
+            nullifierHasher << std::string("Innova/Finality/PrivateNullifier/v1");
+            nullifierHasher << baseNullifier;
+            nullifierHasher << nCurrentEpoch;
+            uint256 voteNullifier = nullifierHasher.GetHash();
+            if (g_finalityTracker.HasVoteNullifier(voteNullifier))
                 continue;
 
             if (wnote.note.vchBlind.empty())
@@ -1833,7 +4410,7 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
             if (nBaseTime < (unsigned int)pEpochBlock->GetBlockTime())
                 nBaseTime = (unsigned int)pEpochBlock->GetBlockTime();
 
-            for (unsigned int n = 0; n < 60; n++)
+            for (unsigned int n = 0; n < FINALITY_PRIVATE_VOTE_SEARCH_INTERVAL; n++)
             {
                 unsigned int nTimeTx = nBaseTime + n;
                 int64_t nWeight = GetWeight((int64_t)nBlockTimeFrom, (int64_t)nTimeTx);
@@ -1872,12 +4449,6 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
                 if (!CreatePedersenCommitment(nPrivateReward, vchRewardBlind, rewardCommitment))
                     continue;
 
-                uint256 baseNullifier = wnote.note.GetNullifier(fvk.nk);
-                CHashWriter nullifierHasher(SER_GETHASH, 0);
-                nullifierHasher << std::string("Innova/Finality/PrivateNullifier/v1");
-                nullifierHasher << baseNullifier;
-                nullifierHasher << nCurrentEpoch;
-
                 CFinalityVote vote;
                 vote.nProofMode = FINALITY_PROOF_NULLSTAKE_V2;
                 vote.nEpoch = nCurrentEpoch;
@@ -1886,7 +4457,7 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
                 vote.nTime = nTimeTx;
                 vote.nVoteWeight = 0;
                 vote.nReward = 0;
-                vote.nullifier = nullifierHasher.GetHash();
+                vote.nullifier = voteNullifier;
 
                 vote.privateProof.nVersion = 1;
                 vote.privateProof.nProofMode = FINALITY_PROOF_NULLSTAKE_V2;
@@ -1905,20 +4476,47 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
                 bindingHasher << std::string("Innova/Finality/PrivateRewardBinding/v1");
                 bindingHasher << vote.nullifier;
                 bindingHasher << rewardCommitment;
+                uint256 hashBinding = bindingHasher.GetHash();
                 CBindingSignature bindingSig;
                 std::vector<std::vector<unsigned char> > vInputBlinds(1, wnote.note.vchBlind);
                 std::vector<std::vector<unsigned char> > vOutputBlinds(1, vchRewardBlind);
                 if (!CreateBindingSignature(vInputBlinds, vOutputBlinds,
-                                            bindingHasher.GetHash(), bindingSig) ||
+                                            hashBinding, bindingSig) ||
+                    !VerifyBindingSignature(std::vector<CPedersenCommitment>(1, stakeCommitment),
+                                            std::vector<CPedersenCommitment>(1, rewardCommitment),
+                                            wnote.note.nValue - nPrivateReward,
+                                            hashBinding,
+                                            bindingSig) ||
                     !SerializeBindingProof(bindingSig, vote.privateProof.vchBindingProof))
-                {
-                    vote.privateProof.vchBindingProof.resize(64);
-                    GetRandBytes(vote.privateProof.vchBindingProof.data(),
-                                 (int)vote.privateProof.vchBindingProof.size());
-                }
+                    continue;
+
+                CFinalityTallyShare share;
+                share.nVersion = 2;
+                share.nEpoch = vote.nEpoch;
+                share.voteNullifier = vote.nullifier;
+                share.hashBlock = vote.hashBlock;
+                share.hashCurveRoot = vote.privateProof.hashCurveRoot;
+                share.hashNullifierRoot = vote.privateProof.hashNullifierRoot;
+                share.committeeSetHash = tallyConfig.committeeSetHash;
+                share.stakeWeightCommitment = vote.privateProof.stakeWeightCommitment;
+                share.rewardCommitment = vote.privateProof.rewardCommitment;
+                share.vchShareProof = vote.privateProof.vchBindingProof;
+                if (!BuildEncryptedFinalityTallyShares(share,
+                                                       wnote.note.nValue,
+                                                       nPrivateReward,
+                                                       wnote.note.vchBlind,
+                                                       vchRewardBlind,
+                                                       tallyConfig))
+                    continue;
 
                 if (!g_finalityTracker.AddVote(vote))
                     continue;
+
+                if (g_finalityTracker.AddTallyShare(share, false))
+                {
+                    CTxDB txdbWrite("r+");
+                    txdbWrite.WriteFinalityTallyShare(share.GetHash(), share);
+                }
 
                 printf("ProduceFinalityVote: private nullstake epoch=%d height=%d note=%s\n",
                        nCurrentEpoch, nEpochHeight,
@@ -1928,6 +4526,7 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
                 for (CNode* pnode : vNodes)
                 {
                     pnode->PushMessage("fvote", vote);
+                    pnode->PushMessage("ftshare", share);
                 }
                 return true;
             }
@@ -1982,7 +4581,9 @@ bool ProduceFinalityVote()
         return false;
 
     std::string strVoteMode = GetFinalityVoteModeArg();
-    bool fAllowPrivateV2 = (strVoteMode == "auto" || strVoteMode == "nullstake");
+    CFinalityTallyConfig tallyConfig = GetFinalityTallyConfig();
+    bool fAllowPrivateV2 = (strVoteMode == "auto" || strVoteMode == "nullstake") &&
+                           tallyConfig.CanRelayPrivateVotes();
     bool fAllowTransparent = (strVoteMode == "auto" || strVoteMode == "transparent");
 
     struct CFinalityVoteCoinGroup
@@ -1997,7 +4598,8 @@ bool ProduceFinalityVote()
     std::map<CKeyID, CFinalityVoteCoinGroup> mapGroups;
     CTxDB txdb("r");
     if (fAllowPrivateV2 && ProducePrivateNullStakeFinalityVote(txdb, pEpochBlock,
-                                                               nCurrentEpoch, nEpochHeight))
+                                                               nCurrentEpoch, nEpochHeight,
+                                                               tallyConfig))
         return true;
     if (!fAllowTransparent)
         return false;

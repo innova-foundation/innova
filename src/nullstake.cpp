@@ -707,7 +707,9 @@ bool CreateNullStakeKernelProofV2(int64_t nValue,
             return false;
     }
 
-    CR1CSCircuit circuit = BuildNullStakeV2Circuit(nStakeModifier, nTimeTx, nBits);
+    CR1CSCircuit circuit = BuildNullStakeV2Circuit(nStakeModifier, nBlockTimeFrom,
+                                                    nTxPrevOffset, nTxTimePrev,
+                                                    nVoutN, nTimeTx, nBits);
 
     CR1CSWitness witness;
     if (!AssignNullStakeV2Witness(circuit, nStakeModifier, nBlockTimeFrom,
@@ -723,13 +725,16 @@ bool CreateNullStakeKernelProofV2(int64_t nValue,
         return false;
 
     uint256 blindCircuit;
-    memcpy(blindCircuit.begin(), vchValueBlindCircuit.data(), 32);
-    blindCircuit = FieldReduce(blindCircuit);
+    for (int i = 0; i < 32; i++)
+        blindCircuit.begin()[i] = vchValueBlindCircuit[31 - i];
     witness.vBlinds[0] = blindCircuit;
 
     CPedersenCommitment valueCommitCircuit;
     if (!CreatePedersenCommitment(nValue, vchValueBlindCircuit, valueCommitCircuit))
+    {
+        if (fDebug) printf("CreateNullStakeKernelProofV2: circuit commitment failed\n");
         return false;
+    }
 
     proofOut.valueCommitment = valueCommitCircuit;
 
@@ -742,7 +747,6 @@ bool CreateNullStakeKernelProofV2(int64_t nValue,
         return false;
     }
 
-
     CNullStakeBNGuard bnRV, bnR, bnS;
     BN_bin2bn(vchValueBlindCircuit.data(), 32, bnRV);
     BN_bin2bn(vchBlind.data(), 32, bnR);
@@ -752,7 +756,11 @@ bool CreateNullStakeKernelProofV2(int64_t nValue,
     BN_rand_range(bnK, bnOrder);
 
     CZarcECPointGuard RLink(group);
-    EC_POINT_mul(group, RLink, bnK, NULL, NULL, ctx);
+    if (EC_POINT_mul(group, RLink, bnK, NULL, NULL, ctx) != 1)
+    {
+        if (fDebug) printf("CreateNullStakeKernelProofV2: link nonce point failed\n");
+        return false;
+    }
 
     size_t rlLen = EC_POINT_point2oct(group, RLink, POINT_CONVERSION_COMPRESSED, NULL, 0, ctx);
     std::vector<unsigned char> vchRL(rlLen);
@@ -770,7 +778,10 @@ bool CreateNullStakeKernelProofV2(int64_t nValue,
     BN_mod(bnELink, bnELink, bnOrder, ctx);
 
     if (BN_is_zero(bnELink))
+    {
+        if (fDebug) printf("CreateNullStakeKernelProofV2: zero link challenge\n");
         return false;
+    }
 
     CNullStakeBNGuard bnSLink, bnTmp;
     BN_mod_mul(bnTmp, bnELink, bnS, bnOrder, ctx);
@@ -785,6 +796,10 @@ bool CreateNullStakeKernelProofV2(int64_t nValue,
     proofOut.vchLinkProof.insert(proofOut.vchLinkProof.end(), slBytes, slBytes + 32);
 
     proofOut.nStakeModifier = nStakeModifier;
+    proofOut.nBlockTimeFrom = nBlockTimeFrom;
+    proofOut.nTxPrevOffset = nTxPrevOffset;
+    proofOut.nTxTimePrev = nTxTimePrev;
+    proofOut.nVoutN = nVoutN;
     proofOut.nTimeTx = nTimeTx;
 
     OPENSSL_cleanse(vchValueBlindCircuit.data(), 32);
@@ -813,6 +828,10 @@ bool VerifyNullStakeKernelProofV2(const CNullStakeKernelProofV2& proof,
         return false;
 
     CR1CSCircuit circuit = BuildNullStakeV2Circuit(proof.nStakeModifier,
+                                                    proof.nBlockTimeFrom,
+                                                    proof.nTxPrevOffset,
+                                                    proof.nTxTimePrev,
+                                                    proof.nVoutN,
                                                     proof.nTimeTx, nBits);
 
     std::vector<std::vector<unsigned char>> vCommitments;
@@ -922,6 +941,8 @@ bool CreateNullStakeKernelProofV3(int64_t nValue,
 {
     if (nValue <= 0 || vchBlind.size() != 32 || cv.IsNull())
         return false;
+    if (vchPkOwner.size() != 33)
+        return false;
 
     if (!CPoseidon2Params::IsInitialized())
         CPoseidon2Params::Initialize();
@@ -935,6 +956,46 @@ bool CreateNullStakeKernelProofV3(int64_t nValue,
     if (!EC_GROUP_get_order(group, bnOrder, ctx))
         return false;
 
+    {
+        unsigned char skBE[32];
+        const unsigned char* skLE = skStake.begin();
+        for (int i = 0; i < 32; i++)
+            skBE[i] = skLE[31 - i];
+
+        CNullStakeBNGuard bnSK;
+        BN_bin2bn(skBE, 32, bnSK);
+        OPENSSL_cleanse(skBE, 32);
+        BN_mod(bnSK, bnSK, bnOrder, ctx);
+
+        if (BN_is_zero(bnSK))
+            return false;
+
+        CZarcECPointGuard pkOwner(group);
+        if (EC_POINT_oct2point(group, pkOwner, vchPkOwner.data(),
+                               vchPkOwner.size(), ctx) != 1 ||
+            EC_POINT_is_on_curve(group, pkOwner, ctx) != 1 ||
+            EC_POINT_is_at_infinity(group, pkOwner))
+            return false;
+
+        CZarcECPointGuard pkStake(group);
+        if (EC_POINT_mul(group, pkStake, bnSK, NULL, NULL, ctx) != 1)
+            return false;
+
+        size_t pkLen = EC_POINT_point2oct(group, pkStake, POINT_CONVERSION_COMPRESSED, NULL, 0, ctx);
+        proofOut.vchPkStake.resize(pkLen);
+        if (pkLen != 33 ||
+            EC_POINT_point2oct(group, pkStake, POINT_CONVERSION_COMPRESSED,
+                               proofOut.vchPkStake.data(), pkLen, ctx) != pkLen)
+            return false;
+    }
+
+    uint256 expectedDelegationHash;
+    if (!ComputeNullStakeV3DelegationHash(nValue, proofOut.vchPkStake,
+                                          vchPkOwner, expectedDelegationHash) ||
+        expectedDelegationHash != delegationHash)
+        return false;
+    proofOut.vchPkOwner = vchPkOwner;
+
     CZarcECPointGuard H(group);
     {
         const std::vector<unsigned char>& vchH = CZKContext::GetGeneratorH();
@@ -942,13 +1003,19 @@ bool CreateNullStakeKernelProofV3(int64_t nValue,
             return false;
     }
 
-    CR1CSCircuit circuit = BuildNullStakeV3Circuit(nStakeModifier, nTimeTx, nBits, delegationHash);
+    CR1CSCircuit circuit = BuildNullStakeV3Circuit(nStakeModifier, nBlockTimeFrom,
+                                                    nTxPrevOffset, nTxTimePrev,
+                                                    nVoutN, nTimeTx, nBits,
+                                                    delegationHash,
+                                                    proofOut.vchPkStake,
+                                                    proofOut.vchPkOwner);
 
     CR1CSWitness witness;
     if (!AssignNullStakeV3Witness(circuit, nStakeModifier, nBlockTimeFrom,
                                   nTxPrevOffset, nTxTimePrev, nVoutN,
                                   nTimeTx, nValue, vchBlind, nBits,
-                                  skStake, vchPkOwner, delegationHash, witness))
+                                  skStake, proofOut.vchPkStake, vchPkOwner,
+                                  delegationHash, witness))
     {
         if (fDebug) printf("CreateNullStakeKernelProofV3: witness assignment failed\n");
         return false;
@@ -959,8 +1026,8 @@ bool CreateNullStakeKernelProofV3(int64_t nValue,
         return false;
 
     uint256 blindCircuit;
-    memcpy(blindCircuit.begin(), vchValueBlindCircuit.data(), 32);
-    blindCircuit = FieldReduce(blindCircuit);
+    for (int i = 0; i < 32; i++)
+        blindCircuit.begin()[i] = vchValueBlindCircuit[31 - i];
     witness.vBlinds[0] = blindCircuit;
 
     CPedersenCommitment valueCommitCircuit;
@@ -987,17 +1054,22 @@ bool CreateNullStakeKernelProofV3(int64_t nValue,
     BN_rand_range(bnK, bnOrder);
 
     CZarcECPointGuard RLink(group);
-    EC_POINT_mul(group, RLink, bnK, NULL, NULL, ctx);
+    if (EC_POINT_mul(group, RLink, bnK, NULL, NULL, ctx) != 1)
+        return false;
 
     size_t rlLen = EC_POINT_point2oct(group, RLink, POINT_CONVERSION_COMPRESSED, NULL, 0, ctx);
     std::vector<unsigned char> vchRL(rlLen);
-    EC_POINT_point2oct(group, RLink, POINT_CONVERSION_COMPRESSED, vchRL.data(), rlLen, ctx);
+    if (rlLen != 33 ||
+        EC_POINT_point2oct(group, RLink, POINT_CONVERSION_COMPRESSED, vchRL.data(), rlLen, ctx) != rlLen)
+        return false;
 
     CDataStream ssLink(SER_GETHASH, 0);
     ssLink << std::string(NULLSTAKE_V3_LINK_DOMAIN);
     ssLink << valueCommitCircuit.vchCommitment;
     ssLink << cv.vchCommitment;
     ssLink << delegationHash;
+    ssLink << proofOut.vchPkStake;
+    ssLink << proofOut.vchPkOwner;
     ssLink << vchRL;
     uint256 hashLinkChallenge = Hash(ssLink.begin(), ssLink.end());
 
@@ -1021,30 +1093,13 @@ bool CreateNullStakeKernelProofV3(int64_t nValue,
     proofOut.vchLinkProof.insert(proofOut.vchLinkProof.end(), slBytes, slBytes + 32);
 
     proofOut.nStakeModifier = nStakeModifier;
+    proofOut.nBlockTimeFrom = nBlockTimeFrom;
+    proofOut.nTxPrevOffset = nTxPrevOffset;
+    proofOut.nTxTimePrev = nTxTimePrev;
+    proofOut.nVoutN = nVoutN;
     proofOut.nTimeTx = nTimeTx;
     proofOut.delegationHash = delegationHash;
-
-    {
-        unsigned char skBE[32];
-        const unsigned char* skLE = skStake.begin();
-        for (int i = 0; i < 32; i++)
-            skBE[i] = skLE[31 - i];
-
-        CNullStakeBNGuard bnSK;
-        BN_bin2bn(skBE, 32, bnSK);
-        OPENSSL_cleanse(skBE, 32);
-        BN_mod(bnSK, bnSK, bnOrder, ctx);
-
-        if (BN_is_zero(bnSK))
-            return false;
-
-        CZarcECPointGuard pkStake(group);
-        EC_POINT_mul(group, pkStake, bnSK, NULL, NULL, ctx);
-
-        size_t pkLen = EC_POINT_point2oct(group, pkStake, POINT_CONVERSION_COMPRESSED, NULL, 0, ctx);
-        proofOut.vchPkStake.resize(pkLen);
-        EC_POINT_point2oct(group, pkStake, POINT_CONVERSION_COMPRESSED, proofOut.vchPkStake.data(), pkLen, ctx);
-    }
+    proofOut.vchPkOwner = vchPkOwner;
 
     OPENSSL_cleanse(vchValueBlindCircuit.data(), 32);
 
@@ -1071,6 +1126,8 @@ bool VerifyNullStakeKernelProofV3(const CNullStakeKernelProofV3& proof,
 
     if (proof.vchPkStake.size() != 33)  // Only accept compressed pubkeys
         return false;
+    if (proof.vchPkOwner.size() != 33)
+        return false;
 
     if (!CPoseidon2Params::IsInitialized())
         CPoseidon2Params::Initialize();
@@ -1080,12 +1137,33 @@ bool VerifyNullStakeKernelProofV3(const CNullStakeKernelProofV3& proof,
     if (!group.group || !ctx.ctx)
         return false;
 
+    CZarcECPointGuard pkStake(group);
+    if (EC_POINT_oct2point(group, pkStake, proof.vchPkStake.data(),
+                           proof.vchPkStake.size(), ctx) != 1 ||
+        EC_POINT_is_on_curve(group, pkStake, ctx) != 1 ||
+        EC_POINT_is_at_infinity(group, pkStake))
+        return false;
+
+    CZarcECPointGuard pkOwner(group);
+    if (EC_POINT_oct2point(group, pkOwner, proof.vchPkOwner.data(),
+                           proof.vchPkOwner.size(), ctx) != 1 ||
+        EC_POINT_is_on_curve(group, pkOwner, ctx) != 1 ||
+        EC_POINT_is_at_infinity(group, pkOwner))
+        return false;
+
     CNullStakeBNGuard bnOrder;
     if (!EC_GROUP_get_order(group, bnOrder, ctx))
         return false;
 
-    CR1CSCircuit circuit = BuildNullStakeV3Circuit(proof.nStakeModifier, proof.nTimeTx,
-                                                    nBits, proof.delegationHash);
+    CR1CSCircuit circuit = BuildNullStakeV3Circuit(proof.nStakeModifier,
+                                                    proof.nBlockTimeFrom,
+                                                    proof.nTxPrevOffset,
+                                                    proof.nTxTimePrev,
+                                                    proof.nVoutN,
+                                                    proof.nTimeTx,
+                                                    nBits, proof.delegationHash,
+                                                    proof.vchPkStake,
+                                                    proof.vchPkOwner);
 
     std::vector<std::vector<unsigned char>> vCommitments;
     vCommitments.push_back(proof.valueCommitment.vchCommitment);
@@ -1112,6 +1190,8 @@ bool VerifyNullStakeKernelProofV3(const CNullStakeKernelProofV3& proof,
     ssLink << proof.valueCommitment.vchCommitment;
     ssLink << cv.vchCommitment;
     ssLink << proof.delegationHash;
+    ssLink << proof.vchPkStake;
+    ssLink << proof.vchPkOwner;
     ssLink << vchRL;
     uint256 hashLinkChallenge = Hash(ssLink.begin(), ssLink.end());
 

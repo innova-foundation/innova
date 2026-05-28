@@ -48,6 +48,11 @@ jobs:
           cd src
           make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
 
+      - name: BPAC, NullStake, and tally crypto Boost tests
+        run: |
+          cd src
+          make USE_NATIVETOR=- -f makefile.unix check-bpac check-finality-tally
+
       - name: Build Qt wallet
         run: |
           sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro

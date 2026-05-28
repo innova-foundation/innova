@@ -15,7 +15,7 @@
 static const size_t IPA_SCALAR_SIZE = 32;
 static const size_t IPA_SECP256K1_POINT = 33;
 static const size_t IPA_ED25519_POINT = 32;
-static const size_t IPA_MAX_VECTOR_LEN = 256;
+static const size_t IPA_MAX_VECTOR_LEN = 2048;
 
 static const uint32_t PATH_IPA_VERSION = 1;
 
