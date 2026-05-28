@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cctype>
+#include <limits>
 
 CFinalityTracker g_finalityTracker;
 
@@ -1672,6 +1673,14 @@ static bool FinalityTierCoefficients(int nTier, uint64_t& nWinningCoeffOut, uint
     return false;
 }
 
+static bool FinalityMulUint64(uint64_t a, uint64_t b, uint64_t& out)
+{
+    if (b != 0 && a > std::numeric_limits<uint64_t>::max() / b)
+        return false;
+    out = a * b;
+    return true;
+}
+
 static uint256 FinalityCertificateProofContextHash(const CFinalityTallyCertificate& cert,
                                                    const std::string& strDomain)
 {
@@ -1975,10 +1984,15 @@ bool CreateFinalityAggregateThresholdProofV2(const CFinalityTallyCertificate& ce
     {
         if (!FinalityTierCoefficients(cert.nTier, nWinningCoeff, nActiveCoeff))
             return false;
-        unsigned __int128 lhs = (unsigned __int128)nWinningCoeff *
-            ((uint64_t)cert.nTransparentWinningWeight + (uint64_t)nPrivateWinningWeight);
-        unsigned __int128 rhs = (unsigned __int128)nActiveCoeff *
-            ((uint64_t)cert.nTransparentActiveWeight + (uint64_t)nPrivateActiveWeight);
+        uint64_t lhs = 0;
+        uint64_t rhs = 0;
+        if (!FinalityMulUint64(nWinningCoeff,
+                               (uint64_t)cert.nTransparentWinningWeight + (uint64_t)nPrivateWinningWeight,
+                               lhs) ||
+            !FinalityMulUint64(nActiveCoeff,
+                               (uint64_t)cert.nTransparentActiveWeight + (uint64_t)nPrivateActiveWeight,
+                               rhs))
+            return false;
         if (lhs < rhs)
             return false;
     }
@@ -2006,11 +2020,17 @@ bool CreateFinalityAggregateThresholdProofV2(const CFinalityTallyCertificate& ce
 
     if (layout.nTierSlackBits >= 0)
     {
-        unsigned __int128 lhs = (unsigned __int128)nWinningCoeff *
-            ((uint64_t)cert.nTransparentWinningWeight + (uint64_t)nPrivateWinningWeight);
-        unsigned __int128 rhs = (unsigned __int128)nActiveCoeff *
-            ((uint64_t)cert.nTransparentActiveWeight + (uint64_t)nPrivateActiveWeight);
-        uint64_t nTierSlack = (uint64_t)(lhs - rhs);
+        uint64_t lhs = 0;
+        uint64_t rhs = 0;
+        if (!FinalityMulUint64(nWinningCoeff,
+                               (uint64_t)cert.nTransparentWinningWeight + (uint64_t)nPrivateWinningWeight,
+                               lhs) ||
+            !FinalityMulUint64(nActiveCoeff,
+                               (uint64_t)cert.nTransparentActiveWeight + (uint64_t)nPrivateActiveWeight,
+                               rhs) ||
+            lhs < rhs)
+            return false;
+        uint64_t nTierSlack = lhs - rhs;
         if (!FinalitySetBits(witness, layout.nTierSlackBits, FINALITY_TIER_SLACK_BITS, nTierSlack))
             return false;
     }
@@ -2039,16 +2059,18 @@ bool CreateFinalityRewardBudgetProofV2(const CFinalityTallyCertificate& cert,
         return false;
 
     int nEpochInterval = GetEpochInterval(cert.nHeight);
-    unsigned __int128 nProduct = (unsigned __int128)(uint64_t)nPrivateActiveWeight *
-        (uint64_t)nEpochInterval;
-    uint64_t nQ1 = (uint64_t)(nProduct / (uint64_t)COIN);
-    uint64_t nR1 = (uint64_t)(nProduct % (uint64_t)COIN);
+    uint64_t nProduct = 0;
+    if (!FinalityMulUint64((uint64_t)nPrivateActiveWeight, (uint64_t)nEpochInterval, nProduct))
+        return false;
+    uint64_t nQ1 = nProduct / (uint64_t)COIN;
+    uint64_t nR1 = nProduct % (uint64_t)COIN;
     uint64_t nCoinAge = nQ1 / 86400;
     uint64_t nR2 = nQ1 % 86400;
-    unsigned __int128 nRewardProduct = (unsigned __int128)nCoinAge *
-        (uint64_t)COIN_YEAR_REWARD;
-    uint64_t nReward = (uint64_t)(nRewardProduct / 365);
-    uint64_t nR3 = (uint64_t)(nRewardProduct % 365);
+    uint64_t nRewardProduct = 0;
+    if (!FinalityMulUint64(nCoinAge, (uint64_t)COIN_YEAR_REWARD, nRewardProduct))
+        return false;
+    uint64_t nReward = nRewardProduct / 365;
+    uint64_t nR3 = nRewardProduct % 365;
     if (nReward > (uint64_t)MAX_MONEY ||
         nPrivateRewardBudget != (int64_t)nReward ||
         nPrivateRewardBudget != GetFinalityVoteReward(nPrivateActiveWeight, nEpochInterval))
