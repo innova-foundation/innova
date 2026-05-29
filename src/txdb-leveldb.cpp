@@ -900,6 +900,11 @@ bool CTxDB::WriteBlockIndex(const CDiskBlockIndex& blockindex)
     return Write(make_pair(string("blockindex"), blockindex.GetBlockHash()), blockindex);
 }
 
+bool CTxDB::EraseBlockIndex(const uint256& blockhash)
+{
+    return Erase(make_pair(string("blockindex"), blockhash));
+}
+
 bool CTxDB::ReadHashBestChain(uint256& hashBestChain)
 {
     return Read(string("hashBestChain"), hashBestChain);

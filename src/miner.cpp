@@ -210,7 +210,13 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             {
                 if (pindexPrev->phashBlock && hashTip == pindexPrev->GetBlockHash())
                     continue; // skip primary parent
-                uint256 nScore = g_dagManager.ComputeDAGScore(mapBlockIndex[hashTip]);
+                std::map<uint256, CBlockIndex*>::iterator miTip = mapBlockIndex.find(hashTip);
+                if (miTip == mapBlockIndex.end() || miTip->second == NULL)
+                    continue;
+                CBlockIndex* pTip = miTip->second;
+                if (pTip != pindexBest && pTip->nChainTrust > nBestChainTrust)
+                    continue;
+                uint256 nScore = g_dagManager.ComputeDAGScore(pTip);
                 vTipScores.push_back(std::make_pair(nScore, hashTip));
             }
             std::sort(vTipScores.begin(), vTipScores.end(),
@@ -229,9 +235,11 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
                 // Merge parent must exist and be within DAG_MERGE_DEPTH
                 std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashTip);
-                if (mi == mapBlockIndex.end())
+                if (mi == mapBlockIndex.end() || mi->second == NULL)
                     continue;
                 CBlockIndex* pTip = mi->second;
+                if (pTip != pindexBest && pTip->nChainTrust > nBestChainTrust)
+                    continue;
                 if (pTip->nHeight < pindexPrev->nHeight - DAG_MERGE_DEPTH)
                     continue;
                 if (pTip->nHeight >= nHeight)

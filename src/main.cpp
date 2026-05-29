@@ -5759,11 +5759,13 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
     if (!txdb.TxnCommit())
         return false;
 
+    bool fDAGDataInitialized = false;
+    std::vector<uint256> vDAGParents;
+
     // IDAG Phase 2: Initialize DAG data for post-fork blocks
     if (pindexNew->nHeight >= FORK_HEIGHT_DAG && pindexNew->IsProofOfWork())
     {
         // Extract DAG parents from coinbase OP_RETURN
-        std::vector<uint256> vDAGParents;
         for (unsigned int i = 0; i < vtx[0].vout.size(); i++)
         {
             vDAGParents = ExtractDAGParents(vtx[0].vout[i].scriptPubKey);
@@ -5775,6 +5777,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
         {
             int64_t nDAGTimer = GetTimeMillis();
             g_dagManager.InitBlockDAGData(pindexNew, vDAGParents);
+            fDAGDataInitialized = true;
             nDAGInitMs = GetTimeMillis() - nDAGTimer;
 
             // IDAG Phase 4: Fork-gate between GHOSTDAG and DAGKNIGHT coloring
@@ -5840,7 +5843,32 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
     // New best
     if (pindexNew->nChainTrust > nBestChainTrust)
         if (!SetBestChain(txdb, pindexNew))
+        {
+            if (fDAGDataInitialized)
+            {
+                g_dagManager.RemoveBlockDAGData(hash);
+
+                CTxDB txdbDAGClean;
+                if (txdbDAGClean.TxnBegin())
+                {
+                    txdbDAGClean.EraseDAGLinks(hash);
+                    for (const uint256& hashParent : vDAGParents)
+                    {
+                        if (g_dagManager.HasDAGData(hashParent))
+                            g_dagManager.WriteDAGLinks(txdbDAGClean, hashParent);
+                    }
+                    txdbDAGClean.TxnCommit();
+                }
+            }
+
+            CTxDB txdbIndexClean;
+            txdbIndexClean.EraseBlockIndex(hash);
+            mapBlockIndex.erase(hash);
+            if (pindexNew->IsProofOfStake())
+                setStakeSeen.erase(make_pair(pindexNew->prevoutStake, pindexNew->nStakeTime));
+            delete pindexNew;
             return false;
+        }
 
     if (pindexNew == pindexBest)
     {
