@@ -20,6 +20,20 @@ using namespace std;
 
 extern unsigned int nMinerSleep;
 
+static bool TransactionSpendsAnyOutpoint(const CTransaction& tx,
+                                         const std::set<COutPoint>& setOutpoints)
+{
+    if (setOutpoints.empty())
+        return false;
+
+    BOOST_FOREACH(const CTxIn& txin, tx.vin)
+    {
+        if (setOutpoints.count(txin.prevout))
+            return true;
+    }
+    return false;
+}
+
 int static FormatHashBlocks(void* pbuffer, unsigned int len)
 {
     unsigned char* pdata = (unsigned char*)pbuffer;
@@ -289,6 +303,20 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
     pblock->nBits = GetNextTargetRequired(pindexPrev, fProofOfStake);
 
+    std::vector<CFinalityVote> vFinalityVotesForBlock;
+    std::set<COutPoint> setFinalityStakeProofOutpoints;
+    if (!fProofOfStake && nHeight >= FORK_HEIGHT_DAG)
+    {
+        vFinalityVotesForBlock = g_finalityTracker.GetPendingVotesForBlock(nHeight);
+        BOOST_FOREACH(const CFinalityVote& vote, vFinalityVotesForBlock)
+        {
+            if (vote.IsPrivate())
+                continue;
+            BOOST_FOREACH(const COutPoint& proof, vote.vStakeProof)
+                setFinalityStakeProofOutpoints.insert(proof);
+        }
+    }
+
     // Collect memory pool transactions into the block
     int64_t nFees = 0;
     {
@@ -377,6 +405,13 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
             // IDAG: Skip transactions already in DAG sibling blocks
             if (!setDAGSiblingTxids.empty() && setDAGSiblingTxids.count(tx.GetHash()))
+                continue;
+
+            // Transparent finality votes use existing UTXOs as stake proofs.
+            // Consensus rejects blocks that both commit such a vote and spend
+            // the proof UTXO, so reserve those outpoints while building the
+            // candidate block.
+            if (TransactionSpendsAnyOutpoint(tx, setFinalityStakeProofOutpoints))
                 continue;
 
             COrphan* porphan = NULL;
@@ -604,8 +639,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         int64_t nFinalityRewardTotal = 0;
         if (!fProofOfStake && nHeight >= FORK_HEIGHT_DAG)
         {
-            std::vector<CFinalityVote> vFinalityVotes = g_finalityTracker.GetPendingVotesForBlock(nHeight);
-            for (const CFinalityVote& vote : vFinalityVotes)
+            for (const CFinalityVote& vote : vFinalityVotesForBlock)
             {
                 if (nFinalityRewardTotal > MAX_MONEY - vote.nReward)
                     break;
