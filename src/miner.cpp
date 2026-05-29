@@ -376,12 +376,24 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         list<COrphan> vOrphan; // list memory doesn't move
         map<uint256, vector<COrphan*> > mapDependers;
 
-        // IDAG Phase 2: Collect txids from DAG sibling blocks to avoid duplicates
+        // IDAG Phase 2: Collect txids and spent inputs from DAG sibling
+        // blocks to avoid duplicates and fee accounting drift. ConnectBlock
+        // skips transactions whose inputs were already spent by earlier DAG
+        // siblings, so CreateNewBlock must exclude them before adding their
+        // fees to the coinbase value.
         std::set<uint256> setDAGSiblingTxids;
+        std::set<COutPoint> setDAGSiblingSpentOutpoints;
         if (nHeight >= FORK_HEIGHT_DAG && pindexPrev->phashBlock)
         {
             std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(pindexPrev->GetBlockHash());
-            for (const uint256& hashSib : siblings)
+            CBlockDAGData parentDagData;
+            if (g_dagManager.GetDAGData(pindexPrev->GetBlockHash(), parentDagData))
+            {
+                BOOST_FOREACH(const uint256& hashChild, parentDagData.vDAGChildren)
+                    siblings.insert(hashChild);
+            }
+
+            BOOST_FOREACH(const uint256& hashSib, siblings)
             {
                 std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashSib);
                 if (mi == mapBlockIndex.end())
@@ -390,7 +402,13 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 if (!sibBlock.ReadFromDisk(mi->second))
                     continue;
                 for (const CTransaction& sibTx : sibBlock.vtx)
+                {
+                    if (sibTx.IsCoinBase() || sibTx.IsCoinStake())
+                        continue;
                     setDAGSiblingTxids.insert(sibTx.GetHash());
+                    BOOST_FOREACH(const CTxIn& txin, sibTx.vin)
+                        setDAGSiblingSpentOutpoints.insert(txin.prevout);
+                }
             }
         }
 
@@ -405,6 +423,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
             // IDAG: Skip transactions already in DAG sibling blocks
             if (!setDAGSiblingTxids.empty() && setDAGSiblingTxids.count(tx.GetHash()))
+                continue;
+            if (TransactionSpendsAnyOutpoint(tx, setDAGSiblingSpentOutpoints))
                 continue;
 
             // Transparent finality votes use existing UTXOs as stake proofs.
