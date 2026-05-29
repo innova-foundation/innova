@@ -1171,8 +1171,19 @@ void CPUMiner(CWallet* pwallet)
             pblock = new CBlock(*ptmp);
             delete ptmp;
 
-            IncrementExtraNonce(pblock, pindexBest, nExtraNonce);
-            nHeight = pindexBest->nHeight + 1;
+            std::map<uint256, CBlockIndex*>::iterator miPrev = mapBlockIndex.find(pblock->hashPrevBlock);
+            CBlockIndex* pindexBlockPrev = (miPrev != mapBlockIndex.end()) ? miPrev->second : pindexBest;
+            if (!pindexBlockPrev)
+            {
+                delete pblock;
+                pblock = NULL;
+                printf("CPUMiner: previous block index missing, retrying...\n");
+                MilliSleep(1000);
+                continue;
+            }
+
+            IncrementExtraNonce(pblock, pindexBlockPrev, nExtraNonce);
+            nHeight = pindexBlockPrev->nHeight + 1;
 
             CBigNum bnTarget;
             bnTarget.SetCompact(pblock->nBits);
