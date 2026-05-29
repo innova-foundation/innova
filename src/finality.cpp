@@ -3079,7 +3079,23 @@ bool CFinalityTracker::AddVote(const CFinalityVote& vote, bool fCheckStake, bool
     uint256 hashVote = vote.GetHash();
     auto itNullifier = mapVoteHashByNullifier.find(vote.nullifier);
     if (itNullifier != mapVoteHashByNullifier.end() && itNullifier->second != hashVote)
-        return false;
+    {
+        if (!fRecordFinality)
+            return false;
+
+        if (mapConnectedVotes.count(vote.nullifier))
+            return false;
+
+        auto itPending = mapPendingVotes.find(vote.nullifier);
+        if (itPending == mapPendingVotes.end())
+            return false;
+
+        // A block-connected vote is authoritative over an unconnected relay
+        // candidate with the same nullifier. This keeps local pending state
+        // from making otherwise-valid blocks node-order dependent.
+        mapPendingVotes.erase(itPending);
+        itNullifier->second = hashVote;
+    }
 
     CKeyID voterKeyID;
     bool fHasTransparentVoterKey = false;

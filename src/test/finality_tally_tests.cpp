@@ -177,9 +177,59 @@ uint32_t ReadProofEnvelopeVersion(const std::vector<unsigned char>& vchProof)
     return nVersion;
 }
 
+CFinalityVote BuildTransparentVoteForTrackerTest(const CKey& key,
+                                                 int64_t nTime,
+                                                 int64_t nWeight)
+{
+    CPubKey pubkey = key.GetPubKey();
+    CFinalityVote vote;
+    vote.nProofMode = FINALITY_PROOF_TRANSPARENT;
+    vote.nEpoch = 0;
+    vote.nHeight = 0;
+    vote.hashBlock = uint256(70707);
+    vote.nTime = nTime;
+    vote.nVoteWeight = nWeight;
+    vote.nReward = 0;
+    vote.vchPubKey.assign(pubkey.begin(), pubkey.end());
+    vote.vStakeProof.push_back(COutPoint(uint256(80808), 0));
+
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << vote.vchPubKey;
+    ss << vote.nEpoch;
+    vote.nullifier = ss.GetHash();
+    return vote;
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(finality_tally_tests)
+
+BOOST_AUTO_TEST_CASE(block_connected_vote_replaces_conflicting_pending_nullifier)
+{
+    CKey key;
+    key.MakeNewKey(true);
+
+    CFinalityVote pending = BuildTransparentVoteForTrackerTest(key, 1000, 50);
+    CFinalityVote connected = BuildTransparentVoteForTrackerTest(key, 1001, 80);
+
+    BOOST_REQUIRE(pending.nullifier == connected.nullifier);
+    BOOST_REQUIRE(pending.GetHash() != connected.GetHash());
+
+    CFinalityTracker tracker;
+    BOOST_REQUIRE(tracker.AddVote(pending, false, false));
+    BOOST_CHECK_EQUAL(tracker.GetPendingVoteCount(), 1);
+    BOOST_CHECK(!tracker.AddVote(connected, false, false));
+
+    BOOST_CHECK(tracker.AddVote(connected, false, true));
+    BOOST_CHECK_EQUAL(tracker.GetPendingVoteCount(), 0);
+    BOOST_CHECK_EQUAL(tracker.GetEpochVoteCount(connected.nEpoch), 1);
+    BOOST_CHECK_EQUAL(tracker.GetEpochVoterCount(connected.nEpoch), 1);
+    BOOST_CHECK_EQUAL(tracker.GetEpochVoteWeight(connected.nEpoch), connected.nVoteWeight);
+
+    CFinalityVote conflictingConnected = BuildTransparentVoteForTrackerTest(key, 1002, 90);
+    BOOST_REQUIRE(conflictingConnected.nullifier == connected.nullifier);
+    BOOST_CHECK(!tracker.AddVote(conflictingConnected, false, true));
+}
 
 BOOST_AUTO_TEST_CASE(tally_config_parses_ordered_committee_and_rejects_invalid_sets)
 {
