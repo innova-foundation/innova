@@ -92,6 +92,131 @@ static bool LoadWalletFCMPProofTree(CTxDB& txdb, int nCurrentHeight,
     return true;
 }
 
+struct ShieldedSpendabilityContext
+{
+    int nCurrentHeight;
+    bool fRequireFCMP;
+    bool fHasFCMPTree;
+    CCurveTree fcmpTree;
+    uint256 hashFCMPRoot;
+    std::string strFCMPError;
+
+    ShieldedSpendabilityContext()
+        : nCurrentHeight(0), fRequireFCMP(false), fHasFCMPTree(false), hashFCMPRoot(0)
+    {
+    }
+};
+
+struct ShieldedNoteSpendability
+{
+    int nConfirmations;
+    bool fMinConfSpendable;
+    bool fFCMPSpendable;
+    bool fSpendable;
+    std::string strPendingReason;
+
+    ShieldedNoteSpendability()
+        : nConfirmations(0), fMinConfSpendable(false),
+          fFCMPSpendable(false), fSpendable(false)
+    {
+    }
+};
+
+static int GetShieldedNoteConfirmations(const CWallet::CShieldedWalletNote& wnote,
+                                        int nCurrentHeight)
+{
+    if (wnote.nHeight <= 0 || nCurrentHeight < wnote.nHeight)
+        return 0;
+    return nCurrentHeight - wnote.nHeight + 1;
+}
+
+static ShieldedSpendabilityContext BuildShieldedSpendabilityContext(int nCurrentHeight)
+{
+    ShieldedSpendabilityContext ctx;
+    ctx.nCurrentHeight = nCurrentHeight;
+    ctx.fRequireFCMP = (nCurrentHeight >= FORK_HEIGHT_FCMP_VALIDATION);
+    ctx.hashFCMPRoot = 0;
+
+    if (ctx.fRequireFCMP)
+    {
+        CTxDB txdb("r");
+        ctx.fHasFCMPTree = LoadWalletFCMPProofTree(txdb, nCurrentHeight,
+                                                   ctx.fcmpTree,
+                                                   ctx.hashFCMPRoot,
+                                                   ctx.strFCMPError);
+    }
+    else
+    {
+        ctx.fHasFCMPTree = true;
+    }
+
+    return ctx;
+}
+
+static ShieldedNoteSpendability GetShieldedNoteSpendability(
+    const CWallet::CShieldedWalletNote& wnote,
+    const ShieldedSpendabilityContext& ctx)
+{
+    ShieldedNoteSpendability status;
+    status.nConfirmations = GetShieldedNoteConfirmations(wnote, ctx.nCurrentHeight);
+    status.fMinConfSpendable = (status.nConfirmations >= MIN_SHIELDED_SPEND_DEPTH);
+    status.fFCMPSpendable = true;
+
+    if (ctx.fRequireFCMP)
+    {
+        status.fFCMPSpendable = false;
+
+        CPedersenCommitment cv;
+        if (!wnote.note.GetPedersenCommitment(cv))
+        {
+            status.strPendingReason = "missing_commitment_blinding_factor";
+        }
+        else if (!ctx.fHasFCMPTree || ctx.fcmpTree.IsEmpty() || ctx.hashFCMPRoot == 0)
+        {
+            status.strPendingReason = "awaiting_finalized_epoch_curve_tree";
+        }
+        else if (ctx.fcmpTree.FindLeafIndex(cv) < 0)
+        {
+            status.strPendingReason = "awaiting_finalized_epoch_curve_tree";
+        }
+        else
+        {
+            status.fFCMPSpendable = true;
+        }
+    }
+
+    status.fSpendable = status.fMinConfSpendable && status.fFCMPSpendable;
+    if (!status.fMinConfSpendable)
+        status.strPendingReason = "awaiting_min_confirmations";
+    else if (!status.fFCMPSpendable && status.strPendingReason.empty())
+        status.strPendingReason = "awaiting_finalized_epoch_curve_tree";
+    else if (status.fSpendable)
+        status.strPendingReason.clear();
+
+    return status;
+}
+
+static std::string FormatShieldedSpendabilityError(const ShieldedSpendabilityContext& ctx,
+                                                   int64_t nSpendable,
+                                                   int64_t nPending,
+                                                   int64_t nNeeded)
+{
+    return strprintf("%s: spendable=%s pending=%s needed=%s",
+                     ctx.fRequireFCMP ? "Insufficient FCMP-finalized shielded balance"
+                                      : "Insufficient shielded balance",
+                     FormatMoney(nSpendable).c_str(),
+                     FormatMoney(nPending).c_str(),
+                     FormatMoney(nNeeded).c_str());
+}
+
+static void SetPublicShieldedRecipient(CShieldedOutputDescription& output,
+                                       const CShieldedPaymentAddress& addr)
+{
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << addr;
+    output.vchRecipientScript.assign(ss.begin(), ss.end());
+}
+
 Value z_getnewaddress(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() > 0)
@@ -411,7 +536,10 @@ Value z_unshield(const Array& params, bool fHelp)
     if (!StringToShieldedAddress(strZAddr, zAddr))
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid shielded address");
 
+    ShieldedSpendabilityContext spendability = BuildShieldedSpendabilityContext(nCurrentHeight);
+
     int64_t nAvailable = 0;
+    int64_t nPending = 0;
     vector<size_t> vSelectedIndices;
     vector<CWallet::CShieldedWalletNote> vSelectedNotes;
     CShieldedSpendingKey sk;
@@ -427,21 +555,24 @@ Value z_unshield(const Array& params, bool fHelp)
             CWallet::CShieldedWalletNote& wnote = pwalletMain->vShieldedNotes[i];
             if (!wnote.fSpent && wnote.note.addr == zAddr)
             {
-                int nConfirms = nCurrentHeight - wnote.nHeight + 1;
-                if (nConfirms >= MIN_SHIELDED_SPEND_DEPTH)
+                ShieldedNoteSpendability noteStatus = GetShieldedNoteSpendability(wnote, spendability);
+                if (!noteStatus.fSpendable)
                 {
-                    nAvailable += wnote.note.nValue;
-                    vSelectedIndices.push_back(i);
-                    if (nAvailable >= nAmount + MIN_TX_FEE_SHIELDED)
-                        break;
+                    nPending += wnote.note.nValue;
+                    continue;
                 }
+
+                nAvailable += wnote.note.nValue;
+                vSelectedIndices.push_back(i);
+                if (nAvailable >= nAmount + MIN_TX_FEE_SHIELDED)
+                    break;
             }
         }
 
         if (nAvailable < nAmount + MIN_TX_FEE_SHIELDED)
             throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
-                strprintf("Insufficient shielded balance: available=%" PRId64 " needed=%" PRId64,
-                          nAvailable, nAmount + MIN_TX_FEE_SHIELDED));
+                FormatShieldedSpendabilityError(spendability, nAvailable, nPending,
+                                                nAmount + MIN_TX_FEE_SHIELDED));
 
         sk = pwalletMain->mapShieldedSpendingKeys[zAddr];
         DeriveShieldedFullViewingKey(sk, fvk);
@@ -560,29 +691,24 @@ Value z_unshield(const Array& params, bool fHelp)
 
         if (fUseFCMP)
         {
-            CTxDB txdb("r");
-            CCurveTree fcmpTree;
-            uint256 hashFCMPRoot = 0;
-            std::string strFCMPError;
-            if (!LoadWalletFCMPProofTree(txdb, nCurrentHeight, fcmpTree, hashFCMPRoot, strFCMPError))
-                throw JSONRPCError(RPC_INTERNAL_ERROR, strFCMPError);
+            if (!spendability.fHasFCMPTree || spendability.fcmpTree.IsEmpty())
+                throw JSONRPCError(RPC_INTERNAL_ERROR,
+                    spendability.strFCMPError.empty() ? "Curve tree is empty, cannot create FCMP proof"
+                                                      : spendability.strFCMPError);
 
-            if (fcmpTree.IsEmpty())
-                throw JSONRPCError(RPC_INTERNAL_ERROR, "Curve tree is empty, cannot create FCMP proof");
-
-            int64_t nLeafIdx = fcmpTree.FindLeafIndex(spend.cv);
+            int64_t nLeafIdx = spendability.fcmpTree.FindLeafIndex(spend.cv);
             if (nLeafIdx < 0)
                 throw JSONRPCError(RPC_INTERNAL_ERROR, strprintf("Spend %d commitment not found in curve tree", (int)i));
 
-            if (!CreateFCMPProof(fcmpTree, (uint64_t)nLeafIdx, wnote.note.vchBlind,
+            if (!CreateFCMPProof(spendability.fcmpTree, (uint64_t)nLeafIdx, wnote.note.vchBlind,
                                   wnote.note.nValue, spend.cv, spend.fcmpProof))
                 throw JSONRPCError(RPC_INTERNAL_ERROR, strprintf("Failed to create FCMP proof for spend %d", (int)i));
 
-            spend.curveTreeRoot = hashFCMPRoot;
+            spend.curveTreeRoot = spendability.hashFCMPRoot;
 
             if (fDebug)
                 printf("z_unshield: created FCMP proof for spend %d (leaf index %ld, tree size %lu)\n",
-                       (int)i, nLeafIdx, fcmpTree.nLeafCount);
+                       (int)i, nLeafIdx, spendability.fcmpTree.nLeafCount);
         }
 
         txNew.vShieldedSpend.push_back(spend);
@@ -777,7 +903,10 @@ Value z_send(const Array& params, bool fHelp)
         destScript.SetDestination(tToAddr.Get());
     }
 
+    ShieldedSpendabilityContext spendability = BuildShieldedSpendabilityContext(nCurrentHeight);
+
     int64_t nAvailable = 0;
+    int64_t nPending = 0;
     vector<size_t> vSelectedIndices;
     vector<CWallet::CShieldedWalletNote> vSelectedNotes;
     CShieldedSpendingKey sk;
@@ -793,21 +922,24 @@ Value z_send(const Array& params, bool fHelp)
             CWallet::CShieldedWalletNote& wnote = pwalletMain->vShieldedNotes[i];
             if (!wnote.fSpent && wnote.note.addr == zFromAddr)
             {
-                int nConfirms = nCurrentHeight - wnote.nHeight + 1;
-                if (nConfirms >= MIN_SHIELDED_SPEND_DEPTH)
+                ShieldedNoteSpendability noteStatus = GetShieldedNoteSpendability(wnote, spendability);
+                if (!noteStatus.fSpendable)
                 {
-                    nAvailable += wnote.note.nValue;
-                    vSelectedIndices.push_back(i);
-                    if (nAvailable >= nAmount + MIN_TX_FEE_SHIELDED)
-                        break;
+                    nPending += wnote.note.nValue;
+                    continue;
                 }
+
+                nAvailable += wnote.note.nValue;
+                vSelectedIndices.push_back(i);
+                if (nAvailable >= nAmount + MIN_TX_FEE_SHIELDED)
+                    break;
             }
         }
 
         if (nAvailable < nAmount + MIN_TX_FEE_SHIELDED)
             throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
-                strprintf("Insufficient shielded balance: available=%" PRId64 " needed=%" PRId64,
-                          nAvailable, nAmount + MIN_TX_FEE_SHIELDED));
+                FormatShieldedSpendabilityError(spendability, nAvailable, nPending,
+                                                nAmount + MIN_TX_FEE_SHIELDED));
 
         sk = pwalletMain->mapShieldedSpendingKeys[zFromAddr];
         DeriveShieldedFullViewingKey(sk, fvk);
@@ -860,8 +992,7 @@ Value z_send(const Array& params, bool fHelp)
         else
         {
             spend.nPlaintextValue = wnote.note.nValue;
-            // PRIV-AUDIT-8: Do not include blinding factor in non-full-privacy spends
-            // The blinding factor is secret; only the plaintext value is revealed
+            spend.vchPlaintextBlind = wnote.note.vchBlind;
         }
 
         spend.nullifier = wnote.note.GetNullifier(fvk.nk);
@@ -949,30 +1080,25 @@ Value z_send(const Array& params, bool fHelp)
 
         if (fUseFCMP)
         {
-            CTxDB txdb("r");
-            CCurveTree fcmpTree;
-            uint256 hashFCMPRoot = 0;
-            std::string strFCMPError;
-            if (!LoadWalletFCMPProofTree(txdb, nCurrentHeight, fcmpTree, hashFCMPRoot, strFCMPError))
-                throw JSONRPCError(RPC_INTERNAL_ERROR, strFCMPError);
+            if (!spendability.fHasFCMPTree || spendability.fcmpTree.IsEmpty())
+                throw JSONRPCError(RPC_INTERNAL_ERROR,
+                    spendability.strFCMPError.empty() ? "Curve tree is empty, cannot create FCMP proof"
+                                                      : spendability.strFCMPError);
 
-            if (fcmpTree.IsEmpty())
-                throw JSONRPCError(RPC_INTERNAL_ERROR, "Curve tree is empty, cannot create FCMP proof");
-
-            int64_t nLeafIdx = fcmpTree.FindLeafIndex(spend.cv);
+            int64_t nLeafIdx = spendability.fcmpTree.FindLeafIndex(spend.cv);
             if (nLeafIdx < 0)
                 throw JSONRPCError(RPC_INTERNAL_ERROR, strprintf("Spend %d commitment not found in curve tree", (int)i));
 
-            if (!CreateFCMPProof(fcmpTree, (uint64_t)nLeafIdx, wnote.note.vchBlind,
+            if (!CreateFCMPProof(spendability.fcmpTree, (uint64_t)nLeafIdx, wnote.note.vchBlind,
                                   wnote.note.nValue, spend.cv, spend.fcmpProof))
                 throw JSONRPCError(RPC_INTERNAL_ERROR, strprintf("Failed to create FCMP proof for spend %d (leaf index %ld)",
                                                                   (int)i, nLeafIdx));
 
-            spend.curveTreeRoot = hashFCMPRoot;
+            spend.curveTreeRoot = spendability.hashFCMPRoot;
 
             if (fDebug)
                 printf("z_send: created FCMP proof for spend %d (leaf index %ld, tree size %lu)\n",
-                       (int)i, nLeafIdx, fcmpTree.nLeafCount);
+                       (int)i, nLeafIdx, spendability.fcmpTree.nLeafCount);
         }
 
         txNew.vShieldedSpend.push_back(spend);
@@ -1023,18 +1149,13 @@ Value z_send(const Array& params, bool fHelp)
             output.vchPlaintextBlind = outNote.vchBlind;
         }
 
-        if (fHideReceiver)
-        {
-            EncryptShieldedNote(outNote, zToAddr, output.vchEphemeralKey, output.vchEncCiphertext);
-            EncryptShieldedNoteForSender(outNote, sk.ovk, outCv.GetHash(), output.cmu,
-                                          output.vchEphemeralKey, output.vchOutCiphertext);
-        }
-        else
-        {
-            CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
-            ss << outNote;
-            output.vchRecipientScript.assign(ss.begin(), ss.end());
-        }
+        if (!EncryptShieldedNote(outNote, zToAddr, output.vchEphemeralKey, output.vchEncCiphertext))
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to encrypt output note");
+        if (!EncryptShieldedNoteForSender(outNote, sk.ovk, outCv.GetHash(), output.cmu,
+                                          output.vchEphemeralKey, output.vchOutCiphertext))
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to encrypt output note for sender");
+        if (!fHideReceiver)
+            SetPublicShieldedRecipient(output, zToAddr);
 
         txNew.vShieldedOutput.push_back(output);
         vOutputBlinds.push_back(outNote.vchBlind);
@@ -1084,18 +1205,13 @@ Value z_send(const Array& params, bool fHelp)
             changeOutput.vchPlaintextBlind = changeNote.vchBlind;
         }
 
-        if (fHideReceiver)
-        {
-            EncryptShieldedNote(changeNote, zFromAddr, changeOutput.vchEphemeralKey, changeOutput.vchEncCiphertext);
-            EncryptShieldedNoteForSender(changeNote, sk.ovk, changeCv.GetHash(), changeOutput.cmu,
-                                          changeOutput.vchEphemeralKey, changeOutput.vchOutCiphertext);
-        }
-        else
-        {
-            CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
-            ss << changeNote;
-            changeOutput.vchRecipientScript.assign(ss.begin(), ss.end());
-        }
+        if (!EncryptShieldedNote(changeNote, zFromAddr, changeOutput.vchEphemeralKey, changeOutput.vchEncCiphertext))
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to encrypt change note");
+        if (!EncryptShieldedNoteForSender(changeNote, sk.ovk, changeCv.GetHash(), changeOutput.cmu,
+                                          changeOutput.vchEphemeralKey, changeOutput.vchOutCiphertext))
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to encrypt change note for sender");
+        if (!fHideSender && !fHideReceiver)
+            SetPublicShieldedRecipient(changeOutput, zFromAddr);
 
         txNew.vShieldedOutput.push_back(changeOutput);
         vOutputBlinds.push_back(changeNote.vchBlind);
@@ -1177,18 +1293,27 @@ Value z_listunspent(const Array& params, bool fHelp)
             "Returns array of unspent shielded notes.\n");
 
     Array results;
+    int nCurrentHeight = pindexBest ? pindexBest->nHeight : 0;
+    ShieldedSpendabilityContext spendability = BuildShieldedSpendabilityContext(nCurrentHeight);
+
     LOCK(pwalletMain->cs_shielded);
     for (const CWallet::CShieldedWalletNote& wnote : pwalletMain->vShieldedNotes)
     {
         if (wnote.fSpent)
             continue;
 
+        ShieldedNoteSpendability noteStatus = GetShieldedNoteSpendability(wnote, spendability);
+
         Object entry;
         entry.push_back(Pair("txid", wnote.txhash.GetHex()));
         entry.push_back(Pair("amount", ValueFromAmount(wnote.note.nValue)));
         entry.push_back(Pair("address", ShieldedAddressToString(wnote.note.addr)));
         entry.push_back(Pair("height", wnote.nHeight));
-        entry.push_back(Pair("confirmations", (pindexBest ? pindexBest->nHeight - wnote.nHeight + 1 : 0)));
+        entry.push_back(Pair("confirmations", noteStatus.nConfirmations));
+        entry.push_back(Pair("minconf_spendable", noteStatus.fMinConfSpendable));
+        entry.push_back(Pair("fcmp_spendable", noteStatus.fFCMPSpendable));
+        entry.push_back(Pair("spendable", noteStatus.fSpendable));
+        entry.push_back(Pair("pending_reason", noteStatus.strPendingReason));
         results.push_back(entry);
     }
     return results;
@@ -1765,8 +1890,9 @@ Value z_nullsend(const Array& params, bool fHelp)
             "}\n"
         );
 
-    if (nBestHeight < FORK_HEIGHT_NULLSEND)
-        throw JSONRPCError(RPC_MISC_ERROR, strprintf("NullSend not active until block %d (current: %d)", FORK_HEIGHT_NULLSEND, nBestHeight));
+    int nCurrentHeight = nBestHeight;
+    if (nCurrentHeight < FORK_HEIGHT_NULLSEND)
+        throw JSONRPCError(RPC_MISC_ERROR, strprintf("NullSend not active until block %d (current: %d)", FORK_HEIGHT_NULLSEND, nCurrentHeight));
 
     std::string strFromAddr = params[0].get_str();
     int64_t nAmount = AmountFromValue(params[1]);
@@ -1780,13 +1906,8 @@ Value z_nullsend(const Array& params, bool fHelp)
         throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Pool size must be %d-%d", NULLSEND_MIN_PARTICIPANTS, NULLSEND_MAX_PARTICIPANTS));
 
     CShieldedPaymentAddress zFromAddr;
-    {
-        std::vector<unsigned char> vchAddr;
-        if (!DecodeBase58(strFromAddr, vchAddr) || vchAddr.size() < 44)
-            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid shielded address");
-        CDataStream ss(vchAddr, SER_NETWORK, PROTOCOL_VERSION);
-        ss >> zFromAddr;
-    }
+    if (!StringToShieldedAddress(strFromAddr, zFromAddr))
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid shielded address");
 
     CWallet* pwallet = pwalletMain;
     if (!pwallet)
@@ -1829,14 +1950,24 @@ Value z_nullsend(const Array& params, bool fHelp)
     bool fHideReceiver = DSP_HideReceiver(nPrivacyMode);
     bool fHideAmount = DSP_HideAmount(nPrivacyMode);
 
+    ShieldedSpendabilityContext spendability = BuildShieldedSpendabilityContext(nCurrentHeight);
+
     std::vector<CWallet::CShieldedWalletNote> vSpendNotes;
     int64_t nTotalInput = 0;
+    int64_t nPending = 0;
     {
         LOCK(pwallet->cs_shielded);
         for (const CWallet::CShieldedWalletNote& wnote : pwallet->vShieldedNotes)
         {
             if (wnote.fSpent) continue;
-            if ((nBestHeight - wnote.nHeight) < 10) continue;
+            if (!(wnote.note.addr == zFromAddr)) continue;
+
+            ShieldedNoteSpendability noteStatus = GetShieldedNoteSpendability(wnote, spendability);
+            if (!noteStatus.fSpendable)
+            {
+                nPending += wnote.note.nValue;
+                continue;
+            }
 
             vSpendNotes.push_back(wnote);
             nTotalInput += wnote.note.nValue;
@@ -1847,27 +1978,33 @@ Value z_nullsend(const Array& params, bool fHelp)
 
     if (nTotalInput < nAmount + NULLSEND_FEE)
         throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
-            strprintf("Insufficient shielded balance: available=%" PRId64 " needed=%" PRId64,
-                       nTotalInput, nAmount + NULLSEND_FEE));
+            FormatShieldedSpendabilityError(spendability, nTotalInput, nPending,
+                                            nAmount + NULLSEND_FEE));
 
     std::vector<std::vector<unsigned char>> vInputBlinds;
     std::vector<std::vector<unsigned char>> vOutputBlinds;
     CShieldedFullViewingKey fvk;
     DeriveShieldedFullViewingKey(sk, fvk);
 
-    for (const CWallet::CShieldedWalletNote& wnote : vSpendNotes)
+    for (size_t nSpendIdx = 0; nSpendIdx < vSpendNotes.size(); nSpendIdx++)
     {
+        CWallet::CShieldedWalletNote& wnote = vSpendNotes[nSpendIdx];
         CShieldedSpendDescription spend;
-        spend.cv = CPedersenCommitment();
-        wnote.note.GetPedersenCommitment(*(CPedersenCommitment*)&spend.cv);
+
+        if (wnote.note.vchBlind.empty())
+            wnote.note.GenerateBlindingFactor();
+
+        if (!wnote.note.GetPedersenCommitment(spend.cv))
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create spend commitment");
+
         spend.nullifier = wnote.note.GetNullifier(fvk.nk);
 
-            if (fHideSender)
+        if (fHideSender)
         {
             CTxDB txdb("r");
             CIncrementalMerkleTree tree;
 
-            int nAnchorHeight = nBestHeight - MIN_SHIELDED_SPEND_DEPTH;
+            int nAnchorHeight = nCurrentHeight - MIN_SHIELDED_SPEND_DEPTH;
             if (nAnchorHeight < 0) nAnchorHeight = 0;
             CBlockIndex* pAnchorBlock = FindBlockByHeight(nAnchorHeight);
             if (pAnchorBlock)
@@ -1893,7 +2030,7 @@ Value z_nullsend(const Array& params, bool fHelp)
 
             CAnonymitySet anonSet;
             if (!BuildAnonymitySet(spend.cv, vAllCommitments, spend.anchor,
-                                    nBestHeight, anonSet))
+                                    nCurrentHeight, anonSet))
                 throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to build anonymity set");
 
             for (const CPedersenCommitment& c : anonSet.vCommitments)
@@ -1904,7 +2041,7 @@ Value z_nullsend(const Array& params, bool fHelp)
                 throw JSONRPCError(RPC_INTERNAL_ERROR, "Real commitment not found in anonymity set");
 
             CLelantusProof proof;
-            int64_t nSerialIdx = (nBestHeight >= FORK_HEIGHT_SERIAL_V2) ? nGlobalOutputIndex : -1;
+            int64_t nSerialIdx = (nCurrentHeight >= FORK_HEIGHT_SERIAL_V2) ? nGlobalOutputIndex : -1;
             uint256 serial = ComputeLelantusSerial(sk.skSpend, wnote.note.rho, spend.cv, nSerialIdx);
             if (!CreateLelantusProof(anonSet, nRealIndex, wnote.note.nValue,
                                       wnote.note.vchBlind, serial, proof))
@@ -1916,7 +2053,7 @@ Value z_nullsend(const Array& params, bool fHelp)
         {
             CTxDB txdb("r");
             CIncrementalMerkleTree tree;
-            int nAnchorHeight2 = nBestHeight - MIN_SHIELDED_SPEND_DEPTH;
+            int nAnchorHeight2 = nCurrentHeight - MIN_SHIELDED_SPEND_DEPTH;
             if (nAnchorHeight2 < 0) nAnchorHeight2 = 0;
             CBlockIndex* pAnchorBlock2 = FindBlockByHeight(nAnchorHeight2);
             if (pAnchorBlock2)
@@ -1931,7 +2068,7 @@ Value z_nullsend(const Array& params, bool fHelp)
                 txdb.ReadShieldedTree(tree);
             spend.anchor = tree.Root();
             int64_t nSerialIdx2 = -1;
-            if (nBestHeight >= FORK_HEIGHT_SERIAL_V2)
+            if (nCurrentHeight >= FORK_HEIGHT_SERIAL_V2)
             {
                 std::vector<CPedersenCommitment> vAllCmts;
                 txdb.ReadAllShieldedCommitments(vAllCmts);
@@ -1956,6 +2093,31 @@ Value z_nullsend(const Array& params, bool fHelp)
         {
             spend.nPlaintextValue = wnote.note.nValue;
             spend.vchPlaintextBlind = wnote.note.vchBlind;
+        }
+
+        if (spendability.fRequireFCMP)
+        {
+            if (!spendability.fHasFCMPTree || spendability.fcmpTree.IsEmpty())
+                throw JSONRPCError(RPC_INTERNAL_ERROR,
+                    spendability.strFCMPError.empty() ? "Curve tree is empty, cannot create FCMP proof"
+                                                      : spendability.strFCMPError);
+
+            int64_t nLeafIdx = spendability.fcmpTree.FindLeafIndex(spend.cv);
+            if (nLeafIdx < 0)
+                throw JSONRPCError(RPC_INTERNAL_ERROR,
+                    strprintf("Spend %d commitment not found in curve tree", (int)nSpendIdx));
+
+            if (!CreateFCMPProof(spendability.fcmpTree, (uint64_t)nLeafIdx,
+                                  wnote.note.vchBlind, wnote.note.nValue,
+                                  spend.cv, spend.fcmpProof))
+                throw JSONRPCError(RPC_INTERNAL_ERROR,
+                    strprintf("Failed to create FCMP proof for spend %d", (int)nSpendIdx));
+
+            spend.curveTreeRoot = spendability.hashFCMPRoot;
+
+            if (fDebug)
+                printf("z_nullsend: created FCMP proof for spend %d (leaf index %ld, tree size %lu)\n",
+                       (int)nSpendIdx, nLeafIdx, spendability.fcmpTree.nLeafCount);
         }
 
         myEntry.vMySpends.push_back(spend);
@@ -1998,18 +2160,13 @@ Value z_nullsend(const Array& params, bool fHelp)
             output.vchPlaintextBlind = outNote.vchBlind;
         }
 
-        if (fHideReceiver)
-        {
-            EncryptShieldedNote(outNote, zFromAddr, output.vchEphemeralKey, output.vchEncCiphertext);
-            EncryptShieldedNoteForSender(outNote, sk.ovk, outCv.GetHash(), output.cmu,
-                                          output.vchEphemeralKey, output.vchOutCiphertext);
-        }
-        else
-        {
-            CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
-            ss << outNote;
-            output.vchRecipientScript.assign(ss.begin(), ss.end());
-        }
+        if (!EncryptShieldedNote(outNote, zFromAddr, output.vchEphemeralKey, output.vchEncCiphertext))
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to encrypt NullSend output note");
+        if (!EncryptShieldedNoteForSender(outNote, sk.ovk, outCv.GetHash(), output.cmu,
+                                          output.vchEphemeralKey, output.vchOutCiphertext))
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to encrypt NullSend output note for sender");
+        if (!fHideSender && !fHideReceiver)
+            SetPublicShieldedRecipient(output, zFromAddr);
 
         myEntry.vMyOutputs.push_back(output);
         vOutputBlinds.push_back(outNote.vchBlind);
@@ -2050,18 +2207,13 @@ Value z_nullsend(const Array& params, bool fHelp)
             changeOutput.vchPlaintextBlind = changeNote.vchBlind;
         }
 
-        if (fHideReceiver)
-        {
-            EncryptShieldedNote(changeNote, zFromAddr, changeOutput.vchEphemeralKey, changeOutput.vchEncCiphertext);
-            EncryptShieldedNoteForSender(changeNote, sk.ovk, changeCv.GetHash(), changeOutput.cmu,
-                                          changeOutput.vchEphemeralKey, changeOutput.vchOutCiphertext);
-        }
-        else
-        {
-            CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
-            ss << changeNote;
-            changeOutput.vchRecipientScript.assign(ss.begin(), ss.end());
-        }
+        if (!EncryptShieldedNote(changeNote, zFromAddr, changeOutput.vchEphemeralKey, changeOutput.vchEncCiphertext))
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to encrypt NullSend change note");
+        if (!EncryptShieldedNoteForSender(changeNote, sk.ovk, changeCv.GetHash(), changeOutput.cmu,
+                                          changeOutput.vchEphemeralKey, changeOutput.vchOutCiphertext))
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to encrypt NullSend change note for sender");
+        if (!fHideSender && !fHideReceiver)
+            SetPublicShieldedRecipient(changeOutput, zFromAddr);
 
         myEntry.vMyOutputs.push_back(changeOutput);
         vOutputBlinds.push_back(changeNote.vchBlind);
@@ -2081,7 +2233,14 @@ Value z_nullsend(const Array& params, bool fHelp)
         if (it == nullSendPool.mapSessions.end())
             throw JSONRPCError(RPC_INTERNAL_ERROR, "Session not found");
 
-        it->second.AcceptEntry(myEntry, NULL);
+        if (it->second.fChaumian)
+        {
+            it->second.fChaumian = false;
+            it->second.SetState(NULLSEND_STATE_ACCEPTING);
+        }
+
+        if (!it->second.AcceptEntry(myEntry, NULL) || it->second.vParticipants.empty())
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to accept direct NullSend entry");
 
         if ((int)it->second.vParticipants.size() >= NULLSEND_MIN_PARTICIPANTS)
         {

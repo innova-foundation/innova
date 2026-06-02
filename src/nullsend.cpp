@@ -336,7 +336,7 @@ bool CNullSendSession::FinalizeTransaction()
 
         for (size_t i = 0; i < vSpends.size(); i++)
         {
-            if (p.vSpendAuthSigs[i].size() != 64 || p.vSpendRks[i].size() != 33)
+            if (p.vSpendAuthSigs[i].size() != 65 || p.vSpendRks[i].size() != 33)
                 return false;
 
             uint256 myNullifier = vSpends[i].nullifier;

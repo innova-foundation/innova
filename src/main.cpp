@@ -1085,12 +1085,10 @@ bool CTransaction::CheckTransaction() const
                     if (!output.vchPlaintextBlind.empty())
                         return DoS(100, error("CTransaction::CheckTransaction() : DSP output %u has blinding factor in hidden-amount mode", (unsigned int)i));
                 }
-                if (!fHideReceiver)
+                if (fHideReceiver)
                 {
-                    if (!output.vchEncCiphertext.empty())
-                        return DoS(100, error("CTransaction::CheckTransaction() : DSP output %u has ciphertext in public-receiver mode", (unsigned int)i));
-                    if (output.vchRecipientScript.empty())
-                        return DoS(100, error("CTransaction::CheckTransaction() : DSP output %u missing recipient in public-receiver mode", (unsigned int)i));
+                    if (!output.vchRecipientScript.empty())
+                        return DoS(100, error("CTransaction::CheckTransaction() : DSP output %u has public recipient in hidden-receiver mode", (unsigned int)i));
                 }
             }
         }

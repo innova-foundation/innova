@@ -103,6 +103,50 @@ void TxToJSON(const CTransaction& tx, const uint256 hashBlock, Object& entry)
     }
     entry.push_back(Pair("vout", vout));
 
+    if (tx.IsShielded())
+    {
+        entry.push_back(Pair("valueBalance", ValueFromAmount(tx.nValueBalance)));
+        if (tx.nVersion >= SHIELDED_TX_VERSION_DSP)
+        {
+            entry.push_back(Pair("privacy_mode", (int)tx.nPrivacyMode));
+            entry.push_back(Pair("hide_sender", DSP_HideSender(tx.nPrivacyMode)));
+            entry.push_back(Pair("hide_receiver", DSP_HideReceiver(tx.nPrivacyMode)));
+            entry.push_back(Pair("hide_amount", DSP_HideAmount(tx.nPrivacyMode)));
+        }
+
+        Array shieldedSpends;
+        for (unsigned int i = 0; i < tx.vShieldedSpend.size(); i++)
+        {
+            const CShieldedSpendDescription& spend = tx.vShieldedSpend[i];
+            Object obj;
+            obj.push_back(Pair("n", (int64_t)i));
+            obj.push_back(Pair("range_proof_size", (int)spend.rangeProof.GetSize()));
+            obj.push_back(Pair("lelantus_proof_size", (int)spend.vchLelantusProof.size()));
+            obj.push_back(Pair("anonset_size", (int)spend.vAnonSet.size()));
+            obj.push_back(Pair("fcmp_proof_size", (int)spend.fcmpProof.GetSize()));
+            obj.push_back(Pair("plaintext_value", spend.nPlaintextValue >= 0 ? ValueFromAmount(spend.nPlaintextValue) : Value(-1)));
+            obj.push_back(Pair("plaintext_blind_size", (int)spend.vchPlaintextBlind.size()));
+            shieldedSpends.push_back(obj);
+        }
+        entry.push_back(Pair("shielded_spends", shieldedSpends));
+
+        Array shieldedOutputs;
+        for (unsigned int i = 0; i < tx.vShieldedOutput.size(); i++)
+        {
+            const CShieldedOutputDescription& output = tx.vShieldedOutput[i];
+            Object obj;
+            obj.push_back(Pair("n", (int64_t)i));
+            obj.push_back(Pair("range_proof_size", (int)output.rangeProof.GetSize()));
+            obj.push_back(Pair("enc_ciphertext_size", (int)output.vchEncCiphertext.size()));
+            obj.push_back(Pair("out_ciphertext_size", (int)output.vchOutCiphertext.size()));
+            obj.push_back(Pair("recipient_script_size", (int)output.vchRecipientScript.size()));
+            obj.push_back(Pair("plaintext_value", output.nPlaintextValue >= 0 ? ValueFromAmount(output.nPlaintextValue) : Value(-1)));
+            obj.push_back(Pair("plaintext_blind_size", (int)output.vchPlaintextBlind.size()));
+            shieldedOutputs.push_back(obj);
+        }
+        entry.push_back(Pair("shielded_outputs", shieldedOutputs));
+    }
+
     if (hashBlock != 0)
     {
         entry.push_back(Pair("blockhash", hashBlock.GetHex()));

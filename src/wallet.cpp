@@ -9658,7 +9658,9 @@ bool CWallet::IsShieldedOutputMine(const CShieldedOutputDescription& output, CSh
 {
     LOCK(cs_shielded);
 
-    // DSP public receiver mode: check plaintext recipient
+    // Legacy DSP public receiver mode serialized the full note in this field.
+    // New public receiver mode stores only the public address marker and keeps
+    // the note encrypted so independent amount privacy still holds.
     if (!output.vchRecipientScript.empty())
     {
         try {
@@ -9677,7 +9679,25 @@ bool CWallet::IsShieldedOutputMine(const CShieldedOutputDescription& output, CSh
             }
         } catch (...) {
         }
-        return false;
+
+        try {
+            CDataStream ss(output.vchRecipientScript, SER_NETWORK, PROTOCOL_VERSION);
+            CShieldedPaymentAddress publicAddr;
+            ss >> publicAddr;
+
+            std::map<CShieldedPaymentAddress, CShieldedIncomingViewingKey>::const_iterator it =
+                mapShieldedViewingKeys.find(publicAddr);
+            if (it != mapShieldedViewingKeys.end() &&
+                DecryptShieldedNote(output.vchEncCiphertext, output.vchEphemeralKey,
+                                    publicAddr.vchPkD, publicAddr.vchDiversifier,
+                                    it->second, noteOut))
+            {
+                uint256 expectedCmu = noteOut.GetCommitment();
+                if (expectedCmu == output.cmu)
+                    return true;
+            }
+        } catch (...) {
+        }
     }
 
     for (const auto& pair : mapShieldedViewingKeys)
