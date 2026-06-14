@@ -2528,7 +2528,7 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
 
        return nSubsidy + nFees;
    } else {
-  // use nHeight parameter throughout (was pindexBest->nHeight)
+  // use nHeight parameter throughout
   if (nHeight == 1)
   		nSubsidy = 10350000 * COIN;  //Swap amount for Innova Chain v0.12 + Founders Fund 2.25 million
   	else if (nHeight <= FAIR_LAUNCH_BLOCK) // Block 490, Instamine prevention
@@ -4529,7 +4529,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         {
             if (vtx[1].IsShielded())
             {
-                // PRIV-AUDIT-3: After V2 fork, reject V1 proofs (they leak UTXO identity)
+                // After the V2 fork, reject V1 proofs (they leak UTXO identity)
                 bool fNullStakeAllowed = (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE && pindex->nHeight >= FORK_HEIGHT_NULLSTAKE && pindex->nHeight < FORK_HEIGHT_NULLSTAKE_V2)
                     || (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 && pindex->nHeight >= FORK_HEIGHT_NULLSTAKE_V2)
                     || (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD && pindex->nHeight >= FORK_HEIGHT_NULLSTAKE_V3);
