@@ -130,6 +130,25 @@ except Exception:
 ' <<< "$json" 2>/dev/null
 }
 
+# Connected committee rotation at a given effective epoch: prints
+# "<signers> <new_set_hash> <new_threshold>" or "MISSING".
+json_rotation_at_epoch() {
+    local json="$1"
+    EFF="$2" python3 -c '
+import json, os, sys
+try:
+    obj = json.load(sys.stdin)
+    eff = int(os.environ["EFF"])
+    for r in obj.get("connected_committee_rotations", []):
+        if isinstance(r, dict) and int(r.get("effective_epoch", -1)) == eff:
+            print("%d %s %s" % (int(r.get("signers", 0)), r.get("new_set_hash", ""), r.get("new_threshold", "")))
+            sys.exit(0)
+    print("MISSING")
+except Exception:
+    print("ERROR")
+' <<< "$json" 2>/dev/null
+}
+
 is_int() {
     echo "$1" | grep -qE '^[0-9]+$'
 }
@@ -606,6 +625,59 @@ if [ "$PAYLOAD_BEFORE" != "$PAYLOAD_HEIGHT" ]; then
     success "payloads were delivered by mined block relay; submitblock was not used"
 else
     fail "payload mining height did not advance"
+fi
+
+# --- D2 committee self-rotation (opt-in; needs an M-of-N committee) ---
+if [ "${IDAG_RELAY_TEST_ROTATION:-0}" = "1" ] && [ "${COMMITTEE_M:-1}" -gt 1 ]; then
+    header "Committee Self-Rotation ($COMMITTEE_THRESHOLD -> 2-of-2)"
+
+    CUR_EPOCH="$(json_field "$(rpc 0 getfinalityinfo 2>/dev/null)" "epoch")"
+    is_int "$CUR_EPOCH" || { fail "could not read current epoch for rotation"; exit 1; }
+    EFF_EPOCH=$((CUR_EPOCH + 1))
+    NEW_PUBS="${COMMITTEE_PUBKEYS[0]},${COMMITTEE_PUBKEYS[1]}"
+    NEW_THRESH="2-of-2"
+    log "Rotating to $NEW_THRESH effective at epoch $EFF_EPOCH (signed by the current $COMMITTEE_THRESHOLD)"
+
+    # 1. Build the unsigned rotation on node0.
+    ROT="$(json_field "$(rpc 0 createcommitteerotation "$NEW_PUBS" "$NEW_THRESH" "$EFF_EPOCH" 2>/dev/null)" "rotation")"
+    if [ -n "$ROT" ]; then success "built unsigned committee rotation (effective epoch $EFF_EPOCH)"; else fail "createcommitteerotation returned no rotation"; exit 1; fi
+
+    # 2/3. Two current members co-sign (node0=index0, node1=index1).
+    ROT="$(json_field "$(rpc 0 signcommitteerotation "$ROT" 2>/dev/null)" "rotation")"
+    SIGN1="$(rpc 1 signcommitteerotation "$ROT" 2>/dev/null)"
+    ROT="$(json_field "$SIGN1" "rotation")"
+    if [ -n "$ROT" ] && [ "$(json_field "$SIGN1" "signatures")" = "2" ] && [ "$(json_field "$SIGN1" "complete")" = "true" ]; then
+        success "rotation co-signed by 2 current committee members (>= M=$COMMITTEE_M)"
+    else
+        fail "rotation co-signing failed: $SIGN1"; exit 1
+    fi
+
+    # 4. Submit (validated against the current committee, held pending).
+    SUBMIT="$(rpc 0 submitcommitteerotation "$ROT" 2>/dev/null)"
+    if [ "$(json_field "$SUBMIT" "accepted")" = "true" ]; then success "rotation submitted and accepted (pending)"; else fail "submitcommitteerotation rejected: $SUBMIT"; exit 1; fi
+
+    # 5. Mine it into a block and relay.
+    mine_one 0 || { fail "failed to mine rotation block"; exit 1; }
+    ROT_HEIGHT="$(height 0)"
+    wait_all_height "$ROT_HEIGHT" 600 || { fail "rotation block did not relay"; exit 1; }
+
+    # 6. Verify it connected fleet-wide: same effective epoch, >= M signers, the
+    #    2-of-2 threshold, and a consistent new set hash on every node.
+    ROT_OK=1; ROT_SET_HASH=""
+    for ((node=0; node<NUM_NODES; node++)); do
+        R="$(json_rotation_at_epoch "$(rpc "$node" getfinalityinfo 2>/dev/null)" "$EFF_EPOCH")"
+        rsig="$(echo "$R" | awk '{print $1}')"; rhash="$(echo "$R" | awk '{print $2}')"; rthr="$(echo "$R" | awk '{print $3}')"
+        [ -z "$ROT_SET_HASH" ] && ROT_SET_HASH="$rhash"
+        log "  node$node: rotation@$EFF_EPOCH signers=$rsig threshold=$rthr new_set_hash=${rhash:0:12}"
+        if [ "$R" = "MISSING" ] || [ "$R" = "ERROR" ] || ! is_int "$rsig" || [ "$rsig" -lt "$COMMITTEE_M" ] || [ "$rthr" != "$NEW_THRESH" ] || [ "$rhash" != "$ROT_SET_HASH" ]; then
+            ROT_OK=0
+        fi
+    done
+    if [ "$ROT_OK" -eq 1 ]; then
+        success "committee self-rotation connected fleet-wide (epoch $EFF_EPOCH, $NEW_THRESH, set_hash ${ROT_SET_HASH:0:12})"
+    else
+        fail "committee rotation not consistently connected across nodes"
+    fi
 fi
 
 header "Summary"
