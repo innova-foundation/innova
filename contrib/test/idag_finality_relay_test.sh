@@ -25,8 +25,17 @@ KEEP_DIR="${IDAG_RELAY_KEEP_DIR:-0}"
 RPCUSER="${IDAG_RELAY_RPCUSER:-relayfinality}"
 RPCPASS="${IDAG_RELAY_RPCPASS:-relaypass}"
 
-COMMITTEE_PRIV="0000000000000000000000000000000000000000000000000000000000000001"
-COMMITTEE_PUB="0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+# Finality tally committee: N ordered pubkeys + an M-of-N threshold. Defaults to a
+# 1-of-1 committee (member 0 on node0). Override for M-of-N, e.g. a 2-of-3:
+#   IDAG_RELAY_COMMITTEE_THRESHOLD=2-of-3
+#   IDAG_RELAY_COMMITTEE_PUBKEYS="<P0> <P1> <P2>"
+#   IDAG_RELAY_COMMITTEE_PRIVKEYS="<k0> <k1> <k2>"   # node i holds committee key i
+# All nodes list the SAME ordered pubkeys (the set hash and signer indexes are
+# order-dependent); node i's local committee index is the position of key i.
+COMMITTEE_THRESHOLD="${IDAG_RELAY_COMMITTEE_THRESHOLD:-1-of-1}"
+read -r -a COMMITTEE_PUBKEYS <<< "${IDAG_RELAY_COMMITTEE_PUBKEYS:-0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798}"
+read -r -a COMMITTEE_PRIVKEYS <<< "${IDAG_RELAY_COMMITTEE_PRIVKEYS:-0000000000000000000000000000000000000000000000000000000000000001}"
+COMMITTEE_M="${COMMITTEE_THRESHOLD%%-of-*}"
 
 PASSED=0
 FAILED=0
@@ -99,6 +108,23 @@ try:
               if isinstance(cert, dict)
               and cert.get("private_weight") is True
               and int(cert.get("version", 0)) in (2, 3)))
+except Exception:
+    print(0)
+' <<< "$json" 2>/dev/null
+}
+
+# Max committee signer_count across the block's private certificates (M-of-N proof).
+json_max_cert_signers() {
+    local json="$1"
+    python3 -c '
+import json
+import sys
+try:
+    obj = json.load(sys.stdin)
+    certs = obj.get("finality_tally_certificates", [])
+    counts = [int(cert.get("signer_count", 0)) for cert in certs
+              if isinstance(cert, dict) and cert.get("private_weight") is True]
+    print(max(counts) if counts else 0)
 except Exception:
     print(0)
 ' <<< "$json" 2>/dev/null
@@ -216,6 +242,7 @@ wait_all_height() {
 
 mine_one() {
     local node="$1"
+    local max_iters="${2:-600}"
     local before
     local after
     local attempt
@@ -223,9 +250,11 @@ mine_one() {
     is_int "$before" || return 1
 
     rpc "$node" setgenerate true 1 >/dev/null 2>&1 || return 1
-    # 600*0.25s = 150s: regtest PoW for a single block can be slow on a
-    # contended host. Returns as soon as the node's own height advances.
-    for ((attempt=0; attempt<600; attempt++)); do
+    # max_iters*0.25s (default 600 -> 150s): regtest PoW for a single block can be
+    # slow on a contended host, and a block that EMBEDS a committee certificate
+    # also re-verifies it (VerifyMofN + BPAC + FCMP) in CreateNewBlock, which is
+    # much heavier for an M-of-N cert -- callers pass a larger cap for that step.
+    for ((attempt=0; attempt<max_iters; attempt++)); do
         after="$(height "$node")"
         if is_int "$after" && [ "$after" -gt "$before" ]; then
             rpc "$node" setgenerate false 0 >/dev/null 2>&1 || true
@@ -329,12 +358,14 @@ write_config() {
         echo "nofinalityvoting=0"
         echo "finalityvotemode=nullstake"
         echo "finalitytallymode=committee"
-        echo "finalitytallythreshold=1-of-1"
-        echo "finalitytallypubkey=$COMMITTEE_PUB"
+        echo "finalitytallythreshold=$COMMITTEE_THRESHOLD"
+        for pk in "${COMMITTEE_PUBKEYS[@]}"; do echo "finalitytallypubkey=$pk"; done
         echo "getdatablockbatch=128"
         echo "maxconnections=32"
-        if [ "$node" -eq 0 ]; then
-            echo "finalitytallyprivkey=$COMMITTEE_PRIV"
+        # Node i holds committee key i (so its local committee index is i). For the
+        # default 1-of-1 only node0 is keyed; for M-of-N each member node is keyed.
+        if [ "$node" -lt "${#COMMITTEE_PRIVKEYS[@]}" ]; then
+            echo "finalitytallyprivkey=${COMMITTEE_PRIVKEYS[$node]}"
         fi
     } > "$dir/innova.conf"
 }
@@ -401,6 +432,34 @@ for ((node=0; node<NUM_NODES; node++)); do
         exit 1
     fi
 done
+
+header "Committee Setup ($COMMITTEE_THRESHOLD)"
+# Every node must resolve the SAME canonical committee (set hash + threshold), and
+# each keyed member node must report its own local committee index. This is the
+# precondition for M-of-N signature collection.
+COMMITTEE_SET_HASH=""
+COMMITTEE_OK=1
+for ((node=0; node<NUM_NODES; node++)); do
+    INFO="$(rpc "$node" getfinalityinfo 2>/dev/null)"
+    cvalid="$(json_field "$INFO" "tally_committee_valid")"
+    cthr="$(json_field "$INFO" "tally_threshold")"
+    cset="$(json_field "$INFO" "tally_committee_set_hash")"
+    cidx="$(json_field "$INFO" "tally_local_committee_index")"
+    [ -z "$COMMITTEE_SET_HASH" ] && COMMITTEE_SET_HASH="$cset"
+    log "  node$node: valid=$cvalid threshold=$cthr local_index=$cidx set_hash=${cset:0:12}"
+    if [ "$cvalid" != "true" ] || [ "$cthr" != "$COMMITTEE_THRESHOLD" ] || [ "$cset" != "$COMMITTEE_SET_HASH" ]; then
+        COMMITTEE_OK=0
+    fi
+    if [ "$node" -lt "${#COMMITTEE_PRIVKEYS[@]}" ] && [ "$cidx" != "$node" ]; then
+        COMMITTEE_OK=0
+    fi
+done
+if [ "$COMMITTEE_OK" -eq 1 ]; then
+    success "committee resolves consistently ($COMMITTEE_THRESHOLD, set_hash ${COMMITTEE_SET_HASH:0:12}) with distinct member indexes"
+else
+    fail "committee configuration inconsistent across nodes"
+    exit 1
+fi
 
 header "Pre-DAG Shielded Note"
 
@@ -502,7 +561,7 @@ if ! is_int "$CERT_COUNT" || [ "$CERT_COUNT" -lt 1 ]; then
     log "Waiting for committee automation to create a private v2 certificate"
     if wait_for_pending_private_cert; then
         success "private v2 tally certificate is pending"
-        mine_one 0 || { fail "failed to mine private certificate block"; exit 1; }
+        mine_one 0 2400 || { fail "failed to mine private certificate block"; exit 1; }
         CERT_HEIGHT="$(height 0)"
         wait_all_height "$CERT_HEIGHT" 600 || { fail "certificate payload block did not relay"; exit 1; }
         PAYLOAD_JSON="$(block_json 2 "$CERT_HEIGHT")"
@@ -527,6 +586,20 @@ if is_int "$CERT_COUNT" && [ "$CERT_COUNT" -ge 1 ]; then
     success "relayed block contains private v2 tally-certificate payload"
 else
     fail "relayed block missing private v2 tally-certificate payload"
+fi
+
+# M-of-N: the connected v3 certificate must carry >= M committee signatures. (A v3
+# cert only connects if VerifyMofNCommitteeSignatures saw >= M valid sigs, so the
+# fleet-wide connection above already implies it; assert it explicitly too.)
+CERT_SIGNERS="$(json_max_cert_signers "$PAYLOAD_JSON")"
+if [ "${COMMITTEE_M:-1}" -gt 1 ]; then
+    if is_int "$CERT_SIGNERS" && [ "$CERT_SIGNERS" -ge "$COMMITTEE_M" ]; then
+        success "v3 certificate carries $CERT_SIGNERS committee signatures (>= M=$COMMITTEE_M of N=${#COMMITTEE_PUBKEYS[@]})"
+    else
+        fail "v3 certificate signer-set too small: got '$CERT_SIGNERS', need >= M=$COMMITTEE_M"
+    fi
+else
+    log "1-of-1 committee: certificate signer_count=$CERT_SIGNERS"
 fi
 
 if [ "$PAYLOAD_BEFORE" != "$PAYLOAD_HEIGHT" ]; then
