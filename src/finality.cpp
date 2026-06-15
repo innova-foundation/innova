@@ -106,7 +106,7 @@ static bool ParseCompressedTallyPubKey(const std::string& strKey, CPubKey& pubKe
     return true;
 }
 
-static bool GetFinalityTallyPrivateKey(CKey& keyOut)
+bool GetFinalityTallyPrivateKey(CKey& keyOut)
 {
     std::string strPrivKey = GetArg("-finalitytallyprivkey", "");
     if (strPrivKey.empty() || !IsHex(strPrivKey))
@@ -484,6 +484,65 @@ void CFinalityTracker::DisconnectCommitteeRotation(int nEffectiveEpoch)
 {
     LOCK(cs_finality);
     mapConnectedRotations.erase(nEffectiveEpoch);
+}
+
+bool CFinalityTracker::AddPendingCommitteeRotation(const CFinalityCommitteeRotation& rot, std::string* pstrError)
+{
+    auto reject = [&](const std::string& s) -> bool { if (pstrError) *pstrError = s; return false; };
+    LOCK(cs_finality);
+    if (vInitialCommittee.empty())
+        return reject("no canonical committee pinned");
+    // Validate exactly as ConnectCommitteeRotation will at connect time: authorized
+    // by >= M signatures from the committee active immediately before the effective
+    // epoch (cs_finality is recursive, so GetCommitteeForEpoch can re-lock).
+    std::vector<CPubKey> vPrev; int nPrevM = 0; uint256 prevSetHash;
+    if (!GetCommitteeForEpoch(rot.nEffectiveEpoch - 1, vPrev, nPrevM, prevSetHash))
+        return reject("no committee resolvable before rotation effective epoch");
+    if (!CheckFinalityCommitteeRotation(rot, vPrev, nPrevM, prevSetHash, pstrError))
+        return false;
+    if (mapConnectedRotations.count(rot.nEffectiveEpoch))
+        return reject("a rotation is already connected at that effective epoch");
+    mapPendingRotations[rot.nEffectiveEpoch] = rot;
+    return true;
+}
+
+std::vector<CFinalityCommitteeRotation> CFinalityTracker::GetPendingCommitteeRotationsForBlock(int nBlockHeight, unsigned int nMax) const
+{
+    LOCK(cs_finality);
+    std::vector<CFinalityCommitteeRotation> vOut;
+    int nBlockEpoch = GetEpochForHeight(nBlockHeight);
+    for (std::map<int, CFinalityCommitteeRotation>::const_iterator it = mapPendingRotations.begin();
+         it != mapPendingRotations.end(); ++it)
+    {
+        const CFinalityCommitteeRotation& rot = it->second;
+        // A2: future effective epoch, within the lookahead, not already connected.
+        if (rot.nEffectiveEpoch <= nBlockEpoch ||
+            rot.nEffectiveEpoch > nBlockEpoch + FINALITY_ROTATION_MAX_LOOKAHEAD ||
+            mapConnectedRotations.count(rot.nEffectiveEpoch))
+            continue;
+        // Re-validate against the current canonical set (it may have advanced).
+        std::vector<CPubKey> vPrev; int nPrevM = 0; uint256 prevSetHash;
+        if (!GetCommitteeForEpoch(rot.nEffectiveEpoch - 1, vPrev, nPrevM, prevSetHash))
+            continue;
+        if (!CheckFinalityCommitteeRotation(rot, vPrev, nPrevM, prevSetHash, NULL))
+            continue;
+        vOut.push_back(rot);
+        if (vOut.size() >= nMax)
+            break;
+    }
+    return vOut;
+}
+
+bool CFinalityTracker::HasPendingCommitteeRotation() const
+{
+    LOCK(cs_finality);
+    return !mapPendingRotations.empty();
+}
+
+std::map<int, CFinalityCommitteeRotation> CFinalityTracker::GetConnectedRotations() const
+{
+    LOCK(cs_finality);
+    return mapConnectedRotations;
 }
 
 // Testnet pinned 1-of-1 finality committee (matches the seed finalitytallypubkey;
@@ -1781,6 +1840,15 @@ static void RelayFinalityCertSignature(const CFinalityCertSignature& msg)
     LOCK(cs_vNodes);
     for (CNode* pnode : vNodes)
         pnode->PushMessage("ftcsig", msg);
+}
+
+// Non-static (declared in finality.h): the committee-rotation RPC gossips a
+// fully-signed pending rotation so any miner can embed it.
+void RelayFinalityCommitteeRotation(const CFinalityCommitteeRotation& rot)
+{
+    LOCK(cs_vNodes);
+    for (CNode* pnode : vNodes)
+        pnode->PushMessage("ftrot", rot);
 }
 
 static bool FinalityRecoverGroupFromPartials(CFinalityTallyGroupWork& group,
@@ -5423,6 +5491,22 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
                 RelayFinalityTallyCertificate(assembled);
         }
 
+        return true;
+    }
+    else if (strCommand == "ftrot")
+    {
+        // D2 self-governance: a fully-signed committee rotation, gossiped so any
+        // miner can embed it. AddPendingCommitteeRotation re-verifies the >= M
+        // signatures against the committee active before its effective epoch.
+        CFinalityCommitteeRotation rot;
+        vRecv >> rot;
+        if (g_finalityTracker.AddPendingCommitteeRotation(rot, NULL))
+        {
+            LOCK(cs_vNodes);
+            for (CNode* pnode : vNodes)
+                if (pnode != pfrom)
+                    pnode->PushMessage("ftrot", rot);
+        }
         return true;
     }
     else if (strCommand == "fvreq")

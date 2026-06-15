@@ -1226,6 +1226,25 @@ Value getfinalityinfo(const Array& params, bool fHelp)
     result.push_back(Pair("tally_committee_set_hash", tallyConfig.committeeSetHash.GetHex()));
     result.push_back(Pair("tally_local_committee_index", tallyConfig.nLocalCommitteeIndex));
     result.push_back(Pair("tally_encrypted_shares_ready", tallyConfig.fEncryptedTallyReady));
+    {
+        // D2 self-governance: connected (applied) committee rotations, so the new
+        // canonical set at each effective epoch is observable for ops + tests.
+        Array rotArray;
+        std::map<int, CFinalityCommitteeRotation> mapRot = g_finalityTracker.GetConnectedRotations();
+        for (std::map<int, CFinalityCommitteeRotation>::const_iterator it = mapRot.begin(); it != mapRot.end(); ++it)
+        {
+            const CFinalityCommitteeRotation& rot = it->second;
+            std::vector<CPubKey> vNew; int nNewM = 0; uint256 newSetHash;
+            bool fResolved = rot.GetNewCommittee(vNew, nNewM, newSetHash);
+            Object rotObj;
+            rotObj.push_back(Pair("effective_epoch", rot.nEffectiveEpoch));
+            rotObj.push_back(Pair("new_set_hash", fResolved ? newSetHash.GetHex() : std::string("")));
+            rotObj.push_back(Pair("new_threshold", strprintf("%d-of-%d", (int)rot.nNewThresholdM, (int)rot.vNewPubKeys.size())));
+            rotObj.push_back(Pair("signers", (int)rot.vSignerIndexes.size()));
+            rotArray.push_back(rotObj);
+        }
+        result.push_back(Pair("connected_committee_rotations", rotArray));
+    }
     int nDecryptableTallyShares = CountDecryptableFinalityTallyShares(nCurrentEpoch);
     int nTallyAggregatePartials = g_finalityTracker.GetEpochTallyAggregatePartialCount(nCurrentEpoch);
     result.push_back(Pair("tally_decryptable_shares", nDecryptableTallyShares));
@@ -1411,6 +1430,172 @@ Value submitfinalitytallycert(const Array& params, bool fHelp)
     result.push_back(Pair("epoch", cert.nEpoch));
     result.push_back(Pair("version", cert.nVersion));
     result.push_back(Pair("private_weight", cert.HasPrivateWeight()));
+    return result;
+}
+
+
+// --- D2 self-governing committee rotation (production governance RPCs) ---
+// Three steps, no central key: build the unsigned rotation, have M current
+// committee members each add a signature, then submit the >= M-signed rotation.
+namespace {
+std::vector<std::string> SplitCommaSpace(const std::string& s)
+{
+    std::vector<std::string> v;
+    std::string cur;
+    for (size_t i = 0; i < s.size(); i++) {
+        char c = s[i];
+        if (c == ',' || c == ' ' || c == '\t' || c == '\n') {
+            if (!cur.empty()) { v.push_back(cur); cur.clear(); }
+        } else cur += c;
+    }
+    if (!cur.empty()) v.push_back(cur);
+    return v;
+}
+} // namespace
+
+Value createcommitteerotation(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 3)
+        throw runtime_error(
+            "createcommitteerotation \"<pubkey,pubkey,...>\" <m-of-n> <effective_epoch>\n"
+            "Build an unsigned committee rotation to a new ordered N-set with an M-of-N\n"
+            "threshold, effective at <effective_epoch>. Returns its hex for each current\n"
+            "committee member to signcommitteerotation, then submitcommitteerotation.\n");
+
+    std::vector<std::string> vPubStr = SplitCommaSpace(params[0].get_str());
+    std::vector<std::vector<unsigned char> > vNewPub;
+    for (size_t i = 0; i < vPubStr.size(); i++) {
+        std::vector<unsigned char> vch = ParseHex(vPubStr[i]);
+        CPubKey pk(vch.begin(), vch.end());
+        if (!pk.IsValid() || !pk.IsFullyValid() || !pk.IsCompressed())
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "invalid compressed committee pubkey: " + vPubStr[i]);
+        vNewPub.push_back(std::vector<unsigned char>(pk.begin(), pk.end()));
+    }
+    if (vNewPub.empty())
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "no committee pubkeys provided");
+
+    std::string strThr = params[1].get_str();
+    for (size_t i = 0; i < strThr.size(); i++) strThr[i] = tolower(strThr[i]);
+    int nM = 0, nN = 0;
+    if (!ParseFinalityTallyThreshold(strThr, nM, nN) || nN != (int)vNewPub.size())
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "threshold must be M-of-N with N == number of pubkeys");
+
+    int nEffEpoch = params[2].get_int();
+    if (nEffEpoch <= 0)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "effective_epoch must be positive");
+
+    std::vector<CPubKey> vPrev; int nPrevM = 0; uint256 prevSetHash;
+    if (!GetCanonicalFinalityCommittee(nEffEpoch - 1, vPrev, nPrevM, prevSetHash))
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "no canonical committee resolvable before the effective epoch");
+
+    CFinalityCommitteeRotation rot;
+    rot.nVersion = 1;
+    rot.nEffectiveEpoch = nEffEpoch;
+    rot.hashPrevCommitteeSet = prevSetHash;
+    rot.nNewThresholdM = (uint8_t)nM;
+    rot.vNewPubKeys = vNewPub;
+
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << rot;
+    Object result;
+    result.push_back(Pair("rotation", HexStr(ss.begin(), ss.end())));
+    result.push_back(Pair("effective_epoch", nEffEpoch));
+    result.push_back(Pair("prev_committee_set_hash", prevSetHash.GetHex()));
+    result.push_back(Pair("prev_threshold_m", nPrevM));
+    result.push_back(Pair("new_threshold", strprintf("%d-of-%d", nM, nN)));
+    result.push_back(Pair("signature_digest", rot.GetSignatureDigest().GetHex()));
+    return result;
+}
+
+Value signcommitteerotation(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 1)
+        throw runtime_error(
+            "signcommitteerotation <hex-rotation>\n"
+            "Add this node's current-committee-member signature to a rotation (output of\n"
+            "createcommitteerotation, or a partially-signed one). Returns the updated hex.\n");
+
+    std::vector<unsigned char> vchData = ParseHexV(params[0], "hex-rotation");
+    CFinalityCommitteeRotation rot;
+    try {
+        CDataStream ssData(vchData, SER_NETWORK, PROTOCOL_VERSION);
+        ssData >> rot;
+    } catch (const std::exception& e) {
+        throw JSONRPCError(RPC_DESERIALIZATION_ERROR, std::string("rotation decode failed: ") + e.what());
+    }
+
+    CKey key;
+    if (!GetFinalityTallyPrivateKey(key))
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "no -finalitytallyprivkey configured on this node");
+    CPubKey myPub = key.GetPubKey();
+
+    std::vector<CPubKey> vPrev; int nPrevM = 0; uint256 prevSetHash;
+    if (!GetCanonicalFinalityCommittee(rot.nEffectiveEpoch - 1, vPrev, nPrevM, prevSetHash))
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "no canonical committee resolvable before the effective epoch");
+    if (rot.hashPrevCommitteeSet != prevSetHash)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "rotation prev-set hash does not match the canonical committee");
+
+    int nMyIdx = -1;
+    for (size_t i = 0; i < vPrev.size(); i++)
+        if (vPrev[i] == myPub) { nMyIdx = (int)i; break; }
+    if (nMyIdx < 0)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "this node's tally key is not in the signing (previous) committee");
+
+    std::vector<unsigned char> mySig;
+    if (!key.Sign(rot.GetSignatureDigest(), mySig) || mySig.empty())
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "failed to sign rotation digest");
+
+    // Merge existing (index,sig) pairs with ours: ascending by index, deduped.
+    std::map<uint16_t, std::vector<unsigned char> > sigs;
+    for (size_t k = 0; k < rot.vSignerIndexes.size() && k < rot.vSignerSigs.size(); k++)
+        sigs[rot.vSignerIndexes[k]] = rot.vSignerSigs[k];
+    sigs[(uint16_t)nMyIdx] = mySig;
+    rot.vSignerIndexes.clear();
+    rot.vSignerSigs.clear();
+    for (std::map<uint16_t, std::vector<unsigned char> >::const_iterator it = sigs.begin(); it != sigs.end(); ++it) {
+        rot.vSignerIndexes.push_back(it->first);
+        rot.vSignerSigs.push_back(it->second);
+    }
+
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << rot;
+    Object result;
+    result.push_back(Pair("rotation", HexStr(ss.begin(), ss.end())));
+    result.push_back(Pair("signer_index", nMyIdx));
+    result.push_back(Pair("signatures", (int)rot.vSignerIndexes.size()));
+    result.push_back(Pair("threshold_m", nPrevM));
+    result.push_back(Pair("complete", (int)rot.vSignerIndexes.size() >= nPrevM));
+    return result;
+}
+
+Value submitcommitteerotation(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 1)
+        throw runtime_error(
+            "submitcommitteerotation <hex-rotation>\n"
+            "Submit a fully-signed (>= M) committee rotation: it is validated against the\n"
+            "previous committee, held pending for inclusion in a block, and gossiped.\n");
+
+    std::vector<unsigned char> vchData = ParseHexV(params[0], "hex-rotation");
+    CFinalityCommitteeRotation rot;
+    try {
+        CDataStream ssData(vchData, SER_NETWORK, PROTOCOL_VERSION);
+        ssData >> rot;
+    } catch (const std::exception& e) {
+        throw JSONRPCError(RPC_DESERIALIZATION_ERROR, std::string("rotation decode failed: ") + e.what());
+    }
+
+    std::string strError;
+    if (!g_finalityTracker.AddPendingCommitteeRotation(rot, &strError))
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("rotation rejected: %s", strError.c_str()));
+
+    RelayFinalityCommitteeRotation(rot);
+
+    Object result;
+    result.push_back(Pair("accepted", true));
+    result.push_back(Pair("rotation_hash", rot.GetHash().GetHex()));
+    result.push_back(Pair("effective_epoch", rot.nEffectiveEpoch));
+    result.push_back(Pair("signatures", (int)rot.vSignerIndexes.size()));
     return result;
 }
 

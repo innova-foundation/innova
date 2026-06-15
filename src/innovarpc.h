@@ -277,6 +277,9 @@ extern json_spirit::Value proofofdata(const json_spirit::Array& params, bool fHe
 extern json_spirit::Value getfinalityinfo(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value submitfinalitytallyshare(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value submitfinalitytallycert(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
+extern json_spirit::Value createcommitteerotation(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
+extern json_spirit::Value signcommitteerotation(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
+extern json_spirit::Value submitcommitteerotation(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value isblockfinalized(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value getdaginfo(const json_spirit::Array& params, bool fHelp);      // in rpcblockchain.cpp
 extern json_spirit::Value getdagtips(const json_spirit::Array& params, bool fHelp);      // in rpcblockchain.cpp

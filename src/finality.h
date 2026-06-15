@@ -120,6 +120,9 @@ struct CFinalityTallyConfig
 bool ParseFinalityTallyThreshold(const std::string& strThreshold, int& nMOut, int& nNOut);
 uint256 ComputeFinalityTallyCommitteeHash(int nM, const std::vector<CPubKey>& vPubKeys);
 CFinalityTallyConfig GetFinalityTallyConfig();
+// Local committee tally private key (-finalitytallyprivkey). Used by the
+// committee-rotation RPCs to sign a rotation as a current-committee member.
+bool GetFinalityTallyPrivateKey(CKey& keyOut);
 
 /** D2: pin the canonical finality committee at startup (before rotations load).
  *  Testnet pins a consensus-constant committee; regtest pins from local config
@@ -608,6 +611,8 @@ bool CheckFinalityCommitteeRotation(const CFinalityCommitteeRotation& rot,
 CScript BuildFinalityCommitteeRotationScript(const CFinalityCommitteeRotation& rot);
 bool ExtractFinalityCommitteeRotation(const CScript& scriptPubKey, CFinalityCommitteeRotation& rotOut);
 std::vector<CFinalityCommitteeRotation> ExtractFinalityCommitteeRotationsFromBlock(const CBlock& block);
+// Gossip a fully-signed pending rotation (ftrot) so non-proposing miners can embed it.
+void RelayFinalityCommitteeRotation(const CFinalityCommitteeRotation& rot);
 
 /** Max epochs ahead a rotation may take effect (A2: keeps rotations timely and
  *  prevents pre-dating). */
@@ -830,6 +835,19 @@ public:
                                            const std::vector<CFinalityCommitteeRotation>& vRots);
     // Reload connected rotations from LevelDB at startup (into the canonical state).
     bool LoadCommitteeRotations(CTxDB& txdb);
+    // D2 production rotation: hold a fully-signed (>= M) rotation that has been
+    // proposed but not yet mined, so the miner can embed it. Validated against the
+    // committee active immediately before its effective epoch, exactly as
+    // ConnectCommitteeRotation will re-check it at connect time.
+    bool AddPendingCommitteeRotation(const CFinalityCommitteeRotation& rot, std::string* pstrError = NULL);
+    // Pending rotations a block at nBlockHeight may embed: still in the future
+    // (effective epoch > the block's epoch), within the A2 lookahead, and not yet
+    // connected. Drops any that no longer validate against the current canonical set.
+    std::vector<CFinalityCommitteeRotation> GetPendingCommitteeRotationsForBlock(int nBlockHeight, unsigned int nMax = 2) const;
+    bool HasPendingCommitteeRotation() const;
+    // Connected (applied) committee rotations, keyed by effective epoch — for RPC
+    // observability (getfinalityinfo) and rotation e2e verification.
+    std::map<int, CFinalityCommitteeRotation> GetConnectedRotations() const;
 
     /** Check if a block at the given height is finalized */
     bool IsFinalized(int nHeight) const;
@@ -941,6 +959,9 @@ private:
     std::map<int, CFinalityCommitteeRotation> mapConnectedRotations;
     // Reorg-safe per-block carrier: block hash -> effective epochs it connected.
     std::map<uint256, std::vector<int> > mapBlockConnectedRotations;
+    // D2 production: fully-signed rotations proposed but not yet mined, keyed by
+    // effective epoch (in-memory; relay/RPC-time only, like pending certs).
+    std::map<int, CFinalityCommitteeRotation> mapPendingRotations;
     // 2c-4b cert-production: candidate certs + collected member signatures keyed
     // by the candidate's GetSignatureDigest() (in-memory; relay-time only).
     std::map<uint256, CFinalityTallyCertificate> mapCandidateCerts;

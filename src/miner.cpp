@@ -133,6 +133,67 @@ public:
     }
 };
 
+static CScript CoinbaseHeightScript(int nHeight)
+{
+    return CScript() << nHeight;
+}
+
+static bool CoinbaseStartsWithHeight(const CBlock* pblock, int nHeight)
+{
+    if (!pblock || pblock->vtx.empty() || pblock->vtx[0].vin.empty())
+        return false;
+
+    CScript expect = CoinbaseHeightScript(nHeight);
+    const CScript& scriptSig = pblock->vtx[0].vin[0].scriptSig;
+    return scriptSig.size() >= expect.size() &&
+           std::equal(expect.begin(), expect.end(), scriptSig.begin());
+}
+
+static bool IsPostDAGProofOfStakeIndex(const CBlockIndex* pindex)
+{
+    return pindex && pindex->nHeight >= FORK_HEIGHT_DAG && pindex->IsProofOfStake();
+}
+
+static bool IsBetterPoWTemplateParent(const CBlockIndex* pCandidate, const CBlockIndex* pBest)
+{
+    if (!pCandidate)
+        return false;
+    if (IsPostDAGProofOfStakeIndex(pCandidate))
+        return false;
+    if (!pBest)
+        return true;
+    if (pCandidate->nChainTrust != pBest->nChainTrust)
+        return pCandidate->nChainTrust > pBest->nChainTrust;
+    if (pCandidate->nHeight != pBest->nHeight)
+        return pCandidate->nHeight > pBest->nHeight;
+    if (pCandidate->phashBlock && pBest->phashBlock)
+        return pCandidate->GetBlockHash() < pBest->GetBlockHash();
+    return pCandidate->phashBlock && !pBest->phashBlock;
+}
+
+static CBlockIndex* SelectBestPoWTemplateParent(CBlockIndex* pPreferred)
+{
+    CBlockIndex* pBest = NULL;
+
+    if (IsBetterPoWTemplateParent(pPreferred, pBest))
+        pBest = pPreferred;
+
+    CBlockIndex* pWalk = pindexBest;
+    while (IsPostDAGProofOfStakeIndex(pWalk))
+        pWalk = pWalk->pprev;
+    if (IsBetterPoWTemplateParent(pWalk, pBest))
+        pBest = pWalk;
+
+    for (std::map<uint256, CBlockIndex*>::const_iterator mi = mapBlockIndex.begin();
+         mi != mapBlockIndex.end(); ++mi)
+    {
+        if (IsBetterPoWTemplateParent(mi->second, pBest))
+            pBest = mi->second;
+    }
+
+    return pBest;
+}
+
 // CreateNewBlock: create new block (without proof-of-work/proof-of-stake)
 CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 {
@@ -145,6 +206,21 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
     {
         LOCK2(cs_main, g_dagManager.cs_dag);
         pindexPrev = g_dagManager.SelectBestDAGTip();
+        if (!fProofOfStake && pindexBest && pindexBest->nHeight + 1 >= FORK_HEIGHT_DAG)
+        {
+            CBlockIndex* pindexDAGTip = pindexPrev;
+            pindexPrev = SelectBestPoWTemplateParent(pindexPrev);
+            if (pindexPrev && pindexDAGTip && pindexPrev != pindexDAGTip)
+            {
+                printf("CreateNewBlock: selected PoW template parent height=%d hash=%s over DAG tip height=%d hash=%s\n",
+                       pindexPrev->nHeight,
+                       pindexPrev->GetBlockHash().ToString().substr(0,20).c_str(),
+                       pindexDAGTip->nHeight,
+                       pindexDAGTip->GetBlockHash().ToString().substr(0,20).c_str());
+            }
+        }
+        else if (pindexPrev && pindexBest && pindexBest->IsProofOfWork() && pindexPrev->nHeight < pindexBest->nHeight)
+            pindexPrev = pindexBest;
         if (!pindexPrev)
             pindexPrev = pindexBest;
     }
@@ -172,6 +248,14 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
     if (!fProofOfStake)
     {
+        // Height first in coinbase required for block.version=2.
+        txNew.vin[0].scriptSig = CoinbaseHeightScript(nHeight);
+        if (txNew.vin[0].scriptSig.size() > 100)
+        {
+            printf("CreateNewBlock() : coinbase scriptSig too large (%d bytes)\n", (int)txNew.vin[0].scriptSig.size());
+            return NULL;
+        }
+
         CReserveKey reservekey(pwallet);
         CPubKey pubkey;
         if (!reservekey.GetReservedKey(pubkey))
@@ -181,7 +265,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
     else
     {
         // Height first in coinbase required for block.version=2
-        txNew.vin[0].scriptSig = (CScript() << nHeight) + COINBASE_FLAGS;
+        txNew.vin[0].scriptSig = CoinbaseHeightScript(nHeight) + COINBASE_FLAGS;
         if (txNew.vin[0].scriptSig.size() > 100)
         {
             printf("CreateNewBlock() : coinbase scriptSig too large (%d bytes)\n", (int)txNew.vin[0].scriptSig.size());
@@ -191,14 +275,14 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         txNew.vout[0].SetEmpty();
     }
 
-    // IDAG Phase 2: Add DAG parent commitment to coinbase
+    std::vector<uint256> vDAGParentsForBlock;
+
+    // Add DAG parent commitment to coinbase
     if (nHeight >= FORK_HEIGHT_DAG)
     {
-        std::vector<uint256> vDAGParents;
-
         // Primary parent = pindexPrev
         if (pindexPrev->phashBlock)
-            vDAGParents.push_back(pindexPrev->GetBlockHash());
+            vDAGParentsForBlock.push_back(pindexPrev->GetBlockHash());
 
         // Collect merge parents from DAG tips (cs_main for mapBlockIndex access)
         {
@@ -228,7 +312,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
             for (const auto& pair : vTipScores)
             {
-                if (vDAGParents.size() >= (unsigned int)MAX_DAG_PARENTS)
+                if (vDAGParentsForBlock.size() >= (unsigned int)MAX_DAG_PARENTS)
                     break;
 
                 const uint256& hashTip = pair.second;
@@ -245,13 +329,13 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 if (pTip->nHeight >= nHeight)
                     continue;
 
-                vDAGParents.push_back(hashTip);
+                vDAGParentsForBlock.push_back(hashTip);
             }
         }
 
-        if (!vDAGParents.empty())
+        if (!vDAGParentsForBlock.empty())
         {
-            CScript dagScript = BuildDAGParentScript(vDAGParents);
+            CScript dagScript = BuildDAGParentScript(vDAGParentsForBlock);
             if (dagScript.size() > 0)
             {
                 CTxOut dagOut;
@@ -316,6 +400,29 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
     if (!fProofOfStake && nHeight >= FORK_HEIGHT_DAG)
     {
         vFinalityVotesForBlock = g_finalityTracker.GetPendingVotesForBlock(nHeight);
+
+        // Drop votes that no longer pass consensus validation (e.g. stake
+        // proof spent since relay). ConnectBlock re-checks every embedded
+        // vote and rejects the whole block on failure, so a stale pending
+        // vote would make every template we produce unmineable.
+        {
+            CTxDB txdbVoteCheck("r");
+            std::vector<CFinalityVote> vValidVotes;
+            vValidVotes.reserve(vFinalityVotesForBlock.size());
+            BOOST_FOREACH(const CFinalityVote& vote, vFinalityVotesForBlock)
+            {
+                std::string strVoteError;
+                if (!g_finalityTracker.CheckVote(vote, txdbVoteCheck, &strVoteError, nHeight))
+                {
+                    printf("CreateNewBlock: excluding stale finality vote %s: %s\n",
+                           vote.nullifier.ToString().substr(0,20).c_str(), strVoteError.c_str());
+                    continue;
+                }
+                vValidVotes.push_back(vote);
+            }
+            vFinalityVotesForBlock.swap(vValidVotes);
+        }
+
         BOOST_FOREACH(const CFinalityVote& vote, vFinalityVotesForBlock)
         {
             if (vote.IsPrivate())
@@ -384,7 +491,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         list<COrphan> vOrphan; // list memory doesn't move
         map<uint256, vector<COrphan*> > mapDependers;
 
-        // IDAG Phase 2: Collect txids and spent inputs from DAG sibling
+        // Collect txids and spent inputs from DAG sibling
         // blocks to avoid duplicates and fee accounting drift. ConnectBlock
         // skips transactions whose inputs were already spent by earlier DAG
         // siblings, so CreateNewBlock must exclude them before adding their
@@ -393,12 +500,22 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         std::set<COutPoint> setDAGSiblingSpentOutpoints;
         if (nHeight >= FORK_HEIGHT_DAG && pindexPrev->phashBlock)
         {
-            std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(pindexPrev->GetBlockHash());
-            CBlockDAGData parentDagData;
-            if (g_dagManager.GetDAGData(pindexPrev->GetBlockHash(), parentDagData))
+            std::set<uint256> siblings;
+            std::set<uint256> candidateParents(vDAGParentsForBlock.begin(), vDAGParentsForBlock.end());
+            if (candidateParents.empty())
+                candidateParents.insert(pindexPrev->GetBlockHash());
+
+            BOOST_FOREACH(const uint256& hashParent, candidateParents)
             {
-                BOOST_FOREACH(const uint256& hashChild, parentDagData.vDAGChildren)
-                    siblings.insert(hashChild);
+                CBlockDAGData parentDagData;
+                if (g_dagManager.GetDAGData(hashParent, parentDagData))
+                {
+                    BOOST_FOREACH(const uint256& hashChild, parentDagData.vDAGChildren)
+                        siblings.insert(hashChild);
+                }
+
+                std::set<uint256> parentSiblings = g_dagManager.GetDAGSiblingBlocks(hashParent);
+                siblings.insert(parentSiblings.begin(), parentSiblings.end());
             }
 
             BOOST_FOREACH(const uint256& hashSib, siblings)
@@ -667,6 +784,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         int64_t nFinalityRewardTotal = 0;
         if (!fProofOfStake && nHeight >= FORK_HEIGHT_DAG)
         {
+            std::vector<CFinalityVote> vVotesEmbedded;
+            vVotesEmbedded.reserve(vFinalityVotesForBlock.size());
             for (const CFinalityVote& vote : vFinalityVotesForBlock)
             {
                 if (nFinalityRewardTotal > MAX_MONEY - vote.nReward)
@@ -681,6 +800,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 voteOut.nValue = 0;
                 voteOut.scriptPubKey = voteScript;
                 pblock->vtx[0].vout.push_back(voteOut);
+                vVotesEmbedded.push_back(vote);
 
                 CPubKey pubkey(vote.vchPubKey);
                 if (!pubkey.IsValid())
@@ -695,7 +815,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 nBlockSize += nVoteCommitSize + 64;
             }
 
-            std::vector<CFinalityTallyShare> vFinalityShares = g_finalityTracker.GetPendingTallySharesForBlock(nHeight);
+            std::vector<CFinalityTallyShare> vFinalityShares = g_finalityTracker.GetPendingTallySharesForBlock(nHeight, 16, &vVotesEmbedded);
             for (const CFinalityTallyShare& share : vFinalityShares)
             {
                 CScript shareScript = BuildFinalityTallyShareScript(share);
@@ -713,6 +833,18 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             std::vector<CFinalityTallyCertificate> vFinalityCerts = g_finalityTracker.GetPendingTallyCertificatesForBlock(nHeight);
             for (const CFinalityTallyCertificate& cert : vFinalityCerts)
             {
+                // Only embed certificates every node can validate: votes must
+                // be connected or embedded in this same block. Certificates
+                // depending on local pending relay state would make the block
+                // invalid on nodes that have not seen those votes.
+                std::string strCertError;
+                if (!g_finalityTracker.CheckTallyCertificate(cert, txdb, &strCertError, &vVotesEmbedded, false, nHeight))
+                {
+                    printf("CreateNewBlock: excluding finality tally certificate %s: %s\n",
+                           cert.GetHash().ToString().substr(0,20).c_str(), strCertError.c_str());
+                    continue;
+                }
+
                 CScript certScript = BuildFinalityTallyCertificateScript(cert);
                 unsigned int nCertCommitSize = ::GetSerializeSize(certScript, SER_NETWORK, PROTOCOL_VERSION);
                 if (nBlockSize + nCertCommitSize + 16 >= nBlockMaxSize)
@@ -724,6 +856,25 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 pblock->vtx[0].vout.push_back(certOut);
                 nBlockSize += nCertCommitSize + 16;
             }
+
+            // D2 self-governance: embed any fully-signed pending committee rotation
+            // (effective epoch in the future, within the A2 lookahead). ConnectBlock
+            // re-validates and applies it to the canonical-set state.
+            std::vector<CFinalityCommitteeRotation> vFinalityRots =
+                g_finalityTracker.GetPendingCommitteeRotationsForBlock(nHeight);
+            for (const CFinalityCommitteeRotation& rot : vFinalityRots)
+            {
+                CScript rotScript = BuildFinalityCommitteeRotationScript(rot);
+                unsigned int nRotCommitSize = ::GetSerializeSize(rotScript, SER_NETWORK, PROTOCOL_VERSION);
+                if (nBlockSize + nRotCommitSize + 16 >= nBlockMaxSize)
+                    break;
+
+                CTxOut rotOut;
+                rotOut.nValue = 0;
+                rotOut.scriptPubKey = rotScript;
+                pblock->vtx[0].vout.push_back(rotOut);
+                nBlockSize += nRotCommitSize + 16;
+            }
         }
 
         nLastBlockTx = nBlockTx;
@@ -733,6 +884,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         if (nHeight < FORK_HEIGHT_TIGHTER_DRIFT && nHeight > 0)
             nRewardHeight = nHeight - 1;
         int64_t blockValue = GetProofOfWorkReward(nRewardHeight, nFees);
+        if (!fProofOfStake)
+            blockValue = ApplyBlockSizePenalty(blockValue, *pblock, pindexPrev);
         if (!MoneyRange(blockValue))
         {
             printf("CreateNewBlock: ERROR: blockValue %" PRId64 " out of MoneyRange (nHeight=%d, nFees=%" PRId64 ")\n", blockValue, nHeight, nFees);
@@ -778,16 +931,17 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 void IncrementExtraNonce(CBlock* pblock, CBlockIndex* pindexPrev, unsigned int& nExtraNonce)
 {
     // Update nExtraNonce
-    static uint256 hashPrevBlock;
-    if (hashPrevBlock != pblock->hashPrevBlock)
+    static CCriticalSection cs_extraNonce;
+    static unsigned int nGlobalExtraNonce = 0;
     {
-        nExtraNonce = 0;
-        hashPrevBlock = pblock->hashPrevBlock;
+        LOCK(cs_extraNonce);
+        nExtraNonce = ++nGlobalExtraNonce;
     }
-    ++nExtraNonce;
 
-    unsigned int nHeight = pindexPrev->nHeight+1; // Height first in coinbase required for block.version=2
-    pblock->vtx[0].vin[0].scriptSig = (CScript() << nHeight << CBigNum(nExtraNonce)) + COINBASE_FLAGS;
+    int nHeight = pindexPrev->nHeight+1; // Height first in coinbase required for block.version=2
+    CScript scriptSig = CoinbaseHeightScript(nHeight);
+    scriptSig << CBigNum(nExtraNonce);
+    pblock->vtx[0].vin[0].scriptSig = scriptSig + COINBASE_FLAGS;
     if (pblock->vtx[0].vin[0].scriptSig.size() > 100)
     {
         printf("IncrementExtraNonce() : coinbase scriptSig too large (%d bytes)\n", (int)pblock->vtx[0].vin[0].scriptSig.size());
@@ -1111,6 +1265,24 @@ void StakeMiner(CWallet *pwallet)
 bool fCPUMining = false;
 int nCPUMinerThreads = 1;
 int nCPUMineTarget = 0;
+static CCriticalSection cs_cpuminer;
+
+static bool CPUMinerShouldRun()
+{
+    LOCK(cs_cpuminer);
+    return fCPUMining && !fShutdown;
+}
+
+static void CPUMinerConsumeAcceptedBlock()
+{
+    LOCK(cs_cpuminer);
+    if (nCPUMineTarget > 0)
+    {
+        nCPUMineTarget--;
+        if (nCPUMineTarget <= 0)
+            fCPUMining = false;
+    }
+}
 
 void CPUMiner(CWallet* pwallet)
 {
@@ -1122,7 +1294,7 @@ void CPUMiner(CWallet* pwallet)
     CReserveKey reservekey(pwallet);
     CBlock* pblock = NULL;
 
-    while (fCPUMining && !fShutdown)
+    while (CPUMinerShouldRun())
     {
         if (fShutdown)
             return;
@@ -1158,32 +1330,44 @@ void CPUMiner(CWallet* pwallet)
         int nHeight;
         uint256 hashTarget;
 
+        CBlock* ptmp = CreateNewBlock(pwallet);
+        if (!ptmp)
+        {
+            printf("CPUMiner: CreateNewBlock failed, retrying...\n");
+            MilliSleep(5000);
+            continue;
+        }
+        if (pblock)
+            delete pblock;
+        pblock = new CBlock(*ptmp);
+        delete ptmp;
+
         {
             LOCK(cs_main);
-
-            CBlock* ptmp = CreateNewBlock(pwallet);
-            if (!ptmp)
-            {
-                printf("CPUMiner: CreateNewBlock failed, retrying...\n");
-                MilliSleep(5000);
-                continue;
-            }
-            pblock = new CBlock(*ptmp);
-            delete ptmp;
-
             std::map<uint256, CBlockIndex*>::iterator miPrev = mapBlockIndex.find(pblock->hashPrevBlock);
-            CBlockIndex* pindexBlockPrev = (miPrev != mapBlockIndex.end()) ? miPrev->second : pindexBest;
-            if (!pindexBlockPrev)
+            if (miPrev == mapBlockIndex.end() || !miPrev->second)
             {
+                std::string strParent = pblock->hashPrevBlock.ToString().substr(0, 20);
                 delete pblock;
                 pblock = NULL;
-                printf("CPUMiner: previous block index missing, retrying...\n");
+                printf("CPUMiner: previous block index missing for template parent %s, retrying...\n",
+                       strParent.c_str());
                 MilliSleep(1000);
                 continue;
             }
+            CBlockIndex* pindexBlockPrev = miPrev->second;
 
             IncrementExtraNonce(pblock, pindexBlockPrev, nExtraNonce);
             nHeight = pindexBlockPrev->nHeight + 1;
+            if (!CoinbaseStartsWithHeight(pblock, nHeight))
+            {
+                printf("CPUMiner: coinbase height prefix mismatch before hashing at height %d, retrying...\n",
+                       nHeight);
+                delete pblock;
+                pblock = NULL;
+                MilliSleep(100);
+                continue;
+            }
 
             CBigNum bnTarget;
             bnTarget.SetCompact(pblock->nBits);
@@ -1197,8 +1381,11 @@ void CPUMiner(CWallet* pwallet)
         uint64_t nHashesDone = 0;
         bool fBlockFound = false;
 
-        while (fCPUMining && !fShutdown)
+        while (!fShutdown)
         {
+            if ((nHashesDone % 4096) == 0 && !CPUMinerShouldRun())
+                break;
+
             uint256 hash = pblock->GetPoWHash();
             if (hash <= hashTarget)
             {
@@ -1222,7 +1409,12 @@ void CPUMiner(CWallet* pwallet)
 
             if ((nHashesDone % 100000) == 0)
             {
-                if (nBestHeight >= nHeight)
+                bool fStale = false;
+                {
+                    LOCK(cs_main);
+                    fStale = (mapBlockIndex.count(pblock->hashPrevBlock) == 0);
+                }
+                if (fStale)
                     break;
             }
         }
@@ -1232,20 +1424,49 @@ void CPUMiner(CWallet* pwallet)
             printf("CPUMiner: Found block! height=%d nonce=%u\n",
                    nHeight, pblock->nNonce);
 
+            bool fAcceptedAsBest = false;
             {
                 LOCK(cs_main);
-                CBlock* psubmit = new CBlock(*pblock);
-                if (!ProcessBlock(NULL, psubmit))
-                    printf("CPUMiner: ProcessBlock failed\n");
+                std::map<uint256, CBlockIndex*>::iterator miPrev = mapBlockIndex.find(pblock->hashPrevBlock);
+                if (miPrev == mapBlockIndex.end() || !miPrev->second)
+                {
+                    printf("CPUMiner: Skipping found block at height %d because parent is missing\n", nHeight);
+                }
                 else
-                    printf("CPUMiner: Block accepted at height %d\n", pindexBest->nHeight);
+                {
+                    int nSubmitHeight = miPrev->second->nHeight + 1;
+                    if (!CoinbaseStartsWithHeight(pblock, nSubmitHeight))
+                    {
+                        printf("CPUMiner: refusing found block with coinbase height mismatch at height %d\n",
+                               nSubmitHeight);
+                        continue;
+                    }
+                    auto_ptr<CBlock> psubmit(new CBlock(*pblock));
+                    uint256 hashSubmit = psubmit->GetHash();
+                    if (!ProcessBlock(NULL, psubmit.get()))
+                    {
+                        printf("CPUMiner: ProcessBlock failed\n");
+                    }
+                    else if (hashBestChain == hashSubmit)
+                    {
+                        fAcceptedAsBest = true;
+                        printf("CPUMiner: Block accepted at height %d\n", pindexBest->nHeight);
+                    }
+                    else
+                    {
+                        printf("CPUMiner: Block accepted but did not become best tip\n");
+                    }
+                }
             }
 
-            if (nCPUMineTarget > 0)
+            if (fAcceptedAsBest)
             {
-                nCPUMineTarget--;
-                if (nCPUMineTarget <= 0)
-                    fCPUMining = false;
+                CPUMinerConsumeAcceptedBlock();
+            }
+            else
+            {
+                if (!CPUMinerShouldRun())
+                    break;
             }
 
             MilliSleep(500);

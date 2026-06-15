@@ -489,13 +489,16 @@ static const CRPCCommand vRPCCommands[] =
     { "sp_listaddresses",       &sp_listaddresses,       true,   false },
     { "sp_send",                &sp_send,                false,  true },
 
-    /* IDAG Phase 1: Finality commands */
+    /* Finality commands */
     { "getfinalityinfo",        &getfinalityinfo,        true,   false },
     { "submitfinalitytallyshare", &submitfinalitytallyshare, false, false },
     { "submitfinalitytallycert", &submitfinalitytallycert, false, false },
+    { "createcommitteerotation", &createcommitteerotation, false, false },
+    { "signcommitteerotation",  &signcommitteerotation,  false, false },
+    { "submitcommitteerotation", &submitcommitteerotation, false, false },
     { "isblockfinalized",       &isblockfinalized,       true,   false },
 
-    /* IDAG: DAG consensus commands (Phase 2-4) */
+    /* DAG consensus commands */
     { "getdaginfo",             &getdaginfo,             true,   false },
     { "getdagtips",             &getdagtips,             true,   false },
     { "getdagorder",            &getdagorder,            true,   false },
@@ -1587,6 +1590,7 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "stop"                   && n > 0) ConvertTo<bool>(params[0]);
     if (strMethod == "setgenerate"            && n > 0) ConvertTo<bool>(params[0]);
     if (strMethod == "setgenerate"            && n > 1) ConvertTo<int64_t>(params[1]);
+    if (strMethod == "setgenerate"            && n > 2) ConvertTo<int64_t>(params[2]);
     if (strMethod == "startmining"           && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "delegatestake"          && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "listcoldutxos"          && n > 0) ConvertTo<bool>(params[0]);
@@ -1706,6 +1710,7 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "name_filter"            && n > 2) ConvertTo<boost::int64_t>(params[2]);
     if (strMethod == "name_filter"            && n > 3) ConvertTo<boost::int64_t>(params[3]);
     if (strMethod == "sendtoname"             && n > 1) ConvertTo<double>(params[1]);
+    if (strMethod == "createcommitteerotation" && n > 2) ConvertTo<boost::int64_t>(params[2]);
 
     return params;
 }
