@@ -384,7 +384,13 @@ public:
     IMPLEMENT_SERIALIZE
     (
         CFinalityTallyAggregatePartial* pthis = const_cast<CFinalityTallyAggregatePartial*>(this);
-        READWRITE(nVersion);
+        // The IMPLEMENT_SERIALIZE macro injects an `int nVersion` (stream version)
+        // that shadows our member nVersion. The member is the partial's own version
+        // and gates vchSourceSig below, so it MUST be (de)serialized as pthis->nVersion
+        // and the conditional MUST test the member — otherwise a v3 signed partial
+        // round-trips with the member left at its default (2) and the source-signature
+        // check is skipped/rejected ("missing source signature") on relay.
+        READWRITE(pthis->nVersion);
         READWRITE(nEpoch);
         READWRITE(hashBlock);
         READWRITE(hashCurveRoot);
@@ -393,7 +399,7 @@ public:
         READWRITE(nSourceIndex);
         READWRITE(vTallyShareHashes);
         READWRITE(vEncryptedRecipientPartials);
-        if (nVersion >= 3)
+        if (pthis->nVersion >= 3)
             READWRITE(pthis->vchSourceSig);
     )
 

@@ -241,6 +241,7 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
             Object certObj;
             certObj.push_back(Pair("hash", cert.GetHash().GetHex()));
             certObj.push_back(Pair("version", cert.nVersion));
+            certObj.push_back(Pair("signer_count", (int)cert.vSignerIndexes.size()));
             certObj.push_back(Pair("epoch", cert.nEpoch));
             certObj.push_back(Pair("height", cert.nHeight));
             certObj.push_back(Pair("block_hash", cert.hashBlock.GetHex()));
@@ -257,7 +258,7 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
         result.push_back(Pair("finality_tally_certificates", certArray));
     }
 
-    // IDAG Phase 2: DAG metadata
+    // DAG metadata
     if (blockindex->nHeight >= FORK_HEIGHT_DAG && blockindex->phashBlock)
     {
         result.push_back(Pair("dag_block_producer", std::string("pow")));
@@ -1444,7 +1445,7 @@ Value isblockfinalized(const Array& params, bool fHelp)
 
 
 // ---------------------------------------------------------------------------
-// IDAG Phase 2: DAG RPC commands
+// DAG RPC commands
 // ---------------------------------------------------------------------------
 
 Value getdaginfo(const Array& params, bool fHelp)
@@ -1471,7 +1472,7 @@ Value getdaginfo(const Array& params, bool fHelp)
     result.push_back(Pair("max_parents", MAX_DAG_PARENTS));
     result.push_back(Pair("merge_depth", DAG_MERGE_DEPTH));
 
-    // IDAG Phase 4: DAGKNIGHT info
+    // DAGKNIGHT info
     bool fDAGKnightActive = nCurrentHeight >= FORK_HEIGHT_DAGKNIGHT;
     result.push_back(Pair("dagknight_active", fDAGKnightActive));
     result.push_back(Pair("dagknight_fork_height", FORK_HEIGHT_DAGKNIGHT));
@@ -1483,7 +1484,7 @@ Value getdaginfo(const Array& params, bool fHelp)
 
     result.push_back(Pair("ghostdag_k", GHOSTDAG_K));
 
-    // IDAG Phase 3: Epoch and pruning info
+    // Epoch and pruning info
     result.push_back(Pair("epoch_interval", GetEpochInterval(nCurrentHeight)));
     int nCurrentEpoch = GetEpochForHeight(nCurrentHeight);
     result.push_back(Pair("current_epoch", nCurrentEpoch));
