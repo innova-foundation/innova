@@ -18,6 +18,7 @@
 #include "nullstake.h"
 
 #include <list>
+#include <vector>
 
 class CValidationState;
 
@@ -58,6 +59,7 @@ class CAddress;
 class CInv;
 class CRequestTracker;
 class CNode;
+class CFinalityVote;
 
 // General Innova Block Values
 
@@ -128,6 +130,15 @@ int64_t GetBlockSizePenalty(unsigned int nBlockSize, unsigned int nMedianSize);
 
 /** Apply adaptive block size penalty to a reward amount. */
 int64_t ApplyBlockSizePenalty(int64_t nReward, const CBlock& block, const CBlockIndex* pindexPrev);
+bool CheckFinalityStakeProofsNotSpentInBlock(const CBlock& block, const std::vector<CFinalityVote>& vVotes);
+bool TransactionConflictsWithDAGSiblingSpends(const CTransaction& tx,
+                                              const std::set<COutPoint>& setDAGSpentOutputs,
+                                              const std::set<uint256>& setDAGSpentNullifiers);
+std::set<uint256> GetDAGSkippedTxsFromSiblingSpends(const CBlock& block,
+                                                    const std::set<COutPoint>& setDAGSpentOutputs,
+                                                    const std::set<uint256>& setDAGSpentNullifiers);
+std::set<uint256> GetDAGSkippedTxsForBlock(const CBlock& block, const CBlockIndex* pindex);
+CBlock GetDAGActiveBlock(const CBlock& block, const std::set<uint256>& setDAGSkippedTxs);
 
 // Threshold for nLockTime: below this value it is interpreted as block number, otherwise as UNIX timestamp.
 static const unsigned int LOCKTIME_THRESHOLD = 500000000; // Tue Nov  5 00:53:20 1985 UTC
@@ -254,7 +265,7 @@ inline int GetForkHeightChaumianCJ()
 }
 #define FORK_HEIGHT_CHAUMIAN_CJ (GetForkHeightChaumianCJ())
 
-// IDAG Phase 1a: POEM entropy weighting
+// POEM entropy weighting
 inline int GetForkHeightPoem()
 {
     extern bool fRegTest;
@@ -265,7 +276,7 @@ inline int GetForkHeightPoem()
 }
 #define FORK_HEIGHT_POEM (GetForkHeightPoem())
 
-// IDAG Phase 1b: PoS finality gadget
+// PoS finality gadget
 inline int GetForkHeightFinality()
 {
     extern bool fRegTest;
@@ -276,13 +287,13 @@ inline int GetForkHeightFinality()
 }
 #define FORK_HEIGHT_FINALITY (GetForkHeightFinality())
 
-// IDAG Phase 2+3: Full DAG consensus + throughput scaling
+// Full DAG consensus and throughput scaling
 inline int GetForkHeightDAG()
 {
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 11;
-    if (fTestNet) return 11;        // clean public IDAG testnet
+    if (fTestNet) return 60;        // clean public IDAG testnet after premine maturity
     return 8150000;                  // mainnet: 5,000 blocks after finality
 }
 #define FORK_HEIGHT_DAG (GetForkHeightDAG())
@@ -298,16 +309,106 @@ inline int GetForkHeightEpochRootFCMP()
 }
 #define FORK_HEIGHT_EPOCH_ROOT_FCMP (GetForkHeightEpochRootFCMP())
 
-// IDAG Phase 4: DAGKNIGHT adaptive ordering (replaces GHOSTDAG)
+// Per-epoch finality vote-set accumulator. ComputeEpochState commits a digest of
+// the votes embedded in the epoch's own blocks (CEpochState.hashVoteSetRoot), and
+// CheckTallyCertificate requires a private cert to cover exactly that set, so a
+// producer that omits connected votes (or picks a minority winning block) is
+// rejected. NOTE: this is enforced from a fresh chain only -- it adds a CEpochState
+// field and a cert-validity rule, so the existing testnet must be remined to
+// activate it (no serialization migration of old epoch records is provided).
+inline int GetForkHeightVoteSetRoot()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest || fTestNet) return GetForkHeightDAG();
+    return GetForkHeightDAG();        // mainnet: pre-launch, activate with the DAG fork
+}
+#define FORK_HEIGHT_VOTESET_ROOT (GetForkHeightVoteSetRoot())
+
+// Nullifier binding: above this height shielded spends and private finality
+// votes must carry a note-bound nullifier proof. Testnet relaunches the shielded
+// pool clean here. Mainnet MUST enforce it from the first height a shielded
+// spend is possible (FORK_HEIGHT_SHIELDED): anchoring it to the later DAG fork
+// would leave a window where an unbound nullifier could over-withdraw from the
+// shielded pool (supply inflation).
+inline int GetForkHeightNullifierBinding()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest) return 8;          // active early so regtest exercises the rule
+    if (fTestNet) return 400;        // future height: relaunch shielded pool clean here
+    return GetForkHeightShielded();  // mainnet: born safe with the shielded pool
+}
+#define FORK_HEIGHT_NULLIFIER_BINDING (GetForkHeightNullifierBinding())
+
+// NullStake V2/V3 kernel public-input pinning: above this height the kernel
+// metadata fields (nBlockTimeFrom/nTxPrevOffset/nTxTimePrev/nVoutN) of V2/V3
+// coinstakes and private finality votes are consensus-pinned to fixed values.
+// The circuits take them as free public inputs and the curve-tree leaves carry
+// no age metadata, so unpinned values allow coin-age forgery / kernel grinding
+// and leak the staked note's creation block + position in the clear.
+inline int GetForkHeightKernelPinning()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest) return 8;           // active early so regtest exercises the rule
+    if (fTestNet) return 450;         // after the connected epoch-360 votes, before the next boundary
+    return GetForkHeightNullStakeV2(); // mainnet: pinned from V2 activation (no unpinned history)
+}
+#define FORK_HEIGHT_KERNEL_PINNING (GetForkHeightKernelPinning())
+
+// Fixed synthetic coin age used by pinned V2/V3 kernels: every staked note
+// claims exactly this age, so kernel weight reduces to note value only.
+static const int64_t NULLSTAKE_PINNED_AGE = 30 * 24 * 60 * 60; // 30 days
+
+// Consensus check for pinned V2/V3 kernel public inputs (see
+// FORK_HEIGHT_KERNEL_PINNING). nTimeTx itself is cross-checked against the
+// including block / epoch block by the caller.
+inline bool CheckNullStakeKernelPinning(unsigned int nBlockTimeFrom,
+                                        unsigned int nTxPrevOffset,
+                                        unsigned int nTxTimePrev,
+                                        unsigned int nVoutN,
+                                        unsigned int nTimeTx)
+{
+    if ((int64_t)nTimeTx <= NULLSTAKE_PINNED_AGE)
+        return false;
+    if ((int64_t)nBlockTimeFrom != (int64_t)nTimeTx - NULLSTAKE_PINNED_AGE)
+        return false;
+    if (nTxTimePrev != nBlockTimeFrom)
+        return false;
+    if (nTxPrevOffset != 0)
+        return false;
+    if (nVoutN != 0)
+        return false;
+    return true;
+}
+
+// DAGKNIGHT adaptive ordering (replaces GHOSTDAG)
 inline int GetForkHeightDAGKnight()
 {
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 13;
-    if (fTestNet) return 13;        // clean public IDAG testnet
+    if (fTestNet) return 62;        // clean public IDAG testnet after DAG activation
     return 8200000;                  // mainnet: 50,000 blocks after DAG (~14h at 1s post-DAG blocks)
 }
 #define FORK_HEIGHT_DAGKNIGHT (GetForkHeightDAGKnight())
+
+// Self-governing finality tally committee (D2): above this height a private
+// tally certificate must carry >= M signatures from the canonical committee set
+// for its epoch, and the committee may rotate itself by M-of-N. Makes the
+// committee a consensus trust root with an on-chain participation record.
+// Testnet activates on the live chain (set with deploy lead time); mainnet is
+// the next slot after DAGKnight.
+inline int GetForkHeightTallyGovernance()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest) return 8;
+    if (fTestNet) return 660;        // live-chain activation at the epoch-2 boundary (tip ~430), reachable to exercise
+    return 8250000;                  // mainnet: next slot after DAGKnight
+}
+#define FORK_HEIGHT_TALLY_GOVERNANCE (GetForkHeightTallyGovernance())
 
 // IDAG: Fork-gated block time — 15s pre-DAG, 1s post-DAG
 inline unsigned int GetTargetSpacingForHeight(int nHeight)
@@ -397,6 +498,7 @@ extern int64_t nMinimumInputValue;
 extern bool fUseFastIndex;
 extern bool fImporting;
 extern bool fReindex;
+extern bool fFullReplayVerify;
 extern unsigned int nDerivationMethodIndex;
 extern unsigned int nCoinCacheSize;
 
@@ -480,7 +582,7 @@ int GetIXConfirmations(uint256 nTXHash);
 /** Abort with a message */
 bool AbortNode(const std::string &msg, const std::string &userMessage="");
 /** Increase a node's misbehavior score. */
-void Misbehaving(NodeId nodeid, int howmuch);
+void Misbehaving(NodeId nodeid, int howmuch, const std::string& reason = "");
 int64_t GetCollateralnodePayment(int nHeight, int64_t blockValue);
 
 
@@ -684,17 +786,19 @@ public:
                 ss << vShieldedSpend[i].vchLelantusProof;
                 ss << vShieldedSpend[i].vAnonSet;
                 ss << vShieldedSpend[i].lelantusSerial;
-                // DSP fields included in sighash to prevent mode malleability
-                if (nVersion == SHIELDED_TX_VERSION_DSP || nVersion == SHIELDED_TX_VERSION_FCMP
-                    || nVersion == SHIELDED_TX_VERSION_NULLSTAKE)
+                // DSP fields included in sighash to prevent mode/value malleability.
+                if (nVersion >= SHIELDED_TX_VERSION_DSP)
                 {
                     ss << vShieldedSpend[i].nPlaintextValue;
                     ss << vShieldedSpend[i].vchPlaintextBlind;
                 }
                 // FCMP++ proof committed to binding sig hash
-                if (nVersion == SHIELDED_TX_VERSION_FCMP || nVersion == SHIELDED_TX_VERSION_NULLSTAKE)
+                if (nVersion >= SHIELDED_TX_VERSION_FCMP)
                 {
+                    bool fHasFCMP = !vShieldedSpend[i].fcmpProof.IsNull();
+                    ss << fHasFCMP;
                     ss << vShieldedSpend[i].fcmpProof;
+                    ss << vShieldedSpend[i].curveTreeRoot;
                 }
             }
             // Output descriptions (includes DSP fields via serialization)
@@ -707,8 +811,7 @@ public:
                 ss << vShieldedOutput[i].vchEncCiphertext;
                 ss << vShieldedOutput[i].vchOutCiphertext;
                 ss << vShieldedOutput[i].rangeProof;
-                if (nVersion == SHIELDED_TX_VERSION_DSP || nVersion == SHIELDED_TX_VERSION_FCMP
-                    || nVersion == SHIELDED_TX_VERSION_NULLSTAKE || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+                if (nVersion >= SHIELDED_TX_VERSION_DSP)
                 {
                     ss << vShieldedOutput[i].nPlaintextValue;
                     ss << vShieldedOutput[i].vchPlaintextBlind;
@@ -988,7 +1091,8 @@ public:
      */
     bool ConnectInputs(CTxDB& txdb, MapPrevTx inputs,
                        std::map<uint256, CTxIndex>& mapTestPool, const CDiskTxPos& posThisTx,
-                       const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, unsigned int flags = STANDARD_SCRIPT_VERIFY_FLAGS, bool fValidateSig = true, bool fSkipFCMP = false);
+                       const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, unsigned int flags = STANDARD_SCRIPT_VERIFY_FLAGS, bool fValidateSig = true, bool fSkipFCMP = false,
+                       bool fValidatedCoinstake = false);
     bool CheckTransaction() const;
     bool AcceptToMemoryPool(CTxDB& txdb, bool fCheckInputs=true, bool* pfMissingInputs=NULL, bool fOnlyCheckWithoutAdding=false);
     bool GetCoinAge(CTxDB& txdb, uint64_t& nCoinAge) const;  // ppcoin: get transaction coin age
@@ -1494,6 +1598,14 @@ public:
     // (memory only) Number of transactions in the chain up to and including this block
     unsigned int nChainTx; // change to 64-bit type when necessary; won't happen before 2030
 
+    // (memory only) Deterministic finalized height as of this block's connected set.
+    // A pure function of the in-chain finality votes/certs up to this block (NOT the
+    // node-local live finalization tip). Private finality votes/certs and FCMP spends
+    // anchor to GetEpochForHeight(pprev->nFinalizedHeight) so producer and every
+    // validator compute the identical anchor -> ConnectBlock stays deterministic.
+    // Recomputed on connect and on load; never serialized.
+    int nFinalizedHeight;
+
     unsigned int nFlags;  // ppcoin: block index flags
     enum
     {
@@ -1537,6 +1649,7 @@ public:
         prevoutStake.SetNull();
         nStakeTime = 0;
         nSize = 0;
+        nFinalizedHeight = 0;
 
         nVersion       = 0;
         hashMerkleRoot = 0;
@@ -1560,6 +1673,7 @@ public:
         nStakeModifier = 0;
         nStakeModifierChecksum = 0;
         hashProof = 0;
+        nFinalizedHeight = 0;
         if (block.IsProofOfStake())
         {
             SetProofOfStake();
@@ -2038,7 +2152,7 @@ public:
     bool remove(const CTransaction &tx, bool fRecursive = false);
     bool removeConflicts(const CTransaction &tx);
 
-    // IDAG Phase 3: DAG-aware mempool coordination
+    // DAG-aware mempool coordination
     std::set<uint256> setDAGSeenTxids;
     void RemoveDAGConflicts(const uint256& hashBlock);
 

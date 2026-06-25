@@ -52,8 +52,11 @@ static bool LoadWalletFCMPProofTree(CTxDB& txdb, int nBlockHeight,
 {
     if (nBlockHeight >= FORK_HEIGHT_EPOCH_ROOT_FCMP)
     {
+        // Anchor the spend's FCMP proof to the SAME deterministic finalized epoch the
+        // validator uses for the including block (LoadFCMPValidationRoot, same height),
+        // not the node-local live tip -- otherwise the spend fails validation on peers.
         CEpochState finalizedEpochState;
-        if (!g_dagManager.GetLastFinalizedEpochState(finalizedEpochState))
+        if (!g_dagManager.GetFinalizedEpochStateAsOf(nBlockHeight, finalizedEpochState))
         {
             strErrorOut = "No finalized epoch curve-tree root is available yet";
             return false;
@@ -1676,7 +1679,7 @@ void CWallet::ReacceptWalletTransactions()
 }
 
 
-void CWalletTx::RelayWalletTransaction(CTxDB& txdb)
+void CWalletTx::RelayWalletTransaction(CTxDB& txdb, bool fForceRelay)
 {
     BOOST_FOREACH(const CMerkleTx& tx, vtxPrev)
     {
@@ -1684,7 +1687,12 @@ void CWalletTx::RelayWalletTransaction(CTxDB& txdb)
         {
             uint256 hash = tx.GetHash();
             if (!txdb.ContainsTx(hash))
-                RelayTransaction((CTransaction)tx, hash);
+            {
+                if (fDebugNet || GetBoolArg("-debugtxrelay", false))
+                    printf("TXRELAY wallet-local-prev tx=%s force=%d\n",
+                           hash.ToString().substr(0,10).c_str(), fForceRelay);
+                RelayTransaction((CTransaction)tx, hash, fForceRelay);
+            }
         }
     }
     if (!(IsCoinBase() || IsCoinStake()))
@@ -1693,15 +1701,18 @@ void CWalletTx::RelayWalletTransaction(CTxDB& txdb)
         if (!txdb.ContainsTx(hash))
         {
             printf("Relaying wtx %s\n", hash.ToString().substr(0,10).c_str());
-            RelayTransaction((CTransaction)*this, hash);
+            if (fDebugNet || GetBoolArg("-debugtxrelay", false))
+                printf("TXRELAY wallet-local tx=%s force=%d\n",
+                       hash.ToString().substr(0,10).c_str(), fForceRelay);
+            RelayTransaction((CTransaction)*this, hash, fForceRelay);
         }
     }
 }
 
-void CWalletTx::RelayWalletTransaction()
+void CWalletTx::RelayWalletTransaction(bool fForceRelay)
 {
    CTxDB txdb("r");
-   RelayWalletTransaction(txdb);
+   RelayWalletTransaction(txdb, fForceRelay);
 }
 
 void CWallet::ResendWalletTransactions(bool fForce)
@@ -1726,7 +1737,7 @@ void CWallet::ResendWalletTransactions(bool fForce)
     }
 
     // Rebroadcast any of our txes that aren't in a block yet
-    printf("ResendWalletTransactions()\n");
+    printf("ResendWalletTransactions(force=%d)\n", fForce);
     CTxDB txdb("r");
     {
         LOCK(cs_wallet);
@@ -1744,7 +1755,7 @@ void CWallet::ResendWalletTransactions(bool fForce)
         {
             CWalletTx& wtx = *item.second;
             if (wtx.CheckTransaction())
-                wtx.RelayWalletTransaction(txdb);
+                wtx.RelayWalletTransaction(txdb, fForce);
             else
                 printf("ResendWalletTransactions() : CheckTransaction failed for transaction %s\n", wtx.GetHash().ToString().c_str());
         }
@@ -4568,24 +4579,43 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                            (int)ni, wnote.note.nValue, nWeight, nBlockTimeFrom, nBits);
 
                 bool fUseNullStakeV2 = (pindexPrev->nHeight + 1 >= FORK_HEIGHT_NULLSTAKE_V2);
+                // V2 consensus (ConnectBlock) checks the proof modifier against
+                // pprev of the NEW block, not the note's origin block (which is
+                // what GetKernelStakeModifier above resolves for V1).
+                if (fUseNullStakeV2)
+                    nStakeModifier = pindexPrev->nStakeModifier;
+                // Pinned V2 kernels (consensus rule from FORK_HEIGHT_KERNEL_PINNING):
+                // synthetic age, no note metadata in the clear.
+                bool fPinnedKernel = fUseNullStakeV2 &&
+                                     (pindexPrev->nHeight + 1 >= FORK_HEIGHT_KERNEL_PINNING);
+                unsigned int nKernelTTP = pNoteBlock->nTime;
+                if (fPinnedKernel)
+                    nVoutN = 0;
 
                 for (unsigned int n = 0; n < min(nSearchInterval, (int64_t)nMaxStakeSearchInterval) && !fShieldedKernelFound && !fShutdown; n++)
                 {
                     unsigned int nTimeTx = txNew.nTime - n;
+
+                    if (fPinnedKernel)
+                    {
+                        nBlockTimeFrom = (unsigned int)((int64_t)nTimeTx - NULLSTAKE_PINNED_AGE);
+                        nKernelTTP = nBlockTimeFrom;
+                        nWeight = GetWeight((int64_t)nBlockTimeFrom, (int64_t)nTimeTx);
+                    }
 
                     bool fKernelOk = false;
                     if (fUseNullStakeV2)
                     {
                         fKernelOk = CheckShieldedStakeKernelHashV2(nBits, nStakeModifier,
                                                                      nBlockTimeFrom, nTxPrevOffset,
-                                                                     pNoteBlock->nTime, nVoutN,
+                                                                     nKernelTTP, nVoutN,
                                                                      nTimeTx, wnote.note.nValue, nWeight);
                     }
                     else
                     {
                         fKernelOk = CheckShieldedStakeKernelHash(nBits, nStakeModifier,
                                                                    nBlockTimeFrom, nTxPrevOffset,
-                                                                   pNoteBlock->nTime, nVoutN,
+                                                                   nKernelTTP, nVoutN,
                                                                    nTimeTx, wnote.note.nValue, nWeight);
                     }
 
@@ -4614,7 +4644,13 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                                                           stakeSpend.cv, stakeSpend.rangeProof))
                             continue;
 
-                        stakeSpend.nullifier = wnote.note.GetNullifier(fvk.nk);
+                        // Note-bound nullifier once binding is active: a coinstake
+                        // spend is consensus-checked against the binding proof like
+                        // any other spend, and key-dependent derivations diverge
+                        // between hot and cold staking of the same note.
+                        if (!ApplyShieldedSpendNullifier(stakeSpend, wnote.note, fvk.nk,
+                                                         pindexPrev->nHeight + 1 >= FORK_HEIGHT_NULLIFIER_BINDING))
+                            continue;
 
                         {
                             CIncrementalMerkleTree tree;
@@ -4680,7 +4716,7 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                             if (!CreateNullStakeKernelProofV2(wnote.note.nValue, wnote.note.vchBlind,
                                                               stakeSpend.cv, nBits,
                                                               nStakeModifier, nBlockTimeFrom,
-                                                              nTxPrevOffset, pNoteBlock->nTime,
+                                                              nTxPrevOffset, nKernelTTP,
                                                               nVoutN, nTimeTx, kernelProofV2))
                                 continue;
                             txNew.nullstakeProofV2 = kernelProofV2;
@@ -4691,7 +4727,7 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                             if (!CreateNullStakeKernelProof(wnote.note.nValue, wnote.note.vchBlind,
                                                             stakeSpend.cv, nBits, nWeight,
                                                             nStakeModifier, nBlockTimeFrom,
-                                                            nTxPrevOffset, pNoteBlock->nTime,
+                                                            nTxPrevOffset, nKernelTTP,
                                                             nVoutN, nTimeTx, kernelProof))
                                 continue;
                             txNew.nullstakeProof = kernelProof;
@@ -4768,32 +4804,10 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
 
                         txNew.nValueBalance = -nReward; // negative = value entering shielded pool
 
-                        {
-                            uint256 spendSighash = txNew.GetBindingSigHash();
-                            if (!CreateSpendAuthSignature(sk.skSpend, spendSighash,
-                                                           txNew.vShieldedSpend[0].vchRk,
-                                                           txNew.vShieldedSpend[0].vchSpendAuthSig))
-                                continue;
-                        }
-
-                        {
-                            uint256 sighash = txNew.GetBindingSigHash();
-                            CBindingSignature bindingSig;
-                            CreateBindingSignature(vInputBlinds, vOutputBlinds, sighash, bindingSig);
-                            txNew.bindingSig.bindingSig = bindingSig;
-                        }
-
-                        txNew.vShieldedSpend[0].nPlaintextValue = -1;
-                        txNew.vShieldedSpend[0].vchPlaintextBlind.clear();
-                        txNew.vShieldedOutput[0].nPlaintextValue = -1;
-                        txNew.vShieldedOutput[0].vchPlaintextBlind.clear();
-                        txNew.vShieldedOutput[1].nPlaintextValue = -1;
-                        txNew.vShieldedOutput[1].vchPlaintextBlind.clear();
-
-                        if (fDebug)
-                            printf("CreateCoinStake() : NullStake shielded stake found, value=%" PRId64 ", reward=%" PRId64 "\n",
-                                   wnote.note.nValue, nReward);
-
+                        // CN payment must be added BEFORE the binding sighash is
+                        // computed: it mutates vout and nValueBalance, which the
+                        // sighash covers, so signing first would invalidate every
+                        // coinstake whenever a CN payee resolves.
                         {
                             bool bCNPayment = false;
                             if (fTestNet) {
@@ -4848,6 +4862,38 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                                 }
                             }
                         }
+
+                        txNew.vShieldedSpend[0].nPlaintextValue = -1;
+                        txNew.vShieldedSpend[0].vchPlaintextBlind.clear();
+                        txNew.vShieldedOutput[0].nPlaintextValue = -1;
+                        txNew.vShieldedOutput[0].vchPlaintextBlind.clear();
+                        txNew.vShieldedOutput[1].nPlaintextValue = -1;
+                        txNew.vShieldedOutput[1].vchPlaintextBlind.clear();
+
+                        {
+                            uint256 spendSighash = txNew.GetBindingSigHash();
+                            if (!CreateSpendAuthSignature(sk.skSpend, spendSighash,
+                                                           txNew.vShieldedSpend[0].vchRk,
+                                                           txNew.vShieldedSpend[0].vchSpendAuthSig))
+                                continue;
+
+                            // Coinstake spends carry the same note-bound nullifier
+                            // proof as ordinary spends (no consensus exemption).
+                            std::vector<int64_t> vSpendValues(1, wnote.note.nValue);
+                            std::vector<std::vector<unsigned char> > vSpendBlinds(1, wnote.note.vchBlind);
+                            if (!FinalizeShieldedSpendBindings(txNew.vShieldedSpend, vSpendValues,
+                                                               vSpendBlinds, spendSighash,
+                                                               pindexPrev->nHeight + 1 >= FORK_HEIGHT_NULLIFIER_BINDING))
+                                continue;
+
+                            CBindingSignature bindingSig;
+                            CreateBindingSignature(vInputBlinds, vOutputBlinds, spendSighash, bindingSig);
+                            txNew.bindingSig.bindingSig = bindingSig;
+                        }
+
+                        if (fDebug)
+                            printf("CreateCoinStake() : NullStake shielded stake found, value=%" PRId64 ", reward=%" PRId64 "\n",
+                                   wnote.note.nValue, nReward);
 
                         wnote.fSpent = true;
 
@@ -4926,32 +4972,34 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                     if (nBlockTimeFrom + nStakeMinAge > txNew.nTime)
                         continue;
 
-                    uint64_t nStakeModifier = 0;
-                    {
-                        int nStakeModifierHeight = 0;
-                        int64_t nStakeModifierTime = 0;
-                        uint256 hashBlock = pNoteBlock->GetBlockHash();
-                        if (!GetKernelStakeModifier(hashBlock, nStakeModifier, nStakeModifierHeight, nStakeModifierTime, false))
-                        {
-                            if (fRegTest && pindexPrev)
-                                nStakeModifier = pindexPrev->nStakeModifier;
-                            else
-                                continue;
-                        }
-                    }
+                    // V3 consensus (ConnectBlock) checks the proof modifier
+                    // against pprev of the NEW block.
+                    uint64_t nStakeModifier = pindexPrev->nStakeModifier;
 
                     int64_t nWeight = GetWeight((int64_t)nBlockTimeFrom, (int64_t)txNew.nTime);
                     unsigned int nTxPrevOffset = 0;
                     unsigned int nVoutN = wnote.nPosition;
+                    // Pinned V3 kernels (consensus rule from FORK_HEIGHT_KERNEL_PINNING).
+                    bool fPinnedKernel = (pindexPrev->nHeight + 1 >= FORK_HEIGHT_KERNEL_PINNING);
+                    unsigned int nKernelTTP = pNoteBlock->nTime;
+                    if (fPinnedKernel)
+                        nVoutN = 0;
 
                     bool fShieldedKernelFound = false;
                     for (unsigned int n = 0; n < min(nSearchInterval, (int64_t)nMaxStakeSearchInterval) && !fShieldedKernelFound && !fShutdown; n++)
                     {
                         unsigned int nTimeTx = txNew.nTime - n;
 
+                        if (fPinnedKernel)
+                        {
+                            nBlockTimeFrom = (unsigned int)((int64_t)nTimeTx - NULLSTAKE_PINNED_AGE);
+                            nKernelTTP = nBlockTimeFrom;
+                            nWeight = GetWeight((int64_t)nBlockTimeFrom, (int64_t)nTimeTx);
+                        }
+
                         bool fKernelOk = CheckShieldedStakeKernelHashV3(nBits, nStakeModifier,
                                                                          nBlockTimeFrom, nTxPrevOffset,
-                                                                         pNoteBlock->nTime, nVoutN,
+                                                                         nKernelTTP, nVoutN,
                                                                          nTimeTx, wnote.note.nValue, nWeight);
                         if (fKernelOk)
                         {
@@ -4974,7 +5022,18 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                                                               stakeSpend.cv, stakeSpend.rangeProof))
                                 continue;
 
-                            // Derive nullifier from skStake (staker has no skSpend)
+                            // Nullifier: with binding active it is note-bound (the
+                            // canonical NF=r*G_nf tag), identical to what the owner's
+                            // own spend would produce — a key-dependent derivation
+                            // here lets the same note be spent once hot and once
+                            // cold. Pre-binding falls back to the legacy skStake
+                            // derivation (staker has no skSpend).
+                            if (pindexPrev->nHeight + 1 >= FORK_HEIGHT_NULLIFIER_BINDING)
+                            {
+                                if (!ApplyShieldedSpendNullifier(stakeSpend, wnote.note, uint256(0), true))
+                                    continue;
+                            }
+                            else
                             {
                                 CHashWriter ssNk(SER_GETHASH, 0);
                                 ssNk << std::string("Innova/ColdStake/Nk/v1");
@@ -5064,7 +5123,7 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                             if (!CreateNullStakeKernelProofV3(wnote.note.nValue, wnote.note.vchBlind,
                                                               stakeSpend.cv, nBits,
                                                               nStakeModifier, nBlockTimeFrom,
-                                                              nTxPrevOffset, pNoteBlock->nTime,
+                                                              nTxPrevOffset, nKernelTTP,
                                                               nVoutN, nTimeTx,
                                                               skStake, vchPkOwner, delegHash,
                                                               kernelProofV3))
@@ -5150,12 +5209,18 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                                                                txNew.vShieldedSpend[0].vchRk,
                                                                txNew.vShieldedSpend[0].vchSpendAuthSig))
                                     continue;
-                            }
 
-                            {
-                                uint256 sighash = txNew.GetBindingSigHash();
+                                // Coinstake spends carry the same note-bound nullifier
+                                // proof as ordinary spends (no consensus exemption).
+                                std::vector<int64_t> vSpendValues(1, wnote.note.nValue);
+                                std::vector<std::vector<unsigned char> > vSpendBlinds(1, wnote.note.vchBlind);
+                                if (!FinalizeShieldedSpendBindings(txNew.vShieldedSpend, vSpendValues,
+                                                                   vSpendBlinds, spendSighash,
+                                                                   pindexPrev->nHeight + 1 >= FORK_HEIGHT_NULLIFIER_BINDING))
+                                    continue;
+
                                 CBindingSignature bindingSig;
-                                CreateBindingSignature(vInputBlinds, vOutputBlinds, sighash, bindingSig);
+                                CreateBindingSignature(vInputBlinds, vOutputBlinds, spendSighash, bindingSig);
                                 txNew.bindingSig.bindingSig = bindingSig;
                             }
 

@@ -90,6 +90,7 @@ int64_t nTimeBestReceived = 0;
 
 bool fImporting = false;
 bool fReindex = false;
+bool fFullReplayVerify = false;
 bool fAddrIndex = false;
 
 bool fSPVMode = false;
@@ -1008,6 +1009,13 @@ bool CTransaction::CheckTransaction() const
         if (IsCoinStake() && nVersion != SHIELDED_TX_VERSION_NULLSTAKE && nVersion != SHIELDED_TX_VERSION_NULLSTAKE_V2 && nVersion != SHIELDED_TX_VERSION_NULLSTAKE_COLD)
             return DoS(100, error("CTransaction::CheckTransaction() : shielded transaction cannot be coinstake"));
 
+        // A NullStake coinstake only ever ADDS the stake reward to the shielded
+        // pool (nValueBalance = -reward). A positive balance on a coinstake-shaped
+        // tx is an unshield placed under the coinstake exemptions — reject it
+        // shape-wide so it can never reach the exempted ConnectInputs paths.
+        if (IsCoinStake() && nValueBalance > 0)
+            return DoS(100, error("CTransaction::CheckTransaction() : coinstake with positive shielded value balance"));
+
         if (vShieldedSpend.empty() && vShieldedOutput.empty())
             return DoS(100, error("CTransaction::CheckTransaction() : shielded tx has no shielded components"));
 
@@ -1196,7 +1204,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
         LOCK(cs);
         if (mapTx.count(hash))
             return false;
-        // IDAG Phase 3: Reject txids already included in a DAG sibling block
+        // Reject txids already included in a DAG sibling block
         if (setDAGSeenTxids.count(hash))
             return error("CTxMemPool::accept() : tx %s already in DAG sibling block", hash.ToString().substr(0, 20).c_str());
     }
@@ -1449,6 +1457,21 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
 
                             if (!VerifyFCMPProof(fcmpRootNode, tx.vShieldedSpend[i].fcmpProof, tx.vShieldedSpend[i].cv))
                                 return error("CTxMemPool::accept() : shielded spend %d FCMP++ proof failed", (int)i);
+                        }
+
+                        // Nullifier binding, mirrored from ConnectInputs so an
+                        // unbound spend is dropped before relay. Gate on the
+                        // height the tx would confirm at (next block).
+                        if (nBestHeight + 1 >= FORK_HEIGHT_NULLIFIER_BINDING)
+                        {
+                            const CShieldedSpendDescription& sp = tx.vShieldedSpend[i];
+                            if (sp.vchNullifierPoint.size() != NULLIFIER_POINT_SIZE ||
+                                sp.vchNullifierBindingProof.size() != NULLIFIER_BINDING_PROOF_SIZE)
+                                return error("CTxMemPool::accept() : shielded spend %d missing nullifier binding proof (required post-fork)", (int)i);
+                            if (sp.nullifier != NullifierTagFromPoint(sp.vchNullifierPoint))
+                                return error("CTxMemPool::accept() : shielded spend %d nullifier does not match bound note", (int)i);
+                            if (!VerifyNullifierBindingProof(sp.cv, sp.vchNullifierPoint, sighash, sp.vchNullifierBindingProof))
+                                return error("CTxMemPool::accept() : shielded spend %d nullifier binding proof failed", (int)i);
                         }
 
                         if (fDebug)
@@ -1875,7 +1898,7 @@ bool CTxMemPool::removeConflicts(const CTransaction &tx)
     return true;
 }
 
-// IDAG Phase 3: Remove mempool transactions that appear in a DAG sibling block
+// Remove mempool transactions that appear in a DAG sibling block
 void CTxMemPool::RemoveDAGConflicts(const uint256& hashBlock)
 {
     CBlock block;
@@ -2290,6 +2313,31 @@ static void QueueBlockInventory(CNode* pfrom, const uint256& hash, std::set<uint
     pfrom->vInventoryToSend.push_back(inv);
 }
 
+static void PushBlockAnnouncement(CNode* pnode, const CBlock& header, bool fForce)
+{
+    if (!pnode)
+        return;
+
+    CInv inv(MSG_BLOCK, header.GetHash());
+    if (pnode->fPreferHeaders)
+    {
+        if (!fForce)
+        {
+            LOCK(pnode->cs_inventory);
+            if (pnode->setInventoryKnown.count(inv))
+                return;
+        }
+        std::vector<CBlock> vHeaders;
+        vHeaders.push_back(header);
+        pnode->PushMessage("headers", vHeaders);
+        return;
+    }
+
+    LOCK(pnode->cs_inventory);
+    if (fForce || !pnode->setInventoryKnown.count(inv))
+        pnode->vInventoryToSend.push_back(inv);
+}
+
 static void QueueDAGSideBlockWithAncestors(CNode* pfrom, const uint256& hash, std::set<uint256>& setQueued, std::set<uint256>& setVisiting, int nDepth)
 {
     if (!pfrom || nDepth > DAG_MERGE_DEPTH)
@@ -2391,7 +2439,7 @@ static bool CheckFinalityVoteRewardOutputs(const CBlock& block, const std::vecto
     return true;
 }
 
-static bool CheckFinalityStakeProofsNotSpentInBlock(const CBlock& block, const std::vector<CFinalityVote>& vVotes)
+bool CheckFinalityStakeProofsNotSpentInBlock(const CBlock& block, const std::vector<CFinalityVote>& vVotes)
 {
     if (vVotes.empty())
         return true;
@@ -2428,8 +2476,11 @@ static bool LoadFCMPValidationRoot(CTxDB& txdb, int nBlockHeight,
 
     if (nBlockHeight >= FORK_HEIGHT_EPOCH_ROOT_FCMP)
     {
+        // Anchor shielded FCMP spends to the finalized epoch DETERMINISTICALLY from the
+        // including block's height, not the validator's node-local live finalization tip,
+        // so every node accepts/rejects the same spend (ConnectBlock stays deterministic).
         CEpochState finalizedEpochState;
-        if (!g_dagManager.GetLastFinalizedEpochState(finalizedEpochState))
+        if (!g_dagManager.GetFinalizedEpochStateAsOf(nBlockHeight, finalizedEpochState))
         {
             strErrorOut = "missing finalized epoch FCMP root";
             return false;
@@ -2491,6 +2542,161 @@ bool CheckFCMPSpendRoots(const CTransaction& tx, int nBlockHeight,
     }
 
     return true;
+}
+
+bool TransactionConflictsWithDAGSiblingSpends(const CTransaction& tx,
+                                              const std::set<COutPoint>& setDAGSpentOutputs,
+                                              const std::set<uint256>& setDAGSpentNullifiers)
+{
+    if (tx.IsCoinBase() || tx.IsCoinStake())
+        return false;
+
+    for (const CTxIn& txin : tx.vin)
+        if (setDAGSpentOutputs.count(txin.prevout))
+            return true;
+
+    for (const CShieldedSpendDescription& spend : tx.vShieldedSpend)
+        if (setDAGSpentNullifiers.count(spend.nullifier))
+            return true;
+
+    return false;
+}
+
+static bool DAGSiblingPrecedesBlock(const uint256& hashBlock,
+                                    const uint256& hashSibling,
+                                    bool fHaveCurrentDAGOrder,
+                                    const CBlockDAGData& currentDagData)
+{
+    bool fSiblingPrecedes = (hashSibling < hashBlock);
+    CBlockDAGData siblingDagData;
+    if (fHaveCurrentDAGOrder && g_dagManager.GetDAGData(hashSibling, siblingDagData) &&
+        siblingDagData.nDAGOrder >= 0)
+        fSiblingPrecedes = siblingDagData.nDAGOrder < currentDagData.nDAGOrder;
+    return fSiblingPrecedes;
+}
+
+std::set<uint256> GetDAGSkippedTxsFromSiblingSpends(const CBlock& block,
+                                                    const std::set<COutPoint>& setDAGSpentOutputs,
+                                                    const std::set<uint256>& setDAGSpentNullifiers)
+{
+    std::set<uint256> setDAGSkippedTxs;
+    bool fChanged = true;
+
+    while (fChanged)
+    {
+        fChanged = false;
+        for (const CTransaction& tx : block.vtx)
+        {
+            if (tx.IsCoinBase() || tx.IsCoinStake())
+                continue;
+
+            uint256 hashTx = tx.GetHash();
+            if (setDAGSkippedTxs.count(hashTx))
+                continue;
+
+            bool fSkip = TransactionConflictsWithDAGSiblingSpends(tx, setDAGSpentOutputs, setDAGSpentNullifiers);
+            if (!fSkip)
+            {
+                for (const CTxIn& txin : tx.vin)
+                {
+                    if (setDAGSkippedTxs.count(txin.prevout.hash))
+                    {
+                        fSkip = true;
+                        break;
+                    }
+                }
+            }
+
+            if (fSkip && setDAGSkippedTxs.insert(hashTx).second)
+                fChanged = true;
+        }
+    }
+
+    return setDAGSkippedTxs;
+}
+
+static std::set<uint256> GetDAGSkippedTxsForBlockInternal(const CBlock& block,
+                                                          const CBlockIndex* pindex,
+                                                          std::map<uint256, std::set<uint256> >& mapSkipCache,
+                                                          std::set<uint256>& setVisiting)
+{
+    std::set<uint256> setDAGSkippedTxs;
+    if (!pindex || pindex->nHeight < FORK_HEIGHT_DAG || !pindex->phashBlock)
+        return setDAGSkippedTxs;
+
+    uint256 hashBlock = pindex->GetBlockHash();
+    std::map<uint256, std::set<uint256> >::const_iterator miCached = mapSkipCache.find(hashBlock);
+    if (miCached != mapSkipCache.end())
+        return miCached->second;
+    if (setVisiting.count(hashBlock))
+        return setDAGSkippedTxs;
+    setVisiting.insert(hashBlock);
+
+    std::set<COutPoint> setDAGSpentOutputs;
+    std::set<uint256> setDAGSpentNullifiers;
+
+    std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(hashBlock);
+    CBlockDAGData currentDagData;
+    bool fHaveCurrentDAGOrder = g_dagManager.GetDAGData(hashBlock, currentDagData) &&
+                                currentDagData.nDAGOrder >= 0;
+
+    for (const uint256& hashSibling : siblings)
+    {
+        if (!DAGSiblingPrecedesBlock(hashBlock, hashSibling, fHaveCurrentDAGOrder, currentDagData))
+            continue;
+
+        std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashSibling);
+        if (mi == mapBlockIndex.end())
+            continue;
+
+        CBlock sibBlock;
+        if (!sibBlock.ReadFromDisk(mi->second))
+            continue;
+
+        std::set<uint256> setSiblingSkippedTxs =
+            GetDAGSkippedTxsForBlockInternal(sibBlock, mi->second, mapSkipCache, setVisiting);
+
+        for (const CTransaction& sibTx : sibBlock.vtx)
+        {
+            if (sibTx.IsCoinBase() || sibTx.IsCoinStake() || setSiblingSkippedTxs.count(sibTx.GetHash()))
+                continue;
+            for (const CTxIn& txin : sibTx.vin)
+                setDAGSpentOutputs.insert(txin.prevout);
+            for (const CShieldedSpendDescription& spend : sibTx.vShieldedSpend)
+                setDAGSpentNullifiers.insert(spend.nullifier);
+        }
+    }
+
+    if (!setDAGSpentOutputs.empty() || !setDAGSpentNullifiers.empty())
+        setDAGSkippedTxs = GetDAGSkippedTxsFromSiblingSpends(block, setDAGSpentOutputs, setDAGSpentNullifiers);
+
+    mapSkipCache[hashBlock] = setDAGSkippedTxs;
+    setVisiting.erase(hashBlock);
+    return setDAGSkippedTxs;
+}
+
+std::set<uint256> GetDAGSkippedTxsForBlock(const CBlock& block, const CBlockIndex* pindex)
+{
+    std::map<uint256, std::set<uint256> > mapSkipCache;
+    std::set<uint256> setVisiting;
+    return GetDAGSkippedTxsForBlockInternal(block, pindex, mapSkipCache, setVisiting);
+}
+
+CBlock GetDAGActiveBlock(const CBlock& block, const std::set<uint256>& setDAGSkippedTxs)
+{
+    if (setDAGSkippedTxs.empty())
+        return block;
+
+    CBlock activeBlock = block;
+    std::vector<CTransaction> vActiveTx;
+    vActiveTx.reserve(activeBlock.vtx.size());
+    for (const CTransaction& tx : activeBlock.vtx)
+    {
+        if (!setDAGSkippedTxs.count(tx.GetHash()))
+            vActiveTx.push_back(tx);
+    }
+    activeBlock.vtx.swap(vActiveTx);
+    return activeBlock;
 }
 
 // Proof of Work miner's coin base reward
@@ -2927,7 +3133,7 @@ void CBlock::UpdateTime(const CBlockIndex* pindexPrev)
 
 
 // Requires cs_main.
-void Misbehaving(NodeId pnode, int howmuch)
+void Misbehaving(NodeId pnode, int howmuch, const std::string& reason)
 {
     if (howmuch == 0)
         return;
@@ -2942,11 +3148,15 @@ void Misbehaving(NodeId pnode, int howmuch)
             int banscore = GetArg("-banscore", 100);
             if (pn->nMisbehavior >= banscore)
             {
-                printf("Misbehaving: %s (%d -> %d) BAN THRESHOLD EXCEEDED\n", pn->addrName.c_str(), pn->nMisbehavior-howmuch, pn->nMisbehavior);
+                printf("Misbehaving: %s (%d -> %d) BAN THRESHOLD EXCEEDED%s%s\n",
+                       pn->addrName.c_str(), pn->nMisbehavior-howmuch, pn->nMisbehavior,
+                       reason.empty() ? "" : " reason=", reason.empty() ? "" : reason.c_str());
                 pn->fDisconnect = true;
             }
             else
-                printf("Misbehaving: %s (%d -> %d)\n", pn->addrName.c_str(), pn->nMisbehavior-howmuch, pn->nMisbehavior);
+                printf("Misbehaving: %s (%d -> %d)%s%s\n",
+                       pn->addrName.c_str(), pn->nMisbehavior-howmuch, pn->nMisbehavior,
+                       reason.empty() ? "" : " reason=", reason.empty() ? "" : reason.c_str());
 
             break;
         }
@@ -3309,7 +3519,8 @@ unsigned int CTransaction::GetP2SHSigOpCount(const MapPrevTx& inputs) const
 }
 
 bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTxIndex>& mapTestPool, const CDiskTxPos& posThisTx,
-    const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, unsigned int flags, bool fValidateSig, bool fSkipFCMP)
+    const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, unsigned int flags, bool fValidateSig, bool fSkipFCMP,
+    bool fValidatedCoinstake)
 {
     // Take over previous transactions' spent pointers
     // fBlock is true when this is called from AcceptBlock when a new best-block is added to the blockchain
@@ -3317,6 +3528,13 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
     // ... both are false when called from CTransaction::AcceptToMemoryPool
     if (!IsCoinBase())
     {
+        const int nContextHeight = pindexBlock ? pindexBlock->nHeight : nBestHeight;
+        // Coinstake exemptions below may only be claimed by the kernel-validated
+        // vtx[1] of a proof-of-stake block (fValidatedCoinstake, set by
+        // ConnectBlock). Pre-DAG heights keep the historical shape-keyed
+        // behavior so existing chains revalidate unchanged.
+        const bool fCoinStakeExempt = IsCoinStake() &&
+            (fValidatedCoinstake || nContextHeight < FORK_HEIGHT_DAG);
         // vector<CTransaction> vTxPrev;
         // vector<CTxIndex> vTxindex;
         int64_t nValueIn = 0;
@@ -3378,7 +3596,9 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
             // Skip ECDSA signature verification when connecting blocks (fBlock=true)
             // before the last blockchain checkpoint. This is safe because block merkle hashes are
             // still computed and checked, and any change will be caught at the next checkpoint.
-            if (!(fBlock && (nBestHeight < Checkpoints::GetTotalBlocksEstimate())))
+            // -fullreplayverify forces full ECDSA verification of all historic blocks (used by
+            // -replayblocks to re-validate mainnet history end to end, not just to the checkpoint).
+            if (!(fBlock && !fFullReplayVerify && (nBestHeight < Checkpoints::GetTotalBlocksEstimate())))
             {
                 // Verify signature
                 if (!VerifySignature(txPrev, *this, i, flags, 0))
@@ -3477,10 +3697,11 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
             if (GetValueOut() > MAX_MONEY - nShieldedAbsorbed)
                 return DoS(100, error("ConnectInputs() : GetValueOut + nShieldedAbsorbed overflow"));
 
-            // NullStake coinstakes are exempt: the reward enters the shielded pool
-            // from block subsidy, not from transparent inputs. The reward amount
-            // is validated separately in ConnectBlock() against GetProofOfStakeReward().
-            if ((nVersion != SHIELDED_TX_VERSION_NULLSTAKE && nVersion != SHIELDED_TX_VERSION_NULLSTAKE_V2 && nVersion != SHIELDED_TX_VERSION_NULLSTAKE_COLD) || !IsCoinStake())
+            // Validated NullStake coinstakes are exempt: the reward enters the
+            // shielded pool from block subsidy, not from transparent inputs. The
+            // reward amount is validated separately in ConnectBlock() against
+            // GetProofOfStakeReward().
+            if ((nVersion != SHIELDED_TX_VERSION_NULLSTAKE && nVersion != SHIELDED_TX_VERSION_NULLSTAKE_V2 && nVersion != SHIELDED_TX_VERSION_NULLSTAKE_COLD) || !fCoinStakeExempt)
             {
                 if (nValueIn < GetValueOut() + nShieldedAbsorbed)
                     return DoS(100, error("ConnectInputs() : %s shielded value balance failed (in=%" PRId64 " out=%" PRId64 " shielded=%" PRId64 ")",
@@ -3590,6 +3811,23 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                         if (!VerifyFCMPProof(ciRootNode, vShieldedSpend[i].fcmpProof, vShieldedSpend[i].cv))
                             return DoS(100, error("ConnectInputs() : shielded spend %d FCMP++ proof failed", (int)i));
                     }
+
+                    // Nullifier must be bound to the spent note (no re-spend under
+                    // a different nullifier). No coinstake exemption: a NullStake
+                    // coinstake spends a real note too, and an exemption keyed on
+                    // tx shape is claimable by a coinstake-shaped tx placed at
+                    // vtx[>=2] of a proof-of-work block.
+                    if (nBlockHeight >= FORK_HEIGHT_NULLIFIER_BINDING)
+                    {
+                        const CShieldedSpendDescription& sp = vShieldedSpend[i];
+                        if (sp.vchNullifierPoint.size() != NULLIFIER_POINT_SIZE ||
+                            sp.vchNullifierBindingProof.size() != NULLIFIER_BINDING_PROOF_SIZE)
+                            return DoS(100, error("ConnectInputs() : shielded spend %d missing nullifier binding proof (required post-fork)", (int)i));
+                        if (sp.nullifier != NullifierTagFromPoint(sp.vchNullifierPoint))
+                            return DoS(100, error("ConnectInputs() : shielded spend %d nullifier does not match bound note", (int)i));
+                        if (!VerifyNullifierBindingProof(sp.cv, sp.vchNullifierPoint, sighash, sp.vchNullifierBindingProof))
+                            return DoS(100, error("ConnectInputs() : shielded spend %d nullifier binding proof failed", (int)i));
+                    }
                 }
                 for (size_t i = 0; i < vShieldedOutput.size(); i++)
                 {
@@ -3634,7 +3872,7 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
             }
         };
 
-        if (!IsCoinStake())
+        if (!fCoinStakeExempt)
         {
             int64_t nEffectiveOut = GetValueOut();
             if (IsShielded() && nValueBalance < 0)
@@ -3663,32 +3901,45 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
 
 bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
 {
+    std::set<uint256> setDAGSkippedTxs = GetDAGSkippedTxsForBlock(*this, pindex);
+    CBlock activeBlock = GetDAGActiveBlock(*this, setDAGSkippedTxs);
+
     // Disconnect in reverse order
     for (int i = vtx.size()-1; i >= 0; i--)
+    {
+        if (setDAGSkippedTxs.count(vtx[i].GetHash()))
+            continue;
         if (!vtx[i].DisconnectInputs(txdb))
             return false;
+    }
 
     if (pindex->nHeight >= FORK_HEIGHT_DAG)
     {
-        std::vector<CFinalityTallyCertificate> vFinalityCerts = ExtractFinalityTallyCertificatesFromBlock(*this);
+        std::vector<CFinalityTallyCertificate> vFinalityCerts = ExtractFinalityTallyCertificatesFromBlock(activeBlock);
         if (!vFinalityCerts.empty() &&
             !g_finalityTracker.DisconnectBlockTallyCertificates(txdb, pindex->GetBlockHash(), vFinalityCerts))
             return error("DisconnectBlock() : DisconnectBlockTallyCertificates failed");
 
-        std::vector<CFinalityTallyShare> vFinalityShares = ExtractFinalityTallySharesFromBlock(*this);
+        std::vector<CFinalityTallyShare> vFinalityShares = ExtractFinalityTallySharesFromBlock(activeBlock);
         if (!vFinalityShares.empty() &&
             !g_finalityTracker.DisconnectBlockTallyShares(txdb, pindex->GetBlockHash(), vFinalityShares))
             return error("DisconnectBlock() : DisconnectBlockTallyShares failed");
 
-        std::vector<CFinalityVote> vFinalityVotes = ExtractFinalityVotesFromBlock(*this);
+        std::vector<CFinalityVote> vFinalityVotes = ExtractFinalityVotesFromBlock(activeBlock);
         if (!vFinalityVotes.empty() &&
             !g_finalityTracker.DisconnectBlockVotes(txdb, pindex->GetBlockHash(), vFinalityVotes))
             return error("DisconnectBlock() : DisconnectBlockVotes failed");
+
+        // D2: roll back committee self-rotations carried in this block.
+        std::vector<CFinalityCommitteeRotation> vCommitteeRotations = ExtractFinalityCommitteeRotationsFromBlock(activeBlock);
+        if (!vCommitteeRotations.empty() &&
+            !g_finalityTracker.DisconnectBlockCommitteeRotations(txdb, pindex->GetBlockHash(), vCommitteeRotations))
+            return error("DisconnectBlock() : DisconnectBlockCommitteeRotations failed");
     }
 
     if (pindex->nHeight >= FORK_HEIGHT_SHIELDED)
     {
-        for (const CTransaction& tx : vtx)
+        for (const CTransaction& tx : activeBlock.vtx)
         {
             if (!tx.IsShielded())
                 continue;
@@ -3758,11 +4009,19 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
 
     // innova: undo name transactions in reverse order
     for (int i = vtx.size() - 1; i >= 0; i--)
+    {
+        if (setDAGSkippedTxs.count(vtx[i].GetHash()))
+            continue;
         hooks->DisconnectInputs(vtx[i]);
+    }
 
     // ppcoin: clean up wallet after disconnecting coinstake
     for (CTransaction& tx : vtx)
+    {
+        if (setDAGSkippedTxs.count(tx.GetHash()))
+            continue;
         SyncWithWallets(tx, this, false, false);
+    }
 
     return true;
 }
@@ -3933,15 +4192,15 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
     if (pindex->nHeight >= FORK_HEIGHT_DAG && IsProofOfStake())
         return DoS(100, error("ConnectBlock() : proof-of-stake blocks are not allowed after DAG fork"));
 
-    std::vector<CFinalityVote> vFinalityVotes = ExtractFinalityVotesFromBlock(*this);
-    if (!vFinalityVotes.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
-        return DoS(100, error("ConnectBlock() : finality votes are only valid in post-DAG proof-of-work blocks"));
-    std::vector<CFinalityTallyShare> vFinalityShares = ExtractFinalityTallySharesFromBlock(*this);
-    if (!vFinalityShares.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
-        return DoS(100, error("ConnectBlock() : finality tally shares are only valid in post-DAG proof-of-work blocks"));
-    std::vector<CFinalityTallyCertificate> vFinalityCerts = ExtractFinalityTallyCertificatesFromBlock(*this);
-    if (!vFinalityCerts.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
-        return DoS(100, error("ConnectBlock() : finality tally certificates are only valid in post-DAG proof-of-work blocks"));
+    // Defense in depth (mirrors AcceptBlock): no coinstake of any shape outside
+    // vtx[1] of a proof-of-stake block. Scanned over the RAW tx list — a
+    // DAG-skipped coinstake must still invalidate the block.
+    if (pindex->nHeight >= FORK_HEIGHT_SHIELDED)
+    {
+        for (unsigned int i = 2; i < vtx.size(); i++)
+            if (vtx[i].IsCoinStake())
+                return DoS(100, error("ConnectBlock() : coinstake at tx index %u (only vtx[1] of a proof-of-stake block may be a coinstake)", i));
+    }
 
     // strict script verification post-fork
     unsigned int flags = SCRIPT_VERIFY_NONE;
@@ -3981,6 +4240,36 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
     std::vector<CAmount> vFees (vtx.size(), 0);
 
+    // IDAG: skipped transactions are a deterministic inactive subgraph.
+    // Every consensus consumer below must use this same filtered block view.
+    std::set<uint256> setDAGSkippedTxs = GetDAGSkippedTxsForBlock(*this, pindex);
+    if (!setDAGSkippedTxs.empty())
+    {
+        for (const CTransaction& tx : vtx)
+        {
+            if (setDAGSkippedTxs.count(tx.GetHash()) && hooks->IsNameTx(tx.nVersion))
+                return DoS(100, error("ConnectBlock() : DAG conflict in name transaction %s",
+                                      tx.GetHash().ToString().substr(0,10).c_str()));
+        }
+    }
+    CBlock activeBlock = GetDAGActiveBlock(*this, setDAGSkippedTxs);
+
+    std::vector<CFinalityVote> vFinalityVotes = ExtractFinalityVotesFromBlock(activeBlock);
+    if (!vFinalityVotes.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
+        return DoS(100, error("ConnectBlock() : finality votes are only valid in post-DAG proof-of-work blocks"));
+    std::vector<CFinalityTallyShare> vFinalityShares = ExtractFinalityTallySharesFromBlock(activeBlock);
+    if (!vFinalityShares.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
+        return DoS(100, error("ConnectBlock() : finality tally shares are only valid in post-DAG proof-of-work blocks"));
+    std::vector<CFinalityTallyCertificate> vFinalityCerts = ExtractFinalityTallyCertificatesFromBlock(activeBlock);
+    if (!vFinalityCerts.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
+        return DoS(100, error("ConnectBlock() : finality tally certificates are only valid in post-DAG proof-of-work blocks"));
+
+    // D2: committee self-rotations ride post-fork proof-of-work blocks.
+    std::vector<CFinalityCommitteeRotation> vCommitteeRotations = ExtractFinalityCommitteeRotationsFromBlock(activeBlock);
+    if (!vCommitteeRotations.empty() &&
+        (pindex->nHeight < FORK_HEIGHT_TALLY_GOVERNANCE || IsProofOfStake()))
+        return DoS(100, error("ConnectBlock() : committee rotations are only valid in post-governance-fork proof-of-work blocks"));
+
     bool fFCMPBatchVerified = false;
     if (pindex->nHeight >= FORK_HEIGHT_FCMP_VALIDATION)
     {
@@ -3990,14 +4279,15 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         uint256 hashExpectedFCMPRoot = 0;
         bool fHaveFCMPRoot = false;
 
-        for (unsigned int i = 1; i < vtx.size(); i++)
+        for (unsigned int i = 1; i < activeBlock.vtx.size(); i++)
         {
-            if (vtx[i].nVersion >= SHIELDED_TX_VERSION_FCMP)
+            const CTransaction& tx = activeBlock.vtx[i];
+            if (tx.nVersion >= SHIELDED_TX_VERSION_FCMP)
             {
-                if (vtx[i].vShieldedSpend.size() > 1000)
-                    return DoS(100, error("ConnectBlock() : tx %d has too many shielded spends (%u)", i, (unsigned int)vtx[i].vShieldedSpend.size()));
+                if (tx.vShieldedSpend.size() > 1000)
+                    return DoS(100, error("ConnectBlock() : tx %d has too many shielded spends (%u)", i, (unsigned int)tx.vShieldedSpend.size()));
 
-                for (const auto& spend : vtx[i].vShieldedSpend)
+                for (const CShieldedSpendDescription& spend : tx.vShieldedSpend)
                 {
                     if (spend.fcmpProof.IsNull())
                         return DoS(100, error("ConnectBlock() : tx %d spend missing FCMP++ proof", i));
@@ -4030,44 +4320,6 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
     std::set<uint256> setBlockNullifiers;
 
-    // IDAG: Collect spent outputs from DAG sibling blocks (lower hash = canonical earlier)
-    // Transactions conflicting with already-spent outputs from siblings are skipped
-    std::set<COutPoint> setDAGSpentOutputs;
-    bool fDAGActive = (pindex->nHeight >= FORK_HEIGHT_DAG);
-    if (fDAGActive && pindex->phashBlock)
-    {
-        std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(pindex->GetBlockHash());
-        CBlockDAGData currentDagData;
-        bool fHaveCurrentDAGOrder = g_dagManager.GetDAGData(pindex->GetBlockHash(), currentDagData) &&
-                                    currentDagData.nDAGOrder >= 0;
-        for (const uint256& hashSibling : siblings)
-        {
-            bool fSiblingPrecedes = (hashSibling < pindex->GetBlockHash());
-            CBlockDAGData siblingDagData;
-            if (fHaveCurrentDAGOrder && g_dagManager.GetDAGData(hashSibling, siblingDagData) &&
-                siblingDagData.nDAGOrder >= 0)
-                fSiblingPrecedes = siblingDagData.nDAGOrder < currentDagData.nDAGOrder;
-            if (!fSiblingPrecedes)
-                continue;
-
-            // Load sibling block and collect its spent outputs
-            std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashSibling);
-            if (mi == mapBlockIndex.end())
-                continue;
-            CBlock sibBlock;
-            if (!sibBlock.ReadFromDisk(mi->second))
-                continue;
-
-            for (const CTransaction& sibTx : sibBlock.vtx)
-            {
-                if (sibTx.IsCoinBase() || sibTx.IsCoinStake())
-                    continue;
-                for (const CTxIn& txin : sibTx.vin)
-                    setDAGSpentOutputs.insert(txin.prevout);
-            }
-        }
-    }
-
     int64_t nTransparentValidateMicros = 0;
     int64_t nShieldedValidateMicros = 0;
     int64_t nPrivateStakeValidateMicros = 0;
@@ -4082,6 +4334,19 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         //const CTransaction &tx = vtx[i];
         int64_t nTxValidateStart = GetTimeMicros();
         uint256 hashTx = tx.GetHash();
+        unsigned int nTxSize = ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
+
+        // Skip transactions whose inputs/nullifiers conflict with earlier DAG siblings.
+        if (!tx.IsCoinBase() && setDAGSkippedTxs.count(hashTx))
+        {
+            if (fDebug)
+                printf("ConnectBlock() : DAG conflict skip tx %s\n",
+                       hashTx.ToString().substr(0, 20).c_str());
+            if (!fJustCheck)
+                nTxPos += nTxSize;
+            pos.nTxPos += nTxSize;
+            continue;
+        }
 
         // Do not allow blocks that contain transactions which 'overwrite' older transactions,
         // unless those are already completely spent.
@@ -4108,7 +4373,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
         CDiskTxPos posThisTx(pindex->nFile, pindex->nBlockPos, nTxPos);
         if (!fJustCheck)
-            nTxPos += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
+            nTxPos += nTxSize;
 
         MapPrevTx mapInputs;
         if (tx.IsCoinBase())
@@ -4123,30 +4388,6 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         }
         else
         {
-            // IDAG Phase 2: Skip transactions whose inputs conflict with DAG siblings
-            if (fDAGActive && !tx.IsCoinStake())
-            {
-                bool fConflict = false;
-                for (const CTxIn& txin : tx.vin)
-                {
-                    if (setDAGSpentOutputs.count(txin.prevout))
-                    {
-                        fConflict = true;
-                        break;
-                    }
-                }
-                if (fConflict)
-                {
-                    if (fDebug)
-                        printf("ConnectBlock() : DAG conflict skip tx %s (inputs spent by sibling)\n",
-                               hashTx.ToString().substr(0, 20).c_str());
-                    // Skip this tx but don't fail the block
-                    nTxPos += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
-                    pos.nTxPos += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
-                    continue;
-                }
-            }
-
             bool fInvalid;
             if (!tx.FetchInputs(txdb, mapQueuedChanges, true, false, mapInputs, fInvalid))
                 return false;
@@ -4220,7 +4461,12 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
             if (tx.IsCoinStake())
                 nStakeReward = nTxValueOut - nTxValueIn;
 
-            if (!tx.ConnectInputs(txdb, mapInputs, mapQueuedChanges, posThisTx, pindex, true, false, flags, true, fFCMPBatchVerified))
+            // The coinstake exemptions inside ConnectInputs may only be claimed
+            // by the kernel-validated coinstake: vtx[1] of a proof-of-stake
+            // block. A coinstake-shaped tx anywhere else gets full ordinary-tx
+            // validation.
+            bool fValidatedCoinstake = IsProofOfStake() && (&tx == &vtx[1]);
+            if (!tx.ConnectInputs(txdb, mapInputs, mapQueuedChanges, posThisTx, pindex, true, false, flags, true, fFCMPBatchVerified, fValidatedCoinstake))
                 return false;
 
             int64_t nTxValidateMicros = GetTimeMicros() - nTxValidateStart;
@@ -4252,7 +4498,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
         vPos.push_back(std::make_pair(tx.GetHash(), pos));
         // pos.nTxOffset += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
-        pos.nTxPos += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);
+        pos.nTxPos += nTxSize;
     }
 
     //int64_t nTime1 = GetTimeMicros(); nTimeConnect += nTime1 - nTimeStart;
@@ -4267,14 +4513,14 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
     int64_t nFinalityRewardOut = 0;
     if (!vFinalityVotes.empty())
     {
-        if (!CheckFinalityStakeProofsNotSpentInBlock(*this, vFinalityVotes))
+        if (!CheckFinalityStakeProofsNotSpentInBlock(activeBlock, vFinalityVotes))
             return DoS(100, error("ConnectBlock() : finality stake proof spent in including block"));
-        if (!CheckFinalityVoteRewardOutputs(*this, vFinalityVotes, nFinalityRewardOut))
+        if (!CheckFinalityVoteRewardOutputs(activeBlock, vFinalityVotes, nFinalityRewardOut))
             return DoS(100, error("ConnectBlock() : finality vote reward outputs invalid"));
         for (const CFinalityVote& vote : vFinalityVotes)
         {
             std::string strVoteError;
-            if (!g_finalityTracker.CheckVote(vote, txdb, &strVoteError))
+            if (!g_finalityTracker.CheckVote(vote, txdb, &strVoteError, pindex->nHeight))
                 return DoS(100, error("ConnectBlock() : finality vote invalid: %s", strVoteError.c_str()));
         }
     }
@@ -4289,8 +4535,11 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
     }
     for (const CFinalityTallyShare& share : vFinalityShares)
     {
+        // Strict vote resolution (connected votes or this block's votes only):
+        // pending relay state differs between nodes, so consulting it here
+        // would make block validity node-dependent and allow chain splits.
         std::string strShareError;
-        if (!g_finalityTracker.CheckTallyShare(share, &strShareError, &vFinalityVotes))
+        if (!g_finalityTracker.CheckTallyShare(share, &strShareError, &vFinalityVotes, false, pindex->nHeight))
             return DoS(100, error("ConnectBlock() : finality tally share invalid: %s", strShareError.c_str()));
     }
 
@@ -4317,6 +4566,18 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
             return DoS(50, error("ConnectBlock() : coinbase reward exceeded (actual=%" PRId64" vs calculated=%" PRId64")",
                    vtx[0].GetValueOut(),
                    nAllowedCoinbase));
+
+        // Block-level value conservation: no combination of per-tx exemptions
+        // may create value beyond the coinbase allowance. nValueIn/nValueOut
+        // already include the shielded value-balance flows of every active tx.
+        if (pindex->nHeight >= FORK_HEIGHT_DAG)
+        {
+            if (nValueIn > std::numeric_limits<int64_t>::max() - nAllowedCoinbase)
+                return DoS(100, error("ConnectBlock() : block value conservation overflow"));
+            if (nValueOut > nValueIn + nAllowedCoinbase)
+                return DoS(100, error("ConnectBlock() : block mints value (out=%" PRId64 " in=%" PRId64 " allowed_coinbase=%" PRId64 ")",
+                                      nValueOut, nValueIn, nAllowedCoinbase));
+        }
     }
     if (IsProofOfStake())
     {
@@ -4344,6 +4605,18 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                     return DoS(100, error("ConnectBlock() : NullStake V2 stake modifier mismatch (proof=0x%016" PRIx64 " chain=0x%016" PRIx64 ")",
                                            vtx[1].nullstakeProofV2.nStakeModifier, pindex->pprev->nStakeModifier));
             }
+
+            // Pinned kernel metadata: the circuit takes these as free public
+            // inputs and the curve tree carries no age data, so unpinned values
+            // allow coin-age forgery / kernel grinding and leak the staked
+            // note's origin block + position.
+            if (pindex->nHeight >= FORK_HEIGHT_KERNEL_PINNING &&
+                !CheckNullStakeKernelPinning(vtx[1].nullstakeProofV2.nBlockTimeFrom,
+                                             vtx[1].nullstakeProofV2.nTxPrevOffset,
+                                             vtx[1].nullstakeProofV2.nTxTimePrev,
+                                             vtx[1].nullstakeProofV2.nVoutN,
+                                             vtx[1].nullstakeProofV2.nTimeTx))
+                return DoS(100, error("ConnectBlock() : NullStake V2 kernel metadata not pinned"));
 
             if (!VerifyNullStakeKernelProofV2(vtx[1].nullstakeProofV2,
                                               vtx[1].vShieldedSpend[0].cv,
@@ -4405,6 +4678,15 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                     return DoS(100, error("ConnectBlock() : NullStake V3 stake modifier mismatch (proof=0x%016" PRIx64 " chain=0x%016" PRIx64 ")",
                                            vtx[1].nullstakeProofV3.nStakeModifier, pindex->pprev->nStakeModifier));
             }
+
+            // Pinned kernel metadata (same rationale as V2).
+            if (pindex->nHeight >= FORK_HEIGHT_KERNEL_PINNING &&
+                !CheckNullStakeKernelPinning(vtx[1].nullstakeProofV3.nBlockTimeFrom,
+                                             vtx[1].nullstakeProofV3.nTxPrevOffset,
+                                             vtx[1].nullstakeProofV3.nTxTimePrev,
+                                             vtx[1].nullstakeProofV3.nVoutN,
+                                             vtx[1].nullstakeProofV3.nTimeTx))
+                return DoS(100, error("ConnectBlock() : NullStake V3 kernel metadata not pinned"));
 
             if (!VerifyNullStakeKernelProofV3(vtx[1].nullstakeProofV3,
                                               vtx[1].vShieldedSpend[0].cv,
@@ -5037,7 +5319,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         // Catch cross-tx nullifier duplicates within this block
         std::set<uint256> setBlockNullifiers;
 
-        for (const CTransaction& tx : vtx)
+        for (const CTransaction& tx : activeBlock.vtx)
         {
             if (!tx.IsShielded())
                 continue;
@@ -5124,18 +5406,23 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
     if (!fJustCheck && !vFinalityVotes.empty())
     {
-        if (!g_finalityTracker.ConnectBlockVotes(txdb, pindex->GetBlockHash(), vFinalityVotes))
+        if (!g_finalityTracker.ConnectBlockVotes(txdb, pindex->GetBlockHash(), vFinalityVotes, pindex->nHeight))
             return error("ConnectBlock() : ConnectBlockVotes failed");
     }
     if (!fJustCheck && !vFinalityShares.empty())
     {
-        if (!g_finalityTracker.ConnectBlockTallyShares(txdb, pindex->GetBlockHash(), vFinalityShares))
+        if (!g_finalityTracker.ConnectBlockTallyShares(txdb, pindex->GetBlockHash(), vFinalityShares, pindex->nHeight))
             return error("ConnectBlock() : ConnectBlockTallyShares failed");
     }
     if (!fJustCheck && !vFinalityCerts.empty())
     {
-        if (!g_finalityTracker.ConnectBlockTallyCertificates(txdb, pindex->GetBlockHash(), vFinalityCerts))
+        if (!g_finalityTracker.ConnectBlockTallyCertificates(txdb, pindex->GetBlockHash(), vFinalityCerts, pindex->nHeight))
             return error("ConnectBlock() : ConnectBlockTallyCertificates failed");
+    }
+    if (!fJustCheck && !vCommitteeRotations.empty())
+    {
+        if (!g_finalityTracker.ConnectBlockCommitteeRotations(txdb, pindex->GetBlockHash(), vCommitteeRotations, pindex->nHeight))
+            return error("ConnectBlock() : ConnectBlockCommitteeRotations failed");
     }
 
     // innova: collect valid name tx
@@ -5177,6 +5464,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         for (CTransaction& tx : vtx)
         {
             uint256 hashTx = tx.GetHash();
+            if (setDAGSkippedTxs.count(hashTx))
+                continue;
         // inputs
         if(!tx.IsCoinBase())
         {
@@ -5238,7 +5527,11 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
     // Watch for transactions paying to me
     for (CTransaction& tx : vtx)
+    {
+        if (setDAGSkippedTxs.count(tx.GetHash()))
+            continue;
         SyncWithWallets(tx, this, true);
+    }
 
     // update the UI about the new block
     uiInterface.NotifyRanksUpdated();
@@ -5365,7 +5658,7 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
     }
 
     // IDAG: Clean up DAG data for disconnected blocks
-    // Phase 1: Batch all LevelDB erasures atomically
+    // Batch all LevelDB erasures atomically
     {
         CTxDB txdbDAGClean;
         txdbDAGClean.TxnBegin();
@@ -5377,7 +5670,7 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
         }
         txdbDAGClean.TxnCommit();
     }
-    // Phase 2: Memory cleanup after LevelDB commit (reverse order: children first)
+    // Memory cleanup after LevelDB commit (reverse order: children first)
     bool fDAGReorg = false;
     for (auto rit = vDisconnect.rbegin(); rit != vDisconnect.rend(); ++rit)
     {
@@ -5461,7 +5754,7 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew)
     for (CTransaction& tx : vtx)
         mempool.remove(tx);
 
-    // IDAG Phase 3: Remove txs from DAG sibling blocks
+    // Remove txs from DAG sibling blocks
     if (pindexNew->nHeight >= FORK_HEIGHT_DAG)
     {
         std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(hash);
@@ -5760,7 +6053,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
     bool fDAGDataInitialized = false;
     std::vector<uint256> vDAGParents;
 
-    // IDAG Phase 2: Initialize DAG data for post-fork blocks
+    // Initialize DAG data for post-fork blocks
     if (pindexNew->nHeight >= FORK_HEIGHT_DAG && pindexNew->IsProofOfWork())
     {
         // Extract DAG parents from coinbase OP_RETURN
@@ -5778,7 +6071,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
             fDAGDataInitialized = true;
             nDAGInitMs = GetTimeMillis() - nDAGTimer;
 
-            // IDAG Phase 4: Fork-gate between GHOSTDAG and DAGKNIGHT coloring
+            // Fork-gate between GHOSTDAG and DAGKNIGHT coloring
             nDAGTimer = GetTimeMillis();
             if (pindexNew->nHeight >= FORK_HEIGHT_DAGKNIGHT)
                 g_dagManager.ColorBlockDAGKnight(pindexNew);
@@ -5802,12 +6095,12 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
             uint256 nDAGScore = g_dagManager.ComputeDAGScore(pindexNew);
             pindexNew->nChainTrust = nDAGScore;
 
-            // IDAG Phase 3: Remove DAG sibling txs from mempool
+            // Remove DAG sibling txs from mempool
             std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(hash);
             for (const uint256& hashSibling : siblings)
                 mempool.RemoveDAGConflicts(hashSibling);
 
-            // IDAG Phase 3: Epoch state computation + pruning at epoch boundaries
+            // Epoch state computation and pruning at epoch boundaries
             if (pindexNew->nHeight > 0)
             {
                 int nCurrentEpoch = GetEpochForHeight(pindexNew->nHeight);
@@ -5832,6 +6125,13 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                     CTxDB txdbPrune;
                     g_dagManager.PruneDAGData(txdbPrune, pindexNew->nHeight);
                 }
+
+                // Cache the deterministic finalized height as of this block. The
+                // consensus source for anchoring is GetDeterministicFinalizedHeight();
+                // this per-index value mirrors it for RPC/observability and reorg-safe
+                // pprev lookups.
+                pindexNew->nFinalizedHeight = g_dagManager.GetDeterministicFinalizedHeight(
+                    GetEpochForHeight(pindexNew->nHeight) - 1);
             }
         }
     }
@@ -5930,6 +6230,25 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
     if (GetBlockTime() > FutureDrift((int64_t)vtx[0].nTime))
         return DoS(50, error("CheckBlock() : coinbase timestamp is too early"));
 
+    // A coinstake may only ever appear as vtx[1] (which is what makes the block
+    // proof-of-stake). This scan must NOT be gated on IsProofOfStake(): a
+    // coinstake-shaped tx at index >= 2 of a proof-of-WORK block would otherwise
+    // skip every coinstake validation path while still claiming the coinstake
+    // exemptions in ConnectInputs (value conservation, shielded value balance,
+    // nullifier binding) — i.e. the supply could increase beyond the subsidy.
+    // NullStake-shaped coinstakes are rejected at any height (none exist in valid
+    // history outside vtx[1]); the classic shape is additionally height-gated in
+    // AcceptBlock/ConnectBlock.
+    for (unsigned int i = 2; i < vtx.size(); i++)
+    {
+        if (!vtx[i].IsCoinStake())
+            continue;
+        if (vtx[i].nVersion == SHIELDED_TX_VERSION_NULLSTAKE ||
+            vtx[i].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 ||
+            vtx[i].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+            return DoS(100, error("CheckBlock() : NullStake coinstake at tx index %u (only vtx[1] of a proof-of-stake block may be a coinstake)", i));
+    }
+
     if (IsProofOfStake())
     {
         // Coinbase output should be empty if proof-of-stake block
@@ -6027,6 +6346,16 @@ bool CBlock::AcceptBlock()
     if (nHeight >= FORK_HEIGHT_DAG && IsProofOfStake())
         return DoS(100, error("AcceptBlock() : proof-of-stake blocks are not allowed after DAG fork height %d", FORK_HEIGHT_DAG));
 
+    // No coinstake of ANY shape may appear outside vtx[1] of a proof-of-stake
+    // block (see CheckBlock; the classic shape needs the height gate because
+    // pre-v5 history was never validated under this rule).
+    if (nHeight >= FORK_HEIGHT_SHIELDED)
+    {
+        for (unsigned int i = 2; i < vtx.size(); i++)
+            if (vtx[i].IsCoinStake())
+                return DoS(100, error("AcceptBlock() : coinstake at tx index %u (only vtx[1] of a proof-of-stake block may be a coinstake)", i));
+    }
+
     // Block size enforcement (height-aware)
     {
         unsigned int nBlockBytes = ::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION);
@@ -6113,9 +6442,13 @@ bool CBlock::AcceptBlock()
     CScript expect = CScript() << nHeight;
     if (vtx[0].vin[0].scriptSig.size() < expect.size() ||
         !std::equal(expect.begin(), expect.end(), vtx[0].vin[0].scriptSig.begin()))
-        return DoS(100, error("AcceptBlock() : block height mismatch in coinbase"));
+        return DoS(100, error("AcceptBlock() : block height mismatch in coinbase (height=%d prev=%s expected=%s actual=%s)",
+                              nHeight,
+                              hashPrevBlock.ToString().substr(0, 20).c_str(),
+                              HexStr(expect).c_str(),
+                              HexStr(vtx[0].vin[0].scriptSig).c_str()));
 
-    // IDAG Phase 2: Validate DAG parent commitment in coinbase OP_RETURN
+    // Validate DAG parent commitment in coinbase OP_RETURN
     if (nHeight >= FORK_HEIGHT_DAG)
     {
         // Search coinbase outputs for DAG parent commitment
@@ -6204,8 +6537,17 @@ bool CBlock::AcceptBlock()
         for (CNode* pnode : vNodes)
         {
             int nPeerHeight = pnode->nBestKnownHeight >= 0 ? pnode->nBestKnownHeight : pnode->nChainHeight;
-            if (nBestHeight > (nPeerHeight != -1 ? nPeerHeight - 2000 : nBlockEstimate))
-                pnode->PushInventory(CInv(MSG_BLOCK, hash));
+            if (nBestHeight <= (nPeerHeight != -1 ? nPeerHeight - 2000 : nBlockEstimate))
+                continue;
+
+            CBlock header;
+            header.nVersion = nVersion;
+            header.hashPrevBlock = hashPrevBlock;
+            header.hashMerkleRoot = hashMerkleRoot;
+            header.nTime = nTime;
+            header.nBits = nBits;
+            header.nNonce = nNonce;
+            PushBlockAnnouncement(pnode, header, false);
         }
     }
 
@@ -6274,7 +6616,7 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
         if (pindexPrev && pindexPrev->nHeight + 1 >= FORK_HEIGHT_DAG)
         {
             if (pfrom)
-                pfrom->Misbehaving(100);
+                pfrom->Misbehaving(100, "proof-of-stake block after DAG fork");
             return error("ProcessBlock() : proof-of-stake block after DAG fork");
         }
     }
@@ -6302,7 +6644,7 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
         if (bnNewBlock > bnRequired)
         {
             if (pfrom)
-                pfrom->Misbehaving(100);
+                pfrom->Misbehaving(100, "block has too little work/stake");
             return error("ProcessBlock() : block with too little %s", pblock->IsProofOfStake()? "proof-of-stake" : "proof-of-work");
         }
     }
@@ -6334,7 +6676,7 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
 
     }
 
-    // IDAG Phase 2: hold blocks whose primary parent is known but whose DAG
+    // Hold blocks whose primary parent is known but whose DAG
     // merge parents are still in flight. Without this, live DAG sync can
     // incorrectly DoS-score peers for ordinary out-of-order delivery.
     if (pindexBest && pindexBest->nHeight + 1 >= FORK_HEIGHT_DAG && mapBlockIndex.count(pblock->hashPrevBlock))
@@ -6358,7 +6700,7 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
 
                     if (IsInitialBlockDownload())
                         return error("ProcessBlock() : peer %d exceeded DAG orphan limit (IBD, no penalty)", pfrom->GetId());
-                    pfrom->Misbehaving(1);
+                    pfrom->Misbehaving(1, "DAG orphan limit exceeded");
                     return error("ProcessBlock() : peer %d exceeded DAG orphan limit", pfrom->GetId());
                 }
             }
@@ -6406,7 +6748,7 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
                 if (IsInitialBlockDownload()) {
                     return error("ProcessBlock() : peer %d exceeded orphan limit (IBD, no penalty)", pfrom->GetId());
                 }
-                pfrom->Misbehaving(1);
+                pfrom->Misbehaving(1, "orphan block limit exceeded");
                 return error("ProcessBlock() : peer %d exceeded orphan limit", pfrom->GetId());
             }
         }
@@ -7029,58 +7371,70 @@ bool LoadExternalBlockFile(FILE* fileIn)
     int64_t nStart = GetTimeMillis();
 
     int nLoaded = 0;
+    int nFailed = 0;
     {
         LOCK(cs_main);
-        try {
-            CAutoFile blkdat(fileIn, SER_DISK, CLIENT_VERSION);
-            unsigned int nPos = 0;
-            while (nPos != (unsigned int)-1 && blkdat.good() && !fRequestShutdown)
-            {
-                unsigned char pchData[65536];
-                do {
-                    fseek(blkdat, nPos, SEEK_SET);
-                    int nRead = fread(pchData, 1, sizeof(pchData), blkdat);
-                    if (nRead <= 8)
+        CAutoFile blkdat(fileIn, SER_DISK, CLIENT_VERSION);
+        unsigned int nPos = 0;
+        while (nPos != (unsigned int)-1 && blkdat.good() && !fRequestShutdown)
+        {
+            unsigned char pchData[65536];
+            do {
+                fseek(blkdat, nPos, SEEK_SET);
+                int nRead = fread(pchData, 1, sizeof(pchData), blkdat);
+                if (nRead <= 8)
+                {
+                    nPos = (unsigned int)-1;
+                    break;
+                }
+                void* nFind = memchr(pchData, pchMessageStart[0], nRead+1-sizeof(pchMessageStart));
+                if (nFind)
+                {
+                    if (memcmp(nFind, pchMessageStart, sizeof(pchMessageStart))==0)
                     {
-                        nPos = (unsigned int)-1;
+                        nPos += ((unsigned char*)nFind - pchData) + sizeof(pchMessageStart);
                         break;
                     }
-                    void* nFind = memchr(pchData, pchMessageStart[0], nRead+1-sizeof(pchMessageStart));
-                    if (nFind)
-                    {
-                        if (memcmp(nFind, pchMessageStart, sizeof(pchMessageStart))==0)
-                        {
-                            nPos += ((unsigned char*)nFind - pchData) + sizeof(pchMessageStart);
-                            break;
-                        }
-                        nPos += ((unsigned char*)nFind - pchData) + 1;
-                    }
-                    else
-                        nPos += sizeof(pchData) - sizeof(pchMessageStart) + 1;
-                } while(!fRequestShutdown);
-                if (nPos == (unsigned int)-1)
-                    break;
-                fseek(blkdat, nPos, SEEK_SET);
-                unsigned int nSize;
-                blkdat >> nSize;
-                if (nSize > 0 && nSize <= MAX_BLOCK_SIZE)
-                {
-                    CBlock block;
-                    blkdat >> block;
-                    if (ProcessBlock(NULL,&block))
-                    {
-                        nLoaded++;
-                        nPos += 4 + nSize;
-                    }
+                    nPos += ((unsigned char*)nFind - pchData) + 1;
                 }
+                else
+                    nPos += sizeof(pchData) - sizeof(pchMessageStart) + 1;
+            } while(!fRequestShutdown);
+            if (nPos == (unsigned int)-1)
+                break;
+            // Process each frame inside its own try, and ALWAYS advance nPos past a
+            // rejected/corrupt frame, so one bad frame can neither abort the rest of
+            // the file nor make the scanner re-walk block content as if it were magic.
+            try {
+                fseek(blkdat, nPos, SEEK_SET);
+                unsigned int nSize = 0;
+                blkdat >> nSize;
+                if (nSize == 0 || nSize > ADAPTIVE_BLOCK_CEILING)
+                {
+                    nPos += 4;          // bogus size: skip the field and resync on the next magic
+                    nFailed++;
+                    continue;
+                }
+                CBlock block;
+                blkdat >> block;
+                nPos += 4 + nSize;      // advance regardless of accept/reject
+                if (ProcessBlock(NULL, &block))
+                    nLoaded++;
+                else
+                    nFailed++;
             }
-        }
-        catch (std::exception &e) {
-            printf("%s() : Deserialize or I/O error caught during load: %s\n",
-                   __PRETTY_FUNCTION__, e.what());
+            catch (std::exception &e) {
+                printf("%s() : frame near pos %u skipped: %s\n", __PRETTY_FUNCTION__, nPos, e.what());
+                nPos += 4;              // resync past the bad frame
+                nFailed++;
+            }
+            if (((nLoaded + nFailed) % 10000) == 0 && (nLoaded + nFailed) > 0)
+                printf("LoadExternalBlockFile: %d loaded, %d failed (%" PRId64"ms)\n",
+                       nLoaded, nFailed, GetTimeMillis() - nStart);
         }
     }
-    printf("Loaded %i blocks from external file in %" PRId64"ms\n", nLoaded, GetTimeMillis() - nStart);
+    printf("Loaded %i blocks (%i failed) from external file in %" PRId64"ms\n",
+           nLoaded, nFailed, GetTimeMillis() - nStart);
     return nLoaded > 0;
 }
 
@@ -7188,6 +7542,15 @@ void static ProcessGetData(CNode* pfrom)
 
     LOCK(cs_main);
 
+    int nBlockBatchLimit = 1;
+    if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_DAG)
+        nBlockBatchLimit = GetArg("-getdatablockbatch", 16);
+    if (nBlockBatchLimit < 1)
+        nBlockBatchLimit = 1;
+    if (nBlockBatchLimit > 128)
+        nBlockBatchLimit = 128;
+    int nBlocksServed = 0;
+
     while (it != pfrom->vRecvGetData.end()) {
         // Don't bother if send buffer is too full to respond anyway
         if (pfrom->nSendSize >= SendBufferSize())
@@ -7262,14 +7625,22 @@ void static ProcessGetData(CNode* pfrom)
             {
                 // Send stream from relay memory
                 bool pushed = false;
-                /*{
+                if (inv.type == MSG_TX && (fDebugNet || GetBoolArg("-debugtxrelay", false)))
+                    printf("TXRELAY getdata tx=%s peer=%s\n",
+                           inv.hash.ToString().substr(0,10).c_str(),
+                           pfrom->addr.ToString().c_str());
+                {
                     LOCK(cs_mapRelay);
                     map<CInv, CDataStream>::iterator mi = mapRelay.find(inv);
                     if (mi != mapRelay.end()) {
                         pfrom->PushMessage(inv.GetCommand(), (*mi).second);
                         pushed = true;
+                        if (inv.type == MSG_TX && (fDebugNet || GetBoolArg("-debugtxrelay", false)))
+                            printf("TXRELAY serve-relay tx=%s peer=%s\n",
+                                   inv.hash.ToString().substr(0,10).c_str(),
+                                   pfrom->addr.ToString().c_str());
                     }
-                }*/
+                }
                 if (!pushed && inv.type == MSG_TX) {
                     if(mapCollateralNBroadcastTxes.count(inv.hash)){
                         CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
@@ -7290,6 +7661,10 @@ void static ProcessGetData(CNode* pfrom)
                             ss << tx;
                             pfrom->PushMessage("tx", ss);
                             pushed = true;
+                            if (fDebugNet || GetBoolArg("-debugtxrelay", false))
+                                printf("TXRELAY serve-mempool tx=%s peer=%s\n",
+                                       inv.hash.ToString().substr(0,10).c_str(),
+                                       pfrom->addr.ToString().c_str());
                         }
                     }
                 }
@@ -7314,14 +7689,22 @@ void static ProcessGetData(CNode* pfrom)
                 }
                 if (!pushed) {
                     vNotFound.push_back(inv);
+                    if (inv.type == MSG_TX && (fDebugNet || GetBoolArg("-debugtxrelay", false)))
+                        printf("TXRELAY notfound tx=%s peer=%s\n",
+                               inv.hash.ToString().substr(0,10).c_str(),
+                               pfrom->addr.ToString().c_str());
                 }
             }
 
             // Track requests for our stuff.
             g_signals.Inventory(inv.hash);
 
-            if (inv.type == MSG_BLOCK /* || inv.type == MSG_FILTERED_BLOCK */)
-                break;
+            if (inv.type == MSG_BLOCK || inv.type == MSG_FILTERED_BLOCK)
+            {
+                nBlocksServed++;
+                if (nBlocksServed >= nBlockBatchLimit)
+                    break;
+            }
         }
     }
 
@@ -7361,7 +7744,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         // Each connection can only send one version message
         if (pfrom->nVersion != 0)
         {
-            pfrom->Misbehaving(1);
+            pfrom->Misbehaving(1, "duplicate version message");
             return false;
         }
 
@@ -7524,7 +7907,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
     else if (pfrom->nVersion == 0)
     {
         // Must have a version message before anything else, as it is sent as soon as the socket opens
-        pfrom->Misbehaving(1);
+        pfrom->Misbehaving(1, "message before version");
         if (fDebug) printf("net: received an out-of-sequence %s from peer at %s\n", strCommand.c_str(), pfrom->addr.ToString().c_str());
         if (pfrom->nMisbehavior > 10 || pfrom->nTimeConnected < GetTime() - 10)
             pfrom->fDisconnect = true; // Disconnect them so we can reconnect and try for another version message
@@ -7566,7 +7949,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             return true;
         if (vAddr.size() > 1000)
         {
-            pfrom->Misbehaving(20);
+            pfrom->Misbehaving(20, "addr message too large");
             return error("message addr size() = %" PRIszu"", vAddr.size());
         }
 
@@ -7630,7 +8013,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         vRecv >> vInv;
         if (vInv.size() > MAX_INV_SZ)
         {
-            pfrom->Misbehaving(20);
+            pfrom->Misbehaving(20, "inv message too large");
             return error("message inv size() = %" PRIszu"", vInv.size());
         }
 
@@ -7648,7 +8031,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                             (pindexBest != NULL && pindexBest->GetBlockTime() < GetTime() - 300);
             if (pfrom->nInvCount > INV_RATE_LIMIT_ITEMS && !fSyncing)
             {
-                pfrom->Misbehaving(25);
+                pfrom->Misbehaving(25, "inv rate limit exceeded");
                 if (fDebug)
                     printf("inv rate limit exceeded: peer=%s count=%" PRIu64" in %" PRId64"s\n",
                            pfrom->addr.ToString().c_str(), pfrom->nInvCount,
@@ -7700,6 +8083,11 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             }
             if (fDebugNet)
                 printf("  got inventory: %s  %s\n", inv.ToString().c_str(), fAlreadyHave ? "have" : "new");
+            if (inv.type == MSG_TX && (fDebugNet || GetBoolArg("-debugtxrelay", false)))
+                printf("TXRELAY inv tx=%s peer=%s have=%d\n",
+                       inv.hash.ToString().substr(0,10).c_str(),
+                       pfrom->addr.ToString().c_str(),
+                       fAlreadyHave);
             if (inv.type == MSG_BLOCK && pindexBest != NULL && pindexBest->GetBlockTime() < GetTime() - 300 && fDebug)
                 printf("sync inv: %s %s from %s\n", inv.ToString().c_str(), fAlreadyHave ? "HAVE" : "NEW", pfrom->addrName.c_str());
 
@@ -7718,10 +8106,12 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                     printf("force request: %s\n", inv.ToString().c_str());
             }
 
-            // Don't bother if send buffer is too full to respond anyway
+            // Queue pressure is local backpressure, not peer misbehavior.
             if (pfrom->nSendSize >= SendBufferSize()) {
-                pfrom->Misbehaving(50);
-                return error("send buffer size() = %" PRIszu"", pfrom->nSendSize);
+                if (fDebugNet)
+                    printf("inv processing paused: send buffer size() = %" PRIszu" peer=%s\n",
+                           pfrom->nSendSize, pfrom->addrName.c_str());
+                break;
             }
 
             // Track requests for our stuff
@@ -7737,7 +8127,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         printf("received getdata (%" PRIszu" invsz)\n", vInv.size());
         if (vInv.size() > MAX_INV_SZ)
         {
-            pfrom->Misbehaving(20);
+            pfrom->Misbehaving(20, "getdata message too large");
             return error("message getdata size() = %" PRIszu"", vInv.size());
         }
 
@@ -7855,7 +8245,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
         if (vHeaders.size() > 2000)
         {
-            pfrom->Misbehaving(20);
+            pfrom->Misbehaving(20, "headers message too large");
             return error("headers message size > 2000");
         }
 
@@ -7865,6 +8255,9 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             printf("Received %u headers from peer %s\n", (unsigned int)vHeaders.size(), pfrom->addr.ToString().c_str());
 
         CBlockIndex* pindexLast = NULL;
+        uint256 hashPrevHeader;
+        int nPrevHeaderHeight = -1;
+        bool fHavePrevHeader = false;
         std::vector<CInv> vGetData;
         for (const CBlock& header : vHeaders)
         {
@@ -7874,10 +8267,24 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             {
                 pindexLast = mapBlockIndex[hash];
                 pfrom->UpdateBestKnownBlock(pindexLast->nHeight, hash);
+                hashPrevHeader = hash;
+                nPrevHeaderHeight = pindexLast->nHeight;
+                fHavePrevHeader = true;
                 continue;
             }
 
-            if (mapBlockIndex.count(header.hashPrevBlock) == 0)
+            CBlockIndex* pindexPrev = NULL;
+            int nParentHeight = -1;
+            if (mapBlockIndex.count(header.hashPrevBlock))
+            {
+                pindexPrev = mapBlockIndex[header.hashPrevBlock];
+                nParentHeight = pindexPrev->nHeight;
+            }
+            else if (fHavePrevHeader && header.hashPrevBlock == hashPrevHeader)
+            {
+                nParentHeight = nPrevHeaderHeight;
+            }
+            else
             {
                 if (fDebug) printf("Header %s has unknown parent %s, waiting for in-flight blocks\n",
                        hash.ToString().substr(0,20).c_str(),
@@ -7886,32 +8293,37 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                 break;
             }
 
-            CBlockIndex* pindexPrev = mapBlockIndex[header.hashPrevBlock];
-            pfrom->UpdateBestKnownBlock(pindexPrev->nHeight + 1, hash);
+            int nHeaderHeight = nParentHeight + 1;
+            pfrom->UpdateBestKnownBlock(nHeaderHeight, hash);
 
             // PoS blocks have nNonce==0 in legacy headers, but post-DAG all
             // headers must be valid PoW headers.
-            if (pindexPrev->nHeight + 1 >= FORK_HEIGHT_DAG || header.nNonce != 0)
+            if (nHeaderHeight >= FORK_HEIGHT_DAG || header.nNonce != 0)
             {
                 if (!CheckProofOfWork(hash, header.nBits))
                 {
-                    pfrom->Misbehaving(100);
+                    pfrom->Misbehaving(100, "header invalid proof of work");
                     return error("header %s has invalid proof of work", hash.ToString().c_str());
                 }
             }
 
             if (header.GetBlockTime() > FutureDrift(GetAdjustedTime()))
             {
-                pfrom->Misbehaving(10);
+                pfrom->Misbehaving(10, "header timestamp too far in future");
                 return error("header %s timestamp too far in future", hash.ToString().c_str());
             }
 
             if (fSPVMode)
             {
+                if (!pindexPrev)
+                {
+                    pfrom->PushGetBlocks(pindexBest, uint256(0));
+                    break;
+                }
                 CBlockIndex* pindexNew = new CBlockIndex();
                 pindexNew->phashBlock = &(mapBlockIndex.insert(make_pair(hash, pindexNew)).first->first);
                 pindexNew->pprev = pindexPrev;
-                pindexNew->nHeight = pindexPrev->nHeight + 1;
+                pindexNew->nHeight = nHeaderHeight;
                 pindexNew->nVersion = header.nVersion;
                 pindexNew->hashMerkleRoot = header.hashMerkleRoot;
                 pindexNew->nTime = header.nTime;
@@ -7945,15 +8357,21 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                     if (fDebug)
                         printf("Header block %s already in-flight, skipping\n",
                                hash.ToString().substr(0,20).c_str());
-                    pindexLast = pindexPrev;
-                    continue;
                 }
-                if (fDebug)
-                    printf("Header announced block %s (parent height %d), requesting full block\n",
-                           hash.ToString().substr(0,20).c_str(), pindexPrev->nHeight);
-                vGetData.push_back(CInv(MSG_BLOCK, hash));
-                pindexLast = pindexPrev;
+                else
+                {
+                    if (fDebug)
+                        printf("Header announced block %s (parent height %d), requesting full block\n",
+                               hash.ToString().substr(0,20).c_str(), nParentHeight);
+                    vGetData.push_back(CInv(MSG_BLOCK, hash));
+                }
+                if (pindexPrev)
+                    pindexLast = pindexPrev;
             }
+
+            hashPrevHeader = hash;
+            nPrevHeaderHeight = nHeaderHeight;
+            fHavePrevHeader = true;
         }
 
         // In full node mode, request full blocks for announced headers
@@ -7990,10 +8408,21 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
         CInv inv(MSG_TX, tx.GetHash());
         pfrom->AddInventoryKnown(inv);
+        bool fTxRelayDebug = fDebugNet || GetBoolArg("-debugtxrelay", false);
+        if (fTxRelayDebug)
+            printf("TXRELAY recv tx=%s peer=%s vin=%u vout=%u\n",
+                   inv.hash.ToString().substr(0,10).c_str(),
+                   pfrom->addr.ToString().c_str(),
+                   (unsigned)tx.vin.size(),
+                   (unsigned)tx.vout.size());
 
         bool fMissingInputs = false;
         if (tx.AcceptToMemoryPool(txdb, &fMissingInputs))
         {
+            if (fTxRelayDebug)
+                printf("TXRELAY accept tx=%s peer=%s\n",
+                       inv.hash.ToString().substr(0,10).c_str(),
+                       pfrom->addr.ToString().c_str());
             SyncWithWallets(tx, NULL, true);
             RelayTransaction(tx, inv.hash);
             {
@@ -8041,6 +8470,10 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         }
         else if (fMissingInputs)
         {
+            if (fTxRelayDebug)
+                printf("TXRELAY orphan tx=%s peer=%s\n",
+                       inv.hash.ToString().substr(0,10).c_str(),
+                       pfrom->addr.ToString().c_str());
             AddOrphanTx(tx);
 
             // DoS prevention: do not allow mapOrphanTransactions to grow unbounded
@@ -8051,7 +8484,14 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             if (nEvicted > 0)
                 printf("mapOrphan overflow, removed %u tx\n", nEvicted);
         }
-        if (tx.nDoS) pfrom->Misbehaving(tx.nDoS);
+        else if (fTxRelayDebug)
+        {
+            printf("TXRELAY reject tx=%s peer=%s dos=%d\n",
+                   inv.hash.ToString().substr(0,10).c_str(),
+                   pfrom->addr.ToString().c_str(),
+                   tx.nDoS);
+        }
+        if (tx.nDoS) pfrom->Misbehaving(tx.nDoS, "transaction validation DoS score");
     }
 
 
@@ -8084,15 +8524,16 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         }
 
         if (block.nDoS)
-            pfrom->Misbehaving(block.nDoS);
+            pfrom->Misbehaving(block.nDoS, "block validation DoS score");
 
-        // Chain sync forward after accepting a new block.
-        if (fAccepted)
+        // Chain sync forward after accepting a new block, bounded so duplicate
+        // orphan/header churn cannot amplify getblocks/getheaders loops.
+        if (fAccepted && pfrom->ShouldRequestBlockCatchup())
         {
             pfrom->PushGetBlocks(pindexBest, uint256(0));
+            if (pfrom->fPreferHeaders)
+                pfrom->PushMessage("getheaders", CBlockLocator(pindexBest), uint256(0));
         }
-        if (fAccepted && pfrom->fPreferHeaders)
-            pfrom->PushMessage("getheaders", CBlockLocator(pindexBest), uint256(0));
 
         if (fSecMsgEnabled)
             SecureMsgScanBlock(block);
@@ -8307,7 +8748,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                 // This isn't a Misbehaving(100) (immediate ban) because the
                 // peer might be an older or different implementation with
                 // a different signature key, etc.
-                pfrom->Misbehaving(10);
+                pfrom->Misbehaving(10, "invalid alert");
             }
         }
     }
@@ -8317,7 +8758,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
     {
         if (vRecv.size() > MAX_BLOOM_FILTER_SIZE + 100)  // +100 for serialization overhead
         {
-            pfrom->Misbehaving(100);
+            pfrom->Misbehaving(100, "filterload message too large");
             return false;
         }
         CBloomFilter filter;
@@ -8325,7 +8766,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
         if (!filter.IsWithinSizeConstraints())
         {
-            pfrom->Misbehaving(100);
+            pfrom->Misbehaving(100, "bloom filter outside size constraints");
         }
         else
         {
@@ -8345,7 +8786,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
         if (vData.size() > MAX_SCRIPT_ELEMENT_SIZE)
         {
-            pfrom->Misbehaving(100);
+            pfrom->Misbehaving(100, "filteradd element too large");
         }
         else
         {
@@ -8356,7 +8797,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
             }
             else
             {
-                pfrom->Misbehaving(100);
+                pfrom->Misbehaving(100, "filteradd without loaded filter");
             }
         }
     }
@@ -8378,7 +8819,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         std::vector<uint256> vMatch;
         if (merkleBlock.txn.ExtractMatches(vMatch) != merkleBlock.header.hashMerkleRoot)
         {
-            pfrom->Misbehaving(100);
+            pfrom->Misbehaving(100, "merkleblock invalid merkle root");
             return error("merkleblock: Invalid merkle root");
         }
 
@@ -8468,7 +8909,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
         ProcessMessageFinality(pfrom, strCommand, vRecv);
         //ProcessSpork(pfrom, strCommand, vRecv);
 
-        // IDAG Phase 2: DAG tips exchange
+        // DAG tips exchange
         if (strCommand == "getdagtips")
         {
             LOCK(cs_main);
@@ -8485,7 +8926,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
 
             if (vTips.size() > (unsigned int)(MAX_DAG_PARENTS * 3))
             {
-                pfrom->Misbehaving(20);
+                pfrom->Misbehaving(20, "dagtips message too large");
             }
             else
             {
@@ -8527,18 +8968,16 @@ bool ProcessMessages(CNode* pfrom)
     //
     bool fOk = true;
 
-    if (!pfrom->vRecvGetData.empty())
+    if (!pfrom->vRecvGetData.empty() && pfrom->nSendSize < SendBufferSize())
         ProcessGetData(pfrom);
 
-    // this maintains the order of responses
-    if (!pfrom->vRecvGetData.empty()) return fOk;
+    // Preserve response ordering while getdata can make progress. If the send
+    // queue is full, continue processing inbound messages so backpressure does
+    // not deadlock block/header relay behind pending getdata.
+    if (!pfrom->vRecvGetData.empty() && pfrom->nSendSize < SendBufferSize()) return fOk;
 
     std::deque<CNetMessage>::iterator it = pfrom->vRecvMsg.begin();
     while (!pfrom->fDisconnect && it != pfrom->vRecvMsg.end()) {
-        // Don't bother if send buffer is too full to respond anyway
-        if (pfrom->nSendSize >= SendBufferSize())
-            break;
-
         // get next message
         CNetMessage& msg = *it;
 
@@ -8604,13 +9043,13 @@ bool ProcessMessages(CNode* pfrom)
             {
                 printf("ProcessMessages(%s, %u bytes) : Oversized data from peer=%s - '%s'\n",
                        strCommand.c_str(), nMessageSize, pfrom->addr.ToString().c_str(), e.what());
-                Misbehaving(pfrom->GetId(), 50);  // Severe penalty for oversized messages
+                Misbehaving(pfrom->GetId(), 50, "oversized message deserialization");  // Severe penalty for oversized messages
             }
             else if (strstr(e.what(), "non-canonical"))
             {
                 printf("ProcessMessages(%s, %u bytes) : Non-canonical encoding from peer=%s - '%s'\n",
                        strCommand.c_str(), nMessageSize, pfrom->addr.ToString().c_str(), e.what());
-                Misbehaving(pfrom->GetId(), 20);  // Penalty for non-canonical encoding
+                Misbehaving(pfrom->GetId(), 20, "non-canonical message encoding");  // Penalty for non-canonical encoding
             }
             else
             {
@@ -8674,14 +9113,41 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
         CBlockIndex* pBest = pindexBest;
         int nHeight = nBestHeight;
         int nPeerHeight = pto->nBestKnownHeight >= 0 ? pto->nBestKnownHeight : pto->nChainHeight;
-        bool fBehind = (pBest != NULL && pBest->GetBlockTime() < nNow - 300) ||
-                       (nPeerHeight > nHeight + 1);
+        bool fPeerAhead = (nPeerHeight > nHeight);
+        bool fWeAhead = (nPeerHeight >= 0 && nHeight > nPeerHeight);
+        bool fStaleBlockInFlight = false;
+        int64_t nOldestBlockInFlight = 0;
+        pto->ExpireBlockInFlight(nNow);
+        {
+            TRY_LOCK(cs_main, lockMain);
+            if (lockMain)
+            {
+                for (std::map<uint256, int64_t>::iterator it = pto->mapBlockInFlightSince.begin();
+                     it != pto->mapBlockInFlightSince.end(); )
+                {
+                    if (mapBlockIndex.count(it->first))
+                    {
+                        pto->setBlocksInFlight.erase(it->first);
+                        it = pto->mapBlockInFlightSince.erase(it);
+                        continue;
+                    }
+                    if (nOldestBlockInFlight == 0 || it->second < nOldestBlockInFlight)
+                        nOldestBlockInFlight = it->second;
+                    ++it;
+                }
+            }
+        }
+        if (nOldestBlockInFlight > 0 && nNow - nOldestBlockInFlight > 15)
+        {
+            fStaleBlockInFlight = true;
+        }
 
         static std::map<std::string, int64_t> mapLastStallRecovery;
         bool fThrottle = (mapLastStallRecovery.count(pto->addrName) &&
                           nNow - mapLastStallRecovery[pto->addrName] < 15);
 
-        if (!fImporting && !fReindex && fBehind && nTimeSinceBlock > 15 && !fThrottle)
+        if (!fImporting && !fReindex && (fPeerAhead || fWeAhead || fStaleBlockInFlight) &&
+            nTimeSinceBlock > 15 && !fThrottle)
         {
             mapLastStallRecovery[pto->addrName] = nNow;
             pto->nLastBlockRecv = nNow;
@@ -8696,10 +9162,17 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
                 }
             }
             if (pBest != NULL)
-                pto->PushMessage("getblocks", CBlockLocator(pBest), uint256(0));
+            {
+                if (fWeAhead)
+                    PushBlockAnnouncement(pto, pBest->GetBlockHeader(), true);
+                else
+                    pto->PushGetBlocks(pBest, uint256(0));
+            }
             if (fDebug)
-                printf("Sync stall recovery: peer=%s ch=%d our=%d stall=%ds\n",
-                       pto->addrName.c_str(), nPeerHeight, nHeight, (int)nTimeSinceBlock);
+                printf("Sync stall recovery: peer=%s ch=%d our=%d stall=%ds reason=%s in_flight=%u\n",
+                       pto->addrName.c_str(), nPeerHeight, nHeight, (int)nTimeSinceBlock,
+                       fPeerAhead ? "peer-ahead" : (fWeAhead ? "we-ahead" : "stale-block-in-flight"),
+                       (unsigned int)pto->setBlocksInFlight.size());
         }
     }
 
@@ -8746,10 +9219,16 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
             std::vector<uint256> vFluff = dandelionState.CheckStemTimeouts(GetTime());
             for (const uint256& txHash : vFluff)
             {
-                LOCK(cs_mapRelay);
                 CInv inv(MSG_TX, txHash);
-                if (mapRelay.count(inv))
-                    RelayInventory(inv);
+                bool fHaveRelay = false;
+                {
+                    LOCK(cs_mapRelay);
+                    std::map<CInv, CDataStream>::iterator mi = mapRelay.find(inv);
+                    if (mi != mapRelay.end())
+                        fHaveRelay = true;
+                }
+                if (fHaveRelay)
+                    RelayInventory(inv, true);
             }
         }
 
@@ -8826,11 +9305,12 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
             vInvWait.reserve(pto->vInventoryToSend.size());
             for (const CInv& inv : pto->vInventoryToSend)
             {
-                if (pto->setInventoryKnown.count(inv))
+                bool fForceInventory = pto->setInventoryForce.count(inv) != 0;
+                if (!fForceInventory && pto->setInventoryKnown.count(inv))
                     continue;
 
                 // trickle out tx inv to protect privacy
-                if (inv.type == MSG_TX && !fSendTrickle)
+                if (!fForceInventory && inv.type == MSG_TX && !fSendTrickle)
                 {
                     // 1/4 of tx invs blast to all immediately
                     static uint256 hashSalt;
@@ -8857,7 +9337,8 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
                 }
 
                 // returns true if wasn't already contained in the set
-                if (pto->setInventoryKnown.insert(inv).second)
+                bool fKnownInserted = pto->setInventoryKnown.insert(inv).second;
+                if (fForceInventory || fKnownInserted)
                 {
                     if (inv.type == MSG_BLOCK && pto->fPreferHeaders)
                     {
@@ -8878,6 +9359,8 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
                         vInv.clear();
                     }
                 }
+                if (fForceInventory)
+                    pto->setInventoryForce.erase(inv);
             }
             pto->vInventoryToSend = vInvWait;
         }

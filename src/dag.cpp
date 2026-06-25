@@ -230,19 +230,22 @@ CBlockIndex* CDAGManager::SelectBestDAGTip() const
         if (pindex->nHeight >= FORK_HEIGHT_DAG && pindex->IsProofOfStake())
             continue;
 
-        if (pindexBest)
+        bool fBetter = false;
+        if (!pBest)
+            fBetter = true;
+        else if (it->second.nDAGScore > nBestScore)
+            fBetter = true;
+        else if (it->second.nDAGScore == nBestScore)
         {
-            if (pindex->nHeight > pindexBest->nHeight)
-                continue;
-            const CBlockIndex* pWalk = pindexBest;
-            while (pWalk && pWalk->nHeight > pindex->nHeight)
-                pWalk = pWalk->pprev;
-            if (pWalk != pindex)
-                continue;
+            if (pindex->nChainTrust != pBest->nChainTrust)
+                fBetter = pindex->nChainTrust > pBest->nChainTrust;
+            else if (pindex->nHeight != pBest->nHeight)
+                fBetter = pindex->nHeight > pBest->nHeight;
+            else
+                fBetter = hashTip < pBest->GetBlockHash();
         }
 
-        if (it->second.nDAGScore > nBestScore ||
-            (it->second.nDAGScore == nBestScore && (!pBest || hashTip < pBest->GetBlockHash())))
+        if (fBetter)
         {
             nBestScore = it->second.nDAGScore;
             pBest = pindex;
@@ -250,7 +253,13 @@ CBlockIndex* CDAGManager::SelectBestDAGTip() const
     }
 
     if (!pBest && pindexBest)
+    {
         pBest = pindexBest;
+        while (pBest && pBest->nHeight >= FORK_HEIGHT_DAG && pBest->IsProofOfStake())
+            pBest = pBest->pprev;
+        if (!pBest)
+            pBest = pindexBest;
+    }
 
     return pBest;
 }
@@ -966,7 +975,7 @@ void CDAGManager::RebuildDAGOrder()
         std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(pair.second);
         if (mi != mapBlockIndex.end())
         {
-            // Phase 4: Fork-gate between GHOSTDAG and DAGKNIGHT coloring
+            // Fork-gate between GHOSTDAG and DAGKNIGHT coloring
             if (mi->second->nHeight >= FORK_HEIGHT_DAGKNIGHT)
                 ColorBlockDAGKnight(mi->second);
             else
@@ -1018,7 +1027,7 @@ void CDAGManager::RebuildDAGOrderIncremental(int nCleanHeight)
         std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(pair.second);
         if (mi != mapBlockIndex.end())
         {
-            // Phase 4: Fork-gate between GHOSTDAG and DAGKNIGHT coloring
+            // Fork-gate between GHOSTDAG and DAGKNIGHT coloring
             if (mi->second->nHeight >= FORK_HEIGHT_DAGKNIGHT)
                 ColorBlockDAGKnight(mi->second);
             else
@@ -1076,7 +1085,7 @@ bool CDAGManager::PruneDAGData(CTxDB& txdb, int nHeight)
     if (vToErase.empty())
         return true;
 
-    // Phase 1: Write erasures + prune height to LevelDB atomically
+    // Write erasures and prune height to LevelDB atomically
     if (!txdb.TxnBegin())
         return false;
 
@@ -1089,7 +1098,7 @@ bool CDAGManager::PruneDAGData(CTxDB& txdb, int nHeight)
     if (!txdb.TxnCommit())
         return false;
 
-    // Phase 2: Erase from memory only after LevelDB commit succeeds
+    // Erase from memory only after LevelDB commit succeeds
     for (const uint256& hash : vToErase)
     {
         auto dit = mapDAGData.find(hash);
@@ -1265,6 +1274,11 @@ bool CDAGManager::ComputeEpochState(int nEpoch, int nEpochInterval)
     bool fHaveBestCert = false;
     bool fInsertEpochOutputs = fHavePriorEpochSnapshot || state.nHeightEnd >= FORK_HEIGHT_EPOCH_ROOT_FCMP;
 
+    // Per-epoch finality vote-set accumulator: the votes embedded in this epoch's
+    // own blocks (vote.nEpoch == nEpoch), deduped + sorted by nullifier (std::map
+    // gives canonical order) so CheckTallyCertificate can reproduce the digest.
+    std::map<uint256, uint256> mapEpochVoteLeaves;   // nullifier -> vote.hashBlock
+
     for (const uint256& hashBlock : state.vBlockHashes)
     {
         std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashBlock);
@@ -1274,8 +1288,10 @@ bool CDAGManager::ComputeEpochState(int nEpoch, int nEpochInterval)
         CBlock block;
         if (!block.ReadFromDisk(mi->second))
             continue;
+        std::set<uint256> setDAGSkippedTxs = GetDAGSkippedTxsForBlock(block, mi->second);
+        CBlock activeBlock = GetDAGActiveBlock(block, setDAGSkippedTxs);
 
-        for (const CTransaction& tx : block.vtx)
+        for (const CTransaction& tx : activeBlock.vtx)
         {
             for (const CShieldedOutputDescription& output : tx.vShieldedOutput)
             {
@@ -1290,7 +1306,7 @@ bool CDAGManager::ComputeEpochState(int nEpoch, int nEpochInterval)
             }
         }
 
-        std::vector<CFinalityTallyCertificate> vCerts = ExtractFinalityTallyCertificatesFromBlock(block);
+        std::vector<CFinalityTallyCertificate> vCerts = ExtractFinalityTallyCertificatesFromBlock(activeBlock);
         for (const CFinalityTallyCertificate& cert : vCerts)
         {
             if (cert.nEpoch != nEpoch)
@@ -1303,15 +1319,67 @@ bool CDAGManager::ComputeEpochState(int nEpoch, int nEpochInterval)
                 fHaveBestCert = true;
             }
         }
+
+        for (const CFinalityVote& vote : ExtractFinalityVotesFromBlock(activeBlock))
+        {
+            if (vote.nEpoch == nEpoch)
+                mapEpochVoteLeaves[vote.nullifier] = vote.hashBlock;
+        }
     }
 
     if (!epochCurveTree.IsEmpty())
         epochCurveTree.RebuildParentNodes();
     state.hashCurveRoot = epochCurveTree.GetRoot();
     state.hashNullifierRoot = nullifierRootHasher.GetHash();
-    state.nFinalityTier = (int)g_finalityTracker.GetFinalityTier();
-    state.nConsecutiveHardCount = g_finalityTracker.GetConsecutiveHardEpochCount();
-    state.fFinalized = g_finalityTracker.IsFinalized(state.nHeightEnd);
+
+    // Non-chained: each epoch's coverage is independent, so the cert-side recompute
+    // in CheckTallyCertificate needs only this epoch's votes (no prior-epoch lookup).
+    CHashWriter voteSetHasher(SER_GETHASH, 0);
+    voteSetHasher << std::string("Innova/IDAG/EpochVoteSetRoot/v1");
+    voteSetHasher << nEpoch;
+    for (std::map<uint256, uint256>::const_iterator it = mapEpochVoteLeaves.begin();
+         it != mapEpochVoteLeaves.end(); ++it)
+    {
+        voteSetHasher << it->first;     // nullifier
+        voteSetHasher << it->second;    // winning-block choice (vote.hashBlock)
+    }
+    state.hashVoteSetRoot = voteSetHasher.GetHash();
+
+    // Deterministic per-epoch finality: a pure function of this epoch's connected
+    // votes / tally certificate plus the prior epoch's persisted state -- NOT the
+    // node-local live finalization streak. This guarantees every node computes the
+    // same tier and the same monotonic finalized height, so private-vote / tally-cert
+    // / FCMP-spend validation (which anchors to GetEpochForHeight(nFinalizedHeight))
+    // is identical on all nodes and ConnectBlock stays deterministic.
+    {
+        int nDetTier = 0; uint256 hashWinner = 0; int nWinnerHeight = 0; int nVoters = 0;
+        g_finalityTracker.ComputeDeterministicEpochTier(nEpoch, nDetTier, hashWinner,
+                                                        nWinnerHeight, nVoters);
+        state.nFinalityTier = nDetTier;
+
+        int nPrevHardCount = 0;
+        int nPrevFinalizedHeight = 0;
+        if (nEpoch > 0)
+        {
+            std::map<int, CEpochState>::const_iterator itPrev = mapEpochState.find(nEpoch - 1);
+            if (itPrev != mapEpochState.end())
+            {
+                if (itPrev->second.nFinalityTier >= FINALITY_HARD)
+                    nPrevHardCount = itPrev->second.nConsecutiveHardCount;
+                nPrevFinalizedHeight = itPrev->second.nFinalizedHeightAsOf;
+            }
+        }
+        state.nConsecutiveHardCount = (nDetTier >= FINALITY_HARD) ? (nPrevHardCount + 1) : 0;
+
+        // Finalized height is monotonic; advance it only when this epoch completes a
+        // run of FINALITY_CONFIRMATION_EPOCHS consecutive HARD epochs.
+        state.nFinalizedHeightAsOf = nPrevFinalizedHeight;
+        if (state.nConsecutiveHardCount >= FINALITY_CONFIRMATION_EPOCHS &&
+            state.nHeightEnd > state.nFinalizedHeightAsOf)
+            state.nFinalizedHeightAsOf = state.nHeightEnd;
+        state.fFinalized = (state.nHeightEnd > 0 && state.nFinalizedHeightAsOf >= state.nHeightEnd);
+    }
+
     if (fHaveBestCert)
         state.hashFinalityCertificate = bestCert.GetHash();
 
@@ -1319,9 +1387,6 @@ bool CDAGManager::ComputeEpochState(int nEpoch, int nEpochInterval)
     // blocking block processing with disk I/O at every epoch boundary.
     // nTxCount = -1 signals "not yet counted"; RPC can populate on demand.
     state.nTxCount = -1;
-
-    // Check finality
-    state.fFinalized = g_finalityTracker.IsFinalized(state.nHeightEnd);
 
     mapEpochState[nEpoch] = state;
     mapEpochCurveTrees[nEpoch] = epochCurveTree;
@@ -1368,6 +1433,36 @@ bool CDAGManager::GetEpochState(int nEpoch, CEpochState& stateOut) const
     return true;
 }
 
+int CDAGManager::GetDeterministicFinalizedHeight(int nUpToEpoch) const
+{
+    LOCK(cs_dag);
+    // nFinalizedHeightAsOf is a monotonic running max carried across epoch states, so
+    // the latest complete epoch <= nUpToEpoch holds the current finalized height.
+    for (int e = nUpToEpoch; e >= 0; e--)
+    {
+        std::map<int, CEpochState>::const_iterator it = mapEpochState.find(e);
+        if (it == mapEpochState.end())
+            continue;
+        return it->second.nFinalizedHeightAsOf;
+    }
+    return 0;
+}
+
+bool CDAGManager::GetFinalizedEpochStateAsOf(int nBlockHeight, CEpochState& stateOut) const
+{
+    LOCK(cs_dag);
+    // Block-relative finalized epoch state: deterministic from the chain up to the
+    // epoch preceding nBlockHeight's epoch (the latest fully-computed epoch), so a
+    // block validates against the same finalized roots on every node.
+    int nFinHeight = GetDeterministicFinalizedHeight(GetEpochForHeight(nBlockHeight) - 1);
+    int nFinEpoch = GetEpochForHeight(nFinHeight);
+    std::map<int, CEpochState>::const_iterator it = mapEpochState.find(nFinEpoch);
+    if (it == mapEpochState.end())
+        return false;
+    stateOut = it->second;
+    return true;
+}
+
 bool CDAGManager::GetLastFinalizedEpochState(CEpochState& stateOut) const
 {
     int nFinalizedEpoch = GetEpochForHeight(g_finalityTracker.GetFinalizedHeight());
@@ -1408,7 +1503,7 @@ void CDAGManager::SetPrunedBelowHeight(int nHeight)
 
 
 // ---------------------------------------------------------------------------
-// CDAGManager: DAGKNIGHT Adaptive Ordering (Phase 4)
+// CDAGManager: DAGKNIGHT Adaptive Ordering
 // ---------------------------------------------------------------------------
 
 int CDAGManager::InferLocalK(const uint256& hashBlock) const

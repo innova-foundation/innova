@@ -29,7 +29,7 @@ static const int GHOSTDAG_K = 18;               // anticone tolerance for blue c
 static const int DAG_MERGE_DEPTH = 64;          // merge parents within this depth of primary (~64s at 1s blocks)
 static const int DAG_PRUNE_DEPTH = 100000;      // prune DAG data older than this (~28h at 1s blocks)
 
-// IDAG Phase 4: DAGKNIGHT adaptive ordering constants
+// DAGKNIGHT adaptive ordering constants
 static const int DAGKNIGHT_MAX_ANTICONE_WINDOW = 64;  // max window for adaptive k estimation
 static const int DAGKNIGHT_MIN_CONFIDENCE = 3;         // min supporting mass difference for confident ordering
 static const int DAGKNIGHT_K_SAMPLE_DEPTH = 16;        // blocks to sample for k inference
@@ -71,6 +71,7 @@ struct CEpochState
     std::vector<uint256> vBlockHashes;   // DAG-ordered block hashes in this epoch
     uint256 hashCurveRoot;
     uint256 hashNullifierRoot;
+    uint256 hashVoteSetRoot;             // digest of finality votes embedded in this epoch's blocks
     uint256 hashFinalityCertificate;
     uint256 nTotalTrust;
     int nBlockCount;
@@ -78,6 +79,10 @@ struct CEpochState
     int nFinalityTier;
     int nConsecutiveHardCount;
     bool fFinalized;
+    // Deterministic finalized height as of this epoch (monotonic running max). A pure
+    // function of the chain's connected per-epoch tiers, identical on every node, so
+    // private-vote / tally-cert / FCMP-spend validation anchors deterministically.
+    int nFinalizedHeightAsOf;
 
     CEpochState()
     {
@@ -85,6 +90,7 @@ struct CEpochState
         hashBoundaryBlock = 0;
         hashCurveRoot = 0;
         hashNullifierRoot = 0;
+        hashVoteSetRoot = 0;
         hashFinalityCertificate = 0;
         nHeightStart = 0;
         nHeightEnd = 0;
@@ -94,6 +100,7 @@ struct CEpochState
         nFinalityTier = 0;
         nConsecutiveHardCount = 0;
         fFinalized = false;
+        nFinalizedHeightAsOf = 0;
     }
 
     IMPLEMENT_SERIALIZE
@@ -105,6 +112,7 @@ struct CEpochState
         READWRITE(vBlockHashes);
         READWRITE(hashCurveRoot);
         READWRITE(hashNullifierRoot);
+        READWRITE(hashVoteSetRoot);
         READWRITE(hashFinalityCertificate);
         READWRITE(nTotalTrust);
         READWRITE(nBlockCount);
@@ -112,6 +120,7 @@ struct CEpochState
         READWRITE(nFinalityTier);
         READWRITE(nConsecutiveHardCount);
         READWRITE(fFinalized);
+        READWRITE(nFinalizedHeightAsOf);
     )
 };
 
@@ -127,7 +136,7 @@ struct CBlockDAGData
     bool fBlue;                          // GHOSTDAG/DAGKNIGHT blue/red coloring
     uint256 nDAGScore;                   // cumulative blue-set trust score
     int nDAGOrder;                       // position in DAG linear order
-    int nInferredK;                      // Phase 4: DAGKNIGHT-inferred k (-1 = GHOSTDAG era)
+    int nInferredK;                      // DAGKNIGHT-inferred k (-1 = GHOSTDAG era)
 
     CBlockDAGData()
     {
@@ -180,7 +189,7 @@ public:
     /** GHOSTDAG blue-set coloring (used below FORK_HEIGHT_DAGKNIGHT). */
     void ColorBlock(CBlockIndex* pindex);
 
-    /** DAGKNIGHT adaptive coloring for a block (Phase 4). */
+    /** DAGKNIGHT adaptive coloring for a block. */
     void ColorBlockDAGKnight(CBlockIndex* pindex);
 
     /** DAGKNIGHT pairwise ordering: -1 if A before B, +1 if B before A, 0 if unordered.
@@ -217,8 +226,18 @@ public:
     /** Get epoch state (from memory cache). */
     bool GetEpochState(int nEpoch, CEpochState& stateOut) const;
 
+    /** Deterministic finalized height as of the latest complete epoch <= nUpToEpoch.
+     *  Pure function of the persisted per-epoch states; identical on every node.
+     *  Returns 0 if nothing is finalized yet. */
+    int GetDeterministicFinalizedHeight(int nUpToEpoch) const;
+
     /** Get the most recent finalized epoch state known to the DAG manager. */
     bool GetLastFinalizedEpochState(CEpochState& stateOut) const;
+
+    /** Block-relative finalized epoch state: deterministic from the chain up to the
+     *  epoch preceding nBlockHeight's epoch. Use this (not GetLastFinalizedEpochState)
+     *  anywhere a block's contents are validated, so validation is node-independent. */
+    bool GetFinalizedEpochStateAsOf(int nBlockHeight, CEpochState& stateOut) const;
 
     /** Get the number of in-memory DAG entries. */
     int GetDAGEntryCount() const;

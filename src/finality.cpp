@@ -545,13 +545,20 @@ std::map<int, CFinalityCommitteeRotation> CFinalityTracker::GetConnectedRotation
     return mapConnectedRotations;
 }
 
-// Testnet pinned 1-of-1 finality committee (matches the seed finalitytallypubkey;
-// seed1 holds the matching finalitytallyprivkey). The committee can be upgraded
-// to M-of-N on the live chain via a self-rotation once more members are keyed.
+// Testnet pinned 2-of-3 finality committee over the well-known secp256k1 test
+// keys (private scalars 0x01/0x02/0x03 -> P0/P1/P2, in this fixed order). Each of
+// the three committee seeds holds one matching finalitytallyprivkey, so the live
+// testnet can assemble M-of-N private-finality certificates and exercise committee
+// self-rotation and recovery end-to-end. The set hash is order-sensitive, so the
+// seed -finalitytallypubkey config must list these in the same order. Testnet only:
+// these keys are public, which is acceptable off mainnet (committee-key secrecy is
+// not the certificate trust boundary).
 static const char* TESTNET_FINALITY_COMMITTEE_PUBKEYS[] = {
-    "03234a4c154b02f270773574270e9ad4f1b6b4acbb2367844c17205d212083e1ce",
+    "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+    "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
+    "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
 };
-static const int TESTNET_FINALITY_COMMITTEE_M = 1;
+static const int TESTNET_FINALITY_COMMITTEE_M = 2;
 
 void PinFinalityCommitteeConstants()
 {
@@ -3314,9 +3321,15 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb, std::st
         if (!vote.privateProof.IsValidBasic(pstrError))
             return false;
 
-        int nFinalizedEpoch = GetEpochForHeight(GetFinalizedHeight());
+        // Anchor to the finalized epoch DETERMINISTICALLY from the including block's
+        // chain context (nContextHeight), not the node-local live finalization tip.
+        // This is what keeps ConnectBlock deterministic across nodes. Relay-time checks
+        // (nContextHeight < 0) fall back to the live tip (lenient; not consensus).
         CEpochState finalizedEpochState;
-        if (!g_dagManager.GetEpochState(nFinalizedEpoch, finalizedEpochState))
+        bool fHaveFinalized = (nContextHeight >= 0)
+            ? g_dagManager.GetFinalizedEpochStateAsOf(nContextHeight, finalizedEpochState)
+            : g_dagManager.GetLastFinalizedEpochState(finalizedEpochState);
+        if (!fHaveFinalized)
             return reject("private finality proof missing finalized epoch roots");
         if (vote.privateProof.hashCurveRoot != finalizedEpochState.hashCurveRoot ||
             vote.privateProof.hashNullifierRoot != finalizedEpochState.hashNullifierRoot)
@@ -3513,10 +3526,16 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
             // primary committee cannot otherwise be unstuck. The slow-but-alive
             // primary still works via the canonical path.
             std::vector<CPubKey> vRec; int nRecM = 0; uint256 recSetHash;
+            // Recovery-window gate uses the deterministic finalized height as of the
+            // including block (relay-time: live tip), so the recovery-committee path is
+            // accepted/rejected identically on every node.
+            int nRecoveryFinalizedHeight = (nContextHeight >= 0)
+                ? g_dagManager.GetDeterministicFinalizedHeight(GetEpochForHeight(nContextHeight) - 1)
+                : GetFinalizedHeight();
             if (cert.committeeSetHash != setHash &&
                 GetRecoveryFinalityCommittee(vRec, nRecM, recSetHash) &&
                 cert.committeeSetHash == recSetHash &&
-                FinalityCertInRecoveryWindow(cert.nEpoch, GetFinalizedHeight()))
+                FinalityCertInRecoveryWindow(cert.nEpoch, nRecoveryFinalizedHeight))
             {
                 std::string strSig;
                 if (!CheckTallyCertificateCommitteeSignatures(cert, vRec, nRecM, recSetHash, &strSig))
@@ -3565,9 +3584,12 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
         return reject("tally certificates must target proof-of-work epoch blocks");
     if (cert.HasPrivateWeight())
     {
-        int nFinalizedEpoch = GetEpochForHeight(GetFinalizedHeight());
+        // Deterministic anchor from the including block's chain context (see CheckVote).
         CEpochState finalizedEpochState;
-        if (!g_dagManager.GetEpochState(nFinalizedEpoch, finalizedEpochState))
+        bool fHaveFinalized = (nContextHeight >= 0)
+            ? g_dagManager.GetFinalizedEpochStateAsOf(nContextHeight, finalizedEpochState)
+            : g_dagManager.GetLastFinalizedEpochState(finalizedEpochState);
+        if (!fHaveFinalized)
             return reject("private tally certificate missing finalized epoch roots");
         if (cert.hashCurveRoot != finalizedEpochState.hashCurveRoot ||
             cert.hashNullifierRoot != finalizedEpochState.hashNullifierRoot)
@@ -4276,6 +4298,86 @@ bool CFinalityTracker::CheckFinalityThreshold(int nEpoch)
     int nFinalHeight = mapBlockHeight.count(hashFinal) ? mapBlockHeight[hashFinal] : 0;
     return ApplyFinalityDecision(nEpoch, hashFinal, nFinalHeight, tier, nVoterCount,
                                  nBestBlockWeight, nEpochVoteWeight, false);
+}
+
+bool CFinalityTracker::ComputeDeterministicEpochTier(int nEpoch, int& nTierOut, uint256& hashWinnerOut,
+                                                     int& nWinnerHeightOut, int& nVoterCountOut) const
+{
+    // PURE: identical inputs (this epoch's connected votes / tally certificate) yield
+    // identical outputs on every node. Does NOT touch the live finalization streak.
+    LOCK(cs_finality);
+    nTierOut = FINALITY_NONE; hashWinnerOut = 0; nWinnerHeightOut = 0; nVoterCountOut = 0;
+
+    // Prefer an in-chain aggregate tally certificate (the only path that can promote
+    // hidden-weight NullStake votes); its tier is fixed by the certificate itself.
+    std::map<int, std::vector<CFinalityTallyCertificate> >::const_iterator itCerts =
+        mapEpochTallyCertificates.find(nEpoch);
+    if (itCerts != mapEpochTallyCertificates.end() && !itCerts->second.empty())
+    {
+        const CFinalityTallyCertificate* pBestCert = NULL;
+        for (const CFinalityTallyCertificate& cert : itCerts->second)
+        {
+            if (!pBestCert || cert.nTier > pBestCert->nTier ||
+                (cert.nTier == pBestCert->nTier && cert.GetHash() < pBestCert->GetHash()))
+                pBestCert = &cert;
+        }
+        if (pBestCert)
+        {
+            nTierOut = pBestCert->nTier;
+            hashWinnerOut = pBestCert->hashBlock;
+            nWinnerHeightOut = pBestCert->nHeight;
+            nVoterCountOut = (int)pBestCert->vVoteNullifiers.size();
+            return nTierOut != FINALITY_NONE;
+        }
+    }
+
+    std::map<int, int64_t>::const_iterator itW = mapEpochVoteWeight.find(nEpoch);
+    int64_t nEpochVoteWeight = (itW != mapEpochVoteWeight.end()) ? itW->second : 0;
+    if (nEpochVoteWeight <= 0)
+        return false;
+
+    std::map<int, std::set<CKeyID> >::const_iterator itV = mapEpochVoters.find(nEpoch);
+    nVoterCountOut = (itV != mapEpochVoters.end()) ? (int)itV->second.size() : 0;
+    if (nVoterCountOut < FINALITY_MIN_VOTERS)
+        return false;
+
+    std::map<int, std::vector<CFinalityVote> >::const_iterator itVotes = mapEpochVotes.find(nEpoch);
+    if (itVotes == mapEpochVotes.end() || itVotes->second.empty())
+        return false;
+
+    std::map<uint256, int64_t> mapBlockVoteWeight;
+    std::map<uint256, int> mapBlockHeightLocal;
+    for (const CFinalityVote& v : itVotes->second)
+    {
+        if (v.IsPrivate())
+            continue;
+        if (v.nVoteWeight > 0 && mapBlockVoteWeight[v.hashBlock] <= MAX_MONEY - v.nVoteWeight)
+            mapBlockVoteWeight[v.hashBlock] += v.nVoteWeight;
+        mapBlockHeightLocal[v.hashBlock] = v.nHeight;
+    }
+
+    int64_t nBestBlockWeight = 0;
+    for (const std::pair<const uint256, int64_t>& p : mapBlockVoteWeight)
+    {
+        if (p.second > nBestBlockWeight ||
+            (p.second == nBestBlockWeight && (hashWinnerOut == 0 || p.first < hashWinnerOut)))
+        {
+            nBestBlockWeight = p.second;
+            hashWinnerOut = p.first;
+        }
+    }
+    if (hashWinnerOut == 0)
+        return false;
+
+    if (nBestBlockWeight * 3 >= nEpochVoteWeight * 2)
+        nTierOut = FINALITY_HARD;
+    else if (nBestBlockWeight * 2 >= nEpochVoteWeight)
+        nTierOut = FINALITY_SOFT;
+    else if (nBestBlockWeight * 3 >= nEpochVoteWeight)
+        nTierOut = FINALITY_TENTATIVE;
+
+    nWinnerHeightOut = mapBlockHeightLocal.count(hashWinnerOut) ? mapBlockHeightLocal[hashWinnerOut] : 0;
+    return nTierOut != FINALITY_NONE;
 }
 
 bool CFinalityTracker::ApplyFinalityDecision(int nEpoch, const uint256& hashFinal, int nFinalHeight,
@@ -5840,8 +5942,12 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
     if (!tallyConfig.CanRelayPrivateVotes())
         return false;
 
+    // Anchor to the SAME deterministic finalized epoch the including block (the next
+    // block on the tip) will validate against -- not the live tip -- so the produced
+    // private vote is accepted by every node (matches CheckVote's GetFinalizedEpochStateAsOf).
     CEpochState finalizedEpochState;
-    if (!g_dagManager.GetLastFinalizedEpochState(finalizedEpochState))
+    int nIncludingHeight = (pindexBest ? pindexBest->nHeight + 1 : nEpochHeight);
+    if (!g_dagManager.GetFinalizedEpochStateAsOf(nIncludingHeight, finalizedEpochState))
         return false;
 
     CCurveTree finalizedCurveTree;
@@ -6118,7 +6224,16 @@ bool ProduceFinalityVote()
 
     std::string strVoteMode = GetFinalityVoteModeArg();
     CFinalityTallyConfig tallyConfig = GetFinalityTallyConfig();
-    bool fAllowPrivateV2 = (strVoteMode == "auto" || strVoteMode == "nullstake") &&
+    // Cold-start: a private (hidden-weight) vote cannot bootstrap finality because it
+    // must anchor to an ALREADY-finalized epoch root. So in auto mode, only begin
+    // casting private votes once finality has bootstrapped (finalized height > 0, which
+    // transparent votes establish). After that we cast BOTH a transparent vote (keeps
+    // finality advancing, using transparent coins) AND a private vote (drives the v3
+    // tally certificate, using shielded notes) -- different stake, no double-count.
+    bool fFinalityBootstrapped =
+        (g_dagManager.GetDeterministicFinalizedHeight(GetEpochForHeight(nCurrentHeight)) > 0);
+    bool fAllowPrivateV2 = ((strVoteMode == "nullstake") ||
+                            (strVoteMode == "auto" && fFinalityBootstrapped)) &&
                            tallyConfig.CanRelayPrivateVotes();
     bool fAllowTransparent = (strVoteMode == "auto" || strVoteMode == "transparent");
 
@@ -6133,12 +6248,12 @@ bool ProduceFinalityVote()
 
     std::map<CKeyID, CFinalityVoteCoinGroup> mapGroups;
     CTxDB txdb("r");
-    if (fAllowPrivateV2 && ProducePrivateNullStakeFinalityVote(txdb, pEpochBlock,
-                                                               nCurrentEpoch, nEpochHeight,
-                                                               tallyConfig))
-        return true;
+    // Cast the private vote (if eligible) but do NOT return -- also cast a transparent
+    // vote below so finality keeps advancing while the committee assembles the v3 cert.
+    bool fPrivateCast = (fAllowPrivateV2 && ProducePrivateNullStakeFinalityVote(
+                            txdb, pEpochBlock, nCurrentEpoch, nEpochHeight, tallyConfig));
     if (!fAllowTransparent)
-        return false;
+        return fPrivateCast;
 
     std::vector<COutput> vCoins;
     pwalletMain->AvailableCoins(vCoins);
@@ -6204,7 +6319,7 @@ bool ProduceFinalityVote()
     }
 
     if (!pBestGroup || pBestGroup->nWeight <= 0)
-        return false;
+        return fPrivateCast;
 
     CHashWriter nullifierHash(SER_GETHASH, 0);
     CPubKey pubkey = pBestGroup->key.GetPubKey();
@@ -6223,10 +6338,10 @@ bool ProduceFinalityVote()
     vote.vStakeProof = pBestGroup->vOutpoints;
 
     if (!vote.Sign(pBestGroup->key))
-        return false;
+        return fPrivateCast;
 
     if (!g_finalityTracker.AddVote(vote))
-        return false;
+        return fPrivateCast;
 
     printf("ProduceFinalityVote: epoch=%d height=%d weight=%s\n",
            nCurrentEpoch, nEpochHeight, FormatMoney(pBestGroup->nWeight).c_str());

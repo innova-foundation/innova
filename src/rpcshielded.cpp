@@ -59,8 +59,10 @@ static bool LoadWalletFCMPProofTree(CTxDB& txdb, int nCurrentHeight,
 {
     if (nCurrentHeight >= FORK_HEIGHT_EPOCH_ROOT_FCMP)
     {
+        // Block-relative deterministic anchor (matches LoadFCMPValidationRoot), not the
+        // node-local live finalized tip, so the created spend validates on every node.
         CEpochState finalizedEpochState;
-        if (!g_dagManager.GetLastFinalizedEpochState(finalizedEpochState))
+        if (!g_dagManager.GetFinalizedEpochStateAsOf(nCurrentHeight, finalizedEpochState))
         {
             strErrorOut = "No finalized epoch curve-tree root is available yet";
             return false;
@@ -606,6 +608,8 @@ Value z_unshield(const Array& params, bool fHelp)
         txNew.nPrivacyMode = PRIVACY_MODE_FULL;
 
     vector<vector<unsigned char>> vInputBlinds;
+    vector<int64_t> vSpendValues;           // per-spend note value (binding proof)
+    vector<vector<unsigned char>> vSpendBlinds; // per-spend note blind (binding proof)
 
     for (size_t i = 0; i < vSelectedNotes.size(); i++)
     {
@@ -622,7 +626,9 @@ Value z_unshield(const Array& params, bool fHelp)
         if (!CreateBulletproofRangeProof(wnote.note.nValue, wnote.note.vchBlind, spend.cv, spend.rangeProof))
             throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create spend range proof");
 
-        spend.nullifier = wnote.note.GetNullifier(fvk.nk);
+        if (!ApplyShieldedSpendNullifier(spend, wnote.note, fvk.nk,
+                nCurrentHeight + 1 >= FORK_HEIGHT_NULLIFIER_BINDING))
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to set shielded spend nullifier");
         {
             CTxDB txdb("r");
             CIncrementalMerkleTree tree;
@@ -713,6 +719,8 @@ Value z_unshield(const Array& params, bool fHelp)
 
         txNew.vShieldedSpend.push_back(spend);
         vInputBlinds.push_back(wnote.note.vchBlind);
+        vSpendValues.push_back(wnote.note.nValue);
+        vSpendBlinds.push_back(wnote.note.vchBlind);
     }
 
     unsigned int nEstimatedKB = 2 + (unsigned int)txNew.vShieldedSpend.size() * 4;
@@ -786,6 +794,9 @@ Value z_unshield(const Array& params, bool fHelp)
     }
 
     uint256 sighash = txNew.GetBindingSigHash();
+    if (!FinalizeShieldedSpendBindings(txNew.vShieldedSpend, vSpendValues, vSpendBlinds, sighash,
+                                       nCurrentHeight + 1 >= FORK_HEIGHT_NULLIFIER_BINDING))
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create shielded nullifier binding proof");
     CBindingSignature bindingSig;
     CreateBindingSignature(vInputBlinds, vOutputBlinds, sighash, bindingSig);
     txNew.bindingSig.bindingSig = bindingSig;
@@ -971,6 +982,8 @@ Value z_send(const Array& params, bool fHelp)
     txNew.nPrivacyMode = nMode;
 
     vector<vector<unsigned char>> vInputBlinds;
+    vector<int64_t> vSpendValues;
+    vector<vector<unsigned char>> vSpendBlinds;
 
     for (size_t i = 0; i < vSelectedNotes.size(); i++)
     {
@@ -995,7 +1008,9 @@ Value z_send(const Array& params, bool fHelp)
             spend.vchPlaintextBlind = wnote.note.vchBlind;
         }
 
-        spend.nullifier = wnote.note.GetNullifier(fvk.nk);
+        if (!ApplyShieldedSpendNullifier(spend, wnote.note, fvk.nk,
+                nCurrentHeight + 1 >= FORK_HEIGHT_NULLIFIER_BINDING))
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to set shielded spend nullifier");
 
         if (fHideSender)
         {
@@ -1103,6 +1118,8 @@ Value z_send(const Array& params, bool fHelp)
 
         txNew.vShieldedSpend.push_back(spend);
         vInputBlinds.push_back(wnote.note.vchBlind);
+        vSpendValues.push_back(wnote.note.nValue);
+        vSpendBlinds.push_back(wnote.note.vchBlind);
     }
 
     int64_t nChange = nAvailable - nAmount - MIN_TX_FEE_SHIELDED;
@@ -1229,6 +1246,9 @@ Value z_send(const Array& params, bool fHelp)
     }
 
     uint256 sighash = txNew.GetBindingSigHash();
+    if (!FinalizeShieldedSpendBindings(txNew.vShieldedSpend, vSpendValues, vSpendBlinds, sighash,
+                                       nCurrentHeight + 1 >= FORK_HEIGHT_NULLIFIER_BINDING))
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create shielded nullifier binding proof");
     CBindingSignature bindSig;
     CreateBindingSignature(vInputBlinds, vOutputBlinds, sighash, bindSig);
     txNew.bindingSig.bindingSig = bindSig;
@@ -1939,7 +1959,9 @@ Value z_nullsend(const Array& params, bool fHelp)
     int nSessionID;
     {
         LOCK(cs_nullsend);
-        nSessionID = nullSendPool.NewSession(nPrivacyMode, nPoolSize);
+        // Owner-locked: this RPC builds proofs outside cs_nullsend, so the
+        // session must reject remote registrations in the meantime.
+        nSessionID = nullSendPool.NewSession(nPrivacyMode, nPoolSize, true);
     }
 
     CNullSendEntry myEntry;
@@ -1983,6 +2005,7 @@ Value z_nullsend(const Array& params, bool fHelp)
 
     std::vector<std::vector<unsigned char>> vInputBlinds;
     std::vector<std::vector<unsigned char>> vOutputBlinds;
+    std::vector<int64_t> vInputValues;
     CShieldedFullViewingKey fvk;
     DeriveShieldedFullViewingKey(sk, fvk);
 
@@ -1997,7 +2020,9 @@ Value z_nullsend(const Array& params, bool fHelp)
         if (!wnote.note.GetPedersenCommitment(spend.cv))
             throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create spend commitment");
 
-        spend.nullifier = wnote.note.GetNullifier(fvk.nk);
+        if (!ApplyShieldedSpendNullifier(spend, wnote.note, fvk.nk,
+                nCurrentHeight + 1 >= FORK_HEIGHT_NULLIFIER_BINDING))
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to set shielded spend nullifier");
 
         if (fHideSender)
         {
@@ -2122,6 +2147,7 @@ Value z_nullsend(const Array& params, bool fHelp)
 
         myEntry.vMySpends.push_back(spend);
         vInputBlinds.push_back(wnote.note.vchBlind);
+        vInputValues.push_back(wnote.note.nValue);
     }
 
     int64_t nChange = nTotalInput - nAmount - NULLSEND_FEE;
@@ -2224,6 +2250,7 @@ Value z_nullsend(const Array& params, bool fHelp)
     nullSendClient.Reset();
     nullSendClient.vMyInputBlinds = vInputBlinds;
     nullSendClient.vMyOutputBlinds = vOutputBlinds;
+    nullSendClient.vMyInputValues = vInputValues;
     nullSendClient.myEntry = myEntry;
     nullSendClient.nCurrentSession = nSessionID;
 
@@ -2281,6 +2308,7 @@ Value z_nullsend(const Array& params, bool fHelp)
         sigMsg.vchPartialSig = vchPartialSig;
 
         uint256 spendSighash = it->second.sighash;
+        bool fBindingActive = nCurrentHeight + 1 >= FORK_HEIGHT_NULLIFIER_BINDING;
         for (size_t i = 0; i < myEntry.vMySpends.size(); i++)
         {
             std::vector<unsigned char> vchRk, vchSig;
@@ -2288,6 +2316,17 @@ Value z_nullsend(const Array& params, bool fHelp)
                 throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create spend auth sig");
             sigMsg.vSpendAuthSigs.push_back(vchSig);
             sigMsg.vSpendRks.push_back(vchRk);
+
+            if (fBindingActive)
+            {
+                std::vector<unsigned char> vchBindProof;
+                if (!CreateNullifierBindingProof(vInputValues[i], vInputBlinds[i],
+                                                 myEntry.vMySpends[i].cv,
+                                                 myEntry.vMySpends[i].vchNullifierPoint,
+                                                 spendSighash, vchBindProof))
+                    throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create nullifier binding proof");
+                sigMsg.vNullifierBindingProofs.push_back(vchBindProof);
+            }
         }
 
         it->second.ProcessPartialSig(0, sigMsg);
