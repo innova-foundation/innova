@@ -27,6 +27,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 
 DEFAULT_OUTPUT_DIR = "testnet_metrics"
+DEFAULT_SEED_DATADIR = "/root/.innova"
+DEFAULT_SEED_RPC_PORT = 15531
 DEFAULT_TRAFFIC_DATADIR = "/root/.innova-traffic"
 DEFAULT_TRAFFIC_RPC_PORT = 15631
 DEFAULT_TRAFFIC_P2P_PORT = 15639
@@ -39,6 +41,11 @@ DEFAULT_TESTNET_PEERS = [
     "45.32.168.101:15539",
     "45.77.118.217:15539",
 ]
+DEFAULT_TESTNET_SEED_IPS = tuple(peer.split(":", 1)[0] for peer in DEFAULT_TESTNET_PEERS)
+DEFAULT_TESTNET_SEED_NODES = tuple(
+    ("seed%s" % (idx + 1), "root@%s" % peer.split(":", 1)[0])
+    for idx, peer in enumerate(DEFAULT_TESTNET_PEERS)
+)
 
 BLOCK_COLUMNS = [
     "collected_at",
@@ -63,6 +70,9 @@ SNAPSHOT_COLUMNS = [
     "hash",
     "mempool_count",
     "connections",
+    "peer_count_rpc",
+    "banned_count",
+    "seed_ip_bans",
     "initialblockdownload",
     "mining_cpumining",
     "mining_threads",
@@ -162,6 +172,20 @@ def boolish(value: Any) -> Optional[bool]:
     if text in ("0", "false", "no", "off"):
         return False
     return None
+
+
+def seed_ip_bans(banned: Any) -> List[str]:
+    if not isinstance(banned, list):
+        return []
+    result: List[str] = []
+    for entry in banned:
+        if not isinstance(entry, dict):
+            continue
+        address = str(entry.get("address", ""))
+        ip = address.split("/", 1)[0].split(":", 1)[0]
+        if ip in DEFAULT_TESTNET_SEED_IPS and ip not in result:
+            result.append(ip)
+    return result
 
 
 def csv_value(value: Any) -> str:
@@ -277,6 +301,21 @@ class RpcClient:
             return "ssh:%s:%s" % (self.ssh_target, self.datadir or self.conf or self.innovad)
         return "local:%s" % (self.datadir or self.conf or self.innovad)
 
+    def with_timeout(self, timeout: int) -> "RpcClient":
+        return RpcClient(
+            backend=self.backend,
+            innovad=self.innovad,
+            datadir=self.datadir,
+            conf=self.conf,
+            rpcuser=self.rpcuser,
+            rpcpassword=self.rpcpassword,
+            rpcport=self.rpcport,
+            testnet=self.testnet,
+            ssh_target=self.ssh_target,
+            ssh_options=self.ssh_options,
+            timeout=max(1, int(timeout)),
+        )
+
     def _argv(self, method: str, args: Sequence[Any]) -> List[str]:
         argv = [self.innovad]
         if self.conf:
@@ -306,12 +345,13 @@ class RpcClient:
                     timeout=self.timeout,
                 )
             else:
-                remote_command = " ".join(shlex.quote(part) for part in argv)
+                remote_argv = " ".join(shlex.quote(part) for part in argv)
+                remote_command = "timeout %s %s" % (shlex.quote(str(max(1, int(self.timeout)))), remote_argv)
                 proc = subprocess.run(
                     ["ssh"] + self.ssh_options + [self.ssh_target or "", remote_command],
                     text=True,
                     capture_output=True,
-                    timeout=self.timeout,
+                    timeout=max(1, int(self.timeout)) + 5,
                 )
         except (OSError, subprocess.TimeoutExpired) as exc:
             if optional:
@@ -389,6 +429,13 @@ def ensure_csv(path: Path, columns: Sequence[str]) -> None:
     ensure_dir(path.parent)
     with path.open("w", newline="") as fh:
         csv.DictWriter(fh, fieldnames=list(columns)).writeheader()
+
+
+def write_json_file(path: Path, obj: Any) -> None:
+    ensure_dir(path.parent)
+    with path.open("w", encoding="utf-8") as fh:
+        json.dump(obj, fh, indent=2, sort_keys=True, default=str)
+        fh.write("\n")
 
 
 def append_csv_rows(path: Path, columns: Sequence[str], rows: Iterable[Dict[str, Any]]) -> int:
@@ -479,6 +526,8 @@ def collect_sample(
     height = get_height_from_info(info)
     best_hash = client.call("getblockhash", height)
     mempool = optional_rpc(client, "getrawmempool")
+    peerinfo = optional_rpc(client, "getpeerinfo")
+    banned = optional_rpc(client, "listbanned")
     mining = optional_rpc(client, "getmininginfo")
     staking = optional_rpc(client, "getstakinginfo")
     dag = optional_rpc(client, "getdaginfo")
@@ -539,7 +588,7 @@ def collect_sample(
             field(info, "errors", ""),
             field(mining, "errors", ""),
             field(staking, "errors", ""),
-            error_text(mempool, mining, staking, dag, finality, shielded, nullsend),
+            error_text(mempool, peerinfo, banned, mining, staking, dag, finality, shielded, nullsend),
         ]
         if part
     )
@@ -551,6 +600,9 @@ def collect_sample(
         "hash": best_hash,
         "mempool_count": mempool_count,
         "connections": field(info, "connections"),
+        "peer_count_rpc": len(peerinfo) if isinstance(peerinfo, list) else "",
+        "banned_count": len(banned) if isinstance(banned, list) else "",
+        "seed_ip_bans": seed_ip_bans(banned),
         "initialblockdownload": field(info, "initialblockdownload"),
         "mining_cpumining": field(mining, "cpumining"),
         "mining_threads": field(mining, "cputhreads"),
@@ -874,6 +926,8 @@ def render_report(input_dir: Path, output: Path) -> None:
         ("Snapshots", len(snapshots)),
         ("Latest height", latest_snapshot.get("height", "")),
         ("Mempool", latest_snapshot.get("mempool_count", "")),
+        ("Peers", latest_snapshot.get("peer_count_rpc") or latest_snapshot.get("connections", "")),
+        ("Bans", latest_snapshot.get("banned_count", "")),
         ("DAG tips", latest_snapshot.get("dag_tips", "")),
         ("Shielded pool", latest_snapshot.get("shielded_pool_value", "")),
     ]
@@ -923,6 +977,14 @@ def render_report(input_dir: Path, output: Path) -> None:
             snap_labels,
             [
                 ("mempool tx", numeric_series(snapshots, "mempool_count"), "#355f8a"),
+            ],
+        ),
+        svg_line_chart(
+            "Peer And Ban Counts",
+            snap_labels,
+            [
+                ("peers", numeric_series(snapshots, "peer_count_rpc"), "#315f72"),
+                ("bans", numeric_series(snapshots, "banned_count"), "#b05d2b"),
             ],
         ),
         svg_line_chart(
@@ -1013,6 +1075,9 @@ def render_report(input_dir: Path, output: Path) -> None:
                 "hash",
                 "mempool_count",
                 "connections",
+                "peer_count_rpc",
+                "banned_count",
+                "seed_ip_bans",
                 "dag_adaptive_block_limit",
                 "finality_tier",
                 "shielded_active",
@@ -1046,6 +1111,471 @@ def cmd_report(args: argparse.Namespace) -> int:
     input_dir = Path(args.input_dir)
     output = Path(args.output or (input_dir / "report.html"))
     render_report(input_dir, output)
+    print("wrote %s" % output)
+    return 0
+
+
+def parse_seed_node(value: str, index: int) -> Tuple[str, str]:
+    if "=" in value:
+        label, target = value.split("=", 1)
+        label = label.strip()
+        target = target.strip()
+    else:
+        label = "seed%s" % (index + 1)
+        target = value.strip()
+    if not label or not target:
+        raise ValueError("seed entries must be label=ssh-target or ssh-target")
+    return label, target
+
+
+def seed_nodes_from_args(args: argparse.Namespace) -> List[Tuple[str, str]]:
+    values = getattr(args, "seed", None)
+    if not values:
+        return list(DEFAULT_TESTNET_SEED_NODES)
+    return [parse_seed_node(value, idx) for idx, value in enumerate(values)]
+
+
+def ssh_capture_text(
+    target: str,
+    argv: Sequence[str],
+    ssh_options: Optional[Sequence[str]],
+    timeout: int,
+    optional: bool = False,
+) -> str:
+    remote_argv = " ".join(shlex.quote(part) for part in argv)
+    remote_command = "timeout %s %s" % (shlex.quote(str(max(1, int(timeout)))), remote_argv)
+    try:
+        proc = subprocess.run(
+            ["ssh"] + split_ssh_options(ssh_options) + [target, remote_command],
+            text=True,
+            capture_output=True,
+            timeout=max(1, int(timeout)) + 5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        if optional:
+            return "ERROR: %s" % exc
+        raise
+    if proc.returncode != 0:
+        message = proc.stderr.strip() or proc.stdout.strip() or "exit status %s" % proc.returncode
+        if optional:
+            return "ERROR: %s" % message
+        raise RuntimeError("%s failed on %s: %s" % (" ".join(argv), target, message))
+    return proc.stdout
+
+
+def process_uses_datadir(command: str, datadir: str) -> bool:
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return ("-datadir=%s" % datadir) in command or ("-datadir %s" % datadir) in command
+    for idx, part in enumerate(parts):
+        if part == "-datadir" and idx + 1 < len(parts) and parts[idx + 1] == datadir:
+            return True
+        if part == "-datadir=%s" % datadir:
+            return True
+    return False
+
+
+def parse_process_inventory(text: str, datadir: str) -> Dict[str, Any]:
+    processes: List[Dict[str, Any]] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or "innovad" not in stripped:
+            continue
+        parts = stripped.split(None, 2)
+        if len(parts) < 3:
+            continue
+        if not process_uses_datadir(parts[2], datadir):
+            continue
+        age = to_int(parts[0], -1)
+        pid = to_int(parts[1], -1)
+        processes.append({"etimes": age, "pid": pid, "command": parts[2]})
+    ages = [proc["etimes"] for proc in processes if isinstance(proc.get("etimes"), int) and proc["etimes"] >= 0]
+    return {
+        "process_count": len(processes),
+        "min_age_seconds": min(ages) if ages else "",
+        "processes": processes,
+    }
+
+
+def seed_client(
+    target: str,
+    args: argparse.Namespace,
+    datadir: Optional[str] = None,
+    rpcport: Optional[int] = None,
+) -> RpcClient:
+    return RpcClient(
+        backend="ssh",
+        innovad=getattr(args, "seed_innovad", None) or "/usr/local/bin/innovad",
+        datadir=datadir or getattr(args, "seed_datadir", None) or DEFAULT_SEED_DATADIR,
+        rpcport=rpcport or getattr(args, "seed_rpcport", None) or DEFAULT_SEED_RPC_PORT,
+        testnet=True,
+        ssh_target=target,
+        ssh_options=getattr(args, "ssh_option", None),
+        timeout=getattr(args, "rpc_timeout", 30),
+    )
+
+
+def audit_one_node(
+    label: str,
+    target: str,
+    args: argparse.Namespace,
+    datadir: Optional[str] = None,
+    rpcport: Optional[int] = None,
+    traffic: bool = False,
+) -> Dict[str, Any]:
+    datadir = datadir or (DEFAULT_TRAFFIC_DATADIR if traffic else getattr(args, "seed_datadir", None) or DEFAULT_SEED_DATADIR)
+    rpcport = rpcport or (DEFAULT_TRAFFIC_RPC_PORT if traffic else getattr(args, "seed_rpcport", None) or DEFAULT_SEED_RPC_PORT)
+    client = seed_client(target, args, datadir=datadir, rpcport=rpcport)
+    entry: Dict[str, Any] = {
+        "label": label,
+        "target": target,
+        "datadir": datadir,
+        "rpcport": rpcport,
+        "traffic": traffic,
+        "timestamp": utc_now(),
+    }
+    try:
+        info = client.call("getinfo")
+        if not isinstance(info, dict):
+            raise RpcError("getinfo returned %r, expected object" % (info,))
+        height = get_height_from_info(info)
+        best_hash = client.call("getblockhash", height)
+        optional_timeout = getattr(args, "optional_rpc_timeout", getattr(args, "rpc_timeout", 30))
+        optional_client = client.with_timeout(optional_timeout)
+        peerinfo = optional_rpc(optional_client, "getpeerinfo")
+        banned = optional_rpc(optional_client, "listbanned")
+        mining = optional_rpc(optional_client, "getmininginfo")
+        staking = optional_rpc(optional_client, "getstakinginfo")
+        dag = optional_rpc(optional_client, "getdaginfo")
+        finality = optional_rpc(optional_client, "getfinalityinfo")
+        mempool = optional_rpc(optional_client, "getrawmempool")
+        process_text = ssh_capture_text(
+            target,
+            ["ps", "-eo", "etimes=,pid=,args="],
+            getattr(args, "ssh_option", None),
+            optional_timeout,
+            optional=True,
+        )
+        process_inventory = parse_process_inventory(process_text, datadir)
+        peer_count = len(peerinfo) if isinstance(peerinfo, list) else to_int(info.get("connections"), -1)
+        banned_count = len(banned) if isinstance(banned, list) else -1
+        warnings = "; ".join(
+            part
+            for part in [
+                field(info, "errors", ""),
+                field(mining, "errors", ""),
+                field(staking, "errors", ""),
+                error_text(peerinfo, banned, mining, staking, dag, finality, mempool),
+            ]
+            if part
+        )
+        entry.update(
+            {
+                "ok": True,
+                "info": info,
+                "height": height,
+                "hash": best_hash,
+                "connections": field(info, "connections"),
+                "peer_count": peer_count,
+                "initialblockdownload": field(info, "initialblockdownload"),
+                "banned_count": banned_count,
+                "seed_ip_bans": seed_ip_bans(banned),
+                "mempool_count": len(mempool) if isinstance(mempool, list) else "",
+                "mining": mining,
+                "cpumining": field(mining, "cpumining"),
+                "staking": staking,
+                "dag": dag,
+                "finality": finality,
+                "warnings": warnings,
+                "process_inventory": process_inventory,
+            }
+        )
+    except Exception as exc:
+        entry.update({"ok": False, "error": str(exc)})
+    return entry
+
+
+def common_hashes_for_audit(nodes: Sequence[Dict[str, Any]], args: argparse.Namespace) -> Dict[str, str]:
+    good = [node for node in nodes if node.get("ok") and to_int(node.get("height"), -1) is not None and to_int(node.get("height"), -1) >= 0]
+    if not good:
+        return {}
+    common_height = min(to_int(node.get("height"), -1) or -1 for node in good)
+    hashes: Dict[str, str] = {}
+    for node in good:
+        try:
+            client = seed_client(
+                str(node.get("target")),
+                args,
+                datadir=str(node.get("datadir") or DEFAULT_SEED_DATADIR),
+                rpcport=to_int(node.get("rpcport"), DEFAULT_SEED_RPC_PORT),
+            ).with_timeout(getattr(args, "optional_rpc_timeout", getattr(args, "rpc_timeout", 30)))
+            hashes[str(node.get("label"))] = str(client.call("getblockhash", common_height))
+        except Exception as exc:
+            hashes[str(node.get("label"))] = "ERROR: %s" % exc
+    return hashes
+
+
+def summarize_seed_audit(seed_nodes: Sequence[Dict[str, Any]], args: argparse.Namespace) -> Dict[str, Any]:
+    expected_labels = [label for label, _ in seed_nodes_from_args(args)]
+    good = [node for node in seed_nodes if node.get("ok")]
+    heights = {str(node.get("label")): to_int(node.get("height"), -1) for node in seed_nodes}
+    max_height = max((to_int(node.get("height"), -1) or -1 for node in good), default=-1)
+    common_height = min((to_int(node.get("height"), -1) or -1 for node in good), default=-1)
+    common_hashes = common_hashes_for_audit(seed_nodes, args)
+    hash_values = [value for value in common_hashes.values() if not value.startswith("ERROR:")]
+    hashes_match = bool(hash_values) and len(hash_values) == len(good) and len(set(hash_values)) == 1
+    peer_counts = {
+        str(node.get("label")): to_int(node.get("peer_count"), -1)
+        for node in seed_nodes
+    }
+    warnings = {
+        str(node.get("label")): str(node.get("warnings"))
+        for node in seed_nodes
+        if str(node.get("warnings") or "")
+    }
+    seed_bans = {
+        str(node.get("label")): node.get("seed_ip_bans")
+        for node in seed_nodes
+        if isinstance(node.get("seed_ip_bans"), list) and node.get("seed_ip_bans")
+    }
+    process_issues = {}
+    for node in seed_nodes:
+        inventory = node.get("process_inventory") if isinstance(node.get("process_inventory"), dict) else {}
+        count = to_int(inventory.get("process_count"), 0) or 0
+        min_age = to_int(inventory.get("min_age_seconds"), -1)
+        if count < 1:
+            process_issues[str(node.get("label"))] = "no matching innovad process"
+        elif count > 1:
+            process_issues[str(node.get("label"))] = "%s matching innovad processes" % count
+        elif min_age is not None and min_age >= 0 and min_age < args.min_process_age:
+            process_issues[str(node.get("label"))] = "matching process age %ss < %ss" % (min_age, args.min_process_age)
+    seed4 = next((node for node in seed_nodes if node.get("label") == "seed4"), {})
+    checks = {
+        "all_seed_rpc_ok": len(good) == len(expected_labels),
+        "no_stale_restart_loop_signal": not process_issues,
+        "no_seed_ip_bans": not seed_bans,
+        "no_ibd": not any(boolish(node.get("initialblockdownload")) for node in seed_nodes),
+        "common_seed_hash": hashes_match,
+        "height_spread_zero": max_height >= 0 and common_height >= 0 and max_height - common_height == 0,
+        "min_seed_peers_ok": min((to_int(node.get("peer_count"), -1) or -1 for node in seed_nodes), default=-1) >= args.min_seed_peers,
+        "seed4_cpumining_false": boolish(seed4.get("cpumining")) is False,
+        "no_warnings": not warnings,
+    }
+    return {
+        "timestamp": utc_now(),
+        "height_spread": max_height - common_height if max_height >= 0 and common_height >= 0 else "",
+        "max_height": max_height,
+        "common_height": common_height,
+        "common_hashes": common_hashes,
+        "hashes_match_common_height": hashes_match,
+        "peer_counts": peer_counts,
+        "min_peers": min((to_int(node.get("peer_count"), -1) or -1 for node in seed_nodes), default=-1),
+        "warnings": warnings,
+        "seed_ip_bans": seed_bans,
+        "process_issues": process_issues,
+        "checks": checks,
+        "passed": all(bool(value) for value in checks.values()),
+        "failed_checks": [key for key, value in checks.items() if not bool(value)],
+        "nodes": seed_nodes,
+    }
+
+
+def summarize_traffic_audit(traffic_node: Dict[str, Any], args: argparse.Namespace) -> Dict[str, Any]:
+    checks = {
+        "traffic_rpc_ok": bool(traffic_node.get("ok")),
+        "traffic_no_ibd": boolish(traffic_node.get("initialblockdownload")) is False,
+        "traffic_min_peers_ok": (to_int(traffic_node.get("peer_count"), -1) or -1) >= args.min_traffic_peers,
+        "traffic_no_warnings": not str(traffic_node.get("warnings") or ""),
+    }
+    return {
+        "timestamp": utc_now(),
+        "checks": checks,
+        "passed": all(bool(value) for value in checks.values()),
+        "failed_checks": [key for key, value in checks.items() if not bool(value)],
+        "node": traffic_node,
+    }
+
+
+def cmd_seed_audit(args: argparse.Namespace) -> int:
+    out_dir = Path(args.output_dir)
+    ensure_dir(out_dir)
+    seed_nodes = [audit_one_node(label, target, args) for label, target in seed_nodes_from_args(args)]
+    seed_summary = summarize_seed_audit(seed_nodes, args)
+    audit: Dict[str, Any] = {
+        "timestamp": utc_now(),
+        "seed_summary": seed_summary,
+    }
+    if args.include_traffic:
+        traffic_node = audit_one_node(
+            args.traffic_label,
+            args.traffic_ssh,
+            args,
+            datadir=args.traffic_datadir,
+            rpcport=args.traffic_rpcport,
+            traffic=True,
+        )
+        audit["traffic_summary"] = summarize_traffic_audit(traffic_node, args)
+    else:
+        audit["traffic_summary"] = None
+
+    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    output = Path(args.output or (out_dir / ("seed_audit_%s.json" % stamp)))
+    write_json_file(output, audit)
+
+    print(
+        "seed audit: passed=%s height=%s spread=%s min_peers=%s failed=%s"
+        % (
+            seed_summary.get("passed"),
+            seed_summary.get("common_height"),
+            seed_summary.get("height_spread"),
+            seed_summary.get("min_peers"),
+            ",".join(seed_summary.get("failed_checks", [])) or "-",
+        )
+    )
+    if audit.get("traffic_summary"):
+        traffic = audit["traffic_summary"]
+        node = traffic.get("node", {})
+        print(
+            "traffic audit: passed=%s height=%s peers=%s mempool=%s failed=%s"
+            % (
+                traffic.get("passed"),
+                node.get("height"),
+                node.get("peer_count"),
+                node.get("mempool_count"),
+                ",".join(traffic.get("failed_checks", [])) or "-",
+            )
+        )
+    print("wrote %s" % output)
+    return 0 if seed_summary.get("passed") and (not audit.get("traffic_summary") or audit["traffic_summary"].get("passed")) else 2
+
+
+def verbose_raw_transaction(client: RpcClient, txid: str) -> Any:
+    tx = optional_rpc(client, "getrawtransaction", txid, 1)
+    if isinstance(tx, dict) and not tx.get("_error"):
+        return tx
+    raw = optional_rpc(client, "getrawtransaction", txid)
+    if isinstance(raw, str) and raw and not raw.startswith("ERROR"):
+        decoded = optional_rpc(client, "decoderawtransaction", raw)
+        if isinstance(decoded, dict) and not decoded.get("_error"):
+            decoded["_raw_length"] = len(raw)
+            return decoded
+    wallet_tx = optional_rpc(client, "gettransaction", txid)
+    if isinstance(wallet_tx, dict) and not wallet_tx.get("_error"):
+        wallet_tx["_source"] = "gettransaction"
+        return wallet_tx
+    return tx if tx is not None else raw
+
+
+def classify_mempool_tx(tx: Any) -> Dict[str, Any]:
+    if not isinstance(tx, dict):
+        return {"classification": "unknown", "error": tx}
+    vout = tx.get("vout", [])
+    vin = tx.get("vin", [])
+    output_value = 0.0
+    output_types: Dict[str, int] = {}
+    if isinstance(vout, list):
+        for out in vout:
+            if not isinstance(out, dict):
+                continue
+            output_value += to_float(out.get("value"), 0.0) or 0.0
+            script = out.get("scriptPubKey") if isinstance(out.get("scriptPubKey"), dict) else {}
+            out_type = str(script.get("type", "unknown"))
+            output_types[out_type] = output_types.get(out_type, 0) + 1
+    has_coinbase = any(isinstance(item, dict) and item.get("coinbase") for item in vin) if isinstance(vin, list) else False
+    classification = "transparent"
+    if output_types.get("nulldata"):
+        classification = "data-carrying"
+    if has_coinbase:
+        classification = "coinbase-like"
+    return {
+        "classification": classification,
+        "vin_count": len(vin) if isinstance(vin, list) else "",
+        "vout_count": len(vout) if isinstance(vout, list) else "",
+        "output_value": round(output_value, 8),
+        "output_types": output_types,
+        "size": tx.get("size") or tx.get("_raw_length") or "",
+        "confirmations": tx.get("confirmations", ""),
+    }
+
+
+def cmd_mempool_inspect(args: argparse.Namespace) -> int:
+    out_dir = Path(args.output_dir)
+    ensure_dir(out_dir)
+    node_specs = list(seed_nodes_from_args(args))
+    clients: Dict[str, RpcClient] = {
+        label: seed_client(target, args)
+        for label, target in node_specs
+    }
+    targets: Dict[str, str] = {label: target for label, target in node_specs}
+    if args.include_traffic:
+        clients[args.traffic_label] = seed_client(
+            args.traffic_ssh,
+            args,
+            datadir=args.traffic_datadir,
+            rpcport=args.traffic_rpcport,
+        )
+        targets[args.traffic_label] = args.traffic_ssh
+
+    node_mempools: Dict[str, Any] = {}
+    tx_locations: Dict[str, List[str]] = {}
+    for label, client in clients.items():
+        mempool_client = client.with_timeout(getattr(args, "optional_rpc_timeout", getattr(args, "rpc_timeout", 30)))
+        mempool = optional_rpc(mempool_client, "getrawmempool")
+        node_mempools[label] = mempool
+        if isinstance(mempool, list):
+            for txid in mempool:
+                tx_locations.setdefault(str(txid), []).append(label)
+
+    detail_clients = {
+        label: client.with_timeout(getattr(args, "tx_detail_timeout", 5))
+        for label, client in clients.items()
+    }
+    txs: Dict[str, Any] = {}
+    for txid, labels in tx_locations.items():
+        tx_obj: Any = None
+        for label in labels:
+            tx_obj = verbose_raw_transaction(detail_clients[label], txid)
+            if isinstance(tx_obj, dict) and not tx_obj.get("_error"):
+                break
+        txs[txid] = {
+            "seen_on": labels,
+            "seen_count": len(labels),
+            "details": classify_mempool_tx(tx_obj),
+            "raw": tx_obj if args.include_raw else "",
+        }
+
+    aggregate_count = sum(len(mempool) for mempool in node_mempools.values() if isinstance(mempool, list))
+    result = {
+        "timestamp": utc_now(),
+        "nodes": targets,
+        "node_mempool_counts": {
+            label: len(mempool) if isinstance(mempool, list) else -1
+            for label, mempool in node_mempools.items()
+        },
+        "aggregate_count": aggregate_count,
+        "unique_count": len(tx_locations),
+        "txs": txs,
+    }
+    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    output = Path(args.output or (out_dir / ("mempool_inspect_%s.json" % stamp)))
+    write_json_file(output, result)
+    print(
+        "mempool inspect: aggregate=%s unique=%s counts=%s"
+        % (aggregate_count, len(tx_locations), json.dumps(result["node_mempool_counts"], sort_keys=True))
+    )
+    for txid, tx in txs.items():
+        details = tx.get("details", {})
+        print(
+            "  %s seen_on=%s class=%s vin=%s vout=%s"
+            % (
+                txid,
+                ",".join(tx.get("seen_on", [])),
+                details.get("classification", ""),
+                details.get("vin_count", ""),
+                details.get("vout_count", ""),
+            )
+        )
     print("wrote %s" % output)
     return 0
 
@@ -1139,6 +1669,7 @@ def traffic_config_text(args: argparse.Namespace) -> str:
         "staking=0",
         "dnsseed=0",
         "listenonion=0",
+        "dandelion=%s" % (1 if getattr(args, "enable_dandelion", False) else 0),
         "rpcuser=%s" % rpcuser,
         "rpcpassword=%s" % rpcpassword,
         "rpcport=%s" % rpcport,
@@ -1399,9 +1930,9 @@ def peer_divergence_reason(client: RpcClient, local_height: int, max_delta: int,
             heights.append(height)
 
     # Legacy chainheight is a version-handshake hint and can be stale for the
-    # whole connection. Use it only when the daemon does not expose fresh fields.
-    if not heights and not any(isinstance(peer, dict) and "bestknownheight" in peer for peer in peers):
-        heights = [to_int(peer.get("chainheight")) for peer in peers if isinstance(peer, dict)]
+    # whole connection. Do not use it for strict spread checks; otherwise a
+    # controlled one-block PoW pulse can look like a peer divergence while the
+    # local node is still processing the newly announced block.
     heights = [height for height in heights if height is not None and height > 0]
     if heights:
         if max(abs(local_height - height) for height in heights) > max_delta:
@@ -1452,6 +1983,118 @@ def submit_transparent_batch(client: RpcClient, outputs: int, amount: float, jit
     estimate = estimate_sendmany_bytes(outputs)
     txid = client.call("sendmany", "", send_to, 1, "traffic run")
     return True, str(txid), estimate
+
+
+def seed_mempool_visibility(args: argparse.Namespace, txids: Sequence[str]) -> Dict[str, Any]:
+    wanted = [str(txid) for txid in txids if str(txid)]
+    wanted_set = set(wanted)
+    locations: Dict[str, List[str]] = {txid: [] for txid in wanted}
+    node_counts: Dict[str, int] = {}
+    errors: Dict[str, str] = {}
+    optional_timeout = getattr(args, "optional_rpc_timeout", getattr(args, "rpc_timeout", 30))
+    for label, target in seed_nodes_from_args(args):
+        client = seed_client(target, args).with_timeout(optional_timeout)
+        mempool = optional_rpc(client, "getrawmempool")
+        if not isinstance(mempool, list):
+            node_counts[label] = -1
+            errors[label] = field(mempool, "_error", str(mempool))
+            continue
+        node_counts[label] = len(mempool)
+        seen_here = wanted_set.intersection(str(txid) for txid in mempool)
+        for txid in seen_here:
+            locations.setdefault(txid, []).append(label)
+    return {
+        "timestamp": utc_now(),
+        "locations": {txid: sorted(labels) for txid, labels in locations.items()},
+        "seen_counts": {txid: len(locations.get(txid, [])) for txid in wanted},
+        "node_mempool_counts": node_counts,
+        "errors": errors,
+    }
+
+
+def poll_seed_visibility(
+    args: argparse.Namespace,
+    txids: Sequence[str],
+    min_seen: int,
+    timeout_seconds: int,
+    interval_seconds: float,
+) -> Tuple[bool, Dict[str, Any]]:
+    if min_seen <= 0 or not txids:
+        return True, seed_mempool_visibility(args, txids)
+    deadline = time.time() + max(1, int(timeout_seconds))
+    last = seed_mempool_visibility(args, txids)
+    while True:
+        below = [
+            txid for txid in txids
+            if int(last.get("seen_counts", {}).get(str(txid), 0)) < min_seen
+        ]
+        if not below:
+            return True, last
+        if time.time() >= deadline:
+            return False, last
+        time.sleep(max(0.25, float(interval_seconds)))
+        last = seed_mempool_visibility(args, txids)
+
+
+def cmd_traffic_recover(args: argparse.Namespace) -> int:
+    require_live_ack(args, "recover live traffic relay")
+    ensure_dir(Path(args.output_dir))
+    client = client_from_args(args, traffic_defaults=True)
+    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    if args.dry_run:
+        print(
+            "would call resendtx and poll seed mempools for %ss, min seed visibility %s"
+            % (args.retry_window, args.min_seed_visibility)
+        )
+        print("traffic backend: %s" % client.describe())
+        return 0
+
+    before = client.call("getrawmempool")
+    if not isinstance(before, list):
+        raise SystemExit("Traffic getrawmempool returned %r, expected list" % (before,))
+    before_txids = [str(txid) for txid in before]
+    resend_result = client.call("resendtx")
+
+    deadline = time.time() + max(1, int(args.retry_window))
+    visibility: Dict[str, Any] = {"seen_counts": {}, "locations": {}}
+    local_txids = before_txids
+    while True:
+        local_mempool = optional_rpc(client.with_timeout(getattr(args, "optional_rpc_timeout", args.rpc_timeout)), "getrawmempool")
+        if isinstance(local_mempool, list):
+            local_txids = [str(txid) for txid in local_mempool]
+        visibility = seed_mempool_visibility(args, local_txids)
+        below_min = [
+            txid for txid in local_txids
+            if int(visibility.get("seen_counts", {}).get(txid, 0)) < args.min_seed_visibility
+        ]
+        if not below_min or time.time() >= deadline:
+            break
+        time.sleep(max(0.25, float(args.poll_interval)))
+
+    seen_counts = visibility.get("seen_counts", {})
+    local_only = [txid for txid in local_txids if int(seen_counts.get(txid, 0)) == 0]
+    below_min = [txid for txid in local_txids if int(seen_counts.get(txid, 0)) < args.min_seed_visibility]
+    result = {
+        "timestamp": utc_now(),
+        "traffic_backend": client.describe(),
+        "initial_local_mempool_count": len(before_txids),
+        "final_local_mempool_count": len(local_txids),
+        "resendtx_result": resend_result,
+        "min_seed_visibility": args.min_seed_visibility,
+        "retry_window": args.retry_window,
+        "visibility": visibility,
+        "local_only_txids": local_only,
+        "below_min_visibility_txids": below_min,
+        "passed": not below_min,
+    }
+    output = Path(args.output or (Path(args.output_dir) / ("traffic_recovery_%s.json" % stamp)))
+    write_json_file(output, result)
+    print(
+        "traffic recovery: passed=%s local=%s local_only=%s below_min=%s wrote=%s"
+        % (result["passed"], len(local_txids), len(local_only), len(below_min), output)
+    )
+    return 0 if result["passed"] else 2
 
 
 def run_privacy_probes(client: RpcClient, args: argparse.Namespace, run_id: str) -> None:
@@ -1591,8 +2234,15 @@ def cmd_traffic_run(args: argparse.Namespace) -> int:
 
     if args.dry_run:
         print(
-            "would run traffic for %ss, target %.0f-%.0f%% utilization, max %s sendmany tx"
-            % (args.duration, args.target_min * 100.0, args.target_max * 100.0, args.max_tx)
+            "would run traffic for %ss, target %.0f-%.0f%% utilization, max %s sendmany tx, seed visibility %s/%ss"
+            % (
+                args.duration,
+                args.target_min * 100.0,
+                args.target_max * 100.0,
+                args.max_tx,
+                args.seed_visibility_min,
+                args.seed_visibility_timeout,
+            )
         )
         print("traffic backend: %s" % client.describe())
         return 0
@@ -1609,6 +2259,7 @@ def cmd_traffic_run(args: argparse.Namespace) -> int:
     start = time.time()
     sent = 0
     failed = 0
+    guard_failed = False
     attempts = 0
     last_mempool: Optional[int] = None
     growing_mempool_ticks = 0
@@ -1685,6 +2336,39 @@ def cmd_traffic_run(args: argparse.Namespace) -> int:
             if ok:
                 sent += 1
                 last_submit = time.time()
+                visible, visibility = poll_seed_visibility(
+                    args,
+                    [txid],
+                    args.seed_visibility_min,
+                    args.seed_visibility_timeout,
+                    args.seed_visibility_interval,
+                )
+                seed_seen = int(visibility.get("seen_counts", {}).get(txid, 0))
+                seen_on = ",".join(visibility.get("locations", {}).get(txid, []))
+                if not visible:
+                    failed += 1
+                    guard_failed = True
+                    append_traffic_row(
+                        args.output_dir,
+                        {
+                            "timestamp": utc_now(),
+                            "run_id": run_id,
+                            "stage": "transparent",
+                            "submitted_tx_count": 1,
+                            "failed_tx_count": 1,
+                            "submitted_bytes_estimate": estimate,
+                            "target_utilization": "%.3f-%.3f" % (args.target_min, args.target_max),
+                            "observed_utilization": "" if observed_avg is None else "%.5f" % observed_avg,
+                            "throttle_reason": "seed_visibility_failed",
+                            "details": "txid=%s seed_seen=%s seen_on=%s errors=%s"
+                            % (txid, seed_seen, seen_on or "-", json.dumps(visibility.get("errors", {}), sort_keys=True)),
+                        },
+                    )
+                    print(
+                        "stopping: tx %s visible on %s seed mempools within %ss, required %s"
+                        % (txid, seed_seen, args.seed_visibility_timeout, args.seed_visibility_min)
+                    )
+                    break
                 append_traffic_row(
                     args.output_dir,
                     {
@@ -1697,10 +2381,11 @@ def cmd_traffic_run(args: argparse.Namespace) -> int:
                         "target_utilization": "%.3f-%.3f" % (args.target_min, args.target_max),
                         "observed_utilization": "" if observed_avg is None else "%.5f" % observed_avg,
                         "throttle_reason": "",
-                        "details": "txid=%s outputs=%s mempool=%s" % (txid, args.batch_size, mempool_count),
+                        "details": "txid=%s outputs=%s mempool=%s seed_seen=%s seen_on=%s"
+                        % (txid, args.batch_size, mempool_count, seed_seen, seen_on or "-"),
                     },
                 )
-                print("submitted transparent tx %s/%s: %s" % (sent, args.max_tx, txid))
+                print("submitted transparent tx %s/%s: %s seed_seen=%s" % (sent, args.max_tx, txid, seed_seen))
         except RpcError as exc:
             failed += 1
             append_traffic_row(
@@ -1748,7 +2433,7 @@ def cmd_traffic_run(args: argparse.Namespace) -> int:
         run_nullsend_probe(client, args, run_id)
 
     print("traffic run complete: submitted=%s failed=%s run_id=%s" % (sent, failed, run_id))
-    return 0
+    return 2 if guard_failed else 0
 
 
 class FakeClient:
@@ -1777,6 +2462,10 @@ class FakeClient:
             }
         if method == "getrawmempool":
             return ["a", "b", "c"]
+        if method == "getpeerinfo":
+            return [{"addr": "45.32.161.27:15539"}, {"addr": "45.77.164.87:15539"}]
+        if method == "listbanned":
+            return []
         if method == "getmininginfo":
             return {"cpumining": True, "cputhreads": 2, "pooledtx": 3, "errors": "", "netstakeweight": 99}
         if method == "getstakinginfo":
@@ -1818,11 +2507,19 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     parsed = parse_rpc_output('{"ok":true,"n":2}')
     assert parsed["ok"] is True and parsed["n"] == 2
     assert parse_rpc_output("0000abcd") == "0000abcd"
+    inventory = parse_process_inventory(
+        "100 1 /usr/local/bin/innovad -datadir=/root/.innova-traffic -testnet -daemon\n"
+        "200 2 /usr/local/bin/innovad -conf=/root/.innova/innova.conf -datadir=/root/.innova -daemon\n",
+        "/root/.innova",
+    )
+    assert inventory["process_count"] == 1
+    assert inventory["processes"][0]["pid"] == 2
 
     fake = FakeClient()
     block_rows, snapshot = collect_sample(fake, "fixture", blocks=5, collected_at="2026-01-01T00:00:00Z")
     assert len(block_rows) == 5
     assert snapshot["mempool_count"] == 3
+    assert snapshot["peer_count_rpc"] == 2
     append_block_rows(workdir / "blocks.csv", block_rows)
     append_csv_rows(workdir / "snapshots.csv", SNAPSHOT_COLUMNS, [snapshot])
     append_csv_rows(
@@ -1881,6 +2578,40 @@ def add_funding_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--funding-ssh-option", action="append", help="Extra funding ssh option; repeatable")
 
 
+def add_live_seed_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--seed",
+        action="append",
+        help="Seed SSH target as label=root@host; repeatable. Defaults to the five public testnet seeds.",
+    )
+    parser.add_argument("--seed-innovad", default="/usr/local/bin/innovad", help="Remote seed innovad path")
+    parser.add_argument("--seed-datadir", default=DEFAULT_SEED_DATADIR, help="Remote seed data directory")
+    parser.add_argument("--seed-rpcport", type=int, default=DEFAULT_SEED_RPC_PORT, help="Remote seed RPC port")
+    parser.add_argument("--ssh-option", action="append", help="Extra ssh option; repeatable")
+    parser.add_argument("--rpc-timeout", type=int, default=30, help="Per-RPC/SSH timeout in seconds")
+    parser.add_argument("--optional-rpc-timeout", type=int, default=10, help="Timeout for optional live diagnostics")
+
+
+def add_seed_selection_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--seed",
+        action="append",
+        help="Seed SSH target as label=root@host; repeatable. Defaults to the five public testnet seeds.",
+    )
+    parser.add_argument("--seed-innovad", default="/usr/local/bin/innovad", help="Remote seed innovad path")
+    parser.add_argument("--seed-datadir", default=DEFAULT_SEED_DATADIR, help="Remote seed data directory")
+    parser.add_argument("--seed-rpcport", type=int, default=DEFAULT_SEED_RPC_PORT, help="Remote seed RPC port")
+    parser.add_argument("--optional-rpc-timeout", type=int, default=10, help="Timeout for optional live diagnostics")
+
+
+def add_traffic_audit_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--include-traffic", action="store_true", help="Also audit the dedicated traffic wallet")
+    parser.add_argument("--traffic-label", default="traffic-seed4")
+    parser.add_argument("--traffic-ssh", default="root@45.32.168.101")
+    parser.add_argument("--traffic-datadir", default=DEFAULT_TRAFFIC_DATADIR)
+    parser.add_argument("--traffic-rpcport", type=int, default=DEFAULT_TRAFFIC_RPC_PORT)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1899,6 +2630,25 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--input-dir", default=DEFAULT_OUTPUT_DIR)
     report.add_argument("--output", help="Output HTML path; defaults to <input-dir>/report.html")
     report.set_defaults(func=cmd_report)
+
+    audit = sub.add_parser("seed-audit", help="Run read-only five-seed live safety gates")
+    add_live_seed_args(audit)
+    add_traffic_audit_args(audit)
+    audit.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
+    audit.add_argument("--output", help="Output JSON path; defaults to <output-dir>/seed_audit_<timestamp>.json")
+    audit.add_argument("--min-seed-peers", type=int, default=4)
+    audit.add_argument("--min-traffic-peers", type=int, default=4)
+    audit.add_argument("--min-process-age", type=int, default=60)
+    audit.set_defaults(func=cmd_seed_audit)
+
+    mempool = sub.add_parser("mempool-inspect", help="Read and de-duplicate mempools across seeds")
+    add_live_seed_args(mempool)
+    add_traffic_audit_args(mempool)
+    mempool.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
+    mempool.add_argument("--output", help="Output JSON path; defaults to <output-dir>/mempool_inspect_<timestamp>.json")
+    mempool.add_argument("--include-raw", action="store_true", help="Include decoded raw transaction objects in JSON")
+    mempool.add_argument("--tx-detail-timeout", type=int, default=5, help="Per-transaction decode timeout in seconds")
+    mempool.set_defaults(func=cmd_mempool_inspect)
 
     traffic = sub.add_parser("traffic", help="Guarded live traffic wallet operations")
     traffic_sub = traffic.add_subparsers(dest="traffic_command", required=True)
@@ -1920,6 +2670,7 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--sync-timeout", type=int, default=300)
     prepare.add_argument("--min-peers", type=int, default=1)
     prepare.add_argument("--wait-after-split", action="store_true")
+    prepare.add_argument("--enable-dandelion", action="store_true", help="Enable Dandelion on the traffic wallet config")
     prepare.add_argument("--no-config", action="store_true")
     prepare.add_argument("--no-start", action="store_true")
     prepare.add_argument("--no-fund", action="store_true")
@@ -1930,6 +2681,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = traffic_sub.add_parser("run", help="Submit controlled staged traffic")
     add_rpc_args(run)
+    add_seed_selection_args(run)
     run.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     run.add_argument("--duration", type=int, default=60)
     run.add_argument("--target-min", type=float, default=0.50)
@@ -1945,6 +2697,9 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--min-peers", type=int, default=1)
     run.add_argument("--max-peer-height-delta", type=int, default=3)
     run.add_argument("--max-reject-rate", type=float, default=0.25)
+    run.add_argument("--seed-visibility-min", type=int, default=4)
+    run.add_argument("--seed-visibility-timeout", type=int, default=30)
+    run.add_argument("--seed-visibility-interval", type=float, default=2.0)
     run.add_argument("--pause", type=float, default=5.0)
     run.add_argument("--backoff", type=float, default=15.0)
     run.add_argument("--min-submit-interval", type=float, default=2.0)
@@ -1961,6 +2716,18 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--dry-run", action="store_true")
     run.add_argument("--yes-live-traffic", action="store_true")
     run.set_defaults(func=cmd_traffic_run)
+
+    recover = traffic_sub.add_parser("recover", help="Rebroadcast traffic wallet txs and verify seed mempools")
+    add_rpc_args(recover)
+    add_seed_selection_args(recover)
+    recover.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
+    recover.add_argument("--output", help="Output JSON path; defaults to <output-dir>/traffic_recovery_<timestamp>.json")
+    recover.add_argument("--retry-window", type=int, default=60)
+    recover.add_argument("--poll-interval", type=float, default=2.0)
+    recover.add_argument("--min-seed-visibility", type=int, default=4)
+    recover.add_argument("--dry-run", action="store_true")
+    recover.add_argument("--yes-live-traffic", action="store_true")
+    recover.set_defaults(func=cmd_traffic_recover)
 
     status = traffic_sub.add_parser("status", help="Summarize dedicated traffic wallet readiness")
     add_rpc_args(status)

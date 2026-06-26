@@ -116,6 +116,89 @@ mine_to_height() {
     fi
 }
 
+z_spendable_balance() {
+    local zaddr="$1"
+    local notes
+    notes="$(rpc1 z_listunspent 2>/dev/null)"
+    NOTES="$notes" ZADDR="$zaddr" python3 - <<'PY'
+import json
+import os
+from decimal import Decimal
+
+try:
+    notes = json.loads(os.environ.get("NOTES", "[]"))
+except Exception:
+    print("0")
+    raise SystemExit
+
+total = Decimal("0")
+for note in notes:
+    if note.get("address") == os.environ.get("ZADDR") and note.get("spendable") is True:
+        total += Decimal(str(note.get("amount", "0")))
+print(total)
+PY
+}
+
+z_pending_reasons() {
+    local zaddr="$1"
+    local notes
+    notes="$(rpc1 z_listunspent 2>/dev/null)"
+    NOTES="$notes" ZADDR="$zaddr" python3 - <<'PY'
+import json
+import os
+
+try:
+    notes = json.loads(os.environ.get("NOTES", "[]"))
+except Exception:
+    raise SystemExit
+
+reasons = []
+for note in notes:
+    if note.get("address") != os.environ.get("ZADDR"):
+        continue
+    if note.get("spendable") is True:
+        continue
+    reason = note.get("pending_reason") or "unknown"
+    if reason not in reasons:
+        reasons.append(reason)
+print(",".join(reasons))
+PY
+}
+
+amount_ge() {
+    python3 - "$1" "$2" <<'PY'
+import sys
+from decimal import Decimal
+
+raise SystemExit(0 if Decimal(sys.argv[1]) >= Decimal(sys.argv[2]) else 1)
+PY
+}
+
+wait_for_z_spendable() {
+    local zaddr="$1"
+    local required="$2"
+    local max_blocks="${3:-80}"
+    local mined=0
+
+    while [ "$mined" -le "$max_blocks" ]; do
+        local spendable
+        spendable="$(z_spendable_balance "$zaddr")"
+        if amount_ge "$spendable" "$required"; then
+            log "Shielded spendable balance ready: $spendable INN"
+            return 0
+        fi
+
+        local reasons
+        reasons="$(z_pending_reasons "$zaddr")"
+        log "Waiting for shielded spendability: spendable=$spendable required=$required pending=${reasons:-none}"
+        mine_blocks 1 || return 1
+        mined=$((mined + 1))
+    done
+
+    warn "Timed out waiting for FCMP-spendable shielded balance at $zaddr"
+    return 1
+}
+
 CLEANUP_DONE=0
 cleanup() {
     if [ $CLEANUP_DONE -eq 1 ]; then return; fi
@@ -282,10 +365,16 @@ else
 fi
 
 Z_BAL_PRE=$(rpc1 z_getbalance "$Z_ADDR" 2>/dev/null)
+SHIELDED_SPEND_READY=0
 SHIELD_TX=$(rpc1 z_shield "*" 100.0 "$Z_ADDR" 2>/dev/null)
 if [ -n "$SHIELD_TX" ] && echo "$SHIELD_TX" | grep -q "txid"; then
     log "z_shield submitted, mining 15 blocks for note maturity..."
     mine_blocks 15
+    if wait_for_z_spendable "$Z_ADDR" 100.0 80; then
+        SHIELDED_SPEND_READY=1
+    else
+        skip "z_shield note confirmed but not FCMP-spendable in this non-finalizing milestone network"
+    fi
     Z_BAL=$(rpc1 z_getbalance "$Z_ADDR" 2>/dev/null)
     if [ -n "$Z_BAL" ] && [ "$Z_BAL" != "0" ] && [ "$Z_BAL" != "0.00000000" ]; then
         success "z_shield: shielded 100 INN (balance: $Z_BAL)"
@@ -297,23 +386,48 @@ else
 fi
 
 UNSHIELD_ADDR=$(rpc1 getnewaddress 2>/dev/null)
-UNSHIELD_TX=$(rpc1 z_unshield "$Z_ADDR" "$UNSHIELD_ADDR" 10.0 2>/dev/null)
-if [ -n "$UNSHIELD_TX" ] && echo "$UNSHIELD_TX" | grep -q "txid"; then
-    mine_blocks 15
-    success "z_unshield: unshielded 10 INN"
+if [ "$SHIELDED_SPEND_READY" -eq 1 ]; then
+    UNSHIELD_TX=$(rpc1 z_unshield "$Z_ADDR" "$UNSHIELD_ADDR" 10.0 2>/dev/null)
+    if [ -n "$UNSHIELD_TX" ] && echo "$UNSHIELD_TX" | grep -q "txid"; then
+        mine_blocks 15
+        SHIELDED_SPEND_READY=0
+        if wait_for_z_spendable "$Z_ADDR" 5.001 80; then
+            SHIELDED_SPEND_READY=1
+        else
+            skip "z_unshield change confirmed but not FCMP-spendable yet"
+        fi
+        success "z_unshield: unshielded 10 INN"
+    else
+        fail "z_unshield failed: $UNSHIELD_TX"
+    fi
 else
-    fail "z_unshield failed: $UNSHIELD_TX"
+    skip "z_unshield skipped until shielded balance is FCMP-spendable"
 fi
 
 Z_ADDR2=$(rpc2 z_getnewaddress 2>/dev/null)
-if [ -n "$Z_ADDR2" ]; then
+if [ "$SHIELDED_SPEND_READY" -eq 1 ] && [ -n "$Z_ADDR2" ]; then
     Z_SEND_TX=$(rpc1 z_send "$Z_ADDR" "$Z_ADDR2" 5.0 2>/dev/null)
     if [ -n "$Z_SEND_TX" ] && echo "$Z_SEND_TX" | grep -q "txid"; then
         mine_blocks 5
+        SHIELDED_SPEND_READY=0
+        if wait_for_z_spendable "$Z_ADDR" 1.001 80; then
+            SHIELDED_SPEND_READY=1
+        else
+            skip "z_send change confirmed but not FCMP-spendable yet"
+        fi
         success "z_send: shielded -> shielded 5 INN"
     else
         fail "z_send failed: $Z_SEND_TX"
     fi
+elif [ -n "$Z_ADDR2" ]; then
+    Z_SEND_MODE0_PENDING=$(rpc1 z_send "$Z_ADDR" "$Z_ADDR2" 1.0 0 2>&1)
+    if echo "$Z_SEND_MODE0_PENDING" | grep -q "Insufficient FCMP-finalized shielded balance" &&
+       ! echo "$Z_SEND_MODE0_PENDING" | grep -q "commitment not found in curve tree"; then
+        success "z_send mode 0 rejects pending FCMP note with wallet spendability error"
+    else
+        fail "z_send mode 0 pending-note error was unexpected: $Z_SEND_MODE0_PENDING"
+    fi
+    skip "z_send skipped until shielded balance is FCMP-spendable"
 else
     skip "Could not get shielded address from node 2"
 fi
@@ -333,13 +447,23 @@ else
     mine_to_height 2
 fi
 
-mine_blocks 15
-Z_SEND_DSP=$(rpc1 z_send "$Z_ADDR" "$Z_ADDR2" 1.0 7 2>/dev/null)
-if [ -n "$Z_SEND_DSP" ] && echo "$Z_SEND_DSP" | grep -q "txid"; then
-    mine_blocks 5
-    success "DSP: z_send with privacy mode 7 (full privacy)"
+if [ "$SHIELDED_SPEND_READY" -eq 1 ] && [ -n "$Z_ADDR2" ]; then
+    mine_blocks 15
+    if wait_for_z_spendable "$Z_ADDR" 1.001 80; then
+        Z_SEND_DSP=$(rpc1 z_send "$Z_ADDR" "$Z_ADDR2" 1.0 7 2>/dev/null)
+        if [ -n "$Z_SEND_DSP" ] && echo "$Z_SEND_DSP" | grep -q "txid"; then
+            mine_blocks 5
+            success "DSP: z_send with privacy mode 7 (full privacy)"
+        else
+            skip "DSP z_send failed: $Z_SEND_DSP"
+        fi
+    else
+        skip "DSP z_send skipped because source note is not FCMP-spendable"
+    fi
+elif [ -z "$Z_ADDR2" ]; then
+    skip "DSP z_send skipped because destination shielded address is unavailable"
 else
-    skip "DSP z_send failed: $Z_SEND_DSP"
+    skip "DSP z_send skipped until shielded balance is FCMP-spendable"
 fi
 
 NS_INFO=$(rpc1 z_nullsendinfo 2>/dev/null)

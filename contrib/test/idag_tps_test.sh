@@ -10,10 +10,11 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-INNOVAD="$INNOVA_ROOT/src/innovad"
+INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 TEST_DIR="${TEST_DIR:-/tmp/innova_tps}"
 NUM_NODES="${NUM_NODES:-4}"
+MIN_PEERS="${MIN_PEERS:-3}"
 BASE_PORT="${BASE_PORT:-29000}"
 BASE_RPC="${BASE_RPC:-29100}"
 RPCUSER="${RPCUSER:-tpstest}"
@@ -28,6 +29,11 @@ MIN_SPENDABLE_UTXOS="${MIN_SPENDABLE_UTXOS:-$TARGET_TXS}"
 RPC_CALL_TIMEOUT="${RPC_CALL_TIMEOUT:-30}"
 POLL_RPC_TIMEOUT="${POLL_RPC_TIMEOUT:-5}"
 MINE_TIMEOUT_PER_BLOCK="${MINE_TIMEOUT_PER_BLOCK:-30}"
+MINE_SYNC_INTERVAL="${MINE_SYNC_INTERVAL:-1}"
+BOOTSTRAP_SYNC_TIMEOUT="${BOOTSTRAP_SYNC_TIMEOUT:-2}"
+BOOTSTRAP_SUBMIT_SYNC_TIMEOUT="${BOOTSTRAP_SUBMIT_SYNC_TIMEOUT:-15}"
+BOOTSTRAP_SYNC_FALLBACK="${BOOTSTRAP_SYNC_FALLBACK:-1}"
+KEEP_DIR="${KEEP_DIR:-0}"
 
 PASSED=0
 FAILED=0
@@ -157,6 +163,68 @@ get_blocks() {
     fi
 }
 
+should_connect_pair() {
+    local node="$1"
+    local peer="$2"
+    [ "$node" -lt "$peer" ]
+}
+
+peer_count() {
+    rpc_timed "$1" "$POLL_RPC_TIMEOUT" getpeerinfo 2>/dev/null | python3 -c '
+import json
+import sys
+try:
+    peers = json.load(sys.stdin)
+    print(len(peers) if isinstance(peers, list) else 0)
+except Exception:
+    print(0)
+'
+}
+
+min_peer_count() {
+    local min=""
+    for ((i=0; i<NUM_NODES; i++)); do
+        local count
+        count="$(peer_count "$i")"
+        if ! is_int "$count"; then
+            echo 0
+            return
+        fi
+        if [ -z "$min" ] || [ "$count" -lt "$min" ]; then
+            min="$count"
+        fi
+    done
+    echo "${min:-0}"
+}
+
+connect_mesh() {
+    for ((i=0; i<NUM_NODES; i++)); do
+        for ((peer=0; peer<NUM_NODES; peer++)); do
+            [ "$i" -eq "$peer" ] && continue
+            if should_connect_pair "$i" "$peer"; then
+                rpc_timed "$i" "$POLL_RPC_TIMEOUT" addnode "127.0.0.1:$((BASE_PORT + peer))" onetry >/dev/null 2>&1 || true
+            fi
+        done
+    done
+}
+
+wait_peer_floor() {
+    local target="$1"
+    local timeout="${2:-60}"
+    for ((w=0; w<timeout; w++)); do
+        local min_count
+        min_count="$(min_peer_count)"
+        if is_int "$min_count" && [ "$min_count" -ge "$target" ]; then
+            return 0
+        fi
+        if [ $((w % 5)) -eq 0 ]; then
+            connect_mesh
+        fi
+        sleep 1
+    done
+    return 1
+}
+
 get_balance() {
     rpc_timed "$1" "$POLL_RPC_TIMEOUT" getbalance 2>/dev/null | tr -d '"' | tr -d ' ' | tr -d '\n'
 }
@@ -198,7 +266,11 @@ cleanup() {
     sleep 2
     pkill -9 -f "innovad.*innova_tps" 2>/dev/null || true
     sleep 1
-    rm -rf "$TEST_DIR"
+    if [ "$KEEP_DIR" = "1" ] || [ "$FAILED" -gt 0 ]; then
+        log "Preserving $TEST_DIR"
+    else
+        rm -rf "$TEST_DIR"
+    fi
 }
 
 setup() {
@@ -216,14 +288,20 @@ rpcpassword=$RPCPASS
 rpcport=$((BASE_RPC + i))
 port=$((BASE_PORT + i))
 listen=1
+dnsseed=0
+nobootstrap=1
+nosmsg=1
+upnp=0
+listenonion=0
 idnsport=$((29200 + i))
 debug=0
 staking=0
 stakingmode=0
 minstakeinterval=2
 blockmaxsize=8000000
+getdatablockbatch=128
+maxconnections=32
 EOF
-        [ $i -gt 0 ] && echo "addnode=127.0.0.1:$BASE_PORT" >> "$TEST_DIR/node$i/innova.conf"
     done
 
     for ((i=0; i<NUM_NODES; i++)); do
@@ -236,7 +314,16 @@ EOF
         for ((i=0; i<NUM_NODES; i++)); do
             rpc "$i" getinfo > /dev/null 2>&1 && ((ready++))
         done
-        [ "$ready" -eq "$NUM_NODES" ] && log "All $NUM_NODES nodes online" && return 0
+        if [ "$ready" -eq "$NUM_NODES" ]; then
+            log "All $NUM_NODES nodes online"
+            connect_mesh
+            if wait_peer_floor "$MIN_PEERS" 60; then
+                log "All nodes reached peer floor $MIN_PEERS"
+                return 0
+            fi
+            fail "Peer floor not met; min peer count $(min_peer_count)"
+            return 1
+        fi
         sleep 1
     done
     fail "Nodes failed to start"
@@ -280,6 +367,59 @@ cluster_lag() {
     fi
 }
 
+cluster_tip_source() {
+    local best_node=0
+    local best_height=-1
+    for ((i=0; i<NUM_NODES; i++)); do
+        local h
+        h=$(get_blocks "$i")
+        if is_int "$h" && [ "$h" -gt "$best_height" ]; then
+            best_height="$h"
+            best_node="$i"
+        fi
+    done
+    echo "$best_node $best_height"
+}
+
+sync_tip_via_submitblock() {
+    local source_node="$1"
+    local target_height="$2"
+    local hash hex node
+
+    hash=$(rpc_timed "$source_node" "$RPC_CALL_TIMEOUT" getblockhash "$target_height" 2>/dev/null | tr -d '"[:space:]')
+    [ -z "$hash" ] && return 1
+    hex=$(rpc_timed "$source_node" "$RPC_CALL_TIMEOUT" getblock "$hash" false 2>/dev/null | tr -d '"[:space:]')
+    echo "$hex" | grep -qE '^[0-9a-fA-F]+$' || return 1
+
+    log "  ...submitblock catch-up at height $target_height"
+    for ((node=0; node<NUM_NODES; node++)); do
+        [ "$node" -eq "$source_node" ] && continue
+        local h
+        h=$(get_blocks "$node")
+        if ! is_int "$h" || [ "$h" -lt "$target_height" ]; then
+            rpc_timed "$node" "$RPC_CALL_TIMEOUT" submitblock "$hex" >/dev/null 2>&1 || true
+        fi
+    done
+}
+
+sync_cluster_tip() {
+    local timeout="${1:-60}"
+    local source_node
+    local best_height
+    read -r source_node best_height < <(cluster_tip_source)
+
+    if ! is_int "$best_height" || [ "$best_height" -lt 0 ]; then
+        return 1
+    fi
+
+    if wait_all_sync_at_or_above "$best_height" "$timeout"; then
+        return 0
+    fi
+
+    sync_tip_via_submitblock "$source_node" "$best_height" || return 1
+    wait_all_sync_at_or_above "$best_height" "$timeout"
+}
+
 mine_until_height() {
     local node=$1
     local target_height=$2
@@ -306,6 +446,7 @@ mine_until_height() {
             fi
             waited=$((waited + 1))
         done
+        rpc "$node" setgenerate false 0 > /dev/null 2>&1 || true
 
         if ! is_int "$current" || [ "$current" -le "$before" ]; then
             fail "Mining stalled at height $before while targeting $target_height"
@@ -320,13 +461,38 @@ mine_until_height() {
     return 0
 }
 
+mine_until_height_synced() {
+    local node=$1
+    local target_height=$2
+    local interval="$MINE_SYNC_INTERVAL"
+    local current
+    current=$(get_blocks "$node")
+    is_int "$current" || return 1
+    is_int "$interval" && [ "$interval" -gt 0 ] || interval=1
+
+    while [ "$current" -lt "$target_height" ]; do
+        local next=$((current + interval))
+        [ "$next" -gt "$target_height" ] && next="$target_height"
+        mine_until_height "$node" "$next" || return 1
+        if ! wait_all_sync_at_or_above "$next" "$BOOTSTRAP_SYNC_TIMEOUT"; then
+            if [ "$BOOTSTRAP_SYNC_FALLBACK" = "1" ]; then
+                sync_tip_via_submitblock "$node" "$next" || return 1
+                wait_all_sync_at_or_above "$next" "$BOOTSTRAP_SUBMIT_SYNC_TIMEOUT" || return 1
+            else
+                return 1
+            fi
+        fi
+        current="$next"
+    done
+}
+
 mine_blocks() {
     local node=$1
     local count=$2
     local current
     current=$(get_blocks "$node")
     is_int "$current" || return 1
-    mine_until_height "$node" "$((current + count))"
+    mine_until_height_synced "$node" "$((current + count))"
 }
 
 mine_until_mempool_empty() {
@@ -486,8 +652,8 @@ header "Phase 1: Mine confirmed spendable funds"
 # =====================================================================
 
 log "Mining to height $INITIAL_HEIGHT with height polling"
-mine_until_height 0 "$INITIAL_HEIGHT" || finish 1
-wait_all_sync_at_or_above "$INITIAL_HEIGHT" 60 || fail "Cluster did not sync to height $INITIAL_HEIGHT"
+mine_until_height_synced 0 "$INITIAL_HEIGHT" || finish 1
+wait_all_sync_at_or_above "$INITIAL_HEIGHT" 60 || sync_cluster_tip 60 || fail "Cluster did not sync to height $INITIAL_HEIGHT"
 
 HEIGHT=$(get_blocks 0)
 BALANCE=$(get_balance 0)
@@ -546,7 +712,7 @@ log "Split mempool entries before confirmation: $SPLIT_MP"
 SPLIT_START_HEIGHT=$(get_blocks 0)
 mine_until_mempool_empty 0 50 || fail "Split transactions did not fully confirm"
 SPLIT_END_HEIGHT=$(get_blocks 0)
-wait_all_sync_at_or_above "$SPLIT_END_HEIGHT" 60 || fail "Cluster did not sync after split confirmations"
+wait_all_sync_at_or_above "$SPLIT_END_HEIGHT" 60 || sync_cluster_tip 60 || fail "Cluster did not sync after split confirmations"
 
 SPENDABLE_UTXOS=$(get_listunspent_count 0 1)
 log "Spendable UTXOs after split confirmation: $SPENDABLE_UTXOS"
@@ -671,7 +837,7 @@ DAG_TIPS2=$(json_field "$DAGINFO2" "dag_tips")
 INFERRED_K2=$(json_field "$DAGINFO2" "inferred_k")
 ALGO2=$(json_field "$DAGINFO2" "ordering_algorithm")
 FINAL_HEIGHT=$(get_blocks 0)
-wait_all_sync_at_or_above "$FINAL_HEIGHT" 60 || fail "Cluster did not sync after TPS run"
+wait_all_sync_at_or_above "$FINAL_HEIGHT" 60 || sync_cluster_tip 60 || fail "Cluster did not sync after TPS run"
 SYNC_LAG=$(cluster_lag)
 
 log "Post-run DAG: entries=$DAG_ENTRIES2, tips=$DAG_TIPS2, inferred_k=$INFERRED_K2, algo=$ALGO2, adaptive_limit=$ADAPTIVE2"

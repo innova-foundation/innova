@@ -10,7 +10,7 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-INNOVAD="$INNOVA_ROOT/src/innovad"
+INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 TEST_DIR="${TEST_DIR:-/tmp/innova_idag_1s_sync}"
 BASE_PORT="${BASE_PORT:-27660}"
@@ -18,6 +18,8 @@ BASE_RPC="${BASE_RPC:-27720}"
 BASE_IDNS="${BASE_IDNS:-7780}"
 RPCUSER="${RPCUSER:-idagsync}"
 RPCPASS="${RPCPASS:-idagsyncpass}"
+KEEP_DIR="${KEEP_DIR:-0}"
+EQUAL_HEIGHT_TIMEOUT="${EQUAL_HEIGHT_TIMEOUT:-180}"
 
 PASSED=0
 FAILED=0
@@ -40,13 +42,23 @@ is_int() {
     echo "$1" | grep -qE '^[0-9]+$'
 }
 
+should_connect_pair() {
+    local node="$1"
+    local peer="$2"
+    [ "$node" -lt "$peer" ]
+}
+
 cleanup() {
     for node in 0 1 2; do
         rpc "$node" stop >/dev/null 2>&1 || true
     done
     sleep 2
     pkill -f "innovad.*innova_idag_1s_sync" 2>/dev/null || true
-    rm -rf "$TEST_DIR"
+    if [ "$KEEP_DIR" = "1" ] || [ "$FAILED" -gt 0 ]; then
+        log "Preserving $TEST_DIR"
+    else
+        rm -rf "$TEST_DIR"
+    fi
 }
 
 write_config() {
@@ -62,15 +74,25 @@ rpcport=$((BASE_RPC + node))
 port=$((BASE_PORT + node))
 bind=127.0.0.1
 listen=1
+dnsseed=0
+nobootstrap=1
+nosmsg=1
+upnp=0
+listenonion=0
 idnsport=$((BASE_IDNS + node))
 debug=1
 showtimers=1
+staking=0
 stakingmode=0
 nofinalityvoting=0
+getdatablockbatch=128
+maxconnections=32
 EOF
     for peer in 0 1 2; do
         [ "$node" = "$peer" ] && continue
-        echo "addnode=127.0.0.1:$((BASE_PORT + peer))" >> "$dir/innova.conf"
+        if should_connect_pair "$node" "$peer"; then
+            echo "addnode=127.0.0.1:$((BASE_PORT + peer))" >> "$dir/innova.conf"
+        fi
     done
 }
 
@@ -94,7 +116,9 @@ connect_mesh() {
     for node in 0 1 2; do
         for peer in 0 1 2; do
             [ "$node" = "$peer" ] && continue
-            rpc "$node" addnode "127.0.0.1:$((BASE_PORT + peer))" onetry >/dev/null 2>&1 || true
+            if should_connect_pair "$node" "$peer"; then
+                rpc "$node" addnode "127.0.0.1:$((BASE_PORT + peer))" onetry >/dev/null 2>&1 || true
+            fi
         done
     done
 }
@@ -125,6 +149,37 @@ wait_peer_count() {
     return 1
 }
 
+mine_one() {
+    local node="$1"
+    local max_per_block="${2:-30}"
+    local before current waited max_ticks
+    before="$(height "$node")"
+
+    if ! is_int "$before"; then
+        log "Cannot read current height from node $node"
+        return 1
+    fi
+
+    rpc "$node" setgenerate true 1 >/dev/null 2>&1 || return 1
+
+    waited=0
+    max_ticks=$((max_per_block * 10))
+    current="$before"
+    while [ "$waited" -lt "$max_ticks" ]; do
+        sleep 0.1
+        current="$(height "$node")"
+        if is_int "$current" && [ "$current" -gt "$before" ]; then
+            rpc "$node" setgenerate false 0 >/dev/null 2>&1 || true
+            return 0
+        fi
+        waited=$((waited + 1))
+    done
+
+    rpc "$node" setgenerate false 0 >/dev/null 2>&1 || true
+    log "Mining stalled at height $before"
+    return 1
+}
+
 mine_until_height() {
     local node="$1"
     local target="$2"
@@ -138,24 +193,9 @@ mine_until_height() {
     fi
 
     while [ "$current" -lt "$target" ]; do
-        local before="$current"
-        rpc "$node" setgenerate true 1 >/dev/null 2>&1 || return 1
-
-        local waited=0
-        local max_ticks=$((max_per_block * 10))
-        while [ "$waited" -lt "$max_ticks" ]; do
-            sleep 0.1
-            current="$(height "$node")"
-            if is_int "$current" && [ "$current" -gt "$before" ]; then
-                break
-            fi
-            waited=$((waited + 1))
-        done
-
-        if ! is_int "$current" || [ "$current" -le "$before" ]; then
-            log "Mining stalled at height $before while targeting $target"
-            return 1
-        fi
+        mine_one "$node" "$max_per_block" || return 1
+        current="$(height "$node")"
+        is_int "$current" || return 1
 
         if [ $((current % 10)) -eq 0 ] || [ "$current" -eq "$target" ]; then
             log "  ...height $current/$target"
@@ -170,6 +210,47 @@ mine_blocks() {
     current="$(height "$node")"
     is_int "$current" || return 1
     mine_until_height "$node" "$((current + count))"
+}
+
+wait_selected_height() {
+    local target="$1"
+    local timeout="$2"
+    shift 2
+
+    for _ in $(seq 1 "$timeout"); do
+        local ready=1
+        local node h
+        for node in "$@"; do
+            h="$(height "$node")"
+            if ! is_int "$h" || [ "$h" -lt "$target" ]; then
+                ready=0
+                break
+            fi
+        done
+        [ "$ready" -eq 1 ] && return 0
+        sleep 1
+    done
+
+    return 1
+}
+
+mine_until_height_synced() {
+    local node="$1"
+    local target="$2"
+    shift 2
+    local current
+    current="$(height "$node")"
+    is_int "$current" || return 1
+
+    while [ "$current" -lt "$target" ]; do
+        mine_one "$node" || return 1
+        current="$(height "$node")"
+        is_int "$current" || return 1
+        if [ $((current % 10)) -eq 0 ] || [ "$current" -eq "$target" ]; then
+            log "  ...height $current/$target"
+        fi
+        wait_selected_height "$current" 90 "$@" || return 1
+    done
 }
 
 wait_height_near() {
@@ -206,6 +287,42 @@ sys.exit(0 if fresh else 1)
 '
 }
 
+wait_all_equal_height() {
+    local timeout="${1:-60}"
+    for _ in $(seq 1 "$timeout"); do
+        local h0 h1 h2
+        h0="$(height 0)"
+        h1="$(height 1)"
+        h2="$(height 2)"
+        if is_int "$h0" && is_int "$h1" && is_int "$h2" && [ "$h0" -eq "$h1" ] && [ "$h1" -eq "$h2" ]; then
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+same_height_stall_log_count() {
+    python3 - "$TEST_DIR" <<'PY'
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+pattern = re.compile(r"Sync stall recovery:.*\bch=(\d+)\s+our=(\d+)")
+count = 0
+for log_path in root.glob("node*/**/debug.log"):
+    try:
+        text = log_path.read_text(errors="replace")
+    except OSError:
+        continue
+    for match in pattern.finditer(text):
+        if match.group(1) == match.group(2):
+            count += 1
+print(count)
+PY
+}
+
 main() {
     cleanup
     trap cleanup EXIT
@@ -235,7 +352,7 @@ main() {
     done
 
     log "Mining through DAG activation"
-    mine_blocks 0 20 || { fail "initial mining failed"; return 1; }
+    mine_until_height_synced 0 20 0 1 2 || { fail "initial mining failed"; return 1; }
     connect_mesh
     local h0
     h0="$(height 0)"
@@ -245,17 +362,34 @@ main() {
     log "Stopping node 2, mining ahead, then restarting it"
     rpc 2 stop >/dev/null 2>&1 || true
     sleep 2
-    mine_blocks 0 30 || { fail "ahead mining failed"; return 1; }
+    h0="$(height 0)"
+    mine_until_height_synced 0 "$((h0 + 30))" 0 1 || { fail "ahead mining failed"; return 1; }
     h0="$(height 0)"
 
     start_node 2
     wait_rpc 2 || { fail "node 2 did not restart"; return 1; }
-    rpc 2 addnode "127.0.0.1:$BASE_PORT" onetry >/dev/null 2>&1 || true
     rpc 0 addnode "127.0.0.1:$((BASE_PORT + 2))" onetry >/dev/null 2>&1 || true
+    rpc 1 addnode "127.0.0.1:$((BASE_PORT + 2))" onetry >/dev/null 2>&1 || true
     wait_peer_count 2 1 30 || { fail "restarted node 2 did not connect to peers"; return 1; }
 
     wait_height_near 2 "$h0" 3 && pass "delayed node caught up within 3 blocks of $h0" || fail "delayed node failed to catch up to $h0"
     fresh_peer_height_seen 2 && pass "delayed node reports fresh peer best-known height" || fail "fresh peer height missing from getpeerinfo"
+
+    if wait_all_equal_height "$EQUAL_HEIGHT_TIMEOUT"; then
+        pass "all nodes reached the same idle height"
+        local stalls_before stalls_after
+        stalls_before="$(same_height_stall_log_count)"
+        log "Holding equal-height network idle to check stall recovery noise"
+        sleep 20
+        stalls_after="$(same_height_stall_log_count)"
+        if is_int "$stalls_before" && is_int "$stalls_after" && [ "$stalls_after" -eq "$stalls_before" ]; then
+            pass "no same-height sync-stall recovery while idle"
+        else
+            fail "same-height sync-stall recovery increased while idle ($stalls_before -> $stalls_after)"
+        fi
+    else
+        fail "nodes did not converge to a single idle height"
+    fi
 
     echo
     echo "1s sync regression: $PASSED passed, $FAILED failed"

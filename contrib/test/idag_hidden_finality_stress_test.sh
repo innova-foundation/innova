@@ -12,7 +12,7 @@ NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-INNOVAD="$INNOVA_ROOT/src/innovad"
+INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 TEST_DIR="${IDAG_HIDDEN_TEST_DIR:-/tmp/innova_hidden_finality_clean_$$}"
 NUM_NODES="${IDAG_HIDDEN_NODES:-3}"
@@ -22,6 +22,8 @@ PORT_OFFSET="${IDAG_HIDDEN_PORT_OFFSET:-0}"
 BASE_PORT="${IDAG_HIDDEN_BASE_PORT:-18122}"
 BASE_RPC="${IDAG_HIDDEN_BASE_RPC:-19172}"
 BASE_IDNS="${IDAG_HIDDEN_BASE_IDNS:-8342}"
+MINE_TIMEOUT_PER_BLOCK="${IDAG_HIDDEN_MINE_TIMEOUT_PER_BLOCK:-30}"
+SYNC_TIMEOUT="${IDAG_HIDDEN_SYNC_TIMEOUT:-90}"
 RPCUSER="hiddenfinality"
 RPCPASS="stresspass"
 
@@ -72,6 +74,10 @@ get_height() {
     rpc "$1" getblockcount 2>/dev/null | tr -d '"[:space:]'
 }
 
+is_int() {
+    echo "$1" | grep -qE '^[0-9]+$'
+}
+
 get_block_json() {
     local node="$1"
     local height="$2"
@@ -81,15 +87,64 @@ get_block_json() {
     rpc "$node" getblock "$hash" 2>/dev/null
 }
 
+wait_all_height() {
+    local target="$1"
+    local timeout="${2:-$SYNC_TIMEOUT}"
+    local attempt
+    local node
+    local height
+    for ((attempt=0; attempt<timeout; attempt++)); do
+        local ready=1
+        for ((node=0; node<NUM_NODES; node++)); do
+            height=$(get_height "$node")
+            if ! is_int "$height" || [ "$height" -lt "$target" ]; then
+                ready=0
+                break
+            fi
+        done
+        [ "$ready" -eq 1 ] && return 0
+        sleep 1
+    done
+    return 1
+}
+
+mine_one() {
+    local node="$1"
+    local before current waited max_ticks
+    before=$(get_height "$node")
+    is_int "$before" || return 1
+
+    rpc "$node" setgenerate true 1 >/dev/null 2>&1 || return 1
+    waited=0
+    max_ticks=$((MINE_TIMEOUT_PER_BLOCK * 10))
+    current="$before"
+    while [ "$waited" -lt "$max_ticks" ]; do
+        sleep 0.1
+        current=$(get_height "$node")
+        if is_int "$current" && [ "$current" -gt "$before" ]; then
+            rpc "$node" setgenerate false 0 >/dev/null 2>&1 || true
+            return 0
+        fi
+        waited=$((waited + 1))
+    done
+
+    rpc "$node" setgenerate false 0 >/dev/null 2>&1 || true
+    return 1
+}
+
 mine_blocks() {
     local node="$1"
     local count="$2"
-    local idx
+    local idx current
     for ((idx=0; idx<count; idx++)); do
-        rpc "$node" setgenerate true 1 >/dev/null 2>&1 || return 1
-        sleep 0.15
+        mine_one "$node" || return 1
+        current=$(get_height "$node")
+        is_int "$current" || return 1
+        wait_all_height "$current" || return 1
+        if [ $((current % 10)) -eq 0 ]; then
+            log "  ...height $current"
+        fi
     done
-    return 0
 }
 
 wait_for_height() {
@@ -157,13 +212,20 @@ setup_nodes() {
             echo "rpcpassword=$RPCPASS"
             echo "rpcport=$(node_rpc "$node")"
             echo "port=$(node_port "$node")"
+            echo "bind=127.0.0.1"
             echo "listen=1"
             echo "dnsseed=0"
+            echo "nobootstrap=1"
+            echo "nosmsg=1"
+            echo "upnp=0"
+            echo "listenonion=0"
             echo "idnsport=$(node_idns "$node")"
             echo "debug=1"
             echo "staking=1"
             echo "nofinalityvoting=0"
             echo "finalityvotemode=auto"
+            echo "getdatablockbatch=128"
+            echo "maxconnections=32"
             for ((peer=0; peer<NUM_NODES; peer++)); do
                 [ "$node" -eq "$peer" ] && continue
                 echo "addnode=127.0.0.1:$(node_port "$peer")"
