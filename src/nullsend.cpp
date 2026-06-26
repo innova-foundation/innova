@@ -25,6 +25,28 @@ CNullSendClient nullSendClient;
 CCriticalSection cs_nullsend;
 std::vector<CNullSendQueue> vecNullSendQueue;
 
+// Whether sessions started now must carry nullifier binding metadata. The
+// final tx connects at >= nBestHeight+1, where ConnectInputs enforces it.
+static bool NullSendBindingActive()
+{
+    return nBestHeight + 1 >= FORK_HEIGHT_NULLIFIER_BINDING;
+}
+
+// Structural check on a participant's spends: each must declare the bound
+// nullifier point and a tag derived from it. The binding proof itself can
+// only be made after the session sighash exists.
+static bool SpendsCarryNullifierBinding(const std::vector<CShieldedSpendDescription>& vSpends)
+{
+    for (const CShieldedSpendDescription& spend : vSpends)
+    {
+        if (spend.vchNullifierPoint.size() != NULLIFIER_POINT_SIZE)
+            return false;
+        if (spend.nullifier != NullifierTagFromPoint(spend.vchNullifierPoint))
+            return false;
+    }
+    return true;
+}
+
 
 void CNullSendSession::SetState(int newState)
 {
@@ -36,6 +58,9 @@ void CNullSendSession::SetState(int newState)
 
 bool CNullSendSession::AcceptEntry(const CNullSendEntry& entry, CNode* pfrom)
 {
+    if (fLocalOwned && pfrom)
+        return false; // RPC self-mix session: no remote registrations
+
     if (nState != NULLSEND_STATE_ACCEPTING)
         return false;
 
@@ -50,6 +75,15 @@ bool CNullSendSession::AcceptEntry(const CNullSendEntry& entry, CNode* pfrom)
 
     if (!MoneyRange(entry.nMyValueBalance))
         return false;
+
+    // Post-fork, an entry without bound nullifiers can never connect; reject
+    // it up front so it cannot poison the session for honest participants.
+    if (NullSendBindingActive() && !SpendsCarryNullifierBinding(entry.vMySpends))
+    {
+        if (fDebug)
+            printf("NullSend session %d: rejected entry without nullifier binding\n", nSessionID);
+        return false;
+    }
 
     CNullSendParticipant participant;
     participant.nID = (int)vParticipants.size();
@@ -287,6 +321,7 @@ bool CNullSendSession::ProcessPartialSig(int nParticipantID, const CNullSendPart
     p.vchPartialSig = msg.vchPartialSig;
     p.vSpendAuthSigs = msg.vSpendAuthSigs;
     p.vSpendRks = msg.vSpendRks;
+    p.vNullifierBindingProofs = msg.vNullifierBindingProofs;
     p.fPartialSigReceived = true;
     p.nLastActivity = GetTime();
 
@@ -324,6 +359,8 @@ bool CNullSendSession::FinalizeTransaction()
     finalTx = unsignedTx;
     finalTx.bindingSig.bindingSig = aggBindingSig;
 
+    bool fBindingActive = NullSendBindingActive();
+
     for (const CNullSendParticipant& p : vParticipants)
     {
             const std::vector<CShieldedSpendDescription>& vSpends =
@@ -333,10 +370,18 @@ bool CNullSendSession::FinalizeTransaction()
             return false;
         if (p.vSpendRks.size() != vSpends.size())
             return false;
+        if (fBindingActive && p.vNullifierBindingProofs.size() != vSpends.size())
+        {
+            printf("NullSend session %d: participant %d missing nullifier binding proofs\n",
+                   nSessionID, p.nID);
+            return false;
+        }
 
         for (size_t i = 0; i < vSpends.size(); i++)
         {
             if (p.vSpendAuthSigs[i].size() != 65 || p.vSpendRks[i].size() != 33)
+                return false;
+            if (fBindingActive && p.vNullifierBindingProofs[i].size() != NULLIFIER_BINDING_PROOF_SIZE)
                 return false;
 
             uint256 myNullifier = vSpends[i].nullifier;
@@ -346,6 +391,8 @@ bool CNullSendSession::FinalizeTransaction()
                 {
                     finalTx.vShieldedSpend[j].vchSpendAuthSig = p.vSpendAuthSigs[i];
                     finalTx.vShieldedSpend[j].vchRk = p.vSpendRks[i];
+                    if (fBindingActive)
+                        finalTx.vShieldedSpend[j].vchNullifierBindingProof = p.vNullifierBindingProofs[i];
                     break;
                 }
             }
@@ -365,6 +412,27 @@ bool CNullSendSession::FinalizeTransaction()
     {
         printf("NullSend session %d: binding signature verification FAILED\n", nSessionID);
         return false;
+    }
+
+    // ConnectInputs will reject post-fork spends whose nullifier binding proof
+    // is absent or invalid; verify here so a bad participant proof fails the
+    // session instead of broadcasting a doomed transaction.
+    if (fBindingActive)
+    {
+        for (size_t j = 0; j < finalTx.vShieldedSpend.size(); j++)
+        {
+            const CShieldedSpendDescription& spend = finalTx.vShieldedSpend[j];
+            if (spend.vchNullifierPoint.size() != NULLIFIER_POINT_SIZE ||
+                spend.vchNullifierBindingProof.size() != NULLIFIER_BINDING_PROOF_SIZE ||
+                spend.nullifier != NullifierTagFromPoint(spend.vchNullifierPoint) ||
+                !VerifyNullifierBindingProof(spend.cv, spend.vchNullifierPoint,
+                                             verifySighash, spend.vchNullifierBindingProof))
+            {
+                printf("NullSend session %d: spend %d nullifier binding proof FAILED\n",
+                       nSessionID, (int)j);
+                return false;
+            }
+        }
     }
 
     if (fDebug)
@@ -490,6 +558,65 @@ static BIGNUM* NS_VecToBN(const std::vector<unsigned char>& vch)
     return BN_bin2bn(vch.data(), (int)vch.size(), NULL);
 }
 
+// Full-domain hash for the RSA blind-credential message (fixes M-3). A bare
+// SHA256 representative occupies only 256 of the modulus' ~2048 bits, which makes
+// the textbook-RSA blind signature multiplicatively malleable and not
+// one-more-unforgeable. NS_FullDomainHash expands the message to a near-uniform
+// integer in [2, n-1] via MGF1-SHA256 over a domain-separated seed, so forging a
+// credential reduces to a full RSA inversion. The reduction into [2, n-1] also
+// excludes the trivial 0/1 message representatives. Signer and verifier MUST both
+// route the message through this function so the round-trip is preserved.
+static bool NS_FullDomainHash(const std::vector<unsigned char>& vchMsg,
+                              const BIGNUM* n, BIGNUM* out, BN_CTX* ctx)
+{
+    if (!n || !out || !ctx)
+        return false;
+    int nLen = BN_num_bytes(n);
+    if (nLen <= 0)
+        return false;
+
+    // Domain-separated seed = TAG || SHA256(msg).
+    static const char NS_FDH_TAG[] = "Innova/NullSend/FDH/v1";
+    unsigned char seed[SHA256_DIGEST_LENGTH];
+    {
+        SHA256_CTX sha;
+        SHA256_Init(&sha);
+        SHA256_Update(&sha, NS_FDH_TAG, sizeof(NS_FDH_TAG) - 1);
+        SHA256_Update(&sha, vchMsg.data(), vchMsg.size());
+        SHA256_Final(seed, &sha);
+    }
+
+    // MGF1-SHA256: produce > modulus-size bytes so the mod reduction bias < 2^-256.
+    std::vector<unsigned char> vchExpand;
+    vchExpand.reserve(nLen + SHA256_DIGEST_LENGTH);
+    uint32_t counter = 0;
+    while ((int)vchExpand.size() < nLen + SHA256_DIGEST_LENGTH)
+    {
+        unsigned char cbe[4] = {
+            (unsigned char)(counter >> 24), (unsigned char)(counter >> 16),
+            (unsigned char)(counter >> 8),  (unsigned char)(counter) };
+        SHA256_CTX sha;
+        SHA256_Init(&sha);
+        SHA256_Update(&sha, seed, SHA256_DIGEST_LENGTH);
+        SHA256_Update(&sha, cbe, sizeof(cbe));
+        unsigned char blk[SHA256_DIGEST_LENGTH];
+        SHA256_Final(blk, &sha);
+        vchExpand.insert(vchExpand.end(), blk, blk + SHA256_DIGEST_LENGTH);
+        counter++;
+    }
+
+    BIGNUM* t = BN_bin2bn(vchExpand.data(), (int)vchExpand.size(), NULL);
+    BIGNUM* nm2 = BN_new();
+    bool fOk = false;
+    // out = (t mod (n-2)) + 2  ->  out in [2, n-1]
+    if (t && nm2 && BN_copy(nm2, n) && BN_sub_word(nm2, 2) &&
+        BN_mod(out, t, nm2, ctx) && BN_add_word(out, 2))
+        fOk = true;
+    if (t) BN_free(t);
+    if (nm2) BN_free(nm2);
+    return fOk;
+}
+
 bool CNullSendSession::GenerateSessionRSAKey()
 {
     BN_CTX* ctx = BN_CTX_new();
@@ -574,6 +701,21 @@ bool CNullSendSession::BlindSign(const std::vector<unsigned char>& vchBlinded,
         return false;
     }
 
+    // Reject degenerate blinded values (0, 1, n-1) that produce trivial signatures.
+    bool fRange = false;
+    {
+        BIGNUM* nm1 = BN_new();
+        if (nm1 && BN_copy(nm1, n_bn) && BN_sub_word(nm1, 1))
+            fRange = (BN_cmp(m, BN_value_one()) > 0) && (BN_cmp(m, nm1) < 0);
+        if (nm1) BN_free(nm1);
+    }
+    if (!fRange)
+    {
+        BN_free(m); BN_clear_free(d_bn); BN_free(n_bn); BN_free(s);
+        BN_CTX_free(ctx);
+        return false;
+    }
+
     bool fOk = BN_mod_exp_mont_consttime(s, m, d_bn, n_bn, ctx, NULL) == 1;
 
     if (fOk)
@@ -606,26 +748,26 @@ bool CNullSendSession::VerifyCredential(const std::vector<unsigned char>& vchCre
         return false;
     }
 
-    bool fOk = BN_mod_exp(result, s_bn, e_bn, n_bn, ctx) == 1;
+    // Reject trivial signature fixed points (0, 1, n-1) before verifying.
+    bool fSigRange = false;
+    {
+        BIGNUM* nm1 = BN_new();
+        if (nm1 && BN_copy(nm1, n_bn) && BN_sub_word(nm1, 1))
+            fSigRange = (BN_cmp(s_bn, BN_value_one()) > 0) && (BN_cmp(s_bn, nm1) < 0);
+        if (nm1) BN_free(nm1);
+    }
+
+    bool fOk = fSigRange && (BN_mod_exp(result, s_bn, e_bn, n_bn, ctx) == 1);
 
     if (fOk)
     {
-        unsigned char hash[SHA256_DIGEST_LENGTH];
-        SHA256(vchCredential.data(), vchCredential.size(), hash);
-
-        BIGNUM* expected = BN_bin2bn(hash, SHA256_DIGEST_LENGTH, NULL);
-        BIGNUM* expected_mod = BN_new();
-        if (expected && expected_mod)
-        {
-            BN_mod(expected_mod, expected, n_bn, ctx);
-            fOk = (BN_cmp(result, expected_mod) == 0);
-        }
+        // Full-domain-hash representative; must match the signer's NS_FullDomainHash.
+        BIGNUM* expected = BN_new();
+        if (expected && NS_FullDomainHash(vchCredential, n_bn, expected, ctx))
+            fOk = (BN_cmp(result, expected) == 0);
         else
-        {
             fOk = false;
-        }
-        BN_free(expected);
-        BN_free(expected_mod);
+        if (expected) BN_free(expected);
     }
 
     BN_free(s_bn);
@@ -639,6 +781,9 @@ bool CNullSendSession::VerifyCredential(const std::vector<unsigned char>& vchCre
 
 bool CNullSendSession::AcceptInputReg(const CNullSendInputReg& reg, CNode* pfrom)
 {
+    if (fLocalOwned && pfrom)
+        return false; // RPC self-mix session: no remote registrations
+
     if (nState != NULLSEND_STATE_INPUT_REG)
         return false;
 
@@ -659,6 +804,13 @@ bool CNullSendSession::AcceptInputReg(const CNullSendInputReg& reg, CNode* pfrom
 
     if (reg.vBlindedNullifiers.size() != reg.vMySpends.size())
         return false;
+
+    if (NullSendBindingActive() && !SpendsCarryNullifierBinding(reg.vMySpends))
+    {
+        if (fDebug)
+            printf("NullSend session %d: rejected input reg without nullifier binding\n", nSessionID);
+        return false;
+    }
 
     for (size_t i = 0; i < reg.vMySpends.size(); i++)
     {
@@ -740,6 +892,24 @@ bool CNullSendSession::AcceptOutputReg(const CNullSendOutputReg& reg)
 
     if ((int)reg.vchCredentialSig.size() > NULLSEND_RSA_BITS / 8)
         return false;
+
+    // L-1: bind the signed credential to the actually-registered outputs. The
+    // client signs a credential over H(outputs || value); recompute it here and
+    // require a match, so a valid blind credential cannot be replayed onto a
+    // different output set.
+    {
+        CHashWriter ss(SER_GETHASH, 0);
+        for (const CShieldedOutputDescription& output : reg.vMyOutputs)
+            ss << output;
+        ss << reg.nMyOutputValue;
+        uint256 expectedCredHash = ss.GetHash();
+        std::vector<unsigned char> vchExpected(expectedCredHash.begin(), expectedCredHash.end());
+        if (reg.vchCredentialHash != vchExpected)
+        {
+            printf("NullSend session %d: credential not bound to registered outputs\n", nSessionID);
+            return false;
+        }
+    }
 
     if (!VerifyCredential(reg.vchCredentialHash, reg.vchCredentialSig))
     {
@@ -862,7 +1032,7 @@ bool CNullSendSession::AssembleTransactionChaumian()
 }
 
 
-int CNullSendPool::NewSession(uint8_t nPrivacyMode, int nPoolSize)
+int CNullSendPool::NewSession(uint8_t nPrivacyMode, int nPoolSize, bool fLocalOwned)
 {
     LOCK(cs_nullsend);
 
@@ -871,6 +1041,7 @@ int CNullSendPool::NewSession(uint8_t nPrivacyMode, int nPoolSize)
 
     CNullSendSession session;
     session.nSessionID = nNextSessionID++;
+    session.fLocalOwned = fLocalOwned;
     session.nPrivacyMode = nPrivacyMode;
     session.nTargetParticipants = std::max(NULLSEND_MIN_PARTICIPANTS, std::min(nPoolSize, NULLSEND_MAX_PARTICIPANTS));
     session.nStartTime = GetTime();
@@ -1059,6 +1230,7 @@ void CNullSendClient::Reset()
     vchMyNoncePoint.clear();
     vMyInputBlinds.clear();
     vMyOutputBlinds.clear();
+    vMyInputValues.clear();
     myEntry = CNullSendEntry();
     nCurrentSession = 0;
     nParticipantID = -1;
@@ -1254,6 +1426,15 @@ void CNullSendClient::ProcessChallenge(const CNullSendChallenge& msg)
     sigMsg.vchPartialSig = vchPartialSig;
 
     uint256 spendSighash = msg.sighash;
+    bool fBindingActive = nBestHeight + 1 >= FORK_HEIGHT_NULLIFIER_BINDING;
+    if (fBindingActive &&
+        (vMyInputValues.size() != myEntry.vMySpends.size() ||
+         vMyInputBlinds.size() != myEntry.vMySpends.size()))
+    {
+        printf("NullSend client: missing note openings for binding proofs\n");
+        Reset();
+        return;
+    }
     for (size_t i = 0; i < myEntry.vMySpends.size(); i++)
     {
         std::vector<unsigned char> vchRk, vchSig;
@@ -1266,6 +1447,22 @@ void CNullSendClient::ProcessChallenge(const CNullSendChallenge& msg)
 
         sigMsg.vSpendAuthSigs.push_back(vchSig);
         sigMsg.vSpendRks.push_back(vchRk);
+
+        if (fBindingActive)
+        {
+            std::vector<unsigned char> vchBindProof;
+            if (myEntry.vMySpends[i].vchNullifierPoint.size() != NULLIFIER_POINT_SIZE ||
+                !CreateNullifierBindingProof(vMyInputValues[i], vMyInputBlinds[i],
+                                             myEntry.vMySpends[i].cv,
+                                             myEntry.vMySpends[i].vchNullifierPoint,
+                                             spendSighash, vchBindProof))
+            {
+                printf("NullSend client: failed to create nullifier binding proof %d\n", (int)i);
+                Reset();
+                return;
+            }
+            sigMsg.vNullifierBindingProofs.push_back(vchBindProof);
+        }
     }
 
     OPENSSL_cleanse(vchMyNonce.data(), vchMyNonce.size());
@@ -1312,11 +1509,7 @@ bool CNullSendClient::BlindOutputCredential(const std::vector<unsigned char>& vc
         vchCredentialHash.assign(hash.begin(), hash.end());
     }
 
-    unsigned char mHash[SHA256_DIGEST_LENGTH];
-    SHA256(vchCredentialHash.data(), vchCredentialHash.size(), mHash);
-
     BN_CTX* ctx = BN_CTX_new();
-    BIGNUM* m = BN_bin2bn(mHash, SHA256_DIGEST_LENGTH, NULL);
     BIGNUM* n_bn = NS_VecToBN(vchN);
     BIGNUM* e_bn = NS_VecToBN(vchE);
     BIGNUM* r = BN_new();
@@ -1324,16 +1517,17 @@ bool CNullSendClient::BlindOutputCredential(const std::vector<unsigned char>& vc
     BIGNUM* blinded = BN_new();
     BIGNUM* m_mod = BN_new();
 
-    if (!ctx || !m || !n_bn || !e_bn || !r || !r_e || !blinded || !m_mod)
+    if (!ctx || !n_bn || !e_bn || !r || !r_e || !blinded || !m_mod)
     {
-        BN_CTX_free(ctx); BN_free(m); BN_free(n_bn); BN_free(e_bn);
+        BN_CTX_free(ctx); BN_free(n_bn); BN_free(e_bn);
         BN_free(r); BN_free(r_e); BN_free(blinded); BN_free(m_mod);
         return false;
     }
 
     bool fOk = false;
 
-    if (!BN_mod(m_mod, m, n_bn, ctx))
+    // Full-domain-hash representative (must match VerifyCredential's NS_FullDomainHash).
+    if (!NS_FullDomainHash(vchCredentialHash, n_bn, m_mod, ctx))
         goto ns_blind_cleanup;
 
     {
@@ -1367,7 +1561,6 @@ bool CNullSendClient::BlindOutputCredential(const std::vector<unsigned char>& vc
     fOk = true;
 
 ns_blind_cleanup:
-    BN_free(m);
     BN_free(m_mod);
     BN_free(n_bn);
     BN_free(e_bn);

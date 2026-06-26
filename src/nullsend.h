@@ -272,6 +272,10 @@ public:
     std::vector<unsigned char> vchPartialSig;          // s_i (32 bytes)
     std::vector<std::vector<unsigned char>> vSpendAuthSigs;
     std::vector<std::vector<unsigned char>> vSpendRks;
+    // Per-spend nullifier binding proofs over the session sighash (post
+    // FORK_HEIGHT_NULLIFIER_BINDING; empty before). Same order as the
+    // participant's spends.
+    std::vector<std::vector<unsigned char>> vNullifierBindingProofs;
 
     CNullSendPartialSig()
     {
@@ -286,6 +290,7 @@ public:
         READWRITE(vchPartialSig);
         READWRITE(vSpendAuthSigs);
         READWRITE(vSpendRks);
+        READWRITE(vNullifierBindingProofs);
     )
 };
 
@@ -324,6 +329,7 @@ public:
     std::vector<unsigned char> vchPartialSig;
     std::vector<std::vector<unsigned char>> vSpendAuthSigs;
     std::vector<std::vector<unsigned char>> vSpendRks;
+    std::vector<std::vector<unsigned char>> vNullifierBindingProofs;
     bool fNonceCommitted;
     bool fPartialSigReceived;
     int nSpendOffset;
@@ -362,6 +368,10 @@ public:
     uint8_t nPrivacyMode;
     uint256 sessionNonce;
     bool fChaumian;
+    // Session created by a local RPC self-mix: remote participants must not be
+    // able to register into it (they could displace the owner's slot while the
+    // RPC builds proofs outside cs_nullsend and stall the session).
+    bool fLocalOwned;
 
     std::vector<CNullSendParticipant> vParticipants;
     CTransaction unsignedTx;
@@ -385,6 +395,7 @@ public:
         nTargetParticipants = NULLSEND_DEFAULT_PARTICIPANTS;
         nPrivacyMode = PRIVACY_MODE_FULL;
         fChaumian = false;
+        fLocalOwned = false;
     }
 
     ~CNullSendSession()
@@ -427,7 +438,7 @@ public:
         nNextSessionID = 1;
     }
 
-    int NewSession(uint8_t nPrivacyMode, int nPoolSize);
+    int NewSession(uint8_t nPrivacyMode, int nPoolSize, bool fLocalOwned = false);
     void ProcessMessage(CNode* pfrom, std::string& strCommand, CDataStream& vRecv);
     void CheckTimeouts();
 };
@@ -442,6 +453,7 @@ public:
     std::vector<unsigned char> vchMyNoncePoint;
     std::vector<std::vector<unsigned char>> vMyInputBlinds;
     std::vector<std::vector<unsigned char>> vMyOutputBlinds;
+    std::vector<int64_t> vMyInputValues;
     CNullSendEntry myEntry;
     CNode* pCoordinator;
     int64_t nTimeout;
