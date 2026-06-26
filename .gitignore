@@ -42,3 +42,17 @@ dist
 *.dmg
 .idea
 .vscode
+
+# build logs
+build_*.log
+# python caches
+__pycache__/
+*.pyc
+# local testnet metrics / scratch
+testnet_metrics/
+# working coordination docs (not committed; see CLAUDE.md)
+HANDOFF.md
+coordination.md
+agents/
+# transient per-node patch scripts
+patch_node1*.py
