@@ -213,6 +213,16 @@ public:
     std::vector<unsigned char> vchPkStake;  // 33 bytes compressed
     std::vector<unsigned char> vchPkOwner;  // 33 bytes compressed
 
+    // B2-e: half-aggregated Schnorr M-of-N staking authorization (public-signer tier).
+    // nThresholdM == 0 selects the legacy single-key path (vchPkStake). nThresholdM >= 1
+    // selects M-of-N: vSignerPubKeys are M distinct members of the delegated staker set,
+    // vSignerRPoints their per-signer R-points, and vchAggregatedSScalar the summed
+    // s-scalar, verified via VerifyHalfAggStakeSignature against the stake digest.
+    unsigned int nThresholdM;
+    std::vector<std::vector<unsigned char> > vSignerPubKeys;
+    std::vector<std::vector<unsigned char> > vSignerRPoints;
+    std::vector<unsigned char> vchAggregatedSScalar;
+
     CNullStakeKernelProofV3()
     {
         nStakeModifier = 0;
@@ -221,6 +231,7 @@ public:
         nTxTimePrev = 0;
         nVoutN = 0;
         nTimeTx = 0;
+        nThresholdM = 0;
     }
 
     IMPLEMENT_SERIALIZE
@@ -237,6 +248,10 @@ public:
         READWRITE(delegationHash);
         READWRITE(vchPkStake);
         READWRITE(vchPkOwner);
+        READWRITE(nThresholdM);
+        READWRITE(vSignerPubKeys);
+        READWRITE(vSignerRPoints);
+        READWRITE(vchAggregatedSScalar);
     )
 
     bool IsNull() const { return acProof.IsNull(); }

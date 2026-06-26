@@ -9,6 +9,10 @@
 
 #include "../uint256.h"
 #include "../zkproof.h"
+#include "../nullstake.h"
+#include "../bulletproof_ac.h"
+#include "../serialize.h"
+#include "../version.h"
 
 #include <string>
 #include <vector>
@@ -179,6 +183,77 @@ BOOST_AUTO_TEST_CASE(halfagg_stake_count_mismatch_fails)
     std::string err;
     BOOST_CHECK_MESSAGE(!VerifyHalfAggStakeSignature(vPk, vR, sAgg, sighash, err),
                         "mismatched R-point/signer counts must be rejected");
+}
+
+// --- Phase 2: delegation-set commitment ---
+BOOST_AUTO_TEST_CASE(halfagg_stake_delegation_set_hash)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+
+    std::vector<valtype> set;
+    for (int i = 1; i <= 3; i++)
+    {
+        valtype pk;
+        BOOST_REQUIRE(HalfAggStakeDerivePubKey(uint256((uint64_t)(1000 + i)), pk));
+        set.push_back(pk);
+    }
+    valtype owner;
+    BOOST_REQUIRE(HalfAggStakeDerivePubKey(uint256(9999ULL), owner));
+
+    uint256 h1, h2, hM, hbad;
+    BOOST_REQUIRE(ComputeNullStakeV3DelegationSetHash(1000000, set, 2, owner, h1));
+    BOOST_CHECK(h1 != uint256(0));
+
+    // Order-independent: reversed member order yields the same commitment.
+    std::vector<valtype> rev(set.rbegin(), set.rend());
+    BOOST_REQUIRE(ComputeNullStakeV3DelegationSetHash(1000000, rev, 2, owner, h2));
+    BOOST_CHECK_MESSAGE(h1 == h2, "delegation set hash must be order-independent");
+
+    // Threshold M is bound into the commitment.
+    BOOST_REQUIRE(ComputeNullStakeV3DelegationSetHash(1000000, set, 3, owner, hM));
+    BOOST_CHECK_MESSAGE(h1 != hM, "changing M must change the delegation hash");
+
+    // Rejections: duplicate member, M > N, M = 0.
+    std::vector<valtype> dup = set; dup[1] = dup[0];
+    BOOST_CHECK_MESSAGE(!ComputeNullStakeV3DelegationSetHash(1000000, dup, 2, owner, hbad),
+                        "duplicate member must be rejected");
+    BOOST_CHECK_MESSAGE(!ComputeNullStakeV3DelegationSetHash(1000000, set, 4, owner, hbad),
+                        "M > N must be rejected");
+    BOOST_CHECK_MESSAGE(!ComputeNullStakeV3DelegationSetHash(1000000, set, 0, owner, hbad),
+                        "M = 0 must be rejected");
+}
+
+// --- Phase 2: V3 proof M-of-N fields serialize/deserialize round-trip ---
+BOOST_AUTO_TEST_CASE(halfagg_stake_proof_serialization_roundtrip)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+
+    CNullStakeKernelProofV3 proof;
+    proof.nThresholdM = 2;
+    proof.nStakeModifier = 12345;
+    proof.delegationHash = uint256(777ULL);
+    for (int i = 1; i <= 2; i++)
+    {
+        valtype pk, R, s;
+        BOOST_REQUIRE(HalfAggStakeDerivePubKey(uint256((uint64_t)(2000 + i)), pk));
+        BOOST_REQUIRE(SignHalfAggStakeShare(uint256((uint64_t)(2000 + i)), uint256(55ULL), R, s));
+        proof.vSignerPubKeys.push_back(pk);
+        proof.vSignerRPoints.push_back(R);
+    }
+    proof.vchAggregatedSScalar = valtype(32, 0x07);
+
+    CDataStream ss(SER_DISK, CLIENT_VERSION);
+    ss << proof;
+    CNullStakeKernelProofV3 proof2;
+    ss >> proof2;
+
+    BOOST_CHECK_EQUAL(proof2.nThresholdM, 2u);
+    BOOST_CHECK(proof2.nStakeModifier == 12345ULL);
+    BOOST_CHECK(proof2.delegationHash == uint256(777ULL));
+    BOOST_CHECK_EQUAL(proof2.vSignerPubKeys.size(), 2u);
+    BOOST_CHECK(proof2.vSignerPubKeys == proof.vSignerPubKeys);
+    BOOST_CHECK(proof2.vSignerRPoints == proof.vSignerRPoints);
+    BOOST_CHECK(proof2.vchAggregatedSScalar == proof.vchAggregatedSScalar);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

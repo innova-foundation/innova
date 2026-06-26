@@ -860,6 +860,46 @@ bool ComputeNullStakeV3DelegationHash(int64_t nValue,
     return delegationHashOut != uint256(0);
 }
 
+bool ComputeNullStakeV3DelegationSetHash(int64_t nValue,
+                                         std::vector<std::vector<unsigned char> > vStakerPubKeys,
+                                         unsigned int nThresholdM,
+                                         const std::vector<unsigned char>& vchPkOwner,
+                                         uint256& delegationHashOut)
+{
+    size_t nMembers = vStakerPubKeys.size();
+    if (nValue <= 0 || nMembers == 0 || nThresholdM < 1 || nThresholdM > nMembers ||
+        vchPkOwner.size() != 33)
+        return false;
+    for (size_t i = 0; i < nMembers; i++)
+        if (vStakerPubKeys[i].size() != 33)
+            return false;
+
+    // Canonical order so the set commitment is independent of member ordering;
+    // reject duplicate members (a set, not a multiset).
+    std::sort(vStakerPubKeys.begin(), vStakerPubKeys.end());
+    for (size_t i = 1; i < nMembers; i++)
+        if (vStakerPubKeys[i] == vStakerPubKeys[i - 1])
+            return false;
+
+    // Fold the per-member auth hashes into a set hash, chaining x^5 for collision
+    // resistance, seeded by the threshold M and member count N so both are bound.
+    uint256 setHash = FieldFromUint64(((uint64_t)nThresholdM << 20) | (uint64_t)nMembers);
+    for (size_t i = 0; i < nMembers; i++)
+    {
+        uint256 keyAuth = LowBitsToScalar(NullStakeV3StakeAuthHash(vStakerPubKeys[i]),
+                                          BPAC_V3_DELEGATION_BITS);
+        uint256 x = FieldAdd(setHash, keyAuth);
+        uint256 x2 = FieldMul(x, x);
+        uint256 x4 = FieldMul(x2, x2);
+        uint256 x5 = FieldMul(x4, x);
+        setHash = FieldAdd(x5, keyAuth);
+    }
+
+    uint256 ownerBind = NullStakeV3OwnerBindHash(nValue, vchPkOwner);
+    delegationHashOut = NullStakeV3DelegationChain(setHash, ownerBind);
+    return delegationHashOut != uint256(0);
+}
+
 
 static bool SerializePoint(const EC_GROUP* group, const EC_POINT* point, BN_CTX* ctx,
                             std::vector<unsigned char>& out)

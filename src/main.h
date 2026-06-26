@@ -410,6 +410,19 @@ inline int GetForkHeightTallyGovernance()
 }
 #define FORK_HEIGHT_TALLY_GOVERNANCE (GetForkHeightTallyGovernance())
 
+// Hard fork height for B2-e: half-aggregated Schnorr M-of-N shielded cold staking
+// (public-signer tier). Sequenced after the committee-governance fork; activate on
+// mainnet only once the open release gates clear.
+inline int GetForkHeightNullStakeDelegSet()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest) return 12;
+    if (fTestNet) return 1500;       // live-chain, after D2 + a canary window
+    return 8260000;                  // mainnet: next slot after the governance fork
+}
+#define FORK_HEIGHT_NULLSTAKE_DELEGSET (GetForkHeightNullStakeDelegSet())
+
 // IDAG: Fork-gated block time — 15s pre-DAG, 1s post-DAG
 inline unsigned int GetTargetSpacingForHeight(int nHeight)
 {

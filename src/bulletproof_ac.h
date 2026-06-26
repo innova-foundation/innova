@@ -214,6 +214,16 @@ bool ComputeNullStakeV3DelegationHash(int64_t nValue,
                                       const std::vector<unsigned char>& vchPkOwner,
                                       uint256& delegationHashOut);
 
+// B2-e: delegation commitment for an M-of-N staker set (public-signer tier). Binds the
+// sorted, de-duplicated set of N staker pubkeys, the threshold M, the staked value, and
+// the owner key into delegationHash. Order-independent (keys are sorted) and rejects
+// duplicate members. Distinct from the 1-of-1 ComputeNullStakeV3DelegationHash above.
+bool ComputeNullStakeV3DelegationSetHash(int64_t nValue,
+                                         std::vector<std::vector<unsigned char> > vStakerPubKeys,
+                                         unsigned int nThresholdM,
+                                         const std::vector<unsigned char>& vchPkOwner,
+                                         uint256& delegationHashOut);
+
 bool AssignNullStakeV3Witness(const CR1CSCircuit& circuit,
                               uint64_t nStakeModifier,
                               unsigned int nBlockTimeFrom,
