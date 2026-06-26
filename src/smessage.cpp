@@ -1631,7 +1631,7 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
 
             if (vchData.size() < 4 || vchData.size() > 8192)
             {
-                pfrom->Misbehaving(1);
+                pfrom->Misbehaving(1, "smsgInv invalid size");
                 return false; // invalid smsgInv size (min 4, max 8KB)
             };
 
@@ -1656,14 +1656,14 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
             if (nInvBuckets > (SMSG_RETENTION / SMSG_BUCKET_LEN) + 1) // +1 for some leeway
             {
                 printf("Peer sent more bucket headers than possible %u, %u.\n", nInvBuckets, (SMSG_RETENTION / SMSG_BUCKET_LEN));
-                pfrom->Misbehaving(1);
+                pfrom->Misbehaving(1, "smsgInv too many bucket headers");
                 return false;
             };
 
             if (vchData.size() < 4 + nInvBuckets*16)
             {
                 printf("Remote node did not send enough data.\n");
-                pfrom->Misbehaving(1);
+                pfrom->Misbehaving(1, "smsgInv truncated bucket headers");
                 return false;
             };
 
@@ -1691,14 +1691,14 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
                         printf("Not interested in peer bucket %" PRId64", has expired.\n", time);
 
                     if (time < now - SMSG_RETENTION - SMSG_TIME_LEEWAY)
-                        pfrom->Misbehaving(1);
+                        pfrom->Misbehaving(1, "smsgInv expired bucket beyond leeway");
                     continue;
                 };
                 if (time > now + SMSG_TIME_LEEWAY)
                 {
                     if (fDebugSmsg)
                         printf("Not interested in peer bucket %" PRId64", in the future.\n", time);
-                    pfrom->Misbehaving(1);
+                    pfrom->Misbehaving(1, "smsgInv future bucket time");
                     continue;
                 };
 
@@ -1847,7 +1847,7 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
             {
                 if (fDebugSmsg)
                     printf("Not interested in peer bucket %" PRId64", in the future.\n", time);
-                pfrom->Misbehaving(1);
+                pfrom->Misbehaving(1, "smsgShow future bucket time");
                 return false;
             };
 
@@ -2022,7 +2022,7 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
             if (vchData.size() < 8)
             {
                 printf("smsgMatch, not enough data %" PRIszu".\n", vchData.size());
-                pfrom->Misbehaving(1);
+                pfrom->Misbehaving(1, "smsgMatch truncated payload");
                 return false;
             };
 
@@ -2076,7 +2076,7 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
             if (vchData.size() < 8)
             {
                 printf("smsgIgnore, not enough data %" PRIszu".\n", vchData.size());
-                pfrom->Misbehaving(1);
+                pfrom->Misbehaving(1, "smsgIgnore truncated payload");
                 return false;
             };
 
@@ -2111,7 +2111,7 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
             {
                 pfrom->smsgData.nTypingViolations++;
                 if (pfrom->smsgData.nTypingViolations > 5)
-                    pfrom->Misbehaving(1);
+                    pfrom->Misbehaving(1, "smsgTyping rate limit");
             }
         } else
         {
@@ -3281,7 +3281,7 @@ int SecureMsgReceive(CNode* pfrom, std::vector<unsigned char>& vchData)
     if (nBunch == 0 || nBunch > 500)
     {
         printf("Error: Invalid no. messages received in bunch %u, for bucket %" PRId64".\n", nBunch, bktTime);
-        pfrom->Misbehaving(1);
+        pfrom->Misbehaving(1, "smsgData invalid bunch size");
 
         // -- release lock on bucket if it exists
         {
@@ -3311,10 +3311,10 @@ int SecureMsgReceive(CNode* pfrom, std::vector<unsigned char>& vchData)
             // message dropped
             if (rv == 2) // invalid proof of work
             {
-                pfrom->Misbehaving(10);
+                pfrom->Misbehaving(10, "smsgData invalid proof of work");
             } else
             {
-                pfrom->Misbehaving(1);
+                pfrom->Misbehaving(1, "smsgData invalid message");
             };
             continue;
         };
@@ -4237,7 +4237,8 @@ bool SecureMsgStemRelay(unsigned char* pHeader, unsigned char* pPayload, uint32_
 
     for (CNode* pnode : vNodes)
     {
-        if (pnode->GetId() == nStemPeerId)
+        if (pnode->GetId() == nStemPeerId && !pnode->fDisconnect &&
+            pnode->hSocket != INVALID_SOCKET && pnode->fRelayTxes)
         {
             pnode->PushMessage("smsgStem", vchStem);
             {
@@ -4252,11 +4253,14 @@ bool SecureMsgStemRelay(unsigned char* pHeader, unsigned char* pPayload, uint32_
         }
     }
 
-    // Stem peer not in vNodes — clean up and let caller fluff
+    // Stem peer not usable — clean up and let caller fluff
     {
         LOCK(cs_smsgStem);
         mapSmsgStemState.erase(msgHash);
     }
+    if (fDebugSmsg)
+        printf("SecureMsgStemRelay: stem peer unavailable, fluff fallback peer=%d hash=%s\n",
+               nStemPeerId, msgHash.ToString().substr(0, 16).c_str());
     return false;
 }
 
@@ -4278,7 +4282,7 @@ bool SecureMsgHandleStem(CNode* pfrom, std::vector<unsigned char>& vchData)
     if (SecureMsgValidate(pHeader, pPayload, nPayload) != 0)
     {
         printf("SecureMsgHandleStem: PoW validation failed\n");
-        pfrom->Misbehaving(1);
+        pfrom->Misbehaving(1, "smsgStem invalid proof of work");
         return false;
     }
 

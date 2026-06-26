@@ -32,8 +32,22 @@ static const int PING_INTERVAL = 2 * 60;
 /** Time after which to disconnect, after waiting for a ping response (or inactivity). */
 static const int TIMEOUT_INTERVAL = 20 * 60;
 
-inline unsigned int ReceiveFloodSize() { return 1000*GetArg("-maxreceivebuffer", 5*1000); }
-inline unsigned int SendBufferSize() { return 1000*GetArg("-maxsendbuffer", 1*1000); }
+inline unsigned int ReceiveFloodSize() { return 1000*GetArg("-maxreceivebuffer", 50*1000); }
+inline unsigned int SendBufferSize() { return 1000*GetArg("-maxsendbuffer", 10*1000); }
+inline unsigned int ReceiveFloodHardSize()
+{
+    unsigned int nSoft = ReceiveFloodSize();
+    return nSoft > 0x7fffffffU ? 0xffffffffU : nSoft * 2;
+}
+inline int64_t ReceiveFloodDrainWindow()
+{
+    int64_t nWindow = GetArg("-receiveflooddrainwindow", 30);
+    if (nWindow < 5)
+        nWindow = 5;
+    if (nWindow > 300)
+        nWindow = 300;
+    return nWindow;
+}
 
 void AddOneShot(std::string strDest);
 bool OpenNetworkConnectionSimple(const CAddress& addrConnect, const char *strDest = NULL);
@@ -428,8 +442,11 @@ public:
     int nBestKnownHeight;
     uint256 hashBestKnownBlock;
     int64_t nLastHeightUpdate;
-	bool fStartSync;
+    bool fStartSync;
     int64_t nLastBlockRecv;
+    int64_t nLastBlockCatchupTime;
+    int64_t nRecvFloodHardStart;
+    int64_t nLastRecvFloodLog;
 
     int nBlocksReceivedInBatch;
     int nExpectedBatchSize;
@@ -448,6 +465,7 @@ public:
     // inventory based relay
     mruset<CInv> setInventoryKnown;
     std::vector<CInv> vInventoryToSend;
+    std::set<CInv> setInventoryForce;
     CCriticalSection cs_inventory;
     std::multimap<int64_t, CInv> mapAskFor;
 
@@ -505,6 +523,9 @@ public:
         nLastHeightUpdate = 0;
         fStartSync = false;
         nLastBlockRecv = 0;
+        nLastBlockCatchupTime = 0;
+        nRecvFloodHardStart = 0;
+        nLastRecvFloodLog = 0;
         nBlocksReceivedInBatch = 0;
         nExpectedBatchSize = 0;
         fPrefetchSent = false;
@@ -632,6 +653,17 @@ public:
             LOCK(cs_inventory);
             static const size_t MAX_INV_TO_SEND = 50000;
             if (!setInventoryKnown.count(inv) && vInventoryToSend.size() < MAX_INV_TO_SEND)
+                vInventoryToSend.push_back(inv);
+        }
+    }
+
+    void PushInventoryForce(const CInv& inv)
+    {
+        {
+            LOCK(cs_inventory);
+            static const size_t MAX_INV_TO_SEND = 50000;
+            setInventoryForce.insert(inv);
+            if (vInventoryToSend.size() < MAX_INV_TO_SEND)
                 vInventoryToSend.push_back(inv);
         }
     }
@@ -951,10 +983,14 @@ template<typename T1, typename T2, typename T3, typename T4, typename T5, typena
 
     void ExpireBlockInFlight(int64_t nNow = GetTime())
     {
-        static const int64_t BLOCK_IN_FLIGHT_TIMEOUT = 5;
+        int64_t nTimeout = GetArg("-blockinflighttimeout", 30);
+        if (nTimeout < 5)
+            nTimeout = 5;
+        if (nTimeout > 600)
+            nTimeout = 600;
         for (std::map<uint256, int64_t>::iterator it = mapBlockInFlightSince.begin(); it != mapBlockInFlightSince.end(); )
         {
-            if (nNow - it->second > BLOCK_IN_FLIGHT_TIMEOUT)
+            if (nNow - it->second > nTimeout)
             {
                 setBlocksInFlight.erase(it->first);
                 it = mapBlockInFlightSince.erase(it);
@@ -985,10 +1021,19 @@ template<typename T1, typename T2, typename T3, typename T4, typename T5, typena
         mapBlockInFlightSince.erase(hashBlock);
     }
 
+    bool ShouldRequestBlockCatchup(int64_t nMinInterval = 5)
+    {
+        int64_t nNow = GetTime();
+        if (nLastBlockCatchupTime != 0 && nNow - nLastBlockCatchupTime < nMinInterval)
+            return false;
+        nLastBlockCatchupTime = nNow;
+        return true;
+    }
+
     bool IsSubscribed(unsigned int nChannel);
     void Subscribe(unsigned int nChannel, unsigned int nHops=0);
     void CancelSubscribe(unsigned int nChannel);
-    void CloseSocketDisconnect();
+    void CloseSocketDisconnect(const char* pszReason = NULL);
 	void Cleanup();
 
     // Denial-of-service detection/prevention
@@ -1022,7 +1067,7 @@ template<typename T1, typename T2, typename T3, typename T4, typename T5, typena
     //!clean unused entires (if bantime has expired)
     static void SweepBanned();
 
-    bool Misbehaving(int howmuch); // 1 == a little, 100 == a lot
+    bool Misbehaving(int howmuch, const std::string& reason = ""); // 1 == a little, 100 == a lot
 
     void copyStats(CNodeStats &stats);
 
@@ -1058,19 +1103,31 @@ template<typename T1, typename T2, typename T3, typename T4, typename T5, typena
     static uint64_t GetMaxOutboundTimeLeftInCycle();
 };
 
-inline void RelayInventory(const CInv& inv)
+inline void RelayInventory(const CInv& inv, bool fForce = false)
 {
     // Put on lists to offer to the other nodes
+    int nPeers = 0;
     {
         LOCK(cs_vNodes);
         for (CNode* pnode : vNodes)
-            pnode->PushInventory(inv);
+        {
+            if (fForce)
+                pnode->PushInventoryForce(inv);
+            else
+                pnode->PushInventory(inv);
+            nPeers++;
+        }
     }
+    if (inv.type == MSG_TX && (fDebugNet || GetBoolArg("-debugtxrelay", false)))
+        printf("TXRELAY fanout tx=%s peers=%d force=%d\n",
+               inv.hash.ToString().substr(0,10).c_str(), nPeers, fForce);
 }
 
 class CTransaction;
 void RelayTransaction(const CTransaction& tx, const uint256& hash);
+void RelayTransaction(const CTransaction& tx, const uint256& hash, bool fForceRelay);
 void RelayTransaction(const CTransaction& tx, const uint256& hash, const CDataStream& ss);
+void RelayTransaction(const CTransaction& tx, const uint256& hash, const CDataStream& ss, bool fForceRelay);
 void RelayTransactionLockReq(const CTransaction& tx, const uint256& hash, bool relayToAll=false);
 void RelayCollaTeralFinalTransaction(const int sessionID, const CTransaction& txNew);
 void RelayCollaTeralIn(const std::vector<CTxIn>& in, const int64_t& nAmount, const CTransaction& txCollateral, const std::vector<CTxOut>& out);

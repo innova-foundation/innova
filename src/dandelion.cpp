@@ -84,14 +84,19 @@ void CDandelionRouter::OnStemPeerDisconnect(int nPeerId)
 {
     LOCK(cs_router);
 
+    bool fRemoved = false;
     for (auto it = vStemPeers.begin(); it != vStemPeers.end(); )
     {
-        if (*it == nPeerId)
+        if (*it == nPeerId) {
             it = vStemPeers.erase(it);
+            fRemoved = true;
+        }
         else
             ++it;
     }
 
+    if (fRemoved && (fDebugNet || GetBoolArg("-debugtxrelay", false)))
+        printf("Dandelion: removed disconnected stem peer=%d\n", nPeerId);
 }
 
 

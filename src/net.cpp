@@ -629,15 +629,19 @@ CNode* ConnectNode(CAddress addrConnect, const char *pszDest, bool colLateralMas
     return NULL;
 }
 
-void CNode::CloseSocketDisconnect()
+void CNode::CloseSocketDisconnect(const char* pszReason)
 {
+    bool fWasDisconnecting = fDisconnect;
     fDisconnect = true;
 
     dandelionRouter.OnStemPeerDisconnect(GetId());
 
     if (hSocket != INVALID_SOCKET)
     {
-        printf("Net() Disconnecting node %s\n", addrName.c_str());
+        printf("Net() Disconnecting node %s%s%s\n",
+               addrName.c_str(),
+               pszReason && pszReason[0] ? " reason=" : "",
+               pszReason && pszReason[0] ? pszReason : "");
         closesocket(hSocket);
         hSocket = INVALID_SOCKET;
 
@@ -645,6 +649,11 @@ void CNode::CloseSocketDisconnect()
         TRY_LOCK(cs_vRecvMsg, lockRecv);
         if (lockRecv)
             vRecvMsg.clear();
+    }
+    else if (!fWasDisconnecting && pszReason && pszReason[0])
+    {
+        printf("Net() Marking node %s disconnected reason=%s\n",
+               addrName.c_str(), pszReason);
     }
 }
 
@@ -837,12 +846,14 @@ void CNode::AddWhitelistedRange(const CSubNet &subnet) {
 }
  */
 
-bool CNode::Misbehaving(int howmuch)
+bool CNode::Misbehaving(int howmuch, const std::string& reason)
 {
     CSubNet subNet(addr);
     if (addr.IsLocal())
     {
-        printf("Warning: Local node %s misbehaving (delta: %d)!\n", addrName.c_str(), howmuch);
+        printf("Warning: Local node %s misbehaving (delta: %d)%s%s!\n",
+               addrName.c_str(), howmuch,
+               reason.empty() ? "" : " reason=", reason.empty() ? "" : reason.c_str());
         return false;
     }
 
@@ -856,16 +867,20 @@ bool CNode::Misbehaving(int howmuch)
     if (nCurrentMisbehavior >= GetArg("-banscore", 100))
     {
         int64_t banTime = GetTime()+GetArg("-bantime", 60*60*24);  // Default 24-hour ban
-        printf("Misbehaving: %s (%d -> %d) DISCONNECTING\n", addr.ToString().c_str(), nCurrentMisbehavior-howmuch, nCurrentMisbehavior);
+        printf("Misbehaving: %s (%d -> %d) DISCONNECTING%s%s\n",
+               addr.ToString().c_str(), nCurrentMisbehavior-howmuch, nCurrentMisbehavior,
+               reason.empty() ? "" : " reason=", reason.empty() ? "" : reason.c_str());
         {
             LOCK(cs_setBanned);
             if (setBanned[subNet].nBanUntil < banTime)
                 setBanned[subNet] = banTime;
         }
-        CloseSocketDisconnect();
+        CloseSocketDisconnect(reason.empty() ? "misbehaving" : reason.c_str());
         return true;
     } else
-        printf("Misbehaving: %s (%d -> %d)\n", addr.ToString().c_str(), nCurrentMisbehavior-howmuch, nCurrentMisbehavior);
+        printf("Misbehaving: %s (%d -> %d)%s%s\n",
+               addr.ToString().c_str(), nCurrentMisbehavior-howmuch, nCurrentMisbehavior,
+               reason.empty() ? "" : " reason=", reason.empty() ? "" : reason.c_str());
     return false;
 }
 
@@ -1130,7 +1145,7 @@ void SocketSendData(CNode *pnode)
         {
             printf("DEBUG-DISCONNECT SocketSendData corrupt state data=%zu offset=%zu peer=%s\n",
                    data.size(), (size_t)pnode->nSendOffset, pnode->addr.ToString().c_str());
-            pnode->CloseSocketDisconnect();
+            pnode->CloseSocketDisconnect("send-corrupt-state");
             return;
         }
         int nBytes = send(pnode->hSocket, &data[pnode->nSendOffset], data.size() - pnode->nSendOffset, MSG_NOSIGNAL | MSG_DONTWAIT);
@@ -1156,7 +1171,7 @@ void SocketSendData(CNode *pnode)
                 if (nErr != WSAEWOULDBLOCK && nErr != WSAEMSGSIZE && nErr != WSAEINTR && nErr != WSAEINPROGRESS)
                 {
                     printf("DEBUG-DISCONNECT send-error %d peer=%s\n", nErr, pnode->addr.ToString().c_str());
-                    pnode->CloseSocketDisconnect();
+                    pnode->CloseSocketDisconnect("send-error");
                 }
             }
             else if (nBytes > 100000) // 100,000 Bytes
@@ -1167,7 +1182,7 @@ void SocketSendData(CNode *pnode)
                 {
                     if (!pnode->fDisconnect)
                         printf("Closing send socket, output too large %d\n", nErr);
-                    pnode->CloseSocketDisconnect();
+                    pnode->CloseSocketDisconnect("send-output-too-large");
                 }
             }
             // couldn't send anything at all
@@ -1522,13 +1537,37 @@ void ThreadSocketHandler2(void* parg)
                 TRY_LOCK(pnode->cs_vRecvMsg, lockRecv);
                 if (lockRecv)
                 {
-                    if (pnode->GetTotalRecvSize() > ReceiveFloodSize()) {
-                        if (!pnode->fDisconnect)
-                            if (fDebug)
-                                printf("DEBUG-DISCONNECT recv-flood (%u bytes) peer=%s\n", pnode->GetTotalRecvSize(), pnode->addr.ToString().c_str());
-                        pnode->CloseSocketDisconnect();
+                    unsigned int nRecvQueueSize = pnode->GetTotalRecvSize();
+                    if (nRecvQueueSize > ReceiveFloodSize()) {
+                        int64_t nNow = GetTime();
+                        if (nRecvQueueSize > ReceiveFloodHardSize())
+                        {
+                            if (pnode->nRecvFloodHardStart == 0)
+                                pnode->nRecvFloodHardStart = nNow;
+                            if (nNow - pnode->nRecvFloodHardStart >= ReceiveFloodDrainWindow())
+                            {
+                                if (!pnode->fDisconnect)
+                                    printf("DEBUG-DISCONNECT recv-flood-hard queued=%u soft=%u hard=%u age=%" PRId64"s peer=%s\n",
+                                           nRecvQueueSize, ReceiveFloodSize(), ReceiveFloodHardSize(),
+                                           nNow - pnode->nRecvFloodHardStart, pnode->addr.ToString().c_str());
+                                pnode->CloseSocketDisconnect("recv-flood-hard");
+                            }
+                        }
+                        else
+                        {
+                            pnode->nRecvFloodHardStart = 0;
+                        }
+                        if (!pnode->fDisconnect && fDebug &&
+                            (pnode->nLastRecvFloodLog == 0 || nNow - pnode->nLastRecvFloodLog >= 5))
+                        {
+                            pnode->nLastRecvFloodLog = nNow;
+                            printf("recv-backpressure queued=%u soft=%u hard=%u peer=%s\n",
+                                   nRecvQueueSize, ReceiveFloodSize(), ReceiveFloodHardSize(),
+                                   pnode->addr.ToString().c_str());
+                        }
                     }
                     else {
+                        pnode->nRecvFloodHardStart = 0;
                         // typical socket buffer is 8K-64K
                         char pchBuf[0x10000];
                         int nBytes = recv(pnode->hSocket, pchBuf, sizeof(pchBuf), MSG_DONTWAIT);
@@ -1536,7 +1575,7 @@ void ThreadSocketHandler2(void* parg)
                         {
                             if (!pnode->ReceiveMsgBytes(pchBuf, nBytes)) {
                                 printf("DEBUG-DISCONNECT ReceiveMsgBytes failed peer=%s\n", pnode->addr.ToString().c_str());
-                                pnode->CloseSocketDisconnect();
+                                pnode->CloseSocketDisconnect("recv-parse-failed");
                             }
                             pnode->nLastRecv = GetTime();
                             pnode->nRecvBytes += nBytes;
@@ -1547,7 +1586,7 @@ void ThreadSocketHandler2(void* parg)
                             // socket closed gracefully
                             if (!pnode->fDisconnect)
                                 printf("DEBUG-DISCONNECT socket-closed-by-peer peer=%s\n", pnode->addr.ToString().c_str());
-                            pnode->CloseSocketDisconnect();
+                            pnode->CloseSocketDisconnect("socket-closed-by-peer");
                         }
                         else if (nBytes < 0)
                         {
@@ -1557,7 +1596,7 @@ void ThreadSocketHandler2(void* parg)
                             {
                                 if (!pnode->fDisconnect)
                                     printf("DEBUG-DISCONNECT recv-error %d peer=%s\n", nErr, pnode->addr.ToString().c_str());
-                                pnode->CloseSocketDisconnect();
+                                pnode->CloseSocketDisconnect("recv-error");
                             }
                         }
                         else if (nBytes > 500000) // 500,000 Bytes
@@ -1568,7 +1607,7 @@ void ThreadSocketHandler2(void* parg)
                             {
                                 if (!pnode->fDisconnect)
                                     printf("DEBUG-DISCONNECT output-too-large %d peer=%s\n", nErr, pnode->addr.ToString().c_str());
-                                pnode->CloseSocketDisconnect();
+                                pnode->CloseSocketDisconnect("output-too-large");
                             }
                         }
                     }
@@ -1596,27 +1635,32 @@ void ThreadSocketHandler2(void* parg)
                 if (pnode->nLastRecv == 0 || pnode->nLastSend == 0)
                 {
                     printf("socket no message in first 60 seconds, %d %d\n", pnode->nLastRecv != 0, pnode->nLastSend != 0);
+                    printf("DEBUG-DISCONNECT initial-handshake-timeout peer=%s\n", pnode->addr.ToString().c_str());
                     pnode->fDisconnect = true;
                 }
                 else if (pnode->nVersion == 0 && nTime - pnode->nTimeConnected > 90)
                 {
                     printf("socket handshake timeout: peer %s did not send version within 90s\n",
                            pnode->addr.ToString().c_str());
+                    printf("DEBUG-DISCONNECT version-handshake-timeout peer=%s\n", pnode->addr.ToString().c_str());
                     pnode->fDisconnect = true;
                 }
                 else if (nTime - pnode->nLastSend > TIMEOUT_INTERVAL)
                 {
                     printf("socket sending timeout: %" PRId64"s\n", nTime - pnode->nLastSend);
+                    printf("DEBUG-DISCONNECT send-timeout peer=%s\n", pnode->addr.ToString().c_str());
                     pnode->fDisconnect = true;
                 }
                 else if (nTime - pnode->nLastRecv > (pnode->nVersion > BIP0031_VERSION ? TIMEOUT_INTERVAL : 90*60))
                 {
                     printf("socket receive timeout: %" PRId64"s\n", nTime - pnode->nLastRecv);
+                    printf("DEBUG-DISCONNECT recv-timeout peer=%s\n", pnode->addr.ToString().c_str());
                     pnode->fDisconnect = true;
                 }
                 else if (pnode->nPingNonceSent && pnode->nPingUsecStart + TIMEOUT_INTERVAL * 1000000 < GetTimeMicros())
                 {
                     printf("ping timeout: %fs\n", 0.000001 * (GetTimeMicros() - pnode->nPingUsecStart));
+                    printf("DEBUG-DISCONNECT ping-timeout peer=%s\n", pnode->addr.ToString().c_str());
                     pnode->fDisconnect = true;
                 }
 
@@ -1632,6 +1676,7 @@ void ThreadSocketHandler2(void* parg)
                         {
                             printf("keepalive: dead socket detected for %s (err=%d, silent=%ds), disconnecting\n",
                                    pnode->addr.ToString().c_str(), nErr, (int)(nTime - pnode->nLastRecv));
+                            printf("DEBUG-DISCONNECT keepalive-dead-socket peer=%s\n", pnode->addr.ToString().c_str());
                             pnode->fDisconnect = true;
                         }
                     }
@@ -2510,13 +2555,12 @@ void ThreadMessageHandler2(void* parg)
                 if (lockRecv)
                 {
                     if (!ProcessMessages(pnode))
-                        pnode->CloseSocketDisconnect();
+                        pnode->CloseSocketDisconnect("process-message-failed");
 
-                    if (pnode->nSendSize < SendBufferSize()) {
-                        if (!pnode->vRecvGetData.empty() || (!pnode->vRecvMsg.empty() && pnode->vRecvMsg[0].complete())) {
-                            fSleep = false; // no sleep for the weak
-                        }
-                    }
+                    bool fCompleteRecvMsg = !pnode->vRecvMsg.empty() && pnode->vRecvMsg[0].complete();
+                    bool fRunnableGetData = !pnode->vRecvGetData.empty() && pnode->nSendSize < SendBufferSize();
+                    if (fCompleteRecvMsg || fRunnableGetData)
+                        fSleep = false; // no sleep for the weak
                 }
             }
 
@@ -2981,13 +3025,23 @@ public:
 
 void RelayTransaction(const CTransaction& tx, const uint256& hash)
 {
+    RelayTransaction(tx, hash, false);
+}
+
+void RelayTransaction(const CTransaction& tx, const uint256& hash, bool fForceRelay)
+{
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
     ss.reserve(10000);
     ss << tx;
-    RelayTransaction(tx, hash, ss);
+    RelayTransaction(tx, hash, ss, fForceRelay);
 }
 
 void RelayTransaction(const CTransaction& tx, const uint256& hash, const CDataStream& ss)
+{
+    RelayTransaction(tx, hash, ss, false);
+}
+
+void RelayTransaction(const CTransaction& tx, const uint256& hash, const CDataStream& ss, bool fForceRelay)
 {
     CInv inv(MSG_TX, hash);
     {
@@ -3014,6 +3068,32 @@ void RelayTransaction(const CTransaction& tx, const uint256& hash, const CDataSt
         vRelayExpiration.push_back(std::make_pair(GetTime() + 15 * 60, inv));
     }
 
+    if (fForceRelay)
+    {
+        if (dandelionState.IsEnabled())
+            dandelionState.TransitionToFluff(hash);
+        if (fDebugNet || GetBoolArg("-debugtxrelay", false))
+            printf("TXRELAY forced-fluff tx=%s\n",
+                   hash.ToString().substr(0,10).c_str());
+        RelayInventory(inv, true);
+        int nDirectPeers = 0;
+        {
+            LOCK(cs_vNodes);
+            for (CNode* pnode : vNodes)
+            {
+                if (!pnode || pnode->fDisconnect || pnode->hSocket == INVALID_SOCKET ||
+                    pnode->nVersion == 0 || !pnode->fRelayTxes)
+                    continue;
+                pnode->PushMessage("tx", tx);
+                nDirectPeers++;
+            }
+        }
+        if (fDebugNet || GetBoolArg("-debugtxrelay", false))
+            printf("TXRELAY forced-direct tx=%s peers=%d\n",
+                   hash.ToString().substr(0,10).c_str(), nDirectPeers);
+        return;
+    }
+
     bool fShielded = tx.IsShielded();
     if (dandelionState.IsEnabled())
     {
@@ -3037,19 +3117,39 @@ void RelayTransaction(const CTransaction& tx, const uint256& hash, const CDataSt
                 int nStemPeerId = dandelionRouter.GetStemPeer(hash);
                 if (nStemPeerId >= 0)
                 {
+                    bool fRelayedStem = false;
                     LOCK(cs_vNodes);
                     for (CNode* pnode : vNodes)
                     {
-                        if (pnode->GetId() == nStemPeerId)
+                        if (pnode->GetId() == nStemPeerId && !pnode->fDisconnect &&
+                            pnode->hSocket != INVALID_SOCKET && pnode->fRelayTxes)
                         {
                             pnode->PushInventory(inv);
+                            fRelayedStem = true;
                             break;
                         }
                     }
-                    return; // Stem relay done, do not broadcast to all
+                    if (fRelayedStem)
+                    {
+                        if (fDebugNet || GetBoolArg("-debugtxrelay", false))
+                            printf("TXRELAY dandelion-stem tx=%s peer=%d shielded=%d\n",
+                                   hash.ToString().substr(0,10).c_str(), nStemPeerId, fShielded);
+                        return; // Stem relay done, do not broadcast to all
+                    }
+                    if (fDebugNet || GetBoolArg("-debugtxrelay", false))
+                        printf("TXRELAY dandelion-fluff-fallback tx=%s reason=stem-peer-unavailable peer=%d\n",
+                               hash.ToString().substr(0,10).c_str(), nStemPeerId);
+                }
+                else if (fDebugNet || GetBoolArg("-debugtxrelay", false))
+                {
+                    printf("TXRELAY dandelion-fluff-fallback tx=%s reason=no-stem-peer\n",
+                           hash.ToString().substr(0,10).c_str());
                 }
             }
             dandelionState.TransitionToFluff(hash);
+            if (fDebugNet || GetBoolArg("-debugtxrelay", false))
+                printf("TXRELAY dandelion-fluff tx=%s shielded=%d\n",
+                       hash.ToString().substr(0,10).c_str(), fShielded);
         }
     }
 
