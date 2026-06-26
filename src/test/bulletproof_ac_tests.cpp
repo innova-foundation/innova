@@ -9,9 +9,18 @@
 #include "../zkproof.h"
 
 #include <openssl/bn.h>
+#include <openssl/ec.h>
+#include <openssl/obj_mac.h>
 #include <string.h>
+#include <vector>
 
 extern unsigned int nStakeMinAge;
+
+// Pippenger multiexp under test (defined in bulletproof_ac.cpp, external linkage).
+extern bool BPACMultiScalarMul(const EC_GROUP* group, BN_CTX* ctx,
+                               const std::vector<EC_POINT*>& points,
+                               const std::vector<BIGNUM*>& scalars,
+                               EC_POINT* result);
 
 namespace
 {
@@ -713,6 +722,58 @@ BOOST_AUTO_TEST_CASE(nullstake_v2_v3_bpac_paths_create_and_verify)
                                               nTxTimePrev, nVoutN, nTimeTx,
                                               skStake, pkOwner,
                                               delegationHash, losingProofV3));
+}
+
+// The Pippenger multiexp must equal the naive sum bit-for-bit, including edge
+// cases (zero scalar, identity point), across sizes up to the AC verifier's.
+BOOST_AUTO_TEST_CASE(multiscalarmul_matches_naive)
+{
+    EC_GROUP* group = EC_GROUP_new_by_curve_name(NID_secp256k1);
+    BN_CTX* ctx = BN_CTX_new();
+    BIGNUM* order = BN_new();
+    BOOST_REQUIRE(group && ctx && order);
+    BOOST_REQUIRE(EC_GROUP_get_order(group, order, ctx) == 1);
+
+    const size_t sizes[] = {1, 2, 5, 33, 100, 257, 1000, 2053};
+    for (size_t si = 0; si < sizeof(sizes) / sizeof(sizes[0]); si++)
+    {
+        size_t n = sizes[si];
+        std::vector<EC_POINT*> pts;
+        std::vector<BIGNUM*> scs;
+        for (size_t i = 0; i < n; i++)
+        {
+            BIGNUM* k = BN_new(); BN_rand_range(k, order);
+            EC_POINT* P = EC_POINT_new(group);
+            BOOST_REQUIRE(EC_POINT_mul(group, P, k, NULL, NULL, ctx) == 1);
+            BN_free(k);
+            BIGNUM* s = BN_new(); BN_rand_range(s, order);
+            pts.push_back(P);
+            scs.push_back(s);
+        }
+        if (n >= 2)
+        {
+            BN_zero(scs[0]);                                        // zero-scalar skip
+            BOOST_REQUIRE(EC_POINT_set_to_infinity(group, pts[1]) == 1); // identity point
+        }
+
+        EC_POINT* naive = EC_POINT_new(group);
+        EC_POINT* term = EC_POINT_new(group);
+        BOOST_REQUIRE(EC_POINT_set_to_infinity(group, naive) == 1);
+        for (size_t i = 0; i < n; i++)
+        {
+            BOOST_REQUIRE(EC_POINT_mul(group, term, NULL, pts[i], scs[i], ctx) == 1);
+            BOOST_REQUIRE(EC_POINT_add(group, naive, naive, term, ctx) == 1);
+        }
+
+        EC_POINT* pip = EC_POINT_new(group);
+        BOOST_REQUIRE(BPACMultiScalarMul(group, ctx, pts, scs, pip));
+        BOOST_CHECK_MESSAGE(EC_POINT_cmp(group, naive, pip, ctx) == 0,
+                            "multiexp mismatch at n=" << n);
+
+        for (size_t i = 0; i < n; i++) { EC_POINT_free(pts[i]); BN_free(scs[i]); }
+        EC_POINT_free(naive); EC_POINT_free(term); EC_POINT_free(pip);
+    }
+    BN_free(order); BN_CTX_free(ctx); EC_GROUP_free(group);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
