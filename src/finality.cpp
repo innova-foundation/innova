@@ -6248,12 +6248,13 @@ bool ProduceFinalityVote()
 
     std::map<CKeyID, CFinalityVoteCoinGroup> mapGroups;
     CTxDB txdb("r");
-    // Cast the private vote (if eligible) but do NOT return -- also cast a transparent
-    // vote below so finality keeps advancing while the committee assembles the v3 cert.
-    bool fPrivateCast = (fAllowPrivateV2 && ProducePrivateNullStakeFinalityVote(
-                            txdb, pEpochBlock, nCurrentEpoch, nEpochHeight, tallyConfig));
+    // Cast the FAST transparent vote FIRST so it lands within the epoch inclusion
+    // window [H_E, H_E+K) and keeps finality advancing; cast the slower private (FCMP)
+    // vote afterwards. The private vote's proof generation can otherwise push the
+    // transparent vote past the window on heavily-loaded nodes, stalling finalization.
     if (!fAllowTransparent)
-        return fPrivateCast;
+        return (fAllowPrivateV2 && ProducePrivateNullStakeFinalityVote(
+                    txdb, pEpochBlock, nCurrentEpoch, nEpochHeight, tallyConfig));
 
     std::vector<COutput> vCoins;
     pwalletMain->AvailableCoins(vCoins);
@@ -6319,7 +6320,8 @@ bool ProduceFinalityVote()
     }
 
     if (!pBestGroup || pBestGroup->nWeight <= 0)
-        return fPrivateCast;
+        return (fAllowPrivateV2 && ProducePrivateNullStakeFinalityVote(
+                    txdb, pEpochBlock, nCurrentEpoch, nEpochHeight, tallyConfig));
 
     CHashWriter nullifierHash(SER_GETHASH, 0);
     CPubKey pubkey = pBestGroup->key.GetPubKey();
@@ -6338,10 +6340,12 @@ bool ProduceFinalityVote()
     vote.vStakeProof = pBestGroup->vOutpoints;
 
     if (!vote.Sign(pBestGroup->key))
-        return fPrivateCast;
+        return (fAllowPrivateV2 && ProducePrivateNullStakeFinalityVote(
+                    txdb, pEpochBlock, nCurrentEpoch, nEpochHeight, tallyConfig));
 
     if (!g_finalityTracker.AddVote(vote))
-        return fPrivateCast;
+        return (fAllowPrivateV2 && ProducePrivateNullStakeFinalityVote(
+                    txdb, pEpochBlock, nCurrentEpoch, nEpochHeight, tallyConfig));
 
     printf("ProduceFinalityVote: epoch=%d height=%d weight=%s\n",
            nCurrentEpoch, nEpochHeight, FormatMoney(pBestGroup->nWeight).c_str());
@@ -6354,5 +6358,11 @@ bool ProduceFinalityVote()
         }
     }
 
+    // Transparent vote is in; now cast the private (hidden-weight) vote for the v3
+    // tally certificate. Done last so its slower FCMP proof can't delay the
+    // finality-advancing transparent vote past the inclusion window.
+    if (fAllowPrivateV2)
+        ProducePrivateNullStakeFinalityVote(txdb, pEpochBlock, nCurrentEpoch,
+                                            nEpochHeight, tallyConfig);
     return true;
 }
