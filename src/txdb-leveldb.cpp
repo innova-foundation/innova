@@ -417,7 +417,7 @@ bool CTxDB::EraseCurveTreeAtBlock(const uint256& blockHash)
     return Erase(make_pair(string("cb"), blockHash));
 }
 
-// IDAG Phase 2: DAG link persistence
+// DAG link persistence
 bool CTxDB::WriteDAGLinks(const uint256& hash, const CBlockDAGData& data)
 {
     return Write(make_pair(string("daglinks"), hash), data);
@@ -433,7 +433,7 @@ bool CTxDB::EraseDAGLinks(const uint256& hash)
     return Erase(make_pair(string("daglinks"), hash));
 }
 
-// IDAG Phase 3: Epoch state persistence
+// Epoch state persistence
 bool CTxDB::WriteEpochState(int nEpoch, const CEpochState& state)
 {
     return Write(make_pair(string("epochstate"), nEpoch), state);
@@ -707,6 +707,255 @@ bool CTxDB::IterateFinalityTallyCertificates(std::map<uint256, CFinalityTallyCer
     return true;
 }
 
+bool CTxDB::WriteFinalityConnectedVoteBlock(const uint256& hashBlock, const std::vector<uint256>& vNullifiers)
+{
+    return Write(make_pair(string("finalityconnvb"), hashBlock), vNullifiers);
+}
+
+bool CTxDB::EraseFinalityConnectedVoteBlock(const uint256& hashBlock)
+{
+    return Erase(make_pair(string("finalityconnvb"), hashBlock));
+}
+
+bool CTxDB::IterateFinalityConnectedVoteBlocks(std::map<uint256, std::vector<uint256> >& mapOut)
+{
+    mapOut.clear();
+    leveldb::DB* db = GetInstance();
+    if (!db)
+        return false;
+
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << string("finalityconnvb");
+    std::string strPrefix = ssPrefix.str();
+
+    leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
+    it->Seek(strPrefix);
+
+    while (it->Valid())
+    {
+        std::string strKey = it->key().ToString();
+        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
+            break;
+
+        try {
+            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
+            std::pair<std::string, uint256> keyPair;
+            ssKey >> keyPair;
+
+            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
+            std::vector<uint256> vNullifiers;
+            ssValue >> vNullifiers;
+            mapOut[keyPair.second] = vNullifiers;
+        }
+        catch (const std::exception&)
+        {
+            // Skip malformed entries.
+        }
+
+        it->Next();
+    }
+
+    delete it;
+    return true;
+}
+
+bool CTxDB::WriteFinalityConnectedShareBlock(const uint256& hashBlock, const std::vector<uint256>& vShareHashes)
+{
+    return Write(make_pair(string("finalityconnsb"), hashBlock), vShareHashes);
+}
+
+bool CTxDB::EraseFinalityConnectedShareBlock(const uint256& hashBlock)
+{
+    return Erase(make_pair(string("finalityconnsb"), hashBlock));
+}
+
+bool CTxDB::IterateFinalityConnectedShareBlocks(std::map<uint256, std::vector<uint256> >& mapOut)
+{
+    mapOut.clear();
+    leveldb::DB* db = GetInstance();
+    if (!db)
+        return false;
+
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << string("finalityconnsb");
+    std::string strPrefix = ssPrefix.str();
+
+    leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
+    it->Seek(strPrefix);
+
+    while (it->Valid())
+    {
+        std::string strKey = it->key().ToString();
+        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
+            break;
+
+        try {
+            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
+            std::pair<std::string, uint256> keyPair;
+            ssKey >> keyPair;
+
+            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
+            std::vector<uint256> vShareHashes;
+            ssValue >> vShareHashes;
+            mapOut[keyPair.second] = vShareHashes;
+        }
+        catch (const std::exception&)
+        {
+            // Skip malformed entries.
+        }
+
+        it->Next();
+    }
+
+    delete it;
+    return true;
+}
+
+bool CTxDB::WriteFinalityConnectedCertBlock(const uint256& hashBlock, const std::vector<uint256>& vCertHashes)
+{
+    return Write(make_pair(string("finalityconncb"), hashBlock), vCertHashes);
+}
+
+bool CTxDB::EraseFinalityConnectedCertBlock(const uint256& hashBlock)
+{
+    return Erase(make_pair(string("finalityconncb"), hashBlock));
+}
+
+bool CTxDB::IterateFinalityConnectedCertBlocks(std::map<uint256, std::vector<uint256> >& mapOut)
+{
+    mapOut.clear();
+    leveldb::DB* db = GetInstance();
+    if (!db)
+        return false;
+
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << string("finalityconncb");
+    std::string strPrefix = ssPrefix.str();
+
+    leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
+    it->Seek(strPrefix);
+
+    while (it->Valid())
+    {
+        std::string strKey = it->key().ToString();
+        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
+            break;
+
+        try {
+            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
+            std::pair<std::string, uint256> keyPair;
+            ssKey >> keyPair;
+
+            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
+            std::vector<uint256> vCertHashes;
+            ssValue >> vCertHashes;
+            mapOut[keyPair.second] = vCertHashes;
+        }
+        catch (const std::exception&)
+        {
+            // Skip malformed entries.
+        }
+
+        it->Next();
+    }
+
+    delete it;
+    return true;
+}
+
+bool CTxDB::WriteFinalityCommitteeRotation(int nEffectiveEpoch, const CFinalityCommitteeRotation& rot)
+{
+    return Write(make_pair(string("finalityrot"), nEffectiveEpoch), rot);
+}
+
+bool CTxDB::ReadFinalityCommitteeRotation(int nEffectiveEpoch, CFinalityCommitteeRotation& rot)
+{
+    return Read(make_pair(string("finalityrot"), nEffectiveEpoch), rot);
+}
+
+bool CTxDB::EraseFinalityCommitteeRotation(int nEffectiveEpoch)
+{
+    return Erase(make_pair(string("finalityrot"), nEffectiveEpoch));
+}
+
+bool CTxDB::IterateFinalityCommitteeRotations(std::map<int, CFinalityCommitteeRotation>& mapOut)
+{
+    mapOut.clear();
+    leveldb::DB* db = GetInstance();
+    if (!db)
+        return false;
+
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << string("finalityrot");
+    std::string strPrefix = ssPrefix.str();
+
+    leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
+    it->Seek(strPrefix);
+    while (it->Valid())
+    {
+        std::string strKey = it->key().ToString();
+        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
+            break;
+        try {
+            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
+            std::pair<std::string, int> keyPair;
+            ssKey >> keyPair;
+            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
+            CFinalityCommitteeRotation rot;
+            ssValue >> rot;
+            mapOut[keyPair.second] = rot;
+        }
+        catch (const std::exception&) { /* skip malformed */ }
+        it->Next();
+    }
+    delete it;
+    return true;
+}
+
+bool CTxDB::WriteFinalityConnectedRotationBlock(const uint256& hashBlock, const std::vector<int>& vEffEpochs)
+{
+    return Write(make_pair(string("finalityconnrot"), hashBlock), vEffEpochs);
+}
+
+bool CTxDB::EraseFinalityConnectedRotationBlock(const uint256& hashBlock)
+{
+    return Erase(make_pair(string("finalityconnrot"), hashBlock));
+}
+
+bool CTxDB::IterateFinalityConnectedRotationBlocks(std::map<uint256, std::vector<int> >& mapOut)
+{
+    mapOut.clear();
+    leveldb::DB* db = GetInstance();
+    if (!db)
+        return false;
+
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << string("finalityconnrot");
+    std::string strPrefix = ssPrefix.str();
+
+    leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
+    it->Seek(strPrefix);
+    while (it->Valid())
+    {
+        std::string strKey = it->key().ToString();
+        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
+            break;
+        try {
+            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
+            std::pair<std::string, uint256> keyPair;
+            ssKey >> keyPair;
+            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
+            std::vector<int> vEffEpochs;
+            ssValue >> vEffEpochs;
+            mapOut[keyPair.second] = vEffEpochs;
+        }
+        catch (const std::exception&) { /* skip malformed */ }
+        it->Next();
+    }
+    delete it;
+    return true;
+}
+
 bool CTxDB::IterateDAGLinks(std::map<uint256, CBlockDAGData>& mapOut)
 {
     mapOut.clear();
@@ -736,14 +985,14 @@ bool CTxDB::IterateDAGLinks(std::map<uint256, CBlockDAGData>& mapOut)
             CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
             CBlockDAGData data;
 
-            // Phase 4 compat: deserialize core fields first, then try nInferredK
+            // DAGKNIGHT compatibility: deserialize core fields first, then try nInferredK
             ssValue >> data.vDAGParents;
             ssValue >> data.vDAGChildren;
             ssValue >> data.fBlue;
             ssValue >> data.nDAGScore;
             ssValue >> data.nDAGOrder;
 
-            // nInferredK may not exist in pre-Phase 4 entries
+            // nInferredK may not exist in legacy entries
             if (ssValue.size() > 0)
             {
                 try { ssValue >> data.nInferredK; }
@@ -1058,12 +1307,14 @@ bool CTxDB::LoadBlockIndex()
             return error("CTxDB::LoadBlockIndex() : Failed stake modifier checkpoint height=%d, modifier=0x%016" PRIx64, pindex->nHeight, pindex->nStakeModifier);
     }
 
-    // IDAG Phase 2+3: Load DAG links (ordering deferred to init.cpp for incremental support)
+    // Load DAG links; ordering is deferred to init.cpp for incremental support
     g_dagManager.LoadDAGLinks(*this);
     g_dagManager.LoadEpochStates(*this);
+    PinFinalityCommitteeConstants(); // before rotations load
     g_finalityTracker.LoadVotes(*this);
     g_finalityTracker.LoadTallyShares(*this);
     g_finalityTracker.LoadTallyCertificates(*this);
+    g_finalityTracker.LoadCommitteeRotations(*this);
 
     // Load hashBestChain pointer to end of best chain
     if (!ReadHashBestChain(hashBestChain))

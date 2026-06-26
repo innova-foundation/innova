@@ -272,13 +272,13 @@ public:
     bool WriteCheckpointPubKey(const std::string& strPubKey);
     bool LoadBlockIndex();
 
-    // IDAG Phase 2: DAG link persistence
+    // DAG link persistence
     bool WriteDAGLinks(const uint256& hash, const CBlockDAGData& data);
     bool ReadDAGLinks(const uint256& hash, CBlockDAGData& data);
     bool EraseDAGLinks(const uint256& hash);
     bool IterateDAGLinks(std::map<uint256, CBlockDAGData>& mapOut);
 
-    // IDAG Phase 3: Epoch state persistence
+    // Epoch state persistence
     bool WriteEpochState(int nEpoch, const CEpochState& state);
     bool ReadEpochState(int nEpoch, CEpochState& state);
     bool IterateEpochStates(std::map<int, CEpochState>& mapOut);
@@ -299,6 +299,29 @@ public:
     bool ReadFinalityTallyCertificate(const uint256& hashCert, CFinalityTallyCertificate& cert);
     bool EraseFinalityTallyCertificate(const uint256& hashCert);
     bool IterateFinalityTallyCertificates(std::map<uint256, CFinalityTallyCertificate>& mapOut);
+    // Per-block connected-carrier indexes (block hash -> carried vote-nullifier /
+    // tally-share-hash / tally-certificate-hash lists). Written on connect, erased
+    // on disconnect; reloaded at startup so the finality connected-set bookkeeping
+    // is restart-deterministic.
+    bool WriteFinalityConnectedVoteBlock(const uint256& hashBlock, const std::vector<uint256>& vNullifiers);
+    bool EraseFinalityConnectedVoteBlock(const uint256& hashBlock);
+    bool IterateFinalityConnectedVoteBlocks(std::map<uint256, std::vector<uint256> >& mapOut);
+    bool WriteFinalityConnectedShareBlock(const uint256& hashBlock, const std::vector<uint256>& vShareHashes);
+    bool EraseFinalityConnectedShareBlock(const uint256& hashBlock);
+    bool IterateFinalityConnectedShareBlocks(std::map<uint256, std::vector<uint256> >& mapOut);
+    bool WriteFinalityConnectedCertBlock(const uint256& hashBlock, const std::vector<uint256>& vCertHashes);
+    bool EraseFinalityConnectedCertBlock(const uint256& hashBlock);
+    bool IterateFinalityConnectedCertBlocks(std::map<uint256, std::vector<uint256> >& mapOut);
+
+    // D2 self-governing committee rotations (keyed by effective epoch) + the
+    // reorg-safe per-block carrier index.
+    bool WriteFinalityCommitteeRotation(int nEffectiveEpoch, const CFinalityCommitteeRotation& rot);
+    bool ReadFinalityCommitteeRotation(int nEffectiveEpoch, CFinalityCommitteeRotation& rot);
+    bool EraseFinalityCommitteeRotation(int nEffectiveEpoch);
+    bool IterateFinalityCommitteeRotations(std::map<int, CFinalityCommitteeRotation>& mapOut);
+    bool WriteFinalityConnectedRotationBlock(const uint256& hashBlock, const std::vector<int>& vEffEpochs);
+    bool EraseFinalityConnectedRotationBlock(const uint256& hashBlock);
+    bool IterateFinalityConnectedRotationBlocks(std::map<uint256, std::vector<int> >& mapOut);
 private:
     bool LoadBlockIndexGuts();
 };
