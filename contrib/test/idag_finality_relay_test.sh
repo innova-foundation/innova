@@ -627,6 +627,68 @@ else
     fail "payload mining height did not advance"
 fi
 
+# --- A1 recovery: v3 cert completes with one committee member offline (M-of-N) ---
+# Needs an M-of-N committee with slack (N > M) so one member can drop and the
+# remaining M still recover the threshold tally and co-sign the certificate.
+if [ "${IDAG_RELAY_TEST_RECOVERY:-0}" = "1" ] && [ "${COMMITTEE_M:-1}" -gt 1 ] && [ "${#COMMITTEE_PUBKEYS[@]}" -gt "${COMMITTEE_M:-1}" ]; then
+    OFFLINE_NODE=$(( ${#COMMITTEE_PUBKEYS[@]} - 1 ))   # last committee member, e.g. node2 in 2-of-3
+    header "A1 Recovery (member node$OFFLINE_NODE offline; cert via remaining M=$COMMITTEE_M of N=${#COMMITTEE_PUBKEYS[@]})"
+
+    rpc "$OFFLINE_NODE" stop >/dev/null 2>&1
+    wait_rpc_down "$OFFLINE_NODE" >/dev/null 2>&1 || true
+    success "committee member node$OFFLINE_NODE taken offline"
+
+    # Drive a fresh epoch's vote-inclusion window closed. Mine node0 in lockstep with
+    # node1 (the other online member) so node1 stays synced and casts its epoch vote +
+    # committee share within the window. node$OFFLINE_NODE stays down throughout.
+    REC_TARGET=340   # epoch-2 boundary (311) + inclusion window (24), plus buffer
+    log "Mining to height $REC_TARGET (fresh epoch window) with node$OFFLINE_NODE offline"
+    h0="$(height 0)"; is_int "$h0" || { fail "could not read node0 height"; exit 1; }
+    while [ "$h0" -lt "$REC_TARGET" ]; do
+        mine_one 0 || { fail "recovery mining failed"; exit 1; }
+        h0="$(height 0)"; is_int "$h0" || { fail "node0 height read failed"; exit 1; }
+        rec_ok=0
+        for ((attempt=0; attempt<120; attempt++)); do
+            h1="$(height 1)"; if is_int "$h1" && [ "$h1" -ge "$h0" ]; then rec_ok=1; break; fi; sleep 1
+        done
+        [ "$rec_ok" -eq 1 ] || { fail "node1 fell behind during recovery mining (h0=$h0 h1=$h1)"; exit 1; }
+        [ $((h0 % 40)) -eq 0 ] && log "  ...recovery height $h0/$REC_TARGET"
+    done
+
+    # The remaining M members must assemble + connect a private v3 certificate.
+    if wait_for_pending_private_cert; then
+        success "private cert became pending with node$OFFLINE_NODE offline (tally recovered by M=$COMMITTEE_M)"
+    else
+        fail "private cert did NOT become pending with one member offline -- A1 recovery FAILED"; exit 1
+    fi
+    mine_one 0 2400 || { fail "failed to mine recovery cert block"; exit 1; }
+    REC_HEIGHT="$(height 0)"
+    for ((attempt=0; attempt<300; attempt++)); do
+        h1="$(height 1)"; if is_int "$h1" && [ "$h1" -ge "$REC_HEIGHT" ]; then break; fi; sleep 2
+    done
+
+    REC_JSON="$(block_json 1 "$REC_HEIGHT")"
+    REC_COUNT="$(json_private_cert_count "$REC_JSON")"
+    REC_SIGNERS="$(json_max_cert_signers "$REC_JSON")"
+    RH0="$(block_hash 0 "$REC_HEIGHT")"; RH1="$(block_hash 1 "$REC_HEIGHT")"
+    if [ "$RH0" = "$RH1" ] && is_int "$REC_COUNT" && [ "$REC_COUNT" -ge 1 ] && is_int "$REC_SIGNERS" && [ "$REC_SIGNERS" -ge "$COMMITTEE_M" ]; then
+        success "A1 recovery: v3 cert completed with node$OFFLINE_NODE offline ($REC_SIGNERS signers >= M=$COMMITTEE_M; relayed to node1 at height $REC_HEIGHT)"
+    else
+        fail "A1 recovery cert check failed: hash0=$RH0 hash1=$RH1 count=$REC_COUNT signers=$REC_SIGNERS"
+    fi
+
+    # Bring the offline member back and confirm it re-syncs the recovered chain.
+    start_node "$OFFLINE_NODE"
+    for ((attempt=0; attempt<300; attempt++)); do
+        hb="$(height "$OFFLINE_NODE" 2>/dev/null)"; if is_int "$hb" && [ "$hb" -ge "$REC_HEIGHT" ]; then break; fi; sleep 2
+    done
+    if is_int "$hb" && [ "$hb" -ge "$REC_HEIGHT" ]; then
+        success "node$OFFLINE_NODE restarted and re-synced to height $hb after recovery"
+    else
+        fail "node$OFFLINE_NODE did not re-sync after restart (h=$hb)"
+    fi
+fi
+
 # --- D2 committee self-rotation (opt-in; needs an M-of-N committee) ---
 if [ "${IDAG_RELAY_TEST_ROTATION:-0}" = "1" ] && [ "${COMMITTEE_M:-1}" -gt 1 ]; then
     header "Committee Self-Rotation ($COMMITTEE_THRESHOLD -> 2-of-2)"
