@@ -599,14 +599,27 @@ Value getwork(const Array& params, bool fHelp)
 }
 
 
+static int MiningThreadCountFromParam(const Array& params, size_t index)
+{
+    int nThreads = 1;
+    if (params.size() > index)
+        nThreads = params[index].get_int();
+    if (nThreads < 1)
+        nThreads = 1;
+    if (nThreads > 16)
+        nThreads = 16;
+    return nThreads;
+}
+
 Value setgenerate(const Array& params, bool fHelp)
 {
-    if (fHelp || params.size() < 1 || params.size() > 2)
+    if (fHelp || params.size() < 1 || params.size() > 3)
         throw runtime_error(
-            "setgenerate <generate> [blocks]\n"
+            "setgenerate <generate> [blocks] [threads]\n"
             "Start or stop background CPU mining (regtest/testnet only).\n"
             "<generate> true to start mining, false to stop.\n"
             "[blocks] number of blocks to mine (default: 0 = unlimited).\n"
+            "[threads] number of CPU miner threads (default: 1, max: 16).\n"
             "Returns immediately. Use getblockcount to monitor progress.");
 
     bool fGenerate = params[0].get_bool();
@@ -632,17 +645,31 @@ Value setgenerate(const Array& params, bool fHelp)
     int nBlocks = 0;
     if (params.size() > 1)
         nBlocks = params[1].get_int();
+    int nThreads = MiningThreadCountFromParam(params, 2);
 
     nCPUMineTarget = nBlocks;
-    nCPUMinerThreads = 1;
+    nCPUMinerThreads = nThreads;
     fCPUMining = true;
 
-    if (!NewThread(ThreadCPUMiner, pwalletMain))
+    bool fStarted = false;
+    for (int i = 0; i < nThreads; i++)
+    {
+        if (NewThread(ThreadCPUMiner, pwalletMain))
+        {
+            fStarted = true;
+        }
+        else
+        {
+            printf("Error: NewThread(ThreadCPUMiner) failed for thread %d\n", i);
+        }
+    }
+    if (!fStarted)
         throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to start mining thread");
 
     Object result;
     result.push_back(Pair("mining", true));
     result.push_back(Pair("target_blocks", nBlocks == 0 ? 0 : nBlocks));
+    result.push_back(Pair("threads", nThreads));
     result.push_back(Pair("height", nBestHeight));
     return result;
 }
@@ -661,15 +688,10 @@ Value startmining(const Array& params, bool fHelp)
     if (fCPUMining)
         throw JSONRPCError(RPC_MISC_ERROR, "CPU mining is already running");
 
-    int nThreads = 1;
-    if (params.size() > 0)
-        nThreads = params[0].get_int();
-    if (nThreads < 1)
-        nThreads = 1;
-    if (nThreads > 16)
-        nThreads = 16;
+    int nThreads = MiningThreadCountFromParam(params, 0);
 
     nCPUMinerThreads = nThreads;
+    nCPUMineTarget = 0;
     fCPUMining = true;
 
     for (int i = 0; i < nThreads; i++)
@@ -696,6 +718,7 @@ Value stopmining(const Array& params, bool fHelp)
         throw JSONRPCError(RPC_MISC_ERROR, "CPU mining is not running");
 
     fCPUMining = false;
+    nCPUMineTarget = 0;
 
     Object result;
     result.push_back(Pair("mining", false));

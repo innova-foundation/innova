@@ -61,7 +61,7 @@ void ProcessSpork(CNode* pfrom, std::string& strCommand, CDataStream& vRecv)
 
         if(!sporkManager.CheckSignature(spork)){
             printf("spork - invalid signature\n");
-            Misbehaving(pfrom->GetId(), 100);
+            Misbehaving(pfrom->GetId(), 100, "spork invalid signature");
             return;
         }
 

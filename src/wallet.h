@@ -1334,8 +1334,8 @@ public:
     bool AcceptWalletTransaction(CTxDB& txdb);
     bool AcceptWalletTransaction();
 
-    void RelayWalletTransaction(CTxDB& txdb);
-    void RelayWalletTransaction();
+    void RelayWalletTransaction(CTxDB& txdb, bool fForceRelay = false);
+    void RelayWalletTransaction(bool fForceRelay = false);
 };
 
 

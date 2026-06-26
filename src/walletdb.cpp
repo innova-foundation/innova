@@ -797,15 +797,20 @@ void ThreadFlushWalletDB(void* parg)
             {
                 bool fPeerCatchingUp = nBestHeight >= 0 && pnode->nChainHeight >= 0 &&
                                         pnode->nChainHeight + 24 < nBestHeight;
-                uint64_t nMaxPeerSendBytes = (uint64_t)std::max<int64_t>(0, GetArg("-maxpp", 10000000));
+                int64_t nMaxPeerSendBytesArg = GetArg("-maxpp", 0);
+                uint64_t nMaxPeerSendBytes = (uint64_t)std::max<int64_t>(0, nMaxPeerSendBytesArg);
                 if (!fPeerCatchingUp &&
+                    nMaxPeerSendBytes > 0 &&
                     pnode->nSendBytes >= nMaxPeerSendBytes &&
                     GetTime() - pnode->nTimeConnected < GetArg("-maxpptime", 10*60))
                 {
-                    printf("Disconnecting and Banning Node: %s, Too Many SendBytes = %" PRIszu"\n", pnode->addr.ToString().c_str(), pnode->nSendBytes);
+                    printf("Disconnecting Node: %s, send byte limit exceeded = %" PRIszu"\n", pnode->addr.ToString().c_str(), pnode->nSendBytes);
                     pnode->fDisconnect = true;
-                    int bantime = 60*60*24;
-                    CNode::Ban(pnode->addr, BanReasonNodeMisbehaving, bantime);
+                    if (GetBoolArg("-maxppban", false))
+                    {
+                        int bantime = 60*60*24;
+                        CNode::Ban(pnode->addr, BanReasonNodeMisbehaving, bantime);
+                    }
                     pnode->CloseSocketDisconnect();
                 }
             }

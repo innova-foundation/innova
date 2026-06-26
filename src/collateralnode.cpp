@@ -126,7 +126,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 
         if(pubkeyScript.size() != 25) {
             if (fDebugCN) printf("isee - pubkey the wrong size\n");
-            Misbehaving(pfrom->GetId(), 100);
+            Misbehaving(pfrom->GetId(), 100, "collateralnode pubkey script wrong size");
             return;
         }
 
@@ -135,14 +135,14 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 
         if(pubkeyScript2.size() != 25) {
             if (fDebugCN) printf("isee - pubkey2 the wrong size\n");
-            Misbehaving(pfrom->GetId(), 100);
+            Misbehaving(pfrom->GetId(), 100, "collateralnode pubkey2 script wrong size");
             return;
         }
 
         std::string errorMessage = "";
         if(!colLateralSigner.VerifyMessage(pubkey, vchSig, strMessage, errorMessage)){
             if (fDebugCN) printf("isee - Got bad collateralnode address signature\n");
-            Misbehaving(pfrom->GetId(), 100);
+            Misbehaving(pfrom->GetId(), 100, "collateralnode address signature invalid");
             return;
         }
 
@@ -449,7 +449,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 
         if(pfrom->HasFulfilledRequest("mnget")) {
             printf("mnget - peer already asked me for the list\n");
-            Misbehaving(pfrom->GetId(), 20);
+            Misbehaving(pfrom->GetId(), 20, "collateralnode mnget duplicate request");
             return;
         }
 
@@ -480,7 +480,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 
         if(winner.vin.nSequence != std::numeric_limits<unsigned int>::max()){
             printf("mnw - invalid nSequence\n");
-            Misbehaving(pfrom->GetId(), 100);
+            Misbehaving(pfrom->GetId(), 100, "collateralnode winner invalid nSequence");
             return;
         }
 
@@ -488,7 +488,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 
         if(!collateralnodePayments.CheckSignature(winner)){
             printf("mnw - invalid signature\n");
-            Misbehaving(pfrom->GetId(), 100);
+            Misbehaving(pfrom->GetId(), 100, "collateralnode winner invalid signature");
             return;
         }
 

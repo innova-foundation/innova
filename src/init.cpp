@@ -137,7 +137,7 @@ void Shutdown(void* parg)
             pwalletMain->SaveSPVUtxoCache();
         }
 
-        // IDAG Phase 3: Save DAG clean height for incremental rebuild on restart
+        // Save DAG clean height for incremental rebuild on restart
         if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_DAG)
         {
             CTxDB txdbClean;
@@ -555,8 +555,8 @@ std::string HelpMessage()
         "  -banscore=<n>          " + _("Threshold for disconnecting misbehaving peers (default: 100)") + "\n" +
         "  -bantime=<n>           " + _("Number of seconds to keep misbehaving peers from reconnecting (default: 86400)") + "\n" +
         "  -softbantime=<n>       " + _("Number of seconds to keep soft banned peers from reconnecting (default: 3600)") + "\n" +
-        "  -maxreceivebuffer=<n>  " + _("Maximum per-connection receive buffer, <n>*1000 bytes (default: 5000)") + "\n" +
-        "  -maxsendbuffer=<n>     " + _("Maximum per-connection send buffer, <n>*1000 bytes (default: 1000)") + "\n" +
+        "  -maxreceivebuffer=<n>  " + _("Maximum per-connection receive soft buffer, <n>*1000 bytes (default: 50000)") + "\n" +
+        "  -maxsendbuffer=<n>     " + _("Maximum per-connection send buffer, <n>*1000 bytes (default: 10000)") + "\n" +
 #ifdef USE_UPNP
 #if USE_UPNP
         "  -upnp                  " + _("Use UPnP to map the listening port (default: 1 when listening)") + "\n" +
@@ -603,6 +603,8 @@ std::string HelpMessage()
         "  -checkblocks=<n>       " + _("How many blocks to check at startup (default: 2500, 0 = all)") + "\n" +
         "  -checklevel=<n>        " + _("How thorough the block verification is (0-6, default: 1)") + "\n" +
         "  -loadblock=<file>      " + _("Imports blocks from external blk000?.dat file") + "\n" +
+        "  -replayblocks=<dir>    " + _("Replay every blkNNNN.dat in <dir> through full validation (implies -fullreplayverify), then exit") + "\n" +
+        "  -fullreplayverify      " + _("Force full ECDSA verification of all historic blocks (no checkpoint signature skip)") + "\n" +
 
         "\n" + _("Block creation options:") + "\n" +
         "  -blockminsize=<n>      "   + _("Set minimum block size in bytes (default: 0)") + "\n" +
@@ -1397,6 +1399,16 @@ bool AppInit2()
     };
     printf(" block index %15" PRId64"ms\n", GetTimeMillis() - nStart);
 
+    // Persisted relayed tally shares can outlive their pending votes across
+    // a restart (pending votes are memory-only). Purge any share whose vote
+    // no longer resolves so the miner never embeds a share that would make
+    // its own block fail ConnectBlock. Must run after LoadBlockIndex so
+    // connected votes and pindexBest are available.
+    {
+        CTxDB txdbFinality("r+");
+        g_finalityTracker.PurgeUnresolvableTallyShares(txdbFinality);
+    }
+
     //Create Innova Name index - this must happen before ReacceptWalletTransactions()
     uiInterface.InitMessage(_("Loading name index..."));
     printf("Loading Innova name index...\n");
@@ -1609,6 +1621,58 @@ bool AppInit2()
 
     // ********************************************************* Step 9: import blocks
 
+    fFullReplayVerify = GetBoolArg("-fullreplayverify", false);
+
+    // The import paths below run ConnectBlock, which for shielded chains needs the
+    // ZK proof context (SeedGenesisCommitments / CreateBlindCommitment). It is
+    // otherwise initialized at node start (Step 11), after this step, so initialize
+    // it now when importing. Idempotent (boost::call_once) -> the Step 11 call no-ops.
+    if (mapArgs.count("-replayblocks") || mapArgs.count("-loadblock"))
+    {
+        if (!CZKContext::Initialize())
+            return InitError(_("Failed to initialize the zero-knowledge proof context for block import."));
+    }
+
+    // -replayblocks=<dir|file>: in-binary full-validation replay. Imports every
+    // blkNNNN.dat in <dir> (or a single file) through the real ProcessBlock pipeline
+    // with full ECDSA verification forced (no checkpoint signature skip), into the
+    // active datadir. Used to re-validate chain history end to end without an
+    // external tool. Files are imported in name order; LoadExternalBlockFile skips
+    // already-known blocks, so the pass is resumable.
+    if (mapArgs.count("-replayblocks"))
+    {
+        fFullReplayVerify = true;
+        fs::path pathSrc = fs::path(GetArg("-replayblocks", ""));
+        uiInterface.InitMessage(_("Replaying blocks with full verification..."));
+
+        std::vector<fs::path> vFiles;
+        if (fs::is_directory(pathSrc))
+        {
+            for (fs::directory_iterator it(pathSrc), end; it != end; ++it)
+            {
+                std::string name = it->path().filename().string();
+                if (name.size() >= 8 && name.compare(0, 3, "blk") == 0 &&
+                    name.compare(name.size() - 4, 4, ".dat") == 0)
+                    vFiles.push_back(it->path());
+            }
+            std::sort(vFiles.begin(), vFiles.end());
+        }
+        else if (fs::exists(pathSrc))
+        {
+            vFiles.push_back(pathSrc);
+        }
+
+        printf("-replayblocks: %d block file(s) from %s, full ECDSA verify ON\n",
+               (int)vFiles.size(), pathSrc.string().c_str());
+        for (const fs::path& f : vFiles)
+        {
+            FILE *file = fopen(f.string().c_str(), "rb");
+            if (file)
+                LoadExternalBlockFile(file);
+        }
+        exit(0);
+    }
+
     if (mapArgs.count("-loadblock"))
     {
         uiInterface.InitMessage(_("Importing blockchain data file."));
@@ -1747,11 +1811,11 @@ bool AppInit2()
     if (!GetBoolArg("-nofinalityvoting", false))
         NewThread(ThreadFinalityVoter, NULL);
 
-    // IDAG Phase 2+3: DAG manager initialized via global constructor
+    // DAG manager initialized via global constructor
     // Links loaded during LoadBlockIndex() in txdb-leveldb.cpp
     if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_DAG)
     {
-        // IDAG Phase 3: Check for clean height — use incremental rebuild if available
+        // Check for clean height; use incremental rebuild if available
         // Also restore nPrunedBelowHeight for GetBlueSet boundary detection
         CTxDB txdbDAGInit;
         int nDAGCleanHeight = -1;
@@ -1777,7 +1841,7 @@ bool AppInit2()
         printf("IDAG: DAG active at height %d, %d tips, %d entries\n",
                pindexBest->nHeight, (int)vTips.size(), g_dagManager.GetDAGEntryCount());
 
-        // IDAG Phase 4: DAGKNIGHT status
+        // DAGKNIGHT status
         if (pindexBest->nHeight >= FORK_HEIGHT_DAGKNIGHT)
             printf("IDAG Phase 4: DAGKNIGHT adaptive ordering active (no fixed k)\n");
         else
