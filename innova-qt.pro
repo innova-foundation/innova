@@ -541,8 +541,8 @@ HEADERS += src/qt/bitcoingui.h \
     src/spork.h \
     src/shielded.h \
     src/nullsend.h \
-    src/shieldedcoinjoin.h \
     src/zkproof.h \
+    src/verifycache.h \
     src/lelantus.h \
     src/curvetree.h \
     src/ipa.h \
@@ -757,9 +757,9 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/spork.cpp \
     src/shielded.cpp \
     src/nullsend.cpp \
-    src/shieldedcoinjoin.cpp \
     src/rpcshielded.cpp \
     src/zkproof.cpp \
+    src/verifycache.cpp \
     src/lelantus.cpp \
     src/curvetree.cpp \
     src/ipa.cpp \

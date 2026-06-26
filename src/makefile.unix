@@ -58,9 +58,21 @@ ifdef STATIC
     endif
 endif
 
+ifeq ($(UNAME_S),Darwin)
+    LDLIBMODE =
+    LDLIBMODE2 =
+    DL_LIB =
+    DARWIN_LDFLAGS = -Wl,-no_fixup_chains -Wl,-adhoc_codesign
+    DARWIN_FRAMEWORKS = -framework CoreFoundation -framework IOKit
+else
+    LDLIBMODE = -Wl,-B$(LMODE)
+    LDLIBMODE2 = -Wl,-B$(LMODE2)
+    DL_LIB = -l dl
+endif
+
 # for boost 1.37, add -mt to the boost libraries
 LIBS += \
- -Wl,-B$(LMODE) \
+ $(LDLIBMODE) \
    -l boost_filesystem$(BOOST_LIB_SUFFIX) \
    -l boost_program_options$(BOOST_LIB_SUFFIX) \
    -l boost_thread$(BOOST_LIB_SUFFIX) \
@@ -94,9 +106,9 @@ ifneq (${USE_UPNP}, -)
 endif
 
 LIBS+= \
- -Wl,-B$(LMODE2) \
+ $(LDLIBMODE2) \
    -l z \
-   -l dl \
+   $(DL_LIB) \
    -l pthread
 
 
@@ -118,7 +130,9 @@ LIBS+= \
     # Make some important things such as the global offset table read only as soon as
     # the dynamic linker is finished building it. This will prevent overwriting of addresses
     # which would later be jumped to.
-    LDHARDENING+=-Wl,-z,relro -Wl,-z,now
+    ifneq ($(UNAME_S),Darwin)
+        LDHARDENING+=-Wl,-z,relro -Wl,-z,now
+    endif
 
     # Build position independent code to take advantage of Address Space Layout Randomization
     # offered by some kernels.
@@ -152,7 +166,7 @@ xCFLAGS=-O2 $(EXT_OPTIONS) -pthread -Wall -Wextra -Wno-ignored-qualifiers -Wno-f
 
 # LDFLAGS can be specified on the make command line, so we use xLDFLAGS that only
 # adds some defaults in front. Unfortunately, LDFLAGS=... $(LDFLAGS) does not work.
-xLDFLAGS=$(LDHARDENING) $(LDFLAGS)
+xLDFLAGS=$(LDHARDENING) $(DARWIN_LDFLAGS) $(LDFLAGS)
 
 ifdef SANITIZE
     xCXXFLAGS += -fsanitize=$(SANITIZE) -fno-omit-frame-pointer
@@ -346,9 +360,9 @@ OBJS= \
 	obj/rpchyperfile.o \
     obj/rpcshielded.o \
     obj/nullsend.o \
-    obj/shieldedcoinjoin.o \
     obj/shielded.o \
     obj/zkproof.o \
+    obj/verifycache.o \
     obj/lelantus.o \
     obj/curvetree.o \
     obj/ipa.o \
@@ -424,9 +438,9 @@ OBJS= \
 	obj/rpchyperfile.o \
     obj/rpcshielded.o \
     obj/nullsend.o \
-    obj/shieldedcoinjoin.o \
     obj/shielded.o \
     obj/zkproof.o \
+    obj/verifycache.o \
     obj/lelantus.o \
     obj/curvetree.o \
     obj/ipa.o \
@@ -486,9 +500,16 @@ TEST_OBJS= \
     obj/test/test_innova.o \
     obj/test/bulletproof_ac_tests.o \
     obj/test/finality_tally_tests.o \
-    obj/test/fcmp_root_tests.o
+    obj/test/fcmp_root_tests.o \
+    obj/test/idag_validation_tests.o \
+    obj/test/shielded_nullifier_binding_tests.o \
+    obj/test/finality_vote_binding_tests.o \
+    obj/test/nullsend_binding_tests.o \
+    obj/test/coinstake_guard_tests.o \
+    obj/test/finality_committee_sig_tests.o \
+    obj/test/halfagg_stake_tests.o
 
-.PHONY: all innova-build check-bpac check-finality-tally check-fcmp release-check
+.PHONY: all innova-build check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-finality-committee-sig release-check
 
 INNOVA_SPINNER ?= 1
 INNOVA_SPINNER_SCRIPT ?= ../contrib/innova_build_spinner.sh
@@ -511,7 +532,25 @@ check-finality-tally: test_innova
 check-fcmp: test_innova
 	./test_innova --run_test=fcmp_root_tests
 
-release-check: innova-build check-bpac check-finality-tally check-fcmp
+check-idag-validation: test_innova
+	./test_innova --run_test=idag_validation_tests
+
+check-shielded-nullifier-binding: test_innova
+	./test_innova --run_test=shielded_nullifier_binding_tests,shielded_nullifier_binding_proof_tests
+
+check-finality-vote-binding: test_innova
+	./test_innova --run_test=finality_vote_binding_tests
+
+check-nullsend-binding: test_innova
+	./test_innova --run_test=nullsend_binding_tests
+
+check-coinstake-guard: test_innova
+	./test_innova --run_test=coinstake_guard_tests
+
+check-finality-committee-sig: test_innova
+	./test_innova --run_test=finality_committee_sig_tests
+
+release-check: innova-build check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-finality-committee-sig
 
 #
 # LevelDB support
@@ -603,10 +642,10 @@ obj/%.o: %.cc
 endif
 
 innovad: $(OBJS:obj/%=obj/%)
-	$(LINK) $(xCXXFLAGS) -o $@ $^ $(xLDFLAGS) $(LIBS)
+	$(LINK) $(xCXXFLAGS) -o $@ $^ $(xLDFLAGS) $(LIBS) $(DARWIN_FRAMEWORKS)
 
 test_innova: $(filter-out obj/init.o,$(OBJS:obj/%=obj/%)) $(TEST_OBJS)
-	$(LINK) $(xCXXFLAGS) -o $@ $^ $(xLDFLAGS) $(LIBS) -lboost_unit_test_framework
+	$(LINK) $(xCXXFLAGS) -o $@ $^ $(xLDFLAGS) $(LIBS) -lboost_unit_test_framework $(DARWIN_FRAMEWORKS)
 
 clean:
 	-rm -f innovad

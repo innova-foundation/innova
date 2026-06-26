@@ -135,9 +135,9 @@ OBJS= \
     obj/rpchyperfile.o \
     obj/rpcshielded.o \
     obj/nullsend.o \
-    obj/shieldedcoinjoin.o \
     obj/shielded.o \
     obj/zkproof.o \
+    obj/verifycache.o \
     obj/lelantus.o \
     obj/curvetree.o \
     obj/ipa.o \
