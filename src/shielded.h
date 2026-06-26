@@ -243,6 +243,11 @@ public:
     CFCMPProof fcmpProof;
     uint256 curveTreeRoot;
 
+    // Nullifier binding (post FORK_HEIGHT_NULLIFIER_BINDING): NF=r*G_nf and a
+    // proof tying it to cv, so nullifier==NullifierTagFromPoint(vchNullifierPoint).
+    std::vector<unsigned char> vchNullifierPoint;        // 33-byte compressed NF
+    std::vector<unsigned char> vchNullifierBindingProof; // NULLIFIER_BINDING_PROOF_SIZE
+
     CShieldedSpendDescription()
     {
         anchor = 0;
@@ -253,6 +258,10 @@ public:
     }
 
     bool HasFCMPProof() const { return !fcmpProof.IsNull(); }
+    bool HasNullifierBinding() const
+    {
+        return !vchNullifierPoint.empty() && !vchNullifierBindingProof.empty();
+    }
 
     IMPLEMENT_SERIALIZE
     (
@@ -272,6 +281,14 @@ public:
         {
             READWRITE(fcmpProof);
             READWRITE(curveTreeRoot);
+        }
+
+        unsigned char fHasNfBind = (vchNullifierPoint.empty() && vchNullifierBindingProof.empty()) ? 0 : 1;
+        READWRITE(fHasNfBind);
+        if (fHasNfBind)
+        {
+            READWRITE(vchNullifierPoint);
+            READWRITE(vchNullifierBindingProof);
         }
     )
 };
@@ -408,6 +425,17 @@ public:
     )
 };
 
+
+// Nullifier binding helpers (see shielded.cpp).
+bool ApplyShieldedSpendNullifier(CShieldedSpendDescription& spend,
+                                 const CShieldedNote& note,
+                                 const uint256& nk,
+                                 bool fBindingActive);
+bool FinalizeShieldedSpendBindings(std::vector<CShieldedSpendDescription>& vSpend,
+                                   const std::vector<int64_t>& vValues,
+                                   const std::vector<std::vector<unsigned char> >& vBlinds,
+                                   const uint256& sighash,
+                                   bool fBindingActive);
 
 bool GenerateShieldedSpendingKey(CShieldedSpendingKey& skOut);
 

@@ -152,6 +152,29 @@ bool VerifyBindingSignature(const std::vector<CPedersenCommitment>& vInputCommit
                              const uint256& sighash,
                              const CBindingSignature& sig);
 
+// Nullifier binding: ties a spend's nullifier to the spent note (see zkproof.cpp).
+static const size_t NULLIFIER_BINDING_PROOF_SIZE = 130; // A1(33)+A2(33)+sv(32)+sr(32)
+static const size_t NULLIFIER_POINT_SIZE = 33;
+
+// Nullifier point NF = r*G_nf for a note with blinding factor r.
+bool ComputeNullifierPoint(const std::vector<unsigned char>& vchBlind,
+                           std::vector<unsigned char>& vchNullifierPointOut);
+
+// Spent-set key derived from the nullifier point.
+uint256 NullifierTagFromPoint(const std::vector<unsigned char>& vchNullifierPoint);
+
+bool CreateNullifierBindingProof(int64_t nValue,
+                                 const std::vector<unsigned char>& vchBlind,
+                                 const CPedersenCommitment& cv,
+                                 const std::vector<unsigned char>& vchNullifierPoint,
+                                 const uint256& sighash,
+                                 std::vector<unsigned char>& vchProofOut);
+
+bool VerifyNullifierBindingProof(const CPedersenCommitment& cv,
+                                 const std::vector<unsigned char>& vchNullifierPoint,
+                                 const uint256& sighash,
+                                 const std::vector<unsigned char>& vchProof);
+
 
 bool VerifySpendAuthSignature(const std::vector<unsigned char>& vchRk,
                                const uint256& sighash,
@@ -205,6 +228,38 @@ bool AggregatePartialSigs(const std::vector<std::vector<unsigned char>>& vPartia
 bool AssembleBindingSignature(const std::vector<unsigned char>& vchAggNonce,
                                const std::vector<unsigned char>& vchAggSig,
                                CBindingSignature& sigOut);
+
+
+// --- B2-e: half-aggregated Schnorr M-of-N staking authorization (public signers) ---
+// Each of M signers independently signs the stake spend digest with its own key
+// (no ceremony, no aggregate key). The s-scalars are summed into one s_agg while the
+// M R-points are kept; verification is a single relation
+//   Sum_j R_j == s_agg*G + Sum_j e_j*pk_j,   e_j = H(domain || R_j || pk_j || sighash)
+// matching the codebase Schnorr convention s = k - e*x. Signer identities are public.
+// On-chain object is M*33 + 32 bytes. Aggregation of the s-scalars reuses
+// AggregatePartialSigs (sum mod the curve order).
+
+// Derive the 33-byte compressed signer pubkey pk = (sk mod n)*G for a given scalar,
+// so callers commit to and verify against exactly the key the share was signed under.
+bool HalfAggStakeDerivePubKey(const uint256& skSigner,
+                              std::vector<unsigned char>& vchPubKeyOut);
+
+// One signer's detached share over sighash: outputs the 33-byte R-point and the
+// 32-byte s-scalar (s = k - e*sk). Callers sum the s-scalars (AggregatePartialSigs)
+// and keep the R-points to form the M-of-N half-aggregated signature.
+bool SignHalfAggStakeShare(const uint256& skSigner,
+                           const uint256& sighash,
+                           std::vector<unsigned char>& vchRPointOut,
+                           std::vector<unsigned char>& vchSShareOut);
+
+// Verify an M-of-N half-aggregated stake signature over sighash. Requires M >= 1
+// distinct, valid signer pubkeys, one valid R-point per signer, and one aggregated
+// 32-byte s-scalar in [0, n). strError carries a human-readable reason on failure.
+bool VerifyHalfAggStakeSignature(const std::vector<std::vector<unsigned char> >& vSignerPubKeys,
+                                 const std::vector<std::vector<unsigned char> >& vSignerRPoints,
+                                 const std::vector<unsigned char>& vchAggregatedSScalar,
+                                 const uint256& sighash,
+                                 std::string& strError);
 
 
 #endif // INN_ZKPROOF_H

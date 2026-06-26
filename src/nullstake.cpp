@@ -7,6 +7,7 @@
 #include "bulletproof_ac.h"
 #include "hash.h"
 #include "util.h"
+#include "verifycache.h"
 #include "bignum.h"
 
 #include <openssl/ec.h>
@@ -808,9 +809,31 @@ bool CreateNullStakeKernelProofV2(int64_t nValue,
 }
 
 
+static bool VerifyNullStakeKernelProofV2Uncached(const CNullStakeKernelProofV2& proof,
+                                                 const CPedersenCommitment& cv,
+                                                 unsigned int nBits);
+
 bool VerifyNullStakeKernelProofV2(const CNullStakeKernelProofV2& proof,
                                   const CPedersenCommitment& cv,
                                   unsigned int nBits)
+{
+    if (!VerifyProofCacheEnabled())
+        return VerifyNullStakeKernelProofV2Uncached(proof, cv, nBits);
+
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << (unsigned char)VERIFYCACHE_NULLSTAKE_V2 << proof << cv << nBits;
+    uint256 key = ss.GetHash();
+    if (VerifyProofCacheCheck(key))
+        return true;
+    if (!VerifyNullStakeKernelProofV2Uncached(proof, cv, nBits))
+        return false;
+    VerifyProofCacheStore(key);
+    return true;
+}
+
+static bool VerifyNullStakeKernelProofV2Uncached(const CNullStakeKernelProofV2& proof,
+                                                 const CPedersenCommitment& cv,
+                                                 unsigned int nBits)
 {
     if (proof.IsNull() || cv.IsNull())
         return false;
@@ -1107,9 +1130,31 @@ bool CreateNullStakeKernelProofV3(int64_t nValue,
 }
 
 
+static bool VerifyNullStakeKernelProofV3Uncached(const CNullStakeKernelProofV3& proof,
+                                                 const CPedersenCommitment& cv,
+                                                 unsigned int nBits);
+
 bool VerifyNullStakeKernelProofV3(const CNullStakeKernelProofV3& proof,
                                   const CPedersenCommitment& cv,
                                   unsigned int nBits)
+{
+    if (!VerifyProofCacheEnabled())
+        return VerifyNullStakeKernelProofV3Uncached(proof, cv, nBits);
+
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << (unsigned char)VERIFYCACHE_NULLSTAKE_V3 << proof << cv << nBits;
+    uint256 key = ss.GetHash();
+    if (VerifyProofCacheCheck(key))
+        return true;
+    if (!VerifyNullStakeKernelProofV3Uncached(proof, cv, nBits))
+        return false;
+    VerifyProofCacheStore(key);
+    return true;
+}
+
+static bool VerifyNullStakeKernelProofV3Uncached(const CNullStakeKernelProofV3& proof,
+                                                 const CPedersenCommitment& cv,
+                                                 unsigned int nBits)
 {
     if (proof.IsNull() || cv.IsNull())
         return false;

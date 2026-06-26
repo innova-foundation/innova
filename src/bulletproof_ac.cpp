@@ -386,6 +386,92 @@ static bool AddPointTimesScalar(const EC_GROUP* group,
     return true;
 }
 
+// Pippenger bucket-method multi-scalar multiplication over secp256k1:
+//   result = sum_i scalars[i] * points[i]
+// The returned group element is IDENTICAL to the naive accumulation, so this is a
+// drop-in replacement for the per-point EC_POINT_mul+add loops in the proof
+// verifier (the AC verify's dominant cost). It is validated bit-for-bit against the
+// naive method over random inputs by a differential unit test. Verification-only,
+// not constant time; scalars are reduced mod the group order, points may be the
+// identity. External linkage so the test can reach it.
+bool BPACMultiScalarMul(const EC_GROUP* group, BN_CTX* ctx,
+                        const std::vector<EC_POINT*>& points,
+                        const std::vector<BIGNUM*>& scalars,
+                        EC_POINT* result)
+{
+    if (points.size() != scalars.size())
+        return false;
+    if (EC_POINT_set_to_infinity(group, result) != 1)
+        return false;
+    const size_t n = points.size();
+    if (n == 0)
+        return true;
+
+    // Window size, tuned for n up to ~2n+5 with n<=2048 in the AC verifier.
+    int c;
+    if (n >= 1024)     c = 11;
+    else if (n >= 256) c = 9;
+    else if (n >= 32)  c = 7;
+    else               c = 4;
+
+    CBPACBNGuard order;
+    if (EC_GROUP_get_order(group, order, ctx) != 1)
+        return false;
+    const int nbits = BN_num_bits(order);
+    const int numWindows = (nbits + c - 1) / c;
+    const int numBuckets = (1 << c) - 1;
+
+    bool ok = true;
+    std::vector<EC_POINT*> buckets(numBuckets, (EC_POINT*)NULL);
+    for (int b = 0; b < numBuckets && ok; b++)
+    {
+        buckets[b] = EC_POINT_new(group);
+        ok = (buckets[b] != NULL);
+    }
+    EC_POINT* running = EC_POINT_new(group);
+    EC_POINT* windowSum = EC_POINT_new(group);
+    ok = ok && running && windowSum;
+
+    for (int w = numWindows - 1; w >= 0 && ok; w--)
+    {
+        // result <<= c (skip on the most-significant window)
+        if (w != numWindows - 1)
+            for (int b = 0; b < c && ok; b++)
+                ok = (EC_POINT_dbl(group, result, result, ctx) == 1);
+
+        for (int b = 0; b < numBuckets && ok; b++)
+            ok = (EC_POINT_set_to_infinity(group, buckets[b]) == 1);
+
+        const int base = w * c;
+        for (size_t i = 0; i < n && ok; i++)
+        {
+            int digit = 0;
+            for (int b = 0; b < c; b++)
+                if (BN_is_bit_set(scalars[i], base + b))
+                    digit |= (1 << b);
+            if (digit != 0)
+                ok = (EC_POINT_add(group, buckets[digit - 1], buckets[digit - 1], points[i], ctx) == 1);
+        }
+
+        // windowSum = sum_{d=1..numBuckets} d * buckets[d-1] via the running-sum trick.
+        ok = ok && (EC_POINT_set_to_infinity(group, running) == 1)
+                && (EC_POINT_set_to_infinity(group, windowSum) == 1);
+        for (int d = numBuckets; d >= 1 && ok; d--)
+        {
+            ok = (EC_POINT_add(group, running, running, buckets[d - 1], ctx) == 1)
+              && (EC_POINT_add(group, windowSum, windowSum, running, ctx) == 1);
+        }
+
+        ok = ok && (EC_POINT_add(group, result, result, windowSum, ctx) == 1);
+    }
+
+    for (int b = 0; b < numBuckets; b++)
+        if (buckets[b]) EC_POINT_free(buckets[b]);
+    if (running) EC_POINT_free(running);
+    if (windowSum) EC_POINT_free(windowSum);
+    return ok;
+}
+
 static void AppendIPAScalar(CIPATranscript& transcript, const uint256& scalar)
 {
     std::vector<unsigned char> scalarBytes;
@@ -414,6 +500,51 @@ static void AppendBPACIPAStatement(CIPATranscript& transcript,
     AppendIPAScalar(transcript, proof.tauX);
     AppendIPAScalar(transcript, proof.mu);
     AppendIPAScalar(transcript, proof.tHat);
+}
+
+// Append (deserialize(pointBytes), scalar) to the multiexp arrays, skipping zero
+// scalars (matching AddPointTimesScalar's early-out) and rejecting infinity points.
+static bool BPACAppendTermBytes(const EC_GROUP* group, BN_CTX* ctx,
+                                const std::vector<unsigned char>& pointBytes,
+                                const BIGNUM* scalar,
+                                std::vector<EC_POINT*>& vPts,
+                                std::vector<BIGNUM*>& vScs)
+{
+    if (BN_is_zero(scalar))
+        return true;
+    EC_POINT* p = EC_POINT_new(group);
+    BIGNUM* s = BN_dup(scalar);
+    if (!p || !s || !DeserializeNonInfinityPoint(group, pointBytes, p, ctx))
+    {
+        if (p) EC_POINT_free(p);
+        if (s) BN_free(s);
+        return false;
+    }
+    vPts.push_back(p);
+    vScs.push_back(s);
+    return true;
+}
+
+// Append (copy(point), scalar) to the multiexp arrays, skipping zero scalars.
+static bool BPACAppendTermPoint(const EC_GROUP* group,
+                                const EC_POINT* point,
+                                const BIGNUM* scalar,
+                                std::vector<EC_POINT*>& vPts,
+                                std::vector<BIGNUM*>& vScs)
+{
+    if (BN_is_zero(scalar))
+        return true;
+    EC_POINT* p = EC_POINT_dup(point, group);
+    BIGNUM* s = BN_dup(scalar);
+    if (!p || !s)
+    {
+        if (p) EC_POINT_free(p);
+        if (s) BN_free(s);
+        return false;
+    }
+    vPts.push_back(p);
+    vScs.push_back(s);
+    return true;
 }
 
 static bool ComputeBPACIPAStatementPoint(const EC_GROUP* group,
@@ -450,48 +581,55 @@ static bool ComputeBPACIPAStatementPoint(const EC_GROUP* group,
     U256ToBN(proof.mu, bnMu);
 
     CBPACPointGuard P(group);
-    if (EC_POINT_set_to_infinity(group, P) != 1)
-        return false;
 
-    CBPACPointGuard xAI(group);
-    if (EC_POINT_mul(group, xAI, NULL, AI, bnX, ctx) != 1)
-        return false;
-    if (EC_POINT_add(group, P, P, xAI, ctx) != 1)
-        return false;
+    // Evaluate the IPA statement point as ONE Pippenger multiexp over all ~2n+5
+    // (point, scalar) terms instead of a per-term EC_POINT_mul+add. The result is
+    // identical to the naive accumulation (multiscalarmul_matches_naive test):
+    //   P = x*AI + x^2*AO + x^3*S - mu*G + tHat*U
+    //       + sum_i coeffG_i*vG[i] + coeffH_i*vH[i]
+    std::vector<EC_POINT*> vPts;
+    std::vector<BIGNUM*> vScs;
+    bool ok = true;
 
-    CBPACPointGuard xAO(group);
-    if (EC_POINT_mul(group, xAO, NULL, AO, bnX2, ctx) != 1)
-        return false;
-    if (EC_POINT_add(group, P, P, xAO, ctx) != 1)
-        return false;
+    ok = ok && BPACAppendTermPoint(group, AI, bnX, vPts, vScs);
+    ok = ok && BPACAppendTermPoint(group, AO, bnX2, vPts, vScs);
+    ok = ok && BPACAppendTermPoint(group, S, bnX3, vPts, vScs);
 
-    CBPACPointGuard x3S(group);
-    if (EC_POINT_mul(group, x3S, NULL, S, bnX3, ctx) != 1)
-        return false;
-    if (EC_POINT_add(group, P, P, x3S, ctx) != 1)
-        return false;
+    // -mu*G  (scalar = order - mu)
+    CBPACBNGuard order, negMu;
+    if (!ok || EC_GROUP_get_order(group, order, ctx) != 1 || !BN_sub(negMu, order, bnMu))
+        ok = false;
+    else
+        ok = BPACAppendTermPoint(group, EC_GROUP_get0_generator(group), negMu, vPts, vScs);
 
-    for (int i = 0; i < n; i++)
+    for (int i = 0; i < n && ok; i++)
     {
         uint256 coeffG = FieldMul(x, FieldMul(yInvPowers[i], wR[i]));
-        if (!AddPointTimesScalar(group, ctx, P, proofGens.vG[i], coeffG))
-            return false;
+        CBPACBNGuard bnCoeffG;
+        U256ToBN(coeffG, bnCoeffG);
+        if (!BPACAppendTermBytes(group, ctx, proofGens.vG[i], bnCoeffG, vPts, vScs)) { ok = false; break; }
 
         uint256 coeffH = FieldSub(wO[i], yPowers[i]);
         coeffH = FieldAdd(coeffH, FieldMul(x, wL[i]));
-        if (!AddPointTimesScalar(group, ctx, P, proofGens.vH[i], coeffH))
-            return false;
+        CBPACBNGuard bnCoeffH;
+        U256ToBN(coeffH, bnCoeffH);
+        if (!BPACAppendTermBytes(group, ctx, proofGens.vH[i], bnCoeffH, vPts, vScs)) { ok = false; break; }
     }
 
-    CBPACPointGuard muG(group);
-    if (EC_POINT_mul(group, muG, bnMu, NULL, NULL, ctx) != 1)
-        return false;
-    if (EC_POINT_invert(group, muG, ctx) != 1)
-        return false;
-    if (EC_POINT_add(group, P, P, muG, ctx) != 1)
-        return false;
+    if (ok)
+    {
+        CBPACBNGuard bnTHat;
+        U256ToBN(proof.tHat, bnTHat);
+        ok = BPACAppendTermBytes(group, ctx, proofGens.vchU, bnTHat, vPts, vScs);
+    }
 
-    if (!AddPointTimesScalar(group, ctx, P, proofGens.vchU, proof.tHat))
+    if (ok)
+        ok = BPACMultiScalarMul(group, ctx, vPts, vScs, P);
+
+    for (size_t i = 0; i < vPts.size(); i++) EC_POINT_free(vPts[i]);
+    for (size_t i = 0; i < vScs.size(); i++) BN_free(vScs[i]);
+
+    if (!ok)
         return false;
 
     return SerializePoint(group, P, ctx, vchPOut);

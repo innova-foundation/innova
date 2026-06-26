@@ -234,6 +234,51 @@ bool CShieldedNote::GenerateBlindingFactor()
     return ::GenerateBlindingFactor(vchBlind);
 }
 
+// Set a spend's nullifier. With binding active it is the tag of NF=r*G_nf and
+// the NF point is stored for the proof; otherwise the legacy PRF_nf is used.
+bool ApplyShieldedSpendNullifier(CShieldedSpendDescription& spend,
+                                 const CShieldedNote& note,
+                                 const uint256& nk,
+                                 bool fBindingActive)
+{
+    if (!fBindingActive)
+    {
+        spend.nullifier = note.GetNullifier(nk);
+        return spend.nullifier != 0;
+    }
+
+    std::vector<unsigned char> vchNfPoint;
+    if (!ComputeNullifierPoint(note.vchBlind, vchNfPoint))
+        return false;
+    spend.vchNullifierPoint = vchNfPoint;
+    spend.nullifier = NullifierTagFromPoint(vchNfPoint);
+    return spend.nullifier != 0;
+}
+
+// Create each spend's nullifier binding proof once the binding sighash is final.
+// vValues/vBlinds are per-spend in spend order. No-op when binding is inactive.
+bool FinalizeShieldedSpendBindings(std::vector<CShieldedSpendDescription>& vSpend,
+                                   const std::vector<int64_t>& vValues,
+                                   const std::vector<std::vector<unsigned char> >& vBlinds,
+                                   const uint256& sighash,
+                                   bool fBindingActive)
+{
+    if (!fBindingActive)
+        return true;
+    if (vSpend.size() != vValues.size() || vSpend.size() != vBlinds.size())
+        return false;
+    for (size_t i = 0; i < vSpend.size(); i++)
+    {
+        if (vSpend[i].vchNullifierPoint.size() != NULLIFIER_POINT_SIZE)
+            return false;
+        if (!CreateNullifierBindingProof(vValues[i], vBlinds[i], vSpend[i].cv,
+                                         vSpend[i].vchNullifierPoint, sighash,
+                                         vSpend[i].vchNullifierBindingProof))
+            return false;
+    }
+    return true;
+}
+
 
 bool GenerateShieldedSpendingKey(CShieldedSpendingKey& skOut)
 {

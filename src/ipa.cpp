@@ -15,14 +15,39 @@
 #include <openssl/obj_mac.h>
 #include <string.h>
 #include <algorithm>
+#include <map>
+#include <mutex>
 
+
+// Per-thread secp256k1 group and BN_CTX. EC_GROUP_new_by_curve_name rebuilds the
+// entire curve, and was previously constructed once per scalar/point op -- tens
+// of thousands of times per proof verify (e.g. IPAScalarMulScalar built a whole
+// group just to read the curve order). BN_CTX was likewise reallocated each op.
+// Reusing them per thread is behaviourally identical (the group is read-only
+// during compute ops; OpenSSL self-balances BN_CTX scratch, and no caller uses
+// BN_CTX_start/get) -- it only removes the allocation churn and lets OpenSSL
+// reuse per-thread generator precomputation. They are never shared across
+// threads (EC_GROUP precompute state and BN_CTX are not thread-safe), and are
+// intentionally leaked at thread exit (one small fixed object per thread).
+static EC_GROUP* IPAThreadGroup()
+{
+    static thread_local EC_GROUP* tl = NULL;
+    if (!tl) tl = EC_GROUP_new_by_curve_name(NID_secp256k1);
+    return tl;
+}
+static BN_CTX* IPAThreadCtx()
+{
+    static thread_local BN_CTX* tl = NULL;
+    if (!tl) tl = BN_CTX_new();
+    return tl;
+}
 
 class CIPABNCtxGuard
 {
 public:
     BN_CTX* ctx;
-    CIPABNCtxGuard() { ctx = BN_CTX_new(); }
-    ~CIPABNCtxGuard() { if (ctx) BN_CTX_free(ctx); }
+    CIPABNCtxGuard() { ctx = IPAThreadCtx(); }
+    ~CIPABNCtxGuard() { }   // thread-local, not owned
     operator BN_CTX*() { return ctx; }
 };
 
@@ -30,8 +55,8 @@ class CIPAECGroupGuard
 {
 public:
     EC_GROUP* group;
-    CIPAECGroupGuard() { group = EC_GROUP_new_by_curve_name(NID_secp256k1); }
-    ~CIPAECGroupGuard() { if (group) EC_GROUP_free(group); }
+    CIPAECGroupGuard() { group = IPAThreadGroup(); }
+    ~CIPAECGroupGuard() { } // thread-local, not owned
     operator EC_GROUP*() { return group; }
     operator const EC_GROUP*() const { return group; }
 };
@@ -439,10 +464,54 @@ static bool HashToPointSecp256k1(const std::string& label,
     return false;
 }
 
+namespace {
+std::mutex g_ipaGenCacheMutex;
+std::map<std::string, CIPAGenerators> g_ipaGenCache;
+}
+
+static bool GenerateIPAGeneratorsUncached(const std::string& domain,
+                                          int n,
+                                          EIPACurveType curveType,
+                                          CIPAGenerators& gensOut);
+
 bool GenerateIPAGenerators(const std::string& domain,
                            int n,
                            EIPACurveType curveType,
                            CIPAGenerators& gensOut)
+{
+    // Generators are a deterministic function of (domain, n, curveType), so a
+    // process-wide memo removes the 2n+1 hash-to-curve derivations (4097 at
+    // n=2048) that previously ran on every verify. Only a handful of distinct
+    // tuples are ever used, so the map stays tiny and needs no eviction.
+    std::string key = domain;
+    key += '|';
+    key += std::to_string(n);
+    key += '|';
+    key += std::to_string((int)curveType);
+    {
+        std::lock_guard<std::mutex> lock(g_ipaGenCacheMutex);
+        std::map<std::string, CIPAGenerators>::iterator it = g_ipaGenCache.find(key);
+        if (it != g_ipaGenCache.end())
+        {
+            gensOut = it->second;
+            return true;
+        }
+    }
+    CIPAGenerators gens;
+    if (!GenerateIPAGeneratorsUncached(domain, n, curveType, gens))
+        return false;
+    {
+        std::lock_guard<std::mutex> lock(g_ipaGenCacheMutex);
+        g_ipaGenCache[key] = gens;
+    }
+    gensOut = gens;
+    return true;
+}
+
+static bool GenerateIPAGeneratorsUncached(const std::string& domain,
+                                          int n,
+                                          EIPACurveType curveType,
+                                          CIPAGenerators& gensOut)
 {
     if (n <= 0 || n > (int)IPA_MAX_VECTOR_LEN)
         return false;

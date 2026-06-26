@@ -5,6 +5,7 @@
 #include "zkproof.h"
 #include "hash.h"
 #include "util.h"
+#include "verifycache.h"
 
 #include <openssl/ec.h>
 #include <openssl/bn.h>
@@ -1596,6 +1597,283 @@ bool VerifyBindingSignature(const std::vector<CPedersenCommitment>& vInputCommit
 }
 
 
+// Nullifier binding: NF = r*G_nf binds a note's secret blind r to its value
+// commitment cv = v*H + r*G, so a note has one unforgeable spend tag (=H(NF)).
+// Schnorr proof of knowledge of (v,r): A1=kv*H+kr*G, A2=kr*G_nf,
+// e=H(domain||cv||NF||A1||A2||sighash), sv=kv+e*v, sr=kr+e*r. Verifies
+// sv*H+sr*G==A1+e*cv and sr*G_nf==A2+e*NF. Proof = A1(33)|A2(33)|sv(32)|sr(32).
+static const char* NULLIFIER_GENERATOR_TAG = "Innova_Nullifier_Generator_v1";
+static const char* NULLIFIER_BIND_DOMAIN   = "Innova_NfBind_v1";
+static const char* NULLIFIER_TAG_DOMAIN    = "Innova_NfTag_v1";
+
+static bool GetNullifierGenerator(const EC_GROUP* group, EC_POINT* gnf, BN_CTX* ctx)
+{
+    return HashToPoint(group, NULLIFIER_GENERATOR_TAG, gnf, ctx);
+}
+
+// Int64 (non-negative note value) -> BIGNUM via 8-byte big-endian, matching the
+// value encoding used by the binding signature.
+static void ValueToBN(int64_t v, BIGNUM* bn)
+{
+    int64_t a = (v < 0) ? -v : v;
+    unsigned char fb[8];
+    for (int i = 7; i >= 0; i--) fb[7 - i] = (unsigned char)((uint64_t)a >> (i * 8));
+    BN_bin2bn(fb, 8, bn);
+    if (v < 0) BN_set_negative(bn, 1);
+}
+
+bool ComputeNullifierPoint(const std::vector<unsigned char>& vchBlind,
+                           std::vector<unsigned char>& vchNullifierPointOut)
+{
+    if (!CZKContext::IsInitialized()) return false;
+    if (vchBlind.size() != BLINDING_FACTOR_SIZE) return false;
+
+    CECGroupGuard group;
+    if (!group.group) return false;
+    CBNCtxGuard ctx;
+    if (!ctx.ctx) return false;
+
+    const BIGNUM* order = EC_GROUP_get0_order(group);
+    CBNGuard r;
+    if (!BN_bin2bn(vchBlind.data(), BLINDING_FACTOR_SIZE, r)) return false;
+    if (BN_is_zero(r) || BN_cmp(r, order) >= 0) return false;
+
+    CECPointGuard Gnf(group), NF(group);
+    if (!GetNullifierGenerator(group, Gnf, ctx)) return false;
+    if (EC_POINT_mul(group, NF, NULL, Gnf, r, ctx) != 1) return false;
+    if (EC_POINT_is_at_infinity(group, NF)) return false;
+
+    return PointToBytes(group, NF, vchNullifierPointOut, ctx);
+}
+
+uint256 NullifierTagFromPoint(const std::vector<unsigned char>& vchNullifierPoint)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string(NULLIFIER_TAG_DOMAIN);
+    ss << vchNullifierPoint;
+    return ss.GetHash();
+}
+
+static void NfBindChallenge(const EC_GROUP* group, const BIGNUM* order, BN_CTX* ctx,
+                            const std::vector<unsigned char>& cv,
+                            const std::vector<unsigned char>& nf,
+                            const unsigned char* a1, const unsigned char* a2,
+                            const uint256& sighash, BIGNUM* eOut)
+{
+    SHA256_CTX sha;
+    SHA256_Init(&sha);
+    SHA256_Update(&sha, NULLIFIER_BIND_DOMAIN, strlen(NULLIFIER_BIND_DOMAIN));
+    SHA256_Update(&sha, cv.data(), cv.size());
+    SHA256_Update(&sha, nf.data(), nf.size());
+    SHA256_Update(&sha, a1, 33);
+    SHA256_Update(&sha, a2, 33);
+    SHA256_Update(&sha, sighash.begin(), 32);
+    unsigned char eHash[32];
+    SHA256_Final(eHash, &sha);
+    BN_bin2bn(eHash, 32, eOut);
+    BN_mod(eOut, eOut, order, ctx);
+    OPENSSL_cleanse(eHash, 32);
+}
+
+bool CreateNullifierBindingProof(int64_t nValue,
+                                 const std::vector<unsigned char>& vchBlind,
+                                 const CPedersenCommitment& cv,
+                                 const std::vector<unsigned char>& vchNullifierPoint,
+                                 const uint256& sighash,
+                                 std::vector<unsigned char>& vchProofOut)
+{
+    if (!CZKContext::IsInitialized()) return false;
+    if (vchBlind.size() != BLINDING_FACTOR_SIZE) return false;
+    if (nValue < 0) return false;
+    if (vchNullifierPoint.size() != 33) return false;
+
+    CECGroupGuard group;
+    if (!group.group) return false;
+    CBNCtxGuard ctx;
+    if (!ctx.ctx) return false;
+
+    const BIGNUM* order = EC_GROUP_get0_order(group);
+    const EC_POINT* G = EC_GROUP_get0_generator(group);
+
+    CECPointGuard H(group), Gnf(group);
+    if (!BytesToPoint(group, CZKContext::GetGeneratorH(), H, ctx)) return false;
+    if (!GetNullifierGenerator(group, Gnf, ctx)) return false;
+
+    CBNGuard v, r;
+    ValueToBN(nValue, v);
+    if (!BN_bin2bn(vchBlind.data(), BLINDING_FACTOR_SIZE, r)) return false;
+    if (BN_is_zero(r) || BN_cmp(r, order) >= 0) return false;
+    BN_set_consttime(r);
+
+    // Hedged nonces: depend on the secret witness, the statement, and fresh
+    // randomness, so a single RNG failure cannot leak the witness.
+    unsigned char rnd[32];
+    if (RAND_bytes(rnd, 32) != 1) return false;
+    unsigned char vb[32]; memset(vb, 0, 32);
+    { int n = BN_num_bytes(v); if (n > 0 && n <= 32) BN_bn2bin(v, vb + (32 - n)); }
+
+    auto deriveNonce = [&](const char* tag, BIGNUM* out) {
+        unsigned char h[32];
+        unsigned int hlen = 32;
+        std::vector<unsigned char> buf;
+        buf.insert(buf.end(), vb, vb + 32);
+        buf.insert(buf.end(), vchBlind.begin(), vchBlind.end());
+        buf.insert(buf.end(), cv.vchCommitment.begin(), cv.vchCommitment.end());
+        buf.insert(buf.end(), vchNullifierPoint.begin(), vchNullifierPoint.end());
+        buf.insert(buf.end(), sighash.begin(), sighash.end());
+        buf.insert(buf.end(), rnd, rnd + 32);
+        HMAC(EVP_sha256(), tag, (int)strlen(tag), buf.data(), buf.size(), h, &hlen);
+        BN_bin2bn(h, 32, out);
+        BN_mod(out, out, order, ctx);
+        OPENSSL_cleanse(h, 32);
+        OPENSSL_cleanse(buf.data(), buf.size());
+    };
+
+    CBNGuard kv, kr;
+    deriveNonce("Innova_NfBind_kv", kv);
+    deriveNonce("Innova_NfBind_kr", kr);
+    OPENSSL_cleanse(rnd, 32);
+    OPENSSL_cleanse(vb, 32);
+    if (BN_is_zero(kv) || BN_is_zero(kr)) return false;
+    BN_set_consttime(kv);
+    BN_set_consttime(kr);
+
+    // A1 = kv*H + kr*G
+    CECPointGuard A1(group), kvH(group), krG(group);
+    if (EC_POINT_mul(group, kvH, NULL, H, kv, ctx) != 1) return false;
+    if (EC_POINT_mul(group, krG, NULL, G, kr, ctx) != 1) return false;
+    if (EC_POINT_add(group, A1, kvH, krG, ctx) != 1) return false;
+
+    // A2 = kr*G_nf
+    CECPointGuard A2(group);
+    if (EC_POINT_mul(group, A2, NULL, Gnf, kr, ctx) != 1) return false;
+
+    unsigned char a1Buf[33], a2Buf[33];
+    if (EC_POINT_point2oct(group, A1, POINT_CONVERSION_COMPRESSED, a1Buf, 33, ctx) != 33) return false;
+    if (EC_POINT_point2oct(group, A2, POINT_CONVERSION_COMPRESSED, a2Buf, 33, ctx) != 33) return false;
+
+    CBNGuard e;
+    NfBindChallenge(group, order, ctx, cv.vchCommitment, vchNullifierPoint, a1Buf, a2Buf, sighash, e);
+
+    // sv = kv + e*v ; sr = kr + e*r  (mod n)
+    CBNGuard sv, sr, tmp;
+    BN_mod_mul(tmp, e, v, order, ctx);
+    BN_mod_add(sv, kv, tmp, order, ctx);
+    BN_mod_mul(tmp, e, r, order, ctx);
+    BN_mod_add(sr, kr, tmp, order, ctx);
+
+    vchProofOut.resize(NULLIFIER_BINDING_PROOF_SIZE);
+    memcpy(vchProofOut.data(), a1Buf, 33);
+    memcpy(vchProofOut.data() + 33, a2Buf, 33);
+    unsigned char sBuf[32];
+    memset(sBuf, 0, 32);
+    { int n = BN_num_bytes(sv); if (n > 0) BN_bn2bin(sv, sBuf + (32 - n)); }
+    memcpy(vchProofOut.data() + 66, sBuf, 32);
+    memset(sBuf, 0, 32);
+    { int n = BN_num_bytes(sr); if (n > 0) BN_bn2bin(sr, sBuf + (32 - n)); }
+    memcpy(vchProofOut.data() + 98, sBuf, 32);
+    OPENSSL_cleanse(sBuf, 32);
+
+    return true;
+}
+
+static bool VerifyNullifierBindingProofUncached(const CPedersenCommitment& cv,
+                                                const std::vector<unsigned char>& vchNullifierPoint,
+                                                const uint256& sighash,
+                                                const std::vector<unsigned char>& vchProof);
+
+bool VerifyNullifierBindingProof(const CPedersenCommitment& cv,
+                                 const std::vector<unsigned char>& vchNullifierPoint,
+                                 const uint256& sighash,
+                                 const std::vector<unsigned char>& vchProof)
+{
+    if (!VerifyProofCacheEnabled())
+        return VerifyNullifierBindingProofUncached(cv, vchNullifierPoint, sighash, vchProof);
+
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << (unsigned char)VERIFYCACHE_NULLIFIER_BIND << cv << vchNullifierPoint << sighash << vchProof;
+    uint256 key = ss.GetHash();
+    if (VerifyProofCacheCheck(key))
+        return true;
+    if (!VerifyNullifierBindingProofUncached(cv, vchNullifierPoint, sighash, vchProof))
+        return false;
+    VerifyProofCacheStore(key);
+    return true;
+}
+
+static bool VerifyNullifierBindingProofUncached(const CPedersenCommitment& cv,
+                                                const std::vector<unsigned char>& vchNullifierPoint,
+                                                const uint256& sighash,
+                                                const std::vector<unsigned char>& vchProof)
+{
+    if (!CZKContext::IsInitialized()) return false;
+    if (vchProof.size() != NULLIFIER_BINDING_PROOF_SIZE) return false;
+    if (vchNullifierPoint.size() != 33) return false;
+
+    CECGroupGuard group;
+    if (!group.group) return false;
+    CBNCtxGuard ctx;
+    if (!ctx.ctx) return false;
+
+    const BIGNUM* order = EC_GROUP_get0_order(group);
+    const EC_POINT* G = EC_GROUP_get0_generator(group);
+
+    CECPointGuard H(group), Gnf(group), cvPt(group), NF(group);
+    if (!BytesToPoint(group, CZKContext::GetGeneratorH(), H, ctx)) return false;
+    if (!GetNullifierGenerator(group, Gnf, ctx)) return false;
+    if (!BytesToPoint(group, cv.vchCommitment, cvPt, ctx)) return false;
+    if (!BytesToPoint(group, vchNullifierPoint, NF, ctx)) return false;
+
+    CECPointGuard A1(group), A2(group);
+    if (EC_POINT_oct2point(group, A1, vchProof.data(), 33, ctx) != 1) return false;
+    if (EC_POINT_is_at_infinity(group, A1)) return false;
+    if (EC_POINT_is_on_curve(group, A1, ctx) != 1) return false;
+    if (EC_POINT_oct2point(group, A2, vchProof.data() + 33, 33, ctx) != 1) return false;
+    if (EC_POINT_is_at_infinity(group, A2)) return false;
+    if (EC_POINT_is_on_curve(group, A2, ctx) != 1) return false;
+
+    BIGNUM* sv = BN_bin2bn(vchProof.data() + 66, 32, NULL);
+    BIGNUM* sr = BN_bin2bn(vchProof.data() + 98, 32, NULL);
+    if (!sv || !sr) { if (sv) BN_free(sv); if (sr) BN_free(sr); return false; }
+    if (BN_cmp(sv, order) >= 0 || BN_cmp(sr, order) >= 0) { BN_free(sv); BN_free(sr); return false; }
+
+    unsigned char a1Buf[33], a2Buf[33];
+    EC_POINT_point2oct(group, A1, POINT_CONVERSION_COMPRESSED, a1Buf, 33, ctx);
+    EC_POINT_point2oct(group, A2, POINT_CONVERSION_COMPRESSED, a2Buf, 33, ctx);
+
+    CBNGuard e;
+    NfBindChallenge(group, order, ctx, cv.vchCommitment, vchNullifierPoint, a1Buf, a2Buf, sighash, e);
+
+    bool fValid = false;
+    // Check1: sv*H + sr*G == A1 + e*cv
+    {
+        CECPointGuard lhs(group), svH(group), srG(group);
+        EC_POINT_mul(group, svH, NULL, H, sv, ctx);
+        EC_POINT_mul(group, srG, NULL, G, sr, ctx);
+        EC_POINT_add(group, lhs, svH, srG, ctx);
+
+        CECPointGuard rhs(group), eCv(group);
+        EC_POINT_mul(group, eCv, NULL, cvPt, e, ctx);
+        EC_POINT_add(group, rhs, A1, eCv, ctx);
+
+        fValid = (EC_POINT_cmp(group, lhs, rhs, ctx) == 0);
+    }
+    // Check2: sr*G_nf == A2 + e*NF
+    if (fValid)
+    {
+        CECPointGuard lhs(group), rhs(group), eNF(group);
+        EC_POINT_mul(group, lhs, NULL, Gnf, sr, ctx);
+        EC_POINT_mul(group, eNF, NULL, NF, e, ctx);
+        EC_POINT_add(group, rhs, A2, eNF, ctx);
+        fValid = (EC_POINT_cmp(group, lhs, rhs, ctx) == 0);
+    }
+
+    BN_free(sv);
+    BN_free(sr);
+    return fValid;
+}
+
+
 bool VerifySpendAuthSignature(const std::vector<unsigned char>& vchRk,
                                const uint256& sighash,
                                const std::vector<unsigned char>& vchSig)
@@ -2203,6 +2481,206 @@ bool AggregatePartialSigs(const std::vector<std::vector<unsigned char>>& vPartia
         BN_bn2bin(s, vchAggSigOut.data() + (32 - nBytes));
 
     return true;
+}
+
+// --- B2-e: half-aggregated Schnorr M-of-N staking authorization ---
+
+// e_j = H("Innova_HalfAggStake_v1" || R_j(33) || pk_j(33) || sighash(32)) mod n
+static bool HalfAggStakeChallenge(const unsigned char* rBuf33,
+                                  const unsigned char* pkBuf33,
+                                  const uint256& sighash,
+                                  EC_GROUP* group, BN_CTX* ctx,
+                                  BIGNUM* eOut)
+{
+    SHA256_CTX sha;
+    SHA256_Init(&sha);
+    const char* domain = "Innova_HalfAggStake_v1";
+    SHA256_Update(&sha, domain, strlen(domain));
+    SHA256_Update(&sha, rBuf33, 33);
+    SHA256_Update(&sha, pkBuf33, 33);
+    SHA256_Update(&sha, sighash.begin(), 32);
+    unsigned char eHash[32];
+    SHA256_Final(eHash, &sha);
+
+    const BIGNUM* order = EC_GROUP_get0_order(group);
+    if (!BN_bin2bn(eHash, 32, eOut)) { OPENSSL_cleanse(eHash, 32); return false; }
+    BN_mod(eOut, eOut, order, ctx);
+    OPENSSL_cleanse(eHash, 32);
+    return true;
+}
+
+bool HalfAggStakeDerivePubKey(const uint256& skSigner,
+                              std::vector<unsigned char>& vchPubKeyOut)
+{
+    if (!CZKContext::IsInitialized()) return false;
+
+    CECGroupGuard group;
+    if (!group.group) return false;
+    CBNCtxGuard ctx;
+    if (!ctx.ctx) return false;
+
+    const BIGNUM* order = EC_GROUP_get0_order(group);
+    const EC_POINT* G = EC_GROUP_get0_generator(group);
+
+    CBNGuard sk;
+    if (!BN_bin2bn(skSigner.begin(), 32, sk)) return false;
+    BN_mod(sk, sk, order, ctx);
+    if (BN_is_zero(sk)) return false;
+    BN_set_consttime(sk);
+
+    CECPointGuard pk(group);
+    if (!EC_POINT_mul(group, pk, NULL, G, sk, ctx)) return false;
+
+    unsigned char buf[33];
+    if (EC_POINT_point2oct(group, pk, POINT_CONVERSION_COMPRESSED, buf, 33, ctx) != 33)
+        return false;
+    vchPubKeyOut.assign(buf, buf + 33);
+    return true;
+}
+
+bool SignHalfAggStakeShare(const uint256& skSigner,
+                           const uint256& sighash,
+                           std::vector<unsigned char>& vchRPointOut,
+                           std::vector<unsigned char>& vchSShareOut)
+{
+    if (!CZKContext::IsInitialized()) return false;
+
+    CECGroupGuard group;
+    if (!group.group) return false;
+    CBNCtxGuard ctx;
+    if (!ctx.ctx) return false;
+
+    const BIGNUM* order = EC_GROUP_get0_order(group);
+    const EC_POINT* G = EC_GROUP_get0_generator(group);
+
+    CBNGuard sk;
+    if (!BN_bin2bn(skSigner.begin(), 32, sk)) return false;
+    BN_mod(sk, sk, order, ctx);
+    if (BN_is_zero(sk)) return false;
+    BN_set_consttime(sk);
+
+    // pk = sk*G (bound into the per-signer challenge)
+    CECPointGuard pkPoint(group);
+    if (!EC_POINT_mul(group, pkPoint, NULL, G, sk, ctx)) return false;
+    unsigned char pkBuf[33];
+    if (EC_POINT_point2oct(group, pkPoint, POINT_CONVERSION_COMPRESSED, pkBuf, 33, ctx) != 33)
+        return false;
+
+    // Hedged deterministic nonce: k = HMAC(domain, sk || sighash || rand) mod n
+    unsigned char rndK[32];
+    if (RAND_bytes(rndK, 32) != 1) return false;
+    unsigned char skBytes[32];
+    memset(skBytes, 0, 32);
+    int skLen = BN_num_bytes(sk);
+    if (skLen > 0 && skLen <= 32)
+        BN_bn2bin(sk, skBytes + (32 - skLen));
+    unsigned char nonceInput[96];
+    memcpy(nonceInput, skBytes, 32);
+    memcpy(nonceInput + 32, sighash.begin(), 32);
+    memcpy(nonceInput + 64, rndK, 32);
+    OPENSSL_cleanse(skBytes, 32);
+    OPENSSL_cleanse(rndK, 32);
+
+    unsigned char hedged[32];
+    unsigned int hlen = 32;
+    HMAC(EVP_sha256(), "Innova_HalfAggStake_nonce", 25, nonceInput, 96, hedged, &hlen);
+    OPENSSL_cleanse(nonceInput, 96);
+
+    CBNGuard k;
+    if (!BN_bin2bn(hedged, 32, k)) { OPENSSL_cleanse(hedged, 32); return false; }
+    BN_mod(k, k, order, ctx);
+    OPENSSL_cleanse(hedged, 32);
+    if (BN_is_zero(k)) return false;
+    BN_set_consttime(k);
+
+    // R = k*G
+    CECPointGuard R(group);
+    if (!EC_POINT_mul(group, R, NULL, G, k, ctx)) return false;
+    unsigned char rBuf[33];
+    if (EC_POINT_point2oct(group, R, POINT_CONVERSION_COMPRESSED, rBuf, 33, ctx) != 33)
+        return false;
+
+    // e = H(domain || R || pk || sighash); s = (k - e*sk) mod n
+    CBNGuard e;
+    if (!HalfAggStakeChallenge(rBuf, pkBuf, sighash, group, ctx, e)) return false;
+    CBNGuard es, s;
+    if (!BN_mod_mul(es, e, sk, order, ctx)) return false;
+    if (!BN_mod_sub(s, k, es, order, ctx)) return false;
+
+    vchRPointOut.assign(rBuf, rBuf + 33);
+    vchSShareOut.resize(32);
+    memset(vchSShareOut.data(), 0, 32);
+    int sLen = BN_num_bytes(s);
+    if (sLen > 0 && sLen <= 32)
+        BN_bn2bin(s, vchSShareOut.data() + (32 - sLen));
+    return true;
+}
+
+bool VerifyHalfAggStakeSignature(const std::vector<std::vector<unsigned char> >& vSignerPubKeys,
+                                 const std::vector<std::vector<unsigned char> >& vSignerRPoints,
+                                 const std::vector<unsigned char>& vchAggregatedSScalar,
+                                 const uint256& sighash,
+                                 std::string& strError)
+{
+    strError.clear();
+    if (!CZKContext::IsInitialized()) { strError = "zk context not initialized"; return false; }
+
+    const size_t M = vSignerPubKeys.size();
+    if (M == 0) { strError = "empty signer set"; return false; }
+    if (vSignerRPoints.size() != M) { strError = "R-point count != signer count"; return false; }
+    if (vchAggregatedSScalar.size() != 32) { strError = "aggregated s-scalar must be 32 bytes"; return false; }
+
+    // Require M distinct signer pubkeys (O(M^2); M is committee-sized).
+    for (size_t a = 0; a + 1 < M; a++)
+        for (size_t b = a + 1; b < M; b++)
+            if (vSignerPubKeys[a] == vSignerPubKeys[b]) { strError = "duplicate signer pubkey"; return false; }
+
+    CECGroupGuard group;
+    if (!group.group) { strError = "EC group alloc failed"; return false; }
+    CBNCtxGuard ctx;
+    if (!ctx.ctx) { strError = "BN ctx alloc failed"; return false; }
+
+    const BIGNUM* order = EC_GROUP_get0_order(group);
+    const EC_POINT* G = EC_GROUP_get0_generator(group);
+
+    CBNGuard sAgg;
+    if (!BN_bin2bn(vchAggregatedSScalar.data(), 32, sAgg)) { strError = "bad aggregated s-scalar"; return false; }
+    if (BN_is_negative(sAgg) || BN_cmp(sAgg, order) >= 0) { strError = "s-scalar out of range"; return false; }
+
+    // lhs = Sum_j R_j ; rhs = s_agg*G + Sum_j e_j*pk_j
+    CECPointGuard lhs(group);
+    EC_POINT_set_to_infinity(group, lhs);
+    CECPointGuard rhs(group);
+    if (!EC_POINT_mul(group, rhs, NULL, G, sAgg, ctx)) { strError = "s_agg*G failed"; return false; }
+
+    for (size_t j = 0; j < M; j++)
+    {
+        if (vSignerPubKeys[j].size() != 33) { strError = "signer pubkey must be 33 bytes"; return false; }
+        if (vSignerRPoints[j].size() != 33) { strError = "R-point must be 33 bytes"; return false; }
+
+        CECPointGuard pk(group), R(group);
+        if (EC_POINT_oct2point(group, pk, vSignerPubKeys[j].data(), 33, ctx) != 1 ||
+            EC_POINT_is_at_infinity(group, pk) ||
+            EC_POINT_is_on_curve(group, pk, ctx) != 1)
+        { strError = "invalid signer pubkey"; return false; }
+        if (EC_POINT_oct2point(group, R, vSignerRPoints[j].data(), 33, ctx) != 1 ||
+            EC_POINT_is_at_infinity(group, R) ||
+            EC_POINT_is_on_curve(group, R, ctx) != 1)
+        { strError = "invalid R-point"; return false; }
+
+        CBNGuard e;
+        if (!HalfAggStakeChallenge(vSignerRPoints[j].data(), vSignerPubKeys[j].data(), sighash, group, ctx, e))
+        { strError = "challenge computation failed"; return false; }
+
+        CECPointGuard ePk(group);
+        if (!EC_POINT_mul(group, ePk, NULL, pk, e, ctx)) { strError = "e*pk failed"; return false; }
+        if (!EC_POINT_add(group, rhs, rhs, ePk, ctx)) { strError = "rhs add failed"; return false; }
+        if (!EC_POINT_add(group, lhs, lhs, R, ctx)) { strError = "lhs add failed"; return false; }
+    }
+
+    bool fValid = (EC_POINT_cmp(group, lhs, rhs, ctx) == 0);
+    if (!fValid) strError = "half-aggregated signature verification failed";
+    return fValid;
 }
 
 bool AssembleBindingSignature(const std::vector<unsigned char>& vchAggNonce,

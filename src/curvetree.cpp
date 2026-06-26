@@ -6,6 +6,7 @@
 #include "ipa.h"
 #include "hash.h"
 #include "util.h"
+#include "verifycache.h"
 
 #include <openssl/ec.h>
 #include <openssl/bn.h>
@@ -1028,9 +1029,31 @@ static bool VerifyRawAuthPath(const CCurveTreeNode& root,
     return current.vchPoint == root.vchPoint;
 }
 
+static bool VerifyFCMPProofUncached(const CCurveTreeNode& root,
+                                     const CFCMPProof& proof,
+                                     const CPedersenCommitment& cv);
+
 bool VerifyFCMPProof(const CCurveTreeNode& root,
                       const CFCMPProof& proof,
                       const CPedersenCommitment& cv)
+{
+    if (!VerifyProofCacheEnabled())
+        return VerifyFCMPProofUncached(root, proof, cv);
+
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << (unsigned char)VERIFYCACHE_FCMP << root << proof << cv;
+    uint256 key = ss.GetHash();
+    if (VerifyProofCacheCheck(key))
+        return true;
+    if (!VerifyFCMPProofUncached(root, proof, cv))
+        return false;
+    VerifyProofCacheStore(key);
+    return true;
+}
+
+static bool VerifyFCMPProofUncached(const CCurveTreeNode& root,
+                                     const CFCMPProof& proof,
+                                     const CPedersenCommitment& cv)
 {
     if (proof.IsNull()) return false;
     if (proof.GetSize() > FCMP_PROOF_MAX_SIZE) return false;
