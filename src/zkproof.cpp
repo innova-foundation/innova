@@ -368,6 +368,38 @@ bool VerifyNullStakeMofNCommitment(const CPedersenCommitment& commit,
     return commit.vchCommitment == expected.vchCommitment;
 }
 
+bool NullStakeMofNDeriveValueCommitment(const CPedersenCommitment& cv3,
+                                        const uint256& delegationHash,
+                                        CPedersenCommitment& cvPlainOut)
+{
+    if (!CZKContext::IsInitialized()) return false;
+    if (cv3.vchCommitment.empty()) return false;
+
+    CECGroupGuard group;
+    if (!group.group) return false;
+    CBNCtxGuard ctx;
+    if (!ctx.ctx) return false;
+
+    const BIGNUM* order = EC_GROUP_get0_order(group);
+
+    CECPointGuard J(group), cv3p(group), dJ(group), res(group);
+    if (!BytesToPoint(group, CZKContext::GetGeneratorJ(), J, ctx)) return false;
+    if (!BytesToPoint(group, cv3.vchCommitment, cv3p, ctx)) return false;
+
+    CBNGuard bnDeleg;
+    if (!BN_bin2bn(delegationHash.begin(), 32, bnDeleg)) return false;
+    BN_mod(bnDeleg, bnDeleg, order, ctx);
+
+    // cv_plain = cv3 - delegationHash*J. delegationHash and J are public, so this is a
+    // deterministic public derivation; a wrong delegationHash leaves a J residual that the
+    // 2-generator range proof on cv_plain then rejects.
+    if (EC_POINT_mul(group, dJ, NULL, J, bnDeleg, ctx) != 1) return false;
+    if (EC_POINT_invert(group, dJ, ctx) != 1) return false;
+    if (EC_POINT_add(group, res, cv3p, dJ, ctx) != 1) return false;
+
+    return PointToBytes(group, res, cvPlainOut.vchCommitment, ctx);
+}
+
 bool VerifyPedersenCommitment(const CPedersenCommitment& commit,
                                int64_t nValue,
                                const std::vector<unsigned char>& vchBlind)

@@ -455,4 +455,33 @@ BOOST_AUTO_TEST_CASE(halfagg_stake_delegation_commitment)
     BOOST_CHECK(cOther.vchCommitment != c.vchCommitment);
 }
 
+// --- Phase 3b step 3 (core): cv_plain derivation from the 3-generator leaf ---
+BOOST_AUTO_TEST_CASE(halfagg_stake_cvplain_derivation)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+    valtype blind(32, 0x11); blind[31] = 0x07;
+    int64_t value = 5000000;
+    uint256 dh(123456ULL);
+
+    // Leaf cv3 = value*H + blind*G + dh*J ; the plain commitment = value*H + blind*G.
+    CPedersenCommitment cv3, cvExpected, cvPlain;
+    BOOST_REQUIRE(CreateNullStakeMofNCommitment(value, blind, dh, cv3));
+    BOOST_REQUIRE(CreatePedersenCommitment(value, blind, cvExpected));
+
+    // The correct delegationHash recovers exactly the plain value commitment.
+    BOOST_REQUIRE(NullStakeMofNDeriveValueCommitment(cv3, dh, cvPlain));
+    BOOST_CHECK_MESSAGE(cvPlain.vchCommitment == cvExpected.vchCommitment,
+                        "cv_plain must equal the plain value commitment for the correct delegationHash");
+    // ...and it opens as a normal 2-generator value commitment (range/nullifier would accept).
+    BOOST_CHECK(VerifyPedersenCommitment(cvPlain, value, blind));
+
+    // A WRONG delegationHash leaves a residual J term: cv_plain != the plain commitment and
+    // does NOT open to (value, blind), so the 2-generator range proof would reject it.
+    CPedersenCommitment cvWrong;
+    BOOST_REQUIRE(NullStakeMofNDeriveValueCommitment(cv3, uint256(123457ULL), cvWrong));
+    BOOST_CHECK(cvWrong.vchCommitment != cvExpected.vchCommitment);
+    BOOST_CHECK_MESSAGE(!VerifyPedersenCommitment(cvWrong, value, blind),
+                        "a wrong delegationHash must not yield a valid value commitment");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

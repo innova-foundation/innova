@@ -281,5 +281,14 @@ bool VerifyNullStakeMofNCommitment(const CPedersenCommitment& commit,
                                    const std::vector<unsigned char>& vchBlind,
                                    const uint256& delegationHash);
 
+// B2-e: recover the plain value commitment cv_plain = cv3 - delegationHash*J from the
+// 3-generator leaf. Public derivation (delegationHash + J are public); the existing
+// 2-generator range/kernel/linking/nullifier checks run on cv_plain, while the FCMP
+// membership proof runs on cv3. A wrong delegationHash yields a cv_plain that the range
+// proof rejects.
+bool NullStakeMofNDeriveValueCommitment(const CPedersenCommitment& cv3,
+                                        const uint256& delegationHash,
+                                        CPedersenCommitment& cvPlainOut);
+
 
 #endif // INN_ZKPROOF_H
