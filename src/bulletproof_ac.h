@@ -238,6 +238,17 @@ bool VerifyNullStakeMofNAuthorization(const std::vector<std::vector<unsigned cha
                                       const uint256& stakeDigest,
                                       std::string& strError);
 
+// B2-e: deterministic stake-authorization digest signed by the M-of-N set. Binds the
+// delegation, the stake kernel parameters, and the value commitment (anti cross-stake/note replay).
+uint256 ComputeNullStakeMofNStakeDigest(const uint256& delegationHash,
+                                        uint64_t nStakeModifier,
+                                        unsigned int nBlockTimeFrom,
+                                        unsigned int nTxPrevOffset,
+                                        unsigned int nTxTimePrev,
+                                        unsigned int nVoutN,
+                                        unsigned int nTimeTx,
+                                        const std::vector<unsigned char>& vchValueCommitment);
+
 bool AssignNullStakeV3Witness(const CR1CSCircuit& circuit,
                               uint64_t nStakeModifier,
                               unsigned int nBlockTimeFrom,

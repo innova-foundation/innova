@@ -982,6 +982,32 @@ bool VerifyNullStakeMofNAuthorization(const std::vector<std::vector<unsigned cha
     return true;
 }
 
+uint256 ComputeNullStakeMofNStakeDigest(const uint256& delegationHash,
+                                        uint64_t nStakeModifier,
+                                        unsigned int nBlockTimeFrom,
+                                        unsigned int nTxPrevOffset,
+                                        unsigned int nTxTimePrev,
+                                        unsigned int nVoutN,
+                                        unsigned int nTimeTx,
+                                        const std::vector<unsigned char>& vchValueCommitment)
+{
+    // Deterministic (CHashWriter serializes little-endian) so the digest is identical on
+    // every node. Binds the delegation, the full stake kernel parameters, and the value
+    // commitment, so an M-of-N signature over it authorizes exactly one stake -- it cannot
+    // be replayed for a different stake or a different note.
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("Innova_NullStakeMofN_StakeDigest_v1");
+    ss << delegationHash;
+    ss << nStakeModifier;
+    ss << nBlockTimeFrom;
+    ss << nTxPrevOffset;
+    ss << nTxTimePrev;
+    ss << nVoutN;
+    ss << nTimeTx;
+    ss << vchValueCommitment;
+    return ss.GetHash();
+}
+
 
 static bool SerializePoint(const EC_GROUP* group, const EC_POINT* point, BN_CTX* ctx,
                             std::vector<unsigned char>& out)

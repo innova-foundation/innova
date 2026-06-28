@@ -370,4 +370,50 @@ BOOST_AUTO_TEST_CASE(halfagg_stake_authorization_wrong_digest_fails)
                         "authorization must not verify under a different stake digest");
 }
 
+// --- Phase 3b step 1: stake-authorization digest ---
+BOOST_AUTO_TEST_CASE(halfagg_stake_digest_deterministic_and_bound)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+    uint256 dh(111ULL);
+    valtype cv(33, 0x02);
+    uint256 d1 = ComputeNullStakeMofNStakeDigest(dh, 5, 6, 7, 8, 9, 10, cv);
+    uint256 d2 = ComputeNullStakeMofNStakeDigest(dh, 5, 6, 7, 8, 9, 10, cv);
+    BOOST_CHECK_MESSAGE(d1 == d2, "stake digest must be deterministic");
+    BOOST_CHECK(d1 != uint256(0));
+    // Every bound field must change the digest.
+    BOOST_CHECK(ComputeNullStakeMofNStakeDigest(uint256(112ULL), 5, 6, 7, 8, 9, 10, cv) != d1);
+    BOOST_CHECK(ComputeNullStakeMofNStakeDigest(dh, 6, 6, 7, 8, 9, 10, cv) != d1);
+    BOOST_CHECK(ComputeNullStakeMofNStakeDigest(dh, 5, 6, 7, 8, 9, 11, cv) != d1);
+    valtype cv2(33, 0x03);
+    BOOST_CHECK(ComputeNullStakeMofNStakeDigest(dh, 5, 6, 7, 8, 9, 10, cv2) != d1);
+}
+
+BOOST_AUTO_TEST_CASE(halfagg_stake_digest_endtoend_authorization)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+    valtype owner; BOOST_REQUIRE(HalfAggStakeDerivePubKey(uint256(8888ULL), owner));
+    std::vector<uint256> setSk;
+    setSk.push_back(uint256(10001ULL)); setSk.push_back(uint256(10002ULL)); setSk.push_back(uint256(10003ULL));
+    std::vector<valtype> vSet;
+    for (size_t i = 0; i < setSk.size(); i++)
+    {
+        valtype pk; BOOST_REQUIRE(HalfAggStakeDerivePubKey(setSk[i], pk)); vSet.push_back(pk);
+    }
+    uint256 dh; BOOST_REQUIRE(ComputeNullStakeV3DelegationSetHash(vSet, 2, owner, dh));
+
+    valtype cv(33, 0x02);
+    uint256 digest = ComputeNullStakeMofNStakeDigest(dh, 1234, 11, 22, 33, 1, 44, cv);
+    std::vector<uint256> signSk; signSk.push_back(uint256(10001ULL)); signSk.push_back(uint256(10002ULL));
+    std::vector<valtype> vSet2, vPk, vR; uint256 dh2; valtype sAgg;
+    BOOST_REQUIRE(BuildMofNAuth(setSk, 2, owner, signSk, digest, vSet2, dh2, vPk, vR, sAgg));
+
+    std::string err;
+    BOOST_CHECK_MESSAGE(VerifyNullStakeMofNAuthorization(vSet, 2, owner, dh, vPk, vR, sAgg, digest, err),
+                        "end-to-end digest + authorization should verify: " + err);
+    // The same signature must NOT authorize a stake with a different kernel parameter.
+    uint256 digestReplay = ComputeNullStakeMofNStakeDigest(dh, 9999, 11, 22, 33, 1, 44, cv);
+    BOOST_CHECK_MESSAGE(!VerifyNullStakeMofNAuthorization(vSet, 2, owner, dh, vPk, vR, sAgg, digestReplay, err),
+                        "signature must not authorize a different stake (replay protection)");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
