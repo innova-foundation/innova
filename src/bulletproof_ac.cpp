@@ -860,14 +860,13 @@ bool ComputeNullStakeV3DelegationHash(int64_t nValue,
     return delegationHashOut != uint256(0);
 }
 
-bool ComputeNullStakeV3DelegationSetHash(int64_t nValue,
-                                         std::vector<std::vector<unsigned char> > vStakerPubKeys,
+bool ComputeNullStakeV3DelegationSetHash(std::vector<std::vector<unsigned char> > vStakerPubKeys,
                                          unsigned int nThresholdM,
                                          const std::vector<unsigned char>& vchPkOwner,
                                          uint256& delegationHashOut)
 {
     size_t nMembers = vStakerPubKeys.size();
-    if (nValue <= 0 || nMembers == 0 || nThresholdM < 1 || nThresholdM > nMembers ||
+    if (nMembers == 0 || nThresholdM < 1 || nThresholdM > nMembers ||
         vchPkOwner.size() != 33)
         return false;
     for (size_t i = 0; i < nMembers; i++)
@@ -895,9 +894,92 @@ bool ComputeNullStakeV3DelegationSetHash(int64_t nValue,
         setHash = FieldAdd(x5, keyAuth);
     }
 
-    uint256 ownerBind = NullStakeV3OwnerBindHash(nValue, vchPkOwner);
+    // Value-decoupled (B2-e per-set authority): the delegation commits to the set,
+    // threshold, and owner only. The staked value is bound separately by the note
+    // commitment / kernel proof and by the half-agg signature over the stake digest.
+    uint256 ownerBind = NullStakeV3OwnerAuthHash(vchPkOwner);
     delegationHashOut = NullStakeV3DelegationChain(setHash, ownerBind);
     return delegationHashOut != uint256(0);
+}
+
+// B2-e: verify that M-of-N members of the set committed in delegationHash authorized the
+// stake digest. This is the AUTHORIZATION component only: it proves (set <-> delegationHash)
+// consistency, distinct M-of-N membership, and a valid half-aggregated signature over the
+// stake digest. It does NOT by itself bind delegationHash to the staked note -- that binding
+// (the note's spend-authority == this set) is enforced by the shielded spend path; callers
+// MUST take delegationHash from the committed note, not from attacker-supplied data.
+bool VerifyNullStakeMofNAuthorization(const std::vector<std::vector<unsigned char> >& vStakerSet,
+                                      unsigned int nThresholdM,
+                                      const std::vector<unsigned char>& vchPkOwner,
+                                      const uint256& delegationHash,
+                                      const std::vector<std::vector<unsigned char> >& vSignerPubKeys,
+                                      const std::vector<std::vector<unsigned char> >& vSignerRPoints,
+                                      const std::vector<unsigned char>& vchAggregatedSScalar,
+                                      const uint256& stakeDigest,
+                                      std::string& strError)
+{
+    strError.clear();
+
+    // 1. The provided staker set must hash to the committed delegationHash. Combined with
+    //    the note->delegationHash binding enforced by the spend path, this pins the exact
+    //    set: substituting attacker keys would change the recompute and be rejected here.
+    uint256 recomputed;
+    if (!ComputeNullStakeV3DelegationSetHash(vStakerSet, nThresholdM, vchPkOwner, recomputed))
+    {
+        strError = "delegation set hash recompute failed (bad set/threshold/owner)";
+        return false;
+    }
+    if (recomputed != delegationHash)
+    {
+        strError = "staker set does not match the committed delegation hash";
+        return false;
+    }
+
+    // 2. At least M signers, paired 1:1 with R-points.
+    size_t nSigners = vSignerPubKeys.size();
+    if (nSigners < (size_t)nThresholdM)
+    {
+        strError = "fewer signers than the threshold M";
+        return false;
+    }
+    if (vSignerRPoints.size() != nSigners)
+    {
+        strError = "R-point count does not match signer count";
+        return false;
+    }
+
+    // 3. Every signer must be a DISTINCT member of the committed set: rejects non-member
+    //    key-stapling and counting one member more than once toward the threshold.
+    for (size_t i = 0; i < nSigners; i++)
+    {
+        if (vSignerPubKeys[i].size() != 33)
+        {
+            strError = "signer pubkey must be 33 bytes";
+            return false;
+        }
+        bool fMember = false;
+        for (size_t j = 0; j < vStakerSet.size(); j++)
+            if (vSignerPubKeys[i] == vStakerSet[j]) { fMember = true; break; }
+        if (!fMember)
+        {
+            strError = "signer is not a member of the delegated set";
+            return false;
+        }
+        for (size_t k = 0; k < i; k++)
+            if (vSignerPubKeys[i] == vSignerPubKeys[k])
+            {
+                strError = "duplicate signer";
+                return false;
+            }
+    }
+
+    // 4. The half-aggregated signature must verify over the stake digest: M distinct members
+    //    actually signed THIS stake (the digest binds the kernel params + value commitment).
+    if (!VerifyHalfAggStakeSignature(vSignerPubKeys, vSignerRPoints,
+                                     vchAggregatedSScalar, stakeDigest, strError))
+        return false;
+
+    return true;
 }
 
 
