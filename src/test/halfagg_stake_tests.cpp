@@ -416,4 +416,43 @@ BOOST_AUTO_TEST_CASE(halfagg_stake_digest_endtoend_authorization)
                         "signature must not authorize a different stake (replay protection)");
 }
 
+// --- Phase 3b step 2: delegationHash-binding commitment ---
+BOOST_AUTO_TEST_CASE(halfagg_stake_delegation_commitment)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+    valtype blind(32, 0x11); blind[31] = 0x07; // nonzero 32-byte blinding
+    int64_t value = 5000000;
+    uint256 dh(123456ULL);
+
+    CPedersenCommitment c;
+    BOOST_REQUIRE(CreateNullStakeMofNCommitment(value, blind, dh, c));
+    BOOST_CHECK(!c.IsNull());
+
+    // Opens to exactly (value, blind, delegationHash).
+    BOOST_CHECK(VerifyNullStakeMofNCommitment(c, value, blind, dh));
+
+    // Binding: any change in value / blind / delegationHash fails to open.
+    BOOST_CHECK(!VerifyNullStakeMofNCommitment(c, value + 1, blind, dh));
+    valtype blind2 = blind; blind2[0] ^= 0x01;
+    BOOST_CHECK(!VerifyNullStakeMofNCommitment(c, value, blind2, dh));
+    BOOST_CHECK(!VerifyNullStakeMofNCommitment(c, value, blind, uint256(123457ULL)));
+
+    // Deterministic.
+    CPedersenCommitment c2;
+    BOOST_REQUIRE(CreateNullStakeMofNCommitment(value, blind, dh, c2));
+    BOOST_CHECK(c.vchCommitment == c2.vchCommitment);
+
+    // delegationHash == 0 reduces to the plain value commitment.
+    CPedersenCommitment cZero, cPlain;
+    BOOST_REQUIRE(CreateNullStakeMofNCommitment(value, blind, uint256(0), cZero));
+    BOOST_REQUIRE(CreatePedersenCommitment(value, blind, cPlain));
+    BOOST_CHECK_MESSAGE(cZero.vchCommitment == cPlain.vchCommitment,
+                        "delegationHash==0 must reduce to the plain Pedersen commitment");
+
+    // A different delegation yields a different commitment point.
+    CPedersenCommitment cOther;
+    BOOST_REQUIRE(CreateNullStakeMofNCommitment(value, blind, uint256(999ULL), cOther));
+    BOOST_CHECK(cOther.vchCommitment != c.vchCommitment);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -22,6 +22,7 @@ bool CZKContext::fInitFailed = false;
 CCriticalSection CZKContext::cs_zkcontext;
 std::vector<unsigned char> CZKContext::vchGeneratorG;
 std::vector<unsigned char> CZKContext::vchGeneratorH;
+std::vector<unsigned char> CZKContext::vchGeneratorJ;
 
 class CBNCtxGuard
 {
@@ -174,6 +175,14 @@ void CZKContext::DoInitialize()
     }
     if (!PointToBytes(group, H, vchGeneratorH, ctx)) { fInitFailed = true; return; }
 
+    CECPointGuard J(group);
+    if (!HashToPoint(group, "Innova_NullStakeMofN_Generator_J_v1", J, ctx))
+    {
+        fInitFailed = true;
+        return;
+    }
+    if (!PointToBytes(group, J, vchGeneratorJ, ctx)) { fInitFailed = true; return; }
+
     fInitialized = true;
     printf("ZK proof context initialized (secp256k1, Pedersen + Bulletproofs)\n");
 }
@@ -191,6 +200,7 @@ void CZKContext::Shutdown()
     LOCK(cs_zkcontext);
     vchGeneratorG.clear();
     vchGeneratorH.clear();
+    vchGeneratorJ.clear();
     fInitialized = false;
 }
 
@@ -208,6 +218,11 @@ const std::vector<unsigned char>& CZKContext::GetGeneratorG()
 const std::vector<unsigned char>& CZKContext::GetGeneratorH()
 {
     return vchGeneratorH;
+}
+
+const std::vector<unsigned char>& CZKContext::GetGeneratorJ()
+{
+    return vchGeneratorJ;
 }
 
 
@@ -291,6 +306,66 @@ bool CreatePedersenCommitment(int64_t nValue,
     BN_clear_free(bnBlind);
 
     return PointToBytes(group, C, commitOut.vchCommitment, ctx);
+}
+
+bool CreateNullStakeMofNCommitment(int64_t nValue,
+                                   const std::vector<unsigned char>& vchBlind,
+                                   const uint256& delegationHash,
+                                   CPedersenCommitment& commitOut)
+{
+    if (!CZKContext::IsInitialized()) return false;
+    if (vchBlind.size() != BLINDING_FACTOR_SIZE) return false;
+    if (nValue < 0) return false;
+    static const int64_t ZK_MAX_VALUE = 1800000000000000LL;
+    if (nValue > ZK_MAX_VALUE) return false;
+
+    CECGroupGuard group;
+    if (!group.group) return false;
+    CBNCtxGuard ctx;
+    if (!ctx.ctx) return false;
+
+    CECPointGuard G(group), H(group), J(group);
+    if (!BytesToPoint(group, CZKContext::GetGeneratorG(), G, ctx)) return false;
+    if (!BytesToPoint(group, CZKContext::GetGeneratorH(), H, ctx)) return false;
+    if (!BytesToPoint(group, CZKContext::GetGeneratorJ(), J, ctx)) return false;
+
+    const BIGNUM* order = EC_GROUP_get0_order(group);
+
+    unsigned char valBytes[8];
+    for (int i = 7; i >= 0; i--) { valBytes[7-i] = (unsigned char)((uint64_t)nValue >> (i*8)); }
+
+    CBNGuard bnValue, bnBlind, bnDeleg;
+    if (!BN_bin2bn(valBytes, 8, bnValue)) return false;
+    if (!BN_bin2bn(vchBlind.data(), (int)vchBlind.size(), bnBlind)) return false;
+    if (!BN_bin2bn(delegationHash.begin(), 32, bnDeleg)) return false;
+    BN_mod(bnBlind, bnBlind, order, ctx);
+    BN_mod(bnDeleg, bnDeleg, order, ctx);
+    if (BN_is_zero(bnBlind)) return false;
+    BN_set_consttime(bnValue);
+    BN_set_consttime(bnBlind);
+
+    // C = value*H + blind*G + delegationHash*J  (matches the value*H + blind*G convention
+    // of CreatePedersenCommitment; the J term binds the delegation set).
+    CECPointGuard vH(group), rG(group), dJ(group), C(group);
+    if (EC_POINT_mul(group, vH, NULL, H, bnValue, ctx) != 1) return false;
+    if (EC_POINT_mul(group, rG, NULL, G, bnBlind, ctx) != 1) return false;
+    if (EC_POINT_mul(group, dJ, NULL, J, bnDeleg, ctx) != 1) return false;
+    if (EC_POINT_add(group, C, vH, rG, ctx) != 1) return false;
+    if (EC_POINT_add(group, C, C, dJ, ctx) != 1) return false;
+
+    return PointToBytes(group, C, commitOut.vchCommitment, ctx);
+}
+
+bool VerifyNullStakeMofNCommitment(const CPedersenCommitment& commit,
+                                   int64_t nValue,
+                                   const std::vector<unsigned char>& vchBlind,
+                                   const uint256& delegationHash)
+{
+    if (commit.vchCommitment.empty()) return false;
+    CPedersenCommitment expected;
+    if (!CreateNullStakeMofNCommitment(nValue, vchBlind, delegationHash, expected))
+        return false;
+    return commit.vchCommitment == expected.vchCommitment;
 }
 
 bool VerifyPedersenCommitment(const CPedersenCommitment& commit,

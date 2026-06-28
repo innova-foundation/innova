@@ -32,6 +32,10 @@ public:
 
     static const std::vector<unsigned char>& GetGeneratorH();
 
+    // B2-e: independent generator J for the M-of-N delegation-binding commitment
+    // (value*H + blind*G + delegationHash*J). Nothing-up-my-sleeve, distinct domain.
+    static const std::vector<unsigned char>& GetGeneratorJ();
+
 private:
     static boost::once_flag initOnceFlag;
     static void DoInitialize();
@@ -40,6 +44,7 @@ private:
     static CCriticalSection cs_zkcontext;
     static std::vector<unsigned char> vchGeneratorG;
     static std::vector<unsigned char> vchGeneratorH;
+    static std::vector<unsigned char> vchGeneratorJ;
 };
 
 
@@ -260,6 +265,21 @@ bool VerifyHalfAggStakeSignature(const std::vector<std::vector<unsigned char> >&
                                  const std::vector<unsigned char>& vchAggregatedSScalar,
                                  const uint256& sighash,
                                  std::string& strError);
+
+// B2-e: delegation-binding commitment  C = value*H + blind*G + delegationHash*J  (J independent
+// of G and H). Binds the staked value, its blinding, and the public delegation-set commitment
+// into one curve point, so the FCMP membership proof ties delegationHash to the note while the
+// value stays hidden. Reduces to the plain value commitment when delegationHash == 0.
+bool CreateNullStakeMofNCommitment(int64_t nValue,
+                                   const std::vector<unsigned char>& vchBlind,
+                                   const uint256& delegationHash,
+                                   CPedersenCommitment& commitOut);
+
+// Verify a delegation-binding commitment opens to exactly (nValue, vchBlind, delegationHash).
+bool VerifyNullStakeMofNCommitment(const CPedersenCommitment& commit,
+                                   int64_t nValue,
+                                   const std::vector<unsigned char>& vchBlind,
+                                   const uint256& delegationHash);
 
 
 #endif // INN_ZKPROOF_H
