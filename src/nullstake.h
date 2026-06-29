@@ -285,6 +285,27 @@ bool CreateNullStakeKernelProofV3(int64_t nValue,
                                   const uint256& delegationHash,
                                   CNullStakeKernelProofV3& proofOut);
 
+// B2-e: build an M-of-N (half-aggregated Schnorr) cold-stake kernel proof. The leaf cv3 is the
+// 3-generator commitment to (nValue, vchBlind, delegationHash); vStakerSet is the ordered
+// N-member set (hashing to delegationHash); vSignerSecrets are the >= M member secret scalars
+// that sign the stake digest. Routed through VerifyNullStakeKernelProofV3 (nThresholdM > 0).
+bool CreateNullStakeMofNKernelProofV3(int64_t nValue,
+                                      const std::vector<unsigned char>& vchBlind,
+                                      const CPedersenCommitment& cv3,
+                                      unsigned int nBits,
+                                      uint64_t nStakeModifier,
+                                      unsigned int nBlockTimeFrom,
+                                      unsigned int nTxPrevOffset,
+                                      unsigned int nTxTimePrev,
+                                      unsigned int nVoutN,
+                                      unsigned int nTimeTx,
+                                      const std::vector<std::vector<unsigned char> >& vStakerSet,
+                                      unsigned int nThresholdM,
+                                      const std::vector<unsigned char>& vchPkOwner,
+                                      const uint256& delegationHash,
+                                      const std::vector<uint256>& vSignerSecrets,
+                                      CNullStakeKernelProofV3& proofOut);
+
 bool VerifyNullStakeKernelProofV3(const CNullStakeKernelProofV3& proof,
                                   const CPedersenCommitment& cv,
                                   unsigned int nBits);

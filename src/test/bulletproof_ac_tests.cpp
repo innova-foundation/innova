@@ -10,6 +10,7 @@
 
 #include <openssl/bn.h>
 #include <openssl/ec.h>
+#include <algorithm>
 #include <openssl/obj_mac.h>
 #include <string.h>
 #include <vector>
@@ -722,6 +723,116 @@ BOOST_AUTO_TEST_CASE(nullstake_v2_v3_bpac_paths_create_and_verify)
                                               nTxTimePrev, nVoutN, nTimeTx,
                                               skStake, pkOwner,
                                               delegationHash, losingProofV3));
+}
+
+// B2-e: M-of-N (half-aggregated Schnorr) cold-stake kernel proof, end-to-end create->verify
+// plus adversarial cases (the consensus crypto wiring; FCMP membership is enforced separately
+// in ConnectBlock and binds the 3-generator leaf cv3 to the tree).
+BOOST_AUTO_TEST_CASE(nullstake_mofn_kernel_proof_create_verify)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+    if (!CPoseidon2Params::IsInitialized())
+        CPoseidon2Params::Initialize();
+
+    typedef std::vector<unsigned char> valtype;
+    const int64_t nValue = 5000000000LL;
+    valtype blind(32, 0);
+    blind[0] = 0x11; blind[31] = 0x07;   // nonzero blinding factor
+    const unsigned int nBits = 0x207fffff;
+    const uint64_t nStakeModifier = 0x1122334455667788ULL;
+    const unsigned int nBlockTimeFrom = 100000;
+    const unsigned int nTxPrevOffset = 7;
+    const unsigned int nTxTimePrev = 100010;
+    const unsigned int nVoutN = 3;
+    const unsigned int nTimeTx = nBlockTimeFrom + nStakeMinAge + 7200;
+
+    // 2-of-3 staker set (canonical) + an owner key.
+    std::vector<uint256> setSk;
+    setSk.push_back(uint256(70001ULL)); setSk.push_back(uint256(70002ULL)); setSk.push_back(uint256(70003ULL));
+    std::vector<valtype> set;
+    for (size_t i = 0; i < setSk.size(); i++)
+    {
+        valtype pk; BOOST_REQUIRE(HalfAggStakeDerivePubKey(setSk[i], pk)); set.push_back(pk);
+    }
+    std::sort(set.begin(), set.end());
+    valtype owner; BOOST_REQUIRE(HalfAggStakeDerivePubKey(uint256(79999ULL), owner));
+
+    uint256 delegationHash;
+    BOOST_REQUIRE(ComputeNullStakeV3DelegationSetHash(set, 2, owner, delegationHash));
+
+    // The cold-stake note leaf is the 3-generator commitment.
+    CPedersenCommitment cv3;
+    BOOST_REQUIRE(CreateNullStakeMofNCommitment(nValue, blind, delegationHash, cv3));
+
+    std::vector<uint256> signers;
+    signers.push_back(uint256(70001ULL)); signers.push_back(uint256(70002ULL));   // 2 of 3
+
+    CNullStakeKernelProofV3 proof;
+    BOOST_REQUIRE(CreateNullStakeMofNKernelProofV3(nValue, blind, cv3, nBits, nStakeModifier,
+        nBlockTimeFrom, nTxPrevOffset, nTxTimePrev, nVoutN, nTimeTx, set, 2, owner,
+        delegationHash, signers, proof));
+    BOOST_CHECK_MESSAGE(VerifyNullStakeKernelProofV3(proof, cv3, nBits),
+                        "a valid 2-of-3 M-of-N kernel proof should verify");
+    BOOST_CHECK_EQUAL(proof.nThresholdM, 2u);
+    BOOST_CHECK_MESSAGE(proof.vchPkStake.empty(), "M-of-N proof must not carry a single pkStake");
+    BOOST_CHECK_EQUAL(proof.vStakerSet.size(), 3u);
+
+    // (a) tampered aggregated s-scalar -> reject.
+    {
+        CNullStakeKernelProofV3 bad = proof;
+        bad.vchAggregatedSScalar[0] ^= 0x01;
+        BOOST_CHECK_MESSAGE(!VerifyNullStakeKernelProofV3(bad, cv3, nBits),
+                            "a tampered aggregated s-scalar must be rejected");
+    }
+    // (b) substituted staker set (attacker keys) against the committed delegationHash -> reject.
+    {
+        CNullStakeKernelProofV3 bad = proof;
+        std::vector<uint256> aSk;
+        aSk.push_back(uint256(80001ULL)); aSk.push_back(uint256(80002ULL)); aSk.push_back(uint256(80003ULL));
+        bad.vStakerSet.clear();
+        for (size_t i = 0; i < aSk.size(); i++)
+        {
+            valtype pk; BOOST_REQUIRE(HalfAggStakeDerivePubKey(aSk[i], pk)); bad.vStakerSet.push_back(pk);
+        }
+        std::sort(bad.vStakerSet.begin(), bad.vStakerSet.end());
+        BOOST_CHECK_MESSAGE(!VerifyNullStakeKernelProofV3(bad, cv3, nBits),
+                            "a substituted staker set must not match the committed delegation hash");
+    }
+    // (c) downgrade: submit the M-of-N leaf/proof as nThresholdM == 0 -> 1-of-1 path rejects it.
+    {
+        CNullStakeKernelProofV3 bad = proof;
+        bad.nThresholdM = 0;
+        BOOST_CHECK_MESSAGE(!VerifyNullStakeKernelProofV3(bad, cv3, nBits),
+                            "an M-of-N leaf submitted as 1-of-1 must be rejected");
+    }
+    // (d) verify against a DIFFERENT leaf (different delegationHash) -> cv_plain/link/digest reject.
+    {
+        uint256 dh2;
+        BOOST_REQUIRE(ComputeNullStakeV3DelegationSetHash(set, 3, owner, dh2));   // M=3 -> different hash
+        CPedersenCommitment cv3b;
+        BOOST_REQUIRE(CreateNullStakeMofNCommitment(nValue, blind, dh2, cv3b));
+        BOOST_CHECK_MESSAGE(!VerifyNullStakeKernelProofV3(proof, cv3b, nBits),
+                            "the proof must not verify against a different note leaf");
+    }
+    // (e) creating a proof with fewer than M signer secrets must fail.
+    {
+        std::vector<uint256> one; one.push_back(uint256(70001ULL));
+        CNullStakeKernelProofV3 p2;
+        BOOST_CHECK_MESSAGE(!CreateNullStakeMofNKernelProofV3(nValue, blind, cv3, nBits, nStakeModifier,
+            nBlockTimeFrom, nTxPrevOffset, nTxTimePrev, nVoutN, nTimeTx, set, 2, owner,
+            delegationHash, one, p2),
+            "creating an M-of-N proof with fewer than M signers must fail");
+    }
+    // (f) a leaf with the wrong value cannot be built into a proof (commitment mismatch).
+    {
+        CPedersenCommitment cvWrongValue;
+        BOOST_REQUIRE(CreateNullStakeMofNCommitment(nValue + 1, blind, delegationHash, cvWrongValue));
+        CNullStakeKernelProofV3 p3;
+        BOOST_CHECK_MESSAGE(!CreateNullStakeMofNKernelProofV3(nValue, blind, cvWrongValue, nBits, nStakeModifier,
+            nBlockTimeFrom, nTxPrevOffset, nTxTimePrev, nVoutN, nTimeTx, set, 2, owner,
+            delegationHash, signers, p3),
+            "a leaf that does not commit to (value,blind,delegationHash) must fail to build");
+    }
 }
 
 // The Pippenger multiexp must equal the naive sum bit-for-bit, including edge

@@ -17,6 +17,8 @@
 #include <openssl/sha.h>
 #include <openssl/obj_mac.h>
 #include <string.h>
+#include <algorithm>
+#include <utility>
 
 class CZarcBNCtxGuard
 {
@@ -1129,6 +1131,355 @@ bool CreateNullStakeKernelProofV3(int64_t nValue,
     return true;
 }
 
+// ============================================================================
+// B2-e: M-of-N (half-aggregated Schnorr) cold-stake kernel proof (value-decoupled,
+// public-signer tier). The note leaf is the 3-generator commitment
+//   cv3 = value*H + blind*G + delegationHash*J.
+// The kernel proof proves range+weight over the J-free commitment
+//   cv_plain = cv3 - delegationHash*J
+// with the V2 (range+weight only) circuit, links the circuit's value commitment to
+// cv_plain, and requires an M-of-N half-aggregated signature -- the only check that
+// needs the member secret keys -- over a stake digest bound to the leaf + kernel params.
+// ============================================================================
+
+static const char* NULLSTAKE_V3_MOFN_LINK_DOMAIN = "Innova_NullStakeV3MofNLinking";
+
+// Shared Fiat-Shamir challenge for the M-of-N value-commitment link, so create and verify
+// build the IDENTICAL transcript. Binds the circuit commitment Vv, the J-free leaf
+// commitment cv_plain, the delegation, and the stake digest (which itself binds cv3 +
+// kernel params). The set is bound through delegationHash (the set hash) and re-checked by
+// the authorization gate.
+static uint256 NullStakeMofNLinkChallenge(const std::vector<unsigned char>& vchVv,
+                                          const std::vector<unsigned char>& vchCvPlain,
+                                          const uint256& delegationHash,
+                                          const uint256& stakeDigest,
+                                          const std::vector<unsigned char>& vchRL)
+{
+    CDataStream ssLink(SER_GETHASH, 0);
+    ssLink << std::string(NULLSTAKE_V3_MOFN_LINK_DOMAIN);
+    ssLink << vchVv;
+    ssLink << vchCvPlain;
+    ssLink << delegationHash;
+    ssLink << stakeDigest;
+    ssLink << vchRL;
+    return Hash(ssLink.begin(), ssLink.end());
+}
+
+bool CreateNullStakeMofNKernelProofV3(int64_t nValue,
+                                      const std::vector<unsigned char>& vchBlind,
+                                      const CPedersenCommitment& cv3,
+                                      unsigned int nBits,
+                                      uint64_t nStakeModifier,
+                                      unsigned int nBlockTimeFrom,
+                                      unsigned int nTxPrevOffset,
+                                      unsigned int nTxTimePrev,
+                                      unsigned int nVoutN,
+                                      unsigned int nTimeTx,
+                                      const std::vector<std::vector<unsigned char> >& vStakerSet,
+                                      unsigned int nThresholdM,
+                                      const std::vector<unsigned char>& vchPkOwner,
+                                      const uint256& delegationHash,
+                                      const std::vector<uint256>& vSignerSecrets,
+                                      CNullStakeKernelProofV3& proofOut)
+{
+    if (nValue <= 0 || vchBlind.size() != 32 || cv3.IsNull())
+        return false;
+    if (vchPkOwner.size() != 33)
+        return false;
+    if (vStakerSet.empty() || vStakerSet.size() > MAX_NULLSTAKE_MOFN_MEMBERS)
+        return false;
+    if (nThresholdM < 1 || nThresholdM > vStakerSet.size())
+        return false;
+    if (vSignerSecrets.size() < nThresholdM || vSignerSecrets.size() > vStakerSet.size())
+        return false;
+
+    // The set must hash to the supplied delegationHash, and the leaf must be the 3-generator
+    // commitment to (nValue, vchBlind, delegationHash).
+    uint256 expectedDeleg;
+    if (!ComputeNullStakeV3DelegationSetHash(vStakerSet, nThresholdM, vchPkOwner, expectedDeleg) ||
+        expectedDeleg != delegationHash)
+        return false;
+    if (!VerifyNullStakeMofNCommitment(cv3, nValue, vchBlind, delegationHash))
+        return false;
+
+    // cv_plain = value*H + blind*G (J-free), the commitment the circuit + link operate on.
+    CPedersenCommitment cvPlain;
+    if (!CreatePedersenCommitment(nValue, vchBlind, cvPlain))
+        return false;
+
+    if (!CPoseidon2Params::IsInitialized())
+        CPoseidon2Params::Initialize();
+    CZarcECGroupGuard group;
+    CZarcBNCtxGuard ctx;
+    if (!group.group || !ctx.ctx)
+        return false;
+    CNullStakeBNGuard bnOrder;
+    if (!EC_GROUP_get_order(group, bnOrder, ctx))
+        return false;
+
+    // V2 range+weight circuit over a freshly-blinded circuit commitment Vv.
+    CR1CSCircuit circuit = BuildNullStakeV2Circuit(nStakeModifier, nBlockTimeFrom,
+                                                    nTxPrevOffset, nTxTimePrev,
+                                                    nVoutN, nTimeTx, nBits);
+    CR1CSWitness witness;
+    if (!AssignNullStakeV2Witness(circuit, nStakeModifier, nBlockTimeFrom,
+                                  nTxPrevOffset, nTxTimePrev, nVoutN,
+                                  nTimeTx, nValue, vchBlind, nBits, witness))
+        return false;
+
+    std::vector<unsigned char> vchRv(32);
+    if (RAND_bytes(vchRv.data(), 32) != 1)
+        return false;
+    uint256 blindCircuit;
+    for (int i = 0; i < 32; i++)
+        blindCircuit.begin()[i] = vchRv[31 - i];
+    witness.vBlinds[0] = blindCircuit;
+
+    CPedersenCommitment Vv;
+    if (!CreatePedersenCommitment(nValue, vchRv, Vv))
+    {
+        OPENSSL_cleanse(vchRv.data(), 32);
+        return false;
+    }
+    proofOut.valueCommitment = Vv;
+
+    std::vector<std::vector<unsigned char> > vCommitments;
+    vCommitments.push_back(Vv.vchCommitment);
+    if (!CreateBulletproofACProof(circuit, witness, vCommitments, proofOut.acProof))
+    {
+        OPENSSL_cleanse(vchRv.data(), 32);
+        return false;
+    }
+
+    // Stake digest binds the leaf cv3 + delegation + chain-pinned kernel params.
+    uint256 stakeDigest = ComputeNullStakeMofNStakeDigest(delegationHash, nStakeModifier,
+                                                          nBlockTimeFrom, nTxPrevOffset,
+                                                          nTxTimePrev, nVoutN, nTimeTx,
+                                                          cv3.vchCommitment);
+
+    // Half-aggregated signature: each signer signs the digest; sort by pubkey (canonical),
+    // keeping (pk, R, s) paired. Aggregation sums the s-scalars.
+    typedef std::pair<std::vector<unsigned char>,
+                      std::pair<std::vector<unsigned char>, std::vector<unsigned char> > > SignerTrip;
+    std::vector<SignerTrip> trips;
+    for (size_t i = 0; i < vSignerSecrets.size(); i++)
+    {
+        std::vector<unsigned char> pk, R, s;
+        if (!HalfAggStakeDerivePubKey(vSignerSecrets[i], pk) ||
+            !SignHalfAggStakeShare(vSignerSecrets[i], stakeDigest, R, s))
+        {
+            OPENSSL_cleanse(vchRv.data(), 32);
+            return false;
+        }
+        trips.push_back(std::make_pair(pk, std::make_pair(R, s)));
+    }
+    std::sort(trips.begin(), trips.end());
+    proofOut.vSignerPubKeys.clear();
+    proofOut.vSignerRPoints.clear();
+    std::vector<std::vector<unsigned char> > vS;
+    for (size_t i = 0; i < trips.size(); i++)
+    {
+        proofOut.vSignerPubKeys.push_back(trips[i].first);
+        proofOut.vSignerRPoints.push_back(trips[i].second.first);
+        vS.push_back(trips[i].second.second);
+    }
+    if (!AggregatePartialSigs(vS, proofOut.vchAggregatedSScalar))
+    {
+        OPENSSL_cleanse(vchRv.data(), 32);
+        return false;
+    }
+
+    // Value-commitment link: D = Vv - cv_plain = (rv - r)*G; prove knowledge of (rv - r).
+    CNullStakeBNGuard bnRV, bnR, bnS;
+    BN_bin2bn(vchRv.data(), 32, bnRV);
+    BN_bin2bn(vchBlind.data(), 32, bnR);
+    BN_mod_sub(bnS, bnRV, bnR, bnOrder, ctx);
+
+    CNullStakeBNGuard bnK;
+    BN_rand_range(bnK, bnOrder);
+    CZarcECPointGuard RLink(group);
+    if (EC_POINT_mul(group, RLink, bnK, NULL, NULL, ctx) != 1)
+    {
+        OPENSSL_cleanse(vchRv.data(), 32);
+        return false;
+    }
+    std::vector<unsigned char> vchRL(33);
+    if (EC_POINT_point2oct(group, RLink, POINT_CONVERSION_COMPRESSED, vchRL.data(), 33, ctx) != 33)
+    {
+        OPENSSL_cleanse(vchRv.data(), 32);
+        return false;
+    }
+
+    uint256 hashLinkChallenge = NullStakeMofNLinkChallenge(Vv.vchCommitment, cvPlain.vchCommitment,
+                                                           delegationHash, stakeDigest, vchRL);
+    CNullStakeBNGuard bnELink;
+    BN_bin2bn(hashLinkChallenge.begin(), 32, bnELink);
+    BN_mod(bnELink, bnELink, bnOrder, ctx);
+    if (BN_is_zero(bnELink))
+    {
+        OPENSSL_cleanse(vchRv.data(), 32);
+        return false;
+    }
+
+    CNullStakeBNGuard bnSLink, bnTmp;
+    BN_mod_mul(bnTmp, bnELink, bnS, bnOrder, ctx);
+    BN_mod_add(bnSLink, bnK, bnTmp, bnOrder, ctx);
+
+    proofOut.vchLinkProof.clear();
+    proofOut.vchLinkProof.insert(proofOut.vchLinkProof.end(), vchRL.begin(), vchRL.end());
+    unsigned char slBytes[32];
+    memset(slBytes, 0, 32);
+    BN_bn2bin(bnSLink, slBytes + 32 - BN_num_bytes(bnSLink));
+    proofOut.vchLinkProof.insert(proofOut.vchLinkProof.end(), slBytes, slBytes + 32);
+
+    proofOut.nThresholdM = nThresholdM;
+    proofOut.vStakerSet = vStakerSet;       // canonicalize so the wire form is non-malleable
+    std::sort(proofOut.vStakerSet.begin(), proofOut.vStakerSet.end());
+    proofOut.delegationHash = delegationHash;
+    proofOut.vchPkOwner = vchPkOwner;
+    proofOut.vchPkStake.clear();            // M-of-N: no single staking key
+    proofOut.nStakeModifier = nStakeModifier;
+    proofOut.nBlockTimeFrom = nBlockTimeFrom;
+    proofOut.nTxPrevOffset = nTxPrevOffset;
+    proofOut.nTxTimePrev = nTxTimePrev;
+    proofOut.nVoutN = nVoutN;
+    proofOut.nTimeTx = nTimeTx;
+
+    OPENSSL_cleanse(vchRv.data(), 32);
+    return true;
+}
+
+// Dedicated verifier for an M-of-N (nThresholdM > 0) V3 cold-stake kernel proof. Called from
+// VerifyNullStakeKernelProofV3Uncached so the verify cache (keyed on the full serialized proof)
+// covers every input. cv3 is the FCMP-membership-verified leaf (3-generator commitment).
+static bool VerifyNullStakeMofNKernelProofV3(const CNullStakeKernelProofV3& proof,
+                                             const CPedersenCommitment& cv3,
+                                             unsigned int nBits)
+{
+    // Structural + DoS caps (bound before any heavy work).
+    if (proof.nThresholdM < 1 || proof.nThresholdM > MAX_NULLSTAKE_MOFN_MEMBERS)
+        return false;
+    if (proof.vStakerSet.empty() || proof.vStakerSet.size() > MAX_NULLSTAKE_MOFN_MEMBERS)
+        return false;
+    if (proof.nThresholdM > proof.vStakerSet.size())
+        return false;
+    if (proof.vSignerPubKeys.size() < proof.nThresholdM ||
+        proof.vSignerPubKeys.size() > MAX_NULLSTAKE_MOFN_SIGNERS)
+        return false;
+    if (!proof.vchPkStake.empty())            // M-of-N proofs carry a SET, never a single pkStake
+        return false;
+    if (proof.vchPkOwner.size() != 33)
+        return false;
+    if (cv3.vchCommitment.size() != 33)
+        return false;
+    if (proof.vchLinkProof.size() != 65)
+        return false;
+    {
+        uint256 zero; memset(zero.begin(), 0, 32);
+        if (proof.delegationHash == zero)
+            return false;
+    }
+    // Canonical-range guard: reject delegationHash >= n (the authorization recompute, which
+    // produces a value < n, also enforces this via the equality check).
+    if (FieldReduce(proof.delegationHash) != proof.delegationHash)
+        return false;
+
+    if (!CPoseidon2Params::IsInitialized())
+        CPoseidon2Params::Initialize();
+    CZarcECGroupGuard group;
+    CZarcBNCtxGuard ctx;
+    if (!group.group || !ctx.ctx)
+        return false;
+    CNullStakeBNGuard bnOrder;
+    if (!EC_GROUP_get_order(group, bnOrder, ctx))
+        return false;
+
+    // Recover the J-free commitment from the FCMP-verified leaf cv3 (a wrong delegationHash
+    // leaves a J residual that the J-free range/link proofs below reject).
+    CPedersenCommitment cvPlain;
+    if (!NullStakeMofNDeriveValueCommitment(cv3, proof.delegationHash, cvPlain))
+        return false;
+
+    // V2 range+weight proof over proof.valueCommitment (J-free 2-generator basis).
+    CR1CSCircuit circuit = BuildNullStakeV2Circuit(proof.nStakeModifier, proof.nBlockTimeFrom,
+                                                    proof.nTxPrevOffset, proof.nTxTimePrev,
+                                                    proof.nVoutN, proof.nTimeTx, nBits);
+    std::vector<std::vector<unsigned char> > vCommitments;
+    vCommitments.push_back(proof.valueCommitment.vchCommitment);
+    if (!VerifyBulletproofACProof(circuit, vCommitments, proof.acProof))
+    {
+        if (fDebug) printf("VerifyNullStakeMofNKernelProofV3: AC proof failed\n");
+        return false;
+    }
+
+    // Stake digest over the leaf cv3 + delegation + kernel params.
+    uint256 stakeDigest = ComputeNullStakeMofNStakeDigest(proof.delegationHash, proof.nStakeModifier,
+                                                          proof.nBlockTimeFrom, proof.nTxPrevOffset,
+                                                          proof.nTxTimePrev, proof.nVoutN, proof.nTimeTx,
+                                                          cv3.vchCommitment);
+
+    // Value-commitment link to cv_plain (NOT cv3): proves Vv and cv_plain share the same
+    // value*H, so the range/weight proven over Vv applies to the staked note's value.
+    std::vector<unsigned char> vchRL(proof.vchLinkProof.begin(), proof.vchLinkProof.begin() + 33);
+    CZarcECPointGuard RLink(group);
+    if (!EC_POINT_oct2point(group, RLink, vchRL.data(), 33, ctx))
+        return false;
+    CNullStakeBNGuard bnSLink;
+    BN_bin2bn(proof.vchLinkProof.data() + 33, 32, bnSLink);
+
+    uint256 hashLinkChallenge = NullStakeMofNLinkChallenge(proof.valueCommitment.vchCommitment,
+                                                           cvPlain.vchCommitment, proof.delegationHash,
+                                                           stakeDigest, vchRL);
+    CNullStakeBNGuard bnELink;
+    BN_bin2bn(hashLinkChallenge.begin(), 32, bnELink);
+    BN_mod(bnELink, bnELink, bnOrder, ctx);
+    if (BN_is_zero(bnELink))
+        return false;
+
+    CZarcECPointGuard D(group);
+    {
+        CZarcECPointGuard VvPoint(group), cvpPoint(group);
+        if (!EC_POINT_oct2point(group, VvPoint, proof.valueCommitment.vchCommitment.data(),
+                                proof.valueCommitment.vchCommitment.size(), ctx))
+            return false;
+        if (!EC_POINT_oct2point(group, cvpPoint, cvPlain.vchCommitment.data(),
+                                cvPlain.vchCommitment.size(), ctx))
+            return false;
+        CZarcECPointGuard negCvp(group);
+        EC_POINT_copy(negCvp, cvpPoint);
+        EC_POINT_invert(group, negCvp, ctx);
+        EC_POINT_add(group, D, VvPoint, negCvp, ctx);
+    }
+    CZarcECPointGuard lhsLink(group);
+    EC_POINT_mul(group, lhsLink, bnSLink, NULL, NULL, ctx);
+    CZarcECPointGuard rhsLink(group);
+    {
+        CZarcECPointGuard eD(group);
+        EC_POINT_mul(group, eD, NULL, D, bnELink, ctx);
+        EC_POINT_add(group, rhsLink, RLink, eD, ctx);
+    }
+    if (EC_POINT_cmp(group, lhsLink, rhsLink, ctx) != 0)
+    {
+        if (fDebug) printf("VerifyNullStakeMofNKernelProofV3: link proof failed\n");
+        return false;
+    }
+
+    // MANDATORY M-of-N authorization: the ONLY gate requiring the member secret keys. Recompute
+    // SetHash(set,M,owner) == proof.delegationHash, require distinct member signers (count >= M)
+    // in canonical order, and verify the half-aggregated signature over the leaf-bound digest.
+    std::string err;
+    if (!VerifyNullStakeMofNAuthorization(proof.vStakerSet, proof.nThresholdM, proof.vchPkOwner,
+                                          proof.delegationHash, proof.vSignerPubKeys,
+                                          proof.vSignerRPoints, proof.vchAggregatedSScalar,
+                                          stakeDigest, err))
+    {
+        if (fDebug) printf("VerifyNullStakeMofNKernelProofV3: authorization failed: %s\n", err.c_str());
+        return false;
+    }
+
+    return true;
+}
+
 
 static bool VerifyNullStakeKernelProofV3Uncached(const CNullStakeKernelProofV3& proof,
                                                  const CPedersenCommitment& cv,
@@ -1158,6 +1509,14 @@ static bool VerifyNullStakeKernelProofV3Uncached(const CNullStakeKernelProofV3& 
 {
     if (proof.IsNull() || cv.IsNull())
         return false;
+
+    // B2-e: route M-of-N (nThresholdM > 0) proofs to the value-decoupled verifier. The fork
+    // height gate (rejecting nThresholdM > 0 before FORK_HEIGHT_NULLSTAKE_DELEGSET) is enforced
+    // at the height-aware call sites (ConnectBlock / finality). The legacy 1-of-1
+    // (nThresholdM == 0) path below is unchanged; a 3-generator M-of-N leaf submitted as
+    // nThresholdM == 0 fails the 1-of-1 link (which targets the raw leaf with its J term).
+    if (proof.nThresholdM > 0)
+        return VerifyNullStakeMofNKernelProofV3(proof, cv, nBits);
 
     if (proof.vchLinkProof.size() != 65)
         return false;
