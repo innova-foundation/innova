@@ -48,11 +48,40 @@ static bool LoadFCMPValidationRoot(CTxDB& txdb, int nBlockHeight,
                                    std::string& strErrorOut);
 
 // B2-e Phase 3c: the value commitment used for the binding signature + value balance (INV-1):
-// the fresh 2-generator Vv for an M-of-N mint output, the curve-tree leaf cv otherwise. NEVER feed
-// a 3-generator cv3 into the binding sig (its delegationHash*J residual breaks value conservation).
-static inline const CPedersenCommitment& MofNBindingCommitment(const CShieldedOutputDescription& o)
+// the fresh 2-generator Vv for a 2006 M-of-N mint output, cv_plain_out for a 2005 M-of-N cold-stake
+// coinstake re-mint, the raw cv otherwise -- see MofNOutputBindingCommitment below.
+
+// B2-e: true when this shielded tx is a kernel-validated M-of-N cold-stake coinstake (vtx[1] of a PoS
+// block, identified by the position-only fValidatedCoinstake flag -- NEVER tx shape). Its staked-note
+// SPEND and ALL its re-minted OUTPUTS are bound to the single public delegation D =
+// nullstakeProofV3.delegationHash (3c.2 principal-continuity: no value can leave the owner-bound D).
+static inline bool IsMofNColdCoinstake(const CTransaction& tx, bool fValidatedCoinstake)
 {
-    return o.IsMofNMint() ? o.valueCommitmentVv : o.cv;
+    return fValidatedCoinstake
+        && tx.nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD
+        && tx.nullstakeProofV3.nThresholdM > 0;
+}
+
+// B2-e: the 2-generator value commitment for a shielded OUTPUT in the binding signature / value balance:
+//   - a 2006 M-of-N mint output      -> its fresh Vv (INV-1);
+//   - a 2005 M-of-N coinstake re-mint -> cv_plain_out = cv3 - D*J (3c.2: forces every re-minted output
+//       under the owner-bound D; a wrong D leaves a J residual the range proof rejects, and the J terms
+//       cancel the spend-side cv_plain so the homomorphic balance stays exact);
+//   - any ordinary output             -> the raw cv.
+// NEVER feed a 3-generator cv3 into the binding sig (its delegationHash*J residual breaks conservation).
+static bool MofNOutputBindingCommitment(const CTransaction& tx, size_t i, bool fValidatedCoinstake,
+                                        CPedersenCommitment& cvOut)
+{
+    const CShieldedOutputDescription& o = tx.vShieldedOutput[i];
+    if (o.IsMofNMint())
+    {
+        cvOut = o.valueCommitmentVv;
+        return true;
+    }
+    if (IsMofNColdCoinstake(tx, fValidatedCoinstake))
+        return NullStakeMofNDeriveValueCommitment(o.cv, tx.nullstakeProofV3.delegationHash, cvOut);
+    cvOut = o.cv;
+    return true;
 }
 
 // B2-e Phase 3c.1: the 2-generator VALUE commitment for a shielded SPEND. For the staked note of an
@@ -1596,7 +1625,12 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                         for (size_t i = 0; i < tx.vShieldedSpend.size(); i++)
                             vInCommits.push_back(tx.vShieldedSpend[i].cv);
                         for (size_t i = 0; i < tx.vShieldedOutput.size(); i++)
-                            vOutCommits.push_back(MofNBindingCommitment(tx.vShieldedOutput[i]));   // Vv for M-of-N (INV-1)
+                        {
+                            CPedersenCommitment cvOut;   // Vv for a 2006 M-of-N mint output (INV-1); cv otherwise
+                            if (!MofNOutputBindingCommitment(tx, i, false, cvOut))
+                                return error("CTxMemPool::accept() : M-of-N output %d value commitment derivation failed", (int)i);
+                            vOutCommits.push_back(cvOut);
+                        }
 
                         if (!VerifyBindingSignature(vInCommits, vOutCommits, tx.nValueBalance, sighash, tx.bindingSig.bindingSig))
                             return error("CTxMemPool::accept() : shielded binding signature verification failed");
@@ -3922,7 +3956,24 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                     if (!CheckMofNMintOutput(*this, i, fHideAmount, nBlockHeight, fIsMofN, strMofN))
                         return DoS(100, error("ConnectInputs() : shielded output %d: %s", (int)i, strMofN.c_str()));
                     if (fIsMofN)
-                        continue;   // value bound by range-over-Vv + the (G,J) link (CheckMofNMintOutput)
+                        continue;   // 2006 mint output: value bound by range-over-Vv + the (G,J) link
+
+                    if (IsMofNColdCoinstake(*this, fValidatedCoinstake))
+                    {
+                        // 3c.2 continuity: every re-minted output is a cv3 under the public delegation D.
+                        // Force hidden-amount (a plaintext output would bypass the J-residual check), then
+                        // verify the range proof over cv_plain_out = cv3 - D*J; a wrong D leaves a J residual
+                        // the 2-generator range proof rejects (fail-closed), so value cannot leave D.
+                        if (!fHideAmount)
+                            return DoS(100, error("ConnectInputs() : M-of-N coinstake output %d must be hidden-amount", (int)i));
+                        CPedersenCommitment cvOutValue;
+                        if (!NullStakeMofNDeriveValueCommitment(vShieldedOutput[i].cv, nullstakeProofV3.delegationHash, cvOutValue))
+                            return DoS(100, error("ConnectInputs() : M-of-N coinstake output %d cv_plain derivation failed", (int)i));
+                        if (!VerifyBulletproofRangeProof(cvOutValue, vShieldedOutput[i].rangeProof))
+                            return DoS(100, error("ConnectInputs() : M-of-N coinstake output %d continuity range proof failed", (int)i));
+                        continue;
+                    }
+
                     if (fHideAmount)
                     {
                         if (!VerifyBulletproofRangeProof(vShieldedOutput[i].cv, vShieldedOutput[i].rangeProof))
@@ -3935,6 +3986,15 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                                                        vShieldedOutput[i].vchPlaintextBlind))
                             return DoS(100, error("ConnectInputs() : DSP output %d commitment opening proof failed", (int)i));
                     }
+                }
+                // 3c.2: an M-of-N cold-stake coinstake must keep ALL value inside D-bound shielded outputs --
+                // no value-bearing transparent vout (only the empty coinstake marker vout[0] is permitted),
+                // so neither principal nor the minted reward can be skimmed to a transparent output.
+                if (IsMofNColdCoinstake(*this, fValidatedCoinstake))
+                {
+                    for (size_t k = 0; k < vout.size(); k++)
+                        if (vout[k].nValue > 0)
+                            return DoS(100, error("ConnectInputs() : M-of-N coinstake has a value-bearing transparent output"));
                 }
 
                 if (!fHideAmount)
@@ -3963,7 +4023,14 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                         vInCommits.push_back(cvIn);
                     }
                     for (size_t i = 0; i < vShieldedOutput.size(); i++)
-                        vOutCommits.push_back(MofNBindingCommitment(vShieldedOutput[i]));   // Vv for M-of-N (INV-1)
+                    {
+                        // Vv for a 2006 mint output; cv_plain_out = cv3 - D*J for a 2005 M-of-N coinstake
+                        // re-mint (3c.2 -- cancels the spend-side cv_plain so the balance stays exact); cv otherwise.
+                        CPedersenCommitment cvOut;
+                        if (!MofNOutputBindingCommitment(*this, i, fValidatedCoinstake, cvOut))
+                            return DoS(100, error("ConnectInputs() : M-of-N output %d value commitment derivation failed (binding sig)", (int)i));
+                        vOutCommits.push_back(cvOut);
+                    }
 
                     if (!VerifyBindingSignature(vInCommits, vOutCommits, nValueBalance, sighash, bindingSig.bindingSig))
                         return DoS(100, error("ConnectInputs() : shielded binding signature verification failed"));
