@@ -1636,6 +1636,9 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "z_unshield"            && n > 2) ConvertTo<double>(params[2]);
     if (strMethod == "z_send"                && n > 2) ConvertTo<double>(params[2]);
     if (strMethod == "z_send"                && n > 3) ConvertTo<int64_t>(params[3]);
+    if (strMethod == "z_mintmofncoldstake"   && n > 1) ConvertTo<double>(params[1]);
+    if (strMethod == "z_mintmofncoldstake"   && n > 3) ConvertTo<json_spirit::Array>(params[3]);
+    if (strMethod == "z_mintmofncoldstake"   && n > 4) ConvertTo<int64_t>(params[4]);
     if (strMethod == "n_delegatestake"       && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "z_nullsend"            && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "z_nullsend"            && n > 2) ConvertTo<int64_t>(params[2]);

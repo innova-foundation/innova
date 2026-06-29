@@ -4010,7 +4010,11 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                 for (size_t i = 0; i < vShieldedOutput.size(); i++)
                 {
                     bool fIsMofN = false; std::string strMofN;
-                    if (!CheckMofNMintOutput(*this, i, fHideAmount, nBlockHeight, fIsMofN, strMofN))
+                    // Gate the M-of-N mint-output fork at the EFFECTIVE mining height: the actual block
+                    // height when connecting a block (deterministic, consensus), or tip+1 in the mempool
+                    // (where the tx will be mined next), matching the mempool-accept direct check.
+                    int nMofNGateHeight = fBlock ? nBlockHeight : nBlockHeight + 1;
+                    if (!CheckMofNMintOutput(*this, i, fHideAmount, nMofNGateHeight, fIsMofN, strMofN))
                         return DoS(100, error("ConnectInputs() : shielded output %d: %s", (int)i, strMofN.c_str()));
                     if (fIsMofN)
                         continue;   // 2006 mint output: value bound by range-over-Vv + the (G,J) link

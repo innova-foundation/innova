@@ -2518,22 +2518,18 @@ Value z_mintmofncoldstake(const Array& params, bool fHelp)
     bool fFilterByAddress = (strFromAddr != "*");
 
     // Owner key from the owner z-address spending key (so the owner can sign a future reclaim with rk==ownerPubKey).
-    CShieldedSpendingKey sk;
     CShieldedPaymentAddress ownerZAddr;
-    bool fFound = false;
+    if (!StringToShieldedAddress(strOwnerZAddr, ownerZAddr))
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid owner z-address");
+    CShieldedSpendingKey sk;
     {
         LOCK(pwalletMain->cs_shielded);
-        for (std::map<CShieldedPaymentAddress, CShieldedSpendingKey>::iterator it = pwalletMain->mapShieldedSpendingKeys.begin();
-             it != pwalletMain->mapShieldedSpendingKeys.end(); ++it)
-        {
-            CDataStream ssAddr(SER_NETWORK, PROTOCOL_VERSION);
-            ssAddr << it->first;
-            if (HexStr(ssAddr.begin(), ssAddr.end()) == strOwnerZAddr)
-            { sk = it->second; ownerZAddr = it->first; fFound = true; break; }
-        }
+        std::map<CShieldedPaymentAddress, CShieldedSpendingKey>::iterator it =
+            pwalletMain->mapShieldedSpendingKeys.find(ownerZAddr);
+        if (it == pwalletMain->mapShieldedSpendingKeys.end())
+            throw JSONRPCError(RPC_WALLET_ERROR, "No spending key for owner z-address (owner must be a wallet address to reclaim)");
+        sk = it->second;
     }
-    if (!fFound)
-        throw JSONRPCError(RPC_WALLET_ERROR, "No spending key for owner z-address (owner must be a wallet address to reclaim)");
 
     CKey ownerKey;
     ownerKey.Set(sk.skSpend.begin(), sk.skSpend.end(), true);
