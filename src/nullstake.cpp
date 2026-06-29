@@ -1366,6 +1366,10 @@ static bool VerifyNullStakeMofNKernelProofV3(const CNullStakeKernelProofV3& proo
     if (proof.vSignerPubKeys.size() < proof.nThresholdM ||
         proof.vSignerPubKeys.size() > MAX_NULLSTAKE_MOFN_SIGNERS)
         return false;
+    if (proof.vSignerRPoints.size() != proof.vSignerPubKeys.size())   // R-points paired 1:1 with signers
+        return false;
+    if (proof.valueCommitment.vchCommitment.size() != 33)             // circuit commitment must be a point
+        return false;
     if (!proof.vchPkStake.empty())            // M-of-N proofs carry a SET, never a single pkStake
         return false;
     if (proof.vchPkOwner.size() != 33)
@@ -1426,6 +1430,10 @@ static bool VerifyNullStakeMofNKernelProofV3(const CNullStakeKernelProofV3& proo
         return false;
     CNullStakeBNGuard bnSLink;
     BN_bin2bn(proof.vchLinkProof.data() + 33, 32, bnSLink);
+    // Canonical link s-scalar (s < n): reject non-canonical encodings so the link proof bytes
+    // are not malleable (matches the half-agg s-scalar range check).
+    if (BN_is_negative(bnSLink) || BN_cmp(bnSLink, bnOrder) >= 0)
+        return false;
 
     uint256 hashLinkChallenge = NullStakeMofNLinkChallenge(proof.valueCommitment.vchCommitment,
                                                            cvPlain.vchCommitment, proof.delegationHash,
@@ -1510,9 +1518,11 @@ static bool VerifyNullStakeKernelProofV3Uncached(const CNullStakeKernelProofV3& 
     if (proof.IsNull() || cv.IsNull())
         return false;
 
-    // B2-e: route M-of-N (nThresholdM > 0) proofs to the value-decoupled verifier. The fork
-    // height gate (rejecting nThresholdM > 0 before FORK_HEIGHT_NULLSTAKE_DELEGSET) is enforced
-    // at the height-aware call sites (ConnectBlock / finality). The legacy 1-of-1
+    // B2-e: route M-of-N (nThresholdM > 0) proofs to the value-decoupled verifier. This verify
+    // is height-independent (so it can be verify-cached deterministically); the fork-height gate
+    // rejecting nThresholdM > 0 before FORK_HEIGHT_NULLSTAKE_DELEGSET is enforced by the
+    // height-aware consensus call sites: ConnectBlock (main.cpp, on pindex->nHeight) and the
+    // finality vote path (finality.cpp, on pEpochBlock->nHeight). The legacy 1-of-1
     // (nThresholdM == 0) path below is unchanged; a 3-generator M-of-N leaf submitted as
     // nThresholdM == 0 fails the 1-of-1 link (which targets the raw leaf with its J term).
     if (proof.nThresholdM > 0)

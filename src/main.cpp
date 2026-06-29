@@ -4645,6 +4645,12 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
             if (pindex->nHeight < FORK_HEIGHT_NULLSTAKE_V3)
                 return DoS(100, error("ConnectBlock() : NullStake V3 cold stake coinstake before fork height"));
 
+            // B2-e: half-aggregated M-of-N (nThresholdM > 0) cold staking activates only at
+            // the DELEGSET fork. Before it, only the legacy 1-of-1 (nThresholdM == 0) is valid.
+            if (vtx[1].nullstakeProofV3.nThresholdM > 0 &&
+                pindex->nHeight < FORK_HEIGHT_NULLSTAKE_DELEGSET)
+                return DoS(100, error("ConnectBlock() : NullStake V3 M-of-N coinstake before DELEGSET fork height"));
+
             if (vtx[1].nullstakeProofV3.IsNull())
                 return DoS(100, error("ConnectBlock() : NullStake V3 kernel proof missing"));
 
@@ -4655,6 +4661,21 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                 return DoS(100, error("ConnectBlock() : NullStake V3 proof exceeds size limit (%u > %u)",
                                        (unsigned int)vtx[1].nullstakeProofV3.acProof.GetProofSize(),
                                        (unsigned int)BPAC_V3_MAX_PROOF_SIZE));
+
+            // B2-e: bound the M-of-N vectors before the kernel verifier (defense in depth;
+            // the verifier also enforces these caps).
+            if (vtx[1].nullstakeProofV3.nThresholdM > 0)
+            {
+                const CNullStakeKernelProofV3& mp = vtx[1].nullstakeProofV3;
+                if (mp.nThresholdM > MAX_NULLSTAKE_MOFN_MEMBERS ||
+                    mp.vStakerSet.empty() || mp.vStakerSet.size() > MAX_NULLSTAKE_MOFN_MEMBERS ||
+                    mp.nThresholdM > mp.vStakerSet.size() ||
+                    mp.vSignerPubKeys.size() < mp.nThresholdM ||
+                    mp.vSignerPubKeys.size() > MAX_NULLSTAKE_MOFN_SIGNERS ||
+                    mp.vSignerRPoints.size() != mp.vSignerPubKeys.size() ||
+                    mp.vchAggregatedSScalar.size() != 32)
+                    return DoS(100, error("ConnectBlock() : NullStake V3 M-of-N structural bounds violated"));
+            }
 
             if (vtx[1].nullstakeProofV3.nTimeTx != nTime)
                 return DoS(100, error("ConnectBlock() : NullStake V3 nTimeTx %" PRId64 " != block time %" PRId64,
@@ -4667,7 +4688,11 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                     return DoS(100, error("ConnectBlock() : NullStake V3 delegation hash is zero"));
             }
 
-            if (vtx[1].nullstakeProofV3.vchPkStake.size() != 33)
+            // 1-of-1 carries a 33-byte pk_stake; an M-of-N proof carries an EMPTY pk_stake
+            // (it has a staker SET, bounded above) and the M-of-N verifier requires it empty,
+            // so this structural check applies only to the legacy 1-of-1 path.
+            if (vtx[1].nullstakeProofV3.nThresholdM == 0 &&
+                vtx[1].nullstakeProofV3.vchPkStake.size() != 33)
                 return DoS(100, error("ConnectBlock() : NullStake V3 pk_stake invalid size"));
             if (vtx[1].nullstakeProofV3.vchPkOwner.size() != 33)
                 return DoS(100, error("ConnectBlock() : NullStake V3 pk_owner invalid size"));
@@ -6927,16 +6952,37 @@ bool CBlock::CheckBlockSignature() const
         return rkPubKey.Verify(GetHash(), vchBlockSig);
     }
 
-    // NullStake V3 (Private Cold Staking): verify block signature against pk_stake
+    // NullStake V3 (Private Cold Staking): verify the block signature against pk_stake (1-of-1)
+    // or, for B2-e M-of-N, against any member of the committed staker set.
     if (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
     {
         if (vchBlockSig.empty())
             return false;
 
-        if (vtx[1].nullstakeProofV3.vchPkStake.size() != 33)
+        const CNullStakeKernelProofV3& p = vtx[1].nullstakeProofV3;
+
+        if (p.nThresholdM > 0)
+        {
+            // M-of-N has no single staking key. The block producer is a hot-wallet member of
+            // the staker set; require the block signature to verify against ANY committed set
+            // member. The M-of-N authorization of the stake itself is enforced separately in
+            // the kernel proof (VerifyNullStakeMofNKernelProofV3); this only ties the block to
+            // a legitimate set member so a non-member cannot stuff the coinstake into a block.
+            for (size_t i = 0; i < p.vStakerSet.size(); i++)
+            {
+                if (p.vStakerSet[i].size() != 33)
+                    continue;
+                CPubKey member(p.vStakerSet[i]);
+                if (member.IsValid() && member.IsFullyValid() && member.Verify(GetHash(), vchBlockSig))
+                    return true;
+            }
+            return false;
+        }
+
+        if (p.vchPkStake.size() != 33)
             return false;
 
-        CPubKey pkStake(vtx[1].nullstakeProofV3.vchPkStake);
+        CPubKey pkStake(p.vchPkStake);
         if (!pkStake.IsValid() || !pkStake.IsFullyValid())
             return false;
 

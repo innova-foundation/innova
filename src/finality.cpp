@@ -3374,6 +3374,12 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb, std::st
         }
         else if (vote.nProofMode == FINALITY_PROOF_NULLSTAKE_V3_COLD)
         {
+            // B2-e: half-aggregated M-of-N (nThresholdM > 0) private votes activate only at the
+            // DELEGSET fork; before it, only the legacy 1-of-1 (nThresholdM == 0) is valid.
+            if (vote.privateProof.nullStakeV3Proof.nThresholdM > 0 &&
+                pEpochBlock->nHeight < FORK_HEIGHT_NULLSTAKE_DELEGSET)
+                return reject("private finality M-of-N NullStake vote before DELEGSET fork height");
+
             if (pEpochBlock->nHeight >= FORK_HEIGHT_KERNEL_PINNING)
             {
                 const CNullStakeKernelProofV3& kp = vote.privateProof.nullStakeV3Proof;
