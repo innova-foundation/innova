@@ -47,6 +47,55 @@ static bool LoadFCMPValidationRoot(CTxDB& txdb, int nBlockHeight,
                                    uint256& hashExpectedRootOut,
                                    std::string& strErrorOut);
 
+// B2-e Phase 3c: the value commitment used for the binding signature + value balance (INV-1):
+// the fresh 2-generator Vv for an M-of-N mint output, the curve-tree leaf cv otherwise. NEVER feed
+// a 3-generator cv3 into the binding sig (its delegationHash*J residual breaks value conservation).
+static inline const CPedersenCommitment& MofNBindingCommitment(const CShieldedOutputDescription& o)
+{
+    return o.IsMofNMint() ? o.valueCommitmentVv : o.cv;
+}
+
+// B2-e Phase 3c: validate the M-of-N mint extension on one shielded output (INV-2/5/9/10/11).
+// Sets fIsMofN. For an M-of-N output it runs the two value-binding checks (range over Vv + the
+// mandatory (G,J) link cv3<->Vv); the caller must NOT also run the normal range/plaintext path on
+// such an output (it would run over cv3 and fail). For a normal output it only enforces that no
+// M-of-N fields are present. Returns false (with strErr) on any malformed or failed M-of-N output.
+static bool CheckMofNMintOutput(const CTransaction& tx, size_t i, bool fHideAmount,
+                                int nHeight, bool& fIsMofN, std::string& strErr)
+{
+    const CShieldedOutputDescription& o = tx.vShieldedOutput[i];
+    fIsMofN = false;
+
+    // The M-of-N fields (marker, Vv, link) are serialized ONLY for marker==1 outputs of a MOFN_MINT
+    // tx; in every other case they hold construction defaults that never reach the wire, so nMofNType
+    // is the only authoritative signal. (A default CPedersenCommitment is a 33-zero point, NOT empty,
+    // so an emptiness test on valueCommitmentVv is not a reliable "absent" check.)
+    if (tx.nVersion != SHIELDED_TX_VERSION_MOFN_MINT)
+    {
+        if (o.nMofNType != 0)
+        { strErr = "M-of-N marker on a non-mint tx version"; return false; }
+        return true;
+    }
+
+    if (o.nMofNType == 0)
+        return true;   // ordinary output inside a mint tx; carries no wire-level M-of-N data
+    if (o.nMofNType != 1) { strErr = "invalid M-of-N output marker"; return false; }   // INV-5
+
+    fIsMofN = true;
+    if (nHeight < FORK_HEIGHT_NULLSTAKE_DELEGSET)                                       // INV-9
+    { strErr = "M-of-N mint output before DELEGSET fork height"; return false; }
+    if (!fHideAmount || o.nPlaintextValue != -1 || !o.vchPlaintextBlind.empty())        // INV-10
+    { strErr = "M-of-N mint output must be hidden-amount"; return false; }
+    if (o.cv.vchCommitment.size() != 33 || o.valueCommitmentVv.vchCommitment.size() != 33 ||
+        o.vchMofNLink.size() != NULLSTAKE_MOFN_MINTLINK_SIZE)                           // INV-5 shape
+    { strErr = "M-of-N mint output malformed shape"; return false; }
+    if (!VerifyBulletproofRangeProof(o.valueCommitmentVv, o.rangeProof))                // INV-2(a)
+    { strErr = "M-of-N mint Vv range proof failed"; return false; }
+    if (!VerifyNullStakeMofNMintLink(o.cv, o.valueCommitmentVv, o.vchMofNLink))         // INV-2(b), MANDATORY
+    { strErr = "M-of-N mint (G,J) value-binding link failed"; return false; }
+    return true;
+}
+
 //
 // Global state
 //
@@ -1482,6 +1531,11 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                         printf("CTxMemPool::accept() : verifying output proofs\n");
                     for (size_t i = 0; i < tx.vShieldedOutput.size(); i++)
                     {
+                        bool fIsMofN = false; std::string strMofN;
+                        if (!CheckMofNMintOutput(tx, i, fHideAmount, nBestHeight + 1, fIsMofN, strMofN))
+                            return error("CTxMemPool::accept() : shielded output %d: %s", (int)i, strMofN.c_str());
+                        if (fIsMofN)
+                            continue;   // value bound by range-over-Vv + the (G,J) link (CheckMofNMintOutput)
                         if (fHideAmount)
                         {
                             if (!VerifyBulletproofRangeProof(tx.vShieldedOutput[i].cv, tx.vShieldedOutput[i].rangeProof))
@@ -1519,7 +1573,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                         for (size_t i = 0; i < tx.vShieldedSpend.size(); i++)
                             vInCommits.push_back(tx.vShieldedSpend[i].cv);
                         for (size_t i = 0; i < tx.vShieldedOutput.size(); i++)
-                            vOutCommits.push_back(tx.vShieldedOutput[i].cv);
+                            vOutCommits.push_back(MofNBindingCommitment(tx.vShieldedOutput[i]));   // Vv for M-of-N (INV-1)
 
                         if (!VerifyBindingSignature(vInCommits, vOutCommits, tx.nValueBalance, sighash, tx.bindingSig.bindingSig))
                             return error("CTxMemPool::accept() : shielded binding signature verification failed");
@@ -3831,6 +3885,11 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                 }
                 for (size_t i = 0; i < vShieldedOutput.size(); i++)
                 {
+                    bool fIsMofN = false; std::string strMofN;
+                    if (!CheckMofNMintOutput(*this, i, fHideAmount, nBlockHeight, fIsMofN, strMofN))
+                        return DoS(100, error("ConnectInputs() : shielded output %d: %s", (int)i, strMofN.c_str()));
+                    if (fIsMofN)
+                        continue;   // value bound by range-over-Vv + the (G,J) link (CheckMofNMintOutput)
                     if (fHideAmount)
                     {
                         if (!VerifyBulletproofRangeProof(vShieldedOutput[i].cv, vShieldedOutput[i].rangeProof))
@@ -3864,7 +3923,7 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                     for (size_t i = 0; i < vShieldedSpend.size(); i++)
                         vInCommits.push_back(vShieldedSpend[i].cv);
                     for (size_t i = 0; i < vShieldedOutput.size(); i++)
-                        vOutCommits.push_back(vShieldedOutput[i].cv);
+                        vOutCommits.push_back(MofNBindingCommitment(vShieldedOutput[i]));   // Vv for M-of-N (INV-1)
 
                     if (!VerifyBindingSignature(vInCommits, vOutCommits, nValueBalance, sighash, bindingSig.bindingSig))
                         return DoS(100, error("ConnectInputs() : shielded binding signature verification failed"));

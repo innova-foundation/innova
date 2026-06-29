@@ -712,7 +712,8 @@ public:
         READWRITE(nLockTime);
         if (this->nVersion == SHIELDED_TX_VERSION || this->nVersion == SHIELDED_TX_VERSION_DSP
             || this->nVersion == SHIELDED_TX_VERSION_FCMP || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE
-            || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+            || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD
+            || this->nVersion == SHIELDED_TX_VERSION_MOFN_MINT)
         {
             READWRITE(vShieldedSpend);
             READWRITE(vShieldedOutput);
@@ -730,6 +731,21 @@ public:
                     READWRITE(vShieldedOutput[i].nPlaintextValue);
                     READWRITE(vShieldedOutput[i].vchPlaintextBlind);
                     READWRITE(vShieldedOutput[i].vchRecipientScript);
+                }
+            }
+            // B2-e M-of-N mint output extension (version-gated, like the DSP fields): a per-output
+            // type marker; marked outputs additionally carry the fresh value commitment Vv and the
+            // 97-byte Okamoto (G,J) link. Existing shielded versions are byte-for-byte unchanged.
+            if (this->nVersion == SHIELDED_TX_VERSION_MOFN_MINT)
+            {
+                for (size_t i = 0; i < vShieldedOutput.size(); i++)
+                {
+                    READWRITE(vShieldedOutput[i].nMofNType);
+                    if (vShieldedOutput[i].nMofNType == 1)
+                    {
+                        READWRITE(vShieldedOutput[i].valueCommitmentVv);
+                        READWRITE(vShieldedOutput[i].vchMofNLink);
+                    }
                 }
             }
             READWRITE(bindingSig);
@@ -787,7 +803,8 @@ public:
         ss << nLockTime;
         if (nVersion == SHIELDED_TX_VERSION || nVersion == SHIELDED_TX_VERSION_DSP
             || nVersion == SHIELDED_TX_VERSION_FCMP || nVersion == SHIELDED_TX_VERSION_NULLSTAKE
-            || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+            || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD
+            || nVersion == SHIELDED_TX_VERSION_MOFN_MINT)
         {
             ss << (unsigned int)vShieldedSpend.size();
             for (size_t i = 0; i < vShieldedSpend.size(); i++)
@@ -830,11 +847,22 @@ public:
                     ss << vShieldedOutput[i].vchPlaintextBlind;
                     ss << vShieldedOutput[i].vchRecipientScript;
                 }
+                // B2-e M-of-N mint fields committed to the binding-sig hash (INV-4): without this an
+                // in-flight adversary could re-randomize cv3/Vv/link and permanently brick the note.
+                if (nVersion == SHIELDED_TX_VERSION_MOFN_MINT)
+                {
+                    ss << vShieldedOutput[i].nMofNType;
+                    if (vShieldedOutput[i].nMofNType == 1)
+                    {
+                        ss << vShieldedOutput[i].valueCommitmentVv;
+                        ss << vShieldedOutput[i].vchMofNLink;
+                    }
+                }
             }
             ss << nValueBalance;
             if (nVersion == SHIELDED_TX_VERSION_DSP || nVersion == SHIELDED_TX_VERSION_FCMP
                 || nVersion == SHIELDED_TX_VERSION_NULLSTAKE || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2
-                || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
+                || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD || nVersion == SHIELDED_TX_VERSION_MOFN_MINT)
                 ss << nPrivacyMode;
             // NullStake V1 coinstake proof committed to binding sig hash
             if (nVersion == SHIELDED_TX_VERSION_NULLSTAKE)
@@ -920,7 +948,8 @@ public:
         return (nVersion == SHIELDED_TX_VERSION || nVersion == SHIELDED_TX_VERSION_DSP
                 || nVersion == SHIELDED_TX_VERSION_FCMP || nVersion == SHIELDED_TX_VERSION_NULLSTAKE
                 || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2
-                || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD);
+                || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD
+                || nVersion == SHIELDED_TX_VERSION_MOFN_MINT);
     }
 
     bool IsDSP() const

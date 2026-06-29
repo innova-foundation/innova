@@ -59,6 +59,41 @@ CTransaction BuildBindingHashCoverageTx(int nVersion)
     return tx;
 }
 
+// B2-e Phase 3c: a SHIELDED_TX_VERSION_MOFN_MINT tx with one M-of-N mint output (marker 1: cv3 leaf
+// + fresh value commitment Vv + 97-byte Okamoto link, hidden-amount) and one ordinary change output
+// (marker 0, carries no M-of-N fields).
+CTransaction BuildMofNMintTx()
+{
+    CTransaction tx;
+    tx.nVersion = SHIELDED_TX_VERSION_MOFN_MINT;
+    tx.nTime = 123456;
+    tx.nLockTime = 0;
+    tx.nPrivacyMode = PRIVACY_MODE_FULL;
+    tx.nValueBalance = 0;
+
+    CShieldedOutputDescription mofn;
+    mofn.cv.vchCommitment.assign(33, 0x02);
+    mofn.cmu = uint256(15);
+    mofn.vchEphemeralKey.push_back(0x31);
+    mofn.vchEncCiphertext.push_back(0x32);
+    mofn.vchOutCiphertext.push_back(0x33);
+    mofn.rangeProof.vchProof.push_back(0x34);
+    mofn.nPlaintextValue = -1;
+    mofn.nMofNType = 1;
+    mofn.valueCommitmentVv.vchCommitment.assign(33, 0x03);
+    mofn.vchMofNLink.assign(97, 0x44);
+    tx.vShieldedOutput.push_back(mofn);
+
+    CShieldedOutputDescription change;
+    change.cv.vchCommitment.assign(33, 0x05);
+    change.cmu = uint256(16);
+    change.nPlaintextValue = -1;
+    change.nMofNType = 0;
+    tx.vShieldedOutput.push_back(change);
+
+    return tx;
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(fcmp_root_tests)
@@ -185,6 +220,58 @@ BOOST_AUTO_TEST_CASE(binding_sighash_covers_dsp_fields_for_versions_2001_to_2005
         mutatedMode.nPrivacyMode ^= PRIVACY_HIDE_RECEIVER;
         BOOST_CHECK(hashBase != mutatedMode.GetBindingSigHash());
     }
+}
+
+// B2-e Phase 3c: the version-gated M-of-N mint output fields must round-trip through serialization,
+// and a marker-0 output in the same tx must carry none of them.
+BOOST_AUTO_TEST_CASE(mofn_mint_output_serialization_roundtrip)
+{
+    CTransaction tx = BuildMofNMintTx();
+
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << tx;
+    CTransaction tx2;
+    ss >> tx2;
+
+    BOOST_REQUIRE_EQUAL(tx2.nVersion, SHIELDED_TX_VERSION_MOFN_MINT);
+    BOOST_REQUIRE_EQUAL(tx2.vShieldedOutput.size(), 2u);
+
+    // marked M-of-N output: fields round-trip exactly.
+    BOOST_CHECK_EQUAL((int)tx2.vShieldedOutput[0].nMofNType, 1);
+    BOOST_CHECK(tx2.vShieldedOutput[0].valueCommitmentVv.vchCommitment
+                == tx.vShieldedOutput[0].valueCommitmentVv.vchCommitment);
+    BOOST_CHECK(tx2.vShieldedOutput[0].vchMofNLink == tx.vShieldedOutput[0].vchMofNLink);
+    BOOST_CHECK_EQUAL(tx2.vShieldedOutput[0].vchMofNLink.size(), 97u);
+
+    // unmarked output: no M-of-N fields on the wire (marker round-trips 0; Vv stays at its 33-zero
+    // construction default since it is not serialized; the link vector stays empty).
+    BOOST_CHECK_EQUAL((int)tx2.vShieldedOutput[1].nMofNType, 0);
+    BOOST_CHECK(tx2.vShieldedOutput[1].valueCommitmentVv.vchCommitment
+                == tx.vShieldedOutput[1].valueCommitmentVv.vchCommitment);
+    BOOST_CHECK(tx2.vShieldedOutput[1].vchMofNLink.empty());
+
+    // whole-tx hash is stable across the round-trip.
+    BOOST_CHECK(tx.GetHash() == tx2.GetHash());
+}
+
+// INV-4: the binding-sig hash MUST commit the M-of-N marker, Vv, and the link, or an in-flight
+// adversary could re-randomize them and permanently brick the minted note.
+BOOST_AUTO_TEST_CASE(binding_sighash_covers_mofn_mint_fields)
+{
+    CTransaction tx = BuildMofNMintTx();
+    uint256 hashBase = tx.GetBindingSigHash();
+
+    CTransaction mMarker = tx;
+    mMarker.vShieldedOutput[0].nMofNType = 0;
+    BOOST_CHECK(hashBase != mMarker.GetBindingSigHash());
+
+    CTransaction mVv = tx;
+    mVv.vShieldedOutput[0].valueCommitmentVv.vchCommitment[0] ^= 0x01;
+    BOOST_CHECK(hashBase != mVv.GetBindingSigHash());
+
+    CTransaction mLink = tx;
+    mLink.vShieldedOutput[0].vchMofNLink[0] ^= 0x01;
+    BOOST_CHECK(hashBase != mLink.GetBindingSigHash());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -29,6 +29,11 @@ static const int SHIELDED_TX_VERSION_NULLSTAKE_V2 = 2004;
 
 static const int SHIELDED_TX_VERSION_NULLSTAKE_COLD = 2005;
 
+// B2-e Phase 3c: a shielded send that may mint M-of-N cold-stake notes. Its outputs may carry the
+// M-of-N mint extension (a cv3 leaf + a fresh value commitment Vv + an Okamoto (G,J) link), so the
+// delegation set stays hidden at mint while the value is range-proven over Vv.
+static const int SHIELDED_TX_VERSION_MOFN_MINT = 2006;
+
 static const int SHIELDED_MERKLE_DEPTH = 32;
 
 static const int MIN_SHIELDED_SPEND_DEPTH = 10;
@@ -307,11 +312,25 @@ public:
     std::vector<unsigned char> vchPlaintextBlind;
     std::vector<unsigned char> vchRecipientScript;
 
+    // B2-e M-of-N cold-stake mint (Phase 3c). nMofNType == 1 marks an output whose curve-tree leaf
+    // cv == cv3 = value*H + blind*G + delegationHash*J hides the delegation: the value is bound by a
+    // fresh 2-generator value commitment valueCommitmentVv (range-proven) plus vchMofNLink, a 97-byte
+    // Okamoto (G,J) proof that (cv - Vv) in <G,J> (same value). Consensus runs the range proof + the
+    // binding signature over Vv (NEVER cv); the leaf/tree/FCMP use cv. These fields are NOT in the
+    // shared serializer below; they are version-gated in the CTransaction serializer + GetBindingSigHash
+    // (like the DSP plaintext fields), so existing shielded versions are byte-for-byte unchanged.
+    unsigned char nMofNType;
+    CPedersenCommitment valueCommitmentVv;
+    std::vector<unsigned char> vchMofNLink;
+
     CShieldedOutputDescription()
     {
         cmu = 0;
         nPlaintextValue = -1;
+        nMofNType = 0;
     }
+
+    bool IsMofNMint() const { return nMofNType == 1; }
 
     IMPLEMENT_SERIALIZE
     (
