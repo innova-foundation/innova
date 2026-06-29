@@ -10,6 +10,7 @@
 #include "shielded.h"
 #include "nullsend.h"
 #include "zkproof.h"
+#include "bulletproof_ac.h"
 #include "lelantus.h"
 #include "dandelion.h"
 #include "init.h"
@@ -2479,6 +2480,240 @@ Value n_delegatestake(const Array& params, bool fHelp)
     result.push_back(Pair("delegation_hash", deleg.GetDelegationHash().GetHex()));
     result.push_back(Pair("pk_stake", HexStr(vchPkStake)));
     result.push_back(Pair("delegate_amount", ValueFromAmount(nDelegateAmount)));
+    return result;
+}
+
+
+// B2-e Phase 3c.5: mint an M-of-N cold-stake note. The note's curve-tree leaf is the value-hiding
+// 3-generator commitment cv3 = value*H + blind*G + D*J, with the value bound by a fresh 2-generator
+// commitment Vv (range-proven) plus the Okamoto (G,J) link. The note is encrypted to the owner so the
+// owner can later reclaim it. Funded from transparent coins (like z_shield).
+Value z_mintmofncoldstake(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 5)
+        throw runtime_error(
+            "z_mintmofncoldstake <fromaddress> <amount> <ownerzaddress> <stakerpubkeys> <threshold_m>\n"
+            "Mint a B2-e M-of-N cold-stake note (a value-hiding cv3 leaf) funded from transparent coins.\n"
+            "stakerpubkeys is a JSON array of N compressed (33-byte hex) staker public keys; threshold_m is M.\n"
+            "The note is staking-delegated to any M of the set and owner-reclaimable after the inactivity\n"
+            "timelock. Returns the txid, the cv3 leaf, and the delegation hash.\n");
+
+    EnsureWalletIsUnlocked();
+    if (!CZKContext::IsInitialized())
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "ZK proof context not initialized");
+
+    int nCurrentHeight = pindexBest ? pindexBest->nHeight : 0;
+    if (nCurrentHeight + 1 < FORK_HEIGHT_NULLSTAKE_DELEGSET)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "M-of-N cold staking not yet active at this height");
+
+    string strFromAddr = params[0].get_str();
+    int64_t nAmount = AmountFromValue(params[1]);
+    string strOwnerZAddr = params[2].get_str();
+    Array arrPubKeys = params[3].get_array();
+    int nThresholdM = params[4].get_int();
+
+    if (nAmount < MIN_TX_FEE_SHIELDED || nAmount > MAX_MONEY)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid amount");
+
+    bool fFilterByAddress = (strFromAddr != "*");
+
+    // Owner key from the owner z-address spending key (so the owner can sign a future reclaim with rk==ownerPubKey).
+    CShieldedSpendingKey sk;
+    CShieldedPaymentAddress ownerZAddr;
+    bool fFound = false;
+    {
+        LOCK(pwalletMain->cs_shielded);
+        for (std::map<CShieldedPaymentAddress, CShieldedSpendingKey>::iterator it = pwalletMain->mapShieldedSpendingKeys.begin();
+             it != pwalletMain->mapShieldedSpendingKeys.end(); ++it)
+        {
+            CDataStream ssAddr(SER_NETWORK, PROTOCOL_VERSION);
+            ssAddr << it->first;
+            if (HexStr(ssAddr.begin(), ssAddr.end()) == strOwnerZAddr)
+            { sk = it->second; ownerZAddr = it->first; fFound = true; break; }
+        }
+    }
+    if (!fFound)
+        throw JSONRPCError(RPC_WALLET_ERROR, "No spending key for owner z-address (owner must be a wallet address to reclaim)");
+
+    CKey ownerKey;
+    ownerKey.Set(sk.skSpend.begin(), sk.skSpend.end(), true);
+    CPubKey ownerPubKey = ownerKey.GetPubKey();
+    std::vector<unsigned char> vchPkOwner(ownerPubKey.begin(), ownerPubKey.end());
+    if (vchPkOwner.size() != 33)
+        throw JSONRPCError(RPC_WALLET_ERROR, "Owner pubkey not compressed");
+
+    // Parse + canonicalize the staker set (sorted, dedup) to match the consensus set-hash.
+    std::vector<std::vector<unsigned char> > vStakerSet;
+    for (size_t i = 0; i < arrPubKeys.size(); i++)
+    {
+        std::vector<unsigned char> pk = ParseHex(arrPubKeys[i].get_str());
+        if (pk.size() != 33)
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Each staker pubkey must be 33-byte compressed hex");
+        vStakerSet.push_back(pk);
+    }
+    std::sort(vStakerSet.begin(), vStakerSet.end());
+    vStakerSet.erase(std::unique(vStakerSet.begin(), vStakerSet.end()), vStakerSet.end());
+    if (vStakerSet.empty() || vStakerSet.size() > MAX_NULLSTAKE_MOFN_MEMBERS)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid staker set size");
+    if (nThresholdM < 1 || (unsigned)nThresholdM > vStakerSet.size())
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "Invalid threshold M");
+
+    uint256 D;
+    if (!ComputeNullStakeV3DelegationSetHash(vStakerSet, (unsigned)nThresholdM, vchPkOwner, D))
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to compute delegation hash");
+
+    // The cold-stake note (encrypted to the owner).
+    CShieldedNote note;
+    note.addr = ownerZAddr;
+    note.nValue = nAmount;
+    {
+        unsigned char rnd[32];
+        if (RAND_bytes(rnd, 32) != 1) throw JSONRPCError(RPC_INTERNAL_ERROR, "rng");
+        memcpy(note.rho.begin(), rnd, 32);
+        if (RAND_bytes(rnd, 32) != 1) throw JSONRPCError(RPC_INTERNAL_ERROR, "rng");
+        memcpy(note.rcm.begin(), rnd, 32);
+        OPENSSL_cleanse(rnd, 32);
+    }
+    if (!note.GenerateBlindingFactor())
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to generate blinding factor");
+
+    // cv3 leaf = value*H + blind*G + D*J.
+    CPedersenCommitment cv3;
+    if (!CreateNullStakeMofNCommitment(note.nValue, note.vchBlind, D, cv3))
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to build cv3 commitment");
+
+    // Fresh 2-generator value commitment Vv + range proof over Vv + the Okamoto (G,J) link to cv3.
+    std::vector<unsigned char> blindV(32, 0);
+    if (RAND_bytes(blindV.data(), 32) != 1) throw JSONRPCError(RPC_INTERNAL_ERROR, "rng");
+    CPedersenCommitment Vv;
+    if (!CreatePedersenCommitment(note.nValue, blindV, Vv))
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to build value commitment");
+    CBulletproofRangeProof rangeProof;
+    if (!CreateBulletproofRangeProof(note.nValue, blindV, Vv, rangeProof))
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to build range proof");
+    std::vector<unsigned char> link;
+    if (!CreateNullStakeMofNMintLink(cv3, Vv, note.vchBlind, blindV, D, link))
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to build mint link");
+
+    // cmu = SHA256d(cv3) (INV-8) so the owner's wallet can match the note to its cv3 leaf, NOT cv_plain.
+    uint256 cmu = cv3.GetHash();
+
+    std::vector<unsigned char> vchEphemeralKey, vchEncCiphertext;
+    if (!EncryptShieldedNote(note, ownerZAddr, vchEphemeralKey, vchEncCiphertext))
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to encrypt note");
+
+    CShieldedOutputDescription output;
+    output.cv = cv3;
+    output.cmu = cmu;
+    output.vchEphemeralKey = vchEphemeralKey;
+    output.vchEncCiphertext = vchEncCiphertext;
+    output.rangeProof = rangeProof;
+    output.nMofNType = 1;
+    output.valueCommitmentVv = Vv;
+    output.vchMofNLink = link;
+    EncryptShieldedNoteForSender(note, sk.ovk, cv3.GetHash(), cmu, vchEphemeralKey, output.vchOutCiphertext);
+
+    CWalletTx wtxNew;
+    wtxNew.BindWallet(pwalletMain);
+    wtxNew.nVersion = SHIELDED_TX_VERSION_MOFN_MINT;
+    wtxNew.nTime = GetAdjustedTime();
+    wtxNew.nPrivacyMode = PRIVACY_MODE_FULL;
+    wtxNew.vShieldedOutput.push_back(output);
+    wtxNew.nValueBalance = -nAmount;
+
+    int64_t nFeeRequired = MIN_TX_FEE_SHIELDED;
+    CReserveKey reservekey(pwalletMain);
+
+    static const int MAX_SHIELD_FEE_RETRIES = 10;
+    for (int nFeeRetry = 0; nFeeRetry < MAX_SHIELD_FEE_RETRIES; nFeeRetry++)
+    {
+        wtxNew.vin.clear();
+        wtxNew.vout.clear();
+
+        int64_t nTotalNeeded = nAmount + nFeeRequired;
+        set<pair<const CWalletTx*, unsigned int>> setCoins;
+        int64_t nValueIn = 0;
+        vector<COutput> vCoins;
+        pwalletMain->AvailableCoins(vCoins);
+        vCoins.erase(remove_if(vCoins.begin(), vCoins.end(), [](const COutput& out) {
+            if (!(out.tx->IsCoinBase() || out.tx->IsCoinStake())) return false;
+            return out.nDepth <= nCoinbaseMaturity;
+        }), vCoins.end());
+        if (fFilterByAddress)
+        {
+            vector<COutput> vFiltered;
+            for (const COutput& out : vCoins)
+            {
+                CTxDestination dest;
+                if (ExtractDestination(out.tx->vout[out.i].scriptPubKey, dest)
+                    && CBitcoinAddress(dest).ToString() == strFromAddr)
+                    vFiltered.push_back(out);
+            }
+            vCoins = vFiltered;
+        }
+
+        if (!pwalletMain->SelectCoinsMinConf(nTotalNeeded, wtxNew.nTime, 1, 10, vCoins, setCoins, nValueIn)
+            && !pwalletMain->SelectCoinsMinConf(nTotalNeeded, wtxNew.nTime, 1, 1, vCoins, setCoins, nValueIn)
+            && !pwalletMain->SelectCoinsMinConf(nTotalNeeded, wtxNew.nTime, 0, 1, vCoins, setCoins, nValueIn))
+            throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS, "Insufficient funds");
+
+        for (const auto& coin : setCoins)
+            wtxNew.vin.push_back(CTxIn(coin.first->GetHash(), coin.second));
+
+        int64_t nChange = nValueIn - nTotalNeeded;
+        if (nChange > 0)
+        {
+            CPubKey vchPubKey;
+            if (!reservekey.GetReservedKey(vchPubKey))
+                throw JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT, "Keypool ran out");
+            CScript scriptChange;
+            scriptChange.SetDestination(vchPubKey.GetID());
+            wtxNew.vout.push_back(CTxOut(nChange, scriptChange));
+        }
+
+        int nIn = 0;
+        for (const auto& coin : setCoins)
+            if (!SignSignature(*pwalletMain, *coin.first, wtxNew, nIn++))
+            { reservekey.ReturnKey(); throw JSONRPCError(RPC_WALLET_ERROR, "Failed to sign transparent input"); }
+
+        {
+            unsigned int nBytes = ::GetSerializeSize(*(CTransaction*)&wtxNew, SER_NETWORK, PROTOCOL_VERSION);
+            int64_t nMinFee = wtxNew.GetMinFee(1, GMF_SEND, nBytes);
+            if (nFeeRequired < nMinFee) { nFeeRequired = nMinFee; reservekey.ReturnKey(); continue; }
+        }
+
+        // Binding signature: the M-of-N output's value commitment for the balance is Vv (its blind is
+        // blindV), NOT cv3 -- so the binding sig is over blindV (matching the consensus INV-1 carve-out).
+        vector<vector<unsigned char>> vInputBlinds, vOutputBlinds;
+        vOutputBlinds.push_back(blindV);
+        vInputBlinds.push_back(vector<unsigned char>(32, 0));   // fee blind placeholder
+
+        uint256 sighash = wtxNew.GetBindingSigHash();
+        CBindingSignature bindingSig;
+        CreateBindingSignature(vInputBlinds, vOutputBlinds, sighash, bindingSig);
+        wtxNew.bindingSig.bindingSig = bindingSig;
+
+        if (!pwalletMain->CommitTransaction(wtxNew, reservekey))
+            throw JSONRPCError(RPC_WALLET_ERROR, "Failed to commit M-of-N mint transaction");
+        break;
+    }
+
+    // Record the delegation so the wallet can later recognize, stake, and reclaim this note.
+    CWallet::CMofNDelegation md;
+    md.delegationHash = D;
+    md.vStakerSet = vStakerSet;
+    md.nThresholdM = (unsigned)nThresholdM;
+    md.vchPkOwner = vchPkOwner;
+    md.ownerAddr = ownerZAddr;
+    md.ownerOvk = sk.ovk;
+    pwalletMain->AddMofNDelegation(md);
+
+    Object result;
+    result.push_back(Pair("txid", wtxNew.GetHash().GetHex()));
+    result.push_back(Pair("cv3", HexStr(cv3.vchCommitment)));
+    result.push_back(Pair("delegation_hash", D.GetHex()));
+    result.push_back(Pair("threshold_m", nThresholdM));
+    result.push_back(Pair("set_size", (int)vStakerSet.size()));
     return result;
 }
 

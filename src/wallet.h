@@ -241,6 +241,27 @@ public:
     std::map<uint256, CColdStakeDelegation> mapColdStakeDelegations;  // hashOwner -> delegation
     bool AddColdStakeDelegation(const CColdStakeDelegation& deleg);
     bool ImportColdStakeDelegation(const CColdStakeDelegation& deleg);
+
+    // B2-e Phase 3c.5: M-of-N cold-stake delegations this wallet has minted, keyed by delegationHash D.
+    // Lets note-scanning recognize the wallet's M-of-N notes (leaf cv3 = value*H + blind*G + D*J) and the
+    // staking / owner-reclaim builders reconstruct the staker set + owner. In-memory for now.
+    struct CMofNDelegation
+    {
+        uint256 delegationHash;                                   // D = SetHash(set, M, ownerPubKey)
+        std::vector<std::vector<unsigned char> > vStakerSet;      // sorted, dedup, 33-byte members
+        unsigned int nThresholdM;
+        std::vector<unsigned char> vchPkOwner;                    // 33 bytes, = ownerSecretKey*G
+        CShieldedPaymentAddress ownerAddr;                        // notes encrypted here for reclaim
+        uint256 ownerOvk;
+        CMofNDelegation() { nThresholdM = 0; }
+    };
+    std::map<uint256, CMofNDelegation> mapMofNDelegations;
+    bool AddMofNDelegation(const CMofNDelegation& deleg)
+    {
+        LOCK(cs_shielded);
+        mapMofNDelegations[deleg.delegationHash] = deleg;
+        return true;
+    }
     bool RevokeColdStakeDelegation(const uint256& hashOwner);
     std::vector<CShieldedWalletNote> SelectShieldedNotesForColdStaking(const CColdStakeDelegation& deleg) const;
 

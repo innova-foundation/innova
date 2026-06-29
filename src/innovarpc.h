@@ -373,6 +373,7 @@ extern json_spirit::Value z_listaddresses(const json_spirit::Array& params, bool
 extern json_spirit::Value z_getbalance(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_gettotalbalance(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_shield(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value z_mintmofncoldstake(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_unshield(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_listunspent(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_validateaddress(const json_spirit::Array& params, bool fHelp);
