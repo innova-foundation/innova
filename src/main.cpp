@@ -55,6 +55,29 @@ static inline const CPedersenCommitment& MofNBindingCommitment(const CShieldedOu
     return o.IsMofNMint() ? o.valueCommitmentVv : o.cv;
 }
 
+// B2-e Phase 3c.1: the 2-generator VALUE commitment for a shielded SPEND. For the staked note of an
+// M-of-N cold-stake coinstake (vtx[1].vShieldedSpend[0]) it is cv_plain = cv3 - delegationHash*J; for
+// every other spend it is the raw cv. The value-based spend checks (range proof, nullifier-binding,
+// binding signature) use this; the MEMBERSHIP proofs (FCMP, Lelantus) MUST keep the raw cv3 leaf, and
+// the spend-auth sig is cv-independent. The carve-out is gated ONLY by the kernel-validated position
+// (fValidatedCoinstake, set only for vtx[1] of a PoS block), the cold-stake version, nThresholdM>0,
+// and i==0 -- NEVER by tx shape. cv3 is pinned by the FCMP membership proof, so a wrong delegationHash
+// leaves a J residual that every value check over cv_plain rejects (self-enforcing, fail-closed).
+static bool MofNSpendValueCommitment(const CTransaction& tx, size_t i, bool fValidatedCoinstake,
+                                     CPedersenCommitment& cvValueOut)
+{
+    cvValueOut = tx.vShieldedSpend[i].cv;
+    if (fValidatedCoinstake
+        && tx.nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD
+        && tx.nullstakeProofV3.nThresholdM > 0
+        && i == 0)
+    {
+        return NullStakeMofNDeriveValueCommitment(tx.vShieldedSpend[i].cv,
+                                                  tx.nullstakeProofV3.delegationHash, cvValueOut);
+    }
+    return true;
+}
+
 // B2-e Phase 3c: validate the M-of-N mint extension on one shielded output (INV-2/5/9/10/11).
 // Sets fIsMofN. For an M-of-N output it runs the two value-binding checks (range over Vv + the
 // mandatory (G,J) link cv3<->Vv); the caller must NOT also run the normal range/plaintext path on
@@ -3798,14 +3821,21 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
 
                 for (size_t i = 0; i < vShieldedSpend.size(); i++)
                 {
+                    // B2-e Phase 3c.1: the value-based checks (range, nullifier-binding, binding sig)
+                    // use cv_plain = cv3 - delegationHash*J for an M-of-N cold-stake coinstake's staked
+                    // note; the FCMP/Lelantus MEMBERSHIP proofs keep the raw cv3 leaf below.
+                    CPedersenCommitment cvSpendValue;
+                    if (!MofNSpendValueCommitment(*this, i, fValidatedCoinstake, cvSpendValue))
+                        return DoS(100, error("ConnectInputs() : shielded spend %d M-of-N cv_plain derivation failed", (int)i));
+
                     if (fHideAmount)
                     {
-                        if (!VerifyBulletproofRangeProof(vShieldedSpend[i].cv, vShieldedSpend[i].rangeProof))
+                        if (!VerifyBulletproofRangeProof(cvSpendValue, vShieldedSpend[i].rangeProof))
                             return DoS(100, error("ConnectInputs() : shielded spend %d range proof failed", (int)i));
                     }
                     else
                     {
-                        if (!VerifyPedersenCommitment(vShieldedSpend[i].cv,
+                        if (!VerifyPedersenCommitment(cvSpendValue,
                                                        vShieldedSpend[i].nPlaintextValue,
                                                        vShieldedSpend[i].vchPlaintextBlind))
                             return DoS(100, error("ConnectInputs() : DSP spend %d commitment opening proof failed", (int)i));
@@ -3879,7 +3909,10 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                             return DoS(100, error("ConnectInputs() : shielded spend %d missing nullifier binding proof (required post-fork)", (int)i));
                         if (sp.nullifier != NullifierTagFromPoint(sp.vchNullifierPoint))
                             return DoS(100, error("ConnectInputs() : shielded spend %d nullifier does not match bound note", (int)i));
-                        if (!VerifyNullifierBindingProof(sp.cv, sp.vchNullifierPoint, sighash, sp.vchNullifierBindingProof))
+                        // B2-e Phase 3c.1: bind the nullifier to the value commitment cv_plain (NOT cv3) for an
+                        // M-of-N stake spend. This MUST be re-run over cv_plain, never skipped: dropping it would
+                        // let the staked note be re-spent under a mismatched nullifier (infinite-stake / double-spend).
+                        if (!VerifyNullifierBindingProof(cvSpendValue, sp.vchNullifierPoint, sighash, sp.vchNullifierBindingProof))
                             return DoS(100, error("ConnectInputs() : shielded spend %d nullifier binding proof failed", (int)i));
                     }
                 }
@@ -3921,7 +3954,14 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                 {
                     std::vector<CPedersenCommitment> vInCommits, vOutCommits;
                     for (size_t i = 0; i < vShieldedSpend.size(); i++)
-                        vInCommits.push_back(vShieldedSpend[i].cv);
+                    {
+                        // cv_plain for the M-of-N stake spend (INV-1): cv3 would inject a delegationHash*J
+                        // residual that breaks the homomorphic value balance. Outputs already use Vv below.
+                        CPedersenCommitment cvIn;
+                        if (!MofNSpendValueCommitment(*this, i, fValidatedCoinstake, cvIn))
+                            return DoS(100, error("ConnectInputs() : binding-sig M-of-N cv_plain derivation failed"));
+                        vInCommits.push_back(cvIn);
+                    }
                     for (size_t i = 0; i < vShieldedOutput.size(); i++)
                         vOutCommits.push_back(MofNBindingCommitment(vShieldedOutput[i]));   // Vv for M-of-N (INV-1)
 
