@@ -128,9 +128,13 @@ uint256 FieldPow5(const uint256& a)
 
 uint256 FieldFromUint64(uint64_t val)
 {
+    // Little-endian construction (all Field* values are little-endian uint256), built
+    // word-wise so it is independent of host byte order and deterministic across platforms.
     uint256 result;
     memset(result.begin(), 0, 32);
-    memcpy(result.begin(), &val, sizeof(val));
+    unsigned char* p = result.begin();
+    for (int i = 0; i < 8; i++)
+        p[i] = (unsigned char)((val >> (8 * i)) & 0xFF);
     return result;
 }
 
@@ -139,7 +143,11 @@ uint256 FieldInv(const uint256& a)
     CPoseBNCtxGuard ctx;
     CPoseBNGuard bnA, bnR;
     Uint256ToBN(a, bnA);
-    BN_mod_inverse(bnR, bnA, GetOrderBN(), ctx);
+    // BN_mod_inverse returns NULL for non-invertible input (a == 0 mod n). Return a
+    // deterministic zero rather than rely on the guard's initial state, so a future caller
+    // that forgets to guard a==0 gets a defined (still-wrong-but-safe) value, not garbage.
+    if (BN_mod_inverse(bnR, bnA, GetOrderBN(), ctx) == NULL)
+        return FieldFromUint64(0);
     uint256 result;
     BNToUint256(bnR, result);
     return result;

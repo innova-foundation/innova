@@ -16,6 +16,8 @@
 
 #include <string>
 #include <vector>
+#include <utility>
+#include <algorithm>
 
 BOOST_AUTO_TEST_SUITE(halfagg_stake_tests)
 
@@ -47,7 +49,9 @@ bool BuildHalfAggSig(const std::vector<uint256>& vSk,
 
 // Build an M-of-N authorization: derive the staker set + delegationHash from vSetSk, and a
 // half-aggregated signature over stakeDigest from the signing keys vSignSk (which need not
-// equal the set, so tests can exercise non-member signers).
+// equal the set, so tests can exercise non-member signers). The set and the signer subset are
+// produced in canonical strictly-ascending order (the wire form the verifier now requires);
+// the half-agg signature is order-independent so reordering the (pk,R,s) triples by pk is safe.
 bool BuildMofNAuth(const std::vector<uint256>& vSetSk, unsigned int M, const valtype& owner,
                    const std::vector<uint256>& vSignSk, const uint256& stakeDigest,
                    std::vector<valtype>& vSet, uint256& delegHash,
@@ -60,14 +64,25 @@ bool BuildMofNAuth(const std::vector<uint256>& vSetSk, unsigned int M, const val
         if (!HalfAggStakeDerivePubKey(vSetSk[i], pk)) return false;
         vSet.push_back(pk);
     }
+    std::sort(vSet.begin(), vSet.end());  // canonical ascending set
     if (!ComputeNullStakeV3DelegationSetHash(vSet, M, owner, delegHash)) return false;
-    std::vector<valtype> vS;
+
+    // Build (pk -> (R, s)) signer triples, then sort ascending by pk (R/s stay paired).
+    std::vector<std::pair<valtype, std::pair<valtype, valtype> > > trips;
     for (size_t i = 0; i < vSignSk.size(); i++)
     {
         valtype pk, R, s;
         if (!HalfAggStakeDerivePubKey(vSignSk[i], pk)) return false;
         if (!SignHalfAggStakeShare(vSignSk[i], stakeDigest, R, s)) return false;
-        vSignerPk.push_back(pk); vSignerR.push_back(R); vS.push_back(s);
+        trips.push_back(std::make_pair(pk, std::make_pair(R, s)));
+    }
+    std::sort(trips.begin(), trips.end());  // distinct pks -> deterministic ascending order
+    std::vector<valtype> vS;
+    for (size_t i = 0; i < trips.size(); i++)
+    {
+        vSignerPk.push_back(trips[i].first);
+        vSignerR.push_back(trips[i].second.first);
+        vS.push_back(trips[i].second.second);
     }
     return AggregatePartialSigs(vS, sAgg);
 }
@@ -259,6 +274,12 @@ BOOST_AUTO_TEST_CASE(halfagg_stake_proof_serialization_roundtrip)
     proof.nThresholdM = 2;
     proof.nStakeModifier = 12345;
     proof.delegationHash = uint256(777ULL);
+    for (int i = 1; i <= 3; i++)   // 3-member set, 2 signers
+    {
+        valtype pk;
+        BOOST_REQUIRE(HalfAggStakeDerivePubKey(uint256((uint64_t)(2000 + i)), pk));
+        proof.vStakerSet.push_back(pk);
+    }
     for (int i = 1; i <= 2; i++)
     {
         valtype pk, R, s;
@@ -277,10 +298,36 @@ BOOST_AUTO_TEST_CASE(halfagg_stake_proof_serialization_roundtrip)
     BOOST_CHECK_EQUAL(proof2.nThresholdM, 2u);
     BOOST_CHECK(proof2.nStakeModifier == 12345ULL);
     BOOST_CHECK(proof2.delegationHash == uint256(777ULL));
+    BOOST_CHECK_EQUAL(proof2.vStakerSet.size(), 3u);
+    BOOST_CHECK(proof2.vStakerSet == proof.vStakerSet);
     BOOST_CHECK_EQUAL(proof2.vSignerPubKeys.size(), 2u);
     BOOST_CHECK(proof2.vSignerPubKeys == proof.vSignerPubKeys);
     BOOST_CHECK(proof2.vSignerRPoints == proof.vSignerRPoints);
     BOOST_CHECK(proof2.vchAggregatedSScalar == proof.vchAggregatedSScalar);
+
+    // Legacy (nThresholdM == 0) proof must serialize compactly: the M-of-N fields are absent
+    // on the wire, so a populated-then-zeroed proof round-trips with empty M-of-N vectors and
+    // is byte-identical to one that never set them.
+    CNullStakeKernelProofV3 legacy;
+    legacy.nThresholdM = 0;
+    legacy.delegationHash = uint256(888ULL);
+    legacy.vStakerSet = proof.vStakerSet;        // set but must NOT be serialized for M==0
+    legacy.vSignerPubKeys = proof.vSignerPubKeys; // ditto
+    CDataStream ssL(SER_DISK, CLIENT_VERSION);
+    ssL << legacy;
+    size_t legacySize = ssL.size();   // measure BEFORE the read below consumes the stream
+    CNullStakeKernelProofV3 legacy2;
+    ssL >> legacy2;
+    BOOST_CHECK_EQUAL(legacy2.nThresholdM, 0u);
+    BOOST_CHECK_MESSAGE(legacy2.vStakerSet.empty(), "legacy proof must not carry the staker set on the wire");
+    BOOST_CHECK_MESSAGE(legacy2.vSignerPubKeys.empty(), "legacy proof must not carry signer pubkeys on the wire");
+    CNullStakeKernelProofV3 legacyClean;
+    legacyClean.nThresholdM = 0;
+    legacyClean.delegationHash = uint256(888ULL);
+    CDataStream ssC(SER_DISK, CLIENT_VERSION);
+    ssC << legacyClean;
+    BOOST_CHECK_MESSAGE(legacySize == ssC.size(),
+                        "legacy serialization must be independent of unused M-of-N members");
 }
 
 // --- Phase 3: M-of-N authorization verifier (adversarial) ---
@@ -399,6 +446,7 @@ BOOST_AUTO_TEST_CASE(halfagg_stake_digest_endtoend_authorization)
     {
         valtype pk; BOOST_REQUIRE(HalfAggStakeDerivePubKey(setSk[i], pk)); vSet.push_back(pk);
     }
+    std::sort(vSet.begin(), vSet.end());  // canonical order required by the verifier (R4)
     uint256 dh; BOOST_REQUIRE(ComputeNullStakeV3DelegationSetHash(vSet, 2, owner, dh));
 
     valtype cv(33, 0x02);
@@ -482,6 +530,63 @@ BOOST_AUTO_TEST_CASE(halfagg_stake_cvplain_derivation)
     BOOST_CHECK(cvWrong.vchCommitment != cvExpected.vchCommitment);
     BOOST_CHECK_MESSAGE(!VerifyPedersenCommitment(cvWrong, value, blind),
                         "a wrong delegationHash must not yield a valid value commitment");
+}
+
+// --- Audit R4/R8: canonical wire order is enforced + s-scalar range ---
+namespace
+{
+void Build2of3(std::vector<valtype>& vSet, uint256& dh, valtype& owner,
+               std::vector<valtype>& vPk, std::vector<valtype>& vR, valtype& sAgg,
+               const uint256& digest)
+{
+    BOOST_REQUIRE(HalfAggStakeDerivePubKey(uint256(8888ULL), owner));
+    std::vector<uint256> setSk;
+    setSk.push_back(uint256(10001ULL)); setSk.push_back(uint256(10002ULL)); setSk.push_back(uint256(10003ULL));
+    std::vector<uint256> signSk; signSk.push_back(uint256(10001ULL)); signSk.push_back(uint256(10002ULL));
+    BOOST_REQUIRE(BuildMofNAuth(setSk, 2, owner, signSk, digest, vSet, dh, vPk, vR, sAgg));
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(halfagg_stake_noncanonical_set_rejected)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+    uint256 digest(424242ULL);
+    std::vector<valtype> vSet, vPk, vR; uint256 dh; valtype owner, sAgg;
+    Build2of3(vSet, dh, owner, vPk, vR, sAgg, digest);
+    std::string err;
+    BOOST_REQUIRE_MESSAGE(VerifyNullStakeMofNAuthorization(vSet, 2, owner, dh, vPk, vR, sAgg, digest, err),
+                          "canonical form should verify: " + err);
+    // Descending (non-canonical) staker set must be rejected even though it hashes the same.
+    std::vector<valtype> vSetRev(vSet.rbegin(), vSet.rend());
+    BOOST_CHECK_MESSAGE(!VerifyNullStakeMofNAuthorization(vSetRev, 2, owner, dh, vPk, vR, sAgg, digest, err),
+                        "a non-canonical (descending) staker set must be rejected");
+}
+
+BOOST_AUTO_TEST_CASE(halfagg_stake_noncanonical_signers_rejected)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+    uint256 digest(424242ULL);
+    std::vector<valtype> vSet, vPk, vR; uint256 dh; valtype owner, sAgg;
+    Build2of3(vSet, dh, owner, vPk, vR, sAgg, digest);
+    std::string err;
+    // Reverse the signer pubkeys and R-points in lockstep (pairing preserved, order descending).
+    std::vector<valtype> vPkRev(vPk.rbegin(), vPk.rend());
+    std::vector<valtype> vRRev(vR.rbegin(), vR.rend());
+    BOOST_CHECK_MESSAGE(!VerifyNullStakeMofNAuthorization(vSet, 2, owner, dh, vPkRev, vRRev, sAgg, digest, err),
+                        "a non-canonical (descending) signer set must be rejected");
+}
+
+BOOST_AUTO_TEST_CASE(halfagg_stake_sagg_out_of_range_rejected)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+    uint256 digest(424242ULL);
+    std::vector<valtype> vSet, vPk, vR; uint256 dh; valtype owner, sAgg;
+    Build2of3(vSet, dh, owner, vPk, vR, sAgg, digest);
+    // s_agg = 2^256-1 is >= n and must be rejected by the half-agg range check.
+    valtype sBad(32, 0xFF);
+    std::string err;
+    BOOST_CHECK_MESSAGE(!VerifyHalfAggStakeSignature(vPk, vR, sBad, digest, err),
+                        "an out-of-range aggregated s-scalar (>= n) must be rejected");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

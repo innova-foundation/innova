@@ -2723,6 +2723,14 @@ bool SignHalfAggStakeShare(const uint256& skSigner,
     return true;
 }
 
+// CONTRACT: this verifies a batch of independent key-prefixed Schnorr signatures whose
+// s-scalars were summed (half-aggregation). It is NOT a standalone M-of-N threshold check:
+// its unforgeability for THIS application rests on the caller restricting the signer set to
+// distinct members of an owner-committed staker set whose hash equals the note's committed
+// delegationHash. Callers MUST route it through VerifyNullStakeMofNAuthorization with the
+// set taken from the committed note; never treat a bare pass here as M-of-N authorization.
+// (Assumes member keys are independent - no member pubkey is a known linear combination of
+// others'; guaranteed in practice by the owner choosing the set at mint.)
 bool VerifyHalfAggStakeSignature(const std::vector<std::vector<unsigned char> >& vSignerPubKeys,
                                  const std::vector<std::vector<unsigned char> >& vSignerRPoints,
                                  const std::vector<unsigned char>& vchAggregatedSScalar,
@@ -2734,6 +2742,7 @@ bool VerifyHalfAggStakeSignature(const std::vector<std::vector<unsigned char> >&
 
     const size_t M = vSignerPubKeys.size();
     if (M == 0) { strError = "empty signer set"; return false; }
+    if (M > MAX_NULLSTAKE_MOFN_SIGNERS) { strError = "signer count exceeds cap"; return false; }  // DoS bound before O(M^2)/EC work
     if (vSignerRPoints.size() != M) { strError = "R-point count != signer count"; return false; }
     if (vchAggregatedSScalar.size() != 32) { strError = "aggregated s-scalar must be 32 bytes"; return false; }
 

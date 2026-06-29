@@ -19,6 +19,12 @@ static const size_t MAX_BULLETPROOF_PROOF_SIZE = 1024;
 static const size_t BINDING_SIGNATURE_SIZE = 65;
 static const size_t BLINDING_FACTOR_SIZE = 32;
 
+// B2-e: consensus DoS bounds for the half-aggregated M-of-N staking authorization.
+// The staker set and the signer subset are committee-sized; these caps are enforced at
+// the earliest validation point (right after deserialize) BEFORE any O(N^2) loop or EC op.
+static const unsigned int MAX_NULLSTAKE_MOFN_MEMBERS = 32;  // upper bound on N (set size)
+static const unsigned int MAX_NULLSTAKE_MOFN_SIGNERS = 32;  // upper bound on signer count
+
 class CZKContext
 {
 public:

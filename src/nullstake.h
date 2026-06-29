@@ -214,11 +214,15 @@ public:
     std::vector<unsigned char> vchPkOwner;  // 33 bytes compressed
 
     // B2-e: half-aggregated Schnorr M-of-N staking authorization (public-signer tier).
-    // nThresholdM == 0 selects the legacy single-key path (vchPkStake). nThresholdM >= 1
-    // selects M-of-N: vSignerPubKeys are M distinct members of the delegated staker set,
-    // vSignerRPoints their per-signer R-points, and vchAggregatedSScalar the summed
-    // s-scalar, verified via VerifyHalfAggStakeSignature against the stake digest.
+    // nThresholdM == 0 selects the legacy single-key path (vchPkStake, value-coupled in-circuit
+    // delegation chain). nThresholdM >= 1 selects M-of-N: vStakerSet is the full ordered
+    // (strictly-ascending, duplicate-free) N-member staker set that hashes to delegationHash;
+    // vSignerPubKeys are the M signing members (a strictly-ascending subset of vStakerSet);
+    // vSignerRPoints their per-signer R-points; vchAggregatedSScalar the summed s-scalar.
+    // The full set is carried in the proof so the verifier can recompute the set hash for a
+    // real threshold (M < N) and so the set is covered by the txid and the verify cache.
     unsigned int nThresholdM;
+    std::vector<std::vector<unsigned char> > vStakerSet;
     std::vector<std::vector<unsigned char> > vSignerPubKeys;
     std::vector<std::vector<unsigned char> > vSignerRPoints;
     std::vector<unsigned char> vchAggregatedSScalar;
@@ -249,9 +253,17 @@ public:
         READWRITE(vchPkStake);
         READWRITE(vchPkOwner);
         READWRITE(nThresholdM);
-        READWRITE(vSignerPubKeys);
-        READWRITE(vSignerRPoints);
-        READWRITE(vchAggregatedSScalar);
+        // B2-e: the M-of-N fields exist only for nThresholdM > 0. A legacy 1-of-1 proof
+        // serializes nThresholdM == 0 and nothing further, keeping the legacy wire form
+        // compact and self-describing. A pre-fork consensus guard separately rejects any
+        // proof with nThresholdM != 0 below FORK_HEIGHT_NULLSTAKE_DELEGSET.
+        if (nThresholdM > 0)
+        {
+            READWRITE(vStakerSet);
+            READWRITE(vSignerPubKeys);
+            READWRITE(vSignerRPoints);
+            READWRITE(vchAggregatedSScalar);
+        }
     )
 
     bool IsNull() const { return acProof.IsNull(); }

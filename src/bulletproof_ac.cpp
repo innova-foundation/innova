@@ -860,45 +860,44 @@ bool ComputeNullStakeV3DelegationHash(int64_t nValue,
     return delegationHashOut != uint256(0);
 }
 
+// B2-e: value-decoupled delegation commitment for an M-of-N staker set. This is the
+// anti-theft LINCHPIN (set-substitution resistance): the spend reveals a public set and
+// the verifier recomputes this hash and requires it to equal the note's committed
+// delegationHash. It is recomputed ONLY in plain verifier code (never inside a circuit),
+// so it has no circuit-friendliness requirement and uses a standard domain-separated
+// double-SHA256 over the canonical (sorted, de-duplicated) set rather than a custom
+// low-round algebraic hash. The result is reduced mod the group order n so it is canonical
+// (< n), matching the field domain and the J-binding in CreateNullStakeMofNCommitment.
 bool ComputeNullStakeV3DelegationSetHash(std::vector<std::vector<unsigned char> > vStakerPubKeys,
                                          unsigned int nThresholdM,
                                          const std::vector<unsigned char>& vchPkOwner,
                                          uint256& delegationHashOut)
 {
     size_t nMembers = vStakerPubKeys.size();
-    if (nMembers == 0 || nThresholdM < 1 || nThresholdM > nMembers ||
-        vchPkOwner.size() != 33)
+    if (nMembers == 0 || nMembers > MAX_NULLSTAKE_MOFN_MEMBERS ||
+        nThresholdM < 1 || nThresholdM > nMembers || vchPkOwner.size() != 33)
         return false;
     for (size_t i = 0; i < nMembers; i++)
         if (vStakerPubKeys[i].size() != 33)
             return false;
 
-    // Canonical order so the set commitment is independent of member ordering;
-    // reject duplicate members (a set, not a multiset).
+    // Canonicalize so the COMMITMENT is independent of the caller's member ordering (the
+    // owner may list the set in any order at mint); reject duplicate members (a set, not a
+    // multiset). The spend path separately requires the on-wire vStakerSet to already be in
+    // this canonical order (anti-malleability), so this sort is a no-op there.
     std::sort(vStakerPubKeys.begin(), vStakerPubKeys.end());
     for (size_t i = 1; i < nMembers; i++)
         if (vStakerPubKeys[i] == vStakerPubKeys[i - 1])
             return false;
 
-    // Fold the per-member auth hashes into a set hash, chaining x^5 for collision
-    // resistance, seeded by the threshold M and member count N so both are bound.
-    uint256 setHash = FieldFromUint64(((uint64_t)nThresholdM << 20) | (uint64_t)nMembers);
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("Innova_NullStakeMofN_DelegationSet_v1");
+    ss << (uint32_t)nThresholdM;
+    ss << (uint32_t)nMembers;
+    ss << vchPkOwner;
     for (size_t i = 0; i < nMembers; i++)
-    {
-        uint256 keyAuth = LowBitsToScalar(NullStakeV3StakeAuthHash(vStakerPubKeys[i]),
-                                          BPAC_V3_DELEGATION_BITS);
-        uint256 x = FieldAdd(setHash, keyAuth);
-        uint256 x2 = FieldMul(x, x);
-        uint256 x4 = FieldMul(x2, x2);
-        uint256 x5 = FieldMul(x4, x);
-        setHash = FieldAdd(x5, keyAuth);
-    }
-
-    // Value-decoupled (B2-e per-set authority): the delegation commits to the set,
-    // threshold, and owner only. The staked value is bound separately by the note
-    // commitment / kernel proof and by the half-agg signature over the stake digest.
-    uint256 ownerBind = NullStakeV3OwnerAuthHash(vchPkOwner);
-    delegationHashOut = NullStakeV3DelegationChain(setHash, ownerBind);
+        ss << vStakerPubKeys[i];
+    delegationHashOut = FieldReduce(ss.GetHash());
     return delegationHashOut != uint256(0);
 }
 
@@ -920,9 +919,58 @@ bool VerifyNullStakeMofNAuthorization(const std::vector<std::vector<unsigned cha
 {
     strError.clear();
 
+    // 0. DoS bounds (caps) + canonical wire form, enforced BEFORE any O(N^2) loop or EC op.
+    const size_t nSet = vStakerSet.size();
+    const size_t nSigners = vSignerPubKeys.size();
+    if (nSet == 0 || nSet > MAX_NULLSTAKE_MOFN_MEMBERS)
+    {
+        strError = "staker set size out of range";
+        return false;
+    }
+    if (nSigners == 0 || nSigners > MAX_NULLSTAKE_MOFN_SIGNERS)
+    {
+        strError = "signer count out of range";
+        return false;
+    }
+    if (nThresholdM < 1 || nThresholdM > nSet)
+    {
+        strError = "threshold M out of range";
+        return false;
+    }
+    // The on-wire staker set must be strictly ascending (canonical + duplicate-free) so the
+    // proof is non-malleable and matches the hash's internal canonical order. A reordered or
+    // duplicate-laden set is rejected here rather than silently re-sorted.
+    for (size_t i = 0; i < nSet; i++)
+        if (vStakerSet[i].size() != 33)
+        {
+            strError = "staker pubkey must be 33 bytes";
+            return false;
+        }
+    for (size_t i = 1; i < nSet; i++)
+        if (!(vStakerSet[i - 1] < vStakerSet[i]))
+        {
+            strError = "staker set not strictly ascending (non-canonical or duplicate)";
+            return false;
+        }
+    // The signer subset must likewise be strictly ascending (canonical + distinct), which
+    // subsumes the distinctness check below.
+    for (size_t i = 0; i < nSigners; i++)
+        if (vSignerPubKeys[i].size() != 33)
+        {
+            strError = "signer pubkey must be 33 bytes";
+            return false;
+        }
+    for (size_t i = 1; i < nSigners; i++)
+        if (!(vSignerPubKeys[i - 1] < vSignerPubKeys[i]))
+        {
+            strError = "signer set not strictly ascending (non-canonical or duplicate)";
+            return false;
+        }
+
     // 1. The provided staker set must hash to the committed delegationHash. Combined with
-    //    the note->delegationHash binding enforced by the spend path, this pins the exact
-    //    set: substituting attacker keys would change the recompute and be rejected here.
+    //    the note->delegationHash binding enforced by the spend path (FCMP over cv3 +
+    //    cv_plain = cv3 - delegationHash*J + the J-free range/link proofs), this pins the
+    //    exact set: substituting attacker keys changes the recompute and is rejected here.
     uint256 recomputed;
     if (!ComputeNullStakeV3DelegationSetHash(vStakerSet, nThresholdM, vchPkOwner, recomputed))
     {
@@ -936,7 +984,6 @@ bool VerifyNullStakeMofNAuthorization(const std::vector<std::vector<unsigned cha
     }
 
     // 2. At least M signers, paired 1:1 with R-points.
-    size_t nSigners = vSignerPubKeys.size();
     if (nSigners < (size_t)nThresholdM)
     {
         strError = "fewer signers than the threshold M";
@@ -948,29 +995,18 @@ bool VerifyNullStakeMofNAuthorization(const std::vector<std::vector<unsigned cha
         return false;
     }
 
-    // 3. Every signer must be a DISTINCT member of the committed set: rejects non-member
-    //    key-stapling and counting one member more than once toward the threshold.
+    // 3. Every signer must be a member of the committed set (distinctness already guaranteed
+    //    by the strictly-ascending check above): rejects non-member key-stapling.
     for (size_t i = 0; i < nSigners; i++)
     {
-        if (vSignerPubKeys[i].size() != 33)
-        {
-            strError = "signer pubkey must be 33 bytes";
-            return false;
-        }
         bool fMember = false;
-        for (size_t j = 0; j < vStakerSet.size(); j++)
+        for (size_t j = 0; j < nSet; j++)
             if (vSignerPubKeys[i] == vStakerSet[j]) { fMember = true; break; }
         if (!fMember)
         {
             strError = "signer is not a member of the delegated set";
             return false;
         }
-        for (size_t k = 0; k < i; k++)
-            if (vSignerPubKeys[i] == vSignerPubKeys[k])
-            {
-                strError = "duplicate signer";
-                return false;
-            }
     }
 
     // 4. The half-aggregated signature must verify over the stake digest: M distinct members
