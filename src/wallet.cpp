@@ -9774,6 +9774,21 @@ bool CWallet::IsShieldedOutputMine(const CShieldedOutputDescription& output, CSh
             uint256 expectedCmu = noteOut.GetCommitment();
             if (expectedCmu == output.cmu)
                 return true;
+            // B2-e Phase 3c.5: an M-of-N cold-stake note's leaf is cv3 = value*H + blind*G + D*J, so its
+            // cmu is SHA256d(cv3), NOT SHA256d(cv_plain) (= the decrypted note's GetCommitment). If this
+            // output is marked M-of-N, match it against the wallet's known delegations by reconstructing
+            // cv3 from the decrypted (value, blind) and each candidate D.
+            if (output.IsMofNMint())
+            {
+                for (std::map<uint256, CMofNDelegation>::const_iterator dit = mapMofNDelegations.begin();
+                     dit != mapMofNDelegations.end(); ++dit)
+                {
+                    CPedersenCommitment cv3;
+                    if (CreateNullStakeMofNCommitment(noteOut.nValue, noteOut.vchBlind, dit->first, cv3)
+                        && cv3.GetHash() == output.cmu)
+                        return true;
+                }
+            }
         }
     }
     return false;
