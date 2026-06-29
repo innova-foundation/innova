@@ -262,6 +262,17 @@ public:
         mapMofNDelegations[deleg.delegationHash] = deleg;
         return true;
     }
+
+    // B2-e Phase 3c.5: imported M-of-N staker MEMBER secret keys (half-agg pubkey -> secret scalar), so this
+    // wallet can co-produce M-of-N finality votes for delegations whose committed set includes these members.
+    // In-memory for now. Keyed by the 33-byte half-agg pubkey = HalfAggStakeDerivePubKey(secret).
+    std::map<std::vector<unsigned char>, uint256> mapMofNMemberKeys;
+    bool AddMofNMemberKey(const std::vector<unsigned char>& vchPubKey, const uint256& secret)
+    {
+        LOCK(cs_shielded);
+        mapMofNMemberKeys[vchPubKey] = secret;
+        return true;
+    }
     bool RevokeColdStakeDelegation(const uint256& hashOwner);
     std::vector<CShieldedWalletNote> SelectShieldedNotesForColdStaking(const CColdStakeDelegation& deleg) const;
 

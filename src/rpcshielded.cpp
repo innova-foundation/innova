@@ -2714,6 +2714,50 @@ Value z_mintmofncoldstake(const Array& params, bool fHelp)
 }
 
 
+// B2-e Phase 3c.5: generate (or import) an M-of-N staker MEMBER key. The half-aggregated Schnorr
+// public key is used in z_mintmofncoldstake's staker set; the secret is held by this wallet so it can
+// co-produce M-of-N private finality votes for notes delegated to this member (M signers each hold one).
+Value n_newmofnmemberkey(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 1)
+        throw runtime_error(
+            "n_newmofnmemberkey [secrethex]\n"
+            "Generate (or, if a 32-byte secret hex is given, import) an M-of-N staker member key.\n"
+            "Returns the 33-byte half-agg public key to place in z_mintmofncoldstake's staker set; the\n"
+            "secret is held by this wallet so it can co-produce M-of-N finality votes for that delegation.\n");
+
+    EnsureWalletIsUnlocked();
+    if (!CZKContext::IsInitialized())
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "ZK proof context not initialized");
+
+    uint256 secret;
+    if (params.size() == 1)
+    {
+        std::vector<unsigned char> vch = ParseHex(params[0].get_str());
+        if (vch.size() != 32)
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "secret must be 32-byte hex");
+        memcpy(secret.begin(), vch.data(), 32);
+    }
+    else
+    {
+        unsigned char rnd[32];
+        if (RAND_bytes(rnd, 32) != 1)
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "rng");
+        memcpy(secret.begin(), rnd, 32);
+        OPENSSL_cleanse(rnd, 32);
+    }
+
+    std::vector<unsigned char> vchPubKey;
+    if (!HalfAggStakeDerivePubKey(secret, vchPubKey) || vchPubKey.size() != 33)
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to derive member public key");
+    pwalletMain->AddMofNMemberKey(vchPubKey, secret);
+
+    Object result;
+    result.push_back(Pair("memberpubkey", HexStr(vchPubKey)));
+    return result;
+}
+
+
 Value n_importdelegation(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() != 1)
