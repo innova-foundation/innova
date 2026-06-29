@@ -400,6 +400,187 @@ bool NullStakeMofNDeriveValueCommitment(const CPedersenCommitment& cv3,
     return PointToBytes(group, res, cvPlainOut.vchCommitment, ctx);
 }
 
+// B2-e MINT LINK (INV-2/INV-6/INV-7): a 2-generator Okamoto representation proof that the point
+// (cv3 - Vv) lies in <G, J>, i.e. cv3 - Vv = a*G + b*J for prover-known (a, b) =
+// (blindCv3 - blindVv, delegationHash). Because G, H, J are independent NUMS generators with no
+// known DL relation, proving the difference has NO H-component proves cv3 and Vv carry the SAME
+// value (H-coefficient); a 2-generator range proof over Vv then transfers to the 3-generator leaf
+// cv3. The proof reveals neither a nor b=delegationHash (HVZK), so the delegation set stays hidden
+// at mint. This is a DISTINCT primitive from the single-generator spend-side kernel link and must
+// never be conflated with it. Proof = R(33) || s_a(32) || s_b(32). Schnorr convention matches the
+// codebase (s = k - e*x; verify R == s*G + e*P). The Fiat-Shamir transcript binds cv3 and Vv but
+// NOT delegationHash (off-wire; the verifier has no D at mint).
+static void NullStakeMofNMintLinkChallenge(const std::vector<unsigned char>& cv3Bytes,
+                                           const std::vector<unsigned char>& vvBytes,
+                                           const unsigned char* rBuf33,
+                                           unsigned char eOut[32])
+{
+    SHA256_CTX sha;
+    SHA256_Init(&sha);
+    const char* domain = "Innova_NullStakeMofN_MintLink_v1";
+    SHA256_Update(&sha, domain, strlen(domain));
+    SHA256_Update(&sha, cv3Bytes.data(), cv3Bytes.size());
+    SHA256_Update(&sha, vvBytes.data(), vvBytes.size());
+    SHA256_Update(&sha, rBuf33, 33);
+    SHA256_Final(eOut, &sha);
+}
+
+bool CreateNullStakeMofNMintLink(const CPedersenCommitment& cv3,
+                                 const CPedersenCommitment& Vv,
+                                 const std::vector<unsigned char>& vchBlindCv3,
+                                 const std::vector<unsigned char>& vchBlindVv,
+                                 const uint256& delegationHash,
+                                 std::vector<unsigned char>& linkProofOut)
+{
+    if (!CZKContext::IsInitialized()) return false;
+    if (cv3.vchCommitment.size() != 33 || Vv.vchCommitment.size() != 33) return false;
+    if (vchBlindCv3.size() != BLINDING_FACTOR_SIZE || vchBlindVv.size() != BLINDING_FACTOR_SIZE) return false;
+
+    CECGroupGuard group;
+    if (!group.group) return false;
+    CBNCtxGuard ctx;
+    if (!ctx.ctx) return false;
+
+    const BIGNUM* order = EC_GROUP_get0_order(group);
+
+    CECPointGuard G(group), J(group);
+    if (!BytesToPoint(group, CZKContext::GetGeneratorG(), G, ctx)) return false;
+    if (!BytesToPoint(group, CZKContext::GetGeneratorJ(), J, ctx)) return false;
+
+    // a = blindCv3 - blindVv (mod n);  b = delegationHash (mod n)
+    CBNGuard bnA, bnB, bnBlindCv3, bnBlindVv;
+    if (!BN_bin2bn(vchBlindCv3.data(), 32, bnBlindCv3)) return false;
+    if (!BN_bin2bn(vchBlindVv.data(), 32, bnBlindVv)) return false;
+    if (!BN_bin2bn(delegationHash.begin(), 32, bnB)) return false;
+    BN_mod(bnBlindCv3, bnBlindCv3, order, ctx);
+    BN_mod(bnBlindVv, bnBlindVv, order, ctx);
+    BN_mod(bnB, bnB, order, ctx);
+    BN_mod_sub(bnA, bnBlindCv3, bnBlindVv, order, ctx);
+    BN_set_consttime(bnA);
+    BN_set_consttime(bnB);
+
+    // Hedged nonces k_a, k_b = HMAC(domain, a || b || cv3 || Vv || rand).
+    unsigned char rnd[32];
+    if (RAND_bytes(rnd, 32) != 1) return false;
+    unsigned char aBytes[32], bBytes[32];
+    memset(aBytes, 0, 32); memset(bBytes, 0, 32);
+    { int n = BN_num_bytes(bnA); if (n > 0 && n <= 32) BN_bn2bin(bnA, aBytes + (32 - n)); }
+    { int n = BN_num_bytes(bnB); if (n > 0 && n <= 32) BN_bn2bin(bnB, bBytes + (32 - n)); }
+    unsigned char nin[162];
+    memcpy(nin,       aBytes, 32);
+    memcpy(nin + 32,  bBytes, 32);
+    memcpy(nin + 64,  cv3.vchCommitment.data(), 33);
+    memcpy(nin + 97,  Vv.vchCommitment.data(), 33);
+    memcpy(nin + 130, rnd, 32);
+    OPENSSL_cleanse(aBytes, 32);
+    OPENSSL_cleanse(bBytes, 32);
+    OPENSSL_cleanse(rnd, 32);
+
+    unsigned char kaH[32], kbH[32];
+    unsigned int hl = 32;
+    HMAC(EVP_sha256(), "Innova_MofN_MintLink_nonce_a", 28, nin, 162, kaH, &hl);
+    HMAC(EVP_sha256(), "Innova_MofN_MintLink_nonce_b", 28, nin, 162, kbH, &hl);
+    OPENSSL_cleanse(nin, 162);
+
+    CBNGuard bnKa, bnKb;
+    BN_bin2bn(kaH, 32, bnKa);
+    BN_bin2bn(kbH, 32, bnKb);
+    BN_mod(bnKa, bnKa, order, ctx);
+    BN_mod(bnKb, bnKb, order, ctx);
+    OPENSSL_cleanse(kaH, 32);
+    OPENSSL_cleanse(kbH, 32);
+    BN_set_consttime(bnKa);
+    BN_set_consttime(bnKb);
+    if (BN_is_zero(bnKa) || BN_is_zero(bnKb)) return false;
+
+    // R = k_a*G + k_b*J
+    CECPointGuard kaG(group), kbJ(group), R(group);
+    if (EC_POINT_mul(group, kaG, NULL, G, bnKa, ctx) != 1) return false;
+    if (EC_POINT_mul(group, kbJ, NULL, J, bnKb, ctx) != 1) return false;
+    if (EC_POINT_add(group, R, kaG, kbJ, ctx) != 1) return false;
+    if (EC_POINT_is_at_infinity(group, R)) return false;
+
+    unsigned char rBuf[33];
+    if (EC_POINT_point2oct(group, R, POINT_CONVERSION_COMPRESSED, rBuf, 33, ctx) != 33) return false;
+
+    unsigned char eHash[32];
+    NullStakeMofNMintLinkChallenge(cv3.vchCommitment, Vv.vchCommitment, rBuf, eHash);
+    CBNGuard bnE;
+    BN_bin2bn(eHash, 32, bnE);
+    BN_mod(bnE, bnE, order, ctx);
+
+    // s_a = k_a - e*a;  s_b = k_b - e*b  (mod n)
+    CBNGuard bnSa, bnSb, bnTmp;
+    BN_mod_mul(bnTmp, bnE, bnA, order, ctx); BN_mod_sub(bnSa, bnKa, bnTmp, order, ctx);
+    BN_mod_mul(bnTmp, bnE, bnB, order, ctx); BN_mod_sub(bnSb, bnKb, bnTmp, order, ctx);
+
+    linkProofOut.resize(97);
+    memcpy(linkProofOut.data(), rBuf, 33);
+    unsigned char sBuf[32];
+    memset(sBuf, 0, 32); { int n = BN_num_bytes(bnSa); if (n > 0) BN_bn2bin(bnSa, sBuf + (32 - n)); }
+    memcpy(linkProofOut.data() + 33, sBuf, 32);
+    memset(sBuf, 0, 32); { int n = BN_num_bytes(bnSb); if (n > 0) BN_bn2bin(bnSb, sBuf + (32 - n)); }
+    memcpy(linkProofOut.data() + 65, sBuf, 32);
+    OPENSSL_cleanse(sBuf, 32);
+    return true;
+}
+
+bool VerifyNullStakeMofNMintLink(const CPedersenCommitment& cv3,
+                                 const CPedersenCommitment& Vv,
+                                 const std::vector<unsigned char>& linkProof)
+{
+    if (!CZKContext::IsInitialized()) return false;
+    if (cv3.vchCommitment.size() != 33 || Vv.vchCommitment.size() != 33) return false;
+    if (linkProof.size() != NULLSTAKE_MOFN_MINTLINK_SIZE) return false;
+
+    CECGroupGuard group;
+    if (!group.group) return false;
+    CBNCtxGuard ctx;
+    if (!ctx.ctx) return false;
+
+    const BIGNUM* order = EC_GROUP_get0_order(group);
+
+    CECPointGuard G(group), J(group), cv3p(group), vvp(group);
+    if (!BytesToPoint(group, CZKContext::GetGeneratorG(), G, ctx)) return false;
+    if (!BytesToPoint(group, CZKContext::GetGeneratorJ(), J, ctx)) return false;
+    if (!BytesToPoint(group, cv3.vchCommitment, cv3p, ctx)) return false;
+    if (!BytesToPoint(group, Vv.vchCommitment, vvp, ctx)) return false;
+
+    std::vector<unsigned char> rBytes(linkProof.begin(), linkProof.begin() + 33);
+    CECPointGuard R(group);
+    if (!BytesToPoint(group, rBytes, R, ctx)) return false;
+    if (EC_POINT_is_at_infinity(group, R)) return false;
+
+    CBNGuard bnSa, bnSb;
+    if (!BN_bin2bn(linkProof.data() + 33, 32, bnSa)) return false;
+    if (!BN_bin2bn(linkProof.data() + 65, 32, bnSb)) return false;
+    if (BN_is_negative(bnSa) || BN_cmp(bnSa, order) >= 0) return false;   // canonical s_a < n
+    if (BN_is_negative(bnSb) || BN_cmp(bnSb, order) >= 0) return false;   // canonical s_b < n
+
+    unsigned char eHash[32];
+    NullStakeMofNMintLinkChallenge(cv3.vchCommitment, Vv.vchCommitment, linkProof.data(), eHash);
+    CBNGuard bnE;
+    if (!BN_bin2bn(eHash, 32, bnE)) return false;
+    BN_mod(bnE, bnE, order, ctx);
+    if (BN_is_zero(bnE)) return false;
+
+    // P = cv3 - Vv
+    CECPointGuard P(group), negVv(group);
+    if (EC_POINT_copy(negVv, vvp) != 1) return false;
+    if (EC_POINT_invert(group, negVv, ctx) != 1) return false;
+    if (EC_POINT_add(group, P, cv3p, negVv, ctx) != 1) return false;
+
+    // check  s_a*G + s_b*J + e*P == R
+    CECPointGuard saG(group), sbJ(group), eP(group), lhs(group);
+    if (EC_POINT_mul(group, saG, NULL, G, bnSa, ctx) != 1) return false;
+    if (EC_POINT_mul(group, sbJ, NULL, J, bnSb, ctx) != 1) return false;
+    if (EC_POINT_mul(group, eP, NULL, P, bnE, ctx) != 1) return false;
+    if (EC_POINT_add(group, lhs, saG, sbJ, ctx) != 1) return false;
+    if (EC_POINT_add(group, lhs, lhs, eP, ctx) != 1) return false;
+
+    return (EC_POINT_cmp(group, lhs, R, ctx) == 0);
+}
+
 bool VerifyPedersenCommitment(const CPedersenCommitment& commit,
                                int64_t nValue,
                                const std::vector<unsigned char>& vchBlind)

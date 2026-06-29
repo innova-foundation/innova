@@ -296,5 +296,23 @@ bool NullStakeMofNDeriveValueCommitment(const CPedersenCommitment& cv3,
                                         const uint256& delegationHash,
                                         CPedersenCommitment& cvPlainOut);
 
+// B2-e MINT LINK: a 2-generator Okamoto representation proof (R || s_a || s_b = 97 bytes) that
+// (cv3 - Vv) lies in <G, J>, proving cv3 (the 3-generator leaf) and Vv (a fresh 2-generator value
+// commitment) carry the SAME value while hiding the blind difference and delegationHash. Lets a
+// standard 2-generator range proof over Vv bind the value of cv3 without revealing the delegation
+// at mint. DISTINCT from the single-generator spend-side kernel link.
+static const size_t NULLSTAKE_MOFN_MINTLINK_SIZE = 97;
+
+bool CreateNullStakeMofNMintLink(const CPedersenCommitment& cv3,
+                                 const CPedersenCommitment& Vv,
+                                 const std::vector<unsigned char>& vchBlindCv3,
+                                 const std::vector<unsigned char>& vchBlindVv,
+                                 const uint256& delegationHash,
+                                 std::vector<unsigned char>& linkProofOut);
+
+bool VerifyNullStakeMofNMintLink(const CPedersenCommitment& cv3,
+                                 const CPedersenCommitment& Vv,
+                                 const std::vector<unsigned char>& linkProof);
+
 
 #endif // INN_ZKPROOF_H

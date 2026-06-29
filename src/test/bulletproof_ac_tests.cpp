@@ -835,6 +835,71 @@ BOOST_AUTO_TEST_CASE(nullstake_mofn_kernel_proof_create_verify)
     }
 }
 
+// B2-e MINT LINK: the 2-generator Okamoto (G,J) representation proof binding the 3-generator leaf
+// cv3 to a fresh 2-generator value commitment Vv. This is the load-bearing mint value-binding (it
+// FAILS OPEN if omitted), so the adversarial cases are the inflation/forgery guards.
+BOOST_AUTO_TEST_CASE(nullstake_mofn_mint_link_create_verify)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+
+    typedef std::vector<unsigned char> valtype;
+    const int64_t nValue = 5000000000LL;
+
+    valtype blindCv3, blindVv;
+    BOOST_REQUIRE(GenerateBlindingFactor(blindCv3));
+    BOOST_REQUIRE(GenerateBlindingFactor(blindVv));
+
+    std::vector<uint256> setSk;
+    setSk.push_back(uint256(70001ULL)); setSk.push_back(uint256(70002ULL)); setSk.push_back(uint256(70003ULL));
+    std::vector<valtype> set;
+    for (size_t i = 0; i < setSk.size(); i++) { valtype pk; BOOST_REQUIRE(HalfAggStakeDerivePubKey(setSk[i], pk)); set.push_back(pk); }
+    std::sort(set.begin(), set.end());
+    valtype owner; BOOST_REQUIRE(HalfAggStakeDerivePubKey(uint256(79999ULL), owner));
+    uint256 D; BOOST_REQUIRE(ComputeNullStakeV3DelegationSetHash(set, 2, owner, D));
+
+    // cv3 = value*H + blindCv3*G + D*J ; Vv = value*H + blindVv*G  (same value, fresh blind).
+    CPedersenCommitment cv3, Vv;
+    BOOST_REQUIRE(CreateNullStakeMofNCommitment(nValue, blindCv3, D, cv3));
+    BOOST_REQUIRE(CreatePedersenCommitment(nValue, blindVv, Vv));
+
+    valtype link;
+    BOOST_REQUIRE(CreateNullStakeMofNMintLink(cv3, Vv, blindCv3, blindVv, D, link));
+    BOOST_CHECK_EQUAL(link.size(), (size_t)97);
+    BOOST_CHECK_MESSAGE(VerifyNullStakeMofNMintLink(cv3, Vv, link),
+                        "an honest mint link (cv3 and Vv share the value) must verify");
+
+    // (a) INFLATION GUARD: Vv commits to a DIFFERENT value than cv3 -> the difference has an
+    // H-component, so no (G,J) representation exists -> verify must reject.
+    {
+        CPedersenCommitment VvWrong;
+        BOOST_REQUIRE(CreatePedersenCommitment(nValue + 1, blindVv, VvWrong));
+        valtype linkW;
+        BOOST_REQUIRE(CreateNullStakeMofNMintLink(cv3, VvWrong, blindCv3, blindVv, D, linkW));
+        BOOST_CHECK_MESSAGE(!VerifyNullStakeMofNMintLink(cv3, VvWrong, linkW),
+                            "a Vv that commits to a different value than cv3 must be rejected (inflation guard)");
+    }
+    // (b) tampered s_a -> reject.
+    { valtype bad = link; bad[33] ^= 0x01; BOOST_CHECK(!VerifyNullStakeMofNMintLink(cv3, Vv, bad)); }
+    // (c) tampered s_b -> reject.
+    { valtype bad = link; bad[65] ^= 0x01; BOOST_CHECK(!VerifyNullStakeMofNMintLink(cv3, Vv, bad)); }
+    // (d) tampered R -> reject.
+    { valtype bad = link; bad[1] ^= 0x01; BOOST_CHECK(!VerifyNullStakeMofNMintLink(cv3, Vv, bad)); }
+    // (e) the link proves a DIFFERENT delegationHash than the leaf's J term -> reject.
+    {
+        uint256 D2; BOOST_REQUIRE(ComputeNullStakeV3DelegationSetHash(set, 3, owner, D2));   // M=3 -> different hash
+        valtype linkW;
+        BOOST_REQUIRE(CreateNullStakeMofNMintLink(cv3, Vv, blindCv3, blindVv, D2, linkW));
+        BOOST_CHECK_MESSAGE(!VerifyNullStakeMofNMintLink(cv3, Vv, linkW),
+                            "a link proving a different delegationHash than the leaf's J term must be rejected");
+    }
+    // (f) non-canonical s_a (>= n) -> reject.
+    { valtype bad = link; for (int i = 33; i < 65; i++) bad[i] = 0xFF; BOOST_CHECK(!VerifyNullStakeMofNMintLink(cv3, Vv, bad)); }
+    // (g) wrong size -> reject.
+    { valtype bad = link; bad.push_back(0x00); BOOST_CHECK(!VerifyNullStakeMofNMintLink(cv3, Vv, bad)); }
+    // (h) swapped cv3/Vv (the link is bound to the ordered pair) -> reject.
+    { BOOST_CHECK(!VerifyNullStakeMofNMintLink(Vv, cv3, link)); }
+}
+
 // The Pippenger multiexp must equal the naive sum bit-for-bit, including edge
 // cases (zero scalar, identity point), across sizes up to the AC verifier's.
 BOOST_AUTO_TEST_CASE(multiscalarmul_matches_naive)
