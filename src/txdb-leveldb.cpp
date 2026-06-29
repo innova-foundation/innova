@@ -366,6 +366,16 @@ bool CTxDB::ReadShieldedCommitmentIndex(const std::vector<unsigned char>& vchCom
     return Read(make_pair(string("sci"), vchCommitment), nIndex);
 }
 
+bool CTxDB::EraseShieldedCommitmentHeight(uint64_t nIndex)
+{
+    return Erase(make_pair(string("sch"), nIndex));
+}
+
+bool CTxDB::EraseShieldedCommitmentIndex(const std::vector<unsigned char>& vchCommitment)
+{
+    return Erase(make_pair(string("sci"), vchCommitment));
+}
+
 bool CTxDB::ReadAllShieldedCommitments(std::vector<CPedersenCommitment>& vCommitments)
 {
     vCommitments.clear();

@@ -94,6 +94,31 @@ CTransaction BuildMofNMintTx()
     return tx;
 }
 
+// B2-e Phase 3c.4: a SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM tx with an owner reclaim-auth struct.
+CTransaction BuildReclaimTx()
+{
+    CTransaction tx;
+    tx.nVersion = SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM;
+    tx.nTime = 123456;
+    tx.nLockTime = 0;
+    tx.nPrivacyMode = PRIVACY_MODE_FULL;
+    tx.nValueBalance = 0;
+
+    CShieldedSpendDescription spend;
+    spend.cv.vchCommitment.assign(33, 0x02);
+    spend.nullifier = uint256(77);
+    spend.vchRk.assign(33, 0x09);
+    tx.vShieldedSpend.push_back(spend);
+
+    tx.reclaimAuth.delegationHash = uint256(4242);
+    tx.reclaimAuth.nThresholdM = 2;
+    tx.reclaimAuth.vStakerSet.push_back(std::vector<unsigned char>(33, 0x11));
+    tx.reclaimAuth.vStakerSet.push_back(std::vector<unsigned char>(33, 0x22));
+    tx.reclaimAuth.vchPkOwner.assign(33, 0x09);
+
+    return tx;
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(fcmp_root_tests)
@@ -272,6 +297,44 @@ BOOST_AUTO_TEST_CASE(binding_sighash_covers_mofn_mint_fields)
     CTransaction mLink = tx;
     mLink.vShieldedOutput[0].vchMofNLink[0] ^= 0x01;
     BOOST_CHECK(hashBase != mLink.GetBindingSigHash());
+}
+
+// B2-e Phase 3c.4: the version-gated reclaim-auth fields must round-trip through serialization.
+BOOST_AUTO_TEST_CASE(reclaim_auth_serialization_roundtrip)
+{
+    CTransaction tx = BuildReclaimTx();
+
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << tx;
+    CTransaction tx2;
+    ss >> tx2;
+
+    BOOST_REQUIRE_EQUAL(tx2.nVersion, SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM);
+    BOOST_CHECK(tx2.reclaimAuth.delegationHash == tx.reclaimAuth.delegationHash);
+    BOOST_CHECK_EQUAL(tx2.reclaimAuth.nThresholdM, 2u);
+    BOOST_REQUIRE_EQUAL(tx2.reclaimAuth.vStakerSet.size(), 2u);
+    BOOST_CHECK(tx2.reclaimAuth.vStakerSet[0] == tx.reclaimAuth.vStakerSet[0]);
+    BOOST_CHECK(tx2.reclaimAuth.vchPkOwner == tx.reclaimAuth.vchPkOwner);
+    BOOST_CHECK(tx.GetHash() == tx2.GetHash());
+}
+
+// The owner spend-auth sig binds the reclaim only if the reclaim-auth is in the binding-sig hash.
+BOOST_AUTO_TEST_CASE(binding_sighash_covers_reclaim_auth)
+{
+    CTransaction tx = BuildReclaimTx();
+    uint256 hashBase = tx.GetBindingSigHash();
+
+    CTransaction mD = tx;
+    mD.reclaimAuth.delegationHash = uint256(9999);
+    BOOST_CHECK(hashBase != mD.GetBindingSigHash());
+
+    CTransaction mOwner = tx;
+    mOwner.reclaimAuth.vchPkOwner[0] ^= 0x01;
+    BOOST_CHECK(hashBase != mOwner.GetBindingSigHash());
+
+    CTransaction mSet = tx;
+    mSet.reclaimAuth.vStakerSet[0][0] ^= 0x01;
+    BOOST_CHECK(hashBase != mSet.GetBindingSigHash());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

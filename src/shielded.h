@@ -34,6 +34,12 @@ static const int SHIELDED_TX_VERSION_NULLSTAKE_COLD = 2005;
 // delegation set stays hidden at mint while the value is range-proven over Vv.
 static const int SHIELDED_TX_VERSION_MOFN_MINT = 2006;
 
+// B2-e Phase 3c.4: an OWNER-OVERRIDE RECLAIM of an idle M-of-N cold-stake note. The owner reveals the
+// staker set + M + owner pubkey (recomputed to the note's delegation hash D), proves control of the
+// owner key (the mandatory spend-auth sig with rk == ownerPubKey), and spends the cv3 note via the
+// cv_plain carve-out -- but ONLY after the note has been staking-inactive for the reclaim timelock.
+static const int SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM = 2007;
+
 static const int SHIELDED_MERKLE_DEPTH = 32;
 
 static const int MIN_SHIELDED_SPEND_DEPTH = 10;

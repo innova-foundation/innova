@@ -238,6 +238,10 @@ public:
     bool ReadShieldedCommitmentHeight(uint64_t nIndex, int& nHeight);
     bool WriteShieldedCommitmentIndex(const std::vector<unsigned char>& vchCommitment, uint64_t nIndex);
     bool ReadShieldedCommitmentIndex(const std::vector<unsigned char>& vchCommitment, uint64_t& nIndex);
+    // B2-e Phase 3c.4: erase the per-leaf height ('sch') + cv->index ('sci') entries on reorg, so a
+    // disconnected block's leaves cannot leave stale data that mis-dates the owner-reclaim timelock.
+    bool EraseShieldedCommitmentHeight(uint64_t nIndex);
+    bool EraseShieldedCommitmentIndex(const std::vector<unsigned char>& vchCommitment);
 
     bool WriteCurveTree(const CCurveTree& tree);
     bool ReadCurveTree(CCurveTree& tree);

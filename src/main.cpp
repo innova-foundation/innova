@@ -104,6 +104,15 @@ static bool MofNSpendValueCommitment(const CTransaction& tx, size_t i, bool fVal
         return NullStakeMofNDeriveValueCommitment(tx.vShieldedSpend[i].cv,
                                                   tx.nullstakeProofV3.delegationHash, cvValueOut);
     }
+    // B2-e Phase 3c.4: an owner reclaim (an ordinary tx, never fValidatedCoinstake) spends the idle cv3
+    // note at spend[0] via the SAME cv_plain = cv3 - D*J derivation, using the reclaim's delegationHash.
+    // This branch is reachable only once ConnectInputs's reclaim gates (D recompute, rk==owner + the
+    // mandatory owner spend-auth sig, and the inactivity timelock) have passed.
+    if (tx.nVersion == SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM && i == 0)
+    {
+        return NullStakeMofNDeriveValueCommitment(tx.vShieldedSpend[i].cv,
+                                                  tx.reclaimAuth.delegationHash, cvValueOut);
+    }
     return true;
 }
 
@@ -3853,6 +3862,54 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                         return DoS(100, error("ConnectInputs() : %s", strFCMPError.c_str()));
                 }
 
+                // B2-e Phase 3c.4: owner-reclaim gates. A reclaim (version 2007) spends an idle cv3 note by
+                // OWNER authority instead of the M-of-N quorum. These fail-closed checks gate the cv_plain
+                // carve-out (MofNSpendValueCommitment) so it is reachable ONLY for a real, timelocked,
+                // owner-signed reclaim -- the spend-lock is not re-opened for an attacker.
+                if (IsMofNReclaim())
+                {
+                    if (nBlockHeight < FORK_HEIGHT_NULLSTAKE_RECLAIM)
+                        return DoS(100, error("ConnectInputs() : owner reclaim before fork height"));
+                    if (vShieldedSpend.empty())
+                        return DoS(100, error("ConnectInputs() : owner reclaim has no shielded spend"));
+                    if (reclaimAuth.vchPkOwner.size() != 33)
+                        return DoS(100, error("ConnectInputs() : owner reclaim invalid owner pubkey"));
+                    // (a) the revealed set+M+owner must recompute to the spent note's delegation hash D
+                    // (the note's J-coefficient); a substituted set/owner leaves a J residual the cv_plain
+                    // value checks reject.
+                    uint256 dRecomputed;
+                    if (!ComputeNullStakeV3DelegationSetHash(reclaimAuth.vStakerSet, reclaimAuth.nThresholdM,
+                                                             reclaimAuth.vchPkOwner, dRecomputed)
+                        || dRecomputed != reclaimAuth.delegationHash)
+                        return DoS(100, error("ConnectInputs() : owner reclaim delegation hash mismatch"));
+                    // (b) owner authorization: the mandatory spend-auth signature (verified in the spend
+                    // loop below) must be under rk == vchPkOwner, making it a proof of knowledge of the
+                    // owner secret key. A third party knows the public set+owner but not the owner key.
+                    if (vShieldedSpend[0].vchRk != reclaimAuth.vchPkOwner)
+                        return DoS(100, error("ConnectInputs() : owner reclaim spend key is not the owner key"));
+                    // (c) inactivity timelock: the spent cv3 leaf must have been on-chain (un-restaked) for
+                    // at least RECLAIM_TIMELOCK blocks. Staking re-mints the note (fresh leaf), so an actively
+                    // staked note never ages this far. Deterministic on nBlockHeight; fail closed if the
+                    // leaf's age cannot be established (missing / stale-after-reorg index).
+                    {
+                        uint64_t nLeafIdx = 0, nLeafCount = 0;
+                        if (!txdb.ReadShieldedCommitmentIndex(vShieldedSpend[0].cv.vchCommitment, nLeafIdx))
+                            return DoS(100, error("ConnectInputs() : owner reclaim leaf not found for timelock"));
+                        txdb.ReadShieldedCommitmentCount(nLeafCount);
+                        if (nLeafIdx >= nLeafCount)
+                            return DoS(100, error("ConnectInputs() : owner reclaim leaf index out of range"));
+                        CPedersenCommitment cvBack;
+                        if (!txdb.ReadShieldedCommitment(nLeafIdx, cvBack)
+                            || cvBack.vchCommitment != vShieldedSpend[0].cv.vchCommitment)
+                            return DoS(100, error("ConnectInputs() : owner reclaim leaf index stale (reorg)"));
+                        int nLeafHeight = 0;
+                        if (!txdb.ReadShieldedCommitmentHeight(nLeafIdx, nLeafHeight))
+                            return DoS(100, error("ConnectInputs() : owner reclaim leaf insertion height missing"));
+                        if (nBlockHeight - nLeafHeight < RECLAIM_TIMELOCK)
+                            return DoS(100, error("ConnectInputs() : owner reclaim before inactivity timelock"));
+                    }
+                }
+
                 for (size_t i = 0; i < vShieldedSpend.size(); i++)
                 {
                     // B2-e Phase 3c.1: the value-based checks (range, nullifier-binding, binding sig)
@@ -4133,6 +4190,20 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
         if (txdb.ReadShieldedTreeAtBlock(pindex->GetBlockHash(), prevTree))
         {
             txdb.WriteShieldedTree(prevTree);
+
+            // B2-e Phase 3c.4: erase the per-leaf height ('sch') + cv->index ('sci') entries for the leaves
+            // this block ADDED (indices >= prevTree.Size()) BEFORE shrinking the count, so a reorg cannot
+            // leave stale entries that mis-date or mis-identify a leaf. The owner-reclaim inactivity timelock
+            // reads these indices; divergent stale entries across nodes would be a chain-split hazard.
+            uint64_t nOldCommitCount = 0;
+            txdb.ReadShieldedCommitmentCount(nOldCommitCount);
+            for (uint64_t ci = prevTree.Size(); ci < nOldCommitCount; ci++)
+            {
+                CPedersenCommitment staleCommit;
+                if (txdb.ReadShieldedCommitment(ci, staleCommit))
+                    txdb.EraseShieldedCommitmentIndex(staleCommit.vchCommitment);
+                txdb.EraseShieldedCommitmentHeight(ci);
+            }
 
             txdb.WriteShieldedCommitmentCount(prevTree.Size());
         }

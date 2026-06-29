@@ -270,6 +270,33 @@ public:
 };
 
 
+// B2-e Phase 3c.4: owner-override reclaim authorization (carried on a SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM
+// tx). The owner reveals the full staker set + threshold + owner pubkey; consensus recomputes
+// SetHash(set, M, owner) and requires it to equal delegationHash (the spent note's J-coefficient), so a
+// substituted set/owner leaves a J residual the cv_plain checks reject. The owner authorization itself is
+// the tx's mandatory spend-auth signature with rk == vchPkOwner (no extra signature field).
+class CNullStakeReclaimAuth
+{
+public:
+    uint256 delegationHash;
+    std::vector<std::vector<unsigned char> > vStakerSet;   // full N-member set (sorted, dedup)
+    unsigned int nThresholdM;
+    std::vector<unsigned char> vchPkOwner;                 // 33 bytes; rk of the reclaim spend must equal this
+
+    CNullStakeReclaimAuth() { nThresholdM = 0; }
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(delegationHash);
+        READWRITE(vStakerSet);
+        READWRITE(nThresholdM);
+        READWRITE(vchPkOwner);
+    )
+
+    bool IsNull() const { return vchPkOwner.empty() && vStakerSet.empty(); }
+};
+
+
 bool CreateNullStakeKernelProofV3(int64_t nValue,
                                   const std::vector<unsigned char>& vchBlind,
                                   const CPedersenCommitment& cv,

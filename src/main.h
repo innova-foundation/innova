@@ -423,6 +423,31 @@ inline int GetForkHeightNullStakeDelegSet()
 }
 #define FORK_HEIGHT_NULLSTAKE_DELEGSET (GetForkHeightNullStakeDelegSet())
 
+// Hard fork height for B2-e Phase 3c.4: owner-override reclaim of an idle M-of-N cold-stake note.
+inline int GetForkHeightNullStakeReclaim()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest) return 12;
+    if (fTestNet) return 1500;
+    return 8260000;
+}
+#define FORK_HEIGHT_NULLSTAKE_RECLAIM (GetForkHeightNullStakeReclaim())
+
+// B2-e Phase 3c.4: staking-INACTIVITY timelock for an owner reclaim — the spent cv3 leaf must have
+// been on-chain (un-restaked) for at least this many blocks before the owner may reclaim it. Staking
+// re-mints the note (resetting its leaf age), so this must safely exceed the set's realistic re-stake
+// interval, and must be >> MIN_SHIELDED_SPEND_DEPTH.
+inline int GetReclaimTimelock()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest) return 20;         // short for regtest e2e
+    if (fTestNet) return 720;        // ~12h at 60s spacing
+    return 43200;                    // mainnet: ~30 days at 60s spacing
+}
+#define RECLAIM_TIMELOCK (GetReclaimTimelock())
+
 // IDAG: Fork-gated block time — 15s pre-DAG, 1s post-DAG
 inline unsigned int GetTargetSpacingForHeight(int nHeight)
 {
@@ -690,6 +715,9 @@ public:
     // NullStake V3 coinstake — only for SHIELDED_TX_VERSION_NULLSTAKE_COLD
     CNullStakeKernelProofV3 nullstakeProofV3;
 
+    // B2-e Phase 3c.4 owner reclaim — only for SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM
+    CNullStakeReclaimAuth reclaimAuth;
+
     // Denial-of-service detection:
     mutable int nDoS;
     bool DoS(int nDoSIn, bool fIn) const { nDoS += nDoSIn; return fIn; }
@@ -713,7 +741,8 @@ public:
         if (this->nVersion == SHIELDED_TX_VERSION || this->nVersion == SHIELDED_TX_VERSION_DSP
             || this->nVersion == SHIELDED_TX_VERSION_FCMP || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE
             || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD
-            || this->nVersion == SHIELDED_TX_VERSION_MOFN_MINT)
+            || this->nVersion == SHIELDED_TX_VERSION_MOFN_MINT
+            || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM)
         {
             READWRITE(vShieldedSpend);
             READWRITE(vShieldedOutput);
@@ -764,6 +793,11 @@ public:
             {
                 READWRITE(nullstakeProofV3);
             }
+            // B2-e Phase 3c.4 owner reclaim authorization (version 2007)
+            if (this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM)
+            {
+                READWRITE(reclaimAuth);
+            }
         }
     )
 
@@ -804,7 +838,8 @@ public:
         if (nVersion == SHIELDED_TX_VERSION || nVersion == SHIELDED_TX_VERSION_DSP
             || nVersion == SHIELDED_TX_VERSION_FCMP || nVersion == SHIELDED_TX_VERSION_NULLSTAKE
             || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD
-            || nVersion == SHIELDED_TX_VERSION_MOFN_MINT)
+            || nVersion == SHIELDED_TX_VERSION_MOFN_MINT
+            || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM)
         {
             ss << (unsigned int)vShieldedSpend.size();
             for (size_t i = 0; i < vShieldedSpend.size(); i++)
@@ -862,7 +897,8 @@ public:
             ss << nValueBalance;
             if (nVersion == SHIELDED_TX_VERSION_DSP || nVersion == SHIELDED_TX_VERSION_FCMP
                 || nVersion == SHIELDED_TX_VERSION_NULLSTAKE || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2
-                || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD || nVersion == SHIELDED_TX_VERSION_MOFN_MINT)
+                || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD || nVersion == SHIELDED_TX_VERSION_MOFN_MINT
+                || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM)
                 ss << nPrivacyMode;
             // NullStake V1 coinstake proof committed to binding sig hash
             if (nVersion == SHIELDED_TX_VERSION_NULLSTAKE)
@@ -873,6 +909,11 @@ public:
             // NullStake V3 coinstake proof committed to binding sig hash
             if (nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD)
                 ss << nullstakeProofV3;
+            // B2-e Phase 3c.4: the reclaim authorization (set + M + owner + delegationHash) is committed
+            // here so the owner spend-auth signature (rk == vchPkOwner) binds the revealed set/owner and
+            // cannot be re-targeted; vchRk / vchSpendAuthSig themselves are deliberately NOT in the sighash.
+            if (nVersion == SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM)
+                ss << reclaimAuth;
             // Deliberately omit bindingSig
         }
         return ss.GetHash();
@@ -949,7 +990,15 @@ public:
                 || nVersion == SHIELDED_TX_VERSION_FCMP || nVersion == SHIELDED_TX_VERSION_NULLSTAKE
                 || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2
                 || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD
-                || nVersion == SHIELDED_TX_VERSION_MOFN_MINT);
+                || nVersion == SHIELDED_TX_VERSION_MOFN_MINT
+                || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM);
+    }
+
+    // B2-e Phase 3c.4: an owner-override reclaim of an idle M-of-N cold-stake note. NOT a coinstake
+    // (deliberately excluded from IsCoinStake), so fValidatedCoinstake is always false for it.
+    bool IsMofNReclaim() const
+    {
+        return (nVersion == SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM);
     }
 
     bool IsDSP() const
