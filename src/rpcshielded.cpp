@@ -2695,7 +2695,7 @@ Value z_mintmofncoldstake(const Array& params, bool fHelp)
     }
 
     // Record the delegation so the wallet can later recognize, stake, and reclaim this note.
-    CWallet::CMofNDelegation md;
+    CMofNDelegation md;
     md.delegationHash = D;
     md.vStakerSet = vStakerSet;
     md.nThresholdM = (unsigned)nThresholdM;

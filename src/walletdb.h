@@ -487,6 +487,32 @@ public:
         return Erase(std::make_pair(std::string("csdeleg"), hashOwner));
     }
 
+    // B2-e M-of-N cold-stake delegation persistence (keyed by delegationHash D).
+    bool WriteMofNDelegation(const uint256& delegationHash, const CMofNDelegation& deleg)
+    {
+        nWalletDBUpdated++;
+        return Write(std::make_pair(std::string("mofndeleg"), delegationHash), deleg, true);
+    }
+
+    bool EraseMofNDelegation(const uint256& delegationHash)
+    {
+        nWalletDBUpdated++;
+        return Erase(std::make_pair(std::string("mofndeleg"), delegationHash));
+    }
+
+    // B2-e M-of-N staker member secret-key persistence (keyed by 33-byte half-agg pubkey).
+    bool WriteMofNMemberKey(const std::vector<unsigned char>& vchPubKey, const uint256& secret)
+    {
+        nWalletDBUpdated++;
+        return Write(std::make_pair(std::string("mofnmkey"), vchPubKey), secret, true);
+    }
+
+    bool EraseMofNMemberKey(const std::vector<unsigned char>& vchPubKey)
+    {
+        nWalletDBUpdated++;
+        return Erase(std::make_pair(std::string("mofnmkey"), vchPubKey));
+    }
+
     bool ReadAccount(const std::string& strAccount, CAccount& account);
     bool WriteAccount(const std::string& strAccount, const CAccount& account);
 private:

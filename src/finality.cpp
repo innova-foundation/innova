@@ -6058,7 +6058,7 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
             unsigned int mofnM = 0;
             std::vector<unsigned char> mofnOwner;
             std::vector<uint256> mofnSecrets;
-            for (std::map<uint256, CWallet::CMofNDelegation>::const_iterator itD =
+            for (std::map<uint256, CMofNDelegation>::const_iterator itD =
                      pwalletMain->mapMofNDelegations.begin();
                  itD != pwalletMain->mapMofNDelegations.end(); ++itD)
             {

@@ -9094,6 +9094,30 @@ bool CWallet::ImportColdStakeDelegation(const CColdStakeDelegation& deleg)
     return AddColdStakeDelegation(deleg);
 }
 
+bool CWallet::AddMofNDelegation(const CMofNDelegation& deleg)
+{
+    LOCK(cs_shielded);
+    mapMofNDelegations[deleg.delegationHash] = deleg;
+    if (fFileBacked)
+    {
+        CWalletDB walletdb(strWalletFile);
+        walletdb.WriteMofNDelegation(deleg.delegationHash, deleg);
+    }
+    return true;
+}
+
+bool CWallet::AddMofNMemberKey(const std::vector<unsigned char>& vchPubKey, const uint256& secret)
+{
+    LOCK(cs_shielded);
+    mapMofNMemberKeys[vchPubKey] = secret;
+    if (fFileBacked)
+    {
+        CWalletDB walletdb(strWalletFile);
+        walletdb.WriteMofNMemberKey(vchPubKey, secret);
+    }
+    return true;
+}
+
 bool CWallet::RevokeColdStakeDelegation(const uint256& hashOwner)
 {
     LOCK(cs_shielded);

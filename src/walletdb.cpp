@@ -570,6 +570,26 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
             LOCK(pwallet->cs_shielded);
             pwallet->mapColdStakeDelegations[hashOwner] = deleg;
         }
+        else if (strType == "mofndeleg")
+        {
+            uint256 delegationHash;
+            ssKey >> delegationHash;
+            CMofNDelegation deleg;
+            ssValue >> deleg;
+
+            LOCK(pwallet->cs_shielded);
+            pwallet->mapMofNDelegations[delegationHash] = deleg;
+        }
+        else if (strType == "mofnmkey")
+        {
+            std::vector<unsigned char> vchPubKey;
+            ssKey >> vchPubKey;
+            uint256 secret;
+            ssValue >> secret;
+
+            LOCK(pwallet->cs_shielded);
+            pwallet->mapMofNMemberKeys[vchPubKey] = secret;
+        }
         else if (strType == "adrenaline")
 	{
 	    std::string sAlias;

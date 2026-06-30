@@ -242,37 +242,16 @@ public:
     bool AddColdStakeDelegation(const CColdStakeDelegation& deleg);
     bool ImportColdStakeDelegation(const CColdStakeDelegation& deleg);
 
-    // B2-e Phase 3c.5: M-of-N cold-stake delegations this wallet has minted, keyed by delegationHash D.
-    // Lets note-scanning recognize the wallet's M-of-N notes (leaf cv3 = value*H + blind*G + D*J) and the
-    // staking / owner-reclaim builders reconstruct the staker set + owner. In-memory for now.
-    struct CMofNDelegation
-    {
-        uint256 delegationHash;                                   // D = SetHash(set, M, ownerPubKey)
-        std::vector<std::vector<unsigned char> > vStakerSet;      // sorted, dedup, 33-byte members
-        unsigned int nThresholdM;
-        std::vector<unsigned char> vchPkOwner;                    // 33 bytes, = ownerSecretKey*G
-        CShieldedPaymentAddress ownerAddr;                        // notes encrypted here for reclaim
-        uint256 ownerOvk;
-        CMofNDelegation() { nThresholdM = 0; }
-    };
+    // B2-e Phase 3c.5: M-of-N cold-stake delegations this wallet has minted, keyed by delegationHash D
+    // (CMofNDelegation defined in shielded.h). Persisted to walletdb ("mofndeleg").
     std::map<uint256, CMofNDelegation> mapMofNDelegations;
-    bool AddMofNDelegation(const CMofNDelegation& deleg)
-    {
-        LOCK(cs_shielded);
-        mapMofNDelegations[deleg.delegationHash] = deleg;
-        return true;
-    }
+    bool AddMofNDelegation(const CMofNDelegation& deleg);
 
     // B2-e Phase 3c.5: imported M-of-N staker MEMBER secret keys (half-agg pubkey -> secret scalar), so this
     // wallet can co-produce M-of-N finality votes for delegations whose committed set includes these members.
-    // In-memory for now. Keyed by the 33-byte half-agg pubkey = HalfAggStakeDerivePubKey(secret).
+    // Persisted to walletdb ("mofnmkey"). Keyed by the 33-byte half-agg pubkey = HalfAggStakeDerivePubKey(secret).
     std::map<std::vector<unsigned char>, uint256> mapMofNMemberKeys;
-    bool AddMofNMemberKey(const std::vector<unsigned char>& vchPubKey, const uint256& secret)
-    {
-        LOCK(cs_shielded);
-        mapMofNMemberKeys[vchPubKey] = secret;
-        return true;
-    }
+    bool AddMofNMemberKey(const std::vector<unsigned char>& vchPubKey, const uint256& secret);
     bool RevokeColdStakeDelegation(const uint256& hashOwner);
     std::vector<CShieldedWalletNote> SelectShieldedNotesForColdStaking(const CColdStakeDelegation& deleg) const;
 

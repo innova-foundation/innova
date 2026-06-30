@@ -1580,6 +1580,10 @@ bool AppInit2()
     printf("%s", strErrors.str().c_str());
     printf("Innova Wallet %15" PRId64"ms\n", GetTimeMillis() - nStart);
 
+    if (!pwalletMain->mapMofNDelegations.empty() || !pwalletMain->mapMofNMemberKeys.empty())
+        printf("Loaded %zu M-of-N delegation(s) and %zu staker member key(s) from wallet\n",
+               pwalletMain->mapMofNDelegations.size(), pwalletMain->mapMofNMemberKeys.size());
+
     RegisterWallet(pwalletMain);
 
     CBlockIndex *pindexRescan = pindexBest;

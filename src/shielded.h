@@ -551,6 +551,32 @@ public:
     bool VerifyOwnerSignature(const std::vector<unsigned char>& vchOwnerPubKey) const;
 };
 
+// B2-e M-of-N cold-stake delegation a wallet has minted, keyed by delegationHash D = SetHash(set, M, owner).
+// Lets note-scanning recognize the wallet's M-of-N notes (leaf cv3 = value*H + blind*G + D*J) and lets the
+// finality-vote / owner-reclaim builders reconstruct the staker set + owner. Persisted to walletdb ("mofndeleg").
+class CMofNDelegation
+{
+public:
+    uint256 delegationHash;                                   // D = SetHash(set, M, ownerPubKey)
+    std::vector<std::vector<unsigned char> > vStakerSet;      // sorted, dedup, 33-byte members
+    unsigned int nThresholdM;
+    std::vector<unsigned char> vchPkOwner;                    // 33 bytes, = ownerSecretKey*G
+    CShieldedPaymentAddress ownerAddr;                        // notes encrypted here for reclaim
+    uint256 ownerOvk;
+
+    CMofNDelegation() { nThresholdM = 0; }
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(delegationHash);
+        READWRITE(vStakerSet);
+        READWRITE(nThresholdM);
+        READWRITE(vchPkOwner);
+        READWRITE(ownerAddr);
+        READWRITE(ownerOvk);
+    )
+};
+
 bool DeriveStakingKey(const uint256& skSpend, uint256& skStakeOut);
 
 bool DeriveStakingPubKey(const uint256& skStake, std::vector<unsigned char>& vchPkStakeOut);
