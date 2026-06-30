@@ -296,6 +296,13 @@ bool NullStakeMofNDeriveValueCommitment(const CPedersenCommitment& cv3,
                                         const uint256& delegationHash,
                                         CPedersenCommitment& cvPlainOut);
 
+// Forward of the above: rebuild the real curve-tree leaf cv3 = cv_plain + delegationHash*J from the
+// J-free value commitment carried on a private finality vote/share. Used by the V3_COLD vote verify to
+// reconstruct the membership/kernel leaf without persisting the J term in any tally artifact.
+bool NullStakeMofNReconstructLeaf(const CPedersenCommitment& cvPlain,
+                                  const uint256& delegationHash,
+                                  CPedersenCommitment& cv3Out);
+
 // B2-e MINT LINK: a 2-generator Okamoto representation proof (R || s_a || s_b = 97 bytes) that
 // (cv3 - Vv) lies in <G, J>, proving cv3 (the 3-generator leaf) and Vv (a fresh 2-generator value
 // commitment) carry the SAME value while hiding the blind difference and delegationHash. Lets a

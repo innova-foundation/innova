@@ -3342,9 +3342,25 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb, std::st
             finalizedCurveTree.RebuildParentNodes();
         if (finalizedCurveTree.GetRoot() != finalizedEpochState.hashCurveRoot)
             return reject("private finality proof finalized epoch curve-tree root mismatch");
+
+        // B2-e: a half-aggregated M-of-N (V3_COLD) vote carries the J-free value commitment cv_plain in
+        // stakeWeightCommitment (so the whole tally + nullifier-binding + share path is byte-identical to
+        // V2 and the J term never enters a persisted tally artifact). The real curve-tree leaf is
+        // cv3 = cv_plain + delegationHash*J; reconstruct it here so the FCMP membership and the V3 kernel
+        // proof verify against the actual leaf. delegationHash is consensus-bound to cv3 by the kernel
+        // proof below (SetHash recompute + value-link + range), so a wrong delegationHash fails membership
+        // or the kernel proof. V2 (and the 1-of-1 nThresholdM==0 case) keep cv_plain as the leaf directly.
+        CPedersenCommitment membershipLeaf = vote.privateProof.stakeWeightCommitment;
+        if (vote.nProofMode == FINALITY_PROOF_NULLSTAKE_V3_COLD)
+        {
+            if (!NullStakeMofNReconstructLeaf(vote.privateProof.stakeWeightCommitment,
+                                              vote.privateProof.nullStakeV3Proof.delegationHash,
+                                              membershipLeaf))
+                return reject("private finality V3 vote leaf reconstruction failed");
+        }
         if (!VerifyFCMPProof(finalizedCurveTree.GetRootNode(),
                              vote.privateProof.fcmpProof,
-                             vote.privateProof.stakeWeightCommitment))
+                             membershipLeaf))
             return reject("private finality FCMP proof failed");
         if (vote.nProofMode == FINALITY_PROOF_NULLSTAKE_V2)
         {
@@ -3394,8 +3410,10 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb, std::st
                                                  kp.nTxTimePrev, kp.nVoutN, kp.nTimeTx))
                     return reject("private finality vote kernel metadata not pinned");
             }
+            // cv3 (the reconstructed leaf), NOT the cv_plain field: VerifyNullStakeKernelProofV3 takes the
+            // 3-generator leaf and re-derives cv_plain = cv3 - delegationHash*J internally for its range/link.
             if (!VerifyNullStakeKernelProofV3(vote.privateProof.nullStakeV3Proof,
-                                              vote.privateProof.stakeWeightCommitment,
+                                              membershipLeaf,
                                               pEpochBlock->nBits))
                 return reject("private finality NullStake V3 proof failed");
         }
@@ -6027,14 +6045,60 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
             if (!wnote.note.GetPedersenCommitment(stakeCommitment))
                 continue;
 
-            int64_t nLeafIdx = finalizedCurveTree.FindLeafIndex(stakeCommitment);
+            // B2-e: detect whether this note is an M-of-N cold-stake note -- its curve-tree leaf is
+            // cv3 = cv_plain + D*J for some delegation D this wallet minted -- and whether this wallet
+            // holds >= M of that delegation's staker-set member secret keys (needed to co-produce the
+            // half-aggregated vote). membershipLeaf is the REAL leaf (cv3 for M-of-N, cv_plain for the
+            // 1-of-1/V2 case); the vote's stakeWeightCommitment stays cv_plain either way, so the J term
+            // never enters the tally. The note carries no D, so trial-match the wallet's delegations.
+            bool fIsMofN = false;
+            CPedersenCommitment membershipLeaf = stakeCommitment;
+            uint256 mofnD;
+            std::vector<std::vector<unsigned char> > mofnSet;
+            unsigned int mofnM = 0;
+            std::vector<unsigned char> mofnOwner;
+            std::vector<uint256> mofnSecrets;
+            for (std::map<uint256, CWallet::CMofNDelegation>::const_iterator itD =
+                     pwalletMain->mapMofNDelegations.begin();
+                 itD != pwalletMain->mapMofNDelegations.end(); ++itD)
+            {
+                if (itD->second.nThresholdM == 0)
+                    continue;
+                CPedersenCommitment cv3try;
+                if (!CreateNullStakeMofNCommitment(wnote.note.nValue, wnote.note.vchBlind,
+                                                   itD->first, cv3try))
+                    continue;
+                if (finalizedCurveTree.FindLeafIndex(cv3try) < 0)
+                    continue;
+                std::vector<uint256> secrets;
+                for (size_t s = 0; s < itD->second.vStakerSet.size(); s++)
+                {
+                    std::map<std::vector<unsigned char>, uint256>::const_iterator itK =
+                        pwalletMain->mapMofNMemberKeys.find(itD->second.vStakerSet[s]);
+                    if (itK != pwalletMain->mapMofNMemberKeys.end())
+                        secrets.push_back(itK->second);
+                }
+                if (secrets.size() < itD->second.nThresholdM)
+                    continue;
+                secrets.resize(itD->second.nThresholdM);
+                fIsMofN = true;
+                membershipLeaf = cv3try;
+                mofnD = itD->first;
+                mofnSet = itD->second.vStakerSet;
+                mofnM = itD->second.nThresholdM;
+                mofnOwner = itD->second.vchPkOwner;
+                mofnSecrets = secrets;
+                break;
+            }
+
+            int64_t nLeafIdx = finalizedCurveTree.FindLeafIndex(membershipLeaf);
             if (nLeafIdx < 0)
                 continue;
 
             CFCMPProof fcmpProof;
             if (!CreateFCMPProof(finalizedCurveTree, (uint64_t)nLeafIdx,
                                  wnote.note.vchBlind, wnote.note.nValue,
-                                 stakeCommitment, fcmpProof))
+                                 membershipLeaf, fcmpProof))
                 continue;
 
             uint64_t nStakeModifier = pEpochBlock->pprev ?
@@ -6054,29 +6118,52 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
             {
                 unsigned int nTimeTx = fPinnedKernel ? pEpochBlock->nTime : (nBaseTime + n);
                 int64_t nWeight = GetWeight((int64_t)nBlockTimeFrom, (int64_t)nTimeTx);
-                if (!CheckShieldedStakeKernelHashV2(pEpochBlock->nBits,
-                                                    nStakeModifier,
-                                                    nBlockTimeFrom,
-                                                    nTxPrevOffset,
-                                                    nTxTimePrev,
-                                                    nVoutN,
-                                                    nTimeTx,
-                                                    wnote.note.nValue,
-                                                    nWeight))
+                bool fKernelOk = fIsMofN
+                    ? CheckShieldedStakeKernelHashV3(pEpochBlock->nBits, nStakeModifier, nBlockTimeFrom,
+                                                     nTxPrevOffset, nTxTimePrev, nVoutN, nTimeTx,
+                                                     wnote.note.nValue, nWeight)
+                    : CheckShieldedStakeKernelHashV2(pEpochBlock->nBits, nStakeModifier, nBlockTimeFrom,
+                                                     nTxPrevOffset, nTxTimePrev, nVoutN, nTimeTx,
+                                                     wnote.note.nValue, nWeight);
+                if (!fKernelOk)
                     continue;
 
+                // M-of-N builds the half-aggregated V3 kernel proof over the cv3 leaf (it re-derives
+                // cv_plain internally); the 1-of-1 path builds the V2 proof over cv_plain. Either way the
+                // vote's stakeWeightCommitment below is cv_plain.
                 CNullStakeKernelProofV2 nullStakeProof;
-                if (!CreateNullStakeKernelProofV2(wnote.note.nValue,
-                                                  wnote.note.vchBlind,
-                                                  stakeCommitment,
-                                                  pEpochBlock->nBits,
-                                                  nStakeModifier,
-                                                  nBlockTimeFrom,
-                                                  nTxPrevOffset,
-                                                  nTxTimePrev,
-                                                  nVoutN,
-                                                  nTimeTx,
-                                                  nullStakeProof))
+                CNullStakeKernelProofV3 nullStakeProofV3;
+                if (fIsMofN)
+                {
+                    if (!CreateNullStakeMofNKernelProofV3(wnote.note.nValue,
+                                                          wnote.note.vchBlind,
+                                                          membershipLeaf,
+                                                          pEpochBlock->nBits,
+                                                          nStakeModifier,
+                                                          nBlockTimeFrom,
+                                                          nTxPrevOffset,
+                                                          nTxTimePrev,
+                                                          nVoutN,
+                                                          nTimeTx,
+                                                          mofnSet,
+                                                          mofnM,
+                                                          mofnOwner,
+                                                          mofnD,
+                                                          mofnSecrets,
+                                                          nullStakeProofV3))
+                        continue;
+                }
+                else if (!CreateNullStakeKernelProofV2(wnote.note.nValue,
+                                                       wnote.note.vchBlind,
+                                                       stakeCommitment,
+                                                       pEpochBlock->nBits,
+                                                       nStakeModifier,
+                                                       nBlockTimeFrom,
+                                                       nTxPrevOffset,
+                                                       nTxTimePrev,
+                                                       nVoutN,
+                                                       nTimeTx,
+                                                       nullStakeProof))
                     continue;
 
                 std::vector<unsigned char> vchRewardBlind;
@@ -6089,8 +6176,10 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
                 if (!CreatePedersenCommitment(nPrivateReward, vchRewardBlind, rewardCommitment))
                     continue;
 
+                int nVoteMode = fIsMofN ? FINALITY_PROOF_NULLSTAKE_V3_COLD
+                                        : FINALITY_PROOF_NULLSTAKE_V2;
                 CFinalityVote vote;
-                vote.nProofMode = FINALITY_PROOF_NULLSTAKE_V2;
+                vote.nProofMode = nVoteMode;
                 vote.nEpoch = nCurrentEpoch;
                 vote.hashBlock = pEpochBlock->GetBlockHash();
                 vote.nHeight = nEpochHeight;
@@ -6100,16 +6189,21 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
                 vote.nullifier = voteNullifier;
 
                 vote.privateProof.nVersion = 1;
-                vote.privateProof.nProofMode = FINALITY_PROOF_NULLSTAKE_V2;
+                vote.privateProof.nProofMode = nVoteMode;
                 vote.privateProof.nEpoch = nCurrentEpoch;
                 vote.privateProof.hashEpochBlock = vote.hashBlock;
                 vote.privateProof.hashCurveRoot = finalizedEpochState.hashCurveRoot;
                 vote.privateProof.hashNullifierRoot = finalizedEpochState.hashNullifierRoot;
                 vote.privateProof.nullifier = vote.nullifier;
+                // cv_plain (J-free) for BOTH modes: keeps the whole tally + nullifier-binding + share path
+                // identical to V2 for M-of-N. The cv3 leaf is reconstructed only at verify-time membership.
                 vote.privateProof.stakeWeightCommitment = stakeCommitment;
                 vote.privateProof.rewardCommitment = rewardCommitment;
                 vote.privateProof.fcmpProof = fcmpProof;
-                vote.privateProof.nullStakeV2Proof = nullStakeProof;
+                if (fIsMofN)
+                    vote.privateProof.nullStakeV3Proof = nullStakeProofV3;
+                else
+                    vote.privateProof.nullStakeV2Proof = nullStakeProof;
                 vote.privateProof.vchRewardOutputCommitment = rewardCommitment.vchCommitment;
 
                 // Bind the nullifier to the staked note (NF tied to stakeCommitment).

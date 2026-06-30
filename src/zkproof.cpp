@@ -400,6 +400,38 @@ bool NullStakeMofNDeriveValueCommitment(const CPedersenCommitment& cv3,
     return PointToBytes(group, res, cvPlainOut.vchCommitment, ctx);
 }
 
+bool NullStakeMofNReconstructLeaf(const CPedersenCommitment& cvPlain,
+                                  const uint256& delegationHash,
+                                  CPedersenCommitment& cv3Out)
+{
+    if (!CZKContext::IsInitialized()) return false;
+    if (cvPlain.vchCommitment.empty()) return false;
+
+    CECGroupGuard group;
+    if (!group.group) return false;
+    CBNCtxGuard ctx;
+    if (!ctx.ctx) return false;
+
+    const BIGNUM* order = EC_GROUP_get0_order(group);
+
+    CECPointGuard J(group), cvp(group), dJ(group), res(group);
+    if (!BytesToPoint(group, CZKContext::GetGeneratorJ(), J, ctx)) return false;
+    if (!BytesToPoint(group, cvPlain.vchCommitment, cvp, ctx)) return false;
+
+    CBNGuard bnDeleg;
+    if (!BN_bin2bn(delegationHash.begin(), 32, bnDeleg)) return false;
+    BN_mod(bnDeleg, bnDeleg, order, ctx);
+
+    // cv3 = cv_plain + delegationHash*J -- the exact forward of NullStakeMofNDeriveValueCommitment, used
+    // to rebuild the real curve-tree leaf from the J-free value commitment carried on a private finality
+    // vote/share. delegationHash is reduced mod n identically to CreateNullStakeMofNCommitment, so the
+    // result is byte-identical (canonical compressed) to the minted leaf.
+    if (EC_POINT_mul(group, dJ, NULL, J, bnDeleg, ctx) != 1) return false;
+    if (EC_POINT_add(group, res, cvp, dJ, ctx) != 1) return false;
+
+    return PointToBytes(group, res, cv3Out.vchCommitment, ctx);
+}
+
 // B2-e MINT LINK (INV-2/INV-6/INV-7): a 2-generator Okamoto representation proof that the point
 // (cv3 - Vv) lies in <G, J>, i.e. cv3 - Vv = a*G + b*J for prover-known (a, b) =
 // (blindCv3 - blindVv, delegationHash). Because G, H, J are independent NUMS generators with no
