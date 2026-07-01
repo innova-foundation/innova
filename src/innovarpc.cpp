@@ -481,6 +481,7 @@ static const CRPCCommand vRPCCommands[] =
     /* Cold Staking Delegation Commands (NullStake V3) */
     { "n_delegatestake",        &n_delegatestake,        false,  true },
     { "z_mintmofncoldstake",    &z_mintmofncoldstake,    false,  true },
+    { "z_reclaimmofncoldstake", &z_reclaimmofncoldstake, false,  true },
     { "n_newmofnmemberkey",     &n_newmofnmemberkey,     false,  true },
     { "n_importdelegation",     &n_importdelegation,     false,  true },
     { "n_revokecoldstake",      &n_revokecoldstake,      false,  true },

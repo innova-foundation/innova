@@ -1499,9 +1499,18 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
 
                     for (size_t i = 0; i < tx.vShieldedSpend.size(); i++)
                     {
+                        // B2-e Phase 3c.4: an owner reclaim (2007) spends a 3-generator cv3 leaf; its value proofs
+                        // (range, nullifier-binding) verify over cv_plain = cv3 - D*J, exactly as ConnectInputs does
+                        // (main.cpp:3924/4006). For every other tx/spend this returns the raw spend commitment, so
+                        // behaviour is unchanged. Relay-layer only -- the reclaim gates (D recompute, owner spend-auth,
+                        // timelock) are still enforced by ConnectInputs, which accept() runs below.
+                        CPedersenCommitment cvSpendValue;
+                        if (!MofNSpendValueCommitment(tx, i, false, cvSpendValue))
+                            return error("CTxMemPool::accept() : shielded spend %d value commitment derivation failed", (int)i);
+
                         if (fHideAmount)
                         {
-                            if (!VerifyBulletproofRangeProof(tx.vShieldedSpend[i].cv, tx.vShieldedSpend[i].rangeProof))
+                            if (!VerifyBulletproofRangeProof(cvSpendValue, tx.vShieldedSpend[i].rangeProof))
                                 return error("CTxMemPool::accept() : shielded spend %d range proof failed", (int)i);
                         }
                         else
@@ -1580,7 +1589,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                                 return error("CTxMemPool::accept() : shielded spend %d missing nullifier binding proof (required post-fork)", (int)i);
                             if (sp.nullifier != NullifierTagFromPoint(sp.vchNullifierPoint))
                                 return error("CTxMemPool::accept() : shielded spend %d nullifier does not match bound note", (int)i);
-                            if (!VerifyNullifierBindingProof(sp.cv, sp.vchNullifierPoint, sighash, sp.vchNullifierBindingProof))
+                            if (!VerifyNullifierBindingProof(cvSpendValue, sp.vchNullifierPoint, sighash, sp.vchNullifierBindingProof))
                                 return error("CTxMemPool::accept() : shielded spend %d nullifier binding proof failed", (int)i);
                         }
 
@@ -1632,7 +1641,12 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                     {
                         std::vector<CPedersenCommitment> vInCommits, vOutCommits;
                         for (size_t i = 0; i < tx.vShieldedSpend.size(); i++)
-                            vInCommits.push_back(tx.vShieldedSpend[i].cv);
+                        {
+                            CPedersenCommitment cvIn;   // cv_plain for a 2007 reclaim spend[0] (mirror ConnectInputs); cv otherwise
+                            if (!MofNSpendValueCommitment(tx, i, false, cvIn))
+                                return error("CTxMemPool::accept() : shielded spend %d value commitment derivation failed", (int)i);
+                            vInCommits.push_back(cvIn);
+                        }
                         for (size_t i = 0; i < tx.vShieldedOutput.size(); i++)
                         {
                             CPedersenCommitment cvOut;   // Vv for a 2006 M-of-N mint output (INV-1); cv otherwise

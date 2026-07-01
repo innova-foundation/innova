@@ -2758,6 +2758,223 @@ Value n_newmofnmemberkey(const Array& params, bool fHelp)
 }
 
 
+// B2-e Phase 3c.4: owner-reclaim an idle M-of-N cold-stake note (cv3 leaf) back to a transparent address,
+// by OWNER authority, after the inactivity timelock. Builds a version-2007 tx that the reclaim consensus
+// gates (D recompute, owner spend-auth rk==vchPkOwner, timelock) accept. Mirrors z_unshield, diverging for
+// the cv3/cv_plain split (value proofs over cv_plain = cv3 - D*J, membership over cv3) and skipping Lelantus.
+Value z_reclaimmofncoldstake(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 2)
+        throw runtime_error(
+            "z_reclaimmofncoldstake <delegationhash> <toaddress>\n"
+            "Owner-reclaim an idle M-of-N cold-stake note back to a transparent address after the inactivity\n"
+            "timelock. Spends the note by owner authority (no M-of-N quorum). Full-note reclaim (value - fee).\n");
+
+    EnsureWalletIsUnlocked();
+    if (!CZKContext::IsInitialized())
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "ZK proof context not initialized");
+
+    int nCurrentHeight = pindexBest ? pindexBest->nHeight : 0;
+    if (nCurrentHeight + 1 < FORK_HEIGHT_NULLSTAKE_RECLAIM)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "M-of-N owner reclaim is not yet active");
+    if (nCurrentHeight < FORK_HEIGHT_FCMP_VALIDATION)
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "FCMP validation is not yet active");
+
+    std::string strD = params[0].get_str();
+    if (strD.size() != 64 || ParseHex(strD).size() != 32)
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "delegationhash must be 64-char hex");
+    uint256 D;
+    D.SetHex(strD);
+
+    std::string strToAddr = params[1].get_str();
+    CBitcoinAddress destAddr(strToAddr);
+    if (!destAddr.IsValid())
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid destination address");
+
+    ShieldedSpendabilityContext spendability = BuildShieldedSpendabilityContext(nCurrentHeight);
+
+    CMofNDelegation deleg;
+    CShieldedSpendingKey sk;
+    CShieldedFullViewingKey fvk;
+    CWallet::CShieldedWalletNote selNote;
+    size_t selIdx = 0;
+    CPedersenCommitment cv3;
+    bool fFound = false;
+
+    {
+        LOCK(pwalletMain->cs_shielded);
+        std::map<uint256, CMofNDelegation>::iterator itD = pwalletMain->mapMofNDelegations.find(D);
+        if (itD == pwalletMain->mapMofNDelegations.end())
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Unknown delegation hash (not held by this wallet)");
+        deleg = itD->second;
+        if (!pwalletMain->HaveShieldedSpendingKey(deleg.ownerAddr))
+            throw JSONRPCError(RPC_WALLET_ERROR, "No owner spending key for this delegation (cannot authorize the reclaim)");
+        sk = pwalletMain->mapShieldedSpendingKeys[deleg.ownerAddr];
+        DeriveShieldedFullViewingKey(sk, fvk);
+
+        for (size_t i = 0; i < pwalletMain->vShieldedNotes.size(); i++)
+        {
+            CWallet::CShieldedWalletNote& wnote = pwalletMain->vShieldedNotes[i];
+            if (wnote.fSpent || !(wnote.note.addr == deleg.ownerAddr) || wnote.note.nValue <= 0)
+                continue;
+            if (wnote.note.vchBlind.empty())
+                wnote.note.GenerateBlindingFactor();
+            CPedersenCommitment cv3try;
+            if (!CreateNullStakeMofNCommitment(wnote.note.nValue, wnote.note.vchBlind, D, cv3try))
+                continue;
+            if (spendability.fcmpTree.FindLeafIndex(cv3try) < 0)
+                continue;   // not this delegation's on-chain leaf
+            if (wnote.nHeight <= 0 || nCurrentHeight - wnote.nHeight < RECLAIM_TIMELOCK)
+                continue;   // inactivity timelock not yet met
+            selNote = wnote;
+            selIdx = i;
+            cv3 = cv3try;
+            fFound = true;
+            break;
+        }
+        if (!fFound)
+            throw JSONRPCError(RPC_WALLET_ERROR,
+                "No timelock-aged unspent M-of-N note found for this delegation (note may be too young or already spent)");
+
+        {
+            CWalletDB walletdb(pwalletMain->strWalletFile);
+            if (!walletdb.WriteShieldedNoteSpent(selNote.txhash, selNote.nPosition, true))
+                throw JSONRPCError(RPC_WALLET_ERROR, "Failed to persist note spent flag");
+        }
+        pwalletMain->vShieldedNotes[selIdx].fSpent = true;
+    } // cs_shielded released
+
+    try
+    {
+        CTransaction txNew;
+        txNew.nVersion = SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM;
+        txNew.nTime = GetAdjustedTime();
+        // Hide the amount but NOT the sender: Lelantus is impossible for a cv3 note (its anon-set members are
+        // cv3 leaves, not cv_plain), and the reclaim reveals cv3 in the clear for the timelock lookup anyway.
+        txNew.nPrivacyMode = PRIVACY_HIDE_AMOUNT;
+
+        // reclaimAuth must be populated before the sighash (GetBindingSigHash commits it for version 2007).
+        txNew.reclaimAuth.delegationHash = D;
+        txNew.reclaimAuth.vStakerSet = deleg.vStakerSet;
+        txNew.reclaimAuth.nThresholdM = deleg.nThresholdM;
+        txNew.reclaimAuth.vchPkOwner = deleg.vchPkOwner;
+
+        CPedersenCommitment cvPlain;
+        if (!NullStakeMofNDeriveValueCommitment(cv3, D, cvPlain))
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to derive cv_plain for reclaim");
+
+        CShieldedSpendDescription spend;
+        spend.cv = cv3;   // the real on-chain leaf (timelock + FCMP key on this)
+        // range proof over cv_plain (matches ConnectInputs + the mempool carve-out)
+        if (!CreateBulletproofRangeProof(selNote.note.nValue, selNote.note.vchBlind, cvPlain, spend.rangeProof))
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create reclaim range proof");
+        if (!ApplyShieldedSpendNullifier(spend, selNote.note, fvk.nk,
+                nCurrentHeight + 1 >= FORK_HEIGHT_NULLIFIER_BINDING))
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to set reclaim nullifier");
+
+        // Anchor from an on-chain tree snapshot (mempool validates it exists + is deep enough).
+        {
+            CTxDB txdb("r");
+            CIncrementalMerkleTree tree;
+            int nAnchorHeight = nCurrentHeight - MIN_SHIELDED_SPEND_DEPTH;
+            if (nAnchorHeight < 0) nAnchorHeight = 0;
+            CBlockIndex* pAnchorBlock = FindBlockByHeight(nAnchorHeight);
+            if (pAnchorBlock)
+            {
+                CIncrementalMerkleTree oldTree;
+                if (txdb.ReadShieldedTreeAtBlock(pAnchorBlock->GetBlockHash(), oldTree))
+                    tree = oldTree;
+                else
+                    txdb.ReadShieldedTree(tree);
+            }
+            else
+                txdb.ReadShieldedTree(tree);
+            spend.anchor = tree.Root();
+        }
+
+        // FCMP membership over cv3 (the real leaf).
+        if (!spendability.fHasFCMPTree || spendability.fcmpTree.IsEmpty())
+            throw JSONRPCError(RPC_INTERNAL_ERROR,
+                spendability.strFCMPError.empty() ? "Curve tree is empty" : spendability.strFCMPError);
+        int64_t nLeafIdx = spendability.fcmpTree.FindLeafIndex(spend.cv);
+        if (nLeafIdx < 0)
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Reclaim note leaf not found in curve tree");
+        if (!CreateFCMPProof(spendability.fcmpTree, (uint64_t)nLeafIdx, selNote.note.vchBlind,
+                              selNote.note.nValue, spend.cv, spend.fcmpProof))
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create reclaim FCMP proof");
+        spend.curveTreeRoot = spendability.hashFCMPRoot;
+
+        txNew.vShieldedSpend.push_back(spend);
+
+        unsigned int nEstimatedKB = 2 + 4;
+        int64_t nFee = std::max(MIN_TX_FEE_SHIELDED, (int64_t)(1 + nEstimatedKB) * MIN_TX_FEE_ANON);
+        if (selNote.note.nValue <= nFee)
+            throw JSONRPCError(RPC_WALLET_ERROR, "Note value is below the reclaim fee");
+        int64_t nOut = selNote.note.nValue - nFee;
+        txNew.nValueBalance = selNote.note.nValue;   // whole note leaves the shielded pool
+
+        CScript scriptPubKey;
+        scriptPubKey.SetDestination(destAddr.Get());
+        txNew.vout.push_back(CTxOut(nOut, scriptPubKey));
+
+        uint256 sighash = txNew.GetBindingSigHash();
+
+        // OWNER authorization: signing with the owner z-addr's spend key yields vchRk == vchPkOwner.
+        if (!CreateSpendAuthSignature(sk.skSpend, sighash,
+                                       txNew.vShieldedSpend[0].vchRk,
+                                       txNew.vShieldedSpend[0].vchSpendAuthSig))
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create owner spend-auth signature");
+        if (txNew.vShieldedSpend[0].vchRk != deleg.vchPkOwner)
+            throw JSONRPCError(RPC_INTERNAL_ERROR, "Owner spend key does not match delegation owner (internal)");
+
+        // Nullifier-binding over cv_plain (do NOT use FinalizeShieldedSpendBindings -- it binds over spend.cv=cv3).
+        if (nCurrentHeight + 1 >= FORK_HEIGHT_NULLIFIER_BINDING)
+        {
+            if (!CreateNullifierBindingProof(selNote.note.nValue, selNote.note.vchBlind, cvPlain,
+                                             txNew.vShieldedSpend[0].vchNullifierPoint, sighash,
+                                             txNew.vShieldedSpend[0].vchNullifierBindingProof))
+                throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create reclaim nullifier binding proof");
+        }
+
+        // Value-balance binding: input opens over cv_plain (value*H + blind*G); no shielded outputs.
+        std::vector<std::vector<unsigned char> > vInputBlinds(1, selNote.note.vchBlind);
+        std::vector<std::vector<unsigned char> > vOutputBlinds;
+        CBindingSignature bindingSig;
+        CreateBindingSignature(vInputBlinds, vOutputBlinds, sighash, bindingSig);
+        txNew.bindingSig.bindingSig = bindingSig;
+
+        CWalletTx wtxNew(pwalletMain, txNew);
+        CReserveKey reservekey(pwalletMain);
+        if (!pwalletMain->CommitTransaction(wtxNew, reservekey))
+        {
+            LOCK(pwalletMain->cs_shielded);
+            pwalletMain->vShieldedNotes[selIdx].fSpent = false;
+            CWalletDB walletdb(pwalletMain->strWalletFile);
+            walletdb.WriteShieldedNoteSpent(selNote.txhash, selNote.nPosition, false);
+            throw JSONRPCError(RPC_WALLET_ERROR, "Failed to commit reclaim transaction");
+        }
+
+        Object result;
+        result.push_back(Pair("txid", wtxNew.GetHash().GetHex()));
+        result.push_back(Pair("delegation_hash", D.GetHex()));
+        result.push_back(Pair("cv3", HexStr(cv3.vchCommitment)));
+        result.push_back(Pair("to_address", strToAddr));
+        result.push_back(Pair("amount", ValueFromAmount(nOut)));
+        result.push_back(Pair("fee", ValueFromAmount(nFee)));
+        result.push_back(Pair("tx_version", (int)txNew.nVersion));
+        return result;
+    }
+    catch (...)
+    {
+        LOCK(pwalletMain->cs_shielded);
+        pwalletMain->vShieldedNotes[selIdx].fSpent = false;
+        CWalletDB walletdb(pwalletMain->strWalletFile);
+        walletdb.WriteShieldedNoteSpent(selNote.txhash, selNote.nPosition, false);
+        throw;
+    }
+}
+
+
 Value n_importdelegation(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() != 1)
