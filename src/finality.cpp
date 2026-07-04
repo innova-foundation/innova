@@ -6141,22 +6141,20 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
                 CNullStakeKernelProofV3 nullStakeProofV3;
                 if (fIsMofN)
                 {
-                    if (!CreateNullStakeMofNKernelProofV3(wnote.note.nValue,
-                                                          wnote.note.vchBlind,
-                                                          membershipLeaf,
-                                                          pEpochBlock->nBits,
-                                                          nStakeModifier,
-                                                          nBlockTimeFrom,
-                                                          nTxPrevOffset,
-                                                          nTxTimePrev,
-                                                          nVoutN,
-                                                          nTimeTx,
-                                                          mofnSet,
-                                                          mofnM,
-                                                          mofnOwner,
-                                                          mofnD,
-                                                          mofnSecrets,
-                                                          nullStakeProofV3))
+                    // B2-c hidden-signer tier: opt-in (-b2chidden) once the chain is past the B2C fork.
+                    // mofnSecrets already holds exactly mofnM member secrets (resized above).
+                    bool fB2CHidden = GetBoolArg("-b2chidden", false) &&
+                                      pEpochBlock->nHeight >= FORK_HEIGHT_NULLSTAKE_B2C;
+                    bool fBuilt = fB2CHidden
+                        ? CreateNullStakeB2CHiddenKernelProofV3(wnote.note.nValue, wnote.note.vchBlind,
+                              membershipLeaf, pEpochBlock->nBits, nStakeModifier, nBlockTimeFrom,
+                              nTxPrevOffset, nTxTimePrev, nVoutN, nTimeTx, mofnSet, mofnM, mofnOwner,
+                              mofnD, mofnSecrets, nullStakeProofV3)
+                        : CreateNullStakeMofNKernelProofV3(wnote.note.nValue, wnote.note.vchBlind,
+                              membershipLeaf, pEpochBlock->nBits, nStakeModifier, nBlockTimeFrom,
+                              nTxPrevOffset, nTxTimePrev, nVoutN, nTimeTx, mofnSet, mofnM, mofnOwner,
+                              mofnD, mofnSecrets, nullStakeProofV3);
+                    if (!fBuilt)
                         continue;
                 }
                 else if (!CreateNullStakeKernelProofV2(wnote.note.nValue,

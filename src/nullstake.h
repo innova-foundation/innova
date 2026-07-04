@@ -478,6 +478,24 @@ bool CreateNullStakeMofNKernelProofV3(int64_t nValue,
                                       const std::vector<uint256>& vSignerSecrets,
                                       CNullStakeKernelProofV3& proofOut);
 
+// B2-c hidden-signer variant: same value spine, ring-DLEQ authorization (nAuthMode = B2C_HIDDEN).
+bool CreateNullStakeB2CHiddenKernelProofV3(int64_t nValue,
+                                           const std::vector<unsigned char>& vchBlind,
+                                           const CPedersenCommitment& cv3,
+                                           unsigned int nBits,
+                                           uint64_t nStakeModifier,
+                                           unsigned int nBlockTimeFrom,
+                                           unsigned int nTxPrevOffset,
+                                           unsigned int nTxTimePrev,
+                                           unsigned int nVoutN,
+                                           unsigned int nTimeTx,
+                                           const std::vector<std::vector<unsigned char> >& vStakerSet,
+                                           unsigned int nThresholdM,
+                                           const std::vector<unsigned char>& vchPkOwner,
+                                           const uint256& delegationHash,
+                                           const std::vector<uint256>& vSignerSecrets,
+                                           CNullStakeKernelProofV3& proofOut);
+
 bool VerifyNullStakeKernelProofV3(const CNullStakeKernelProofV3& proof,
                                   const CPedersenCommitment& cv,
                                   unsigned int nBits);

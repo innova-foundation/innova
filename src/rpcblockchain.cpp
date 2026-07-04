@@ -189,6 +189,11 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
             else if (vote.nProofMode == FINALITY_PROOF_NULLSTAKE_V3_COLD)
                 strMode = "nullstake_v3_cold";
             voteObj.push_back(Pair("proof_mode", strMode));
+            if (vote.nProofMode == FINALITY_PROOF_NULLSTAKE_V3_COLD &&
+                vote.privateProof.nullStakeV3Proof.nThresholdM > 0)
+                voteObj.push_back(Pair("auth_mode",
+                    vote.privateProof.nullStakeV3Proof.nAuthMode == NULLSTAKE_AUTHMODE_B2C_HIDDEN
+                        ? std::string("b2c_hidden") : std::string("b2e_public")));
             voteObj.push_back(Pair("epoch", vote.nEpoch));
             voteObj.push_back(Pair("height", vote.nHeight));
             voteObj.push_back(Pair("block_hash", vote.hashBlock.GetHex()));

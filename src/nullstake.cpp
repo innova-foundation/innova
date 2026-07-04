@@ -1349,6 +1349,176 @@ bool CreateNullStakeMofNKernelProofV3(int64_t nValue,
     return true;
 }
 
+// B2-c (Increment 4): build a HIDDEN-signer M-of-N kernel proof. Identical value spine to the B2-e builder
+// (range/weight over a fresh Vv, value-link Vv<->cv_plain, stake digest over cv3), swapping ONLY the
+// authorization: instead of revealing M half-aggregated signatures it emits a ring-DLEQ hidden-auth proof
+// over the SAME stake digest. Requires EXACTLY nThresholdM signer secrets. The staker set is sorted up front
+// and that sorted order is used for BOTH the hidden proof and proofOut.vStakerSet, because the hidden-auth
+// statement hash is order-sensitive (the verifier requires a strictly-ascending set).
+bool CreateNullStakeB2CHiddenKernelProofV3(int64_t nValue,
+                                           const std::vector<unsigned char>& vchBlind,
+                                           const CPedersenCommitment& cv3,
+                                           unsigned int nBits,
+                                           uint64_t nStakeModifier,
+                                           unsigned int nBlockTimeFrom,
+                                           unsigned int nTxPrevOffset,
+                                           unsigned int nTxTimePrev,
+                                           unsigned int nVoutN,
+                                           unsigned int nTimeTx,
+                                           const std::vector<std::vector<unsigned char> >& vStakerSet,
+                                           unsigned int nThresholdM,
+                                           const std::vector<unsigned char>& vchPkOwner,
+                                           const uint256& delegationHash,
+                                           const std::vector<uint256>& vSignerSecrets,
+                                           CNullStakeKernelProofV3& proofOut)
+{
+    if (nValue <= 0 || vchBlind.size() != 32 || cv3.IsNull())
+        return false;
+    if (vchPkOwner.size() != 33)
+        return false;
+    if (vStakerSet.empty() || vStakerSet.size() > MAX_NULLSTAKE_MOFN_MEMBERS)
+        return false;
+    if (nThresholdM < 1 || nThresholdM > vStakerSet.size())
+        return false;
+    if (vSignerSecrets.size() != nThresholdM)   // the hidden ring proof takes exactly M witnesses
+        return false;
+
+    // Canonical (strictly-ascending) set: the hidden-auth statement hash + the verifier require it.
+    std::vector<std::vector<unsigned char> > vSet = vStakerSet;
+    std::sort(vSet.begin(), vSet.end());
+
+    uint256 expectedDeleg;
+    if (!ComputeNullStakeV3DelegationSetHash(vSet, nThresholdM, vchPkOwner, expectedDeleg) ||
+        expectedDeleg != delegationHash)
+        return false;
+    if (!VerifyNullStakeMofNCommitment(cv3, nValue, vchBlind, delegationHash))
+        return false;
+
+    CPedersenCommitment cvPlain;
+    if (!CreatePedersenCommitment(nValue, vchBlind, cvPlain))
+        return false;
+
+    if (!CPoseidon2Params::IsInitialized())
+        CPoseidon2Params::Initialize();
+    CZarcECGroupGuard group;
+    CZarcBNCtxGuard ctx;
+    if (!group.group || !ctx.ctx)
+        return false;
+    CNullStakeBNGuard bnOrder;
+    if (!EC_GROUP_get_order(group, bnOrder, ctx))
+        return false;
+
+    CR1CSCircuit circuit = BuildNullStakeV2Circuit(nStakeModifier, nBlockTimeFrom,
+                                                    nTxPrevOffset, nTxTimePrev,
+                                                    nVoutN, nTimeTx, nBits);
+    CR1CSWitness witness;
+    if (!AssignNullStakeV2Witness(circuit, nStakeModifier, nBlockTimeFrom,
+                                  nTxPrevOffset, nTxTimePrev, nVoutN,
+                                  nTimeTx, nValue, vchBlind, nBits, witness))
+        return false;
+
+    std::vector<unsigned char> vchRv(32);
+    if (RAND_bytes(vchRv.data(), 32) != 1)
+        return false;
+    uint256 blindCircuit;
+    for (int i = 0; i < 32; i++)
+        blindCircuit.begin()[i] = vchRv[31 - i];
+    witness.vBlinds[0] = blindCircuit;
+
+    CPedersenCommitment Vv;
+    if (!CreatePedersenCommitment(nValue, vchRv, Vv))
+    {
+        OPENSSL_cleanse(vchRv.data(), 32);
+        return false;
+    }
+    proofOut.valueCommitment = Vv;
+
+    std::vector<std::vector<unsigned char> > vCommitments;
+    vCommitments.push_back(Vv.vchCommitment);
+    if (!CreateBulletproofACProof(circuit, witness, vCommitments, proofOut.acProof))
+    {
+        OPENSSL_cleanse(vchRv.data(), 32);
+        return false;
+    }
+
+    uint256 stakeDigest = ComputeNullStakeMofNStakeDigest(delegationHash, nStakeModifier,
+                                                          nBlockTimeFrom, nTxPrevOffset,
+                                                          nTxTimePrev, nVoutN, nTimeTx,
+                                                          cv3.vchCommitment);
+
+    // Hidden authorization over the same digest + leaf (kernelValueCommitment := cv3, matching the verifier).
+    std::string err;
+    if (!CreateNullStakeMofNHiddenAuthProof(vSet, nThresholdM, vchPkOwner, delegationHash,
+                                            stakeDigest, cv3, vSignerSecrets, proofOut.hiddenAuth, err))
+    {
+        OPENSSL_cleanse(vchRv.data(), 32);
+        return false;
+    }
+    // A hidden proof never carries the public half-agg triple.
+    proofOut.vSignerPubKeys.clear();
+    proofOut.vSignerRPoints.clear();
+    proofOut.vchAggregatedSScalar.clear();
+
+    // Value-commitment link: D = Vv - cv_plain = (rv - r)*G (identical to the B2-e spine).
+    CNullStakeBNGuard bnRV, bnR, bnS;
+    BN_bin2bn(vchRv.data(), 32, bnRV);
+    BN_bin2bn(vchBlind.data(), 32, bnR);
+    BN_mod_sub(bnS, bnRV, bnR, bnOrder, ctx);
+
+    CNullStakeBNGuard bnK;
+    BN_rand_range(bnK, bnOrder);
+    CZarcECPointGuard RLink(group);
+    if (EC_POINT_mul(group, RLink, bnK, NULL, NULL, ctx) != 1)
+    {
+        OPENSSL_cleanse(vchRv.data(), 32);
+        return false;
+    }
+    std::vector<unsigned char> vchRL(33);
+    if (EC_POINT_point2oct(group, RLink, POINT_CONVERSION_COMPRESSED, vchRL.data(), 33, ctx) != 33)
+    {
+        OPENSSL_cleanse(vchRv.data(), 32);
+        return false;
+    }
+
+    uint256 hashLinkChallenge = NullStakeMofNLinkChallenge(Vv.vchCommitment, cvPlain.vchCommitment,
+                                                           delegationHash, stakeDigest, vchRL);
+    CNullStakeBNGuard bnELink;
+    BN_bin2bn(hashLinkChallenge.begin(), 32, bnELink);
+    BN_mod(bnELink, bnELink, bnOrder, ctx);
+    if (BN_is_zero(bnELink))
+    {
+        OPENSSL_cleanse(vchRv.data(), 32);
+        return false;
+    }
+
+    CNullStakeBNGuard bnSLink, bnTmp;
+    BN_mod_mul(bnTmp, bnELink, bnS, bnOrder, ctx);
+    BN_mod_add(bnSLink, bnK, bnTmp, bnOrder, ctx);
+
+    proofOut.vchLinkProof.clear();
+    proofOut.vchLinkProof.insert(proofOut.vchLinkProof.end(), vchRL.begin(), vchRL.end());
+    unsigned char slBytes[32];
+    memset(slBytes, 0, 32);
+    BN_bn2bin(bnSLink, slBytes + 32 - BN_num_bytes(bnSLink));
+    proofOut.vchLinkProof.insert(proofOut.vchLinkProof.end(), slBytes, slBytes + 32);
+
+    proofOut.nThresholdM = nThresholdM;
+    proofOut.nAuthMode = NULLSTAKE_AUTHMODE_B2C_HIDDEN;
+    proofOut.vStakerSet = vSet;             // the same canonical order the hidden proof was built over
+    proofOut.delegationHash = delegationHash;
+    proofOut.vchPkOwner = vchPkOwner;
+    proofOut.vchPkStake.clear();            // M-of-N: no single staking key
+    proofOut.nStakeModifier = nStakeModifier;
+    proofOut.nBlockTimeFrom = nBlockTimeFrom;
+    proofOut.nTxPrevOffset = nTxPrevOffset;
+    proofOut.nTxTimePrev = nTxTimePrev;
+    proofOut.nVoutN = nVoutN;
+    proofOut.nTimeTx = nTimeTx;
+
+    OPENSSL_cleanse(vchRv.data(), 32);
+    return true;
+}
+
 // Dedicated verifier for an M-of-N (nThresholdM > 0) V3 cold-stake kernel proof. Called from
 // VerifyNullStakeKernelProofV3Uncached so the verify cache (keyed on the full serialized proof)
 // covers every input. cv3 is the FCMP-membership-verified leaf (3-generator commitment).
