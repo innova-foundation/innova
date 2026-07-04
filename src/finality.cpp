@@ -3395,6 +3395,12 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb, std::st
             if (vote.privateProof.nullStakeV3Proof.nThresholdM > 0 &&
                 pEpochBlock->nHeight < FORK_HEIGHT_NULLSTAKE_DELEGSET)
                 return reject("private finality M-of-N NullStake vote before DELEGSET fork height");
+            // B2-c: the ZK-hidden-signer tier (nAuthMode == B2C_HIDDEN) activates only at the B2C fork
+            // (>= DELEGSET). Deterministic on the epoch block height so every node agrees.
+            if (vote.privateProof.nullStakeV3Proof.nThresholdM > 0 &&
+                vote.privateProof.nullStakeV3Proof.nAuthMode == NULLSTAKE_AUTHMODE_B2C_HIDDEN &&
+                pEpochBlock->nHeight < FORK_HEIGHT_NULLSTAKE_B2C)
+                return reject("private finality B2-c hidden NullStake vote before B2C fork height");
 
             if (pEpochBlock->nHeight >= FORK_HEIGHT_KERNEL_PINNING)
             {

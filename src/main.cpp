@@ -4905,6 +4905,12 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
             if (vtx[1].nullstakeProofV3.nThresholdM > 0 &&
                 pindex->nHeight < FORK_HEIGHT_NULLSTAKE_DELEGSET)
                 return DoS(100, error("ConnectBlock() : NullStake V3 M-of-N coinstake before DELEGSET fork height"));
+            // B2-c: the ZK-hidden-signer tier (nAuthMode == B2C_HIDDEN) activates only at the B2C fork.
+            // Defense-in-depth on the coinstake path (the live B2-c staking path is the finality vote).
+            if (vtx[1].nullstakeProofV3.nThresholdM > 0 &&
+                vtx[1].nullstakeProofV3.nAuthMode == NULLSTAKE_AUTHMODE_B2C_HIDDEN &&
+                pindex->nHeight < FORK_HEIGHT_NULLSTAKE_B2C)
+                return DoS(100, error("ConnectBlock() : NullStake V3 B2-c hidden coinstake before B2C fork height"));
 
             if (vtx[1].nullstakeProofV3.IsNull())
                 return DoS(100, error("ConnectBlock() : NullStake V3 kernel proof missing"));
