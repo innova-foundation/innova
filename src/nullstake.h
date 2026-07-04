@@ -351,10 +351,16 @@ public:
     // The full set is carried in the proof so the verifier can recompute the set hash for a
     // real threshold (M < N) and so the set is covered by the txid and the verify cache.
     unsigned int nThresholdM;
+    // B2-c (Increment 4): authorization tier tag for M-of-N (nThresholdM > 0) proofs.
+    // NULLSTAKE_AUTHMODE_HALFAGG (0) = B2-e public half-agg signers (the four vectors below);
+    // NULLSTAKE_AUTHMODE_B2C_HIDDEN (1) = B2-c ring-DLEQ hidden signers (hiddenAuth). Each tier
+    // requires the other's authorization material EMPTY (verified). Absent on the 1-of-1 wire.
+    unsigned int nAuthMode;
     std::vector<std::vector<unsigned char> > vStakerSet;
     std::vector<std::vector<unsigned char> > vSignerPubKeys;
     std::vector<std::vector<unsigned char> > vSignerRPoints;
     std::vector<unsigned char> vchAggregatedSScalar;
+    CNullStakeMofNHiddenAuthProof hiddenAuth;   // B2-c hidden-signer auth (nAuthMode == B2C_HIDDEN only)
 
     CNullStakeKernelProofV3()
     {
@@ -365,6 +371,7 @@ public:
         nVoutN = 0;
         nTimeTx = 0;
         nThresholdM = 0;
+        nAuthMode = NULLSTAKE_AUTHMODE_HALFAGG;
     }
 
     IMPLEMENT_SERIALIZE
@@ -382,16 +389,25 @@ public:
         READWRITE(vchPkStake);
         READWRITE(vchPkOwner);
         READWRITE(nThresholdM);
-        // B2-e: the M-of-N fields exist only for nThresholdM > 0. A legacy 1-of-1 proof
-        // serializes nThresholdM == 0 and nothing further, keeping the legacy wire form
-        // compact and self-describing. A pre-fork consensus guard separately rejects any
-        // proof with nThresholdM != 0 below FORK_HEIGHT_NULLSTAKE_DELEGSET.
+        // The M-of-N fields exist only for nThresholdM > 0. A legacy 1-of-1 proof serializes
+        // nThresholdM == 0 and nothing further (wire byte-identical + self-describing). For M-of-N,
+        // nAuthMode selects the authorization tier: mode B2C_HIDDEN carries only the staker set + the
+        // hidden-auth blob; every other mode carries the B2-e public half-agg triple. Height gates
+        // (DELEGSET for any M-of-N, B2C for the hidden tier) are enforced at the consensus call sites.
         if (nThresholdM > 0)
         {
+            READWRITE(nAuthMode);
             READWRITE(vStakerSet);
-            READWRITE(vSignerPubKeys);
-            READWRITE(vSignerRPoints);
-            READWRITE(vchAggregatedSScalar);
+            if (nAuthMode == NULLSTAKE_AUTHMODE_B2C_HIDDEN)
+            {
+                READWRITE(hiddenAuth);
+            }
+            else
+            {
+                READWRITE(vSignerPubKeys);
+                READWRITE(vSignerRPoints);
+                READWRITE(vchAggregatedSScalar);
+            }
         }
     )
 

@@ -1357,6 +1357,10 @@ static bool VerifyNullStakeMofNKernelProofV3(const CNullStakeKernelProofV3& proo
                                              unsigned int nBits)
 {
     // Structural + DoS caps (bound before any heavy work).
+    // Tier tag: the B2-c hidden mode is dispatched away before this function; every other value must be
+    // the public half-agg tier exactly (rejects an out-of-range nAuthMode that would otherwise slip in).
+    if (proof.nAuthMode != NULLSTAKE_AUTHMODE_HALFAGG)
+        return false;
     if (proof.nThresholdM < 1 || proof.nThresholdM > MAX_NULLSTAKE_MOFN_MEMBERS)
         return false;
     if (proof.vStakerSet.empty() || proof.vStakerSet.size() > MAX_NULLSTAKE_MOFN_MEMBERS)
@@ -1489,6 +1493,143 @@ static bool VerifyNullStakeMofNKernelProofV3(const CNullStakeKernelProofV3& proo
 }
 
 
+// B2-c (Increment 4): hidden-signer M-of-N kernel verifier. IDENTICAL value spine to the B2-e verifier
+// (derive cv_plain from the FCMP-verified cv3, AC range/weight over Vv, recompute the stake digest, value-
+// link Vv<->cv_plain); it swaps ONLY the authorization predicate -- the revealed half-agg signers become a
+// ring-DLEQ hidden-auth proof. Every statement input is recomputed here from consensus data (cv3 + kernel
+// params); nothing is trusted from proof-carried statement fields. Height-independent (the B2C fork gate
+// lives at the height-aware call sites) so the verify cache stays deterministic.
+static bool VerifyNullStakeB2CHiddenKernelProofV3(const CNullStakeKernelProofV3& proof,
+                                                  const CPedersenCommitment& cv3,
+                                                  unsigned int nBits)
+{
+    // Tier tag + structural/DoS caps.
+    if (proof.nAuthMode != NULLSTAKE_AUTHMODE_B2C_HIDDEN)
+        return false;
+    if (proof.nThresholdM < 1 || proof.nThresholdM > MAX_NULLSTAKE_MOFN_MEMBERS)
+        return false;
+    if (proof.vStakerSet.empty() || proof.vStakerSet.size() > MAX_NULLSTAKE_MOFN_MEMBERS)
+        return false;
+    if (proof.nThresholdM > proof.vStakerSet.size())
+        return false;
+    // The B2-e public half-agg triple MUST be empty for a hidden proof (the empty-vchPkStake analogue:
+    // a hidden proof never carries revealed signers).
+    if (!proof.vSignerPubKeys.empty() || !proof.vSignerRPoints.empty() || !proof.vchAggregatedSScalar.empty())
+        return false;
+    if (proof.hiddenAuth.IsNull())
+        return false;
+    if (proof.hiddenAuth.GetProofSize() > NULLSTAKE_B2C_MAX_AUTH_SIZE)
+        return false;
+    if (proof.valueCommitment.vchCommitment.size() != 33)
+        return false;
+    if (!proof.vchPkStake.empty())            // M-of-N proofs carry a SET, never a single pkStake
+        return false;
+    if (proof.vchPkOwner.size() != 33)
+        return false;
+    if (cv3.vchCommitment.size() != 33)
+        return false;
+    if (proof.vchLinkProof.size() != 65)
+        return false;
+    {
+        uint256 zero; memset(zero.begin(), 0, 32);
+        if (proof.delegationHash == zero)
+            return false;
+    }
+    if (FieldReduce(proof.delegationHash) != proof.delegationHash)
+        return false;
+
+    if (!CPoseidon2Params::IsInitialized())
+        CPoseidon2Params::Initialize();
+    CZarcECGroupGuard group;
+    CZarcBNCtxGuard ctx;
+    if (!group.group || !ctx.ctx)
+        return false;
+    CNullStakeBNGuard bnOrder;
+    if (!EC_GROUP_get_order(group, bnOrder, ctx))
+        return false;
+
+    // Recover the J-free commitment from the FCMP-verified leaf cv3 (identical to the B2-e spine).
+    CPedersenCommitment cvPlain;
+    if (!NullStakeMofNDeriveValueCommitment(cv3, proof.delegationHash, cvPlain))
+        return false;
+
+    CR1CSCircuit circuit = BuildNullStakeV2Circuit(proof.nStakeModifier, proof.nBlockTimeFrom,
+                                                    proof.nTxPrevOffset, proof.nTxTimePrev,
+                                                    proof.nVoutN, proof.nTimeTx, nBits);
+    std::vector<std::vector<unsigned char> > vCommitments;
+    vCommitments.push_back(proof.valueCommitment.vchCommitment);
+    if (!VerifyBulletproofACProof(circuit, vCommitments, proof.acProof))
+    {
+        if (fDebug) printf("VerifyNullStakeB2CHiddenKernelProofV3: AC proof failed\n");
+        return false;
+    }
+
+    uint256 stakeDigest = ComputeNullStakeMofNStakeDigest(proof.delegationHash, proof.nStakeModifier,
+                                                          proof.nBlockTimeFrom, proof.nTxPrevOffset,
+                                                          proof.nTxTimePrev, proof.nVoutN, proof.nTimeTx,
+                                                          cv3.vchCommitment);
+
+    // Value-commitment link Vv <-> cv_plain (identical to the B2-e spine).
+    std::vector<unsigned char> vchRL(proof.vchLinkProof.begin(), proof.vchLinkProof.begin() + 33);
+    CZarcECPointGuard RLink(group);
+    if (!EC_POINT_oct2point(group, RLink, vchRL.data(), 33, ctx))
+        return false;
+    CNullStakeBNGuard bnSLink;
+    BN_bin2bn(proof.vchLinkProof.data() + 33, 32, bnSLink);
+    if (BN_is_negative(bnSLink) || BN_cmp(bnSLink, bnOrder) >= 0)
+        return false;
+    uint256 hashLinkChallenge = NullStakeMofNLinkChallenge(proof.valueCommitment.vchCommitment,
+                                                           cvPlain.vchCommitment, proof.delegationHash,
+                                                           stakeDigest, vchRL);
+    CNullStakeBNGuard bnELink;
+    BN_bin2bn(hashLinkChallenge.begin(), 32, bnELink);
+    BN_mod(bnELink, bnELink, bnOrder, ctx);
+    if (BN_is_zero(bnELink))
+        return false;
+    CZarcECPointGuard Dpt(group);
+    {
+        CZarcECPointGuard VvPoint(group), cvpPoint(group);
+        if (!EC_POINT_oct2point(group, VvPoint, proof.valueCommitment.vchCommitment.data(),
+                                proof.valueCommitment.vchCommitment.size(), ctx))
+            return false;
+        if (!EC_POINT_oct2point(group, cvpPoint, cvPlain.vchCommitment.data(),
+                                cvPlain.vchCommitment.size(), ctx))
+            return false;
+        CZarcECPointGuard negCvp(group);
+        EC_POINT_copy(negCvp, cvpPoint);
+        EC_POINT_invert(group, negCvp, ctx);
+        EC_POINT_add(group, Dpt, VvPoint, negCvp, ctx);
+    }
+    CZarcECPointGuard lhsLink(group);
+    EC_POINT_mul(group, lhsLink, bnSLink, NULL, NULL, ctx);
+    CZarcECPointGuard rhsLink(group);
+    {
+        CZarcECPointGuard eD(group);
+        EC_POINT_mul(group, eD, NULL, Dpt, bnELink, ctx);
+        EC_POINT_add(group, rhsLink, RLink, eD, ctx);
+    }
+    if (EC_POINT_cmp(group, lhsLink, rhsLink, ctx) != 0)
+    {
+        if (fDebug) printf("VerifyNullStakeB2CHiddenKernelProofV3: link proof failed\n");
+        return false;
+    }
+
+    // MANDATORY hidden authorization: prove >= M distinct committed members authorized the RECOMPUTED
+    // stake digest without revealing which. Statement inputs (stakeDigest, kernelValueCommitment := cv3)
+    // are the consensus-recomputed values; the hidden verifier rebuilds the statement hash internally.
+    std::string err;
+    if (!VerifyNullStakeMofNHiddenAuthProof(proof.vStakerSet, proof.nThresholdM, proof.vchPkOwner,
+                                            proof.delegationHash, stakeDigest, cv3,
+                                            proof.hiddenAuth, err))
+    {
+        if (fDebug) printf("VerifyNullStakeB2CHiddenKernelProofV3: hidden authorization failed: %s\n", err.c_str());
+        return false;
+    }
+
+    return true;
+}
+
+
 static bool VerifyNullStakeKernelProofV3Uncached(const CNullStakeKernelProofV3& proof,
                                                  const CPedersenCommitment& cv,
                                                  unsigned int nBits);
@@ -1525,6 +1666,10 @@ static bool VerifyNullStakeKernelProofV3Uncached(const CNullStakeKernelProofV3& 
     // finality vote path (finality.cpp, on pEpochBlock->nHeight). The legacy 1-of-1
     // (nThresholdM == 0) path below is unchanged; a 3-generator M-of-N leaf submitted as
     // nThresholdM == 0 fails the 1-of-1 link (which targets the raw leaf with its J term).
+    // B2-c hidden tier (nAuthMode == B2C_HIDDEN) routes to the ring-DLEQ verifier; the B2C height gate
+    // is enforced at the call sites (like DELEGSET). Any other M-of-N nAuthMode is the B2-e public tier.
+    if (proof.nThresholdM > 0 && proof.nAuthMode == NULLSTAKE_AUTHMODE_B2C_HIDDEN)
+        return VerifyNullStakeB2CHiddenKernelProofV3(proof, cv, nBits);
     if (proof.nThresholdM > 0)
         return VerifyNullStakeMofNKernelProofV3(proof, cv, nBits);
 
