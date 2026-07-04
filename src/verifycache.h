@@ -33,7 +33,9 @@ enum VerifyCacheDomain
     VERIFYCACHE_NULLSTAKE_V2   = 1,
     VERIFYCACHE_NULLSTAKE_V3   = 2,
     VERIFYCACHE_FCMP           = 3,
-    VERIFYCACHE_NULLIFIER_BIND = 4
+    VERIFYCACHE_NULLIFIER_BIND = 4,
+    VERIFYCACHE_NULLSTAKE_B2C  = 5    // B2-c hidden-signer: keyed on the recomputed statement hash, NOT proof bytes
+
 };
 
 // True if the verify-once cache is enabled (-verifycache, default on).

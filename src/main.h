@@ -434,6 +434,20 @@ inline int GetForkHeightNullStakeReclaim()
 }
 #define FORK_HEIGHT_NULLSTAKE_RECLAIM (GetForkHeightNullStakeReclaim())
 
+// B2-c (Increment 4): activation height for the ZK-HIDDEN-SIGNER M-of-N authorization tier (nAuthMode ==
+// NULLSTAKE_AUTHMODE_B2C_HIDDEN). MUST be >= FORK_HEIGHT_NULLSTAKE_DELEGSET on every network: a B2-c stake
+// reuses the M-of-N cv3 leaf + delegation-set machinery that DELEGSET activates. Gated at the height-aware
+// consensus CALL SITES (coinstake ConnectBlock, finality vote, mempool), never inside the verifier.
+inline int GetForkHeightNullStakeB2C()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest) return 14;         // > DELEGSET(12), so e2e can exercise pre/post-B2C with one 2006 note
+    if (fTestNet) return 1600;       // after DELEGSET(1500) + a canary window
+    return 8260000;                  // mainnet: co-batched with DELEGSET/RECLAIM (equal is legal: >= gate)
+}
+#define FORK_HEIGHT_NULLSTAKE_B2C (GetForkHeightNullStakeB2C())
+
 // B2-e Phase 3c.4: staking-INACTIVITY timelock for an owner reclaim — the spent cv3 leaf must have
 // been on-chain (un-restaked) for at least this many blocks before the owner may reclaim it. Staking
 // re-mints the note (resetting its leaf age), so this must safely exceed the set's realistic re-stake

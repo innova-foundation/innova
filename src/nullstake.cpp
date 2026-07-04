@@ -1877,11 +1877,15 @@ uint256 ComputeNullStakeMofNHiddenAuthStatementHash(const std::vector<std::vecto
                                                     const std::vector<unsigned char>& vchPkOwner,
                                                     const uint256& delegationHash,
                                                     const uint256& stakeDigest,
-                                                    const CPedersenCommitment& kernelValueCommitment)
+                                                    const CPedersenCommitment& kernelValueCommitment,
+                                                    unsigned int nAuthMode)
 {
     CDataStream ss(SER_GETHASH, 0);
     ss << std::string("Innova_NullStakeB2C_HiddenAuthStatement_v1");
     ss << delegationHash;
+    // Bind the authorization-tier tag so a proof valid under one tier's statement is not a witness under
+    // another's -- closes the cross-tier reinterpretation gap the wiring audit flagged.
+    ss << (uint32_t)nAuthMode;
     ss << (uint32_t)nThresholdM;
     ss << (uint32_t)vStakerSet.size();
     ss << vchPkOwner;

@@ -199,6 +199,15 @@ static const unsigned int NULLSTAKE_B2C_AUTH_TYPE_BPAC = 1;
 static const unsigned int NULLSTAKE_B2C_AUTH_TYPE_RINGXM_DLEQ = 2;
 static const unsigned int NULLSTAKE_B2C_BPAC_AUTH_CONSTRAINT_CAP = 8192;
 
+// M-of-N authorization tier tag on CNullStakeKernelProofV3 (nThresholdM > 0 only). HALFAGG = B2-e public
+// half-aggregated signers; B2C_HIDDEN = B2-c ring-DLEQ hidden signers. 1-of-1 (nThresholdM == 0) carries no
+// nAuthMode. Each tier requires the OTHER tier's authorization material empty (the empty-vchPkStake analogue).
+static const unsigned int NULLSTAKE_AUTHMODE_HALFAGG    = 0;
+static const unsigned int NULLSTAKE_AUTHMODE_B2C_HIDDEN = 1;
+// Consensus wire cap for a B2-c hidden-auth blob (headroom over the 32-of-32 worst case ~66.7 KiB), enforced
+// structurally before any expensive EC work at every call site.
+static const size_t NULLSTAKE_B2C_MAX_AUTH_SIZE = 96 * 1024;
+
 struct CNullStakeB2CBPACBudget
 {
     unsigned int nMembers;
@@ -290,7 +299,8 @@ uint256 ComputeNullStakeMofNHiddenAuthStatementHash(const std::vector<std::vecto
                                                     const std::vector<unsigned char>& vchPkOwner,
                                                     const uint256& delegationHash,
                                                     const uint256& stakeDigest,
-                                                    const CPedersenCommitment& kernelValueCommitment);
+                                                    const CPedersenCommitment& kernelValueCommitment,
+                                                    unsigned int nAuthMode = NULLSTAKE_AUTHMODE_B2C_HIDDEN);
 
 bool CreateNullStakeMofNHiddenAuthProof(const std::vector<std::vector<unsigned char> >& vStakerSet,
                                         unsigned int nThresholdM,
