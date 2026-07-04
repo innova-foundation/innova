@@ -589,4 +589,205 @@ BOOST_AUTO_TEST_CASE(halfagg_stake_sagg_out_of_range_rejected)
                         "an out-of-range aggregated s-scalar (>= n) must be rejected");
 }
 
+// --- B2-c hidden-signer research prototype: BPAC gate + threshold-ring xM fallback ---
+namespace
+{
+bool BuildHiddenFixture(unsigned int N, unsigned int M,
+                        std::vector<uint256>& setSk,
+                        std::vector<valtype>& set,
+                        valtype& owner,
+                        uint256& delegationHash,
+                        CPedersenCommitment& cv3,
+                        uint256& stakeDigest)
+{
+    setSk.clear();
+    set.clear();
+    for (unsigned int i = 0; i < N; i++)
+    {
+        uint256 sk((uint64_t)(90000 + i + 37 * N));
+        valtype pk;
+        if (!HalfAggStakeDerivePubKey(sk, pk)) return false;
+        setSk.push_back(sk);
+        set.push_back(pk);
+    }
+    std::sort(set.begin(), set.end());
+    if (!HalfAggStakeDerivePubKey(uint256((uint64_t)(99000 + N)), owner)) return false;
+    if (!ComputeNullStakeV3DelegationSetHash(set, M, owner, delegationHash)) return false;
+
+    valtype blind(32, 0x42);
+    blind[0] = (unsigned char)N;
+    blind[31] = (unsigned char)M;
+    if (!CreateNullStakeMofNCommitment(5000000 + N, blind, delegationHash, cv3)) return false;
+    stakeDigest = ComputeNullStakeMofNStakeDigest(delegationHash,
+                                                  0x1122334455667788ULL + N,
+                                                  100000 + N, 7, 100010 + N,
+                                                  3, 110000 + N,
+                                                  cv3.vchCommitment);
+    return true;
+}
+
+std::vector<uint256> FirstSigners(const std::vector<uint256>& setSk, unsigned int M)
+{
+    std::vector<uint256> out;
+    for (unsigned int i = 0; i < M; i++)
+        out.push_back(setSk[i]);
+    return out;
+}
+} // namespace
+
+BOOST_AUTO_TEST_CASE(hidden_auth_bpac_gate_falls_back)
+{
+    CNullStakeB2CBPACBudget selectorOnly, fullEC;
+    BOOST_REQUIRE(EstimateNullStakeB2CHiddenAuthBPACBudget(32, 16, false, selectorOnly));
+    BOOST_CHECK(!selectorOnly.fBPACFeasible);
+    BOOST_CHECK_EQUAL(selectorOnly.nECAuthConstraints, 0u);
+
+    BOOST_REQUIRE(EstimateNullStakeB2CHiddenAuthBPACBudget(32, 16, true, fullEC));
+    BOOST_CHECK(!fullEC.fBPACFeasible);
+    BOOST_CHECK_GT(fullEC.nECAuthConstraints, 0u);
+    BOOST_CHECK_GT(fullEC.nTotalConstraints, NULLSTAKE_B2C_BPAC_AUTH_CONSTRAINT_CAP);
+}
+
+BOOST_AUTO_TEST_CASE(hidden_auth_roundtrip_target_sizes)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+    const unsigned int targets[][4] = {
+        {3, 1, 2, 3},
+        {8, 1, 4, 8},
+        {16, 1, 8, 16},
+        {32, 1, 16, 32}
+    };
+    for (size_t row = 0; row < sizeof(targets) / sizeof(targets[0]); row++)
+    {
+        unsigned int N = targets[row][0];
+        for (size_t col = 1; col < 4; col++)
+        {
+            unsigned int M = targets[row][col];
+            std::vector<uint256> setSk;
+            std::vector<valtype> set;
+            valtype owner;
+            uint256 dh, digest;
+            CPedersenCommitment cv3;
+            BOOST_REQUIRE(BuildHiddenFixture(N, M, setSk, set, owner, dh, cv3, digest));
+
+            CNullStakeMofNHiddenAuthProof proof;
+            std::string err;
+            BOOST_REQUIRE_MESSAGE(CreateNullStakeMofNHiddenAuthProof(set, M, owner, dh, digest, cv3,
+                                                                     FirstSigners(setSk, M),
+                                                                     proof, err),
+                                  "hidden auth create failed for target");
+            BOOST_CHECK_EQUAL(proof.nAuthType, NULLSTAKE_B2C_AUTH_TYPE_RINGXM_DLEQ);
+            BOOST_CHECK_EQUAL(proof.vRingSlotProofs.size(), M);
+            BOOST_CHECK_MESSAGE(VerifyNullStakeMofNHiddenAuthProof(set, M, owner, dh, digest, cv3,
+                                                                   proof, err),
+                                "hidden auth verify failed: " + err);
+        }
+    }
+}
+
+BOOST_AUTO_TEST_CASE(hidden_auth_adversarial_rejections)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+    std::vector<uint256> setSk;
+    std::vector<valtype> set;
+    valtype owner;
+    uint256 dh, digest;
+    CPedersenCommitment cv3;
+    BOOST_REQUIRE(BuildHiddenFixture(3, 2, setSk, set, owner, dh, cv3, digest));
+
+    std::string err;
+    CNullStakeMofNHiddenAuthProof proof;
+    BOOST_REQUIRE(CreateNullStakeMofNHiddenAuthProof(set, 2, owner, dh, digest, cv3,
+                                                     FirstSigners(setSk, 2), proof, err));
+
+    std::vector<uint256> oneSigner;
+    oneSigner.push_back(setSk[0]);
+    CNullStakeMofNHiddenAuthProof badProof;
+    BOOST_CHECK_MESSAGE(!CreateNullStakeMofNHiddenAuthProof(set, 2, owner, dh, digest, cv3,
+                                                            oneSigner, badProof, err),
+                        "subthreshold hidden signer set must be rejected");
+
+    std::vector<uint256> dup;
+    dup.push_back(setSk[0]);
+    dup.push_back(setSk[0]);
+    BOOST_CHECK_MESSAGE(!CreateNullStakeMofNHiddenAuthProof(set, 2, owner, dh, digest, cv3,
+                                                            dup, badProof, err),
+                        "duplicate hidden signer must be rejected");
+
+    std::vector<uint256> nonMember;
+    nonMember.push_back(setSk[0]);
+    nonMember.push_back(uint256(123456789ULL));
+    BOOST_CHECK_MESSAGE(!CreateNullStakeMofNHiddenAuthProof(set, 2, owner, dh, digest, cv3,
+                                                            nonMember, badProof, err),
+                        "non-member secret must be rejected");
+
+    std::vector<valtype> forgedSet = set;
+    valtype attackerPk;
+    BOOST_REQUIRE(HalfAggStakeDerivePubKey(uint256(22222222ULL), attackerPk));
+    forgedSet[0] = attackerPk;
+    std::sort(forgedSet.begin(), forgedSet.end());
+    BOOST_CHECK_MESSAGE(!VerifyNullStakeMofNHiddenAuthProof(forgedSet, 2, owner, dh, digest, cv3,
+                                                            proof, err),
+                        "forged set/delegationHash must be rejected");
+
+    uint256 replayDigest = ComputeNullStakeMofNStakeDigest(dh, 0x9999ULL, 100000, 7,
+                                                           100010, 3, 110000,
+                                                           cv3.vchCommitment);
+    BOOST_CHECK_MESSAGE(!VerifyNullStakeMofNHiddenAuthProof(set, 2, owner, dh, replayDigest, cv3,
+                                                            proof, err),
+                        "replay across different kernel params must be rejected");
+
+    CNullStakeMofNHiddenAuthProof duplicateTag = proof;
+    duplicateTag.vRingSlotProofs[1].vchTag = duplicateTag.vRingSlotProofs[0].vchTag;
+    BOOST_CHECK_MESSAGE(!VerifyNullStakeMofNHiddenAuthProof(set, 2, owner, dh, digest, cv3,
+                                                            duplicateTag, err),
+                        "duplicate hidden tag must be rejected");
+}
+
+BOOST_AUTO_TEST_CASE(hidden_auth_serialization_and_privacy_shape)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+    std::vector<uint256> setSk;
+    std::vector<valtype> set;
+    valtype owner;
+    uint256 dh, digest;
+    CPedersenCommitment cv3;
+    BOOST_REQUIRE(BuildHiddenFixture(8, 4, setSk, set, owner, dh, cv3, digest));
+
+    std::string err;
+    CNullStakeMofNHiddenAuthProof p1, p2, pOther;
+    BOOST_REQUIRE(CreateNullStakeMofNHiddenAuthProof(set, 4, owner, dh, digest, cv3,
+                                                     FirstSigners(setSk, 4), p1, err));
+    BOOST_REQUIRE(CreateNullStakeMofNHiddenAuthProof(set, 4, owner, dh, digest, cv3,
+                                                     FirstSigners(setSk, 4), p2, err));
+
+    BOOST_CHECK_MESSAGE(p1.vchTagBaseNonce != p2.vchTagBaseNonce,
+                        "same subset proofs must use different tag-base nonces");
+    BOOST_CHECK_MESSAGE(p1.vRingSlotProofs[0].vchTag != p2.vRingSlotProofs[0].vchTag,
+                        "same subset proofs must not expose a stable signer tag");
+
+    std::vector<uint256> otherSigners;
+    otherSigners.push_back(setSk[1]);
+    otherSigners.push_back(setSk[2]);
+    otherSigners.push_back(setSk[3]);
+    otherSigners.push_back(setSk[4]);
+    BOOST_REQUIRE(CreateNullStakeMofNHiddenAuthProof(set, 4, owner, dh, digest, cv3,
+                                                     otherSigners, pOther, err));
+    BOOST_CHECK_EQUAL(p1.GetProofSize(), pOther.GetProofSize());
+    BOOST_CHECK(p1.vchResearchProof.empty());
+
+    CDataStream ss(SER_DISK, CLIENT_VERSION);
+    ss << p1;
+    std::vector<unsigned char> bytes(ss.begin(), ss.end());
+    CNullStakeMofNHiddenAuthProof decoded;
+    ss >> decoded;
+    CDataStream ss2(SER_DISK, CLIENT_VERSION);
+    ss2 << decoded;
+    std::vector<unsigned char> bytes2(ss2.begin(), ss2.end());
+    BOOST_CHECK(bytes == bytes2);
+    BOOST_CHECK_MESSAGE(VerifyNullStakeMofNHiddenAuthProof(set, 4, owner, dh, digest, cv3,
+                                                           decoded, err),
+                        "decoded hidden auth proof must verify: " + err);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

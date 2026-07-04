@@ -728,6 +728,7 @@ SOURCES += qrc_bitcoin.cpp \
            src/test/bulletproof_ac_tests.cpp \
            src/test/finality_tally_tests.cpp \
            src/test/fcmp_root_tests.cpp \
+           src/test/halfagg_stake_tests.cpp \
            src/test/Checkpoints_tests.cpp \
            src/test/DoS_tests.cpp \
            src/test/getarg_tests.cpp \

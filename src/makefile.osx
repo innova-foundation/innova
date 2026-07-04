@@ -221,7 +221,8 @@ TEST_OBJS= \
     obj/test/shielded_nullifier_binding_tests.o \
     obj/test/finality_vote_binding_tests.o \
     obj/test/nullsend_binding_tests.o \
-    obj/test/coinstake_guard_tests.o
+    obj/test/coinstake_guard_tests.o \
+    obj/test/halfagg_stake_tests.o
 
 .PHONY: all innova-build check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard release-check
 

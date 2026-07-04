@@ -12,6 +12,7 @@
 #include "shielded.h"
 #include "bulletproof_ac.h"
 
+#include <string>
 #include <vector>
 #include <stdint.h>
 
@@ -191,6 +192,124 @@ bool CheckShieldedStakeKernelHashV2(unsigned int nBits,
 
 
 static const size_t NULLSTAKE_V3_PROOF_MAX_SIZE = 4096;  // DoS protection
+static const size_t NULLSTAKE_B2C_BPAC_AUTH_PROOF_MAX_SIZE = 16384;       // research cap, not consensus
+static const size_t NULLSTAKE_B2C_RINGXM_AUTH_PROOF_MAX_SIZE = 96 * 1024; // off-consensus prototype cap
+static const unsigned int NULLSTAKE_B2C_HIDDEN_AUTH_VERSION = 1;
+static const unsigned int NULLSTAKE_B2C_AUTH_TYPE_BPAC = 1;
+static const unsigned int NULLSTAKE_B2C_AUTH_TYPE_RINGXM_DLEQ = 2;
+static const unsigned int NULLSTAKE_B2C_BPAC_AUTH_CONSTRAINT_CAP = 8192;
+
+struct CNullStakeB2CBPACBudget
+{
+    unsigned int nMembers;
+    unsigned int nThresholdM;
+    unsigned int nSelectorConstraints;
+    unsigned int nThresholdConstraints;
+    unsigned int nDistinctnessConstraints;
+    unsigned int nTranscriptConstraints;
+    unsigned int nECAuthConstraints;
+    unsigned int nTotalConstraints;
+    size_t nEstimatedProofSize;
+    bool fECAuthIncluded;
+    bool fWithinConstraintCap;
+    bool fWithinProofCap;
+    bool fBPACFeasible;
+    std::string strFallbackReason;
+
+    CNullStakeB2CBPACBudget()
+    {
+        nMembers = 0;
+        nThresholdM = 0;
+        nSelectorConstraints = 0;
+        nThresholdConstraints = 0;
+        nDistinctnessConstraints = 0;
+        nTranscriptConstraints = 0;
+        nECAuthConstraints = 0;
+        nTotalConstraints = 0;
+        nEstimatedProofSize = 0;
+        fECAuthIncluded = false;
+        fWithinConstraintCap = false;
+        fWithinProofCap = false;
+        fBPACFeasible = false;
+    }
+};
+
+class CNullStakeMofNHiddenAuthRingSlotProof
+{
+public:
+    std::vector<unsigned char> vchTag;  // per-proof duplicate tag, not stable across proofs
+    std::vector<uint256> vChallenges;
+    std::vector<uint256> vResponses;
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(vchTag);
+        READWRITE(vChallenges);
+        READWRITE(vResponses);
+    )
+};
+
+// B2-c off-consensus hidden M-of-N authorization proof envelope. This object is deliberately
+// separate from CNullStakeKernelProofV3 so the B2-e wire format remains byte-compatible while
+// the hidden-signer construction is researched and benchmarked.
+class CNullStakeMofNHiddenAuthProof
+{
+public:
+    unsigned int nVersion;
+    unsigned int nAuthType;
+    std::vector<unsigned char> vchTagBaseNonce;
+    std::vector<CNullStakeMofNHiddenAuthRingSlotProof> vRingSlotProofs;
+    std::vector<unsigned char> vchResearchProof;
+
+    CNullStakeMofNHiddenAuthProof()
+    {
+        nVersion = NULLSTAKE_B2C_HIDDEN_AUTH_VERSION;
+        nAuthType = 0;
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(nVersion);
+        READWRITE(nAuthType);
+        READWRITE(vchTagBaseNonce);
+        READWRITE(vRingSlotProofs);
+        READWRITE(vchResearchProof);
+    )
+
+    bool IsNull() const { return vRingSlotProofs.empty() && vchResearchProof.empty(); }
+    size_t GetProofSize() const;
+};
+
+bool EstimateNullStakeB2CHiddenAuthBPACBudget(unsigned int nMembers,
+                                              unsigned int nThresholdM,
+                                              bool fIncludeECAuth,
+                                              CNullStakeB2CBPACBudget& budgetOut);
+
+uint256 ComputeNullStakeMofNHiddenAuthStatementHash(const std::vector<std::vector<unsigned char> >& vStakerSet,
+                                                    unsigned int nThresholdM,
+                                                    const std::vector<unsigned char>& vchPkOwner,
+                                                    const uint256& delegationHash,
+                                                    const uint256& stakeDigest,
+                                                    const CPedersenCommitment& kernelValueCommitment);
+
+bool CreateNullStakeMofNHiddenAuthProof(const std::vector<std::vector<unsigned char> >& vStakerSet,
+                                        unsigned int nThresholdM,
+                                        const std::vector<unsigned char>& vchPkOwner,
+                                        const uint256& delegationHash,
+                                        const uint256& stakeDigest,
+                                        const CPedersenCommitment& kernelValueCommitment,
+                                        const std::vector<uint256>& vSignerSecrets,
+                                        CNullStakeMofNHiddenAuthProof& proofOut,
+                                        std::string& strError);
+
+bool VerifyNullStakeMofNHiddenAuthProof(const std::vector<std::vector<unsigned char> >& vStakerSet,
+                                        unsigned int nThresholdM,
+                                        const std::vector<unsigned char>& vchPkOwner,
+                                        const uint256& delegationHash,
+                                        const uint256& stakeDigest,
+                                        const CPedersenCommitment& kernelValueCommitment,
+                                        const CNullStakeMofNHiddenAuthProof& proof,
+                                        std::string& strError);
 
 class CNullStakeKernelProofV3
 {

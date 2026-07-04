@@ -1651,3 +1651,780 @@ static bool VerifyNullStakeKernelProofV3Uncached(const CNullStakeKernelProofV3& 
 
     return true;
 }
+
+
+// ============================================================================
+// B2-c research prototype: hidden M-of-N authorization, off-consensus.
+//
+// The BPAC track is explicitly gated below. Under the current cap, full secp256k1
+// membership+authorization inside BPAC is estimated too large, so Create... uses a
+// threshold-ring xM fallback: M independent one-out-of-N DLEQ ring proofs. Each slot proves
+// knowledge of x for some public member P_i=xG and a per-proof duplicate tag T=xH_tag.
+// Tags are checked distinct within one proof, but H_tag includes a random proof nonce, so
+// tags do not provide a stable cross-proof signer handle.
+// ============================================================================
+
+size_t CNullStakeMofNHiddenAuthProof::GetProofSize() const
+{
+    CDataStream ss(SER_DISK, 0);
+    ss << *this;
+    return ss.size();
+}
+
+bool EstimateNullStakeB2CHiddenAuthBPACBudget(unsigned int nMembers,
+                                              unsigned int nThresholdM,
+                                              bool fIncludeECAuth,
+                                              CNullStakeB2CBPACBudget& budgetOut)
+{
+    budgetOut = CNullStakeB2CBPACBudget();
+    budgetOut.nMembers = nMembers;
+    budgetOut.nThresholdM = nThresholdM;
+    budgetOut.fECAuthIncluded = fIncludeECAuth;
+
+    if (nMembers == 0 || nMembers > MAX_NULLSTAKE_MOFN_MEMBERS ||
+        nThresholdM == 0 || nThresholdM > nMembers)
+    {
+        budgetOut.strFallbackReason = "invalid B2-c M-of-N budget parameters";
+        return false;
+    }
+
+    // Constraint spike for selector bits, threshold count, distinctness, and transcript binding.
+    // These are conservative planning numbers, not a consensus circuit commitment.
+    budgetOut.nSelectorConstraints = nMembers * nThresholdM;                  // boolean selector matrix
+    budgetOut.nThresholdConstraints = nThresholdM + nMembers + 8;             // row sums + M counter
+    budgetOut.nDistinctnessConstraints = (nThresholdM * (nThresholdM - 1) / 2) * nMembers;
+    budgetOut.nTranscriptConstraints = 512 + 8 * nMembers + 64 * nThresholdM; // statement/hash binding
+
+    // A complete secp256k1 Schnorr/public-key relation inside this BPAC system needs field
+    // arithmetic, point decompression, scalar multiplication, and challenge binding per hidden
+    // signer. This dominates the selector budget and exceeds the current B2-c cap even at M=1.
+    budgetOut.nECAuthConstraints = fIncludeECAuth ? (32000 * nThresholdM) : 0;
+    budgetOut.nTotalConstraints = budgetOut.nSelectorConstraints +
+                                  budgetOut.nThresholdConstraints +
+                                  budgetOut.nDistinctnessConstraints +
+                                  budgetOut.nTranscriptConstraints +
+                                  budgetOut.nECAuthConstraints;
+
+    const unsigned int nPadded = 1u << 13; // cap target for the research gate
+    budgetOut.nEstimatedProofSize = 512 + (size_t)nPadded / 2 +
+                                    (size_t)budgetOut.nTotalConstraints / 4;
+    budgetOut.fWithinConstraintCap =
+        budgetOut.nTotalConstraints <= NULLSTAKE_B2C_BPAC_AUTH_CONSTRAINT_CAP;
+    budgetOut.fWithinProofCap =
+        budgetOut.nEstimatedProofSize <= NULLSTAKE_B2C_BPAC_AUTH_PROOF_MAX_SIZE;
+    budgetOut.fBPACFeasible = fIncludeECAuth &&
+                              budgetOut.fWithinConstraintCap &&
+                              budgetOut.fWithinProofCap;
+
+    if (!budgetOut.fBPACFeasible)
+    {
+        if (!fIncludeECAuth)
+            budgetOut.strFallbackReason = "BPAC selector/threshold spike only; EC authorization not included";
+        else if (!budgetOut.fWithinConstraintCap)
+            budgetOut.strFallbackReason = "BPAC secp256k1 authorization estimate exceeds B2-c constraint cap";
+        else
+            budgetOut.strFallbackReason = "BPAC secp256k1 authorization estimate exceeds B2-c proof-size cap";
+    }
+    return true;
+}
+
+static bool NullStakeB2CPointToBytes(const EC_GROUP* group, const EC_POINT* point,
+                                     BN_CTX* ctx, std::vector<unsigned char>& out)
+{
+    size_t len = EC_POINT_point2oct(group, point, POINT_CONVERSION_COMPRESSED, NULL, 0, ctx);
+    if (len != 33)
+        return false;
+    out.resize(33);
+    return EC_POINT_point2oct(group, point, POINT_CONVERSION_COMPRESSED,
+                              out.data(), out.size(), ctx) == out.size();
+}
+
+static bool NullStakeB2CBytesToPoint(const EC_GROUP* group,
+                                     const std::vector<unsigned char>& in,
+                                     EC_POINT* point,
+                                     BN_CTX* ctx)
+{
+    if (in.size() != 33)
+        return false;
+    if (EC_POINT_oct2point(group, point, in.data(), in.size(), ctx) != 1)
+        return false;
+    if (EC_POINT_is_at_infinity(group, point) ||
+        EC_POINT_is_on_curve(group, point, ctx) != 1)
+        return false;
+    std::vector<unsigned char> canonical;
+    if (!NullStakeB2CPointToBytes(group, point, ctx, canonical))
+        return false;
+    return canonical == in;
+}
+
+static bool NullStakeB2CBNToScalar(const BIGNUM* bn, uint256& out)
+{
+    if (!bn || BN_is_negative(bn) || BN_num_bytes(bn) > 32)
+        return false;
+    memset(out.begin(), 0, 32);
+    int nBytes = BN_num_bytes(bn);
+    if (nBytes > 0)
+        BN_bn2bin(bn, out.begin() + (32 - nBytes));
+    return true;
+}
+
+static bool NullStakeB2CScalarToBN(const uint256& scalar,
+                                   const BIGNUM* order,
+                                   BIGNUM* out)
+{
+    if (!BN_bin2bn(scalar.begin(), 32, out))
+        return false;
+    return !BN_is_negative(out) && BN_cmp(out, order) < 0;
+}
+
+static bool NullStakeB2CRandomScalar(const BIGNUM* order, BIGNUM* out, bool fNonZero)
+{
+    for (unsigned int i = 0; i < 64; i++)
+    {
+        if (BN_rand_range(out, order) != 1)
+            return false;
+        if (!fNonZero || !BN_is_zero(out))
+            return true;
+    }
+    return false;
+}
+
+// Hedged ring-proof nonce (parity with SignHalfAggStakeShare's HMAC-hedged nonce, zkproof.cpp): the scalar
+// is derived from H(domain || slotSecret || statementHash || per-proof-nonce || slot || label || idx ||
+// counter || fresh-random). Binding it to the signing secret means a weak or failed RNG cannot by itself
+// leak the witness (an attacker who does not know the secret still cannot predict the Schnorr nonce), while
+// the fresh random + per-proof nonce keep the alphas/simulated scalars independent across proofs of the
+// same statement -- which the signer-set unlinkability property requires.
+static bool NullStakeB2CHedgedScalar(const uint256& slotSecret,
+                                     const uint256& statementHash,
+                                     const std::vector<unsigned char>& nonce,
+                                     uint32_t nSlot,
+                                     uint32_t nLabel,
+                                     uint32_t nIdx,
+                                     const BIGNUM* order,
+                                     BN_CTX* ctx,
+                                     BIGNUM* out,
+                                     bool fNonZero)
+{
+    for (uint32_t counter = 0; counter < 256; counter++)
+    {
+        unsigned char rnd[32];
+        if (RAND_bytes(rnd, 32) != 1)
+            return false;
+        CDataStream ss(SER_GETHASH, 0);
+        ss << std::string("Innova_NullStakeB2C_HedgedNonce_v1");
+        ss << slotSecret;
+        ss << statementHash;
+        ss << nonce;
+        ss << nSlot;
+        ss << nLabel;
+        ss << nIdx;
+        ss << counter;
+        ss.write((const char*)rnd, 32);
+        uint256 h = Hash(ss.begin(), ss.end());
+        OPENSSL_cleanse(rnd, 32);
+        if (!BN_bin2bn(h.begin(), 32, out))
+            return false;
+        BN_mod(out, out, order, ctx);
+        if (!fNonZero || !BN_is_zero(out))
+            return true;
+    }
+    return false;
+}
+
+static bool NullStakeB2CSecretToBN(const uint256& sk,
+                                   const BIGNUM* order,
+                                   BN_CTX* ctx,
+                                   BIGNUM* out)
+{
+    if (!BN_bin2bn(sk.begin(), 32, out))
+        return false;
+    BN_mod(out, out, order, ctx);
+    return !BN_is_zero(out);
+}
+
+static bool NullStakeB2CHashToTagBase(const uint256& statementHash,
+                                      const std::vector<unsigned char>& nonce,
+                                      const EC_GROUP* group,
+                                      BN_CTX* ctx,
+                                      EC_POINT* out)
+{
+    if (nonce.size() != 32)
+        return false;
+
+    for (uint32_t counter = 0; counter < 512; counter++)
+    {
+        CDataStream ss(SER_GETHASH, 0);
+        ss << std::string("Innova_NullStakeB2C_TagBase_v1");
+        ss << statementHash;
+        ss << nonce;
+        ss << counter;
+        uint256 h = Hash(ss.begin(), ss.end());
+
+        unsigned char compressed[33];
+        compressed[0] = 0x02;
+        memcpy(compressed + 1, h.begin(), 32);
+        if (EC_POINT_oct2point(group, out, compressed, 33, ctx) == 1 &&
+            !EC_POINT_is_at_infinity(group, out) &&
+            EC_POINT_is_on_curve(group, out, ctx) == 1)
+            return true;
+    }
+    return false;
+}
+
+uint256 ComputeNullStakeMofNHiddenAuthStatementHash(const std::vector<std::vector<unsigned char> >& vStakerSet,
+                                                    unsigned int nThresholdM,
+                                                    const std::vector<unsigned char>& vchPkOwner,
+                                                    const uint256& delegationHash,
+                                                    const uint256& stakeDigest,
+                                                    const CPedersenCommitment& kernelValueCommitment)
+{
+    CDataStream ss(SER_GETHASH, 0);
+    ss << std::string("Innova_NullStakeB2C_HiddenAuthStatement_v1");
+    ss << delegationHash;
+    ss << (uint32_t)nThresholdM;
+    ss << (uint32_t)vStakerSet.size();
+    ss << vchPkOwner;
+    ss << stakeDigest;
+    ss << kernelValueCommitment.vchCommitment;
+    for (size_t i = 0; i < vStakerSet.size(); i++)
+        ss << vStakerSet[i];
+    return Hash(ss.begin(), ss.end());
+}
+
+static bool NullStakeB2CValidateStatement(const std::vector<std::vector<unsigned char> >& vStakerSet,
+                                          unsigned int nThresholdM,
+                                          const std::vector<unsigned char>& vchPkOwner,
+                                          const uint256& delegationHash,
+                                          const uint256& stakeDigest,
+                                          const CPedersenCommitment& kernelValueCommitment,
+                                          std::string& strError)
+{
+    strError.clear();
+    if (vStakerSet.empty() || vStakerSet.size() > MAX_NULLSTAKE_MOFN_MEMBERS)
+    {
+        strError = "staker set size out of range";
+        return false;
+    }
+    if (nThresholdM < 1 || nThresholdM > vStakerSet.size())
+    {
+        strError = "threshold M out of range";
+        return false;
+    }
+    if (vchPkOwner.size() != 33)
+    {
+        strError = "owner pubkey must be 33 bytes";
+        return false;
+    }
+    if (kernelValueCommitment.vchCommitment.size() != 33 || kernelValueCommitment.IsNull())
+    {
+        strError = "kernel value commitment is invalid";
+        return false;
+    }
+    if (delegationHash == uint256(0) || FieldReduce(delegationHash) != delegationHash)
+    {
+        strError = "delegation hash is zero or non-canonical";
+        return false;
+    }
+    if (stakeDigest == uint256(0))
+    {
+        strError = "stake digest must be nonzero";
+        return false;
+    }
+    for (size_t i = 0; i < vStakerSet.size(); i++)
+    {
+        if (vStakerSet[i].size() != 33)
+        {
+            strError = "staker pubkey must be 33 bytes";
+            return false;
+        }
+        if (i > 0 && !(vStakerSet[i - 1] < vStakerSet[i]))
+        {
+            strError = "staker set not strictly ascending";
+            return false;
+        }
+    }
+
+    uint256 recomputed;
+    if (!ComputeNullStakeV3DelegationSetHash(vStakerSet, nThresholdM, vchPkOwner, recomputed) ||
+        recomputed != delegationHash)
+    {
+        strError = "staker set does not match delegation hash";
+        return false;
+    }
+
+    CZarcECGroupGuard group;
+    CZarcBNCtxGuard ctx;
+    if (!group.group || !ctx.ctx)
+    {
+        strError = "EC context allocation failed";
+        return false;
+    }
+    CZarcECPointGuard point(group);
+    if (!NullStakeB2CBytesToPoint(group, vchPkOwner, point, ctx))
+    {
+        strError = "owner pubkey is not a valid compressed secp256k1 point";
+        return false;
+    }
+    if (!NullStakeB2CBytesToPoint(group, kernelValueCommitment.vchCommitment, point, ctx))
+    {
+        strError = "kernel value commitment is not a valid compressed secp256k1 point";
+        return false;
+    }
+    for (size_t i = 0; i < vStakerSet.size(); i++)
+    {
+        if (!NullStakeB2CBytesToPoint(group, vStakerSet[i], point, ctx))
+        {
+            strError = "staker pubkey is not a valid compressed secp256k1 point";
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool NullStakeB2CComputeSlotChallenge(const uint256& statementHash,
+                                             const std::vector<unsigned char>& nonce,
+                                             unsigned int nSlot,
+                                             const std::vector<unsigned char>& vchTag,
+                                             const std::vector<std::vector<unsigned char> >& vA,
+                                             const std::vector<std::vector<unsigned char> >& vB,
+                                             const BIGNUM* order,
+                                             BN_CTX* ctx,
+                                             BIGNUM* challengeOut)
+{
+    CDataStream ss(SER_GETHASH, 0);
+    ss << std::string("Innova_NullStakeB2C_RingDLEQ_v1");
+    ss << statementHash;
+    ss << nonce;
+    ss << (uint32_t)nSlot;
+    ss << vchTag;
+    ss << (uint32_t)vA.size();
+    for (size_t i = 0; i < vA.size(); i++)
+    {
+        ss << vA[i];
+        ss << vB[i];
+    }
+    uint256 h = Hash(ss.begin(), ss.end());
+    if (!BN_bin2bn(h.begin(), 32, challengeOut))
+        return false;
+    BN_mod(challengeOut, challengeOut, order, ctx);
+    return true;
+}
+
+static bool NullStakeB2CComputeProofCommitments(const std::vector<std::vector<unsigned char> >& vStakerSet,
+                                                const EC_POINT* tag,
+                                                const EC_POINT* tagBase,
+                                                const std::vector<uint256>& vChallenges,
+                                                const std::vector<uint256>& vResponses,
+                                                const EC_GROUP* group,
+                                                const BIGNUM* order,
+                                                BN_CTX* ctx,
+                                                std::vector<std::vector<unsigned char> >& vAOut,
+                                                std::vector<std::vector<unsigned char> >& vBOut)
+{
+    if (vChallenges.size() != vStakerSet.size() || vResponses.size() != vStakerSet.size())
+        return false;
+
+    vAOut.clear();
+    vBOut.clear();
+    for (size_t i = 0; i < vStakerSet.size(); i++)
+    {
+        CNullStakeBNGuard c, z;
+        if (!NullStakeB2CScalarToBN(vChallenges[i], order, c) ||
+            !NullStakeB2CScalarToBN(vResponses[i], order, z))
+            return false;
+
+        CZarcECPointGuard member(group);
+        if (!NullStakeB2CBytesToPoint(group, vStakerSet[i], member, ctx))
+            return false;
+
+        CZarcECPointGuard zG(group), cP(group), A(group);
+        if (EC_POINT_mul(group, zG, z, NULL, NULL, ctx) != 1)
+            return false;
+        if (EC_POINT_mul(group, cP, NULL, member, c, ctx) != 1)
+            return false;
+        if (EC_POINT_invert(group, cP, ctx) != 1)
+            return false;
+        if (EC_POINT_add(group, A, zG, cP, ctx) != 1)
+            return false;
+
+        CZarcECPointGuard zH(group), cT(group), B(group);
+        if (EC_POINT_mul(group, zH, NULL, tagBase, z, ctx) != 1)
+            return false;
+        if (EC_POINT_mul(group, cT, NULL, tag, c, ctx) != 1)
+            return false;
+        if (EC_POINT_invert(group, cT, ctx) != 1)
+            return false;
+        if (EC_POINT_add(group, B, zH, cT, ctx) != 1)
+            return false;
+
+        std::vector<unsigned char> aBytes, bBytes;
+        if (!NullStakeB2CPointToBytes(group, A, ctx, aBytes) ||
+            !NullStakeB2CPointToBytes(group, B, ctx, bBytes))
+            return false;
+        vAOut.push_back(aBytes);
+        vBOut.push_back(bBytes);
+    }
+    return true;
+}
+
+bool CreateNullStakeMofNHiddenAuthProof(const std::vector<std::vector<unsigned char> >& vStakerSet,
+                                        unsigned int nThresholdM,
+                                        const std::vector<unsigned char>& vchPkOwner,
+                                        const uint256& delegationHash,
+                                        const uint256& stakeDigest,
+                                        const CPedersenCommitment& kernelValueCommitment,
+                                        const std::vector<uint256>& vSignerSecrets,
+                                        CNullStakeMofNHiddenAuthProof& proofOut,
+                                        std::string& strError)
+{
+    proofOut = CNullStakeMofNHiddenAuthProof();
+    strError.clear();
+    if (!CZKContext::Initialize())
+    {
+        strError = "zk context initialization failed";
+        return false;
+    }
+    if (!NullStakeB2CValidateStatement(vStakerSet, nThresholdM, vchPkOwner, delegationHash,
+                                       stakeDigest, kernelValueCommitment, strError))
+        return false;
+    if (vSignerSecrets.size() != nThresholdM)
+    {
+        strError = "prototype requires exactly M signer secrets";
+        return false;
+    }
+
+    // NOTE: this construction is the ring xM DLEQ path unconditionally. A single-shot BPAC circuit for the
+    // full secp256k1 M-of-N authorization is estimated over the research cap even at M=1 (see
+    // EstimateNullStakeB2CHiddenAuthBPACBudget, kept as an ADVISORY sizing estimate for future work, not an
+    // operative feasibility branch), so there is no BPAC prover to select. Parameter validity is already
+    // enforced by NullStakeB2CValidateStatement above and the exactly-M signer-secret check.
+
+    proofOut.nVersion = NULLSTAKE_B2C_HIDDEN_AUTH_VERSION;
+    proofOut.nAuthType = NULLSTAKE_B2C_AUTH_TYPE_RINGXM_DLEQ;
+    proofOut.vchTagBaseNonce.resize(32);
+    if (RAND_bytes(proofOut.vchTagBaseNonce.data(), 32) != 1 ||
+        proofOut.vchTagBaseNonce == std::vector<unsigned char>(32, 0))
+    {
+        strError = "failed to create B2-c proof nonce";
+        return false;
+    }
+
+    const uint256 statementHash = ComputeNullStakeMofNHiddenAuthStatementHash(
+        vStakerSet, nThresholdM, vchPkOwner, delegationHash, stakeDigest, kernelValueCommitment);
+
+    CZarcECGroupGuard group;
+    CZarcBNCtxGuard ctx;
+    if (!group.group || !ctx.ctx)
+    {
+        strError = "EC context allocation failed";
+        return false;
+    }
+    CNullStakeBNGuard order;
+    if (!EC_GROUP_get_order(group, order, ctx))
+    {
+        strError = "EC order lookup failed";
+        return false;
+    }
+
+    CZarcECPointGuard tagBase(group);
+    if (!NullStakeB2CHashToTagBase(statementHash, proofOut.vchTagBaseNonce, group, ctx, tagBase))
+    {
+        strError = "failed to derive B2-c tag base";
+        return false;
+    }
+
+    std::vector<std::vector<unsigned char> > vUsedSignerPks;
+    for (size_t slot = 0; slot < vSignerSecrets.size(); slot++)
+    {
+        std::vector<unsigned char> signerPk;
+        if (!HalfAggStakeDerivePubKey(vSignerSecrets[slot], signerPk))
+        {
+            strError = "failed to derive signer pubkey";
+            return false;
+        }
+        std::vector<std::vector<unsigned char> >::const_iterator it =
+            std::find(vStakerSet.begin(), vStakerSet.end(), signerPk);
+        if (it == vStakerSet.end())
+        {
+            strError = "signer secret is not a member of the delegated set";
+            return false;
+        }
+        if (std::find(vUsedSignerPks.begin(), vUsedSignerPks.end(), signerPk) != vUsedSignerPks.end())
+        {
+            strError = "duplicate signer secret";
+            return false;
+        }
+        vUsedSignerPks.push_back(signerPk);
+        const size_t realIndex = (size_t)(it - vStakerSet.begin());
+
+        CNullStakeBNGuard sk;
+        if (!NullStakeB2CSecretToBN(vSignerSecrets[slot], order, ctx, sk))
+        {
+            strError = "invalid signer secret scalar";
+            return false;
+        }
+        CNullStakeBNGuard alpha;
+        if (!NullStakeB2CHedgedScalar(vSignerSecrets[slot], statementHash, proofOut.vchTagBaseNonce,
+                                      (uint32_t)slot, /*label=alpha*/ 0, 0, order, ctx, alpha, true))
+        {
+            strError = "failed to generate ring proof nonce";
+            return false;
+        }
+
+        CZarcECPointGuard tag(group);
+        if (EC_POINT_mul(group, tag, NULL, tagBase, sk, ctx) != 1)
+        {
+            strError = "failed to compute hidden duplicate tag";
+            return false;
+        }
+        CNullStakeMofNHiddenAuthRingSlotProof slotProof;
+        if (!NullStakeB2CPointToBytes(group, tag, ctx, slotProof.vchTag))
+        {
+            strError = "failed to encode hidden duplicate tag";
+            return false;
+        }
+
+        slotProof.vChallenges.assign(vStakerSet.size(), uint256(0));
+        slotProof.vResponses.assign(vStakerSet.size(), uint256(0));
+        std::vector<std::vector<unsigned char> > vA(vStakerSet.size());
+        std::vector<std::vector<unsigned char> > vB(vStakerSet.size());
+        CNullStakeBNGuard sumC;
+        BN_zero(sumC);
+
+        for (size_t i = 0; i < vStakerSet.size(); i++)
+        {
+            if (i == realIndex)
+            {
+                CZarcECPointGuard A(group), B(group);
+                if (EC_POINT_mul(group, A, alpha, NULL, NULL, ctx) != 1 ||
+                    EC_POINT_mul(group, B, NULL, tagBase, alpha, ctx) != 1 ||
+                    !NullStakeB2CPointToBytes(group, A, ctx, vA[i]) ||
+                    !NullStakeB2CPointToBytes(group, B, ctx, vB[i]))
+                {
+                    strError = "failed to create real ring commitment";
+                    return false;
+                }
+                continue;
+            }
+
+            CNullStakeBNGuard c, z;
+            if (!NullStakeB2CHedgedScalar(vSignerSecrets[slot], statementHash, proofOut.vchTagBaseNonce,
+                                          (uint32_t)slot, /*label=simC*/ 1, (uint32_t)i, order, ctx, c, false) ||
+                !NullStakeB2CHedgedScalar(vSignerSecrets[slot], statementHash, proofOut.vchTagBaseNonce,
+                                          (uint32_t)slot, /*label=simZ*/ 2, (uint32_t)i, order, ctx, z, false))
+            {
+                strError = "failed to generate simulated ring scalars";
+                return false;
+            }
+            BN_mod_add(sumC, sumC, c, order, ctx);
+            if (!NullStakeB2CBNToScalar(c, slotProof.vChallenges[i]) ||
+                !NullStakeB2CBNToScalar(z, slotProof.vResponses[i]))
+            {
+                strError = "failed to encode simulated ring scalars";
+                return false;
+            }
+
+            CZarcECPointGuard member(group);
+            if (!NullStakeB2CBytesToPoint(group, vStakerSet[i], member, ctx))
+            {
+                strError = "invalid member pubkey";
+                return false;
+            }
+            CZarcECPointGuard zG(group), cP(group), A(group);
+            if (EC_POINT_mul(group, zG, z, NULL, NULL, ctx) != 1 ||
+                EC_POINT_mul(group, cP, NULL, member, c, ctx) != 1 ||
+                EC_POINT_invert(group, cP, ctx) != 1 ||
+                EC_POINT_add(group, A, zG, cP, ctx) != 1)
+            {
+                strError = "failed to create simulated public-key commitment";
+                return false;
+            }
+            CZarcECPointGuard zH(group), cT(group), B(group);
+            if (EC_POINT_mul(group, zH, NULL, tagBase, z, ctx) != 1 ||
+                EC_POINT_mul(group, cT, NULL, tag, c, ctx) != 1 ||
+                EC_POINT_invert(group, cT, ctx) != 1 ||
+                EC_POINT_add(group, B, zH, cT, ctx) != 1)
+            {
+                strError = "failed to create simulated tag commitment";
+                return false;
+            }
+            if (!NullStakeB2CPointToBytes(group, A, ctx, vA[i]) ||
+                !NullStakeB2CPointToBytes(group, B, ctx, vB[i]))
+            {
+                strError = "failed to encode simulated ring commitments";
+                return false;
+            }
+        }
+
+        CNullStakeBNGuard totalC, realC, realZ, tmp;
+        if (!NullStakeB2CComputeSlotChallenge(statementHash, proofOut.vchTagBaseNonce,
+                                              (unsigned int)slot, slotProof.vchTag,
+                                              vA, vB, order, ctx, totalC))
+        {
+            strError = "failed to compute ring challenge";
+            return false;
+        }
+        BN_mod_sub(realC, totalC, sumC, order, ctx);
+        BN_mod_mul(tmp, realC, sk, order, ctx);
+        BN_mod_add(realZ, alpha, tmp, order, ctx);
+
+        if (!NullStakeB2CBNToScalar(realC, slotProof.vChallenges[realIndex]) ||
+            !NullStakeB2CBNToScalar(realZ, slotProof.vResponses[realIndex]))
+        {
+            strError = "failed to encode real ring scalars";
+            return false;
+        }
+        proofOut.vRingSlotProofs.push_back(slotProof);
+    }
+
+    if (proofOut.GetProofSize() > NULLSTAKE_B2C_RINGXM_AUTH_PROOF_MAX_SIZE)
+    {
+        strError = "B2-c ring xM proof exceeds research cap";
+        proofOut = CNullStakeMofNHiddenAuthProof();
+        return false;
+    }
+    if (!VerifyNullStakeMofNHiddenAuthProof(vStakerSet, nThresholdM, vchPkOwner,
+                                            delegationHash, stakeDigest, kernelValueCommitment,
+                                            proofOut, strError))
+    {
+        proofOut = CNullStakeMofNHiddenAuthProof();
+        return false;
+    }
+    return true;
+}
+
+bool VerifyNullStakeMofNHiddenAuthProof(const std::vector<std::vector<unsigned char> >& vStakerSet,
+                                        unsigned int nThresholdM,
+                                        const std::vector<unsigned char>& vchPkOwner,
+                                        const uint256& delegationHash,
+                                        const uint256& stakeDigest,
+                                        const CPedersenCommitment& kernelValueCommitment,
+                                        const CNullStakeMofNHiddenAuthProof& proof,
+                                        std::string& strError)
+{
+    strError.clear();
+    if (!CZKContext::Initialize())
+    {
+        strError = "zk context initialization failed";
+        return false;
+    }
+    if (!NullStakeB2CValidateStatement(vStakerSet, nThresholdM, vchPkOwner, delegationHash,
+                                       stakeDigest, kernelValueCommitment, strError))
+        return false;
+    if (proof.nVersion != NULLSTAKE_B2C_HIDDEN_AUTH_VERSION)
+    {
+        strError = "unsupported B2-c hidden auth proof version";
+        return false;
+    }
+    if (proof.nAuthType != NULLSTAKE_B2C_AUTH_TYPE_RINGXM_DLEQ)
+    {
+        strError = "unsupported B2-c hidden auth proof type";
+        return false;
+    }
+    if (!proof.vchResearchProof.empty())
+    {
+        strError = "unexpected BPAC research proof bytes in ring xM proof";
+        return false;
+    }
+    if (proof.vchTagBaseNonce.size() != 32 ||
+        proof.vchTagBaseNonce == std::vector<unsigned char>(32, 0))
+    {
+        strError = "invalid B2-c proof nonce";
+        return false;
+    }
+    if (proof.vRingSlotProofs.size() != nThresholdM)
+    {
+        strError = "ring slot count must equal threshold M";
+        return false;
+    }
+    if (proof.GetProofSize() > NULLSTAKE_B2C_RINGXM_AUTH_PROOF_MAX_SIZE)
+    {
+        strError = "B2-c hidden auth proof exceeds research cap";
+        return false;
+    }
+
+    const uint256 statementHash = ComputeNullStakeMofNHiddenAuthStatementHash(
+        vStakerSet, nThresholdM, vchPkOwner, delegationHash, stakeDigest, kernelValueCommitment);
+
+    CZarcECGroupGuard group;
+    CZarcBNCtxGuard ctx;
+    if (!group.group || !ctx.ctx)
+    {
+        strError = "EC context allocation failed";
+        return false;
+    }
+    CNullStakeBNGuard order;
+    if (!EC_GROUP_get_order(group, order, ctx))
+    {
+        strError = "EC order lookup failed";
+        return false;
+    }
+    CZarcECPointGuard tagBase(group);
+    if (!NullStakeB2CHashToTagBase(statementHash, proof.vchTagBaseNonce, group, ctx, tagBase))
+    {
+        strError = "failed to derive B2-c tag base";
+        return false;
+    }
+
+    std::vector<std::vector<unsigned char> > vTagsSeen;
+    for (size_t slot = 0; slot < proof.vRingSlotProofs.size(); slot++)
+    {
+        const CNullStakeMofNHiddenAuthRingSlotProof& slotProof = proof.vRingSlotProofs[slot];
+        if (slotProof.vChallenges.size() != vStakerSet.size() ||
+            slotProof.vResponses.size() != vStakerSet.size())
+        {
+            strError = "ring scalar vector size mismatch";
+            return false;
+        }
+
+        CZarcECPointGuard tag(group);
+        if (!NullStakeB2CBytesToPoint(group, slotProof.vchTag, tag, ctx))
+        {
+            strError = "invalid hidden duplicate tag";
+            return false;
+        }
+        if (std::find(vTagsSeen.begin(), vTagsSeen.end(), slotProof.vchTag) != vTagsSeen.end())
+        {
+            strError = "duplicate hidden signer tag";
+            return false;
+        }
+        vTagsSeen.push_back(slotProof.vchTag);
+
+        std::vector<std::vector<unsigned char> > vA, vB;
+        if (!NullStakeB2CComputeProofCommitments(vStakerSet, tag, tagBase,
+                                                 slotProof.vChallenges,
+                                                 slotProof.vResponses,
+                                                 group, order, ctx, vA, vB))
+        {
+            strError = "failed to reconstruct ring commitments";
+            return false;
+        }
+
+        CNullStakeBNGuard expectedC, sumC;
+        BN_zero(sumC);
+        for (size_t i = 0; i < slotProof.vChallenges.size(); i++)
+        {
+            CNullStakeBNGuard c;
+            if (!NullStakeB2CScalarToBN(slotProof.vChallenges[i], order, c))
+            {
+                strError = "non-canonical ring challenge scalar";
+                return false;
+            }
+            BN_mod_add(sumC, sumC, c, order, ctx);
+        }
+        if (!NullStakeB2CComputeSlotChallenge(statementHash, proof.vchTagBaseNonce,
+                                              (unsigned int)slot, slotProof.vchTag,
+                                              vA, vB, order, ctx, expectedC))
+        {
+            strError = "failed to compute expected ring challenge";
+            return false;
+        }
+        if (BN_cmp(sumC, expectedC) != 0)
+        {
+            strError = "ring DLEQ challenge sum mismatch";
+            return false;
+        }
+    }
+    return true;
+}
