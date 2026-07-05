@@ -4923,18 +4923,35 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                                        (unsigned int)vtx[1].nullstakeProofV3.acProof.GetProofSize(),
                                        (unsigned int)BPAC_V3_MAX_PROOF_SIZE));
 
-            // B2-e: bound the M-of-N vectors before the kernel verifier (defense in depth;
-            // the verifier also enforces these caps).
+            // B2-e/B2-c: bound the M-of-N vectors before the kernel verifier (defense in depth; the tier
+            // verifiers also enforce these). Branch on nAuthMode so the bounds match the tier the verifier
+            // dispatches to -- otherwise a B2-c hidden proof (empty half-agg triple) would be wrongly
+            // rejected here before the tier-aware verifier runs.
             if (vtx[1].nullstakeProofV3.nThresholdM > 0)
             {
                 const CNullStakeKernelProofV3& mp = vtx[1].nullstakeProofV3;
-                if (mp.nThresholdM > MAX_NULLSTAKE_MOFN_MEMBERS ||
-                    mp.vStakerSet.empty() || mp.vStakerSet.size() > MAX_NULLSTAKE_MOFN_MEMBERS ||
-                    mp.nThresholdM > mp.vStakerSet.size() ||
-                    mp.vSignerPubKeys.size() < mp.nThresholdM ||
-                    mp.vSignerPubKeys.size() > MAX_NULLSTAKE_MOFN_SIGNERS ||
-                    mp.vSignerRPoints.size() != mp.vSignerPubKeys.size() ||
-                    mp.vchAggregatedSScalar.size() != 32)
+                bool fBounds = mp.nThresholdM <= MAX_NULLSTAKE_MOFN_MEMBERS &&
+                               !mp.vStakerSet.empty() && mp.vStakerSet.size() <= MAX_NULLSTAKE_MOFN_MEMBERS &&
+                               mp.nThresholdM <= mp.vStakerSet.size();
+                if (mp.nAuthMode == NULLSTAKE_AUTHMODE_B2C_HIDDEN)
+                {
+                    // Hidden tier: the public half-agg triple MUST be empty; carries a hiddenAuth blob.
+                    fBounds = fBounds &&
+                              mp.vSignerPubKeys.empty() && mp.vSignerRPoints.empty() &&
+                              mp.vchAggregatedSScalar.empty() &&
+                              !mp.hiddenAuth.IsNull() &&
+                              mp.hiddenAuth.GetProofSize() <= NULLSTAKE_B2C_MAX_AUTH_SIZE;
+                }
+                else
+                {
+                    // Public half-agg tier: the M signer vectors + the aggregated s-scalar.
+                    fBounds = fBounds &&
+                              mp.vSignerPubKeys.size() >= mp.nThresholdM &&
+                              mp.vSignerPubKeys.size() <= MAX_NULLSTAKE_MOFN_SIGNERS &&
+                              mp.vSignerRPoints.size() == mp.vSignerPubKeys.size() &&
+                              mp.vchAggregatedSScalar.size() == 32;
+                }
+                if (!fBounds)
                     return DoS(100, error("ConnectBlock() : NullStake V3 M-of-N structural bounds violated"));
             }
 
