@@ -4957,8 +4957,48 @@ bool CFinalityTracker::DisconnectBlockCommitteeRotations(CTxDB& txdb, const uint
     LOCK(cs_finality);
     for (const CFinalityCommitteeRotation& rot : vRots)
     {
-        DisconnectCommitteeRotation(rot.nEffectiveEpoch);
-        txdb.EraseFinalityCommitteeRotation(rot.nEffectiveEpoch);
+        const int nEff = rot.nEffectiveEpoch;
+        // A committee rotation for an effective epoch may be carried by MORE THAN ONE connected block
+        // (the same or a competing rotation re-embedded across DAG siblings/branches -- normal under IDAG,
+        // exactly as for votes/shares/certs). Only tear the rotation down when NO OTHER still-connected
+        // block carries this effective epoch; otherwise re-resolve the canonical winner (lowest GetHash)
+        // from the surviving carriers and rewrite memory + DB. This mirrors the DisconnectBlockVotes/
+        // Shares/Certificates guards and keeps the committee resolver a pure function of the connected
+        // chain -- an unconditional erase here diverges the resolver across nodes -> consensus split.
+        std::vector<CFinalityCommitteeRotation> vSurviving;
+        for (const std::pair<const uint256, std::vector<int> >& carrier : mapBlockConnectedRotations)
+        {
+            if (carrier.first == hashBlock)
+                continue;
+            if (std::find(carrier.second.begin(), carrier.second.end(), nEff) == carrier.second.end())
+                continue;
+            std::map<uint256, CBlockIndex*>::iterator itIdx = mapBlockIndex.find(carrier.first);
+            if (itIdx == mapBlockIndex.end() || itIdx->second == NULL)
+                continue;
+            CBlock blkCarrier;
+            if (!blkCarrier.ReadFromDisk(itIdx->second, true))
+                continue;
+            std::vector<CFinalityCommitteeRotation> vOther =
+                ExtractFinalityCommitteeRotationsFromBlock(blkCarrier);
+            for (const CFinalityCommitteeRotation& r : vOther)
+                if (r.nEffectiveEpoch == nEff)
+                    vSurviving.push_back(r);
+        }
+
+        if (vSurviving.empty())
+        {
+            DisconnectCommitteeRotation(nEff);
+            txdb.EraseFinalityCommitteeRotation(nEff);
+        }
+        else
+        {
+            const CFinalityCommitteeRotation* pWinner = &vSurviving[0];
+            for (size_t i = 1; i < vSurviving.size(); i++)
+                if (vSurviving[i].GetHash() < pWinner->GetHash())
+                    pWinner = &vSurviving[i];
+            mapConnectedRotations[nEff] = *pWinner;
+            txdb.WriteFinalityCommitteeRotation(nEff, *pWinner);
+        }
     }
     mapBlockConnectedRotations.erase(hashBlock);
     txdb.EraseFinalityConnectedRotationBlock(hashBlock);
