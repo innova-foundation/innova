@@ -325,6 +325,27 @@ inline int GetForkHeightVoteSetRoot()
 }
 #define FORK_HEIGHT_VOTESET_ROOT (GetForkHeightVoteSetRoot())
 
+// Deterministic epoch-state anchor (v2). ComputeEpochState originally derived the epoch's
+// block set + DAG order from SelectBestDAGTip() -- the node-local LIVE tip -- computed once at
+// boundary crossing and never recomputed on reorg, so two nodes could freeze different
+// curve/nullifier/vote-set roots for the same epoch -> a private vote/cert anchored to the
+// canonical root passed on one node and was rejected on another -> permanent ConnectBlock split.
+// Above this height ComputeEpochState is a PURE function of a CANONICAL anchor block
+// (GetDAGLinearOrder is anchor-pure: selected-parent chain + committed vDAGParents + coloring):
+// it is computed only for a best-chain extension (side branches skip) and recomputed from the
+// new best tip on reorg. The consumed state is always the FINALIZED epoch, which reorgs cannot
+// change (Reorganize rejects sub-finalized reorgs), so the anchor is stable + agreed by all nodes.
+// This changes the epoch-root derivation, so it is a fresh-chain-only rule (no migration of old
+// epoch records). Regtest-active so the finality e2e + unit harness exercise it; testnet/mainnet
+// INERT (sentinel) pending the multi-node reorg e2e -- flip to GetForkHeightDAG() once validated.
+inline int GetForkHeightEpochStateV2()
+{
+    extern bool fRegTest;
+    if (fRegTest) return GetForkHeightDAG();
+    return 0x7FFFFFFF;               // testnet/mainnet: inert until reorg-validated
+}
+#define FORK_HEIGHT_EPOCH_STATE_V2 (GetForkHeightEpochStateV2())
+
 // Nullifier binding: above this height shielded spends and private finality
 // votes must carry a note-bound nullifier proof. Testnet relaunches the shielded
 // pool clean here. Mainnet MUST enforce it from the first height a shielded

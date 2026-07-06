@@ -6028,6 +6028,35 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
         mempool.removeConflicts(tx);
     }
 
+    // Deterministic epoch-state anchor: AddToBlockIndex computes an epoch's state once, when its
+    // boundary block extends the best chain -- it is NOT re-run when a reorg changes that epoch's
+    // blocks (the ConnectBlock calls above do not go through AddToBlockIndex). Re-anchor every
+    // completed epoch overlapping the reorged span to the NEW best tip (pindexNew), whose committed
+    // selected-parent chain + DAG merges are now canonical and, post-recolor above, consistently
+    // coloured. Reorgs cannot descend below the finalized height (guarded above), so the FINALIZED
+    // epochs that CheckVote/CheckTallyCertificate anchor to are unaffected -- only not-yet-finalized
+    // epochs are re-anchored here, before they can finalize. Gated to FORK_HEIGHT_EPOCH_STATE_V2
+    // (regtest-only for now); pre-fork chains keep the exact legacy behavior.
+    if (pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V2 && pfork)
+    {
+        int nForkEpoch = GetEpochForHeight(pfork->nHeight);
+        int nTipEpoch  = GetEpochForHeight(pindexNew->nHeight);
+        CTxDB txdbEpochReorg;
+        bool fTxn = txdbEpochReorg.TxnBegin();
+        for (int nEpoch = nForkEpoch; nEpoch < nTipEpoch; nEpoch++)
+        {
+            int nEpochStart = GetEpochBoundaryHeight(nEpoch, pindexNew->nHeight);
+            int nEpochEnd   = GetEpochBoundaryHeight(nEpoch + 1, pindexNew->nHeight) - 1;
+            int nEpochInterval = (nEpochEnd >= nEpochStart) ? (nEpochEnd - nEpochStart + 1)
+                                                            : GetEpochInterval(nEpochStart);
+            g_dagManager.ComputeEpochState(nEpoch, nEpochInterval, pindexNew);
+            if (fTxn)
+                g_dagManager.WriteEpochState(txdbEpochReorg, nEpoch);
+        }
+        if (fTxn)
+            txdbEpochReorg.TxnCommit();
+    }
+
     CollateralNReorgBlock = true;
     printf("REORGANIZE: done\n");
 
@@ -6415,13 +6444,23 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                     int nEpochEnd = GetEpochBoundaryHeight(nCompletedEpoch + 1, pindexNew->nHeight) - 1;
                     int nEpochInterval = (nEpochEnd >= nEpochStart) ? (nEpochEnd - nEpochStart + 1) : GetEpochInterval(nEpochStart);
 
-                    g_dagManager.ComputeEpochState(nCompletedEpoch, nEpochInterval);
-
-                    CTxDB txdbEpoch;
-                    if (txdbEpoch.TxnBegin())
+                    // V2 (deterministic anchor): compute the epoch state only for a linear best-chain
+                    // extension, anchored to the boundary-crossing block. A side branch must NOT overwrite
+                    // the canonical epoch state (that was the side-branch-corruption path), and a reorg
+                    // re-anchors the touched epochs from the new best tip in Reorganize(). Pre-fork keeps
+                    // the legacy unconditional live-best-tip computation byte-for-byte.
+                    bool fEpochV2 = (pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V2);
+                    if (!fEpochV2 || hashPrevBlock == hashBestChain)
                     {
-                        g_dagManager.WriteEpochState(txdbEpoch, nCompletedEpoch);
-                        txdbEpoch.TxnCommit();
+                        g_dagManager.ComputeEpochState(nCompletedEpoch, nEpochInterval,
+                                                       fEpochV2 ? pindexNew : NULL);
+
+                        CTxDB txdbEpoch;
+                        if (txdbEpoch.TxnBegin())
+                        {
+                            g_dagManager.WriteEpochState(txdbEpoch, nCompletedEpoch);
+                            txdbEpoch.TxnCommit();
+                        }
                     }
 
                     // Prune old DAG data periodically

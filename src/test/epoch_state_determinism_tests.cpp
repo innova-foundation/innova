@@ -149,11 +149,17 @@ BOOST_AUTO_TEST_CASE(dag_linear_order_is_anchor_pure)
     BOOST_CHECK(!contains(orderAfter, uint256(0xE00000FF)));  // unreachable sibling excluded
 }
 
-// BUG REPRODUCTION: an epoch's stored state is frozen at first computation and is NOT
-// recomputed when a reorg replaces that epoch's blocks. Chain A and chain B carry different
-// blocks at the same in-epoch height; after "reorging" A->B the stored epoch state still
-// lists chain A's block, and only an explicit recompute reflects chain B.
-BOOST_AUTO_TEST_CASE(epoch_state_frozen_not_recomputed_on_reorg)
+// THE FIX (HIGH #2): ComputeEpochState anchored to a canonical tip must be a PURE function of
+// that anchor -- the epoch it produces reflects the anchor's selected-parent chain, NOT the
+// node-local live best tip. Two competing branches coexist in the DAG; anchoring to each tip
+// yields that branch's epoch, and flipping pindexBest to the OTHER branch does not change the
+// result. This is exactly what removes the frozen-live-tip cross-node divergence: every node
+// validating a block anchors the epoch to that block's chain and computes identical roots.
+//
+// Pre-fork (legacy path) ComputeEpochState ignores the anchor and reads SelectBestDAGTip(), so
+// this property would NOT hold; the DAGHarness forces fRegTest on, which activates
+// FORK_HEIGHT_EPOCH_STATE_V2 in-test so the anchored path runs.
+BOOST_AUTO_TEST_CASE(epoch_state_is_deterministic_per_anchor)
 {
     DAGHarness h;
 
@@ -169,46 +175,39 @@ BOOST_AUTO_TEST_CASE(epoch_state_frozen_not_recomputed_on_reorg)
     CBlockIndex* pE0 = h.add(0xE0000000, hStart, none, NULL);
     std::vector<uint256> pe0(1, uint256(0xE0000000));
 
-    // ---- Phase 1: chain A is canonical ----
+    // Two competing branches from the shared base pE0, BOTH present in the DAG at once.
     CBlockIndex* pA    = h.add(0x0A000012, hStart + 1, pe0,                              pE0);
     std::vector<uint256> pAp(1, hA);
     CBlockIndex* pEndA = h.add(0x0A000310, hEnd,       pAp,                              pA);
     std::vector<uint256> pEndAp(1, uint256(0x0A000310));
     CBlockIndex* pTipA = h.add(0x0A000311, hEnd + 1,   pEndAp,                           pEndA);
-    pindexBest = pTipA;
 
-    BOOST_REQUIRE(g_dagManager.ComputeEpochState(E, interval));
-    CEpochState sA;
-    BOOST_REQUIRE(g_dagManager.GetEpochState(E, sA));
-    BOOST_CHECK(contains(sA.vBlockHashes, hA));    // chain A's block is in the epoch
-    BOOST_CHECK(!contains(sA.vBlockHashes, hB));
-
-    // ---- Phase 2: reorg A -> B (disconnect A's branch, connect B's) ----
-    h.remove(0x0A000012);
-    h.remove(0x0A000310);
-    h.remove(0x0A000311);
     CBlockIndex* pB    = h.add(0x0B000012, hStart + 1, pe0,                              pE0);
     std::vector<uint256> pBp(1, hB);
     CBlockIndex* pEndB = h.add(0x0B000310, hEnd,       pBp,                              pB);
     std::vector<uint256> pEndBp(1, uint256(0x0B000310));
     CBlockIndex* pTipB = h.add(0x0B000311, hEnd + 1,   pEndBp,                           pEndB);
+
+    // Anchor to chain A's tip while the live best tip is deliberately chain B: the epoch must be
+    // chain A's regardless (anchor-pure, no SelectBestDAGTip dependency).
     pindexBest = pTipB;
+    BOOST_REQUIRE(g_dagManager.ComputeEpochState(E, interval, pTipA));
+    CEpochState sA;
+    BOOST_REQUIRE(g_dagManager.GetEpochState(E, sA));
+    BOOST_CHECK(contains(sA.vBlockHashes, hA));
+    BOOST_CHECK(!contains(sA.vBlockHashes, hB));
 
-    // THE BUG: the reorg changed the canonical chain, but nothing recomputed the epoch state.
-    CEpochState sStale;
-    BOOST_REQUIRE(g_dagManager.GetEpochState(E, sStale));
-    // FLIP-WHEN-FIXED: once HIGH #2 (recompute-on-reorg) lands, the stored state must already
-    // reflect chain B here -- i.e. contains(sStale.vBlockHashes, hB) && !contains(..., hA).
-    BOOST_CHECK(contains(sStale.vBlockHashes, hA));    // stale: still chain A
-    BOOST_CHECK(!contains(sStale.vBlockHashes, hB));   // stale: chain B absent
-
-    // ---- Phase 3: explicit recompute (what the fix's reorg hook must do) yields chain B ----
-    BOOST_REQUIRE(g_dagManager.ComputeEpochState(E, interval));
+    // Anchor to chain B's tip while the live best tip is deliberately chain A: epoch must be B's.
+    pindexBest = pTipA;
+    BOOST_REQUIRE(g_dagManager.ComputeEpochState(E, interval, pTipB));
     CEpochState sB;
     BOOST_REQUIRE(g_dagManager.GetEpochState(E, sB));
-    BOOST_CHECK(contains(sB.vBlockHashes, hB));        // recomputed: now chain B
+    BOOST_CHECK(contains(sB.vBlockHashes, hB));
     BOOST_CHECK(!contains(sB.vBlockHashes, hA));
-    BOOST_CHECK(sA.vBlockHashes != sB.vBlockHashes);   // the reorg genuinely changes epoch E
+
+    // The two anchors yield genuinely different canonical epochs (the reorg case), and the epoch
+    // is a pure function of the anchor -- the HIGH #2 frozen-live-tip divergence is gone.
+    BOOST_CHECK(sA.vBlockHashes != sB.vBlockHashes);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

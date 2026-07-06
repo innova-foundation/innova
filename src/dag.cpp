@@ -1144,7 +1144,7 @@ bool CDAGManager::PruneDAGData(CTxDB& txdb, int nHeight)
 // CDAGManager: Epoch State Computation
 // ---------------------------------------------------------------------------
 
-bool CDAGManager::ComputeEpochState(int nEpoch, int nEpochInterval)
+bool CDAGManager::ComputeEpochState(int nEpoch, int nEpochInterval, const CBlockIndex* pAnchorTip)
 {
     LOCK(cs_dag);
 
@@ -1166,7 +1166,15 @@ bool CDAGManager::ComputeEpochState(int nEpoch, int nEpochInterval)
     // Post-DAG epoch boundaries follow the selected-parent chain, not a
     // height-sorted side effect of local arrival order.
     CBlockIndex* pBoundary = NULL;
-    CBlockIndex* pBestTip = SelectBestDAGTip();
+    // Deterministic anchor: post-FORK_HEIGHT_EPOCH_STATE_V2, order the epoch off the CANONICAL anchor
+    // block the caller supplies (its committed selected-parent chain + vDAGParents), NOT the node-local
+    // live best tip. GetDAGLinearOrder() is a pure function of its anchor, so this is the single change
+    // that makes the epoch roots reorg-safe and identical across nodes. Pre-fork / no anchor keeps the
+    // legacy live-tip derivation byte-for-byte (the fork gate is regtest-only for now).
+    const bool fDeterministicAnchor =
+        (state.nHeightEnd >= FORK_HEIGHT_EPOCH_STATE_V2) && (pAnchorTip != NULL);
+    CBlockIndex* pBestTip = fDeterministicAnchor ? const_cast<CBlockIndex*>(pAnchorTip)
+                                                 : SelectBestDAGTip();
     if (pBestTip && pBestTip->nHeight >= state.nHeightEnd)
     {
         CBlockIndex* pWalk = pBestTip;
@@ -1211,32 +1219,52 @@ bool CDAGManager::ComputeEpochState(int nEpoch, int nEpochInterval)
         }
     }
 
-    // Include any DAG-era blocks missing from the selected order using stored
-    // DAG order as deterministic fallback.
-    std::vector<std::pair<int, uint256>> vEpochBlocks;
-    for (const auto& pair : mapDAGData)
+    if (fDeterministicAnchor)
     {
-        std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(pair.first);
-        if (mi == mapBlockIndex.end())
-            continue;
-
-        int nBlockHeight = mi->second->nHeight;
-        if (nBlockHeight >= state.nHeightStart && nBlockHeight <= state.nHeightEnd)
+        // Canonical accounting: block-count + blue-trust over EXACTLY the anchor-ordered set
+        // (state.vBlockHashes built above). The legacy mapDAGData sweep folds in every locally-seen
+        // side-branch block in the height range and appends by a live-tip-derived nDAGOrder sort --
+        // both node-local -- which would reintroduce the divergence this fork removes.
+        for (const uint256& hashBlock : state.vBlockHashes)
         {
-            if (mi->second->nHeight >= FORK_HEIGHT_DAG && mi->second->IsProofOfStake())
+            std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashBlock);
+            if (mi == mapBlockIndex.end())
                 continue;
-            if (!setOrdered.count(pair.first))
-                vEpochBlocks.push_back(std::make_pair(pair.second.nDAGOrder, pair.first));
             state.nBlockCount++;
-
-            if (pair.second.fBlue)
+            auto dit = mapDAGData.find(hashBlock);
+            if (dit != mapDAGData.end() && dit->second.fBlue)
                 state.nTotalTrust = state.nTotalTrust + mi->second->GetBlockTrust();
         }
     }
+    else
+    {
+        // Include any DAG-era blocks missing from the selected order using stored
+        // DAG order as deterministic fallback.
+        std::vector<std::pair<int, uint256>> vEpochBlocks;
+        for (const auto& pair : mapDAGData)
+        {
+            std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(pair.first);
+            if (mi == mapBlockIndex.end())
+                continue;
 
-    std::sort(vEpochBlocks.begin(), vEpochBlocks.end());
-    for (const auto& pair : vEpochBlocks)
-        state.vBlockHashes.push_back(pair.second);
+            int nBlockHeight = mi->second->nHeight;
+            if (nBlockHeight >= state.nHeightStart && nBlockHeight <= state.nHeightEnd)
+            {
+                if (mi->second->nHeight >= FORK_HEIGHT_DAG && mi->second->IsProofOfStake())
+                    continue;
+                if (!setOrdered.count(pair.first))
+                    vEpochBlocks.push_back(std::make_pair(pair.second.nDAGOrder, pair.first));
+                state.nBlockCount++;
+
+                if (pair.second.fBlue)
+                    state.nTotalTrust = state.nTotalTrust + mi->second->GetBlockTrust();
+            }
+        }
+
+        std::sort(vEpochBlocks.begin(), vEpochBlocks.end());
+        for (const auto& pair : vEpochBlocks)
+            state.vBlockHashes.push_back(pair.second);
+    }
 
     // Epoch-root privacy state is derived from deterministic DAG order.
     // Starting from the previous persisted epoch snapshot avoids mutable

@@ -217,8 +217,11 @@ public:
     /** Prune DAG data below nHeight - DAG_PRUNE_DEPTH, preserving epoch boundaries. */
     bool PruneDAGData(CTxDB& txdb, int nHeight);
 
-    /** Compute epoch state for a completed epoch. */
-    bool ComputeEpochState(int nEpoch, int nEpochInterval);
+    /** Compute epoch state for a completed epoch.
+     *  pAnchorTip: post-FORK_HEIGHT_EPOCH_STATE_V2, the CANONICAL tip block whose selected-parent
+     *  chain + committed DAG merges define the epoch's block set and order (deterministic, reorg-safe).
+     *  NULL (or pre-fork) falls back to the legacy live-best-tip derivation. */
+    bool ComputeEpochState(int nEpoch, int nEpochInterval, const CBlockIndex* pAnchorTip = NULL);
 
     /** Write epoch state to LevelDB. */
     bool WriteEpochState(CTxDB& txdb, int nEpoch);
