@@ -507,9 +507,10 @@ TEST_OBJS= \
     obj/test/nullsend_binding_tests.o \
     obj/test/coinstake_guard_tests.o \
     obj/test/finality_committee_sig_tests.o \
-    obj/test/halfagg_stake_tests.o
+    obj/test/halfagg_stake_tests.o \
+    obj/test/epoch_state_determinism_tests.o
 
-.PHONY: all innova-build check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-finality-committee-sig release-check
+.PHONY: all innova-build check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-finality-committee-sig check-epoch-state-determinism release-check
 
 INNOVA_SPINNER ?= 1
 INNOVA_SPINNER_SCRIPT ?= ../contrib/innova_build_spinner.sh
