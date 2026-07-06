@@ -31,11 +31,12 @@
 enum VerifyCacheDomain
 {
     VERIFYCACHE_NULLSTAKE_V2   = 1,
-    VERIFYCACHE_NULLSTAKE_V3   = 2,
+    VERIFYCACHE_NULLSTAKE_V3   = 2,   // also carries B2-c hidden proofs: keyed on the FULL serialized
+                                      // CNullStakeKernelProofV3 bytes (incl. the entire hiddenAuth blob),
+                                      // never on a recomputed statement hash -- a statement-keyed cache
+                                      // would false-accept a distinct invalid proof over the same statement.
     VERIFYCACHE_FCMP           = 3,
-    VERIFYCACHE_NULLIFIER_BIND = 4,
-    VERIFYCACHE_NULLSTAKE_B2C  = 5    // B2-c hidden-signer: keyed on the recomputed statement hash, NOT proof bytes
-
+    VERIFYCACHE_NULLIFIER_BIND = 4
 };
 
 // True if the verify-once cache is enabled (-verifycache, default on).

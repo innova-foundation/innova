@@ -1307,7 +1307,10 @@ void CPUMiner(CWallet* pwallet)
                 LOCK(cs_vNodes);
                 fNoNodes = vNodes.empty();
             }
-            bool fSkipBootstrap = (nBestHeight <= 10);
+            // The low-height bootstrap-skip lets a fresh chain mine its first blocks without peers/IBD
+            // (needed to bring up regtest + a fresh testnet). Restrict it to regtest/testnet so a
+            // mainnet node can never mine low-difficulty stub blocks off genesis during IBD/no-peers.
+            bool fSkipBootstrap = (nBestHeight <= 10) && (fRegTest || fTestNet);
             if (!fSkipBootstrap && (fNoNodes || IsInitialBlockDownload()))
             {
                 MilliSleep(1000);

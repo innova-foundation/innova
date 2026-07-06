@@ -1192,7 +1192,11 @@ bool CDAGManager::ComputeEpochState(int nEpoch, int nEpochInterval, const CBlock
         if (pWalk && pWalk->nHeight == state.nHeightEnd)
             pBoundary = pWalk;
     }
-    if (!pBoundary)
+    // Legacy path only: FindBlockByHeight follows live pnext/best-chain links (node-local). In the
+    // deterministic-anchor path the selected-parent walk above always lands on nHeightEnd (anchor height
+    // >= nHeightEnd), so this fallback is unreachable there -- gate it out so it can never silently
+    // reintroduce a live-tip dependency into the anchor-pure computation.
+    if (!pBoundary && !fDeterministicAnchor)
         pBoundary = FindBlockByHeight(state.nHeightEnd);
     if (pBoundary && pBoundary->phashBlock)
     {
@@ -1341,7 +1345,7 @@ bool CDAGManager::ComputeEpochState(int nEpoch, int nEpochInterval, const CBlock
                 continue;
             if (!fHaveBestCert ||
                 cert.nTier > bestCert.nTier ||
-                (cert.nTier == bestCert.nTier && cert.GetHash() < bestCert.GetHash()))
+                (cert.nTier == bestCert.nTier && cert.GetSignatureDigest() < bestCert.GetSignatureDigest()))
             {
                 bestCert = cert;
                 fHaveBestCert = true;

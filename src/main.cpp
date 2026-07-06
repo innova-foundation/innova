@@ -5855,7 +5855,21 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
     printf("REORGANIZE\n");
 
     {
+        // The deterministic epoch-state anchor (HIGH#2) is immutable ONLY if reorgs never descend below
+        // the finalized height its consumers use -- GetDeterministicFinalizedHeight (CheckVote /
+        // CheckTallyCertificate / FCMP-spend). The live consecutive-HARD streak GetFinalizedHeight() can
+        // transiently STALL below the deterministic value (out-of-order vote arrival resets the streak),
+        // so guarding on the live value alone would permit a sub-deterministic-finalized reorg that
+        // re-anchors a finalized epoch's roots + persisted curve tree -> cross-node split. Guard on the
+        // MAX of both so the immutability boundary always covers what the anchor consumers treat as final.
         int nFinalHeight = g_finalityTracker.GetFinalizedHeight();
+        if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
+        {
+            int nDetFinal = g_dagManager.GetDeterministicFinalizedHeight(
+                GetEpochForHeight(pindexBest->nHeight) - 1);
+            if (nDetFinal > nFinalHeight)
+                nFinalHeight = nDetFinal;
+        }
         if (nFinalHeight > 0 && pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
         {
             CBlockIndex* pCheck = pindexBest;
@@ -6118,7 +6132,16 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
     else
     {
         {
+            // MEDIUM-1 (see Reorganize): guard on max(live, deterministic) finalized height so a
+            // sub-deterministic-finalized reorg can never re-anchor a finalized epoch's roots -> split.
             int nFinalHeight = g_finalityTracker.GetFinalizedHeight();
+            if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
+            {
+                int nDetFinal = g_dagManager.GetDeterministicFinalizedHeight(
+                    GetEpochForHeight(pindexBest->nHeight) - 1);
+                if (nDetFinal > nFinalHeight)
+                    nFinalHeight = nDetFinal;
+            }
             if (nFinalHeight > 0 && pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
             {
                 CBlockIndex* pWalk = pindexNew;

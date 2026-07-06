@@ -4070,6 +4070,22 @@ bool CFinalityTracker::AddTallyAggregatePartial(const CFinalityTallyAggregatePar
 
 bool CFinalityTracker::AddTallyCertificate(const CFinalityTallyCertificate& cert, bool fCheck, bool fRecordFinality)
 {
+    // Relay-DoS mitigation: on the relay path, reject an already-known certificate (by hash or by
+    // automation-context) BEFORE the expensive CheckTallyCertificate (which runs the uncached bulletproof
+    // threshold+budget verification). Otherwise a replayed cert forces a full verification on every
+    // delivery. The authoritative dedup + add still run under the lock below; this is a cheap early-out.
+    if (fCheck && !fRecordFinality)
+    {
+        LOCK(cs_finality);
+        uint256 hashKnown = cert.GetHash();
+        uint256 hashCtx = 0;
+        if (mapPendingTallyCertificates.count(hashKnown) ||
+            mapConnectedTallyCertificates.count(hashKnown) ||
+            FinalityTallyCertificateContextExists(cert, mapPendingTallyCertificates, hashCtx) ||
+            FinalityTallyCertificateContextExists(cert, mapConnectedTallyCertificates, hashCtx))
+            return false;
+    }
+
     if (fCheck)
     {
         CTxDB txdb("r");
@@ -4261,7 +4277,7 @@ bool CFinalityTracker::CheckFinalityThreshold(int nEpoch)
         {
             if (!pBestCert ||
                 cert.nTier > pBestCert->nTier ||
-                (cert.nTier == pBestCert->nTier && cert.GetHash() < pBestCert->GetHash()))
+                (cert.nTier == pBestCert->nTier && cert.GetSignatureDigest() < pBestCert->GetSignatureDigest()))
                 pBestCert = &cert;
         }
         if (pBestCert)
@@ -4353,7 +4369,7 @@ bool CFinalityTracker::ComputeDeterministicEpochTier(int nEpoch, int& nTierOut, 
         for (const CFinalityTallyCertificate& cert : itCerts->second)
         {
             if (!pBestCert || cert.nTier > pBestCert->nTier ||
-                (cert.nTier == pBestCert->nTier && cert.GetHash() < pBestCert->GetHash()))
+                (cert.nTier == pBestCert->nTier && cert.GetSignatureDigest() < pBestCert->GetSignatureDigest()))
                 pBestCert = &cert;
         }
         if (pBestCert)
