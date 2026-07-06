@@ -469,10 +469,15 @@ bool CFinalityTracker::ConnectCommitteeRotation(const CFinalityCommitteeRotation
     std::map<int, CFinalityCommitteeRotation>::iterator it = mapConnectedRotations.find(rot.nEffectiveEpoch);
     if (it != mapConnectedRotations.end())
     {
-        if (it->second.GetHash() == rot.GetHash())
-            return true; // idempotent: same rotation re-applied (load/reorg)
-        if (it->second.GetHash() < rot.GetHash())
-            return reject("committee rotation superseded by lower-hash rotation at same epoch");
+        // Identity + tie-break on the SIGNATURE DIGEST (signed content), never GetHash(): ECDSA signatures
+        // are third-party malleable (S -> n-S, DER re-encode), so keying on GetHash() would let a re-signed
+        // same-content rotation defeat idempotency and let a signer/miner GRIND the deterministic tie-break.
+        // The resulting committee is derived from the content (set+M+owner) alone, so equal digests ARE the
+        // same rotation, and the lower-digest winner is canonical and un-grindable.
+        if (it->second.GetSignatureDigest() == rot.GetSignatureDigest())
+            return true; // idempotent: same rotation content re-applied (load/reorg/re-sign)
+        if (it->second.GetSignatureDigest() < rot.GetSignatureDigest())
+            return reject("committee rotation superseded by lower-digest rotation at same epoch");
         it->second = rot;
         return true;
     }
@@ -4992,9 +4997,11 @@ bool CFinalityTracker::DisconnectBlockCommitteeRotations(CTxDB& txdb, const uint
         }
         else
         {
+            // Canonical winner among surviving carriers on the signature DIGEST (content), not the malleable
+            // GetHash() -- matches the connect-time tie-break so disconnect re-resolution is grind-proof too.
             const CFinalityCommitteeRotation* pWinner = &vSurviving[0];
             for (size_t i = 1; i < vSurviving.size(); i++)
-                if (vSurviving[i].GetHash() < pWinner->GetHash())
+                if (vSurviving[i].GetSignatureDigest() < pWinner->GetSignatureDigest())
                     pWinner = &vSurviving[i];
             mapConnectedRotations[nEff] = *pWinner;
             txdb.WriteFinalityCommitteeRotation(nEff, *pWinner);

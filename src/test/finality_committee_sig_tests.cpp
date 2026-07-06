@@ -318,8 +318,10 @@ BOOST_AUTO_TEST_CASE(rotation_a2_lowest_hash_wins_at_same_epoch)
 
     CFinalityCommitteeRotation a = MakeRotation(initial, set0, 10, nextA, 2, {0, 1, 2});
     CFinalityCommitteeRotation b = MakeRotation(initial, set0, 10, nextB, 3, {0, 1, 2});
-    // Determine which has the lower hash — that one must win regardless of order.
-    bool aLower = (a.GetHash() < b.GetHash());
+    // Determine which has the lower SIGNATURE DIGEST (the malleability-free signed content, not GetHash
+    // which folds in third-party-malleable signatures) — that one must win the A2 tie-break regardless of
+    // connect order. Keyed on GetSignatureDigest so a re-signed variant cannot grind the outcome.
+    bool aLower = (a.GetSignatureDigest() < b.GetSignatureDigest());
     uint256 winnerSet = aLower
         ? ComputeFinalityTallyCommitteeHash(2, nextA.pubs)
         : ComputeFinalityTallyCommitteeHash(3, nextB.pubs);
