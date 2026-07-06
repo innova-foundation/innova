@@ -336,13 +336,14 @@ inline int GetForkHeightVoteSetRoot()
 // new best tip on reorg. The consumed state is always the FINALIZED epoch, which reorgs cannot
 // change (Reorganize rejects sub-finalized reorgs), so the anchor is stable + agreed by all nodes.
 // This changes the epoch-root derivation, so it is a fresh-chain-only rule (no migration of old
-// epoch records). Regtest-active so the finality e2e + unit harness exercise it; testnet/mainnet
-// INERT (sentinel) pending the multi-node reorg e2e -- flip to GetForkHeightDAG() once validated.
+// epoch records). REORG-VALIDATED 2026-07 (unit determinism harness + 4-node regtest reorg e2e:
+// after a reorg the epoch's boundary/nullifier roots re-anchor to the new canonical chain). Now
+// ACTIVE with the DAG fork on every network, alongside its sibling epoch-state forks
+// (FORK_HEIGHT_EPOCH_ROOT_FCMP, FORK_HEIGHT_VOTESET_ROOT) which together define the epoch-state
+// consensus. Testnet must remine to adopt it; mainnet activates at the DAG fork (pre-launch there).
 inline int GetForkHeightEpochStateV2()
 {
-    extern bool fRegTest;
-    if (fRegTest) return GetForkHeightDAG();
-    return 0x7FFFFFFF;               // testnet/mainnet: inert until reorg-validated
+    return GetForkHeightDAG();
 }
 #define FORK_HEIGHT_EPOCH_STATE_V2 (GetForkHeightEpochStateV2())
 
