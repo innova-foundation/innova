@@ -95,13 +95,21 @@ namespace Checkpoints
         ( 6250000, uint256("0x000000d85b4e0798609a31c9e9272e0e1f776cc9ce61d2bc516eaba2068685f0") )
         ( 6500000, uint256("0x0000000072362d64a180a6f36407b0b0ba014d9146d7e67899a6b6a42643d38f") )
         ( 6750000, uint256("0x000000a86c88b161a6c013963911d4bcd5e6a65fd7ba81c3474f5cfa1a384c64") )
+        // v5 PRE-FORK hardened checkpoint. The prior top checkpoint (6.75M) left ~1M pre-fork blocks --
+        // and the 8.0M/8.14M v5 fork boundaries -- exposed to deep-reorg / long-range rewrite during the
+        // v5 IBD/upgrade window. This anchors history well below the tip so it cannot be reorged out.
+        // >>> VERIFY BEFORE RELEASE: `innovad getblockhash 7750000` on a fully-synced TRUSTED mainnet node
+        // MUST equal the hash below (this value came from the chainz explorer, not a first-party node).
+        // If the release slips, re-cut this closer to the then-current tip (a few thousand blocks below).
+        ( 7750000, uint256("0x00000000523d02837bf00acee580aa7e4443b6da34929b8b2caa7116e10c353a") )
 	;
 
   static const CCheckpointData data = {
         &mapCheckpoints,
-        1737676800, // * UNIX timestamp of last checkpoint block (approx Jan 24, 2025)
-        8500000,    // * total number of transactions between genesis and last checkpoint
-                    //   (the tx=... number in the SetBestChain debug.log lines)
+        1783126722, // * UNIX timestamp of last checkpoint block (7,750,000 = 2026-07-04 00:58:42 UTC)
+        9200000,    // * total number of transactions between genesis and last checkpoint -- APPROX;
+                    //   refresh at release with the exact tx=... from block 7,750,000's SetBestChain
+                    //   debug.log line (this is a cosmetic sync-progress estimate, not consensus).
         5000.0      // * estimated number of transactions per day after checkpoint
     };
 
