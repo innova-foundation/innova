@@ -587,29 +587,30 @@ static const char* TESTNET_FINALITY_COMMITTEE_PUBKEYS[] = {
 static const int TESTNET_FINALITY_COMMITTEE_M = 2;
 
 // MAINNET launch finality committee (3-of-5) + recovery committee (3-of-5).
-// ############################## RELEASE GATE ##############################
-// These are PLACEHOLDER pre-launch integration keys. They MUST be regenerated on secure hardware
-// (privkeys held by the actual committee members) and swapped here BEFORE mainnet ships / reaches
-// the governance fork. The committee is pinned from launch (a network constant) so the M-of-N
-// signer-set rule has a trust root from the first height a private cert can exist -- pinning it in
-// a LATER release would require signatures on already-accepted historical certs and permanently
-// split old vs new binaries. On mainnet the signature requirement activates at
-// FORK_HEIGHT_TALLY_GOVERNANCE, which == FORK_HEIGHT_DAG (no unauthenticated-cert window).
-// #########################################################################
+// These are the REAL launch committee public keys (pinned 2026-07-07). Only the PUBLIC keys are here;
+// the private keys are held by the Innova Foundation across its producer hosts (a founder-attested
+// federation, not trustless BFT -- consistent with the tally-privacy trust model). The committee is
+// pinned from launch (a network constant) so the M-of-N signer-set rule has a trust root from the first
+// height a private cert can exist; pinning it in a LATER release would require signatures on
+// already-accepted historical certs and permanently split old vs new binaries. On mainnet the signature
+// requirement activates at FORK_HEIGHT_TALLY_GOVERNANCE (== FORK_HEIGHT_DAG, no unauthenticated window).
+// Order is consensus-relevant (the committee set hash is order-sensitive): the finalitytallypubkey
+// entries in each producer's innova.conf MUST list these in the same order. To decentralize later,
+// rotate the committee on-chain (no new binary / no split).
 static const char* MAINNET_FINALITY_COMMITTEE_PUBKEYS[] = {
-    "02f315b0bee4c591509f002b030a4c634e3ccd48f3531d7cea0c0dc085211827b5",
-    "030adc8ccf8840c9a19a44aeb3b48197c1459476db79deabbc9f00fae62308e518",
-    "02e2d3fb20070bcecde0967aee61c19ae3ead6b2299284c2559cc48b6ed878aaa2",
-    "03a9b6558acfef9f9da37e02ff6f808ec531136498225106f7cd118a01aac9dea2",
-    "02f39784bb6088608085b5b3a6778e49b5a3fe7e9bc6e17d496636b19d16270992",
+    "021f16d69279899beb18a343457e79822553958138fe9ed15399d5d98699fe50f1",
+    "03f588fdc18ff0cc5601d7ac84320cb8050f7ba05645b4f994c4885fe1dafb93d6",
+    "0242e664ce3a77cbc707cafcb8b53bf7db4cb17836bd04af1089c7713a874d1f85",
+    "03fbb5d13d76a1cdba13b786c96214a611f6d7187850684fa84e7201d252b23340",
+    "027cd1f55f84f4bca1538a581aa4208aa77769127c1ff5781f1eb0b837508a4fc2",
 };
 static const int MAINNET_FINALITY_COMMITTEE_M = 3;
 static const char* MAINNET_RECOVERY_COMMITTEE_PUBKEYS[] = {
-    "03640e4ea1b954ac387c3c7e0a644acfc22b789cf4f84c78d9b2103a2495c7cf09",
-    "02e36155c6506dced64479358e3d4f69139784cd2f35b3bbc8cd1b3bbd53897292",
-    "02d64b22603edf2c47067b2e5859782787deca11a303db0530c4897fd1730a86d9",
-    "0240c9571eafe7c36e831a80f6f98f9f888297f8cca10b9d1c86cd4dbb5eef5ced",
-    "026dd0852655423527b393fa370b2b8ff944d69f700eb0ddda19cbab6cb762c6d3",
+    "024418b153a8ed226865b3da22e3d2911d05813d41b7f57ebf776599acaf370435",
+    "0298f708300de0a08d3c0dd50fb37f015dc78650ee30709ae4279534d94e3b519a",
+    "03684ec3b0e2746d372dd02f010b85bdb985a38b96b51ee812a2f584faf0eeb546",
+    "03c95b86d868cd3c245993cb865f6632295383f8ac509075257687bab773309af1",
+    "020b17943a23b5db5fb14f5f4953182f16b5277096bc9d5dd6d7be9066aee2545e",
 };
 static const int MAINNET_RECOVERY_COMMITTEE_M = 3;
 

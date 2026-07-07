@@ -165,7 +165,7 @@ inline const uint256& GetGenesisBlockHash()
 inline int GetForkHeightTighterDrift() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 8000000;
+    return (fRegTest || fTestNet) ? 1 : 7800000;
 }
 #define FORK_HEIGHT_TIGHTER_DRIFT (GetForkHeightTighterDrift())
 
@@ -173,7 +173,7 @@ inline int GetForkHeightTighterDrift() {
 inline int GetForkHeightCNPaymentValidation() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 8000000;
+    return (fRegTest || fTestNet) ? 1 : 7800000;
 }
 #define FORK_HEIGHT_CN_PAYMENT_VALIDATION (GetForkHeightCNPaymentValidation())
 
@@ -186,7 +186,7 @@ static const int FORK_MIN_CN_PROTO_VERSION = 43950;
 inline int GetForkHeightColdStaking() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 8000000;
+    return (fRegTest || fTestNet) ? 1 : 7800000;
 }
 #define FORK_HEIGHT_COLD_STAKING (GetForkHeightColdStaking())
 
@@ -195,7 +195,7 @@ inline int GetForkHeightColdStaking() {
 inline int GetForkHeightShielded() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 8010000;
+    return (fRegTest || fTestNet) ? 1 : 7810000;
 }
 #define FORK_HEIGHT_SHIELDED (GetForkHeightShielded())
 
@@ -204,7 +204,7 @@ inline int GetForkHeightShielded() {
 inline int GetForkHeightRingSigDeprecation() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 8015000;
+    return (fRegTest || fTestNet) ? 1 : 7815000;
 }
 #define FORK_HEIGHT_RINGSIG_DEPRECATION (GetForkHeightRingSigDeprecation())
 
@@ -213,7 +213,7 @@ inline int GetForkHeightRingSigDeprecation() {
 inline int GetForkHeightDSP() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 2 : 8015000;
+    return (fRegTest || fTestNet) ? 2 : 7815000;
 }
 #define FORK_HEIGHT_DSP (GetForkHeightDSP())
 
@@ -221,7 +221,7 @@ inline int GetForkHeightDSP() {
 inline int GetForkHeightNullSend() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 2 : 8020000;
+    return (fRegTest || fTestNet) ? 2 : 7820000;
 }
 #define FORK_HEIGHT_NULLSEND (GetForkHeightNullSend())
 #define FORK_HEIGHT_CJOIN FORK_HEIGHT_NULLSEND
@@ -235,7 +235,7 @@ inline int GetForkHeightNullSend() {
 inline int GetForkHeightNullStake() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 3 : 8025000;
+    return (fRegTest || fTestNet) ? 3 : 7825000;
 }
 #define FORK_HEIGHT_NULLSTAKE (GetForkHeightNullStake())
 
@@ -244,7 +244,7 @@ inline int GetForkHeightNullStake() {
 inline int GetForkHeightNullStakeV2() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 5 : 8030000;
+    return (fRegTest || fTestNet) ? 5 : 7830000;
 }
 #define FORK_HEIGHT_NULLSTAKE_V2 (GetForkHeightNullStakeV2())
 
@@ -252,7 +252,7 @@ inline int GetForkHeightNullStakeV2() {
 inline int GetForkHeightNullStakeV3() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 7 : 8035000;
+    return (fRegTest || fTestNet) ? 7 : 7835000;
 }
 #define FORK_HEIGHT_NULLSTAKE_V3 (GetForkHeightNullStakeV3())
 
@@ -261,7 +261,7 @@ inline int GetForkHeightChaumianCJ()
 {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 8 : 8040000;
+    return (fRegTest || fTestNet) ? 8 : 7840000;
 }
 #define FORK_HEIGHT_CHAUMIAN_CJ (GetForkHeightChaumianCJ())
 
@@ -272,7 +272,7 @@ inline int GetForkHeightPoem()
     extern bool fTestNet;
     if (fRegTest) return 9;
     if (fTestNet) return 9;         // clean public IDAG testnet
-    return 8140000;                  // mainnet: 100K blocks after Chaumian CJ
+    return 7940000;                  // mainnet: 100K blocks after Chaumian CJ (base 7.8M + 140K)
 }
 #define FORK_HEIGHT_POEM (GetForkHeightPoem())
 
@@ -283,7 +283,7 @@ inline int GetForkHeightFinality()
     extern bool fTestNet;
     if (fRegTest) return 10;
     if (fTestNet) return 10;        // clean public IDAG testnet
-    return 8145000;                  // mainnet: 5,000 blocks after POEM
+    return 7945000;                  // mainnet: 5,000 blocks after POEM
 }
 #define FORK_HEIGHT_FINALITY (GetForkHeightFinality())
 
@@ -294,7 +294,7 @@ inline int GetForkHeightDAG()
     extern bool fTestNet;
     if (fRegTest) return 11;
     if (fTestNet) return 60;        // clean public IDAG testnet after premine maturity
-    return 8150000;                  // mainnet: 5,000 blocks after finality
+    return 7950000;                  // mainnet: 5,000 blocks after finality (base 7.8M + 150K)
 }
 #define FORK_HEIGHT_DAG (GetForkHeightDAG())
 
@@ -412,7 +412,7 @@ inline int GetForkHeightDAGKnight()
     extern bool fTestNet;
     if (fRegTest) return 13;
     if (fTestNet) return 62;        // clean public IDAG testnet after DAG activation
-    return 8200000;                  // mainnet: 50,000 blocks after DAG (~14h at 1s post-DAG blocks)
+    return 8000000;                  // mainnet: 50,000 blocks after DAG (~14h at 1s post-DAG blocks)
 }
 #define FORK_HEIGHT_DAGKNIGHT (GetForkHeightDAGKnight())
 
@@ -444,7 +444,7 @@ inline int GetForkHeightNullStakeDelegSet()
     extern bool fTestNet;
     if (fRegTest) return 12;
     if (fTestNet) return 1500;       // live-chain, after D2 + a canary window
-    return 8260000;                  // mainnet: next slot after the governance fork
+    return 8060000;                  // mainnet: next slot after the governance fork
 }
 #define FORK_HEIGHT_NULLSTAKE_DELEGSET (GetForkHeightNullStakeDelegSet())
 
@@ -455,7 +455,7 @@ inline int GetForkHeightNullStakeReclaim()
     extern bool fTestNet;
     if (fRegTest) return 12;
     if (fTestNet) return 1500;
-    return 8260000;
+    return 8060000;
 }
 #define FORK_HEIGHT_NULLSTAKE_RECLAIM (GetForkHeightNullStakeReclaim())
 
@@ -469,7 +469,7 @@ inline int GetForkHeightNullStakeB2C()
     extern bool fTestNet;
     if (fRegTest) return 14;         // > DELEGSET(12), so e2e can exercise pre/post-B2C with one 2006 note
     if (fTestNet) return 1600;       // after DELEGSET(1500) + a canary window
-    return 8260000;                  // mainnet: co-batched with DELEGSET/RECLAIM (equal is legal: >= gate)
+    return 8060000;                  // mainnet: co-batched with DELEGSET/RECLAIM (equal is legal: >= gate)
 }
 #define FORK_HEIGHT_NULLSTAKE_B2C (GetForkHeightNullStakeB2C())
 
@@ -504,7 +504,7 @@ inline int GetForkHeightIDNSReset() {
     extern bool fTestNet;
     if (fRegTest) return 0;     // No reset in regtest (clean chain)
     if (fTestNet) return 0;     // No reset in testnet (clean chain)
-    return 8000000;             // Mainnet: wipe all names before this height
+    return 7800000;             // Mainnet: wipe all names before this height
 }
 #define FORK_HEIGHT_IDNS_RESET (GetForkHeightIDNSReset())
 
