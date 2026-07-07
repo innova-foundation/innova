@@ -773,6 +773,50 @@ Value setbestblockbyheight(const Array& params, bool fHelp)
     return result;
 }
 
+Value invalidateblock(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 1)
+        throw runtime_error(
+            "invalidateblock \"hash\"\n"
+            "Permanently marks a block as invalid, as if it violated a consensus rule.\n"
+            "Disconnects it (and its descendants) from the active chain if present, and\n"
+            "re-selects the best valid chain. Use 'reconsiderblock' to undo. A finality\n"
+            "guard will reject invalidating a finalized-or-lower block.");
+
+    LOCK(cs_main);
+    uint256 hash(params[0].get_str());
+    if (mapBlockIndex.count(hash) == 0)
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Block not found");
+    CBlockIndex* pindex = mapBlockIndex[hash];
+
+    CTxDB txdb;
+    std::string strError;
+    if (!InvalidateBlock(txdb, pindex, strError))
+        throw JSONRPCError(RPC_MISC_ERROR, strError);
+    return Value::null;
+}
+
+Value reconsiderblock(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 1)
+        throw runtime_error(
+            "reconsiderblock \"hash\"\n"
+            "Removes invalidity status from a block and its descendant subtree, allowing\n"
+            "them to be reconsidered for the best chain. Undoes 'invalidateblock'.");
+
+    LOCK(cs_main);
+    uint256 hash(params[0].get_str());
+    if (mapBlockIndex.count(hash) == 0)
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Block not found");
+    CBlockIndex* pindex = mapBlockIndex[hash];
+
+    CTxDB txdb;
+    std::string strError;
+    if (!ReconsiderBlock(txdb, pindex, strError))
+        throw JSONRPCError(RPC_MISC_ERROR, strError);
+    return Value::null;
+}
+
 // ppcoin: get information of sync-checkpoint
 Value getcheckpoint(const Array& params, bool fHelp)
 {

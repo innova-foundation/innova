@@ -605,6 +605,7 @@ std::string HelpMessage()
         "  -loadblock=<file>      " + _("Imports blocks from external blk000?.dat file") + "\n" +
         "  -replayblocks=<dir>    " + _("Replay every blkNNNN.dat in <dir> through full validation (implies -fullreplayverify), then exit") + "\n" +
         "  -fullreplayverify      " + _("Force full ECDSA verification of all historic blocks (no checkpoint signature skip)") + "\n" +
+        "  -acceptepochstate      " + _("Grandfather pre-marker epoch-state records as deterministic (only if they were written by a deterministic-anchor build; otherwise resync)") + "\n" +
 
         "\n" + _("Block creation options:") + "\n" +
         "  -blockminsize=<n>      "   + _("Set minimum block size in bytes (default: 0)") + "\n" +
@@ -1851,6 +1852,48 @@ bool AppInit2()
         else
             printf("IDAG: GHOSTDAG ordering active (k=%d), DAGKNIGHT activates at height %d\n",
                    GHOSTDAG_K, FORK_HEIGHT_DAGKNIGHT);
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Epoch-state upgrade-safety guard (fail-closed). A binary that ACTIVATES the deterministic epoch
+    // anchor (FORK_HEIGHT_EPOCH_STATE_V2) must not silently consume epoch-state records that a PRIOR
+    // binary wrote under the old node-local (non-deterministic) regime -- doing so gives this node a
+    // finalized-epoch root that diverges from the fleet, so a fleet-valid block is deterministically
+    // rejected here (the exact stuck-node failure seen in testing). Records written under the
+    // deterministic anchor stamp EPOCHSTATE_SCHEMA_V2 (main.cpp). If we are past the fork but the marker
+    // is absent while epoch records exist, refuse to start rather than serve divergent roots. Escape
+    // hatches: a fresh/empty epoch cache is stamped and proceeds; an operator certain the existing
+    // records were produced by a deterministic-anchor build can grandfather them with -acceptepochstate.
+    if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_EPOCH_STATE_V2)
+    {
+        CTxDB txdbEpochChk("rw");
+        int nEpochSchema = 0;
+        txdbEpochChk.ReadEpochStateSchema(nEpochSchema);
+        if (nEpochSchema < EPOCHSTATE_SCHEMA_V2)
+        {
+            size_t nLoadedEpochs = g_dagManager.GetLoadedEpochStateCount();
+            if (nLoadedEpochs == 0)
+            {
+                txdbEpochChk.WriteEpochStateSchema(EPOCHSTATE_SCHEMA_V2);
+                printf("EpochState: stamped schema V2 (no pre-existing epoch records)\n");
+            }
+            else if (GetBoolArg("-acceptepochstate", false))
+            {
+                txdbEpochChk.WriteEpochStateSchema(EPOCHSTATE_SCHEMA_V2);
+                printf("EpochState: -acceptepochstate given; grandfathered %d pre-marker epoch records to schema V2\n",
+                       (int)nLoadedEpochs);
+            }
+            else
+            {
+                return InitError(strprintf(_(
+                    "Epoch-state records (%d) predate the deterministic-epoch schema marker and may have been "
+                    "computed under the old non-deterministic regime; consuming them could split this node from "
+                    "the network. Refusing to start. Recover by removing the chain database (keep wallet.dat) and "
+                    "resyncing. Only if you are certain these records were written by a deterministic-anchor "
+                    "build, restart with -acceptepochstate to grandfather them in."),
+                    (int)nLoadedEpochs));
+            }
+        }
     }
 
     RandAddSeedPerfmon();

@@ -339,6 +339,8 @@ static const CRPCCommand vRPCCommands[] =
     { "getblock",               &getblock,               false,  false },
 	{ "getblockheader",         &getblockheader,         false,  false },
     { "setbestblockbyheight",   &setbestblockbyheight,   false,  false },
+    { "invalidateblock",        &invalidateblock,        false,  false },
+    { "reconsiderblock",        &reconsiderblock,        false,  false },
     { "getblock_old",           &getblock_old,           false,  false },
     { "getblockbynumber",       &getblockbynumber,       false,  false },
     { "getblockhash",           &getblockhash,           false,  false },

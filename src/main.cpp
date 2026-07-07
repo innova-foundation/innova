@@ -6079,12 +6079,21 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
 
 
 // Called from inside SetBestChain: attaches a block to the new best chain being built
-bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew)
+bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew, bool* pfPermanentInvalid)
 {
     uint256 hash = GetHash();
 
-    // Adding to current best branch
-    if (!ConnectBlock(txdb, pindexNew) || !txdb.WriteHashBestChain(hash))
+    // Adding to current best branch. Split ConnectBlock (a CONSENSUS rejection -> permanent invalidity,
+    // flag+keep the index) from WriteHashBestChain (a transient DB error -> leave permanent flag unset so
+    // the caller keeps the delete-based retry path).
+    if (!ConnectBlock(txdb, pindexNew))
+    {
+        txdb.TxnAbort();
+        InvalidChainFound(pindexNew);
+        if (pfPermanentInvalid) *pfPermanentInvalid = true;
+        return false;
+    }
+    if (!txdb.WriteHashBestChain(hash))
     {
         txdb.TxnAbort();
         InvalidChainFound(pindexNew);
@@ -6111,8 +6120,9 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew)
     return true;
 }
 
-bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
+bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanentInvalid)
 {
+    if (pfPermanentInvalid) *pfPermanentInvalid = false;
     uint256 hash = GetHash();
     if (!txdb.TxnBegin())
         return error("SetBestChain() : TxnBegin failed");
@@ -6126,7 +6136,7 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
     }
     else if (hashPrevBlock == hashBestChain)
     {
-        if (!SetBestChainInner(txdb, pindexNew))
+        if (!SetBestChainInner(txdb, pindexNew, pfPermanentInvalid))
             return error("SetBestChain() : SetBestChainInner failed");
     }
     else
@@ -6163,6 +6173,9 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
                 if (pOld && pOld->nHeight < nFinalHeight)
                 {
                     txdb.TxnAbort();
+                    // A fork below the finalized height can NEVER become best (finality is immutable),
+                    // so this candidate is permanently unconnectable -> flag it, don't re-request forever.
+                    if (pfPermanentInvalid) *pfPermanentInvalid = true;
                     return error("SetBestChain() : rejected reorg - fork below finalized height %d", nFinalHeight);
                 }
             }
@@ -6190,6 +6203,9 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
         {
             txdb.TxnAbort();
             InvalidChainFound(pindexNew);
+            // Reorganize failed to connect this candidate (ConnectBlock consensus rejection inside the
+            // reorg, or an unconnectable fork) -> permanent invalidity.
+            if (pfPermanentInvalid) *pfPermanentInvalid = true;
             return error("SetBestChain() : Reorganize failed");
         }
 
@@ -6342,6 +6358,119 @@ bool CBlock::GetCoinAge(uint64_t& nCoinAge) const
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Block-index invalidation / best-valid-chain reselection (invalidateblock RPC).
+// All three assume cs_main is held (the RPCs run unlocked=false -> LOCK2(cs_main, wallet)).
+// ---------------------------------------------------------------------------
+
+// Switch to the highest-trust non-invalid block that has block data on disk, if it beats the current
+// tip. Mirrors the native selection rule (nChainTrust > nBestChainTrust), which also excludes interior
+// best-chain nodes. Used by both invalidateblock (after rollback) and reconsiderblock.
+static bool ReselectBestValidChain(CTxDB& txdb)
+{
+    CBlockIndex* pbest = NULL;
+    for (map<uint256, CBlockIndex*>::iterator it = mapBlockIndex.begin(); it != mapBlockIndex.end(); ++it)
+    {
+        CBlockIndex* p = it->second;
+        if (!p || p->IsInvalid())
+            continue;
+        if (p->nFile == 0 && p->nBlockPos == 0 && p != pindexGenesisBlock)
+            continue; // header-only / no block data -> cannot be connected
+        if (p->nChainTrust > nBestChainTrust && (!pbest || p->nChainTrust > pbest->nChainTrust))
+            pbest = p;
+    }
+    if (!pbest)
+        return true; // nothing beats the current tip -> no-op
+    CBlock block;
+    if (!block.ReadFromDisk(pbest))
+        return error("ReselectBestValidChain() : ReadFromDisk failed for %s",
+                     pbest->GetBlockHash().ToString().substr(0,20).c_str());
+    return block.SetBestChain(txdb, pbest);
+}
+
+// Taint pindex (BLOCK_FAILED_VALID) and every descendant (BLOCK_FAILED_CHILD). Collects the changed
+// indexes for persistence. O(N * depth-from-target); fine for an admin RPC, cheap near the tip.
+static void MarkFailedSubtree(CBlockIndex* pindex, bool fInvalidate, std::vector<CBlockIndex*>& vChanged)
+{
+    if (fInvalidate) pindex->SetFailedValid(); else pindex->ClearFailed();
+    vChanged.push_back(pindex);
+    for (map<uint256, CBlockIndex*>::iterator it = mapBlockIndex.begin(); it != mapBlockIndex.end(); ++it)
+    {
+        CBlockIndex* p = it->second;
+        if (!p || p == pindex)
+            continue;
+        if (fInvalidate ? p->IsInvalid() : !p->IsInvalid())
+            continue;
+        for (CBlockIndex* q = p->pprev; q && q->nHeight >= pindex->nHeight; q = q->pprev)
+        {
+            if (q == pindex)
+            {
+                if (fInvalidate) p->SetFailedChild(); else p->ClearFailed();
+                vChanged.push_back(p);
+                break;
+            }
+        }
+    }
+}
+
+// Mark a block permanently invalid, roll the active chain back off it if present, re-select the best
+// valid chain. Returns false (with strError) if a finality guard forbids the rollback.
+bool InvalidateBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError)
+{
+    if (!pindex)
+        { strError = "null block index"; return false; }
+    if (pindex == pindexGenesisBlock)
+        { strError = "cannot invalidate the genesis block"; return false; }
+
+    std::vector<CBlockIndex*> vChanged;
+    MarkFailedSubtree(pindex, true, vChanged);
+
+    // If it is on the active chain, roll the tip back to its parent (ancestor target -> Reorganize
+    // pure-rollback, exactly as setbestblockbyheight relies on). Finality guards may reject this.
+    if (pindex->IsInMainChain() && pindex->pprev)
+    {
+        CBlock block;
+        if (!block.ReadFromDisk(pindex->pprev))
+            { strError = "ReadFromDisk failed for parent of invalidated block"; return false; }
+        if (!block.SetBestChain(txdb, pindex->pprev))
+            { strError = "rollback rejected (a finality guard may forbid invalidating a finalized-or-lower block)"; return false; }
+    }
+
+    InvalidChainFound(pindex);
+
+    if (txdb.TxnBegin())
+    {
+        for (size_t i = 0; i < vChanged.size(); i++)
+            txdb.WriteBlockIndex(CDiskBlockIndex(vChanged[i]));
+        txdb.TxnCommit();
+    }
+
+    if (!ReselectBestValidChain(txdb))
+        { strError = "reselection of best valid chain failed"; return false; }
+    return true;
+}
+
+// Clear the invalid marks on a block and its descendant subtree, then re-select the best valid chain.
+bool ReconsiderBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError)
+{
+    if (!pindex)
+        { strError = "null block index"; return false; }
+
+    std::vector<CBlockIndex*> vChanged;
+    MarkFailedSubtree(pindex, false, vChanged);
+
+    if (txdb.TxnBegin())
+    {
+        for (size_t i = 0; i < vChanged.size(); i++)
+            txdb.WriteBlockIndex(CDiskBlockIndex(vChanged[i]));
+        txdb.TxnCommit();
+    }
+
+    if (!ReselectBestValidChain(txdb))
+        { strError = "reselection of best valid chain failed"; return false; }
+    return true;
+}
+
 bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const uint256& hashProof)
 {
     int64_t nAddStart = GetTimeMillis();
@@ -6482,6 +6611,11 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                         if (txdbEpoch.TxnBegin())
                         {
                             g_dagManager.WriteEpochState(txdbEpoch, nCompletedEpoch);
+                            // Any node that has ever written a V2 (deterministic-anchor) epoch record
+                            // carries the schema marker, so the startup upgrade guard treats it as
+                            // already-migrated and never re-triggers. Idempotent int write.
+                            if (fEpochV2)
+                                txdbEpoch.WriteEpochStateSchema(EPOCHSTATE_SCHEMA_V2);
                             txdbEpoch.TxnCommit();
                         }
                     }
@@ -6505,8 +6639,31 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
 
     // New best
     if (pindexNew->nChainTrust > nBestChainTrust)
-        if (!SetBestChain(txdb, pindexNew))
+    {
+        bool fPermanentInvalid = false;
+        if (!SetBestChain(txdb, pindexNew, &fPermanentInvalid))
         {
+            if (fPermanentInvalid)
+            {
+                // Permanent consensus invalidity (ConnectBlock/Reorganize rejected this block, or its
+                // fork is below the finalized height). KEEP the index in mapBlockIndex flagged failed --
+                // deleting it flips AlreadyHave() back to "don't have it" so the block is re-inv'd,
+                // re-downloaded and re-validated forever (the stuck-node re-request loop). The index was
+                // already persisted above WITHOUT the failed bit, so re-write it WITH the bit so the mark
+                // survives restart. Do NOT erase setStakeSeen (retain duplicate-stake detection); leave
+                // the index in mapBlockIndex (AlreadyHave stays true; children are rejected in AcceptBlock).
+                pindexNew->SetFailedValid();
+                CTxDB txdbFail;
+                if (txdbFail.TxnBegin())
+                {
+                    txdbFail.WriteBlockIndex(CDiskBlockIndex(pindexNew));
+                    txdbFail.TxnCommit();
+                }
+                return false;
+            }
+
+            // Transient (DB / resource) failure: preserve the original delete-based retry path so a later
+            // attempt can re-accept the block cleanly (A1 / resource recovery).
             if (fDAGDataInitialized)
             {
                 g_dagManager.RemoveBlockDAGData(hash);
@@ -6532,6 +6689,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
             delete pindexNew;
             return false;
         }
+    }
 
     if (pindexNew == pindexBest)
     {
@@ -6706,6 +6864,13 @@ bool CBlock::AcceptBlock()
     if (mi == mapBlockIndex.end())
         return DoS(10, error("AcceptBlock() : prev block not found"));
     CBlockIndex* pindexPrev = (*mi).second;
+    // Reject any block that builds on a permanently-invalid parent. Previously a connect-failed block was
+    // DELETED, so a child's prev was "not found" and the child orphaned. Now the failed parent stays in
+    // mapBlockIndex (to stop the re-request loop / support invalidateblock), so a child would find its
+    // prev -- guard here or a peer could re-feed the invalidated chain and re-connect on top of it.
+    if (pindexPrev->IsInvalid())
+        return DoS(100, error("AcceptBlock() : prev block %s is marked failed/invalid",
+                              hashPrevBlock.ToString().substr(0,20).c_str()));
     int nHeight = pindexPrev->nHeight+1;
 
     if (nHeight >= FORK_HEIGHT_DAG && IsProofOfStake())

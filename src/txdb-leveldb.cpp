@@ -449,6 +449,10 @@ bool CTxDB::WriteEpochState(int nEpoch, const CEpochState& state)
     return Write(make_pair(string("epochstate"), nEpoch), state);
 }
 
+// NOTE: this whole-struct Read requires the trailing nSerVersion byte (CEpochState serialization),
+// so it MUST NOT be called on pre-versioning (legacy) records -- it would throw. It currently has
+// zero callers; the sole runtime read path is IterateEpochStates, which reads tolerantly. If you wire
+// this up, guarantee the DB has been migrated to V2 records first (see the epochstateschema marker).
 bool CTxDB::ReadEpochState(int nEpoch, CEpochState& state)
 {
     return Read(make_pair(string("epochstate"), nEpoch), state);
@@ -481,11 +485,49 @@ bool CTxDB::IterateEpochStates(std::map<int, CEpochState>& mapOut)
 
             CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
             CEpochState state;
-            ssValue >> state;
+            // Read the known fields explicitly, in EXACT CEpochState::IMPLEMENT_SERIALIZE order
+            // (dag.h) -- do NOT use `ssValue >> state`, because the whole-struct read now requires the
+            // trailing nSerVersion byte and would THROW on legacy (pre-byte) records. This mirrors the
+            // CBlockDAGData nInferredK tolerant-read pattern in LoadDAGLinks. Keep this list in sync
+            // with CEpochState on any future field add, or every epoch silently misparses.
+            ssValue >> state.nEpoch;
+            ssValue >> state.hashBoundaryBlock;
+            ssValue >> state.nHeightStart;
+            ssValue >> state.nHeightEnd;
+            ssValue >> state.vBlockHashes;
+            ssValue >> state.hashCurveRoot;
+            ssValue >> state.hashNullifierRoot;
+            ssValue >> state.hashVoteSetRoot;
+            ssValue >> state.hashFinalityCertificate;
+            ssValue >> state.nTotalTrust;
+            ssValue >> state.nBlockCount;
+            ssValue >> state.nTxCount;
+            ssValue >> state.nFinalityTier;
+            ssValue >> state.nConsecutiveHardCount;
+            ssValue >> state.fFinalized;
+            ssValue >> state.nFinalizedHeightAsOf;
+            // Trailing version byte: present on V2+ records, absent (implicit 0) on legacy records.
+            if (ssValue.size() > 0)
+            {
+                try { ssValue >> state.nSerVersion; }
+                catch (const std::exception&) { state.nSerVersion = 0; }
+            }
+            else
+                state.nSerVersion = 0;
             mapOut[keyPair.second] = state;
         }
-        catch (const std::exception&)
+        catch (const std::exception& e)
         {
+            // A persisted epoch-state record that fails to deserialize is a CONSENSUS ANCHOR silently
+            // going missing -> a wrong GetDeterministicFinalizedHeight with nothing in the log. Never
+            // swallow it quietly: this is especially important across a binary upgrade that changes the
+            // CEpochState record format or activates the epoch-state fork on a node holding records
+            // written under the old regime. Callers treat a missing epoch as not-yet-computed, so a
+            // dropped record can diverge this node from the fleet; surface it so a reindex is triggered.
+            printf("IterateEpochStates: WARNING dropped an epoch-state record that failed to deserialize "
+                   "(rawkeylen=%d): %s -- deterministic finalized-height anchor may be INCOMPLETE; a "
+                   "-reindex is recommended after any format/fork-regime change\n",
+                   (int)strKey.size(), e.what());
         }
 
         it->Next();
@@ -544,6 +586,19 @@ bool CTxDB::WriteDAGCleanHeight(int nHeight)
 bool CTxDB::ReadDAGCleanHeight(int& nHeight)
 {
     return Read(string("dagcleanheight"), nHeight);
+}
+
+// DB-wide epoch-state schema marker (see EPOCHSTATE_SCHEMA_V2 in dag.h). Absent -> nVersion left 0,
+// which classifies the DB as pre-deterministic-anchor (needs the upgrade guard in AppInit2).
+bool CTxDB::WriteEpochStateSchema(int nVersion)
+{
+    return Write(string("epochstateschema"), nVersion);
+}
+
+bool CTxDB::ReadEpochStateSchema(int& nVersion)
+{
+    nVersion = 0;
+    return Read(string("epochstateschema"), nVersion);
 }
 
 bool CTxDB::WriteFinalityVote(const uint256& nullifier, const CFinalityVote& vote)

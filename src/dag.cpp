@@ -946,6 +946,12 @@ bool CDAGManager::LoadEpochStates(CTxDB& txdb)
 }
 
 
+size_t CDAGManager::GetLoadedEpochStateCount() const
+{
+    LOCK(cs_dag);
+    return mapEpochState.size();
+}
+
 // ---------------------------------------------------------------------------
 // CDAGManager: Rebuild Ordering
 // ---------------------------------------------------------------------------

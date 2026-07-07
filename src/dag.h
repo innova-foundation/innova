@@ -62,6 +62,15 @@ CScript BuildDAGParentScript(const std::vector<uint256>& vParents);
 // Per-epoch DAG state (persisted to LevelDB)
 // ---------------------------------------------------------------------------
 
+// Per-record serialization version for CEpochState. Legacy records (written before this byte was
+// added) carry an implicit version 0; the DB reader (CTxDB::IterateEpochStates) reads the trailing
+// byte tolerantly, mirroring the CBlockDAGData::nInferredK legacy-field pattern.
+static const unsigned char EPOCHSTATE_SER_VERSION = 1;
+// DB-wide epoch-state schema marker (key "epochstateschema"). Absent/0 = pre-deterministic-anchor
+// regime (records may have been computed off a node-local tip); EPOCHSTATE_SCHEMA_V2 = records are
+// written under the deterministic anchor (post FORK_HEIGHT_EPOCH_STATE_V2). Gates the upgrade guard.
+static const int EPOCHSTATE_SCHEMA_V2 = 2;
+
 struct CEpochState
 {
     int nEpoch;
@@ -83,6 +92,9 @@ struct CEpochState
     // function of the chain's connected per-epoch tiers, identical on every node, so
     // private-vote / tally-cert / FCMP-spend validation anchors deterministically.
     int nFinalizedHeightAsOf;
+    // Record serialization version (trailing field; legacy records read back as 0). Not part of the
+    // consensus root — purely a format tag so a future field-add can be detected across upgrades.
+    unsigned char nSerVersion;
 
     CEpochState()
     {
@@ -101,6 +113,7 @@ struct CEpochState
         nConsecutiveHardCount = 0;
         fFinalized = false;
         nFinalizedHeightAsOf = 0;
+        nSerVersion = EPOCHSTATE_SER_VERSION;
     }
 
     IMPLEMENT_SERIALIZE
@@ -121,6 +134,7 @@ struct CEpochState
         READWRITE(nConsecutiveHardCount);
         READWRITE(fFinalized);
         READWRITE(nFinalizedHeightAsOf);
+        READWRITE(nSerVersion);   // trailing; legacy records lack it -> IterateEpochStates reads it tolerantly
     )
 };
 
@@ -228,6 +242,9 @@ public:
 
     /** Get epoch state (from memory cache). */
     bool GetEpochState(int nEpoch, CEpochState& stateOut) const;
+
+    /** Number of epoch-state records loaded into the memory cache (used by the startup schema guard). */
+    size_t GetLoadedEpochStateCount() const;
 
     /** Deterministic finalized height as of the latest complete epoch <= nUpToEpoch.
      *  Pure function of the persisted per-epoch states; identical on every node.

@@ -624,6 +624,9 @@ FILE* AppendBlockFile(unsigned int& nFileRet);
 bool LoadBlockIndex(bool fAllowNew=true);
 void PrintBlockTree();
 CBlockIndex* FindBlockByHeight(int nHeight);
+// invalidateblock / reconsiderblock RPC support (defined in main.cpp; assume cs_main held).
+bool InvalidateBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError);
+bool ReconsiderBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError);
 bool ProcessMessages(CNode* pfrom);
 bool SendMessages(CNode* pto, bool fSendTrickle);
 bool LoadExternalBlockFile(FILE* fileIn);
@@ -1681,7 +1684,7 @@ public:
     bool DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames = true);
     bool ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck=false, bool fWriteNames = true);
     bool ReadFromDisk(const CBlockIndex* pindex, bool fReadTransactions=true);
-    bool SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew);
+    bool SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanentInvalid = NULL);
     bool AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const uint256& hashProof);
     bool CheckBlock(bool fCheckPOW=true, bool fCheckMerkleRoot=true, bool fCheckSig=true) const;
     bool AcceptBlock();
@@ -1691,7 +1694,7 @@ public:
 	void RebuildAddressIndex(CTxDB& txdb);
 
 private:
-    bool SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew);
+    bool SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew, bool* pfPermanentInvalid = NULL);
 };
 
 
@@ -1742,6 +1745,8 @@ public:
         BLOCK_PROOF_OF_STAKE = (1 << 0), // is proof-of-stake block
         BLOCK_STAKE_ENTROPY  = (1 << 1), // entropy bit for stake modifier
         BLOCK_STAKE_MODIFIER = (1 << 2), // regenerated stake modifier
+        BLOCK_FAILED_VALID   = (1 << 3), // failed connect/reorg validity: keep index, never re-request/connect
+        BLOCK_FAILED_CHILD   = (1 << 4), // descends from a BLOCK_FAILED_VALID block (invalidateblock taint)
     };
 
     uint64_t nStakeModifier; // hash modifier for proof-of-stake
@@ -1944,6 +1949,15 @@ public:
         if (fGeneratedStakeModifier)
             nFlags |= BLOCK_STAKE_MODIFIER;
     }
+
+    // Permanent-invalidity flags (persisted via nFlags in CDiskBlockIndex). A block that permanently
+    // failed connect/reorg is KEPT in mapBlockIndex flagged (not deleted) so it is not re-requested +
+    // re-validated forever, and its children are rejected. invalidateblock/reconsiderblock toggle these.
+    bool IsInvalid() const { return (nFlags & (BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD)); }
+    bool IsFailed() const { return (nFlags & BLOCK_FAILED_VALID); }
+    void SetFailedValid() { nFlags |= BLOCK_FAILED_VALID; }
+    void SetFailedChild() { nFlags |= BLOCK_FAILED_CHILD; }
+    void ClearFailed() { nFlags &= ~(BLOCK_FAILED_VALID | BLOCK_FAILED_CHILD); }
 
     std::string ToString() const
     {
