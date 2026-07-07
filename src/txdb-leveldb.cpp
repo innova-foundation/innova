@@ -1321,6 +1321,22 @@ bool CTxDB::LoadBlockIndex()
     g_dagManager.LoadDAGLinks(*this);
     g_dagManager.LoadEpochStates(*this);
     PinFinalityCommitteeConstants(); // before rotations load
+    {
+        // Release gate (defense-in-depth): a mainnet node must never run with an empty finality
+        // committee. If it did, private tally certificates would be accepted with NO M-of-N committee
+        // authorization from FORK_HEIGHT_TALLY_GOVERNANCE onward (GetCommitteeForEpoch returns false ->
+        // the signature check is skipped -> accept-all). Refuse to start rather than run unpinned; the
+        // mainnet committee is pinned from constants in PinFinalityCommitteeConstants, so this only fires
+        // if a build ships with an empty/invalid committee.
+        extern bool fRegTest;
+        extern bool fTestNet;
+        std::vector<CPubKey> vChk; int nChkM = 0; uint256 hashChk;
+        if (!fRegTest && !fTestNet &&
+            !g_finalityTracker.GetCommitteeForEpoch(0, vChk, nChkM, hashChk))
+            return error("LoadBlockIndex : FATAL -- mainnet finality committee is UNPINNED; refusing to "
+                         "start (the M-of-N governance trust root would be absent). Pin the launch "
+                         "committee in PinFinalityCommitteeConstants before shipping mainnet.");
+    }
     g_finalityTracker.LoadVotes(*this);
     g_finalityTracker.LoadTallyShares(*this);
     g_finalityTracker.LoadTallyCertificates(*this);

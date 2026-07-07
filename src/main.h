@@ -428,7 +428,10 @@ inline int GetForkHeightTallyGovernance()
     extern bool fTestNet;
     if (fRegTest) return 8;
     if (fTestNet) return 660;        // live-chain activation at the epoch-2 boundary (tip ~430), reachable to exercise
-    return 8250000;                  // mainnet: next slot after DAGKnight
+    // Mainnet: co-activate the committee-signature requirement with the DAG fork (the first height a
+    // private cert can exist). Any later governance height would leave a window where private certs are
+    // accepted with content-checks only (no M-of-N committee authorization) even with a pinned committee.
+    return GetForkHeightDAG();
 }
 #define FORK_HEIGHT_TALLY_GOVERNANCE (GetForkHeightTallyGovernance())
 

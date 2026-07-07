@@ -273,6 +273,27 @@ bool CheckFinalityCommitteeRotation(const CFinalityCommitteeRotation& rot,
                                          rot.GetSignatureDigest(), pstrError);
 }
 
+// A rotation is authorized by EITHER the canonical prior committee OR (if that committee cannot
+// authorize) the recovery committee -- so a lost/dead/sub-threshold primary can be permanently healed
+// with a fresh committee, rather than depending on recovery certs forever (D2 audit MEDIUM-2). The
+// rotation's own hashPrevCommitteeSet + signatures select which committee is checked (it must chain to
+// and be M-of-N-signed by exactly one of them), so this adds no ambiguity. Recovery is already trusted
+// to sign certificates in the recovery window, so authorizing a rotation is within the same trust.
+bool CheckCommitteeRotationAuthorized(const CFinalityCommitteeRotation& rot,
+                                      const std::vector<CPubKey>& vCanonical, int nCanonicalM,
+                                      const uint256& hashCanonicalSet, std::string* pstrError)
+{
+    std::string errCanonical;
+    if (CheckFinalityCommitteeRotation(rot, vCanonical, nCanonicalM, hashCanonicalSet, &errCanonical))
+        return true;
+    std::vector<CPubKey> vRec; int nRecM = 0; uint256 recSetHash;
+    if (g_finalityTracker.GetRecoveryCommittee(vRec, nRecM, recSetHash) &&
+        CheckFinalityCommitteeRotation(rot, vRec, nRecM, recSetHash, NULL))
+        return true;
+    if (pstrError) *pstrError = errCanonical;
+    return false;
+}
+
 void CFinalityTracker::SetInitialFinalityCommittee(const std::vector<CPubKey>& vPubKeys, int nM)
 {
     LOCK(cs_finality);
@@ -461,7 +482,7 @@ bool CFinalityTracker::ConnectCommitteeRotation(const CFinalityCommitteeRotation
     if (!GetCommitteeForEpoch(rot.nEffectiveEpoch - 1, vPrev, nPrevM, prevSetHash))
         return reject("no committee resolvable before rotation effective epoch");
 
-    if (!CheckFinalityCommitteeRotation(rot, vPrev, nPrevM, prevSetHash, pstrError))
+    if (!CheckCommitteeRotationAuthorized(rot, vPrev, nPrevM, prevSetHash, pstrError))
         return false;
 
     // A2 determinism: at most one rotation per effective epoch; deterministic
@@ -503,7 +524,7 @@ bool CFinalityTracker::AddPendingCommitteeRotation(const CFinalityCommitteeRotat
     std::vector<CPubKey> vPrev; int nPrevM = 0; uint256 prevSetHash;
     if (!GetCommitteeForEpoch(rot.nEffectiveEpoch - 1, vPrev, nPrevM, prevSetHash))
         return reject("no committee resolvable before rotation effective epoch");
-    if (!CheckFinalityCommitteeRotation(rot, vPrev, nPrevM, prevSetHash, pstrError))
+    if (!CheckCommitteeRotationAuthorized(rot, vPrev, nPrevM, prevSetHash, pstrError))
         return false;
     if (mapConnectedRotations.count(rot.nEffectiveEpoch))
         return reject("a rotation is already connected at that effective epoch");
@@ -529,7 +550,7 @@ std::vector<CFinalityCommitteeRotation> CFinalityTracker::GetPendingCommitteeRot
         std::vector<CPubKey> vPrev; int nPrevM = 0; uint256 prevSetHash;
         if (!GetCommitteeForEpoch(rot.nEffectiveEpoch - 1, vPrev, nPrevM, prevSetHash))
             continue;
-        if (!CheckFinalityCommitteeRotation(rot, vPrev, nPrevM, prevSetHash, NULL))
+        if (!CheckCommitteeRotationAuthorized(rot, vPrev, nPrevM, prevSetHash, NULL))
             continue;
         vOut.push_back(rot);
         if (vOut.size() >= nMax)
@@ -565,6 +586,52 @@ static const char* TESTNET_FINALITY_COMMITTEE_PUBKEYS[] = {
 };
 static const int TESTNET_FINALITY_COMMITTEE_M = 2;
 
+// MAINNET launch finality committee (3-of-5) + recovery committee (3-of-5).
+// ############################## RELEASE GATE ##############################
+// These are PLACEHOLDER pre-launch integration keys. They MUST be regenerated on secure hardware
+// (privkeys held by the actual committee members) and swapped here BEFORE mainnet ships / reaches
+// the governance fork. The committee is pinned from launch (a network constant) so the M-of-N
+// signer-set rule has a trust root from the first height a private cert can exist -- pinning it in
+// a LATER release would require signatures on already-accepted historical certs and permanently
+// split old vs new binaries. On mainnet the signature requirement activates at
+// FORK_HEIGHT_TALLY_GOVERNANCE, which == FORK_HEIGHT_DAG (no unauthenticated-cert window).
+// #########################################################################
+static const char* MAINNET_FINALITY_COMMITTEE_PUBKEYS[] = {
+    "02f315b0bee4c591509f002b030a4c634e3ccd48f3531d7cea0c0dc085211827b5",
+    "030adc8ccf8840c9a19a44aeb3b48197c1459476db79deabbc9f00fae62308e518",
+    "02e2d3fb20070bcecde0967aee61c19ae3ead6b2299284c2559cc48b6ed878aaa2",
+    "03a9b6558acfef9f9da37e02ff6f808ec531136498225106f7cd118a01aac9dea2",
+    "02f39784bb6088608085b5b3a6778e49b5a3fe7e9bc6e17d496636b19d16270992",
+};
+static const int MAINNET_FINALITY_COMMITTEE_M = 3;
+static const char* MAINNET_RECOVERY_COMMITTEE_PUBKEYS[] = {
+    "03640e4ea1b954ac387c3c7e0a644acfc22b789cf4f84c78d9b2103a2495c7cf09",
+    "02e36155c6506dced64479358e3d4f69139784cd2f35b3bbc8cd1b3bbd53897292",
+    "02d64b22603edf2c47067b2e5859782787deca11a303db0530c4897fd1730a86d9",
+    "0240c9571eafe7c36e831a80f6f98f9f888297f8cca10b9d1c86cd4dbb5eef5ced",
+    "026dd0852655423527b393fa370b2b8ff944d69f700eb0ddda19cbab6cb762c6d3",
+};
+static const int MAINNET_RECOVERY_COMMITTEE_M = 3;
+
+// Parse a hardcoded compressed-pubkey list; returns false (empty out) if any entry is not a valid
+// fully-valid compressed secp256k1 point. Order is preserved (the committee set hash is order-sensitive).
+static bool ParsePinnedCommittee(const char* const* pubkeyHexes, int count, std::vector<CPubKey>& out)
+{
+    out.clear();
+    for (int i = 0; i < count; i++)
+    {
+        std::vector<unsigned char> vch = ParseHex(pubkeyHexes[i]);
+        CPubKey pk(vch.begin(), vch.end());
+        if (!pk.IsValid() || !pk.IsFullyValid() || !pk.IsCompressed())
+        {
+            out.clear();
+            return false;
+        }
+        out.push_back(pk);
+    }
+    return true;
+}
+
 void PinFinalityCommitteeConstants()
 {
     extern bool fRegTest;
@@ -573,16 +640,11 @@ void PinFinalityCommitteeConstants()
     if (fTestNet)
     {
         std::vector<CPubKey> vPubKeys;
-        for (const char* hex : TESTNET_FINALITY_COMMITTEE_PUBKEYS)
+        if (!ParsePinnedCommittee(TESTNET_FINALITY_COMMITTEE_PUBKEYS,
+                                  (int)ARRAYLEN(TESTNET_FINALITY_COMMITTEE_PUBKEYS), vPubKeys))
         {
-            std::vector<unsigned char> vch = ParseHex(hex);
-            CPubKey pk(vch.begin(), vch.end());
-            if (!pk.IsValid() || !pk.IsFullyValid() || !pk.IsCompressed())
-            {
-                printf("PinFinalityCommitteeConstants: WARNING invalid testnet committee pubkey\n");
-                return;
-            }
-            vPubKeys.push_back(pk);
+            printf("PinFinalityCommitteeConstants: WARNING invalid testnet committee pubkey\n");
+            return;
         }
         g_finalityTracker.SetInitialFinalityCommittee(vPubKeys, TESTNET_FINALITY_COMMITTEE_M);
         printf("PinFinalityCommitteeConstants: pinned testnet committee %d-of-%d\n",
@@ -592,9 +654,26 @@ void PinFinalityCommitteeConstants()
 
     if (!fRegTest)
     {
-        // Mainnet: the launch committee is pinned here before the mainnet
-        // governance fork (8,250,000). Left unpinned until decided — the
-        // signer-set rule is inert without a pinned committee.
+        // Mainnet: pin the launch committee + recovery committee from constants, so the M-of-N
+        // signer-set trust root exists from the first height a private cert can exist
+        // (FORK_HEIGHT_TALLY_GOVERNANCE == FORK_HEIGHT_DAG). Pinned from launch -> no later-pin split.
+        std::vector<CPubKey> vCommittee, vRecovery;
+        if (ParsePinnedCommittee(MAINNET_FINALITY_COMMITTEE_PUBKEYS,
+                                 (int)ARRAYLEN(MAINNET_FINALITY_COMMITTEE_PUBKEYS), vCommittee))
+        {
+            g_finalityTracker.SetInitialFinalityCommittee(vCommittee, MAINNET_FINALITY_COMMITTEE_M);
+            printf("PinFinalityCommitteeConstants: pinned mainnet committee %d-of-%d\n",
+                   MAINNET_FINALITY_COMMITTEE_M, (int)vCommittee.size());
+        }
+        else
+            printf("PinFinalityCommitteeConstants: FATAL invalid mainnet committee pubkey -- committee UNPINNED\n");
+        if (ParsePinnedCommittee(MAINNET_RECOVERY_COMMITTEE_PUBKEYS,
+                                 (int)ARRAYLEN(MAINNET_RECOVERY_COMMITTEE_PUBKEYS), vRecovery))
+        {
+            g_finalityTracker.SetRecoveryFinalityCommittee(vRecovery, MAINNET_RECOVERY_COMMITTEE_M);
+            printf("PinFinalityCommitteeConstants: pinned mainnet recovery committee %d-of-%d\n",
+                   MAINNET_RECOVERY_COMMITTEE_M, (int)vRecovery.size());
+        }
         return;
     }
 
