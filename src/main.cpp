@@ -2980,6 +2980,19 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
     else if (nHeight >= 10000000) // 0.0001 Coin PoW Reward to release ~200 INN per year
       nSubsidy = 0.0001 * COIN; // Final PoW Reward 0.0001 INN @ block 10 mln
 
+    // IDAG emission-rate correction: post-DAG blocks come 15x faster (1s vs 15s pre-DAG, see
+    // GetTargetSpacingForHeight). The tier schedule above encodes the intended per-block emission at the
+    // 15s cadence, so scale each post-DAG reward by the block-spacing ratio (= 1/15) to keep the emission
+    // RATE continuous across the DAG fork -- the same per-block reward at 1s blocks would otherwise be a
+    // ~15x inflation spike, and the whole schedule would mine out ~15x faster in wall-clock time.
+    if (nHeight >= FORK_HEIGHT_DAG)
+    {
+        unsigned int nPreDAGSpacing = GetTargetSpacingForHeight(FORK_HEIGHT_DAG - 1);
+        unsigned int nPostDAGSpacing = GetTargetSpacingForHeight(nHeight);
+        if (nPreDAGSpacing > 0)
+            nSubsidy = nSubsidy * (int64_t)nPostDAGSpacing / (int64_t)nPreDAGSpacing;
+    }
+
     if (fDebug && GetBoolArg("-printcreation"))
       printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
 
