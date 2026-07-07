@@ -236,6 +236,15 @@ bool CreatePartialBindingSig(const std::vector<unsigned char>& vchNonce,        
 bool AggregatePartialSigs(const std::vector<std::vector<unsigned char>>& vPartialSigs,
                            std::vector<unsigned char>& vchAggSigOut);
 
+// Proven RLC half-aggregation for the M-of-N stake authorization: s_agg = Sum_j rho_j*s_j, with
+// rho_j bound to the full ordered (R,pk,sighash) transcript. Use this (not the plain-sum
+// AggregatePartialSigs) for the half-agg stake signature; VerifyHalfAggStakeSignature verifies it.
+bool AggregatePartialSigsRLC(const std::vector<std::vector<unsigned char>>& vPartialSigs,
+                             const std::vector<std::vector<unsigned char>>& vSignerRPoints,
+                             const std::vector<std::vector<unsigned char>>& vSignerPubKeys,
+                             const uint256& sighash,
+                             std::vector<unsigned char>& vchAggSigOut);
+
 bool AssembleBindingSignature(const std::vector<unsigned char>& vchAggNonce,
                                const std::vector<unsigned char>& vchAggSig,
                                CBindingSignature& sigOut);

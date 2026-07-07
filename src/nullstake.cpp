@@ -1283,7 +1283,11 @@ bool CreateNullStakeMofNKernelProofV3(int64_t nValue,
         proofOut.vSignerRPoints.push_back(trips[i].second.first);
         vS.push_back(trips[i].second.second);
     }
-    if (!AggregatePartialSigs(vS, proofOut.vchAggregatedSScalar))
+    // Proven RLC half-aggregation (s_agg = Sum rho_j*s_j, rho_j bound to the full ordered
+    // (R,pk,digest) transcript). VerifyHalfAggStakeSignature recomputes the same rho_j from the same
+    // sorted vSignerRPoints/vSignerPubKeys + stakeDigest, so the aggregate round-trips.
+    if (!AggregatePartialSigsRLC(vS, proofOut.vSignerRPoints, proofOut.vSignerPubKeys, stakeDigest,
+                                 proofOut.vchAggregatedSScalar))
     {
         OPENSSL_cleanse(vchRv.data(), 32);
         return false;

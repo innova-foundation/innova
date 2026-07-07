@@ -2829,6 +2829,91 @@ static bool HalfAggStakeChallenge(const unsigned char* rBuf33,
     return true;
 }
 
+// RLC (random-linear-combination) half-aggregation coefficient for signer slot j:
+//   rho_j = H("Innova_HalfAggStake_RLC_v1" || M || R_0..R_{M-1} || pk_0..pk_{M-1} || sighash || j) mod n
+// Binding rho_j to the FULL ordered (R, pk) transcript + sighash upgrades the naive plain-sum
+// half-aggregation (s_agg = Sum s_j) to the proven CGKN construction (s_agg = Sum rho_j*s_j): each
+// signer's contribution depends on the entire signer set, closing cross-set / mix-and-match forgery.
+// All field lengths are fixed (33/33/32) and M/j are big-endian, so the hash pre-image is canonical.
+static bool HalfAggStakeRLCCoeff(size_t j, size_t M,
+                                 const std::vector<std::vector<unsigned char> >& vR,
+                                 const std::vector<std::vector<unsigned char> >& vPk,
+                                 const uint256& sighash,
+                                 const BIGNUM* order, BN_CTX* ctx, BIGNUM* rhoOut)
+{
+    if (vR.size() != M || vPk.size() != M) return false;
+    SHA256_CTX sha;
+    SHA256_Init(&sha);
+    const char* domain = "Innova_HalfAggStake_RLC_v1";
+    SHA256_Update(&sha, domain, strlen(domain));
+    unsigned char mb[4] = { (unsigned char)(M >> 24), (unsigned char)(M >> 16),
+                            (unsigned char)(M >> 8),  (unsigned char)M };
+    SHA256_Update(&sha, mb, 4);
+    for (size_t k = 0; k < M; k++)
+    {
+        if (vR[k].size() != 33 || vPk[k].size() != 33) return false;
+        SHA256_Update(&sha, vR[k].data(), 33);
+    }
+    for (size_t k = 0; k < M; k++)
+        SHA256_Update(&sha, vPk[k].data(), 33);
+    SHA256_Update(&sha, sighash.begin(), 32);
+    unsigned char jb[4] = { (unsigned char)(j >> 24), (unsigned char)(j >> 16),
+                            (unsigned char)(j >> 8),  (unsigned char)j };
+    SHA256_Update(&sha, jb, 4);
+    unsigned char h[32];
+    SHA256_Final(h, &sha);
+    if (!BN_bin2bn(h, 32, rhoOut)) { OPENSSL_cleanse(h, 32); return false; }
+    OPENSSL_cleanse(h, 32);
+    BN_mod(rhoOut, rhoOut, order, ctx);
+    // A zero coefficient would silently drop signer j's contribution; reject (negligible probability).
+    if (BN_is_zero(rhoOut)) return false;
+    return true;
+}
+
+// Proven RLC half-aggregation of the M-of-N stake signatures: s_agg = Sum_j rho_j * s_j (mod n).
+// The naive plain-sum AggregatePartialSigs is retained for NullSend (a distinct, separately-scoped scheme).
+bool AggregatePartialSigsRLC(const std::vector<std::vector<unsigned char> >& vPartialSigs,
+                             const std::vector<std::vector<unsigned char> >& vSignerRPoints,
+                             const std::vector<std::vector<unsigned char> >& vSignerPubKeys,
+                             const uint256& sighash,
+                             std::vector<unsigned char>& vchAggSigOut)
+{
+    const size_t M = vPartialSigs.size();
+    if (M == 0) return false;
+    if (vSignerRPoints.size() != M || vSignerPubKeys.size() != M) return false;
+    if (!CZKContext::IsInitialized()) return false;
+
+    CECGroupGuard group;
+    if (!group.group) return false;
+    CBNCtxGuard ctx;
+    if (!ctx.ctx) return false;
+    const BIGNUM* order = EC_GROUP_get0_order(group);
+
+    CBNGuard sAgg;
+    BN_zero(sAgg);
+    for (size_t j = 0; j < M; j++)
+    {
+        if (vPartialSigs[j].size() != 32 ||
+            vSignerRPoints[j].size() != 33 || vSignerPubKeys[j].size() != 33)
+            return false;
+        CBNGuard sj;
+        if (!BN_bin2bn(vPartialSigs[j].data(), 32, sj)) return false;
+        CBNGuard rho;
+        if (!HalfAggStakeRLCCoeff(j, M, vSignerRPoints, vSignerPubKeys, sighash, order, ctx, rho))
+            return false;
+        CBNGuard term;
+        BN_mod_mul(term, rho, sj, order, ctx);
+        BN_mod_add(sAgg, sAgg, term, order, ctx);
+    }
+
+    vchAggSigOut.resize(32);
+    memset(vchAggSigOut.data(), 0, 32);
+    int nBytes = BN_num_bytes(sAgg);
+    if (nBytes > 0 && nBytes <= 32)
+        BN_bn2bin(sAgg, vchAggSigOut.data() + (32 - nBytes));
+    return true;
+}
+
 bool HalfAggStakeDerivePubKey(const uint256& skSigner,
                               std::vector<unsigned char>& vchPubKeyOut)
 {
@@ -2976,7 +3061,7 @@ bool VerifyHalfAggStakeSignature(const std::vector<std::vector<unsigned char> >&
     if (!BN_bin2bn(vchAggregatedSScalar.data(), 32, sAgg)) { strError = "bad aggregated s-scalar"; return false; }
     if (BN_is_negative(sAgg) || BN_cmp(sAgg, order) >= 0) { strError = "s-scalar out of range"; return false; }
 
-    // lhs = Sum_j R_j ; rhs = s_agg*G + Sum_j e_j*pk_j
+    // RLC half-agg verify: lhs = Sum_j rho_j*R_j ; rhs = s_agg*G + Sum_j (rho_j*e_j)*pk_j
     CECPointGuard lhs(group);
     EC_POINT_set_to_infinity(group, lhs);
     CECPointGuard rhs(group);
@@ -3001,10 +3086,21 @@ bool VerifyHalfAggStakeSignature(const std::vector<std::vector<unsigned char> >&
         if (!HalfAggStakeChallenge(vSignerRPoints[j].data(), vSignerPubKeys[j].data(), sighash, group, ctx, e))
         { strError = "challenge computation failed"; return false; }
 
+        // RLC coefficient rho_j binds signer j's term to the full ordered (R,pk) transcript.
+        CBNGuard rho;
+        if (!HalfAggStakeRLCCoeff(j, M, vSignerRPoints, vSignerPubKeys, sighash, order, ctx, rho))
+        { strError = "rlc coefficient failed"; return false; }
+
+        // rhs += (rho_j * e_j) * pk_j
+        CBNGuard rhoE;
+        BN_mod_mul(rhoE, rho, e, order, ctx);
         CECPointGuard ePk(group);
-        if (!EC_POINT_mul(group, ePk, NULL, pk, e, ctx)) { strError = "e*pk failed"; return false; }
+        if (!EC_POINT_mul(group, ePk, NULL, pk, rhoE, ctx)) { strError = "e*pk failed"; return false; }
         if (!EC_POINT_add(group, rhs, rhs, ePk, ctx)) { strError = "rhs add failed"; return false; }
-        if (!EC_POINT_add(group, lhs, lhs, R, ctx)) { strError = "lhs add failed"; return false; }
+        // lhs += rho_j * R_j
+        CECPointGuard rhoR(group);
+        if (!EC_POINT_mul(group, rhoR, NULL, R, rho, ctx)) { strError = "rho*R failed"; return false; }
+        if (!EC_POINT_add(group, lhs, lhs, rhoR, ctx)) { strError = "lhs add failed"; return false; }
     }
 
     bool fValid = (EC_POINT_cmp(group, lhs, rhs, ctx) == 0);

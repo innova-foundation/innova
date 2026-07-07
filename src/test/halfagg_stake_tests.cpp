@@ -44,7 +44,7 @@ bool BuildHalfAggSig(const std::vector<uint256>& vSk,
         vR.push_back(R);
         vS.push_back(s);
     }
-    return AggregatePartialSigs(vS, sAgg);
+    return AggregatePartialSigsRLC(vS, vR, vPk, sighash, sAgg);
 }
 
 // Build an M-of-N authorization: derive the staker set + delegationHash from vSetSk, and a
@@ -84,7 +84,7 @@ bool BuildMofNAuth(const std::vector<uint256>& vSetSk, unsigned int M, const val
         vSignerR.push_back(trips[i].second.first);
         vS.push_back(trips[i].second.second);
     }
-    return AggregatePartialSigs(vS, sAgg);
+    return AggregatePartialSigsRLC(vS, vSignerR, vSignerPk, stakeDigest, sAgg);
 }
 } // namespace
 
