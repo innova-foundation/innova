@@ -2985,13 +2985,13 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
     // 15s cadence, so scale each post-DAG reward by the block-spacing ratio (= 1/15) to keep the emission
     // RATE continuous across the DAG fork -- the same per-block reward at 1s blocks would otherwise be a
     // ~15x inflation spike, and the whole schedule would mine out ~15x faster in wall-clock time.
+    // The pre-DAG reference is a compile-time CONSTANT (not the mutable global nTargetSpacing) so this
+    // consensus divisor can never be perturbed by runtime state; the post-DAG spacing is read from
+    // GetTargetSpacingForHeight (deterministic literal 1 post-DAG) so the ratio self-corrects if that
+    // block time is ever re-tuned. Keep PRE_DAG_TARGET_SPACING in sync with nTargetSpacing's init value.
+    static const int64_t PRE_DAG_TARGET_SPACING = 15; // seconds; matches nTargetSpacing init (main.cpp:185)
     if (nHeight >= FORK_HEIGHT_DAG)
-    {
-        unsigned int nPreDAGSpacing = GetTargetSpacingForHeight(FORK_HEIGHT_DAG - 1);
-        unsigned int nPostDAGSpacing = GetTargetSpacingForHeight(nHeight);
-        if (nPreDAGSpacing > 0)
-            nSubsidy = nSubsidy * (int64_t)nPostDAGSpacing / (int64_t)nPreDAGSpacing;
-    }
+        nSubsidy = nSubsidy * (int64_t)GetTargetSpacingForHeight(nHeight) / PRE_DAG_TARGET_SPACING;
 
     if (fDebug && GetBoolArg("-printcreation"))
       printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
