@@ -133,6 +133,8 @@ private:
     QProgressBar *progressBar;
 
     QMenuBar *appMenuBar;
+    QAction *toggleThemeAction;
+    void applyTheme();
     QAction *overviewAction;
 	  QAction *statisticsAction;
     QAction *idagAction;
@@ -291,6 +293,8 @@ private slots:
 
     /** Show configuration dialog */
     void optionsClicked();
+    /** Toggle between the dark and light interface theme */
+    void toggleTheme();
     /** Show about dialog */
     void aboutClicked();
 #ifndef Q_OS_MAC
