@@ -71,6 +71,7 @@
 #include <QMovie>
 #include <QFileDialog>
 #include <QSettings>
+#include "modernstyle.h"
 #include <QDesktopServices>
 #include <QTimer>
 #include <QDragEnterEvent>
@@ -344,20 +345,9 @@ void BitcoinGUI::applyTheme()
 {
     QSettings settings;
     bool fDark = settings.value("fDarkTheme", true).toBool();
-    if (fDark)
-    {
-        QFile f(":qdarkstyle/style.qss");
-        if (f.exists())
-        {
-            f.open(QFile::ReadOnly | QFile::Text);
-            QTextStream ts(&f);
-            qApp->setStyleSheet(ts.readAll());
-            return;
-        }
-    }
-    // Light / native look
-    qApp->setStyleSheet("");
+    // Fusion base style so the modern QSS renders consistently across platforms.
     QApplication::setStyle(QStyleFactory::create("Fusion"));
+    qApp->setStyleSheet(QString::fromUtf8(fDark ? MODERN_DARK_QSS : MODERN_LIGHT_QSS));
 }
 
 void BitcoinGUI::toggleTheme()
@@ -1512,7 +1502,7 @@ void BitcoinGUI::mainToolbarOrientation(Qt::Orientation orientation)
         mainIcon->setAlignment(Qt::AlignLeft);
         mainIcon->show();
         mainToolbar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
-        mainToolbar->setStyleSheet(HORIZONTAL_TOOLBAR_STYLESHEET);
+        mainToolbar->setStyleSheet("");
         messageAction->setIconText(tr("&Messages"));
     }
     else
@@ -1521,14 +1511,14 @@ void BitcoinGUI::mainToolbarOrientation(Qt::Orientation orientation)
         mainIcon->setAlignment(Qt::AlignCenter);
         mainIcon->show();
         mainToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-        mainToolbar->setStyleSheet(VERTICAL_TOOBAR_STYLESHEET);
+        mainToolbar->setStyleSheet("");
         messageAction->setIconText(tr("Encrypted &Messages"));
     }
 }
 
 void BitcoinGUI::secondaryToolbarOrientation(Qt::Orientation orientation)
 {
-    secondaryToolbar->setStyleSheet(orientation == Qt::Horizontal ? HORIZONTAL_TOOLBAR_STYLESHEET : VERTICAL_TOOBAR_STYLESHEET);
+    secondaryToolbar->setStyleSheet("");
 }
 
 void BitcoinGUI::setEncryptionStatus(int status)
