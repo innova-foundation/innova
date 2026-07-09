@@ -54,6 +54,11 @@ namespace GUIUtil
 
     // Parse "innova:" URI into recipient object, return true on successful parsing
     // See Bitcoin URI definition discussion here: https://bitcointalk.org/index.php?topic=33490.0
+    // Execute a wallet RPC command by name with string args, via the same dispatcher
+    // the debug console uses. Returns the result text; on error sets ok=false and
+    // returns the error message. Runs on the calling (GUI) thread.
+    QString executeRpc(const QString &command, const QStringList &args, bool &ok);
+
     bool parseBitcoinURI(const QUrl &uri, SendCoinsRecipient *out);
     bool parseBitcoinURI(QString uri, SendCoinsRecipient *out);
 

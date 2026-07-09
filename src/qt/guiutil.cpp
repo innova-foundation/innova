@@ -4,6 +4,7 @@
 #include "bitcoinunits.h"
 #include "util.h"
 #include "init.h"
+#include "innovarpc.h"
 
 #include <QRegularExpression>
 #include <QStandardPaths>
@@ -171,6 +172,32 @@ void setupAmountWidget(QLineEdit *widget, QWidget *parent)
     amountValidator->setBottom(0.0);
     widget->setValidator(amountValidator);
     widget->setAlignment(Qt::AlignRight|Qt::AlignVCenter);
+}
+
+QString executeRpc(const QString &command, const QStringList &args, bool &ok)
+{
+    std::vector<std::string> vArgs;
+    for (int i = 0; i < args.size(); ++i)
+        vArgs.push_back(args.at(i).toStdString());
+    try {
+        json_spirit::Value result = tableRPC.execute(command.toStdString(),
+                                        RPCConvertValues(command.toStdString(), vArgs));
+        ok = true;
+        if (result.type() == json_spirit::str_type)
+            return QString::fromStdString(result.get_str());
+        if (result.type() == json_spirit::null_type)
+            return QString();
+        return QString::fromStdString(write_string(result, true));
+    }
+    catch (json_spirit::Object &objError) {
+        ok = false;
+        try { return QString::fromStdString(find_value(objError, "message").get_str()); }
+        catch (...) { return QObject::tr("RPC error"); }
+    }
+    catch (std::exception &e) {
+        ok = false;
+        return QString::fromUtf8(e.what());
+    }
 }
 
 bool parseBitcoinURI(const QUrl &uri, SendCoinsRecipient *out)
