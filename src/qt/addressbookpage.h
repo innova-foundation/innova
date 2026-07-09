@@ -20,6 +20,8 @@ QT_END_NAMESPACE
 
 /** Widget that shows a list of sending or receiving addresses.
   */
+class QLabel;
+
 class AddressBookPage : public QDialog
 {
     Q_OBJECT
@@ -49,6 +51,8 @@ public slots:
 
 private:
     Ui::AddressBookPage *ui;
+    QLabel *receiveQR;
+    void updateReceiveQR();
     AddressTableModel *model;
     OptionsModel *optionsModel;
     WalletModel *walletModel;

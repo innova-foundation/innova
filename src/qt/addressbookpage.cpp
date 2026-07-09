@@ -18,7 +18,9 @@
 
 #ifdef USE_QRCODE
 #include "qrcodedialog.h"
+#include <qrencode.h>
 #endif
+#include <QLabel>
 
 AddressBookPage::AddressBookPage(Mode mode, Tabs tab, QWidget *parent) :
     QDialog(parent),
@@ -30,6 +32,7 @@ AddressBookPage::AddressBookPage(Mode mode, Tabs tab, QWidget *parent) :
     tab(tab)
 {
     ui->setupUi(this);
+    receiveQR = NULL;
 
 #ifdef Q_OS_MAC // Icons on push buttons are very uncommon on Mac
     ui->newAddressButton->setIcon(QIcon());
@@ -83,6 +86,16 @@ AddressBookPage::AddressBookPage(Mode mode, Tabs tab, QWidget *parent) :
             btnNewStaking->setStyleSheet("QPushButton { color: #FF9800; font-weight: bold; }");
             ui->horizontalLayout->insertWidget(3, btnNewStaking);
             connect(btnNewStaking, SIGNAL(clicked()), this, SLOT(onNewStakingAddressClicked()));
+
+#ifdef USE_QRCODE
+            // Inline QR code panel for the selected receiving address
+            receiveQR = new QLabel(this);
+            receiveQR->setAlignment(Qt::AlignCenter);
+            receiveQR->setMinimumHeight(190);
+            receiveQR->setText(tr("Select a receiving address to display its QR code"));
+            receiveQR->setStyleSheet("color: #8b929e; padding: 14px;");
+            ui->verticalLayout->insertWidget(1, receiveQR);
+#endif
         }
         break;
     }
@@ -293,12 +306,50 @@ void AddressBookPage::on_deleteButton_clicked()
     }
 }
 
+void AddressBookPage::updateReceiveQR()
+{
+#ifdef USE_QRCODE
+    if (!receiveQR)
+        return;
+    QTableView *qrTable = ui->tableView;
+    if (!qrTable->selectionModel() || !qrTable->selectionModel()->hasSelection())
+    {
+        receiveQR->setPixmap(QPixmap());
+        receiveQR->setText(tr("Select a receiving address to display its QR code"));
+        return;
+    }
+    QModelIndexList rows = qrTable->selectionModel()->selectedRows(AddressTableModel::Address);
+    if (rows.isEmpty())
+        return;
+    QString uri = "innova:" + rows.first().data().toString();
+    QRcode *code = QRcode_encodeString(uri.toUtf8().constData(), 0, QR_ECLEVEL_L, QR_MODE_8, 1);
+    if (!code)
+    {
+        receiveQR->setText(tr("Error encoding address into QR code."));
+        return;
+    }
+    QImage img(code->width + 8, code->width + 8, QImage::Format_RGB32);
+    img.fill(0xffffff);
+    unsigned char *p = code->data;
+    for (int y = 0; y < code->width; y++)
+        for (int x = 0; x < code->width; x++)
+        {
+            img.setPixel(x + 4, y + 4, ((*p & 1) ? 0x0 : 0xffffff));
+            p++;
+        }
+    QRcode_free(code);
+    receiveQR->setPixmap(QPixmap::fromImage(img).scaled(170, 170, Qt::KeepAspectRatio, Qt::FastTransformation));
+#endif
+}
+
 void AddressBookPage::selectionChanged()
 {
     // Set button states based on selected tab and selection
     QTableView *table = ui->tableView;
     if(!table->selectionModel())
         return;
+
+    updateReceiveQR();
 
     if(table->selectionModel()->hasSelection())
     {
