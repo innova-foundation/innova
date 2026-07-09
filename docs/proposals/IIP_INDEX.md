@@ -39,26 +39,26 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 
 | IIP | Title | Category | Status | Fork Height | TX Version |
 |-----|-------|----------|--------|-------------|------------|
-| [IIP-0001](#iip-0001-cold-staking-p2cs) | Cold Staking (P2CS) | Consensus | Active | 7,100,000 | 1 |
-| [IIP-0003](#iip-0003-ring-signature-deprecation) | Ring Signature Deprecation | Consensus | Active | 8,500,000 | 1000 |
+| [IIP-0001](#iip-0001-cold-staking-p2cs) | Cold Staking (P2CS) | Consensus | Active | 7,800,000 | 1 |
+| [IIP-0003](#iip-0003-ring-signature-deprecation) | Ring Signature Deprecation | Consensus | Active | 7,815,000 | 1000 |
 
 ### Privacy
 
 | IIP | Title | Category | Status | Fork Height | TX Version |
 |-----|-------|----------|--------|-------------|------------|
-| [IIP-0002](#iip-0002-shielded-transactions) | Shielded Transactions | Privacy | Active | 8,000,000 | 2000 |
-| [IIP-0004](#iip-0004-dynamic-selective-privacy) | Dynamic Selective Privacy (DSP) | Privacy | Active | 8,600,000 | 2001 |
-| [IIP-0005](#iip-0005-confidential-coinjoin) | Confidential CoinJoin | Privacy | Active | 8,700,000 | 2000 |
-| [IIP-0006](#iip-0006-fcmp-full-chain-membership-proofs) | FCMP++ Full-Chain Membership Proofs | Privacy | Active | 9,000,000 | 2002 |
-| [IIP-0007](#iip-0007-silent-payments-and-silent-shielding) | Silent Payments + Silent Shielding | Privacy | Active | 8,000,000 | 2000 |
-| [IIP-0009](#iip-0009-nullstake-v1) | NullStake V1 (ZK Private Staking) | Privacy | Active | 9,500,000 | 2003 |
-| [IIP-0010](#iip-0010-nullstake-v2) | NullStake V2 (ZK Kernel Privacy) | Privacy | Proposed | 10,000,000 | 2004 |
+| [IIP-0002](#iip-0002-shielded-transactions) | Shielded Transactions | Privacy | Active | 7,810,000 | 2000 |
+| [IIP-0004](#iip-0004-dynamic-selective-privacy) | Dynamic Selective Privacy (DSP) | Privacy | Active | 7,815,000 | 2001 |
+| [IIP-0005](#iip-0005-confidential-coinjoin) | Confidential CoinJoin | Privacy | Active | 7,820,000 | 2000 |
+| [IIP-0006](#iip-0006-fcmp-full-chain-membership-proofs) | FCMP++ Full-Chain Membership Proofs | Privacy | Active | 7,820,000 | 2002 |
+| [IIP-0007](#iip-0007-silent-payments-and-silent-shielding) | Silent Payments + Silent Shielding | Privacy | Active | 7,810,000 | 2000 |
+| [IIP-0009](#iip-0009-nullstake-v1) | NullStake V1 (ZK Private Staking) | Privacy | Active | 7,825,000 | 2003 |
+| [IIP-0010](#iip-0010-nullstake-v2) | NullStake V2 (ZK Kernel Privacy) | Privacy | Proposed | 7,830,000 | 2004 |
 
 ### Network
 
 | IIP | Title | Category | Status | Fork Height | TX Version |
 |-----|-------|----------|--------|-------------|------------|
-| [IIP-0008](#iip-0008-dandelion-network-privacy) | Dandelion++ Network Privacy | Network | Active | 8,000,000 | -- |
+| [IIP-0008](#iip-0008-dandelion-network-privacy) | Dandelion++ Network Privacy | Network | Active | 7,810,000 | -- |
 
 ---
 
@@ -72,7 +72,7 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **Title** | Cold Staking via Pay-to-Cold-Staking Scripts |
 | **Category** | Consensus |
 | **Status** | Active |
-| **Fork Height** | 7,100,000 (mainnet) |
+| **Fork Height** | 7,800,000 (mainnet) |
 | **Author** | 0xcircuitbreaker |
 
 **Abstract**: Introduces Pay-to-Cold-Staking (P2CS) scripts that separate spending authority from staking authority. A P2CS output has two key hashes: the `staker` key can produce coinstake transactions, while only the `owner` key can create spending transactions. This enables hardware wallet cold staking where the spending key never touches an online machine.
@@ -94,7 +94,7 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **Title** | Shielded Transactions with Pedersen Commitments and Bulletproof Range Proofs |
 | **Category** | Privacy |
 | **Status** | Active |
-| **Fork Height** | 8,000,000 (mainnet) |
+| **Fork Height** | 7,810,000 (mainnet) |
 | **TX Version** | `SHIELDED_TX_VERSION = 2000` |
 | **Author** | 0xcircuitbreaker |
 
@@ -127,7 +127,7 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **Title** | Deprecation of Legacy Ring Signatures |
 | **Category** | Consensus |
 | **Status** | Active |
-| **Fork Height** | 8,500,000 (mainnet) |
+| **Fork Height** | 7,815,000 (mainnet) |
 | **TX Version** | `1000` (rejected after fork) |
 | **Author** | 0xcircuitbreaker |
 
@@ -143,7 +143,7 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **Title** | Dynamic Selective Privacy (DSP) |
 | **Category** | Privacy |
 | **Status** | Active |
-| **Fork Height** | 8,600,000 (mainnet) |
+| **Fork Height** | 7,815,000 (mainnet) |
 | **TX Version** | `SHIELDED_TX_VERSION_DSP = 2001` |
 | **Author** | 0xcircuitbreaker |
 
@@ -180,12 +180,12 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **Title** | Confidential CoinJoin with MuSig Blind Aggregation |
 | **Category** | Privacy |
 | **Status** | Active |
-| **Fork Height** | 8,700,000 (mainnet) |
+| **Fork Height** | 7,820,000 (mainnet) |
 | **Author** | 0xcircuitbreaker |
 
 **Abstract**: Enables multi-party shielded CoinJoin transactions where participants collaboratively construct a shielded transaction with aggregated binding signatures. The protocol uses MuSig partial blind aggregation so that no single participant learns the values of other participants' inputs or outputs.
 
-**References**: See `src/shieldedcoinjoin.h/cpp`.
+**References**: See `src/nullsend.h/cpp` (NullSend confidential CoinJoin).
 
 ---
 
@@ -197,7 +197,7 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **Title** | Full-Chain Membership Proofs via Dual-Curve Trees |
 | **Category** | Privacy |
 | **Status** | Active |
-| **Fork Height** | 9,000,000 (mainnet) |
+| **Fork Height** | 7,820,000 (mainnet) |
 | **TX Version** | `SHIELDED_TX_VERSION_FCMP = 2002` |
 | **Author** | 0xcircuitbreaker |
 
@@ -225,7 +225,7 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **Title** | Silent Payments (BIP-352 Adaptation) with Silent Shielding |
 | **Category** | Privacy |
 | **Status** | Active |
-| **Fork Height** | 8,000,000 (mainnet) |
+| **Fork Height** | 7,810,000 (mainnet) |
 | **Author** | 0xcircuitbreaker |
 
 **Abstract**: Adapts BIP-352 Silent Payments for Innova, enabling recipients to publish a single static address `(B_scan, B_spend)` that senders use to derive unique one-time output keys via ECDH. Introduces **Silent Shielding** -- the first protocol combining BIP-352 stealth addressing with a ZK shielded pool in a single atomic transaction.
@@ -250,7 +250,7 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **Title** | Dandelion++ Network-Layer Transaction Privacy |
 | **Category** | Network |
 | **Status** | Active |
-| **Fork Height** | 8,000,000 (mainnet) |
+| **Fork Height** | 7,810,000 (mainnet) |
 | **Author** | 0xcircuitbreaker |
 
 **Abstract**: Implements the Dandelion++ two-phase relay protocol to prevent IP-to-transaction linking. Transactions first propagate through a private "stem" phase (forwarded to exactly one peer per hop), then transition to a public "fluff" phase (standard gossip broadcast). Shielded transactions receive mandatory stem phase for enhanced privacy.
@@ -275,7 +275,7 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **Title** | NullStake V1: Zero-Knowledge Private Staking via Sigma Protocol |
 | **Category** | Privacy |
 | **Status** | Active |
-| **Fork Height** | 9,500,000 (mainnet) |
+| **Fork Height** | 7,825,000 (mainnet) |
 | **TX Version** | `SHIELDED_TX_VERSION_ZARCANUM = 2003` |
 | **Author** | 0xcircuitbreaker |
 
@@ -291,7 +291,7 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 
 **Limitation**: V1 exposes `nBlockTimeFrom`, `nTxPrevOffset`, `nTxTimePrev`, and `nVoutN` as public fields, leaking UTXO identity. Resolved by IIP-0010.
 
-**References**: See `src/zarcanum.h/cpp` (proof creation/verification), `src/kernel.cpp` (kernel hash). Internal codename: "Zarcanum."
+**References**: See `src/nullstake.h/cpp` (proof creation/verification), `src/kernel.cpp` (kernel hash). Internal codename: "Zarcanum."
 
 ---
 
@@ -303,7 +303,7 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **Title** | NullStake V2: ZK Kernel Privacy via Poseidon2 + Bulletproof Arithmetic Circuits |
 | **Category** | Privacy |
 | **Status** | Proposed |
-| **Fork Height** | 10,000,000 (mainnet) |
+| **Fork Height** | 7,830,000 (mainnet) |
 | **TX Version** | `SHIELDED_TX_VERSION_ZARCANUM_V2 = 2004` |
 | **Supersedes** | IIP-0009 (V1 remains valid below fork height) |
 | **Author** | 0xcircuitbreaker |
@@ -340,7 +340,7 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 - Poseidon2: 128-bit algebraic security
 - Fiat-Shamir non-malleability
 
-**References**: See `src/poseidon2.h/cpp` (hash function), `src/bulletproof_ac.h/cpp` (R1CS circuit + AC prover/verifier), `src/zarcanum.h/cpp` (V2 proof integration). Based on Grassi et al. [GLRRSW23] and Bunz et al. [BBB+18].
+**References**: See `src/poseidon2.h/cpp` (hash function), `src/bulletproof_ac.h/cpp` (R1CS circuit + AC prover/verifier), `src/nullstake.h/cpp` (V2 proof integration). Based on Grassi et al. [GLRRSW23] and Bunz et al. [BBB+18].
 
 ---
 
@@ -364,4 +364,4 @@ Each IIP specification should include:
 
 ---
 
-*This document is maintained alongside the Innova codebase. For the full technical specification of each IIP, see the [Innova Whitepaper](INNOVA_WHITEPAPER.md) and [Innova Privacy Protocol](INNOVA_PRIVACY_WHITEPAPER.md).*
+*This document is maintained alongside the Innova codebase. For the consensus and privacy design behind these IIPs, see the [architecture docs](../architecture/) ([CONSENSUS.md](../architecture/CONSENSUS.md), [PRIVACY.md](../architecture/PRIVACY.md)).*

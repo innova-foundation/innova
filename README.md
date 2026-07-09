@@ -1,9 +1,9 @@
 # Innova [INN]
 Tribus Algo PoW/PoS Hybrid Cryptocurrency
 
-![logo](https://i.imgur.com/0ieINKm.png)
+![logo](docs/innova_logo_doxygen.png)
 
-[![License: GPL v3](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/innova-foundation/innova/blob/master/COPYING)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/innova-foundation/innova/blob/master/COPYING)
 
 [![GitHub version](https://img.shields.io/github/release/innova-foundation/innova.svg)](https://badge.fury.io/gh/innova-foundation%2Finnova)
 
@@ -83,29 +83,42 @@ Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Trib
 * Atomic Swaps using UTXOs (BIP65 CLTV)
 * BIP39 Support (Coin Type 116)
 * Proof of Data (Image/Data Timestamping)
-* Fast ~15 Second Block Times
+* ~15 second block times pre-DAG; ~1 second block ordering post-DAG (IDAG)
 * Tribus PoW Algorithm comprising of 3 NIST5 algorithms
 * Tribus PoW/PoS Hybrid
 * Full decentralization
 * Hyperfile - IPFS API Implementation with Anonymous Decentralized File Uploads (UI and RPC)
 * Name Value System supporting the IDNS for fully & truly decentralized blockchain domains
 
+### v5 Privacy & Consensus Stack
+
+* Shielded pool — Pedersen commitments, Bulletproofs, and Lelantus-style proofs
+* FCMP++ full-chain membership proofs (curve-tree + inner-product argument)
+* NullSend — confidential CoinJoin-style transaction mixing
+* NullStake — zero-knowledge private staking
+* Silent Payments and silent shielding
+* Dandelion++ network-level transaction-origin privacy
+* IDAG — DAG block-ordering layer for high throughput
+* Epoch finality — M-of-N committee finality gadget with soft/hard tiers
+
+See [docs/architecture/](docs/architecture/) for the consensus and privacy design docs.
+
 ## Privacy & Protocol Innovations (IIPs)
 
-Innova Improvement Proposals (IIPs) formalize all protocol innovations. See [IIP_INDEX.md](IIP_INDEX.md) for full specifications.
+Innova Improvement Proposals (IIPs) formalize all protocol innovations. See [IIP_INDEX.md](docs/proposals/IIP_INDEX.md) for full specifications.
 
 | IIP | Title | Status | Fork Height |
 |-----|-------|--------|-------------|
-| [IIP-0001](IIP_INDEX.md#iip-0001-cold-staking-p2cs) | Cold Staking (P2CS) | Active | 7,100,000 |
-| [IIP-0002](IIP_INDEX.md#iip-0002-shielded-transactions) | Shielded Transactions (Pedersen + Bulletproofs + Lelantus) | Active | 8,000,000 |
-| [IIP-0003](IIP_INDEX.md#iip-0003-ring-signature-deprecation) | Ring Signature Deprecation | Active | 8,500,000 |
-| [IIP-0004](IIP_INDEX.md#iip-0004-dynamic-selective-privacy) | Dynamic Selective Privacy (8 modes) | Active | 8,600,000 |
-| [IIP-0005](IIP_INDEX.md#iip-0005-confidential-coinjoin) | Confidential CoinJoin | Active | 8,700,000 |
-| [IIP-0006](IIP_INDEX.md#iip-0006-fcmp-full-chain-membership-proofs) | FCMP++ Full-Chain Membership Proofs | Active | 9,000,000 |
-| [IIP-0007](IIP_INDEX.md#iip-0007-silent-payments-and-silent-shielding) | Silent Payments + Silent Shielding | Active | 8,000,000 |
-| [IIP-0008](IIP_INDEX.md#iip-0008-dandelion-network-privacy) | Dandelion++ Network Privacy | Active | 8,000,000 |
-| [IIP-0009](IIP_INDEX.md#iip-0009-nullstake-v1) | NullStake V1 (ZK Private Staking) | Active | 9,500,000 |
-| [IIP-0010](IIP_INDEX.md#iip-0010-nullstake-v2) | NullStake V2 (Poseidon2 + Bulletproof AC) | Proposed | 10,000,000 |
+| [IIP-0001](docs/proposals/IIP_INDEX.md#iip-0001-cold-staking-p2cs) | Cold Staking (P2CS) | Active | 7,800,000 |
+| [IIP-0002](docs/proposals/IIP_INDEX.md#iip-0002-shielded-transactions) | Shielded Transactions (Pedersen + Bulletproofs + Lelantus) | Active | 7,810,000 |
+| [IIP-0003](docs/proposals/IIP_INDEX.md#iip-0003-ring-signature-deprecation) | Ring Signature Deprecation | Active | 7,815,000 |
+| [IIP-0004](docs/proposals/IIP_INDEX.md#iip-0004-dynamic-selective-privacy) | Dynamic Selective Privacy (8 modes) | Active | 7,815,000 |
+| [IIP-0005](docs/proposals/IIP_INDEX.md#iip-0005-confidential-coinjoin) | Confidential CoinJoin | Active | 7,820,000 |
+| [IIP-0006](docs/proposals/IIP_INDEX.md#iip-0006-fcmp-full-chain-membership-proofs) | FCMP++ Full-Chain Membership Proofs | Active | 7,820,000 |
+| [IIP-0007](docs/proposals/IIP_INDEX.md#iip-0007-silent-payments-and-silent-shielding) | Silent Payments + Silent Shielding | Active | 7,810,000 |
+| [IIP-0008](docs/proposals/IIP_INDEX.md#iip-0008-dandelion-network-privacy) | Dandelion++ Network Privacy | Active | 7,810,000 |
+| [IIP-0009](docs/proposals/IIP_INDEX.md#iip-0009-nullstake-v1) | NullStake V1 (ZK Private Staking) | Active | 7,825,000 |
+| [IIP-0010](docs/proposals/IIP_INDEX.md#iip-0010-nullstake-v2) | NullStake V2 (Poseidon2 + Bulletproof AC) | Proposed | 7,830,000 |
 
 ## Links
 
@@ -116,9 +129,9 @@ Innova Improvement Proposals (IIPs) formalize all protocol innovations. See [IIP
 
 ## installdaemon.sh
 
-Compile the latest Innova Daemon (Headless Wallet) Ubuntu 16.04, Ubuntu 18.04, or 20.04
+Compile the latest Innova Daemon (Headless Wallet) Ubuntu 22.04, Ubuntu 24.04, or 26.04
 
-Compiles Innova Daemon Ubuntu 16.04, 18.04 or 20.04, Grabs latest chaindata, and populates innova.conf with addnodes or can update a previous compile to the latest master branch.  
+Compiles Innova Daemon Ubuntu 22.04, 24.04 or 26.04, Grabs latest chaindata, and populates innova.conf with addnodes or can update a previous compile to the latest master branch.  
 ```bash -c "$(wget -O - https://raw.githubusercontent.com/innova-foundation/innova/master/installdaemon.sh)"```  
 
 To turn on nativetor in innova.conf  
@@ -126,11 +139,11 @@ To turn on nativetor in innova.conf
 
 ## innovaqtubuntu.sh
 
-Compile the latest Innova QT (Graphical Wallet) Ubuntu 16.04, Ubuntu 18.04, or 20.04
+Compile the latest Innova QT (Graphical Wallet) Ubuntu 22.04, Ubuntu 24.04, or 26.04
 
 Credits to Buzzkillb for the creation of this bash script, original repository: https://github.com/buzzkillb/denarius-qt/
 
-Compiles Innova QT Ubuntu 16.04, 18.04 or 20.04, Grabs latest chaindata, and populates innova.conf with addnodes or can update a previous compile to the latest master branch.  
+Compiles Innova QT Ubuntu 22.04, 24.04 or 26.04, Grabs latest chaindata, and populates innova.conf with addnodes or can update a previous compile to the latest master branch.  
 ```bash -c "$(wget -O - https://raw.githubusercontent.com/innova-foundation/innova/master/innovaqtubuntu.sh)"```  
 
 To turn on nativetor in innova.conf  
@@ -144,7 +157,7 @@ they think their feature or bug fix is ready.
 
 The patch will be accepted if there is broad consensus that it is a
 good thing.  Developers should expect to rework and resubmit patches
-if they don't match the project's coding conventions (see coding.txt)
+if they don't match the project's coding conventions (see docs/CONTRIBUTING.md)
 or are controversial.
 
 The master branch is regularly built and tested, but is not guaranteed
