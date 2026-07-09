@@ -2,7 +2,7 @@
 
 ## Overview
 
-Innova's encrypted file sharing system (Hyperfile) uses IPFS for decentralized storage. By default, wallets connect to `ipfs.innova-foundation.com:5001`. You can run your own IPFS gateway for maximum control, privacy, and no file size limits beyond the 1TB protocol maximum.
+Innova's encrypted file sharing system (Hyperfile) uses IPFS for decentralized storage. By default, wallets connect to `ipfs.innova-foundation.com:5001`. You can run your own IPFS gateway for maximum control, privacy, and no file size limits beyond the 10TB protocol maximum (`nyxmaxfilesize`).
 
 ## File Size Tiers
 
@@ -42,7 +42,7 @@ ipfs config --json Datastore.GCPeriod '"1h"'
 
 ### 3. Run as a Service
 
-Create `/etc/systemd/service/ipfs.service`:
+Create `/etc/systemd/system/ipfs.service`:
 
 ```ini
 [Unit]
@@ -79,7 +79,7 @@ server {
     ssl_certificate /etc/letsencrypt/live/ipfs.yourdomain.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/ipfs.yourdomain.com/privkey.pem;
 
-    client_max_body_size 1100M;  # 1TB chunked, but individual requests are chunk-sized
+    client_max_body_size 1100M;  # 10TB max via chunking, but individual requests are chunk-sized
 
     location / {
         proxy_pass http://127.0.0.1:5001;
