@@ -70,6 +70,7 @@
 #include <QDateTime>
 #include <QMovie>
 #include <QFileDialog>
+#include <QSettings>
 #include <QDesktopServices>
 #include <QTimer>
 #include <QDragEnterEvent>
@@ -177,16 +178,8 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     QApplication::setAttribute(Qt::AA_DontShowIconsInMenus);
 #endif
 
-    // TODO: Theme switching :)
-    QFile f(":qdarkstyle/style.qss");
-    if (f.exists())
-    {
-        f.open(QFile::ReadOnly | QFile::Text);
-        QTextStream ts(&f);
-        qApp->setStyleSheet(ts.readAll());
-    }
-    else
-        QApplication::setStyle(QStyleFactory::create("Fusion"));
+    // Apply the persisted interface theme (dark by default; toggle via the Settings menu)
+    applyTheme();
 
     // Accept D&D of URIs
     setAcceptDrops(true);
@@ -345,6 +338,36 @@ BitcoinGUI::~BitcoinGUI()
 #ifdef Q_OS_MAC
     delete appMenuBar;
 #endif
+}
+
+void BitcoinGUI::applyTheme()
+{
+    QSettings settings;
+    bool fDark = settings.value("fDarkTheme", true).toBool();
+    if (fDark)
+    {
+        QFile f(":qdarkstyle/style.qss");
+        if (f.exists())
+        {
+            f.open(QFile::ReadOnly | QFile::Text);
+            QTextStream ts(&f);
+            qApp->setStyleSheet(ts.readAll());
+            return;
+        }
+    }
+    // Light / native look
+    qApp->setStyleSheet("");
+    QApplication::setStyle(QStyleFactory::create("Fusion"));
+}
+
+void BitcoinGUI::toggleTheme()
+{
+    QSettings settings;
+    bool nowDark = !settings.value("fDarkTheme", true).toBool();
+    settings.setValue("fDarkTheme", nowDark);
+    applyTheme();
+    if (toggleThemeAction)
+        toggleThemeAction->setText(nowDark ? tr("Switch to &Light Theme") : tr("Switch to &Dark Theme"));
 }
 
 void BitcoinGUI::createActions()
@@ -525,6 +548,12 @@ void BitcoinGUI::createActions()
     optionsAction = new QAction(QIcon(":/icons/options"), tr("&Options..."), this);
     optionsAction->setToolTip(tr("Modify configuration options for Innova"));
     optionsAction->setMenuRole(QAction::PreferencesRole);
+    {
+        QSettings themeSettings;
+        bool fDarkInit = themeSettings.value("fDarkTheme", true).toBool();
+        toggleThemeAction = new QAction(fDarkInit ? tr("Switch to &Light Theme") : tr("Switch to &Dark Theme"), this);
+        toggleThemeAction->setToolTip(tr("Toggle between the dark and light interface theme"));
+    }
     toggleHideAction = new QAction(QIcon(":/icons/bitcoin"), tr("&Show / Hide"), this);
     encryptWalletAction = new QAction(QIcon(":/icons/lock_closed"), tr("&Encrypt Wallet..."), this);
     encryptWalletAction->setToolTip(tr("Encrypt or decrypt wallet"));
@@ -566,6 +595,7 @@ void BitcoinGUI::createActions()
     connect(aboutAction, SIGNAL(triggered()), this, SLOT(aboutClicked()));
     connect(aboutQtAction, SIGNAL(triggered()), qApp, SLOT(aboutQt()));
     connect(optionsAction, SIGNAL(triggered()), this, SLOT(optionsClicked()));
+    connect(toggleThemeAction, SIGNAL(triggered()), this, SLOT(toggleTheme()));
     connect(toggleHideAction, SIGNAL(triggered()), this, SLOT(toggleHidden()));
     connect(encryptWalletAction, SIGNAL(triggered(bool)), this, SLOT(encryptWallet(bool)));
     connect(backupWalletAction, SIGNAL(triggered()), this, SLOT(backupWallet()));
@@ -610,6 +640,8 @@ void BitcoinGUI::createMenuBar()
     settings->addAction(encryptWalletAction);
     settings->addAction(backupWalletAction);
     settings->addAction(changePassphraseAction);
+    settings->addSeparator();
+    settings->addAction(toggleThemeAction);
     settings->addAction(unlockWalletAction);
     settings->addAction(lockWalletAction);
     settings->addSeparator();
