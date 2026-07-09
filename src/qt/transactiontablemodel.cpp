@@ -5,6 +5,7 @@
 #include "guiconstants.h"
 #include "transactiondesc.h"
 #include "walletmodel.h"
+#include "finality.h"
 #include "optionsmodel.h"
 #include "addresstablemodel.h"
 #include "bitcoinunits.h"
@@ -241,7 +242,7 @@ TransactionTableModel::TransactionTableModel(CWallet* wallet, WalletModel *paren
         walletModel(parent),
         priv(new TransactionTablePriv(wallet, this))
 {
-    columns << QString() << tr("Date") << tr("Type") << tr("Address") << tr("Narration") << tr("Amount");
+    columns << QString() << tr("Date") << tr("Type") << tr("Address") << tr("Narration") << tr("Amount") << tr("Finality");
 
     priv->refreshWallet();
 
@@ -486,6 +487,19 @@ QVariant TransactionTableModel::txStatusDecoration(const TransactionRecord *wtx)
     return QColor(0,0,0);
 }
 
+QString TransactionTableModel::formatTxFinality(const TransactionRecord *wtx) const
+{
+    // A confirmed transaction is "Finalized" once its block height is covered by the
+    // epoch-finality checkpoint (g_finalityTracker). Confirmed-but-not-yet shows
+    // "Pending"; unconfirmed (not in a block) shows an em-dash.
+    if (wtx->status.depth <= 0)
+        return QString::fromUtf8("\xE2\x80\x94");
+    int nTxHeight = wtx->status.cur_num_blocks - (int)wtx->status.depth + 1;
+    if (nTxHeight > 0 && g_finalityTracker.IsFinalized(nTxHeight))
+        return tr("Finalized");
+    return tr("Pending");
+}
+
 QString TransactionTableModel::formatTooltip(const TransactionRecord *rec) const
 {
     QString tooltip = formatTxStatus(rec) + QString("\n") + formatTxType(rec);
@@ -527,6 +541,8 @@ QVariant TransactionTableModel::data(const QModelIndex &index, int role) const
             return formatNarration(rec);
         case Amount:
             return formatTxAmount(rec);
+        case Finality:
+            return formatTxFinality(rec);
         }
         break;
     case Qt::EditRole:
