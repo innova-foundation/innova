@@ -5,6 +5,8 @@
 #include "util.h"
 #include "init.h"
 
+#include <QRegularExpression>
+#include <QStandardPaths>
 #include <QString>
 #include <QDateTime>
 #include <QDoubleValidator>
@@ -233,7 +235,7 @@ bool parseBitcoinURI(QString uri, SendCoinsRecipient *out)
 
 QString HtmlEscape(const QString& str, bool fMultiLine)
 {
-    QString escaped = Qt::escape(str);
+    QString escaped = str.toHtmlEscaped();
     if(fMultiLine)
     {
         escaped = escaped.replace("\n", "<br>\n");
@@ -300,7 +302,7 @@ QString getSaveFileName(QWidget *parent, const QString &caption,
     QString myDir;
     if(dir.isEmpty()) // Default to user documents location
     {
-        myDir = QDesktopServices::storageLocation(QDesktopServices::DocumentsLocation);
+        myDir = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     }
     else
     {
@@ -309,11 +311,12 @@ QString getSaveFileName(QWidget *parent, const QString &caption,
     QString result = QFileDialog::getSaveFileName(parent, caption, myDir, filter, &selectedFilter);
 
     /* Extract first suffix from filter pattern "Description (*.foo)" or "Description (*.foo *.bar ...) */
-    QRegExp filter_re(".* \\(\\*\\.(.*)[ \\)]");
+    QRegularExpression filter_re(QRegularExpression::anchoredPattern(".* \\(\\*\\.(.*)[ \\)]"));
     QString selectedSuffix;
-    if(filter_re.exactMatch(selectedFilter))
+    QRegularExpressionMatch filter_match = filter_re.match(selectedFilter);
+    if(filter_match.hasMatch())
     {
-        selectedSuffix = filter_re.cap(1);
+        selectedSuffix = filter_match.captured(1);
     }
 
     /* Add suffix if needed */

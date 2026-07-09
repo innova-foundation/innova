@@ -21,7 +21,7 @@
 #include <QTemporaryFile>
 #include <QDir>
 #include <QStandardPaths>
-#include <QRegExp>
+#include <QRegularExpression>
 #include <QtConcurrent/QtConcurrent>
 #include <QFutureWatcher>
 #include <QTimer>
@@ -859,7 +859,7 @@ void ChatWidget::onFileUploadFinished()
     // Sanitize filename: strip protocol-breaking chars and cap length
     QFileInfo fi(pendingUploadFilePath);
     QString safeName = fi.fileName().left(255);
-    safeName.remove(QRegExp("[\\[\\]\\n\\r:]")); // Strip colons too (CHAT-CRYPTO-3)
+    safeName.remove(QRegularExpression("[\\[\\]\\n\\r:]")); // Strip colons too (CHAT-CRYPTO-3)
     safeName = QFileInfo(safeName).fileName();
     if (safeName.isEmpty()) safeName = "file";
 
@@ -1173,8 +1173,8 @@ bool ChatWidget::encryptAndUploadFile(const QString& filePath, QString& outCID, 
 
                     // Validate CID format
                     QString cidStr = QString::fromStdString(hash);
-                    QRegExp cidRegex("^[A-Za-z0-9]+$");
-                    if (!cidRegex.exactMatch(cidStr))
+                    QRegularExpression cidRegex("^[A-Za-z0-9]+$");
+                    if (!cidRegex.match(cidStr).hasMatch())
                         return qMakePair(idx, QString("ERROR:Invalid CID format"));
 
                     return qMakePair(idx, cidStr);
@@ -1299,7 +1299,7 @@ void ChatWidget::onFileDownloadClicked(const QString& cid, const QString& encKey
 #else
     // Sanitize filename from untrusted peer
     QString safeName = QFileInfo(filename).fileName();
-    safeName.remove(QRegExp("[\\[\\]\\n\\r]"));
+    safeName.remove(QRegularExpression("[\\[\\]\\n\\r]"));
     if (safeName.isEmpty()) safeName = "download";
 
     QString savePath = QFileDialog::getSaveFileName(this, tr("Save File As"), safeName);

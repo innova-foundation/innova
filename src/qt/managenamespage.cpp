@@ -293,7 +293,7 @@ void ManageNamesPage::setModel(WalletModel *walletModel)
     // Set column widths
     ui->tableView->horizontalHeader()->resizeSection(
             NameTableModel::Name, COLUMN_WIDTH_NAME);
-    ui->tableView->horizontalHeader()->setResizeMode(
+    ui->tableView->horizontalHeader()->setSectionResizeMode(
             NameTableModel::Value, QHeaderView::Stretch);
     ui->tableView->horizontalHeader()->resizeSection(
             NameTableModel::Address, COLUMN_WIDTH_ADDRESS);

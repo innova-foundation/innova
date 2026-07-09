@@ -90,8 +90,8 @@ public:
                 {
                     label = parent->getWalletModel()->getAddressTableModel()->labelForAddress(QString::fromStdString(msg.sFromAddress));
 
-                    sent_datetime    .setTime_t(msg.timestamp);
-                    received_datetime.setTime_t(smsgStored.timeReceived);
+                    sent_datetime    .setSecsSinceEpoch(msg.timestamp);
+                    received_datetime.setSecsSinceEpoch(smsgStored.timeReceived);
 
                     memcpy(&vchKey[0], chKey, 18);
 
@@ -118,8 +118,8 @@ public:
                 {
                     label = parent->getWalletModel()->getAddressTableModel()->labelForAddress(QString::fromStdString(smsgStored.sAddrTo));
 
-                    sent_datetime    .setTime_t(msg.timestamp);
-                    received_datetime.setTime_t(smsgStored.timeReceived);
+                    sent_datetime    .setSecsSinceEpoch(msg.timestamp);
+                    received_datetime.setSecsSinceEpoch(smsgStored.timeReceived);
 
                     memcpy(&vchKey[0], chKey, 18);
 
@@ -153,8 +153,8 @@ public:
         {
             label = parent->getWalletModel()->getAddressTableModel()->labelForAddress(QString::fromStdString(msg.sFromAddress));
 
-            sent_datetime    .setTime_t(msg.timestamp);
-            received_datetime.setTime_t(smsgStored.timeReceived);
+            sent_datetime    .setSecsSinceEpoch(msg.timestamp);
+            received_datetime.setSecsSinceEpoch(smsgStored.timeReceived);
 
             std::string sPrefix("im");
             SecureMessage* psmsg = (SecureMessage*) &smsgStored.vchMessage[0];
@@ -191,8 +191,8 @@ public:
         {
             label = parent->getWalletModel()->getAddressTableModel()->labelForAddress(QString::fromStdString(smsgStored.sAddrTo));
 
-            sent_datetime    .setTime_t(msg.timestamp);
-            received_datetime.setTime_t(smsgStored.timeReceived);
+            sent_datetime    .setSecsSinceEpoch(msg.timestamp);
+            received_datetime.setSecsSinceEpoch(smsgStored.timeReceived);
 
             std::string sPrefix("nm");
             SecureMessage* psmsg = (SecureMessage*) &smsgStored.vchMessage[0];
