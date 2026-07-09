@@ -378,7 +378,7 @@ void BitcoinGUI::createActions()
 	statisticsAction->setStatusTip(tr("Innova Statistics"));
     tabGroup->addAction(statisticsAction);
 
-    idagAction = new QAction(QIcon(":/icons/block"), tr("&IDAG"), this);
+    idagAction = new QAction(QIcon(":/icons/idag"), tr("&IDAG"), this);
     idagAction->setToolTip(tr("View IDAG consensus status"));
     idagAction->setCheckable(true);
     idagAction->setStatusTip(tr("IDAG Consensus Status"));
