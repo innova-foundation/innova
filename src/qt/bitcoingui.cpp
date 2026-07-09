@@ -158,9 +158,10 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     int screenW = screenGeom.width();
     int screenH = screenGeom.height();
 
-    // Use 75% of screen width (max 1200) and 80% of screen height (max 900)
+    // Use 75% of screen width (max 1200) and 90% of screen height (max 1080)
+    // -- the taller default lets the full left nav sidebar (16 items) fit without overflow.
     int startW = qMin((int)(screenW * 0.75), 1200);
-    int startH = qMin((int)(screenH * 0.80), 900);
+    int startH = qMin((int)(screenH * 0.90), 1080);
 
     // Minimum usable size — prevents balance/form compression on small screens
     setMinimumSize(850, 600);
@@ -656,11 +657,19 @@ void BitcoinGUI::createToolBars()
 {
 
     mainIcon = new QLabel (this);
-    mainIcon->setPixmap(QPixmap(":images/vertical"));
+    mainIcon->setPixmap(QPixmap(":images/vertical").scaledToHeight(56, Qt::SmoothTransformation));
     mainIcon->show();
 
     mainToolbar = addToolBar(tr("Tabs toolbar"));
-    mainToolbar->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+    // Modern left sidebar navigation: vertical, text beside icon, locked in place
+    // (docked left) so all nav items stack without horizontal overflow.
+    mainToolbar->setObjectName("navSidebar");
+    mainToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    mainToolbar->setMovable(false);
+    mainToolbar->setFloatable(false);
+    removeToolBar(mainToolbar);
+    addToolBar(Qt::LeftToolBarArea, mainToolbar);
+    mainToolbar->show();
     mainToolbar->addWidget(mainIcon);
 
     mainToolbar->addAction(overviewAction);
@@ -1507,7 +1516,7 @@ void BitcoinGUI::mainToolbarOrientation(Qt::Orientation orientation)
     }
     else
     {
-        mainIcon->setPixmap(QPixmap(":images/vertical"));
+        mainIcon->setPixmap(QPixmap(":images/vertical").scaledToHeight(56, Qt::SmoothTransformation));
         mainIcon->setAlignment(Qt::AlignCenter);
         mainIcon->show();
         mainToolbar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
