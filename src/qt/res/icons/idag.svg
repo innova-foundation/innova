@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <g stroke="#e6e8ec" stroke-width="2.6" stroke-linecap="round" fill="none">
+    <!-- DAG edges: source branches to two, both merge into the sink (multi-parent, acyclic) -->
+    <line x1="15" y1="32" x2="31" y2="15"/>
+    <line x1="15" y1="32" x2="31" y2="49"/>
+    <line x1="33" y1="15" x2="49" y2="32"/>
+    <line x1="33" y1="49" x2="49" y2="32"/>
+    <!-- cross reference edge (adds the graph/lattice feel, still acyclic top->bottom) -->
+    <line x1="32" y1="20" x2="32" y2="44" stroke-opacity="0.45"/>
+  </g>
+  <g fill="#e6e8ec" stroke="#14171c" stroke-width="1.5">
+    <circle cx="14" cy="32" r="6"/>
+    <circle cx="32" cy="14" r="6"/>
+    <circle cx="32" cy="50" r="6"/>
+    <circle cx="50" cy="32" r="6"/>
+  </g>
+</svg>
