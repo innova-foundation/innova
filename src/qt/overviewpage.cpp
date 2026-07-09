@@ -175,7 +175,8 @@ PriceData OverviewPage::fetchPricesWorker()
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, PriceWriteCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 5L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Innova-Wallet/5.0");
@@ -219,7 +220,8 @@ PriceData OverviewPage::fetchPricesWorker()
         curl_easy_setopt(ghCurl, CURLOPT_URL, "https://api.github.com/repos/innova-foundation/innova/releases/latest");
         curl_easy_setopt(ghCurl, CURLOPT_WRITEFUNCTION, PriceWriteCallback);
         curl_easy_setopt(ghCurl, CURLOPT_WRITEDATA, &ghBuffer);
-        curl_easy_setopt(ghCurl, CURLOPT_SSL_VERIFYPEER, 0);
+        curl_easy_setopt(ghCurl, CURLOPT_SSL_VERIFYPEER, 1L);
+        curl_easy_setopt(ghCurl, CURLOPT_SSL_VERIFYHOST, 2L);
         curl_easy_setopt(ghCurl, CURLOPT_TIMEOUT, 10L);
         curl_easy_setopt(ghCurl, CURLOPT_CONNECTTIMEOUT, 5L);
         curl_easy_setopt(ghCurl, CURLOPT_USERAGENT, "Innova-Wallet/5.0");
