@@ -390,7 +390,7 @@ contains(USE_IPV6, -) {
 
 contains(BITCOIN_NEED_QT_PLUGINS, 1) {
     DEFINES += BITCOIN_NEED_QT_PLUGINS
-    QTPLUGIN += qcncodecs qjpcodecs qtwcodecs qkrcodecs qtaccessiblewidgets
+    # Qt4-era text codec / accessibility plugins removed in Qt6 (were dead here: block is off by default)
 }
 
 # use: qmake "USE_LEVELDB=1" ( enabled by default; default)

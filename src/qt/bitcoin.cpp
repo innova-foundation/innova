@@ -17,7 +17,9 @@
 
 #include <QApplication>
 #include <QMessageBox>
+#if QT_VERSION < 0x050000
 #include <QTextCodec>
+#endif
 #include <QLocale>
 #include <QTranslator>
 #include <QSplashScreen>
@@ -130,6 +132,14 @@ int main(int argc, char *argv[])
 #endif
 
     Q_INIT_RESOURCE(bitcoin);
+
+    // High-DPI support (retina / 4K displays). Must be set before the QApplication is
+    // constructed. Qt6 scales automatically, so these attributes are Qt5-only.
+#if QT_VERSION >= 0x050600 && QT_VERSION < 0x060000
+    QApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
+    QApplication::setAttribute(Qt::AA_UseHighDpiPixmaps);
+#endif
+
     QApplication app(argc, argv);
 
     // Application identification (must be set before OptionsModel is initialized,
@@ -152,12 +162,19 @@ int main(int argc, char *argv[])
     // - First load the translator for the base language, without territory
     // - Then load the more specific locale translator
 
+    // Qt6 renamed QLibraryInfo::location() to path(); the enum name is unchanged.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    const QString qtTransPath = QLibraryInfo::path(QLibraryInfo::TranslationsPath);
+#else
+    const QString qtTransPath = QLibraryInfo::location(QLibraryInfo::TranslationsPath);
+#endif
+
     // Load e.g. qt_de.qm
-    if (qtTranslatorBase.load("qt_" + lang, QLibraryInfo::location(QLibraryInfo::TranslationsPath)))
+    if (qtTranslatorBase.load("qt_" + lang, qtTransPath))
         app.installTranslator(&qtTranslatorBase);
 
     // Load e.g. qt_de_DE.qm
-    if (qtTranslator.load("qt_" + lang_territory, QLibraryInfo::location(QLibraryInfo::TranslationsPath)))
+    if (qtTranslator.load("qt_" + lang_territory, qtTransPath))
         app.installTranslator(&qtTranslator);
 
     // Load e.g. bitcoin_de.qm (shortcut "de" needs to be defined in bitcoin.qrc)
@@ -256,14 +273,12 @@ int main(int argc, char *argv[])
 
                 if (splashref)
                 {
-                    QString finishMessage = QString::fromStdString(_("Done loading"));
-                    int nTimeoutMs = 0;
-                    while (splashref->message() != finishMessage && nTimeoutMs < 60000)
-                    {
-                        MilliSleep(200);
-                        nTimeoutMs += 200;
-                        app.processEvents();
-                    }
+                    // Init has completed (executor.success() is true), so dismiss the splash now.
+                    // This previously polled until the splash message equalled "Done loading", but a
+                    // later InitMessage (e.g. "Loading addresses from DNS seeds (could take a while)")
+                    // overwrites that message, so the poll never matched and always spun the full 60s
+                    // timeout before the main window appeared -- perceived as the wallet being stuck
+                    // "loading" forever.
                     splashref->finish(&window);
                 }
 

@@ -10,8 +10,8 @@
 #include <QIntValidator>
 #include <QLocale>
 #include <QMessageBox>
-#include <QRegExp>
-#include <QRegExpValidator>
+#include <QRegularExpression>
+#include <QRegularExpression>
 
 OptionsDialog::OptionsDialog(QWidget *parent) :
     QDialog(parent),
