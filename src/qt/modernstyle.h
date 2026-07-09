@@ -26,6 +26,9 @@ QToolTip { background-color: #1e222a; color: #e6e8ec; border: 1px solid #2c313b;
 QGroupBox { background-color: #1a1e25; border: 1px solid #262b34; border-radius: 12px;
     margin-top: 14px; padding: 14px; font-weight: 600; }
 QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 4px; color: #9aa2af; }
+/* Overview dashboard cards */
+#OverviewPage { background-color: #101318; }
+#OverviewPage QFrame#frame, #OverviewPage QFrame#frame_2 { background-color: #1b212b; border: 1px solid #2b323d; border-radius: 14px; padding: 10px; }
 
 /* Buttons */
 QPushButton { background-color: #1283C4; color: #ffffff; border: none; border-radius: 8px;
@@ -123,6 +126,8 @@ QLabel { background: transparent; color: #1c2128; }
 QToolTip { background-color: #ffffff; color: #1c2128; border: 1px solid #dfe3e8; border-radius: 6px; padding: 6px 8px; }
 QGroupBox { background-color: #ffffff; border: 1px solid #e5e8ec; border-radius: 12px; margin-top: 14px; padding: 14px; font-weight: 600; }
 QGroupBox::title { subcontrol-origin: margin; left: 14px; padding: 0 4px; color: #6b727e; }
+#OverviewPage { background-color: #eef1f4; }
+#OverviewPage QFrame#frame, #OverviewPage QFrame#frame_2 { background-color: #ffffff; border: 1px solid #e5e8ec; border-radius: 14px; padding: 10px; }
 QPushButton { background-color: #1283C4; color: #ffffff; border: none; border-radius: 8px; padding: 8px 16px; font-weight: 600; min-height: 18px; }
 QPushButton:hover { background-color: #1a93d8; }
 QPushButton:pressed { background-color: #0e6ea6; }
