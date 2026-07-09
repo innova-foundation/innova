@@ -195,22 +195,36 @@ void NullSendPage::onStartMixClicked()
     if (!ctx.isValid())
         return;
 
-    QString rpcCmd = QString("z_nullsend \"%1\" %2 7 %3 %4").arg(from, amount).arg(pool).arg(timeout);
-    statusLabel->setText(tr("Mixing started... Use Debug Console for real-time status: getmixingstatus"));
-
-    QMessageBox::information(this, tr("NullSend"),
-        tr("Execute this command in the Debug Console:\n\n%1\n\n"
-           "Monitor progress with: getmixingstatus").arg(rpcCmd));
+    // Execute the real mixing RPC (startmixing <amount> [rounds]). The pool/timeout
+    // fields are informational; startmixing coordinates rounds via collateralnodes.
+    bool ok = false;
+    QStringList args; args << amount;
+    QString result = GUIUtil::executeRpc("startmixing", args, ok);
+    if (ok)
+    {
+        statusLabel->setText(tr("Mixing started -- use Refresh Status to monitor."));
+        QMessageBox::information(this, tr("NullSend"),
+            tr("Mixing started for %1 INN.\n\n%2").arg(amount, result));
+    }
+    else
+    {
+        statusLabel->setText(tr("Mixing failed to start."));
+        QMessageBox::warning(this, tr("NullSend"), tr("Could not start mixing:\n\n%1").arg(result));
+    }
 }
 
 void NullSendPage::onStopMixClicked()
 {
-    statusLabel->setText(tr("Use Debug Console: stopmixing"));
-    QMessageBox::information(this, tr("Stop Mixing"),
-        tr("Execute in Debug Console:\n\nstopmixing"));
+    bool ok = false;
+    QString result = GUIUtil::executeRpc("stopmixing", QStringList(), ok);
+    statusLabel->setText(ok ? tr("Mixing stopped.") : tr("Stop failed."));
+    if (!ok)
+        QMessageBox::warning(this, tr("Stop Mixing"), tr("Could not stop mixing:\n\n%1").arg(result));
 }
 
 void NullSendPage::onRefreshStatusClicked()
 {
-    statusLabel->setText(tr("Use Debug Console: getmixingstatus"));
+    bool ok = false;
+    QString result = GUIUtil::executeRpc("getmixingstatus", QStringList(), ok);
+    statusLabel->setText(ok ? result.left(160) : tr("Status unavailable."));
 }

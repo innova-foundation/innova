@@ -1,5 +1,6 @@
 #include "stakingpage.h"
 #include "walletmodel.h"
+#include "guiutil.h"
 #include "optionsmodel.h"
 #include "bitcoinunits.h"
 #include "base58.h"
@@ -582,10 +583,18 @@ void StakingPage::onNullColdDelegateClicked()
 
     if (reply == QMessageBox::Yes)
     {
-        QString rpcCmd = QString("n_delegatestake \"%1\" %2").arg(stakerAddr, amountStr);
-        QMessageBox::information(this, tr("Private Cold Staking"),
-            tr("Execute in Debug Console:\n\n  %1\n\n"
-               "Monitor with: n_coldstakeinfo").arg(rpcCmd));
+        WalletModel::UnlockContext ctx(model->requestUnlock());
+        if (!ctx.isValid())
+            return;
+        bool ok = false;
+        QStringList args; args << stakerAddr << amountStr;
+        QString result = GUIUtil::executeRpc("n_delegatestake", args, ok);
+        if (ok)
+            QMessageBox::information(this, tr("Private Cold Staking"),
+                tr("Delegation submitted.\n\n%1").arg(result));
+        else
+            QMessageBox::warning(this, tr("Private Cold Staking"),
+                tr("Delegation failed:\n\n%1").arg(result));
     }
 }
 
@@ -645,12 +654,18 @@ void StakingPage::onDelegateClicked()
 
     if (reply == QMessageBox::Yes)
     {
-        QMessageBox::information(this, tr("Delegate Stake"),
-            tr("To delegate your stake, use the Debug Console (Help > Debug Window > Console):\n\n"
-               "  delegatestake \"%1\" %2\n\n"
-               "This will create a cold staking delegation transaction.\n"
-               "This will be integrated directly in a future update.")
-               .arg(stakerAddr, amountStr));
+        WalletModel::UnlockContext ctx(model->requestUnlock());
+        if (!ctx.isValid())
+            return;
+        bool okRpc = false;
+        QStringList args; args << stakerAddr << amountStr;
+        QString result = GUIUtil::executeRpc("delegatestake", args, okRpc);
+        if (okRpc)
+            QMessageBox::information(this, tr("Delegate Stake"),
+                tr("Cold-staking delegation submitted.\n\n%1").arg(result));
+        else
+            QMessageBox::warning(this, tr("Delegate Stake"),
+                tr("Delegation failed:\n\n%1").arg(result));
     }
 }
 
