@@ -27,7 +27,8 @@ static int column_alignments[] = {
         Qt::AlignLeft|Qt::AlignVCenter,
         Qt::AlignLeft|Qt::AlignVCenter,
         Qt::AlignLeft|Qt::AlignVCenter,
-        Qt::AlignRight|Qt::AlignVCenter
+        Qt::AlignRight|Qt::AlignVCenter,
+        Qt::AlignHCenter|Qt::AlignVCenter
     };
 
 // Comparison operator for sort/binary search of model tx list
@@ -578,6 +579,15 @@ QVariant TransactionTableModel::data(const QModelIndex &index, int role) const
         if(index.column() == ToAddress)
         {
             return addressColor(rec);
+        }
+        if(index.column() == Finality)
+        {
+            if (rec->status.depth <= 0)
+                return COLOR_UNCONFIRMED;
+            int nH = rec->status.cur_num_blocks - (int)rec->status.depth + 1;
+            if (nH > 0 && g_finalityTracker.IsFinalized(nH))
+                return QColor(38, 166, 91);   // finalized: green
+            return QColor(219, 152, 34);      // pending: amber
         }
         break;
     case TypeRole:
