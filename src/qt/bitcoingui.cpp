@@ -450,7 +450,7 @@ void BitcoinGUI::createActions()
     messageAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_8));
     tabGroup->addAction(messageAction);
 
-	mintingAction = new QAction(QIcon(":/icons/stake"), tr("Staking &Inputs"), this);
+	mintingAction = new QAction(QIcon(":/icons/stakinginputs"), tr("Staking &Inputs"), this);
     mintingAction->setToolTip(tr("View staking inputs and estimated earnings"));
     mintingAction->setCheckable(true);
 	mintingAction->setStatusTip(tr("Staking Inputs & Estimations"));
