@@ -5467,7 +5467,14 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                 // make sure the ranks are updated
                 GetCollateralnodeRanks(pindexBest);
 
-                int64_t collateralnodePaymentAmount = GetCollateralnodePayment(pindex->nHeight, vtx[0].GetValueOut());
+                // Exclude embedded finality-vote reward outputs from the collateralnode-payment base.
+                // The miner sizes the CN payment on the block reward only (miner.cpp:894), so the
+                // validator must too; using the raw vtx[0].GetValueOut() -- which also includes the
+                // finality-vote rewards -- makes every post-DAG block that carries a vote (the default
+                // post-DAG case) fail this check and get DoS-rejected -> block-production stall.
+                // Reuse the exact nFinalityRewardOut already computed above (from activeBlock, and the
+                // same total the coinbase cap nAllowedCoinbase enforces) so the two bases can never drift.
+                int64_t collateralnodePaymentAmount = GetCollateralnodePayment(pindex->nHeight, vtx[0].GetValueOut() - nFinalityRewardOut);
 
                 // If we don't already have its previous block, skip collateralnode payment step
                 if (pindex != NULL)
@@ -5868,19 +5875,18 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
     {
         // The deterministic epoch-state anchor (HIGH#2) is immutable ONLY if reorgs never descend below
         // the finalized height its consumers use -- GetDeterministicFinalizedHeight (CheckVote /
-        // CheckTallyCertificate / FCMP-spend). The live consecutive-HARD streak GetFinalizedHeight() can
-        // transiently STALL below the deterministic value (out-of-order vote arrival resets the streak),
-        // so guarding on the live value alone would permit a sub-deterministic-finalized reorg that
-        // re-anchors a finalized epoch's roots + persisted curve tree -> cross-node split. Guard on the
-        // MAX of both so the immutability boundary always covers what the anchor consumers treat as final.
-        int nFinalHeight = g_finalityTracker.GetFinalizedHeight();
+        // CheckTallyCertificate / FCMP-spend). Guard this boundary on ONLY that deterministic,
+        // fleet-identical height. The node-local live streak GetFinalizedHeight() must NOT enter this
+        // decision: it can transiently STALL below the deterministic value (out-of-order vote arrival
+        // resets the consecutive-HARD streak) and it differs between nodes, so folding it in via max()
+        // reintroduces path-dependent state into a consensus reorg -- two nodes with different live
+        // heights would latch pfPermanentInvalid on different reorgs -> non-self-healing split. The
+        // deterministic anchor is exactly what the vote/cert/FCMP-spend consumers treat as final, so it
+        // fully covers the immutability boundary on its own.
+        int nFinalHeight = 0;
         if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
-        {
-            int nDetFinal = g_dagManager.GetDeterministicFinalizedHeight(
+            nFinalHeight = g_dagManager.GetDeterministicFinalizedHeight(
                 GetEpochForHeight(pindexBest->nHeight) - 1);
-            if (nDetFinal > nFinalHeight)
-                nFinalHeight = nDetFinal;
-        }
         if (nFinalHeight > 0 && pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
         {
             CBlockIndex* pCheck = pindexBest;
@@ -6153,16 +6159,14 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
     else
     {
         {
-            // MEDIUM-1 (see Reorganize): guard on max(live, deterministic) finalized height so a
-            // sub-deterministic-finalized reorg can never re-anchor a finalized epoch's roots -> split.
-            int nFinalHeight = g_finalityTracker.GetFinalizedHeight();
+            // MEDIUM-1 (see Reorganize): guard on the deterministic, fleet-identical finalized height so
+            // a sub-deterministic-finalized reorg can never re-anchor a finalized epoch's roots -> split.
+            // Deterministic-ONLY: never mix the node-local live finalized height into this reorg
+            // decision, else divergent nodes latch pfPermanentInvalid on different reorgs -> split.
+            int nFinalHeight = 0;
             if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
-            {
-                int nDetFinal = g_dagManager.GetDeterministicFinalizedHeight(
+                nFinalHeight = g_dagManager.GetDeterministicFinalizedHeight(
                     GetEpochForHeight(pindexBest->nHeight) - 1);
-                if (nDetFinal > nFinalHeight)
-                    nFinalHeight = nDetFinal;
-            }
             if (nFinalHeight > 0 && pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
             {
                 CBlockIndex* pWalk = pindexNew;
