@@ -938,6 +938,22 @@ bool CDAGManager::LoadEpochStates(CTxDB& txdb)
             setEpochBoundaryBlocks.insert(pair.second.hashBoundaryBlock);
     }
 
+    // Epoch-state records must be dense from lowest to highest present epoch; an interior hole
+    // refuses the load and forces -reindex. A non-zero lowest epoch is allowed.
+    if (!mapEpochState.empty())
+    {
+        int nLo = mapEpochState.begin()->first;
+        int nHi = mapEpochState.rbegin()->first;
+        if ((int64_t)mapEpochState.size() != (int64_t)nHi - nLo + 1)
+        {
+            printf("LoadEpochStates: FATAL epoch-state gap -- loaded %d records spanning epochs "
+                   "[%d..%d] (expected %d contiguous); refusing to run on a holed deterministic "
+                   "finalized-height anchor; -reindex required\n",
+                   (int)mapEpochState.size(), nLo, nHi, nHi - nLo + 1);
+            return false;
+        }
+    }
+
     if (!mapEpochState.empty() || !mapEpochCurveTrees.empty())
         printf("LoadEpochStates: loaded %d epoch states and %d curve-tree snapshots\n",
                (int)mapEpochState.size(), (int)mapEpochCurveTrees.size());
@@ -1299,9 +1315,19 @@ bool CDAGManager::ComputeEpochState(int nEpoch, int nEpochInterval, const CBlock
     if (!epochCurveTree.IsEmpty())
         epochCurveTree.RebuildParentNodes();
 
+    // Fail closed on an epoch-state gap: a missing predecessor with earlier epochs present
+    // would reset the finalized height, HARD streak and nullifier-root chain. A missing
+    // predecessor is legitimate only when nEpoch is the earliest epoch in the map.
+    bool fHavePrevEpoch = (nEpoch > 0 && mapEpochState.count(nEpoch - 1));
+    if (nEpoch > 0 && !fHavePrevEpoch &&
+        !mapEpochState.empty() && mapEpochState.begin()->first < nEpoch)
+        return error("ComputeEpochState: epoch-state gap -- missing predecessor epoch %d "
+                     "for epoch %d; refusing to compute a divergent finalized height "
+                     "(resync/-reindex required)", nEpoch - 1, nEpoch);
+
     CHashWriter nullifierRootHasher(SER_GETHASH, 0);
     nullifierRootHasher << std::string("Innova/IDAG/EpochNullifierRoot/v1");
-    if (nEpoch > 0 && mapEpochState.count(nEpoch - 1))
+    if (fHavePrevEpoch)
         nullifierRootHasher << mapEpochState[nEpoch - 1].hashNullifierRoot;
     else
         nullifierRootHasher << uint256(0);
@@ -1390,14 +1416,16 @@ bool CDAGManager::ComputeEpochState(int nEpoch, int nEpochInterval, const CBlock
     // / FCMP-spend validation (which anchors to GetEpochForHeight(nFinalizedHeight))
     // is identical on all nodes and ConnectBlock stays deterministic.
     {
+        // Tier from the epoch's own-block best cert, not the live cert map, so a late cert cannot make
+        // the boundary and reorg-recompute paths persist different tiers.
         int nDetTier = 0; uint256 hashWinner = 0; int nWinnerHeight = 0; int nVoters = 0;
-        g_finalityTracker.ComputeDeterministicEpochTier(nEpoch, nDetTier, hashWinner,
-                                                        nWinnerHeight, nVoters);
+        g_finalityTracker.ComputeDeterministicEpochTier(nEpoch, fHaveBestCert, bestCert,
+                                                        nDetTier, hashWinner, nWinnerHeight, nVoters);
         state.nFinalityTier = nDetTier;
 
         int nPrevHardCount = 0;
         int nPrevFinalizedHeight = 0;
-        if (nEpoch > 0)
+        if (fHavePrevEpoch)
         {
             std::map<int, CEpochState>::const_iterator itPrev = mapEpochState.find(nEpoch - 1);
             if (itPrev != mapEpochState.end())

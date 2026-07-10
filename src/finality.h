@@ -855,12 +855,12 @@ public:
     /** Check if an epoch has reached the finality threshold */
     bool CheckFinalityThreshold(int nEpoch);
 
-    /** Deterministic per-epoch finality tier: a PURE function of this epoch's
-     *  in-chain votes / aggregate tally certificate, with NO dependency on the
-     *  node-local live finalization streak. Used to populate the persisted
-     *  per-epoch CEpochState so private-vote / tally-cert / FCMP-spend validation
-     *  can anchor to a finalized epoch that every node computes identically. */
-    bool ComputeDeterministicEpochTier(int nEpoch, int& nTierOut, uint256& hashWinnerOut,
+    /** Deterministic per-epoch finality tier from the epoch's own blocks: its own-block
+     *  best cert (from CEpochState::vBlockHashes, not the global cert map) and its
+     *  in-window votes. Independent of the live streak and connect order. */
+    bool ComputeDeterministicEpochTier(int nEpoch, bool fHaveEpochCert,
+                                        const CFinalityTallyCertificate& epochBestCert,
+                                        int& nTierOut, uint256& hashWinnerOut,
                                         int& nWinnerHeightOut, int& nVoterCountOut) const;
 
     /** Get current finalized height */

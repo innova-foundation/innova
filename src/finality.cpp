@@ -4418,35 +4418,28 @@ bool CFinalityTracker::CheckFinalityThreshold(int nEpoch)
                                  nBestBlockWeight, nEpochVoteWeight, false);
 }
 
-bool CFinalityTracker::ComputeDeterministicEpochTier(int nEpoch, int& nTierOut, uint256& hashWinnerOut,
+bool CFinalityTracker::ComputeDeterministicEpochTier(int nEpoch, bool fHaveEpochCert,
+                                                     const CFinalityTallyCertificate& epochBestCert,
+                                                     int& nTierOut, uint256& hashWinnerOut,
                                                      int& nWinnerHeightOut, int& nVoterCountOut) const
 {
-    // PURE: identical inputs (this epoch's connected votes / tally certificate) yield
-    // identical outputs on every node. Does NOT touch the live finalization streak.
+    // Pure and deterministic: derived only from the epoch's own committed blocks
+    // [H_E, H_E+K). Does not touch the live streak or the global certificate map.
     LOCK(cs_finality);
     nTierOut = FINALITY_NONE; hashWinnerOut = 0; nWinnerHeightOut = 0; nVoterCountOut = 0;
 
-    // Prefer an in-chain aggregate tally certificate (the only path that can promote
-    // hidden-weight NullStake votes); its tier is fixed by the certificate itself.
-    std::map<int, std::vector<CFinalityTallyCertificate> >::const_iterator itCerts =
-        mapEpochTallyCertificates.find(nEpoch);
-    if (itCerts != mapEpochTallyCertificates.end() && !itCerts->second.empty())
+    // Prefer the epoch's own-block aggregate tally certificate (the only path that
+    // can promote hidden-weight NullStake votes); its tier is fixed by the cert.
+    // Scoped to the epoch's own blocks (NOT the live global cert map) so a late cert
+    // carried in a later epoch's block (block-valid per R2 up to E+CONFIRMATION) can
+    // never fold into this epoch's tier on one path but not another -> no split.
+    if (fHaveEpochCert && epochBestCert.nEpoch == nEpoch)
     {
-        const CFinalityTallyCertificate* pBestCert = NULL;
-        for (const CFinalityTallyCertificate& cert : itCerts->second)
-        {
-            if (!pBestCert || cert.nTier > pBestCert->nTier ||
-                (cert.nTier == pBestCert->nTier && cert.GetSignatureDigest() < pBestCert->GetSignatureDigest()))
-                pBestCert = &cert;
-        }
-        if (pBestCert)
-        {
-            nTierOut = pBestCert->nTier;
-            hashWinnerOut = pBestCert->hashBlock;
-            nWinnerHeightOut = pBestCert->nHeight;
-            nVoterCountOut = (int)pBestCert->vVoteNullifiers.size();
-            return nTierOut != FINALITY_NONE;
-        }
+        nTierOut = epochBestCert.nTier;
+        hashWinnerOut = epochBestCert.hashBlock;
+        nWinnerHeightOut = epochBestCert.nHeight;
+        nVoterCountOut = (int)epochBestCert.vVoteNullifiers.size();
+        return nTierOut != FINALITY_NONE;
     }
 
     std::map<int, int64_t>::const_iterator itW = mapEpochVoteWeight.find(nEpoch);

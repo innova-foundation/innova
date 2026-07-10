@@ -516,16 +516,15 @@ bool CTxDB::IterateEpochStates(std::map<int, CEpochState>& mapOut)
         }
         catch (const std::exception& e)
         {
-            // A persisted epoch-state record that fails to deserialize is a CONSENSUS ANCHOR silently
-            // going missing -> a wrong GetDeterministicFinalizedHeight with nothing in the log. Never
-            // swallow it quietly: this is especially important across a binary upgrade that changes the
-            // CEpochState record format or activates the epoch-state fork on a node holding records
-            // written under the old regime. Callers treat a missing epoch as not-yet-computed, so a
-            // dropped record can diverge this node from the fleet; surface it so a reindex is triggered.
-            printf("IterateEpochStates: WARNING dropped an epoch-state record that failed to deserialize "
-                   "(rawkeylen=%d): %s -- deterministic finalized-height anchor may be INCOMPLETE; a "
-                   "-reindex is recommended after any format/fork-regime change\n",
+            // Fail closed: a dropped epoch-state record reads as not-yet-computed and diverges
+            // GetDeterministicFinalizedHeight from the network. Abort the load so the caller
+            // refuses to start and forces a -reindex. Legacy pre-V2 records parse above.
+            printf("IterateEpochStates: FATAL epoch-state record failed to deserialize "
+                   "(rawkeylen=%d): %s -- refusing to load a partial epoch-state set (would diverge "
+                   "the deterministic finalized-height anchor); -reindex required\n",
                    (int)strKey.size(), e.what());
+            delete it;
+            return false;
         }
 
         it->Next();
@@ -1372,7 +1371,12 @@ bool CTxDB::LoadBlockIndex()
 
     // Load DAG links; ordering is deferred to init.cpp for incremental support
     g_dagManager.LoadDAGLinks(*this);
-    g_dagManager.LoadEpochStates(*this);
+    // Fail closed: a corrupt or holed epoch-state set would diverge the finalized-height
+    // anchor from the network.
+    if (!g_dagManager.LoadEpochStates(*this))
+        return error("CTxDB::LoadBlockIndex() : FATAL -- epoch-state load failed (corrupt or holed "
+                     "epoch-state records -> divergent deterministic finalized-height anchor). "
+                     "Recover by removing the chain database (keep wallet.dat) and resyncing, or -reindex.");
     PinFinalityCommitteeConstants(); // before rotations load
     {
         // Release gate (defense-in-depth): a mainnet node must never run with an empty finality

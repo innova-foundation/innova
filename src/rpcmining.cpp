@@ -928,15 +928,24 @@ Value getblocktemplate(const Array& params, bool fHelp)
                 }
     }
     if (fDebug && fDebugNet) printf("getblock : payee = %i, bCollateralnode = %i\n",payee != CScript(),bCollateralnodePayments);
+    // Post-DAG the coinbase carries embedded finality-vote reward outputs; exclude them
+    // from the collateralnode-payment base so payee_amount matches what the validator
+    // accepts. ConnectBlock sizes the CN payment on the block reward only (the HIGH#1 fix
+    // in main.cpp); reporting the raw GetValueOut() base here would tell an external/pool
+    // miner to pay a CN amount no block can carry -> its block gets DoS-rejected.
+    int64_t nTmplFinalityReward = 0;
+    for (const CFinalityVote& fv : ExtractFinalityVotesFromBlock(*pblock))
+        nTmplFinalityReward += fv.nReward;
+    int64_t nTmplCNBase = pblock->vtx[0].GetValueOut() - nTmplFinalityReward;
     if(payee != CScript()){
 		CTxDestination address1;
 		ExtractDestination(payee, address1);
 		CBitcoinAddress address2(address1);
 		result.push_back(Pair("payee", address2.ToString().c_str()));
-		result.push_back(Pair("payee_amount", (int64_t)GetCollateralnodePayment(pindexPrev->nHeight+1, pblock->vtx[0].GetValueOut())));
+		result.push_back(Pair("payee_amount", (int64_t)GetCollateralnodePayment(pindexPrev->nHeight+1, nTmplCNBase)));
 	  } else {
         result.push_back(Pair("payee", fTestNet ? "8TestXXXXXXXXXXXXXXXXXXXXXXXXbCvpq" : "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw"));
-	result.push_back(Pair("payee_amount", (int64_t)GetCollateralnodePayment(pindexPrev->nHeight+1, pblock->vtx[0].GetValueOut())));
+	result.push_back(Pair("payee_amount", (int64_t)GetCollateralnodePayment(pindexPrev->nHeight+1, nTmplCNBase)));
     }
 
 	  result.push_back(Pair("collateralnode_payments", bCollateralnodePayments));

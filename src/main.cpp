@@ -6085,7 +6085,17 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
                 g_dagManager.WriteEpochState(txdbEpochReorg, nEpoch);
         }
         if (fTxn)
+        {
+            // Stamp the deterministic-anchor schema marker here too (the linear
+            // AddToBlockIndex path already does). Every record written in this branch is
+            // a V2 deterministic record (we are past FORK_HEIGHT_EPOCH_STATE_V2), so
+            // without the stamp a later restart's fail-closed pre-marker guard
+            // (init.cpp) would falsely refuse to boot on records that ARE valid V2 --
+            // e.g. when the fork is crossed mid-epoch and the first post-fork epoch is
+            // completed by a reorg rather than a linear boundary. Idempotent.
+            txdbEpochReorg.WriteEpochStateSchema(EPOCHSTATE_SCHEMA_V2);
             txdbEpochReorg.TxnCommit();
+        }
     }
 
     CollateralNReorgBlock = true;
