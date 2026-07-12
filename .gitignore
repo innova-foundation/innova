@@ -52,3 +52,8 @@ __pycache__/
 testnet_metrics/
 # transient per-node patch scripts
 patch_node1*.py
+
+# Private fleet inventories may contain operational host metadata. A future
+# reviewed example must use the explicit non-private filename below.
+contrib/testnet_tools/fleet*.json
+!contrib/testnet_tools/fleet.example.json
