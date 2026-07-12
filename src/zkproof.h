@@ -14,6 +14,10 @@
 #include <boost/thread/once.hpp>
 
 static const size_t PEDERSEN_COMMITMENT_SIZE = 33;
+// Legacy v5 deserialization/verification also accepted standard 65-byte SEC1
+// encodings. Preserve that consensus surface until a forward fork can require
+// compressed-only encodings, while still preventing oversized allocation.
+static const size_t PEDERSEN_COMMITMENT_MAX_WIRE_SIZE = 65;
 static const size_t BULLETPROOF_PROOF_SIZE = 688;
 static const size_t MAX_BULLETPROOF_PROOF_SIZE = 1024;
 static const size_t BINDING_SIGNATURE_SIZE = 65;
@@ -66,7 +70,10 @@ public:
 
     IMPLEMENT_SERIALIZE
     (
-        READWRITE(vchCommitment);
+        CPedersenCommitment* pthis = const_cast<CPedersenCommitment*>(this);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchCommitment,
+                                                 PEDERSEN_COMMITMENT_MAX_WIRE_SIZE,
+                                                 nType, nVersion, ser_action);
     )
 
     bool IsNull() const;
@@ -116,7 +123,10 @@ public:
 
     IMPLEMENT_SERIALIZE
     (
-        READWRITE(vchProof);
+        CBulletproofRangeProof* pthis = const_cast<CBulletproofRangeProof*>(this);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchProof,
+                                                 MAX_BULLETPROOF_PROOF_SIZE,
+                                                 nType, nVersion, ser_action);
     )
 
     bool IsNull() const { return vchProof.empty(); }
@@ -146,7 +156,10 @@ public:
 
     IMPLEMENT_SERIALIZE
     (
-        READWRITE(vchSignature);
+        CBindingSignature* pthis = const_cast<CBindingSignature*>(this);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchSignature,
+                                                 BINDING_SIGNATURE_SIZE,
+                                                 nType, nVersion, ser_action);
     )
 
     bool IsNull() const { return vchSignature.empty(); }

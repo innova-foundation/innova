@@ -121,15 +121,24 @@ public:
 
     IMPLEMENT_SERIALIZE
     (
+        CBulletproofACProof* pthis = const_cast<CBulletproofACProof*>(this);
         READWRITE(nVersion);
-        READWRITE(vchAI);
-        READWRITE(vchAO);
-        READWRITE(vchS);
-        READWRITE(vchT1);
-        READWRITE(vchT3);
-        READWRITE(vchT4);
-        READWRITE(vchT5);
-        READWRITE(vchT6);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchAI, 33,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchAO, 33,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchS, 33,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchT1, 33,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchT3, 33,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchT4, 33,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchT5, 33,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchT6, 33,
+                                                 nType, nVersion, ser_action);
         READWRITE(tauX);
         READWRITE(mu);
         READWRITE(tHat);
@@ -143,7 +152,9 @@ public:
 
     size_t GetProofSize() const
     {
-        return sizeof(nVersion) + 8 * 33 + 3 * 32 + ipaProof.GetProofSize();
+        return sizeof(nVersion) + vchAI.size() + vchAO.size() + vchS.size()
+             + vchT1.size() + vchT3.size() + vchT4.size() + vchT5.size()
+             + vchT6.size() + 3 * 32 + ipaProof.GetProofSize();
     }
 };
 

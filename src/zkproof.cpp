@@ -48,7 +48,7 @@ class CECPointGuard
 public:
     EC_POINT* point;
     const EC_GROUP* group;
-    CECPointGuard(const EC_GROUP* g) : group(g) { point = EC_POINT_new(group); }
+    CECPointGuard(const EC_GROUP* g) : group(g) { point = group ? EC_POINT_new(group) : NULL; }
     ~CECPointGuard() { if (point) EC_POINT_free(point); }
     operator EC_POINT*() { return point; }
     operator const EC_POINT*() const { return point; }
@@ -59,7 +59,15 @@ class CBNGuard
 public:
     BIGNUM* bn;
     CBNGuard() { bn = BN_new(); }
-    CBNGuard(int64_t val) { bn = BN_new(); BN_set_word(bn, (unsigned long)(val < 0 ? -val : val)); if (val < 0) BN_set_negative(bn, 1); }
+    CBNGuard(int64_t val)
+    {
+        bn = BN_new();
+        if (bn)
+        {
+            BN_set_word(bn, (unsigned long)(val < 0 ? -val : val));
+            if (val < 0) BN_set_negative(bn, 1);
+        }
+    }
     ~CBNGuard() { if (bn) BN_clear_free(bn); }
     operator BIGNUM*() { return bn; }
     operator const BIGNUM*() const { return bn; }
@@ -93,7 +101,9 @@ static bool PointToBytes(const EC_GROUP* group, const EC_POINT* point,
 static bool BytesToPoint(const EC_GROUP* group, const std::vector<unsigned char>& vch,
                           EC_POINT* point, BN_CTX* ctx)
 {
-    if (vch.size() < 33) return false;
+    if (vch.size() != PEDERSEN_COMMITMENT_SIZE &&
+        vch.size() != PEDERSEN_COMMITMENT_MAX_WIRE_SIZE)
+        return false;
     if (EC_POINT_oct2point(group, point, vch.data(), vch.size(), ctx) != 1)
         return false;
     if (EC_POINT_is_at_infinity(group, point))
@@ -124,7 +134,13 @@ static bool HashToPoint(const EC_GROUP* group, const char* tag,
         if (!x) continue;
 
         BIGNUM* field_p = BN_new();
-        EC_GROUP_get_curve(group, field_p, NULL, NULL, ctx);
+        if (!field_p || EC_GROUP_get_curve(group, field_p, NULL, NULL, ctx) != 1)
+        {
+            BN_free(x);
+            if (field_p) BN_free(field_p);
+            OPENSSL_cleanse(hash, sizeof(hash));
+            return false;
+        }
 
         if (BN_cmp(x, field_p) >= 0)
         {
@@ -766,17 +782,25 @@ bool VerifyCommitmentBalance(const std::vector<CPedersenCommitment>& vInputCommi
 static bool ScalarPowers(const BIGNUM* base, int n, const BIGNUM* order,
                           std::vector<BIGNUM*>& powersOut, BN_CTX* ctx)
 {
-    powersOut.resize(n);
+    if (!base || n < 0 || !order || !ctx)
+        return false;
+
+    std::vector<BIGNUM*> powers((size_t)n, NULL);
     for (int i = 0; i < n; i++)
     {
-        powersOut[i] = BN_new();
-        if (i == 0)
-            BN_one(powersOut[i]);
-        else if (i == 1)
-            BN_copy(powersOut[i], base);
-        else
-            BN_mod_mul(powersOut[i], powersOut[i-1], base, order, ctx);
+        powers[i] = BN_new();
+        const bool ok = powers[i] &&
+            (i == 0 ? BN_one(powers[i]) == 1 :
+             i == 1 ? BN_copy(powers[i], base) != NULL :
+                      BN_mod_mul(powers[i], powers[i-1], base, order, ctx) == 1);
+        if (!ok)
+        {
+            for (size_t j = 0; j < powers.size(); ++j)
+                if (powers[j]) BN_clear_free(powers[j]);
+            return false;
+        }
     }
+    powersOut.swap(powers);
     return true;
 }
 
@@ -786,6 +810,23 @@ static void FreeScalars(std::vector<BIGNUM*>& v)
         if (v[i]) BN_clear_free(v[i]);
     v.clear();
 }
+
+class CScopedScalars
+{
+public:
+    std::vector<BIGNUM*> values;
+
+    CScopedScalars() {}
+
+    ~CScopedScalars()
+    {
+        FreeScalars(values);
+    }
+
+private:
+    CScopedScalars(const CScopedScalars&);
+    CScopedScalars& operator=(const CScopedScalars&);
+};
 
 static bool GenerateBPGenerators(const EC_GROUP* group, int n,
                                    std::vector<EC_POINT*>& vG,
@@ -804,14 +845,17 @@ static bool GenerateBPGenerators(const EC_GROUP* group, int n,
         snprintf(tagG, sizeof(tagG), "Innova_BP_G_%d", i);
         snprintf(tagH, sizeof(tagH), "Innova_BP_H_%d", i);
 
-        if (!HashToPoint(group, tagG, vG[i], ctx) ||
+        if (!vG[i] || !vH[i] ||
+            !HashToPoint(group, tagG, vG[i], ctx) ||
             !HashToPoint(group, tagH, vH[i], ctx))
         {
             for (int j = 0; j <= i; j++)
             {
-                EC_POINT_free(vG[j]);
-                EC_POINT_free(vH[j]);
+                if (vG[j]) EC_POINT_free(vG[j]);
+                if (vH[j]) EC_POINT_free(vH[j]);
             }
+            vG.clear();
+            vH.clear();
             return false;
         }
     }
@@ -830,13 +874,16 @@ static void FreeBPGenerators(std::vector<EC_POINT*>& vG, std::vector<EC_POINT*>&
 static bool FiatShamirChallenge(const std::vector<unsigned char>& transcript,
                                  BIGNUM* challenge, const BIGNUM* order, BN_CTX* ctx)
 {
+    if (!challenge || !order || !ctx)
+        return false;
+
     unsigned char hash[32];
     SHA256(transcript.data(), transcript.size(), hash);
-    BN_bin2bn(hash, 32, challenge);
-    BN_mod(challenge, challenge, order, ctx);
+    const bool ok = BN_bin2bn(hash, 32, challenge) != NULL &&
+                    BN_mod(challenge, challenge, order, ctx) == 1;
     OPENSSL_cleanse(hash, 32);
 
-    if (BN_is_zero(challenge))
+    if (!ok || BN_is_zero(challenge))
         return false;
 
     return true;
@@ -879,8 +926,15 @@ bool CreateBulletproofRangeProof(int64_t nValue,
     if (!ctx.ctx) return false;
 
     const BIGNUM* order = EC_GROUP_get0_order(group);
+    if (!order) return false;
+
+    CECPointGuard commitmentPoint(group);
+    if (!commitmentPoint.point) return false;
+    if (!BytesToPoint(group, commit.vchCommitment, commitmentPoint, ctx))
+        return false;
 
     CECPointGuard G(group), H(group);
+    if (!G.point || !H.point) return false;
     if (!BytesToPoint(group, CZKContext::GetGeneratorG(), G, ctx)) return false;
     if (!BytesToPoint(group, CZKContext::GetGeneratorH(), H, ctx)) return false;
 
@@ -978,7 +1032,11 @@ bool CreateBulletproofRangeProof(int64_t nValue,
     AppendToTranscript(transcript, group, S, ctx);
 
     BIGNUM* y = BN_new();
-    FiatShamirChallenge(transcript, y, order, ctx);
+    if (!y || !FiatShamirChallenge(transcript, y, order, ctx))
+    {
+        if (y) BN_free(y);
+        return false;
+    }
 
     unsigned char yBytes[32];
     memset(yBytes, 0, 32);
@@ -987,15 +1045,29 @@ bool CreateBulletproofRangeProof(int64_t nValue,
     transcript.insert(transcript.end(), yBytes, yBytes + 32);
 
     BIGNUM* z = BN_new();
-    FiatShamirChallenge(transcript, z, order, ctx);
+    if (!z || !FiatShamirChallenge(transcript, z, order, ctx))
+    {
+        BN_free(y);
+        if (z) BN_free(z);
+        return false;
+    }
 
     std::vector<BIGNUM*> yn;
-    ScalarPowers(y, N, order, yn, ctx);
+    if (!ScalarPowers(y, N, order, yn, ctx))
+        return false;
 
     std::vector<BIGNUM*> twon;
     BIGNUM* two = BN_new();
-    BN_set_word(two, 2);
-    ScalarPowers(two, N, order, twon, ctx);
+    if (!two || BN_set_word(two, 2) != 1)
+    {
+        if (two) BN_free(two);
+        return false;
+    }
+    if (!ScalarPowers(two, N, order, twon, ctx))
+    {
+        BN_free(two);
+        return false;
+    }
     BN_free(two);
 
     BIGNUM* z2 = BN_new();
@@ -1064,7 +1136,11 @@ bool CreateBulletproofRangeProof(int64_t nValue,
     AppendToTranscript(transcript, group, T2, ctx);
 
     BIGNUM* x = BN_new();
-    FiatShamirChallenge(transcript, x, order, ctx);
+    if (!x || !FiatShamirChallenge(transcript, x, order, ctx))
+    {
+        if (x) BN_free(x);
+        return false;
+    }
 
     BIGNUM* x2 = BN_new();
     BN_mod_sqr(x2, x, order, ctx);
@@ -1166,9 +1242,17 @@ bool CreateBulletproofRangeProof(int64_t nValue,
     }
 
     BIGNUM* y_inv = BN_new();
-    BN_mod_inverse(y_inv, y, order, ctx);
+    if (!y_inv || !BN_mod_inverse(y_inv, y, order, ctx))
+    {
+        if (y_inv) BN_free(y_inv);
+        return false;
+    }
     std::vector<BIGNUM*> y_inv_n;
-    ScalarPowers(y_inv, N, order, y_inv_n, ctx);
+    if (!ScalarPowers(y_inv, N, order, y_inv_n, ctx))
+    {
+        BN_free(y_inv);
+        return false;
+    }
     BN_free(y_inv);
 
     std::vector<EC_POINT*> vHiPrime(N);
@@ -1341,11 +1425,12 @@ bool VerifyBulletproofRangeProof(const CPedersenCommitment& commit,
     const int N = 64;
     const int logN = 6;
 
-    if (proof.vchProof.size() > MAX_BULLETPROOF_PROOF_SIZE)
-        return false;
-
-    size_t minSize = 4 * 33 + 3 * 32 + logN * 2 * 33 + 2 * 32;
-    if (proof.vchProof.size() < minSize)
+    // Consensus: the legacy v5 wire accepts ignored trailing bytes up to
+    // MAX_BULLETPROOF_PROOF_SIZE; changing that needs a separately activated fork.
+    const size_t expectedSize = 4 * 33 + 3 * 32 + logN * 2 * 33 + 2 * 32;
+    if (expectedSize != BULLETPROOF_PROOF_SIZE ||
+        proof.vchProof.size() < expectedSize ||
+        proof.vchProof.size() > MAX_BULLETPROOF_PROOF_SIZE)
         return false;
 
     CECGroupGuard group;
@@ -1355,14 +1440,22 @@ bool VerifyBulletproofRangeProof(const CPedersenCommitment& commit,
     if (!ctx.ctx) return false;
 
     const BIGNUM* order = EC_GROUP_get0_order(group);
+    if (!order) return false;
+
+    CECPointGuard commitmentPoint(group);
+    if (!commitmentPoint.point) return false;
+    if (!BytesToPoint(group, commit.vchCommitment, commitmentPoint, ctx))
+        return false;
 
     CECPointGuard G(group), H(group);
+    if (!G.point || !H.point) return false;
     if (!BytesToPoint(group, CZKContext::GetGeneratorG(), G, ctx)) return false;
     if (!BytesToPoint(group, CZKContext::GetGeneratorH(), H, ctx)) return false;
 
     size_t offset = 0;
 
     CECPointGuard A(group), S(group), T1(group), T2(group);
+    if (!A.point || !S.point || !T1.point || !T2.point) return false;
     if (EC_POINT_oct2point(group, A, proof.vchProof.data() + offset, 33, ctx) != 1) return false;
     if (EC_POINT_is_on_curve(group, A, ctx) != 1) return false;
     offset += 33;
@@ -1376,12 +1469,21 @@ bool VerifyBulletproofRangeProof(const CPedersenCommitment& commit,
     if (EC_POINT_is_on_curve(group, T2, ctx) != 1) return false;
     offset += 33;
 
-    BIGNUM* taux = BN_bin2bn(proof.vchProof.data() + offset, 32, NULL); offset += 32;
-    if (!taux || BN_cmp(taux, order) >= 0) { if (taux) BN_free(taux); return false; }
-    BIGNUM* mu = BN_bin2bn(proof.vchProof.data() + offset, 32, NULL); offset += 32;
-    if (!mu || BN_cmp(mu, order) >= 0) { BN_free(taux); if (mu) BN_free(mu); return false; }
-    BIGNUM* t_hat = BN_bin2bn(proof.vchProof.data() + offset, 32, NULL); offset += 32;
-    if (!t_hat || BN_cmp(t_hat, order) >= 0) { BN_free(taux); BN_free(mu); if (t_hat) BN_free(t_hat); return false; }
+    CBNGuard taux;
+    if (!taux.bn || !BN_bin2bn(proof.vchProof.data() + offset, 32, taux) ||
+        BN_cmp(taux, order) >= 0)
+        return false;
+    offset += 32;
+    CBNGuard mu;
+    if (!mu.bn || !BN_bin2bn(proof.vchProof.data() + offset, 32, mu) ||
+        BN_cmp(mu, order) >= 0)
+        return false;
+    offset += 32;
+    CBNGuard t_hat;
+    if (!t_hat.bn || !BN_bin2bn(proof.vchProof.data() + offset, 32, t_hat) ||
+        BN_cmp(t_hat, order) >= 0)
+        return false;
+    offset += 32;
 
     std::vector<unsigned char> transcript;
     const char* bpDomain = "Innova_Bulletproof_v1";
@@ -1394,8 +1496,9 @@ bool VerifyBulletproofRangeProof(const CPedersenCommitment& commit,
     AppendToTranscript(transcript, group, A, ctx);
     AppendToTranscript(transcript, group, S, ctx);
 
-    BIGNUM* y = BN_new();
-    FiatShamirChallenge(transcript, y, order, ctx);
+    CBNGuard y;
+    if (!y.bn || !FiatShamirChallenge(transcript, y, order, ctx))
+        return false;
 
     unsigned char yBytes[32];
     memset(yBytes, 0, 32);
@@ -1403,67 +1506,79 @@ bool VerifyBulletproofRangeProof(const CPedersenCommitment& commit,
     if (yLen > 0) BN_bn2bin(y, yBytes + (32 - yLen));
     transcript.insert(transcript.end(), yBytes, yBytes + 32);
 
-    BIGNUM* z = BN_new();
-    FiatShamirChallenge(transcript, z, order, ctx);
+    CBNGuard z;
+    if (!z.bn || !FiatShamirChallenge(transcript, z, order, ctx))
+        return false;
 
     AppendToTranscript(transcript, group, T1, ctx);
     AppendToTranscript(transcript, group, T2, ctx);
 
-    BIGNUM* x = BN_new();
-    FiatShamirChallenge(transcript, x, order, ctx);
+    CBNGuard x;
+    if (!x.bn || !FiatShamirChallenge(transcript, x, order, ctx))
+        return false;
 
-    BIGNUM* x2 = BN_new();
-    BN_mod_sqr(x2, x, order, ctx);
-    BIGNUM* z2 = BN_new();
-    BN_mod_sqr(z2, z, order, ctx);
-    BIGNUM* z3 = BN_new();
-    BN_mod_mul(z3, z2, z, order, ctx);
+    CBNGuard x2, z2, z3;
+    if (!x2.bn || !z2.bn || !z3.bn ||
+        BN_mod_sqr(x2, x, order, ctx) != 1 ||
+        BN_mod_sqr(z2, z, order, ctx) != 1 ||
+        BN_mod_mul(z3, z2, z, order, ctx) != 1)
+        return false;
 
-    std::vector<BIGNUM*> yn;
-    ScalarPowers(y, N, order, yn, ctx);
+    CScopedScalars yn;
+    if (!ScalarPowers(y, N, order, yn.values, ctx))
+        return false;
 
-    BIGNUM* y_inv_v = BN_new();
-    BN_mod_inverse(y_inv_v, y, order, ctx);
-    std::vector<BIGNUM*> y_inv_n;
-    ScalarPowers(y_inv_v, N, order, y_inv_n, ctx);
-    BN_free(y_inv_v);
+    CBNGuard y_inv_v;
+    if (!y_inv_v.bn || !BN_mod_inverse(y_inv_v, y, order, ctx))
+        return false;
+    CScopedScalars y_inv_n;
+    if (!ScalarPowers(y_inv_v, N, order, y_inv_n.values, ctx))
+        return false;
 
-    std::vector<BIGNUM*> twon;
-    BIGNUM* two = BN_new();
-    BN_set_word(two, 2);
-    ScalarPowers(two, N, order, twon, ctx);
-    BN_free(two);
+    CScopedScalars twon;
+    CBNGuard two;
+    if (!two.bn || BN_set_word(two, 2) != 1 ||
+        !ScalarPowers(two, N, order, twon.values, ctx))
+        return false;
 
-    BIGNUM* sumYn = BN_new(); BN_zero(sumYn);
-    BIGNUM* sum2n = BN_new(); BN_zero(sum2n);
-    BIGNUM* tmp = BN_new();
+    CBNGuard sumYn, sum2n, tmp;
+    if (!sumYn.bn || !sum2n.bn || !tmp.bn)
+        return false;
+    BN_zero(sumYn);
+    BN_zero(sum2n);
 
     for (int i = 0; i < N; i++)
     {
-        BN_mod_add(sumYn, sumYn, yn[i], order, ctx);
-        BN_mod_add(sum2n, sum2n, twon[i], order, ctx);
+        BN_mod_add(sumYn, sumYn, yn.values[i], order, ctx);
+        BN_mod_add(sum2n, sum2n, twon.values[i], order, ctx);
     }
 
-    BIGNUM* delta = BN_new();
+    CBNGuard delta;
+    if (!delta.bn) return false;
     BN_mod_sub(tmp, z, z2, order, ctx);
     BN_mod_mul(delta, tmp, sumYn, order, ctx);
     BN_mod_mul(tmp, z3, sum2n, order, ctx);
     BN_mod_sub(delta, delta, tmp, order, ctx);
 
     CECPointGuard LHS(group);
+    if (!LHS.point) return false;
     {
         CECPointGuard p1(group), p2(group);
+        if (!p1.point || !p2.point) return false;
         EC_POINT_mul(group, p1, NULL, H, t_hat, ctx);
         EC_POINT_mul(group, p2, NULL, G, taux, ctx);
         EC_POINT_add(group, LHS, p1, p2, ctx);
     }
 
     CECPointGuard RHS(group);
+    if (!RHS.point) return false;
     {
         CECPointGuard V(group);
-        BytesToPoint(group, commit.vchCommitment, V, ctx);
+        if (!V.point) return false;
+        EC_POINT_copy(V, commitmentPoint);
 
         CECPointGuard p1(group), p2(group), p3(group), p4(group);
+        if (!p1.point || !p2.point || !p3.point || !p4.point) return false;
         EC_POINT_mul(group, p1, NULL, V, z2, ctx);
         EC_POINT_mul(group, p2, NULL, H, delta, ctx);
         EC_POINT_mul(group, p3, NULL, T1, x, ctx);
@@ -1485,6 +1600,11 @@ bool VerifyBulletproofRangeProof(const CPedersenCommitment& commit,
         {
             vL[round] = EC_POINT_new(group);
             vR[round] = EC_POINT_new(group);
+            if (!vL[round] || !vR[round])
+            {
+                fValid = false;
+                break;
+            }
 
             if (EC_POINT_oct2point(group, vL[round], proof.vchProof.data() + offset, 33, ctx) != 1 ||
                 EC_POINT_is_on_curve(group, vL[round], ctx) != 1)
@@ -1505,150 +1625,213 @@ bool VerifyBulletproofRangeProof(const CPedersenCommitment& commit,
             AppendToTranscript(transcript, group, vR[round], ctx);
 
             vChallenge[round] = BN_new();
-            FiatShamirChallenge(transcript, vChallenge[round], order, ctx);
-        }
-
-        BIGNUM* a_final = BN_bin2bn(proof.vchProof.data() + offset, 32, NULL); offset += 32;
-        BIGNUM* b_final = BN_bin2bn(proof.vchProof.data() + offset, 32, NULL); offset += 32;
-
-        if (!a_final || !b_final || BN_cmp(a_final, order) >= 0 || BN_cmp(b_final, order) >= 0)
-        {
-            if (a_final) BN_free(a_final);
-            if (b_final) BN_free(b_final);
-            return false;
-        }
-
-        BIGNUM* ab = BN_new();
-        BN_mod_mul(ab, a_final, b_final, order, ctx);
-
-        std::vector<EC_POINT*> vGi, vHi;
-        GenerateBPGenerators(group, N, vGi, vHi, ctx);
-
-        CECPointGuard P(group);
-        {
-            CECPointGuard xS(group);
-            EC_POINT_mul(group, xS, NULL, S, x, ctx);
-            EC_POINT_add(group, P, A, xS, ctx);
-        }
-
-        for (int i = 0; i < N; i++)
-        {
-            CECPointGuard tmp2(group);
-            EC_POINT_mul(group, tmp2, NULL, vGi[i], z, ctx);
-            EC_POINT_invert(group, tmp2, ctx);
-            EC_POINT_add(group, P, P, tmp2, ctx);
-        }
-
-        for (int i = 0; i < N; i++)
-        {
-            BIGNUM* coeff = BN_new();
-            BN_mod_mul(coeff, z2, twon[i], order, ctx);
-            BN_mod_mul(coeff, coeff, y_inv_n[i], order, ctx);
-            BN_mod_add(coeff, coeff, z, order, ctx);
-
-            CECPointGuard tmp2(group);
-            EC_POINT_mul(group, tmp2, NULL, vHi[i], coeff, ctx);
-            EC_POINT_add(group, P, P, tmp2, ctx);
-
-            BN_free(coeff);
-        }
-
-        {
-            CECPointGuard muG(group);
-            EC_POINT_mul(group, muG, NULL, G, mu, ctx);
-            EC_POINT_invert(group, muG, ctx);
-            EC_POINT_add(group, P, P, muG, ctx);
-        }
-
-        {
-            CECPointGuard tH(group);
-            EC_POINT_mul(group, tH, NULL, H, t_hat, ctx);
-            EC_POINT_add(group, P, P, tH, ctx);
-        }
-
-        CECPointGuard Plhs(group);
-        EC_POINT_copy(Plhs, P);
-
-        for (int round = 0; round < logN; round++)
-        {
-            BIGNUM* u2 = BN_new();
-            BN_mod_sqr(u2, vChallenge[round], order, ctx);
-
-            BIGNUM* u_inv = BN_new();
-            BN_mod_inverse(u_inv, vChallenge[round], order, ctx);
-            BIGNUM* u_inv2 = BN_new();
-            BN_mod_sqr(u_inv2, u_inv, order, ctx);
-
-            CECPointGuard tmpL(group), tmpR(group);
-            EC_POINT_mul(group, tmpL, NULL, vL[round], u2, ctx);
-            EC_POINT_mul(group, tmpR, NULL, vR[round], u_inv2, ctx);
-
-            EC_POINT_add(group, Plhs, Plhs, tmpL, ctx);
-            EC_POINT_add(group, Plhs, Plhs, tmpR, ctx);
-
-            BN_free(u2);
-            BN_free(u_inv);
-            BN_free(u_inv2);
-        }
-
-        CECPointGuard Pcheck(group);
-        EC_POINT_set_to_infinity(group, Pcheck);
-
-        for (int i = 0; i < N; i++)
-        {
-            BIGNUM* sG = BN_new(); BN_one(sG);
-            BIGNUM* sH = BN_new(); BN_one(sH);
-
-            for (int j = 0; j < logN; j++)
+            if (!vChallenge[round] ||
+                !FiatShamirChallenge(transcript, vChallenge[round], order, ctx))
             {
-                int bit = (i >> (logN - 1 - j)) & 1;
-                if (bit)
-                {
-                    BN_mod_mul(sG, sG, vChallenge[j], order, ctx);
-                    BIGNUM* u_inv = BN_new();
-                    BN_mod_inverse(u_inv, vChallenge[j], order, ctx);
-                    BN_mod_mul(sH, sH, u_inv, order, ctx);
-                    BN_free(u_inv);
-                }
-                else
-                {
-                    BIGNUM* u_inv = BN_new();
-                    BN_mod_inverse(u_inv, vChallenge[j], order, ctx);
-                    BN_mod_mul(sG, sG, u_inv, order, ctx);
-                    BN_free(u_inv);
-                    BN_mod_mul(sH, sH, vChallenge[j], order, ctx);
-                }
+                fValid = false;
+                break;
             }
-
-            BIGNUM* asG = BN_new();
-            BN_mod_mul(asG, a_final, sG, order, ctx);
-            CECPointGuard tmpPt(group);
-            EC_POINT_mul(group, tmpPt, NULL, vGi[i], asG, ctx);
-            EC_POINT_add(group, Pcheck, Pcheck, tmpPt, ctx);
-
-            BIGNUM* bsH = BN_new();
-            BN_mod_mul(bsH, b_final, sH, order, ctx);
-            BN_mod_mul(bsH, bsH, y_inv_n[i], order, ctx);
-            EC_POINT_mul(group, tmpPt, NULL, vHi[i], bsH, ctx);
-            EC_POINT_add(group, Pcheck, Pcheck, tmpPt, ctx);
-
-            BN_free(sG); BN_free(sH);
-            BN_free(asG); BN_free(bsH);
         }
 
+        BIGNUM* a_final = NULL;
+        BIGNUM* b_final = NULL;
+        if (fValid)
         {
-            CECPointGuard abH(group);
-            EC_POINT_mul(group, abH, NULL, H, ab, ctx);
-            EC_POINT_add(group, Pcheck, Pcheck, abH, ctx);
+            a_final = BN_bin2bn(proof.vchProof.data() + offset, 32, NULL); offset += 32;
+            b_final = BN_bin2bn(proof.vchProof.data() + offset, 32, NULL); offset += 32;
         }
 
-        if (EC_POINT_cmp(group, Plhs, Pcheck, ctx) != 0)
+        if (fValid && (!a_final || !b_final ||
+                       BN_cmp(a_final, order) >= 0 || BN_cmp(b_final, order) >= 0))
             fValid = false;
 
-        BN_free(ab);
-        BN_clear_free(a_final);
-        BN_clear_free(b_final);
-        FreeBPGenerators(vGi, vHi);
+        if (fValid)
+        {
+            CBNGuard ab;
+            if (!ab.bn || !BN_mod_mul(ab, a_final, b_final, order, ctx))
+                fValid = false;
+
+            std::vector<EC_POINT*> vGi, vHi;
+            if (fValid && (!GenerateBPGenerators(group, N, vGi, vHi, ctx) ||
+                           vGi.size() != (size_t)N || vHi.size() != (size_t)N))
+                fValid = false;
+
+            if (fValid)
+            {
+                CECPointGuard P(group);
+                if (!P.point)
+                    fValid = false;
+
+                if (fValid)
+                {
+                    CECPointGuard xS(group);
+                    if (!xS.point)
+                        fValid = false;
+                    else
+                    {
+                        EC_POINT_mul(group, xS, NULL, S, x, ctx);
+                        EC_POINT_add(group, P, A, xS, ctx);
+                    }
+                }
+
+                for (int i = 0; fValid && i < N; i++)
+                {
+                    CECPointGuard tmp2(group);
+                    if (!tmp2.point)
+                    {
+                        fValid = false;
+                        break;
+                    }
+                    EC_POINT_mul(group, tmp2, NULL, vGi[i], z, ctx);
+                    EC_POINT_invert(group, tmp2, ctx);
+                    EC_POINT_add(group, P, P, tmp2, ctx);
+                }
+
+                for (int i = 0; fValid && i < N; i++)
+                {
+                    CBNGuard coeff;
+                    CECPointGuard tmp2(group);
+                    if (!coeff.bn || !tmp2.point)
+                    {
+                        fValid = false;
+                        break;
+                    }
+                    BN_mod_mul(coeff, z2, twon.values[i], order, ctx);
+                    BN_mod_mul(coeff, coeff, y_inv_n.values[i], order, ctx);
+                    BN_mod_add(coeff, coeff, z, order, ctx);
+
+                    EC_POINT_mul(group, tmp2, NULL, vHi[i], coeff, ctx);
+                    EC_POINT_add(group, P, P, tmp2, ctx);
+                }
+
+                if (fValid)
+                {
+                    CECPointGuard muG(group);
+                    if (!muG.point)
+                        fValid = false;
+                    else
+                    {
+                        EC_POINT_mul(group, muG, NULL, G, mu, ctx);
+                        EC_POINT_invert(group, muG, ctx);
+                        EC_POINT_add(group, P, P, muG, ctx);
+                    }
+                }
+
+                if (fValid)
+                {
+                    CECPointGuard tH(group);
+                    if (!tH.point)
+                        fValid = false;
+                    else
+                    {
+                        EC_POINT_mul(group, tH, NULL, H, t_hat, ctx);
+                        EC_POINT_add(group, P, P, tH, ctx);
+                    }
+                }
+
+                CECPointGuard Plhs(group);
+                if (!Plhs.point)
+                    fValid = false;
+                else if (fValid)
+                    EC_POINT_copy(Plhs, P);
+
+                for (int round = 0; fValid && round < logN; round++)
+                {
+                    CBNGuard u2, u_inv, u_inv2;
+                    CECPointGuard tmpL(group), tmpR(group);
+                    if (!u2.bn || !u_inv.bn || !u_inv2.bn ||
+                        !tmpL.point || !tmpR.point ||
+                        !BN_mod_inverse(u_inv, vChallenge[round], order, ctx))
+                    {
+                        fValid = false;
+                        break;
+                    }
+                    BN_mod_sqr(u2, vChallenge[round], order, ctx);
+                    BN_mod_sqr(u_inv2, u_inv, order, ctx);
+
+                    EC_POINT_mul(group, tmpL, NULL, vL[round], u2, ctx);
+                    EC_POINT_mul(group, tmpR, NULL, vR[round], u_inv2, ctx);
+
+                    EC_POINT_add(group, Plhs, Plhs, tmpL, ctx);
+                    EC_POINT_add(group, Plhs, Plhs, tmpR, ctx);
+                }
+
+                CECPointGuard Pcheck(group);
+                if (!Pcheck.point)
+                    fValid = false;
+                else if (fValid)
+                    EC_POINT_set_to_infinity(group, Pcheck);
+
+                for (int i = 0; fValid && i < N; i++)
+                {
+                    CBNGuard sG, sH;
+                    CECPointGuard tmpPt(group);
+                    if (!sG.bn || !sH.bn || !tmpPt.point)
+                    {
+                        fValid = false;
+                        break;
+                    }
+                    BN_one(sG);
+                    BN_one(sH);
+
+                    for (int j = 0; fValid && j < logN; j++)
+                    {
+                        const int bit = (i >> (logN - 1 - j)) & 1;
+                        CBNGuard u_inv;
+                        if (!u_inv.bn || !BN_mod_inverse(u_inv, vChallenge[j], order, ctx))
+                        {
+                            fValid = false;
+                            break;
+                        }
+                        if (bit)
+                        {
+                            BN_mod_mul(sG, sG, vChallenge[j], order, ctx);
+                            BN_mod_mul(sH, sH, u_inv, order, ctx);
+                        }
+                        else
+                        {
+                            BN_mod_mul(sG, sG, u_inv, order, ctx);
+                            BN_mod_mul(sH, sH, vChallenge[j], order, ctx);
+                        }
+                    }
+
+                    CBNGuard asG, bsH;
+                    if (!fValid || !asG.bn || !bsH.bn)
+                    {
+                        fValid = false;
+                        break;
+                    }
+                    BN_mod_mul(asG, a_final, sG, order, ctx);
+                    EC_POINT_mul(group, tmpPt, NULL, vGi[i], asG, ctx);
+                    EC_POINT_add(group, Pcheck, Pcheck, tmpPt, ctx);
+
+                    BN_mod_mul(bsH, b_final, sH, order, ctx);
+                    BN_mod_mul(bsH, bsH, y_inv_n.values[i], order, ctx);
+                    EC_POINT_mul(group, tmpPt, NULL, vHi[i], bsH, ctx);
+                    EC_POINT_add(group, Pcheck, Pcheck, tmpPt, ctx);
+                }
+
+                if (fValid)
+                {
+                    CECPointGuard abH(group);
+                    if (!abH.point)
+                        fValid = false;
+                    else
+                    {
+                        EC_POINT_mul(group, abH, NULL, H, ab, ctx);
+                        EC_POINT_add(group, Pcheck, Pcheck, abH, ctx);
+                    }
+                }
+
+                if (fValid && EC_POINT_cmp(group, Plhs, Pcheck, ctx) != 0)
+                    fValid = false;
+            }
+
+            FreeBPGenerators(vGi, vHi);
+        }
+
+        if (a_final) BN_clear_free(a_final);
+        if (b_final) BN_clear_free(b_final);
 
         for (int i = 0; i < logN; i++)
         {
@@ -1657,17 +1840,6 @@ bool VerifyBulletproofRangeProof(const CPedersenCommitment& commit,
             BN_free(vChallenge[i]);
         }
     }
-
-    BN_clear_free(taux);
-    BN_clear_free(mu);
-    BN_free(t_hat);
-    BN_free(y); BN_free(z);
-    BN_free(x); BN_free(x2);
-    BN_free(z2); BN_free(z3);
-    BN_free(delta); BN_free(sumYn); BN_free(sum2n);
-    BN_free(tmp);
-    FreeScalars(yn); FreeScalars(twon);
-    FreeScalars(y_inv_n);
 
     return fValid;
 }

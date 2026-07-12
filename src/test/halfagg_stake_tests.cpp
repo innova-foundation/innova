@@ -263,6 +263,16 @@ BOOST_AUTO_TEST_CASE(halfagg_stake_delegation_set_hash)
                         "M > N must be rejected");
     BOOST_CHECK_MESSAGE(!ComputeNullStakeV3DelegationSetHash(set, 0, owner, hbad),
                         "M = 0 must be rejected");
+
+    // Every committed key must be a canonical, non-infinity curve point even
+    // when that member is not part of the signing subset.
+    std::vector<valtype> invalidMember = set;
+    invalidMember[2].assign(33, 0x00);
+    BOOST_CHECK_MESSAGE(!ComputeNullStakeV3DelegationSetHash(invalidMember, 2, owner, hbad),
+                        "an invalid non-signer member point must be rejected");
+    valtype invalidOwner(33, 0x00);
+    BOOST_CHECK_MESSAGE(!ComputeNullStakeV3DelegationSetHash(set, 2, invalidOwner, hbad),
+                        "an invalid owner point must be rejected");
 }
 
 // --- Phase 2: V3 proof M-of-N fields serialize/deserialize round-trip ---

@@ -16,6 +16,10 @@ static const int LELANTUS_SET_SIZE = 64;
 static const int LELANTUS_SET_SIZE_LOG = 6;
 static const int LELANTUS_MAX_SPEND_PER_TX = 8;
 static const int LELANTUS_MIN_SET_SIZE = 16;
+// VerifyLelantusProof rejects larger anonymity sets.  Proof byte strings are
+// separately bounded by the enclosing transaction-size-compatible read cap:
+// the legacy verifier accepts a valid prefix followed by trailing bytes.
+static const int LELANTUS_MAX_SET_SIZE = 1024;
 static const int LELANTUS_GENESIS_SEED_COUNT = LELANTUS_MIN_SET_SIZE;
 
 // Fork height for serial v2

@@ -45,7 +45,10 @@ public:
 
     IMPLEMENT_SERIALIZE
     (
-        READWRITE(vchProof);
+        CNullStakeKernelProof* pthis = const_cast<CNullStakeKernelProof*>(this);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchProof,
+                                                 NULLSTAKE_PROOF_MAX_SIZE,
+                                                 nType, nVersion, ser_action);
         READWRITE(nStakeModifier);
         READWRITE(nBlockTimeFrom);
         READWRITE(nTxPrevOffset);
@@ -151,7 +154,9 @@ public:
     (
         READWRITE(acProof);
         READWRITE(valueCommitment);
-        READWRITE(vchLinkProof);
+        CNullStakeKernelProofV2* pthis = const_cast<CNullStakeKernelProofV2*>(this);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchLinkProof, 65,
+                                                 nType, nVersion, ser_action);
         READWRITE(nStakeModifier);
         READWRITE(nBlockTimeFrom);
         READWRITE(nTxPrevOffset);
@@ -252,9 +257,16 @@ public:
 
     IMPLEMENT_SERIALIZE
     (
-        READWRITE(vchTag);
-        READWRITE(vChallenges);
-        READWRITE(vResponses);
+        CNullStakeMofNHiddenAuthRingSlotProof* pthis =
+            const_cast<CNullStakeMofNHiddenAuthRingSlotProof*>(this);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchTag, 33,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vChallenges,
+                                                 MAX_NULLSTAKE_MOFN_MEMBERS,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vResponses,
+                                                 MAX_NULLSTAKE_MOFN_MEMBERS,
+                                                 nType, nVersion, ser_action);
     )
 };
 
@@ -278,11 +290,18 @@ public:
 
     IMPLEMENT_SERIALIZE
     (
+        CNullStakeMofNHiddenAuthProof* pthis =
+            const_cast<CNullStakeMofNHiddenAuthProof*>(this);
         READWRITE(nVersion);
         READWRITE(nAuthType);
-        READWRITE(vchTagBaseNonce);
-        READWRITE(vRingSlotProofs);
-        READWRITE(vchResearchProof);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchTagBaseNonce, 32,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vRingSlotProofs,
+                                                 MAX_NULLSTAKE_MOFN_SIGNERS,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchResearchProof,
+                                                 NULLSTAKE_B2C_MAX_AUTH_SIZE,
+                                                 nType, nVersion, ser_action);
     )
 
     bool IsNull() const { return vRingSlotProofs.empty() && vchResearchProof.empty(); }
@@ -376,9 +395,13 @@ public:
 
     IMPLEMENT_SERIALIZE
     (
+        CNullStakeKernelProofV3* pthis = const_cast<CNullStakeKernelProofV3*>(this);
+        if (fRead)
+            *pthis = CNullStakeKernelProofV3();
         READWRITE(acProof);
         READWRITE(valueCommitment);
-        READWRITE(vchLinkProof);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchLinkProof, 65,
+                                                 nType, nVersion, ser_action);
         READWRITE(nStakeModifier);
         READWRITE(nBlockTimeFrom);
         READWRITE(nTxPrevOffset);
@@ -386,9 +409,13 @@ public:
         READWRITE(nVoutN);
         READWRITE(nTimeTx);
         READWRITE(delegationHash);
-        READWRITE(vchPkStake);
-        READWRITE(vchPkOwner);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchPkStake, 33,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchPkOwner, 33,
+                                                 nType, nVersion, ser_action);
         READWRITE(nThresholdM);
+        if (fRead && nThresholdM > MAX_NULLSTAKE_MOFN_MEMBERS)
+            throw std::ios_base::failure("NullStake M-of-N threshold too large");
         // The M-of-N fields exist only for nThresholdM > 0. A legacy 1-of-1 proof serializes
         // nThresholdM == 0 and nothing further (wire byte-identical + self-describing). For M-of-N,
         // nAuthMode selects the authorization tier: mode B2C_HIDDEN carries only the staker set + the
@@ -397,16 +424,30 @@ public:
         if (nThresholdM > 0)
         {
             READWRITE(nAuthMode);
-            READWRITE(vStakerSet);
+            if (fRead && nAuthMode != NULLSTAKE_AUTHMODE_HALFAGG &&
+                nAuthMode != NULLSTAKE_AUTHMODE_B2C_HIDDEN)
+                throw std::ios_base::failure("invalid NullStake M-of-N auth mode");
+            nSerSize += ::SerReadWriteLimitedByteVectors(s, pthis->vStakerSet,
+                                                          MAX_NULLSTAKE_MOFN_MEMBERS,
+                                                          33, nType, nVersion,
+                                                          ser_action);
             if (nAuthMode == NULLSTAKE_AUTHMODE_B2C_HIDDEN)
             {
                 READWRITE(hiddenAuth);
             }
             else
             {
-                READWRITE(vSignerPubKeys);
-                READWRITE(vSignerRPoints);
-                READWRITE(vchAggregatedSScalar);
+                nSerSize += ::SerReadWriteLimitedByteVectors(s, pthis->vSignerPubKeys,
+                                                              MAX_NULLSTAKE_MOFN_SIGNERS,
+                                                              33, nType, nVersion,
+                                                              ser_action);
+                nSerSize += ::SerReadWriteLimitedByteVectors(s, pthis->vSignerRPoints,
+                                                              MAX_NULLSTAKE_MOFN_SIGNERS,
+                                                              33, nType, nVersion,
+                                                              ser_action);
+                nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchAggregatedSScalar,
+                                                         32, nType, nVersion,
+                                                         ser_action);
             }
         }
     )
@@ -432,10 +473,15 @@ public:
 
     IMPLEMENT_SERIALIZE
     (
+        CNullStakeReclaimAuth* pthis = const_cast<CNullStakeReclaimAuth*>(this);
         READWRITE(delegationHash);
-        READWRITE(vStakerSet);
+        nSerSize += ::SerReadWriteLimitedByteVectors(s, pthis->vStakerSet,
+                                                      MAX_NULLSTAKE_MOFN_MEMBERS,
+                                                      33, nType, nVersion,
+                                                      ser_action);
         READWRITE(nThresholdM);
-        READWRITE(vchPkOwner);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchPkOwner, 33,
+                                                 nType, nVersion, ser_action);
     )
 
     bool IsNull() const { return vchPkOwner.empty() && vStakerSet.empty(); }

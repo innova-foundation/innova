@@ -140,6 +140,7 @@ bool CreateNullStakeKernelProof(int64_t nValue,
                                 unsigned int nTimeTx,
                                 CNullStakeKernelProof& proofOut)
 {
+    proofOut = CNullStakeKernelProof();
     if (nValue <= 0 || nWeight <= 0 || vchBlind.size() != 32 || cv.IsNull())
         return false;
 
@@ -688,6 +689,7 @@ bool CreateNullStakeKernelProofV2(int64_t nValue,
                                   unsigned int nTimeTx,
                                   CNullStakeKernelProofV2& proofOut)
 {
+    proofOut = CNullStakeKernelProofV2();
     if (nValue <= 0 || vchBlind.size() != 32 || cv.IsNull())
         return false;
 
@@ -815,10 +817,40 @@ static bool VerifyNullStakeKernelProofV2Uncached(const CNullStakeKernelProofV2& 
                                                  const CPedersenCommitment& cv,
                                                  unsigned int nBits);
 
+static bool CheckNullStakeKernelProofV2Structure(const CNullStakeKernelProofV2& proof,
+                                                 const CPedersenCommitment& cv)
+{
+    if (proof.IsNull() || cv.IsNull() || cv.vchCommitment.size() != 33 ||
+        proof.valueCommitment.vchCommitment.size() != 33 ||
+        proof.vchLinkProof.size() != 65 ||
+        proof.acProof.nVersion != BPAC_PROOF_VERSION ||
+        proof.acProof.GetProofSize() > BPAC_MAX_PROOF_SIZE ||
+        !FieldIsValid(proof.acProof.tauX) || !FieldIsValid(proof.acProof.mu) ||
+        !FieldIsValid(proof.acProof.tHat) ||
+        proof.acProof.vchAI.size() != 33 || proof.acProof.vchAO.size() != 33 ||
+        proof.acProof.vchS.size() != 33 || proof.acProof.vchT1.size() != 33 ||
+        proof.acProof.vchT3.size() != 33 || proof.acProof.vchT4.size() != 33 ||
+        proof.acProof.vchT5.size() != 33 || proof.acProof.vchT6.size() != 33 ||
+        proof.acProof.ipaProof.curveType != IPA_CURVE_SECP256K1 ||
+        proof.acProof.ipaProof.vL.size() != proof.acProof.ipaProof.vR.size() ||
+        proof.acProof.ipaProof.vL.size() > IPA_MAX_ROUNDS ||
+        proof.acProof.ipaProof.vchAFinal.size() != IPA_SCALAR_SIZE ||
+        proof.acProof.ipaProof.vchBFinal.size() != IPA_SCALAR_SIZE)
+        return false;
+    for (size_t i = 0; i < proof.acProof.ipaProof.vL.size(); ++i)
+        if (proof.acProof.ipaProof.vL[i].size() != IPA_SECP256K1_POINT ||
+            proof.acProof.ipaProof.vR[i].size() != IPA_SECP256K1_POINT)
+            return false;
+    return true;
+}
+
 bool VerifyNullStakeKernelProofV2(const CNullStakeKernelProofV2& proof,
                                   const CPedersenCommitment& cv,
                                   unsigned int nBits)
 {
+    if (!CheckNullStakeKernelProofV2Structure(proof, cv))
+        return false;
+
     if (!VerifyProofCacheEnabled())
         return VerifyNullStakeKernelProofV2Uncached(proof, cv, nBits);
 
@@ -875,6 +907,8 @@ static bool VerifyNullStakeKernelProofV2Uncached(const CNullStakeKernelProofV2& 
 
     CNullStakeBNGuard bnSLink;
     BN_bin2bn(proof.vchLinkProof.data() + 33, 32, bnSLink);
+    if (BN_is_negative(bnSLink) || BN_cmp(bnSLink, bnOrder) >= 0)
+        return false;
 
     std::vector<unsigned char> vchRL(proof.vchLinkProof.begin(), proof.vchLinkProof.begin() + 33);
 
@@ -964,6 +998,7 @@ bool CreateNullStakeKernelProofV3(int64_t nValue,
                                   const uint256& delegationHash,
                                   CNullStakeKernelProofV3& proofOut)
 {
+    proofOut = CNullStakeKernelProofV3();
     if (nValue <= 0 || vchBlind.size() != 32 || cv.IsNull())
         return false;
     if (vchPkOwner.size() != 33)
@@ -1182,6 +1217,7 @@ bool CreateNullStakeMofNKernelProofV3(int64_t nValue,
                                       const std::vector<uint256>& vSignerSecrets,
                                       CNullStakeKernelProofV3& proofOut)
 {
+    proofOut = CNullStakeKernelProofV3();
     if (nValue <= 0 || vchBlind.size() != 32 || cv3.IsNull())
         return false;
     if (vchPkOwner.size() != 33)
@@ -1201,6 +1237,23 @@ bool CreateNullStakeMofNKernelProofV3(int64_t nValue,
         return false;
     if (!VerifyNullStakeMofNCommitment(cv3, nValue, vchBlind, delegationHash))
         return false;
+
+    // Validate the signer subset before constructing the expensive arithmetic
+    // proof.  A creator must never report success for duplicate or non-member
+    // secrets and leave the caller with a proof that only fails downstream.
+    std::vector<std::vector<unsigned char> > signerPubKeys;
+    for (size_t i = 0; i < vSignerSecrets.size(); ++i)
+    {
+        std::vector<unsigned char> pk;
+        if (!HalfAggStakeDerivePubKey(vSignerSecrets[i], pk) ||
+            std::find(vStakerSet.begin(), vStakerSet.end(), pk) == vStakerSet.end())
+            return false;
+        signerPubKeys.push_back(pk);
+    }
+    std::sort(signerPubKeys.begin(), signerPubKeys.end());
+    for (size_t i = 1; i < signerPubKeys.size(); ++i)
+        if (signerPubKeys[i - 1] == signerPubKeys[i])
+            return false;
 
     // cv_plain = value*H + blind*G (J-free), the commitment the circuit + link operate on.
     CPedersenCommitment cvPlain;
@@ -1274,6 +1327,20 @@ bool CreateNullStakeMofNKernelProofV3(int64_t nValue,
         trips.push_back(std::make_pair(pk, std::make_pair(R, s)));
     }
     std::sort(trips.begin(), trips.end());
+    for (size_t i = 0; i < trips.size(); ++i)
+    {
+        if (i > 0 && trips[i - 1].first == trips[i].first)
+        {
+            OPENSSL_cleanse(vchRv.data(), 32);
+            return false;
+        }
+        if (std::find(vStakerSet.begin(), vStakerSet.end(), trips[i].first) ==
+            vStakerSet.end())
+        {
+            OPENSSL_cleanse(vchRv.data(), 32);
+            return false;
+        }
+    }
     proofOut.vSignerPubKeys.clear();
     proofOut.vSignerRPoints.clear();
     std::vector<std::vector<unsigned char> > vS;
@@ -1337,6 +1404,7 @@ bool CreateNullStakeMofNKernelProofV3(int64_t nValue,
     proofOut.vchLinkProof.insert(proofOut.vchLinkProof.end(), slBytes, slBytes + 32);
 
     proofOut.nThresholdM = nThresholdM;
+    proofOut.nAuthMode = NULLSTAKE_AUTHMODE_HALFAGG;
     proofOut.vStakerSet = vStakerSet;       // canonicalize so the wire form is non-malleable
     std::sort(proofOut.vStakerSet.begin(), proofOut.vStakerSet.end());
     proofOut.delegationHash = delegationHash;
@@ -1376,6 +1444,7 @@ bool CreateNullStakeB2CHiddenKernelProofV3(int64_t nValue,
                                            const std::vector<uint256>& vSignerSecrets,
                                            CNullStakeKernelProofV3& proofOut)
 {
+    proofOut = CNullStakeKernelProofV3();
     if (nValue <= 0 || vchBlind.size() != 32 || cv3.IsNull())
         return false;
     if (vchPkOwner.size() != 33)
@@ -1566,6 +1635,30 @@ static bool VerifyNullStakeMofNKernelProofV3(const CNullStakeKernelProofV3& proo
     if (FieldReduce(proof.delegationHash) != proof.delegationHash)
         return false;
 
+    // Authenticate the cheap set/signature layer before the substantially more
+    // expensive BPAC verification.  The digest is fully determined by consensus
+    // inputs, so this reordering does not change the statement being verified.
+    uint256 stakeDigest = ComputeNullStakeMofNStakeDigest(proof.delegationHash,
+                                                          proof.nStakeModifier,
+                                                          proof.nBlockTimeFrom,
+                                                          proof.nTxPrevOffset,
+                                                          proof.nTxTimePrev,
+                                                          proof.nVoutN,
+                                                          proof.nTimeTx,
+                                                          cv3.vchCommitment);
+    std::string authError;
+    if (!VerifyNullStakeMofNAuthorization(proof.vStakerSet, proof.nThresholdM,
+                                          proof.vchPkOwner, proof.delegationHash,
+                                          proof.vSignerPubKeys, proof.vSignerRPoints,
+                                          proof.vchAggregatedSScalar, stakeDigest,
+                                          authError))
+    {
+        if (fDebug)
+            printf("VerifyNullStakeMofNKernelProofV3: authorization failed: %s\n",
+                   authError.c_str());
+        return false;
+    }
+
     if (!CPoseidon2Params::IsInitialized())
         CPoseidon2Params::Initialize();
     CZarcECGroupGuard group;
@@ -1593,12 +1686,6 @@ static bool VerifyNullStakeMofNKernelProofV3(const CNullStakeKernelProofV3& proo
         if (fDebug) printf("VerifyNullStakeMofNKernelProofV3: AC proof failed\n");
         return false;
     }
-
-    // Stake digest over the leaf cv3 + delegation + kernel params.
-    uint256 stakeDigest = ComputeNullStakeMofNStakeDigest(proof.delegationHash, proof.nStakeModifier,
-                                                          proof.nBlockTimeFrom, proof.nTxPrevOffset,
-                                                          proof.nTxTimePrev, proof.nVoutN, proof.nTimeTx,
-                                                          cv3.vchCommitment);
 
     // Value-commitment link to cv_plain (NOT cv3): proves Vv and cv_plain share the same
     // value*H, so the range/weight proven over Vv applies to the staked note's value.
@@ -1647,19 +1734,6 @@ static bool VerifyNullStakeMofNKernelProofV3(const CNullStakeKernelProofV3& proo
     if (EC_POINT_cmp(group, lhsLink, rhsLink, ctx) != 0)
     {
         if (fDebug) printf("VerifyNullStakeMofNKernelProofV3: link proof failed\n");
-        return false;
-    }
-
-    // MANDATORY M-of-N authorization: the ONLY gate requiring the member secret keys. Recompute
-    // SetHash(set,M,owner) == proof.delegationHash, require distinct member signers (count >= M)
-    // in canonical order, and verify the half-aggregated signature over the leaf-bound digest.
-    std::string err;
-    if (!VerifyNullStakeMofNAuthorization(proof.vStakerSet, proof.nThresholdM, proof.vchPkOwner,
-                                          proof.delegationHash, proof.vSignerPubKeys,
-                                          proof.vSignerRPoints, proof.vchAggregatedSScalar,
-                                          stakeDigest, err))
-    {
-        if (fDebug) printf("VerifyNullStakeMofNKernelProofV3: authorization failed: %s\n", err.c_str());
         return false;
     }
 
@@ -1712,6 +1786,40 @@ static bool VerifyNullStakeB2CHiddenKernelProofV3(const CNullStakeKernelProofV3&
     if (FieldReduce(proof.delegationHash) != proof.delegationHash)
         return false;
 
+    // Reject an invalid or mismatched delegation set before Poseidon setup,
+    // BPAC verification, or the hidden ring proof.  This also validates every
+    // committed member and the owner as a non-infinity secp256k1 point.
+    uint256 expectedDelegationHash;
+    if (!ComputeNullStakeV3DelegationSetHash(proof.vStakerSet,
+                                             proof.nThresholdM,
+                                             proof.vchPkOwner,
+                                             expectedDelegationHash) ||
+        expectedDelegationHash != proof.delegationHash)
+        return false;
+
+    // Authenticate the bounded ring proof before the substantially more
+    // expensive arithmetic-circuit proof.  Its statement is fully determined
+    // by the same consensus inputs, so the order does not change validity.
+    uint256 stakeDigest = ComputeNullStakeMofNStakeDigest(proof.delegationHash,
+                                                          proof.nStakeModifier,
+                                                          proof.nBlockTimeFrom,
+                                                          proof.nTxPrevOffset,
+                                                          proof.nTxTimePrev,
+                                                          proof.nVoutN,
+                                                          proof.nTimeTx,
+                                                          cv3.vchCommitment);
+    std::string authError;
+    if (!VerifyNullStakeMofNHiddenAuthProof(proof.vStakerSet, proof.nThresholdM,
+                                            proof.vchPkOwner, proof.delegationHash,
+                                            stakeDigest, cv3, proof.hiddenAuth,
+                                            authError))
+    {
+        if (fDebug)
+            printf("VerifyNullStakeB2CHiddenKernelProofV3: hidden authorization failed: %s\n",
+                   authError.c_str());
+        return false;
+    }
+
     if (!CPoseidon2Params::IsInitialized())
         CPoseidon2Params::Initialize();
     CZarcECGroupGuard group;
@@ -1737,11 +1845,6 @@ static bool VerifyNullStakeB2CHiddenKernelProofV3(const CNullStakeKernelProofV3&
         if (fDebug) printf("VerifyNullStakeB2CHiddenKernelProofV3: AC proof failed\n");
         return false;
     }
-
-    uint256 stakeDigest = ComputeNullStakeMofNStakeDigest(proof.delegationHash, proof.nStakeModifier,
-                                                          proof.nBlockTimeFrom, proof.nTxPrevOffset,
-                                                          proof.nTxTimePrev, proof.nVoutN, proof.nTimeTx,
-                                                          cv3.vchCommitment);
 
     // Value-commitment link Vv <-> cv_plain (identical to the B2-e spine).
     std::vector<unsigned char> vchRL(proof.vchLinkProof.begin(), proof.vchLinkProof.begin() + 33);
@@ -1788,18 +1891,6 @@ static bool VerifyNullStakeB2CHiddenKernelProofV3(const CNullStakeKernelProofV3&
         return false;
     }
 
-    // MANDATORY hidden authorization: prove >= M distinct committed members authorized the RECOMPUTED
-    // stake digest without revealing which. Statement inputs (stakeDigest, kernelValueCommitment := cv3)
-    // are the consensus-recomputed values; the hidden verifier rebuilds the statement hash internally.
-    std::string err;
-    if (!VerifyNullStakeMofNHiddenAuthProof(proof.vStakerSet, proof.nThresholdM, proof.vchPkOwner,
-                                            proof.delegationHash, stakeDigest, cv3,
-                                            proof.hiddenAuth, err))
-    {
-        if (fDebug) printf("VerifyNullStakeB2CHiddenKernelProofV3: hidden authorization failed: %s\n", err.c_str());
-        return false;
-    }
-
     return true;
 }
 
@@ -1808,10 +1899,125 @@ static bool VerifyNullStakeKernelProofV3Uncached(const CNullStakeKernelProofV3& 
                                                  const CPedersenCommitment& cv,
                                                  unsigned int nBits);
 
+static bool IsCanonicalCompressedPointSet(
+    const std::vector<std::vector<unsigned char> >& points,
+    size_t nMax,
+    bool fRequireNonEmpty)
+{
+    if ((fRequireNonEmpty && points.empty()) || points.size() > nMax)
+        return false;
+    for (size_t i = 0; i < points.size(); ++i)
+    {
+        if (points[i].size() != 33)
+            return false;
+        if (i > 0 && !(points[i - 1] < points[i]))
+            return false;
+    }
+    return true;
+}
+
+static bool HasBoundedCompressedPoints(
+    const std::vector<std::vector<unsigned char> >& points,
+    size_t nMax,
+    bool fRequireNonEmpty)
+{
+    if ((fRequireNonEmpty && points.empty()) || points.size() > nMax)
+        return false;
+    for (size_t i = 0; i < points.size(); ++i)
+        if (points[i].size() != 33)
+            return false;
+    return true;
+}
+
+// Validate the variant shape before cache-key serialization, so malformed proofs cannot
+// make hashing traverse oversized or inactive-tier fields.
+static bool CheckNullStakeKernelProofV3Structure(const CNullStakeKernelProofV3& proof,
+                                                 const CPedersenCommitment& cv)
+{
+    if (proof.IsNull() || cv.IsNull() || cv.vchCommitment.size() != 33 ||
+        proof.valueCommitment.vchCommitment.size() != 33 ||
+        proof.vchLinkProof.size() != 65 ||
+        proof.acProof.GetProofSize() > BPAC_V3_MAX_PROOF_SIZE ||
+        proof.delegationHash == uint256(0) || !FieldIsValid(proof.delegationHash))
+        return false;
+
+    if (proof.acProof.nVersion != BPAC_PROOF_VERSION ||
+        proof.acProof.ipaProof.curveType != IPA_CURVE_SECP256K1 ||
+        !FieldIsValid(proof.acProof.tauX) || !FieldIsValid(proof.acProof.mu) ||
+        !FieldIsValid(proof.acProof.tHat) ||
+        proof.acProof.vchAI.size() != 33 || proof.acProof.vchAO.size() != 33 ||
+        proof.acProof.vchS.size() != 33 || proof.acProof.vchT1.size() != 33 ||
+        proof.acProof.vchT3.size() != 33 || proof.acProof.vchT4.size() != 33 ||
+        proof.acProof.vchT5.size() != 33 || proof.acProof.vchT6.size() != 33 ||
+        proof.acProof.ipaProof.vL.size() != proof.acProof.ipaProof.vR.size() ||
+        proof.acProof.ipaProof.vL.size() > IPA_MAX_ROUNDS ||
+        proof.acProof.ipaProof.vchAFinal.size() != IPA_SCALAR_SIZE ||
+        proof.acProof.ipaProof.vchBFinal.size() != IPA_SCALAR_SIZE)
+        return false;
+    for (size_t i = 0; i < proof.acProof.ipaProof.vL.size(); ++i)
+        if (proof.acProof.ipaProof.vL[i].size() != IPA_SECP256K1_POINT ||
+            proof.acProof.ipaProof.vR[i].size() != IPA_SECP256K1_POINT)
+            return false;
+
+    if (proof.nThresholdM == 0)
+    {
+        return proof.nAuthMode == NULLSTAKE_AUTHMODE_HALFAGG &&
+               proof.vchPkStake.size() == 33 && proof.vchPkOwner.size() == 33 &&
+               proof.vStakerSet.empty() && proof.vSignerPubKeys.empty() &&
+               proof.vSignerRPoints.empty() && proof.vchAggregatedSScalar.empty() &&
+               proof.hiddenAuth.nAuthType == 0 &&
+               proof.hiddenAuth.vchTagBaseNonce.empty() && proof.hiddenAuth.IsNull();
+    }
+
+    if (proof.nThresholdM > MAX_NULLSTAKE_MOFN_MEMBERS ||
+        proof.vchPkStake.size() != 0 || proof.vchPkOwner.size() != 33 ||
+        !IsCanonicalCompressedPointSet(proof.vStakerSet,
+                                       MAX_NULLSTAKE_MOFN_MEMBERS, true) ||
+        proof.nThresholdM > proof.vStakerSet.size())
+        return false;
+
+    if (proof.nAuthMode == NULLSTAKE_AUTHMODE_HALFAGG)
+    {
+        return IsCanonicalCompressedPointSet(proof.vSignerPubKeys,
+                                              MAX_NULLSTAKE_MOFN_SIGNERS, true) &&
+               proof.vSignerPubKeys.size() >= proof.nThresholdM &&
+               proof.vSignerRPoints.size() == proof.vSignerPubKeys.size() &&
+               HasBoundedCompressedPoints(proof.vSignerRPoints,
+                                          MAX_NULLSTAKE_MOFN_SIGNERS, true) &&
+               proof.vchAggregatedSScalar.size() == 32 &&
+               proof.hiddenAuth.nAuthType == 0 &&
+               proof.hiddenAuth.vchTagBaseNonce.empty() && proof.hiddenAuth.IsNull();
+    }
+
+    if (proof.nAuthMode != NULLSTAKE_AUTHMODE_B2C_HIDDEN ||
+        !proof.vSignerPubKeys.empty() || !proof.vSignerRPoints.empty() ||
+        !proof.vchAggregatedSScalar.empty() ||
+        proof.hiddenAuth.nVersion != NULLSTAKE_B2C_HIDDEN_AUTH_VERSION ||
+        proof.hiddenAuth.nAuthType != NULLSTAKE_B2C_AUTH_TYPE_RINGXM_DLEQ ||
+        proof.hiddenAuth.vchTagBaseNonce.size() != 32 ||
+        proof.hiddenAuth.vRingSlotProofs.size() != proof.nThresholdM ||
+        !proof.hiddenAuth.vchResearchProof.empty())
+        return false;
+
+    for (size_t i = 0; i < proof.hiddenAuth.vRingSlotProofs.size(); ++i)
+    {
+        const CNullStakeMofNHiddenAuthRingSlotProof& slot =
+            proof.hiddenAuth.vRingSlotProofs[i];
+        if (slot.vchTag.size() != 33 ||
+            slot.vChallenges.size() != proof.vStakerSet.size() ||
+            slot.vResponses.size() != proof.vStakerSet.size())
+            return false;
+    }
+    return true;
+}
+
 bool VerifyNullStakeKernelProofV3(const CNullStakeKernelProofV3& proof,
                                   const CPedersenCommitment& cv,
                                   unsigned int nBits)
 {
+    if (!CheckNullStakeKernelProofV3Structure(proof, cv))
+        return false;
+
     if (!VerifyProofCacheEnabled())
         return VerifyNullStakeKernelProofV3Uncached(proof, cv, nBits);
 
@@ -1917,6 +2123,8 @@ static bool VerifyNullStakeKernelProofV3Uncached(const CNullStakeKernelProofV3& 
 
     CNullStakeBNGuard bnSLink;
     BN_bin2bn(vchSL.data(), 32, bnSLink);
+    if (BN_is_negative(bnSLink) || BN_cmp(bnSLink, bnOrder) >= 0)
+        return false;
 
     CDataStream ssLink(SER_GETHASH, 0);
     ssLink << std::string(NULLSTAKE_V3_LINK_DOMAIN);

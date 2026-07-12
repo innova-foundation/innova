@@ -2,10 +2,12 @@
 
 #include "../bulletproof_ac.h"
 #include "../bignum.h"
+#include "../curvetree.h"
 #include "../key.h"
 #include "../nullstake.h"
 #include "../poseidon2.h"
 #include "../shielded.h"
+#include "../util.h"
 #include "../zkproof.h"
 
 #include <openssl/bn.h>
@@ -208,6 +210,29 @@ void MutateBytes(std::vector<unsigned char>& bytes)
     bytes[bytes.size() - 1] ^= 0x01;
 }
 
+bool ToUncompressedSecpPoint(const std::vector<unsigned char>& encoded,
+                             std::vector<unsigned char>& uncompressedOut)
+{
+    EC_GROUP* group = EC_GROUP_new_by_curve_name(NID_secp256k1);
+    BN_CTX* ctx = BN_CTX_new();
+    EC_POINT* point = group ? EC_POINT_new(group) : NULL;
+    bool ok = group && ctx && point &&
+              EC_POINT_oct2point(group, point, encoded.data(), encoded.size(), ctx) == 1 &&
+              EC_POINT_is_on_curve(group, point, ctx) == 1 &&
+              !EC_POINT_is_at_infinity(group, point);
+    if (ok)
+    {
+        uncompressedOut.resize(IPA_SECP256K1_POINT_UNCOMPRESSED);
+        ok = EC_POINT_point2oct(group, point, POINT_CONVERSION_UNCOMPRESSED,
+                               uncompressedOut.data(), uncompressedOut.size(), ctx) ==
+             uncompressedOut.size();
+    }
+    if (point) EC_POINT_free(point);
+    if (ctx) BN_CTX_free(ctx);
+    if (group) EC_GROUP_free(group);
+    return ok;
+}
+
 CBPACTestCase BuildValidBPACTestCase()
 {
     BOOST_REQUIRE(CZKContext::Initialize());
@@ -338,6 +363,14 @@ BOOST_AUTO_TEST_CASE(simple_bpac_tau_t_and_ipa_mutations_rejected)
     MutateBytes(mutated.ipaProof.vchAFinal);
     ExpectMutatedProofRejected(mutated, test.circuit, test.commitments);
 
+    mutated = test.proof;
+    mutated.ipaProof.vchAFinal.assign(IPA_SCALAR_SIZE, 0xff);
+    ExpectMutatedProofRejected(mutated, test.circuit, test.commitments);
+
+    mutated = test.proof;
+    mutated.ipaProof.vchBFinal.assign(IPA_SCALAR_SIZE, 0xff);
+    ExpectMutatedProofRejected(mutated, test.circuit, test.commitments);
+
     BOOST_REQUIRE(!test.proof.ipaProof.vL.empty());
 
     mutated = test.proof;
@@ -372,6 +405,315 @@ BOOST_AUTO_TEST_CASE(simple_bpac_t_commitment_mutations_rejected)
     mutated = test.proof;
     MutateBytes(mutated.vchT6);
     ExpectMutatedProofRejected(mutated, test.circuit, test.commitments);
+}
+
+BOOST_AUTO_TEST_CASE(proof_deserialization_rejects_oversized_shapes_before_allocation)
+{
+    // CIPA round counts are fixed-width on the existing wire.  The decoder must
+    // reject an impossible count before resizing either nested vector.
+    CDataStream oversizedRounds(SER_NETWORK, PROTOCOL_VERSION);
+    oversizedRounds << (uint32_t)(IPA_MAX_ROUNDS + 1);
+    CIPAProof ipa;
+    BOOST_CHECK_THROW(oversizedRounds >> ipa, std::ios_base::failure);
+
+    // BPAC points use ordinary CompactSize framing on the existing wire.  A
+    // 34-byte advertised point is rejected from the length prefix alone.
+    CDataStream oversizedPoint(SER_NETWORK, PROTOCOL_VERSION);
+    oversizedPoint << (int)0; // historical stream-version field; see wire compatibility note
+    WriteCompactSize(oversizedPoint, 34);
+    CBulletproofACProof bpac;
+    BOOST_CHECK_THROW(oversizedPoint >> bpac, std::ios_base::failure);
+
+    // The exact maximum IPA shape remains byte-stable and round-trips.
+    CIPAProof maxProof;
+    maxProof.vL.assign(IPA_MAX_ROUNDS, std::vector<unsigned char>(IPA_SECP256K1_POINT, 0x02));
+    maxProof.vR.assign(IPA_MAX_ROUNDS, std::vector<unsigned char>(IPA_SECP256K1_POINT, 0x03));
+    maxProof.vchAFinal.assign(IPA_SCALAR_SIZE, 0x04);
+    maxProof.vchBFinal.assign(IPA_SCALAR_SIZE, 0x05);
+    CDataStream encoded(SER_NETWORK, PROTOCOL_VERSION);
+    encoded << maxProof;
+    CIPAProof decoded;
+    encoded >> decoded;
+    BOOST_CHECK(decoded.vL == maxProof.vL);
+    BOOST_CHECK(decoded.vR == maxProof.vR);
+    BOOST_CHECK(decoded.vchAFinal == maxProof.vchAFinal);
+    BOOST_CHECK(decoded.vchBFinal == maxProof.vchBFinal);
+
+    // A directly constructed malformed object must also fail without shifting
+    // by an attacker-controlled round count.
+    CIPAProof tooManyRounds = maxProof;
+    tooManyRounds.vL.push_back(std::vector<unsigned char>(IPA_SECP256K1_POINT, 0x02));
+    tooManyRounds.vR.push_back(std::vector<unsigned char>(IPA_SECP256K1_POINT, 0x03));
+    CIPAGenerators emptyGenerators;
+    CIPATranscript transcript;
+    BOOST_CHECK(!VerifyIPAProof(std::vector<unsigned char>(IPA_SECP256K1_POINT, 0x02),
+                                std::vector<unsigned char>(IPA_SCALAR_SIZE, 0x01),
+                                emptyGenerators, transcript, tooManyRounds));
+
+    CNullStakeKernelProofV3 oversizedThreshold;
+    oversizedThreshold.nThresholdM = MAX_NULLSTAKE_MOFN_MEMBERS + 1;
+    CDataStream encodedThreshold(SER_NETWORK, PROTOCOL_VERSION);
+    encodedThreshold << oversizedThreshold;
+    CNullStakeKernelProofV3 decodedThreshold;
+    BOOST_CHECK_THROW(encodedThreshold >> decodedThreshold, std::ios_base::failure);
+
+    CNullStakeKernelProofV3 oversizedSet;
+    oversizedSet.nThresholdM = 1;
+    oversizedSet.vStakerSet.assign(MAX_NULLSTAKE_MOFN_MEMBERS + 1,
+                                   std::vector<unsigned char>(33, 0x02));
+    CDataStream encodedSet(SER_NETWORK, PROTOCOL_VERSION);
+    encodedSet << oversizedSet;
+    CNullStakeKernelProofV3 decodedSet;
+    BOOST_CHECK_THROW(encodedSet >> decodedSet, std::ios_base::failure);
+
+    CNullStakeKernelProofV3 oversizedMember;
+    oversizedMember.nThresholdM = 1;
+    oversizedMember.vStakerSet.push_back(std::vector<unsigned char>(34, 0x02));
+    CDataStream encodedMember(SER_NETWORK, PROTOCOL_VERSION);
+    encodedMember << oversizedMember;
+    CNullStakeKernelProofV3 decodedMember;
+    BOOST_CHECK_THROW(encodedMember >> decodedMember, std::ios_base::failure);
+
+    CNullStakeKernelProofV3 invalidMode;
+    invalidMode.nThresholdM = 1;
+    invalidMode.nAuthMode = 2;
+    CDataStream encodedMode(SER_NETWORK, PROTOCOL_VERSION);
+    encodedMode << invalidMode;
+    CNullStakeKernelProofV3 decodedMode;
+    BOOST_CHECK_THROW(encodedMode >> decodedMode, std::ios_base::failure);
+
+    CNullStakeKernelProofV3 maxMofN;
+    maxMofN.nThresholdM = 1;
+    for (unsigned int i = 0; i < MAX_NULLSTAKE_MOFN_MEMBERS; ++i)
+    {
+        std::vector<unsigned char> point(33, (unsigned char)(i + 1));
+        maxMofN.vStakerSet.push_back(point);
+    }
+    maxMofN.vSignerPubKeys.push_back(maxMofN.vStakerSet[0]);
+    maxMofN.vSignerRPoints.push_back(std::vector<unsigned char>(33, 0x03));
+    maxMofN.vchAggregatedSScalar.assign(32, 0x04);
+    CDataStream encodedMaxMofN(SER_NETWORK, PROTOCOL_VERSION);
+    encodedMaxMofN << maxMofN;
+    CNullStakeKernelProofV3 decodedMaxMofN;
+    encodedMaxMofN >> decodedMaxMofN;
+    BOOST_CHECK_EQUAL(decodedMaxMofN.vStakerSet.size(),
+                      (size_t)MAX_NULLSTAKE_MOFN_MEMBERS);
+
+    // The outer FCMP envelope is consensus-capped at 4 KiB.  Reject the
+    // advertised size before allocating it, while preserving the exact maximum.
+    CDataStream oversizedFCMP(SER_NETWORK, PROTOCOL_VERSION);
+    WriteCompactSize(oversizedFCMP, FCMP_PROOF_MAX_SIZE + 1);
+    CFCMPProof decodedFCMP;
+    BOOST_CHECK_THROW(oversizedFCMP >> decodedFCMP, std::ios_base::failure);
+
+    CFCMPProof maxFCMP;
+    maxFCMP.vchProof.assign(FCMP_PROOF_MAX_SIZE, 0x5a);
+    CDataStream encodedFCMP(SER_NETWORK, PROTOCOL_VERSION);
+    encodedFCMP << maxFCMP;
+    encodedFCMP >> decodedFCMP;
+    BOOST_CHECK(decodedFCMP.vchProof == maxFCMP.vchProof);
+
+    // Inner v5 fields used to go through the generic 5 MiB vector decoder and
+    // could throw through the consensus verifier.  A malformed network proof
+    // must be a plain validation failure, never an exception or allocation.
+    CDataStream malformedV5(SER_NETWORK, PROTOCOL_VERSION);
+    malformedV5 << (uint32_t)FCMP_PROOF_VERSION_IPA;
+    malformedV5 << (uint32_t)PATH_IPA_VERSION;
+    malformedV5 << (int)1;
+    WriteCompactSize(malformedV5, PATH_IPA_LEGACY_BLOB_MAX_SIZE + 1);
+    std::vector<unsigned char> malformedV5Bytes(malformedV5.begin(), malformedV5.end());
+    bool fAccepted = true;
+    BOOST_CHECK_NO_THROW(fAccepted = VerifyFCMPProofV5(
+        std::vector<unsigned char>(32, 0x01),
+        std::vector<unsigned char>(IPA_SECP256K1_POINT, 0x02),
+        malformedV5Bytes));
+    BOOST_CHECK(!fAccepted);
+}
+
+BOOST_AUTO_TEST_CASE(fcmp_v5_legacy_wire_compatibility_is_preserved)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+    BOOST_REQUIRE_EQUAL(PATH_IPA_LEGACY_BLOB_MAX_SIZE, FCMP_PROOF_MAX_SIZE);
+
+    std::vector<unsigned char> blind(IPA_SCALAR_SIZE, 0);
+    blind[IPA_SCALAR_SIZE - 1] = 7;
+    CPedersenCommitment leaf;
+    BOOST_REQUIRE(CreatePedersenCommitment(17, blind, leaf));
+
+    std::vector<std::vector<unsigned char> > siblings;
+    siblings.push_back(std::vector<unsigned char>(32, 0x42));
+    std::vector<unsigned char> proofBytes;
+    BOOST_REQUIRE(CreateFCMPProofV5(siblings, 0, 1, blind,
+                                    leaf.vchCommitment, proofBytes));
+    const std::vector<unsigned char> goldenProof = ParseHex(
+        "0500000001000000010000002102a96c22c9d4211cea9f84e168f7b842d9ee17cdf8ae21b2031456bffdd6171b5b"
+        "21033c934127b15d08b6817197cac5c7deddf738fc0b3a0e7fd8444b0d24ab483dda208b5ced9121856fae79922a"
+        "852542b51c101246d82a31fd172f22f21bf1143c6e20e346209e742c091cb11238053ee0bcb49c0878b38c02c98d"
+        "fda90699f1cc2fe900000000203a09914253006315682ee12ae1db3007e98478ef395d8776e390495b53124f11208b"
+        "70435b71c38b1c6baed52c03567e57ee3b73a8ee32a8c9df45557f93859b8f000000002102a7c0f07b05aeb35976"
+        "e5b4d20f77a0994ae326d1422dbf9bbd821a5e21c7b313");
+    BOOST_REQUIRE(proofBytes == goldenProof);
+
+    const std::vector<unsigned char> root(32, 0x24);
+    BOOST_REQUIRE(VerifyFCMPProofV5(root, leaf.vchCommitment, proofBytes));
+
+    // Evidence for the open V5 membership blocker: this proof was built from
+    // a prover-selected sibling digest, without a CCurveTree, and the active
+    // verifier accepts it against two different claimed roots.  Preserve this
+    // legacy behavior only for V5 history; a sound replacement needs a new,
+    // fork-gated proof version rather than an in-place encoding change.
+    const std::vector<unsigned char> unrelatedRoot(32, 0x25);
+    BOOST_REQUIRE(root != unrelatedRoot);
+    BOOST_CHECK(VerifyFCMPProofV5(unrelatedRoot, leaf.vchCommitment,
+                                  proofBytes));
+
+    // Exercise the public active verifier as consensus does.  One claimed
+    // tree contains the supplied leaf and the other contains a different
+    // commitment, yet the same self-selected V5 proof verifies under both.
+    std::vector<unsigned char> otherBlind(IPA_SCALAR_SIZE, 0);
+    otherBlind[IPA_SCALAR_SIZE - 1] = 9;
+    CPedersenCommitment otherLeaf;
+    BOOST_REQUIRE(CreatePedersenCommitment(23, otherBlind, otherLeaf));
+    CCurveTree claimedTree;
+    CCurveTree unrelatedTree;
+    BOOST_REQUIRE(claimedTree.InsertLeaf(leaf));
+    BOOST_REQUIRE(unrelatedTree.InsertLeaf(otherLeaf));
+    BOOST_REQUIRE(claimedTree.GetRoot() != unrelatedTree.GetRoot());
+
+    CFCMPProof activeProof;
+    activeProof.vchProof = proofBytes;
+    BOOST_CHECK(VerifyFCMPProof(claimedTree.GetRootNode(), activeProof, leaf));
+    BOOST_CHECK(VerifyFCMPProof(unrelatedTree.GetRootNode(), activeProof, leaf));
+
+    // The bounded parser must preserve the exact legacy field order and bytes.
+    CDataStream decodedStream(proofBytes, SER_NETWORK, PROTOCOL_VERSION);
+    uint32_t version = 0;
+    CPathIPAProof pathProof;
+    std::vector<unsigned char> decodedLeaf;
+    decodedStream >> version;
+    decodedStream >> pathProof;
+    decodedStream >> decodedLeaf;
+    BOOST_REQUIRE(decodedStream.empty());
+
+    CDataStream reencoded(SER_NETWORK, PROTOCOL_VERSION);
+    reencoded << version;
+    reencoded << pathProof;
+    reencoded << decodedLeaf;
+    const std::vector<unsigned char> reencodedBytes(reencoded.begin(),
+                                                     reencoded.end());
+    BOOST_CHECK_EQUAL_COLLECTIONS(proofBytes.begin(), proofBytes.end(),
+                                  reencodedBytes.begin(), reencodedBytes.end());
+
+    // The carried sibling commitment is likewise outside the enforced V5
+    // equation.  Mutating it leaves the same self-selected statement valid.
+    BOOST_REQUIRE(!pathProof.vchSiblingCommit.empty());
+    pathProof.vchSiblingCommit[0] ^= 0x01;
+    CDataStream siblingMutatedStream(SER_NETWORK, PROTOCOL_VERSION);
+    siblingMutatedStream << version;
+    siblingMutatedStream << pathProof;
+    siblingMutatedStream << decodedLeaf;
+    const std::vector<unsigned char> siblingMutatedProof(
+        siblingMutatedStream.begin(), siblingMutatedStream.end());
+    BOOST_REQUIRE(siblingMutatedProof.size() <= FCMP_PROOF_MAX_SIZE);
+    BOOST_CHECK(VerifyFCMPProofV5(root, leaf.vchCommitment,
+                                  siblingMutatedProof));
+
+    // Active v5 historically accepted ordinary trailing bytes inside the
+    // already-bounded 4 KiB proof envelope.
+    std::vector<unsigned char> withTrailing = proofBytes;
+    withTrailing.push_back(0xa5);
+    withTrailing.push_back(0x5a);
+    BOOST_REQUIRE(withTrailing.size() <= FCMP_PROOF_MAX_SIZE);
+    BOOST_CHECK(VerifyFCMPProofV5(root, leaf.vchCommitment, withTrailing));
+
+    // Preserve both standard SEC1 encodings for point-valued legacy fields.
+    BOOST_REQUIRE(ToUncompressedSecpPoint(pathProof.vchPositionCommit,
+                                          pathProof.vchPositionCommit));
+    BOOST_REQUIRE(ToUncompressedSecpPoint(pathProof.vchPathCommit,
+                                          pathProof.vchPathCommit));
+    BOOST_REQUIRE(ToUncompressedSecpPoint(decodedLeaf, decodedLeaf));
+
+    CDataStream uncompressedStream(SER_NETWORK, PROTOCOL_VERSION);
+    uncompressedStream << version;
+    uncompressedStream << pathProof;
+    uncompressedStream << decodedLeaf;
+    std::vector<unsigned char> uncompressedProof(uncompressedStream.begin(),
+                                                  uncompressedStream.end());
+    BOOST_REQUIRE(uncompressedProof.size() <= FCMP_PROOF_MAX_SIZE);
+    BOOST_CHECK(VerifyFCMPProofV5(root, decodedLeaf, uncompressedProof));
+}
+
+BOOST_AUTO_TEST_CASE(range_proof_malformed_ipa_point_returns_false_without_crash)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+    std::vector<unsigned char> blind;
+    BOOST_REQUIRE(GenerateBlindingFactor(blind));
+    CPedersenCommitment commit;
+    BOOST_REQUIRE(CreatePedersenCommitment(42, blind, commit));
+    CBulletproofRangeProof proof;
+    BOOST_REQUIRE(CreateBulletproofRangeProof(42, blind, commit, proof));
+    BOOST_REQUIRE_EQUAL(proof.vchProof.size(), BULLETPROOF_PROOF_SIZE);
+    BOOST_CHECK(VerifyBulletproofRangeProof(commit, proof));
+
+    // L/R points are parsed only after the polynomial equation succeeds; a malformed
+    // point there must be rejected without touching the null challenge entries.
+    const size_t firstL = 4 * 33 + 3 * 32;
+    bool fAccepted = true;
+    for (size_t point = 0; point < 12; ++point)
+    {
+        CBulletproofRangeProof malformedPoint = proof;
+        const size_t pointOffset = firstL + (point / 2) * 2 * 33
+                                           + (point % 2) * 33;
+        BOOST_REQUIRE(pointOffset < malformedPoint.vchProof.size());
+        malformedPoint.vchProof[pointOffset] = 0x00;
+
+        // Exercise the network deserializer and the verifier for each of the six L/R pairs.
+        CDataStream wire(SER_NETWORK, PROTOCOL_VERSION);
+        wire << malformedPoint;
+        CBulletproofRangeProof roundTripped;
+        wire >> roundTripped;
+        BOOST_REQUIRE(wire.empty());
+
+        fAccepted = true;
+        BOOST_CHECK_NO_THROW(fAccepted = VerifyBulletproofRangeProof(
+            commit, roundTripped));
+        BOOST_CHECK(!fAccepted);
+    }
+
+    // Prefix points and the three initial scalars are consumed before the IPA
+    // rounds.  They must fail closed without reaching transcript arithmetic on
+    // a partially initialized BN/EC object.
+    CBulletproofRangeProof malformedPrefix = proof;
+    malformedPrefix.vchProof[0] = 0x00;
+    fAccepted = true;
+    BOOST_CHECK_NO_THROW(fAccepted = VerifyBulletproofRangeProof(commit, malformedPrefix));
+    BOOST_CHECK(!fAccepted);
+
+    CBulletproofRangeProof nonCanonicalInitialScalar = proof;
+    const size_t firstScalar = 4 * 33;
+    std::fill(nonCanonicalInitialScalar.vchProof.begin() + firstScalar,
+              nonCanonicalInitialScalar.vchProof.begin() + firstScalar + 32,
+              0xff);
+    fAccepted = true;
+    BOOST_CHECK_NO_THROW(fAccepted = VerifyBulletproofRangeProof(
+        commit, nonCanonicalInitialScalar));
+    BOOST_CHECK(!fAccepted);
+
+    // The active wire format historically accepts ignored trailing bytes.
+    // Preserve acceptance through the exact consensus cap; tightening this is
+    // a forward-fork decision, not parser hardening.
+    CBulletproofRangeProof maxTrailing = proof;
+    maxTrailing.vchProof.resize(MAX_BULLETPROOF_PROOF_SIZE, 0xa5);
+    CDataStream trailingWire(SER_NETWORK, PROTOCOL_VERSION);
+    trailingWire << maxTrailing;
+    CBulletproofRangeProof roundTrippedTrailing;
+    trailingWire >> roundTrippedTrailing;
+    BOOST_REQUIRE(trailingWire.empty());
+    BOOST_CHECK(VerifyBulletproofRangeProof(commit, roundTrippedTrailing));
+
+    CBulletproofRangeProof oversized = maxTrailing;
+    oversized.vchProof.push_back(0x5a);
+    BOOST_CHECK(!VerifyBulletproofRangeProof(commit, oversized));
 }
 
 BOOST_AUTO_TEST_CASE(nullstake_v2_v3_bpac_paths_create_and_verify)
@@ -525,12 +867,22 @@ BOOST_AUTO_TEST_CASE(nullstake_v2_v3_bpac_paths_create_and_verify)
                                                    delegationHash));
 
     CNullStakeKernelProofV3 proofV3;
+    // Output objects may be reused by wallet/finality callers.  Construction
+    // must not inherit the previous authorization tier or inactive fields.
+    proofV3.nThresholdM = 2;
+    proofV3.nAuthMode = NULLSTAKE_AUTHMODE_B2C_HIDDEN;
+    proofV3.hiddenAuth.nAuthType = NULLSTAKE_B2C_AUTH_TYPE_RINGXM_DLEQ;
+    proofV3.hiddenAuth.vchTagBaseNonce.assign(32, 0x7a);
     BOOST_REQUIRE(CreateNullStakeKernelProofV3(5000000000LL, blind, commit,
                                                nBits, nStakeModifier,
                                                nBlockTimeFrom, nTxPrevOffset,
                                                nTxTimePrev, nVoutN, nTimeTx,
                                                skStake, pkOwner,
                                                delegationHash, proofV3));
+    BOOST_CHECK_EQUAL(proofV3.nThresholdM, 0u);
+    BOOST_CHECK_EQUAL(proofV3.nAuthMode, NULLSTAKE_AUTHMODE_HALFAGG);
+    BOOST_CHECK(proofV3.hiddenAuth.IsNull());
+    BOOST_CHECK(proofV3.hiddenAuth.vchTagBaseNonce.empty());
     BOOST_CHECK(VerifyNullStakeKernelProofV3(proofV3, commit, nBits));
 
     uint256 wrongDelegationHash = FieldAdd(delegationHash, FieldFromUint64(1));
@@ -768,9 +1120,15 @@ BOOST_AUTO_TEST_CASE(nullstake_mofn_kernel_proof_create_verify)
     signers.push_back(uint256(70001ULL)); signers.push_back(uint256(70002ULL));   // 2 of 3
 
     CNullStakeKernelProofV3 proof;
+    proof.nAuthMode = NULLSTAKE_AUTHMODE_B2C_HIDDEN;
+    proof.hiddenAuth.nAuthType = NULLSTAKE_B2C_AUTH_TYPE_RINGXM_DLEQ;
+    proof.hiddenAuth.vchTagBaseNonce.assign(32, 0x6b);
     BOOST_REQUIRE(CreateNullStakeMofNKernelProofV3(nValue, blind, cv3, nBits, nStakeModifier,
         nBlockTimeFrom, nTxPrevOffset, nTxTimePrev, nVoutN, nTimeTx, set, 2, owner,
         delegationHash, signers, proof));
+    BOOST_CHECK_EQUAL(proof.nAuthMode, NULLSTAKE_AUTHMODE_HALFAGG);
+    BOOST_CHECK(proof.hiddenAuth.IsNull());
+    BOOST_CHECK(proof.hiddenAuth.vchTagBaseNonce.empty());
     BOOST_CHECK_MESSAGE(VerifyNullStakeKernelProofV3(proof, cv3, nBits),
                         "a valid 2-of-3 M-of-N kernel proof should verify");
     BOOST_CHECK_EQUAL(proof.nThresholdM, 2u);
@@ -832,6 +1190,24 @@ BOOST_AUTO_TEST_CASE(nullstake_mofn_kernel_proof_create_verify)
             nBlockTimeFrom, nTxPrevOffset, nTxTimePrev, nVoutN, nTimeTx, set, 2, owner,
             delegationHash, signers, p3),
             "a leaf that does not commit to (value,blind,delegationHash) must fail to build");
+    }
+    // (g) duplicate or non-member secrets must fail construction instead of
+    // returning a proof that the verifier will later reject.
+    {
+        std::vector<uint256> duplicate;
+        duplicate.push_back(uint256(70001ULL));
+        duplicate.push_back(uint256(70001ULL));
+        CNullStakeKernelProofV3 p4;
+        BOOST_CHECK(!CreateNullStakeMofNKernelProofV3(nValue, blind, cv3, nBits, nStakeModifier,
+            nBlockTimeFrom, nTxPrevOffset, nTxTimePrev, nVoutN, nTimeTx, set, 2, owner,
+            delegationHash, duplicate, p4));
+
+        std::vector<uint256> nonMember;
+        nonMember.push_back(uint256(70001ULL));
+        nonMember.push_back(uint256(90001ULL));
+        BOOST_CHECK(!CreateNullStakeMofNKernelProofV3(nValue, blind, cv3, nBits, nStakeModifier,
+            nBlockTimeFrom, nTxPrevOffset, nTxTimePrev, nVoutN, nTimeTx, set, 2, owner,
+            delegationHash, nonMember, p4));
     }
 }
 

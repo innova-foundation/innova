@@ -14,10 +14,18 @@
 
 static const size_t IPA_SCALAR_SIZE = 32;
 static const size_t IPA_SECP256K1_POINT = 33;
+static const size_t IPA_SECP256K1_POINT_UNCOMPRESSED = 65;
 static const size_t IPA_ED25519_POINT = 32;
 static const size_t IPA_MAX_VECTOR_LEN = 2048;
+static const uint32_t IPA_MAX_ROUNDS = 11; // log2(IPA_MAX_VECTOR_LEN)
 
 static const uint32_t PATH_IPA_VERSION = 1;
+static const int PATH_IPA_MAX_DEPTH = 64;
+// Active FCMP v5 already caps the complete envelope at 4 KiB.  Use the same
+// bound for its historically opaque/ignored inner blobs so a bogus CompactSize
+// cannot allocate the generic 5 MiB limit without narrowing accepted v5 bytes.
+static const size_t PATH_IPA_LEGACY_BLOB_MAX_SIZE = 4096;
+static const uint32_t CROSSCURVE_MAX_DEPTH = 8;
 
 
 enum EIPACurveType
@@ -47,23 +55,40 @@ public:
     (
         CIPAProof* pthis = const_cast<CIPAProof*>(this);
         uint32_t nRounds = vL.size();
+        if (!fRead && (vL.size() != vR.size() || vL.size() > IPA_MAX_ROUNDS))
+            throw std::ios_base::failure("invalid IPA proof round vectors");
         READWRITE(nRounds);
         if (fRead)
         {
+            if (nRounds > IPA_MAX_ROUNDS)
+                throw std::ios_base::failure("IPA proof round count too large");
             pthis->vL.resize(nRounds);
             pthis->vR.resize(nRounds);
         }
         for (uint32_t i = 0; i < nRounds; i++)
         {
-            READWRITE(pthis->vL[i]);
-            READWRITE(pthis->vR[i]);
+            nSerSize += ::SerReadWriteLimitedVector(s, pthis->vL[i],
+                                                     IPA_SECP256K1_POINT,
+                                                     nType, nVersion, ser_action);
+            nSerSize += ::SerReadWriteLimitedVector(s, pthis->vR[i],
+                                                     IPA_SECP256K1_POINT,
+                                                     nType, nVersion, ser_action);
         }
-        READWRITE(pthis->vchAFinal);
-        READWRITE(pthis->vchBFinal);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchAFinal,
+                                                 IPA_SCALAR_SIZE,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchBFinal,
+                                                 IPA_SCALAR_SIZE,
+                                                 nType, nVersion, ser_action);
         int nCurve = (int)curveType;
         READWRITE(nCurve);
         if (fRead)
+        {
+            if (nCurve != (int)IPA_CURVE_SECP256K1 &&
+                nCurve != (int)IPA_CURVE_ED25519)
+                throw std::ios_base::failure("invalid IPA proof curve type");
             pthis->curveType = (EIPACurveType)nCurve;
+        }
     )
 
     bool IsNull() const
@@ -78,15 +103,20 @@ public:
 
     int GetVectorLength() const
     {
-        return 1 << GetNumRounds();
+        const int nRounds = GetNumRounds();
+        if (nRounds < 0 || nRounds > (int)IPA_MAX_ROUNDS)
+            return 0;
+        return 1 << nRounds;
     }
 
     size_t GetProofSize() const
     {
-        size_t ptSize = (curveType == IPA_CURVE_SECP256K1)
-            ? IPA_SECP256K1_POINT : IPA_ED25519_POINT;
-        return vL.size() * ptSize * 2  // L and R points
-             + IPA_SCALAR_SIZE * 2;     // a_final and b_final
+        size_t nSize = vchAFinal.size() + vchBFinal.size();
+        for (size_t i = 0; i < vL.size(); ++i)
+            nSize += vL[i].size();
+        for (size_t i = 0; i < vR.size(); ++i)
+            nSize += vR[i].size();
+        return nSize;
     }
 };
 
@@ -160,6 +190,9 @@ bool VerifyIPAProof(const std::vector<unsigned char>& P,
                     CIPATranscript& transcript,
                     const CIPAProof& proof);
 
+bool IsCanonicalIPAScalar(const std::vector<unsigned char>& scalar,
+                          EIPACurveType curveType);
+
 
 
 bool IPAInnerProduct(const std::vector<std::vector<unsigned char>>& a,
@@ -215,10 +248,20 @@ public:
         CPathIPAProof* pthis = const_cast<CPathIPAProof*>(this);
         READWRITE(pthis->nVersion);
         READWRITE(pthis->nDepth);
-        READWRITE(pthis->vchPositionCommit);
-        READWRITE(pthis->vchPathCommit);
-        READWRITE(pthis->vchInnerProduct);
-        READWRITE(pthis->vchSiblingCommit);
+        if (fRead && (pthis->nDepth <= 0 || pthis->nDepth > PATH_IPA_MAX_DEPTH))
+            throw std::ios_base::failure("Path IPA depth out of range");
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchPositionCommit,
+                                                 PATH_IPA_LEGACY_BLOB_MAX_SIZE,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchPathCommit,
+                                                 IPA_SECP256K1_POINT_UNCOMPRESSED,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchInnerProduct,
+                                                 PATH_IPA_LEGACY_BLOB_MAX_SIZE,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchSiblingCommit,
+                                                 PATH_IPA_LEGACY_BLOB_MAX_SIZE,
+                                                 nType, nVersion, ser_action);
         READWRITE(pthis->ipaProof);
     )
 
@@ -280,9 +323,18 @@ public:
         int nCurve = (int)curveType;
         READWRITE(nCurve);
         if (fRead)
+        {
+            if (nCurve != (int)IPA_CURVE_SECP256K1 &&
+                nCurve != (int)IPA_CURVE_ED25519)
+                throw std::ios_base::failure("invalid cross-curve layer type");
             pthis->curveType = (EIPACurveType)nCurve;
-        READWRITE(pthis->vchCommitment);
-        READWRITE(pthis->vchReRandomizer);
+        }
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchCommitment,
+                                                 IPA_SECP256K1_POINT,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchReRandomizer,
+                                                 IPA_SCALAR_SIZE,
+                                                 nType, nVersion, ser_action);
         READWRITE(pthis->ipaProof);
     )
 
@@ -313,17 +365,30 @@ public:
         CCrossCurveFCMPProof* pthis = const_cast<CCrossCurveFCMPProof*>(this);
         READWRITE(pthis->nVersion);
         READWRITE(pthis->nTreeDepth);
-        READWRITE(pthis->vchLeafCommit);
-        READWRITE(pthis->vchRootCommit);
+        if (fRead && (pthis->nTreeDepth == 0 ||
+                      pthis->nTreeDepth > CROSSCURVE_MAX_DEPTH))
+            throw std::ios_base::failure("cross-curve tree depth out of range");
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchLeafCommit, 32,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchRootCommit,
+                                                 IPA_SECP256K1_POINT,
+                                                 nType, nVersion, ser_action);
 
         uint32_t nLayers = pthis->vLayerProofs.size();
+        if (!fRead && nLayers > CROSSCURVE_MAX_DEPTH)
+            throw std::ios_base::failure("too many cross-curve proof layers");
         READWRITE(nLayers);
         if (fRead)
+        {
+            if (nLayers > CROSSCURVE_MAX_DEPTH || nLayers != pthis->nTreeDepth)
+                throw std::ios_base::failure("cross-curve proof layer count mismatch");
             pthis->vLayerProofs.resize(nLayers);
+        }
         for (uint32_t i = 0; i < nLayers; i++)
             READWRITE(pthis->vLayerProofs[i]);
 
-        READWRITE(pthis->vchBindingProof);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchBindingProof, 32,
+                                                 nType, nVersion, ser_action);
     )
 
     bool IsNull() const

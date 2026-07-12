@@ -82,6 +82,48 @@ public:
     operator const BIGNUM*() const { return bn; }
 };
 
+bool IsCanonicalIPAScalar(const std::vector<unsigned char>& scalar,
+                          EIPACurveType curveType)
+{
+    if (scalar.size() != IPA_SCALAR_SIZE)
+        return false;
+
+    CIPABNGuard value, order;
+    if (!value.bn || !order.bn ||
+        !BN_bin2bn(scalar.data(), scalar.size(), value))
+        return false;
+
+    if (curveType == IPA_CURVE_SECP256K1)
+    {
+        CIPAECGroupGuard group;
+        CIPABNCtxGuard ctx;
+        if (!group.group || !ctx.ctx || !EC_GROUP_get_order(group, order, ctx))
+            return false;
+    }
+    else if (curveType == IPA_CURVE_ED25519)
+    {
+        // Ed25519's group order is conventionally written little-endian.  IPA
+        // scalar byte strings are big-endian, so reverse it before comparing.
+        static const unsigned char ed25519OrderLE[32] = {
+            0xED, 0xD3, 0xF5, 0x5C, 0x1A, 0x63, 0x12, 0x58,
+            0xD6, 0x9C, 0xF7, 0xA2, 0xDE, 0xF9, 0xDE, 0x14,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10
+        };
+        unsigned char orderBE[32];
+        for (size_t i = 0; i < sizeof(orderBE); ++i)
+            orderBE[i] = ed25519OrderLE[sizeof(orderBE) - 1 - i];
+        if (!BN_bin2bn(orderBE, sizeof(orderBE), order))
+            return false;
+    }
+    else
+    {
+        return false;
+    }
+
+    return BN_cmp(value, order) < 0;
+}
+
 
 
 void CIPATranscript::AppendScalar(const std::vector<unsigned char>& scalar)
@@ -778,11 +820,39 @@ bool VerifyIPAProof(const std::vector<unsigned char>& P,
     if (proof.IsNull())
         return false;
 
-    int logN = proof.GetNumRounds();
-    int n = 1 << logN;
-
-    if (n != gens.nLength)
+    if (proof.curveType != gens.curveType ||
+        (proof.curveType != IPA_CURVE_SECP256K1 && proof.curveType != IPA_CURVE_ED25519))
         return false;
+
+    const int logN = proof.GetNumRounds();
+    if (logN < 0 || logN > (int)IPA_MAX_ROUNDS ||
+        proof.vR.size() != proof.vL.size())
+        return false;
+
+    const int n = 1 << logN;
+
+    if (n <= 0 || n > (int)IPA_MAX_VECTOR_LEN || n != gens.nLength ||
+        gens.vG.size() != (size_t)n || gens.vH.size() != (size_t)n)
+        return false;
+
+    const size_t nPointSize = proof.curveType == IPA_CURVE_SECP256K1
+        ? IPA_SECP256K1_POINT : IPA_ED25519_POINT;
+    const bool fPSizeValid = proof.curveType == IPA_CURVE_SECP256K1
+        ? (P.size() == IPA_SECP256K1_POINT ||
+           P.size() == IPA_SECP256K1_POINT_UNCOMPRESSED)
+        : P.size() == nPointSize;
+    if (!fPSizeValid || z.size() != IPA_SCALAR_SIZE ||
+        proof.vchAFinal.size() != IPA_SCALAR_SIZE ||
+        proof.vchBFinal.size() != IPA_SCALAR_SIZE ||
+        gens.vchU.size() != nPointSize)
+        return false;
+    if (!IsCanonicalIPAScalar(z, proof.curveType) ||
+        !IsCanonicalIPAScalar(proof.vchAFinal, proof.curveType) ||
+        !IsCanonicalIPAScalar(proof.vchBFinal, proof.curveType))
+        return false;
+    for (int i = 0; i < logN; ++i)
+        if (proof.vL[i].size() != nPointSize || proof.vR[i].size() != nPointSize)
+            return false;
 
     if (gens.curveType == IPA_CURVE_ED25519)
     {
@@ -1170,9 +1240,11 @@ bool VerifyPathIPAProof(const std::vector<unsigned char>& vchRoot,
 {
     if (proof.nVersion != PATH_IPA_VERSION)
         return false;
-    if (proof.nDepth <= 0 || proof.nDepth > 64)
+    if (proof.nDepth <= 0 || proof.nDepth > PATH_IPA_MAX_DEPTH)
         return false;
-    if (proof.ipaProof.IsNull())
+    if (proof.ipaProof.IsNull() ||
+        (proof.vchPathCommit.size() != IPA_SECP256K1_POINT &&
+         proof.vchPathCommit.size() != IPA_SECP256K1_POINT_UNCOMPRESSED))
         return false;
 
     int n = 1;
@@ -1187,7 +1259,12 @@ bool VerifyPathIPAProof(const std::vector<unsigned char>& vchRoot,
     transcript.AppendPoint(proof.vchPositionCommit);
     transcript.AppendPoint(proof.vchPathCommit);
 
-    if (!VerifyIPAProof(proof.vchPathCommit, proof.vchInnerProduct, gens, transcript, proof.ipaProof))
+    // The active-v5 equation never consumed the carried inner-product bytes.
+    // Preserve that legacy acceptance without weakening scalar checks for BPAC
+    // and other IPA users; a forward proof version must bind this field.
+    const std::vector<unsigned char> legacyUnusedInnerProduct(IPA_SCALAR_SIZE, 0);
+    if (!VerifyIPAProof(proof.vchPathCommit, legacyUnusedInnerProduct,
+                        gens, transcript, proof.ipaProof))
         return false;
 
     if (!vchRoot.empty())
@@ -1243,31 +1320,34 @@ bool VerifyFCMPProofV5(const std::vector<unsigned char>& vchRoot,
                         const std::vector<unsigned char>& vchLeafCommit,
                         const std::vector<unsigned char>& proof)
 {
-    if (proof.size() < 4)
-        return false;
-
-    CDataStream ss(proof, SER_NETWORK, PROTOCOL_VERSION);
-
-    uint32_t version;
-    ss >> version;
-    if (version != FCMP_PROOF_VERSION_IPA)
+    if (proof.size() < 4 || proof.size() > FCMP_PROOF_MAX_SIZE ||
+        vchRoot.size() != 32 ||
+        (vchLeafCommit.size() != IPA_SECP256K1_POINT &&
+         vchLeafCommit.size() != IPA_SECP256K1_POINT_UNCOMPRESSED))
         return false;
 
     CPathIPAProof pathProof;
-    ss >> pathProof.nVersion;
-    ss >> pathProof.nDepth;
-    ss >> pathProof.vchPositionCommit;
-    ss >> pathProof.vchPathCommit;
-    ss >> pathProof.vchInnerProduct;
-    ss >> pathProof.vchSiblingCommit;
-    ss >> pathProof.ipaProof;
-
     std::vector<unsigned char> leafCommit;
-    ss >> leafCommit;
-
-    if (!vchLeafCommit.empty() && leafCommit != vchLeafCommit)
+    try
+    {
+        CDataStream ss(proof, SER_NETWORK, PROTOCOL_VERSION);
+        uint32_t version;
+        ss >> version;
+        if (version != FCMP_PROOF_VERSION_IPA)
+            return false;
+        ss >> pathProof;
+        SerReadWriteLimitedVector(ss, leafCommit,
+                                  IPA_SECP256K1_POINT_UNCOMPRESSED,
+                                  SER_NETWORK, PROTOCOL_VERSION,
+                                  CSerActionUnserialize());
+    }
+    catch (const std::exception&)
+    {
         return false;
+    }
 
+    if (leafCommit != vchLeafCommit)
+        return false;
     return VerifyPathIPAProof(vchRoot, leafCommit, pathProof);
 }
 
@@ -1523,7 +1603,12 @@ bool VerifyFCMPProofV6(const std::vector<unsigned char>& vchExpectedRoot,
         return false;
     if (proof.nVersion != CROSSCURVE_PROOF_VERSION)
         return false;
-    if (proof.vLayerProofs.size() != proof.nTreeDepth)
+    if (proof.nTreeDepth == 0 || proof.nTreeDepth > CROSSCURVE_MAX_DEPTH ||
+        proof.vLayerProofs.size() != proof.nTreeDepth ||
+        proof.vchLeafCommit.size() != 32 ||
+        (proof.vchRootCommit.size() != IPA_ED25519_POINT &&
+         proof.vchRootCommit.size() != IPA_SECP256K1_POINT) ||
+        proof.vchBindingProof.size() != 32)
         return false;
 
     for (size_t layer = 0; layer < proof.vLayerProofs.size(); layer++)
@@ -1612,18 +1697,25 @@ bool CreateFCMPProofV6Serialized(const std::vector<std::vector<unsigned char>>& 
 bool VerifyFCMPProofV6Serialized(const std::vector<unsigned char>& vchExpectedRoot,
                                   const std::vector<unsigned char>& proof)
 {
-    if (proof.size() < 4)
-        return false;
-
-    CDataStream ss(proof, SER_NETWORK, PROTOCOL_VERSION);
-
-    uint32_t version;
-    ss >> version;
-    if (version != FCMP_PROOF_VERSION_CROSSCURVE)
+    if (proof.size() < 4 || proof.size() > FCMP_PROOF_MAX_SIZE)
         return false;
 
     CCrossCurveFCMPProof fcmpProof;
-    ss >> fcmpProof;
+    try
+    {
+        CDataStream ss(proof, SER_NETWORK, PROTOCOL_VERSION);
+        uint32_t version;
+        ss >> version;
+        if (version != FCMP_PROOF_VERSION_CROSSCURVE)
+            return false;
+        ss >> fcmpProof;
+        if (!ss.empty())
+            return false;
+    }
+    catch (const std::exception&)
+    {
+        return false;
+    }
 
     return VerifyFCMPProofV6(vchExpectedRoot, fcmpProof);
 }

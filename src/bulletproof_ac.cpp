@@ -881,6 +881,26 @@ bool ComputeNullStakeV3DelegationSetHash(std::vector<std::vector<unsigned char> 
         if (vStakerPubKeys[i].size() != 33)
             return false;
 
+    // Size alone is not a public-key validity check.  Validate every member
+    // (including non-signers) and the owner as canonical, non-infinity
+    // secp256k1 points before committing the set hash.
+    CBPACGroupGuard group;
+    CBPACBNCtxGuard ctx;
+    if (!group.group || !ctx.ctx ||
+        (vchPkOwner[0] != 0x02 && vchPkOwner[0] != 0x03))
+        return false;
+    CBPACPointGuard owner(group);
+    if (!DeserializeNonInfinityPoint(group, vchPkOwner, owner, ctx))
+        return false;
+    for (size_t i = 0; i < nMembers; ++i)
+    {
+        if (vStakerPubKeys[i][0] != 0x02 && vStakerPubKeys[i][0] != 0x03)
+            return false;
+        CBPACPointGuard member(group);
+        if (!DeserializeNonInfinityPoint(group, vStakerPubKeys[i], member, ctx))
+            return false;
+    }
+
     // Canonicalize so the COMMITMENT is independent of the caller's member ordering (the
     // owner may list the set in any order at mint); reject duplicate members (a set, not a
     // multiset). The spend path separately requires the on-wire vStakerSet to already be in
@@ -1947,12 +1967,44 @@ bool VerifyBulletproofACProof(const CR1CSCircuit& circuit,
     if (proof.nVersion != BPAC_PROOF_VERSION)
         return false;
 
+    // Reject malformed encodings before generator derivation or any EC work.  Besides
+    // being canonical, these exact lengths keep attacker-controlled vectors from
+    // turning a small proof into a large hashing/allocation workload.
+    if (proof.vchAI.size() != 33 || proof.vchAO.size() != 33 ||
+        proof.vchS.size() != 33 || proof.vchT1.size() != 33 ||
+        proof.vchT3.size() != 33 || proof.vchT4.size() != 33 ||
+        proof.vchT5.size() != 33 || proof.vchT6.size() != 33)
+        return false;
+    if (!FieldIsValid(proof.tauX) || !FieldIsValid(proof.mu) ||
+        !FieldIsValid(proof.tHat))
+        return false;
+    if (proof.ipaProof.curveType != IPA_CURVE_SECP256K1 ||
+        proof.ipaProof.vL.size() != proof.ipaProof.vR.size() ||
+        proof.ipaProof.vL.size() > IPA_MAX_ROUNDS ||
+        proof.ipaProof.vchAFinal.size() != IPA_SCALAR_SIZE ||
+        proof.ipaProof.vchBFinal.size() != IPA_SCALAR_SIZE ||
+        !IsCanonicalIPAScalar(proof.ipaProof.vchAFinal, IPA_CURVE_SECP256K1) ||
+        !IsCanonicalIPAScalar(proof.ipaProof.vchBFinal, IPA_CURVE_SECP256K1))
+        return false;
+    for (size_t i = 0; i < proof.ipaProof.vL.size(); ++i)
+        if (proof.ipaProof.vL[i].size() != IPA_SECP256K1_POINT ||
+            proof.ipaProof.vR[i].size() != IPA_SECP256K1_POINT)
+            return false;
+
     if (!CheckCircuitShape(circuit))
         return false;
     if ((int)vCommitments.size() != circuit.nHighLevelVars)
         return false;
+    for (size_t i = 0; i < vCommitments.size(); ++i)
+        if (vCommitments[i].size() != 33)
+            return false;
 
     int n = circuit.nPaddedSize;
+    int nExpectedRounds = 0;
+    for (int nTmp = n; nTmp > 1; nTmp >>= 1)
+        ++nExpectedRounds;
+    if (proof.ipaProof.GetNumRounds() != nExpectedRounds)
+        return false;
 
     CBPACGroupGuard group;
     CBPACBNCtxGuard ctx;

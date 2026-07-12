@@ -112,7 +112,10 @@ public:
 
     IMPLEMENT_SERIALIZE
     (
-        READWRITE(vchProof);
+        CFCMPProof* pthis = const_cast<CFCMPProof*>(this);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchProof,
+                                                 FCMP_PROOF_MAX_SIZE,
+                                                 nType, nVersion, ser_action);
     )
 
     bool IsNull() const

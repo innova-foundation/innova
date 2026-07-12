@@ -902,6 +902,129 @@ inline unsigned int SerReadWrite(Stream& s, T& obj, int nType, int nVersion, CSe
     return 0;
 }
 
+// Vector serialization with a small, type-specific element cap on read, so an advertised
+// length cannot allocate far beyond what a proof vector can hold (MAX_VECTOR_SIZE is too
+// loose). Write side is byte-identical to ordinary vector serialization.
+template<typename Stream, typename T, typename A>
+inline unsigned int SerReadWriteLimitedVector(Stream& s,
+                                               const std::vector<T, A>& obj,
+                                               uint64_t,
+                                               int nType,
+                                               int nVersion,
+                                               CSerActionGetSerializeSize)
+{
+    return ::GetSerializeSize(obj, nType, nVersion);
+}
+
+template<typename Stream, typename T, typename A>
+inline unsigned int SerReadWriteLimitedVector(Stream& s,
+                                               const std::vector<T, A>& obj,
+                                               uint64_t,
+                                               int nType,
+                                               int nVersion,
+                                               CSerActionSerialize)
+{
+    ::Serialize(s, obj, nType, nVersion);
+    return 0;
+}
+
+template<typename Stream, typename T, typename A>
+inline void UnserializeLimitedVectorElements(Stream& is,
+                                              std::vector<T, A>& obj,
+                                              uint64_t nSize,
+                                              int,
+                                              int,
+                                              const boost::true_type&)
+{
+    if (nSize > (uint64_t)MAX_VECTOR_SIZE / sizeof(T))
+        throw std::ios_base::failure("limited vector byte size too large");
+    obj.resize((size_t)nSize);
+    if (nSize != 0)
+        is.read((char*)&obj[0], (size_t)nSize * sizeof(T));
+}
+
+template<typename Stream, typename T, typename A>
+inline void UnserializeLimitedVectorElements(Stream& is,
+                                              std::vector<T, A>& obj,
+                                              uint64_t nSize,
+                                              int nType,
+                                              int nVersion,
+                                              const boost::false_type&)
+{
+    if (nSize > (uint64_t)MAX_VECTOR_SIZE / sizeof(T))
+        throw std::ios_base::failure("limited vector byte size too large");
+    obj.resize((size_t)nSize);
+    for (size_t i = 0; i < (size_t)nSize; ++i)
+        ::Unserialize(is, obj[i], nType, nVersion);
+}
+
+template<typename Stream, typename T, typename A>
+inline unsigned int SerReadWriteLimitedVector(Stream& s,
+                                               std::vector<T, A>& obj,
+                                               uint64_t nMaxElements,
+                                               int nType,
+                                               int nVersion,
+                                               CSerActionUnserialize)
+{
+    uint64_t nSize = 0;
+    if (!ReadCompactSizeLimited(s, nSize, nMaxElements))
+        throw std::ios_base::failure("limited vector size too large or non-canonical");
+    obj.clear();
+    UnserializeLimitedVectorElements(s, obj, nSize, nType, nVersion,
+                                     boost::is_fundamental<T>());
+    return 0;
+}
+
+// The nested byte-vector form is used for small collections of compressed
+// curve points.  It applies a cap to both dimensions before either allocation.
+template<typename Stream>
+inline unsigned int SerReadWriteLimitedByteVectors(
+    Stream& s,
+    const std::vector<std::vector<unsigned char> >& obj,
+    uint64_t,
+    uint64_t,
+    int nType,
+    int nVersion,
+    CSerActionGetSerializeSize)
+{
+    return ::GetSerializeSize(obj, nType, nVersion);
+}
+
+template<typename Stream>
+inline unsigned int SerReadWriteLimitedByteVectors(
+    Stream& s,
+    const std::vector<std::vector<unsigned char> >& obj,
+    uint64_t,
+    uint64_t,
+    int nType,
+    int nVersion,
+    CSerActionSerialize)
+{
+    ::Serialize(s, obj, nType, nVersion);
+    return 0;
+}
+
+template<typename Stream>
+inline unsigned int SerReadWriteLimitedByteVectors(
+    Stream& s,
+    std::vector<std::vector<unsigned char> >& obj,
+    uint64_t nMaxVectors,
+    uint64_t nMaxBytes,
+    int nType,
+    int nVersion,
+    CSerActionUnserialize)
+{
+    uint64_t nSize = 0;
+    if (!ReadCompactSizeLimited(s, nSize, nMaxVectors))
+        throw std::ios_base::failure("limited nested vector size too large or non-canonical");
+    obj.clear();
+    obj.resize((size_t)nSize);
+    for (size_t i = 0; i < (size_t)nSize; ++i)
+        SerReadWriteLimitedVector(s, obj[i], nMaxBytes, nType, nVersion,
+                                  CSerActionUnserialize());
+    return 0;
+}
+
 struct ser_streamplaceholder
 {
     int nType;
