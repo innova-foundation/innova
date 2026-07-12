@@ -14,6 +14,7 @@
 #include <vector>
 #include <map>
 #include <set>
+#include <string>
 #include <stdint.h>
 
 class CBlockIndex;
@@ -70,6 +71,9 @@ static const unsigned char EPOCHSTATE_SER_VERSION = 1;
 // regime (records may have been computed off a node-local tip); EPOCHSTATE_SCHEMA_V2 = records are
 // written under the deterministic anchor (post FORK_HEIGHT_EPOCH_STATE_V2). Gates the upgrade guard.
 static const int EPOCHSTATE_SCHEMA_V2 = 2;
+// V3 records are built from the exact canonical epoch-end block, staged without touching the
+// in-memory cache, and committed with their matching curve snapshot and best-chain transition.
+static const int EPOCHSTATE_SCHEMA_V3 = 3;
 
 struct CEpochState
 {
@@ -115,6 +119,9 @@ struct CEpochState
         nFinalizedHeightAsOf = 0;
         nSerVersion = EPOCHSTATE_SER_VERSION;
     }
+
+    /** Domain-separated digest of the canonical consensus fields (format tag excluded). */
+    uint256 GetDigest() const;
 
     IMPLEMENT_SERIALIZE
     (
@@ -195,7 +202,8 @@ public:
 
     /** Get DAG linear ordering from a given tip back to genesis.
      *  nMaxBlocks limits computation (0 = unlimited). */
-    std::vector<uint256> GetDAGLinearOrder(const uint256& hashTip, int nMaxBlocks = 0) const;
+    std::vector<uint256> GetDAGLinearOrder(const uint256& hashTip, int nMaxBlocks = 0,
+                                           bool fForceSchemaV3Order = false) const;
 
     /** Compute DAG score for a block: sum of GetBlockTrust() for all blue ancestors. */
     uint256 ComputeDAGScore(CBlockIndex* pindex);
@@ -231,14 +239,50 @@ public:
     /** Prune DAG data below nHeight - DAG_PRUNE_DEPTH, preserving epoch boundaries. */
     bool PruneDAGData(CTxDB& txdb, int nHeight);
 
-    /** Compute epoch state for a completed epoch.
+    /** Legacy V2 computation used only to create the migration-base epoch before V3 activates.
      *  pAnchorTip: post-FORK_HEIGHT_EPOCH_STATE_V2, the CANONICAL tip block whose selected-parent
      *  chain + committed DAG merges define the epoch's block set and order (deterministic, reorg-safe).
      *  NULL (or pre-fork) falls back to the legacy live-best-tip derivation. */
     bool ComputeEpochState(int nEpoch, int nEpochInterval, const CBlockIndex* pAnchorTip = NULL);
 
-    /** Write epoch state to LevelDB. */
+    /** Build schema-V2 bytes without touching the epoch cache. Optional predecessor
+     *  inputs let a reorg build a contiguous suffix before commit. */
+    bool BuildEpochStateV2Compat(int nEpoch, int nEpochInterval,
+                                 const CBlockIndex* pAnchorTip,
+                                 CEpochState& stateOut,
+                                 CCurveTree& curveTreeOut,
+                                 std::string& strError,
+                                 const CEpochState* pPrevState = NULL,
+                                 const CCurveTree* pPrevCurveTree = NULL) const;
+
+    /** Build a V3 epoch state without changing any global or cached state. The boundary must be
+     *  the exact canonical block at the epoch's final height. Optional predecessor arguments are
+     *  used by an atomic multi-epoch reorg rebuild and must be supplied as a matching pair. */
+    bool BuildEpochState(int nEpoch, int nEpochInterval, const CBlockIndex* pBoundary,
+                         CEpochState& stateOut, CCurveTree& curveTreeOut,
+                         std::string& strError,
+                         const CEpochState* pPrevState = NULL,
+                         const CCurveTree* pPrevCurveTree = NULL) const;
+
+    /** Legacy V2 cache writer. */
     bool WriteEpochState(CTxDB& txdb, int nEpoch);
+
+    /** Write one staged V3 state/snapshot pair into the caller's active DB transaction. */
+    bool WriteEpochState(CTxDB& txdb, const CEpochState& state,
+                         const CCurveTree& curveTree) const;
+
+    /** Erase the persisted epoch suffix in the caller's active transaction. */
+    bool EraseEpochStateSuffix(CTxDB& txdb, int nFirstEpoch) const;
+
+    /** Validate a staged suffix completely before its durable DB commit. */
+    bool ValidateEpochStateBatch(int nFirstEpoch,
+                                 const std::map<int, CEpochState>& mapStates,
+                                 const std::map<int, CCurveTree>& mapCurveTrees) const;
+
+    /** Atomically replace the in-memory suffix after the caller's DB commit succeeds. */
+    bool InstallEpochStateBatch(int nFirstEpoch,
+                                const std::map<int, CEpochState>& mapStates,
+                                const std::map<int, CCurveTree>& mapCurveTrees);
 
     /** Get epoch state (from memory cache). */
     bool GetEpochState(int nEpoch, CEpochState& stateOut) const;
@@ -246,7 +290,16 @@ public:
     /** Number of epoch-state records loaded into the memory cache (used by the startup schema guard). */
     size_t GetLoadedEpochStateCount() const;
 
-    /** Deterministic finalized height as of the latest complete epoch <= nUpToEpoch.
+    /** Deterministic finalized height as of the exact requested completed epoch. Missing state is
+     *  an error, distinct from the valid finalized height zero. */
+    bool TryGetDeterministicFinalizedHeight(int nUpToEpoch, int& nHeightOut) const;
+
+    /** Transaction-aware variant used while a best-chain/reorg WriteBatch contains staged
+     *  epoch records that must be visible to ConnectBlock without installing global cache state. */
+    bool TryGetDeterministicFinalizedHeight(CTxDB& txdb, int nUpToEpoch,
+                                            int& nHeightOut) const;
+
+    /** Non-consensus wrapper; consensus callers use TryGet.
      *  Pure function of the persisted per-epoch states; identical on every node.
      *  Returns 0 if nothing is finalized yet. */
     int GetDeterministicFinalizedHeight(int nUpToEpoch) const;
@@ -258,6 +311,14 @@ public:
      *  epoch preceding nBlockHeight's epoch. Use this (not GetLastFinalizedEpochState)
      *  anywhere a block's contents are validated, so validation is node-independent. */
     bool GetFinalizedEpochStateAsOf(int nBlockHeight, CEpochState& stateOut) const;
+
+    /** Resolve finalized state from the caller's transaction, including staged WriteBatch data. */
+    bool GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
+                                    CEpochState& stateOut) const;
+
+    /** Validate that V3 persistence ends at the exact completed epoch required by pBest and
+     *  that both the migration-base and highest-required boundaries are on pBest's pprev chain. */
+    bool ValidateEpochStateTip(const CBlockIndex* pBest, std::string& strError) const;
 
     /** Get the number of in-memory DAG entries. */
     int GetDAGEntryCount() const;

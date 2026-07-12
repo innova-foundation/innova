@@ -560,13 +560,16 @@ check-coinstake-guard: test_innova
 check-finality-committee-sig: test_innova
 	./test_innova --run_test=finality_committee_sig_tests
 
+check-epoch-state-determinism: test_innova
+	./test_innova --run_test=epoch_state_determinism_tests
+
 check-smessage-hmac: test_innova
 	./test_innova --run_test=smessage_hmac_tests
 
 check-generic-hardening: test_innova
 	./test_innova --run_test=base58_tests,key_tests,DoS_tests,script_P2SH_tests,script_tests,transaction_tests,multisig_tests,rpc_tests
 
-release-check: innova-build check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-finality-committee-sig check-smessage-hmac check-generic-hardening
+release-check: innova-build check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-finality-committee-sig check-epoch-state-determinism check-smessage-hmac check-generic-hardening
 
 #
 # LevelDB support

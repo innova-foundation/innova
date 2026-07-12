@@ -329,6 +329,28 @@ inline int GetForkHeightEpochStateV2()
 }
 #define FORK_HEIGHT_EPOCH_STATE_V2 (GetForkHeightEpochStateV2())
 
+// Epoch-state schema V3: exact epoch-end boundary anchoring plus atomic state/tree persistence.
+// A single V2 post-DAG epoch is deliberately completed first so it supplies the strict predecessor
+// pair for the first V3 build. This primitives-only boundary is enabled on regtest
+// and deliberately sentinel-disabled on public networks until the atomic chain
+// transition wiring lands in the following reviewed commit.
+static const int TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET = 0x7fffffff;
+inline int GetForkHeightEpochStateV3()
+{
+    extern bool fRegTest;
+    if (!fRegTest) return TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET;
+    return GetForkHeightDAG() + 300;
+}
+#define FORK_HEIGHT_EPOCH_STATE_V3 (GetForkHeightEpochStateV3())
+
+/** First schema-V3 suffix epoch affected by a reorg whose common ancestor is nForkHeight.
+ *  The migration-base epoch is the lower bound because older V2 history is an immutable input. */
+int GetFirstV3EpochStateRebuildEpoch(int nForkHeight);
+
+/** First schema-V2 epoch whose linear boundary-crossing anchor can change after
+ *  a reorg at nForkHeight. Pre-V2 history remains byte-for-byte legacy. */
+int GetFirstV2EpochStateRebuildEpoch(int nForkHeight);
+
 // Nullifier binding: above this height shielded spends and private finality
 // votes must carry a note-bound nullifier proof. Testnet relaunches the shielded
 // pool clean here. Mainnet MUST enforce it from the first height a shielded

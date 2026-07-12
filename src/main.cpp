@@ -5871,6 +5871,19 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
     return true;
 }
 
+int GetFirstV3EpochStateRebuildEpoch(int nForkHeight)
+{
+    const int nMigrationEpoch = GetEpochForHeight(FORK_HEIGHT_EPOCH_STATE_V3) - 1;
+    const int nFirstChangedEpoch = GetEpochForHeight(nForkHeight + 1);
+    return std::max(nMigrationEpoch, nFirstChangedEpoch);
+}
+
+int GetFirstV2EpochStateRebuildEpoch(int nForkHeight)
+{
+    return std::max(GetEpochForHeight(FORK_HEIGHT_EPOCH_STATE_V2),
+                    GetEpochForHeight(nForkHeight));
+}
+
 bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
 {
     printf("REORGANIZE\n");

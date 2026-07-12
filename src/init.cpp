@@ -1826,10 +1826,10 @@ bool AppInit2()
         int nDAGCleanHeight = -1;
         if (txdbDAGInit.ReadDAGCleanHeight(nDAGCleanHeight) && nDAGCleanHeight > 0)
         {
-            // Clean height may also serve as prune boundary
-            int nPruneBelow = nDAGCleanHeight - DAG_PRUNE_DEPTH;
-            if (nPruneBelow > 0)
-                g_dagManager.SetPrunedBelowHeight(nPruneBelow);
+            // PruneDAGData persists the actual exclusive prune boundary,
+            // not the tip height. Subtracting DAG_PRUNE_DEPTH a second time
+            // makes restart disagree about which missing records are expected.
+            g_dagManager.SetPrunedBelowHeight(nDAGCleanHeight);
         }
         if (nDAGCleanHeight > 0)
         {

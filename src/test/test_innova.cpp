@@ -32,6 +32,10 @@ struct TestingSetup {
         boost::filesystem::create_directories(pathTestData);
         mapArgs["-datadir"] = pathTestData.string();
         mapArgs["-regtest"] = "1";
+        // AppInit normally derives these globals from mapArgs. This fixture
+        // calls LoadBlockIndex directly, so make the requested network real.
+        fRegTest = true;
+        fTestNet = false;
 
         fPrintToDebugger = true; // don't want to write to debug.log file
         noui_connect();

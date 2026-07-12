@@ -182,4 +182,72 @@ BOOST_AUTO_TEST_CASE(dag_skipped_transactions_expand_to_in_block_descendants)
     BOOST_CHECK_EQUAL(activeBlock.vtx[1].GetHash().ToString(), independent.GetHash().ToString());
 }
 
+BOOST_AUTO_TEST_CASE(v3_sibling_conflicts_ignore_unreachable_local_children)
+{
+    const int nV3Height = FORK_HEIGHT_EPOCH_STATE_V3;
+    uint256 hGrandparent(710001);
+    uint256 hParent(710002);
+    uint256 hMergedSibling(710003);
+    uint256 hLocalOnlySibling(710004);
+    uint256 hBlock(710005);
+
+    CBlockIndex grandparent;
+    CBlockIndex parent;
+    CBlockIndex mergedSibling;
+    CBlockIndex localOnlySibling;
+    CBlockIndex block;
+    grandparent.nHeight = nV3Height - 2;
+    parent.nHeight = nV3Height - 1;
+    mergedSibling.nHeight = nV3Height;
+    localOnlySibling.nHeight = nV3Height;
+    block.nHeight = nV3Height + 1;
+    parent.pprev = &grandparent;
+    mergedSibling.pprev = &parent;
+    localOnlySibling.pprev = &parent;
+    block.pprev = &mergedSibling;
+
+    mapBlockIndex[hGrandparent] = &grandparent;
+    mapBlockIndex[hParent] = &parent;
+    mapBlockIndex[hMergedSibling] = &mergedSibling;
+    mapBlockIndex[hLocalOnlySibling] = &localOnlySibling;
+    mapBlockIndex[hBlock] = &block;
+    grandparent.phashBlock = &mapBlockIndex.find(hGrandparent)->first;
+    parent.phashBlock = &mapBlockIndex.find(hParent)->first;
+    mergedSibling.phashBlock = &mapBlockIndex.find(hMergedSibling)->first;
+    localOnlySibling.phashBlock = &mapBlockIndex.find(hLocalOnlySibling)->first;
+    block.phashBlock = &mapBlockIndex.find(hBlock)->first;
+
+    std::vector<uint256> grandparentParents;
+    std::vector<uint256> parentParents(1, hGrandparent);
+    std::vector<uint256> siblingParents(1, hParent);
+    std::vector<uint256> blockParents;
+    blockParents.push_back(hMergedSibling);
+    blockParents.push_back(hParent);
+
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&grandparent,
+                                                 grandparentParents));
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&parent, parentParents));
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&mergedSibling,
+                                                 siblingParents));
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&localOnlySibling,
+                                                 siblingParents));
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&block, blockParents));
+
+    const std::set<uint256> siblings =
+        g_dagManager.GetDAGSiblingBlocks(hBlock);
+    BOOST_CHECK(siblings.count(hMergedSibling));
+    BOOST_CHECK(!siblings.count(hLocalOnlySibling));
+
+    g_dagManager.RemoveBlockDAGData(hBlock);
+    g_dagManager.RemoveBlockDAGData(hLocalOnlySibling);
+    g_dagManager.RemoveBlockDAGData(hMergedSibling);
+    g_dagManager.RemoveBlockDAGData(hParent);
+    g_dagManager.RemoveBlockDAGData(hGrandparent);
+    mapBlockIndex.erase(hBlock);
+    mapBlockIndex.erase(hLocalOnlySibling);
+    mapBlockIndex.erase(hMergedSibling);
+    mapBlockIndex.erase(hParent);
+    mapBlockIndex.erase(hGrandparent);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

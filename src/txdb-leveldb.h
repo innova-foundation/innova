@@ -250,6 +250,7 @@ public:
     bool EraseCurveTreeAtBlock(const uint256& blockHash);
     bool WriteCurveTreeAtEpoch(int nEpoch, const CCurveTree& tree);
     bool ReadCurveTreeAtEpoch(int nEpoch, CCurveTree& tree);
+    bool EraseCurveTreeAtEpoch(int nEpoch);
 
 	bool ReadAddrIndex(uint160 addrHash, std::vector<uint256>& txHashes);
     bool WriteAddrIndex(uint160 addrHash, uint256 txHash);
@@ -285,12 +286,14 @@ public:
     // Epoch state persistence
     bool WriteEpochState(int nEpoch, const CEpochState& state);
     bool ReadEpochState(int nEpoch, CEpochState& state);
+    bool EraseEpochState(int nEpoch);
     bool IterateEpochStates(std::map<int, CEpochState>& mapOut);
     bool IterateCurveTreeEpochs(std::map<int, CCurveTree>& mapOut);
     bool WriteDAGCleanHeight(int nHeight);
     bool ReadDAGCleanHeight(int& nHeight);
     bool WriteEpochStateSchema(int nVersion);
     bool ReadEpochStateSchema(int& nVersion);
+    bool HasEpochStateSchema();
 
     // IDAG finality vote persistence
     bool WriteFinalityVote(const uint256& nullifier, const CFinalityVote& vote);

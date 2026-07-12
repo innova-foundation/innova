@@ -4,6 +4,7 @@
 // file license.txt or http://www.opensource.org/licenses/mit-license.php.
 
 #include <map>
+#include <set>
 
 #include <boost/version.hpp>
 #include <boost/filesystem.hpp>
@@ -422,6 +423,11 @@ bool CTxDB::ReadCurveTreeAtEpoch(int nEpoch, CCurveTree& tree)
     return Read(make_pair(string("ce"), nEpoch), tree);
 }
 
+bool CTxDB::EraseCurveTreeAtEpoch(int nEpoch)
+{
+    return Erase(make_pair(string("ce"), nEpoch));
+}
+
 bool CTxDB::EraseCurveTreeAtBlock(const uint256& blockHash)
 {
     return Erase(make_pair(string("cb"), blockHash));
@@ -456,6 +462,11 @@ bool CTxDB::ReadEpochState(int nEpoch, CEpochState& state)
     return Read(make_pair(string("epochstate"), nEpoch), state);
 }
 
+bool CTxDB::EraseEpochState(int nEpoch)
+{
+    return Erase(make_pair(string("epochstate"), nEpoch));
+}
+
 bool CTxDB::IterateEpochStates(std::map<int, CEpochState>& mapOut)
 {
     mapOut.clear();
@@ -480,6 +491,8 @@ bool CTxDB::IterateEpochStates(std::map<int, CEpochState>& mapOut)
             CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
             std::pair<std::string, int> keyPair;
             ssKey >> keyPair;
+            if (keyPair.first != "epochstate" || ssKey.size() != 0)
+                throw std::ios_base::failure("non-canonical epoch-state key");
 
             CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
             CEpochState state;
@@ -506,12 +519,15 @@ bool CTxDB::IterateEpochStates(std::map<int, CEpochState>& mapOut)
             ssValue >> state.nFinalizedHeightAsOf;
             // Trailing version byte: present on V2+ records, absent (implicit 0) on legacy records.
             if (ssValue.size() > 0)
-            {
-                try { ssValue >> state.nSerVersion; }
-                catch (const std::exception&) { state.nSerVersion = 0; }
-            }
+                ssValue >> state.nSerVersion;
             else
                 state.nSerVersion = 0;
+            if (ssValue.size() != 0)
+                throw std::ios_base::failure("trailing epoch-state bytes");
+            if (state.nEpoch != keyPair.second)
+                throw std::ios_base::failure("epoch-state key/value epoch mismatch");
+            if (mapOut.count(keyPair.second))
+                throw std::ios_base::failure("duplicate epoch-state key");
             mapOut[keyPair.second] = state;
         }
         catch (const std::exception& e)
@@ -530,7 +546,14 @@ bool CTxDB::IterateEpochStates(std::map<int, CEpochState>& mapOut)
         it->Next();
     }
 
+    leveldb::Status status = it->status();
     delete it;
+    if (!status.ok())
+    {
+        printf("IterateEpochStates: FATAL LevelDB iterator failure: %s -- "
+               "-reindex/resync required\n", status.ToString().c_str());
+        return false;
+    }
     return true;
 }
 
@@ -558,20 +581,38 @@ bool CTxDB::IterateCurveTreeEpochs(std::map<int, CCurveTree>& mapOut)
             CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
             std::pair<std::string, int> keyPair;
             ssKey >> keyPair;
+            if (keyPair.first != "ce" || ssKey.size() != 0)
+                throw std::ios_base::failure("non-canonical curve-tree epoch key");
 
             CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
             CCurveTree tree;
             ssValue >> tree;
+            if (ssValue.size() != 0)
+                throw std::ios_base::failure("trailing curve-tree epoch bytes");
+            if (mapOut.count(keyPair.second))
+                throw std::ios_base::failure("duplicate curve-tree epoch key");
             mapOut[keyPair.second] = tree;
         }
-        catch (const std::exception&)
+        catch (const std::exception& e)
         {
+            printf("IterateCurveTreeEpochs: FATAL curve-tree snapshot failed to deserialize "
+                   "(rawkeylen=%d): %s -- refusing to load a partial epoch snapshot set; "
+                   "-reindex/resync required\n", (int)strKey.size(), e.what());
+            delete it;
+            return false;
         }
 
         it->Next();
     }
 
+    leveldb::Status status = it->status();
     delete it;
+    if (!status.ok())
+    {
+        printf("IterateCurveTreeEpochs: FATAL LevelDB iterator failure: %s -- "
+               "-reindex/resync required\n", status.ToString().c_str());
+        return false;
+    }
     return true;
 }
 
@@ -596,6 +637,11 @@ bool CTxDB::ReadEpochStateSchema(int& nVersion)
 {
     nVersion = 0;
     return Read(string("epochstateschema"), nVersion);
+}
+
+bool CTxDB::HasEpochStateSchema()
+{
+    return Exists(string("epochstateschema"));
 }
 
 bool CTxDB::WriteFinalityVote(const uint256& nullifier, const CFinalityVote& vote)
@@ -1043,39 +1089,84 @@ bool CTxDB::IterateDAGLinks(std::map<uint256, CBlockDAGData>& mapOut)
             CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
             std::pair<std::string, uint256> keyPair;
             ssKey >> keyPair;
+            if (keyPair.first != "daglinks" || keyPair.second == 0 ||
+                ssKey.size() != 0)
+                throw std::ios_base::failure("non-canonical DAG-link key");
+            if (mapOut.count(keyPair.second))
+                throw std::ios_base::failure("duplicate DAG-link key");
 
             CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
             CBlockDAGData data;
 
-            // DAGKNIGHT compatibility: deserialize core fields first, then try nInferredK
-            ssValue >> data.vDAGParents;
-            ssValue >> data.vDAGChildren;
+            // Bound the persisted parent set before allocating. Child lists are
+            // derived from parent records during DAG-manager rebuild, so consume
+            // their historical bytes without retaining node-local arrival state.
+            const uint64_t nParentCount = ReadCompactSize(ssValue);
+            if (nParentCount > MAX_DAG_PARENTS)
+                throw std::ios_base::failure("oversized DAG parent set");
+            data.vDAGParents.reserve((size_t)nParentCount);
+            for (uint64_t i = 0; i < nParentCount; ++i)
+            {
+                uint256 hashParent;
+                ssValue >> hashParent;
+                data.vDAGParents.push_back(hashParent);
+            }
+            const uint64_t nChildCount = ReadCompactSize(ssValue);
+            if (nChildCount > (uint64_t)ssValue.size() / 32)
+                throw std::ios_base::failure("truncated/oversized DAG child set");
+            for (uint64_t i = 0; i < nChildCount; ++i)
+            {
+                uint256 hashIgnoredChild;
+                ssValue >> hashIgnoredChild;
+            }
+
+            // DAGKNIGHT compatibility: deserialize core fields first, then
+            // tolerate only the exact legacy absence of nInferredK.
             ssValue >> data.fBlue;
             ssValue >> data.nDAGScore;
             ssValue >> data.nDAGOrder;
 
             // nInferredK may not exist in legacy entries
             if (ssValue.size() > 0)
-            {
-                try { ssValue >> data.nInferredK; }
-                catch (const std::exception&) { data.nInferredK = -1; }
-            }
+                ssValue >> data.nInferredK;
             else
-            {
                 data.nInferredK = -1;
+
+            if (ssValue.size() != 0)
+                throw std::ios_base::failure("trailing DAG-link bytes");
+            std::set<uint256> setParents;
+            for (std::vector<uint256>::const_iterator pit =
+                     data.vDAGParents.begin();
+                 pit != data.vDAGParents.end(); ++pit)
+            {
+                if (*pit == 0 || *pit == keyPair.second ||
+                    !setParents.insert(*pit).second)
+                    throw std::ios_base::failure("invalid DAG parent set");
             }
 
             mapOut[keyPair.second] = data;
         }
-        catch (const std::exception&)
+        catch (const std::exception& e)
         {
-            // Skip malformed entries
+            printf("IterateDAGLinks: FATAL DAG-link record failed to deserialize: %s -- "
+                   "-reindex/resync required\n", e.what());
+            delete it;
+            mapOut.clear();
+            return false;
         }
 
         it->Next();
     }
 
+    leveldb::Status status = it->status();
     delete it;
+    if (!status.ok())
+    {
+        printf("IterateDAGLinks: FATAL LevelDB iterator failure: %s -- "
+               "-reindex/resync required\n", status.ToString().c_str());
+        mapOut.clear();
+        return false;
+    }
     return true;
 }
 
