@@ -33,15 +33,15 @@ BOOST_AUTO_TEST_CASE(rpc_addmultisig)
 
     Value v;
     CBitcoinAddress address;
-    BOOST_CHECK_NO_THROW(v = addmultisig(createArgs(1, address1Hex), false));
+    BOOST_REQUIRE_NO_THROW(v = addmultisig(createArgs(1, address1Hex), false));
     address.SetString(v.get_str());
     BOOST_CHECK(address.IsValid() && address.IsScript());
 
-    BOOST_CHECK_NO_THROW(v = addmultisig(createArgs(1, address1Hex, address2Hex), false));
+    BOOST_REQUIRE_NO_THROW(v = addmultisig(createArgs(1, address1Hex, address2Hex), false));
     address.SetString(v.get_str());
     BOOST_CHECK(address.IsValid() && address.IsScript());
 
-    BOOST_CHECK_NO_THROW(v = addmultisig(createArgs(2, address1Hex, address2Hex), false));
+    BOOST_REQUIRE_NO_THROW(v = addmultisig(createArgs(2, address1Hex, address2Hex), false));
     address.SetString(v.get_str());
     BOOST_CHECK(address.IsValid() && address.IsScript());
 

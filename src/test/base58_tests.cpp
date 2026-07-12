@@ -11,6 +11,46 @@ extern Array read_json(const std::string& filename);
 
 BOOST_AUTO_TEST_SUITE(base58_tests)
 
+class TestNetFlagGuard
+{
+private:
+    const bool fStored;
+
+public:
+    TestNetFlagGuard() : fStored(fTestNet) { }
+    ~TestNetFlagGuard() { fTestNet = fStored; }
+};
+
+static std::string EncodeInnovaKeyVector(const std::vector<unsigned char>& payload,
+                                         bool isPrivkey,
+                                         bool isTestnet,
+                                         const std::string& addrType,
+                                         bool isCompressed)
+{
+    unsigned int version;
+    if (isPrivkey)
+    {
+        version = 128 + (isTestnet ? CBitcoinAddress::PUBKEY_ADDRESS_TEST
+                                   : CBitcoinAddress::PUBKEY_ADDRESS);
+    }
+    else if (addrType == "script")
+    {
+        version = isTestnet ? CBitcoinAddress::SCRIPT_ADDRESS_TEST
+                            : CBitcoinAddress::SCRIPT_ADDRESS;
+    }
+    else
+    {
+        version = isTestnet ? CBitcoinAddress::PUBKEY_ADDRESS_TEST
+                            : CBitcoinAddress::PUBKEY_ADDRESS;
+    }
+
+    std::vector<unsigned char> encoded(1, static_cast<unsigned char>(version));
+    encoded.insert(encoded.end(), payload.begin(), payload.end());
+    if (isPrivkey && isCompressed)
+        encoded.push_back(1);
+    return EncodeBase58Check(encoded);
+}
+
 // Goal: test low-level base58 encoding functionality
 BOOST_AUTO_TEST_CASE(base58_EncodeBase58)
 {
@@ -76,6 +116,10 @@ public:
     {
         return (exp_addrType == "none");
     }
+    bool operator()(const CStealthAddress &stxAddr) const
+    {
+        return (exp_addrType == "stealth");
+    }
 };
 
 // Visitor to check address payload
@@ -108,8 +152,7 @@ BOOST_AUTO_TEST_CASE(base58_keys_valid_parse)
     std::vector<unsigned char> result;
     CBitcoinSecret secret;
     CBitcoinAddress addr;
-    // Save global state
-    bool fTestNet_stored = fTestNet;
+    TestNetFlagGuard testNetFlagGuard;
 
     BOOST_FOREACH(Value& tv, tests)
     {
@@ -120,17 +163,25 @@ BOOST_AUTO_TEST_CASE(base58_keys_valid_parse)
             BOOST_ERROR("Bad test: " << strTest);
             continue;
         }
-        std::string exp_base58string = test[0].get_str();
+        const std::string legacyBase58String = test[0].get_str();
         std::vector<unsigned char> exp_payload = ParseHex(test[1].get_str());
         const Object &metadata = test[2].get_obj();
         bool isPrivkey = find_value(metadata, "isPrivkey").get_bool();
         bool isTestnet = find_value(metadata, "isTestnet").get_bool();
+        const std::string addrType = isPrivkey ? std::string() :
+            find_value(metadata, "addrType").get_str();
+        const bool isCompressed = isPrivkey &&
+            find_value(metadata, "isCompressed").get_bool();
+        const std::string exp_base58string = EncodeInnovaKeyVector(
+            exp_payload, isPrivkey, isTestnet, addrType, isCompressed);
+        BOOST_CHECK_MESSAGE(exp_base58string != legacyBase58String,
+                            "legacy Bitcoin prefix unexpectedly accepted: " + strTest);
         fTestNet = isTestnet; // Override testnet flag
         if(isPrivkey)
         {
-            bool isCompressed = find_value(metadata, "isCompressed").get_bool();
             // Must be valid private key
-            // Note: CBitcoinSecret::SetString tests isValid, whereas CBitcoinAddress does not!
+            BOOST_CHECK_MESSAGE(!secret.SetString(legacyBase58String),
+                                "legacy Bitcoin secret accepted: " + strTest);
             BOOST_CHECK_MESSAGE(secret.SetString(exp_base58string), "!SetString:"+ strTest);
             BOOST_CHECK_MESSAGE(secret.IsValid(), "!IsValid:" + strTest);
             bool fCompressedOut = false;
@@ -144,8 +195,11 @@ BOOST_AUTO_TEST_CASE(base58_keys_valid_parse)
         }
         else
         {
-            std::string exp_addrType = find_value(metadata, "addrType").get_str(); // "script" or "pubkey"
+            const std::string exp_addrType = addrType; // "script" or "pubkey"
             // Must be valid public key
+            addr.SetString(legacyBase58String);
+            BOOST_CHECK_MESSAGE(!addr.IsValid(),
+                                "legacy Bitcoin address accepted: " + strTest);
             BOOST_CHECK_MESSAGE(addr.SetString(exp_base58string), "SetString:" + strTest);
             BOOST_CHECK_MESSAGE(addr.IsValid(), "!IsValid:" + strTest);
             BOOST_CHECK_MESSAGE(addr.IsScript() == (exp_addrType == "script"), "isScript mismatch" + strTest);
@@ -157,8 +211,6 @@ BOOST_AUTO_TEST_CASE(base58_keys_valid_parse)
             BOOST_CHECK_MESSAGE(!secret.IsValid(), "IsValid pubkey as privkey:" + strTest);
         }
     }
-    // Restore global state
-    fTestNet = fTestNet_stored;
 }
 
 // Goal: check that generated keys match test vectors
@@ -166,8 +218,7 @@ BOOST_AUTO_TEST_CASE(base58_keys_valid_gen)
 {
     Array tests = read_json("base58_keys_valid.json");
     std::vector<unsigned char> result;
-    // Save global state
-    bool fTestNet_stored = fTestNet;
+    TestNetFlagGuard testNetFlagGuard;
 
     BOOST_FOREACH(Value& tv, tests)
     {
@@ -178,22 +229,29 @@ BOOST_AUTO_TEST_CASE(base58_keys_valid_gen)
             BOOST_ERROR("Bad test: " << strTest);
             continue;
         }
-        std::string exp_base58string = test[0].get_str();
+        const std::string legacyBase58String = test[0].get_str();
         std::vector<unsigned char> exp_payload = ParseHex(test[1].get_str());
         const Object &metadata = test[2].get_obj();
         bool isPrivkey = find_value(metadata, "isPrivkey").get_bool();
         bool isTestnet = find_value(metadata, "isTestnet").get_bool();
+        const std::string addrType = isPrivkey ? std::string() :
+            find_value(metadata, "addrType").get_str();
+        const bool isCompressed = isPrivkey &&
+            find_value(metadata, "isCompressed").get_bool();
+        const std::string exp_base58string = EncodeInnovaKeyVector(
+            exp_payload, isPrivkey, isTestnet, addrType, isCompressed);
+        BOOST_CHECK_MESSAGE(exp_base58string != legacyBase58String,
+                            "legacy Bitcoin prefix unexpectedly generated: " + strTest);
         fTestNet = isTestnet; // Override testnet flag
         if(isPrivkey)
         {
-            bool isCompressed = find_value(metadata, "isCompressed").get_bool();
             CBitcoinSecret secret;
             secret.SetSecret(CSecret(exp_payload.begin(), exp_payload.end()), isCompressed);
             BOOST_CHECK_MESSAGE(secret.ToString() == exp_base58string, "result mismatch: " + strTest);
         }
         else
         {
-            std::string exp_addrType = find_value(metadata, "addrType").get_str();
+            const std::string exp_addrType = addrType;
             CTxDestination dest;
             if(exp_addrType == "pubkey")
             {
@@ -223,8 +281,32 @@ BOOST_AUTO_TEST_CASE(base58_keys_valid_gen)
     CTxDestination nodest = CNoDestination();
     BOOST_CHECK(!boost::apply_visitor(CBitcoinAddressVisitor(&dummyAddr), nodest));
 
-    // Restore global state
-    fTestNet = fTestNet_stored;
+    // Independently generated Innova-prefix goldens prevent the transformed
+    // upstream payload corpus from becoming a round-trip-only test.
+    const uint160 pubkeyPayload(ParseHex(
+        "65a16059864a2fdbc7c99a4723a8395bc6f188eb"));
+    const uint160 scriptPayload(ParseHex(
+        "74f209f6ea907e2ea48f74fae05782ae8a665257"));
+    const std::vector<unsigned char> secretBytes = ParseHex(
+        "12b004fff7f4b69ef8650e767f18f11ede158148b425660723b9f9a66e61f747");
+    const CSecret secretPayload(secretBytes.begin(), secretBytes.end());
+
+    fTestNet = false;
+    BOOST_CHECK_EQUAL(CBitcoinAddress(CKeyID(pubkeyPayload)).ToString(),
+                      "iCju15UwpvRvttUZL61DaLnTavJWbqefub");
+    BOOST_CHECK_EQUAL(CBitcoinAddress(CScriptID(scriptPayload)).ToString(),
+                      "xJxzEHi3X6MG1dQg3ymELduqMrgjrrPVeU");
+    BOOST_CHECK_EQUAL(CBitcoinSecret(secretPayload, false).ToString(),
+                      "8iESvaTAX6WvJE6NX1cgDoppZN3Q2q5mYs7jT1Sj4bwGrFZ74wY");
+    BOOST_CHECK_EQUAL(CBitcoinSecret(secretPayload, true).ToString(),
+                      "b2zMRUeV1qM4F2nhyTiU7Xg4uqsaf5E3deCiMnxYeuCYxEyqWTvC");
+
+    fTestNet = true;
+    BOOST_CHECK_EQUAL(CBitcoinAddress(CKeyID(pubkeyPayload)).ToString(),
+                      "TKEaa4THZFHWdrKMRZgRdhiMJFmcFaMkWa");
+    BOOST_CHECK_EQUAL(CBitcoinAddress(CScriptID(scriptPayload)).ToString(),
+                      "XN1bBZEBVucwJkmJXy7UGs34LaiFrenPye");
+
 }
 
 // Goal: check that base58 parsing code is robust against a variety of corrupted data
@@ -256,4 +338,3 @@ BOOST_AUTO_TEST_CASE(base58_keys_invalid)
 
 
 BOOST_AUTO_TEST_SUITE_END()
-

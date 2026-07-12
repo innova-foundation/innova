@@ -494,12 +494,9 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
                 opcode == OP_RSHIFT)
                 return false;
 
-            if (opcode == OP_RESERVED ||
-                opcode == OP_VER ||
-                opcode == OP_VERIF ||
-                opcode == OP_VERNOTIF ||
-                opcode == OP_RESERVED1 ||
-                opcode == OP_RESERVED2)
+            // OP_VERIF and OP_VERNOTIF fail even in an unexecuted branch; other reserved
+            // opcodes fail only when executed (historical interpreter semantics).
+            if (opcode == OP_VERIF || opcode == OP_VERNOTIF)
                 return false;
 
             if (fExec && 0 <= opcode && opcode <= OP_PUSHDATA4)

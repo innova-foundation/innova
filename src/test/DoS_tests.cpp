@@ -16,10 +16,10 @@
 #include <stdint.h>
 
 // Tests this internal-to-main.cpp method:
-extern bool AddOrphanTx(const CDataStream& vMsg);
+extern bool AddOrphanTx(const CTransaction& tx);
 extern unsigned int LimitOrphanTxSize(unsigned int nMaxOrphans);
-extern std::map<uint256, CDataStream*> mapOrphanTransactions;
-extern std::map<uint256, std::map<uint256, CDataStream*> > mapOrphanTransactionsByPrev;
+extern std::map<uint256, CTransaction> mapOrphanTransactions;
+extern std::map<uint256, std::set<uint256> > mapOrphanTransactionsByPrev;
 
 CService ip(uint32_t i)
 {
@@ -46,11 +46,15 @@ BOOST_AUTO_TEST_CASE(DoS_banning)
     BOOST_CHECK(CNode::IsBanned(addr1));  // ... but 1 still should be
     dummyNode2.Misbehaving(50);
     BOOST_CHECK(CNode::IsBanned(addr2));
+    CNode::ClearBanned();
 }    
 
 BOOST_AUTO_TEST_CASE(DoS_banscore)
 {
     CNode::ClearBanned();
+    const std::map<std::string, std::string>::const_iterator oldBanScore = mapArgs.find("-banscore");
+    const bool hadBanScore = oldBanScore != mapArgs.end();
+    const std::string oldBanScoreValue = hadBanScore ? oldBanScore->second : std::string();
     mapArgs["-banscore"] = "111"; // because 11 is my favorite number
     CAddress addr1(ip(0xa0b0c001));
     CNode dummyNode1(INVALID_SOCKET, addr1, "", true);
@@ -60,13 +64,17 @@ BOOST_AUTO_TEST_CASE(DoS_banscore)
     BOOST_CHECK(!CNode::IsBanned(addr1));
     dummyNode1.Misbehaving(1);
     BOOST_CHECK(CNode::IsBanned(addr1));
-    mapArgs.erase("-banscore");
+    if (hadBanScore)
+        mapArgs["-banscore"] = oldBanScoreValue;
+    else
+        mapArgs.erase("-banscore");
+    CNode::ClearBanned();
 }
 
 BOOST_AUTO_TEST_CASE(DoS_bantime)
 {
     CNode::ClearBanned();
-    int64 nStartTime = GetTime();
+    int64_t nStartTime = GetTime();
     SetMockTime(nStartTime); // Overrides future calls to GetTime()
 
     CAddress addr(ip(0xa0b0c001));
@@ -80,13 +88,15 @@ BOOST_AUTO_TEST_CASE(DoS_bantime)
 
     SetMockTime(nStartTime+60*60*24+1);
     BOOST_CHECK(!CNode::IsBanned(addr));
+    SetMockTime(0);
+    CNode::ClearBanned();
 }
 
-static bool CheckNBits(unsigned int nbits1, int64 time1, unsigned int nbits2, int64 time2)\
+static bool CheckNBits(unsigned int nbits1, int64_t time1, unsigned int nbits2, int64_t time2)
 {
     if (time1 > time2)
         return CheckNBits(nbits2, time2, nbits1, time1);
-    int64 deltaTime = time2-time1;
+    int64_t deltaTime = time2-time1;
 
     CBigNum required;
     required.SetCompact(ComputeMinWork(nbits1, deltaTime));
@@ -101,7 +111,7 @@ BOOST_AUTO_TEST_CASE(DoS_checknbits)
 
     // Timestamps,nBits from the bitcoin blockchain.
     // These are the block-chain checkpoint blocks
-    typedef std::map<int64, unsigned int> BlockData;
+    typedef std::map<int64_t, unsigned int> BlockData;
     BlockData chainData =
         map_list_of(1239852051,486604799)(1262749024,486594666)
         (1279305360,469854461)(1280200847,469830746)(1281678674,469809688)
@@ -134,18 +144,16 @@ BOOST_AUTO_TEST_CASE(DoS_checknbits)
 
 CTransaction RandomOrphan()
 {
-    std::map<uint256, CDataStream*>::iterator it;
+    std::map<uint256, CTransaction>::iterator it;
     it = mapOrphanTransactions.lower_bound(GetRandHash());
     if (it == mapOrphanTransactions.end())
         it = mapOrphanTransactions.begin();
-    const CDataStream* pvMsg = it->second;
-    CTransaction tx;
-    CDataStream(*pvMsg) >> tx;
-    return tx;
+    return it->second;
 }
 
 BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
 {
+    LimitOrphanTxSize(0);
     CKey key;
     key.MakeNewKey(true);
     CBasicKeyStore keystore;
@@ -163,9 +171,7 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
         tx.vout[0].nValue = 1*CENT;
         tx.vout[0].scriptPubKey.SetDestination(key.GetPubKey().GetID());
 
-        CDataStream ds(SER_DISK, CLIENT_VERSION);
-        ds << tx;
-        AddOrphanTx(ds);
+        AddOrphanTx(tx);
     }
 
     // ... and 50 that depend on other orphans:
@@ -182,9 +188,7 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
         tx.vout[0].scriptPubKey.SetDestination(key.GetPubKey().GetID());
         SignSignature(keystore, txPrev, tx, 0);
 
-        CDataStream ds(SER_DISK, CLIENT_VERSION);
-        ds << tx;
-        AddOrphanTx(ds);
+        AddOrphanTx(tx);
     }
 
     // This really-big orphan should be ignored:
@@ -208,9 +212,7 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
         for (unsigned int j = 1; j < tx.vin.size(); j++)
             tx.vin[j].scriptSig = tx.vin[0].scriptSig;
 
-        CDataStream ds(SER_DISK, CLIENT_VERSION);
-        ds << tx;
-        BOOST_CHECK(!AddOrphanTx(ds));
+        BOOST_CHECK(!AddOrphanTx(tx));
     }
 
     // Test LimitOrphanTxSize() function:
@@ -225,6 +227,7 @@ BOOST_AUTO_TEST_CASE(DoS_mapOrphans)
 
 BOOST_AUTO_TEST_CASE(DoS_checkSig)
 {
+    LimitOrphanTxSize(0);
     // Test signature caching code (see key.cpp Verify() methods)
 
     CKey key;
@@ -246,9 +249,7 @@ BOOST_AUTO_TEST_CASE(DoS_checkSig)
         tx.vout[0].nValue = 1*CENT;
         tx.vout[0].scriptPubKey.SetDestination(key.GetPubKey().GetID());
 
-        CDataStream ds(SER_DISK, CLIENT_VERSION);
-        ds << tx;
-        AddOrphanTx(ds);
+        AddOrphanTx(tx);
     }
 
     // Create a transaction that depends on orphans:
@@ -299,6 +300,9 @@ BOOST_AUTO_TEST_CASE(DoS_checkSig)
     std::swap(tx.vin[0].scriptSig, tx.vin[1].scriptSig);
 
     // Exercise -maxsigcachesize code:
+    const std::map<std::string, std::string>::const_iterator oldMaxSigCache = mapArgs.find("-maxsigcachesize");
+    const bool hadMaxSigCache = oldMaxSigCache != mapArgs.end();
+    const std::string oldMaxSigCacheValue = hadMaxSigCache ? oldMaxSigCache->second : std::string();
     mapArgs["-maxsigcachesize"] = "10";
     // Generate a new, different signature for vin[0] to trigger cache clear:
     CScript oldSig = tx.vin[0].scriptSig;
@@ -306,7 +310,10 @@ BOOST_AUTO_TEST_CASE(DoS_checkSig)
     BOOST_CHECK(tx.vin[0].scriptSig != oldSig);
     for (unsigned int j = 0; j < tx.vin.size(); j++)
         BOOST_CHECK(VerifySignature(orphans[j], tx, j, true, SIGHASH_ALL));
-    mapArgs.erase("-maxsigcachesize");
+    if (hadMaxSigCache)
+        mapArgs["-maxsigcachesize"] = oldMaxSigCacheValue;
+    else
+        mapArgs.erase("-maxsigcachesize");
 
     LimitOrphanTxSize(0);
 }

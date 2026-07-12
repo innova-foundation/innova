@@ -123,8 +123,7 @@ Value addnode(const Array& params, bool fHelp)
     {
         CNode* pnode = FindNode(strNode);
         if(pnode) {
-            int bantime;
-            CNode::Ban(pnode->addr, BanReasonManuallyAdded, bantime);
+            CNode::Ban(pnode->addr, BanReasonManuallyAdded);
             pnode->CloseSocketDisconnect();
         } else {
             throw JSONRPCError(RPC_CLIENT_NOT_CONNECTED, "Error: Node is not connected.");
@@ -237,7 +236,7 @@ Value getnetworkinfo(const Array& params, bool fHelp)
     obj.push_back(Pair("version",        (int)CLIENT_VERSION));
     obj.push_back(Pair("subversion",     FormatSubVersion(CLIENT_NAME, CLIENT_VERSION, std::vector<string>())));
     obj.push_back(Pair("protocolversion",(int)PROTOCOL_VERSION));
-    obj.push_back(Pair("localservices",  strprintf("%016", PRIx64, nLocalServices)));
+    obj.push_back(Pair("localservices",  strprintf("%016" PRIx64, nLocalServices)));
     obj.push_back(Pair("timeoffset",     GetTimeOffset()));
     {
         LOCK(cs_vNodes);

@@ -1102,11 +1102,12 @@ Value addmultisigaddress(const Array& params, bool fHelp)
         throw runtime_error(
             strprintf("not enough keys supplied "
                       "(got %" PRIszu" keys, but need at least %d to redeem)", keys.size(), nRequired));
-    std::vector<CKey> pubkeys;
-    pubkeys.resize(keys.size());
+    std::vector<CPubKey> pubkeys;
+    pubkeys.reserve(keys.size());
     for (unsigned int i = 0; i < keys.size(); i++)
     {
         const std::string& ks = keys[i].get_str();
+        CPubKey vchPubKey;
 
         // Case 1: Bitcoin address and we have full public key:
         CBitcoinAddress address(ks);
@@ -1116,18 +1117,17 @@ Value addmultisigaddress(const Array& params, bool fHelp)
             if (!address.GetKeyID(keyID))
                 throw runtime_error(
                     strprintf("%s does not refer to a key",ks.c_str()));
-            CPubKey vchPubKey;
             if (!pwalletMain->GetPubKey(keyID, vchPubKey))
                 throw runtime_error(
                     strprintf("no full public key for address %s",ks.c_str()));
-             if (!vchPubKey.IsFullyValid())
+            if (!vchPubKey.IsFullyValid())
                 throw runtime_error(" Invalid public key: "+ks);
         }
 
         // Case 2: hex public key
         else if (IsHex(ks))
         {
-            CPubKey vchPubKey(ParseHex(ks));
+            vchPubKey = CPubKey(ParseHex(ks));
             if (!vchPubKey.IsFullyValid())
                 throw runtime_error(" Invalid public key: "+ks);
         }
@@ -1135,11 +1135,12 @@ Value addmultisigaddress(const Array& params, bool fHelp)
         {
             throw runtime_error(" Invalid public key: "+ks);
         }
+        pubkeys.push_back(vchPubKey);
     }
 
     // Construct using pay-to-script-hash:
     CScript inner;
-    inner.SetMultisig(nRequired, pubkeys);
+    inner.SetMultisigpub(nRequired, pubkeys);
     CScriptID innerID = inner.GetID();
     if (!pwalletMain->AddCScript(inner))
         throw runtime_error("AddCScript() failed");

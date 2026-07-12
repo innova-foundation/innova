@@ -812,8 +812,11 @@ bool AreInputsStandard(const CTransaction& tx, const MapPrevTx& mapInputs)
             {
                 // Any other Script with less than 15 sigops OK:
                 unsigned int sigops = subscript.GetSigOpCount(true);
-                // ... extra data left on the stack after execution is OK, too:
-                return (sigops <= MAX_P2SH_SIGOPS);
+                if (sigops > MAX_P2SH_SIGOPS)
+                    return false;
+                // ... extra data left on the stack after execution is OK, too. Continue: returning
+                // true would let one unknown redeem script skip policy checks for later inputs.
+                continue;
             }
         }
 

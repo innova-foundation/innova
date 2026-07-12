@@ -219,14 +219,18 @@ void static BIP32Hash(const unsigned char chainCode[32], unsigned int nChild, un
 
 void CKey::SetCompressedPubKey()
 {
-    EC_KEY_set_conv_form(pkey, POINT_CONVERSION_COMPRESSED);
+    if (pkey)
+        EC_KEY_set_conv_form(pkey, POINT_CONVERSION_COMPRESSED);
     fCompressedPubKey = true;
+    fCompressed = true;
 }
 
 void CKey::SetUnCompressedPubKey()
 {
-    EC_KEY_set_conv_form(pkey, POINT_CONVERSION_UNCOMPRESSED);
+    if (pkey)
+        EC_KEY_set_conv_form(pkey, POINT_CONVERSION_UNCOMPRESSED);
     fCompressedPubKey = false;
+    fCompressed = false;
 }
 
 bool CKey::Check(const unsigned char *vch) {
@@ -255,13 +259,17 @@ bool CKey::Check(const unsigned char *vch) {
 
 
 // Construct an invalid private key.
-CKey::CKey() : fValid(false), pkey(NULL), fSet(false), fCompressedPubKey(false), fCompressed(false)
+CKey::CKey()
+    : pkey(NULL), fSet(false), fCompressedPubKey(false),
+      fValid(false), fCompressed(false)
 {
     LockObject(vch);
 }
 
 // Copy constructor. This is necessary because of memlocking.
-CKey::CKey(const CKey& b) : fValid(b.fValid), fCompressed(b.fCompressed)
+CKey::CKey(const CKey& b)
+    : pkey(NULL), fSet(false), fCompressedPubKey(b.fCompressed),
+      fValid(b.fValid), fCompressed(b.fCompressed)
 {
     LockObject(vch);
     memcpy(vch, b.vch, sizeof(vch));
@@ -289,26 +297,13 @@ bool CKey::IsCompressed() const
 
 bool CKey::SetSecret(const CSecret& vchSecret, bool fCompressed)
 {
-    if (pkey != NULL)
-        EC_KEY_free(pkey);
-    pkey = EC_KEY_new_by_curve_name(NID_secp256k1);
-    if (pkey == NULL)
-        throw key_error("CKey::SetSecret() : EC_KEY_new_by_curve_name failed");
     if (vchSecret.size() != 32)
         throw key_error("CKey::SetSecret() : secret must be 32 bytes");
-    BIGNUM *bn = BN_bin2bn(&vchSecret[0],32,BN_new());
-    if (bn == NULL)
-        throw key_error("CKey::SetSecret() : BN_bin2bn failed");
-    if (!EC_KEY_regenerate_key(pkey,bn))
-    {
-        BN_clear_free(bn);
-        throw key_error("CKey::SetSecret() : EC_KEY_regenerate_key failed");
-    }
-    BN_clear_free(bn);
-    fSet = true;
-    if (fCompressed || fCompressedPubKey)
-        SetCompressedPubKey();
-    return true;
+    // CKey's authoritative representation is the locked 32-byte vch buffer.
+    // The legacy OpenSSL-only implementation populated pkey/fSet but left
+    // fValid false, so GetPubKey(), Sign(), and GetSecret() immediately failed.
+    Set(vchSecret.begin(), vchSecret.end(), fCompressed);
+    return fValid;
 }
 
 CSecret CKey::GetSecret(bool &fCompressedOut) const

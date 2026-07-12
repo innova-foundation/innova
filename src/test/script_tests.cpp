@@ -21,7 +21,7 @@ using namespace boost::algorithm;
 
 extern uint256 SignatureHash(CScript scriptCode, const CTransaction& txTo, unsigned int nIn, int nHashType);
 extern bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const CTransaction& txTo, unsigned int nIn,
-                         bool fValidatePayToScriptHash, int nHashType);
+                         unsigned int flags, int nHashType);
 
 CScript
 ParseScript(string s)
@@ -32,7 +32,7 @@ ParseScript(string s)
 
     if (mapOpNames.size() == 0)
     {
-        for (int op = OP_NOP; op <= OP_NOP10; op++)
+        for (int op = OP_NOP; op <= OP_SHIELDED_MARKER; op++)
         {
             const char* name = GetOpName((opcodetype)op);
             if (strcmp(name, "OP_UNKNOWN") == 0)
@@ -43,6 +43,12 @@ ParseScript(string s)
             replace_first(strName, "OP_", "");
             mapOpNames[strName] = (opcodetype)op;
         }
+        // Keep the historical vector spelling so the legacy NOP10 vectors
+        // exercise opcode 0xb9, which is now OP_ANON_MARKER.
+        mapOpNames["OP_NOP2"] = OP_NOP2;
+        mapOpNames["NOP2"] = OP_NOP2;
+        mapOpNames["OP_NOP10"] = OP_ANON_MARKER;
+        mapOpNames["NOP10"] = OP_ANON_MARKER;
     }
 
     vector<string> words;
@@ -54,7 +60,7 @@ ParseScript(string s)
             (starts_with(w, "-") && all(string(w.begin()+1, w.end()), is_digit())))
         {
             // Number
-            int64 n = atoi64(w);
+            int64_t n = atoi64(w);
             result << n;
         }
         else if (starts_with(w, "0x") && IsHex(string(w.begin()+2, w.end())))
@@ -119,6 +125,17 @@ read_json(const std::string& filename)
 
 BOOST_AUTO_TEST_SUITE(script_tests)
 
+static bool IsLegacyV2Nop10ValidVector(const std::string& scriptSig,
+                                       const std::string& scriptPubKey)
+{
+    return
+        (scriptSig == "1" &&
+         scriptPubKey == "NOP1 NOP2 NOP3 NOP4 NOP5 NOP6 NOP7 NOP8 NOP9 NOP10 1 EQUAL") ||
+        (scriptSig == "'NOP_1_to_10' NOP1 NOP2 NOP3 NOP4 NOP5 NOP6 NOP7 NOP8 NOP9 NOP10" &&
+         scriptPubKey == "'NOP_1_to_10' EQUAL") ||
+        (scriptSig == "NOP" && scriptPubKey == "NOP10 1");
+}
+
 BOOST_AUTO_TEST_CASE(script_valid)
 {
     // Read tests from test/data/script_valid.json
@@ -128,6 +145,7 @@ BOOST_AUTO_TEST_CASE(script_valid)
     // scripts.
     Array tests = read_json("script_valid.json");
 
+    unsigned int nLegacyNop10Vectors = 0;
     BOOST_FOREACH(Value& tv, tests)
     {
         Array test = tv.get_array();
@@ -143,8 +161,20 @@ BOOST_AUTO_TEST_CASE(script_valid)
         CScript scriptPubKey = ParseScript(scriptPubKeyString);
 
         CTransaction tx;
-        BOOST_CHECK_MESSAGE(VerifyScript(scriptSig, scriptPubKey, tx, 0, true, SIGHASH_NONE), strTest);
+        const bool fVerified = VerifyScript(scriptSig, scriptPubKey, tx, 0,
+                                            SCRIPT_VERIFY_P2SH, SIGHASH_NONE);
+        if (IsLegacyV2Nop10ValidVector(scriptSigString, scriptPubKeyString))
+        {
+            ++nLegacyNop10Vectors;
+            BOOST_CHECK_MESSAGE(!fVerified,
+                "legacy v2 NOP10 vector must reject under v3+ marker semantics: " + strTest);
+        }
+        else
+        {
+            BOOST_CHECK_MESSAGE(fVerified, strTest);
+        }
     }
+    BOOST_CHECK_EQUAL(nLegacyNop10Vectors, 3U);
 }
 
 BOOST_AUTO_TEST_CASE(script_invalid)
@@ -152,6 +182,7 @@ BOOST_AUTO_TEST_CASE(script_invalid)
     // Scripts that should evaluate as invalid
     Array tests = read_json("script_invalid.json");
 
+    unsigned int nExpandedSizeVectors = 0;
     BOOST_FOREACH(Value& tv, tests)
     {
         Array test = tv.get_array();
@@ -167,8 +198,69 @@ BOOST_AUTO_TEST_CASE(script_invalid)
         CScript scriptPubKey = ParseScript(scriptPubKeyString);
 
         CTransaction tx;
-        BOOST_CHECK_MESSAGE(!VerifyScript(scriptSig, scriptPubKey, tx, 0, true, SIGHASH_NONE), strTest);
+        const bool fVerified = VerifyScript(scriptSig, scriptPubKey, tx, 0,
+                                            SCRIPT_VERIFY_P2SH, SIGHASH_NONE);
+        const bool fExpandedSizeVector = test.size() > 2 &&
+            test[2].type() == str_type &&
+            test[2].get_str() == "10,001-byte scriptPubKey";
+        if (fExpandedSizeVector)
+        {
+            ++nExpandedSizeVectors;
+            BOOST_CHECK_MESSAGE(fVerified,
+                "10,001-byte script is valid under Innova's historical 22,000-byte limit: " + strTest);
+        }
+        else
+        {
+            BOOST_CHECK_MESSAGE(!fVerified, strTest);
+        }
     }
+    BOOST_CHECK_EQUAL(nExpandedSizeVectors, 1U);
+}
+
+BOOST_AUTO_TEST_CASE(script_innova_consensus_boundaries)
+{
+    const CTransaction tx;
+
+    CScript reservedUnexecuted;
+    reservedUnexecuted << OP_0 << OP_IF << OP_RESERVED << OP_ENDIF << OP_1;
+    BOOST_CHECK(VerifyScript(CScript(), reservedUnexecuted, tx, 0,
+                             SCRIPT_VERIFY_P2SH, SIGHASH_NONE));
+
+    CScript markerExecuted;
+    markerExecuted << OP_ANON_MARKER << OP_1;
+    BOOST_CHECK(!VerifyScript(CScript(), markerExecuted, tx, 0,
+                              SCRIPT_VERIFY_P2SH, SIGHASH_NONE));
+
+    CScript markerUnexecuted;
+    markerUnexecuted << OP_0 << OP_IF << OP_ANON_MARKER << OP_ENDIF << OP_1;
+    BOOST_CHECK(VerifyScript(CScript(), markerUnexecuted, tx, 0,
+                             SCRIPT_VERIFY_P2SH, SIGHASH_NONE));
+
+    CScript atLimit;
+    const std::vector<unsigned char> chunk500(500, 0);
+    for (unsigned int i = 0; i < 43; ++i)
+        atLimit << chunk500 << OP_DROP;
+    atLimit << std::vector<unsigned char>(323, 0) << OP_DROP << OP_1;
+    BOOST_REQUIRE_EQUAL(atLimit.size(), 22000U);
+    std::vector<std::vector<unsigned char> > stack;
+    BOOST_CHECK(EvalScript(stack, atLimit, tx, 0,
+                           SCRIPT_VERIFY_NONE, SIGHASH_NONE));
+    BOOST_REQUIRE(!stack.empty());
+    BOOST_CHECK(stack.back() == std::vector<unsigned char>(1, 1));
+
+    CScript overLimit(atLimit);
+    overLimit << OP_NOP;
+    BOOST_REQUIRE_EQUAL(overLimit.size(), 22001U);
+    stack.clear();
+    BOOST_CHECK(!EvalScript(stack, overLimit, tx, 0,
+                            SCRIPT_VERIFY_NONE, SIGHASH_NONE));
+
+    CTxOut anonEnvelope;
+    anonEnvelope.scriptPubKey.assign(MIN_ANON_OUT_SIZE, 0);
+    anonEnvelope.scriptPubKey[0] = OP_RETURN;
+    anonEnvelope.scriptPubKey[1] = OP_ANON_MARKER;
+    BOOST_CHECK(anonEnvelope.IsAnonOutput());
+    BOOST_CHECK(anonEnvelope.IsUnspendable());
 }
 
 BOOST_AUTO_TEST_CASE(script_PushData)
@@ -181,18 +273,18 @@ BOOST_AUTO_TEST_CASE(script_PushData)
     static const unsigned char pushdata4[] = { OP_PUSHDATA4, 1, 0, 0, 0, 0x5a };
 
     vector<vector<unsigned char> > directStack;
-    BOOST_CHECK(EvalScript(directStack, CScript(&direct[0], &direct[sizeof(direct)]), CTransaction(), 0, 0));
+    BOOST_CHECK(EvalScript(directStack, CScript(&direct[0], &direct[sizeof(direct)]), CTransaction(), 0, SCRIPT_VERIFY_NONE, 0));
 
     vector<vector<unsigned char> > pushdata1Stack;
-    BOOST_CHECK(EvalScript(pushdata1Stack, CScript(&pushdata1[0], &pushdata1[sizeof(pushdata1)]), CTransaction(), 0, 0));
+    BOOST_CHECK(EvalScript(pushdata1Stack, CScript(&pushdata1[0], &pushdata1[sizeof(pushdata1)]), CTransaction(), 0, SCRIPT_VERIFY_NONE, 0));
     BOOST_CHECK(pushdata1Stack == directStack);
 
     vector<vector<unsigned char> > pushdata2Stack;
-    BOOST_CHECK(EvalScript(pushdata2Stack, CScript(&pushdata2[0], &pushdata2[sizeof(pushdata2)]), CTransaction(), 0, 0));
+    BOOST_CHECK(EvalScript(pushdata2Stack, CScript(&pushdata2[0], &pushdata2[sizeof(pushdata2)]), CTransaction(), 0, SCRIPT_VERIFY_NONE, 0));
     BOOST_CHECK(pushdata2Stack == directStack);
 
     vector<vector<unsigned char> > pushdata4Stack;
-    BOOST_CHECK(EvalScript(pushdata4Stack, CScript(&pushdata4[0], &pushdata4[sizeof(pushdata4)]), CTransaction(), 0, 0));
+    BOOST_CHECK(EvalScript(pushdata4Stack, CScript(&pushdata4[0], &pushdata4[sizeof(pushdata4)]), CTransaction(), 0, SCRIPT_VERIFY_NONE, 0));
     BOOST_CHECK(pushdata4Stack == directStack);
 }
 

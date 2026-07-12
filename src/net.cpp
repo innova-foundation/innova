@@ -866,15 +866,13 @@ bool CNode::Misbehaving(int howmuch, const std::string& reason)
 
     if (nCurrentMisbehavior >= GetArg("-banscore", 100))
     {
-        int64_t banTime = GetTime()+GetArg("-bantime", 60*60*24);  // Default 24-hour ban
         printf("Misbehaving: %s (%d -> %d) DISCONNECTING%s%s\n",
                addr.ToString().c_str(), nCurrentMisbehavior-howmuch, nCurrentMisbehavior,
                reason.empty() ? "" : " reason=", reason.empty() ? "" : reason.c_str());
-        {
-            LOCK(cs_setBanned);
-            if (setBanned[subNet].nBanUntil < banTime)
-                setBanned[subNet] = banTime;
-        }
+        // Use the canonical ban writer: CBanEntry(int64_t) sets nCreateTime, not
+        // nBanUntil, and does not mark the ban set dirty.
+        Ban(subNet, BanReasonNodeMisbehaving,
+            GetArg("-bantime", 60*60*24));
         CloseSocketDisconnect(reason.empty() ? "misbehaving" : reason.c_str());
         return true;
     } else
@@ -966,7 +964,9 @@ void CNode::SetMaxOutboundTarget(uint64_t limit)
     nMaxOutboundLimit = limit;
 
     if (limit < recommendedMinimum)
-        printf("Max outbound target is very small (%d) and will be overshot. Recommended minimum is %d\n.", nMaxOutboundLimit, recommendedMinimum);
+        printf("Max outbound target is very small (%llu) and will be overshot. Recommended minimum is %llu\n.",
+               (unsigned long long)nMaxOutboundLimit,
+               (unsigned long long)recommendedMinimum);
 }
 
 uint64_t CNode::GetMaxOutboundTarget()
@@ -1234,7 +1234,7 @@ static void AcceptConnection(const ListenSocket& hListenSocket) {
     if (hSocket == INVALID_SOCKET) {
         int nErr = WSAGetLastError();
         if (nErr != WSAEWOULDBLOCK)
-            printf("socket error accept failed: %s\n", nErr);
+            printf("socket error accept failed: %d\n", nErr);
         return;
     }
 
@@ -2861,7 +2861,7 @@ void StartNode(void* parg)
         CNode::SetBannedSetDirty(false); // no need to write down, just read data
         CNode::SweepBanned(); // sweep out unused entries
 
-        printf("Loaded %d banned node ips/subnets from banlist.dat %" PRId64"ms\n",
+        printf("Loaded %zu banned node ips/subnets from banlist.dat %" PRId64"ms\n",
                  banmap.size(), GetTimeMillis() - nStart);
     } else {
         printf("Invalid or missing banlist.dat...recreating\n");
@@ -3377,7 +3377,7 @@ void DumpBanlist()
     if (bandb.Write(banmap))
         CNode::SetBannedSetDirty(false);
 
-    printf("Flushed %d banned node ips/subnets to banlist.dat  %" PRId64"ms\n",
+    printf("Flushed %zu banned node ips/subnets to banlist.dat  %" PRId64"ms\n",
              banmap.size(), GetTimeMillis() - nStart);
 }
 

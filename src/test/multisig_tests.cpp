@@ -19,9 +19,15 @@ using namespace boost::assign;
 
 typedef vector<unsigned char> valtype;
 
+static bool DestinationIsKey(const CTxDestination& destination, const CKeyID& expected)
+{
+    const CKeyID* key = boost::get<CKeyID>(&destination);
+    return key != NULL && *key == expected;
+}
+
 extern uint256 SignatureHash(CScript scriptCode, const CTransaction& txTo, unsigned int nIn, int nHashType);
 extern bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const CTransaction& txTo, unsigned int nIn,
-                         bool fValidatePayToScriptHash, int nHashType);
+                         unsigned int flags, int nHashType);
 
 BOOST_AUTO_TEST_SUITE(multisig_tests)
 
@@ -130,24 +136,25 @@ BOOST_AUTO_TEST_CASE(multisig_verify)
 BOOST_AUTO_TEST_CASE(multisig_IsStandard)
 {
     CKey key[4];
+    txnouttype whichType;
     for (int i = 0; i < 4; i++)
         key[i].MakeNewKey(true);
 
     CScript a_and_b;
     a_and_b << OP_2 << key[0].GetPubKey() << key[1].GetPubKey() << OP_2 << OP_CHECKMULTISIG;
-    BOOST_CHECK(::IsStandard(a_and_b));
+    BOOST_CHECK(::IsStandard(a_and_b, whichType));
 
     CScript a_or_b;
     a_or_b  << OP_1 << key[0].GetPubKey() << key[1].GetPubKey() << OP_2 << OP_CHECKMULTISIG;
-    BOOST_CHECK(::IsStandard(a_or_b));
+    BOOST_CHECK(::IsStandard(a_or_b, whichType));
 
     CScript escrow;
     escrow << OP_2 << key[0].GetPubKey() << key[1].GetPubKey() << key[2].GetPubKey() << OP_3 << OP_CHECKMULTISIG;
-    BOOST_CHECK(::IsStandard(escrow));
+    BOOST_CHECK(::IsStandard(escrow, whichType));
 
     CScript one_of_four;
     one_of_four << OP_1 << key[0].GetPubKey() << key[1].GetPubKey() << key[2].GetPubKey() << key[3].GetPubKey() << OP_4 << OP_CHECKMULTISIG;
-    BOOST_CHECK(!::IsStandard(one_of_four));
+    BOOST_CHECK(!::IsStandard(one_of_four, whichType));
 
     CScript malformed[6];
     malformed[0] << OP_3 << key[0].GetPubKey() << key[1].GetPubKey() << OP_2 << OP_CHECKMULTISIG;
@@ -158,7 +165,7 @@ BOOST_AUTO_TEST_CASE(multisig_IsStandard)
     malformed[5] << OP_1 << key[0].GetPubKey() << key[1].GetPubKey();
 
     for (int i = 0; i < 6; i++)
-        BOOST_CHECK(!::IsStandard(malformed[i]));
+        BOOST_CHECK(!::IsStandard(malformed[i], whichType));
 }
 
 BOOST_AUTO_TEST_CASE(multisig_Solver1)
@@ -175,7 +182,7 @@ BOOST_AUTO_TEST_CASE(multisig_Solver1)
     //
     CBasicKeyStore keystore, emptykeystore, partialkeystore;
     CKey key[3];
-    CTxDestination keyaddr[3];
+    CKeyID keyaddr[3];
     for (int i = 0; i < 3; i++)
     {
         key[i].MakeNewKey(true);
@@ -193,7 +200,7 @@ BOOST_AUTO_TEST_CASE(multisig_Solver1)
         BOOST_CHECK(solutions.size() == 1);
         CTxDestination addr;
         BOOST_CHECK(ExtractDestination(s, addr));
-        BOOST_CHECK(addr == keyaddr[0]);
+        BOOST_CHECK(DestinationIsKey(addr, keyaddr[0]));
         BOOST_CHECK(IsMine(keystore, s));
         BOOST_CHECK(!IsMine(emptykeystore, s));
     }
@@ -206,7 +213,7 @@ BOOST_AUTO_TEST_CASE(multisig_Solver1)
         BOOST_CHECK(solutions.size() == 1);
         CTxDestination addr;
         BOOST_CHECK(ExtractDestination(s, addr));
-        BOOST_CHECK(addr == keyaddr[0]);
+        BOOST_CHECK(DestinationIsKey(addr, keyaddr[0]));
         BOOST_CHECK(IsMine(keystore, s));
         BOOST_CHECK(!IsMine(emptykeystore, s));
     }
@@ -233,8 +240,8 @@ BOOST_AUTO_TEST_CASE(multisig_Solver1)
         vector<CTxDestination> addrs;
         int nRequired;
         BOOST_CHECK(ExtractDestinations(s, whichType, addrs, nRequired));
-        BOOST_CHECK(addrs[0] == keyaddr[0]);
-        BOOST_CHECK(addrs[1] == keyaddr[1]);
+        BOOST_CHECK(DestinationIsKey(addrs[0], keyaddr[0]));
+        BOOST_CHECK(DestinationIsKey(addrs[1], keyaddr[1]));
         BOOST_CHECK(nRequired == 1);
         BOOST_CHECK(IsMine(keystore, s));
         BOOST_CHECK(!IsMine(emptykeystore, s));

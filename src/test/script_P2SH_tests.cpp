@@ -14,7 +14,15 @@ using namespace std;
 // Test routines internal to script.cpp:
 extern uint256 SignatureHash(CScript scriptCode, const CTransaction& txTo, unsigned int nIn, int nHashType);
 extern bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const CTransaction& txTo, unsigned int nIn,
-                         bool fValidatePayToScriptHash, int nHashType);
+                         unsigned int flags, int nHashType);
+extern bool AreInputsStandard(const CTransaction& tx, const MapPrevTx& mapInputs);
+
+static bool
+IsStandardTransaction(const CTransaction& tx)
+{
+    std::string reason;
+    return IsStandardTx(tx, reason);
+}
 
 // Helpers:
 static std::vector<unsigned char>
@@ -40,7 +48,8 @@ Verify(const CScript& scriptSig, const CScript& scriptPubKey, bool fStrict)
     txTo.vin[0].scriptSig = scriptSig;
     txTo.vout[0].nValue = 1;
 
-    return VerifyScript(scriptSig, scriptPubKey, txTo, 0, fStrict, 0);
+    return VerifyScript(scriptSig, scriptPubKey, txTo, 0,
+                        fStrict ? SCRIPT_VERIFY_P2SH : SCRIPT_VERIFY_NONE, 0);
 }
 
 
@@ -82,7 +91,7 @@ BOOST_AUTO_TEST_CASE(sign)
         txFrom.vout[i].scriptPubKey = evalScripts[i];
         txFrom.vout[i+4].scriptPubKey = standardScripts[i];
     }
-    BOOST_CHECK(txFrom.IsStandard());
+    BOOST_CHECK(IsStandardTransaction(txFrom));
 
     CTransaction txTo[8]; // Spending transactions
     for (int i = 0; i < 8; i++)
@@ -172,7 +181,7 @@ BOOST_AUTO_TEST_CASE(set)
     {
         txFrom.vout[i].scriptPubKey = outer[i];
     }
-    BOOST_CHECK(txFrom.IsStandard());
+    BOOST_CHECK(IsStandardTransaction(txFrom));
 
     CTransaction txTo[4]; // Spending transactions
     for (int i = 0; i < 4; i++)
@@ -188,7 +197,7 @@ BOOST_AUTO_TEST_CASE(set)
     for (int i = 0; i < 4; i++)
     {
         BOOST_CHECK_MESSAGE(SignSignature(keystore, txFrom, txTo[i], 0), strprintf("SignSignature %d", i));
-        BOOST_CHECK_MESSAGE(txTo[i].IsStandard(), strprintf("txTo[%d].IsStandard", i));
+        BOOST_CHECK_MESSAGE(IsStandardTransaction(txTo[i]), strprintf("txTo[%d] is standard", i));
     }
 }
 
@@ -235,9 +244,9 @@ BOOST_AUTO_TEST_CASE(switchover)
     fund.SetDestination(notValid.GetID());
 
 
-    // Validation should succeed under old rules (hash is correct):
-    BOOST_CHECK(Verify(scriptSig, fund, false));
-    // Fail under new:
+    // P2SH redemption is always enforced in the active VerifyScript overload, so
+    // the invalid redeem script fails in both policy modes.
+    BOOST_CHECK(!Verify(scriptSig, fund, false));
     BOOST_CHECK(!Verify(scriptSig, fund, true));
 }
 
@@ -297,7 +306,7 @@ BOOST_AUTO_TEST_CASE(AreInputsStandard)
     txTo.vin[2].prevout.hash = txFrom.GetHash();
     BOOST_CHECK(SignSignature(keystore, txFrom, txTo, 2));
 
-    BOOST_CHECK(txTo.AreInputsStandard(mapInputs));
+    BOOST_CHECK(::AreInputsStandard(txTo, mapInputs));
     BOOST_CHECK_EQUAL(txTo.GetP2SHSigOpCount(mapInputs), 1);
 
     // Make sure adding crap to the scriptSigs makes them non-standard:
@@ -305,7 +314,7 @@ BOOST_AUTO_TEST_CASE(AreInputsStandard)
     {
         CScript t = txTo.vin[i].scriptSig;
         txTo.vin[i].scriptSig = (CScript() << 11) + t;
-        BOOST_CHECK(!txTo.AreInputsStandard(mapInputs));
+        BOOST_CHECK(!::AreInputsStandard(txTo, mapInputs));
         txTo.vin[i].scriptSig = t;
     }
 
@@ -320,11 +329,11 @@ BOOST_AUTO_TEST_CASE(AreInputsStandard)
     txToNonStd.vin[1].prevout.hash = txFrom.GetHash();
     txToNonStd.vin[1].scriptSig << OP_0 << Serialize(oneOfEleven);
 
-    BOOST_CHECK(!txToNonStd.AreInputsStandard(mapInputs));
+    BOOST_CHECK(!::AreInputsStandard(txToNonStd, mapInputs));
     BOOST_CHECK_EQUAL(txToNonStd.GetP2SHSigOpCount(mapInputs), 11);
 
     txToNonStd.vin[0].scriptSig.clear();
-    BOOST_CHECK(!txToNonStd.AreInputsStandard(mapInputs));
+    BOOST_CHECK(!::AreInputsStandard(txToNonStd, mapInputs));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

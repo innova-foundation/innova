@@ -214,6 +214,7 @@ endif
 
 TEST_OBJS= \
     obj/test/test_innova.o \
+    obj/test/rpc_tests.o \
     obj/test/bulletproof_ac_tests.o \
     obj/test/finality_tally_tests.o \
     obj/test/fcmp_root_tests.o \
@@ -223,9 +224,16 @@ TEST_OBJS= \
     obj/test/nullsend_binding_tests.o \
     obj/test/coinstake_guard_tests.o \
     obj/test/halfagg_stake_tests.o \
-    obj/test/smessage_hmac_tests.o
+    obj/test/smessage_hmac_tests.o \
+    obj/test/base58_tests.o \
+    obj/test/key_tests.o \
+    obj/test/DoS_tests.o \
+    obj/test/script_P2SH_tests.o \
+    obj/test/script_tests.o \
+    obj/test/transaction_tests.o \
+    obj/test/multisig_tests.o
 
-.PHONY: all innova-build check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-smessage-hmac release-check
+.PHONY: all innova-build check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-smessage-hmac check-generic-hardening release-check
 
 INNOVA_SPINNER ?= 1
 INNOVA_SPINNER_SCRIPT ?= ../contrib/innova_build_spinner.sh
@@ -266,7 +274,10 @@ check-coinstake-guard: test_innova
 check-smessage-hmac: test_innova
 	./test_innova --run_test=smessage_hmac_tests
 
-release-check: innova-build check-bpac check-finality-tally check-fcmp check-smessage-hmac
+check-generic-hardening: test_innova
+	./test_innova --run_test=base58_tests,key_tests,DoS_tests,script_P2SH_tests,script_tests,transaction_tests,multisig_tests,rpc_tests
+
+release-check: innova-build check-bpac check-finality-tally check-fcmp check-smessage-hmac check-generic-hardening
 
 #
 # LevelDB support
