@@ -80,15 +80,31 @@ struct DAGHarness
     // parents[0] is the primary parent and contains the actual mined block hash.
     CBlockIndex* add(unsigned int seed, int height,
                      const std::vector<uint256>& parents, CBlockIndex* pprev,
-                     bool fWriteBlock = true)
+                     bool fWriteBlock = true,
+                     const CScript* pCarrierScript = NULL,
+                     const CScript* pSecondCarrierScript = NULL)
     {
         CBlock block;
         block.nVersion = 1;
         block.hashPrevBlock = pprev ? pprev->GetBlockHash() : uint256(0);
-        block.hashMerkleRoot = uint256(seed);
         block.nTime = (unsigned int)(1700000000 + height);
         block.nBits = bnProofOfWorkLimit.GetCompact();
         block.nNonce = seed;
+        if (pCarrierScript || pSecondCarrierScript)
+        {
+            CTransaction carrier;
+            carrier.nTime = block.nTime;
+            if (pCarrierScript)
+                carrier.vout.push_back(CTxOut(0, *pCarrierScript));
+            if (pSecondCarrierScript)
+                carrier.vout.push_back(CTxOut(0, *pSecondCarrierScript));
+            block.vtx.push_back(carrier);
+            block.hashMerkleRoot = block.BuildMerkleTree();
+        }
+        else
+        {
+            block.hashMerkleRoot = uint256(seed);
+        }
         while (!CheckProofOfWork(block.GetHash(), block.nBits))
             ++block.nNonce;
 
@@ -153,6 +169,55 @@ struct DAGHarness
 bool contains(const std::vector<uint256>& v, const uint256& h)
 {
     return std::find(v.begin(), v.end(), h) != v.end();
+}
+
+CFinalityVote BuildV2CarrierVote(int nEpoch, int nHeight,
+                                 const uint256& hashChoice,
+                                 const uint256& nullifier)
+{
+    CFinalityVote vote;
+    vote.nProofMode = FINALITY_PROOF_TRANSPARENT;
+    vote.nEpoch = nEpoch;
+    vote.hashBlock = hashChoice;
+    vote.nHeight = nHeight;
+    vote.nTime = 1700000000 + nHeight;
+    vote.nVoteWeight = 1000;
+    vote.nReward = 0;
+    vote.nullifier = nullifier;
+    return vote;
+}
+
+CFinalityTallyCertificate BuildV2CarrierCertificate(
+    int nEpoch, int nHeight, const uint256& hashChoice, int nTier,
+    const uint256& voteNullifier)
+{
+    CFinalityTallyCertificate cert;
+    cert.nVersion = 2;
+    cert.nEpoch = nEpoch;
+    cert.hashBlock = hashChoice;
+    cert.nHeight = nHeight;
+    cert.nTier = nTier;
+    cert.nConsecutiveHardCount =
+        nTier >= FINALITY_HARD ? FINALITY_CONFIRMATION_EPOCHS : 0;
+    cert.nTransparentActiveWeight = 1000;
+    cert.nTransparentWinningWeight = 1000;
+    cert.vVoteNullifiers.push_back(voteNullifier);
+    return cert;
+}
+
+uint256 BuildExpectedV2VoteSetRoot(
+    int nEpoch, const std::map<uint256, uint256>& mapLeaves)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("Innova/IDAG/EpochVoteSetRoot/v1");
+    ss << nEpoch;
+    for (std::map<uint256, uint256>::const_iterator it = mapLeaves.begin();
+         it != mapLeaves.end(); ++it)
+    {
+        ss << it->first;
+        ss << it->second;
+    }
+    return ss.GetHash();
 }
 
 } // namespace
@@ -383,6 +448,233 @@ BOOST_AUTO_TEST_CASE(v3_migration_base_is_staged_from_exact_boundary)
             expectedEpochOrder.push_back(hash);
     }
     BOOST_CHECK(state.vBlockHashes == expectedEpochOrder);
+}
+
+BOOST_AUTO_TEST_CASE(v3_ignores_unconnected_merge_finality_carriers)
+{
+    DAGHarness h;
+    const int E = GetEpochForHeight(FORK_HEIGHT_EPOCH_STATE_V3);
+    const int hStart = GetEpochBoundaryHeight(E, FORK_HEIGHT_EPOCH_STATE_V3);
+    const int hEnd = GetEpochBoundaryHeight(E + 1,
+                                            FORK_HEIGHT_EPOCH_STATE_V3) - 1;
+    const int interval = hEnd - hStart + 1;
+
+    // This certificate is canonically encoded but deliberately has never
+    // passed CheckTallyCertificate/ConnectBlock. A merge sibling may carry it
+    // as ordinary transaction data, but it cannot influence finality state.
+    CFinalityTallyCertificate unvalidated;
+    unvalidated.nVersion = 2;
+    unvalidated.nEpoch = E;
+    unvalidated.hashBlock = uint256(0xFA110001);
+    unvalidated.nHeight = hStart + 1;
+    unvalidated.nTier = FINALITY_HARD;
+    unvalidated.nConsecutiveHardCount = FINALITY_CONFIRMATION_EPOCHS;
+    unvalidated.nTransparentActiveWeight = 3;
+    unvalidated.nTransparentWinningWeight = 3;
+    unvalidated.MarkCanonicalEnvelope();
+    CScript carrierScript;
+    BOOST_REQUIRE(BuildCanonicalFinalityTallyCertificateScript(
+        unvalidated, carrierScript));
+
+    std::vector<uint256> none;
+    CBlockIndex* pBefore = h.add(0xFA110000, hStart - 1, none, NULL);
+    std::vector<uint256> beforeParent(1, pBefore->GetBlockHash());
+    CBlockIndex* pBase = h.add(0xFA110010, hStart, beforeParent, pBefore);
+    std::vector<uint256> baseParent(1, pBase->GetBlockHash());
+    CBlockIndex* pSide = h.add(0xFA110011, hStart + 1, baseParent,
+                               pBase, true, &carrierScript);
+    CBlockIndex* pMain = h.add(0xFA110012, hStart + 1, baseParent, pBase);
+    std::vector<uint256> mergeParents;
+    mergeParents.push_back(pMain->GetBlockHash());
+    mergeParents.push_back(pSide->GetBlockHash());
+    pMain = h.add(0xFA110013, hStart + 2, mergeParents, pMain);
+    for (int nHeight = hStart + 3; nHeight <= hEnd; ++nHeight)
+    {
+        std::vector<uint256> parents(1, pMain->GetBlockHash());
+        pMain = h.add(0xFA110000U +
+                          (unsigned int)(nHeight - hStart + 0x20),
+                      nHeight, parents, pMain);
+    }
+
+    CEpochState prev;
+    prev.nEpoch = E - 1;
+    prev.hashBoundaryBlock = pBefore->GetBlockHash();
+    prev.nHeightStart = GetEpochBoundaryHeight(E - 1, hStart);
+    prev.nHeightEnd = hStart - 1;
+    CCurveTree prevTree;
+    CEpochState state;
+    CCurveTree tree;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(g_dagManager.BuildEpochState(
+                              E, interval, pMain, state, tree, strError,
+                              &prev, &prevTree), strError);
+    BOOST_CHECK(contains(state.vBlockHashes, pSide->GetBlockHash()));
+    BOOST_CHECK_EQUAL(state.nFinalityTier, FINALITY_NONE);
+    BOOST_CHECK(state.hashFinalityCertificate == 0);
+}
+
+BOOST_AUTO_TEST_CASE(v2_preserves_pre_fork_merge_finality_carrier_bytes)
+{
+    DAGHarness h;
+    const int nCarrierFork = FORK_HEIGHT_CONNECTED_FINALITY_CARRIER;
+    const int E = GetEpochForHeight(nCarrierFork);
+    const int hStart = GetEpochBoundaryHeight(E, nCarrierFork);
+    const int hEnd = GetEpochBoundaryHeight(E + 1, nCarrierFork) - 1;
+    const int hCarrier = nCarrierFork - 1;
+    BOOST_REQUIRE_EQUAL(nCarrierFork, FORK_HEIGHT_DAG + 2);
+    BOOST_REQUIRE(hCarrier >= hStart);
+    BOOST_REQUIRE(hEnd < FORK_HEIGHT_EPOCH_STATE_V3);
+
+    const uint256 hashChoice(0xC2F10001);
+    const uint256 nullifier(0xC2F10002);
+    const CFinalityVote vote = BuildV2CarrierVote(
+        E, hCarrier, hashChoice, nullifier);
+    const CFinalityTallyCertificate cert = BuildV2CarrierCertificate(
+        E, hCarrier, hashChoice, FINALITY_HARD, nullifier);
+    const CScript voteScript = BuildFinalityVoteScript(vote);
+    const CScript certScript = BuildFinalityTallyCertificateScript(cert);
+
+    std::vector<uint256> none;
+    CBlockIndex* pBefore = h.add(0xC2F10010, hStart - 1, none, NULL);
+    std::vector<uint256> beforeParent(1, pBefore->GetBlockHash());
+    CBlockIndex* pBase = h.add(0xC2F10011, hStart, beforeParent, pBefore);
+    std::vector<uint256> baseParent(1, pBase->GetBlockHash());
+    CBlockIndex* pSide = h.add(0xC2F10012, hCarrier, baseParent,
+                               pBase, true, &certScript, &voteScript);
+    CBlockIndex* pMain = h.add(0xC2F10013, hCarrier, baseParent, pBase);
+    std::vector<uint256> mergeParents;
+    mergeParents.push_back(pMain->GetBlockHash());
+    mergeParents.push_back(pSide->GetBlockHash());
+    pMain = h.add(0xC2F10014, nCarrierFork, mergeParents, pMain);
+    for (int nHeight = nCarrierFork + 1; nHeight <= hEnd; ++nHeight)
+    {
+        std::vector<uint256> parents(1, pMain->GetBlockHash());
+        pMain = h.add(0xC2F11000U +
+                          (unsigned int)(nHeight - nCarrierFork),
+                      nHeight, parents, pMain);
+    }
+    std::vector<uint256> crossingParents(1, pMain->GetBlockHash());
+    CBlockIndex* pCrossing = h.add(0xC2F1FFFF, hEnd + 1,
+                                    crossingParents, pMain);
+
+    CEpochState prev;
+    prev.nEpoch = E - 1;
+    prev.hashBoundaryBlock = pBefore->GetBlockHash();
+    prev.nHeightStart = GetEpochBoundaryHeight(E - 1, hStart);
+    prev.nHeightEnd = hStart - 1;
+    CCurveTree prevTree;
+    CEpochState state;
+    CCurveTree tree;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(g_dagManager.BuildEpochStateV2Compat(
+                              E, hEnd - hStart + 1, pCrossing,
+                              state, tree, strError, &prev, &prevTree),
+                          strError);
+
+    std::map<uint256, uint256> expectedLeaves;
+    expectedLeaves[nullifier] = hashChoice;
+    BOOST_CHECK(contains(state.vBlockHashes, pSide->GetBlockHash()));
+    BOOST_CHECK_EQUAL(state.nFinalityTier, FINALITY_HARD);
+    BOOST_CHECK(state.hashFinalityCertificate == cert.GetHash());
+    BOOST_CHECK(state.hashVoteSetRoot ==
+                BuildExpectedV2VoteSetRoot(E, expectedLeaves));
+}
+
+BOOST_AUTO_TEST_CASE(v2_ignores_post_fork_merge_finality_carriers)
+{
+    DAGHarness h;
+    const int nCarrierFork = FORK_HEIGHT_CONNECTED_FINALITY_CARRIER;
+    const int E = GetEpochForHeight(nCarrierFork);
+    const int hStart = GetEpochBoundaryHeight(E, nCarrierFork);
+    const int hEnd = GetEpochBoundaryHeight(E + 1, nCarrierFork) - 1;
+    BOOST_REQUIRE_EQUAL(nCarrierFork, FORK_HEIGHT_DAG + 2);
+    BOOST_REQUIRE(nCarrierFork >= hStart);
+    BOOST_REQUIRE(hEnd < FORK_HEIGHT_EPOCH_STATE_V3);
+
+    const uint256 hashCanonicalChoice(0xC2F20001);
+    const uint256 canonicalNullifier(0xC2F20002);
+    const CFinalityVote canonicalVote = BuildV2CarrierVote(
+        E, nCarrierFork, hashCanonicalChoice, canonicalNullifier);
+    const CFinalityTallyCertificate canonicalCert =
+        BuildV2CarrierCertificate(E, nCarrierFork,
+                                  hashCanonicalChoice, FINALITY_SOFT,
+                                  canonicalNullifier);
+    const CScript canonicalVoteScript =
+        BuildFinalityVoteScript(canonicalVote);
+    const CScript canonicalCertScript =
+        BuildFinalityTallyCertificateScript(canonicalCert);
+
+    // These parse as legacy V2 carriers but have never passed ConnectBlock's
+    // contextual vote/certificate validation.  Their stronger tier and
+    // distinct vote leaf make accidental inclusion directly observable.
+    const uint256 hashMergeChoice(0xC2F20011);
+    const uint256 mergeNullifier(0xC2F20012);
+    const CFinalityVote mergeVote = BuildV2CarrierVote(
+        E, nCarrierFork, hashMergeChoice, mergeNullifier);
+    const CFinalityTallyCertificate mergeCert =
+        BuildV2CarrierCertificate(E, nCarrierFork,
+                                  hashMergeChoice, FINALITY_HARD,
+                                  mergeNullifier);
+    const CScript mergeVoteScript = BuildFinalityVoteScript(mergeVote);
+    const CScript mergeCertScript =
+        BuildFinalityTallyCertificateScript(mergeCert);
+
+    std::vector<uint256> none;
+    CBlockIndex* pBefore = h.add(0xC2F20020, hStart - 1, none, NULL);
+    CBlockIndex* pMain = pBefore;
+    for (int nHeight = hStart; nHeight < nCarrierFork; ++nHeight)
+    {
+        std::vector<uint256> parents(1, pMain->GetBlockHash());
+        pMain = h.add(0xC2F20020U +
+                          (unsigned int)(nHeight - hStart + 1),
+                      nHeight, parents, pMain);
+    }
+    std::vector<uint256> forkParent(1, pMain->GetBlockHash());
+    CBlockIndex* pSide = h.add(0xC2F20030, nCarrierFork, forkParent,
+                               pMain, true, &mergeCertScript,
+                               &mergeVoteScript);
+    CBlockIndex* pCanonical = h.add(
+        0xC2F20031, nCarrierFork, forkParent, pMain, true,
+        &canonicalCertScript, &canonicalVoteScript);
+    std::vector<uint256> mergeParents;
+    mergeParents.push_back(pCanonical->GetBlockHash());
+    mergeParents.push_back(pSide->GetBlockHash());
+    pMain = h.add(0xC2F20032, nCarrierFork + 1,
+                  mergeParents, pCanonical);
+    for (int nHeight = nCarrierFork + 2; nHeight <= hEnd; ++nHeight)
+    {
+        std::vector<uint256> parents(1, pMain->GetBlockHash());
+        pMain = h.add(0xC2F21000U +
+                          (unsigned int)(nHeight - nCarrierFork),
+                      nHeight, parents, pMain);
+    }
+    std::vector<uint256> crossingParents(1, pMain->GetBlockHash());
+    CBlockIndex* pCrossing = h.add(0xC2F2FFFF, hEnd + 1,
+                                    crossingParents, pMain);
+
+    CEpochState prev;
+    prev.nEpoch = E - 1;
+    prev.hashBoundaryBlock = pBefore->GetBlockHash();
+    prev.nHeightStart = GetEpochBoundaryHeight(E - 1, hStart);
+    prev.nHeightEnd = hStart - 1;
+    CCurveTree prevTree;
+    CEpochState state;
+    CCurveTree tree;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(g_dagManager.BuildEpochStateV2Compat(
+                              E, hEnd - hStart + 1, pCrossing,
+                              state, tree, strError, &prev, &prevTree),
+                          strError);
+
+    std::map<uint256, uint256> expectedLeaves;
+    expectedLeaves[canonicalNullifier] = hashCanonicalChoice;
+    BOOST_CHECK(contains(state.vBlockHashes, pSide->GetBlockHash()));
+    BOOST_CHECK(contains(state.vBlockHashes, pCanonical->GetBlockHash()));
+    BOOST_CHECK_EQUAL(state.nFinalityTier, FINALITY_SOFT);
+    BOOST_CHECK(state.hashFinalityCertificate == canonicalCert.GetHash());
+    BOOST_CHECK(state.hashFinalityCertificate != mergeCert.GetHash());
+    BOOST_CHECK(state.hashVoteSetRoot ==
+                BuildExpectedV2VoteSetRoot(E, expectedLeaves));
 }
 
 BOOST_AUTO_TEST_CASE(v3_reorg_suffix_includes_changed_migration_base)

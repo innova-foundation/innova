@@ -934,7 +934,15 @@ Value getblocktemplate(const Array& params, bool fHelp)
     // in main.cpp); reporting the raw GetValueOut() base here would tell an external/pool
     // miner to pay a CN amount no block can carry -> its block gets DoS-rejected.
     int64_t nTmplFinalityReward = 0;
-    for (const CFinalityVote& fv : ExtractFinalityVotesFromBlock(*pblock))
+    std::vector<CFinalityVote> vTemplateVotes;
+    FinalityEnvelopeDecodeResult templateEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
+    if (!ExtractFinalityVotesFromBlockForHeight(
+            *pblock, pindexPrev->nHeight + 1, vTemplateVotes,
+            &templateEnvelopeFailure))
+        throw JSONRPCError(RPC_INTERNAL_ERROR,
+                           strprintf("locally-built block template has invalid finality envelope (decode=%d)",
+                                     (int)templateEnvelopeFailure));
+    for (const CFinalityVote& fv : vTemplateVotes)
         nTmplFinalityReward += fv.nReward;
     int64_t nTmplCNBase = pblock->vtx[0].GetValueOut() - nTmplFinalityReward;
     if(payee != CScript()){

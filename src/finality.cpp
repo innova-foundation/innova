@@ -25,6 +25,59 @@
 
 CFinalityTracker g_finalityTracker;
 
+static bool ReturnFinalityResult(FinalityResult* pResult,
+                                 FinalityResult result,
+                                 bool fReturn)
+{
+    if (pResult)
+        *pResult = result;
+    return fReturn;
+}
+
+/** Resolve the finalized epoch anchor without conflating "nothing has
+ * finalized yet" with missing/corrupt local persistence.  The former makes a
+ * private vote/certificate deterministically premature; only an expected
+ * state record that cannot be recovered is a transient local-state failure. */
+static FinalityResult ResolveFinalityAnchorForContext(
+    CTxDB& txdb, int nContextHeight, int nLiveFinalizedHeight,
+    CEpochState& stateOut)
+{
+    int nFinalizedHeight = 0;
+    if (nContextHeight >= 0)
+    {
+        const int nAsOfEpoch = GetEpochForHeight(nContextHeight) - 1;
+        const bool fHaveProgress =
+            nContextHeight >= FORK_HEIGHT_EPOCH_STATE_V2
+                ? g_dagManager.TryGetDeterministicFinalizedHeight(
+                      txdb, nAsOfEpoch, nFinalizedHeight)
+                : g_dagManager.TryGetDeterministicFinalizedHeight(
+                      nAsOfEpoch, nFinalizedHeight);
+        if (!fHaveProgress)
+            return FINALITY_RESULT_LOCAL_STATE;
+        if (nFinalizedHeight <= 0)
+            return FINALITY_RESULT_INVALID;
+
+        const bool fHaveState =
+            nContextHeight >= FORK_HEIGHT_EPOCH_STATE_V2
+                ? g_dagManager.GetFinalizedEpochStateAsOf(
+                      txdb, nContextHeight, stateOut)
+                : g_dagManager.GetFinalizedEpochStateAsOf(
+                      nContextHeight, stateOut);
+        if (!fHaveState ||
+            stateOut.nEpoch != GetEpochForHeight(nFinalizedHeight) ||
+            stateOut.nFinalizedHeightAsOf < nFinalizedHeight)
+            return FINALITY_RESULT_LOCAL_STATE;
+        return FINALITY_RESULT_OK;
+    }
+
+    if (nLiveFinalizedHeight <= 0)
+        return FINALITY_RESULT_INVALID;
+    if (!g_dagManager.GetLastFinalizedEpochState(stateOut) ||
+        stateOut.nEpoch != GetEpochForHeight(nLiveFinalizedHeight))
+        return FINALITY_RESULT_LOCAL_STATE;
+    return FINALITY_RESULT_OK;
+}
+
 
 // ---------------------------------------------------------------------------
 // POEM Entropy
@@ -250,6 +303,56 @@ bool CFinalityCommitteeRotation::GetNewCommittee(std::vector<CPubKey>& vOut,
     }
     nMOut = nNewThresholdM;
     setHashOut = ComputeFinalityTallyCommitteeHash(nMOut, vOut);
+    return true;
+}
+
+bool SelectCanonicalFinalityCommitteeRotation(
+    const std::vector<CFinalityCommitteeRotationCarrier>& vCarriers,
+    int nV3ActivationHeight,
+    CFinalityCommitteeRotation& rotationOut,
+    uint256* phashCarrierOut)
+{
+    if (vCarriers.empty())
+        return false;
+
+    const int nEffectiveEpoch = vCarriers[0].rotation.nEffectiveEpoch;
+    const CFinalityCommitteeRotationCarrier* pLegacyWinner = NULL;
+    const CFinalityCommitteeRotationCarrier* pV3Winner = NULL;
+    for (std::vector<CFinalityCommitteeRotationCarrier>::const_iterator it =
+             vCarriers.begin(); it != vCarriers.end(); ++it)
+    {
+        if (it->nBlockHeight < 0 ||
+            it->rotation.nEffectiveEpoch != nEffectiveEpoch)
+            return false;
+
+        if (it->nBlockHeight < nV3ActivationHeight)
+        {
+            if (pLegacyWinner == NULL ||
+                it->rotation.GetSignatureDigest() <
+                    pLegacyWinner->rotation.GetSignatureDigest() ||
+                (it->rotation.GetSignatureDigest() ==
+                     pLegacyWinner->rotation.GetSignatureDigest() &&
+                 it->hashBlock < pLegacyWinner->hashBlock))
+                pLegacyWinner = &*it;
+        }
+        else if (pV3Winner == NULL ||
+                 it->nBlockHeight < pV3Winner->nBlockHeight ||
+                 (it->nBlockHeight == pV3Winner->nBlockHeight &&
+                  it->hashBlock < pV3Winner->hashBlock))
+        {
+            pV3Winner = &*it;
+        }
+    }
+
+    // A pre-V3 carrier was already interpreted under the historical rule and
+    // cannot be reinterpreted merely because the database later crosses V3.
+    const CFinalityCommitteeRotationCarrier* pWinner =
+        pLegacyWinner != NULL ? pLegacyWinner : pV3Winner;
+    if (pWinner == NULL)
+        return false;
+    rotationOut = pWinner->rotation;
+    if (phashCarrierOut)
+        *phashCarrierOut = pWinner->hashBlock;
     return true;
 }
 
@@ -1459,6 +1562,135 @@ bool DecryptFinalityTallyAggregatePartialForRecipient(const CFinalityTallyAggreg
     return true;
 }
 
+static bool CanonicalVoteHasExactEmptyPrivateProof(const CFinalityVote& vote)
+{
+    CDataStream actual(SER_NETWORK, PROTOCOL_VERSION);
+    CDataStream expected(SER_NETWORK, PROTOCOL_VERSION);
+    actual << vote.privateProof;
+    expected << CPrivateFinalityVoteProof();
+    return actual.size() == expected.size() &&
+           std::equal(actual.begin(), actual.end(), expected.begin());
+}
+
+static bool CanonicalCertificateHasExactEmptyOmittedFields(
+    const CFinalityTallyCertificate& cert)
+{
+    CFinalityTallyCertificate empty;
+    CDataStream actual(SER_NETWORK, PROTOCOL_VERSION);
+    CDataStream expected(SER_NETWORK, PROTOCOL_VERSION);
+    actual << cert.activeWeightCommitment << cert.winningWeightCommitment
+           << cert.rewardBudgetCommitment << cert.vTallyShareHashes
+           << cert.vchAggregateThresholdProof << cert.vchRewardBudgetProof
+           << cert.vSignerIndexes << cert.vSignerSigs;
+    expected << empty.activeWeightCommitment << empty.winningWeightCommitment
+             << empty.rewardBudgetCommitment << empty.vTallyShareHashes
+             << empty.vchAggregateThresholdProof << empty.vchRewardBudgetProof
+             << empty.vSignerIndexes << empty.vSignerSigs;
+    return actual.size() == expected.size() &&
+           std::equal(actual.begin(), actual.end(), expected.begin());
+}
+
+bool CCanonicalFinalityVoteEnvelope::FromLogical(const CFinalityVote& vote)
+{
+    if (!vote.IsCanonicalEnvelope() ||
+        vote.nProofMode != FINALITY_PROOF_TRANSPARENT ||
+        !CanonicalVoteHasExactEmptyPrivateProof(vote) ||
+        vote.vStakeProof.size() > FINALITY_MAX_STAKE_PROOFS ||
+        vote.vchPubKey.size() > 65 || vote.vchSig.size() > 80)
+        return false;
+
+    nLogicalVersion = FINALITY_CANONICAL_VOTE_VERSION;
+    nEpoch = vote.nEpoch;
+    hashBlock = vote.hashBlock;
+    nHeight = vote.nHeight;
+    nTime = vote.nTime;
+    nVoteWeight = vote.nVoteWeight;
+    nReward = vote.nReward;
+    nullifier = vote.nullifier;
+    vStakeProof = vote.vStakeProof;
+    vchPubKey = vote.vchPubKey;
+    vchSig = vote.vchSig;
+    return true;
+}
+
+bool CCanonicalFinalityVoteEnvelope::ToLogical(CFinalityVote& voteOut) const
+{
+    if (nLogicalVersion != FINALITY_CANONICAL_VOTE_VERSION ||
+        vStakeProof.size() > FINALITY_MAX_STAKE_PROOFS ||
+        vchPubKey.size() > 65 || vchSig.size() > 80)
+        return false;
+
+    CFinalityVote vote;
+    vote.nProofMode = FINALITY_PROOF_TRANSPARENT;
+    vote.nEpoch = nEpoch;
+    vote.hashBlock = hashBlock;
+    vote.nHeight = nHeight;
+    vote.nTime = nTime;
+    vote.nVoteWeight = nVoteWeight;
+    vote.nReward = nReward;
+    vote.nullifier = nullifier;
+    vote.vStakeProof = vStakeProof;
+    vote.vchPubKey = vchPubKey;
+    vote.vchSig = vchSig;
+    vote.MarkCanonicalEnvelope();
+    voteOut = vote;
+    return true;
+}
+
+bool CCanonicalFinalityTallyCertificateEnvelope::FromLogical(
+    const CFinalityTallyCertificate& cert)
+{
+    if (!cert.IsCanonicalEnvelope() || cert.nVersion < 1 || cert.nVersion > 2 ||
+        cert.HasPrivateWeight() ||
+        !CanonicalCertificateHasExactEmptyOmittedFields(cert) ||
+        cert.vVoteNullifiers.size() > FINALITY_CANONICAL_CERT_MAX_NULLIFIERS ||
+        !cert.vSignerIndexes.empty() || !cert.vSignerSigs.empty())
+        return false;
+
+    nLogicalVersion = FINALITY_CANONICAL_TALLY_CERT_VERSION;
+    nCertificateVersion = cert.nVersion;
+    nEpoch = cert.nEpoch;
+    hashBlock = cert.hashBlock;
+    nHeight = cert.nHeight;
+    nTier = cert.nTier;
+    nConsecutiveHardCount = cert.nConsecutiveHardCount;
+    hashCurveRoot = cert.hashCurveRoot;
+    hashNullifierRoot = cert.hashNullifierRoot;
+    committeeSetHash = cert.committeeSetHash;
+    nTransparentActiveWeight = cert.nTransparentActiveWeight;
+    nTransparentWinningWeight = cert.nTransparentWinningWeight;
+    nTransparentRewardBudget = cert.nTransparentRewardBudget;
+    vVoteNullifiers = cert.vVoteNullifiers;
+    return true;
+}
+
+bool CCanonicalFinalityTallyCertificateEnvelope::ToLogical(
+    CFinalityTallyCertificate& certOut) const
+{
+    if (nLogicalVersion != FINALITY_CANONICAL_TALLY_CERT_VERSION ||
+        nCertificateVersion < 1 || nCertificateVersion > 2 ||
+        vVoteNullifiers.size() > FINALITY_CANONICAL_CERT_MAX_NULLIFIERS)
+        return false;
+
+    CFinalityTallyCertificate cert;
+    cert.nVersion = nCertificateVersion;
+    cert.nEpoch = nEpoch;
+    cert.hashBlock = hashBlock;
+    cert.nHeight = nHeight;
+    cert.nTier = nTier;
+    cert.nConsecutiveHardCount = nConsecutiveHardCount;
+    cert.hashCurveRoot = hashCurveRoot;
+    cert.hashNullifierRoot = hashNullifierRoot;
+    cert.committeeSetHash = committeeSetHash;
+    cert.nTransparentActiveWeight = nTransparentActiveWeight;
+    cert.nTransparentWinningWeight = nTransparentWinningWeight;
+    cert.nTransparentRewardBudget = nTransparentRewardBudget;
+    cert.vVoteNullifiers = vVoteNullifiers;
+    cert.MarkCanonicalEnvelope();
+    certOut = cert;
+    return true;
+}
+
 CScript BuildFinalityVoteScript(const CFinalityVote& vote)
 {
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
@@ -1533,6 +1765,295 @@ static bool ExtractTaggedOpReturnPayload(const CScript& scriptPubKey,
     return !vPayloadOut.empty();
 }
 
+static bool ExtractCanonicalTaggedOpReturnPayload(
+    const CScript& scriptPubKey, const unsigned char* pchTag,
+    std::vector<unsigned char>& vPayloadOut)
+{
+    if (!ExtractTaggedOpReturnPayload(scriptPubKey, pchTag, vPayloadOut))
+        return false;
+
+    const unsigned int nDataSize = (unsigned int)vPayloadOut.size() + 4;
+    CScript::const_iterator pc = scriptPubKey.begin();
+    ++pc; // OP_RETURN was checked by ExtractTaggedOpReturnPayload.
+    const opcodetype opcode = (opcodetype)*pc;
+    if (nDataSize < OP_PUSHDATA1)
+        return opcode == (opcodetype)nDataSize;
+    if (nDataSize <= 0xff)
+        return opcode == OP_PUSHDATA1;
+    if (nDataSize <= 0xffff)
+        return opcode == OP_PUSHDATA2;
+    return opcode == OP_PUSHDATA4;
+}
+
+static bool ScriptCarriesFinalityTag(const CScript& scriptPubKey,
+                                     const unsigned char* pchTag)
+{
+    if (scriptPubKey.size() > MAX_SCRIPT_SIZE)
+        return false;
+    CScript::const_iterator pc = scriptPubKey.begin();
+    if (pc == scriptPubKey.end() || *pc++ != OP_RETURN ||
+        pc == scriptPubKey.end())
+        return false;
+
+    unsigned int nSize = 0;
+    const opcodetype opcode = (opcodetype)*pc++;
+    if (opcode < OP_PUSHDATA1)
+        nSize = opcode;
+    else if (opcode == OP_PUSHDATA1)
+    {
+        if (scriptPubKey.end() - pc < 1)
+            return false;
+        nSize = *pc++;
+    }
+    else if (opcode == OP_PUSHDATA2)
+    {
+        if (scriptPubKey.end() - pc < 2)
+            return false;
+        nSize = (unsigned int)pc[0] | ((unsigned int)pc[1] << 8);
+        pc += 2;
+    }
+    else if (opcode == OP_PUSHDATA4)
+    {
+        if (scriptPubKey.end() - pc < 4)
+            return false;
+        nSize = (unsigned int)pc[0] |
+                ((unsigned int)pc[1] << 8) |
+                ((unsigned int)pc[2] << 16) |
+                ((unsigned int)pc[3] << 24);
+        pc += 4;
+    }
+    else
+        return false;
+
+    if (nSize < 4 || nSize > MAX_SCRIPT_SIZE ||
+        (unsigned int)(scriptPubKey.end() - pc) != nSize)
+        return false;
+    return memcmp(&pc[0], pchTag, 4) == 0;
+}
+
+// Wire-only readers for historical IFVT/IFTC carriers: they keep the legacy rule of
+// decoding oversized objects and rejecting them in IsValid, rather than ignoring them.
+// Input is capped to MAX_SCRIPT_SIZE by ExtractTaggedOpReturnPayload.
+class CLegacyPrivateFinalityVoteProofWire
+{
+public:
+    int nVersion;
+    int nProofMode;
+    int nEpoch;
+    uint256 hashEpochBlock;
+    uint256 hashCurveRoot;
+    uint256 hashNullifierRoot;
+    uint256 nullifier;
+    CPedersenCommitment stakeWeightCommitment;
+    CPedersenCommitment rewardCommitment;
+    CFCMPProof fcmpProof;
+    CNullStakeKernelProofV2 nullStakeV2Proof;
+    CNullStakeKernelProofV3 nullStakeV3Proof;
+    std::vector<unsigned char> vchRewardOutputCommitment;
+    std::vector<unsigned char> vchBindingProof;
+    std::vector<unsigned char> vchNullifierPoint;
+    std::vector<unsigned char> vchNullifierBindingProof;
+
+    CLegacyPrivateFinalityVoteProofWire()
+        : nVersion(1), nProofMode(FINALITY_PROOF_TRANSPARENT), nEpoch(0) {}
+
+    IMPLEMENT_SERIALIZE
+    (
+        CLegacyPrivateFinalityVoteProofWire* pthis =
+            const_cast<CLegacyPrivateFinalityVoteProofWire*>(this);
+        READWRITE(pthis->nVersion);
+        READWRITE(pthis->nProofMode);
+        READWRITE(pthis->nEpoch);
+        READWRITE(pthis->hashEpochBlock);
+        READWRITE(pthis->hashCurveRoot);
+        READWRITE(pthis->hashNullifierRoot);
+        READWRITE(pthis->nullifier);
+        READWRITE(pthis->stakeWeightCommitment);
+        READWRITE(pthis->rewardCommitment);
+        READWRITE(pthis->fcmpProof);
+        READWRITE(pthis->nullStakeV2Proof);
+        READWRITE(pthis->nullStakeV3Proof);
+        READWRITE(pthis->vchRewardOutputCommitment);
+        READWRITE(pthis->vchBindingProof);
+        unsigned char fHasNfBind =
+            (pthis->vchNullifierPoint.empty() &&
+             pthis->vchNullifierBindingProof.empty()) ? 0 : 1;
+        READWRITE(fHasNfBind);
+        if (fHasNfBind)
+        {
+            READWRITE(pthis->vchNullifierPoint);
+            READWRITE(pthis->vchNullifierBindingProof);
+        }
+    )
+
+    void ToLogical(CPrivateFinalityVoteProof& proof) const
+    {
+        proof = CPrivateFinalityVoteProof();
+        proof.nVersion = nVersion;
+        proof.nProofMode = nProofMode;
+        proof.nEpoch = nEpoch;
+        proof.hashEpochBlock = hashEpochBlock;
+        proof.hashCurveRoot = hashCurveRoot;
+        proof.hashNullifierRoot = hashNullifierRoot;
+        proof.nullifier = nullifier;
+        proof.stakeWeightCommitment = stakeWeightCommitment;
+        proof.rewardCommitment = rewardCommitment;
+        proof.fcmpProof = fcmpProof;
+        proof.nullStakeV2Proof = nullStakeV2Proof;
+        proof.nullStakeV3Proof = nullStakeV3Proof;
+        proof.vchRewardOutputCommitment = vchRewardOutputCommitment;
+        proof.vchBindingProof = vchBindingProof;
+        proof.vchNullifierPoint = vchNullifierPoint;
+        proof.vchNullifierBindingProof = vchNullifierBindingProof;
+    }
+};
+
+class CLegacyFinalityVoteWire
+{
+public:
+    int nProofMode;
+    int nEpoch;
+    uint256 hashBlock;
+    int nHeight;
+    int64_t nTime;
+    int64_t nVoteWeight;
+    int64_t nReward;
+    uint256 nullifier;
+    std::vector<COutPoint> vStakeProof;
+    std::vector<unsigned char> vchPubKey;
+    std::vector<unsigned char> vchSig;
+    CLegacyPrivateFinalityVoteProofWire privateProof;
+
+    CLegacyFinalityVoteWire()
+        : nProofMode(FINALITY_PROOF_TRANSPARENT), nEpoch(0), nHeight(0),
+          nTime(0), nVoteWeight(0), nReward(0) {}
+
+    IMPLEMENT_SERIALIZE
+    (
+        CLegacyFinalityVoteWire* pthis =
+            const_cast<CLegacyFinalityVoteWire*>(this);
+        READWRITE(pthis->nProofMode);
+        READWRITE(pthis->nEpoch);
+        READWRITE(pthis->hashBlock);
+        READWRITE(pthis->nHeight);
+        READWRITE(VARINT(pthis->nTime));
+        READWRITE(VARINT(pthis->nVoteWeight));
+        READWRITE(VARINT(pthis->nReward));
+        READWRITE(pthis->nullifier);
+        READWRITE(pthis->vStakeProof);
+        READWRITE(pthis->vchPubKey);
+        READWRITE(pthis->vchSig);
+        READWRITE(pthis->privateProof);
+    )
+
+    void ToLogical(CFinalityVote& vote) const
+    {
+        vote = CFinalityVote();
+        vote.nProofMode = nProofMode;
+        vote.nEpoch = nEpoch;
+        vote.hashBlock = hashBlock;
+        vote.nHeight = nHeight;
+        vote.nTime = nTime;
+        vote.nVoteWeight = nVoteWeight;
+        vote.nReward = nReward;
+        vote.nullifier = nullifier;
+        vote.vStakeProof = vStakeProof;
+        vote.vchPubKey = vchPubKey;
+        vote.vchSig = vchSig;
+        privateProof.ToLogical(vote.privateProof);
+        vote.fCanonicalEnvelope = false;
+    }
+};
+
+class CLegacyFinalityCertificateWire
+{
+public:
+    int nVersion;
+    int nEpoch;
+    uint256 hashBlock;
+    int nHeight;
+    int nTier;
+    int nConsecutiveHardCount;
+    uint256 hashCurveRoot;
+    uint256 hashNullifierRoot;
+    uint256 committeeSetHash;
+    CPedersenCommitment activeWeightCommitment;
+    CPedersenCommitment winningWeightCommitment;
+    CPedersenCommitment rewardBudgetCommitment;
+    int64_t nTransparentActiveWeight;
+    int64_t nTransparentWinningWeight;
+    int64_t nTransparentRewardBudget;
+    std::vector<uint256> vVoteNullifiers;
+    std::vector<uint256> vTallyShareHashes;
+    std::vector<unsigned char> vchAggregateThresholdProof;
+    std::vector<unsigned char> vchRewardBudgetProof;
+    std::vector<uint16_t> vSignerIndexes;
+    std::vector<std::vector<unsigned char> > vSignerSigs;
+
+    CLegacyFinalityCertificateWire()
+        : nVersion(2), nEpoch(0), nHeight(0), nTier(FINALITY_NONE),
+          nConsecutiveHardCount(0), nTransparentActiveWeight(0),
+          nTransparentWinningWeight(0), nTransparentRewardBudget(0) {}
+
+    IMPLEMENT_SERIALIZE
+    (
+        CLegacyFinalityCertificateWire* pthis =
+            const_cast<CLegacyFinalityCertificateWire*>(this);
+        READWRITE(pthis->nVersion);
+        READWRITE(pthis->nEpoch);
+        READWRITE(pthis->hashBlock);
+        READWRITE(pthis->nHeight);
+        READWRITE(pthis->nTier);
+        READWRITE(pthis->nConsecutiveHardCount);
+        READWRITE(pthis->hashCurveRoot);
+        READWRITE(pthis->hashNullifierRoot);
+        if (pthis->nVersion >= 2)
+            READWRITE(pthis->committeeSetHash);
+        READWRITE(pthis->activeWeightCommitment);
+        READWRITE(pthis->winningWeightCommitment);
+        READWRITE(pthis->rewardBudgetCommitment);
+        READWRITE(VARINT(pthis->nTransparentActiveWeight));
+        READWRITE(VARINT(pthis->nTransparentWinningWeight));
+        READWRITE(VARINT(pthis->nTransparentRewardBudget));
+        READWRITE(pthis->vVoteNullifiers);
+        READWRITE(pthis->vTallyShareHashes);
+        READWRITE(pthis->vchAggregateThresholdProof);
+        READWRITE(pthis->vchRewardBudgetProof);
+        if (pthis->nVersion >= 3)
+        {
+            READWRITE(pthis->vSignerIndexes);
+            READWRITE(pthis->vSignerSigs);
+        }
+    )
+
+    void ToLogical(CFinalityTallyCertificate& cert) const
+    {
+        cert = CFinalityTallyCertificate();
+        cert.nVersion = nVersion;
+        cert.nEpoch = nEpoch;
+        cert.hashBlock = hashBlock;
+        cert.nHeight = nHeight;
+        cert.nTier = nTier;
+        cert.nConsecutiveHardCount = nConsecutiveHardCount;
+        cert.hashCurveRoot = hashCurveRoot;
+        cert.hashNullifierRoot = hashNullifierRoot;
+        cert.committeeSetHash = committeeSetHash;
+        cert.activeWeightCommitment = activeWeightCommitment;
+        cert.winningWeightCommitment = winningWeightCommitment;
+        cert.rewardBudgetCommitment = rewardBudgetCommitment;
+        cert.nTransparentActiveWeight = nTransparentActiveWeight;
+        cert.nTransparentWinningWeight = nTransparentWinningWeight;
+        cert.nTransparentRewardBudget = nTransparentRewardBudget;
+        cert.vVoteNullifiers = vVoteNullifiers;
+        cert.vTallyShareHashes = vTallyShareHashes;
+        cert.vchAggregateThresholdProof = vchAggregateThresholdProof;
+        cert.vchRewardBudgetProof = vchRewardBudgetProof;
+        cert.vSignerIndexes = vSignerIndexes;
+        cert.vSignerSigs = vSignerSigs;
+        cert.fCanonicalEnvelope = false;
+    }
+};
+
 bool ExtractFinalityVote(const CScript& scriptPubKey, CFinalityVote& voteOut)
 {
     std::vector<unsigned char> vPayload;
@@ -1541,7 +2062,9 @@ bool ExtractFinalityVote(const CScript& scriptPubKey, CFinalityVote& voteOut)
 
     try {
         CDataStream ss(vPayload, SER_NETWORK, PROTOCOL_VERSION);
-        ss >> voteOut;
+        CLegacyFinalityVoteWire wire;
+        ss >> wire;
+        wire.ToLogical(voteOut);
     } catch (const std::exception& e) {
         return false;
     }
@@ -1586,7 +2109,9 @@ bool ExtractFinalityTallyCertificate(const CScript& scriptPubKey, CFinalityTally
 
     try {
         CDataStream ss(vPayload, SER_NETWORK, PROTOCOL_VERSION);
-        ss >> certOut;
+        CLegacyFinalityCertificateWire wire;
+        ss >> wire;
+        wire.ToLogical(certOut);
     } catch (const std::exception&) {
         return false;
     }
@@ -1606,6 +2131,240 @@ std::vector<CFinalityTallyCertificate> ExtractFinalityTallyCertificatesFromBlock
             vCerts.push_back(cert);
     }
     return vCerts;
+}
+
+static bool BuildCanonicalTaggedFinalityScript(
+    const unsigned char* pchTag,
+    const std::vector<unsigned char>& vPayload,
+    CScript& scriptOut)
+{
+    scriptOut.clear();
+    if (vPayload.empty() || vPayload.size() > MAX_SCRIPT_SIZE - 4)
+        return false;
+
+    std::vector<unsigned char> vchData;
+    vchData.reserve(4 + vPayload.size());
+    vchData.insert(vchData.end(), pchTag, pchTag + 4);
+    vchData.insert(vchData.end(), vPayload.begin(), vPayload.end());
+
+    CScript script;
+    script << OP_RETURN << vchData;
+    if (script.size() > MAX_SCRIPT_SIZE)
+        return false;
+    scriptOut = script;
+    return true;
+}
+
+bool BuildCanonicalFinalityVoteScript(const CFinalityVote& vote,
+                                       CScript& scriptOut)
+{
+    CCanonicalFinalityVoteEnvelope envelope;
+    if (!envelope.FromLogical(vote))
+    {
+        scriptOut.clear();
+        return false;
+    }
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << envelope;
+    return BuildCanonicalTaggedFinalityScript(
+        FINALITY_CANONICAL_VOTE_TAG,
+        std::vector<unsigned char>(ss.begin(), ss.end()), scriptOut);
+}
+
+bool ExtractCanonicalFinalityVote(const CScript& scriptPubKey,
+                                  CFinalityVote& voteOut)
+{
+    std::vector<unsigned char> vPayload;
+    if (!ExtractCanonicalTaggedOpReturnPayload(scriptPubKey,
+                                               FINALITY_CANONICAL_VOTE_TAG,
+                                               vPayload))
+        return false;
+    try {
+        CDataStream ss(vPayload, SER_NETWORK, PROTOCOL_VERSION);
+        CCanonicalFinalityVoteEnvelope envelope;
+        ss >> envelope;
+        if (!ss.empty())
+            return false;
+        return envelope.ToLogical(voteOut);
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool BuildCanonicalFinalityTallyCertificateScript(
+    const CFinalityTallyCertificate& cert, CScript& scriptOut)
+{
+    CCanonicalFinalityTallyCertificateEnvelope envelope;
+    if (!envelope.FromLogical(cert))
+    {
+        scriptOut.clear();
+        return false;
+    }
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << envelope;
+    return BuildCanonicalTaggedFinalityScript(
+        FINALITY_CANONICAL_TALLY_CERT_TAG,
+        std::vector<unsigned char>(ss.begin(), ss.end()), scriptOut);
+}
+
+bool ExtractCanonicalFinalityTallyCertificate(
+    const CScript& scriptPubKey, CFinalityTallyCertificate& certOut)
+{
+    std::vector<unsigned char> vPayload;
+    if (!ExtractCanonicalTaggedOpReturnPayload(
+            scriptPubKey, FINALITY_CANONICAL_TALLY_CERT_TAG, vPayload))
+        return false;
+    try {
+        CDataStream ss(vPayload, SER_NETWORK, PROTOCOL_VERSION);
+        CCanonicalFinalityTallyCertificateEnvelope envelope;
+        ss >> envelope;
+        if (!ss.empty())
+            return false;
+        return envelope.ToLogical(certOut);
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool BuildFinalityVoteScriptForHeight(const CFinalityVote& vote, int nHeight,
+                                      CScript& scriptOut)
+{
+    if (IsBoundaryAActiveAtHeight(nHeight))
+        return BuildCanonicalFinalityVoteScript(vote, scriptOut);
+    if (vote.IsCanonicalEnvelope())
+    {
+        scriptOut.clear();
+        return false;
+    }
+    scriptOut = BuildFinalityVoteScript(vote);
+    return true;
+}
+
+bool BuildFinalityTallyCertificateScriptForHeight(
+    const CFinalityTallyCertificate& cert, int nHeight, CScript& scriptOut)
+{
+    if (IsBoundaryAActiveAtHeight(nHeight))
+        return BuildCanonicalFinalityTallyCertificateScript(cert, scriptOut);
+    if (cert.IsCanonicalEnvelope())
+    {
+        scriptOut.clear();
+        return false;
+    }
+    scriptOut = BuildFinalityTallyCertificateScript(cert);
+    return true;
+}
+
+FinalityEnvelopeDecodeResult ExtractFinalityVoteForHeight(
+    const CScript& scriptPubKey, int nHeight, CFinalityVote& voteOut)
+{
+    // Before Boundary A only a decoded IFVT carrier is a vote; other OP_RETURN data stays
+    // ignored so replay does not invalidate historical blocks.
+    if (!IsBoundaryAActiveAtHeight(nHeight))
+        return ExtractFinalityVote(scriptPubKey, voteOut)
+            ? FINALITY_ENVELOPE_VALID : FINALITY_ENVELOPE_NO_MATCH;
+
+    const bool fLegacy = ScriptCarriesFinalityTag(
+        scriptPubKey, FINALITY_VOTE_TAG);
+    const bool fCanonical = ScriptCarriesFinalityTag(
+        scriptPubKey, FINALITY_CANONICAL_VOTE_TAG);
+    if (fLegacy)
+        return FINALITY_ENVELOPE_LEGACY_AFTER_BOUNDARY;
+    if (!fCanonical)
+        return FINALITY_ENVELOPE_NO_MATCH;
+    return ExtractCanonicalFinalityVote(scriptPubKey, voteOut)
+        ? FINALITY_ENVELOPE_VALID : FINALITY_ENVELOPE_INVALID;
+}
+
+FinalityEnvelopeDecodeResult ExtractFinalityTallyCertificateForHeight(
+    const CScript& scriptPubKey, int nHeight,
+    CFinalityTallyCertificate& certOut)
+{
+    // Preserve the exact pre-A decoder contract for historical block replay;
+    // IFCC was unknown data and malformed IFTC carriers were ignored.
+    if (!IsBoundaryAActiveAtHeight(nHeight))
+        return ExtractFinalityTallyCertificate(scriptPubKey, certOut)
+            ? FINALITY_ENVELOPE_VALID : FINALITY_ENVELOPE_NO_MATCH;
+
+    const bool fLegacy = ScriptCarriesFinalityTag(
+        scriptPubKey, FINALITY_TALLY_CERT_TAG);
+    const bool fCanonical = ScriptCarriesFinalityTag(
+        scriptPubKey, FINALITY_CANONICAL_TALLY_CERT_TAG);
+    if (fLegacy)
+        return FINALITY_ENVELOPE_LEGACY_AFTER_BOUNDARY;
+    if (!fCanonical)
+        return FINALITY_ENVELOPE_NO_MATCH;
+    return ExtractCanonicalFinalityTallyCertificate(scriptPubKey, certOut)
+        ? FINALITY_ENVELOPE_VALID : FINALITY_ENVELOPE_INVALID;
+}
+
+bool ExtractFinalityVotesFromBlockForHeight(
+    const CBlock& block, int nHeight, std::vector<CFinalityVote>& vVotesOut,
+    FinalityEnvelopeDecodeResult* pFailure)
+{
+    vVotesOut.clear();
+    if (pFailure)
+        *pFailure = FINALITY_ENVELOPE_NO_MATCH;
+    if (block.vtx.empty())
+        return true;
+    for (const CTxOut& out : block.vtx[0].vout)
+    {
+        CFinalityVote vote;
+        FinalityEnvelopeDecodeResult result = ExtractFinalityVoteForHeight(
+            out.scriptPubKey, nHeight, vote);
+        if (result == FINALITY_ENVELOPE_NO_MATCH)
+            continue;
+        if (result != FINALITY_ENVELOPE_VALID)
+        {
+            vVotesOut.clear();
+            if (pFailure)
+                *pFailure = result;
+            return false;
+        }
+        vVotesOut.push_back(vote);
+    }
+    return true;
+}
+
+bool ExtractFinalityTallyCertificatesFromBlockForHeight(
+    const CBlock& block, int nHeight,
+    std::vector<CFinalityTallyCertificate>& vCertsOut,
+    FinalityEnvelopeDecodeResult* pFailure)
+{
+    vCertsOut.clear();
+    if (pFailure)
+        *pFailure = FINALITY_ENVELOPE_NO_MATCH;
+    if (block.vtx.empty())
+        return true;
+    for (const CTxOut& out : block.vtx[0].vout)
+    {
+        CFinalityTallyCertificate cert;
+        FinalityEnvelopeDecodeResult result =
+            ExtractFinalityTallyCertificateForHeight(
+                out.scriptPubKey, nHeight, cert);
+        if (result == FINALITY_ENVELOPE_NO_MATCH)
+            continue;
+        if (result != FINALITY_ENVELOPE_VALID)
+        {
+            vCertsOut.clear();
+            if (pFailure)
+                *pFailure = result;
+            return false;
+        }
+        vCertsOut.push_back(cert);
+    }
+    return true;
+}
+
+const char* GetFinalityVoteCommandForHeight(int nHeight)
+{
+    return IsBoundaryAActiveAtHeight(nHeight)
+        ? FINALITY_CANONICAL_VOTE_COMMAND : "fvote";
+}
+
+const char* GetFinalityTallyCertificateCommandForHeight(int nHeight)
+{
+    return IsBoundaryAActiveAtHeight(nHeight)
+        ? FINALITY_CANONICAL_TALLY_CERT_COMMAND : "ftcert";
 }
 
 CScript BuildFinalityCommitteeRotationScript(const CFinalityCommitteeRotation& rot)
@@ -1827,6 +2586,95 @@ static FinalityTier FinalityDetermineTier(int64_t nActiveWeight, int64_t nWinnin
     return FINALITY_NONE;
 }
 
+bool BuildCanonicalTransparentFinalityCertificate(
+    const std::vector<CFinalityVote>& vVotes,
+    CFinalityTallyCertificate& certOut,
+    std::string* pstrError)
+{
+    certOut = CFinalityTallyCertificate();
+    const auto reject = [&](const std::string& strReason) -> bool {
+        if (pstrError)
+            *pstrError = strReason;
+        return false;
+    };
+    if (pstrError)
+        pstrError->clear();
+    if (vVotes.size() < FINALITY_MIN_VOTERS)
+        return reject("canonical transparent certificate has too few voters");
+    if (vVotes.size() > FINALITY_CANONICAL_CERT_MAX_NULLIFIERS)
+        return reject("canonical transparent certificate exceeds its vote-set bound");
+
+    const int nEpoch = vVotes[0].nEpoch;
+    std::set<uint256> setNullifiers;
+    std::map<uint256, int64_t> mapBlockWeight;
+    std::map<uint256, int> mapBlockHeight;
+    int64_t nActiveWeight = 0;
+    int64_t nRewardBudget = 0;
+    for (std::vector<CFinalityVote>::const_iterator it = vVotes.begin();
+         it != vVotes.end(); ++it)
+    {
+        const CFinalityVote& vote = *it;
+        if (vote.IsPrivate())
+            return reject("canonical transparent certificate contains a private vote");
+        if (vote.nEpoch != nEpoch || vote.nEpoch < 0 || vote.nHeight < 0 ||
+            vote.hashBlock == 0 || vote.nullifier == 0 ||
+            vote.nVoteWeight <= 0 || vote.nVoteWeight > MAX_MONEY ||
+            vote.nReward < 0 || vote.nReward > MAX_MONEY)
+            return reject("canonical transparent certificate contains an invalid vote");
+        if (!setNullifiers.insert(vote.nullifier).second)
+            return reject("canonical transparent certificate contains a duplicate nullifier");
+
+        std::map<uint256, int>::iterator hit = mapBlockHeight.find(vote.hashBlock);
+        if (hit != mapBlockHeight.end() && hit->second != vote.nHeight)
+            return reject("canonical transparent certificate has inconsistent target heights");
+        mapBlockHeight[vote.hashBlock] = vote.nHeight;
+
+        int64_t& nBlockWeight = mapBlockWeight[vote.hashBlock];
+        nBlockWeight = nBlockWeight <= MAX_MONEY - vote.nVoteWeight
+            ? nBlockWeight + vote.nVoteWeight : MAX_MONEY;
+        nActiveWeight = nActiveWeight <= MAX_MONEY - vote.nVoteWeight
+            ? nActiveWeight + vote.nVoteWeight : MAX_MONEY;
+        nRewardBudget = nRewardBudget <= MAX_MONEY - vote.nReward
+            ? nRewardBudget + vote.nReward : MAX_MONEY;
+    }
+
+    uint256 hashWinner;
+    int64_t nWinningWeight = 0;
+    for (std::map<uint256, int64_t>::const_iterator it = mapBlockWeight.begin();
+         it != mapBlockWeight.end(); ++it)
+    {
+        if (it->second > nWinningWeight ||
+            (it->second == nWinningWeight &&
+             (hashWinner == 0 || it->first < hashWinner)))
+        {
+            hashWinner = it->first;
+            nWinningWeight = it->second;
+        }
+    }
+    const FinalityTier tier = FinalityDetermineTier(nActiveWeight,
+                                                     nWinningWeight);
+    if (hashWinner == 0 || tier == FINALITY_NONE)
+        return reject("canonical transparent vote set has no finality decision");
+
+    CFinalityTallyCertificate cert;
+    cert.nVersion = 2;
+    cert.nEpoch = nEpoch;
+    cert.hashBlock = hashWinner;
+    cert.nHeight = mapBlockHeight[hashWinner];
+    cert.nTier = (int)tier;
+    cert.nTransparentActiveWeight = nActiveWeight;
+    cert.nTransparentWinningWeight = nWinningWeight;
+    cert.nTransparentRewardBudget = nRewardBudget;
+    cert.vVoteNullifiers.assign(setNullifiers.begin(), setNullifiers.end());
+    cert.MarkCanonicalEnvelope();
+    std::string strBasicError;
+    if (!cert.IsValidBasic(&strBasicError))
+        return reject("canonical transparent certificate is invalid: " +
+                      strBasicError);
+    certOut = cert;
+    return true;
+}
+
 static uint256 FinalityAutomationContextHash(const std::string& strDomain,
                                              const CFinalityTallyGroupKey& key,
                                              int nSourceIndex,
@@ -1847,7 +2695,12 @@ static uint256 FinalityAutomationContextHash(const std::string& strDomain,
 static uint256 FinalityCertificateAutomationContextHash(const CFinalityTallyCertificate& cert)
 {
     CHashWriter ss(SER_GETHASH, 0);
-    ss << std::string("Innova/Finality/TallyCertificateAutomation/v2");
+    ss << std::string("Innova/Finality/TallyCertificateAutomation/v3");
+    // Legacy and Boundary-A certificates may have the same logical tally but
+    // are authenticated and persisted in different envelope/hash domains.
+    // Never let one suppress or replace the other during the transition.
+    ss << (unsigned char)(cert.IsCanonicalEnvelope() ? 1 : 0);
+    ss << cert.nVersion;
     ss << cert.nEpoch;
     ss << cert.hashBlock;
     ss << cert.nHeight;
@@ -1864,6 +2717,18 @@ static uint256 FinalityCertificateAutomationContextHash(const CFinalityTallyCert
     ss << cert.vVoteNullifiers;
     ss << cert.vTallyShareHashes;
     return ss.GetHash();
+}
+
+static bool FinalityVotesHaveSameSemanticIdentity(const CFinalityVote& a,
+                                                  const CFinalityVote& b)
+{
+    // ECDSA may have more than one valid byte representation for the same
+    // signed object. Compare the provenance/domain and both signature-free
+    // identities, then independently require each signature to verify.
+    return a.IsCanonicalEnvelope() == b.IsCanonicalEnvelope() &&
+           a.nullifier == b.nullifier && a.GetHash() == b.GetHash() &&
+           a.GetSignatureHash() == b.GetSignatureHash() &&
+           a.IsValid() && b.IsValid();
 }
 
 static bool FinalityTallyCertificateContextExists(
@@ -1913,22 +2778,97 @@ static bool FinalityPartialMatchesGroup(const CFinalityTallyAggregatePartial& pa
            FinalitySameHashVector(partial.vTallyShareHashes, group.vShareHashes);
 }
 
+static bool LegacyPrivateFinalityTrafficDisabledAtTip()
+{
+    const int nNextHeight = nBestHeight == std::numeric_limits<int>::max()
+        ? nBestHeight : nBestHeight + 1;
+    return IsLegacyPrivacyPolicyDisabled() ||
+           IsBoundaryAActiveAtHeight(nNextHeight);
+}
+
+bool UseCanonicalFinalityTrafficForTip(int nTipHeight)
+{
+    // Relay traffic targets the next candidate block, so the envelope switches one
+    // block before Boundary A; the activation block holds only canonical-envelope objects.
+    const int nNextHeight = nTipHeight == std::numeric_limits<int>::max()
+        ? nTipHeight : nTipHeight + 1;
+    return IsBoundaryAActiveAtHeight(nNextHeight);
+}
+
+bool IsFinalityVoteWindowClosedForTip(int nEpoch, int nTipHeight)
+{
+    const int nCandidateHeight =
+        nTipHeight == std::numeric_limits<int>::max()
+            ? nTipHeight : nTipHeight + 1;
+    if (nCandidateHeight < FORK_HEIGHT_VOTESET_ROOT)
+        return true;
+    const int64_t nFirstCertificateHeight =
+        (int64_t)GetEpochBoundaryHeight(nEpoch, nCandidateHeight) +
+        FINALITY_VOTE_INCLUSION_WINDOW;
+    return (int64_t)nCandidateHeight >= nFirstCertificateHeight;
+}
+
+static bool CanonicalFinalityTrafficAtTip()
+{
+    return UseCanonicalFinalityTrafficForTip(nBestHeight);
+}
+
+static bool PushFinalityVoteMessage(CNode* pnode, const CFinalityVote& vote)
+{
+    if (CanonicalFinalityTrafficAtTip())
+    {
+        CCanonicalFinalityVoteEnvelope envelope;
+        if (!envelope.FromLogical(vote))
+            return false;
+        pnode->PushMessage(FINALITY_CANONICAL_VOTE_COMMAND, envelope);
+        return true;
+    }
+    if (vote.IsCanonicalEnvelope())
+        return false;
+    pnode->PushMessage("fvote", vote);
+    return true;
+}
+
+static bool PushFinalityTallyCertificateMessage(
+    CNode* pnode, const CFinalityTallyCertificate& cert)
+{
+    if (CanonicalFinalityTrafficAtTip())
+    {
+        CCanonicalFinalityTallyCertificateEnvelope envelope;
+        if (!envelope.FromLogical(cert))
+            return false;
+        pnode->PushMessage(FINALITY_CANONICAL_TALLY_CERT_COMMAND, envelope);
+        return true;
+    }
+    if (cert.IsCanonicalEnvelope())
+        return false;
+    pnode->PushMessage("ftcert", cert);
+    return true;
+}
+
 static void RelayFinalityTallyAggregatePartial(const CFinalityTallyAggregatePartial& partial)
 {
+    if (LegacyPrivateFinalityTrafficDisabledAtTip())
+        return;
     LOCK(cs_vNodes);
     for (CNode* pnode : vNodes)
         pnode->PushMessage("ftpart", partial);
 }
 
-static void RelayFinalityTallyCertificate(const CFinalityTallyCertificate& cert)
+void RelayFinalityTallyCertificate(const CFinalityTallyCertificate& cert)
 {
+    if (cert.HasPrivateWeight() &&
+        LegacyPrivateFinalityTrafficDisabledAtTip())
+        return;
     LOCK(cs_vNodes);
     for (CNode* pnode : vNodes)
-        pnode->PushMessage("ftcert", cert);
+        PushFinalityTallyCertificateMessage(pnode, cert);
 }
 
 static void RelayFinalityCertSignature(const CFinalityCertSignature& msg)
 {
+    if (LegacyPrivateFinalityTrafficDisabledAtTip())
+        return;
     LOCK(cs_vNodes);
     for (CNode* pnode : vNodes)
         pnode->PushMessage("ftcsig", msg);
@@ -1938,6 +2878,8 @@ static void RelayFinalityCertSignature(const CFinalityCertSignature& msg)
 // fully-signed pending rotation so any miner can embed it.
 void RelayFinalityCommitteeRotation(const CFinalityCommitteeRotation& rot)
 {
+    if (LegacyPrivateFinalityTrafficDisabledAtTip())
+        return;
     LOCK(cs_vNodes);
     for (CNode* pnode : vNodes)
         pnode->PushMessage("ftrot", rot);
@@ -3047,6 +3989,27 @@ bool CFinalityTallyAggregatePartial::IsValidBasic() const
 
 uint256 CFinalityTallyCertificate::GetSignatureDigest() const
 {
+    if (fCanonicalEnvelope)
+    {
+        CHashWriter canonical(SER_GETHASH, 0);
+        canonical << std::string("Innova/Finality/CanonicalTransparentCertificate/v1");
+        canonical << (uint32_t)FINALITY_CANONICAL_TALLY_CERT_VERSION;
+        canonical << nVersion;
+        canonical << nEpoch;
+        canonical << hashBlock;
+        canonical << nHeight;
+        canonical << nTier;
+        canonical << nConsecutiveHardCount;
+        canonical << hashCurveRoot;
+        canonical << hashNullifierRoot;
+        canonical << committeeSetHash;
+        canonical << nTransparentActiveWeight;
+        canonical << nTransparentWinningWeight;
+        canonical << nTransparentRewardBudget;
+        canonical << vVoteNullifiers;
+        return canonical.GetHash();
+    }
+
     // Everything the committee members sign — the full tally result EXCLUDING
     // the signer-set vectors (so signatures cannot affect the digest they
     // commit to). Domain-separated.
@@ -3076,6 +4039,27 @@ uint256 CFinalityTallyCertificate::GetSignatureDigest() const
 
 uint256 CFinalityTallyCertificate::GetHash() const
 {
+    if (fCanonicalEnvelope)
+    {
+        CHashWriter canonical(SER_GETHASH, 0);
+        canonical << std::string("Innova/Finality/CanonicalTransparentCertificateIdentity/v1");
+        canonical << (uint32_t)FINALITY_CANONICAL_TALLY_CERT_VERSION;
+        canonical << nVersion;
+        canonical << nEpoch;
+        canonical << hashBlock;
+        canonical << nHeight;
+        canonical << nTier;
+        canonical << nConsecutiveHardCount;
+        canonical << hashCurveRoot;
+        canonical << hashNullifierRoot;
+        canonical << committeeSetHash;
+        canonical << nTransparentActiveWeight;
+        canonical << nTransparentWinningWeight;
+        canonical << nTransparentRewardBudget;
+        canonical << vVoteNullifiers;
+        return canonical.GetHash();
+    }
+
     CHashWriter ss(SER_GETHASH, 0);
     ss << nVersion;
     ss << nEpoch;
@@ -3131,6 +4115,10 @@ bool CFinalityTallyCertificate::IsValidBasic(std::string* pstrError) const
         return FinalityReject(pstrError, "winning transparent weight exceeds active transparent weight");
     if (vVoteNullifiers.empty() || vVoteNullifiers.size() > FINALITY_MAX_VOTES)
         return FinalityReject(pstrError, "invalid tally certificate vote set size");
+    if (fCanonicalEnvelope &&
+        vVoteNullifiers.size() < (size_t)FINALITY_MIN_VOTERS)
+        return FinalityReject(pstrError,
+                              "canonical tally certificate has too few voters");
     std::set<uint256> setNullifiers;
     for (const uint256& nf : vVoteNullifiers)
     {
@@ -3212,6 +4200,23 @@ bool CFinalityTallyCertificate::IsValidBasic(std::string* pstrError) const
 
 uint256 CFinalityVote::GetHash() const
 {
+    if (fCanonicalEnvelope)
+    {
+        CHashWriter canonical(SER_GETHASH, 0);
+        canonical << std::string("Innova/Finality/CanonicalTransparentVoteIdentity/v1");
+        canonical << (uint32_t)FINALITY_CANONICAL_VOTE_VERSION;
+        canonical << nEpoch;
+        canonical << hashBlock;
+        canonical << nHeight;
+        canonical << nTime;
+        canonical << nVoteWeight;
+        canonical << nReward;
+        canonical << nullifier;
+        canonical << vStakeProof;
+        canonical << vchPubKey;
+        return canonical.GetHash();
+    }
+
     CHashWriter ss(SER_GETHASH, 0);
     ss << nProofMode;
     ss << nEpoch;
@@ -3229,6 +4234,22 @@ uint256 CFinalityVote::GetHash() const
 
 uint256 CFinalityVote::GetSignatureHash() const
 {
+    if (fCanonicalEnvelope)
+    {
+        CHashWriter canonical(SER_GETHASH, 0);
+        canonical << std::string("Innova/Finality/CanonicalTransparentVote/v1");
+        canonical << (uint32_t)FINALITY_CANONICAL_VOTE_VERSION;
+        canonical << nEpoch;
+        canonical << hashBlock;
+        canonical << nHeight;
+        canonical << nTime;
+        canonical << nVoteWeight;
+        canonical << nReward;
+        canonical << nullifier;
+        canonical << vStakeProof;
+        return canonical.GetHash();
+    }
+
     CHashWriter ss(SER_GETHASH, 0);
     ss << std::string("Innova/FinalityVote/v2");
     ss << nProofMode;
@@ -3353,14 +4374,23 @@ uint256 FinalityNullifierBindContext(int nEpoch, const uint256& hashEpochBlock)
     return ss.GetHash();
 }
 
-bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb, std::string* pstrError,
-                                 int nContextHeight) const
+bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb,
+                                 std::string* pstrError, int nContextHeight,
+                                 FinalityResult* pResult) const
 {
     auto reject = [&](const std::string& strReason) -> bool {
         if (pstrError)
             *pstrError = strReason;
-        return false;
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_INVALID, false);
     };
+    auto localState = [&](const std::string& strReason) -> bool {
+        if (pstrError)
+            *pstrError = strReason;
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_LOCAL_STATE, false);
+    };
+
+    if (pResult)
+        *pResult = FINALITY_RESULT_INVALID;
 
     if (!vote.IsValid())
         return reject("invalid vote structure or signature");
@@ -3370,6 +4400,18 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb, std::st
     if (GetEpochForHeight(vote.nHeight) != vote.nEpoch ||
         GetEpochBoundaryHeight(vote.nEpoch, vote.nHeight) != vote.nHeight)
         return reject("vote height is not this epoch boundary");
+
+    const int nEffectiveContextHeight = nContextHeight >= 0
+        ? nContextHeight
+        : (nBestHeight == std::numeric_limits<int>::max()
+               ? nBestHeight : nBestHeight + 1);
+    // Policy may refuse new relay traffic before Boundary A, but historical
+    // blocks remain consensus-valid until the activation height. A non-negative
+    // context is block validation; a negative context is relay/pre-check.
+    if (vote.IsPrivate() &&
+        ((nContextHeight < 0 && IsLegacyPrivacyPolicyDisabled()) ||
+         IsBoundaryAActiveAtHeight(nEffectiveContextHeight)))
+        return reject("legacy private-finality proofs are disabled pending privacy vNext");
 
     // R1: connect-time vote-inclusion window (fork-gated). An epoch-E vote is
     // block-valid only in a containing block within [H_E, H_E + K). vote.nHeight
@@ -3388,7 +4430,9 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb, std::st
 
     std::map<uint256, CBlockIndex*>::iterator miEpoch = mapBlockIndex.find(vote.hashBlock);
     if (miEpoch == mapBlockIndex.end())
-        return reject("epoch block not found");
+        return reject("epoch block is not known");
+    if (miEpoch->second == NULL)
+        return localState("epoch block index entry is corrupt");
     CBlockIndex* pEpochBlock = miEpoch->second;
     if (pEpochBlock->nHeight != vote.nHeight)
         return reject("epoch block height mismatch");
@@ -3411,22 +4455,23 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb, std::st
         // This is what keeps ConnectBlock deterministic across nodes. Relay-time checks
         // (nContextHeight < 0) fall back to the live tip (lenient; not consensus).
         CEpochState finalizedEpochState;
-        bool fHaveFinalized = (nContextHeight >= 0)
-            ? g_dagManager.GetFinalizedEpochStateAsOf(nContextHeight, finalizedEpochState)
-            : g_dagManager.GetLastFinalizedEpochState(finalizedEpochState);
-        if (!fHaveFinalized)
-            return reject("private finality proof missing finalized epoch roots");
+        const FinalityResult anchorResult = ResolveFinalityAnchorForContext(
+            txdb, nContextHeight, GetFinalizedHeight(), finalizedEpochState);
+        if (anchorResult == FINALITY_RESULT_INVALID)
+            return reject("private finality proof requires an already-finalized epoch");
+        if (anchorResult == FINALITY_RESULT_LOCAL_STATE)
+            return localState("private finality proof requires unavailable finalized epoch state");
         if (vote.privateProof.hashCurveRoot != finalizedEpochState.hashCurveRoot ||
             vote.privateProof.hashNullifierRoot != finalizedEpochState.hashNullifierRoot)
             return reject("private finality proof not anchored to last finalized epoch root");
 
         CCurveTree finalizedCurveTree;
         if (!txdb.ReadCurveTreeAtEpoch(finalizedEpochState.nEpoch, finalizedCurveTree))
-            return reject("private finality proof missing finalized epoch curve-tree snapshot");
-        if (!finalizedCurveTree.IsEmpty())
-            finalizedCurveTree.RebuildParentNodes();
+            return localState("private finality proof requires unavailable finalized epoch curve-tree snapshot");
+        if (!finalizedCurveTree.IsEmpty() && !finalizedCurveTree.RebuildParentNodes())
+            return localState("private finality proof finalized epoch curve-tree snapshot is corrupt");
         if (finalizedCurveTree.GetRoot() != finalizedEpochState.hashCurveRoot)
-            return reject("private finality proof finalized epoch curve-tree root mismatch");
+            return localState("private finality proof finalized epoch state/tree root mismatch");
 
         // B2-e: a half-aggregated M-of-N (V3_COLD) vote carries the J-free value commitment cv_plain in
         // stakeWeightCommitment (so the whole tally + nullifier-binding + share path is byte-identical to
@@ -3531,7 +4576,7 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb, std::st
         // weight or clear reward.
         if (vote.nVoteWeight != 0 || vote.nReward != 0)
             return reject("private finality vote exposes clear weight or reward");
-        return true;
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
     }
 
     CPubKey votePubKey(vote.vchPubKey);
@@ -3557,10 +4602,16 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb, std::st
         if (!setSeenOutpoints.insert(outpoint).second)
             return reject("duplicate stake proof outpoint");
 
-        CTransaction txPrev;
         CTxIndex txindex;
-        if (!txdb.ReadDiskTx(outpoint.hash, txPrev, txindex))
-            return reject("stake proof transaction not found");
+        const TxDBReadStatus txIndexStatus =
+            txdb.ReadTxIndexStatus(outpoint.hash, txindex);
+        if (txIndexStatus == TXDB_READ_NOT_FOUND)
+            return reject("stake proof transaction is not known");
+        if (txIndexStatus != TXDB_READ_FOUND)
+            return localState("stake proof transaction index is corrupt or unreadable");
+        CTransaction txPrev;
+        if (!txPrev.ReadFromDisk(txindex.pos) || txPrev.GetHash() != outpoint.hash)
+            return localState("indexed stake proof transaction body is corrupt or unreadable");
         if (outpoint.n >= txPrev.vout.size() || outpoint.n >= txindex.vSpent.size())
             return reject("stake proof outpoint out of range");
         if (!txindex.vSpent[outpoint.n].IsNull())
@@ -3581,10 +4632,10 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb, std::st
 
         CBlock blockFrom;
         if (!blockFrom.ReadFromDisk(txindex.pos.nFile, txindex.pos.nBlockPos, false))
-            return reject("stake proof block not readable");
+            return localState("stake proof block is unavailable in local block storage");
         std::map<uint256, CBlockIndex*>::iterator miFrom = mapBlockIndex.find(blockFrom.GetHash());
-        if (miFrom == mapBlockIndex.end())
-            return reject("stake proof block index not found");
+        if (miFrom == mapBlockIndex.end() || miFrom->second == NULL)
+            return localState("stake proof block is unavailable in the local block index");
         CBlockIndex* pFrom = miFrom->second;
         if (pFrom->nHeight > vote.nHeight)
             return reject("stake proof created after epoch boundary");
@@ -3600,25 +4651,39 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb, std::st
     if (nVerifiedWeight != vote.nVoteWeight)
         return reject("vote weight does not match stake proof value");
 
-    return true;
+    return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
 }
 
-bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& cert, CTxDB& txdb, std::string* pstrError,
-                                             const std::vector<CFinalityVote>* pvBlockVotes,
-                                             bool fAllowPendingVotes,
-                                             int nContextHeight,
-                                             bool fSkipCommitteeSigs) const
+bool CFinalityTracker::CheckTallyCertificate(
+    const CFinalityTallyCertificate& cert, CTxDB& txdb,
+    std::string* pstrError, const std::vector<CFinalityVote>* pvBlockVotes,
+    bool fAllowPendingVotes, int nContextHeight, bool fSkipCommitteeSigs,
+    FinalityResult* pResult) const
 {
-    (void)txdb;
-
     auto reject = [&](const std::string& strReason) -> bool {
         if (pstrError)
             *pstrError = strReason;
-        return false;
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_INVALID, false);
     };
+    auto localState = [&](const std::string& strReason) -> bool {
+        if (pstrError)
+            *pstrError = strReason;
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_LOCAL_STATE, false);
+    };
+
+    if (pResult)
+        *pResult = FINALITY_RESULT_INVALID;
 
     if (!cert.IsValidBasic(pstrError))
         return false;
+    const int nEffectiveContextHeight = nContextHeight >= 0
+        ? nContextHeight
+        : (nBestHeight == std::numeric_limits<int>::max()
+               ? nBestHeight : nBestHeight + 1);
+    if (cert.HasPrivateWeight() &&
+        ((nContextHeight < 0 && IsLegacyPrivacyPolicyDisabled()) ||
+         IsBoundaryAActiveAtHeight(nEffectiveContextHeight)))
+        return reject("legacy private tally certificates are disabled pending privacy vNext");
     if (GetEpochForHeight(cert.nHeight) != cert.nEpoch ||
         GetEpochBoundaryHeight(cert.nEpoch, cert.nHeight) != cert.nHeight)
         return reject("tally certificate height is not this epoch boundary");
@@ -3633,7 +4698,16 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
         std::vector<CPubKey> vCommittee;
         int nM = 0;
         uint256 setHash;
-        if (GetCanonicalFinalityCommittee(cert.nEpoch, vCommittee, nM, setHash))
+        if (!GetCanonicalFinalityCommittee(cert.nEpoch, vCommittee, nM, setHash))
+        {
+            // Relay callers historically tolerate an unconfigured committee (in
+            // particular regtest).  A block-context caller cannot: the pinned
+            // committee is required local consensus state, not evidence that the
+            // peer's certificate is bad.
+            if (nContextHeight >= 0)
+                return localState("canonical finality committee is unavailable");
+        }
+        else
         {
             // A1 recovery (union): if the cert is signed by the pinned recovery
             // committee AND HARD finality has stalled past the gap for this
@@ -3644,9 +4718,22 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
             // Recovery-window gate uses the deterministic finalized height as of the
             // including block (relay-time: live tip), so the recovery-committee path is
             // accepted/rejected identically on every node.
-            int nRecoveryFinalizedHeight = (nContextHeight >= 0)
-                ? g_dagManager.GetDeterministicFinalizedHeight(GetEpochForHeight(nContextHeight) - 1)
-                : GetFinalizedHeight();
+            int nRecoveryFinalizedHeight = GetFinalizedHeight();
+            if (nContextHeight >= 0)
+            {
+                const int nAsOfEpoch = GetEpochForHeight(nContextHeight) - 1;
+                if (nContextHeight >= FORK_HEIGHT_EPOCH_STATE_V2)
+                {
+                    if (!g_dagManager.TryGetDeterministicFinalizedHeight(
+                            txdb, nAsOfEpoch, nRecoveryFinalizedHeight))
+                        return localState(strprintf(
+                            "missing deterministic finalized-height state for epoch %d",
+                            nAsOfEpoch));
+                }
+                else
+                    nRecoveryFinalizedHeight =
+                        g_dagManager.GetDeterministicFinalizedHeight(nAsOfEpoch);
+            }
             if (cert.committeeSetHash != setHash &&
                 GetRecoveryFinalityCommittee(vRec, nRecM, recSetHash) &&
                 cert.committeeSetHash == recSetHash &&
@@ -3684,7 +4771,9 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
 
     std::map<uint256, CBlockIndex*>::iterator miEpoch = mapBlockIndex.find(cert.hashBlock);
     if (miEpoch == mapBlockIndex.end())
-        return reject("tally certificate block not found");
+        return reject("tally certificate block is not known");
+    if (miEpoch->second == NULL)
+        return localState("tally certificate block index entry is corrupt");
     CBlockIndex* pEpochBlock = miEpoch->second;
     if (pEpochBlock->nHeight != cert.nHeight)
         return reject("tally certificate block height mismatch");
@@ -3696,11 +4785,12 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
     {
         // Deterministic anchor from the including block's chain context (see CheckVote).
         CEpochState finalizedEpochState;
-        bool fHaveFinalized = (nContextHeight >= 0)
-            ? g_dagManager.GetFinalizedEpochStateAsOf(nContextHeight, finalizedEpochState)
-            : g_dagManager.GetLastFinalizedEpochState(finalizedEpochState);
-        if (!fHaveFinalized)
-            return reject("private tally certificate missing finalized epoch roots");
+        const FinalityResult anchorResult = ResolveFinalityAnchorForContext(
+            txdb, nContextHeight, GetFinalizedHeight(), finalizedEpochState);
+        if (anchorResult == FINALITY_RESULT_INVALID)
+            return reject("private tally certificate requires an already-finalized epoch");
+        if (anchorResult == FINALITY_RESULT_LOCAL_STATE)
+            return localState("private tally certificate requires unavailable finalized epoch state");
         if (cert.hashCurveRoot != finalizedEpochState.hashCurveRoot ||
             cert.hashNullifierRoot != finalizedEpochState.hashNullifierRoot)
             return reject("private tally certificate not anchored to last finalized epoch root");
@@ -3720,6 +4810,8 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
     int64_t nTransparentActiveWeight = 0;
     int64_t nTransparentWinningWeight = 0;
     int64_t nTransparentRewardBudget = 0;
+    std::vector<CFinalityVote> vMatchedVotes;
+    vMatchedVotes.reserve(cert.vVoteNullifiers.size());
     std::set<uint256> setExpectedTallyShareHashes;
     CPedersenCommitment privateActiveCommitment;
     CPedersenCommitment privateWinningCommitment;
@@ -3781,6 +4873,7 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
 
         if (vote.nEpoch != cert.nEpoch)
             return reject("tally certificate references vote from different epoch");
+        vMatchedVotes.push_back(vote);
         if (vote.IsPrivate())
         {
             if (!cert.HasPrivateWeight())
@@ -3879,6 +4972,23 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
         cert.nTransparentRewardBudget != nTransparentRewardBudget)
         return reject("tally certificate transparent aggregate mismatch");
 
+    // Boundary-A certificates must equal the one canonical transparent result rebuilt from the
+    // frozen connected vote set; no alternative tier, root or order is a valid representation.
+    if (cert.IsCanonicalEnvelope())
+    {
+        if (!CanonicalCertificateHasExactEmptyOmittedFields(cert))
+            return reject("canonical tally certificate has non-empty omitted fields");
+        CFinalityTallyCertificate expected;
+        std::string strCanonicalError;
+        if (!BuildCanonicalTransparentFinalityCertificate(
+                vMatchedVotes, expected, &strCanonicalError))
+            return reject("canonical tally certificate cannot be rebuilt: " +
+                          strCanonicalError);
+        if (cert.GetHash() != expected.GetHash() ||
+            cert.GetSignatureDigest() != expected.GetSignatureDigest())
+            return reject("canonical tally certificate is not the exact deterministic result");
+    }
+
     if (cert.HasPrivateWeight())
     {
         for (const uint256& hashShare : cert.vTallyShareHashes)
@@ -3931,7 +5041,7 @@ bool CFinalityTracker::CheckTallyCertificate(const CFinalityTallyCertificate& ce
         if (!VerifyFinalityThresholdTier(cert.nTier, nTransparentActiveWeight, nTransparentWinningWeight))
             return reject("transparent tally certificate threshold mismatch");
     }
-    return true;
+    return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
 }
 
 bool CFinalityTracker::CheckTallyShare(const CFinalityTallyShare& share,
@@ -3948,6 +5058,13 @@ bool CFinalityTracker::CheckTallyShare(const CFinalityTallyShare& share,
 
     if (!share.IsValidBasic())
         return reject("invalid tally share structure");
+    const int nEffectiveContextHeight = nContextHeight >= 0
+        ? nContextHeight
+        : (nBestHeight == std::numeric_limits<int>::max()
+               ? nBestHeight : nBestHeight + 1);
+    if ((nContextHeight < 0 && IsLegacyPrivacyPolicyDisabled()) ||
+        IsBoundaryAActiveAtHeight(nEffectiveContextHeight))
+        return reject("legacy private tally shares are disabled pending privacy vNext");
     CBindingSignature bindingSig;
     if (!DeserializeFinalityBindingProof(share.vchShareProof, bindingSig))
         return reject("invalid tally share proof encoding");
@@ -4137,6 +5254,8 @@ bool CFinalityTracker::AddTallyAggregatePartial(const CFinalityTallyAggregatePar
 
 bool CFinalityTracker::AddTallyCertificate(const CFinalityTallyCertificate& cert, bool fCheck, bool fRecordFinality)
 {
+    const uint256 hashContext =
+        FinalityCertificateAutomationContextHash(cert);
     // Relay-DoS mitigation: on the relay path, reject an already-known certificate (by hash or by
     // automation-context) BEFORE the expensive CheckTallyCertificate (which runs the uncached bulletproof
     // threshold+budget verification). Otherwise a replayed cert forces a full verification on every
@@ -4149,7 +5268,7 @@ bool CFinalityTracker::AddTallyCertificate(const CFinalityTallyCertificate& cert
         if (mapPendingTallyCertificates.count(hashKnown) ||
             mapConnectedTallyCertificates.count(hashKnown) ||
             FinalityTallyCertificateContextExists(cert, mapPendingTallyCertificates, hashCtx) ||
-            FinalityTallyCertificateContextExists(cert, mapConnectedTallyCertificates, hashCtx))
+            mapConnectedTallyCertificateByContext.count(hashContext))
             return false;
     }
 
@@ -4180,9 +5299,15 @@ bool CFinalityTracker::AddTallyCertificate(const CFinalityTallyCertificate& cert
         }
 
         uint256 hashExisting = 0;
-        if (FinalityTallyCertificateContextExists(cert, mapPendingTallyCertificates, hashExisting) ||
-            FinalityTallyCertificateContextExists(cert, mapConnectedTallyCertificates, hashExisting))
+        const bool fPendingContext = FinalityTallyCertificateContextExists(
+            cert, mapPendingTallyCertificates, hashExisting);
+        std::map<uint256, uint256>::const_iterator connectedContext =
+            mapConnectedTallyCertificateByContext.find(hashContext);
+        if (fPendingContext ||
+            connectedContext != mapConnectedTallyCertificateByContext.end())
         {
+            if (!fPendingContext)
+                hashExisting = connectedContext->second;
             if (GetBoolArg("-debugfinalityrelay", false))
                 printf("FINALITY relay-duplicate-context ftcert=%s existing=%s\n",
                        hashCert.ToString().substr(0, 10).c_str(),
@@ -4197,22 +5322,50 @@ bool CFinalityTracker::AddTallyCertificate(const CFinalityTallyCertificate& cert
         return true;
 
     uint256 hashExisting = 0;
-    if (FinalityTallyCertificateContextExists(cert, mapConnectedTallyCertificates, hashExisting))
+    std::map<uint256, uint256>::const_iterator contextExisting =
+        mapConnectedTallyCertificateByContext.find(hashContext);
+    if (contextExisting != mapConnectedTallyCertificateByContext.end())
     {
+        hashExisting = contextExisting->second;
         if (GetBoolArg("-debugfinalityrelay", false))
             printf("FINALITY connect-duplicate-context ftcert=%s existing=%s\n",
                    hashCert.ToString().substr(0, 10).c_str(),
                    hashExisting.ToString().substr(0, 10).c_str());
         FinalityEraseTallyCertificateContext(cert, mapPendingTallyCertificates);
-        return true;
+        // Context-equivalent certificates can differ in proof or signature bytes; pick one by a
+        // rule independent of connect order, iteration order, restart or reorg.
+        if (!(hashCert < hashExisting))
+            return true;
+
+        std::map<uint256, CFinalityTallyCertificate>::iterator itExisting =
+            mapConnectedTallyCertificates.find(hashExisting);
+        if (itExisting != mapConnectedTallyCertificates.end())
+        {
+            const int nExistingEpoch = itExisting->second.nEpoch;
+            mapConnectedTallyCertificates.erase(itExisting);
+            std::map<int, std::vector<CFinalityTallyCertificate> >::iterator eit =
+                mapEpochTallyCertificates.find(nExistingEpoch);
+            if (eit != mapEpochTallyCertificates.end())
+            {
+                std::vector<CFinalityTallyCertificate>& vEpoch = eit->second;
+                vEpoch.erase(std::remove_if(
+                    vEpoch.begin(), vEpoch.end(),
+                    [&](const CFinalityTallyCertificate& existing) {
+                        return existing.GetHash() == hashExisting;
+                    }), vEpoch.end());
+                if (vEpoch.empty())
+                    mapEpochTallyCertificates.erase(eit);
+            }
+        }
     }
 
     mapConnectedTallyCertificates[hashCert] = cert;
+    mapConnectedTallyCertificateByContext[hashContext] = hashCert;
     FinalityEraseTallyCertificateContext(cert, mapPendingTallyCertificates);
     for (const uint256& hashShare : cert.vTallyShareHashes)
         setConnectedTallyShares.insert(hashShare);
     mapEpochTallyCertificates[cert.nEpoch].push_back(cert);
-    CheckFinalityThreshold(cert.nEpoch);
+    MarkFinalitySummaryDirty(cert.nEpoch);
     return true;
 }
 
@@ -4321,7 +5474,7 @@ bool CFinalityTracker::AddVote(const CFinalityVote& vote, bool fCheckStake, bool
     else if (!vote.IsPrivate())
         mapEpochVoteWeight[vote.nEpoch] = MAX_MONEY;
 
-    CheckFinalityThreshold(vote.nEpoch);
+    MarkFinalitySummaryDirty(vote.nEpoch);
     return true;
 }
 
@@ -4331,7 +5484,7 @@ bool CFinalityTracker::IsFinalized(int nHeight) const
     return nHeight <= nLastFinalizedHeight;
 }
 
-bool CFinalityTracker::CheckFinalityThreshold(int nEpoch)
+bool CFinalityTracker::CheckFinalityThreshold(int nEpoch, bool fLog)
 {
     // Prefer aggregate tally certificates. They are the only consensus path
     // that can promote hidden-weight NullStake votes because individual
@@ -4354,7 +5507,7 @@ bool CFinalityTracker::CheckFinalityThreshold(int nEpoch)
                                          (FinalityTier)pBestCert->nTier, nVoterCount,
                                          pBestCert->nTransparentWinningWeight,
                                          pBestCert->nTransparentActiveWeight,
-                                         true);
+                                         true, fLog);
         }
     }
 
@@ -4415,7 +5568,7 @@ bool CFinalityTracker::CheckFinalityThreshold(int nEpoch)
 
     int nFinalHeight = mapBlockHeight.count(hashFinal) ? mapBlockHeight[hashFinal] : 0;
     return ApplyFinalityDecision(nEpoch, hashFinal, nFinalHeight, tier, nVoterCount,
-                                 nBestBlockWeight, nEpochVoteWeight, false);
+                                 nBestBlockWeight, nEpochVoteWeight, false, fLog);
 }
 
 bool CFinalityTracker::ComputeDeterministicEpochTier(int nEpoch, bool fHaveEpochCert,
@@ -4494,7 +5647,7 @@ bool CFinalityTracker::ComputeDeterministicEpochTier(int nEpoch, bool fHaveEpoch
 bool CFinalityTracker::ApplyFinalityDecision(int nEpoch, const uint256& hashFinal, int nFinalHeight,
                                              FinalityTier tier, int nVoterCount,
                                              int64_t nBestBlockWeight, int64_t nEpochVoteWeight,
-                                             bool fFromCertificate)
+                                             bool fFromCertificate, bool fLog)
 {
     nLastFinalityTier = tier;
 
@@ -4526,21 +5679,23 @@ bool CFinalityTracker::ApplyFinalityDecision(int nEpoch, const uint256& hashFina
         {
             nLastFinalizedHeight = nPendingFinalizedHeight;
             hashLastFinalized = hashPendingFinalized;
-            printf("FINALITY: CONFIRMED at height %d after %d consecutive HARD epochs (hash=%s, voters=%d, source=%s)\n",
-                   nLastFinalizedHeight, nConsecutiveHardEpochs,
-                   hashLastFinalized.ToString().substr(0, 20).c_str(),
-                   nVoterCount,
-                   fFromCertificate ? "tally-certificate" : "transparent-votes");
+            if (fLog)
+                printf("FINALITY: CONFIRMED at height %d after %d consecutive HARD epochs (hash=%s, voters=%d, source=%s)\n",
+                       nLastFinalizedHeight, nConsecutiveHardEpochs,
+                       hashLastFinalized.ToString().substr(0, 20).c_str(),
+                       nVoterCount,
+                       fFromCertificate ? "tally-certificate" : "transparent-votes");
         }
         else
         {
-            printf("FINALITY: Epoch %d HARD (%d/%d confirmations) at height %d (block_weight=%s, epoch_weight=%s, voters=%d, source=%s)\n",
-                   nEpoch, nConsecutiveHardEpochs, FINALITY_CONFIRMATION_EPOCHS,
-                   nFinalHeight,
-                   FormatMoney(nBestBlockWeight).c_str(),
-                   FormatMoney(nEpochVoteWeight).c_str(),
-                   nVoterCount,
-                   fFromCertificate ? "tally-certificate" : "transparent-votes");
+            if (fLog)
+                printf("FINALITY: Epoch %d HARD (%d/%d confirmations) at height %d (block_weight=%s, epoch_weight=%s, voters=%d, source=%s)\n",
+                       nEpoch, nConsecutiveHardEpochs, FINALITY_CONFIRMATION_EPOCHS,
+                       nFinalHeight,
+                       FormatMoney(nBestBlockWeight).c_str(),
+                       FormatMoney(nEpochVoteWeight).c_str(),
+                       nVoterCount,
+                       fFromCertificate ? "tally-certificate" : "transparent-votes");
         }
         return nConsecutiveHardEpochs >= FINALITY_CONFIRMATION_EPOCHS;
     }
@@ -4550,7 +5705,7 @@ bool CFinalityTracker::ApplyFinalityDecision(int nEpoch, const uint256& hashFina
         nConsecutiveHardEpochs = 0;
         nLastHardEpoch = -1;
 
-        if (tier >= FINALITY_SOFT)
+        if (tier >= FINALITY_SOFT && fLog)
         {
             printf("FINALITY: Epoch %d SOFT at height %d (block_weight=%s, epoch_weight=%s, voters=%d, source=%s)\n",
                    nEpoch, nFinalHeight,
@@ -4559,7 +5714,7 @@ bool CFinalityTracker::ApplyFinalityDecision(int nEpoch, const uint256& hashFina
                    nVoterCount,
                    fFromCertificate ? "tally-certificate" : "transparent-votes");
         }
-        else if (tier >= FINALITY_TENTATIVE && fDebug)
+        else if (tier >= FINALITY_TENTATIVE && fDebug && fLog)
         {
             printf("FINALITY: Epoch %d tentative at height %d (voters=%d, source=%s)\n",
                    nEpoch, nFinalHeight, nVoterCount,
@@ -4739,9 +5894,24 @@ std::vector<CFinalityVote> CFinalityTracker::GetPendingVotesForBlock(int nBlockH
 
     std::vector<CFinalityVote> vVotes;
     int nBlockEpoch = GetEpochForHeight(nBlockHeight);
+    if (IsBoundaryAActiveAtHeight(nBlockHeight))
+    {
+        std::map<int, std::vector<CFinalityVote> >::const_iterator itConnected =
+            mapEpochVotes.find(nBlockEpoch);
+        const size_t nConnected = itConnected == mapEpochVotes.end()
+            ? 0 : itConnected->second.size();
+        if (nConnected >= FINALITY_CANONICAL_CERT_MAX_NULLIFIERS)
+            return vVotes;
+        nMaxVotes = std::min<unsigned int>(
+            nMaxVotes,
+            FINALITY_CANONICAL_CERT_MAX_NULLIFIERS - nConnected);
+    }
     for (const auto& pair : mapPendingVotes)
     {
         const CFinalityVote& vote = pair.second;
+        if (vote.IsCanonicalEnvelope() !=
+            IsBoundaryAActiveAtHeight(nBlockHeight))
+            continue;
         if (vote.nEpoch > nBlockEpoch)
             continue;
         if (vote.nEpoch + 2 < nBlockEpoch)
@@ -4761,6 +5931,48 @@ std::vector<CFinalityVote> CFinalityTracker::GetPendingVotesForBlock(int nBlockH
     return vVotes;
 }
 
+bool CFinalityTracker::CheckCanonicalVoteSetCapacity(
+    const std::vector<CFinalityVote>& vBlockVotes, int nBlockHeight,
+    std::string* pstrError) const
+{
+    if (pstrError)
+        pstrError->clear();
+    if (!IsBoundaryAActiveAtHeight(nBlockHeight))
+        return true;
+
+    LOCK(cs_finality);
+    std::map<int, std::set<uint256> > mapEpochNullifiers;
+    for (std::vector<CFinalityVote>::const_iterator it = vBlockVotes.begin();
+         it != vBlockVotes.end(); ++it)
+    {
+        std::map<int, std::set<uint256> >::iterator cached =
+            mapEpochNullifiers.find(it->nEpoch);
+        if (cached == mapEpochNullifiers.end())
+        {
+            std::set<uint256>& setExisting =
+                mapEpochNullifiers[it->nEpoch];
+            std::map<int, std::vector<CFinalityVote> >::const_iterator eit =
+                mapEpochVotes.find(it->nEpoch);
+            if (eit != mapEpochVotes.end())
+                for (std::vector<CFinalityVote>::const_iterator vit =
+                         eit->second.begin(); vit != eit->second.end(); ++vit)
+                    setExisting.insert(vit->nullifier);
+            cached = mapEpochNullifiers.find(it->nEpoch);
+        }
+        std::set<uint256>& setEpoch = cached->second;
+        setEpoch.insert(it->nullifier);
+        if (setEpoch.size() > FINALITY_CANONICAL_CERT_MAX_NULLIFIERS)
+        {
+            if (pstrError)
+                *pstrError = strprintf(
+                    "epoch %d canonical vote set exceeds %u entries",
+                    it->nEpoch, FINALITY_CANONICAL_CERT_MAX_NULLIFIERS);
+            return false;
+        }
+    }
+    return true;
+}
+
 std::vector<CFinalityTallyCertificate> CFinalityTracker::GetPendingTallyCertificatesForBlock(int nBlockHeight, unsigned int nMaxCerts) const
 {
     LOCK(cs_finality);
@@ -4770,6 +5982,9 @@ std::vector<CFinalityTallyCertificate> CFinalityTracker::GetPendingTallyCertific
     for (const auto& pair : mapPendingTallyCertificates)
     {
         const CFinalityTallyCertificate& cert = pair.second;
+        if (cert.IsCanonicalEnvelope() !=
+            IsBoundaryAActiveAtHeight(nBlockHeight))
+            continue;
         if (cert.nEpoch > nBlockEpoch)
             continue;
         // Staleness bound aligned with the connect-time R2 rule (and the HARD
@@ -4825,30 +6040,64 @@ std::vector<CFinalityTallyShare> CFinalityTracker::GetPendingTallySharesForBlock
     return vShares;
 }
 
-bool CFinalityTracker::ConnectBlockVotes(CTxDB& txdb, const uint256& hashBlock, const std::vector<CFinalityVote>& vVotes, int nBlockHeight)
+bool CFinalityTracker::ConnectBlockVotes(CTxDB& txdb, const uint256& hashBlock,
+                                        const std::vector<CFinalityVote>& vVotes,
+                                        int nBlockHeight,
+                                        FinalityResult* pResult)
 {
+    if (pResult)
+        *pResult = FINALITY_RESULT_INVALID;
     if (vVotes.empty())
-        return true;
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
 
     std::set<uint256> setBlockNullifiers;
+    if (!CheckCanonicalVoteSetCapacity(vVotes, nBlockHeight))
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_INVALID, false);
+
+    // Complete deterministic preflight before mutating tracker state.  In
+    // particular, a bad later vote must not leave earlier votes from the same
+    // rejected block visible until the outer transaction-abort recovery runs.
     for (const CFinalityVote& vote : vVotes)
     {
         if (!setBlockNullifiers.insert(vote.nullifier).second)
             return false;
 
+        // An alternative carrier must not overwrite the value already committed for a
+        // nullifier. The point read observes the active batch, covering multi-block reorgs.
+        bool fExistingCarrier = false;
+        {
+            LOCK(cs_finality);
+            fExistingCarrier =
+                mapConnectedVotes.count(vote.nullifier) != 0;
+        }
+        if (fExistingCarrier)
+        {
+            CFinalityVote persisted;
+            if (!txdb.ReadFinalityVote(vote.nullifier, persisted))
+                return ReturnFinalityResult(
+                    pResult, FINALITY_RESULT_LOCAL_STATE, false);
+            if (!FinalityVotesHaveSameSemanticIdentity(vote, persisted))
+                return ReturnFinalityResult(
+                    pResult, FINALITY_RESULT_INVALID, false);
+        }
+
         std::string strError;
-        if (!CheckVote(vote, txdb, &strError, nBlockHeight))
+        FinalityResult checkResult = FINALITY_RESULT_INVALID;
+        if (!CheckVote(vote, txdb, &strError, nBlockHeight, &checkResult))
         {
             if (fDebug)
                 printf("ConnectBlockVotes: rejected vote in block %s: %s\n",
                        hashBlock.ToString().substr(0,20).c_str(), strError.c_str());
-            return false;
+            return ReturnFinalityResult(pResult, checkResult, false);
         }
+    }
 
+    for (const CFinalityVote& vote : vVotes)
+    {
         if (!AddVote(vote, false, true))
-            return false;
+            return ReturnFinalityResult(pResult, FINALITY_RESULT_INVALID, false);
         if (!txdb.WriteFinalityVote(vote.nullifier, vote))
-            return false;
+            return ReturnFinalityResult(pResult, FINALITY_RESULT_LOCAL_STATE, false);
     }
 
     LOCK(cs_finality);
@@ -4861,9 +6110,19 @@ bool CFinalityTracker::ConnectBlockVotes(CTxDB& txdb, const uint256& hashBlock, 
     // pure function of the connected chain across restart: without it a post-restart
     // reorg would mis-tear-down a vote carried by multiple connected DAG blocks and
     // diverge mapEpochVotes from a fresh-sync node.
-    txdb.WriteFinalityConnectedVoteBlock(hashBlock, vNullifiers);
+    if (!txdb.WriteFinalityConnectedVoteBlock(hashBlock, vNullifiers))
+    {
+        mapBlockConnectedVoteNullifiers.erase(hashBlock);
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_LOCAL_STATE, false);
+    }
+    int nEarliestEpoch = vVotes[0].nEpoch;
+    for (std::vector<CFinalityVote>::const_iterator it = vVotes.begin();
+         it != vVotes.end(); ++it)
+        nEarliestEpoch = std::min(nEarliestEpoch, it->nEpoch);
+    if (!RecomputeFinalityStateFromEpoch(nEarliestEpoch))
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_LOCAL_STATE, false);
 
-    return true;
+    return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
 }
 
 bool CFinalityTracker::DisconnectBlockVotes(CTxDB& txdb, const uint256& hashBlock, const std::vector<CFinalityVote>& vVotes)
@@ -4890,7 +6149,8 @@ bool CFinalityTracker::DisconnectBlockVotes(CTxDB& txdb, const uint256& hashBloc
         if (fStillConnected)
             continue;
 
-        txdb.EraseFinalityVote(vote.nullifier);
+        if (!txdb.EraseFinalityVote(vote.nullifier))
+            return false;
 
         mapPendingVotes.erase(vote.nullifier);
         mapConnectedVotes.erase(vote.nullifier);
@@ -4935,16 +6195,27 @@ bool CFinalityTracker::DisconnectBlockVotes(CTxDB& txdb, const uint256& hashBloc
             mapEpochVoteWeight[vote.nEpoch] = nPrevWeight - vote.nVoteWeight;
         else
             mapEpochVoteWeight.erase(vote.nEpoch);
+        MarkFinalitySummaryDirty(vote.nEpoch);
     }
     mapBlockConnectedVoteNullifiers.erase(hashBlock);
-    txdb.EraseFinalityConnectedVoteBlock(hashBlock);
-    return true;
+    if (!txdb.EraseFinalityConnectedVoteBlock(hashBlock))
+        return false;
+    int nEarliestEpoch = vVotes[0].nEpoch;
+    for (std::vector<CFinalityVote>::const_iterator it = vVotes.begin();
+         it != vVotes.end(); ++it)
+        nEarliestEpoch = std::min(nEarliestEpoch, it->nEpoch);
+    return RecomputeFinalityStateFromEpoch(nEarliestEpoch);
 }
 
-bool CFinalityTracker::ConnectBlockTallyCertificates(CTxDB& txdb, const uint256& hashBlock, const std::vector<CFinalityTallyCertificate>& vCerts, int nBlockHeight)
+bool CFinalityTracker::ConnectBlockTallyCertificates(
+    CTxDB& txdb, const uint256& hashBlock,
+    const std::vector<CFinalityTallyCertificate>& vCerts, int nBlockHeight,
+    FinalityResult* pResult)
 {
+    if (pResult)
+        *pResult = FINALITY_RESULT_INVALID;
     if (vCerts.empty())
-        return true;
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
 
     std::set<uint256> setBlockCerts;
     for (const CFinalityTallyCertificate& cert : vCerts)
@@ -4957,18 +6228,20 @@ bool CFinalityTracker::ConnectBlockTallyCertificates(CTxDB& txdb, const uint256&
         // this block's votes, so pending relay state must not be consulted.
         // nBlockHeight drives the fork-gated position/coverage rules (R2/R3).
         std::string strError;
-        if (!CheckTallyCertificate(cert, txdb, &strError, NULL, false, nBlockHeight))
+        FinalityResult checkResult = FINALITY_RESULT_INVALID;
+        if (!CheckTallyCertificate(cert, txdb, &strError, NULL, false,
+                                   nBlockHeight, false, &checkResult))
         {
             if (fDebug)
                 printf("ConnectBlockTallyCertificates: rejected cert in block %s: %s\n",
                        hashBlock.ToString().substr(0,20).c_str(), strError.c_str());
-            return false;
+            return ReturnFinalityResult(pResult, checkResult, false);
         }
 
         if (!AddTallyCertificate(cert, false, true))
-            return false;
+            return ReturnFinalityResult(pResult, FINALITY_RESULT_LOCAL_STATE, false);
         if (!txdb.WriteFinalityTallyCertificate(hashCert, cert))
-            return false;
+            return ReturnFinalityResult(pResult, FINALITY_RESULT_LOCAL_STATE, false);
     }
 
     LOCK(cs_finality);
@@ -4977,21 +6250,38 @@ bool CFinalityTracker::ConnectBlockTallyCertificates(CTxDB& txdb, const uint256&
     for (const CFinalityTallyCertificate& cert : vCerts)
         vHashes.push_back(cert.GetHash());
     if (!txdb.WriteFinalityConnectedCertBlock(hashBlock, vHashes))
-        return false;
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_LOCAL_STATE, false);
+    int nEarliestEpoch = vCerts[0].nEpoch;
+    for (std::vector<CFinalityTallyCertificate>::const_iterator it =
+             vCerts.begin(); it != vCerts.end(); ++it)
+        nEarliestEpoch = std::min(nEarliestEpoch, it->nEpoch);
+    if (!RecomputeFinalityStateFromEpoch(nEarliestEpoch))
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_LOCAL_STATE, false);
 
-    return true;
+    return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
 }
 
 bool CFinalityTracker::ConnectBlockCommitteeRotations(CTxDB& txdb, const uint256& hashBlock,
                                                       const std::vector<CFinalityCommitteeRotation>& vRots,
-                                                      int nBlockHeight)
+                                                      int nBlockHeight,
+                                                      FinalityResult* pResult)
 {
+    if (pResult)
+        *pResult = FINALITY_RESULT_INVALID;
     if (vRots.empty())
-        return true;
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
 
     int nBlockEpoch = GetEpochForHeight(nBlockHeight);
+    std::vector<CFinalityCommitteeRotation> vSorted = vRots;
+    std::sort(vSorted.begin(), vSorted.end(),
+              [](const CFinalityCommitteeRotation& a,
+                 const CFinalityCommitteeRotation& b) {
+                  if (a.nEffectiveEpoch != b.nEffectiveEpoch)
+                      return a.nEffectiveEpoch < b.nEffectiveEpoch;
+                  return a.GetSignatureDigest() < b.GetSignatureDigest();
+              });
     std::set<int> setEffEpochs;
-    for (const CFinalityCommitteeRotation& rot : vRots)
+    for (const CFinalityCommitteeRotation& rot : vSorted)
     {
         // A2 lookahead bound: a rotation must take effect strictly after the
         // connecting block's epoch and within the bounded window (no pre-dating,
@@ -5003,22 +6293,161 @@ bool CFinalityTracker::ConnectBlockCommitteeRotations(CTxDB& txdb, const uint256
         if (!setEffEpochs.insert(rot.nEffectiveEpoch).second)
             return error("ConnectBlockCommitteeRotations: duplicate effective epoch in block");
 
+    }
+
+    // Runtime application must match startup's ascending map iteration. Keep a
+    // snapshot so a later invalid dependent rotation cannot leave an earlier one
+    // installed after ConnectBlock aborts its DB transaction.
+    std::map<int, CFinalityCommitteeRotation> mapBefore;
+    {
+        LOCK(cs_finality);
+        mapBefore = mapConnectedRotations;
+    }
+    for (const CFinalityCommitteeRotation& rot : vSorted)
+    {
+        bool fV3ExistingCandidate = false;
+        if (nBlockHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
+        {
+            LOCK(cs_finality);
+            std::map<int, CFinalityCommitteeRotation>::const_iterator existing =
+                mapConnectedRotations.find(rot.nEffectiveEpoch);
+            fV3ExistingCandidate =
+                existing != mapConnectedRotations.end();
+        }
+
+        if (fV3ExistingCandidate)
+        {
+            // V3 finality state is connected only on the canonical pprev chain,
+            // so an existing carrier must be at a strictly lower height.  Check
+            // that invariant before treating this independently valid later
+            // competitor as a retained no-op.  This also covers
+            // an identical signed-content digest with different ECDSA bytes:
+            // rewriting that value would make the persisted record depend on
+            // which re-signature arrived last.  Validate every candidate
+            // against the committee immediately before its epoch, retain its
+            // carrier below, and leave the active/persisted winner untouched.
+            bool fHaveEarlierCarrier = false;
+            {
+                LOCK(cs_finality);
+                for (std::map<uint256, std::vector<int> >::const_iterator bit =
+                         mapBlockConnectedRotations.begin();
+                     bit != mapBlockConnectedRotations.end(); ++bit)
+                {
+                    if (std::find(bit->second.begin(), bit->second.end(),
+                                  rot.nEffectiveEpoch) == bit->second.end())
+                        continue;
+                    std::map<uint256, CBlockIndex*>::const_iterator miCarrier =
+                        mapBlockIndex.find(bit->first);
+                    if (miCarrier == mapBlockIndex.end() ||
+                        miCarrier->second == NULL ||
+                        miCarrier->second->nHeight >= nBlockHeight)
+                    {
+                        mapConnectedRotations = mapBefore;
+                        error("ConnectBlockCommitteeRotations: V3 carrier-order "
+                              "invariant failed for epoch %d (existing=%s, "
+                              "candidate height=%d)",
+                              rot.nEffectiveEpoch,
+                              bit->first.ToString().substr(0,20).c_str(),
+                              nBlockHeight);
+                        return ReturnFinalityResult(
+                            pResult, FINALITY_RESULT_LOCAL_STATE, false);
+                    }
+                    fHaveEarlierCarrier = true;
+                }
+                if (!fHaveEarlierCarrier)
+                {
+                    mapConnectedRotations = mapBefore;
+                    error("ConnectBlockCommitteeRotations: V3 winner for epoch "
+                          "%d has no connected canonical-pprev carrier",
+                          rot.nEffectiveEpoch);
+                    return ReturnFinalityResult(
+                        pResult, FINALITY_RESULT_LOCAL_STATE, false);
+                }
+            }
+            std::vector<CPubKey> vPrev;
+            int nPrevM = 0;
+            uint256 hashPrev;
+            std::string strError;
+            if (!GetCommitteeForEpoch(rot.nEffectiveEpoch - 1,
+                                      vPrev, nPrevM, hashPrev))
+            {
+                LOCK(cs_finality);
+                mapConnectedRotations = mapBefore;
+                error("ConnectBlockCommitteeRotations: local committee state is "
+                      "unavailable before epoch %d", rot.nEffectiveEpoch);
+                return ReturnFinalityResult(pResult,
+                                            FINALITY_RESULT_LOCAL_STATE, false);
+            }
+            if (!CheckCommitteeRotationAuthorized(rot, vPrev, nPrevM,
+                                                  hashPrev, &strError))
+            {
+                LOCK(cs_finality);
+                mapConnectedRotations = mapBefore;
+                error("ConnectBlockCommitteeRotations: rejected later V3 "
+                      "candidate in block %s: %s",
+                      hashBlock.ToString().substr(0,20).c_str(),
+                      strError.c_str());
+                return ReturnFinalityResult(pResult,
+                                            FINALITY_RESULT_INVALID, false);
+            }
+            continue;
+        }
+
         std::string strError;
+        std::vector<CPubKey> vPrev;
+        int nPrevM = 0;
+        uint256 hashPrev;
+        if (!GetCommitteeForEpoch(rot.nEffectiveEpoch - 1,
+                                  vPrev, nPrevM, hashPrev))
+        {
+            LOCK(cs_finality);
+            mapConnectedRotations = mapBefore;
+            error("ConnectBlockCommitteeRotations: local committee state is "
+                  "unavailable before epoch %d", rot.nEffectiveEpoch);
+            return ReturnFinalityResult(pResult,
+                                        FINALITY_RESULT_LOCAL_STATE, false);
+        }
+        if (!CheckCommitteeRotationAuthorized(rot, vPrev, nPrevM,
+                                              hashPrev, &strError))
+        {
+            LOCK(cs_finality);
+            mapConnectedRotations = mapBefore;
+            error("ConnectBlockCommitteeRotations: rejected rotation in block %s: %s",
+                  hashBlock.ToString().substr(0,20).c_str(), strError.c_str());
+            return ReturnFinalityResult(pResult,
+                                        FINALITY_RESULT_INVALID, false);
+        }
         if (!ConnectCommitteeRotation(rot, &strError))
-            return error("ConnectBlockCommitteeRotations: rejected rotation in block %s: %s",
-                         hashBlock.ToString().substr(0,20).c_str(), strError.c_str());
+        {
+            LOCK(cs_finality);
+            mapConnectedRotations = mapBefore;
+            error("ConnectBlockCommitteeRotations: rejected rotation in block %s: %s",
+                  hashBlock.ToString().substr(0,20).c_str(), strError.c_str());
+            return ReturnFinalityResult(pResult,
+                                        FINALITY_RESULT_INVALID, false);
+        }
         if (!txdb.WriteFinalityCommitteeRotation(rot.nEffectiveEpoch, rot))
-            return false;
+        {
+            LOCK(cs_finality);
+            mapConnectedRotations = mapBefore;
+            return ReturnFinalityResult(pResult,
+                                        FINALITY_RESULT_LOCAL_STATE, false);
+        }
     }
 
     LOCK(cs_finality);
     std::vector<int>& vEpochs = mapBlockConnectedRotations[hashBlock];
     vEpochs.clear();
-    for (const CFinalityCommitteeRotation& rot : vRots)
+    for (const CFinalityCommitteeRotation& rot : vSorted)
         vEpochs.push_back(rot.nEffectiveEpoch);
     if (!txdb.WriteFinalityConnectedRotationBlock(hashBlock, vEpochs))
-        return false;
-    return true;
+    {
+        mapConnectedRotations = mapBefore;
+        mapBlockConnectedRotations.erase(hashBlock);
+        return ReturnFinalityResult(pResult,
+                                    FINALITY_RESULT_LOCAL_STATE, false);
+    }
+    return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
 }
 
 bool CFinalityTracker::DisconnectBlockCommitteeRotations(CTxDB& txdb, const uint256& hashBlock,
@@ -5028,17 +6457,38 @@ bool CFinalityTracker::DisconnectBlockCommitteeRotations(CTxDB& txdb, const uint
         return true;
 
     LOCK(cs_finality);
-    for (const CFinalityCommitteeRotation& rot : vRots)
+    const std::map<int, CFinalityCommitteeRotation> mapConnectedBefore = mapConnectedRotations;
+    const std::map<uint256, std::vector<int> > mapCarriersBefore = mapBlockConnectedRotations;
+    const std::map<int, CFinalityCommitteeRotation> mapPendingBefore = mapPendingRotations;
+    const auto RestoreRotationMemory = [&]() {
+        mapConnectedRotations = mapConnectedBefore;
+        mapBlockConnectedRotations = mapCarriersBefore;
+        mapPendingRotations = mapPendingBefore;
+    };
+    int nEpochSchema = 0;
+    const bool fSchemaRead = txdb.ReadEpochStateSchema(nEpochSchema);
+    if (!fSchemaRead && txdb.HasEpochStateSchema())
     {
-        const int nEff = rot.nEffectiveEpoch;
-        // A committee rotation for an effective epoch may be carried by MORE THAN ONE connected block
-        // (the same or a competing rotation re-embedded across DAG siblings/branches -- normal under IDAG,
-        // exactly as for votes/shares/certs). Only tear the rotation down when NO OTHER still-connected
-        // block carries this effective epoch; otherwise re-resolve the canonical winner (lowest GetHash)
-        // from the surviving carriers and rewrite memory + DB. This mirrors the DisconnectBlockVotes/
-        // Shares/Certificates guards and keeps the committee resolver a pure function of the connected
-        // chain -- an unconditional erase here diverges the resolver across nodes -> consensus split.
-        std::vector<CFinalityCommitteeRotation> vSurviving;
+        RestoreRotationMemory();
+        return error("DisconnectBlockCommitteeRotations: unreadable epoch-state schema; "
+                     "-reindex/resync required");
+    }
+    const bool fStrictV3 = fSchemaRead && nEpochSchema >= EPOCHSTATE_SCHEMA_V3;
+    std::set<int> setDisconnectEpochs;
+    for (std::vector<CFinalityCommitteeRotation>::const_iterator it = vRots.begin();
+         it != vRots.end(); ++it)
+        setDisconnectEpochs.insert(it->nEffectiveEpoch);
+
+    for (std::set<int>::const_iterator eit = setDisconnectEpochs.begin();
+         eit != setDisconnectEpochs.end(); ++eit)
+    {
+        const int nEff = *eit;
+        // A rotation for one effective epoch may be re-embedded in multiple
+        // distinct-height canonical-pprev blocks. Only tear it down when no
+        // other connected pprev carrier remains; otherwise re-resolve the
+        // earliest survivor and rewrite memory + DB. Finality payloads in DAG
+        // merge/sibling blocks are deliberately outside connected tracker state.
+        std::vector<CFinalityCommitteeRotationCarrier> vSurviving;
         for (const std::pair<const uint256, std::vector<int> >& carrier : mapBlockConnectedRotations)
         {
             if (carrier.first == hashBlock)
@@ -5047,44 +6497,315 @@ bool CFinalityTracker::DisconnectBlockCommitteeRotations(CTxDB& txdb, const uint
                 continue;
             std::map<uint256, CBlockIndex*>::iterator itIdx = mapBlockIndex.find(carrier.first);
             if (itIdx == mapBlockIndex.end() || itIdx->second == NULL)
+            {
+                if (fStrictV3)
+                {
+                    RestoreRotationMemory();
+                    return error("DisconnectBlockCommitteeRotations: V3 carrier block %s "
+                                 "is missing from the block index; -reindex/resync required",
+                                 carrier.first.ToString().substr(0,20).c_str());
+                }
                 continue;
+            }
             CBlock blkCarrier;
             if (!blkCarrier.ReadFromDisk(itIdx->second, true))
+            {
+                if (fStrictV3)
+                {
+                    RestoreRotationMemory();
+                    return error("DisconnectBlockCommitteeRotations: V3 carrier block %s "
+                                 "cannot be read; -reindex/resync required",
+                                 carrier.first.ToString().substr(0,20).c_str());
+                }
                 continue;
+            }
             std::vector<CFinalityCommitteeRotation> vOther =
                 ExtractFinalityCommitteeRotationsFromBlock(blkCarrier);
+            bool fFound = false;
             for (const CFinalityCommitteeRotation& r : vOther)
                 if (r.nEffectiveEpoch == nEff)
-                    vSurviving.push_back(r);
+                {
+                    if (fFound && fStrictV3)
+                    {
+                        RestoreRotationMemory();
+                        return error("DisconnectBlockCommitteeRotations: V3 carrier block %s "
+                                     "has duplicate rotations for epoch %d; -reindex/resync required",
+                                     carrier.first.ToString().substr(0,20).c_str(), nEff);
+                    }
+                    fFound = true;
+                    vSurviving.push_back(CFinalityCommitteeRotationCarrier(
+                        itIdx->second->nHeight, carrier.first, r));
+                }
+            if (!fFound && fStrictV3)
+            {
+                RestoreRotationMemory();
+                return error("DisconnectBlockCommitteeRotations: V3 carrier block %s "
+                             "does not contain its recorded epoch %d rotation; "
+                             "-reindex/resync required",
+                             carrier.first.ToString().substr(0,20).c_str(), nEff);
+            }
         }
 
         if (vSurviving.empty())
         {
             DisconnectCommitteeRotation(nEff);
-            txdb.EraseFinalityCommitteeRotation(nEff);
+            if (!txdb.EraseFinalityCommitteeRotation(nEff))
+            {
+                RestoreRotationMemory();
+                return false;
+            }
         }
         else
         {
-            // Canonical winner among surviving carriers on the signature DIGEST (content), not the malleable
-            // GetHash() -- matches the connect-time tie-break so disconnect re-resolution is grind-proof too.
-            const CFinalityCommitteeRotation* pWinner = &vSurviving[0];
-            for (size_t i = 1; i < vSurviving.size(); i++)
-                if (vSurviving[i].GetSignatureDigest() < pWinner->GetSignatureDigest())
-                    pWinner = &vSurviving[i];
-            mapConnectedRotations[nEff] = *pWinner;
-            txdb.WriteFinalityCommitteeRotation(nEff, *pWinner);
+            CFinalityCommitteeRotation winner;
+            if (!SelectCanonicalFinalityCommitteeRotation(
+                    vSurviving, FORK_HEIGHT_EPOCH_STATE_V3, winner))
+            {
+                RestoreRotationMemory();
+                return error("DisconnectBlockCommitteeRotations: cannot resolve canonical "
+                             "carrier for epoch %d", nEff);
+            }
+            mapConnectedRotations[nEff] = winner;
+            if (!txdb.WriteFinalityCommitteeRotation(nEff, winner))
+            {
+                RestoreRotationMemory();
+                return false;
+            }
         }
     }
     mapBlockConnectedRotations.erase(hashBlock);
-    txdb.EraseFinalityConnectedRotationBlock(hashBlock);
+    if (!txdb.EraseFinalityConnectedRotationBlock(hashBlock))
+    {
+        RestoreRotationMemory();
+        return false;
+    }
+
+    // A later rotation may have been authorized only by a rotation just removed.
+    // Re-evaluate the chain from the pinned committee and recursively drop every
+    // runtime/persisted orphan instead of silently skipping it until restart.
+    std::vector<CPubKey> vActive = vInitialCommittee;
+    int nActiveM = nInitialCommitteeM;
+    uint256 hashActive = hashInitialCommitteeSet;
+    std::vector<int> vOrphanEpochs;
+    for (std::map<int, CFinalityCommitteeRotation>::const_iterator it =
+             mapConnectedRotations.begin(); it != mapConnectedRotations.end(); ++it)
+    {
+        const CFinalityCommitteeRotation& candidate = it->second;
+        std::vector<CPubKey> vNew;
+        int nNewM = 0;
+        uint256 hashNew;
+        if (candidate.hashPrevCommitteeSet != hashActive ||
+            !CheckCommitteeRotationAuthorized(candidate, vActive, nActiveM, hashActive, NULL) ||
+            !candidate.GetNewCommittee(vNew, nNewM, hashNew))
+        {
+            vOrphanEpochs.push_back(it->first);
+            continue;
+        }
+        vActive = vNew;
+        nActiveM = nNewM;
+        hashActive = hashNew;
+    }
+    for (std::vector<int>::const_iterator oit = vOrphanEpochs.begin();
+         oit != vOrphanEpochs.end(); ++oit)
+    {
+        mapConnectedRotations.erase(*oit);
+        if (!txdb.EraseFinalityCommitteeRotation(*oit))
+        {
+            RestoreRotationMemory();
+            return false;
+        }
+        for (std::map<uint256, std::vector<int> >::iterator bit =
+                 mapBlockConnectedRotations.begin(); bit != mapBlockConnectedRotations.end(); )
+        {
+            std::vector<int>& vEpochs = bit->second;
+            vEpochs.erase(std::remove(vEpochs.begin(), vEpochs.end(), *oit), vEpochs.end());
+            if (vEpochs.empty())
+            {
+                if (!txdb.EraseFinalityConnectedRotationBlock(bit->first))
+                {
+                    RestoreRotationMemory();
+                    return false;
+                }
+                mapBlockConnectedRotations.erase(bit++);
+            }
+            else
+            {
+                if (!txdb.WriteFinalityConnectedRotationBlock(bit->first, vEpochs))
+                {
+                    RestoreRotationMemory();
+                    return false;
+                }
+                ++bit;
+            }
+        }
+    }
+
+    // Pending rotations are runtime-only; prune any whose predecessor set no
+    // longer resolves after the recursive connected-chain cleanup.
+    for (std::map<int, CFinalityCommitteeRotation>::iterator it = mapPendingRotations.begin();
+         it != mapPendingRotations.end(); )
+    {
+        std::vector<CPubKey> vPrev;
+        int nPrevM = 0;
+        uint256 hashPrev;
+        if (!GetCommitteeForEpoch(it->first - 1, vPrev, nPrevM, hashPrev) ||
+            !CheckCommitteeRotationAuthorized(it->second, vPrev, nPrevM, hashPrev, NULL))
+            mapPendingRotations.erase(it++);
+        else
+            ++it;
+    }
     return true;
 }
 
 bool CFinalityTracker::LoadCommitteeRotations(CTxDB& txdb)
 {
+    LOCK(cs_finality);
     std::map<int, CFinalityCommitteeRotation> mapRots;
     if (!txdb.IterateFinalityCommitteeRotations(mapRots))
         return false;
+    const std::map<int, CFinalityCommitteeRotation> mapConnectedBefore =
+        mapConnectedRotations;
+
+    for (std::map<int, CFinalityCommitteeRotation>::const_iterator it = mapRots.begin();
+         it != mapRots.end(); ++it)
+    {
+        if (it->first != it->second.nEffectiveEpoch)
+            return error("LoadCommitteeRotations: FATAL key epoch %d does not match "
+                         "record epoch %d -- -reindex/resync required",
+                         it->first, it->second.nEffectiveEpoch);
+    }
+
+    std::map<uint256, std::vector<int> > mapRotBlocks;
+    if (!txdb.IterateFinalityConnectedRotationBlocks(mapRotBlocks))
+        return false;
+
+    int nEpochSchema = 0;
+    const bool fSchemaRead = txdb.ReadEpochStateSchema(nEpochSchema);
+    if (!fSchemaRead && txdb.HasEpochStateSchema())
+        return error("LoadCommitteeRotations: FATAL epoch-state schema marker is corrupt -- "
+                     "-reindex/resync required");
+    const bool fStrictV3 = fSchemaRead && nEpochSchema >= EPOCHSTATE_SCHEMA_V3;
+
+    std::set<uint256> setCanonicalBlocks;
+    if (fStrictV3 && !mapRotBlocks.empty())
+    {
+        uint256 hashBest;
+        if (!txdb.ReadHashBestChain(hashBest))
+            return error("LoadCommitteeRotations: FATAL V3 best-chain pointer is missing -- "
+                         "-reindex/resync required");
+        std::map<uint256, CBlockIndex*>::const_iterator itBest = mapBlockIndex.find(hashBest);
+        if (itBest == mapBlockIndex.end() || itBest->second == NULL)
+            return error("LoadCommitteeRotations: FATAL V3 best-chain index %s is missing -- "
+                         "-reindex/resync required",
+                         hashBest.ToString().substr(0,20).c_str());
+        for (const CBlockIndex* pindex = itBest->second; pindex != NULL;
+             pindex = pindex->pprev)
+        {
+            if (!setCanonicalBlocks.insert(pindex->GetBlockHash()).second)
+                return error("LoadCommitteeRotations: FATAL cycle in V3 best-chain index at %s -- "
+                             "-reindex/resync required",
+                             pindex->GetBlockHash().ToString().substr(0,20).c_str());
+        }
+    }
+
+    std::set<int> setReferenced;
+    std::map<int, std::vector<CFinalityCommitteeRotationCarrier> > mapCandidates;
+    for (std::map<uint256, std::vector<int> >::const_iterator it = mapRotBlocks.begin();
+         it != mapRotBlocks.end(); ++it)
+    {
+        std::set<int> setCarrierEpochs;
+        for (std::vector<int>::const_iterator eit = it->second.begin();
+             eit != it->second.end(); ++eit)
+        {
+            if (!setCarrierEpochs.insert(*eit).second)
+                return error("LoadCommitteeRotations: FATAL carrier %s repeats epoch %d -- "
+                             "-reindex/resync required",
+                             it->first.ToString().substr(0,20).c_str(), *eit);
+            if (!mapRots.count(*eit))
+                return error("LoadCommitteeRotations: FATAL carrier references missing "
+                             "rotation epoch %d -- -reindex/resync required", *eit);
+            setReferenced.insert(*eit);
+        }
+
+        if (!fStrictV3)
+            continue;
+        if (setCarrierEpochs.empty())
+            return error("LoadCommitteeRotations: FATAL empty V3 carrier record for block %s -- "
+                         "-reindex/resync required",
+                         it->first.ToString().substr(0,20).c_str());
+
+        std::map<uint256, CBlockIndex*>::const_iterator itIdx = mapBlockIndex.find(it->first);
+        if (itIdx == mapBlockIndex.end() || itIdx->second == NULL)
+            return error("LoadCommitteeRotations: FATAL V3 carrier block %s is missing "
+                         "from the block index -- -reindex/resync required",
+                         it->first.ToString().substr(0,20).c_str());
+        if (!setCanonicalBlocks.count(it->first))
+            return error("LoadCommitteeRotations: FATAL V3 carrier block %s is not on "
+                         "the persisted best chain -- -reindex/resync required",
+                         it->first.ToString().substr(0,20).c_str());
+
+        CBlock block;
+        if (!block.ReadFromDisk(itIdx->second, true))
+            return error("LoadCommitteeRotations: FATAL V3 carrier block %s cannot be read -- "
+                         "-reindex/resync required",
+                         it->first.ToString().substr(0,20).c_str());
+        if (itIdx->second->nHeight < FORK_HEIGHT_TALLY_GOVERNANCE ||
+            !itIdx->second->IsProofOfWork())
+            return error("LoadCommitteeRotations: FATAL invalid V3 carrier context at height %d -- "
+                         "-reindex/resync required", itIdx->second->nHeight);
+
+        std::vector<CFinalityCommitteeRotation> vBlockRots =
+            ExtractFinalityCommitteeRotationsFromBlock(block);
+        std::set<int> setExtractedEpochs;
+        for (std::vector<CFinalityCommitteeRotation>::const_iterator rit =
+                 vBlockRots.begin(); rit != vBlockRots.end(); ++rit)
+        {
+            if (!setExtractedEpochs.insert(rit->nEffectiveEpoch).second)
+                return error("LoadCommitteeRotations: FATAL V3 carrier block %s contains "
+                             "duplicate rotations for epoch %d -- -reindex/resync required",
+                             it->first.ToString().substr(0,20).c_str(),
+                             rit->nEffectiveEpoch);
+            const int nBlockEpoch = GetEpochForHeight(itIdx->second->nHeight);
+            if (rit->nEffectiveEpoch <= nBlockEpoch ||
+                rit->nEffectiveEpoch > nBlockEpoch + FINALITY_ROTATION_MAX_LOOKAHEAD)
+                return error("LoadCommitteeRotations: FATAL V3 carrier block %s has "
+                             "out-of-window effective epoch %d -- -reindex/resync required",
+                             it->first.ToString().substr(0,20).c_str(),
+                             rit->nEffectiveEpoch);
+            mapCandidates[rit->nEffectiveEpoch].push_back(
+                CFinalityCommitteeRotationCarrier(itIdx->second->nHeight,
+                                                  it->first, *rit));
+        }
+        if (setExtractedEpochs != setCarrierEpochs)
+            return error("LoadCommitteeRotations: FATAL V3 carrier block %s content/index "
+                         "mismatch -- -reindex/resync required",
+                         it->first.ToString().substr(0,20).c_str());
+    }
+
+    if (setReferenced.size() != mapRots.size())
+        return error("LoadCommitteeRotations: FATAL unpaired rotation/carrier records -- "
+                     "-reindex/resync required");
+
+    if (fStrictV3)
+    {
+        for (std::map<int, CFinalityCommitteeRotation>::const_iterator it = mapRots.begin();
+             it != mapRots.end(); ++it)
+        {
+            CFinalityCommitteeRotation expected;
+            uint256 hashExpectedCarrier;
+            if (!SelectCanonicalFinalityCommitteeRotation(
+                    mapCandidates[it->first], FORK_HEIGHT_EPOCH_STATE_V3,
+                    expected, &hashExpectedCarrier))
+                return error("LoadCommitteeRotations: FATAL no canonical V3 carrier for "
+                             "epoch %d -- -reindex/resync required", it->first);
+            if (expected.GetSignatureDigest() != it->second.GetSignatureDigest())
+                return error("LoadCommitteeRotations: FATAL persisted rotation for epoch %d "
+                             "does not match canonical carrier %s -- -reindex/resync required",
+                             it->first,
+                             hashExpectedCarrier.ToString().substr(0,20).c_str());
+        }
+    }
+
     // Apply in ascending effective-epoch order so each chains onto the prior set.
     for (std::map<int, CFinalityCommitteeRotation>::const_iterator it = mapRots.begin();
          it != mapRots.end(); ++it)
@@ -5092,30 +6813,63 @@ bool CFinalityTracker::LoadCommitteeRotations(CTxDB& txdb)
         std::string strError;
         if (!ConnectCommitteeRotation(it->second, &strError))
         {
-            if (fDebug)
-                printf("LoadCommitteeRotations: skipped epoch %d: %s\n", it->first, strError.c_str());
+            mapConnectedRotations = mapConnectedBefore;
+            return error("LoadCommitteeRotations: FATAL invalid chained rotation at epoch %d: "
+                         "%s -- -reindex/resync required", it->first, strError.c_str());
         }
     }
-    // Restore the reorg-safe per-block carrier index.
+
+    // A later V3 no-op candidate must be independently authorized too.  It can
+    // become the winner after a reorg removes an earlier carrier, so accepting
+    // an unverifiable fallback here would make restart/reorg behavior diverge.
+    if (fStrictV3)
     {
-        std::map<uint256, std::vector<int> > mapRotBlocks;
-        if (txdb.IterateFinalityConnectedRotationBlocks(mapRotBlocks))
+        for (std::map<int, std::vector<CFinalityCommitteeRotationCarrier> >::const_iterator it =
+                 mapCandidates.begin(); it != mapCandidates.end(); ++it)
         {
-            LOCK(cs_finality);
-            for (std::map<uint256, std::vector<int> >::const_iterator it = mapRotBlocks.begin();
-                 it != mapRotBlocks.end(); ++it)
-                mapBlockConnectedRotations[it->first] = it->second;
+            std::vector<CPubKey> vPrev;
+            int nPrevM = 0;
+            uint256 hashPrev;
+            if (!GetCommitteeForEpoch(it->first - 1, vPrev, nPrevM, hashPrev))
+            {
+                mapConnectedRotations = mapConnectedBefore;
+                return error("LoadCommitteeRotations: FATAL cannot resolve the committee "
+                             "before candidate epoch %d -- -reindex/resync required",
+                             it->first);
+            }
+            for (std::vector<CFinalityCommitteeRotationCarrier>::const_iterator cit =
+                     it->second.begin(); cit != it->second.end(); ++cit)
+            {
+                std::string strError;
+                if (!CheckCommitteeRotationAuthorized(cit->rotation, vPrev, nPrevM,
+                                                      hashPrev, &strError))
+                {
+                    mapConnectedRotations = mapConnectedBefore;
+                    return error("LoadCommitteeRotations: FATAL invalid fallback candidate "
+                                 "for epoch %d in carrier %s: %s -- -reindex/resync required",
+                                 it->first,
+                                 cit->hashBlock.ToString().substr(0,20).c_str(),
+                                 strError.c_str());
+                }
+            }
         }
     }
+
+    mapBlockConnectedRotations = mapRotBlocks;
     if (!mapRots.empty())
         printf("LoadCommitteeRotations: loaded %d connected committee rotations\n", (int)mapRots.size());
     return true;
 }
 
-bool CFinalityTracker::ConnectBlockTallyShares(CTxDB& txdb, const uint256& hashBlock, const std::vector<CFinalityTallyShare>& vShares, int nBlockHeight)
+bool CFinalityTracker::ConnectBlockTallyShares(
+    CTxDB& txdb, const uint256& hashBlock,
+    const std::vector<CFinalityTallyShare>& vShares, int nBlockHeight,
+    FinalityResult* pResult)
 {
+    if (pResult)
+        *pResult = FINALITY_RESULT_INVALID;
     if (vShares.empty())
-        return true;
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
 
     std::set<uint256> setBlockShares;
     for (const CFinalityTallyShare& share : vShares)
@@ -5145,9 +6899,9 @@ bool CFinalityTracker::ConnectBlockTallyShares(CTxDB& txdb, const uint256& hashB
             fHaveShare = mapTallyShares.count(hashShare) != 0;
         }
         if (!fHaveShare && !AddTallyShare(share, false))
-            return false;
+            return ReturnFinalityResult(pResult, FINALITY_RESULT_LOCAL_STATE, false);
         if (!txdb.WriteFinalityTallyShare(hashShare, share))
-            return false;
+            return ReturnFinalityResult(pResult, FINALITY_RESULT_LOCAL_STATE, false);
     }
 
     LOCK(cs_finality);
@@ -5162,9 +6916,13 @@ bool CFinalityTracker::ConnectBlockTallyShares(CTxDB& txdb, const uint256& hashB
     // Persist the per-block connected-share index so setConnectedTallyShares and the
     // still-connected-elsewhere teardown survive restart; the connect-time cert
     // share-resolution gate depends on this being a pure function of the chain.
-    txdb.WriteFinalityConnectedShareBlock(hashBlock, vHashes);
+    if (!txdb.WriteFinalityConnectedShareBlock(hashBlock, vHashes))
+    {
+        mapBlockConnectedTallyShares.erase(hashBlock);
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_LOCAL_STATE, false);
+    }
 
-    return true;
+    return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
 }
 
 bool CFinalityTracker::DisconnectBlockTallyShares(CTxDB& txdb, const uint256& hashBlock, const std::vector<CFinalityTallyShare>& vShares)
@@ -5189,13 +6947,15 @@ bool CFinalityTracker::DisconnectBlockTallyShares(CTxDB& txdb, const uint256& ha
         }
         if (!fStillConnected)
         {
-            txdb.EraseFinalityTallyShare(hashShare);
+            if (!txdb.EraseFinalityTallyShare(hashShare))
+                return false;
             mapTallyShares.erase(hashShare);
             setConnectedTallyShares.erase(hashShare);
         }
     }
     mapBlockConnectedTallyShares.erase(hashBlock);
-    txdb.EraseFinalityConnectedShareBlock(hashBlock);
+    if (!txdb.EraseFinalityConnectedShareBlock(hashBlock))
+        return false;
     return true;
 }
 
@@ -5209,6 +6969,13 @@ bool CFinalityTracker::DisconnectBlockTallyCertificates(CTxDB& txdb, const uint2
                                             const uint256& hashToErase) {
         mapPendingTallyCertificates.erase(hashToErase);
         mapConnectedTallyCertificates.erase(hashToErase);
+        const uint256 hashContext =
+            FinalityCertificateAutomationContextHash(certToErase);
+        std::map<uint256, uint256>::iterator context =
+            mapConnectedTallyCertificateByContext.find(hashContext);
+        if (context != mapConnectedTallyCertificateByContext.end() &&
+            context->second == hashToErase)
+            mapConnectedTallyCertificateByContext.erase(context);
 
         auto itCerts = mapEpochTallyCertificates.find(certToErase.nEpoch);
         if (itCerts != mapEpochTallyCertificates.end())
@@ -5228,6 +6995,8 @@ bool CFinalityTracker::DisconnectBlockTallyCertificates(CTxDB& txdb, const uint2
             return;
 
         mapConnectedTallyCertificates[hashToAdd] = certToAdd;
+        mapConnectedTallyCertificateByContext[
+            FinalityCertificateAutomationContextHash(certToAdd)] = hashToAdd;
         FinalityEraseTallyCertificateContext(certToAdd, mapPendingTallyCertificates);
         for (const uint256& hashShare : certToAdd.vTallyShareHashes)
             setConnectedTallyShares.insert(hashShare);
@@ -5256,9 +7025,6 @@ bool CFinalityTracker::DisconnectBlockTallyCertificates(CTxDB& txdb, const uint2
                     break;
                 }
 
-                if (fHaveReplacementContext)
-                    continue;
-
                 CFinalityTallyCertificate certOther;
                 auto itConnected = mapConnectedTallyCertificates.find(hashOther);
                 if (itConnected != mapConnectedTallyCertificates.end())
@@ -5268,9 +7034,12 @@ bool CFinalityTracker::DisconnectBlockTallyCertificates(CTxDB& txdb, const uint2
 
                 if (FinalityCertificateAutomationContextHash(certOther) == hashContext)
                 {
-                    certReplacement = certOther;
-                    hashReplacement = hashOther;
-                    fHaveReplacementContext = true;
+                    if (!fHaveReplacementContext || hashOther < hashReplacement)
+                    {
+                        certReplacement = certOther;
+                        hashReplacement = hashOther;
+                        fHaveReplacementContext = true;
+                    }
                 }
             }
 
@@ -5282,15 +7051,22 @@ bool CFinalityTracker::DisconnectBlockTallyCertificates(CTxDB& txdb, const uint2
             continue;
 
         bool fWasCanonical = mapConnectedTallyCertificates.count(hashCert) != 0;
-        txdb.EraseFinalityTallyCertificate(hashCert);
+        if (!txdb.EraseFinalityTallyCertificate(hashCert))
+            return false;
         eraseConnectedCertFromMemory(cert, hashCert);
 
         if (fWasCanonical && fHaveReplacementContext)
             addConnectedCertToMemory(certReplacement, hashReplacement);
+        MarkFinalitySummaryDirty(cert.nEpoch);
     }
     mapBlockConnectedTallyCertificates.erase(hashBlock);
-    txdb.EraseFinalityConnectedCertBlock(hashBlock);
-    return true;
+    if (!txdb.EraseFinalityConnectedCertBlock(hashBlock))
+        return false;
+    int nEarliestEpoch = vCerts[0].nEpoch;
+    for (std::vector<CFinalityTallyCertificate>::const_iterator it =
+             vCerts.begin(); it != vCerts.end(); ++it)
+        nEarliestEpoch = std::min(nEarliestEpoch, it->nEpoch);
+    return RecomputeFinalityStateFromEpoch(nEarliestEpoch);
 }
 
 bool CFinalityTracker::LoadVotes(CTxDB& txdb)
@@ -5300,9 +7076,12 @@ bool CFinalityTracker::LoadVotes(CTxDB& txdb)
         return false;
 
     for (const auto& pair : mapVotes)
-        AddVote(pair.second, false, true);
+        if (!AddVote(pair.second, false, true))
+            return error("LoadFinalityVotes: FATAL persisted vote could not be restored -- "
+                         "-reindex/resync required");
 
-    RebuildFinalityState();
+    if (!RebuildFinalityState())
+        return false;
 
     if (!mapVotes.empty())
         printf("LoadFinalityVotes: loaded %d connected finality votes\n", (int)mapVotes.size());
@@ -5316,14 +7095,16 @@ bool CFinalityTracker::LoadTallyShares(CTxDB& txdb)
         return false;
 
     for (const auto& pair : mapShares)
-        AddTallyShare(pair.second, false);
+        if (!AddTallyShare(pair.second, false))
+            return error("LoadFinalityTallyShares: FATAL persisted share could not be "
+                         "restored -- -reindex/resync required");
 
     if (!mapShares.empty())
         printf("LoadFinalityTallyShares: loaded %d relayed tally shares\n", (int)mapShares.size());
     return true;
 }
 
-void CFinalityTracker::PurgeUnresolvableTallyShares(CTxDB& txdb)
+bool CFinalityTracker::PurgeUnresolvableTallyShares(CTxDB& txdb)
 {
     LOCK(cs_finality);
 
@@ -5342,7 +7123,8 @@ void CFinalityTracker::PurgeUnresolvableTallyShares(CTxDB& txdb)
         {
             printf("PurgeUnresolvableTallyShares: dropping tally share %s: %s\n",
                    it->first.ToString().substr(0,20).c_str(), strError.c_str());
-            txdb.EraseFinalityTallyShare(it->first);
+            if (!txdb.EraseFinalityTallyShare(it->first))
+                return false;
             setConnectedTallyShares.erase(it->first);
             it = mapTallyShares.erase(it);
             nPurged++;
@@ -5355,6 +7137,7 @@ void CFinalityTracker::PurgeUnresolvableTallyShares(CTxDB& txdb)
 
     if (nPurged > 0)
         printf("PurgeUnresolvableTallyShares: purged %d unresolvable tally shares\n", nPurged);
+    return true;
 }
 
 bool CFinalityTracker::LoadTallyCertificates(CTxDB& txdb)
@@ -5364,29 +7147,29 @@ bool CFinalityTracker::LoadTallyCertificates(CTxDB& txdb)
         return false;
 
     for (const auto& pair : mapCerts)
-        AddTallyCertificate(pair.second, false, true);
+        if (!AddTallyCertificate(pair.second, false, true))
+            return error("LoadFinalityTallyCertificates: FATAL persisted certificate could "
+                         "not be restored -- -reindex/resync required");
 
-    RebuildFinalityState();
+    if (!RebuildFinalityState())
+        return false;
 
     if (!mapCerts.empty())
         printf("LoadFinalityTallyCertificates: loaded %d connected tally certificates\n", (int)mapCerts.size());
     return true;
 }
 
-void CFinalityTracker::RebuildFinalityState()
+void CFinalityTracker::MarkFinalitySummaryDirty(int nEpoch)
 {
-    LOCK(cs_finality);
+    AssertLockHeld(cs_finality);
+    if (nFinalitySummaryDirtyFromEpoch < 0 ||
+        nEpoch < nFinalitySummaryDirtyFromEpoch)
+        nFinalitySummaryDirtyFromEpoch = nEpoch;
+}
 
-    // FCMP-spend and private-vote validity anchor to the finalization state,
-    // so it must be a pure function of the chain's CONNECTED votes and
-    // certificates. The in-memory epoch maps are pruned over time
-    // (PruneOldEpochs); replaying only the retained window would silently
-    // regress finalization after a restart or reorg-triggered rebuild and
-    // diverge from freshly-synced nodes. Re-merge the persisted connected set
-    // (LevelDB is append-on-connect / erase-on-disconnect, never pruned)
-    // before replaying.
-    ReloadConnectedFinalityFromDB();
-
+void CFinalityTracker::ResetFinalitySummary()
+{
+    AssertLockHeld(cs_finality);
     nLastFinalizedHeight = 0;
     hashLastFinalized = 0;
     nLastFinalityTier = FINALITY_NONE;
@@ -5394,18 +7177,103 @@ void CFinalityTracker::RebuildFinalityState()
     nLastHardEpoch = -1;
     nPendingFinalizedHeight = 0;
     hashPendingFinalized = 0;
-
-    std::set<int> setEpochs;
-    for (const auto& pair : mapEpochVotes)
-        setEpochs.insert(pair.first);
-    for (const auto& pair : mapEpochTallyCertificates)
-        setEpochs.insert(pair.first);
-
-    for (int nEpoch : setEpochs)
-        CheckFinalityThreshold(nEpoch);
 }
 
-void CFinalityTracker::ReloadConnectedFinalityFromDB()
+void CFinalityTracker::CaptureFinalitySummary(
+    CFinalitySummarySnapshot& snapshot) const
+{
+    AssertLockHeld(cs_finality);
+    snapshot.nFinalizedHeight = nLastFinalizedHeight;
+    snapshot.hashFinalized = hashLastFinalized;
+    snapshot.nTier = nLastFinalityTier;
+    snapshot.nConsecutiveHardEpochs = nConsecutiveHardEpochs;
+    snapshot.nLastHardEpoch = nLastHardEpoch;
+    snapshot.nPendingFinalizedHeight = nPendingFinalizedHeight;
+    snapshot.hashPendingFinalized = hashPendingFinalized;
+}
+
+void CFinalityTracker::RestoreFinalitySummary(
+    const CFinalitySummarySnapshot& snapshot)
+{
+    AssertLockHeld(cs_finality);
+    nLastFinalizedHeight = snapshot.nFinalizedHeight;
+    hashLastFinalized = snapshot.hashFinalized;
+    nLastFinalityTier = snapshot.nTier;
+    nConsecutiveHardEpochs = snapshot.nConsecutiveHardEpochs;
+    nLastHardEpoch = snapshot.nLastHardEpoch;
+    nPendingFinalizedHeight = snapshot.nPendingFinalizedHeight;
+    hashPendingFinalized = snapshot.hashPendingFinalized;
+}
+
+bool CFinalityTracker::RecomputeFinalityStateFromEpoch(int nRequestedEpoch)
+{
+    AssertLockHeld(cs_finality);
+
+    int nReplayFrom = nRequestedEpoch;
+    if (nFinalitySummaryDirtyFromEpoch >= 0)
+        nReplayFrom = std::min(nReplayFrom,
+                               nFinalitySummaryDirtyFromEpoch);
+
+    std::map<int, CFinalitySummarySnapshot>::iterator eraseFrom =
+        mapFinalitySummaryAfterEpoch.lower_bound(nReplayFrom);
+    if (eraseFrom == mapFinalitySummaryAfterEpoch.begin())
+        ResetFinalitySummary();
+    else
+    {
+        std::map<int, CFinalitySummarySnapshot>::iterator previous = eraseFrom;
+        --previous;
+        RestoreFinalitySummary(previous->second);
+    }
+    mapFinalitySummaryAfterEpoch.erase(eraseFrom,
+                                       mapFinalitySummaryAfterEpoch.end());
+
+    std::set<int> setEpochs;
+    for (std::map<int, std::vector<CFinalityVote> >::const_iterator it =
+             mapEpochVotes.lower_bound(nReplayFrom);
+         it != mapEpochVotes.end(); ++it)
+        setEpochs.insert(it->first);
+    for (std::map<int, std::vector<CFinalityTallyCertificate> >::const_iterator it =
+             mapEpochTallyCertificates.lower_bound(nReplayFrom);
+         it != mapEpochTallyCertificates.end(); ++it)
+        setEpochs.insert(it->first);
+
+    for (std::set<int>::const_iterator it = setEpochs.begin();
+         it != setEpochs.end(); ++it)
+    {
+        CheckFinalityThreshold(*it, false);
+        CaptureFinalitySummary(mapFinalitySummaryAfterEpoch[*it]);
+    }
+    nFinalitySummaryDirtyFromEpoch = -1;
+    return true;
+}
+
+bool CFinalityTracker::RebuildFinalityState()
+{
+    LOCK(cs_finality);
+
+    // Finalization state must be a pure function of the connected votes and
+    // certificates; re-merge the persisted carrier-backed set before replaying.
+    if (!ReloadConnectedFinalityFromDB())
+        return false;
+
+    mapFinalitySummaryAfterEpoch.clear();
+    int nFirstEpoch = std::numeric_limits<int>::max();
+    if (!mapEpochVotes.empty())
+        nFirstEpoch = std::min(nFirstEpoch, mapEpochVotes.begin()->first);
+    if (!mapEpochTallyCertificates.empty())
+        nFirstEpoch = std::min(nFirstEpoch,
+                               mapEpochTallyCertificates.begin()->first);
+    if (nFirstEpoch == std::numeric_limits<int>::max())
+    {
+        ResetFinalitySummary();
+        nFinalitySummaryDirtyFromEpoch = -1;
+        return true;
+    }
+    nFinalitySummaryDirtyFromEpoch = nFirstEpoch;
+    return RecomputeFinalityStateFromEpoch(nFirstEpoch);
+}
+
+bool CFinalityTracker::ReloadConnectedFinalityFromDB()
 {
     AssertLockHeld(cs_finality);
 
@@ -5415,54 +7283,284 @@ void CFinalityTracker::ReloadConnectedFinalityFromDB()
     // fRecordFinality=true as LoadVotes does. fCheck=false: the finalized-epoch
     // anchor is not yet rebuilt.
     std::map<uint256, CFinalityVote> mapVotes;
-    if (txdb.IterateFinalityVotes(mapVotes))
+    if (!txdb.IterateFinalityVotes(mapVotes))
+        return false;
+
+    std::map<uint256, CFinalityTallyCertificate> mapCerts;
+    if (!txdb.IterateFinalityTallyCertificates(mapCerts))
+        return false;
+
+    std::map<uint256, std::vector<uint256> > mapVoteBlocks;
+    if (!txdb.IterateFinalityConnectedVoteBlocks(mapVoteBlocks))
+        return false;
+    std::map<uint256, CFinalityTallyShare> mapPersistedShares;
+    if (!txdb.IterateFinalityTallyShares(mapPersistedShares))
+        return false;
+    std::map<uint256, std::vector<uint256> > mapShareBlocks;
+    if (!txdb.IterateFinalityConnectedShareBlocks(mapShareBlocks))
+        return false;
+    std::map<uint256, std::vector<uint256> > mapCertBlocks;
+    if (!txdb.IterateFinalityConnectedCertBlocks(mapCertBlocks))
+        return false;
+
+    std::set<uint256> setCanonicalBlocks;
+    if (!mapVoteBlocks.empty() || !mapShareBlocks.empty() ||
+        !mapCertBlocks.empty())
     {
-        for (const auto& pair : mapVotes)
+        uint256 hashBest;
+        if (!txdb.ReadHashBestChain(hashBest))
+            return error("ReloadConnectedFinalityFromDB: best-chain pointer is missing; "
+                         "-reindex/resync required");
+        std::map<uint256, CBlockIndex*>::const_iterator itBest =
+            mapBlockIndex.find(hashBest);
+        if (itBest == mapBlockIndex.end() || itBest->second == NULL)
+            return error("ReloadConnectedFinalityFromDB: best-chain block %s is missing; "
+                         "-reindex/resync required",
+                         hashBest.ToString().substr(0,20).c_str());
+        for (const CBlockIndex* pindex = itBest->second; pindex != NULL;
+             pindex = pindex->pprev)
         {
-            if (mapVoteHashByNullifier.count(pair.second.nullifier))
-                continue; // still in the retained window
-            AddVote(pair.second, false, true);
+            if (!setCanonicalBlocks.insert(pindex->GetBlockHash()).second)
+                return error("ReloadConnectedFinalityFromDB: cycle in persisted best chain; "
+                             "-reindex/resync required");
         }
     }
 
-    std::map<uint256, CFinalityTallyCertificate> mapCerts;
-    if (txdb.IterateFinalityTallyCertificates(mapCerts))
-    {
-        for (const auto& pair : mapCerts)
-        {
-            if (mapConnectedTallyCertificates.count(pair.first))
-                continue; // still in the retained window
-            AddTallyCertificate(pair.second, false, true);
-        }
-    }
+    // Replay each recorded carrier through the connect-time decoder, or a paired but wrong
+    // index becomes trusted after restart.
+    const auto loadActiveCarrier = [&](const uint256& hashBlock,
+                                       CBlock& activeOut,
+                                       int& nHeightOut) -> bool {
+        std::map<uint256, CBlockIndex*>::const_iterator mi =
+            mapBlockIndex.find(hashBlock);
+        if (!setCanonicalBlocks.count(hashBlock) ||
+            mi == mapBlockIndex.end() || mi->second == NULL ||
+            mi->second->nHeight < FORK_HEIGHT_DAG ||
+            !mi->second->IsProofOfWork())
+            return error("ReloadConnectedFinalityFromDB: carrier block %s is missing "
+                         "from the post-DAG block index; -reindex/resync required",
+                         hashBlock.ToString().substr(0,20).c_str());
+        CBlock block;
+        if (!block.ReadFromDisk(mi->second, true))
+            return error("ReloadConnectedFinalityFromDB: carrier block %s cannot be read; "
+                         "-reindex/resync required",
+                         hashBlock.ToString().substr(0,20).c_str());
+        // Finality carriers live only in vtx[0], identical in every DAG active view,
+        // so decode the original coinbase without requiring the active-set marker.
+        activeOut = block;
+        nHeightOut = mi->second->nHeight;
+        return true;
+    };
+    const auto sameCert = [](const CFinalityTallyCertificate& a,
+                             const CFinalityTallyCertificate& b) -> bool {
+        if (a.IsCanonicalEnvelope() != b.IsCanonicalEnvelope())
+            return false;
+        CDataStream sa(SER_DISK, CLIENT_VERSION);
+        CDataStream sb(SER_DISK, CLIENT_VERSION);
+        sa << a;
+        sb << b;
+        return sa.size() == sb.size() &&
+               std::equal(sa.begin(), sa.end(), sb.begin());
+    };
+    const auto sameShare = [](const CFinalityTallyShare& a,
+                              const CFinalityTallyShare& b) -> bool {
+        CDataStream sa(SER_DISK, CLIENT_VERSION);
+        CDataStream sb(SER_DISK, CLIENT_VERSION);
+        sa << a;
+        sb << b;
+        return sa.size() == sb.size() &&
+               std::equal(sa.begin(), sa.end(), sb.begin());
+    };
 
     // Restore the per-block connected-carrier indexes so teardown and coverage rules
     // survive restart. setConnectedTallyShares comes from the share index, which also
     // covers shares not yet referenced by a connected cert.
-    std::map<uint256, std::vector<uint256> > mapVoteBlocks;
-    if (txdb.IterateFinalityConnectedVoteBlocks(mapVoteBlocks))
+    std::set<uint256> setReferencedVotes;
+    for (const auto& pair : mapVoteBlocks)
     {
-        for (const auto& pair : mapVoteBlocks)
-            mapBlockConnectedVoteNullifiers[pair.first] = pair.second;
-    }
-
-    std::map<uint256, std::vector<uint256> > mapShareBlocks;
-    if (txdb.IterateFinalityConnectedShareBlocks(mapShareBlocks))
-    {
-        for (const auto& pair : mapShareBlocks)
+        CBlock activeBlock;
+        int nCarrierHeight = -1;
+        if (!loadActiveCarrier(pair.first, activeBlock, nCarrierHeight))
+            return false;
+        std::vector<CFinalityVote> vExtracted;
+        FinalityEnvelopeDecodeResult failure = FINALITY_ENVELOPE_NO_MATCH;
+        if (!ExtractFinalityVotesFromBlockForHeight(
+                activeBlock, nCarrierHeight, vExtracted, &failure))
+            return error("ReloadConnectedFinalityFromDB: vote carrier %s has an invalid "
+                         "height-selected envelope (decode=%d); -reindex/resync required",
+                         pair.first.ToString().substr(0,20).c_str(), (int)failure);
+        std::vector<uint256> vExtractedNullifiers;
+        for (std::vector<CFinalityVote>::const_iterator it = vExtracted.begin();
+             it != vExtracted.end(); ++it)
+            vExtractedNullifiers.push_back(it->nullifier);
+        if (vExtractedNullifiers != pair.second)
+            return error("ReloadConnectedFinalityFromDB: vote carrier %s index does not "
+                         "match its active block; -reindex/resync required",
+                         pair.first.ToString().substr(0,20).c_str());
+        for (std::vector<uint256>::const_iterator it = pair.second.begin();
+             it != pair.second.end(); ++it)
         {
-            mapBlockConnectedTallyShares[pair.first] = pair.second;
-            for (const uint256& hashShare : pair.second)
-                setConnectedTallyShares.insert(hashShare);
+            std::map<uint256, CFinalityVote>::const_iterator persisted =
+                mapVotes.find(*it);
+            if (persisted == mapVotes.end())
+                return error("ReloadConnectedFinalityFromDB: vote carrier references "
+                             "missing vote; -reindex/resync required");
+            const size_t n = it - pair.second.begin();
+            if (!FinalityVotesHaveSameSemanticIdentity(
+                    vExtracted[n], persisted->second))
+                return error("ReloadConnectedFinalityFromDB: vote carrier logical value/"
+                             "provenance mismatch; -reindex/resync required");
+            setReferencedVotes.insert(*it);
+        }
+    }
+    if (setReferencedVotes.size() != mapVotes.size())
+        return error("ReloadConnectedFinalityFromDB: unpaired vote/carrier records; "
+                     "-reindex/resync required");
+
+    std::set<uint256> setConnectedSharesNew = setConnectedTallyShares;
+    for (const auto& pair : mapShareBlocks)
+    {
+        CBlock activeBlock;
+        int nCarrierHeight = -1;
+        if (!loadActiveCarrier(pair.first, activeBlock, nCarrierHeight))
+            return false;
+        const std::vector<CFinalityTallyShare> vExtracted =
+            ExtractFinalityTallySharesFromBlock(activeBlock);
+        std::vector<uint256> vExtractedHashes;
+        for (std::vector<CFinalityTallyShare>::const_iterator it =
+                 vExtracted.begin(); it != vExtracted.end(); ++it)
+            vExtractedHashes.push_back(it->GetHash());
+        if (vExtractedHashes != pair.second)
+            return error("ReloadConnectedFinalityFromDB: tally-share carrier %s index "
+                         "does not match its active block; -reindex/resync required",
+                         pair.first.ToString().substr(0,20).c_str());
+        for (std::vector<uint256>::const_iterator it = pair.second.begin();
+             it != pair.second.end(); ++it)
+        {
+            std::map<uint256, CFinalityTallyShare>::const_iterator persisted =
+                mapPersistedShares.find(*it);
+            if (persisted == mapPersistedShares.end())
+                return error("ReloadConnectedFinalityFromDB: share carrier references "
+                             "missing share; -reindex/resync required");
+            const size_t n = it - pair.second.begin();
+            if (!sameShare(vExtracted[n], persisted->second))
+                return error("ReloadConnectedFinalityFromDB: share carrier logical "
+                             "value mismatch; -reindex/resync required");
+            setConnectedSharesNew.insert(*it);
         }
     }
 
-    std::map<uint256, std::vector<uint256> > mapCertBlocks;
-    if (txdb.IterateFinalityConnectedCertBlocks(mapCertBlocks))
+    std::set<uint256> setReferencedCerts;
+    for (const auto& pair : mapCertBlocks)
     {
-        for (const auto& pair : mapCertBlocks)
-            mapBlockConnectedTallyCertificates[pair.first] = pair.second;
+        CBlock activeBlock;
+        int nCarrierHeight = -1;
+        if (!loadActiveCarrier(pair.first, activeBlock, nCarrierHeight))
+            return false;
+        std::vector<CFinalityTallyCertificate> vExtracted;
+        FinalityEnvelopeDecodeResult failure = FINALITY_ENVELOPE_NO_MATCH;
+        if (!ExtractFinalityTallyCertificatesFromBlockForHeight(
+                activeBlock, nCarrierHeight, vExtracted, &failure))
+            return error("ReloadConnectedFinalityFromDB: certificate carrier %s has an "
+                         "invalid height-selected envelope (decode=%d); -reindex/resync required",
+                         pair.first.ToString().substr(0,20).c_str(), (int)failure);
+        std::vector<uint256> vExtractedHashes;
+        for (std::vector<CFinalityTallyCertificate>::const_iterator it =
+                 vExtracted.begin(); it != vExtracted.end(); ++it)
+            vExtractedHashes.push_back(it->GetHash());
+        if (vExtractedHashes != pair.second)
+            return error("ReloadConnectedFinalityFromDB: certificate carrier %s index "
+                         "does not match its active block; -reindex/resync required",
+                         pair.first.ToString().substr(0,20).c_str());
+        for (std::vector<uint256>::const_iterator it = pair.second.begin();
+             it != pair.second.end(); ++it)
+        {
+            std::map<uint256, CFinalityTallyCertificate>::const_iterator persisted =
+                mapCerts.find(*it);
+            if (persisted == mapCerts.end())
+                return error("ReloadConnectedFinalityFromDB: certificate carrier references "
+                             "missing certificate; -reindex/resync required");
+            const size_t n = it - pair.second.begin();
+            if (!sameCert(vExtracted[n], persisted->second))
+                return error("ReloadConnectedFinalityFromDB: certificate carrier logical "
+                             "value/provenance mismatch; -reindex/resync required");
+            setReferencedCerts.insert(*it);
+        }
     }
+    if (setReferencedCerts.size() != mapCerts.size())
+        return error("ReloadConnectedFinalityFromDB: unpaired certificate/carrier records; "
+                     "-reindex/resync required");
+
+    // Merge only after every persisted record has been tied back to its exact
+    // active carrier.  A failed integrity check leaves no additional tracker
+    // state synthesized from corrupt disk records.
+    for (const auto& pair : mapVotes)
+    {
+        if (mapVoteHashByNullifier.count(pair.second.nullifier))
+            continue;
+        if (!AddVote(pair.second, false, true))
+            return false;
+    }
+    for (const auto& pair : mapCerts)
+    {
+        if (mapConnectedTallyCertificates.count(pair.first))
+            continue;
+        if (!AddTallyCertificate(pair.second, false, true))
+            return false;
+    }
+    mapBlockConnectedVoteNullifiers = mapVoteBlocks;
+    mapBlockConnectedTallyShares = mapShareBlocks;
+    mapBlockConnectedTallyCertificates = mapCertBlocks;
+    setConnectedTallyShares.swap(setConnectedSharesNew);
+    return true;
+}
+
+bool CFinalityTracker::RestoreCommittedStateAfterAbort()
+{
+    {
+        LOCK(cs_finality);
+        nLastFinalizedHeight = 0;
+        hashLastFinalized = 0;
+        nLastFinalityTier = FINALITY_NONE;
+        nConsecutiveHardEpochs = 0;
+        nLastHardEpoch = -1;
+        nPendingFinalizedHeight = 0;
+        hashPendingFinalized = 0;
+        mapFinalitySummaryAfterEpoch.clear();
+        nFinalitySummaryDirtyFromEpoch = -1;
+
+        mapEpochVotes.clear();
+        mapEpochVoteWeight.clear();
+        mapVoteHashByNullifier.clear();
+        mapPendingVotes.clear();
+        mapConnectedVotes.clear();
+        mapBlockConnectedVoteNullifiers.clear();
+        mapEpochVoters.clear();
+        mapEpochTransparentVoteCount.clear();
+        mapEpochPrivateVoteCount.clear();
+        mapTallyShares.clear();
+        setConnectedTallyShares.clear();
+        mapTallyAggregatePartials.clear();
+        mapTallyPartialBySource.clear();
+        mapBlockConnectedTallyShares.clear();
+        mapConnectedRotations.clear();
+        mapBlockConnectedRotations.clear();
+        mapPendingRotations.clear();
+        mapCandidateCerts.clear();
+        mapCollectedCertSigs.clear();
+        mapPendingTallyCertificates.clear();
+        mapConnectedTallyCertificates.clear();
+        mapConnectedTallyCertificateByContext.clear();
+        mapEpochTallyCertificates.clear();
+        mapBlockConnectedTallyCertificates.clear();
+    }
+
+    CTxDB txdb("r");
+    if (!LoadVotes(txdb) || !LoadTallyShares(txdb) ||
+        !LoadTallyCertificates(txdb) || !LoadCommitteeRotations(txdb))
+        return error("RestoreCommittedStateAfterAbort: committed finality state could not "
+                     "be reconstructed; restart with -reindex/resync");
+    return true;
 }
 
 void CFinalityTracker::PruneOldEpochs(int nCurrentEpoch)
@@ -5472,34 +7570,30 @@ void CFinalityTracker::PruneOldEpochs(int nCurrentEpoch)
     if (nMinEpoch < 0)
         nMinEpoch = 0;
 
-    for (auto it = mapEpochVotes.begin(); it != mapEpochVotes.end(); )
+    // Connected finality is consensus/reorg state: prune only relay/automation
+    // objects with no block carrier.
+    for (std::map<uint256, CFinalityVote>::iterator it =
+             mapPendingVotes.begin(); it != mapPendingVotes.end(); )
     {
-        if (it->first < nMinEpoch)
+        if (it->second.nEpoch < nMinEpoch)
         {
-            for (const CFinalityVote& vote : it->second)
-            {
-                mapVoteHashByNullifier.erase(vote.nullifier);
-                mapPendingVotes.erase(vote.nullifier);
-                mapConnectedVotes.erase(vote.nullifier);
-            }
-            mapEpochVoteWeight.erase(it->first);
-            mapEpochVoters.erase(it->first);
-            mapEpochTransparentVoteCount.erase(it->first);
-            mapEpochPrivateVoteCount.erase(it->first);
-            mapEpochTallyCertificates.erase(it->first);
-            it = mapEpochVotes.erase(it);
+            std::map<uint256, uint256>::iterator hit =
+                mapVoteHashByNullifier.find(it->first);
+            if (hit != mapVoteHashByNullifier.end() &&
+                hit->second == it->second.GetHash() &&
+                !mapConnectedVotes.count(it->first))
+                mapVoteHashByNullifier.erase(hit);
+            mapPendingVotes.erase(it++);
         }
         else
-        {
             ++it;
-        }
     }
 
     for (auto it = mapTallyShares.begin(); it != mapTallyShares.end(); )
     {
-        if (it->second.nEpoch < nMinEpoch)
+        if (it->second.nEpoch < nMinEpoch &&
+            !setConnectedTallyShares.count(it->first))
         {
-            setConnectedTallyShares.erase(it->first);
             it = mapTallyShares.erase(it);
         }
         else
@@ -5513,6 +7607,16 @@ void CFinalityTracker::PruneOldEpochs(int nCurrentEpoch)
         else
             ++it;
     }
+
+    for (std::map<uint256, CFinalityTallyCertificate>::iterator it =
+             mapPendingTallyCertificates.begin();
+         it != mapPendingTallyCertificates.end(); )
+    {
+        if (it->second.nEpoch < nMinEpoch)
+            mapPendingTallyCertificates.erase(it++);
+        else
+            ++it;
+    }
 }
 
 
@@ -5522,10 +7626,34 @@ void CFinalityTracker::PruneOldEpochs(int nCurrentEpoch)
 
 bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataStream& vRecv)
 {
-    if (strCommand == "fvote")
+    if (strCommand == "fvote" || strCommand == FINALITY_CANONICAL_VOTE_COMMAND)
     {
+        const bool fCanonicalCommand =
+            strCommand == FINALITY_CANONICAL_VOTE_COMMAND;
+        if (fCanonicalCommand != CanonicalFinalityTrafficAtTip())
+            return false;
+
         CFinalityVote vote;
-        vRecv >> vote;
+        if (fCanonicalCommand)
+        {
+            CCanonicalFinalityVoteEnvelope envelope;
+            try {
+                vRecv >> envelope;
+            } catch (const std::exception&) {
+                return false;
+            }
+            if (!vRecv.empty() || !envelope.ToLogical(vote))
+                return false;
+        }
+        else
+        {
+            vRecv >> vote;
+            vote.fCanonicalEnvelope = false;
+        }
+
+        if (vote.IsPrivate() &&
+            LegacyPrivateFinalityTrafficDisabledAtTip())
+            return false;
 
         // Cheap checks first (before expensive ECDSA signature verification)
         if (vote.nEpoch < 0 || vote.nHeight < 0)
@@ -5567,7 +7695,7 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
             {
                 if (pnode == pfrom)
                     continue;
-                pnode->PushMessage("fvote", vote);
+                PushFinalityVoteMessage(pnode, vote);
             }
         }
 
@@ -5575,6 +7703,8 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
     }
     else if (strCommand == "ftshare")
     {
+        if (LegacyPrivateFinalityTrafficDisabledAtTip())
+            return false;
         CFinalityTallyShare share;
         vRecv >> share;
 
@@ -5608,6 +7738,8 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
     }
     else if (strCommand == "ftpart")
     {
+        if (LegacyPrivateFinalityTrafficDisabledAtTip())
+            return false;
         CFinalityTallyAggregatePartial partial;
         vRecv >> partial;
 
@@ -5636,10 +7768,35 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
 
         return true;
     }
-    else if (strCommand == "ftcert")
+    else if (strCommand == "ftcert" ||
+             strCommand == FINALITY_CANONICAL_TALLY_CERT_COMMAND)
     {
+        const bool fCanonicalCommand =
+            strCommand == FINALITY_CANONICAL_TALLY_CERT_COMMAND;
+        if (fCanonicalCommand != CanonicalFinalityTrafficAtTip())
+            return false;
+
         CFinalityTallyCertificate cert;
-        vRecv >> cert;
+        if (fCanonicalCommand)
+        {
+            CCanonicalFinalityTallyCertificateEnvelope envelope;
+            try {
+                vRecv >> envelope;
+            } catch (const std::exception&) {
+                return false;
+            }
+            if (!vRecv.empty() || !envelope.ToLogical(cert))
+                return false;
+        }
+        else
+        {
+            vRecv >> cert;
+            cert.fCanonicalEnvelope = false;
+        }
+
+        if (cert.HasPrivateWeight() &&
+            LegacyPrivateFinalityTrafficDisabledAtTip())
+            return false;
 
         if (cert.nEpoch < 0 || cert.nHeight < 0 || cert.hashBlock == 0)
             return false;
@@ -5662,7 +7819,7 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
             {
                 if (pnode == pfrom)
                     continue;
-                pnode->PushMessage("ftcert", cert);
+                PushFinalityTallyCertificateMessage(pnode, cert);
             }
         }
 
@@ -5670,6 +7827,8 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
     }
     else if (strCommand == "ftcsig")
     {
+        if (LegacyPrivateFinalityTrafficDisabledAtTip())
+            return false;
         // 2c-4b: a committee member's signature over a candidate certificate.
         CFinalityCertSignature msg;
         vRecv >> msg;
@@ -5731,6 +7890,8 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
     }
     else if (strCommand == "ftrot")
     {
+        if (LegacyPrivateFinalityTrafficDisabledAtTip())
+            return false;
         // D2 self-governance: a fully-signed committee rotation, gossiped so any
         // miner can embed it. AddPendingCommitteeRotation re-verifies the >= M
         // signatures against the committee active before its effective epoch.
@@ -5774,23 +7935,29 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
         std::vector<CFinalityVote> votes = g_finalityTracker.GetEpochVotes(nEpoch);
         for (const CFinalityVote& vote : votes)
         {
-            pfrom->PushMessage("fvote", vote);
+            if (vote.IsPrivate() &&
+                LegacyPrivateFinalityTrafficDisabledAtTip())
+                continue;
+            PushFinalityVoteMessage(pfrom, vote);
         }
-        std::vector<CFinalityTallyShare> shares = g_finalityTracker.GetEpochTallyShares(nEpoch);
-        for (const CFinalityTallyShare& share : shares)
+        if (!LegacyPrivateFinalityTrafficDisabledAtTip())
         {
-            pfrom->PushMessage("ftshare", share);
-        }
-        std::vector<CFinalityTallyAggregatePartial> partials =
-            g_finalityTracker.GetEpochTallyAggregatePartials(nEpoch);
-        for (const CFinalityTallyAggregatePartial& partial : partials)
-        {
-            pfrom->PushMessage("ftpart", partial);
+            std::vector<CFinalityTallyShare> shares =
+                g_finalityTracker.GetEpochTallyShares(nEpoch);
+            for (const CFinalityTallyShare& share : shares)
+                pfrom->PushMessage("ftshare", share);
+            std::vector<CFinalityTallyAggregatePartial> partials =
+                g_finalityTracker.GetEpochTallyAggregatePartials(nEpoch);
+            for (const CFinalityTallyAggregatePartial& partial : partials)
+                pfrom->PushMessage("ftpart", partial);
         }
         std::vector<CFinalityTallyCertificate> certs = g_finalityTracker.GetEpochTallyCertificates(nEpoch);
         for (const CFinalityTallyCertificate& cert : certs)
         {
-            pfrom->PushMessage("ftcert", cert);
+            if (cert.HasPrivateWeight() &&
+                LegacyPrivateFinalityTrafficDisabledAtTip())
+                continue;
+            PushFinalityTallyCertificateMessage(pfrom, cert);
         }
 
         return true;
@@ -5922,14 +8089,6 @@ static bool ProcessFinalityTallyCommitteeEpoch(int nEpoch,
 
 bool ProcessFinalityTallyCommittee()
 {
-    CFinalityTallyConfig config = GetFinalityTallyConfig();
-    if (!config.CanProduceCertificates())
-        return false;
-
-    CKey keyLocal;
-    if (!GetFinalityTallyPrivateKey(keyLocal))
-        return false;
-
     int nCurrentEpoch = -1;
     int nTipHeight = -1;
     {
@@ -5939,6 +8098,49 @@ bool ProcessFinalityTallyCommittee()
         nTipHeight = pindexBest->nHeight;
         nCurrentEpoch = GetEpochForHeight(nTipHeight);
     }
+
+    // At A-1 the next candidate requires the new domain: build a transparent
+    // certificate from the frozen connected vote set, and publish it only after
+    // construction and validation both succeed.
+    if (UseCanonicalFinalityTrafficForTip(nTipHeight))
+    {
+        const auto produce = [](int nEpoch) -> bool {
+            CFinalityTallyCertificate cert;
+            std::string strError;
+            if (!BuildCanonicalTransparentFinalityCertificate(
+                    g_finalityTracker.GetConnectedEpochVotes(nEpoch), cert,
+                    &strError))
+            {
+                if (fDebug && !strError.empty())
+                    printf("ProcessFinalityTallyCommittee: canonical epoch %d not ready: %s\n",
+                           nEpoch, strError.c_str());
+                return false;
+            }
+            if (!g_finalityTracker.AddTallyCertificate(cert))
+                return false;
+            RelayFinalityTallyCertificate(cert);
+            return true;
+        };
+
+        bool fDidWork = false;
+        if (nCurrentEpoch > 0)
+            fDidWork |= produce(nCurrentEpoch - 1);
+        const bool fCurrentWindowClosed =
+            IsFinalityVoteWindowClosedForTip(nCurrentEpoch, nTipHeight);
+        if (fCurrentWindowClosed)
+            fDidWork |= produce(nCurrentEpoch);
+        return fDidWork;
+    }
+
+    if (LegacyPrivateFinalityTrafficDisabledAtTip())
+        return false;
+    CFinalityTallyConfig config = GetFinalityTallyConfig();
+    if (!config.CanProduceCertificates())
+        return false;
+
+    CKey keyLocal;
+    if (!GetFinalityTallyPrivateKey(keyLocal))
+        return false;
 
     bool fDidWork = false;
     // The previous epoch's vote-inclusion window is always closed (we are a full
@@ -5950,8 +8152,8 @@ bool ProcessFinalityTallyCommittee()
     // (tip >= H_E + K). Before that the connected set is still growing, and any
     // cert would be rejected at connect by the coverage rule (R3) and the cert
     // position floor (R2). Pre-fork, retain the prior unconditional behavior.
-    bool fCurrentWindowClosed = (nTipHeight < FORK_HEIGHT_VOTESET_ROOT) ||
-        (nTipHeight >= GetEpochBoundaryHeight(nCurrentEpoch, nTipHeight) + FINALITY_VOTE_INCLUSION_WINDOW);
+    bool fCurrentWindowClosed =
+        IsFinalityVoteWindowClosedForTip(nCurrentEpoch, nTipHeight);
     if (fCurrentWindowClosed)
         fDidWork |= ProcessFinalityTallyCommitteeEpoch(nCurrentEpoch, config, keyLocal);
     return fDidWork;
@@ -6072,6 +8274,8 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
                                                 const CFinalityTallyConfig& tallyConfig)
 {
     if (!pEpochBlock)
+        return false;
+    if (LegacyPrivateFinalityTrafficDisabledAtTip())
         return false;
     if (!tallyConfig.CanRelayPrivateVotes())
         return false;
@@ -6375,7 +8579,7 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
                 LOCK(cs_vNodes);
                 for (CNode* pnode : vNodes)
                 {
-                    pnode->PushMessage("fvote", vote);
+                    PushFinalityVoteMessage(pnode, vote);
                     pnode->PushMessage("ftshare", share);
                 }
                 return true;
@@ -6440,7 +8644,8 @@ bool ProduceFinalityVote()
     // tally certificate, using shielded notes) -- different stake, no double-count.
     bool fFinalityBootstrapped =
         (g_dagManager.GetDeterministicFinalizedHeight(GetEpochForHeight(nCurrentHeight)) > 0);
-    bool fAllowPrivateV2 = ((strVoteMode == "nullstake") ||
+    bool fAllowPrivateV2 = !LegacyPrivateFinalityTrafficDisabledAtTip() &&
+                           ((strVoteMode == "nullstake") ||
                             (strVoteMode == "auto" && fFinalityBootstrapped)) &&
                            tallyConfig.CanRelayPrivateVotes();
     bool fAllowTransparent = (strVoteMode == "auto" || strVoteMode == "transparent");
@@ -6547,6 +8752,11 @@ bool ProduceFinalityVote()
     vote.nullifier = nullifier;
     vote.vStakeProof = pBestGroup->vOutpoints;
 
+    // Authenticate the Boundary-A logical schema itself.  The runtime marker
+    // is deliberately set before signing and is not part of legacy bytes.
+    if (IsBoundaryAActiveAtHeight(nCurrentHeight + 1))
+        vote.MarkCanonicalEnvelope();
+
     if (!vote.Sign(pBestGroup->key))
         return (fAllowPrivateV2 && ProducePrivateNullStakeFinalityVote(
                     txdb, pEpochBlock, nCurrentEpoch, nEpochHeight, tallyConfig));
@@ -6562,7 +8772,7 @@ bool ProduceFinalityVote()
         LOCK(cs_vNodes);
         for (CNode* pnode : vNodes)
         {
-            pnode->PushMessage("fvote", vote);
+            PushFinalityVoteMessage(pnode, vote);
         }
     }
 

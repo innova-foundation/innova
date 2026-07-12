@@ -1407,7 +1407,9 @@ bool AppInit2()
     // connected votes and pindexBest are available.
     {
         CTxDB txdbFinality("r+");
-        g_finalityTracker.PurgeUnresolvableTallyShares(txdbFinality);
+        if (!g_finalityTracker.PurgeUnresolvableTallyShares(txdbFinality))
+            return InitError(_("Failed to purge stale finality tally shares; "
+                               "restart with -reindex/resync."));
     }
 
     //Create Innova Name index - this must happen before ReacceptWalletTransactions()

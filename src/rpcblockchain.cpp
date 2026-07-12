@@ -177,7 +177,14 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
     if (blockindex->nHeight >= FORK_HEIGHT_FINALITY)
     {
         result.push_back(Pair("finalized", g_finalityTracker.IsFinalized(blockindex->nHeight)));
-        std::vector<CFinalityVote> vFinalityVotes = ExtractFinalityVotesFromBlock(block);
+        std::vector<CFinalityVote> vFinalityVotes;
+        FinalityEnvelopeDecodeResult voteEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
+        if (!ExtractFinalityVotesFromBlockForHeight(
+                block, blockindex->nHeight, vFinalityVotes,
+                &voteEnvelopeFailure))
+            throw JSONRPCError(RPC_DATABASE_ERROR,
+                               strprintf("stored block has invalid finality vote envelope (decode=%d)",
+                                         (int)voteEnvelopeFailure));
         Array voteArray;
         int64_t nFinalityReward = 0;
         for (const CFinalityVote& vote : vFinalityVotes)
@@ -239,7 +246,14 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
             shareArray.push_back(shareObj);
         }
         result.push_back(Pair("finality_tally_shares", shareArray));
-        std::vector<CFinalityTallyCertificate> vCerts = ExtractFinalityTallyCertificatesFromBlock(block);
+        std::vector<CFinalityTallyCertificate> vCerts;
+        FinalityEnvelopeDecodeResult certEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
+        if (!ExtractFinalityTallyCertificatesFromBlockForHeight(
+                block, blockindex->nHeight, vCerts,
+                &certEnvelopeFailure))
+            throw JSONRPCError(RPC_DATABASE_ERROR,
+                               strprintf("stored block has invalid finality certificate envelope (decode=%d)",
+                                         (int)certEnvelopeFailure));
         Array certArray;
         for (const CFinalityTallyCertificate& cert : vCerts)
         {
@@ -1453,7 +1467,25 @@ Value submitfinalitytallycert(const Array& params, bool fHelp)
     CFinalityTallyCertificate cert;
     try {
         CDataStream ssData(vchData, SER_NETWORK, PROTOCOL_VERSION);
-        ssData >> cert;
+        bool fCanonical = false;
+        {
+            LOCK(cs_main);
+            fCanonical = UseCanonicalFinalityTrafficForTip(nBestHeight);
+        }
+        if (fCanonical)
+        {
+            CCanonicalFinalityTallyCertificateEnvelope envelope;
+            ssData >> envelope;
+            if (!envelope.ToLogical(cert))
+                throw std::ios_base::failure("invalid canonical tally certificate envelope");
+        }
+        else
+        {
+            ssData >> cert;
+            cert.fCanonicalEnvelope = false;
+        }
+        if (!ssData.empty())
+            throw std::ios_base::failure("trailing tally certificate bytes");
     } catch (const std::exception& e) {
         throw JSONRPCError(RPC_DESERIALIZATION_ERROR, std::string("tally certificate decode failed: ") + e.what());
     }
@@ -1466,11 +1498,7 @@ Value submitfinalitytallycert(const Array& params, bool fHelp)
     bool fAdded = g_finalityTracker.AddTallyCertificate(cert, false);
     uint256 hashCert = cert.GetHash();
     if (fAdded)
-    {
-        LOCK(cs_vNodes);
-        for (CNode* pnode : vNodes)
-            pnode->PushMessage("ftcert", cert);
-    }
+        RelayFinalityTallyCertificate(cert);
 
     Object result;
     result.push_back(Pair("accepted", fAdded));
@@ -1510,6 +1538,11 @@ Value createcommitteerotation(const Array& params, bool fHelp)
             "Build an unsigned committee rotation to a new ordered N-set with an M-of-N\n"
             "threshold, effective at <effective_epoch>. Returns its hex for each current\n"
             "committee member to signcommitteerotation, then submitcommitteerotation.\n");
+
+    if (IsLegacyPrivacyPolicyDisabled() ||
+        IsBoundaryAActiveAtHeight(nBestHeight + 1))
+        throw JSONRPCError(RPC_METHOD_NOT_FOUND,
+            "Legacy private-finality committee rotation is disabled pending privacy vNext");
 
     std::vector<std::string> vPubStr = SplitCommaSpace(params[0].get_str());
     std::vector<std::vector<unsigned char> > vNewPub;
@@ -1563,6 +1596,11 @@ Value signcommitteerotation(const Array& params, bool fHelp)
             "signcommitteerotation <hex-rotation>\n"
             "Add this node's current-committee-member signature to a rotation (output of\n"
             "createcommitteerotation, or a partially-signed one). Returns the updated hex.\n");
+
+    if (IsLegacyPrivacyPolicyDisabled() ||
+        IsBoundaryAActiveAtHeight(nBestHeight + 1))
+        throw JSONRPCError(RPC_METHOD_NOT_FOUND,
+            "Legacy private-finality committee rotation is disabled pending privacy vNext");
 
     std::vector<unsigned char> vchData = ParseHexV(params[0], "hex-rotation");
     CFinalityCommitteeRotation rot;
@@ -1624,6 +1662,11 @@ Value submitcommitteerotation(const Array& params, bool fHelp)
             "submitcommitteerotation <hex-rotation>\n"
             "Submit a fully-signed (>= M) committee rotation: it is validated against the\n"
             "previous committee, held pending for inclusion in a block, and gossiped.\n");
+
+    if (IsLegacyPrivacyPolicyDisabled() ||
+        IsBoundaryAActiveAtHeight(nBestHeight + 1))
+        throw JSONRPCError(RPC_METHOD_NOT_FOUND,
+            "Legacy private-finality committee rotation is disabled pending privacy vNext");
 
     std::vector<unsigned char> vchData = ParseHexV(params[0], "hex-rotation");
     CFinalityCommitteeRotation rot;

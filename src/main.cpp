@@ -4159,6 +4159,25 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
     std::set<uint256> setDAGSkippedTxs = GetDAGSkippedTxsForBlock(*this, pindex);
     CBlock activeBlock = GetDAGActiveBlock(*this, setDAGSkippedTxs);
 
+    // Decode finality carriers before staging any disconnect mutations. A
+    // connected block must decode under the schema selected by its own height;
+    // treating a wrong-generation or malformed carrier as absent would make
+    // rollback and restart state differ from connect-time consensus.
+    std::vector<CFinalityTallyCertificate> vFinalityCerts;
+    std::vector<CFinalityVote> vFinalityVotes;
+    FinalityEnvelopeDecodeResult certEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
+    FinalityEnvelopeDecodeResult voteEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
+    if (!ExtractFinalityTallyCertificatesFromBlockForHeight(
+            activeBlock, pindex->nHeight, vFinalityCerts,
+            &certEnvelopeFailure))
+        return error("DisconnectBlock() : invalid finality certificate envelope for height %d (decode=%d)",
+                     pindex->nHeight, (int)certEnvelopeFailure);
+    if (!ExtractFinalityVotesFromBlockForHeight(
+            activeBlock, pindex->nHeight, vFinalityVotes,
+            &voteEnvelopeFailure))
+        return error("DisconnectBlock() : invalid finality vote envelope for height %d (decode=%d)",
+                     pindex->nHeight, (int)voteEnvelopeFailure);
+
     // Disconnect in reverse order
     for (int i = vtx.size()-1; i >= 0; i--)
     {
@@ -4170,7 +4189,6 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
 
     if (pindex->nHeight >= FORK_HEIGHT_DAG)
     {
-        std::vector<CFinalityTallyCertificate> vFinalityCerts = ExtractFinalityTallyCertificatesFromBlock(activeBlock);
         if (!vFinalityCerts.empty() &&
             !g_finalityTracker.DisconnectBlockTallyCertificates(txdb, pindex->GetBlockHash(), vFinalityCerts))
             return error("DisconnectBlock() : DisconnectBlockTallyCertificates failed");
@@ -4180,7 +4198,6 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
             !g_finalityTracker.DisconnectBlockTallyShares(txdb, pindex->GetBlockHash(), vFinalityShares))
             return error("DisconnectBlock() : DisconnectBlockTallyShares failed");
 
-        std::vector<CFinalityVote> vFinalityVotes = ExtractFinalityVotesFromBlock(activeBlock);
         if (!vFinalityVotes.empty() &&
             !g_finalityTracker.DisconnectBlockVotes(txdb, pindex->GetBlockHash(), vFinalityVotes))
             return error("DisconnectBlock() : DisconnectBlockVotes failed");
@@ -4448,8 +4465,24 @@ bool SeedGenesisCommitments(CTxDB& txdb, CIncrementalMerkleTree& shieldedTree, C
     return true;
 }
 
-bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, bool fWriteNames)
+bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
+                          bool fWriteNames, ConnectResult* pResult)
 {
+    // Deterministic invalidity is the conservative default. Exact finality
+    // storage/read failures override it so callers do not poison a valid block.
+    if (pResult)
+        *pResult = CONNECT_RESULT_INVALID;
+    const auto TransientFailure = [&](bool fReturn) -> bool {
+        if (pResult)
+            *pResult = CONNECT_RESULT_TRANSIENT;
+        return fReturn;
+    };
+    const auto Connected = [&]() -> bool {
+        if (pResult)
+            *pResult = CONNECT_RESULT_OK;
+        return true;
+    };
+
     int64_t nConnectBlockStart = GetTimeMillis();
     int64_t nConnectCheckStart = GetTimeMillis();
 
@@ -4523,13 +4556,33 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
     }
     CBlock activeBlock = GetDAGActiveBlock(*this, setDAGSkippedTxs);
 
-    std::vector<CFinalityVote> vFinalityVotes = ExtractFinalityVotesFromBlock(activeBlock);
+    std::vector<CFinalityVote> vFinalityVotes;
+    FinalityEnvelopeDecodeResult voteEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
+    if (!ExtractFinalityVotesFromBlockForHeight(
+            activeBlock, pindex->nHeight, vFinalityVotes,
+            &voteEnvelopeFailure))
+        return DoS(100, error(
+            "ConnectBlock() : invalid finality vote envelope for height %d (decode=%d)",
+            pindex->nHeight, (int)voteEnvelopeFailure));
+    std::string strFinalityCapacityError;
+    if (!g_finalityTracker.CheckCanonicalVoteSetCapacity(
+            vFinalityVotes, pindex->nHeight, &strFinalityCapacityError))
+        return DoS(100, error(
+            "ConnectBlock() : canonical finality vote capacity exceeded: %s",
+            strFinalityCapacityError.c_str()));
     if (!vFinalityVotes.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
         return DoS(100, error("ConnectBlock() : finality votes are only valid in post-DAG proof-of-work blocks"));
     std::vector<CFinalityTallyShare> vFinalityShares = ExtractFinalityTallySharesFromBlock(activeBlock);
     if (!vFinalityShares.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
         return DoS(100, error("ConnectBlock() : finality tally shares are only valid in post-DAG proof-of-work blocks"));
-    std::vector<CFinalityTallyCertificate> vFinalityCerts = ExtractFinalityTallyCertificatesFromBlock(activeBlock);
+    std::vector<CFinalityTallyCertificate> vFinalityCerts;
+    FinalityEnvelopeDecodeResult certEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
+    if (!ExtractFinalityTallyCertificatesFromBlockForHeight(
+            activeBlock, pindex->nHeight, vFinalityCerts,
+            &certEnvelopeFailure))
+        return DoS(100, error(
+            "ConnectBlock() : invalid finality certificate envelope for height %d (decode=%d)",
+            pindex->nHeight, (int)certEnvelopeFailure));
     if (!vFinalityCerts.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
         return DoS(100, error("ConnectBlock() : finality tally certificates are only valid in post-DAG proof-of-work blocks"));
 
@@ -4789,8 +4842,17 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
         for (const CFinalityVote& vote : vFinalityVotes)
         {
             std::string strVoteError;
-            if (!g_finalityTracker.CheckVote(vote, txdb, &strVoteError, pindex->nHeight))
-                return DoS(100, error("ConnectBlock() : finality vote invalid: %s", strVoteError.c_str()));
+            FinalityResult voteResult = FINALITY_RESULT_INVALID;
+            if (!g_finalityTracker.CheckVote(vote, txdb, &strVoteError,
+                                             pindex->nHeight, &voteResult))
+            {
+                if (voteResult == FINALITY_RESULT_LOCAL_STATE)
+                    return TransientFailure(error(
+                        "ConnectBlock() : finality vote local state unavailable: %s",
+                        strVoteError.c_str()));
+                return DoS(100, error("ConnectBlock() : finality vote invalid: %s",
+                                      strVoteError.c_str()));
+            }
         }
     }
     for (const CFinalityTallyCertificate& cert : vFinalityCerts)
@@ -5730,23 +5792,59 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
 
     if (!fJustCheck && !vFinalityVotes.empty())
     {
-        if (!g_finalityTracker.ConnectBlockVotes(txdb, pindex->GetBlockHash(), vFinalityVotes, pindex->nHeight))
-            return error("ConnectBlock() : ConnectBlockVotes failed");
+        FinalityResult finalityResult = FINALITY_RESULT_INVALID;
+        if (!g_finalityTracker.ConnectBlockVotes(
+                txdb, pindex->GetBlockHash(), vFinalityVotes,
+                pindex->nHeight, &finalityResult))
+        {
+            if (finalityResult == FINALITY_RESULT_LOCAL_STATE)
+                return TransientFailure(error(
+                    "ConnectBlock() : ConnectBlockVotes local state/persistence failure"));
+            return DoS(100, error(
+                "ConnectBlock() : ConnectBlockVotes deterministic validation failure"));
+        }
     }
     if (!fJustCheck && !vFinalityShares.empty())
     {
-        if (!g_finalityTracker.ConnectBlockTallyShares(txdb, pindex->GetBlockHash(), vFinalityShares, pindex->nHeight))
-            return error("ConnectBlock() : ConnectBlockTallyShares failed");
+        FinalityResult finalityResult = FINALITY_RESULT_INVALID;
+        if (!g_finalityTracker.ConnectBlockTallyShares(
+                txdb, pindex->GetBlockHash(), vFinalityShares,
+                pindex->nHeight, &finalityResult))
+        {
+            if (finalityResult == FINALITY_RESULT_LOCAL_STATE)
+                return TransientFailure(error(
+                    "ConnectBlock() : ConnectBlockTallyShares local state/persistence failure"));
+            return DoS(100, error(
+                "ConnectBlock() : ConnectBlockTallyShares deterministic validation failure"));
+        }
     }
     if (!fJustCheck && !vFinalityCerts.empty())
     {
-        if (!g_finalityTracker.ConnectBlockTallyCertificates(txdb, pindex->GetBlockHash(), vFinalityCerts, pindex->nHeight))
-            return error("ConnectBlock() : ConnectBlockTallyCertificates failed");
+        FinalityResult finalityResult = FINALITY_RESULT_INVALID;
+        if (!g_finalityTracker.ConnectBlockTallyCertificates(
+                txdb, pindex->GetBlockHash(), vFinalityCerts,
+                pindex->nHeight, &finalityResult))
+        {
+            if (finalityResult == FINALITY_RESULT_LOCAL_STATE)
+                return TransientFailure(error(
+                    "ConnectBlock() : ConnectBlockTallyCertificates local state/persistence failure"));
+            return DoS(100, error(
+                "ConnectBlock() : ConnectBlockTallyCertificates deterministic validation failure"));
+        }
     }
     if (!fJustCheck && !vCommitteeRotations.empty())
     {
-        if (!g_finalityTracker.ConnectBlockCommitteeRotations(txdb, pindex->GetBlockHash(), vCommitteeRotations, pindex->nHeight))
-            return error("ConnectBlock() : ConnectBlockCommitteeRotations failed");
+        FinalityResult finalityResult = FINALITY_RESULT_INVALID;
+        if (!g_finalityTracker.ConnectBlockCommitteeRotations(
+                txdb, pindex->GetBlockHash(), vCommitteeRotations,
+                pindex->nHeight, &finalityResult))
+        {
+            if (finalityResult == FINALITY_RESULT_LOCAL_STATE)
+                return TransientFailure(error(
+                    "ConnectBlock() : ConnectBlockCommitteeRotations local state/persistence failure"));
+            return DoS(100, error(
+                "ConnectBlock() : ConnectBlockCommitteeRotations deterministic validation failure"));
+        }
     }
 
     // innova: collect valid name tx
@@ -5773,7 +5871,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                    nShieldedValidateCount, nShieldedValidateMicros,
                    nAnonValidateCount, nAnonValidateMicros,
                    nPrivateStakeValidateCount, nPrivateStakeValidateMicros);
-        return true;
+        return Connected();
     }
 
     // Write queued txindex changes
@@ -5868,7 +5966,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck, boo
                nAnonValidateCount, nAnonValidateMicros,
                nPrivateStakeValidateCount, nPrivateStakeValidateMicros);
 
-    return true;
+    return Connected();
 }
 
 int GetFirstV3EpochStateRebuildEpoch(int nForkHeight)
@@ -5884,8 +5982,19 @@ int GetFirstV2EpochStateRebuildEpoch(int nForkHeight)
                     GetEpochForHeight(nForkHeight));
 }
 
-bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
+static void RestoreCommittedFinalityOrShutdown(const char* pszContext)
 {
+    if (g_finalityTracker.RestoreCommittedStateAfterAbort())
+        return;
+    printf("%s: FATAL could not restore committed finality state after transaction "
+           "failure; shutting down for -reindex/resync\n", pszContext);
+    StartShutdown();
+}
+
+bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
+                       bool* pfPermanentInvalid = NULL)
+{
+    if (pfPermanentInvalid) *pfPermanentInvalid = false;
     printf("REORGANIZE\n");
 
     {
@@ -5918,6 +6027,8 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
             }
             if (pCheck && pCheck->nHeight < nFinalHeight)
             {
+                if (pfPermanentInvalid)
+                    *pfPermanentInvalid = true;
                 return error("Reorganize() : rejected - fork point height %d is below finalized height %d",
                              pCheck->nHeight, nFinalHeight);
             }
@@ -5983,10 +6094,16 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
 
         if (!IsInitialBlockDownload()) GetCollateralnodeRanks(pindex); // recalculate ranks for the this block hash if required
 
-        if (!block.ConnectBlock(txdb, pindex))
+        CBlock::ConnectResult connectResult = CBlock::CONNECT_RESULT_INVALID;
+        if (!block.ConnectBlock(txdb, pindex, false, true, &connectResult))
         {
-            // Invalid block
-            return error("Reorganize() : ConnectBlock %s failed", pindex->GetBlockHash().ToString().substr(0,20).c_str());
+            if (pfPermanentInvalid &&
+                connectResult == CBlock::CONNECT_RESULT_INVALID)
+                *pfPermanentInvalid = true;
+            return error("Reorganize() : ConnectBlock %s failed (%s)",
+                         pindex->GetBlockHash().ToString().substr(0,20).c_str(),
+                         connectResult == CBlock::CONNECT_RESULT_TRANSIENT
+                             ? "local/transient" : "consensus-invalid");
         }
 
         // Queue memory transactions to delete
@@ -6129,21 +6246,29 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew, bool* pfPerm
     // Adding to current best branch. Split ConnectBlock (a CONSENSUS rejection -> permanent invalidity,
     // flag+keep the index) from WriteHashBestChain (a transient DB error -> leave permanent flag unset so
     // the caller keeps the delete-based retry path).
-    if (!ConnectBlock(txdb, pindexNew))
+    ConnectResult connectResult = CONNECT_RESULT_INVALID;
+    if (!ConnectBlock(txdb, pindexNew, false, true, &connectResult))
     {
         txdb.TxnAbort();
-        InvalidChainFound(pindexNew);
-        if (pfPermanentInvalid) *pfPermanentInvalid = true;
+        RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
+        if (connectResult == CONNECT_RESULT_INVALID)
+        {
+            InvalidChainFound(pindexNew);
+            if (pfPermanentInvalid) *pfPermanentInvalid = true;
+        }
         return false;
     }
     if (!txdb.WriteHashBestChain(hash))
     {
         txdb.TxnAbort();
-        InvalidChainFound(pindexNew);
+        RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
         return false;
     }
     if (!txdb.TxnCommit())
+    {
+        RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
         return error("SetBestChain() : TxnCommit failed");
+    }
 
     if (pindexNew->pprev)
         pindexNew->pprev->pnext = pindexNew;
@@ -6240,13 +6365,17 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
             printf("Postponing %" PRIszu" reconnects\n", vpindexSecondary.size());
 
         // Switch to new best branch
-        if (!Reorganize(txdb, pindexIntermediate))
+        bool fReorgPermanentInvalid = false;
+        if (!Reorganize(txdb, pindexIntermediate,
+                        &fReorgPermanentInvalid))
         {
             txdb.TxnAbort();
-            InvalidChainFound(pindexNew);
-            // Reorganize failed to connect this candidate (ConnectBlock consensus rejection inside the
-            // reorg, or an unconnectable fork) -> permanent invalidity.
-            if (pfPermanentInvalid) *pfPermanentInvalid = true;
+            RestoreCommittedFinalityOrShutdown("SetBestChain()/Reorganize");
+            if (fReorgPermanentInvalid)
+            {
+                InvalidChainFound(pindexNew);
+                if (pfPermanentInvalid) *pfPermanentInvalid = true;
+            }
             return error("SetBestChain() : Reorganize failed");
         }
 

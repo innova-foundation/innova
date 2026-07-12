@@ -411,6 +411,10 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             vValidVotes.reserve(vFinalityVotesForBlock.size());
             BOOST_FOREACH(const CFinalityVote& vote, vFinalityVotesForBlock)
             {
+                if (vote.IsPrivate() &&
+                    (IsLegacyPrivacyPolicyDisabled() ||
+                     IsBoundaryAActiveAtHeight(nHeight)))
+                    continue;
                 std::string strVoteError;
                 if (!g_finalityTracker.CheckVote(vote, txdbVoteCheck, &strVoteError, nHeight))
                 {
@@ -791,7 +795,9 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 if (nFinalityRewardTotal > MAX_MONEY - vote.nReward)
                     break;
 
-                CScript voteScript = BuildFinalityVoteScript(vote);
+                CScript voteScript;
+                if (!BuildFinalityVoteScriptForHeight(vote, nHeight, voteScript))
+                    continue;
                 unsigned int nVoteCommitSize = ::GetSerializeSize(voteScript, SER_NETWORK, PROTOCOL_VERSION);
                 if (nBlockSize + nVoteCommitSize + 64 >= nBlockMaxSize)
                     break;
@@ -815,7 +821,11 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 nBlockSize += nVoteCommitSize + 64;
             }
 
-            std::vector<CFinalityTallyShare> vFinalityShares = g_finalityTracker.GetPendingTallySharesForBlock(nHeight, 16, &vVotesEmbedded);
+            std::vector<CFinalityTallyShare> vFinalityShares;
+            if (!IsLegacyPrivacyPolicyDisabled() &&
+                !IsBoundaryAActiveAtHeight(nHeight))
+                vFinalityShares = g_finalityTracker.GetPendingTallySharesForBlock(
+                    nHeight, 16, &vVotesEmbedded);
             for (const CFinalityTallyShare& share : vFinalityShares)
             {
                 CScript shareScript = BuildFinalityTallyShareScript(share);
@@ -833,6 +843,10 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             std::vector<CFinalityTallyCertificate> vFinalityCerts = g_finalityTracker.GetPendingTallyCertificatesForBlock(nHeight);
             for (const CFinalityTallyCertificate& cert : vFinalityCerts)
             {
+                if (cert.HasPrivateWeight() &&
+                    (IsLegacyPrivacyPolicyDisabled() ||
+                     IsBoundaryAActiveAtHeight(nHeight)))
+                    continue;
                 // Only embed certificates every node can validate: votes must
                 // be connected or embedded in this same block. Certificates
                 // depending on local pending relay state would make the block
@@ -845,7 +859,10 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                     continue;
                 }
 
-                CScript certScript = BuildFinalityTallyCertificateScript(cert);
+                CScript certScript;
+                if (!BuildFinalityTallyCertificateScriptForHeight(
+                        cert, nHeight, certScript))
+                    continue;
                 unsigned int nCertCommitSize = ::GetSerializeSize(certScript, SER_NETWORK, PROTOCOL_VERSION);
                 if (nBlockSize + nCertCommitSize + 16 >= nBlockMaxSize)
                     break;
@@ -860,8 +877,11 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             // D2 self-governance: embed any fully-signed pending committee rotation
             // (effective epoch in the future, within the A2 lookahead). ConnectBlock
             // re-validates and applies it to the canonical-set state.
-            std::vector<CFinalityCommitteeRotation> vFinalityRots =
-                g_finalityTracker.GetPendingCommitteeRotationsForBlock(nHeight);
+            std::vector<CFinalityCommitteeRotation> vFinalityRots;
+            if (!IsLegacyPrivacyPolicyDisabled() &&
+                !IsBoundaryAActiveAtHeight(nHeight))
+                vFinalityRots =
+                    g_finalityTracker.GetPendingCommitteeRotationsForBlock(nHeight);
             for (const CFinalityCommitteeRotation& rot : vFinalityRots)
             {
                 CScript rotScript = BuildFinalityCommitteeRotationScript(rot);

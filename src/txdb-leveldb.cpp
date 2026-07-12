@@ -5,6 +5,7 @@
 
 #include <map>
 #include <set>
+#include <limits>
 
 #include <boost/version.hpp>
 #include <boost/filesystem.hpp>
@@ -27,6 +28,222 @@ namespace fs = boost::filesystem;
 leveldb::DB *txdb; // global pointer for LevelDB object instance
 
 static CCriticalSection cs_txdb;
+// LevelDB does not own Options::block_cache or filter_policy. Keep their
+// lifetime with the shared DB rather than with whichever cheap CTxDB wrapper
+// happened to open it, so a later wrapper can release them during Close().
+static leveldb::Cache* txdbBlockCache = NULL;
+static const leveldb::FilterPolicy* txdbFilterPolicy = NULL;
+
+static void ReleaseLevelDBSharedResources()
+{
+    // DB uses the cache/filter during its destructor, so release it first.
+    delete txdb;
+    txdb = NULL;
+    delete txdbFilterPolicy;
+    txdbFilterPolicy = NULL;
+    delete txdbBlockCache;
+    txdbBlockCache = NULL;
+}
+
+namespace
+{
+// Every consensus-valid transaction is larger than one uint256 on disk, so a
+// block cannot contain more hashes than this without exceeding the adaptive
+// hard ceiling.  The bound is intentionally checked before allocating.
+static const uint64_t DAG_ACTIVE_SET_MAX_TXS =
+    (uint64_t)ADAPTIVE_BLOCK_CEILING / 32 + 1;
+// A minimally encoded transparent output is nine bytes.  This bounds the
+// CTxIndex spent-position vector for every transaction admitted by an adaptive
+// block while retaining all historical records.
+static const uint64_t TXINDEX_MAX_OUTPUTS =
+    (uint64_t)ADAPTIVE_BLOCK_CEILING / 9 + 1;
+
+uint256 ComputeDAGSkippedTxDigest(
+    const uint256& hashBlock, const uint256& hashMerkleRoot,
+    uint32_t nBlockTxCount, const std::vector<uint256>& vSkipped)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("Innova/IDAG/ActiveSet/v1");
+    ss << hashBlock << hashMerkleRoot << nBlockTxCount;
+    ss << (uint64_t)vSkipped.size();
+    for (std::vector<uint256>::const_iterator it = vSkipped.begin();
+         it != vSkipped.end(); ++it)
+        ss << *it;
+    return ss.GetHash();
+}
+
+class CDAGSkippedTxDiskRecord
+{
+public:
+    int nSchema;
+    uint32_t nBlockTxCount;
+    uint256 hashMerkleRoot;
+    std::vector<uint256> vSkipped;
+    uint256 hashDigest;
+
+    CDAGSkippedTxDiskRecord()
+        : nSchema(0), nBlockTxCount(0) {}
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(nSchema);
+        READWRITE(nBlockTxCount);
+        READWRITE(hashMerkleRoot);
+        READWRITE(vSkipped);
+        READWRITE(hashDigest);
+    )
+};
+
+class CDAGActiveSetBestRecord
+{
+public:
+    int nSchema;
+    uint256 hashBest;
+    uint256 hashDigest;
+
+    CDAGActiveSetBestRecord() : nSchema(0) {}
+
+    uint256 GetDigest() const
+    {
+        CHashWriter ss(SER_GETHASH, 0);
+        ss << std::string("Innova/IDAG/ActiveSetBest/v1");
+        ss << nSchema << hashBest;
+        return ss.GetHash();
+    }
+
+    bool IsValid() const
+    {
+        return nSchema == DAG_ACTIVE_SET_SCHEMA && hashBest != 0 &&
+               hashDigest == GetDigest();
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(nSchema);
+        READWRITE(hashBest);
+        READWRITE(hashDigest);
+    )
+};
+
+TxDBReadStatus ParseDAGSkippedTxValue(
+    const char* pData, size_t nDataSize, const uint256& hashBlock,
+    const uint256& hashExpectedMerkleRoot, uint32_t& nBlockTxCount,
+    std::set<uint256>* pSkipped, std::string& strError)
+{
+    if (pSkipped)
+        pSkipped->clear();
+    strError.clear();
+
+    // schema + tx count + merkle root + one-byte empty vector + digest
+    static const size_t MIN_RECORD_SIZE = 4 + 4 + 32 + 1 + 32;
+    if (!pData || nDataSize < MIN_RECORD_SIZE ||
+        nDataSize > 4 + 4 + 32 + 9 +
+                        (size_t)DAG_ACTIVE_SET_MAX_TXS * 32 + 32)
+    {
+        strError = "DAG active-set record has an invalid bounded size";
+        return TXDB_READ_ERROR;
+    }
+
+    try
+    {
+        CDataStream ssValue(pData, pData + nDataSize,
+                            SER_DISK, CLIENT_VERSION);
+        int nSchema = 0;
+        uint256 hashMerkleRoot;
+        ssValue >> nSchema;
+        ssValue >> nBlockTxCount;
+        ssValue >> hashMerkleRoot;
+        const uint64_t nSkipped = ReadCompactSize(ssValue);
+        if (nSchema != DAG_ACTIVE_SET_SCHEMA ||
+            nBlockTxCount > DAG_ACTIVE_SET_MAX_TXS ||
+            nSkipped > nBlockTxCount ||
+            nSkipped > DAG_ACTIVE_SET_MAX_TXS ||
+            nSkipped > (uint64_t)ssValue.size() / 32 ||
+            ssValue.size() != (size_t)nSkipped * 32 + 32)
+            throw std::ios_base::failure("invalid/truncated DAG active-set fields");
+        if (hashExpectedMerkleRoot != 0 &&
+            hashMerkleRoot != hashExpectedMerkleRoot)
+            throw std::ios_base::failure("DAG active-set merkle-root mismatch");
+
+        std::vector<uint256> vSkipped;
+        if (pSkipped)
+            vSkipped.reserve((size_t)nSkipped);
+
+        CHashWriter digestWriter(SER_GETHASH, 0);
+        digestWriter << std::string("Innova/IDAG/ActiveSet/v1");
+        digestWriter << hashBlock << hashMerkleRoot << nBlockTxCount;
+        digestWriter << nSkipped;
+        uint256 hashPrevious;
+        bool fHavePrevious = false;
+        for (uint64_t i = 0; i < nSkipped; ++i)
+        {
+            uint256 hashTx;
+            ssValue >> hashTx;
+            if (hashTx == 0 || (fHavePrevious && !(hashPrevious < hashTx)))
+                throw std::ios_base::failure("non-canonical DAG active-set ordering");
+            digestWriter << hashTx;
+            if (pSkipped)
+                vSkipped.push_back(hashTx);
+            hashPrevious = hashTx;
+            fHavePrevious = true;
+        }
+        uint256 hashStoredDigest;
+        ssValue >> hashStoredDigest;
+        if (!ssValue.empty() || hashStoredDigest != digestWriter.GetHash())
+            throw std::ios_base::failure("DAG active-set digest/trailing-byte mismatch");
+        if (pSkipped)
+            pSkipped->insert(vSkipped.begin(), vSkipped.end());
+        return TXDB_READ_FOUND;
+    }
+    catch (const std::exception& e)
+    {
+        if (pSkipped)
+            pSkipped->clear();
+        strError = e.what();
+        return TXDB_READ_ERROR;
+    }
+}
+
+TxDBReadStatus ParseTxIndexValue(const char* pData, size_t nDataSize,
+                                 CTxIndex& txindex)
+{
+    txindex.SetNull();
+    const size_t nPosSize = ::GetSerializeSize(
+        CDiskTxPos(), SER_DISK, CLIENT_VERSION);
+    const size_t nMaxSize = 4 + nPosSize + 9 +
+                            (size_t)TXINDEX_MAX_OUTPUTS * nPosSize;
+    if (!pData || nDataSize < 4 + nPosSize + 1 || nDataSize > nMaxSize)
+        return TXDB_READ_ERROR;
+    try
+    {
+        CDataStream ssValue(pData, pData + nDataSize,
+                            SER_DISK, CLIENT_VERSION);
+        int nDiskVersion = 0;
+        ssValue >> nDiskVersion;
+        ssValue >> txindex.pos;
+        const uint64_t nSpent = ReadCompactSize(ssValue);
+        if (nSpent > TXINDEX_MAX_OUTPUTS ||
+            nSpent > (uint64_t)ssValue.size() / nPosSize ||
+            ssValue.size() != (size_t)nSpent * nPosSize)
+            throw std::ios_base::failure("invalid/truncated transaction-index spent vector");
+        txindex.vSpent.reserve((size_t)nSpent);
+        for (uint64_t i = 0; i < nSpent; ++i)
+        {
+            CDiskTxPos spent;
+            ssValue >> spent;
+            txindex.vSpent.push_back(spent);
+        }
+        if (!ssValue.empty())
+            throw std::ios_base::failure("trailing transaction-index bytes");
+        return TXDB_READ_FOUND;
+    }
+    catch (const std::exception&)
+    {
+        txindex.SetNull();
+        return TXDB_READ_ERROR;
+    }
+}
+} // namespace
 
 static int nIBDBatchSize = 0;
 static int nIBDBatchCount = 0;
@@ -59,8 +276,21 @@ void FlushIBDBatch()
 static leveldb::Options GetOptions() {
     leveldb::Options options;
     int nCacheSizeMB = GetArg("-dbcache", 300);
-    options.block_cache = leveldb::NewLRUCache(nCacheSizeMB * 1048576);
-    options.filter_policy = leveldb::NewBloomFilterPolicy(10);
+    if (txdbBlockCache || txdbFilterPolicy)
+        ReleaseLevelDBSharedResources();
+    try
+    {
+        txdbBlockCache = leveldb::NewLRUCache(
+            nCacheSizeMB * 1048576);
+        txdbFilterPolicy = leveldb::NewBloomFilterPolicy(10);
+    }
+    catch (...)
+    {
+        ReleaseLevelDBSharedResources();
+        throw;
+    }
+    options.block_cache = txdbBlockCache;
+    options.filter_policy = txdbFilterPolicy;
     options.write_buffer_size = 64 * 1048576; // 64MB write buffer (default 4MB) for smoother IBD
     options.max_open_files = 1000;
     options.compression = leveldb::kSnappyCompression;
@@ -116,9 +346,18 @@ CTxDB::CTxDB(const char* pszMode)
 
     options = GetOptions();
     options.create_if_missing = true; //fCreate
-    options.filter_policy = leveldb::NewBloomFilterPolicy(10);
 
-    init_blockindex(options); // Init directory
+    try
+    {
+        init_blockindex(options); // Init directory
+    }
+    catch (...)
+    {
+        ReleaseLevelDBSharedResources();
+        options.filter_policy = NULL;
+        options.block_cache = NULL;
+        throw;
+    }
     pdb = txdb;
 
     if (Exists(string("version")))
@@ -158,7 +397,17 @@ CTxDB::CTxDB(const char* pszMode)
             delete activeBatch;
             activeBatch = NULL;
 
-            init_blockindex(options, true); // Remove directory and create new database
+            try
+            {
+                init_blockindex(options, true); // Remove directory and create new database
+            }
+            catch (...)
+            {
+                ReleaseLevelDBSharedResources();
+                options.filter_policy = NULL;
+                options.block_cache = NULL;
+                throw;
+            }
             pdb = txdb;
 
             bool fTmp = fReadOnly;
@@ -182,11 +431,9 @@ CTxDB::CTxDB(const char* pszMode)
 void CTxDB::Close()
 {
     LOCK(cs_txdb);
-    delete txdb;
-    txdb = pdb = NULL;
-    delete options.filter_policy;
+    ReleaseLevelDBSharedResources();
+    pdb = NULL;
     options.filter_policy = NULL;
-    delete options.block_cache;
     options.block_cache = NULL;
     delete activeBatch;
     activeBatch = NULL;
@@ -200,15 +447,15 @@ bool CTxDB::TxnBegin()
     return true;
 }
 
-bool CTxDB::TxnCommit()
+bool CTxDB::TxnCommit(bool fSync)
 {
     if (!activeBatch)
         return false;
 
     leveldb::WriteOptions writeOptions;
-    if (IsInitialBlockDownload() && nIBDBatchSize > 0)
+    writeOptions.sync = fSync;
+    if (!fSync && IsInitialBlockDownload() && nIBDBatchSize > 0)
     {
-        writeOptions.sync = false;
         LOCK(cs_IBDBatch);
         fIBDBatchPending = true;
         nIBDBatchCount++;
@@ -644,14 +891,304 @@ bool CTxDB::HasEpochStateSchema()
     return Exists(string("epochstateschema"));
 }
 
+namespace
+{
+static const uint32_t FINALITY_DISK_ENVELOPE_MAGIC = 0x31444649; // "IFD1"
+static const unsigned char FINALITY_DISK_ENCODING_LEGACY = 0;
+static const unsigned char FINALITY_DISK_ENCODING_CANONICAL = 1;
+
+class CFinalityVoteDiskRecord
+{
+public:
+    uint32_t nMagic;
+    int nGeneration;
+    unsigned char nEncoding;
+    CFinalityVote legacyVote;
+    CCanonicalFinalityVoteEnvelope canonicalVote;
+
+    CFinalityVoteDiskRecord()
+        : nMagic(FINALITY_DISK_ENVELOPE_MAGIC),
+          nGeneration(FINALITY_DISK_ENVELOPE_GENERATION),
+          nEncoding(FINALITY_DISK_ENCODING_LEGACY)
+    {
+    }
+
+    bool FromLogical(const CFinalityVote& vote)
+    {
+        nMagic = FINALITY_DISK_ENVELOPE_MAGIC;
+        nGeneration = FINALITY_DISK_ENVELOPE_GENERATION;
+        if (vote.IsCanonicalEnvelope())
+        {
+            nEncoding = FINALITY_DISK_ENCODING_CANONICAL;
+            canonicalVote = CCanonicalFinalityVoteEnvelope();
+            return canonicalVote.FromLogical(vote);
+        }
+        nEncoding = FINALITY_DISK_ENCODING_LEGACY;
+        legacyVote = vote;
+        legacyVote.fCanonicalEnvelope = false;
+        return true;
+    }
+
+    bool ToLogical(CFinalityVote& voteOut) const
+    {
+        if (nMagic != FINALITY_DISK_ENVELOPE_MAGIC ||
+            nGeneration != FINALITY_DISK_ENVELOPE_GENERATION)
+            return false;
+        if (nEncoding == FINALITY_DISK_ENCODING_CANONICAL)
+            return canonicalVote.ToLogical(voteOut);
+        if (nEncoding != FINALITY_DISK_ENCODING_LEGACY)
+            return false;
+        voteOut = legacyVote;
+        voteOut.fCanonicalEnvelope = false;
+        return true;
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        CFinalityVoteDiskRecord* pthis =
+            const_cast<CFinalityVoteDiskRecord*>(this);
+        READWRITE(pthis->nMagic);
+        READWRITE(pthis->nGeneration);
+        READWRITE(pthis->nEncoding);
+        if (fRead &&
+            (pthis->nMagic != FINALITY_DISK_ENVELOPE_MAGIC ||
+             pthis->nGeneration != FINALITY_DISK_ENVELOPE_GENERATION ||
+             (pthis->nEncoding != FINALITY_DISK_ENCODING_LEGACY &&
+              pthis->nEncoding != FINALITY_DISK_ENCODING_CANONICAL)))
+            throw std::ios_base::failure("invalid finality-vote disk envelope header");
+        if (pthis->nEncoding == FINALITY_DISK_ENCODING_CANONICAL)
+            READWRITE(pthis->canonicalVote);
+        else
+            READWRITE(pthis->legacyVote);
+    )
+};
+
+class CFinalityCertificateDiskRecord
+{
+public:
+    uint32_t nMagic;
+    int nGeneration;
+    unsigned char nEncoding;
+    CFinalityTallyCertificate legacyCert;
+    CCanonicalFinalityTallyCertificateEnvelope canonicalCert;
+
+    CFinalityCertificateDiskRecord()
+        : nMagic(FINALITY_DISK_ENVELOPE_MAGIC),
+          nGeneration(FINALITY_DISK_ENVELOPE_GENERATION),
+          nEncoding(FINALITY_DISK_ENCODING_LEGACY)
+    {
+    }
+
+    bool FromLogical(const CFinalityTallyCertificate& cert)
+    {
+        nMagic = FINALITY_DISK_ENVELOPE_MAGIC;
+        nGeneration = FINALITY_DISK_ENVELOPE_GENERATION;
+        if (cert.IsCanonicalEnvelope())
+        {
+            nEncoding = FINALITY_DISK_ENCODING_CANONICAL;
+            canonicalCert = CCanonicalFinalityTallyCertificateEnvelope();
+            return canonicalCert.FromLogical(cert);
+        }
+        nEncoding = FINALITY_DISK_ENCODING_LEGACY;
+        legacyCert = cert;
+        legacyCert.fCanonicalEnvelope = false;
+        return true;
+    }
+
+    bool ToLogical(CFinalityTallyCertificate& certOut) const
+    {
+        if (nMagic != FINALITY_DISK_ENVELOPE_MAGIC ||
+            nGeneration != FINALITY_DISK_ENVELOPE_GENERATION)
+            return false;
+        if (nEncoding == FINALITY_DISK_ENCODING_CANONICAL)
+            return canonicalCert.ToLogical(certOut);
+        if (nEncoding != FINALITY_DISK_ENCODING_LEGACY)
+            return false;
+        certOut = legacyCert;
+        certOut.fCanonicalEnvelope = false;
+        return true;
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        CFinalityCertificateDiskRecord* pthis =
+            const_cast<CFinalityCertificateDiskRecord*>(this);
+        READWRITE(pthis->nMagic);
+        READWRITE(pthis->nGeneration);
+        READWRITE(pthis->nEncoding);
+        if (fRead &&
+            (pthis->nMagic != FINALITY_DISK_ENVELOPE_MAGIC ||
+             pthis->nGeneration != FINALITY_DISK_ENVELOPE_GENERATION ||
+             (pthis->nEncoding != FINALITY_DISK_ENCODING_LEGACY &&
+              pthis->nEncoding != FINALITY_DISK_ENCODING_CANONICAL)))
+            throw std::ios_base::failure("invalid finality-certificate disk envelope header");
+        if (pthis->nEncoding == FINALITY_DISK_ENCODING_CANONICAL)
+            READWRITE(pthis->canonicalCert);
+        else
+            READWRITE(pthis->legacyCert);
+    )
+};
+
+bool FinalityDiskValueHasEnvelopeMagic(const std::string& strValue)
+{
+    if (strValue.size() < sizeof(uint32_t))
+        return false;
+    try
+    {
+        CDataStream ss(strValue.data(), strValue.data() + strValue.size(),
+                       SER_DISK, CLIENT_VERSION);
+        uint32_t nMagic = 0;
+        ss >> nMagic;
+        return nMagic == FINALITY_DISK_ENVELOPE_MAGIC;
+    }
+    catch (const std::exception&)
+    {
+        return false;
+    }
+}
+
+bool DecodeFinalityVoteDiskValue(const std::string& strValue,
+                                 CFinalityVote& voteOut,
+                                 bool& fEnvelopeOut,
+                                 std::string& strError)
+{
+    fEnvelopeOut = FinalityDiskValueHasEnvelopeMagic(strValue);
+    strError.clear();
+    try
+    {
+        CDataStream ss(strValue.data(), strValue.data() + strValue.size(),
+                       SER_DISK, CLIENT_VERSION);
+        if (fEnvelopeOut)
+        {
+            CFinalityVoteDiskRecord record;
+            ss >> record;
+            if (!ss.empty() || !record.ToLogical(voteOut))
+                throw std::ios_base::failure("invalid/trailing finality-vote disk envelope");
+            return true;
+        }
+
+        CFinalityVote rawVote;
+        ss >> rawVote;
+        if (!ss.empty())
+            throw std::ios_base::failure("trailing legacy finality-vote bytes");
+
+        // The old serializer omitted fCanonicalEnvelope. Transparent vote signatures authenticate
+        // exactly one of the legacy and canonical domains; private votes cannot be canonical.
+        CFinalityVote legacyVote = rawVote;
+        legacyVote.fCanonicalEnvelope = false;
+        CFinalityVote canonicalVote = rawVote;
+        canonicalVote.MarkCanonicalEnvelope();
+        CCanonicalFinalityVoteEnvelope canonicalShape;
+        const bool fLegacyValid = legacyVote.IsValid();
+        const bool fCanonicalValid =
+            canonicalShape.FromLogical(canonicalVote) && canonicalVote.IsValid();
+        if (fLegacyValid == fCanonicalValid)
+            throw std::ios_base::failure(
+                "legacy finality-vote provenance is invalid or ambiguous");
+        voteOut = fCanonicalValid ? canonicalVote : legacyVote;
+        return true;
+    }
+    catch (const std::exception& e)
+    {
+        strError = e.what();
+        return false;
+    }
+}
+
+bool DecodeFinalityCertificateDiskValue(
+    const std::string& strValue, const uint256& hashKey,
+    CFinalityTallyCertificate& certOut, bool& fEnvelopeOut,
+    std::string& strError)
+{
+    fEnvelopeOut = FinalityDiskValueHasEnvelopeMagic(strValue);
+    strError.clear();
+    try
+    {
+        CDataStream ss(strValue.data(), strValue.data() + strValue.size(),
+                       SER_DISK, CLIENT_VERSION);
+        if (fEnvelopeOut)
+        {
+            CFinalityCertificateDiskRecord record;
+            ss >> record;
+            if (!ss.empty() || !record.ToLogical(certOut))
+                throw std::ios_base::failure(
+                    "invalid/trailing finality-certificate disk envelope");
+            return true;
+        }
+
+        CFinalityTallyCertificate rawCert;
+        ss >> rawCert;
+        if (!ss.empty())
+            throw std::ios_base::failure(
+                "trailing legacy finality-certificate bytes");
+
+        // Certificates do not always carry a signature, but their LevelDB key
+        // is their identity hash.  Exactly one domain must reproduce that key.
+        CFinalityTallyCertificate legacyCert = rawCert;
+        legacyCert.fCanonicalEnvelope = false;
+        CFinalityTallyCertificate canonicalCert = rawCert;
+        canonicalCert.MarkCanonicalEnvelope();
+        CCanonicalFinalityTallyCertificateEnvelope canonicalShape;
+        const bool fLegacyValid = legacyCert.IsValidBasic() &&
+                                  legacyCert.GetHash() == hashKey;
+        const bool fCanonicalValid = canonicalShape.FromLogical(canonicalCert) &&
+                                     canonicalCert.IsValidBasic() &&
+                                     canonicalCert.GetHash() == hashKey;
+        if (fLegacyValid == fCanonicalValid)
+            throw std::ios_base::failure(
+                "legacy finality-certificate provenance is invalid or ambiguous");
+        certOut = fCanonicalValid ? canonicalCert : legacyCert;
+        return true;
+    }
+    catch (const std::exception& e)
+    {
+        strError = e.what();
+        return false;
+    }
+}
+} // namespace
+
+bool CTxDB::ReadFinalityDiskEnvelopeGeneration(int& nGeneration)
+{
+    nGeneration = 0;
+    return ReadFixedExactStatusBounded(
+               string("finalitydiskschema"), nGeneration) ==
+           TXDB_READ_FOUND;
+}
+
 bool CTxDB::WriteFinalityVote(const uint256& nullifier, const CFinalityVote& vote)
 {
-    return Write(make_pair(string("finalityvote"), nullifier), vote);
+    int nGeneration = 0;
+    if (!ReadFinalityDiskEnvelopeGeneration(nGeneration) ||
+        nGeneration != FINALITY_DISK_ENVELOPE_GENERATION)
+        return error("WriteFinalityVote: finality disk envelope schema is unavailable");
+    CFinalityVoteDiskRecord record;
+    if (!record.FromLogical(vote))
+        return false;
+    return Write(make_pair(string("finalityvote"), nullifier), record);
 }
 
 bool CTxDB::ReadFinalityVote(const uint256& nullifier, CFinalityVote& vote)
 {
-    return Read(make_pair(string("finalityvote"), nullifier), vote);
+    int nGeneration = 0;
+    const TxDBReadStatus schemaStatus = ReadFixedExactStatusBounded(
+        string("finalitydiskschema"), nGeneration);
+    if (schemaStatus == TXDB_READ_ERROR ||
+        (schemaStatus == TXDB_READ_FOUND &&
+         nGeneration != FINALITY_DISK_ENVELOPE_GENERATION))
+        return false;
+
+    std::string strValue;
+    if (ReadRawValueStatus(make_pair(string("finalityvote"), nullifier),
+                           strValue) != TXDB_READ_FOUND)
+        return false;
+    bool fEnvelope = false;
+    std::string strError;
+    if (!DecodeFinalityVoteDiskValue(strValue, vote, fEnvelope, strError))
+        return false;
+    if (schemaStatus == TXDB_READ_FOUND && !fEnvelope)
+        return false;
+    return vote.nullifier == nullifier && vote.IsValid();
 }
 
 bool CTxDB::EraseFinalityVote(const uint256& nullifier)
@@ -662,6 +1199,15 @@ bool CTxDB::EraseFinalityVote(const uint256& nullifier)
 bool CTxDB::IterateFinalityVotes(std::map<uint256, CFinalityVote>& mapOut)
 {
     mapOut.clear();
+    int nGeneration = 0;
+    const TxDBReadStatus schemaStatus = ReadFixedExactStatusBounded(
+        string("finalitydiskschema"), nGeneration);
+    if (schemaStatus == TXDB_READ_ERROR ||
+        (schemaStatus == TXDB_READ_FOUND &&
+         nGeneration != FINALITY_DISK_ENVELOPE_GENERATION))
+        return false;
+    const bool fRequireEnvelope = schemaStatus == TXDB_READ_FOUND;
+
     leveldb::DB* db = GetInstance();
     if (!db)
         return false;
@@ -683,21 +1229,49 @@ bool CTxDB::IterateFinalityVotes(std::map<uint256, CFinalityVote>& mapOut)
             CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
             std::pair<std::string, uint256> keyPair;
             ssKey >> keyPair;
+            if (keyPair.first != "finalityvote" || keyPair.second == 0 || ssKey.size() != 0)
+                throw std::ios_base::failure("non-canonical finality-vote key");
 
-            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
             CFinalityVote vote;
-            ssValue >> vote;
+            const leveldb::Slice rawValue = it->value();
+            const std::string strValue(rawValue.data(), rawValue.size());
+            bool fEnvelope = false;
+            std::string strDecodeError;
+            if (!DecodeFinalityVoteDiskValue(
+                    strValue, vote, fEnvelope, strDecodeError))
+                throw std::ios_base::failure(strDecodeError);
+            if (fRequireEnvelope && !fEnvelope)
+                throw std::ios_base::failure(
+                    "legacy finality-vote value under envelope schema marker");
+            if (vote.nullifier == 0 || vote.nullifier != keyPair.second)
+                throw std::ios_base::failure("finality-vote key/value nullifier mismatch");
+            if (!vote.IsValid())
+                throw std::ios_base::failure("persisted finality vote is structurally invalid");
+            if (mapOut.count(keyPair.second))
+                throw std::ios_base::failure("duplicate finality-vote key");
             mapOut[keyPair.second] = vote;
         }
-        catch (const std::exception&)
+        catch (const std::exception& e)
         {
-            // Skip malformed entries.
+            printf("IterateFinalityVotes: FATAL finality-vote record failed to deserialize: %s -- "
+                   "-reindex/resync required\n", e.what());
+            delete it;
+            mapOut.clear();
+            return false;
         }
 
         it->Next();
     }
 
+    leveldb::Status status = it->status();
     delete it;
+    if (!status.ok())
+    {
+        printf("IterateFinalityVotes: FATAL LevelDB iterator failure: %s -- "
+               "-reindex/resync required\n", status.ToString().c_str());
+        mapOut.clear();
+        return false;
+    }
     return true;
 }
 
@@ -716,56 +1290,187 @@ bool CTxDB::EraseFinalityTallyShare(const uint256& hashShare)
     return Erase(make_pair(string("finalityshare"), hashShare));
 }
 
-bool CTxDB::IterateFinalityTallyShares(std::map<uint256, CFinalityTallyShare>& mapOut)
+template <typename Key, typename Value>
+static bool IterateFinalityRecords(leveldb::DB* db,
+                                   const char* pszPrefix,
+                                   std::map<Key, Value>& mapOut)
 {
     mapOut.clear();
-    leveldb::DB* db = GetInstance();
     if (!db)
         return false;
 
+    const std::string strType(pszPrefix);
     CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
-    ssPrefix << string("finalityshare");
-    std::string strPrefix = ssPrefix.str();
+    ssPrefix << strType;
+    const std::string strPrefix = ssPrefix.str();
 
     leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
     it->Seek(strPrefix);
-
     while (it->Valid())
     {
-        std::string strKey = it->key().ToString();
+        const std::string strKey = it->key().ToString();
         if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
             break;
-
-        try {
-            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
-            std::pair<std::string, uint256> keyPair;
-            ssKey >> keyPair;
-
-            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
-            CFinalityTallyShare share;
-            ssValue >> share;
-            mapOut[keyPair.second] = share;
-        }
-        catch (const std::exception&)
+        try
         {
-            // Skip malformed entries.
-        }
+            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(),
+                              SER_DISK, CLIENT_VERSION);
+            std::pair<std::string, Key> keyPair;
+            ssKey >> keyPair;
+            if (keyPair.first != strType || ssKey.size() != 0 ||
+                mapOut.count(keyPair.second))
+                throw std::ios_base::failure("non-canonical or duplicate finality key");
 
+            CDataStream ssValue(it->value().data(),
+                                it->value().data() + it->value().size(),
+                                SER_DISK, CLIENT_VERSION);
+            Value value;
+            ssValue >> value;
+            if (ssValue.size() != 0)
+                throw std::ios_base::failure("trailing finality record bytes");
+            mapOut[keyPair.second] = value;
+        }
+        catch (const std::exception& e)
+        {
+            printf("IterateFinalityRecords(%s): FATAL record decode failure: %s -- "
+                   "-reindex/resync required\n", pszPrefix, e.what());
+            delete it;
+            mapOut.clear();
+            return false;
+        }
         it->Next();
     }
 
+    const leveldb::Status status = it->status();
     delete it;
+    if (!status.ok())
+    {
+        printf("IterateFinalityRecords(%s): FATAL iterator failure: %s -- "
+               "-reindex/resync required\n", pszPrefix, status.ToString().c_str());
+        mapOut.clear();
+        return false;
+    }
+    return true;
+}
+
+template <typename Key, typename Element>
+static bool IterateFinalityVectorRecords(
+    leveldb::DB* db,
+    const char* pszPrefix,
+    uint64_t nMaxElements,
+    std::map<Key, std::vector<Element> >& mapOut)
+{
+    mapOut.clear();
+    if (!db)
+        return false;
+
+    const std::string strType(pszPrefix);
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << strType;
+    const std::string strPrefix = ssPrefix.str();
+
+    leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
+    it->Seek(strPrefix);
+    while (it->Valid())
+    {
+        const std::string strKey = it->key().ToString();
+        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
+            break;
+        try
+        {
+            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(),
+                              SER_DISK, CLIENT_VERSION);
+            std::pair<std::string, Key> keyPair;
+            ssKey >> keyPair;
+            if (keyPair.first != strType || ssKey.size() != 0 ||
+                mapOut.count(keyPair.second))
+                throw std::ios_base::failure("non-canonical or duplicate finality key");
+
+            CDataStream ssValue(it->value().data(),
+                                it->value().data() + it->value().size(),
+                                SER_DISK, CLIENT_VERSION);
+            std::vector<Element> value;
+            SerReadWriteLimitedVector(ssValue, value, nMaxElements,
+                                      SER_DISK, CLIENT_VERSION,
+                                      CSerActionUnserialize());
+            if (ssValue.size() != 0)
+                throw std::ios_base::failure("trailing finality vector record bytes");
+            mapOut[keyPair.second] = value;
+        }
+        catch (const std::exception& e)
+        {
+            printf("IterateFinalityVectorRecords(%s): FATAL record decode failure: %s -- "
+                   "-reindex/resync required\n", pszPrefix, e.what());
+            delete it;
+            mapOut.clear();
+            return false;
+        }
+        it->Next();
+    }
+
+    const leveldb::Status status = it->status();
+    delete it;
+    if (!status.ok())
+    {
+        printf("IterateFinalityVectorRecords(%s): FATAL iterator failure: %s -- "
+               "-reindex/resync required\n", pszPrefix, status.ToString().c_str());
+        mapOut.clear();
+        return false;
+    }
+    return true;
+}
+
+bool CTxDB::IterateFinalityTallyShares(std::map<uint256, CFinalityTallyShare>& mapOut)
+{
+    if (!IterateFinalityRecords(GetInstance(), "finalityshare", mapOut))
+        return false;
+    for (std::map<uint256, CFinalityTallyShare>::const_iterator it = mapOut.begin();
+         it != mapOut.end(); ++it)
+        if (it->first == 0 || it->second.GetHash() != it->first ||
+            !it->second.IsValidBasic())
+        {
+            printf("IterateFinalityTallyShares: FATAL key/value or structural mismatch; "
+                   "-reindex/resync required\n");
+            mapOut.clear();
+            return false;
+        }
     return true;
 }
 
 bool CTxDB::WriteFinalityTallyCertificate(const uint256& hashCert, const CFinalityTallyCertificate& cert)
 {
-    return Write(make_pair(string("finalitycert"), hashCert), cert);
+    int nGeneration = 0;
+    if (!ReadFinalityDiskEnvelopeGeneration(nGeneration) ||
+        nGeneration != FINALITY_DISK_ENVELOPE_GENERATION)
+        return error("WriteFinalityTallyCertificate: finality disk envelope schema is unavailable");
+    CFinalityCertificateDiskRecord record;
+    if (!record.FromLogical(cert))
+        return false;
+    return Write(make_pair(string("finalitycert"), hashCert), record);
 }
 
 bool CTxDB::ReadFinalityTallyCertificate(const uint256& hashCert, CFinalityTallyCertificate& cert)
 {
-    return Read(make_pair(string("finalitycert"), hashCert), cert);
+    int nGeneration = 0;
+    const TxDBReadStatus schemaStatus = ReadFixedExactStatusBounded(
+        string("finalitydiskschema"), nGeneration);
+    if (schemaStatus == TXDB_READ_ERROR ||
+        (schemaStatus == TXDB_READ_FOUND &&
+         nGeneration != FINALITY_DISK_ENVELOPE_GENERATION))
+        return false;
+
+    std::string strValue;
+    if (ReadRawValueStatus(make_pair(string("finalitycert"), hashCert),
+                           strValue) != TXDB_READ_FOUND)
+        return false;
+    bool fEnvelope = false;
+    std::string strError;
+    if (!DecodeFinalityCertificateDiskValue(
+            strValue, hashCert, cert, fEnvelope, strError))
+        return false;
+    if (schemaStatus == TXDB_READ_FOUND && !fEnvelope)
+        return false;
+    return cert.GetHash() == hashCert && cert.IsValidBasic();
 }
 
 bool CTxDB::EraseFinalityTallyCertificate(const uint256& hashCert)
@@ -776,42 +1481,178 @@ bool CTxDB::EraseFinalityTallyCertificate(const uint256& hashCert)
 bool CTxDB::IterateFinalityTallyCertificates(std::map<uint256, CFinalityTallyCertificate>& mapOut)
 {
     mapOut.clear();
+    int nGeneration = 0;
+    const TxDBReadStatus schemaStatus = ReadFixedExactStatusBounded(
+        string("finalitydiskschema"), nGeneration);
+    if (schemaStatus == TXDB_READ_ERROR ||
+        (schemaStatus == TXDB_READ_FOUND &&
+         nGeneration != FINALITY_DISK_ENVELOPE_GENERATION))
+        return false;
+    const bool fRequireEnvelope = schemaStatus == TXDB_READ_FOUND;
+
     leveldb::DB* db = GetInstance();
     if (!db)
         return false;
-
     CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
     ssPrefix << string("finalitycert");
-    std::string strPrefix = ssPrefix.str();
-
-    leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
-    it->Seek(strPrefix);
-
-    while (it->Valid())
+    const std::string strPrefix = ssPrefix.str();
+    leveldb::Iterator* iter = db->NewIterator(leveldb::ReadOptions());
+    iter->Seek(strPrefix);
+    while (iter->Valid())
     {
-        std::string strKey = it->key().ToString();
+        const std::string strKey = iter->key().ToString();
         if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
             break;
-
-        try {
-            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
+        try
+        {
+            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(),
+                              SER_DISK, CLIENT_VERSION);
             std::pair<std::string, uint256> keyPair;
             ssKey >> keyPair;
+            if (keyPair.first != "finalitycert" || keyPair.second == 0 ||
+                !ssKey.empty() || mapOut.count(keyPair.second))
+                throw std::ios_base::failure(
+                    "non-canonical or duplicate finality-certificate key");
 
-            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
+            const leveldb::Slice rawValue = iter->value();
+            const std::string strValue(rawValue.data(), rawValue.size());
             CFinalityTallyCertificate cert;
-            ssValue >> cert;
+            bool fEnvelope = false;
+            std::string strDecodeError;
+            if (!DecodeFinalityCertificateDiskValue(
+                    strValue, keyPair.second, cert, fEnvelope,
+                    strDecodeError))
+                throw std::ios_base::failure(strDecodeError);
+            if (fRequireEnvelope && !fEnvelope)
+                throw std::ios_base::failure(
+                    "legacy finality-certificate value under envelope schema marker");
+            if (cert.GetHash() != keyPair.second || !cert.IsValidBasic())
+                throw std::ios_base::failure(
+                    "finality-certificate key/value or structural mismatch");
             mapOut[keyPair.second] = cert;
         }
-        catch (const std::exception&)
+        catch (const std::exception& e)
         {
-            // Skip malformed entries.
+            printf("IterateFinalityTallyCertificates: FATAL record decode failure: %s -- "
+                   "-reindex/resync required\n", e.what());
+            delete iter;
+            mapOut.clear();
+            return false;
         }
-
-        it->Next();
+        iter->Next();
     }
 
-    delete it;
+    const leveldb::Status status = iter->status();
+    delete iter;
+    if (!status.ok())
+    {
+        printf("IterateFinalityTallyCertificates: FATAL iterator failure: %s -- "
+               "-reindex/resync required\n", status.ToString().c_str());
+        mapOut.clear();
+        return false;
+    }
+    return true;
+}
+
+bool CTxDB::MigrateFinalityDiskRecords(std::string& strError)
+{
+    strError.clear();
+    if (IsTxnActive())
+    {
+        strError = "finality disk migration cannot join an existing transaction";
+        return false;
+    }
+
+    int nGeneration = 0;
+    const TxDBReadStatus schemaStatus = ReadFixedExactStatusBounded(
+        string("finalitydiskschema"), nGeneration);
+    if (schemaStatus == TXDB_READ_ERROR)
+    {
+        strError = "finality disk envelope schema marker is corrupt";
+        return false;
+    }
+    if (schemaStatus == TXDB_READ_FOUND)
+    {
+        if (nGeneration != FINALITY_DISK_ENVELOPE_GENERATION)
+        {
+            strError = strprintf("unsupported finality disk envelope generation %d",
+                                 nGeneration);
+            return false;
+        }
+        return true;
+    }
+
+    // No marker means the legacy generation. The strict dual decoder recovers canonical
+    // provenance from the vote domain or certificate key, and fails if both or neither match.
+    std::map<uint256, CFinalityVote> mapVotes;
+    if (!IterateFinalityVotes(mapVotes))
+    {
+        strError = "legacy finality-vote records cannot be classified safely";
+        return false;
+    }
+    std::map<uint256, CFinalityTallyCertificate> mapCerts;
+    if (!IterateFinalityTallyCertificates(mapCerts))
+    {
+        strError = "legacy finality-certificate records cannot be classified safely";
+        return false;
+    }
+
+    // Read-only loads run the full legacy classification but cannot stamp the marker; a
+    // writable startup commits records and marker in one synchronous batch.
+    if (fReadOnly)
+    {
+        printf("Finality: validated %d legacy votes and %d legacy certificates "
+               "in read-only mode (migration deferred)\n",
+               (int)mapVotes.size(), (int)mapCerts.size());
+        return true;
+    }
+
+    if (!TxnBegin())
+    {
+        strError = "could not begin atomic finality disk migration";
+        return false;
+    }
+
+    for (std::map<uint256, CFinalityVote>::const_iterator it = mapVotes.begin();
+         it != mapVotes.end(); ++it)
+    {
+        CFinalityVoteDiskRecord record;
+        if (!record.FromLogical(it->second) ||
+            !Write(make_pair(string("finalityvote"), it->first), record))
+        {
+            TxnAbort();
+            strError = "failed to stage generation-tagged finality-vote record";
+            return false;
+        }
+    }
+    for (std::map<uint256, CFinalityTallyCertificate>::const_iterator it =
+             mapCerts.begin(); it != mapCerts.end(); ++it)
+    {
+        CFinalityCertificateDiskRecord record;
+        if (!record.FromLogical(it->second) ||
+            !Write(make_pair(string("finalitycert"), it->first), record))
+        {
+            TxnAbort();
+            strError = "failed to stage generation-tagged finality-certificate record";
+            return false;
+        }
+    }
+    if (!Write(string("finalitydiskschema"),
+               FINALITY_DISK_ENVELOPE_GENERATION))
+    {
+        TxnAbort();
+        strError = "failed to stage finality disk envelope schema marker";
+        return false;
+    }
+    if (!TxnCommit(true))
+    {
+        strError = "failed to commit atomic finality disk migration";
+        return false;
+    }
+
+    printf("Finality: migrated %d votes and %d certificates to disk envelope generation %d\n",
+           (int)mapVotes.size(), (int)mapCerts.size(),
+           FINALITY_DISK_ENVELOPE_GENERATION);
     return true;
 }
 
@@ -827,43 +1668,17 @@ bool CTxDB::EraseFinalityConnectedVoteBlock(const uint256& hashBlock)
 
 bool CTxDB::IterateFinalityConnectedVoteBlocks(std::map<uint256, std::vector<uint256> >& mapOut)
 {
-    mapOut.clear();
-    leveldb::DB* db = GetInstance();
-    if (!db)
+    if (!IterateFinalityVectorRecords(GetInstance(), "finalityconnvb",
+                                      FINALITY_MAX_BLOCK_VOTES, mapOut))
         return false;
-
-    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
-    ssPrefix << string("finalityconnvb");
-    std::string strPrefix = ssPrefix.str();
-
-    leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
-    it->Seek(strPrefix);
-
-    while (it->Valid())
+    for (std::map<uint256, std::vector<uint256> >::const_iterator it = mapOut.begin();
+         it != mapOut.end(); ++it)
     {
-        std::string strKey = it->key().ToString();
-        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
-            break;
-
-        try {
-            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
-            std::pair<std::string, uint256> keyPair;
-            ssKey >> keyPair;
-
-            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
-            std::vector<uint256> vNullifiers;
-            ssValue >> vNullifiers;
-            mapOut[keyPair.second] = vNullifiers;
-        }
-        catch (const std::exception&)
-        {
-            // Skip malformed entries.
-        }
-
-        it->Next();
+        const std::set<uint256> unique(it->second.begin(), it->second.end());
+        if (it->first == 0 || it->second.size() > FINALITY_MAX_BLOCK_VOTES ||
+            unique.size() != it->second.size() || unique.count(uint256(0)))
+            return false;
     }
-
-    delete it;
     return true;
 }
 
@@ -879,43 +1694,17 @@ bool CTxDB::EraseFinalityConnectedShareBlock(const uint256& hashBlock)
 
 bool CTxDB::IterateFinalityConnectedShareBlocks(std::map<uint256, std::vector<uint256> >& mapOut)
 {
-    mapOut.clear();
-    leveldb::DB* db = GetInstance();
-    if (!db)
+    if (!IterateFinalityVectorRecords(GetInstance(), "finalityconnsb",
+                                      FINALITY_MAX_VOTES, mapOut))
         return false;
-
-    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
-    ssPrefix << string("finalityconnsb");
-    std::string strPrefix = ssPrefix.str();
-
-    leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
-    it->Seek(strPrefix);
-
-    while (it->Valid())
+    for (std::map<uint256, std::vector<uint256> >::const_iterator it = mapOut.begin();
+         it != mapOut.end(); ++it)
     {
-        std::string strKey = it->key().ToString();
-        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
-            break;
-
-        try {
-            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
-            std::pair<std::string, uint256> keyPair;
-            ssKey >> keyPair;
-
-            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
-            std::vector<uint256> vShareHashes;
-            ssValue >> vShareHashes;
-            mapOut[keyPair.second] = vShareHashes;
-        }
-        catch (const std::exception&)
-        {
-            // Skip malformed entries.
-        }
-
-        it->Next();
+        const std::set<uint256> unique(it->second.begin(), it->second.end());
+        if (it->first == 0 || it->second.size() > FINALITY_MAX_VOTES ||
+            unique.size() != it->second.size() || unique.count(uint256(0)))
+            return false;
     }
-
-    delete it;
     return true;
 }
 
@@ -931,43 +1720,17 @@ bool CTxDB::EraseFinalityConnectedCertBlock(const uint256& hashBlock)
 
 bool CTxDB::IterateFinalityConnectedCertBlocks(std::map<uint256, std::vector<uint256> >& mapOut)
 {
-    mapOut.clear();
-    leveldb::DB* db = GetInstance();
-    if (!db)
+    if (!IterateFinalityVectorRecords(GetInstance(), "finalityconncb",
+                                      FINALITY_MAX_VOTES, mapOut))
         return false;
-
-    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
-    ssPrefix << string("finalityconncb");
-    std::string strPrefix = ssPrefix.str();
-
-    leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
-    it->Seek(strPrefix);
-
-    while (it->Valid())
+    for (std::map<uint256, std::vector<uint256> >::const_iterator it = mapOut.begin();
+         it != mapOut.end(); ++it)
     {
-        std::string strKey = it->key().ToString();
-        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
-            break;
-
-        try {
-            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
-            std::pair<std::string, uint256> keyPair;
-            ssKey >> keyPair;
-
-            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
-            std::vector<uint256> vCertHashes;
-            ssValue >> vCertHashes;
-            mapOut[keyPair.second] = vCertHashes;
-        }
-        catch (const std::exception&)
-        {
-            // Skip malformed entries.
-        }
-
-        it->Next();
+        const std::set<uint256> unique(it->second.begin(), it->second.end());
+        if (it->first == 0 || it->second.size() > FINALITY_MAX_VOTES ||
+            unique.size() != it->second.size() || unique.count(uint256(0)))
+            return false;
     }
-
-    delete it;
     return true;
 }
 
@@ -988,35 +1751,18 @@ bool CTxDB::EraseFinalityCommitteeRotation(int nEffectiveEpoch)
 
 bool CTxDB::IterateFinalityCommitteeRotations(std::map<int, CFinalityCommitteeRotation>& mapOut)
 {
-    mapOut.clear();
-    leveldb::DB* db = GetInstance();
-    if (!db)
+    if (!IterateFinalityRecords(GetInstance(), "finalityrot", mapOut))
         return false;
-
-    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
-    ssPrefix << string("finalityrot");
-    std::string strPrefix = ssPrefix.str();
-
-    leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
-    it->Seek(strPrefix);
-    while (it->Valid())
-    {
-        std::string strKey = it->key().ToString();
-        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
-            break;
-        try {
-            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
-            std::pair<std::string, int> keyPair;
-            ssKey >> keyPair;
-            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
-            CFinalityCommitteeRotation rot;
-            ssValue >> rot;
-            mapOut[keyPair.second] = rot;
+    for (std::map<int, CFinalityCommitteeRotation>::const_iterator it = mapOut.begin();
+         it != mapOut.end(); ++it)
+        if (it->first <= 0 || it->second.nEffectiveEpoch != it->first ||
+            !it->second.IsValidBasic())
+        {
+            printf("IterateFinalityCommitteeRotations: FATAL key/value or structural "
+                   "mismatch; -reindex/resync required\n");
+            mapOut.clear();
+            return false;
         }
-        catch (const std::exception&) { /* skip malformed */ }
-        it->Next();
-    }
-    delete it;
     return true;
 }
 
@@ -1032,35 +1778,18 @@ bool CTxDB::EraseFinalityConnectedRotationBlock(const uint256& hashBlock)
 
 bool CTxDB::IterateFinalityConnectedRotationBlocks(std::map<uint256, std::vector<int> >& mapOut)
 {
-    mapOut.clear();
-    leveldb::DB* db = GetInstance();
-    if (!db)
+    if (!IterateFinalityVectorRecords(GetInstance(), "finalityconnrot",
+                                      FINALITY_MAX_VOTES, mapOut))
         return false;
-
-    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
-    ssPrefix << string("finalityconnrot");
-    std::string strPrefix = ssPrefix.str();
-
-    leveldb::Iterator* it = db->NewIterator(leveldb::ReadOptions());
-    it->Seek(strPrefix);
-    while (it->Valid())
+    for (std::map<uint256, std::vector<int> >::const_iterator it = mapOut.begin();
+         it != mapOut.end(); ++it)
     {
-        std::string strKey = it->key().ToString();
-        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
-            break;
-        try {
-            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
-            std::pair<std::string, uint256> keyPair;
-            ssKey >> keyPair;
-            CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
-            std::vector<int> vEffEpochs;
-            ssValue >> vEffEpochs;
-            mapOut[keyPair.second] = vEffEpochs;
-        }
-        catch (const std::exception&) { /* skip malformed */ }
-        it->Next();
+        const std::set<int> unique(it->second.begin(), it->second.end());
+        if (it->first == 0 || it->second.size() > FINALITY_MAX_VOTES ||
+            unique.size() != it->second.size() ||
+            (!unique.empty() && *unique.begin() <= 0))
+            return false;
     }
-    delete it;
     return true;
 }
 
@@ -1243,8 +1972,57 @@ bool CTxDB::ReadAddrIndex(uint160 addrHash, std::vector<uint256>& txHashes)
 
 bool CTxDB::ReadTxIndex(uint256 hash, CTxIndex& txindex)
 {
+    return ReadTxIndexStatus(hash, txindex) == TXDB_READ_FOUND;
+}
+
+TxDBReadStatus CTxDB::ReadTxIndexStatus(const uint256& hash,
+                                        CTxIndex& txindex)
+{
     txindex.SetNull();
-    return Read(make_pair(string("tx"), hash), txindex);
+    CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+    ssKey << make_pair(string("tx"), hash);
+
+    std::string strBatchValue;
+    if (activeBatch)
+    {
+        try
+        {
+            bool fDeleted = false;
+            if (ScanBatch(ssKey, &strBatchValue, &fDeleted))
+            {
+                if (fDeleted)
+                    return TXDB_READ_NOT_FOUND;
+                return ParseTxIndexValue(strBatchValue.data(),
+                                         strBatchValue.size(), txindex);
+            }
+        }
+        catch (const std::exception&)
+        {
+            return TXDB_READ_ERROR;
+        }
+    }
+
+    leveldb::Iterator* it = pdb->NewIterator(leveldb::ReadOptions());
+    if (!it)
+        return TXDB_READ_ERROR;
+    const std::string strKey = ssKey.str();
+    it->Seek(strKey);
+    if (!it->Valid())
+    {
+        const bool fOk = it->status().ok();
+        delete it;
+        return fOk ? TXDB_READ_NOT_FOUND : TXDB_READ_ERROR;
+    }
+    if (it->key().compare(leveldb::Slice(strKey)) != 0)
+    {
+        delete it;
+        return TXDB_READ_NOT_FOUND;
+    }
+    const leveldb::Slice value = it->value();
+    const TxDBReadStatus status = ParseTxIndexValue(
+        value.data(), value.size(), txindex);
+    delete it;
+    return status;
 }
 
 bool CTxDB::UpdateTxIndex(uint256 hash, const CTxIndex& txindex)
@@ -1369,6 +2147,15 @@ static CBlockIndex *InsertBlockIndex(uint256 hash)
 
 bool CTxDB::LoadBlockIndex()
 {
+    {
+        // Runs even when an earlier BDB-import pass populated mapBlockIndex, so legacy finality
+        // values are stamped whichever loader ran first.
+        std::string strFinalityMigrationError;
+        if (!MigrateFinalityDiskRecords(strFinalityMigrationError))
+            return error("CTxDB::LoadBlockIndex() : FATAL -- finality disk envelope "
+                         "migration failed: %s. Recover with -reindex/resync.",
+                         strFinalityMigrationError.c_str());
+    }
     if (mapBlockIndex.size() > 0) {
         // Already loaded once in this session. It can happen during migration
         // from BDB.
@@ -1461,7 +2248,9 @@ bool CTxDB::LoadBlockIndex()
     }
 
     // Load DAG links; ordering is deferred to init.cpp for incremental support
-    g_dagManager.LoadDAGLinks(*this);
+    if (!g_dagManager.LoadDAGLinks(*this))
+        return error("CTxDB::LoadBlockIndex() : FATAL -- DAG-link load failed (corrupt or "
+                     "incomplete DAG persistence). Recover with -reindex/resync.");
     // Fail closed: a corrupt or holed epoch-state set would diverge the finalized-height
     // anchor from the network.
     if (!g_dagManager.LoadEpochStates(*this))
@@ -1485,10 +2274,13 @@ bool CTxDB::LoadBlockIndex()
                          "start (the M-of-N governance trust root would be absent). Pin the launch "
                          "committee in PinFinalityCommitteeConstants before shipping mainnet.");
     }
-    g_finalityTracker.LoadVotes(*this);
-    g_finalityTracker.LoadTallyShares(*this);
-    g_finalityTracker.LoadTallyCertificates(*this);
-    g_finalityTracker.LoadCommitteeRotations(*this);
+    if (!g_finalityTracker.LoadVotes(*this) ||
+        !g_finalityTracker.LoadTallyShares(*this) ||
+        !g_finalityTracker.LoadTallyCertificates(*this) ||
+        !g_finalityTracker.LoadCommitteeRotations(*this))
+        return error("CTxDB::LoadBlockIndex() : FATAL -- persisted finality vote/share/"
+                     "certificate/rotation state is corrupt or incomplete. Recover with "
+                     "-reindex/resync.");
 
     // Load hashBestChain pointer to end of best chain
     if (!ReadHashBestChain(hashBestChain))

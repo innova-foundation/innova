@@ -7,7 +7,9 @@
 
 #include "../finality.h"
 #include "../key.h"
+#include "../txdb.h"
 
+#include <algorithm>
 #include <vector>
 
 namespace {
@@ -35,6 +37,38 @@ uint256 SomeDigest(const char* s)
     ss << std::string(s);
     return ss.GetHash();
 }
+
+struct ScopedCommitteeBlockIndex
+{
+    uint256 hashBlock;
+    CBlockIndex index;
+    CBlockIndex* pOld;
+    bool fHadOld;
+
+    ScopedCommitteeBlockIndex(const uint256& hashBlockIn, int nHeight)
+        : hashBlock(hashBlockIn), pOld(NULL), fHadOld(false)
+    {
+        std::map<uint256, CBlockIndex*>::iterator old =
+            mapBlockIndex.find(hashBlock);
+        if (old != mapBlockIndex.end())
+        {
+            fHadOld = true;
+            pOld = old->second;
+        }
+        index.nHeight = nHeight;
+        index.nFlags = 0;
+        mapBlockIndex[hashBlock] = &index;
+        index.phashBlock = &mapBlockIndex.find(hashBlock)->first;
+    }
+
+    ~ScopedCommitteeBlockIndex()
+    {
+        if (fHadOld)
+            mapBlockIndex[hashBlock] = pOld;
+        else
+            mapBlockIndex.erase(hashBlock);
+    }
+};
 
 } // namespace
 
@@ -340,6 +374,176 @@ BOOST_AUTO_TEST_CASE(rotation_a2_lowest_hash_wins_at_same_epoch)
     BOOST_CHECK(sh == set0);
 }
 
+BOOST_AUTO_TEST_CASE(rotation_v3_uses_canonical_carrier_order_without_reinterpreting_legacy)
+{
+    Committee initial(5);
+    Committee nextA(3);
+    Committee nextB(4);
+    const uint256 set0 = ComputeFinalityTallyCommitteeHash(3, initial.pubs);
+    const CFinalityCommitteeRotation a =
+        MakeRotation(initial, set0, 10, nextA, 2, {0, 1, 2});
+    const CFinalityCommitteeRotation b =
+        MakeRotation(initial, set0, 10, nextB, 3, {0, 1, 2});
+    const CFinalityCommitteeRotation lower =
+        a.GetSignatureDigest() < b.GetSignatureDigest() ? a : b;
+    const CFinalityCommitteeRotation higher =
+        a.GetSignatureDigest() < b.GetSignatureDigest() ? b : a;
+    const int nV3Height = 1000;
+
+    // With V3-only carriers, canonical block position wins even when the first
+    // carrier advertises the higher content digest. Input vector order is not
+    // part of the result.
+    std::vector<CFinalityCommitteeRotationCarrier> vV3;
+    vV3.push_back(CFinalityCommitteeRotationCarrier(
+        nV3Height + 2, uint256(0xB002), lower));
+    vV3.push_back(CFinalityCommitteeRotationCarrier(
+        nV3Height + 1, uint256(0xB001), higher));
+    CFinalityCommitteeRotation winner;
+    uint256 hashCarrier;
+    BOOST_REQUIRE(SelectCanonicalFinalityCommitteeRotation(
+        vV3, nV3Height, winner, &hashCarrier));
+    BOOST_CHECK(winner.GetSignatureDigest() == higher.GetSignatureDigest());
+    BOOST_CHECK(hashCarrier == uint256(0xB001));
+    std::reverse(vV3.begin(), vV3.end());
+    BOOST_REQUIRE(SelectCanonicalFinalityCommitteeRotation(
+        vV3, nV3Height, winner, &hashCarrier));
+    BOOST_CHECK(winner.GetSignatureDigest() == higher.GetSignatureDigest());
+
+    // Crossing V3 must not reinterpret a winner already carried under the
+    // historical rule. A legacy carrier remains authoritative over a later V3
+    // competitor, while two legacy carriers still resolve by lowest digest.
+    std::vector<CFinalityCommitteeRotationCarrier> vMixed;
+    vMixed.push_back(CFinalityCommitteeRotationCarrier(
+        nV3Height - 1, uint256(0xA001), higher));
+    vMixed.push_back(CFinalityCommitteeRotationCarrier(
+        nV3Height + 1, uint256(0xA002), lower));
+    BOOST_REQUIRE(SelectCanonicalFinalityCommitteeRotation(
+        vMixed, nV3Height, winner, NULL));
+    BOOST_CHECK(winner.GetSignatureDigest() == higher.GetSignatureDigest());
+
+    vMixed.push_back(CFinalityCommitteeRotationCarrier(
+        nV3Height - 2, uint256(0xA000), lower));
+    BOOST_REQUIRE(SelectCanonicalFinalityCommitteeRotation(
+        vMixed, nV3Height, winner, NULL));
+    BOOST_CHECK(winner.GetSignatureDigest() == lower.GetSignatureDigest());
+}
+
+BOOST_AUTO_TEST_CASE(block_rotation_v3_later_lower_digest_is_retained_as_noop)
+{
+    Committee initial(5);
+    Committee nextA(3);
+    Committee nextB(4);
+    const uint256 set0 = ComputeFinalityTallyCommitteeHash(3, initial.pubs);
+    const int nFirstHeight = FORK_HEIGHT_EPOCH_STATE_V3;
+    BOOST_REQUIRE(nFirstHeight < TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET);
+    const int nSecondHeight = nFirstHeight + 1;
+    const int nEffectiveEpoch =
+        std::max(GetEpochForHeight(nFirstHeight),
+                 GetEpochForHeight(nSecondHeight)) + 1;
+    const CFinalityCommitteeRotation a =
+        MakeRotation(initial, set0, nEffectiveEpoch, nextA, 2, {0, 1, 2});
+    const CFinalityCommitteeRotation b =
+        MakeRotation(initial, set0, nEffectiveEpoch, nextB, 3, {0, 1, 2});
+    const CFinalityCommitteeRotation lower =
+        a.GetSignatureDigest() < b.GetSignatureDigest() ? a : b;
+    const CFinalityCommitteeRotation higher =
+        a.GetSignatureDigest() < b.GetSignatureDigest() ? b : a;
+
+    CFinalityTracker tracker;
+    tracker.SetInitialFinalityCommittee(initial.pubs, 3);
+    CTxDB txdb("rw");
+    BOOST_REQUIRE(txdb.TxnBegin());
+    ScopedCommitteeBlockIndex firstCarrier(uint256(0xC001),
+                                            nFirstHeight);
+    BOOST_REQUIRE(tracker.ConnectBlockCommitteeRotations(
+        txdb, uint256(0xC001),
+        std::vector<CFinalityCommitteeRotation>(1, higher), nFirstHeight));
+
+    FinalityResult sameHeightResult = FINALITY_RESULT_OK;
+    BOOST_CHECK(!tracker.ConnectBlockCommitteeRotations(
+        txdb, uint256(0xC000),
+        std::vector<CFinalityCommitteeRotation>(1, lower), nFirstHeight,
+        &sameHeightResult));
+    BOOST_CHECK_EQUAL(sameHeightResult, FINALITY_RESULT_LOCAL_STATE);
+    std::map<int, CFinalityCommitteeRotation> afterRejectedCarrier =
+        tracker.GetConnectedRotations();
+    BOOST_REQUIRE_EQUAL(afterRejectedCarrier.size(), 1U);
+    BOOST_CHECK(afterRejectedCarrier.begin()->second.GetSignatureDigest() ==
+                higher.GetSignatureDigest());
+
+    BOOST_REQUIRE(tracker.ConnectBlockCommitteeRotations(
+        txdb, uint256(0xC002),
+        std::vector<CFinalityCommitteeRotation>(1, lower), nSecondHeight));
+
+    const std::map<int, CFinalityCommitteeRotation> connected =
+        tracker.GetConnectedRotations();
+    BOOST_REQUIRE_EQUAL(connected.size(), 1U);
+    BOOST_CHECK(connected.begin()->second.GetSignatureDigest() ==
+                higher.GetSignatureDigest());
+    txdb.TxnAbort();
+}
+
+BOOST_AUTO_TEST_CASE(block_rotations_apply_in_effective_epoch_order)
+{
+    Committee initial(5);
+    Committee middle(4);
+    Committee finalSet(3);
+    const int M0 = 3, M1 = 3, M2 = 2;
+    const uint256 set0 = ComputeFinalityTallyCommitteeHash(M0, initial.pubs);
+    const uint256 set1 = ComputeFinalityTallyCommitteeHash(M1, middle.pubs);
+    const uint256 set2 = ComputeFinalityTallyCommitteeHash(M2, finalSet.pubs);
+    CFinalityCommitteeRotation first =
+        MakeRotation(initial, set0, 10, middle, M1, {0, 2, 4});
+    CFinalityCommitteeRotation second =
+        MakeRotation(middle, set1, 11, finalSet, M2, {0, 1, 3});
+
+    CFinalityTracker tracker;
+    tracker.SetInitialFinalityCommittee(initial.pubs, M0);
+    CTxDB txdb("rw");
+    BOOST_REQUIRE(txdb.TxnBegin());
+    std::vector<CFinalityCommitteeRotation> reversed;
+    reversed.push_back(second);
+    reversed.push_back(first);
+    BOOST_REQUIRE(tracker.ConnectBlockCommitteeRotations(
+        txdb, uint256(0xA001), reversed, GetEpochBoundaryHeight(8, FORK_HEIGHT_DAG)));
+
+    std::vector<CPubKey> v;
+    int m = 0;
+    uint256 hashSet;
+    BOOST_REQUIRE(tracker.GetCommitteeForEpoch(11, v, m, hashSet));
+    BOOST_CHECK(hashSet == set2);
+    txdb.TxnAbort();
+}
+
+BOOST_AUTO_TEST_CASE(disconnecting_predecessor_recursively_drops_rotation_orphans)
+{
+    Committee initial(5);
+    Committee middle(4);
+    Committee finalSet(3);
+    const int M0 = 3, M1 = 3, M2 = 2;
+    const uint256 set0 = ComputeFinalityTallyCommitteeHash(M0, initial.pubs);
+    const uint256 set1 = ComputeFinalityTallyCommitteeHash(M1, middle.pubs);
+    CFinalityCommitteeRotation first =
+        MakeRotation(initial, set0, 10, middle, M1, {0, 2, 4});
+    CFinalityCommitteeRotation dependent =
+        MakeRotation(middle, set1, 11, finalSet, M2, {0, 1, 3});
+
+    CFinalityTracker tracker;
+    tracker.SetInitialFinalityCommittee(initial.pubs, M0);
+    CTxDB txdb("rw");
+    BOOST_REQUIRE(txdb.TxnBegin());
+    std::vector<CFinalityCommitteeRotation> vFirst(1, first);
+    std::vector<CFinalityCommitteeRotation> vDependent(1, dependent);
+    BOOST_REQUIRE(tracker.ConnectBlockCommitteeRotations(
+        txdb, uint256(0xB001), vFirst, GetEpochBoundaryHeight(8, FORK_HEIGHT_DAG)));
+    BOOST_REQUIRE(tracker.ConnectBlockCommitteeRotations(
+        txdb, uint256(0xB002), vDependent, GetEpochBoundaryHeight(8, FORK_HEIGHT_DAG)));
+    BOOST_REQUIRE(tracker.DisconnectBlockCommitteeRotations(
+        txdb, uint256(0xB001), vFirst));
+    BOOST_CHECK(tracker.GetConnectedRotations().empty());
+    txdb.TxnAbort();
+}
+
 BOOST_AUTO_TEST_CASE(rotation_opreturn_roundtrip)
 {
     Committee initial(5);
@@ -383,6 +587,65 @@ BOOST_AUTO_TEST_CASE(recovery_window_predicate_and_committee_auth)
     std::vector<CPubKey> v; int m; uint256 sh;
     BOOST_REQUIRE(tracker.GetRecoveryCommittee(v, m, sh));
     BOOST_CHECK(sh == recSet && m == M && v.size() == 5);
+}
+
+BOOST_AUTO_TEST_CASE(block_rotation_results_distinguish_invalid_and_local_state)
+{
+    Committee initial(5);
+    Committee next(3);
+    const int M0 = 3;
+    const uint256 set0 = ComputeFinalityTallyCommitteeHash(M0, initial.pubs);
+    const int nBlockHeight = GetEpochBoundaryHeight(8, FORK_HEIGHT_DAG);
+    const CFinalityCommitteeRotation valid =
+        MakeRotation(initial, set0, 10, next, 2, {0, 2, 4});
+    const uint256 hashCarrier(0xFC010001);
+    CTxDB txdbReadOnly("r");
+
+    // A deterministic A2 window violation is peer-invalid even before any
+    // committee state or database write is consulted.
+    CFinalityCommitteeRotation outOfWindow = valid;
+    outOfWindow.nEffectiveEpoch = 8;
+    CFinalityTracker trackerWindow;
+    FinalityResult result = FINALITY_RESULT_OK;
+    BOOST_CHECK(!trackerWindow.ConnectBlockCommitteeRotations(
+        txdbReadOnly, hashCarrier,
+        std::vector<CFinalityCommitteeRotation>(1, outOfWindow),
+        nBlockHeight, &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
+
+    // A valid candidate cannot be judged without the locally pinned committee.
+    CFinalityTracker trackerMissing;
+    result = FINALITY_RESULT_INVALID;
+    BOOST_CHECK(!trackerMissing.ConnectBlockCommitteeRotations(
+        txdbReadOnly, hashCarrier,
+        std::vector<CFinalityCommitteeRotation>(1, valid),
+        nBlockHeight, &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_LOCAL_STATE);
+
+    // Once the committee is available, a bad signature is deterministically
+    // invalid, while a write failure after successful validation is local.
+    CFinalityCommitteeRotation badSignature = valid;
+    BOOST_REQUIRE(!badSignature.vSignerSigs.empty());
+    BOOST_REQUIRE(!badSignature.vSignerSigs[0].empty());
+    badSignature.vSignerSigs[0][0] ^= 0x01;
+    CFinalityTracker trackerBadSig;
+    trackerBadSig.SetInitialFinalityCommittee(initial.pubs, M0);
+    result = FINALITY_RESULT_OK;
+    BOOST_CHECK(!trackerBadSig.ConnectBlockCommitteeRotations(
+        txdbReadOnly, hashCarrier,
+        std::vector<CFinalityCommitteeRotation>(1, badSignature),
+        nBlockHeight, &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
+
+    CFinalityTracker trackerWrite;
+    trackerWrite.SetInitialFinalityCommittee(initial.pubs, M0);
+    result = FINALITY_RESULT_INVALID;
+    BOOST_CHECK(!trackerWrite.ConnectBlockCommitteeRotations(
+        txdbReadOnly, hashCarrier,
+        std::vector<CFinalityCommitteeRotation>(1, valid),
+        nBlockHeight, &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_LOCAL_STATE);
+    BOOST_CHECK(trackerWrite.GetConnectedRotations().empty());
 }
 
 BOOST_AUTO_TEST_CASE(cert_signature_collection_assembles_at_threshold)

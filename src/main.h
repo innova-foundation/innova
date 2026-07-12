@@ -329,19 +329,108 @@ inline int GetForkHeightEpochStateV2()
 }
 #define FORK_HEIGHT_EPOCH_STATE_V2 (GetForkHeightEpochStateV2())
 
+// A schema-V2 epoch includes every block in its anchor-derived DAG order, but
+// finality votes/certificates become connected state only when their carrier is
+// on the canonical pprev chain.  From this fork onward the V2 builder therefore
+// commits finality carriers only from that connected chain while retaining all
+// non-finality merge-block effects.  The rule is selected by each carrier's own
+// height so bytes mined before activation remain historical even when activation
+// occurs part-way through an epoch.
+//
+// Public testnet must fill this from the same frozen four-node preflight that
+// schedules Boundary A: with mining paused at common height H, use H+1 and
+// recalculate if any node advances.  Mainnet has no post-DAG history and can
+// activate with DAG.  Regtest leaves two V2 carrier heights before activation so
+// both compatibility paths can be exercised in one epoch.
+static const int TESTNET_CONNECTED_FINALITY_CARRIER_HEIGHT_UNSET = 0x7fffffff;
+inline int GetForkHeightConnectedFinalityCarrier()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest) return GetForkHeightDAG() + 2;
+    if (fTestNet) return TESTNET_CONNECTED_FINALITY_CARRIER_HEIGHT_UNSET;
+    return GetForkHeightDAG();
+}
+#define FORK_HEIGHT_CONNECTED_FINALITY_CARRIER (GetForkHeightConnectedFinalityCarrier())
+
+inline bool IsConnectedFinalityCarrierConfigured()
+{
+    return FORK_HEIGHT_CONNECTED_FINALITY_CARRIER !=
+           TESTNET_CONNECTED_FINALITY_CARRIER_HEIGHT_UNSET;
+}
+
+inline bool IsConnectedFinalityCarrierActiveAtHeight(int nHeight)
+{
+    return IsConnectedFinalityCarrierConfigured() &&
+           nHeight >= FORK_HEIGHT_CONNECTED_FINALITY_CARRIER;
+}
+
 // Epoch-state schema V3: exact epoch-end boundary anchoring plus atomic state/tree persistence.
 // A single V2 post-DAG epoch is deliberately completed first so it supplies the strict predecessor
-// pair for the first V3 build. This primitives-only boundary is enabled on regtest
-// and deliberately sentinel-disabled on public networks until the atomic chain
-// transition wiring lands in the following reviewed commit.
+// pair for the first V3 build. The public testnet height MUST be filled from the four-node rollout
+// preflight (smallest 300-block boundary >= common height + 900); leaving the sentinel in place is
+// a release blocker and keeps existing public history on V2 meanwhile.
 static const int TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET = 0x7fffffff;
 inline int GetForkHeightEpochStateV3()
 {
     extern bool fRegTest;
-    if (!fRegTest) return TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET;
+    extern bool fTestNet;
+    if (fTestNet) return TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET;
     return GetForkHeightDAG() + 300;
 }
 #define FORK_HEIGHT_EPOCH_STATE_V3 (GetForkHeightEpochStateV3())
+
+// Boundary A is the safe-IDAG activation.  It co-activates epoch-state schema
+// V3 and permanently retires every legacy privacy/proof transaction format.
+// The public-testnet value remains deliberately unset until a clean immutable
+// candidate completes the four-node preflight; at the observed height 853 the
+// non-binding calculator recommendation is 1860.
+inline int GetForkHeightBoundaryA()
+{
+    return GetForkHeightEpochStateV3();
+}
+#define FORK_HEIGHT_BOUNDARY_A (GetForkHeightBoundaryA())
+
+// Boundary B cannot be scheduled until the exact vendored FCMP++/GBP/Helios-
+// Selene candidate and Innova composition have passed independent review.
+// Keeping one shared sentinel makes accidental activation fail closed on every
+// network, including regtest, until that implementation is intentionally
+// introduced with its own tests.
+static const int PRIVACY_VNEXT_HEIGHT_UNSET = 0x7fffffff;
+inline int GetForkHeightBoundaryB()
+{
+    return PRIVACY_VNEXT_HEIGHT_UNSET;
+}
+#define FORK_HEIGHT_BOUNDARY_B (GetForkHeightBoundaryB())
+
+inline bool IsBoundaryAConfigured()
+{
+    return FORK_HEIGHT_BOUNDARY_A != TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET;
+}
+
+inline bool IsBoundaryAActiveAtHeight(int nHeight)
+{
+    return IsBoundaryAConfigured() && nHeight >= FORK_HEIGHT_BOUNDARY_A;
+}
+
+inline bool IsBoundaryBConfigured()
+{
+    return FORK_HEIGHT_BOUNDARY_B != PRIVACY_VNEXT_HEIGHT_UNSET;
+}
+
+inline bool IsBoundaryBActiveAtHeight(int nHeight)
+{
+    return IsBoundaryBConfigured() && nHeight >= FORK_HEIGHT_BOUNDARY_B;
+}
+
+// Public testnet/mainnet candidates stop creating and relaying legacy privacy
+// transactions immediately, before the consensus boundary. Regtest retains
+// the historical formats solely for deterministic replay and rejection tests.
+inline bool IsLegacyPrivacyPolicyDisabled()
+{
+    extern bool fRegTest;
+    return !fRegTest;
+}
 
 /** First schema-V3 suffix epoch affected by a reorg whose common ancestor is nForkHeight.
  *  The migration-base epoch is the lower bound because older V2 history is an immutable input. */
@@ -1684,7 +1773,16 @@ public:
 
 
     bool DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames = true);
-    bool ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck=false, bool fWriteNames = true);
+    enum ConnectResult
+    {
+        CONNECT_RESULT_OK = 0,
+        CONNECT_RESULT_INVALID,
+        CONNECT_RESULT_TRANSIENT
+    };
+
+    bool ConnectBlock(CTxDB& txdb, CBlockIndex* pindex,
+                      bool fJustCheck=false, bool fWriteNames = true,
+                      ConnectResult* pResult = NULL);
     bool ReadFromDisk(const CBlockIndex* pindex, bool fReadTransactions=true);
     bool SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanentInvalid = NULL);
     bool AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const uint256& hashProof);

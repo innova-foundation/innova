@@ -29,6 +29,44 @@ struct ScopedTallyArgs
     }
 };
 
+struct ScopedFinalityTestnet
+{
+    bool fSavedRegTest;
+    bool fSavedTestNet;
+
+    ScopedFinalityTestnet()
+        : fSavedRegTest(fRegTest), fSavedTestNet(fTestNet)
+    {
+        fRegTest = false;
+        fTestNet = true;
+    }
+
+    ~ScopedFinalityTestnet()
+    {
+        fRegTest = fSavedRegTest;
+        fTestNet = fSavedTestNet;
+    }
+};
+
+struct ScopedFinalityRegtest
+{
+    bool fSavedRegTest;
+    bool fSavedTestNet;
+
+    ScopedFinalityRegtest()
+        : fSavedRegTest(fRegTest), fSavedTestNet(fTestNet)
+    {
+        fRegTest = true;
+        fTestNet = false;
+    }
+
+    ~ScopedFinalityRegtest()
+    {
+        fRegTest = fSavedRegTest;
+        fTestNet = fSavedTestNet;
+    }
+};
+
 std::string PubKeyHex(const CPubKey& pubkey)
 {
     return HexStr(pubkey.begin(), pubkey.end());
@@ -177,6 +215,43 @@ uint32_t ReadProofEnvelopeVersion(const std::vector<unsigned char>& vchProof)
     return nVersion;
 }
 
+template <typename K, typename V>
+bool PutRawLevelDBRecord(CTxDB& txdb, const K& key, const V& value)
+{
+    CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+    CDataStream ssValue(SER_DISK, CLIENT_VERSION);
+    ssKey << key;
+    ssValue << value;
+    leveldb::DB* db = txdb.GetInstance();
+    return db && db->Put(leveldb::WriteOptions(), ssKey.str(),
+                         ssValue.str()).ok();
+}
+
+template <typename K>
+bool DeleteRawLevelDBRecord(CTxDB& txdb, const K& key)
+{
+    CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+    ssKey << key;
+    leveldb::DB* db = txdb.GetInstance();
+    if (!db)
+        return false;
+    const leveldb::Status status = db->Delete(leveldb::WriteOptions(),
+                                               ssKey.str());
+    return status.ok() || status.IsNotFound();
+}
+
+template <typename K>
+bool GetRawLevelDBRecord(CTxDB& txdb, const K& key,
+                         std::string& valueOut)
+{
+    CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+    ssKey << key;
+    leveldb::DB* db = txdb.GetInstance();
+    if (!db)
+        return false;
+    return db->Get(leveldb::ReadOptions(), ssKey.str(), &valueOut).ok();
+}
+
 CFinalityVote BuildTransparentVoteForTrackerTest(const CKey& key,
                                                  int64_t nTime,
                                                  int64_t nWeight)
@@ -232,6 +307,48 @@ struct ScopedBlockIndexEntry
     }
 };
 
+struct ScopedEpochStateOverride
+{
+    CTxDB& txdb;
+    int nEpoch;
+    bool fHadOriginal;
+    CEpochState original;
+
+    ScopedEpochStateOverride(CTxDB& txdbIn, int nEpochIn)
+        : txdb(txdbIn), nEpoch(nEpochIn), fHadOriginal(false)
+    {
+        fHadOriginal = txdb.ReadEpochState(nEpoch, original);
+        txdb.EraseEpochState(nEpoch);
+    }
+
+    ~ScopedEpochStateOverride()
+    {
+        if (fHadOriginal)
+            txdb.WriteEpochState(nEpoch, original);
+        else
+            txdb.EraseEpochState(nEpoch);
+    }
+};
+
+struct ScopedRawTxIndexCleanup
+{
+    CTxDB& txdb;
+    uint256 hashTx;
+
+    ScopedRawTxIndexCleanup(CTxDB& txdbIn, const uint256& hashTxIn)
+        : txdb(txdbIn), hashTx(hashTxIn)
+    {
+        DeleteRawLevelDBRecord(
+            txdb, std::make_pair(std::string("tx"), hashTx));
+    }
+
+    ~ScopedRawTxIndexCleanup()
+    {
+        DeleteRawLevelDBRecord(
+            txdb, std::make_pair(std::string("tx"), hashTx));
+    }
+};
+
 struct ScopedFinalityCertDbCleanup
 {
     CTxDB& txdb;
@@ -261,6 +378,34 @@ struct ScopedFinalityCertDbCleanup
     {
         vBlockHashes.push_back(hashBlock);
         txdb.EraseFinalityConnectedCertBlock(hashBlock);
+    }
+};
+
+struct ScopedFinalityDiskMigrationCleanup
+{
+    CTxDB& txdb;
+    std::vector<uint256> vVoteNullifiers;
+    std::vector<uint256> vCertHashes;
+
+    explicit ScopedFinalityDiskMigrationCleanup(CTxDB& txdbIn)
+        : txdb(txdbIn)
+    {
+    }
+
+    ~ScopedFinalityDiskMigrationCleanup()
+    {
+        for (std::vector<uint256>::const_iterator it = vVoteNullifiers.begin();
+             it != vVoteNullifiers.end(); ++it)
+            txdb.EraseFinalityVote(*it);
+        for (std::vector<uint256>::const_iterator it = vCertHashes.begin();
+             it != vCertHashes.end(); ++it)
+            txdb.EraseFinalityTallyCertificate(*it);
+
+        int nGeneration = 0;
+        if (!txdb.ReadFinalityDiskEnvelopeGeneration(nGeneration) ||
+            nGeneration != FINALITY_DISK_ENVELOPE_GENERATION)
+            PutRawLevelDBRecord(txdb, std::string("finalitydiskschema"),
+                                FINALITY_DISK_ENVELOPE_GENERATION);
     }
 };
 
@@ -363,6 +508,99 @@ BOOST_AUTO_TEST_CASE(pending_tally_certificate_duplicate_is_not_rebroadcast)
     BOOST_CHECK(!tracker.AddTallyCertificate(sameContext, false, false));
 }
 
+BOOST_AUTO_TEST_CASE(tally_certificate_context_separates_envelope_and_version_domains)
+{
+    CFinalityTallyCertificate legacyV2;
+    legacyV2.nVersion = 2;
+    legacyV2.nEpoch = 9;
+    legacyV2.hashBlock = uint256(0xD001);
+    legacyV2.nHeight = 90;
+    legacyV2.nTier = FINALITY_HARD;
+    legacyV2.nTransparentActiveWeight = 1000 * COIN;
+    legacyV2.nTransparentWinningWeight = 800 * COIN;
+    legacyV2.vVoteNullifiers.push_back(uint256(0xD002));
+    legacyV2.vVoteNullifiers.push_back(uint256(0xD003));
+
+    CFinalityTallyCertificate canonicalV2 = legacyV2;
+    canonicalV2.MarkCanonicalEnvelope();
+    CFinalityTallyCertificate legacyV1 = legacyV2;
+    legacyV1.nVersion = 1;
+
+    BOOST_REQUIRE(legacyV2.GetHash() != canonicalV2.GetHash());
+    BOOST_REQUIRE(legacyV2.GetHash() != legacyV1.GetHash());
+
+    CFinalityTracker tracker;
+    BOOST_CHECK(tracker.AddTallyCertificate(legacyV2, false, false));
+    BOOST_CHECK(tracker.AddTallyCertificate(canonicalV2, false, false));
+    BOOST_CHECK(tracker.AddTallyCertificate(legacyV1, false, false));
+    BOOST_CHECK(!tracker.AddTallyCertificate(legacyV2, false, false));
+    BOOST_CHECK(!tracker.AddTallyCertificate(canonicalV2, false, false));
+    BOOST_CHECK(!tracker.AddTallyCertificate(legacyV1, false, false));
+}
+
+BOOST_AUTO_TEST_CASE(canonical_certificate_validation_requires_exact_rebuild)
+{
+    ScopedFinalityRegtest network;
+    const int nTargetHeight = FORK_HEIGHT_BOUNDARY_A;
+    const int nEpoch = GetEpochForHeight(nTargetHeight);
+    BOOST_REQUIRE_EQUAL(GetEpochBoundaryHeight(nEpoch, nTargetHeight),
+                        nTargetHeight);
+    const int nContextHeight =
+        nTargetHeight + FINALITY_VOTE_INCLUSION_WINDOW;
+    const uint256 hashTarget(0xD101);
+    ScopedBlockIndexEntry targetIndex(hashTarget, nTargetHeight);
+
+    CFinalityTracker tracker;
+    std::vector<CFinalityVote> votes;
+    for (int i = 0; i < FINALITY_MIN_VOTERS; ++i)
+    {
+        CKey key;
+        key.MakeNewKey(true);
+        CFinalityVote vote = BuildTransparentVoteForCertificateCarrierTest(
+            key, nEpoch, nTargetHeight, hashTarget);
+        vote.MarkCanonicalEnvelope();
+        BOOST_REQUIRE(tracker.AddVote(vote, false, true));
+        votes.push_back(vote);
+    }
+
+    CFinalityTallyCertificate canonical;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(BuildCanonicalTransparentFinalityCertificate(
+                              votes, canonical, &error), error);
+    CTxDB txdb("r");
+    FinalityResult result = FINALITY_RESULT_INVALID;
+    BOOST_REQUIRE_MESSAGE(tracker.CheckTallyCertificate(
+                              canonical, txdb, &error, NULL,
+                              false, nContextHeight, false, &result), error);
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_OK);
+
+    const auto rejected = [&](const CFinalityTallyCertificate& candidate) {
+        FinalityResult candidateResult = FINALITY_RESULT_OK;
+        std::string candidateError;
+        BOOST_CHECK(!tracker.CheckTallyCertificate(
+            candidate, txdb, &candidateError, NULL, false,
+            nContextHeight, false, &candidateResult));
+        BOOST_CHECK_EQUAL(candidateResult, FINALITY_RESULT_INVALID);
+    };
+
+    CFinalityTallyCertificate downgraded = canonical;
+    downgraded.nTier = FINALITY_SOFT;
+    rejected(downgraded);
+
+    CFinalityTallyCertificate arbitraryRoot = canonical;
+    arbitraryRoot.hashCurveRoot = uint256(0xD102);
+    rejected(arbitraryRoot);
+
+    CFinalityTallyCertificate arbitraryStreak = canonical;
+    arbitraryStreak.nConsecutiveHardCount = 1;
+    rejected(arbitraryStreak);
+
+    CFinalityTallyCertificate permuted = canonical;
+    std::reverse(permuted.vVoteNullifiers.begin(),
+                 permuted.vVoteNullifiers.end());
+    rejected(permuted);
+}
+
 BOOST_AUTO_TEST_CASE(connected_tally_certificate_context_duplicate_is_not_reindexed)
 {
     CFinalityTallyCertificate cert;
@@ -434,21 +672,34 @@ BOOST_AUTO_TEST_CASE(connected_tally_certificate_carriers_survive_partial_discon
     CFinalityTracker trackerSameHash;
     BOOST_REQUIRE(trackerSameHash.AddVote(vote, false, true));
     BOOST_REQUIRE(trackerSameHash.ConnectBlockTallyCertificates(txdb, hashCarrierA, vCert, nCertBlockHeight));
+    BOOST_CHECK_EQUAL(trackerSameHash.GetFinalityTier(), FINALITY_HARD);
+    BOOST_CHECK_EQUAL(trackerSameHash.GetConsecutiveHardEpochCount(), 1);
     BOOST_REQUIRE(trackerSameHash.ConnectBlockTallyCertificates(txdb, hashCarrierB, vCert, nCertBlockHeight));
     BOOST_REQUIRE_EQUAL(trackerSameHash.GetEpochTallyCertificates(nEpoch).size(), 1U);
     BOOST_REQUIRE(trackerSameHash.DisconnectBlockTallyCertificates(txdb, hashCarrierA, vCert));
     BOOST_CHECK_EQUAL(trackerSameHash.GetEpochTallyCertificates(nEpoch).size(), 1U);
+    BOOST_CHECK_EQUAL(trackerSameHash.GetFinalityTier(), FINALITY_HARD);
+    BOOST_CHECK_EQUAL(trackerSameHash.GetConsecutiveHardEpochCount(), 1);
     CFinalityTallyCertificate persisted;
     BOOST_CHECK(txdb.ReadFinalityTallyCertificate(cert.GetHash(), persisted));
     BOOST_REQUIRE(trackerSameHash.DisconnectBlockTallyCertificates(txdb, hashCarrierB, vCert));
     BOOST_CHECK(trackerSameHash.GetEpochTallyCertificates(nEpoch).empty());
     BOOST_CHECK(!txdb.ReadFinalityTallyCertificate(cert.GetHash(), persisted));
+    BOOST_CHECK_EQUAL(trackerSameHash.GetFinalityTier(), FINALITY_NONE);
+    BOOST_CHECK_EQUAL(trackerSameHash.GetConsecutiveHardEpochCount(), 0);
+    BOOST_CHECK_EQUAL(trackerSameHash.GetFinalizedHeight(), 0);
 
     CFinalityTracker trackerSameContext;
     BOOST_REQUIRE(trackerSameContext.AddVote(vote, false, true));
     BOOST_REQUIRE(trackerSameContext.ConnectBlockTallyCertificates(txdb, hashCarrierC, vCert, nCertBlockHeight));
     BOOST_REQUIRE(trackerSameContext.ConnectBlockTallyCertificates(txdb, hashCarrierD, vSameContext, nCertBlockHeight));
-    BOOST_REQUIRE_EQUAL(trackerSameContext.GetEpochTallyCertificates(nEpoch).size(), 1U);
+    std::vector<CFinalityTallyCertificate> vSelected =
+        trackerSameContext.GetEpochTallyCertificates(nEpoch);
+    BOOST_REQUIRE_EQUAL(vSelected.size(), 1U);
+    const uint256 hashExpectedWinner =
+        sameContext.GetHash() < cert.GetHash()
+            ? sameContext.GetHash() : cert.GetHash();
+    BOOST_CHECK(vSelected[0].GetHash() == hashExpectedWinner);
     BOOST_REQUIRE(trackerSameContext.DisconnectBlockTallyCertificates(txdb, hashCarrierC, vCert));
     std::vector<CFinalityTallyCertificate> vRemaining = trackerSameContext.GetEpochTallyCertificates(nEpoch);
     BOOST_REQUIRE_EQUAL(vRemaining.size(), 1U);
@@ -458,6 +709,119 @@ BOOST_AUTO_TEST_CASE(connected_tally_certificate_carriers_survive_partial_discon
     BOOST_REQUIRE(trackerSameContext.DisconnectBlockTallyCertificates(txdb, hashCarrierD, vSameContext));
     BOOST_CHECK(trackerSameContext.GetEpochTallyCertificates(nEpoch).empty());
     BOOST_CHECK(!txdb.ReadFinalityTallyCertificate(sameContext.GetHash(), persisted));
+}
+
+BOOST_AUTO_TEST_CASE(finality_live_summary_replays_late_certificates_in_epoch_order)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+
+    const int nEpoch = GetEpochForHeight(FORK_HEIGHT_DAG);
+    const int nNextEpoch = nEpoch + 1;
+    const int nThirdEpoch = nEpoch + 2;
+    const int nEpochHeight = GetEpochBoundaryHeight(nEpoch, FORK_HEIGHT_DAG);
+    const int nNextEpochHeight =
+        GetEpochBoundaryHeight(nNextEpoch, FORK_HEIGHT_DAG);
+    const int nThirdEpochHeight =
+        GetEpochBoundaryHeight(nThirdEpoch, FORK_HEIGHT_DAG);
+    const int nFirstCarrierHeight =
+        nNextEpochHeight + FINALITY_VOTE_INCLUSION_WINDOW;
+    const uint256 hashEpochBlock(9107101);
+    const uint256 hashNextEpochBlock(9107102);
+    const uint256 hashNextCertCarrier(9107103);
+    const uint256 hashLateCertCarrier(9107104);
+    const uint256 hashThirdEpochBlock(9107105);
+    const uint256 hashThirdCertCarrier(9107106);
+    ScopedBlockIndexEntry scopedEpochBlock(hashEpochBlock, nEpochHeight);
+    ScopedBlockIndexEntry scopedNextEpochBlock(hashNextEpochBlock,
+                                                nNextEpochHeight);
+    ScopedBlockIndexEntry scopedThirdEpochBlock(hashThirdEpochBlock,
+                                                 nThirdEpochHeight);
+
+    CKey keyEpoch;
+    CKey keyNextEpoch;
+    CKey keyThirdEpoch;
+    keyEpoch.MakeNewKey(true);
+    keyNextEpoch.MakeNewKey(true);
+    keyThirdEpoch.MakeNewKey(true);
+    CFinalityVote voteEpoch = BuildTransparentVoteForCertificateCarrierTest(
+        keyEpoch, nEpoch, nEpochHeight, hashEpochBlock);
+    CFinalityVote voteNextEpoch =
+        BuildTransparentVoteForCertificateCarrierTest(
+            keyNextEpoch, nNextEpoch, nNextEpochHeight,
+            hashNextEpochBlock);
+    CFinalityVote voteThirdEpoch =
+        BuildTransparentVoteForCertificateCarrierTest(
+            keyThirdEpoch, nThirdEpoch, nThirdEpochHeight,
+            hashThirdEpochBlock);
+    CFinalityTallyCertificate certEpoch =
+        BuildTransparentCertificateForCarrierTest(voteEpoch);
+    CFinalityTallyCertificate certNextEpoch =
+        BuildTransparentCertificateForCarrierTest(voteNextEpoch);
+    CFinalityTallyCertificate certThirdEpoch =
+        BuildTransparentCertificateForCarrierTest(voteThirdEpoch);
+
+    CTxDB txdb;
+    ScopedFinalityCertDbCleanup cleanup(txdb);
+    cleanup.TrackCert(certEpoch.GetHash());
+    cleanup.TrackCert(certNextEpoch.GetHash());
+    cleanup.TrackCert(certThirdEpoch.GetHash());
+    cleanup.TrackBlock(hashNextCertCarrier);
+    cleanup.TrackBlock(hashLateCertCarrier);
+    cleanup.TrackBlock(hashThirdCertCarrier);
+    BOOST_REQUIRE(txdb.TxnBegin());
+
+    CFinalityTracker tracker;
+    BOOST_REQUIRE(tracker.AddVote(voteEpoch, false, true));
+    BOOST_REQUIRE(tracker.AddVote(voteNextEpoch, false, true));
+
+    // Connect E+1 first, then a still-valid late certificate for E. Canonical replay
+    // must derive E,E+1 regardless of carrier arrival order.
+    std::vector<CFinalityTallyCertificate> vNext(1, certNextEpoch);
+    BOOST_REQUIRE(tracker.ConnectBlockTallyCertificates(
+        txdb, hashNextCertCarrier, vNext, nFirstCarrierHeight));
+    BOOST_CHECK_EQUAL(tracker.GetConsecutiveHardEpochCount(), 1);
+
+    std::vector<CFinalityTallyCertificate> vLate(1, certEpoch);
+    BOOST_REQUIRE(tracker.ConnectBlockTallyCertificates(
+        txdb, hashLateCertCarrier, vLate, nFirstCarrierHeight + 1));
+    BOOST_CHECK_EQUAL(tracker.GetFinalityTier(), FINALITY_HARD);
+    BOOST_CHECK_EQUAL(tracker.GetConsecutiveHardEpochCount(), 2);
+    BOOST_CHECK_EQUAL(tracker.GetFinalizedHeight(), 0);
+
+    // This maintenance call is scheduled only on local voters, so it must never
+    // remove carrier-backed validation state. All following connect/disconnect
+    // mutations still run inside the active WriteBatch and are aborted below.
+    tracker.PruneOldEpochs(nNextEpoch + 20);
+    BOOST_CHECK_EQUAL(tracker.GetEpochTallyCertificates(nEpoch).size(), 1U);
+    BOOST_CHECK_EQUAL(tracker.GetEpochTallyCertificates(nNextEpoch).size(), 1U);
+    BOOST_CHECK_EQUAL(tracker.GetConsecutiveHardEpochCount(), 2);
+
+    std::vector<CFinalityTallyCertificate> vThird(1, certThirdEpoch);
+    BOOST_REQUIRE(tracker.AddVote(voteThirdEpoch, false, true));
+    BOOST_REQUIRE(tracker.ConnectBlockTallyCertificates(
+        txdb, hashThirdCertCarrier, vThird,
+        nThirdEpochHeight + FINALITY_VOTE_INCLUSION_WINDOW));
+    BOOST_CHECK_EQUAL(tracker.GetConsecutiveHardEpochCount(), 3);
+    BOOST_CHECK_EQUAL(tracker.GetFinalizedHeight(), nThirdEpochHeight);
+    BOOST_REQUIRE(tracker.DisconnectBlockTallyCertificates(
+        txdb, hashThirdCertCarrier, vThird));
+    BOOST_CHECK_EQUAL(tracker.GetConsecutiveHardEpochCount(), 2);
+    BOOST_CHECK_EQUAL(tracker.GetFinalizedHeight(), 0);
+
+    // Removing the late E carrier must immediately recompute from the surviving
+    // E+1 carrier instead of retaining the stale two-epoch streak until restart.
+    BOOST_REQUIRE(tracker.DisconnectBlockTallyCertificates(
+        txdb, hashLateCertCarrier, vLate));
+    BOOST_CHECK_EQUAL(tracker.GetEpochTallyCertificates(nNextEpoch).size(), 1U);
+    // The still-connected E+2 vote has too few voters after its cert is gone,
+    // so the latest tier is NONE even though the surviving hard streak is one.
+    BOOST_CHECK_EQUAL(tracker.GetFinalityTier(), FINALITY_NONE);
+    BOOST_CHECK_EQUAL(tracker.GetConsecutiveHardEpochCount(), 1);
+    BOOST_REQUIRE(tracker.DisconnectBlockTallyCertificates(
+        txdb, hashNextCertCarrier, vNext));
+    BOOST_CHECK_EQUAL(tracker.GetFinalityTier(), FINALITY_NONE);
+    BOOST_CHECK_EQUAL(tracker.GetConsecutiveHardEpochCount(), 0);
+    txdb.TxnAbort();
 }
 
 BOOST_AUTO_TEST_CASE(tally_config_parses_ordered_committee_and_rejects_invalid_sets)
@@ -848,7 +1212,8 @@ BOOST_AUTO_TEST_CASE(v2_tally_share_opreturn_extracts_and_persists)
     const uint256 hashContainingBlock(606060);
     BOOST_REQUIRE(tracker.ConnectBlockTallyShares(txdb,
                                                   hashContainingBlock,
-                                                  vExtracted));
+                                                  vExtracted,
+                                                  nBlockHeight));
     BOOST_CHECK_EQUAL(tracker.GetEpochTallyShareCount(share.nEpoch), 1);
     BOOST_CHECK(tracker.GetPendingTallySharesForBlock(nBlockHeight).empty());
 
@@ -923,7 +1288,7 @@ BOOST_AUTO_TEST_CASE(v2_tally_share_orphaned_vote_excluded_and_purged)
     CTxDB txdb;
     BOOST_REQUIRE(txdb.WriteFinalityTallyShare(hashShare, share));
 
-    trackerRestarted.PurgeUnresolvableTallyShares(txdb);
+    BOOST_REQUIRE(trackerRestarted.PurgeUnresolvableTallyShares(txdb));
 
     BOOST_CHECK(trackerRestarted.GetPendingTallySharesForBlock(nBlockHeight).empty());
     CFinalityTallyShare reloaded;
@@ -1073,6 +1438,494 @@ BOOST_AUTO_TEST_CASE(private_tally_certificate_v2_bpac_proofs_reject_opening_blo
                                                          vchWinningBlind,
                                                          true,
                                                          zeroWinning.vchAggregateThresholdProof));
+}
+
+BOOST_AUTO_TEST_CASE(finality_deserializers_enforce_consensus_vector_maxima_before_allocation)
+{
+    CFinalityVote voteAtMax;
+    voteAtMax.vStakeProof.resize(FINALITY_MAX_STAKE_PROOFS);
+    CDataStream ssVoteAtMax(SER_NETWORK, PROTOCOL_VERSION);
+    ssVoteAtMax << voteAtMax;
+    CFinalityVote decodedVote;
+    BOOST_CHECK_NO_THROW(ssVoteAtMax >> decodedVote);
+    BOOST_CHECK_EQUAL(decodedVote.vStakeProof.size(),
+                      (size_t)FINALITY_MAX_STAKE_PROOFS);
+
+    CFinalityVote voteTooLarge;
+    voteTooLarge.vStakeProof.resize(FINALITY_MAX_STAKE_PROOFS + 1);
+    CDataStream ssVoteTooLarge(SER_NETWORK, PROTOCOL_VERSION);
+    ssVoteTooLarge << voteTooLarge;
+    BOOST_CHECK_THROW(ssVoteTooLarge >> decodedVote, std::ios_base::failure);
+
+    CFinalityTallyShare shareAtMax;
+    shareAtMax.vEncryptedRecipientShares.assign(
+        FINALITY_MAX_TALLY_COMMITTEE, std::vector<unsigned char>(1, 0x01));
+    shareAtMax.vchShareProof.assign(BPAC_V3_MAX_PROOF_SIZE, 0x02);
+    CDataStream ssShareAtMax(SER_NETWORK, PROTOCOL_VERSION);
+    ssShareAtMax << shareAtMax;
+    CFinalityTallyShare decodedShare;
+    BOOST_CHECK_NO_THROW(ssShareAtMax >> decodedShare);
+    BOOST_CHECK_EQUAL(decodedShare.vEncryptedRecipientShares.size(),
+                      (size_t)FINALITY_MAX_TALLY_COMMITTEE);
+    BOOST_CHECK_EQUAL(decodedShare.vchShareProof.size(),
+                      (size_t)BPAC_V3_MAX_PROOF_SIZE);
+
+    CFinalityTallyShare shareTooLarge = shareAtMax;
+    shareTooLarge.vEncryptedRecipientShares.push_back(
+        std::vector<unsigned char>(1, 0x03));
+    CDataStream ssShareTooLarge(SER_NETWORK, PROTOCOL_VERSION);
+    ssShareTooLarge << shareTooLarge;
+    BOOST_CHECK_THROW(ssShareTooLarge >> decodedShare, std::ios_base::failure);
+
+    CFinalityTallyCertificate certAtMax;
+    certAtMax.vVoteNullifiers.resize(FINALITY_MAX_VOTES, uint256(1));
+    certAtMax.vTallyShareHashes.resize(FINALITY_MAX_VOTES, uint256(2));
+    certAtMax.vchAggregateThresholdProof.assign(BPAC_V3_MAX_PROOF_SIZE, 0x04);
+    certAtMax.vchRewardBudgetProof.assign(BPAC_V3_MAX_PROOF_SIZE, 0x05);
+    CDataStream ssCertAtMax(SER_NETWORK, PROTOCOL_VERSION);
+    ssCertAtMax << certAtMax;
+    CFinalityTallyCertificate decodedCert;
+    BOOST_CHECK_NO_THROW(ssCertAtMax >> decodedCert);
+    BOOST_CHECK_EQUAL(decodedCert.vVoteNullifiers.size(),
+                      (size_t)FINALITY_MAX_VOTES);
+
+    CFinalityTallyCertificate certTooLarge = certAtMax;
+    certTooLarge.vVoteNullifiers.push_back(uint256(3));
+    CDataStream ssCertTooLarge(SER_NETWORK, PROTOCOL_VERSION);
+    ssCertTooLarge << certTooLarge;
+    BOOST_CHECK_THROW(ssCertTooLarge >> decodedCert, std::ios_base::failure);
+
+    CFinalityCommitteeRotation rotationTooLarge;
+    rotationTooLarge.vNewPubKeys.assign(
+        FINALITY_MAX_TALLY_COMMITTEE + 1,
+        std::vector<unsigned char>(33, 0x02));
+    CDataStream ssRotationTooLarge(SER_NETWORK, PROTOCOL_VERSION);
+    ssRotationTooLarge << rotationTooLarge;
+    CFinalityCommitteeRotation decodedRotation;
+    BOOST_CHECK_THROW(ssRotationTooLarge >> decodedRotation,
+                      std::ios_base::failure);
+}
+
+BOOST_AUTO_TEST_CASE(finality_abort_restores_only_committed_state)
+{
+    const uint256 nullifier(0xFA110001);
+    const uint256 hashCarrier(0xFA110002);
+    CTxDB txdb("r+");
+    BOOST_REQUIRE(txdb.EraseFinalityVote(nullifier));
+    BOOST_REQUIRE(txdb.EraseFinalityConnectedVoteBlock(hashCarrier));
+
+    CKey key;
+    key.MakeNewKey(true);
+    CFinalityVote vote;
+    vote.nEpoch = 777;
+    vote.hashBlock = uint256(0xFA110003);
+    vote.nHeight = 777;
+    vote.nTime = GetTime();
+    vote.nVoteWeight = COIN;
+    vote.nullifier = nullifier;
+    vote.vStakeProof.push_back(COutPoint(uint256(0xFA120004), 0));
+    CPubKey pubkey = key.GetPubKey();
+    vote.vchPubKey.assign(pubkey.begin(), pubkey.end());
+
+    CFinalityTracker tracker;
+    BOOST_REQUIRE(txdb.TxnBegin());
+    BOOST_REQUIRE(txdb.WriteFinalityVote(nullifier, vote));
+    BOOST_REQUIRE(txdb.WriteFinalityConnectedVoteBlock(
+        hashCarrier, std::vector<uint256>(1, nullifier)));
+    BOOST_REQUIRE(tracker.AddVote(vote, false, true));
+    BOOST_REQUIRE(tracker.HasVoteNullifier(nullifier));
+    txdb.TxnAbort();
+
+    BOOST_REQUIRE(tracker.RestoreCommittedStateAfterAbort());
+    BOOST_CHECK(!tracker.HasVoteNullifier(nullifier));
+    CFinalityVote persisted;
+    BOOST_CHECK(!txdb.ReadFinalityVote(nullifier, persisted));
+}
+
+BOOST_AUTO_TEST_CASE(canonical_finality_disk_envelopes_survive_restart_decode)
+{
+    CTxDB txdb("r+");
+    int nGeneration = 0;
+    BOOST_REQUIRE(txdb.ReadFinalityDiskEnvelopeGeneration(nGeneration));
+    BOOST_REQUIRE_EQUAL(nGeneration, FINALITY_DISK_ENVELOPE_GENERATION);
+
+    CKey key;
+    key.MakeNewKey(true);
+    CFinalityVote vote = BuildTransparentVoteForTrackerTest(key, 2000, 75 * COIN);
+    vote.nEpoch = 811;
+    vote.nHeight = 811;
+    vote.hashBlock = uint256(0xFA210001);
+    vote.nullifier = uint256(0xFA210002);
+    vote.MarkCanonicalEnvelope();
+    BOOST_REQUIRE(vote.Sign(key));
+    BOOST_REQUIRE(vote.IsValid());
+    const uint256 hashVote = vote.GetHash();
+    const uint256 hashVoteSig = vote.GetSignatureHash();
+
+    CFinalityTallyCertificate cert =
+        BuildTransparentCertificateForCarrierTest(vote);
+    cert.MarkCanonicalEnvelope();
+    cert.vVoteNullifiers.push_back(uint256(0xFA210003));
+    BOOST_REQUIRE(cert.IsValidBasic());
+    const uint256 hashCert = cert.GetHash();
+    const uint256 hashCertSig = cert.GetSignatureDigest();
+
+    ScopedFinalityDiskMigrationCleanup cleanup(txdb);
+    cleanup.vVoteNullifiers.push_back(vote.nullifier);
+    cleanup.vCertHashes.push_back(hashCert);
+
+    BOOST_REQUIRE(txdb.EraseFinalityVote(vote.nullifier));
+    BOOST_REQUIRE(txdb.EraseFinalityTallyCertificate(hashCert));
+    BOOST_REQUIRE(txdb.WriteFinalityVote(vote.nullifier, vote));
+    BOOST_REQUIRE(txdb.WriteFinalityTallyCertificate(hashCert, cert));
+
+    // A new cheap wrapper exercises the on-disk decoder used after process
+    // restart; runtime provenance must not be borrowed from the original object.
+    CTxDB restarted("r");
+    CFinalityVote loadedVote;
+    CFinalityTallyCertificate loadedCert;
+    BOOST_REQUIRE(restarted.ReadFinalityVote(vote.nullifier, loadedVote));
+    BOOST_REQUIRE(restarted.ReadFinalityTallyCertificate(hashCert, loadedCert));
+    BOOST_CHECK(loadedVote.IsCanonicalEnvelope());
+    BOOST_CHECK(loadedCert.IsCanonicalEnvelope());
+    BOOST_CHECK(loadedVote.GetHash() == hashVote);
+    BOOST_CHECK(loadedVote.GetSignatureHash() == hashVoteSig);
+    BOOST_CHECK(loadedVote.CheckSignature());
+    BOOST_CHECK(loadedCert.GetHash() == hashCert);
+    BOOST_CHECK(loadedCert.GetSignatureDigest() == hashCertSig);
+
+    std::map<uint256, CFinalityVote> mapVotes;
+    std::map<uint256, CFinalityTallyCertificate> mapCerts;
+    BOOST_REQUIRE(restarted.IterateFinalityVotes(mapVotes));
+    BOOST_REQUIRE(restarted.IterateFinalityTallyCertificates(mapCerts));
+    BOOST_REQUIRE(mapVotes.count(vote.nullifier));
+    BOOST_REQUIRE(mapCerts.count(hashCert));
+    BOOST_CHECK(mapVotes[vote.nullifier].IsCanonicalEnvelope());
+    BOOST_CHECK(mapCerts[hashCert].IsCanonicalEnvelope());
+
+    BOOST_REQUIRE(txdb.EraseFinalityVote(vote.nullifier));
+    BOOST_REQUIRE(txdb.EraseFinalityTallyCertificate(hashCert));
+}
+
+BOOST_AUTO_TEST_CASE(legacy_finality_disk_records_migrate_atomically_with_provenance)
+{
+    CTxDB txdb("r+");
+    int nGeneration = 0;
+    BOOST_REQUIRE(txdb.ReadFinalityDiskEnvelopeGeneration(nGeneration));
+    BOOST_REQUIRE_EQUAL(nGeneration, FINALITY_DISK_ENVELOPE_GENERATION);
+
+    CKey key;
+    key.MakeNewKey(true);
+
+    CFinalityVote legacyVote =
+        BuildTransparentVoteForTrackerTest(key, 2100, 60 * COIN);
+    legacyVote.nEpoch = 812;
+    legacyVote.nHeight = 812;
+    legacyVote.hashBlock = uint256(0xFA220001);
+    legacyVote.nullifier = uint256(0xFA220002);
+    BOOST_REQUIRE(legacyVote.Sign(key));
+    BOOST_REQUIRE(legacyVote.IsValid());
+
+    CFinalityVote canonicalVote =
+        BuildTransparentVoteForTrackerTest(key, 2200, 70 * COIN);
+    canonicalVote.nEpoch = 813;
+    canonicalVote.nHeight = 813;
+    canonicalVote.hashBlock = uint256(0xFA220003);
+    canonicalVote.nullifier = uint256(0xFA220004);
+    canonicalVote.MarkCanonicalEnvelope();
+    BOOST_REQUIRE(canonicalVote.Sign(key));
+    BOOST_REQUIRE(canonicalVote.IsValid());
+    const uint256 hashCanonicalVote = canonicalVote.GetHash();
+
+    CFinalityTallyCertificate canonicalCert =
+        BuildTransparentCertificateForCarrierTest(canonicalVote);
+    canonicalCert.MarkCanonicalEnvelope();
+    canonicalCert.vVoteNullifiers.push_back(uint256(0xFA220005));
+    BOOST_REQUIRE(canonicalCert.IsValidBasic());
+    const uint256 hashCanonicalCert = canonicalCert.GetHash();
+    CFinalityTallyCertificate legacyCert =
+        BuildTransparentCertificateForCarrierTest(legacyVote);
+    BOOST_REQUIRE(legacyCert.IsValidBasic());
+    const uint256 hashLegacyCert = legacyCert.GetHash();
+
+    ScopedFinalityDiskMigrationCleanup cleanup(txdb);
+    cleanup.vVoteNullifiers.push_back(legacyVote.nullifier);
+    cleanup.vVoteNullifiers.push_back(canonicalVote.nullifier);
+    cleanup.vCertHashes.push_back(hashCanonicalCert);
+    cleanup.vCertHashes.push_back(hashLegacyCert);
+
+    BOOST_REQUIRE(txdb.EraseFinalityVote(legacyVote.nullifier));
+    BOOST_REQUIRE(txdb.EraseFinalityVote(canonicalVote.nullifier));
+    BOOST_REQUIRE(txdb.EraseFinalityTallyCertificate(hashCanonicalCert));
+    BOOST_REQUIRE(txdb.EraseFinalityTallyCertificate(hashLegacyCert));
+
+    // Recreate the pre-envelope database: the old serializers omit the runtime
+    // marker even for canonical logical objects.  Removing the schema marker
+    // makes the three raw writes one coherent legacy generation for migration.
+    BOOST_REQUIRE(DeleteRawLevelDBRecord(
+        txdb, std::string("finalitydiskschema")));
+    BOOST_REQUIRE(PutRawLevelDBRecord(
+        txdb, std::make_pair(std::string("finalityvote"), legacyVote.nullifier),
+        legacyVote));
+    BOOST_REQUIRE(PutRawLevelDBRecord(
+        txdb, std::make_pair(std::string("finalityvote"), canonicalVote.nullifier),
+        canonicalVote));
+    BOOST_REQUIRE(PutRawLevelDBRecord(
+        txdb, std::make_pair(std::string("finalitycert"), hashCanonicalCert),
+        canonicalCert));
+    BOOST_REQUIRE(PutRawLevelDBRecord(
+        txdb, std::make_pair(std::string("finalitycert"), hashLegacyCert),
+        legacyCert));
+
+    std::string strMigrationError;
+    BOOST_REQUIRE_MESSAGE(txdb.MigrateFinalityDiskRecords(strMigrationError),
+                          strMigrationError);
+    BOOST_REQUIRE(txdb.ReadFinalityDiskEnvelopeGeneration(nGeneration));
+    BOOST_CHECK_EQUAL(nGeneration, FINALITY_DISK_ENVELOPE_GENERATION);
+
+    CFinalityVote loadedLegacy;
+    CFinalityVote loadedCanonical;
+    CFinalityTallyCertificate loadedCert;
+    CFinalityTallyCertificate loadedLegacyCert;
+    BOOST_REQUIRE(txdb.ReadFinalityVote(legacyVote.nullifier, loadedLegacy));
+    BOOST_REQUIRE(txdb.ReadFinalityVote(canonicalVote.nullifier,
+                                       loadedCanonical));
+    BOOST_REQUIRE(txdb.ReadFinalityTallyCertificate(hashCanonicalCert,
+                                                    loadedCert));
+    BOOST_REQUIRE(txdb.ReadFinalityTallyCertificate(hashLegacyCert,
+                                                    loadedLegacyCert));
+    BOOST_CHECK(!loadedLegacy.IsCanonicalEnvelope());
+    BOOST_CHECK(loadedLegacy.CheckSignature());
+    BOOST_CHECK(loadedCanonical.IsCanonicalEnvelope());
+    BOOST_CHECK(loadedCanonical.CheckSignature());
+    BOOST_CHECK(loadedCanonical.GetHash() == hashCanonicalVote);
+    BOOST_CHECK(loadedCert.IsCanonicalEnvelope());
+    BOOST_CHECK(loadedCert.GetHash() == hashCanonicalCert);
+    BOOST_CHECK(!loadedLegacyCert.IsCanonicalEnvelope());
+    BOOST_CHECK(loadedLegacyCert.GetHash() == hashLegacyCert);
+
+    BOOST_REQUIRE(txdb.EraseFinalityVote(legacyVote.nullifier));
+    BOOST_REQUIRE(txdb.EraseFinalityVote(canonicalVote.nullifier));
+    BOOST_REQUIRE(txdb.EraseFinalityTallyCertificate(hashCanonicalCert));
+    BOOST_REQUIRE(txdb.EraseFinalityTallyCertificate(hashLegacyCert));
+}
+
+BOOST_AUTO_TEST_CASE(finality_disk_migration_rejects_lossy_provenance_without_writes)
+{
+    CTxDB txdb("r+");
+    CKey key;
+    key.MakeNewKey(true);
+    CFinalityVote corruptCanonical =
+        BuildTransparentVoteForTrackerTest(key, 2300, 80 * COIN);
+    corruptCanonical.nEpoch = 814;
+    corruptCanonical.nHeight = 814;
+    corruptCanonical.hashBlock = uint256(0xFA230001);
+    corruptCanonical.nullifier = uint256(0xFA230002);
+    corruptCanonical.MarkCanonicalEnvelope();
+    BOOST_REQUIRE(corruptCanonical.Sign(key));
+    // These bytes are omitted by the canonical envelope.  A migration must
+    // fail rather than authenticate the canonical signature and silently drop
+    // the non-default legacy payload.
+    corruptCanonical.privateProof.hashCurveRoot = uint256(0xFA230003);
+
+    ScopedFinalityDiskMigrationCleanup cleanup(txdb);
+    cleanup.vVoteNullifiers.push_back(corruptCanonical.nullifier);
+    BOOST_REQUIRE(txdb.EraseFinalityVote(corruptCanonical.nullifier));
+    BOOST_REQUIRE(DeleteRawLevelDBRecord(
+        txdb, std::string("finalitydiskschema")));
+    const std::pair<std::string, uint256> keyVote(
+        std::string("finalityvote"), corruptCanonical.nullifier);
+    BOOST_REQUIRE(PutRawLevelDBRecord(txdb, keyVote, corruptCanonical));
+
+    std::string bytesBefore;
+    BOOST_REQUIRE(GetRawLevelDBRecord(txdb, keyVote, bytesBefore));
+    std::string strMigrationError;
+    BOOST_CHECK(!txdb.MigrateFinalityDiskRecords(strMigrationError));
+    BOOST_CHECK(!strMigrationError.empty());
+    int nGeneration = 0;
+    BOOST_CHECK(!txdb.ReadFinalityDiskEnvelopeGeneration(nGeneration));
+    std::string bytesAfter;
+    BOOST_REQUIRE(GetRawLevelDBRecord(txdb, keyVote, bytesAfter));
+    BOOST_CHECK(bytesAfter == bytesBefore);
+
+    BOOST_REQUIRE(txdb.EraseFinalityVote(corruptCanonical.nullifier));
+    BOOST_REQUIRE(PutRawLevelDBRecord(
+        txdb, std::string("finalitydiskschema"),
+        FINALITY_DISK_ENVELOPE_GENERATION));
+}
+
+BOOST_AUTO_TEST_CASE(finality_restart_rejects_unpaired_persistence_records)
+{
+    const uint256 nullifier(0xFA120001);
+    const uint256 hashCarrier(0xFA120002);
+    CTxDB txdb("r+");
+    BOOST_REQUIRE(txdb.EraseFinalityVote(nullifier));
+    BOOST_REQUIRE(txdb.EraseFinalityConnectedVoteBlock(hashCarrier));
+
+    CKey key;
+    key.MakeNewKey(true);
+    CFinalityVote vote;
+    vote.nEpoch = 778;
+    vote.hashBlock = uint256(0xFA120003);
+    vote.nHeight = 778;
+    vote.nTime = GetTime();
+    vote.nVoteWeight = COIN;
+    vote.nullifier = nullifier;
+    vote.vStakeProof.push_back(COutPoint(uint256(0xFA120004), 0));
+    CPubKey pubkey = key.GetPubKey();
+    vote.vchPubKey.assign(pubkey.begin(), pubkey.end());
+    BOOST_REQUIRE(vote.Sign(key));
+    BOOST_REQUIRE(txdb.WriteFinalityVote(nullifier, vote));
+
+    CFinalityTracker tracker;
+    BOOST_CHECK(!tracker.RestoreCommittedStateAfterAbort());
+
+    BOOST_REQUIRE(txdb.EraseFinalityVote(nullifier));
+    BOOST_REQUIRE(txdb.EraseFinalityConnectedVoteBlock(hashCarrier));
+
+    // A syntactically paired index is still corrupt when the claimed carrier
+    // cannot be resolved to an active block containing the exact vote.
+    BOOST_REQUIRE(txdb.WriteFinalityVote(nullifier, vote));
+    BOOST_REQUIRE(txdb.WriteFinalityConnectedVoteBlock(
+        hashCarrier, std::vector<uint256>(1, nullifier)));
+    CFinalityTracker pairedWrongCarrier;
+    BOOST_CHECK(!pairedWrongCarrier.RestoreCommittedStateAfterAbort());
+
+    BOOST_REQUIRE(txdb.EraseFinalityVote(nullifier));
+    BOOST_REQUIRE(txdb.EraseFinalityConnectedVoteBlock(hashCarrier));
+}
+
+BOOST_AUTO_TEST_CASE(finality_validation_distinguishes_invalid_from_local_state)
+{
+    ScopedFinalityTestnet network;
+    CFinalityTracker tracker;
+    CTxDB txdb("r+");
+    std::string error;
+
+    CFinalityVote malformedVote;
+    FinalityResult result = FINALITY_RESULT_OK;
+    BOOST_CHECK(!tracker.CheckVote(malformedVote, txdb, &error, -1, &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
+
+    const int voteEpoch = GetEpochForHeight(FORK_HEIGHT_DAG) + 5;
+    const int voteHeight = GetEpochBoundaryHeight(voteEpoch, FORK_HEIGHT_DAG);
+    CKey key;
+    key.MakeNewKey(true);
+    CFinalityVote unavailableVote;
+    unavailableVote.nEpoch = voteEpoch;
+    unavailableVote.nHeight = voteHeight;
+    unavailableVote.hashBlock = uint256(0xFA130001);
+    unavailableVote.nTime = GetTime();
+    unavailableVote.nVoteWeight = COIN;
+    unavailableVote.nReward = GetFinalityVoteReward(
+        unavailableVote.nVoteWeight, GetEpochInterval(voteHeight));
+    unavailableVote.vStakeProof.push_back(COutPoint(uint256(0xFA130002), 0));
+    CPubKey pubkey = key.GetPubKey();
+    unavailableVote.vchPubKey.assign(pubkey.begin(), pubkey.end());
+    CHashWriter nullifierHash(SER_GETHASH, 0);
+    nullifierHash << unavailableVote.vchPubKey;
+    nullifierHash << unavailableVote.nEpoch;
+    unavailableVote.nullifier = nullifierHash.GetHash();
+    BOOST_REQUIRE(unavailableVote.Sign(key));
+
+    result = FINALITY_RESULT_INVALID;
+    error.clear();
+    BOOST_CHECK(!tracker.CheckVote(unavailableVote, txdb, &error,
+                                   voteHeight, &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
+
+    // Once the claimed epoch block is known, an absent transaction index is
+    // still peer-invalid: the outpoint simply does not exist.  An existing
+    // index whose block/transaction body cannot be read is local corruption.
+    ScopedBlockIndexEntry knownVoteTarget(unavailableVote.hashBlock,
+                                           voteHeight);
+    result = FINALITY_RESULT_LOCAL_STATE;
+    error.clear();
+    BOOST_CHECK(!tracker.CheckVote(unavailableVote, txdb, &error,
+                                   voteHeight, &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
+
+    ScopedRawTxIndexCleanup txIndexCleanup(
+        txdb, unavailableVote.vStakeProof[0].hash);
+    CTxIndex unreadableIndex(CDiskTxPos(999999, 1, 1), 1);
+    BOOST_REQUIRE(PutRawLevelDBRecord(
+        txdb,
+        std::make_pair(std::string("tx"),
+                       unavailableVote.vStakeProof[0].hash),
+        unreadableIndex));
+    result = FINALITY_RESULT_INVALID;
+    error.clear();
+    BOOST_CHECK(!tracker.CheckVote(unavailableVote, txdb, &error,
+                                   voteHeight, &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_LOCAL_STATE);
+
+    CFinalityTallyCertificate malformedCert;
+    result = FINALITY_RESULT_OK;
+    error.clear();
+    BOOST_CHECK(!tracker.CheckTallyCertificate(
+        malformedCert, txdb, &error, NULL, false, -1, false, &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
+
+    CFinalityTallyCertificate unavailableCert;
+    unavailableCert.nVersion = 2;
+    unavailableCert.nEpoch = voteEpoch;
+    unavailableCert.nHeight = voteHeight;
+    unavailableCert.hashBlock = uint256(0xFA130003);
+    unavailableCert.nTier = FINALITY_NONE;
+    unavailableCert.vVoteNullifiers.push_back(uint256(0xFA130004));
+    result = FINALITY_RESULT_INVALID;
+    error.clear();
+    BOOST_CHECK(!tracker.CheckTallyCertificate(
+        unavailableCert, txdb, &error, NULL, false,
+        voteHeight + FINALITY_VOTE_INCLUSION_WINDOW, false, &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
+
+    // A private certificate before any epoch has finalized is invalid, not a
+    // recoverable storage failure.  Missing progress for an epoch that should
+    // already be persisted remains LOCAL_STATE.
+    const int certContextHeight =
+        voteHeight + FINALITY_VOTE_INCLUSION_WINDOW;
+    BOOST_REQUIRE(!IsBoundaryAActiveAtHeight(certContextHeight));
+    const uint256 hashPrivateTarget(0xFA130005);
+    ScopedBlockIndexEntry knownPrivateTarget(hashPrivateTarget, voteHeight);
+    const int nAsOfEpoch = GetEpochForHeight(certContextHeight) - 1;
+    ScopedEpochStateOverride epochStateOverride(txdb, nAsOfEpoch);
+
+    CFinalityTallyCertificate privateCert;
+    privateCert.nVersion = 2;
+    privateCert.nEpoch = voteEpoch;
+    privateCert.nHeight = voteHeight;
+    privateCert.hashBlock = hashPrivateTarget;
+    privateCert.nTier = FINALITY_HARD;
+    privateCert.hashCurveRoot = uint256(0xFA130006);
+    privateCert.hashNullifierRoot = uint256(0xFA130007);
+    privateCert.committeeSetHash = uint256(0xFA130008);
+    privateCert.activeWeightCommitment.vchCommitment[0] = 1;
+    privateCert.winningWeightCommitment.vchCommitment[0] = 2;
+    privateCert.rewardBudgetCommitment.vchCommitment[0] = 3;
+    privateCert.vVoteNullifiers.push_back(uint256(0xFA130009));
+    privateCert.vTallyShareHashes.push_back(uint256(0xFA13000A));
+    privateCert.vchAggregateThresholdProof.push_back(1);
+    privateCert.vchRewardBudgetProof.push_back(1);
+    BOOST_REQUIRE(privateCert.IsValidBasic(&error));
+
+    result = FINALITY_RESULT_INVALID;
+    error.clear();
+    BOOST_CHECK(!tracker.CheckTallyCertificate(
+        privateCert, txdb, &error, NULL, false, certContextHeight,
+        true, &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_LOCAL_STATE);
+
+    CEpochState zeroFinalityState;
+    zeroFinalityState.nEpoch = nAsOfEpoch;
+    zeroFinalityState.nFinalizedHeightAsOf = 0;
+    BOOST_REQUIRE(txdb.WriteEpochState(nAsOfEpoch, zeroFinalityState));
+    result = FINALITY_RESULT_LOCAL_STATE;
+    error.clear();
+    BOOST_CHECK(!tracker.CheckTallyCertificate(
+        privateCert, txdb, &error, NULL, false, certContextHeight,
+        true, &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

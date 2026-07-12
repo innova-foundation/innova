@@ -13,11 +13,129 @@
 #include "curvetree.h"
 
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
 #include <leveldb/db.h>
 #include <leveldb/write_batch.h>
+
+enum TxDBReadStatus
+{
+    TXDB_READ_FOUND = 0,
+    TXDB_READ_NOT_FOUND,
+    TXDB_READ_ERROR
+};
+
+static const int SHIELDED_WALLET_RECOVERY_SCHEMA = 1;
+static const int DAG_ACTIVE_SET_SCHEMA = 1;
+static const int DAG_ACTIVE_SET_BUILD_REBUILD_SUFFIX = 1;
+static const int DAG_ACTIVE_SET_BUILD_REPAIR_CANONICAL = 2;
+
+// Crash-recovery outbox for the auxiliary shielded wallet.  This fixed-size
+// record is written in the same LevelDB batch as the canonical best-chain
+// transition.  No transaction or wire encoding depends on it.
+class CShieldedWalletRecoveryRecord
+{
+public:
+    int nSchema;
+    uint256 hashOldTip;
+    uint256 hashFork;
+    uint256 hashNewTip;
+    uint32_t nDisconnect;
+    uint32_t nConnect;
+    uint256 hashEffectPlan;
+
+    CShieldedWalletRecoveryRecord()
+        : nSchema(0), nDisconnect(0), nConnect(0) {}
+
+    bool IsValid() const
+    {
+        if (nSchema != SHIELDED_WALLET_RECOVERY_SCHEMA ||
+            hashNewTip == 0 || hashEffectPlan == 0 ||
+            (nDisconnect == 0 && nConnect == 0))
+            return false;
+        if (nDisconnect == 0 && hashOldTip != hashFork)
+            return false;
+        if (nDisconnect > 0 && hashOldTip == 0)
+            return false;
+        if (hashOldTip == 0 && hashFork != 0)
+            return false;
+        if (nConnect == 0 && hashNewTip != hashFork)
+            return false;
+        return true;
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(nSchema);
+        READWRITE(hashOldTip);
+        READWRITE(hashFork);
+        READWRITE(hashNewTip);
+        READWRITE(nDisconnect);
+        READWRITE(nConnect);
+        READWRITE(hashEffectPlan);
+    )
+};
+
+// Durable progress of the chunked legacy active-set recovery: the marker advances in each
+// chunk's batch, and the best-tip marker is written only once every DAG block is covered.
+class CDAGActiveSetBuildRecord
+{
+public:
+    int nSchema;
+    int nMode;
+    uint256 hashTargetBest;
+    int nTargetHeight;
+    uint256 hashTrustedBase;
+    int nTrustedBaseHeight;
+    uint256 hashNextBlock;
+    int nNextHeight;
+    uint256 hashDigest;
+
+    CDAGActiveSetBuildRecord()
+        : nSchema(0), nMode(0), nTargetHeight(-1),
+          nTrustedBaseHeight(-1), nNextHeight(-1) {}
+
+    uint256 GetDigest() const
+    {
+        CHashWriter ss(SER_GETHASH, 0);
+        ss << std::string("Innova/IDAG/ActiveSetBuild/v1");
+        ss << nSchema << nMode << hashTargetBest << nTargetHeight;
+        ss << hashTrustedBase << nTrustedBaseHeight;
+        ss << hashNextBlock << nNextHeight;
+        return ss.GetHash();
+    }
+
+    bool IsValid() const
+    {
+        if (nSchema != DAG_ACTIVE_SET_SCHEMA ||
+            (nMode != DAG_ACTIVE_SET_BUILD_REBUILD_SUFFIX &&
+             nMode != DAG_ACTIVE_SET_BUILD_REPAIR_CANONICAL) ||
+            hashTargetBest == 0 || nTargetHeight < 0 ||
+            nTrustedBaseHeight < -1 ||
+            nNextHeight < nTrustedBaseHeight ||
+            nNextHeight > nTargetHeight)
+            return false;
+        if ((nTrustedBaseHeight < 0) != (hashTrustedBase == 0) ||
+            (nNextHeight < 0) != (hashNextBlock == 0))
+            return false;
+        return hashDigest == GetDigest();
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(nSchema);
+        READWRITE(nMode);
+        READWRITE(hashTargetBest);
+        READWRITE(nTargetHeight);
+        READWRITE(hashTrustedBase);
+        READWRITE(nTrustedBaseHeight);
+        READWRITE(hashNextBlock);
+        READWRITE(nNextHeight);
+        READWRITE(hashDigest);
+    )
+};
 
 // Class that provides access to a LevelDB. Note that this class is frequently
 // instantiated on the stack and then destroyed again, so instantiation has to
@@ -55,11 +173,50 @@ private:
     bool fReadOnly;
     int nVersion;
 
+    // Stage deletion of every raw key whose serialized leading string equals strPrefix.
+    // Schema migrations only, inside an existing DB transaction.
+    bool EraseSerializedStringKeyPrefix(const std::string& strPrefix,
+                                        std::string& strError);
+
 protected:
     // Returns true and sets (value,false) if activeBatch contains the given key
     // or leaves value alone and sets deleted = true if activeBatch contains a
     // delete for it.
     bool ScanBatch(const CDataStream &key, std::string *value, bool *deleted) const;
+
+    // Fetch one raw value without choosing its decoder, so migrated records pick the
+    // envelope or legacy decoder before consuming untrusted bytes.
+    template<typename K>
+    TxDBReadStatus ReadRawValueStatus(const K& key, std::string& strValue)
+    {
+        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        ssKey.reserve(1000);
+        ssKey << key;
+        strValue.clear();
+
+        bool fReadFromDb = true;
+        if (activeBatch)
+        {
+            bool fDeleted = false;
+            fReadFromDb = !ScanBatch(ssKey, &strValue, &fDeleted);
+            if (fDeleted)
+                return TXDB_READ_NOT_FOUND;
+        }
+        if (fReadFromDb)
+        {
+            const leveldb::Status status = pdb->Get(
+                leveldb::ReadOptions(), ssKey.str(), &strValue);
+            if (!status.ok())
+            {
+                if (status.IsNotFound())
+                    return TXDB_READ_NOT_FOUND;
+                printf("LevelDB raw-read failure: %s\n",
+                       status.ToString().c_str());
+                return TXDB_READ_ERROR;
+            }
+        }
+        return TXDB_READ_FOUND;
+    }
 
     template<typename K, typename T>
     bool Read(const K& key, T& value)
@@ -102,6 +259,140 @@ protected:
             return false;
         }
         return true;
+    }
+
+    // Persistence records used as consensus inputs must not accept a valid
+    // prefix followed by unparsed bytes.  Keep the legacy Read() behavior for
+    // older database records, and opt strict records into this exact decoder.
+    template<typename K, typename T>
+    TxDBReadStatus ReadExactStatus(const K& key, T& value)
+    {
+        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        ssKey.reserve(1000);
+        ssKey << key;
+        std::string strValue;
+
+        bool readFromDb = true;
+        if (activeBatch) {
+            bool deleted = false;
+            readFromDb = ScanBatch(ssKey, &strValue, &deleted) == false;
+            if (deleted)
+                return TXDB_READ_NOT_FOUND;
+        }
+        if (readFromDb) {
+            leveldb::Status status = pdb->Get(leveldb::ReadOptions(),
+                                              ssKey.str(), &strValue);
+            if (!status.ok()) {
+                if (status.IsNotFound())
+                    return TXDB_READ_NOT_FOUND;
+                printf("LevelDB exact-read failure: %s\n",
+                       status.ToString().c_str());
+                return TXDB_READ_ERROR;
+            }
+        }
+
+        try {
+            CDataStream ssValue(strValue.data(),
+                                strValue.data() + strValue.size(),
+                                SER_DISK, CLIENT_VERSION);
+            ssValue >> value;
+            if (ssValue.size() != 0) {
+                printf("LevelDB exact-read failure: trailing bytes "
+                       "(value size=%zu, trailing=%zu)\n",
+                       strValue.size(), ssValue.size());
+                return TXDB_READ_ERROR;
+            }
+        }
+        catch (std::exception &e) {
+            printf("LevelDB exact deserialization failure: %s "
+                   "(value size=%zu)\n", e.what(), strValue.size());
+            return TXDB_READ_ERROR;
+        }
+        return TXDB_READ_FOUND;
+    }
+
+    template<typename K, typename T>
+    bool ReadExact(const K& key, T& value)
+    {
+        return ReadExactStatus(key, value) == TXDB_READ_FOUND;
+    }
+
+    // Fixed-size markers are read through a borrowed iterator slice so a
+    // corrupt local value cannot force an attacker-sized std::string copy.
+    template<typename K, typename T>
+    TxDBReadStatus ReadFixedExactStatusBounded(const K& key, T& value)
+    {
+        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        ssKey << key;
+        const size_t nExpected = ::GetSerializeSize(
+            T(), SER_DISK, CLIENT_VERSION);
+        std::string strBatchValue;
+        if (activeBatch)
+        {
+            bool fDeleted = false;
+            try
+            {
+                if (ScanBatch(ssKey, &strBatchValue, &fDeleted))
+                {
+                    if (fDeleted)
+                        return TXDB_READ_NOT_FOUND;
+                    if (strBatchValue.size() != nExpected)
+                        return TXDB_READ_ERROR;
+                    CDataStream ssValue(strBatchValue.data(),
+                                        strBatchValue.data() +
+                                            strBatchValue.size(),
+                                        SER_DISK, CLIENT_VERSION);
+                    ssValue >> value;
+                    return ssValue.empty() ? TXDB_READ_FOUND
+                                           : TXDB_READ_ERROR;
+                }
+            }
+            catch (const std::exception&)
+            {
+                return TXDB_READ_ERROR;
+            }
+        }
+
+        leveldb::Iterator* it = pdb->NewIterator(leveldb::ReadOptions());
+        if (!it)
+            return TXDB_READ_ERROR;
+        const std::string strKey = ssKey.str();
+        it->Seek(strKey);
+        if (!it->Valid())
+        {
+            const bool fOk = it->status().ok();
+            delete it;
+            return fOk ? TXDB_READ_NOT_FOUND : TXDB_READ_ERROR;
+        }
+        if (it->key().compare(leveldb::Slice(strKey)) != 0)
+        {
+            delete it;
+            return TXDB_READ_NOT_FOUND;
+        }
+        const leveldb::Slice raw = it->value();
+        if (raw.size() != nExpected)
+        {
+            delete it;
+            return TXDB_READ_ERROR;
+        }
+        try
+        {
+            CDataStream ssValue(raw.data(), raw.data() + raw.size(),
+                                SER_DISK, CLIENT_VERSION);
+            ssValue >> value;
+            if (!ssValue.empty())
+            {
+                delete it;
+                return TXDB_READ_ERROR;
+            }
+        }
+        catch (const std::exception&)
+        {
+            delete it;
+            return TXDB_READ_ERROR;
+        }
+        delete it;
+        return TXDB_READ_FOUND;
     }
 
     template<typename K, typename T>
@@ -163,21 +454,26 @@ protected:
         std::string unused;
 
         if (activeBatch) {
-            bool deleted;
-            if (ScanBatch(ssKey, &unused, &deleted) && !deleted) {
-                return true;
-            }
+            bool deleted = false;
+            // The newest op in the active batch wins; never fall through to disk after a
+            // staged delete.
+            if (ScanBatch(ssKey, &unused, &deleted))
+                return !deleted;
         }
 
-
         leveldb::Status status = pdb->Get(leveldb::ReadOptions(), ssKey.str(), &unused);
-        return status.IsNotFound() == false;
+        if (status.ok())
+            return true;
+        if (!status.IsNotFound())
+            printf("LevelDB exists failure: %s\n", status.ToString().c_str());
+        return false;
     }
 
 
 public:
     bool TxnBegin();
-    bool TxnCommit();
+    bool TxnCommit(bool fSync = false);
+    bool IsTxnActive() const { return activeBatch != NULL; }
     bool TxnAbort()
     {
         delete activeBatch;
@@ -255,6 +551,8 @@ public:
 	bool ReadAddrIndex(uint160 addrHash, std::vector<uint256>& txHashes);
     bool WriteAddrIndex(uint160 addrHash, uint256 txHash);
     bool ReadTxIndex(uint256 hash, CTxIndex& txindex);
+    TxDBReadStatus ReadTxIndexStatus(const uint256& hash,
+                                     CTxIndex& txindex);
     bool UpdateTxIndex(uint256 hash, const CTxIndex& txindex);
     bool AddTxIndex(const CTransaction& tx, const CDiskTxPos& pos, int nHeight);
     bool EraseTxIndex(const CTransaction& tx);
@@ -300,6 +598,8 @@ public:
     bool ReadFinalityVote(const uint256& nullifier, CFinalityVote& vote);
     bool EraseFinalityVote(const uint256& nullifier);
     bool IterateFinalityVotes(std::map<uint256, CFinalityVote>& mapOut);
+    bool ReadFinalityDiskEnvelopeGeneration(int& nGeneration);
+    bool MigrateFinalityDiskRecords(std::string& strError);
     bool WriteFinalityTallyShare(const uint256& hashShare, const CFinalityTallyShare& share);
     bool ReadFinalityTallyShare(const uint256& hashShare, CFinalityTallyShare& share);
     bool EraseFinalityTallyShare(const uint256& hashShare);

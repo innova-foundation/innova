@@ -61,9 +61,11 @@ enum DeserializeTarget
     DESERIALIZE_TRANSACTION = 0,
     DESERIALIZE_BLOCK,
     DESERIALIZE_FINALITY_VOTE,
+    DESERIALIZE_CANONICAL_FINALITY_VOTE,
     DESERIALIZE_FINALITY_TALLY_SHARE,
     DESERIALIZE_FINALITY_AGGREGATE_PARTIAL,
     DESERIALIZE_FINALITY_CERTIFICATE,
+    DESERIALIZE_CANONICAL_FINALITY_CERTIFICATE,
     DESERIALIZE_FINALITY_ROTATION,
     DESERIALIZE_PRIVATE_FINALITY_PROOF,
     DESERIALIZE_FCMP_PROOF,
@@ -99,6 +101,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     case DESERIALIZE_FINALITY_VOTE:
         (void)TryDeserializeEnvelope<CFinalityVote>(payload, payloadSize);
         break;
+    case DESERIALIZE_CANONICAL_FINALITY_VOTE:
+        (void)TryDeserializeEnvelope<CCanonicalFinalityVoteEnvelope>(payload, payloadSize);
+        break;
     case DESERIALIZE_FINALITY_TALLY_SHARE:
         (void)TryDeserializeEnvelope<CFinalityTallyShare>(payload, payloadSize);
         break;
@@ -107,6 +112,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         break;
     case DESERIALIZE_FINALITY_CERTIFICATE:
         (void)TryDeserializeEnvelope<CFinalityTallyCertificate>(payload, payloadSize);
+        break;
+    case DESERIALIZE_CANONICAL_FINALITY_CERTIFICATE:
+        (void)TryDeserializeEnvelope<CCanonicalFinalityTallyCertificateEnvelope>(payload, payloadSize);
         break;
     case DESERIALIZE_FINALITY_ROTATION:
         (void)TryDeserializeEnvelope<CFinalityCommitteeRotation>(payload, payloadSize);

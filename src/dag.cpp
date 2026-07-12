@@ -1567,6 +1567,56 @@ bool CDAGManager::BuildEpochStateV2Compat(int nEpoch, int nEpochInterval,
         (state.nHeightEnd >= FORK_HEIGHT_EPOCH_STATE_V2) && (pAnchorTip != NULL);
     CBlockIndex* pBestTip = fDeterministicAnchor ? const_cast<CBlockIndex*>(pAnchorTip)
                                                  : SelectBestDAGTip();
+
+    // ConnectBlock records finality carriers only along the canonical pprev chain, so build the
+    // connected-carrier set from the canonical crossing anchor. Activation is per carrier height.
+    std::set<uint256> setConnectedFinalityCarrierBlocks;
+    if (IsConnectedFinalityCarrierActiveAtHeight(state.nHeightEnd))
+    {
+        if (!pAnchorTip || !pAnchorTip->phashBlock)
+        {
+            strError = strprintf("V2 epoch %d connected-finality carrier rule "
+                                 "requires a canonical anchor", nEpoch);
+            return false;
+        }
+
+        const CBlockIndex* pChain = pAnchorTip;
+        bool fReachedEpochStart = false;
+        while (pChain && pChain->nHeight >= state.nHeightStart)
+        {
+            if (!pChain->phashBlock)
+            {
+                strError = strprintf("V2 epoch %d canonical carrier chain has "
+                                     "an unbound block at height %d",
+                                     nEpoch, pChain->nHeight);
+                return false;
+            }
+            if (pChain->nHeight <= state.nHeightEnd)
+                setConnectedFinalityCarrierBlocks.insert(
+                    pChain->GetBlockHash());
+            if (pChain->nHeight == state.nHeightStart)
+            {
+                fReachedEpochStart = true;
+                break;
+            }
+            if (!pChain->pprev ||
+                pChain->pprev->nHeight != pChain->nHeight - 1)
+            {
+                strError = strprintf("V2 epoch %d canonical carrier chain is "
+                                     "not contiguous below height %d",
+                                     nEpoch, pChain->nHeight);
+                return false;
+            }
+            pChain = pChain->pprev;
+        }
+        if (!fReachedEpochStart)
+        {
+            strError = strprintf("V2 epoch %d canonical carrier chain does not "
+                                 "reach epoch start height %d",
+                                 nEpoch, state.nHeightStart);
+            return false;
+        }
+    }
     if (pBestTip && pBestTip->nHeight >= state.nHeightEnd)
     {
         CBlockIndex* pWalk = pBestTip;
@@ -1772,8 +1822,24 @@ bool CDAGManager::BuildEpochStateV2Compat(int nEpoch, int nEpochInterval,
             }
         }
 
-        const std::vector<CFinalityTallyCertificate> vCerts =
-            ExtractFinalityTallyCertificatesFromBlock(activeBlock);
+        // A merge-only block skipped ConnectBlock's finality checks: once the connected-carrier rule
+        // is active, exclude its vote/certificate outputs from the V2 finality commitment.
+        if (IsConnectedFinalityCarrierActiveAtHeight(mi->second->nHeight) &&
+            !setConnectedFinalityCarrierBlocks.count(hashBlock))
+            continue;
+
+        std::vector<CFinalityTallyCertificate> vCerts;
+        FinalityEnvelopeDecodeResult certEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
+        if (!ExtractFinalityTallyCertificatesFromBlockForHeight(
+                activeBlock, mi->second->nHeight, vCerts,
+                &certEnvelopeFailure))
+        {
+            strError = strprintf("V2 epoch %d block %s has invalid finality certificate envelope "
+                                 "at height %d (decode=%d)",
+                                 nEpoch, hashBlock.ToString().substr(0, 20).c_str(),
+                                 mi->second->nHeight, (int)certEnvelopeFailure);
+            return false;
+        }
         for (const CFinalityTallyCertificate& cert : vCerts)
         {
             if (cert.nEpoch != nEpoch)
@@ -1787,8 +1853,18 @@ bool CDAGManager::BuildEpochStateV2Compat(int nEpoch, int nEpochInterval,
             }
         }
 
-        const std::vector<CFinalityVote> vVotes =
-            ExtractFinalityVotesFromBlock(activeBlock);
+        std::vector<CFinalityVote> vVotes;
+        FinalityEnvelopeDecodeResult voteEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
+        if (!ExtractFinalityVotesFromBlockForHeight(
+                activeBlock, mi->second->nHeight, vVotes,
+                &voteEnvelopeFailure))
+        {
+            strError = strprintf("V2 epoch %d block %s has invalid finality vote envelope "
+                                 "at height %d (decode=%d)",
+                                 nEpoch, hashBlock.ToString().substr(0, 20).c_str(),
+                                 mi->second->nHeight, (int)voteEnvelopeFailure);
+            return false;
+        }
         for (const CFinalityVote& vote : vVotes)
         {
             if (vote.nEpoch == nEpoch)
@@ -1987,6 +2063,12 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
     // Refuse a partial canonical block set. Every pprev-chain block in the epoch
     // must appear exactly once in the boundary-derived DAG order, and the block
     // index chain itself must be height-contiguous.
+    // Finality tracker state is connected only along the canonical pprev chain.
+    // Merge/sibling blocks still contribute their conflict-filtered transaction
+    // effects to the epoch roots, but their finality payloads have not passed
+    // ConnectBlock's stateful vote/certificate checks and therefore must not
+    // influence the deterministic tier.
+    std::set<uint256> setCanonicalFinalityBlocks;
     const CBlockIndex* pChain = pBoundary;
     while (pChain && pChain->nHeight >= state.nHeightStart)
     {
@@ -1996,6 +2078,7 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                                  nEpoch, pChain->nHeight);
             return false;
         }
+        setCanonicalFinalityBlocks.insert(pChain->GetBlockHash());
         if (pChain->nHeight > state.nHeightStart &&
             (!pChain->pprev || pChain->pprev->nHeight != pChain->nHeight - 1))
         {
@@ -2169,8 +2252,25 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
             }
         }
 
-        const std::vector<CFinalityTallyCertificate> vCerts =
-            ExtractFinalityTallyCertificatesFromBlock(activeBlock);
+        // A DAG merge block is structurally accepted before it becomes a
+        // pprev-chain block. Ignore its finality-tagged outputs here; if that
+        // block later becomes canonical, ConnectBlock validates and persists
+        // them and the reorg rebuild includes them through this exact set.
+        if (!setCanonicalFinalityBlocks.count(*it))
+            continue;
+
+        std::vector<CFinalityTallyCertificate> vCerts;
+        FinalityEnvelopeDecodeResult certEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
+        if (!ExtractFinalityTallyCertificatesFromBlockForHeight(
+                activeBlock, mi->second->nHeight, vCerts,
+                &certEnvelopeFailure))
+        {
+            strError = strprintf("epoch %d block %s has invalid finality certificate envelope "
+                                 "at height %d (decode=%d)",
+                                 nEpoch, it->ToString().substr(0, 20).c_str(),
+                                 mi->second->nHeight, (int)certEnvelopeFailure);
+            return false;
+        }
         for (std::vector<CFinalityTallyCertificate>::const_iterator cit = vCerts.begin();
              cit != vCerts.end(); ++cit)
         {
@@ -2185,8 +2285,18 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
             }
         }
 
-        const std::vector<CFinalityVote> vVotes =
-            ExtractFinalityVotesFromBlock(activeBlock);
+        std::vector<CFinalityVote> vVotes;
+        FinalityEnvelopeDecodeResult voteEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
+        if (!ExtractFinalityVotesFromBlockForHeight(
+                activeBlock, mi->second->nHeight, vVotes,
+                &voteEnvelopeFailure))
+        {
+            strError = strprintf("epoch %d block %s has invalid finality vote envelope "
+                                 "at height %d (decode=%d)",
+                                 nEpoch, it->ToString().substr(0, 20).c_str(),
+                                 mi->second->nHeight, (int)voteEnvelopeFailure);
+            return false;
+        }
         for (std::vector<CFinalityVote>::const_iterator vit = vVotes.begin();
              vit != vVotes.end(); ++vit)
         {
