@@ -417,6 +417,23 @@ bool SecureMsgSendTyping(const std::string& addrFrom, const std::string& addrTo)
 /** Handle incoming smsgTyping message. Returns the sender address if valid. */
 bool SecureMsgHandleTyping(CNode* pfrom, std::vector<unsigned char>& vchData, std::string& senderAddrOut);
 
+/** Canonical v1 proof transcript: header[4..103] || payload || payload. */
+bool SecureMsgComputeProofHash(const SecureMessage& smsg,
+                               const unsigned char* pPayload,
+                               uint32_t nPayload,
+                               unsigned char hashOut[32]);
+
+/** Canonical v1 authentication transcript: timestamp wire bytes || payload. */
+bool SecureMsgComputeMessageMAC(const unsigned char key[32],
+                                const SecureMessage& smsg,
+                                const unsigned char* pPayload,
+                                uint32_t nPayload,
+                                unsigned char macOut[32]);
+bool SecureMsgVerifyMessageMAC(const unsigned char key[32],
+                               const SecureMessage& smsg,
+                               const unsigned char* pPayload,
+                               uint32_t nPayload);
+
 int SecureMsgValidate(unsigned char *pHeader, unsigned char *pPayload, uint32_t nPayload);
 int SecureMsgSetHash(unsigned char *pHeader, unsigned char *pPayload, uint32_t nPayload);
 

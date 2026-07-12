@@ -52,6 +52,7 @@ Notes:
 #include "db.h"
 #include "main.h"
 #include "init.h" // pwalletMain
+#include "openssl_compat.h"
 #include "txdb.h"
 #include "dandelion.h"
 
@@ -61,16 +62,6 @@ Notes:
 #include "xxhash/xxhash.h"
 #include "xxhash/xxhash.c"
 
-
-// On 64 bit system ld is 64bits
-#ifdef IS_ARCH_64
-#undef PRId64
-#undef PRIu64
-#undef PRIx64
-#define PRId64  "ld"
-#define PRIu64  "lu"
-#define PRIx64  "lx"
-#endif // IS_ARCH_64
 
 namespace fs = boost::filesystem;
 
@@ -101,6 +92,140 @@ leveldb::DB *smsgDB = NULL;
 static inline int SecureMemcmp(const void *a, const void *b, size_t len)
 {
     return CRYPTO_memcmp(a, b, len);
+}
+
+namespace
+{
+    struct SecureMsgHMACInput
+    {
+        const unsigned char* pData;
+        size_t nBytes;
+    };
+
+    bool SecureMsgHMACSHA256(HMAC_CTX* ctx,
+                             const unsigned char* pKey,
+                             int nKeyBytes,
+                             const SecureMsgHMACInput* pInputs,
+                             size_t nInputs,
+                             unsigned char hashOut[32])
+    {
+        if (!ctx || !pKey || nKeyBytes <= 0 || !pInputs || !hashOut)
+            return false;
+
+        memset(hashOut, 0, 32);
+        if (!HMAC_Init_ex(ctx, pKey, nKeyBytes, EVP_sha256(), NULL))
+            return false;
+
+        for (size_t i = 0; i < nInputs; ++i)
+        {
+            if (pInputs[i].nBytes == 0)
+                continue;
+            if (!pInputs[i].pData ||
+                !HMAC_Update(ctx, pInputs[i].pData, pInputs[i].nBytes))
+            {
+                return false;
+            }
+        }
+
+        unsigned int nBytes = 0;
+        if (!HMAC_Final(ctx, hashOut, &nBytes) || nBytes != 32)
+        {
+            OPENSSL_cleanse(hashOut, 32);
+            return false;
+        }
+        return true;
+    }
+
+    bool SecureMsgComputeProofHashWithContext(HMAC_CTX* ctx,
+                                               const SecureMessage& smsg,
+                                               const unsigned char* pPayload,
+                                               uint32_t nPayload,
+                                               bool fLegacySinglePayload,
+                                               unsigned char hashOut[32])
+    {
+        if (nPayload != 0 && !pPayload)
+            return false;
+
+        uint32_t nonse = 0;
+        memcpy(&nonse, smsg.nonse, sizeof(nonse));
+
+        unsigned char civ[32];
+        for (size_t i = 0; i < sizeof(civ); i += sizeof(nonse))
+            memcpy(civ + i, &nonse, sizeof(nonse));
+
+        const unsigned char* pHeader = smsg.hash;
+        SecureMsgHMACInput inputs[3] = {
+            {pHeader + 4, SMSG_HDR_LEN - 4},
+            {pPayload, nPayload},
+            {pPayload, fLegacySinglePayload ? 0 : nPayload}
+        };
+        const bool fOk = SecureMsgHMACSHA256(ctx, civ, sizeof(civ),
+                                             inputs, 3, hashOut);
+        OPENSSL_cleanse(civ, sizeof(civ));
+        return fOk;
+    }
+
+    bool SecureMsgProofMeetsTarget(const unsigned char hash[32])
+    {
+        // Preserve the v1 proof target exactly: two trailing zero bytes and
+        // at least one clear bit among bits 0, 1, and 2 of the prior byte.
+        return hash[31] == 0 && hash[30] == 0 &&
+               ((~hash[29]) & ((1 << 0) | (1 << 1) | (1 << 2)));
+    }
+}
+
+bool SecureMsgComputeProofHash(const SecureMessage& smsg,
+                               const unsigned char* pPayload,
+                               uint32_t nPayload,
+                               unsigned char hashOut[32])
+{
+    HMAC_CTX* ctx = HMAC_CTX_new();
+    if (!ctx)
+        return false;
+
+    const bool fOk = SecureMsgComputeProofHashWithContext(
+        ctx, smsg, pPayload, nPayload, false, hashOut);
+    HMAC_CTX_free(ctx);
+    return fOk;
+}
+
+bool SecureMsgComputeMessageMAC(const unsigned char key[32],
+                                const SecureMessage& smsg,
+                                const unsigned char* pPayload,
+                                uint32_t nPayload,
+                                unsigned char macOut[32])
+{
+    if (!key || (nPayload != 0 && !pPayload) || !macOut)
+        return false;
+
+    HMAC_CTX* ctx = HMAC_CTX_new();
+    if (!ctx)
+        return false;
+
+    // Hash the exact timestamp bytes carried in the existing v1 header.
+    // This keeps the transcript and wire layout unchanged.
+    const SecureMsgHMACInput inputs[2] = {
+        {reinterpret_cast<const unsigned char*>(&smsg.timestamp),
+         sizeof(smsg.timestamp)},
+        {pPayload, nPayload}
+    };
+    const bool fOk = SecureMsgHMACSHA256(ctx, key, 32, inputs, 2, macOut);
+    HMAC_CTX_free(ctx);
+    return fOk;
+}
+
+bool SecureMsgVerifyMessageMAC(const unsigned char key[32],
+                               const SecureMessage& smsg,
+                               const unsigned char* pPayload,
+                               uint32_t nPayload)
+{
+    unsigned char mac[32];
+    if (!SecureMsgComputeMessageMAC(key, smsg, pPayload, nPayload, mac))
+        return false;
+
+    const bool fMatch = SecureMemcmp(mac, smsg.mac, sizeof(mac)) == 0;
+    OPENSSL_cleanse(mac, sizeof(mac));
+    return fMatch;
 }
 
 namespace
@@ -1336,7 +1461,8 @@ int SecureMsgReadIni()
         } else
         if (strcmp(pName, "key") == 0)
         {
-            int rv = sscanf(pValue, "%64[^|]|%d|%d", cAddress, &addrRecv, &addrRecvAnon);
+            // cAddress is 64 bytes; reserve one byte for sscanf's terminating NUL.
+            int rv = sscanf(pValue, "%63[^|]|%d|%d", cAddress, &addrRecv, &addrRecvAnon);
             if (rv == 3)
             {
                 smsgAddresses.push_back(SecMsgAddress(std::string(cAddress), addrRecv, addrRecvAnon));
@@ -1901,7 +2027,7 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
                 if (fDebugSmsg)
                 {
                     printf("Asking peer for  %" PRIszu" messages.\n", (vchDataOut.size() - 8) / 16);
-                    printf("Locking bucket %" PRIszu" for peer %u.\n", time, pfrom->smsgData.nPeerId);
+                    printf("Locking bucket %" PRId64" for peer %u.\n", time, pfrom->smsgData.nPeerId);
                 };
                 smsgBuckets[time].nLockCount   = 3; // lock this bucket for at most 3 * SMSG_THREAD_DELAY seconds, unset when peer sends smsgMsg
                 smsgBuckets[time].nLockPeerId  = pfrom->smsgData.nPeerId;
@@ -3595,9 +3721,7 @@ int SecureMsgValidate(unsigned char *pHeader, unsigned char *pPayload, uint32_t 
     if (nPayload > SMSG_MAX_MSG_WORST)
         return 5;
 
-    unsigned char civ[32];
     unsigned char sha256Hash[32];
-    int rv = 2; // invalid
 
     uint32_t nonse;
     memcpy(&nonse, &psmsg->nonse[0], 4);
@@ -3605,81 +3729,58 @@ int SecureMsgValidate(unsigned char *pHeader, unsigned char *pPayload, uint32_t 
     if (fDebugSmsg)
         printf("SecureMsgValidate() nonse %u.\n", nonse);
 
-    for (int i = 0; i < 32; i+=4)
-        memcpy(civ+i, &nonse, 4);
-
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-    HMAC_CTX ctx;
-    HMAC_CTX_init(&ctx);
-
-    unsigned int nBytes;
-    if (!HMAC_Init_ex(&ctx, &civ[0], 32, EVP_sha256(), NULL)
-        || !HMAC_Update(&ctx, (unsigned char*) pHeader+4, SMSG_HDR_LEN-4)
-        || !HMAC_Update(&ctx, (unsigned char*) pPayload, nPayload)
-        || !HMAC_Final(&ctx, sha256Hash, &nBytes)
-        || nBytes != 32)
+    HMAC_CTX* ctx = HMAC_CTX_new();
+    if (!ctx)
     {
         if (fDebugSmsg)
-            printf("HMAC error.\n");
-        rv = 1; // error
-    } else
-    {
-        // Bitwise OR (not logical) to test bits 0,1,2
-        if (sha256Hash[31] == 0
-            && sha256Hash[30] == 0
-            && (~(sha256Hash[29]) & ((1<<0) | (1<<1) | (1<<2)) ))
-        {
-            if (fDebugSmsg)
-                printf("Hash Valid.\n");
-            rv = 0; // smsg is valid
-        };
-
-        if (SecureMemcmp(psmsg->hash, sha256Hash, 4) != 0)
-        {
-            if (fDebugSmsg)
-                printf("Checksum mismatch.\n");
-            rv = 3; // checksum mismatch
-        }
+            printf("HMAC context allocation failed.\n");
+        return 1;
     }
-    HMAC_CTX_cleanup(&ctx);
-#else
-    HMAC_CTX *ctx;
-    ctx = HMAC_CTX_new();
 
-    unsigned int nBytes;
-    if (!HMAC_Init_ex(ctx, &civ[0], 32, EVP_sha256(), NULL)
-        || !HMAC_Update(ctx, (unsigned char*) pHeader+4, SMSG_HDR_LEN-4)
-        || !HMAC_Update(ctx, (unsigned char*) pPayload, nPayload)
-        || !HMAC_Update(ctx, pPayload, nPayload)
-        || !HMAC_Final(ctx, sha256Hash, &nBytes)
-        || nBytes != 32)
-    {
-        if (fDebugSmsg)
-            printf("HMAC error.\n");
-        rv = 1; // error
-    } else
-    {
-        // Bitwise OR (not logical) to test bits 0,1,2
-        if (sha256Hash[31] == 0
-            && sha256Hash[30] == 0
-            && (~(sha256Hash[29]) & ((1<<0) | (1<<1) | (1<<2)) ))
-        {
-            if (fDebugSmsg)
-                printf("Hash Valid.\n");
-            rv = 0; // smsg is valid
-        };
+    bool fHmacOk = SecureMsgComputeProofHashWithContext(
+        ctx, *psmsg, pPayload, nPayload, false, sha256Hash);
+    bool fChecksumMatch = fHmacOk &&
+        SecureMemcmp(psmsg->hash, sha256Hash, 4) == 0;
+    bool fLegacyTranscript = false;
 
-        if (SecureMemcmp(psmsg->hash, sha256Hash, 4) != 0)
-        {
-            if (fDebugSmsg)
-                printf("Checksum mismatch.\n");
-            rv = 3; // checksum mismatch
-        }
+    // OpenSSL < 1.1 receivers historically checked header || payload while
+    // all senders generated header || payload || payload.  Prefer the sender
+    // transcript, then accept the one-pass form only as a receive fallback.
+    if (fHmacOk && !fChecksumMatch)
+    {
+        fHmacOk = SecureMsgComputeProofHashWithContext(
+            ctx, *psmsg, pPayload, nPayload, true, sha256Hash);
+        fChecksumMatch = fHmacOk &&
+            SecureMemcmp(psmsg->hash, sha256Hash, 4) == 0;
+        fLegacyTranscript = fChecksumMatch;
     }
     HMAC_CTX_free(ctx);
-#endif
 
-    return rv;
+    if (!fHmacOk)
+    {
+        if (fDebugSmsg)
+            printf("HMAC error.\n");
+        return 1;
+    }
+
+    if (!fChecksumMatch)
+    {
+        if (fDebugSmsg)
+            printf("Checksum mismatch.\n");
+        return 3;
+    }
+
+    if (!SecureMsgProofMeetsTarget(sha256Hash))
+        return 2;
+
+    if (fDebugSmsg)
+    {
+        if (fLegacyTranscript)
+            printf("Hash Valid (legacy single-payload transcript).\n");
+        else
+            printf("Hash Valid.\n");
+    }
+    return 0;
 };
 
 int SecureMsgSetHash(unsigned char *pHeader, unsigned char *pPayload, uint32_t nPayload)
@@ -3698,144 +3799,40 @@ int SecureMsgSetHash(unsigned char *pHeader, unsigned char *pPayload, uint32_t n
     SecureMessage* psmsg = (SecureMessage*) pHeader;
 
     int64_t nStart = GetTimeMillis();
-    unsigned char civ[32];
     unsigned char sha256Hash[32];
-
-    //std::vector<unsigned char> vchHash;
-    //vchHash.resize(32);
-
     bool found = false;
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-    HMAC_CTX ctx;
-    HMAC_CTX_init(&ctx);
-
     uint32_t nonse = 0;
-
-    //CBigNum bnTarget(2);
-    //bnTarget = bnTarget.pow(256 - 40);
-
-    // -- break for HMAC_CTX_cleanup
-    for (;;)
+    HMAC_CTX* ctx = HMAC_CTX_new();
+    if (ctx)
     {
-        if (!fSecMsgEnabled)
-            break;
-
-        //psmsg->timestamp = GetTime();
-        //memcpy(&psmsg->timestamp, &now, 8);
-        memcpy(&psmsg->nonse[0], &nonse, 4);
-
-        for (int i = 0; i < 32; i+=4)
-            memcpy(civ+i, &nonse, 4);
-
-        unsigned int nBytes;
-        if (!HMAC_Init_ex(&ctx, &civ[0], 32, EVP_sha256(), NULL)
-            || !HMAC_Update(&ctx, (unsigned char*) pHeader+4, SMSG_HDR_LEN-4)
-            || !HMAC_Update(&ctx, (unsigned char*) pPayload, nPayload)
-            || !HMAC_Update(&ctx, pPayload, nPayload)
-            || !HMAC_Final(&ctx, sha256Hash, &nBytes)
-            //|| !HMAC_Final(&ctx, &vchHash[0], &nBytes)
-            || nBytes != 32)
-            break;
-
-        /*
-        if (CBigNum(vchHash) <= bnTarget)
+        for (;;)
         {
-            found = true;
-            if (fDebugSmsg)
-                printf("Match %u\n", nonse);
-            break;
-        };
-        */
+            if (!fSecMsgEnabled)
+                break;
 
-        if (sha256Hash[31] == 0
-            && sha256Hash[30] == 0
-            && (~(sha256Hash[29]) & ((1<<0) || (1<<1) || (1<<2)) ))
-            //    && sha256Hash[29] == 0)
-        {
-            found = true;
-            //if (fDebugSmsg)
-            //    printf("Match %u\n", nonse);
-            break;
+            memcpy(&psmsg->nonse[0], &nonse, 4);
+            if (!SecureMsgComputeProofHashWithContext(
+                    ctx, *psmsg, pPayload, nPayload, false, sha256Hash))
+            {
+                break;
+            }
+
+            if (SecureMsgProofMeetsTarget(sha256Hash))
+            {
+                found = true;
+                break;
+            }
+
+            if (nonse >= 4294967295U)
+            {
+                if (fDebugSmsg)
+                    printf("No match %u\n", nonse);
+                break;
+            }
+            nonse++;
         }
-
-        //if (nonse >= UINT32_MAX)
-        if (nonse >= 4294967295U)
-        {
-            if (fDebugSmsg)
-                printf("No match %u\n", nonse);
-            break;
-            //return 1;
-        }
-        nonse++;
-    };
-
-    HMAC_CTX_cleanup(&ctx);
-#else
-    HMAC_CTX *ctx;
-    ctx = HMAC_CTX_new();
-
-    uint32_t nonse = 0;
-
-    //CBigNum bnTarget(2);
-    //bnTarget = bnTarget.pow(256 - 40);
-
-    // -- break for HMAC_CTX_cleanup
-    for (;;)
-    {
-        if (!fSecMsgEnabled)
-            break;
-
-        //psmsg->timestamp = GetTime();
-        //memcpy(&psmsg->timestamp, &now, 8);
-        memcpy(&psmsg->nonse[0], &nonse, 4);
-
-        for (int i = 0; i < 32; i+=4)
-            memcpy(civ+i, &nonse, 4);
-
-        unsigned int nBytes;
-        if (!HMAC_Init_ex(ctx, &civ[0], 32, EVP_sha256(), NULL)
-            || !HMAC_Update(ctx, (unsigned char*) pHeader+4, SMSG_HDR_LEN-4)
-            || !HMAC_Update(ctx, (unsigned char*) pPayload, nPayload)
-            || !HMAC_Update(ctx, pPayload, nPayload)
-            || !HMAC_Final(ctx, sha256Hash, &nBytes)
-            //|| !HMAC_Final(&ctx, &vchHash[0], &nBytes)
-            || nBytes != 32)
-            break;
-
-        /*
-        if (CBigNum(vchHash) <= bnTarget)
-        {
-            found = true;
-            if (fDebugSmsg)
-                printf("Match %u\n", nonse);
-            break;
-        };
-        */
-
-        if (sha256Hash[31] == 0
-            && sha256Hash[30] == 0
-            && (~(sha256Hash[29]) & ((1<<0) || (1<<1) || (1<<2)) ))
-            //    && sha256Hash[29] == 0)
-        {
-            found = true;
-            //if (fDebugSmsg)
-            //    printf("Match %u\n", nonse);
-            break;
-        }
-
-        //if (nonse >= UINT32_MAX)
-        if (nonse >= 4294967295U)
-        {
-            if (fDebugSmsg)
-                printf("No match %u\n", nonse);
-            break;
-            //return 1;
-        }
-        nonse++;
-    };
-
-    HMAC_CTX_free(ctx);
-#endif
+        HMAC_CTX_free(ctx);
+    }
 
     if (!fSecMsgEnabled)
     {
@@ -4139,35 +4136,8 @@ int SecureMsgEncrypt(SecureMessage& smsg, std::string& addressFrom, std::string&
 
     // -- Calculate a 32 byte MAC with HMACSHA256, using key_m as salt
     //    Message authentication code, (hash of timestamp + destination + payload)
-    bool fHmacOk = true;
-    unsigned int nBytes = 32;
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-    HMAC_CTX ctx;
-    HMAC_CTX_init(&ctx);
-
-    if (!HMAC_Init_ex(&ctx, &key_m[0], 32, EVP_sha256(), NULL)
-        || !HMAC_Update(&ctx, (unsigned char*) &smsg.timestamp, sizeof(smsg.timestamp))
-        || !HMAC_Update(&ctx, &vchCiphertext[0], vchCiphertext.size())
-        || !HMAC_Final(&ctx, smsg.mac, &nBytes)
-        || nBytes != 32)
-        fHmacOk = false;
-
-    HMAC_CTX_cleanup(&ctx);
-#else
-    HMAC_CTX *ctx;
-    ctx = HMAC_CTX_new();
-
-    if (!HMAC_Init_ex(ctx, &key_m[0], 32, EVP_sha256(), NULL)
-        || !HMAC_Update(ctx, (unsigned char*) &smsg.timestamp, sizeof(smsg.timestamp))
-        || !HMAC_Update(ctx, &vchCiphertext[0], vchCiphertext.size())
-        || !HMAC_Final(ctx, smsg.mac, &nBytes)
-        || nBytes != 32)
-        fHmacOk = false;
-
-    HMAC_CTX_free(ctx);
-#endif
-
-    if (!fHmacOk)
+    if (!SecureMsgComputeMessageMAC(&key_m[0], smsg, smsg.pPayload,
+                                    smsg.nPayload, smsg.mac))
     {
         printf("Could not generate MAC.\n");
         return 10;
@@ -4682,42 +4652,7 @@ int SecureMsgDecrypt(bool fTestOnly, std::string& address, unsigned char *pHeade
 
 
     // -- Message authentication code, (hash of timestamp + destination + payload)
-    unsigned char MAC[32];
-    bool fHmacOk = true;
-    unsigned int nBytes = 32;
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
-    HMAC_CTX ctx;
-    HMAC_CTX_init(&ctx);
-
-    if (!HMAC_Init_ex(&ctx, &key_m[0], 32, EVP_sha256(), NULL)
-        || !HMAC_Update(&ctx, (unsigned char*) &psmsg->timestamp, sizeof(psmsg->timestamp))
-        || !HMAC_Update(&ctx, pPayload, nPayload)
-        || !HMAC_Final(&ctx, MAC, &nBytes)
-        || nBytes != 32)
-        fHmacOk = false;
-
-    HMAC_CTX_cleanup(&ctx);
-#else
-    HMAC_CTX *ctx;
-    ctx = HMAC_CTX_new();
-
-    if (!HMAC_Init_ex(ctx, &key_m[0], 32, EVP_sha256(), NULL)
-        || !HMAC_Update(ctx, (unsigned char*) &psmsg->timestamp, sizeof(psmsg->timestamp))
-        || !HMAC_Update(ctx, pPayload, nPayload)
-        || !HMAC_Final(ctx, MAC, &nBytes)
-        || nBytes != 32)
-        fHmacOk = false;
-
-    HMAC_CTX_free(ctx);
-#endif
-
-    if (!fHmacOk)
-    {
-        printf("Could not generate MAC.\n");
-        return 1;
-    };
-
-    if (SecureMemcmp(MAC, psmsg->mac, 32) != 0)
+    if (!SecureMsgVerifyMessageMAC(&key_m[0], *psmsg, pPayload, nPayload))
     {
         if (fDebugSmsg)
             printf("MAC does not match.\n"); // expected if message is not to address on node
