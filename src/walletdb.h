@@ -10,6 +10,7 @@
 #include "stealth.h"
 #include "ringsig.h"
 #include "shielded.h"
+#include "privacy_vnext_wallet.h"
 
 class CKeyPool;
 class CAccount;
@@ -80,6 +81,8 @@ public:
 
 };
 
+// Wallet-local UI/configuration data. This type is not part of any
+// transaction, block, hash, or P2P serialization domain.
 class CAdrenalineNodeConfig
 {
 public:
@@ -105,7 +108,8 @@ public:
     }
 
     IMPLEMENT_SERIALIZE(
-        READWRITE(nVersion);
+        READWRITE(this->nVersion);
+        nVersion = this->nVersion;
         READWRITE(sAlias);
         READWRITE(sAddress);
         READWRITE(sCollateralnodePrivKey);
@@ -113,6 +117,31 @@ public:
         READWRITE(sOutputIndex);
     )
 };
+
+// Generation 0: the legacy value under ("adrenaline", address). Generation 1 adds a
+// canonical identity-bound record and keeps the legacy bytes for older readers.
+static const int ADRENALINE_NODE_CONFIG_DISK_GENERATION = 1;
+
+bool EncodeLegacyAdrenalineNodeConfigValue(
+    const CAdrenalineNodeConfig& nodeConfig,
+    int nSerializerContextVersion,
+    CDataStream& ssValue,
+    std::string& strError);
+bool DecodeLegacyAdrenalineNodeConfigValue(
+    CDataStream& ssValue,
+    CAdrenalineNodeConfig& nodeConfig,
+    int& nSerializerContextVersion,
+    std::string& strError);
+bool EncodeCanonicalAdrenalineNodeConfigValue(
+    const std::string& strStorageKey,
+    const CAdrenalineNodeConfig& nodeConfig,
+    CDataStream& ssValue,
+    std::string& strError);
+bool DecodeCanonicalAdrenalineNodeConfigValue(
+    CDataStream& ssValue,
+    const std::string& strExpectedStorageKey,
+    CAdrenalineNodeConfig& nodeConfig,
+    std::string& strError);
 
 class CLockedAnonOutput
 {
@@ -195,6 +224,21 @@ public:
 private:
     CWalletDB(const CWalletDB&);
     void operator=(const CWalletDB&);
+
+    enum WalletDBRawReadStatus
+    {
+        WALLET_DB_READ_NOT_FOUND,
+        WALLET_DB_READ_FOUND,
+        WALLET_DB_READ_ERROR
+    };
+
+    WalletDBRawReadStatus ReadRawValueStatus(
+        CDataStream& ssKey,
+        CDataStream& ssValue,
+        size_t nMaxValueSize);
+    WalletDBRawReadStatus ReadAdrenalineNodeConfigSchemaStatus(
+        int& nGeneration);
+    bool EnsureAdrenalineNodeConfigSchema(std::string& strError);
 public:
     Dbc* GetAtCursor()
     {
@@ -332,6 +376,15 @@ public:
         return Read(std::make_pair(std::string("sxAddr"), sxAddr.scan_pubkey), sxAddr);
     }
 
+    bool WritePrivacyVNextSeed(const CPrivacyVNextSeedRecord& record);
+    bool ReadPrivacyVNextSeed(CPrivacyVNextSeedRecord& record)
+    {
+        return Read(std::string("iv5seed"), record);
+    }
+    bool AdvancePrivacyVNextSeedIndex(
+        const CPrivacyVNextSeedRecord& expected,
+        uint32_t nextAddressIndex);
+
     bool WriteShieldedKey(const CShieldedPaymentAddress& addr, const CShieldedSpendingKey& key)
     {
         nWalletDBUpdated++;
@@ -383,7 +436,9 @@ public:
         return Write(std::make_pair(std::string("shnote"), std::make_pair(txhash, nPosition)), data, true);
     }
 
-	bool WriteAdrenalineNodeConfig(std::string sAlias, const CAdrenalineNodeConfig& nodeConfig);
+    bool MigrateAdrenalineNodeConfigRecords(std::string& strError);
+    bool ReadAdrenalineNodeConfigGeneration(int& nGeneration);
+    bool WriteAdrenalineNodeConfig(std::string sAlias, const CAdrenalineNodeConfig& nodeConfig);
     bool ReadAdrenalineNodeConfig(std::string sAlias, CAdrenalineNodeConfig& nodeConfig);
     bool EraseAdrenalineNodeConfig(std::string sAlias);
 

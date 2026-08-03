@@ -287,6 +287,7 @@ static const CRPCCommand vRPCCommands[] =
     { "stop",                   &stop,                   true,   true },
     { "getbestblockhash",       &getbestblockhash,       true,   true },
     { "getblockchaininfo",      &getblockchaininfo,      true,   false },
+    { "getv5migrationinventory", &getv5migrationinventory, true, false },
     { "getblockcount",          &getblockcount,          true,   true },
     { "getconnectioncount",     &getconnectioncount,     true,   true },
     { "getpeerinfo",            &getpeerinfo,            true,   true },
@@ -462,6 +463,8 @@ static const CRPCCommand vRPCCommands[] =
     { "name_count",             &name_count,             false,  false },
 
     /* Shielded Transaction Commands */
+    { "z_createiv5seed",        &z_createiv5seed,        false,  true },
+    { "z_getnewiv5address",     &z_getnewiv5address,     false,  true },
     { "z_getnewaddress",        &z_getnewaddress,        false,  true },
     { "z_listaddresses",        &z_listaddresses,        true,   false },
     { "z_getbalance",           &z_getbalance,           true,   false },

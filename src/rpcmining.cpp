@@ -237,10 +237,15 @@ Value getfinalitystakinginfo(const Array& params, bool fHelp)
     obj.push_back(Pair("finalized_hash", g_finalityTracker.GetFinalizedHash().GetHex()));
     obj.push_back(Pair("finality_model", std::string("active-epoch-committed-weight")));
     obj.push_back(Pair("absolute_stake_floor", false));
-    obj.push_back(Pair("private_finality_mode", std::string("hidden-weight-nullstake")));
+    const bool fBoundaryBActive = IsBoundaryBActiveAtHeight(nHeight);
+    obj.push_back(Pair("private_finality_mode", fBoundaryBActive
+                       ? std::string("privacy_vnext")
+                       : std::string("disabled")));
     obj.push_back(Pair("tally_certificate_required_for_private_votes", true));
     CFinalityTallyConfig tallyConfig = GetFinalityTallyConfig();
-    obj.push_back(Pair("private_promotion_enabled", nHeight >= FORK_HEIGHT_DAG && tallyConfig.CanRelayPrivateVotes()));
+    obj.push_back(Pair("private_promotion_enabled",
+                       fBoundaryBActive && nHeight >= FORK_HEIGHT_DAG &&
+                       tallyConfig.CanRelayPrivateVotes()));
     obj.push_back(Pair("tally_mode", tallyConfig.strMode));
     obj.push_back(Pair("tally_mode_valid", tallyConfig.fModeValid));
     obj.push_back(Pair("tally_pubkey_configured", tallyConfig.fPubKeyConfigured));
@@ -259,7 +264,9 @@ Value getfinalitystakinginfo(const Array& params, bool fHelp)
     int nTallyAggregatePartials = g_finalityTracker.GetEpochTallyAggregatePartialCount(nEpoch);
     obj.push_back(Pair("tally_decryptable_shares", nDecryptableTallyShares));
     obj.push_back(Pair("tally_aggregate_partials", nTallyAggregatePartials));
-    obj.push_back(Pair("tally_certificate_production_enabled", nHeight >= FORK_HEIGHT_DAG && tallyConfig.CanProduceCertificates()));
+    obj.push_back(Pair("tally_certificate_production_enabled",
+                       fBoundaryBActive && nHeight >= FORK_HEIGHT_DAG &&
+                       tallyConfig.CanProduceCertificates()));
 
     int nTransparentVotes = 0;
     int nPrivateVotes = 0;
@@ -313,7 +320,9 @@ Value getfinalitystakinginfo(const Array& params, bool fHelp)
     obj.push_back(Pair("tally_certificate_version", nTallyCertificateVersion));
     obj.push_back(Pair("tally_certificate_source", strTallyCertificateSource));
     std::string strPrivatePromotionStatus = "waiting-for-shares";
-    if (nHeight < FORK_HEIGHT_DAG)
+    if (!fBoundaryBActive)
+        strPrivatePromotionStatus = "disabled-pending-privacy-vnext";
+    else if (nHeight < FORK_HEIGHT_DAG)
         strPrivatePromotionStatus = "inactive-pre-dag";
     else if (!tallyConfig.CanRelayPrivateVotes())
         strPrivatePromotionStatus = "committee-config-invalid";

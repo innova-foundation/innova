@@ -259,6 +259,7 @@ extern json_spirit::Value searchrawtransactions(const json_spirit::Array& params
 extern json_spirit::Value getbestblockhash(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value getblockcount(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getblockchaininfo(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value getv5migrationinventory(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value getdifficulty(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value setbestblockbyheight(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value invalidateblock(const json_spirit::Array& params, bool fHelp);
@@ -371,6 +372,8 @@ extern json_spirit::Value smsgbuckets(const json_spirit::Array& params, bool fHe
 extern json_spirit::Value nyx(const json_spirit::Array& params, bool fHelp);
 
 extern json_spirit::Value z_getnewaddress(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value z_createiv5seed(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value z_getnewiv5address(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_listaddresses(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_getbalance(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_gettotalbalance(const json_spirit::Array& params, bool fHelp);
