@@ -60,7 +60,7 @@ else
     EXT_OPTIONS=
 endif
 
-xCXXFLAGS=-mthreads -O3 $(EXT_OPTIONS) -std=c++11 -Wall -Wextra -Wno-ignored-qualifiers -Wformat -Wformat-security -Wno-unused-parameter -Wno-deprecated-declarations -Wno-deprecated-copy $(HARDENING_FLAGS) $(DEBUGFLAGS) $(DEFS) $(INCLUDEPATHS) $(CXXFLAGS)
+xCXXFLAGS=-mthreads -O3 $(EXT_OPTIONS) -std=c++17 -Wall -Wextra -Wno-ignored-qualifiers -Wformat -Wformat-security -Wno-unused-parameter -Wno-deprecated-declarations -Wno-deprecated-copy $(HARDENING_FLAGS) $(DEBUGFLAGS) $(DEFS) $(INCLUDEPATHS) $(CXXFLAGS)
 xCFLAGS=-mthreads -O3 $(EXT_OPTIONS) -Wall -Wextra -Wno-ignored-qualifiers -Wformat -Wformat-security -Wno-unused-parameter -Wno-deprecated-declarations -Wno-incompatible-pointer-types $(HARDENING_FLAGS) $(DEBUGFLAGS) $(DEFS) $(INCLUDEPATHS) $(CFLAGS)
 LDFLAGS=-Wl,--dynamicbase -Wl,--nxcompat -Wl,--high-entropy-va
 xLDFLAGS=$(LDFLAGS)
@@ -136,6 +136,7 @@ OBJS= \
     obj/rpcshielded.o \
     obj/nullsend.o \
     obj/shielded.o \
+    obj/privacy_vnext_ffi.o \
     obj/zkproof.o \
     obj/verifycache.o \
     obj/lelantus.o \
@@ -276,7 +277,26 @@ obj/%.o: %.cc
 	rm -f $(@:%.o=%.d)
 endif
 
-innovad.exe: $(OBJS:obj/%=obj/%)
+PRIVACY_VNEXT_RUST_DIR := $(CURDIR)/privacy_vnext/rust
+PRIVACY_VNEXT_RUST_PROFILE := debug
+PRIVACY_VNEXT_RUST_FLAGS :=
+ifdef RELEASE
+PRIVACY_VNEXT_RUST_PROFILE := release
+PRIVACY_VNEXT_RUST_FLAGS := --release
+endif
+PRIVACY_VNEXT_RUST_LIB := $(PRIVACY_VNEXT_RUST_DIR)/target/$(PRIVACY_VNEXT_RUST_PROFILE)/libinnova_privacy_vnext.a
+PRIVACY_VNEXT_RUST_INPUTS := \
+	$(PRIVACY_VNEXT_RUST_DIR)/Cargo.toml \
+	$(PRIVACY_VNEXT_RUST_DIR)/Cargo.lock \
+	$(PRIVACY_VNEXT_RUST_DIR)/src/lib.rs \
+	$(PRIVACY_VNEXT_RUST_DIR)/abi/innova_privacy_vnext_v2.txt \
+	$(PRIVACY_VNEXT_RUST_DIR)/provenance.json \
+	$(CURDIR)/privacy_vnext/contract/iv5_protocol_v1.json
+
+$(PRIVACY_VNEXT_RUST_LIB): $(PRIVACY_VNEXT_RUST_INPUTS)
+	cd $(PRIVACY_VNEXT_RUST_DIR) && cargo build --locked --offline $(PRIVACY_VNEXT_RUST_FLAGS)
+
+innovad.exe: $(OBJS:obj/%=obj/%) $(PRIVACY_VNEXT_RUST_LIB)
 	$(CXX) $(xCXXFLAGS) $(xLDFLAGS) -o $@ $(LIBPATHS) $^ $(LEVELDB_LIBS) $(LIBS)
 
 clean:

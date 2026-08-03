@@ -113,7 +113,7 @@ DEBUGFLAGS=-g
 
 # CXXFLAGS can be specified on the make command line, so we use xCXXFLAGS that only
 # adds some defaults in front. Unfortunately, CXXFLAGS=... $(CXXFLAGS) does not work.
-xCXXFLAGS=-O2 -pthread -Wall -Wextra -Wno-ignored-qualifiers -Wno-format -Wno-unused-parameter -std=c++11 -Wno-literal-suffix \
+xCXXFLAGS=-O2 -pthread -Wall -Wextra -Wno-ignored-qualifiers -Wno-format -Wno-unused-parameter -std=c++17 -Wno-literal-suffix \
     $(DEBUGFLAGS) $(DEFS) $(HARDENING) $(CXXFLAGS)
 
 xCFLAGS=-O2 -pthread -Wall -Wextra -Wno-ignored-qualifiers -Wno-format -Wno-unused-parameter \
@@ -312,6 +312,7 @@ OBJS= \
     obj/rpcshielded.o \
     obj/nullsend.o \
     obj/shielded.o \
+    obj/privacy_vnext_ffi.o \
     obj/zkproof.o \
     obj/verifycache.o \
     obj/lelantus.o \
@@ -389,6 +390,7 @@ OBJS= \
     obj/rpcshielded.o \
     obj/nullsend.o \
     obj/shielded.o \
+    obj/privacy_vnext_ffi.o \
     obj/zkproof.o \
     obj/verifycache.o \
     obj/lelantus.o \
@@ -534,7 +536,26 @@ obj/%.o: %.cc
 	rm -f $(@:%.o=%.d)
 endif
 
-innovad: $(OBJS:obj/%=obj/%)
+PRIVACY_VNEXT_RUST_DIR := $(CURDIR)/privacy_vnext/rust
+PRIVACY_VNEXT_RUST_PROFILE := debug
+PRIVACY_VNEXT_RUST_FLAGS :=
+ifdef RELEASE
+PRIVACY_VNEXT_RUST_PROFILE := release
+PRIVACY_VNEXT_RUST_FLAGS := --release
+endif
+PRIVACY_VNEXT_RUST_LIB := $(PRIVACY_VNEXT_RUST_DIR)/target/$(PRIVACY_VNEXT_RUST_PROFILE)/libinnova_privacy_vnext.a
+PRIVACY_VNEXT_RUST_INPUTS := \
+	$(PRIVACY_VNEXT_RUST_DIR)/Cargo.toml \
+	$(PRIVACY_VNEXT_RUST_DIR)/Cargo.lock \
+	$(PRIVACY_VNEXT_RUST_DIR)/src/lib.rs \
+	$(PRIVACY_VNEXT_RUST_DIR)/abi/innova_privacy_vnext_v2.txt \
+	$(PRIVACY_VNEXT_RUST_DIR)/provenance.json \
+	$(CURDIR)/privacy_vnext/contract/iv5_protocol_v1.json
+
+$(PRIVACY_VNEXT_RUST_LIB): $(PRIVACY_VNEXT_RUST_INPUTS)
+	cd $(PRIVACY_VNEXT_RUST_DIR) && cargo build --locked --offline $(PRIVACY_VNEXT_RUST_FLAGS)
+
+innovad: $(OBJS:obj/%=obj/%) $(PRIVACY_VNEXT_RUST_LIB)
 	$(LINK) $(xCXXFLAGS) -o $@ $^ $(xLDFLAGS) $(LIBS)
 
 clean:

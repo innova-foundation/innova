@@ -1,0 +1,8 @@
+Innova privacy-vNext ABI-v2 compatibility notice
+status: non-consensus; transaction-version-2008-inactive
+normative-contract: ../contract/iv5_protocol_v1.json
+parameter-digest-input: exact bytes of iv5_protocol_v1.json
+activation-policy: an ABI entry point does not activate consensus; consensus-capabilities is authoritative
+implemented-capabilities: exact contract export, proof-size calculation, tree update/root, address codec, and key derivation
+prove-status: unsupported
+verify-status: unsupported

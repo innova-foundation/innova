@@ -1,0 +1,28 @@
+[package]
+name = "monero-oxide-no-std-tests"
+version = "0.1.0"
+description = "A crate to test no-std builds of monero-oxide crates work"
+license = "MIT"
+repository = "https://github.com/monero-oxide/monero-oxide/tree/main/tests/no-std"
+authors = ["Luke Parker <lukeparker5132@gmail.com>"]
+keywords = ["nostd", "no_std", "alloc"]
+edition = "2021"
+publish = false
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# Helioselene SHOULD work on `no-std`, yet it uses `std-shims` which requires `alloc`
+helioselene = { path = "../../crypto/helioselene", default-features = false, optional = true }
+
+monero-epee = { path = "../../monero-oxide/epee" }
+monero-wallet = { path = "../../monero-oxide/wallet", default-features = false, features = ["compile-time-generators"], optional = true }
+monero-daemon-rpc = { path = "../../monero-oxide/interface/daemon", default-features = false, optional = true }
+
+[features]
+alloc = ["helioselene/alloc", "monero-wallet", "monero-daemon-rpc"]

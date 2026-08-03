@@ -1,0 +1,236 @@
+Innova IV5 caller-owned consensus ABI v2
+calling-convention: C
+result-type: signed 32-bit integer
+ownership: all input and output storage is caller-owned; Rust transfers no allocation
+panic-policy: unwind and contain at every exported boundary
+consensus-status: disabled; consensus-capabilities is zero
+maximum-request-or-output-bytes: 262144
+functions:
+  innova_privacy_vnext_abi_version(uint32_t *out_version)
+  innova_privacy_vnext_abi_hash(uint8_t *out, size_t out_len)
+  innova_privacy_vnext_provenance_digest(uint8_t *out, size_t out_len)
+  innova_privacy_vnext_parameter_digest(uint8_t *out, size_t out_len)
+  innova_privacy_vnext_contract_metadata(innova_privacy_vnext_contract *out, size_t out_len)
+  innova_privacy_vnext_protocol_contract(uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_fcmp_proof_size(uint32_t inputs, uint32_t layers, size_t *out_size)
+  innova_privacy_vnext_fcmp_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_fcmp_verify(const uint8_t *request, size_t request_len)
+  innova_privacy_vnext_fcmp_batch_verify(const uint8_t *request, size_t request_len, uint32_t request_count)
+  innova_privacy_vnext_tree_update(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_tree_root(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_nullifier_update(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_nullifier_root(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_tree_witness(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_payload_validate(const uint8_t *request, size_t request_len)
+  innova_privacy_vnext_payload_effects(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_address_encode(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_address_decode(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_key_derive(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_note_scan(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_note_encrypt(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_value_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+result-codes:
+  0 valid
+  1 consensus-invalid
+  2 bad-length
+  3 unsupported-format
+  4 resource-limit
+  5 contained-panic
+  6 internal-or-local-state-failure
+capabilities:
+  bit-0 exact-protocol-contract
+  bit-1 upstream-fcmp-proof-size
+  bit-2 fcmp-prove
+  bit-3 fcmp-single-verify
+  bit-4 fcmp-batch-verify
+  bit-5 tree-update
+  bit-6 tree-root
+  bit-7 tree-witness
+  bit-8 payload-validation
+  bit-9 address-codec
+  bit-10 key-derivation
+  bit-11 note-scanning
+  bit-12 note-encryption
+  bit-13 value-proof-construction
+  bit-14 validated-payload-state-effects
+  bit-15 nullifier-accumulator-update-and-root
+implemented-capabilities: bits 0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, and 15
+consensus-capabilities: none
+fixed-output-length: 32
+parameter-digest: sha256(../contract/iv5_protocol_v1.json)
+contract-metadata-layout:
+  16 consecutive uint32_t fields followed by 40 revision bytes
+  exact-size: 104
+  consensus-active: 0
+protocol-contract-query:
+  null output with zero capacity returns exact size in out-written
+  insufficient non-null capacity returns resource-limit and required size
+proof-size:
+  implementation: upstream FcmpPlusPlus::proof_size
+  inputs: 1..16
+  layers: exactly 8
+  null-or-zero-or-wrong-layers: bad-length
+  inputs-above-16: resource-limit
+  output: one caller-owned size_t; unchanged on error
+fcmp-common:
+  schema: uint16-le 1
+  layers: uint8 8
+  root-curve: uint8 2 for Helios
+  input-count: uint8 1..16
+  reserved: all reserved bytes are zero
+  points: canonical nonidentity encodings
+  scalars: canonical little-endian field encodings
+  proof-length: exact upstream FcmpPlusPlus::proof_size(input-count, 8)
+  aggregate-batch-input-limit: 16
+fcmp-prove-request:
+  header-fields: schema-u16-le, layers-u8, root-curve-u8, input-count-u8, reserved-zero-3, finalized-root-32, signable-hash-32, caller-entropy-32
+  caller-entropy: nonzero and domain-separated through Innova/IV5/FCMP++/ProverRng/v1
+  per-input-fields: spend-scalar-x-32, commitment-scalar-y-32, output-O-I-C-96, leaf-count-u8, reserved-zero-3, leaves, four-Helios-field-branches, three-Selene-field-branches
+  leaves: 1..38 output tuples; the spent output must occur
+  Helios-field-branch: exactly 18 canonical scalars
+  Selene-field-branch: exactly 38 canonical scalars
+  behavior: derive rerandomized inputs and branch blinds, prove, then self-verify against finalized-root and signable-hash before returning
+fcmp-prove-response:
+  fields: schema-u16-le, layers-u8, input-count-u8, per-input-construction-record-256, proof-length-u32-le, proof
+  per-input-construction-record: pseudo-out-32, key-image-32, pseudo-out-mask-delta-r-c-32, sender-authority-32, sender-disclosure-proof-128
+  pseudo-out-mask-rule: pseudo-out equals source-commitment plus r-c times Ed25519-G; wallet adds r-c to the source note mask when constructing the value proof
+  sender-disclosure-rule: authority and proof bind the source spend authority and exact rerandomized FCMP O-tilde to signable-hash and input-index
+  secret-output-policy: pseudo-out-mask-delta-r-c is caller-secret construction material and must be zeroized after value-proof construction
+  verification-projection: only pseudo-out and key-image from each construction record enter the canonical verifier request
+fcmp-verify-request:
+  fields: schema-u16-le, layers-u8, root-curve-u8, input-count-u8, reserved-zero-3, finalized-root-32, signable-hash-32, per-input-pseudo-out-and-key-image, proof-length-u32-le, proof
+  duplicate-key-images: consensus-invalid
+fcmp-batch-request:
+  fields: schema-u16-le, layers-u8, request-count-u8, total-input-count-u8, reserved-zero-2, length-prefixed-verify-requests
+  nested-length: uint32-le followed by one exact fcmp-verify-request
+  request-count: must equal the out-of-band request-count argument and be 1..16
+  total-input-count: exact sum across nested requests and at most 16
+  batching: parse every nested proof before queueing; share all three upstream batch verifiers
+  deterministic-weights: ChaCha20 seeded by Blake2b-512 domain Innova/IV5/FCMP++/BatchWeights/v1 over canonical length-prefixed nested requests
+  differential-rule: single verification is exactly the one-item batch path
+value-prove-request:
+  header-fields: schema-u16-le, output-count-u8, input-count-u8, transparent-value-balance-i64-le, fee-u64-le, signable-hash-32, nonzero-caller-entropy-32, aggregate-excess-mask-32
+  trailing-fields: input-count pseudo-outs-32 followed by output-count amount-u64-le-and-mask-32 openings
+  counts: each 0..16; exact request EOF
+value-prove-response:
+  fields: schema-u16-le, output-count-u8, input-count-u8, output-commitments-32, range-proof-length-u32-le, range-proof, balance-proof-64, binding-signature-64
+  range-proof: empty for zero outputs, otherwise one canonical aggregate Bulletproof+
+  behavior: prove and independently verify range, signed public/private balance, and binding signature before returning
+unimplemented-operation-policy:
+  applies only to tree-witness
+  structurally invalid dimensions return bad-length or resource-limit
+  otherwise return unsupported-format without mutating output buffers
+address-components-request:
+  exact-size: 70
+  fields: schema-u16-le, network-u8, format-u8, address-type-u8, reserved-zero-u8, spend-public-32, view-public-32
+  network: mainnet-0, testnet-1, regtest-2
+  format: 1
+  address-type: 0..3
+address-encoding:
+  payload: ASCII-IV5, network-u8, format-u8, address-type-u8, spend-public-32, view-public-32
+  checksum: first-four-bytes-of-double-sha256-payload
+  text: Bitcoin Base58 alphabet with canonical re-encoding required
+address-decode-request:
+  fields: schema-u16-le, expected-network-u8, reserved-zero-u8, address-ascii-to-eof
+  output: exact canonical 70-byte address-components-request
+key-derivation-request:
+  exact-size: 72
+  fields: schema-u16-le, network-u8, address-type-u8, address-index-u32-le, seed-32, genesis-hash-32
+key-derivation-labels:
+  Innova/IV5/Key/spend/v1
+  Innova/IV5/Key/view/v1
+  Innova/IV5/Key/outgoing-view/v1
+  Innova/IV5/Key/nullifier/v1
+  Innova/IV5/Key/staking/v1
+key-derivation-transcript:
+  blake2b-512(label, genesis-hash, address-index-u32-le, network-u8, address-type-u8, seed-32, retry-counter-u32-le)
+  scalar: ed25519 scalar reduction; retry from zero
+key-derivation-output:
+  exact-size: 232
+  fields: schema-u16-le, network-u8, address-type-u8, address-index-u32-le, five-secret-scalars-32-each, spend-public-32, view-public-32
+note-ciphertext:
+  recipient-exact-size: 177
+  outgoing-exact-size: 209
+  construction: unique-key ChaCha20 stream from pinned rand_chacha ChaCha20Rng, then keyed BLAKE2b-256 encrypt-then-MAC
+  kdf: BLAKE2b-512 over a domain, secret material, and length-prefixed associated data; first 32 bytes encrypt and last 32 bytes authenticate
+  associated-data: schema, network, address-type, output-index, genesis, O, I, C, and ephemeral public key
+  recipient-secret: ephemeral-DH shared point from recipient view key
+  outgoing-secret: wallet outgoing-view secret scalar bytes
+  recipient-plaintext: schema, network, address-type, output-index, recipient spend/view public keys, amount, y, and commitment mask
+  outgoing-plaintext: recipient plaintext followed by ephemeral secret scalar
+note-encrypt-request:
+  exact-size: 272
+  fields: schema-u16-le, network-u8, address-type-u8, output-index-u32-le, genesis-32, recipient-spend-32, recipient-view-32, outgoing-secret-32, ephemeral-secret-32, amount-u64-le, y-32, mask-32, I-32
+note-encrypt-result:
+  exact-size: 522
+  fields: schema-u16-le, network-u8, address-type-u8, output-index-u32-le, O-I-C-ephemeral-128, recipient-ciphertext-177, outgoing-ciphertext-209
+  self-check: outgoing ciphertext is independently authenticated, decrypted, and matched to every input and public output component before return
+note-scan-request:
+  prefix-exact-size: 236
+  fields: schema-u16-le, scan-kind-u8, network-u8, address-type-u8, reserved-zero-3, output-index-u32-le, genesis-32, scan-secret-32, spend-material-32, O-I-C-ephemeral-128, ciphertext-to-eof
+  scan-kinds: 0 full-spend, 1 view-only, 2 outgoing
+  spend-material: base spend secret for full-spend; all zero for view-only and outgoing
+note-scan-result:
+  exact-size: 212
+  fields: schema-u16-le, scan-kind-u8, network-u8, address-type-u8, reserved-zero-3, output-index-u32-le, amount-u64-le, recipient-spend-32, recipient-view-32, derived-spend-secret-or-zero-32, y-32, mask-32, key-image-or-zero-32
+  validation: authenticate before decrypting; verify all context fields, address linkage, O opening, C opening, ephemeral relation for outgoing scans, and I-times-derived-spend-secret key image for full scans
+tree-state:
+  exact-size: 300
+  fields: schema-u16-le, layers-u8, reserved-zero-u8, size-u64-le, eight-level-records
+  level-record: child-count-u8, three-reserved-zero-u8, canonical-curve-point-32
+  level-arities: 38,18,38,18,38,18,38,18
+  empty-level-point: pinned Selene or Helios hash initializer
+tree-update-request:
+  fields: schema-u16-le, initialize-flag-u8, reserved-zero-u8, optional-state-300, leaf-count-u32-le, leaves
+  initialize-flag: 1 omits state; 0 requires exact canonical state
+  leaf: O-32, I-32, C-32 canonical nonidentity Ed25519 subgroup points
+  maximum-leaves-per-update: 16
+  output: canonical tree-state-300
+tree-root-output:
+  exact-size: 44
+  fields: schema-u16-le, layers-u8, curve-id-u8, size-u64-le, root-point-32
+  layers: 8
+  curve-id: 2 for Helios
+nullifier-update-request:
+  fields: schema-u16-le, initialize-flag-u8, reserved-zero-u8, optional-state-44, key-image-count-u32-le, key-images-32-each
+  initialize-flag: 1 omits state; 0 requires exact canonical state
+  maximum-key-images-per-update: 16
+  key-image: canonical nonidentity torsion-free Ed25519 point
+  duplicate-key-images-in-one-update: consensus-invalid
+  output: canonical nullifier-state-44
+nullifier-state-and-root:
+  exact-size: 44
+  fields: schema-u16-le, accumulator-version-u8, reserved-zero-u8, count-u64-le, rolling-root-32
+  accumulator-version: 1
+  empty-root: first-32-bytes(blake2b-512(Innova/IV5/NullifierAccumulator/Empty/v1))
+  step-root: first-32-bytes(blake2b-512(Innova/IV5/NullifierAccumulator/Step/v1, previous-root, previous-count-u64-le, key-image))
+  exact-spent-membership: C++ LevelDB keys and epoch undo remain authoritative; this bounded state is the deterministic epoch commitment
+payload-validation-request:
+  fields: outer-wire-version-u32-le, canonical-payload-to-eof
+  exact outer versions: 2000..2008 under the normative envelope matrix
+  maximum payload bytes: 262144
+payload-effects-response:
+  header-exact-size: 76
+  header-fields: schema-u16-le, input-count-u8, output-count-u8, finalized-root-32, finalized-tree-size-u64-le, parameter-digest-32
+  trailing-fields: input-count key-images-32 followed by output-count O-I-C leaves-96
+  behavior: rerun complete payload validation before returning ordered state effects; no C++ payload re-decoding is permitted
+payload-validation:
+  strict canonical CompactSize and no trailing bytes
+  exact typed enum and wire-envelope capability matrix
+  network, reserved byte, nonzero genesis, and current parameter digest
+  canonical Ed25519 pseudo-out/key-image/output/address/ephemeral points and signatures
+  canonical nonidentity Helios finalized root and bounded tree size
+  input/output limits: 16/16 pending benchmark cap selection
+  disclosure records derived only from mask bits 1, 2, and 4
+  six bounded proof sections in fixed normative order
+  signing-hash: blake2b-256(Innova/IV5/Signing/v1, outer-wire-version-u32-le, canonical-payload-through-finality-body)
+  hidden-spend-input: pseudo-out-32 then nullifier-key-image-32; source leaves are never serialized in the base input
+  membership: exact upstream proof size and full FCMP++ verification against finalized-root, signing-hash, pseudo-outs, and key-images
+  exposed-amount: C equals opening-times-Ed25519-G plus value-times-Monero-H
+  hidden-amount-range: canonical aggregate Monero Bulletproof+ over all output commitments; deterministic verifier weights bind signing-hash, commitments, and proof
+  value-balance: exact 64-byte Schnorr excess proof binds signing-hash, pseudo-outs, output commitments, signed transparent value balance, and fee
+  binding-signature: distinct exact 64-byte Schnorr signature under the value-excess key binds signing-hash, pseudo-outs, output commitments, signed transparent value balance, and fee
+  sender-disclosure: source-spend-authority-32 plus a 128-byte proof of the authority discrete log and the Monero-T rerandomization linking it to the exact FCMP O-tilde input
+  receiver-disclosure: recipient-spend-32 and view-32 plus a 160-byte proof containing the ephemeral-view shared point, a DLEQ proof, and the Monero-T output-opening proof
+  disclosure-proof-order: all sender proofs in input order, then all receiver proofs in output order; exposed amounts need no extra proof beyond their verified openings
+  remaining-inactive-work: operation-proof cryptographic verification

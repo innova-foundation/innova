@@ -158,7 +158,7 @@ endif
 
 # CXXFLAGS can be specified on the make command line, so we use xCXXFLAGS that only
 # adds some defaults in front. Unfortunately, CXXFLAGS=... $(CXXFLAGS) does not work.
-xCXXFLAGS=-O2 $(EXT_OPTIONS) -pthread -Wall -Wextra -Wno-ignored-qualifiers -Wno-format -Wno-unused-parameter -Wno-literal-suffix -Wno-deprecated-declarations -Wno-deprecated-copy -std=c++11 \
+xCXXFLAGS=-O2 $(EXT_OPTIONS) -pthread -Wall -Wextra -Wno-ignored-qualifiers -Wno-format -Wno-unused-parameter -Wno-literal-suffix -Wno-deprecated-declarations -Wno-deprecated-copy -std=c++17 \
     $(DEBUGFLAGS) $(DEFS) $(HARDENING) $(CXXFLAGS)
 
 xCFLAGS=-O2 $(EXT_OPTIONS) -pthread -Wall -Wextra -Wno-ignored-qualifiers -Wno-format -Wno-unused-parameter -Wno-deprecated-declarations \
@@ -361,6 +361,7 @@ OBJS= \
     obj/rpcshielded.o \
     obj/nullsend.o \
     obj/shielded.o \
+    obj/privacy_vnext_ffi.o \
     obj/zkproof.o \
     obj/verifycache.o \
     obj/lelantus.o \
@@ -439,6 +440,7 @@ OBJS= \
     obj/rpcshielded.o \
     obj/nullsend.o \
     obj/shielded.o \
+    obj/privacy_vnext_ffi.o \
     obj/zkproof.o \
     obj/verifycache.o \
     obj/lelantus.o \
@@ -498,10 +500,19 @@ endif
 
 TEST_OBJS= \
     obj/test/test_innova.o \
+    obj/test/allocator_tests.o \
+    obj/test/base32_tests.o \
+    obj/test/base64_tests.o \
+    obj/test/getarg_tests.o \
+    obj/test/mruset_tests.o \
+    obj/test/netbase_tests.o \
+    obj/test/ringsig_tests.o \
     obj/test/rpc_tests.o \
+    obj/test/sigopcount_tests.o \
     obj/test/bulletproof_ac_tests.o \
     obj/test/finality_tally_tests.o \
     obj/test/fcmp_root_tests.o \
+    obj/test/privacy_vnext_abi_tests.o \
     obj/test/idag_validation_tests.o \
     obj/test/shielded_nullifier_binding_tests.o \
     obj/test/finality_vote_binding_tests.o \
@@ -510,16 +521,32 @@ TEST_OBJS= \
     obj/test/finality_committee_sig_tests.o \
     obj/test/halfagg_stake_tests.o \
     obj/test/epoch_state_determinism_tests.o \
+    obj/test/name_index_recovery_tests.o \
+    obj/test/fuzz_deserialize_tests.o \
     obj/test/smessage_hmac_tests.o \
     obj/test/base58_tests.o \
+    obj/test/bignum_tests.o \
     obj/test/key_tests.o \
+    obj/test/uint160_tests.o \
+    obj/test/uint256_tests.o \
+    obj/test/util_tests.o \
+    obj/test/Checkpoints_tests.o \
     obj/test/DoS_tests.o \
     obj/test/script_P2SH_tests.o \
     obj/test/script_tests.o \
     obj/test/transaction_tests.o \
-    obj/test/multisig_tests.o
+    obj/test/multisig_tests.o \
+    obj/test/wallet_tests.o \
+    obj/test/accounting_tests.o \
+    obj/test/miner_tests.o
 
-.PHONY: all innova-build check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-finality-committee-sig check-epoch-state-determinism check-smessage-hmac check-generic-hardening release-check
+FUZZ_CXX ?= clang++
+FUZZ_COMPILE_FLAGS ?= -O1 -g -fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer
+FUZZ_LINK_FLAGS ?= -O1 -g -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer
+FUZZ_DESERIALIZE_BIN ?= fuzz_deserialize
+FUZZ_DESERIALIZE_OBJ ?= obj/fuzz/fuzz_deserialize.o
+
+.PHONY: all innova-build audit-test-dependencies fuzz-deserialize fuzz-deserialize-libfuzzer check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-name-index-recovery check-fuzz-deserialize-limits check-smessage-hmac release-check
 
 INNOVA_SPINNER ?= 1
 INNOVA_SPINNER_SCRIPT ?= ../contrib/innova_build_spinner.sh
@@ -532,6 +559,21 @@ all: innova-build
 endif
 
 innova-build: innovad
+
+audit-test-dependencies:
+	../contrib/test/audit_build_dependencies.sh
+
+fuzz-deserialize: $(FUZZ_DESERIALIZE_OBJ)
+
+$(FUZZ_DESERIALIZE_OBJ): test/fuzz/fuzz_deserialize.cpp
+	@mkdir -p $(@D)
+	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_COMPILE_FLAGS) -DINNOVA_FUZZ_STANDALONE -MMD -MF $(@:%.o=%.d) -c -o $@ $<
+
+fuzz-deserialize-libfuzzer:
+	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $(FUZZ_DESERIALIZE_BIN) test/fuzz/fuzz_deserialize.cpp
+
+check-legacy-aggregate: test_innova
+	./test_innova --run_test=allocator_tests,base32_tests,base58_tests,base64_tests,bignum_tests,Checkpoints_tests,DoS_tests,getarg_tests,key_tests,mruset_tests,multisig_tests,netbase_tests,ringsig_tests,rpc_tests,script_P2SH_tests,script_tests,sigopcount_tests,transaction_tests,uint160_tests,uint256_tests,util_tests,wallet_tests,accounting_tests,miner_tests
 
 check-bpac: test_innova
 	./test_innova --run_test=bulletproof_ac_tests
@@ -560,16 +602,22 @@ check-coinstake-guard: test_innova
 check-finality-committee-sig: test_innova
 	./test_innova --run_test=finality_committee_sig_tests
 
+check-halfagg-stake: test_innova
+	./test_innova --run_test=halfagg_stake_tests
+
 check-epoch-state-determinism: test_innova
 	./test_innova --run_test=epoch_state_determinism_tests
+
+check-name-index-recovery: test_innova
+	./test_innova --run_test=name_index_recovery_tests
+
+check-fuzz-deserialize-limits: test_innova
+	./test_innova --run_test=fuzz_deserialize_tests
 
 check-smessage-hmac: test_innova
 	./test_innova --run_test=smessage_hmac_tests
 
-check-generic-hardening: test_innova
-	./test_innova --run_test=base58_tests,key_tests,DoS_tests,script_P2SH_tests,script_tests,transaction_tests,multisig_tests,rpc_tests
-
-release-check: innova-build check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-finality-committee-sig check-epoch-state-determinism check-smessage-hmac check-generic-hardening
+release-check: audit-test-dependencies innova-build check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-name-index-recovery check-fuzz-deserialize-limits check-smessage-hmac
 
 #
 # LevelDB support
@@ -580,7 +628,10 @@ DEFS += $(addprefix -I,$(CURDIR)/leveldb/include) -DUSE_LEVELDB
 DEFS += $(addprefix -I,$(CURDIR)/leveldb/helpers)
 OBJS += obj/txdb-leveldb.o
 leveldb/libleveldb.a:
-	@echo "Building LevelDB ..."; cd leveldb; CC=$(CC) CXX=$(CXX) make libleveldb.a libmemenv.a; cd ..;
+	@echo "Building LevelDB ..."
+	+$(MAKE) -C leveldb CC="$(CC)" CXX="$(CXX)" \
+		CFLAGS="$(xCFLAGS)" CXXFLAGS="$(xCXXFLAGS)" LDFLAGS="$(xLDFLAGS)" \
+		libleveldb.a libmemenv.a
 obj/txdb-leveldb.o: leveldb/libleveldb.a
 endif
 ifneq (${USE_LEVELDB}, 1)
@@ -588,7 +639,9 @@ OBJS += obj/txdb-bdb.o
 endif
 
 # auto-generated dependencies:
--include obj/*.P
+# Keep nested test/minizip objects header-correct.  Omitting obj/test/*.P can
+# silently link ABI-stale tests after a consensus/proof header changes.
+-include obj/*.P obj/*/*.P
 
 obj/build.h: FORCE
 	/bin/sh ../share/genbuild.sh obj/build.h
@@ -660,27 +713,48 @@ obj/%.o: %.cc
 	rm -f $(@:%.o=%.d)
 endif
 
-innovad: $(OBJS:obj/%=obj/%)
+PRIVACY_VNEXT_RUST_DIR := $(CURDIR)/privacy_vnext/rust
+PRIVACY_VNEXT_RUST_PROFILE := debug
+PRIVACY_VNEXT_RUST_FLAGS :=
+ifdef RELEASE
+PRIVACY_VNEXT_RUST_PROFILE := release
+PRIVACY_VNEXT_RUST_FLAGS := --release
+endif
+PRIVACY_VNEXT_RUST_LIB := $(PRIVACY_VNEXT_RUST_DIR)/target/$(PRIVACY_VNEXT_RUST_PROFILE)/libinnova_privacy_vnext.a
+PRIVACY_VNEXT_RUST_INPUTS := \
+	$(PRIVACY_VNEXT_RUST_DIR)/Cargo.toml \
+	$(PRIVACY_VNEXT_RUST_DIR)/Cargo.lock \
+	$(PRIVACY_VNEXT_RUST_DIR)/src/lib.rs \
+	$(PRIVACY_VNEXT_RUST_DIR)/abi/innova_privacy_vnext_v2.txt \
+	$(PRIVACY_VNEXT_RUST_DIR)/provenance.json \
+	$(CURDIR)/privacy_vnext/contract/iv5_protocol_v1.json
+
+$(PRIVACY_VNEXT_RUST_LIB): $(PRIVACY_VNEXT_RUST_INPUTS)
+	cd $(PRIVACY_VNEXT_RUST_DIR) && cargo build --locked --offline $(PRIVACY_VNEXT_RUST_FLAGS)
+
+innovad: $(OBJS:obj/%=obj/%) $(PRIVACY_VNEXT_RUST_LIB)
 	$(LINK) $(xCXXFLAGS) -o $@ $^ $(xLDFLAGS) $(LIBS) $(DARWIN_FRAMEWORKS)
 
-test_innova: $(filter-out obj/init.o,$(OBJS:obj/%=obj/%)) $(TEST_OBJS)
+test_innova: $(filter-out obj/init.o,$(OBJS:obj/%=obj/%)) $(TEST_OBJS) $(PRIVACY_VNEXT_RUST_LIB)
 	$(LINK) $(xCXXFLAGS) -o $@ $^ $(xLDFLAGS) $(LIBS) -lboost_unit_test_framework $(DARWIN_FRAMEWORKS)
 
 clean:
-	-rm -f innovad
-	-rm -f test_innova
-	-rm -f obj/*.o
-	-rm -f obj/*.P
-	-rm -f obj/*.d
-	-rm -f obj/test/*.o
-	-rm -f obj/test/*.P
-	-rm -f obj/test/*.d
-	-rm -f obj/build.h
-	-rm -f obj/tor/*.o
-	-rm -f obj/tor/*.P
-	-rm -f obj/ipfs/*.o
-	-rm -f obj/ipfs/*.P
-	-rm -rf obj/minizip
-	-cd leveldb && $(MAKE) clean || true
+	rm -f innovad
+	rm -f test_innova
+	rm -f $(FUZZ_DESERIALIZE_BIN)
+	rm -f obj/*.o
+	rm -f obj/*.P
+	rm -f obj/*.d
+	rm -f obj/test/*.o
+	rm -f obj/test/*.P
+	rm -f obj/test/*.d
+	rm -rf obj/fuzz
+	rm -f obj/build.h
+	rm -f obj/tor/*.o
+	rm -f obj/tor/*.P
+	rm -f obj/ipfs/*.o
+	rm -f obj/ipfs/*.P
+	rm -rf obj/minizip
+	+$(MAKE) -C leveldb clean
 
 FORCE:

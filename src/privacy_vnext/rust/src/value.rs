@@ -1,0 +1,608 @@
+use blake2::{Blake2b512, Digest};
+use curve25519_dalek::{
+    constants::ED25519_BASEPOINT_POINT,
+    edwards::{CompressedEdwardsY, EdwardsPoint},
+    scalar::Scalar,
+    traits::{Identity, IsIdentity},
+};
+use monero_bulletproofs::Bulletproof;
+use monero_ed25519::{Commitment, CompressedPoint, Scalar as MoneroScalar};
+use rand_chacha::ChaCha20Rng;
+use rand_core::SeedableRng;
+
+use crate::{ResultCode, PAYLOAD_SCHEMA_U16};
+
+pub(crate) const MAX_VALUE_COMMITMENTS: usize = 16;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ValueError {
+    BadLength,
+    InvalidEncoding,
+    InvalidProof,
+    ResourceLimit,
+}
+
+fn hash_to_scalar(domain: &[u8], fields: &[&[u8]]) -> Scalar {
+    let mut hash = Blake2b512::new();
+    hash.update(domain);
+    for field in fields {
+        hash.update((field.len() as u64).to_le_bytes());
+        hash.update(field);
+    }
+    Scalar::from_bytes_mod_order_wide(&hash.finalize().into())
+}
+
+fn deterministic_rng(domain: &[u8], fields: &[&[u8]]) -> ChaCha20Rng {
+    let mut hash = Blake2b512::new();
+    hash.update(domain);
+    for field in fields {
+        hash.update((field.len() as u64).to_le_bytes());
+        hash.update(field);
+    }
+    let digest = hash.finalize();
+    let mut seed = [0_u8; 32];
+    seed.copy_from_slice(&digest[..32]);
+    ChaCha20Rng::from_seed(seed)
+}
+
+fn canonical_scalar(bytes: &[u8; 32]) -> Result<Scalar, ValueError> {
+    Option::<Scalar>::from(Scalar::from_canonical_bytes(*bytes)).ok_or(ValueError::InvalidEncoding)
+}
+
+fn canonical_point(bytes: &[u8; 32], allow_identity: bool) -> Result<EdwardsPoint, ValueError> {
+    let point = CompressedEdwardsY(*bytes)
+        .decompress()
+        .filter(|point| point.compress().to_bytes() == *bytes)
+        .filter(EdwardsPoint::is_torsion_free)
+        .ok_or(ValueError::InvalidEncoding)?;
+    if !allow_identity && point.is_identity() {
+        return Err(ValueError::InvalidEncoding);
+    }
+    Ok(point)
+}
+
+fn monero_h() -> EdwardsPoint {
+    CompressedEdwardsY(CompressedPoint::H.to_bytes())
+        .decompress()
+        .expect("the pinned Monero H encoding must decompress")
+}
+
+pub(crate) fn commitment(amount: u64, mask_bytes: &[u8; 32]) -> Result<[u8; 32], ValueError> {
+    let mask = canonical_scalar(mask_bytes)?;
+    let commitment = Commitment::new(MoneroScalar::from(mask), amount).commit();
+    Ok(commitment.compress().to_bytes())
+}
+
+pub(crate) fn validate_disclosed_commitment(
+    encoded: &[u8; 32],
+    amount: u64,
+    mask: &[u8; 32],
+) -> Result<bool, ValueError> {
+    canonical_point(encoded, false)?;
+    Ok(commitment(amount, mask)? == *encoded)
+}
+
+pub(crate) fn prove_range(
+    amounts: &[u64],
+    masks: &[[u8; 32]],
+    entropy: &[u8; 32],
+) -> Result<(Vec<[u8; 32]>, Vec<u8>), ValueError> {
+    if amounts.is_empty() || amounts.len() != masks.len() {
+        return Err(ValueError::BadLength);
+    }
+    if amounts.len() > MAX_VALUE_COMMITMENTS {
+        return Err(ValueError::ResourceLimit);
+    }
+
+    let mut openings = Vec::with_capacity(amounts.len());
+    let mut encoded = Vec::with_capacity(amounts.len());
+    for (&amount, mask_bytes) in amounts.iter().zip(masks) {
+        let mask = canonical_scalar(mask_bytes)?;
+        let opening = Commitment::new(MoneroScalar::from(mask), amount);
+        let point = opening.commit().compress().to_bytes();
+        canonical_point(&point, false)?;
+        encoded.push(point);
+        openings.push(opening);
+    }
+
+    let encoded_flat = encoded.iter().flatten().copied().collect::<Vec<_>>();
+    let mut rng = deterministic_rng(b"Innova/IV5/RangeProof/Prove/v1", &[entropy, &encoded_flat]);
+    let proof = Bulletproof::prove_plus(&mut rng, openings)
+        .map_err(|_| ValueError::InvalidProof)?
+        .serialize();
+    Ok((encoded, proof))
+}
+
+pub(crate) fn verify_range(
+    commitments: &[[u8; 32]],
+    proof_bytes: &[u8],
+    signable_hash: &[u8; 32],
+) -> Result<bool, ValueError> {
+    if commitments.is_empty() || proof_bytes.is_empty() {
+        return Err(ValueError::BadLength);
+    }
+    if commitments.len() > MAX_VALUE_COMMITMENTS {
+        return Err(ValueError::ResourceLimit);
+    }
+
+    let mut compressed = Vec::with_capacity(commitments.len());
+    for encoded in commitments {
+        canonical_point(encoded, false)?;
+        compressed.push(CompressedPoint::from(*encoded));
+    }
+
+    let mut reader = proof_bytes;
+    let proof = Bulletproof::read_plus(&mut reader).map_err(|_| ValueError::InvalidEncoding)?;
+    if !reader.is_empty() || proof.serialize() != proof_bytes {
+        return Err(ValueError::InvalidEncoding);
+    }
+
+    let commitments_flat = commitments.iter().flatten().copied().collect::<Vec<_>>();
+    let mut rng = deterministic_rng(
+        b"Innova/IV5/RangeProof/Verify/v1",
+        &[signable_hash, &commitments_flat, proof_bytes],
+    );
+    Ok(proof.verify(&mut rng, &compressed))
+}
+
+fn excess_point(
+    pseudo_outs: &[[u8; 32]],
+    outputs: &[[u8; 32]],
+    transparent_value_balance: i64,
+    fee: u64,
+) -> Result<EdwardsPoint, ValueError> {
+    if pseudo_outs.len() > MAX_VALUE_COMMITMENTS || outputs.len() > MAX_VALUE_COMMITMENTS {
+        return Err(ValueError::ResourceLimit);
+    }
+    if fee > i64::MAX as u64 {
+        return Err(ValueError::ResourceLimit);
+    }
+
+    let mut excess = EdwardsPoint::identity();
+    for encoded in pseudo_outs {
+        excess += canonical_point(encoded, false)?;
+    }
+    for encoded in outputs {
+        excess -= canonical_point(encoded, false)?;
+    }
+
+    // Positive balance enters the private pool; negative balance exits it.
+    let public_delta = i128::from(transparent_value_balance) - i128::from(fee);
+    let magnitude =
+        u64::try_from(public_delta.unsigned_abs()).map_err(|_| ValueError::ResourceLimit)?;
+    let public_term = monero_h() * Scalar::from(magnitude);
+    if public_delta >= 0 {
+        excess += public_term;
+    } else {
+        excess -= public_term;
+    }
+    Ok(excess)
+}
+
+pub(crate) fn prove_balance(
+    pseudo_outs: &[[u8; 32]],
+    outputs: &[[u8; 32]],
+    transparent_value_balance: i64,
+    fee: u64,
+    excess_mask_bytes: &[u8; 32],
+    signable_hash: &[u8; 32],
+    entropy: &[u8; 32],
+) -> Result<[u8; 64], ValueError> {
+    let excess_mask = canonical_scalar(excess_mask_bytes)?;
+    let excess = excess_point(pseudo_outs, outputs, transparent_value_balance, fee)?;
+    if excess != ED25519_BASEPOINT_POINT * excess_mask {
+        return Err(ValueError::InvalidProof);
+    }
+
+    let excess_encoded = excess.compress().to_bytes();
+    let mut nonce = hash_to_scalar(
+        b"Innova/IV5/BalanceProof/Nonce/v1",
+        &[entropy, excess_mask_bytes, signable_hash, &excess_encoded],
+    );
+    if nonce == Scalar::ZERO {
+        nonce = Scalar::ONE;
+    }
+    let nonce_point = ED25519_BASEPOINT_POINT * nonce;
+    let nonce_encoded = nonce_point.compress().to_bytes();
+    let challenge = hash_to_scalar(
+        b"Innova/IV5/BalanceProof/Challenge/v1",
+        &[signable_hash, &excess_encoded, &nonce_encoded],
+    );
+    let response = nonce + (challenge * excess_mask);
+
+    let mut proof = [0_u8; 64];
+    proof[..32].copy_from_slice(&nonce_encoded);
+    proof[32..].copy_from_slice(&response.to_bytes());
+    Ok(proof)
+}
+
+pub(crate) fn verify_balance(
+    pseudo_outs: &[[u8; 32]],
+    outputs: &[[u8; 32]],
+    transparent_value_balance: i64,
+    fee: u64,
+    signable_hash: &[u8; 32],
+    proof: &[u8],
+) -> Result<bool, ValueError> {
+    if proof.len() != 64 {
+        return Err(ValueError::BadLength);
+    }
+    let mut nonce_bytes = [0_u8; 32];
+    nonce_bytes.copy_from_slice(&proof[..32]);
+    let nonce = canonical_point(&nonce_bytes, false)?;
+    let mut response_bytes = [0_u8; 32];
+    response_bytes.copy_from_slice(&proof[32..]);
+    let response = canonical_scalar(&response_bytes)?;
+
+    let excess = excess_point(pseudo_outs, outputs, transparent_value_balance, fee)?;
+    let excess_encoded = excess.compress().to_bytes();
+    let challenge = hash_to_scalar(
+        b"Innova/IV5/BalanceProof/Challenge/v1",
+        &[signable_hash, &excess_encoded, &nonce_bytes],
+    );
+    Ok((ED25519_BASEPOINT_POINT * response) == (nonce + (excess * challenge)))
+}
+
+pub(crate) fn prove_binding_signature(
+    pseudo_outs: &[[u8; 32]],
+    outputs: &[[u8; 32]],
+    transparent_value_balance: i64,
+    fee: u64,
+    excess_mask_bytes: &[u8; 32],
+    signable_hash: &[u8; 32],
+    entropy: &[u8; 32],
+) -> Result<[u8; 64], ValueError> {
+    let excess_mask = canonical_scalar(excess_mask_bytes)?;
+    let excess = excess_point(pseudo_outs, outputs, transparent_value_balance, fee)?;
+    if excess != ED25519_BASEPOINT_POINT * excess_mask {
+        return Err(ValueError::InvalidProof);
+    }
+
+    let excess_encoded = excess.compress().to_bytes();
+    let mut nonce = hash_to_scalar(
+        b"Innova/IV5/BindingSignature/Nonce/v1",
+        &[entropy, excess_mask_bytes, signable_hash, &excess_encoded],
+    );
+    if nonce == Scalar::ZERO {
+        nonce = Scalar::ONE;
+    }
+    let nonce_encoded = (ED25519_BASEPOINT_POINT * nonce).compress().to_bytes();
+    let challenge = hash_to_scalar(
+        b"Innova/IV5/BindingSignature/Challenge/v1",
+        &[signable_hash, &excess_encoded, &nonce_encoded],
+    );
+    let response = nonce + (challenge * excess_mask);
+
+    let mut signature = [0_u8; 64];
+    signature[..32].copy_from_slice(&nonce_encoded);
+    signature[32..].copy_from_slice(&response.to_bytes());
+    Ok(signature)
+}
+
+pub(crate) fn verify_binding_signature(
+    pseudo_outs: &[[u8; 32]],
+    outputs: &[[u8; 32]],
+    transparent_value_balance: i64,
+    fee: u64,
+    signable_hash: &[u8; 32],
+    signature: &[u8],
+) -> Result<bool, ValueError> {
+    if signature.len() != 64 {
+        return Err(ValueError::BadLength);
+    }
+    let mut nonce_bytes = [0_u8; 32];
+    nonce_bytes.copy_from_slice(&signature[..32]);
+    let nonce = canonical_point(&nonce_bytes, false)?;
+    let mut response_bytes = [0_u8; 32];
+    response_bytes.copy_from_slice(&signature[32..]);
+    let response = canonical_scalar(&response_bytes)?;
+
+    let excess = excess_point(pseudo_outs, outputs, transparent_value_balance, fee)?;
+    let excess_encoded = excess.compress().to_bytes();
+    let challenge = hash_to_scalar(
+        b"Innova/IV5/BindingSignature/Challenge/v1",
+        &[signable_hash, &excess_encoded, &nonce_bytes],
+    );
+    Ok((ED25519_BASEPOINT_POINT * response) == (nonce + (excess * challenge)))
+}
+
+struct Reader<'a> {
+    bytes: &'a [u8],
+    position: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, position: 0 }
+    }
+
+    fn take(&mut self, length: usize) -> Result<&'a [u8], ResultCode> {
+        let end = self
+            .position
+            .checked_add(length)
+            .ok_or(ResultCode::ResourceLimit)?;
+        if end > self.bytes.len() {
+            return Err(ResultCode::BadLength);
+        }
+        let result = &self.bytes[self.position..end];
+        self.position = end;
+        Ok(result)
+    }
+
+    fn array<const N: usize>(&mut self) -> Result<[u8; N], ResultCode> {
+        self.take(N)?
+            .try_into()
+            .map_err(|_| ResultCode::InternalLocalStateFailure)
+    }
+
+    fn u8(&mut self) -> Result<u8, ResultCode> {
+        Ok(self.array::<1>()?[0])
+    }
+
+    fn u16(&mut self) -> Result<u16, ResultCode> {
+        Ok(u16::from_le_bytes(self.array()?))
+    }
+
+    fn u64(&mut self) -> Result<u64, ResultCode> {
+        Ok(u64::from_le_bytes(self.array()?))
+    }
+
+    fn i64(&mut self) -> Result<i64, ResultCode> {
+        Ok(i64::from_le_bytes(self.array()?))
+    }
+
+    fn finish(self) -> Result<(), ResultCode> {
+        if self.position == self.bytes.len() {
+            Ok(())
+        } else {
+            Err(ResultCode::BadLength)
+        }
+    }
+}
+
+fn result_code(error: ValueError) -> ResultCode {
+    match error {
+        ValueError::BadLength => ResultCode::BadLength,
+        ValueError::ResourceLimit => ResultCode::ResourceLimit,
+        ValueError::InvalidEncoding | ValueError::InvalidProof => ResultCode::ConsensusInvalid,
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) fn prove_request(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
+    const HEADER_BYTES: usize = 116;
+    if request.len() < HEADER_BYTES {
+        return Err(ResultCode::BadLength);
+    }
+    let mut reader = Reader::new(request);
+    if reader.u16()? != PAYLOAD_SCHEMA_U16 {
+        return Err(ResultCode::UnsupportedFormat);
+    }
+    let output_count = usize::from(reader.u8()?);
+    let input_count = usize::from(reader.u8()?);
+    if output_count > MAX_VALUE_COMMITMENTS || input_count > MAX_VALUE_COMMITMENTS {
+        return Err(ResultCode::ResourceLimit);
+    }
+    let transparent_value_balance = reader.i64()?;
+    let fee = reader.u64()?;
+    let signable_hash = reader.array()?;
+    let entropy = reader.array()?;
+    let excess_mask = reader.array()?;
+    if signable_hash.iter().all(|byte| *byte == 0) || entropy.iter().all(|byte| *byte == 0) {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    let mut pseudo_outs = Vec::with_capacity(input_count);
+    for _ in 0..input_count {
+        let pseudo_out = reader.array()?;
+        canonical_point(&pseudo_out, false).map_err(result_code)?;
+        pseudo_outs.push(pseudo_out);
+    }
+    let mut amounts = Vec::with_capacity(output_count);
+    let mut masks = Vec::with_capacity(output_count);
+    for _ in 0..output_count {
+        amounts.push(reader.u64()?);
+        let mask = reader.array()?;
+        canonical_scalar(&mask).map_err(result_code)?;
+        masks.push(mask);
+    }
+    reader.finish()?;
+
+    let (output_commitments, range_proof) = if output_count == 0 {
+        (Vec::new(), Vec::new())
+    } else {
+        prove_range(&amounts, &masks, &entropy).map_err(result_code)?
+    };
+    let balance_proof = prove_balance(
+        &pseudo_outs,
+        &output_commitments,
+        transparent_value_balance,
+        fee,
+        &excess_mask,
+        &signable_hash,
+        &entropy,
+    )
+    .map_err(result_code)?;
+    let binding_signature = prove_binding_signature(
+        &pseudo_outs,
+        &output_commitments,
+        transparent_value_balance,
+        fee,
+        &excess_mask,
+        &signable_hash,
+        &entropy,
+    )
+    .map_err(result_code)?;
+
+    if (output_count != 0
+        && !verify_range(&output_commitments, &range_proof, &signable_hash).map_err(result_code)?)
+        || !verify_balance(
+            &pseudo_outs,
+            &output_commitments,
+            transparent_value_balance,
+            fee,
+            &signable_hash,
+            &balance_proof,
+        )
+        .map_err(result_code)?
+        || !verify_binding_signature(
+            &pseudo_outs,
+            &output_commitments,
+            transparent_value_balance,
+            fee,
+            &signable_hash,
+            &binding_signature,
+        )
+        .map_err(result_code)?
+    {
+        return Err(ResultCode::InternalLocalStateFailure);
+    }
+
+    let mut response = Vec::new();
+    response.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+    response.push(u8::try_from(output_count).map_err(|_| ResultCode::ResourceLimit)?);
+    response.push(u8::try_from(input_count).map_err(|_| ResultCode::ResourceLimit)?);
+    for commitment in output_commitments {
+        response.extend_from_slice(&commitment);
+    }
+    response.extend_from_slice(
+        &u32::try_from(range_proof.len())
+            .map_err(|_| ResultCode::ResourceLimit)?
+            .to_le_bytes(),
+    );
+    response.extend_from_slice(&range_proof);
+    response.extend_from_slice(&balance_proof);
+    response.extend_from_slice(&binding_signature);
+    Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scalar(value: u64) -> [u8; 32] {
+        Scalar::from(value).to_bytes()
+    }
+
+    #[test]
+    fn aggregate_range_proof_roundtrip_and_malleation() {
+        let amounts = [0, 42, u64::MAX];
+        let masks = [scalar(3), scalar(5), scalar(7)];
+        let entropy = [9_u8; 32];
+        let signable_hash = [11_u8; 32];
+        let (commitments, proof) = prove_range(&amounts, &masks, &entropy).unwrap();
+        assert!(verify_range(&commitments, &proof, &signable_hash).unwrap());
+
+        let mut malformed = proof.clone();
+        let last = malformed.len() - 1;
+        malformed[last] ^= 1;
+        assert!(!verify_range(&commitments, &malformed, &signable_hash).unwrap_or(false));
+
+        let mut wrong_commitments = commitments.clone();
+        wrong_commitments[0] = commitment(1, &masks[0]).unwrap();
+        assert!(!verify_range(&wrong_commitments, &proof, &signable_hash).unwrap());
+    }
+
+    #[test]
+    fn disclosed_amount_is_bound_to_commitment() {
+        let mask = scalar(19);
+        let encoded = commitment(123, &mask).unwrap();
+        assert!(validate_disclosed_commitment(&encoded, 123, &mask).unwrap());
+        assert!(!validate_disclosed_commitment(&encoded, 124, &mask).unwrap());
+    }
+
+    #[test]
+    fn balance_proof_covers_private_and_public_sides() {
+        let input = commitment(100, &scalar(5)).unwrap();
+        let output = commitment(90, &scalar(2)).unwrap();
+        let signable_hash = [21_u8; 32];
+        let proof = prove_balance(
+            &[input],
+            &[output],
+            0,
+            10,
+            &scalar(3),
+            &signable_hash,
+            &[22_u8; 32],
+        )
+        .unwrap();
+        assert!(verify_balance(&[input], &[output], 0, 10, &signable_hash, &proof).unwrap());
+        assert!(!verify_balance(&[input], &[output], 0, 11, &signable_hash, &proof).unwrap());
+
+        let binding = prove_binding_signature(
+            &[input],
+            &[output],
+            0,
+            10,
+            &scalar(3),
+            &signable_hash,
+            &[24_u8; 32],
+        )
+        .unwrap();
+        assert!(
+            verify_binding_signature(&[input], &[output], 0, 10, &signable_hash, &binding,)
+                .unwrap()
+        );
+        let mut malformed_binding = binding;
+        malformed_binding[63] ^= 1;
+        assert!(!verify_binding_signature(
+            &[input],
+            &[output],
+            0,
+            10,
+            &signable_hash,
+            &malformed_binding,
+        )
+        .unwrap_or(false));
+
+        let shielded = commitment(50, &scalar(7)).unwrap();
+        let shield_proof = prove_balance(
+            &[],
+            &[shielded],
+            51,
+            1,
+            &(-Scalar::from(7_u64)).to_bytes(),
+            &signable_hash,
+            &[23_u8; 32],
+        )
+        .unwrap();
+        assert!(verify_balance(&[], &[shielded], 51, 1, &signable_hash, &shield_proof).unwrap());
+    }
+
+    #[test]
+    fn malformed_value_material_is_rejected() {
+        let noncanonical = [0xff_u8; 32];
+        assert_eq!(
+            commitment(1, &noncanonical),
+            Err(ValueError::InvalidEncoding)
+        );
+        assert_eq!(
+            prove_range(&[], &[], &[0_u8; 32]),
+            Err(ValueError::BadLength)
+        );
+        assert_eq!(
+            verify_balance(&[], &[], 0, 0, &[0_u8; 32], &[0_u8; 63]),
+            Err(ValueError::BadLength)
+        );
+    }
+
+    #[test]
+    fn canonical_value_proving_request_self_verifies() {
+        let pseudo_out = commitment(100, &scalar(5)).unwrap();
+        let mut request = Vec::new();
+        request.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+        request.extend_from_slice(&[1, 1]);
+        request.extend_from_slice(&0_i64.to_le_bytes());
+        request.extend_from_slice(&10_u64.to_le_bytes());
+        request.extend_from_slice(&[0x81; 32]);
+        request.extend_from_slice(&[0x82; 32]);
+        request.extend_from_slice(&scalar(3));
+        request.extend_from_slice(&pseudo_out);
+        request.extend_from_slice(&90_u64.to_le_bytes());
+        request.extend_from_slice(&scalar(2));
+        let response = prove_request(&request).unwrap();
+        assert_eq!(&response[..4], &[1, 0, 1, 1]);
+        assert_eq!(&response[4..36], &commitment(90, &scalar(2)).unwrap());
+        request.push(0);
+        assert_eq!(prove_request(&request), Err(ResultCode::BadLength));
+    }
+}

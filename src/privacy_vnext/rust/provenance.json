@@ -1,0 +1,184 @@
+{
+  "abi": {
+    "ownership": "caller_owned_outputs_only",
+    "panic_strategy": "unwind_and_catch_unwind",
+    "schema_path": "abi/innova_privacy_vnext_v2.txt",
+    "schema_sha256": "2be4a63cea3fc7f4de6e7f9f05a2db482e947472fbd5b13cf7eab136c12be6e5",
+    "version": 2
+  },
+  "consensus_enabled": false,
+  "dependency_lock": {
+    "expected_upstream_sha256": "ed36d0720d8f9edd9ebc479ad84adb0763b24d739ecce3271d35bc2ca59a0747",
+    "upstream_package_count": 184,
+    "upstream_path": "upstream/Cargo.lock",
+    "upstream_sha256": "ed36d0720d8f9edd9ebc479ad84adb0763b24d739ecce3271d35bc2ca59a0747",
+    "wrapper_package_count": 84,
+    "wrapper_path": "Cargo.lock",
+    "wrapper_sha256": "a9005b4d7573a5fba2e47bb06e6d346d3a800b78af1df18df9820c5fec6b7daf"
+  },
+  "licenses": {
+    "upstream_file_count": 31,
+    "upstream_files": [
+      ".github/LICENSE",
+      "audits/fcmp++/LICENSE",
+      "audits/generalized-bulletproofs/LICENSE",
+      "audits/helioselene/script/LICENSE",
+      "crypto/divisors/LICENSE",
+      "crypto/fcmps/LICENSE",
+      "crypto/fcmps/circuit-abstraction/LICENSE",
+      "crypto/fcmps/ec-gadgets/LICENSE",
+      "crypto/generalized-bulletproofs/LICENSE",
+      "crypto/helioselene/LICENSE",
+      "monero-oxide/LICENSE",
+      "monero-oxide/ed25519/LICENSE",
+      "monero-oxide/ed25519/tests/LICENSE",
+      "monero-oxide/epee/LICENSE",
+      "monero-oxide/interface/LICENSE",
+      "monero-oxide/interface/daemon/LICENSE",
+      "monero-oxide/interface/daemon/simple-request/LICENSE",
+      "monero-oxide/io/LICENSE",
+      "monero-oxide/primitives/LICENSE",
+      "monero-oxide/ringct/borromean/LICENSE",
+      "monero-oxide/ringct/bulletproofs/LICENSE",
+      "monero-oxide/ringct/bulletproofs/generators/LICENSE",
+      "monero-oxide/ringct/clsag/LICENSE",
+      "monero-oxide/ringct/fcmp++/LICENSE",
+      "monero-oxide/ringct/fcmp++/generators/LICENSE",
+      "monero-oxide/ringct/mlsag/LICENSE",
+      "monero-oxide/wallet/LICENSE",
+      "monero-oxide/wallet/address/LICENSE",
+      "monero-oxide/wallet/base58/LICENSE",
+      "tests/no-std/LICENSE",
+      "tests/verify-chain/LICENSE"
+    ],
+    "vendored_file_count": 285
+  },
+  "parameter_digest": {
+    "algorithm": "SHA-256",
+    "available": true,
+    "compatibility_summary_path": "contract/innova_privacy_vnext_product_v1.txt",
+    "compatibility_summary_sha256": "6bd0af00a522df073d5f54a15b6a3a79689d5e1e610e0ed527f704dd9240b815",
+    "contract_path": "../contract/iv5_protocol_v1.json",
+    "contract_sha256": "7305fae4f0a26989b0db63b55b587cfd1094bb136661252cf595f81cbf6f78fa",
+    "scope": "normative inactive IV5 protocol contract; not activation"
+  },
+  "product_contract": {
+    "authorization_modes": [
+      "owner",
+      "cold_staker",
+      "m_of_n_public_signers",
+      "m_of_n_hidden_signers"
+    ],
+    "consensus_active": false,
+    "disclosure_modes": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "finality_objects": [
+      "none",
+      "vote",
+      "tally_share",
+      "certificate",
+      "committee_rotation"
+    ],
+    "finality_profiles": [
+      "none",
+      "nullstake_v1",
+      "nullstake_v2",
+      "nullstake_v3"
+    ],
+    "max_inputs": 16,
+    "max_outputs": 16,
+    "max_payload_bytes": 262144,
+    "nullstake_generations": [
+      1,
+      2,
+      3
+    ],
+    "proof_size_api": "upstream FcmpPlusPlus::proof_size",
+    "prove_implemented": true,
+    "required_operations": [
+      "shield",
+      "unshield",
+      "transfer",
+      "nullsend",
+      "delegation_create",
+      "m_of_n_mint",
+      "reclaim",
+      "conditional_migration"
+    ],
+    "transaction_version": 2008,
+    "tree_layers": 8,
+    "upstream_revision": "76399e58bfc7e652d900936f84b3785ea59ab4cd",
+    "verify_implemented": true
+  },
+  "residual_risks": {
+    "generalized_bulletproofs_fixed_protocol_audited": false,
+    "innova_composition_reviewed": false,
+    "proof_or_verification_abi_implemented": true
+  },
+  "rust_toolchain": {
+    "channel": "1.94.1",
+    "expected_sha256": "f53198ae4fdecfd87da36fe431c771b54c51e975d01c0e99f653bc14d5d48211",
+    "path": "rust-toolchain.toml",
+    "sha256": "f53198ae4fdecfd87da36fe431c771b54c51e975d01c0e99f653bc14d5d48211"
+  },
+  "sbom": {
+    "format": "SPDX-2.3",
+    "path": "sbom.spdx.json",
+    "sha256": "a4bd71a8f25e54ec6a96b3ef929d1580f83ed1789938e930adcc84b5b9599fbc"
+  },
+  "schema_version": 1,
+  "status": "non_consensus_contract_and_fcmp_proof_abi",
+  "transaction_version_2008_enabled": false,
+  "upstream": {
+    "commit": "76399e58bfc7e652d900936f84b3785ea59ab4cd",
+    "commit_timestamp_utc": "2026-07-09T09:05:47Z",
+    "components": {
+      "crypto/divisors": {
+        "file_count": 11,
+        "git_tree": "c18a9e59ec397738a6bf9c66e8ca2a1ad22d7851",
+        "sha256_tree": "204f07a7b1d17d4b499e746a29e3d685d4042675fec99d85856a74a7b544f7af"
+      },
+      "crypto/fcmps": {
+        "file_count": 23,
+        "git_tree": "4350e4a902093fcaa6e898324e419f01ac2c584f",
+        "sha256_tree": "456d8ecede574c01191ec51b57aca14212ae4be7133655b65b9f2fe9720b1de2"
+      },
+      "crypto/generalized-bulletproofs": {
+        "file_count": 13,
+        "git_tree": "160793b98181d6c61d4ec5063a4afa4ad410eaf5",
+        "sha256_tree": "31a2b8059276af662d4519f922f2cdcbcebe2371c4fe6ea3b198a5ba31d14bde"
+      },
+      "crypto/helioselene": {
+        "file_count": 13,
+        "git_tree": "89df10d4f04c760fc6f8b230872703b1f219d433",
+        "sha256_tree": "d432f1242564043e88c49ec8d8444bf192651d7720a7d0ac4743dd920f009cab"
+      },
+      "monero-oxide/ringct/fcmp++": {
+        "file_count": 16,
+        "git_tree": "49e090270ba09bbc79c65718e5a002ca49bb0cd7",
+        "sha256_tree": "44f3e54fdec062873ce2f625511c82347b121fe8e43cb0fb67e2eacba16ef447"
+      }
+    },
+    "file_count": 284,
+    "git_tree": "18eb6a7f525e9413a8b7dcea28fd4c2b1180f9c7",
+    "repository": "https://github.com/monero-oxide/monero-oxide.git",
+    "sha256_tree": "20ef84e4ce6001789a5b096728b0b611d1021839587347d6ea6877eeff7c2e7b",
+    "source_directory": "upstream"
+  },
+  "vendored_registry": {
+    "cargo_locked_required": true,
+    "cargo_offline_required": true,
+    "directory": "vendor",
+    "file_count": 6806,
+    "package_directory_count": 158,
+    "sha256_tree": "ad16118daaaed9d2a7a64b2e1582d52d15e845750671d3bf321cc10ff7b4793e"
+  }
+}

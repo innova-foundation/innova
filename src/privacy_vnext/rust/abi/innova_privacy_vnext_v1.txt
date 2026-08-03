@@ -1,0 +1,36 @@
+Innova privacy-vNext metadata and sizing ABI v1
+calling-convention: C
+result-type: signed 32-bit integer
+ownership: all output storage is caller-owned; Rust transfers no allocation
+panic-policy: unwind and contain at every exported boundary
+consensus-status: disabled; transaction-version-2008-inactive
+functions:
+  innova_privacy_vnext_abi_version(uint32_t *out_version)
+  innova_privacy_vnext_abi_hash(uint8_t *out, size_t out_len)
+  innova_privacy_vnext_provenance_digest(uint8_t *out, size_t out_len)
+  innova_privacy_vnext_parameter_digest(uint8_t *out, size_t out_len)
+  innova_privacy_vnext_contract_metadata(innova_privacy_vnext_contract *out, size_t out_len)
+  innova_privacy_vnext_fcmp_proof_size(uint32_t inputs, uint32_t layers, size_t *out_size)
+result-codes:
+  0 valid
+  1 consensus-invalid
+  2 bad-length
+  3 unsupported-format
+  4 resource-limit
+  5 contained-panic
+  6 internal-or-local-state-failure
+fixed-output-length: 32
+parameter-digest: sha256(contract/innova_privacy_vnext_product_v1.txt)
+contract-metadata-layout:
+  13 consecutive uint32_t fields followed by 40 revision bytes
+  exact-size: 92
+  consensus-active: 0
+proof-size:
+  implementation: upstream FcmpPlusPlus::proof_size
+  inputs: 1..16
+  layers: exactly 8
+  null-or-zero-or-wrong-layers: bad-length
+  inputs-above-16: resource-limit
+  output: one caller-owned size_t; unchanged on error
+prove-status: unsupported
+verify-status: unsupported

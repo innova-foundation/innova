@@ -1,0 +1,668 @@
+use blake2::{digest::consts::U32, Blake2b};
+use ciphersuite::group::{Group, GroupEncoding};
+use curve25519_dalek::scalar::Scalar;
+use helioselene::HeliosPoint;
+use monero_fcmp_plus_plus::FcmpPlusPlus;
+use sha2::{Digest, Sha256};
+
+use crate::{
+    disclosure, envelope_allows, fcmp, validate_public_key, value, ResultCode,
+    AUTH_M_OF_N_HIDDEN_SIGNERS, FINALITY_OBJECT_NONE, MAX_INPUTS, MAX_OUTPUTS, MAX_PAYLOAD_BYTES,
+    NETWORK_ID_MAX, NOTE_SHIELD, NOTE_TRANSFER, NOTE_UNSHIELD, PAYLOAD_SCHEMA_U16,
+    PRODUCT_CONTRACT, TREE_LAYERS,
+};
+
+const VALIDATION_PREFIX_SIZE: usize = 4;
+const MAX_CIPHERTEXT_BYTES: usize = 4_096;
+const MAX_FINALITY_BODY_BYTES: usize = 65_536;
+const MAX_PROOF_SECTION_BYTES: usize = 65_536;
+const TREE_CAPACITY: u64 = 38_u64.pow(4) * 18_u64.pow(4);
+const SIGNING_DOMAIN: &[u8] = b"Innova/IV5/Signing/v1";
+const EFFECTS_HEADER_BYTES: usize = 76;
+
+struct PayloadEffects {
+    finalized_root: [u8; 32],
+    finalized_tree_size: u64,
+    parameter_digest: [u8; 32],
+    key_images: Vec<[u8; 32]>,
+    output_leaves: Vec<([u8; 32], [u8; 32], [u8; 32])>,
+}
+
+impl PayloadEffects {
+    fn encode(&self) -> Result<Vec<u8>, ResultCode> {
+        let capacity = EFFECTS_HEADER_BYTES
+            .checked_add(self.key_images.len() * 32)
+            .and_then(|size| size.checked_add(self.output_leaves.len() * 96))
+            .ok_or(ResultCode::ResourceLimit)?;
+        let mut encoded = Vec::with_capacity(capacity);
+        encoded.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+        encoded.push(u8::try_from(self.key_images.len()).map_err(|_| ResultCode::ResourceLimit)?);
+        encoded
+            .push(u8::try_from(self.output_leaves.len()).map_err(|_| ResultCode::ResourceLimit)?);
+        encoded.extend_from_slice(&self.finalized_root);
+        encoded.extend_from_slice(&self.finalized_tree_size.to_le_bytes());
+        encoded.extend_from_slice(&self.parameter_digest);
+        for key_image in &self.key_images {
+            encoded.extend_from_slice(key_image);
+        }
+        for (owner, nullifier_base, commitment) in &self.output_leaves {
+            encoded.extend_from_slice(owner);
+            encoded.extend_from_slice(nullifier_base);
+            encoded.extend_from_slice(commitment);
+        }
+        Ok(encoded)
+    }
+}
+
+struct Cursor<'a> {
+    bytes: &'a [u8],
+    position: usize,
+}
+
+impl<'a> Cursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, position: 0 }
+    }
+
+    fn take(&mut self, length: usize) -> Result<&'a [u8], ResultCode> {
+        let end = self
+            .position
+            .checked_add(length)
+            .ok_or(ResultCode::ResourceLimit)?;
+        if end > self.bytes.len() {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+        let result = &self.bytes[self.position..end];
+        self.position = end;
+        Ok(result)
+    }
+
+    fn array<const N: usize>(&mut self) -> Result<[u8; N], ResultCode> {
+        self.take(N)?
+            .try_into()
+            .map_err(|_| ResultCode::InternalLocalStateFailure)
+    }
+
+    fn u8(&mut self) -> Result<u8, ResultCode> {
+        Ok(self.array::<1>()?[0])
+    }
+
+    fn u16(&mut self) -> Result<u16, ResultCode> {
+        Ok(u16::from_le_bytes(self.array()?))
+    }
+
+    fn u32(&mut self) -> Result<u32, ResultCode> {
+        Ok(u32::from_le_bytes(self.array()?))
+    }
+
+    fn u64(&mut self) -> Result<u64, ResultCode> {
+        Ok(u64::from_le_bytes(self.array()?))
+    }
+
+    fn i64(&mut self) -> Result<i64, ResultCode> {
+        Ok(i64::from_le_bytes(self.array()?))
+    }
+
+    fn compact_size(&mut self) -> Result<u64, ResultCode> {
+        match self.u8()? {
+            value @ 0..=252 => Ok(u64::from(value)),
+            253 => {
+                let value = self.u16()?;
+                if value < 253 {
+                    return Err(ResultCode::ConsensusInvalid);
+                }
+                Ok(u64::from(value))
+            }
+            254 => {
+                let value = self.u32()?;
+                if u16::try_from(value).is_ok() {
+                    return Err(ResultCode::ConsensusInvalid);
+                }
+                Ok(u64::from(value))
+            }
+            255 => {
+                let value = self.u64()?;
+                if u32::try_from(value).is_ok() {
+                    return Err(ResultCode::ConsensusInvalid);
+                }
+                Ok(value)
+            }
+        }
+    }
+
+    fn vector(&mut self, maximum: usize) -> Result<&'a [u8], ResultCode> {
+        let length =
+            usize::try_from(self.compact_size()?).map_err(|_| ResultCode::ResourceLimit)?;
+        if length > maximum {
+            return Err(ResultCode::ResourceLimit);
+        }
+        self.take(length)
+    }
+
+    fn finish(self) -> Result<(), ResultCode> {
+        if self.position != self.bytes.len() {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+        Ok(())
+    }
+
+    const fn position(&self) -> usize {
+        self.position
+    }
+}
+
+fn validate_nonzero(bytes: &[u8]) -> Result<(), ResultCode> {
+    if bytes.iter().all(|byte| *byte == 0) {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    Ok(())
+}
+
+fn validate_ed25519_point(bytes: [u8; 32]) -> Result<(), ResultCode> {
+    validate_public_key(bytes)
+}
+
+fn validate_helios_point(bytes: [u8; 32]) -> Result<(), ResultCode> {
+    let point = Option::<HeliosPoint>::from(HeliosPoint::from_bytes(&bytes))
+        .ok_or(ResultCode::ConsensusInvalid)?;
+    if bool::from(point.is_identity()) || point.to_bytes() != bytes {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    Ok(())
+}
+
+fn validate_scalar(bytes: [u8; 32], nonzero: bool) -> Result<(), ResultCode> {
+    let scalar = Option::<Scalar>::from(Scalar::from_canonical_bytes(bytes))
+        .ok_or(ResultCode::ConsensusInvalid)?;
+    if nonzero && scalar == Scalar::ZERO {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    Ok(())
+}
+
+fn bounded_count(cursor: &mut Cursor<'_>, maximum: u32) -> Result<usize, ResultCode> {
+    let count = cursor.compact_size()?;
+    if count > u64::from(maximum) {
+        return Err(ResultCode::ResourceLimit);
+    }
+    usize::try_from(count).map_err(|_| ResultCode::ResourceLimit)
+}
+
+fn signable_hash(wire_version: u32, payload_prefix: &[u8]) -> [u8; 32] {
+    let mut transcript = Blake2b::<U32>::new();
+    transcript.update(SIGNING_DOMAIN);
+    transcript.update(wire_version.to_le_bytes());
+    transcript.update(payload_prefix);
+    transcript.finalize().into()
+}
+
+#[allow(clippy::too_many_lines)] // Mirrors the normative payload field order in one audit path.
+fn validate_payload(wire_version: u32, payload: &[u8]) -> Result<PayloadEffects, ResultCode> {
+    let mut cursor = Cursor::new(payload);
+    if cursor.u16()? != PAYLOAD_SCHEMA_U16 {
+        return Err(ResultCode::UnsupportedFormat);
+    }
+    let operation = cursor.u8()?;
+    let profile = cursor.u8()?;
+    let authorization = cursor.u8()?;
+    let disclosure_mask = cursor.u8()?;
+    let finality_object = cursor.u8()?;
+    let network = cursor.u8()?;
+    if cursor.u8()? != 0 {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    if network > NETWORK_ID_MAX
+        || authorization > AUTH_M_OF_N_HIDDEN_SIGNERS
+        || !envelope_allows(
+            wire_version,
+            operation,
+            profile,
+            authorization,
+            finality_object,
+            disclosure_mask,
+        )
+    {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    // Extended operations fail closed before proof verification until their typed frame and
+    // verifier exist.
+    if finality_object != FINALITY_OBJECT_NONE
+        || !matches!(operation, NOTE_SHIELD | NOTE_UNSHIELD | NOTE_TRANSFER)
+    {
+        return Err(ResultCode::UnsupportedFormat);
+    }
+
+    let genesis = cursor.array::<32>()?;
+    validate_nonzero(&genesis)?;
+    let parameter_digest = cursor.array::<32>()?;
+    if parameter_digest.as_slice() != &Sha256::digest(PRODUCT_CONTRACT)[..] {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    let finalized_root = cursor.array()?;
+    validate_helios_point(finalized_root)?;
+    let finalized_tree_size = cursor.u64()?;
+    if finalized_tree_size > TREE_CAPACITY {
+        return Err(ResultCode::ResourceLimit);
+    }
+    let transparent_value_balance = cursor.i64()?;
+    let fee = cursor.u64()?;
+
+    let input_count = bounded_count(&mut cursor, MAX_INPUTS)?;
+    let mut pseudo_outs = Vec::with_capacity(input_count);
+    let mut key_images = Vec::with_capacity(input_count);
+    for _ in 0..input_count {
+        let pseudo_out = cursor.array()?;
+        validate_ed25519_point(pseudo_out)?;
+        pseudo_outs.push(pseudo_out);
+        let key_image = cursor.array()?;
+        validate_ed25519_point(key_image)?;
+        key_images.push(key_image);
+    }
+
+    let output_count = bounded_count(&mut cursor, MAX_OUTPUTS)?;
+    let mut output_owners = Vec::with_capacity(output_count);
+    let mut output_nullifier_bases = Vec::with_capacity(output_count);
+    let mut output_commitments = Vec::with_capacity(output_count);
+    let mut output_ephemeral_keys = Vec::with_capacity(output_count);
+    for _ in 0..output_count {
+        let owner = cursor.array()?;
+        validate_ed25519_point(owner)?;
+        output_owners.push(owner);
+        let nullifier_base = cursor.array()?;
+        validate_ed25519_point(nullifier_base)?;
+        output_nullifier_bases.push(nullifier_base);
+        let commitment = cursor.array()?;
+        validate_ed25519_point(commitment)?;
+        output_commitments.push(commitment);
+        let ephemeral = cursor.array()?;
+        validate_ed25519_point(ephemeral)?;
+        output_ephemeral_keys.push(ephemeral);
+        if cursor.vector(MAX_CIPHERTEXT_BYTES)?.is_empty()
+            || cursor.vector(MAX_CIPHERTEXT_BYTES)?.is_empty()
+        {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+    }
+
+    let mut sender_authorities = Vec::new();
+    if disclosure_mask & 1 == 0 {
+        sender_authorities.reserve(input_count);
+        for _ in 0..input_count {
+            let authority = cursor.array()?;
+            validate_ed25519_point(authority)?;
+            sender_authorities.push(authority);
+        }
+    }
+    let mut receiver_addresses = Vec::new();
+    if disclosure_mask & 2 == 0 {
+        receiver_addresses.reserve(output_count);
+        for _ in 0..output_count {
+            let spend = cursor.array()?;
+            let view = cursor.array()?;
+            validate_ed25519_point(spend)?;
+            validate_ed25519_point(view)?;
+            receiver_addresses.push((spend, view));
+        }
+    }
+    if disclosure_mask & 4 == 0 {
+        for commitment in &output_commitments {
+            let value = cursor.u64()?;
+            let opening = cursor.array()?;
+            validate_scalar(opening, false)?;
+            if !value::validate_disclosed_commitment(commitment, value, &opening)
+                .map_err(|_| ResultCode::ConsensusInvalid)?
+            {
+                return Err(ResultCode::ConsensusInvalid);
+            }
+        }
+    }
+
+    let finality_body = cursor.vector(MAX_FINALITY_BODY_BYTES)?;
+    if (finality_object == FINALITY_OBJECT_NONE) != finality_body.is_empty() {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    let signing_hash = signable_hash(wire_version, &payload[..cursor.position()]);
+
+    let membership = cursor.vector(MAX_PROOF_SECTION_BYTES)?;
+    let expected_membership = if input_count == 0 {
+        0
+    } else {
+        FcmpPlusPlus::proof_size(input_count, TREE_LAYERS as usize)
+    };
+    if membership.len() != expected_membership {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    if input_count != 0 {
+        fcmp::verify_components(
+            finalized_root,
+            signing_hash,
+            &pseudo_outs,
+            &key_images,
+            membership,
+        )?;
+    }
+
+    let range = cursor.vector(MAX_PROOF_SECTION_BYTES)?;
+    let requires_range = output_count != 0 && disclosure_mask & 4 != 0;
+    if requires_range == range.is_empty() {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    if requires_range
+        && !value::verify_range(&output_commitments, range, &signing_hash).map_err(|error| {
+            match error {
+                value::ValueError::ResourceLimit => ResultCode::ResourceLimit,
+                _ => ResultCode::ConsensusInvalid,
+            }
+        })?
+    {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+
+    let balance_proof = cursor.vector(MAX_PROOF_SECTION_BYTES)?;
+    if balance_proof.is_empty()
+        || !value::verify_balance(
+            &pseudo_outs,
+            &output_commitments,
+            transparent_value_balance,
+            fee,
+            &signing_hash,
+            balance_proof,
+        )
+        .map_err(|error| match error {
+            value::ValueError::ResourceLimit => ResultCode::ResourceLimit,
+            _ => ResultCode::ConsensusInvalid,
+        })?
+    {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+
+    let operation_proof = cursor.vector(MAX_PROOF_SECTION_BYTES)?;
+    if !operation_proof.is_empty() {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+
+    let disclosure_proof = cursor.vector(MAX_PROOF_SECTION_BYTES)?;
+    let expected_disclosure_proof = sender_authorities
+        .len()
+        .checked_mul(disclosure::SENDER_PROOF_BYTES)
+        .and_then(|bytes| {
+            receiver_addresses
+                .len()
+                .checked_mul(disclosure::RECEIVER_PROOF_BYTES)
+                .and_then(|receiver_bytes| bytes.checked_add(receiver_bytes))
+        })
+        .ok_or(ResultCode::ResourceLimit)?;
+    if disclosure_proof.len() != expected_disclosure_proof {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    let mut disclosure_offset = 0_usize;
+    for (input_index, authority) in sender_authorities.iter().enumerate() {
+        let end = disclosure_offset + disclosure::SENDER_PROOF_BYTES;
+        let o_tilde = fcmp::input_o_tilde(membership, input_count, input_index)?;
+        if !disclosure::verify_sender(
+            authority,
+            &o_tilde,
+            &signing_hash,
+            u32::try_from(input_index).map_err(|_| ResultCode::ResourceLimit)?,
+            &disclosure_proof[disclosure_offset..end],
+        )
+        .map_err(|_| ResultCode::ConsensusInvalid)?
+        {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+        disclosure_offset = end;
+    }
+    for (output_index, (spend, view)) in receiver_addresses.iter().enumerate() {
+        let end = disclosure_offset + disclosure::RECEIVER_PROOF_BYTES;
+        if !disclosure::verify_receiver(
+            spend,
+            view,
+            &output_owners[output_index],
+            &output_ephemeral_keys[output_index],
+            &signing_hash,
+            u32::try_from(output_index).map_err(|_| ResultCode::ResourceLimit)?,
+            &disclosure_proof[disclosure_offset..end],
+        )
+        .map_err(|_| ResultCode::ConsensusInvalid)?
+        {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+        disclosure_offset = end;
+    }
+
+    let binding_signature = cursor.vector(MAX_PROOF_SECTION_BYTES)?;
+    if !value::verify_binding_signature(
+        &pseudo_outs,
+        &output_commitments,
+        transparent_value_balance,
+        fee,
+        &signing_hash,
+        binding_signature,
+    )
+    .map_err(|error| match error {
+        value::ValueError::ResourceLimit => ResultCode::ResourceLimit,
+        _ => ResultCode::ConsensusInvalid,
+    })? {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    cursor.finish()?;
+    let output_leaves = output_owners
+        .into_iter()
+        .zip(output_nullifier_bases)
+        .zip(output_commitments)
+        .map(|((owner, nullifier_base), commitment)| (owner, nullifier_base, commitment))
+        .collect();
+    Ok(PayloadEffects {
+        finalized_root,
+        finalized_tree_size,
+        parameter_digest,
+        key_images,
+        output_leaves,
+    })
+}
+
+fn request_parts(request: &[u8]) -> Result<(u32, &[u8]), ResultCode> {
+    if request.len() < VALIDATION_PREFIX_SIZE + 1 {
+        return Err(ResultCode::BadLength);
+    }
+    if request.len() > (MAX_PAYLOAD_BYTES as usize) + VALIDATION_PREFIX_SIZE {
+        return Err(ResultCode::ResourceLimit);
+    }
+    let wire_version = u32::from_le_bytes(
+        request[..VALIDATION_PREFIX_SIZE]
+            .try_into()
+            .map_err(|_| ResultCode::InternalLocalStateFailure)?,
+    );
+    Ok((wire_version, &request[VALIDATION_PREFIX_SIZE..]))
+}
+
+pub(crate) fn validate(request: &[u8]) -> Result<(), ResultCode> {
+    let (wire_version, payload) = request_parts(request)?;
+    validate_payload(wire_version, payload).map(|_| ())
+}
+
+pub(crate) fn effects(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
+    let (wire_version, payload) = request_parts(request)?;
+    validate_payload(wire_version, payload)?.encode()
+}
+
+#[cfg(test)]
+mod tests {
+    use curve25519_dalek::{constants::ED25519_BASEPOINT_POINT, scalar::Scalar};
+
+    use super::*;
+    use crate::tree;
+
+    fn compact_size(output: &mut Vec<u8>, value: usize) {
+        if value <= 252 {
+            output.push(u8::try_from(value).expect("compact test value is bounded"));
+        } else if u16::try_from(value).is_ok() {
+            output.push(253);
+            output.extend_from_slice(
+                &u16::try_from(value)
+                    .expect("compact test value fits u16")
+                    .to_le_bytes(),
+            );
+        } else {
+            output.push(254);
+            output.extend_from_slice(
+                &u32::try_from(value)
+                    .expect("compact test value fits u32")
+                    .to_le_bytes(),
+            );
+        }
+    }
+
+    fn vector(output: &mut Vec<u8>, bytes: &[u8]) {
+        compact_size(output, bytes.len());
+        output.extend_from_slice(bytes);
+    }
+
+    fn valid_request() -> Vec<u8> {
+        let point = ED25519_BASEPOINT_POINT.compress().to_bytes();
+        let output_mask = Scalar::from(3_u64).to_bytes();
+        let output_commitment = value::commitment(9, &output_mask).expect("valid commitment");
+        let state = tree::update(&[1, 0, 1, 0, 0, 0, 0, 0]).expect("empty canonical tree state");
+        let root = tree::root(&state).expect("empty canonical tree root");
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+        payload.extend_from_slice(&[NOTE_SHIELD, 0, 0, 7, FINALITY_OBJECT_NONE, 1, 0]);
+        payload.extend_from_slice(&[0x11; 32]);
+        payload.extend_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+        payload.extend_from_slice(&root[12..44]);
+        payload.extend_from_slice(&0_u64.to_le_bytes());
+        payload.extend_from_slice(&10_i64.to_le_bytes());
+        payload.extend_from_slice(&1_u64.to_le_bytes());
+
+        compact_size(&mut payload, 0);
+
+        compact_size(&mut payload, 1);
+        payload.extend_from_slice(&point);
+        payload.extend_from_slice(&point);
+        payload.extend_from_slice(&output_commitment);
+        payload.extend_from_slice(&point);
+        vector(&mut payload, &[1, 2]);
+        vector(&mut payload, &[3]);
+
+        vector(&mut payload, &[]);
+        let signing_hash = signable_hash(2008, &payload);
+        let (range_commitments, range_proof) =
+            value::prove_range(&[9], &[output_mask], &[0x41; 32]).expect("valid range proof");
+        assert_eq!(range_commitments, vec![output_commitment]);
+        let balance_proof = value::prove_balance(
+            &[],
+            &[output_commitment],
+            10,
+            1,
+            &(-Scalar::from(3_u64)).to_bytes(),
+            &signing_hash,
+            &[0x42; 32],
+        )
+        .expect("valid balance proof");
+        let binding_signature = value::prove_binding_signature(
+            &[],
+            &[output_commitment],
+            10,
+            1,
+            &(-Scalar::from(3_u64)).to_bytes(),
+            &signing_hash,
+            &[0x43; 32],
+        )
+        .expect("valid binding signature");
+        vector(&mut payload, &[]);
+        vector(&mut payload, &range_proof);
+        vector(&mut payload, &balance_proof);
+        vector(&mut payload, &[]);
+        vector(&mut payload, &[]);
+        vector(&mut payload, &binding_signature);
+
+        let mut request = 2008_u32.to_le_bytes().to_vec();
+        request.extend_from_slice(&payload);
+        request
+    }
+
+    #[test]
+    fn canonical_payload_is_accepted_without_trailing_bytes() {
+        let request = valid_request();
+        assert_eq!(validate(&request), Ok(()));
+
+        let state_effects = effects(&request).expect("valid payload has canonical state effects");
+        assert_eq!(state_effects.len(), EFFECTS_HEADER_BYTES + 96);
+        assert_eq!(&state_effects[..2], &PAYLOAD_SCHEMA_U16.to_le_bytes());
+        assert_eq!(state_effects[2], 0);
+        assert_eq!(state_effects[3], 1);
+        assert_eq!(
+            &state_effects[44..76],
+            &Sha256::digest(PRODUCT_CONTRACT)[..]
+        );
+        assert_eq!(&state_effects[76..108], &request[135..167]);
+        assert_eq!(&state_effects[108..140], &request[167..199]);
+        assert_eq!(&state_effects[140..172], &request[199..231]);
+
+        let mut trailing = request;
+        trailing.push(0);
+        assert_eq!(validate(&trailing), Err(ResultCode::ConsensusInvalid));
+    }
+
+    #[test]
+    fn extended_operations_are_fail_closed_until_typed_proofs_exist() {
+        let mut request = valid_request();
+        request[VALIDATION_PREFIX_SIZE + 2] = crate::NOTE_NULLSEND;
+        assert_eq!(validate(&request), Err(ResultCode::UnsupportedFormat));
+    }
+
+    #[test]
+    fn payload_rejects_noncanonical_lengths_context_and_points() {
+        const INPUT_COUNT_OFFSET: usize = VALIDATION_PREFIX_SIZE + 129;
+        const PARAMETER_DIGEST_OFFSET: usize = VALIDATION_PREFIX_SIZE + 41;
+        let request = valid_request();
+
+        let mut noncanonical_count = request.clone();
+        noncanonical_count.splice(INPUT_COUNT_OFFSET..=INPUT_COUNT_OFFSET, [253, 1, 0]);
+        assert_eq!(
+            validate(&noncanonical_count),
+            Err(ResultCode::ConsensusInvalid)
+        );
+
+        let mut over_cap = request.clone();
+        over_cap[INPUT_COUNT_OFFSET] = 17;
+        assert_eq!(validate(&over_cap), Err(ResultCode::ResourceLimit));
+
+        let mut wrong_parameter = request.clone();
+        wrong_parameter[PARAMETER_DIGEST_OFFSET] ^= 1;
+        assert_eq!(
+            validate(&wrong_parameter),
+            Err(ResultCode::ConsensusInvalid)
+        );
+
+        let mut identity_output = request.clone();
+        identity_output[INPUT_COUNT_OFFSET + 2..INPUT_COUNT_OFFSET + 34].fill(0);
+        assert_eq!(
+            validate(&identity_output),
+            Err(ResultCode::ConsensusInvalid)
+        );
+    }
+
+    #[test]
+    fn payload_rejects_unknown_schema_envelope_and_missing_disclosures() {
+        let request = valid_request();
+
+        let mut unknown_schema = request.clone();
+        unknown_schema[VALIDATION_PREFIX_SIZE] = 2;
+        assert_eq!(
+            validate(&unknown_schema),
+            Err(ResultCode::UnsupportedFormat)
+        );
+
+        let mut wrong_envelope = request.clone();
+        wrong_envelope[..4].copy_from_slice(&2003_u32.to_le_bytes());
+        assert_eq!(validate(&wrong_envelope), Err(ResultCode::ConsensusInvalid));
+
+        let mut missing_disclosures = request;
+        missing_disclosures[VALIDATION_PREFIX_SIZE + 5] = 0;
+        assert_eq!(
+            validate(&missing_disclosures),
+            Err(ResultCode::ConsensusInvalid)
+        );
+    }
+}

@@ -1,0 +1,515 @@
+{
+  "contract": "Innova/IV5/Protocol/v1",
+  "status": "normative-inactive",
+  "schema": 1,
+  "consensus_ready": false,
+  "upstream": {
+    "monero_oxide_revision": "76399e58bfc7e652d900936f84b3785ea59ab4cd",
+    "source_tree": "18eb6a7f525e9413a8b7dcea28fd4c2b1180f9c7",
+    "fcmp_tree": "49e090270ba09bbc79c65718e5a002ca49bb0cd7",
+    "helios_selene_tree": "89df10d4f04c760fc6f8b230872703b1f219d433"
+  },
+  "envelope": {
+    "marker_hex": "ff49563550",
+    "marker_text": "\\xffIV5P",
+    "schema_encoding": "uint16_le",
+    "payload_length_encoding": "canonical_compact_size",
+    "maximum_payload_bytes": 262144,
+    "historical_collision_rule": "old-format-2000-2007-first-vector-count-is-at-most-16"
+  },
+  "limits": {
+    "tree_layers": 8,
+    "maximum_inputs_pre_benchmark": 16,
+    "maximum_outputs_pre_benchmark": 16,
+    "nullsend_minimum_participants": 2,
+    "nullsend_maximum_participants": 16,
+    "selected_maximum_inputs": null,
+    "selected_maximum_outputs": null,
+    "benchmark_sha256": null
+  },
+  "network_ids": {
+    "mainnet": 0,
+    "testnet": 1,
+    "regtest": 2
+  },
+  "fcmp_abi": {
+    "schema": 1,
+    "abi_schema_sha256": "2be4a63cea3fc7f4de6e7f9f05a2db482e947472fbd5b13cf7eab136c12be6e5",
+    "layers": 8,
+    "root_curve_id": 2,
+    "maximum_inputs": 16,
+    "maximum_batch_requests": 16,
+    "maximum_aggregate_batch_inputs": 16,
+    "prover_rng_domain": "Innova/IV5/FCMP++/ProverRng/v1",
+    "batch_weight_domain": "Innova/IV5/FCMP++/BatchWeights/v1",
+    "proving_request_field_order": [
+      "schema_u16_le",
+      "layers_u8",
+      "root_curve_u8",
+      "input_count_u8",
+      "reserved_zero_3",
+      "finalized_root_32",
+      "signable_hash_32",
+      "caller_entropy_32",
+      "per_input_witnesses"
+    ],
+    "per_input_witness_field_order": [
+      "spend_scalar_x_32",
+      "commitment_scalar_y_32",
+      "output_o_i_c_96",
+      "leaf_count_u8",
+      "reserved_zero_3",
+      "leaves_96_each",
+      "four_helios_branches_of_18_scalars",
+      "three_selene_branches_of_38_scalars"
+    ],
+    "proving_response_field_order": [
+      "schema_u16_le",
+      "layers_u8",
+      "input_count_u8",
+      "per_input_construction_record_256_each",
+      "proof_length_u32_le",
+      "proof"
+    ],
+    "proving_response_record_bytes": 256,
+    "per_input_proving_response_field_order": [
+      "pseudo_out_32",
+      "key_image_32",
+      "pseudo_out_mask_delta_r_c_32",
+      "sender_authority_32",
+      "sender_disclosure_proof_128"
+    ],
+    "verification_request_field_order": [
+      "schema_u16_le",
+      "layers_u8",
+      "root_curve_u8",
+      "input_count_u8",
+      "reserved_zero_3",
+      "finalized_root_32",
+      "signable_hash_32",
+      "pseudo_out_and_key_image_64_each",
+      "proof_length_u32_le",
+      "proof"
+    ],
+    "batch_request_field_order": [
+      "schema_u16_le",
+      "layers_u8",
+      "request_count_u8",
+      "total_input_count_u8",
+      "reserved_zero_2",
+      "u32_length_prefixed_verification_requests"
+    ],
+    "rules": [
+      "caller-entropy-is-nonzero",
+      "all-points-and-scalars-are-canonical",
+      "every-branch-is-exactly-full-width",
+      "spent-output-occurs-in-leaf-branch",
+      "duplicate-key-images-within-one-proof-are-invalid",
+      "proof-length-equals-upstream-eight-layer-proof-size",
+      "proving-self-verifies-before-output",
+      "pseudo-out-equals-source-commitment-plus-mask-delta-r-c-times-ed25519-g",
+      "sender-disclosure-proves-source-authority-and-exact-rerandomized-o-tilde-bound-to-signable-hash-and-input-index",
+      "only-pseudo-out-and-key-image-project-into-the-verification-request",
+      "caller-zeroizes-secret-pseudo-out-mask-delta-after-value-proof-construction",
+      "all-batch-items-parse-before-equations-are-queued",
+      "single-verification-uses-the-one-item-batch-path"
+    ]
+  },
+  "note_operations": {
+    "shield": 0,
+    "unshield": 1,
+    "transfer": 2,
+    "nullsend": 3,
+    "delegation_create": 4,
+    "m_of_n_mint": 5,
+    "reclaim": 6,
+    "conditional_migration": 7,
+    "none": 255
+  },
+  "finality_profiles": {
+    "none": 0,
+    "nullstake_v1": 1,
+    "nullstake_v2": 2,
+    "nullstake_v3": 3
+  },
+  "authorization_modes": {
+    "owner": 0,
+    "cold_staker": 1,
+    "m_of_n_public_signers": 2,
+    "m_of_n_hidden_signers": 3
+  },
+  "finality_objects": {
+    "none": 0,
+    "vote": 1,
+    "tally_share": 2,
+    "certificate": 3,
+    "committee_rotation": 4
+  },
+  "disclosure_mask": {
+    "minimum": 0,
+    "maximum": 7,
+    "hide_sender": 1,
+    "hide_receiver": 2,
+    "hide_amount": 4,
+    "mode_0": "sender-receiver-amount-exposed",
+    "mode_7": "sender-receiver-amount-hidden",
+    "wallet_default": 7
+  },
+  "envelope_capabilities": {
+    "2000": {
+      "note_operations": [0, 1, 2],
+      "disclosure_masks": [7],
+      "finality_profiles": [0],
+      "authorization_modes": [0],
+      "finality_objects": [0]
+    },
+    "2001": {
+      "note_operations": [0, 1, 2],
+      "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
+      "finality_profiles": [0],
+      "authorization_modes": [0],
+      "finality_objects": [0]
+    },
+    "2002": {
+      "note_operations": [2, 3],
+      "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
+      "finality_profiles": [0],
+      "authorization_modes": [0],
+      "finality_objects": [0]
+    },
+    "2003": {
+      "note_operations": [255],
+      "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
+      "finality_profiles": [1],
+      "authorization_modes": [0],
+      "finality_objects": [1, 2, 3, 4]
+    },
+    "2004": {
+      "note_operations": [255],
+      "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
+      "finality_profiles": [2],
+      "authorization_modes": [0],
+      "finality_objects": [1, 2, 3, 4]
+    },
+    "2005": {
+      "note_operations": [4, 255],
+      "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
+      "finality_profiles": [0, 3],
+      "authorization_modes": [0, 1, 2, 3],
+      "finality_objects": [0, 1, 2, 3, 4]
+    },
+    "2006": {
+      "note_operations": [5],
+      "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
+      "finality_profiles": [0],
+      "authorization_modes": [2, 3],
+      "finality_objects": [0]
+    },
+    "2007": {
+      "note_operations": [6],
+      "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
+      "finality_profiles": [0],
+      "authorization_modes": [0],
+      "finality_objects": [0]
+    },
+    "2008": {
+      "note_operations": [0, 1, 2, 3, 4, 5, 6, 7, 255],
+      "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
+      "finality_profiles": [0, 1, 2, 3],
+      "authorization_modes": [0, 1, 2, 3],
+      "finality_objects": [0, 1, 2, 3, 4]
+    }
+  },
+  "payload": {
+    "integer_byte_order": "little-endian",
+    "vector_length_encoding": "canonical_compact_size",
+    "field_order": [
+      "schema_u16",
+      "note_operation_u8",
+      "finality_profile_u8",
+      "authorization_mode_u8",
+      "disclosure_mask_u8",
+      "finality_object_u8",
+      "network_id_u8",
+      "reserved_zero_u8",
+      "genesis_hash_32",
+      "parameter_digest_32",
+      "finalized_root_32",
+      "finalized_tree_size_u64",
+      "transparent_value_balance_i64",
+      "fee_u64",
+      "inputs",
+      "outputs",
+      "sender_disclosures",
+      "receiver_disclosures",
+      "amount_disclosures",
+      "finality_body",
+      "proof_sections"
+    ],
+    "input_field_order": [
+      "pseudo_out_32",
+      "nullifier_key_image_32"
+    ],
+    "output_field_order": [
+      "leaf_o_32",
+      "leaf_i_32",
+      "leaf_c_32",
+      "ephemeral_key_32",
+      "recipient_ciphertext",
+      "outgoing_ciphertext"
+    ],
+    "proof_section_order": [
+      "fcmp_membership",
+      "range",
+      "value_balance",
+      "operation",
+      "disclosure",
+      "binding_signature"
+    ],
+    "validation_request": {
+      "field_order": ["outer_wire_version_u32_le", "payload_to_eof"],
+      "minimum_bytes": 5,
+      "maximum_bytes": 262148
+    },
+    "record_encodings": {
+      "input": "fixed-64-bytes-pseudo-out-and-nullifier-key-image",
+      "output": "fixed-128-byte-point-prefix-then-two-canonical-compact-size-byte-vectors",
+      "sender_disclosure": "fixed-32-byte-source-spend-authority-point",
+      "receiver_disclosure": "fixed-64-byte-recipient-spend-and-view-public-points",
+      "amount_disclosure": "fixed-40-bytes-value-u64-le-and-opening-scalar",
+      "signature": "fixed-64-bytes-canonical-nonidentity-ed25519-point-and-canonical-nonzero-scalar",
+      "finality_body": "canonical-compact-size-byte-vector",
+      "proof_section": "canonical-compact-size-byte-vector"
+    },
+    "variable_field_limits": {
+      "recipient_ciphertext_bytes": 4096,
+      "outgoing_ciphertext_bytes": 4096,
+      "finality_body_bytes": 65536,
+      "proof_section_bytes": 65536
+    },
+    "structural_rules": [
+      "genesis-hash-must-be-nonzero",
+      "parameter-digest-must-equal-the-abi-parameter-digest",
+      "finalized-root-must-be-a-canonical-nonidentity-helios-point",
+      "pseudo-out-key-image-output-address-and-ephemeral-points-must-be-canonical-nonidentity-torsion-free-ed25519-points",
+      "source-leaves-never-appear-in-hidden-base-input-records",
+      "recipient-and-outgoing-ciphertexts-must-be-nonempty",
+      "finality-body-is-empty-only-for-finality-object-none",
+      "sender-disclosures-are-present-once-per-input-only-when-bit-1-is-clear",
+      "receiver-disclosures-are-present-once-per-output-only-when-bit-2-is-clear",
+      "amount-disclosures-are-present-once-per-output-only-when-bit-4-is-clear",
+      "fcmp-membership-section-is-empty-with-zero-inputs-and-otherwise-has-the-exact-upstream-eight-layer-proof-size-and-verifies-against-the-finalized-root-signing-hash-pseudo-outs-and-key-images",
+      "exposed-amount-openings-must-open-the-corresponding-output-commitment-as-opening-times-ed25519-G-plus-value-times-monero-H",
+      "range-section-is-nonempty-only-when-at-least-one-output-amount-is-hidden-and-is-a-canonical-aggregate-monero-bulletproof-plus-verified-against-all-output-commitments",
+      "value-balance-section-is-always-an-exact-64-byte-schnorr-excess-proof-bound-to-the-signing-hash-pseudo-outs-output-commitments-transparent-value-balance-and-fee",
+      "operation-section-is-empty-for-shield-unshield-and-transfer",
+      "nullsend-delegation-m-of-n-reclaim-migration-and-finality-objects-return-unsupported-format-until-a-normative-typed-operation-proof-frame-and-verifier-are-frozen",
+      "disclosure-section-is-exactly-128-bytes-per-sender-record-followed-by-160-bytes-per-receiver-record-and-empty-when-neither-dimension-is-exposed",
+      "binding-signature-section-is-an-exact-64-byte-schnorr-signature-under-the-value-excess-key-bound-to-the-signing-hash-pseudo-outs-output-commitments-transparent-value-balance-and-fee"
+    ],
+    "canonical_rules": [
+      "all-enums-must-be-known",
+      "reserved-byte-must-be-zero",
+      "compact-size-values-must-use-shortest-form",
+      "input-and-output-counts-must-not-exceed-selected-consensus-caps",
+      "proof-sections-appear-exactly-once-in-fixed-order",
+      "optional-disclosure-presence-is-derived-only-from-disclosure-mask",
+      "no-trailing-bytes"
+    ]
+  },
+  "note_encryption": {
+    "construction": "unique-key-chacha20-stream-then-keyed-blake2b-256-encrypt-then-mac",
+    "kdf": "blake2b-512-domain-secret-and-length-prefixed-associated-data",
+    "recipient_ciphertext_bytes": 177,
+    "outgoing_ciphertext_bytes": 209,
+    "associated_data": [
+      "schema",
+      "network",
+      "address_type",
+      "output_index",
+      "genesis_hash",
+      "leaf_o",
+      "leaf_i",
+      "leaf_c",
+      "ephemeral_public"
+    ],
+    "scan_kinds": {
+      "0": "full-spend",
+      "1": "view-only",
+      "2": "outgoing"
+    },
+    "scan_request_prefix_bytes": 236,
+    "scan_result_bytes": 212,
+    "encrypt_request_bytes": 272,
+    "encrypt_result_bytes": 522,
+    "encrypt_result_fields": [
+      "schema",
+      "network",
+      "address_type",
+      "output_index",
+      "leaf_o",
+      "leaf_i",
+      "leaf_c",
+      "ephemeral_public",
+      "recipient_ciphertext",
+      "outgoing_ciphertext"
+    ],
+    "construction_self_check": "outgoing-scan-must-authenticate-decrypt-and-match-all-input-and-public-output-fields-before-return",
+    "authentication_order": "verify-mac-before-decryption",
+    "consensus_status": "disabled"
+  },
+  "value_proving": {
+    "request_header_bytes": 116,
+    "maximum_inputs": 16,
+    "maximum_outputs": 16,
+    "request_trailing_fields": [
+      "pseudo_outs",
+      "output_amount_and_mask_openings"
+    ],
+    "response_fields": [
+      "schema",
+      "output_count",
+      "input_count",
+      "output_commitments",
+      "range_proof_length",
+      "aggregate_bulletproof_plus",
+      "balance_proof_64",
+      "binding_signature_64"
+    ],
+    "self_check": "range-balance-and-binding-proofs-must-all-verify-before-return",
+    "consensus_status": "disabled"
+  },
+  "payload_state_effects": {
+    "header_bytes": 76,
+    "header_fields": [
+      "schema_u16_le",
+      "input_count_u8",
+      "output_count_u8",
+      "finalized_root_32",
+      "finalized_tree_size_u64_le",
+      "parameter_digest_32"
+    ],
+    "trailing_fields": [
+      "ordered_key_images_32_each",
+      "ordered_output_leaves_o_i_c_96_each"
+    ],
+    "validation_rule": "complete-canonical-payload-and-proof-validation-precedes-extraction",
+    "ownership_rule": "rust-decodes-effects-and-cpp-owns-atomic-leveldb-application",
+    "consensus_status": "disabled"
+  },
+  "nullifier_accumulator": {
+    "schema": 1,
+    "version": 1,
+    "state_bytes": 44,
+    "maximum_key_images_per_update": 16,
+    "state_fields": [
+      "schema_u16_le",
+      "accumulator_version_u8",
+      "reserved_zero_u8",
+      "count_u64_le",
+      "rolling_root_32"
+    ],
+    "hash": "first-32-bytes-of-blake2b-512",
+    "empty_domain": "Innova/IV5/NullifierAccumulator/Empty/v1",
+    "step_domain": "Innova/IV5/NullifierAccumulator/Step/v1",
+    "step_fields": [
+      "domain",
+      "previous_root",
+      "previous_count_u64_le",
+      "canonical_key_image"
+    ],
+    "exact_spent_membership_owner": "cpp-leveldb-with-epoch-undo",
+    "consensus_status": "disabled"
+  },
+  "transcripts": {
+    "signing": "Innova/IV5/Signing/v1",
+    "parameter_digest": "Innova/IV5/ParameterDigest/v1",
+    "note_leaf": "Innova/IV5/NoteLeaf/v1",
+    "nullifier": "Innova/IV5/Nullifier/v1",
+    "epoch_nullifier": "Innova/IV5/EpochNullifier/v1",
+    "nullifier_accumulator_empty": "Innova/IV5/NullifierAccumulator/Empty/v1",
+    "nullifier_accumulator_step": "Innova/IV5/NullifierAccumulator/Step/v1",
+    "value_balance_nonce": "Innova/IV5/BalanceProof/Nonce/v1",
+    "value_balance_challenge": "Innova/IV5/BalanceProof/Challenge/v1",
+    "binding_signature_nonce": "Innova/IV5/BindingSignature/Nonce/v1",
+    "binding_signature_challenge": "Innova/IV5/BindingSignature/Challenge/v1",
+    "range_prover_rng": "Innova/IV5/RangeProof/Prove/v1",
+    "range_verifier_rng": "Innova/IV5/RangeProof/Verify/v1",
+    "disclosure_sender": "Innova/IV5/Disclosure/Sender/v1",
+    "disclosure_receiver": "Innova/IV5/Disclosure/Receiver/v1",
+    "disclosure_sender_authority_nonce": "Innova/IV5/Disclosure/Sender/AuthorityNonce/v1",
+    "disclosure_sender_authority_challenge": "Innova/IV5/Disclosure/Sender/AuthorityChallenge/v1",
+    "disclosure_sender_rerandomization_nonce": "Innova/IV5/Disclosure/Sender/RerandomizationNonce/v1",
+    "disclosure_sender_rerandomization_challenge": "Innova/IV5/Disclosure/Sender/RerandomizationChallenge/v1",
+    "disclosure_receiver_tweak": "Innova/IV5/ReceiverTweak/v1",
+    "disclosure_receiver_dleq_nonce": "Innova/IV5/Disclosure/Receiver/DleqNonce/v1",
+    "disclosure_receiver_dleq_challenge": "Innova/IV5/Disclosure/Receiver/DleqChallenge/v1",
+    "disclosure_receiver_output_nonce": "Innova/IV5/Disclosure/Receiver/OutputNonce/v1",
+    "disclosure_receiver_output_challenge": "Innova/IV5/Disclosure/Receiver/OutputChallenge/v1",
+    "note_associated_data": "Innova/IV5/NoteAssociatedData/v1",
+    "note_recipient_encryption": "Innova/IV5/NoteEncryption/Recipient/v1",
+    "note_outgoing_encryption": "Innova/IV5/NoteEncryption/Outgoing/v1",
+    "disclosure_amount": "Innova/IV5/Disclosure/Amount/v1",
+    "nullsend": "Innova/IV5/NullSend/v1",
+    "nullstake": "Innova/IV5/NullStake/v1",
+    "fcmp_prover_rng": "Innova/IV5/FCMP++/ProverRng/v1",
+    "fcmp_batch_weights": "Innova/IV5/FCMP++/BatchWeights/v1"
+  },
+  "signing_hash": {
+    "hash": "blake2b-256",
+    "domain": "Innova/IV5/Signing/v1",
+    "field_order": [
+      "domain",
+      "outer_wire_version_u32_le",
+      "canonical_payload_from_schema_through_finality_body"
+    ],
+    "excludes": [
+      "fcmp_membership_proof",
+      "range_proof",
+      "value_balance_proof",
+      "operation_proof",
+      "disclosure_proof",
+      "binding_signature"
+    ]
+  },
+  "signing_transcript_field_order": [
+    "domain",
+    "genesis_hash",
+    "network_id",
+    "outer_wire_version",
+    "schema",
+    "note_operation",
+    "disclosure_mask",
+    "finality_profile",
+    "authorization_mode",
+    "finality_object",
+    "parameter_digest",
+    "finalized_root",
+    "finalized_tree_size",
+    "ordered_inputs",
+    "ordered_outputs",
+    "transparent_value_balance",
+    "fee",
+    "disclosures",
+    "finality_body"
+  ],
+  "parameter_digest": {
+    "hash": "sha256",
+    "status": "unfrozen-until-benchmark-caps-and-abi-v2-are-final",
+    "required_components": [
+      "upstream_revision",
+      "vendored_source_sha256",
+      "generator_sha256",
+      "transcript_domains",
+      "tree_shape",
+      "empty_root",
+      "payload_schema",
+      "envelope_capabilities",
+      "typed_enums",
+      "disclosure_rules",
+      "selected_consensus_caps",
+      "abi_version_and_hash",
+      "benchmark_sha256"
+    ]
+  }
+}
