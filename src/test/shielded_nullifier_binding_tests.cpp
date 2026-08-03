@@ -164,7 +164,7 @@ BOOST_AUTO_TEST_CASE(binding_proof_round_trip)
     BOOST_REQUIRE(CreateNullifierBindingProof(note.value, note.blind, note.cv,
                                               note.nfPoint, sighash, proof));
     BOOST_REQUIRE_EQUAL(proof.size(), (size_t)NULLIFIER_BINDING_PROOF_SIZE);
-    BOOST_CHECK(VerifyNullifierBindingProof(note.cv, note.nfPoint, sighash, proof));
+    BOOST_CHECK(VerifyNullifierBindingProof(note.cv, note.nfPoint, sighash, proof, 0 /* below every gate */));
 }
 
 // Determinism + uniqueness: the same note always yields the same nullifier
@@ -205,14 +205,14 @@ BOOST_AUTO_TEST_CASE(binding_proof_rejects_forged_nullifier_point)
     std::vector<unsigned char> proof;
     BOOST_REQUIRE(CreateNullifierBindingProof(note.value, note.blind, note.cv,
                                               forgedNf, sighash, proof));
-    BOOST_CHECK(!VerifyNullifierBindingProof(note.cv, forgedNf, sighash, proof));
+    BOOST_CHECK(!VerifyNullifierBindingProof(note.cv, forgedNf, sighash, proof, 0 /* below every gate */));
 
     // And a proof made for the canonical NF does not transfer to the forged NF.
     std::vector<unsigned char> realProof;
     BOOST_REQUIRE(CreateNullifierBindingProof(note.value, note.blind, note.cv,
                                               note.nfPoint, sighash, realProof));
-    BOOST_CHECK(VerifyNullifierBindingProof(note.cv, note.nfPoint, sighash, realProof));
-    BOOST_CHECK(!VerifyNullifierBindingProof(note.cv, forgedNf, sighash, realProof));
+    BOOST_CHECK(VerifyNullifierBindingProof(note.cv, note.nfPoint, sighash, realProof, 0 /* below every gate */));
+    BOOST_CHECK(!VerifyNullifierBindingProof(note.cv, forgedNf, sighash, realProof, 0 /* below every gate */));
 }
 
 // A proof for note A must not verify against a different note B's commitment.
@@ -226,9 +226,9 @@ BOOST_AUTO_TEST_CASE(binding_proof_rejects_foreign_commitment)
     std::vector<unsigned char> proofA;
     BOOST_REQUIRE(CreateNullifierBindingProof(a.value, a.blind, a.cv,
                                               a.nfPoint, sighash, proofA));
-    BOOST_CHECK(VerifyNullifierBindingProof(a.cv, a.nfPoint, sighash, proofA));
-    BOOST_CHECK(!VerifyNullifierBindingProof(b.cv, a.nfPoint, sighash, proofA));
-    BOOST_CHECK(!VerifyNullifierBindingProof(a.cv, b.nfPoint, sighash, proofA));
+    BOOST_CHECK(VerifyNullifierBindingProof(a.cv, a.nfPoint, sighash, proofA, 0 /* below every gate */));
+    BOOST_CHECK(!VerifyNullifierBindingProof(b.cv, a.nfPoint, sighash, proofA, 0 /* below every gate */));
+    BOOST_CHECK(!VerifyNullifierBindingProof(a.cv, b.nfPoint, sighash, proofA, 0 /* below every gate */));
 }
 
 // The proof is bound to the transaction sighash (no cross-tx replay).
@@ -240,8 +240,8 @@ BOOST_AUTO_TEST_CASE(binding_proof_is_bound_to_sighash)
     std::vector<unsigned char> proof;
     BOOST_REQUIRE(CreateNullifierBindingProof(note.value, note.blind, note.cv,
                                               note.nfPoint, uint256(0x1111), proof));
-    BOOST_CHECK(VerifyNullifierBindingProof(note.cv, note.nfPoint, uint256(0x1111), proof));
-    BOOST_CHECK(!VerifyNullifierBindingProof(note.cv, note.nfPoint, uint256(0x2222), proof));
+    BOOST_CHECK(VerifyNullifierBindingProof(note.cv, note.nfPoint, uint256(0x1111), proof, 0 /* below every gate */));
+    BOOST_CHECK(!VerifyNullifierBindingProof(note.cv, note.nfPoint, uint256(0x2222), proof, 0 /* below every gate */));
 }
 
 // Any tamper of the proof bytes is rejected.
@@ -254,19 +254,19 @@ BOOST_AUTO_TEST_CASE(binding_proof_rejects_tampering)
     std::vector<unsigned char> proof;
     BOOST_REQUIRE(CreateNullifierBindingProof(note.value, note.blind, note.cv,
                                               note.nfPoint, sighash, proof));
-    BOOST_REQUIRE(VerifyNullifierBindingProof(note.cv, note.nfPoint, sighash, proof));
+    BOOST_REQUIRE(VerifyNullifierBindingProof(note.cv, note.nfPoint, sighash, proof, 0 /* below every gate */));
 
     for (size_t pos : {size_t(0), size_t(40), size_t(70), size_t(100), size_t(129)})
     {
         std::vector<unsigned char> bad = proof;
         bad[pos] ^= 0x01;
-        BOOST_CHECK_MESSAGE(!VerifyNullifierBindingProof(note.cv, note.nfPoint, sighash, bad),
+        BOOST_CHECK_MESSAGE(!VerifyNullifierBindingProof(note.cv, note.nfPoint, sighash, bad, 0 /* below every gate */),
                             "tampered proof accepted at byte " + std::to_string(pos));
     }
 
     // Wrong length rejected.
     std::vector<unsigned char> shortProof(proof.begin(), proof.end() - 1);
-    BOOST_CHECK(!VerifyNullifierBindingProof(note.cv, note.nfPoint, sighash, shortProof));
+    BOOST_CHECK(!VerifyNullifierBindingProof(note.cv, note.nfPoint, sighash, shortProof, 0 /* below every gate */));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

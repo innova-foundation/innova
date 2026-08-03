@@ -107,6 +107,25 @@ CNullSendClient MakeCredentialClient(const std::vector<unsigned char>& vchN,
 
 BOOST_AUTO_TEST_SUITE(nullsend_binding_tests)
 
+BOOST_AUTO_TEST_CASE(legacy_nullsend_p2p_is_public_disabled_and_boundary_retired)
+{
+    const bool fRegTestSaved = fRegTest;
+    const int nBestHeightSaved = nBestHeight;
+
+    fRegTest = false;
+    nBestHeight = FORK_HEIGHT_NULLSEND;
+    BOOST_CHECK(!IsLegacyNullSendEnabledAtHeight(nBestHeight));
+
+    fRegTest = true;
+    nBestHeight = FORK_HEIGHT_NULLSEND;
+    BOOST_CHECK(IsLegacyNullSendEnabledAtHeight(nBestHeight));
+    nBestHeight = FORK_HEIGHT_BOUNDARY_A;
+    BOOST_CHECK(!IsLegacyNullSendEnabledAtHeight(nBestHeight));
+
+    nBestHeight = nBestHeightSaved;
+    fRegTest = fRegTestSaved;
+}
+
 // The znsps wire message round-trips the per-spend binding proofs.
 BOOST_AUTO_TEST_CASE(partial_sig_message_round_trips_binding_proofs)
 {

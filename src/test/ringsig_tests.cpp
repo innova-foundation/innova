@@ -61,8 +61,17 @@ void testRingSigs(int nRingSize)
     memcpy(&sSpend.e[0], key[iSender].begin(), EC_SECRET_SIZE);
 
     BOOST_REQUIRE(0 == SecretToPublicKey(sSpend, pkSpend));
+    BOOST_REQUIRE_EQUAL_COLLECTIONS(
+        pkSpend.begin(), pkSpend.end(),
+        &pPubkeys[iSender * EC_COMPRESSED_SIZE],
+        &pPubkeys[(iSender + 1) * EC_COMPRESSED_SIZE]);
 
-    BOOST_REQUIRE(0 == generateKeyImage(pkSpend, sSpend, keyImage));
+    // Legacy RING_SIG_1 binds the legacy key image; the newer generateKeyImage mapping
+    // would make this valid replay signature unverifiable.
+    CPubKey pkSender(
+        &pPubkeys[iSender * EC_COMPRESSED_SIZE], EC_COMPRESSED_SIZE);
+    BOOST_REQUIRE(pkSender.IsFullyValid());
+    BOOST_REQUIRE(0 == getOldKeyImage(pkSender, keyImage));
 
     start = clock();
     BOOST_REQUIRE(0 == generateRingSignature(keyImage, preimage, nRingSize, iSender, sSpend, pPubkeys, pSigc, pSigr));
@@ -119,9 +128,19 @@ void testRingSigABs(int nRingSize)
 
     memcpy(&sSpend.e[0], key[iSender].begin(), EC_SECRET_SIZE);
 
-    BOOST_CHECK(0 == SecretToPublicKey(sSpend, pkSpend));
+    BOOST_REQUIRE(0 == SecretToPublicKey(sSpend, pkSpend));
+    BOOST_REQUIRE_EQUAL_COLLECTIONS(
+        pkSpend.begin(), pkSpend.end(),
+        &pPubkeys[iSender * EC_COMPRESSED_SIZE],
+        &pPubkeys[(iSender + 1) * EC_COMPRESSED_SIZE]);
 
-    BOOST_REQUIRE(0 == generateKeyImage(pkSpend, sSpend, keyImage));
+    // Exercise the historical consensus verifier's key-image domain.  Wallet
+    // creation/relay for ANON is disabled; this test must not imply that the
+    // later try-and-increment wallet key-image mapping is a creatable mode.
+    CPubKey pkSender(
+        &pPubkeys[iSender * EC_COMPRESSED_SIZE], EC_COMPRESSED_SIZE);
+    BOOST_REQUIRE(pkSender.IsFullyValid());
+    BOOST_REQUIRE(0 == getOldKeyImage(pkSender, keyImage));
 
     start = clock();
     BOOST_REQUIRE(0 == generateRingSignatureAB(keyImage, preimage, nRingSize, iSender, sSpend, pPubkeys, pSigC, pSigS));
@@ -152,10 +171,9 @@ BOOST_AUTO_TEST_CASE(ringsig)
 
     BOOST_MESSAGE("testRingSigs");
 
-    for (int k = 1; k < 4; ++k)
+    for (int k = 0; k < 3; ++k)
     {
-        //BOOST_MESSAGE("ringSize " << (k % 126 + 2));
-        testRingSigs(k % 126 + 2);
+        testRingSigs((int)MIN_RING_SIZE + k);
     };
     //testRingSigs(16);
 
@@ -166,10 +184,9 @@ BOOST_AUTO_TEST_CASE(ringsig)
     totalVerify = 0;
     BOOST_MESSAGE("testRingSigABs");
 
-    for (int k = 1; k < 4; ++k)
+    for (int k = 0; k < 3; ++k)
     {
-        //BOOST_MESSAGE("ringSize " << (k % 126 + 2));
-        testRingSigABs(k % 126 + 2);
+        testRingSigABs((int)MIN_RING_SIZE + k);
     };
     //testRingSigABs(16);
 

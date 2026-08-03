@@ -10,6 +10,7 @@
 
 #include "../main.h"
 #include "../curvetree.h"
+#include "../wallet.h"
 
 #include <vector>
 
@@ -42,6 +43,44 @@ struct RegTestChainGuard
         nBestHeight = nBestHeightSaved;
     }
 };
+
+struct NetworkFlagsGuard
+{
+    bool fRegTestSaved;
+    bool fTestNetSaved;
+    StakingMode eStakingModeSaved;
+    CBlockIndex* pindexBestSaved;
+
+    NetworkFlagsGuard()
+        : fRegTestSaved(fRegTest), fTestNetSaved(fTestNet),
+          pindexBestSaved(pindexBest)
+    {
+        LOCK(cs_stakingMode);
+        eStakingModeSaved = nStakingMode;
+    }
+
+    ~NetworkFlagsGuard()
+    {
+        fRegTest = fRegTestSaved;
+        fTestNet = fTestNetSaved;
+        pindexBest = pindexBestSaved;
+        LOCK(cs_stakingMode);
+        nStakingMode = eStakingModeSaved;
+    }
+};
+
+void SetTestStakingMode(StakingMode eMode)
+{
+    LOCK(cs_stakingMode);
+    nStakingMode = eMode;
+}
+
+std::vector<unsigned char> SerializeTransaction(const CTransaction& tx)
+{
+    CDataStream stream(SER_NETWORK, PROTOCOL_VERSION);
+    stream << tx;
+    return std::vector<unsigned char>(stream.begin(), stream.end());
+}
 
 CTransaction MakeCoinbase(unsigned int nTime)
 {
@@ -204,8 +243,120 @@ BOOST_AUTO_TEST_CASE(mainnet_fork_ladder_keeps_shielded_pool_born_safe)
     BOOST_CHECK(GetForkHeightNullStakeV2() <= GetForkHeightNullStakeV3());
     BOOST_CHECK(GetForkHeightNullStakeV3() <= GetForkHeightDAG());
 
+    // A fresh trusted-tip check may move the ladder only as one 10,000-block
+    // unit. These golden vectors catch an accidental partial shift.
+    BOOST_CHECK_GE(MAINNET_V5_ACTIVATION_SHIFT, 0);
+    BOOST_CHECK_EQUAL(MAINNET_V5_ACTIVATION_SHIFT % 10000, 0);
+    BOOST_CHECK_EQUAL(GetForkHeightTighterDrift(),
+                      7800000 + MAINNET_V5_ACTIVATION_SHIFT);
+    BOOST_CHECK_EQUAL(GetForkHeightShielded(),
+                      7810000 + MAINNET_V5_ACTIVATION_SHIFT);
+    BOOST_CHECK_EQUAL(GetForkHeightFCMP(),
+                      7820000 + MAINNET_V5_ACTIVATION_SHIFT);
+    BOOST_CHECK_EQUAL(GetForkHeightDAG(),
+                      7950000 + MAINNET_V5_ACTIVATION_SHIFT);
+    BOOST_CHECK_EQUAL(GetForkHeightDAGKnight(),
+                      8000000 + MAINNET_V5_ACTIVATION_SHIFT);
+    BOOST_CHECK_EQUAL(GetForkHeightNullStakeDelegSet(),
+                      8060000 + MAINNET_V5_ACTIVATION_SHIFT);
+
     fRegTest = fRegTestSaved;
     fTestNet = fTestNetSaved;
+}
+
+BOOST_AUTO_TEST_CASE(public_wallet_policy_disables_legacy_private_staking_creation)
+{
+    NetworkFlagsGuard guard;
+
+    // Public mainnet/testnet policy disables both legacy private staking modes
+    // immediately, without affecting either transparent staking mode.
+    fRegTest = false;
+    fTestNet = false;
+    BOOST_CHECK(!IsLegacyPrivateStakeCreationAllowed(STAKE_NULLSTAKE, 0));
+    BOOST_CHECK(!IsLegacyPrivateStakeCreationAllowed(STAKE_NULLSTAKE_COLD, 0));
+    BOOST_CHECK(IsLegacyPrivateStakeCreationAllowed(STAKE_TRANSPARENT, 0));
+    BOOST_CHECK(IsLegacyPrivateStakeCreationAllowed(STAKE_COLD, 0));
+
+    fTestNet = true;
+    BOOST_CHECK(!IsLegacyPrivateStakeCreationAllowed(STAKE_NULLSTAKE, 0));
+    BOOST_CHECK(!IsLegacyPrivateStakeCreationAllowed(STAKE_NULLSTAKE_COLD, 0));
+
+    // Historical construction remains available only on isolated regtest and
+    // only before a configured Boundary A.
+    fRegTest = true;
+    fTestNet = false;
+    BOOST_CHECK(IsLegacyPrivateStakeCreationAllowed(STAKE_NULLSTAKE, 0));
+    BOOST_CHECK(IsLegacyPrivateStakeCreationAllowed(STAKE_NULLSTAKE_COLD, 0));
+    BOOST_CHECK(!IsLegacyPrivateStakeCreationAllowed(
+        STAKE_NULLSTAKE, FORK_HEIGHT_BOUNDARY_A));
+    BOOST_CHECK(!IsLegacyPrivateStakeCreationAllowed(
+        STAKE_NULLSTAKE_COLD, FORK_HEIGHT_BOUNDARY_A));
+    BOOST_CHECK(IsLegacyPrivateStakeCreationAllowed(
+        STAKE_TRANSPARENT, FORK_HEIGHT_BOUNDARY_A));
+    BOOST_CHECK(IsLegacyPrivateStakeCreationAllowed(
+        STAKE_COLD, FORK_HEIGHT_BOUNDARY_A));
+}
+
+BOOST_AUTO_TEST_CASE(privacy_vnext_product_contract_keeps_all_required_modes)
+{
+    BOOST_CHECK_EQUAL((int)PRIVACY_MODE_TRANSPARENT, 0);
+    BOOST_CHECK_EQUAL((int)PRIVACY_MODE_FULL, 7);
+    BOOST_CHECK_EQUAL((int)PRIVACY_MODE_MASK, 7);
+    BOOST_CHECK_EQUAL((int)SHIELDED_VNEXT_PRIVACY_MODE_COUNT, 8);
+    BOOST_CHECK_EQUAL((int)SHIELDED_VNEXT_NULLSTAKE_GENERATION_COUNT, 3);
+    BOOST_CHECK_EQUAL((int)SHIELDED_VNEXT_TREE_LAYERS, 8);
+    BOOST_CHECK_EQUAL((int)SHIELDED_VNEXT_NULLSTAKE_V1, 1);
+    BOOST_CHECK_EQUAL((int)SHIELDED_VNEXT_NULLSTAKE_V2, 2);
+    BOOST_CHECK_EQUAL((int)SHIELDED_VNEXT_NULLSTAKE_V3, 3);
+    BOOST_CHECK_EQUAL((int)SHIELDED_VNEXT_OPERATION_SHIELD, 0);
+    BOOST_CHECK_EQUAL((int)SHIELDED_VNEXT_OPERATION_UNSHIELD, 1);
+    BOOST_CHECK_EQUAL((int)SHIELDED_VNEXT_OPERATION_TRANSFER, 2);
+    BOOST_CHECK_EQUAL((int)SHIELDED_VNEXT_OPERATION_NULLSEND, 3);
+    BOOST_CHECK_EQUAL((int)SHIELDED_VNEXT_OPERATION_CONDITIONAL_MIGRATION, 7);
+    BOOST_CHECK(iv5::EnvelopeAllows(2000, iv5::NOTE_TRANSFER,
+                                    iv5::FINALITY_NONE, iv5::AUTH_OWNER,
+                                    iv5::FINALITY_OBJECT_NONE, 7));
+    BOOST_CHECK(!iv5::EnvelopeAllows(2000, iv5::NOTE_TRANSFER,
+                                     iv5::FINALITY_NONE, iv5::AUTH_OWNER,
+                                     iv5::FINALITY_OBJECT_NONE, 6));
+    BOOST_CHECK(iv5::EnvelopeAllows(2003, iv5::NOTE_OPERATION_NONE,
+                                    iv5::FINALITY_NULLSTAKE_V1,
+                                    iv5::AUTH_OWNER,
+                                    iv5::FINALITY_OBJECT_VOTE, 7));
+    BOOST_CHECK(iv5::EnvelopeAllows(2008,
+                                    iv5::NOTE_CONDITIONAL_MIGRATION,
+                                    iv5::FINALITY_NONE, iv5::AUTH_OWNER,
+                                    iv5::FINALITY_OBJECT_NONE, 0));
+}
+
+BOOST_AUTO_TEST_CASE(public_private_staking_guard_precedes_wallet_mutation)
+{
+    NetworkFlagsGuard guard;
+    fRegTest = false;
+    fTestNet = false;
+    pindexBest = NULL;
+
+    CWallet wallet;
+    CKey key;
+    const StakingMode vPrivateModes[] = {
+        STAKE_NULLSTAKE,
+        STAKE_NULLSTAKE_COLD
+    };
+
+    for (size_t i = 0; i < sizeof(vPrivateModes) / sizeof(vPrivateModes[0]); ++i)
+    {
+        SetTestStakingMode(vPrivateModes[i]);
+
+        CTransaction tx;
+        tx.nTime = 123456;
+        tx.vin.push_back(CTxIn(COutPoint(uint256(1234 + i), 1)));
+        tx.vout.push_back(CTxOut(7, CScript() << OP_TRUE));
+        const std::vector<unsigned char> vBefore = SerializeTransaction(tx);
+
+        BOOST_CHECK(!wallet.CreateCoinStake(wallet, 0x1d00ffff, 1, 0,
+                                             tx, key));
+        BOOST_CHECK(vBefore == SerializeTransaction(tx));
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

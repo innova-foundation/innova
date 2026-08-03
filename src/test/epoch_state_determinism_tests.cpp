@@ -35,6 +35,7 @@
 #include "../dag.h"
 #include "../finality.h"
 #include "../main.h"
+#include "../privacy_vnext_ffi.h"
 #include "../txdb.h"
 
 #include <algorithm>
@@ -48,6 +49,16 @@ extern bool fTestNet;
 BOOST_AUTO_TEST_SUITE(epoch_state_determinism_tests)
 
 namespace {
+
+class EpochStateRestartTestDB : public CTxDB
+{
+public:
+    EpochStateRestartTestDB() : CTxDB("r+") {}
+    bool EraseEpochStateSchemaForTest()
+    {
+        return Erase(std::string("epochstateschema"));
+    }
+};
 
 // Builds throwaway post-DAG PoW CBlockIndex nodes wired into the global mapBlockIndex + the
 // DAG manager, and tears them all down (plus restoring pindexBest / fRegTest) on destruction.
@@ -129,7 +140,11 @@ struct DAGHarness
                                   " at " << idx->nFile << ":" << idx->nBlockPos);
         }
         g_dagManager.InitBlockDAGData(idx, parents);
-        g_dagManager.ColorBlock(idx);
+        if (height >= FORK_HEIGHT_DAGKNIGHT)
+            BOOST_REQUIRE(g_dagManager.ColorBlockDAGKnight(idx));
+        else
+            g_dagManager.ColorBlock(idx);
+        idx->nChainTrust = g_dagManager.ComputeDAGScore(idx);
         hashes.push_back(h);
         blocks.push_back(idx);
         hashesBySeed[seed] = h;
@@ -252,6 +267,87 @@ BOOST_AUTO_TEST_CASE(dag_linear_order_is_anchor_pure)
     BOOST_CHECK(contains(orderAfter, pE0->GetBlockHash()));
     BOOST_CHECK(contains(orderAfter, pMid->GetBlockHash()));
     BOOST_CHECK(!contains(orderAfter, pSibling->GetBlockHash()));  // unreachable sibling excluded
+}
+
+BOOST_AUTO_TEST_CASE(dagknight_v3_arrival_restart_and_tip_are_anchor_pure)
+{
+    struct Snapshot
+    {
+        std::vector<uint256> order;
+        std::vector<std::pair<uint256, bool> > colors;
+        uint256 selectedParent;
+        uint256 score;
+        uint256 tip;
+        int inferredK;
+    };
+
+    const auto run = [](bool fReverseSiblings) -> Snapshot {
+        DAGHarness h;
+        const int nBaseHeight =
+            std::max(FORK_HEIGHT_EPOCH_STATE_V3,
+                     FORK_HEIGHT_DAGKNIGHT) + 10;
+        std::vector<uint256> none;
+        CBlockIndex* base = h.add(0xDA600001, nBaseHeight,
+                                  none, NULL);
+        std::vector<uint256> baseParent(1, base->GetBlockHash());
+        CBlockIndex* a = NULL;
+        CBlockIndex* b = NULL;
+        if (fReverseSiblings)
+        {
+            b = h.add(0xDA600003, nBaseHeight + 1, baseParent, base);
+            a = h.add(0xDA600002, nBaseHeight + 1, baseParent, base);
+        }
+        else
+        {
+            a = h.add(0xDA600002, nBaseHeight + 1, baseParent, base);
+            b = h.add(0xDA600003, nBaseHeight + 1, baseParent, base);
+        }
+
+        std::vector<uint256> mergeParents;
+        mergeParents.push_back(a->GetBlockHash());
+        mergeParents.push_back(b->GetBlockHash());
+        CScript carrier = BuildDAGParentScript(mergeParents);
+        CBlockIndex* merge = h.add(0xDA600004, nBaseHeight + 2,
+                                   mergeParents, a, true, &carrier);
+
+        Snapshot snapshot;
+        BOOST_REQUIRE(g_dagManager.GetDAGKnightAnchorMetrics(
+            merge->GetBlockHash(), snapshot.selectedParent,
+            snapshot.inferredK, snapshot.score, snapshot.colors));
+        snapshot.order =
+            g_dagManager.GetDAGLinearOrder(merge->GetBlockHash(), 0, true);
+        CBlockIndex* best = g_dagManager.SelectBestDAGTip();
+        BOOST_REQUIRE(best != NULL);
+        snapshot.tip = best->GetBlockHash();
+
+        g_dagManager.RebuildDAGOrder();
+        uint256 rebuiltParent;
+        uint256 rebuiltScore;
+        int rebuiltK = 0;
+        std::vector<std::pair<uint256, bool> > rebuiltColors;
+        BOOST_REQUIRE(g_dagManager.GetDAGKnightAnchorMetrics(
+            merge->GetBlockHash(), rebuiltParent, rebuiltK,
+            rebuiltScore, rebuiltColors));
+        BOOST_CHECK(snapshot.order ==
+                    g_dagManager.GetDAGLinearOrder(
+                        merge->GetBlockHash(), 0, true));
+        BOOST_CHECK(snapshot.colors == rebuiltColors);
+        BOOST_CHECK(snapshot.selectedParent == rebuiltParent);
+        BOOST_CHECK(snapshot.score == rebuiltScore);
+        BOOST_CHECK_EQUAL(snapshot.inferredK, rebuiltK);
+        return snapshot;
+    };
+
+    const Snapshot forward = run(false);
+    const Snapshot reverse = run(true);
+    BOOST_CHECK(forward.order == reverse.order);
+    BOOST_CHECK(forward.colors == reverse.colors);
+    BOOST_CHECK(forward.selectedParent == reverse.selectedParent);
+    BOOST_CHECK(forward.score == reverse.score);
+    BOOST_CHECK(forward.tip == reverse.tip);
+    BOOST_CHECK_EQUAL(forward.inferredK, reverse.inferredK);
+    BOOST_CHECK_GE(forward.inferredK, DAGKNIGHT_K_FLOOR);
+    BOOST_CHECK_LE(forward.inferredK, DAGKNIGHT_K_CEILING);
 }
 
 BOOST_AUTO_TEST_CASE(v3_dag_score_survives_pruned_history_and_rebuild)
@@ -999,6 +1095,92 @@ BOOST_AUTO_TEST_CASE(v3_startup_requires_exact_highest_completed_epoch)
     BOOST_CHECK(strError.find("does not match hashBestChain") != std::string::npos);
 }
 
+BOOST_AUTO_TEST_CASE(v3_restart_accepts_v2_prefix_but_checks_strict_migration_suffix)
+{
+    DAGHarness h;
+    const int nFirstStrictEpoch =
+        GetEpochForHeight(FORK_HEIGHT_EPOCH_STATE_V3) - 1;
+    BOOST_REQUIRE_EQUAL(nFirstStrictEpoch, 1);
+    const int nPrefixEpoch = nFirstStrictEpoch - 1;
+
+    // Regtest's mixed-generation shape: epoch 0 from the V2 compatibility path
+    // (nBlockCount 0), epoch 1 rebuilt as the V3 migration base, schema marker V3.
+    CEpochState prefix;
+    prefix.nEpoch = nPrefixEpoch;
+    prefix.nHeightStart =
+        GetEpochBoundaryHeight(nPrefixEpoch, FORK_HEIGHT_EPOCH_STATE_V3);
+    prefix.nHeightEnd =
+        GetEpochBoundaryHeight(nPrefixEpoch + 1,
+                               FORK_HEIGHT_EPOCH_STATE_V3) - 1;
+    prefix.hashBoundaryBlock = uint256(0xe3000001);
+    prefix.vBlockHashes.push_back(prefix.hashBoundaryBlock);
+    prefix.nBlockCount = 0;
+    prefix.nTxCount = -1;
+
+    const int nMigrationEnd =
+        GetEpochBoundaryHeight(nFirstStrictEpoch + 1,
+                               FORK_HEIGHT_EPOCH_STATE_V3) - 1;
+    std::vector<uint256> noParents;
+    CBlockIndex* pMigrationBoundary =
+        h.add(0xE3000002, nMigrationEnd, noParents, NULL, false);
+    CEpochState migration;
+    migration.nEpoch = nFirstStrictEpoch;
+    migration.nHeightStart =
+        GetEpochBoundaryHeight(nFirstStrictEpoch,
+                               FORK_HEIGHT_EPOCH_STATE_V3);
+    migration.nHeightEnd = nMigrationEnd;
+    migration.hashBoundaryBlock = pMigrationBoundary->GetBlockHash();
+    migration.vBlockHashes.push_back(migration.hashBoundaryBlock);
+    migration.nBlockCount = 1;
+    migration.nTxCount = -1;
+
+    CCurveTree emptyTree;
+    EpochStateRestartTestDB txdb;
+    int nOldSchema = 0;
+    const bool fHadOldSchema = txdb.ReadEpochStateSchema(nOldSchema);
+    CEpochState oldState;
+    CCurveTree oldTree;
+    BOOST_REQUIRE(!txdb.ReadEpochState(nPrefixEpoch, oldState));
+    BOOST_REQUIRE(!txdb.ReadCurveTreeAtEpoch(nPrefixEpoch, oldTree));
+    BOOST_REQUIRE(!txdb.ReadEpochState(nFirstStrictEpoch, oldState));
+    BOOST_REQUIRE(!txdb.ReadCurveTreeAtEpoch(nFirstStrictEpoch, oldTree));
+    BOOST_REQUIRE(txdb.TxnBegin());
+    BOOST_REQUIRE(txdb.WriteEpochState(nPrefixEpoch, prefix));
+    BOOST_REQUIRE(txdb.WriteCurveTreeAtEpoch(nPrefixEpoch, emptyTree));
+    BOOST_REQUIRE(txdb.WriteEpochState(nFirstStrictEpoch, migration));
+    BOOST_REQUIRE(txdb.WriteCurveTreeAtEpoch(nFirstStrictEpoch, emptyTree));
+    BOOST_REQUIRE(txdb.WriteEpochStateSchema(EPOCHSTATE_SCHEMA_V3));
+    BOOST_REQUIRE(txdb.TxnCommit());
+
+    CDAGManager restarted;
+    BOOST_REQUIRE(restarted.InitBlockDAGData(pMigrationBoundary, noParents));
+    BOOST_CHECK(restarted.LoadEpochStates(txdb));
+    CEpochState loadedPrefix;
+    BOOST_REQUIRE(restarted.GetEpochState(nPrefixEpoch, loadedPrefix));
+    BOOST_CHECK_EQUAL(loadedPrefix.nBlockCount, 0);
+    BOOST_CHECK_EQUAL(loadedPrefix.vBlockHashes.size(), 1U);
+
+    // The compatibility exception is prefix-only.  The exact same mismatch
+    // in the strict migration epoch remains fatal, preserving fail-closed
+    // recovery for the V3 suffix.
+    migration.nBlockCount = 0;
+    BOOST_REQUIRE(txdb.WriteEpochState(nFirstStrictEpoch, migration));
+    CDAGManager corruptRestart;
+    BOOST_REQUIRE(corruptRestart.InitBlockDAGData(pMigrationBoundary, noParents));
+    BOOST_CHECK(!corruptRestart.LoadEpochStates(txdb));
+
+    BOOST_REQUIRE(txdb.TxnBegin());
+    BOOST_REQUIRE(txdb.EraseEpochState(nPrefixEpoch));
+    BOOST_REQUIRE(txdb.EraseCurveTreeAtEpoch(nPrefixEpoch));
+    BOOST_REQUIRE(txdb.EraseEpochState(nFirstStrictEpoch));
+    BOOST_REQUIRE(txdb.EraseCurveTreeAtEpoch(nFirstStrictEpoch));
+    if (fHadOldSchema)
+        BOOST_REQUIRE(txdb.WriteEpochStateSchema(nOldSchema));
+    else
+        BOOST_REQUIRE(txdb.EraseEpochStateSchemaForTest());
+    BOOST_REQUIRE(txdb.TxnCommit());
+}
+
 BOOST_AUTO_TEST_CASE(epoch_state_persistence_load_fails_closed)
 {
     CTxDB txdb("rw");
@@ -1069,6 +1251,360 @@ BOOST_AUTO_TEST_CASE(epoch_state_persistence_load_fails_closed)
     BOOST_REQUIRE(txdb.EraseEpochState(E + 2));
     BOOST_REQUIRE(txdb.EraseCurveTreeAtEpoch(E + 2));
     BOOST_REQUIRE(txdb.TxnCommit());
+}
+
+BOOST_AUTO_TEST_CASE(v4_frontiers_and_active_transaction_set_serialize_exactly)
+{
+    PrivacyVNextEpochSeed seed;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextEpochSeed(seed, strError), strError);
+
+    PrivacyVNextDigest keyImage;
+    keyImage.fill(0x66);
+    keyImage[0] = 0x58;
+    std::vector<PrivacyVNextDigest> keyImages(1, keyImage);
+    std::vector<unsigned char> nullifierState;
+    std::vector<unsigned char> nullifierRoot;
+    uint64_t nullifierCount = 0;
+    BOOST_REQUIRE_MESSAGE(ApplyPrivacyVNextNullifiers(
+                              seed.vchNullifierState, keyImages,
+                              nullifierState, nullifierRoot,
+                              nullifierCount, strError),
+                          strError);
+
+    CEpochState state;
+    state.nEpoch = 910001;
+    state.nHeightStart = 1;
+    state.nHeightEnd = 1;
+    state.hashBoundaryBlock = uint256(0x91000101);
+    state.vBlockHashes.push_back(state.hashBoundaryBlock);
+    state.nBlockCount = 1;
+    state.nTxCount = 1;
+    state.nSerVersion = EPOCHSTATE_SER_VERSION_V4;
+    state.vchVNextTreeState = seed.vchTreeState;
+    state.vchVNextRoot = seed.vchRoot;
+    state.nVNextTreeSize = seed.nTreeSize;
+    state.vchVNextNullifierState = nullifierState;
+    state.hashVNextNullifierRoot = uint256(nullifierRoot);
+    state.nVNextNullifierCount = nullifierCount;
+    state.vVNextEpochNullifiers.push_back(uint256(
+        std::vector<unsigned char>(keyImage.begin(), keyImage.end())));
+    state.vchVNextParameterDigest = seed.vchParameterDigest;
+    state.hashVNextFinalizedAnchor = uint256(0x91000102);
+    state.nVNextFinalizedHeight = 0;
+    state.vVNextActiveBlockTxCounts.push_back(1);
+    state.vVNextActiveTxIds.push_back(uint256(0x91000103));
+    CHashWriter activeSetHasher(SER_GETHASH, 0);
+    activeSetHasher << std::string("Innova/IV5/ActiveDAGTransactionSet/v1");
+    activeSetHasher << state.hashBoundaryBlock << state.vBlockHashes;
+    activeSetHasher << state.vVNextActiveBlockTxCounts;
+    activeSetHasher << state.vVNextActiveTxIds;
+    state.hashVNextActiveTxSet = activeSetHasher.GetHash();
+
+    CDataStream encoded(SER_DISK, CLIENT_VERSION);
+    encoded << state;
+    CEpochState decoded;
+    encoded >> decoded;
+    BOOST_CHECK(encoded.empty());
+    BOOST_CHECK_EQUAL(decoded.nSerVersion, EPOCHSTATE_SER_VERSION_V4);
+    BOOST_CHECK(decoded.GetDigest() == state.GetDigest());
+    BOOST_CHECK(decoded.vchVNextNullifierState == nullifierState);
+    BOOST_CHECK(decoded.vVNextEpochNullifiers == state.vVNextEpochNullifiers);
+    BOOST_CHECK(decoded.vVNextActiveBlockTxCounts ==
+                state.vVNextActiveBlockTxCounts);
+    BOOST_CHECK(decoded.vVNextActiveTxIds == state.vVNextActiveTxIds);
+
+    CDAGManager manager;
+    CCurveTree emptyTree;
+    CTxDB txdb("rw");
+    BOOST_REQUIRE(txdb.TxnBegin());
+    BOOST_REQUIRE(manager.WriteEpochState(txdb, state, emptyTree));
+    txdb.TxnAbort();
+
+    CEpochState corrupt = state;
+    corrupt.vchVNextNullifierState[12] ^= 1;
+    BOOST_REQUIRE(txdb.TxnBegin());
+    BOOST_CHECK(!manager.WriteEpochState(txdb, corrupt, emptyTree));
+    txdb.TxnAbort();
+
+    corrupt = state;
+    corrupt.vVNextActiveBlockTxCounts[0] = 2;
+    BOOST_REQUIRE(txdb.TxnBegin());
+    BOOST_CHECK(!manager.WriteEpochState(txdb, corrupt, emptyTree));
+    txdb.TxnAbort();
+
+    corrupt = state;
+    corrupt.hashVNextActiveTxSet = uint256(0x91000104);
+    BOOST_REQUIRE(txdb.TxnBegin());
+    BOOST_CHECK(!manager.WriteEpochState(txdb, corrupt, emptyTree));
+    txdb.TxnAbort();
+}
+
+BOOST_AUTO_TEST_CASE(v4_exact_nullifier_index_tracks_atomic_batches)
+{
+    const uint256 keyImage = uint256(
+        "42a1186f1c89f79361a76f5fe270c92c5c82f879f19512d62f6f46f2f6ef3108");
+    CShieldedNullifierSpent spent;
+    spent.txnHash = uint256(
+        "75f9f96e0e5a12341c547f1c3389cd55906f2fcedec4727a8989b95388b60401");
+    spent.nIndex = 3;
+
+    CTxDB txdb("r+");
+    BOOST_REQUIRE(txdb.TxnBegin());
+    BOOST_REQUIRE(txdb.ErasePrivacyVNextNullifier(keyImage));
+    BOOST_REQUIRE(txdb.TxnCommit(true));
+
+    uint64_t nBaselineCount = 0;
+    std::string strCountError;
+    BOOST_REQUIRE(txdb.CountPrivacyVNextNullifiers(
+        nBaselineCount, strCountError));
+
+    CShieldedNullifierSpent observed;
+    BOOST_CHECK_EQUAL(txdb.ReadPrivacyVNextNullifierStatus(keyImage, observed),
+                      TXDB_READ_NOT_FOUND);
+
+    BOOST_REQUIRE(txdb.TxnBegin());
+    BOOST_REQUIRE(txdb.WritePrivacyVNextNullifier(keyImage, spent));
+    BOOST_REQUIRE_EQUAL(
+        txdb.ReadPrivacyVNextNullifierStatus(keyImage, observed),
+        TXDB_READ_FOUND);
+    BOOST_CHECK(observed.txnHash == spent.txnHash);
+    BOOST_CHECK_EQUAL(observed.nIndex, spent.nIndex);
+    BOOST_REQUIRE(txdb.TxnAbort());
+    BOOST_CHECK_EQUAL(txdb.ReadPrivacyVNextNullifierStatus(keyImage, observed),
+                      TXDB_READ_NOT_FOUND);
+
+    BOOST_REQUIRE(txdb.TxnBegin());
+    BOOST_REQUIRE(txdb.WritePrivacyVNextNullifier(keyImage, spent));
+    BOOST_REQUIRE(txdb.TxnCommit(true));
+
+    CTxDB reopened("r+");
+    BOOST_REQUIRE_EQUAL(
+        reopened.ReadPrivacyVNextNullifierStatus(keyImage, observed),
+        TXDB_READ_FOUND);
+    BOOST_CHECK(observed.txnHash == spent.txnHash);
+    BOOST_CHECK_EQUAL(observed.nIndex, spent.nIndex);
+    uint64_t nCommittedCount = 0;
+    BOOST_REQUIRE(reopened.CountPrivacyVNextNullifiers(
+        nCommittedCount, strCountError));
+    BOOST_CHECK_EQUAL(nCommittedCount, nBaselineCount + 1);
+
+    BOOST_REQUIRE(txdb.TxnBegin());
+    BOOST_REQUIRE(txdb.ErasePrivacyVNextNullifier(keyImage));
+    BOOST_REQUIRE(txdb.TxnAbort());
+    BOOST_REQUIRE_EQUAL(
+        reopened.ReadPrivacyVNextNullifierStatus(keyImage, observed),
+        TXDB_READ_FOUND);
+
+    BOOST_REQUIRE(txdb.TxnBegin());
+    BOOST_REQUIRE(txdb.ErasePrivacyVNextNullifier(keyImage));
+    BOOST_REQUIRE(txdb.TxnCommit(true));
+    BOOST_CHECK_EQUAL(
+        reopened.ReadPrivacyVNextNullifierStatus(keyImage, observed),
+        TXDB_READ_NOT_FOUND);
+    uint64_t nFinalCount = 0;
+    BOOST_REQUIRE(reopened.CountPrivacyVNextNullifiers(
+        nFinalCount, strCountError));
+    BOOST_CHECK_EQUAL(nFinalCount, nBaselineCount);
+}
+
+BOOST_AUTO_TEST_CASE(v4_restart_conflict_reorg_and_shortening_converge_exactly)
+{
+    PrivacyVNextEpochSeed seed;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextEpochSeed(seed, strError), strError);
+
+    const int E = 910002;
+    CEpochState branchA;
+    CEpochState branchB;
+    uint256 keyImageA;
+    uint256 keyImageB;
+
+    const auto buildBranch = [&](const PrivacyVNextDigest& keyImage,
+                                 const uint256& boundary,
+                                 const uint256& activeTx,
+                                 CEpochState& state,
+                                 uint256& keyImageOut) {
+        std::vector<PrivacyVNextDigest> keyImages(1, keyImage);
+        std::vector<unsigned char> nullifierState;
+        std::vector<unsigned char> nullifierRoot;
+        uint64_t nullifierCount = 0;
+        strError.clear();
+        BOOST_REQUIRE_MESSAGE(ApplyPrivacyVNextNullifiers(
+                                  seed.vchNullifierState, keyImages,
+                                  nullifierState, nullifierRoot,
+                                  nullifierCount, strError),
+                              strError);
+
+        state.nEpoch = E;
+        state.nHeightStart = 1;
+        state.nHeightEnd = 1;
+        state.hashBoundaryBlock = boundary;
+        state.vBlockHashes.push_back(boundary);
+        state.nBlockCount = 1;
+        state.nTxCount = 1;
+        state.nSerVersion = EPOCHSTATE_SER_VERSION_V4;
+        state.vchVNextTreeState = seed.vchTreeState;
+        state.vchVNextRoot = seed.vchRoot;
+        state.nVNextTreeSize = seed.nTreeSize;
+        state.vchVNextNullifierState = nullifierState;
+        state.hashVNextNullifierRoot = uint256(nullifierRoot);
+        state.nVNextNullifierCount = nullifierCount;
+        keyImageOut = uint256(std::vector<unsigned char>(
+            keyImage.begin(), keyImage.end()));
+        state.vVNextEpochNullifiers.push_back(keyImageOut);
+        state.vchVNextParameterDigest = seed.vchParameterDigest;
+        state.hashVNextFinalizedAnchor = boundary;
+        state.nVNextFinalizedHeight = 0;
+        state.vVNextActiveBlockTxCounts.push_back(1);
+        state.vVNextActiveTxIds.push_back(activeTx);
+        CHashWriter activeSetHasher(SER_GETHASH, 0);
+        activeSetHasher << std::string("Innova/IV5/ActiveDAGTransactionSet/v1");
+        activeSetHasher << state.hashBoundaryBlock << state.vBlockHashes;
+        activeSetHasher << state.vVNextActiveBlockTxCounts;
+        activeSetHasher << state.vVNextActiveTxIds;
+        state.hashVNextActiveTxSet = activeSetHasher.GetHash();
+    };
+
+    PrivacyVNextDigest vectorA;
+    vectorA.fill(0x66);
+    vectorA[0] = 0x58;
+    PrivacyVNextDigest vectorB = vectorA;
+    vectorB[31] = 0xe6;
+    buildBranch(vectorA, uint256(0x910002a1), uint256(0x910002a2),
+                branchA, keyImageA);
+    buildBranch(vectorB, uint256(0x910002b1), uint256(0x910002b2),
+                branchB, keyImageB);
+    BOOST_REQUIRE(keyImageA != keyImageB);
+    BOOST_REQUIRE(branchA.hashVNextNullifierRoot !=
+                  branchB.hashVNextNullifierRoot);
+    BOOST_REQUIRE(branchA.hashVNextActiveTxSet !=
+                  branchB.hashVNextActiveTxSet);
+    BOOST_REQUIRE(branchA.GetDigest() != branchB.GetDigest());
+
+    const auto checkExactState = [](const CEpochState& actual,
+                                    const CEpochState& expected) {
+        BOOST_CHECK_EQUAL(actual.nSerVersion, EPOCHSTATE_SER_VERSION_V4);
+        BOOST_CHECK_EQUAL(actual.nEpoch, expected.nEpoch);
+        BOOST_CHECK(actual.hashBoundaryBlock == expected.hashBoundaryBlock);
+        BOOST_CHECK_EQUAL(actual.nHeightStart, expected.nHeightStart);
+        BOOST_CHECK_EQUAL(actual.nHeightEnd, expected.nHeightEnd);
+        BOOST_CHECK(actual.vBlockHashes == expected.vBlockHashes);
+        BOOST_CHECK_EQUAL(actual.nBlockCount, expected.nBlockCount);
+        BOOST_CHECK_EQUAL(actual.nTxCount, expected.nTxCount);
+        BOOST_CHECK(actual.vchVNextTreeState == expected.vchVNextTreeState);
+        BOOST_CHECK(actual.vchVNextRoot == expected.vchVNextRoot);
+        BOOST_CHECK_EQUAL(actual.nVNextTreeSize, expected.nVNextTreeSize);
+        BOOST_CHECK(actual.vchVNextNullifierState ==
+                    expected.vchVNextNullifierState);
+        BOOST_CHECK(actual.hashVNextNullifierRoot ==
+                    expected.hashVNextNullifierRoot);
+        BOOST_CHECK_EQUAL(actual.nVNextNullifierCount,
+                          expected.nVNextNullifierCount);
+        BOOST_CHECK(actual.vVNextEpochNullifiers ==
+                    expected.vVNextEpochNullifiers);
+        BOOST_CHECK(actual.vchVNextParameterDigest ==
+                    expected.vchVNextParameterDigest);
+        BOOST_CHECK(actual.hashVNextFinalizedAnchor ==
+                    expected.hashVNextFinalizedAnchor);
+        BOOST_CHECK_EQUAL(actual.nVNextFinalizedHeight,
+                          expected.nVNextFinalizedHeight);
+        BOOST_CHECK(actual.vVNextActiveBlockTxCounts ==
+                    expected.vVNextActiveBlockTxCounts);
+        BOOST_CHECK(actual.vVNextActiveTxIds == expected.vVNextActiveTxIds);
+        BOOST_CHECK(actual.hashVNextActiveTxSet ==
+                    expected.hashVNextActiveTxSet);
+        BOOST_CHECK(actual.GetDigest() == expected.GetDigest());
+    };
+
+    CShieldedNullifierSpent ownerA;
+    ownerA.txnHash = branchA.vVNextActiveTxIds[0];
+    ownerA.nIndex = 0;
+    CShieldedNullifierSpent ownerB;
+    ownerB.txnHash = branchB.vVNextActiveTxIds[0];
+    ownerB.nIndex = 0;
+    CCurveTree emptyTree;
+    CDAGManager manager;
+    CTxDB txdb("r+");
+
+    BOOST_REQUIRE(txdb.TxnBegin());
+    BOOST_REQUIRE(txdb.EraseEpochState(E));
+    BOOST_REQUIRE(txdb.EraseCurveTreeAtEpoch(E));
+    BOOST_REQUIRE(txdb.ErasePrivacyVNextNullifier(keyImageA));
+    BOOST_REQUIRE(txdb.ErasePrivacyVNextNullifier(keyImageB));
+    BOOST_REQUIRE(txdb.TxnCommit(true));
+
+    uint64_t baselineCount = 0;
+    BOOST_REQUIRE(txdb.CountPrivacyVNextNullifiers(baselineCount, strError));
+
+    BOOST_REQUIRE(txdb.TxnBegin());
+    BOOST_REQUIRE(manager.WriteEpochState(txdb, branchA, emptyTree));
+    BOOST_REQUIRE(txdb.WritePrivacyVNextNullifier(keyImageA, ownerA));
+    BOOST_REQUIRE(txdb.TxnCommit(true));
+
+    CTxDB restartedA("r+");
+    CEpochState loaded;
+    CCurveTree loadedTree;
+    BOOST_REQUIRE(restartedA.ReadEpochState(E, loaded));
+    BOOST_REQUIRE(restartedA.ReadCurveTreeAtEpoch(E, loadedTree));
+    BOOST_CHECK(loadedTree.IsEmpty());
+    checkExactState(loaded, branchA);
+    CShieldedNullifierSpent observed;
+    BOOST_REQUIRE_EQUAL(
+        restartedA.ReadPrivacyVNextNullifierStatus(keyImageA, observed),
+        TXDB_READ_FOUND);
+    BOOST_CHECK(observed.txnHash == ownerA.txnHash);
+    BOOST_CHECK_EQUAL(observed.nIndex, ownerA.nIndex);
+    uint64_t branchCount = 0;
+    BOOST_REQUIRE(restartedA.CountPrivacyVNextNullifiers(
+        branchCount, strError));
+    BOOST_CHECK_EQUAL(branchCount, baselineCount + 1);
+
+    // Model the single LevelDB transaction used by a conflict reorg: remove
+    // the old suffix and exact spent-key owner, then install the replacement.
+    BOOST_REQUIRE(txdb.TxnBegin());
+    BOOST_REQUIRE(manager.EraseEpochStateSuffix(txdb, E));
+    BOOST_REQUIRE(txdb.ErasePrivacyVNextNullifier(keyImageA));
+    BOOST_REQUIRE(manager.WriteEpochState(txdb, branchB, emptyTree));
+    BOOST_REQUIRE(txdb.WritePrivacyVNextNullifier(keyImageB, ownerB));
+    BOOST_REQUIRE(txdb.TxnCommit(true));
+
+    CTxDB restartedB("r+");
+    BOOST_REQUIRE(restartedB.ReadEpochState(E, loaded));
+    BOOST_REQUIRE(restartedB.ReadCurveTreeAtEpoch(E, loadedTree));
+    BOOST_CHECK(loadedTree.IsEmpty());
+    checkExactState(loaded, branchB);
+    BOOST_CHECK_EQUAL(
+        restartedB.ReadPrivacyVNextNullifierStatus(keyImageA, observed),
+        TXDB_READ_NOT_FOUND);
+    BOOST_REQUIRE_EQUAL(
+        restartedB.ReadPrivacyVNextNullifierStatus(keyImageB, observed),
+        TXDB_READ_FOUND);
+    BOOST_CHECK(observed.txnHash == ownerB.txnHash);
+    BOOST_CHECK_EQUAL(observed.nIndex, ownerB.nIndex);
+    BOOST_REQUIRE(restartedB.CountPrivacyVNextNullifiers(
+        branchCount, strError));
+    BOOST_CHECK_EQUAL(branchCount, baselineCount + 1);
+
+    // A shortening reorg removes the entire replacement suffix and its exact
+    // spent-key owner. A fresh wrapper must observe the pre-branch baseline.
+    BOOST_REQUIRE(txdb.TxnBegin());
+    BOOST_REQUIRE(manager.EraseEpochStateSuffix(txdb, E));
+    BOOST_REQUIRE(txdb.ErasePrivacyVNextNullifier(keyImageB));
+    BOOST_REQUIRE(txdb.TxnCommit(true));
+
+    CTxDB restartedShort("r+");
+    BOOST_CHECK(!restartedShort.ReadEpochState(E, loaded));
+    BOOST_CHECK(!restartedShort.ReadCurveTreeAtEpoch(E, loadedTree));
+    BOOST_CHECK_EQUAL(
+        restartedShort.ReadPrivacyVNextNullifierStatus(keyImageA, observed),
+        TXDB_READ_NOT_FOUND);
+    BOOST_CHECK_EQUAL(
+        restartedShort.ReadPrivacyVNextNullifierStatus(keyImageB, observed),
+        TXDB_READ_NOT_FOUND);
+    BOOST_REQUIRE(restartedShort.CountPrivacyVNextNullifiers(
+        branchCount, strError));
+    BOOST_CHECK_EQUAL(branchCount, baselineCount);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

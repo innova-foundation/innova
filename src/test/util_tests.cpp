@@ -10,6 +10,40 @@ using namespace std;
 
 BOOST_AUTO_TEST_SUITE(util_tests)
 
+BOOST_AUTO_TEST_CASE(random_shuffle_preserves_elements)
+{
+    std::vector<int> empty;
+    RandomShuffle(empty.begin(), empty.end());
+    BOOST_CHECK(empty.empty());
+
+    std::vector<int> one(1, 42);
+    RandomShuffle(one.begin(), one.end());
+    BOOST_CHECK_EQUAL(one.front(), 42);
+
+    std::vector<int> values;
+    for (int i = 0; i < 100; ++i)
+        values.push_back(i);
+    RandomShuffle(values.begin(), values.end());
+    std::sort(values.begin(), values.end());
+    for (int i = 0; i < 100; ++i)
+        BOOST_CHECK_EQUAL(values[i], i);
+}
+
+class ArgsStateGuard
+{
+private:
+    std::map<std::string, std::string> savedArgs;
+    std::map<std::string, std::vector<std::string> > savedMultiArgs;
+
+public:
+    ArgsStateGuard() : savedArgs(mapArgs), savedMultiArgs(mapMultiArgs) { }
+    ~ArgsStateGuard()
+    {
+        mapArgs.swap(savedArgs);
+        mapMultiArgs.swap(savedMultiArgs);
+    }
+};
+
 BOOST_AUTO_TEST_CASE(util_criticalsection)
 {
     CCriticalSection cs;
@@ -114,6 +148,7 @@ BOOST_AUTO_TEST_CASE(util_DateTimeStrFormat)
 
 BOOST_AUTO_TEST_CASE(util_ParseParameters)
 {
+    ArgsStateGuard argsStateGuard;
     const char *argv_test[] = {"-ignored", "-a", "-b", "-ccc=argument", "-ccc=multiple", "f", "-d=e"};
 
     ParseParameters(0, (char**)argv_test);
@@ -138,6 +173,7 @@ BOOST_AUTO_TEST_CASE(util_ParseParameters)
 
 BOOST_AUTO_TEST_CASE(util_GetArg)
 {
+    ArgsStateGuard argsStateGuard;
     mapArgs.clear();
     mapArgs["strtest1"] = "string...";
     // strtest2 undefined on purpose
@@ -200,7 +236,7 @@ BOOST_AUTO_TEST_CASE(util_FormatMoney)
 
 BOOST_AUTO_TEST_CASE(util_ParseMoney)
 {
-    int64 ret = 0;
+    int64_t ret = 0;
     BOOST_CHECK(ParseMoney("0.0", ret));
     BOOST_CHECK_EQUAL(ret, 0);
 

@@ -1,10 +1,33 @@
 #include <boost/test/unit_test.hpp>
 
+#include "../ipa.h"
 #include "../main.h"
 #include "../shielded.h"
+#include "../txdb.h"
+
+// Defined in util.cpp.  Keep this declaration at global scope so it resolves
+// the process-wide network selector rather than a namespace-local symbol.
+extern bool fRegTest;
 
 namespace
 {
+
+// Selects the public-network policy (legacy privacy relay rejected) for one test and
+// restores the global afterwards.
+struct PublicRelayPolicyGuard
+{
+    bool fRegTestSaved;
+
+    PublicRelayPolicyGuard() : fRegTestSaved(fRegTest)
+    {
+        fRegTest = false;
+    }
+
+    ~PublicRelayPolicyGuard()
+    {
+        fRegTest = fRegTestSaved;
+    }
+};
 
 CTransaction BuildFCMPSpendTx(const uint256& hashSpendRoot,
                               const uint256& nullifier = uint256(101))
@@ -172,6 +195,83 @@ BOOST_AUTO_TEST_CASE(finalized_epoch_root_policy_rejects_wrong_stale_missing_roo
                                     FORK_HEIGHT_EPOCH_ROOT_FCMP,
                                     hashFinalizedRoot,
                                     strError));
+}
+
+BOOST_AUTO_TEST_CASE(v5_unbound_membership_is_stopped_at_public_relay_policy)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+
+    // Proof-level membership statement only: zero nullifier, no value balance or output, so
+    // it cannot create value if submitted.
+    std::vector<unsigned char> blind(IPA_SCALAR_SIZE, 0);
+    blind[IPA_SCALAR_SIZE - 1] = 7;
+    CPedersenCommitment suppliedLeaf;
+    BOOST_REQUIRE(CreatePedersenCommitment(17, blind, suppliedLeaf));
+
+    std::vector<std::vector<unsigned char> > proverSelectedSiblings;
+    proverSelectedSiblings.push_back(std::vector<unsigned char>(32, 0x42));
+    CFCMPProof proof;
+    BOOST_REQUIRE(CreateFCMPProofV5(proverSelectedSiblings, 0, 1, blind,
+                                    suppliedLeaf.vchCommitment,
+                                    proof.vchProof));
+
+    std::vector<unsigned char> unrelatedBlind(IPA_SCALAR_SIZE, 0);
+    unrelatedBlind[IPA_SCALAR_SIZE - 1] = 9;
+    CPedersenCommitment unrelatedLeaf;
+    BOOST_REQUIRE(CreatePedersenCommitment(23, unrelatedBlind,
+                                           unrelatedLeaf));
+    CCurveTree unrelatedTree;
+    BOOST_REQUIRE(unrelatedTree.InsertLeaf(unrelatedLeaf));
+    BOOST_REQUIRE(unrelatedTree.FindLeafIndex(suppliedLeaf) < 0);
+
+    CTransaction tx;
+    tx.nVersion = SHIELDED_TX_VERSION_FCMP;
+    tx.nPrivacyMode = PRIVACY_MODE_FULL;
+    CShieldedSpendDescription spend;
+    spend.cv = suppliedLeaf;
+    spend.fcmpProof = proof;
+    spend.curveTreeRoot = unrelatedTree.GetRoot();
+    // Keep the context-free transaction intentionally invalid.  A zero
+    // nullifier makes CheckTransaction increment nDoS if relay ever reaches
+    // structural validation, which lets the assertion below prove ordering.
+    spend.nullifier = uint256(0);
+    tx.vShieldedSpend.push_back(spend);
+
+    std::string rootError;
+    BOOST_REQUIRE(CheckFCMPSpendRoots(tx,
+                                     FORK_HEIGHT_EPOCH_ROOT_FCMP,
+                                     unrelatedTree.GetRoot(),
+                                     rootError));
+
+    // V5-00 characterization: matching the root field in the transaction is
+    // only envelope equality.  The active V5 verifier also accepts this proof
+    // for a tree which demonstrably does not contain the supplied commitment.
+    BOOST_CHECK(VerifyFCMPProof(unrelatedTree.GetRootNode(), proof,
+                                suppliedLeaf, 0 /* below every gate */));
+
+    // Confirm that nDoS is a reliable sentinel for the next validation stage:
+    // an isolated context-free check sees the intentionally zero nullifier.
+    CTransaction contextFreeProbe(tx);
+    BOOST_CHECK(!contextFreeProbe.CheckTransaction());
+    BOOST_CHECK_GT(contextFreeProbe.nDoS, 0);
+
+    // The first rejection is the relay gate ("legacy shielded/privacy relay is
+    // disabled"), before CheckTransaction (nDoS stays 0) and before input lookups.
+    CTxDB txdb("r");
+    CTxMemPool isolatedPool;
+    bool fMissingInputs = false;
+    bool fAccepted = true;
+    {
+        PublicRelayPolicyGuard policyGuard;
+        BOOST_REQUIRE(IsLegacyPrivacyPolicyDisabled());
+        LOCK(cs_main);
+        fAccepted = isolatedPool.accept(txdb, tx, false,
+                                        &fMissingInputs, true);
+    }
+    BOOST_CHECK(!fAccepted);
+    BOOST_CHECK(!fMissingInputs);
+    BOOST_CHECK_EQUAL(tx.nDoS, 0);
+    BOOST_CHECK_EQUAL(isolatedPool.size(), 0U);
 }
 
 BOOST_AUTO_TEST_CASE(duplicate_shielded_nullifiers_are_rejected)

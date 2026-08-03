@@ -1,6 +1,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "main.h"
+#include "privacy_vnext_ffi.h"
 #include "wallet.h"
 
 // how many times to run all the tests to have a chance to catch errors that only show up with particular random shuffles
@@ -16,10 +17,106 @@ typedef set<pair<const CWalletTx*,unsigned int> > CoinSet;
 
 BOOST_AUTO_TEST_SUITE(wallet_tests)
 
-static CWallet wallet;
+BOOST_AUTO_TEST_CASE(privacy_vnext_seed_record_is_encrypted_and_checked)
+{
+    CKeyingMaterial masterKey(32, 0x31);
+    CSecret seed(32, 0);
+    for (size_t i = 0; i < seed.size(); ++i)
+        seed[i] = static_cast<unsigned char>(i + 1);
+
+    CPrivacyVNextSeedRecord record;
+    record.nGeneration = PRIVACY_VNEXT_WALLET_SEED_GENERATION;
+    record.hashSeedCommitment = Hash(seed.begin(), seed.end());
+    record.nNextAddressIndex = 0;
+    BOOST_REQUIRE(EncryptSecret(masterKey, seed, uint256(1),
+                                record.vchCryptedSeed));
+    BOOST_REQUIRE_EQUAL(record.vchCryptedSeed.size(),
+                        PRIVACY_VNEXT_WALLET_SEED_CIPHERTEXT_SIZE);
+    BOOST_CHECK(!std::equal(seed.begin(), seed.end(),
+                           record.vchCryptedSeed.begin()));
+
+    const std::string walletFile("iv5-seed-wallet-test.dat");
+    {
+        CWalletDB walletdb(walletFile);
+        BOOST_REQUIRE(walletdb.WritePrivacyVNextSeed(record));
+    }
+
+    CWallet localWallet(walletFile);
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(localWallet.LoadPrivacyVNextSeedRecord(
+                              record, error), error);
+    BOOST_CHECK(localWallet.HasPrivacyVNextSeed());
+    BOOST_CHECK(!localWallet.IsPrivacyVNextSeedUnlocked());
+    BOOST_REQUIRE_MESSAGE(localWallet.UnlockPrivacyVNextSeed(
+                              masterKey, error), error);
+    BOOST_CHECK(localWallet.IsPrivacyVNextSeedUnlocked());
+    CKeyingMaterial recovered;
+    BOOST_REQUIRE(localWallet.GetPrivacyVNextSeed(recovered));
+    BOOST_CHECK_EQUAL_COLLECTIONS(seed.begin(), seed.end(),
+                                  recovered.begin(), recovered.end());
+
+    std::string address;
+    uint32_t addressIndex = 99;
+    BOOST_REQUIRE_MESSAGE(localWallet.GenerateNewPrivacyVNextAddress(
+                              0, address, addressIndex, error), error);
+    BOOST_CHECK_EQUAL(addressIndex, 0U);
+    PrivacyVNextAddressComponents decodedAddress;
+    BOOST_REQUIRE_MESSAGE(DecodePrivacyVNextAddress(
+                              address, 2, decodedAddress, error), error);
+    BOOST_CHECK_EQUAL(decodedAddress.nNetwork, 2U);
+    BOOST_CHECK_EQUAL(decodedAddress.nAddressType, 0U);
+    CPrivacyVNextSeedRecord advanced;
+    {
+        CWalletDB walletdb(walletFile);
+        BOOST_REQUIRE(walletdb.ReadPrivacyVNextSeed(advanced));
+    }
+    BOOST_CHECK_EQUAL(advanced.nNextAddressIndex, 1U);
+    BOOST_CHECK_EQUAL(localWallet.privacyVNextSeedRecord.nNextAddressIndex, 1U);
+
+    CPrivacyVNextSeedRecord corrupt = record;
+    corrupt.hashSeedCommitment.begin()[0] ^= 1;
+    CWallet corruptWallet;
+    BOOST_REQUIRE_MESSAGE(corruptWallet.LoadPrivacyVNextSeedRecord(
+                              corrupt, error), error);
+    BOOST_CHECK(!corruptWallet.UnlockPrivacyVNextSeed(masterKey, error));
+    BOOST_CHECK(!error.empty());
+    BOOST_CHECK(!corruptWallet.IsPrivacyVNextSeedUnlocked());
+
+    CPrivacyVNextSeedRecord wrongGeneration = record;
+    wrongGeneration.nGeneration++;
+    CWallet rejectedWallet;
+    BOOST_CHECK(!rejectedWallet.LoadPrivacyVNextSeedRecord(
+        wrongGeneration, error));
+    BOOST_CHECK(!error.empty());
+}
+
+class CSelectionTestWallet : public CWallet
+{
+public:
+    using CWallet::SelectCoinsMinConf;
+
+    bool SelectCoinsMinConf(int64_t nTargetValue,
+                            int nConfMine,
+                            int nConfTheirs,
+                            std::vector<COutput> vCoins,
+                            CoinSet& setCoinsRet,
+                            int64_t& nValueRet) const
+    {
+        // Synthetic test transactions have no meaningful wall-clock time.
+        return CWallet::SelectCoinsMinConf(nTargetValue,
+                                           std::numeric_limits<unsigned int>::max(),
+                                           nConfMine,
+                                           nConfTheirs,
+                                           vCoins,
+                                           setCoinsRet,
+                                           nValueRet);
+    }
+};
+
+static CSelectionTestWallet wallet;
 static vector<COutput> vCoins;
 
-static void add_coin(int64 nValue, int nAge = 6*24, bool fIsFromMe = false, int nInput=0)
+static void add_coin(int64_t nValue, int nAge = 6*24, bool fIsFromMe = false, int nInput=0)
 {
     static int i;
     CTransaction* tx = new CTransaction;
@@ -36,7 +133,7 @@ static void add_coin(int64 nValue, int nAge = 6*24, bool fIsFromMe = false, int 
         wtx->fDebitCached = true;
         wtx->nDebitCached = 1;
     }
-    COutput output(wtx, nInput, nAge);
+    COutput output(wtx, nInput, nAge, true);
     vCoins.push_back(output);
 }
 
@@ -55,8 +152,8 @@ static bool equal_sets(CoinSet a, CoinSet b)
 
 BOOST_AUTO_TEST_CASE(coin_selection_tests)
 {
-    static CoinSet setCoinsRet, setCoinsRet2;
-    static int64 nValueRet;
+    CoinSet setCoinsRet, setCoinsRet2;
+    int64_t nValueRet;
 
     // test multiple times to allow for differences in the shuffle order
     for (int i = 0; i < RUN_TESTS; i++)
@@ -290,6 +387,10 @@ BOOST_AUTO_TEST_CASE(coin_selection_tests)
             BOOST_CHECK_NE(fails, RANDOM_REPEATS);
         }
     }
+
+    setCoinsRet.clear();
+    setCoinsRet2.clear();
+    empty_wallet();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

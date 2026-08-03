@@ -1797,7 +1797,9 @@ BOOST_AUTO_TEST_CASE(finality_restart_rejects_unpaired_persistence_records)
 
 BOOST_AUTO_TEST_CASE(finality_validation_distinguishes_invalid_from_local_state)
 {
-    ScopedFinalityTestnet network;
+    // Historical private-finality validation is regtest-only, so this test uses a
+    // pre-Boundary-A regtest epoch.
+    ScopedFinalityRegtest network;
     CFinalityTracker tracker;
     CTxDB txdb("r+");
     std::string error;
@@ -1807,7 +1809,7 @@ BOOST_AUTO_TEST_CASE(finality_validation_distinguishes_invalid_from_local_state)
     BOOST_CHECK(!tracker.CheckVote(malformedVote, txdb, &error, -1, &result));
     BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
 
-    const int voteEpoch = GetEpochForHeight(FORK_HEIGHT_DAG) + 5;
+    const int voteEpoch = GetEpochForHeight(FORK_HEIGHT_DAG);
     const int voteHeight = GetEpochBoundaryHeight(voteEpoch, FORK_HEIGHT_DAG);
     CKey key;
     key.MakeNewKey(true);

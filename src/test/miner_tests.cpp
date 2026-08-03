@@ -1,7 +1,11 @@
 #include <boost/test/unit_test.hpp>
 
+#include <memory>
+
+#include "dag.h"
 #include "init.h"
 #include "main.h"
+#include "miner.h"
 #include "uint256.h"
 #include "util.h"
 #include "wallet.h"
@@ -10,192 +14,163 @@ extern void SHA256Transform(void* pstate, void* pinput, const void* pinit);
 
 BOOST_AUTO_TEST_SUITE(miner_tests)
 
-static
-struct {
-    unsigned char extranonce;
-    unsigned int nonce;
-} blockinfo[] = {
-    {4, 0xa4a3e223}, {2, 0x15c32f9e}, {1, 0x0375b547}, {1, 0x7004a8a5},
-    {2, 0xce440296}, {2, 0x52cfe198}, {1, 0x77a72cd0}, {2, 0xbb5d6f84},
-    {2, 0x83f30c2c}, {1, 0x48a73d5b}, {1, 0xef7dcd01}, {2, 0x6809c6c4},
-    {2, 0x0883ab3c}, {1, 0x087bbbe2}, {2, 0x2104a814}, {2, 0xdffb6daa},
-    {1, 0xee8a0a08}, {2, 0xba4237c1}, {1, 0xa70349dc}, {1, 0x344722bb},
-    {3, 0xd6294733}, {2, 0xec9f5c94}, {2, 0xca2fbc28}, {1, 0x6ba4f406},
-    {2, 0x015d4532}, {1, 0x6e119b7c}, {2, 0x43e8f314}, {2, 0x27962f38},
-    {2, 0xb571b51b}, {2, 0xb36bee23}, {2, 0xd17924a8}, {2, 0x6bc212d9},
-    {1, 0x630d4948}, {2, 0x9a4c4ebb}, {2, 0x554be537}, {1, 0xd63ddfc7},
-    {2, 0xa10acc11}, {1, 0x759a8363}, {2, 0xfb73090d}, {1, 0xe82c6a34},
-    {1, 0xe33e92d7}, {3, 0x658ef5cb}, {2, 0xba32ff22}, {5, 0x0227a10c},
-    {1, 0xa9a70155}, {5, 0xd096d809}, {1, 0x37176174}, {1, 0x830b8d0f},
-    {1, 0xc6e3910e}, {2, 0x823f3ca8}, {1, 0x99850849}, {1, 0x7521fb81},
-    {1, 0xaacaabab}, {1, 0xd645a2eb}, {5, 0x7aea1781}, {5, 0x9d6e4b78},
-    {1, 0x4ce90fd8}, {1, 0xabdc832d}, {6, 0x4a34f32a}, {2, 0xf2524c1c},
-    {2, 0x1bbeb08a}, {1, 0xad47f480}, {1, 0x9f026aeb}, {1, 0x15a95049},
-    {2, 0xd1cb95b2}, {2, 0xf84bbda5}, {1, 0x0fa62cd1}, {1, 0xe05f9169},
-    {1, 0x78d194a9}, {5, 0x3e38147b}, {5, 0x737ba0d4}, {1, 0x63378e10},
-    {1, 0x6d5f91cf}, {2, 0x88612eb8}, {2, 0xe9639484}, {1, 0xb7fabc9d},
-    {2, 0x19b01592}, {1, 0x5a90dd31}, {2, 0x5bd7e028}, {2, 0x94d00323},
-    {1, 0xa9b9c01a}, {1, 0x3a40de61}, {1, 0x56e7eec7}, {5, 0x859f7ef6},
-    {1, 0xfd8e5630}, {1, 0x2b0c9f7f}, {1, 0xba700e26}, {1, 0x7170a408},
-    {1, 0x70de86a8}, {1, 0x74d64cd5}, {1, 0x49e738a1}, {2, 0x6910b602},
-    {0, 0x643c565f}, {1, 0x54264b3f}, {2, 0x97ea6396}, {2, 0x55174459},
-    {2, 0x03e8779a}, {1, 0x98f34d8f}, {1, 0xc07b2b07}, {1, 0xdfe29668},
-    {1, 0x3141c7c1}, {1, 0xb3b595f4}, {1, 0x735abf08}, {5, 0x623bfbce},
-    {2, 0xd351e722}, {1, 0xf4ca48c9}, {1, 0x5b19c670}, {1, 0xa164bf0e},
-    {2, 0xbbbeb305}, {2, 0xfe1c810a},
-};
+BOOST_AUTO_TEST_CASE(dag_parent_boundary_a_canonical_matrix)
+{
+    std::string error;
+    std::vector<uint256> decoded;
 
-// NOTE: These tests rely on CreateNewBlock doing its own self-validation!
+    std::vector<uint256> one(1, uint256(1));
+    const CScript oneScript = BuildDAGParentScript(one);
+    BOOST_CHECK_EQUAL(DecodeCanonicalDAGParentScript(
+                          oneScript, decoded, error), DAG_PARENT_VALID);
+    BOOST_CHECK(decoded == one);
+
+    std::vector<uint256> thirtyTwo;
+    for (unsigned int i = 1; i <= 32; ++i)
+        thirtyTwo.push_back(uint256(i));
+    const CScript thirtyTwoScript = BuildDAGParentScript(thirtyTwo);
+    BOOST_CHECK_EQUAL(DecodeCanonicalDAGParentScript(
+                          thirtyTwoScript, decoded, error), DAG_PARENT_VALID);
+    BOOST_CHECK(decoded == thirtyTwo);
+
+    std::vector<unsigned char> zeroData(DAG_PARENT_TAG,
+                                        DAG_PARENT_TAG + 4);
+    zeroData.push_back(0);
+    CScript zeroScript;
+    zeroScript << OP_RETURN << zeroData;
+    BOOST_CHECK_EQUAL(DecodeCanonicalDAGParentScript(
+                          zeroScript, decoded, error), DAG_PARENT_MALFORMED);
+
+    std::vector<unsigned char> thirtyThreeData(DAG_PARENT_TAG,
+                                               DAG_PARENT_TAG + 4);
+    thirtyThreeData.push_back(33);
+    for (unsigned int i = 1; i <= 33; ++i)
+    {
+        uint256 hash(i);
+        thirtyThreeData.insert(thirtyThreeData.end(), hash.begin(), hash.end());
+    }
+    CScript thirtyThreeScript;
+    thirtyThreeScript << OP_RETURN << thirtyThreeData;
+    BOOST_CHECK_EQUAL(DecodeCanonicalDAGParentScript(
+                          thirtyThreeScript, decoded, error), DAG_PARENT_MALFORMED);
+
+    CScript trailingPayload = oneScript;
+    trailingPayload << OP_TRUE;
+    BOOST_CHECK_EQUAL(DecodeCanonicalDAGParentScript(
+                          trailingPayload, decoded, error), DAG_PARENT_MALFORMED);
+
+    std::vector<unsigned char> oneData(DAG_PARENT_TAG, DAG_PARENT_TAG + 4);
+    oneData.push_back(1);
+    oneData.insert(oneData.end(), one[0].begin(), one[0].end());
+    CScript nonMinimal;
+    nonMinimal.push_back(OP_RETURN);
+    nonMinimal.push_back(OP_PUSHDATA1);
+    nonMinimal.push_back((unsigned char)oneData.size());
+    nonMinimal.insert(nonMinimal.end(), oneData.begin(), oneData.end());
+    BOOST_CHECK_EQUAL(DecodeCanonicalDAGParentScript(
+                          nonMinimal, decoded, error), DAG_PARENT_MALFORMED);
+
+    std::vector<uint256> duplicate;
+    duplicate.push_back(uint256(9));
+    duplicate.push_back(uint256(9));
+    std::vector<unsigned char> duplicateData(DAG_PARENT_TAG,
+                                             DAG_PARENT_TAG + 4);
+    duplicateData.push_back(2);
+    duplicateData.insert(duplicateData.end(), duplicate[0].begin(),
+                         duplicate[0].end());
+    duplicateData.insert(duplicateData.end(), duplicate[1].begin(),
+                         duplicate[1].end());
+    CScript duplicateScript;
+    duplicateScript << OP_RETURN << duplicateData;
+    BOOST_CHECK_EQUAL(DecodeCanonicalDAGParentScript(
+                          duplicateScript, decoded, error), DAG_PARENT_MALFORMED);
+
+    std::vector<CScript> exactlyOne;
+    exactlyOne.push_back(CScript() << OP_RETURN <<
+                         std::vector<unsigned char>(1, 0x42));
+    exactlyOne.push_back(oneScript);
+    BOOST_CHECK(ExtractCanonicalDAGParentCommitment(
+        exactlyOne, decoded, error));
+    exactlyOne.push_back(thirtyTwoScript);
+    BOOST_CHECK(!ExtractCanonicalDAGParentCommitment(
+        exactlyOne, decoded, error));
+}
+
 BOOST_AUTO_TEST_CASE(CreateNewBlock_validity)
 {
-    CReserveKey reservekey(pwalletMain);
-    CBlock *pblock;
-    CTransaction tx;
-    CScript script;
-    uint256 hash;
+    BOOST_REQUIRE(fRegTest);
+    BOOST_REQUIRE(pindexBest != NULL);
+    BOOST_CHECK_EQUAL(mempool.size(), 0U);
 
-    // Simple block creation, nothing special yet:
-    BOOST_CHECK(pblock = CreateNewBlock(reservekey));
+    const int nInitialHeight = pindexBest->nHeight;
+    const int nTerminalHeight = std::max(nInitialHeight + 2,
+                                         FORK_HEIGHT_DAG + 1);
+    unsigned int nExtraNonce = 0;
+    bool fObservedDAGCommitment = false;
 
-    // We can't make transactions until we have inputs
-    // Therefore, load 100 blocks :)
-    std::vector<CTransaction*>txFirst;
-    for (unsigned int i = 0; i < sizeof(blockinfo)/sizeof(*blockinfo); ++i)
+    while (pindexBest->nHeight < nTerminalHeight)
     {
-        pblock->nVersion = 1;
-        pblock->nTime = pindexBest->GetMedianTimePast()+1;
-        pblock->vtx[0].vin[0].scriptSig = CScript();
-        pblock->vtx[0].vin[0].scriptSig.push_back(blockinfo[i].extranonce);
-        pblock->vtx[0].vin[0].scriptSig.push_back(pindexBest->nHeight);
-        pblock->vtx[0].vout[0].scriptPubKey = CScript();
-        if (txFirst.size() < 2)
-            txFirst.push_back(new CTransaction(pblock->vtx[0]));
-        pblock->hashMerkleRoot = pblock->BuildMerkleTree();
-        pblock->nNonce = blockinfo[i].nonce;
-        assert(ProcessBlock(NULL, pblock));
-        pblock->hashPrevBlock = pblock->GetHash();
+        std::unique_ptr<CBlock> pblock(CreateNewBlock(pwalletMain));
+        BOOST_REQUIRE(pblock.get() != NULL);
+        BOOST_REQUIRE(pblock->nVersion == CBlock::CURRENT_VERSION);
+        BOOST_REQUIRE_EQUAL(pblock->vtx.size(), 1U);
+        BOOST_REQUIRE(pblock->vtx[0].IsCoinBase());
+
+        CBlockIndex* pindexParent = NULL;
+        {
+            LOCK(cs_main);
+            std::map<uint256, CBlockIndex*>::const_iterator mi =
+                mapBlockIndex.find(pblock->hashPrevBlock);
+            BOOST_REQUIRE(mi != mapBlockIndex.end());
+            pindexParent = mi->second;
+        }
+        BOOST_REQUIRE(pindexParent != NULL);
+        const int nHeight = pindexParent->nHeight + 1;
+
+        const CScript expectedHeight = CScript() << nHeight;
+        BOOST_REQUIRE(pblock->vtx[0].vin[0].scriptSig.size() >=
+                      expectedHeight.size());
+        BOOST_CHECK(std::equal(expectedHeight.begin(), expectedHeight.end(),
+                               pblock->vtx[0].vin[0].scriptSig.begin()));
+
+        IncrementExtraNonce(pblock.get(), pindexParent, nExtraNonce);
+        BOOST_CHECK(pblock->hashMerkleRoot == pblock->BuildMerkleTree());
+
+        if (nHeight >= FORK_HEIGHT_DAG)
+        {
+            std::vector<uint256> parents;
+            for (std::vector<CTxOut>::const_iterator out =
+                     pblock->vtx[0].vout.begin();
+                 out != pblock->vtx[0].vout.end() && parents.empty(); ++out)
+                parents = ExtractDAGParents(out->scriptPubKey);
+            BOOST_REQUIRE(!parents.empty());
+            BOOST_CHECK(parents.front() == pblock->hashPrevBlock);
+            fObservedDAGCommitment = true;
+        }
+
+        CBigNum target;
+        target.SetCompact(pblock->nBits);
+        const uint256 hashTarget = target.getuint256();
+        unsigned int nHashes = 0;
+        while (pblock->GetPoWHash() > hashTarget)
+        {
+            ++pblock->nNonce;
+            if (pblock->nNonce == 0)
+                ++pblock->nTime;
+            ++nHashes;
+            BOOST_REQUIRE_LT(nHashes, 1000000U);
+        }
+
+        BOOST_REQUIRE(pblock->CheckBlock(true, true, true));
+        const uint256 blockHash = pblock->GetHash();
+        BOOST_REQUIRE(ProcessBlock(NULL, pblock.get()));
+        BOOST_REQUIRE(mapBlockIndex.count(blockHash) != 0);
+        BOOST_CHECK_EQUAL(mapBlockIndex[blockHash]->nHeight, nHeight);
     }
-    delete pblock;
 
-    // Just to make sure we can still make simple blocks
-    BOOST_CHECK(pblock = CreateNewBlock(reservekey));
-
-    // block sigops > limit: 1000 CHECKMULTISIG + 1
-    tx.vin.resize(1);
-    // NOTE: OP_NOP is used to force 20 SigOps for the CHECKMULTISIG
-    tx.vin[0].scriptSig = CScript() << OP_0 << OP_0 << OP_0 << OP_NOP << OP_CHECKMULTISIG << OP_1;
-    tx.vin[0].prevout.hash = txFirst[0]->GetHash();
-    tx.vin[0].prevout.n = 0;
-    tx.vout.resize(1);
-    tx.vout[0].nValue = 5000000000LL;
-    for (unsigned int i = 0; i < 1001; ++i)
-    {
-        tx.vout[0].nValue -= 1000000;
-        hash = tx.GetHash();
-        mempool.addUnchecked(hash, tx);
-        tx.vin[0].prevout.hash = hash;
-    }
-    BOOST_CHECK(pblock = CreateNewBlock(reservekey));
-    delete pblock;
-    mempool.clear();
-
-    // block size > limit
-    tx.vin[0].scriptSig = CScript();
-    // 18 * (520char + DROP) + OP_1 = 9433 bytes
-    std::vector<unsigned char> vchData(520);
-    for (unsigned int i = 0; i < 18; ++i)
-        tx.vin[0].scriptSig << vchData << OP_DROP;
-    tx.vin[0].scriptSig << OP_1;
-    tx.vin[0].prevout.hash = txFirst[0]->GetHash();
-    tx.vout[0].nValue = 5000000000LL;
-    for (unsigned int i = 0; i < 128; ++i)
-    {
-        tx.vout[0].nValue -= 10000000;
-        hash = tx.GetHash();
-        mempool.addUnchecked(hash, tx);
-        tx.vin[0].prevout.hash = hash;
-    }
-    BOOST_CHECK(pblock = CreateNewBlock(reservekey));
-    delete pblock;
-    mempool.clear();
-
-    // orphan in mempool
-    hash = tx.GetHash();
-    mempool.addUnchecked(hash, tx);
-    BOOST_CHECK(pblock = CreateNewBlock(reservekey));
-    delete pblock;
-    mempool.clear();
-
-    // child with higher priority than parent
-    tx.vin[0].scriptSig = CScript() << OP_1;
-    tx.vin[0].prevout.hash = txFirst[1]->GetHash();
-    tx.vout[0].nValue = 4900000000LL;
-    hash = tx.GetHash();
-    mempool.addUnchecked(hash, tx);
-    tx.vin[0].prevout.hash = hash;
-    tx.vin.resize(2);
-    tx.vin[1].scriptSig = CScript() << OP_1;
-    tx.vin[1].prevout.hash = txFirst[0]->GetHash();
-    tx.vin[1].prevout.n = 0;
-    tx.vout[0].nValue = 5900000000LL;
-    hash = tx.GetHash();
-    mempool.addUnchecked(hash, tx);
-    BOOST_CHECK(pblock = CreateNewBlock(reservekey));
-    delete pblock;
-    mempool.clear();
-
-    // coinbase in mempool
-    tx.vin.resize(1);
-    tx.vin[0].prevout.SetNull();
-    tx.vin[0].scriptSig = CScript() << OP_0 << OP_1;
-    tx.vout[0].nValue = 0;
-    hash = tx.GetHash();
-    mempool.addUnchecked(hash, tx);
-    BOOST_CHECK(pblock = CreateNewBlock(reservekey));
-    delete pblock;
-    mempool.clear();
-
-    // invalid (pre-p2sh) txn in mempool
-    tx.vin[0].prevout.hash = txFirst[0]->GetHash();
-    tx.vin[0].prevout.n = 0;
-    tx.vin[0].scriptSig = CScript() << OP_1;
-    tx.vout[0].nValue = 4900000000LL;
-    script = CScript() << OP_0;
-    tx.vout[0].scriptPubKey.SetDestination(script.GetID());
-    hash = tx.GetHash();
-    mempool.addUnchecked(hash, tx);
-    tx.vin[0].prevout.hash = hash;
-    tx.vin[0].scriptSig = CScript() << (std::vector<unsigned char>)script;
-    tx.vout[0].nValue -= 1000000;
-    hash = tx.GetHash();
-    mempool.addUnchecked(hash,tx);
-    BOOST_CHECK(pblock = CreateNewBlock(reservekey));
-    delete pblock;
-    mempool.clear();
-
-    // double spend txn pair in mempool
-    tx.vin[0].prevout.hash = txFirst[0]->GetHash();
-    tx.vin[0].scriptSig = CScript() << OP_1;
-    tx.vout[0].nValue = 4900000000LL;
-    tx.vout[0].scriptPubKey = CScript() << OP_1;
-    hash = tx.GetHash();
-    mempool.addUnchecked(hash, tx);
-    tx.vout[0].scriptPubKey = CScript() << OP_2;
-    hash = tx.GetHash();
-    mempool.addUnchecked(hash, tx);
-    BOOST_CHECK(pblock = CreateNewBlock(reservekey));
-    delete pblock;
-    mempool.clear();
-
-    // subsidy changing
-    int nHeight = pindexBest->nHeight;
-    pindexBest->nHeight = 209999;
-    BOOST_CHECK(pblock = CreateNewBlock(reservekey));
-    delete pblock;
-    pindexBest->nHeight = 210000;
-    BOOST_CHECK(pblock = CreateNewBlock(reservekey));
-    delete pblock;
-    pindexBest->nHeight = nHeight;
+    BOOST_CHECK(fObservedDAGCommitment);
+    BOOST_CHECK_GE(pindexBest->nHeight, FORK_HEIGHT_DAG + 1);
+    BOOST_CHECK_EQUAL(mempool.size(), 0U);
 }
 
 BOOST_AUTO_TEST_CASE(sha256transform_equality)

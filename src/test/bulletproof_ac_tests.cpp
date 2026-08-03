@@ -582,8 +582,21 @@ BOOST_AUTO_TEST_CASE(fcmp_v5_legacy_wire_compatibility_is_preserved)
 
     CFCMPProof activeProof;
     activeProof.vchProof = proofBytes;
-    BOOST_CHECK(VerifyFCMPProof(claimedTree.GetRootNode(), activeProof, leaf));
-    BOOST_CHECK(VerifyFCMPProof(unrelatedTree.GetRootNode(), activeProof, leaf));
+    // Below the hardening gate the legacy acceptance set is preserved exactly,
+    // including the unsound accept against an unrelated tree.
+    const int nTestHeight = 0;
+    BOOST_REQUIRE(nTestHeight < FORK_HEIGHT_SHIELDED_HARDENING);
+    BOOST_CHECK(VerifyFCMPProof(claimedTree.GetRootNode(), activeProof, leaf, nTestHeight));
+    BOOST_CHECK(VerifyFCMPProof(unrelatedTree.GetRootNode(), activeProof, leaf, nTestHeight));
+
+    // At and above it the unbound proof is rejected for every claimed tree,
+    // including the one that really contains the leaf.
+    const int nHardened = FORK_HEIGHT_SHIELDED_HARDENING;
+    BOOST_CHECK(!VerifyFCMPProof(claimedTree.GetRootNode(), activeProof, leaf, nHardened));
+    BOOST_CHECK(!VerifyFCMPProof(unrelatedTree.GetRootNode(), activeProof, leaf, nHardened));
+
+    // Containment must be in force before any FCMP proof can be accepted.
+    BOOST_CHECK(FORK_HEIGHT_SHIELDED_HARDENING <= FORK_HEIGHT_FCMP);
 
     // The bounded parser must preserve the exact legacy field order and bytes.
     CDataStream decodedStream(proofBytes, SER_NETWORK, PROTOCOL_VERSION);
@@ -741,19 +754,19 @@ BOOST_AUTO_TEST_CASE(nullstake_v2_v3_bpac_paths_create_and_verify)
                                                nBlockTimeFrom, nTxPrevOffset,
                                                nTxTimePrev, nVoutN, nTimeTx,
                                                proofV2));
-    BOOST_CHECK(VerifyNullStakeKernelProofV2(proofV2, commit, nBits));
+    BOOST_CHECK(VerifyNullStakeKernelProofV2(proofV2, commit, nBits, 0 /* below every gate */));
 
     CNullStakeKernelProofV2 badProofV2 = proofV2;
     MutateScalar(badProofV2.acProof.tHat);
-    BOOST_CHECK(!VerifyNullStakeKernelProofV2(badProofV2, commit, nBits));
+    BOOST_CHECK(!VerifyNullStakeKernelProofV2(badProofV2, commit, nBits, 0 /* below every gate */));
 
     badProofV2 = proofV2;
     MutateBytes(badProofV2.vchLinkProof);
-    BOOST_CHECK(!VerifyNullStakeKernelProofV2(badProofV2, commit, nBits));
+    BOOST_CHECK(!VerifyNullStakeKernelProofV2(badProofV2, commit, nBits, 0 /* below every gate */));
 
     badProofV2 = proofV2;
     badProofV2.nTimeTx++;
-    BOOST_CHECK(!VerifyNullStakeKernelProofV2(badProofV2, commit, nBits));
+    BOOST_CHECK(!VerifyNullStakeKernelProofV2(badProofV2, commit, nBits, 0 /* below every gate */));
 
     CNullStakeKernelProofV2 losingProofV2;
     BOOST_CHECK(!CreateNullStakeKernelProofV2(5000000000LL, blind, commit,
@@ -883,7 +896,7 @@ BOOST_AUTO_TEST_CASE(nullstake_v2_v3_bpac_paths_create_and_verify)
     BOOST_CHECK_EQUAL(proofV3.nAuthMode, NULLSTAKE_AUTHMODE_HALFAGG);
     BOOST_CHECK(proofV3.hiddenAuth.IsNull());
     BOOST_CHECK(proofV3.hiddenAuth.vchTagBaseNonce.empty());
-    BOOST_CHECK(VerifyNullStakeKernelProofV3(proofV3, commit, nBits));
+    BOOST_CHECK(VerifyNullStakeKernelProofV3(proofV3, commit, nBits, 0 /* below every gate */));
 
     uint256 wrongDelegationHash = FieldAdd(delegationHash, FieldFromUint64(1));
     CNullStakeKernelProofV3 mismatchedDelegationProofV3;
@@ -1042,31 +1055,31 @@ BOOST_AUTO_TEST_CASE(nullstake_v2_v3_bpac_paths_create_and_verify)
 
 	    CNullStakeKernelProofV3 badProofV3 = proofV3;
     MutateScalar(badProofV3.acProof.tHat);
-    BOOST_CHECK(!VerifyNullStakeKernelProofV3(badProofV3, commit, nBits));
+    BOOST_CHECK(!VerifyNullStakeKernelProofV3(badProofV3, commit, nBits, 0 /* below every gate */));
 
     badProofV3 = proofV3;
     MutateBytes(badProofV3.vchLinkProof);
-    BOOST_CHECK(!VerifyNullStakeKernelProofV3(badProofV3, commit, nBits));
+    BOOST_CHECK(!VerifyNullStakeKernelProofV3(badProofV3, commit, nBits, 0 /* below every gate */));
 
     badProofV3 = proofV3;
     MutateScalar(badProofV3.delegationHash);
-    BOOST_CHECK(!VerifyNullStakeKernelProofV3(badProofV3, commit, nBits));
+    BOOST_CHECK(!VerifyNullStakeKernelProofV3(badProofV3, commit, nBits, 0 /* below every gate */));
 
     badProofV3 = proofV3;
     badProofV3.vchPkStake.clear();
-    BOOST_CHECK(!VerifyNullStakeKernelProofV3(badProofV3, commit, nBits));
+    BOOST_CHECK(!VerifyNullStakeKernelProofV3(badProofV3, commit, nBits, 0 /* below every gate */));
 
 	    badProofV3 = proofV3;
 	    MutateBytes(badProofV3.vchPkStake);
-	    BOOST_CHECK(!VerifyNullStakeKernelProofV3(badProofV3, commit, nBits));
+	    BOOST_CHECK(!VerifyNullStakeKernelProofV3(badProofV3, commit, nBits, 0 /* below every gate */));
 
 	    badProofV3 = proofV3;
 	    badProofV3.vchPkOwner = otherPkOwner;
-	    BOOST_CHECK(!VerifyNullStakeKernelProofV3(badProofV3, commit, nBits));
+	    BOOST_CHECK(!VerifyNullStakeKernelProofV3(badProofV3, commit, nBits, 0 /* below every gate */));
 
 	    badProofV3 = proofV3;
 	    badProofV3.nTimeTx++;
-    BOOST_CHECK(!VerifyNullStakeKernelProofV3(badProofV3, commit, nBits));
+    BOOST_CHECK(!VerifyNullStakeKernelProofV3(badProofV3, commit, nBits, 0 /* below every gate */));
 
     CNullStakeKernelProofV3 losingProofV3;
     BOOST_CHECK(!CreateNullStakeKernelProofV3(5000000000LL, blind, commit,
@@ -1129,7 +1142,7 @@ BOOST_AUTO_TEST_CASE(nullstake_mofn_kernel_proof_create_verify)
     BOOST_CHECK_EQUAL(proof.nAuthMode, NULLSTAKE_AUTHMODE_HALFAGG);
     BOOST_CHECK(proof.hiddenAuth.IsNull());
     BOOST_CHECK(proof.hiddenAuth.vchTagBaseNonce.empty());
-    BOOST_CHECK_MESSAGE(VerifyNullStakeKernelProofV3(proof, cv3, nBits),
+    BOOST_CHECK_MESSAGE(VerifyNullStakeKernelProofV3(proof, cv3, nBits, 0 /* below every gate */),
                         "a valid 2-of-3 M-of-N kernel proof should verify");
     BOOST_CHECK_EQUAL(proof.nThresholdM, 2u);
     BOOST_CHECK_MESSAGE(proof.vchPkStake.empty(), "M-of-N proof must not carry a single pkStake");
@@ -1139,7 +1152,7 @@ BOOST_AUTO_TEST_CASE(nullstake_mofn_kernel_proof_create_verify)
     {
         CNullStakeKernelProofV3 bad = proof;
         bad.vchAggregatedSScalar[0] ^= 0x01;
-        BOOST_CHECK_MESSAGE(!VerifyNullStakeKernelProofV3(bad, cv3, nBits),
+        BOOST_CHECK_MESSAGE(!VerifyNullStakeKernelProofV3(bad, cv3, nBits, 0 /* below every gate */),
                             "a tampered aggregated s-scalar must be rejected");
     }
     // (b) substituted staker set (attacker keys) against the committed delegationHash -> reject.
@@ -1153,14 +1166,14 @@ BOOST_AUTO_TEST_CASE(nullstake_mofn_kernel_proof_create_verify)
             valtype pk; BOOST_REQUIRE(HalfAggStakeDerivePubKey(aSk[i], pk)); bad.vStakerSet.push_back(pk);
         }
         std::sort(bad.vStakerSet.begin(), bad.vStakerSet.end());
-        BOOST_CHECK_MESSAGE(!VerifyNullStakeKernelProofV3(bad, cv3, nBits),
+        BOOST_CHECK_MESSAGE(!VerifyNullStakeKernelProofV3(bad, cv3, nBits, 0 /* below every gate */),
                             "a substituted staker set must not match the committed delegation hash");
     }
     // (c) downgrade: submit the M-of-N leaf/proof as nThresholdM == 0 -> 1-of-1 path rejects it.
     {
         CNullStakeKernelProofV3 bad = proof;
         bad.nThresholdM = 0;
-        BOOST_CHECK_MESSAGE(!VerifyNullStakeKernelProofV3(bad, cv3, nBits),
+        BOOST_CHECK_MESSAGE(!VerifyNullStakeKernelProofV3(bad, cv3, nBits, 0 /* below every gate */),
                             "an M-of-N leaf submitted as 1-of-1 must be rejected");
     }
     // (d) verify against a DIFFERENT leaf (different delegationHash) -> cv_plain/link/digest reject.
@@ -1169,7 +1182,7 @@ BOOST_AUTO_TEST_CASE(nullstake_mofn_kernel_proof_create_verify)
         BOOST_REQUIRE(ComputeNullStakeV3DelegationSetHash(set, 3, owner, dh2));   // M=3 -> different hash
         CPedersenCommitment cv3b;
         BOOST_REQUIRE(CreateNullStakeMofNCommitment(nValue, blind, dh2, cv3b));
-        BOOST_CHECK_MESSAGE(!VerifyNullStakeKernelProofV3(proof, cv3b, nBits),
+        BOOST_CHECK_MESSAGE(!VerifyNullStakeKernelProofV3(proof, cv3b, nBits, 0 /* below every gate */),
                             "the proof must not verify against a different note leaf");
     }
     // (e) creating a proof with fewer than M signer secrets must fail.

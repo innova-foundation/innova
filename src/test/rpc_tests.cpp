@@ -59,4 +59,15 @@ BOOST_AUTO_TEST_CASE(rpc_addmultisig)
     BOOST_CHECK_THROW(addmultisig(createArgs(2, short2.c_str()), false), runtime_error);
 }
 
+BOOST_AUTO_TEST_CASE(iv5_wallet_rpc_registration_and_nonmutating_argument_checks)
+{
+    BOOST_REQUIRE(tableRPC["z_createiv5seed"] != NULL);
+    BOOST_REQUIRE(tableRPC["z_getnewiv5address"] != NULL);
+
+    Array invalid;
+    invalid.push_back(0);
+    BOOST_CHECK_THROW(tableRPC["z_createiv5seed"]->actor(invalid, false), runtime_error);
+    BOOST_CHECK_THROW(tableRPC["z_getnewiv5address"]->actor(invalid, false), runtime_error);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

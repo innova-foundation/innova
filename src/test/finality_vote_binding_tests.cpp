@@ -8,6 +8,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include "../main.h"
+#include "../base58.h"
 #include "../finality.h"
 #include "../util.h"
 #include "../zkproof.h"
@@ -152,6 +153,66 @@ struct ScopedRegtestBoundary
 
 BOOST_AUTO_TEST_SUITE(finality_vote_binding_tests)
 
+BOOST_AUTO_TEST_CASE(transparent_cold_stake_finality_uses_staker_authority)
+{
+    CKey stakerKey;
+    CKey ownerKey;
+    stakerKey.MakeNewKey(true);
+    ownerKey.MakeNewKey(true);
+    const CKeyID stakerKeyID = stakerKey.GetPubKey().GetID();
+    const CKeyID ownerKeyID = ownerKey.GetPubKey().GetID();
+    BOOST_REQUIRE(stakerKeyID != ownerKeyID);
+
+    const CScript coldStakeScript =
+        GetScriptForColdStaking(stakerKeyID, ownerKeyID);
+
+    // General destination extraction exposes the owner/spend branch.  The
+    // finality-specific resolver must instead select only delegated staking
+    // authority, otherwise the owner could vote and the staker could not.
+    CTxDestination walletDestination;
+    BOOST_REQUIRE(ExtractDestination(coldStakeScript, walletDestination));
+    CKeyID walletKeyID;
+    BOOST_REQUIRE(CBitcoinAddress(walletDestination).GetKeyID(walletKeyID));
+    BOOST_CHECK(walletKeyID == ownerKeyID);
+
+    CKeyID finalityKeyID;
+    BOOST_REQUIRE(ExtractFinalityStakeKeyID(coldStakeScript,
+                                            finalityKeyID));
+    BOOST_CHECK(finalityKeyID == stakerKeyID);
+    BOOST_CHECK(finalityKeyID != ownerKeyID);
+
+    // Preserve the historical transparent stake-proof behavior for ordinary
+    // P2PKH and P2PK scripts.
+    BOOST_REQUIRE(ExtractFinalityStakeKeyID(
+        GetScriptForDestination(stakerKeyID), finalityKeyID));
+    BOOST_CHECK(finalityKeyID == stakerKeyID);
+
+    const CScript payToPubKey =
+        CScript() << stakerKey.GetPubKey() << OP_CHECKSIG;
+    BOOST_REQUIRE(ExtractFinalityStakeKeyID(payToPubKey, finalityKeyID));
+    BOOST_CHECK(finalityKeyID == stakerKeyID);
+}
+
+BOOST_AUTO_TEST_CASE(finality_vote_modes_select_the_intended_private_note_kind)
+{
+    // Explicit NullStake is the non-M-of-N V2 path only.
+    BOOST_CHECK(FinalityVoteModeAllowsPrivateNote("nullstake", false));
+    BOOST_CHECK(!FinalityVoteModeAllowsPrivateNote("nullstake", true));
+
+    // Explicit NullStake cold is the M-of-N V3 path only.
+    BOOST_CHECK(!FinalityVoteModeAllowsPrivateNote("nullstakecold", false));
+    BOOST_CHECK(FinalityVoteModeAllowsPrivateNote("nullstakecold", true));
+
+    // Auto may select either available private note kind. Transparent and
+    // unknown modes must never enter private proof generation.
+    BOOST_CHECK(FinalityVoteModeAllowsPrivateNote("auto", false));
+    BOOST_CHECK(FinalityVoteModeAllowsPrivateNote("auto", true));
+    BOOST_CHECK(!FinalityVoteModeAllowsPrivateNote("transparent", false));
+    BOOST_CHECK(!FinalityVoteModeAllowsPrivateNote("transparent", true));
+    BOOST_CHECK(!FinalityVoteModeAllowsPrivateNote("unknown", false));
+    BOOST_CHECK(!FinalityVoteModeAllowsPrivateNote("unknown", true));
+}
+
 // Tag is deterministic per (note, epoch), distinct across epochs and notes.
 BOOST_AUTO_TEST_CASE(vote_tag_is_epoch_scoped_and_note_bound)
 {
@@ -206,14 +267,14 @@ BOOST_AUTO_TEST_CASE(vote_binding_proof_rejects_cross_epoch_replay)
     std::vector<unsigned char> proof;
     BOOST_REQUIRE(CreateNullifierBindingProof(stake.value, stake.blind, stake.cv,
                                               stake.nfPoint, ctx4, proof));
-    BOOST_CHECK(VerifyNullifierBindingProof(stake.cv, stake.nfPoint, ctx4, proof));
+    BOOST_CHECK(VerifyNullifierBindingProof(stake.cv, stake.nfPoint, ctx4, proof, 0 /* below every gate */));
 
     BOOST_CHECK(!VerifyNullifierBindingProof(stake.cv, stake.nfPoint,
-                                             FinalityNullifierBindContext(5, hashBlock5), proof));
+                                             FinalityNullifierBindContext(5, hashBlock5), proof, 0 /* below every gate */));
     BOOST_CHECK(!VerifyNullifierBindingProof(stake.cv, stake.nfPoint,
-                                             FinalityNullifierBindContext(5, hashBlock4), proof));
+                                             FinalityNullifierBindContext(5, hashBlock4), proof, 0 /* below every gate */));
     BOOST_CHECK(!VerifyNullifierBindingProof(stake.cv, stake.nfPoint,
-                                             FinalityNullifierBindContext(4, hashBlock5), proof));
+                                             FinalityNullifierBindContext(4, hashBlock5), proof, 0 /* below every gate */));
 }
 
 // A vote-binding proof for stake A cannot be grafted onto stake B's
@@ -229,11 +290,11 @@ BOOST_AUTO_TEST_CASE(vote_binding_proof_rejects_foreign_stake)
     std::vector<unsigned char> proofA;
     BOOST_REQUIRE(CreateNullifierBindingProof(a.value, a.blind, a.cv,
                                               a.nfPoint, ctx, proofA));
-    BOOST_REQUIRE(VerifyNullifierBindingProof(a.cv, a.nfPoint, ctx, proofA));
+    BOOST_REQUIRE(VerifyNullifierBindingProof(a.cv, a.nfPoint, ctx, proofA, 0 /* below every gate */));
 
-    BOOST_CHECK(!VerifyNullifierBindingProof(b.cv, a.nfPoint, ctx, proofA));
-    BOOST_CHECK(!VerifyNullifierBindingProof(a.cv, b.nfPoint, ctx, proofA));
-    BOOST_CHECK(!VerifyNullifierBindingProof(b.cv, b.nfPoint, ctx, proofA));
+    BOOST_CHECK(!VerifyNullifierBindingProof(b.cv, a.nfPoint, ctx, proofA, 0 /* below every gate */));
+    BOOST_CHECK(!VerifyNullifierBindingProof(a.cv, b.nfPoint, ctx, proofA, 0 /* below every gate */));
+    BOOST_CHECK(!VerifyNullifierBindingProof(b.cv, b.nfPoint, ctx, proofA, 0 /* below every gate */));
 }
 
 BOOST_AUTO_TEST_CASE(canonical_vote_envelope_has_golden_context_independent_bytes)
