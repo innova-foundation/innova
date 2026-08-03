@@ -505,6 +505,10 @@ extern CCriticalSection cs_nullsend;
 extern std::vector<CNullSendQueue> vecNullSendQueue;
 
 void ProcessMessageNullSend(CNode* pfrom, std::string& strCommand, CDataStream& vRecv);
+// Legacy NullSend is a regtest-only compatibility protocol and is also
+// permanently retired at Boundary A.  This shared predicate keeps P2P and RPC
+// reporting from disagreeing about whether a session may be processed.
+bool IsLegacyNullSendEnabledAtHeight(int nTipHeight);
 
 void ThreadNullSend(void* parg);
 

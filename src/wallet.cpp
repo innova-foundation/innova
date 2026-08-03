@@ -10,6 +10,7 @@
 
 #include "txdb.h"
 #include "wallet.h"
+#include "privacy_vnext_ffi.h"
 #include "walletdb.h"
 #include "crypter.h"
 #include "ui_interface.h"
@@ -44,6 +45,513 @@ using namespace std;
 unsigned int nStakeSplitAge = 1 * 24 * 60 * 60;
 int64_t nStakeCombineThreshold = 1000 * COIN;
 int64_t nStakeMinSplitThreshold = 100 * COIN;
+
+bool ComputeWalletShieldedTxPositions(
+    const CBlock& block,
+    const std::set<uint256>& setDAGSkippedTxs,
+    uint64_t nPredecessorMerkleSize,
+    bool fHavePredecessorCurveSize,
+    uint64_t nPredecessorCurveSize,
+    std::vector<CWalletShieldedTxPosition>& vPositionsOut,
+    std::string& strErrorOut)
+{
+    vPositionsOut.clear();
+    strErrorOut.clear();
+
+    uint64_t nMerklePosition = nPredecessorMerkleSize;
+    uint64_t nCurvePosition = nPredecessorCurveSize;
+    std::set<uint256> setSeenTransactions;
+
+    for (std::vector<CTransaction>::const_iterator it = block.vtx.begin();
+         it != block.vtx.end(); ++it)
+    {
+        const CTransaction& tx = *it;
+        const uint256 hashTx = tx.GetHash();
+        if (!setSeenTransactions.insert(hashTx).second)
+        {
+            strErrorOut = strprintf("duplicate transaction %s while deriving shielded wallet positions",
+                                    hashTx.ToString().substr(0, 20).c_str());
+            vPositionsOut.clear();
+            return false;
+        }
+        if (setDAGSkippedTxs.count(hashTx) || !tx.IsShielded())
+            continue;
+
+        const uint64_t nOutputs = (uint64_t)tx.vShieldedOutput.size();
+        if (nOutputs > std::numeric_limits<uint64_t>::max() - nMerklePosition ||
+            (fHavePredecessorCurveSize &&
+             nOutputs > std::numeric_limits<uint64_t>::max() - nCurvePosition))
+        {
+            strErrorOut = "shielded wallet output-position arithmetic overflow";
+            vPositionsOut.clear();
+            return false;
+        }
+        if (nOutputs > 0 &&
+            nMerklePosition + nOutputs - 1 >
+                (uint64_t)std::numeric_limits<uint32_t>::max())
+        {
+            strErrorOut = "shielded wallet note position exceeds persisted uint32 range";
+            vPositionsOut.clear();
+            return false;
+        }
+
+        CWalletShieldedTxPosition position;
+        position.hashTx = hashTx;
+        position.nMerklePosition = nMerklePosition;
+        position.fHasCurveLeafPosition = fHavePredecessorCurveSize;
+        position.nCurveLeafPosition =
+            fHavePredecessorCurveSize ? nCurvePosition : 0;
+        vPositionsOut.push_back(position);
+
+        nMerklePosition += nOutputs;
+        if (fHavePredecessorCurveSize)
+            nCurvePosition += nOutputs;
+    }
+
+    return true;
+}
+
+namespace
+{
+struct CWalletShieldedBlockContext
+{
+    int nHeight;
+    std::set<uint256> setDAGSkippedTxs;
+    std::vector<CWalletShieldedTxPosition> vPositions;
+
+    CWalletShieldedBlockContext() : nHeight(0) {}
+};
+
+bool AddWalletPositionBase(uint64_t& nBase, uint64_t nDelta,
+                           const char* pszWhat, std::string& strErrorOut)
+{
+    if (nDelta > std::numeric_limits<uint64_t>::max() - nBase)
+    {
+        strErrorOut = strprintf("%s position arithmetic overflow", pszWhat);
+        return false;
+    }
+    nBase += nDelta;
+    return true;
+}
+
+bool BuildWalletShieldedBlockContext(const CBlock& block,
+                                     const CBlockIndex* pindex,
+                                     CWalletShieldedBlockContext& contextOut,
+                                     std::string& strErrorOut,
+                                     const std::set<uint256>* pDAGSkippedTxs)
+{
+    contextOut = CWalletShieldedBlockContext();
+    strErrorOut.clear();
+
+    LOCK(cs_main);
+    if (!pindex || !pindex->phashBlock ||
+        pindex->GetBlockHash() != block.GetHash())
+    {
+        strErrorOut = "shielded wallet scan received a missing or mismatched block index";
+        return false;
+    }
+    if (pindex->nHeight < FORK_HEIGHT_SHIELDED)
+    {
+        strErrorOut = strprintf("shielded wallet scan received pre-activation block height %d",
+                                pindex->nHeight);
+        return false;
+    }
+
+    contextOut.nHeight = pindex->nHeight;
+    CTxDB txdb("r");
+    if (pDAGSkippedTxs)
+        contextOut.setDAGSkippedTxs = *pDAGSkippedTxs;
+    else if (pindex->nHeight >= FORK_HEIGHT_DAG)
+    {
+        const TxDBReadStatus status = txdb.ReadDAGSkippedTxsStatus(
+            block, contextOut.setDAGSkippedTxs, strErrorOut);
+        if (status != TXDB_READ_FOUND)
+        {
+            if (strErrorOut.empty())
+                strErrorOut = status == TXDB_READ_NOT_FOUND
+                    ? "exact connect-time DAG active set is missing"
+                    : "exact connect-time DAG active set is corrupt";
+            return false;
+        }
+    }
+    CIncrementalMerkleTree predecessorTree;
+    if (!txdb.ReadShieldedTreeAtBlock(pindex->GetBlockHash(), predecessorTree))
+    {
+        strErrorOut = "missing or corrupt per-block predecessor shielded-tree snapshot";
+        return false;
+    }
+
+    uint64_t nMerkleBase = predecessorTree.Size();
+    if (pindex->nHeight == FORK_HEIGHT_SHIELDED)
+    {
+        if (nMerkleBase != 0)
+        {
+            strErrorOut = "shielded activation predecessor tree is unexpectedly non-empty";
+            return false;
+        }
+        if (!AddWalletPositionBase(nMerkleBase,
+                                   (uint64_t)LELANTUS_GENESIS_SEED_COUNT,
+                                   "shielded Merkle", strErrorOut))
+            return false;
+    }
+
+    const bool fMutableCurveTree =
+        pindex->nHeight >= FORK_HEIGHT_FCMP &&
+        pindex->nHeight < FORK_HEIGHT_EPOCH_ROOT_FCMP;
+    uint64_t nCurveBase = 0;
+    if (fMutableCurveTree)
+    {
+        CCurveTree predecessorCurveTree;
+        if (!txdb.ReadCurveTreeAtBlock(pindex->GetBlockHash(), predecessorCurveTree))
+        {
+            strErrorOut = "missing or corrupt per-block predecessor curve-tree snapshot";
+            return false;
+        }
+        nCurveBase = predecessorCurveTree.nLeafCount;
+        if (pindex->nHeight == FORK_HEIGHT_SHIELDED)
+        {
+            if (nCurveBase != 0)
+            {
+                strErrorOut = "shielded activation predecessor curve tree is unexpectedly non-empty";
+                return false;
+            }
+            if (!AddWalletPositionBase(nCurveBase,
+                                       (uint64_t)LELANTUS_GENESIS_SEED_COUNT,
+                                       "shielded curve leaf", strErrorOut))
+                return false;
+        }
+    }
+
+    return ComputeWalletShieldedTxPositions(
+        block, contextOut.setDAGSkippedTxs, nMerkleBase,
+        fMutableCurveTree, nCurveBase, contextOut.vPositions, strErrorOut);
+}
+
+const CWalletShieldedTxPosition* FindWalletShieldedTxPosition(
+    const CWalletShieldedBlockContext& context, const uint256& hashTx)
+{
+    for (std::vector<CWalletShieldedTxPosition>::const_iterator it =
+             context.vPositions.begin(); it != context.vPositions.end(); ++it)
+    {
+        if (it->hashTx == hashTx)
+            return &*it;
+    }
+    return NULL;
+}
+
+bool PersistWalletShieldedChanges(
+    CWallet& wallet,
+    const std::vector<CWallet::CShieldedWalletNote>& vNewNotes,
+    const std::vector<size_t>& vSpentNoteIndices,
+    bool fSpent,
+    std::string& strErrorOut)
+{
+    if (!wallet.fFileBacked ||
+        (vNewNotes.empty() && vSpentNoteIndices.empty()))
+        return true;
+
+    CWalletDB walletdb(wallet.strWalletFile, "r+");
+    if (!walletdb.TxnBegin())
+    {
+        strErrorOut = "could not begin shielded wallet-note database transaction";
+        return false;
+    }
+
+    for (std::vector<CWallet::CShieldedWalletNote>::const_iterator it =
+             vNewNotes.begin(); it != vNewNotes.end(); ++it)
+    {
+        if (!walletdb.WriteShieldedNote(it->txhash, it->nPosition, it->note,
+                                        it->fSpent, it->nHeight))
+        {
+            walletdb.TxnAbort();
+            strErrorOut = strprintf("failed to persist shielded wallet note %s:%u",
+                                    it->txhash.ToString().substr(0, 20).c_str(),
+                                    it->nPosition);
+            return false;
+        }
+    }
+
+    for (std::vector<size_t>::const_iterator it = vSpentNoteIndices.begin();
+         it != vSpentNoteIndices.end(); ++it)
+    {
+        if (*it >= wallet.vShieldedNotes.size())
+        {
+            walletdb.TxnAbort();
+            strErrorOut = "shielded wallet-note mutation index is out of range";
+            return false;
+        }
+        const CWallet::CShieldedWalletNote& note = wallet.vShieldedNotes[*it];
+        if (!walletdb.WriteShieldedNoteSpent(note.txhash, note.nPosition, fSpent))
+        {
+            walletdb.TxnAbort();
+            strErrorOut = strprintf("failed to persist shielded wallet-note spent state %s:%u",
+                                    note.txhash.ToString().substr(0, 20).c_str(),
+                                    note.nPosition);
+            return false;
+        }
+    }
+
+    if (!walletdb.TxnCommit())
+    {
+        strErrorOut = "failed to commit shielded wallet-note database transaction";
+        return false;
+    }
+    return true;
+}
+
+bool BuildWalletShieldedNullifierCandidates(
+    CWallet& wallet, const CWallet::CShieldedWalletNote& note,
+    std::set<uint256>& setCandidatesOut,
+    bool& fHaveBoundOut, bool& fHaveLegacyOwnerOut,
+    bool& fHaveLegacyColdOut,
+    std::string& strErrorOut)
+{
+    setCandidatesOut.clear();
+    fHaveBoundOut = false;
+    fHaveLegacyOwnerOut = false;
+    fHaveLegacyColdOut = false;
+
+    // Binding-era spends use the note-blind-derived, key-independent tag.
+    // Keep legacy candidates too because a pre-binding note may already have
+    // been spent under one of those rules.
+    if (note.note.vchBlind.size() == BLINDING_FACTOR_SIZE)
+    {
+        std::vector<unsigned char> vchNullifierPoint;
+        if (!ComputeNullifierPoint(note.note.vchBlind,
+                                   vchNullifierPoint))
+        {
+            strErrorOut = "failed to derive a bound shielded wallet nullifier";
+            return false;
+        }
+        const uint256 hashBound = NullifierTagFromPoint(vchNullifierPoint);
+        if (hashBound == 0)
+        {
+            strErrorOut = "derived a zero bound shielded wallet nullifier";
+            return false;
+        }
+        setCandidatesOut.insert(hashBound);
+        fHaveBoundOut = true;
+    }
+
+    std::map<CShieldedPaymentAddress, CShieldedSpendingKey>::const_iterator
+        keyIt = wallet.mapShieldedSpendingKeys.find(note.note.addr);
+    if (keyIt != wallet.mapShieldedSpendingKeys.end())
+    {
+        CShieldedFullViewingKey fvk;
+        if (!DeriveShieldedFullViewingKey(keyIt->second, fvk))
+        {
+            strErrorOut = "failed to derive a shielded wallet full viewing key";
+            return false;
+        }
+        const uint256 hashLegacy = note.note.GetNullifier(fvk.nk);
+        if (hashLegacy == 0)
+        {
+            strErrorOut = "derived a zero legacy shielded wallet nullifier";
+            return false;
+        }
+        setCandidatesOut.insert(hashLegacy);
+        fHaveLegacyOwnerOut = true;
+    }
+
+    // Legacy delegated cold staking used a distinct nk derived from the
+    // delegated staking secret. Imported/created delegations retain that
+    // secret locally; binding-era cold spends are already covered above.
+    for (std::map<uint256, CColdStakeDelegation>::const_iterator delegIt =
+             wallet.mapColdStakeDelegations.begin();
+         delegIt != wallet.mapColdStakeDelegations.end(); ++delegIt)
+    {
+        const CColdStakeDelegation& deleg = delegIt->second;
+        if (!(deleg.ownerAddr == note.note.addr) ||
+            deleg.vchSkStakeEnc.size() != 32)
+            continue;
+        uint256 skStake;
+        memcpy(skStake.begin(), deleg.vchSkStakeEnc.data(), 32);
+        CHashWriter ssNk(SER_GETHASH, 0);
+        ssNk << std::string("Innova/ColdStake/Nk/v1");
+        ssNk << skStake;
+        const uint256 hashLegacyCold =
+            note.note.GetNullifier(ssNk.GetHash());
+        OPENSSL_cleanse(skStake.begin(), 32);
+        if (hashLegacyCold == 0)
+        {
+            strErrorOut = "derived a zero legacy cold-stake nullifier";
+            return false;
+        }
+        setCandidatesOut.insert(hashLegacyCold);
+        fHaveLegacyColdOut = true;
+    }
+    return true;
+}
+
+bool CollectWalletShieldedSpends(
+    CWallet& wallet,
+    const std::vector<const CTransaction*>& vTransactions,
+    bool fCurrentlySpent,
+    std::vector<size_t>& vNoteIndicesOut,
+    std::string& strErrorOut)
+{
+    vNoteIndicesOut.clear();
+    std::map<uint256, std::set<size_t> > mapNullifierToNoteIndices;
+    for (size_t i = 0; i < wallet.vShieldedNotes.size(); ++i)
+    {
+        const CWallet::CShieldedWalletNote& note = wallet.vShieldedNotes[i];
+        if (note.fSpent != fCurrentlySpent)
+            continue;
+
+        std::set<uint256> setCandidates;
+        bool fHaveBound = false;
+        bool fHaveLegacyOwner = false;
+        bool fHaveLegacyCold = false;
+        if (!BuildWalletShieldedNullifierCandidates(
+                wallet, note, setCandidates, fHaveBound,
+                fHaveLegacyOwner, fHaveLegacyCold,
+                strErrorOut))
+            return false;
+
+        for (std::set<uint256>::const_iterator candidateIt =
+                 setCandidates.begin(); candidateIt != setCandidates.end();
+             ++candidateIt)
+        {
+            mapNullifierToNoteIndices[*candidateIt].insert(i);
+        }
+    }
+
+    std::set<size_t> setNoteIndices;
+    for (std::vector<const CTransaction*>::const_iterator txIt =
+             vTransactions.begin(); txIt != vTransactions.end(); ++txIt)
+    {
+        for (std::vector<CShieldedSpendDescription>::const_iterator spendIt =
+                 (*txIt)->vShieldedSpend.begin();
+             spendIt != (*txIt)->vShieldedSpend.end(); ++spendIt)
+        {
+            std::map<uint256, std::set<size_t> >::const_iterator match =
+                mapNullifierToNoteIndices.find(spendIt->nullifier);
+            if (match != mapNullifierToNoteIndices.end())
+                setNoteIndices.insert(match->second.begin(),
+                                      match->second.end());
+        }
+    }
+    vNoteIndicesOut.assign(setNoteIndices.begin(), setNoteIndices.end());
+    return true;
+}
+
+bool ApplyWalletShieldedBlock(CWallet& wallet,
+                              const CBlock& block,
+                              const CBlockIndex* pindex,
+                              const uint256* pOnlyTx,
+                              bool& fFoundOwnedOutputOut,
+                              std::string& strErrorOut,
+                              const std::set<uint256>* pDAGSkippedTxs = NULL)
+{
+    fFoundOwnedOutputOut = false;
+    CWalletShieldedBlockContext context;
+    if (!BuildWalletShieldedBlockContext(block, pindex, context,
+                                         strErrorOut, pDAGSkippedTxs))
+        return false;
+
+    std::vector<const CTransaction*> vTransactions;
+    for (std::vector<CTransaction>::const_iterator it = block.vtx.begin();
+         it != block.vtx.end(); ++it)
+    {
+        if (!it->IsShielded() || context.setDAGSkippedTxs.count(it->GetHash()))
+            continue;
+        if (!pOnlyTx || it->GetHash() == *pOnlyTx)
+            vTransactions.push_back(&*it);
+    }
+    if (pOnlyTx && vTransactions.empty())
+    {
+        strErrorOut = "connected shielded transaction is absent or DAG-inactive in its passed block";
+        return false;
+    }
+
+    LOCK2(wallet.cs_wallet, wallet.cs_shielded);
+    std::vector<CWallet::CShieldedWalletNote> vNewNotes;
+    for (std::vector<const CTransaction*>::const_iterator txIt =
+             vTransactions.begin(); txIt != vTransactions.end(); ++txIt)
+    {
+        const CTransaction& tx = **txIt;
+        const CWalletShieldedTxPosition* position =
+            FindWalletShieldedTxPosition(context, tx.GetHash());
+        if (!position)
+        {
+            strErrorOut = "missing deterministic shielded wallet transaction position";
+            return false;
+        }
+
+        for (size_t i = 0; i < tx.vShieldedOutput.size(); ++i)
+        {
+            CShieldedNote noteOut;
+            if (!wallet.IsShieldedOutputMine(tx.vShieldedOutput[i],
+                                             tx.nVersion, noteOut))
+                continue;
+
+            const uint64_t nPosition64 = position->nMerklePosition + (uint64_t)i;
+            if (nPosition64 > (uint64_t)std::numeric_limits<uint32_t>::max())
+            {
+                strErrorOut = "shielded wallet note position exceeds persisted uint32 range";
+                return false;
+            }
+            const uint32_t nPosition = (uint32_t)nPosition64;
+            bool fDuplicate = false;
+            for (std::vector<CWallet::CShieldedWalletNote>::const_iterator existing =
+                     wallet.vShieldedNotes.begin();
+                 existing != wallet.vShieldedNotes.end(); ++existing)
+            {
+                if (existing->txhash == tx.GetHash() &&
+                    existing->nPosition == nPosition)
+                {
+                    fDuplicate = true;
+                    break;
+                }
+            }
+            for (std::vector<CWallet::CShieldedWalletNote>::const_iterator pending =
+                     vNewNotes.begin();
+                 !fDuplicate && pending != vNewNotes.end(); ++pending)
+            {
+                if (pending->txhash == tx.GetHash() &&
+                    pending->nPosition == nPosition)
+                    fDuplicate = true;
+            }
+            if (fDuplicate)
+                continue;
+
+            CWallet::CShieldedWalletNote walletNote;
+            walletNote.note = noteOut;
+            walletNote.txhash = tx.GetHash();
+            walletNote.nPosition = nPosition;
+            walletNote.fSpent = false;
+            walletNote.nHeight = context.nHeight;
+            walletNote.nLeafIndex = position->fHasCurveLeafPosition
+                ? position->nCurveLeafPosition + (uint64_t)i : 0;
+            vNewNotes.push_back(walletNote);
+        }
+    }
+
+    std::vector<size_t> vSpentNoteIndices;
+    if (!CollectWalletShieldedSpends(wallet, vTransactions, false,
+                                     vSpentNoteIndices, strErrorOut))
+        return false;
+    if (!PersistWalletShieldedChanges(wallet, vNewNotes, vSpentNoteIndices,
+                                      true, strErrorOut))
+        return false;
+
+    for (std::vector<CWallet::CShieldedWalletNote>::const_iterator it =
+             vNewNotes.begin(); it != vNewNotes.end(); ++it)
+    {
+        wallet.vShieldedNotes.push_back(*it);
+        if (fDebug)
+            printf("ApplyWalletShieldedBlock() : added note in tx %s pos=%u leafIdx=%" PRIu64 "\n",
+                   it->txhash.ToString().substr(0, 10).c_str(),
+                   it->nPosition, it->nLeafIndex);
+    }
+    for (std::vector<size_t>::const_iterator it = vSpentNoteIndices.begin();
+         it != vSpentNoteIndices.end(); ++it)
+        wallet.vShieldedNotes[*it].fSpent = true;
+
+    fFoundOwnedOutputOut = !vNewNotes.empty();
+    return true;
+}
+} // namespace
 
 static bool LoadWalletFCMPProofTree(CTxDB& txdb, int nBlockHeight,
                                     CCurveTree& treeOut,
@@ -285,6 +793,7 @@ bool CWallet::Lock()
             }
             sxAddr.spend_secret = sxAddrTemp.spend_secret;
         };
+        vchPrivacyVNextSeed.clear();
     }
     return LockKeyStore();
 };
@@ -374,12 +883,262 @@ bool CWallet::Unlock(const SecureString& strWalletPassphrase)
             break;
         }
 
-        UnlockStealthAddresses(vMasterKey);
+		UnlockStealthAddresses(vMasterKey);
+        std::string strPrivacySeedError;
+        if (!UnlockPrivacyVNextSeed(vMasterKey, strPrivacySeedError))
+        {
+            printf("Error: Failed to unlock IV5 seed: %s\n",
+                   strPrivacySeedError.c_str());
+            vchPrivacyVNextSeed.clear();
+            LockKeyStore();
+            return false;
+        }
 		    ProcessLockedAnonOutputs(); //Process Locked Anon Outputs when unlocked, I n n o v a - v3.1
         SecureMsgWalletUnlocked();
         return true;
     }
     return false;
+}
+
+namespace
+{
+uint256 PrivacyVNextSeedEncryptionIV()
+{
+    CHashWriter writer(SER_GETHASH, 0);
+    writer << std::string("Innova/IV5/WalletSeedEncryption/v1");
+    return writer.GetHash();
+}
+
+bool PrivacyVNextSeedRecordIsCanonical(
+    const CPrivacyVNextSeedRecord& record, std::string& error)
+{
+    if (record.nGeneration != PRIVACY_VNEXT_WALLET_SEED_GENERATION)
+    {
+        error = "unsupported IV5 wallet seed generation";
+        return false;
+    }
+    if (record.vchCryptedSeed.size() !=
+        PRIVACY_VNEXT_WALLET_SEED_CIPHERTEXT_SIZE)
+    {
+        error = "invalid IV5 wallet seed ciphertext length";
+        return false;
+    }
+    if (record.hashSeedCommitment == 0)
+    {
+        error = "zero IV5 wallet seed commitment";
+        return false;
+    }
+    return true;
+}
+}
+
+bool CWallet::LoadPrivacyVNextSeedRecord(
+    const CPrivacyVNextSeedRecord& record, std::string& strError)
+{
+    LOCK(cs_wallet);
+    strError.clear();
+    if (privacyVNextSeedRecord.nGeneration != 0)
+    {
+        strError = "duplicate IV5 wallet seed record";
+        return false;
+    }
+    if (!PrivacyVNextSeedRecordIsCanonical(record, strError))
+        return false;
+    privacyVNextSeedRecord = record;
+    vchPrivacyVNextSeed.clear();
+    return true;
+}
+
+bool CWallet::UnlockPrivacyVNextSeed(
+    const CKeyingMaterial& vMasterKeyIn, std::string& strError)
+{
+    LOCK(cs_wallet);
+    strError.clear();
+    vchPrivacyVNextSeed.clear();
+    if (privacyVNextSeedRecord.nGeneration == 0)
+        return true;
+    if (!PrivacyVNextSeedRecordIsCanonical(
+            privacyVNextSeedRecord, strError))
+        return false;
+
+    CSecret seed;
+    if (!DecryptSecret(vMasterKeyIn,
+                       privacyVNextSeedRecord.vchCryptedSeed,
+                       PrivacyVNextSeedEncryptionIV(), seed) ||
+        seed.size() != 32)
+    {
+        strError = "could not decrypt IV5 wallet seed";
+        return false;
+    }
+    const uint256 commitment = Hash(seed.begin(), seed.end());
+    bool fAllZero = true;
+    for (size_t i = 0; i < seed.size(); ++i)
+        fAllZero = fAllZero && seed[i] == 0;
+    if (fAllZero || commitment != privacyVNextSeedRecord.hashSeedCommitment)
+    {
+        OPENSSL_cleanse(&seed[0], seed.size());
+        strError = "IV5 wallet seed commitment mismatch";
+        return false;
+    }
+    vchPrivacyVNextSeed.assign(seed.begin(), seed.end());
+    OPENSSL_cleanse(&seed[0], seed.size());
+    return true;
+}
+
+bool CWallet::CreatePrivacyVNextSeed(std::string& strError)
+{
+    LOCK(cs_wallet);
+    strError.clear();
+    if (!fFileBacked)
+    {
+        strError = "IV5 seed creation requires a file-backed wallet";
+        return false;
+    }
+    if (!IsCrypted())
+    {
+        strError = "encrypt the wallet before creating an IV5 seed";
+        return false;
+    }
+    if (IsLocked() || vMasterKey.size() != WALLET_CRYPTO_KEY_SIZE)
+    {
+        strError = "wallet must be unlocked to create an IV5 seed";
+        return false;
+    }
+    if (privacyVNextSeedRecord.nGeneration != 0)
+    {
+        strError = "IV5 wallet seed already exists";
+        return false;
+    }
+
+    CSecret seed(32, 0);
+    if (RAND_bytes(&seed[0], seed.size()) != 1)
+    {
+        strError = "secure IV5 wallet seed generation failed";
+        return false;
+    }
+    bool fAllZero = true;
+    for (size_t i = 0; i < seed.size(); ++i)
+        fAllZero = fAllZero && seed[i] == 0;
+    if (fAllZero)
+    {
+        OPENSSL_cleanse(&seed[0], seed.size());
+        strError = "secure IV5 wallet seed generation returned zero";
+        return false;
+    }
+
+    CPrivacyVNextSeedRecord record;
+    record.nGeneration = PRIVACY_VNEXT_WALLET_SEED_GENERATION;
+    record.hashSeedCommitment = Hash(seed.begin(), seed.end());
+    record.nNextAddressIndex = 0;
+    if (!EncryptSecret(vMasterKey, seed, PrivacyVNextSeedEncryptionIV(),
+                       record.vchCryptedSeed) ||
+        record.vchCryptedSeed.size() !=
+            PRIVACY_VNEXT_WALLET_SEED_CIPHERTEXT_SIZE)
+    {
+        OPENSSL_cleanse(&seed[0], seed.size());
+        strError = "could not encrypt IV5 wallet seed";
+        return false;
+    }
+
+    CWalletDB walletdb(strWalletFile);
+    if (!walletdb.WritePrivacyVNextSeed(record))
+    {
+        OPENSSL_cleanse(&seed[0], seed.size());
+        strError = "could not durably persist IV5 wallet seed";
+        return false;
+    }
+    privacyVNextSeedRecord = record;
+    vchPrivacyVNextSeed.assign(seed.begin(), seed.end());
+    OPENSSL_cleanse(&seed[0], seed.size());
+    return true;
+}
+
+bool CWallet::HasPrivacyVNextSeed() const
+{
+    LOCK(cs_wallet);
+    return privacyVNextSeedRecord.nGeneration ==
+           PRIVACY_VNEXT_WALLET_SEED_GENERATION;
+}
+
+bool CWallet::IsPrivacyVNextSeedUnlocked() const
+{
+    LOCK(cs_wallet);
+    return vchPrivacyVNextSeed.size() == 32;
+}
+
+bool CWallet::GetPrivacyVNextSeed(CKeyingMaterial& seedOut) const
+{
+    LOCK(cs_wallet);
+    seedOut.clear();
+    if (vchPrivacyVNextSeed.size() != 32)
+        return false;
+    seedOut.assign(vchPrivacyVNextSeed.begin(), vchPrivacyVNextSeed.end());
+    return true;
+}
+
+bool CWallet::GenerateNewPrivacyVNextAddress(
+    uint8_t addressType, std::string& addressOut,
+    uint32_t& indexOut, std::string& strError)
+{
+    LOCK(cs_wallet);
+    addressOut.clear();
+    indexOut = 0;
+    strError.clear();
+    if (!fFileBacked)
+    {
+        strError = "IV5 address generation requires a file-backed wallet";
+        return false;
+    }
+    if (privacyVNextSeedRecord.nGeneration !=
+            PRIVACY_VNEXT_WALLET_SEED_GENERATION ||
+        vchPrivacyVNextSeed.size() != 32)
+    {
+        strError = "unlocked IV5 wallet seed is unavailable";
+        return false;
+    }
+    if (privacyVNextSeedRecord.nNextAddressIndex == 0xffffffffU)
+    {
+        strError = "IV5 address index is exhausted";
+        return false;
+    }
+
+    PrivacyVNextDigest seed;
+    PrivacyVNextDigest genesis;
+    std::memcpy(seed.data(), &vchPrivacyVNextSeed[0], seed.size());
+    const uint256& genesisHash = GetGenesisBlockHash();
+    std::memcpy(genesis.data(), genesisHash.begin(), genesis.size());
+    const uint8_t network = fRegTest ? 2 : (fTestNet ? 1 : 0);
+    const uint32_t index = privacyVNextSeedRecord.nNextAddressIndex;
+
+    PrivacyVNextDerivedKeys keys;
+    if (!DerivePrivacyVNextKeys(seed, genesis, index, network,
+                                addressType, keys, strError))
+    {
+        OPENSSL_cleanse(seed.data(), seed.size());
+        return false;
+    }
+    OPENSSL_cleanse(seed.data(), seed.size());
+
+    PrivacyVNextAddressComponents components;
+    components.nNetwork = network;
+    components.nAddressType = addressType;
+    components.spendPublic = keys.spendPublic;
+    components.viewPublic = keys.viewPublic;
+    std::string address;
+    if (!EncodePrivacyVNextAddress(components, address, strError))
+        return false;
+
+    CWalletDB walletdb(strWalletFile);
+    if (!walletdb.AdvancePrivacyVNextSeedIndex(
+            privacyVNextSeedRecord, index + 1))
+    {
+        strError = "could not durably advance IV5 address index";
+        return false;
+    }
+    privacyVNextSeedRecord.nNextAddressIndex = index + 1;
+    addressOut = address;
+    indexOut = index;
+    return true;
 }
 
 void CWallet::LockCoin(COutPoint& output)
@@ -514,10 +1273,18 @@ bool CWallet::ChangeWalletPassphrase(const SecureString& strOldWalletPassphrase,
     return false;
 }
 
+bool CWallet::SetBestChainChecked(const CBlockLocator& loc)
+{
+    if (!fFileBacked)
+        return true;
+    CWalletDB walletdb(strWalletFile);
+    return walletdb.WriteBestBlock(loc);
+}
+
 void CWallet::SetBestChain(const CBlockLocator& loc)
 {
-    CWalletDB walletdb(strWalletFile);
-    walletdb.WriteBestBlock(loc);
+    if (!SetBestChainChecked(loc))
+        error("CWallet::SetBestChain() : failed to persist wallet best-block locator");
 }
 
 bool CWallet::SetMinVersion(enum WalletFeature nVersion, CWalletDB* pwalletdbIn, bool fExplicit)
@@ -716,8 +1483,10 @@ CWallet::TxItems CWallet::OrderedTxItems(std::list<CAccountingEntry>& acentries,
     return txOrdered;
 }
 
-void CWallet::WalletUpdateSpent(const CTransaction &tx, bool fBlock)
+bool CWallet::WalletUpdateSpentChecked(const CTransaction& tx, bool fBlock,
+                                       std::string& strErrorOut)
 {
+    strErrorOut.clear();
     // Anytime a signature is successfully verified, it's proof the outpoint is spent.
     // Update the wallet spent flag if it doesn't know due to wallet.dat being
     // restored from backup or the user making copies of wallet.dat.
@@ -743,7 +1512,13 @@ void CWallet::WalletUpdateSpent(const CTransaction &tx, bool fBlock)
                 {
                     printf("WalletUpdateSpent found spent coins\n");
                     wtx.MarkSpent(txin.prevout.n);
-                    wtx.WriteToDisk();
+                    if (!wtx.WriteToDisk())
+                    {
+                        strErrorOut = strprintf("failed to persist spent wallet input %s:%u",
+                                                txin.prevout.hash.ToString().substr(0, 20).c_str(),
+                                                txin.prevout.n);
+                        return false;
+                    }
                     NotifyTransactionChanged(this, txin.prevout.hash, CT_UPDATED);
 					vMintingWalletUpdated.push_back(txin.prevout.hash);
                     if (fHybridSPV)
@@ -759,7 +1534,7 @@ void CWallet::WalletUpdateSpent(const CTransaction &tx, bool fBlock)
             uint256 hash = tx.GetHash();
             map<uint256, CWalletTx>::iterator mi = mapWallet.find(hash);
             if (mi == mapWallet.end())
-                return;
+                return true;
             CWalletTx& wtx = (*mi).second;
 
             BOOST_FOREACH(const CTxOut& txout, tx.vout)
@@ -774,7 +1549,12 @@ void CWallet::WalletUpdateSpent(const CTransaction &tx, bool fBlock)
                 if (IsMine(txout))
                 {
                     wtx.MarkUnspent(&txout - &tx.vout[0]);
-                    wtx.WriteToDisk();
+                    if (!wtx.WriteToDisk())
+                    {
+                        strErrorOut = strprintf("failed to persist wallet output state for %s",
+                                                hash.ToString().substr(0, 20).c_str());
+                        return false;
+                    }
                     NotifyTransactionChanged(this, hash, CT_UPDATED);
 					vMintingWalletUpdated.push_back(hash);
                 }
@@ -782,6 +1562,14 @@ void CWallet::WalletUpdateSpent(const CTransaction &tx, bool fBlock)
         }
 
     }
+    return true;
+}
+
+void CWallet::WalletUpdateSpent(const CTransaction& tx, bool fBlock)
+{
+    std::string strError;
+    if (!WalletUpdateSpentChecked(tx, fBlock, strError))
+        error("CWallet::WalletUpdateSpent() : %s", strError.c_str());
 }
 
 void CWallet::MarkDirty()
@@ -908,7 +1696,10 @@ bool CWallet::AddToWallet(const CWalletTx& wtxIn)
         }
 #endif
         // since AddToWallet is called directly for self-originating transactions, check for consumption of own coins
-        WalletUpdateSpent(wtx, (wtxIn.hashBlock != 0));
+        std::string strSpentError;
+        if (!WalletUpdateSpentChecked(wtx, (wtxIn.hashBlock != 0),
+                                      strSpentError))
+            return error("AddToWallet() : %s", strSpentError.c_str());
 
         // Notify UI of new or updated transaction
         NotifyTransactionChanged(this, hash, fInsertedNew ? CT_NEW : CT_UPDATED);
@@ -931,11 +1722,41 @@ bool CWallet::AddToWallet(const CWalletTx& wtxIn)
 // Add a transaction to the wallet, or update it.
 // pblock is optional, but should be provided if the transaction is known to be in a block.
 // If fUpdate is true, existing transactions will be updated.
-bool CWallet::AddToWalletIfInvolvingMe(const CTransaction& tx, const CBlock* pblock, bool fUpdate, bool fFindBlock)
+bool CWallet::AddToWalletIfInvolvingMe(const CTransaction& tx, const CBlock* pblock,
+                                       bool fUpdate, bool fFindBlock,
+                                       std::string* pErrorOut,
+                                       const std::set<uint256>* pDAGSkippedTxs)
 {
     //printf("AddToWalletIfInvolvingMe() %s\n", hash.ToString().c_str()); // happens often
 
+    if (pErrorOut)
+        pErrorOut->clear();
+
     uint256 hash = tx.GetHash();
+    bool fShieldedMine = false;
+    if (tx.IsShielded() && pblock)
+    {
+        CBlockIndex* pindex = NULL;
+        {
+            LOCK(cs_main);
+            std::map<uint256, CBlockIndex*>::const_iterator mi =
+                mapBlockIndex.find(pblock->GetHash());
+            if (mi != mapBlockIndex.end())
+                pindex = mi->second;
+        }
+        std::string strShieldedError;
+        if (!ApplyWalletShieldedBlock(*this, *pblock, pindex, &hash,
+                                      fShieldedMine, strShieldedError,
+                                      pDAGSkippedTxs))
+        {
+            if (pErrorOut)
+                *pErrorOut = strShieldedError;
+            return error("AddToWalletIfInvolvingMe() : shielded block update failed for %s: %s",
+                         hash.ToString().substr(0, 20).c_str(),
+                         strShieldedError.c_str());
+        }
+    }
+
     {
         LOCK(cs_wallet);
         bool fExisted = mapWallet.count(hash);
@@ -957,125 +1778,76 @@ bool CWallet::AddToWalletIfInvolvingMe(const CTransaction& tx, const CBlock* pbl
             uint256 blockHash = 0;
             blockHash = pblock ? ((CBlock*)pblock)->GetHash() : 0;
 
-            walletdb.TxnBegin();
-            txdb.TxnBegin();
+            if (!walletdb.TxnBegin())
+            {
+                if (pErrorOut)
+                    *pErrorOut = "could not begin anonymous wallet transaction";
+                return false;
+            }
+            if (!txdb.TxnBegin())
+            {
+                walletdb.TxnAbort();
+                if (pErrorOut)
+                    *pErrorOut = "could not begin anonymous chain-state transaction";
+                return false;
+            }
             std::vector<std::map<uint256, CWalletTx>::iterator> vUpdatedTxns;
             if (!ProcessAnonTransaction(&walletdb, &txdb, tx, blockHash, fIsMine, mapNarr, vUpdatedTxns))
             {
                 printf("ProcessAnonTransaction failed %s\n", hash.ToString().c_str());
                 walletdb.TxnAbort();
                 txdb.TxnAbort();
+                if (pErrorOut)
+                    *pErrorOut = "anonymous wallet transaction processing failed";
                 return false;
             } else
             {
-                walletdb.TxnCommit();
-                txdb.TxnCommit();
+                if (!walletdb.TxnCommit())
+                {
+                    txdb.TxnAbort();
+                    if (pErrorOut)
+                        *pErrorOut = "anonymous wallet transaction commit failed";
+                    return false;
+                }
+                if (!txdb.TxnCommit())
+                {
+                    if (pErrorOut)
+                        *pErrorOut = "anonymous chain-state transaction commit failed";
+                    return false;
+                }
                 for (std::vector<std::map<uint256, CWalletTx>::iterator>::iterator it = vUpdatedTxns.begin();
                     it != vUpdatedTxns.end(); ++it)
                     NotifyTransactionChanged(this, (*it)->first, CT_UPDATED);
             };
         };
 
-        bool fShieldedMine = false;
-        if (tx.IsShielded())
+        if (fShieldedMine)
+            fIsMine = true;
+
+        // A mempool transaction has no stable commitment position.  Defer
+        // receiving-note creation until a passed block supplies its exact
+        // predecessor snapshot, but retain the existing spent-note behavior.
+        if (tx.IsShielded() && !pblock)
         {
             LOCK(cs_shielded);
-            uint64_t nTreePos = 0;
-            uint64_t nCurveLeafPos = 0;
+            std::vector<const CTransaction*> vTransactions(1, &tx);
+            std::vector<size_t> vSpentNoteIndices;
+            std::string strShieldedError;
+            if (!CollectWalletShieldedSpends(*this, vTransactions, false,
+                                             vSpentNoteIndices,
+                                             strShieldedError) ||
+                !PersistWalletShieldedChanges(*this,
+                    std::vector<CShieldedWalletNote>(), vSpentNoteIndices,
+                    true, strShieldedError))
             {
-                CTxDB txdb("r");
-                txdb.ReadShieldedCommitmentCount(nTreePos);
-
-                int nCurrentHeight = pindexBest ? pindexBest->nHeight : 0;
-                if (nCurrentHeight >= FORK_HEIGHT_FCMP)
-                {
-                    CCurveTree tmpTree;
-                    if (txdb.ReadCurveTree(tmpTree))
-                        nCurveLeafPos = tmpTree.nLeafCount;
-                }
+                if (pErrorOut)
+                    *pErrorOut = strShieldedError;
+                return error("AddToWalletIfInvolvingMe() : shielded mempool spent-state update failed: %s",
+                             strShieldedError.c_str());
             }
-            if (nTreePos >= tx.vShieldedOutput.size())
-                nTreePos -= tx.vShieldedOutput.size();
-            if (nCurveLeafPos >= tx.vShieldedOutput.size())
-                nCurveLeafPos -= tx.vShieldedOutput.size();
-
-            for (unsigned int i = 0; i < tx.vShieldedOutput.size(); i++)
-            {
-                CShieldedNote noteOut;
-                if (IsShieldedOutputMine(tx.vShieldedOutput[i], noteOut))
-                {
-                    fShieldedMine = true;
-                    fIsMine = true;
-
-                    uint64_t pos = nTreePos + i;
-                    bool fDuplicate = false;
-                    for (const CShieldedWalletNote& existing : vShieldedNotes)
-                    {
-                        if (existing.txhash == hash && existing.nPosition == pos)
-                        {
-                            fDuplicate = true;
-                            break;
-                        }
-                    }
-                    if (!fDuplicate)
-                    {
-                        CShieldedWalletNote wnote;
-                        wnote.note = noteOut;
-                        wnote.txhash = hash;
-                        wnote.nPosition = pos;
-                        wnote.fSpent = false;
-                        wnote.nHeight = pindexBest ? pindexBest->nHeight : 0;
-                        wnote.nLeafIndex = (wnote.nHeight >= FORK_HEIGHT_FCMP) ? (nCurveLeafPos + i) : 0;
-                        vShieldedNotes.push_back(wnote);
-
-                        {
-                            CWalletDB walletdb(strWalletFile);
-                            walletdb.WriteShieldedNote(hash, pos, noteOut, false, wnote.nHeight);
-                        }
-
-                        if (fDebug)
-                            printf("AddToWalletIfInvolvingMe() : added shielded note in tx %s pos=%u leafIdx=%lu\n",
-                                   hash.ToString().substr(0,10).c_str(), (unsigned int)pos, wnote.nLeafIndex);
-                    }
-                }
-            }
-
-            std::map<uint256, size_t> mapNullifierToNoteIndex;
-            for (size_t i = 0; i < vShieldedNotes.size(); i++)
-            {
-                CShieldedWalletNote& wnote = vShieldedNotes[i];
-                if (wnote.fSpent)
-                    continue;
-                for (auto& pair : mapShieldedSpendingKeys)
-                {
-                    CShieldedFullViewingKey fvk;
-                    DeriveShieldedFullViewingKey(pair.second, fvk);
-                    uint256 nf = wnote.note.GetNullifier(fvk.nk);
-                    mapNullifierToNoteIndex[nf] = i;
-                }
-            }
-
-            for (const CShieldedSpendDescription& spend : tx.vShieldedSpend)
-            {
-                std::map<uint256, size_t>::iterator it = mapNullifierToNoteIndex.find(spend.nullifier);
-                if (it != mapNullifierToNoteIndex.end())
-                {
-                    CShieldedWalletNote& wnote = vShieldedNotes[it->second];
-                    if (!wnote.fSpent)
-                    {
-                        wnote.fSpent = true;
-
-                        {
-                            CWalletDB walletdb(strWalletFile);
-                            walletdb.WriteShieldedNoteSpent(wnote.txhash, wnote.nPosition, true);
-                        }
-
-                        if (fDebug)
-                            printf("AddToWalletIfInvolvingMe() : shielded note spent by nullifier %s\n",
-                                   spend.nullifier.ToString().substr(0,10).c_str());
-                    }
-                }
-            }
+            for (std::vector<size_t>::const_iterator it =
+                     vSpentNoteIndices.begin(); it != vSpentNoteIndices.end(); ++it)
+                vShieldedNotes[*it].fSpent = true;
         }
 
         if (fExisted || fIsMine || fShieldedMine || IsMine(tx) || IsFromMe(tx))
@@ -1090,10 +1862,22 @@ bool CWallet::AddToWalletIfInvolvingMe(const CTransaction& tx, const CBlock* pbl
             if (pcblock)
                 wtx.SetMerkleBranch(pcblock);
 
-            return AddToWallet(wtx); //AddToWallet(wtx, hash);
+            if (!AddToWallet(wtx))
+            {
+                if (pErrorOut)
+                    *pErrorOut = "wallet transaction persistence failed";
+                return false;
+            }
+            return true;
         } else
         {
-            WalletUpdateSpent(tx);
+            std::string strSpentError;
+            if (!WalletUpdateSpentChecked(tx, false, strSpentError))
+            {
+                if (pErrorOut)
+                    *pErrorOut = strSpentError;
+                return false;
+            }
         };
     }
     return false;
@@ -1528,9 +2312,12 @@ bool CWalletTx::WriteToDisk()
 // Scan the block chain (starting in pindexStart) for transactions
 // from or to us. If fUpdate is true, found transactions that already
 // exist in the wallet will be updated.
-int CWallet::ScanForWalletTransactions(CBlockIndex* pindexStart, bool fUpdate)
+bool CWallet::ScanForWalletTransactionsChecked(CBlockIndex* pindexStart,
+                                               bool fUpdate, int& nFoundOut,
+                                               std::string& strErrorOut)
 {
-    int ret = 0;
+    nFoundOut = 0;
+    strErrorOut.clear();
 
     CBlockIndex* pindex = pindexStart;
     {
@@ -1538,6 +2325,11 @@ int CWallet::ScanForWalletTransactions(CBlockIndex* pindexStart, bool fUpdate)
         int dProgressTop;
         {
             LOCK(cs_main);
+            if (!pindexBest)
+            {
+                strErrorOut = "wallet rescan cannot run without a best-chain tip";
+                return false;
+            }
             dProgressTop = pindexBest->nHeight;
         }
 
@@ -1568,12 +2360,24 @@ int CWallet::ScanForWalletTransactions(CBlockIndex* pindexStart, bool fUpdate)
             }
 
             CBlock block;
-            block.ReadFromDisk(pindex, true);
+            if (!block.ReadFromDisk(pindex, true) ||
+                block.GetHash() != pindex->GetBlockHash())
+            {
+                strErrorOut = strprintf("wallet rescan could not read canonical block at height %d",
+                                        pindex->nHeight);
+                return false;
+            }
             BOOST_FOREACH(CTransaction& tx, block.vtx)
             {
-                LOCK(cs_wallet);
-                if (AddToWalletIfInvolvingMe(tx, &block, fUpdate))
-                    ret++;
+                std::string strWalletError;
+                if (AddToWalletIfInvolvingMe(tx, &block, fUpdate, false,
+                                             &strWalletError))
+                    nFoundOut++;
+                else if (!strWalletError.empty())
+                {
+                    strErrorOut = strWalletError;
+                    return false;
+                }
             }
             pindex = pindex->pnext;
 
@@ -1582,9 +2386,25 @@ int CWallet::ScanForWalletTransactions(CBlockIndex* pindexStart, bool fUpdate)
 
         }
 
+        if (fShutdown && pindex)
+        {
+            strErrorOut = "wallet rescan interrupted by shutdown";
+            return false;
+        }
+
         uiInterface.InitMessage(_("Rescanning complete."));
     }
-    return ret;
+    return true;
+}
+
+int CWallet::ScanForWalletTransactions(CBlockIndex* pindexStart, bool fUpdate)
+{
+    int nFound = 0;
+    std::string strError;
+    if (!ScanForWalletTransactionsChecked(pindexStart, fUpdate, nFound,
+                                          strError))
+        error("CWallet::ScanForWalletTransactions() : %s", strError.c_str());
+    return nFound;
 }
 
 /*
@@ -1685,6 +2505,15 @@ void CWalletTx::RelayWalletTransaction(CTxDB& txdb, bool fForceRelay)
     {
         if (!(tx.IsCoinBase() || tx.IsCoinStake()))
         {
+            const int nCandidateHeight = pindexBest ? pindexBest->nHeight + 1 : 0;
+            if ((tx.nVersion == ANON_TXN_VERSION &&
+                 (IsLegacyPrivacyPolicyDisabled() ||
+                  nCandidateHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)) ||
+                (IsLegacyShieldedTransactionVersion(tx.nVersion) &&
+                 (IsLegacyPrivacyPolicyDisabled() ||
+                  IsBoundaryAActiveAtHeight(nCandidateHeight))) ||
+                tx.nVersion == SHIELDED_TX_VERSION_VNEXT)
+                continue;
             uint256 hash = tx.GetHash();
             if (!txdb.ContainsTx(hash))
             {
@@ -1697,6 +2526,15 @@ void CWalletTx::RelayWalletTransaction(CTxDB& txdb, bool fForceRelay)
     }
     if (!(IsCoinBase() || IsCoinStake()))
     {
+        const int nCandidateHeight = pindexBest ? pindexBest->nHeight + 1 : 0;
+        if ((nVersion == ANON_TXN_VERSION &&
+             (IsLegacyPrivacyPolicyDisabled() ||
+              nCandidateHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)) ||
+            (IsLegacyShieldedTransactionVersion(nVersion) &&
+             (IsLegacyPrivacyPolicyDisabled() ||
+              IsBoundaryAActiveAtHeight(nCandidateHeight))) ||
+            nVersion == SHIELDED_TX_VERSION_VNEXT)
+            return;
         uint256 hash = GetHash();
         if (!txdb.ContainsTx(hash))
         {
@@ -2575,7 +3413,7 @@ bool CWallet::SelectCoinsMinConf(int64_t nTargetValue, unsigned int nSpendTime, 
     vector<pair<int64_t, pair<const CWalletTx*,unsigned int> > > vValue;
     int64_t nTotalLower = 0;
 
-    random_shuffle(vCoins.begin(), vCoins.end(), GetRandInt);
+    RandomShuffle(vCoins.begin(), vCoins.end());
 
     // move denoms down on the list
     sort(vCoins.begin(), vCoins.end(), less_then_denom);
@@ -3756,7 +4594,7 @@ bool CWallet::CreateStealthTransaction(CScript scriptPubKey, int64_t nValue, std
     vecSend.push_back(make_pair(scriptP, 0));
 
     // -- shuffle inputs, change output won't mix enough as it must be not fully random for plantext narrations
-    std::random_shuffle(vecSend.begin(), vecSend.end());
+    RandomShuffle(vecSend.begin(), vecSend.end());
 
     int nChangePos;
 
@@ -4236,6 +5074,24 @@ bool CWallet::GetStakeWeight(const CKeyStore& keystore, uint64_t& nMinWeight, ui
 bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int64_t nSearchInterval, int64_t nFees, CTransaction& txNew, CKey& key)
 {
     CBlockIndex* pindexPrev = pindexBest;
+
+    // Snapshot the UI-controlled mode once, then enforce the public release
+    // policy before mutating the caller's transaction or inspecting wallet
+    // state. Historical validation is intentionally unaffected.
+    StakingMode eStakingMode;
+    {
+        LOCK(cs_stakingMode);
+        eStakingMode = nStakingMode;
+    }
+    const int nCandidateHeight = pindexPrev ? pindexPrev->nHeight + 1 : 0;
+    if (!IsLegacyPrivateStakeCreationAllowed(eStakingMode,
+                                              nCandidateHeight))
+    {
+        if (fDebug && GetBoolArg("-printcoinstakedebug", false))
+            printf("CreateCoinStake() : legacy private staking creation is disabled by release policy\n");
+        return false;
+    }
+
     if (pindexPrev && pindexPrev->nHeight + 1 >= FORK_HEIGHT_DAG)
         return false;
     CBigNum bnTargetPerCoinDay;
@@ -4260,13 +5116,6 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
     set<pair<const CWalletTx*,unsigned int> > setCoins;
     int64_t nValueIn = 0;
     int64_t nCredit = 0;
-
-    // Cache staking mode (UI thread may change it concurrently)
-    StakingMode eStakingMode;
-    {
-        LOCK(cs_stakingMode);
-        eStakingMode = nStakingMode;
-    }
 
     bool fTryTransparent = (eStakingMode == STAKE_TRANSPARENT || eStakingMode == STAKE_COLD);
 
@@ -4354,7 +5203,8 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
         for (unsigned int n=0; n<min(nSearchInterval,(int64_t)nMaxStakeSearchInterval) && !fKernelFound && !fShutdown && pindexPrev == pindexBest; n++)
         {
             if (fDebug && GetBoolArg("-printcoinstakedebug"))
-                printf("CreateCoinStake() : searching backward in time from %ld for %d seconds to %d\n",txNew.nTime,nSearchInterval,nMaxStakeSearchInterval);
+                printf("CreateCoinStake() : searching backward in time from %u for %" PRId64 " seconds to %d\n",
+                       txNew.nTime, nSearchInterval, nMaxStakeSearchInterval);
             // Search backward in time from the given txNew timestamp
             // Search nSearchInterval seconds back up to nMaxStakeSearchInterval
             uint256 hashProofOfStake = 0, targetProofOfStake = 0;
@@ -4654,11 +5504,17 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
 
                         {
                             CIncrementalMerkleTree tree;
-                            txdb.ReadShieldedTree(tree);
+                            if (!txdb.ReadShieldedTree(tree))
+                                continue;
                             stakeSpend.anchor = tree.Root();
 
                             std::vector<CPedersenCommitment> vAllCommitments;
-                            txdb.ReadAllShieldedCommitments(vAllCommitments);
+                            uint64_t nGlobalOutputIndex = 0;
+                            std::string strSampleError;
+                            if (!txdb.ReadBoundedLelantusCommitments(
+                                    stakeSpend.cv, vAllCommitments,
+                                    nGlobalOutputIndex, strSampleError))
+                                continue;
 
                             CAnonymitySet anonSet;
                             if (!BuildAnonymitySet(stakeSpend.cv, vAllCommitments, stakeSpend.anchor,
@@ -4670,12 +5526,9 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                                 continue;
 
                             CLelantusProof lelantusProof;
-                            int64_t nGlobalOutputIndex = -1;
-                            for (size_t ci = 0; ci < vAllCommitments.size(); ci++)
-                            {
-                                if (vAllCommitments[ci] == stakeSpend.cv) { nGlobalOutputIndex = (int64_t)ci; break; }
-                            }
-                            int64_t nSerialIdx = (pindexPrev->nHeight >= FORK_HEIGHT_SERIAL_V2) ? nGlobalOutputIndex : -1;
+                            int64_t nSerialIdx =
+                                (pindexPrev->nHeight >= FORK_HEIGHT_SERIAL_V2)
+                                    ? (int64_t)nGlobalOutputIndex : -1;
                             uint256 serial = ComputeLelantusSerial(sk.skSpend, wnote.note.rho, stakeSpend.cv, nSerialIdx);
                             if (!CreateLelantusProof(anonSet, nRealIndex, wnote.note.nValue,
                                                       wnote.note.vchBlind, serial, lelantusProof))
@@ -5049,11 +5902,17 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
 
                             {
                                 CIncrementalMerkleTree tree;
-                                txdb.ReadShieldedTree(tree);
+                                if (!txdb.ReadShieldedTree(tree))
+                                    continue;
                                 stakeSpend.anchor = tree.Root();
 
                                 std::vector<CPedersenCommitment> vAllCommitments;
-                                txdb.ReadAllShieldedCommitments(vAllCommitments);
+                                uint64_t nGlobalOutputIndex = 0;
+                                std::string strSampleError;
+                                if (!txdb.ReadBoundedLelantusCommitments(
+                                        stakeSpend.cv, vAllCommitments,
+                                        nGlobalOutputIndex, strSampleError))
+                                    continue;
 
                                 CAnonymitySet anonSet;
                                 if (!BuildAnonymitySet(stakeSpend.cv, vAllCommitments, stakeSpend.anchor,
@@ -5064,12 +5923,9 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                                 if (nRealIndex < 0)
                                     continue;
 
-                                int64_t nGlobalOutputIndex = -1;
-                                for (size_t ci = 0; ci < vAllCommitments.size(); ci++)
-                                {
-                                    if (vAllCommitments[ci] == stakeSpend.cv) { nGlobalOutputIndex = (int64_t)ci; break; }
-                                }
-                                int64_t nSerialIdx = (pindexPrev->nHeight >= FORK_HEIGHT_SERIAL_V2) ? nGlobalOutputIndex : -1;
+                                int64_t nSerialIdx =
+                                    (pindexPrev->nHeight >= FORK_HEIGHT_SERIAL_V2)
+                                        ? (int64_t)nGlobalOutputIndex : -1;
                                 uint256 serial = ComputeLelantusSerial(skStake, wnote.note.rho, stakeSpend.cv, nSerialIdx);
                                 CLelantusProof lelantusProof;
                                 if (!CreateLelantusProof(anonSet, nRealIndex, wnote.note.nValue,
@@ -5632,7 +6488,8 @@ DBErrors CWallet::LoadWallet(bool& fFirstRunRet)
         return nLoadWalletRet;
     fFirstRunRet = !vchDefaultKey.IsValid();
 
-    NewThread(ThreadFlushWalletDB, &strWalletFile);
+    if (!StartWalletDBFlushThread(strWalletFile))
+        return DB_LOAD_FAIL;
     return DB_LOAD_OK;
 }
 
@@ -6115,10 +6972,12 @@ void CWallet::FixSpentCoins(int& nMismatchFound, int64_t& nBalanceInQuestion, bo
 }
 
 // ppcoin: disable transaction (only for coinstake)
-void CWallet::DisableTransaction(const CTransaction &tx)
+bool CWallet::DisableTransactionChecked(const CTransaction& tx,
+                                        std::string& strErrorOut)
 {
+    strErrorOut.clear();
     if (!tx.IsCoinStake() || !IsFromMe(tx))
-        return; // only disconnecting coinstake requires marking input unspent
+        return true; // only disconnecting coinstake requires marking input unspent
 
     LOCK(cs_wallet);
     BOOST_FOREACH(const CTxIn& txin, tx.vin)
@@ -6133,10 +6992,24 @@ void CWallet::DisableTransaction(const CTransaction &tx)
             if (txin.prevout.n < prev.vout.size() && IsMine(prev.vout[txin.prevout.n]))
             {
                 prev.MarkUnspent(txin.prevout.n);
-                prev.WriteToDisk();
+                if (!prev.WriteToDisk())
+                {
+                    strErrorOut = strprintf("failed to persist disconnected coinstake input %s:%u",
+                                            txin.prevout.hash.ToString().substr(0, 20).c_str(),
+                                            txin.prevout.n);
+                    return false;
+                }
             }
         }
     }
+    return true;
+}
+
+void CWallet::DisableTransaction(const CTransaction& tx)
+{
+    std::string strError;
+    if (!DisableTransactionChecked(tx, strError))
+        error("CWallet::DisableTransaction() : %s", strError.c_str());
 }
 
 bool CReserveKey::GetReservedKey(CPubKey& pubkey)
@@ -6320,82 +7193,60 @@ bool CWallet::UpdateAnonTransaction(CTxDB* ptxdb, const CTransaction& tx, const 
     if (fDebugRingSig)
         printf("UpdateAnonTransaction() tx: %s\n", txnHash.GetHex().c_str());
 
-    // -- update txns not received in a block
+    // Canonical ao/ki records are committed by ConnectBlock before wallet
+    // replay.  A repeated wallet callback may observe them, but must never
+    // author or repair chain state.
+    const int nNewHeight = GetBlockHeightFromHash(blockHash);
+    if (!ptxdb || blockHash == 0 || nNewHeight <= 0)
+        return false;
 
-    //LOCK2(cs_main, cs_wallet);
-
-    int nNewHeight = GetBlockHeightFromHash(blockHash);
-
-    CKeyImageSpent spentKeyImage;
     for (uint32_t i = 0; i < tx.vin.size(); ++i)
     {
         const CTxIn& txin = tx.vin[i];
-
         if (!txin.IsAnonInput())
             continue;
 
-        const CScript &s = txin.scriptSig;
-
-        std::vector<uint8_t> vchImage;
+        ec_point vchImage;
         txin.ExtractKeyImage(vchImage);
-
-        // -- get nCoinValue by reading first ring element
-        CPubKey pkRingCoin;
-        CAnonOutput ao;
-        CTxIndex txindex;
-        const unsigned char* pPubkeys = &s[2];
-        pkRingCoin = CPubKey(&pPubkeys[0 * ec_compressed_size], ec_compressed_size);
-        if (!ptxdb->ReadAnonOutput(pkRingCoin, ao))
+        CKeyImageSpent spentKeyImage;
+        if (ptxdb->ReadKeyImageStatus(vchImage, spentKeyImage) !=
+                TXDB_READ_FOUND ||
+            spentKeyImage.txnHash != txnHash ||
+            spentKeyImage.inputNo != i ||
+            !MoneyRange(spentKeyImage.nValue))
         {
-            printf("UpdateAnonTransaction(): Error input %u AnonOutput %s not found.\n", i, HexStr(pkRingCoin.Raw()).c_str());
+            printf("UpdateAnonTransaction(): input %u chain key image is missing/corrupt/mismatched.\n",
+                   i);
             return false;
-        };
-
-        int64_t nCoinValue = ao.nValue;
-
-
-        spentKeyImage.txnHash = txnHash;
-        spentKeyImage.inputNo = i;
-        spentKeyImage.nValue = nCoinValue;
-
-        if (!ptxdb->WriteKeyImage(vchImage, spentKeyImage))
-        {
-            printf("UpdateAnonTransaction(): Error input %d WriteKeyImage failed %s .\n", i, HexStr(vchImage).c_str());
-            return false;
-        };
-
-    };
+        }
+    }
 
     for (uint32_t i = 0; i < tx.vout.size(); ++i)
     {
         const CTxOut& txout = tx.vout[i];
-
         if (!txout.IsAnonOutput())
             continue;
 
-        const CScript &s = txout.scriptPubKey;
-
-        CPubKey pkCoin    = CPubKey(&s[2+1], ec_compressed_size);
+        const CPubKey pkCoin = txout.ExtractAnonPk();
+        const COutPoint expectedOutpoint(txnHash, i);
         CAnonOutput ao;
-        if (!ptxdb->ReadAnonOutput(pkCoin, ao))
+        if (ptxdb->ReadAnonOutputStatus(pkCoin, ao) !=
+                TXDB_READ_FOUND ||
+            ao.outpoint != expectedOutpoint ||
+            ao.nValue != txout.nValue ||
+            ao.nBlockHeight != nNewHeight ||
+            ao.nCompromised != 0)
         {
-            printf("ReadAnonOutput %d failed.\n", i);
+            printf("UpdateAnonTransaction(): output %u chain record is missing/corrupt/mismatched.\n",
+                   i);
             return false;
-        };
-
-        ao.nBlockHeight = nNewHeight;
-
-        if (!ptxdb->WriteAnonOutput(pkCoin, ao))
-        {
-            printf("ReadAnonOutput %d failed.\n", i);
-            return false;
-        };
+        }
 
         mapAnonOutputStats[ao.nValue].updateDepth(nNewHeight, ao.nValue);
-    };
+    }
 
     return true;
-};
+}
 
 
 bool CWallet::UndoAnonTransaction(const CTransaction& tx)
@@ -6409,7 +7260,6 @@ bool CWallet::UndoAnonTransaction(const CTransaction& tx)
     uint256 txnHash = tx.GetHash();
 
     CWalletDB walletdb(strWalletFile, "cr+");
-    CTxDB txdb("cr+");
 
     for (unsigned int i = 0; i < tx.vin.size(); ++i)
     {
@@ -6420,32 +7270,6 @@ bool CWallet::UndoAnonTransaction(const CTransaction& tx)
 
         ec_point vchImage;
         txin.ExtractKeyImage(vchImage);
-
-        CKeyImageSpent spentKeyImage;
-
-        bool fInMempool;
-        if (!GetKeyImage(&txdb, vchImage, spentKeyImage, fInMempool))
-        {
-            if (fDebugRingSig)
-                printf("Error: keyImage for input %d not found.\n", i);
-            continue;
-        };
-
-        // Possible?
-        if (spentKeyImage.txnHash != txnHash)
-        {
-            printf("Error: spentKeyImage for %s does not match txn %s.\n", HexStr(vchImage).c_str(), txnHash.ToString().c_str());
-            continue;
-        };
-
-        if (!txdb.EraseKeyImage(vchImage))
-        {
-            printf("EraseKeyImage %d failed.\n", i);
-            continue;
-        };
-
-        mapAnonOutputStats[spentKeyImage.nValue].decSpends(spentKeyImage.nValue);
-
 
         COwnedAnonOutput oao;
         if (walletdb.ReadOwnedAnonOutput(vchImage, oao))
@@ -6498,25 +7322,8 @@ bool CWallet::UndoAnonTransaction(const CTransaction& tx)
         if (!txout.IsAnonOutput())
             continue;
 
-        const CScript &s = txout.scriptPubKey;
-
-        CPubKey pkCoin    = CPubKey(&s[2+1], ec_compressed_size);
+        const CPubKey pkCoin = txout.ExtractAnonPk();
         CKeyID  ckCoinId  = pkCoin.GetID();
-
-        CAnonOutput ao;
-        if (!txdb.ReadAnonOutput(pkCoin, ao)) // read only to update mapAnonOutputStats
-        {
-            printf("ReadAnonOutput(): %u failed.\n", i);
-            return false;
-        };
-
-        mapAnonOutputStats[ao.nValue].decExists(ao.nValue);
-
-        if (!txdb.EraseAnonOutput(pkCoin))
-        {
-            printf("EraseAnonOutput(): %u failed.\n", i);
-            continue;
-        };
 
         // -- only in db if owned
         walletdb.EraseLockedAnonOutput(ckCoinId);
@@ -6543,7 +7350,7 @@ bool CWallet::UndoAnonTransaction(const CTransaction& tx)
     };
 
 
-    if (!walletdb.EraseTx(txnHash))
+    if (mapWallet.count(txnHash) && !walletdb.EraseTx(txnHash))
     {
         printf("UndoAnonTransaction() EraseTx %s failed.\n", txnHash.ToString().c_str());
         return false;
@@ -6571,37 +7378,41 @@ bool CWallet::ProcessAnonTransaction(CWalletDB* pwdb, CTxDB* ptxdb, const CTrans
         if (!txin.IsAnonInput())
             continue;
 
-        const CScript &s = txin.scriptSig;
-
-        std::vector<uint8_t> vchImage;
+        ec_point vchImage;
         txin.ExtractKeyImage(vchImage);
 
         CKeyImageSpent spentKeyImage;
-
-        bool fInMempool;
-        if (GetKeyImage(ptxdb, vchImage, spentKeyImage, fInMempool))
+        const TxDBReadStatus chainStatus =
+            ptxdb->ReadKeyImageStatus(vchImage, spentKeyImage);
+        if (chainStatus == TXDB_READ_ERROR)
         {
-            if (spentKeyImage.txnHash == txnHash
-                && spentKeyImage.inputNo == i)
+            printf("ProcessAnonTransaction(): chain key image is corrupt/unreadable.\n");
+            return false;
+        }
+        bool fHaveKeyImage = chainStatus == TXDB_READ_FOUND;
+        if (blockHash == 0)
+        {
+            // A locally-created tx reaches here before AcceptToMemoryPool; mempool
+            // admission owns the relay index. Verify the record only if admission
+            // already happened (inbound-relay path).
+            CKeyImageSpent relayKeyImage;
+            if (!fHaveKeyImage &&
+                mempool.lookupKeyImage(vchImage, relayKeyImage))
             {
-                if (fDebugRingSig)
-                    printf("found matching spent key image - txn has been processed before\n");
-                return UpdateAnonTransaction(ptxdb, tx, blockHash);
-            };
-
-            if (TxnHashInSystem(ptxdb, spentKeyImage.txnHash))
-            {
-                printf("ProcessAnonTransaction(): Error input %d keyimage %s already spent.\n", i, HexStr(vchImage).c_str());
-                return false;
-            };
-
-            if (fDebugRingSig)
-                printf("Input %d keyimage %s matches unknown txn %s, continuing.\n", i, HexStr(vchImage).c_str(), spentKeyImage.txnHash.ToString().c_str());
-
-            // -- keyimage is in db, but invalid as does not point to a known transaction
-            //    could be an old mempool keyimage
-            //    continue
-        };
+                spentKeyImage = relayKeyImage;
+                fHaveKeyImage = true;
+            }
+        }
+        if ((blockHash != 0 && !fHaveKeyImage) ||
+            (fHaveKeyImage &&
+             (spentKeyImage.txnHash != txnHash ||
+              spentKeyImage.inputNo != i ||
+              !MoneyRange(spentKeyImage.nValue))))
+        {
+            printf("ProcessAnonTransaction(): input %u key image is missing or mismatched.\n",
+                   i);
+            return false;
+        }
 
 
         COwnedAnonOutput oao;
@@ -6638,82 +7449,17 @@ bool CWallet::ProcessAnonTransaction(CWalletDB* pwdb, CTxDB* ptxdb, const CTrans
                 vUpdatedTxns.push_back(mi); // notify updates outside db txn
             };
 
-            oao.fSpent = true;
-            if (!pwdb->WriteOwnedAnonOutput(vchImage, oao))
+            if (!oao.fSpent)
             {
-                printf("ProcessAnonTransaction(): input %d WriteOwnedAnonOutput failed %s.\n", i, HexStr(vchImage).c_str());
-                return false;
-            };
-        };
-
-        int nRingSize = txin.ExtractRingSize();
-        if (nRingSize < (int)MIN_RING_SIZE
-            || nRingSize > (int)MAX_RING_SIZE)
-        {
-            printf("ProcessAnonTransaction(): Error input %d ringsize %d not in range [%d, %d].\n", i, nRingSize, MIN_RING_SIZE, MAX_RING_SIZE);
-            return false;
-        };
-
-        if (s.size() < 2 + (ec_compressed_size + ec_secret_size + ec_secret_size) * nRingSize)
-        {
-            printf("ProcessAnonTransaction(): Error input %d scriptSig too small.\n", i);
-            return false;
-        };
-
-        int64_t nCoinValue = -1;
-
-        CPubKey pkRingCoin;
-        CAnonOutput ao;
-        CTxIndex txindex;
-        const unsigned char* pPubkeys = &s[2];
-        for (uint32_t ri = 0; ri < (uint32_t)nRingSize; ++ri)
-        {
-            pkRingCoin = CPubKey(&pPubkeys[ri * ec_compressed_size], ec_compressed_size);
-            if (!ptxdb->ReadAnonOutput(pkRingCoin, ao))
-            {
-                printf("ProcessAnonTransaction(): Error input %u AnonOutput %s not found.\n", i, HexStr(pkRingCoin.Raw()).c_str());
-                return false;
-            };
-
-            if (nCoinValue == -1)
-            {
-                nCoinValue = ao.nValue;
-            } else
-            if (nCoinValue != ao.nValue)
-            {
-                printf("ProcessAnonTransaction(): Error input %u ring amount mismatch %" PRId64 ", %" PRId64 ".\n", i, nCoinValue, ao.nValue);
-                return false;
-            };
-
-            if (ao.nBlockHeight == 0
-                || nBestHeight - ao.nBlockHeight < MIN_ANON_SPEND_DEPTH)
-            {
-                printf("ProcessAnonTransaction(): Error input %u ring coin %u depth < MIN_ANON_SPEND_DEPTH.\n", i, ri);
-                return false;
-            };
-
-            // -- ring sig validation is done in CTransaction::CheckAnonInputs()
-        };
-
-        spentKeyImage.txnHash = txnHash;
-        spentKeyImage.inputNo = i;
-        spentKeyImage.nValue = nCoinValue;
-
-        if (blockHash != 0)
-        {
-            if (!ptxdb->WriteKeyImage(vchImage, spentKeyImage))
-            {
-                printf("ProcessAnonTransaction(): Error input %d WriteKeyImage failed %s .\n", i, HexStr(vchImage).c_str());
-                return false;
-            };
-        } else
-        {
-            // -- add keyImage to mempool, will be added to txdb in UpdateAnonTransaction
-            mempool.insertKeyImage(vchImage, spentKeyImage);
-        };
-
-        mapAnonOutputStats[spentKeyImage.nValue].incSpends(spentKeyImage.nValue);
-    };
+                oao.fSpent = true;
+                if (!pwdb->WriteOwnedAnonOutput(vchImage, oao))
+                {
+                    printf("ProcessAnonTransaction(): input %d WriteOwnedAnonOutput failed %s.\n", i, HexStr(vchImage).c_str());
+                    return false;
+                }
+            }
+        }
+    }
 
     ec_secret sSpendR;
     ec_secret sSpend;
@@ -6746,35 +7492,37 @@ bool CWallet::ProcessAnonTransaction(CWalletDB* pwdb, CTxDB* ptxdb, const CTrans
 
         const CScript &s = txout.scriptPubKey;
 
-        CPubKey pkCoin    = CPubKey(&s[2+1], ec_compressed_size);
+        const CPubKey pkCoin = txout.ExtractAnonPk();
         CKeyID  ckCoinId  = pkCoin.GetID();
 
         COutPoint outpoint = COutPoint(tx.GetHash(), i);
 
-        // -- add all anon outputs to txdb
         CAnonOutput ao;
-
-        if (ptxdb->ReadAnonOutput(pkCoin, ao)) // check if exists
+        const TxDBReadStatus outputStatus =
+            ptxdb->ReadAnonOutputStatus(pkCoin, ao);
+        if (outputStatus == TXDB_READ_ERROR)
         {
-            if (blockHash != 0)
+            printf("ProcessAnonTransaction(): chain anon output is corrupt/unreadable.\n");
+            return false;
+        }
+        if (blockHash != 0)
+        {
+            if (outputStatus != TXDB_READ_FOUND ||
+                ao.outpoint != outpoint ||
+                ao.nValue != txout.nValue ||
+                ao.nBlockHeight != nBlockHeight ||
+                ao.nCompromised != 0)
             {
-                if (fDebugRingSig)
-                    printf("Found existing anon output - assuming txn has been processed before.\n");
-                return UpdateAnonTransaction(ptxdb, tx, blockHash);
-            };
-            printf("Error: Found duplicate anon output.\n");
-            return false;
-        };
-
-        ao = CAnonOutput(outpoint, txout.nValue, nBlockHeight, 0);
-
-        if (!ptxdb->WriteAnonOutput(pkCoin, ao))
+                printf("ProcessAnonTransaction(): confirmed output %u chain record is missing/mismatched.\n",
+                       i);
+                return false;
+            }
+        }
+        else if (outputStatus == TXDB_READ_FOUND)
         {
-            printf("WriteAnonOutput failed for coin %s.\n", pkCoin.GetHash().ToString().c_str());
+            printf("ProcessAnonTransaction(): unconfirmed output conflicts with chain state.\n");
             return false;
-        };
-
-        mapAnonOutputStats[txout.nValue].addCoin(nBlockHeight, txout.nValue);
+        }
 
         memcpy(&vchEphemPK[0], &s[2+ec_compressed_size+2], ec_compressed_size);
 
@@ -7391,7 +8139,8 @@ int CWallet::PickAnonInputs(int rsType, int64_t nValue, int64_t& nFee, int nRing
         nFee = wtxNew.GetMinFee(0, GMF_ANON, nTotalBytes);
 
         if (fDebugRingSig)
-            printf("nValue + nFee: %d, nValue: %d, nAmountCheck: %d, nTotalBytes: %u\n", nValue + nFee, nValue, nAmountCheck, nTotalBytes);
+            printf("nValue + nFee: %" PRId64 ", nValue: %" PRId64 ", nAmountCheck: %" PRId64 ", nTotalBytes: %u\n",
+                   nValue + nFee, nValue, nAmountCheck, nTotalBytes);
 
         if (nValue + nFee > nAmountCheck)
         {
@@ -7412,7 +8161,7 @@ int CWallet::PickAnonInputs(int rsType, int64_t nValue, int64_t& nFee, int nRing
                     printf("%d%c", vecInputIndex[ic], ic ? ' ': '\n');
 
                 printf("nTotalBytes %u\n", nTotalBytes);
-                printf("nFee %d\n", nFee);
+                printf("nFee %" PRId64 "\n", nFee);
             };
 
             int64_t nTotalIn = 0;
@@ -7456,7 +8205,8 @@ int CWallet::PickAnonInputs(int rsType, int64_t nValue, int64_t& nFee, int nRing
             if (nTestFee > nFee)
             {
                 if (fDebugRingSig)
-                    printf("Try again - nTestFee > nFee %d, %d, nTotalBytes %u\n", nTestFee, nFee, nTotalBytes);
+                    printf("Try again - nTestFee > nFee %" PRId64 ", %" PRId64 ", nTotalBytes %u\n",
+                           nTestFee, nFee, nTotalBytes);
                 nExpectChangeOuts = vecChange.size();
                 return 2; // up changeOutSize
             };
@@ -7471,31 +8221,7 @@ int CWallet::PickAnonInputs(int rsType, int64_t nValue, int64_t& nFee, int nRing
 
 int CWallet::GetTxnPreImage(CTransaction& txn, uint256& hash)
 {
-    CHashWriter ss(SER_GETHASH, PROTOCOL_VERSION);
-    ss << txn.nVersion;
-    ss << txn.nTime;
-    for (uint32_t i = 0; i < txn.vin.size(); ++i)
-    {
-        const CTxIn& txin = txn.vin[i];
-        ss << txin.prevout; // keyimage only
-
-        int ringSize = txin.ExtractRingSize();
-
-        if (txin.scriptSig.size() < 2 + ringSize * ec_compressed_size)
-        {
-            printf("scriptSig is too small, input %u, ring size %d.\n", i, ringSize);
-            return 1;
-        };
-        ss.write((const char*)&txin.scriptSig[2], ringSize * ec_compressed_size);
-    };
-
-    for (uint32_t i = 0; i < txn.vout.size(); ++i)
-        ss << txn.vout[i];
-    ss << txn.nLockTime;
-
-    hash = ss.GetHash();
-
-    return 0;
+    return GetAnonTxnPreImage(txn, hash);
 };
 
 int CWallet::PickHidingOutputs(int64_t nValue, int nRingSize, CPubKey& pkCoin, int skip, uint8_t* p)
@@ -8043,6 +8769,7 @@ bool CWallet::CacheAnonStats()
     if (CountAllAnonOutputs(lOutputCounts, false) != 0)
     {
         printf("Error: CountAllAnonOutputs() failed.\n");
+        return false;
     } else
     {
         for (std::list<CAnonOutputCount>::iterator it = lOutputCounts.begin(); it != lOutputCounts.end(); ++it)
@@ -8059,6 +8786,12 @@ bool CWallet::SendINNToAnon(CStealthAddress& sxAddress, int64_t nValue, std::str
 {
     if (fDebugRingSig)
         printf("SendINNToAnon()\n");
+
+    if (IsLegacyPrivacyPolicyDisabled())
+    {
+        sError = "Legacy ANON creation is permanently disabled.";
+        return false;
+    }
 
     if (IsLocked())
     {
@@ -8116,7 +8849,7 @@ bool CWallet::SendINNToAnon(CStealthAddress& sxAddress, int64_t nValue, std::str
     };
 
     // -- shuffle outputs
-    std::random_shuffle(vecSend.begin(), vecSend.end());
+    RandomShuffle(vecSend.begin(), vecSend.end());
 
     int64_t nFeeRequired;
     int32_t nChangePos = -1;
@@ -8172,6 +8905,12 @@ bool CWallet::SendAnonToAnon(CStealthAddress& sxAddress, int64_t nValue, int nRi
 {
     if (fDebugRingSig)
         printf("SendAnonToAnon()\n");
+
+    if (IsLegacyPrivacyPolicyDisabled())
+    {
+        sError = "Legacy ANON creation is permanently disabled.";
+        return false;
+    }
 
     if (IsLocked())
     {
@@ -8269,6 +9008,12 @@ bool CWallet::SendAnonToINN(CStealthAddress& sxAddress, int64_t nValue, int nRin
     if (fDebug)
         printf("SendAnonToINN()\n");
 
+    if (IsLegacyPrivacyPolicyDisabled())
+    {
+        sError = "Legacy ANON creation is permanently disabled.";
+        return false;
+    }
+
     if (IsLocked())
     {
         sError = _("Error: Wallet locked, unable to create transaction.");
@@ -8353,7 +9098,7 @@ bool CWallet::SendAnonToINN(CStealthAddress& sxAddress, int64_t nValue, int nRin
 bool CWallet::AddAnonInputs(int rsType, int64_t nTotalOut, int nRingSize, std::vector<std::pair<CScript, int64_t> >&vecSend, std::vector<std::pair<CScript, int64_t> >&vecChange, CWalletTx& wtxNew, int64_t& nFeeRequired, bool fTestOnly, std::string& sError)
 {
     if (fDebugRingSig)
-        printf("AddAnonInputs() %d, %d, rsType:%d\n", nTotalOut, nRingSize, rsType);
+        printf("AddAnonInputs() %" PRId64 ", %d, rsType:%d\n", nTotalOut, nRingSize, rsType);
 
     std::list<COwnedAnonOutput> lAvailableCoins;
     if (ListUnspentAnonOutputs(lAvailableCoins, true) != 0)
@@ -8375,7 +9120,7 @@ bool CWallet::AddAnonInputs(int rsType, int64_t nTotalOut, int nRingSize, std::v
     if (fDebugRingSig)
     {
         for (std::map<int64_t, int>::iterator it = mOutputCounts.begin(); it != mOutputCounts.end(); ++it)
-            printf("mOutputCounts %ld %d\n", it->first, it->second);
+            printf("mOutputCounts %" PRId64 " %d\n", it->first, it->second);
     };
 
     int64_t nAmountCheck = 0;
@@ -8397,7 +9142,8 @@ bool CWallet::AddAnonInputs(int rsType, int64_t nTotalOut, int nRingSize, std::v
     };
 
     if (fDebugRingSig)
-        printf("%u coins available with ring size %d, total %d\n", lAvailableCoins.size(), nRingSize, nAmountCheck);
+        printf("%zu coins available with ring size %d, total %" PRId64 "\n",
+               lAvailableCoins.size(), nRingSize, nAmountCheck);
 
     // -- estimate fee
 
@@ -8447,7 +9193,8 @@ bool CWallet::AddAnonInputs(int rsType, int64_t nTotalOut, int nRingSize, std::v
     {
         CTxIn& txin = wtxNew.vin[ii];
         if (fDebugRingSig)
-            printf("pickedCoin %s %d\n", HexStr((*it)->vchImage).c_str(), (*it)->nValue);
+            printf("pickedCoin %s %" PRId64 "\n",
+                   HexStr((*it)->vchImage).c_str(), (*it)->nValue);
 
         // -- overload prevout to hold keyImage
         memcpy(txin.prevout.hash.begin(), &(*it)->vchImage[0], EC_SECRET_SIZE);
@@ -8606,7 +9353,7 @@ bool CWallet::AddAnonInputs(int rsType, int64_t nTotalOut, int nRingSize, std::v
                 if (pSigC.size() == EC_SECRET_SIZE)
                     memcpy(&txin.scriptSig[2], &pSigC[0], EC_SECRET_SIZE);
                 else
-                    printf("pSigC.size() : %d Invalid!!\n", pSigC.size());
+                    printf("pSigC.size() : %zu Invalid!!\n", pSigC.size());
 
                 // -- test verify
                 if (verifyRingSignatureAB(vchImageTest, preimage, nRingSize, pPubkeys, pSigC, pSigS) != 0)
@@ -9743,20 +10490,24 @@ bool CWallet::HaveShieldedViewingKey(const CShieldedPaymentAddress& addr) const
     return mapShieldedViewingKeys.count(addr) > 0;
 }
 
-bool CWallet::IsShieldedOutputMine(const CShieldedOutputDescription& output, CShieldedNote& noteOut) const
+bool CWallet::IsShieldedOutputMine(
+    const CShieldedOutputDescription& output, int nTxVersion,
+    CShieldedNote& noteOut) const
 {
     LOCK(cs_shielded);
 
-    // Legacy DSP public receiver mode serialized the full note in this field.
-    // New public receiver mode stores only the public address marker and keeps
-    // the note encrypted so independent amount privacy still holds.
     if (!output.vchRecipientScript.empty())
     {
-        try {
-            CDataStream ss(output.vchRecipientScript, SER_NETWORK, PROTOCOL_VERSION);
-            CShieldedNote plainNote;
-            ss >> plainNote;
+        ShieldedRecipientPayloadKind kind = SHIELDED_RECIPIENT_NONE;
+        CShieldedPaymentAddress publicAddr;
+        CShieldedNote plainNote;
+        if (!DecodeShieldedRecipientPayload(
+                nTxVersion, output.vchRecipientScript, kind,
+                publicAddr, plainNote))
+            return false;
 
+        if (kind == SHIELDED_RECIPIENT_LEGACY_NOTE)
+        {
             if (mapShieldedViewingKeys.count(plainNote.addr) > 0)
             {
                 uint256 expectedCmu = plainNote.GetCommitment();
@@ -9766,14 +10517,9 @@ bool CWallet::IsShieldedOutputMine(const CShieldedOutputDescription& output, CSh
                     return true;
                 }
             }
-        } catch (...) {
         }
-
-        try {
-            CDataStream ss(output.vchRecipientScript, SER_NETWORK, PROTOCOL_VERSION);
-            CShieldedPaymentAddress publicAddr;
-            ss >> publicAddr;
-
+        else if (kind == SHIELDED_RECIPIENT_ADDRESS)
+        {
             std::map<CShieldedPaymentAddress, CShieldedIncomingViewingKey>::const_iterator it =
                 mapShieldedViewingKeys.find(publicAddr);
             if (it != mapShieldedViewingKeys.end() &&
@@ -9785,7 +10531,6 @@ bool CWallet::IsShieldedOutputMine(const CShieldedOutputDescription& output, CSh
                 if (expectedCmu == output.cmu)
                     return true;
             }
-        } catch (...) {
         }
     }
 
@@ -9834,8 +10579,524 @@ int64_t CWallet::GetShieldedBalance() const
     return nBalance;
 }
 
-void CWallet::ScanBlockForShieldedNotes(const CBlock& block, int nHeight)
+bool CWallet::DisconnectShieldedBlockChecked(const CBlock& block,
+                                             const CBlockIndex* pindex,
+                                             std::string& strErrorOut)
 {
+    // No global tree is necessarily this block's predecessor; notes are erased by their
+    // creating tx hash and persisted key.
+    strErrorOut.clear();
+    std::set<uint256> setDAGSkippedTxs;
+    {
+        LOCK(cs_main);
+        if (!pindex || !pindex->phashBlock ||
+            pindex->GetBlockHash() != block.GetHash())
+        {
+            strErrorOut = "shielded wallet disconnect received a missing or mismatched block index";
+            return false;
+        }
+        if (pindex->nHeight < FORK_HEIGHT_SHIELDED)
+        {
+            strErrorOut = strprintf("shielded wallet disconnect received pre-activation block height %d",
+                                    pindex->nHeight);
+            return false;
+        }
+        if (pindex->nHeight >= FORK_HEIGHT_DAG)
+        {
+            CTxDB txdb("r");
+            const TxDBReadStatus status = txdb.ReadDAGSkippedTxsStatus(
+                block, setDAGSkippedTxs, strErrorOut);
+            if (status != TXDB_READ_FOUND)
+            {
+                if (strErrorOut.empty())
+                    strErrorOut = status == TXDB_READ_NOT_FOUND
+                        ? "exact connect-time DAG active set is missing"
+                        : "exact connect-time DAG active set is corrupt";
+                return false;
+            }
+        }
+    }
+
+    return DisconnectShieldedBlockChecked(block, pindex,
+                                           setDAGSkippedTxs,
+                                           strErrorOut);
+}
+
+bool CWallet::DisconnectShieldedBlockChecked(
+    const CBlock& block, const CBlockIndex* pindex,
+    const std::set<uint256>& setDAGSkippedTxs,
+    std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    {
+        LOCK(cs_main);
+        if (!pindex || !pindex->phashBlock ||
+            pindex->GetBlockHash() != block.GetHash())
+        {
+            strErrorOut = "shielded wallet recovery disconnect received a missing or mismatched block index";
+            return false;
+        }
+        if (pindex->nHeight < FORK_HEIGHT_SHIELDED)
+        {
+            strErrorOut = strprintf("shielded wallet recovery disconnect received pre-activation block height %d",
+                                    pindex->nHeight);
+            return false;
+        }
+        std::set<uint256> setBlockTxHashes;
+        for (std::vector<CTransaction>::const_iterator it = block.vtx.begin();
+             it != block.vtx.end(); ++it)
+            setBlockTxHashes.insert(it->GetHash());
+        for (std::set<uint256>::const_iterator it = setDAGSkippedTxs.begin();
+             it != setDAGSkippedTxs.end(); ++it)
+        {
+            if (!setBlockTxHashes.count(*it))
+            {
+                strErrorOut = "shielded wallet recovery plan names a skipped transaction absent from its block";
+                return false;
+            }
+        }
+    }
+
+    std::vector<const CTransaction*> vTransactions;
+    std::set<uint256> setActiveShieldedTxHashes;
+    for (std::vector<CTransaction>::const_iterator it = block.vtx.begin();
+         it != block.vtx.end(); ++it)
+    {
+        if (it->IsShielded() &&
+            !setDAGSkippedTxs.count(it->GetHash()))
+        {
+            vTransactions.push_back(&*it);
+            setActiveShieldedTxHashes.insert(it->GetHash());
+        }
+    }
+
+    LOCK2(cs_wallet, cs_shielded);
+    std::set<size_t> setCreatedNoteIndices;
+    for (size_t noteIndex = 0; noteIndex < vShieldedNotes.size(); ++noteIndex)
+    {
+        if (setActiveShieldedTxHashes.count(vShieldedNotes[noteIndex].txhash))
+            setCreatedNoteIndices.insert(noteIndex);
+    }
+
+    std::vector<size_t> vUnspentNoteIndices;
+    if (!CollectWalletShieldedSpends(*this, vTransactions, true,
+                                     vUnspentNoteIndices, strErrorOut))
+        return false;
+    vUnspentNoteIndices.erase(
+        std::remove_if(vUnspentNoteIndices.begin(), vUnspentNoteIndices.end(),
+            [&setCreatedNoteIndices](size_t i) {
+                return setCreatedNoteIndices.count(i) != 0;
+            }),
+        vUnspentNoteIndices.end());
+
+    if (fFileBacked &&
+        (!setCreatedNoteIndices.empty() || !vUnspentNoteIndices.empty()))
+    {
+        CWalletDB walletdb(strWalletFile, "r+");
+        if (!walletdb.TxnBegin())
+        {
+            strErrorOut = "could not begin shielded wallet disconnect transaction";
+            return false;
+        }
+        for (std::set<size_t>::const_iterator it = setCreatedNoteIndices.begin();
+             it != setCreatedNoteIndices.end(); ++it)
+        {
+            const CShieldedWalletNote& note = vShieldedNotes[*it];
+            if (!walletdb.EraseShieldedNote(note.txhash, note.nPosition))
+            {
+                walletdb.TxnAbort();
+                strErrorOut = strprintf("failed to erase disconnected shielded wallet note %s:%u",
+                                        note.txhash.ToString().substr(0, 20).c_str(),
+                                        note.nPosition);
+                return false;
+            }
+        }
+        for (std::vector<size_t>::const_iterator it =
+                 vUnspentNoteIndices.begin();
+             it != vUnspentNoteIndices.end(); ++it)
+        {
+            const CShieldedWalletNote& note = vShieldedNotes[*it];
+            if (!walletdb.WriteShieldedNoteSpent(note.txhash, note.nPosition,
+                                                 false))
+            {
+                walletdb.TxnAbort();
+                strErrorOut = strprintf("failed to restore disconnected shielded wallet note %s:%u",
+                                        note.txhash.ToString().substr(0, 20).c_str(),
+                                        note.nPosition);
+                return false;
+            }
+        }
+        if (!walletdb.TxnCommit())
+        {
+            strErrorOut = "failed to commit shielded wallet disconnect transaction";
+            return false;
+        }
+    }
+
+    for (std::vector<size_t>::const_iterator it = vUnspentNoteIndices.begin();
+         it != vUnspentNoteIndices.end(); ++it)
+        vShieldedNotes[*it].fSpent = false;
+    for (std::set<size_t>::const_reverse_iterator it =
+             setCreatedNoteIndices.rbegin();
+         it != setCreatedNoteIndices.rend(); ++it)
+        vShieldedNotes.erase(vShieldedNotes.begin() + *it);
+
+    return true;
+}
+
+bool CWallet::DisconnectShieldedBlockRecoveryChecked(
+    const CBlock& block, const CBlockIndex* pindex,
+    std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    int nDisconnectedHeight = -1;
+    {
+        LOCK(cs_main);
+        if (!pindex || !pindex->phashBlock ||
+            pindex->GetBlockHash() != block.GetHash())
+        {
+            strErrorOut = "shielded wallet recovery purge received a missing or mismatched block index";
+            return false;
+        }
+        if (pindex->nHeight < FORK_HEIGHT_SHIELDED)
+        {
+            strErrorOut = strprintf("shielded wallet recovery purge received pre-activation block height %d",
+                                    pindex->nHeight);
+            return false;
+        }
+        nDisconnectedHeight = pindex->nHeight;
+    }
+
+    // Pre-V3 sibling ordering may have changed: purge every raw shielded tx at this exact
+    // height (the height qualifier protects an older same-txid occurrence).
+    std::set<uint256> setRawShieldedTxHashes;
+    for (std::vector<CTransaction>::const_iterator it = block.vtx.begin();
+         it != block.vtx.end(); ++it)
+        if (it->IsShielded())
+            setRawShieldedTxHashes.insert(it->GetHash());
+
+    LOCK2(cs_wallet, cs_shielded);
+    std::set<size_t> setEraseIndices;
+    std::vector<CShieldedWalletNote> vRetainedNotes;
+    vRetainedNotes.reserve(vShieldedNotes.size());
+    for (size_t i = 0; i < vShieldedNotes.size(); ++i)
+    {
+        const CShieldedWalletNote& note = vShieldedNotes[i];
+        if (note.nHeight == nDisconnectedHeight &&
+            setRawShieldedTxHashes.count(note.txhash))
+            setEraseIndices.insert(i);
+        else
+            vRetainedNotes.push_back(note);
+    }
+    if (setEraseIndices.empty())
+        return true;
+
+    if (fFileBacked)
+    {
+        CWalletDB walletdb(strWalletFile, "r+");
+        if (!walletdb.TxnBegin())
+        {
+            strErrorOut = "could not begin shielded wallet recovery purge transaction";
+            return false;
+        }
+        for (std::set<size_t>::const_iterator it = setEraseIndices.begin();
+             it != setEraseIndices.end(); ++it)
+        {
+            const CShieldedWalletNote& note = vShieldedNotes[*it];
+            if (!walletdb.EraseShieldedNote(note.txhash, note.nPosition))
+            {
+                walletdb.TxnAbort();
+                strErrorOut = strprintf("failed to purge disconnected shielded wallet note %s:%u",
+                                        note.txhash.ToString().substr(0, 20).c_str(),
+                                        note.nPosition);
+                return false;
+            }
+        }
+        if (!walletdb.TxnCommit())
+        {
+            strErrorOut = "failed to commit shielded wallet recovery purge transaction";
+            return false;
+        }
+    }
+    vShieldedNotes.swap(vRetainedNotes);
+    return true;
+}
+
+bool CWallet::DisconnectAuxiliaryBlockRecoveryChecked(
+    const CBlock& block,
+    const std::set<uint256>& setDAGSkippedTxs,
+    std::string& strErrorOut)
+{
+    strErrorOut.clear();
+
+    // Bind replay to transactions that actually belong to this block.  The
+    // persisted effect-plan digest already commits to this set; validating it
+    // again here keeps the wallet method safe when called independently.
+    std::set<uint256> setBlockTxHashes;
+    for (std::vector<CTransaction>::const_iterator it = block.vtx.begin();
+         it != block.vtx.end(); ++it)
+        setBlockTxHashes.insert(it->GetHash());
+    for (std::set<uint256>::const_iterator it = setDAGSkippedTxs.begin();
+         it != setDAGSkippedTxs.end(); ++it)
+    {
+        if (!setBlockTxHashes.count(*it))
+        {
+            strErrorOut =
+                "auxiliary wallet recovery plan names a skipped transaction absent from its block";
+            return false;
+        }
+    }
+
+    // Same idempotent disconnect subset SyncWithWalletsChecked uses after a reorg. Must
+    // run at startup before the LevelDB outbox is acknowledged.
+    for (std::vector<CTransaction>::const_iterator it = block.vtx.begin();
+         it != block.vtx.end(); ++it)
+    {
+        if (setDAGSkippedTxs.count(it->GetHash()))
+            continue;
+
+        if (it->IsCoinStake())
+        {
+            std::string strDisableError;
+            if (!DisableTransactionChecked(*it, strDisableError))
+            {
+                strErrorOut = strDisableError;
+                return false;
+            }
+        }
+        if (it->nVersion == ANON_TXN_VERSION && !UndoAnonTransaction(*it))
+        {
+            strErrorOut = strprintf(
+                "failed to replay anonymous wallet disconnect %s",
+                it->GetHash().ToString().substr(0, 20).c_str());
+            return false;
+        }
+    }
+    return true;
+}
+
+bool CWallet::ReconcileShieldedNoteSpentStateChecked(
+    CTxDB& txdb, int nCanonicalHeight, std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    uint256 hashDurableBest;
+    if (!txdb.ReadHashBestChain(hashDurableBest))
+    {
+        strErrorOut = "could not read the durable best chain during shielded wallet reconciliation";
+        return false;
+    }
+
+    LOCK(cs_main);
+    if (!pindexBest || !pindexBest->phashBlock ||
+        pindexBest->nHeight != nCanonicalHeight ||
+        pindexBest->GetBlockHash() != hashDurableBest)
+    {
+        strErrorOut = "shielded wallet reconciliation target is not the durable canonical tip";
+        return false;
+    }
+    LOCK2(cs_wallet, cs_shielded);
+
+    std::vector<bool> vTargetSpent(vShieldedNotes.size(), false);
+    std::vector<bool> vDeterminate(vShieldedNotes.size(), false);
+    for (size_t i = 0; i < vShieldedNotes.size(); ++i)
+    {
+        const CShieldedWalletNote& note = vShieldedNotes[i];
+        std::set<uint256> setCandidates;
+        bool fHaveBound = false;
+        bool fHaveLegacyOwner = false;
+        bool fHaveLegacyCold = false;
+        if (!BuildWalletShieldedNullifierCandidates(
+                *this, note, setCandidates, fHaveBound,
+                fHaveLegacyOwner, fHaveLegacyCold, strErrorOut))
+            return false;
+
+        bool fFoundCanonicalSpend = false;
+        for (std::set<uint256>::const_iterator candidateIt =
+                 setCandidates.begin(); candidateIt != setCandidates.end();
+             ++candidateIt)
+        {
+            CShieldedNullifierSpent nfs;
+            const TxDBReadStatus status =
+                txdb.ReadShieldedNullifierStatus(*candidateIt, nfs);
+            if (status == TXDB_READ_ERROR)
+            {
+                strErrorOut = "canonical shielded nullifier record is corrupt or unreadable";
+                return false;
+            }
+            if (status == TXDB_READ_NOT_FOUND)
+                continue;
+
+            CTransaction txSpend;
+            CTxIndex txindex;
+            if (!txdb.ReadDiskTx(nfs.txnHash, txSpend, txindex) ||
+                txSpend.GetHash() != nfs.txnHash ||
+                nfs.nIndex >= txSpend.vShieldedSpend.size() ||
+                txSpend.vShieldedSpend[nfs.nIndex].nullifier != *candidateIt)
+            {
+                strErrorOut = "canonical shielded nullifier does not resolve to its recorded spend";
+                return false;
+            }
+            CBlock spendBlock;
+            if (!spendBlock.ReadFromDisk(txindex.pos.nFile,
+                                         txindex.pos.nBlockPos, true))
+            {
+                strErrorOut = "canonical shielded nullifier spend block is missing or corrupt";
+                return false;
+            }
+            std::map<uint256, CBlockIndex*>::const_iterator blockIt =
+                mapBlockIndex.find(spendBlock.GetHash());
+            if (blockIt == mapBlockIndex.end() || !blockIt->second ||
+                !blockIt->second->IsInMainChain() ||
+                blockIt->second->nHeight > nCanonicalHeight)
+            {
+                strErrorOut = "canonical shielded nullifier points outside the canonical chain";
+                return false;
+            }
+            bool fTxInBlock = false;
+            for (std::vector<CTransaction>::const_iterator txIt =
+                     spendBlock.vtx.begin(); txIt != spendBlock.vtx.end(); ++txIt)
+                if (txIt->GetHash() == nfs.txnHash)
+                    fTxInBlock = true;
+            std::set<uint256> setSkipped;
+            std::string strActiveSetError;
+            if (blockIt->second->nHeight >= FORK_HEIGHT_DAG &&
+                txdb.ReadDAGSkippedTxsStatus(
+                    spendBlock, setSkipped, strActiveSetError) !=
+                    TXDB_READ_FOUND)
+            {
+                strErrorOut = strprintf(
+                    "canonical shielded spend exact DAG active set is unreadable%s%s",
+                    strActiveSetError.empty() ? "" : ": ",
+                    strActiveSetError.c_str());
+                return false;
+            }
+            if (!fTxInBlock || setSkipped.count(nfs.txnHash))
+            {
+                strErrorOut = "canonical shielded nullifier points to a missing or DAG-inactive spend";
+                return false;
+            }
+            fFoundCanonicalSpend = true;
+        }
+
+        // A binding-era note is determined by its bound tag; an older note's absence is
+        // conclusive only if this wallet can derive its owner legacy tag.
+        const bool fCanProveUnspent =
+            (note.nHeight >= FORK_HEIGHT_NULLIFIER_BINDING && fHaveBound) ||
+            (note.nHeight < FORK_HEIGHT_NULLIFIER_BINDING &&
+             fHaveLegacyOwner &&
+             (nCanonicalHeight < FORK_HEIGHT_NULLIFIER_BINDING || fHaveBound));
+        (void)fHaveLegacyCold;
+        vDeterminate[i] = fFoundCanonicalSpend || fCanProveUnspent;
+        vTargetSpent[i] = fFoundCanonicalSpend ? true : note.fSpent;
+        if (fCanProveUnspent && !fFoundCanonicalSpend)
+            vTargetSpent[i] = false;
+    }
+
+    std::vector<size_t> vChangedIndices;
+    std::vector<CShieldedWalletNote> vReconciledNotes = vShieldedNotes;
+    for (size_t i = 0; i < vShieldedNotes.size(); ++i)
+    {
+        if (vDeterminate[i] && vTargetSpent[i] != vShieldedNotes[i].fSpent)
+        {
+            vChangedIndices.push_back(i);
+            vReconciledNotes[i].fSpent = vTargetSpent[i];
+        }
+    }
+    if (vChangedIndices.empty())
+        return true;
+
+    if (fFileBacked)
+    {
+        CWalletDB walletdb(strWalletFile, "r+");
+        if (!walletdb.TxnBegin())
+        {
+            strErrorOut = "could not begin shielded wallet spent-state reconciliation transaction";
+            return false;
+        }
+        for (std::vector<size_t>::const_iterator it = vChangedIndices.begin();
+             it != vChangedIndices.end(); ++it)
+        {
+            const CShieldedWalletNote& note = vShieldedNotes[*it];
+            if (!walletdb.WriteShieldedNoteSpent(
+                    note.txhash, note.nPosition, vTargetSpent[*it]))
+            {
+                walletdb.TxnAbort();
+                strErrorOut = strprintf("failed to reconcile shielded wallet note %s:%u",
+                                        note.txhash.ToString().substr(0, 20).c_str(),
+                                        note.nPosition);
+                return false;
+            }
+        }
+        if (!walletdb.TxnCommit())
+        {
+            strErrorOut = "failed to commit shielded wallet spent-state reconciliation";
+            return false;
+        }
+    }
+    vShieldedNotes.swap(vReconciledNotes);
+    return true;
+}
+
+bool CWallet::ApplyShieldedBlockRecoveryChecked(
+    const CBlock& block, const CBlockIndex* pindex,
+    const std::set<uint256>& setDAGSkippedTxs,
+    std::string& strErrorOut)
+{
+    std::set<uint256> setBlockTxHashes;
+    for (std::vector<CTransaction>::const_iterator it = block.vtx.begin();
+         it != block.vtx.end(); ++it)
+        setBlockTxHashes.insert(it->GetHash());
+    for (std::set<uint256>::const_iterator it = setDAGSkippedTxs.begin();
+         it != setDAGSkippedTxs.end(); ++it)
+    {
+        if (!setBlockTxHashes.count(*it))
+        {
+            strErrorOut = "shielded wallet recovery plan names a skipped transaction absent from its block";
+            return false;
+        }
+    }
+
+    bool fFoundOwnedOutput = false;
+    return ApplyWalletShieldedBlock(*this, block, pindex, NULL,
+                                    fFoundOwnedOutput, strErrorOut,
+                                    &setDAGSkippedTxs);
+}
+
+bool CWallet::ScanBlockForShieldedNotesChecked(const CBlock& block,
+                                               const CBlockIndex* pindex,
+                                               std::string& strErrorOut)
+{
+    bool fFoundOwnedOutput = false;
+    if (!ApplyWalletShieldedBlock(*this, block, pindex, NULL,
+                                  fFoundOwnedOutput, strErrorOut))
+        return false;
+
+    std::set<uint256> setDAGSkippedTxs;
+    {
+        LOCK(cs_main);
+        if (!pindex || !pindex->phashBlock ||
+            pindex->GetBlockHash() != block.GetHash())
+        {
+            strErrorOut = "shielded wallet scan received a missing or mismatched block index";
+            return false;
+        }
+        if (pindex->nHeight >= FORK_HEIGHT_DAG)
+        {
+            CTxDB txdb("r");
+            const TxDBReadStatus status = txdb.ReadDAGSkippedTxsStatus(
+                block, setDAGSkippedTxs, strErrorOut);
+            if (status != TXDB_READ_FOUND)
+            {
+                if (strErrorOut.empty())
+                    strErrorOut = status == TXDB_READ_NOT_FOUND
+                        ? "exact connect-time DAG active set is missing"
+                        : "exact connect-time DAG active set is corrupt";
+                return false;
+            }
+        }
+    }
+    const int nHeight = pindex->nHeight;
+
     // Deferred key imports (after cs_shielded release to preserve lock ordering)
     struct SPendingKeyImport {
         CKey key;
@@ -9848,110 +11109,10 @@ void CWallet::ScanBlockForShieldedNotes(const CBlock& block, int nHeight)
     { // Scope for locks
     LOCK2(cs_wallet, cs_shielded);
 
-    uint64_t nTreePosition = 0;
-    uint64_t nCurveLeafCount = 0;
-    {
-        CTxDB txdb("r");
-        txdb.ReadShieldedCommitmentCount(nTreePosition);
-
-        if (nHeight >= FORK_HEIGHT_FCMP)
-        {
-            CCurveTree tmpTree;
-            if (txdb.ReadCurveTree(tmpTree))
-                nCurveLeafCount = tmpTree.nLeafCount;
-        }
-    }
-    uint64_t nBlockOutputs = 0;
     for (const CTransaction& tx : block.vtx)
     {
-        if (tx.IsShielded())
-            nBlockOutputs += tx.vShieldedOutput.size();
-    }
-    if (nTreePosition >= nBlockOutputs)
-        nTreePosition -= nBlockOutputs;
-    else
-        nTreePosition = 0;
-
-    uint64_t nCurveLeafPosition = 0;
-    if (nHeight >= FORK_HEIGHT_FCMP)
-    {
-        if (nCurveLeafCount >= nBlockOutputs)
-            nCurveLeafPosition = nCurveLeafCount - nBlockOutputs;
-    }
-
-    for (const CTransaction& tx : block.vtx)
-    {
-        if (!tx.IsShielded())
+        if (!tx.IsShielded() || setDAGSkippedTxs.count(tx.GetHash()))
             continue;
-
-        for (unsigned int i = 0; i < tx.vShieldedOutput.size(); i++)
-        {
-            CShieldedNote noteOut;
-            if (IsShieldedOutputMine(tx.vShieldedOutput[i], noteOut))
-            {
-                uint256 txhash = tx.GetHash();
-                uint64_t pos = nTreePosition + i;
-                bool fDuplicate = false;
-                for (const CShieldedWalletNote& existing : vShieldedNotes)
-                {
-                    if (existing.txhash == txhash && existing.nPosition == pos)
-                    {
-                        fDuplicate = true;
-                        break;
-                    }
-                }
-                if (!fDuplicate)
-                {
-                    CShieldedWalletNote wnote;
-                    wnote.note = noteOut;
-                    wnote.txhash = txhash;
-                    wnote.nPosition = pos;
-                    wnote.fSpent = false;
-                    wnote.nHeight = nHeight;
-                    wnote.nLeafIndex = (nHeight >= FORK_HEIGHT_FCMP) ? (nCurveLeafPosition + i) : 0;
-                    vShieldedNotes.push_back(wnote);
-
-                    {
-                        CWalletDB walletdb(strWalletFile);
-                        walletdb.WriteShieldedNote(txhash, pos, noteOut, false, nHeight);
-                    }
-
-                    if (fDebug)
-                        printf("ScanBlockForShieldedNotes() : found note value=%" PRId64 " at height=%d pos=%u leafIndex=%lu\n",
-                               noteOut.nValue, nHeight, (unsigned int)pos, wnote.nLeafIndex);
-                }
-            }
-        }
-
-        nTreePosition += tx.vShieldedOutput.size();
-        if (nHeight >= FORK_HEIGHT_FCMP)
-            nCurveLeafPosition += tx.vShieldedOutput.size();
-
-        for (const CShieldedSpendDescription& spend : tx.vShieldedSpend)
-        {
-            for (CShieldedWalletNote& wnote : vShieldedNotes)
-            {
-                if (wnote.fSpent)
-                    continue;
-                for (const auto& keypair : mapShieldedSpendingKeys)
-                {
-                    CShieldedFullViewingKey fvk;
-                    DeriveShieldedFullViewingKey(keypair.second, fvk);
-                    uint256 nf = wnote.note.GetNullifier(fvk.nk);
-                    if (nf == spend.nullifier)
-                    {
-                        wnote.fSpent = true;
-
-                        {
-                            CWalletDB walletdb(strWalletFile);
-                            walletdb.WriteShieldedNoteSpent(wnote.txhash, wnote.nPosition, true);
-                        }
-
-                        break;
-                    }
-                }
-            }
-        }
 
         if (!vSilentPaymentKeys.empty() && tx.vin.size() > 0)
         {
@@ -10064,11 +11225,34 @@ void CWallet::ScanBlockForShieldedNotes(const CBlock& block, int nHeight)
     {
         if (!HaveKey(imp.pubkey.GetID()))
         {
-            AddKeyPubKey(imp.key, imp.pubkey);
+            if (!AddKeyPubKey(imp.key, imp.pubkey))
+            {
+                strErrorOut = strprintf("failed to import silent-payment key for output %u",
+                                        imp.idx);
+                return false;
+            }
             if (fDebug)
                 printf("ScanBlockForShieldedNotes() : imported silent payment spend key for output idx=%u\n", imp.idx);
         }
     }
+    return true;
+}
+
+void CWallet::ScanBlockForShieldedNotes(const CBlock& block, int nHeight)
+{
+    CBlockIndex* pindex = NULL;
+    {
+        LOCK(cs_main);
+        std::map<uint256, CBlockIndex*>::const_iterator mi =
+            mapBlockIndex.find(block.GetHash());
+        if (mi != mapBlockIndex.end() && mi->second &&
+            mi->second->nHeight == nHeight)
+            pindex = mi->second;
+    }
+
+    std::string strError;
+    if (!ScanBlockForShieldedNotesChecked(block, pindex, strError))
+        error("CWallet::ScanBlockForShieldedNotes() : %s", strError.c_str());
 }
 
 bool CWallet::AddSilentPaymentKey(CSilentPaymentKey&& key)

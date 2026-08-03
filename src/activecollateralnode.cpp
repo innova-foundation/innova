@@ -295,7 +295,9 @@ bool CActiveCollateralnode::Register(CTxIn vin, CService service, CKey keyCollat
     }
     if (dup) {
         retErrorMessage = "Failed, CN already in list, use a different pubkey";
-        printf("CActiveCollateralnode::Register() FAILED! CN Already in List. Change your collateral address to a different address for this CN.\n", retErrorMessage.c_str());
+        printf("CActiveCollateralnode::Register() FAILED! CN Already in List. "
+               "Change your collateral address to a different address for this CN: %s\n",
+               retErrorMessage.c_str());
         return false;
     }
     for (CCollateralNode& mn : vecCollateralnodes)

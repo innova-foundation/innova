@@ -58,6 +58,18 @@ void CDBEnv::Close()
     EnvShutdown();
 }
 
+bool CDBEnv::FlushLog()
+{
+    LOCK(cs_db);
+    if (!fDbEnvInit)
+        return false;
+    const int ret = dbenv.log_flush(NULL);
+    if (ret != 0)
+        return error("CDBEnv::FlushLog() : log_flush failed: %s (%d)",
+                     DbEnv::strerror(ret), ret);
+    return true;
+}
+
 bool CDBEnv::Open(fs::path pathEnv_)
 {
     if (fDbEnvInit)

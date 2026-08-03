@@ -17,10 +17,12 @@
 #include "base58.h"
 #include "dag.h"
 #include "finality.h"
+#include "privacy_vnext_ffi.h"
 
 #include <string>
 #include <sstream>
 #include <algorithm>
+#include <limits>
 #include <openssl/rand.h>
 
 using namespace json_spirit;
@@ -220,12 +222,74 @@ static void SetPublicShieldedRecipient(CShieldedOutputDescription& output,
     output.vchRecipientScript.assign(ss.begin(), ss.end());
 }
 
+static void RequireLegacyPrivacyCreationEnabled()
+{
+    const int nCandidateHeight = pindexBest ? pindexBest->nHeight + 1 : 0;
+    if (IsLegacyPrivacyPolicyDisabled() ||
+        IsBoundaryAActiveAtHeight(nCandidateHeight))
+        throw JSONRPCError(
+            RPC_METHOD_NOT_FOUND,
+            "Legacy shielded, NullStake, private-finality, and NullSend creation is disabled; privacy vNext is not active");
+}
+
+Value z_createiv5seed(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 0)
+        throw runtime_error(
+            "z_createiv5seed\n"
+            "Creates the wallet's encrypted generation-1 IV5 seed.\n"
+            "The wallet must be encrypted, unlocked, and backed up after creation.\n"
+            "This prepares key material only; IV5 transaction construction remains inactive.\n");
+
+    EnsureWalletIsUnlocked();
+
+    std::string error;
+    if (!pwalletMain->CreatePrivacyVNextSeed(error))
+        throw JSONRPCError(RPC_WALLET_ERROR, error);
+
+    Object result;
+    result.push_back(Pair("created", true));
+    result.push_back(Pair("generation", 1));
+    result.push_back(Pair("next_address_index", 0));
+    result.push_back(Pair("secret_exported", false));
+    result.push_back(Pair("transactions_active", false));
+    return result;
+}
+
+Value z_getnewiv5address(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 0)
+        throw runtime_error(
+            "z_getnewiv5address\n"
+            "Returns a new generation-1 IV5 address from the encrypted wallet seed.\n"
+            "The derived address is returned only after its index is durably committed.\n"
+            "This allocates an address only; IV5 transaction construction remains inactive.\n");
+
+    EnsureWalletIsUnlocked();
+
+    std::string address;
+    std::string error;
+    uint32_t index = 0;
+    if (!pwalletMain->GenerateNewPrivacyVNextAddress(0, address, index, error))
+        throw JSONRPCError(RPC_WALLET_ERROR, error);
+
+    Object result;
+    result.push_back(Pair("address", address));
+    result.push_back(Pair("address_type", 0));
+    result.push_back(Pair("address_index", (int64_t)index));
+    result.push_back(Pair("generation", 1));
+    result.push_back(Pair("transactions_active", false));
+    return result;
+}
+
 Value z_getnewaddress(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() > 0)
         throw runtime_error(
             "z_getnewaddress\n"
             "Returns a new shielded payment address.\n");
+
+    RequireLegacyPrivacyCreationEnabled();
 
     EnsureWalletIsUnlocked();
 
@@ -304,6 +368,8 @@ Value z_shield(const Array& params, bool fHelp)
             "Shield transparent coins to a shielded address.\n"
             "If zaddress is not specified, a new shielded address is created.\n"
             "\nCreates a shielded transaction with Pedersen commitments and Bulletproof range proofs.\n");
+
+    RequireLegacyPrivacyCreationEnabled();
 
     EnsureWalletIsUnlocked();
 
@@ -517,6 +583,8 @@ Value z_unshield(const Array& params, bool fHelp)
             "Unshield coins from a shielded address to a transparent address.\n"
             "\nCreates an unshielding transaction with Bulletproof range proofs.\n");
 
+    RequireLegacyPrivacyCreationEnabled();
+
     EnsureWalletIsUnlocked();
 
     if (!CZKContext::IsInitialized())
@@ -648,31 +716,33 @@ Value z_unshield(const Array& params, bool fHelp)
                 }
                 else
                 {
-                    txdb.ReadShieldedTree(tree);
-                    if (fDebug)
-                        printf("z_unshield: WARNING: no tree snapshot at height %d, using current\n", nAnchorHeight);
+                    throw JSONRPCError(RPC_DATABASE_ERROR,
+                        strprintf("Missing shielded-tree snapshot at anchor height %d; "
+                                  "reindex/resync required", nAnchorHeight));
                 }
             }
             else
             {
-                txdb.ReadShieldedTree(tree);
+                if (!txdb.ReadShieldedTree(tree))
+                    throw JSONRPCError(RPC_DATABASE_ERROR,
+                        "Missing current shielded tree; reindex/resync required");
             }
             spend.anchor = tree.Root();
 
             vector<CPedersenCommitment> vAllCommitments;
-            txdb.ReadAllShieldedCommitments(vAllCommitments);
+            uint64_t nGlobalOutputIndex = 0;
+            std::string strSampleError;
+            if (!txdb.ReadBoundedLelantusCommitments(
+                    spend.cv, vAllCommitments, nGlobalOutputIndex,
+                    strSampleError))
+                throw JSONRPCError(RPC_DATABASE_ERROR,
+                    strprintf("Unable to sample shielded commitments: %s; "
+                              "reindex/resync may be required",
+                              strSampleError.c_str()));
 
             if (fDebug)
-                printf("z_unshield: pool has %d commitments\n", (int)vAllCommitments.size());
-
-            bool fFound = false;
-            int64_t nGlobalOutputIndex = -1;
-            for (size_t ci = 0; ci < vAllCommitments.size(); ci++)
-            {
-                if (vAllCommitments[ci] == spend.cv) { fFound = true; nGlobalOutputIndex = (int64_t)ci; break; }
-            }
-            if (fDebug)
-                printf("z_unshield: spend cv found in pool: %s\n", fFound ? "YES" : "NO");
+                printf("z_unshield: uniformly sampled %d commitments; real index=%" PRIu64 "\n",
+                       (int)vAllCommitments.size(), nGlobalOutputIndex);
 
             CAnonymitySet anonSet;
             if (!BuildAnonymitySet(spend.cv, vAllCommitments, spend.anchor,
@@ -684,7 +754,8 @@ Value z_unshield(const Array& params, bool fHelp)
                 throw JSONRPCError(RPC_INTERNAL_ERROR, "Own commitment not found in Lelantus anonymity set");
 
             CLelantusProof lelantusProof;
-            int64_t nSerialIdx = (nCurrentHeight >= FORK_HEIGHT_SERIAL_V2) ? nGlobalOutputIndex : -1;
+            int64_t nSerialIdx = (nCurrentHeight >= FORK_HEIGHT_SERIAL_V2)
+                ? (int64_t)nGlobalOutputIndex : -1;
             uint256 serial = ComputeLelantusSerial(sk.skSpend, wnote.note.rho, spend.cv, nSerialIdx);
 
             if (!CreateLelantusProof(anonSet, nRealIndex, wnote.note.nValue,
@@ -714,8 +785,9 @@ Value z_unshield(const Array& params, bool fHelp)
             spend.curveTreeRoot = spendability.hashFCMPRoot;
 
             if (fDebug)
-                printf("z_unshield: created FCMP proof for spend %d (leaf index %ld, tree size %lu)\n",
-                       (int)i, nLeafIdx, spendability.fcmpTree.nLeafCount);
+                printf("z_unshield: created FCMP proof for spend %d (leaf index %lld, tree size %llu)\n",
+                       (int)i, (long long)nLeafIdx,
+                       (unsigned long long)spendability.fcmpTree.nLeafCount);
         }
 
         txNew.vShieldedSpend.push_back(spend);
@@ -867,6 +939,8 @@ Value z_send(const Array& params, bool fHelp)
             "\nMode 0: Fully transparent  Mode 7: Fully private (default)\n"
             "Mode 1: Hidden sender      Mode 4: Hidden amount\n"
             "Mode 3: Hidden parties      Mode 5: Hidden sender+amount\n");
+
+    RequireLegacyPrivacyCreationEnabled();
 
     EnsureWalletIsUnlocked();
 
@@ -1027,20 +1101,27 @@ Value z_send(const Array& params, bool fHelp)
                 if (txdb.ReadShieldedTreeAtBlock(pAnchorBlock->GetBlockHash(), oldTree))
                     tree = oldTree;
                 else
-                    txdb.ReadShieldedTree(tree);
+                    throw JSONRPCError(RPC_DATABASE_ERROR,
+                        "Missing shielded-tree anchor snapshot; reindex/resync required");
             }
             else
-                txdb.ReadShieldedTree(tree);
+            {
+                if (!txdb.ReadShieldedTree(tree))
+                    throw JSONRPCError(RPC_DATABASE_ERROR,
+                        "Missing current shielded tree; reindex/resync required");
+            }
             spend.anchor = tree.Root();
 
             vector<CPedersenCommitment> vAllCommitments;
-            txdb.ReadAllShieldedCommitments(vAllCommitments);
-
-            int64_t nGlobalOutputIndex = -1;
-            for (size_t ci = 0; ci < vAllCommitments.size(); ci++)
-            {
-                if (vAllCommitments[ci] == spend.cv) { nGlobalOutputIndex = (int64_t)ci; break; }
-            }
+            uint64_t nGlobalOutputIndex = 0;
+            std::string strSampleError;
+            if (!txdb.ReadBoundedLelantusCommitments(
+                    spend.cv, vAllCommitments, nGlobalOutputIndex,
+                    strSampleError))
+                throw JSONRPCError(RPC_DATABASE_ERROR,
+                    strprintf("Unable to sample shielded commitments: %s; "
+                              "reindex/resync may be required",
+                              strSampleError.c_str()));
 
             CAnonymitySet anonSet;
             if (!BuildAnonymitySet(spend.cv, vAllCommitments, spend.anchor,
@@ -1052,7 +1133,8 @@ Value z_send(const Array& params, bool fHelp)
                 throw JSONRPCError(RPC_INTERNAL_ERROR, "Own commitment not found in Lelantus anonymity set");
 
             CLelantusProof lelantusProof;
-            int64_t nSerialIdx = (nCurrentHeight >= FORK_HEIGHT_SERIAL_V2) ? nGlobalOutputIndex : -1;
+            int64_t nSerialIdx = (nCurrentHeight >= FORK_HEIGHT_SERIAL_V2)
+                ? (int64_t)nGlobalOutputIndex : -1;
             uint256 serial = ComputeLelantusSerial(sk.skSpend, wnote.note.rho, spend.cv, nSerialIdx);
 
             if (!CreateLelantusProof(anonSet, nRealIndex, wnote.note.nValue,
@@ -1076,20 +1158,29 @@ Value z_send(const Array& params, bool fHelp)
                 if (txdb.ReadShieldedTreeAtBlock(pAnchorBlock->GetBlockHash(), oldTree))
                     tree = oldTree;
                 else
-                    txdb.ReadShieldedTree(tree);
+                    throw JSONRPCError(RPC_DATABASE_ERROR,
+                        "Missing shielded-tree anchor snapshot; reindex/resync required");
             }
             else
-                txdb.ReadShieldedTree(tree);
+            {
+                if (!txdb.ReadShieldedTree(tree))
+                    throw JSONRPCError(RPC_DATABASE_ERROR,
+                        "Missing current shielded tree; reindex/resync required");
+            }
             spend.anchor = tree.Root();
             int64_t nSerialIdx2 = -1;
             if (nCurrentHeight >= FORK_HEIGHT_SERIAL_V2)
             {
-                vector<CPedersenCommitment> vAllCmts;
-                txdb.ReadAllShieldedCommitments(vAllCmts);
-                for (size_t ci = 0; ci < vAllCmts.size(); ci++)
-                {
-                    if (vAllCmts[ci] == spend.cv) { nSerialIdx2 = (int64_t)ci; break; }
-                }
+                uint64_t nIndexed = 0;
+                CPedersenCommitment indexedCommitment;
+                if (!txdb.ReadShieldedCommitmentIndex(spend.cv.vchCommitment, nIndexed) ||
+                    nIndexed > (uint64_t)std::numeric_limits<int64_t>::max() ||
+                    !txdb.ReadShieldedCommitment(nIndexed, indexedCommitment) ||
+                    !(indexedCommitment == spend.cv))
+                    throw JSONRPCError(RPC_DATABASE_ERROR,
+                        "Shielded commitment reverse index is missing/corrupt; "
+                        "reindex/resync required");
+                nSerialIdx2 = (int64_t)nIndexed;
             }
             spend.lelantusSerial = ComputeLelantusSerial(sk.skSpend, wnote.note.rho, spend.cv, nSerialIdx2);
         }
@@ -1107,14 +1198,15 @@ Value z_send(const Array& params, bool fHelp)
 
             if (!CreateFCMPProof(spendability.fcmpTree, (uint64_t)nLeafIdx, wnote.note.vchBlind,
                                   wnote.note.nValue, spend.cv, spend.fcmpProof))
-                throw JSONRPCError(RPC_INTERNAL_ERROR, strprintf("Failed to create FCMP proof for spend %d (leaf index %ld)",
-                                                                  (int)i, nLeafIdx));
+                throw JSONRPCError(RPC_INTERNAL_ERROR, strprintf("Failed to create FCMP proof for spend %d (leaf index %lld)",
+                                                                  (int)i, (long long)nLeafIdx));
 
             spend.curveTreeRoot = spendability.hashFCMPRoot;
 
             if (fDebug)
-                printf("z_send: created FCMP proof for spend %d (leaf index %ld, tree size %lu)\n",
-                       (int)i, nLeafIdx, spendability.fcmpTree.nLeafCount);
+                printf("z_send: created FCMP proof for spend %d (leaf index %lld, tree size %llu)\n",
+                       (int)i, (long long)nLeafIdx,
+                       (unsigned long long)spendability.fcmpTree.nLeafCount);
         }
 
         txNew.vShieldedSpend.push_back(spend);
@@ -1509,30 +1601,179 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
     Object obj;
 
     int nCurrentHeight = pindexBest ? pindexBest->nHeight : 0;
-    bool fActive = nCurrentHeight >= FORK_HEIGHT_SHIELDED;
+    const bool fLegacyConsensusActive =
+        nCurrentHeight >= FORK_HEIGHT_SHIELDED &&
+        !IsLegacyPrivacyPolicyDisabled() &&
+        !IsBoundaryAActiveAtHeight(nCurrentHeight);
+    const bool fActive = fLegacyConsensusActive;
+    PrivacyVNextAbiInfo vnextAbi;
+    const bool fVNextAbiLinked = LoadPrivacyVNextAbiInfo(vnextAbi);
+    const bool fVNextReady = IsShieldedVNextConsensusReady() &&
+                             fVNextAbiLinked &&
+                             vnextAbi.nConsensusActive != 0 &&
+                             vnextAbi.nConsensusCapabilities != 0;
 
     obj.push_back(Pair("shielded_active", fActive));
+    obj.push_back(Pair("legacy_shielded_consensus_active", fLegacyConsensusActive));
+    obj.push_back(Pair("legacy_shielded_creation_enabled", fActive));
     obj.push_back(Pair("fork_height", FORK_HEIGHT_SHIELDED));
     obj.push_back(Pair("current_height", nCurrentHeight));
-    obj.push_back(Pair("blocks_until_activation", fActive ? 0 : FORK_HEIGHT_SHIELDED - nCurrentHeight));
+    obj.push_back(Pair("blocks_until_activation",
+                       std::max(0, FORK_HEIGHT_SHIELDED - nCurrentHeight)));
+    obj.push_back(Pair("boundary_a_activation_height", FORK_HEIGHT_BOUNDARY_A));
+    obj.push_back(Pair("boundary_a_configured", IsBoundaryAConfigured()));
+    obj.push_back(Pair("boundary_a_active", IsBoundaryAActiveAtHeight(nCurrentHeight)));
+    obj.push_back(Pair("boundary_b_activation_height", FORK_HEIGHT_BOUNDARY_B));
+    obj.push_back(Pair("boundary_b_configured", IsBoundaryBConfigured()));
+    obj.push_back(Pair("boundary_b_active", IsBoundaryBActiveAtHeight(nCurrentHeight)));
+    obj.push_back(Pair("legacy_transaction_versions", std::string("2000-2007")));
+    obj.push_back(Pair("privacy_vnext_transaction_version", SHIELDED_TX_VERSION_VNEXT));
+    obj.push_back(Pair("privacy_vnext_consensus_ready", fVNextReady));
+    obj.push_back(Pair("privacy_vnext_abi_linked", fVNextAbiLinked));
+    obj.push_back(Pair("privacy_vnext_abi_status",
+                       fVNextAbiLinked ? std::string("linked_fail_closed")
+                                       : std::string("local_failure")));
+    obj.push_back(Pair("privacy_vnext_abi_error", vnextAbi.strError));
+    obj.push_back(Pair("privacy_vnext_abi_version",
+                       (int)vnextAbi.nAbiVersion));
+    obj.push_back(Pair("privacy_vnext_abi_sha256", vnextAbi.strAbiSha256));
+    obj.push_back(Pair("privacy_vnext_parameter_digest",
+                       vnextAbi.strParameterDigest));
+    obj.push_back(Pair("privacy_vnext_provenance_digest",
+                       vnextAbi.strProvenanceDigest));
+    obj.push_back(Pair("privacy_vnext_upstream_revision",
+                       vnextAbi.strUpstreamRevision));
+    obj.push_back(Pair("privacy_vnext_payload_schema",
+                       (int)vnextAbi.nPayloadSchema));
+    obj.push_back(Pair("privacy_vnext_implemented_capabilities",
+                       (int)vnextAbi.nImplementedCapabilities));
+    obj.push_back(Pair("privacy_vnext_consensus_capabilities",
+                       (int)vnextAbi.nConsensusCapabilities));
+    obj.push_back(Pair("privacy_vnext_tree_root", std::string()));
+    obj.push_back(Pair("privacy_vnext_tree_size", 0));
+    obj.push_back(Pair("privacy_vnext_max_inputs",
+                       (int)vnextAbi.nMaxInputs));
+    obj.push_back(Pair("privacy_vnext_max_outputs",
+                       (int)vnextAbi.nMaxOutputs));
+    obj.push_back(Pair("privacy_vnext_max_payload_bytes",
+                       (int)vnextAbi.nMaxPayloadBytes));
+    obj.push_back(Pair("privacy_vnext_supported_operations", Array()));
+    Array requiredOperations;
+    requiredOperations.push_back("shield");
+    requiredOperations.push_back("unshield");
+    requiredOperations.push_back("transfer");
+    requiredOperations.push_back("nullsend");
+    requiredOperations.push_back("delegation_create");
+    requiredOperations.push_back("m_of_n_mint");
+    requiredOperations.push_back("reclaim");
+    requiredOperations.push_back("conditional_migration");
+    obj.push_back(Pair("privacy_vnext_required_operations", requiredOperations));
+    obj.push_back(Pair("privacy_vnext_note_operations", requiredOperations));
+    Array finalityProfiles;
+    finalityProfiles.push_back("none");
+    finalityProfiles.push_back("nullstake_v1");
+    finalityProfiles.push_back("nullstake_v2");
+    finalityProfiles.push_back("nullstake_v3");
+    obj.push_back(Pair("privacy_vnext_finality_profiles", finalityProfiles));
+    Array authorizationModes;
+    authorizationModes.push_back("owner");
+    authorizationModes.push_back("cold_staker");
+    authorizationModes.push_back("m_of_n_public_signers");
+    authorizationModes.push_back("m_of_n_hidden_signers");
+    obj.push_back(Pair("privacy_vnext_authorization_modes", authorizationModes));
+    Array finalityObjects;
+    finalityObjects.push_back("none");
+    finalityObjects.push_back("vote");
+    finalityObjects.push_back("tally_share");
+    finalityObjects.push_back("certificate");
+    finalityObjects.push_back("committee_rotation");
+    obj.push_back(Pair("privacy_vnext_finality_objects", finalityObjects));
+    obj.push_back(Pair("privacy_vnext_required_privacy_modes",
+                       (int)SHIELDED_VNEXT_PRIVACY_MODE_COUNT));
+    Array requiredDisclosureModes;
+    for (int mode = PRIVACY_MODE_TRANSPARENT; mode <= PRIVACY_MODE_FULL; ++mode)
+        requiredDisclosureModes.push_back(mode);
+    obj.push_back(Pair("privacy_vnext_required_disclosure_modes",
+                       requiredDisclosureModes));
+    // Release-evidence field; fixed protocol contract.
+    obj.push_back(Pair("privacy_vnext_disclosure_modes",
+                       requiredDisclosureModes));
+    obj.push_back(Pair("privacy_vnext_required_nullstake_generations",
+                       (int)SHIELDED_VNEXT_NULLSTAKE_GENERATION_COUNT));
+    Array requiredNullStakeGenerations;
+    requiredNullStakeGenerations.push_back((int)SHIELDED_VNEXT_NULLSTAKE_V1);
+    requiredNullStakeGenerations.push_back((int)SHIELDED_VNEXT_NULLSTAKE_V2);
+    requiredNullStakeGenerations.push_back((int)SHIELDED_VNEXT_NULLSTAKE_V3);
+    obj.push_back(Pair("privacy_vnext_required_nullstake_generation_ids",
+                       requiredNullStakeGenerations));
+    obj.push_back(Pair("privacy_vnext_nullstake_generation_ids",
+                       requiredNullStakeGenerations));
+    obj.push_back(Pair("privacy_vnext_tree_layers",
+                       (int)SHIELDED_VNEXT_TREE_LAYERS));
+    obj.push_back(Pair("privacy_vnext_membership_scope",
+                       std::string("full_chain_finalized_root")));
+    obj.push_back(Pair("privacy_vnext_post_dag_staking_role",
+                       std::string("finality")));
+    obj.push_back(Pair("privacy_vnext_wallet_migration_state",
+                       std::string("unavailable")));
+    const bool fHaveVNextSeed = pwalletMain && pwalletMain->HasPrivacyVNextSeed();
+    const bool fVNextSeedUnlocked = pwalletMain &&
+                                    pwalletMain->IsPrivacyVNextSeedUnlocked();
+    obj.push_back(Pair("privacy_vnext_wallet_seed_present", fHaveVNextSeed));
+    obj.push_back(Pair("privacy_vnext_wallet_seed_unlocked", fVNextSeedUnlocked));
+    obj.push_back(Pair("privacy_vnext_wallet_seed_generation",
+                       fHaveVNextSeed ? 1 : 0));
+    obj.push_back(Pair("privacy_vnext_wallet_address_generation_available",
+                       fHaveVNextSeed && fVNextSeedUnlocked));
+    obj.push_back(Pair("privacy_vnext_wallet_key_management_state",
+                       !fHaveVNextSeed
+                           ? std::string("not_initialized")
+                           : (fVNextSeedUnlocked ? std::string("ready")
+                                                 : std::string("locked"))));
+    obj.push_back(Pair("legacy_privacy_retired",
+                       IsLegacyPrivacyPolicyDisabled() ||
+                       IsBoundaryAActiveAtHeight(nCurrentHeight)));
+    obj.push_back(Pair("legacy_privacy_encoding_quarantined",
+                       IsLegacyPrivacyPolicyDisabled() ||
+                       IsBoundaryAActiveAtHeight(nCurrentHeight)));
+    obj.push_back(Pair("privacy_protocol_status",
+                       (IsBoundaryBActiveAtHeight(nCurrentHeight) && fVNextReady)
+                           ? std::string("privacy_vnext_active")
+                           : (IsBoundaryAActiveAtHeight(nCurrentHeight)
+                                  ? std::string("legacy_frozen_privacy_vnext_unavailable")
+                                  : (IsLegacyPrivacyPolicyDisabled()
+                                         ? std::string("legacy_policy_disabled_privacy_vnext_unavailable")
+                                         : std::string("regtest_legacy_testing_only")))));
 
-    bool fDSPActive = nCurrentHeight >= FORK_HEIGHT_DSP;
+    bool fDSPActive = nCurrentHeight >= FORK_HEIGHT_DSP &&
+                      !IsLegacyPrivacyPolicyDisabled() &&
+                      !IsBoundaryAActiveAtHeight(nCurrentHeight);
     obj.push_back(Pair("dsp_active", fDSPActive));
     obj.push_back(Pair("dsp_fork_height", FORK_HEIGHT_DSP));
     obj.push_back(Pair("dsp_privacy_modes", 8));
 
     int64_t nPoolValue = 0;
+    bool fHavePoolValue = false;
     {
         CTxDB txdb("r");
-        txdb.ReadShieldedPoolValue(nPoolValue);
+        fHavePoolValue = txdb.ReadShieldedPoolValue(nPoolValue);
     }
+    if (fLegacyConsensusActive && (!fHavePoolValue || !MoneyRange(nPoolValue)))
+        throw JSONRPCError(RPC_DATABASE_ERROR,
+            "Shielded pool state is missing/corrupt; reindex/resync required");
     obj.push_back(Pair("shielded_pool_value", ValueFromAmount(nPoolValue)));
 
     CIncrementalMerkleTree tree;
+    bool fHaveTree = false;
     {
         CTxDB txdb("r");
-        txdb.ReadShieldedTree(tree);
+        fHaveTree = txdb.ReadShieldedTree(tree);
     }
+    if (fLegacyConsensusActive && !fHaveTree)
+        throw JSONRPCError(RPC_DATABASE_ERROR,
+            "Shielded commitment tree is missing; reindex/resync required");
+    obj.push_back(Pair("shielded_state_healthy",
+                       !fLegacyConsensusActive || (fHavePoolValue && fHaveTree)));
     obj.push_back(Pair("commitment_tree_size", (int)tree.nSize));
     if (tree.nSize > 0)
         obj.push_back(Pair("best_anchor", tree.Root().GetHex()));
@@ -1559,9 +1800,7 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
     }
 
     obj.push_back(Pair("phase", 2));
-    obj.push_back(Pair("proof_system", CZKContext::IsInitialized() ?
-        "Bulletproofs++ (Pedersen + secp256k1, no trusted setup)" :
-        "SHA256-simplified (ZK context not initialized)"));
+    obj.push_back(Pair("proof_system", std::string("legacy_historical_only")));
     obj.push_back(Pair("zk_context_active", CZKContext::IsInitialized()));
     obj.push_back(Pair("shielded_staking", false));
 
@@ -1592,6 +1831,8 @@ Value z_migrateanon(const Array& params, bool fHelp)
             "  \"txids\": [...]         (array) transaction IDs of migration transactions\n"
             "  \"zaddress\": \"...\"      (string) shielded address funds were sent to\n"
             "}\n");
+
+    RequireLegacyPrivacyCreationEnabled();
 
     EnsureWalletIsUnlocked();
 
@@ -1911,6 +2152,8 @@ Value z_nullsend(const Array& params, bool fHelp)
             "}\n"
         );
 
+    RequireLegacyPrivacyCreationEnabled();
+
     int nCurrentHeight = nBestHeight;
     if (nCurrentHeight < FORK_HEIGHT_NULLSEND)
         throw JSONRPCError(RPC_MISC_ERROR, strprintf("NullSend not active until block %d (current: %d)", FORK_HEIGHT_NULLSEND, nCurrentHeight));
@@ -2039,20 +2282,27 @@ Value z_nullsend(const Array& params, bool fHelp)
                 if (txdb.ReadShieldedTreeAtBlock(pAnchorBlock->GetBlockHash(), oldTree))
                     tree = oldTree;
                 else
-                    txdb.ReadShieldedTree(tree);
+                    throw JSONRPCError(RPC_DATABASE_ERROR,
+                        "Missing shielded-tree anchor snapshot; reindex/resync required");
             }
             else
-                txdb.ReadShieldedTree(tree);
+            {
+                if (!txdb.ReadShieldedTree(tree))
+                    throw JSONRPCError(RPC_DATABASE_ERROR,
+                        "Missing current shielded tree; reindex/resync required");
+            }
             spend.anchor = tree.Root();
 
             std::vector<CPedersenCommitment> vAllCommitments;
-            txdb.ReadAllShieldedCommitments(vAllCommitments);
-
-            int64_t nGlobalOutputIndex = -1;
-            for (size_t ci = 0; ci < vAllCommitments.size(); ci++)
-            {
-                if (vAllCommitments[ci] == spend.cv) { nGlobalOutputIndex = (int64_t)ci; break; }
-            }
+            uint64_t nGlobalOutputIndex = 0;
+            std::string strSampleError;
+            if (!txdb.ReadBoundedLelantusCommitments(
+                    spend.cv, vAllCommitments, nGlobalOutputIndex,
+                    strSampleError))
+                throw JSONRPCError(RPC_DATABASE_ERROR,
+                    strprintf("Unable to sample shielded commitments: %s; "
+                              "reindex/resync may be required",
+                              strSampleError.c_str()));
 
             CAnonymitySet anonSet;
             if (!BuildAnonymitySet(spend.cv, vAllCommitments, spend.anchor,
@@ -2067,7 +2317,8 @@ Value z_nullsend(const Array& params, bool fHelp)
                 throw JSONRPCError(RPC_INTERNAL_ERROR, "Real commitment not found in anonymity set");
 
             CLelantusProof proof;
-            int64_t nSerialIdx = (nCurrentHeight >= FORK_HEIGHT_SERIAL_V2) ? nGlobalOutputIndex : -1;
+            int64_t nSerialIdx = (nCurrentHeight >= FORK_HEIGHT_SERIAL_V2)
+                ? (int64_t)nGlobalOutputIndex : -1;
             uint256 serial = ComputeLelantusSerial(sk.skSpend, wnote.note.rho, spend.cv, nSerialIdx);
             if (!CreateLelantusProof(anonSet, nRealIndex, wnote.note.nValue,
                                       wnote.note.vchBlind, serial, proof))
@@ -2088,20 +2339,29 @@ Value z_nullsend(const Array& params, bool fHelp)
                 if (txdb.ReadShieldedTreeAtBlock(pAnchorBlock2->GetBlockHash(), oldTree))
                     tree = oldTree;
                 else
-                    txdb.ReadShieldedTree(tree);
+                    throw JSONRPCError(RPC_DATABASE_ERROR,
+                        "Missing shielded-tree anchor snapshot; reindex/resync required");
             }
             else
-                txdb.ReadShieldedTree(tree);
+            {
+                if (!txdb.ReadShieldedTree(tree))
+                    throw JSONRPCError(RPC_DATABASE_ERROR,
+                        "Missing current shielded tree; reindex/resync required");
+            }
             spend.anchor = tree.Root();
             int64_t nSerialIdx2 = -1;
             if (nCurrentHeight >= FORK_HEIGHT_SERIAL_V2)
             {
-                std::vector<CPedersenCommitment> vAllCmts;
-                txdb.ReadAllShieldedCommitments(vAllCmts);
-                for (size_t ci = 0; ci < vAllCmts.size(); ci++)
-                {
-                    if (vAllCmts[ci] == spend.cv) { nSerialIdx2 = (int64_t)ci; break; }
-                }
+                uint64_t nIndexed = 0;
+                CPedersenCommitment indexedCommitment;
+                if (!txdb.ReadShieldedCommitmentIndex(spend.cv.vchCommitment, nIndexed) ||
+                    nIndexed > (uint64_t)std::numeric_limits<int64_t>::max() ||
+                    !txdb.ReadShieldedCommitment(nIndexed, indexedCommitment) ||
+                    !(indexedCommitment == spend.cv))
+                    throw JSONRPCError(RPC_DATABASE_ERROR,
+                        "Shielded commitment reverse index is missing/corrupt; "
+                        "reindex/resync required");
+                nSerialIdx2 = (int64_t)nIndexed;
             }
             spend.lelantusSerial = ComputeLelantusSerial(sk.skSpend, wnote.note.rho, spend.cv, nSerialIdx2);
         }
@@ -2142,8 +2402,9 @@ Value z_nullsend(const Array& params, bool fHelp)
             spend.curveTreeRoot = spendability.hashFCMPRoot;
 
             if (fDebug)
-                printf("z_nullsend: created FCMP proof for spend %d (leaf index %ld, tree size %lu)\n",
-                       (int)nSpendIdx, nLeafIdx, spendability.fcmpTree.nLeafCount);
+                printf("z_nullsend: created FCMP proof for spend %d (leaf index %lld, tree size %llu)\n",
+                       (int)nSpendIdx, (long long)nLeafIdx,
+                       (unsigned long long)spendability.fcmpTree.nLeafCount);
         }
 
         myEntry.vMySpends.push_back(spend);
@@ -2359,7 +2620,14 @@ Value z_nullsendinfo(const Array& params, bool fHelp)
     LOCK(cs_nullsend);
 
     Object result;
-    result.push_back(Pair("nullsend_active", nBestHeight >= FORK_HEIGHT_NULLSEND));
+    const int nCandidateHeight =
+        nBestHeight == std::numeric_limits<int>::max()
+            ? nBestHeight : nBestHeight + 1;
+    const bool fNullSendActive = IsLegacyNullSendEnabledAtHeight(nBestHeight);
+    result.push_back(Pair("nullsend_active", fNullSendActive));
+    result.push_back(Pair("legacy_retired", !fNullSendActive &&
+                          (IsLegacyPrivacyPolicyDisabled() ||
+                           IsBoundaryAActiveAtHeight(nCandidateHeight))));
     result.push_back(Pair("fork_height", FORK_HEIGHT_NULLSEND));
     result.push_back(Pair("current_height", nBestHeight));
     result.push_back(Pair("active_sessions", (int)nullSendPool.mapSessions.size()));
@@ -2395,6 +2663,8 @@ Value n_delegatestake(const Array& params, bool fHelp)
             "2. amount          (numeric, optional, default=0) Max delegated amount (0=unlimited)\n"
             "3. staker_pubkey   (string, optional) Staker's transparent pubkey (for encryption)\n"
             "\nResult: hex-encoded delegation voucher\n");
+
+    RequireLegacyPrivacyCreationEnabled();
 
     if (!pwalletMain)
         throw JSONRPCError(RPC_WALLET_ERROR, "Wallet not available");
@@ -2497,6 +2767,8 @@ Value z_mintmofncoldstake(const Array& params, bool fHelp)
             "stakerpubkeys is a JSON array of N compressed (33-byte hex) staker public keys; threshold_m is M.\n"
             "The note is staking-delegated to any M of the set and owner-reclaimable after the inactivity\n"
             "timelock. Returns the txid, the cv3 leaf, and the delegation hash.\n");
+
+    RequireLegacyPrivacyCreationEnabled();
 
     EnsureWalletIsUnlocked();
     if (!CZKContext::IsInitialized())
@@ -2770,6 +3042,8 @@ Value z_reclaimmofncoldstake(const Array& params, bool fHelp)
             "Owner-reclaim an idle M-of-N cold-stake note back to a transparent address after the inactivity\n"
             "timelock. Spends the note by owner authority (no M-of-N quorum). Full-note reclaim (value - fee).\n");
 
+    RequireLegacyPrivacyCreationEnabled();
+
     EnsureWalletIsUnlocked();
     if (!CZKContext::IsInitialized())
         throw JSONRPCError(RPC_INTERNAL_ERROR, "ZK proof context not initialized");
@@ -2885,10 +3159,15 @@ Value z_reclaimmofncoldstake(const Array& params, bool fHelp)
                 if (txdb.ReadShieldedTreeAtBlock(pAnchorBlock->GetBlockHash(), oldTree))
                     tree = oldTree;
                 else
-                    txdb.ReadShieldedTree(tree);
+                    throw JSONRPCError(RPC_DATABASE_ERROR,
+                        "Missing shielded-tree anchor snapshot; reindex/resync required");
             }
             else
-                txdb.ReadShieldedTree(tree);
+            {
+                if (!txdb.ReadShieldedTree(tree))
+                    throw JSONRPCError(RPC_DATABASE_ERROR,
+                        "Missing current shielded tree; reindex/resync required");
+            }
             spend.anchor = tree.Root();
         }
 
@@ -3060,6 +3339,8 @@ Value n_revokecoldstake(const Array& params, bool fHelp)
             "\nNote: Revocation removes the delegation from the wallet.\n"
             "To prevent the staker from creating further blocks, spend the\n"
             "delegated notes using z_send (this invalidates the staker's FCMP proofs).\n");
+
+    RequireLegacyPrivacyCreationEnabled();
 
     if (!pwalletMain)
         throw JSONRPCError(RPC_WALLET_ERROR, "Wallet not available");

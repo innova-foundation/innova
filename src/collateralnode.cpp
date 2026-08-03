@@ -287,15 +287,21 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         bool stop;
         vRecv >> vin >> vchSig >> sigTime >> stop;
 
-        if (fDebugCN & fDebugSmsg) printf("iseep - Received: vin: %s sigTime: %lld stop: %s\n", vin.ToString().c_str(), sigTime, stop ? "true" : "false");
+        if (fDebugCN & fDebugSmsg) printf("iseep - Received: vin: %s sigTime: %lld stop: %s\n",
+                                          vin.ToString().c_str(), (long long)sigTime,
+                                          stop ? "true" : "false");
         // 3-minute future timestamp tolerance
         if (sigTime > pindexBest->GetBlockTime() + PING_SIG_TOLERANCE) {
-            if (fDebugCN) printf("iseep - Signature rejected, too far into the future %s, sig %d local %d \n", vin.ToString().c_str(), sigTime, GetAdjustedTime());
+            if (fDebugCN) printf("iseep - Signature rejected, too far into the future %s, sig %lld local %lld \n",
+                                 vin.ToString().c_str(), (long long)sigTime,
+                                 (long long)GetAdjustedTime());
             return;
         }
 
         if (sigTime <= pindexBest->GetBlockTime() - PING_SIG_TOLERANCE) {
-            if (fDebugCN) printf("iseep - Signature rejected, too far into the past %s - sig %d local %d \n", vin.ToString().c_str(), sigTime, GetAdjustedTime());
+            if (fDebugCN) printf("iseep - Signature rejected, too far into the past %s - sig %lld local %lld \n",
+                                 vin.ToString().c_str(), (long long)sigTime,
+                                 (long long)GetAdjustedTime());
             return;
         }
 
@@ -760,7 +766,9 @@ bool CheckCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn) {
     if (nAveragePayCount < 1) return true; // if the pay count is less than 1 just let it through
     int64_t maxed = nAveragePayCount * 12 / 8;
     if (mn.payCount > maxed) {
-        printf("CheckCNPayment() Current payCount of %s CN is %d - payCount Overall Average %d\n", address2.ToString().c_str(), mn.payCount, nAveragePayCount);
+        printf("CheckCNPayment() Current payCount of %s CN is %d - payCount Overall Average %lld\n",
+               address2.ToString().c_str(), mn.payCount,
+               (long long)nAveragePayCount);
         return false;
     }
 
@@ -788,7 +796,9 @@ bool CheckPoSCNPayment(CBlockIndex* pindex, int64_t value, CCollateralNode &mn) 
     if (nAveragePayCount < 1) return true; // if the pay count is less than 1 just let it through
     int64_t maxed = nAveragePayCount * 12 / 8;
     if (mn.payCount > maxed) {
-        printf("CheckPoSCNPayment() Current payCount of %s is %d - payCount Overall Average %d\n", address2.ToString().c_str(), mn.payCount, nAveragePayCount);
+        printf("CheckPoSCNPayment() Current payCount of %s is %d - payCount Overall Average %lld\n",
+               address2.ToString().c_str(), mn.payCount,
+               (long long)nAveragePayCount);
         return false;
     }
 
@@ -936,6 +946,7 @@ int CCollateralNode::SetPayRate(int nHeight)
              return matches;
          }
      }
+     return 0;
 }
 
 int CCollateralNode::GetPaymentAmount(const CBlockIndex *pindex, int nMaxBlocksToScanBack, int64_t &totalValue)
@@ -1150,7 +1161,9 @@ void CCollateralNode::UpdateLastPaidBlock(const CBlockIndex *pindex, int nMaxBlo
                         int lastPay = pindexBest->nHeight - BlockReading->nHeight;
                         bool validPayment = (txout.nValue >= (nExpectedPayment * 95 / 100));
                         if (fDebug) printf("CCollateralNode::UpdateLastPaidBlock -- found pow payment to %s at %d (%d blocks ago), amount=%lld, expected=%lld, valid=%s\n",
-                            address2.ToString().c_str(), BlockReading->nHeight, lastPay, txout.nValue, nExpectedPayment, validPayment ? "yes" : "no");
+                            address2.ToString().c_str(), BlockReading->nHeight, lastPay,
+                            (long long)txout.nValue, (long long)nExpectedPayment,
+                            validPayment ? "yes" : "no");
                         if (BlockReading->nHeight >= FORK_HEIGHT_CN_PAYMENT_VALIDATION && !validPayment) {
                             if (fDebug) printf("CCollateralNode::UpdateLastPaidBlock -- invalid payment amount, skipping\n");
                             continue;
@@ -1168,7 +1181,9 @@ void CCollateralNode::UpdateLastPaidBlock(const CBlockIndex *pindex, int nMaxBlo
                         int lastPay = pindexBest->nHeight - BlockReading->nHeight;
                         bool validPayment = (txout.nValue >= (nExpectedPayment * 95 / 100));
                         if (fDebug) printf("CCollateralNode::UpdateLastPaidBlock -- found pos payment to %s at %d (%d blocks ago), amount=%lld, expected=%lld, valid=%s\n",
-                            address2.ToString().c_str(), BlockReading->nHeight, lastPay, txout.nValue, nExpectedPayment, validPayment ? "yes" : "no");
+                            address2.ToString().c_str(), BlockReading->nHeight, lastPay,
+                            (long long)txout.nValue, (long long)nExpectedPayment,
+                            validPayment ? "yes" : "no");
                         if (BlockReading->nHeight >= FORK_HEIGHT_CN_PAYMENT_VALIDATION && !validPayment) {
                             if (fDebug) printf("CCollateralNode::UpdateLastPaidBlock -- invalid payment amount, skipping\n");
                             continue;
@@ -1504,7 +1519,7 @@ bool CCollateralnodePayments::ProcessBlock(int nBlockHeight)
         if(++c > (int)vecCollateralnodes.size()) break;
     }
 
-    std::random_shuffle ( vecCollateralnodes.begin(), vecCollateralnodes.end() );
+    RandomShuffle(vecCollateralnodes.begin(), vecCollateralnodes.end());
     for (CCollateralNode& mn : vecCollateralnodes) {
         bool found = false;
         for (CTxIn& vin : vecLastPayments)
@@ -1672,7 +1687,8 @@ void CCollateralNPayments::update(const CBlockIndex *pindex, bool force)
         }
 
     }
-    if (fDebug) printf("Calculating payrates (%d ms)\n",GetTimeMillis() - nStart);
+    if (fDebug) printf("Calculating payrates (%lld ms)\n",
+                       (long long)(GetTimeMillis() - nStart));
 
     // do pay rate loops, already do this in connectblock()
     for (CCollateralNode& mn : vecCollateralnodes)
@@ -1684,7 +1700,8 @@ void CCollateralNPayments::update(const CBlockIndex *pindex, bool force)
         mn.SetPayRate(pindex->nHeight);
     }
 
-    if (fDebug) printf("Finished CN payments. (%d ms)\n",GetTimeMillis() - nStart);
+    if (fDebug) printf("Finished CN payments. (%lld ms)\n",
+                       (long long)(GetTimeMillis() - nStart));
 
 }
 
@@ -1812,7 +1829,8 @@ bool CCollateralNPayments::initialize(const CBlockIndex *pindex)
         }
     }
     if (fDebug){
-        printf("finished at height %d\n-----------%d collaterals------------",nHeight,vCollaterals.size());
+        printf("finished at height %d\n-----------%zu collaterals------------",
+               nHeight, vCollaterals.size());
         for (CCollateralNCollateral& rec : vCollaterals)
         {
             CTxDestination address1;

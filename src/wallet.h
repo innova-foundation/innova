@@ -67,6 +67,30 @@ struct COutputEntry
     int vout;
 };
 
+// Deterministic output ranges assigned to the active shielded transactions in
+// one connected block.  The starting positions are derived from that block's
+// predecessor snapshots; skipped DAG transactions consume no positions.
+struct CWalletShieldedTxPosition
+{
+    uint256 hashTx;
+    uint64_t nMerklePosition;
+    uint64_t nCurveLeafPosition;
+    bool fHasCurveLeafPosition;
+
+    CWalletShieldedTxPosition()
+        : nMerklePosition(0), nCurveLeafPosition(0),
+          fHasCurveLeafPosition(false) {}
+};
+
+bool ComputeWalletShieldedTxPositions(
+    const CBlock& block,
+    const std::set<uint256>& setDAGSkippedTxs,
+    uint64_t nPredecessorMerkleSize,
+    bool fHavePredecessorCurveSize,
+    uint64_t nPredecessorCurveSize,
+    std::vector<CWalletShieldedTxPosition>& vPositionsOut,
+    std::string& strErrorOut);
+
 /** Address book data */
 class CAddressBookData
 {
@@ -213,6 +237,8 @@ public:
 
     std::map<CShieldedPaymentAddress, CShieldedSpendingKey> mapShieldedSpendingKeys;
     std::map<CShieldedPaymentAddress, CShieldedIncomingViewingKey> mapShieldedViewingKeys;
+    CPrivacyVNextSeedRecord privacyVNextSeedRecord;
+    CKeyingMaterial vchPrivacyVNextSeed;
 
     struct CShieldedWalletNote
     {
@@ -287,6 +313,8 @@ public:
         pwalletdbEncryption = NULL;
         nOrderPosNext = 0;
         nTimeFirstKey = 0;
+        privacyVNextSeedRecord.SetNull();
+        vchPrivacyVNextSeed.clear();
     }
 
     std::map<uint256, CWalletTx> mapWallet;
@@ -407,9 +435,17 @@ public:
 
     void MarkDirty();
     bool AddToWallet(const CWalletTx& wtxIn);
-    bool AddToWalletIfInvolvingMe(const CTransaction& tx, const CBlock* pblock, bool fUpdate = false, bool fFindBlock = false);
+    bool AddToWalletIfInvolvingMe(const CTransaction& tx, const CBlock* pblock,
+                                  bool fUpdate = false, bool fFindBlock = false,
+                                  std::string* pErrorOut = NULL,
+                                  const std::set<uint256>* pDAGSkippedTxs = NULL);
     bool EraseFromWallet(uint256 hash);
+    bool WalletUpdateSpentChecked(const CTransaction& prevout, bool fBlock,
+                                  std::string& strErrorOut);
     void WalletUpdateSpent(const CTransaction& prevout, bool fBlock = false);
+    bool ScanForWalletTransactionsChecked(CBlockIndex* pindexStart,
+                                          bool fUpdate, int& nFoundOut,
+                                          std::string& strErrorOut);
     int ScanForWalletTransactions(CBlockIndex* pindexStart, bool fUpdate = false);
     void ReacceptWalletTransactions();
     void ResendWalletTransactions(bool fForce = false);
@@ -485,13 +521,50 @@ public:
     bool CacheAnonStats();
 
     CShieldedPaymentAddress GenerateNewShieldedAddress();
+    bool LoadPrivacyVNextSeedRecord(
+        const CPrivacyVNextSeedRecord& record, std::string& strError);
+    bool UnlockPrivacyVNextSeed(
+        const CKeyingMaterial& vMasterKeyIn, std::string& strError);
+    bool CreatePrivacyVNextSeed(std::string& strError);
+    bool HasPrivacyVNextSeed() const;
+    bool IsPrivacyVNextSeedUnlocked() const;
+    bool GetPrivacyVNextSeed(CKeyingMaterial& seedOut) const;
+    bool GenerateNewPrivacyVNextAddress(
+        uint8_t addressType, std::string& addressOut,
+        uint32_t& indexOut, std::string& strError);
     bool AddShieldedSpendingKey(const CShieldedPaymentAddress& addr, const CShieldedSpendingKey& key);
     bool AddShieldedViewingKey(const CShieldedPaymentAddress& addr, const CShieldedIncomingViewingKey& ivk);
     bool HaveShieldedSpendingKey(const CShieldedPaymentAddress& addr) const;
     bool HaveShieldedViewingKey(const CShieldedPaymentAddress& addr) const;
-    bool IsShieldedOutputMine(const CShieldedOutputDescription& output, CShieldedNote& noteOut) const;
+    bool IsShieldedOutputMine(const CShieldedOutputDescription& output,
+                              int nTxVersion,
+                              CShieldedNote& noteOut) const;
     int64_t GetShieldedBalance() const;
+    bool ScanBlockForShieldedNotesChecked(const CBlock& block,
+                                          const CBlockIndex* pindex,
+                                          std::string& strErrorOut);
     void ScanBlockForShieldedNotes(const CBlock& block, int nHeight);
+    bool DisconnectShieldedBlockChecked(const CBlock& block,
+                                        const CBlockIndex* pindex,
+                                        std::string& strErrorOut);
+    bool DisconnectShieldedBlockChecked(
+        const CBlock& block, const CBlockIndex* pindex,
+        const std::set<uint256>& setDAGSkippedTxs,
+        std::string& strErrorOut);
+    bool DisconnectShieldedBlockRecoveryChecked(
+        const CBlock& block, const CBlockIndex* pindex,
+        std::string& strErrorOut);
+    bool DisconnectAuxiliaryBlockRecoveryChecked(
+        const CBlock& block,
+        const std::set<uint256>& setDAGSkippedTxs,
+        std::string& strErrorOut);
+    bool ApplyShieldedBlockRecoveryChecked(
+        const CBlock& block, const CBlockIndex* pindex,
+        const std::set<uint256>& setDAGSkippedTxs,
+        std::string& strErrorOut);
+    bool ReconcileShieldedNoteSpentStateChecked(
+        CTxDB& txdb, int nCanonicalHeight,
+        std::string& strErrorOut);
 
     bool CreateCollateralTransaction(CTransaction& txCollateral, std::string strReason);
     bool ConvertList(std::vector<CTxIn> vCoins, std::vector<int64_t>& vecAmounts);
@@ -625,6 +698,7 @@ public:
         }
         return nChange;
     }
+    bool SetBestChainChecked(const CBlockLocator& loc);
     void SetBestChain(const CBlockLocator& loc);
 
     DBErrors LoadWallet(bool& fFirstRunRet);
@@ -672,6 +746,8 @@ public:
     int GetVersion() { LOCK(cs_wallet); return nWalletVersion; }
 
     void FixSpentCoins(int& nMismatchSpent, int64_t& nBalanceInQuestion, bool fCheckOnly = false);
+    bool DisableTransactionChecked(const CTransaction& tx,
+                                   std::string& strErrorOut);
     void DisableTransaction(const CTransaction &tx);
 
     /** Address book entry changed.

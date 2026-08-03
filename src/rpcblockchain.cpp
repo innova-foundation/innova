@@ -12,10 +12,14 @@
 #include "dag.h"
 #include "base58.h"
 #include "net.h"
+#include "ringsig.h"
 #include <errno.h>
 
+#include <algorithm>
 #include <boost/filesystem.hpp>
 #include <fstream>
+#include <map>
+#include <set>
 
 using namespace json_spirit;
 using namespace std;
@@ -30,6 +34,24 @@ static std::string FinalityTierName(FinalityTier tier)
     if (tier == FINALITY_SOFT) return "soft";
     if (tier == FINALITY_TENTATIVE) return "tentative";
     return "none";
+}
+
+static int EpochStateSchemaForHeight(int nHeight)
+{
+    if (nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
+        return EPOCHSTATE_SCHEMA_V3;
+    if (nHeight >= FORK_HEIGHT_EPOCH_STATE_V2)
+        return EPOCHSTATE_SCHEMA_V2;
+    return 0;
+}
+
+static std::string EpochStateAnchorRuleForHeight(int nHeight)
+{
+    if (nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
+        return "canonical_epoch_end_boundary_v3";
+    if (nHeight >= FORK_HEIGHT_EPOCH_STATE_V2)
+        return "canonical_anchor_v2";
+    return "legacy_live_dag_tip";
 }
 
 double BitsToDouble(unsigned int nBits)
@@ -1008,6 +1030,374 @@ Value getblockchaininfo(const Array& params, bool fHelp)
     return obj;
 }
 
+namespace
+{
+struct V5PrototypeVersionInventory
+{
+    int64_t nTransactions;
+    int64_t nSpends;
+    int64_t nOutputs;
+    int64_t nPoolDelta;
+
+    V5PrototypeVersionInventory()
+        : nTransactions(0), nSpends(0), nOutputs(0), nPoolDelta(0)
+    {
+    }
+};
+
+static bool V5InventoryAddMoney(int64_t& total, int64_t value)
+{
+    if (total < 0 || value < 0 || value > MAX_MONEY - total)
+        return false;
+    total += value;
+    return true;
+}
+
+static bool V5InventoryLegacyRingValue(
+    const CTxIn& txin,
+    const std::map<std::vector<unsigned char>, int64_t>& anonOutputs,
+    int64_t& valueOut, std::string& errorOut)
+{
+    valueOut = -1;
+    errorOut.clear();
+    const int nRingSize = txin.ExtractRingSize();
+    if (nRingSize <= 0)
+    {
+        errorOut = "invalid v1000 ring size";
+        return false;
+    }
+
+    const CScript& script = txin.scriptSig;
+    const size_t ringSize = (size_t)nRingSize;
+    const size_t abSize = 2 + ec_secret_size +
+        (ec_secret_size + ec_compressed_size) * ringSize;
+    const bool isAB = nRingSize > 1 && script.size() == abSize;
+    const size_t standardMinimum = 2 +
+        (ec_compressed_size + ec_secret_size + ec_secret_size) * ringSize;
+    if (!isAB && script.size() < standardMinimum)
+    {
+        errorOut = "truncated v1000 ring script";
+        return false;
+    }
+    const size_t pubkeyOffset = isAB
+        ? 2 + ec_secret_size + ec_secret_size * ringSize
+        : 2;
+
+    for (size_t i = 0; i < ringSize; ++i)
+    {
+        const size_t offset = pubkeyOffset + i * ec_compressed_size;
+        if (offset > script.size() ||
+            script.size() - offset < ec_compressed_size)
+        {
+            errorOut = "truncated v1000 ring pubkey layout";
+            return false;
+        }
+        const std::vector<unsigned char> pubkey(
+            script.begin() + offset,
+            script.begin() + offset + ec_compressed_size);
+        const std::map<std::vector<unsigned char>, int64_t>::const_iterator it =
+            anonOutputs.find(pubkey);
+        if (it == anonOutputs.end())
+        {
+            errorOut = "v1000 ring references an unavailable output";
+            return false;
+        }
+        if (valueOut == -1)
+            valueOut = it->second;
+        else if (valueOut != it->second)
+        {
+            errorOut = "v1000 ring members disagree on value";
+            return false;
+        }
+    }
+    if (valueOut < 0 || !MoneyRange(valueOut))
+    {
+        errorOut = "v1000 ring value is outside the money range";
+        return false;
+    }
+    return true;
+}
+}
+
+Value getv5migrationinventory(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 1 || !params[0].get_bool())
+        throw runtime_error(
+            "getv5migrationinventory true\n"
+            "Performs a full, read-only replay inventory of the locked active "
+            "chain. The explicit true acknowledges that block connection is "
+            "paused for the duration.\n");
+
+    LOCK(cs_main);
+    if (!pindexBest || !pindexGenesisBlock)
+        throw JSONRPCError(RPC_DATABASE_ERROR,
+                           "active chain is unavailable");
+
+    std::vector<CBlockIndex*> chain;
+    for (CBlockIndex* pindex = pindexBest; pindex; pindex = pindex->pprev)
+        chain.push_back(pindex);
+    std::reverse(chain.begin(), chain.end());
+    if (chain.empty() || chain.front() != pindexGenesisBlock)
+        throw JSONRPCError(RPC_DATABASE_ERROR,
+                           "active chain does not reach the configured genesis");
+
+    std::map<std::vector<unsigned char>, int64_t> anonOutputs;
+    std::set<std::vector<unsigned char> > anonKeyImages;
+    std::set<uint256> prototypeNullifiers;
+    int64_t legacyTransactions = 0;
+    int64_t legacyOutputCount = 0;
+    int64_t legacyInputCount = 0;
+    int64_t legacyCreated = 0;
+    int64_t legacySpent = 0;
+    int64_t prototypeTransactions = 0;
+    int64_t prototypeSpendCount = 0;
+    int64_t prototypeOutputCount = 0;
+    int64_t prototypePool = 0;
+    int64_t preBindingSpendCount = 0;
+    int64_t boundSpendCount = 0;
+    int earliestPrototypeHeight = -1;
+    int latestPrototypeHeight = -1;
+    V5PrototypeVersionInventory versions[8];
+
+    CHashWriter activeChainDigest(SER_GETHASH, 0);
+    CHashWriter migrationSourceDigest(SER_GETHASH, 0);
+    activeChainDigest << std::string("Innova/V5/ActiveChainInventory/v1");
+    migrationSourceDigest << std::string("Innova/V5/MigrationSources/v1");
+    activeChainDigest << GetGenesisBlockHash();
+    migrationSourceDigest << GetGenesisBlockHash();
+
+    for (size_t chainPosition = 0; chainPosition < chain.size(); ++chainPosition)
+    {
+        CBlockIndex* pindex = chain[chainPosition];
+        if (pindex->nHeight != (int)chainPosition)
+            throw JSONRPCError(RPC_DATABASE_ERROR,
+                               "active chain height sequence is not contiguous");
+        CBlock block;
+        if (!block.ReadFromDisk(pindex, true))
+            throw JSONRPCError(
+                RPC_DATABASE_ERROR,
+                strprintf("cannot read active block at height %d", pindex->nHeight));
+        if (block.GetHash() != pindex->GetBlockHash())
+            throw JSONRPCError(
+                RPC_DATABASE_ERROR,
+                strprintf("active block hash mismatch at height %d", pindex->nHeight));
+
+        activeChainDigest << pindex->nHeight << pindex->GetBlockHash();
+        for (size_t txPosition = 0; txPosition < block.vtx.size(); ++txPosition)
+        {
+            const CTransaction& tx = block.vtx[txPosition];
+            const uint256 txid = tx.GetHash();
+            if (tx.nVersion == ANON_TXN_VERSION)
+            {
+                ++legacyTransactions;
+                migrationSourceDigest << pindex->nHeight << (uint32_t)txPosition
+                                      << tx.nVersion << txid;
+                for (size_t input = 0; input < tx.vin.size(); ++input)
+                {
+                    const CTxIn& txin = tx.vin[input];
+                    if (!txin.IsAnonInput())
+                        continue;
+                    std::vector<unsigned char> keyImage;
+                    txin.ExtractKeyImage(keyImage);
+                    if (!anonKeyImages.insert(keyImage).second)
+                        throw JSONRPCError(
+                            RPC_DATABASE_ERROR,
+                            strprintf("duplicate v1000 key image at height %d",
+                                      pindex->nHeight));
+                    int64_t value = -1;
+                    std::string error;
+                    if (!V5InventoryLegacyRingValue(
+                            txin, anonOutputs, value, error))
+                        throw JSONRPCError(
+                            RPC_DATABASE_ERROR,
+                            strprintf("%s at height %d tx %s input %u",
+                                      error.c_str(), pindex->nHeight,
+                                      txid.GetHex().c_str(), (unsigned int)input));
+                    if (!V5InventoryAddMoney(legacySpent, value))
+                        throw JSONRPCError(RPC_DATABASE_ERROR,
+                                           "v1000 spent-value overflow");
+                    ++legacyInputCount;
+                }
+                for (size_t output = 0; output < tx.vout.size(); ++output)
+                {
+                    const CTxOut& txout = tx.vout[output];
+                    if (!txout.IsAnonOutput())
+                        continue;
+                    const std::vector<unsigned char> pubkey =
+                        txout.ExtractAnonPk().Raw();
+                    if (!MoneyRange(txout.nValue) || txout.nValue < 0)
+                        throw JSONRPCError(RPC_DATABASE_ERROR,
+                                           "v1000 output value is invalid");
+                    if (!anonOutputs.insert(
+                            std::make_pair(pubkey, txout.nValue)).second)
+                        throw JSONRPCError(
+                            RPC_DATABASE_ERROR,
+                            strprintf("duplicate v1000 output key at height %d",
+                                      pindex->nHeight));
+                    if (!V5InventoryAddMoney(legacyCreated, txout.nValue))
+                        throw JSONRPCError(RPC_DATABASE_ERROR,
+                                           "v1000 created-value overflow");
+                    ++legacyOutputCount;
+                }
+                continue;
+            }
+
+            if (!IsLegacyShieldedTransactionVersion(tx.nVersion))
+                continue;
+
+            const int versionIndex = tx.nVersion - SHIELDED_TX_VERSION;
+            V5PrototypeVersionInventory& version = versions[versionIndex];
+            ++version.nTransactions;
+            version.nSpends += (int64_t)tx.vShieldedSpend.size();
+            version.nOutputs += (int64_t)tx.vShieldedOutput.size();
+            ++prototypeTransactions;
+            prototypeSpendCount += (int64_t)tx.vShieldedSpend.size();
+            prototypeOutputCount += (int64_t)tx.vShieldedOutput.size();
+            if (earliestPrototypeHeight < 0)
+                earliestPrototypeHeight = pindex->nHeight;
+            latestPrototypeHeight = pindex->nHeight;
+            migrationSourceDigest << pindex->nHeight << (uint32_t)txPosition
+                                  << tx.nVersion << txid;
+
+            if (tx.nValueBalance < -MAX_MONEY ||
+                tx.nValueBalance > MAX_MONEY)
+                throw JSONRPCError(RPC_DATABASE_ERROR,
+                                   "prototype value balance is invalid");
+            const int64_t poolDelta = -tx.nValueBalance;
+            if ((poolDelta > 0 && version.nPoolDelta > MAX_MONEY - poolDelta) ||
+                (poolDelta < 0 && version.nPoolDelta < -MAX_MONEY - poolDelta))
+                throw JSONRPCError(RPC_DATABASE_ERROR,
+                                   "prototype per-version pool delta overflow");
+            version.nPoolDelta += poolDelta;
+            if (poolDelta >= 0)
+            {
+                if (!V5InventoryAddMoney(prototypePool, poolDelta))
+                    throw JSONRPCError(RPC_DATABASE_ERROR,
+                                       "prototype pool value overflow");
+            }
+            else
+            {
+                const int64_t leavingPool = -poolDelta;
+                if (prototypePool < leavingPool)
+                    throw JSONRPCError(
+                        RPC_DATABASE_ERROR,
+                        strprintf("prototype pool underflow at height %d",
+                                  pindex->nHeight));
+                prototypePool -= leavingPool;
+            }
+
+            for (size_t spend = 0; spend < tx.vShieldedSpend.size(); ++spend)
+            {
+                const CShieldedSpendDescription& description =
+                    tx.vShieldedSpend[spend];
+                if (!prototypeNullifiers.insert(description.nullifier).second)
+                    throw JSONRPCError(
+                        RPC_DATABASE_ERROR,
+                        strprintf("duplicate prototype nullifier at height %d",
+                                  pindex->nHeight));
+                if (pindex->nHeight < FORK_HEIGHT_NULLIFIER_BINDING)
+                {
+                    ++preBindingSpendCount;
+                }
+                else
+                {
+                    if (!description.HasNullifierBinding())
+                        throw JSONRPCError(
+                            RPC_DATABASE_ERROR,
+                            strprintf("missing post-binding proof at height %d",
+                                      pindex->nHeight));
+                    ++boundSpendCount;
+                }
+            }
+        }
+    }
+
+    if (legacySpent > legacyCreated)
+        throw JSONRPCError(RPC_DATABASE_ERROR,
+                           "v1000 aggregate pool underflow");
+    const int64_t legacyUnclaimed = legacyCreated - legacySpent;
+    const bool ambiguousPrototype =
+        prototypePool > 0 && preBindingSpendCount > 0;
+
+    std::string prototypeClass = "zero";
+    if (prototypePool > 0)
+        prototypeClass = ambiguousPrototype
+            ? "ambiguous_pre_binding"
+            : "bound_nullifier";
+    else if (preBindingSpendCount > 0)
+        prototypeClass = "zero_with_pre_binding_history";
+
+    std::string inventoryGate = "clear";
+    if (ambiguousPrototype)
+        inventoryGate = "no_go_ambiguous_prototype";
+    else if (legacyUnclaimed > 0 && prototypePool > 0)
+        inventoryGate = "v1000_and_prototype_adapters_required";
+    else if (legacyUnclaimed > 0)
+        inventoryGate = "v1000_claim_required";
+    else if (prototypePool > 0)
+        inventoryGate = "prototype_adapter_required";
+
+    Object legacy;
+    legacy.push_back(Pair("transaction_count", legacyTransactions));
+    legacy.push_back(Pair("output_count", legacyOutputCount));
+    legacy.push_back(Pair("key_image_count", legacyInputCount));
+    legacy.push_back(Pair("created_atomic", legacyCreated));
+    legacy.push_back(Pair("spent_atomic", legacySpent));
+    legacy.push_back(Pair("unclaimed_atomic", legacyUnclaimed));
+    legacy.push_back(Pair("unclaimed", FormatMoney(legacyUnclaimed)));
+    legacy.push_back(Pair("claim_rule",
+                          std::string("exact_output_historical_key_image")));
+
+    Array versionArray;
+    for (int i = 0; i < 8; ++i)
+    {
+        Object version;
+        version.push_back(Pair("version", SHIELDED_TX_VERSION + i));
+        version.push_back(Pair("transaction_count", versions[i].nTransactions));
+        version.push_back(Pair("spend_count", versions[i].nSpends));
+        version.push_back(Pair("output_count", versions[i].nOutputs));
+        version.push_back(Pair("pool_delta_atomic", versions[i].nPoolDelta));
+        versionArray.push_back(version);
+    }
+
+    Object prototype;
+    prototype.push_back(Pair("classification", prototypeClass));
+    prototype.push_back(Pair("transaction_count", prototypeTransactions));
+    prototype.push_back(Pair("spend_count", prototypeSpendCount));
+    prototype.push_back(Pair("output_count", prototypeOutputCount));
+    prototype.push_back(Pair("pre_binding_spend_count", preBindingSpendCount));
+    prototype.push_back(Pair("bound_spend_count", boundSpendCount));
+    prototype.push_back(Pair("pool_atomic", prototypePool));
+    prototype.push_back(Pair("pool", FormatMoney(prototypePool)));
+    prototype.push_back(Pair("earliest_height", earliestPrototypeHeight));
+    prototype.push_back(Pair("latest_height", latestPrototypeHeight));
+    prototype.push_back(Pair("versions", versionArray));
+
+    const std::string network = fRegTest
+        ? "regtest" : (fTestNet ? "testnet" : "mainnet");
+    Object result;
+    result.push_back(Pair("schema_version", 1));
+    result.push_back(Pair("contract_sha256",
+                          std::string(iv5::PROTOCOL_CONTRACT_SHA256)));
+    result.push_back(Pair("network", network));
+    result.push_back(Pair("genesis_hash", GetGenesisBlockHash().GetHex()));
+    result.push_back(Pair("tip_height", pindexBest->nHeight));
+    result.push_back(Pair("tip_hash", pindexBest->GetBlockHash().GetHex()));
+    result.push_back(Pair("active_chain_digest",
+                          activeChainDigest.GetHash().GetHex()));
+    result.push_back(Pair("migration_source_digest",
+                          migrationSourceDigest.GetHash().GetHex()));
+    result.push_back(Pair("nullifier_binding_height",
+                          FORK_HEIGHT_NULLIFIER_BINDING));
+    result.push_back(Pair("integrity", std::string("exact")));
+    result.push_back(Pair("v1000", legacy));
+    result.push_back(Pair("prototype_2000_2007", prototype));
+    result.push_back(Pair("boundary_b_inventory_gate", inventoryGate));
+    result.push_back(Pair("boundary_b_inventory_clear",
+                          inventoryGate == "clear"));
+    return result;
+}
+
 Value getspvinfo(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() != 0)
@@ -1245,6 +1635,71 @@ Value getfinalityinfo(const Array& params, bool fHelp)
     int nPrivateVotes = 0;
     g_finalityTracker.GetEpochVoteModeCounts(nCurrentEpoch, nTransparentVotes, nPrivateVotes);
 
+    // Legacy live-tracker fields kept for compatibility; consensus uses the exact
+    // completed-epoch lookup and treats a missing state as an error, never height zero.
+    const int nCompletedEpoch = nCurrentEpoch - 1;
+    const int nCompletedHeight = nCompletedEpoch >= 0
+        ? GetEpochBoundaryHeight(nCurrentEpoch, nCurrentHeight) - 1 : -1;
+    const int nRequiredEpochSchema = nCompletedHeight >= 0
+        ? EpochStateSchemaForHeight(nCompletedHeight) : 0;
+    int nPersistedEpochSchema = 0;
+    bool fHaveEpochSchemaMarker = false;
+    TxDBReadStatus shieldedRecoveryStatus = TXDB_READ_NOT_FOUND;
+    TxDBReadStatus dagRecoveryStatus = TXDB_READ_NOT_FOUND;
+    {
+        CTxDB txdbEpochSchema("r");
+        fHaveEpochSchemaMarker = txdbEpochSchema.ReadEpochStateSchema(nPersistedEpochSchema);
+        CShieldedWalletRecoveryRecord shieldedRecovery;
+        CDAGActiveSetBuildRecord dagRecovery;
+        shieldedRecoveryStatus =
+            txdbEpochSchema.ReadShieldedWalletRecoveryStatus(shieldedRecovery);
+        dagRecoveryStatus = txdbEpochSchema.ReadDAGActiveSetBuild(dagRecovery);
+    }
+    int nDeterministicFinalizedHeight = 0;
+    const bool fHaveDeterministicFinalizedHeight = nCompletedEpoch >= 0 &&
+        g_dagManager.TryGetDeterministicFinalizedHeight(
+            nCompletedEpoch, nDeterministicFinalizedHeight);
+    CEpochState completedEpochState;
+    const bool fHaveCompletedEpochState = nCompletedEpoch >= 0 &&
+        g_dagManager.GetEpochState(nCompletedEpoch, completedEpochState);
+
+    std::string strEpochStateHealth = "ok";
+    if (fTestNet && FORK_HEIGHT_EPOCH_STATE_V3 == TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET)
+        strEpochStateHealth = "v3_activation_unset";
+    else if (nRequiredEpochSchema == 0)
+        strEpochStateHealth = "pre_activation";
+    else if (!fHaveEpochSchemaMarker)
+        strEpochStateHealth = "schema_marker_missing";
+    else if (nPersistedEpochSchema < nRequiredEpochSchema)
+        strEpochStateHealth = "schema_upgrade_required";
+    else if (!fHaveCompletedEpochState || !fHaveDeterministicFinalizedHeight)
+        strEpochStateHealth = "missing_completed_epoch";
+
+    std::string strMigrationState = "recovery_idle";
+    if (shieldedRecoveryStatus == TXDB_READ_ERROR ||
+        dagRecoveryStatus == TXDB_READ_ERROR)
+        strMigrationState = "corrupt_or_unreadable";
+    else if (shieldedRecoveryStatus == TXDB_READ_FOUND ||
+             dagRecoveryStatus == TXDB_READ_FOUND)
+        strMigrationState = "recovery_pending";
+
+    const bool fBoundaryAActive = IsBoundaryAActiveAtHeight(nCurrentHeight);
+    const bool fBoundaryBActive = IsBoundaryBActiveAtHeight(nCurrentHeight) &&
+                                  IsShieldedVNextConsensusReady();
+    const std::string strLegacyAnonStatus =
+        nCurrentHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION
+            ? "historical_only"
+            : (IsLegacyPrivacyPolicyDisabled()
+                   ? "policy_disabled_pending_retirement"
+                   : "regtest_historical_testing");
+    const std::string strPrivacyStatus = fBoundaryBActive
+        ? "privacy_vnext_active"
+        : (fBoundaryAActive
+               ? "legacy_frozen_privacy_vnext_unavailable"
+               : (IsLegacyPrivacyPolicyDisabled()
+                      ? "legacy_policy_disabled_privacy_vnext_unavailable"
+                      : "regtest_legacy_testing_only"));
+
     result.push_back(Pair("height", nCurrentHeight));
     result.push_back(Pair("epoch", nCurrentEpoch));
     result.push_back(Pair("epoch_interval", GetEpochInterval(nCurrentHeight)));
@@ -1265,16 +1720,95 @@ Value getfinalityinfo(const Array& params, bool fHelp)
     result.push_back(Pair("pending_votes", g_finalityTracker.GetPendingVoteCount()));
     result.push_back(Pair("pending_rewards", FormatMoney(g_finalityTracker.GetPendingRewardTotal())));
     result.push_back(Pair("money_supply", FormatMoney(nSupply)));
+    result.push_back(Pair("candidate_build_identifier", FormatFullVersion()));
+    result.push_back(Pair("boundary_a_activation_height", FORK_HEIGHT_BOUNDARY_A));
+    result.push_back(Pair("boundary_a_configured", IsBoundaryAConfigured()));
+    result.push_back(Pair("boundary_a_active", fBoundaryAActive));
+    result.push_back(Pair("boundary_b_activation_height", FORK_HEIGHT_BOUNDARY_B));
+    result.push_back(Pair("boundary_b_configured", IsBoundaryBConfigured()));
+    result.push_back(Pair("boundary_b_active", fBoundaryBActive));
+    result.push_back(Pair("serializer_schema_version",
+                          DAG_PARENT_CARRIER_SCHEMA_VERSION));
+    result.push_back(Pair("serializer_schema",
+                          fBoundaryAActive
+                              ? std::string(DAG_PARENT_CARRIER_SCHEMA)
+                              : std::string("legacy_v5_decode")));
+    result.push_back(Pair("boundary_a_carrier_schema",
+                          std::string(DAG_PARENT_CARRIER_SCHEMA)));
+    result.push_back(Pair("boundary_a_carrier_schema_version",
+                          DAG_PARENT_CARRIER_SCHEMA_VERSION));
+    result.push_back(Pair("boundary_a_carrier_tag",
+                          std::string("49444147")));
+    result.push_back(Pair("boundary_a_carrier_exactly_one", true));
+    result.push_back(Pair("boundary_a_carrier_max_parents",
+                          MAX_DAG_PARENTS));
+    result.push_back(Pair("boundary_a_dagknight_contract",
+                          std::string(DAGKNIGHT_ORDERING_CONTRACT)));
+    result.push_back(Pair("migration_state", strMigrationState));
+    result.push_back(Pair("legacy_anon_status", strLegacyAnonStatus));
+    result.push_back(Pair("privacy_protocol_status", strPrivacyStatus));
+    result.push_back(Pair("privacy_vnext_required_privacy_modes",
+                          (int)SHIELDED_VNEXT_PRIVACY_MODE_COUNT));
+    Array requiredDisclosureModes;
+    for (int mode = PRIVACY_MODE_TRANSPARENT; mode <= PRIVACY_MODE_FULL; ++mode)
+        requiredDisclosureModes.push_back(mode);
+    result.push_back(Pair("privacy_vnext_required_disclosure_modes",
+                          requiredDisclosureModes));
+    result.push_back(Pair("privacy_vnext_disclosure_modes",
+                          requiredDisclosureModes));
+    result.push_back(Pair("privacy_vnext_required_nullstake_generations",
+                          (int)SHIELDED_VNEXT_NULLSTAKE_GENERATION_COUNT));
+    Array requiredNullStakeGenerations;
+    requiredNullStakeGenerations.push_back((int)SHIELDED_VNEXT_NULLSTAKE_V1);
+    requiredNullStakeGenerations.push_back((int)SHIELDED_VNEXT_NULLSTAKE_V2);
+    requiredNullStakeGenerations.push_back((int)SHIELDED_VNEXT_NULLSTAKE_V3);
+    result.push_back(Pair("privacy_vnext_required_nullstake_generation_ids",
+                          requiredNullStakeGenerations));
+    result.push_back(Pair("privacy_vnext_nullstake_generation_ids",
+                          requiredNullStakeGenerations));
+    result.push_back(Pair("privacy_vnext_tree_layers",
+                          (int)SHIELDED_VNEXT_TREE_LAYERS));
+    result.push_back(Pair("privacy_vnext_membership_scope",
+                          std::string("full_chain_finalized_root")));
+    result.push_back(Pair("privacy_vnext_post_dag_staking_role",
+                          std::string("finality")));
+    result.push_back(Pair("epoch_state_health", strEpochStateHealth));
+    result.push_back(Pair("epoch_state_schema_version", nPersistedEpochSchema));
+    result.push_back(Pair("epoch_state_required_schema_version", nRequiredEpochSchema));
+    result.push_back(Pair("epoch_state_schema_marker_present", fHaveEpochSchemaMarker));
+    result.push_back(Pair("epoch_state_anchor_rule",
+                          EpochStateAnchorRuleForHeight(nCurrentHeight)));
+    result.push_back(Pair("epoch_state_records",
+                          (int)g_dagManager.GetLoadedEpochStateCount()));
+    result.push_back(Pair("epoch_state_latest_completed_epoch", nCompletedEpoch));
+    result.push_back(Pair("epoch_state_digest", fHaveCompletedEpochState
+                          ? completedEpochState.GetDigest().GetHex() : uint256(0).GetHex()));
+    result.push_back(Pair("epoch_curve_root", fHaveCompletedEpochState
+                          ? completedEpochState.hashCurveRoot.GetHex() : uint256(0).GetHex()));
+    result.push_back(Pair("epoch_nullifier_root", fHaveCompletedEpochState
+                          ? completedEpochState.hashNullifierRoot.GetHex() : uint256(0).GetHex()));
+    result.push_back(Pair("epoch_vote_set_root", fHaveCompletedEpochState
+                          ? completedEpochState.hashVoteSetRoot.GetHex() : uint256(0).GetHex()));
+    result.push_back(Pair("deterministic_finalized_height_available",
+                          fHaveDeterministicFinalizedHeight));
+    result.push_back(Pair("deterministic_finalized_height",
+                          fHaveDeterministicFinalizedHeight
+                              ? nDeterministicFinalizedHeight : 0));
+    result.push_back(Pair("deterministic_finalized_epoch",
+                          fHaveDeterministicFinalizedHeight
+                              ? GetEpochForHeight(nDeterministicFinalizedHeight) : 0));
 
     // Finality tier info
     result.push_back(Pair("finality_tier", FinalityTierName(tier)));
     result.push_back(Pair("consecutive_hard_epochs", g_finalityTracker.GetConsecutiveHardEpochCount()));
     result.push_back(Pair("finality_model", std::string("active-epoch-committed-weight")));
     result.push_back(Pair("absolute_stake_floor", false));
-    result.push_back(Pair("private_finality_mode", std::string("hidden-weight-nullstake")));
+    result.push_back(Pair("private_finality_mode", fBoundaryBActive
+                          ? std::string("privacy_vnext")
+                          : std::string("disabled")));
     result.push_back(Pair("tally_certificate_required_for_private_votes", true));
     CFinalityTallyConfig tallyConfig = GetFinalityTallyConfig();
-    result.push_back(Pair("private_promotion_enabled", nCurrentHeight >= FORK_HEIGHT_DAG && tallyConfig.CanRelayPrivateVotes()));
+    result.push_back(Pair("private_promotion_enabled", fBoundaryBActive && tallyConfig.CanRelayPrivateVotes()));
     result.push_back(Pair("tally_mode", tallyConfig.strMode));
     result.push_back(Pair("tally_mode_valid", tallyConfig.fModeValid));
     result.push_back(Pair("tally_pubkey_configured", tallyConfig.fPubKeyConfigured));
@@ -1312,7 +1846,10 @@ Value getfinalityinfo(const Array& params, bool fHelp)
     int nTallyAggregatePartials = g_finalityTracker.GetEpochTallyAggregatePartialCount(nCurrentEpoch);
     result.push_back(Pair("tally_decryptable_shares", nDecryptableTallyShares));
     result.push_back(Pair("tally_aggregate_partials", nTallyAggregatePartials));
-    result.push_back(Pair("tally_certificate_production_enabled", nCurrentHeight >= FORK_HEIGHT_DAG && tallyConfig.CanProduceCertificates()));
+    result.push_back(Pair("tally_certificate_production_enabled",
+                          fBoundaryBActive &&
+                          nCurrentHeight >= FORK_HEIGHT_DAG &&
+                          tallyConfig.CanProduceCertificates()));
     result.push_back(Pair("current_epoch_tally_shares", g_finalityTracker.GetEpochTallyShareCount(nCurrentEpoch)));
 
     std::vector<CFinalityTallyCertificate> vCerts = g_finalityTracker.GetEpochTallyCertificates(nCurrentEpoch);
@@ -1361,7 +1898,9 @@ Value getfinalityinfo(const Array& params, bool fHelp)
     result.push_back(Pair("tally_certificate_version", nTallyCertificateVersion));
     result.push_back(Pair("tally_certificate_source", strTallyCertificateSource));
     std::string strPrivatePromotionStatus = "waiting-for-shares";
-    if (nCurrentHeight < FORK_HEIGHT_DAG)
+    if (!fBoundaryBActive)
+        strPrivatePromotionStatus = "disabled-pending-privacy-vnext";
+    else if (nCurrentHeight < FORK_HEIGHT_DAG)
         strPrivatePromotionStatus = "inactive-pre-dag";
     else if (!tallyConfig.CanRelayPrivateVotes())
         strPrivatePromotionStatus = "committee-config-invalid";
@@ -1751,11 +2290,30 @@ Value getdaginfo(const Array& params, bool fHelp)
 
     // DAGKNIGHT info
     bool fDAGKnightActive = nCurrentHeight >= FORK_HEIGHT_DAGKNIGHT;
+    bool fBoundaryAActive = IsBoundaryAActiveAtHeight(nCurrentHeight);
     result.push_back(Pair("dagknight_active", fDAGKnightActive));
     result.push_back(Pair("dagknight_fork_height", FORK_HEIGHT_DAGKNIGHT));
+    result.push_back(Pair("boundary_a_activation_height", FORK_HEIGHT_BOUNDARY_A));
+    result.push_back(Pair("boundary_a_configured", IsBoundaryAConfigured()));
+    result.push_back(Pair("boundary_a_active", fBoundaryAActive));
+    result.push_back(Pair("parent_commitment_schema",
+                          std::string(DAG_PARENT_CARRIER_SCHEMA)));
+    result.push_back(Pair("parent_commitment_schema_version",
+                          DAG_PARENT_CARRIER_SCHEMA_VERSION));
+    result.push_back(Pair("parent_commitment_tag", std::string("49444147")));
+    result.push_back(Pair("parent_commitment_exactly_one", true));
+    result.push_back(Pair("parent_commitment_min_parents", 1));
+    result.push_back(Pair("parent_commitment_max_parents", MAX_DAG_PARENTS));
+    result.push_back(Pair("parent_commitment_strict_active", fBoundaryAActive));
+    result.push_back(Pair("dagknight_contract",
+                          std::string(DAGKNIGHT_ORDERING_CONTRACT)));
+    result.push_back(Pair("dagknight_anchor_pure", true));
+    result.push_back(Pair("dagknight_k_floor", DAGKNIGHT_K_FLOOR));
+    result.push_back(Pair("dagknight_k_ceiling", DAGKNIGHT_K_CEILING));
 
     if (fDAGKnightActive)
-        result.push_back(Pair("ordering_algorithm", std::string("DAGKNIGHT")));
+        result.push_back(Pair("ordering_algorithm",
+                              std::string(DAGKNIGHT_ORDERING_CONTRACT)));
     else
         result.push_back(Pair("ordering_algorithm", std::string("GHOSTDAG")));
 
@@ -1795,6 +2353,15 @@ Value getdaginfo(const Array& params, bool fHelp)
     result.push_back(Pair("adaptive_block_ceiling", (int)ADAPTIVE_BLOCK_CEILING));
     result.push_back(Pair("adaptive_block_floor", (int)ADAPTIVE_BLOCK_FLOOR));
 
+    uint256 hashAnchorSelectedParent = 0;
+    uint256 nAnchorScore = 0;
+    uint256 hashAnchorOrderDigest = 0;
+    int nAnchorInferredK = -1;
+    int nAnchorOrderCount = 0;
+    int nAnchorBlueCount = 0;
+    int nBestParentCount = 0;
+    bool fAnchorMetricsAvailable = false;
+    std::string strBestParentCommitment;
     CBlockIndex* pBestTip = g_dagManager.SelectBestDAGTip();
     if (pBestTip && pBestTip->phashBlock)
     {
@@ -1807,19 +2374,53 @@ Value getdaginfo(const Array& params, bool fHelp)
             CBlockDAGData tipData;
             if (g_dagManager.GetDAGData(pBestTip->GetBlockHash(), tipData))
             {
-                if (tipData.nInferredK < 0)
+                nBestParentCount = (int)tipData.vDAGParents.size();
+                const CScript parentCommitment =
+                    BuildDAGParentScript(tipData.vDAGParents);
+                strBestParentCommitment = HexStr(
+                    parentCommitment.begin(), parentCommitment.end());
+
+                std::vector<std::pair<uint256, bool> > vOrderColors;
+                if (g_dagManager.GetDAGKnightAnchorMetrics(
+                        pBestTip->GetBlockHash(), hashAnchorSelectedParent,
+                        nAnchorInferredK, nAnchorScore, vOrderColors))
                 {
-                    result.push_back(Pair("inferred_k", -1));
-                    result.push_back(Pair("inferred_k_error", true));
-                }
-                else
-                {
-                    result.push_back(Pair("inferred_k", tipData.nInferredK));
-                    result.push_back(Pair("inferred_k_error", false));
+                    CHashWriter digest(SER_GETHASH, 0);
+                    digest << std::string(
+                        "Innova/IDAG/DAGKnightAnchorMetrics/v1");
+                    digest << pBestTip->GetBlockHash()
+                           << hashAnchorSelectedParent
+                           << nAnchorInferredK << nAnchorScore;
+                    for (std::vector<std::pair<uint256, bool> >::const_iterator it =
+                             vOrderColors.begin();
+                         it != vOrderColors.end(); ++it)
+                    {
+                        digest << it->first << it->second;
+                        if (it->second)
+                            ++nAnchorBlueCount;
+                    }
+                    nAnchorOrderCount = (int)vOrderColors.size();
+                    hashAnchorOrderDigest = digest.GetHash();
+                    fAnchorMetricsAvailable = true;
                 }
             }
         }
     }
+
+    result.push_back(Pair("anchor_metrics_available", fAnchorMetricsAvailable));
+    result.push_back(Pair("anchor_selected_parent",
+                          hashAnchorSelectedParent.GetHex()));
+    result.push_back(Pair("anchor_score", nAnchorScore.GetHex()));
+    result.push_back(Pair("anchor_inferred_k", nAnchorInferredK));
+    result.push_back(Pair("anchor_order_count", nAnchorOrderCount));
+    result.push_back(Pair("anchor_blue_count", nAnchorBlueCount));
+    result.push_back(Pair("anchor_order_digest",
+                          hashAnchorOrderDigest.GetHex()));
+    result.push_back(Pair("best_parent_count", nBestParentCount));
+    result.push_back(Pair("best_parent_commitment_hex",
+                          strBestParentCommitment));
+    result.push_back(Pair("inferred_k", nAnchorInferredK));
+    result.push_back(Pair("inferred_k_error", !fAnchorMetricsAvailable));
 
     return result;
 }
@@ -1879,9 +2480,14 @@ Value getepochinfo(const Array& params, bool fHelp)
         result.push_back(Pair("finalized", state.fFinalized));
         result.push_back(Pair("curve_root", state.hashCurveRoot.GetHex()));
         result.push_back(Pair("nullifier_root", state.hashNullifierRoot.GetHex()));
+        result.push_back(Pair("vote_set_root", state.hashVoteSetRoot.GetHex()));
         result.push_back(Pair("finality_certificate", state.hashFinalityCertificate.GetHex()));
         result.push_back(Pair("finality_tier", FinalityTierName((FinalityTier)state.nFinalityTier)));
         result.push_back(Pair("consecutive_hard_epochs", state.nConsecutiveHardCount));
+        result.push_back(Pair("finalized_height_as_of", state.nFinalizedHeightAsOf));
+        result.push_back(Pair("schema_version", EpochStateSchemaForHeight(state.nHeightEnd)));
+        result.push_back(Pair("anchor_rule", EpochStateAnchorRuleForHeight(state.nHeightEnd)));
+        result.push_back(Pair("epoch_state_digest", state.GetDigest().GetHex()));
 
         Array blocks;
         for (const uint256& hash : state.vBlockHashes)
@@ -1899,9 +2505,14 @@ Value getepochinfo(const Array& params, bool fHelp)
         result.push_back(Pair("height_end", nEstEnd));
         result.push_back(Pair("curve_root", hashZero.GetHex()));
         result.push_back(Pair("nullifier_root", hashZero.GetHex()));
+        result.push_back(Pair("vote_set_root", hashZero.GetHex()));
         result.push_back(Pair("finality_certificate", hashZero.GetHex()));
         result.push_back(Pair("finality_tier", std::string("none")));
         result.push_back(Pair("consecutive_hard_epochs", 0));
+        result.push_back(Pair("finalized_height_as_of", 0));
+        result.push_back(Pair("schema_version", EpochStateSchemaForHeight(nEstEnd)));
+        result.push_back(Pair("anchor_rule", EpochStateAnchorRuleForHeight(nEstEnd)));
+        result.push_back(Pair("epoch_state_digest", hashZero.GetHex()));
         result.push_back(Pair("status", "not_computed"));
     }
 

@@ -15,6 +15,7 @@
 #include "curvetree.h"
 
 #include <algorithm>
+#include <limits>
 
 #include <openssl/rand.h>
 #include <openssl/bn.h>
@@ -426,7 +427,7 @@ bool CNullSendSession::FinalizeTransaction()
                 spend.vchNullifierBindingProof.size() != NULLIFIER_BINDING_PROOF_SIZE ||
                 spend.nullifier != NullifierTagFromPoint(spend.vchNullifierPoint) ||
                 !VerifyNullifierBindingProof(spend.cv, spend.vchNullifierPoint,
-                                             verifySighash, spend.vchNullifierBindingProof))
+                                             verifySighash, spend.vchNullifierBindingProof, nBestHeight + 1))
             {
                 printf("NullSend session %d: spend %d nullifier binding proof FAILED\n",
                        nSessionID, (int)j);
@@ -1703,12 +1704,22 @@ void CNullSendClient::ProcessInputAccept(const CNullSendInputAccept& msg, CNode*
 }
 
 
+bool IsLegacyNullSendEnabledAtHeight(int nTipHeight)
+{
+    const int nCandidateHeight =
+        nTipHeight == std::numeric_limits<int>::max()
+            ? nTipHeight : nTipHeight + 1;
+    return !IsLegacyPrivacyPolicyDisabled() &&
+           !IsBoundaryAActiveAtHeight(nCandidateHeight) &&
+           nTipHeight >= FORK_HEIGHT_NULLSEND;
+}
+
 void ProcessMessageNullSend(CNode* pfrom, std::string& strCommand, CDataStream& vRecv)
 {
     if (strCommand.substr(0, 3) != "zns")
         return;
 
-    if (nBestHeight < FORK_HEIGHT_NULLSEND)
+    if (!IsLegacyNullSendEnabledAtHeight(nBestHeight))
         return;
 
     if (strCommand == "znsq")

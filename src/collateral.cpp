@@ -360,7 +360,9 @@ bool CCollaTeralPool::IsCollateralValid(const CTransaction& txCollateral){
 
     //collateral transactions are required to pay out COLLATERALN_COLLATERAL as a fee to the miners
     if(nValueIn-nValueOut < COLLATERALN_COLLATERAL) {
-        if(fDebug) printf("CCollaTeralPool::IsCollateralValid - did not include enough fees in transaction %lu\n%s\n", nValueOut-nValueIn, txCollateral.ToString().c_str());
+        if(fDebug) printf("CCollaTeralPool::IsCollateralValid - did not include enough fees in transaction %lld\n%s\n",
+                          (long long)(nValueOut - nValueIn),
+                          txCollateral.ToString().c_str());
         return false;
     }
 
@@ -812,7 +814,8 @@ int CCollaTeralPool::GetDenominationsByAmount(int64_t nAmount, int nDenomTarget)
             nValueLeft -= v;
             nOutputs++;
         }
-        printf("GetDenominationsByAmount --- %lu nOutputs %d\n", v, nOutputs);
+        printf("GetDenominationsByAmount --- %lld nOutputs %d\n",
+               (long long)v, nOutputs);
     }
 
     //add non-denom left overs as change

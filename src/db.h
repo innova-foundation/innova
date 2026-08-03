@@ -27,6 +27,8 @@ class CWalletTx;
 extern unsigned int nWalletDBUpdated;
 
 void ThreadFlushWalletDB(void* parg);
+bool StartWalletDBFlushThread(const std::string& strFile);
+void StopWalletDBFlushThread();
 bool BackupWallet(const CWallet& wallet, const std::string& strDest);
 
 
@@ -73,6 +75,7 @@ public:
     bool Open(boost::filesystem::path pathEnv_);
     void Close();
     void Flush(bool fShutdown);
+    bool FlushLog();
     void CheckpointLSN(std::string strFile);
     void SetDetach(bool fDetachDB_) { fDetachDB = fDetachDB_; }
     bool GetDetach() { return fDetachDB; }
@@ -281,11 +284,11 @@ public:
         return true;
     }
 
-    bool TxnCommit()
+    bool TxnCommit(bool fSync=false)
     {
         if (!pdb || !activeTxn)
             return false;
-        int ret = activeTxn->commit(0);
+        int ret = activeTxn->commit(fSync ? DB_TXN_SYNC : 0);
         activeTxn = NULL;
         return (ret == 0);
     }

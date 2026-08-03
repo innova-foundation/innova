@@ -619,15 +619,28 @@ CHooks* InitHook()
 }
 
 // version for connectInputs. Used when accepting blocks.
-bool IsNameFeeEnough(CTxDB& txdb, const CTransaction& tx, const NameTxInfo& nti, const CBlockIndex* pindexBlock, const map<uint256, CTxIndex>& mapTestPool, bool fBlock, bool fMiner)
+bool IsNameFeeEnough(CTxDB& txdb, const CTransaction& tx,
+                     const NameTxInfo& nti,
+                     const CBlockIndex* pindexBlock,
+                     const map<uint256, CTxIndex>& mapTestPool,
+                     bool fBlock, bool fMiner,
+                     bool* pfLocalError = NULL)
 {
+    if (pfLocalError)
+        *pfLocalError = false;
+
     // get tx fee
     // Note: if fBlock and fMiner equal false then FetchInputs will search mempool
     int64_t txFee;
     MapPrevTx mapInputs;
     bool fInvalid = false;
-    if (!const_cast<CTransaction&>(tx).FetchInputs(txdb, mapTestPool, fBlock, fMiner, mapInputs, fInvalid))
+    if (!const_cast<CTransaction&>(tx).FetchInputs(
+            txdb, mapTestPool, fBlock, fMiner, mapInputs, fInvalid))
+    {
+        if (pfLocalError && !fInvalid)
+            *pfLocalError = true;
         return false;
+    }
     txFee = tx.GetValueIn(mapInputs) - tx.GetValueOut();
 
 
@@ -2085,18 +2098,814 @@ NameTxReturn name_delete(const vector<unsigned char> &vchName)
 //     printf("Scanned Innova for names successfully!\n");
 // }
 
+static CNameIndexCursor MakeNameIndexCursor(const CBlockIndex* pindexTip)
+{
+    CNameIndexCursor cursor;
+    cursor.nSchema = NAMEINDEX_CURSOR_SCHEMA;
+    cursor.nResetHeight = FORK_HEIGHT_IDNS_RESET;
+    if (pindexTip)
+    {
+        cursor.nHeight = pindexTip->nHeight;
+        cursor.hashBlock = pindexTip->GetBlockHash();
+    }
+    return cursor;
+}
+
+bool CNameDB::ReadCursor(CNameIndexCursor& cursor)
+{
+    if (!pdb)
+        return false;
+
+    CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+    ssKey.reserve(1000);
+    ssKey << std::string("nameindex-cursor");
+    Dbt datKey(&ssKey[0], ssKey.size());
+
+    // Fixed encoding (three integers and one uint256): read into an exactly-sized buffer
+    // so Berkeley DB rejects oversized values without allocating for them.
+    const unsigned int nExpectedSize = ::GetSerializeSize(
+        CNameIndexCursor(), SER_DISK, CLIENT_VERSION);
+    static const unsigned int MAX_NAMEINDEX_CURSOR_SIZE = 64;
+    if (nExpectedSize == 0 || nExpectedSize > MAX_NAMEINDEX_CURSOR_SIZE)
+    {
+        memset(datKey.get_data(), 0, datKey.get_size());
+        return false;
+    }
+
+    std::vector<unsigned char> vchValue(nExpectedSize);
+    Dbt datValue;
+    datValue.set_flags(DB_DBT_USERMEM);
+    datValue.set_ulen(vchValue.size());
+    datValue.set_data(&vchValue[0]);
+
+    const int ret = pdb->get(activeTxn, &datKey, &datValue, 0);
+    memset(datKey.get_data(), 0, datKey.get_size());
+    if (ret != 0 || datValue.get_data() == NULL ||
+        datValue.get_size() != nExpectedSize)
+    {
+        memset(&vchValue[0], 0, vchValue.size());
+        return false;
+    }
+
+    bool fDecoded = false;
+    try
+    {
+        CDataStream ssValue((char*)&vchValue[0],
+                            (char*)&vchValue[0] + vchValue.size(),
+                            SER_DISK, CLIENT_VERSION);
+        CNameIndexCursor decoded;
+        ssValue >> decoded;
+        if (ssValue.empty())
+        {
+            cursor = decoded;
+            fDecoded = true;
+        }
+    }
+    catch (const std::exception&)
+    {
+    }
+
+    memset(&vchValue[0], 0, vchValue.size());
+    return fDecoded;
+}
+
+bool CNameDB::ReadEffectProgress(CNameIndexEffectProgress& progress)
+{
+    if (!pdb)
+        return false;
+
+    CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+    ssKey.reserve(1000);
+    ssKey << std::string("nameindex-effect-progress");
+    Dbt datKey(&ssKey[0], ssKey.size());
+
+    const unsigned int nExpectedSize = ::GetSerializeSize(
+        CNameIndexEffectProgress(), SER_DISK, CLIENT_VERSION);
+    static const unsigned int MAX_NAMEINDEX_EFFECT_PROGRESS_SIZE = 128;
+    if (nExpectedSize == 0 ||
+        nExpectedSize > MAX_NAMEINDEX_EFFECT_PROGRESS_SIZE)
+    {
+        memset(datKey.get_data(), 0, datKey.get_size());
+        return false;
+    }
+
+    std::vector<unsigned char> vchValue(nExpectedSize);
+    Dbt datValue;
+    datValue.set_flags(DB_DBT_USERMEM);
+    datValue.set_ulen(vchValue.size());
+    datValue.set_data(&vchValue[0]);
+
+    const int ret = pdb->get(activeTxn, &datKey, &datValue, 0);
+    memset(datKey.get_data(), 0, datKey.get_size());
+    if (ret != 0 || datValue.get_data() == NULL ||
+        datValue.get_size() != nExpectedSize)
+    {
+        memset(&vchValue[0], 0, vchValue.size());
+        return false;
+    }
+
+    bool fDecoded = false;
+    try
+    {
+        CDataStream ssValue((char*)&vchValue[0],
+                            (char*)&vchValue[0] + vchValue.size(),
+                            SER_DISK, CLIENT_VERSION);
+        CNameIndexEffectProgress decoded;
+        ssValue >> decoded;
+        if (ssValue.empty() && decoded.IsValid())
+        {
+            progress = decoded;
+            fDecoded = true;
+        }
+    }
+    catch (const std::exception&)
+    {
+    }
+
+    memset(&vchValue[0], 0, vchValue.size());
+    return fDecoded;
+}
+
+namespace
+{
+bool SameNameIndexEntry(const CNameIndex& a, const CNameIndex& b)
+{
+    return a.txPos == b.txPos && a.nHeight == b.nHeight &&
+           a.op == b.op && a.vchValue == b.vchValue;
+}
+
+bool SameNameRecord(const CNameRecord& a, const CNameRecord& b)
+{
+    if (a.nExpiresAt != b.nExpiresAt ||
+        a.nLastActiveChainIndex != b.nLastActiveChainIndex ||
+        a.vtxPos.size() != b.vtxPos.size())
+        return false;
+    for (size_t i = 0; i < a.vtxPos.size(); ++i)
+        if (!SameNameIndexEntry(a.vtxPos[i], b.vtxPos[i]))
+            return false;
+    return true;
+}
+
+bool ValidNameEffectRecord(const CNameRecord& record)
+{
+    if (record.vtxPos.empty() ||
+        record.vtxPos.size() > NAMEINDEX_MAX_EFFECT_RECORD_ENTRIES ||
+        record.nLastActiveChainIndex < 0 ||
+        (size_t)record.nLastActiveChainIndex >= record.vtxPos.size())
+        return false;
+    for (std::vector<CNameIndex>::const_iterator it = record.vtxPos.begin();
+         it != record.vtxPos.end(); ++it)
+    {
+        if ((it->op != OP_NAME_NEW && it->op != OP_NAME_UPDATE &&
+             it->op != OP_NAME_DELETE) ||
+            it->vchValue.size() > MAX_VALUE_LENGTH)
+            return false;
+    }
+    return true;
+}
+
+bool SameNameEffectState(bool fExistsA, const CNameRecord& a,
+                         bool fExistsB, const CNameRecord& b)
+{
+    if (fExistsA != fExistsB)
+        return false;
+    return !fExistsA || SameNameRecord(a, b);
+}
+
+bool SameNameEffectCursor(const CNameIndexCursor& a,
+                          const CNameIndexCursor& b)
+{
+    return a.nSchema == b.nSchema &&
+           a.nResetHeight == b.nResetHeight &&
+           a.nHeight == b.nHeight && a.hashBlock == b.hashBlock;
+}
+
+bool ValidNameEffectCursor(const CNameIndexCursor& cursor)
+{
+    if (cursor.nSchema != NAMEINDEX_CURSOR_SCHEMA ||
+        cursor.nResetHeight != FORK_HEIGHT_IDNS_RESET ||
+        cursor.nHeight < -1)
+        return false;
+    return cursor.nHeight == -1 ? cursor.hashBlock == 0
+                                : cursor.hashBlock != 0;
+}
+
+bool ReadCurrentNameEffectState(CNameDB& dbName,
+                                const std::vector<unsigned char>& vchName,
+                                bool& fExistsOut, CNameRecord& recordOut,
+                                std::string& strError)
+{
+    fExistsOut = dbName.ExistsName(vchName);
+    recordOut = CNameRecord();
+    if (fExistsOut && !dbName.ReadName(vchName, recordOut))
+    {
+        strError = "name-index transition encountered an unreadable existing record";
+        return false;
+    }
+    return true;
+}
+
+
+typedef std::map<std::vector<unsigned char>,
+                 std::pair<bool, CNameRecord> > NameEffectStateMap;
+
+bool LoadPreparedNameState(CNameDB& dbName, NameEffectStateMap& mapState,
+                           const std::vector<unsigned char>& vchName,
+                           bool& fExistsOut, CNameRecord& recordOut,
+                           std::string& strError)
+{
+    NameEffectStateMap::const_iterator it = mapState.find(vchName);
+    if (it != mapState.end())
+    {
+        fExistsOut = it->second.first;
+        recordOut = it->second.second;
+        return true;
+    }
+    if (!ReadCurrentNameEffectState(dbName, vchName, fExistsOut,
+                                    recordOut, strError))
+        return false;
+    mapState[vchName] = std::make_pair(fExistsOut, recordOut);
+    return true;
+}
+
+bool ValidateNameIndexSkippedSet(const CBlock& block,
+                                 const std::set<uint256>& setDAGSkippedTxs,
+                                 std::string& strError)
+{
+    if (setDAGSkippedTxs.size() > block.vtx.size() ||
+        setDAGSkippedTxs.size() > NAMEINDEX_MAX_TRANSITION_EFFECTS)
+    {
+        strError = "name-index DAG-skipped transaction set exceeds its block bound";
+        return false;
+    }
+
+    std::set<uint256> setBlockTxs;
+    for (std::vector<CTransaction>::const_iterator it = block.vtx.begin();
+         it != block.vtx.end(); ++it)
+        setBlockTxs.insert(it->GetHash());
+    for (std::set<uint256>::const_iterator it = setDAGSkippedTxs.begin();
+         it != setDAGSkippedTxs.end(); ++it)
+    {
+        if (!setBlockTxs.count(*it))
+        {
+            strError = "name-index DAG-skipped transaction is not in its block";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool CheckCompletedNameTransition(const uint256& hashTransition,
+                                  const CNameIndexCursor& cursorAfter,
+                                  bool& fCompleteOut,
+                                  std::string& strError)
+{
+    fCompleteOut = false;
+    CNameDB dbName("r");
+    if (!dbName.HasEffectProgress())
+        return true;
+
+    CNameIndexEffectProgress progress;
+    if (!dbName.ReadEffectProgress(progress))
+    {
+        strError = "name-index block transition progress is corrupt or unreadable";
+        return false;
+    }
+    if (progress.hashTransition != hashTransition)
+    {
+        if (!progress.IsComplete())
+        {
+            strError = "a different name-index block transition is incomplete";
+            return false;
+        }
+        CNameIndexCursor cursor;
+        if (dbName.ReadCursor(cursor) &&
+            SameNameEffectCursor(cursor, cursorAfter))
+        {
+            strError = "a conflicting completed name-index transition targets the same cursor";
+            return false;
+        }
+        return true;
+    }
+    if (!progress.IsComplete())
+    {
+        strError = "name-index block transition has partial durable progress";
+        return false;
+    }
+
+    CNameIndexCursor cursor;
+    if (!dbName.ReadCursor(cursor) ||
+        !SameNameEffectCursor(cursor, cursorAfter))
+    {
+        strError = "completed name-index block transition cursor does not match";
+        return false;
+    }
+    fCompleteOut = true;
+    return true;
+}
+} // namespace
+
+uint256 ComputeNameIndexTransitionEffectIdentity(
+    const uint256& hashTransition, uint32_t nEffect,
+    uint32_t nEffectCount, const CNameIndexTransitionEffect& effect,
+    const CNameIndexCursor& cursorAfter)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("Innova name-index transition effect v1");
+    ss << hashTransition;
+    ss << nEffect;
+    ss << nEffectCount;
+    ss << (unsigned char)(effect.fConnect ? 1 : 0);
+    ss << effect.hashSourceTx;
+    ss << effect.vchName;
+    ss << (unsigned char)(effect.fBeforeExists ? 1 : 0);
+    if (effect.fBeforeExists)
+        ss << effect.before;
+    ss << (unsigned char)(effect.fAfterExists ? 1 : 0);
+    if (effect.fAfterExists)
+        ss << effect.after;
+    ss << cursorAfter.nSchema;
+    ss << cursorAfter.nResetHeight;
+    ss << cursorAfter.nHeight;
+    ss << cursorAfter.hashBlock;
+    return ss.GetHash();
+}
+
+uint256 ComputeNameIndexBlockTransitionIdentity(
+    bool fConnect, const uint256& hashBlock,
+    const CNameIndexCursor& cursorAfter,
+    const std::set<uint256>& setDAGSkippedTxs)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("Innova name-index block transition v2");
+    ss << (unsigned char)(fConnect ? 1 : 0);
+    ss << hashBlock;
+    ss << cursorAfter.nSchema;
+    ss << cursorAfter.nResetHeight;
+    ss << cursorAfter.nHeight;
+    ss << cursorAfter.hashBlock;
+    ss << (uint32_t)setDAGSkippedTxs.size();
+    for (std::set<uint256>::const_iterator it = setDAGSkippedTxs.begin();
+         it != setDAGSkippedTxs.end(); ++it)
+        ss << *it;
+    return ss.GetHash();
+}
+
+bool StageNameIndexTransitionEffect(
+    CNameDB& dbName, const uint256& hashTransition,
+    uint32_t nEffect, uint32_t nEffectCount,
+    const CNameIndexTransitionEffect& effect,
+    const CNameIndexCursor& cursorAfter,
+    bool& fAlreadyAppliedOut, std::string& strError,
+    NameIndexEffectFault fault)
+{
+    fAlreadyAppliedOut = false;
+    strError.clear();
+
+    if (!dbName.HasActiveTxn())
+    {
+        strError = "name-index transition requires a caller-owned transaction";
+        return false;
+    }
+    if (hashTransition == 0 || effect.hashSourceTx == 0 ||
+        nEffectCount == 0 ||
+        nEffectCount > NAMEINDEX_MAX_TRANSITION_EFFECTS ||
+        nEffect >= nEffectCount || effect.vchName.empty() ||
+        effect.vchName.size() > MAX_NAME_LENGTH ||
+        !ValidNameEffectCursor(cursorAfter) ||
+        (effect.fConnect && !effect.fAfterExists) ||
+        (!effect.fConnect && !effect.fBeforeExists) ||
+        (effect.fBeforeExists && !ValidNameEffectRecord(effect.before)) ||
+        (effect.fAfterExists && !ValidNameEffectRecord(effect.after)) ||
+        SameNameEffectState(effect.fBeforeExists, effect.before,
+                            effect.fAfterExists, effect.after) ||
+        fault < NAMEINDEX_EFFECT_FAULT_NONE ||
+        fault > NAMEINDEX_EFFECT_FAULT_AFTER_PROGRESS)
+    {
+        strError = "invalid or unbounded name-index transition effect";
+        return false;
+    }
+
+    const uint256 hashEffect = ComputeNameIndexTransitionEffectIdentity(
+        hashTransition, nEffect, nEffectCount, effect, cursorAfter);
+    if (hashEffect == 0)
+    {
+        strError = "name-index transition produced a zero effect identity";
+        return false;
+    }
+
+    CNameIndexEffectProgress progress;
+    const bool fHaveProgress = dbName.HasEffectProgress();
+    if (fHaveProgress && !dbName.ReadEffectProgress(progress))
+    {
+        strError = "name-index transition progress is corrupt or unreadable";
+        return false;
+    }
+
+    if (fHaveProgress && progress.hashTransition == hashTransition)
+    {
+        if (progress.nEffectCount != nEffectCount)
+        {
+            strError = "name-index transition effect count changed during replay";
+            return false;
+        }
+        if (progress.nNextEffect > nEffect)
+        {
+            if (progress.nNextEffect == nEffect + 1 &&
+                progress.hashLastEffect != hashEffect)
+            {
+                strError = "name-index transition retry has a conflicting effect identity";
+                return false;
+            }
+            fAlreadyAppliedOut = true;
+            return true;
+        }
+        if (progress.nNextEffect < nEffect)
+        {
+            strError = "name-index transition effect is out of order";
+            return false;
+        }
+    }
+    else if (fHaveProgress)
+    {
+        if (!progress.IsComplete() || nEffect != 0)
+        {
+            strError = "a different name-index transition is still incomplete";
+            return false;
+        }
+        progress = CNameIndexEffectProgress();
+    }
+    else if (nEffect != 0)
+    {
+        strError = "name-index transition progress is missing before a later effect";
+        return false;
+    }
+
+    bool fCurrentExists = false;
+    CNameRecord current;
+    if (!ReadCurrentNameEffectState(dbName, effect.vchName,
+                                    fCurrentExists, current, strError))
+        return false;
+
+    const bool fMatchesBefore = SameNameEffectState(
+        fCurrentExists, current, effect.fBeforeExists, effect.before);
+    const bool fMatchesAfter = SameNameEffectState(
+        fCurrentExists, current, effect.fAfterExists, effect.after);
+    if (!fMatchesBefore && !fMatchesAfter)
+    {
+        strError = "name-index transition current state matches neither exact endpoint";
+        return false;
+    }
+
+    if (!fMatchesAfter)
+    {
+        const bool fMutationOK = effect.fAfterExists
+            ? dbName.WriteName(effect.vchName, effect.after)
+            : dbName.EraseName(effect.vchName);
+        if (!fMutationOK)
+        {
+            strError = "could not stage the exact name-index transition mutation";
+            return false;
+        }
+    }
+    else
+    {
+        // This covers recovery from a legacy record write which preceded the
+        // new progress marker, while still requiring an exact after-state.
+        fAlreadyAppliedOut = true;
+    }
+
+    if (fault == NAMEINDEX_EFFECT_FAULT_AFTER_MUTATION)
+    {
+        strError = "injected failure after name-index mutation";
+        return false;
+    }
+    if (!dbName.WriteCursor(cursorAfter))
+    {
+        strError = "could not stage the name-index transition cursor";
+        return false;
+    }
+    if (fault == NAMEINDEX_EFFECT_FAULT_AFTER_CURSOR)
+    {
+        strError = "injected failure after name-index cursor";
+        return false;
+    }
+
+    progress.nSchema = NAMEINDEX_EFFECT_PROGRESS_SCHEMA;
+    progress.hashTransition = hashTransition;
+    progress.nEffectCount = nEffectCount;
+    progress.nNextEffect = nEffect + 1;
+    progress.hashLastEffect = hashEffect;
+    if (!dbName.WriteEffectProgress(progress))
+    {
+        strError = "could not stage name-index transition progress";
+        return false;
+    }
+    if (fault == NAMEINDEX_EFFECT_FAULT_AFTER_PROGRESS)
+    {
+        strError = "injected failure after name-index progress";
+        return false;
+    }
+    return true;
+}
+
+bool ApplyPreparedNameIndexTransition(
+    const CPreparedNameIndexTransition& prepared,
+    bool& fAlreadyAppliedOut, std::string& strError,
+    uint32_t nFaultEffect, NameIndexEffectFault fault)
+{
+    fAlreadyAppliedOut = false;
+    strError.clear();
+    if (prepared.hashBlock == 0 || prepared.hashTransition == 0 ||
+        !ValidNameEffectCursor(prepared.cursorAfter) ||
+        prepared.vEffects.size() > NAMEINDEX_MAX_TRANSITION_EFFECTS ||
+        prepared.setDAGSkippedTxs.size() > NAMEINDEX_MAX_TRANSITION_EFFECTS ||
+        prepared.hashTransition != ComputeNameIndexBlockTransitionIdentity(
+            prepared.fConnect, prepared.hashBlock, prepared.cursorAfter,
+            prepared.setDAGSkippedTxs) ||
+        fault < NAMEINDEX_EFFECT_FAULT_NONE ||
+        fault > NAMEINDEX_EFFECT_FAULT_AFTER_PROGRESS ||
+        (fault != NAMEINDEX_EFFECT_FAULT_NONE &&
+         nFaultEffect >= prepared.vEffects.size()))
+    {
+        strError = "invalid prepared name-index block transition";
+        return false;
+    }
+    for (std::vector<CNameIndexTransitionEffect>::const_iterator it =
+             prepared.vEffects.begin(); it != prepared.vEffects.end(); ++it)
+    {
+        if (it->fConnect != prepared.fConnect)
+        {
+            strError = "prepared name-index effect direction conflicts with its block";
+            return false;
+        }
+    }
+
+    try
+    {
+        if (prepared.fAlreadyComplete)
+        {
+            bool fStillComplete = false;
+            if (!CheckCompletedNameTransition(
+                    prepared.hashTransition, prepared.cursorAfter,
+                    fStillComplete, strError) || !fStillComplete)
+            {
+                if (strError.empty())
+                    strError = "prepared name-index completion marker disappeared";
+                return false;
+            }
+            fAlreadyAppliedOut = true;
+            return true;
+        }
+
+        CNameDB dbName("cr+");
+        if (!dbName.TxnBegin())
+        {
+            strError = "could not begin prepared name-index block transaction";
+            return false;
+        }
+
+        if (prepared.vEffects.empty())
+        {
+            CNameIndexEffectProgress prior;
+            const bool fHavePrior = dbName.HasEffectProgress();
+            if (fHavePrior && !dbName.ReadEffectProgress(prior))
+            {
+                dbName.TxnAbort();
+                strError = "name-index no-op transition progress is corrupt";
+                return false;
+            }
+            if (fHavePrior &&
+                prior.hashTransition == prepared.hashTransition)
+            {
+                if (!prior.IsComplete() || prior.nEffectCount != 0)
+                {
+                    dbName.TxnAbort();
+                    strError = "name-index no-op transition progress conflicts";
+                    return false;
+                }
+                CNameIndexCursor cursor;
+                if (!dbName.ReadCursor(cursor) ||
+                    !SameNameEffectCursor(cursor, prepared.cursorAfter))
+                {
+                    dbName.TxnAbort();
+                    strError = "name-index no-op transition cursor conflicts";
+                    return false;
+                }
+                fAlreadyAppliedOut = true;
+                if (!dbName.TxnCommit())
+                {
+                    strError = "could not close an already-complete no-op name transition";
+                    return false;
+                }
+                return true;
+            }
+            if (fHavePrior && !prior.IsComplete())
+            {
+                dbName.TxnAbort();
+                strError = "a prior name-index transition is incomplete";
+                return false;
+            }
+
+            if (!dbName.WriteCursor(prepared.cursorAfter))
+            {
+                dbName.TxnAbort();
+                strError = "could not stage no-op name-index cursor";
+                return false;
+            }
+            CNameIndexEffectProgress complete;
+            complete.nSchema = NAMEINDEX_EFFECT_PROGRESS_SCHEMA;
+            complete.hashTransition = prepared.hashTransition;
+            complete.nEffectCount = 0;
+            complete.nNextEffect = 0;
+            complete.hashLastEffect = uint256(0);
+            if (!dbName.WriteEffectProgress(complete))
+            {
+                dbName.TxnAbort();
+                strError = "could not stage no-op name-index progress";
+                return false;
+            }
+        }
+        else
+        {
+            bool fAllAlreadyApplied = true;
+            for (size_t i = 0; i < prepared.vEffects.size(); ++i)
+            {
+                bool fEffectAlreadyApplied = false;
+                const NameIndexEffectFault effectFault =
+                    nFaultEffect == i ? fault : NAMEINDEX_EFFECT_FAULT_NONE;
+                if (!StageNameIndexTransitionEffect(
+                        dbName, prepared.hashTransition, (uint32_t)i,
+                        (uint32_t)prepared.vEffects.size(),
+                        prepared.vEffects[i], prepared.cursorAfter,
+                        fEffectAlreadyApplied, strError, effectFault))
+                {
+                    dbName.TxnAbort();
+                    return false;
+                }
+                fAllAlreadyApplied = fAllAlreadyApplied &&
+                                     fEffectAlreadyApplied;
+            }
+            fAlreadyAppliedOut = fAllAlreadyApplied;
+        }
+
+        if (!dbName.TxnCommit())
+        {
+            strError = "could not commit prepared name-index block transition";
+            return false;
+        }
+
+        if (prepared.fConnect && !prepared.vPendingCleanup.empty())
+        {
+            LOCK(cs_main);
+            for (std::vector<std::pair<std::vector<unsigned char>, uint256> >::
+                     const_iterator it = prepared.vPendingCleanup.begin();
+                 it != prepared.vPendingCleanup.end(); ++it)
+            {
+                map<std::vector<unsigned char>, set<uint256> >::iterator mi =
+                    mapNamePending.find(it->first);
+                if (mi == mapNamePending.end())
+                    continue;
+                mi->second.erase(it->second);
+                if (mi->second.empty())
+                    mapNamePending.erase(mi);
+            }
+        }
+        return true;
+    }
+    catch (const std::exception& e)
+    {
+        strError = strprintf("prepared name-index transition exception: %s",
+                             e.what());
+        return false;
+    }
+    catch (...)
+    {
+        strError = "prepared name-index transition raised an unknown exception";
+        return false;
+    }
+}
+
+bool CommitNameIndexTip(const CBlockIndex* pindexTip, std::string& strError)
+{
+    strError.clear();
+    try
+    {
+        CNameDB dbName("cr+");
+        if (!dbName.TxnBegin())
+        {
+            strError = "could not begin name-index cursor transaction";
+            return false;
+        }
+        if (!dbName.WriteCursor(MakeNameIndexCursor(pindexTip)))
+        {
+            dbName.TxnAbort();
+            strError = "could not write name-index cursor";
+            return false;
+        }
+        if (!dbName.TxnCommit())
+        {
+            strError = "could not commit name-index cursor";
+            return false;
+        }
+    }
+    catch (const std::exception& e)
+    {
+        strError = strprintf("could not open/update name index: %s", e.what());
+        return false;
+    }
+    return true;
+}
+
+bool ValidateNameIndexTip(const CBlockIndex* pindexTip, std::string& strError)
+{
+    strError.clear();
+    CNameIndexCursor cursor;
+    try
+    {
+        CNameDB dbName("r");
+        if (!dbName.ReadCursor(cursor))
+        {
+            strError = "name-index cursor is missing or unreadable";
+            return false;
+        }
+    }
+    catch (const std::exception& e)
+    {
+        strError = strprintf("could not open/read name index: %s", e.what());
+        return false;
+    }
+
+    if (cursor.nSchema != NAMEINDEX_CURSOR_SCHEMA)
+    {
+        strError = strprintf("name-index cursor schema %d does not match required schema %d",
+                             cursor.nSchema, NAMEINDEX_CURSOR_SCHEMA);
+        return false;
+    }
+    if (cursor.nResetHeight != FORK_HEIGHT_IDNS_RESET)
+    {
+        strError = strprintf("name-index cursor reset era %d does not match required era %d",
+                             cursor.nResetHeight, FORK_HEIGHT_IDNS_RESET);
+        return false;
+    }
+
+    const int nExpectedHeight = pindexTip ? pindexTip->nHeight : -1;
+    const uint256 hashExpected = pindexTip ? pindexTip->GetBlockHash() : uint256(0);
+    if (cursor.nHeight != nExpectedHeight || cursor.hashBlock != hashExpected)
+    {
+        strError = strprintf("name-index cursor tip %d/%s does not match canonical tip %d/%s",
+                             cursor.nHeight,
+                             cursor.hashBlock.ToString().substr(0,20).c_str(),
+                             nExpectedHeight,
+                             hashExpected.ToString().substr(0,20).c_str());
+        return false;
+    }
+    return true;
+}
+
+bool ApplyNameIndexRebuildBlock(
+    CTxDB& txdb, const CBlock& block, CBlockIndex* pindex,
+    std::string& strError)
+{
+    strError.clear();
+    if (!pindex || !pindex->phashBlock ||
+        block.GetHash() != pindex->GetBlockHash())
+    {
+        strError = "name-index rebuild received a mismatched block/index pair";
+        return false;
+    }
+
+    std::set<uint256> setDAGSkippedTxs;
+    if (pindex->nHeight >= FORK_HEIGHT_DAG)
+    {
+        std::string strActiveSetError;
+        const TxDBReadStatus status = txdb.ReadDAGSkippedTxsStatus(
+            block, setDAGSkippedTxs, strActiveSetError);
+        if (status != TXDB_READ_FOUND)
+        {
+            strError = strprintf(
+                "name-index rebuild exact DAG active set is %s at height %d%s%s",
+                status == TXDB_READ_NOT_FOUND ? "missing" : "corrupt",
+                pindex->nHeight,
+                strActiveSetError.empty() ? "" : ": ",
+                strActiveSetError.c_str());
+            return false;
+        }
+    }
+
+    return ApplyNameIndexConnectBlock(
+        txdb, pindex, setDAGSkippedTxs, strError);
+}
+
 bool createNameIndexFile()
 {
     printf("Scanning Innova blockchain for names to create a fast index...\n");
-    CNameDB dbName("cr+");
-    CTxDB txdb("r");
 
     LOCK(cs_main);
 
-    int maxHeight = pindexBest->nHeight;
-    if (maxHeight <= 0)
-        return true;
-    int reportDone = 0;
+    CBlockIndex* const pindexTip = pindexBest;
+    const int nMaxHeight = pindexTip ? pindexTip->nHeight : -1;
+    int nReportDone = 0;
 
     // Start scanning from RELEASE_HEIGHT or IDNS reset height, whichever is later.
     // When FORK_HEIGHT_IDNS_RESET > RELEASE_HEIGHT, old names are effectively wiped
@@ -2105,63 +2914,57 @@ bool createNameIndexFile()
     if (FORK_HEIGHT_IDNS_RESET > nStartHeight)
     {
         nStartHeight = FORK_HEIGHT_IDNS_RESET;
-        printf("IDNS reset active: scanning names from height %d (skipping pre-reset names)\n", nStartHeight);
+        printf("IDNS reset active: scanning names from height %d (skipping pre-reset names)\n",
+               nStartHeight);
     }
 
-    for (int nHeight=nStartHeight; nHeight<=maxHeight; nHeight++)
+    try
     {
-        int percentageDone = (100*nHeight / maxHeight);
-        if (reportDone < percentageDone/10) {
-            // report every 10% step
-            printf("[%d%%]...\n", percentageDone);
-            reportDone = percentageDone/10;
+        // Ensure the replacement DB exists even if the active chain has not
+        // reached the name release height.  Its recovery cursor is written only
+        // after the strict scan completes below.
+        CNameDB dbName("cr+");
+    }
+    catch (const std::exception& e)
+    {
+        return error("createNameIndexFile() : could not create name index: %s", e.what());
+    }
+
+    CTxDB txdb("r");
+
+    for (int nHeight = nStartHeight; nHeight <= nMaxHeight; ++nHeight)
+    {
+        const int nPercentageDone = nMaxHeight > 0
+            ? (100 * nHeight / nMaxHeight) : 100;
+        if (nReportDone < nPercentageDone / 10)
+        {
+            printf("[%d%%]...\n", nPercentageDone);
+            nReportDone = nPercentageDone / 10;
         }
-        //uiInterface.InitMessage(strprintf("Creating name index... %i", percentageDone));
 
         CBlockIndex* pindex = FindBlockByHeight(nHeight);
-        if (!pindex)
-            continue;
+        if (!pindex || pindex->nHeight != nHeight)
+            return error("createNameIndexFile() : canonical block index missing at height %d",
+                         nHeight);
+
         CBlock block;
+        if (!block.ReadFromDisk(pindex, true) ||
+            block.GetHash() != pindex->GetBlockHash())
+            return error("createNameIndexFile() : canonical block data missing/corrupt at height %d",
+                         nHeight);
 
-        if(!block.ReadFromDisk(pindex, true)) { // shouldn't really happen
-            continue;
-        }
-
-        // collect name tx from block
-        vector<nameTempProxy> vName;
-        //CDiskTxPos pos(pindex->nFile, pindex->nBlockPos, nTxPos);
-        CDiskTxPos pos(pindex->nFile, pindex->nBlockPos, GetSizeOfCompactSize(block.vtx.size()));
-        //CDiskTxPos pos(pindex->nBlockPos, GetSizeOfCompactSize(block.vtx.size())); // start position
-        for (unsigned int i=0; i<block.vtx.size(); i++)
-        {
-            const CTransaction& tx = block.vtx[i];
-            if (tx.IsCoinStake() || tx.IsCoinBase())
-            {
-                pos.nTxPos += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);  // set next tx position
-                continue;
-            }
-
-            // calculate tx fee
-            CAmount input = 0;
-            for (const CTxIn& txin : tx.vin)
-            {
-                CTransaction txPrev;
-                uint256 hashBlock = 0;
-                if (!GetTransaction(txin.prevout.hash, txPrev, hashBlock))
-                    return error("createNameIndexFile() : prev transaction not found");
-
-                input += txPrev.vout[txin.prevout.n].nValue;
-            }
-            CAmount fee = input - tx.GetValueOut();
-
-            //hooks->CheckInputs(tx, pindex, vName, pos, fee);               // collect valid name tx to vName
-            pos.nTxPos += ::GetSerializeSize(tx, SER_DISK, CLIENT_VERSION);  // set next tx position
-        }
-
-        // execute name operations, if any
-        hooks->ConnectBlock(txdb, pindex);
-
+        std::string strRebuildError;
+        if (!ApplyNameIndexRebuildBlock(
+                txdb, block, pindex, strRebuildError))
+            return error("createNameIndexFile() : name rebuild failed at height %d: %s",
+                         nHeight, strRebuildError.c_str());
     }
+
+    std::string strCursorError;
+    if (!CommitNameIndexTip(pindexTip, strCursorError))
+        return error("createNameIndexFile() : strict scan completed but cursor commit failed: %s",
+                     strCursorError.c_str());
+
     return true;
 }
 
@@ -2363,8 +3166,12 @@ bool ConnectInputs(CTxDB& txdb,
         vector<CTxIndex>& vTxindex,
         const CBlockIndex* pindexBlock,
         const CDiskTxPos& txPos,
-        vector<nameTempProxy>& vName)
+        vector<nameTempProxy>& vName,
+        bool* pfLocalError)
 {
+    if (pfLocalError)
+        *pfLocalError = false;
+
     // find prev name tx
     int nInput = 0;
     bool found = false;
@@ -2398,20 +3205,42 @@ bool ConnectInputs(CTxDB& txdb,
         ", block=" + boost::lexical_cast<string>(pindexBlock->nHeight) + " -";
 
     CNameDB dbName("r");
+    CNameRecord nameRec;
+    const bool fNameExists = dbName.ExistsName(vchName);
+    if (fNameExists && !dbName.ReadName(vchName, nameRec))
+    {
+        if (pfLocalError)
+            *pfLocalError = true;
+        return error("ConnectInputsHook() : failed to read from name DB for name %s in tx %s",
+                     sName.c_str(), tx.GetHash().GetHex().c_str());
+    }
+
+    bool fNameActive = fNameExists && !nameRec.deleted();
+    if (fNameActive && FORK_HEIGHT_IDNS_RESET > 0 &&
+        !nameRec.vtxPos.empty() &&
+        nameRec.vtxPos[nameRec.nLastActiveChainIndex].nHeight <
+            FORK_HEIGHT_IDNS_RESET)
+        fNameActive = false;
+    if (fNameActive && pindexBlock->nHeight > nameRec.nExpiresAt)
+        fNameActive = false;
 
     switch (nti.op)
     {
         case OP_NAME_NEW:
         {
             //scan last 10 PoW block for tx fee that matches the one specified in tx
-            if (!IsNameFeeEnough(txdb, tx, nti, pindexBlock, mapTestPool, true, false))
+            bool fFeeLocalError = false;
+            if (!IsNameFeeEnough(txdb, tx, nti, pindexBlock, mapTestPool,
+                                 true, false, &fFeeLocalError))
             {
+                if (fFeeLocalError && pfLocalError)
+                    *pfLocalError = true;
                 if (pindexBlock->nHeight > RELEASE_HEIGHT)
                     return error("%s rejected name_new because not enough fee", info.c_str());
                 return false;
             }
 
-            if (NameActive(dbName, vchName, pindexBlock->nHeight))
+            if (fNameActive)
             {
                 if (pindexBlock->nHeight > RELEASE_HEIGHT)
                     return error("%s name_new on an unexpired name", info.c_str());
@@ -2422,8 +3251,12 @@ bool ConnectInputs(CTxDB& txdb,
         case OP_NAME_UPDATE:
         {
             //scan last 10 PoW block for tx fee that matches the one specified in tx
-            if (!IsNameFeeEnough(txdb, tx, nti, pindexBlock, mapTestPool, true, false))
+            bool fFeeLocalError = false;
+            if (!IsNameFeeEnough(txdb, tx, nti, pindexBlock, mapTestPool,
+                                 true, false, &fFeeLocalError))
             {
+                if (fFeeLocalError && pfLocalError)
+                    *pfLocalError = true;
                 if (pindexBlock->nHeight > RELEASE_HEIGHT)
                     return error("%s rejected name_update because not enough fee", info.c_str());
                 return false;
@@ -2435,7 +3268,7 @@ bool ConnectInputs(CTxDB& txdb,
             if (prev_nti.vchName != vchName)
                 return error("%s name_update name mismatch", info.c_str());
 
-            if (!NameActive(dbName, vchName, pindexBlock->nHeight))
+            if (!fNameActive)
                 return error("%s name_update on an expired name", info.c_str());
             break;
         }
@@ -2447,17 +3280,13 @@ bool ConnectInputs(CTxDB& txdb,
             if (prev_nti.vchName != vchName)
                 return error("%s name_delete name mismatch", info.c_str());
 
-            if (!NameActive(dbName, vchName, pindexBlock->nHeight))
+            if (!fNameActive)
                 return error("%s name_delete on expired name", info.c_str());
             break;
         }
         default:
             return error("%s unknown name operation", info.c_str());
     }
-
-    CNameRecord nameRec;
-    if (dbName.ExistsName(vchName) && !dbName.ReadName(vchName, nameRec))
-        return error("ConnectInputsHook() : failed to read from name DB for name %s in tx %s", sName.c_str(), tx.GetHash().GetHex().c_str());
 
     if ((nti.op == OP_NAME_UPDATE || nti.op == OP_NAME_DELETE) && !CheckNameTxPos(nameRec.vtxPos, vTxindex[nInput].pos))
     {
@@ -2483,6 +3312,377 @@ bool ConnectInputs(CTxDB& txdb,
     return true;
 }
 
+bool PrepareNameIndexConnectTransition(
+    CTxDB& txdb, CBlockIndex* pindex,
+    const std::set<uint256>& setDAGSkippedTxs,
+    CPreparedNameIndexTransition& preparedOut,
+    std::string& strError)
+{
+    preparedOut = CPreparedNameIndexTransition();
+    strError.clear();
+    if (!pindex || !pindex->phashBlock)
+    {
+        strError = "name-index connect preparation is missing a block index";
+        return false;
+    }
+
+    preparedOut.fConnect = true;
+    preparedOut.hashBlock = pindex->GetBlockHash();
+    preparedOut.cursorAfter = MakeNameIndexCursor(pindex);
+    preparedOut.setDAGSkippedTxs = setDAGSkippedTxs;
+    preparedOut.hashTransition = ComputeNameIndexBlockTransitionIdentity(
+        true, preparedOut.hashBlock, preparedOut.cursorAfter,
+        preparedOut.setDAGSkippedTxs);
+
+    CBlock block;
+    if (!block.ReadFromDisk(pindex, true) ||
+        block.GetHash() != preparedOut.hashBlock)
+    {
+        strError = strprintf(
+            "name-index connect block data is missing/corrupt at height %d",
+            pindex->nHeight);
+        return false;
+    }
+    if (!ValidateNameIndexSkippedSet(block, preparedOut.setDAGSkippedTxs,
+                                     strError))
+        return false;
+    if (!CheckCompletedNameTransition(
+            preparedOut.hashTransition, preparedOut.cursorAfter,
+            preparedOut.fAlreadyComplete, strError))
+        return false;
+    if (preparedOut.fAlreadyComplete)
+        return true;
+
+    std::vector<nameTempProxy> vName;
+    for (std::vector<CTransaction>::iterator txIt = block.vtx.begin();
+         txIt != block.vtx.end(); ++txIt)
+    {
+        CTransaction& tx = *txIt;
+        if (preparedOut.setDAGSkippedTxs.count(tx.GetHash()))
+            continue;
+        if (tx.nVersion != NAMECOIN_TX_VERSION)
+            continue;
+
+        CTxIndex txindex;
+        if (!txdb.ReadTxIndex(tx.GetHash(), txindex))
+        {
+            strError = strprintf(
+                "name-index connect tx index is missing for %s",
+                tx.GetHash().ToString().substr(0, 20).c_str());
+            return false;
+        }
+
+        map<uint256, CTxIndex> mapTestPool;
+        MapPrevTx mapInputs;
+        bool fInvalid = false;
+        if (!tx.FetchInputs(txdb, mapTestPool, true, false,
+                            mapInputs, fInvalid))
+        {
+            strError = strprintf(
+                "name-index connect inputs are unavailable for %s",
+                tx.GetHash().ToString().substr(0, 20).c_str());
+            return false;
+        }
+
+        std::vector<CTxIndex> vTxindex;
+        std::vector<CTransaction> vTxPrev;
+        vTxindex.reserve(tx.vin.size());
+        vTxPrev.reserve(tx.vin.size());
+        for (unsigned int i = 0; i < tx.vin.size(); ++i)
+        {
+            const COutPoint& prevout = tx.vin[i].prevout;
+            MapPrevTx::iterator inputIt = mapInputs.find(prevout.hash);
+            if (inputIt == mapInputs.end())
+            {
+                strError = "name-index connect input map is incomplete";
+                return false;
+            }
+            vTxPrev.push_back(inputIt->second.second);
+            vTxindex.push_back(inputIt->second.first);
+        }
+
+        bool fNameLocalError = false;
+        bool fNameIndexable = false;
+        try
+        {
+            fNameIndexable = ConnectInputs(
+                txdb, mapTestPool, tx, vTxPrev, vTxindex, pindex,
+                txindex.pos, vName, &fNameLocalError);
+        }
+        catch (const std::exception& e)
+        {
+            strError = strprintf(
+                "name-index connect validation exception at height %d: %s",
+                pindex->nHeight, e.what());
+            return false;
+        }
+        if (!fNameIndexable)
+        {
+            if (fNameLocalError)
+            {
+                strError = strprintf(
+                    "name-index connect local read failure at height %d",
+                    pindex->nHeight);
+                return false;
+            }
+            printf("ConnectBlockHook() : name operation %s was not indexable at height %d\n",
+                   tx.GetHash().ToString().substr(0,20).c_str(),
+                   pindex->nHeight);
+        }
+    }
+
+    CNameDB dbName("r");
+    NameEffectStateMap mapState;
+    set<vector<unsigned char> > setNameNew;
+    for (std::vector<nameTempProxy>::const_iterator it = vName.begin();
+         it != vName.end(); ++it)
+    {
+        if (it->op == OP_NAME_NEW && setNameNew.count(it->vchName))
+            continue;
+        if (preparedOut.vEffects.size() >=
+            NAMEINDEX_MAX_TRANSITION_EFFECTS)
+        {
+            strError = "name-index connect effect count exceeds its bound";
+            return false;
+        }
+
+        bool fBeforeExists = false;
+        CNameRecord before;
+        if (!LoadPreparedNameState(dbName, mapState, it->vchName,
+                                   fBeforeExists, before, strError))
+            return false;
+
+        CNameRecord after = fBeforeExists ? before : CNameRecord();
+        after.vtxPos.push_back(it->ind);
+        if (it->op == OP_NAME_NEW)
+            after.nLastActiveChainIndex = after.vtxPos.size() - 1;
+
+        if (after.vtxPos.size() > NAMEINDEX_CHAIN_SIZE &&
+            after.vtxPos.size() - after.nLastActiveChainIndex + 1 <=
+                NAMEINDEX_CHAIN_SIZE)
+        {
+            const int d = after.vtxPos.size() - NAMEINDEX_CHAIN_SIZE;
+            after.vtxPos.erase(after.vtxPos.begin(),
+                               after.vtxPos.begin() + d);
+            after.nLastActiveChainIndex -= d;
+            if (after.nLastActiveChainIndex < 0)
+            {
+                strError = "name-index connect produced an invalid active-chain index";
+                return false;
+            }
+        }
+        after.vtxPos.back().op = it->op;
+        if (!CalculateExpiresAt(after))
+        {
+            strError = "name-index connect could not calculate expiration";
+            return false;
+        }
+
+        CNameIndexTransitionEffect effect;
+        effect.fConnect = true;
+        effect.hashSourceTx = it->hash;
+        effect.vchName = it->vchName;
+        effect.fBeforeExists = fBeforeExists;
+        if (fBeforeExists)
+            effect.before = before;
+        effect.fAfterExists = true;
+        effect.after = after;
+        preparedOut.vEffects.push_back(effect);
+        preparedOut.vPendingCleanup.push_back(
+            std::make_pair(it->vchName, it->hash));
+        mapState[it->vchName] = std::make_pair(true, after);
+        if (it->op == OP_NAME_NEW)
+            setNameNew.insert(it->vchName);
+    }
+    return true;
+}
+
+bool PrepareNameIndexConnectTransition(
+    CTxDB& txdb, CBlockIndex* pindex,
+    CPreparedNameIndexTransition& preparedOut,
+    std::string& strError)
+{
+    const std::set<uint256> setNoSkippedTxs;
+    return PrepareNameIndexConnectTransition(
+        txdb, pindex, setNoSkippedTxs, preparedOut, strError);
+}
+
+bool PrepareNameIndexDisconnectTransition(
+    const CBlock& block, const CBlockIndex* pindex,
+    const std::set<uint256>& setDAGSkippedTxs,
+    CPreparedNameIndexTransition& preparedOut,
+    std::string& strError)
+{
+    preparedOut = CPreparedNameIndexTransition();
+    strError.clear();
+    if (!pindex || !pindex->phashBlock ||
+        block.GetHash() != pindex->GetBlockHash())
+    {
+        strError = "name-index disconnect preparation received a mismatched block";
+        return false;
+    }
+
+    preparedOut.fConnect = false;
+    preparedOut.hashBlock = pindex->GetBlockHash();
+    preparedOut.cursorAfter = MakeNameIndexCursor(pindex->pprev);
+    preparedOut.setDAGSkippedTxs = setDAGSkippedTxs;
+    preparedOut.hashTransition = ComputeNameIndexBlockTransitionIdentity(
+        false, preparedOut.hashBlock, preparedOut.cursorAfter,
+        preparedOut.setDAGSkippedTxs);
+    if (!ValidateNameIndexSkippedSet(block, preparedOut.setDAGSkippedTxs,
+                                     strError))
+        return false;
+    if (!CheckCompletedNameTransition(
+            preparedOut.hashTransition, preparedOut.cursorAfter,
+            preparedOut.fAlreadyComplete, strError))
+        return false;
+    if (preparedOut.fAlreadyComplete)
+        return true;
+
+    CNameDB dbName("r");
+    NameEffectStateMap mapState;
+    for (int i = (int)block.vtx.size() - 1; i >= 0; --i)
+    {
+        const CTransaction& tx = block.vtx[i];
+        if (preparedOut.setDAGSkippedTxs.count(tx.GetHash()))
+            continue;
+        if (tx.nVersion != NAMECOIN_TX_VERSION)
+            continue;
+        if (preparedOut.vEffects.size() >=
+            NAMEINDEX_MAX_TRANSITION_EFFECTS)
+        {
+            strError = "name-index disconnect effect count exceeds its bound";
+            return false;
+        }
+
+        NameTxInfo nti;
+        if (!DecodeNameTx(tx, nti))
+        {
+            strError = strprintf(
+                "could not decode disconnected name transaction %s",
+                tx.GetHash().ToString().substr(0, 20).c_str());
+            return false;
+        }
+
+        bool fBeforeExists = false;
+        CNameRecord before;
+        if (!LoadPreparedNameState(dbName, mapState, nti.vchName,
+                                   fBeforeExists, before, strError))
+            return false;
+        if (!fBeforeExists || before.vtxPos.empty())
+        {
+            strError = "disconnected name record is absent or empty";
+            return false;
+        }
+
+        CTransaction lastTx;
+        if (!lastTx.ReadFromDisk(before.vtxPos.back().txPos) ||
+            lastTx.GetHash() != tx.GetHash())
+        {
+            strError = "disconnected name record tail does not match its transaction";
+            return false;
+        }
+
+        CNameRecord after = before;
+        after.vtxPos.pop_back();
+        bool fAfterExists = !after.vtxPos.empty();
+        if (fAfterExists)
+        {
+            if (nti.op == OP_NAME_NEW)
+            {
+                bool fFoundRegistration = false;
+                for (int j = (int)after.vtxPos.size() - 1; j >= 0; --j)
+                {
+                    if (after.vtxPos[j].op == OP_NAME_NEW)
+                    {
+                        after.nLastActiveChainIndex = j;
+                        fFoundRegistration = true;
+                        break;
+                    }
+                }
+                if (!fFoundRegistration)
+                {
+                    strError = "disconnected name history has no prior registration";
+                    return false;
+                }
+            }
+            if (!CalculateExpiresAt(after))
+            {
+                strError = "name-index disconnect could not calculate expiration";
+                return false;
+            }
+        }
+
+        CNameIndexTransitionEffect effect;
+        effect.fConnect = false;
+        effect.hashSourceTx = tx.GetHash();
+        effect.vchName = nti.vchName;
+        effect.fBeforeExists = true;
+        effect.before = before;
+        effect.fAfterExists = fAfterExists;
+        if (fAfterExists)
+            effect.after = after;
+        preparedOut.vEffects.push_back(effect);
+        mapState[nti.vchName] = std::make_pair(fAfterExists, after);
+    }
+    return true;
+}
+
+bool PrepareNameIndexDisconnectTransition(
+    const CBlock& block, const CBlockIndex* pindex,
+    CPreparedNameIndexTransition& preparedOut,
+    std::string& strError)
+{
+    const std::set<uint256> setNoSkippedTxs;
+    return PrepareNameIndexDisconnectTransition(
+        block, pindex, setNoSkippedTxs, preparedOut, strError);
+}
+
+bool ApplyNameIndexConnectBlock(
+    CTxDB& txdb, CBlockIndex* pindex,
+    const std::set<uint256>& setDAGSkippedTxs,
+    std::string& strError)
+{
+    CPreparedNameIndexTransition prepared;
+    if (!PrepareNameIndexConnectTransition(
+            txdb, pindex, setDAGSkippedTxs, prepared, strError))
+        return false;
+    bool fAlreadyApplied = false;
+    return ApplyPreparedNameIndexTransition(prepared, fAlreadyApplied,
+                                            strError);
+}
+
+bool ApplyNameIndexConnectBlock(
+    CTxDB& txdb, CBlockIndex* pindex, std::string& strError)
+{
+    const std::set<uint256> setNoSkippedTxs;
+    return ApplyNameIndexConnectBlock(
+        txdb, pindex, setNoSkippedTxs, strError);
+}
+
+bool ApplyNameIndexDisconnectBlock(
+    const CBlock& block, const CBlockIndex* pindex,
+    const std::set<uint256>& setDAGSkippedTxs,
+    std::string& strError)
+{
+    CPreparedNameIndexTransition prepared;
+    if (!PrepareNameIndexDisconnectTransition(
+            block, pindex, setDAGSkippedTxs, prepared, strError))
+        return false;
+    bool fAlreadyApplied = false;
+    return ApplyPreparedNameIndexTransition(prepared, fAlreadyApplied,
+                                            strError);
+}
+
+bool ApplyNameIndexDisconnectBlock(
+    const CBlock& block, const CBlockIndex* pindex,
+    std::string& strError)
+{
+    const std::set<uint256> setNoSkippedTxs;
+    return ApplyNameIndexDisconnectBlock(
+        block, pindex, setNoSkippedTxs, strError);
+}
+
 bool CNamecoinHooks::DisconnectInputs(const CTransaction& tx)
 {
     if (tx.nVersion != NAMECOIN_TX_VERSION)
@@ -2492,48 +3692,78 @@ bool CNamecoinHooks::DisconnectInputs(const CTransaction& tx)
     if (!DecodeNameTx(tx, nti))
         return error("DisconnectInputsHook() : could not decode Innova name tx");
 
+    try
     {
         CNameDB dbName("cr+");
-        dbName.TxnBegin();
+        if (!dbName.TxnBegin())
+            return error("DisconnectInputsHook() : failed to begin name DB transaction");
 
         CNameRecord nameRec;
         if (!dbName.ReadName(nti.vchName, nameRec))
-            return error("DisconnectInputsHook() : failed to read from name DB");
-
-        // vtxPos might be empty if we pruned expired transactions.  However, it should normally still not
-        // be empty, since a reorg cannot go that far back.  Be safe anyway and do not try to pop if empty.
-        if (nameRec.vtxPos.size() > 0)
         {
-            // check if tx matches last tx in innovanamesindex.dat
+            dbName.TxnAbort();
+            return error("DisconnectInputsHook() : failed to read from name DB");
+        }
+
+    // The indexed tail must be exactly the transaction being undone.  Never
+    // pop an entry speculatively after a missing/corrupt block-data read.
+        if (!nameRec.vtxPos.empty())
+        {
             CTransaction lastTx;
-            lastTx.ReadFromDisk(nameRec.vtxPos.back().txPos);
-            if (lastTx.GetHash() != tx.GetHash())
-                return error("DisconnectInputsHook() : name DB inconsistency - tx hash mismatch");
-
-            // remove tx
+            if (!lastTx.ReadFromDisk(nameRec.vtxPos.back().txPos) ||
+                lastTx.GetHash() != tx.GetHash())
+            {
+                dbName.TxnAbort();
+                return error("DisconnectInputsHook() : name DB inconsistency - tx data missing or hash mismatch");
+            }
             nameRec.vtxPos.pop_back();
+        }
 
-            if (nameRec.vtxPos.size() == 0) // delete empty record
-                return dbName.EraseName(nti.vchName);
-
-            // if we have deleted name_new - recalculate Last Active Chain Index
+        bool fWriteOK = true;
+        if (nameRec.vtxPos.empty())
+        {
+            fWriteOK = dbName.EraseName(nti.vchName);
+        }
+        else
+        {
             if (nti.op == OP_NAME_NEW)
-                for (int i = nameRec.vtxPos.size() - 1; i >= 0; i--)
+            {
+                bool fFoundRegistration = false;
+                for (int i = (int)nameRec.vtxPos.size() - 1; i >= 0; --i)
+                {
                     if (nameRec.vtxPos[i].op == OP_NAME_NEW)
                     {
                         nameRec.nLastActiveChainIndex = i;
+                        fFoundRegistration = true;
                         break;
                     }
+                }
+                if (!fFoundRegistration)
+                {
+                    dbName.TxnAbort();
+                    return error("DisconnectInputsHook() : name history has no preceding registration");
+                }
+            }
+
+            if (!CalculateExpiresAt(nameRec))
+            {
+                dbName.TxnAbort();
+                return error("DisconnectInputsHook() : failed to calculate expiration time before writing to name DB");
+            }
+            fWriteOK = dbName.WriteName(nti.vchName, nameRec);
         }
-        else
-            return dbName.EraseName(nti.vchName); // delete empty record
 
-        if (!CalculateExpiresAt(nameRec))
-            return error("DisconnectInputsHook() : failed to calculate expiration time before writing to name DB");
-        if (!dbName.WriteName(nti.vchName, nameRec))
-            return error("DisconnectInputsHook() : failed to write to name DB");
-
-        dbName.TxnCommit();
+        if (!fWriteOK)
+        {
+            dbName.TxnAbort();
+            return error("DisconnectInputsHook() : failed to update name DB");
+        }
+        if (!dbName.TxnCommit())
+            return error("DisconnectInputsHook() : failed to commit name DB transaction");
+    }
+    catch (const std::exception& e)
+    {
+        return error("DisconnectInputsHook() : name DB exception: %s", e.what());
     }
 
     return true;
@@ -2569,124 +3799,16 @@ bool CNamecoinHooks::ExtractAddress(const CScript& script, string& address)
 // NOTE: the block should already be written to blockchain by now - otherwise this may fail.
 bool CNamecoinHooks::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex)
 {
-    CBlock block;
-    block.ReadFromDisk(pindex, true);
-
-    // read name txs and add them to vName if they pass all checks.
-    CTxIndex txindex;
-    // NOTE: all tx in block have been validated by upper function, so it is safe to iterate over them
-    vector<nameTempProxy> vName;
-    for (CTransaction& tx : block.vtx)
-    {
-        if (tx.nVersion != NAMECOIN_TX_VERSION)
-            continue;
-
-        if(!txdb.ReadTxIndex(tx.GetHash(), txindex))
-            return error("ConnectBlockHook() : failed to read tx from disk, aborting.");
-
-        // mapTestPool - is used in hooks->ConnectInput only if we have fMiner=true, so we don't care about it in this case
-        map<uint256, CTxIndex> mapTestPool;
-        MapPrevTx mapInputs;
-        bool fInvalid;
-        if (!tx.FetchInputs(txdb, mapTestPool, true, false, mapInputs, fInvalid))
-            return error("ReconstructNameIndex() : failed to read from disk, aborting.");
-
-        // vTxPrev and vTxindex
-        vector<CTxIndex> vTxindex;
-        vector<CTransaction> vTxPrev;
-        for (unsigned int i = 0; i < tx.vin.size(); i++)
-        {
-            COutPoint prevout = tx.vin[i].prevout;
-            CTransaction& txPrev = mapInputs[prevout.hash].second;
-            CTxIndex& txindex = mapInputs[prevout.hash].first;
-
-            vTxPrev.push_back(txPrev);
-            vTxindex.push_back(txindex);
-        }
-
-        if (!ConnectInputs(txdb, mapTestPool, tx, vTxPrev, vTxindex, pindex, txindex.pos, vName))
-        {
-            // remove tx from mapNamePending, wallet and mempool
-            NameTxInfo nti;
-            if (DecodeNameTx(tx, nti, false))
-            {
-                std::map<std::vector<unsigned char>, std::set<uint256> >::iterator mi = mapNamePending.find(nti.vchName);
-                if (mi != mapNamePending.end())
-                    mi->second.erase(tx.GetHash());
-                if (mi->second.empty())
-                    mapNamePending.erase(nti.vchName);
-            }
-
-            LOCK2(cs_main, pwalletMain->cs_wallet);
-            pwalletMain->EraseFromWallet(tx.GetHash());
-            mempool.remove(tx);
-        }
-    }
-
-    if (vName.empty())
-        return true;
-
-    // All of these name ops should succed. If there is an error - innovanamesindex.dat is probably corrupt.
-    CNameDB dbName("cr+");
-    set< vector<unsigned char> > sNameNew;
-    for (const nameTempProxy &i : vName)
-    {
-        string info = "ConnectBlock(): trying to write " + nameFromOp(i.op) + " " + stringFromVch(i.vchName) +
-            " in block " + boost::lexical_cast<string>(pindex->nHeight) + " to INN name index...";
-
-        CNameRecord nameRec;
-        if (dbName.ExistsName(i.vchName) && !dbName.ReadName(i.vchName, nameRec))
-            return error("%s failed to read from name DB", info.c_str());
-
-        dbName.TxnBegin();
-
-        // only first name_new for same name in same block will get written
-        if  (i.op == OP_NAME_NEW && sNameNew.count(i.vchName))
-            continue;
-
-        nameRec.vtxPos.push_back(i.ind); // add
-
-        // if starting new chain - save position of where it starts
-        if (i.op == OP_NAME_NEW)
-            nameRec.nLastActiveChainIndex = nameRec.vtxPos.size()-1;
-
-        // limit to 100 tx per name or a full single chain - whichever is larger
-        if (nameRec.vtxPos.size() > NAMEINDEX_CHAIN_SIZE
-             && nameRec.vtxPos.size() - nameRec.nLastActiveChainIndex + 1 <= NAMEINDEX_CHAIN_SIZE)
-        {
-            int d = nameRec.vtxPos.size() - NAMEINDEX_CHAIN_SIZE; // number of elements to delete
-            nameRec.vtxPos.erase(nameRec.vtxPos.begin(), nameRec.vtxPos.begin() + d);
-            nameRec.nLastActiveChainIndex -= d; // move last index backwards by d elements
-            if (nameRec.nLastActiveChainIndex < 0)
-                return error("ConnectBlockHook() : invalid nLastActiveChainIndex");
-        }
-
-        // save name op
-        nameRec.vtxPos.back().op = i.op;
-
-        if (!CalculateExpiresAt(nameRec))
-            return error("%s failed to calculate expiration time", info.c_str());
-        if (!dbName.WriteName(i.vchName, nameRec))
-            return error("%s failed on write", info.c_str());
-        if  (i.op == OP_NAME_NEW)
-            sNameNew.insert(i.vchName);
-
-        {
-            // remove from pending names list
-            LOCK(cs_main);
-            map<vector<unsigned char>, set<uint256> >::iterator mi = mapNamePending.find(i.vchName);
-            if (mi != mapNamePending.end())
-            {
-                mi->second.erase(i.hash);
-                if (mi->second.empty())
-                    mapNamePending.erase(i.vchName);
-            }
-        }
-        if (!dbName.TxnCommit())
-            return error("%s failed on write", info.c_str());
-        printf("%s success!\n", info.c_str());
-    }
-
+    CPreparedNameIndexTransition prepared;
+    std::string strError;
+    if (!PrepareNameIndexConnectTransition(txdb, pindex, prepared, strError))
+        return error("ConnectBlockHook() : preparation failed: %s",
+                     strError.c_str());
+    bool fAlreadyApplied = false;
+    if (!ApplyPreparedNameIndexTransition(prepared, fAlreadyApplied,
+                                          strError))
+        return error("ConnectBlockHook() : apply failed: %s",
+                     strError.c_str());
     return true;
 }
 
@@ -2838,4 +3960,5 @@ bool CNameDB::DumpToTextFile()
 
     // myfile.close();
     // return true;
+    return false;
 }

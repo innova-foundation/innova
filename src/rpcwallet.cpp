@@ -2685,6 +2685,9 @@ Value sendinntoanon(const Array& params, bool fHelp)
             "<amount> is a real number and is rounded to the nearest 0.000001"
             + HelpRequiringPassphrase());
 
+    if (IsLegacyPrivacyPolicyDisabled())
+        throw JSONRPCError(RPC_METHOD_NOT_FOUND, "Legacy ANON creation is permanently disabled");
+
     if (pwalletMain->IsLocked())
         throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
 
@@ -2732,8 +2735,9 @@ Value sendanontoanon(const Array& params, bool fHelp)
             "  warning: using a ring_size less than 5 is not recommended"
             + HelpRequiringPassphrase());
 
-    if (nBestHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)
-        throw JSONRPCError(RPC_METHOD_NOT_FOUND, "Ring signatures deprecated after fork. Use z_shield/z_unshield for private transactions, or z_migrateanon to migrate existing anon balances.");
+    if (IsLegacyPrivacyPolicyDisabled() ||
+        nBestHeight + 1 >= FORK_HEIGHT_RINGSIG_DEPRECATION)
+        throw JSONRPCError(RPC_METHOD_NOT_FOUND, "Legacy ANON creation is permanently disabled");
 
     if (pwalletMain->IsLocked())
         throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
@@ -2796,8 +2800,9 @@ Value sendanontoinn(const Array& params, bool fHelp)
             "<ring_size> is a number of outputs of the same amount to include in the signature"
             + HelpRequiringPassphrase());
 
-    if (nBestHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)
-        throw JSONRPCError(RPC_METHOD_NOT_FOUND, "Ring signatures deprecated after fork. Use z_shield/z_unshield for private transactions, or z_migrateanon to migrate existing anon balances.");
+    if (IsLegacyPrivacyPolicyDisabled() ||
+        nBestHeight + 1 >= FORK_HEIGHT_RINGSIG_DEPRECATION)
+        throw JSONRPCError(RPC_METHOD_NOT_FOUND, "Legacy ANON creation is permanently disabled");
 
     if (pwalletMain->IsLocked())
         throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED, "Error: Please enter the wallet passphrase with walletpassphrase first.");
@@ -2848,8 +2853,9 @@ Value estimateanonfee(const Array& params, bool fHelp)
             "<amount>is a real number and is rounded to the nearest 0.000001\n"
             "<ring_size> is a number of outputs of the same amount to include in the signature");
 
-    if (nBestHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)
-        throw JSONRPCError(RPC_METHOD_NOT_FOUND, "Ring signatures deprecated after fork. Use z_shield/z_unshield for private transactions.");
+    if (IsLegacyPrivacyPolicyDisabled() ||
+        nBestHeight + 1 >= FORK_HEIGHT_RINGSIG_DEPRECATION)
+        throw JSONRPCError(RPC_METHOD_NOT_FOUND, "Legacy ANON creation is permanently disabled");
 
     int64_t nAmount = AmountFromValue(params[0]);
 
@@ -3077,7 +3083,9 @@ Value anonoutputs(const Array& params, bool fHelp)
             if (nLast > 0 && it->nValue != nLast)
             {
                 nSystemCount = mOutputCounts[nLast];
-                std::string str = strprintf("%4d, %4d", nCount, nSystemCount);
+                std::string str = strprintf("%4lld, %4lld",
+                                            (long long)nCount,
+                                            (long long)nSystemCount);
                 result.push_back(Pair(str, ValueFromAmount(nLast)));
                 nCount = 0;
             };
@@ -3089,7 +3097,9 @@ Value anonoutputs(const Array& params, bool fHelp)
         if (nCount > 0)
         {
             nSystemCount = mOutputCounts[nLast];
-            std::string str = strprintf("%4d, %4d", nCount, nSystemCount);
+            std::string str = strprintf("%4lld, %4lld",
+                                        (long long)nCount,
+                                        (long long)nSystemCount);
             result.push_back(Pair(str, ValueFromAmount(nLast)));
         };
         result.push_back(Pair("total currency owned", ValueFromAmount(nTotal)));
