@@ -885,7 +885,9 @@ vector<unsigned char> DecodeBase64(const char* p, bool* pfInvalid)
 string DecodeBase64(const string& str)
 {
     vector<unsigned char> vchRet = DecodeBase64(str.c_str());
-    return string((const char*)&vchRet[0], vchRet.size());
+    // .data(), not &vchRet[0]: decoding an empty or fully-invalid string yields an
+    // empty vector, and indexing it binds a reference to null.
+    return string((const char*)vchRet.data(), vchRet.size());
 }
 
 string EncodeBase32(const unsigned char* pch, size_t len)
@@ -1072,7 +1074,7 @@ vector<unsigned char> DecodeBase32(const char* p, bool* pfInvalid)
 string DecodeBase32(const string& str)
 {
     vector<unsigned char> vchRet = DecodeBase32(str.c_str());
-    return string((const char*)&vchRet[0], vchRet.size());
+    return string((const char*)vchRet.data(), vchRet.size());
 }
 
 
