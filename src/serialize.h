@@ -17,6 +17,7 @@
 #include <cstdio>
 
 #include <boost/type_traits/is_fundamental.hpp>
+#include <boost/type_traits/make_unsigned.hpp>
 #include <boost/tuple/tuple.hpp>
 
 #include "allocators.h"
@@ -410,16 +411,30 @@ void WriteVarInt(Stream& os, I n)
 template<typename Stream, typename I>
 I ReadVarInt(Stream& is)
 {
-    I n = 0;
+    // Accumulate in the unsigned counterpart. The encoded bytes are attacker
+    // controlled and VARINT carries signed consensus fields, so shifting or
+    // incrementing a signed type here is undefined behavior on overflow --
+    // which also lets a compiler discard the downstream range checks that are
+    // supposed to catch it, and lets two builds decode the same bytes
+    // differently. Overflow now throws instead.
+    typedef typename boost::make_unsigned<I>::type U;
+    U n = 0;
     // PROTO-4: Bound loop to prevent unbounded read on malformed data
     for (int nIter = 0; nIter < 10; nIter++) {
         unsigned char chData;
         READDATA(is, chData);
-        n = (n << 7) | (chData & 0x7F);
-        if (chData & 0x80)
+        if (n > (std::numeric_limits<U>::max() >> 7))
+            throw std::ios_base::failure("ReadVarInt(): value out of range");
+        n = (U)(n << 7) | (U)(chData & 0x7F);
+        if (chData & 0x80) {
+            if (n == std::numeric_limits<U>::max())
+                throw std::ios_base::failure("ReadVarInt(): value out of range");
             n++;
-        else
-            return n;
+        } else {
+            if (n > (U)std::numeric_limits<I>::max())
+                throw std::ios_base::failure("ReadVarInt(): value out of range");
+            return (I)n;
+        }
     }
     throw std::ios_base::failure("ReadVarInt(): too many bytes");
 }
