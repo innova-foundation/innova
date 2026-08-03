@@ -6,6 +6,10 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
+      replace_existing_release:
+        description: 'To REPLACE an existing published release, type its exact tag (e.g. v5.0.0.0). Leave blank otherwise.'
+        required: false
+        default: ''
       publish_release:
         description: 'Publish a GitHub release after the full matrix completes'
         required: false
@@ -1179,12 +1183,23 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: v${{ needs.get-version.outputs.version }}
+          REPLACE_CONFIRM: ${{ inputs.replace_existing_release }}
         run: |
           set -euo pipefail
           release_ids="$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate --jq ".[] | select(.tag_name == \"${TAG_NAME}\") | .id")"
           if [ -z "$release_ids" ]; then
             echo "No existing releases for ${TAG_NAME}"
             exit 0
+          fi
+
+          # An existing published release is destroyed only when the operator
+          # typed the exact tag into replace_existing_release. Without that a
+          # dispatch on any branch would silently delete the real release,
+          # because the version comes from build.properties rather than the ref.
+          if [ "$REPLACE_CONFIRM" != "$TAG_NAME" ]; then
+            echo "Refusing to delete the existing ${TAG_NAME} release."
+            echo "Re-run with replace_existing_release set to exactly ${TAG_NAME} if that is intended."
+            exit 1
           fi
 
           for release_id in $release_ids; do

@@ -1,4 +1,7 @@
 #!/bin/bash
+# Build from a pinned release tag: master may carry activation heights below the
+# chain tip. Override: INNOVA_REF=v5.0.0.0 ./installdaemon.sh
+INNOVA_REF="${INNOVA_REF:-v4.3.9.5}"
 TEMP=/tmp/answer$$
 whiptail --title "Innova [INN]"  --menu  "Ubuntu 16.04/18.04/20.04 Daemon Node :" 20 0 0 1 "Compile innovad Ubuntu 16.04" 2 "Update innovad 16.04 to latest" 3 "Compile innovad Ubuntu 18.04" 4 "Update innovad 18.04 to latest" 5 "Compile innovad Ubuntu 20.04" 6 "Update innovad 20.04 to latest" 2>$TEMP
 choice=`cat $TEMP`
@@ -31,7 +34,7 @@ echo '/swapfile none swap sw 0 0' >> sudo /etc/fstab
 echo "Installing Innova Wallet"
 git clone https://github.com/innova-foundation/innova
 cd innova || exit
-git checkout master
+git checkout "$INNOVA_REF"
 git pull
 
 cd src
@@ -52,7 +55,7 @@ cd ~/innova/src
 2) echo 2 "Update innovad"
 echo "Updating Innova Wallet"
 cd ~/innova || exit
-git checkout master
+git checkout "$INNOVA_REF"
 git pull
 
 cd src
@@ -104,7 +107,7 @@ openssl version -v
 echo "Installing Innova Wallet"
 git clone https://github.com/innova-foundation/innova
 cd innova
-git checkout master
+git checkout "$INNOVA_REF"
 git pull
 
 cd src
@@ -125,7 +128,7 @@ cd ~/innova/src
 4) echo 4 "Update innovad 18.04"
 echo "Updating Innova Wallet"
 cd ~/innova || exit
-git checkout master
+git checkout "$INNOVA_REF"
 git pull
 
 cd src
