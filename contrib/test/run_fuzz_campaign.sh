@@ -13,6 +13,37 @@ OUT="${FUZZ_OUT:-/tmp/innova-fuzz-$STAMP}"
 
 TARGETS="fuzz_deserialize fuzz_script fuzz_block_header"
 
+# Count live workers for a target. pgrep -x fails on names over 15 characters;
+# pgrep -f also matches this script, so exclude our own pid.
+fuzz_worker_count() {
+    # Match the executable path only, so a target named in another worker's
+    # arguments (its corpus directory, for instance) is not miscounted.
+    pgrep -af "$1" 2>/dev/null \
+        | awk -v t="$1" '$2 ~ ("(^|/)" t "$") { n++ } END { print n+0 }'
+}
+
+# `status` reports a campaign in progress without disturbing it.
+if [ "${1:-}" = "status" ]; then
+    dir="${2:-${FUZZ_OUT:-}}"
+    [ -n "$dir" ] || { echo "usage: $0 status <evidence-dir>" >&2; exit 2; }
+    [ -f "$dir/manifest.txt" ] && sed 's/^/  /' "$dir/manifest.txt"
+    for t in $TARGETS; do
+        run="$dir/$t"
+        if [ ! -d "$run" ]; then
+            printf '  %-20s not started\n' "$t"
+            continue
+        fi
+        ub=$( { grep -c "runtime error" "$run/run.log" 2>/dev/null || true; } | head -1 | tr -dc '0-9')
+        art=$(find "$run/work" -maxdepth 1 \( -name 'crash-*' -o -name 'leak-*' \
+                  -o -name 'timeout-*' -o -name 'oom-*' \) 2>/dev/null | wc -l | tr -d ' ')
+        corp=$(find "$run/corpus" -maxdepth 1 -type f 2>/dev/null | wc -l | tr -d ' ')
+        printf '  %-20s corpus=%-7s undefined_behavior=%-3s artifacts=%-3s workers=%s\n' \
+               "$t" "$corp" "${ub:-0}" "$art" "$(fuzz_worker_count "$t")"
+        grep -oE 'cov: [0-9]+ ft: [0-9]+ corp: [0-9]+' "$run/run.log" 2>/dev/null | tail -1 | sed 's/^/      /'
+    done
+    exit 0
+fi
+
 mkdir -p "$OUT"
 echo "commit:    $COMMIT"   > "$OUT/manifest.txt"
 echo "started:   $STAMP"   >> "$OUT/manifest.txt"
@@ -34,9 +65,9 @@ for t in $TARGETS; do
         -max_total_time="$DURATION" -workers="$WORKERS" -jobs="$WORKERS" \
         -rss_limit_mb=4096 -print_final_stats=1 ) > "$run/run.log" 2>&1 || true
 
-    # No-match globs make ls exit non-zero, which under pipefail would abort the
-    # whole campaign after the first target. Count with find instead.
-    ub=$(grep -c "runtime error" "$run/run.log" 2>/dev/null || true)
+    # Count with find: a no-match ls glob fails under pipefail. Normalise grep -c
+    # output to a bare integer.
+    ub=$( { grep -c "runtime error" "$run/run.log" 2>/dev/null || true; } | head -1 | tr -dc '0-9')
     ub=${ub:-0}
     art=$(find "$run/work" -maxdepth 1 \( -name 'crash-*' -o -name 'leak-*' \
               -o -name 'timeout-*' -o -name 'oom-*' \) 2>/dev/null | wc -l | tr -d ' ')
