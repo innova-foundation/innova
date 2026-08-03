@@ -575,8 +575,12 @@ fuzz-deserialize-libfuzzer:
 FUZZ_SCRIPT_BIN ?= fuzz_script
 FUZZ_BLOCK_HEADER_BIN ?= fuzz_block_header
 
+# fuzz_script.cpp exercises real CScript/Solver behavior, so the implementation
+# must be compiled in alongside it, instrumented with the same flags.
+FUZZ_SCRIPT_SRCS ?= test/fuzz/fuzz_script.cpp test/fuzz/fuzz_stubs.cpp script.cpp key.cpp hash.cpp util.cpp netbase.cpp sync.cpp keystore.cpp crypter.cpp version.cpp noui.cpp scrypt.cpp pbkdf2.cpp
+
 fuzz-script-libfuzzer:
-	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $(FUZZ_SCRIPT_BIN) test/fuzz/fuzz_script.cpp
+	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $(FUZZ_SCRIPT_BIN) $(FUZZ_SCRIPT_SRCS) $(LIBS)
 
 fuzz-block-header-libfuzzer:
 	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $(FUZZ_BLOCK_HEADER_BIN) test/fuzz/fuzz_block_header.cpp
