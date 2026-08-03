@@ -20,6 +20,12 @@ runs:
         # first cargo invocation from doing it mid-build.
         cd src/privacy_vnext/rust
         rustup show active-toolchain || rustup toolchain install
+        # makefile.mingw and the .pro both link libinnova_privacy_vnext.a, the
+        # GNU-style archive. rustup defaults to the MSVC host on Windows, which
+        # emits innova_privacy_vnext.lib instead, so pull in the GNU target there.
+        case "${RUNNER_OS:-}" in
+          Windows) rustup target add x86_64-pc-windows-gnu ;;
+        esac
 
     - name: Restore vendored crates
       shell: bash
@@ -50,5 +56,16 @@ runs:
         set -euo pipefail
         export PATH="$HOME/.cargo/bin:$PATH"
         cd src/privacy_vnext/rust
-        cargo build --locked --offline --release
-        cargo build --locked --offline
+        # Windows builds through MinGW, so target the GNU ABI explicitly and put
+        # the archive where the makefile and the .pro expect to find it.
+        if [ "${RUNNER_OS:-}" = "Windows" ]; then
+          cargo build --locked --offline --release --target x86_64-pc-windows-gnu
+          cargo build --locked --offline --target x86_64-pc-windows-gnu
+          for p in release debug; do
+            mkdir -p "target/$p"
+            cp -f "target/x86_64-pc-windows-gnu/$p/libinnova_privacy_vnext.a" "target/$p/" 2>/dev/null || true
+          done
+        else
+          cargo build --locked --offline --release
+          cargo build --locked --offline
+        fi

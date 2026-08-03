@@ -432,8 +432,6 @@ jobs:
           fetch-depth: 0
 
 
-      - name: Setup IV5 Rust layer
-        uses: ./.github/actions/setup-iv5-rust
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
@@ -452,6 +450,9 @@ jobs:
             make
             git
 
+
+      - name: Setup IV5 Rust layer
+        uses: ./.github/actions/setup-iv5-rust
       - name: Build LevelDB
         run: |
           cd src/leveldb
