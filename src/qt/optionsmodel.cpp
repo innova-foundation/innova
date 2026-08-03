@@ -6,7 +6,9 @@
 #include "main.h"
 #include "walletdb.h"
 #include "guiutil.h"
+#include "privacyuipolicy.h"
 #include "ringsig.h"
+#include "stakinguipolicy.h"
 
 OptionsModel::OptionsModel(QObject *parent) :
     QAbstractListModel(parent)
@@ -36,6 +38,14 @@ bool static ApplyProxySettings()
     return true;
 }
 
+static bool LegacyPrivateStakingAllowed()
+{
+    const int currentHeight = pindexBest ? pindexBest->nHeight : 0;
+    return PrivacyUiPolicy::EvaluateLegacyControls(
+               fRegTest, IsBoundaryBActiveAtHeight(currentHeight), false)
+        .legacyControlsEnabled;
+}
+
 void OptionsModel::Init()
 {
     QSettings settings;
@@ -50,7 +60,9 @@ void OptionsModel::Init()
     nReserveBalance = settings.value("nReserveBalance").toLongLong();
     language = settings.value("language", "").toString();
     nStakingModeOption = settings.value("nStakingMode", 0).toInt();
-    if (nStakingModeOption >= 0 && nStakingModeOption <= 3)
+    if (StakingUiPolicy::CoreModeForTabIndex(nStakingModeOption) >= 0 &&
+        (!StakingUiPolicy::IsLegacyPrivateTab(nStakingModeOption) ||
+         LegacyPrivateStakingAllowed()))
     {
         LOCK(cs_stakingMode);
         nStakingMode = (StakingMode)nStakingModeOption;
@@ -58,6 +70,7 @@ void OptionsModel::Init()
     else
     {
         nStakingModeOption = 0;
+        settings.setValue("nStakingMode", nStakingModeOption);
         LOCK(cs_stakingMode);
         nStakingMode = STAKE_TRANSPARENT;
     }
@@ -232,7 +245,9 @@ bool OptionsModel::setData(const QModelIndex & index, const QVariant & value, in
             break;
         case StakingModeOpt: {
             int nMode = value.toInt();
-            if (nMode >= 0 && nMode <= 3) {
+            if (StakingUiPolicy::CoreModeForTabIndex(nMode) >= 0 &&
+                (!StakingUiPolicy::IsLegacyPrivateTab(nMode) ||
+                 LegacyPrivateStakingAllowed())) {
                 nStakingModeOption = nMode;
                 {
                     LOCK(cs_stakingMode);

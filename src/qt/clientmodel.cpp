@@ -111,12 +111,12 @@ QDateTime ClientModel::getLastBlockDate() const
     {
         TRY_LOCK(cs_main, lockMain);
         if (lockMain && pindexBest)
-            return QDateTime::fromTime_t(pindexBest->GetBlockTime());
+            return QDateTime::fromSecsSinceEpoch(pindexBest->GetBlockTime());
     }
     if (!isTestNet())
-        return QDateTime::fromTime_t(1576002227); // I n n o v a - MAINNET Genesis Block Coinbase Time
+        return QDateTime::fromSecsSinceEpoch(1576002227); // I n n o v a - MAINNET Genesis Block Coinbase Time
     else
-        return QDateTime::fromTime_t(1778976000); // I n n o v a TESTNET V3 Genesis Block Coinbase Time
+        return QDateTime::fromSecsSinceEpoch(1778976000); // I n n o v a TESTNET V3 Genesis Block Coinbase Time
 }
 
 void ClientModel::updateTimer()
@@ -371,7 +371,7 @@ QString ClientModel::clientName() const
 
 QString ClientModel::formatClientStartupTime() const
 {
-    return QDateTime::fromTime_t(nClientStartupTime).toString();
+    return QDateTime::fromSecsSinceEpoch(nClientStartupTime).toString();
 }
 
 // Handlers for core signals

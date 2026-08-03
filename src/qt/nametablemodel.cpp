@@ -9,6 +9,7 @@
 #include "../wallet.h"
 
 #include <vector>
+#include <algorithm>
 
 using namespace std;
 
@@ -110,6 +111,8 @@ public:
                     nHeightStatus = NameTableEntry::NAME_UPDATE;
                 else if (nti.op == OP_NAME_DELETE)
                     nHeightStatus = NameTableEntry::NAME_DELETE;
+                else
+                    continue;
                 NameTableEntry nte(stringFromVch(nti.vchName), stringFromVch(nti.vchValue), nti.strAddress, nHeightStatus, item.second.fIsMine);
                 cachedNameTable.append(nte);
             }
@@ -130,8 +133,9 @@ public:
             }
         }
 
-        // qLowerBound() and qUpperBound() require our cachedNameTable list to be sorted in asc order
-        qSort(cachedNameTable.begin(), cachedNameTable.end(), NameTableEntryLessThan());
+        // The bound searches require the cached table to be sorted ascending.
+        std::sort(cachedNameTable.begin(), cachedNameTable.end(),
+                  NameTableEntryLessThan());
         parent->endResetModel();
     }
 
@@ -143,9 +147,9 @@ public:
     void updateEntry(const QString &name, const QString &value, const QString &address, int nExpiresAt, int status, int *outNewRowIndex = NULL)
     {
         // Find name in model
-        QList<NameTableEntry>::iterator lower = qLowerBound(
+        QList<NameTableEntry>::iterator lower = std::lower_bound(
             cachedNameTable.begin(), cachedNameTable.end(), name, NameTableEntryLessThan());
-        QList<NameTableEntry>::iterator upper = qUpperBound(
+        QList<NameTableEntry>::iterator upper = std::upper_bound(
             cachedNameTable.begin(), cachedNameTable.end(), name, NameTableEntryLessThan());
         int lowerIndex = (lower - cachedNameTable.begin());
         int upperIndex = (upper - cachedNameTable.begin());

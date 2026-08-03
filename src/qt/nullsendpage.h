@@ -38,11 +38,14 @@ private:
     QPushButton *stopMixButton;
 
     // Status
+    QLabel *availabilityLabel;
     QLabel *statusLabel;
     QLabel *mixingStatusLabel;
     QPushButton *refreshStatusButton;
+    bool legacyNullSendEnabled;
 
     void setupUI();
+    void applyPrivacyPolicy();
 };
 
 #endif // NULLSENDPAGE_H

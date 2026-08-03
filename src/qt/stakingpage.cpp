@@ -7,6 +7,8 @@
 #include "main.h"
 #include "wallet.h"
 #include "init.h"
+#include "privacyuipolicy.h"
+#include "stakinguipolicy.h"
 
 #include <QLabel>
 #include <QComboBox>
@@ -29,7 +31,8 @@
 StakingPage::StakingPage(QWidget *parent) :
     QWidget(parent),
     model(0),
-    updateTimer(0)
+    updateTimer(0),
+    legacyPrivateModesEnabled(false)
 {
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(20, 20, 20, 20);
@@ -53,6 +56,10 @@ StakingPage::StakingPage(QWidget *parent) :
     labelEstimatedTime = new QLabel(tr("Estimated Time to Stake: N/A"));
     statusLayout->addWidget(labelEstimatedTime);
 
+    labelPrivateModeStatus = new QLabel();
+    labelPrivateModeStatus->setWordWrap(true);
+    statusLayout->addWidget(labelPrivateModeStatus);
+
     mainLayout->addWidget(statusGroup);
 
     // Tab-based staking modes (replaces dropdown + stacked widget)
@@ -68,6 +75,8 @@ StakingPage::StakingPage(QWidget *parent) :
     stakingTabs->addTab(nullstakePanel, tr("NullStake"));
     stakingTabs->addTab(coldStakingPanel, tr("Cold Staking"));
     stakingTabs->addTab(nullstakeColdPanel, tr("Private Cold Stake"));
+
+    applyPrivacyPolicy();
 
     mainLayout->addWidget(stakingTabs);
 
@@ -353,9 +362,28 @@ void StakingPage::setModel(WalletModel *model)
     this->model = model;
     if (model)
     {
+        applyPrivacyPolicy();
+        int initialMode;
         {
             LOCK(cs_stakingMode);
-            stakingTabs->setCurrentIndex((int)nStakingMode);
+            initialMode = (int)nStakingMode;
+        }
+
+        bool modeWasCoerced = false;
+        if (StakingUiPolicy::CoreModeForTabIndex(initialMode) < 0 ||
+            (StakingUiPolicy::IsLegacyPrivateTab(initialMode) &&
+             !legacyPrivateModesEnabled))
+        {
+            initialMode = 0;
+            modeWasCoerced = true;
+        }
+        stakingTabs->setCurrentIndex(initialMode);
+
+        if (modeWasCoerced && model->getOptionsModel())
+        {
+            model->getOptionsModel()->setData(
+                model->getOptionsModel()->index(OptionsModel::StakingModeOpt),
+                QVariant(0), Qt::EditRole);
         }
 
         if (model->getOptionsModel())
@@ -371,11 +399,16 @@ void StakingPage::setModel(WalletModel *model)
 
 void StakingPage::onStakingModeChanged(int index)
 {
-    if (index < 0 || index > 3)
+    const int modeIdx = StakingUiPolicy::CoreModeForTabIndex(index);
+    if (modeIdx < 0)
         return;
+    if (StakingUiPolicy::IsLegacyPrivateTab(index) &&
+        !legacyPrivateModesEnabled)
+    {
+        stakingTabs->setCurrentIndex(0);
+        return;
+    }
 
-    // Map tab index to staking mode: 0=transparent, 1=nullstake, 2=cold, 3=nullstake cold (uses cold mode)
-    int modeIdx = (index == 3) ? 2 : index; // NullStake Cold uses STAKE_COLD mode internally
     {
         LOCK(cs_stakingMode);
         nStakingMode = (StakingMode)modeIdx;
@@ -395,20 +428,39 @@ void StakingPage::onStakingModeChanged(int index)
 
 void StakingPage::updateModeDescription(int mode)
 {
-    switch(mode)
+    labelStakingMode->setText(
+        tr(StakingUiPolicy::ModeDescriptionSource(mode)));
+}
+
+void StakingPage::applyPrivacyPolicy()
+{
+    const int currentHeight = pindexBest ? pindexBest->nHeight : 0;
+    const PrivacyUiPolicy::Decision decision =
+        PrivacyUiPolicy::EvaluateLegacyControls(
+            fRegTest, IsBoundaryBActiveAtHeight(currentHeight), false);
+    legacyPrivateModesEnabled = decision.legacyControlsEnabled;
+
+    stakingTabs->setTabEnabled(1, legacyPrivateModesEnabled);
+    stakingTabs->setTabEnabled(3, legacyPrivateModesEnabled);
+    if (legacyPrivateModesEnabled)
     {
-    case 0:
-        labelStakingMode->setText(tr("Mode: Transparent Staking"));
-        break;
-    case 1:
-        labelStakingMode->setText(tr("Mode: NullStake Private Staking"));
-        break;
-    case 2:
-        labelStakingMode->setText(tr("Mode: Cold Staking (Delegated)"));
-        break;
-    default:
-        labelStakingMode->setText(tr("Mode: Unknown"));
-        break;
+        const QString notice = tr(
+            "Legacy private staking is enabled for regtest historical testing only.");
+        labelPrivateModeStatus->setText(notice);
+        stakingTabs->setTabToolTip(1, notice);
+        stakingTabs->setTabToolTip(3, notice);
+    }
+    else
+    {
+        const QString notice = tr(
+            "The unsafe legacy NullStake format is quarantined. NullStake V1/V2/V3 "
+            "remain mandatory as post-DAG private finality modes, but privacy vNext "
+            "staking is not yet available in this build.");
+        labelPrivateModeStatus->setText(notice);
+        stakingTabs->setTabToolTip(1, notice);
+        stakingTabs->setTabToolTip(3, notice);
+        if (StakingUiPolicy::IsLegacyPrivateTab(stakingTabs->currentIndex()))
+            stakingTabs->setCurrentIndex(0);
     }
 }
 

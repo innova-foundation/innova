@@ -1,5 +1,15 @@
 # Innova Privacy Architecture
 
+> **v5 recovery status:** the unsafe transaction-2000–2007 encodings are
+> quarantined on public networks and retained for isolated historical/regtest
+> replay. This is not retirement of Innova privacy. Boundary B must restore the
+> complete product in the distinct transaction-2008 protocol: full-chain
+> FCMP++, selectable privacy masks 0–7, NullSend, and NullStake V1/V2/V3 as
+> post-DAG private-finality modes. Boundary B remains unconfigured and fails
+> closed until that proof/tree ABI, wallet integration, review, and release
+> evidence are complete. Nothing here authorizes enabling the root-unbound
+> legacy verifier.
+
 This document describes Innova's optional privacy stack: the shielded value
 pool, the zero-knowledge proof systems that protect it, the private-staking
 layer, and the network-level and address-level features that reduce metadata
@@ -7,12 +17,15 @@ leakage. These are standard privacy-coin components, comparable to those found
 in Zcash, Monero, Firo, and Dash. Each section states what a feature does, the
 key source files, and how it fits into the wider system.
 
-Privacy in Innova is *opt-in*. Transparent UTXO transactions remain the default;
-a sender chooses privacy per transaction through a mode mask
+Innova privacy is *opt-in*. Transparent UTXO transactions remain the only
+public-network path in the current recovery candidate while the unsafe legacy
+proof is quarantined. The product contract preserves the sender's per-
+transaction mode mask
 (`PRIVACY_HIDE_SENDER`, `PRIVACY_HIDE_RECEIVER`, `PRIVACY_HIDE_AMOUNT`, or the
-combined `PRIVACY_MODE_FULL`), defined in `shielded.h`. Most features are gated
-by consensus fork heights so that older nodes remain valid until a coordinated
-activation.
+combined `PRIVACY_MODE_FULL`), defined in `shielded.h`. Version 2008 will use a
+distinct canonical three-bit disclosure mask after a separately reviewed
+Boundary-B activation; it does not reuse the unsafe legacy proof or wire
+format.
 
 ---
 

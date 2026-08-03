@@ -6,7 +6,8 @@ is the landing page; this directory holds the detailed docs.
 ## Building & releasing
 
 - [BUILD.md](BUILD.md) — building `innovad` and the Innova Qt wallet on Linux, macOS, and Windows
-- [RELEASING.md](RELEASING.md) — the GitHub Actions release flow (tag a `v*` version → CI builds and publishes)
+- [RELEASING.md](RELEASING.md) — the evidence-gated GitHub Actions flow (build, protected desktop signing, then manual publication)
+- [V5-RECOVERY-STATUS.md](V5-RECOVERY-STATUS.md) — current hard-gate verdict and critical path
 - [CONTRIBUTING.md](CONTRIBUTING.md) — code style, the pull-request workflow, and how to run the tests
 
 ## Architecture
@@ -22,6 +23,7 @@ is the landing page; this directory holds the detailed docs.
 ## Operations
 
 - [IPFS_SELF_HOSTED_SETUP.md](IPFS_SELF_HOSTED_SETUP.md) — running a self-hosted IPFS gateway for Hyperfile
+- [testnet audit and rollout tooling](../contrib/testnet_tools/README.md) — four-node preflight, schema-V3 activation, differential checks, and guarded traffic
 
 ## Other
 

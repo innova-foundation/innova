@@ -69,9 +69,12 @@ private:
     QPushButton *copySPAddressButton;
 
     // Status
+    QLabel *availabilityLabel;
     QLabel *statusLabel;
+    bool legacyPrivacyControlsEnabled;
 
     void setupUI();
+    void applyPrivacyPolicy();
     void refreshBalances();
     void refreshAddresses();
     void refreshSPAddresses();

@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
-EVIDENCE_SCHEMA_VERSION = 2
+EVIDENCE_SCHEMA_VERSION = 3
 
 
 EPOCH_FIELDS: Tuple[str, ...] = (
@@ -64,6 +64,12 @@ FINALITY_FIELDS: Tuple[str, ...] = (
     "boundary_b_active",
     "serializer_schema_version",
     "serializer_schema",
+    "boundary_a_carrier_schema",
+    "boundary_a_carrier_schema_version",
+    "boundary_a_carrier_tag",
+    "boundary_a_carrier_exactly_one",
+    "boundary_a_carrier_max_parents",
+    "boundary_a_dagknight_contract",
     "migration_state",
     "legacy_anon_status",
     "privacy_protocol_status",
@@ -96,9 +102,29 @@ DAG_INFO_FIELDS: Tuple[str, ...] = (
     "dag_tips",
     "dag_entries",
     "ordering_algorithm",
+    "boundary_a_active",
+    "parent_commitment_schema",
+    "parent_commitment_schema_version",
+    "parent_commitment_tag",
+    "parent_commitment_exactly_one",
+    "parent_commitment_max_parents",
+    "parent_commitment_strict_active",
+    "dagknight_contract",
+    "dagknight_anchor_pure",
+    "dagknight_k_floor",
+    "dagknight_k_ceiling",
     "best_dag_tip",
     "best_dag_score",
     "inferred_k",
+    "anchor_metrics_available",
+    "anchor_selected_parent",
+    "anchor_score",
+    "anchor_inferred_k",
+    "anchor_order_count",
+    "anchor_blue_count",
+    "anchor_order_digest",
+    "best_parent_count",
+    "best_parent_commitment_hex",
     "pruned_below",
     "finality_tier",
     "consecutive_hard_epochs",

@@ -1,0 +1,175 @@
+name: Sign v5 Desktop Artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: 'Completed Build & Release Innova run containing unsigned artifacts'
+        required: true
+        type: string
+      version:
+        description: 'Exact release version used in package filenames'
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  sign-macos:
+    runs-on: macos-14
+    environment: v5-release-signing
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          run-id: ${{ inputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+          name: innova-macOS-arm64
+          path: unsigned
+
+      - name: Import Developer ID certificate
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$APPLE_CERTIFICATE_P12_BASE64"
+          test -n "$APPLE_CERTIFICATE_PASSWORD"
+          keychain="$RUNNER_TEMP/v5-signing.keychain-db"
+          certificate="$RUNNER_TEMP/v5-developer-id.p12"
+          printf '%s' "$APPLE_CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate"
+          security create-keychain -p "$APPLE_CERTIFICATE_PASSWORD" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$APPLE_CERTIFICATE_PASSWORD" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -d user -s "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$APPLE_CERTIFICATE_PASSWORD" "$keychain"
+          rm -f "$certificate"
+
+      - name: Sign, notarize, staple, and verify macOS package
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          test -n "$APPLE_SIGNING_IDENTITY"
+          test -n "$APPLE_ID"
+          test -n "$APPLE_APP_PASSWORD"
+          test -n "$APPLE_TEAM_ID"
+          unsigned="unsigned/innova-${VERSION}-macOS-arm64.dmg"
+          test -s "$unsigned"
+          mkdir -p "$RUNNER_TEMP/v5-mount" signed_contents signing-evidence
+          hdiutil attach "$unsigned" -readonly -nobrowse -mountpoint "$RUNNER_TEMP/v5-mount"
+          trap 'hdiutil detach "$RUNNER_TEMP/v5-mount" >/dev/null 2>&1 || true' EXIT
+          ditto "$RUNNER_TEMP/v5-mount" signed_contents
+          hdiutil detach "$RUNNER_TEMP/v5-mount"
+          trap - EXIT
+
+          if [ -d signed_contents/Innova.app ]; then
+            while IFS= read -r -d '' binary; do
+              if file "$binary" | grep -q 'Mach-O'; then
+                codesign --force --timestamp --options runtime \
+                  --sign "$APPLE_SIGNING_IDENTITY" "$binary"
+              fi
+            done < <(find signed_contents/Innova.app/Contents -type f -print0)
+            codesign --force --timestamp --options runtime \
+              --sign "$APPLE_SIGNING_IDENTITY" signed_contents/Innova.app
+            codesign --verify --deep --strict --verbose=4 signed_contents/Innova.app \
+              2>&1 | tee signing-evidence/codesign-verify.txt
+          fi
+          if [ -f signed_contents/innovad ]; then
+            codesign --force --timestamp --options runtime \
+              --sign "$APPLE_SIGNING_IDENTITY" signed_contents/innovad
+            codesign --verify --strict --verbose=4 signed_contents/innovad \
+              2>&1 | tee -a signing-evidence/codesign-verify.txt
+          fi
+
+          signed="innova-${VERSION}-macOS-arm64.dmg"
+          hdiutil create -volname Innova -srcfolder signed_contents -ov -format UDZO "$signed"
+          xcrun notarytool submit "$signed" --wait \
+            --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID" \
+            2>&1 | tee signing-evidence/notarytool.txt
+          xcrun stapler staple "$signed" 2>&1 | tee signing-evidence/stapler.txt
+          xcrun stapler validate "$signed" 2>&1 | tee -a signing-evidence/stapler.txt
+          spctl --assess --type open --context context:primary-signature --verbose=4 "$signed" \
+            2>&1 | tee signing-evidence/gatekeeper.txt
+          shasum -a 256 "$unsigned" > signing-evidence/unsigned-package.sha256
+          shasum -a 256 "$signed" > signing-evidence/signed-package.sha256
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: innova-macOS-arm64-signed
+          path: innova-${{ inputs.version }}-macOS-arm64.dmg
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v5
+        with:
+          name: v5-macos-signing-evidence
+          path: signing-evidence
+          if-no-files-found: error
+          retention-days: 30
+
+  sign-windows:
+    runs-on: windows-latest
+    environment: v5-release-signing
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          run-id: ${{ inputs.candidate_run_id }}
+          github-token: ${{ github.token }}
+          name: innova-win64
+          path: unsigned
+
+      - name: Authenticode sign, RFC3161 timestamp, and verify Windows package
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          WINDOWS_TIMESTAMP_URL: ${{ secrets.WINDOWS_TIMESTAMP_URL }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:WINDOWS_CERTIFICATE_PFX_BASE64) { throw 'missing Windows certificate' }
+          if (-not $env:WINDOWS_TIMESTAMP_URL) { throw 'missing RFC3161 timestamp URL' }
+          $unsigned = "unsigned/innova-$env:VERSION-win64.zip"
+          if (-not (Test-Path $unsigned)) { throw "missing $unsigned" }
+          $pfx = Join-Path $env:RUNNER_TEMP 'v5-authenticode.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_PFX_BASE64))
+          Expand-Archive -LiteralPath $unsigned -DestinationPath signed_contents
+          New-Item -ItemType Directory -Force signing-evidence | Out-Null
+          $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
+            Where-Object { $_.FullName -match '\\x64\\signtool.exe$' } |
+            Sort-Object FullName -Descending | Select-Object -First 1).FullName
+          if (-not $signtool) { throw 'SignTool not found' }
+          $targets = Get-ChildItem signed_contents -Recurse -File | Where-Object { $_.Extension -in '.exe', '.dll' }
+          if (-not $targets) { throw 'no Windows executables or DLLs found' }
+          foreach ($target in $targets) {
+            & $signtool sign /fd SHA256 /td SHA256 /tr $env:WINDOWS_TIMESTAMP_URL `
+              /f $pfx /p $env:WINDOWS_CERTIFICATE_PASSWORD $target.FullName
+            if ($LASTEXITCODE -ne 0) { throw "SignTool sign failed for $($target.FullName)" }
+            & $signtool verify /pa /all /v $target.FullName 2>&1 |
+              Tee-Object -FilePath signing-evidence/authenticode-verify.txt -Append
+            if ($LASTEXITCODE -ne 0) { throw "SignTool verify failed for $($target.FullName)" }
+          }
+          Remove-Item -Force $pfx
+          $signed = "innova-$env:VERSION-win64.zip"
+          Compress-Archive -Path signed_contents/* -DestinationPath $signed
+          (Get-FileHash -Algorithm SHA256 $unsigned).Hash.ToLower() | Set-Content signing-evidence/unsigned-package.sha256
+          (Get-FileHash -Algorithm SHA256 $signed).Hash.ToLower() | Set-Content signing-evidence/signed-package.sha256
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: innova-win64-signed
+          path: innova-${{ inputs.version }}-win64.zip
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v5
+        with:
+          name: v5-windows-signing-evidence
+          path: signing-evidence
+          if-no-files-found: error
+          retention-days: 30

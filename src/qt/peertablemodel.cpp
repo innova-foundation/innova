@@ -16,6 +16,8 @@
 #include <QList>
 #include <QTimer>
 
+#include <algorithm>
+
 bool NodeLessThan::operator()(const CNodeCombinedStats &left, const CNodeCombinedStats &right) const
 {
     const CNodeStats *pLeft = &(left.nodeStats);
@@ -93,7 +95,8 @@ public:
 
         if (sortColumn >= 0)
             // sort cacheNodeStats (use stable sort to prevent rows jumping around unneceesarily)
-            qStableSort(cachedNodeStats.begin(), cachedNodeStats.end(), NodeLessThan(sortColumn, sortOrder));
+            std::stable_sort(cachedNodeStats.begin(), cachedNodeStats.end(),
+                             NodeLessThan(sortColumn, sortOrder));
 
         // build index map
         mapNodeRows.clear();

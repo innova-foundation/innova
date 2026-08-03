@@ -5,6 +5,7 @@
 #include "util.h"
 #include "init.h"
 #include "innovarpc.h"
+#include "uriutil.h"
 
 #include <QRegularExpression>
 #include <QStandardPaths>
@@ -20,6 +21,7 @@
 #include <QClipboard>
 #include <QFileDialog>
 #include <QDesktopServices>
+#include <QLocale>
 #include <QThread>
 
 #ifndef Q_MOC_RUN
@@ -76,12 +78,13 @@ QString boostPathToQString(const boost::filesystem::path &path)
 
 QString dateTimeStr(const QDateTime &date)
 {
-    return date.date().toString(Qt::SystemLocaleShortDate) + QString(" ") + date.toString("hh:mm");
+    return QLocale().toString(date.date(), QLocale::ShortFormat) +
+           QString(" ") + date.toString("hh:mm");
 }
 
 QString dateTimeStr(qint64 nTime)
 {
-    return dateTimeStr(QDateTime::fromTime_t((qint32)nTime));
+    return dateTimeStr(QDateTime::fromSecsSinceEpoch(nTime));
 }
 
 QString formatDurationStr(int secs)
@@ -202,62 +205,30 @@ QString executeRpc(const QString &command, const QStringList &args, bool &ok)
 
 bool parseBitcoinURI(const QUrl &uri, SendCoinsRecipient *out)
 {
-    // NovaCoin: check prefix
-    if(uri.scheme() != QString("innova"))
+    URIUtil::Recipient parsed;
+    if (!URIUtil::Parse(uri, &parsed))
         return false;
-
-    SendCoinsRecipient rv;
-    rv.address = uri.path();
-    rv.amount = 0;
-    QList<QPair<QString, QString> > items = uri.queryItems();
-    for (QList<QPair<QString, QString> >::iterator i = items.begin(); i != items.end(); i++)
+    if (out)
     {
-        bool fShouldReturnFalse = false;
-        if (i->first.startsWith("req-"))
-        {
-            i->first.remove(0, 4);
-            fShouldReturnFalse = true;
-        }
-
-        if (i->first == "label")
-        {
-            rv.label = i->second;
-            fShouldReturnFalse = false;
-        }
-        else if (i->first == "amount")
-        {
-            if(!i->second.isEmpty())
-            {
-                if(!BitcoinUnits::parse(BitcoinUnits::BTC, i->second, &rv.amount))
-                {
-                    return false;
-                }
-            }
-            fShouldReturnFalse = false;
-        }
-
-        if (fShouldReturnFalse)
-            return false;
-    }
-    if(out)
-    {
-        *out = rv;
+        out->address = parsed.address;
+        out->label = parsed.label;
+        out->amount = parsed.amount;
     }
     return true;
 }
 
 bool parseBitcoinURI(QString uri, SendCoinsRecipient *out)
 {
-    // Convert innova:// to innova:
-    //
-    //    Cannot handle this later, because bitcoin:// will cause Qt to see the part after // as host,
-    //    which will lower-case it (and thus invalidate the address).
-    if(uri.startsWith("innova://"))
+    URIUtil::Recipient parsed;
+    if (!URIUtil::Parse(uri, &parsed))
+        return false;
+    if (out)
     {
-        uri.replace(0, 12, "innova:");
+        out->address = parsed.address;
+        out->label = parsed.label;
+        out->amount = parsed.amount;
     }
-    QUrl uriInstance(uri);
-    return parseBitcoinURI(uriInstance, out);
+    return true;
 }
 
 QString HtmlEscape(const QString& str, bool fMultiLine)

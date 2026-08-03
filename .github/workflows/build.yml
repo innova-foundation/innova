@@ -11,6 +11,10 @@ on:
         required: false
         type: boolean
         default: false
+      signed_run_id:
+        description: 'Completed protected desktop-signing workflow run ID'
+        required: false
+        type: string
 
 env:
   COIN_NAME: innova
@@ -84,6 +88,7 @@ jobs:
         with:
           name: innova-ubuntu2204-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-ubuntu2204-x86_64.tar.gz
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────
   # Ubuntu 24.04 x86_64 (daemon + Qt)
@@ -133,6 +138,7 @@ jobs:
         with:
           name: innova-ubuntu2404-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-ubuntu2404-x86_64.tar.gz
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────
   # Ubuntu 26.04 x86_64 (daemon + Qt) via Docker container
@@ -217,6 +223,7 @@ jobs:
         with:
           name: innova-ubuntu2604-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-ubuntu2604-x86_64.tar.gz
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────
   # Debian 12 x86_64 (daemon + Qt) via Docker container
@@ -269,6 +276,7 @@ jobs:
         with:
           name: innova-debian12-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-debian12-x86_64.tar.gz
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────
   # Linux aarch64 (daemon only)
@@ -309,6 +317,7 @@ jobs:
         with:
           name: innova-linux-aarch64
           path: innova-${{ needs.get-version.outputs.version }}-linux-aarch64.tar.gz
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────
   # macOS ARM64 (Apple Silicon) — daemon + Qt
@@ -329,7 +338,13 @@ jobs:
       - name: Build daemon
         run: |
           cd src
-          make -f makefile.osx -j$(sysctl -n hw.ncpu)
+          make STRICT_WARNINGS=1 -f makefile.osx clean
+          make STRICT_WARNINGS=1 -f makefile.osx -j$(sysctl -n hw.ncpu) innovad test_innova
+
+      - name: Full macOS 38-translation-unit test aggregate
+        run: |
+          cd src
+          make STRICT_WARNINGS=1 -f makefile.osx release-check
 
       - name: Build Qt wallet
         run: |
@@ -338,29 +353,47 @@ jobs:
 
       - name: Package
         run: |
+          set -euo pipefail
           strip src/innovad || true
+          test -s src/innovad
           mkdir -p dmg_contents
           cp src/innovad dmg_contents/
           if [ -d "Innova.app" ]; then
             strip Innova.app/Contents/MacOS/Innova || true
+            test -s Innova.app/Contents/MacOS/Innova
             cp -R Innova.app dmg_contents/
           elif [ -f "Innova" ]; then
             strip Innova || true
+            test -s Innova
             cp Innova dmg_contents/
+          else
+            echo "Qt wallet output is missing" >&2
+            exit 1
           fi
-          cd dmg_contents && shasum -a 256 * > SHA256SUMS.txt 2>/dev/null || true && cd ..
+          (
+            cd dmg_contents
+            find . -type f ! -name SHA256SUMS.txt -exec shasum -a 256 {} \; > SHA256SUMS.txt
+            test -s SHA256SUMS.txt
+          )
           touch dmg_contents/.metadata_never_index
+          dmg="innova-${{ needs.get-version.outputs.version }}-macOS-arm64.dmg"
+          created=0
           for attempt in 1 2 3; do
             hdiutil create -volname "Innova" -srcfolder dmg_contents \
-              -ov -format UDZO innova-${{ needs.get-version.outputs.version }}-macOS-arm64.dmg && break
+              -ov -format UDZO "$dmg" && { created=1; break; }
             echo "hdiutil attempt $attempt failed, retrying in 5s..."
             sleep 5
           done
+          if [ "$created" -ne 1 ] || [ ! -s "$dmg" ]; then
+            echo "failed to create required macOS DMG" >&2
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v5
         with:
           name: innova-macOS-arm64
           path: innova-${{ needs.get-version.outputs.version }}-macOS-arm64.dmg
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────
   # Windows x86_64 — fully static daemon + Qt via MSYS2
@@ -471,21 +504,33 @@ jobs:
 
       - name: Package
         run: |
+          set -euo pipefail
           PKGDIR="innova-${{ needs.get-version.outputs.version }}-win64"
           mkdir -p "$PKGDIR"
           cp src/innovad.exe "$PKGDIR/"
-          cp release/Innova.exe "$PKGDIR/" 2>/dev/null || true
-          [ -f "Innova.exe" ] && cp Innova.exe "$PKGDIR/" || true
+          if [ -s release/Innova.exe ]; then
+            cp release/Innova.exe "$PKGDIR/"
+          elif [ -s Innova.exe ]; then
+            cp Innova.exe "$PKGDIR/"
+          else
+            echo "Qt wallet output is missing" >&2
+            exit 1
+          fi
+          test -s "$PKGDIR/innovad.exe"
+          test -s "$PKGDIR/Innova.exe"
           strip "$PKGDIR"/*.exe 2>/dev/null || true
           cd "$PKGDIR"
-          sha256sum *.exe > SHA256SUMS.txt 2>/dev/null || true
+          sha256sum *.exe > SHA256SUMS.txt
+          test -s SHA256SUMS.txt
           cd ..
           "/c/Program Files/7-Zip/7z.exe" a innova-${{ needs.get-version.outputs.version }}-win64.zip "$PKGDIR"/*
+          test -s innova-${{ needs.get-version.outputs.version }}-win64.zip
 
       - uses: actions/upload-artifact@v5
         with:
           name: innova-win64
           path: innova-${{ needs.get-version.outputs.version }}-win64.zip
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────
   # Debian 11 (Bullseye) x86_64 (daemon + Qt) via Docker
@@ -536,6 +581,7 @@ jobs:
         with:
           name: innova-debian11-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-debian11-x86_64.tar.gz
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────
   # Fedora 41 x86_64 (daemon + Qt) via Docker
@@ -584,6 +630,7 @@ jobs:
         with:
           name: innova-fedora41-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-fedora41-x86_64.tar.gz
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────
   # Arch Linux x86_64 (daemon + Qt) via Docker
@@ -632,6 +679,7 @@ jobs:
         with:
           name: innova-archlinux-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-archlinux-x86_64.tar.gz
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────
   # Fedora 40 x86_64 (daemon + Qt) via Docker
@@ -680,6 +728,7 @@ jobs:
         with:
           name: innova-fedora40-x86_64
           path: innova-${{ needs.get-version.outputs.version }}-fedora40-x86_64.tar.gz
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────
   # Linux aarch64 Qt (daemon + Qt) via QEMU emulation
@@ -712,26 +761,32 @@ jobs:
               make USE_NATIVETOR=- USE_IPFS=- -f makefile.unix -j\$(nproc) && \
               cd .. && \
               sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx\$\$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx\$\$BDB_LIB_SUFFIX/' innova-qt.pro && \
-              strip --remove-section=.note.ABI-tag /usr/lib/aarch64-linux-gnu/libQt5Core.so.5 || true && \
+              (strip --remove-section=.note.ABI-tag /usr/lib/aarch64-linux-gnu/libQt5Core.so.5 || true) && \
               qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- USE_IPFS=- innova-qt.pro && \
               make -j\$(nproc)
             "
 
       - name: Package
         run: |
+          set -euo pipefail
           mkdir -p innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt
-          cp src/innovad innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt/ 2>/dev/null || true
-          cp Innova innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt/ 2>/dev/null || true
+          test -s src/innovad
+          test -s Innova
+          cp src/innovad innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt/
+          cp Innova innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt/
           cd innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt
-          sha256sum * > SHA256SUMS.txt 2>/dev/null || true
+          sha256sum innovad Innova > SHA256SUMS.txt
+          test -s SHA256SUMS.txt
           cd ..
           tar -czf innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt/
+          test -s innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt.tar.gz
 
       - uses: actions/upload-artifact@v5
         with:
           name: innova-linux-aarch64-qt
           path: innova-${{ needs.get-version.outputs.version }}-linux-aarch64-qt.tar.gz
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────
   # Raspberry Pi (armhf/armv7) — daemon only via QEMU emulation
@@ -764,24 +819,258 @@ jobs:
 
       - name: Package
         run: |
+          set -euo pipefail
           mkdir -p innova-${{ needs.get-version.outputs.version }}-linux-armhf
-          cp src/innovad innova-${{ needs.get-version.outputs.version }}-linux-armhf/ 2>/dev/null || true
+          test -s src/innovad
+          cp src/innovad innova-${{ needs.get-version.outputs.version }}-linux-armhf/
           cd innova-${{ needs.get-version.outputs.version }}-linux-armhf
-          sha256sum * > SHA256SUMS.txt 2>/dev/null || true
+          sha256sum innovad > SHA256SUMS.txt
+          test -s SHA256SUMS.txt
           cd ..
           tar -czf innova-${{ needs.get-version.outputs.version }}-linux-armhf.tar.gz \
             innova-${{ needs.get-version.outputs.version }}-linux-armhf/
+          test -s innova-${{ needs.get-version.outputs.version }}-linux-armhf.tar.gz
 
       - uses: actions/upload-artifact@v5
         with:
           name: innova-linux-armhf
           path: innova-${{ needs.get-version.outputs.version }}-linux-armhf.tar.gz
+          if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────
-  # Create GitHub Release (version tags or explicit manual publish)
+  # Required audit gates and GitHub release policy
   # ─────────────────────────────────────────────────────────
+  # Required v5 release-audit gates. These build from clean objects so stale
+  # test ABIs cannot turn proof-verifier results into false crashes or passes.
+  audit-linux-clean:
+    runs-on: ubuntu-22.04
+    needs: get-version
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libtool autotools-dev automake pkg-config \
+            libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb++-dev \
+            libminiupnpc-dev libcurl4-openssl-dev libgmp-dev libsecp256k1-dev
+
+      - name: Static audit checks
+        run: contrib/test/v5_release_gate.sh --static
+
+      - name: Clean warning-gated build and 38-translation-unit test aggregate
+        run: |
+          cd src
+          make USE_NATIVETOR=- USE_IPFS=- -f makefile.unix clean
+          make USE_NATIVETOR=- USE_IPFS=- -f makefile.unix -j$(nproc) innovad test_innova \
+            CXXFLAGS="-Werror=return-type -Werror=format" \
+            CFLAGS="-Werror=return-type -Werror=format"
+          make USE_NATIVETOR=- USE_IPFS=- -f makefile.unix release-check \
+            CXXFLAGS="-Werror=return-type -Werror=format" \
+            CFLAGS="-Werror=return-type -Werror=format"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: v5-audit-linux-daemon
+          path: src/innovad
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Materialize immutable source artifact
+        run: |
+          set -euo pipefail
+          source_commit="$(git rev-parse --verify HEAD)"
+          [[ "$source_commit" =~ ^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$ ]]
+          git cat-file -e "${source_commit}^{commit}"
+          git archive --format=tar --prefix=innova-v5-source/ \
+            --output="$RUNNER_TEMP/innova-v5-source.tar" "$source_commit"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: v5-immutable-source-artifact
+          path: ${{ runner.temp }}/innova-v5-source.tar
+          if-no-files-found: error
+          retention-days: 30
+
+  audit-linux-sanitizers:
+    runs-on: ubuntu-22.04
+    needs: get-version
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, undefined]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libtool autotools-dev automake pkg-config \
+            libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb++-dev \
+            libminiupnpc-dev libcurl4-openssl-dev libgmp-dev libsecp256k1-dev
+
+      - name: Clean sanitizer build and 38-translation-unit test aggregate
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          cd src
+          make USE_NATIVETOR=- USE_IPFS=- -f makefile.unix clean
+          make USE_NATIVETOR=- USE_IPFS=- SANITIZE=${{ matrix.sanitizer }} \
+            CXXFLAGS="-O1 -Werror=return-type -Werror=format" \
+            CFLAGS="-O1 -Werror=return-type -Werror=format" \
+            -f makefile.unix -j$(nproc) innovad test_innova
+          ./test_innova \
+            --run_test=bulletproof_ac_tests/range_proof_malformed_ipa_point_returns_false_without_crash \
+            --catch_system_errors=yes
+          ./test_innova \
+            --run_test=bulletproof_ac_tests/nullstake_mofn_kernel_proof_create_verify \
+            --catch_system_errors=yes
+          make USE_NATIVETOR=- USE_IPFS=- SANITIZE=${{ matrix.sanitizer }} \
+            CXXFLAGS="-O1 -Werror=return-type -Werror=format" \
+            CFLAGS="-O1 -Werror=return-type -Werror=format" \
+            -f makefile.unix release-check
+
+  audit-rust-vnext:
+    runs-on: ubuntu-22.04
+    needs: get-version
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Install pinned Rust toolchain only
+        run: rustup toolchain install 1.94.1 --profile minimal --component clippy
+      - name: Verify vendored provenance and run locked offline Rust gate
+        run: src/privacy_vnext/rust/check.sh
+
+  audit-regtest:
+    runs-on: ubuntu-22.04
+    needs: audit-linux-clean
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev libevent-dev libboost-all-dev libdb++-dev \
+            libminiupnpc-dev libcurl4-openssl-dev libgmp-dev libsecp256k1-dev python3 bc
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: v5-audit-linux-daemon
+          path: src
+
+      - name: Full local privacy, IDAG, finality, relay, and restart gate
+        run: |
+          set -euo pipefail
+          chmod +x src/innovad
+          contrib/test/v5_release_gate.sh --integration 2>&1 | tee v5-integration.log
+
+      - uses: actions/upload-artifact@v5
+        if: always()
+        with:
+          name: v5-audit-integration-log
+          path: v5-integration.log
+          if-no-files-found: error
+          retention-days: 30
+
+  release-policy:
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release && inputs.signed_run_id != ''
+    runs-on: ubuntu-22.04
+    needs:
+      - audit-linux-clean
+      - audit-rust-vnext
+      - build-ubuntu-2204
+      - build-ubuntu-2404
+      - build-ubuntu-2604
+      - build-debian-11
+      - build-debian-12
+      - build-fedora-40
+      - build-fedora-41
+      - build-archlinux
+      - build-linux-arm64
+      - build-linux-arm64-qt
+      - build-linux-armhf
+      - build-macos-arm64
+      - build-windows
+    environment: v5-release
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v5
+        with:
+          name: v5-immutable-source-artifact
+          path: ${{ runner.temp }}/v5-immutable-source-artifact
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: innova-*
+          path: ${{ runner.temp }}/v5-release-artifacts
+      - uses: actions/download-artifact@v5
+        with:
+          run-id: ${{ inputs.signed_run_id }}
+          github-token: ${{ github.token }}
+          pattern: innova-*-signed
+          path: ${{ runner.temp }}/v5-release-artifacts
+
+      - name: Require external provenance, preflight, audit, and review attestations
+        env:
+          V5_RELEASE_MANIFEST_BASE64: ${{ secrets.V5_RELEASE_MANIFEST_BASE64 }}
+          V5_RELEASE_EVIDENCE_BASE64: ${{ secrets.V5_RELEASE_EVIDENCE_BASE64 }}
+          V5_RELEASE_GATE_EVIDENCE_BASE64: ${{ secrets.V5_RELEASE_GATE_EVIDENCE_BASE64 }}
+          V5_PRIVATE_AUDIT_SHA256: ${{ secrets.V5_PRIVATE_AUDIT_SHA256 }}
+          V5_SPECIFICATION_TO_CODE_ATTESTATION_BASE64: ${{ secrets.V5_SPECIFICATION_TO_CODE_ATTESTATION_BASE64 }}
+          V5_ADVERSARIAL_COMPOSITION_ATTESTATION_BASE64: ${{ secrets.V5_ADVERSARIAL_COMPOSITION_ATTESTATION_BASE64 }}
+        run: |
+          set -euo pipefail
+          test -n "$V5_RELEASE_MANIFEST_BASE64"
+          test -n "$V5_RELEASE_EVIDENCE_BASE64"
+          test -n "$V5_RELEASE_GATE_EVIDENCE_BASE64"
+          test -n "$V5_PRIVATE_AUDIT_SHA256"
+          test -n "$V5_SPECIFICATION_TO_CODE_ATTESTATION_BASE64"
+          test -n "$V5_ADVERSARIAL_COMPOSITION_ATTESTATION_BASE64"
+          umask 077
+          manifest_path="$RUNNER_TEMP/v5-release-candidate-manifest.json"
+          evidence_path="$RUNNER_TEMP/v5-testnet-v3-preflight.json"
+          release_gate_evidence_path="$RUNNER_TEMP/v5-release-gate-evidence.json"
+          source_artifact_path="$RUNNER_TEMP/v5-immutable-source-artifact/innova-v5-source.tar"
+          artifact_directory="$RUNNER_TEMP/v5-release-artifacts"
+          specification_attestation_path="$RUNNER_TEMP/specification-to-code-review.json"
+          adversarial_attestation_path="$RUNNER_TEMP/adversarial-composition-review.json"
+          trap 'rm -f "$manifest_path" "$evidence_path" "$release_gate_evidence_path" "$specification_attestation_path" "$adversarial_attestation_path"' EXIT
+          printf '%s' "$V5_RELEASE_MANIFEST_BASE64" | base64 --decode > "$manifest_path"
+          printf '%s' "$V5_RELEASE_EVIDENCE_BASE64" | base64 --decode > "$evidence_path"
+          printf '%s' "$V5_RELEASE_GATE_EVIDENCE_BASE64" | base64 --decode > "$release_gate_evidence_path"
+          printf '%s' "$V5_SPECIFICATION_TO_CODE_ATTESTATION_BASE64" | base64 --decode > "$specification_attestation_path"
+          printf '%s' "$V5_ADVERSARIAL_COMPOSITION_ATTESTATION_BASE64" | base64 --decode > "$adversarial_attestation_path"
+          test -s "$manifest_path"
+          test -s "$evidence_path"
+          test -s "$release_gate_evidence_path"
+          test -s "$source_artifact_path"
+          test -d "$artifact_directory"
+          test -s "$specification_attestation_path"
+          test -s "$adversarial_attestation_path"
+          python3 contrib/test/check_v5_release_policy.py \
+            --manifest "$manifest_path" \
+            --evidence "$evidence_path" \
+            --release-gate-evidence "$release_gate_evidence_path" \
+            --artifact-directory "$artifact_directory" \
+            --source-artifact "$source_artifact_path" \
+            --specification-to-code-attestation "$specification_attestation_path" \
+            --adversarial-composition-attestation "$adversarial_attestation_path" \
+            --private-audit-sha256 "$V5_PRIVATE_AUDIT_SHA256"
+
+  # Create GitHub Release (version tags or explicit manual publish)
   release:
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+    if: github.event_name == 'workflow_dispatch' && inputs.publish_release && inputs.signed_run_id != ''
     runs-on: ubuntu-22.04
     needs:
       - get-version
@@ -798,6 +1087,11 @@ jobs:
       - build-linux-armhf
       - build-macos-arm64
       - build-windows
+      - audit-linux-clean
+      - audit-linux-sanitizers
+      - audit-rust-vnext
+      - audit-regtest
+      - release-policy
     permissions:
       contents: write
     steps:
@@ -808,13 +1102,74 @@ jobs:
         with:
           path: artifacts
 
-      - name: Collect release assets
+      - name: Build vendored-crate archive for air-gapped reproduction
         run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cd src/privacy_vnext/rust
+          # Regenerate from the checksums pinned in Cargo.lock so the archive is
+          # reproducible from the tag alone, then ship it with the release.
+          cargo vendor --versioned-dirs > /dev/null
+          tar --sort=name --owner=0 --group=0 --numeric-owner \
+              --mtime='UTC 2020-01-01' -cf - vendor | zstd -19 -T0 \
+              -o "$GITHUB_WORKSPACE/innova-${{ needs.get-version.outputs.version }}-rust-vendor.tar.zst"
+          cd "$GITHUB_WORKSPACE"
+          sha256sum "innova-${{ needs.get-version.outputs.version }}-rust-vendor.tar.zst"
+
+      - name: Download protected signed desktop artifacts
+        uses: actions/download-artifact@v5
+        with:
+          run-id: ${{ inputs.signed_run_id }}
+          github-token: ${{ github.token }}
+          pattern: innova-*-signed
+          path: artifacts
+
+      - name: Collect release assets
+        env:
+          VERSION: ${{ needs.get-version.outputs.version }}
+        run: |
+          set -euo pipefail
           mkdir -p release-assets
-          find artifacts -type f \( -name "*.tar.gz" -o -name "*.dmg" -o -name "*.zip" \) \
-            -exec cp {} release-assets/ \;
+          expected=(
+            "innova-${VERSION}-ubuntu2204-x86_64.tar.gz"
+            "innova-${VERSION}-ubuntu2404-x86_64.tar.gz"
+            "innova-${VERSION}-ubuntu2604-x86_64.tar.gz"
+            "innova-${VERSION}-debian11-x86_64.tar.gz"
+            "innova-${VERSION}-debian12-x86_64.tar.gz"
+            "innova-${VERSION}-fedora40-x86_64.tar.gz"
+            "innova-${VERSION}-fedora41-x86_64.tar.gz"
+            "innova-${VERSION}-archlinux-x86_64.tar.gz"
+            "innova-${VERSION}-linux-aarch64.tar.gz"
+            "innova-${VERSION}-linux-aarch64-qt.tar.gz"
+            "innova-${VERSION}-linux-armhf.tar.gz"
+            "innova-${VERSION}-macOS-arm64.dmg"
+            "innova-${VERSION}-win64.zip"
+          )
+          for asset in "${expected[@]}"; do
+            case "$asset" in
+              *-macOS-arm64.dmg)
+                source="artifacts/innova-macOS-arm64-signed/$asset"
+                ;;
+              *-win64.zip)
+                source="artifacts/innova-win64-signed/$asset"
+                ;;
+              *)
+                count="$(find artifacts -type f -name "$asset" | wc -l | tr -d '[:space:]')"
+                if [ "$count" -ne 1 ]; then
+                  echo "expected exactly one release asset $asset, found $count" >&2
+                  exit 1
+                fi
+                source="$(find artifacts -type f -name "$asset" -print -quit)"
+                ;;
+            esac
+            test -s "$source"
+            cp "$source" release-assets/
+          done
           cd release-assets
-          sha256sum * > SHA256SUMS.txt
+          test "$(find . -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" -eq 13
+          sha256sum -- "${expected[@]}" > SHA256SUMS.txt
+          test -s SHA256SUMS.txt
           echo "=== Release Assets ==="
           ls -lh
           echo ""
@@ -843,6 +1198,8 @@ jobs:
           tag_name: v${{ needs.get-version.outputs.version }}
           name: "Innova v${{ needs.get-version.outputs.version }}"
           body: "Official release binaries for Innova v${{ needs.get-version.outputs.version }}. See release notes above for details."
-          files: release-assets/*
+          files: |
+            release-assets/*
+            innova-${{ needs.get-version.outputs.version }}-rust-vendor.tar.zst
           draft: false
           prerelease: true

@@ -962,7 +962,8 @@ void BitcoinGUI::setNumBlocks(int count, int nTotalBlocks)
             nBlocksPerSec = 0;
 
             if (nBlocksPerSec>0) {
-              nRemainingTime = QDateTime::fromTime_t((nTotalBlocks - count) / nBlocksPerSec).toUTC().toString("hh'h'mm'm'");
+              nRemainingTime = QDateTime::fromSecsSinceEpoch(
+                  (nTotalBlocks - count) / nBlocksPerSec).toUTC().toString("hh'h'mm'm'");
           }
 
           QDateTime lastBlockDate = clientModel->getLastBlockDate();

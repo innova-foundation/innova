@@ -3,6 +3,8 @@
 #include "bitcoinunits.h"
 #include "optionsmodel.h"
 #include "guiutil.h"
+#include "main.h"
+#include "privacyuipolicy.h"
 
 #include <QMessageBox>
 #include <QApplication>
@@ -15,9 +17,11 @@
 
 NullSendPage::NullSendPage(QWidget *parent) :
     QWidget(parent),
-    model(0)
+    model(0),
+    legacyNullSendEnabled(false)
 {
     setupUI();
+    applyPrivacyPolicy();
 }
 
 void NullSendPage::setupUI()
@@ -45,6 +49,12 @@ void NullSendPage::setupUI()
     descLabel->setStyleSheet("color: #888; margin-bottom: 15px; font-size: 12px;");
     mainLayout->addWidget(descLabel);
 
+    availabilityLabel = new QLabel();
+    availabilityLabel->setWordWrap(true);
+    availabilityLabel->setStyleSheet(
+        "color: #d98c00; font-weight: bold; margin-bottom: 8px;");
+    mainLayout->addWidget(availabilityLabel);
+
     // Status section
     QGroupBox *statusGroup = new QGroupBox(tr("Mixing Status"));
     QHBoxLayout *statusLayout = new QHBoxLayout(statusGroup);
@@ -67,7 +77,7 @@ void NullSendPage::setupUI()
     QLabel *fromLabel = new QLabel(tr("From:"));
     fromLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     fromAddressEdit = new QLineEdit();
-    fromAddressEdit->setPlaceholderText(tr("Your address (funds to mix)"));
+    fromAddressEdit->setPlaceholderText(tr("Your shielded z-address (funds to mix)"));
     fromAddressEdit->setFont(GUIUtil::bitcoinAddressFont());
     QToolButton *fromPasteBtn = new QToolButton();
     fromPasteBtn->setIcon(QIcon(":/icons/editpaste"));
@@ -164,11 +174,36 @@ void NullSendPage::setupUI()
 void NullSendPage::setModel(WalletModel *model)
 {
     this->model = model;
+    applyPrivacyPolicy();
+}
+
+void NullSendPage::applyPrivacyPolicy()
+{
+    const int currentHeight = pindexBest ? pindexBest->nHeight : 0;
+    const PrivacyUiPolicy::Decision decision =
+        PrivacyUiPolicy::EvaluateLegacyControls(
+            fRegTest, IsBoundaryBActiveAtHeight(currentHeight), false);
+    legacyNullSendEnabled = decision.legacyControlsEnabled;
+    startMixButton->setEnabled(legacyNullSendEnabled);
+    stopMixButton->setEnabled(false);
+
+    if (legacyNullSendEnabled)
+    {
+        availabilityLabel->setText(tr(
+            "Legacy NullSend is enabled for regtest historical testing only."));
+    }
+    else
+    {
+        availabilityLabel->setText(tr(
+            "The unsafe legacy NullSend format is quarantined. Full-chain FCMP++ "
+            "NullSend remains mandatory for privacy vNext, but is not yet available "
+            "in this build."));
+    }
 }
 
 void NullSendPage::onStartMixClicked()
 {
-    if (!model)
+    if (!model || !legacyNullSendEnabled)
         return;
 
     QString from = fromAddressEdit->text().trimmed();
@@ -195,11 +230,13 @@ void NullSendPage::onStartMixClicked()
     if (!ctx.isValid())
         return;
 
-    // Execute the real mixing RPC (startmixing <amount> [rounds]). The pool/timeout
-    // fields are informational; startmixing coordinates rounds via collateralnodes.
+    // This legacy RPC remains reachable only on regtest. Public-network vNext
+    // will use a distinct transaction-2008 RPC and payload.
     bool ok = false;
-    QStringList args; args << amount;
-    QString result = GUIUtil::executeRpc("startmixing", args, ok);
+    QStringList args;
+    args << from << amount << QStringLiteral("7")
+         << QString::number(pool) << QString::number(timeout);
+    QString result = GUIUtil::executeRpc("z_nullsend", args, ok);
     if (ok)
     {
         statusLabel->setText(tr("Mixing started -- use Refresh Status to monitor."));
@@ -215,16 +252,14 @@ void NullSendPage::onStartMixClicked()
 
 void NullSendPage::onStopMixClicked()
 {
-    bool ok = false;
-    QString result = GUIUtil::executeRpc("stopmixing", QStringList(), ok);
-    statusLabel->setText(ok ? tr("Mixing stopped.") : tr("Stop failed."));
-    if (!ok)
-        QMessageBox::warning(this, tr("Stop Mixing"), tr("Could not stop mixing:\n\n%1").arg(result));
+    statusLabel->setText(tr("Legacy NullSend sessions cannot be manually stopped."));
 }
 
 void NullSendPage::onRefreshStatusClicked()
 {
     bool ok = false;
-    QString result = GUIUtil::executeRpc("getmixingstatus", QStringList(), ok);
-    statusLabel->setText(ok ? result.left(160) : tr("Status unavailable."));
+    QString result = GUIUtil::executeRpc("z_nullsendinfo", QStringList(), ok);
+    mixingStatusLabel->setText(ok ? result.left(160) : tr("Status unavailable."));
+    statusLabel->setText(ok ? tr("Legacy NullSend status refreshed.")
+                            : tr("Status unavailable."));
 }

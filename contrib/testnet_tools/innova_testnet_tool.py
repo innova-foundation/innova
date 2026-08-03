@@ -17,6 +17,7 @@ import math
 import os
 import platform
 import random
+import re
 import shlex
 import statistics
 import subprocess
@@ -34,18 +35,43 @@ DEFAULT_TRAFFIC_RPC_PORT = 15631
 DEFAULT_TRAFFIC_P2P_PORT = 15639
 DEFAULT_TRAFFIC_RPC_USER = "innova_traffic"
 DEFAULT_TRAFFIC_RPC_PASSWORD = "change_this_traffic_rpc_password"
-DEFAULT_TESTNET_PEERS = [
-    "45.32.161.27:15539",
-    "45.77.164.87:15539",
-    "144.202.37.36:15539",
-    "45.32.168.101:15539",
-    "45.77.118.217:15539",
+SAFE_SSH_OPTIONS = [
+    "-o", "BatchMode=yes",
+    "-o", "IdentitiesOnly=yes",
+    "-o", "PasswordAuthentication=no",
+    "-o", "KbdInteractiveAuthentication=no",
+    "-o", "StrictHostKeyChecking=yes",
 ]
-DEFAULT_TESTNET_SEED_IPS = tuple(peer.split(":", 1)[0] for peer in DEFAULT_TESTNET_PEERS)
-DEFAULT_TESTNET_SEED_NODES = tuple(
-    ("seed%s" % (idx + 1), "root@%s" % peer.split(":", 1)[0])
-    for idx, peer in enumerate(DEFAULT_TESTNET_PEERS)
-)
+REQUIRED_SSH_OPTIONS = {
+    "batchmode": "yes",
+    "identitiesonly": "yes",
+    "passwordauthentication": "no",
+    "kbdinteractiveauthentication": "no",
+    "stricthostkeychecking": "yes",
+}
+FORBIDDEN_INVENTORY_KEYS = {
+    "api_key",
+    "apikey",
+    "credential",
+    "credentials",
+    "identity_file",
+    "passphrase",
+    "password",
+    "private_key",
+    "privatekey",
+    "privkey",
+    "rpc_password",
+    "rpcpassword",
+    "secret",
+    "ssh_key",
+    "ssh_private_key",
+    "token",
+}
+# The retired five-seed fleet must never be contacted implicitly.  Live commands
+# require either four explicit --seed entries or a credential-free --fleet-file.
+DEFAULT_TESTNET_PEERS: Tuple[str, ...] = ()
+DEFAULT_TESTNET_SEED_IPS: Tuple[str, ...] = ()
+DEFAULT_TESTNET_SEED_NODES: Tuple[Tuple[str, str], ...] = ()
 
 BLOCK_COLUMNS = [
     "collected_at",
@@ -174,7 +200,7 @@ def boolish(value: Any) -> Optional[bool]:
     return None
 
 
-def seed_ip_bans(banned: Any) -> List[str]:
+def seed_ip_bans(banned: Any, seed_ips: Sequence[str] = DEFAULT_TESTNET_SEED_IPS) -> List[str]:
     if not isinstance(banned, list):
         return []
     result: List[str] = []
@@ -183,7 +209,7 @@ def seed_ip_bans(banned: Any) -> List[str]:
             continue
         address = str(entry.get("address", ""))
         ip = address.split("/", 1)[0].split(":", 1)[0]
-        if ip in DEFAULT_TESTNET_SEED_IPS and ip not in result:
+        if ip in seed_ips and ip not in result:
             result.append(ip)
     return result
 
@@ -258,6 +284,30 @@ def split_ssh_options(values: Optional[Sequence[str]]) -> List[str]:
     return opts
 
 
+def validate_ssh_options(values: Optional[Sequence[str]]) -> List[str]:
+    opts = split_ssh_options(values)
+    idx = 0
+    while idx < len(opts):
+        token = opts[idx]
+        setting = ""
+        if token == "-o":
+            idx += 1
+            if idx >= len(opts):
+                raise ValueError("--ssh-option -o requires a setting")
+            setting = opts[idx]
+        elif token.startswith("-o") and len(token) > 2:
+            setting = token[2:]
+        if setting:
+            key, sep, value = setting.partition("=")
+            normalized_key = key.strip().lower()
+            if normalized_key in REQUIRED_SSH_OPTIONS:
+                if not sep or value.strip().lower() != REQUIRED_SSH_OPTIONS[normalized_key]:
+                    raise ValueError("SSH option %s may not weaken mandatory value %s" %
+                                     (key, REQUIRED_SSH_OPTIONS[normalized_key]))
+        idx += 1
+    return opts
+
+
 def default_innovad_for_backend(backend: str) -> str:
     repo_binary = Path.cwd() / "src" / "innovad"
     if backend == "local" and repo_binary.exists():
@@ -293,7 +343,8 @@ class RpcClient:
         self.rpcport = rpcport
         self.testnet = testnet
         self.ssh_target = ssh_target
-        self.ssh_options = split_ssh_options(ssh_options)
+        self.user_ssh_options = validate_ssh_options(ssh_options)
+        self.ssh_options = SAFE_SSH_OPTIONS + self.user_ssh_options
         self.timeout = timeout
 
     def describe(self) -> str:
@@ -312,7 +363,7 @@ class RpcClient:
             rpcport=self.rpcport,
             testnet=self.testnet,
             ssh_target=self.ssh_target,
-            ssh_options=self.ssh_options,
+            ssh_options=self.user_ssh_options,
             timeout=max(1, int(timeout)),
         )
 
@@ -1128,11 +1179,86 @@ def parse_seed_node(value: str, index: int) -> Tuple[str, str]:
     return label, target
 
 
+def fleet_entries(path: str) -> List[Dict[str, Any]]:
+    try:
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("cannot read fleet inventory %s: %s" % (path, exc))
+    if not isinstance(raw, dict) or raw.get("schema_version") != 1:
+        raise ValueError("fleet inventory must have schema_version=1")
+    def reject_credentials(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                normalized_key = re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
+                if normalized_key in FORBIDDEN_INVENTORY_KEYS:
+                    raise ValueError("fleet inventory must not contain credentials")
+                reject_credentials(child)
+        elif isinstance(value, list):
+            for child in value:
+                reject_credentials(child)
+
+    reject_credentials(raw)
+    nodes = raw.get("nodes")
+    if not isinstance(nodes, list) or len(nodes) != 4 or not all(isinstance(node, dict) for node in nodes):
+        raise ValueError("fleet inventory must contain exactly four node objects")
+    for node in nodes:
+        label = str(node.get("label", "")).strip()
+        target = str(node.get("ssh_target", "")).strip()
+        if not label or not target or target.lower().endswith(".invalid"):
+            raise ValueError("fleet inventory has a missing or placeholder label/ssh_target")
+    labels = [str(node["label"]) for node in nodes]
+    if len(set(labels)) != 4:
+        raise ValueError("fleet inventory labels must be unique")
+    targets = [str(node["ssh_target"]) for node in nodes]
+    if len(set(targets)) != 4:
+        raise ValueError("fleet inventory SSH targets must be unique")
+    return list(nodes)
+
+
 def seed_nodes_from_args(args: argparse.Namespace) -> List[Tuple[str, str]]:
     values = getattr(args, "seed", None)
-    if not values:
-        return list(DEFAULT_TESTNET_SEED_NODES)
-    return [parse_seed_node(value, idx) for idx, value in enumerate(values)]
+    if values:
+        nodes = [parse_seed_node(value, idx) for idx, value in enumerate(values)]
+    else:
+        fleet_file = str(getattr(args, "fleet_file", "") or "")
+        if not fleet_file:
+            raise ValueError("supply exactly four --seed entries or --fleet-file; retired seed defaults are disabled")
+        nodes = [(str(node["label"]), str(node["ssh_target"])) for node in fleet_entries(fleet_file)]
+    if len(nodes) != 4:
+        raise ValueError("the v5 fleet must contain exactly four nodes")
+    labels = [label for label, _ in nodes]
+    targets = [target for _, target in nodes]
+    if len(set(labels)) != 4 or len(set(targets)) != 4:
+        raise ValueError("the four explicit seed labels and SSH targets must be unique")
+    for target in targets:
+        user = target.rsplit("@", 1)[0] if "@" in target else ""
+        if "://" in target or ":" in user:
+            raise ValueError("SSH targets must not embed passwords or URL credentials")
+    return nodes
+
+
+def seed_ips_from_args(args: argparse.Namespace) -> Tuple[str, ...]:
+    result = []
+    for _, target in seed_nodes_from_args(args):
+        host = target.rsplit("@", 1)[-1]
+        if host.startswith("[") and "]" in host:
+            host = host[1:host.index("]")]
+        elif host.count(":") == 1:
+            host = host.split(":", 1)[0]
+        result.append(host)
+    return tuple(result)
+
+
+def fleet_peers_from_args(args: argparse.Namespace) -> List[str]:
+    fleet_file = str(getattr(args, "fleet_file", "") or "")
+    if not fleet_file:
+        return []
+    peers = []
+    for node in fleet_entries(fleet_file):
+        host = str(node["ssh_target"]).rsplit("@", 1)[-1]
+        port = int(node.get("p2p_port", 15539))
+        peers.append("%s:%d" % (host, port))
+    return peers
 
 
 def ssh_capture_text(
@@ -1146,7 +1272,7 @@ def ssh_capture_text(
     remote_command = "timeout %s %s" % (shlex.quote(str(max(1, int(timeout)))), remote_argv)
     try:
         proc = subprocess.run(
-            ["ssh"] + split_ssh_options(ssh_options) + [target, remote_command],
+            ["ssh"] + SAFE_SSH_OPTIONS + validate_ssh_options(ssh_options) + [target, remote_command],
             text=True,
             capture_output=True,
             timeout=max(1, int(timeout)) + 5,
@@ -1280,7 +1406,7 @@ def audit_one_node(
                 "peer_count": peer_count,
                 "initialblockdownload": field(info, "initialblockdownload"),
                 "banned_count": banned_count,
-                "seed_ip_bans": seed_ip_bans(banned),
+                "seed_ip_bans": seed_ip_bans(banned, seed_ips_from_args(args)),
                 "mempool_count": len(mempool) if isinstance(mempool, list) else "",
                 "mining": mining,
                 "cpumining": field(mining, "cpumining"),
@@ -1350,7 +1476,6 @@ def summarize_seed_audit(seed_nodes: Sequence[Dict[str, Any]], args: argparse.Na
             process_issues[str(node.get("label"))] = "%s matching innovad processes" % count
         elif min_age is not None and min_age >= 0 and min_age < args.min_process_age:
             process_issues[str(node.get("label"))] = "matching process age %ss < %ss" % (min_age, args.min_process_age)
-    seed4 = next((node for node in seed_nodes if node.get("label") == "seed4"), {})
     checks = {
         "all_seed_rpc_ok": len(good) == len(expected_labels),
         "no_stale_restart_loop_signal": not process_issues,
@@ -1359,7 +1484,7 @@ def summarize_seed_audit(seed_nodes: Sequence[Dict[str, Any]], args: argparse.Na
         "common_seed_hash": hashes_match,
         "height_spread_zero": max_height >= 0 and common_height >= 0 and max_height - common_height == 0,
         "min_seed_peers_ok": min((to_int(node.get("peer_count"), -1) or -1 for node in seed_nodes), default=-1) >= args.min_seed_peers,
-        "seed4_cpumining_false": boolish(seed4.get("cpumining")) is False,
+        "controlled_mining_paused": all(boolish(node.get("cpumining")) is False for node in seed_nodes),
         "no_warnings": not warnings,
     }
     return {
@@ -1407,6 +1532,8 @@ def cmd_seed_audit(args: argparse.Namespace) -> int:
         "seed_summary": seed_summary,
     }
     if args.include_traffic:
+        if not args.traffic_ssh:
+            raise ValueError("--traffic-ssh is required with --include-traffic")
         traffic_node = audit_one_node(
             args.traffic_label,
             args.traffic_ssh,
@@ -1655,7 +1782,9 @@ def local_or_remote_mkdir(client: RpcClient, path: str) -> None:
 
 
 def traffic_config_text(args: argparse.Namespace) -> str:
-    peers = args.peer or DEFAULT_TESTNET_PEERS
+    peers = args.peer or fleet_peers_from_args(args)
+    if not peers:
+        raise RuntimeError("traffic configuration requires --peer entries or --fleet-file")
     rpcuser = args.rpcuser or DEFAULT_TRAFFIC_RPC_USER
     rpcpassword = args.rpcpassword or DEFAULT_TRAFFIC_RPC_PASSWORD
     rpcport = args.rpcport or DEFAULT_TRAFFIC_RPC_PORT
@@ -2463,7 +2592,7 @@ class FakeClient:
         if method == "getrawmempool":
             return ["a", "b", "c"]
         if method == "getpeerinfo":
-            return [{"addr": "45.32.161.27:15539"}, {"addr": "45.77.164.87:15539"}]
+            return [{"addr": "192.0.2.10:15539"}, {"addr": "192.0.2.11:15539"}]
         if method == "listbanned":
             return []
         if method == "getmininginfo":
@@ -2543,6 +2672,50 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     render_report(workdir, workdir / "report.html")
     assert (workdir / "report.html").exists()
     assert "Innova Testnet Metrics" in (workdir / "report.html").read_text(encoding="utf-8")
+    try:
+        seed_nodes_from_args(argparse.Namespace(seed=None, fleet_file=None))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("live seed selection accepted the retired implicit inventory")
+    bad_inventory = workdir / "bad-fleet.json"
+    bad_inventory.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "nodes": [
+                    {
+                        "label": "n%d" % idx,
+                        "ssh_target": "root@n%d.example.test" % idx,
+                        "auth": {"identity-file": "must-not-be-stored"} if idx == 0 else {},
+                    }
+                    for idx in range(4)
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    try:
+        fleet_entries(str(bad_inventory))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("nested credential-bearing inventory was accepted")
+    assert validate_ssh_options(["-i /tmp/maintenance-key"]) == [
+        "-i", "/tmp/maintenance-key"
+    ]
+    try:
+        validate_ssh_options(["-o StrictHostKeyChecking=accept-new"])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("unsafe SSH host-key override was accepted")
+    try:
+        validate_ssh_options(["-o PasswordAuthentication=yes"])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("password SSH authentication override was accepted")
     print("selftest passed: %s" % workdir)
     return 0
 
@@ -2582,8 +2755,9 @@ def add_live_seed_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--seed",
         action="append",
-        help="Seed SSH target as label=root@host; repeatable. Defaults to the five public testnet seeds.",
+        help="Seed SSH target as label=root@host; repeat exactly four times.",
     )
+    parser.add_argument("--fleet-file", help="Credential-free four-node fleet JSON (alternative to --seed)")
     parser.add_argument("--seed-innovad", default="/usr/local/bin/innovad", help="Remote seed innovad path")
     parser.add_argument("--seed-datadir", default=DEFAULT_SEED_DATADIR, help="Remote seed data directory")
     parser.add_argument("--seed-rpcport", type=int, default=DEFAULT_SEED_RPC_PORT, help="Remote seed RPC port")
@@ -2596,8 +2770,9 @@ def add_seed_selection_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--seed",
         action="append",
-        help="Seed SSH target as label=root@host; repeatable. Defaults to the five public testnet seeds.",
+        help="Seed SSH target as label=root@host; repeat exactly four times.",
     )
+    parser.add_argument("--fleet-file", help="Credential-free four-node fleet JSON (alternative to --seed)")
     parser.add_argument("--seed-innovad", default="/usr/local/bin/innovad", help="Remote seed innovad path")
     parser.add_argument("--seed-datadir", default=DEFAULT_SEED_DATADIR, help="Remote seed data directory")
     parser.add_argument("--seed-rpcport", type=int, default=DEFAULT_SEED_RPC_PORT, help="Remote seed RPC port")
@@ -2606,8 +2781,8 @@ def add_seed_selection_args(parser: argparse.ArgumentParser) -> None:
 
 def add_traffic_audit_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--include-traffic", action="store_true", help="Also audit the dedicated traffic wallet")
-    parser.add_argument("--traffic-label", default="traffic-seed4")
-    parser.add_argument("--traffic-ssh", default="root@45.32.168.101")
+    parser.add_argument("--traffic-label", default="traffic")
+    parser.add_argument("--traffic-ssh", default="", help="Required with --include-traffic")
     parser.add_argument("--traffic-datadir", default=DEFAULT_TRAFFIC_DATADIR)
     parser.add_argument("--traffic-rpcport", type=int, default=DEFAULT_TRAFFIC_RPC_PORT)
 
@@ -2631,12 +2806,12 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--output", help="Output HTML path; defaults to <input-dir>/report.html")
     report.set_defaults(func=cmd_report)
 
-    audit = sub.add_parser("seed-audit", help="Run read-only five-seed live safety gates")
+    audit = sub.add_parser("seed-audit", help="Run read-only four-node live safety gates")
     add_live_seed_args(audit)
     add_traffic_audit_args(audit)
     audit.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     audit.add_argument("--output", help="Output JSON path; defaults to <output-dir>/seed_audit_<timestamp>.json")
-    audit.add_argument("--min-seed-peers", type=int, default=4)
+    audit.add_argument("--min-seed-peers", type=int, default=3)
     audit.add_argument("--min-traffic-peers", type=int, default=4)
     audit.add_argument("--min-process-age", type=int, default=60)
     audit.set_defaults(func=cmd_seed_audit)
@@ -2659,6 +2834,7 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     prepare.add_argument("--p2p-port", type=int, default=DEFAULT_TRAFFIC_P2P_PORT)
     prepare.add_argument("--peer", action="append", help="Testnet peer host:port; repeatable")
+    prepare.add_argument("--fleet-file", help="Credential-free four-node fleet JSON used to derive peers")
     prepare.add_argument("--funding-amount", type=float, default=2500.0)
     prepare.add_argument("--split-count", type=int, default=1000)
     prepare.add_argument("--split-amount", type=float, default=1.0)

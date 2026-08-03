@@ -41,6 +41,7 @@ private:
     void setupNullStakePanel();
     void setupColdStakingPanel();
     void setupNullStakeColdPanel();
+    void applyPrivacyPolicy();
     void updateModeDescription(int mode);
 
     WalletModel *model;
@@ -49,6 +50,7 @@ private:
     QLabel *labelStakingStatus;
     QLabel *labelStakingBalance;
     QLabel *labelEstimatedTime;
+    QLabel *labelPrivateModeStatus;
 
     QTabWidget *stakingTabs;
 
@@ -78,6 +80,7 @@ private:
     QPushButton *btnNullColdDelegate;
 
     QTimer *updateTimer;
+    bool legacyPrivateModesEnabled;
 };
 
 #endif // STAKINGPAGE_H

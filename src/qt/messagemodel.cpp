@@ -20,6 +20,8 @@
 #include <QFont>
 #include <QColor>
 
+#include <algorithm>
+
 #if BOOST_VERSION >= 107300
 #include <boost/bind/bind.hpp>
 using boost::placeholders::_1;
@@ -301,7 +303,11 @@ private:
             cachedMessageTable.append(message);
         } else
         {
-            int index = qLowerBound(cachedMessageTable.begin(), cachedMessageTable.end(), message.received_datetime, MessageTableEntryLessThan()) - cachedMessageTable.begin();
+            int index = std::lower_bound(cachedMessageTable.begin(),
+                                         cachedMessageTable.end(),
+                                         message.received_datetime,
+                                         MessageTableEntryLessThan()) -
+                        cachedMessageTable.begin();
             parent->beginInsertRows(QModelIndex(), index, index);
             cachedMessageTable.insert(
                         index,

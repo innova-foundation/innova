@@ -15,7 +15,10 @@
 #include <QDateTime>
 #include <QDebug>
 #include <QList>
+#include <QLocale>
 #include <QTimer>
+
+#include <algorithm>
 
 bool BannedNodeLessThan::operator()(const CCombinedBan& left, const CCombinedBan& right) const
 {
@@ -66,7 +69,8 @@ public:
 
         if (sortColumn >= 0)
             // sort cachedBanlist (use stable sort to prevent rows jumping around unneceesarily)
-            qStableSort(cachedBanlist.begin(), cachedBanlist.end(), BannedNodeLessThan(sortColumn, sortOrder));
+            std::stable_sort(cachedBanlist.begin(), cachedBanlist.end(),
+                             BannedNodeLessThan(sortColumn, sortOrder));
     }
 
     int size() const
@@ -132,7 +136,7 @@ QVariant BanTableModel::data(const QModelIndex &index, int role) const
         case Bantime:
             QDateTime date = QDateTime::fromMSecsSinceEpoch(0);
             date = date.addSecs(rec->banEntry.nBanUntil);
-            return date.toString(Qt::SystemLocaleLongDate);
+            return QLocale().toString(date, QLocale::LongFormat);
         }
     }
 

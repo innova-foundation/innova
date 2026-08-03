@@ -6,7 +6,7 @@ DEFINES += QT_GUI BOOST_THREAD_USE_LIB BOOST_SPIRIT_THREADSAFE
 CONFIG += no_include_pwd
 CONFIG += thread
 CONFIG += static
-CONFIG += c++11
+CONFIG += c++17
 QT += core gui network widgets concurrent
 
 # macOS: Detect Homebrew prefix early (arm64 uses /opt/homebrew, x86_64 uses /usr/local)
@@ -19,7 +19,7 @@ macx {
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 lessThan(QT_MAJOR_VERSION, 5): CONFIG += static
-QMAKE_CXXFLAGS += -fpermissive -Wno-literal-suffix
+QMAKE_CXXFLAGS += -Wno-literal-suffix
 QMAKE_CFLAGS += -std=c99 -Wno-incompatible-pointer-types
 unix|macx:QMAKE_MAKE = $$PWD/contrib/innova_make.sh
 
@@ -87,6 +87,22 @@ exists($$MSYS2_MINGW64/include/boost/version.hpp) {
 OBJECTS_DIR = build
 MOC_DIR = build
 UI_DIR = build
+
+IV5_RUST_DIR = $$PWD/src/privacy_vnext/rust
+IV5_RUST_PROFILE = debug
+IV5_RUST_FLAGS =
+contains(RELEASE, 1) {
+    IV5_RUST_PROFILE = release
+    IV5_RUST_FLAGS = --release
+}
+win32-msvc:IV5_RUST_LIB = $$IV5_RUST_DIR/target/$$IV5_RUST_PROFILE/innova_privacy_vnext.lib
+else:IV5_RUST_LIB = $$IV5_RUST_DIR/target/$$IV5_RUST_PROFILE/libinnova_privacy_vnext.a
+privacy_vnext_rust.target = $$IV5_RUST_LIB
+win32:privacy_vnext_rust.commands = cd /d $$shell_path($$IV5_RUST_DIR) && cargo build --locked --offline $$IV5_RUST_FLAGS
+else:privacy_vnext_rust.commands = cd $$shell_path($$IV5_RUST_DIR) && cargo build --locked --offline $$IV5_RUST_FLAGS
+QMAKE_EXTRA_TARGETS += privacy_vnext_rust
+PRE_TARGETDEPS += $$IV5_RUST_LIB
+LIBS = $$IV5_RUST_LIB $$LIBS
 
 # use: qmake "RELEASE=1"
 contains(RELEASE, 1) {
@@ -469,6 +485,10 @@ contains(USE_O3, 1) {
 
 QMAKE_CXXFLAGS_WARN_ON = -fdiagnostics-show-option -Wall -Wextra -Wno-ignored-qualifiers -Wno-format -Wno-unused-parameter -Wstack-protector
 
+contains(STRICT_WARNINGS, 1) {
+    QMAKE_CXXFLAGS += -Werror=return-type -Werror=format
+}
+
 
 # Input
 DEPENDPATH += src src/json src/qt
@@ -627,7 +647,10 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/sendmessagesentry.h \
     src/qt/initexecutor.h \
     src/qt/plugins/mrichtexteditor/mrichtextedit.h \
-    src/qt/qvalidatedtextedit.h
+    src/qt/qvalidatedtextedit.h \
+    src/qt/uriutil.h \
+    src/qt/stakinguipolicy.h \
+    src/qt/privacyuipolicy.h
 
 SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/initexecutor.cpp \
@@ -692,6 +715,9 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/walletdb.cpp \
     src/qt/clientmodel.cpp \
     src/qt/guiutil.cpp \
+    src/qt/uriutil.cpp \
+    src/qt/stakinguipolicy.cpp \
+    src/qt/privacyuipolicy.cpp \
     src/qt/transactionrecord.cpp \
     src/qt/optionsmodel.cpp \
     src/qt/monitoreddatamapper.cpp \
@@ -756,6 +782,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/collateralnodeconfig.cpp \
     src/spork.cpp \
     src/shielded.cpp \
+    src/privacy_vnext_ffi.cpp \
     src/nullsend.cpp \
     src/rpcshielded.cpp \
     src/zkproof.cpp \
@@ -911,8 +938,9 @@ macx:QMAKE_MACOSX_DEPLOYMENT_TARGET = 12.0
 macx:QMAKE_CXXFLAGS_THREAD += -pthread
 macx:QMAKE_RPATHDIR = @executable_path/../Frameworks
 macx:QMAKE_CXXFLAGS += -stdlib=libc++ -Wno-deprecated-declarations
-# macOS 26+ requires signed binaries in .app bundles; ad-hoc sign for CI compatibility.
-macx:QMAKE_POST_LINK += codesign --force --deep -s - $${TARGET}.app
+# Ad-hoc signing is opt-in for local compatibility only. Release signing and
+# notarization are separate packaging steps and must never use --deep.
+macx:contains(ADHOC_SIGN, 1):QMAKE_POST_LINK += codesign --force --sign - --timestamp=none $${TARGET}.app
 
 
 # Set libraries and includes at end, to use platform-defined defaults if not overridden

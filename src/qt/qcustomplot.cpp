@@ -2930,8 +2930,10 @@ void QCPLayoutGrid::updateLayout()
   
   int totalRowSpacing = (rowCount()-1) * mRowSpacing;
   int totalColSpacing = (columnCount()-1) * mColumnSpacing;
-  QVector<int> colWidths = getSectionSizes(maxColWidths, minColWidths, mColumnStretchFactors.toVector(), mRect.width()-totalColSpacing);
-  QVector<int> rowHeights = getSectionSizes(maxRowHeights, minRowHeights, mRowStretchFactors.toVector(), mRect.height()-totalRowSpacing);
+  QVector<double> columnStretchFactors(mColumnStretchFactors.begin(), mColumnStretchFactors.end());
+  QVector<double> rowStretchFactors(mRowStretchFactors.begin(), mRowStretchFactors.end());
+  QVector<int> colWidths = getSectionSizes(maxColWidths, minColWidths, columnStretchFactors, mRect.width()-totalColSpacing);
+  QVector<int> rowHeights = getSectionSizes(maxRowHeights, minRowHeights, rowStretchFactors, mRect.height()-totalRowSpacing);
   
   // go through cells and set rects accordingly:
   int yOffset = mRect.top();
@@ -5695,7 +5697,9 @@ void QCPAxis::setupTickVectors()
       for (int i=mLowestVisibleTick; i<=mHighestVisibleTick; ++i)
       {
 #if QT_VERSION < QT_VERSION_CHECK(4, 7, 0) // use fromMSecsSinceEpoch function if available, to gain sub-second accuracy on tick labels (e.g. for format "hh:mm:ss:zzz")
-        mTickVectorLabels[i] = mParentPlot->locale().toString(QDateTime::fromTime_t(mTickVector.at(i)).toTimeSpec(mDateTimeSpec), mDateTimeFormat);
+        mTickVectorLabels[i] = mParentPlot->locale().toString(
+              QDateTime::fromSecsSinceEpoch(mTickVector.at(i)).toTimeSpec(mDateTimeSpec),
+              mDateTimeFormat);
 #else
         mTickVectorLabels[i] = mParentPlot->locale().toString(QDateTime::fromMSecsSinceEpoch(mTickVector.at(i)*1000).toTimeSpec(mDateTimeSpec), mDateTimeFormat);
 #endif
@@ -7574,12 +7578,12 @@ QCPItemAnchor::QCPItemAnchor(QCustomPlot *parentPlot, QCPAbstractItem *parentIte
 QCPItemAnchor::~QCPItemAnchor()
 {
   // unregister as parent at children:
-  foreach (QCPItemPosition *child, mChildrenX.toList())
+  foreach (QCPItemPosition *child, mChildrenX.values())
   {
     if (child->parentAnchorX() == this)
       child->setParentAnchorX(0); // this acts back on this anchor and child removes itself from mChildrenX
   }
-  foreach (QCPItemPosition *child, mChildrenY.toList())
+  foreach (QCPItemPosition *child, mChildrenY.values())
   {
     if (child->parentAnchorY() == this)
       child->setParentAnchorY(0); // this acts back on this anchor and child removes itself from mChildrenY
@@ -7752,12 +7756,12 @@ QCPItemPosition::~QCPItemPosition()
   // unregister as parent at children:
   // Note: this is done in ~QCPItemAnchor again, but it's important QCPItemPosition does it itself, because only then
   //       the setParentAnchor(0) call the correct QCPItemPosition::pixelPoint function instead of QCPItemAnchor::pixelPoint
-  foreach (QCPItemPosition *child, mChildrenX.toList())
+  foreach (QCPItemPosition *child, mChildrenX.values())
   {
     if (child->parentAnchorX() == this)
       child->setParentAnchorX(0); // this acts back on this anchor and child removes itself from mChildrenX
   }
-  foreach (QCPItemPosition *child, mChildrenY.toList())
+  foreach (QCPItemPosition *child, mChildrenY.values())
   {
     if (child->parentAnchorY() == this)
       child->setParentAnchorY(0); // this acts back on this anchor and child removes itself from mChildrenY
@@ -23709,4 +23713,3 @@ QPen QCPItemBracket::mainPen() const
 {
     return mSelected ? mSelectedPen : mPen;
 }
-

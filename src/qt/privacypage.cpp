@@ -3,6 +3,8 @@
 #include "bitcoinunits.h"
 #include "optionsmodel.h"
 #include "guiconstants.h"
+#include "main.h"
+#include "privacyuipolicy.h"
 
 #include <QMessageBox>
 #include <QApplication>
@@ -11,9 +13,11 @@
 
 PrivacyPage::PrivacyPage(QWidget *parent) :
     QWidget(parent),
-    model(0)
+    model(0),
+    legacyPrivacyControlsEnabled(false)
 {
     setupUI();
+    applyPrivacyPolicy();
 }
 
 void PrivacyPage::setupUI()
@@ -31,6 +35,12 @@ void PrivacyPage::setupUI()
     descLabel->setWordWrap(true);
     descLabel->setStyleSheet("color: #888; margin-bottom: 15px;");
     mainLayout->addWidget(descLabel);
+
+    availabilityLabel = new QLabel();
+    availabilityLabel->setWordWrap(true);
+    availabilityLabel->setStyleSheet(
+        "color: #d98c00; font-weight: bold; margin-bottom: 8px;");
+    mainLayout->addWidget(availabilityLabel);
 
     // Balance section
     QGroupBox *balanceGroup = new QGroupBox(tr("Privacy Balances"));
@@ -180,11 +190,40 @@ void PrivacyPage::setupUI()
 void PrivacyPage::setModel(WalletModel *model)
 {
     this->model = model;
+    applyPrivacyPolicy();
     if (model)
     {
         refreshBalances();
         refreshAddresses();
         refreshSPAddresses();
+    }
+}
+
+void PrivacyPage::applyPrivacyPolicy()
+{
+    const int currentHeight = pindexBest ? pindexBest->nHeight : 0;
+    const PrivacyUiPolicy::Decision decision =
+        PrivacyUiPolicy::EvaluateLegacyControls(
+            fRegTest, IsBoundaryBActiveAtHeight(currentHeight), false);
+    legacyPrivacyControlsEnabled = decision.legacyControlsEnabled;
+
+    shieldButton->setEnabled(legacyPrivacyControlsEnabled);
+    unshieldButton->setEnabled(legacyPrivacyControlsEnabled);
+    sendShieldedButton->setEnabled(legacyPrivacyControlsEnabled);
+    newZAddressButton->setEnabled(legacyPrivacyControlsEnabled);
+    newSPAddressButton->setEnabled(legacyPrivacyControlsEnabled);
+
+    if (legacyPrivacyControlsEnabled)
+    {
+        availabilityLabel->setText(tr(
+            "Legacy privacy controls are enabled for regtest historical testing only."));
+    }
+    else
+    {
+        availabilityLabel->setText(tr(
+            "The unsafe legacy privacy format is quarantined. Full-chain FCMP++ "
+            "selectable privacy modes 0-7 are mandatory for privacy vNext, but are "
+            "not yet available in this build; these controls cannot change the wallet."));
     }
 }
 
@@ -256,7 +295,7 @@ void PrivacyPage::refreshSPAddresses()
 
 void PrivacyPage::onNewZAddressClicked()
 {
-    if (!model)
+    if (!model || !legacyPrivacyControlsEnabled)
         return;
 
     WalletModel::UnlockContext ctx(model->requestUnlock());
@@ -282,7 +321,7 @@ void PrivacyPage::onNewZAddressClicked()
 
 void PrivacyPage::onNewSPAddressClicked()
 {
-    if (!model)
+    if (!model || !legacyPrivacyControlsEnabled)
         return;
 
     WalletModel::UnlockContext ctx(model->requestUnlock());
@@ -337,7 +376,7 @@ void PrivacyPage::onRefreshClicked()
 
 void PrivacyPage::onShieldClicked()
 {
-    if (!model)
+    if (!model || !legacyPrivacyControlsEnabled)
         return;
 
     QString targetAddr = shieldTargetCombo->currentText();
@@ -401,7 +440,7 @@ void PrivacyPage::onShieldClicked()
 
 void PrivacyPage::onUnshieldClicked()
 {
-    if (!model)
+    if (!model || !legacyPrivacyControlsEnabled)
         return;
 
     QString toAddr = unshieldToEdit->text().trimmed();
@@ -465,7 +504,7 @@ void PrivacyPage::onUnshieldClicked()
 
 void PrivacyPage::onSendShieldedClicked()
 {
-    if (!model)
+    if (!model || !legacyPrivacyControlsEnabled)
         return;
 
     QString toAddr = sendToEdit->text().trimmed();

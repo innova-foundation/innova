@@ -1,14 +1,24 @@
 # Innova Consensus
 
+> **v5 recovery status:** this source is a fail-closed recovery candidate, not
+> an activated v5 release. Unsafe legacy privacy encodings are quarantined;
+> selectable privacy, NullSend, and NullStake are not removed from the product.
+> Public-testnet Boundary A is deliberately unset pending four-node preflight,
+> and Boundary B is unset on every network pending a complete full-chain FCMP++
+> version-2008 implementation and evidence gates. The descriptions below do not
+> override those activation guards.
+
 This document describes the consensus rules of Innova (INN) as implemented in the
 v5.0.0.0 source tree. It covers the hybrid Proof-of-Work / Proof-of-Stake base
 layer, the v5 IDAG block-ordering layer, epoch finality with the M-of-N tally
 committee, and the height-gated fork-activation schedule. Function and constant
 references point at the current code so the prose can be checked against it.
 
-All heights and constants below are the mainnet values unless noted. Regtest and
-testnet activate the same rules at low heights (see the `GetForkHeight*` helpers
-in `main.h`) so the full stack can be exercised end to end.
+All heights and constants below are the mainnet values unless noted. Regtest
+uses low heights for historical/recovery coverage. Public-testnet recovery
+heights must be filled only from the frozen four-node preflight (see the
+`GetForkHeight*` helpers in `main.h`); unset sentinels are intentional release
+blockers.
 
 ---
 

@@ -302,7 +302,7 @@ typedef enum { full = 0, partial = 1 } earlyEnd_directive;
 ****************************/
 #if LZ4_ARCH64
 
-FORCE_INLINE int LZ4_NbCommonBytes (register U64 val)
+FORCE_INLINE int LZ4_NbCommonBytes (U64 val)
 {
 # if defined(LZ4_BIG_ENDIAN)
 #   if defined(_MSC_VER) && !defined(LZ4_FORCE_SW_BITCOUNT)
@@ -334,7 +334,7 @@ FORCE_INLINE int LZ4_NbCommonBytes (register U64 val)
 
 #else
 
-FORCE_INLINE int LZ4_NbCommonBytes (register U32 val)
+FORCE_INLINE int LZ4_NbCommonBytes (U32 val)
 {
 # if defined(LZ4_BIG_ENDIAN)
 #   if defined(_MSC_VER) && !defined(LZ4_FORCE_SW_BITCOUNT)

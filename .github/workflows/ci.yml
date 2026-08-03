@@ -15,6 +15,10 @@ on:
 jobs:
   ubuntu-qt-smoke:
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        qt: [5, 6]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -39,23 +43,105 @@ jobs:
           sudo apt-get install -y build-essential libtool autotools-dev automake pkg-config \
             libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb++-dev \
             libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
-            libsecp256k1-dev \
-            libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools \
-            libprotobuf-dev protobuf-compiler
+            libsecp256k1-dev libprotobuf-dev protobuf-compiler
 
-      - name: Build daemon
+      - name: Install Qt ${{ matrix.qt }}
+        run: |
+          if [ "${{ matrix.qt }}" = "5" ]; then
+            sudo apt-get install -y \
+              libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools
+          else
+            sudo apt-get install -y \
+              qt6-base-dev qt6-base-dev-tools qt6-tools-dev qt6-tools-dev-tools
+          fi
+
+      - name: Static release-audit checks
+        run: contrib/test/v5_release_gate.sh --static
+
+      - name: Clean build with network-input warning gate
         run: |
           cd src
-          make USE_NATIVETOR=- -f makefile.unix -j$(nproc)
+          make USE_NATIVETOR=- -f makefile.unix clean
+          make USE_NATIVETOR=- -f makefile.unix -j$(nproc) innovad test_innova \
+            CXXFLAGS="-Werror=return-type -Werror=format" \
+            CFLAGS="-Werror=return-type -Werror=format"
 
-      - name: BPAC, NullStake, and tally crypto Boost tests
+      - name: Full 38-translation-unit test aggregate
         run: |
           cd src
-          make USE_NATIVETOR=- -f makefile.unix check-bpac check-finality-tally
+          make USE_NATIVETOR=- -f makefile.unix release-check \
+            CXXFLAGS="-Werror=return-type -Werror=format" \
+            CFLAGS="-Werror=return-type -Werror=format"
 
       - name: Build Qt wallet
         run: |
           sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
-          sudo strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5 || true
-          qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
-          make -j$(nproc)
+          if [ "${{ matrix.qt }}" = "5" ]; then
+            qmake_bin=qmake
+            sudo strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5 || true
+          else
+            qmake_bin=/usr/lib/qt6/bin/qmake
+          fi
+          "$qmake_bin" -o Makefile.qt-tests innova-qt-test.pro
+          make -f Makefile.qt-tests -j$(nproc)
+          ./test_innova_qt
+          "$qmake_bin" -o Makefile.qt-app \
+            USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- STRICT_WARNINGS=1 innova-qt.pro
+          make -f Makefile.qt-app -j$(nproc)
+
+  ubuntu-sanitizers:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, undefined]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libtool autotools-dev automake pkg-config \
+            libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb++-dev \
+            libminiupnpc-dev libcurl4-openssl-dev libgmp-dev libsecp256k1-dev
+
+      - name: Clean sanitizer build and 38-translation-unit test aggregate
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:abort_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: |
+          cd src
+          make USE_NATIVETOR=- USE_IPFS=- -f makefile.unix clean
+          make USE_NATIVETOR=- USE_IPFS=- SANITIZE=${{ matrix.sanitizer }} \
+            CXXFLAGS="-O1 -Werror=return-type -Werror=format" \
+            CFLAGS="-O1 -Werror=return-type -Werror=format" \
+            -f makefile.unix -j$(nproc) innovad test_innova
+          ./test_innova \
+            --run_test=bulletproof_ac_tests/range_proof_malformed_ipa_point_returns_false_without_crash \
+            --catch_system_errors=yes
+          ./test_innova \
+            --run_test=bulletproof_ac_tests/nullstake_mofn_kernel_proof_create_verify \
+            --catch_system_errors=yes
+          make USE_NATIVETOR=- USE_IPFS=- SANITIZE=${{ matrix.sanitizer }} \
+            CXXFLAGS="-O1 -Werror=return-type -Werror=format" \
+            CFLAGS="-O1 -Werror=return-type -Werror=format" \
+            -f makefile.unix release-check
+
+  macos-consensus:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: brew install boost openssl@3 berkeley-db@5 miniupnpc libevent curl gmp secp256k1
+
+      - name: Clean macOS build and 38-translation-unit test aggregate
+        run: |
+          cd src
+          make STRICT_WARNINGS=1 -f makefile.osx clean
+          make STRICT_WARNINGS=1 -f makefile.osx -j$(sysctl -n hw.ncpu) innovad test_innova
+          make STRICT_WARNINGS=1 -f makefile.osx release-check

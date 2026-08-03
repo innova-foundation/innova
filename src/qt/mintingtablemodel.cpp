@@ -20,7 +20,7 @@
 #include <QTimer>
 #include <QIcon>
 #include <QDateTime>
-#include <QtAlgorithms>
+#include <algorithm>
 
 extern double GetDifficulty(const CBlockIndex* blockindex);
 
@@ -99,7 +99,7 @@ public:
         //  can be emitted from end to beginning (so that earlier updates will not influence
         // the indices of latter ones).
         QList<uint256> updated_sorted = updated;
-        qSort(updated_sorted);
+        std::sort(updated_sorted.begin(), updated_sorted.end());
 
         {
             TRY_LOCK(cs_main, lockMain);
@@ -114,9 +114,9 @@ public:
                 bool inWallet = mi != wallet->mapWallet.end();
 
                 // Find bounds of this transaction in model
-                QList<KernelRecord>::iterator lower = qLowerBound(
+                QList<KernelRecord>::iterator lower = std::lower_bound(
                     cachedWallet.begin(), cachedWallet.end(), hash, TxLessThan());
-                QList<KernelRecord>::iterator upper = qUpperBound(
+                QList<KernelRecord>::iterator upper = std::upper_bound(
                     cachedWallet.begin(), cachedWallet.end(), hash, TxLessThan());
                 int lowerIndex = (lower - cachedWallet.begin());
                 int upperIndex = (upper - cachedWallet.begin());

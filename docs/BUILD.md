@@ -66,6 +66,38 @@ checkout (a shallow tarball works but yields less version detail).
 
 ---
 
+## Rust toolchain (required)
+
+The IV5 privacy layer (`src/privacy_vnext/`) wraps the upstream monero-oxide
+FCMP++ implementation. FCMP++ has no C++ implementation — Monero's own C++ daemon
+calls the same Rust code over FFI — so a Rust toolchain is required to build the
+daemon or the test binary.
+
+```sh
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+rustup toolchain install 1.94.1 --profile minimal -c rustfmt -c clippy
+```
+
+The exact version is pinned by `src/privacy_vnext/rust/rust-toolchain.toml`;
+rustup selects it automatically inside that directory.
+
+### Restore the vendored crates (once per clone)
+
+`src/privacy_vnext/rust/vendor/` is not tracked in git. It holds third-party
+crates.io dependencies, which `cargo vendor` reproduces exactly from the versions
+and SHA-256 checksums pinned in `Cargo.lock`. The pinned monero-oxide sources
+under `rust/upstream/` *are* tracked, because they are path dependencies with no
+crates.io equivalent.
+
+```sh
+cd src/privacy_vnext/rust
+cargo vendor          # needs network, once
+cargo build --locked --offline
+```
+
+`.cargo/config.toml` sets `offline = true`, so every later build is offline and
+reproducible. Release archives also ship a `vendor.tar.zst` for air-gapped builds.
+
 ## Linux
 
 Tested distributions (all built in CI): Ubuntu 22.04 / 24.04 / 26.04,
@@ -197,7 +229,7 @@ keg-only formulae `berkeley-db@5`, `openssl@3`, `libevent`, and `curl` via their
 
 ```sh
 cd src
-make -f makefile.osx -j$(sysctl -n hw.ncpu)
+make STRICT_WARNINGS=1 -f makefile.osx -j$(sysctl -n hw.ncpu)
 ```
 
 This produces `src/innovad`. On macOS, Native Tor is **off by default**
@@ -225,8 +257,9 @@ hdiutil create -volname "Innova" -srcfolder dmg_contents \
   -ov -format UDZO innova-<version>-macOS-arm64.dmg
 ```
 
-> The macOS toolchain builds the daemon and wallet, but the Boost unit-test
-> binary `test_innova` is not run on macOS; run the test suite on Linux.
+> Release CI builds and runs `test_innova` on macOS as well as Linux. The
+> `STRICT_WARNINGS=1` gate promotes return-type and format diagnostics to errors
+> so platform-specific varargs ABI mistakes cannot be hidden.
 
 ---
 
@@ -337,7 +370,8 @@ compile the feature out entirely. Defaults differ per makefile, as noted.
 | `RELEASE` | off | (makefile.osx / qmake) Optimize for release (`-O3`, dynamic-relink of C/C++ runtime on Linux, macOS deployment-target pinning). |
 
 Additional makefile knobs: `PIE` (position-independent executable + `-pie`),
-`SANITIZE=<checks>` (build with `-fsanitize=...`), `INNOVA_SPINNER=0` (disable the
+`SANITIZE=<checks>` (build with `-fsanitize=...`), `STRICT_WARNINGS=1` on macOS
+(fail on return-type/format warnings), `INNOVA_SPINNER=0` (disable the
 build-progress spinner), and the `BOOST_*` / `BDB_*` / `OPENSSL_*` /
 `*_ROOT` / `*_PATH` / `*_LIB_SUFFIX` variables for pointing at
 non-standard dependency locations.
@@ -346,23 +380,41 @@ non-standard dependency locations.
 
 ## Running the test suite
 
-The Boost unit tests build into a separate `test_innova` binary (Linux/Unix
-makefiles). The consensus-critical suites are wired as individual `make` targets:
+The Boost unit tests build into a separate `test_innova` binary on Linux and
+macOS. The consensus-critical suites are wired as individual `make` targets:
 
 ```sh
 cd src
-make -f makefile.unix release-check      # builds innovad + runs the core test suites
+make -f makefile.unix release-check      # builds innovad + runs all 38 test translation units
 # or run individual suites:
 make -f makefile.unix check-finality-tally
 make -f makefile.unix check-idag-validation
 make -f makefile.unix check-coinstake-guard
+make -f makefile.unix check-finality-committee-sig
+make -f makefile.unix check-halfagg-stake
+make -f makefile.unix check-epoch-state-determinism
 # ...see the check-* targets in makefile.unix for the full list
 ```
 
 `release-check` builds the daemon and runs the bulletproof, finality-tally,
 FCMP-root, IDAG-validation, nullifier-binding, vote-binding, NullSend-binding,
-coinstake-guard, and committee-signature suites. Run the tests on Linux; the
-macOS makefile does not build `test_innova`.
+coinstake-guard, committee-signature, half-aggregated NullStake authorization,
+epoch-state determinism, name-index recovery, deserialize-limit, and secure
+message HMAC suites. It also runs all 24 historical/legacy suites for allocator,
+base/key/number codecs, checkpoints, denial-of-service controls, argument and
+utility handling, MRU/network behavior, ring signatures, scripts/P2SH,
+transactions, wallet/accounting/miner behavior, multisig/RPC, and signature-
+operation counting. That is every one of the repository's 38 Boost test
+translation units (39 suites) plus the test harness. Stateful accounting and
+miner coverage is ordered last; isolated suite invocations remain available for
+diagnosis.
+`makefile.osx` builds the same test binary and exposes the same release-critical
+targets, so both Linux and macOS run those mandatory suites. Both makefiles load
+`obj/test/*.P`; this prevents stale test objects after consensus/proof headers
+change. The vendored LevelDB sub-build retains its required include/platform
+flags when audit or sanitizer flags are supplied by the parent, and any nested
+build or clean failure stops the top-level build. Linux sanitizer flags are
+passed into LevelDB itself, not only into the daemon objects that call it.
 
 ---
 
@@ -381,8 +433,12 @@ matrix:
 - macOS arm64 (daemon + Qt, `.dmg`)
 - Windows x86_64 (static daemon + Qt, `.zip`, via MSYS2)
 
-Each job packages its binaries with a `SHA256SUMS.txt`, and the final `release`
-job collects every artifact, generates a combined `SHA256SUMS.txt`, and publishes
+Each job requires its documented binaries and archive, uploads with missing-file
+failure enabled, and includes a `SHA256SUMS.txt`. The final `release` job requires
+exactly one of every named platform archive only after the clean Linux
+unit/warning gate, ASan,
+UBSan, full local v5 integration gate, macOS consensus gate, and testnet-V3
+release policy all pass. It generates a combined `SHA256SUMS.txt` and publishes
 a GitHub release via `softprops/action-gh-release`. The release version comes
 from the tag (`v<version>`) or from `release-version` in `build.properties`.
 
