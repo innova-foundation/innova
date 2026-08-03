@@ -1236,12 +1236,15 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
                         return false;
                     valtype& vch = stacktop(-1);
                     valtype vchHash((opcode == OP_RIPEMD160 || opcode == OP_SHA1 || opcode == OP_HASH160) ? 20 : 32);
+                    // vch.data(), not &vch[0]: a stack element may be zero-length
+                    // (OP_0 OP_SHA256 reaches here), and indexing an empty vector
+                    // binds a reference to null, which is undefined behavior.
                     if (opcode == OP_RIPEMD160)
-                        RIPEMD160(&vch[0], vch.size(), &vchHash[0]);
+                        RIPEMD160(vch.data(), vch.size(), &vchHash[0]);
                     else if (opcode == OP_SHA1)
-                        SHA1(&vch[0], vch.size(), &vchHash[0]);
+                        SHA1(vch.data(), vch.size(), &vchHash[0]);
                     else if (opcode == OP_SHA256)
-                        SHA256(&vch[0], vch.size(), &vchHash[0]);
+                        SHA256(vch.data(), vch.size(), &vchHash[0]);
                     else if (opcode == OP_HASH160)
                     {
                         uint160 hash160 = Hash160(vch);
