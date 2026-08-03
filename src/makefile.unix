@@ -582,8 +582,19 @@ FUZZ_SCRIPT_SRCS ?= test/fuzz/fuzz_script.cpp test/fuzz/fuzz_stubs.cpp script.cp
 fuzz-script-libfuzzer:
 	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $(FUZZ_SCRIPT_BIN) $(FUZZ_SCRIPT_SRCS) $(LIBS)
 
-fuzz-block-header-libfuzzer:
-	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $(FUZZ_BLOCK_HEADER_BIN) test/fuzz/fuzz_block_header.cpp
+# The header hash is Tribus (jh + keccak + echo). Those are C sources and must be
+# compiled as C; feeding them to the C++ driver breaks overload resolution.
+FUZZ_CC ?= clang
+FUZZ_BLOCK_HEADER_SRCS ?= test/fuzz/fuzz_block_header.cpp test/fuzz/fuzz_stubs.cpp util.cpp netbase.cpp sync.cpp version.cpp noui.cpp
+FUZZ_TRIBUS_SRCS ?= jh.c keccak.c echo.c
+FUZZ_TRIBUS_OBJS ?= obj/fuzz/jh.o obj/fuzz/keccak.o obj/fuzz/echo.o
+
+obj/fuzz/%.o: %.c
+	@mkdir -p $(@D)
+	$(FUZZ_CC) $(filter-out -D_FORTIFY_SOURCE=2,$(xCFLAGS)) $(FUZZ_COMPILE_FLAGS) -c -o $@ $<
+
+fuzz-block-header-libfuzzer: $(FUZZ_TRIBUS_OBJS)
+	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $(FUZZ_BLOCK_HEADER_BIN) $(FUZZ_BLOCK_HEADER_SRCS) $(FUZZ_TRIBUS_OBJS) $(LIBS)
 
 fuzz-all-libfuzzer: fuzz-deserialize-libfuzzer fuzz-script-libfuzzer fuzz-block-header-libfuzzer
 

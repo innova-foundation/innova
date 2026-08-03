@@ -1126,7 +1126,10 @@ public:
         Init(nTypeIn, nVersionIn);
     }
 
-    CDataStream(const std::vector<unsigned char>& vchIn, int nTypeIn, int nVersionIn) : vch((char*)&vchIn.begin()[0], (char*)&vchIn.end()[0])
+    // .data() rather than &vchIn.begin()[0]: an empty input is reachable from the
+    // network, and dereferencing an iterator on an empty vector is undefined.
+    CDataStream(const std::vector<unsigned char>& vchIn, int nTypeIn, int nVersionIn)
+        : vch((const char*)vchIn.data(), (const char*)vchIn.data() + vchIn.size())
     {
         Init(nTypeIn, nVersionIn);
     }

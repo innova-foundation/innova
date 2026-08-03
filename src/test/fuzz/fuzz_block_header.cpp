@@ -1,6 +1,9 @@
 // Copyright (c) 2019-2026 The Innova developers
-// Fuzz target: Block header parsing and validation
-// Exercises CBlockHeader deserialization and hash computation
+// Fuzz target: block header parsing and hash computation.
+//
+// This lineage has no separate CBlockHeader type: CBlock carries the header
+// fields directly and serializes them ahead of its transactions, so a header is
+// exercised by deserializing a CBlock with transactions switched off.
 
 #include "main.h"
 #include "serialize.h"
@@ -8,28 +11,28 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 #include <vector>
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
-    // CBlockHeader is fixed-size (~80 bytes), but allow some extra
+    // The header is fixed-size (~80 bytes); allow slack for trailing input.
     if (size > 1000)
         return 0;
 
     std::vector<unsigned char> vch(data, data + size);
 
-    // Try deserializing as CBlockHeader
     try
     {
-        CDataStream ss(vch, SER_NETWORK, PROTOCOL_VERSION);
-        CBlockHeader header;
+        // SER_BLOCKHEADERONLY stops the read at the header fields.
+        CDataStream ss(vch, SER_NETWORK | SER_BLOCKHEADERONLY, PROTOCOL_VERSION);
+        CBlock header;
         ss >> header;
 
-        // Exercise header hash computation (Tribus)
+        // Tribus proof-of-work hash over the header range.
         header.GetHash();
         header.GetPoWHash();
 
-        // Exercise field access
         (void)header.nVersion;
         (void)header.hashPrevBlock;
         (void)header.hashMerkleRoot;
@@ -39,10 +42,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     }
     catch (const std::exception&)
     {
-        // Expected for malformed data
+        // Expected for malformed input.
     }
 
-    // Try constructing uint256 from fuzz data
     if (size >= 32)
     {
         uint256 hash;
