@@ -65,7 +65,7 @@ jobs:
             libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb++-dev \
             libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
             libsecp256k1-dev \
-            libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools \
+            qt6-base-dev qt6-tools-dev qt6-tools-dev-tools libgl1-mesa-dev \
             libprotobuf-dev protobuf-compiler
 
       - name: Build daemon
@@ -77,7 +77,7 @@ jobs:
         run: |
           sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
           sudo strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5 || true
-          qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+          qmake6 USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
           make -j$(nproc)
 
       - name: Package
@@ -118,7 +118,7 @@ jobs:
             libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb++-dev \
             libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
             libsecp256k1-dev \
-            libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools \
+            qt6-base-dev qt6-tools-dev qt6-tools-dev-tools libgl1-mesa-dev \
             libprotobuf-dev protobuf-compiler
 
       - name: Build daemon
@@ -130,7 +130,7 @@ jobs:
         run: |
           sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
           sudo strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5 || true
-          qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+          qmake6 USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
           make -j$(nproc)
 
       - name: Package
@@ -181,7 +181,7 @@ jobs:
             libssl-dev libevent-dev bsdextrautils libboost-all-dev libdb5.3++-dev \
             libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
             libsecp256k1-dev \
-            libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools \
+            qt6-base-dev qt6-tools-dev qt6-tools-dev-tools libgl1-mesa-dev \
             libprotobuf-dev protobuf-compiler
 
       - name: Configure Berkeley DB paths
@@ -218,7 +218,7 @@ jobs:
         run: |
           sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
           strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5 || true
-          qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- BDB_INCLUDE_PATH="$BDB_INCLUDE_PATH" BDB_LIB_PATH="$BDB_LIB_PATH" BDB_LIB_SUFFIX="$BDB_LIB_SUFFIX" innova-qt.pro
+          qmake6 USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- BDB_INCLUDE_PATH="$BDB_INCLUDE_PATH" BDB_LIB_PATH="$BDB_LIB_PATH" BDB_LIB_SUFFIX="$BDB_LIB_SUFFIX" innova-qt.pro
           make -j$(nproc)
 
       - name: Package
@@ -261,7 +261,7 @@ jobs:
             libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb++-dev \
             libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
             libsecp256k1-dev \
-            libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools \
+            qt6-base-dev qt6-tools-dev qt6-tools-dev-tools libgl1-mesa-dev \
             libprotobuf-dev protobuf-compiler \
             git
 
@@ -274,7 +274,7 @@ jobs:
         run: |
           sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
           strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5 || true
-          qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+          qmake6 USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
           make -j$(nproc)
 
       - name: Package
@@ -445,7 +445,7 @@ jobs:
             mingw-w64-x86_64-libevent
             mingw-w64-x86_64-curl
             mingw-w64-x86_64-gmp
-            mingw-w64-x86_64-qt5-static
+            mingw-w64-x86_64-qt6-static
             mingw-w64-x86_64-protobuf
             make
             git
@@ -518,7 +518,7 @@ jobs:
 
       - name: Build Qt wallet (fully static)
         run: |
-          /mingw64/qt5-static/bin/qmake \
+          /mingw64/qt6-static/bin/qmake \
             "BOOST_LIB_SUFFIX=${{ steps.libs.outputs.boost_suffix }}" \
             "BOOST_THREAD_LIB_SUFFIX=${{ steps.libs.outputs.boost_suffix }}" \
             "BDB_LIB_SUFFIX=${{ steps.libs.outputs.bdb_suffix }}" \
@@ -580,7 +580,7 @@ jobs:
           apt-get install -y build-essential libtool autotools-dev automake pkg-config \
             libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb++-dev \
             libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
-            libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools \
+            qt6-base-dev qt6-tools-dev qt6-tools-dev-tools libgl1-mesa-dev \
             libprotobuf-dev protobuf-compiler git
 
       - name: Build daemon
@@ -592,7 +592,7 @@ jobs:
         run: |
           sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
           strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5 || true
-          qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+          qmake6 USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
           make -j$(nproc)
 
       - name: Package
@@ -696,7 +696,7 @@ jobs:
         run: |
           sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
           sed -i '/-lboost_system/d' innova-qt.pro
-          qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
+          qmake6 USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- innova-qt.pro
           make -j$(nproc)
 
       - name: Package
@@ -796,14 +796,14 @@ jobs:
               apt-get install -y build-essential libtool automake pkg-config \
                 libssl-dev libevent-dev libboost-all-dev libdb++-dev \
                 libminiupnpc-dev libqrencode-dev libcurl4-openssl-dev libgmp-dev \
-                libqt5gui5 libqt5core5a libqt5dbus5 qttools5-dev qttools5-dev-tools \
+                qt6-base-dev qt6-tools-dev qt6-tools-dev-tools libgl1-mesa-dev \
                 libprotobuf-dev protobuf-compiler git && \
               cd src && \
               make USE_NATIVETOR=- USE_IPFS=- -f makefile.unix -j\$(nproc) && \
               cd .. && \
               sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx\$\$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx\$\$BDB_LIB_SUFFIX/' innova-qt.pro && \
               (strip --remove-section=.note.ABI-tag /usr/lib/aarch64-linux-gnu/libQt5Core.so.5 || true) && \
-              qmake USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- USE_IPFS=- innova-qt.pro && \
+              qmake6 USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- USE_IPFS=- innova-qt.pro && \
               make -j\$(nproc)
             "
 
