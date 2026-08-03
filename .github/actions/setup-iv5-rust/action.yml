@@ -1,0 +1,54 @@
+name: Setup IV5 Rust layer
+description: >-
+  Install the pinned Rust toolchain and restore the vendored crates the IV5
+  privacy layer needs. Every daemon and Qt build links libinnova_privacy_vnext.a,
+  so this must run before any build step.
+
+runs:
+  using: composite
+  steps:
+    - name: Install pinned Rust toolchain
+      shell: bash
+      run: |
+        set -euo pipefail
+        if ! command -v rustup >/dev/null 2>&1; then
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+        fi
+        # rust-toolchain.toml pins the version; installing it here keeps the
+        # first cargo invocation from doing it mid-build.
+        cd src/privacy_vnext/rust
+        rustup show active-toolchain || rustup toolchain install
+
+    - name: Restore vendored crates
+      shell: bash
+      run: |
+        set -euo pipefail
+        export PATH="$HOME/.cargo/bin:$PATH"
+        cd src/privacy_vnext/rust
+        # vendor/ is not tracked in git. cargo vendor reproduces it from the
+        # versions and SHA-256 checksums pinned in Cargo.lock, so the build stays
+        # offline and reproducible after this one networked step.
+        #
+        # .cargo/config.toml replaces crates-io with the vendor directory and
+        # sets offline mode, so cargo vendor cannot run while it is in place: it
+        # would be told to resolve from the directory it is supposed to create.
+        # Move it aside for the restore and put it straight back.
+        if [ ! -d vendor ] || [ -z "$(ls -A vendor 2>/dev/null)" ]; then
+          mv .cargo/config.toml .cargo/config.toml.offline
+          trap 'mv -f .cargo/config.toml.offline .cargo/config.toml 2>/dev/null || true' EXIT
+          cargo vendor --versioned-dirs > /dev/null
+          mv -f .cargo/config.toml.offline .cargo/config.toml
+          trap - EXIT
+        fi
+        test -f .cargo/config.toml
+
+    - name: Build the IV5 static library
+      shell: bash
+      run: |
+        set -euo pipefail
+        export PATH="$HOME/.cargo/bin:$PATH"
+        cd src/privacy_vnext/rust
+        cargo build --locked --offline --release
+        cargo build --locked --offline
