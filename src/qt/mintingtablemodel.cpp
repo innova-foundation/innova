@@ -359,7 +359,7 @@ QVariant MintingTableModel::data(const QModelIndex &index, int role) const
             //return formatTxPoSReward(rec);
         }
         break;
-      case Qt::BackgroundColorRole:
+      case Qt::BackgroundRole:
         minAge = nStakeMinAge / 60 / 60 / 8;
         maxAge = nStakeMaxAge / 60 / 60 / 24;
         if(rec->getAge() < minAge)

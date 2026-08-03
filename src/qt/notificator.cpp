@@ -151,13 +151,21 @@ const QDBusArgument &operator>>(const QDBusArgument &a, FreedesktopImage &i)
 
 int FreedesktopImage::metaType()
 {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return qDBusRegisterMetaType<FreedesktopImage>().id();
+#else
     return qDBusRegisterMetaType<FreedesktopImage>();
+#endif
 }
 
 QVariant FreedesktopImage::toVariant(const QImage &img)
 {
     FreedesktopImage fimg(img);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return QVariant(QMetaType(FreedesktopImage::metaType()), &fimg);
+#else
     return QVariant(FreedesktopImage::metaType(), &fimg);
+#endif
 }
 
 void Notificator::notifyDBus(Class cls, const QString &title, const QString &text, const QIcon &icon, int millisTimeout)

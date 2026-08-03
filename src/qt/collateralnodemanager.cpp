@@ -89,7 +89,7 @@ class SortedWidgetItem : public QTableWidgetItem
 public:
     bool operator <( const QTableWidgetItem& other ) const
     {
-        return (data(Qt::UserRole) < other.data(Qt::UserRole));
+        return (data(Qt::UserRole).toString() < other.data(Qt::UserRole).toString());
     }
 };
 
@@ -262,10 +262,10 @@ static QString seconds_to_DHMS(quint32 duration)
   int hours = (int) (duration % 24);
   int days = (int) (duration / 24);
   if((hours == 0)&&(days == 0))
-      return res.sprintf("%02dm:%02ds", minutes, seconds);
+      return QString::asprintf("%02dm:%02ds", minutes, seconds);
   if (days == 0)
-      return res.sprintf("%02dh:%02dm:%02ds", hours, minutes, seconds);
-  return res.sprintf("%dd %02dh:%02dm:%02ds", days, hours, minutes, seconds);
+      return QString::asprintf("%02dh:%02dm:%02ds", hours, minutes, seconds);
+  return QString::asprintf("%dd %02dh:%02dm:%02ds", days, hours, minutes, seconds);
 }
 
 uint256 lastNodeUpdateHash;

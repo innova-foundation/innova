@@ -224,7 +224,7 @@ int main(int argc, char *argv[])
     }
 
     // show a persistent splash screen unless it is disabled from flags
-    QSplashScreen splash(QPixmap(":/images/splash"), 0);
+    QSplashScreen splash(QPixmap(":/images/splash"), Qt::WindowFlags());
     if (GetBoolArg("-splash", true) && !GetBoolArg("-min"))
     {
         splash.setEnabled(false);
@@ -311,7 +311,7 @@ int main(int argc, char *argv[])
             }
 
             // Show a persistent splash screen while shutting down
-            QSplashScreen splash(QPixmap(":/images/splash"), 0);
+            QSplashScreen splash(QPixmap(":/images/splash"), Qt::WindowFlags());
             splash.setEnabled(false);
             splash.show();
             splashref = &splash;

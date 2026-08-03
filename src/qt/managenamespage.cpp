@@ -192,7 +192,7 @@ class SortedWidgetItem : public QTableWidgetItem
 public:
     bool operator <( const QTableWidgetItem& other ) const
     {
-        return (data(Qt::UserRole) < other.data(Qt::UserRole));
+        return (data(Qt::UserRole).toString() < other.data(Qt::UserRole).toString());
     }
 };
 

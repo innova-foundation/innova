@@ -50,6 +50,7 @@
 #endif
 
 #include <QStandardPaths>
+#include <QActionGroup>
 #include <QApplication>
 #include <QMainWindow>
 #include <QMenuBar>
