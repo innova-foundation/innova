@@ -1,9 +1,5 @@
 // Copyright (c) 2019-2026 The Innova developers
-// Fuzz target: block header parsing and hash computation.
-//
-// This lineage has no separate CBlockHeader type: CBlock carries the header
-// fields directly and serializes them ahead of its transactions, so a header is
-// exercised by deserializing a CBlock with transactions switched off.
+// Fuzz target: block header parsing and hashing (CBlock carries the header fields).
 
 #include "main.h"
 #include "serialize.h"

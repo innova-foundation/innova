@@ -940,7 +940,8 @@ macx:QMAKE_RPATHDIR = @executable_path/../Frameworks
 macx:QMAKE_CXXFLAGS += -stdlib=libc++ -Wno-deprecated-declarations
 # Ad-hoc signing is opt-in for local compatibility only. Release signing and
 # notarization are separate packaging steps and must never use --deep.
-macx:contains(ADHOC_SIGN, 1):QMAKE_POST_LINK += codesign --force --sign - --timestamp=none $${TARGET}.app
+# Non-fatal: a failed recipe makes make delete the linked binary.
+macx:contains(ADHOC_SIGN, 1):QMAKE_POST_LINK += (codesign --force --sign - --timestamp=none $${TARGET}.app || true)
 
 
 # Set libraries and includes at end, to use platform-defined defaults if not overridden

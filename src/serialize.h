@@ -411,12 +411,8 @@ void WriteVarInt(Stream& os, I n)
 template<typename Stream, typename I>
 I ReadVarInt(Stream& is)
 {
-    // Accumulate in the unsigned counterpart. The encoded bytes are attacker
-    // controlled and VARINT carries signed consensus fields, so shifting or
-    // incrementing a signed type here is undefined behavior on overflow --
-    // which also lets a compiler discard the downstream range checks that are
-    // supposed to catch it, and lets two builds decode the same bytes
-    // differently. Overflow now throws instead.
+    // Unsigned accumulator: shifting or incrementing a signed type overflows on
+    // attacker-controlled input, which is undefined. Out of range throws.
     typedef typename boost::make_unsigned<I>::type U;
     U n = 0;
     // PROTO-4: Bound loop to prevent unbounded read on malformed data
@@ -1141,8 +1137,8 @@ public:
         Init(nTypeIn, nVersionIn);
     }
 
-    // .data() rather than &vchIn.begin()[0]: an empty input is reachable from the
-    // network, and dereferencing an iterator on an empty vector is undefined.
+    // .data(): an empty input is reachable from the network, and dereferencing
+    // an iterator on an empty vector is undefined.
     CDataStream(const std::vector<unsigned char>& vchIn, int nTypeIn, int nVersionIn)
         : vch((const char*)vchIn.data(), (const char*)vchIn.data() + vchIn.size())
     {
