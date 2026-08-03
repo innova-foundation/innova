@@ -10,6 +10,7 @@
 #include "checkpoints.h"
 #include "db.h"
 #include "txdb.h"
+#include "verifycache.h"
 #include "net.h"
 #include "init.h"
 #include "wallet.h"
@@ -26,6 +27,7 @@
 #include "curvetree.h"
 #include "finality.h"
 #include "dag.h"
+#include "privacy_vnext_ffi.h"
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
@@ -46,6 +48,71 @@ static bool LoadFCMPValidationRoot(CTxDB& txdb, int nBlockHeight,
                                    CCurveTreeNode& rootOut,
                                    uint256& hashExpectedRootOut,
                                    std::string& strErrorOut);
+
+// Validate only the commitments named by this spend.  The reverse lookup is
+// bounded by LELANTUS_MAX_SET_SIZE, and the forward read prevents a stale or
+// corrupt reverse-index entry from authenticating a different commitment.
+static bool CheckShieldedAnonSetChainState(
+    CTxDB& txdb,
+    const std::vector<CPedersenCommitment>& vAnonSet,
+    std::string& strErrorOut)
+{
+    if (vAnonSet.size() > (size_t)LELANTUS_MAX_SET_SIZE)
+    {
+        strErrorOut = strprintf("anonymity set size %u exceeds maximum %u",
+                                (unsigned int)vAnonSet.size(),
+                                (unsigned int)LELANTUS_MAX_SET_SIZE);
+        return false;
+    }
+
+    uint64_t nCommitmentCount = 0;
+    if (!txdb.ReadShieldedCommitmentCount(nCommitmentCount))
+    {
+        strErrorOut = "shielded commitment count missing or unreadable";
+        return false;
+    }
+
+    for (size_t i = 0; i < vAnonSet.size(); ++i)
+    {
+        uint64_t nCommitmentIndex = 0;
+        if (!txdb.ReadShieldedCommitmentIndex(
+                vAnonSet[i].vchCommitment, nCommitmentIndex))
+        {
+            strErrorOut = strprintf(
+                "anonymity set commitment %u reverse index missing or unreadable",
+                (unsigned int)i);
+            return false;
+        }
+        if (nCommitmentIndex >= nCommitmentCount)
+        {
+            strErrorOut = strprintf(
+                "anonymity set commitment %u reverse index %" PRIu64
+                " is outside commitment count %" PRIu64,
+                (unsigned int)i, nCommitmentIndex, nCommitmentCount);
+            return false;
+        }
+
+        CPedersenCommitment indexedCommitment;
+        if (!txdb.ReadShieldedCommitment(nCommitmentIndex,
+                                         indexedCommitment))
+        {
+            strErrorOut = strprintf(
+                "anonymity set commitment %u indexed value missing or unreadable",
+                (unsigned int)i);
+            return false;
+        }
+        if (indexedCommitment.vchCommitment !=
+            vAnonSet[i].vchCommitment)
+        {
+            strErrorOut = strprintf(
+                "anonymity set commitment %u reverse-index/value mismatch",
+                (unsigned int)i);
+            return false;
+        }
+    }
+
+    return true;
+}
 
 // B2-e Phase 3c: the value commitment used for the binding signature + value balance (INV-1):
 // the fresh 2-generator Vv for a 2006 M-of-N mint output, cv_plain_out for a 2005 M-of-N cold-stake
@@ -189,6 +256,8 @@ unsigned int nModifierInterval  = 10 * 60;          // time to elapse before new
 int64_t nLastCoinStakeSearchTime = GetAdjustedTime();
 int nCoinbaseMaturity = 65; //75 on Mainnet I n n o v a
 CBlockIndex* pindexGenesisBlock = NULL;
+int nRegtestBoundaryBHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
+bool fRegtestShieldedVNextRehearsal = false;
 int nBestHeight = -1;
 bool CollateralNReorgBlock = true;
 uint256 nBestChainTrust = 0;
@@ -325,9 +394,15 @@ void static EraseFromWallets(uint256 hash)
         pwallet->EraseFromWallet(hash);
 }
 
-// make sure all wallets know about the given transaction, in the given block
-void SyncWithWallets(const CTransaction& tx, const CBlock* pblock, bool fUpdate, bool fConnect)
+// Make sure all wallets know about the given transaction.  The checked form is
+// used after a durable best-chain commit, where silently losing a wallet write
+// would make the wallet locator lie about how far recovery has progressed.
+static bool SyncWithWalletsChecked(const CTransaction& tx, const CBlock* pblock,
+                                   bool fUpdate, bool fConnect,
+                                   std::string& strErrorOut,
+                                   const std::set<uint256>* pDAGSkippedTxs = NULL)
 {
+    strErrorOut.clear();
     if (!fConnect)
     {
         // ppcoin: wallets need to refund inputs when disconnecting coinstake
@@ -336,28 +411,70 @@ void SyncWithWallets(const CTransaction& tx, const CBlock* pblock, bool fUpdate,
             for (CWallet* pwallet : setpwalletRegistered)
             {
                 if (pwallet->IsFromMe(tx))
-                    pwallet->DisableTransaction(tx);
+                {
+                    std::string strWalletError;
+                    if (!pwallet->DisableTransactionChecked(tx, strWalletError))
+                    {
+                        strErrorOut = strWalletError;
+                        return false;
+                    }
+                }
             };
         };
 
         if (tx.nVersion == ANON_TXN_VERSION)
         {
             for (CWallet* pwallet : setpwalletRegistered)
-                pwallet->UndoAnonTransaction(tx);
+            {
+                if (!pwallet->UndoAnonTransaction(tx))
+                {
+                    strErrorOut = strprintf("failed to undo anonymous wallet transaction %s",
+                                            tx.GetHash().ToString().substr(0, 20).c_str());
+                    return false;
+                }
+            }
         };
-        return;
+        return true;
     };
 
     //uint256 hash = tx.GetHash();
     for (CWallet* pwallet : setpwalletRegistered)
-        pwallet->AddToWalletIfInvolvingMe(tx, pblock, fUpdate);
+    {
+        std::string strWalletError;
+        pwallet->AddToWalletIfInvolvingMe(tx, pblock, fUpdate, false,
+                                          &strWalletError,
+                                          pDAGSkippedTxs);
+        if (!strWalletError.empty())
+        {
+            strErrorOut = strWalletError;
+            return false;
+        }
+    }
+    return true;
+}
+
+void SyncWithWallets(const CTransaction& tx, const CBlock* pblock,
+                     bool fUpdate, bool fConnect)
+{
+    std::string strError;
+    if (!SyncWithWalletsChecked(tx, pblock, fUpdate, fConnect, strError))
+        error("SyncWithWallets() : %s", strError.c_str());
 }
 
 // notify wallets about a new best chain
-void static SetBestChain(const CBlockLocator& loc)
+static bool SetWalletBestChainChecked(const CBlockLocator& loc,
+                                      std::string& strErrorOut)
 {
+    strErrorOut.clear();
     for (CWallet* pwallet : setpwalletRegistered)
-        pwallet->SetBestChain(loc);
+    {
+        if (!pwallet->SetBestChainChecked(loc))
+        {
+            strErrorOut = "failed to persist a wallet best-block locator";
+            return false;
+        }
+    }
+    return true;
 }
 
 // notify wallets about an updated transaction
@@ -391,6 +508,10 @@ void ResendWalletTransactions(bool fForce)
 bool Finalise()
 {
     printf("Finalise()");
+
+    // Join the wallet flusher before taking cs_main and before its chain/DB state is destroyed;
+    // joining under cs_main could deadlock a flusher inside IsInitialBlockDownload().
+    StopWalletDBFlushThread();
 
     LOCK(cs_main);
 
@@ -1046,10 +1167,36 @@ int64_t ApplyBlockSizePenalty(int64_t nReward, const CBlock& block, const CBlock
 
 bool CTransaction::CheckTransaction() const
 {
+    if (IsPrivacyVNext())
+    {
+        const PrivacyVNextPayloadValidation validation =
+            ValidatePrivacyVNextPayload(
+                static_cast<uint32_t>(nVersion),
+                privacyVNext.vchPayload);
+        if (validation.fLocalFailure)
+        {
+            StartShutdown();
+            return error("CTransaction::CheckTransaction() : local IV5 failure: %s",
+                         validation.strError.c_str());
+        }
+        if (!validation.IsValid())
+            return DoS(100, error("CTransaction::CheckTransaction() : %s",
+                                  validation.strError.c_str()));
+        if (!IsShieldedVNextConsensusReady())
+            return DoS(100, error("CTransaction::CheckTransaction() : IV5 consensus implementation is inactive"));
+    }
+
+    // Versions 2000--2007 never activated on a public network; their decoder is kept for
+    // regtest coverage only and never yields consensus validity on mainnet/testnet.
+    if (IsShielded() &&
+        IsLegacyPrivacyPolicyDisabled())
+        return DoS(100, error("CTransaction::CheckTransaction() : legacy shielded transaction version %d is disabled on public networks",
+                              nVersion));
+
     // Basic checks that don't depend on any context
-    if (vin.empty() && !IsShielded())
+    if (vin.empty() && !IsShielded() && !IsPrivacyVNext())
         return DoS(10, error("CTransaction::CheckTransaction() : vin empty"));
-    if (vout.empty() && !IsShielded())
+    if (vout.empty() && !IsShielded() && !IsPrivacyVNext())
         return DoS(10, error("CTransaction::CheckTransaction() : vout empty"));
     // Size limits
     if (::GetSerializeSize(*this, SER_NETWORK, PROTOCOL_VERSION) > MAX_BLOCK_SIZE)
@@ -1139,12 +1286,45 @@ bool CTransaction::CheckTransaction() const
             return DoS(100, error("CTransaction::CheckTransaction() : too many shielded outputs (%u > %u)",
                                   (unsigned int)vShieldedOutput.size(), (unsigned int)MAX_SHIELDED_OUTPUTS));
 
+        for (const CShieldedOutputDescription& output : vShieldedOutput)
+        {
+            if (output.vchMofNLink.size() > NULLSTAKE_MOFN_MINTLINK_SIZE)
+                return DoS(100, error("CTransaction::CheckTransaction() : shielded output M-of-N link too large (%u > %u)",
+                                      (unsigned int)output.vchMofNLink.size(),
+                                      (unsigned int)NULLSTAKE_MOFN_MINTLINK_SIZE));
+        }
+
         if (nValueBalance < -MAX_MONEY || nValueBalance > MAX_MONEY)
             return DoS(100, error("CTransaction::CheckTransaction() : shielded nValueBalance out of range"));
 
         set<uint256> vNullifiers;
         for (const CShieldedSpendDescription& spend : vShieldedSpend)
         {
+            if (spend.vchRk.size() > SHIELDED_SPEND_AUTH_KEY_MAX_SIZE)
+                return DoS(100, error("CTransaction::CheckTransaction() : shielded spend rk too large (%u > %u)",
+                                      (unsigned int)spend.vchRk.size(),
+                                      (unsigned int)SHIELDED_SPEND_AUTH_KEY_MAX_SIZE));
+            if (spend.vchSpendAuthSig.size() > SHIELDED_SPEND_AUTH_SIG_SIZE)
+                return DoS(100, error("CTransaction::CheckTransaction() : shielded spend authorization signature too large (%u > %u)",
+                                      (unsigned int)spend.vchSpendAuthSig.size(),
+                                      (unsigned int)SHIELDED_SPEND_AUTH_SIG_SIZE));
+            if (spend.vchLelantusProof.size() > SHIELDED_TX_FIELD_MAX_WIRE_SIZE)
+                return DoS(100, error("CTransaction::CheckTransaction() : shielded spend Lelantus proof too large (%u > %u)",
+                                      (unsigned int)spend.vchLelantusProof.size(),
+                                      (unsigned int)SHIELDED_TX_FIELD_MAX_WIRE_SIZE));
+            if (spend.vAnonSet.size() > (size_t)LELANTUS_MAX_SET_SIZE)
+                return DoS(100, error("CTransaction::CheckTransaction() : shielded spend anonymity set too large (%u > %u)",
+                                      (unsigned int)spend.vAnonSet.size(),
+                                      (unsigned int)LELANTUS_MAX_SET_SIZE));
+            if (spend.vchNullifierPoint.size() > NULLIFIER_POINT_SIZE)
+                return DoS(100, error("CTransaction::CheckTransaction() : shielded spend nullifier point too large (%u > %u)",
+                                      (unsigned int)spend.vchNullifierPoint.size(),
+                                      (unsigned int)NULLIFIER_POINT_SIZE));
+            if (spend.vchNullifierBindingProof.size() > NULLIFIER_BINDING_PROOF_SIZE)
+                return DoS(100, error("CTransaction::CheckTransaction() : shielded spend nullifier binding proof too large (%u > %u)",
+                                      (unsigned int)spend.vchNullifierBindingProof.size(),
+                                      (unsigned int)NULLIFIER_BINDING_PROOF_SIZE));
+
             if (spend.nullifier == 0)
                 return DoS(100, error("CTransaction::CheckTransaction() : zero shielded nullifier"));
 
@@ -1279,6 +1459,80 @@ int64_t CTransaction::GetMinFee(unsigned int nBlockSize, enum GetMinFee_mode mod
     return nMinFee;
 }
 
+static bool ValidatePrivacyVNextFinalizedContext(
+    CTxDB& txdb, int nContextHeight,
+    const PrivacyVNextStateEffects& effects,
+    bool& fLocalFailure, std::string& strError)
+{
+    fLocalFailure = false;
+    strError.clear();
+
+    CEpochState finalizedState;
+    if (!g_dagManager.GetFinalizedEpochStateAsOf(
+            txdb, nContextHeight, finalizedState))
+    {
+        fLocalFailure = true;
+        strError = "finalized epoch state is unavailable";
+        return false;
+    }
+
+    std::vector<unsigned char> expectedRoot;
+    std::vector<unsigned char> expectedParameterDigest;
+    uint64_t nExpectedTreeSize = 0;
+    if (finalizedState.nSerVersion >= EPOCHSTATE_SER_VERSION_V4)
+    {
+        if (!finalizedState.fFinalized ||
+            finalizedState.vchVNextRoot.size() !=
+                EPOCHSTATE_VNEXT_DIGEST_SIZE ||
+            finalizedState.vchVNextParameterDigest.size() !=
+                EPOCHSTATE_VNEXT_DIGEST_SIZE)
+        {
+            fLocalFailure = true;
+            strError = "persisted finalized IV5 epoch state is malformed";
+            return false;
+        }
+        expectedRoot = finalizedState.vchVNextRoot;
+        expectedParameterDigest = finalizedState.vchVNextParameterDigest;
+        nExpectedTreeSize = finalizedState.nVNextTreeSize;
+    }
+    else
+    {
+        if (!effects.keyImages.empty())
+        {
+            strError = "no finalized IV5 root is available for a spend";
+            return false;
+        }
+        PrivacyVNextEpochSeed seed;
+        std::string strSeedError;
+        if (!LoadPrivacyVNextEpochSeed(seed, strSeedError))
+        {
+            fLocalFailure = true;
+            strError = "canonical IV5 bootstrap seed is unavailable: " +
+                       strSeedError;
+            return false;
+        }
+        expectedRoot = seed.vchRoot;
+        expectedParameterDigest = seed.vchParameterDigest;
+        nExpectedTreeSize = seed.nTreeSize;
+    }
+
+    if (!std::equal(effects.finalizedRoot.begin(),
+                    effects.finalizedRoot.end(), expectedRoot.begin()) ||
+        effects.nFinalizedTreeSize != nExpectedTreeSize)
+    {
+        strError = "payload finalized root or tree size does not match consensus state";
+        return false;
+    }
+    if (!std::equal(effects.parameterDigest.begin(),
+                    effects.parameterDigest.end(),
+                    expectedParameterDigest.begin()))
+    {
+        strError = "payload parameter digest does not match consensus state";
+        return false;
+    }
+    return true;
+}
+
 bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                         bool* pfMissingInputs, bool fOnlyCheckWithoutAdding)
 {
@@ -1289,12 +1543,90 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
     if (pfMissingInputs)
         *pfMissingInputs = false;
 
+    const int nEffectiveMempoolHeight =
+        nBestHeight == std::numeric_limits<int>::max()
+            ? nBestHeight : nBestHeight + 1;
+    int64_t nValidatedAnonValueIn = 0;
+    std::vector<std::pair<ec_point, CKeyImageSpent> >
+        vAnonRelayKeyImages;
+    std::vector<uint256> vPrivacyVNextKeyImages;
+    if (tx.nVersion == ANON_TXN_VERSION &&
+        (IsLegacyPrivacyPolicyDisabled() ||
+         nEffectiveMempoolHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION))
+        return error("CTxMemPool::accept() : legacy ANON relay is permanently disabled");
+    if (tx.IsShielded() &&
+        (IsLegacyPrivacyPolicyDisabled() ||
+         IsBoundaryAActiveAtHeight(nEffectiveMempoolHeight)))
+        return error("CTxMemPool::accept() : legacy shielded/privacy relay is disabled pending privacy vNext");
+    if (tx.IsPrivacyVNext() &&
+        (!IsBoundaryBActiveAtHeight(nEffectiveMempoolHeight) ||
+         !IsShieldedVNextConsensusReady()))
+        return error("CTxMemPool::accept() : privacy-vNext is inactive before Boundary B");
+
     size_t nMaxMempoolSize = GetArg("-maxmempool", DEFAULT_MAX_MEMPOOL_SIZE) * 1000000;
     if (GetTotalMemoryUsage() >= nMaxMempoolSize)
         return error("CTxMemPool::accept() : mempool full (%" PRIu64" bytes)", (uint64_t)nMaxMempoolSize);
 
     if (!tx.CheckTransaction())
         return error("CTxMemPool::accept() : CheckTransaction failed");
+
+    if (tx.IsPrivacyVNext())
+    {
+        PrivacyVNextStateEffects effects;
+        const PrivacyVNextPayloadValidation validation =
+            ExtractPrivacyVNextPayloadEffects(
+                static_cast<uint32_t>(tx.nVersion),
+                tx.privacyVNext.vchPayload, effects);
+        if (validation.fLocalFailure)
+        {
+            StartShutdown();
+            return error("CTxMemPool::accept() : local IV5 payload-effects failure: %s",
+                         validation.strError.c_str());
+        }
+        if (!validation.IsValid())
+            return error("CTxMemPool::accept() : invalid IV5 payload effects: %s",
+                         validation.strError.c_str());
+
+        bool fContextLocalFailure = false;
+        std::string strContextError;
+        if (!ValidatePrivacyVNextFinalizedContext(
+                txdb, nEffectiveMempoolHeight, effects,
+                fContextLocalFailure, strContextError))
+        {
+            if (fContextLocalFailure)
+                StartShutdown();
+            return error("CTxMemPool::accept() : IV5 finalized context rejected: %s",
+                         strContextError.c_str());
+        }
+
+        std::set<uint256> setTransactionKeyImages;
+        vPrivacyVNextKeyImages.reserve(effects.keyImages.size());
+        for (size_t i = 0; i < effects.keyImages.size(); ++i)
+        {
+            uint256 keyImage;
+            memcpy(keyImage.begin(), effects.keyImages[i].data(),
+                   effects.keyImages[i].size());
+            if (!setTransactionKeyImages.insert(keyImage).second)
+                return error("CTxMemPool::accept() : duplicate IV5 spent key %s",
+                             keyImage.ToString().substr(0,10).c_str());
+
+            CShieldedNullifierSpent spent;
+            const TxDBReadStatus status =
+                txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
+            if (status == TXDB_READ_ERROR)
+            {
+                StartShutdown();
+                return error("CTxMemPool::accept() : IV5 spent-key index is corrupt for %s; "
+                             "-reindex/resync required",
+                             keyImage.ToString().substr(0,10).c_str());
+            }
+            if (status == TXDB_READ_FOUND)
+                return error("CTxMemPool::accept() : IV5 spent key %s was already consumed by %s",
+                             keyImage.ToString().substr(0,10).c_str(),
+                             spent.txnHash.ToString().substr(0,10).c_str());
+            vPrivacyVNextKeyImages.push_back(keyImage);
+        }
+    }
 
     // Coinbase is only valid in a block, not as a loose transaction
     if (tx.IsCoinBase())
@@ -1320,6 +1652,17 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
         // Reject txids already included in a DAG sibling block
         if (setDAGSeenTxids.count(hash))
             return error("CTxMemPool::accept() : tx %s already in DAG sibling block", hash.ToString().substr(0, 20).c_str());
+        for (std::vector<uint256>::const_iterator it =
+                 vPrivacyVNextKeyImages.begin();
+             it != vPrivacyVNextKeyImages.end(); ++it)
+        {
+            std::map<uint256, CShieldedNullifierSpent>::const_iterator spentIt =
+                mapPrivacyVNextNullifier.find(*it);
+            if (spentIt != mapPrivacyVNextNullifier.end())
+                return error("CTxMemPool::accept() : IV5 spent key %s is reserved by %s",
+                             it->ToString().substr(0,10).c_str(),
+                             spentIt->second.txnHash.ToString().substr(0,10).c_str());
+        }
     }
 
     if (txdb.ContainsTx(hash))
@@ -1385,11 +1728,14 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
 
             if (tx.nVersion == ANON_TXN_VERSION)
             {
-                if (nBestHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)
+                if (nEffectiveMempoolHeight >=
+                        FORK_HEIGHT_RINGSIG_DEPRECATION)
                     return error("CTxMemPool::accept() : ring signature transactions (ANON_TXN_VERSION) deprecated after height %d. Use shielded transactions.", FORK_HEIGHT_RINGSIG_DEPRECATION);
 
-                int64_t nSumAnon;
-                if (!tx.CheckAnonInputs(txdb, nSumAnon, fInvalid, true))
+                if (!tx.CheckAnonInputs(
+                        txdb, nEffectiveMempoolHeight,
+                        nValidatedAnonValueIn, fInvalid, true, NULL,
+                        &vAnonRelayKeyImages))
                 {
                     if (fInvalid)
                         return error("CTxMemPool::accept() : CheckAnonInputs found invalid tx %s", hash.ToString().substr(0,10).c_str());
@@ -1398,7 +1744,10 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                     return false;
                 };
 
-                nFees += nSumAnon;
+                if (nValidatedAnonValueIn < 0 ||
+                    nFees > MAX_MONEY - nValidatedAnonValueIn)
+                    return error("CTxMemPool::accept() : anonymous input value overflow");
+                nFees += nValidatedAnonValueIn;
 
                 feeMode = GMF_ANON;
             };
@@ -1407,6 +1756,9 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
             {
                 if (pindexBest && pindexBest->nHeight < FORK_HEIGHT_SHIELDED)
                     return error("CTxMemPool::accept() : shielded tx rejected before fork height %d", FORK_HEIGHT_SHIELDED);
+
+                const bool fStrictV3Anchors =
+                    nEffectiveMempoolHeight >= FORK_HEIGHT_EPOCH_STATE_V3;
 
                 for (const CShieldedSpendDescription& spend : tx.vShieldedSpend)
                 {
@@ -1420,13 +1772,36 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                         return error("CTxMemPool::accept() : shielded nullifier %s already in mempool",
                                      spend.nullifier.ToString().substr(0,10).c_str());
 
-                    if (!txdb.ReadShieldedAnchor(spend.anchor))
-                        return error("CTxMemPool::accept() : shielded anchor %s not found",
-                                     spend.anchor.ToString().substr(0,10).c_str());
                     int nAnchorHeight = 0;
-                    if (txdb.ReadShieldedAnchorHeight(spend.anchor, nAnchorHeight))
+                    if (fStrictV3Anchors)
                     {
+                        const TxDBReadStatus anchorStatus =
+                            txdb.ReadShieldedAnchorStatus(spend.anchor);
+                        if (anchorStatus == TXDB_READ_ERROR)
+                            return error("CTxMemPool::accept() : shielded anchor %s record is corrupt/unreadable; -reindex/resync required",
+                                         spend.anchor.ToString().substr(0,10).c_str());
+                        if (anchorStatus == TXDB_READ_NOT_FOUND)
+                            return error("CTxMemPool::accept() : shielded anchor %s not found",
+                                         spend.anchor.ToString().substr(0,10).c_str());
+                        if (txdb.ReadShieldedAnchorHeightStatus(
+                                spend.anchor, nAnchorHeight) != TXDB_READ_FOUND ||
+                            nAnchorHeight < FORK_HEIGHT_SHIELDED ||
+                            nAnchorHeight > nBestHeight)
+                            return error("CTxMemPool::accept() : shielded anchor %s height is missing/corrupt; -reindex/resync required",
+                                         spend.anchor.ToString().substr(0,10).c_str());
                         if (nBestHeight - nAnchorHeight < MIN_SHIELDED_SPEND_DEPTH)
+                            return error("CTxMemPool::accept() : shielded anchor %s too recent (height=%d, need %d confirmations)",
+                                         spend.anchor.ToString().substr(0,10).c_str(),
+                                         nAnchorHeight, MIN_SHIELDED_SPEND_DEPTH);
+                    }
+                    else
+                    {
+                        if (!txdb.ReadShieldedAnchor(spend.anchor))
+                            return error("CTxMemPool::accept() : shielded anchor %s not found",
+                                         spend.anchor.ToString().substr(0,10).c_str());
+                        if (txdb.ReadShieldedAnchorHeight(spend.anchor,
+                                                         nAnchorHeight) &&
+                            nBestHeight - nAnchorHeight < MIN_SHIELDED_SPEND_DEPTH)
                             return error("CTxMemPool::accept() : shielded anchor %s too recent (height=%d, need %d confirmations)",
                                          spend.anchor.ToString().substr(0,10).c_str(),
                                          nAnchorHeight, MIN_SHIELDED_SPEND_DEPTH);
@@ -1538,24 +1913,15 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                                              (int)i, (int)tx.vShieldedSpend[i].vAnonSet.size(), LELANTUS_MIN_SET_SIZE);
 
                             {
-                                // Verify all vAnonSet commitments exist on-chain
                                 {
                                     CTxDB txdb("r");
-                                    std::set<std::vector<unsigned char>> setChainCommitments;
-                                    uint64_t nCommitCount = 0;
-                                    txdb.ReadShieldedCommitmentCount(nCommitCount);
-                                    for (uint64_t ci = 0; ci < nCommitCount; ci++)
-                                    {
-                                        CPedersenCommitment chainCommit;
-                                        if (txdb.ReadShieldedCommitment(ci, chainCommit))
-                                            setChainCommitments.insert(chainCommit.vchCommitment);
-                                    }
-
-                                    for (size_t j = 0; j < tx.vShieldedSpend[i].vAnonSet.size(); j++)
-                                    {
-                                        if (setChainCommitments.find(tx.vShieldedSpend[i].vAnonSet[j].vchCommitment) == setChainCommitments.end())
-                                            return error("CTxMemPool::accept() : shielded spend %d anonymity set commitment %d not found in chain state", (int)i, (int)j);
-                                    }
+                                    std::string strAnonSetError;
+                                    if (!CheckShieldedAnonSetChainState(
+                                            txdb,
+                                            tx.vShieldedSpend[i].vAnonSet,
+                                            strAnonSetError))
+                                        return error("CTxMemPool::accept() : shielded spend %d %s",
+                                                     (int)i, strAnonSetError.c_str());
                                 }
 
                                 CAnonymitySet anonSet;
@@ -1575,7 +1941,8 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                             if (tx.vShieldedSpend[i].fcmpProof.IsNull())
                                 return error("CTxMemPool::accept() : shielded spend %d missing FCMP++ proof (required post-fork)", (int)i);
 
-                            if (!VerifyFCMPProof(fcmpRootNode, tx.vShieldedSpend[i].fcmpProof, tx.vShieldedSpend[i].cv))
+                            if (!VerifyFCMPProof(fcmpRootNode, tx.vShieldedSpend[i].fcmpProof, tx.vShieldedSpend[i].cv,
+                                                 nBestHeight + 1))
                                 return error("CTxMemPool::accept() : shielded spend %d FCMP++ proof failed", (int)i);
                         }
 
@@ -1590,7 +1957,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                                 return error("CTxMemPool::accept() : shielded spend %d missing nullifier binding proof (required post-fork)", (int)i);
                             if (sp.nullifier != NullifierTagFromPoint(sp.vchNullifierPoint))
                                 return error("CTxMemPool::accept() : shielded spend %d nullifier does not match bound note", (int)i);
-                            if (!VerifyNullifierBindingProof(cvSpendValue, sp.vchNullifierPoint, sighash, sp.vchNullifierBindingProof))
+                            if (!VerifyNullifierBindingProof(cvSpendValue, sp.vchNullifierPoint, sighash, sp.vchNullifierBindingProof, nBestHeight + 1))
                                 return error("CTxMemPool::accept() : shielded spend %d nullifier binding proof failed", (int)i);
                         }
 
@@ -1706,7 +2073,13 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
             // Check against previous transactions
             // This is done last to help prevent CPU exhaustion denial-of-service attacks.
             printf("CTxMemPool::accept() : calling ConnectInputs for %s\n", hash.ToString().substr(0,10).c_str());
-            if (!tx.ConnectInputs(txdb, mapInputs, mapUnused, CDiskTxPos(1,1,1), pindexBest, false, false))
+            const bool fAnonPrevalidated =
+                tx.nVersion == ANON_TXN_VERSION;
+            if (!tx.ConnectInputs(
+                    txdb, mapInputs, mapUnused, CDiskTxPos(1,1,1),
+                    pindexBest, false, false, STANDARD_SCRIPT_VERIFY_FLAGS,
+                    true, false, false, fAnonPrevalidated,
+                    nEffectiveMempoolHeight, nValidatedAnonValueIn))
             {
                 return error("CTxMemPool::accept() : ConnectInputs failed %s", hash.ToString().substr(0,10).c_str());
             };
@@ -1723,6 +2096,26 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                 remove(*ptxOld);
             }
             addUnchecked(hash, tx);
+
+            if (tx.IsPrivacyVNext())
+            {
+                mapPrivacyVNextTxNullifiers[hash] = vPrivacyVNextKeyImages;
+                for (size_t i = 0; i < vPrivacyVNextKeyImages.size(); ++i)
+                {
+                    CShieldedNullifierSpent spent;
+                    spent.txnHash = hash;
+                    spent.nIndex = i;
+                    mapPrivacyVNextNullifier[vPrivacyVNextKeyImages[i]] = spent;
+                }
+            }
+
+            if (tx.nVersion == ANON_TXN_VERSION)
+            {
+                for (std::vector<std::pair<ec_point, CKeyImageSpent> >::const_iterator it =
+                         vAnonRelayKeyImages.begin();
+                     it != vAnonRelayKeyImages.end(); ++it)
+                    mapKeyImage[it->first] = it->second;
+            }
 
             if (tx.IsShielded())
             {
@@ -1814,8 +2207,12 @@ bool AcceptableInputs(CTxMemPool& pool, const CTransaction &txo, bool fLimitFree
         if (!tx.FetchInputs(txdb, mapUnused, false, false, mapInputs, fInvalid))
         {
             if (fInvalid)
-                if (fDebugNet) return error("AcceptableInputs : FetchInputs found invalid tx %s", hash.ToString().substr(0,10).c_str());
+            {
+                if (fDebugNet)
+                    return error("AcceptableInputs : FetchInputs found invalid tx %s",
+                                 hash.ToString().substr(0,10).c_str());
                 return false;
+            }
             if (pfMissingInputs)
                 *pfMissingInputs = true;
             return false;
@@ -1872,7 +2269,13 @@ bool AcceptableInputs(CTxMemPool& pool, const CTransaction &txo, bool fLimitFree
 
         // Check against previous transactions
         // This is done last to help prevent CPU exhaustion denial-of-service attacks.
-        if (!tx.ConnectInputs(txdb, mapInputs, mapUnused, CDiskTxPos(1,1,1), pindexBest, true, false, STANDARD_SCRIPT_VERIFY_FLAGS, false))
+        const int nCandidateHeight =
+            nBestHeight == std::numeric_limits<int>::max()
+                ? nBestHeight : nBestHeight + 1;
+        if (!tx.ConnectInputs(
+                txdb, mapInputs, mapUnused, CDiskTxPos(1,1,1),
+                pindexBest, true, false, STANDARD_SCRIPT_VERIFY_FLAGS,
+                false, false, false, false, nCandidateHeight, 0))
         {
             return error("AcceptableInputs : ConnectInputs failed %s", hash.ToString().c_str());
         }
@@ -1978,6 +2381,39 @@ bool CTxMemPool::remove(const CTransaction &tx, bool fRecursive)
                 }
             };
 
+            if (tx.IsPrivacyVNext())
+            {
+                std::map<uint256, std::vector<uint256> >::iterator reverseIt =
+                    mapPrivacyVNextTxNullifiers.find(hash);
+                if (reverseIt == mapPrivacyVNextTxNullifiers.end())
+                {
+                    StartShutdown();
+                    printf("CTxMemPool::remove: missing IV5 reverse reservation for %s\n",
+                           hash.ToString().substr(0,10).c_str());
+                }
+                else
+                {
+                    for (std::vector<uint256>::const_iterator it =
+                             reverseIt->second.begin();
+                         it != reverseIt->second.end(); ++it)
+                    {
+                        std::map<uint256, CShieldedNullifierSpent>::iterator spentIt =
+                            mapPrivacyVNextNullifier.find(*it);
+                        if (spentIt == mapPrivacyVNextNullifier.end() ||
+                            spentIt->second.txnHash != hash)
+                        {
+                            StartShutdown();
+                            printf("CTxMemPool::remove: mismatched IV5 reservation %s for %s\n",
+                                   it->ToString().substr(0,10).c_str(),
+                                   hash.ToString().substr(0,10).c_str());
+                            continue;
+                        }
+                        mapPrivacyVNextNullifier.erase(spentIt);
+                    }
+                    mapPrivacyVNextTxNullifiers.erase(reverseIt);
+                }
+            }
+
             nTransactionsUpdated++;
         };
     }
@@ -2030,6 +2466,38 @@ bool CTxMemPool::removeConflicts(const CTransaction &tx)
         }
     }
 
+    if (tx.IsPrivacyVNext())
+    {
+        PrivacyVNextStateEffects effects;
+        const PrivacyVNextPayloadValidation validation =
+            ExtractPrivacyVNextPayloadEffects(
+                static_cast<uint32_t>(tx.nVersion),
+                tx.privacyVNext.vchPayload, effects);
+        if (!validation.IsValid())
+        {
+            StartShutdown();
+            return error("CTxMemPool::removeConflicts: accepted IV5 payload cannot be decoded");
+        }
+        for (size_t i = 0; i < effects.keyImages.size(); ++i)
+        {
+            uint256 keyImage;
+            memcpy(keyImage.begin(), effects.keyImages[i].data(),
+                   effects.keyImages[i].size());
+            std::map<uint256, CShieldedNullifierSpent>::const_iterator spentIt =
+                mapPrivacyVNextNullifier.find(keyImage);
+            if (spentIt == mapPrivacyVNextNullifier.end() ||
+                spentIt->second.txnHash == tx.GetHash())
+                continue;
+            std::map<uint256, CTransaction>::const_iterator txIt =
+                mapTx.find(spentIt->second.txnHash);
+            if (txIt != mapTx.end())
+            {
+                const CTransaction txToRemove = txIt->second;
+                remove(txToRemove, true);
+            }
+        }
+    }
+
     return true;
 }
 
@@ -2069,6 +2537,23 @@ void CTxMemPool::RemoveDAGConflicts(const uint256& hashBlock)
             for (const CShieldedSpendDescription& spend : txCopy.vShieldedSpend)
                 mapShieldedNullifier.erase(spend.nullifier);
 
+            std::map<uint256, std::vector<uint256> >::iterator reverseIt =
+                mapPrivacyVNextTxNullifiers.find(txHash);
+            if (reverseIt != mapPrivacyVNextTxNullifiers.end())
+            {
+                for (std::vector<uint256>::const_iterator it =
+                         reverseIt->second.begin();
+                     it != reverseIt->second.end(); ++it)
+                {
+                    std::map<uint256, CShieldedNullifierSpent>::iterator spentIt =
+                        mapPrivacyVNextNullifier.find(*it);
+                    if (spentIt != mapPrivacyVNextNullifier.end() &&
+                        spentIt->second.txnHash == txHash)
+                        mapPrivacyVNextNullifier.erase(spentIt);
+                }
+                mapPrivacyVNextTxNullifiers.erase(reverseIt);
+            }
+
             mapTx.erase(txHash);
             nRemoved++;
             ++nTransactionsUpdated;
@@ -2087,6 +2572,8 @@ void CTxMemPool::clear()
     mapNextTx.clear();
     mapKeyImage.clear();
     mapShieldedNullifier.clear();
+    mapPrivacyVNextNullifier.clear();
+    mapPrivacyVNextTxNullifiers.clear();
     setDAGSeenTxids.clear();
     ++nTransactionsUpdated;
 }
@@ -2615,7 +3102,13 @@ static bool LoadFCMPValidationRoot(CTxDB& txdb, int nBlockHeight,
         // including block's height, not the validator's node-local live finalization tip,
         // so every node accepts/rejects the same spend (ConnectBlock stays deterministic).
         CEpochState finalizedEpochState;
-        if (!g_dagManager.GetFinalizedEpochStateAsOf(nBlockHeight, finalizedEpochState))
+        const bool fHaveFinalizedState =
+            nBlockHeight >= FORK_HEIGHT_EPOCH_STATE_V2
+                ? g_dagManager.GetFinalizedEpochStateAsOf(txdb, nBlockHeight,
+                                                           finalizedEpochState)
+                : g_dagManager.GetFinalizedEpochStateAsOf(nBlockHeight,
+                                                           finalizedEpochState);
+        if (!fHaveFinalizedState)
         {
             strErrorOut = "missing finalized epoch FCMP root";
             return false;
@@ -2702,6 +3195,19 @@ static bool DAGSiblingPrecedesBlock(const uint256& hashBlock,
                                     bool fHaveCurrentDAGOrder,
                                     const CBlockDAGData& currentDagData)
 {
+    std::map<uint256, CBlockIndex*>::const_iterator miBlock = mapBlockIndex.find(hashBlock);
+    std::map<uint256, CBlockIndex*>::const_iterator miSibling = mapBlockIndex.find(hashSibling);
+    if (miBlock != mapBlockIndex.end() && miBlock->second &&
+        miBlock->second->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
+    {
+        const int nBlockHeight = miBlock->second->nHeight;
+        const int nSiblingHeight =
+            (miSibling != mapBlockIndex.end() && miSibling->second)
+                ? miSibling->second->nHeight : -1;
+        return nSiblingHeight != nBlockHeight
+                   ? nSiblingHeight < nBlockHeight
+                   : hashSibling < hashBlock;
+    }
     bool fSiblingPrecedes = (hashSibling < hashBlock);
     CBlockDAGData siblingDagData;
     if (fHaveCurrentDAGOrder && g_dagManager.GetDAGData(hashSibling, siblingDagData) &&
@@ -2817,6 +3323,23 @@ std::set<uint256> GetDAGSkippedTxsForBlock(const CBlock& block, const CBlockInde
     return GetDAGSkippedTxsForBlockInternal(block, pindex, mapSkipCache, setVisiting);
 }
 
+uint256 ComputeShieldedWalletEffectPlanDigest(
+    const std::vector<CShieldedWalletEffectDigestEntry>& vEntries)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("Innova shielded wallet recovery plan v1");
+    ss << (uint64_t)vEntries.size();
+    for (std::vector<CShieldedWalletEffectDigestEntry>::const_iterator it =
+             vEntries.begin(); it != vEntries.end(); ++it)
+    {
+        ss << (unsigned char)(it->fConnect ? 1 : 0);
+        ss << it->hashBlock;
+        ss << std::vector<uint256>(it->setDAGSkippedTxs.begin(),
+                                  it->setDAGSkippedTxs.end());
+    }
+    return ss.GetHash();
+}
+
 CBlock GetDAGActiveBlock(const CBlock& block, const std::set<uint256>& setDAGSkippedTxs)
 {
     if (setDAGSkippedTxs.empty())
@@ -2832,6 +3355,531 @@ CBlock GetDAGActiveBlock(const CBlock& block, const std::set<uint256>& setDAGSki
     }
     activeBlock.vtx.swap(vActiveTx);
     return activeBlock;
+}
+
+namespace
+{
+static const size_t DAG_ACTIVE_SET_RECOVERY_CHUNK = 512;
+
+CBlockIndex* GetAncestorAtHeight(CBlockIndex* pindex, int nHeight)
+{
+    if (nHeight < 0)
+        return NULL;
+    while (pindex && pindex->nHeight > nHeight)
+        pindex = pindex->pprev;
+    return pindex && pindex->nHeight == nHeight ? pindex : NULL;
+}
+
+CBlockIndex* FindCommonPrimaryAncestor(CBlockIndex* a, CBlockIndex* b)
+{
+    while (a && b && a->nHeight > b->nHeight)
+        a = a->pprev;
+    while (a && b && b->nHeight > a->nHeight)
+        b = b->pprev;
+    while (a && b && a != b)
+    {
+        a = a->pprev;
+        b = b->pprev;
+    }
+    return a == b ? a : NULL;
+}
+
+bool ValidateDAGActiveSetTipBinding(CTxDB& txdb,
+                                    CBlockIndex* pindexTip,
+                                    std::string& strError)
+{
+    strError.clear();
+    if (!pindexTip || pindexTip->nHeight < FORK_HEIGHT_DAG)
+        return true;
+    if (!pindexTip->phashBlock)
+    {
+        strError = "canonical DAG tip has no block hash";
+        return false;
+    }
+    CBlock block;
+    if (!block.ReadFromDisk(pindexTip, true) ||
+        block.GetHash() != pindexTip->GetBlockHash() ||
+        block.BuildMerkleTree() != pindexTip->hashMerkleRoot)
+    {
+        strError = "canonical DAG tip block data is missing or corrupt";
+        return false;
+    }
+    std::set<uint256> setSkipped;
+    const TxDBReadStatus status =
+        txdb.ReadDAGSkippedTxsStatus(block, setSkipped, strError);
+    if (status != TXDB_READ_FOUND)
+    {
+        if (strError.empty())
+            strError = status == TXDB_READ_NOT_FOUND
+                ? "canonical DAG tip active set is missing"
+                : "canonical DAG tip active set is corrupt";
+        return false;
+    }
+    return true;
+}
+
+bool ProveLegacyCanonicalBlockFullyActive(
+    CTxDB& txdb, const CBlock& block, const CBlockIndex* pindex,
+    std::string& strError)
+{
+    strError.clear();
+    if (!pindex || !pindex->phashBlock || block.vtx.empty() ||
+        block.GetHash() != pindex->GetBlockHash() ||
+        block.BuildMerkleTree() != block.hashMerkleRoot ||
+        block.hashMerkleRoot != pindex->hashMerkleRoot)
+    {
+        strError = "legacy DAG active-set recovery received mismatched block data";
+        return false;
+    }
+
+    const uint64_t nHeaderBytes = ::GetSerializeSize(
+        CBlock(), SER_DISK, CLIENT_VERSION);
+    const uint64_t nEmptyVectorBytes = 2 * GetSizeOfCompactSize(0);
+    if (nHeaderBytes < nEmptyVectorBytes)
+    {
+        strError = "legacy DAG active-set recovery block-header size underflow";
+        return false;
+    }
+    uint64_t nTxPos = (uint64_t)pindex->nBlockPos + nHeaderBytes -
+                      nEmptyVectorBytes +
+                      GetSizeOfCompactSize(block.vtx.size());
+    std::set<uint256> setSeenTx;
+    for (std::vector<CTransaction>::const_iterator it = block.vtx.begin();
+         it != block.vtx.end(); ++it)
+    {
+        const uint256 hashTx = it->GetHash();
+        if (!setSeenTx.insert(hashTx).second)
+        {
+            strError = strprintf(
+                "height %d contains duplicate transaction %s; its historical "
+                "active instance is ambiguous",
+                pindex->nHeight, hashTx.ToString().substr(0, 20).c_str());
+            return false;
+        }
+        const uint64_t nTxSize = ::GetSerializeSize(
+            *it, SER_DISK, CLIENT_VERSION);
+        if (nTxPos > std::numeric_limits<unsigned int>::max() ||
+            nTxSize > std::numeric_limits<unsigned int>::max() - nTxPos)
+        {
+            strError = strprintf(
+                "height %d transaction positions overflow the legacy disk format",
+                pindex->nHeight);
+            return false;
+        }
+
+        CTxIndex txindex;
+        const TxDBReadStatus status =
+            txdb.ReadTxIndexStatus(hashTx, txindex);
+        if (status != TXDB_READ_FOUND)
+        {
+            // NOT_FOUND is deliberately not interpreted as "skipped".  It can
+            // equally mean an active tx-index record was lost.  No historical
+            // arrival-order evidence survives elsewhere in the legacy DB.
+            strError = strprintf(
+                "height %d transaction %s has %s transaction-index state; "
+                "cannot prove historically skipped versus missing/corrupt active "
+                "state without guessing from the current DAG",
+                pindex->nHeight, hashTx.ToString().substr(0, 20).c_str(),
+                status == TXDB_READ_NOT_FOUND ? "no" : "corrupt");
+            return false;
+        }
+        const CDiskTxPos expected(pindex->nFile, pindex->nBlockPos,
+                                  (unsigned int)nTxPos);
+        if (txindex.pos != expected)
+        {
+            strError = strprintf(
+                "height %d transaction %s index points to a different disk "
+                "position; duplicate/overwritten versus inactive history is ambiguous",
+                pindex->nHeight, hashTx.ToString().substr(0, 20).c_str());
+            return false;
+        }
+        if (txindex.vSpent.size() != it->vout.size())
+        {
+            strError = strprintf(
+                "height %d transaction %s index output count is corrupt",
+                pindex->nHeight, hashTx.ToString().substr(0, 20).c_str());
+            return false;
+        }
+        nTxPos += nTxSize;
+    }
+    return true;
+}
+
+bool CommitDAGActiveSetBuildMarker(CTxDB& txdb,
+                                   CDAGActiveSetBuildRecord record,
+                                   std::string& strError)
+{
+    if (!txdb.TxnBegin())
+    {
+        strError = "could not begin DAG active-set recovery marker transaction";
+        return false;
+    }
+    if (!txdb.WriteDAGActiveSetBuild(record))
+    {
+        txdb.TxnAbort();
+        strError = "could not stage DAG active-set recovery marker";
+        return false;
+    }
+    if (!txdb.TxnCommit(true))
+    {
+        strError = "could not durably commit DAG active-set recovery marker";
+        return false;
+    }
+    return true;
+}
+} // namespace
+
+bool ValidateAndRecoverDAGActiveSetPersistence(CTxDB& txdb,
+                                               std::string& strError)
+{
+    LOCK(cs_main);
+    strError.clear();
+    if (!pindexBest || !pindexBest->phashBlock)
+        return true;
+
+    uint256 hashDurableBest;
+    if (!txdb.ReadHashBestChain(hashDurableBest) ||
+        hashDurableBest != pindexBest->GetBlockHash())
+    {
+        strError = "DAG active-set recovery target is not the durable best chain";
+        return false;
+    }
+
+    CShieldedWalletRecoveryRecord pendingWalletRecovery;
+    const TxDBReadStatus walletStatus =
+        txdb.ReadShieldedWalletRecoveryStatus(pendingWalletRecovery);
+    if (walletStatus == TXDB_READ_ERROR)
+    {
+        strError = "shielded-wallet recovery marker is corrupt during DAG active-set validation";
+        return false;
+    }
+
+    uint256 hashRecordedBest;
+    const TxDBReadStatus bestStatus =
+        txdb.ReadDAGActiveSetBest(hashRecordedBest);
+    if (bestStatus == TXDB_READ_ERROR)
+    {
+        strError = "DAG active-set completed-tip marker is corrupt";
+        return false;
+    }
+    CDAGActiveSetBuildRecord build;
+    const TxDBReadStatus buildStatus = txdb.ReadDAGActiveSetBuild(build);
+    if (buildStatus == TXDB_READ_ERROR)
+    {
+        strError = "DAG active-set recovery-progress marker is corrupt";
+        return false;
+    }
+
+    std::string strCoverageError;
+    const bool fCompletedAtCurrentTip =
+        bestStatus == TXDB_READ_FOUND &&
+        hashRecordedBest == hashDurableBest;
+    // The completed marker, tip record and hashBestChain share every chain WriteBatch, so a
+    // matching marker proves coverage; per-block reads still fail closed.
+    if (fCompletedAtCurrentTip &&
+        ValidateDAGActiveSetTipBinding(
+            txdb, pindexBest, strCoverageError))
+    {
+        if (buildStatus == TXDB_READ_FOUND)
+        {
+            if (!txdb.TxnBegin())
+            {
+                strError = "could not begin stale DAG recovery-marker cleanup";
+                return false;
+            }
+            if (!txdb.EraseDAGActiveSetBuild())
+            {
+                txdb.TxnAbort();
+                strError = "could not stage stale DAG recovery-marker cleanup";
+                return false;
+            }
+            if (!txdb.TxnCommit(true))
+            {
+                strError = "could not commit stale DAG recovery-marker cleanup";
+                return false;
+            }
+        }
+        return true;
+    }
+
+    if (walletStatus == TXDB_READ_FOUND)
+    {
+        strError = strprintf(
+            "DAG active-set persistence needs repair (%s), but a committed "
+            "shielded-wallet transition is pending; disconnected-block plans "
+            "cannot be reconstructed from the current transaction index",
+            strCoverageError.empty() ? "best-tip marker mismatch"
+                                     : strCoverageError.c_str());
+        return false;
+    }
+
+    // A tip below the DAG fork has no variable activation sets.  Stamp it
+    // directly; this also gives downgrade detection before activation.
+    if (pindexBest->nHeight < FORK_HEIGHT_DAG)
+    {
+        if (!txdb.TxnBegin())
+        {
+            strError = "could not begin pre-DAG active-set marker transaction";
+            return false;
+        }
+        if (!txdb.WriteDAGActiveSetBest(hashDurableBest) ||
+            (buildStatus == TXDB_READ_FOUND &&
+             !txdb.EraseDAGActiveSetBuild()))
+        {
+            txdb.TxnAbort();
+            strError = "could not stage pre-DAG active-set marker";
+            return false;
+        }
+        if (!txdb.TxnCommit(true))
+        {
+            strError = "could not commit pre-DAG active-set marker";
+            return false;
+        }
+        return true;
+    }
+
+    bool fResumeBuild = false;
+    if (buildStatus == TXDB_READ_FOUND &&
+        build.hashTargetBest == hashDurableBest &&
+        build.nTargetHeight == pindexBest->nHeight)
+    {
+        CBlockIndex* pTrusted = GetAncestorAtHeight(
+            pindexBest, build.nTrustedBaseHeight);
+        CBlockIndex* pNext = GetAncestorAtHeight(
+            pindexBest, build.nNextHeight);
+        if ((build.nTrustedBaseHeight < 0 ||
+             (pTrusted && pTrusted->GetBlockHash() == build.hashTrustedBase)) &&
+            (build.nNextHeight < 0 ||
+             (pNext && pNext->GetBlockHash() == build.hashNextBlock)))
+            fResumeBuild = true;
+    }
+
+    if (!fResumeBuild)
+    {
+        int nTrustedBaseHeight = FORK_HEIGHT_DAG - 1;
+        CBlockIndex* pTrustedBase = GetAncestorAtHeight(
+            pindexBest, nTrustedBaseHeight);
+        int nMode = DAG_ACTIVE_SET_BUILD_REBUILD_SUFFIX;
+        if (fCompletedAtCurrentTip)
+        {
+            // The marker matches but an interior record is absent/corrupt.
+            // Retain every individually exact record and recover only holes.
+            nMode = DAG_ACTIVE_SET_BUILD_REPAIR_CANONICAL;
+        }
+        else if (bestStatus == TXDB_READ_FOUND)
+        {
+            std::map<uint256, CBlockIndex*>::const_iterator itOld =
+                mapBlockIndex.find(hashRecordedBest);
+            if (itOld != mapBlockIndex.end() && itOld->second)
+            {
+                CBlockIndex* pCommon = FindCommonPrimaryAncestor(
+                    pindexBest, itOld->second);
+                if (pCommon && pCommon->nHeight > nTrustedBaseHeight)
+                {
+                    std::string strTrustedCoverageError;
+                    if (!ValidateDAGActiveSetTipBinding(
+                            txdb, pCommon, strTrustedCoverageError))
+                    {
+                        strError = strprintf(
+                            "previously completed DAG active-set prefix is no longer exact: %s",
+                            strTrustedCoverageError.c_str());
+                        return false;
+                    }
+                    nTrustedBaseHeight = pCommon->nHeight;
+                    pTrustedBase = pCommon;
+                }
+            }
+        }
+        if (!pTrustedBase || !pTrustedBase->phashBlock)
+        {
+            strError = strprintf(
+                "canonical chain is truncated before DAG recovery base height %d",
+                nTrustedBaseHeight);
+            return false;
+        }
+
+        build = CDAGActiveSetBuildRecord();
+        build.nMode = nMode;
+        build.hashTargetBest = hashDurableBest;
+        build.nTargetHeight = pindexBest->nHeight;
+        build.hashTrustedBase = pTrustedBase->GetBlockHash();
+        build.nTrustedBaseHeight = nTrustedBaseHeight;
+        build.hashNextBlock = build.hashTargetBest;
+        build.nNextHeight = build.nTargetHeight;
+        if (!CommitDAGActiveSetBuildMarker(txdb, build, strError))
+            return false;
+    }
+
+    CBlockIndex* pNext = GetAncestorAtHeight(
+        pindexBest, build.nNextHeight);
+    if (!pNext || !pNext->phashBlock ||
+        pNext->GetBlockHash() != build.hashNextBlock)
+    {
+        strError = "DAG active-set recovery progress is not on the canonical chain";
+        return false;
+    }
+    if (build.nTrustedBaseHeight >= FORK_HEIGHT_DAG)
+    {
+        CBlockIndex* pTrustedBase = GetAncestorAtHeight(
+            pindexBest, build.nTrustedBaseHeight);
+        std::string strTrustedCoverageError;
+        if (!pTrustedBase ||
+            !ValidateDAGActiveSetTipBinding(
+                txdb, pTrustedBase, strTrustedCoverageError))
+        {
+            strError = strprintf(
+                "DAG active-set recovery trusted prefix is incomplete%s%s",
+                strTrustedCoverageError.empty() ? "" : ": ",
+                strTrustedCoverageError.c_str());
+            return false;
+        }
+    }
+
+    // Walk the target tip's pprev chain newest to oldest; the records are independent, and
+    // persisted pnext pointers are not trusted.
+    CBlockIndex* pCursor = pNext;
+    while (build.nNextHeight > build.nTrustedBaseHeight)
+    {
+        if (fRequestShutdown)
+        {
+            strError = "shutdown requested during DAG active-set recovery";
+            return false;
+        }
+        if (!txdb.TxnBegin())
+        {
+            strError = "could not begin DAG active-set recovery chunk";
+            return false;
+        }
+        bool fChunkOK = true;
+        size_t nChunkCount = 0;
+        for (; pCursor &&
+               pCursor->nHeight > build.nTrustedBaseHeight &&
+               nChunkCount < DAG_ACTIVE_SET_RECOVERY_CHUNK;
+             ++nChunkCount)
+        {
+            CBlockIndex* pindex = pCursor;
+            if (!pindex->phashBlock ||
+                pindex->nHeight != build.nNextHeight ||
+                pindex->GetBlockHash() != build.hashNextBlock)
+            {
+                strError = "canonical DAG recovery pprev suffix is truncated/non-contiguous";
+                fChunkOK = false;
+                break;
+            }
+            CBlock block;
+            if (!block.ReadFromDisk(pindex, true) ||
+                block.GetHash() != pindex->GetBlockHash() ||
+                block.BuildMerkleTree() != pindex->hashMerkleRoot)
+            {
+                strError = strprintf(
+                    "cannot read/verify canonical block at height %d during DAG active-set recovery",
+                    pindex->nHeight);
+                fChunkOK = false;
+                break;
+            }
+
+            bool fHaveExactRecord = false;
+            if (build.nMode == DAG_ACTIVE_SET_BUILD_REPAIR_CANONICAL)
+            {
+                std::set<uint256> setExisting;
+                std::string strReadError;
+                fHaveExactRecord = txdb.ReadDAGSkippedTxsStatus(
+                    block, setExisting, strReadError) == TXDB_READ_FOUND;
+            }
+            if (!fHaveExactRecord)
+            {
+                if (!ProveLegacyCanonicalBlockFullyActive(
+                        txdb, block, pindex, strError))
+                {
+                    fChunkOK = false;
+                    break;
+                }
+                std::string strWriteError;
+                if (!txdb.WriteDAGSkippedTxs(
+                        block, std::set<uint256>(), strWriteError))
+                {
+                    strError = strprintf(
+                        "failed to stage recovered active set at height %d: %s",
+                        pindex->nHeight, strWriteError.c_str());
+                    fChunkOK = false;
+                    break;
+                }
+            }
+            pCursor = pindex->pprev;
+            if (!pCursor || !pCursor->phashBlock)
+            {
+                strError = "canonical DAG recovery pprev suffix ended before its trusted base";
+                fChunkOK = false;
+                break;
+            }
+            build.hashNextBlock = pCursor->GetBlockHash();
+            build.nNextHeight = pCursor->nHeight;
+        }
+        if (fChunkOK && nChunkCount == 0)
+        {
+            strError = "canonical DAG recovery made no bounded progress";
+            fChunkOK = false;
+        }
+        if (!fChunkOK || !txdb.WriteDAGActiveSetBuild(build))
+        {
+            txdb.TxnAbort();
+            if (fChunkOK)
+                strError = "failed to stage DAG active-set recovery progress";
+            return false;
+        }
+        if (!txdb.TxnCommit(true))
+        {
+            strError = "failed to durably commit DAG active-set recovery chunk";
+            return false;
+        }
+        printf("DAG active-set recovery: next height %d (trusted base %d, target %d)\n",
+               build.nNextHeight, build.nTrustedBaseHeight,
+               build.nTargetHeight);
+    }
+    if (build.nNextHeight != build.nTrustedBaseHeight ||
+        build.hashNextBlock != build.hashTrustedBase)
+    {
+        strError = "DAG active-set recovery did not reach its target tip";
+        return false;
+    }
+
+    if (!ValidateDAGActiveSetTipBinding(
+            txdb, pindexBest, strCoverageError))
+    {
+        strError = strprintf(
+            "DAG active-set recovery completed an invalid suffix: %s",
+            strCoverageError.c_str());
+        return false;
+    }
+    uint256 hashBestCheck;
+    if (!txdb.ReadHashBestChain(hashBestCheck) ||
+        hashBestCheck != build.hashTargetBest ||
+        pindexBest->GetBlockHash() != build.hashTargetBest)
+    {
+        strError = "durable best changed during DAG active-set recovery";
+        return false;
+    }
+    if (!txdb.TxnBegin())
+    {
+        strError = "could not begin DAG active-set recovery finalization";
+        return false;
+    }
+    if (!txdb.WriteDAGActiveSetBest(build.hashTargetBest) ||
+        !txdb.EraseDAGActiveSetBuild())
+    {
+        txdb.TxnAbort();
+        strError = "could not stage DAG active-set recovery finalization";
+        return false;
+    }
+    if (!txdb.TxnCommit(true))
+    {
+        strError = "could not durably finalize DAG active-set recovery";
+        return false;
+    }
+    printf("DAG active-set recovery complete at height %d (%s)\n",
+           pindexBest->nHeight,
+           pindexBest->GetBlockHash().ToString().substr(0, 20).c_str());
+    return true;
 }
 
 // Proof of Work miner's coin base reward
@@ -2871,37 +3919,37 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
    } else {
   // use nHeight parameter throughout
   if (nHeight == 1)
-  		nSubsidy = 10350000 * COIN;  //Swap amount for Innova Chain v0.12 + Founders Fund 2.25 million
-  	else if (nHeight <= FAIR_LAUNCH_BLOCK) // Block 490, Instamine prevention
+      nSubsidy = 10350000 * COIN;  //Swap amount for Innova Chain v0.12 + Founders Fund 2.25 million
+    else if (nHeight <= FAIR_LAUNCH_BLOCK) // Block 490, Instamine prevention
       nSubsidy = 0.165 * COIN/2;
-  	else if (nHeight <= 5000)
-  		nSubsidy = 0.33 * COIN;
+    else if (nHeight <= 5000)
+      nSubsidy = 0.33 * COIN;
     else if (nHeight <= 10000)
-    	nSubsidy = 0.66 * COIN;
+      nSubsidy = 0.66 * COIN;
     else if (nHeight <= 15000)
       nSubsidy = 0.99 * COIN;
     else if (nHeight <= 20000)
-    	nSubsidy = 1.32 * COIN;
+      nSubsidy = 1.32 * COIN;
     else if (nHeight <= 25000)
       nSubsidy = 1.65 * COIN;
-  	else if (nHeight <= 27500)
-  		nSubsidy = 1.485 * COIN;
+    else if (nHeight <= 27500)
+      nSubsidy = 1.485 * COIN;
     else if (nHeight <= 30000)
-    	nSubsidy = 1.32 * COIN;
+      nSubsidy = 1.32 * COIN;
     else if (nHeight <= 32500)
       nSubsidy = 1.155 * COIN;
     else if (nHeight <= 35000)
       nSubsidy = 0.99 * COIN;
     else if (nHeight <= 37500)
       nSubsidy = 0.825 * COIN;
-  	else if (nHeight <= 40000)
-  		nSubsidy = 0.66 * COIN;
+    else if (nHeight <= 40000)
+      nSubsidy = 0.66 * COIN;
     else if (nHeight <= 42500)
-    	nSubsidy = 0.495 * COIN;
+      nSubsidy = 0.495 * COIN;
     else if (nHeight <= 45000)
-    	nSubsidy = 0.33 * COIN;
+      nSubsidy = 0.33 * COIN;
     else if (nHeight <= 47500)
-    	nSubsidy = 0.165 * COIN;
+      nSubsidy = 0.165 * COIN;
     else if (nHeight <= 50000)
       nSubsidy = 0.0825 * COIN;
     else if (nHeight > ZERO_POW_BLOCK && nHeight < 2000000)
@@ -3013,7 +4061,7 @@ int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees)
         if (pindexBest)
             nHeight = pindexBest->nHeight;
     }
-    if (nHeight > (YEARLY_BLOCKCOUNT*9000)) // It's Over 9000!! [years] - Vegeta
+    if ((int64_t)nHeight > (int64_t)YEARLY_BLOCKCOUNT * 9000) // It's Over 9000!! [years] - Vegeta
         return nFees;
 
     int64_t nRewardCoinYear;
@@ -3175,6 +4223,129 @@ bool IsSynchronized() {
   return rc;
 }
 
+bool ValidatePrivacyVNextNullifierPersistence(
+    CTxDB& txdb, std::string& strError)
+{
+    LOCK(cs_main);
+    strError.clear();
+    if (!pindexBest || !pindexBest->phashBlock ||
+        !IsBoundaryBActiveAtHeight(pindexBest->nHeight))
+        return true;
+
+    std::vector<CBlockIndex*> vBoundaryBChain;
+    for (CBlockIndex* pindex = pindexBest;
+         pindex && IsBoundaryBActiveAtHeight(pindex->nHeight);
+         pindex = pindex->pprev)
+        vBoundaryBChain.push_back(pindex);
+    std::reverse(vBoundaryBChain.begin(), vBoundaryBChain.end());
+
+    std::set<uint256> setExpectedKeyImages;
+    for (std::vector<CBlockIndex*>::const_iterator blockIt =
+             vBoundaryBChain.begin();
+         blockIt != vBoundaryBChain.end(); ++blockIt)
+    {
+        CBlockIndex* pindex = *blockIt;
+        CBlock block;
+        if (!block.ReadFromDisk(pindex, true) ||
+            block.GetHash() != pindex->GetBlockHash() ||
+            block.BuildMerkleTree() != pindex->hashMerkleRoot)
+        {
+            strError = strprintf("Boundary-B block %d is unavailable or corrupt",
+                                 pindex->nHeight);
+            return false;
+        }
+
+        std::set<uint256> setSkipped;
+        if (pindex->nHeight >= FORK_HEIGHT_DAG)
+        {
+            std::string strActiveSetError;
+            const TxDBReadStatus status = txdb.ReadDAGSkippedTxsStatus(
+                block, setSkipped, strActiveSetError);
+            if (status != TXDB_READ_FOUND)
+            {
+                strError = strprintf(
+                    "Boundary-B DAG active set is missing/corrupt at height %d%s%s",
+                    pindex->nHeight,
+                    strActiveSetError.empty() ? "" : ": ",
+                    strActiveSetError.c_str());
+                return false;
+            }
+        }
+        const CBlock activeBlock = GetDAGActiveBlock(block, setSkipped);
+        for (std::vector<CTransaction>::const_iterator txIt =
+                 activeBlock.vtx.begin();
+             txIt != activeBlock.vtx.end(); ++txIt)
+        {
+            const CTransaction& tx = *txIt;
+            if (!tx.IsPrivacyVNext())
+                continue;
+            PrivacyVNextStateEffects effects;
+            const PrivacyVNextPayloadValidation validation =
+                ExtractPrivacyVNextPayloadEffects(
+                    static_cast<uint32_t>(tx.nVersion),
+                    tx.privacyVNext.vchPayload, effects);
+            if (!validation.IsValid())
+            {
+                strError = strprintf(
+                    "accepted IV5 payload %s cannot be replayed: %s",
+                    tx.GetHash().ToString().substr(0,10).c_str(),
+                    validation.strError.c_str());
+                return false;
+            }
+            bool fContextLocalFailure = false;
+            std::string strContextError;
+            if (!ValidatePrivacyVNextFinalizedContext(
+                    txdb, pindex->nHeight, effects,
+                    fContextLocalFailure, strContextError))
+            {
+                strError = strprintf(
+                    "accepted IV5 payload %s has invalid finalized context: %s",
+                    tx.GetHash().ToString().substr(0,10).c_str(),
+                    strContextError.c_str());
+                return false;
+            }
+
+            for (size_t i = 0; i < effects.keyImages.size(); ++i)
+            {
+                uint256 keyImage;
+                memcpy(keyImage.begin(), effects.keyImages[i].data(),
+                       effects.keyImages[i].size());
+                if (!setExpectedKeyImages.insert(keyImage).second)
+                {
+                    strError = strprintf(
+                        "duplicate IV5 spent key %s in active chain",
+                        keyImage.ToString().substr(0,10).c_str());
+                    return false;
+                }
+                CShieldedNullifierSpent spent;
+                const TxDBReadStatus status =
+                    txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
+                if (status != TXDB_READ_FOUND ||
+                    spent.txnHash != tx.GetHash() || spent.nIndex != i)
+                {
+                    strError = strprintf(
+                        "IV5 spent-key record %s is missing, corrupt, or owned by another input",
+                        keyImage.ToString().substr(0,10).c_str());
+                    return false;
+                }
+            }
+        }
+    }
+
+    uint64_t nPersistedCount = 0;
+    if (!txdb.CountPrivacyVNextNullifiers(nPersistedCount, strError))
+        return false;
+    if (nPersistedCount != setExpectedKeyImages.size())
+    {
+        strError = strprintf(
+            "IV5 spent-key index count mismatch (persisted=%" PRIu64 ", expected=%" PRIu64 ")",
+            nPersistedCount,
+            static_cast<uint64_t>(setExpectedKeyImages.size()));
+        return false;
+    }
+    return true;
+}
+
 bool IsInitialBlockDownload()
 {
     if (fRegTest && pindexBest != NULL)
@@ -3324,6 +4495,11 @@ bool CTransaction::DisconnectInputs(CTxDB& txdb)
     {
         for (const CTxIn& txin : vin)
         {
+            // ANON prevouts encode a key image and ring size, not a
+            // transaction-index outpoint.  Their exact chain record is undone
+            // by DisconnectLegacyAnonChainState in the enclosing block batch.
+            if (nVersion == ANON_TXN_VERSION && txin.IsAnonInput())
+                continue;
             COutPoint prevout = txin.prevout;
 
             // Get prev txindex from disk
@@ -3437,7 +4613,85 @@ bool CTransaction::FetchInputs(CTxDB& txdb, const map<uint256, CTxIndex>& mapTes
 }
 
 // Ring Signatures - I n n o v a
-static bool CheckAnonInputAB(CTxDB &txdb, const CTxIn &txin, int i, int nRingSize, std::vector<uint8_t> &vchImage, uint256 &preimage, int64_t &nCoinValue)
+int GetAnonTxnPreImage(const CTransaction& tx, uint256& hashOut)
+{
+    CHashWriter ss(SER_GETHASH, PROTOCOL_VERSION);
+    ss << tx.nVersion;
+    ss << tx.nTime;
+    for (uint32_t i = 0; i < tx.vin.size(); ++i)
+    {
+        const CTxIn& txin = tx.vin[i];
+        ss << txin.prevout; // key image only
+
+        const int nRingSize = txin.ExtractRingSize();
+        if (nRingSize < 0 ||
+            (size_t)nRingSize >
+                (std::numeric_limits<size_t>::max() - 2) /
+                    ec_compressed_size)
+        {
+            printf("anonymous preimage has invalid ring size %d at input %u\n",
+                   nRingSize, i);
+            return 1;
+        }
+        const size_t nPubkeyBytes =
+            (size_t)nRingSize * ec_compressed_size;
+        if (txin.scriptSig.size() < 2 + nPubkeyBytes)
+        {
+            printf("scriptSig is too small, input %u, ring size %d.\n",
+                   i, nRingSize);
+            return 1;
+        }
+        if (nPubkeyBytes > 0)
+            ss.write((const char*)&txin.scriptSig[2], nPubkeyBytes);
+    }
+
+    for (uint32_t i = 0; i < tx.vout.size(); ++i)
+        ss << tx.vout[i];
+    ss << tx.nLockTime;
+    hashOut = ss.GetHash();
+    return 0;
+}
+
+static bool LegacyAnonRecordsEqual(const CKeyImageSpent& a,
+                                   const CKeyImageSpent& b)
+{
+    return a.txnHash == b.txnHash &&
+           a.inputNo == b.inputNo &&
+           a.nValue == b.nValue;
+}
+
+static bool LegacyAnonRecordsEqual(const CAnonOutput& a,
+                                   const CAnonOutput& b)
+{
+    return a.outpoint == b.outpoint &&
+           a.nValue == b.nValue &&
+           a.nBlockHeight == b.nBlockHeight &&
+           a.nCompromised == b.nCompromised;
+}
+
+static bool LegacyAnonOutputMatureAtCandidate(const CAnonOutput& output,
+                                               int nCandidateHeight)
+{
+    if (output.nBlockHeight <= 0 || nCandidateHeight <= 0)
+        return false;
+    const int64_t nPredecessorHeight = (int64_t)nCandidateHeight - 1;
+    return nPredecessorHeight - output.nBlockHeight >=
+           MIN_ANON_SPEND_DEPTH;
+}
+
+static int LegacyAnonMaxRingSizeAtCandidate(int nCandidateHeight)
+{
+    // MAX_RING_SIZE_OLD applied only while the predecessor was genesis; keyed on the
+    // candidate height, not the live tip.
+    return nCandidateHeight <= 1 ? (int)MAX_RING_SIZE_OLD
+                                 : (int)MAX_RING_SIZE;
+}
+
+static bool CheckAnonInputAB(CTxDB &txdb, const CTxIn &txin, int i,
+                             int nRingSize,
+                             std::vector<uint8_t> &vchImage,
+                             uint256 &preimage, int64_t &nCoinValue,
+                             int nCandidateHeight, bool& fInvalid)
 {
     const CScript &s = txin.scriptSig;
 
@@ -3453,9 +4707,16 @@ static bool CheckAnonInputAB(CTxDB &txdb, const CTxIn &txin, int i, int nRingSiz
     for (int ri = 0; ri < nRingSize; ++ri)
     {
         pkRingCoin = CPubKey(&pPubkeys[ri * ec_compressed_size], ec_compressed_size);
-        if (!txdb.ReadAnonOutput(pkRingCoin, ao))
+        const TxDBReadStatus outputStatus =
+            txdb.ReadAnonOutputStatus(pkRingCoin, ao);
+        if (outputStatus != TXDB_READ_FOUND)
         {
-            printf("CheckAnonInputsAB(): Error input %d, element %d AnonOutput %s not found.\n", i, ri);
+            printf("CheckAnonInputsAB(): Error input %d, element %d AnonOutput %s %s.\n",
+                   i, ri, HexStr(pkRingCoin.Raw()).c_str(),
+                   outputStatus == TXDB_READ_NOT_FOUND
+                       ? "not found" : "corrupt/unreadable");
+            if (outputStatus == TXDB_READ_NOT_FOUND)
+                fInvalid = true;
             return false;
         };
 
@@ -3465,14 +4726,16 @@ static bool CheckAnonInputAB(CTxDB &txdb, const CTxIn &txin, int i, int nRingSiz
         } else
         if (nCoinValue != ao.nValue)
         {
-            printf("CheckAnonInputsAB(): Error input %d, element %d ring amount mismatch %d, %d.\n", i, ri, nCoinValue, ao.nValue);
+            printf("CheckAnonInputsAB(): Error input %d, element %d ring amount mismatch %" PRId64 ", %" PRId64 ".\n",
+                   i, ri, nCoinValue, ao.nValue);
+            fInvalid = true;
             return false;
         };
 
-        if (ao.nBlockHeight == 0
-            || nBestHeight - ao.nBlockHeight < MIN_ANON_SPEND_DEPTH)
+        if (!LegacyAnonOutputMatureAtCandidate(ao, nCandidateHeight))
         {
             printf("CheckAnonInputsAB(): Error input %d, element %d depth < MIN_ANON_SPEND_DEPTH.\n", i, ri);
+            fInvalid = true;
             return false;
         };
     };
@@ -3480,23 +4743,46 @@ static bool CheckAnonInputAB(CTxDB &txdb, const CTxIn &txin, int i, int nRingSiz
     if (verifyRingSignatureAB(vchImage, preimage, nRingSize, pPubkeys, pSigC, pSigS) != 0)
     {
         printf("CheckAnonInputsAB(): Error input %d verifyRingSignatureAB() failed.\n", i);
+        fInvalid = true;
         return false;
     };
 
     return true;
 };
 
-bool CTransaction::CheckAnonInputs(CTxDB& txdb, int64_t& nSumValue, bool& fInvalid, bool fCheckExists)
+bool CTransaction::CheckAnonInputs(
+    CTxDB& txdb, int nCandidateHeight, int64_t& nSumValue,
+    bool& fInvalid, bool fRelay,
+    std::set<ec_point>* pBlockKeyImages,
+    std::vector<std::pair<ec_point, CKeyImageSpent> >* pKeyImageEffects) const
 {
     AssertLockHeld(cs_main);
-    // - fCheckExists should only run for anonInputs entering this node
-
     fInvalid = false;
-
     nSumValue = 0;
+    if (pKeyImageEffects)
+        pKeyImageEffects->clear();
+
+    if (nVersion != ANON_TXN_VERSION)
+    {
+        printf("CheckAnonInputs(): called for non-ANON transaction.\n");
+        fInvalid = true;
+        return false;
+    }
+    if (nCandidateHeight < 0)
+    {
+        printf("CheckAnonInputs(): candidate height is unavailable.\n");
+        return false;
+    }
+    if (nCandidateHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)
+    {
+        printf("CheckAnonInputs(): ANON transaction is retired at candidate height %d.\n",
+               nCandidateHeight);
+        fInvalid = true;
+        return false;
+    }
 
     uint256 preimage;
-    if (pwalletMain->GetTxnPreImage(*this, preimage) != 0)
+    if (GetAnonTxnPreImage(*this, preimage) != 0)
     {
         printf("CheckAnonInputs(): Error GetTxnPreImage() failed.\n");
         fInvalid = true; return false;
@@ -3516,35 +4802,54 @@ bool CTransaction::CheckAnonInputs(CTxDB& txdb, int64_t& nSumValue, bool& fInval
         std::vector<uint8_t> vchImage;
         txin.ExtractKeyImage(vchImage);
 
-        CKeyImageSpent spentKeyImage;
-        bool fInMemPool;
-        if (GetKeyImage(&txdb, vchImage, spentKeyImage, fInMemPool))
+        if (pBlockKeyImages &&
+            !pBlockKeyImages->insert(vchImage).second)
         {
-            // -- this can happen for transactions created by the local node
-            if (spentKeyImage.txnHash == txnHash)
+            printf("CheckAnonInputs(): duplicate key image %s in active block.\n",
+                   HexStr(vchImage).c_str());
+            fInvalid = true;
+            return false;
+        }
+
+        CKeyImageSpent spentKeyImage;
+        const TxDBReadStatus keyImageStatus =
+            txdb.ReadKeyImageStatus(vchImage, spentKeyImage);
+        if (keyImageStatus == TXDB_READ_ERROR)
+        {
+            printf("CheckAnonInputs(): key-image record is corrupt/unreadable.\n");
+            return false;
+        }
+        bool fHaveKeyImage = keyImageStatus == TXDB_READ_FOUND;
+        bool fKeyImageFromMempool = false;
+        if (!fHaveKeyImage && fRelay &&
+            mempool.lookupKeyImage(vchImage, spentKeyImage))
+        {
+            fHaveKeyImage = true;
+            fKeyImageFromMempool = true;
+        }
+        if (fHaveKeyImage)
+        {
+            // Idempotent validation of the same transaction is permitted; a key image owned by any
+            // other transaction/input is spent. The chain path never consults mempool or live-chain lookups.
+            if (spentKeyImage.txnHash == txnHash &&
+                spentKeyImage.inputNo == i)
             {
                 if (fDebugRingSig)
                     printf("Input %d keyimage %s matches txn %s.\n", i, HexStr(vchImage).c_str(), txnHash.ToString().c_str());
-            } else
+            }
+            else
             {
-                if (fCheckExists
-                    && !TxnHashInSystem(&txdb, spentKeyImage.txnHash))
-                {
-                    printf("CheckAnonInputs(): Warning input %d keyimage %s spent by unknown txn %s - rejecting for safety.\n",
-                           i, HexStr(vchImage).c_str(), spentKeyImage.txnHash.ToString().c_str());
-                    fInvalid = true; return false;
-                } else
-                {
-                    printf("CheckAnonInputs(): Error input %d keyimage %s already spent.\n", i, HexStr(vchImage).c_str());
-                    fInvalid = true; return false;
-                };
-            };
-        };
+                printf("CheckAnonInputs(): Error input %d keyimage %s already spent.\n",
+                       i, HexStr(vchImage).c_str());
+                fInvalid = true;
+                return false;
+            }
+        }
 
         int64_t nCoinValue = -1;
         int nRingSize = txin.ExtractRingSize();
         if (nRingSize < (int)MIN_RING_SIZE
-          ||nRingSize > (pindexBest->nHeight ? (int)MAX_RING_SIZE : (int)MAX_RING_SIZE_OLD))
+          ||nRingSize > LegacyAnonMaxRingSizeAtCandidate(nCandidateHeight))
         {
             printf("CheckAnonInputs(): Error input %d ringsize %d not in range [%d, %d].\n", i, nRingSize, MIN_RING_SIZE, MAX_RING_SIZE);
             fInvalid = true; return false;
@@ -3554,12 +4859,37 @@ bool CTransaction::CheckAnonInputs(CTxDB& txdb, int64_t& nSumValue, bool& fInval
         if (nRingSize > 1 && s.size() == 2 + ec_secret_size + (ec_secret_size + ec_compressed_size) * nRingSize)
         {
             // ringsig AB
-            if (!CheckAnonInputAB(txdb, txin, i, nRingSize, vchImage, preimage, nCoinValue))
+            if (!CheckAnonInputAB(txdb, txin, i, nRingSize, vchImage,
+                                  preimage, nCoinValue, nCandidateHeight,
+                                  fInvalid))
             {
-                fInvalid = true; return false;
+                return false;
             };
 
+            if (nCoinValue < 0 || nCoinValue > MAX_MONEY - nSumValue)
+            {
+                printf("CheckAnonInputs(): anonymous input sum overflow.\n");
+                fInvalid = true;
+                return false;
+            }
             nSumValue += nCoinValue;
+
+            CKeyImageSpent expected;
+            expected.txnHash = txnHash;
+            expected.inputNo = i;
+            expected.nValue = nCoinValue;
+            if (fHaveKeyImage &&
+                !LegacyAnonRecordsEqual(spentKeyImage, expected))
+            {
+                printf("CheckAnonInputs(): key-image metadata mismatch for input %d%s.\n",
+                       i, fKeyImageFromMempool ? " in mempool" : " on disk");
+                if (fKeyImageFromMempool)
+                    fInvalid = true;
+                return false;
+            }
+            if (pKeyImageEffects)
+                pKeyImageEffects->push_back(
+                    std::make_pair(vchImage, expected));
             continue;
         };
 
@@ -3579,10 +4909,17 @@ bool CTransaction::CheckAnonInputs(CTxDB& txdb, int64_t& nSumValue, bool& fInval
         for (int ri = 0; ri < nRingSize; ++ri)
         {
             pkRingCoin = CPubKey(&pPubkeys[ri * ec_compressed_size], ec_compressed_size);
-            if (!txdb.ReadAnonOutput(pkRingCoin, ao))
+            const TxDBReadStatus outputStatus =
+                txdb.ReadAnonOutputStatus(pkRingCoin, ao);
+            if (outputStatus != TXDB_READ_FOUND)
             {
-                printf("CheckAnonInputs(): Error input %d, element %d AnonOutput %s not found.\n", i, ri);
-                fInvalid = true; return false;
+                printf("CheckAnonInputs(): Error input %d, element %d AnonOutput %s %s.\n",
+                       i, ri, HexStr(pkRingCoin.Raw()).c_str(),
+                       outputStatus == TXDB_READ_NOT_FOUND
+                           ? "not found" : "corrupt/unreadable");
+                if (outputStatus == TXDB_READ_NOT_FOUND)
+                    fInvalid = true;
+                return false;
             };
 
             if (nCoinValue == -1)
@@ -3591,12 +4928,12 @@ bool CTransaction::CheckAnonInputs(CTxDB& txdb, int64_t& nSumValue, bool& fInval
             } else
             if (nCoinValue != ao.nValue)
             {
-                printf("CheckAnonInputs(): Error input %d, element %d ring amount mismatch %d, %d.\n", i, ri, nCoinValue, ao.nValue);
+                printf("CheckAnonInputs(): Error input %d, element %d ring amount mismatch %" PRId64 ", %" PRId64 ".\n",
+                       i, ri, nCoinValue, ao.nValue);
                 fInvalid = true; return false;
             };
 
-            if (ao.nBlockHeight == 0
-                || nBestHeight - ao.nBlockHeight < MIN_ANON_SPEND_DEPTH)
+            if (!LegacyAnonOutputMatureAtCandidate(ao, nCandidateHeight))
             {
                 printf("CheckAnonInputs(): Error input %d, element %d depth < MIN_ANON_SPEND_DEPTH.\n", i, ri);
                 fInvalid = true; return false;
@@ -3609,11 +4946,327 @@ bool CTransaction::CheckAnonInputs(CTxDB& txdb, int64_t& nSumValue, bool& fInval
             fInvalid = true; return false;
         };
 
+        if (nCoinValue < 0 || nCoinValue > MAX_MONEY - nSumValue)
+        {
+            printf("CheckAnonInputs(): anonymous input sum overflow.\n");
+            fInvalid = true;
+            return false;
+        }
         nSumValue += nCoinValue;
-    };
+
+        CKeyImageSpent expected;
+        expected.txnHash = txnHash;
+        expected.inputNo = i;
+        expected.nValue = nCoinValue;
+        if (fHaveKeyImage && !LegacyAnonRecordsEqual(spentKeyImage, expected))
+        {
+            printf("CheckAnonInputs(): key-image metadata mismatch for input %d%s.\n",
+                   i, fKeyImageFromMempool ? " in mempool" : " on disk");
+            // Disk mismatch for the same tx/input is local corruption.  Relay
+            // metadata mismatch is a conflicting transaction and is invalid.
+            if (fKeyImageFromMempool)
+                fInvalid = true;
+            return false;
+        }
+        if (pKeyImageEffects)
+            pKeyImageEffects->push_back(
+                std::make_pair(vchImage, expected));
+    }
 
     return true;
-};
+}
+
+bool CTransaction::CheckAnonInputs(CTxDB& txdb, int64_t& nSumValue,
+                                   bool& fInvalid,
+                                   bool fCheckExists) const
+{
+    // Compatibility for local block-template code.  Consensus callers use
+    // the explicit-height overload above.  Mempool visibility is enabled only
+    // for the historical relay call (fCheckExists=true).
+    const int nCandidateHeight =
+        nBestHeight == std::numeric_limits<int>::max()
+            ? nBestHeight : nBestHeight + 1;
+    return CheckAnonInputs(txdb, nCandidateHeight, nSumValue, fInvalid,
+                           fCheckExists, NULL, NULL);
+}
+
+bool CTransaction::BuildLegacyAnonEffectPlan(
+    CTxDB& txdb, int nCandidateHeight,
+    std::set<ec_point>& setBlockKeyImages,
+    CLegacyAnonEffectPlan& plan, bool& fInvalid) const
+{
+    AssertLockHeld(cs_main);
+    plan.Clear();
+    fInvalid = false;
+
+    if (nVersion != ANON_TXN_VERSION)
+    {
+        fInvalid = true;
+        return false;
+    }
+    if (nCandidateHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)
+    {
+        fInvalid = true;
+        return false;
+    }
+
+    // Publish block-local key images only after the entire transaction and
+    // output plan succeeds.  A failed transaction cannot leave partial state
+    // in the caller's duplicate set.
+    std::set<ec_point> setCandidateKeyImages(setBlockKeyImages);
+    if (!CheckAnonInputs(txdb, nCandidateHeight, plan.nValueIn,
+                         fInvalid, false, &setCandidateKeyImages,
+                         &plan.vKeyImages))
+        return false;
+
+    const uint256 hashTx = GetHash();
+    for (uint32_t i = 0; i < vout.size(); ++i)
+    {
+        const CTxOut& txout = vout[i];
+        if (!txout.IsAnonOutput())
+            continue;
+
+        const CPubKey pkCoin = txout.ExtractAnonPk();
+        COutPoint outpoint(hashTx, i);
+        const CAnonOutput expected(outpoint, txout.nValue,
+                                   nCandidateHeight, 0);
+        CAnonOutput existing;
+        const TxDBReadStatus status =
+            txdb.ReadAnonOutputStatus(pkCoin, existing);
+        if (status == TXDB_READ_ERROR)
+        {
+            printf("BuildLegacyAnonEffectPlan(): anon-output record is corrupt/unreadable.\n");
+            return false;
+        }
+        if (status == TXDB_READ_FOUND &&
+            !LegacyAnonRecordsEqual(existing, expected))
+        {
+            // A legacy unconfirmed wallet residue used height zero.  Repair it
+            // only when every consensus-visible identity/value field matches;
+            // any other same-key record is a conflict or local corruption.
+            const bool fRepairableLegacyResidue =
+                existing.outpoint == expected.outpoint &&
+                existing.nValue == expected.nValue &&
+                existing.nBlockHeight == 0 &&
+                existing.nCompromised == expected.nCompromised;
+            if (!fRepairableLegacyResidue)
+            {
+                if (existing.outpoint != expected.outpoint)
+                    fInvalid = true;
+                printf("BuildLegacyAnonEffectPlan(): conflicting anon output %s.\n",
+                       HexStr(pkCoin.Raw()).c_str());
+                return false;
+            }
+        }
+        plan.vOutputs.push_back(std::make_pair(pkCoin, expected));
+    }
+
+    setBlockKeyImages.swap(setCandidateKeyImages);
+    return true;
+}
+
+bool ApplyLegacyAnonEffectPlan(CTxDB& txdb,
+                               const CLegacyAnonEffectPlan& plan,
+                               std::string& strError)
+{
+    strError.clear();
+    if (!txdb.IsTxnActive())
+    {
+        strError = "legacy ANON effects require the outer chain transaction";
+        return false;
+    }
+    for (std::vector<std::pair<ec_point, CKeyImageSpent> >::const_iterator it =
+             plan.vKeyImages.begin(); it != plan.vKeyImages.end(); ++it)
+    {
+        CKeyImageSpent existing;
+        const TxDBReadStatus status =
+            txdb.ReadKeyImageStatus(it->first, existing);
+        if (status == TXDB_READ_ERROR)
+        {
+            strError = "legacy ANON key-image record is corrupt/unreadable";
+            return false;
+        }
+        if (status == TXDB_READ_FOUND)
+        {
+            if (!LegacyAnonRecordsEqual(existing, it->second))
+            {
+                strError = "legacy ANON key-image record changed after validation";
+                return false;
+            }
+            continue;
+        }
+        if (!txdb.WriteKeyImage(it->first, it->second))
+        {
+            strError = "failed to stage legacy ANON key-image record";
+            return false;
+        }
+    }
+
+    for (std::vector<std::pair<CPubKey, CAnonOutput> >::const_iterator it =
+             plan.vOutputs.begin(); it != plan.vOutputs.end(); ++it)
+    {
+        CAnonOutput existing;
+        const TxDBReadStatus status =
+            txdb.ReadAnonOutputStatus(it->first, existing);
+        if (status == TXDB_READ_ERROR)
+        {
+            strError = "legacy ANON output record is corrupt/unreadable";
+            return false;
+        }
+        if (status == TXDB_READ_FOUND &&
+            LegacyAnonRecordsEqual(existing, it->second))
+            continue;
+        if (status == TXDB_READ_FOUND)
+        {
+            const bool fRepairableLegacyResidue =
+                existing.outpoint == it->second.outpoint &&
+                existing.nValue == it->second.nValue &&
+                existing.nBlockHeight == 0 &&
+                existing.nCompromised == it->second.nCompromised;
+            if (!fRepairableLegacyResidue)
+            {
+                strError = "legacy ANON output record changed after validation";
+                return false;
+            }
+        }
+        if (!txdb.WriteAnonOutput(it->first, it->second))
+        {
+            strError = "failed to stage legacy ANON output record";
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool ReadLegacyAnonInputValueForDisconnect(
+    CTxDB& txdb, const CTxIn& txin, int nBlockHeight,
+    int64_t& nValue, std::string& strError)
+{
+    nValue = -1;
+    const int nRingSize = txin.ExtractRingSize();
+    if (nRingSize < (int)MIN_RING_SIZE ||
+        nRingSize > LegacyAnonMaxRingSizeAtCandidate(nBlockHeight))
+    {
+        strError = "legacy ANON disconnect has invalid ring size";
+        return false;
+    }
+
+    const CScript& script = txin.scriptSig;
+    const size_t nABSize = 2 + ec_secret_size +
+        (ec_secret_size + ec_compressed_size) * (size_t)nRingSize;
+    const bool fAB = nRingSize > 1 && script.size() == nABSize;
+    const size_t nStandardMinimum = 2 +
+        (ec_compressed_size + ec_secret_size + ec_secret_size) *
+            (size_t)nRingSize;
+    if (!fAB && script.size() < nStandardMinimum)
+    {
+        strError = "legacy ANON disconnect script is truncated";
+        return false;
+    }
+    const size_t nPubkeyOffset = fAB
+        ? 2 + ec_secret_size + ec_secret_size * (size_t)nRingSize
+        : 2;
+
+    for (int ri = 0; ri < nRingSize; ++ri)
+    {
+        const size_t offset = nPubkeyOffset +
+            (size_t)ri * ec_compressed_size;
+        if (offset > script.size() ||
+            script.size() - offset < ec_compressed_size)
+        {
+            strError = "legacy ANON disconnect pubkey layout is truncated";
+            return false;
+        }
+        const CPubKey pkCoin(&script[offset], ec_compressed_size);
+        CAnonOutput output;
+        if (txdb.ReadAnonOutputStatus(pkCoin, output) != TXDB_READ_FOUND)
+        {
+            strError = "legacy ANON disconnect ring output is missing/corrupt";
+            return false;
+        }
+        if (nValue == -1)
+            nValue = output.nValue;
+        else if (nValue != output.nValue)
+        {
+            strError = "legacy ANON disconnect ring values disagree";
+            return false;
+        }
+    }
+    return nValue >= 0;
+}
+
+bool DisconnectLegacyAnonChainState(CTxDB& txdb,
+                                    const CTransaction& tx,
+                                    int nBlockHeight,
+                                    std::string& strError)
+{
+    strError.clear();
+    if (tx.nVersion != ANON_TXN_VERSION)
+        return true;
+    if (!txdb.IsTxnActive())
+    {
+        strError = "legacy ANON rollback requires the outer chain transaction";
+        return false;
+    }
+
+    const uint256 hashTx = tx.GetHash();
+    for (int i = (int)tx.vin.size() - 1; i >= 0; --i)
+    {
+        const CTxIn& txin = tx.vin[i];
+        if (!txin.IsAnonInput())
+            continue;
+
+        ec_point keyImage;
+        txin.ExtractKeyImage(keyImage);
+        int64_t nValue = -1;
+        if (!ReadLegacyAnonInputValueForDisconnect(
+                txdb, txin, nBlockHeight, nValue, strError))
+            return false;
+
+        CKeyImageSpent expected;
+        expected.txnHash = hashTx;
+        expected.inputNo = i;
+        expected.nValue = nValue;
+        CKeyImageSpent existing;
+        if (txdb.ReadKeyImageStatus(keyImage, existing) !=
+                TXDB_READ_FOUND ||
+            !LegacyAnonRecordsEqual(existing, expected))
+        {
+            strError = "legacy ANON disconnect key-image record is missing/corrupt/mismatched";
+            return false;
+        }
+        if (!txdb.EraseKeyImage(keyImage))
+        {
+            strError = "failed to stage legacy ANON key-image erase";
+            return false;
+        }
+    }
+
+    for (int i = (int)tx.vout.size() - 1; i >= 0; --i)
+    {
+        const CTxOut& txout = tx.vout[i];
+        if (!txout.IsAnonOutput())
+            continue;
+        const CPubKey pkCoin = txout.ExtractAnonPk();
+        COutPoint outpoint(hashTx, i);
+        const CAnonOutput expected(outpoint, txout.nValue,
+                                   nBlockHeight, 0);
+        CAnonOutput existing;
+        if (txdb.ReadAnonOutputStatus(pkCoin, existing) !=
+                TXDB_READ_FOUND ||
+            !LegacyAnonRecordsEqual(existing, expected))
+        {
+            strError = "legacy ANON disconnect output record is missing/corrupt/mismatched";
+            return false;
+        }
+        if (!txdb.EraseAnonOutput(pkCoin))
+        {
+            strError = "failed to stage legacy ANON output erase";
+            return false;
+        }
+    }
+    return true;
+}
 
 const CTxOut& CTransaction::GetOutputFor(const CTxIn& input, const MapPrevTx& inputs) const
 {
@@ -3668,7 +5321,8 @@ unsigned int CTransaction::GetP2SHSigOpCount(const MapPrevTx& inputs) const
 
 bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTxIndex>& mapTestPool, const CDiskTxPos& posThisTx,
     const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, unsigned int flags, bool fValidateSig, bool fSkipFCMP,
-    bool fValidatedCoinstake)
+    bool fValidatedCoinstake, bool fAnonPrevalidated,
+    int nAnonCandidateHeight, int64_t nPrevalidatedAnonValueIn)
 {
     // Take over previous transactions' spent pointers
     // fBlock is true when this is called from AcceptBlock when a new best-block is added to the blockchain
@@ -3677,6 +5331,15 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
     if (!IsCoinBase())
     {
         const int nContextHeight = pindexBlock ? pindexBlock->nHeight : nBestHeight;
+        if (IsShielded() &&
+            (IsLegacyPrivacyPolicyDisabled() ||
+             IsBoundaryAActiveAtHeight(nContextHeight)))
+            return DoS(100, error("ConnectInputs() : legacy shielded transaction version %d is disabled in this network/era",
+                                  nVersion));
+        if (IsPrivacyVNext() &&
+            (!IsBoundaryBActiveAtHeight(nContextHeight) ||
+             !IsShieldedVNextConsensusReady()))
+            return DoS(100, error("ConnectInputs() : privacy-vNext is inactive before Boundary B"));
         // Coinstake exemptions below may only be claimed by the kernel-validated
         // vtx[1] of a proof-of-stake block (fValidatedCoinstake, set by
         // ConnectBlock). Pre-DAG heights keep the historical shape-keyed
@@ -3792,24 +5455,54 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
 
         if (nVersion == ANON_TXN_VERSION)
         {
-            if (pindexBlock && pindexBlock->nHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)
+            if (nAnonCandidateHeight < 0 && pindexBlock)
+            {
+                nAnonCandidateHeight = pindexBlock->nHeight;
+                if (fMiner && nAnonCandidateHeight <
+                                  std::numeric_limits<int>::max())
+                    ++nAnonCandidateHeight;
+            }
+            if (nAnonCandidateHeight < 0)
+                return error("ConnectInputs() : ANON candidate height is unavailable");
+            if (nAnonCandidateHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)
                 return DoS(100, error("ConnectInputs() : ring signature transactions deprecated after height %d", FORK_HEIGHT_RINGSIG_DEPRECATION));
 
-            int64_t nSumAnon;
-            bool fInvalid;
-            if (!CheckAnonInputs(txdb, nSumAnon, fInvalid, true))
+            if (fAnonPrevalidated)
             {
-                //if (fInvalid)
-                DoS(100, error("ConnectInputs() : CheckAnonInputs found invalid tx %s", GetHash().ToString().substr(0,10).c_str()));
-            };
-
-            nValueIn += nSumAnon;
+                if (nPrevalidatedAnonValueIn < 0 ||
+                    nPrevalidatedAnonValueIn > MAX_MONEY - nValueIn)
+                    return DoS(100, error("ConnectInputs() : prevalidated anonymous input value is out of range"));
+                nValueIn += nPrevalidatedAnonValueIn;
+            }
+            else
+            {
+                int64_t nSumAnon = 0;
+                bool fInvalid = false;
+                if (!CheckAnonInputs(txdb, nAnonCandidateHeight, nSumAnon,
+                                     fInvalid, false, NULL, NULL))
+                    return fInvalid
+                        ? DoS(100, error("ConnectInputs() : CheckAnonInputs found invalid tx %s",
+                                         GetHash().ToString().substr(0,10).c_str()))
+                        : error("ConnectInputs() : CheckAnonInputs could not read chain state for %s",
+                                GetHash().ToString().substr(0,10).c_str());
+                if (nSumAnon < 0 || nSumAnon > MAX_MONEY - nValueIn)
+                    return DoS(100, error("ConnectInputs() : anonymous input value overflow"));
+                nValueIn += nSumAnon;
+            }
         };
 
         if (IsShielded())
         {
             if (pindexBlock && pindexBlock->nHeight < FORK_HEIGHT_SHIELDED)
                 return DoS(100, error("ConnectInputs() : shielded tx before activation height %d", FORK_HEIGHT_SHIELDED));
+
+            int nAnchorValidationHeight = pindexBlock
+                ? pindexBlock->nHeight : nBestHeight;
+            if (!fBlock && nAnchorValidationHeight <
+                               std::numeric_limits<int>::max())
+                ++nAnchorValidationHeight;
+            const bool fStrictV3Anchors =
+                nAnchorValidationHeight >= FORK_HEIGHT_EPOCH_STATE_V3;
 
             for (const CShieldedSpendDescription& spend : vShieldedSpend)
             {
@@ -3819,13 +5512,39 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                                           spend.nullifier.ToString().substr(0,10).c_str(),
                                           nfs.txnHash.ToString().substr(0,10).c_str()));
 
-                if (!txdb.ReadShieldedAnchor(spend.anchor))
-                    return DoS(100, error("ConnectInputs() : shielded anchor %s not found",
-                                          spend.anchor.ToString().substr(0,10).c_str()));
                 int nAnchorHeight = 0;
-                if (pindexBlock && txdb.ReadShieldedAnchorHeight(spend.anchor, nAnchorHeight))
+                if (fStrictV3Anchors)
                 {
-                    if (pindexBlock->nHeight - nAnchorHeight < MIN_SHIELDED_SPEND_DEPTH)
+                    const TxDBReadStatus anchorStatus =
+                        txdb.ReadShieldedAnchorStatus(spend.anchor);
+                    if (anchorStatus == TXDB_READ_ERROR)
+                        return error("ConnectInputs() : shielded anchor %s record is corrupt/unreadable; -reindex/resync required",
+                                     spend.anchor.ToString().substr(0,10).c_str());
+                    if (anchorStatus == TXDB_READ_NOT_FOUND)
+                        return DoS(100, error("ConnectInputs() : shielded anchor %s not found",
+                                              spend.anchor.ToString().substr(0,10).c_str()));
+                    if (txdb.ReadShieldedAnchorHeightStatus(
+                            spend.anchor, nAnchorHeight) != TXDB_READ_FOUND ||
+                        nAnchorHeight < FORK_HEIGHT_SHIELDED ||
+                        (pindexBlock && nAnchorHeight > pindexBlock->nHeight))
+                        return error("ConnectInputs() : shielded anchor %s height is missing/corrupt; -reindex/resync required",
+                                     spend.anchor.ToString().substr(0,10).c_str());
+                    if (pindexBlock &&
+                        pindexBlock->nHeight - nAnchorHeight <
+                            MIN_SHIELDED_SPEND_DEPTH)
+                        return DoS(100, error("ConnectInputs() : shielded anchor %s too recent (height=%d, block=%d, need %d)",
+                                              spend.anchor.ToString().substr(0,10).c_str(),
+                                              nAnchorHeight, pindexBlock->nHeight, MIN_SHIELDED_SPEND_DEPTH));
+                }
+                else
+                {
+                    if (!txdb.ReadShieldedAnchor(spend.anchor))
+                        return DoS(100, error("ConnectInputs() : shielded anchor %s not found",
+                                              spend.anchor.ToString().substr(0,10).c_str()));
+                    if (pindexBlock && txdb.ReadShieldedAnchorHeight(
+                            spend.anchor, nAnchorHeight) &&
+                        pindexBlock->nHeight - nAnchorHeight <
+                            MIN_SHIELDED_SPEND_DEPTH)
                         return DoS(100, error("ConnectInputs() : shielded anchor %s too recent (height=%d, block=%d, need %d)",
                                               spend.anchor.ToString().substr(0,10).c_str(),
                                               nAnchorHeight, pindexBlock->nHeight, MIN_SHIELDED_SPEND_DEPTH));
@@ -3977,21 +5696,12 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
 
                         {
                             {
-                                std::set<std::vector<unsigned char>> setChainCommitments;
-                                uint64_t nCommitCount = 0;
-                                txdb.ReadShieldedCommitmentCount(nCommitCount);
-                                for (uint64_t ci = 0; ci < nCommitCount; ci++)
-                                {
-                                    CPedersenCommitment chainCommit;
-                                    if (txdb.ReadShieldedCommitment(ci, chainCommit))
-                                        setChainCommitments.insert(chainCommit.vchCommitment);
-                                }
-
-                                for (size_t j = 0; j < vShieldedSpend[i].vAnonSet.size(); j++)
-                                {
-                                    if (setChainCommitments.find(vShieldedSpend[i].vAnonSet[j].vchCommitment) == setChainCommitments.end())
-                                        return DoS(100, error("ConnectInputs() : shielded spend %d anonymity set commitment %d not in chain state", (int)i, (int)j));
-                                }
+                                std::string strAnonSetError;
+                                if (!CheckShieldedAnonSetChainState(
+                                        txdb, vShieldedSpend[i].vAnonSet,
+                                        strAnonSetError))
+                                    return DoS(100, error("ConnectInputs() : shielded spend %d %s",
+                                                          (int)i, strAnonSetError.c_str()));
                             }
 
                             CAnonymitySet anonSet;
@@ -4011,7 +5721,9 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                         if (vShieldedSpend[i].fcmpProof.IsNull())
                             return DoS(100, error("ConnectInputs() : shielded spend %d missing FCMP++ proof (required post-fork)", (int)i));
 
-                        if (!VerifyFCMPProof(ciRootNode, vShieldedSpend[i].fcmpProof, vShieldedSpend[i].cv))
+                        // Same height convention as nMofNGateHeight below.
+                        if (!VerifyFCMPProof(ciRootNode, vShieldedSpend[i].fcmpProof, vShieldedSpend[i].cv,
+                                             fBlock ? nBlockHeight : nBlockHeight + 1))
                             return DoS(100, error("ConnectInputs() : shielded spend %d FCMP++ proof failed", (int)i));
                     }
 
@@ -4031,7 +5743,7 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                         // B2-e Phase 3c.1: bind the nullifier to the value commitment cv_plain (NOT cv3) for an
                         // M-of-N stake spend. This MUST be re-run over cv_plain, never skipped: dropping it would
                         // let the staked note be re-spent under a mismatched nullifier (infinite-stake / double-spend).
-                        if (!VerifyNullifierBindingProof(cvSpendValue, sp.vchNullifierPoint, sighash, sp.vchNullifierBindingProof))
+                        if (!VerifyNullifierBindingProof(cvSpendValue, sp.vchNullifierPoint, sighash, sp.vchNullifierBindingProof, fBlock ? nBlockHeight : nBlockHeight + 1))
                             return DoS(100, error("ConnectInputs() : shielded spend %d nullifier binding proof failed", (int)i));
                     }
                 }
@@ -4156,13 +5868,26 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
 
 bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
 {
-    std::set<uint256> setDAGSkippedTxs = GetDAGSkippedTxsForBlock(*this, pindex);
+    // Name, wallet and UI effects are journaled by best-chain callers and replayed after
+    // commit; the argument is kept for source compatibility and never dispatches here.
+    (void)fWriteNames;
+    std::set<uint256> setDAGSkippedTxs;
+    if (pindex && pindex->nHeight >= FORK_HEIGHT_DAG)
+    {
+        std::string strActiveSetError;
+        const TxDBReadStatus status = txdb.ReadDAGSkippedTxsStatus(
+            *this, setDAGSkippedTxs, strActiveSetError);
+        if (status != TXDB_READ_FOUND)
+            return error("DisconnectBlock() : exact connect-time DAG active set is %s%s%s; "
+                         "refusing mutable-DAG recomputation (-reindex/resync required)",
+                         status == TXDB_READ_NOT_FOUND ? "missing" : "corrupt",
+                         strActiveSetError.empty() ? "" : ": ",
+                         strActiveSetError.c_str());
+    }
     CBlock activeBlock = GetDAGActiveBlock(*this, setDAGSkippedTxs);
 
-    // Decode finality carriers before staging any disconnect mutations. A
-    // connected block must decode under the schema selected by its own height;
-    // treating a wrong-generation or malformed carrier as absent would make
-    // rollback and restart state differ from connect-time consensus.
+    // Decode finality carriers before staging any disconnect mutation, under the schema of
+    // the block's own height; a malformed carrier is never read as "no vote".
     std::vector<CFinalityTallyCertificate> vFinalityCerts;
     std::vector<CFinalityVote> vFinalityVotes;
     FinalityEnvelopeDecodeResult certEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
@@ -4183,6 +5908,54 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
     {
         if (setDAGSkippedTxs.count(vtx[i].GetHash()))
             continue;
+        if (vtx[i].nVersion == ANON_TXN_VERSION)
+        {
+            std::string strAnonDisconnectError;
+            if (!DisconnectLegacyAnonChainState(
+                    txdb, vtx[i], pindex->nHeight,
+                    strAnonDisconnectError))
+                return error("DisconnectBlock() : legacy ANON chain-state rollback failed for %s: %s",
+                             vtx[i].GetHash().ToString().substr(0,10).c_str(),
+                             strAnonDisconnectError.c_str());
+        }
+        if (vtx[i].IsPrivacyVNext())
+        {
+            PrivacyVNextStateEffects effects;
+            const PrivacyVNextPayloadValidation validation =
+                ExtractPrivacyVNextPayloadEffects(
+                    static_cast<uint32_t>(vtx[i].nVersion),
+                    vtx[i].privacyVNext.vchPayload, effects);
+            if (!validation.IsValid())
+            {
+                StartShutdown();
+                return error("DisconnectBlock() : accepted IV5 payload cannot be decoded: %s; "
+                             "local state is inconsistent (-reindex/resync required)",
+                             validation.strError.c_str());
+            }
+
+            for (size_t j = effects.keyImages.size(); j > 0; --j)
+            {
+                uint256 keyImage;
+                memcpy(keyImage.begin(), effects.keyImages[j - 1].data(),
+                       effects.keyImages[j - 1].size());
+                CShieldedNullifierSpent spent;
+                const TxDBReadStatus status =
+                    txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
+                if (status != TXDB_READ_FOUND ||
+                    spent.txnHash != vtx[i].GetHash() ||
+                    spent.nIndex != j - 1)
+                {
+                    StartShutdown();
+                    return error("DisconnectBlock() : IV5 spent-key undo record is %s or "
+                                 "owned by another input for %s (-reindex/resync required)",
+                                 status == TXDB_READ_NOT_FOUND ? "missing" :
+                                 status == TXDB_READ_ERROR ? "corrupt" : "mismatched",
+                                 keyImage.ToString().substr(0,10).c_str());
+                }
+                if (!txdb.ErasePrivacyVNextNullifier(keyImage))
+                    return error("DisconnectBlock() : IV5 spent-key erase failed");
+            }
+        }
         if (!vtx[i].DisconnectInputs(txdb))
             return false;
     }
@@ -4211,50 +5984,131 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
 
     if (pindex->nHeight >= FORK_HEIGHT_SHIELDED)
     {
-        for (const CTransaction& tx : activeBlock.vtx)
+        bool fV3ShieldedPersistence = false;
+        std::string strIndexModeError;
+        if (!txdb.ResolveShieldedCommitmentIndexV3Mode(
+                pindex->nHeight, FORK_HEIGHT_EPOCH_STATE_V3,
+                fV3ShieldedPersistence, strIndexModeError))
+            return error("DisconnectBlock() : %s; -reindex/resync required",
+                         strIndexModeError.c_str());
+
+        int64_t nShieldedPool = 0;
+        if (!txdb.ReadShieldedPoolValue(nShieldedPool))
+            return error("DisconnectBlock() : missing shielded pool value");
+        // Reverse the exact state-transition order used by ConnectBlock.  A
+        // deposit followed by a withdrawal can be valid in forward order but
+        // underflow if its deltas are undone in that same order.
+        for (std::vector<CTransaction>::const_reverse_iterator txIt =
+                 activeBlock.vtx.rbegin();
+             txIt != activeBlock.vtx.rend(); ++txIt)
         {
+            const CTransaction& tx = *txIt;
             if (!tx.IsShielded())
                 continue;
 
             for (const CShieldedSpendDescription& spend : tx.vShieldedSpend)
             {
-                txdb.EraseShieldedNullifier(spend.nullifier);
+                if (!txdb.EraseShieldedNullifier(spend.nullifier))
+                    return error("DisconnectBlock() : EraseShieldedNullifier failed");
             }
 
-            int64_t nShieldedPool = 0;
-            txdb.ReadShieldedPoolValue(nShieldedPool);
+            if (tx.nValueBalance == std::numeric_limits<int64_t>::min() ||
+                (tx.nValueBalance > 0 &&
+                 nShieldedPool > MAX_MONEY - tx.nValueBalance) ||
+                (tx.nValueBalance < 0 &&
+                 nShieldedPool < -tx.nValueBalance))
+                return error("DisconnectBlock() : shielded pool reversal overflow");
             nShieldedPool += tx.nValueBalance; // reverse the subtraction done in ConnectBlock
-            txdb.WriteShieldedPoolValue(nShieldedPool);
-            nShieldedPoolValue = nShieldedPool;
         }
+        if (!MoneyRange(nShieldedPool) || !txdb.WriteShieldedPoolValue(nShieldedPool))
+            return error("DisconnectBlock() : WriteShieldedPoolValue failed");
 
         CIncrementalMerkleTree currentTree;
-        if (txdb.ReadShieldedTree(currentTree))
+        if (!txdb.ReadShieldedTree(currentTree))
+            return error("DisconnectBlock() : missing current shielded tree");
+        uint256 currentRoot = currentTree.Root();
+        if (fV3ShieldedPersistence)
         {
-            uint256 currentRoot = currentTree.Root();
-            txdb.EraseShieldedAnchor(currentRoot);
+            int nCurrentRootHeight = -1;
+            if (txdb.ReadShieldedAnchorStatus(currentRoot) !=
+                    TXDB_READ_FOUND ||
+                txdb.ReadShieldedAnchorHeightStatus(
+                    currentRoot, nCurrentRootHeight) != TXDB_READ_FOUND ||
+                nCurrentRootHeight < FORK_HEIGHT_SHIELDED ||
+                nCurrentRootHeight > pindex->nHeight)
+                return error("DisconnectBlock() : current V3 shielded anchor pair missing/corrupt; -reindex/resync required");
+
+            // A block with no outputs repeats its predecessor's root.  Keep
+            // that still-live anchor and its original height; only remove a
+            // root which first appeared in the block being disconnected.
+            if (nCurrentRootHeight == pindex->nHeight &&
+                (!txdb.EraseShieldedAnchor(currentRoot) ||
+                 !txdb.EraseShieldedAnchorHeight(currentRoot)))
+                return error("DisconnectBlock() : failed to erase V3 shielded anchor pair");
+        }
+        else if (!txdb.EraseShieldedAnchor(currentRoot))
+        {
+            return error("DisconnectBlock() : EraseShieldedAnchor failed");
         }
 
         CIncrementalMerkleTree prevTree;
-        if (txdb.ReadShieldedTreeAtBlock(pindex->GetBlockHash(), prevTree))
+        if (!txdb.ReadShieldedTreeAtBlock(pindex->GetBlockHash(), prevTree))
+            return error("DisconnectBlock() : missing predecessor shielded-tree snapshot");
+        if (!txdb.WriteShieldedTree(prevTree))
+            return error("DisconnectBlock() : WriteShieldedTree failed");
+        if (!txdb.EraseShieldedTreeAtBlock(pindex->GetBlockHash()))
+            return error("DisconnectBlock() : EraseShieldedTreeAtBlock failed");
+        if (fV3ShieldedPersistence &&
+            pindex->nHeight != FORK_HEIGHT_SHIELDED)
         {
-            txdb.WriteShieldedTree(prevTree);
+            const uint256 prevRoot = prevTree.Root();
+            int nPrevRootHeight = -1;
+            if (txdb.ReadShieldedAnchorStatus(prevRoot) !=
+                    TXDB_READ_FOUND ||
+                txdb.ReadShieldedAnchorHeightStatus(
+                    prevRoot, nPrevRootHeight) != TXDB_READ_FOUND ||
+                nPrevRootHeight < FORK_HEIGHT_SHIELDED ||
+                nPrevRootHeight > pindex->nHeight - 1)
+                return error("DisconnectBlock() : predecessor V3 shielded anchor pair missing/corrupt; -reindex/resync required");
+        }
 
-            // B2-e Phase 3c.4: erase the per-leaf height ('sch') + cv->index ('sci') entries for the leaves
-            // this block ADDED (indices >= prevTree.Size()) BEFORE shrinking the count, so a reorg cannot
-            // leave stale entries that mis-date or mis-identify a leaf. The owner-reclaim inactivity timelock
-            // reads these indices; divergent stale entries across nodes would be a chain-split hazard.
+        // Erase the per-leaf records for leaves this block
+        // added before shrinking the count. Missing records are corruption, not
+        // a reason to reconstruct a partial commitment set.
+        {
             uint64_t nOldCommitCount = 0;
-            txdb.ReadShieldedCommitmentCount(nOldCommitCount);
-            for (uint64_t ci = prevTree.Size(); ci < nOldCommitCount; ci++)
+            if (!txdb.ReadShieldedCommitmentCount(nOldCommitCount) ||
+                nOldCommitCount < prevTree.Size() ||
+                (fV3ShieldedPersistence &&
+                 nOldCommitCount != currentTree.Size()))
+                return error("DisconnectBlock() : corrupt shielded commitment count");
+            for (uint64_t ci = nOldCommitCount;
+                 ci-- > prevTree.Size(); )
             {
                 CPedersenCommitment staleCommit;
-                if (txdb.ReadShieldedCommitment(ci, staleCommit))
-                    txdb.EraseShieldedCommitmentIndex(staleCommit.vchCommitment);
-                txdb.EraseShieldedCommitmentHeight(ci);
+                if (!txdb.ReadShieldedCommitment(ci, staleCommit))
+                    return error("DisconnectBlock() : missing shielded commitment during rollback");
+                std::string strIndexError;
+                if (fV3ShieldedPersistence)
+                {
+                    if (!txdb.PopShieldedCommitmentIndexV3(
+                            ci, staleCommit, strIndexError))
+                        return error("DisconnectBlock() : V3 shielded reverse-index rollback failed at %" PRIu64 ": %s",
+                                     ci, strIndexError.c_str());
+                }
+                else if (!txdb.EraseShieldedCommitmentIndex(
+                             staleCommit.vchCommitment))
+                {
+                    return error("DisconnectBlock() : legacy shielded reverse-index erase failed");
+                }
+                if (
+                    !txdb.EraseShieldedCommitmentHeight(ci) ||
+                    !txdb.EraseShieldedCommitment(ci))
+                    return error("DisconnectBlock() : incomplete shielded commitment rollback");
             }
 
-            txdb.WriteShieldedCommitmentCount(prevTree.Size());
+            if (!txdb.WriteShieldedCommitmentCount(prevTree.Size()))
+                return error("DisconnectBlock() : WriteShieldedCommitmentCount failed");
         }
 
         if (pindex->nHeight >= FORK_HEIGHT_FCMP &&
@@ -4263,23 +6117,16 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
             CCurveTree restoredCurveTree;
             if (txdb.ReadCurveTreeAtBlock(pindex->GetBlockHash(), restoredCurveTree))
             {
-                txdb.WriteCurveTree(restoredCurveTree);
+                if (!txdb.WriteCurveTree(restoredCurveTree))
+                    return error("DisconnectBlock() : WriteCurveTree failed");
             }
             else
             {
-                // fallback: O(n) rebuild
-                printf("DisconnectBlock() : WARNING - Curve Tree snapshot not found for block %s, falling back to O(n) rebuild\n",
-                       pindex->GetBlockHash().ToString().substr(0,16).c_str());
-                uint64_t nRestoredCount = prevTree.Size();
-                for (uint64_t i = 0; i < nRestoredCount; i++)
-                {
-                    CPedersenCommitment commit;
-                    if (txdb.ReadShieldedCommitment(i, commit))
-                        restoredCurveTree.InsertLeaf(commit);
-                }
-                txdb.WriteCurveTree(restoredCurveTree);
+                return error("DisconnectBlock() : missing predecessor curve-tree snapshot; "
+                             "-reindex/resync required");
             }
-            txdb.EraseCurveTreeAtBlock(pindex->GetBlockHash());
+            if (!txdb.EraseCurveTreeAtBlock(pindex->GetBlockHash()))
+                return error("DisconnectBlock() : EraseCurveTreeAtBlock failed");
         }
     }
 
@@ -4291,22 +6138,6 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
         blockindexPrev.hashNext = 0;
         if (!txdb.WriteBlockIndex(blockindexPrev))
             return error("DisconnectBlock() : WriteBlockIndex failed");
-    }
-
-    // innova: undo name transactions in reverse order
-    for (int i = vtx.size() - 1; i >= 0; i--)
-    {
-        if (setDAGSkippedTxs.count(vtx[i].GetHash()))
-            continue;
-        hooks->DisconnectInputs(vtx[i]);
-    }
-
-    // ppcoin: clean up wallet after disconnecting coinstake
-    for (CTransaction& tx : vtx)
-    {
-        if (setDAGSkippedTxs.count(tx.GetHash()))
-            continue;
-        SyncWithWallets(tx, this, false, false);
     }
 
     return true;
@@ -4425,22 +6256,140 @@ static int64_t nTimeIndex = 0;
 static int64_t nTimeCallbacks = 0;
 static int64_t nTimeTotal = 0;
 
+static bool ComputeShieldedGenesisCommitment(int nSeed,
+                                             CPedersenCommitment& commitmentOut)
+{
+    CHashWriter ssBlind(SER_GETHASH, 0);
+    ssBlind << std::string("Innova_Genesis_Seed_");
+    ssBlind << nSeed;
+    uint256 blindHash = ssBlind.GetHash();
+    std::vector<unsigned char> vchBlind(blindHash.begin(),
+                                         blindHash.begin() + 32);
+    return CreateBlindCommitment(vchBlind, commitmentOut);
+}
+
+bool ValidateAndMigrateShieldedGenesisCommitmentIndexes(
+    CTxDB& txdb, std::string& strError)
+{
+    strError.clear();
+    if (!pindexBest || pindexBest->nHeight < FORK_HEIGHT_SHIELDED)
+        return true;
+
+    if (!txdb.TxnBegin())
+    {
+        strError = "could not begin genesis commitment-index migration transaction";
+        return false;
+    }
+
+    uint64_t nCommitmentCount = 0;
+    if (!txdb.ReadShieldedCommitmentCount(nCommitmentCount) ||
+        nCommitmentCount < (uint64_t)LELANTUS_GENESIS_SEED_COUNT)
+    {
+        txdb.TxnAbort();
+        strError = "missing or truncated shielded commitment count";
+        return false;
+    }
+
+    unsigned int nFilled = 0;
+    for (int i = 0; i < LELANTUS_GENESIS_SEED_COUNT; ++i)
+    {
+        CPedersenCommitment expectedCommitment;
+        if (!ComputeShieldedGenesisCommitment(i, expectedCommitment))
+        {
+            txdb.TxnAbort();
+            strError = strprintf("could not recompute deterministic genesis commitment %d", i);
+            return false;
+        }
+
+        CPedersenCommitment storedCommitment;
+        if (!txdb.ReadShieldedCommitment((uint64_t)i, storedCommitment))
+        {
+            txdb.TxnAbort();
+            strError = strprintf("genesis commitment value %d is missing or unreadable", i);
+            return false;
+        }
+        if (storedCommitment.vchCommitment !=
+            expectedCommitment.vchCommitment)
+        {
+            txdb.TxnAbort();
+            strError = strprintf("genesis commitment value %d is not canonical", i);
+            return false;
+        }
+
+        if (txdb.HasShieldedCommitmentIndex(
+                expectedCommitment.vchCommitment))
+        {
+            uint64_t nStoredIndex = 0;
+            if (!txdb.ReadShieldedCommitmentIndex(
+                    expectedCommitment.vchCommitment, nStoredIndex) ||
+                nStoredIndex != (uint64_t)i)
+            {
+                txdb.TxnAbort();
+                strError = strprintf("genesis commitment reverse index %d is unreadable or conflicting", i);
+                return false;
+            }
+        }
+        else
+        {
+            if (!txdb.WriteShieldedCommitmentIndex(
+                    expectedCommitment.vchCommitment, (uint64_t)i))
+            {
+                txdb.TxnAbort();
+                strError = strprintf("could not backfill genesis commitment reverse index %d", i);
+                return false;
+            }
+            ++nFilled;
+        }
+
+        if (txdb.HasShieldedCommitmentHeight((uint64_t)i))
+        {
+            int nStoredHeight = -1;
+            if (!txdb.ReadShieldedCommitmentHeight((uint64_t)i,
+                                                   nStoredHeight) ||
+                nStoredHeight != FORK_HEIGHT_SHIELDED)
+            {
+                txdb.TxnAbort();
+                strError = strprintf("genesis commitment height %d is unreadable or conflicting", i);
+                return false;
+            }
+        }
+        else
+        {
+            if (!txdb.WriteShieldedCommitmentHeight(
+                    (uint64_t)i, FORK_HEIGHT_SHIELDED))
+            {
+                txdb.TxnAbort();
+                strError = strprintf("could not backfill genesis commitment height %d", i);
+                return false;
+            }
+            ++nFilled;
+        }
+    }
+
+    if (!txdb.TxnCommit())
+    {
+        strError = "could not commit genesis commitment-index migration";
+        return false;
+    }
+
+    if (nFilled > 0)
+        printf("Shielded: atomically backfilled %u deterministic genesis index records\n",
+               nFilled);
+    return true;
+}
+
 // Seed deterministic unspendable commitments at fork height for Lelantus anonymity set.
 // Each seed: blind_i = SHA256("Innova_Genesis_Seed_" || i), cv_i = blind_i * G (zero value),
 // cmu_i = SHA256("Innova_Genesis_Seed_CMU_" || i). Unspendable: no spending key, no nullifier derivation.
-bool SeedGenesisCommitments(CTxDB& txdb, CIncrementalMerkleTree& shieldedTree, CCurveTree* pCurveTree)
+bool SeedGenesisCommitments(CTxDB& txdb,
+                            CIncrementalMerkleTree& shieldedTree,
+                            CCurveTree* pCurveTree,
+                            bool fV3ShieldedPersistence)
 {
     for (int i = 0; i < LELANTUS_GENESIS_SEED_COUNT; i++)
     {
-        // Deterministic blinding factor
-        CHashWriter ssBlind(SER_GETHASH, 0);
-        ssBlind << std::string("Innova_Genesis_Seed_");
-        ssBlind << i;
-        uint256 blindHash = ssBlind.GetHash();
-        std::vector<unsigned char> vchBlind(blindHash.begin(), blindHash.begin() + 32);
-
         CPedersenCommitment cv;
-        if (!CreateBlindCommitment(vchBlind, cv))
+        if (!ComputeShieldedGenesisCommitment(i, cv))
             return error("SeedGenesisCommitments() : CreateBlindCommitment failed for seed %d", i);
 
         // Deterministic note commitment (Merkle leaf)
@@ -4450,13 +6399,32 @@ bool SeedGenesisCommitments(CTxDB& txdb, CIncrementalMerkleTree& shieldedTree, C
         uint256 cmu = ssCmu.GetHash();
 
         // Append to Merkle tree and write to commitment DB
-        shieldedTree.Append(cmu);
+        if (!shieldedTree.Append(cmu))
+            return error("SeedGenesisCommitments() : Merkle append failed for seed %d", i);
         uint64_t nCommitIdx = shieldedTree.Size() - 1;
+        if (nCommitIdx != (uint64_t)i)
+            return error("SeedGenesisCommitments() : unexpected seed index %" PRIu64 " for seed %d",
+                         nCommitIdx, i);
         if (!txdb.WriteShieldedCommitment(nCommitIdx, cv))
             return error("SeedGenesisCommitments() : WriteShieldedCommitment failed for seed %d", i);
+        if (fV3ShieldedPersistence)
+        {
+            std::string strIndexError;
+            if (!txdb.PushShieldedCommitmentIndexV3(
+                    nCommitIdx, cv, strIndexError))
+                return error("SeedGenesisCommitments() : V3 reverse-index push failed for seed %d: %s",
+                             i, strIndexError.c_str());
+        }
+        else if (!txdb.WriteShieldedCommitmentIndex(
+                     cv.vchCommitment, nCommitIdx))
+        {
+            return error("SeedGenesisCommitments() : WriteShieldedCommitmentIndex failed for seed %d", i);
+        }
+        if (!txdb.WriteShieldedCommitmentHeight(nCommitIdx, FORK_HEIGHT_SHIELDED))
+            return error("SeedGenesisCommitments() : WriteShieldedCommitmentHeight failed for seed %d", i);
 
-        if (pCurveTree)
-            pCurveTree->InsertLeaf(cv);
+        if (pCurveTree && !pCurveTree->InsertLeaf(cv))
+            return error("SeedGenesisCommitments() : curve-tree insertion failed for seed %d", i);
     }
 
     if (fDebug)
@@ -4468,8 +6436,11 @@ bool SeedGenesisCommitments(CTxDB& txdb, CIncrementalMerkleTree& shieldedTree, C
 bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                           bool fWriteNames, ConnectResult* pResult)
 {
-    // Deterministic invalidity is the conservative default. Exact finality
-    // storage/read failures override it so callers do not poison a valid block.
+    // Name, wallet, UI and notification effects are replayed by best-chain callers after the
+    // durable tip is published; the argument is kept for source compatibility.
+    (void)fWriteNames;
+    // Consensus-invalid is the default; only a site identifying a local read/write/resource
+    // condition downgrades it.
     if (pResult)
         *pResult = CONNECT_RESULT_INVALID;
     const auto TransientFailure = [&](bool fReturn) -> bool {
@@ -4617,7 +6588,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                     {
                         std::string strFCMPError;
                         if (!LoadFCMPValidationRoot(txdb, pindex->nHeight, fcmpRootNode, hashExpectedFCMPRoot, strFCMPError))
-                            return DoS(100, error("ConnectBlock() : %s", strFCMPError.c_str()));
+                            return TransientFailure(error("ConnectBlock() : local FCMP root state unavailable: %s",
+                                                          strFCMPError.c_str()));
                         fHaveFCMPRoot = true;
                     }
                     if (pindex->nHeight >= FORK_HEIGHT_EPOCH_ROOT_FCMP && spend.curveTreeRoot != hashExpectedFCMPRoot)
@@ -4630,7 +6602,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
         if (!vBlockProofs.empty())
         {
-            if (!BatchVerifyFCMPProofs(fcmpRootNode, vBlockProofs, vBlockCommitments))
+            if (!BatchVerifyFCMPProofs(fcmpRootNode, vBlockProofs, vBlockCommitments,
+                                       pindex->nHeight))
                 return DoS(100, error("ConnectBlock() : batch FCMP++ proof verification failed"));
 
             fFCMPBatchVerified = true;
@@ -4641,6 +6614,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     }
 
     std::set<uint256> setBlockNullifiers;
+    std::set<ec_point> setBlockAnonKeyImages;
 
     int64_t nTransparentValidateMicros = 0;
     int64_t nShieldedValidateMicros = 0;
@@ -4686,7 +6660,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         if (txdb.ReadTxIndex(hashTx, txindexOld)) {
             for (CDiskTxPos &pos : txindexOld.vSpent)
                 if (pos.IsNull())
-                    return false;
+                    return DoS(100, error("ConnectBlock() : transaction %s overwrites an unspent transaction",
+                                          hashTx.ToString().substr(0,10).c_str()));
         }
 
         nSigOps += tx.GetLegacySigOpCount();
@@ -4698,6 +6673,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             nTxPos += nTxSize;
 
         MapPrevTx mapInputs;
+        CLegacyAnonEffectPlan anonEffectPlan;
+        bool fHaveAnonEffectPlan = false;
         if (tx.IsCoinBase())
         {
             int64_t nCoinbaseValue;
@@ -4712,7 +6689,13 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         {
             bool fInvalid;
             if (!tx.FetchInputs(txdb, mapQueuedChanges, true, false, mapInputs, fInvalid))
-                return false;
+            {
+                if (fInvalid)
+                    return DoS(100, error("ConnectBlock() : FetchInputs found invalid transaction %s",
+                                          hashTx.ToString().substr(0,10).c_str()));
+                return TransientFailure(error("ConnectBlock() : FetchInputs could not read inputs for %s",
+                                              hashTx.ToString().substr(0,10).c_str()));
+            }
 
             for (const CShieldedSpendDescription& spend : tx.vShieldedSpend)
             {
@@ -4737,16 +6720,23 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 if (pindex->nHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)
                     return DoS(100, error("ConnectBlock() : ring signature transactions deprecated after height %d", FORK_HEIGHT_RINGSIG_DEPRECATION));
 
-                int64_t nSumAnon;
-                if (!tx.CheckAnonInputs(txdb, nSumAnon, fInvalid, true))
+                if (!tx.BuildLegacyAnonEffectPlan(
+                        txdb, pindex->nHeight, setBlockAnonKeyImages,
+                        anonEffectPlan, fInvalid))
                 {
                     if (fInvalid)
-                        return error("ConnectBlock() : CheckAnonInputs found invalid tx %s", tx.GetHash().ToString().substr(0,10).c_str());
-                    return false;
-                };
+                        return DoS(100, error("ConnectBlock() : legacy ANON effect plan is invalid for tx %s",
+                                              tx.GetHash().ToString().substr(0,10).c_str()));
+                    return TransientFailure(error("ConnectBlock() : legacy ANON effect plan could not read exact chain state for %s",
+                                                  tx.GetHash().ToString().substr(0,10).c_str()));
+                }
 
-                nTxValueIn += nSumAnon;
-            };
+                if (anonEffectPlan.nValueIn < 0 ||
+                    anonEffectPlan.nValueIn > MAX_MONEY - nTxValueIn)
+                    return DoS(100, error("ConnectBlock() : legacy ANON input value overflow"));
+                nTxValueIn += anonEffectPlan.nValueIn;
+                fHaveAnonEffectPlan = true;
+            }
 
             if (tx.IsShielded())
             {
@@ -4788,8 +6778,29 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             // block. A coinstake-shaped tx anywhere else gets full ordinary-tx
             // validation.
             bool fValidatedCoinstake = IsProofOfStake() && (&tx == &vtx[1]);
-            if (!tx.ConnectInputs(txdb, mapInputs, mapQueuedChanges, posThisTx, pindex, true, false, flags, true, fFCMPBatchVerified, fValidatedCoinstake))
-                return false;
+            const int nTxDoSBeforeConnect = tx.nDoS;
+            if (!tx.ConnectInputs(txdb, mapInputs, mapQueuedChanges,
+                                  posThisTx, pindex, true, false, flags, true,
+                                  fFCMPBatchVerified, fValidatedCoinstake,
+                                  fHaveAnonEffectPlan, pindex->nHeight,
+                                  anonEffectPlan.nValueIn))
+            {
+                if (tx.nDoS > nTxDoSBeforeConnect)
+                    return DoS(tx.nDoS - nTxDoSBeforeConnect, false);
+                return TransientFailure(error("ConnectBlock() : ConnectInputs failed without a deterministic-invalid result for %s",
+                                              hashTx.ToString().substr(0,10).c_str()));
+            }
+
+            if (fHaveAnonEffectPlan && !fJustCheck)
+            {
+                std::string strAnonEffectError;
+                if (!ApplyLegacyAnonEffectPlan(txdb, anonEffectPlan,
+                                               strAnonEffectError))
+                    return TransientFailure(error(
+                        "ConnectBlock() : failed to stage legacy ANON chain effects for %s: %s",
+                        hashTx.ToString().substr(0,10).c_str(),
+                        strAnonEffectError.c_str()));
+            }
 
             int64_t nTxValidateMicros = GetTimeMicros() - nTxValidateStart;
             if (tx.IsCoinStake() && (tx.nVersion == SHIELDED_TX_VERSION_NULLSTAKE ||
@@ -4951,19 +6962,24 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
             if (!VerifyNullStakeKernelProofV2(vtx[1].nullstakeProofV2,
                                               vtx[1].vShieldedSpend[0].cv,
-                                              nBits))
+                                              nBits, pindex->nHeight))
                 return DoS(100, error("ConnectBlock() : NullStake V2 kernel proof invalid"));
 
-            CCurveTree nullstakeTree;
-            if (!txdb.ReadCurveTree(nullstakeTree))
-                return DoS(100, error("ConnectBlock() : failed to read curve tree for NullStake V2"));
-            nullstakeTree.RebuildParentNodes();
-
-            CCurveTreeNode nullstakeRoot = nullstakeTree.GetRootNode();
+            // Deterministic anchor: the node-local mutable curve tree differs between
+            // nodes, so reading it here made the same block valid on one node and
+            // invalid on another. Use the same finalized-epoch snapshot the shielded
+            // spend path uses.
+            CCurveTreeNode nullstakeRoot;
+            uint256 hashNullStakeRootV2;
+            std::string strNullStakeRootV2;
+            if (!LoadFCMPValidationRoot(txdb, pindex->nHeight, nullstakeRoot,
+                                        hashNullStakeRootV2, strNullStakeRootV2))
+                return TransientFailure(error("ConnectBlock() : NullStake V2 membership anchor unavailable: %s",
+                                              strNullStakeRootV2.c_str()));
             if (vtx[1].vShieldedSpend[0].fcmpProof.IsNull())
                 return DoS(100, error("ConnectBlock() : NullStake V2 stake FCMP proof missing"));
             if (!VerifyFCMPProof(nullstakeRoot, vtx[1].vShieldedSpend[0].fcmpProof,
-                                  vtx[1].vShieldedSpend[0].cv))
+                                  vtx[1].vShieldedSpend[0].cv, pindex->nHeight))
                 return DoS(100, error("ConnectBlock() : NullStake V2 stake FCMP proof invalid"));
 
             uint64_t nCoinAge = 1;  // Minimum coin-day for V2
@@ -5069,19 +7085,24 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
             if (!VerifyNullStakeKernelProofV3(vtx[1].nullstakeProofV3,
                                               vtx[1].vShieldedSpend[0].cv,
-                                              nBits))
+                                              nBits, pindex->nHeight))
                 return DoS(100, error("ConnectBlock() : NullStake V3 kernel proof invalid"));
 
-            CCurveTree nullstakeV3Tree;
-            if (!txdb.ReadCurveTree(nullstakeV3Tree))
-                return DoS(100, error("ConnectBlock() : failed to read curve tree for NullStake V3"));
-            nullstakeV3Tree.RebuildParentNodes();
-
-            CCurveTreeNode nullstakeV3Root = nullstakeV3Tree.GetRootNode();
+            // Deterministic anchor: the node-local mutable curve tree differs between
+            // nodes, so reading it here made the same block valid on one node and
+            // invalid on another. Use the same finalized-epoch snapshot the shielded
+            // spend path uses.
+            CCurveTreeNode nullstakeV3Root;
+            uint256 hashNullStakeRootV3;
+            std::string strNullStakeRootV3;
+            if (!LoadFCMPValidationRoot(txdb, pindex->nHeight, nullstakeV3Root,
+                                        hashNullStakeRootV3, strNullStakeRootV3))
+                return TransientFailure(error("ConnectBlock() : NullStake V3 membership anchor unavailable: %s",
+                                              strNullStakeRootV3.c_str()));
             if (vtx[1].vShieldedSpend[0].fcmpProof.IsNull())
                 return DoS(100, error("ConnectBlock() : NullStake V3 stake FCMP proof missing"));
             if (!VerifyFCMPProof(nullstakeV3Root, vtx[1].vShieldedSpend[0].fcmpProof,
-                                  vtx[1].vShieldedSpend[0].cv))
+                                  vtx[1].vShieldedSpend[0].cv, pindex->nHeight))
                 return DoS(100, error("ConnectBlock() : NullStake V3 stake FCMP proof invalid"));
 
             // V3 reward: same conservative approach as V2
@@ -5156,16 +7177,21 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                             nBits, nWeight))
                 return DoS(100, error("ConnectBlock() : NullStake kernel proof invalid"));
 
-            CCurveTree nullstakeTree;
-            if (!txdb.ReadCurveTree(nullstakeTree))
-                return DoS(100, error("ConnectBlock() : failed to read curve tree for NullStake"));
-            nullstakeTree.RebuildParentNodes();
-
-            CCurveTreeNode nullstakeRoot = nullstakeTree.GetRootNode();
+            // Deterministic anchor: the node-local mutable curve tree differs between
+            // nodes, so reading it here made the same block valid on one node and
+            // invalid on another. Use the same finalized-epoch snapshot the shielded
+            // spend path uses.
+            CCurveTreeNode nullstakeRoot;
+            uint256 hashNullStakeRootV1;
+            std::string strNullStakeRootV1;
+            if (!LoadFCMPValidationRoot(txdb, pindex->nHeight, nullstakeRoot,
+                                        hashNullStakeRootV1, strNullStakeRootV1))
+                return TransientFailure(error("ConnectBlock() : NullStake membership anchor unavailable: %s",
+                                              strNullStakeRootV1.c_str()));
             if (vtx[1].vShieldedSpend[0].fcmpProof.IsNull())
                 return DoS(100, error("ConnectBlock() : NullStake stake FCMP proof missing"));
             if (!VerifyFCMPProof(nullstakeRoot, vtx[1].vShieldedSpend[0].fcmpProof,
-                                  vtx[1].vShieldedSpend[0].cv))
+                                  vtx[1].vShieldedSpend[0].cv, pindex->nHeight))
                 return DoS(100, error("ConnectBlock() : NullStake stake FCMP proof invalid"));
 
             uint64_t nCoinAge = nWeight > 0 ? (uint64_t)nWeight : 1;
@@ -5177,7 +7203,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         {
             uint64_t nCoinAge;
             if (!vtx[1].GetCoinAge(txdb, nCoinAge))
-                return error("ConnectBlock() : %s unable to get coin age for coinstake", vtx[1].GetHash().ToString().substr(0,10).c_str());
+                return TransientFailure(error("ConnectBlock() : %s unable to get coin age for coinstake",
+                                              vtx[1].GetHash().ToString().substr(0,10).c_str()));
 
             int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees), *this, pindex->pprev);
 
@@ -5396,7 +7423,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 // Calculate Coin Age for Collateralnode Reward Calculation
                 uint64_t nCoinAge;
                 if (!vtx[1].GetCoinAge(txdb, nCoinAge))
-                    return error("CheckBlock-POS : %s unable to get coin age for coinstake, Can't Calculate Collateralnode Reward\n", vtx[1].GetHash().ToString().substr(0,10).c_str());
+                    return TransientFailure(error("CheckBlock-POS : %s unable to get coin age for coinstake, Can't Calculate Collateralnode Reward\n",
+                                                  vtx[1].GetHash().ToString().substr(0,10).c_str()));
                 int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees), *this, pindex->pprev);
 
                 // Calculate expected collateralnodePaymentAmmount
@@ -5410,13 +7438,13 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                     bool paymentOK = false;
 
                     CScript payee;
-                    if(fDebug) { printf("CheckBlock-POS() : Using collateralnode payments for block %ld\n", pindex->nHeight); }
+                    if(fDebug) { printf("CheckBlock-POS() : Using collateralnode payments for block %d\n", pindex->nHeight); }
 
                     // Check transaction for payee and if contains collateralnode reward payment
-                    if(fDebug) { printf("CheckBlock-POS(): Transaction 1 Size : %i\n", vtx[1].vout.size()); }
-                    if(fDebug) { printf("CheckBlock-POS() : Expected Collateralnode reward of: %ld\n", collateralnodePaymentAmount); }
+                    if(fDebug) { printf("CheckBlock-POS(): Transaction 1 Size : %zu\n", vtx[1].vout.size()); }
+                    if(fDebug) { printf("CheckBlock-POS() : Expected Collateralnode reward of: %" PRId64 "\n", collateralnodePaymentAmount); }
                     for (unsigned int i = 0; i < vtx[1].vout.size(); i++) {
-                        if(fDebug) { printf("CheckBlock-POS() : Payment vout number: %i , Amount: %ld\n",i, vtx[1].vout[i].nValue); }
+                        if(fDebug) { printf("CheckBlock-POS() : Payment vout number: %u , Amount: %" PRId64 "\n", i, vtx[1].vout[i].nValue); }
                         if(vtx[1].vout[i].nValue == collateralnodePaymentAmount )
                         {
                             foundPaymentAmount = true;
@@ -5498,7 +7526,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                                 pnode->nLastDseg = GetTime();
                                         }
                                     }
-                            return error("CheckBlock-POS() : Did not find this payee in the collateralnode list. Requesting list update and rejecting block.");
+                            return TransientFailure(error("CheckBlock-POS() : collateralnode payee is not present in the local list yet"));
                         } else {
                             if (fDebug) printf("WARNING: Did not find this payee in the collateralnode list, this block will not be accepted after block %d\n", nCNEnforcementHeight);
                             foundPayee = true;
@@ -5515,16 +7543,16 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                         CTxDestination address1;
                         ExtractDestination(payee, address1);
                         CBitcoinAddress address2(address1);
-                        if(fDebug) { printf("CheckBlock-POS() : Couldn't find collateralnode payment(%d|%ld) or payee(%d|%s) nHeight %d. \n", foundPaymentAmount, collateralnodePaymentAmount, foundPayee, address2.ToString().c_str(), pindex->nHeight+1); }
+                        if(fDebug) { printf("CheckBlock-POS() : Couldn't find collateralnode payment(%d|%" PRId64 ") or payee(%d|%s) nHeight %d. \n", foundPaymentAmount, collateralnodePaymentAmount, foundPayee, address2.ToString().c_str(), pindex->nHeight+1); }
                         return DoS(100, error("CheckBlock-POS() : Couldn't find collateralnode payment or payee"));
                     } else {
                         if(fDebug) { printf("CheckBlock-POS() : Found collateralnode payment %d\n", pindex->nHeight+1); }
                     }
                 } else {
-                    if(fDebug) { printf("CheckBlock-POS() : Is initial download, skipping collateralnode payment check %ld\n", pindexBest->nHeight+1); }
+                    if(fDebug) { printf("CheckBlock-POS() : Is initial download, skipping collateralnode payment check %d\n", pindexBest->nHeight+1); }
                 }
             } else {
-                if(fDebug) { printf("CheckBlock-POS() : Skipping collateralnode payment check - nHeight %ld Hash %s\n", pindex->nHeight, GetHash().ToString().c_str()); }
+                if(fDebug) { printf("CheckBlock-POS() : Skipping collateralnode payment check - nHeight %d Hash %s\n", pindex->nHeight, GetHash().ToString().c_str()); }
             }
         }else if(IsProofOfWork() && pindexBest != NULL){
             if(pindexBest->GetBlockHash() == hashPrevBlock){
@@ -5549,13 +7577,14 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                     bool paymentOK = true;
                     CScript payee;
 
-                    if(fDebug) { printf("CheckBlock-POW() : Using non-specific collateralnode payments %ld\n", pindex->nHeight); }
+                    if(fDebug) { printf("CheckBlock-POW() : Using non-specific collateralnode payments %d\n", pindex->nHeight); }
 
                     // Check transaction for payee and if contains collateralnode reward payment
-                    if (fDebug) { printf("CheckBlock-POW(): Transaction 0 Size : %i\n", vtx[0].vout.size()); }
-                    if (fDebug) { printf("CheckBlock-POW() : Expected Collateralnode reward of: %ld\n", collateralnodePaymentAmount); }
+                    if (fDebug) { printf("CheckBlock-POW(): Transaction 0 Size : %zu\n", vtx[0].vout.size()); }
+                    if (fDebug) { printf("CheckBlock-POW() : Expected Collateralnode reward of: %" PRId64 "\n", collateralnodePaymentAmount); }
                     for (unsigned int i = 0; i < vtx[0].vout.size(); i++) {
-                        if(fDebug) { printf("CheckBlock-POW() : Payment vout number: %i , Amount: %lld\n",i, vtx[0].vout[i].nValue); }
+                        if(fDebug) { printf("CheckBlock-POW() : Payment vout number: %u , Amount: %lld\n",
+                                             i, (long long)vtx[0].vout[i].nValue); }
                         if(vtx[0].vout[i].nValue == collateralnodePaymentAmount )
                         {
                             CTxDestination mnDest;
@@ -5577,7 +7606,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
                                 if (payee == pubScript)
                                 {
-                                    if (fDebug) printf("CheckBlock-POW() : Collateralnode PoW payee found at block %d: %s who got paid %s INN rate:%" PRId64" rank:%d lastpaid:%d\n", pindex->nHeight, address2.ToString().c_str(), FormatMoney(vtx[0].vout[i].nValue).c_str(), FormatMoney(mn.payRate).c_str(), mn.nRank, mn.nBlockLastPaid);
+                                    if (fDebug) printf("CheckBlock-POW() : Collateralnode PoW payee found at block %d: %s who got paid %s INN rate:%s rank:%d lastpaid:%d\n", pindex->nHeight, address2.ToString().c_str(), FormatMoney(vtx[0].vout[i].nValue).c_str(), FormatMoney(mn.payRate).c_str(), mn.nRank, mn.nBlockLastPaid);
                                     if (!fIsInitialDownload) {
                                         if (!CheckCNPayment(pindex, vtx[0].vout[i].nValue, mn)) // if MN is being paid and it's bottom 50% ranked, don't let it be paid.
                                         {
@@ -5632,7 +7661,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                             pnode->nLastDseg = GetTime();
                                     }
                                 }
-                                return error("CheckBlock-POW() : Did not find this payee in the collateralnode list, rejecting block.");
+                                return TransientFailure(error("CheckBlock-POW() : collateralnode payee is not present in the local list yet"));
                         } else {
                             if (fDebug) printf("WARNING: Did not find this payee in  the collateralnode list, this block will not be accepted after block %d\n", nCNEnforcementHeight);
                             foundPayee = true;
@@ -5651,7 +7680,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                         CTxDestination address1;
                         ExtractDestination(payee, address1);
                         CBitcoinAddress address2(address1);
-                        if(fDebug) { printf("CheckBlock-POW() : Couldn't find collateralnode payment(%d|%ld) or payee(%d|%s) nHeight %d. \n", foundPaymentAmount, collateralnodePaymentAmount, foundPayee, address2.ToString().c_str(), pindex->nHeight+1); }
+                        if(fDebug) { printf("CheckBlock-POW() : Couldn't find collateralnode payment(%d|%" PRId64 ") or payee(%d|%s) nHeight %d. \n", foundPaymentAmount, collateralnodePaymentAmount, foundPayee, address2.ToString().c_str(), pindex->nHeight+1); }
                         return DoS(100, error("CheckBlock-POW() : Couldn't find collateralnode payment or payee"));
                     } else {
                         if(fDebug) { printf("CheckBlock-POW() : Found collateralnode payment %d\n", pindex->nHeight+1); }
@@ -5673,34 +7702,155 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         }
     }
 
+    if (IsBoundaryBActiveAtHeight(pindex->nHeight))
+    {
+        std::set<uint256> setBlockPrivacyVNextNullifiers;
+        for (const CTransaction& tx : activeBlock.vtx)
+        {
+            if (!tx.IsPrivacyVNext())
+                continue;
+
+            PrivacyVNextStateEffects effects;
+            const PrivacyVNextPayloadValidation validation =
+                ExtractPrivacyVNextPayloadEffects(
+                    static_cast<uint32_t>(tx.nVersion),
+                    tx.privacyVNext.vchPayload, effects);
+            if (validation.fLocalFailure)
+            {
+                StartShutdown();
+                return TransientFailure(error(
+                    "ConnectBlock() : local IV5 payload-effects failure: %s",
+                    validation.strError.c_str()));
+            }
+            if (!validation.IsValid())
+                return DoS(100, error("ConnectBlock() : invalid IV5 payload effects: %s",
+                                      validation.strError.c_str()));
+
+            bool fContextLocalFailure = false;
+            std::string strContextError;
+            if (!ValidatePrivacyVNextFinalizedContext(
+                    txdb, pindex->nHeight, effects,
+                    fContextLocalFailure, strContextError))
+            {
+                if (fContextLocalFailure)
+                {
+                    StartShutdown();
+                    return TransientFailure(error(
+                        "ConnectBlock() : local IV5 finalized-context failure: %s",
+                        strContextError.c_str()));
+                }
+                return DoS(100, error(
+                    "ConnectBlock() : IV5 finalized context rejected: %s",
+                    strContextError.c_str()));
+            }
+
+            for (size_t i = 0; i < effects.keyImages.size(); ++i)
+            {
+                uint256 keyImage;
+                memcpy(keyImage.begin(), effects.keyImages[i].data(),
+                       effects.keyImages[i].size());
+                if (!setBlockPrivacyVNextNullifiers.insert(keyImage).second)
+                    return DoS(100, error(
+                        "ConnectBlock() : duplicate IV5 spent key %s in active DAG block",
+                        keyImage.ToString().substr(0,10).c_str()));
+
+                CShieldedNullifierSpent prior;
+                const TxDBReadStatus status =
+                    txdb.ReadPrivacyVNextNullifierStatus(keyImage, prior);
+                if (status == TXDB_READ_ERROR)
+                {
+                    StartShutdown();
+                    return TransientFailure(error(
+                        "ConnectBlock() : corrupt IV5 spent-key index for %s; "
+                        "-reindex/resync required",
+                        keyImage.ToString().substr(0,10).c_str()));
+                }
+                if (status == TXDB_READ_FOUND)
+                    return DoS(100, error(
+                        "ConnectBlock() : IV5 spent key %s was already consumed by %s",
+                        keyImage.ToString().substr(0,10).c_str(),
+                        prior.txnHash.ToString().substr(0,10).c_str()));
+
+                if (!fJustCheck)
+                {
+                    CShieldedNullifierSpent spent;
+                    spent.txnHash = tx.GetHash();
+                    spent.nIndex = i;
+                    if (!txdb.WritePrivacyVNextNullifier(keyImage, spent))
+                        return TransientFailure(error(
+                            "ConnectBlock() : IV5 spent-key write failed"));
+                }
+            }
+        }
+    }
+
     if (pindex->nHeight >= FORK_HEIGHT_SHIELDED && !fJustCheck)
     {
         CIncrementalMerkleTree shieldedTree;
-        if (pindex->pprev)
-            txdb.ReadShieldedTree(shieldedTree); // OK if not found (empty tree)
+        if (pindex->pprev && !txdb.ReadShieldedTree(shieldedTree) &&
+            pindex->nHeight != FORK_HEIGHT_SHIELDED)
+            return TransientFailure(error("ConnectBlock() : missing predecessor shielded tree; "
+                                          "-reindex/resync required"));
 
-        txdb.WriteShieldedTreeAtBlock(pindex->GetBlockHash(), shieldedTree);
+        if (pindex->nHeight == FORK_HEIGHT_EPOCH_STATE_V3)
+        {
+            const uint256 predecessorRoot = shieldedTree.Root();
+            int nPredecessorRootHeight = -1;
+            if (!pindex->pprev ||
+                txdb.ReadShieldedAnchorStatus(predecessorRoot) !=
+                    TXDB_READ_FOUND ||
+                txdb.ReadShieldedAnchorHeightStatus(
+                    predecessorRoot, nPredecessorRootHeight) !=
+                    TXDB_READ_FOUND ||
+                nPredecessorRootHeight < FORK_HEIGHT_SHIELDED ||
+                nPredecessorRootHeight > pindex->pprev->nHeight)
+                return TransientFailure(error("ConnectBlock() : V3 activation predecessor shielded anchor pair missing/corrupt; -reindex/resync required"));
+
+            std::string strIndexError;
+            if (!txdb.InitializeShieldedCommitmentIndexV3(
+                    pindex->GetBlockHash(), strIndexError))
+                return TransientFailure(error("ConnectBlock() : V3 shielded reverse-index activation failed: %s",
+                                              strIndexError.c_str()));
+        }
+
+        bool fV3ShieldedPersistence = false;
+        std::string strIndexModeError;
+        if (!txdb.ResolveShieldedCommitmentIndexV3Mode(
+                pindex->nHeight, FORK_HEIGHT_EPOCH_STATE_V3,
+                fV3ShieldedPersistence, strIndexModeError))
+            return TransientFailure(error("ConnectBlock() : %s; -reindex/resync required",
+                                          strIndexModeError.c_str()));
+
+        if (!txdb.WriteShieldedTreeAtBlock(pindex->GetBlockHash(), shieldedTree))
+            return TransientFailure(error("ConnectBlock() : WriteShieldedTreeAtBlock failed"));
 
         CCurveTree curveTree;
         bool fMutableCurveTree = (pindex->nHeight >= FORK_HEIGHT_FCMP &&
                                   pindex->nHeight < FORK_HEIGHT_EPOCH_ROOT_FCMP);
-        if (fMutableCurveTree && pindex->pprev)
-            txdb.ReadCurveTree(curveTree); // OK if not found (empty)
+        if (fMutableCurveTree && pindex->pprev &&
+            !txdb.ReadCurveTree(curveTree) && pindex->nHeight != FORK_HEIGHT_FCMP)
+            return TransientFailure(error("ConnectBlock() : missing predecessor curve tree; "
+                                          "-reindex/resync required"));
 
-        if (fMutableCurveTree)
-            txdb.WriteCurveTreeAtBlock(pindex->GetBlockHash(), curveTree);
+        if (fMutableCurveTree &&
+            !txdb.WriteCurveTreeAtBlock(pindex->GetBlockHash(), curveTree))
+            return TransientFailure(error("ConnectBlock() : WriteCurveTreeAtBlock failed"));
 
         // Seed genesis commitments at the fork activation block
         // These provide the initial Lelantus anonymity set (16 unspendable decoys)
         if (pindex->nHeight == FORK_HEIGHT_SHIELDED)
         {
             CCurveTree* pCurveTreePtr = fMutableCurveTree ? &curveTree : nullptr;
-            if (!SeedGenesisCommitments(txdb, shieldedTree, pCurveTreePtr))
-                return error("ConnectBlock() : SeedGenesisCommitments failed");
+            if (!SeedGenesisCommitments(txdb, shieldedTree, pCurveTreePtr,
+                                        fV3ShieldedPersistence))
+                return TransientFailure(error("ConnectBlock() : SeedGenesisCommitments failed"));
         }
 
         int64_t nShieldedPool = 0;
-        txdb.ReadShieldedPoolValue(nShieldedPool); // OK if not found (zero)
+        if (!txdb.ReadShieldedPoolValue(nShieldedPool) &&
+            pindex->nHeight != FORK_HEIGHT_SHIELDED)
+            return TransientFailure(error("ConnectBlock() : missing predecessor shielded pool value; "
+                                          "-reindex/resync required"));
 
         // Catch cross-tx nullifier duplicates within this block
         std::set<uint256> setBlockNullifiers;
@@ -5713,70 +7863,110 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             for (unsigned int i = 0; i < tx.vShieldedSpend.size(); i++)
             {
                 if (!setBlockNullifiers.insert(tx.vShieldedSpend[i].nullifier).second)
-                    return error("ConnectBlock() : duplicate nullifier %s across transactions in block",
-                                 tx.vShieldedSpend[i].nullifier.ToString().substr(0,10).c_str());
+                    return DoS(100, error("ConnectBlock() : duplicate nullifier %s across transactions in block",
+                                          tx.vShieldedSpend[i].nullifier.ToString().substr(0,10).c_str()));
 
                 CShieldedNullifierSpent nfs;
                 nfs.txnHash = tx.GetHash();
                 nfs.nIndex = i;
                 if (!txdb.WriteShieldedNullifier(tx.vShieldedSpend[i].nullifier, nfs))
-                    return error("ConnectBlock() : WriteShieldedNullifier failed");
+                    return TransientFailure(error("ConnectBlock() : WriteShieldedNullifier failed"));
             }
 
             // Append note commitments to the Merkle tree and commitment index
             for (const CShieldedOutputDescription& output : tx.vShieldedOutput)
             {
-                shieldedTree.Append(output.cmu);
+                if (!shieldedTree.Append(output.cmu))
+                    return DoS(100, error("ConnectBlock() : shielded Merkle tree capacity exhausted"));
 
                 // Index Pedersen commitment for Lelantus anonymity set construction
                 uint64_t nCommitIdx = shieldedTree.Size() - 1;
                 if (!txdb.WriteShieldedCommitment(nCommitIdx, output.cv))
-                    return error("ConnectBlock() : WriteShieldedCommitment failed");
+                    return TransientFailure(error("ConnectBlock() : WriteShieldedCommitment failed"));
 
                 if (!txdb.WriteShieldedCommitmentHeight(nCommitIdx, pindex->nHeight))
-                    return error("ConnectBlock() : WriteShieldedCommitmentHeight failed");
-                // Reverse index for spend validation
-                if (!txdb.WriteShieldedCommitmentIndex(output.cv.vchCommitment, nCommitIdx))
-                    return error("ConnectBlock() : WriteShieldedCommitmentIndex failed");
+                    return TransientFailure(error("ConnectBlock() : WriteShieldedCommitmentHeight failed"));
+                if (fV3ShieldedPersistence)
+                {
+                    std::string strIndexError;
+                    if (!txdb.PushShieldedCommitmentIndexV3(
+                            nCommitIdx, output.cv, strIndexError))
+                        return TransientFailure(error("ConnectBlock() : V3 shielded reverse-index push failed: %s",
+                                                      strIndexError.c_str()));
+                }
+                else if (!txdb.WriteShieldedCommitmentIndex(
+                             output.cv.vchCommitment, nCommitIdx))
+                {
+                    return TransientFailure(error("ConnectBlock() : WriteShieldedCommitmentIndex failed"));
+                }
 
-                if (fMutableCurveTree)
-                    curveTree.InsertLeaf(output.cv);
+                if (fMutableCurveTree && !curveTree.InsertLeaf(output.cv))
+                    return TransientFailure(error("ConnectBlock() : curve-tree leaf insertion failed after proof validation"));
             }
 
+            if (tx.nValueBalance == std::numeric_limits<int64_t>::min() ||
+                (tx.nValueBalance > 0 && nShieldedPool < tx.nValueBalance) ||
+                (tx.nValueBalance < 0 &&
+                 nShieldedPool > MAX_MONEY + tx.nValueBalance))
+                return DoS(100, error("ConnectBlock() : shielded pool balance overflow/"
+                                      "underflow, inflation detected"));
             nShieldedPool -= tx.nValueBalance;
-
-            if (nShieldedPool < 0)
-                return error("ConnectBlock() : shielded pool would go negative (%" PRId64 "), inflation detected", nShieldedPool);
+            if (!MoneyRange(nShieldedPool))
+                return DoS(100, error("ConnectBlock() : shielded pool out of range (%" PRId64
+                                      "), inflation detected", nShieldedPool));
         }
 
         if (!txdb.WriteShieldedTree(shieldedTree))
-            return error("ConnectBlock() : WriteShieldedTree failed");
+            return TransientFailure(error("ConnectBlock() : WriteShieldedTree failed"));
         if (!txdb.WriteShieldedCommitmentCount(shieldedTree.Size()))
-            return error("ConnectBlock() : WriteShieldedCommitmentCount failed");
+            return TransientFailure(error("ConnectBlock() : WriteShieldedCommitmentCount failed"));
 
         if (fMutableCurveTree)
         {
             if (!txdb.WriteCurveTree(curveTree))
-                return error("ConnectBlock() : WriteCurveTree failed");
+                return TransientFailure(error("ConnectBlock() : WriteCurveTree failed"));
         }
 
         uint256 treeRoot = shieldedTree.Root();
-        if (!txdb.WriteShieldedAnchor(treeRoot))
-            return error("ConnectBlock() : WriteShieldedAnchor failed");
-        // Only write anchor height for NEW anchors (don't reset age each block)
+        if (fV3ShieldedPersistence)
         {
-            int nExistingHeight = 0;
-            if (!txdb.ReadShieldedAnchorHeight(treeRoot, nExistingHeight))
+            const TxDBReadStatus anchorStatus =
+                txdb.ReadShieldedAnchorStatus(treeRoot);
+            if (anchorStatus == TXDB_READ_ERROR)
+                return TransientFailure(error("ConnectBlock() : shielded anchor record corrupt/unreadable; -reindex/resync required"));
+            if (anchorStatus == TXDB_READ_FOUND)
             {
-                if (!txdb.WriteShieldedAnchorHeight(treeRoot, pindex->nHeight))
-                    return error("ConnectBlock() : WriteShieldedAnchorHeight failed");
+                int nExistingHeight = -1;
+                if (txdb.ReadShieldedAnchorHeightStatus(
+                        treeRoot, nExistingHeight) != TXDB_READ_FOUND ||
+                    nExistingHeight < FORK_HEIGHT_SHIELDED ||
+                    nExistingHeight > pindex->nHeight)
+                    return TransientFailure(error("ConnectBlock() : existing V3 shielded anchor height missing/corrupt; -reindex/resync required"));
             }
+            else
+            {
+                // Overwrite any height-only residue from a disconnected legacy
+                // branch; a newly active anchor starts aging at this block.
+                if (!txdb.WriteShieldedAnchor(treeRoot) ||
+                    !txdb.WriteShieldedAnchorHeight(treeRoot,
+                                                     pindex->nHeight))
+                    return TransientFailure(error("ConnectBlock() : WriteShieldedAnchor pair failed"));
+            }
+        }
+        else
+        {
+            if (!txdb.WriteShieldedAnchor(treeRoot))
+                return TransientFailure(error("ConnectBlock() : WriteShieldedAnchor failed"));
+            // Only write anchor height for NEW anchors (don't reset age each block)
+            int nExistingHeight = 0;
+            if (!txdb.ReadShieldedAnchorHeight(treeRoot, nExistingHeight) &&
+                !txdb.WriteShieldedAnchorHeight(treeRoot, pindex->nHeight))
+                return TransientFailure(error("ConnectBlock() : WriteShieldedAnchorHeight failed"));
         }
 
         if (!txdb.WriteShieldedPoolValue(nShieldedPool))
-            return error("ConnectBlock() : WriteShieldedPoolValue failed");
+            return TransientFailure(error("ConnectBlock() : WriteShieldedPoolValue failed"));
 
-        nShieldedPoolValue = nShieldedPool;
 
         if (fDebug)
             printf("ConnectBlock() : shielded tree root=%s, pool=%" PRId64 "\n",
@@ -5788,7 +7978,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     pindex->nMoneySupply = (pindex->pprev? pindex->pprev->nMoneySupply : 0) + nValueOut - nValueIn;
     pindex->nMoneySupply -= nAmountBurned;
     if (pindex->nMoneySupply < 0)
-        return error("ConnectBlock() : negative money supply at height %d", pindex->nHeight);
+        return DoS(100, error("ConnectBlock() : negative money supply at height %d", pindex->nHeight));
 
     if (!fJustCheck && !vFinalityVotes.empty())
     {
@@ -5860,7 +8050,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     // }
 
     if (!txdb.WriteBlockIndex(CDiskBlockIndex(pindex)))
-        return error("Connect() : WriteBlockIndex for pindex failed");
+        return TransientFailure(error("Connect() : WriteBlockIndex for pindex failed"));
 
     if (fJustCheck)
     {
@@ -5878,7 +8068,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     for (map<uint256, CTxIndex>::iterator mi = mapQueuedChanges.begin(); mi != mapQueuedChanges.end(); ++mi)
     {
         if (!txdb.UpdateTxIndex((*mi).first, (*mi).second))
-            return error("ConnectBlock() : UpdateTxIndex failed");
+            return TransientFailure(error("ConnectBlock() : UpdateTxIndex failed"));
     }
     if(GetBoolArg("-addrindex", false))
     {
@@ -5895,7 +8085,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             map<uint256, CTxIndex> mapQueuedChangesT;
             bool fInvalid;
                 if (!tx.FetchInputs(txdb, mapQueuedChangesT, true, false, mapInputs, fInvalid))
-                    return false;
+                    return TransientFailure(error("ConnectBlock() : address-index input read failed"));
 
             MapPrevTx::const_iterator mi;
             for(MapPrevTx::const_iterator mi = mapInputs.begin(); mi != mapInputs.end(); ++mi)
@@ -5908,7 +8098,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                         for (uint160 addrId : addrIds)
                         {
                         if(!txdb.WriteAddrIndex(addrId, hashTx))
-                            printf("ConnectBlock(): txins WriteAddrIndex failed addrId: %s txhash: %s\n", addrId.ToString().c_str(), hashTx.ToString().c_str());
+                            return TransientFailure(error("ConnectBlock(): txins WriteAddrIndex failed addrId: %s txhash: %s",
+                                                          addrId.ToString().c_str(), hashTx.ToString().c_str()));
                         }
                 }
                 }
@@ -5924,11 +8115,22 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             for (uint160 addrId : addrIds)
             {
                 if(!txdb.WriteAddrIndex(addrId, hashTx))
-                    printf("ConnectBlock(): txouts WriteAddrIndex failed addrId: %s txhash: %s\n", addrId.ToString().c_str(), hashTx.ToString().c_str());
+                    return TransientFailure(error("ConnectBlock(): txouts WriteAddrIndex failed addrId: %s txhash: %s",
+                                                  addrId.ToString().c_str(), hashTx.ToString().c_str()));
                     }
             }
         }
         }
+    }
+
+    if (pindex->nHeight >= FORK_HEIGHT_DAG)
+    {
+        std::string strActiveSetError;
+        if (!txdb.WriteDAGSkippedTxs(
+                *this, setDAGSkippedTxs, strActiveSetError))
+            return TransientFailure(error(
+                "ConnectBlock() : could not persist exact DAG active set: %s",
+                strActiveSetError.c_str()));
     }
 
     // Update block index on disk without changing it in memory.
@@ -5938,25 +8140,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         CDiskBlockIndex blockindexPrev(pindex->pprev);
         blockindexPrev.hashNext = pindex->GetBlockHash();
         if (!txdb.WriteBlockIndex(blockindexPrev))
-            return error("ConnectBlock() : WriteBlockIndex failed");
+            return TransientFailure(error("ConnectBlock() : WriteBlockIndex failed"));
     }
-
-    // Check Name Release Height to Connect Blocks
-    if (pindex->nHeight >= RELEASE_HEIGHT) {
-        // add names to innovanamesindex.dat
-        hooks->ConnectBlock(txdb, pindex);
-    }
-
-    // Watch for transactions paying to me
-    for (CTransaction& tx : vtx)
-    {
-        if (setDAGSkippedTxs.count(tx.GetHash()))
-            continue;
-        SyncWithWallets(tx, this, true);
-    }
-
-    // update the UI about the new block
-    uiInterface.NotifyRanksUpdated();
 
     if (fDebug && GetBoolArg("-showtimers", false))
         printf("ConnectBlock: height=%d total=%" PRId64"ms check=%" PRId64"ms tx_transparent=%u/%" PRId64"us tx_shielded=%u/%" PRId64"us tx_anon=%u/%" PRId64"us tx_privstake=%u/%" PRId64"us\n",
@@ -5982,6 +8167,138 @@ int GetFirstV2EpochStateRebuildEpoch(int nForkHeight)
                     GetEpochForHeight(nForkHeight));
 }
 
+static bool StageV2EpochStateAtCrossing(
+    CTxDB& txdb, CBlockIndex* pCrossing, int nEpoch, int nFirstEpoch,
+    std::map<int, CEpochState>& mapStagedEpochStates,
+    std::map<int, CCurveTree>& mapStagedEpochTrees,
+    std::string& strError)
+{
+    strError.clear();
+    if (!pCrossing || !pCrossing->phashBlock || nEpoch < nFirstEpoch)
+    {
+        strError = "invalid V2 boundary-crossing stage request";
+        return false;
+    }
+
+    const int nEpochStart = GetEpochBoundaryHeight(nEpoch, pCrossing->nHeight);
+    const int nEpochEnd = GetEpochBoundaryHeight(nEpoch + 1, pCrossing->nHeight) - 1;
+    if (pCrossing->nHeight != nEpochEnd + 1 ||
+        GetEpochForHeight(pCrossing->nHeight) <= nEpoch)
+    {
+        strError = strprintf("V2 epoch %d requires canonical crossing height %d (got %d)",
+                             nEpoch, nEpochEnd + 1, pCrossing->nHeight);
+        return false;
+    }
+
+    const CEpochState* pPrevState = NULL;
+    const CCurveTree* pPrevTree = NULL;
+    if (nEpoch > nFirstEpoch)
+    {
+        std::map<int, CEpochState>::const_iterator itState =
+            mapStagedEpochStates.find(nEpoch - 1);
+        std::map<int, CCurveTree>::const_iterator itTree =
+            mapStagedEpochTrees.find(nEpoch - 1);
+        if (itState == mapStagedEpochStates.end() ||
+            itTree == mapStagedEpochTrees.end())
+        {
+            strError = strprintf("V2 staged predecessor pair missing for epoch %d", nEpoch);
+            return false;
+        }
+        pPrevState = &itState->second;
+        pPrevTree = &itTree->second;
+    }
+
+    CEpochState state;
+    CCurveTree tree;
+    if (!g_dagManager.BuildEpochStateV2Compat(
+            nEpoch, nEpochEnd - nEpochStart + 1, pCrossing,
+            state, tree, strError, pPrevState, pPrevTree))
+        return false;
+    if (!g_dagManager.WriteEpochState(txdb, state, tree))
+    {
+        strError = strprintf("V2 state/tree write failed for epoch %d", nEpoch);
+        return false;
+    }
+
+    mapStagedEpochStates[nEpoch] = state;
+    mapStagedEpochTrees[nEpoch] = tree;
+    return true;
+}
+
+static bool StageEpochStateRange(CTxDB& txdb, CBlockIndex* pTip,
+                                 int nFirstEpoch, int nLastEpoch,
+                                 std::map<int, CEpochState>& mapStagedEpochStates,
+                                 std::map<int, CCurveTree>& mapStagedEpochTrees,
+                                 std::string& strError)
+{
+    strError.clear();
+    if (!pTip || !pTip->phashBlock || nFirstEpoch < 0 || nLastEpoch < nFirstEpoch)
+    {
+        strError = "invalid staged epoch range";
+        return false;
+    }
+
+    for (int nEpoch = nFirstEpoch; nEpoch <= nLastEpoch; ++nEpoch)
+    {
+        const int nEpochStart = GetEpochBoundaryHeight(nEpoch, pTip->nHeight);
+        const int nEpochEnd = GetEpochBoundaryHeight(nEpoch + 1, pTip->nHeight) - 1;
+        CBlockIndex* pBoundary = pTip;
+        while (pBoundary && pBoundary->nHeight > nEpochEnd)
+            pBoundary = pBoundary->pprev;
+        if (!pBoundary || pBoundary->nHeight != nEpochEnd)
+        {
+            strError = strprintf("missing canonical boundary at height %d for epoch %d",
+                                 nEpochEnd, nEpoch);
+            return false;
+        }
+
+        const CEpochState* pPrevState = NULL;
+        const CCurveTree* pPrevTree = NULL;
+        if (nEpoch > nFirstEpoch)
+        {
+            std::map<int, CEpochState>::const_iterator itPrevState =
+                mapStagedEpochStates.find(nEpoch - 1);
+            std::map<int, CCurveTree>::const_iterator itPrevTree =
+                mapStagedEpochTrees.find(nEpoch - 1);
+            if (itPrevState == mapStagedEpochStates.end() ||
+                itPrevTree == mapStagedEpochTrees.end())
+            {
+                strError = strprintf("staged predecessor pair missing for epoch %d", nEpoch);
+                return false;
+            }
+            pPrevState = &itPrevState->second;
+            pPrevTree = &itPrevTree->second;
+        }
+
+        CEpochState state;
+        CCurveTree tree;
+        if (!g_dagManager.BuildEpochState(nEpoch, nEpochEnd - nEpochStart + 1,
+                                          pBoundary, state, tree, strError,
+                                          pPrevState, pPrevTree))
+            return false;
+        if (!g_dagManager.WriteEpochState(txdb, state, tree))
+        {
+            strError = strprintf("state/tree write failed for epoch %d", nEpoch);
+            return false;
+        }
+        mapStagedEpochStates[nEpoch] = state;
+        mapStagedEpochTrees[nEpoch] = tree;
+    }
+    return true;
+}
+
+static void PublishDurablyCommittedBest(CBlockIndex* pindexCommitted)
+{
+    if (!pindexCommitted || !pindexCommitted->phashBlock)
+        return;
+    hashBestChain = pindexCommitted->GetBlockHash();
+    pindexBest = pindexCommitted;
+    pblockindexFBBHLast = NULL;
+    nBestHeight = pindexCommitted->nHeight;
+    nBestChainTrust = pindexCommitted->nChainTrust;
+    nTimeBestReceived = GetTime();
+}
+
 static void RestoreCommittedFinalityOrShutdown(const char* pszContext)
 {
     if (g_finalityTracker.RestoreCommittedStateAfterAbort())
@@ -5991,10 +8308,527 @@ static void RestoreCommittedFinalityOrShutdown(const char* pszContext)
     StartShutdown();
 }
 
-bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
-                       bool* pfPermanentInvalid = NULL)
+static void RefreshCommittedShieldedPoolOrShutdown(CTxDB& txdb,
+                                                    CBlockIndex* pindexCommitted,
+                                                    const char* pszContext)
 {
-    if (pfPermanentInvalid) *pfPermanentInvalid = false;
+    if (!pindexCommitted || pindexCommitted->nHeight < FORK_HEIGHT_SHIELDED)
+    {
+        nShieldedPoolValue = 0;
+        return;
+    }
+    int64_t nCommittedPool = 0;
+    if (!txdb.ReadShieldedPoolValue(nCommittedPool) || !MoneyRange(nCommittedPool))
+    {
+        printf("%s: FATAL committed shielded pool value is missing/out of range; "
+               "publishing durable best and shutting down for -reindex/resync\n",
+               pszContext);
+        PublishDurablyCommittedBest(pindexCommitted);
+        StartShutdown();
+        return;
+    }
+    nShieldedPoolValue = nCommittedPool;
+}
+
+/** Ordered effects and recovery locator for one chain transaction, all prepared before
+ *  TxnCommit; replayed before any later postponed reconnect transaction begins. */
+class CBestChainEffectJournal
+{
+private:
+    struct Entry
+    {
+        CBlockIndex* pindex;
+        bool fConnect;
+        CBlock block;
+        std::set<uint256> setDAGSkippedTxs;
+
+        Entry(CBlockIndex* pindexIn, bool fConnectIn,
+              const CBlock& blockIn,
+              const std::set<uint256>& setDAGSkippedTxsIn)
+            : pindex(pindexIn), fConnect(fConnectIn), block(blockIn),
+              setDAGSkippedTxs(setDAGSkippedTxsIn) {}
+    };
+
+    std::vector<Entry> vEntries;
+    CBlockLocator locator;
+    CShieldedWalletRecoveryRecord recoveryRecord;
+    bool fPrepared;
+    bool fCommitted;
+
+    bool PrepareEntry(CTxDB& txdb, CBlockIndex* pindex, bool fConnect)
+    {
+        if (!pindex || !pindex->phashBlock)
+            return false;
+        CBlock block;
+        if (!block.ReadFromDisk(pindex, true) ||
+            block.GetHash() != pindex->GetBlockHash())
+            return false;
+        std::set<uint256> setDAGSkippedTxs;
+        if (pindex->nHeight >= FORK_HEIGHT_DAG)
+        {
+            std::string strActiveSetError;
+            const TxDBReadStatus status = txdb.ReadDAGSkippedTxsStatus(
+                block, setDAGSkippedTxs, strActiveSetError);
+            if (status != TXDB_READ_FOUND)
+            {
+                printf("PrepareBestChainEffects: exact DAG active set is %s "
+                       "at height %d%s%s\n",
+                       status == TXDB_READ_NOT_FOUND ? "missing" : "corrupt",
+                       pindex->nHeight,
+                       strActiveSetError.empty() ? "" : ": ",
+                       strActiveSetError.c_str());
+                return false;
+            }
+        }
+        vEntries.push_back(Entry(pindex, fConnect, block,
+                                 setDAGSkippedTxs));
+        return true;
+    }
+
+    bool PrepareRecoveryRecord(CBlockIndex* pindexOldTip,
+                               CBlockIndex* pindexFork,
+                               CBlockIndex* pindexNewTip,
+                               size_t nDisconnect,
+                               size_t nConnect)
+    {
+        if (!pindexNewTip || !pindexNewTip->phashBlock ||
+            (pindexOldTip && !pindexOldTip->phashBlock) ||
+            (pindexFork && !pindexFork->phashBlock) ||
+            (nDisconnect == 0 && nConnect == 0) ||
+            nDisconnect > std::numeric_limits<uint32_t>::max() ||
+            nConnect > std::numeric_limits<uint32_t>::max())
+            return false;
+
+        std::vector<CShieldedWalletEffectDigestEntry> vDigestEntries;
+        vDigestEntries.reserve(vEntries.size());
+        for (std::vector<Entry>::const_iterator it = vEntries.begin();
+             it != vEntries.end(); ++it)
+        {
+            if (!it->pindex || !it->pindex->phashBlock)
+                return false;
+            vDigestEntries.push_back(CShieldedWalletEffectDigestEntry(
+                it->fConnect, it->pindex->GetBlockHash(),
+                it->setDAGSkippedTxs));
+        }
+
+        recoveryRecord = CShieldedWalletRecoveryRecord();
+        recoveryRecord.nSchema = SHIELDED_WALLET_RECOVERY_SCHEMA;
+        recoveryRecord.hashOldTip = pindexOldTip
+            ? pindexOldTip->GetBlockHash() : uint256(0);
+        recoveryRecord.hashFork = pindexFork
+            ? pindexFork->GetBlockHash() : uint256(0);
+        recoveryRecord.hashNewTip = pindexNewTip->GetBlockHash();
+        recoveryRecord.nDisconnect = (uint32_t)nDisconnect;
+        recoveryRecord.nConnect = (uint32_t)nConnect;
+        recoveryRecord.hashEffectPlan =
+            ComputeShieldedWalletEffectPlanDigest(vDigestEntries);
+        return recoveryRecord.IsValid();
+    }
+
+    bool FailClosed(const Entry& entry, const char* pszReason) const
+    {
+        const int nHeight = entry.pindex ? entry.pindex->nHeight : -1;
+        printf("ReplayBestChainEffects: FATAL post-commit %s effect failed for "
+               "block at height %d: %s. The chain transition is already "
+               "durable and will NOT be rolled back; shutting down. Rebuild "
+               "innovanamesindex.dat/wallet state from the committed chain or "
+               "restart with -reindex/resync.\n",
+               entry.fConnect ? "connect" : "disconnect",
+               nHeight, pszReason);
+        StartShutdown();
+        return false;
+    }
+
+public:
+    CBestChainEffectJournal()
+        : fPrepared(false), fCommitted(false) {}
+
+    bool PrepareConnect(CTxDB& txdb, CBlockIndex* pindex)
+    {
+        Clear();
+        try
+        {
+            vEntries.reserve(1);
+            locator.Set(pindex);
+            if (!PrepareEntry(txdb, pindex, true))
+            {
+                Clear();
+                return false;
+            }
+            if (!PrepareRecoveryRecord(pindex ? pindex->pprev : NULL,
+                                       pindex ? pindex->pprev : NULL,
+                                       pindex, 0, 1))
+            {
+                Clear();
+                return false;
+            }
+            fPrepared = true;
+            return true;
+        }
+        catch (...)
+        {
+            Clear();
+            return false;
+        }
+    }
+
+    bool PrepareReorg(CTxDB& txdb,
+                      const std::vector<CBlockIndex*>& vDisconnect,
+                      const std::vector<CBlockIndex*>& vConnect,
+                      CBlockIndex* pindexTip)
+    {
+        Clear();
+        try
+        {
+            if (vConnect.size() > vEntries.max_size() ||
+                vDisconnect.size() > vEntries.max_size() - vConnect.size())
+                return false;
+            vEntries.reserve(vDisconnect.size() + vConnect.size());
+            locator.Set(pindexTip);
+            for (std::vector<CBlockIndex*>::const_iterator it =
+                     vDisconnect.begin(); it != vDisconnect.end(); ++it)
+            {
+                if (!PrepareEntry(txdb, *it, false))
+                {
+                    Clear();
+                    return false;
+                }
+            }
+            for (std::vector<CBlockIndex*>::const_iterator it =
+                     vConnect.begin(); it != vConnect.end(); ++it)
+            {
+                if (!PrepareEntry(txdb, *it, true))
+                {
+                    Clear();
+                    return false;
+                }
+            }
+            CBlockIndex* pindexFork = NULL;
+            if (!vDisconnect.empty())
+                pindexFork = vDisconnect.back()->pprev;
+            else if (!vConnect.empty())
+                pindexFork = vConnect.front()->pprev;
+            CBlockIndex* pindexOldTip = !vDisconnect.empty()
+                ? vDisconnect.front() : pindexFork;
+            if (!PrepareRecoveryRecord(pindexOldTip, pindexFork, pindexTip,
+                                       vDisconnect.size(), vConnect.size()))
+            {
+                Clear();
+                return false;
+            }
+            fPrepared = true;
+            return true;
+        }
+        catch (...)
+        {
+            Clear();
+            return false;
+        }
+    }
+
+    void MarkCommitted()
+    {
+        if (fPrepared)
+            fCommitted = true;
+    }
+
+    bool IsEmpty() const
+    {
+        return vEntries.empty() && !fPrepared && !fCommitted;
+    }
+
+    const CBlockLocator& GetLocator() const
+    {
+        return locator;
+    }
+
+    const CShieldedWalletRecoveryRecord& GetRecoveryRecord() const
+    {
+        return recoveryRecord;
+    }
+
+    void Clear()
+    {
+        vEntries.clear();
+        locator.SetNull();
+        recoveryRecord = CShieldedWalletRecoveryRecord();
+        fPrepared = false;
+        fCommitted = false;
+    }
+
+    bool Replay(CTxDB& txdb) const
+    {
+        if (!fPrepared || !fCommitted)
+        {
+            printf("ReplayBestChainEffects: FATAL attempted to replay an "
+                   "uncommitted effect batch; shutting down\n");
+            StartShutdown();
+            return false;
+        }
+
+        bool fTouchedShieldedWallet = false;
+        for (std::vector<Entry>::const_iterator it = vEntries.begin();
+             it != vEntries.end(); ++it)
+        {
+            const Entry& entry = *it;
+            if (!entry.pindex || !entry.pindex->phashBlock)
+                return FailClosed(entry, "missing committed block index");
+
+            try
+            {
+                if (!entry.fConnect &&
+                    entry.pindex->nHeight >= FORK_HEIGHT_SHIELDED)
+                    fTouchedShieldedWallet = true;
+                if (entry.fConnect)
+                {
+                    std::string strNameError;
+                    // The name index has its own Berkeley DB transaction. Replay the exact block transition
+                    // (with the persisted DAG skip set) so mutations, cursor and progress commit together.
+                    if (entry.pindex->nHeight >= RELEASE_HEIGHT)
+                    {
+                        if (!ApplyNameIndexConnectBlock(
+                                txdb, entry.pindex,
+                                entry.setDAGSkippedTxs, strNameError))
+                            return FailClosed(entry, strNameError.c_str());
+                    }
+                    else if (!CommitNameIndexTip(entry.pindex,
+                                                 strNameError))
+                        return FailClosed(entry, strNameError.c_str());
+
+                    for (std::vector<CTransaction>::const_iterator txIt =
+                             entry.block.vtx.begin();
+                         txIt != entry.block.vtx.end(); ++txIt)
+                    {
+                        if (entry.setDAGSkippedTxs.count(txIt->GetHash()))
+                            continue;
+                        std::string strWalletError;
+                        if (!SyncWithWalletsChecked(*txIt, &entry.block, true,
+                                                    true, strWalletError,
+                                                    &entry.setDAGSkippedTxs))
+                            return FailClosed(entry, strWalletError.c_str());
+                    }
+
+                    uiInterface.NotifyRanksUpdated();
+                }
+                else
+                {
+                    // Commits the disconnect's mutations, predecessor cursor and progress in one Berkeley DB
+                    // transaction, bound to the same connect-time DAG skip set.
+                    std::string strNameError;
+                    if (entry.pindex->nHeight >= RELEASE_HEIGHT)
+                    {
+                        if (!ApplyNameIndexDisconnectBlock(
+                                entry.block, entry.pindex,
+                                entry.setDAGSkippedTxs, strNameError))
+                            return FailClosed(entry, strNameError.c_str());
+                    }
+                    else if (!CommitNameIndexTip(entry.pindex->pprev,
+                                                 strNameError))
+                        return FailClosed(entry, strNameError.c_str());
+
+                    if (entry.pindex->nHeight >= FORK_HEIGHT_SHIELDED)
+                    {
+                        for (CWallet* pwallet : setpwalletRegistered)
+                        {
+                            std::string strWalletError;
+                            if (!pwallet->DisconnectShieldedBlockRecoveryChecked(
+                                    entry.block, entry.pindex,
+                                    strWalletError))
+                                return FailClosed(entry, strWalletError.c_str());
+                        }
+                    }
+
+                    for (std::vector<CTransaction>::const_iterator txIt =
+                             entry.block.vtx.begin();
+                         txIt != entry.block.vtx.end(); ++txIt)
+                    {
+                        if (entry.setDAGSkippedTxs.count(txIt->GetHash()))
+                            continue;
+                        std::string strWalletError;
+                        if (!SyncWithWalletsChecked(*txIt, &entry.block, false,
+                                                    false, strWalletError))
+                            return FailClosed(entry, strWalletError.c_str());
+                    }
+                }
+            }
+            catch (const std::exception& e)
+            {
+                return FailClosed(entry, e.what());
+            }
+            catch (...)
+            {
+                return FailClosed(entry, "unknown post-commit exception");
+            }
+        }
+
+        if (fTouchedShieldedWallet)
+        {
+            const Entry& context = vEntries.back();
+            try
+            {
+                if (!pindexBest || !pindexBest->phashBlock)
+                    return FailClosed(context, "missing canonical tip during shielded wallet reconciliation");
+                for (CWallet* pwallet : setpwalletRegistered)
+                {
+                    std::string strWalletError;
+                    if (!pwallet->ReconcileShieldedNoteSpentStateChecked(
+                            txdb, pindexBest->nHeight, strWalletError))
+                        return FailClosed(context, strWalletError.c_str());
+                }
+            }
+            catch (const std::exception& e)
+            {
+                return FailClosed(context, e.what());
+            }
+            catch (...)
+            {
+                return FailClosed(context, "unknown shielded wallet reconciliation exception");
+            }
+        }
+        return true;
+    }
+};
+
+static bool SameShieldedWalletRecoveryRecord(
+    const CShieldedWalletRecoveryRecord& a,
+    const CShieldedWalletRecoveryRecord& b)
+{
+    return a.nSchema == b.nSchema &&
+           a.hashOldTip == b.hashOldTip &&
+           a.hashFork == b.hashFork &&
+           a.hashNewTip == b.hashNewTip &&
+           a.nDisconnect == b.nDisconnect &&
+           a.nConnect == b.nConnect &&
+           a.hashEffectPlan == b.hashEffectPlan;
+}
+
+static bool ClearCommittedShieldedWalletRecovery(
+    CTxDB& txdb, const CShieldedWalletRecoveryRecord& expected,
+    const char* pszContext)
+{
+    // Wallet/name Berkeley DB uses DB_TXN_WRITE_NOSYNC.  Force its committed
+    // log records durable before deleting the LevelDB outbox; otherwise a
+    // power loss could retain the acknowledgement but lose wallet mutations.
+    if (!bitdb.FlushLog())
+    {
+        printf("%s: FATAL could not flush auxiliary Berkeley DB logs before "
+               "shielded-wallet recovery acknowledgement; shutting down\n",
+               pszContext);
+        StartShutdown();
+        return false;
+    }
+
+    CShieldedWalletRecoveryRecord persisted;
+    if (txdb.ReadShieldedWalletRecoveryStatus(persisted) !=
+            TXDB_READ_FOUND ||
+        !SameShieldedWalletRecoveryRecord(persisted, expected))
+    {
+        printf("%s: FATAL shielded-wallet recovery outbox is missing, corrupt, "
+               "or does not match the committed transition; shutting down\n",
+               pszContext);
+        StartShutdown();
+        return false;
+    }
+    if (!txdb.TxnBegin())
+    {
+        printf("%s: FATAL could not begin shielded-wallet recovery outbox "
+               "clear transaction; shutting down\n", pszContext);
+        StartShutdown();
+        return false;
+    }
+    if (!txdb.EraseShieldedWalletRecovery())
+    {
+        txdb.TxnAbort();
+        printf("%s: FATAL could not stage shielded-wallet recovery outbox "
+               "clear; shutting down\n", pszContext);
+        StartShutdown();
+        return false;
+    }
+    if (!txdb.TxnCommit(true))
+    {
+        printf("%s: FATAL could not commit shielded-wallet recovery outbox "
+               "clear; shutting down\n", pszContext);
+        StartShutdown();
+        return false;
+    }
+    return true;
+}
+
+static bool PublishAndReplayCommittedEffects(CTxDB& txdb,
+                                             CBlockIndex* pindexCommitted,
+                                             CBestChainEffectJournal& effects,
+                                             const char* pszContext)
+{
+    // The chain transaction is already durable.  Publish exactly that tip
+    // before callbacks inspect globals, but never report a callback failure as
+    // block invalidity or try to roll the transaction back.
+    PublishDurablyCommittedBest(pindexCommitted);
+    mempool.AddTransactionsUpdated(1);
+
+    if (fShutdown)
+    {
+        printf("%s: shutdown requested after chain commit; leaving auxiliary "
+               "recovery markers behind the durable tip\n", pszContext);
+        effects.Clear();
+        return false;
+    }
+
+    if (!effects.Replay(txdb))
+    {
+        effects.Clear();
+        return false;
+    }
+
+    try
+    {
+        std::string strWalletError;
+        if (!SetWalletBestChainChecked(effects.GetLocator(), strWalletError))
+        {
+            printf("%s: FATAL %s after durable chain commit; shutting down "
+                   "with the prior wallet locator retained for rescan\n",
+                   pszContext, strWalletError.c_str());
+            StartShutdown();
+            effects.Clear();
+            return false;
+        }
+    }
+    catch (const std::exception& e)
+    {
+        printf("%s: FATAL wallet locator exception after durable chain "
+               "commit: %s; shutting down for rescan\n",
+               pszContext, e.what());
+        StartShutdown();
+        effects.Clear();
+        return false;
+    }
+    catch (...)
+    {
+        printf("%s: FATAL unknown wallet locator exception after durable "
+               "chain commit; shutting down for rescan\n", pszContext);
+        StartShutdown();
+        effects.Clear();
+        return false;
+    }
+
+    if (!ClearCommittedShieldedWalletRecovery(
+            txdb, effects.GetRecoveryRecord(), pszContext))
+    {
+        effects.Clear();
+        return false;
+    }
+
+    effects.Clear();
+    return true;
+}
+
+bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
+                       bool* pfPermanentInvalid, bool* pfChainStateMutated,
+                       CBestChainEffectJournal* pCommittedEffects)
+{
+    if (pfPermanentInvalid)
+        *pfPermanentInvalid = false;
+    if (pfChainStateMutated)
+        *pfChainStateMutated = false;
     printf("REORGANIZE\n");
 
     {
@@ -6010,8 +8844,15 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         // fully covers the immutability boundary on its own.
         int nFinalHeight = 0;
         if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
-            nFinalHeight = g_dagManager.GetDeterministicFinalizedHeight(
-                GetEpochForHeight(pindexBest->nHeight) - 1);
+        {
+            const int nAsOfEpoch = GetEpochForHeight(pindexBest->nHeight) - 1;
+            if (pindexBest->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3 &&
+                !g_dagManager.TryGetDeterministicFinalizedHeight(nAsOfEpoch, nFinalHeight))
+                return error("Reorganize() : missing deterministic finalized-height state for "
+                             "epoch %d; -reindex/resync required", nAsOfEpoch);
+            if (pindexBest->nHeight < FORK_HEIGHT_EPOCH_STATE_V3)
+                nFinalHeight = g_dagManager.GetDeterministicFinalizedHeight(nAsOfEpoch);
+        }
         if (nFinalHeight > 0 && pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
         {
             CBlockIndex* pCheck = pindexBest;
@@ -6063,7 +8904,52 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
     printf("REORGANIZE: Disconnect %" PRIszu" blocks; %s..%s\n", vDisconnect.size(), pfork->GetBlockHash().ToString().substr(0,20).c_str(), pindexBest->GetBlockHash().ToString().substr(0,20).c_str());
     printf("REORGANIZE: Connect %" PRIszu" blocks; %s..%s\n", vConnect.size(), pfork->GetBlockHash().ToString().substr(0,20).c_str(), pindexNew->GetBlockHash().ToString().substr(0,20).c_str());
 
+    // Stage the affected V3 suffix before ConnectBlock; reads through this CTxDB see the
+    // active WriteBatch without exposing uncommitted epoch state in the global cache.
+    std::map<int, CEpochState> mapStagedEpochStates;
+    std::map<int, CCurveTree> mapStagedEpochTrees;
+    int nFirstStagedEpoch = -1;
+    int nLastV2EpochToStage = -1;
+    const bool fV3EpochReorg =
+        (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3) ||
+        pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3;
+    const bool fV2EpochReorg = !fV3EpochReorg &&
+        ((pindexBest && pindexBest->nHeight >= FORK_HEIGHT_EPOCH_STATE_V2) ||
+         pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V2);
+    if (fV3EpochReorg)
+    {
+        nFirstStagedEpoch = GetFirstV3EpochStateRebuildEpoch(pfork->nHeight);
+        const int nTipEpoch = GetEpochForHeight(pindexNew->nHeight);
+        const int nTipEpochEnd =
+            GetEpochBoundaryHeight(nTipEpoch + 1, pindexNew->nHeight) - 1;
+        const int nLastCompleteEpoch =
+            (pindexNew->nHeight >= nTipEpochEnd) ? nTipEpoch : nTipEpoch - 1;
 
+        if (!g_dagManager.EraseEpochStateSuffix(txdb, nFirstStagedEpoch))
+            return error("Reorganize() : failed to erase stale epoch-state suffix from epoch %d",
+                         nFirstStagedEpoch);
+        if (nFirstStagedEpoch <= nLastCompleteEpoch)
+        {
+            std::string strEpochError;
+            if (!StageEpochStateRange(txdb, pindexNew, nFirstStagedEpoch,
+                                      nLastCompleteEpoch, mapStagedEpochStates,
+                                      mapStagedEpochTrees, strEpochError))
+                return error("Reorganize() : V3 epoch suffix build failed: %s",
+                             strEpochError.c_str());
+        }
+        const int nEpochSchema = IsBoundaryBActiveAtHeight(pindexNew->nHeight)
+            ? EPOCHSTATE_SCHEMA_V4 : EPOCHSTATE_SCHEMA_V3;
+        if (!txdb.WriteEpochStateSchema(nEpochSchema))
+            return error("Reorganize() : V3 epoch schema write failed");
+    }
+    else if (fV2EpochReorg)
+    {
+        // V2 commits an epoch when the first block of the next epoch arrives.
+        // The exact crossing block is part of the V2 anchor, so an epoch whose
+        // final block is the fork point is affected as well.
+        nFirstStagedEpoch = GetFirstV2EpochStateRebuildEpoch(pfork->nHeight);
+        nLastV2EpochToStage = GetEpochForHeight(pindexNew->nHeight) - 1;
+    }
 
     // Disconnect shorter branch
     list<CTransaction> vResurrect;
@@ -6072,6 +8958,8 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         CBlock block;
         if (!block.ReadFromDisk(pindex))
             return error("Reorganize() : ReadFromDisk for disconnect failed");
+        if (pfChainStateMutated)
+            *pfChainStateMutated = true;
         if (!block.DisconnectBlock(txdb, pindex))
             return error("Reorganize() : DisconnectBlock %s failed", pindex->GetBlockHash().ToString().substr(0,20).c_str());
 
@@ -6094,6 +8982,34 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
 
         if (!IsInitialBlockDownload()) GetCollateralnodeRanks(pindex); // recalculate ranks for the this block hash if required
 
+        if (fV2EpochReorg && pindex->nHeight > 0)
+        {
+            const int nCurrentEpoch = GetEpochForHeight(pindex->nHeight);
+            const int nPreviousEpoch = GetEpochForHeight(pindex->nHeight - 1);
+            if (nCurrentEpoch > nPreviousEpoch &&
+                nPreviousEpoch >= nFirstStagedEpoch &&
+                nPreviousEpoch <= nLastV2EpochToStage)
+            {
+                std::string strEpochError;
+                if (!StageV2EpochStateAtCrossing(
+                        txdb, pindex, nPreviousEpoch, nFirstStagedEpoch,
+                        mapStagedEpochStates, mapStagedEpochTrees, strEpochError))
+                    return error("Reorganize() : V2 epoch %d build failed: %s",
+                                 nPreviousEpoch, strEpochError.c_str());
+            }
+        }
+
+        if (pindex->nHeight >= FORK_HEIGHT_EPOCH_STATE_V2)
+        {
+            const int nAsOfEpoch = GetEpochForHeight(pindex->nHeight) - 1;
+            if (!g_dagManager.TryGetDeterministicFinalizedHeight(
+                    txdb, nAsOfEpoch, pindex->nFinalizedHeight))
+                return error("Reorganize() : staged deterministic finalized-height state "
+                             "missing for epoch %d", nAsOfEpoch);
+        }
+
+        if (pfChainStateMutated)
+            *pfChainStateMutated = true;
         CBlock::ConnectResult connectResult = CBlock::CONNECT_RESULT_INVALID;
         if (!block.ConnectBlock(txdb, pindex, false, true, &connectResult))
         {
@@ -6110,12 +9026,109 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         for (const CTransaction& tx : block.vtx)
             vDelete.push_back(tx);
     }
+
+    if (fV2EpochReorg)
+    {
+        const size_t nExpectedStates = nFirstStagedEpoch <= nLastV2EpochToStage
+            ? (size_t)(nLastV2EpochToStage - nFirstStagedEpoch + 1) : 0;
+        if (mapStagedEpochStates.size() != nExpectedStates ||
+            mapStagedEpochTrees.size() != nExpectedStates)
+            return error("Reorganize() : V2 staged suffix is incomplete (%d/%d, expected %d)",
+                         (int)mapStagedEpochStates.size(),
+                         (int)mapStagedEpochTrees.size(), (int)nExpectedStates);
+
+        // Delete the whole old suffix, then re-append the canonical staged pairs, so a
+        // shortening reorg leaves no stale records.
+        if (!g_dagManager.EraseEpochStateSuffix(txdb, nFirstStagedEpoch))
+            return error("Reorganize() : failed to erase stale V2 suffix from epoch %d",
+                         nFirstStagedEpoch);
+        for (std::map<int, CEpochState>::const_iterator it =
+                 mapStagedEpochStates.begin();
+             it != mapStagedEpochStates.end(); ++it)
+        {
+            std::map<int, CCurveTree>::const_iterator itTree =
+                mapStagedEpochTrees.find(it->first);
+            if (itTree == mapStagedEpochTrees.end() ||
+                !g_dagManager.WriteEpochState(txdb, it->second, itTree->second))
+                return error("Reorganize() : V2 suffix rewrite failed for epoch %d",
+                             it->first);
+        }
+        if (!txdb.WriteEpochStateSchema(EPOCHSTATE_SCHEMA_V2))
+            return error("Reorganize() : V2 epoch schema write failed");
+    }
+
+    // The new branch's DAG vertices and all changed parent child-lists share the
+    // disconnect/connect/best-chain transaction. This also covers the newest block,
+    // whose eager AddToBlockIndex DAG write is deferred when it can become best.
+    for (std::vector<CBlockIndex*>::const_iterator bit = vConnect.begin();
+         bit != vConnect.end(); ++bit)
+    {
+        CBlockIndex* pindex = *bit;
+        if (!pindex || pindex->nHeight < FORK_HEIGHT_DAG || !pindex->phashBlock)
+            continue;
+        CBlockDAGData dagData;
+        const uint256 hashBlock = pindex->GetBlockHash();
+        if (!g_dagManager.GetDAGData(hashBlock, dagData) ||
+            !g_dagManager.WriteDAGLinks(txdb, hashBlock))
+            return error("Reorganize() : DAG link write failed for %s",
+                         hashBlock.ToString().substr(0,20).c_str());
+        for (std::vector<uint256>::const_iterator pit = dagData.vDAGParents.begin();
+             pit != dagData.vDAGParents.end(); ++pit)
+        {
+            if (g_dagManager.HasDAGData(*pit) && !g_dagManager.WriteDAGLinks(txdb, *pit))
+                return error("Reorganize() : parent DAG link write failed for %s",
+                             pit->ToString().substr(0,20).c_str());
+        }
+    }
+
+    if (nFirstStagedEpoch >= 0 &&
+        !g_dagManager.ValidateEpochStateBatch(nFirstStagedEpoch,
+                                              mapStagedEpochStates,
+                                              mapStagedEpochTrees))
+        return error("Reorganize() : staged epoch suffix failed pre-commit validation");
+    if (!pCommittedEffects || !pCommittedEffects->IsEmpty() ||
+        !pCommittedEffects->PrepareReorg(txdb, vDisconnect, vConnect,
+                                         pindexNew))
+        return error("Reorganize() : could not prebuild committed effect batch");
+    if (!txdb.WriteShieldedWalletRecovery(
+            pCommittedEffects->GetRecoveryRecord()))
+    {
+        pCommittedEffects->Clear();
+        return error("Reorganize() : shielded-wallet recovery outbox write failed");
+    }
+    if (!txdb.WriteDAGActiveSetBest(pindexNew->GetBlockHash()))
+    {
+        pCommittedEffects->Clear();
+        return error("Reorganize() : DAG active-set best-tip write failed");
+    }
     if (!txdb.WriteHashBestChain(pindexNew->GetBlockHash()))
+    {
+        pCommittedEffects->Clear();
         return error("Reorganize() : WriteHashBestChain failed");
+    }
 
     // Make sure it's successfully written to disk before changing memory structure
-    if (!txdb.TxnCommit())
+    if (!txdb.TxnCommit(true))
+    {
+        pCommittedEffects->Clear();
         return error("Reorganize() : TxnCommit failed");
+    }
+
+    // The effect batch and its final wallet locator were fully allocated before
+    // commit.  Marking it durable cannot allocate or throw.
+    pCommittedEffects->MarkCommitted();
+
+    RefreshCommittedShieldedPoolOrShutdown(txdb, pindexNew, "Reorganize()");
+
+    if (nFirstStagedEpoch >= 0 &&
+        !g_dagManager.InstallEpochStateBatch(nFirstStagedEpoch, mapStagedEpochStates,
+                                             mapStagedEpochTrees))
+    {
+        printf("Reorganize() : FATAL committed epoch suffix failed impossible "
+               "post-commit install; publishing durable best and shutting down for restart\n");
+        PublishDurablyCommittedBest(pindexNew);
+        StartShutdown();
+    }
 
     // Clear setStakeSeen so disconnected stakes don't block the new branch
     for (CBlockIndex* pindex : vDisconnect)
@@ -6124,33 +9137,8 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
             setStakeSeen.erase(make_pair(pindex->prevoutStake, pindex->nStakeTime));
     }
 
-    // IDAG: Clean up DAG data for disconnected blocks
-    // Batch all LevelDB erasures atomically
-    {
-        CTxDB txdbDAGClean;
-        txdbDAGClean.TxnBegin();
-        for (auto rit = vDisconnect.rbegin(); rit != vDisconnect.rend(); ++rit)
-        {
-            CBlockIndex* pindex = *rit;
-            if (pindex->nHeight >= FORK_HEIGHT_DAG && pindex->phashBlock)
-                txdbDAGClean.EraseDAGLinks(pindex->GetBlockHash());
-        }
-        txdbDAGClean.TxnCommit();
-    }
-    // Memory cleanup after LevelDB commit (reverse order: children first)
-    bool fDAGReorg = false;
-    for (auto rit = vDisconnect.rbegin(); rit != vDisconnect.rend(); ++rit)
-    {
-        CBlockIndex* pindex = *rit;
-        if (pindex->nHeight >= FORK_HEIGHT_DAG && pindex->phashBlock)
-        {
-            g_dagManager.RemoveBlockDAGData(pindex->GetBlockHash());
-            fDAGReorg = true;
-        }
-    }
-    // Re-color DAG blocks above fork point to ensure consistency with fresh-synced nodes
-    if (fDAGReorg && pfork)
-        g_dagManager.RebuildDAGOrderIncremental(pfork->nHeight);
+    // Accepted DAG blocks remain part of the DAG across a best-chain reorg. Erasing the
+    // disconnected branch made restart/order depend on which branch happened to be best first.
 
     // Disconnect shorter branch
     for (CBlockIndex* pindex : vDisconnect)
@@ -6192,45 +9180,6 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
         mempool.removeConflicts(tx);
     }
 
-    // Deterministic epoch-state anchor: AddToBlockIndex computes an epoch's state once, when its
-    // boundary block extends the best chain -- it is NOT re-run when a reorg changes that epoch's
-    // blocks (the ConnectBlock calls above do not go through AddToBlockIndex). Re-anchor every
-    // completed epoch overlapping the reorged span to the NEW best tip (pindexNew), whose committed
-    // selected-parent chain + DAG merges are now canonical and, post-recolor above, consistently
-    // coloured. Reorgs cannot descend below the finalized height (guarded above), so the FINALIZED
-    // epochs that CheckVote/CheckTallyCertificate anchor to are unaffected -- only not-yet-finalized
-    // epochs are re-anchored here, before they can finalize. Gated to FORK_HEIGHT_EPOCH_STATE_V2
-    // (regtest-only for now); pre-fork chains keep the exact legacy behavior.
-    if (pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V2 && pfork)
-    {
-        int nForkEpoch = GetEpochForHeight(pfork->nHeight);
-        int nTipEpoch  = GetEpochForHeight(pindexNew->nHeight);
-        CTxDB txdbEpochReorg;
-        bool fTxn = txdbEpochReorg.TxnBegin();
-        for (int nEpoch = nForkEpoch; nEpoch < nTipEpoch; nEpoch++)
-        {
-            int nEpochStart = GetEpochBoundaryHeight(nEpoch, pindexNew->nHeight);
-            int nEpochEnd   = GetEpochBoundaryHeight(nEpoch + 1, pindexNew->nHeight) - 1;
-            int nEpochInterval = (nEpochEnd >= nEpochStart) ? (nEpochEnd - nEpochStart + 1)
-                                                            : GetEpochInterval(nEpochStart);
-            g_dagManager.ComputeEpochState(nEpoch, nEpochInterval, pindexNew);
-            if (fTxn)
-                g_dagManager.WriteEpochState(txdbEpochReorg, nEpoch);
-        }
-        if (fTxn)
-        {
-            // Stamp the deterministic-anchor schema marker here too (the linear
-            // AddToBlockIndex path already does). Every record written in this branch is
-            // a V2 deterministic record (we are past FORK_HEIGHT_EPOCH_STATE_V2), so
-            // without the stamp a later restart's fail-closed pre-marker guard
-            // (init.cpp) would falsely refuse to boot on records that ARE valid V2 --
-            // e.g. when the fork is crossed mid-epoch and the first post-fork epoch is
-            // completed by a reorg rather than a linear boundary. Idempotent.
-            txdbEpochReorg.WriteEpochStateSchema(EPOCHSTATE_SCHEMA_V2);
-            txdbEpochReorg.TxnCommit();
-        }
-    }
-
     CollateralNReorgBlock = true;
     printf("REORGANIZE: done\n");
 
@@ -6239,13 +9188,97 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
 
 
 // Called from inside SetBestChain: attaches a block to the new best chain being built
-bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew, bool* pfPermanentInvalid)
+bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
+                               bool* pfPermanentInvalid,
+                               CBestChainEffectJournal* pCommittedEffects)
 {
     uint256 hash = GetHash();
+    std::map<int, CEpochState> mapStagedEpochStates;
+    std::map<int, CCurveTree> mapStagedEpochTrees;
+    int nFirstStagedEpoch = -1;
 
-    // Adding to current best branch. Split ConnectBlock (a CONSENSUS rejection -> permanent invalidity,
-    // flag+keep the index) from WriteHashBestChain (a transient DB error -> leave permanent flag unset so
-    // the caller keeps the delete-based retry path).
+    // V2 commits the completed epoch at the first block of the next epoch, inside this
+    // best-chain transaction; the cache is published only after commit.
+    if (pindexNew->nHeight > 0 &&
+        pindexNew->nHeight < FORK_HEIGHT_EPOCH_STATE_V3)
+    {
+        const int nCurrentEpoch = GetEpochForHeight(pindexNew->nHeight);
+        const int nPreviousEpoch = GetEpochForHeight(pindexNew->nHeight - 1);
+        if (nCurrentEpoch > nPreviousEpoch)
+        {
+            const int nEpochEnd =
+                GetEpochBoundaryHeight(nPreviousEpoch + 1, pindexNew->nHeight) - 1;
+            if (nEpochEnd >= FORK_HEIGHT_EPOCH_STATE_V2)
+            {
+                if (!g_dagManager.EraseEpochStateSuffix(txdb, nPreviousEpoch))
+                {
+                    txdb.TxnAbort();
+                    return error("SetBestChainInner() : failed to erase stale V2 suffix at epoch %d",
+                                 nPreviousEpoch);
+                }
+                std::string strEpochError;
+                if (!StageV2EpochStateAtCrossing(
+                        txdb, pindexNew, nPreviousEpoch, nPreviousEpoch,
+                        mapStagedEpochStates, mapStagedEpochTrees, strEpochError))
+                {
+                    txdb.TxnAbort();
+                    return error("SetBestChainInner() : V2 epoch %d build failed: %s",
+                                 nPreviousEpoch, strEpochError.c_str());
+                }
+                if (!txdb.WriteEpochStateSchema(EPOCHSTATE_SCHEMA_V2))
+                {
+                    txdb.TxnAbort();
+                    return error("SetBestChainInner() : V2 epoch schema write failed");
+                }
+                nFirstStagedEpoch = nPreviousEpoch;
+            }
+        }
+    }
+
+    // At the activation block, build the V3 migration base for the preceding epoch with the
+    // exact-boundary builder into this WriteBatch; the global cache changes only on commit.
+    if (pindexNew->nHeight == FORK_HEIGHT_EPOCH_STATE_V3)
+    {
+        const int nMigrationEpoch = GetEpochForHeight(pindexNew->nHeight) - 1;
+        const int nMigrationEnd =
+            GetEpochBoundaryHeight(nMigrationEpoch + 1, pindexNew->nHeight) - 1;
+        if (!pindexNew->pprev || pindexNew->pprev->nHeight != nMigrationEnd)
+        {
+            txdb.TxnAbort();
+            return error("SetBestChainInner() : missing exact V3 migration boundary at height %d",
+                         nMigrationEnd);
+        }
+        if (!g_dagManager.EraseEpochStateSuffix(txdb, nMigrationEpoch))
+        {
+            txdb.TxnAbort();
+            return error("SetBestChainInner() : failed to erase migration-base suffix");
+        }
+        std::string strEpochError;
+        if (!StageEpochStateRange(txdb, pindexNew->pprev, nMigrationEpoch,
+                                  nMigrationEpoch, mapStagedEpochStates,
+                                  mapStagedEpochTrees, strEpochError))
+        {
+            txdb.TxnAbort();
+            return error("SetBestChainInner() : V3 migration-base build failed: %s",
+                         strEpochError.c_str());
+        }
+        nFirstStagedEpoch = nMigrationEpoch;
+    }
+
+    if (pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V2)
+    {
+        const int nAsOfEpoch = GetEpochForHeight(pindexNew->nHeight) - 1;
+        if (!g_dagManager.TryGetDeterministicFinalizedHeight(
+                txdb, nAsOfEpoch, pindexNew->nFinalizedHeight))
+        {
+            txdb.TxnAbort();
+            return error("SetBestChainInner() : missing staged deterministic finalized-height "
+                         "state for epoch %d", nAsOfEpoch);
+        }
+    }
+
+    // ConnectBlock classifies deterministic invalidity separately from local
+    // read/write/resource failure.  Only the former may poison the block index.
     ConnectResult connectResult = CONNECT_RESULT_INVALID;
     if (!ConnectBlock(txdb, pindexNew, false, true, &connectResult))
     {
@@ -6254,20 +9287,134 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew, bool* pfPerm
         if (connectResult == CONNECT_RESULT_INVALID)
         {
             InvalidChainFound(pindexNew);
-            if (pfPermanentInvalid) *pfPermanentInvalid = true;
+            if (pfPermanentInvalid)
+                *pfPermanentInvalid = true;
         }
         return false;
     }
-    if (!txdb.WriteHashBestChain(hash))
+
+    // Persist the accepted DAG vertex and changed parent child-lists in the same
+    // transaction as the best-chain pointer. AddToBlockIndex deliberately defers
+    // these writes for a candidate that is about to become best.
+    if (pindexNew->nHeight >= FORK_HEIGHT_DAG)
+    {
+        CBlockDAGData dagData;
+        if (!g_dagManager.GetDAGData(hash, dagData) ||
+            !g_dagManager.WriteDAGLinks(txdb, hash))
+        {
+            txdb.TxnAbort();
+            RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
+            return error("SetBestChainInner() : DAG link write failed for %s",
+                         hash.ToString().substr(0,20).c_str());
+        }
+        for (std::vector<uint256>::const_iterator it = dagData.vDAGParents.begin();
+             it != dagData.vDAGParents.end(); ++it)
+        {
+            if (g_dagManager.HasDAGData(*it) && !g_dagManager.WriteDAGLinks(txdb, *it))
+            {
+                txdb.TxnAbort();
+                RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
+                return error("SetBestChainInner() : parent DAG link write failed for %s",
+                             it->ToString().substr(0,20).c_str());
+            }
+        }
+    }
+
+    // Complete a V3 epoch on its exact final block. Build into locals, write the
+    // state/tree/schema into this active best-chain batch, and expose it in memory
+    // only after TxnCommit succeeds below.
+    if (pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
+    {
+        const int nEpoch = GetEpochForHeight(pindexNew->nHeight);
+        const int nEpochEnd = GetEpochBoundaryHeight(nEpoch + 1, pindexNew->nHeight) - 1;
+        if (pindexNew->nHeight == nEpochEnd)
+        {
+            if (!g_dagManager.EraseEpochStateSuffix(txdb, nEpoch))
+            {
+                txdb.TxnAbort();
+                RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
+                return error("SetBestChainInner() : failed to erase stale V3 suffix at epoch %d",
+                             nEpoch);
+            }
+            std::string strEpochError;
+            if (!StageEpochStateRange(txdb, pindexNew, nEpoch, nEpoch,
+                                      mapStagedEpochStates, mapStagedEpochTrees,
+                                      strEpochError))
+            {
+                txdb.TxnAbort();
+                RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
+                return error("SetBestChainInner() : V3 epoch %d build failed: %s",
+                             nEpoch, strEpochError.c_str());
+            }
+            nFirstStagedEpoch = nEpoch;
+        }
+        const int nEpochSchema = IsBoundaryBActiveAtHeight(pindexNew->nHeight)
+            ? EPOCHSTATE_SCHEMA_V4 : EPOCHSTATE_SCHEMA_V3;
+        if (!txdb.WriteEpochStateSchema(nEpochSchema))
+        {
+            txdb.TxnAbort();
+            RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
+            return error("SetBestChainInner() : V3 epoch schema write failed");
+        }
+    }
+    if (nFirstStagedEpoch >= 0 &&
+        !g_dagManager.ValidateEpochStateBatch(nFirstStagedEpoch,
+                                              mapStagedEpochStates,
+                                              mapStagedEpochTrees))
     {
         txdb.TxnAbort();
         RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
-        return false;
+        return error("SetBestChainInner() : staged epoch suffix failed pre-commit validation");
     }
-    if (!txdb.TxnCommit())
+    if (!pCommittedEffects || !pCommittedEffects->IsEmpty() ||
+        !pCommittedEffects->PrepareConnect(txdb, pindexNew))
     {
+        txdb.TxnAbort();
+        RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
+        return error("SetBestChainInner() : could not prebuild committed effect batch");
+    }
+    if (!txdb.WriteShieldedWalletRecovery(
+            pCommittedEffects->GetRecoveryRecord()))
+    {
+        pCommittedEffects->Clear();
+        txdb.TxnAbort();
+        RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
+        return error("SetBestChainInner() : shielded-wallet recovery outbox write failed");
+    }
+    if (!txdb.WriteDAGActiveSetBest(hash))
+    {
+        pCommittedEffects->Clear();
+        txdb.TxnAbort();
+        RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
+        return error("SetBestChainInner() : DAG active-set best-tip write failed");
+    }
+    if (!txdb.WriteHashBestChain(hash))
+    {
+        pCommittedEffects->Clear();
+        txdb.TxnAbort();
+        RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
+        return error("SetBestChainInner() : WriteHashBestChain failed");
+    }
+    if (!txdb.TxnCommit(true))
+    {
+        pCommittedEffects->Clear();
         RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
         return error("SetBestChain() : TxnCommit failed");
+    }
+
+    pCommittedEffects->MarkCommitted();
+
+    RefreshCommittedShieldedPoolOrShutdown(txdb, pindexNew,
+                                            "SetBestChainInner()");
+
+    if (nFirstStagedEpoch >= 0 &&
+        !g_dagManager.InstallEpochStateBatch(nFirstStagedEpoch, mapStagedEpochStates,
+                                             mapStagedEpochTrees))
+    {
+        printf("SetBestChainInner() : FATAL committed epoch suffix failed impossible "
+               "post-commit install; publishing durable best and shutting down for restart\n");
+        PublishDurablyCommittedBest(pindexNew);
+        StartShutdown();
     }
 
     if (pindexNew->pprev)
@@ -6291,20 +9438,59 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew, bool* pfPerm
 bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanentInvalid)
 {
     if (pfPermanentInvalid) *pfPermanentInvalid = false;
+    const bool fIsInitialDownload = IsInitialBlockDownload();
     uint256 hash = GetHash();
+    CBestChainEffectJournal committedEffects;
+    CShieldedWalletRecoveryRecord pendingRecovery;
+    const TxDBReadStatus pendingRecoveryStatus =
+        txdb.ReadShieldedWalletRecoveryStatus(pendingRecovery);
+    if (pendingRecoveryStatus == TXDB_READ_ERROR)
+        return error("SetBestChain() : shielded-wallet recovery outbox is corrupt; restart for recovery or -reindex/resync");
+    if (pendingRecoveryStatus == TXDB_READ_FOUND)
+        return error("SetBestChain() : shielded-wallet recovery is still pending; refusing a later chain transition");
     if (!txdb.TxnBegin())
         return error("SetBestChain() : TxnBegin failed");
 
     if (pindexGenesisBlock == NULL && hash == GetGenesisBlockHash())
     {
-        txdb.WriteHashBestChain(hash);
-        if (!txdb.TxnCommit())
-            return error("SetBestChain() : TxnCommit failed");
+        if (!committedEffects.PrepareConnect(txdb, pindexNew))
+        {
+            txdb.TxnAbort();
+            return error("SetBestChain() : could not prebuild genesis effect batch");
+        }
+        if (!txdb.WriteShieldedWalletRecovery(
+                committedEffects.GetRecoveryRecord()))
+        {
+            committedEffects.Clear();
+            txdb.TxnAbort();
+            return error("SetBestChain() : genesis shielded-wallet recovery outbox write failed");
+        }
+        if (!txdb.WriteDAGActiveSetBest(hash))
+        {
+            committedEffects.Clear();
+            txdb.TxnAbort();
+            return error("SetBestChain() : genesis DAG active-set best-tip write failed");
+        }
+        if (!txdb.WriteHashBestChain(hash))
+        {
+            committedEffects.Clear();
+            txdb.TxnAbort();
+            return error("SetBestChain() : genesis WriteHashBestChain failed");
+        }
+        if (!txdb.TxnCommit(true))
+        {
+            committedEffects.Clear();
+            return error("SetBestChain() : genesis TxnCommit failed");
+        }
+        committedEffects.MarkCommitted();
+        RefreshCommittedShieldedPoolOrShutdown(txdb, pindexNew,
+                                                "SetBestChain(genesis)");
         pindexGenesisBlock = pindexNew;
     }
     else if (hashPrevBlock == hashBestChain)
     {
-        if (!SetBestChainInner(txdb, pindexNew, pfPermanentInvalid))
+        if (!SetBestChainInner(txdb, pindexNew, pfPermanentInvalid,
+                               &committedEffects))
             return error("SetBestChain() : SetBestChainInner failed");
     }
     else
@@ -6316,8 +9502,19 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
             // decision, else divergent nodes latch pfPermanentInvalid on different reorgs -> split.
             int nFinalHeight = 0;
             if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
-                nFinalHeight = g_dagManager.GetDeterministicFinalizedHeight(
-                    GetEpochForHeight(pindexBest->nHeight) - 1);
+            {
+                const int nAsOfEpoch = GetEpochForHeight(pindexBest->nHeight) - 1;
+                if (pindexBest->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3 &&
+                    !g_dagManager.TryGetDeterministicFinalizedHeight(nAsOfEpoch,
+                                                                    nFinalHeight))
+                {
+                    txdb.TxnAbort();
+                    return error("SetBestChain() : missing deterministic finalized-height state "
+                                 "for epoch %d; -reindex/resync required", nAsOfEpoch);
+                }
+                if (pindexBest->nHeight < FORK_HEIGHT_EPOCH_STATE_V3)
+                    nFinalHeight = g_dagManager.GetDeterministicFinalizedHeight(nAsOfEpoch);
+            }
             if (nFinalHeight > 0 && pindexBest && pindexBest->nHeight >= FORK_HEIGHT_FINALITY)
             {
                 CBlockIndex* pWalk = pindexNew;
@@ -6366,17 +9563,30 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
 
         // Switch to new best branch
         bool fReorgPermanentInvalid = false;
-        if (!Reorganize(txdb, pindexIntermediate,
-                        &fReorgPermanentInvalid))
+        bool fReorgChainStateMutated = false;
+        if (!Reorganize(txdb, pindexIntermediate, &fReorgPermanentInvalid,
+                        &fReorgChainStateMutated, &committedEffects))
         {
             txdb.TxnAbort();
-            RestoreCommittedFinalityOrShutdown("SetBestChain()/Reorganize");
+            if (fReorgChainStateMutated)
+                RestoreCommittedFinalityOrShutdown("SetBestChain()/Reorganize");
             if (fReorgPermanentInvalid)
             {
                 InvalidChainFound(pindexNew);
                 if (pfPermanentInvalid) *pfPermanentInvalid = true;
             }
             return error("SetBestChain() : Reorganize failed");
+        }
+
+        CBlockIndex* pindexCommittedBest = pindexIntermediate;
+        if (!PublishAndReplayCommittedEffects(
+                txdb, pindexCommittedBest, committedEffects,
+                "SetBestChain()/Reorganize"))
+        {
+            printf("SetBestChain: reorganization is durable at height %d, but "
+                   "post-commit recovery is required; suppressing later reconnects\n",
+                   pindexCommittedBest->nHeight);
+            return true;
         }
 
         // Connect further blocks
@@ -6393,29 +9603,46 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
                 break;
             }
             // errors now are not fatal, we still did a reorganisation to a new chain in a valid way
-            if (!block.SetBestChainInner(txdb, pindex))
+            if (!block.SetBestChainInner(txdb, pindex, NULL,
+                                         &committedEffects))
                 break;
+            pindexCommittedBest = pindex;
+            if (!PublishAndReplayCommittedEffects(
+                    txdb, pindexCommittedBest, committedEffects,
+                    "SetBestChain()/postponed reconnect"))
+            {
+                printf("SetBestChain: postponed reconnect is durable at height %d, "
+                       "but post-commit recovery is required; suppressing later reconnects\n",
+                       pindexCommittedBest->nHeight);
+                return true;
+            }
+        }
+
+        // A postponed reconnect may fail after the reorg transaction has already
+        // committed. Publish only the last actually committed tip; advertising the
+        // original pindexNew here made memory/wallet state outrun hashBestChain on disk.
+        if (pindexCommittedBest != pindexNew)
+        {
+            printf("SetBestChain() : stopped postponed reconnects at committed height %d\n",
+                   pindexCommittedBest->nHeight);
+            pindexNew = pindexCommittedBest;
+            hash = pindexNew->GetBlockHash();
         }
 
 
     }
 
-    // Update best block in wallet (so we can detect restored wallets)
-    bool fIsInitialDownload = IsInitialBlockDownload();
-    if (!fIsInitialDownload)
+    // Linear and genesis paths still have their single prebuilt batch here.
+    // Reorg and postponed-reconnect batches were applied immediately above.
+    if (!committedEffects.IsEmpty() &&
+        !PublishAndReplayCommittedEffects(txdb, pindexNew, committedEffects,
+                                          "SetBestChain()"))
     {
-        const CBlockLocator locator(pindexNew);
-        ::SetBestChain(locator);
+        printf("SetBestChain: durable tip published, but auxiliary post-commit "
+               "effects are incomplete; suppressing further notifications while "
+               "shutdown proceeds\n");
+        return true;
     }
-
-    // New best block
-    hashBestChain = hash;
-    pindexBest = pindexNew;
-    pblockindexFBBHLast = NULL;
-    nBestHeight = pindexBest->nHeight;
-    nBestChainTrust = pindexNew->nChainTrust;
-    nTimeBestReceived = GetTime();
-    mempool.AddTransactionsUpdated(1);
 
     uint256 nBestBlockTrust = (pindexBest->nHeight != 0 && pindexBest->pprev != NULL) ? (pindexBest->nChainTrust - pindexBest->pprev->nChainTrust) : pindexBest->nChainTrust;
 
@@ -6587,6 +9814,7 @@ static void MarkFailedSubtree(CBlockIndex* pindex, bool fInvalidate, std::vector
 // valid chain. Returns false (with strError) if a finality guard forbids the rollback.
 bool InvalidateBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError)
 {
+    VerifyProofCacheClear();
     if (!pindex)
         { strError = "null block index"; return false; }
     if (pindex == pindexGenesisBlock)
@@ -6623,6 +9851,7 @@ bool InvalidateBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError)
 // Clear the invalid marks on a block and its descendant subtree, then re-select the best valid chain.
 bool ReconsiderBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError)
 {
+    VerifyProofCacheClear();
     if (!pindex)
         { strError = "null block index"; return false; }
 
@@ -6696,16 +9925,23 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
         setStakeSeen.insert(make_pair(pindexNew->prevoutStake, pindexNew->nStakeTime));
     pindexNew->phashBlock = &((*mi).first);
 
-    // Write to disk block index
+    // Persistence waits for DAG init and score selection, so the index commits with its DAG
+    // records (here for a side block, in SetBestChain's batch for a best-block candidate).
     CTxDB txdb;
-    if (!txdb.TxnBegin())
-        return false;
-    txdb.WriteBlockIndex(CDiskBlockIndex(pindexNew));
-    if (!txdb.TxnCommit())
-        return false;
-
     bool fDAGDataInitialized = false;
+    bool fBlockIndexPersisted = false;
+    bool fResolvedLateDAGChildren = false;
     std::vector<uint256> vDAGParents;
+
+    const auto CleanupUncommittedIndex = [&]() {
+        if (fDAGDataInitialized)
+            g_dagManager.RemoveBlockDAGData(hash);
+        mapBlockIndex.erase(hash);
+        if (pindexNew->IsProofOfStake())
+            setStakeSeen.erase(make_pair(pindexNew->prevoutStake,
+                                         pindexNew->nStakeTime));
+        delete pindexNew;
+    };
 
     // Initialize DAG data for post-fork blocks
     if (pindexNew->nHeight >= FORK_HEIGHT_DAG && pindexNew->IsProofOfWork())
@@ -6718,36 +9954,50 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                 break;
         }
 
-        if (!vDAGParents.empty())
+        if (vDAGParents.empty())
+        {
+            CleanupUncommittedIndex();
+            return error("AddToBlockIndex() : post-DAG block is missing its parent commitment");
+        }
+        else
         {
             int64_t nDAGTimer = GetTimeMillis();
-            g_dagManager.InitBlockDAGData(pindexNew, vDAGParents);
+            if (!g_dagManager.InitBlockDAGData(pindexNew, vDAGParents))
+            {
+                CleanupUncommittedIndex();
+                return error("AddToBlockIndex() : InitBlockDAGData failed");
+            }
             fDAGDataInitialized = true;
+            {
+                CBlockDAGData initializedData;
+                fResolvedLateDAGChildren =
+                    g_dagManager.GetDAGData(hash, initializedData) &&
+                    !initializedData.vDAGChildren.empty();
+            }
             nDAGInitMs = GetTimeMillis() - nDAGTimer;
 
-            // Fork-gate between GHOSTDAG and DAGKNIGHT coloring
             nDAGTimer = GetTimeMillis();
             if (pindexNew->nHeight >= FORK_HEIGHT_DAGKNIGHT)
-                g_dagManager.ColorBlockDAGKnight(pindexNew);
+            {
+                if (!g_dagManager.ColorBlockDAGKnight(pindexNew))
+                {
+                    CleanupUncommittedIndex();
+                    return error("AddToBlockIndex() : anchor-pure DAGKNIGHT coloring failed");
+                }
+            }
             else
                 g_dagManager.ColorBlock(pindexNew);
             nDAGColorMs = GetTimeMillis() - nDAGTimer;
 
-            nDAGTimer = GetTimeMillis();
-            CTxDB txdbDAG;
-            if (txdbDAG.TxnBegin())
-            {
-                g_dagManager.WriteDAGLinks(txdbDAG, hash);
-                // Also update parent entries (new child link)
-                for (const uint256& hashParent : vDAGParents)
-                    g_dagManager.WriteDAGLinks(txdbDAG, hashParent);
-                txdbDAG.TxnCommit();
-            }
-            nDAGWriteMs = GetTimeMillis() - nDAGTimer;
-
             // Use DAG score for best-chain comparison
             uint256 nDAGScore = g_dagManager.ComputeDAGScore(pindexNew);
             pindexNew->nChainTrust = nDAGScore;
+            if (fResolvedLateDAGChildren &&
+                pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
+            {
+                g_dagManager.RebuildDAGOrderIncremental(pindexNew->nHeight - 1);
+                pindexNew->nChainTrust = g_dagManager.ComputeDAGScore(pindexNew);
+            }
 
             // Remove DAG sibling txs from mempool
             std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(hash);
@@ -6759,53 +10009,139 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
             {
                 int nCurrentEpoch = GetEpochForHeight(pindexNew->nHeight);
                 int nPreviousEpoch = GetEpochForHeight(pindexNew->nHeight - 1);
-                if (nCurrentEpoch > nPreviousEpoch)
+                if (nCurrentEpoch > nPreviousEpoch &&
+                    pindexNew->nHeight < FORK_HEIGHT_EPOCH_STATE_V3)
                 {
                     int nCompletedEpoch = nPreviousEpoch;
                     int nEpochStart = GetEpochBoundaryHeight(nCompletedEpoch, pindexNew->nHeight);
                     int nEpochEnd = GetEpochBoundaryHeight(nCompletedEpoch + 1, pindexNew->nHeight) - 1;
                     int nEpochInterval = (nEpochEnd >= nEpochStart) ? (nEpochEnd - nEpochStart + 1) : GetEpochInterval(nEpochStart);
 
-                    // V2 (deterministic anchor): compute the epoch state only for a linear best-chain
-                    // extension, anchored to the boundary-crossing block. A side branch must NOT overwrite
-                    // the canonical epoch state (that was the side-branch-corruption path), and a reorg
-                    // re-anchors the touched epochs from the new best tip in Reorganize(). Pre-fork keeps
-                    // the legacy unconditional live-best-tip computation byte-for-byte.
-                    bool fEpochV2 = (pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V2);
-                    if (!fEpochV2 || hashPrevBlock == hashBestChain)
+                    // Epochs whose own range predates V2 retain their historical
+                    // AddToBlockIndex timing. V2-range epochs are staged later by
+                    // SetBestChainInner/Reorganize so their state/tree/schema share
+                    // the best-chain transaction and side-branch arrival cannot
+                    // mutate the canonical cache.
+                    if (nEpochEnd < FORK_HEIGHT_EPOCH_STATE_V2)
                     {
-                        g_dagManager.ComputeEpochState(nCompletedEpoch, nEpochInterval,
-                                                       fEpochV2 ? pindexNew : NULL);
-
-                        CTxDB txdbEpoch;
-                        if (txdbEpoch.TxnBegin())
+                        bool fEpochV2 =
+                            (pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V2);
+                        if (!fEpochV2 ||
+                            (hashPrevBlock == hashBestChain &&
+                             pindexNew->nChainTrust > nBestChainTrust))
                         {
-                            g_dagManager.WriteEpochState(txdbEpoch, nCompletedEpoch);
-                            // Any node that has ever written a V2 (deterministic-anchor) epoch record
-                            // carries the schema marker, so the startup upgrade guard treats it as
-                            // already-migrated and never re-triggers. Idempotent int write.
-                            if (fEpochV2)
-                                txdbEpoch.WriteEpochStateSchema(EPOCHSTATE_SCHEMA_V2);
-                            txdbEpoch.TxnCommit();
+                            const CBlockIndex* pV2Anchor = fEpochV2 ? pindexNew : NULL;
+                            if (!g_dagManager.ComputeEpochState(
+                                    nCompletedEpoch, nEpochInterval, pV2Anchor))
+                                return error("AddToBlockIndex() : V2 epoch %d build failed",
+                                             nCompletedEpoch);
+
+                            CTxDB txdbEpoch;
+                            if (!txdbEpoch.TxnBegin())
+                                return error("AddToBlockIndex() : V2 epoch TxnBegin failed");
+                            if (!g_dagManager.WriteEpochState(txdbEpoch, nCompletedEpoch) ||
+                                (fEpochV2 &&
+                                 !txdbEpoch.WriteEpochStateSchema(EPOCHSTATE_SCHEMA_V2)))
+                            {
+                                txdbEpoch.TxnAbort();
+                                return error("AddToBlockIndex() : V2 epoch state/schema write failed");
+                            }
+                            if (!txdbEpoch.TxnCommit())
+                                return error("AddToBlockIndex() : V2 epoch TxnCommit failed");
                         }
                     }
-
-                    // Prune old DAG data periodically
-                    CTxDB txdbPrune;
-                    g_dagManager.PruneDAGData(txdbPrune, pindexNew->nHeight);
                 }
 
                 // Cache the deterministic finalized height as of this block. The
                 // consensus source for anchoring is GetDeterministicFinalizedHeight();
                 // this per-index value mirrors it for RPC/observability and reorg-safe
                 // pprev lookups.
-                pindexNew->nFinalizedHeight = g_dagManager.GetDeterministicFinalizedHeight(
-                    GetEpochForHeight(pindexNew->nHeight) - 1);
+                const int nAsOfEpoch = GetEpochForHeight(pindexNew->nHeight) - 1;
+                if (pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
+                {
+                    // The activation block's migration base is staged inside
+                    // SetBestChainInner/Reorganize and is not globally visible yet.
+                    if (pindexNew->nHeight == FORK_HEIGHT_EPOCH_STATE_V3)
+                        pindexNew->nFinalizedHeight = 0;
+                    else if (!g_dagManager.TryGetDeterministicFinalizedHeight(
+                                 nAsOfEpoch, pindexNew->nFinalizedHeight))
+                    {
+                        if (pindexNew->nChainTrust > nBestChainTrust)
+                            return error("AddToBlockIndex() : missing deterministic finalized-height "
+                                         "state for epoch %d; -reindex/resync required", nAsOfEpoch);
+                        pindexNew->nFinalizedHeight = 0;
+                    }
+                }
+                else
+                    pindexNew->nFinalizedHeight =
+                        g_dagManager.GetDeterministicFinalizedHeight(nAsOfEpoch);
             }
         }
     }
 
     LOCK(cs_main);
+
+    if (fDAGDataInitialized && pindexNew->nChainTrust <= nBestChainTrust)
+    {
+        // A side branch must survive restart immediately, but its index and
+        // DAG graph are one invariant and therefore one transaction.
+        const int64_t nDAGTimer = GetTimeMillis();
+        CTxDB txdbDAG;
+        if (!txdbDAG.TxnBegin())
+        {
+            CleanupUncommittedIndex();
+            return error("AddToBlockIndex() : side-index/DAG TxnBegin failed");
+        }
+        if (!txdbDAG.WriteBlockIndex(CDiskBlockIndex(pindexNew)) ||
+            !g_dagManager.WriteDAGLinks(txdbDAG, hash))
+        {
+            txdbDAG.TxnAbort();
+            CleanupUncommittedIndex();
+            return error("AddToBlockIndex() : side-index/DAG write failed");
+        }
+        for (std::vector<uint256>::const_iterator it = vDAGParents.begin();
+             it != vDAGParents.end(); ++it)
+        {
+            if (g_dagManager.HasDAGData(*it) &&
+                !g_dagManager.WriteDAGLinks(txdbDAG, *it))
+            {
+                txdbDAG.TxnAbort();
+                CleanupUncommittedIndex();
+                return error("AddToBlockIndex() : parent DAG link write failed");
+            }
+        }
+        if (!txdbDAG.TxnCommit())
+        {
+            CleanupUncommittedIndex();
+            return error("AddToBlockIndex() : side-index/DAG TxnCommit failed");
+        }
+        fBlockIndexPersisted = true;
+        nDAGWriteMs = GetTimeMillis() - nDAGTimer;
+    }
+    else if (!fDAGDataInitialized)
+    {
+        // Preserve the legacy pre-DAG persistence timing.  Best-candidate DAG
+        // blocks intentionally fall through so ConnectBlock, DAG links and the
+        // best-chain pointer share SetBestChain's transaction.
+        CTxDB txdbIndex;
+        if (!txdbIndex.TxnBegin())
+        {
+            CleanupUncommittedIndex();
+            return error("AddToBlockIndex() : block-index TxnBegin failed");
+        }
+        if (!txdbIndex.WriteBlockIndex(CDiskBlockIndex(pindexNew)))
+        {
+            txdbIndex.TxnAbort();
+            CleanupUncommittedIndex();
+            return error("AddToBlockIndex() : WriteBlockIndex failed");
+        }
+        if (!txdbIndex.TxnCommit())
+        {
+            CleanupUncommittedIndex();
+            return error("AddToBlockIndex() : block-index TxnCommit failed");
+        }
+        fBlockIndexPersisted = true;
+    }
 
     // New best
     if (pindexNew->nChainTrust > nBestChainTrust)
@@ -6819,15 +10155,38 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                 // fork is below the finalized height). KEEP the index in mapBlockIndex flagged failed --
                 // deleting it flips AlreadyHave() back to "don't have it" so the block is re-inv'd,
                 // re-downloaded and re-validated forever (the stuck-node re-request loop). The index was
-                // already persisted above WITHOUT the failed bit, so re-write it WITH the bit so the mark
+                // possibly persisted WITHOUT the failed bit, so re-write it WITH the bit so the mark
                 // survives restart. Do NOT erase setStakeSeen (retain duplicate-stake detection); leave
                 // the index in mapBlockIndex (AlreadyHave stays true; children are rejected in AcceptBlock).
+                if (fDAGDataInitialized)
+                    g_dagManager.RemoveBlockDAGData(hash);
                 pindexNew->SetFailedValid();
                 CTxDB txdbFail;
+                bool fFailedIndexCommitted = false;
                 if (txdbFail.TxnBegin())
                 {
-                    txdbFail.WriteBlockIndex(CDiskBlockIndex(pindexNew));
-                    txdbFail.TxnCommit();
+                    bool fWritesOK =
+                        txdbFail.WriteBlockIndex(CDiskBlockIndex(pindexNew));
+                    if (fDAGDataInitialized)
+                    {
+                        fWritesOK = txdbFail.EraseDAGLinks(hash) && fWritesOK;
+                        for (std::vector<uint256>::const_iterator it = vDAGParents.begin();
+                             it != vDAGParents.end(); ++it)
+                            if (g_dagManager.HasDAGData(*it))
+                                fWritesOK = g_dagManager.WriteDAGLinks(txdbFail, *it) &&
+                                            fWritesOK;
+                    }
+                    if (fWritesOK)
+                        fFailedIndexCommitted = txdbFail.TxnCommit();
+                    else
+                        txdbFail.TxnAbort();
+                }
+                if (!fFailedIndexCommitted)
+                {
+                    printf("AddToBlockIndex() : FATAL could not persist the permanent-invalid "
+                           "index/DAG cleanup for %s; shutting down\n",
+                           hash.ToString().substr(0,20).c_str());
+                    StartShutdown();
                 }
                 return false;
             }
@@ -6835,29 +10194,91 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
             // Transient (DB / resource) failure: preserve the original delete-based retry path so a later
             // attempt can re-accept the block cleanly (A1 / resource recovery).
             if (fDAGDataInitialized)
-            {
                 g_dagManager.RemoveBlockDAGData(hash);
 
-                CTxDB txdbDAGClean;
-                if (txdbDAGClean.TxnBegin())
+            if (fBlockIndexPersisted)
+            {
+                CTxDB txdbIndexClean;
+                if (!txdbIndexClean.EraseBlockIndex(hash))
                 {
-                    txdbDAGClean.EraseDAGLinks(hash);
-                    for (const uint256& hashParent : vDAGParents)
-                    {
-                        if (g_dagManager.HasDAGData(hashParent))
-                            g_dagManager.WriteDAGLinks(txdbDAGClean, hashParent);
-                    }
-                    txdbDAGClean.TxnCommit();
+                    printf("AddToBlockIndex() : FATAL could not erase transient block index %s; "
+                           "shutting down\n", hash.ToString().substr(0,20).c_str());
+                    StartShutdown();
                 }
             }
-
-            CTxDB txdbIndexClean;
-            txdbIndexClean.EraseBlockIndex(hash);
             mapBlockIndex.erase(hash);
             if (pindexNew->IsProofOfStake())
                 setStakeSeen.erase(make_pair(pindexNew->prevoutStake, pindexNew->nStakeTime));
             delete pindexNew;
             return false;
+        }
+    }
+
+    // A late merge parent repairs its children's V3 scores; re-run selection now so arrival
+    // order and restart converge on the same tip.
+    if (fResolvedLateDAGChildren && pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
+    {
+        CBlockIndex* pLateBest = g_dagManager.SelectBestDAGTip();
+        if (pLateBest && pLateBest != pindexBest && !pLateBest->IsInvalid() &&
+            pLateBest->nChainTrust > nBestChainTrust)
+        {
+            CBlock lateBestBlock;
+            bool fLatePermanentInvalid = false;
+            if (!lateBestBlock.ReadFromDisk(pLateBest) ||
+                !lateBestBlock.SetBestChain(txdb, pLateBest, &fLatePermanentInvalid))
+            {
+                if (fLatePermanentInvalid)
+                {
+                    const uint256 hashLate = pLateBest->GetBlockHash();
+                    CBlockDAGData lateData;
+                    g_dagManager.GetDAGData(hashLate, lateData);
+                    pLateBest->SetFailedValid();
+                    g_dagManager.RemoveBlockDAGData(hashLate);
+                    CTxDB txdbLateFail;
+                    bool fLateFailureCommitted = false;
+                    if (txdbLateFail.TxnBegin())
+                    {
+                        bool fWritesOK =
+                            txdbLateFail.WriteBlockIndex(CDiskBlockIndex(pLateBest)) &&
+                            txdbLateFail.EraseDAGLinks(hashLate);
+                        for (std::vector<uint256>::const_iterator it =
+                                 lateData.vDAGParents.begin();
+                             it != lateData.vDAGParents.end(); ++it)
+                            if (g_dagManager.HasDAGData(*it))
+                                fWritesOK = g_dagManager.WriteDAGLinks(txdbLateFail, *it) &&
+                                            fWritesOK;
+                        if (fWritesOK)
+                            fLateFailureCommitted = txdbLateFail.TxnCommit();
+                        else
+                            txdbLateFail.TxnAbort();
+                    }
+                    if (!fLateFailureCommitted)
+                    {
+                        printf("AddToBlockIndex() : FATAL could not persist late-parent "
+                               "invalid-index/DAG cleanup for %s; shutting down\n",
+                               hashLate.ToString().substr(0,20).c_str());
+                        StartShutdown();
+                    }
+                }
+                else
+                    printf("AddToBlockIndex() : late-parent best-tip reselection deferred after "
+                           "transient read/DB failure\n");
+            }
+        }
+    }
+
+    // Pruning keeps hostile DAG growth bounded under V3; it runs only after a successful
+    // boundary crossing.
+    if (pindexNew == pindexBest && pindexNew->nHeight > 0 &&
+        GetEpochForHeight(pindexNew->nHeight) >
+            GetEpochForHeight(pindexNew->nHeight - 1))
+    {
+        CTxDB txdbPrune;
+        if (!g_dagManager.PruneDAGData(txdbPrune, pindexNew->nHeight))
+        {
+            printf("AddToBlockIndex() : FATAL DAG prune persistence failed at height %d; "
+                   "shutting down to avoid unbounded DAG growth\n", pindexNew->nHeight);
+            StartShutdown();
         }
     }
 
@@ -6967,8 +10388,10 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
         if (vtx.empty() || !vtx[1].IsCoinStake())
             return DoS(100, error("CheckBlock() : second tx is not coinstake"));
         for (unsigned int i = 2; i < vtx.size(); i++)
+        {
             if (vtx[i].IsCoinStake())
                 return DoS(100, error("CheckBlock() : more than one coinstake"));
+        }
 
 		// Check coinstake timestamp
 		if (!CheckCoinStakeTimestamp(GetBlockTime(), (int64_t)vtx[1].nTime))
@@ -7100,7 +10523,7 @@ bool CBlock::AcceptBlock()
     {
         uint256 targetProofOfStake;
         //if (!CheckProofOfStake(pindexPrev, vtx[1], nBits, hashProof, targetProofOfStake))
-		if (!CheckProofOfStake(vtx[1], nBits, hashProof, targetProofOfStake))
+		if (!CheckProofOfStake(vtx[1], nBits, hashProof, targetProofOfStake, nHeight))
         {
             // Only penalize outside IBD (PoS verification needs UTXOs)
             if (!IsInitialBlockDownload())
@@ -7118,16 +10541,32 @@ bool CBlock::AcceptBlock()
         hashProof = GetPoWHash();
     }
 
-    // Reject ring signature transactions after deprecation height
-    if (nHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)
+    // Boundary A permanently freezes all legacy privacy/proof transaction
+    // formats.  Keep pre-A blocks byte-compatible for historical replay, but
+    // reject the old identifiers in every newly connected A-or-later block.
+    if (nHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION ||
+        IsLegacyPrivacyPolicyDisabled() ||
+        IsBoundaryAActiveAtHeight(nHeight))
     {
         for (unsigned int i = 0; i < vtx.size(); i++)
         {
-            if (vtx[i].nVersion == ANON_TXN_VERSION)
+            if (vtx[i].nVersion == ANON_TXN_VERSION &&
+                nHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)
                 return DoS(100, error("AcceptBlock() : ring signature transaction (ANON_TXN_VERSION) in block at height %d after deprecation height %d",
                                        nHeight, FORK_HEIGHT_RINGSIG_DEPRECATION));
+            if (vtx[i].IsShielded() &&
+                (IsLegacyPrivacyPolicyDisabled() ||
+                 IsBoundaryAActiveAtHeight(nHeight)))
+                return DoS(100, error("AcceptBlock() : legacy shielded transaction version %d is disabled in this network/era at height %d",
+                                      vtx[i].nVersion, nHeight));
         }
     }
+
+    for (unsigned int i = 0; i < vtx.size(); ++i)
+        if (vtx[i].IsPrivacyVNext() &&
+            (!IsBoundaryBActiveAtHeight(nHeight) ||
+             !IsShieldedVNextConsensusReady()))
+            return DoS(100, error("AcceptBlock() : privacy-vNext is inactive before Boundary B"));
 
     bool cpSatisfies = Checkpoints::CheckSync(hash, pindexPrev);
 
@@ -7151,17 +10590,31 @@ bool CBlock::AcceptBlock()
     // Validate DAG parent commitment in coinbase OP_RETURN
     if (nHeight >= FORK_HEIGHT_DAG)
     {
-        // Search coinbase outputs for DAG parent commitment
         std::vector<uint256> vDAGParents;
-        for (unsigned int i = 0; i < vtx[0].vout.size(); i++)
+        if (IsBoundaryAActiveAtHeight(nHeight))
         {
-            vDAGParents = ExtractDAGParents(vtx[0].vout[i].scriptPubKey);
-            if (!vDAGParents.empty())
-                break;
+            std::vector<CScript> vScripts;
+            for (std::vector<CTxOut>::const_iterator it = vtx[0].vout.begin();
+                 it != vtx[0].vout.end(); ++it)
+                vScripts.push_back(it->scriptPubKey);
+            std::string strDAGError;
+            if (!ExtractCanonicalDAGParentCommitment(vScripts, vDAGParents,
+                                                     strDAGError))
+                return DoS(100, error("AcceptBlock() : %s", strDAGError.c_str()));
         }
-
-        if (vDAGParents.empty())
-            return DoS(100, error("AcceptBlock() : post-DAG-fork block missing DAG parent commitment"));
+        else
+        {
+            // Historical pre-A decoder intentionally retains its permissive
+            // shape for byte-identical replay.
+            for (unsigned int i = 0; i < vtx[0].vout.size(); i++)
+            {
+                vDAGParents = ExtractDAGParents(vtx[0].vout[i].scriptPubKey);
+                if (!vDAGParents.empty())
+                    break;
+            }
+            if (vDAGParents.empty())
+                return DoS(100, error("AcceptBlock() : post-DAG-fork block missing DAG parent commitment"));
+        }
 
         if (vDAGParents.size() > (unsigned int)MAX_DAG_PARENTS)
             return DoS(100, error("AcceptBlock() : too many DAG parents (%d > %d)", (int)vDAGParents.size(), MAX_DAG_PARENTS));
@@ -7182,13 +10635,18 @@ bool CBlock::AcceptBlock()
             // Must exist in block index
             if (!mapBlockIndex.count(vDAGParents[i]))
             {
-                if (IsInitialBlockDownload())
+                if (nHeight < FORK_HEIGHT_EPOCH_STATE_V3 &&
+                    IsInitialBlockDownload())
                 {
                     if (fDebug)
                         printf("AcceptBlock() : DAG merge parent[%d] %s not found during IBD, deferring validation\n",
                                i, vDAGParents[i].ToString().substr(0, 20).c_str());
                     continue;
                 }
+                if (nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
+                    return error("AcceptBlock() : V3 DAG merge parent[%d] %s is not available; "
+                                 "defer the child until every committed parent is present",
+                                 i, vDAGParents[i].ToString().substr(0, 20).c_str());
                 return DoS(10, error("AcceptBlock() : DAG merge parent[%d] %s not found",
                                       i, vDAGParents[i].ToString().substr(0, 20).c_str()));
             }
@@ -7212,6 +10670,15 @@ bool CBlock::AcceptBlock()
                 if (vDAGParents[j] == vDAGParents[i])
                     return DoS(100, error("AcceptBlock() : duplicate DAG parent at index %d and %d", j, i));
             }
+        }
+
+        if (IsBoundaryAActiveAtHeight(nHeight))
+        {
+            std::string strDAGKnightError;
+            if (!g_dagManager.CheckDAGKnightParentSet(
+                    vDAGParents, nHeight, strDAGKnightError))
+                return DoS(100, error("AcceptBlock() : %s",
+                                      strDAGKnightError.c_str()));
         }
     }
 
@@ -7567,10 +11034,10 @@ bool CBlock::SignBlock(CWallet& wallet, int64_t nFees)
     CTransaction txCoinStake; // make a new transaction.
     int64_t nSearchTime = txCoinStake.nTime; // search to current time
 
-    if (fDebug && GetBoolArg("-printcoinstake")) printf ("searchtime %ld to %ld \n",nSearchTime,nLastCoinStakeSearchTime);
+    if (fDebug && GetBoolArg("-printcoinstake")) printf ("searchtime %" PRId64 " to %" PRId64 " \n", nSearchTime, nLastCoinStakeSearchTime);
     if (nSearchTime > nLastCoinStakeSearchTime)
     {
-        if (fDebug && GetBoolArg("-printcoinstake")) printf ("nSearchTime %ld > nLastCoinStakeSearchTime %ld\n",nSearchTime,nLastCoinStakeSearchTime);
+        if (fDebug && GetBoolArg("-printcoinstake")) printf ("nSearchTime %" PRId64 " > nLastCoinStakeSearchTime %" PRId64 "\n", nSearchTime, nLastCoinStakeSearchTime);
         if (wallet.CreateCoinStake(wallet, nBits, nSearchTime-nLastCoinStakeSearchTime, nFees, txCoinStake, key))
         {
             if (fDebug && GetBoolArg("-printcoinstake")) printf ("CreateCoinStake succeeded \n");
@@ -7597,7 +11064,7 @@ bool CBlock::SignBlock(CWallet& wallet, int64_t nFees)
         }
         nLastCoinStakeSearchInterval = nSearchTime - nLastCoinStakeSearchTime;
         nLastCoinStakeSearchTime = nSearchTime;
-        if (fDebug && GetBoolArg("-printcoinstake")) printf ("CreateCoinStake failed at %ld. Try again in %ld\n",nLastCoinStakeSearchTime,nLastCoinStakeSearchInterval);
+        if (fDebug && GetBoolArg("-printcoinstake")) printf ("CreateCoinStake failed at %" PRId64 ". Try again in %" PRId64 "\n", nLastCoinStakeSearchTime, nLastCoinStakeSearchInterval);
     }
 
     return false;
@@ -7806,8 +11273,6 @@ bool LoadBlockIndex(bool fAllowNew)
     CTxDB txdb("cr+");
     if (!txdb.LoadBlockIndex())
         return false;
-    if (!pwalletMain->CacheAnonStats())
-        printf("CacheAnonStats() failed.\n");
 
     //
     // Init with genesis block
@@ -7816,6 +11281,17 @@ bool LoadBlockIndex(bool fAllowNew)
     {
         if (!fAllowNew)
             return false;
+
+        // With IDNS active from genesis, create the auxiliary database before AddToBlockIndex
+        // commits genesis; the chain effect journal opens it read-only.
+        if (RELEASE_HEIGHT == 0)
+        {
+            std::string strNameIndexBootstrapError;
+            if (!CommitNameIndexTip(NULL, strNameIndexBootstrapError))
+                return error("LoadBlockIndex() : could not initialize the "
+                             "genesis name-index cursor: %s",
+                             strNameIndexBootstrapError.c_str());
+        }
 
         if(fRegTest)
         {
@@ -8087,12 +11563,21 @@ void PrintBlockTree()
     }
 }
 
+// A frame carrying the genesis block is already indexed, so ProcessBlock
+// rejects it. That is not an import failure and must not fail the replay gate.
+static bool ImportFrameIsIndexedGenesis(const CBlock& block)
+{
+    return pindexGenesisBlock != NULL &&
+           block.GetHash() == GetGenesisBlockHash();
+}
+
 bool LoadExternalBlockFile(FILE* fileIn)
 {
     int64_t nStart = GetTimeMillis();
 
     int nLoaded = 0;
     int nFailed = 0;
+    int nSkipped = 0;
     {
         LOCK(cs_main);
         CAutoFile blkdat(fileIn, SER_DISK, CLIENT_VERSION);
@@ -8141,8 +11626,16 @@ bool LoadExternalBlockFile(FILE* fileIn)
                 nPos += 4 + nSize;      // advance regardless of accept/reject
                 if (ProcessBlock(NULL, &block))
                     nLoaded++;
+                else if (ImportFrameIsIndexedGenesis(block))
+                    nSkipped++;
                 else
+                {
                     nFailed++;
+                    printf("LoadExternalBlockFile: REJECTED %s (prev %s) -- see the "
+                           "preceding error for the failing check\n",
+                           block.GetHash().ToString().c_str(),
+                           block.hashPrevBlock.ToString().c_str());
+                }
             }
             catch (std::exception &e) {
                 printf("%s() : frame near pos %u skipped: %s\n", __PRETTY_FUNCTION__, nPos, e.what());
@@ -8154,9 +11647,12 @@ bool LoadExternalBlockFile(FILE* fileIn)
                        nLoaded, nFailed, GetTimeMillis() - nStart);
         }
     }
-    printf("Loaded %i blocks (%i failed) from external file in %" PRId64"ms\n",
-           nLoaded, nFailed, GetTimeMillis() - nStart);
-    return nLoaded > 0;
+    printf("Loaded %i blocks (%i failed, %i already-indexed genesis) from external file in %" PRId64"ms\n",
+           nLoaded, nFailed, nSkipped, GetTimeMillis() - nStart);
+    // A history-replay gate is evidence only when every framed block was
+    // accepted.  Partial import with one or more rejected/corrupt frames must
+    // never be reported as a successful replay.
+    return (nLoaded + nSkipped) > 0 && nFailed == 0 && !fRequestShutdown;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -9138,7 +12634,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                    (unsigned)tx.vout.size());
 
         bool fMissingInputs = false;
-        if (tx.AcceptToMemoryPool(txdb, &fMissingInputs))
+        if (tx.AcceptToMemoryPool(txdb, true, &fMissingInputs))
         {
             if (fTxRelayDebug)
                 printf("TXRELAY accept tx=%s peer=%s\n",
@@ -9165,7 +12661,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv, 
                     CTransaction& orphanTx = mapOrphanTransactions[orphanTxHash];
                     bool fMissingInputs2 = false;
 
-                    if (orphanTx.AcceptToMemoryPool(txdb, &fMissingInputs2))
+                    if (orphanTx.AcceptToMemoryPool(txdb, true, &fMissingInputs2))
                     {
                         printf("   accepted orphan tx %s\n", orphanTxHash.ToString().substr(0,10).c_str());
                         SyncWithWallets(orphanTx, NULL, true);

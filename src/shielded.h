@@ -10,6 +10,8 @@
 #include "hash.h"
 #include "zkproof.h"
 #include "curvetree.h"
+#include "lelantus.h"
+#include "privacy_vnext/iv5_protocol.h"
 
 #include <vector>
 #include <string>
@@ -40,6 +42,157 @@ static const int SHIELDED_TX_VERSION_MOFN_MINT = 2006;
 // cv_plain carve-out -- but ONLY after the note has been staking-inactive for the reclaim timelock.
 static const int SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM = 2007;
 
+// Reserved exclusively for the externally reviewed Boundary-B privacy
+// protocol. Merely defining its distinct wire envelope does not activate it:
+// context-free validation remains fail closed until the complete vNext proof
+// implementation and Boundary-B state transition are consensus ready.
+static const int SHIELDED_TX_VERSION_VNEXT = 2008;
+static const size_t SHIELDED_VNEXT_MAX_PAYLOAD_SIZE = 256 * 1024;
+
+// Boundary B must not be inferred merely from a configured height. This stays
+// false until the distinct v2008 wire format, tree, verifier, wallet state and
+// reviewed ABI are all linked into consensus.
+// Regtest-only rehearsal switch (-regtestiv5rehearsal). It exercises the
+// Boundary-B state transition and migration bookkeeping only: the Rust IV5
+// verifier is not wired into consensus yet (CONSENSUS_CAPABILITIES == 0), so a
+// rehearsal proves nothing about proof validity. Never settable off regtest.
+extern bool fRegtestShieldedVNextRehearsal;
+
+inline bool IsShieldedVNextConsensusReady()
+{
+    extern bool fRegTest;
+    return fRegTest && fRegtestShieldedVNextRehearsal;
+}
+
+/** vNext privacy envelope after the common tx header:
+ *    0xff || "IV5P" || uint16_le(schema=1) || CompactSize(length) || payload
+ *  The marker keeps it disjoint from older vectors; the bound is checked before allocation. */
+class CShieldedVNextEnvelope
+{
+public:
+    uint16_t nSchema;
+    std::vector<unsigned char> vchPayload;
+    bool fPresent;
+
+    CShieldedVNextEnvelope()
+    {
+        SetNull();
+    }
+
+    void SetNull()
+    {
+        nSchema = static_cast<uint16_t>(iv5::PROTOCOL_SCHEMA);
+        vchPayload.clear();
+        fPresent = false;
+    }
+
+    bool IsNull() const
+    {
+        return !IsPresent();
+    }
+
+    bool IsPresent() const
+    {
+        return fPresent || !vchPayload.empty();
+    }
+
+    void SetPresent()
+    {
+        fPresent = true;
+    }
+
+    template<typename Stream>
+    unsigned int UnserializeAfterMarkerPrefix(Stream& s, int nType,
+                                              int nVersion,
+                                              CSerActionUnserialize)
+    {
+        unsigned char markerSuffix[4];
+        s.read(reinterpret_cast<char*>(markerSuffix), sizeof(markerSuffix));
+        if (markerSuffix[0] != 'I' || markerSuffix[1] != 'V' ||
+            markerSuffix[2] != '5' || markerSuffix[3] != 'P')
+            throw std::ios_base::failure("non-canonical IV5 privacy marker");
+
+        ::Unserialize(s, nSchema, nType, nVersion);
+        if (nSchema != static_cast<uint16_t>(iv5::PROTOCOL_SCHEMA))
+            throw std::ios_base::failure("unsupported IV5 privacy envelope schema");
+
+        const uint64_t nPayloadSize = ReadCompactSize(s);
+        if (nPayloadSize > SHIELDED_VNEXT_MAX_PAYLOAD_SIZE)
+            throw std::ios_base::failure("IV5 privacy payload exceeds consensus limit");
+        vchPayload.resize(static_cast<size_t>(nPayloadSize));
+        if (nPayloadSize != 0)
+            s.read(reinterpret_cast<char*>(&vchPayload[0]),
+                   static_cast<int>(nPayloadSize));
+        fPresent = true;
+        return 4 + sizeof(nSchema) + GetSizeOfCompactSize(nPayloadSize) +
+               static_cast<unsigned int>(nPayloadSize);
+    }
+
+    template<typename Stream, typename Operation>
+    unsigned int UnserializeAfterMarkerPrefix(Stream&, int, int, Operation)
+    {
+        return 0;
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        CShieldedVNextEnvelope* pthis =
+            const_cast<CShieldedVNextEnvelope*>(this);
+        unsigned char marker[5];
+        marker[0] = 0xff;
+        marker[1] = 'I';
+        marker[2] = 'V';
+        marker[3] = '5';
+        marker[4] = 'P';
+        READWRITE(FLATDATA(marker));
+        if (fRead &&
+            (marker[0] != 0xff || marker[1] != 'I' || marker[2] != 'V' ||
+             marker[3] != '5' || marker[4] != 'P'))
+            throw std::ios_base::failure("non-canonical IV5 privacy marker");
+
+        READWRITE(nSchema);
+        if (nSchema != static_cast<uint16_t>(iv5::PROTOCOL_SCHEMA))
+            throw std::ios_base::failure("unsupported IV5 privacy envelope schema");
+
+        nSerSize += ::SerReadWriteLimitedVector(
+            s, vchPayload, SHIELDED_VNEXT_MAX_PAYLOAD_SIZE,
+            nType, nVersion, ser_action);
+        if (fRead)
+            pthis->fPresent = true;
+    )
+};
+
+inline bool IsLegacyShieldedTransactionVersion(int nVersion)
+{
+    return nVersion >= SHIELDED_TX_VERSION &&
+           nVersion <= SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM;
+}
+
+// Boundary-B product contract.  These operation identifiers are independent
+// from the three-bit disclosure mask below: a transfer or NullSend may select
+// any applicable privacy combination without changing its operation type.
+enum ShieldedVNextOperation
+{
+    SHIELDED_VNEXT_OPERATION_SHIELD = iv5::NOTE_SHIELD,
+    SHIELDED_VNEXT_OPERATION_UNSHIELD = iv5::NOTE_UNSHIELD,
+    SHIELDED_VNEXT_OPERATION_TRANSFER = iv5::NOTE_TRANSFER,
+    SHIELDED_VNEXT_OPERATION_NULLSEND = iv5::NOTE_NULLSEND,
+    SHIELDED_VNEXT_OPERATION_DELEGATION_CREATE = iv5::NOTE_DELEGATION_CREATE,
+    SHIELDED_VNEXT_OPERATION_M_OF_N_MINT = iv5::NOTE_M_OF_N_MINT,
+    SHIELDED_VNEXT_OPERATION_RECLAIM = iv5::NOTE_RECLAIM,
+    SHIELDED_VNEXT_OPERATION_CONDITIONAL_MIGRATION = iv5::NOTE_CONDITIONAL_MIGRATION,
+    SHIELDED_VNEXT_OPERATION_NONE = iv5::NOTE_OPERATION_NONE
+};
+
+// All three private-staking generations remain mandatory.  After IDAG they
+// authorize finalized-epoch votes; they do not mint PoS blocks in the DAG.
+enum ShieldedVNextNullStakeGeneration
+{
+    SHIELDED_VNEXT_NULLSTAKE_V1 = iv5::FINALITY_NULLSTAKE_V1,
+    SHIELDED_VNEXT_NULLSTAKE_V2 = iv5::FINALITY_NULLSTAKE_V2,
+    SHIELDED_VNEXT_NULLSTAKE_V3 = iv5::FINALITY_NULLSTAKE_V3
+};
+
 static const int SHIELDED_MERKLE_DEPTH = 32;
 
 static const int MIN_SHIELDED_SPEND_DEPTH = 10;
@@ -49,12 +202,15 @@ static const int64_t MIN_TX_FEE_SHIELDED = 100000;
 static const int MAX_SHIELDED_INPUTS = 16;
 static const int MAX_SHIELDED_OUTPUTS = 16;
 
-static const uint8_t PRIVACY_HIDE_SENDER    = 0x01;
-static const uint8_t PRIVACY_HIDE_RECEIVER   = 0x02;
-static const uint8_t PRIVACY_HIDE_AMOUNT     = 0x04;
-static const uint8_t PRIVACY_MODE_MASK       = 0x07;
+static const uint8_t PRIVACY_HIDE_SENDER    = iv5::DISCLOSURE_HIDE_SENDER;
+static const uint8_t PRIVACY_HIDE_RECEIVER   = iv5::DISCLOSURE_HIDE_RECEIVER;
+static const uint8_t PRIVACY_HIDE_AMOUNT     = iv5::DISCLOSURE_HIDE_AMOUNT;
+static const uint8_t PRIVACY_MODE_MASK       = iv5::DISCLOSURE_MASK;
 static const uint8_t PRIVACY_MODE_TRANSPARENT = 0x00;
-static const uint8_t PRIVACY_MODE_FULL       = 0x07;
+static const uint8_t PRIVACY_MODE_FULL       = iv5::WALLET_DEFAULT_DISCLOSURE_MASK;
+static const uint8_t SHIELDED_VNEXT_PRIVACY_MODE_COUNT = 8;
+static const uint8_t SHIELDED_VNEXT_NULLSTAKE_GENERATION_COUNT = 3;
+static const uint8_t SHIELDED_VNEXT_TREE_LAYERS = 8;
 
 inline bool DSP_HideSender(uint8_t mode)   { return (mode & PRIVACY_HIDE_SENDER) != 0; }
 inline bool DSP_HideReceiver(uint8_t mode) { return (mode & PRIVACY_HIDE_RECEIVER) != 0; }
@@ -65,8 +221,18 @@ static const size_t SHIELDED_PKD_SIZE = 33;
 static const size_t SHIELDED_PROOF_SIZE = 672;
 static const size_t SHIELDED_EPHEMERAL_KEY_SIZE = 33;
 static const size_t SHIELDED_ENC_CIPHERTEXT_SIZE = 580;
-static const size_t SHIELDED_OUT_CIPHERTEXT_SIZE = 80;
+// The legacy sender-recovery plaintext is 54 bytes. ChaCha20-Poly1305 adds a
+// 12-byte nonce and 16-byte tag, so every producer in versions 2000--2007 has
+// always emitted 82 bytes.  The old value of 80 described no real wire object.
+static const size_t SHIELDED_OUT_CIPHERTEXT_SIZE = 82;
 static const size_t SHIELDED_BINDING_SIG_SIZE = 65;
+// Read-side allocation caps for the vectors embedded directly in a shielded
+// spend.  Serialization remains the ordinary vector encoding.
+static const size_t SHIELDED_SPEND_AUTH_KEY_MAX_SIZE = 65;
+static const size_t SHIELDED_SPEND_AUTH_SIG_SIZE = 65;
+// Fields without a tighter shape check are bounded by the 1 MB transaction ceiling
+// CheckTransaction enforces, avoiding MAX_VECTOR_SIZE-scale allocations.
+static const size_t SHIELDED_TX_FIELD_MAX_WIRE_SIZE = 1000000;
 
 
 class CShieldedSpendingKey
@@ -234,6 +400,23 @@ public:
     )
 };
 
+enum ShieldedRecipientPayloadKind
+{
+    SHIELDED_RECIPIENT_NONE = 0,
+    SHIELDED_RECIPIENT_LEGACY_NOTE,
+    SHIELDED_RECIPIENT_ADDRESS
+};
+
+// Decode the public-recipient payload by exact canonical shape: early DSP producers stored
+// a complete note, later ones only the address, under the same tx versions. Future
+// versions never inherit this format.
+bool DecodeShieldedRecipientPayload(
+    int nTxVersion,
+    const std::vector<unsigned char>& vchPayload,
+    ShieldedRecipientPayloadKind& kindOut,
+    CShieldedPaymentAddress& addressOut,
+    CShieldedNote& noteOut);
+
 
 class CShieldedSpendDescription
 {
@@ -276,14 +459,23 @@ public:
 
     IMPLEMENT_SERIALIZE
     (
+        CShieldedSpendDescription* pthis = const_cast<CShieldedSpendDescription*>(this);
         READWRITE(cv);
         READWRITE(anchor);
         READWRITE(nullifier);
-        READWRITE(vchRk);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchRk,
+                                                 SHIELDED_SPEND_AUTH_KEY_MAX_SIZE,
+                                                 nType, nVersion, ser_action);
         READWRITE(rangeProof);
-        READWRITE(vchSpendAuthSig);
-        READWRITE(vchLelantusProof);
-        READWRITE(vAnonSet);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchSpendAuthSig,
+                                                 SHIELDED_SPEND_AUTH_SIG_SIZE,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchLelantusProof,
+                                                 SHIELDED_TX_FIELD_MAX_WIRE_SIZE,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vAnonSet,
+                                                 LELANTUS_MAX_SET_SIZE,
+                                                 nType, nVersion, ser_action);
         READWRITE(lelantusSerial);
 
         unsigned char fHasFCMP = fcmpProof.IsNull() ? 0 : 1;
@@ -298,8 +490,12 @@ public:
         READWRITE(fHasNfBind);
         if (fHasNfBind)
         {
-            READWRITE(vchNullifierPoint);
-            READWRITE(vchNullifierBindingProof);
+            nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchNullifierPoint,
+                                                     NULLIFIER_POINT_SIZE,
+                                                     nType, nVersion, ser_action);
+            nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchNullifierBindingProof,
+                                                     NULLIFIER_BINDING_PROOF_SIZE,
+                                                     nType, nVersion, ser_action);
         }
     )
 };
@@ -340,11 +536,18 @@ public:
 
     IMPLEMENT_SERIALIZE
     (
+        CShieldedOutputDescription* pthis = const_cast<CShieldedOutputDescription*>(this);
         READWRITE(cv);
         READWRITE(cmu);
-        READWRITE(vchEphemeralKey);
-        READWRITE(vchEncCiphertext);
-        READWRITE(vchOutCiphertext);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchEphemeralKey,
+                                                 SHIELDED_TX_FIELD_MAX_WIRE_SIZE,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchEncCiphertext,
+                                                 SHIELDED_TX_FIELD_MAX_WIRE_SIZE,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchOutCiphertext,
+                                                 SHIELDED_TX_FIELD_MAX_WIRE_SIZE,
+                                                 nType, nVersion, ser_action);
         READWRITE(rangeProof);
     )
 };
@@ -409,12 +612,24 @@ public:
 
     bool GetWitness(uint64_t nPosition, std::vector<uint256>& vPathOut) const;
 
+    // Disk snapshots are consensus inputs during connect, disconnect and
+    // wallet proof construction.  Reject malformed vector lengths or an
+    // impossible leaf count before any indexed access.
+    bool IsValidStructure() const;
+
     uint64_t Size() const { return nSize; }
 
     IMPLEMENT_SERIALIZE
     (
-        READWRITE(vLeft);
-        READWRITE(vRight);
+        CIncrementalMerkleTree* pthis = const_cast<CIncrementalMerkleTree*>(this);
+        // A valid tree has exactly SHIELDED_MERKLE_DEPTH slots per frontier vector; reject a
+        // malformed length before allocating (IsValidStructure checks shape after decode).
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vLeft,
+                                                 SHIELDED_MERKLE_DEPTH,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vRight,
+                                                 SHIELDED_MERKLE_DEPTH,
+                                                 nType, nVersion, ser_action);
         READWRITE(nSize);
     )
 

@@ -8,6 +8,7 @@
 #define BITCOIN_MAIN_H
 
 #include "core.h"
+#include "v5activation.h"
 #include "bignum.h"
 #include "sync.h"
 #include "net.h"
@@ -21,6 +22,7 @@
 #include <vector>
 
 class CValidationState;
+class CBestChainEffectJournal;
 
 #define BLOCK_START_COLLATERALNODE_PAYMENTS_TESTNET 999999 // Disabled for clean IDAG public testnet launch
 #define BLOCK_START_COLLATERALNODE_PAYMENTS 800 // Mainnet Collateralnode payments not enabled until block 800
@@ -90,6 +92,8 @@ static const unsigned int MAX_BLOCK_SIZE = MAX_BLOCK_SIZE_LEGACY;       // 1MB u
 static const unsigned int MAX_BLOCK_SIZE_GEN = MAX_BLOCK_SIZE / 2;
 static const unsigned int MAX_STANDARD_TX_SIZE = MAX_BLOCK_SIZE_GEN / 5;
 static const unsigned int MAX_BLOCK_SIGOPS = MAX_BLOCK_SIZE / 50;
+static_assert(SHIELDED_TX_FIELD_MAX_WIRE_SIZE >= MAX_BLOCK_SIZE,
+              "shielded read cap must preserve every basic-valid transaction");
 
 // Post-fork limits (used via GetMaxBlockSize(nHeight) after DAG activation)
 static const unsigned int MAX_BLOCK_SIGOPS_ADAPTIVE = ADAPTIVE_BLOCK_CEILING / 50;
@@ -140,6 +144,27 @@ std::set<uint256> GetDAGSkippedTxsFromSiblingSpends(const CBlock& block,
 std::set<uint256> GetDAGSkippedTxsForBlock(const CBlock& block, const CBlockIndex* pindex);
 CBlock GetDAGActiveBlock(const CBlock& block, const std::set<uint256>& setDAGSkippedTxs);
 
+// Fixed-input description binding a shielded-wallet recovery record to the exact
+// pre-commit DAG-active transaction plan; the record stores only its digest.
+struct CShieldedWalletEffectDigestEntry
+{
+    bool fConnect;
+    uint256 hashBlock;
+    std::set<uint256> setDAGSkippedTxs;
+
+    CShieldedWalletEffectDigestEntry()
+        : fConnect(false) {}
+
+    CShieldedWalletEffectDigestEntry(
+        bool fConnectIn, const uint256& hashBlockIn,
+        const std::set<uint256>& setDAGSkippedTxsIn)
+        : fConnect(fConnectIn), hashBlock(hashBlockIn),
+          setDAGSkippedTxs(setDAGSkippedTxsIn) {}
+};
+
+uint256 ComputeShieldedWalletEffectPlanDigest(
+    const std::vector<CShieldedWalletEffectDigestEntry>& vEntries);
+
 // Threshold for nLockTime: below this value it is interpreted as block number, otherwise as UNIX timestamp.
 static const unsigned int LOCKTIME_THRESHOLD = 500000000; // Tue Nov  5 00:53:20 1985 UTC
 
@@ -165,7 +190,7 @@ inline const uint256& GetGenesisBlockHash()
 inline int GetForkHeightTighterDrift() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 7800000;
+    return (fRegTest || fTestNet) ? 1 : ShiftMainnetV5Activation(7800000);
 }
 #define FORK_HEIGHT_TIGHTER_DRIFT (GetForkHeightTighterDrift())
 
@@ -173,7 +198,7 @@ inline int GetForkHeightTighterDrift() {
 inline int GetForkHeightCNPaymentValidation() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 7800000;
+    return (fRegTest || fTestNet) ? 1 : ShiftMainnetV5Activation(7800000);
 }
 #define FORK_HEIGHT_CN_PAYMENT_VALIDATION (GetForkHeightCNPaymentValidation())
 
@@ -186,7 +211,7 @@ static const int FORK_MIN_CN_PROTO_VERSION = 43950;
 inline int GetForkHeightColdStaking() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 7800000;
+    return (fRegTest || fTestNet) ? 1 : ShiftMainnetV5Activation(7800000);
 }
 #define FORK_HEIGHT_COLD_STAKING (GetForkHeightColdStaking())
 
@@ -195,7 +220,7 @@ inline int GetForkHeightColdStaking() {
 inline int GetForkHeightShielded() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 7810000;
+    return (fRegTest || fTestNet) ? 1 : ShiftMainnetV5Activation(7810000);
 }
 #define FORK_HEIGHT_SHIELDED (GetForkHeightShielded())
 
@@ -204,7 +229,7 @@ inline int GetForkHeightShielded() {
 inline int GetForkHeightRingSigDeprecation() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : 7815000;
+    return (fRegTest || fTestNet) ? 1 : ShiftMainnetV5Activation(7815000);
 }
 #define FORK_HEIGHT_RINGSIG_DEPRECATION (GetForkHeightRingSigDeprecation())
 
@@ -213,7 +238,7 @@ inline int GetForkHeightRingSigDeprecation() {
 inline int GetForkHeightDSP() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 2 : 7815000;
+    return (fRegTest || fTestNet) ? 2 : ShiftMainnetV5Activation(7815000);
 }
 #define FORK_HEIGHT_DSP (GetForkHeightDSP())
 
@@ -221,7 +246,7 @@ inline int GetForkHeightDSP() {
 inline int GetForkHeightNullSend() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 2 : 7820000;
+    return (fRegTest || fTestNet) ? 2 : ShiftMainnetV5Activation(7820000);
 }
 #define FORK_HEIGHT_NULLSEND (GetForkHeightNullSend())
 #define FORK_HEIGHT_CJOIN FORK_HEIGHT_NULLSEND
@@ -235,7 +260,7 @@ inline int GetForkHeightNullSend() {
 inline int GetForkHeightNullStake() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 3 : 7825000;
+    return (fRegTest || fTestNet) ? 3 : ShiftMainnetV5Activation(7825000);
 }
 #define FORK_HEIGHT_NULLSTAKE (GetForkHeightNullStake())
 
@@ -244,7 +269,7 @@ inline int GetForkHeightNullStake() {
 inline int GetForkHeightNullStakeV2() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 5 : 7830000;
+    return (fRegTest || fTestNet) ? 5 : ShiftMainnetV5Activation(7830000);
 }
 #define FORK_HEIGHT_NULLSTAKE_V2 (GetForkHeightNullStakeV2())
 
@@ -252,7 +277,7 @@ inline int GetForkHeightNullStakeV2() {
 inline int GetForkHeightNullStakeV3() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 7 : 7835000;
+    return (fRegTest || fTestNet) ? 7 : ShiftMainnetV5Activation(7835000);
 }
 #define FORK_HEIGHT_NULLSTAKE_V3 (GetForkHeightNullStakeV3())
 
@@ -261,7 +286,7 @@ inline int GetForkHeightChaumianCJ()
 {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 8 : 7840000;
+    return (fRegTest || fTestNet) ? 8 : ShiftMainnetV5Activation(7840000);
 }
 #define FORK_HEIGHT_CHAUMIAN_CJ (GetForkHeightChaumianCJ())
 
@@ -272,7 +297,7 @@ inline int GetForkHeightPoem()
     extern bool fTestNet;
     if (fRegTest) return 9;
     if (fTestNet) return 9;         // clean public IDAG testnet
-    return 7940000;                  // mainnet: 100K blocks after Chaumian CJ (base 7.8M + 140K)
+    return ShiftMainnetV5Activation(7940000); // 140K after the base gate
 }
 #define FORK_HEIGHT_POEM (GetForkHeightPoem())
 
@@ -283,7 +308,7 @@ inline int GetForkHeightFinality()
     extern bool fTestNet;
     if (fRegTest) return 10;
     if (fTestNet) return 10;        // clean public IDAG testnet
-    return 7945000;                  // mainnet: 5,000 blocks after POEM
+    return ShiftMainnetV5Activation(7945000); // 5,000 blocks after POEM
 }
 #define FORK_HEIGHT_FINALITY (GetForkHeightFinality())
 
@@ -294,7 +319,7 @@ inline int GetForkHeightDAG()
     extern bool fTestNet;
     if (fRegTest) return 11;
     if (fTestNet) return 60;        // clean public IDAG testnet after premine maturity
-    return 7950000;                  // mainnet: 5,000 blocks after finality (base 7.8M + 150K)
+    return ShiftMainnetV5Activation(7950000); // 5,000 blocks after finality
 }
 #define FORK_HEIGHT_DAG (GetForkHeightDAG())
 
@@ -365,7 +390,8 @@ inline bool IsConnectedFinalityCarrierActiveAtHeight(int nHeight)
            nHeight >= FORK_HEIGHT_CONNECTED_FINALITY_CARRIER;
 }
 
-// Epoch-state schema V3: exact epoch-end boundary anchoring plus atomic state/tree persistence.
+// Epoch-state schema V3: exact epoch-end boundary anchoring, anchor-pure
+// adaptive DAGKNIGHT ordering, plus atomic state/tree persistence.
 // A single V2 post-DAG epoch is deliberately completed first so it supplies the strict predecessor
 // pair for the first V3 build. The public testnet height MUST be filled from the four-node rollout
 // preflight (smallest 300-block boundary >= common height + 900); leaving the sentinel in place is
@@ -380,8 +406,11 @@ inline int GetForkHeightEpochStateV3()
 }
 #define FORK_HEIGHT_EPOCH_STATE_V3 (GetForkHeightEpochStateV3())
 
-// Boundary A is the safe-IDAG activation.  It co-activates epoch-state schema
-// V3 and permanently retires every legacy privacy/proof transaction format.
+// Boundary A is the safe-IDAG activation. It co-activates epoch-state schema
+// V3, strict canonical parent commitments, and bounded anchor-keyed DAGKNIGHT
+// state, and quarantines the unsafe legacy privacy/proof encodings. This is not a
+// retirement of the privacy product: Boundary B must restore full-chain FCMP++
+// sends (masks 0--7), NullSend, and NullStake V1/V2/V3 as DAG-finality modes.
 // The public-testnet value remains deliberately unset until a clean immutable
 // candidate completes the four-node preflight; at the observed height 853 the
 // non-binding calculator recommendation is 1860.
@@ -397,9 +426,15 @@ inline int GetForkHeightBoundaryA()
 // network, including regtest, until that implementation is intentionally
 // introduced with its own tests.
 static const int PRIVACY_VNEXT_HEIGHT_UNSET = 0x7fffffff;
+// Regtest-only rehearsal height for Boundary B (-regtestboundaryb). Stays unset
+// on mainnet and testnet. A height alone never activates Boundary B; readiness is
+// a separate switch (IsShieldedVNextConsensusReady).
+extern int nRegtestBoundaryBHeight;
+
 inline int GetForkHeightBoundaryB()
 {
-    return PRIVACY_VNEXT_HEIGHT_UNSET;
+    extern bool fRegTest;
+    return fRegTest ? nRegtestBoundaryBHeight : PRIVACY_VNEXT_HEIGHT_UNSET;
 }
 #define FORK_HEIGHT_BOUNDARY_B (GetForkHeightBoundaryB())
 
@@ -505,7 +540,7 @@ inline int GetForkHeightDAGKnight()
     extern bool fTestNet;
     if (fRegTest) return 13;
     if (fTestNet) return 62;        // clean public IDAG testnet after DAG activation
-    return 8000000;                  // mainnet: 50,000 blocks after DAG (~14h at 1s post-DAG blocks)
+    return ShiftMainnetV5Activation(8000000); // 50,000 blocks after DAG
 }
 #define FORK_HEIGHT_DAGKNIGHT (GetForkHeightDAGKnight())
 
@@ -535,7 +570,7 @@ inline int GetForkHeightNullStakeDelegSet()
     extern bool fTestNet;
     if (fRegTest) return 12;
     if (fTestNet) return 1500;       // live-chain, after D2 + a canary window
-    return 8060000;                  // mainnet: next slot after the governance fork
+    return ShiftMainnetV5Activation(8060000); // reviewed Boundary-B slot
 }
 #define FORK_HEIGHT_NULLSTAKE_DELEGSET (GetForkHeightNullStakeDelegSet())
 
@@ -546,7 +581,7 @@ inline int GetForkHeightNullStakeReclaim()
     extern bool fTestNet;
     if (fRegTest) return 12;
     if (fTestNet) return 1500;
-    return 8060000;
+    return ShiftMainnetV5Activation(8060000);
 }
 #define FORK_HEIGHT_NULLSTAKE_RECLAIM (GetForkHeightNullStakeReclaim())
 
@@ -560,7 +595,7 @@ inline int GetForkHeightNullStakeB2C()
     extern bool fTestNet;
     if (fRegTest) return 14;         // > DELEGSET(12), so e2e can exercise pre/post-B2C with one 2006 note
     if (fTestNet) return 1600;       // after DELEGSET(1500) + a canary window
-    return 8060000;                  // mainnet: co-batched with DELEGSET/RECLAIM (equal is legal: >= gate)
+    return ShiftMainnetV5Activation(8060000); // co-batched slot; legacy mode remains retired
 }
 #define FORK_HEIGHT_NULLSTAKE_B2C (GetForkHeightNullStakeB2C())
 
@@ -590,12 +625,16 @@ inline unsigned int GetTargetSpacingForHeight(int nHeight)
 
 // Hard fork height for IDNS name reset
 // names before this height treated as expired; 0 = no reset
+//
+// Pinned to the ladder's first gate so it cannot drift behind a shift. Names
+// registered before it expire, and registrations resume at v5 activation.
+// Changing this invalidates the persisted name cursor and forces a rebuild.
 inline int GetForkHeightIDNSReset() {
     extern bool fRegTest;
     extern bool fTestNet;
     if (fRegTest) return 0;     // No reset in regtest (clean chain)
     if (fTestNet) return 0;     // No reset in testnet (clean chain)
-    return 7800000;             // Mainnet: wipe all names before this height
+    return ShiftMainnetV5Activation(7800000); // Mainnet: wipe names before the v5 first gate
 }
 #define FORK_HEIGHT_IDNS_RESET (GetForkHeightIDNSReset())
 
@@ -687,6 +726,23 @@ enum StakingMode {
     STAKE_COLD = 2,
     STAKE_NULLSTAKE_COLD = 3
 };
+
+inline bool IsLegacyPrivateStakingMode(StakingMode eMode)
+{
+    return eMode == STAKE_NULLSTAKE ||
+           eMode == STAKE_NULLSTAKE_COLD;
+}
+
+// Legacy private-staking encodings are kept for historical/regtest coverage only.
+// Public wallet construction is disabled; Boundary A is a permanent cutoff.
+inline bool IsLegacyPrivateStakeCreationAllowed(StakingMode eMode,
+                                                 int nCandidateHeight)
+{
+    return !IsLegacyPrivateStakingMode(eMode) ||
+           (!IsLegacyPrivacyPolicyDisabled() &&
+            !IsBoundaryAActiveAtHeight(nCandidateHeight));
+}
+
 extern StakingMode nStakingMode;
 extern CCriticalSection cs_stakingMode;
 
@@ -703,7 +759,21 @@ class CIncrementalMerkleTree;
 class CCurveTree;
 
 // Seed deterministic unspendable commitments at fork height for Lelantus anonymity set
-bool SeedGenesisCommitments(CTxDB& txdb, CIncrementalMerkleTree& shieldedTree, CCurveTree* pCurveTree);
+bool SeedGenesisCommitments(CTxDB& txdb, CIncrementalMerkleTree& shieldedTree,
+                            CCurveTree* pCurveTree,
+                            bool fV3ShieldedPersistence = false);
+// Validate and, for historical databases, atomically backfill the bounded
+// reverse-index/height records for the deterministic genesis decoys.
+bool ValidateAndMigrateShieldedGenesisCommitmentIndexes(CTxDB& txdb, std::string& strError);
+// Validate the exact per-block DAG activation journal, or recover legacy
+// canonical history in bounded crash-resumable chunks using transaction-index
+// disk positions.  Never reconstructs from the mutable live DAG.
+bool ValidateAndRecoverDAGActiveSetPersistence(CTxDB& txdb,
+                                               std::string& strError);
+// Replay the Boundary-B active chain against exact IV5 spent-key ownership.
+// This is startup validation only and never reconstructs or mutates records.
+bool ValidatePrivacyVNextNullifierPersistence(CTxDB& txdb,
+                                              std::string& strError);
 
 void RegisterWallet(CWallet* pwalletIn);
 void UnregisterWallet(CWallet* pwalletIn);
@@ -736,6 +806,7 @@ bool IsInitialBlockDownload();
 std::string GetWarnings(std::string strFor);
 bool GetTransaction(const uint256 &hash, CTransaction &tx, uint256 &hashBlock, bool s=false);
 bool GetKeyImage(CTxDB* ptxdb, ec_point& keyImage, CKeyImageSpent& keyImageSpent, bool& fInMempool);
+int GetAnonTxnPreImage(const CTransaction& tx, uint256& hashOut);
 bool TxnHashInSystem(CTxDB* ptxdb, uint256& txnHash);
 uint256 WantedByOrphan(const CBlock* pblockOrphan);
 const CBlockIndex* GetLastBlockIndex(const CBlockIndex* pindex, bool fProofOfStake);
@@ -818,6 +889,25 @@ public:
 
 typedef std::map<uint256, std::pair<CTxIndex, CTransaction> > MapPrevTx;
 
+// Exact chain effects of validating one historical ANON transaction, in the legacy
+// on-disk encoding, persisted inside the enclosing best-chain LevelDB transaction.
+class CLegacyAnonEffectPlan
+{
+public:
+    int64_t nValueIn;
+    std::vector<std::pair<ec_point, CKeyImageSpent> > vKeyImages;
+    std::vector<std::pair<CPubKey, CAnonOutput> > vOutputs;
+
+    CLegacyAnonEffectPlan() : nValueIn(0) {}
+
+    void Clear()
+    {
+        nValueIn = 0;
+        vKeyImages.clear();
+        vOutputs.clear();
+    }
+};
+
 //struct CMutableTransaction;
 /** The basic transaction that is broadcasted on the network and contained in
  * blocks.  A transaction can contain multiple inputs and outputs.
@@ -831,6 +921,10 @@ public:
     std::vector<CTxIn> vin;
     std::vector<CTxOut> vout;
     unsigned int nLockTime;
+
+    // Distinct canonical envelope for SHIELDED_TX_VERSION_VNEXT. It remains
+    // consensus inactive until Boundary B and never aliases legacy fields.
+    CShieldedVNextEnvelope privacyVNext;
 
     // Shielded transaction components (populated when IsShielded())
     std::vector<CShieldedSpendDescription> vShieldedSpend;
@@ -865,20 +959,61 @@ public:
 
     IMPLEMENT_SERIALIZE
     (
+        CTransaction* pthis = const_cast<CTransaction*>(this);
         READWRITE(this->nVersion);
         nVersion = this->nVersion;
         READWRITE(nTime);
         READWRITE(vin);
         READWRITE(vout);
         READWRITE(nLockTime);
+        if (this->nVersion == SHIELDED_TX_VERSION_VNEXT)
+            READWRITE(privacyVNext);
         if (this->nVersion == SHIELDED_TX_VERSION || this->nVersion == SHIELDED_TX_VERSION_DSP
             || this->nVersion == SHIELDED_TX_VERSION_FCMP || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE
             || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD
             || this->nVersion == SHIELDED_TX_VERSION_MOFN_MINT
             || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM)
         {
-            READWRITE(vShieldedSpend);
-            READWRITE(vShieldedOutput);
+            bool fVNextEnvelope = false;
+            if (fRead)
+            {
+                pthis->privacyVNext.SetNull();
+                unsigned char firstByte = 0;
+                READWRITE(firstByte);
+                if (firstByte == 0xff)
+                {
+                    nSerSize += pthis->privacyVNext.UnserializeAfterMarkerPrefix(
+                        s, nType, nVersion, ser_action);
+                    pthis->vShieldedSpend.clear();
+                    pthis->vShieldedOutput.clear();
+                    fVNextEnvelope = true;
+                }
+                else
+                {
+                    if (firstByte > MAX_SHIELDED_INPUTS)
+                        throw std::ios_base::failure("legacy shielded input count exceeds consensus limit");
+                    pthis->vShieldedSpend.resize(firstByte);
+                    for (size_t i = 0; i < pthis->vShieldedSpend.size(); ++i)
+                        READWRITE(pthis->vShieldedSpend[i]);
+                }
+            }
+            else if (pthis->privacyVNext.IsPresent())
+            {
+                READWRITE(privacyVNext);
+                fVNextEnvelope = true;
+            }
+            else
+            {
+                nSerSize += ::SerReadWriteLimitedVector(s, pthis->vShieldedSpend,
+                                                         MAX_SHIELDED_INPUTS,
+                                                         nType, nVersion, ser_action);
+            }
+
+            if (!fVNextEnvelope)
+            {
+                nSerSize += ::SerReadWriteLimitedVector(s, pthis->vShieldedOutput,
+                                                         MAX_SHIELDED_OUTPUTS,
+                                                         nType, nVersion, ser_action);
             READWRITE(nValueBalance);
             if (this->nVersion >= SHIELDED_TX_VERSION_DSP)
             {
@@ -886,13 +1021,20 @@ public:
                 for (size_t i = 0; i < vShieldedSpend.size(); i++)
                 {
                     READWRITE(vShieldedSpend[i].nPlaintextValue);
-                    READWRITE(vShieldedSpend[i].vchPlaintextBlind);
+                    nSerSize += ::SerReadWriteLimitedVector(
+                        s, pthis->vShieldedSpend[i].vchPlaintextBlind,
+                        BLINDING_FACTOR_SIZE, nType, nVersion, ser_action);
                 }
                 for (size_t i = 0; i < vShieldedOutput.size(); i++)
                 {
                     READWRITE(vShieldedOutput[i].nPlaintextValue);
-                    READWRITE(vShieldedOutput[i].vchPlaintextBlind);
-                    READWRITE(vShieldedOutput[i].vchRecipientScript);
+                    nSerSize += ::SerReadWriteLimitedVector(
+                        s, pthis->vShieldedOutput[i].vchPlaintextBlind,
+                        BLINDING_FACTOR_SIZE, nType, nVersion, ser_action);
+                    nSerSize += ::SerReadWriteLimitedVector(
+                        s, pthis->vShieldedOutput[i].vchRecipientScript,
+                        SHIELDED_TX_FIELD_MAX_WIRE_SIZE,
+                        nType, nVersion, ser_action);
                 }
             }
             // B2-e M-of-N mint output extension (version-gated, like the DSP fields): a per-output
@@ -906,7 +1048,10 @@ public:
                     if (vShieldedOutput[i].nMofNType == 1)
                     {
                         READWRITE(vShieldedOutput[i].valueCommitmentVv);
-                        READWRITE(vShieldedOutput[i].vchMofNLink);
+                        nSerSize += ::SerReadWriteLimitedVector(
+                            s, pthis->vShieldedOutput[i].vchMofNLink,
+                            NULLSTAKE_MOFN_MINTLINK_SIZE,
+                            nType, nVersion, ser_action);
                     }
                 }
             }
@@ -931,6 +1076,7 @@ public:
             {
                 READWRITE(reclaimAuth);
             }
+            }
         }
     )
 
@@ -941,6 +1087,7 @@ public:
         vin.clear();
         vout.clear();
         nLockTime = 0;
+        privacyVNext.SetNull();
         nDoS = 0;  // Denial-of-service prevention
         vShieldedSpend.clear();
         vShieldedOutput.clear();
@@ -1119,30 +1266,35 @@ public:
 
     bool IsShielded() const
     {
-        return (nVersion == SHIELDED_TX_VERSION || nVersion == SHIELDED_TX_VERSION_DSP
-                || nVersion == SHIELDED_TX_VERSION_FCMP || nVersion == SHIELDED_TX_VERSION_NULLSTAKE
-                || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2
-                || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD
-                || nVersion == SHIELDED_TX_VERSION_MOFN_MINT
-                || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM);
+        return IsLegacyShieldedTransactionVersion(nVersion) &&
+               !privacyVNext.IsPresent();
+    }
+
+    bool IsPrivacyVNext() const
+    {
+        return nVersion == SHIELDED_TX_VERSION_VNEXT ||
+               (IsLegacyShieldedTransactionVersion(nVersion) &&
+                privacyVNext.IsPresent());
     }
 
     // B2-e Phase 3c.4: an owner-override reclaim of an idle M-of-N cold-stake note. NOT a coinstake
     // (deliberately excluded from IsCoinStake), so fValidatedCoinstake is always false for it.
     bool IsMofNReclaim() const
     {
-        return (nVersion == SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM);
+        return nVersion == SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM &&
+               !privacyVNext.IsPresent();
     }
 
     bool IsDSP() const
     {
-        // All versions >= DSP support DSP privacy modes
-        return (nVersion >= SHIELDED_TX_VERSION_DSP);
+        // Only the enumerated legacy shielded envelope carries the DSP fields;
+        // reserved versions must not inherit them.
+        return IsShielded() && nVersion >= SHIELDED_TX_VERSION_DSP;
     }
 
     bool IsFCMP() const
     {
-        return (nVersion >= SHIELDED_TX_VERSION_FCMP);
+        return IsShielded() && nVersion >= SHIELDED_TX_VERSION_FCMP;
     }
 
     bool HasShieldedSpend() const
@@ -1300,7 +1452,23 @@ public:
     bool FetchInputs(CTxDB& txdb, const std::map<uint256, CTxIndex>& mapTestPool,
                      bool fBlock, bool fMiner, MapPrevTx& inputsRet, bool& fInvalid);
 
-    bool CheckAnonInputs(CTxDB& txdb, int64_t& nSumValue, bool& fInvalid, bool fCheckExists);
+    // Explicit-height validator used by consensus replay and relay policy.
+    // Chain validation never consults the mempool; pBlockKeyImages supplies
+    // the exact active-block duplicate set when non-null.
+    bool CheckAnonInputs(
+        CTxDB& txdb, int nCandidateHeight, int64_t& nSumValue,
+        bool& fInvalid, bool fRelay,
+        std::set<ec_point>* pBlockKeyImages = NULL,
+        std::vector<std::pair<ec_point, CKeyImageSpent> >* pKeyImageEffects = NULL) const;
+    // Source-compatible local-miner wrapper.  It is not used by block
+    // consensus and never enables the relay-only mempool key-image view when
+    // fCheckExists is false.
+    bool CheckAnonInputs(CTxDB& txdb, int64_t& nSumValue,
+                         bool& fInvalid, bool fCheckExists) const;
+    bool BuildLegacyAnonEffectPlan(CTxDB& txdb, int nCandidateHeight,
+                                   std::set<ec_point>& setBlockKeyImages,
+                                   CLegacyAnonEffectPlan& plan,
+                                   bool& fInvalid) const;
 
     /** Sanity check previous transactions, then, if all checks succeed,
         mark them as spent by this transaction.
@@ -1316,13 +1484,24 @@ public:
     bool ConnectInputs(CTxDB& txdb, MapPrevTx inputs,
                        std::map<uint256, CTxIndex>& mapTestPool, const CDiskTxPos& posThisTx,
                        const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, unsigned int flags = STANDARD_SCRIPT_VERIFY_FLAGS, bool fValidateSig = true, bool fSkipFCMP = false,
-                       bool fValidatedCoinstake = false);
+                       bool fValidatedCoinstake = false,
+                       bool fAnonPrevalidated = false,
+                       int nAnonCandidateHeight = -1,
+                       int64_t nPrevalidatedAnonValueIn = 0);
     bool CheckTransaction() const;
     bool AcceptToMemoryPool(CTxDB& txdb, bool fCheckInputs=true, bool* pfMissingInputs=NULL, bool fOnlyCheckWithoutAdding=false);
     bool GetCoinAge(CTxDB& txdb, uint64_t& nCoinAge) const;  // ppcoin: get transaction coin age
 
     const CTxOut& GetOutputFor(const CTxIn& input, const MapPrevTx& inputs) const;
 };
+
+bool ApplyLegacyAnonEffectPlan(CTxDB& txdb,
+                               const CLegacyAnonEffectPlan& plan,
+                               std::string& strError);
+bool DisconnectLegacyAnonChainState(CTxDB& txdb,
+                                    const CTransaction& tx,
+                                    int nBlockHeight,
+                                    std::string& strError);
 
 
 /** A mutable version of CTransaction. */
@@ -1794,7 +1973,9 @@ public:
 	void RebuildAddressIndex(CTxDB& txdb);
 
 private:
-    bool SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew, bool* pfPermanentInvalid = NULL);
+    bool SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
+                           bool* pfPermanentInvalid = NULL,
+                           CBestChainEffectJournal* pCommittedEffects = NULL);
 };
 
 
@@ -2061,11 +2242,11 @@ public:
 
     std::string ToString() const
     {
-        return strprintf("CBlockIndex(nprev=%p, pnext=%p, nFile=%u, nBlockPos=%-6d nHeight=%d, nMint=%s, nMoneySupply=%s, nFlags=(%s)(%d)(%s), nStakeModifier=%016x, nStakeModifierChecksum=%08x, hashProof=%s, prevoutStake=(%s), nStakeTime=%d merkle=%s, hashBlock=%s)",
+        return strprintf("CBlockIndex(nprev=%p, pnext=%p, nFile=%u, nBlockPos=%-6u nHeight=%d, nMint=%s, nMoneySupply=%s, nFlags=(%s)(%d)(%s), nStakeModifier=%016llx, nStakeModifierChecksum=%08x, hashProof=%s, prevoutStake=(%s), nStakeTime=%u merkle=%s, hashBlock=%s)",
             pprev, pnext, nFile, nBlockPos, nHeight,
             FormatMoney(nMint).c_str(), FormatMoney(nMoneySupply).c_str(),
             GeneratedStakeModifier() ? "MOD" : "-", GetStakeEntropyBit(), IsProofOfStake()? "PoS" : "PoW",
-            nStakeModifier, nStakeModifierChecksum,
+            (unsigned long long)nStakeModifier, nStakeModifierChecksum,
             hashProof.ToString().c_str(),
             prevoutStake.ToString().c_str(), nStakeTime,
             hashMerkleRoot.ToString().c_str(),
@@ -2389,6 +2570,11 @@ public:
 
     // Shielded nullifier tracking (prevents double-spend in mempool)
     std::map<uint256, CShieldedNullifierSpent> mapShieldedNullifier;
+
+    // Privacy vNext uses a separate key-image generation and namespace. The
+    // reverse map makes removal independent of re-running proof verification.
+    std::map<uint256, CShieldedNullifierSpent> mapPrivacyVNextNullifier;
+    std::map<uint256, std::vector<uint256> > mapPrivacyVNextTxNullifiers;
 
     bool accept(CTxDB& txdb, CTransaction &tx,
                 bool fCheckInputs, bool* pfMissingInputs, bool fOnlyCheckWithoutAdding=false);

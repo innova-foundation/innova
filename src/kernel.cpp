@@ -469,7 +469,7 @@ bool CheckStakeKernelHash(unsigned int nBits, const CBlock& blockFrom, unsigned 
 }
 
 // Check kernel hash target and coinstake signature
-bool CheckProofOfStake(const CTransaction& tx, unsigned int nBits, uint256& hashProofOfStake, uint256& targetProofOfStake)
+bool CheckProofOfStake(const CTransaction& tx, unsigned int nBits, uint256& hashProofOfStake, uint256& targetProofOfStake, int nEvalHeight)
 {
     if (!tx.IsCoinStake())
         return error("CheckProofOfStake() : called on non-coinstake %s", tx.GetHash().ToString().c_str());
@@ -500,7 +500,7 @@ bool CheckProofOfStake(const CTransaction& tx, unsigned int nBits, uint256& hash
         if (tx.nullstakeProofV2.IsNull() || tx.vShieldedSpend.empty())
             return tx.DoS(100, error("CheckProofOfStake() : NullStake V2 proof missing or no spends"));
 
-        if (!VerifyNullStakeKernelProofV2(tx.nullstakeProofV2, tx.vShieldedSpend[0].cv, nBits))
+        if (!VerifyNullStakeKernelProofV2(tx.nullstakeProofV2, tx.vShieldedSpend[0].cv, nBits, nEvalHeight))
             return tx.DoS(1, error("CheckProofOfStake() : NullStake V2 kernel proof verification failed"));
 
         {
@@ -517,7 +517,7 @@ bool CheckProofOfStake(const CTransaction& tx, unsigned int nBits, uint256& hash
         if (tx.nullstakeProofV3.IsNull() || tx.vShieldedSpend.empty())
             return tx.DoS(100, error("CheckProofOfStake() : NullStake V3 proof missing or no spends"));
 
-        if (!VerifyNullStakeKernelProofV3(tx.nullstakeProofV3, tx.vShieldedSpend[0].cv, nBits))
+        if (!VerifyNullStakeKernelProofV3(tx.nullstakeProofV3, tx.vShieldedSpend[0].cv, nBits, nEvalHeight))
             return tx.DoS(1, error("CheckProofOfStake() : NullStake V3 kernel proof verification failed"));
 
         {

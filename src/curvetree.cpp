@@ -1031,21 +1031,23 @@ static bool VerifyRawAuthPath(const CCurveTreeNode& root,
 
 static bool VerifyFCMPProofUncached(const CCurveTreeNode& root,
                                      const CFCMPProof& proof,
-                                     const CPedersenCommitment& cv);
+                                     const CPedersenCommitment& cv,
+                                     int nEvalHeight);
 
 bool VerifyFCMPProof(const CCurveTreeNode& root,
                       const CFCMPProof& proof,
-                      const CPedersenCommitment& cv)
+                      const CPedersenCommitment& cv,
+                      int nEvalHeight)
 {
     if (!VerifyProofCacheEnabled())
-        return VerifyFCMPProofUncached(root, proof, cv);
+        return VerifyFCMPProofUncached(root, proof, cv, nEvalHeight);
 
     CHashWriter ss(SER_GETHASH, 0);
-    ss << (unsigned char)VERIFYCACHE_FCMP << root << proof << cv;
-    uint256 key = ss.GetHash();
+    ss << root << proof << cv;
+    uint256 key = VerifyProofCacheKey(VERIFYCACHE_FCMP, nEvalHeight, ss.GetHash());
     if (VerifyProofCacheCheck(key))
         return true;
-    if (!VerifyFCMPProofUncached(root, proof, cv))
+    if (!VerifyFCMPProofUncached(root, proof, cv, nEvalHeight))
         return false;
     VerifyProofCacheStore(key);
     return true;
@@ -1053,7 +1055,8 @@ bool VerifyFCMPProof(const CCurveTreeNode& root,
 
 static bool VerifyFCMPProofUncached(const CCurveTreeNode& root,
                                      const CFCMPProof& proof,
-                                     const CPedersenCommitment& cv)
+                                     const CPedersenCommitment& cv,
+                                     int nEvalHeight)
 {
     if (proof.IsNull()) return false;
     if (proof.GetSize() > FCMP_PROOF_MAX_SIZE) return false;
@@ -1075,6 +1078,14 @@ static bool VerifyFCMPProofUncached(const CCurveTreeNode& root,
 
     if (nVersion == FCMP_PROOF_VERSION_IPA)
     {
+        // VerifyPathIPAProof never compares the root-binding digest and never
+        // checks the leaf commitment, so this proof verifies against any claimed
+        // tree. There is no in-place repair: the statement carries no witness
+        // about any tree. Reject it from the hardening height; below it the path
+        // stays reachable so historical blocks replay byte-identically.
+        if (nEvalHeight >= FORK_HEIGHT_SHIELDED_HARDENING)
+            return false;
+
         uint256 expectedRootHash = root.GetHash();
         std::vector<unsigned char> vchRoot(expectedRootHash.begin(), expectedRootHash.end());
 
@@ -1208,14 +1219,15 @@ static bool VerifyFCMPProofUncached(const CCurveTreeNode& root,
 
 bool BatchVerifyFCMPProofs(const CCurveTreeNode& root,
                             const std::vector<CFCMPProof>& vProofs,
-                            const std::vector<CPedersenCommitment>& vCommitments)
+                            const std::vector<CPedersenCommitment>& vCommitments,
+                            int nEvalHeight)
 {
     if (vProofs.size() != vCommitments.size())
         return false;
 
     for (size_t i = 0; i < vProofs.size(); i++)
     {
-        if (!VerifyFCMPProof(root, vProofs[i], vCommitments[i]))
+        if (!VerifyFCMPProof(root, vProofs[i], vCommitments[i], nEvalHeight))
             return false;
     }
     return true;

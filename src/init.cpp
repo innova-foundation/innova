@@ -48,8 +48,10 @@
 #include <stdexcept>
 #include <thread>
 #include <atomic>
+#include <algorithm>
 #include <vector>
 #include <cstring>
+#include <limits>
 
 #ifndef WIN32
 #include <signal.h>
@@ -413,6 +415,12 @@ bool AppInit(int argc, char* argv[])
 
 #if !defined(WIN32) && !defined(QT_GUI)
     fDaemon = GetBoolArg("-daemon", false);
+    if (fDaemon && mapArgs.count("-replayblocks"))
+    {
+        fprintf(stderr,
+                "Error: -replayblocks must run in the foreground so its exit status is authoritative; use -daemon=0\n");
+        return false;
+    }
     if (fDaemon)
     {
         pid_t pid = fork();
@@ -532,8 +540,8 @@ std::string HelpMessage()
         "  -onionseed             " + _("Find peers using .onion seeds (default: 0 unless -connect)") + "\n" +
         "  -nativetor=<n>         " + _("Enable or disable Native Tor Onion Node (default: 0)") +
         "  -staking               " + _("Stake your coins to support network and gain reward (default: 1)") + "\n" +
-        "  -stakingmode=<mode>    " + _("Staking mode: transparent, nullstake, cold, coldprivate (default: transparent)") + "\n" +
-        "  -finalityvotemode=<m>  " + _("Post-DAG finality voting mode: auto, transparent, nullstake, nullstakecold (default: auto)") + "\n" +
+        "  -stakingmode=<mode>    " + _("Staking mode: transparent or cold; legacy nullstake/coldprivate are regtest-only pending privacy vNext (default: transparent)") + "\n" +
+        "  -finalityvotemode=<m>  " + _("Post-DAG finality voting mode: auto or transparent; legacy private modes are regtest-only pending privacy vNext (default: auto)") + "\n" +
         "  -finalitytallymode=<m> " + _("Hidden finality tally mode: off, committee, auto (default: off)") + "\n" +
         "  -finalitytallypubkey=<key> " + _("Advertise a finality tally committee public key") + "\n" +
         "  -finalitytallyprivkey=<key> " + _("Enable local finality tally share handling with a private key") + "\n" +
@@ -603,9 +611,13 @@ std::string HelpMessage()
         "  -checkblocks=<n>       " + _("How many blocks to check at startup (default: 2500, 0 = all)") + "\n" +
         "  -checklevel=<n>        " + _("How thorough the block verification is (0-6, default: 1)") + "\n" +
         "  -loadblock=<file>      " + _("Imports blocks from external blk000?.dat file") + "\n" +
-        "  -replayblocks=<dir>    " + _("Replay every blkNNNN.dat in <dir> through full validation (implies -fullreplayverify), then exit") + "\n" +
+        "  -replayblocks=<dir>    " + _("Replay every blkNNNN.dat in <dir> through full validation (requires -replayexpectedheight/-replayexpectedhash), then exit") + "\n" +
+        "  -replayexpectedheight=<n> " + _("Required trusted terminal height for -replayblocks") + "\n" +
+        "  -replayexpectedhash=<hex> " + _("Required trusted terminal block hash for -replayblocks") + "\n" +
         "  -fullreplayverify      " + _("Force full ECDSA verification of all historic blocks (no checkpoint signature skip)") + "\n" +
         "  -acceptepochstate      " + _("Grandfather pre-marker epoch-state records as deterministic (only if they were written by a deterministic-anchor build; otherwise resync)") + "\n" +
+        "  -regtestboundaryb=<n>  " + _("Regtest only: Boundary-B rehearsal activation height") + "\n" +
+        "  -regtestiv5rehearsal   " + _("Regtest only: treat vNext as consensus ready for state-transition rehearsal (no IV5 verifier)") + "\n" +
 
         "\n" + _("Block creation options:") + "\n" +
         "  -blockminsize=<n>      "   + _("Set minimum block size in bytes (default: 0)") + "\n" +
@@ -655,9 +667,399 @@ bool InitSanityCheck(void)
     return true;
 }
 
+namespace
+{
+struct CShieldedWalletRecoveryWork
+{
+    CBlockIndex* pindex;
+    bool fConnect;
+    std::set<uint256> setDAGSkippedTxs;
+
+    CShieldedWalletRecoveryWork(CBlockIndex* pindexIn, bool fConnectIn)
+        : pindex(pindexIn), fConnect(fConnectIn) {}
+};
+
+bool SameShieldedWalletRecoveryRecordForInit(
+    const CShieldedWalletRecoveryRecord& a,
+    const CShieldedWalletRecoveryRecord& b)
+{
+    return a.nSchema == b.nSchema &&
+           a.hashOldTip == b.hashOldTip &&
+           a.hashFork == b.hashFork &&
+           a.hashNewTip == b.hashNewTip &&
+           a.nDisconnect == b.nDisconnect &&
+           a.nConnect == b.nConnect &&
+           a.hashEffectPlan == b.hashEffectPlan;
+}
+
+bool RecoverPendingShieldedWalletTransitionImpl(
+    CWallet* pwallet,
+    bool& fPendingAcknowledgementOut,
+    CShieldedWalletRecoveryRecord& pendingAcknowledgementOut,
+    std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    fPendingAcknowledgementOut = false;
+    pendingAcknowledgementOut = CShieldedWalletRecoveryRecord();
+    if (!pwallet)
+    {
+        strErrorOut = "shielded wallet recovery requires a loaded wallet";
+        return false;
+    }
+
+    CTxDB txdb("r+");
+    CShieldedWalletRecoveryRecord record;
+    const TxDBReadStatus status =
+        txdb.ReadShieldedWalletRecoveryStatus(record);
+    if (status == TXDB_READ_NOT_FOUND)
+        return true;
+    if (status != TXDB_READ_FOUND)
+    {
+        strErrorOut = "shielded wallet recovery outbox is corrupt or unreadable";
+        return false;
+    }
+
+    uint256 hashPersistedBest;
+    if (!txdb.ReadHashBestChain(hashPersistedBest) ||
+        hashPersistedBest != record.hashNewTip || !pindexBest ||
+        !pindexBest->phashBlock ||
+        pindexBest->GetBlockHash() != record.hashNewTip)
+    {
+        strErrorOut = "shielded wallet recovery target does not match the durable canonical tip";
+        return false;
+    }
+
+    std::vector<CShieldedWalletRecoveryWork> vDisconnect;
+    std::vector<CShieldedWalletRecoveryWork> vConnectReverse;
+    try
+    {
+        LOCK(cs_main);
+        if ((size_t)record.nDisconnect > mapBlockIndex.size() ||
+            (size_t)record.nConnect > mapBlockIndex.size())
+        {
+            strErrorOut = "shielded wallet recovery path count exceeds the loaded block index";
+            return false;
+        }
+
+        CBlockIndex* pindexOld = NULL;
+        CBlockIndex* pindexFork = NULL;
+        CBlockIndex* pindexNew = NULL;
+        if (record.hashOldTip != 0)
+        {
+            std::map<uint256, CBlockIndex*>::const_iterator it =
+                mapBlockIndex.find(record.hashOldTip);
+            if (it == mapBlockIndex.end())
+            {
+                strErrorOut = "shielded wallet recovery old tip is absent from the block index";
+                return false;
+            }
+            pindexOld = it->second;
+        }
+        if (record.hashFork != 0)
+        {
+            std::map<uint256, CBlockIndex*>::const_iterator it =
+                mapBlockIndex.find(record.hashFork);
+            if (it == mapBlockIndex.end())
+            {
+                strErrorOut = "shielded wallet recovery fork is absent from the block index";
+                return false;
+            }
+            pindexFork = it->second;
+        }
+        {
+            std::map<uint256, CBlockIndex*>::const_iterator it =
+                mapBlockIndex.find(record.hashNewTip);
+            if (it == mapBlockIndex.end())
+            {
+                strErrorOut = "shielded wallet recovery new tip is absent from the block index";
+                return false;
+            }
+            pindexNew = it->second;
+        }
+        if (pindexNew != pindexBest || !pindexNew->IsInMainChain() ||
+            (pindexFork && !pindexFork->IsInMainChain()))
+        {
+            strErrorOut = "shielded wallet recovery topology is not anchored in the canonical chain";
+            return false;
+        }
+
+        vDisconnect.reserve(record.nDisconnect);
+        CBlockIndex* pindexWalk = pindexOld;
+        for (uint32_t i = 0; i < record.nDisconnect; ++i)
+        {
+            if (!pindexWalk || pindexWalk == pindexFork ||
+                !pindexWalk->phashBlock)
+            {
+                strErrorOut = "shielded wallet recovery disconnect path is truncated";
+                return false;
+            }
+            vDisconnect.push_back(
+                CShieldedWalletRecoveryWork(pindexWalk, false));
+            pindexWalk = pindexWalk->pprev;
+        }
+        if (pindexWalk != pindexFork)
+        {
+            strErrorOut = "shielded wallet recovery disconnect count does not reach its recorded fork";
+            return false;
+        }
+
+        vConnectReverse.reserve(record.nConnect);
+        pindexWalk = pindexNew;
+        for (uint32_t i = 0; i < record.nConnect; ++i)
+        {
+            if (!pindexWalk || pindexWalk == pindexFork ||
+                !pindexWalk->phashBlock || !pindexWalk->IsInMainChain())
+            {
+                strErrorOut = "shielded wallet recovery connect path is truncated or non-canonical";
+                return false;
+            }
+            vConnectReverse.push_back(
+                CShieldedWalletRecoveryWork(pindexWalk, true));
+            pindexWalk = pindexWalk->pprev;
+        }
+        if (pindexWalk != pindexFork)
+        {
+            strErrorOut = "shielded wallet recovery connect count does not reach its recorded fork";
+            return false;
+        }
+        std::reverse(vConnectReverse.begin(), vConnectReverse.end());
+
+        std::vector<CShieldedWalletEffectDigestEntry> vDigestEntries;
+        vDigestEntries.reserve(vDisconnect.size() + vConnectReverse.size());
+        for (size_t phase = 0; phase < 2; ++phase)
+        {
+            std::vector<CShieldedWalletRecoveryWork>& vWork =
+                phase == 0 ? vDisconnect : vConnectReverse;
+            for (std::vector<CShieldedWalletRecoveryWork>::iterator it =
+                     vWork.begin(); it != vWork.end(); ++it)
+            {
+                CBlock block;
+                if (!block.ReadFromDisk(it->pindex, true) ||
+                    block.GetHash() != it->pindex->GetBlockHash())
+                {
+                    strErrorOut = strprintf(
+                        "shielded wallet recovery block data is missing or corrupt at height %d",
+                        it->pindex->nHeight);
+                    return false;
+                }
+                it->setDAGSkippedTxs.clear();
+                if (it->pindex->nHeight >= FORK_HEIGHT_DAG)
+                {
+                    std::string strActiveSetError;
+                    const TxDBReadStatus activeSetStatus =
+                        txdb.ReadDAGSkippedTxsStatus(
+                            block, it->setDAGSkippedTxs,
+                            strActiveSetError);
+                    if (activeSetStatus != TXDB_READ_FOUND)
+                    {
+                        strErrorOut = strprintf(
+                            "shielded wallet recovery exact DAG active set is %s "
+                            "at height %d%s%s",
+                            activeSetStatus == TXDB_READ_NOT_FOUND
+                                ? "missing" : "corrupt",
+                            it->pindex->nHeight,
+                            strActiveSetError.empty() ? "" : ": ",
+                            strActiveSetError.c_str());
+                        return false;
+                    }
+                }
+                vDigestEntries.push_back(CShieldedWalletEffectDigestEntry(
+                    it->fConnect, it->pindex->GetBlockHash(),
+                    it->setDAGSkippedTxs));
+            }
+        }
+        if (ComputeShieldedWalletEffectPlanDigest(vDigestEntries) !=
+            record.hashEffectPlan)
+        {
+            strErrorOut = "shielded wallet recovery plan digest does not match the committed transition";
+            return false;
+        }
+    }
+    catch (const std::exception& e)
+    {
+        strErrorOut = strprintf("shielded wallet recovery plan construction failed: %s",
+                                e.what());
+        return false;
+    }
+    catch (...)
+    {
+        strErrorOut = "shielded wallet recovery plan construction failed";
+        return false;
+    }
+
+    printf("Recovering shielded wallet across committed transition: disconnect=%u connect=%u\n",
+           record.nDisconnect, record.nConnect);
+    for (size_t phase = 0; phase < 2; ++phase)
+    {
+        std::vector<CShieldedWalletRecoveryWork>& vWork =
+            phase == 0 ? vDisconnect : vConnectReverse;
+        for (std::vector<CShieldedWalletRecoveryWork>::const_iterator it =
+                 vWork.begin(); it != vWork.end(); ++it)
+        {
+            CBlock block;
+            if (!block.ReadFromDisk(it->pindex, true) ||
+                block.GetHash() != it->pindex->GetBlockHash())
+            {
+                strErrorOut = strprintf(
+                    "shielded wallet recovery could not reread block at height %d",
+                    it->pindex->nHeight);
+                return false;
+            }
+            std::string strWalletError;
+            bool fApplied = true;
+            if (it->pindex->nHeight >= FORK_HEIGHT_SHIELDED)
+            {
+                fApplied = it->fConnect
+                    ? pwallet->ApplyShieldedBlockRecoveryChecked(
+                          block, it->pindex, it->setDAGSkippedTxs,
+                          strWalletError)
+                    : pwallet->DisconnectShieldedBlockRecoveryChecked(
+                          block, it->pindex, strWalletError);
+            }
+            if (fApplied && !it->fConnect)
+                fApplied = pwallet->DisconnectAuxiliaryBlockRecoveryChecked(
+                    block, it->setDAGSkippedTxs, strWalletError);
+            if (!fApplied)
+            {
+                strErrorOut = strprintf(
+                    "shielded wallet recovery %s failed at height %d: %s",
+                    it->fConnect ? "connect" : "disconnect",
+                    it->pindex->nHeight, strWalletError.c_str());
+                return false;
+            }
+        }
+    }
+
+    std::string strReconcileError;
+    if (record.nDisconnect > 0 &&
+        !pwallet->ReconcileShieldedNoteSpentStateChecked(
+            txdb, pindexBest->nHeight, strReconcileError))
+    {
+        strErrorOut = strprintf(
+            "shielded wallet recovery spent-state reconciliation failed: %s",
+            strReconcileError.c_str());
+        return false;
+    }
+
+    // Do not acknowledge here: the LevelDB outbox stays live until replay, rescan, the wallet
+    // locator and the Berkeley DB log flush have all succeeded.
+    CShieldedWalletRecoveryRecord currentRecord;
+    if (txdb.ReadShieldedWalletRecoveryStatus(currentRecord) !=
+            TXDB_READ_FOUND ||
+        !SameShieldedWalletRecoveryRecordForInit(currentRecord, record))
+    {
+        strErrorOut = "shielded wallet recovery outbox changed before acknowledgement";
+        return false;
+    }
+    pendingAcknowledgementOut = record;
+    fPendingAcknowledgementOut = true;
+    printf("Shielded wallet recovery replay completed at %s; "
+           "acknowledgement deferred until auxiliary rescan durability\n",
+           record.hashNewTip.ToString().substr(0, 20).c_str());
+    return true;
+}
+
+bool RecoverPendingShieldedWalletTransition(
+    CWallet* pwallet,
+    bool& fPendingAcknowledgementOut,
+    CShieldedWalletRecoveryRecord& pendingAcknowledgementOut,
+    std::string& strErrorOut)
+{
+    fPendingAcknowledgementOut = false;
+    pendingAcknowledgementOut = CShieldedWalletRecoveryRecord();
+    try
+    {
+        return RecoverPendingShieldedWalletTransitionImpl(
+            pwallet, fPendingAcknowledgementOut,
+            pendingAcknowledgementOut, strErrorOut);
+    }
+    catch (const std::exception& e)
+    {
+        strErrorOut = strprintf("shielded wallet recovery raised an exception: %s",
+                                e.what());
+        return false;
+    }
+    catch (...)
+    {
+        strErrorOut = "shielded wallet recovery raised an unknown exception";
+        return false;
+    }
+}
+
+bool AcknowledgePendingShieldedWalletTransition(
+    const CShieldedWalletRecoveryRecord& expected,
+    std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    if (!expected.IsValid())
+    {
+        strErrorOut = "pending shielded-wallet acknowledgement is invalid";
+        return false;
+    }
+
+    // Wallet/name Berkeley DB uses DB_TXN_WRITE_NOSYNC.  The wallet's final
+    // best-block locator is written before this call; flush every preceding
+    // auxiliary mutation and the locator before the LevelDB outbox can clear.
+    if (!bitdb.FlushLog())
+    {
+        strErrorOut = "could not flush auxiliary database logs before shielded-wallet acknowledgement";
+        return false;
+    }
+
+    CTxDB txdb("r+");
+    if (!txdb.AcknowledgeShieldedWalletRecovery(expected))
+    {
+        strErrorOut = "shielded-wallet recovery outbox is missing, corrupt, changed, or could not be durably acknowledged";
+        return false;
+    }
+    printf("Shielded wallet recovery acknowledged at %s\n",
+           expected.hashNewTip.ToString().substr(0, 20).c_str());
+    return true;
+}
+
+bool HasPendingOrCorruptShieldedWalletRecovery(std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    try
+    {
+        CTxDB txdb("r");
+        CShieldedWalletRecoveryRecord record;
+        const TxDBReadStatus status =
+            txdb.ReadShieldedWalletRecoveryStatus(record);
+        if (status == TXDB_READ_NOT_FOUND)
+            return false;
+        strErrorOut = status == TXDB_READ_FOUND
+            ? "a committed shielded-wallet transition is pending"
+            : "the shielded-wallet recovery outbox is corrupt or unreadable";
+        return true;
+    }
+    catch (const std::exception& e)
+    {
+        strErrorOut = strprintf("could not inspect the shielded-wallet recovery outbox: %s",
+                                e.what());
+        return true;
+    }
+    catch (...)
+    {
+        strErrorOut = "could not inspect the shielded-wallet recovery outbox";
+        return true;
+    }
+}
+} // namespace
+
 /** Initialize bitcoin.
  *  @pre Parameters should be parsed and config file should be read.
  */
+// -replayblocks is a release gate: a run that cannot complete must exit
+// non-zero. InitError alone unwinds into Shutdown(), which exits 0.
+static bool ReplayFail(const std::string& strMsg)
+{
+    printf("-replayblocks FAILED: %s\n", strMsg.c_str());
+    fprintf(stderr, "-replayblocks FAILED: %s\n", strMsg.c_str());
+    exit(1);
+    return false;
+}
+
 bool AppInit2()
 {
     // ********************************************************* Step 1: setup
@@ -764,6 +1166,24 @@ bool AppInit2()
         SoftSetBoolArg("-dnsseed", false);
         SoftSetBoolArg("-onionseed", false);
         SoftSetBoolArg("-listen", true);
+    }
+
+    // Boundary-B rehearsal knobs. Regtest only, and independent by design: a
+    // height must never imply the vNext implementation is consensus ready.
+    if (mapArgs.count("-regtestboundaryb") || GetBoolArg("-regtestiv5rehearsal", false))
+    {
+        if (!fRegTest)
+            return InitError(_("-regtestboundaryb and -regtestiv5rehearsal require -regtest"));
+        if (mapArgs.count("-regtestboundaryb"))
+        {
+            const int64_t nB = GetArg("-regtestboundaryb", (int64_t)PRIVACY_VNEXT_HEIGHT_UNSET);
+            if (nB < 0 || nB > (int64_t)PRIVACY_VNEXT_HEIGHT_UNSET)
+                return InitError(_("-regtestboundaryb is out of range"));
+            nRegtestBoundaryBHeight = (int)nB;
+        }
+        fRegtestShieldedVNextRehearsal = GetBoolArg("-regtestiv5rehearsal", false);
+        printf("Boundary-B rehearsal: height=%d ready=%d (regtest only; IV5 verifier is NOT wired into consensus)\n",
+               nRegtestBoundaryBHeight, (int)fRegtestShieldedVNextRehearsal);
     }
 
     fCNLock = GetBoolArg("-cnconflock");
@@ -917,21 +1337,25 @@ bool AppInit2()
     }
 
     {
-        string strStakingMode = GetArg("-stakingmode", "transparent");
-        LOCK(cs_stakingMode);
+        const string strStakingMode = GetArg("-stakingmode", "transparent");
+        StakingMode eRequestedStakingMode = STAKE_TRANSPARENT;
         if (strStakingMode == "nullstake" || strStakingMode == "private" || strStakingMode == "1")
-            nStakingMode = STAKE_NULLSTAKE;
+            eRequestedStakingMode = STAKE_NULLSTAKE;
         else if (strStakingMode == "cold" || strStakingMode == "2")
-            nStakingMode = STAKE_COLD;
+            eRequestedStakingMode = STAKE_COLD;
         else if (strStakingMode == "coldprivate" || strStakingMode == "nullstakecold" || strStakingMode == "3")
-            nStakingMode = STAKE_NULLSTAKE_COLD;
-        else if (strStakingMode == "transparent" || strStakingMode == "0")
-            nStakingMode = STAKE_TRANSPARENT;
-        else
-        {
+            eRequestedStakingMode = STAKE_NULLSTAKE_COLD;
+        else if (strStakingMode != "transparent" && strStakingMode != "0")
             printf("WARNING: Unknown -stakingmode '%s', using transparent\n", strStakingMode.c_str());
-            nStakingMode = STAKE_TRANSPARENT;
+
+        if (IsLegacyPrivateStakingMode(eRequestedStakingMode) &&
+            IsLegacyPrivacyPolicyDisabled())
+        {
+            return InitError(_("Legacy private staking modes are disabled on public networks pending privacy vNext; use -stakingmode=transparent or -stakingmode=cold."));
         }
+
+        LOCK(cs_stakingMode);
+        nStakingMode = eRequestedStakingMode;
     }
 
     {
@@ -1400,6 +1824,82 @@ bool AppInit2()
     };
     printf(" block index %15" PRId64"ms\n", GetTimeMillis() - nStart);
 
+    // Validate the retained connect-time DAG plans before loading any wallet or worker. Legacy
+    // databases recover only with an exact CTxIndex position for every tx; otherwise fail closed.
+    {
+        CTxDB txdbDAGActiveSets("r+");
+        std::string strDAGActiveSetError;
+        if (!ValidateAndRecoverDAGActiveSetPersistence(
+                txdbDAGActiveSets, strDAGActiveSetError))
+            return InitError(strprintf(_(
+                "DAG active-set persistence validation/recovery failed: %s. "
+                "Do not infer the historical plan from the current DAG. If the "
+                "message reports an ambiguous legacy transaction, preserve "
+                "wallet.dat and restart with -reindex or resync the chain database."),
+                strDAGActiveSetError.c_str()));
+    }
+
+    if (pindexBest && IsBoundaryBActiveAtHeight(pindexBest->nHeight))
+    {
+        CTxDB txdbPrivacyVNext("r");
+        std::string strPrivacyVNextError;
+        if (!ValidatePrivacyVNextNullifierPersistence(
+                txdbPrivacyVNext, strPrivacyVNextError))
+            return InitError(strprintf(_(
+                "IV5 spent-key persistence validation failed: %s. "
+                "The chain database is incomplete or inconsistent; preserve "
+                "wallet.dat and restart with -reindex or resync."),
+                strPrivacyVNextError.c_str()));
+    }
+
+    // Validate and backfill the missing auxiliary records for the 16 shielded genesis decoys
+    // before starting threads. Never recreate a commitment or overwrite a conflicting record.
+    if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_SHIELDED)
+    {
+        if (!CZKContext::Initialize())
+            return InitError(_("Failed to initialize the zero-knowledge proof context while validating shielded genesis commitments."));
+
+        CTxDB txdbShieldedGenesis("r+");
+        std::string strShieldedGenesisError;
+        if (!ValidateAndMigrateShieldedGenesisCommitmentIndexes(
+                txdbShieldedGenesis, strShieldedGenesisError))
+            return InitError(strprintf(_(
+                "Shielded genesis commitment index validation failed: %s. "
+                "The chain database is incomplete or conflicting; restart with "
+                "-reindex or preserve wallet.dat and resync."),
+                strShieldedGenesisError.c_str()));
+
+        int nEpochSchema = 0;
+        if (txdbShieldedGenesis.ReadEpochStateSchema(nEpochSchema) &&
+            nEpochSchema >= EPOCHSTATE_SCHEMA_V3)
+        {
+            std::string strShieldedV3Error;
+            if (!txdbShieldedGenesis.ValidateShieldedCommitmentIndexV3(
+                    strShieldedV3Error))
+                return InitError(strprintf(_(
+                    "Shielded schema-V3 persistence validation failed: %s. "
+                    "The reverse index/tree snapshot is incomplete or "
+                    "conflicting; restart with -reindex or preserve wallet.dat "
+                    "and resync."), strShieldedV3Error.c_str()));
+
+            CIncrementalMerkleTree currentShieldedTree;
+            int nCurrentAnchorHeight = -1;
+            if (!txdbShieldedGenesis.ReadShieldedTree(
+                    currentShieldedTree) ||
+                txdbShieldedGenesis.ReadShieldedAnchorStatus(
+                    currentShieldedTree.Root()) != TXDB_READ_FOUND ||
+                txdbShieldedGenesis.ReadShieldedAnchorHeightStatus(
+                    currentShieldedTree.Root(), nCurrentAnchorHeight) !=
+                    TXDB_READ_FOUND ||
+                nCurrentAnchorHeight < FORK_HEIGHT_SHIELDED ||
+                nCurrentAnchorHeight > pindexBest->nHeight)
+                return InitError(_(
+                    "Shielded schema-V3 current tree/anchor pair is missing "
+                    "or corrupt; restart with -reindex or preserve wallet.dat "
+                    "and resync."));
+        }
+    }
+
     // Persisted relayed tally shares can outlive their pending votes across
     // a restart (pending votes are memory-only). Purge any share whose vote
     // no longer resolves so the miner never embeds a share that would make
@@ -1418,52 +1918,50 @@ bool AppInit2()
     nStart2 = GetTimeMillis();
 
     extern bool createNameIndexFile();
+    extern bool ValidateNameIndexTip(const CBlockIndex*, std::string&);
 
     {
         fs::path pathNamesDB = GetDataDir() / "innovanamesindex.dat";
-        fs::path pathNamesVer = GetDataDir() / "innovanamesindex.version";
-        int nResetHeight = FORK_HEIGHT_IDNS_RESET;
-        bool fNeedRebuild = false;
+        const bool fNameDBExists = fs::exists(pathNamesDB);
+        bool fNeedRebuild = !fNameDBExists;
+        std::string strNameIndexError;
 
-        if (fs::exists(pathNamesDB))
-        {
-            if (nResetHeight > 0)
-            {
-                int nStoredReset = 0;
-                FILE* fVer = fopen(pathNamesVer.string().c_str(), "r");
-                if (fVer)
-                {
-                    fscanf(fVer, "%d", &nStoredReset);
-                    fclose(fVer);
-                }
-                if (nStoredReset < nResetHeight)
-                {
-                    printf("IDNS reset: database era %d < reset height %d, rebuilding...\n",
-                           nStoredReset, nResetHeight);
-                    fs::remove(pathNamesDB);
-                    fNeedRebuild = true;
-                }
-            }
-        }
-        else
+        if (!fNeedRebuild &&
+            !ValidateNameIndexTip(pindexBest, strNameIndexError))
         {
             fNeedRebuild = true;
+            printf("Name index recovery cursor is not current: %s. Rebuilding...\n",
+                   strNameIndexError.c_str());
+        }
+        else if (fNeedRebuild)
+        {
+            strNameIndexError = "name-index database is missing";
+            printf("Name index is missing. Rebuilding...\n");
         }
 
-        if (fNeedRebuild && !createNameIndexFile())
+        if (fNeedRebuild)
         {
-            printf("Fatal error: Failed to create innovanamesindex.dat\n");
-            return false;
-        }
+            // Berkeley DB handles must be closed through the environment before
+            // removal.  Removing the path directly can leave a cached handle
+            // referring to the old, partially applied index.
+            if (fNameDBExists && !bitdb.RemoveDb("innovanamesindex.dat"))
+                return InitError(strprintf(_(
+                    "Name index recovery required (%s), but the stale database "
+                    "could not be removed. Stop all Innova processes and retry."),
+                    strNameIndexError.c_str()));
 
-        if (nResetHeight > 0)
-        {
-            FILE* fVer = fopen(pathNamesVer.string().c_str(), "w");
-            if (fVer)
-            {
-                fprintf(fVer, "%d\n", nResetHeight);
-                fclose(fVer);
-            }
+            if (!createNameIndexFile())
+                return InitError(_(
+                    "Failed to rebuild innovanamesindex.dat from the canonical "
+                    "chain. Block/index data may be missing or corrupt; restart "
+                    "with -reindex or preserve wallet.dat and resync."));
+
+            strNameIndexError.clear();
+            if (!ValidateNameIndexTip(pindexBest, strNameIndexError))
+                return InitError(strprintf(_(
+                    "Name index rebuild completed without an exact canonical-tip "
+                    "recovery cursor (%s). Restart with -reindex or preserve "
+                    "wallet.dat and resync."), strNameIndexError.c_str()));
         }
     }
 
@@ -1587,28 +2085,135 @@ bool AppInit2()
         printf("Loaded %zu M-of-N delegation(s) and %zu staker member key(s) from wallet\n",
                pwalletMain->mapMofNDelegations.size(), pwalletMain->mapMofNMemberKeys.size());
 
+    bool fPendingShieldedWalletAcknowledgement = false;
+    CShieldedWalletRecoveryRecord pendingShieldedWalletAcknowledgement;
+    if (nLoadWalletRet == DB_LOAD_OK)
+    {
+        std::string strShieldedRecoveryError;
+        if (!RecoverPendingShieldedWalletTransition(
+                pwalletMain,
+                fPendingShieldedWalletAcknowledgement,
+                pendingShieldedWalletAcknowledgement,
+                strShieldedRecoveryError))
+            return InitError(strprintf(
+                "Shielded wallet recovery failed: %s. Preserve both wallet.dat "
+                "and txleveldb and retry after restoring the missing block/index "
+                "data. Do not use -reindex or delete txleveldb while this marker "
+                "is pending; doing so can destroy the abandoned-branch cleanup "
+                "plan.",
+                strShieldedRecoveryError.c_str()));
+    }
+    else if (nLoadWalletRet == DB_NONCRITICAL_ERROR)
+    {
+        std::string strPendingRecoveryError;
+        if (HasPendingOrCorruptShieldedWalletRecovery(
+                strPendingRecoveryError))
+            return InitError(strprintf(
+                "Wallet data loaded with noncritical errors while %s. The "
+                "shielded recovery marker was preserved and cannot be "
+                "acknowledged against an incomplete wallet. Restore or repair "
+                "wallet.dat without deleting txleveldb, then restart.",
+                strPendingRecoveryError.c_str()));
+    }
+
+    if (!pwalletMain->CacheAnonStats())
+        printf("CacheAnonStats() failed; legacy anonymous balances will remain unavailable until a successful rescan\n");
+
     RegisterWallet(pwalletMain);
 
+    if (!pindexBest || !pindexGenesisBlock)
+        return InitError("Wallet recovery requires a loaded canonical chain; restart with -reindex/resync.");
+
     CBlockIndex *pindexRescan = pindexBest;
+    bool fRepairWalletLocator = false;
     if (GetBoolArg("-rescan"))
     {
         pindexRescan = pindexGenesisBlock;
+        fRepairWalletLocator = true;
     } else
     {
         CWalletDB walletdb(strWalletFileName);
         CBlockLocator locator;
         if (walletdb.ReadBestBlock(locator))
             pindexRescan = locator.GetBlockIndex();
+        else
+        {
+            // A missing/unreadable locator can mean the process stopped after
+            // the chain commit but before wallet effects completed.  Starting
+            // at pindexBest would silently skip recovery.
+            printf("Wallet best-block locator is missing or unreadable; rescanning from genesis\n");
+            pindexRescan = pindexGenesisBlock;
+            fRepairWalletLocator = true;
+        }
     };
+
+    if (!pindexRescan)
+    {
+        printf("Wallet best-block locator does not resolve to the canonical chain; rescanning from genesis\n");
+        pindexRescan = pindexGenesisBlock;
+        fRepairWalletLocator = true;
+    }
+
+    if (fPendingShieldedWalletAcknowledgement)
+    {
+        // Replay the committed canonical suffix from the recorded fork even if the locator already
+        // reached the new tip, so transparent wallet connects recover before the outbox ack.
+        CBlockIndex* pindexRecoveryRescan = pindexGenesisBlock;
+        if (pendingShieldedWalletAcknowledgement.hashFork != 0)
+        {
+            std::map<uint256, CBlockIndex*>::const_iterator itFork =
+                mapBlockIndex.find(
+                    pendingShieldedWalletAcknowledgement.hashFork);
+            if (itFork == mapBlockIndex.end() || !itFork->second ||
+                !itFork->second->IsInMainChain())
+                return InitError(
+                    "Shielded wallet recovery fork is no longer canonical; "
+                    "the recovery outbox was preserved.");
+            pindexRecoveryRescan = itFork->second;
+        }
+        if (!pindexRecoveryRescan)
+            return InitError(
+                "Shielded wallet recovery has no safe transparent-wallet "
+                "rescan start; the recovery outbox was preserved.");
+        if (!pindexRescan ||
+            pindexRecoveryRescan->nHeight < pindexRescan->nHeight)
+            pindexRescan = pindexRecoveryRescan;
+        fRepairWalletLocator = true;
+    }
 
     if (pindexBest != pindexRescan && pindexBest && pindexRescan && pindexBest->nHeight > pindexRescan->nHeight)
     {
         uiInterface.InitMessage(_("Rescanning..."));
         printf("Rescanning last %i blocks (from block %i)...\n", pindexBest->nHeight - pindexRescan->nHeight, pindexRescan->nHeight);
         nStart = GetTimeMillis();
-        pwalletMain->ScanForWalletTransactions(pindexRescan, true);
+        int nWalletTransactionsFound = 0;
+        std::string strRescanError;
+        if (!pwalletMain->ScanForWalletTransactionsChecked(
+                pindexRescan, true, nWalletTransactionsFound,
+                strRescanError))
+            return InitError(strprintf("Wallet rescan failed: %s. Restore the wallet from a known-good backup or restart with -rescan after repairing block data.",
+                                       strRescanError.c_str()));
+        fRepairWalletLocator = true;
         printf(" rescan      %15" PRId64"ms\n", GetTimeMillis() - nStart);
     };
+
+    if (fRepairWalletLocator &&
+        !pwalletMain->SetBestChainChecked(CBlockLocator(pindexBest)))
+        return InitError("Wallet rescan completed but its best-block locator could not be persisted; check wallet storage and restart with -rescan.");
+
+    if (fPendingShieldedWalletAcknowledgement)
+    {
+        std::string strAcknowledgementError;
+        if (!AcknowledgePendingShieldedWalletTransition(
+                pendingShieldedWalletAcknowledgement,
+                strAcknowledgementError))
+            return InitError(strprintf(
+                "Shielded wallet recovery replay and transparent rescan "
+                "completed, but durable acknowledgement failed: %s. "
+                "The recovery outbox was preserved; keep wallet.dat and "
+                "txleveldb together and restart.",
+                strAcknowledgementError.c_str()));
+    }
 
     // Add wallet transactions that aren't already in a block to mapTransactions
     pwalletMain->ReacceptWalletTransactions();
@@ -1644,13 +2249,30 @@ bool AppInit2()
     // blkNNNN.dat in <dir> (or a single file) through the real ProcessBlock pipeline
     // with full ECDSA verification forced (no checkpoint signature skip), into the
     // active datadir. Used to re-validate chain history end to end without an
-    // external tool. Files are imported in name order; LoadExternalBlockFile skips
-    // already-known blocks, so the pass is resumable.
+    // external tool. Files are imported in name order. An empty source, an unreadable file,
+    // or a file yielding no new block fails the replay; release evidence uses a fresh datadir.
     if (mapArgs.count("-replayblocks"))
     {
         fFullReplayVerify = true;
         fs::path pathSrc = fs::path(GetArg("-replayblocks", ""));
         uiInterface.InitMessage(_("Replaying blocks with full verification..."));
+
+        if (!mapArgs.count("-replayexpectedheight") ||
+            !mapArgs.count("-replayexpectedhash"))
+            return ReplayFail(
+                "-replayblocks requires both -replayexpectedheight and "
+                "-replayexpectedhash so a partial history cannot pass");
+        const int64_t nExpectedHeight64 =
+            GetArg("-replayexpectedheight", (int64_t)-1);
+        const std::string strExpectedHash =
+            GetArg("-replayexpectedhash", "");
+        if (nExpectedHeight64 < 0 ||
+            nExpectedHeight64 > std::numeric_limits<int>::max() ||
+            strExpectedHash.size() != 64 || !IsHex(strExpectedHash))
+            return ReplayFail(
+                "-replayexpectedheight/-replayexpectedhash are malformed");
+        uint256 hashExpected;
+        hashExpected.SetHex(strExpectedHash);
 
         std::vector<fs::path> vFiles;
         if (fs::is_directory(pathSrc))
@@ -1669,14 +2291,36 @@ bool AppInit2()
             vFiles.push_back(pathSrc);
         }
 
+        if (vFiles.empty())
+            return ReplayFail(strprintf(
+                "-replayblocks found no blkNNNN.dat files at %s",
+                pathSrc.string().c_str()));
+
         printf("-replayblocks: %d block file(s) from %s, full ECDSA verify ON\n",
                (int)vFiles.size(), pathSrc.string().c_str());
         for (const fs::path& f : vFiles)
         {
             FILE *file = fopen(f.string().c_str(), "rb");
-            if (file)
-                LoadExternalBlockFile(file);
+            if (!file)
+                return ReplayFail(strprintf(
+                    "-replayblocks could not open %s",
+                    f.string().c_str()));
+            if (!LoadExternalBlockFile(file))
+                return ReplayFail(strprintf(
+                    "-replayblocks did not cleanly validate every block in %s",
+                    f.string().c_str()));
         }
+        if (!pindexBest ||
+            pindexBest->nHeight != (int)nExpectedHeight64 ||
+            pindexBest->GetBlockHash() != hashExpected)
+            return ReplayFail(strprintf(
+                "-replayblocks terminal tip mismatch: expected %d/%s, got %d/%s",
+                (int)nExpectedHeight64, hashExpected.ToString().c_str(),
+                pindexBest ? pindexBest->nHeight : -1,
+                pindexBest ? pindexBest->GetBlockHash().ToString().c_str()
+                           : uint256(0).ToString().c_str()));
+        printf("-replayblocks: trusted terminal tip verified at %d/%s\n",
+               (int)nExpectedHeight64, hashExpected.ToString().c_str());
         exit(0);
     }
 
@@ -1810,14 +2454,6 @@ bool AppInit2()
         uiInterface.NotifyAdrenalineNodeChanged(c);
     }
 
-    //Threading still needs reworking
-    NewThread(ThreadCheckCollaTeralPool, NULL);
-
-    NewThread(ThreadNullSend, NULL);
-
-    if (!GetBoolArg("-nofinalityvoting", false))
-        NewThread(ThreadFinalityVoter, NULL);
-
     // DAG manager initialized via global constructor
     // Links loaded during LoadBlockIndex() in txdb-leveldb.cpp
     if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_DAG)
@@ -1830,7 +2466,8 @@ bool AppInit2()
         {
             // PruneDAGData persists the actual exclusive prune boundary,
             // not the tip height. Subtracting DAG_PRUNE_DEPTH a second time
-            // makes restart disagree about which missing records are expected.
+            // made restart disagree about which missing DAG records were
+            // expected versus corrupt.
             g_dagManager.SetPrunedBelowHeight(nDAGCleanHeight);
         }
         if (nDAGCleanHeight > 0)
@@ -1897,6 +2534,44 @@ bool AppInit2()
             }
         }
     }
+
+    // Schema V3 is intentionally not grandfatherable: its exact-boundary roots and
+    // atomic state/tree invariant cannot be inferred from an older marker. A node whose
+    // best chain has crossed the V3 activation must have committed the V3 marker in the
+    // same batch as that best-chain transition. Anything else is a torn/old database.
+    if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
+    {
+        CTxDB txdbEpochV3("r");
+        int nEpochSchema = 0;
+        std::string strEpochTipError;
+        const bool fSchemaRead = txdbEpochV3.ReadEpochStateSchema(nEpochSchema);
+        const int nExpectedEpochSchema =
+            IsBoundaryBActiveAtHeight(pindexBest->nHeight)
+                ? EPOCHSTATE_SCHEMA_V4 : EPOCHSTATE_SCHEMA_V3;
+        const bool fEpochTipValid =
+            fSchemaRead && nEpochSchema == nExpectedEpochSchema &&
+            g_dagManager.GetLoadedEpochStateCount() > 0 &&
+            g_dagManager.ValidateEpochStateTip(pindexBest, strEpochTipError);
+        if (!fEpochTipValid)
+        {
+            if (strEpochTipError.empty())
+                strEpochTipError = "schema marker or epoch-state set is missing";
+            return InitError(strprintf(_(
+                "Epoch-state schema %d is required at height %d, but the chain database has "
+                "schema marker %d and %d loaded epoch records (%s). This indicates an old or torn "
+                "epoch-state database; continuing could split consensus. Restart with -reindex "
+                "or remove the chain database (preserve wallet.dat) and resync."),
+                nExpectedEpochSchema, pindexBest->nHeight, nEpochSchema,
+                (int)g_dagManager.GetLoadedEpochStateCount(), strEpochTipError.c_str()));
+        }
+    }
+
+    // Background workers start only after every DAG and epoch-state integrity/schema
+    // guard above has passed.
+    NewThread(ThreadCheckCollaTeralPool, NULL);
+    NewThread(ThreadNullSend, NULL);
+    if (!GetBoolArg("-nofinalityvoting", false))
+        NewThread(ThreadFinalityVoter, NULL);
 
     RandAddSeedPerfmon();
 

@@ -3,6 +3,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #include "verifycache.h"
 
+#include "hash.h"
 #include "sync.h"
 #include "util.h"
 
@@ -18,6 +19,24 @@ namespace {
 CCriticalSection cs_verifyCache;
 std::list<uint256> lruOrder;                                  // front = most recently used
 std::map<uint256, std::list<uint256>::iterator> mapCache;     // key -> its node in lruOrder
+}
+
+uint256 VerifyProofCacheKey(int nDomain, int nHeight, const uint256& hashArgs)
+{
+    extern bool fTestNet;
+    extern bool fRegTest;
+    // Network is bound explicitly rather than relying on the argument bytes
+    // differing: fork heights differ per network, so the same proof at the same
+    // height can be judged under different rules on regtest vs mainnet.
+    const unsigned char nNetwork = fRegTest ? 2 : (fTestNet ? 1 : 0);
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("Innova/VerifyProofCache/v1");
+    ss << (uint32_t)VERIFYCACHE_SEMANTICS_VERSION;
+    ss << (unsigned char)nNetwork;
+    ss << (int32_t)nDomain;
+    ss << (int32_t)nHeight;
+    ss << hashArgs;
+    return ss.GetHash();
 }
 
 bool VerifyProofCacheEnabled()

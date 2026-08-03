@@ -6,6 +6,7 @@
 #include "main.h"
 #include "txdb.h"
 #include "finality.h"
+#include "privacy_vnext_ffi.h"
 #include "util.h"
 
 #include <algorithm>
@@ -16,11 +17,22 @@ CDAGManager g_dagManager;
 uint256 CEpochState::GetDigest() const
 {
     CHashWriter ss(SER_GETHASH, 0);
-    ss << std::string("Innova/IDAG/EpochState/v3");
+    ss << (nSerVersion >= EPOCHSTATE_SER_VERSION_V4
+               ? std::string("Innova/IDAG/EpochState/v4")
+               : std::string("Innova/IDAG/EpochState/v3"));
     ss << nEpoch << hashBoundaryBlock << nHeightStart << nHeightEnd << vBlockHashes;
     ss << hashCurveRoot << hashNullifierRoot << hashVoteSetRoot << hashFinalityCertificate;
     ss << nTotalTrust << nBlockCount << nTxCount << nFinalityTier;
     ss << nConsecutiveHardCount << fFinalized << nFinalizedHeightAsOf;
+    if (nSerVersion >= EPOCHSTATE_SER_VERSION_V4)
+    {
+        ss << vchVNextRoot << nVNextTreeSize << vchVNextNullifierState;
+        ss << hashVNextNullifierRoot << nVNextNullifierCount;
+        ss << vVNextEpochNullifiers;
+        ss << vchVNextParameterDigest << hashVNextFinalizedAnchor;
+        ss << nVNextFinalizedHeight << vVNextActiveBlockTxCounts;
+        ss << vVNextActiveTxIds << hashVNextActiveTxSet;
+    }
     return ss.GetHash();
 }
 
@@ -75,6 +87,148 @@ std::vector<uint256> ExtractDAGParents(const CScript& scriptCoinbase)
     return vResult;
 }
 
+DAGParentDecodeStatus DecodeCanonicalDAGParentScript(
+    const CScript& script, std::vector<uint256>& vParents,
+    std::string& strError)
+{
+    vParents.clear();
+    strError.clear();
+
+    if (script.size() < 2 || script[0] != OP_RETURN)
+        return DAG_PARENT_NOT_FOUND;
+
+    // 32 hashes (1,029 payload bytes) exceed the 520-byte element policy, so parse the push
+    // directly while keeping the canonical-encoding checks below.
+    size_t nOffset = 1;
+    const unsigned char opcode = script[nOffset++];
+    uint64_t nDataSize = 0;
+    if (opcode <= 75)
+        nDataSize = opcode;
+    else if (opcode == OP_PUSHDATA1)
+    {
+        if (nOffset + 1 > script.size())
+            return DAG_PARENT_NOT_FOUND;
+        nDataSize = script[nOffset++];
+    }
+    else if (opcode == OP_PUSHDATA2)
+    {
+        if (nOffset + 2 > script.size())
+            return DAG_PARENT_NOT_FOUND;
+        nDataSize = (uint64_t)script[nOffset] |
+                    ((uint64_t)script[nOffset + 1] << 8);
+        nOffset += 2;
+    }
+    else
+        return DAG_PARENT_NOT_FOUND;
+    // The count byte bounds malformed candidates to at most 255 hashes. Read
+    // that bounded shape so max-plus-one is classified as malformed rather
+    // than silently treated as an unrelated OP_RETURN.
+    if (nDataSize > 5 + (uint64_t)255 * 32 ||
+        nOffset + nDataSize > script.size())
+        return DAG_PARENT_NOT_FOUND;
+
+    std::vector<unsigned char> vchData(
+        script.begin() + nOffset,
+        script.begin() + nOffset + (size_t)nDataSize);
+    nOffset += (size_t)nDataSize;
+    if (vchData.size() < 4 ||
+        memcmp(vchData.data(), DAG_PARENT_TAG, 4) != 0)
+        return DAG_PARENT_NOT_FOUND;
+
+    if (nOffset != script.size())
+    {
+        strError = "IDAG commitment has trailing script operations";
+        return DAG_PARENT_MALFORMED;
+    }
+    if (vchData.size() < 5)
+    {
+        strError = "IDAG commitment is missing its parent count";
+        return DAG_PARENT_MALFORMED;
+    }
+
+    const unsigned int nCount = vchData[4];
+    if (nCount == 0 || nCount > MAX_DAG_PARENTS)
+    {
+        strError = strprintf("IDAG parent count %u is outside 1..%d",
+                             nCount, MAX_DAG_PARENTS);
+        return DAG_PARENT_MALFORMED;
+    }
+    const size_t nExpected = 5 + (size_t)nCount * 32;
+    if (vchData.size() != nExpected)
+    {
+        strError = strprintf("IDAG payload length %u does not match count %u",
+                             (unsigned int)vchData.size(), nCount);
+        return DAG_PARENT_MALFORMED;
+    }
+
+    std::set<uint256> setParents;
+    for (unsigned int i = 0; i < nCount; ++i)
+    {
+        uint256 hash;
+        memcpy(hash.begin(), &vchData[5 + i * 32], 32);
+        if (hash == 0)
+        {
+            strError = strprintf("IDAG parent[%u] is zero", i);
+            vParents.clear();
+            return DAG_PARENT_MALFORMED;
+        }
+        if (!setParents.insert(hash).second)
+        {
+            strError = strprintf("IDAG parent[%u] is duplicated", i);
+            vParents.clear();
+            return DAG_PARENT_MALFORMED;
+        }
+        vParents.push_back(hash);
+    }
+
+    if (BuildDAGParentScript(vParents) != script)
+    {
+        strError = "IDAG commitment uses a non-canonical push encoding";
+        vParents.clear();
+        return DAG_PARENT_MALFORMED;
+    }
+    return DAG_PARENT_VALID;
+}
+
+bool ExtractCanonicalDAGParentCommitment(
+    const std::vector<CScript>& vScripts,
+    std::vector<uint256>& vParents,
+    std::string& strError)
+{
+    vParents.clear();
+    strError.clear();
+    bool fFound = false;
+    for (std::vector<CScript>::const_iterator it = vScripts.begin();
+         it != vScripts.end(); ++it)
+    {
+        std::vector<uint256> vDecoded;
+        std::string strDecodeError;
+        const DAGParentDecodeStatus status =
+            DecodeCanonicalDAGParentScript(*it, vDecoded, strDecodeError);
+        if (status == DAG_PARENT_MALFORMED)
+        {
+            strError = strDecodeError;
+            return false;
+        }
+        if (status != DAG_PARENT_VALID)
+            continue;
+        if (fFound)
+        {
+            strError = "multiple canonical IDAG commitments";
+            vParents.clear();
+            return false;
+        }
+        fFound = true;
+        vParents = vDecoded;
+    }
+    if (!fFound)
+    {
+        strError = "missing canonical IDAG commitment";
+        return false;
+    }
+    return true;
+}
+
 CScript BuildDAGParentScript(const std::vector<uint256>& vParents)
 {
     if (vParents.empty() || vParents.size() > MAX_DAG_PARENTS)
@@ -110,6 +264,7 @@ void CDAGManager::AddChildNoDuplicate(std::vector<uint256>& vChildren, const uin
 void CDAGManager::InvalidateBlueSetCacheForBlock(const uint256& hashBlock) const
 {
     mapBlueSetCache.erase(hashBlock);
+    mapDAGKnightAnchorCache.erase(hashBlock);
 }
 
 void CDAGManager::RebuildPendingChildIndex()
@@ -177,6 +332,10 @@ bool CDAGManager::InitBlockDAGData(CBlockIndex* pindex, const std::vector<uint25
     auto pendingIt = mapPendingChildrenByParent.find(hash);
     if (pendingIt != mapPendingChildrenByParent.end())
     {
+        // A late parent changes the committed past of those pre-A children.
+        // V3/A validation normally prevents this path; clear disposable state
+        // so historical recovery cannot retain a stale anchor view.
+        mapDAGKnightAnchorCache.clear();
         for (const uint256& hashChild : pendingIt->second)
         {
             AddChildNoDuplicate(data.vDAGChildren, hashChild);
@@ -444,6 +603,53 @@ std::vector<uint256> CDAGManager::GetDAGLinearOrder(const uint256& hashTip, int 
         miTip->second->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
         fSchemaV3Order = true;
 
+    if (fSchemaV3Order)
+    {
+        std::vector<uint256> vSelectedChain;
+        std::set<uint256> setChain;
+        uint256 hashCurrent = hashTip;
+        int nRemaining = (int)mapDAGData.size() + 1;
+        if (nMaxBlocks > 0 && nMaxBlocks < nRemaining)
+            nRemaining = nMaxBlocks;
+
+        while (hashCurrent != 0 && nRemaining-- > 0 &&
+               setChain.insert(hashCurrent).second)
+        {
+            vSelectedChain.push_back(hashCurrent);
+            std::map<uint256, CBlockDAGData>::const_iterator dit =
+                mapDAGData.find(hashCurrent);
+            if (dit == mapDAGData.end())
+                break;
+            hashCurrent = GetDAGKnightSelectedParent(dit->second.vDAGParents);
+        }
+        std::reverse(vSelectedChain.begin(), vSelectedChain.end());
+
+        for (std::vector<uint256>::const_iterator cit = vSelectedChain.begin();
+             cit != vSelectedChain.end(); ++cit)
+        {
+            if (mapDAGData.count(*cit) == 0)
+            {
+                if (visited.insert(*cit).second)
+                    vOrder.push_back(*cit);
+                continue;
+            }
+            if (!EnsureDAGKnightAnchorState(*cit))
+                return std::vector<uint256>();
+            std::map<uint256, CDAGKnightAnchorState>::const_iterator sit =
+                mapDAGKnightAnchorCache.find(*cit);
+            if (sit == mapDAGKnightAnchorCache.end())
+                return std::vector<uint256>();
+            for (std::vector<std::pair<uint256, bool> >::const_iterator oit =
+                     sit->second.vOrderDelta.begin();
+                 oit != sit->second.vOrderDelta.end(); ++oit)
+            {
+                if (visited.insert(oit->first).second)
+                    vOrder.push_back(oit->first);
+            }
+        }
+        return vOrder;
+    }
+
     // V3 epoch ordering follows the committed primary-parent chain and treats
     // every other parent as a merge. This removes mutable live blue-score state
     // from the anchor-derived order; pre-V3 callers retain historical behavior.
@@ -587,57 +793,6 @@ uint256 CDAGManager::ComputeDAGScore(CBlockIndex* pindex)
 
     uint256 hash = pindex->GetBlockHash();
     auto it = mapDAGData.find(hash);
-    if (it != mapDAGData.end() && pindex->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
-    {
-        // V3 score is incremental over the committed PRIMARY parent: its
-        // persisted deterministic score plus exactly the newly reachable set
-        // introduced by this block (merge past + the block itself).  Comparing
-        // the two boundary-derived orders makes this independent of coloring,
-        // arrival order and nDAGOrder, while the parent score is a stable prune
-        // frontier -- rebuilding from a truncated 100k-block DAG cannot collapse
-        // accumulated trust after restart.
-        if (it->second.vDAGParents.empty())
-            return 0;
-        const uint256 hashPrimary = it->second.vDAGParents[0];
-        uint256 nScore = 0;
-        std::map<uint256, CBlockDAGData>::const_iterator pit =
-            mapDAGData.find(hashPrimary);
-        if (pit != mapDAGData.end())
-            nScore = pit->second.nDAGScore;
-        else
-        {
-            std::map<uint256, CBlockIndex*>::const_iterator pmi =
-                mapBlockIndex.find(hashPrimary);
-            if (pmi == mapBlockIndex.end() || !pmi->second ||
-                pmi->second->nHeight >= FORK_HEIGHT_DAG)
-                return 0; // missing DAG-era score is corruption, not a zero base
-            nScore = pmi->second->nChainTrust;
-        }
-
-        const std::vector<uint256> vParentOrder =
-            GetDAGLinearOrder(hashPrimary, 0, true);
-        const std::set<uint256> setParentOrder(vParentOrder.begin(), vParentOrder.end());
-        const std::vector<uint256> vOrder = GetDAGLinearOrder(hash, 0, true);
-        bool fCountedSelf = false;
-        for (std::vector<uint256>::const_iterator oit = vOrder.begin();
-             oit != vOrder.end(); ++oit)
-        {
-            if (setParentOrder.count(*oit))
-                continue;
-            std::map<uint256, CBlockIndex*>::const_iterator mi = mapBlockIndex.find(*oit);
-            if (mi == mapBlockIndex.end() || !mi->second ||
-                (mi->second->nHeight >= FORK_HEIGHT_DAG && !mi->second->IsProofOfWork()))
-                return 0;
-            nScore = nScore + mi->second->GetBlockTrust();
-            if (*oit == hash)
-                fCountedSelf = true;
-        }
-        if (!fCountedSelf)
-            return 0;
-        it->second.nDAGScore = nScore;
-        it->second.fBlue = true;
-        return nScore;
-    }
     if (it != mapDAGData.end())
         return it->second.nDAGScore;
 
@@ -1006,6 +1161,7 @@ void CDAGManager::RemoveBlockDAGData(const uint256& hashBlock)
     setDAGTips.erase(hashBlock);
     mapDAGData.erase(it);
     InvalidateBlueSetCacheForBlock(hashBlock);
+    mapDAGKnightAnchorCache.clear();
 }
 
 
@@ -1145,6 +1301,11 @@ bool CDAGManager::LoadEpochStates(CTxDB& txdb)
         return false;
     }
 
+    // Older V2 prefix records stay byte-identical, so V3-only invariants apply from the migration
+    // boundary; the generation-independent checks below apply to all records.
+    const int nFirstStrictV3Epoch =
+        GetEpochForHeight(FORK_HEIGHT_EPOCH_STATE_V3) - 1;
+
     // Every state is a consensus anchor and must have exactly one same-epoch curve snapshot.
     // Validate temporary maps completely before replacing the live cache.
     if (mapStates.size() != mapTrees.size())
@@ -1153,11 +1314,25 @@ bool CDAGManager::LoadEpochStates(CTxDB& txdb)
                "-reindex/resync required\n", (int)mapStates.size(), (int)mapTrees.size());
         return false;
     }
+    PrivacyVNextEpochSeed expectedVNextSeed;
+    if (nSchema >= EPOCHSTATE_SCHEMA_V4)
+    {
+        std::string seedError;
+        if (!LoadPrivacyVNextEpochSeed(expectedVNextSeed, seedError))
+        {
+            printf("LoadEpochStates: FATAL IV5 epoch seed unavailable: %s\n",
+                   seedError.c_str());
+            return false;
+        }
+    }
     for (std::map<int, CEpochState>::const_iterator it = mapStates.begin();
          it != mapStates.end(); ++it)
     {
         const int nEpoch = it->first;
         const CEpochState& state = it->second;
+        const bool fStrictV3Record =
+            nSchema >= EPOCHSTATE_SCHEMA_V3 &&
+            nEpoch >= nFirstStrictV3Epoch;
         std::map<int, CCurveTree>::const_iterator itTree = mapTrees.find(nEpoch);
         if (itTree == mapTrees.end())
         {
@@ -1187,14 +1362,14 @@ bool CDAGManager::LoadEpochStates(CTxDB& txdb)
                    "-reindex/resync required\n", nEpoch, nSchema);
             return false;
         }
-        if (nSchema >= EPOCHSTATE_SCHEMA_V3 &&
+        if (fStrictV3Record &&
             (state.nBlockCount < 0 || (size_t)state.nBlockCount != state.vBlockHashes.size()))
         {
             printf("LoadEpochStates: FATAL V3 block-count mismatch at epoch %d; "
                    "-reindex/resync required\n", nEpoch);
             return false;
         }
-        if (nSchema >= EPOCHSTATE_SCHEMA_V3 &&
+        if (fStrictV3Record &&
             state.nHeightEnd >= FORK_HEIGHT_DAG &&
             !mapDAGData.count(state.hashBoundaryBlock))
         {
@@ -1221,6 +1396,105 @@ bool CDAGManager::LoadEpochStates(CTxDB& txdb)
             {
                 printf("LoadEpochStates: FATAL corrupt snapshot or curve-root mismatch at epoch %d; "
                        "-reindex/resync required\n", nEpoch);
+                return false;
+            }
+        }
+
+        const bool fExpectedVNext =
+            IsBoundaryBActiveAtHeight(state.nHeightEnd);
+        const bool fHaveVNext =
+            state.nSerVersion >= EPOCHSTATE_SER_VERSION_V4;
+        if (fExpectedVNext != fHaveVNext ||
+            (fHaveVNext && nSchema < EPOCHSTATE_SCHEMA_V4))
+        {
+            printf("LoadEpochStates: FATAL IV5 generation mismatch at epoch %d "
+                   "(expected=%d record=%d schema=%d); -reindex/resync required\n",
+                   nEpoch, fExpectedVNext, fHaveVNext, nSchema);
+            return false;
+        }
+        if (fHaveVNext)
+        {
+            std::vector<unsigned char> checkedVNextRoot;
+            uint64_t checkedVNextSize = 0;
+            std::string treeError;
+            if (state.vchVNextTreeState.size() !=
+                    EPOCHSTATE_VNEXT_TREE_STATE_SIZE ||
+                state.vchVNextNullifierState.size() !=
+                    EPOCHSTATE_VNEXT_NULLIFIER_STATE_SIZE ||
+                state.vchVNextRoot.size() !=
+                    EPOCHSTATE_VNEXT_DIGEST_SIZE ||
+                state.vchVNextParameterDigest !=
+                    expectedVNextSeed.vchParameterDigest ||
+                !DecodePrivacyVNextTreeState(state.vchVNextTreeState,
+                                             checkedVNextRoot,
+                                             checkedVNextSize,
+                                             treeError) ||
+                checkedVNextRoot != state.vchVNextRoot ||
+                checkedVNextSize != state.nVNextTreeSize ||
+                state.hashVNextNullifierRoot == 0)
+            {
+                printf("LoadEpochStates: FATAL corrupt IV5 root/frontier at epoch %d "
+                       "(%s); -reindex/resync required\n",
+                       nEpoch, treeError.c_str());
+                return false;
+            }
+
+            std::vector<unsigned char> checkedNullifierRoot;
+            uint64_t checkedNullifierCount = 0;
+            if (!DecodePrivacyVNextNullifierState(
+                    state.vchVNextNullifierState, checkedNullifierRoot,
+                    checkedNullifierCount, treeError) ||
+                checkedNullifierRoot.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE ||
+                uint256(checkedNullifierRoot) != state.hashVNextNullifierRoot ||
+                checkedNullifierCount != state.nVNextNullifierCount ||
+                state.vVNextEpochNullifiers.size() > checkedNullifierCount)
+            {
+                printf("LoadEpochStates: FATAL corrupt IV5 nullifier accumulator "
+                       "at epoch %d (%s); -reindex/resync required\n",
+                       nEpoch, treeError.c_str());
+                return false;
+            }
+
+            if (state.vVNextActiveBlockTxCounts.size() !=
+                state.vBlockHashes.size())
+            {
+                printf("LoadEpochStates: FATAL IV5 active-set block-count mismatch "
+                       "at epoch %d; -reindex/resync required\n", nEpoch);
+                return false;
+            }
+            uint64_t nActiveTxCount = 0;
+            for (std::vector<unsigned int>::const_iterator countIt =
+                     state.vVNextActiveBlockTxCounts.begin();
+                 countIt != state.vVNextActiveBlockTxCounts.end(); ++countIt)
+                nActiveTxCount += *countIt;
+            if (nActiveTxCount != state.vVNextActiveTxIds.size())
+            {
+                printf("LoadEpochStates: FATAL IV5 active-set transaction-count mismatch "
+                       "at epoch %d; -reindex/resync required\n", nEpoch);
+                return false;
+            }
+
+            std::map<uint256, CBlockIndex*>::const_iterator finalizedIt =
+                mapBlockIndex.find(state.hashVNextFinalizedAnchor);
+            if (finalizedIt == mapBlockIndex.end() || !finalizedIt->second ||
+                finalizedIt->second->nHeight != state.nVNextFinalizedHeight ||
+                state.nVNextFinalizedHeight != state.nFinalizedHeightAsOf)
+            {
+                printf("LoadEpochStates: FATAL IV5 finalized-anchor mismatch at epoch %d; "
+                       "-reindex/resync required\n", nEpoch);
+                return false;
+            }
+
+            CHashWriter activeSetHasher(SER_GETHASH, 0);
+            activeSetHasher << std::string(
+                "Innova/IV5/ActiveDAGTransactionSet/v1");
+            activeSetHasher << state.hashBoundaryBlock << state.vBlockHashes;
+            activeSetHasher << state.vVNextActiveBlockTxCounts;
+            activeSetHasher << state.vVNextActiveTxIds;
+            if (activeSetHasher.GetHash() != state.hashVNextActiveTxSet)
+            {
+                printf("LoadEpochStates: FATAL IV5 active-set commitment mismatch "
+                       "at epoch %d; -reindex/resync required\n", nEpoch);
                 return false;
             }
         }
@@ -1296,6 +1570,7 @@ void CDAGManager::RebuildDAGOrder()
 
     // Clear blue set cache to avoid stale entries during rebuild
     mapBlueSetCache.clear();
+    mapDAGKnightAnchorCache.clear();
 
     // Re-color all blocks and recompute scores
     // Process blocks in height order
@@ -1315,16 +1590,17 @@ void CDAGManager::RebuildDAGOrder()
         std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(pair.second);
         if (mi != mapBlockIndex.end())
         {
-            if (mi->second->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
-                mi->second->nChainTrust = ComputeDAGScore(mi->second);
-            else
+            if (mi->second->nHeight >= FORK_HEIGHT_DAGKNIGHT)
             {
-                // Legacy coloring is consensus-visible only before schema V3.
-                if (mi->second->nHeight >= FORK_HEIGHT_DAGKNIGHT)
-                    ColorBlockDAGKnight(mi->second);
-                else
-                    ColorBlock(mi->second);
+                if (ColorBlockDAGKnight(mi->second))
+                {
+                    CBlockDAGData rebuilt;
+                    if (GetDAGData(pair.second, rebuilt))
+                        mi->second->nChainTrust = rebuilt.nDAGScore;
+                }
             }
+            else
+                ColorBlock(mi->second);
         }
     }
 
@@ -1358,6 +1634,7 @@ void CDAGManager::RebuildDAGOrderIncremental(int nCleanHeight)
 
     // Clear blue set cache to avoid stale entries during rebuild
     mapBlueSetCache.clear();
+    mapDAGKnightAnchorCache.clear();
 
     std::vector<std::pair<int, uint256>> vByHeight;
 
@@ -1375,15 +1652,17 @@ void CDAGManager::RebuildDAGOrderIncremental(int nCleanHeight)
         std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(pair.second);
         if (mi != mapBlockIndex.end())
         {
-            if (mi->second->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
-                mi->second->nChainTrust = ComputeDAGScore(mi->second);
-            else
+            if (mi->second->nHeight >= FORK_HEIGHT_DAGKNIGHT)
             {
-                if (mi->second->nHeight >= FORK_HEIGHT_DAGKNIGHT)
-                    ColorBlockDAGKnight(mi->second);
-                else
-                    ColorBlock(mi->second);
+                if (ColorBlockDAGKnight(mi->second))
+                {
+                    CBlockDAGData rebuilt;
+                    if (GetDAGData(pair.second, rebuilt))
+                        mi->second->nChainTrust = rebuilt.nDAGScore;
+                }
             }
+            else
+                ColorBlock(mi->second);
         }
     }
 
@@ -1496,6 +1775,7 @@ bool CDAGManager::PruneDAGData(CTxDB& txdb, int nHeight)
     }
 
     nPrunedBelowHeight = nPruneBelow;
+    mapDAGKnightAnchorCache.clear();
 
     if (nPruned > 0)
         printf("PruneDAGData: pruned %d entries below height %d (%d remaining)\n",
@@ -2185,12 +2465,57 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
         }
     }
 
+    const bool fBuildVNext = IsBoundaryBActiveAtHeight(state.nHeightEnd);
+    PrivacyVNextEpochSeed vNextSeed;
+    if (fBuildVNext)
+    {
+        if (!LoadPrivacyVNextEpochSeed(vNextSeed, strError))
+        {
+            strError = "IV5 epoch seed unavailable: " + strError;
+            return false;
+        }
+        state.nSerVersion = EPOCHSTATE_SER_VERSION_V4;
+        state.vchVNextParameterDigest = vNextSeed.vchParameterDigest;
+        if (fHavePredecessor &&
+            prevState.nSerVersion >= EPOCHSTATE_SER_VERSION_V4)
+        {
+            if (prevState.vchVNextParameterDigest !=
+                vNextSeed.vchParameterDigest)
+            {
+                strError = "IV5 predecessor parameter digest mismatch";
+                return false;
+            }
+            state.vchVNextTreeState = prevState.vchVNextTreeState;
+            state.vchVNextRoot = prevState.vchVNextRoot;
+            state.nVNextTreeSize = prevState.nVNextTreeSize;
+            state.vchVNextNullifierState =
+                prevState.vchVNextNullifierState;
+            state.hashVNextNullifierRoot =
+                prevState.hashVNextNullifierRoot;
+            state.nVNextNullifierCount =
+                prevState.nVNextNullifierCount;
+        }
+        else
+        {
+            state.vchVNextTreeState = vNextSeed.vchTreeState;
+            state.vchVNextRoot = vNextSeed.vchRoot;
+            state.nVNextTreeSize = vNextSeed.nTreeSize;
+            state.vchVNextNullifierState =
+                vNextSeed.vchNullifierState;
+            state.hashVNextNullifierRoot =
+                uint256(vNextSeed.vchNullifierRoot);
+            state.nVNextNullifierCount =
+                vNextSeed.nNullifierCount;
+        }
+    }
+
     CHashWriter nullifierRootHasher(SER_GETHASH, 0);
     nullifierRootHasher << std::string("Innova/IDAG/EpochNullifierRoot/v1");
     nullifierRootHasher << (fHavePredecessor ? prevState.hashNullifierRoot : uint256(0));
     nullifierRootHasher << nEpoch;
 
     std::set<uint256> setSeenShieldedNullifiers;
+    std::set<uint256> setVNextEpochNullifiers;
     std::set<COutPoint> setOrderedSpentOutputs;
     std::set<uint256> setOrderedSpentNullifiers;
     std::map<uint256, CFinalityVote> mapEpochVotes;
@@ -2223,9 +2548,24 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                                               setOrderedSpentNullifiers);
         const CBlock activeBlock = GetDAGActiveBlock(block, setDAGSkippedTxs);
 
+        if (fBuildVNext)
+        {
+            if (state.vVNextActiveTxIds.size() + activeBlock.vtx.size() >
+                EPOCHSTATE_VNEXT_MAX_ACTIVE_TXS)
+            {
+                strError = strprintf(
+                    "epoch %d IV5 active transaction set exceeds limit", nEpoch);
+                return false;
+            }
+            state.vVNextActiveBlockTxCounts.push_back(
+                static_cast<unsigned int>(activeBlock.vtx.size()));
+        }
+
         for (std::vector<CTransaction>::const_iterator txit = activeBlock.vtx.begin();
              txit != activeBlock.vtx.end(); ++txit)
         {
+            if (fBuildVNext)
+                state.vVNextActiveTxIds.push_back(txit->GetHash());
             if (!txit->IsCoinBase() && !txit->IsCoinStake())
             {
                 for (std::vector<CTxIn>::const_iterator iit = txit->vin.begin();
@@ -2249,6 +2589,81 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
             {
                 if (setSeenShieldedNullifiers.insert(sit->nullifier).second)
                     nullifierRootHasher << sit->nullifier;
+            }
+
+            if (fBuildVNext && txit->IsPrivacyVNext())
+            {
+                PrivacyVNextStateEffects effects;
+                const PrivacyVNextPayloadValidation validation =
+                    ExtractPrivacyVNextPayloadEffects(
+                        static_cast<uint32_t>(txit->nVersion),
+                        txit->privacyVNext.vchPayload, effects);
+                if (!validation.IsValid())
+                {
+                    strError = strprintf(
+                        "epoch %d IV5 effects extraction failed for transaction %s: %s",
+                        nEpoch, txit->GetHash().ToString().substr(0, 20).c_str(),
+                        validation.strError.c_str());
+                    return false;
+                }
+                const std::vector<unsigned char> effectDigest(
+                    effects.parameterDigest.begin(), effects.parameterDigest.end());
+                if (effectDigest != state.vchVNextParameterDigest)
+                {
+                    strError = strprintf(
+                        "epoch %d IV5 transaction %s has wrong parameter digest",
+                        nEpoch, txit->GetHash().ToString().substr(0, 20).c_str());
+                    return false;
+                }
+
+                std::vector<unsigned char> nextState;
+                std::vector<unsigned char> nextRoot;
+                uint64_t nextSize = 0;
+                if (!ApplyPrivacyVNextOutputLeaves(
+                        state.vchVNextTreeState, effects.outputLeaves,
+                        nextState, nextRoot, nextSize, strError))
+                {
+                    strError = "IV5 output-tree transition failed: " + strError;
+                    return false;
+                }
+                state.vchVNextTreeState.swap(nextState);
+                state.vchVNextRoot.swap(nextRoot);
+                state.nVNextTreeSize = nextSize;
+
+                uint64_t nextNullifierCount = 0;
+                if (!ApplyPrivacyVNextNullifiers(
+                        state.vchVNextNullifierState, effects.keyImages,
+                        nextState, nextRoot, nextNullifierCount, strError))
+                {
+                    strError = "IV5 nullifier transition failed: " + strError;
+                    return false;
+                }
+                if (state.vVNextEpochNullifiers.size() +
+                        effects.keyImages.size() >
+                    EPOCHSTATE_VNEXT_MAX_NULLIFIERS)
+                {
+                    strError = strprintf(
+                        "epoch %d IV5 nullifier delta exceeds limit", nEpoch);
+                    return false;
+                }
+                for (size_t i = 0; i < effects.keyImages.size(); ++i)
+                {
+                    const std::vector<unsigned char> encoded(
+                        effects.keyImages[i].begin(), effects.keyImages[i].end());
+                    const uint256 nullifier(encoded);
+                    if (nullifier == 0 ||
+                        !setVNextEpochNullifiers.insert(nullifier).second)
+                    {
+                        strError = strprintf(
+                            "epoch %d IV5 active set contains duplicate/zero nullifier",
+                            nEpoch);
+                        return false;
+                    }
+                    state.vVNextEpochNullifiers.push_back(nullifier);
+                }
+                state.vchVNextNullifierState.swap(nextState);
+                state.hashVNextNullifierRoot = uint256(nextRoot);
+                state.nVNextNullifierCount = nextNullifierCount;
             }
         }
 
@@ -2390,6 +2805,31 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                        state.nFinalizedHeightAsOf >= state.nHeightEnd;
     state.nTxCount = -1;
 
+    if (fBuildVNext)
+    {
+        state.nVNextFinalizedHeight = state.nFinalizedHeightAsOf;
+        const CBlockIndex* pFinalized = pBoundary;
+        while (pFinalized &&
+               pFinalized->nHeight > state.nVNextFinalizedHeight)
+            pFinalized = pFinalized->pprev;
+        if (!pFinalized ||
+            pFinalized->nHeight != state.nVNextFinalizedHeight ||
+            !pFinalized->phashBlock)
+        {
+            strError = "IV5 finalized anchor is unavailable from epoch boundary";
+            return false;
+        }
+        state.hashVNextFinalizedAnchor = pFinalized->GetBlockHash();
+
+        CHashWriter activeSetHasher(SER_GETHASH, 0);
+        activeSetHasher << std::string(
+            "Innova/IV5/ActiveDAGTransactionSet/v1");
+        activeSetHasher << state.hashBoundaryBlock << state.vBlockHashes;
+        activeSetHasher << state.vVNextActiveBlockTxCounts;
+        activeSetHasher << state.vVNextActiveTxIds;
+        state.hashVNextActiveTxSet = activeSetHasher.GetHash();
+    }
+
     stateOut = state;
     curveTreeOut = epochCurveTree;
     return true;
@@ -2438,14 +2878,149 @@ bool CDAGManager::WriteEpochState(CTxDB& txdb, const CEpochState& state,
         return false;
     }
 
+    if (state.nSerVersion >= EPOCHSTATE_SER_VERSION_V4)
+    {
+        if (state.vchVNextTreeState.size() !=
+                EPOCHSTATE_VNEXT_TREE_STATE_SIZE ||
+            state.vchVNextNullifierState.size() !=
+                EPOCHSTATE_VNEXT_NULLIFIER_STATE_SIZE ||
+            state.vchVNextRoot.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE ||
+            state.vchVNextParameterDigest.size() !=
+                EPOCHSTATE_VNEXT_DIGEST_SIZE ||
+            state.hashVNextFinalizedAnchor == 0 ||
+            state.hashVNextActiveTxSet == 0)
+            return false;
+        std::vector<unsigned char> checkedRoot;
+        uint64_t checkedSize = 0;
+        std::string treeError;
+        if (!DecodePrivacyVNextTreeState(state.vchVNextTreeState,
+                                         checkedRoot, checkedSize,
+                                         treeError) ||
+            checkedRoot != state.vchVNextRoot ||
+            checkedSize != state.nVNextTreeSize)
+            return false;
+        std::vector<unsigned char> checkedNullifierRoot;
+        uint64_t checkedNullifierCount = 0;
+        if (!DecodePrivacyVNextNullifierState(
+                state.vchVNextNullifierState, checkedNullifierRoot,
+                checkedNullifierCount, treeError) ||
+            uint256(checkedNullifierRoot) != state.hashVNextNullifierRoot ||
+            checkedNullifierCount != state.nVNextNullifierCount ||
+            state.vVNextEpochNullifiers.size() > checkedNullifierCount ||
+            state.vVNextActiveBlockTxCounts.size() != state.vBlockHashes.size())
+            return false;
+        uint64_t nActiveTxCount = 0;
+        for (std::vector<unsigned int>::const_iterator it =
+                 state.vVNextActiveBlockTxCounts.begin();
+             it != state.vVNextActiveBlockTxCounts.end(); ++it)
+            nActiveTxCount += *it;
+        if (nActiveTxCount != state.vVNextActiveTxIds.size())
+            return false;
+        std::set<uint256> checkedEpochNullifiers;
+        for (std::vector<uint256>::const_iterator it =
+                 state.vVNextEpochNullifiers.begin();
+             it != state.vVNextEpochNullifiers.end(); ++it)
+        {
+            if (*it == 0 || !checkedEpochNullifiers.insert(*it).second)
+                return false;
+        }
+        CHashWriter activeSetHasher(SER_GETHASH, 0);
+        activeSetHasher << std::string(
+            "Innova/IV5/ActiveDAGTransactionSet/v1");
+        activeSetHasher << state.hashBoundaryBlock << state.vBlockHashes;
+        activeSetHasher << state.vVNextActiveBlockTxCounts;
+        activeSetHasher << state.vVNextActiveTxIds;
+        if (activeSetHasher.GetHash() != state.hashVNextActiveTxSet)
+            return false;
+    }
+
     return txdb.WriteEpochState(state.nEpoch, state) &&
            txdb.WriteCurveTreeAtEpoch(state.nEpoch, curveTree);
 }
 
 bool CDAGManager::EraseEpochStateSuffix(CTxDB& txdb, int nFirstEpoch) const
 {
+    if (nFirstEpoch < 0 || !txdb.IsTxnActive())
+    {
+        printf("EraseEpochStateSuffix: FATAL invalid epoch %d or no active DB "
+               "transaction; refusing non-atomic epoch-state deletion\n",
+               nFirstEpoch);
+        return false;
+    }
+
     LOCK(cs_dag);
+
+    // LevelDB is authoritative across restart; the live maps are derived caches and may
+    // be incomplete. Discover and validate the committed namespaces before staging any
+    // deletes, because the iterators read the committed database, not the pending batch.
+    std::map<int, CEpochState> mapPersistedStates;
+    std::map<int, CCurveTree> mapPersistedTrees;
+    if (!txdb.IterateEpochStates(mapPersistedStates) ||
+        !txdb.IterateCurveTreeEpochs(mapPersistedTrees))
+    {
+        printf("EraseEpochStateSuffix: FATAL unable to enumerate the durable "
+               "epoch-state namespaces; refusing partial suffix deletion\n");
+        return false;
+    }
+
+    if (mapPersistedStates.size() != mapPersistedTrees.size())
+    {
+        printf("EraseEpochStateSuffix: FATAL durable state/tree count mismatch "
+               "(%d states, %d snapshots); refusing to repair consensus state "
+               "implicitly\n", (int)mapPersistedStates.size(),
+               (int)mapPersistedTrees.size());
+        return false;
+    }
+    for (std::map<int, CEpochState>::const_iterator it =
+             mapPersistedStates.begin();
+         it != mapPersistedStates.end(); ++it)
+    {
+        if (!mapPersistedTrees.count(it->first))
+        {
+            printf("EraseEpochStateSuffix: FATAL durable epoch %d has no curve "
+                   "snapshot; refusing implicit repair\n", it->first);
+            return false;
+        }
+    }
+    for (std::map<int, CCurveTree>::const_iterator it =
+             mapPersistedTrees.begin();
+         it != mapPersistedTrees.end(); ++it)
+    {
+        if (!mapPersistedStates.count(it->first))
+        {
+            printf("EraseEpochStateSuffix: FATAL durable curve snapshot %d has "
+                   "no epoch state; refusing implicit repair\n", it->first);
+            return false;
+        }
+    }
+
+    if (mapEpochState.size() != mapEpochCurveTrees.size())
+    {
+        printf("EraseEpochStateSuffix: FATAL cached state/tree count mismatch "
+               "(%d states, %d snapshots)\n", (int)mapEpochState.size(),
+               (int)mapEpochCurveTrees.size());
+        return false;
+    }
+    for (std::map<int, CEpochState>::const_iterator it = mapEpochState.begin();
+         it != mapEpochState.end(); ++it)
+    {
+        if (!mapEpochCurveTrees.count(it->first))
+        {
+            printf("EraseEpochStateSuffix: FATAL cached epoch %d has no curve "
+                   "snapshot\n", it->first);
+            return false;
+        }
+    }
+
     std::set<int> setEpochs;
+    for (std::map<int, CEpochState>::const_iterator it =
+             mapPersistedStates.lower_bound(nFirstEpoch);
+         it != mapPersistedStates.end(); ++it)
+        setEpochs.insert(it->first);
+    for (std::map<int, CCurveTree>::const_iterator it =
+             mapPersistedTrees.lower_bound(nFirstEpoch);
+         it != mapPersistedTrees.end(); ++it)
+        setEpochs.insert(it->first);
     for (std::map<int, CEpochState>::const_iterator it = mapEpochState.lower_bound(nFirstEpoch);
          it != mapEpochState.end(); ++it)
         setEpochs.insert(it->first);
@@ -2455,7 +3030,11 @@ bool CDAGManager::EraseEpochStateSuffix(CTxDB& txdb, int nFirstEpoch) const
     for (std::set<int>::const_iterator it = setEpochs.begin(); it != setEpochs.end(); ++it)
     {
         if (!txdb.EraseEpochState(*it) || !txdb.EraseCurveTreeAtEpoch(*it))
+        {
+            printf("EraseEpochStateSuffix: FATAL failed to stage paired deletion "
+                   "for epoch %d\n", *it);
             return false;
+        }
     }
     return true;
 }
@@ -2733,127 +3312,456 @@ void CDAGManager::SetPrunedBelowHeight(int nHeight)
 // CDAGManager: DAGKNIGHT Adaptive Ordering
 // ---------------------------------------------------------------------------
 
-int CDAGManager::InferLocalK(const uint256& hashBlock) const
+uint256 CDAGManager::GetDAGKnightSelectedParent(
+    const std::vector<uint256>& vParents) const
 {
-    // No lock — caller holds cs_dag
-    // Determinism: use each ancestor's already-stored nInferredK (computed at
-    // their own coloring time) rather than recomputing against a stale blue set.
-    // For the current block, compute its own anticone against its selected parent.
-    auto it = mapDAGData.find(hashBlock);
-    if (it == mapDAGData.end())
-        return 0;
-
-    uint256 hashSelectedParent = GetSelectedParent(hashBlock);
-    if (hashSelectedParent == 0)
-        return 0;
-
-    // Compute this block's anticone against its own selected parent's blue set
-    std::set<uint256> blueSet = GetBlueSetCached(hashSelectedParent);
-    int nAnticone = AnticoneSize(hashBlock, blueSet);
-
-    // Clamp seed to ceiling to prevent single outlier from dominating EMA
-    int nSeedAnticone = std::min(nAnticone, DAGKNIGHT_K_CEILING);
-
-    // Sample stored nInferredK from ancestors (deterministic — values were
-    // computed at coloring time before any pruning occurred)
-    // Use EMA smoothing for stable k estimation
-    int nEMAk = nSeedAnticone * 256; // fixed-point (*256), clamped seed
-    uint256 hashWalk = hashSelectedParent;
-    int nSamples = 0;
-
-    while (nSamples < DAGKNIGHT_K_SAMPLE_DEPTH && hashWalk != 0)
+    uint256 hashBest;
+    uint256 nBestScore = 0;
+    bool fBestPrimary = false;
+    for (size_t i = 0; i < vParents.size(); ++i)
     {
-        auto wit = mapDAGData.find(hashWalk);
-        if (wit == mapDAGData.end())
-            break;
-
-        if (wit->second.nInferredK >= 0)
+        const uint256& hashParent = vParents[i];
+        uint256 nParentScore = 0;
+        std::map<uint256, CBlockDAGData>::const_iterator dit =
+            mapDAGData.find(hashParent);
+        if (dit != mapDAGData.end())
+            nParentScore = dit->second.nDAGScore;
+        else
         {
-            // EMA: k_new = alpha * sample + (1 - alpha) * k_old
-            nEMAk = (DAGKNIGHT_K_EMA_ALPHA * wit->second.nInferredK * 256
-                     + (256 - DAGKNIGHT_K_EMA_ALPHA) * nEMAk) / 256;
-
+            std::map<uint256, CBlockIndex*>::const_iterator mi =
+                mapBlockIndex.find(hashParent);
+            if (mi != mapBlockIndex.end() && mi->second &&
+                !(mi->second->nHeight >= FORK_HEIGHT_DAG &&
+                  mi->second->IsProofOfStake()))
+                nParentScore = mi->second->nChainTrust;
         }
 
-        hashWalk = GetSelectedParent(hashWalk);
-        nSamples++;
+        const bool fPrimary = (i == 0);
+        if (hashBest == 0 || nParentScore > nBestScore ||
+            (nParentScore == nBestScore && fPrimary && !fBestPrimary) ||
+            (nParentScore == nBestScore && fPrimary == fBestPrimary &&
+             hashParent < hashBest))
+        {
+            hashBest = hashParent;
+            nBestScore = nParentScore;
+            fBestPrimary = fPrimary;
+        }
     }
-
-    // Use EMA estimate only (not max — max is dominated by outliers, allowing k inflation)
-    int nResult = (nEMAk + 128) / 256; // round from fixed-point
-
-    // Apply floor and ceiling
-    if (nResult < DAGKNIGHT_K_FLOOR)
-        nResult = DAGKNIGHT_K_FLOOR;
-    if (nResult > DAGKNIGHT_K_CEILING)
-        nResult = DAGKNIGHT_K_CEILING;
-
-    return nResult;
+    return hashBest;
 }
 
-int CDAGManager::SupportingMass(const uint256& hashA, const uint256& hashB) const
+bool CDAGManager::IsDAGAncestor(const uint256& hashAncestor,
+                                const uint256& hashDescendant,
+                                int nMaxDepth) const
 {
-    // supporting_mass(A>B) = |{C : A in past(C) AND B not in past(C)}|
-    // Bounded by both step count and visited set size to prevent DoS
-    static const int SM_MAX_VISITED = 2048;
-    int nBound = DAGKNIGHT_MAX_ANTICONE_WINDOW * 2;
+    if (hashAncestor == hashDescendant)
+        return true;
+    std::map<uint256, CBlockIndex*>::const_iterator ai =
+        mapBlockIndex.find(hashAncestor);
+    std::map<uint256, CBlockIndex*>::const_iterator di =
+        mapBlockIndex.find(hashDescendant);
+    if (ai == mapBlockIndex.end() || di == mapBlockIndex.end() ||
+        !ai->second || !di->second ||
+        ai->second->nHeight >= di->second->nHeight)
+        return false;
 
-    std::set<uint256> futureA;
-    std::set<uint256> futureB;
-
-    // BFS forward from A through children
-    std::queue<uint256> qA;
-    qA.push(hashA);
-    int nSteps = 0;
-    while (!qA.empty() && nSteps < nBound && (int)futureA.size() < SM_MAX_VISITED)
+    const int nDescendantHeight = di->second->nHeight;
+    std::queue<uint256> queue;
+    std::set<uint256> visited;
+    queue.push(hashDescendant);
+    while (!queue.empty() &&
+           visited.size() <= (size_t)DAGKNIGHT_MAX_ANCHOR_CANDIDATES)
     {
-        uint256 h = qA.front();
-        qA.pop();
-        if (!futureA.insert(h).second)
+        const uint256 hash = queue.front();
+        queue.pop();
+        if (!visited.insert(hash).second)
             continue;
-        auto it = mapDAGData.find(h);
-        if (it != mapDAGData.end())
-        {
-            for (const uint256& hc : it->second.vDAGChildren)
-            {
-                if (!futureA.count(hc) && (int)qA.size() < SM_MAX_VISITED)
-                    qA.push(hc);
-            }
-        }
-        nSteps++;
-    }
-
-    // BFS forward from B through children
-    std::queue<uint256> qB;
-    qB.push(hashB);
-    nSteps = 0;
-    while (!qB.empty() && nSteps < nBound && (int)futureB.size() < SM_MAX_VISITED)
-    {
-        uint256 h = qB.front();
-        qB.pop();
-        if (!futureB.insert(h).second)
+        std::map<uint256, CBlockIndex*>::const_iterator hi =
+            mapBlockIndex.find(hash);
+        if (hi != mapBlockIndex.end() && hi->second &&
+            nDescendantHeight - hi->second->nHeight > nMaxDepth)
             continue;
-        auto it = mapDAGData.find(h);
-        if (it != mapDAGData.end())
+        std::map<uint256, CBlockDAGData>::const_iterator dit =
+            mapDAGData.find(hash);
+        if (dit == mapDAGData.end())
+            continue;
+        for (std::vector<uint256>::const_iterator pit =
+                 dit->second.vDAGParents.begin();
+             pit != dit->second.vDAGParents.end(); ++pit)
         {
-            for (const uint256& hc : it->second.vDAGChildren)
-            {
-                if (!futureB.count(hc) && (int)qB.size() < SM_MAX_VISITED)
-                    qB.push(hc);
-            }
+            if (*pit == hashAncestor)
+                return true;
+            if (!visited.count(*pit))
+                queue.push(*pit);
         }
-        nSteps++;
     }
+    return false;
+}
 
-    // Count blocks in future(A) not in future(B)
-    int nSupport = 0;
-    for (const uint256& h : futureA)
+bool CDAGManager::CollectDAGKnightCandidates(
+    const std::vector<uint256>& vParents,
+    const uint256& hashSelectedParent,
+    int nAnchorHeight,
+    std::vector<uint256>& vCandidates,
+    std::string& strError) const
+{
+    vCandidates.clear();
+    strError.clear();
+    std::queue<uint256> queue;
+    for (std::vector<uint256>::const_iterator it = vParents.begin();
+         it != vParents.end(); ++it)
+        if (*it != hashSelectedParent)
+            queue.push(*it);
+
+    std::set<uint256> visited;
+    const int nMinHeight = nAnchorHeight - DAG_MERGE_DEPTH;
+    while (!queue.empty())
     {
-        if (h != hashA && !futureB.count(h))
-            nSupport++;
+        const uint256 hash = queue.front();
+        queue.pop();
+        if (!visited.insert(hash).second || hash == hashSelectedParent)
+            continue;
+        if (visited.size() > (size_t)DAGKNIGHT_MAX_ANCHOR_CANDIDATES)
+        {
+            strError = strprintf("DAGKNIGHT anchor merge set exceeds %d blocks",
+                                 DAGKNIGHT_MAX_ANCHOR_CANDIDATES);
+            vCandidates.clear();
+            return false;
+        }
+
+        std::map<uint256, CBlockIndex*>::const_iterator mi =
+            mapBlockIndex.find(hash);
+        if (mi == mapBlockIndex.end() || !mi->second)
+        {
+            strError = "DAGKNIGHT anchor references unavailable merge history";
+            vCandidates.clear();
+            return false;
+        }
+        if (mi->second->nHeight < nMinHeight)
+            continue;
+        if (IsDAGAncestor(hash, hashSelectedParent, DAG_MERGE_DEPTH))
+            continue;
+
+        vCandidates.push_back(hash);
+        std::map<uint256, CBlockDAGData>::const_iterator dit =
+            mapDAGData.find(hash);
+        if (dit == mapDAGData.end())
+            continue;
+        for (std::vector<uint256>::const_iterator pit =
+                 dit->second.vDAGParents.begin();
+             pit != dit->second.vDAGParents.end(); ++pit)
+            if (!visited.count(*pit))
+                queue.push(*pit);
     }
 
-    return nSupport;
+    std::sort(vCandidates.begin(), vCandidates.end(),
+              [](const uint256& a, const uint256& b) {
+                  std::map<uint256, CBlockIndex*>::const_iterator ai =
+                      mapBlockIndex.find(a);
+                  std::map<uint256, CBlockIndex*>::const_iterator bi =
+                      mapBlockIndex.find(b);
+                  const int ah = ai != mapBlockIndex.end() && ai->second
+                                     ? ai->second->nHeight : -1;
+                  const int bh = bi != mapBlockIndex.end() && bi->second
+                                     ? bi->second->nHeight : -1;
+                  return ah != bh ? ah < bh : a < b;
+              });
+    return true;
+}
+
+bool CDAGManager::CheckDAGKnightParentSet(
+    const std::vector<uint256>& vParents, int nAnchorHeight,
+    std::string& strError) const
+{
+    LOCK(cs_dag);
+    if (vParents.empty())
+    {
+        strError = "DAGKNIGHT anchor has no primary parent";
+        return false;
+    }
+    const uint256 hashSelected = GetDAGKnightSelectedParent(vParents);
+    std::vector<uint256> vCandidates;
+    return hashSelected != 0 &&
+           CollectDAGKnightCandidates(vParents, hashSelected,
+                                      nAnchorHeight, vCandidates, strError);
+}
+
+void CDAGManager::CacheDAGKnightAnchorState(
+    const uint256& hashAnchor,
+    const CDAGKnightAnchorState& state) const
+{
+    if (mapDAGKnightAnchorCache.size() >=
+        (size_t)DAGKNIGHT_ANCHOR_CACHE_MAX)
+    {
+        int nAnchorHeight = 0;
+        std::map<uint256, CBlockIndex*>::const_iterator ai =
+            mapBlockIndex.find(hashAnchor);
+        if (ai != mapBlockIndex.end() && ai->second)
+            nAnchorHeight = ai->second->nHeight;
+        const int nKeepHeight = nAnchorHeight - 2 * DAG_MERGE_DEPTH;
+        for (std::map<uint256, CDAGKnightAnchorState>::iterator it =
+                 mapDAGKnightAnchorCache.begin();
+             it != mapDAGKnightAnchorCache.end() &&
+             mapDAGKnightAnchorCache.size() >=
+                 (size_t)(DAGKNIGHT_ANCHOR_CACHE_MAX / 2); )
+        {
+            std::map<uint256, CBlockIndex*>::const_iterator mi =
+                mapBlockIndex.find(it->first);
+            if (mi == mapBlockIndex.end() || !mi->second ||
+                mi->second->nHeight < nKeepHeight)
+                it = mapDAGKnightAnchorCache.erase(it);
+            else
+                ++it;
+        }
+        while (mapDAGKnightAnchorCache.size() >=
+               (size_t)DAGKNIGHT_ANCHOR_CACHE_MAX)
+            mapDAGKnightAnchorCache.erase(mapDAGKnightAnchorCache.begin());
+    }
+    mapDAGKnightAnchorCache[hashAnchor] = state;
+}
+
+bool CDAGManager::BuildDAGKnightAnchorState(
+    const uint256& hashAnchor, CDAGKnightAnchorState& stateOut,
+    std::string& strError) const
+{
+    std::map<uint256, CBlockDAGData>::const_iterator dit =
+        mapDAGData.find(hashAnchor);
+    std::map<uint256, CBlockIndex*>::const_iterator mi =
+        mapBlockIndex.find(hashAnchor);
+    if (dit == mapDAGData.end() || mi == mapBlockIndex.end() || !mi->second)
+    {
+        strError = "DAGKNIGHT anchor is unavailable";
+        return false;
+    }
+
+    const CBlockDAGData& data = dit->second;
+    stateOut = CDAGKnightAnchorState();
+    if (data.vDAGParents.empty())
+    {
+        stateOut.nInferredK = DAGKNIGHT_K_FLOOR;
+        stateOut.nScore = mi->second->GetBlockTrust();
+        stateOut.vPressureSamples.push_back(DAGKNIGHT_K_FLOOR);
+        stateOut.vBlueWindow.push_back(hashAnchor);
+        stateOut.vOrderDelta.push_back(std::make_pair(hashAnchor, true));
+        return true;
+    }
+
+    stateOut.hashSelectedParent =
+        GetDAGKnightSelectedParent(data.vDAGParents);
+    if (stateOut.hashSelectedParent == 0)
+    {
+        strError = "DAGKNIGHT selected parent is unavailable";
+        return false;
+    }
+
+    const CDAGKnightAnchorState* pParentState = NULL;
+    std::map<uint256, CBlockDAGData>::const_iterator pdit =
+        mapDAGData.find(stateOut.hashSelectedParent);
+    if (pdit != mapDAGData.end())
+    {
+        std::map<uint256, CDAGKnightAnchorState>::const_iterator psit =
+            mapDAGKnightAnchorCache.find(stateOut.hashSelectedParent);
+        if (psit == mapDAGKnightAnchorCache.end())
+        {
+            strError = "DAGKNIGHT selected-parent state is unavailable";
+            return false;
+        }
+        pParentState = &psit->second;
+        stateOut.nScore = pParentState->nScore;
+        stateOut.vPressureSamples = pParentState->vPressureSamples;
+        stateOut.vBlueWindow = pParentState->vBlueWindow;
+    }
+    else
+    {
+        std::map<uint256, CBlockIndex*>::const_iterator pi =
+            mapBlockIndex.find(stateOut.hashSelectedParent);
+        if (pi == mapBlockIndex.end() || !pi->second)
+        {
+            // Pruning retains the first surviving block's persisted cumulative
+            // score/k as an authenticated local frontier while deleting older
+            // DAG links and block indexes. Seed the disposable cache at that
+            // frontier; descendants extend it without collapsing historical
+            // work or requiring a chain/datadir reset.
+            if (data.nDAGScore == 0 ||
+                data.nInferredK < DAGKNIGHT_K_FLOOR ||
+                data.nInferredK > DAGKNIGHT_K_CEILING)
+            {
+                strError = "DAGKNIGHT retained frontier lacks score/k state";
+                return false;
+            }
+            stateOut.nScore = data.nDAGScore;
+            stateOut.nInferredK = data.nInferredK;
+            stateOut.vPressureSamples.push_back(
+                (unsigned char)data.nInferredK);
+            stateOut.vBlueWindow.push_back(hashAnchor);
+            stateOut.vOrderDelta.push_back(
+                std::make_pair(hashAnchor, true));
+            return true;
+        }
+        if (pi->second->nHeight >= FORK_HEIGHT_DAG)
+        {
+            strError = "DAGKNIGHT selected-parent frontier is corrupt";
+            return false;
+        }
+        stateOut.nScore = pi->second->nChainTrust;
+    }
+
+    std::vector<uint256> vCandidates;
+    if (!CollectDAGKnightCandidates(data.vDAGParents,
+                                    stateOut.hashSelectedParent,
+                                    mi->second->nHeight,
+                                    vCandidates, strError))
+        return false;
+
+    int nPressure = 0;
+    for (std::vector<uint256>::const_iterator cit = vCandidates.begin();
+         cit != vCandidates.end(); ++cit)
+    {
+        int nAnticone = 0;
+        for (std::vector<uint256>::const_iterator bit =
+                 stateOut.vBlueWindow.begin();
+             bit != stateOut.vBlueWindow.end(); ++bit)
+        {
+            if (!IsDAGAncestor(*bit, *cit, DAG_MERGE_DEPTH) &&
+                !IsDAGAncestor(*cit, *bit, DAG_MERGE_DEPTH))
+                ++nAnticone;
+        }
+        nPressure = std::max(nPressure, nAnticone);
+    }
+    int nSampleK = std::max(DAGKNIGHT_K_FLOOR,
+                            std::min(DAGKNIGHT_K_CEILING,
+                                     2 * nPressure + 1));
+    stateOut.vPressureSamples.push_back((unsigned char)nSampleK);
+    if (stateOut.vPressureSamples.size() >
+        (size_t)DAGKNIGHT_K_SAMPLE_DEPTH)
+        stateOut.vPressureSamples.erase(stateOut.vPressureSamples.begin());
+
+    int nEMA = (int)stateOut.vPressureSamples[0] * 256;
+    for (size_t i = 1; i < stateOut.vPressureSamples.size(); ++i)
+        nEMA = ((256 - DAGKNIGHT_K_EMA_ALPHA) * nEMA +
+                DAGKNIGHT_K_EMA_ALPHA *
+                    (int)stateOut.vPressureSamples[i] * 256) / 256;
+    stateOut.nInferredK = std::max(
+        DAGKNIGHT_K_FLOOR,
+        std::min(DAGKNIGHT_K_CEILING, (nEMA + 128) / 256));
+
+    std::vector<std::pair<uint256, bool> > vColored;
+    for (std::vector<uint256>::const_iterator cit = vCandidates.begin();
+         cit != vCandidates.end(); ++cit)
+    {
+        int nAnticone = 0;
+        for (std::vector<uint256>::const_iterator bit =
+                 stateOut.vBlueWindow.begin();
+             bit != stateOut.vBlueWindow.end(); ++bit)
+        {
+            if (!IsDAGAncestor(*bit, *cit, DAG_MERGE_DEPTH) &&
+                !IsDAGAncestor(*cit, *bit, DAG_MERGE_DEPTH))
+                ++nAnticone;
+        }
+        const bool fBlue = nAnticone <= stateOut.nInferredK;
+        vColored.push_back(std::make_pair(*cit, fBlue));
+        if (fBlue)
+        {
+            stateOut.vBlueWindow.push_back(*cit);
+            std::map<uint256, CBlockIndex*>::const_iterator ci =
+                mapBlockIndex.find(*cit);
+            if (ci == mapBlockIndex.end() || !ci->second ||
+                (ci->second->nHeight >= FORK_HEIGHT_DAG &&
+                 !ci->second->IsProofOfWork()))
+            {
+                strError = "DAGKNIGHT candidate block index is invalid";
+                return false;
+            }
+            stateOut.nScore = stateOut.nScore + ci->second->GetBlockTrust();
+        }
+    }
+
+    std::sort(vColored.begin(), vColored.end(),
+              [](const std::pair<uint256, bool>& a,
+                 const std::pair<uint256, bool>& b) {
+                  std::map<uint256, CBlockIndex*>::const_iterator ai =
+                      mapBlockIndex.find(a.first);
+                  std::map<uint256, CBlockIndex*>::const_iterator bi =
+                      mapBlockIndex.find(b.first);
+                  const int ah = ai != mapBlockIndex.end() && ai->second
+                                     ? ai->second->nHeight : -1;
+                  const int bh = bi != mapBlockIndex.end() && bi->second
+                                     ? bi->second->nHeight : -1;
+                  if (ah != bh) return ah < bh;
+                  if (a.second != b.second) return a.second > b.second;
+                  return a.first < b.first;
+              });
+    stateOut.vOrderDelta = vColored;
+    stateOut.vOrderDelta.push_back(std::make_pair(hashAnchor, true));
+    stateOut.vBlueWindow.push_back(hashAnchor);
+    stateOut.nScore = stateOut.nScore + mi->second->GetBlockTrust();
+
+    const int nMinBlueHeight =
+        mi->second->nHeight - DAGKNIGHT_MAX_ANTICONE_WINDOW;
+    std::vector<uint256> vBoundedBlue;
+    std::set<uint256> setBlue;
+    for (std::vector<uint256>::const_iterator it =
+             stateOut.vBlueWindow.begin();
+         it != stateOut.vBlueWindow.end(); ++it)
+    {
+        std::map<uint256, CBlockIndex*>::const_iterator bi =
+            mapBlockIndex.find(*it);
+        if (bi != mapBlockIndex.end() && bi->second &&
+            bi->second->nHeight >= nMinBlueHeight &&
+            setBlue.insert(*it).second)
+            vBoundedBlue.push_back(*it);
+    }
+    stateOut.vBlueWindow.swap(vBoundedBlue);
+    return true;
+}
+
+bool CDAGManager::EnsureDAGKnightAnchorState(
+    const uint256& hashAnchor) const
+{
+    if (mapDAGKnightAnchorCache.count(hashAnchor))
+        return true;
+
+    std::vector<uint256> vBuild;
+    std::set<uint256> setVisited;
+    uint256 hash = hashAnchor;
+    while (mapDAGData.count(hash) &&
+           !mapDAGKnightAnchorCache.count(hash))
+    {
+        if (!setVisited.insert(hash).second)
+            return false;
+        vBuild.push_back(hash);
+        std::map<uint256, CBlockDAGData>::const_iterator dit =
+            mapDAGData.find(hash);
+        if (dit->second.vDAGParents.empty())
+            break;
+        hash = GetDAGKnightSelectedParent(dit->second.vDAGParents);
+        if (hash == 0)
+            return false;
+    }
+    std::reverse(vBuild.begin(), vBuild.end());
+    for (std::vector<uint256>::const_iterator it = vBuild.begin();
+         it != vBuild.end(); ++it)
+    {
+        CDAGKnightAnchorState state;
+        std::string strError;
+        if (!BuildDAGKnightAnchorState(*it, state, strError))
+        {
+            printf("EnsureDAGKnightAnchorState: %s for %s\n",
+                   strError.c_str(), it->ToString().substr(0,20).c_str());
+            return false;
+        }
+        CacheDAGKnightAnchorState(*it, state);
+    }
+    return mapDAGKnightAnchorCache.count(hashAnchor) != 0;
+}
+
+int CDAGManager::InferLocalK(const uint256& hashBlock) const
+{
+    if (!EnsureDAGKnightAnchorState(hashBlock))
+        return 0;
+    std::map<uint256, CDAGKnightAnchorState>::const_iterator it =
+        mapDAGKnightAnchorCache.find(hashBlock);
+    return it == mapDAGKnightAnchorCache.end() ? 0 : it->second.nInferredK;
 }
 
 int CDAGManager::CompareBlockOrder(const uint256& hashA, const uint256& hashB,
@@ -2867,167 +3775,55 @@ int CDAGManager::CompareBlockOrder(const uint256& hashA, const uint256& hashB,
         return 0;
     }
 
-    // Check topological ordering: is A ancestor of B or vice versa?
-    std::set<uint256> pastB = GetPastSet(hashB, DAGKNIGHT_MAX_ANTICONE_WINDOW);
-    if (pastB.count(hashA))
+    if (IsDAGAncestor(hashA, hashB, DAGKNIGHT_MAX_ANTICONE_WINDOW))
     {
-        nConfidence = (int)pastB.size();
+        nConfidence = 1;
         return -1; // A precedes B
     }
-
-    std::set<uint256> pastA = GetPastSet(hashA, DAGKNIGHT_MAX_ANTICONE_WINDOW);
-    if (pastA.count(hashB))
+    if (IsDAGAncestor(hashB, hashA, DAGKNIGHT_MAX_ANTICONE_WINDOW))
     {
-        nConfidence = (int)pastA.size();
+        nConfidence = 1;
         return 1; // B precedes A
     }
 
-    // Blocks in each other's anticone — use supporting mass
-    int nSupportAB = SupportingMass(hashA, hashB);
-    int nSupportBA = SupportingMass(hashB, hashA);
-
-    nConfidence = abs(nSupportAB - nSupportBA);
-
-    if (nSupportAB > nSupportBA + DAGKNIGHT_MIN_CONFIDENCE)
-        return -1; // A precedes B
-    if (nSupportBA > nSupportAB + DAGKNIGHT_MIN_CONFIDENCE)
-        return 1;  // B precedes A
-
-    // Tie: deterministic hash comparison
+    std::map<uint256, CBlockIndex*>::const_iterator ai = mapBlockIndex.find(hashA);
+    std::map<uint256, CBlockIndex*>::const_iterator bi = mapBlockIndex.find(hashB);
+    const int ah = ai != mapBlockIndex.end() && ai->second ? ai->second->nHeight : -1;
+    const int bh = bi != mapBlockIndex.end() && bi->second ? bi->second->nHeight : -1;
+    if (ah != bh)
+    {
+        nConfidence = abs(ah - bh);
+        return ah < bh ? -1 : 1;
+    }
     nConfidence = 0;
     return (hashA < hashB) ? -1 : 1;
 }
 
-void CDAGManager::ColorBlockDAGKnight(CBlockIndex* pindex)
+bool CDAGManager::ColorBlockDAGKnight(CBlockIndex* pindex)
 {
     LOCK(cs_dag);
 
     if (!pindex || !pindex->phashBlock)
-        return;
+        return false;
     if (pindex->nHeight >= FORK_HEIGHT_DAG && pindex->IsProofOfStake())
-        return;
+        return false;
 
     uint256 hash = pindex->GetBlockHash();
     auto it = mapDAGData.find(hash);
     if (it == mapDAGData.end())
-        return;
+        return false;
 
-    CBlockDAGData& data = it->second;
-    const std::vector<uint256>& vParents = data.vDAGParents;
-
-    if (vParents.empty())
-    {
-        data.fBlue = true;
-        data.nDAGScore = pindex->GetBlockTrust();
-        data.nInferredK = 0;
-        return;
-    }
-
-    uint256 hashSelectedParent;
-    uint256 nBestParentScore = 0;
-
-    for (const uint256& hashParent : vParents)
-    {
-        uint256 nParentScore = 0;
-        auto pit = mapDAGData.find(hashParent);
-        if (pit != mapDAGData.end())
-            nParentScore = pit->second.nDAGScore;
-        else
-        {
-            std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashParent);
-            if (mi != mapBlockIndex.end() &&
-                !(mi->second->nHeight >= FORK_HEIGHT_DAG && mi->second->IsProofOfStake()))
-                nParentScore = mi->second->nChainTrust;
-        }
-
-        bool fIsPrimary = (hashParent == vParents[0]);
-        if (nParentScore > nBestParentScore ||
-            (nParentScore == nBestParentScore && (hashSelectedParent == 0 ||
-             (fIsPrimary ? true : hashParent < hashSelectedParent))))
-        {
-            nBestParentScore = nParentScore;
-            hashSelectedParent = hashParent;
-        }
-    }
-
-    if (hashSelectedParent == 0)
-    {
-        if (pindex->pprev)
-            data.nDAGScore = pindex->pprev->nChainTrust + pindex->GetBlockTrust();
-        else
-            data.nDAGScore = pindex->GetBlockTrust();
-        data.fBlue = true;
-        data.nInferredK = 0;
-        return;
-    }
-
-    // DAGKNIGHT: Infer local k from DAG structure
-    int nLocalK = InferLocalK(hash);
-    if (nLocalK < DAGKNIGHT_K_FLOOR)
-    {
-        printf("ColorBlockDAGKnight: inferred k %d below floor %d for %s, clamping\n",
-               nLocalK, DAGKNIGHT_K_FLOOR, hash.ToString().substr(0,20).c_str());
-        nLocalK = DAGKNIGHT_K_FLOOR;
-    }
-    data.nInferredK = nLocalK;
-
-    // Inherit blue set from selected parent
-    std::set<uint256> blueSet = GetBlueSet(hashSelectedParent);
-    std::set<uint256> selectedParentBlue = blueSet;
-
-    // Merge parents' blue blocks using adaptive k
-    for (const uint256& hashParent : vParents)
-    {
-        if (hashParent == hashSelectedParent)
-            continue;
-
-        auto pit = mapDAGData.find(hashParent);
-        if (pit == mapDAGData.end())
-            continue;
-
-        std::set<uint256> mergeBlue = GetBlueSet(hashParent);
-
-        for (const uint256& hashCandidate : mergeBlue)
-        {
-            if (blueSet.count(hashCandidate))
-                continue;
-
-            // DAGKNIGHT: Use inferred k instead of fixed GHOSTDAG_K
-            int nAnticone = AnticoneSize(hashCandidate, blueSet);
-            if (nAnticone <= nLocalK)
-            {
-                blueSet.insert(hashCandidate);
-                auto cit = mapDAGData.find(hashCandidate);
-                if (cit != mapDAGData.end())
-                    cit->second.fBlue = true;
-            }
-            else
-            {
-                auto cit = mapDAGData.find(hashCandidate);
-                if (cit != mapDAGData.end())
-                    cit->second.fBlue = false;
-            }
-        }
-    }
-
-    // This block is always blue
-    data.fBlue = true;
-    blueSet.insert(hash);
-
-    // Compute score: selected parent score + this block trust + newly-blue merge blocks
-    uint256 nScore = nBestParentScore + pindex->GetBlockTrust();
-    for (const uint256& hashBlue : blueSet)
-    {
-        if (hashBlue == hash)
-            continue;
-        if (selectedParentBlue.count(hashBlue))
-            continue;
-        std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashBlue);
-        if (mi != mapBlockIndex.end() &&
-            !(mi->second->nHeight >= FORK_HEIGHT_DAG && mi->second->IsProofOfStake()))
-            nScore = nScore + mi->second->GetBlockTrust();
-    }
-    data.nDAGScore = nScore;
+    mapDAGKnightAnchorCache.erase(hash);
+    if (!EnsureDAGKnightAnchorState(hash))
+        return false;
+    std::map<uint256, CDAGKnightAnchorState>::const_iterator sit =
+        mapDAGKnightAnchorCache.find(hash);
+    if (sit == mapDAGKnightAnchorCache.end())
+        return false;
+    it->second.fBlue = true;
+    it->second.nDAGScore = sit->second.nScore;
+    it->second.nInferredK = sit->second.nInferredK;
+    return true;
 }
 
 int CDAGManager::GetOrderConfidence(const uint256& hashBlock) const
@@ -3038,34 +3834,56 @@ int CDAGManager::GetOrderConfidence(const uint256& hashBlock) const
     if (it == mapDAGData.end())
         return 0;
 
-    // Count blue descendants as confidence measure
-    int nConfidence = 0;
-    std::set<uint256> visited;
-    std::queue<uint256> queue;
-    queue.push(hashBlock);
-    int nDepth = 0;
+    return std::max(0, it->second.nInferredK);
+}
 
-    while (!queue.empty() && nDepth < DAGKNIGHT_MAX_ANTICONE_WINDOW)
+bool CDAGManager::GetDAGKnightAnchorMetrics(
+    const uint256& hashAnchor, uint256& hashSelectedParent,
+    int& nInferredK, uint256& nScore,
+    std::vector<std::pair<uint256, bool> >& vOrderColors) const
+{
+    LOCK(cs_dag);
+    vOrderColors.clear();
+    if (!EnsureDAGKnightAnchorState(hashAnchor))
+        return false;
+
+    std::vector<uint256> vChain;
+    std::set<uint256> setChain;
+    uint256 hash = hashAnchor;
+    while (mapDAGData.count(hash) && setChain.insert(hash).second)
     {
-        uint256 h = queue.front();
-        queue.pop();
-        if (!visited.insert(h).second)
-            continue;
-
-        auto dit = mapDAGData.find(h);
-        if (dit == mapDAGData.end())
-            continue;
-
-        if (dit->second.fBlue && h != hashBlock)
-            nConfidence++;
-
-        for (const uint256& hc : dit->second.vDAGChildren)
-        {
-            if (!visited.count(hc))
-                queue.push(hc);
-        }
-        nDepth++;
+        vChain.push_back(hash);
+        std::map<uint256, CDAGKnightAnchorState>::const_iterator sit =
+            mapDAGKnightAnchorCache.find(hash);
+        if (sit == mapDAGKnightAnchorCache.end() ||
+            sit->second.hashSelectedParent == 0)
+            break;
+        hash = sit->second.hashSelectedParent;
+        if (!EnsureDAGKnightAnchorState(hash) && mapDAGData.count(hash))
+            return false;
+    }
+    std::reverse(vChain.begin(), vChain.end());
+    std::set<uint256> emitted;
+    for (std::vector<uint256>::const_iterator it = vChain.begin();
+         it != vChain.end(); ++it)
+    {
+        std::map<uint256, CDAGKnightAnchorState>::const_iterator sit =
+            mapDAGKnightAnchorCache.find(*it);
+        if (sit == mapDAGKnightAnchorCache.end())
+            return false;
+        for (std::vector<std::pair<uint256, bool> >::const_iterator oit =
+                 sit->second.vOrderDelta.begin();
+             oit != sit->second.vOrderDelta.end(); ++oit)
+            if (emitted.insert(oit->first).second)
+                vOrderColors.push_back(*oit);
     }
 
-    return nConfidence;
+    std::map<uint256, CDAGKnightAnchorState>::const_iterator anchor =
+        mapDAGKnightAnchorCache.find(hashAnchor);
+    if (anchor == mapDAGKnightAnchorCache.end())
+        return false;
+    hashSelectedParent = anchor->second.hashSelectedParent;
+    nInferredK = anchor->second.nInferredK;
+    nScore = anchor->second.nScore;
+    return true;
 }

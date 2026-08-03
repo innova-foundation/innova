@@ -34,6 +34,24 @@ static bool ReturnFinalityResult(FinalityResult* pResult,
     return fReturn;
 }
 
+bool ExtractFinalityStakeKeyID(const CScript& scriptPubKey,
+                               CKeyID& keyIDOut)
+{
+    // ExtractDestination historically exposes the owner branch of P2CS.  That
+    // is correct for wallet ownership/spending, but finality follows delegated
+    // staking authority and must therefore select the staker branch explicitly.
+    if (IsPayToColdStaking(scriptPubKey))
+    {
+        CKeyID ownerKeyID;
+        return ExtractColdStakeKeys(scriptPubKey, keyIDOut, ownerKeyID);
+    }
+
+    CTxDestination dest;
+    if (!ExtractDestination(scriptPubKey, dest))
+        return false;
+    return CBitcoinAddress(dest).GetKeyID(keyIDOut);
+}
+
 /** Resolve the finalized epoch anchor without conflating "nothing has
  * finalized yet" with missing/corrupt local persistence.  The former makes a
  * private vote/certificate deterministically premature; only an expected
@@ -4405,11 +4423,11 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb,
         ? nContextHeight
         : (nBestHeight == std::numeric_limits<int>::max()
                ? nBestHeight : nBestHeight + 1);
-    // Policy may refuse new relay traffic before Boundary A, but historical
-    // blocks remain consensus-valid until the activation height. A non-negative
-    // context is block validation; a negative context is relay/pre-check.
+    // Public networks never activated the legacy private-finality proof. Keep
+    // its byte-compatible decoder and verifier for regtest coverage only; on
+    // regtest Boundary A permanently quarantines this unsafe wire version.
     if (vote.IsPrivate() &&
-        ((nContextHeight < 0 && IsLegacyPrivacyPolicyDisabled()) ||
+        (IsLegacyPrivacyPolicyDisabled() ||
          IsBoundaryAActiveAtHeight(nEffectiveContextHeight)))
         return reject("legacy private-finality proofs are disabled pending privacy vNext");
 
@@ -4488,9 +4506,10 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb,
                                               membershipLeaf))
                 return reject("private finality V3 vote leaf reconstruction failed");
         }
+        // Containing block's height, not the epoch being voted on.
         if (!VerifyFCMPProof(finalizedCurveTree.GetRootNode(),
                              vote.privateProof.fcmpProof,
-                             membershipLeaf))
+                             membershipLeaf, nEffectiveContextHeight))
             return reject("private finality FCMP proof failed");
         if (vote.nProofMode == FINALITY_PROOF_NULLSTAKE_V2)
         {
@@ -4515,7 +4534,7 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb,
             }
             if (!VerifyNullStakeKernelProofV2(vote.privateProof.nullStakeV2Proof,
                                               vote.privateProof.stakeWeightCommitment,
-                                              pEpochBlock->nBits))
+                                              pEpochBlock->nBits, nEffectiveContextHeight))
                 return reject("private finality NullStake V2 proof failed");
         }
         else if (vote.nProofMode == FINALITY_PROOF_NULLSTAKE_V3_COLD)
@@ -4550,7 +4569,7 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb,
             // 3-generator leaf and re-derives cv_plain = cv3 - delegationHash*J internally for its range/link.
             if (!VerifyNullStakeKernelProofV3(vote.privateProof.nullStakeV3Proof,
                                               membershipLeaf,
-                                              pEpochBlock->nBits))
+                                              pEpochBlock->nBits, nEffectiveContextHeight))
                 return reject("private finality NullStake V3 proof failed");
         }
 
@@ -4566,7 +4585,7 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb,
                 return reject("private finality vote nullifier not bound to staked note");
             uint256 nfCtx = FinalityNullifierBindContext(vote.nEpoch, vote.hashBlock);
             if (!VerifyNullifierBindingProof(vote.privateProof.stakeWeightCommitment, nf, nfCtx,
-                                             vote.privateProof.vchNullifierBindingProof))
+                                             vote.privateProof.vchNullifierBindingProof, nEffectiveContextHeight))
                 return reject("private finality vote nullifier binding proof failed");
         }
 
@@ -4621,12 +4640,9 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb,
         if (txout.nValue <= 0 || !MoneyRange(txout.nValue))
             return reject("stake proof value out of range");
 
-        CTxDestination dest;
-        if (!ExtractDestination(txout.scriptPubKey, dest))
-            return reject("stake proof is not transparent P2PKH/P2PK");
         CKeyID outKeyID;
-        if (!CBitcoinAddress(dest).GetKeyID(outKeyID))
-            return reject("stake proof has no key id");
+        if (!ExtractFinalityStakeKeyID(txout.scriptPubKey, outKeyID))
+            return reject("stake proof is not transparent P2PKH/P2PK/P2CS");
         if (outKeyID != keyID)
             return reject("stake proof key mismatch");
 
@@ -4681,7 +4697,7 @@ bool CFinalityTracker::CheckTallyCertificate(
         : (nBestHeight == std::numeric_limits<int>::max()
                ? nBestHeight : nBestHeight + 1);
     if (cert.HasPrivateWeight() &&
-        ((nContextHeight < 0 && IsLegacyPrivacyPolicyDisabled()) ||
+        (IsLegacyPrivacyPolicyDisabled() ||
          IsBoundaryAActiveAtHeight(nEffectiveContextHeight)))
         return reject("legacy private tally certificates are disabled pending privacy vNext");
     if (GetEpochForHeight(cert.nHeight) != cert.nEpoch ||
@@ -5062,7 +5078,7 @@ bool CFinalityTracker::CheckTallyShare(const CFinalityTallyShare& share,
         ? nContextHeight
         : (nBestHeight == std::numeric_limits<int>::max()
                ? nBestHeight : nBestHeight + 1);
-    if ((nContextHeight < 0 && IsLegacyPrivacyPolicyDisabled()) ||
+    if (IsLegacyPrivacyPolicyDisabled() ||
         IsBoundaryAActiveAtHeight(nEffectiveContextHeight))
         return reject("legacy private tally shares are disabled pending privacy vNext");
     CBindingSignature bindingSig;
@@ -8256,6 +8272,18 @@ static std::string GetFinalityVoteModeArg()
     return strMode;
 }
 
+bool FinalityVoteModeAllowsPrivateNote(const std::string& strVoteMode,
+                                       bool fIsMofN)
+{
+    if (strVoteMode == "auto")
+        return true;
+    if (strVoteMode == "nullstake")
+        return !fIsMofN;
+    if (strVoteMode == "nullstakecold")
+        return fIsMofN;
+    return false;
+}
+
 static bool SerializeBindingProof(const CBindingSignature& sig,
                                   std::vector<unsigned char>& vchOut)
 {
@@ -8271,7 +8299,8 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
                                                 CBlockIndex* pEpochBlock,
                                                 int nCurrentEpoch,
                                                 int nEpochHeight,
-                                                const CFinalityTallyConfig& tallyConfig)
+                                                const CFinalityTallyConfig& tallyConfig,
+                                                const std::string& strVoteMode)
 {
     if (!pEpochBlock)
         return false;
@@ -8404,6 +8433,12 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
                 mofnSecrets = secrets;
                 break;
             }
+
+            // Explicit modes select exactly one proof generation: NullStake
+            // uses a plain shielded note and V2, while NullStake cold uses an
+            // M-of-N delegated note and V3. Auto may select either note kind.
+            if (!FinalityVoteModeAllowsPrivateNote(strVoteMode, fIsMofN))
+                continue;
 
             int64_t nLeafIdx = finalizedCurveTree.FindLeafIndex(membershipLeaf);
             if (nLeafIdx < 0)
@@ -8644,8 +8679,9 @@ bool ProduceFinalityVote()
     // tally certificate, using shielded notes) -- different stake, no double-count.
     bool fFinalityBootstrapped =
         (g_dagManager.GetDeterministicFinalizedHeight(GetEpochForHeight(nCurrentHeight)) > 0);
-    bool fAllowPrivateV2 = !LegacyPrivateFinalityTrafficDisabledAtTip() &&
+    bool fAllowPrivate = !LegacyPrivateFinalityTrafficDisabledAtTip() &&
                            ((strVoteMode == "nullstake") ||
+                            (strVoteMode == "nullstakecold") ||
                             (strVoteMode == "auto" && fFinalityBootstrapped)) &&
                            tallyConfig.CanRelayPrivateVotes();
     bool fAllowTransparent = (strVoteMode == "auto" || strVoteMode == "transparent");
@@ -8666,8 +8702,9 @@ bool ProduceFinalityVote()
     // vote afterwards. The private vote's proof generation can otherwise push the
     // transparent vote past the window on heavily-loaded nodes, stalling finalization.
     if (!fAllowTransparent)
-        return (fAllowPrivateV2 && ProducePrivateNullStakeFinalityVote(
-                    txdb, pEpochBlock, nCurrentEpoch, nEpochHeight, tallyConfig));
+        return (fAllowPrivate && ProducePrivateNullStakeFinalityVote(
+                    txdb, pEpochBlock, nCurrentEpoch, nEpochHeight,
+                    tallyConfig, strVoteMode));
 
     std::vector<COutput> vCoins;
     pwalletMain->AvailableCoins(vCoins);
@@ -8685,11 +8722,8 @@ bool ProduceFinalityVote()
         if (txout.nValue <= 0 || txout.nValue > MAX_MONEY)
             continue;
 
-        CTxDestination dest;
-        if (!ExtractDestination(txout.scriptPubKey, dest))
-            continue;
         CKeyID keyID;
-        if (!CBitcoinAddress(dest).GetKeyID(keyID))
+        if (!ExtractFinalityStakeKeyID(txout.scriptPubKey, keyID))
             continue;
 
         CKey key;
@@ -8733,8 +8767,9 @@ bool ProduceFinalityVote()
     }
 
     if (!pBestGroup || pBestGroup->nWeight <= 0)
-        return (fAllowPrivateV2 && ProducePrivateNullStakeFinalityVote(
-                    txdb, pEpochBlock, nCurrentEpoch, nEpochHeight, tallyConfig));
+        return (fAllowPrivate && ProducePrivateNullStakeFinalityVote(
+                    txdb, pEpochBlock, nCurrentEpoch, nEpochHeight,
+                    tallyConfig, strVoteMode));
 
     CHashWriter nullifierHash(SER_GETHASH, 0);
     CPubKey pubkey = pBestGroup->key.GetPubKey();
@@ -8758,12 +8793,14 @@ bool ProduceFinalityVote()
         vote.MarkCanonicalEnvelope();
 
     if (!vote.Sign(pBestGroup->key))
-        return (fAllowPrivateV2 && ProducePrivateNullStakeFinalityVote(
-                    txdb, pEpochBlock, nCurrentEpoch, nEpochHeight, tallyConfig));
+        return (fAllowPrivate && ProducePrivateNullStakeFinalityVote(
+                    txdb, pEpochBlock, nCurrentEpoch, nEpochHeight,
+                    tallyConfig, strVoteMode));
 
     if (!g_finalityTracker.AddVote(vote))
-        return (fAllowPrivateV2 && ProducePrivateNullStakeFinalityVote(
-                    txdb, pEpochBlock, nCurrentEpoch, nEpochHeight, tallyConfig));
+        return (fAllowPrivate && ProducePrivateNullStakeFinalityVote(
+                    txdb, pEpochBlock, nCurrentEpoch, nEpochHeight,
+                    tallyConfig, strVoteMode));
 
     printf("ProduceFinalityVote: epoch=%d height=%d weight=%s\n",
            nCurrentEpoch, nEpochHeight, FormatMoney(pBestGroup->nWeight).c_str());
@@ -8779,8 +8816,9 @@ bool ProduceFinalityVote()
     // Transparent vote is in; now cast the private (hidden-weight) vote for the v3
     // tally certificate. Done last so its slower FCMP proof can't delay the
     // finality-advancing transparent vote past the inclusion window.
-    if (fAllowPrivateV2)
+    if (fAllowPrivate)
         ProducePrivateNullStakeFinalityVote(txdb, pEpochBlock, nCurrentEpoch,
-                                            nEpochHeight, tallyConfig);
+                                            nEpochHeight, tallyConfig,
+                                            strVoteMode);
     return true;
 }

@@ -44,6 +44,13 @@ static const int DAGKNIGHT_K_FLOOR = 3;                // min inferred k (1s blo
 static const int DAGKNIGHT_K_CEILING = 32;             // max inferred k (caps attack surface)
 // Exponential moving average smoothing factor for k calibration (fixed-point, /256)
 static const int DAGKNIGHT_K_EMA_ALPHA = 64;           // ~25% weight to new sample
+static const int DAGKNIGHT_MAX_ANCHOR_CANDIDATES = 2048;
+static const int DAGKNIGHT_ANCHOR_CACHE_MAX = 8192;
+
+static const int DAG_PARENT_CARRIER_SCHEMA_VERSION = 1;
+static const char DAG_PARENT_CARRIER_SCHEMA[] = "boundary_a_canonical_v1";
+static const char DAGKNIGHT_ORDERING_CONTRACT[] =
+    "dagknight_adaptive_k_anchor_pure_v1";
 
 
 // ---------------------------------------------------------------------------
@@ -53,6 +60,26 @@ static const int DAGKNIGHT_K_EMA_ALPHA = 64;           // ~25% weight to new sam
 /** Extract DAG parent hashes from a coinbase OP_RETURN output.
  *  Returns empty vector if no DAG commitment found. */
 std::vector<uint256> ExtractDAGParents(const CScript& scriptCoinbase);
+
+enum DAGParentDecodeStatus
+{
+    DAG_PARENT_NOT_FOUND = 0,
+    DAG_PARENT_VALID = 1,
+    DAG_PARENT_MALFORMED = 2
+};
+
+/** Strict Boundary-A decoder. A matching IDAG payload must use the minimal
+ *  canonical push, consume the entire script and payload, and contain 1..32
+ *  unique non-zero parents. Non-IDAG OP_RETURN outputs are NOT_FOUND. */
+DAGParentDecodeStatus DecodeCanonicalDAGParentScript(
+    const CScript& script, std::vector<uint256>& vParents,
+    std::string& strError);
+
+/** Require exactly one strict IDAG commitment across the supplied scripts. */
+bool ExtractCanonicalDAGParentCommitment(
+    const std::vector<CScript>& vScripts,
+    std::vector<uint256>& vParents,
+    std::string& strError);
 
 /** Build a coinbase OP_RETURN script committing to DAG parents.
  *  Format: OP_RETURN <IDAG tag(4) || count(1) || hash1(32) || hash2(32) || ...> */
@@ -66,7 +93,9 @@ CScript BuildDAGParentScript(const std::vector<uint256>& vParents);
 // Per-record serialization version for CEpochState. Legacy records (written before this byte was
 // added) carry an implicit version 0; the DB reader (CTxDB::IterateEpochStates) reads the trailing
 // byte tolerantly, mirroring the CBlockDAGData::nInferredK legacy-field pattern.
-static const unsigned char EPOCHSTATE_SER_VERSION = 1;
+static const unsigned char EPOCHSTATE_SER_VERSION_V3 = 1;
+static const unsigned char EPOCHSTATE_SER_VERSION_V4 = 2;
+static const unsigned char EPOCHSTATE_SER_VERSION = EPOCHSTATE_SER_VERSION_V4;
 // DB-wide epoch-state schema marker (key "epochstateschema"). Absent/0 = pre-deterministic-anchor
 // regime (records may have been computed off a node-local tip); EPOCHSTATE_SCHEMA_V2 = records are
 // written under the deterministic anchor (post FORK_HEIGHT_EPOCH_STATE_V2). Gates the upgrade guard.
@@ -74,6 +103,14 @@ static const int EPOCHSTATE_SCHEMA_V2 = 2;
 // V3 records are built from the exact canonical epoch-end block, staged without touching the
 // in-memory cache, and committed with their matching curve snapshot and best-chain transition.
 static const int EPOCHSTATE_SCHEMA_V3 = 3;
+// Boundary B appends independently versioned IV5 accumulator/finality fields.
+// Existing V3 records remain byte-identical and continue to deserialize as v1.
+static const int EPOCHSTATE_SCHEMA_V4 = 4;
+static const size_t EPOCHSTATE_VNEXT_TREE_STATE_SIZE = 300;
+static const size_t EPOCHSTATE_VNEXT_NULLIFIER_STATE_SIZE = 44;
+static const size_t EPOCHSTATE_VNEXT_DIGEST_SIZE = 32;
+static const size_t EPOCHSTATE_VNEXT_MAX_ACTIVE_TXS = 65536;
+static const size_t EPOCHSTATE_VNEXT_MAX_NULLIFIERS = 1048576;
 
 struct CEpochState
 {
@@ -99,6 +136,21 @@ struct CEpochState
     // Record serialization version (trailing field; legacy records read back as 0). Not part of the
     // consensus root — purely a format tag so a future field-add can be detected across upgrades.
     unsigned char nSerVersion;
+    // Schema-V4 extension. These fields are serialized only when nSerVersion
+    // is EPOCHSTATE_SER_VERSION_V4, after the historical trailing version byte.
+    std::vector<unsigned char> vchVNextTreeState;
+    std::vector<unsigned char> vchVNextRoot;
+    uint64_t nVNextTreeSize;
+    std::vector<unsigned char> vchVNextNullifierState;
+    uint256 hashVNextNullifierRoot;
+    uint64_t nVNextNullifierCount;
+    std::vector<uint256> vVNextEpochNullifiers;
+    std::vector<unsigned char> vchVNextParameterDigest;
+    uint256 hashVNextFinalizedAnchor;
+    int nVNextFinalizedHeight;
+    std::vector<unsigned int> vVNextActiveBlockTxCounts;
+    std::vector<uint256> vVNextActiveTxIds;
+    uint256 hashVNextActiveTxSet;
 
     CEpochState()
     {
@@ -117,7 +169,13 @@ struct CEpochState
         nConsecutiveHardCount = 0;
         fFinalized = false;
         nFinalizedHeightAsOf = 0;
-        nSerVersion = EPOCHSTATE_SER_VERSION;
+        nSerVersion = EPOCHSTATE_SER_VERSION_V3;
+        nVNextTreeSize = 0;
+        hashVNextNullifierRoot = 0;
+        nVNextNullifierCount = 0;
+        hashVNextFinalizedAnchor = 0;
+        nVNextFinalizedHeight = 0;
+        hashVNextActiveTxSet = 0;
     }
 
     /** Domain-separated digest of the canonical consensus fields (format tag excluded). */
@@ -125,6 +183,7 @@ struct CEpochState
 
     IMPLEMENT_SERIALIZE
     (
+        CEpochState* pthis = const_cast<CEpochState*>(this);
         READWRITE(nEpoch);
         READWRITE(hashBoundaryBlock);
         READWRITE(nHeightStart);
@@ -142,6 +201,44 @@ struct CEpochState
         READWRITE(fFinalized);
         READWRITE(nFinalizedHeightAsOf);
         READWRITE(nSerVersion);   // trailing; legacy records lack it -> IterateEpochStates reads it tolerantly
+        if (nSerVersion > EPOCHSTATE_SER_VERSION)
+            throw std::ios_base::failure("unsupported epoch-state record version");
+        if (nSerVersion >= EPOCHSTATE_SER_VERSION_V4)
+        {
+            nSerSize += ::SerReadWriteLimitedVector(
+                s, pthis->vchVNextTreeState,
+                EPOCHSTATE_VNEXT_TREE_STATE_SIZE,
+                nType, nVersion, ser_action);
+            nSerSize += ::SerReadWriteLimitedVector(
+                s, pthis->vchVNextRoot, EPOCHSTATE_VNEXT_DIGEST_SIZE,
+                nType, nVersion, ser_action);
+            READWRITE(nVNextTreeSize);
+            nSerSize += ::SerReadWriteLimitedVector(
+                s, pthis->vchVNextNullifierState,
+                EPOCHSTATE_VNEXT_NULLIFIER_STATE_SIZE,
+                nType, nVersion, ser_action);
+            READWRITE(hashVNextNullifierRoot);
+            READWRITE(nVNextNullifierCount);
+            nSerSize += ::SerReadWriteLimitedVector(
+                s, pthis->vVNextEpochNullifiers,
+                EPOCHSTATE_VNEXT_MAX_NULLIFIERS,
+                nType, nVersion, ser_action);
+            nSerSize += ::SerReadWriteLimitedVector(
+                s, pthis->vchVNextParameterDigest,
+                EPOCHSTATE_VNEXT_DIGEST_SIZE,
+                nType, nVersion, ser_action);
+            READWRITE(hashVNextFinalizedAnchor);
+            READWRITE(nVNextFinalizedHeight);
+            nSerSize += ::SerReadWriteLimitedVector(
+                s, pthis->vVNextActiveBlockTxCounts,
+                EPOCHSTATE_VNEXT_MAX_ACTIVE_TXS,
+                nType, nVersion, ser_action);
+            nSerSize += ::SerReadWriteLimitedVector(
+                s, pthis->vVNextActiveTxIds,
+                EPOCHSTATE_VNEXT_MAX_ACTIVE_TXS,
+                nType, nVersion, ser_action);
+            READWRITE(hashVNextActiveTxSet);
+        }
     )
 };
 
@@ -212,7 +309,7 @@ public:
     void ColorBlock(CBlockIndex* pindex);
 
     /** DAGKNIGHT adaptive coloring for a block. */
-    void ColorBlockDAGKnight(CBlockIndex* pindex);
+    bool ColorBlockDAGKnight(CBlockIndex* pindex);
 
     /** DAGKNIGHT pairwise ordering: -1 if A before B, +1 if B before A, 0 if unordered.
      *  nConfidence is set to the supporting mass difference. */
@@ -220,6 +317,19 @@ public:
 
     /** DAGKNIGHT: Get confidence level for a block's ordering position. */
     int GetOrderConfidence(const uint256& hashBlock) const;
+
+    /** Validate the bounded anchor-local merge set before accepting a
+     *  Boundary-A block. This is consensus resource-limit enforcement. */
+    bool CheckDAGKnightParentSet(const std::vector<uint256>& vParents,
+                                 int nAnchorHeight,
+                                 std::string& strError) const;
+
+    /** Return the complete anchor-derived order/color view used by tests,
+     *  diagnostics and evidence generation. */
+    bool GetDAGKnightAnchorMetrics(
+        const uint256& hashAnchor, uint256& hashSelectedParent,
+        int& nInferredK, uint256& nScore,
+        std::vector<std::pair<uint256, bool> >& vOrderColors) const;
 
     /** Write DAG links for a block to LevelDB. */
     bool WriteDAGLinks(CTxDB& txdb, const uint256& hash);
@@ -346,6 +456,18 @@ public:
     void RemoveBlockDAGData(const uint256& hashBlock);
 
 private:
+    struct CDAGKnightAnchorState
+    {
+        uint256 hashSelectedParent;
+        uint256 nScore;
+        int nInferredK;
+        std::vector<unsigned char> vPressureSamples;
+        std::vector<uint256> vBlueWindow;
+        std::vector<std::pair<uint256, bool> > vOrderDelta;
+
+        CDAGKnightAnchorState() : nScore(0), nInferredK(0) {}
+    };
+
     std::map<uint256, CBlockDAGData> mapDAGData;
     std::set<uint256> setDAGTips;
     std::map<uint256, std::set<uint256>> mapPendingChildrenByParent;
@@ -358,6 +480,11 @@ private:
     mutable std::map<uint256, std::set<uint256>> mapBlueSetCache;
     static const int BLUESET_CACHE_MAX = 128;
 
+    // Boundary-A DAGKNIGHT states are keyed by their immutable anchor. The
+    // bounded cache is disposable: restart/reorg rebuild derives identical
+    // bytes from persisted parent links and block indexes.
+    mutable std::map<uint256, CDAGKnightAnchorState> mapDAGKnightAnchorCache;
+
     /** Internal: get blue set with caching */
     std::set<uint256> GetBlueSetCached(const uint256& hashBlock) const;
 
@@ -369,8 +496,24 @@ private:
     /** DAGKNIGHT: Infer local k from DAG neighborhood. */
     int InferLocalK(const uint256& hashBlock) const;
 
-    /** DAGKNIGHT: Compute supporting mass of A over B (blocks seeing A but not B). */
-    int SupportingMass(const uint256& hashA, const uint256& hashB) const;
+    uint256 GetDAGKnightSelectedParent(
+        const std::vector<uint256>& vParents) const;
+    bool IsDAGAncestor(const uint256& hashAncestor,
+                       const uint256& hashDescendant,
+                       int nMaxDepth) const;
+    bool CollectDAGKnightCandidates(
+        const std::vector<uint256>& vParents,
+        const uint256& hashSelectedParent,
+        int nAnchorHeight,
+        std::vector<uint256>& vCandidates,
+        std::string& strError) const;
+    bool EnsureDAGKnightAnchorState(const uint256& hashAnchor) const;
+    bool BuildDAGKnightAnchorState(const uint256& hashAnchor,
+                                   CDAGKnightAnchorState& stateOut,
+                                   std::string& strError) const;
+    void CacheDAGKnightAnchorState(
+        const uint256& hashAnchor,
+        const CDAGKnightAnchorState& state) const;
 
     /** Internal: get anticone of block X relative to a blue set */
     int AnticoneSize(const uint256& hashBlock, const std::set<uint256>& blueSet) const;

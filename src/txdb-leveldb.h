@@ -497,43 +497,99 @@ public:
         return Write(std::string("version"), nVersion);
     }
 
-    bool WriteKeyImage(ec_point& keyImage, CKeyImageSpent& keyImageSpent);
+    bool WriteKeyImage(const ec_point& keyImage,
+                       const CKeyImageSpent& keyImageSpent);
     bool ReadKeyImage(ec_point& keyImage, CKeyImageSpent& keyImageSpent);
-    bool EraseKeyImage(ec_point& keyImage);
+    TxDBReadStatus ReadKeyImageStatus(const ec_point& keyImage,
+                                      CKeyImageSpent& keyImageSpent);
+    bool EraseKeyImage(const ec_point& keyImage);
 
-    bool WriteAnonOutput(CPubKey& pkCoin, CAnonOutput& ao);
+    bool WriteAnonOutput(const CPubKey& pkCoin, const CAnonOutput& ao);
     bool ReadAnonOutput(CPubKey& pkCoin, CAnonOutput& ao);
-    bool EraseAnonOutput(CPubKey& pkCoin);
+    TxDBReadStatus ReadAnonOutputStatus(const CPubKey& pkCoin,
+                                        CAnonOutput& ao);
+    bool EraseAnonOutput(const CPubKey& pkCoin);
 
     bool WriteShieldedNullifier(const uint256& nullifier, const CShieldedNullifierSpent& nfs);
     bool ReadShieldedNullifier(const uint256& nullifier, CShieldedNullifierSpent& nfs);
+    TxDBReadStatus ReadShieldedNullifierStatus(
+        const uint256& nullifier, CShieldedNullifierSpent& nfs);
     bool EraseShieldedNullifier(const uint256& nullifier);
+
+    // Exact full-chain IV5 spent-key membership. These records deliberately
+    // use a distinct namespace from every historical privacy generation.
+    bool WritePrivacyVNextNullifier(const uint256& keyImage,
+                                    const CShieldedNullifierSpent& spent);
+    TxDBReadStatus ReadPrivacyVNextNullifierStatus(
+        const uint256& keyImage, CShieldedNullifierSpent& spent);
+    bool ErasePrivacyVNextNullifier(const uint256& keyImage);
+    bool CountPrivacyVNextNullifiers(uint64_t& nCount,
+                                    std::string& strError);
 
     bool WriteShieldedAnchor(const uint256& anchor);
     bool ReadShieldedAnchor(const uint256& anchor);
+    TxDBReadStatus ReadShieldedAnchorStatus(const uint256& anchor);
     bool EraseShieldedAnchor(const uint256& anchor);
     bool WriteShieldedAnchorHeight(const uint256& anchor, int nHeight);
     bool ReadShieldedAnchorHeight(const uint256& anchor, int& nHeight);
+    TxDBReadStatus ReadShieldedAnchorHeightStatus(const uint256& anchor,
+                                                  int& nHeight);
+    bool HasShieldedAnchorHeight(const uint256& anchor);
+    bool EraseShieldedAnchorHeight(const uint256& anchor);
 
     bool WriteShieldedTree(const CIncrementalMerkleTree& tree);
     bool ReadShieldedTree(CIncrementalMerkleTree& tree);
 
     bool WriteShieldedTreeAtBlock(const uint256& blockHash, const CIncrementalMerkleTree& tree);
     bool ReadShieldedTreeAtBlock(const uint256& blockHash, CIncrementalMerkleTree& tree);
+    bool EraseShieldedTreeAtBlock(const uint256& blockHash);
 
     bool WriteShieldedPoolValue(int64_t nValue);
     bool ReadShieldedPoolValue(int64_t& nValue);
 
     bool WriteShieldedCommitment(uint64_t nIndex, const CPedersenCommitment& commit);
     bool ReadShieldedCommitment(uint64_t nIndex, CPedersenCommitment& commit);
+    bool EraseShieldedCommitment(uint64_t nIndex);
     bool ReadAllShieldedCommitments(std::vector<CPedersenCommitment>& vCommitments);
+    // Proof construction only: include realCommit via its reverse index, then sample
+    // the rest uniformly without replacement, up to LELANTUS_MAX_SET_SIZE.
+    bool ReadBoundedLelantusCommitments(
+        const CPedersenCommitment& realCommit,
+        std::vector<CPedersenCommitment>& vCommitments,
+        uint64_t& nRealIndex,
+        std::string& strError);
     bool ReadShieldedCommitmentCount(uint64_t& nCount);
     bool WriteShieldedCommitmentCount(uint64_t nCount);
+    bool EraseShieldedCommitmentCount();
 
     bool WriteShieldedCommitmentHeight(uint64_t nIndex, int nHeight);
     bool ReadShieldedCommitmentHeight(uint64_t nIndex, int& nHeight);
+    bool HasShieldedCommitmentHeight(uint64_t nIndex);
     bool WriteShieldedCommitmentIndex(const std::vector<unsigned char>& vchCommitment, uint64_t nIndex);
     bool ReadShieldedCommitmentIndex(const std::vector<unsigned char>& vchCommitment, uint64_t& nIndex);
+    bool HasShieldedCommitmentIndex(const std::vector<unsigned char>& vchCommitment);
+    // Schema-V3 reverse-index journal.  Every active leaf has a predecessor
+    // record, allowing duplicate Pedersen commitments to be disconnected
+    // without erasing the older leaf's canonical lookup.
+    bool InitializeShieldedCommitmentIndexV3(const uint256& hashGeneration,
+                                              std::string& strError);
+    bool ValidateShieldedCommitmentIndexV3(std::string& strError);
+    bool PushShieldedCommitmentIndexV3(uint64_t nIndex,
+                                       const CPedersenCommitment& commitment,
+                                       std::string& strError);
+    bool PopShieldedCommitmentIndexV3(uint64_t nIndex,
+                                      const CPedersenCommitment& commitment,
+                                      std::string& strError);
+    bool ReadShieldedCommitmentIndexV3(const std::vector<unsigned char>& vchCommitment,
+                                       uint64_t& nIndex);
+    bool HasShieldedCommitmentIndexV3Schema();
+    // Reverse-index persistence mode for a block transition: a valid marker keeps V3 across
+    // reorgs below activation; missing markers at/after activation and malformed ones fail closed.
+    bool ResolveShieldedCommitmentIndexV3Mode(int nCandidateHeight,
+                                               int nActivationHeight,
+                                               bool& fUseV3,
+                                               std::string& strError);
+    bool ClearShieldedCommitmentIndexV3(std::string& strError);
     // B2-e Phase 3c.4: erase the per-leaf height ('sch') + cv->index ('sci') entries on reorg, so a
     // disconnected block's leaves cannot leave stale data that mis-dates the owner-reclaim timelock.
     bool EraseShieldedCommitmentHeight(uint64_t nIndex);
@@ -565,6 +621,31 @@ public:
     bool EraseBlockIndex(const uint256& blockhash);
     bool ReadHashBestChain(uint256& hashBestChain);
     bool WriteHashBestChain(uint256 hashBestChain);
+    TxDBReadStatus ReadShieldedWalletRecoveryStatus(
+        CShieldedWalletRecoveryRecord& record);
+    bool WriteShieldedWalletRecovery(
+        const CShieldedWalletRecoveryRecord& record);
+    // Atomically erase the recovery outbox only when its exact fixed record
+    // still matches the caller's successfully replayed transition.  The
+    // caller must make auxiliary Berkeley DB effects durable first.
+    bool AcknowledgeShieldedWalletRecovery(
+        const CShieldedWalletRecoveryRecord& expected);
+    bool EraseShieldedWalletRecovery();
+    TxDBReadStatus ReadDAGSkippedTxsStatus(
+        const CBlock& block, std::set<uint256>& setSkipped,
+        std::string& strError);
+    TxDBReadStatus ReadDAGSkippedTxMetadataStatus(
+        const uint256& hashBlock, const uint256& hashMerkleRoot,
+        uint32_t& nBlockTxCount, std::string& strError);
+    bool WriteDAGSkippedTxs(const CBlock& block,
+                            const std::set<uint256>& setSkipped,
+                            std::string& strError);
+    TxDBReadStatus ReadDAGActiveSetBest(uint256& hashBest);
+    bool WriteDAGActiveSetBest(const uint256& hashBest);
+    TxDBReadStatus ReadDAGActiveSetBuild(
+        CDAGActiveSetBuildRecord& record);
+    bool WriteDAGActiveSetBuild(CDAGActiveSetBuildRecord record);
+    bool EraseDAGActiveSetBuild();
     bool ReadHashBestHeaderChain(uint256& hashBestChain);
     bool WriteHashBestHeaderChain(uint256 hashBestChain);
     bool ReadBestInvalidTrust(CBigNum& bnBestInvalidTrust);

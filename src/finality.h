@@ -58,6 +58,18 @@ enum FinalityResult
     FINALITY_RESULT_INVALID,
     FINALITY_RESULT_LOCAL_STATE
 };
+
+/** Key authorized to cast a transparent finality vote for an output. P2CS resolves
+ *  to the staker key, never the owner key. */
+bool ExtractFinalityStakeKeyID(const CScript& scriptPubKey,
+                               CKeyID& keyIDOut);
+
+/** Decide whether an operator-selected finality vote mode may use a private
+ * note of the given kind.  Plain shielded notes generate NullStake V2 proofs;
+ * M-of-N delegated notes generate NullStake V3 cold-stake proofs. */
+bool FinalityVoteModeAllowsPrivateNote(const std::string& strVoteMode,
+                                       bool fIsMofN);
+
 static const int FINALITY_MAX_BLOCK_VOTES = 32;      // per-block vote inclusion cap
 static const int FINALITY_MAX_TALLY_COMMITTEE = 64;  // bounded m-of-n committee descriptor
 static const unsigned char FINALITY_VOTE_TAG[4] = { 0x49, 0x46, 0x56, 0x54 }; // "IFVT"

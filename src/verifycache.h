@@ -39,6 +39,14 @@ enum VerifyCacheDomain
     VERIFYCACHE_NULLIFIER_BIND = 4
 };
 
+// Bump whenever a cached verifier's accept/reject behavior changes, so entries
+// recorded under the old semantics cannot satisfy a lookup under the new ones.
+static const uint32_t VERIFYCACHE_SEMANTICS_VERSION = 1;
+
+// The only supported way to build a cache key: binds domain, semantics version, height
+// and network so a verdict below a fork gate never satisfies a check above it.
+uint256 VerifyProofCacheKey(int nDomain, int nHeight, const uint256& hashArgs);
+
 // True if the verify-once cache is enabled (-verifycache, default on).
 bool VerifyProofCacheEnabled();
 
@@ -48,7 +56,9 @@ bool VerifyProofCacheCheck(const uint256& key);
 // Record a successful verification for this key.
 void VerifyProofCacheStore(const uint256& key);
 
-// Drop all cached entries (test/diagnostic use only).
+// Drop all cached entries. Required on reindex, invalidateblock and
+// reconsiderblock: those move blocks across heights, so entries for the
+// abandoned chain must not be carried into the new one.
 void VerifyProofCacheClear();
 
 #endif // INNOVA_VERIFYCACHE_H

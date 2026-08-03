@@ -11,6 +11,8 @@
 #include "dag.h"
 #include "finality.h"
 
+#include <memory>
+
 using namespace std;
 
 //////////////////////////////////////////////////////////////////////////////
@@ -198,7 +200,7 @@ static CBlockIndex* SelectBestPoWTemplateParent(CBlockIndex* pPreferred)
 CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 {
     // Create new block
-    auto_ptr<CBlock> pblock(new CBlock());
+    unique_ptr<CBlock> pblock(new CBlock());
     if (!pblock.get())
         return NULL;
 
@@ -548,6 +550,16 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         {
             CTransaction& tx = (*mi).second;
             if (tx.IsCoinBase() || tx.IsCoinStake() || !tx.IsFinal())
+                continue;
+
+            const int nCandidateHeight = pindexPrev->nHeight + 1;
+            if ((tx.nVersion == ANON_TXN_VERSION &&
+                 (IsLegacyPrivacyPolicyDisabled() ||
+                  nCandidateHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)) ||
+                (IsLegacyShieldedTransactionVersion(tx.nVersion) &&
+                 (IsLegacyPrivacyPolicyDisabled() ||
+                  IsBoundaryAActiveAtHeight(nCandidateHeight))) ||
+                tx.nVersion == SHIELDED_TX_VERSION_VNEXT)
                 continue;
 
             // IDAG: Skip transactions already in DAG sibling blocks
@@ -1072,7 +1084,7 @@ bool CheckStake(CBlock* pblock, CWallet& wallet)
 
    // verify hash target and signature of coinstake tx -
     //if (!CheckProofOfStake(mapBlockIndex[pblock->hashPrevBlock], pblock->vtx[1], pblock->nBits, proofHash, hashTarget))
-	if (!CheckProofOfStake(pblock->vtx[1], pblock->nBits, proofHash, hashTarget))
+	if (!CheckProofOfStake(pblock->vtx[1], pblock->nBits, proofHash, hashTarget, nBestHeight + 1))
         return error("CheckStake() : proof-of-stake checking failed");
 
     //// debug print
@@ -1245,7 +1257,7 @@ void StakeMiner(CWallet *pwallet)
         //
         int64_t nFees;
         if (fDebug && GetBoolArg("-printcoinstake")) printf ("creating block. ");
-        auto_ptr<CBlock> pblock(CreateNewBlock(pwallet, true, &nFees));
+        unique_ptr<CBlock> pblock(CreateNewBlock(pwallet, true, &nFees));
         if (!pblock.get())
         {
             printf("StakeMiner: CreateNewBlock failed, retrying...\n");
@@ -1327,10 +1339,9 @@ void CPUMiner(CWallet* pwallet)
                 LOCK(cs_vNodes);
                 fNoNodes = vNodes.empty();
             }
-            // The low-height bootstrap-skip lets a fresh chain mine its first blocks without peers/IBD
-            // (needed to bring up regtest + a fresh testnet). Restrict it to regtest/testnet so a
-            // mainnet node can never mine low-difficulty stub blocks off genesis during IBD/no-peers.
-            bool fSkipBootstrap = (nBestHeight <= 10) && (fRegTest || fTestNet);
+            // Regtest may mine an isolated branch at any height, testnet only at low
+            // height; mainnet never bypasses the peer/IBD guard.
+            bool fSkipBootstrap = fRegTest || (fTestNet && nBestHeight <= 10);
             if (!fSkipBootstrap && (fNoNodes || IsInitialBlockDownload()))
             {
                 MilliSleep(1000);
@@ -1464,7 +1475,7 @@ void CPUMiner(CWallet* pwallet)
                                nSubmitHeight);
                         continue;
                     }
-                    auto_ptr<CBlock> psubmit(new CBlock(*pblock));
+                    unique_ptr<CBlock> psubmit(new CBlock(*pblock));
                     uint256 hashSubmit = psubmit->GetHash();
                     if (!ProcessBlock(NULL, psubmit.get()))
                     {

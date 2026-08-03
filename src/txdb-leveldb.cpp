@@ -471,7 +471,8 @@ bool CTxDB::TxnCommit(bool fSync)
     return true;
 }
 
-bool CTxDB::WriteKeyImage(ec_point& keyImage, CKeyImageSpent& keyImageSpent)
+bool CTxDB::WriteKeyImage(const ec_point& keyImage,
+                          const CKeyImageSpent& keyImageSpent)
 {
     return Write(make_pair(string("ki"), keyImage), keyImageSpent);
 };
@@ -481,12 +482,18 @@ bool CTxDB::ReadKeyImage(ec_point& keyImage, CKeyImageSpent& keyImageSpent)
     return Read(make_pair(string("ki"), keyImage), keyImageSpent);
 };
 
-bool CTxDB::EraseKeyImage(ec_point& keyImage)
+TxDBReadStatus CTxDB::ReadKeyImageStatus(
+    const ec_point& keyImage, CKeyImageSpent& keyImageSpent)
+{
+    return ReadExactStatus(make_pair(string("ki"), keyImage), keyImageSpent);
+}
+
+bool CTxDB::EraseKeyImage(const ec_point& keyImage)
 {
     return Erase(make_pair(string("ki"), keyImage));
 }
 
-bool CTxDB::WriteAnonOutput(CPubKey& pkCoin, CAnonOutput& ao)
+bool CTxDB::WriteAnonOutput(const CPubKey& pkCoin, const CAnonOutput& ao)
 {
     return Write(make_pair(string("ao"), pkCoin), ao);
 };
@@ -496,7 +503,13 @@ bool CTxDB::ReadAnonOutput(CPubKey& pkCoin, CAnonOutput& ao)
     return Read(make_pair(string("ao"), pkCoin), ao);
 };
 
-bool CTxDB::EraseAnonOutput(CPubKey& pkCoin)
+TxDBReadStatus CTxDB::ReadAnonOutputStatus(const CPubKey& pkCoin,
+                                           CAnonOutput& ao)
+{
+    return ReadExactStatus(make_pair(string("ao"), pkCoin), ao);
+}
+
+bool CTxDB::EraseAnonOutput(const CPubKey& pkCoin)
 {
     return Erase(make_pair(string("ao"), pkCoin));
 }
@@ -511,9 +524,101 @@ bool CTxDB::ReadShieldedNullifier(const uint256& nullifier, CShieldedNullifierSp
     return Read(make_pair(string("sn"), nullifier), nfs);
 }
 
+TxDBReadStatus CTxDB::ReadShieldedNullifierStatus(
+    const uint256& nullifier, CShieldedNullifierSpent& nfs)
+{
+    const TxDBReadStatus status = ReadExactStatus(
+        make_pair(string("sn"), nullifier), nfs);
+    if (status == TXDB_READ_FOUND && nfs.txnHash == 0)
+        return TXDB_READ_ERROR;
+    return status;
+}
+
 bool CTxDB::EraseShieldedNullifier(const uint256& nullifier)
 {
     return Erase(make_pair(string("sn"), nullifier));
+}
+
+bool CTxDB::WritePrivacyVNextNullifier(
+    const uint256& keyImage, const CShieldedNullifierSpent& spent)
+{
+    return Write(make_pair(string("iv5nf"), keyImage), spent);
+}
+
+TxDBReadStatus CTxDB::ReadPrivacyVNextNullifierStatus(
+    const uint256& keyImage, CShieldedNullifierSpent& spent)
+{
+    const TxDBReadStatus status = ReadExactStatus(
+        make_pair(string("iv5nf"), keyImage), spent);
+    if (status == TXDB_READ_FOUND && spent.txnHash == 0)
+        return TXDB_READ_ERROR;
+    return status;
+}
+
+bool CTxDB::ErasePrivacyVNextNullifier(const uint256& keyImage)
+{
+    return Erase(make_pair(string("iv5nf"), keyImage));
+}
+
+bool CTxDB::CountPrivacyVNextNullifiers(
+    uint64_t& nCount, std::string& strError)
+{
+    nCount = 0;
+    strError.clear();
+    if (activeBatch)
+    {
+        strError = "cannot audit the IV5 spent-key index inside an active batch";
+        return false;
+    }
+
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << string("iv5nf");
+    const std::string strPrefix = ssPrefix.str();
+    leveldb::Iterator* it = pdb->NewIterator(leveldb::ReadOptions());
+    it->Seek(strPrefix);
+    while (it->Valid())
+    {
+        const std::string strKey = it->key().ToString();
+        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
+            break;
+        try
+        {
+            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(),
+                              SER_DISK, CLIENT_VERSION);
+            std::pair<std::string, uint256> key;
+            ssKey >> key;
+            if (key.first != "iv5nf" || ssKey.size() != 0 || key.second == 0)
+                throw std::ios_base::failure("non-canonical IV5 spent-key record key");
+
+            const leveldb::Slice value = it->value();
+            CDataStream ssValue(value.data(), value.data() + value.size(),
+                                SER_DISK, CLIENT_VERSION);
+            CShieldedNullifierSpent spent;
+            ssValue >> spent;
+            if (ssValue.size() != 0 || spent.txnHash == 0)
+                throw std::ios_base::failure("non-canonical IV5 spent-key record value");
+            if (nCount == std::numeric_limits<uint64_t>::max())
+                throw std::ios_base::failure("IV5 spent-key record count overflow");
+            ++nCount;
+        }
+        catch (const std::exception& e)
+        {
+            strError = strprintf("invalid IV5 spent-key index record: %s",
+                                 e.what());
+            delete it;
+            return false;
+        }
+        it->Next();
+    }
+
+    const leveldb::Status status = it->status();
+    delete it;
+    if (!status.ok())
+    {
+        strError = "IV5 spent-key iterator failure: " + status.ToString();
+        return false;
+    }
+    return true;
 }
 
 bool CTxDB::WriteShieldedAnchor(const uint256& anchor)
@@ -527,6 +632,16 @@ bool CTxDB::ReadShieldedAnchor(const uint256& anchor)
     if (!Read(make_pair(string("sa"), anchor), fValid))
         return false;
     return fValid;
+}
+
+TxDBReadStatus CTxDB::ReadShieldedAnchorStatus(const uint256& anchor)
+{
+    bool fValid = false;
+    const TxDBReadStatus status = ReadExactStatus(
+        make_pair(string("sa"), anchor), fValid);
+    if (status == TXDB_READ_FOUND && !fValid)
+        return TXDB_READ_ERROR;
+    return status;
 }
 
 bool CTxDB::EraseShieldedAnchor(const uint256& anchor)
@@ -544,24 +659,51 @@ bool CTxDB::ReadShieldedAnchorHeight(const uint256& anchor, int& nHeight)
     return Read(make_pair(string("sah"), anchor), nHeight);
 }
 
+TxDBReadStatus CTxDB::ReadShieldedAnchorHeightStatus(
+    const uint256& anchor,
+    int& nHeight)
+{
+    return ReadExactStatus(make_pair(string("sah"), anchor), nHeight);
+}
+
+bool CTxDB::HasShieldedAnchorHeight(const uint256& anchor)
+{
+    return Exists(make_pair(string("sah"), anchor));
+}
+
+bool CTxDB::EraseShieldedAnchorHeight(const uint256& anchor)
+{
+    return Erase(make_pair(string("sah"), anchor));
+}
+
 bool CTxDB::WriteShieldedTree(const CIncrementalMerkleTree& tree)
 {
+    if (!tree.IsValidStructure())
+        return false;
     return Write(string("st"), tree);
 }
 
 bool CTxDB::ReadShieldedTree(CIncrementalMerkleTree& tree)
 {
-    return Read(string("st"), tree);
+    return ReadExact(string("st"), tree) && tree.IsValidStructure();
 }
 
 bool CTxDB::WriteShieldedTreeAtBlock(const uint256& blockHash, const CIncrementalMerkleTree& tree)
 {
+    if (!tree.IsValidStructure())
+        return false;
     return Write(make_pair(string("sb"), blockHash), tree);
 }
 
 bool CTxDB::ReadShieldedTreeAtBlock(const uint256& blockHash, CIncrementalMerkleTree& tree)
 {
-    return Read(make_pair(string("sb"), blockHash), tree);
+    return ReadExact(make_pair(string("sb"), blockHash), tree) &&
+           tree.IsValidStructure();
+}
+
+bool CTxDB::EraseShieldedTreeAtBlock(const uint256& blockHash)
+{
+    return Erase(make_pair(string("sb"), blockHash));
 }
 
 bool CTxDB::WriteShieldedPoolValue(int64_t nValue)
@@ -584,6 +726,11 @@ bool CTxDB::ReadShieldedCommitment(uint64_t nIndex, CPedersenCommitment& commit)
     return Read(make_pair(string("sc"), nIndex), commit);
 }
 
+bool CTxDB::EraseShieldedCommitment(uint64_t nIndex)
+{
+    return Erase(make_pair(string("sc"), nIndex));
+}
+
 bool CTxDB::WriteShieldedCommitmentCount(uint64_t nCount)
 {
     return Write(string("scc"), nCount);
@@ -592,6 +739,11 @@ bool CTxDB::WriteShieldedCommitmentCount(uint64_t nCount)
 bool CTxDB::ReadShieldedCommitmentCount(uint64_t& nCount)
 {
     return Read(string("scc"), nCount);
+}
+
+bool CTxDB::EraseShieldedCommitmentCount()
+{
+    return Erase(string("scc"));
 }
 
 bool CTxDB::WriteShieldedCommitmentHeight(uint64_t nIndex, int nHeight)
@@ -604,6 +756,11 @@ bool CTxDB::ReadShieldedCommitmentHeight(uint64_t nIndex, int& nHeight)
     return Read(make_pair(string("sch"), nIndex), nHeight);
 }
 
+bool CTxDB::HasShieldedCommitmentHeight(uint64_t nIndex)
+{
+    return Exists(make_pair(string("sch"), nIndex));
+}
+
 bool CTxDB::WriteShieldedCommitmentIndex(const std::vector<unsigned char>& vchCommitment, uint64_t nIndex)
 {
     return Write(make_pair(string("sci"), vchCommitment), nIndex);
@@ -612,6 +769,452 @@ bool CTxDB::WriteShieldedCommitmentIndex(const std::vector<unsigned char>& vchCo
 bool CTxDB::ReadShieldedCommitmentIndex(const std::vector<unsigned char>& vchCommitment, uint64_t& nIndex)
 {
     return Read(make_pair(string("sci"), vchCommitment), nIndex);
+}
+
+bool CTxDB::HasShieldedCommitmentIndex(const std::vector<unsigned char>& vchCommitment)
+{
+    return Exists(make_pair(string("sci"), vchCommitment));
+}
+
+namespace
+{
+
+static const uint64_t SHIELDED_COMMITMENT_INDEX_NONE =
+    std::numeric_limits<uint64_t>::max();
+static const int SHIELDED_COMMITMENT_INDEX_SCHEMA_V3 = 3;
+
+class CShieldedCommitmentIndexV3Marker
+{
+public:
+    int nSchema;
+    uint256 hashGeneration;
+
+    CShieldedCommitmentIndexV3Marker()
+        : nSchema(0), hashGeneration(0) {}
+
+    CShieldedCommitmentIndexV3Marker(int nSchemaIn,
+                                     const uint256& hashGenerationIn)
+        : nSchema(nSchemaIn), hashGeneration(hashGenerationIn) {}
+
+    bool IsValid() const
+    {
+        return nSchema == SHIELDED_COMMITMENT_INDEX_SCHEMA_V3 &&
+               hashGeneration != 0;
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(nSchema);
+        READWRITE(hashGeneration);
+    )
+};
+
+typedef std::pair<std::string, uint256> CShieldedIndexGenerationKey;
+
+static std::pair<CShieldedIndexGenerationKey, std::vector<unsigned char> >
+ShieldedCommitmentIndexV3Key(
+    const uint256& hashGeneration,
+    const std::vector<unsigned char>& vchCommitment)
+{
+    return std::make_pair(
+        std::make_pair(std::string("sci3"), hashGeneration),
+        vchCommitment);
+}
+
+static std::pair<CShieldedIndexGenerationKey, uint64_t>
+ShieldedCommitmentPreviousV3Key(const uint256& hashGeneration,
+                                uint64_t nIndex)
+{
+    return std::make_pair(
+        std::make_pair(std::string("scp3"), hashGeneration), nIndex);
+}
+
+} // namespace
+
+bool CTxDB::EraseSerializedStringKeyPrefix(const std::string& strPrefix,
+                                           std::string& strError)
+{
+    if (!activeBatch)
+    {
+        strError = "shielded index prefix reset requires an active DB transaction";
+        return false;
+    }
+
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << strPrefix;
+    const std::string encodedPrefix = ssPrefix.str();
+    leveldb::Iterator* it = pdb->NewIterator(leveldb::ReadOptions());
+    for (it->Seek(encodedPrefix); it->Valid(); it->Next())
+    {
+        const std::string key = it->key().ToString();
+        if (key.size() < encodedPrefix.size() ||
+            key.compare(0, encodedPrefix.size(), encodedPrefix) != 0)
+            break;
+        activeBatch->Delete(key);
+    }
+    const leveldb::Status status = it->status();
+    delete it;
+    if (!status.ok())
+    {
+        strError = strprintf("LevelDB iterator failed while clearing %s: %s",
+                             strPrefix.c_str(),
+                             status.ToString().c_str());
+        return false;
+    }
+    return true;
+}
+
+bool CTxDB::ReadShieldedCommitmentIndexV3(
+    const std::vector<unsigned char>& vchCommitment,
+    uint64_t& nIndex)
+{
+    CShieldedCommitmentIndexV3Marker marker;
+    if (!ReadExact(string("siv3"), marker) || !marker.IsValid())
+        return false;
+    return ReadExact(ShieldedCommitmentIndexV3Key(
+                         marker.hashGeneration, vchCommitment),
+                     nIndex);
+}
+
+bool CTxDB::HasShieldedCommitmentIndexV3Schema()
+{
+    CShieldedCommitmentIndexV3Marker marker;
+    return ReadExact(string("siv3"), marker) && marker.IsValid();
+}
+
+bool CTxDB::ResolveShieldedCommitmentIndexV3Mode(
+    int nCandidateHeight,
+    int nActivationHeight,
+    bool& fUseV3,
+    std::string& strError)
+{
+    fUseV3 = false;
+    strError.clear();
+
+    CShieldedCommitmentIndexV3Marker marker;
+    const TxDBReadStatus markerStatus =
+        ReadExactStatus(string("siv3"), marker);
+    if (markerStatus == TXDB_READ_ERROR ||
+        (markerStatus == TXDB_READ_FOUND && !marker.IsValid()))
+    {
+        strError = "shielded V3 reverse-index marker is corrupt";
+        return false;
+    }
+
+    const bool fHaveValidMarker = markerStatus == TXDB_READ_FOUND;
+    fUseV3 = nCandidateHeight >= nActivationHeight || fHaveValidMarker;
+    if (fUseV3 && !fHaveValidMarker)
+    {
+        strError = "shielded V3 reverse-index marker is missing at or after activation";
+        return false;
+    }
+    return true;
+}
+
+bool CTxDB::ClearShieldedCommitmentIndexV3(std::string& strError)
+{
+    strError.clear();
+    if (!EraseSerializedStringKeyPrefix("sci3", strError) ||
+        !EraseSerializedStringKeyPrefix("scp3", strError) ||
+        !Erase(string("siv3")))
+    {
+        if (strError.empty())
+            strError = "failed to clear shielded V3 reverse-index marker";
+        return false;
+    }
+    return true;
+}
+
+bool CTxDB::InitializeShieldedCommitmentIndexV3(
+    const uint256& hashGeneration,
+    std::string& strError)
+{
+    strError.clear();
+    if (hashGeneration == 0)
+    {
+        strError = "shielded V3 reverse-index generation is zero";
+        return false;
+    }
+
+    CShieldedCommitmentIndexV3Marker existingMarker;
+    const TxDBReadStatus markerStatus =
+        ReadExactStatus(string("siv3"), existingMarker);
+    if (markerStatus == TXDB_READ_ERROR ||
+        (markerStatus == TXDB_READ_FOUND && !existingMarker.IsValid()))
+    {
+        strError = "existing shielded V3 reverse-index marker is corrupt";
+        return false;
+    }
+
+    CIncrementalMerkleTree tree;
+    uint64_t nCount = 0;
+    if (!ReadShieldedTree(tree))
+    {
+        strError = "shielded Merkle tree missing, malformed, or unreadable";
+        return false;
+    }
+    if (!ReadExact(string("scc"), nCount))
+    {
+        strError = "shielded commitment count missing or unreadable";
+        return false;
+    }
+    if (nCount != tree.Size())
+    {
+        strError = strprintf("shielded tree/count mismatch (%" PRIu64
+                             " != %" PRIu64 ")", tree.Size(), nCount);
+        return false;
+    }
+
+    // O(active shielded leaves) at the one-time V3 activation or a reorg across it. Prefix
+    // clearing plus full rebuild drops abandoned-branch heads and repairs legacy `sci` atomically.
+    if (!EraseSerializedStringKeyPrefix("sci3", strError) ||
+        !EraseSerializedStringKeyPrefix("scp3", strError) ||
+        !EraseSerializedStringKeyPrefix("sci", strError))
+        return false;
+
+    std::map<std::vector<unsigned char>, uint64_t> mapLatest;
+    for (uint64_t i = 0; i < nCount; ++i)
+    {
+        CPedersenCommitment commitment;
+        if (!ReadExact(make_pair(string("sc"), i), commitment) ||
+            commitment.vchCommitment.size() != PEDERSEN_COMMITMENT_SIZE)
+        {
+            strError = strprintf("shielded commitment %" PRIu64
+                                 " missing, malformed, or unreadable", i);
+            return false;
+        }
+
+        const std::map<std::vector<unsigned char>, uint64_t>::const_iterator
+            previous = mapLatest.find(commitment.vchCommitment);
+        const uint64_t nPrevious =
+            previous == mapLatest.end() ? SHIELDED_COMMITMENT_INDEX_NONE
+                                        : previous->second;
+
+        if (!Write(ShieldedCommitmentPreviousV3Key(hashGeneration, i),
+                   nPrevious) ||
+            !Write(ShieldedCommitmentIndexV3Key(
+                       hashGeneration, commitment.vchCommitment), i) ||
+            !WriteShieldedCommitmentIndex(commitment.vchCommitment, i))
+        {
+            strError = strprintf("failed to stage shielded V3 index leaf %" PRIu64,
+                                 i);
+            return false;
+        }
+        mapLatest[commitment.vchCommitment] = i;
+    }
+
+    const CShieldedCommitmentIndexV3Marker marker(
+        SHIELDED_COMMITMENT_INDEX_SCHEMA_V3, hashGeneration);
+    if (!Write(string("siv3"), marker))
+    {
+        strError = "failed to stage shielded V3 reverse-index schema marker";
+        return false;
+    }
+    return true;
+}
+
+bool CTxDB::ValidateShieldedCommitmentIndexV3(std::string& strError)
+{
+    strError.clear();
+    CShieldedCommitmentIndexV3Marker marker;
+    if (!ReadExact(string("siv3"), marker) || !marker.IsValid())
+    {
+        strError = "shielded V3 reverse-index schema marker missing or invalid";
+        return false;
+    }
+
+    CIncrementalMerkleTree tree;
+    uint64_t nCount = 0;
+    if (!ReadShieldedTree(tree) || !ReadExact(string("scc"), nCount))
+    {
+        strError = "shielded tree/count missing, malformed, or unreadable";
+        return false;
+    }
+    if (nCount != tree.Size())
+    {
+        strError = strprintf("shielded tree/count mismatch (%" PRIu64
+                             " != %" PRIu64 ")", tree.Size(), nCount);
+        return false;
+    }
+
+    std::map<std::vector<unsigned char>, uint64_t> mapLatest;
+    for (uint64_t i = 0; i < nCount; ++i)
+    {
+        CPedersenCommitment commitment;
+        if (!ReadExact(make_pair(string("sc"), i), commitment) ||
+            commitment.vchCommitment.size() != PEDERSEN_COMMITMENT_SIZE)
+        {
+            strError = strprintf("shielded commitment %" PRIu64
+                                 " missing, malformed, or unreadable", i);
+            return false;
+        }
+
+        const std::map<std::vector<unsigned char>, uint64_t>::const_iterator
+            previous = mapLatest.find(commitment.vchCommitment);
+        const uint64_t nExpectedPrevious =
+            previous == mapLatest.end() ? SHIELDED_COMMITMENT_INDEX_NONE
+                                        : previous->second;
+        uint64_t nStoredPrevious = 0;
+        if (!ReadExact(ShieldedCommitmentPreviousV3Key(
+                           marker.hashGeneration, i),
+                       nStoredPrevious) ||
+            nStoredPrevious != nExpectedPrevious)
+        {
+            strError = strprintf("shielded V3 predecessor mismatch at leaf %" PRIu64,
+                                 i);
+            return false;
+        }
+        mapLatest[commitment.vchCommitment] = i;
+    }
+
+    for (std::map<std::vector<unsigned char>, uint64_t>::const_iterator it =
+             mapLatest.begin(); it != mapLatest.end(); ++it)
+    {
+        uint64_t nV3Index = 0;
+        uint64_t nLegacyIndex = 0;
+        if (!ReadExact(ShieldedCommitmentIndexV3Key(
+                           marker.hashGeneration, it->first),
+                       nV3Index) ||
+            nV3Index != it->second ||
+            !ReadExact(make_pair(string("sci"), it->first), nLegacyIndex) ||
+            nLegacyIndex != it->second)
+        {
+            strError = "shielded V3 reverse-index head mismatch";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool CTxDB::PushShieldedCommitmentIndexV3(
+    uint64_t nIndex,
+    const CPedersenCommitment& commitment,
+    std::string& strError)
+{
+    strError.clear();
+    CShieldedCommitmentIndexV3Marker marker;
+    if (!ReadExact(string("siv3"), marker) || !marker.IsValid())
+    {
+        strError = "shielded V3 reverse-index schema marker missing or invalid";
+        return false;
+    }
+    if (commitment.vchCommitment.size() != PEDERSEN_COMMITMENT_SIZE)
+    {
+        strError = "shielded commitment has invalid encoded size";
+        return false;
+    }
+
+    CPedersenCommitment stored;
+    if (!ReadExact(make_pair(string("sc"), nIndex), stored) ||
+        stored.vchCommitment != commitment.vchCommitment)
+    {
+        strError = "shielded commitment forward value missing or mismatched";
+        return false;
+    }
+
+    uint64_t nPrevious = SHIELDED_COMMITMENT_INDEX_NONE;
+    uint64_t nCandidate = 0;
+    const TxDBReadStatus status = ReadExactStatus(
+        ShieldedCommitmentIndexV3Key(marker.hashGeneration,
+                                     commitment.vchCommitment),
+        nCandidate);
+    if (status == TXDB_READ_ERROR)
+    {
+        strError = "shielded V3 reverse-index head is malformed or unreadable";
+        return false;
+    }
+    if (status == TXDB_READ_FOUND && nCandidate < nIndex)
+    {
+        CPedersenCommitment candidate;
+        if (ReadExact(make_pair(string("sc"), nCandidate), candidate) &&
+            candidate.vchCommitment == commitment.vchCommitment)
+            nPrevious = nCandidate;
+    }
+
+    if (!Write(ShieldedCommitmentPreviousV3Key(marker.hashGeneration,
+                                               nIndex),
+               nPrevious) ||
+        !Write(ShieldedCommitmentIndexV3Key(
+                   marker.hashGeneration, commitment.vchCommitment),
+               nIndex) ||
+        !WriteShieldedCommitmentIndex(commitment.vchCommitment, nIndex))
+    {
+        strError = "failed to stage shielded V3 reverse-index push";
+        return false;
+    }
+    return true;
+}
+
+bool CTxDB::PopShieldedCommitmentIndexV3(
+    uint64_t nIndex,
+    const CPedersenCommitment& commitment,
+    std::string& strError)
+{
+    strError.clear();
+    CShieldedCommitmentIndexV3Marker marker;
+    if (!ReadExact(string("siv3"), marker) || !marker.IsValid())
+    {
+        strError = "shielded V3 reverse-index schema marker missing or invalid";
+        return false;
+    }
+    if (commitment.vchCommitment.size() != PEDERSEN_COMMITMENT_SIZE)
+    {
+        strError = "shielded commitment has invalid encoded size";
+        return false;
+    }
+
+    uint64_t nHead = 0;
+    uint64_t nPrevious = 0;
+    if (!ReadExact(ShieldedCommitmentIndexV3Key(
+                       marker.hashGeneration, commitment.vchCommitment),
+                   nHead) ||
+        nHead != nIndex ||
+        !ReadExact(ShieldedCommitmentPreviousV3Key(
+                       marker.hashGeneration, nIndex),
+                   nPrevious))
+    {
+        strError = "shielded V3 reverse-index pop order/state mismatch";
+        return false;
+    }
+
+    if (nPrevious == SHIELDED_COMMITMENT_INDEX_NONE)
+    {
+        if (!Erase(ShieldedCommitmentIndexV3Key(
+                       marker.hashGeneration, commitment.vchCommitment)) ||
+            !EraseShieldedCommitmentIndex(commitment.vchCommitment))
+        {
+            strError = "failed to erase final shielded V3 reverse-index head";
+            return false;
+        }
+    }
+    else
+    {
+        CPedersenCommitment previous;
+        if (nPrevious >= nIndex ||
+            !ReadExact(make_pair(string("sc"), nPrevious), previous) ||
+            previous.vchCommitment != commitment.vchCommitment)
+        {
+            strError = "shielded V3 predecessor is invalid or unreadable";
+            return false;
+        }
+        if (!Write(ShieldedCommitmentIndexV3Key(
+                       marker.hashGeneration, commitment.vchCommitment),
+                   nPrevious) ||
+            !WriteShieldedCommitmentIndex(commitment.vchCommitment,
+                                           nPrevious))
+        {
+            strError = "failed to restore shielded V3 reverse-index predecessor";
+            return false;
+        }
+    }
+
+    if (!Erase(ShieldedCommitmentPreviousV3Key(marker.hashGeneration,
+                                               nIndex)))
+    {
+        strError = "failed to erase shielded V3 predecessor journal entry";
+        return false;
+    }
+    return true;
 }
 
 bool CTxDB::EraseShieldedCommitmentHeight(uint64_t nIndex)
@@ -634,8 +1237,111 @@ bool CTxDB::ReadAllShieldedCommitments(std::vector<CPedersenCommitment>& vCommit
     for (uint64_t i = 0; i < nCount; i++)
     {
         CPedersenCommitment commit;
-        if (ReadShieldedCommitment(i, commit))
-            vCommitments.push_back(commit);
+        if (!ReadShieldedCommitment(i, commit))
+        {
+            vCommitments.clear();
+            return false;
+        }
+        vCommitments.push_back(commit);
+    }
+    return true;
+}
+
+bool CTxDB::ReadBoundedLelantusCommitments(
+    const CPedersenCommitment& realCommit,
+    std::vector<CPedersenCommitment>& vCommitments,
+    uint64_t& nRealIndex,
+    std::string& strError)
+{
+    vCommitments.clear();
+    nRealIndex = 0;
+    strError.clear();
+
+    uint64_t nCount = 0;
+    if (!ReadShieldedCommitmentCount(nCount))
+    {
+        strError = "shielded commitment count missing or unreadable";
+        return false;
+    }
+    if (nCount < (uint64_t)LELANTUS_MIN_SET_SIZE)
+    {
+        strError = strprintf("shielded commitment pool too small (%" PRIu64
+                             " < %d)", nCount, LELANTUS_MIN_SET_SIZE);
+        return false;
+    }
+    if (!ReadShieldedCommitmentIndex(realCommit.vchCommitment,
+                                     nRealIndex))
+    {
+        strError = "real shielded commitment reverse index missing or unreadable";
+        return false;
+    }
+    if (nRealIndex >= nCount)
+    {
+        strError = strprintf("real shielded commitment index %" PRIu64
+                             " is outside count %" PRIu64,
+                             nRealIndex, nCount);
+        return false;
+    }
+
+    CPedersenCommitment indexedRealCommitment;
+    if (!ReadShieldedCommitment(nRealIndex, indexedRealCommitment))
+    {
+        strError = "real shielded commitment value missing or unreadable";
+        return false;
+    }
+    if (indexedRealCommitment.vchCommitment != realCommit.vchCommitment)
+    {
+        strError = "real shielded commitment reverse-index/value mismatch";
+        return false;
+    }
+
+    const uint64_t nDecoyPopulation = nCount - 1;
+    const uint64_t nDecoyCount = std::min<uint64_t>(
+        nDecoyPopulation, (uint64_t)LELANTUS_MAX_SET_SIZE - 1);
+
+    // Floyd's algorithm chooses a uniform k-subset without replacement using
+    // O(k) memory and random draws. Work over a virtual population that omits
+    // nRealIndex, then map virtual indices at/after it up by one.
+    std::set<uint64_t> setVirtualIndices;
+    try
+    {
+        for (uint64_t j = nDecoyPopulation - nDecoyCount;
+             j < nDecoyPopulation; ++j)
+        {
+            const uint64_t nCandidate = GetRand(j + 1);
+            if (!setVirtualIndices.insert(nCandidate).second)
+                setVirtualIndices.insert(j);
+        }
+    }
+    catch (const std::exception& e)
+    {
+        strError = strprintf("secure Lelantus sampling failed: %s", e.what());
+        return false;
+    }
+
+    vCommitments.reserve((size_t)nDecoyCount + 1);
+    vCommitments.push_back(indexedRealCommitment);
+    for (std::set<uint64_t>::const_iterator it = setVirtualIndices.begin();
+         it != setVirtualIndices.end(); ++it)
+    {
+        const uint64_t nIndex = *it >= nRealIndex ? *it + 1 : *it;
+        CPedersenCommitment commitment;
+        if (!ReadShieldedCommitment(nIndex, commitment))
+        {
+            vCommitments.clear();
+            strError = strprintf("sampled shielded commitment %" PRIu64
+                                 " missing or unreadable", nIndex);
+            return false;
+        }
+        vCommitments.push_back(commitment);
+    }
+
+    if (vCommitments.size() != (size_t)nDecoyCount + 1 ||
+        vCommitments.size() > (size_t)LELANTUS_MAX_SET_SIZE)
+    {
+        vCommitments.clear();
+        strError = "bounded Lelantus sampler produced an invalid sample size";
+        return false;
     }
     return true;
 }
@@ -766,9 +1472,44 @@ bool CTxDB::IterateEpochStates(std::map<int, CEpochState>& mapOut)
             ssValue >> state.nFinalizedHeightAsOf;
             // Trailing version byte: present on V2+ records, absent (implicit 0) on legacy records.
             if (ssValue.size() > 0)
+            {
                 ssValue >> state.nSerVersion;
+            }
             else
                 state.nSerVersion = 0;
+            if (state.nSerVersion > EPOCHSTATE_SER_VERSION)
+                throw std::ios_base::failure("unsupported epoch-state record version");
+            if (state.nSerVersion >= EPOCHSTATE_SER_VERSION_V4)
+            {
+                ssValue >> state.vchVNextTreeState;
+                ssValue >> state.vchVNextRoot;
+                ssValue >> state.nVNextTreeSize;
+                ssValue >> state.vchVNextNullifierState;
+                ssValue >> state.hashVNextNullifierRoot;
+                ssValue >> state.nVNextNullifierCount;
+                ssValue >> state.vVNextEpochNullifiers;
+                ssValue >> state.vchVNextParameterDigest;
+                ssValue >> state.hashVNextFinalizedAnchor;
+                ssValue >> state.nVNextFinalizedHeight;
+                ssValue >> state.vVNextActiveBlockTxCounts;
+                ssValue >> state.vVNextActiveTxIds;
+                ssValue >> state.hashVNextActiveTxSet;
+                if (state.vchVNextTreeState.size() !=
+                        EPOCHSTATE_VNEXT_TREE_STATE_SIZE ||
+                    state.vchVNextRoot.size() !=
+                        EPOCHSTATE_VNEXT_DIGEST_SIZE ||
+                    state.vchVNextNullifierState.size() !=
+                        EPOCHSTATE_VNEXT_NULLIFIER_STATE_SIZE ||
+                    state.vVNextEpochNullifiers.size() >
+                        EPOCHSTATE_VNEXT_MAX_NULLIFIERS ||
+                    state.vVNextActiveBlockTxCounts.size() >
+                        EPOCHSTATE_VNEXT_MAX_ACTIVE_TXS ||
+                    state.vVNextActiveTxIds.size() >
+                        EPOCHSTATE_VNEXT_MAX_ACTIVE_TXS ||
+                    state.vchVNextParameterDigest.size() !=
+                        EPOCHSTATE_VNEXT_DIGEST_SIZE)
+                    throw std::ios_base::failure("invalid IV5 epoch-state field length");
+            }
             if (ssValue.size() != 0)
                 throw std::ios_base::failure("trailing epoch-state bytes");
             if (state.nEpoch != keyPair.second)
@@ -797,8 +1538,8 @@ bool CTxDB::IterateEpochStates(std::map<int, CEpochState>& mapOut)
     delete it;
     if (!status.ok())
     {
-        printf("IterateEpochStates: FATAL LevelDB iterator failure: %s -- "
-               "-reindex/resync required\n", status.ToString().c_str());
+        printf("IterateEpochStates: FATAL LevelDB iterator failure: %s -- -reindex/resync required\n",
+               status.ToString().c_str());
         return false;
     }
     return true;
@@ -1818,8 +2559,7 @@ bool CTxDB::IterateDAGLinks(std::map<uint256, CBlockDAGData>& mapOut)
             CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(), SER_DISK, CLIENT_VERSION);
             std::pair<std::string, uint256> keyPair;
             ssKey >> keyPair;
-            if (keyPair.first != "daglinks" || keyPair.second == 0 ||
-                ssKey.size() != 0)
+            if (keyPair.first != "daglinks" || keyPair.second == 0 || ssKey.size() != 0)
                 throw std::ios_base::failure("non-canonical DAG-link key");
             if (mapOut.count(keyPair.second))
                 throw std::ios_base::failure("duplicate DAG-link key");
@@ -1827,9 +2567,8 @@ bool CTxDB::IterateDAGLinks(std::map<uint256, CBlockDAGData>& mapOut)
             CDataStream ssValue(it->value().data(), it->value().data() + it->value().size(), SER_DISK, CLIENT_VERSION);
             CBlockDAGData data;
 
-            // Bound the persisted parent set before allocating. Child lists are
-            // derived from parent records during DAG-manager rebuild, so consume
-            // their historical bytes without retaining node-local arrival state.
+            // Parents are deserialized manually so a corrupt record cannot allocate past the consensus
+            // maximum. Children are rebuilt by RebuildPendingChildIndex(), so this copy is discarded.
             const uint64_t nParentCount = ReadCompactSize(ssValue);
             if (nParentCount > MAX_DAG_PARENTS)
                 throw std::ios_base::failure("oversized DAG parent set");
@@ -1849,27 +2588,28 @@ bool CTxDB::IterateDAGLinks(std::map<uint256, CBlockDAGData>& mapOut)
                 ssValue >> hashIgnoredChild;
             }
 
-            // DAGKNIGHT compatibility: deserialize core fields first, then
-            // tolerate only the exact legacy absence of nInferredK.
+            // DAGKNIGHT compatibility: deserialize core fields first, then try nInferredK.
             ssValue >> data.fBlue;
             ssValue >> data.nDAGScore;
             ssValue >> data.nDAGOrder;
 
             // nInferredK may not exist in legacy entries
             if (ssValue.size() > 0)
+            {
                 ssValue >> data.nInferredK;
+            }
             else
+            {
                 data.nInferredK = -1;
+            }
 
             if (ssValue.size() != 0)
                 throw std::ios_base::failure("trailing DAG-link bytes");
             std::set<uint256> setParents;
-            for (std::vector<uint256>::const_iterator pit =
-                     data.vDAGParents.begin();
+            for (std::vector<uint256>::const_iterator pit = data.vDAGParents.begin();
                  pit != data.vDAGParents.end(); ++pit)
             {
-                if (*pit == 0 || *pit == keyPair.second ||
-                    !setParents.insert(*pit).second)
+                if (*pit == 0 || *pit == keyPair.second || !setParents.insert(*pit).second)
                     throw std::ios_base::failure("invalid DAG parent set");
             }
 
@@ -2093,6 +2833,391 @@ bool CTxDB::ReadHashBestChain(uint256& hashBestChain)
 bool CTxDB::WriteHashBestChain(uint256 hashBestChain)
 {
     return Write(string("hashBestChain"), hashBestChain);
+}
+
+TxDBReadStatus CTxDB::ReadShieldedWalletRecoveryStatus(
+    CShieldedWalletRecoveryRecord& record)
+{
+    CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+    ssKey << string("shieldedWalletRecovery");
+    const size_t nExpectedSize = ::GetSerializeSize(
+        CShieldedWalletRecoveryRecord(), SER_DISK, CLIENT_VERSION);
+
+    std::string strBatchValue;
+    if (activeBatch)
+    {
+        bool fDeleted = false;
+        if (ScanBatch(ssKey, &strBatchValue, &fDeleted))
+        {
+            if (fDeleted)
+                return TXDB_READ_NOT_FOUND;
+            if (strBatchValue.size() != nExpectedSize)
+                return TXDB_READ_ERROR;
+            try
+            {
+                CDataStream ssValue(strBatchValue.data(),
+                                    strBatchValue.data() +
+                                        strBatchValue.size(),
+                                    SER_DISK, CLIENT_VERSION);
+                ssValue >> record;
+                if (!ssValue.empty() || !record.IsValid())
+                    return TXDB_READ_ERROR;
+                return TXDB_READ_FOUND;
+            }
+            catch (const std::exception&)
+            {
+                return TXDB_READ_ERROR;
+            }
+        }
+    }
+
+    // Iterator values are borrowed slices.  Inspect the exact fixed size
+    // before copying or deserializing, so a corrupt local record cannot force
+    // an attacker-sized allocation during startup.
+    leveldb::Iterator* it = pdb->NewIterator(leveldb::ReadOptions());
+    if (!it)
+        return TXDB_READ_ERROR;
+    const std::string strKey = ssKey.str();
+    it->Seek(strKey);
+    if (!it->Valid())
+    {
+        const bool fOk = it->status().ok();
+        delete it;
+        return fOk ? TXDB_READ_NOT_FOUND : TXDB_READ_ERROR;
+    }
+    if (it->key().compare(leveldb::Slice(strKey)) != 0)
+    {
+        delete it;
+        return TXDB_READ_NOT_FOUND;
+    }
+    const leveldb::Slice value = it->value();
+    if (value.size() != nExpectedSize)
+    {
+        delete it;
+        return TXDB_READ_ERROR;
+    }
+    try
+    {
+        CDataStream ssValue(value.data(), value.data() + value.size(),
+                            SER_DISK, CLIENT_VERSION);
+        ssValue >> record;
+        if (!ssValue.empty() || !record.IsValid())
+        {
+            delete it;
+            return TXDB_READ_ERROR;
+        }
+    }
+    catch (const std::exception&)
+    {
+        delete it;
+        return TXDB_READ_ERROR;
+    }
+    delete it;
+    return TXDB_READ_FOUND;
+}
+
+bool CTxDB::WriteShieldedWalletRecovery(
+    const CShieldedWalletRecoveryRecord& record)
+{
+    return record.IsValid() &&
+           Write(string("shieldedWalletRecovery"), record);
+}
+
+bool CTxDB::AcknowledgeShieldedWalletRecovery(
+    const CShieldedWalletRecoveryRecord& expected)
+{
+    if (!expected.IsValid() || IsTxnActive() || !TxnBegin())
+        return false;
+
+    CShieldedWalletRecoveryRecord current;
+    const TxDBReadStatus status =
+        ReadShieldedWalletRecoveryStatus(current);
+    const bool fMatches =
+        status == TXDB_READ_FOUND &&
+        current.nSchema == expected.nSchema &&
+        current.hashOldTip == expected.hashOldTip &&
+        current.hashFork == expected.hashFork &&
+        current.hashNewTip == expected.hashNewTip &&
+        current.nDisconnect == expected.nDisconnect &&
+        current.nConnect == expected.nConnect &&
+        current.hashEffectPlan == expected.hashEffectPlan;
+    if (!fMatches || !EraseShieldedWalletRecovery())
+    {
+        TxnAbort();
+        return false;
+    }
+    return TxnCommit(true);
+}
+
+bool CTxDB::EraseShieldedWalletRecovery()
+{
+    return Erase(string("shieldedWalletRecovery"));
+}
+
+TxDBReadStatus CTxDB::ReadDAGSkippedTxMetadataStatus(
+    const uint256& hashBlock, const uint256& hashMerkleRoot,
+    uint32_t& nBlockTxCount, std::string& strError)
+{
+    nBlockTxCount = 0;
+    strError.clear();
+    CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+    ssKey << make_pair(string("dagactiveset"), hashBlock);
+
+    std::string strBatchValue;
+    if (activeBatch)
+    {
+        try
+        {
+            bool fDeleted = false;
+            if (ScanBatch(ssKey, &strBatchValue, &fDeleted))
+            {
+                if (fDeleted)
+                    return TXDB_READ_NOT_FOUND;
+                return ParseDAGSkippedTxValue(
+                    strBatchValue.data(), strBatchValue.size(), hashBlock,
+                    hashMerkleRoot, nBlockTxCount, NULL, strError);
+            }
+        }
+        catch (const std::exception& e)
+        {
+            strError = e.what();
+            return TXDB_READ_ERROR;
+        }
+    }
+
+    leveldb::Iterator* it = pdb->NewIterator(leveldb::ReadOptions());
+    if (!it)
+    {
+        strError = "could not create DAG active-set iterator";
+        return TXDB_READ_ERROR;
+    }
+    const std::string strKey = ssKey.str();
+    it->Seek(strKey);
+    if (!it->Valid())
+    {
+        const bool fOk = it->status().ok();
+        if (!fOk)
+            strError = it->status().ToString();
+        delete it;
+        return fOk ? TXDB_READ_NOT_FOUND : TXDB_READ_ERROR;
+    }
+    if (it->key().compare(leveldb::Slice(strKey)) != 0)
+    {
+        delete it;
+        return TXDB_READ_NOT_FOUND;
+    }
+    const leveldb::Slice value = it->value();
+    const TxDBReadStatus status = ParseDAGSkippedTxValue(
+        value.data(), value.size(), hashBlock, hashMerkleRoot,
+        nBlockTxCount, NULL, strError);
+    delete it;
+    return status;
+}
+
+TxDBReadStatus CTxDB::ReadDAGSkippedTxsStatus(
+    const CBlock& block, std::set<uint256>& setSkipped,
+    std::string& strError)
+{
+    setSkipped.clear();
+    strError.clear();
+    if (block.vtx.empty() || block.hashMerkleRoot == 0 ||
+        block.BuildMerkleTree() != block.hashMerkleRoot ||
+        block.vtx.size() > DAG_ACTIVE_SET_MAX_TXS)
+    {
+        strError = "block data is invalid while reading its DAG active set";
+        return TXDB_READ_ERROR;
+    }
+
+    const uint256 hashBlock = block.GetHash();
+    CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+    ssKey << make_pair(string("dagactiveset"), hashBlock);
+    uint32_t nBlockTxCount = 0;
+    TxDBReadStatus status = TXDB_READ_ERROR;
+    std::string strBatchValue;
+    if (activeBatch)
+    {
+        try
+        {
+            bool fDeleted = false;
+            if (ScanBatch(ssKey, &strBatchValue, &fDeleted))
+            {
+                if (fDeleted)
+                    return TXDB_READ_NOT_FOUND;
+                status = ParseDAGSkippedTxValue(
+                    strBatchValue.data(), strBatchValue.size(), hashBlock,
+                    block.hashMerkleRoot, nBlockTxCount, &setSkipped,
+                    strError);
+            }
+        }
+        catch (const std::exception& e)
+        {
+            strError = e.what();
+            return TXDB_READ_ERROR;
+        }
+    }
+    if (status == TXDB_READ_ERROR && strBatchValue.empty())
+    {
+        leveldb::Iterator* it = pdb->NewIterator(leveldb::ReadOptions());
+        if (!it)
+        {
+            strError = "could not create DAG active-set iterator";
+            return TXDB_READ_ERROR;
+        }
+        const std::string strKey = ssKey.str();
+        it->Seek(strKey);
+        if (!it->Valid())
+        {
+            const bool fOk = it->status().ok();
+            if (!fOk)
+                strError = it->status().ToString();
+            delete it;
+            return fOk ? TXDB_READ_NOT_FOUND : TXDB_READ_ERROR;
+        }
+        if (it->key().compare(leveldb::Slice(strKey)) != 0)
+        {
+            delete it;
+            return TXDB_READ_NOT_FOUND;
+        }
+        const leveldb::Slice value = it->value();
+        status = ParseDAGSkippedTxValue(
+            value.data(), value.size(), hashBlock, block.hashMerkleRoot,
+            nBlockTxCount, &setSkipped, strError);
+        delete it;
+    }
+    if (status != TXDB_READ_FOUND)
+        return status;
+    if (nBlockTxCount != block.vtx.size())
+    {
+        setSkipped.clear();
+        strError = "DAG active-set block transaction count mismatch";
+        return TXDB_READ_ERROR;
+    }
+
+    std::map<uint256, const CTransaction*> mapBlockTx;
+    for (std::vector<CTransaction>::const_iterator it = block.vtx.begin();
+         it != block.vtx.end(); ++it)
+    {
+        const uint256 hashTx = it->GetHash();
+        if (!mapBlockTx.insert(std::make_pair(hashTx, &*it)).second)
+        {
+            setSkipped.clear();
+            strError = "DAG active-set block contains duplicate transaction hashes";
+            return TXDB_READ_ERROR;
+        }
+    }
+    for (std::set<uint256>::const_iterator it = setSkipped.begin();
+         it != setSkipped.end(); ++it)
+    {
+        std::map<uint256, const CTransaction*>::const_iterator mi =
+            mapBlockTx.find(*it);
+        if (mi == mapBlockTx.end() || mi->second->IsCoinBase() ||
+            mi->second->IsCoinStake())
+        {
+            setSkipped.clear();
+            strError = "DAG active set names an absent or mandatory transaction";
+            return TXDB_READ_ERROR;
+        }
+    }
+    return TXDB_READ_FOUND;
+}
+
+bool CTxDB::WriteDAGSkippedTxs(
+    const CBlock& block, const std::set<uint256>& setSkipped,
+    std::string& strError)
+{
+    strError.clear();
+    if (block.vtx.empty() || block.hashMerkleRoot == 0 ||
+        block.BuildMerkleTree() != block.hashMerkleRoot ||
+        block.vtx.size() > DAG_ACTIVE_SET_MAX_TXS ||
+        setSkipped.size() > block.vtx.size())
+    {
+        strError = "cannot persist an invalid/unbounded DAG active set";
+        return false;
+    }
+
+    std::map<uint256, const CTransaction*> mapBlockTx;
+    for (std::vector<CTransaction>::const_iterator it = block.vtx.begin();
+         it != block.vtx.end(); ++it)
+    {
+        const uint256 hashTx = it->GetHash();
+        if (!mapBlockTx.insert(std::make_pair(hashTx, &*it)).second)
+        {
+            strError = "cannot persist a DAG active set for duplicate transaction hashes";
+            return false;
+        }
+    }
+    for (std::set<uint256>::const_iterator it = setSkipped.begin();
+         it != setSkipped.end(); ++it)
+    {
+        std::map<uint256, const CTransaction*>::const_iterator mi =
+            mapBlockTx.find(*it);
+        if (mi == mapBlockTx.end() || mi->second->IsCoinBase() ||
+            mi->second->IsCoinStake())
+        {
+            strError = "cannot persist an absent/mandatory skipped transaction";
+            return false;
+        }
+    }
+
+    CDAGSkippedTxDiskRecord record;
+    record.nSchema = DAG_ACTIVE_SET_SCHEMA;
+    record.nBlockTxCount = (uint32_t)block.vtx.size();
+    record.hashMerkleRoot = block.hashMerkleRoot;
+    record.vSkipped.assign(setSkipped.begin(), setSkipped.end());
+    record.hashDigest = ComputeDAGSkippedTxDigest(
+        block.GetHash(), record.hashMerkleRoot, record.nBlockTxCount,
+        record.vSkipped);
+    return Write(make_pair(string("dagactiveset"), block.GetHash()),
+                 record);
+}
+
+TxDBReadStatus CTxDB::ReadDAGActiveSetBest(uint256& hashBest)
+{
+    hashBest = 0;
+    CDAGActiveSetBestRecord record;
+    const TxDBReadStatus status = ReadFixedExactStatusBounded(
+        string("dagactivesetbest"), record);
+    if (status != TXDB_READ_FOUND)
+        return status;
+    if (!record.IsValid())
+        return TXDB_READ_ERROR;
+    hashBest = record.hashBest;
+    return TXDB_READ_FOUND;
+}
+
+bool CTxDB::WriteDAGActiveSetBest(const uint256& hashBest)
+{
+    if (hashBest == 0)
+        return false;
+    CDAGActiveSetBestRecord record;
+    record.nSchema = DAG_ACTIVE_SET_SCHEMA;
+    record.hashBest = hashBest;
+    record.hashDigest = record.GetDigest();
+    return Write(string("dagactivesetbest"), record);
+}
+
+TxDBReadStatus CTxDB::ReadDAGActiveSetBuild(
+    CDAGActiveSetBuildRecord& record)
+{
+    record = CDAGActiveSetBuildRecord();
+    const TxDBReadStatus status = ReadFixedExactStatusBounded(
+        string("dagactivesetbuild"), record);
+    if (status != TXDB_READ_FOUND)
+        return status;
+    return record.IsValid() ? TXDB_READ_FOUND : TXDB_READ_ERROR;
+}
+
+bool CTxDB::WriteDAGActiveSetBuild(CDAGActiveSetBuildRecord record)
+{
+    record.nSchema = DAG_ACTIVE_SET_SCHEMA;
+    record.hashDigest = record.GetDigest();
+    return record.IsValid() &&
+           Write(string("dagactivesetbuild"), record);
+}
+
+bool CTxDB::EraseDAGActiveSetBuild()
+{
+    return Erase(string("dagactivesetbuild"));
 }
 
 bool CTxDB::ReadBestInvalidTrust(CBigNum& bnBestInvalidTrust)

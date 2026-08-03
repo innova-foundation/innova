@@ -8,6 +8,7 @@
 #include "uint256.h"
 #include "serialize.h"
 #include "zkproof.h"
+#include "v5activation.h"
 
 #include <vector>
 #include <stdint.h>
@@ -18,9 +19,20 @@ static const size_t FCMP_PROOF_MAX_SIZE = 4096;
 inline int GetForkHeightFCMP() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 2 : 7820000;
+    return (fRegTest || fTestNet) ? 2 : ShiftMainnetV5Activation(7820000);
 }
 #define FORK_HEIGHT_FCMP (GetForkHeightFCMP())
+
+// FCMP_PROOF_VERSION_IPA binds neither the claimed root nor the leaf commitment,
+// so it is rejected from this height. Must stay <= FORK_HEIGHT_FCMP: containment
+// has to be in force before any FCMP proof can be accepted. Tracks
+// FORK_HEIGHT_SHIELDED so shielded activates already hardened.
+inline int GetForkHeightShieldedHardening() {
+    extern bool fRegTest;
+    extern bool fTestNet;
+    return (fRegTest || fTestNet) ? 1 : ShiftMainnetV5Activation(7810000);
+}
+#define FORK_HEIGHT_SHIELDED_HARDENING (GetForkHeightShieldedHardening())
 
 static const size_t SECP256K1_POINT_SIZE = 33;
 static const size_t ED25519_POINT_SIZE = 32;
@@ -205,13 +217,18 @@ bool CreateFCMPProof(const CCurveTree& tree,
                       CFCMPProof& proofOut,
                       uint32_t nVersion = FCMP_PROOF_VERSION_CURRENT);
 
+// nEvalHeight is the height whose rules this proof is judged under: the
+// containing block's height, or tip+1 for a mempool check. Not defaulted, so a
+// missing height is a compile error rather than an unbound cache key.
 bool VerifyFCMPProof(const CCurveTreeNode& root,
                       const CFCMPProof& proof,
-                      const CPedersenCommitment& cv);
+                      const CPedersenCommitment& cv,
+                      int nEvalHeight);
 
 bool BatchVerifyFCMPProofs(const CCurveTreeNode& root,
                             const std::vector<CFCMPProof>& vProofs,
-                            const std::vector<CPedersenCommitment>& vCommitments);
+                            const std::vector<CPedersenCommitment>& vCommitments,
+                            int nEvalHeight);
 
 
 CCurveTreeNode HashCurveTreeChildren(int nDepth,

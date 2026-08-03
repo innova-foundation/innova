@@ -197,7 +197,8 @@ bool CreateNullifierBindingProof(int64_t nValue,
 bool VerifyNullifierBindingProof(const CPedersenCommitment& cv,
                                  const std::vector<unsigned char>& vchNullifierPoint,
                                  const uint256& sighash,
-                                 const std::vector<unsigned char>& vchProof);
+                                 const std::vector<unsigned char>& vchProof,
+                                 int nEvalHeight);
 
 
 bool VerifySpendAuthSignature(const std::vector<unsigned char>& vchRk,

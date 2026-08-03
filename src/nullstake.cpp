@@ -846,7 +846,8 @@ static bool CheckNullStakeKernelProofV2Structure(const CNullStakeKernelProofV2& 
 
 bool VerifyNullStakeKernelProofV2(const CNullStakeKernelProofV2& proof,
                                   const CPedersenCommitment& cv,
-                                  unsigned int nBits)
+                                  unsigned int nBits,
+                                  int nEvalHeight)
 {
     if (!CheckNullStakeKernelProofV2Structure(proof, cv))
         return false;
@@ -855,8 +856,8 @@ bool VerifyNullStakeKernelProofV2(const CNullStakeKernelProofV2& proof,
         return VerifyNullStakeKernelProofV2Uncached(proof, cv, nBits);
 
     CHashWriter ss(SER_GETHASH, 0);
-    ss << (unsigned char)VERIFYCACHE_NULLSTAKE_V2 << proof << cv << nBits;
-    uint256 key = ss.GetHash();
+    ss << proof << cv << nBits;
+    uint256 key = VerifyProofCacheKey(VERIFYCACHE_NULLSTAKE_V2, nEvalHeight, ss.GetHash());
     if (VerifyProofCacheCheck(key))
         return true;
     if (!VerifyNullStakeKernelProofV2Uncached(proof, cv, nBits))
@@ -2013,7 +2014,8 @@ static bool CheckNullStakeKernelProofV3Structure(const CNullStakeKernelProofV3& 
 
 bool VerifyNullStakeKernelProofV3(const CNullStakeKernelProofV3& proof,
                                   const CPedersenCommitment& cv,
-                                  unsigned int nBits)
+                                  unsigned int nBits,
+                                  int nEvalHeight)
 {
     if (!CheckNullStakeKernelProofV3Structure(proof, cv))
         return false;
@@ -2022,8 +2024,8 @@ bool VerifyNullStakeKernelProofV3(const CNullStakeKernelProofV3& proof,
         return VerifyNullStakeKernelProofV3Uncached(proof, cv, nBits);
 
     CHashWriter ss(SER_GETHASH, 0);
-    ss << (unsigned char)VERIFYCACHE_NULLSTAKE_V3 << proof << cv << nBits;
-    uint256 key = ss.GetHash();
+    ss << proof << cv << nBits;
+    uint256 key = VerifyProofCacheKey(VERIFYCACHE_NULLSTAKE_V3, nEvalHeight, ss.GetHash());
     if (VerifyProofCacheCheck(key))
         return true;
     if (!VerifyNullStakeKernelProofV3Uncached(proof, cv, nBits))

@@ -18,6 +18,8 @@ typedef int pid_t; /* define for windows compatiblity */
 #include <map>
 #include <vector>
 #include <string>
+#include <algorithm>
+#include <iterator>
 
 #include <boost/thread.hpp>
 #include <boost/filesystem.hpp>
@@ -323,6 +325,22 @@ uint32_t GetRandUInt32();
 void GetRandBytes(unsigned char* buf, int num);
 uint64_t GetRand(uint64_t nMax);
 uint256 GetRandHash();
+
+/** C++17 replacement for removed std::random_shuffle using the existing RNG. */
+template <typename RandomAccessIterator>
+void RandomShuffle(RandomAccessIterator first, RandomAccessIterator last)
+{
+    typedef typename std::iterator_traits<RandomAccessIterator>::difference_type Difference;
+    const Difference count = last - first;
+    for (Difference i = 1; i < count; ++i)
+    {
+        const Difference selected = static_cast<Difference>(
+            GetRandInt(static_cast<int>(i + 1)));
+        if (selected != i)
+            std::iter_swap(first + i, first + selected);
+    }
+}
+
 int64_t GetTime();
 void SetMockTime(int64_t nMockTimeIn);
 int64_t GetAdjustedTime();
@@ -340,7 +358,7 @@ namespace d
 
 inline std::string i64tostr(int64_t n)
 {
-    return strprintf("%d", n);
+    return strprintf("%lld", (long long)n);
 }
 
 inline std::string itostr(int n)

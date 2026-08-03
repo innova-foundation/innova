@@ -183,7 +183,8 @@ bool CreateNullStakeKernelProofV2(int64_t nValue,
 
 bool VerifyNullStakeKernelProofV2(const CNullStakeKernelProofV2& proof,
                                   const CPedersenCommitment& cv,
-                                  unsigned int nBits);
+                                  unsigned int nBits,
+                                  int nEvalHeight);
 
 bool CheckShieldedStakeKernelHashV2(unsigned int nBits,
                                      uint64_t nStakeModifier,
@@ -544,7 +545,8 @@ bool CreateNullStakeB2CHiddenKernelProofV3(int64_t nValue,
 
 bool VerifyNullStakeKernelProofV3(const CNullStakeKernelProofV3& proof,
                                   const CPedersenCommitment& cv,
-                                  unsigned int nBits);
+                                  unsigned int nBits,
+                                  int nEvalHeight);
 
 bool CheckShieldedStakeKernelHashV3(unsigned int nBits,
                                      uint64_t nStakeModifier,

@@ -62,9 +62,22 @@ uint256 CIncrementalMerkleTree::HashCombine(int nDepth, const uint256& left, con
     return ss.GetHash();
 }
 
+bool CIncrementalMerkleTree::IsValidStructure() const
+{
+    return vLeft.size() == SHIELDED_MERKLE_DEPTH &&
+           vRight.size() == SHIELDED_MERKLE_DEPTH &&
+           nSize <= ((uint64_t)1 << SHIELDED_MERKLE_DEPTH);
+}
+
 bool CIncrementalMerkleTree::Append(const uint256& leaf)
 {
     boost::call_once(&InitEmptyRoots, emptyRootsOnceFlag);
+
+    if (!IsValidStructure())
+    {
+        printf("CIncrementalMerkleTree::Append() : malformed tree structure\n");
+        return false;
+    }
 
     if (nSize >= ((uint64_t)1 << SHIELDED_MERKLE_DEPTH))
     {
@@ -100,6 +113,12 @@ uint256 CIncrementalMerkleTree::Root() const
 {
     boost::call_once(&InitEmptyRoots, emptyRootsOnceFlag);
 
+    if (!IsValidStructure())
+    {
+        printf("CIncrementalMerkleTree::Root() : malformed tree structure\n");
+        return uint256(0);
+    }
+
     if (nSize == 0)
         return EmptyRoot(SHIELDED_MERKLE_DEPTH);
 
@@ -133,6 +152,13 @@ uint256 CIncrementalMerkleTree::Root() const
 bool CIncrementalMerkleTree::GetWitness(uint64_t nPosition, std::vector<uint256>& vPathOut) const
 {
     vPathOut.clear();
+
+    if (!IsValidStructure())
+    {
+        printf("CIncrementalMerkleTree::GetWitness() : malformed tree structure\n");
+        return false;
+    }
+
     vPathOut.resize(SHIELDED_MERKLE_DEPTH);
 
     if (nPosition >= nSize)
@@ -427,6 +453,69 @@ bool GenerateShieldedDiversifier(std::vector<unsigned char>& vchDiversifierOut)
     return true;
 }
 
+bool DecodeShieldedRecipientPayload(
+    int nTxVersion,
+    const std::vector<unsigned char>& vchPayload,
+    ShieldedRecipientPayloadKind& kindOut,
+    CShieldedPaymentAddress& addressOut,
+    CShieldedNote& noteOut)
+{
+    kindOut = SHIELDED_RECIPIENT_NONE;
+    addressOut = CShieldedPaymentAddress();
+    noteOut = CShieldedNote();
+
+    if (vchPayload.empty())
+        return true;
+    if (!IsLegacyShieldedTransactionVersion(nTxVersion) ||
+        nTxVersion < SHIELDED_TX_VERSION_DSP)
+        return false;
+
+    CShieldedPaymentAddress canonicalAddressShape;
+    CShieldedNote canonicalNoteShape;
+    canonicalNoteShape.vchBlind.resize(BLINDING_FACTOR_SIZE, 0);
+    const size_t nAddressSize = ::GetSerializeSize(
+        canonicalAddressShape, SER_NETWORK, 0);
+    const size_t nLegacyNoteSize = ::GetSerializeSize(
+        canonicalNoteShape, SER_NETWORK, 0);
+
+    try
+    {
+        if (vchPayload.size() == nAddressSize)
+        {
+            CDataStream ss(vchPayload, SER_NETWORK, 0);
+            CShieldedPaymentAddress decoded;
+            ss >> decoded;
+            if (!ss.empty() ||
+                decoded.vchDiversifier.size() != SHIELDED_DIVERSIFIER_SIZE ||
+                decoded.vchPkD.size() != SHIELDED_PKD_SIZE)
+                return false;
+            addressOut = decoded;
+            kindOut = SHIELDED_RECIPIENT_ADDRESS;
+            return true;
+        }
+
+        if (vchPayload.size() != nLegacyNoteSize)
+            return false;
+        CDataStream ss(vchPayload, SER_NETWORK, 0);
+        CShieldedNote decoded;
+        ss >> decoded;
+        if (!ss.empty() ||
+            decoded.addr.vchDiversifier.size() !=
+                SHIELDED_DIVERSIFIER_SIZE ||
+            decoded.addr.vchPkD.size() != SHIELDED_PKD_SIZE ||
+            decoded.vchBlind.size() != BLINDING_FACTOR_SIZE)
+            return false;
+        noteOut = decoded;
+        addressOut = decoded.addr;
+        kindOut = SHIELDED_RECIPIENT_LEGACY_NOTE;
+        return true;
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
 
 bool EncryptShieldedNote(const CShieldedNote& note,
                          const CShieldedPaymentAddress& addr,
@@ -673,22 +762,34 @@ bool DecryptShieldedNote(const std::vector<unsigned char>& vchEncCiphertext,
 
     OPENSSL_cleanse(vchKey.data(), vchKey.size());
 
+    // An authenticated empty payload is valid AEAD, but it can never encode a
+    // shielded note.  Reject it before constructing a stream: taking element
+    // zero of an empty vector is undefined behaviour.
+    if (vchPlaintext.empty())
+        return false;
+
     try
     {
         CDataStream ssNote((const char*)&vchPlaintext[0],
                            (const char*)&vchPlaintext[0] + vchPlaintext.size(),
                            SER_NETWORK, 0);
-        ssNote >> noteOut;
+        CShieldedNote decoded;
+        ssNote >> decoded;
+        if (!ssNote.empty() ||
+            decoded.addr.vchPkD.size() != SHIELDED_PKD_SIZE ||
+            decoded.addr.vchDiversifier.size() !=
+                SHIELDED_DIVERSIFIER_SIZE ||
+            decoded.vchBlind.size() != BLINDING_FACTOR_SIZE ||
+            decoded.addr.vchPkD != vchPkD ||
+            decoded.addr.vchDiversifier != vchDiversifier)
+            return false;
+        noteOut = decoded;
+        return true;
     }
     catch (...)
     {
         return false;
     }
-
-    if (noteOut.addr.vchPkD != vchPkD || noteOut.addr.vchDiversifier != vchDiversifier)
-        return false;
-
-    return true;
 }
 
 bool EncryptShieldedNoteForSender(const CShieldedNote& note,

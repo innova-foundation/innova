@@ -2277,14 +2277,15 @@ static bool VerifyNullifierBindingProofUncached(const CPedersenCommitment& cv,
 bool VerifyNullifierBindingProof(const CPedersenCommitment& cv,
                                  const std::vector<unsigned char>& vchNullifierPoint,
                                  const uint256& sighash,
-                                 const std::vector<unsigned char>& vchProof)
+                                 const std::vector<unsigned char>& vchProof,
+                                 int nEvalHeight)
 {
     if (!VerifyProofCacheEnabled())
         return VerifyNullifierBindingProofUncached(cv, vchNullifierPoint, sighash, vchProof);
 
     CHashWriter ss(SER_GETHASH, 0);
-    ss << (unsigned char)VERIFYCACHE_NULLIFIER_BIND << cv << vchNullifierPoint << sighash << vchProof;
-    uint256 key = ss.GetHash();
+    ss << cv << vchNullifierPoint << sighash << vchProof;
+    uint256 key = VerifyProofCacheKey(VERIFYCACHE_NULLIFIER_BIND, nEvalHeight, ss.GetHash());
     if (VerifyProofCacheCheck(key))
         return true;
     if (!VerifyNullifierBindingProofUncached(cv, vchNullifierPoint, sighash, vchProof))
