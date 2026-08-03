@@ -572,6 +572,17 @@ $(FUZZ_DESERIALIZE_OBJ): test/fuzz/fuzz_deserialize.cpp
 fuzz-deserialize-libfuzzer:
 	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $(FUZZ_DESERIALIZE_BIN) test/fuzz/fuzz_deserialize.cpp
 
+FUZZ_SCRIPT_BIN ?= fuzz_script
+FUZZ_BLOCK_HEADER_BIN ?= fuzz_block_header
+
+fuzz-script-libfuzzer:
+	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $(FUZZ_SCRIPT_BIN) test/fuzz/fuzz_script.cpp
+
+fuzz-block-header-libfuzzer:
+	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $(FUZZ_BLOCK_HEADER_BIN) test/fuzz/fuzz_block_header.cpp
+
+fuzz-all-libfuzzer: fuzz-deserialize-libfuzzer fuzz-script-libfuzzer fuzz-block-header-libfuzzer
+
 check-legacy-aggregate: test_innova
 	./test_innova --run_test=allocator_tests,base32_tests,base58_tests,base64_tests,bignum_tests,Checkpoints_tests,DoS_tests,getarg_tests,key_tests,mruset_tests,multisig_tests,netbase_tests,ringsig_tests,rpc_tests,script_P2SH_tests,script_tests,sigopcount_tests,transaction_tests,uint160_tests,uint256_tests,util_tests,wallet_tests,accounting_tests,miner_tests
 
