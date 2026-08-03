@@ -26,10 +26,10 @@ both.
 | Target | Build system | Output | What it is |
 | --- | --- | --- | --- |
 | `innovad` | `make -f makefile.<platform>` in `src/` | `src/innovad` (`innovad.exe` on Windows) | The headless daemon and RPC server. Runs full validation, staking / finality voting, and the wallet backend. This is what you run on a node or seed. |
-| `Innova` (Qt) | `qmake innova-qt.pro && make` in the repo root | `Innova` / `Innova.app` / `release/Innova.exe` | The Qt 5 desktop wallet GUI. Wraps the same consensus/wallet code with a graphical interface, block/DAG browser, staking and privacy pages. |
+| `Innova` (Qt) | `qmake6 innova-qt.pro && make` (Linux/Windows) or `qmake` with Qt 5 (macOS) | `Innova` / `Innova.app` / `release/Innova.exe` | The desktop wallet GUI. Wraps the same consensus/wallet code with a graphical interface, block/DAG browser, staking and privacy pages. |
 
 Both link the same consensus and wallet code, so their dependency sets overlap
-heavily. The Qt wallet additionally needs Qt 5, and (optionally) `qrencode` for
+heavily. The Qt wallet additionally needs Qt (see below), and (optionally) `qrencode` for
 QR codes and `protobuf` for payment-request handling.
 
 ### Common dependencies
@@ -56,10 +56,12 @@ Optional, controlled by the `USE_*` flags (see the table further below):
 
 The Qt wallet adds:
 
-- **Qt 5** — `core gui network widgets concurrent printsupport` (and `dbus` on
+- **Qt** — `core gui network widgets concurrent printsupport` (and `dbus` on
   Linux for desktop notifications).
 - **qrencode** — QR-code rendering (`USE_QRCODE`).
 - **protobuf** — payment-protocol support.
+
+The tree builds against both Qt 5.15 and Qt 6. Linux and Windows release builds use Qt 6 (`qmake6`); macOS uses Qt 5, because Homebrew's Qt 6 ships no qmake platform mkspec. Moving macOS to Qt 6 needs the official Qt distribution or a CMake port.
 
 The build embeds git revision info via `share/genbuild.sh`, so build from a git
 checkout (a shallow tarball works but yields less version detail).

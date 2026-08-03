@@ -253,8 +253,14 @@ reached. Each gate is a `GetForkHeight*()` helper (`main.h`, plus
 `GetForkHeightFCMP()` in `curvetree.h`) that returns a low height on
 regtest/testnet and the mainnet height below.
 
-| Fork | Helper / macro | Mainnet height | What it activates |
-|------|----------------|----------------|-------------------|
+Mainnet heights are not literals in the source. Every gate returns
+`ShiftMainnetV5Activation(base)`, which adds `MAINNET_V5_ACTIVATION_SHIFT`
+(`v5activation.h`) to the base value below, so the whole ladder moves as a unit and
+the gaps between gates cannot drift. The release preflight sets the shift against a
+fresh trusted mainnet tip; the effective height of any gate is base + shift.
+
+| Fork | Helper / macro | Base height | What it activates |
+|------|----------------|-------------|-------------------|
 | Cold staking (P2CS) | `FORK_HEIGHT_COLD_STAKING` | 7,800,000 | cold-staking scripts; also the CN-payment / tighter-drift base hardening |
 | Shielded | `FORK_HEIGHT_SHIELDED` | 7,810,000 | shielded (zk) transactions; nullifier-binding is born here |
 | RingSig deprecation | `FORK_HEIGHT_RINGSIG_DEPRECATION` | 7,815,000 | rejects legacy `ANON_TXN_VERSION` ring-sig txns |
@@ -270,6 +276,8 @@ regtest/testnet and the mainnet height below.
 | DAG | `FORK_HEIGHT_DAG` | 7,950,000 | IDAG ordering, 1s blocks, PoS-minting disabled, reward /15; co-activates epoch-state (`EPOCH_ROOT_FCMP`, `VOTESET_ROOT`, `EPOCH_STATE_V2`) and tally governance |
 | DAGKnight | `FORK_HEIGHT_DAGKNIGHT` | 8,000,000 | adaptive-`k` DAGKNIGHT ordering (replaces GHOSTDAG) |
 | NullStake deleg-set / reclaim / B2-c | `FORK_HEIGHT_NULLSTAKE_DELEGSET` / `_RECLAIM` / `_NULLSTAKE_B2C` | 8,060,000 | M-of-N shielded cold staking (public-signer and ZK-hidden-signer tiers), owner-override reclaim |
+| IDNS name reset | `FORK_HEIGHT_IDNS_RESET` | 7,800,000 | names registered before this height expire, so IDNS restarts with a clean namespace at v5 activation |
+| Shielded hardening | `FORK_HEIGHT_SHIELDED_HARDENING` | 7,810,000 | rejects the unbound FCMP version-IPA proof; tracks the shielded gate so it is in force before any FCMP proof is accepted |
 
 Several sibling gates are pinned to `FORK_HEIGHT_DAG` deliberately:
 `FORK_HEIGHT_EPOCH_ROOT_FCMP` (FCMP spends bind to the last finalized epoch
