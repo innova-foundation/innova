@@ -592,11 +592,101 @@ BOOST_AUTO_TEST_CASE(cpp_note_scan_bridge_matches_the_raw_abi)
     BOOST_CHECK(!error.empty());
 }
 
-// A note must survive the wallet file byte for byte, and a truncated field must be
-// visible as incomplete rather than silently spendable.
-// A moved-from or cleared value must keep no secret. These pin that, so an edit
-// that drops a field from Clear or the move operations fails here rather than
-// leaving spend material behind.
+// The witness builder frames the request, checks the response against its tree, and
+// refuses shapes the tree cannot serve.
+BOOST_AUTO_TEST_CASE(cpp_witness_builder_frames_and_bounds_correctly)
+{
+    PrivacyVNextDigest seed;
+    PrivacyVNextDigest genesis;
+    for (size_t i = 0; i < 32; ++i)
+    {
+        seed[i] = static_cast<unsigned char>(i + 5);
+        genesis[i] = static_cast<unsigned char>(0xd0 + i);
+    }
+
+    std::vector<PrivacyVNextOutputLeaf> leaves(4);
+    std::string error;
+    for (size_t i = 0; i < leaves.size(); ++i)
+    {
+        PrivacyVNextDerivedKeys keys;
+        BOOST_REQUIRE_MESSAGE(
+            DerivePrivacyVNextKeys(seed, genesis, static_cast<uint32_t>(i), 1, 0,
+                                   keys, error), error);
+        leaves[i].owner = keys.spendPublic;
+        leaves[i].nullifierBase = keys.viewPublic;
+        leaves[i].commitment = keys.spendPublic;
+    }
+
+    PrivacyVNextEpochSeed emptySeed;
+    BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextEpochSeed(emptySeed, error), error);
+    std::vector<unsigned char> state;
+    std::vector<unsigned char> root;
+    uint64_t nSize = 0;
+    BOOST_REQUIRE_MESSAGE(
+        ApplyPrivacyVNextOutputLeaves(emptySeed.vchTreeState, leaves, state,
+                                      root, nSize, error),
+        error);
+    BOOST_REQUIRE_EQUAL(nSize, leaves.size());
+    BOOST_REQUIRE_EQUAL(state.size(), INNOVA_PRIVACY_VNEXT_TREE_STATE_SIZE);
+
+    std::vector<uint64_t> vTargets;
+    vTargets.push_back(0);
+    vTargets.push_back(3);
+    std::vector<PrivacyVNextMembershipWitness> witnesses;
+    PrivacyVNextDigest treeRoot;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextWitnesses(state, leaves, vTargets, witnesses, treeRoot,
+                                   error),
+        error);
+    BOOST_REQUIRE_EQUAL(witnesses.size(), 2U);
+    BOOST_CHECK_EQUAL(witnesses[0].nLeafIndex, 0U);
+    BOOST_CHECK_EQUAL(witnesses[1].nLeafIndex, 3U);
+
+    // The root the witness opens must be the tree's own root.
+    BOOST_REQUIRE_EQUAL(root.size(), 32U);
+    BOOST_CHECK_EQUAL_COLLECTIONS(treeRoot.begin(), treeRoot.end(),
+                                  root.begin(), root.end());
+
+    // Each record is the proving-request tail: the output, its leaf branch, then
+    // four Helios branches of 18 and three Selene branches of 38.
+    const size_t nBranchBytes = (4 * 18 * 32) + (3 * 38 * 32);
+    const size_t nExpected = 100 + (leaves.size() * 96) + nBranchBytes;
+    BOOST_CHECK_EQUAL(witnesses[0].vchRecord.size(), nExpected);
+    BOOST_CHECK_EQUAL(witnesses[1].vchRecord.size(), nExpected);
+    BOOST_CHECK_EQUAL(witnesses[0].vchRecord[96], leaves.size());
+    // The record leads with the target's own leaf.
+    BOOST_CHECK_EQUAL_COLLECTIONS(witnesses[1].vchRecord.begin(),
+                                  witnesses[1].vchRecord.begin() + 32,
+                                  leaves[3].owner.begin(), leaves[3].owner.end());
+
+    std::vector<PrivacyVNextMembershipWitness> rejected;
+    std::vector<uint64_t> vBad;
+    BOOST_CHECK(!BuildPrivacyVNextWitnesses(state, leaves, vBad, rejected,
+                                            treeRoot, error));
+    vBad.push_back(4);
+    BOOST_CHECK(!BuildPrivacyVNextWitnesses(state, leaves, vBad, rejected,
+                                            treeRoot, error));
+    vBad.clear();
+    vBad.push_back(1);
+    vBad.push_back(1);
+    BOOST_CHECK(!BuildPrivacyVNextWitnesses(state, leaves, vBad, rejected,
+                                            treeRoot, error));
+    vBad.clear();
+    vBad.push_back(0);
+    BOOST_CHECK(!BuildPrivacyVNextWitnesses(std::vector<unsigned char>(300, 0),
+                                            leaves, vBad, rejected, treeRoot,
+                                            error));
+    BOOST_CHECK(!BuildPrivacyVNextWitnesses(
+        state, std::vector<PrivacyVNextOutputLeaf>(), vBad, rejected, treeRoot,
+        error));
+
+    // A tree larger than one request can carry must be refused, not truncated.
+    std::vector<PrivacyVNextOutputLeaf> tooMany(3000, leaves[0]);
+    BOOST_CHECK(!BuildPrivacyVNextWitnesses(state, tooMany, vBad, rejected,
+                                            treeRoot, error));
+    BOOST_CHECK(error.find("over the") != std::string::npos);
+}
+
 BOOST_AUTO_TEST_CASE(privacy_vnext_secret_holders_clear_and_move_completely)
 {
     PrivacyVNextDigest zero;

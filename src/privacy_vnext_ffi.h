@@ -331,6 +331,27 @@ bool ScanPrivacyVNextPayload(
     uint8_t& nOutputCount,
     std::string& error);
 
+// One input's membership witness: the proving-request tail that follows the
+// caller's spend and commitment scalars.
+struct PrivacyVNextMembershipWitness
+{
+    uint64_t nLeafIndex;
+    std::vector<unsigned char> vchRecord;
+
+    PrivacyVNextMembershipWitness() : nLeafIndex(0) {}
+};
+
+// Builds one witness per target against the supplied tree. The whole leaf set
+// travels in one request, so the request bound caps the tree this can serve far
+// below the structural maximum; a larger tree needs the path-carrying mode.
+bool BuildPrivacyVNextWitnesses(
+    const std::vector<unsigned char>& treeState,
+    const std::vector<PrivacyVNextOutputLeaf>& leaves,
+    const std::vector<uint64_t>& vTargetLeafIndexes,
+    std::vector<PrivacyVNextMembershipWitness>& witnesses,
+    PrivacyVNextDigest& treeRoot,
+    std::string& error);
+
 // Range, balance and binding proofs over one transaction's value flow. The Rust
 // side verifies each before returning, so a success means the proofs check.
 bool ProvePrivacyVNextValue(
