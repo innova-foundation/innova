@@ -21,6 +21,7 @@ functions:
   innova_privacy_vnext_nullifier_update(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_nullifier_root(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_tree_witness(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_payload_scan(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_payload_validate(const uint8_t *request, size_t request_len)
   innova_privacy_vnext_payload_effects(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_address_encode(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
@@ -54,7 +55,8 @@ capabilities:
   bit-13 value-proof-construction
   bit-14 validated-payload-state-effects
   bit-15 nullifier-accumulator-update-and-root
-implemented-capabilities: bits 0 through 15
+  bit-16 payload-output-scanning
+implemented-capabilities: bits 0 through 16
 consensus-capabilities: none
 fixed-output-length: 32
 parameter-digest: sha256(../contract/iv5_protocol_v1.json)
@@ -220,6 +222,18 @@ payload-validation-request:
   fields: outer-wire-version-u32-le, canonical-payload-to-eof
   exact outer versions: 2000..2008 under the normative envelope matrix
   maximum payload bytes: 262144
+payload-scan-request:
+  fields: schema-u16-le, scan-kind-u8, network-u8, address-type-u8, reserved-zero-3, outer-wire-version-u32-le, scan-secret-32, spend-material-32, canonical-payload-to-eof
+  scan-kind: 0 full-spend, 1 view-only, 2 outgoing
+  network: must equal the network the payload declares
+  scan-secret: the view secret for a recipient scan and the outgoing view secret for an outgoing one
+  spend-material: the spend secret for a full scan, ignored otherwise
+payload-scan-response:
+  fields: schema-u16-le, match-count-u8, reserved-zero-u8, per-match-records
+  record-fields: output-index-u32-le, matched-O-I-C-96, note-scan-result-212
+  behavior: structural read of the header, inputs and outputs only; no proof is verified, so results are meaningful only for a payload consensus has accepted
+  authentication: every opened note is authenticated by its own tag before decryption, so an output that is not the caller's is skipped rather than reported
+  caller-obligation: require each record's matched leaf to equal the leaf the validated state effects carry at the same output index
 payload-effects-response:
   header-exact-size: 76
   header-fields: schema-u16-le, input-count-u8, output-count-u8, finalized-root-32, finalized-tree-size-u64-le, parameter-digest-32

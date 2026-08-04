@@ -5,8 +5,10 @@ use helioselene::HeliosPoint;
 use monero_fcmp_plus_plus::FcmpPlusPlus;
 use sha2::{Digest, Sha256};
 
+use zeroize::Zeroize;
+
 use crate::{
-    disclosure, envelope_allows, fcmp, validate_public_key, value, ResultCode,
+    disclosure, envelope_allows, fcmp, validate_public_key, value, ResultCode, ADDRESS_TYPE_MAX,
     AUTH_M_OF_N_HIDDEN_SIGNERS, FINALITY_OBJECT_NONE, MAX_INPUTS, MAX_OUTPUTS, MAX_PAYLOAD_BYTES,
     NETWORK_ID_MAX, NOTE_SHIELD, NOTE_TRANSFER, NOTE_UNSHIELD, PAYLOAD_SCHEMA_U16,
     PRODUCT_CONTRACT, TREE_LAYERS,
@@ -476,6 +478,200 @@ fn request_parts(request: &[u8]) -> Result<(u32, &[u8]), ResultCode> {
     Ok((wire_version, &request[VALIDATION_PREFIX_SIZE..]))
 }
 
+const SCAN_REQUEST_PREFIX_BYTES: usize = 76;
+const NOTE_SCAN_PREFIX_BYTES: usize = 236;
+const NOTE_SCAN_RESULT_BYTES: usize = 212;
+const SCAN_RECORD_BYTES: usize = 4 + 96 + NOTE_SCAN_RESULT_BYTES;
+const SCAN_OUTGOING: u8 = 2;
+
+struct ScannableOutput {
+    owner: [u8; 32],
+    nullifier_base: [u8; 32],
+    commitment: [u8; 32],
+    ephemeral: [u8; 32],
+    recipient_ciphertext: Vec<u8>,
+    outgoing_ciphertext: Vec<u8>,
+}
+
+/// Read the header, inputs and outputs of a canonical payload.
+///
+/// This is a structural read for wallet scanning only: it stops at the outputs and
+/// verifies no proof. Results are meaningful only for a payload consensus already
+/// accepted, and each opened note is authenticated by its own tag.
+fn read_scannable_outputs(
+    wire_version: u32,
+    payload: &[u8],
+    expected_network: u8,
+) -> Result<(u8, [u8; 32], Vec<ScannableOutput>), ResultCode> {
+    let mut cursor = Cursor::new(payload);
+    if cursor.u16()? != PAYLOAD_SCHEMA_U16 {
+        return Err(ResultCode::UnsupportedFormat);
+    }
+    let operation = cursor.u8()?;
+    let profile = cursor.u8()?;
+    let authorization = cursor.u8()?;
+    let disclosure_mask = cursor.u8()?;
+    let finality_object = cursor.u8()?;
+    let network = cursor.u8()?;
+    if cursor.u8()? != 0 {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    if network != expected_network
+        || network > NETWORK_ID_MAX
+        || authorization > AUTH_M_OF_N_HIDDEN_SIGNERS
+        || !envelope_allows(
+            wire_version,
+            operation,
+            profile,
+            authorization,
+            finality_object,
+            disclosure_mask,
+        )
+    {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+
+    let genesis = cursor.array::<32>()?;
+    validate_nonzero(&genesis)?;
+    let parameter_digest = cursor.array::<32>()?;
+    if parameter_digest.as_slice() != &Sha256::digest(PRODUCT_CONTRACT)[..] {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    let finalized_root = cursor.array::<32>()?;
+    validate_helios_point(finalized_root)?;
+    if cursor.u64()? > TREE_CAPACITY {
+        return Err(ResultCode::ResourceLimit);
+    }
+    let _transparent_value_balance = cursor.i64()?;
+    let _fee = cursor.u64()?;
+
+    let input_count = bounded_count(&mut cursor, MAX_INPUTS)?;
+    for _ in 0..input_count {
+        validate_ed25519_point(cursor.array()?)?;
+        validate_ed25519_point(cursor.array()?)?;
+    }
+
+    let output_count = bounded_count(&mut cursor, MAX_OUTPUTS)?;
+    let mut outputs = Vec::with_capacity(output_count);
+    for _ in 0..output_count {
+        let owner = cursor.array()?;
+        validate_ed25519_point(owner)?;
+        let nullifier_base = cursor.array()?;
+        validate_ed25519_point(nullifier_base)?;
+        let commitment = cursor.array()?;
+        validate_ed25519_point(commitment)?;
+        let ephemeral = cursor.array()?;
+        validate_ed25519_point(ephemeral)?;
+        let recipient_ciphertext = cursor.vector(MAX_CIPHERTEXT_BYTES)?.to_vec();
+        let outgoing_ciphertext = cursor.vector(MAX_CIPHERTEXT_BYTES)?.to_vec();
+        if recipient_ciphertext.is_empty() || outgoing_ciphertext.is_empty() {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+        outputs.push(ScannableOutput {
+            owner,
+            nullifier_base,
+            commitment,
+            ephemeral,
+            recipient_ciphertext,
+            outgoing_ciphertext,
+        });
+    }
+    Ok((network, genesis, outputs))
+}
+
+/// Try every output of one payload with the caller's scanning material, emitting
+/// the matched leaf so the caller can check it against the consensus leaf.
+pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
+    if request.len() <= SCAN_REQUEST_PREFIX_BYTES {
+        return Err(ResultCode::BadLength);
+    }
+    if u16::from_le_bytes([request[0], request[1]]) != PAYLOAD_SCHEMA_U16 {
+        return Err(ResultCode::UnsupportedFormat);
+    }
+    let scan_kind = request[2];
+    let network = request[3];
+    let address_type = request[4];
+    if request[5..8] != [0_u8; 3] {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    if network > NETWORK_ID_MAX || address_type > ADDRESS_TYPE_MAX {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    if scan_kind > SCAN_OUTGOING {
+        return Err(ResultCode::UnsupportedFormat);
+    }
+    let wire_version = u32::from_le_bytes(
+        request[8..12]
+            .try_into()
+            .map_err(|_| ResultCode::BadLength)?,
+    );
+
+    let (_, genesis, outputs) =
+        read_scannable_outputs(wire_version, &request[SCAN_REQUEST_PREFIX_BYTES..], network)?;
+
+    let mut result = Vec::new();
+    result.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+    result.push(0);
+    result.push(0);
+
+    let mut matches: u8 = 0;
+    for (index, output) in outputs.iter().enumerate() {
+        let ciphertext = if scan_kind == SCAN_OUTGOING {
+            &output.outgoing_ciphertext
+        } else {
+            &output.recipient_ciphertext
+        };
+        let output_index = u32::try_from(index).map_err(|_| ResultCode::ResourceLimit)?;
+
+        let mut scan_request = Vec::with_capacity(NOTE_SCAN_PREFIX_BYTES + ciphertext.len());
+        scan_request.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+        scan_request.push(scan_kind);
+        scan_request.push(network);
+        scan_request.push(address_type);
+        scan_request.extend_from_slice(&[0_u8; 3]);
+        scan_request.extend_from_slice(&output_index.to_le_bytes());
+        scan_request.extend_from_slice(&genesis);
+        scan_request.extend_from_slice(&request[12..44]);
+        scan_request.extend_from_slice(&request[44..76]);
+        scan_request.extend_from_slice(&output.owner);
+        scan_request.extend_from_slice(&output.nullifier_base);
+        scan_request.extend_from_slice(&output.commitment);
+        scan_request.extend_from_slice(&output.ephemeral);
+        scan_request.extend_from_slice(ciphertext);
+
+        // A tag mismatch means the note is not ours, which is the common case and not
+        // an error. Anything else is a malformed request the caller must see.
+        let scanned = match crate::note::scan(&scan_request) {
+            Ok(scanned) => scanned,
+            Err(ResultCode::ConsensusInvalid) => {
+                scan_request.zeroize();
+                continue;
+            }
+            Err(code) => {
+                scan_request.zeroize();
+                return Err(code);
+            }
+        };
+        scan_request.zeroize();
+        if scanned.len() != NOTE_SCAN_RESULT_BYTES {
+            return Err(ResultCode::InternalLocalStateFailure);
+        }
+
+        result.extend_from_slice(&output_index.to_le_bytes());
+        result.extend_from_slice(&output.owner);
+        result.extend_from_slice(&output.nullifier_base);
+        result.extend_from_slice(&output.commitment);
+        result.extend_from_slice(&scanned);
+        matches = matches.checked_add(1).ok_or(ResultCode::ResourceLimit)?;
+    }
+
+    result[2] = matches;
+    if result.len() != 4 + (usize::from(matches) * SCAN_RECORD_BYTES) {
+        return Err(ResultCode::InternalLocalStateFailure);
+    }
+    Ok(result)
+}
+
 pub(crate) fn validate(request: &[u8]) -> Result<(), ResultCode> {
     let (wire_version, payload) = request_parts(request)?;
     validate_payload(wire_version, payload).map(|_| ())
@@ -579,6 +775,155 @@ mod tests {
         let mut request = 2008_u32.to_le_bytes().to_vec();
         request.extend_from_slice(&payload);
         request
+    }
+
+    fn encrypted_output(genesis: &[u8; 32], index: u32) -> (Vec<u8>, Scalar, Scalar) {
+        let spend_secret = Scalar::from(3_u64);
+        let view_secret = Scalar::from(5_u64);
+        let outgoing_secret = Scalar::from(7_u64);
+        let mut request = vec![0_u8; 272];
+        request[..2].copy_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+        request[2] = 1;
+        request[4..8].copy_from_slice(&index.to_le_bytes());
+        request[8..40].copy_from_slice(genesis);
+        request[40..72].copy_from_slice(
+            &(ED25519_BASEPOINT_POINT * spend_secret)
+                .compress()
+                .to_bytes(),
+        );
+        request[72..104].copy_from_slice(
+            &(ED25519_BASEPOINT_POINT * view_secret)
+                .compress()
+                .to_bytes(),
+        );
+        request[104..136].copy_from_slice(&outgoing_secret.to_bytes());
+        request[136..168].copy_from_slice(&Scalar::from(13_u64).to_bytes());
+        request[168..176].copy_from_slice(&99_u64.to_le_bytes());
+        request[176..208].copy_from_slice(&Scalar::from(17_u64).to_bytes());
+        request[208..240].copy_from_slice(&Scalar::from(19_u64).to_bytes());
+        request[240..272].copy_from_slice(
+            &(ED25519_BASEPOINT_POINT * Scalar::from(11_u64))
+                .compress()
+                .to_bytes(),
+        );
+        let encrypted = crate::note::encrypt_request(&request).expect("canonical note");
+        (encrypted, spend_secret, view_secret)
+    }
+
+    fn payload_with_output(genesis: &[u8; 32], encrypted: &[u8]) -> Vec<u8> {
+        let state = tree::update(&[1, 0, 1, 0, 0, 0, 0, 0]).expect("empty canonical tree state");
+        let root = tree::root(&state).expect("empty canonical tree root");
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+        payload.extend_from_slice(&[NOTE_SHIELD, 0, 0, 7, FINALITY_OBJECT_NONE, 1, 0]);
+        payload.extend_from_slice(genesis);
+        payload.extend_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+        payload.extend_from_slice(&root[12..44]);
+        payload.extend_from_slice(&0_u64.to_le_bytes());
+        payload.extend_from_slice(&10_i64.to_le_bytes());
+        payload.extend_from_slice(&1_u64.to_le_bytes());
+        compact_size(&mut payload, 0);
+        compact_size(&mut payload, 1);
+        payload.extend_from_slice(&encrypted[8..40]);
+        payload.extend_from_slice(&encrypted[40..72]);
+        payload.extend_from_slice(&encrypted[72..104]);
+        payload.extend_from_slice(&encrypted[104..136]);
+        vector(&mut payload, &encrypted[136..313]);
+        vector(&mut payload, &encrypted[313..522]);
+        payload
+    }
+
+    fn scan_request(
+        scan_kind: u8,
+        scan_secret: &Scalar,
+        spend: &Scalar,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut request = vec![0_u8; 76];
+        request[..2].copy_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+        request[2] = scan_kind;
+        request[3] = 1;
+        request[8..12].copy_from_slice(&2008_u32.to_le_bytes());
+        request[12..44].copy_from_slice(&scan_secret.to_bytes());
+        request[44..76].copy_from_slice(&spend.to_bytes());
+        request.extend_from_slice(payload);
+        request
+    }
+
+    // Scanning must find the wallet's own output and report the leaf it matched, so the
+    // caller can hold it against the leaf consensus recorded at the same index.
+    #[test]
+    fn payload_scan_opens_an_owned_output_and_reports_its_leaf() {
+        let genesis = [0x11_u8; 32];
+        let (encrypted, spend_secret, view_secret) = encrypted_output(&genesis, 0);
+        let payload = payload_with_output(&genesis, &encrypted);
+
+        let scanned = scan_outputs(&scan_request(0, &view_secret, &spend_secret, &payload))
+            .expect("an owned output must open");
+        assert_eq!(
+            u16::from_le_bytes([scanned[0], scanned[1]]),
+            PAYLOAD_SCHEMA_U16
+        );
+        assert_eq!(scanned[2], 1);
+        assert_eq!(scanned[3], 0);
+        assert_eq!(scanned.len(), 4 + SCAN_RECORD_BYTES);
+
+        let record = &scanned[4..];
+        assert_eq!(u32::from_le_bytes(record[..4].try_into().unwrap()), 0);
+        // The leaf the scan matched must be the leaf carried in the payload.
+        assert_eq!(&record[4..100], &encrypted[8..104]);
+        // The opened amount and output index travel in the note-scan result.
+        assert_eq!(u64::from_le_bytes(record[112..120].try_into().unwrap()), 99);
+        assert_eq!(u32::from_le_bytes(record[108..112].try_into().unwrap()), 0);
+
+        // A view-only scan opens the same note without the spend material.
+        let view_only = scan_outputs(&scan_request(1, &view_secret, &Scalar::ZERO, &payload))
+            .expect("view-only scan must open");
+        assert_eq!(view_only[2], 1);
+        assert_eq!(&view_only[4..104], &record[..100]);
+
+        // Another wallet's material must find nothing, and that is not an error.
+        let stranger = Scalar::from(23_u64);
+        let missed = scan_outputs(&scan_request(0, &stranger, &stranger, &payload))
+            .expect("a foreign scan is empty, not an error");
+        assert_eq!(missed[2], 0);
+        assert_eq!(missed.len(), 4);
+    }
+
+    #[test]
+    fn payload_scan_rejects_malformed_requests() {
+        let genesis = [0x11_u8; 32];
+        let (encrypted, spend_secret, view_secret) = encrypted_output(&genesis, 0);
+        let payload = payload_with_output(&genesis, &encrypted);
+
+        assert_eq!(scan_outputs(&[]), Err(ResultCode::BadLength));
+        assert_eq!(scan_outputs(&[0_u8; 76]), Err(ResultCode::BadLength));
+
+        let mut wrong_schema = scan_request(0, &view_secret, &spend_secret, &payload);
+        wrong_schema[0] = 2;
+        assert_eq!(
+            scan_outputs(&wrong_schema),
+            Err(ResultCode::UnsupportedFormat)
+        );
+
+        let mut wrong_kind = scan_request(9, &view_secret, &spend_secret, &payload);
+        wrong_kind[2] = 9;
+        assert_eq!(
+            scan_outputs(&wrong_kind),
+            Err(ResultCode::UnsupportedFormat)
+        );
+
+        let mut reserved = scan_request(0, &view_secret, &spend_secret, &payload);
+        reserved[5] = 1;
+        assert_eq!(scan_outputs(&reserved), Err(ResultCode::ConsensusInvalid));
+
+        // The declared network must be the payload's, or the scan context is not ours.
+        let mut wrong_network = scan_request(0, &view_secret, &spend_secret, &payload);
+        wrong_network[3] = 0;
+        assert_eq!(
+            scan_outputs(&wrong_network),
+            Err(ResultCode::ConsensusInvalid)
+        );
     }
 
     #[test]

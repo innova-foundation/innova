@@ -66,6 +66,7 @@ pub const CAP_PAYLOAD_VALIDATE: u32 = 1 << 8;
 pub const CAP_ADDRESS_CODEC: u32 = 1 << 9;
 pub const CAP_KEY_DERIVATION: u32 = 1 << 10;
 pub const CAP_NOTE_SCAN: u32 = 1 << 11;
+const CAP_PAYLOAD_SCAN: u32 = 1 << 16;
 pub const CAP_NOTE_ENCRYPT: u32 = 1 << 12;
 pub const CAP_VALUE_PROVE: u32 = 1 << 13;
 pub const CAP_PAYLOAD_EFFECTS: u32 = 1 << 14;
@@ -82,6 +83,7 @@ const IMPLEMENTED_CAPABILITIES: u32 = CAP_PROTOCOL_CONTRACT
     | CAP_ADDRESS_CODEC
     | CAP_KEY_DERIVATION
     | CAP_NOTE_SCAN
+    | CAP_PAYLOAD_SCAN
     | CAP_NOTE_ENCRYPT
     | CAP_VALUE_PROVE
     | CAP_PAYLOAD_EFFECTS
@@ -696,6 +698,28 @@ pub unsafe extern "C" fn innova_privacy_vnext_tree_witness(
         // SAFETY: request validation precedes this read.
         let request = unsafe { slice::from_raw_parts(request, request_len) };
         let result = tree::witness(request)?;
+        write_variable_output(&result, out, out_capacity, out_written)
+    })
+}
+
+/// Scan every output of one canonical IV5 payload with the caller's material.
+///
+/// # Safety
+///
+/// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_payload_scan(
+    request: *const u8,
+    request_len: usize,
+    out: *mut u8,
+    out_capacity: usize,
+    out_written: *mut usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        // SAFETY: request validation precedes this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        let result = payload::scan_outputs(request)?;
         write_variable_output(&result, out, out_capacity, out_written)
     })
 }

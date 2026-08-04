@@ -131,6 +131,7 @@ def verify_configuration_and_abi() -> None:
             "innova_privacy_vnext_tree_witness",
             "innova_privacy_vnext_payload_validate",
             "innova_privacy_vnext_payload_effects",
+            "innova_privacy_vnext_payload_scan",
             "innova_privacy_vnext_address_encode",
             "innova_privacy_vnext_address_decode",
             "innova_privacy_vnext_key_derive",

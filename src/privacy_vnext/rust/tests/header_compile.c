@@ -13,7 +13,7 @@ _Static_assert(INNOVA_PRIVACY_VNEXT_REQUIRED_OPERATIONS == 0x7ffu,
                "required operations changed");
 _Static_assert(sizeof(innova_privacy_vnext_contract) == 104u,
                "contract metadata layout changed");
-_Static_assert(INNOVA_PRIVACY_VNEXT_IMPLEMENTED_CAPABILITIES == 65535u,
+_Static_assert(INNOVA_PRIVACY_VNEXT_IMPLEMENTED_CAPABILITIES == 131071u,
                "implemented capabilities changed");
 _Static_assert(INNOVA_PRIVACY_VNEXT_VALID == 0, "valid result changed");
 _Static_assert(INNOVA_PRIVACY_VNEXT_INTERNAL_LOCAL_STATE_FAILURE == 6,
