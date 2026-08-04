@@ -594,6 +594,117 @@ BOOST_AUTO_TEST_CASE(cpp_note_scan_bridge_matches_the_raw_abi)
 
 // A note must survive the wallet file byte for byte, and a truncated field must be
 // visible as incomplete rather than silently spendable.
+// A moved-from or cleared value must keep no secret. These pin that, so an edit
+// that drops a field from Clear or the move operations fails here rather than
+// leaving spend material behind.
+BOOST_AUTO_TEST_CASE(privacy_vnext_secret_holders_clear_and_move_completely)
+{
+    PrivacyVNextDigest zero;
+    zero.fill(0);
+
+    PrivacyVNextScanMatch match;
+    match.nKeyIndex = 7;
+    match.nOutputIndex = 9;
+    match.nAmount = 99;
+    match.leaf.owner.fill(0x11);
+    match.leaf.nullifierBase.fill(0x22);
+    match.leaf.commitment.fill(0x33);
+    match.recipientSpend.fill(0x44);
+    match.recipientView.fill(0x55);
+    match.spendSecret.fill(0x66);
+    match.y.fill(0x77);
+    match.mask.fill(0x88);
+    match.keyImage.fill(0x99);
+
+    PrivacyVNextScanMatch moved(std::move(match));
+    BOOST_CHECK_EQUAL(moved.nKeyIndex, 7);
+    BOOST_CHECK_EQUAL(moved.nOutputIndex, 9U);
+    BOOST_CHECK_EQUAL(moved.nAmount, 99U);
+    BOOST_CHECK(moved.spendSecret != zero);
+    BOOST_CHECK(moved.mask != zero);
+    BOOST_CHECK(moved.leaf.commitment != zero);
+
+    // The source keeps nothing.
+    BOOST_CHECK_EQUAL(match.nKeyIndex, 0);
+    BOOST_CHECK_EQUAL(match.nOutputIndex, 0U);
+    BOOST_CHECK_EQUAL(match.nAmount, 0U);
+    BOOST_CHECK(match.leaf.owner == zero);
+    BOOST_CHECK(match.leaf.nullifierBase == zero);
+    BOOST_CHECK(match.leaf.commitment == zero);
+    BOOST_CHECK(match.recipientSpend == zero);
+    BOOST_CHECK(match.recipientView == zero);
+    BOOST_CHECK(match.spendSecret == zero);
+    BOOST_CHECK(match.y == zero);
+    BOOST_CHECK(match.mask == zero);
+    BOOST_CHECK(match.keyImage == zero);
+
+    PrivacyVNextScanMatch assigned;
+    assigned = std::move(moved);
+    BOOST_CHECK_EQUAL(assigned.nAmount, 99U);
+    BOOST_CHECK(assigned.spendSecret != zero);
+    BOOST_CHECK(moved.spendSecret == zero);
+    BOOST_CHECK(moved.keyImage == zero);
+    BOOST_CHECK_EQUAL(moved.nAmount, 0U);
+
+    assigned.Clear();
+    BOOST_CHECK_EQUAL(assigned.nKeyIndex, 0);
+    BOOST_CHECK_EQUAL(assigned.nOutputIndex, 0U);
+    BOOST_CHECK_EQUAL(assigned.nAmount, 0U);
+    BOOST_CHECK(assigned.leaf.owner == zero);
+    BOOST_CHECK(assigned.leaf.nullifierBase == zero);
+    BOOST_CHECK(assigned.leaf.commitment == zero);
+    BOOST_CHECK(assigned.recipientSpend == zero);
+    BOOST_CHECK(assigned.recipientView == zero);
+    BOOST_CHECK(assigned.spendSecret == zero);
+    BOOST_CHECK(assigned.y == zero);
+    BOOST_CHECK(assigned.mask == zero);
+    BOOST_CHECK(assigned.keyImage == zero);
+
+    PrivacyVNextScannedNote note;
+    note.nScanKind = 1;
+    note.nNetwork = 1;
+    note.nAddressType = 2;
+    note.nOutputIndex = 5;
+    note.nAmount = 42;
+    note.recipientSpend.fill(0x11);
+    note.recipientView.fill(0x22);
+    note.spendSecret.fill(0x33);
+    note.y.fill(0x44);
+    note.mask.fill(0x55);
+    note.keyImage.fill(0x66);
+    note.Clear();
+    BOOST_CHECK_EQUAL(note.nScanKind, 0);
+    BOOST_CHECK_EQUAL(note.nNetwork, 0);
+    BOOST_CHECK_EQUAL(note.nAddressType, 0);
+    BOOST_CHECK_EQUAL(note.nOutputIndex, 0U);
+    BOOST_CHECK_EQUAL(note.nAmount, 0U);
+    BOOST_CHECK(note.recipientSpend == zero);
+    BOOST_CHECK(note.recipientView == zero);
+    BOOST_CHECK(note.spendSecret == zero);
+    BOOST_CHECK(note.y == zero);
+    BOOST_CHECK(note.mask == zero);
+    BOOST_CHECK(note.keyImage == zero);
+
+    PrivacyVNextDerivedKeys keys;
+    keys.nIndex = 3;
+    keys.spendSecret.fill(0x11);
+    keys.viewSecret.fill(0x22);
+    keys.outgoingViewSecret.fill(0x33);
+    keys.nullifierSecret.fill(0x44);
+    keys.stakingSecret.fill(0x55);
+    keys.spendPublic.fill(0x66);
+    keys.viewPublic.fill(0x77);
+    keys.Clear();
+    BOOST_CHECK_EQUAL(keys.nIndex, 0U);
+    BOOST_CHECK(keys.spendSecret == zero);
+    BOOST_CHECK(keys.viewSecret == zero);
+    BOOST_CHECK(keys.outgoingViewSecret == zero);
+    BOOST_CHECK(keys.nullifierSecret == zero);
+    BOOST_CHECK(keys.stakingSecret == zero);
+    BOOST_CHECK(keys.spendPublic == zero);
+    BOOST_CHECK(keys.viewPublic == zero);
+}
+
 BOOST_AUTO_TEST_CASE(privacy_vnext_note_round_trips_through_the_wallet_record)
 {
     CPrivacyVNextWalletNote note;

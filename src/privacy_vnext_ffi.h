@@ -292,6 +292,7 @@ struct PrivacyVNextScanKey
 
 // One output this wallet owns, with the leaf it was matched against and the
 // position in the caller's key list that opened it.
+// Holds spend material: every field is wiped on clear and on move-from.
 struct PrivacyVNextScanMatch
 {
     uint16_t nKeyIndex;
