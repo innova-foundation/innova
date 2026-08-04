@@ -11,6 +11,11 @@ fail() {
     exit 1
 }
 
+tmp_objects=$(mktemp)
+tmp_sources=$(mktemp)
+tmp_replay=$(mktemp)
+trap 'rm -f "$tmp_objects" "$tmp_sources" "$tmp_replay"' EXIT INT TERM
+
 for name in makefile.unix makefile.osx; do
     makefile="$ROOT/src/$name"
     grep -Eq '^-include .*obj/\*/\*\.P' "$makefile" || \
@@ -33,9 +38,21 @@ for name in makefile.unix makefile.osx; do
         grep -q "obj/test/${object}\.o" "$makefile" || \
             fail "$name does not compile legacy ${object}.o"
     done
-    test_object_count=$(sed -n '/^TEST_OBJS=/,/^$/p' "$makefile" | grep -Ec 'obj/test/[^[:space:]]+\.o')
-    [ "$test_object_count" -eq 39 ] || \
-        fail "$name must compile all 38 test translation units plus the test harness (found $test_object_count objects)"
+    # Compare against the sources on disk rather than a fixed count: a suite
+    # that is added but never wired compiles clean and silently never runs.
+    sed -n '/^TEST_OBJS=/,/^$/p' "$makefile" \
+        | grep -oE 'obj/test/[^[:space:]\\]+\.o' \
+        | sed 's|obj/test/||; s|\.o$||' | sort -u > "$tmp_objects"
+    find "$ROOT/src/test" -maxdepth 1 -name '*.cpp' -exec basename {} .cpp ';' \
+        | sort -u > "$tmp_sources"
+
+    missing=$(comm -13 "$tmp_objects" "$tmp_sources")
+    [ -z "$missing" ] || \
+        fail "$name does not compile these test translation units: $(echo $missing)"
+
+    orphaned=$(comm -23 "$tmp_objects" "$tmp_sources")
+    [ -z "$orphaned" ] || \
+        fail "$name compiles test objects with no source: $(echo $orphaned)"
 
     legacy_target_body=$(sed -n '/^check-legacy-aggregate:/,/^$/p' "$makefile")
     for suite in $legacy_suites; do
@@ -194,23 +211,24 @@ fi
 # Keep the prebuilt journal, marker-last auxiliary indexes, and checked wallet
 # recovery path wired whenever this legacy activation code is edited.
 main_cpp="$ROOT/src/main.cpp"
+main_hdr="$ROOT/src/main.h"
 init_cpp="$ROOT/src/init.cpp"
-replay_body=$(sed -n '/if (mapArgs.count("-replayblocks"))/,/if (mapArgs.count("-loadblock"))/p' "$init_cpp")
+sed -n '/if (mapArgs.count("-replayblocks"))/,/if (mapArgs.count("-loadblock"))/p' "$init_cpp" > "$tmp_replay"
 grep -q 'fDaemon && mapArgs.count("-replayblocks")' "$init_cpp" || \
     fail "history replay can detach and hide its child exit status"
-echo "$replay_body" | grep -q 'if (vFiles.empty())' || \
+grep -q 'if (vFiles.empty())' "$tmp_replay" || \
     fail "history replay can succeed without an input block file"
-echo "$replay_body" | grep -q 'if (!file)' || \
+grep -q 'if (!file)' "$tmp_replay" || \
     fail "history replay ignores block-file open failures"
-echo "$replay_body" | grep -q 'if (!LoadExternalBlockFile(file))' || \
+grep -q 'if (!LoadExternalBlockFile(file))' "$tmp_replay" || \
     fail "history replay ignores block-loader failure"
-echo "$replay_body" | grep -q 'mapArgs.count("-replayexpectedheight")' || \
+grep -q 'mapArgs.count("-replayexpectedheight")' "$tmp_replay" || \
     fail "history replay does not require a trusted terminal height"
-echo "$replay_body" | grep -q 'mapArgs.count("-replayexpectedhash")' || \
+grep -q 'mapArgs.count("-replayexpectedhash")' "$tmp_replay" || \
     fail "history replay does not require a trusted terminal hash"
-echo "$replay_body" | grep -q 'pindexBest->GetBlockHash() != hashExpected' || \
+grep -q 'pindexBest->GetBlockHash() != hashExpected' "$tmp_replay" || \
     fail "history replay does not compare the resulting terminal hash"
-grep -q 'nLoaded > 0 && nFailed == 0' "$main_cpp" || \
+grep -qE 'return .*nLoaded.*&& nFailed == 0 && !fRequestShutdown;' "$main_cpp" || \
     fail "history replay can report success after a rejected/corrupt block frame"
 
 genbuild="$ROOT/share/genbuild.sh"
@@ -263,9 +281,9 @@ grep -q 'ClearCommittedShieldedWalletRecovery(' "$main_cpp" || \
 
 # The 2000--2007 encodings and their private-finality carriers never activated on
 # mainnet/testnet; they are decoded/verified on regtest only. Boundary B still requires them.
-grep -q 'IsLegacyShieldedTransactionVersion(nVersion) &&' "$main_cpp" || \
+grep -q 'IsLegacyShieldedTransactionVersion(nVersion) &&' "$main_hdr" || \
     fail "context-free validation does not identify legacy shielded versions"
-grep -A3 'IsLegacyShieldedTransactionVersion(nVersion) &&' "$main_cpp" | \
+grep -A2 'if (IsShielded() &&' "$main_cpp" | \
     grep -q 'IsLegacyPrivacyPolicyDisabled()' || \
     fail "public networks can still reach legacy shielded consensus validation"
 if grep -q 'nContextHeight < 0 && IsLegacyPrivacyPolicyDisabled()' "$ROOT/src/finality.cpp"; then
