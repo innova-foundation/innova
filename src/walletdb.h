@@ -426,6 +426,36 @@ public:
         return Erase(std::make_pair(std::string("shnote"), std::make_pair(txhash, nPosition)));
     }
 
+    bool WritePrivacyVNextNote(const uint256& txhash, uint32_t nOutputIndex,
+                               const CPrivacyVNextWalletNote& note)
+    {
+        nWalletDBUpdated++;
+        return Write(std::make_pair(std::string("iv5note"),
+                                    std::make_pair(txhash, nOutputIndex)),
+                     note, true);
+    }
+
+    bool ErasePrivacyVNextNote(const uint256& txhash, uint32_t nOutputIndex)
+    {
+        nWalletDBUpdated++;
+        return Erase(std::make_pair(std::string("iv5note"),
+                                    std::make_pair(txhash, nOutputIndex)));
+    }
+
+    bool WritePrivacyVNextNoteSpent(const uint256& txhash, uint32_t nOutputIndex,
+                                    bool fSpent)
+    {
+        CPrivacyVNextWalletNote note;
+        if (!Read(std::make_pair(std::string("iv5note"),
+                                 std::make_pair(txhash, nOutputIndex)), note))
+            return false;
+        note.fSpent = fSpent;
+        nWalletDBUpdated++;
+        return Write(std::make_pair(std::string("iv5note"),
+                                    std::make_pair(txhash, nOutputIndex)),
+                     note, true);
+    }
+
     bool WriteShieldedNoteSpent(const uint256& txhash, uint32_t nPosition, bool fSpent)
     {
         CShieldedNoteData data;

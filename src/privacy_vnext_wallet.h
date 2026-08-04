@@ -15,6 +15,54 @@ static const size_t PRIVACY_VNEXT_WALLET_SEED_CIPHERTEXT_SIZE = 64;
 
 // Wallet-local only. This record is never serialized into transactions,
 // blocks, hashes, P2P messages, or consensus state.
+// One IV5 output this wallet owns. Every secret here derives from the wallet
+// seed, so the note carries them rather than re-deriving on every spend.
+struct CPrivacyVNextWalletNote
+{
+    uint256 txhash;
+    uint32_t nOutputIndex;
+    int nHeight;
+    bool fSpent;
+    uint64_t nAmount;
+    uint64_t nLeafIndex;
+    std::vector<unsigned char> vchOwner;
+    std::vector<unsigned char> vchNullifierBase;
+    std::vector<unsigned char> vchCommitment;
+    std::vector<unsigned char> vchSpendSecret;
+    std::vector<unsigned char> vchY;
+    std::vector<unsigned char> vchMask;
+    std::vector<unsigned char> vchKeyImage;
+
+    CPrivacyVNextWalletNote()
+        : nOutputIndex(0), nHeight(0), fSpent(false), nAmount(0),
+          nLeafIndex(0) {}
+
+    bool IsComplete() const
+    {
+        return vchOwner.size() == 32 && vchNullifierBase.size() == 32 &&
+               vchCommitment.size() == 32 && vchSpendSecret.size() == 32 &&
+               vchY.size() == 32 && vchMask.size() == 32 &&
+               vchKeyImage.size() == 32;
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(txhash);
+        READWRITE(nOutputIndex);
+        READWRITE(nHeight);
+        READWRITE(fSpent);
+        READWRITE(nAmount);
+        READWRITE(nLeafIndex);
+        READWRITE(vchOwner);
+        READWRITE(vchNullifierBase);
+        READWRITE(vchCommitment);
+        READWRITE(vchSpendSecret);
+        READWRITE(vchY);
+        READWRITE(vchMask);
+        READWRITE(vchKeyImage);
+    )
+};
+
 class CPrivacyVNextSeedRecord
 {
 public:

@@ -1454,6 +1454,35 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
                 pwallet->vShieldedNotes.push_back(wnote);
             }
         }
+        else if (strType == "iv5note")
+        {
+            uint256 txhash;
+            uint32_t nOutputIndex;
+            ssKey >> txhash;
+            ssKey >> nOutputIndex;
+            CPrivacyVNextWalletNote note;
+            ssValue >> note;
+            if (note.txhash != txhash || note.nOutputIndex != nOutputIndex ||
+                !note.IsComplete())
+            {
+                strErr = "Error reading wallet database: malformed IV5 note record";
+                return false;
+            }
+
+            LOCK(pwallet->cs_shielded);
+            bool fDuplicate = false;
+            for (const auto& existing : pwallet->vPrivacyVNextNotes)
+            {
+                if (existing.txhash == txhash &&
+                    existing.nOutputIndex == nOutputIndex)
+                {
+                    fDuplicate = true;
+                    break;
+                }
+            }
+            if (!fDuplicate)
+                pwallet->vPrivacyVNextNotes.push_back(note);
+        }
         else if (strType == "csdeleg")
         {
             uint256 hashOwner;

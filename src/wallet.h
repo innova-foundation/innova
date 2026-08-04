@@ -264,6 +264,8 @@ public:
     std::vector<CShieldedWalletNote> vShieldedNotes;
     mutable CCriticalSection cs_shielded;
 
+    std::vector<CPrivacyVNextWalletNote> vPrivacyVNextNotes;
+
     std::map<uint256, CColdStakeDelegation> mapColdStakeDelegations;  // hashOwner -> delegation
     bool AddColdStakeDelegation(const CColdStakeDelegation& deleg);
     bool ImportColdStakeDelegation(const CColdStakeDelegation& deleg);

@@ -4,6 +4,8 @@
 #include <boost/test/unit_test.hpp>
 
 #include "privacy_vnext_ffi.h"
+#include "privacy_vnext_wallet.h"
+#include "serialize.h"
 #include "privacy_vnext/iv5_protocol.h"
 #include "privacy_vnext/rust/include/innova_privacy_vnext.h"
 
@@ -588,6 +590,58 @@ BOOST_AUTO_TEST_CASE(cpp_note_scan_bridge_matches_the_raw_abi)
     BOOST_CHECK(!ScanPrivacyVNextNote(9, 1, 0, note, keys.viewSecret, zero,
                                       unknownKind, error));
     BOOST_CHECK(!error.empty());
+}
+
+// A note must survive the wallet file byte for byte, and a truncated field must be
+// visible as incomplete rather than silently spendable.
+BOOST_AUTO_TEST_CASE(privacy_vnext_note_round_trips_through_the_wallet_record)
+{
+    CPrivacyVNextWalletNote note;
+    note.txhash = uint256("0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef");
+    note.nOutputIndex = 3;
+    note.nHeight = 4242;
+    note.fSpent = false;
+    note.nAmount = 99;
+    note.nLeafIndex = 700;
+    note.vchOwner.assign(32, 0x11);
+    note.vchNullifierBase.assign(32, 0x22);
+    note.vchCommitment.assign(32, 0x33);
+    note.vchSpendSecret.assign(32, 0x44);
+    note.vchY.assign(32, 0x55);
+    note.vchMask.assign(32, 0x66);
+    note.vchKeyImage.assign(32, 0x77);
+    BOOST_REQUIRE(note.IsComplete());
+
+    CDataStream ss(SER_DISK, CLIENT_VERSION);
+    ss << note;
+    CPrivacyVNextWalletNote restored;
+    ss >> restored;
+
+    BOOST_CHECK(restored.txhash == note.txhash);
+    BOOST_CHECK_EQUAL(restored.nOutputIndex, note.nOutputIndex);
+    BOOST_CHECK_EQUAL(restored.nHeight, note.nHeight);
+    BOOST_CHECK_EQUAL(restored.fSpent, note.fSpent);
+    BOOST_CHECK_EQUAL(restored.nAmount, note.nAmount);
+    BOOST_CHECK_EQUAL(restored.nLeafIndex, note.nLeafIndex);
+    BOOST_CHECK_EQUAL_COLLECTIONS(restored.vchOwner.begin(), restored.vchOwner.end(),
+                                  note.vchOwner.begin(), note.vchOwner.end());
+    BOOST_CHECK_EQUAL_COLLECTIONS(restored.vchKeyImage.begin(),
+                                  restored.vchKeyImage.end(),
+                                  note.vchKeyImage.begin(), note.vchKeyImage.end());
+    BOOST_CHECK_EQUAL_COLLECTIONS(restored.vchSpendSecret.begin(),
+                                  restored.vchSpendSecret.end(),
+                                  note.vchSpendSecret.begin(),
+                                  note.vchSpendSecret.end());
+    BOOST_CHECK(restored.IsComplete());
+
+    CPrivacyVNextWalletNote truncated = note;
+    truncated.vchMask.resize(31);
+    BOOST_CHECK(!truncated.IsComplete());
+
+    CPrivacyVNextWalletNote fresh;
+    BOOST_CHECK(!fresh.IsComplete());
+    BOOST_CHECK_EQUAL(fresh.nAmount, 0U);
+    BOOST_CHECK_EQUAL(fresh.fSpent, false);
 }
 
 BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
