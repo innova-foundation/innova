@@ -2817,6 +2817,9 @@ Value z_mintmofncoldstake(const Array& params, bool fHelp)
         std::vector<unsigned char> pk = ParseHex(arrPubKeys[i].get_str());
         if (pk.size() != 33)
             throw JSONRPCError(RPC_INVALID_PARAMETER, "Each staker pubkey must be 33-byte compressed hex");
+        // A non-point member can never sign and would make the threshold unreachable.
+        if (!CPubKey(pk).IsFullyValid())
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "Each staker pubkey must be a valid curve point");
         vStakerSet.push_back(pk);
     }
     std::sort(vStakerSet.begin(), vStakerSet.end());
