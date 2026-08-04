@@ -904,9 +904,10 @@ mod tests {
         append_scalar::<Ed25519>(&mut request, y);
         request.extend_from_slice(record);
 
-        // The prover self-verifies before returning, so a witness that does not open the
-        // claimed root fails here rather than producing an unverifiable proof.
-        assert!(prove(&request).is_err());
+        // The foreign root must be a decodable point, so the rejection is the membership
+        // check inside the prover's self-verification and not a parse failure.
+        assert!(decode_root(ROOT_CURVE_HELIOS, foreign_root).is_ok());
+        assert_eq!(prove(&request), Err(ResultCode::ConsensusInvalid));
     }
     use super::*;
     use ec_divisors::DivisorCurve as _;

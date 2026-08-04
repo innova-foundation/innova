@@ -814,6 +814,24 @@ mod tests {
         }
     }
 
+    // Level 2 gains a second node only at 25,993 leaves, so shallower sizes cannot
+    // distinguish a rebuild that diverges from the frontier above level 1.
+    #[test]
+    #[ignore = "builds a 25,993-leaf tree to reach the level-2 branch boundary"]
+    fn rebuilt_root_matches_the_frontier_at_the_level_two_boundary() {
+        for count in [25_992_u64, 25_993] {
+            let all = leaves(count);
+            let state = grow(&all);
+            let expected = root(&state).expect("frontier root");
+            let response = witness_call(&state, &[0, count - 1], &all).expect("witness");
+            assert_eq!(
+                &response[..ROOT_SIZE],
+                &expected[..],
+                "rebuild diverged from the frontier at {count} leaves"
+            );
+        }
+    }
+
     #[test]
     fn witness_covers_every_leaf_position_in_a_partial_branch() {
         let all = leaves(39);
