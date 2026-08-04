@@ -3,6 +3,7 @@
 #include "../bulletproof_ac.h"
 #include "../bignum.h"
 #include "../curvetree.h"
+#include "../verifycache.h"
 #include "../key.h"
 #include "../nullstake.h"
 #include "../poseidon2.h"
@@ -1339,6 +1340,63 @@ BOOST_AUTO_TEST_CASE(multiscalarmul_matches_naive)
         EC_POINT_free(naive); EC_POINT_free(term); EC_POINT_free(pip);
     }
     BN_free(order); BN_CTX_free(ctx); EC_GROUP_free(group);
+}
+
+
+// A memo is only sound if its key determines the verdict. These pin the three
+// bindings that make a height-gated verifier change impossible to bypass with a
+// cached pre-gate accept.
+BOOST_AUTO_TEST_CASE(verify_cache_key_binds_height_domain_and_semantics)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("identical verifier arguments");
+    const uint256 hashArgs = ss.GetHash();
+
+    // Same arguments below and at a fork gate must not share a key, or an accept
+    // recorded below the gate would satisfy the check above it.
+    const uint256 keyBelow = VerifyProofCacheKey(VERIFYCACHE_FCMP, 100, hashArgs);
+    const uint256 keyAbove = VerifyProofCacheKey(VERIFYCACHE_FCMP, 101, hashArgs);
+    BOOST_CHECK(keyBelow != keyAbove);
+
+    // Two verifiers must not collide on identical argument bytes.
+    BOOST_CHECK(VerifyProofCacheKey(VERIFYCACHE_FCMP, 100, hashArgs) !=
+                VerifyProofCacheKey(VERIFYCACHE_NULLSTAKE_V2, 100, hashArgs));
+    BOOST_CHECK(VerifyProofCacheKey(VERIFYCACHE_NULLSTAKE_V2, 100, hashArgs) !=
+                VerifyProofCacheKey(VERIFYCACHE_NULLSTAKE_V3, 100, hashArgs));
+    BOOST_CHECK(VerifyProofCacheKey(VERIFYCACHE_NULLIFIER_BIND, 100, hashArgs) !=
+                VerifyProofCacheKey(VERIFYCACHE_FCMP, 100, hashArgs));
+
+    // Identical inputs must still hit, otherwise the cache never pays for itself.
+    BOOST_CHECK(VerifyProofCacheKey(VERIFYCACHE_FCMP, 100, hashArgs) ==
+                VerifyProofCacheKey(VERIFYCACHE_FCMP, 100, hashArgs));
+
+    // Different arguments at one height must not share a key.
+    CHashWriter ss2(SER_GETHASH, 0);
+    ss2 << std::string("different verifier arguments");
+    BOOST_CHECK(VerifyProofCacheKey(VERIFYCACHE_FCMP, 100, hashArgs) !=
+                VerifyProofCacheKey(VERIFYCACHE_FCMP, 100, ss2.GetHash()));
+}
+
+BOOST_AUTO_TEST_CASE(verify_cache_store_at_one_height_does_not_satisfy_another)
+{
+    if (!VerifyProofCacheEnabled())
+        return;
+
+    VerifyProofCacheClear();
+
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("proof recorded once, checked at two heights");
+    const uint256 hashArgs = ss.GetHash();
+
+    const uint256 keyBelow = VerifyProofCacheKey(VERIFYCACHE_FCMP, 4242, hashArgs);
+    const uint256 keyAbove = VerifyProofCacheKey(VERIFYCACHE_FCMP, 4243, hashArgs);
+
+    VerifyProofCacheStore(keyBelow);
+    BOOST_CHECK(VerifyProofCacheCheck(keyBelow));
+    BOOST_CHECK(!VerifyProofCacheCheck(keyAbove));
+
+    VerifyProofCacheClear();
+    BOOST_CHECK(!VerifyProofCacheCheck(keyBelow));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
