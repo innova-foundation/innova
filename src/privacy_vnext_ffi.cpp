@@ -939,6 +939,7 @@ PrivacyVNextScanMatch::PrivacyVNextScanMatch()
 
 PrivacyVNextScanMatch::PrivacyVNextScanMatch(PrivacyVNextScanMatch&& other) noexcept
 {
+    nKeyIndex = other.nKeyIndex;
     nOutputIndex = other.nOutputIndex;
     leaf = other.leaf;
     nAmount = other.nAmount;
@@ -957,6 +958,7 @@ PrivacyVNextScanMatch& PrivacyVNextScanMatch::operator=(
     if (this != &other)
     {
         Clear();
+        nKeyIndex = other.nKeyIndex;
         nOutputIndex = other.nOutputIndex;
         leaf = other.leaf;
         nAmount = other.nAmount;
@@ -987,6 +989,7 @@ void PrivacyVNextScanMatch::Clear()
     recipientSpend.fill(0);
     recipientView.fill(0);
     keyImage.fill(0);
+    nKeyIndex = 0;
     nOutputIndex = 0;
     nAmount = 0;
 }
@@ -997,8 +1000,7 @@ bool ScanPrivacyVNextPayload(
     uint8_t addressType,
     uint32_t wireVersion,
     const std::vector<unsigned char>& payload,
-    const PrivacyVNextDigest& scanSecret,
-    const PrivacyVNextDigest& spendMaterial,
+    const std::vector<PrivacyVNextScanKey>& keys,
     std::vector<PrivacyVNextScanMatch>& matches,
     std::vector<PrivacyVNextDigest>& keyImages,
     std::string& error)
@@ -1013,19 +1015,33 @@ bool ScanPrivacyVNextPayload(
         return false;
     }
 
-    static const size_t nRequestPrefix = 76;
-    static const size_t nRecordSize = 4 + 96 + INNOVA_PRIVACY_VNEXT_NOTE_SCAN_RESULT_SIZE;
+    if (keys.empty() || keys.size() > 1024)
+    {
+        error = "IV5 scan needs between one and 1024 derivation keys";
+        return false;
+    }
 
-    std::vector<uint8_t> request(nRequestPrefix + payload.size(), 0);
+    static const size_t nHeader = 16;
+    static const size_t nRecordSize =
+        2 + 4 + 96 + INNOVA_PRIVACY_VNEXT_NOTE_SCAN_RESULT_SIZE;
+    const size_t nKeysBytes = keys.size() * 64;
+
+    std::vector<uint8_t> request(nHeader + nKeysBytes + payload.size(), 0);
     request[0] = static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA);
     request[1] = 0;
     request[2] = scanKind;
     request[3] = network;
     request[4] = addressType;
     PutLE32(&request[8], wireVersion);
-    std::memcpy(&request[12], scanSecret.data(), 32);
-    std::memcpy(&request[44], spendMaterial.data(), 32);
-    std::memcpy(&request[nRequestPrefix], &payload[0], payload.size());
+    request[12] = static_cast<uint8_t>(keys.size() & 0xff);
+    request[13] = static_cast<uint8_t>((keys.size() >> 8) & 0xff);
+    for (size_t i = 0; i < keys.size(); ++i)
+    {
+        std::memcpy(&request[nHeader + (i * 64)], keys[i].scanSecret.data(), 32);
+        std::memcpy(&request[nHeader + (i * 64) + 32],
+                    keys[i].spendMaterial.data(), 32);
+    }
+    std::memcpy(&request[nHeader + nKeysBytes], &payload[0], payload.size());
 
     size_t required = 0;
     int32_t result = innova_privacy_vnext_payload_scan(
@@ -1071,12 +1087,19 @@ bool ScanPrivacyVNextPayload(
     {
         const uint8_t* record = &response[nRecordBase + (i * nRecordSize)];
         PrivacyVNextScanMatch match;
-        match.nOutputIndex = ReadLE32(record);
-        std::memcpy(match.leaf.owner.data(), record + 4, 32);
-        std::memcpy(match.leaf.nullifierBase.data(), record + 36, 32);
-        std::memcpy(match.leaf.commitment.data(), record + 68, 32);
+        match.nKeyIndex = (uint16_t)(record[0] | ((uint16_t)record[1] << 8));
+        match.nOutputIndex = ReadLE32(record + 2);
+        if (match.nKeyIndex >= keys.size())
+        {
+            OPENSSL_cleanse(&response[0], response.size());
+            error = "IV5 payload scan named a key the caller did not supply";
+            return false;
+        }
+        std::memcpy(match.leaf.owner.data(), record + 6, 32);
+        std::memcpy(match.leaf.nullifierBase.data(), record + 38, 32);
+        std::memcpy(match.leaf.commitment.data(), record + 70, 32);
 
-        const uint8_t* scanned = record + 100;
+        const uint8_t* scanned = record + 102;
         if (scanned[0] != static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA) ||
             scanned[1] != 0 || scanned[2] != scanKind ||
             scanned[3] != network || scanned[4] != addressType ||

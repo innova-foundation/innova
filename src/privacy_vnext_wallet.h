@@ -18,6 +18,9 @@ static const size_t PRIVACY_VNEXT_WALLET_SEED_CIPHERTEXT_SIZE = 64;
 // Matches the per-proof input bound the IV5 ABI declares.
 static const size_t PRIVACY_VNEXT_MAX_SPEND_INPUTS = 16;
 
+// Matches the key-list bound the IV5 scan request declares.
+static const uint32_t PRIVACY_VNEXT_MAX_SCAN_KEYS = 1024;
+
 // One IV5 output this wallet owns. Every secret here derives from the wallet
 // seed, so the note carries them rather than re-deriving on every spend.
 struct CPrivacyVNextWalletNote

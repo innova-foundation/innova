@@ -1454,6 +1454,18 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
                 pwallet->vShieldedNotes.push_back(wnote);
             }
         }
+        else if (strType == "iv5idxcount")
+        {
+            uint32_t nCount = 0;
+            ssValue >> nCount;
+            if (nCount == 0)
+            {
+                strErr = "Error reading wallet database: IV5 index count is zero";
+                return false;
+            }
+            LOCK(pwallet->cs_shielded);
+            pwallet->nPrivacyVNextIndexCount = nCount;
+        }
         else if (strType == "iv5note")
         {
             uint256 txhash;

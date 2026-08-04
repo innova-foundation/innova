@@ -561,16 +561,19 @@ fn request_parts(request: &[u8]) -> Result<(u32, &[u8]), ResultCode> {
     Ok((wire_version, &request[VALIDATION_PREFIX_SIZE..]))
 }
 
-const SCAN_REQUEST_PREFIX_BYTES: usize = 76;
+const SCAN_REQUEST_HEADER_BYTES: usize = 16;
+const SCAN_KEY_BYTES: usize = 64;
+const MAX_SCAN_KEYS: usize = 1024;
 const NOTE_SCAN_PREFIX_BYTES: usize = 236;
 const NOTE_SCAN_RESULT_BYTES: usize = 212;
-const SCAN_RECORD_BYTES: usize = 4 + 96 + NOTE_SCAN_RESULT_BYTES;
+const SCAN_RECORD_BYTES: usize = 2 + 4 + 96 + NOTE_SCAN_RESULT_BYTES;
 const SCAN_OUTGOING: u8 = 2;
 
 /// Try every output of one payload with the caller's scanning material, emitting
 /// the matched leaf so the caller can check it against the consensus leaf.
+#[allow(clippy::too_many_lines)] // Mirrors the normative payload field order in one audit path.
 pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
-    if request.len() <= SCAN_REQUEST_PREFIX_BYTES {
+    if request.len() <= SCAN_REQUEST_HEADER_BYTES {
         return Err(ResultCode::BadLength);
     }
     if u16::from_le_bytes([request[0], request[1]]) != PAYLOAD_SCHEMA_U16 {
@@ -579,7 +582,7 @@ pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     let scan_kind = request[2];
     let network = request[3];
     let address_type = request[4];
-    if request[5..8] != [0_u8; 3] {
+    if request[5..8] != [0_u8; 3] || request[14..16] != [0_u8; 2] {
         return Err(ResultCode::ConsensusInvalid);
     }
     if network > NETWORK_ID_MAX || address_type > ADDRESS_TYPE_MAX {
@@ -593,8 +596,25 @@ pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
             .try_into()
             .map_err(|_| ResultCode::BadLength)?,
     );
+    let key_count = usize::from(u16::from_le_bytes([request[12], request[13]]));
+    if key_count == 0 {
+        return Err(ResultCode::BadLength);
+    }
+    if key_count > MAX_SCAN_KEYS {
+        return Err(ResultCode::ResourceLimit);
+    }
+    let payload_start = SCAN_REQUEST_HEADER_BYTES
+        .checked_add(
+            key_count
+                .checked_mul(SCAN_KEY_BYTES)
+                .ok_or(ResultCode::ResourceLimit)?,
+        )
+        .ok_or(ResultCode::ResourceLimit)?;
+    if request.len() <= payload_start {
+        return Err(ResultCode::BadLength);
+    }
 
-    let prefix = parse_payload_prefix(wire_version, &request[SCAN_REQUEST_PREFIX_BYTES..])?;
+    let prefix = parse_payload_prefix(wire_version, &request[payload_start..])?;
     if prefix.network != network {
         return Err(ResultCode::ConsensusInvalid);
     }
@@ -611,46 +631,54 @@ pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         };
         let output_index = u32::try_from(index).map_err(|_| ResultCode::ResourceLimit)?;
 
-        let mut scan_request = Vec::with_capacity(NOTE_SCAN_PREFIX_BYTES + ciphertext.len());
-        scan_request.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
-        scan_request.push(scan_kind);
-        scan_request.push(network);
-        scan_request.push(address_type);
-        scan_request.extend_from_slice(&[0_u8; 3]);
-        scan_request.extend_from_slice(&output_index.to_le_bytes());
-        scan_request.extend_from_slice(&prefix.genesis);
-        scan_request.extend_from_slice(&request[12..44]);
-        scan_request.extend_from_slice(&request[44..76]);
-        scan_request.extend_from_slice(&prefix.output_owners[index]);
-        scan_request.extend_from_slice(&prefix.output_nullifier_bases[index]);
-        scan_request.extend_from_slice(&prefix.output_commitments[index]);
-        scan_request.extend_from_slice(&prefix.output_ephemeral_keys[index]);
-        scan_request.extend_from_slice(ciphertext);
+        // A note opens for at most one key, so the first that authenticates ends the
+        // search for this output.
+        for key in 0..key_count {
+            let key_at = SCAN_REQUEST_HEADER_BYTES + (key * SCAN_KEY_BYTES);
+            let mut scan_request = Vec::with_capacity(NOTE_SCAN_PREFIX_BYTES + ciphertext.len());
+            scan_request.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+            scan_request.push(scan_kind);
+            scan_request.push(network);
+            scan_request.push(address_type);
+            scan_request.extend_from_slice(&[0_u8; 3]);
+            scan_request.extend_from_slice(&output_index.to_le_bytes());
+            scan_request.extend_from_slice(&prefix.genesis);
+            scan_request.extend_from_slice(&request[key_at..key_at + 32]);
+            scan_request.extend_from_slice(&request[key_at + 32..key_at + 64]);
+            scan_request.extend_from_slice(&prefix.output_owners[index]);
+            scan_request.extend_from_slice(&prefix.output_nullifier_bases[index]);
+            scan_request.extend_from_slice(&prefix.output_commitments[index]);
+            scan_request.extend_from_slice(&prefix.output_ephemeral_keys[index]);
+            scan_request.extend_from_slice(ciphertext);
 
-        // A tag mismatch means the note is not ours, which is the common case and not
-        // an error. Anything else is a malformed request the caller must see.
-        let scanned = match crate::note::scan(&scan_request) {
-            Ok(scanned) => scanned,
-            Err(ResultCode::ConsensusInvalid) => {
-                scan_request.zeroize();
-                continue;
+            // A tag mismatch means this output is not this key's, which is the common
+            // case. Anything else is a malformed request the caller must see.
+            let scanned = match crate::note::scan(&scan_request) {
+                Ok(scanned) => scanned,
+                Err(ResultCode::ConsensusInvalid) => {
+                    scan_request.zeroize();
+                    continue;
+                }
+                Err(code) => {
+                    scan_request.zeroize();
+                    return Err(code);
+                }
+            };
+            scan_request.zeroize();
+            if scanned.len() != NOTE_SCAN_RESULT_BYTES {
+                return Err(ResultCode::InternalLocalStateFailure);
             }
-            Err(code) => {
-                scan_request.zeroize();
-                return Err(code);
-            }
-        };
-        scan_request.zeroize();
-        if scanned.len() != NOTE_SCAN_RESULT_BYTES {
-            return Err(ResultCode::InternalLocalStateFailure);
+
+            let key_index = u16::try_from(key).map_err(|_| ResultCode::ResourceLimit)?;
+            records.extend_from_slice(&key_index.to_le_bytes());
+            records.extend_from_slice(&output_index.to_le_bytes());
+            records.extend_from_slice(&prefix.output_owners[index]);
+            records.extend_from_slice(&prefix.output_nullifier_bases[index]);
+            records.extend_from_slice(&prefix.output_commitments[index]);
+            records.extend_from_slice(&scanned);
+            matches = matches.checked_add(1).ok_or(ResultCode::ResourceLimit)?;
+            break;
         }
-
-        records.extend_from_slice(&output_index.to_le_bytes());
-        records.extend_from_slice(&prefix.output_owners[index]);
-        records.extend_from_slice(&prefix.output_nullifier_bases[index]);
-        records.extend_from_slice(&prefix.output_commitments[index]);
-        records.extend_from_slice(&scanned);
-        matches = matches.checked_add(1).ok_or(ResultCode::ResourceLimit)?;
     }
 
     let mut result = Vec::new();
@@ -830,21 +858,29 @@ mod tests {
         payload
     }
 
+    fn scan_request_keys(scan_kind: u8, keys: &[(Scalar, Scalar)], payload: &[u8]) -> Vec<u8> {
+        let mut request = vec![0_u8; SCAN_REQUEST_HEADER_BYTES];
+        request[..2].copy_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+        request[2] = scan_kind;
+        request[3] = 1;
+        request[8..12].copy_from_slice(&2008_u32.to_le_bytes());
+        let count = u16::try_from(keys.len()).expect("test key count is bounded");
+        request[12..14].copy_from_slice(&count.to_le_bytes());
+        for (scan_secret, spend) in keys {
+            request.extend_from_slice(&scan_secret.to_bytes());
+            request.extend_from_slice(&spend.to_bytes());
+        }
+        request.extend_from_slice(payload);
+        request
+    }
+
     fn scan_request(
         scan_kind: u8,
         scan_secret: &Scalar,
         spend: &Scalar,
         payload: &[u8],
     ) -> Vec<u8> {
-        let mut request = vec![0_u8; 76];
-        request[..2].copy_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
-        request[2] = scan_kind;
-        request[3] = 1;
-        request[8..12].copy_from_slice(&2008_u32.to_le_bytes());
-        request[12..44].copy_from_slice(&scan_secret.to_bytes());
-        request[44..76].copy_from_slice(&spend.to_bytes());
-        request.extend_from_slice(payload);
-        request
+        scan_request_keys(scan_kind, &[(*scan_secret, *spend)], payload)
     }
 
     // Scanning must find the wallet's own output and report the leaf it matched, so the
@@ -866,18 +902,19 @@ mod tests {
         assert_eq!(scanned.len(), 4 + SCAN_RECORD_BYTES);
 
         let record = &scanned[4..];
-        assert_eq!(u32::from_le_bytes(record[..4].try_into().unwrap()), 0);
+        assert_eq!(u16::from_le_bytes(record[..2].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(record[2..6].try_into().unwrap()), 0);
         // The leaf the scan matched must be the leaf carried in the payload.
-        assert_eq!(&record[4..100], &encrypted[8..104]);
+        assert_eq!(&record[6..102], &encrypted[8..104]);
         // The opened amount and output index travel in the note-scan result.
-        assert_eq!(u64::from_le_bytes(record[112..120].try_into().unwrap()), 99);
-        assert_eq!(u32::from_le_bytes(record[108..112].try_into().unwrap()), 0);
+        assert_eq!(u64::from_le_bytes(record[114..122].try_into().unwrap()), 99);
+        assert_eq!(u32::from_le_bytes(record[110..114].try_into().unwrap()), 0);
 
         // A view-only scan opens the same note without the spend material.
         let view_only = scan_outputs(&scan_request(1, &view_secret, &Scalar::ZERO, &payload))
             .expect("view-only scan must open");
         assert_eq!(view_only[2], 1);
-        assert_eq!(&view_only[4..104], &record[..100]);
+        assert_eq!(&view_only[4..106], &record[..102]);
 
         // Another wallet's material must find nothing, and that is not an error.
         let stranger = Scalar::from(23_u64);
@@ -942,8 +979,38 @@ mod tests {
         // The validated effects carry the leaf after its 76-byte header and no key
         // images, so the scan's leaf must be byte-identical to it.
         let validated_leaf = &encoded[EFFECTS_HEADER_BYTES..EFFECTS_HEADER_BYTES + 96];
-        let scanned_leaf = &scanned[8..104];
+        let scanned_leaf = &scanned[10..106];
         assert_eq!(validated_leaf, scanned_leaf);
+    }
+
+    // A wallet holding several derivation indices must find its note under the right
+    // one and report which, so a stranger's key in the set changes nothing.
+    #[test]
+    fn payload_scan_reports_which_key_opened_an_output() {
+        let genesis = [0x11_u8; 32];
+        let (encrypted, spend_secret, view_secret) = encrypted_output(&genesis, 0);
+        let payload = payload_with_output(&genesis, &encrypted);
+        let stranger = Scalar::from(23_u64);
+
+        let keys = [
+            (stranger, stranger),
+            (Scalar::from(29_u64), Scalar::from(31_u64)),
+            (view_secret, spend_secret),
+        ];
+        let scanned = scan_outputs(&scan_request_keys(0, &keys, &payload))
+            .expect("the owning key must open the output");
+        assert_eq!(scanned[2], 1);
+        assert_eq!(u16::from_le_bytes(scanned[4..6].try_into().unwrap()), 2);
+
+        let foreign = [(stranger, stranger)];
+        let missed = scan_outputs(&scan_request_keys(0, &foreign, &payload))
+            .expect("a foreign key set is empty, not an error");
+        assert_eq!(missed[2], 0);
+
+        let mut none = scan_request_keys(0, &keys, &payload);
+        none[12] = 0;
+        none[13] = 0;
+        assert_eq!(scan_outputs(&none), Err(ResultCode::BadLength));
     }
 
     #[test]
@@ -953,7 +1020,7 @@ mod tests {
         let payload = payload_with_output(&genesis, &encrypted);
 
         assert_eq!(scan_outputs(&[]), Err(ResultCode::BadLength));
-        assert_eq!(scan_outputs(&[0_u8; 76]), Err(ResultCode::BadLength));
+        assert_eq!(scan_outputs(&[0_u8; 16]), Err(ResultCode::BadLength));
 
         let mut wrong_schema = scan_request(0, &view_secret, &spend_secret, &payload);
         wrong_schema[0] = 2;

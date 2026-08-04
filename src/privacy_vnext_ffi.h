@@ -277,9 +277,24 @@ bool ScanPrivacyVNextNote(
     PrivacyVNextScannedNote& scanned,
     std::string& error);
 
-// One output this wallet owns, with the leaf it was matched against.
+// One derivation index's scanning material. A note opens for exactly one.
+struct PrivacyVNextScanKey
+{
+    PrivacyVNextDigest scanSecret;
+    PrivacyVNextDigest spendMaterial;
+
+    PrivacyVNextScanKey()
+    {
+        scanSecret.fill(0);
+        spendMaterial.fill(0);
+    }
+};
+
+// One output this wallet owns, with the leaf it was matched against and the
+// position in the caller's key list that opened it.
 struct PrivacyVNextScanMatch
 {
+    uint16_t nKeyIndex;
     uint32_t nOutputIndex;
     PrivacyVNextOutputLeaf leaf;
     uint64_t nAmount;
@@ -309,8 +324,7 @@ bool ScanPrivacyVNextPayload(
     uint8_t addressType,
     uint32_t wireVersion,
     const std::vector<unsigned char>& payload,
-    const PrivacyVNextDigest& scanSecret,
-    const PrivacyVNextDigest& spendMaterial,
+    const std::vector<PrivacyVNextScanKey>& keys,
     std::vector<PrivacyVNextScanMatch>& matches,
     std::vector<PrivacyVNextDigest>& keyImages,
     std::string& error);

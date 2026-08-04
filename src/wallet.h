@@ -265,6 +265,10 @@ public:
     mutable CCriticalSection cs_shielded;
 
     std::vector<CPrivacyVNextWalletNote> vPrivacyVNextNotes;
+    // Index 0 always exists as the default receive index; scanning covers every
+    // index issued, since a note only opens under the one it was sent to.
+    uint32_t nPrivacyVNextIndexCount;
+    bool AllocatePrivacyVNextIndex(uint32_t& nIndexOut, std::string& strErrorOut);
     bool ApplyPrivacyVNextBlock(const CBlock& block, const CBlockIndex* pindex,
                                 std::string& strErrorOut);
     bool DisconnectPrivacyVNextBlock(const CBlock& block,
@@ -324,6 +328,7 @@ public:
         nWalletMaxVersion = FEATURE_BASE;
         fFileBacked = false;
         nMasterKeyMaxID = 0;
+        nPrivacyVNextIndexCount = 1;
         pwalletdbEncryption = NULL;
         nOrderPosNext = 0;
         nTimeFirstKey = 0;

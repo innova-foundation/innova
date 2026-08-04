@@ -10853,6 +10853,34 @@ bool CWallet::SelectPrivacyVNextNotes(
     return false;
 }
 
+bool CWallet::AllocatePrivacyVNextIndex(uint32_t& nIndexOut,
+                                        std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    LOCK(cs_shielded);
+    if (nPrivacyVNextIndexCount == 0 ||
+        nPrivacyVNextIndexCount >= PRIVACY_VNEXT_MAX_SCAN_KEYS)
+    {
+        strErrorOut = "IV5 derivation indices are exhausted";
+        return false;
+    }
+    const uint32_t nIndex = nPrivacyVNextIndexCount;
+    // Persist before handing the index out, so a crash cannot leave an address
+    // issued under an index the next scan will not cover.
+    if (fFileBacked)
+    {
+        CWalletDB walletdb(strWalletFile, "r+");
+        if (!walletdb.WritePrivacyVNextIndexCount(nIndex + 1))
+        {
+            strErrorOut = "failed to persist the IV5 derivation index count";
+            return false;
+        }
+    }
+    nPrivacyVNextIndexCount = nIndex + 1;
+    nIndexOut = nIndex;
+    return true;
+}
+
 bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
                                      const CBlockIndex* pindex,
                                      std::string& strErrorOut)
@@ -10875,14 +10903,21 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
     std::memcpy(genesis.data(), hashGenesis.begin(), 32);
     const uint8_t nNetwork = PrivacyVNextNetworkId();
 
-    // One derivation index until issued IV5 addresses are tracked; a note sent to
-    // another index needs that index's view secret and is not found here.
-    PrivacyVNextDerivedKeys keys;
-    std::string strKeyError;
-    if (!DerivePrivacyVNextKeys(seed, genesis, 0, nNetwork, 0, keys, strKeyError))
+    // Every index this wallet has issued: a note only opens under the one it was
+    // sent to, so missing an index would hide received value rather than fail.
+    std::vector<PrivacyVNextScanKey> vKeys(nPrivacyVNextIndexCount);
+    for (uint32_t i = 0; i < nPrivacyVNextIndexCount; ++i)
     {
-        strErrorOut = "IV5 wallet key derivation failed: " + strKeyError;
-        return false;
+        PrivacyVNextDerivedKeys keys;
+        std::string strKeyError;
+        if (!DerivePrivacyVNextKeys(seed, genesis, i, nNetwork, 0, keys,
+                                    strKeyError))
+        {
+            strErrorOut = "IV5 wallet key derivation failed: " + strKeyError;
+            return false;
+        }
+        vKeys[i].scanSecret = keys.viewSecret;
+        vKeys[i].spendMaterial = keys.spendSecret;
     }
 
     std::vector<CPrivacyVNextWalletNote> vNewNotes;
@@ -10898,9 +10933,8 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
         std::string strScanError;
         if (!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, nNetwork, 0,
                                      (uint32_t)tx.nVersion,
-                                     tx.privacyVNext.vchPayload, keys.viewSecret,
-                                     keys.spendSecret, vMatches, vKeyImages,
-                                     strScanError))
+                                     tx.privacyVNext.vchPayload, vKeys, vMatches,
+                                     vKeyImages, strScanError))
         {
             strErrorOut = "IV5 wallet scan failed: " + strScanError;
             return false;
@@ -11036,13 +11070,13 @@ bool CWallet::DisconnectPrivacyVNextBlock(const CBlock& block,
 
         std::vector<PrivacyVNextScanMatch> vIgnored;
         std::vector<PrivacyVNextDigest> vKeyImages;
-        PrivacyVNextDigest zero;
-        zero.fill(0);
+        // Only the key images matter here, so one unowned key reads them.
+        const std::vector<PrivacyVNextScanKey> vNoKeys(1);
         std::string strScanError;
         if (!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_VIEW_ONLY,
                                      PrivacyVNextNetworkId(), 0,
                                      (uint32_t)tx.nVersion,
-                                     tx.privacyVNext.vchPayload, zero, zero,
+                                     tx.privacyVNext.vchPayload, vNoKeys,
                                      vIgnored, vKeyImages, strScanError))
         {
             strErrorOut = "IV5 wallet disconnect could not read a payload: " +

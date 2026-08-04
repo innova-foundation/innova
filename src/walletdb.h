@@ -426,6 +426,12 @@ public:
         return Erase(std::make_pair(std::string("shnote"), std::make_pair(txhash, nPosition)));
     }
 
+    bool WritePrivacyVNextIndexCount(uint32_t nCount)
+    {
+        nWalletDBUpdated++;
+        return Write(std::string("iv5idxcount"), nCount, true);
+    }
+
     bool WritePrivacyVNextNote(const uint256& txhash, uint32_t nOutputIndex,
                                const CPrivacyVNextWalletNote& note)
     {

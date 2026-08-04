@@ -727,13 +727,17 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
     payload.insert(payload.end(), encrypted + 313,
                    encrypted + 313 + INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE);
 
+    std::vector<PrivacyVNextScanKey> vKeys(1);
+    vKeys[0].scanSecret = keys.viewSecret;
+    vKeys[0].spendMaterial = keys.spendSecret;
+
     std::vector<PrivacyVNextScanMatch> matches;
     std::vector<PrivacyVNextDigest> keyImages;
     BOOST_REQUIRE_MESSAGE(
         ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008, payload,
-                                keys.viewSecret, keys.spendSecret, matches,
-                                keyImages, error),
+                                vKeys, matches, keyImages, error),
         error);
+    BOOST_CHECK_EQUAL(matches[0].nKeyIndex, 0);
     BOOST_REQUIRE_EQUAL(matches.size(), 1U);
     BOOST_CHECK(keyImages.empty());
     BOOST_CHECK_EQUAL(matches[0].nOutputIndex, 0U);
@@ -755,12 +759,13 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
     BOOST_CHECK(matches[0].keyImage != zero);
 
     // A view-only scan opens the same note without the spend material.
+    std::vector<PrivacyVNextScanKey> vViewKeys(1);
+    vViewKeys[0].scanSecret = keys.viewSecret;
     std::vector<PrivacyVNextScanMatch> viewOnly;
     std::vector<PrivacyVNextDigest> viewKeyImages;
     BOOST_REQUIRE_MESSAGE(
         ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_VIEW_ONLY, 1, 0, 2008, payload,
-                                keys.viewSecret, zero, viewOnly, viewKeyImages,
-                                error),
+                                vViewKeys, viewOnly, viewKeyImages, error),
         error);
     BOOST_REQUIRE_EQUAL(viewOnly.size(), 1U);
     BOOST_CHECK_EQUAL(viewOnly[0].nAmount, 99U);
@@ -773,29 +778,52 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
     otherSeed.fill(0x5a);
     BOOST_REQUIRE_MESSAGE(
         DerivePrivacyVNextKeys(otherSeed, genesis, 0, 1, 0, stranger, error), error);
+    std::vector<PrivacyVNextScanKey> vStranger(1);
+    vStranger[0].scanSecret = stranger.viewSecret;
+    vStranger[0].spendMaterial = stranger.spendSecret;
     std::vector<PrivacyVNextScanMatch> missed;
     std::vector<PrivacyVNextDigest> missedKeyImages;
     BOOST_REQUIRE_MESSAGE(
         ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008, payload,
-                                stranger.viewSecret, stranger.spendSecret,
-                                missed, missedKeyImages, error),
+                                vStranger, missed, missedKeyImages, error),
         error);
     BOOST_CHECK(missed.empty());
+
+    // A wallet holding several indices must be told which one opened the note.
+    std::vector<PrivacyVNextScanKey> vMany(3);
+    vMany[0] = vStranger[0];
+    vMany[2].scanSecret = keys.viewSecret;
+    vMany[2].spendMaterial = keys.spendSecret;
+    std::vector<PrivacyVNextScanMatch> manyMatches;
+    std::vector<PrivacyVNextDigest> manyKeyImages;
+    BOOST_REQUIRE_MESSAGE(
+        ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008, payload,
+                                vMany, manyMatches, manyKeyImages, error),
+        error);
+    BOOST_REQUIRE_EQUAL(manyMatches.size(), 1U);
+    BOOST_CHECK_EQUAL(manyMatches[0].nKeyIndex, 2);
+    BOOST_CHECK_EQUAL(manyMatches[0].nAmount, 99U);
+
+    // No keys at all is a caller error, not an empty result.
+    std::vector<PrivacyVNextScanMatch> noKeyMatches;
+    std::vector<PrivacyVNextDigest> noKeyImages;
+    BOOST_CHECK(!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008,
+                                         payload,
+                                         std::vector<PrivacyVNextScanKey>(),
+                                         noKeyMatches, noKeyImages, error));
 
     // A payload declaring another network is not this wallet's scan context.
     std::vector<PrivacyVNextScanMatch> wrongNet;
     std::vector<PrivacyVNextDigest> wrongNetKeyImages;
     BOOST_CHECK(!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 0, 0, 2008,
-                                         payload, keys.viewSecret,
-                                         keys.spendSecret, wrongNet,
+                                         payload, vKeys, wrongNet,
                                          wrongNetKeyImages, error));
     BOOST_CHECK(!error.empty());
 
     std::vector<PrivacyVNextScanMatch> empty;
     std::vector<PrivacyVNextDigest> emptyKeyImages;
     BOOST_CHECK(!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008,
-                                         std::vector<unsigned char>(),
-                                         keys.viewSecret, keys.spendSecret,
+                                         std::vector<unsigned char>(), vKeys,
                                          empty, emptyKeyImages, error));
     BOOST_CHECK(!error.empty());
 }

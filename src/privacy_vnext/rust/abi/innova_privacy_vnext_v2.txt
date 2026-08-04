@@ -223,14 +223,17 @@ payload-validation-request:
   exact outer versions: 2000..2008 under the normative envelope matrix
   maximum payload bytes: 262144
 payload-scan-request:
-  fields: schema-u16-le, scan-kind-u8, network-u8, address-type-u8, reserved-zero-3, outer-wire-version-u32-le, scan-secret-32, spend-material-32, canonical-payload-to-eof
+  fields: schema-u16-le, scan-kind-u8, network-u8, address-type-u8, reserved-zero-3, outer-wire-version-u32-le, key-count-u16-le, reserved-zero-2, key-count-pairs-of-scan-secret-32-and-spend-material-32, canonical-payload-to-eof
   scan-kind: 0 full-spend, 1 view-only, 2 outgoing
   network: must equal the network the payload declares
+  key-count: 1 to 1024, one pair per derivation index the caller holds
   scan-secret: the view secret for a recipient scan and the outgoing view secret for an outgoing one
   spend-material: the spend secret for a full scan, ignored otherwise
+  behavior: the payload is read once and every output is tried against each key in order, so holding many indices does not re-read the payload
 payload-scan-response:
   fields: schema-u16-le, match-count-u8, key-image-count-u8, key-images-32-each, per-match-records
-  record-fields: output-index-u32-le, matched-O-I-C-96, note-scan-result-212
+  record-fields: key-index-u16-le, output-index-u32-le, matched-O-I-C-96, note-scan-result-212
+  key-index: the position in the request key list that opened the output; an output opens for at most one key
   behavior: reads the header, inputs and outputs with the same decoder validation uses, and verifies no proof; results are meaningful only for a payload consensus has accepted
   key-images: every key image the payload spends, so a caller can retire its own notes without a second decode
   authentication: every opened note is authenticated by its own tag before decryption, so an output that is not the caller's is skipped rather than reported
