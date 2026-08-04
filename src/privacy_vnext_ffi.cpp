@@ -62,6 +62,20 @@ void PutLE32(uint8_t* bytes, uint32_t value)
         bytes[i] = static_cast<uint8_t>(value >> (8 * i));
 }
 
+uint64_t ReadLE64(const uint8_t* bytes)
+{
+    uint64_t value = 0;
+    for (size_t i = 0; i < 8; ++i)
+        value |= static_cast<uint64_t>(bytes[i]) << (8 * i);
+    return value;
+}
+
+void PutLE64(uint8_t* bytes, uint64_t value)
+{
+    for (size_t i = 0; i < 8; ++i)
+        bytes[i] = static_cast<uint8_t>(value >> (8 * i));
+}
+
 std::string ResultError(const char* operation, int32_t result)
 {
     return std::string(operation) + " returned result " +
@@ -790,4 +804,234 @@ PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffects(
         validation.strError = "unknown local IV5 effects failure";
         return validation;
     }
+}
+
+PrivacyVNextScannedNote::PrivacyVNextScannedNote()
+{
+    Clear();
+}
+
+PrivacyVNextScannedNote::~PrivacyVNextScannedNote()
+{
+    Clear();
+}
+
+void PrivacyVNextScannedNote::Clear()
+{
+    OPENSSL_cleanse(spendSecret.data(), spendSecret.size());
+    OPENSSL_cleanse(y.data(), y.size());
+    OPENSSL_cleanse(mask.data(), mask.size());
+    recipientSpend.fill(0);
+    recipientView.fill(0);
+    keyImage.fill(0);
+    nScanKind = 0;
+    nNetwork = 0;
+    nAddressType = 0;
+    nOutputIndex = 0;
+    nAmount = 0;
+}
+
+PrivacyVNextValueProof::PrivacyVNextValueProof()
+{
+    Clear();
+}
+
+void PrivacyVNextValueProof::Clear()
+{
+    vOutputCommitments.clear();
+    vchRangeProof.clear();
+    balanceProof.fill(0);
+    bindingSignature.fill(0);
+}
+
+bool ScanPrivacyVNextNote(
+    uint8_t scanKind,
+    uint8_t network,
+    uint8_t addressType,
+    const PrivacyVNextEncryptedNote& note,
+    const PrivacyVNextDigest& scanSecret,
+    const PrivacyVNextDigest& spendMaterial,
+    PrivacyVNextScannedNote& scanned,
+    std::string& error)
+{
+    scanned.Clear();
+    error.clear();
+
+    size_t nExpectedCiphertext = 0;
+    switch (scanKind)
+    {
+    case PRIVACY_VNEXT_SCAN_FULL:
+    case PRIVACY_VNEXT_SCAN_VIEW_ONLY:
+        nExpectedCiphertext = INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE;
+        break;
+    case PRIVACY_VNEXT_SCAN_OUTGOING:
+        nExpectedCiphertext = INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE;
+        break;
+    default:
+        error = "unknown IV5 note scan kind";
+        return false;
+    }
+    if (note.vchCiphertext.size() != nExpectedCiphertext)
+    {
+        error = "IV5 note ciphertext has the wrong length for this scan kind";
+        return false;
+    }
+
+    std::vector<uint8_t> request(
+        INNOVA_PRIVACY_VNEXT_NOTE_SCAN_PREFIX_SIZE + nExpectedCiphertext, 0);
+    request[0] = static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA);
+    request[1] = 0;
+    request[2] = scanKind;
+    request[3] = network;
+    request[4] = addressType;
+    PutLE32(&request[8], note.nOutputIndex);
+    std::memcpy(&request[12], note.genesis.data(), 32);
+    std::memcpy(&request[44], scanSecret.data(), 32);
+    std::memcpy(&request[76], spendMaterial.data(), 32);
+    std::memcpy(&request[108], note.leafO.data(), 32);
+    std::memcpy(&request[140], note.leafI.data(), 32);
+    std::memcpy(&request[172], note.leafC.data(), 32);
+    std::memcpy(&request[204], note.ephemeral.data(), 32);
+    std::memcpy(&request[INNOVA_PRIVACY_VNEXT_NOTE_SCAN_PREFIX_SIZE],
+                &note.vchCiphertext[0], nExpectedCiphertext);
+
+    std::array<uint8_t, INNOVA_PRIVACY_VNEXT_NOTE_SCAN_RESULT_SIZE> response = {};
+    size_t written = 0;
+    const int32_t result = innova_privacy_vnext_note_scan(
+        &request[0], request.size(), response.data(), response.size(), &written);
+    OPENSSL_cleanse(&request[0], request.size());
+    if (result != INNOVA_PRIVACY_VNEXT_VALID)
+    {
+        OPENSSL_cleanse(response.data(), response.size());
+        error = ResultError("IV5 note scan", result);
+        return false;
+    }
+    if (written != response.size() ||
+        response[0] != static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA) ||
+        response[1] != 0 || response[2] != scanKind ||
+        response[3] != network || response[4] != addressType ||
+        ReadLE32(response.data() + 8) != note.nOutputIndex)
+    {
+        OPENSSL_cleanse(response.data(), response.size());
+        error = "non-canonical IV5 note-scan response";
+        return false;
+    }
+
+    scanned.nScanKind = scanKind;
+    scanned.nNetwork = network;
+    scanned.nAddressType = addressType;
+    scanned.nOutputIndex = note.nOutputIndex;
+    scanned.nAmount = ReadLE64(response.data() + 12);
+    std::memcpy(scanned.recipientSpend.data(), response.data() + 20, 32);
+    std::memcpy(scanned.recipientView.data(), response.data() + 52, 32);
+    std::memcpy(scanned.spendSecret.data(), response.data() + 84, 32);
+    std::memcpy(scanned.y.data(), response.data() + 116, 32);
+    std::memcpy(scanned.mask.data(), response.data() + 148, 32);
+    std::memcpy(scanned.keyImage.data(), response.data() + 180, 32);
+    OPENSSL_cleanse(response.data(), response.size());
+    return true;
+}
+
+bool ProvePrivacyVNextValue(
+    const std::vector<PrivacyVNextDigest>& vPseudoOuts,
+    const std::vector<PrivacyVNextValueOutput>& vOutputs,
+    int64_t nTransparentValueBalance,
+    uint64_t nFee,
+    const PrivacyVNextDigest& signableHash,
+    const PrivacyVNextDigest& entropy,
+    const PrivacyVNextDigest& excessMask,
+    PrivacyVNextValueProof& proof,
+    std::string& error)
+{
+    proof.Clear();
+    error.clear();
+
+    if (vPseudoOuts.size() > INNOVA_PRIVACY_VNEXT_MAX_INPUTS ||
+        vOutputs.size() > INNOVA_PRIVACY_VNEXT_MAX_OUTPUTS)
+    {
+        error = "IV5 value proof exceeds the input or output limit";
+        return false;
+    }
+
+    std::vector<uint8_t> request(
+        INNOVA_PRIVACY_VNEXT_VALUE_PROVE_HEADER_SIZE +
+            (vPseudoOuts.size() * 32) + (vOutputs.size() * 40),
+        0);
+    request[0] = static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA);
+    request[1] = 0;
+    request[2] = static_cast<uint8_t>(vOutputs.size());
+    request[3] = static_cast<uint8_t>(vPseudoOuts.size());
+    PutLE64(&request[4], static_cast<uint64_t>(nTransparentValueBalance));
+    PutLE64(&request[12], nFee);
+    std::memcpy(&request[20], signableHash.data(), 32);
+    std::memcpy(&request[52], entropy.data(), 32);
+    std::memcpy(&request[84], excessMask.data(), 32);
+
+    size_t offset = INNOVA_PRIVACY_VNEXT_VALUE_PROVE_HEADER_SIZE;
+    for (size_t i = 0; i < vPseudoOuts.size(); ++i)
+    {
+        std::memcpy(&request[offset], vPseudoOuts[i].data(), 32);
+        offset += 32;
+    }
+    for (size_t i = 0; i < vOutputs.size(); ++i)
+    {
+        PutLE64(&request[offset], vOutputs[i].nAmount);
+        std::memcpy(&request[offset + 8], vOutputs[i].mask.data(), 32);
+        offset += 40;
+    }
+
+    size_t required = 0;
+    int32_t result = innova_privacy_vnext_value_prove(
+        &request[0], request.size(), NULL, 0, &required);
+    if (result != INNOVA_PRIVACY_VNEXT_VALID ||
+        required == 0 || required > INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES)
+    {
+        OPENSSL_cleanse(&request[0], request.size());
+        error = ResultError("IV5 value proof size query", result);
+        return false;
+    }
+
+    std::vector<uint8_t> response(required, 0);
+    size_t written = 0;
+    result = innova_privacy_vnext_value_prove(
+        &request[0], request.size(), &response[0], response.size(), &written);
+    OPENSSL_cleanse(&request[0], request.size());
+    if (result != INNOVA_PRIVACY_VNEXT_VALID)
+    {
+        error = ResultError("IV5 value proof", result);
+        return false;
+    }
+
+    const size_t nFixed = 4 + (vOutputs.size() * 32) + 4 + 128;
+    if (written != response.size() || written < nFixed ||
+        response[0] != static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA) ||
+        response[1] != 0 ||
+        response[2] != static_cast<uint8_t>(vOutputs.size()) ||
+        response[3] != static_cast<uint8_t>(vPseudoOuts.size()))
+    {
+        error = "non-canonical IV5 value-proof response";
+        return false;
+    }
+
+    offset = 4;
+    proof.vOutputCommitments.resize(vOutputs.size());
+    for (size_t i = 0; i < vOutputs.size(); ++i)
+    {
+        std::memcpy(proof.vOutputCommitments[i].data(), &response[offset], 32);
+        offset += 32;
+    }
+    const uint32_t nRangeProof = ReadLE32(&response[offset]);
+    offset += 4;
+    if (nRangeProof != written - nFixed)
+    {
+        proof.Clear();
+        error = "IV5 value-proof range section does not fill the response";
+        return false;
+    }
+    proof.vchRangeProof.assign(response.begin() + offset,
+                               response.begin() + offset + nRangeProof);
+    offset += nRangeProof;
+    std::memcpy(proof.balanceProof.data(), &response[offset], 64);
+    std::memcpy(proof.bindingSignature.data(), &response[offset + 64], 64);
+    return true;
 }

@@ -461,6 +461,225 @@ BOOST_AUTO_TEST_CASE(note_and_value_construction_cross_the_c_abi)
                       static_cast<size_t>(40 + rangeSize + 128));
 }
 
+// The wrappers own the request framing, so a note encrypted through the raw ABI
+// must scan back through the C++ surface with the same fields the raw scan
+// produced. Anything else means the framing drifted.
+BOOST_AUTO_TEST_CASE(cpp_note_scan_bridge_matches_the_raw_abi)
+{
+    PrivacyVNextDigest seed;
+    PrivacyVNextDigest genesis;
+    for (size_t i = 0; i < 32; ++i)
+    {
+        seed[i] = static_cast<unsigned char>(i + 1);
+        genesis[i] = static_cast<unsigned char>(0x80 + i);
+    }
+
+    PrivacyVNextDerivedKeys keys;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextKeys(seed, genesis, 11, 1, 0, keys, error), error);
+
+    uint8_t encryptRequest[INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_REQUEST_SIZE] = {0};
+    encryptRequest[0] = 1;
+    encryptRequest[2] = 1;
+    encryptRequest[4] = 11;
+    std::memcpy(encryptRequest + 8, genesis.data(), 32);
+    std::memcpy(encryptRequest + 40, keys.spendPublic.data(), 32);
+    std::memcpy(encryptRequest + 72, keys.viewPublic.data(), 32);
+    std::memcpy(encryptRequest + 104, keys.outgoingViewSecret.data(), 32);
+    encryptRequest[136] = 7;
+    PutLE64(encryptRequest + 168, 9);
+    encryptRequest[176] = 5;
+    encryptRequest[208] = 3;
+    std::memcpy(encryptRequest + 240, keys.spendPublic.data(), 32);
+
+    uint8_t encrypted[INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_RESULT_SIZE] = {0};
+    size_t encryptedWritten = 0;
+    BOOST_REQUIRE_EQUAL(
+        innova_privacy_vnext_note_encrypt(
+            encryptRequest, sizeof(encryptRequest), encrypted,
+            sizeof(encrypted), &encryptedWritten),
+        INNOVA_PRIVACY_VNEXT_VALID);
+
+    PrivacyVNextEncryptedNote note;
+    note.nOutputIndex = 11;
+    note.genesis = genesis;
+    std::memcpy(note.leafO.data(), encrypted + 8, 32);
+    std::memcpy(note.leafI.data(), encrypted + 40, 32);
+    std::memcpy(note.leafC.data(), encrypted + 72, 32);
+    std::memcpy(note.ephemeral.data(), encrypted + 104, 32);
+    note.vchCiphertext.assign(
+        encrypted + 136,
+        encrypted + 136 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE);
+
+    PrivacyVNextScannedNote full;
+    BOOST_REQUIRE_MESSAGE(
+        ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, 1, 0, note,
+                             keys.viewSecret, keys.spendSecret, full, error),
+        error);
+    BOOST_CHECK_EQUAL(full.nAmount, 9U);
+    BOOST_CHECK_EQUAL(full.nOutputIndex, 11U);
+    BOOST_CHECK_EQUAL(full.nScanKind, PRIVACY_VNEXT_SCAN_FULL);
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        full.recipientSpend.begin(), full.recipientSpend.end(),
+        keys.spendPublic.begin(), keys.spendPublic.end());
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        full.recipientView.begin(), full.recipientView.end(),
+        keys.viewPublic.begin(), keys.viewPublic.end());
+    BOOST_CHECK_EQUAL(full.y[0], 5U);
+    BOOST_CHECK_EQUAL(full.mask[0], 3U);
+
+    PrivacyVNextDigest zero;
+    zero.fill(0);
+    BOOST_CHECK(full.spendSecret != zero);
+    BOOST_CHECK(full.keyImage != zero);
+
+    // A view-only scan recovers the same amount and recipient but must leave the
+    // spend material and key image zero.
+    PrivacyVNextScannedNote viewOnly;
+    BOOST_REQUIRE_MESSAGE(
+        ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_VIEW_ONLY, 1, 0, note,
+                             keys.viewSecret, zero, viewOnly, error),
+        error);
+    BOOST_CHECK_EQUAL(viewOnly.nAmount, 9U);
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        viewOnly.recipientSpend.begin(), viewOnly.recipientSpend.end(),
+        full.recipientSpend.begin(), full.recipientSpend.end());
+    BOOST_CHECK(viewOnly.spendSecret == zero);
+    BOOST_CHECK(viewOnly.keyImage == zero);
+    BOOST_CHECK(viewOnly.mask != zero);
+    BOOST_CHECK_EQUAL_COLLECTIONS(viewOnly.y.begin(), viewOnly.y.end(),
+                                  full.y.begin(), full.y.end());
+
+    PrivacyVNextEncryptedNote outgoingNote = note;
+    outgoingNote.vchCiphertext.assign(
+        encrypted + 313,
+        encrypted + 313 + INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE);
+    PrivacyVNextScannedNote outgoing;
+    BOOST_REQUIRE_MESSAGE(
+        ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_OUTGOING, 1, 0, outgoingNote,
+                             keys.outgoingViewSecret, zero, outgoing, error),
+        error);
+    BOOST_CHECK_EQUAL(outgoing.nAmount, 9U);
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        outgoing.recipientSpend.begin(), outgoing.recipientSpend.end(),
+        full.recipientSpend.begin(), full.recipientSpend.end());
+
+    // A tampered ciphertext must fail closed and leave nothing behind.
+    PrivacyVNextEncryptedNote tampered = note;
+    tampered.vchCiphertext.back() ^= 1;
+    PrivacyVNextScannedNote rejected;
+    BOOST_CHECK(!ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, 1, 0, tampered,
+                                      keys.viewSecret, keys.spendSecret,
+                                      rejected, error));
+    BOOST_CHECK(!error.empty());
+    BOOST_CHECK_EQUAL(rejected.nAmount, 0U);
+    BOOST_CHECK(rejected.spendSecret == zero);
+    BOOST_CHECK(rejected.keyImage == zero);
+
+    // A ciphertext sized for the wrong scan kind is rejected before the ABI.
+    PrivacyVNextScannedNote mismatched;
+    BOOST_CHECK(!ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_OUTGOING, 1, 0, note,
+                                      keys.outgoingViewSecret, zero, mismatched,
+                                      error));
+    BOOST_CHECK(!error.empty());
+
+    PrivacyVNextScannedNote unknownKind;
+    BOOST_CHECK(!ScanPrivacyVNextNote(9, 1, 0, note, keys.viewSecret, zero,
+                                      unknownKind, error));
+    BOOST_CHECK(!error.empty());
+}
+
+BOOST_AUTO_TEST_CASE(cpp_value_proof_bridge_is_bounded_and_canonical)
+{
+    PrivacyVNextDigest signableHash;
+    PrivacyVNextDigest entropy;
+    PrivacyVNextDigest excessMask;
+    signableHash.fill(0x44);
+    entropy.fill(0x45);
+    // The canonical Ed25519 scalar for -3, matching the raw-ABI vector.
+    const unsigned char minusThree[32] = {
+        0xea, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58,
+        0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10
+    };
+    std::memcpy(excessMask.data(), minusThree, sizeof(minusThree));
+
+    std::vector<PrivacyVNextValueOutput> outputs(1);
+    outputs[0].nAmount = 9;
+    outputs[0].mask.fill(0);
+    outputs[0].mask[0] = 3;
+
+    PrivacyVNextValueProof proof;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(
+        ProvePrivacyVNextValue(std::vector<PrivacyVNextDigest>(), outputs, 10, 1,
+                               signableHash, entropy, excessMask, proof, error),
+        error);
+    BOOST_CHECK_EQUAL(proof.vOutputCommitments.size(), 1U);
+    BOOST_CHECK(!proof.vchRangeProof.empty());
+
+    PrivacyVNextDigest zero;
+    zero.fill(0);
+    PrivacyVNextDigest balanceHead;
+    PrivacyVNextDigest bindingHead;
+    std::memcpy(balanceHead.data(), proof.balanceProof.data(), 32);
+    std::memcpy(bindingHead.data(), proof.bindingSignature.data(), 32);
+    BOOST_CHECK(balanceHead != zero);
+    BOOST_CHECK(bindingHead != zero);
+    BOOST_CHECK(balanceHead != bindingHead);
+
+    // Proving is deterministic in the supplied entropy.
+    PrivacyVNextValueProof repeated;
+    BOOST_REQUIRE_MESSAGE(
+        ProvePrivacyVNextValue(std::vector<PrivacyVNextDigest>(), outputs, 10, 1,
+                               signableHash, entropy, excessMask, repeated,
+                               error),
+        error);
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        repeated.vchRangeProof.begin(), repeated.vchRangeProof.end(),
+        proof.vchRangeProof.begin(), proof.vchRangeProof.end());
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        repeated.vOutputCommitments[0].begin(),
+        repeated.vOutputCommitments[0].end(),
+        proof.vOutputCommitments[0].begin(),
+        proof.vOutputCommitments[0].end());
+
+    // Zero outputs is a legal shape and carries no range proof. With no value
+    // moving, the excess must be zero for the balance to hold.
+    PrivacyVNextDigest zeroExcess;
+    zeroExcess.fill(0);
+    PrivacyVNextValueProof empty;
+    BOOST_REQUIRE_MESSAGE(
+        ProvePrivacyVNextValue(std::vector<PrivacyVNextDigest>(),
+                               std::vector<PrivacyVNextValueOutput>(), 0, 0,
+                               signableHash, entropy, zeroExcess, empty, error),
+        error);
+    BOOST_CHECK(empty.vOutputCommitments.empty());
+    BOOST_CHECK(empty.vchRangeProof.empty());
+
+    // Over the declared limit the wrapper refuses before reaching the ABI.
+    std::vector<PrivacyVNextValueOutput> tooMany(
+        INNOVA_PRIVACY_VNEXT_MAX_OUTPUTS + 1);
+    PrivacyVNextValueProof overflow;
+    BOOST_CHECK(!ProvePrivacyVNextValue(std::vector<PrivacyVNextDigest>(),
+                                        tooMany, 0, 0, signableHash, entropy,
+                                        excessMask, overflow, error));
+    BOOST_CHECK(!error.empty());
+    BOOST_CHECK(overflow.vOutputCommitments.empty());
+
+    // A non-canonical mask must be rejected by the Rust side, not accepted.
+    std::vector<PrivacyVNextValueOutput> badMask(1);
+    badMask[0].nAmount = 1;
+    badMask[0].mask.fill(0xff);
+    PrivacyVNextValueProof rejected;
+    BOOST_CHECK(!ProvePrivacyVNextValue(std::vector<PrivacyVNextDigest>(),
+                                        badMask, 0, 0, signableHash, entropy,
+                                        excessMask, rejected, error));
+    BOOST_CHECK(!error.empty());
+}
+
 BOOST_AUTO_TEST_CASE(nullifier_accumulator_is_canonical_and_bounded)
 {
     PrivacyVNextEpochSeed seed;

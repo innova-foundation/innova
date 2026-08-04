@@ -190,4 +190,104 @@ bool DecodePrivacyVNextAddress(
     PrivacyVNextAddressComponents& components,
     std::string& error);
 
+static const uint8_t PRIVACY_VNEXT_SCAN_FULL = 0;
+static const uint8_t PRIVACY_VNEXT_SCAN_VIEW_ONLY = 1;
+static const uint8_t PRIVACY_VNEXT_SCAN_OUTGOING = 2;
+
+// The public part of one IV5 output, as it appears on chain.
+struct PrivacyVNextEncryptedNote
+{
+    uint32_t nOutputIndex;
+    PrivacyVNextDigest genesis;
+    PrivacyVNextDigest leafO;
+    PrivacyVNextDigest leafI;
+    PrivacyVNextDigest leafC;
+    PrivacyVNextDigest ephemeral;
+    std::vector<unsigned char> vchCiphertext;
+
+    PrivacyVNextEncryptedNote()
+        : nOutputIndex(0)
+    {
+        genesis.fill(0);
+        leafO.fill(0);
+        leafI.fill(0);
+        leafC.fill(0);
+        ephemeral.fill(0);
+    }
+};
+
+// A view-only scan leaves spendSecret and keyImage zero: it recovers the amount,
+// the recipient and the commitment openings without the authority to spend.
+struct PrivacyVNextScannedNote
+{
+    uint8_t nScanKind;
+    uint8_t nNetwork;
+    uint8_t nAddressType;
+    uint32_t nOutputIndex;
+    uint64_t nAmount;
+    PrivacyVNextDigest recipientSpend;
+    PrivacyVNextDigest recipientView;
+    PrivacyVNextDigest spendSecret;
+    PrivacyVNextDigest y;
+    PrivacyVNextDigest mask;
+    PrivacyVNextDigest keyImage;
+
+    PrivacyVNextScannedNote();
+    ~PrivacyVNextScannedNote();
+    void Clear();
+
+private:
+    PrivacyVNextScannedNote(const PrivacyVNextScannedNote&) = delete;
+    PrivacyVNextScannedNote& operator=(const PrivacyVNextScannedNote&) = delete;
+};
+
+struct PrivacyVNextValueOutput
+{
+    uint64_t nAmount;
+    PrivacyVNextDigest mask;
+
+    PrivacyVNextValueOutput()
+        : nAmount(0)
+    {
+        mask.fill(0);
+    }
+};
+
+struct PrivacyVNextValueProof
+{
+    std::vector<PrivacyVNextDigest> vOutputCommitments;
+    std::vector<unsigned char> vchRangeProof;
+    std::array<unsigned char, 64> balanceProof;
+    std::array<unsigned char, 64> bindingSignature;
+
+    PrivacyVNextValueProof();
+    void Clear();
+};
+
+// scanSecret is the view secret for a recipient scan and the outgoing view
+// secret for an outgoing one; spendMaterial is the spend secret for a full scan
+// and is ignored otherwise. Both are consumed and wiped, never retained.
+bool ScanPrivacyVNextNote(
+    uint8_t scanKind,
+    uint8_t network,
+    uint8_t addressType,
+    const PrivacyVNextEncryptedNote& note,
+    const PrivacyVNextDigest& scanSecret,
+    const PrivacyVNextDigest& spendMaterial,
+    PrivacyVNextScannedNote& scanned,
+    std::string& error);
+
+// Range, balance and binding proofs over one transaction's value flow. The Rust
+// side verifies each before returning, so a success means the proofs check.
+bool ProvePrivacyVNextValue(
+    const std::vector<PrivacyVNextDigest>& vPseudoOuts,
+    const std::vector<PrivacyVNextValueOutput>& vOutputs,
+    int64_t nTransparentValueBalance,
+    uint64_t nFee,
+    const PrivacyVNextDigest& signableHash,
+    const PrivacyVNextDigest& entropy,
+    const PrivacyVNextDigest& excessMask,
+    PrivacyVNextValueProof& proof,
+    std::string& error);
+
 #endif // INN_PRIVACY_VNEXT_FFI_H
