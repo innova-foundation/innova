@@ -10755,6 +10755,104 @@ static uint8_t PrivacyVNextNetworkId()
 
 // Notes reach the IV5 tree when their epoch finalizes, not when their block
 // connects, so a note's tree position is unknown here and is filled in later.
+static bool PrivacyVNextNoteIsSpendable(const CPrivacyVNextWalletNote& note,
+                                        int nSpendHeight)
+{
+    return !note.fSpent && note.fLeafIndexKnown && note.IsComplete() &&
+           note.nHeight > 0 &&
+           nSpendHeight - note.nHeight >= MIN_SHIELDED_SPEND_DEPTH;
+}
+
+int64_t CWallet::GetPrivacyVNextBalance() const
+{
+    LOCK(cs_shielded);
+    int nSpendHeight = 0;
+    {
+        LOCK(cs_main);
+        nSpendHeight = nBestHeight;
+    }
+    int64_t nTotal = 0;
+    for (size_t i = 0; i < vPrivacyVNextNotes.size(); ++i)
+    {
+        if (!PrivacyVNextNoteIsSpendable(vPrivacyVNextNotes[i], nSpendHeight))
+            continue;
+        if (vPrivacyVNextNotes[i].nAmount >
+            (uint64_t)std::numeric_limits<int64_t>::max() - nTotal)
+            return std::numeric_limits<int64_t>::max();
+        nTotal += (int64_t)vPrivacyVNextNotes[i].nAmount;
+    }
+    return nTotal;
+}
+
+// Everything owned and unspent that cannot be spent yet: too shallow, or still
+// waiting for the epoch that gives it a tree position.
+int64_t CWallet::GetPrivacyVNextUnconfirmedBalance() const
+{
+    LOCK(cs_shielded);
+    int nSpendHeight = 0;
+    {
+        LOCK(cs_main);
+        nSpendHeight = nBestHeight;
+    }
+    int64_t nTotal = 0;
+    for (size_t i = 0; i < vPrivacyVNextNotes.size(); ++i)
+    {
+        const CPrivacyVNextWalletNote& note = vPrivacyVNextNotes[i];
+        if (note.fSpent || !note.IsComplete())
+            continue;
+        if (PrivacyVNextNoteIsSpendable(note, nSpendHeight))
+            continue;
+        if (note.nAmount > (uint64_t)std::numeric_limits<int64_t>::max() - nTotal)
+            return std::numeric_limits<int64_t>::max();
+        nTotal += (int64_t)note.nAmount;
+    }
+    return nTotal;
+}
+
+// Largest first, so a spend reaches its target with the fewest inputs and stays
+// inside the per-proof input bound.
+bool CWallet::SelectPrivacyVNextNotes(
+    int64_t nTargetValue, int nSpendHeight,
+    std::vector<CPrivacyVNextWalletNote>& vSelected,
+    int64_t& nSelectedValue) const
+{
+    vSelected.clear();
+    nSelectedValue = 0;
+    if (nTargetValue <= 0)
+        return false;
+
+    LOCK(cs_shielded);
+    std::vector<const CPrivacyVNextWalletNote*> vCandidates;
+    for (size_t i = 0; i < vPrivacyVNextNotes.size(); ++i)
+    {
+        if (PrivacyVNextNoteIsSpendable(vPrivacyVNextNotes[i], nSpendHeight))
+            vCandidates.push_back(&vPrivacyVNextNotes[i]);
+    }
+    std::sort(vCandidates.begin(), vCandidates.end(),
+              [](const CPrivacyVNextWalletNote* a,
+                 const CPrivacyVNextWalletNote* b) {
+                  if (a->nAmount != b->nAmount)
+                      return a->nAmount > b->nAmount;
+                  if (a->txhash != b->txhash)
+                      return a->txhash < b->txhash;
+                  return a->nOutputIndex < b->nOutputIndex;
+              });
+
+    for (size_t i = 0; i < vCandidates.size(); ++i)
+    {
+        if (vSelected.size() >= PRIVACY_VNEXT_MAX_SPEND_INPUTS)
+            break;
+        vSelected.push_back(*vCandidates[i]);
+        nSelectedValue += (int64_t)vCandidates[i]->nAmount;
+        if (nSelectedValue >= nTargetValue)
+            return true;
+    }
+
+    vSelected.clear();
+    nSelectedValue = 0;
+    return false;
+}
+
 bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
                                      const CBlockIndex* pindex,
                                      std::string& strErrorOut)

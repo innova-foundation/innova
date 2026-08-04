@@ -393,4 +393,72 @@ BOOST_AUTO_TEST_CASE(coin_selection_tests)
     empty_wallet();
 }
 
+static CPrivacyVNextWalletNote MakeVNextNote(uint64_t nAmount, int nHeight,
+                                             bool fLeafKnown, unsigned char tag)
+{
+    CPrivacyVNextWalletNote note;
+    note.txhash = uint256(tag);
+    note.nOutputIndex = tag;
+    note.nHeight = nHeight;
+    note.fSpent = false;
+    note.fLeafIndexKnown = fLeafKnown;
+    note.nAmount = nAmount;
+    note.nLeafIndex = tag;
+    note.vchOwner.assign(32, tag);
+    note.vchNullifierBase.assign(32, tag);
+    note.vchCommitment.assign(32, tag);
+    note.vchSpendSecret.assign(32, tag);
+    note.vchY.assign(32, tag);
+    note.vchMask.assign(32, tag);
+    note.vchKeyImage.assign(32, tag);
+    return note;
+}
+
+// A note is only spendable once it is deep enough and its epoch has given it a
+// tree position. Selection must respect both, and never exceed the input bound.
+BOOST_AUTO_TEST_CASE(privacy_vnext_selection_honours_depth_position_and_bound)
+{
+    CWallet wallet;
+    const int nSpendHeight = 1000;
+    const int nDeep = nSpendHeight - MIN_SHIELDED_SPEND_DEPTH;
+
+    wallet.vPrivacyVNextNotes.push_back(MakeVNextNote(50, nDeep, true, 1));
+    wallet.vPrivacyVNextNotes.push_back(MakeVNextNote(30, nDeep, true, 2));
+    wallet.vPrivacyVNextNotes.push_back(MakeVNextNote(90, nSpendHeight, true, 3));
+    wallet.vPrivacyVNextNotes.push_back(MakeVNextNote(80, nDeep, false, 4));
+    CPrivacyVNextWalletNote spent = MakeVNextNote(70, nDeep, true, 5);
+    spent.fSpent = true;
+    wallet.vPrivacyVNextNotes.push_back(spent);
+
+    std::vector<CPrivacyVNextWalletNote> vSelected;
+    int64_t nValue = 0;
+
+    // Largest spendable first: 50 alone covers 40.
+    BOOST_REQUIRE(wallet.SelectPrivacyVNextNotes(40, nSpendHeight, vSelected, nValue));
+    BOOST_CHECK_EQUAL(vSelected.size(), 1U);
+    BOOST_CHECK_EQUAL(vSelected[0].nAmount, 50U);
+    BOOST_CHECK_EQUAL(nValue, 50);
+
+    // 80 is spendable but has no tree position, 90 is too shallow, 70 is spent,
+    // so only 50 + 30 are available and 100 cannot be reached.
+    BOOST_CHECK(wallet.SelectPrivacyVNextNotes(80, nSpendHeight, vSelected, nValue));
+    BOOST_CHECK_EQUAL(vSelected.size(), 2U);
+    BOOST_CHECK_EQUAL(nValue, 80);
+    BOOST_CHECK(!wallet.SelectPrivacyVNextNotes(100, nSpendHeight, vSelected, nValue));
+    BOOST_CHECK(vSelected.empty());
+    BOOST_CHECK_EQUAL(nValue, 0);
+
+    BOOST_CHECK(!wallet.SelectPrivacyVNextNotes(0, nSpendHeight, vSelected, nValue));
+    BOOST_CHECK(!wallet.SelectPrivacyVNextNotes(-1, nSpendHeight, vSelected, nValue));
+
+    // A spend cannot carry more inputs than one proof admits.
+    CWallet many;
+    for (unsigned char i = 0; i < 20; ++i)
+        many.vPrivacyVNextNotes.push_back(MakeVNextNote(1, nDeep, true, i + 1));
+    BOOST_CHECK(!many.SelectPrivacyVNextNotes(20, nSpendHeight, vSelected, nValue));
+    BOOST_REQUIRE(many.SelectPrivacyVNextNotes(16, nSpendHeight, vSelected, nValue));
+    BOOST_CHECK_EQUAL(vSelected.size(), PRIVACY_VNEXT_MAX_SPEND_INPUTS);
+    BOOST_CHECK_EQUAL(nValue, 16);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

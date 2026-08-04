@@ -15,6 +15,9 @@ static const size_t PRIVACY_VNEXT_WALLET_SEED_CIPHERTEXT_SIZE = 64;
 
 // Wallet-local only. This record is never serialized into transactions,
 // blocks, hashes, P2P messages, or consensus state.
+// Matches the per-proof input bound the IV5 ABI declares.
+static const size_t PRIVACY_VNEXT_MAX_SPEND_INPUTS = 16;
+
 // One IV5 output this wallet owns. Every secret here derives from the wallet
 // seed, so the note carries them rather than re-deriving on every spend.
 struct CPrivacyVNextWalletNote

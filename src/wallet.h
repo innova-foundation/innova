@@ -270,6 +270,13 @@ public:
     bool DisconnectPrivacyVNextBlock(const CBlock& block,
                                      const CBlockIndex* pindex,
                                      std::string& strErrorOut);
+    // Spendable means confirmed to the shielded depth and holding a tree
+    // position, which a note only gains once its epoch finalizes.
+    int64_t GetPrivacyVNextBalance() const;
+    int64_t GetPrivacyVNextUnconfirmedBalance() const;
+    bool SelectPrivacyVNextNotes(int64_t nTargetValue, int nSpendHeight,
+                                 std::vector<CPrivacyVNextWalletNote>& vSelected,
+                                 int64_t& nSelectedValue) const;
 
     std::map<uint256, CColdStakeDelegation> mapColdStakeDelegations;  // hashOwner -> delegation
     bool AddColdStakeDelegation(const CColdStakeDelegation& deleg);
