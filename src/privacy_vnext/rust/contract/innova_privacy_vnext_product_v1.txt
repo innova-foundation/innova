@@ -3,6 +3,6 @@ status: non-consensus; transaction-version-2008-inactive
 normative-contract: ../contract/iv5_protocol_v1.json
 parameter-digest-input: exact bytes of iv5_protocol_v1.json
 activation-policy: an ABI entry point does not activate consensus; consensus-capabilities is authoritative
-implemented-capabilities: exact contract export, proof-size calculation, tree update/root, address codec, and key derivation
+implemented-capabilities: exact contract export, proof-size calculation, FCMP proving and verification, tree update/root/witness, payload validation and state effects, address codec, key derivation, note scanning and encryption, value proving, and nullifier accumulation
 prove-status: unsupported
 verify-status: unsupported

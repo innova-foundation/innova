@@ -26,7 +26,8 @@ Pinned inputs:
 `innova_privacy_vnext_parameter_digest` is SHA-256 of the exact bytes of
 `contract/iv5_protocol_v1.json`. It identifies the normative typed protocol;
 it is not an activation digest and must not be interpreted as making version
-2008 consensus-valid. Proving and verification remain unsupported.
+2008 consensus-valid. Proving and verification are implemented but reach no
+consensus path: `consensus_capabilities` is zero on every network.
 
 `innova_privacy_vnext_fcmp_proof_size` calls the pinned upstream
 `FcmpPlusPlus::proof_size` implementation. It accepts only 1 through 16 inputs

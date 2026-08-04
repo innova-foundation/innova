@@ -57,7 +57,7 @@
     "algorithm": "SHA-256",
     "available": true,
     "compatibility_summary_path": "contract/innova_privacy_vnext_product_v1.txt",
-    "compatibility_summary_sha256": "6bd0af00a522df073d5f54a15b6a3a79689d5e1e610e0ed527f704dd9240b815",
+    "compatibility_summary_sha256": "aec6b77212eb579a18ba02f56cf92f2c55a8291faceace9513133ddda91d1be3",
     "contract_path": "../contract/iv5_protocol_v1.json",
     "contract_sha256": "7ef260f5a5464b90c7c547b4ed4932cd9d5aeb39418e240e3da752df999db305",
     "scope": "normative inactive IV5 protocol contract; not activation"
