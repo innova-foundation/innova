@@ -10893,24 +10893,13 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
         if (!tx.IsPrivacyVNext() || !tx.privacyVNext.IsPresent())
             continue;
 
-        PrivacyVNextStateEffects effects;
-        const PrivacyVNextPayloadValidation validation =
-            ExtractPrivacyVNextPayloadEffects((uint32_t)tx.nVersion,
-                                              tx.privacyVNext.vchPayload,
-                                              effects);
-        if (!validation.IsValid())
-        {
-            strErrorOut = "connected block carries an IV5 payload the wallet "
-                          "cannot revalidate: " + validation.strError;
-            return false;
-        }
-
         std::vector<PrivacyVNextScanMatch> vMatches;
+        std::vector<PrivacyVNextDigest> vKeyImages;
         std::string strScanError;
         if (!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, nNetwork, 0,
                                      (uint32_t)tx.nVersion,
                                      tx.privacyVNext.vchPayload, keys.viewSecret,
-                                     keys.spendSecret, effects, vMatches,
+                                     keys.spendSecret, vMatches, vKeyImages,
                                      strScanError))
         {
             strErrorOut = "IV5 wallet scan failed: " + strScanError;
@@ -10960,7 +10949,7 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
             vNewNotes.push_back(note);
         }
 
-        for (size_t k = 0; k < effects.keyImages.size(); ++k)
+        for (size_t k = 0; k < vKeyImages.size(); ++k)
         {
             for (size_t n = 0; n < vPrivacyVNextNotes.size(); ++n)
             {
@@ -10968,7 +10957,7 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
                     vPrivacyVNextNotes[n].vchKeyImage.size() != 32)
                     continue;
                 if (std::memcmp(&vPrivacyVNextNotes[n].vchKeyImage[0],
-                                effects.keyImages[k].data(), 32) != 0)
+                                vKeyImages[k].data(), 32) != 0)
                     continue;
                 if (std::find(vSpentIndices.begin(), vSpentIndices.end(), n) ==
                     vSpentIndices.end())
@@ -11045,21 +11034,25 @@ bool CWallet::DisconnectPrivacyVNextBlock(const CBlock& block,
             continue;
         setBlockTxHashes.insert(tx.GetHash());
 
-        PrivacyVNextStateEffects effects;
-        const PrivacyVNextPayloadValidation validation =
-            ExtractPrivacyVNextPayloadEffects((uint32_t)tx.nVersion,
-                                              tx.privacyVNext.vchPayload,
-                                              effects);
-        if (!validation.IsValid())
+        std::vector<PrivacyVNextScanMatch> vIgnored;
+        std::vector<PrivacyVNextDigest> vKeyImages;
+        PrivacyVNextDigest zero;
+        zero.fill(0);
+        std::string strScanError;
+        if (!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_VIEW_ONLY,
+                                     PrivacyVNextNetworkId(), 0,
+                                     (uint32_t)tx.nVersion,
+                                     tx.privacyVNext.vchPayload, zero, zero,
+                                     vIgnored, vKeyImages, strScanError))
         {
-            strErrorOut = "disconnected block carries an IV5 payload the wallet "
-                          "cannot revalidate: " + validation.strError;
+            strErrorOut = "IV5 wallet disconnect could not read a payload: " +
+                          strScanError;
             return false;
         }
-        for (size_t k = 0; k < effects.keyImages.size(); ++k)
+        for (size_t k = 0; k < vKeyImages.size(); ++k)
             vSpentKeyImages.push_back(
-                std::vector<unsigned char>(effects.keyImages[k].begin(),
-                                           effects.keyImages[k].end()));
+                std::vector<unsigned char>(vKeyImages[k].begin(),
+                                           vKeyImages[k].end()));
     }
 
     std::set<size_t> setCreated;

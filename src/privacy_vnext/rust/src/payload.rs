@@ -198,8 +198,38 @@ fn signable_hash(wire_version: u32, payload_prefix: &[u8]) -> [u8; 32] {
     transcript.finalize().into()
 }
 
+/// Everything a canonical payload declares before its disclosures and proofs.
+struct PayloadPrefix<'a> {
+    cursor: Cursor<'a>,
+    operation: u8,
+    disclosure_mask: u8,
+    finality_object: u8,
+    network: u8,
+    genesis: [u8; 32],
+    parameter_digest: [u8; 32],
+    finalized_root: [u8; 32],
+    finalized_tree_size: u64,
+    transparent_value_balance: i64,
+    fee: u64,
+    pseudo_outs: Vec<[u8; 32]>,
+    key_images: Vec<[u8; 32]>,
+    output_owners: Vec<[u8; 32]>,
+    output_nullifier_bases: Vec<[u8; 32]>,
+    output_commitments: Vec<[u8; 32]>,
+    output_ephemeral_keys: Vec<[u8; 32]>,
+    output_recipient_ciphertexts: Vec<Vec<u8>>,
+    output_outgoing_ciphertexts: Vec<Vec<u8>>,
+}
+
+/// Read the header, inputs and outputs of a canonical payload.
+///
+/// Validation and wallet scanning share this, so a payload is never decoded two
+/// different ways and a scan cannot disagree with what consensus accepted.
 #[allow(clippy::too_many_lines)] // Mirrors the normative payload field order in one audit path.
-fn validate_payload(wire_version: u32, payload: &[u8]) -> Result<PayloadEffects, ResultCode> {
+fn parse_payload_prefix(
+    wire_version: u32,
+    payload: &[u8],
+) -> Result<PayloadPrefix<'_>, ResultCode> {
     let mut cursor = Cursor::new(payload);
     if cursor.u16()? != PAYLOAD_SCHEMA_U16 {
         return Err(ResultCode::UnsupportedFormat);
@@ -266,6 +296,8 @@ fn validate_payload(wire_version: u32, payload: &[u8]) -> Result<PayloadEffects,
     let mut output_nullifier_bases = Vec::with_capacity(output_count);
     let mut output_commitments = Vec::with_capacity(output_count);
     let mut output_ephemeral_keys = Vec::with_capacity(output_count);
+    let mut output_recipient_ciphertexts = Vec::with_capacity(output_count);
+    let mut output_outgoing_ciphertexts = Vec::with_capacity(output_count);
     for _ in 0..output_count {
         let owner = cursor.array()?;
         validate_ed25519_point(owner)?;
@@ -279,12 +311,63 @@ fn validate_payload(wire_version: u32, payload: &[u8]) -> Result<PayloadEffects,
         let ephemeral = cursor.array()?;
         validate_ed25519_point(ephemeral)?;
         output_ephemeral_keys.push(ephemeral);
-        if cursor.vector(MAX_CIPHERTEXT_BYTES)?.is_empty()
-            || cursor.vector(MAX_CIPHERTEXT_BYTES)?.is_empty()
-        {
+        let recipient_ciphertext = cursor.vector(MAX_CIPHERTEXT_BYTES)?.to_vec();
+        let outgoing_ciphertext = cursor.vector(MAX_CIPHERTEXT_BYTES)?.to_vec();
+        if recipient_ciphertext.is_empty() || outgoing_ciphertext.is_empty() {
             return Err(ResultCode::ConsensusInvalid);
         }
+        output_recipient_ciphertexts.push(recipient_ciphertext);
+        output_outgoing_ciphertexts.push(outgoing_ciphertext);
     }
+
+    Ok(PayloadPrefix {
+        cursor,
+        operation,
+        disclosure_mask,
+        finality_object,
+        network,
+        genesis,
+        parameter_digest,
+        finalized_root,
+        finalized_tree_size,
+        transparent_value_balance,
+        fee,
+        pseudo_outs,
+        key_images,
+        output_owners,
+        output_nullifier_bases,
+        output_commitments,
+        output_ephemeral_keys,
+        output_recipient_ciphertexts,
+        output_outgoing_ciphertexts,
+    })
+}
+
+#[allow(clippy::too_many_lines)] // Mirrors the normative payload field order in one audit path.
+fn validate_payload(wire_version: u32, payload: &[u8]) -> Result<PayloadEffects, ResultCode> {
+    let PayloadPrefix {
+        mut cursor,
+        operation,
+        disclosure_mask,
+        finality_object,
+        network,
+        genesis,
+        parameter_digest,
+        finalized_root,
+        finalized_tree_size,
+        transparent_value_balance,
+        fee,
+        pseudo_outs,
+        key_images,
+        output_owners,
+        output_nullifier_bases,
+        output_commitments,
+        output_ephemeral_keys,
+        ..
+    } = parse_payload_prefix(wire_version, payload)?;
+    let _ = (operation, network, genesis);
+    let input_count = key_images.len();
+    let output_count = output_owners.len();
 
     let mut sender_authorities = Vec::new();
     if disclosure_mask & 1 == 0 {
@@ -484,101 +567,6 @@ const NOTE_SCAN_RESULT_BYTES: usize = 212;
 const SCAN_RECORD_BYTES: usize = 4 + 96 + NOTE_SCAN_RESULT_BYTES;
 const SCAN_OUTGOING: u8 = 2;
 
-struct ScannableOutput {
-    owner: [u8; 32],
-    nullifier_base: [u8; 32],
-    commitment: [u8; 32],
-    ephemeral: [u8; 32],
-    recipient_ciphertext: Vec<u8>,
-    outgoing_ciphertext: Vec<u8>,
-}
-
-/// Read the header, inputs and outputs of a canonical payload.
-///
-/// This is a structural read for wallet scanning only: it stops at the outputs and
-/// verifies no proof. Results are meaningful only for a payload consensus already
-/// accepted, and each opened note is authenticated by its own tag.
-fn read_scannable_outputs(
-    wire_version: u32,
-    payload: &[u8],
-    expected_network: u8,
-) -> Result<(u8, [u8; 32], Vec<ScannableOutput>), ResultCode> {
-    let mut cursor = Cursor::new(payload);
-    if cursor.u16()? != PAYLOAD_SCHEMA_U16 {
-        return Err(ResultCode::UnsupportedFormat);
-    }
-    let operation = cursor.u8()?;
-    let profile = cursor.u8()?;
-    let authorization = cursor.u8()?;
-    let disclosure_mask = cursor.u8()?;
-    let finality_object = cursor.u8()?;
-    let network = cursor.u8()?;
-    if cursor.u8()? != 0 {
-        return Err(ResultCode::ConsensusInvalid);
-    }
-    if network != expected_network
-        || network > NETWORK_ID_MAX
-        || authorization > AUTH_M_OF_N_HIDDEN_SIGNERS
-        || !envelope_allows(
-            wire_version,
-            operation,
-            profile,
-            authorization,
-            finality_object,
-            disclosure_mask,
-        )
-    {
-        return Err(ResultCode::ConsensusInvalid);
-    }
-
-    let genesis = cursor.array::<32>()?;
-    validate_nonzero(&genesis)?;
-    let parameter_digest = cursor.array::<32>()?;
-    if parameter_digest.as_slice() != &Sha256::digest(PRODUCT_CONTRACT)[..] {
-        return Err(ResultCode::ConsensusInvalid);
-    }
-    let finalized_root = cursor.array::<32>()?;
-    validate_helios_point(finalized_root)?;
-    if cursor.u64()? > TREE_CAPACITY {
-        return Err(ResultCode::ResourceLimit);
-    }
-    let _transparent_value_balance = cursor.i64()?;
-    let _fee = cursor.u64()?;
-
-    let input_count = bounded_count(&mut cursor, MAX_INPUTS)?;
-    for _ in 0..input_count {
-        validate_ed25519_point(cursor.array()?)?;
-        validate_ed25519_point(cursor.array()?)?;
-    }
-
-    let output_count = bounded_count(&mut cursor, MAX_OUTPUTS)?;
-    let mut outputs = Vec::with_capacity(output_count);
-    for _ in 0..output_count {
-        let owner = cursor.array()?;
-        validate_ed25519_point(owner)?;
-        let nullifier_base = cursor.array()?;
-        validate_ed25519_point(nullifier_base)?;
-        let commitment = cursor.array()?;
-        validate_ed25519_point(commitment)?;
-        let ephemeral = cursor.array()?;
-        validate_ed25519_point(ephemeral)?;
-        let recipient_ciphertext = cursor.vector(MAX_CIPHERTEXT_BYTES)?.to_vec();
-        let outgoing_ciphertext = cursor.vector(MAX_CIPHERTEXT_BYTES)?.to_vec();
-        if recipient_ciphertext.is_empty() || outgoing_ciphertext.is_empty() {
-            return Err(ResultCode::ConsensusInvalid);
-        }
-        outputs.push(ScannableOutput {
-            owner,
-            nullifier_base,
-            commitment,
-            ephemeral,
-            recipient_ciphertext,
-            outgoing_ciphertext,
-        });
-    }
-    Ok((network, genesis, outputs))
-}
-
 /// Try every output of one payload with the caller's scanning material, emitting
 /// the matched leaf so the caller can check it against the consensus leaf.
 pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
@@ -606,20 +594,20 @@ pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
             .map_err(|_| ResultCode::BadLength)?,
     );
 
-    let (_, genesis, outputs) =
-        read_scannable_outputs(wire_version, &request[SCAN_REQUEST_PREFIX_BYTES..], network)?;
+    let prefix = parse_payload_prefix(wire_version, &request[SCAN_REQUEST_PREFIX_BYTES..])?;
+    if prefix.network != network {
+        return Err(ResultCode::ConsensusInvalid);
+    }
 
-    let mut result = Vec::new();
-    result.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
-    result.push(0);
-    result.push(0);
-
+    let key_image_count =
+        u8::try_from(prefix.key_images.len()).map_err(|_| ResultCode::ResourceLimit)?;
+    let mut records = Vec::new();
     let mut matches: u8 = 0;
-    for (index, output) in outputs.iter().enumerate() {
+    for index in 0..prefix.output_owners.len() {
         let ciphertext = if scan_kind == SCAN_OUTGOING {
-            &output.outgoing_ciphertext
+            &prefix.output_outgoing_ciphertexts[index]
         } else {
-            &output.recipient_ciphertext
+            &prefix.output_recipient_ciphertexts[index]
         };
         let output_index = u32::try_from(index).map_err(|_| ResultCode::ResourceLimit)?;
 
@@ -630,13 +618,13 @@ pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         scan_request.push(address_type);
         scan_request.extend_from_slice(&[0_u8; 3]);
         scan_request.extend_from_slice(&output_index.to_le_bytes());
-        scan_request.extend_from_slice(&genesis);
+        scan_request.extend_from_slice(&prefix.genesis);
         scan_request.extend_from_slice(&request[12..44]);
         scan_request.extend_from_slice(&request[44..76]);
-        scan_request.extend_from_slice(&output.owner);
-        scan_request.extend_from_slice(&output.nullifier_base);
-        scan_request.extend_from_slice(&output.commitment);
-        scan_request.extend_from_slice(&output.ephemeral);
+        scan_request.extend_from_slice(&prefix.output_owners[index]);
+        scan_request.extend_from_slice(&prefix.output_nullifier_bases[index]);
+        scan_request.extend_from_slice(&prefix.output_commitments[index]);
+        scan_request.extend_from_slice(&prefix.output_ephemeral_keys[index]);
         scan_request.extend_from_slice(ciphertext);
 
         // A tag mismatch means the note is not ours, which is the common case and not
@@ -657,16 +645,25 @@ pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
             return Err(ResultCode::InternalLocalStateFailure);
         }
 
-        result.extend_from_slice(&output_index.to_le_bytes());
-        result.extend_from_slice(&output.owner);
-        result.extend_from_slice(&output.nullifier_base);
-        result.extend_from_slice(&output.commitment);
-        result.extend_from_slice(&scanned);
+        records.extend_from_slice(&output_index.to_le_bytes());
+        records.extend_from_slice(&prefix.output_owners[index]);
+        records.extend_from_slice(&prefix.output_nullifier_bases[index]);
+        records.extend_from_slice(&prefix.output_commitments[index]);
+        records.extend_from_slice(&scanned);
         matches = matches.checked_add(1).ok_or(ResultCode::ResourceLimit)?;
     }
 
-    result[2] = matches;
-    if result.len() != 4 + (usize::from(matches) * SCAN_RECORD_BYTES) {
+    let mut result = Vec::new();
+    result.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+    result.push(matches);
+    result.push(key_image_count);
+    for key_image in &prefix.key_images {
+        result.extend_from_slice(key_image);
+    }
+    result.extend_from_slice(&records);
+    if result.len()
+        != 4 + (usize::from(key_image_count) * 32) + (usize::from(matches) * SCAN_RECORD_BYTES)
+    {
         return Err(ResultCode::InternalLocalStateFailure);
     }
     Ok(result)
@@ -820,7 +817,7 @@ mod tests {
         payload.extend_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
         payload.extend_from_slice(&root[12..44]);
         payload.extend_from_slice(&0_u64.to_le_bytes());
-        payload.extend_from_slice(&10_i64.to_le_bytes());
+        payload.extend_from_slice(&100_i64.to_le_bytes());
         payload.extend_from_slice(&1_u64.to_le_bytes());
         compact_size(&mut payload, 0);
         compact_size(&mut payload, 1);
@@ -865,7 +862,7 @@ mod tests {
             PAYLOAD_SCHEMA_U16
         );
         assert_eq!(scanned[2], 1);
-        assert_eq!(scanned[3], 0);
+        assert_eq!(scanned[3], 0, "a shield carries no key images");
         assert_eq!(scanned.len(), 4 + SCAN_RECORD_BYTES);
 
         let record = &scanned[4..];
@@ -888,6 +885,65 @@ mod tests {
             .expect("a foreign scan is empty, not an error");
         assert_eq!(missed[2], 0);
         assert_eq!(missed.len(), 4);
+    }
+
+    // The leaves a scan reports must equal the leaves validation derives from the same
+    // payload (single decode path).
+    #[test]
+    fn scanning_and_validation_agree_on_the_same_payload() {
+        let genesis = [0x11_u8; 32];
+        let (encrypted, spend_secret, view_secret) = encrypted_output(&genesis, 0);
+        let mut payload = payload_with_output(&genesis, &encrypted);
+
+        let output_mask = Scalar::from(19_u64).to_bytes();
+        let output_commitment = value::commitment(99, &output_mask).expect("valid commitment");
+        vector(&mut payload, &[]);
+        let signing_hash = signable_hash(2008, &payload);
+        let (range_commitments, range_proof) =
+            value::prove_range(&[99], &[output_mask], &[0x41; 32]).expect("valid range proof");
+        assert_eq!(range_commitments, vec![output_commitment]);
+        let excess = (-Scalar::from(19_u64)).to_bytes();
+        let balance_proof = value::prove_balance(
+            &[],
+            &[output_commitment],
+            100,
+            1,
+            &excess,
+            &signing_hash,
+            &[0x42; 32],
+        )
+        .expect("valid balance proof");
+        let binding_signature = value::prove_binding_signature(
+            &[],
+            &[output_commitment],
+            100,
+            1,
+            &excess,
+            &signing_hash,
+            &[0x43; 32],
+        )
+        .expect("valid binding signature");
+        vector(&mut payload, &[]);
+        vector(&mut payload, &range_proof);
+        vector(&mut payload, &balance_proof);
+        vector(&mut payload, &[]);
+        vector(&mut payload, &[]);
+        vector(&mut payload, &binding_signature);
+
+        let mut request = 2008_u32.to_le_bytes().to_vec();
+        request.extend_from_slice(&payload);
+        let encoded = effects(&request).expect("the payload must validate");
+
+        let scanned = scan_outputs(&scan_request(0, &view_secret, &spend_secret, &payload))
+            .expect("the same payload must scan");
+        assert_eq!(scanned[2], 1);
+        assert_eq!(scanned[3], 0);
+
+        // The validated effects carry the leaf after its 76-byte header and no key
+        // images, so the scan's leaf must be byte-identical to it.
+        let validated_leaf = &encoded[EFFECTS_HEADER_BYTES..EFFECTS_HEADER_BYTES + 96];
+        let scanned_leaf = &scanned[8..104];
+        assert_eq!(validated_leaf, scanned_leaf);
     }
 
     #[test]

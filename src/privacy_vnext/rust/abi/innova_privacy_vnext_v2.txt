@@ -229,11 +229,11 @@ payload-scan-request:
   scan-secret: the view secret for a recipient scan and the outgoing view secret for an outgoing one
   spend-material: the spend secret for a full scan, ignored otherwise
 payload-scan-response:
-  fields: schema-u16-le, match-count-u8, reserved-zero-u8, per-match-records
+  fields: schema-u16-le, match-count-u8, key-image-count-u8, key-images-32-each, per-match-records
   record-fields: output-index-u32-le, matched-O-I-C-96, note-scan-result-212
-  behavior: structural read of the header, inputs and outputs only; no proof is verified, so results are meaningful only for a payload consensus has accepted
+  behavior: reads the header, inputs and outputs with the same decoder validation uses, and verifies no proof; results are meaningful only for a payload consensus has accepted
+  key-images: every key image the payload spends, so a caller can retire its own notes without a second decode
   authentication: every opened note is authenticated by its own tag before decryption, so an output that is not the caller's is skipped rather than reported
-  caller-obligation: require each record's matched leaf to equal the leaf the validated state effects carry at the same output index
 payload-effects-response:
   header-exact-size: 76
   header-fields: schema-u16-le, input-count-u8, output-count-u8, finalized-root-32, finalized-tree-size-u64-le, parameter-digest-32

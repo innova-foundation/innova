@@ -277,8 +277,7 @@ bool ScanPrivacyVNextNote(
     PrivacyVNextScannedNote& scanned,
     std::string& error);
 
-// One output this wallet owns. The leaf is the one the scan matched, held against
-// the leaf consensus recorded at the same index before the note is trusted.
+// One output this wallet owns, with the leaf it was matched against.
 struct PrivacyVNextScanMatch
 {
     uint32_t nOutputIndex;
@@ -302,9 +301,8 @@ private:
     PrivacyVNextScanMatch& operator=(const PrivacyVNextScanMatch&) = delete;
 };
 
-// Finds the outputs of one payload that open with the supplied material. The scan
-// reads the payload separately from the validating decoder, so every match is held
-// against the validated effects at the same index and a disagreement fails closed.
+// Outputs of one payload that open with the supplied material, plus its key images.
+// Uses the consensus decoder and verifies no proof.
 bool ScanPrivacyVNextPayload(
     uint8_t scanKind,
     uint8_t network,
@@ -313,8 +311,8 @@ bool ScanPrivacyVNextPayload(
     const std::vector<unsigned char>& payload,
     const PrivacyVNextDigest& scanSecret,
     const PrivacyVNextDigest& spendMaterial,
-    const PrivacyVNextStateEffects& effects,
     std::vector<PrivacyVNextScanMatch>& matches,
+    std::vector<PrivacyVNextDigest>& keyImages,
     std::string& error);
 
 // Range, balance and binding proofs over one transaction's value flow. The Rust

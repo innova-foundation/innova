@@ -999,11 +999,12 @@ bool ScanPrivacyVNextPayload(
     const std::vector<unsigned char>& payload,
     const PrivacyVNextDigest& scanSecret,
     const PrivacyVNextDigest& spendMaterial,
-    const PrivacyVNextStateEffects& effects,
     std::vector<PrivacyVNextScanMatch>& matches,
+    std::vector<PrivacyVNextDigest>& keyImages,
     std::string& error)
 {
     matches.clear();
+    keyImages.clear();
     error.clear();
 
     if (payload.empty())
@@ -1049,20 +1050,26 @@ bool ScanPrivacyVNextPayload(
     }
 
     const size_t nMatches = response[2];
+    const size_t nKeyImages = response[3];
     if (written != response.size() ||
         response[0] != static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA) ||
-        response[1] != 0 || response[3] != 0 ||
-        written != 4 + (nMatches * nRecordSize))
+        response[1] != 0 ||
+        written != 4 + (nKeyImages * 32) + (nMatches * nRecordSize))
     {
         OPENSSL_cleanse(&response[0], response.size());
         error = "non-canonical IV5 payload-scan response";
         return false;
     }
 
+    keyImages.resize(nKeyImages);
+    for (size_t i = 0; i < nKeyImages; ++i)
+        std::memcpy(keyImages[i].data(), &response[4 + (i * 32)], 32);
+
+    const size_t nRecordBase = 4 + (nKeyImages * 32);
     matches.reserve(nMatches);
     for (size_t i = 0; i < nMatches; ++i)
     {
-        const uint8_t* record = &response[4 + (i * nRecordSize)];
+        const uint8_t* record = &response[nRecordBase + (i * nRecordSize)];
         PrivacyVNextScanMatch match;
         match.nOutputIndex = ReadLE32(record);
         std::memcpy(match.leaf.owner.data(), record + 4, 32);
@@ -1086,26 +1093,6 @@ bool ScanPrivacyVNextPayload(
         std::memcpy(match.y.data(), scanned + 116, 32);
         std::memcpy(match.mask.data(), scanned + 148, 32);
         std::memcpy(match.keyImage.data(), scanned + 180, 32);
-
-        // The scan reads the payload separately from the validating decoder. Requiring
-        // the matched leaf to equal the validated one keeps a divergence between the
-        // two from assigning a note to the wrong tree position.
-        if (match.nOutputIndex >= effects.outputLeaves.size())
-        {
-            OPENSSL_cleanse(&response[0], response.size());
-            error = "IV5 scan matched an output the validated effects do not carry";
-            return false;
-        }
-        const PrivacyVNextOutputLeaf& expected =
-            effects.outputLeaves[match.nOutputIndex];
-        if (match.leaf.owner != expected.owner ||
-            match.leaf.nullifierBase != expected.nullifierBase ||
-            match.leaf.commitment != expected.commitment)
-        {
-            OPENSSL_cleanse(&response[0], response.size());
-            error = "IV5 scan leaf disagrees with the validated payload effects";
-            return false;
-        }
 
         for (size_t seen = 0; seen < matches.size(); ++seen)
         {

@@ -727,28 +727,27 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
     payload.insert(payload.end(), encrypted + 313,
                    encrypted + 313 + INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE);
 
-    PrivacyVNextStateEffects effects;
-    effects.outputLeaves.resize(1);
-    std::memcpy(effects.outputLeaves[0].owner.data(), encrypted + 8, 32);
-    std::memcpy(effects.outputLeaves[0].nullifierBase.data(), encrypted + 40, 32);
-    std::memcpy(effects.outputLeaves[0].commitment.data(), encrypted + 72, 32);
-
     std::vector<PrivacyVNextScanMatch> matches;
+    std::vector<PrivacyVNextDigest> keyImages;
     BOOST_REQUIRE_MESSAGE(
         ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008, payload,
-                                keys.viewSecret, keys.spendSecret, effects,
-                                matches, error),
+                                keys.viewSecret, keys.spendSecret, matches,
+                                keyImages, error),
         error);
     BOOST_REQUIRE_EQUAL(matches.size(), 1U);
+    BOOST_CHECK(keyImages.empty());
     BOOST_CHECK_EQUAL(matches[0].nOutputIndex, 0U);
     BOOST_CHECK_EQUAL(matches[0].nAmount, 99U);
     BOOST_CHECK_EQUAL_COLLECTIONS(
         matches[0].recipientSpend.begin(), matches[0].recipientSpend.end(),
         keys.spendPublic.begin(), keys.spendPublic.end());
-    BOOST_CHECK_EQUAL_COLLECTIONS(
-        matches[0].leaf.owner.begin(), matches[0].leaf.owner.end(),
-        effects.outputLeaves[0].owner.begin(),
-        effects.outputLeaves[0].owner.end());
+    // The leaf reported is the leaf the payload carries.
+    BOOST_CHECK_EQUAL_COLLECTIONS(matches[0].leaf.owner.begin(),
+                                  matches[0].leaf.owner.end(),
+                                  encrypted + 8, encrypted + 40);
+    BOOST_CHECK_EQUAL_COLLECTIONS(matches[0].leaf.commitment.begin(),
+                                  matches[0].leaf.commitment.end(),
+                                  encrypted + 72, encrypted + 104);
 
     PrivacyVNextDigest zero;
     zero.fill(0);
@@ -757,9 +756,11 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
 
     // A view-only scan opens the same note without the spend material.
     std::vector<PrivacyVNextScanMatch> viewOnly;
+    std::vector<PrivacyVNextDigest> viewKeyImages;
     BOOST_REQUIRE_MESSAGE(
         ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_VIEW_ONLY, 1, 0, 2008, payload,
-                                keys.viewSecret, zero, effects, viewOnly, error),
+                                keys.viewSecret, zero, viewOnly, viewKeyImages,
+                                error),
         error);
     BOOST_REQUIRE_EQUAL(viewOnly.size(), 1U);
     BOOST_CHECK_EQUAL(viewOnly[0].nAmount, 99U);
@@ -773,40 +774,29 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
     BOOST_REQUIRE_MESSAGE(
         DerivePrivacyVNextKeys(otherSeed, genesis, 0, 1, 0, stranger, error), error);
     std::vector<PrivacyVNextScanMatch> missed;
+    std::vector<PrivacyVNextDigest> missedKeyImages;
     BOOST_REQUIRE_MESSAGE(
         ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008, payload,
                                 stranger.viewSecret, stranger.spendSecret,
-                                effects, missed, error),
+                                missed, missedKeyImages, error),
         error);
     BOOST_CHECK(missed.empty());
 
-    // The scan reads the payload separately from the validating decoder, so a leaf
-    // that disagrees with the validated effects must fail closed.
-    PrivacyVNextStateEffects tampered;
-    tampered.outputLeaves = effects.outputLeaves;
-    tampered.outputLeaves[0].commitment[0] ^= 1;
-    std::vector<PrivacyVNextScanMatch> rejected;
-    BOOST_CHECK(!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008,
+    // A payload declaring another network is not this wallet's scan context.
+    std::vector<PrivacyVNextScanMatch> wrongNet;
+    std::vector<PrivacyVNextDigest> wrongNetKeyImages;
+    BOOST_CHECK(!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 0, 0, 2008,
                                          payload, keys.viewSecret,
-                                         keys.spendSecret, tampered, rejected,
-                                         error));
-    BOOST_CHECK(!error.empty());
-    BOOST_CHECK(rejected.empty());
-
-    // An output the validated effects do not carry is refused as well.
-    PrivacyVNextStateEffects missing;
-    std::vector<PrivacyVNextScanMatch> orphan;
-    BOOST_CHECK(!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008,
-                                         payload, keys.viewSecret,
-                                         keys.spendSecret, missing, orphan,
-                                         error));
+                                         keys.spendSecret, wrongNet,
+                                         wrongNetKeyImages, error));
     BOOST_CHECK(!error.empty());
 
     std::vector<PrivacyVNextScanMatch> empty;
+    std::vector<PrivacyVNextDigest> emptyKeyImages;
     BOOST_CHECK(!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008,
                                          std::vector<unsigned char>(),
                                          keys.viewSecret, keys.spendSecret,
-                                         effects, empty, error));
+                                         empty, emptyKeyImages, error));
     BOOST_CHECK(!error.empty());
 }
 
