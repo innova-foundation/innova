@@ -23,6 +23,7 @@ struct CPrivacyVNextWalletNote
     uint32_t nOutputIndex;
     int nHeight;
     bool fSpent;
+    bool fLeafIndexKnown;
     uint64_t nAmount;
     uint64_t nLeafIndex;
     std::vector<unsigned char> vchOwner;
@@ -34,8 +35,8 @@ struct CPrivacyVNextWalletNote
     std::vector<unsigned char> vchKeyImage;
 
     CPrivacyVNextWalletNote()
-        : nOutputIndex(0), nHeight(0), fSpent(false), nAmount(0),
-          nLeafIndex(0) {}
+        : nOutputIndex(0), nHeight(0), fSpent(false), fLeafIndexKnown(false),
+          nAmount(0), nLeafIndex(0) {}
 
     bool IsComplete() const
     {
@@ -51,6 +52,7 @@ struct CPrivacyVNextWalletNote
         READWRITE(nOutputIndex);
         READWRITE(nHeight);
         READWRITE(fSpent);
+        READWRITE(fLeafIndexKnown);
         READWRITE(nAmount);
         READWRITE(nLeafIndex);
         READWRITE(vchOwner);

@@ -10741,6 +10741,297 @@ bool CWallet::DisconnectShieldedBlockChecked(
          it != setCreatedNoteIndices.rend(); ++it)
         vShieldedNotes.erase(vShieldedNotes.begin() + *it);
 
+    return DisconnectPrivacyVNextBlock(block, pindex, strErrorOut);
+}
+
+static uint8_t PrivacyVNextNetworkId()
+{
+    extern bool fTestNet;
+    extern bool fRegTest;
+    if (fRegTest)
+        return 2;
+    return fTestNet ? 1 : 0;
+}
+
+// Notes reach the IV5 tree when their epoch finalizes, not when their block
+// connects, so a note's tree position is unknown here and is filled in later.
+bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
+                                     const CBlockIndex* pindex,
+                                     std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    if (!pindex)
+    {
+        strErrorOut = "IV5 wallet scan requires a block index";
+        return false;
+    }
+
+    LOCK(cs_shielded);
+    if (vchPrivacyVNextSeed.size() != 32)
+        return true;
+
+    PrivacyVNextDigest seed;
+    std::memcpy(seed.data(), &vchPrivacyVNextSeed[0], 32);
+    PrivacyVNextDigest genesis;
+    const uint256 hashGenesis = GetGenesisBlockHash();
+    std::memcpy(genesis.data(), hashGenesis.begin(), 32);
+    const uint8_t nNetwork = PrivacyVNextNetworkId();
+
+    // One derivation index until issued IV5 addresses are tracked; a note sent to
+    // another index needs that index's view secret and is not found here.
+    PrivacyVNextDerivedKeys keys;
+    std::string strKeyError;
+    if (!DerivePrivacyVNextKeys(seed, genesis, 0, nNetwork, 0, keys, strKeyError))
+    {
+        strErrorOut = "IV5 wallet key derivation failed: " + strKeyError;
+        return false;
+    }
+
+    std::vector<CPrivacyVNextWalletNote> vNewNotes;
+    std::vector<size_t> vSpentIndices;
+    for (unsigned int i = 0; i < block.vtx.size(); ++i)
+    {
+        const CTransaction& tx = block.vtx[i];
+        if (!tx.IsPrivacyVNext() || !tx.privacyVNext.IsPresent())
+            continue;
+
+        PrivacyVNextStateEffects effects;
+        const PrivacyVNextPayloadValidation validation =
+            ExtractPrivacyVNextPayloadEffects((uint32_t)tx.nVersion,
+                                              tx.privacyVNext.vchPayload,
+                                              effects);
+        if (!validation.IsValid())
+        {
+            strErrorOut = "connected block carries an IV5 payload the wallet "
+                          "cannot revalidate: " + validation.strError;
+            return false;
+        }
+
+        std::vector<PrivacyVNextScanMatch> vMatches;
+        std::string strScanError;
+        if (!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, nNetwork, 0,
+                                     (uint32_t)tx.nVersion,
+                                     tx.privacyVNext.vchPayload, keys.viewSecret,
+                                     keys.spendSecret, effects, vMatches,
+                                     strScanError))
+        {
+            strErrorOut = "IV5 wallet scan failed: " + strScanError;
+            return false;
+        }
+
+        const uint256 hashTx = tx.GetHash();
+        for (size_t m = 0; m < vMatches.size(); ++m)
+        {
+            bool fDuplicate = false;
+            for (size_t n = 0; !fDuplicate && n < vPrivacyVNextNotes.size(); ++n)
+                fDuplicate = vPrivacyVNextNotes[n].txhash == hashTx &&
+                             vPrivacyVNextNotes[n].nOutputIndex ==
+                                 vMatches[m].nOutputIndex;
+            for (size_t n = 0; !fDuplicate && n < vNewNotes.size(); ++n)
+                fDuplicate = vNewNotes[n].txhash == hashTx &&
+                             vNewNotes[n].nOutputIndex ==
+                                 vMatches[m].nOutputIndex;
+            if (fDuplicate)
+                continue;
+
+            CPrivacyVNextWalletNote note;
+            note.txhash = hashTx;
+            note.nOutputIndex = vMatches[m].nOutputIndex;
+            note.nHeight = pindex->nHeight;
+            note.fSpent = false;
+            note.nAmount = vMatches[m].nAmount;
+            note.nLeafIndex = 0;
+            note.fLeafIndexKnown = false;
+            note.vchOwner.assign(vMatches[m].leaf.owner.begin(),
+                                 vMatches[m].leaf.owner.end());
+            note.vchNullifierBase.assign(vMatches[m].leaf.nullifierBase.begin(),
+                                         vMatches[m].leaf.nullifierBase.end());
+            note.vchCommitment.assign(vMatches[m].leaf.commitment.begin(),
+                                      vMatches[m].leaf.commitment.end());
+            note.vchSpendSecret.assign(vMatches[m].spendSecret.begin(),
+                                       vMatches[m].spendSecret.end());
+            note.vchY.assign(vMatches[m].y.begin(), vMatches[m].y.end());
+            note.vchMask.assign(vMatches[m].mask.begin(), vMatches[m].mask.end());
+            note.vchKeyImage.assign(vMatches[m].keyImage.begin(),
+                                    vMatches[m].keyImage.end());
+            if (!note.IsComplete())
+            {
+                strErrorOut = "IV5 wallet scan produced an incomplete note";
+                return false;
+            }
+            vNewNotes.push_back(note);
+        }
+
+        for (size_t k = 0; k < effects.keyImages.size(); ++k)
+        {
+            for (size_t n = 0; n < vPrivacyVNextNotes.size(); ++n)
+            {
+                if (vPrivacyVNextNotes[n].fSpent ||
+                    vPrivacyVNextNotes[n].vchKeyImage.size() != 32)
+                    continue;
+                if (std::memcmp(&vPrivacyVNextNotes[n].vchKeyImage[0],
+                                effects.keyImages[k].data(), 32) != 0)
+                    continue;
+                if (std::find(vSpentIndices.begin(), vSpentIndices.end(), n) ==
+                    vSpentIndices.end())
+                    vSpentIndices.push_back(n);
+            }
+        }
+    }
+
+    if (vNewNotes.empty() && vSpentIndices.empty())
+        return true;
+
+    if (fFileBacked)
+    {
+        CWalletDB walletdb(strWalletFile, "r+");
+        if (!walletdb.TxnBegin())
+        {
+            strErrorOut = "could not begin IV5 wallet connect transaction";
+            return false;
+        }
+        for (size_t i = 0; i < vNewNotes.size(); ++i)
+        {
+            if (!walletdb.WritePrivacyVNextNote(vNewNotes[i].txhash,
+                                                vNewNotes[i].nOutputIndex,
+                                                vNewNotes[i]))
+            {
+                walletdb.TxnAbort();
+                strErrorOut = "failed to persist a connected IV5 note";
+                return false;
+            }
+        }
+        for (size_t i = 0; i < vSpentIndices.size(); ++i)
+        {
+            const CPrivacyVNextWalletNote& note =
+                vPrivacyVNextNotes[vSpentIndices[i]];
+            if (!walletdb.WritePrivacyVNextNoteSpent(note.txhash,
+                                                     note.nOutputIndex, true))
+            {
+                walletdb.TxnAbort();
+                strErrorOut = "failed to persist a spent IV5 note";
+                return false;
+            }
+        }
+        if (!walletdb.TxnCommit())
+        {
+            strErrorOut = "failed to commit the IV5 wallet connect transaction";
+            return false;
+        }
+    }
+
+    for (size_t i = 0; i < vSpentIndices.size(); ++i)
+        vPrivacyVNextNotes[vSpentIndices[i]].fSpent = true;
+    for (size_t i = 0; i < vNewNotes.size(); ++i)
+        vPrivacyVNextNotes.push_back(vNewNotes[i]);
+    return true;
+}
+
+bool CWallet::DisconnectPrivacyVNextBlock(const CBlock& block,
+                                          const CBlockIndex* pindex,
+                                          std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    (void)pindex;
+
+    LOCK(cs_shielded);
+    if (vPrivacyVNextNotes.empty())
+        return true;
+
+    std::set<uint256> setBlockTxHashes;
+    std::vector<std::vector<unsigned char> > vSpentKeyImages;
+    for (unsigned int i = 0; i < block.vtx.size(); ++i)
+    {
+        const CTransaction& tx = block.vtx[i];
+        if (!tx.IsPrivacyVNext() || !tx.privacyVNext.IsPresent())
+            continue;
+        setBlockTxHashes.insert(tx.GetHash());
+
+        PrivacyVNextStateEffects effects;
+        const PrivacyVNextPayloadValidation validation =
+            ExtractPrivacyVNextPayloadEffects((uint32_t)tx.nVersion,
+                                              tx.privacyVNext.vchPayload,
+                                              effects);
+        if (!validation.IsValid())
+        {
+            strErrorOut = "disconnected block carries an IV5 payload the wallet "
+                          "cannot revalidate: " + validation.strError;
+            return false;
+        }
+        for (size_t k = 0; k < effects.keyImages.size(); ++k)
+            vSpentKeyImages.push_back(
+                std::vector<unsigned char>(effects.keyImages[k].begin(),
+                                           effects.keyImages[k].end()));
+    }
+
+    std::set<size_t> setCreated;
+    std::vector<size_t> vRestored;
+    for (size_t n = 0; n < vPrivacyVNextNotes.size(); ++n)
+    {
+        const CPrivacyVNextWalletNote& note = vPrivacyVNextNotes[n];
+        if (setBlockTxHashes.count(note.txhash))
+        {
+            setCreated.insert(n);
+            continue;
+        }
+        if (!note.fSpent || note.vchKeyImage.size() != 32)
+            continue;
+        for (size_t k = 0; k < vSpentKeyImages.size(); ++k)
+        {
+            if (vSpentKeyImages[k].size() == 32 &&
+                std::memcmp(&note.vchKeyImage[0], &vSpentKeyImages[k][0], 32) == 0)
+            {
+                vRestored.push_back(n);
+                break;
+            }
+        }
+    }
+
+    if (setCreated.empty() && vRestored.empty())
+        return true;
+
+    if (fFileBacked)
+    {
+        CWalletDB walletdb(strWalletFile, "r+");
+        if (!walletdb.TxnBegin())
+        {
+            strErrorOut = "could not begin IV5 wallet disconnect transaction";
+            return false;
+        }
+        for (std::set<size_t>::const_iterator it = setCreated.begin();
+             it != setCreated.end(); ++it)
+        {
+            const CPrivacyVNextWalletNote& note = vPrivacyVNextNotes[*it];
+            if (!walletdb.ErasePrivacyVNextNote(note.txhash, note.nOutputIndex))
+            {
+                walletdb.TxnAbort();
+                strErrorOut = "failed to erase a disconnected IV5 note";
+                return false;
+            }
+        }
+        for (size_t i = 0; i < vRestored.size(); ++i)
+        {
+            const CPrivacyVNextWalletNote& note = vPrivacyVNextNotes[vRestored[i]];
+            if (!walletdb.WritePrivacyVNextNoteSpent(note.txhash,
+                                                     note.nOutputIndex, false))
+            {
+                walletdb.TxnAbort();
+                strErrorOut = "failed to restore a disconnected IV5 note";
+                return false;
+            }
+        }
+        if (!walletdb.TxnCommit())
+        {
+            strErrorOut = "failed to commit the IV5 wallet disconnect transaction";
+            return false;
+        }
+    }
+
+    for (size_t i = 0; i < vRestored.size(); ++i)
+        vPrivacyVNextNotes[vRestored[i]].fSpent = false;
+    for (std::set<size_t>::const_reverse_iterator it = setCreated.rbegin();
+         it != setCreated.rend(); ++it)
+        vPrivacyVNextNotes.erase(vPrivacyVNextNotes.begin() + *it);
     return true;
 }
 
@@ -11235,7 +11526,7 @@ bool CWallet::ScanBlockForShieldedNotesChecked(const CBlock& block,
                 printf("ScanBlockForShieldedNotes() : imported silent payment spend key for output idx=%u\n", imp.idx);
         }
     }
-    return true;
+    return ApplyPrivacyVNextBlock(block, pindex, strErrorOut);
 }
 
 void CWallet::ScanBlockForShieldedNotes(const CBlock& block, int nHeight)

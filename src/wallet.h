@@ -265,6 +265,11 @@ public:
     mutable CCriticalSection cs_shielded;
 
     std::vector<CPrivacyVNextWalletNote> vPrivacyVNextNotes;
+    bool ApplyPrivacyVNextBlock(const CBlock& block, const CBlockIndex* pindex,
+                                std::string& strErrorOut);
+    bool DisconnectPrivacyVNextBlock(const CBlock& block,
+                                     const CBlockIndex* pindex,
+                                     std::string& strErrorOut);
 
     std::map<uint256, CColdStakeDelegation> mapColdStakeDelegations;  // hashOwner -> delegation
     bool AddColdStakeDelegation(const CColdStakeDelegation& deleg);
