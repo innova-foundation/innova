@@ -54,7 +54,7 @@ capabilities:
   bit-13 value-proof-construction
   bit-14 validated-payload-state-effects
   bit-15 nullifier-accumulator-update-and-root
-implemented-capabilities: bits 0, 1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, and 15
+implemented-capabilities: bits 0 through 15
 consensus-capabilities: none
 fixed-output-length: 32
 parameter-digest: sha256(../contract/iv5_protocol_v1.json)
@@ -116,10 +116,17 @@ value-prove-response:
   fields: schema-u16-le, output-count-u8, input-count-u8, output-commitments-32, range-proof-length-u32-le, range-proof, balance-proof-64, binding-signature-64
   range-proof: empty for zero outputs, otherwise one canonical aggregate Bulletproof+
   behavior: prove and independently verify range, signed public/private balance, and binding signature before returning
-unimplemented-operation-policy:
-  applies only to tree-witness
-  structurally invalid dimensions return bad-length or resource-limit
-  otherwise return unsupported-format without mutating output buffers
+tree-witness-request:
+  fields: schema-u16-le, target-count-u8, reserved-zero-u8, state-300, target-leaf-indices-u64-le-each, leaf-count-u32-le, leaves
+  target-count: 1 to 16
+  leaf-count: exactly the tree size the supplied state declares
+  target-leaf-index: strictly below leaf-count and distinct across targets
+  behavior: rebuild every level from the supplied leaves, replay the append frontier, and require the serialized result to equal the supplied state before emitting
+tree-witness-response:
+  fields: tree-root-output-44, witness-count-u8, reserved-zero-3, per-target-records
+  record-fields: output-96, leaf-count-u8, reserved-zero-3, leaves-96-each, four-helios-branches-of-18-scalars, three-selene-branches-of-38-scalars
+  record: the proving-request per-input witness tail, spliceable after the caller spend and commitment scalars
+  branches: zero-padded to the exact layer width with each child at its own generator index
 address-components-request:
   exact-size: 70
   fields: schema-u16-le, network-u8, format-u8, address-type-u8, reserved-zero-u8, spend-public-32, view-public-32

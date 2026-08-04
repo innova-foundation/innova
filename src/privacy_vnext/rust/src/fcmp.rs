@@ -757,6 +757,157 @@ pub(super) fn verify_batch(request: &[u8], expected_count: u32) -> Result<(), Re
 
 #[cfg(test)]
 mod tests {
+
+    fn tree_from_leaves(leaf_bytes: &[u8]) -> Vec<u8> {
+        let mut state: Option<Vec<u8>> = None;
+        for batch in leaf_bytes.chunks(16 * 96) {
+            let mut request = Vec::new();
+            request.extend_from_slice(&1_u16.to_le_bytes());
+            match &state {
+                None => request.push(1),
+                Some(_) => request.push(0),
+            }
+            request.push(0);
+            if let Some(previous) = &state {
+                request.extend_from_slice(previous);
+            }
+            let count = u32::try_from(batch.len() / 96).expect("batch is bounded");
+            request.extend_from_slice(&count.to_le_bytes());
+            request.extend_from_slice(batch);
+            state = Some(crate::tree::update(&request).expect("tree update").to_vec());
+        }
+        state.expect("at least one batch")
+    }
+
+    fn witness_request(state: &[u8], targets: &[u64], leaf_bytes: &[u8]) -> Vec<u8> {
+        let mut request = Vec::new();
+        request.extend_from_slice(&1_u16.to_le_bytes());
+        request.push(u8::try_from(targets.len()).expect("target count is bounded"));
+        request.push(0);
+        request.extend_from_slice(state);
+        for target in targets {
+            request.extend_from_slice(&target.to_le_bytes());
+        }
+        let count = u32::try_from(leaf_bytes.len() / 96).expect("leaf count is bounded");
+        request.extend_from_slice(&count.to_le_bytes());
+        request.extend_from_slice(leaf_bytes);
+        request
+    }
+
+    // A witness is only correct if the prover accepts it against the tree's own root and
+    // the resulting proof verifies. Anything weaker passes with a witness built against a
+    // root nobody else computes.
+    #[test]
+    fn tree_witness_yields_a_proof_that_verifies() {
+        let mut rng = ChaCha20Rng::from_seed([0x77; 32]);
+        let x = EdScalar::from(7_u64);
+        let y = EdScalar::from(11_u64);
+        let output = FcmpOutput::new(
+            (<Ed25519 as Ciphersuite>::generator() * x) + (monero_t() * y),
+            <Ed25519 as Ciphersuite>::generator() * EdScalar::from(13_u64),
+            <Ed25519 as Ciphersuite>::generator() * EdScalar::from(17_u64),
+        )
+        .expect("test output is nonidentity");
+
+        // 45 leaves spans two leaf branches, so the level-1 branch has a real sibling
+        // rather than only padding.
+        let mut leaves = vec![output];
+        while leaves.len() < 45 {
+            leaves.push(random_output(&mut rng));
+        }
+        let mut leaf_bytes = Vec::new();
+        for leaf in &leaves {
+            append_output(&mut leaf_bytes, leaf);
+        }
+
+        let state = tree_from_leaves(&leaf_bytes);
+        let response = crate::tree::witness(&witness_request(&state, &[0], &leaf_bytes))
+            .expect("witness must be produced");
+
+        assert_eq!(u16::from_le_bytes([response[0], response[1]]), 1);
+        assert_eq!(response[2], LAYERS);
+        assert_eq!(response[3], ROOT_CURVE_HELIOS);
+        assert_eq!(u64::from_le_bytes(response[4..12].try_into().unwrap()), 45);
+        assert_eq!(response[44], 1);
+        assert_eq!(&response[45..48], &[0, 0, 0]);
+
+        let root_bytes: [u8; 32] = response[12..44].try_into().expect("root is 32 bytes");
+        let record = &response[48..];
+        assert_eq!(record.len(), 100 + (96 * 38) + (2304 + 3648));
+
+        let signable_hash = [0x51; 32];
+        let mut request = Vec::new();
+        request.extend_from_slice(&SCHEMA.to_le_bytes());
+        request.push(LAYERS);
+        request.push(ROOT_CURVE_HELIOS);
+        request.push(1);
+        request.extend_from_slice(&[0; 3]);
+        request.extend_from_slice(&root_bytes);
+        request.extend_from_slice(&signable_hash);
+        request.extend_from_slice(&[0x73; 32]);
+        append_scalar::<Ed25519>(&mut request, x);
+        append_scalar::<Ed25519>(&mut request, y);
+        request.extend_from_slice(record);
+
+        let response = prove(&request).expect("witness must drive a real proof");
+        let verification = verification_request_from_response(root_bytes, signable_hash, &response)
+            .expect("verification request");
+        verify(&verification).expect("a proof over a real witness must verify");
+    }
+
+    // The tree root is the only value binding a witness to the chain, so a witness taken
+    // against a different tree must not verify against this one.
+    #[test]
+    fn tree_witness_is_bound_to_its_own_root() {
+        let mut rng = ChaCha20Rng::from_seed([0x24; 32]);
+        let x = EdScalar::from(5_u64);
+        let y = EdScalar::from(9_u64);
+        let output = FcmpOutput::new(
+            (<Ed25519 as Ciphersuite>::generator() * x) + (monero_t() * y),
+            <Ed25519 as Ciphersuite>::generator() * EdScalar::from(19_u64),
+            <Ed25519 as Ciphersuite>::generator() * EdScalar::from(23_u64),
+        )
+        .expect("test output is nonidentity");
+        let mut leaves = vec![output];
+        while leaves.len() < 12 {
+            leaves.push(random_output(&mut rng));
+        }
+        let mut leaf_bytes = Vec::new();
+        for leaf in &leaves {
+            append_output(&mut leaf_bytes, leaf);
+        }
+
+        let state = tree_from_leaves(&leaf_bytes);
+        let response = crate::tree::witness(&witness_request(&state, &[0], &leaf_bytes))
+            .expect("witness must be produced");
+        let record = &response[48..];
+
+        let signable_hash = [0x33; 32];
+        let mut foreign_root = [0_u8; 32];
+        foreign_root.copy_from_slice(
+            <Helios as Ciphersuite>::G::to_bytes(
+                &(*HELIOS_HASH_INIT * <Helios as Ciphersuite>::F::from(3_u64)),
+            )
+            .as_ref(),
+        );
+
+        let mut request = Vec::new();
+        request.extend_from_slice(&SCHEMA.to_le_bytes());
+        request.push(LAYERS);
+        request.push(ROOT_CURVE_HELIOS);
+        request.push(1);
+        request.extend_from_slice(&[0; 3]);
+        request.extend_from_slice(&foreign_root);
+        request.extend_from_slice(&signable_hash);
+        request.extend_from_slice(&[0x73; 32]);
+        append_scalar::<Ed25519>(&mut request, x);
+        append_scalar::<Ed25519>(&mut request, y);
+        request.extend_from_slice(record);
+
+        // The prover self-verifies before returning, so a witness that does not open the
+        // claimed root fails here rather than producing an unverifiable proof.
+        assert!(prove(&request).is_err());
+    }
     use super::*;
     use ec_divisors::DivisorCurve as _;
 

@@ -77,6 +77,7 @@ const IMPLEMENTED_CAPABILITIES: u32 = CAP_PROTOCOL_CONTRACT
     | CAP_FCMP_BATCH_VERIFY
     | CAP_TREE_UPDATE
     | CAP_TREE_ROOT
+    | CAP_TREE_WITNESS
     | CAP_PAYLOAD_VALIDATE
     | CAP_ADDRESS_CODEC
     | CAP_KEY_DERIVATION
@@ -311,19 +312,6 @@ fn validate_optional_output(
     }
     Ok(())
 }
-
-fn unsupported_transform(
-    request: *const u8,
-    request_len: usize,
-    out: *mut u8,
-    out_capacity: usize,
-    out_written: *mut usize,
-) -> Result<(), ResultCode> {
-    validate_request(request, request_len)?;
-    validate_optional_output(out, out_capacity, out_written)?;
-    Err(ResultCode::UnsupportedFormat)
-}
-
 fn write_variable_output(
     bytes: &[u8],
     out: *mut u8,
@@ -690,33 +678,27 @@ pub unsafe extern "C" fn innova_privacy_vnext_fcmp_batch_verify(
         fcmp::verify_batch(request, request_count)
     })
 }
-
-macro_rules! unavailable_transform_export {
-    ($name:ident, $description:literal) => {
-        #[doc = $description]
-        ///
-        /// # Safety
-        ///
-        /// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
-        #[no_mangle]
-        pub unsafe extern "C" fn $name(
-            request: *const u8,
-            request_len: usize,
-            out: *mut u8,
-            out_capacity: usize,
-            out_written: *mut usize,
-        ) -> i32 {
-            ffi_boundary(|| {
-                unsupported_transform(request, request_len, out, out_capacity, out_written)
-            })
-        }
-    };
+/// Produce a canonical membership witness from caller-owned tree state.
+///
+/// # Safety
+///
+/// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_tree_witness(
+    request: *const u8,
+    request_len: usize,
+    out: *mut u8,
+    out_capacity: usize,
+    out_written: *mut usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        // SAFETY: request validation precedes this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        let result = tree::witness(request)?;
+        write_variable_output(&result, out, out_capacity, out_written)
+    })
 }
-
-unavailable_transform_export!(
-    innova_privacy_vnext_tree_witness,
-    "Produce a canonical membership witness from caller-owned tree state."
-);
 
 /// Scan one canonical IV5 output with full, view-only, or outgoing material.
 ///
