@@ -590,6 +590,172 @@ BOOST_AUTO_TEST_CASE(cpp_note_scan_bridge_matches_the_raw_abi)
     BOOST_CHECK(!error.empty());
 }
 
+BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
+{
+    PrivacyVNextDigest seed;
+    PrivacyVNextDigest genesis;
+    for (size_t i = 0; i < 32; ++i)
+    {
+        seed[i] = static_cast<unsigned char>(i + 3);
+        genesis[i] = static_cast<unsigned char>(0x11);
+    }
+
+    PrivacyVNextDerivedKeys keys;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextKeys(seed, genesis, 0, 1, 0, keys, error), error);
+
+    uint8_t encryptRequest[INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_REQUEST_SIZE] = {0};
+    encryptRequest[0] = 1;
+    encryptRequest[2] = 1;
+    std::memcpy(encryptRequest + 8, genesis.data(), 32);
+    std::memcpy(encryptRequest + 40, keys.spendPublic.data(), 32);
+    std::memcpy(encryptRequest + 72, keys.viewPublic.data(), 32);
+    std::memcpy(encryptRequest + 104, keys.outgoingViewSecret.data(), 32);
+    encryptRequest[136] = 13;
+    PutLE64(encryptRequest + 168, 99);
+    encryptRequest[176] = 17;
+    encryptRequest[208] = 19;
+    std::memcpy(encryptRequest + 240, keys.spendPublic.data(), 32);
+
+    uint8_t encrypted[INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_RESULT_SIZE] = {0};
+    size_t encryptedWritten = 0;
+    BOOST_REQUIRE_EQUAL(
+        innova_privacy_vnext_note_encrypt(
+            encryptRequest, sizeof(encryptRequest), encrypted,
+            sizeof(encrypted), &encryptedWritten),
+        INNOVA_PRIVACY_VNEXT_VALID);
+
+    const uint8_t emptyUpdate[8] = {1, 0, 1, 0, 0, 0, 0, 0};
+    uint8_t state[INNOVA_PRIVACY_VNEXT_TREE_STATE_SIZE] = {0};
+    size_t stateWritten = 0;
+    BOOST_REQUIRE_EQUAL(
+        innova_privacy_vnext_tree_update(emptyUpdate, sizeof(emptyUpdate), state,
+                                         sizeof(state), &stateWritten),
+        INNOVA_PRIVACY_VNEXT_VALID);
+    uint8_t root[INNOVA_PRIVACY_VNEXT_TREE_ROOT_SIZE] = {0};
+    size_t rootWritten = 0;
+    BOOST_REQUIRE_EQUAL(
+        innova_privacy_vnext_tree_root(state, sizeof(state), root, sizeof(root),
+                                       &rootWritten),
+        INNOVA_PRIVACY_VNEXT_VALID);
+
+    uint8_t digest[INNOVA_PRIVACY_VNEXT_DIGEST_SIZE] = {0};
+    BOOST_REQUIRE_EQUAL(
+        innova_privacy_vnext_parameter_digest(digest, sizeof(digest)),
+        INNOVA_PRIVACY_VNEXT_VALID);
+
+    std::vector<unsigned char> payload;
+    payload.push_back(1);
+    payload.push_back(0);
+    const unsigned char header[7] = {0, 0, 0, 7, 0, 1, 0};
+    payload.insert(payload.end(), header, header + 7);
+    payload.insert(payload.end(), genesis.begin(), genesis.end());
+    payload.insert(payload.end(), digest, digest + 32);
+    payload.insert(payload.end(), root + 12, root + 44);
+    for (int i = 0; i < 8; ++i) payload.push_back(0);
+    uint8_t balance[8] = {0};
+    PutLE64(balance, 10);
+    payload.insert(payload.end(), balance, balance + 8);
+    uint8_t fee[8] = {0};
+    PutLE64(fee, 1);
+    payload.insert(payload.end(), fee, fee + 8);
+    payload.push_back(0);
+    payload.push_back(1);
+    payload.insert(payload.end(), encrypted + 8, encrypted + 104);
+    payload.insert(payload.end(), encrypted + 104, encrypted + 136);
+    payload.push_back(static_cast<unsigned char>(
+        INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE));
+    payload.insert(payload.end(), encrypted + 136,
+                   encrypted + 136 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE);
+    payload.push_back(static_cast<unsigned char>(
+        INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE));
+    payload.insert(payload.end(), encrypted + 313,
+                   encrypted + 313 + INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE);
+
+    PrivacyVNextStateEffects effects;
+    effects.outputLeaves.resize(1);
+    std::memcpy(effects.outputLeaves[0].owner.data(), encrypted + 8, 32);
+    std::memcpy(effects.outputLeaves[0].nullifierBase.data(), encrypted + 40, 32);
+    std::memcpy(effects.outputLeaves[0].commitment.data(), encrypted + 72, 32);
+
+    std::vector<PrivacyVNextScanMatch> matches;
+    BOOST_REQUIRE_MESSAGE(
+        ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008, payload,
+                                keys.viewSecret, keys.spendSecret, effects,
+                                matches, error),
+        error);
+    BOOST_REQUIRE_EQUAL(matches.size(), 1U);
+    BOOST_CHECK_EQUAL(matches[0].nOutputIndex, 0U);
+    BOOST_CHECK_EQUAL(matches[0].nAmount, 99U);
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        matches[0].recipientSpend.begin(), matches[0].recipientSpend.end(),
+        keys.spendPublic.begin(), keys.spendPublic.end());
+    BOOST_CHECK_EQUAL_COLLECTIONS(
+        matches[0].leaf.owner.begin(), matches[0].leaf.owner.end(),
+        effects.outputLeaves[0].owner.begin(),
+        effects.outputLeaves[0].owner.end());
+
+    PrivacyVNextDigest zero;
+    zero.fill(0);
+    BOOST_CHECK(matches[0].spendSecret != zero);
+    BOOST_CHECK(matches[0].keyImage != zero);
+
+    // A view-only scan opens the same note without the spend material.
+    std::vector<PrivacyVNextScanMatch> viewOnly;
+    BOOST_REQUIRE_MESSAGE(
+        ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_VIEW_ONLY, 1, 0, 2008, payload,
+                                keys.viewSecret, zero, effects, viewOnly, error),
+        error);
+    BOOST_REQUIRE_EQUAL(viewOnly.size(), 1U);
+    BOOST_CHECK_EQUAL(viewOnly[0].nAmount, 99U);
+    BOOST_CHECK(viewOnly[0].spendSecret == zero);
+    BOOST_CHECK(viewOnly[0].keyImage == zero);
+
+    // Another wallet finds nothing, and that is not an error.
+    PrivacyVNextDerivedKeys stranger;
+    PrivacyVNextDigest otherSeed;
+    otherSeed.fill(0x5a);
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextKeys(otherSeed, genesis, 0, 1, 0, stranger, error), error);
+    std::vector<PrivacyVNextScanMatch> missed;
+    BOOST_REQUIRE_MESSAGE(
+        ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008, payload,
+                                stranger.viewSecret, stranger.spendSecret,
+                                effects, missed, error),
+        error);
+    BOOST_CHECK(missed.empty());
+
+    // The scan reads the payload separately from the validating decoder, so a leaf
+    // that disagrees with the validated effects must fail closed.
+    PrivacyVNextStateEffects tampered;
+    tampered.outputLeaves = effects.outputLeaves;
+    tampered.outputLeaves[0].commitment[0] ^= 1;
+    std::vector<PrivacyVNextScanMatch> rejected;
+    BOOST_CHECK(!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008,
+                                         payload, keys.viewSecret,
+                                         keys.spendSecret, tampered, rejected,
+                                         error));
+    BOOST_CHECK(!error.empty());
+    BOOST_CHECK(rejected.empty());
+
+    // An output the validated effects do not carry is refused as well.
+    PrivacyVNextStateEffects missing;
+    std::vector<PrivacyVNextScanMatch> orphan;
+    BOOST_CHECK(!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008,
+                                         payload, keys.viewSecret,
+                                         keys.spendSecret, missing, orphan,
+                                         error));
+    BOOST_CHECK(!error.empty());
+
+    std::vector<PrivacyVNextScanMatch> empty;
+    BOOST_CHECK(!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008,
+                                         std::vector<unsigned char>(),
+                                         keys.viewSecret, keys.spendSecret,
+                                         effects, empty, error));
+    BOOST_CHECK(!error.empty());
+}
+
 BOOST_AUTO_TEST_CASE(cpp_value_proof_bridge_is_bounded_and_canonical)
 {
     PrivacyVNextDigest signableHash;

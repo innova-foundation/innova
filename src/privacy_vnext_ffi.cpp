@@ -932,6 +932,197 @@ bool ScanPrivacyVNextNote(
     return true;
 }
 
+PrivacyVNextScanMatch::PrivacyVNextScanMatch()
+{
+    Clear();
+}
+
+PrivacyVNextScanMatch::PrivacyVNextScanMatch(PrivacyVNextScanMatch&& other) noexcept
+{
+    nOutputIndex = other.nOutputIndex;
+    leaf = other.leaf;
+    nAmount = other.nAmount;
+    recipientSpend = other.recipientSpend;
+    recipientView = other.recipientView;
+    spendSecret = other.spendSecret;
+    y = other.y;
+    mask = other.mask;
+    keyImage = other.keyImage;
+    other.Clear();
+}
+
+PrivacyVNextScanMatch& PrivacyVNextScanMatch::operator=(
+    PrivacyVNextScanMatch&& other) noexcept
+{
+    if (this != &other)
+    {
+        Clear();
+        nOutputIndex = other.nOutputIndex;
+        leaf = other.leaf;
+        nAmount = other.nAmount;
+        recipientSpend = other.recipientSpend;
+        recipientView = other.recipientView;
+        spendSecret = other.spendSecret;
+        y = other.y;
+        mask = other.mask;
+        keyImage = other.keyImage;
+        other.Clear();
+    }
+    return *this;
+}
+
+PrivacyVNextScanMatch::~PrivacyVNextScanMatch()
+{
+    Clear();
+}
+
+void PrivacyVNextScanMatch::Clear()
+{
+    OPENSSL_cleanse(spendSecret.data(), spendSecret.size());
+    OPENSSL_cleanse(y.data(), y.size());
+    OPENSSL_cleanse(mask.data(), mask.size());
+    leaf.owner.fill(0);
+    leaf.nullifierBase.fill(0);
+    leaf.commitment.fill(0);
+    recipientSpend.fill(0);
+    recipientView.fill(0);
+    keyImage.fill(0);
+    nOutputIndex = 0;
+    nAmount = 0;
+}
+
+bool ScanPrivacyVNextPayload(
+    uint8_t scanKind,
+    uint8_t network,
+    uint8_t addressType,
+    uint32_t wireVersion,
+    const std::vector<unsigned char>& payload,
+    const PrivacyVNextDigest& scanSecret,
+    const PrivacyVNextDigest& spendMaterial,
+    const PrivacyVNextStateEffects& effects,
+    std::vector<PrivacyVNextScanMatch>& matches,
+    std::string& error)
+{
+    matches.clear();
+    error.clear();
+
+    if (payload.empty())
+    {
+        error = "empty IV5 payload";
+        return false;
+    }
+
+    static const size_t nRequestPrefix = 76;
+    static const size_t nRecordSize = 4 + 96 + INNOVA_PRIVACY_VNEXT_NOTE_SCAN_RESULT_SIZE;
+
+    std::vector<uint8_t> request(nRequestPrefix + payload.size(), 0);
+    request[0] = static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA);
+    request[1] = 0;
+    request[2] = scanKind;
+    request[3] = network;
+    request[4] = addressType;
+    PutLE32(&request[8], wireVersion);
+    std::memcpy(&request[12], scanSecret.data(), 32);
+    std::memcpy(&request[44], spendMaterial.data(), 32);
+    std::memcpy(&request[nRequestPrefix], &payload[0], payload.size());
+
+    size_t required = 0;
+    int32_t result = innova_privacy_vnext_payload_scan(
+        &request[0], request.size(), NULL, 0, &required);
+    if (result != INNOVA_PRIVACY_VNEXT_VALID || required < 4 ||
+        required > INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES)
+    {
+        OPENSSL_cleanse(&request[0], request.size());
+        error = ResultError("IV5 payload scan size query", result);
+        return false;
+    }
+
+    std::vector<uint8_t> response(required, 0);
+    size_t written = 0;
+    result = innova_privacy_vnext_payload_scan(
+        &request[0], request.size(), &response[0], response.size(), &written);
+    OPENSSL_cleanse(&request[0], request.size());
+    if (result != INNOVA_PRIVACY_VNEXT_VALID)
+    {
+        error = ResultError("IV5 payload scan", result);
+        return false;
+    }
+
+    const size_t nMatches = response[2];
+    if (written != response.size() ||
+        response[0] != static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA) ||
+        response[1] != 0 || response[3] != 0 ||
+        written != 4 + (nMatches * nRecordSize))
+    {
+        OPENSSL_cleanse(&response[0], response.size());
+        error = "non-canonical IV5 payload-scan response";
+        return false;
+    }
+
+    matches.reserve(nMatches);
+    for (size_t i = 0; i < nMatches; ++i)
+    {
+        const uint8_t* record = &response[4 + (i * nRecordSize)];
+        PrivacyVNextScanMatch match;
+        match.nOutputIndex = ReadLE32(record);
+        std::memcpy(match.leaf.owner.data(), record + 4, 32);
+        std::memcpy(match.leaf.nullifierBase.data(), record + 36, 32);
+        std::memcpy(match.leaf.commitment.data(), record + 68, 32);
+
+        const uint8_t* scanned = record + 100;
+        if (scanned[0] != static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA) ||
+            scanned[1] != 0 || scanned[2] != scanKind ||
+            scanned[3] != network || scanned[4] != addressType ||
+            ReadLE32(scanned + 8) != match.nOutputIndex)
+        {
+            OPENSSL_cleanse(&response[0], response.size());
+            error = "non-canonical IV5 note-scan record";
+            return false;
+        }
+        match.nAmount = ReadLE64(scanned + 12);
+        std::memcpy(match.recipientSpend.data(), scanned + 20, 32);
+        std::memcpy(match.recipientView.data(), scanned + 52, 32);
+        std::memcpy(match.spendSecret.data(), scanned + 84, 32);
+        std::memcpy(match.y.data(), scanned + 116, 32);
+        std::memcpy(match.mask.data(), scanned + 148, 32);
+        std::memcpy(match.keyImage.data(), scanned + 180, 32);
+
+        // The scan reads the payload separately from the validating decoder. Requiring
+        // the matched leaf to equal the validated one keeps a divergence between the
+        // two from assigning a note to the wrong tree position.
+        if (match.nOutputIndex >= effects.outputLeaves.size())
+        {
+            OPENSSL_cleanse(&response[0], response.size());
+            error = "IV5 scan matched an output the validated effects do not carry";
+            return false;
+        }
+        const PrivacyVNextOutputLeaf& expected =
+            effects.outputLeaves[match.nOutputIndex];
+        if (match.leaf.owner != expected.owner ||
+            match.leaf.nullifierBase != expected.nullifierBase ||
+            match.leaf.commitment != expected.commitment)
+        {
+            OPENSSL_cleanse(&response[0], response.size());
+            error = "IV5 scan leaf disagrees with the validated payload effects";
+            return false;
+        }
+
+        for (size_t seen = 0; seen < matches.size(); ++seen)
+        {
+            if (matches[seen].nOutputIndex == match.nOutputIndex)
+            {
+                OPENSSL_cleanse(&response[0], response.size());
+                error = "IV5 payload scan repeated an output index";
+                return false;
+            }
+        }
+        matches.push_back(std::move(match));
+    }
+
+    OPENSSL_cleanse(&response[0], response.size());
+    return true;
+}
+
 bool ProvePrivacyVNextValue(
     const std::vector<PrivacyVNextDigest>& vPseudoOuts,
     const std::vector<PrivacyVNextValueOutput>& vOutputs,
