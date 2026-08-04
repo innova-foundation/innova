@@ -844,10 +844,17 @@ mod tests {
             assert_eq!(&record[..LEAF_SIZE], &all[index][..]);
             let branch_len = usize::from(record[LEAF_SIZE]);
             assert_eq!(branch_len, if target < 38 { 38 } else { 1 });
+            // Every leaf must sit at its own position: the generator index is the
+            // position, so a rotated branch hashes to a different node.
             let branch = &record[LEAF_SIZE + 4..LEAF_SIZE + 4 + (branch_len * LEAF_SIZE)];
-            assert!(branch
-                .chunks_exact(LEAF_SIZE)
-                .any(|candidate| candidate == all[index]));
+            let branch_start = (index / capacity(0)) * capacity(0);
+            for (offset, candidate) in branch.chunks_exact(LEAF_SIZE).enumerate() {
+                assert_eq!(candidate, &all[branch_start + offset][..]);
+            }
+            assert_eq!(
+                &branch[(index - branch_start) * LEAF_SIZE..][..LEAF_SIZE],
+                &all[index][..]
+            );
         }
     }
 

@@ -855,6 +855,140 @@ mod tests {
         verify(&verification).expect("a proof over a real witness must verify");
     }
 
+    // A leaf in the last, partially filled branch of a tree deep enough to give the
+    // level-1 path a nonzero branch index. Shallower trees leave every parent index at
+    // zero and every leaf branch full, so neither the index arithmetic nor the partial
+    // branch is exercised by the other round trip.
+    #[test]
+    fn tree_witness_proves_a_partial_branch_at_a_nonzero_parent_index() {
+        let mut rng = ChaCha20Rng::from_seed([0x19; 32]);
+        let x = EdScalar::from(29_u64);
+        let y = EdScalar::from(31_u64);
+        let output = FcmpOutput::new(
+            (<Ed25519 as Ciphersuite>::generator() * x) + (monero_t() * y),
+            <Ed25519 as Ciphersuite>::generator() * EdScalar::from(37_u64),
+            <Ed25519 as Ciphersuite>::generator() * EdScalar::from(41_u64),
+        )
+        .expect("test output is nonidentity");
+
+        // 700 leaves puts the last leaf in branch 18 of 16 leaves, under level-1 branch 1.
+        let target = 699_u64;
+        let mut leaves = Vec::new();
+        while leaves.len() < 699 {
+            leaves.push(random_output(&mut rng));
+        }
+        leaves.push(output);
+        let mut leaf_bytes = Vec::new();
+        for leaf in &leaves {
+            append_output(&mut leaf_bytes, leaf);
+        }
+
+        let state = tree_from_leaves(&leaf_bytes);
+        let response = crate::tree::witness(&witness_request(&state, &[target], &leaf_bytes))
+            .expect("witness must be produced");
+
+        let root_bytes: [u8; 32] = response[12..44].try_into().expect("root is 32 bytes");
+        let record = &response[48..];
+        assert_eq!(
+            record[96], 16,
+            "the target sits in a partially filled leaf branch"
+        );
+
+        let signable_hash = [0x62; 32];
+        let mut request = Vec::new();
+        request.extend_from_slice(&SCHEMA.to_le_bytes());
+        request.push(LAYERS);
+        request.push(ROOT_CURVE_HELIOS);
+        request.push(1);
+        request.extend_from_slice(&[0; 3]);
+        request.extend_from_slice(&root_bytes);
+        request.extend_from_slice(&signable_hash);
+        request.extend_from_slice(&[0x73; 32]);
+        append_scalar::<Ed25519>(&mut request, x);
+        append_scalar::<Ed25519>(&mut request, y);
+        request.extend_from_slice(record);
+
+        let response = prove(&request).expect("partial-branch witness must drive a proof");
+        let verification = verification_request_from_response(root_bytes, signable_hash, &response)
+            .expect("verification request");
+        verify(&verification).expect("a partial-branch proof must verify");
+    }
+
+    // Records are positional, so a caller splices them in request order. Proving two
+    // inputs at once is the only thing that checks the response carries them that way.
+    #[test]
+    fn tree_witness_serves_two_inputs_in_request_order() {
+        let mut rng = ChaCha20Rng::from_seed([0x2b; 32]);
+        let keys = [
+            (EdScalar::from(3_u64), EdScalar::from(5_u64)),
+            (EdScalar::from(43_u64), EdScalar::from(47_u64)),
+        ];
+        let outputs: Vec<FcmpOutput> = keys
+            .iter()
+            .enumerate()
+            .map(|(index, (x, y))| {
+                FcmpOutput::new(
+                    (<Ed25519 as Ciphersuite>::generator() * *x) + (monero_t() * *y),
+                    <Ed25519 as Ciphersuite>::generator() * EdScalar::from(53_u64 + index as u64),
+                    <Ed25519 as Ciphersuite>::generator() * EdScalar::from(59_u64 + index as u64),
+                )
+                .expect("test output is nonidentity")
+            })
+            .collect();
+
+        // Targets 0 and 40 sit in different leaf branches, so the two records differ.
+        let mut leaves = vec![outputs[0]];
+        while leaves.len() < 40 {
+            leaves.push(random_output(&mut rng));
+        }
+        leaves.push(outputs[1]);
+        while leaves.len() < 45 {
+            leaves.push(random_output(&mut rng));
+        }
+        let mut leaf_bytes = Vec::new();
+        for leaf in &leaves {
+            append_output(&mut leaf_bytes, leaf);
+        }
+
+        let state = tree_from_leaves(&leaf_bytes);
+        let response = crate::tree::witness(&witness_request(&state, &[0, 40], &leaf_bytes))
+            .expect("witness must be produced");
+        assert_eq!(response[44], 2);
+
+        let root_bytes: [u8; 32] = response[12..44].try_into().expect("root is 32 bytes");
+        let records = &response[48..];
+        let first_len = 100 + (38 * 96) + 2304 + 3648;
+        let second_len = 100 + (7 * 96) + 2304 + 3648;
+        assert_eq!(records.len(), first_len + second_len);
+        assert_eq!(&records[..96], leaf_bytes[..96].to_vec().as_slice());
+        assert_eq!(
+            &records[first_len..first_len + 96],
+            leaf_bytes[40 * 96..41 * 96].to_vec().as_slice()
+        );
+
+        let signable_hash = [0x84; 32];
+        let mut request = Vec::new();
+        request.extend_from_slice(&SCHEMA.to_le_bytes());
+        request.push(LAYERS);
+        request.push(ROOT_CURVE_HELIOS);
+        request.push(2);
+        request.extend_from_slice(&[0; 3]);
+        request.extend_from_slice(&root_bytes);
+        request.extend_from_slice(&signable_hash);
+        request.extend_from_slice(&[0x73; 32]);
+        append_scalar::<Ed25519>(&mut request, keys[0].0);
+        append_scalar::<Ed25519>(&mut request, keys[0].1);
+        request.extend_from_slice(&records[..first_len]);
+        append_scalar::<Ed25519>(&mut request, keys[1].0);
+        append_scalar::<Ed25519>(&mut request, keys[1].1);
+        request.extend_from_slice(&records[first_len..]);
+
+        let response = prove(&request).expect("two-input witness must drive a proof");
+        let verification = verification_request_from_response(root_bytes, signable_hash, &response)
+            .expect("verification request");
+        verify(&verification).expect("a two-input proof must verify");
+    }
+
     // The tree root is the only value binding a witness to the chain, so a witness taken
     // against a different tree must not verify against this one.
     #[test]
