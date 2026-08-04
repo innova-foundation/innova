@@ -23,16 +23,14 @@ inline int GetForkHeightFCMP() {
 }
 #define FORK_HEIGHT_FCMP (GetForkHeightFCMP())
 
-// FCMP_PROOF_VERSION_IPA binds neither the claimed root nor the leaf commitment,
-// so it is rejected from this height. Must stay <= FORK_HEIGHT_FCMP: containment
-// has to be in force before any FCMP proof can be accepted. Tracks
-// FORK_HEIGHT_SHIELDED so shielded activates already hardened.
-inline int GetForkHeightShieldedHardening() {
+// FCMP_PROOF_VERSION_IPA carries no argument binding the claimed tree root, so
+// it verifies against any root and proves no membership. Public networks never
+// accept it at any height; regtest retains it for replay and rejection tests.
+// Mainnet membership proofs come from the privacy-vNext verifier instead.
+inline bool IsLegacyFCMPProofAccepted() {
     extern bool fRegTest;
-    extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : ShiftMainnetV5Activation(7810000);
+    return fRegTest;
 }
-#define FORK_HEIGHT_SHIELDED_HARDENING (GetForkHeightShieldedHardening())
 
 static const size_t SECP256K1_POINT_SIZE = 33;
 static const size_t ED25519_POINT_SIZE = 32;

@@ -296,6 +296,8 @@ void ExpectMutatedProofRejected(CBulletproofACProof proof,
 
 } // namespace
 
+extern bool fRegTest;
+
 BOOST_AUTO_TEST_SUITE(bulletproof_ac_tests)
 
 BOOST_AUTO_TEST_CASE(valid_simple_bpac_proof_verifies)
@@ -583,21 +585,28 @@ BOOST_AUTO_TEST_CASE(fcmp_v5_legacy_wire_compatibility_is_preserved)
 
     CFCMPProof activeProof;
     activeProof.vchProof = proofBytes;
-    // Below the hardening gate the legacy acceptance set is preserved exactly,
-    // including the unsound accept against an unrelated tree.
+
+    const bool fStoredRegTest = fRegTest;
     const int nTestHeight = 0;
-    BOOST_REQUIRE(nTestHeight < FORK_HEIGHT_SHIELDED_HARDENING);
+
+    // Regtest keeps the legacy acceptance set exactly, including the unsound
+    // accept against a tree that does not contain the leaf. That accept is the
+    // reason the version is confined to regtest.
+    fRegTest = true;
+    VerifyProofCacheClear();
     BOOST_CHECK(VerifyFCMPProof(claimedTree.GetRootNode(), activeProof, leaf, nTestHeight));
     BOOST_CHECK(VerifyFCMPProof(unrelatedTree.GetRootNode(), activeProof, leaf, nTestHeight));
 
-    // At and above it the unbound proof is rejected for every claimed tree,
-    // including the one that really contains the leaf.
-    const int nHardened = FORK_HEIGHT_SHIELDED_HARDENING;
-    BOOST_CHECK(!VerifyFCMPProof(claimedTree.GetRootNode(), activeProof, leaf, nHardened));
-    BOOST_CHECK(!VerifyFCMPProof(unrelatedTree.GetRootNode(), activeProof, leaf, nHardened));
+    // Public networks reject it at every height, including against the tree that
+    // really contains the leaf.
+    fRegTest = false;
+    VerifyProofCacheClear();
+    BOOST_CHECK(!VerifyFCMPProof(claimedTree.GetRootNode(), activeProof, leaf, nTestHeight));
+    BOOST_CHECK(!VerifyFCMPProof(unrelatedTree.GetRootNode(), activeProof, leaf, nTestHeight));
+    BOOST_CHECK(!VerifyFCMPProof(claimedTree.GetRootNode(), activeProof, leaf, FORK_HEIGHT_FCMP));
 
-    // Containment must be in force before any FCMP proof can be accepted.
-    BOOST_CHECK(FORK_HEIGHT_SHIELDED_HARDENING <= FORK_HEIGHT_FCMP);
+    fRegTest = fStoredRegTest;
+    VerifyProofCacheClear();
 
     // The bounded parser must preserve the exact legacy field order and bytes.
     CDataStream decodedStream(proofBytes, SER_NETWORK, PROTOCOL_VERSION);

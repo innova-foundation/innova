@@ -2281,7 +2281,6 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
 
     // Shielded output support precedes anything that spends or proves over it.
     BOOST_CHECK(GetForkHeightShielded() > nFirst);
-    BOOST_CHECK(GetForkHeightShieldedHardening() >= GetForkHeightShielded());
     BOOST_CHECK(GetForkHeightRingSigDeprecation() > GetForkHeightShielded());
     BOOST_CHECK(GetForkHeightDSP() > GetForkHeightShielded());
     BOOST_CHECK(GetForkHeightFCMP() > GetForkHeightShielded());

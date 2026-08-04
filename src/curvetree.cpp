@@ -1081,9 +1081,8 @@ static bool VerifyFCMPProofUncached(const CCurveTreeNode& root,
         // VerifyPathIPAProof never compares the root-binding digest and never
         // checks the leaf commitment, so this proof verifies against any claimed
         // tree. There is no in-place repair: the statement carries no witness
-        // about any tree. Reject it from the hardening height; below it the path
-        // stays reachable so historical blocks replay byte-identically.
-        if (nEvalHeight >= FORK_HEIGHT_SHIELDED_HARDENING)
+        // about any tree.
+        if (!IsLegacyFCMPProofAccepted())
             return false;
 
         uint256 expectedRootHash = root.GetHash();

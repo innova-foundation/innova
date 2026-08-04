@@ -277,7 +277,7 @@ fresh trusted mainnet tip; the effective height of any gate is base + shift.
 | DAGKnight | `FORK_HEIGHT_DAGKNIGHT` | 8,000,000 | adaptive-`k` DAGKNIGHT ordering (replaces GHOSTDAG) |
 | NullStake deleg-set / reclaim / B2-c | `FORK_HEIGHT_NULLSTAKE_DELEGSET` / `_RECLAIM` / `_NULLSTAKE_B2C` | 8,060,000 | M-of-N shielded cold staking (public-signer and ZK-hidden-signer tiers), owner-override reclaim |
 | IDNS name reset | `FORK_HEIGHT_IDNS_RESET` | 7,800,000 | names registered before this height expire, so IDNS restarts with a clean namespace at v5 activation |
-| Shielded hardening | `FORK_HEIGHT_SHIELDED_HARDENING` | 7,810,000 | rejects the unbound FCMP version-IPA proof; tracks the shielded gate so it is in force before any FCMP proof is accepted |
+| Legacy FCMP proof policy | `IsLegacyFCMPProofAccepted()` | n/a | version-IPA proofs bind no tree root and prove no membership; rejected on mainnet and testnet at every height, retained on regtest for replay and rejection tests |
 
 Several sibling gates are pinned to `FORK_HEIGHT_DAG` deliberately:
 `FORK_HEIGHT_EPOCH_ROOT_FCMP` (FCMP spends bind to the last finalized epoch
