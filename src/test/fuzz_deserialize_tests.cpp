@@ -8,6 +8,7 @@
 #include "../main.h"
 #include "../nullstake.h"
 #include "../serialize.h"
+#include "../v5activation.h"
 #include "../shielded.h"
 #include "../txdb.h"
 #include "../util.h"
@@ -2201,6 +2202,106 @@ BOOST_AUTO_TEST_CASE(future_versions_do_not_inherit_legacy_privacy_predicates)
     // become consensus-active as an incidental consequence of reserving 2008.
     BOOST_CHECK_EQUAL(FCMP_PROOF_VERSION_CURRENT, FCMP_PROOF_VERSION_IPA);
     BOOST_CHECK(FCMP_PROOF_VERSION_CROSSCURVE > FCMP_PROOF_VERSION_CURRENT);
+}
+
+
+namespace {
+struct NetFlagGuard {
+    bool fStoredRegTest, fStoredTestNet;
+    NetFlagGuard() : fStoredRegTest(fRegTest), fStoredTestNet(fTestNet) {}
+    ~NetFlagGuard() { fRegTest = fStoredRegTest; fTestNet = fStoredTestNet; }
+};
+
+bool VarIntReadThrows(const std::vector<unsigned char>& vch)
+{
+    try {
+        CDataStream ss(vch, SER_DISK, CLIENT_VERSION);
+        int64_t n = 0;
+        ss >> VARINT(n);
+        return false;
+    } catch (const std::ios_base::failure&) {
+        return true;
+    }
+}
+} // namespace
+
+// VARINT encodes consensus fields that arrive from the network. A signed
+// accumulator made an over-wide encoding undefined rather than a decode error,
+// so a peer could steer the decoded value.
+BOOST_AUTO_TEST_CASE(varint_rejects_out_of_range_rather_than_wrapping)
+{
+    BOOST_CHECK(VarIntReadThrows(std::vector<unsigned char>(10, 0xFF)));
+    BOOST_CHECK(VarIntReadThrows(std::vector<unsigned char>(64, 0xFF)));
+
+    std::vector<unsigned char> vchWide(9, 0xFF);
+    vchWide.push_back(0x00);
+    BOOST_CHECK(VarIntReadThrows(vchWide));
+
+    // A truncated encoding is a stream error, never a silent value.
+    BOOST_CHECK(VarIntReadThrows(std::vector<unsigned char>(1, 0x80)));
+
+    // Valid values must still round trip, including the widest one.
+    const int64_t vTest[] = { 0, 1, 127, 128, 16383, 16384, 0xFFFFFFFFLL,
+                              std::numeric_limits<int64_t>::max() };
+    for (unsigned int i = 0; i < sizeof(vTest) / sizeof(vTest[0]); i++) {
+        CDataStream ss(SER_DISK, CLIENT_VERSION);
+        int64_t nIn = vTest[i];
+        ss << VARINT(nIn);
+        int64_t nOut = -1;
+        ss >> VARINT(nOut);
+        BOOST_CHECK_EQUAL(nOut, nIn);
+    }
+}
+
+// The shift moves every mainnet gate by one constant. If it ever scaled or
+// applied unevenly the ladder would reorder and stages would activate before
+// what they depend on.
+BOOST_AUTO_TEST_CASE(v5_activation_shift_is_uniform)
+{
+    BOOST_CHECK_EQUAL(ShiftMainnetV5Activation(7810000) - ShiftMainnetV5Activation(7800000), 10000);
+    BOOST_CHECK_EQUAL(ShiftMainnetV5Activation(8060000) - ShiftMainnetV5Activation(7800000), 260000);
+    BOOST_CHECK_EQUAL(ShiftMainnetV5Activation(MAINNET_V5_ACTIVATION_BASE),
+                      MAINNET_V5_ACTIVATION_BASE + MAINNET_V5_ACTIVATION_SHIFT);
+}
+
+// Each gate depends on the stage below it being live. These orderings are the
+// reason a re-base may only move the shift, never an individual base.
+BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
+{
+    NetFlagGuard guard;
+    fRegTest = false;
+    fTestNet = false;
+
+    const int nFirst = ShiftMainnetV5Activation(MAINNET_V5_ACTIVATION_BASE);
+
+    BOOST_CHECK_EQUAL(GetForkHeightTighterDrift(), nFirst);
+    BOOST_CHECK_EQUAL(GetForkHeightCNPaymentValidation(), nFirst);
+    BOOST_CHECK_EQUAL(GetForkHeightColdStaking(), nFirst);
+    BOOST_CHECK_EQUAL(GetForkHeightIDNSReset(), nFirst);
+
+    // Shielded output support precedes anything that spends or proves over it.
+    BOOST_CHECK(GetForkHeightShielded() > nFirst);
+    BOOST_CHECK(GetForkHeightShieldedHardening() >= GetForkHeightShielded());
+    BOOST_CHECK(GetForkHeightRingSigDeprecation() > GetForkHeightShielded());
+    BOOST_CHECK(GetForkHeightDSP() > GetForkHeightShielded());
+    BOOST_CHECK(GetForkHeightFCMP() > GetForkHeightShielded());
+    BOOST_CHECK(GetForkHeightNullSend() > GetForkHeightShielded());
+
+    // Private staking builds on FCMP membership, and each tier on the last.
+    BOOST_CHECK(GetForkHeightNullStake() > GetForkHeightFCMP());
+    BOOST_CHECK(GetForkHeightNullStakeV2() > GetForkHeightNullStake());
+    BOOST_CHECK(GetForkHeightNullStakeV3() > GetForkHeightNullStakeV2());
+    BOOST_CHECK(GetForkHeightNullStakeB2C() > GetForkHeightNullStakeV3());
+    BOOST_CHECK(GetForkHeightNullStakeReclaim() >= GetForkHeightNullStakeV3());
+    BOOST_CHECK(GetForkHeightNullStakeDelegSet() >= GetForkHeightNullStakeV3());
+
+    // Finality certifies DAG order, so it must be live before the DAG turns on.
+    BOOST_CHECK(GetForkHeightFinality() > GetForkHeightPoem());
+    BOOST_CHECK(GetForkHeightDAG() > GetForkHeightFinality());
+    BOOST_CHECK(GetForkHeightDAGKnight() > GetForkHeightDAG());
+
+    // Boundary B stays unset on mainnet until privacy vNext is scheduled.
+    BOOST_CHECK_EQUAL(GetForkHeightBoundaryB(), PRIVACY_VNEXT_HEIGHT_UNSET);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
