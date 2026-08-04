@@ -231,7 +231,8 @@ payload-scan-request:
   spend-material: the spend secret for a full scan, ignored otherwise
   behavior: the payload is read once and every output is tried against each key in order, so holding many indices does not re-read the payload
 payload-scan-response:
-  fields: schema-u16-le, match-count-u8, key-image-count-u8, key-images-32-each, per-match-records
+  fields: schema-u16-le, match-count-u8, key-image-count-u8, output-count-u8, reserved-zero-u8, key-images-32-each, per-match-records
+  output-count: every output the payload declares, so a caller can place its own notes in the tree without decoding the payloads it does not own
   record-fields: key-index-u16-le, output-index-u32-le, matched-O-I-C-96, note-scan-result-212
   key-index: the position in the request key list that opened the output; an output opens for at most one key
   behavior: reads the header, inputs and outputs with the same decoder validation uses, and verifies no proof; results are meaningful only for a payload consensus has accepted

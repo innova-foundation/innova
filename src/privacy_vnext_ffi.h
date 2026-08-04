@@ -328,6 +328,7 @@ bool ScanPrivacyVNextPayload(
     const std::vector<PrivacyVNextScanKey>& keys,
     std::vector<PrivacyVNextScanMatch>& matches,
     std::vector<PrivacyVNextDigest>& keyImages,
+    uint8_t& nOutputCount,
     std::string& error);
 
 // Range, balance and binding proofs over one transaction's value flow. The Rust

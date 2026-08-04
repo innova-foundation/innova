@@ -564,6 +564,7 @@ fn request_parts(request: &[u8]) -> Result<(u32, &[u8]), ResultCode> {
 const SCAN_REQUEST_HEADER_BYTES: usize = 16;
 const SCAN_KEY_BYTES: usize = 64;
 const MAX_SCAN_KEYS: usize = 1024;
+const SCAN_RESPONSE_HEADER_BYTES: usize = 6;
 const NOTE_SCAN_PREFIX_BYTES: usize = 236;
 const NOTE_SCAN_RESULT_BYTES: usize = 212;
 const SCAN_RECORD_BYTES: usize = 2 + 4 + 96 + NOTE_SCAN_RESULT_BYTES;
@@ -681,16 +682,24 @@ pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         }
     }
 
+    // The output count lets a caller place its notes in the tree without decoding
+    // the payloads it does not own.
+    let output_count =
+        u8::try_from(prefix.output_owners.len()).map_err(|_| ResultCode::ResourceLimit)?;
     let mut result = Vec::new();
     result.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
     result.push(matches);
     result.push(key_image_count);
+    result.push(output_count);
+    result.push(0);
     for key_image in &prefix.key_images {
         result.extend_from_slice(key_image);
     }
     result.extend_from_slice(&records);
     if result.len()
-        != 4 + (usize::from(key_image_count) * 32) + (usize::from(matches) * SCAN_RECORD_BYTES)
+        != SCAN_RESPONSE_HEADER_BYTES
+            + (usize::from(key_image_count) * 32)
+            + (usize::from(matches) * SCAN_RECORD_BYTES)
     {
         return Err(ResultCode::InternalLocalStateFailure);
     }
@@ -899,9 +908,13 @@ mod tests {
         );
         assert_eq!(scanned[2], 1);
         assert_eq!(scanned[3], 0, "a shield carries no key images");
-        assert_eq!(scanned.len(), 4 + SCAN_RECORD_BYTES);
+        assert_eq!(
+            scanned.len(),
+            SCAN_RESPONSE_HEADER_BYTES + SCAN_RECORD_BYTES
+        );
 
-        let record = &scanned[4..];
+        assert_eq!(scanned[4], 1, "the payload declares one output");
+        let record = &scanned[SCAN_RESPONSE_HEADER_BYTES..];
         assert_eq!(u16::from_le_bytes(record[..2].try_into().unwrap()), 0);
         assert_eq!(u32::from_le_bytes(record[2..6].try_into().unwrap()), 0);
         // The leaf the scan matched must be the leaf carried in the payload.
@@ -914,14 +927,14 @@ mod tests {
         let view_only = scan_outputs(&scan_request(1, &view_secret, &Scalar::ZERO, &payload))
             .expect("view-only scan must open");
         assert_eq!(view_only[2], 1);
-        assert_eq!(&view_only[4..106], &record[..102]);
+        assert_eq!(&view_only[6..108], &record[..102]);
 
         // Another wallet's material must find nothing, and that is not an error.
         let stranger = Scalar::from(23_u64);
         let missed = scan_outputs(&scan_request(0, &stranger, &stranger, &payload))
             .expect("a foreign scan is empty, not an error");
         assert_eq!(missed[2], 0);
-        assert_eq!(missed.len(), 4);
+        assert_eq!(missed.len(), SCAN_RESPONSE_HEADER_BYTES);
     }
 
     // The leaves a scan reports must equal the leaves validation derives from the same
@@ -979,7 +992,7 @@ mod tests {
         // The validated effects carry the leaf after its 76-byte header and no key
         // images, so the scan's leaf must be byte-identical to it.
         let validated_leaf = &encoded[EFFECTS_HEADER_BYTES..EFFECTS_HEADER_BYTES + 96];
-        let scanned_leaf = &scanned[10..106];
+        let scanned_leaf = &scanned[12..108];
         assert_eq!(validated_leaf, scanned_leaf);
     }
 
@@ -1000,7 +1013,7 @@ mod tests {
         let scanned = scan_outputs(&scan_request_keys(0, &keys, &payload))
             .expect("the owning key must open the output");
         assert_eq!(scanned[2], 1);
-        assert_eq!(u16::from_le_bytes(scanned[4..6].try_into().unwrap()), 2);
+        assert_eq!(u16::from_le_bytes(scanned[6..8].try_into().unwrap()), 2);
 
         let foreign = [(stranger, stranger)];
         let missed = scan_outputs(&scan_request_keys(0, &foreign, &payload))

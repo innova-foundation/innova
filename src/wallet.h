@@ -269,6 +269,7 @@ public:
     // index issued, since a note only opens under the one it was sent to.
     uint32_t nPrivacyVNextIndexCount;
     bool AllocatePrivacyVNextIndex(uint32_t& nIndexOut, std::string& strErrorOut);
+    bool AssignPrivacyVNextLeafIndices(int nEpoch, std::string& strErrorOut);
     bool ApplyPrivacyVNextBlock(const CBlock& block, const CBlockIndex* pindex,
                                 std::string& strErrorOut);
     bool DisconnectPrivacyVNextBlock(const CBlock& block,

@@ -1003,10 +1003,12 @@ bool ScanPrivacyVNextPayload(
     const std::vector<PrivacyVNextScanKey>& keys,
     std::vector<PrivacyVNextScanMatch>& matches,
     std::vector<PrivacyVNextDigest>& keyImages,
+    uint8_t& nOutputCount,
     std::string& error)
 {
     matches.clear();
     keyImages.clear();
+    nOutputCount = 0;
     error.clear();
 
     if (payload.empty())
@@ -1046,7 +1048,7 @@ bool ScanPrivacyVNextPayload(
     size_t required = 0;
     int32_t result = innova_privacy_vnext_payload_scan(
         &request[0], request.size(), NULL, 0, &required);
-    if (result != INNOVA_PRIVACY_VNEXT_VALID || required < 4 ||
+    if (result != INNOVA_PRIVACY_VNEXT_VALID || required < 6 ||
         required > INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES)
     {
         OPENSSL_cleanse(&request[0], request.size());
@@ -1065,23 +1067,31 @@ bool ScanPrivacyVNextPayload(
         return false;
     }
 
+    static const size_t nResponseHeader = 6;
     const size_t nMatches = response[2];
     const size_t nKeyImages = response[3];
     if (written != response.size() ||
         response[0] != static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA) ||
-        response[1] != 0 ||
-        written != 4 + (nKeyImages * 32) + (nMatches * nRecordSize))
+        response[1] != 0 || response[5] != 0 ||
+        written != nResponseHeader + (nKeyImages * 32) + (nMatches * nRecordSize))
     {
         OPENSSL_cleanse(&response[0], response.size());
         error = "non-canonical IV5 payload-scan response";
         return false;
     }
 
+    nOutputCount = response[4];
+    if (nMatches > nOutputCount)
+    {
+        OPENSSL_cleanse(&response[0], response.size());
+        error = "IV5 payload scan reported more matches than outputs";
+        return false;
+    }
     keyImages.resize(nKeyImages);
     for (size_t i = 0; i < nKeyImages; ++i)
-        std::memcpy(keyImages[i].data(), &response[4 + (i * 32)], 32);
+        std::memcpy(keyImages[i].data(), &response[nResponseHeader + (i * 32)], 32);
 
-    const size_t nRecordBase = 4 + (nKeyImages * 32);
+    const size_t nRecordBase = nResponseHeader + (nKeyImages * 32);
     matches.reserve(nMatches);
     for (size_t i = 0; i < nMatches; ++i)
     {

@@ -10881,6 +10881,151 @@ bool CWallet::AllocatePrivacyVNextIndex(uint32_t& nIndexOut,
     return true;
 }
 
+// A note reaches the IV5 tree when its epoch finalizes, in the order the epoch
+// state fixes: active transactions in sequence, each contributing its outputs.
+// Walking that order gives every note of ours its exact position.
+bool CWallet::AssignPrivacyVNextLeafIndices(int nEpoch, std::string& strErrorOut)
+{
+    strErrorOut.clear();
+
+    CEpochState state;
+    if (!g_dagManager.GetEpochState(nEpoch, state))
+        return true;
+    CEpochState previous;
+    uint64_t nBase = 0;
+    if (nEpoch > 0)
+    {
+        if (!g_dagManager.GetEpochState(nEpoch - 1, previous))
+            return true;
+        nBase = previous.nVNextTreeSize;
+    }
+    if (state.nVNextTreeSize < nBase)
+    {
+        strErrorOut = "IV5 epoch state tree size moved backwards";
+        return false;
+    }
+
+    LOCK(cs_shielded);
+    bool fWanted = false;
+    for (size_t i = 0; !fWanted && i < vPrivacyVNextNotes.size(); ++i)
+        fWanted = !vPrivacyVNextNotes[i].fLeafIndexKnown;
+    if (!fWanted || state.vVNextActiveTxIds.empty())
+        return true;
+
+    if (vchPrivacyVNextSeed.size() != 32)
+        return true;
+    PrivacyVNextDigest seed;
+    std::memcpy(seed.data(), &vchPrivacyVNextSeed[0], 32);
+    PrivacyVNextDigest genesis;
+    const uint256 hashGenesis = GetGenesisBlockHash();
+    std::memcpy(genesis.data(), hashGenesis.begin(), 32);
+    const uint8_t nNetwork = PrivacyVNextNetworkId();
+
+    std::vector<PrivacyVNextScanKey> vKeys(nPrivacyVNextIndexCount);
+    for (uint32_t i = 0; i < nPrivacyVNextIndexCount; ++i)
+    {
+        PrivacyVNextDerivedKeys keys;
+        std::string strKeyError;
+        if (!DerivePrivacyVNextKeys(seed, genesis, i, nNetwork, 0, keys, strKeyError))
+        {
+            strErrorOut = "IV5 wallet key derivation failed: " + strKeyError;
+            return false;
+        }
+        vKeys[i].scanSecret = keys.viewSecret;
+        vKeys[i].spendMaterial = keys.spendSecret;
+    }
+
+    std::vector<std::pair<size_t, uint64_t> > vAssigned;
+    uint64_t nRunning = nBase;
+    for (size_t t = 0; t < state.vVNextActiveTxIds.size(); ++t)
+    {
+        const uint256& hashTx = state.vVNextActiveTxIds[t];
+        CTransaction tx;
+        uint256 hashBlock;
+        if (!::GetTransaction(hashTx, tx, hashBlock))
+        {
+            strErrorOut = strprintf("IV5 epoch transaction %s is not retrievable",
+                                    hashTx.ToString().substr(0, 20).c_str());
+            return false;
+        }
+        if (!tx.IsPrivacyVNext() || !tx.privacyVNext.IsPresent())
+            continue;
+
+        std::vector<PrivacyVNextScanMatch> vMatches;
+        std::vector<PrivacyVNextDigest> vKeyImages;
+        uint8_t nOutputCount = 0;
+        std::string strScanError;
+        if (!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, nNetwork, 0,
+                                     (uint32_t)tx.nVersion,
+                                     tx.privacyVNext.vchPayload, vKeys, vMatches,
+                                     vKeyImages, nOutputCount, strScanError))
+        {
+            strErrorOut = "IV5 epoch scan failed: " + strScanError;
+            return false;
+        }
+
+        for (size_t m = 0; m < vMatches.size(); ++m)
+        {
+            for (size_t n = 0; n < vPrivacyVNextNotes.size(); ++n)
+            {
+                CPrivacyVNextWalletNote& note = vPrivacyVNextNotes[n];
+                if (note.fLeafIndexKnown || note.txhash != hashTx ||
+                    note.nOutputIndex != vMatches[m].nOutputIndex)
+                    continue;
+                vAssigned.push_back(
+                    std::make_pair(n, nRunning + vMatches[m].nOutputIndex));
+            }
+        }
+        nRunning += nOutputCount;
+    }
+
+    if (nRunning != state.nVNextTreeSize)
+    {
+        // The walk must land exactly on the size the epoch state records, or the
+        // positions it produced are not the ones consensus assigned.
+        strErrorOut = strprintf("IV5 epoch %d leaf walk ended at %" PRIu64
+                                " but the epoch state records %" PRIu64,
+                                nEpoch, nRunning, state.nVNextTreeSize);
+        return false;
+    }
+    if (vAssigned.empty())
+        return true;
+
+    if (fFileBacked)
+    {
+        CWalletDB walletdb(strWalletFile, "r+");
+        if (!walletdb.TxnBegin())
+        {
+            strErrorOut = "could not begin IV5 leaf-index transaction";
+            return false;
+        }
+        for (size_t i = 0; i < vAssigned.size(); ++i)
+        {
+            CPrivacyVNextWalletNote note = vPrivacyVNextNotes[vAssigned[i].first];
+            note.nLeafIndex = vAssigned[i].second;
+            note.fLeafIndexKnown = true;
+            if (!walletdb.WritePrivacyVNextNote(note.txhash, note.nOutputIndex, note))
+            {
+                walletdb.TxnAbort();
+                strErrorOut = "failed to persist an IV5 note tree position";
+                return false;
+            }
+        }
+        if (!walletdb.TxnCommit())
+        {
+            strErrorOut = "failed to commit the IV5 leaf-index transaction";
+            return false;
+        }
+    }
+
+    for (size_t i = 0; i < vAssigned.size(); ++i)
+    {
+        vPrivacyVNextNotes[vAssigned[i].first].nLeafIndex = vAssigned[i].second;
+        vPrivacyVNextNotes[vAssigned[i].first].fLeafIndexKnown = true;
+    }
+    return true;
+}
+
 bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
                                      const CBlockIndex* pindex,
                                      std::string& strErrorOut)
@@ -10930,11 +11075,12 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
 
         std::vector<PrivacyVNextScanMatch> vMatches;
         std::vector<PrivacyVNextDigest> vKeyImages;
+        uint8_t nOutputCount = 0;
         std::string strScanError;
         if (!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, nNetwork, 0,
                                      (uint32_t)tx.nVersion,
                                      tx.privacyVNext.vchPayload, vKeys, vMatches,
-                                     vKeyImages, strScanError))
+                                     vKeyImages, nOutputCount, strScanError))
         {
             strErrorOut = "IV5 wallet scan failed: " + strScanError;
             return false;
@@ -11070,6 +11216,7 @@ bool CWallet::DisconnectPrivacyVNextBlock(const CBlock& block,
 
         std::vector<PrivacyVNextScanMatch> vIgnored;
         std::vector<PrivacyVNextDigest> vKeyImages;
+        uint8_t nOutputCount = 0;
         // Only the key images matter here, so one unowned key reads them.
         const std::vector<PrivacyVNextScanKey> vNoKeys(1);
         std::string strScanError;
@@ -11077,7 +11224,7 @@ bool CWallet::DisconnectPrivacyVNextBlock(const CBlock& block,
                                      PrivacyVNextNetworkId(), 0,
                                      (uint32_t)tx.nVersion,
                                      tx.privacyVNext.vchPayload, vNoKeys,
-                                     vIgnored, vKeyImages, strScanError))
+                                     vIgnored, vKeyImages, nOutputCount, strScanError))
         {
             strErrorOut = "IV5 wallet disconnect could not read a payload: " +
                           strScanError;

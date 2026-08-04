@@ -838,6 +838,7 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
     payload.insert(payload.end(), encrypted + 313,
                    encrypted + 313 + INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE);
 
+    uint8_t nOutputCount = 0;
     std::vector<PrivacyVNextScanKey> vKeys(1);
     vKeys[0].scanSecret = keys.viewSecret;
     vKeys[0].spendMaterial = keys.spendSecret;
@@ -846,7 +847,7 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
     std::vector<PrivacyVNextDigest> keyImages;
     BOOST_REQUIRE_MESSAGE(
         ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008, payload,
-                                vKeys, matches, keyImages, error),
+                                vKeys, matches, keyImages, nOutputCount, error),
         error);
     BOOST_CHECK_EQUAL(matches[0].nKeyIndex, 0);
     BOOST_REQUIRE_EQUAL(matches.size(), 1U);
@@ -876,7 +877,7 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
     std::vector<PrivacyVNextDigest> viewKeyImages;
     BOOST_REQUIRE_MESSAGE(
         ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_VIEW_ONLY, 1, 0, 2008, payload,
-                                vViewKeys, viewOnly, viewKeyImages, error),
+                                vViewKeys, viewOnly, viewKeyImages, nOutputCount, error),
         error);
     BOOST_REQUIRE_EQUAL(viewOnly.size(), 1U);
     BOOST_CHECK_EQUAL(viewOnly[0].nAmount, 99U);
@@ -896,7 +897,7 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
     std::vector<PrivacyVNextDigest> missedKeyImages;
     BOOST_REQUIRE_MESSAGE(
         ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008, payload,
-                                vStranger, missed, missedKeyImages, error),
+                                vStranger, missed, missedKeyImages, nOutputCount, error),
         error);
     BOOST_CHECK(missed.empty());
 
@@ -909,7 +910,7 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
     std::vector<PrivacyVNextDigest> manyKeyImages;
     BOOST_REQUIRE_MESSAGE(
         ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008, payload,
-                                vMany, manyMatches, manyKeyImages, error),
+                                vMany, manyMatches, manyKeyImages, nOutputCount, error),
         error);
     BOOST_REQUIRE_EQUAL(manyMatches.size(), 1U);
     BOOST_CHECK_EQUAL(manyMatches[0].nKeyIndex, 2);
@@ -921,21 +922,21 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
     BOOST_CHECK(!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008,
                                          payload,
                                          std::vector<PrivacyVNextScanKey>(),
-                                         noKeyMatches, noKeyImages, error));
+                                         noKeyMatches, noKeyImages, nOutputCount, error));
 
     // A payload declaring another network is not this wallet's scan context.
     std::vector<PrivacyVNextScanMatch> wrongNet;
     std::vector<PrivacyVNextDigest> wrongNetKeyImages;
     BOOST_CHECK(!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 0, 0, 2008,
                                          payload, vKeys, wrongNet,
-                                         wrongNetKeyImages, error));
+                                         wrongNetKeyImages, nOutputCount, error));
     BOOST_CHECK(!error.empty());
 
     std::vector<PrivacyVNextScanMatch> empty;
     std::vector<PrivacyVNextDigest> emptyKeyImages;
     BOOST_CHECK(!ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 1, 0, 2008,
                                          std::vector<unsigned char>(), vKeys,
-                                         empty, emptyKeyImages, error));
+                                         empty, emptyKeyImages, nOutputCount, error));
     BOOST_CHECK(!error.empty());
 }
 
