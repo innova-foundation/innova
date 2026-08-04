@@ -634,6 +634,12 @@ fn append_witness_record(
     Ok(())
 }
 
+/// Emit membership witnesses for one tree, rebuilt from the caller's leaves.
+///
+/// The whole leaf set travels in one request, so the request bound caps the tree this can
+/// serve far below `MAX_LEAVES`. Serving a larger tree needs a request carrying the path's
+/// siblings instead of every leaf, which in turn needs per-level node hashes to be
+/// persisted rather than only the frontier.
 pub(crate) fn witness(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     if request.len() < WITNESS_HEADER_SIZE + STATE_SIZE + LEAF_COUNT_SIZE {
         return Err(ResultCode::BadLength);
@@ -868,6 +874,26 @@ mod tests {
         let first = 100 + (38 * LEAF_SIZE) + branches;
         let second = 100 + (2 * LEAF_SIZE) + branches;
         assert_eq!(response.len(), ROOT_SIZE + 4 + first + second);
+    }
+
+    // The ABI documents the largest tree this can serve. It is derived from the request
+    // framing, so a new field or a wider header silently shrinks it.
+    #[test]
+    fn documented_serviceable_tree_size_matches_the_request_framing() {
+        let fixed = WITNESS_HEADER_SIZE + STATE_SIZE + LEAF_COUNT_SIZE;
+        let capacity = crate::MAX_PAYLOAD_BYTES as usize;
+        let serviceable =
+            |targets: usize| (capacity - fixed - (targets * WITNESS_TARGET_SIZE)) / LEAF_SIZE;
+        assert_eq!(serviceable(1), 2727);
+        assert_eq!(serviceable(MAX_WITNESS_TARGETS), 2726);
+
+        // One more leaf than the maximum must not fit the request bound.
+        for targets in [1, MAX_WITNESS_TARGETS] {
+            let leaves = serviceable(targets);
+            let size = |count: usize| fixed + (targets * WITNESS_TARGET_SIZE) + (count * LEAF_SIZE);
+            assert!(size(leaves) <= capacity);
+            assert!(size(leaves + 1) > capacity);
+        }
     }
 
     #[test]

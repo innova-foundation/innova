@@ -3,7 +3,7 @@
     "ownership": "caller_owned_outputs_only",
     "panic_strategy": "unwind_and_catch_unwind",
     "schema_path": "abi/innova_privacy_vnext_v2.txt",
-    "schema_sha256": "8c209fd268e856a7d9ac5acf44a88b8719df58478789b99e168afee0307ec62d",
+    "schema_sha256": "0e1097002aaf2c75eb83abdd74a8eea3e30ecfa1b83164b7b31cbd2fefecd791",
     "version": 2
   },
   "consensus_enabled": false,
@@ -59,7 +59,7 @@
     "compatibility_summary_path": "contract/innova_privacy_vnext_product_v1.txt",
     "compatibility_summary_sha256": "aec6b77212eb579a18ba02f56cf92f2c55a8291faceace9513133ddda91d1be3",
     "contract_path": "../contract/iv5_protocol_v1.json",
-    "contract_sha256": "7ef260f5a5464b90c7c547b4ed4932cd9d5aeb39418e240e3da752df999db305",
+    "contract_sha256": "7bca16ee41ce7b57d0fbce902b3453ef616924cefdaebe23f27b337d303e1be0",
     "scope": "normative inactive IV5 protocol contract; not activation"
   },
   "product_contract": {

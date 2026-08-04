@@ -122,6 +122,10 @@ tree-witness-request:
   leaf-count: exactly the tree size the supplied state declares
   target-leaf-index: strictly below leaf-count and distinct across targets
   behavior: rebuild every level from the supplied leaves, replay the append frontier, and require the serialized result to equal the supplied state before emitting
+  maximum-serviceable-tree-size: 2727 leaves for one target and 2726 for sixteen; the whole leaf set travels in one request, so a larger tree exceeds the request bound and returns resource-limit
+  guarantee: the emitted root is the root of the supplied state, and each record opens that root
+  state-authority: none; the state is recomputed from the supplied leaves, so a self-consistent fabricated tree yields a self-consistent fabricated root
+  caller-obligation: take the state from consensus and bind the proving root to a chain anchor; this operation cannot distinguish a chain tree from a fabricated one
 tree-witness-response:
   fields: tree-root-output-44, witness-count-u8, reserved-zero-3, per-target-records
   record-fields: output-96, leaf-count-u8, reserved-zero-3, leaves-96-each, four-helios-branches-of-18-scalars, three-selene-branches-of-38-scalars
