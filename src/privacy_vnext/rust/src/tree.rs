@@ -995,6 +995,8 @@ mod tests {
     }
 
     #[test]
+    // Slow in debug. Equality is also implied by every witness round trip, since the
+    // prover recomputes the tree with the upstream generators against a root built here.
     #[ignore = "loads the full upstream proof generator set for differential assurance"]
     fn tree_generator_prefixes_equal_the_pinned_full_set() {
         assert_eq!(
