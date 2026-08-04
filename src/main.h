@@ -544,12 +544,18 @@ inline int GetForkHeightDAGKnight()
 }
 #define FORK_HEIGHT_DAGKNIGHT (GetForkHeightDAGKnight())
 
-// Self-governing finality tally committee (D2): above this height a private
-// tally certificate must carry >= M signatures from the canonical committee set
-// for its epoch, and the committee may rotate itself by M-of-N. Makes the
-// committee a consensus trust root with an on-chain participation record.
-// Testnet activates on the live chain (set with deploy lead time); mainnet is
-// the next slot after DAGKnight.
+// Canonical-encoding enforcement for committee signatures, so a relayed certificate
+// cannot be re-encoded to a different hash. Rides the first v5 gate.
+inline int GetForkHeightCommitteeSigCanonical()
+{
+    extern bool fRegTest;
+    extern bool fTestNet;
+    if (fRegTest) return 1;
+    if (fTestNet) return 1;
+    return ShiftMainnetV5Activation(7800000);
+}
+#define FORK_HEIGHT_COMMITTEE_SIG_CANONICAL (GetForkHeightCommitteeSigCanonical())
+
 inline int GetForkHeightTallyGovernance()
 {
     extern bool fRegTest;

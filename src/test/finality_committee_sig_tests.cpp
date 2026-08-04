@@ -7,6 +7,7 @@
 
 #include "../finality.h"
 #include "../key.h"
+#include "../script.h"
 #include "../txdb.h"
 
 #include <algorithm>
@@ -699,6 +700,36 @@ BOOST_AUTO_TEST_CASE(cert_signature_collection_assembles_at_threshold)
     withBad[2] = std::vector<unsigned char>(70, 0x00); // invalid sig for member 2
     CFinalityTallyCertificate badAssembled = cand;
     BOOST_CHECK(!AssembleCertificateFromSignatures(badAssembled, withBad, c.pubs, M, setHash));
+}
+
+// The canonical-encoding rule assumes this wallet's own signer emits low-S DER.
+// If that ever stops being true, certificates this node signs would be rejected
+// by the rule at the fork height, so pin it here rather than discover it live.
+BOOST_AUTO_TEST_CASE(committee_signatures_this_node_produces_are_canonical)
+{
+    for (int i = 0; i < 64; i++)
+    {
+        CKey key;
+        key.MakeNewKey(true);
+        uint256 digest;
+        for (int b = 0; b < 32; b++)
+            *(digest.begin() + b) = (unsigned char)((i * 31) + b);
+
+        std::vector<unsigned char> vchSig;
+        BOOST_REQUIRE(key.Sign(digest, vchSig));
+        BOOST_REQUIRE(!vchSig.empty());
+        BOOST_CHECK_MESSAGE(IsDERSignature(vchSig, false),
+                            "signer produced a non-DER committee signature");
+
+        const unsigned int nLenR = vchSig[3];
+        BOOST_REQUIRE(vchSig.size() >= (size_t)6 + nLenR);
+        const unsigned int nLenS = vchSig[5 + nLenR];
+        BOOST_REQUIRE(vchSig.size() >= (size_t)6 + nLenR + nLenS);
+        BOOST_CHECK_MESSAGE(CKey::CheckSignatureElement(&vchSig[6 + nLenR], nLenS, true),
+                            "signer produced a high-S committee signature");
+
+        BOOST_CHECK(key.GetPubKey().Verify(digest, vchSig));
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

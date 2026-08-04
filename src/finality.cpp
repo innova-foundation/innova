@@ -819,6 +819,22 @@ bool GetCanonicalFinalityCommittee(int nEpoch,
     return g_finalityTracker.GetCommitteeForEpoch(nEpoch, vCommitteeOut, nMOut, setHashOut);
 }
 
+// A committee signature is part of a certificate's identity, so an unenforced
+// encoding lets a third party re-encode it and change the certificate hash
+// without its signers. Our own signer already emits low-S DER.
+static bool IsCanonicalCommitteeSignature(const std::vector<unsigned char>& vchSig)
+{
+    if (!IsDERSignature(vchSig, false))
+        return false;
+    const unsigned int nLenR = vchSig[3];
+    if (vchSig.size() < (size_t)6 + nLenR)
+        return false;
+    const unsigned int nLenS = vchSig[5 + nLenR];
+    if (vchSig.size() < (size_t)6 + nLenR + nLenS)
+        return false;
+    return CKey::CheckSignatureElement(&vchSig[6 + nLenR], nLenS, true);
+}
+
 bool CheckTallyCertificateCommitteeSignatures(const CFinalityTallyCertificate& cert,
                                               const std::vector<CPubKey>& vCommittee,
                                               int nThreshold,
@@ -833,6 +849,14 @@ bool CheckTallyCertificateCommitteeSignatures(const CFinalityTallyCertificate& c
         return reject("tally certificate predates committee signer-set (version < 3)");
     if (cert.committeeSetHash != setHash)
         return reject("tally certificate committee-set hash does not match canonical committee");
+    if (cert.nHeight >= FORK_HEIGHT_COMMITTEE_SIG_CANONICAL)
+    {
+        for (size_t i = 0; i < cert.vSignerSigs.size(); i++)
+        {
+            if (!IsCanonicalCommitteeSignature(cert.vSignerSigs[i]))
+                return reject("tally certificate carries a non-canonical committee signature");
+        }
+    }
     return VerifyMofNCommitteeSignatures(vCommittee, nThreshold,
                                          cert.vSignerIndexes, cert.vSignerSigs,
                                          cert.GetSignatureDigest(), pstrError);
