@@ -10810,7 +10810,8 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
 
         if (bnNewBlock > bnRequired)
         {
-            if (pfrom)
+            // A catching-up peer relaying an unattachable block is normal; reject without scoring.
+            if (pfrom && !IsInitialBlockDownload())
                 pfrom->Misbehaving(100, "block has too little work/stake");
             return error("ProcessBlock() : block with too little %s", pblock->IsProofOfStake()? "proof-of-stake" : "proof-of-work");
         }
