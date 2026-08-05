@@ -16,6 +16,7 @@
 #include "init.h"
 #include "base58.h"
 #include "dag.h"
+#include "privacy_vnext_store.h"
 #include "finality.h"
 #include "privacy_vnext_ffi.h"
 
@@ -1649,8 +1650,29 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
                        (int)vnextAbi.nImplementedCapabilities));
     obj.push_back(Pair("privacy_vnext_consensus_capabilities",
                        (int)vnextAbi.nConsensusCapabilities));
-    obj.push_back(Pair("privacy_vnext_tree_root", std::string()));
-    obj.push_back(Pair("privacy_vnext_tree_size", 0));
+    // Tree from the finalized epoch; store size is the node-local index, reported separately.
+    std::string strVNextTreeRoot;
+    int64_t nVNextTreeSize = 0;
+    int64_t nVNextStoreSize = 0;
+    {
+        LOCK(cs_main);
+        const int nStoreEpoch = GetEpochForHeight(nBestHeight) - 1;
+        CEpochState vnextEpoch;
+        if (nStoreEpoch >= 0 &&
+            g_dagManager.GetEpochState(nStoreEpoch, vnextEpoch) &&
+            vnextEpoch.nSerVersion >= EPOCHSTATE_SER_VERSION_V4)
+        {
+            strVNextTreeRoot = HexStr(vnextEpoch.vchVNextRoot);
+            nVNextTreeSize = (int64_t)vnextEpoch.nVNextTreeSize;
+        }
+        CTxDB txdb("r");
+        uint64_t nStored = 0;
+        if (ReadPrivacyVNextTreeStoreSize(txdb, nStored))
+            nVNextStoreSize = (int64_t)nStored;
+    }
+    obj.push_back(Pair("privacy_vnext_tree_root", strVNextTreeRoot));
+    obj.push_back(Pair("privacy_vnext_tree_size", nVNextTreeSize));
+    obj.push_back(Pair("privacy_vnext_tree_store_size", nVNextStoreSize));
     obj.push_back(Pair("privacy_vnext_max_inputs",
                        (int)vnextAbi.nMaxInputs));
     obj.push_back(Pair("privacy_vnext_max_outputs",
