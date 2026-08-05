@@ -10,6 +10,7 @@
 #include "privacy_vnext_ffi.h"
 
 class CTxDB;
+struct CEpochState;
 
 // Node-local index of the finalized IV5 tree: leaves and per-level node hashes, so a
 // membership witness is read by leaf index. Derived state; the epoch root is authoritative.
@@ -27,6 +28,16 @@ bool GrowPrivacyVNextTreeStore(CTxDB& txdb,
 bool TrimPrivacyVNextTreeStore(CTxDB& txdb, uint64_t nNewSize,
                                const std::vector<unsigned char>& treeState,
                                std::string& strErrorOut);
+
+// Bring the store in line with the persisted epoch chain through `nThroughEpoch`.
+// Idempotent; a failure must be logged and retried, never fail block processing.
+bool SyncPrivacyVNextTreeStore(CTxDB& txdb, int nThroughEpoch,
+                               std::string& strErrorOut);
+
+// Collect one epoch's output leaves in the order the epoch state fixes.
+bool CollectPrivacyVNextEpochLeaves(const CEpochState& state,
+                                    std::vector<PrivacyVNextOutputLeaf>& vLeavesOut,
+                                    std::string& strErrorOut);
 
 // Read the sibling path for each target, framed as a path-mode witness request tail.
 bool ReadPrivacyVNextTreePaths(CTxDB& txdb, uint64_t nTreeSize,

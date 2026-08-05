@@ -28,6 +28,7 @@
 #include "finality.h"
 #include "dag.h"
 #include "privacy_vnext_ffi.h"
+#include "privacy_vnext_store.h"
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/filesystem/fstream.hpp>
@@ -9653,6 +9654,18 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
       DateTimeStrFormat("%x %H:%M:%S", pindexBest->GetBlockTime()).c_str());
 
     nTimeBestReceived = GetTime();
+
+    // Keep the IV5 tree store level with the epoch chain it indexes. The store is derived
+    // and rebuildable, so a failure is reported and retried on the next block rather than
+    // allowed to fail the tip, and the catch-up is left until the node is synced.
+    if (!fIsInitialDownload && IsBoundaryBActiveAtHeight(nBestHeight))
+    {
+        const int nStoreEpoch = GetEpochForHeight(nBestHeight) - 1;
+        std::string strStoreError;
+        if (!SyncPrivacyVNextTreeStore(txdb, nStoreEpoch, strStoreError))
+            printf("SetBestChain: IV5 tree store did not reach epoch %d: %s\n",
+                   nStoreEpoch, strStoreError.c_str());
+    }
 
     // Check the version of the last 100 blocks to see if we need to upgrade:
     if (!fIsInitialDownload)

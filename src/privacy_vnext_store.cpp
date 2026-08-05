@@ -5,6 +5,8 @@
 
 #include <cstring>
 
+#include "dag.h"
+#include "main.h"
 #include "txdb-leveldb.h"
 #include "util.h"
 
@@ -180,6 +182,15 @@ bool TrimPrivacyVNextTreeStore(CTxDB& txdb, uint64_t nNewSize,
     if (nNewSize == nStored)
         return true;
 
+    // Lower the recorded size before erasing anything. The size marker must never claim
+    // data the store no longer holds, or a crash mid-trim leaves reads running off the end;
+    // stale leaves left above it are harmless and a later append overwrites them.
+    if (!txdb.WritePrivacyVNextTreeStoreSize(nNewSize))
+    {
+        strErrorOut = "could not lower the IV5 tree store size";
+        return false;
+    }
+
     for (uint64_t nIndex = nNewSize; nIndex < nStored; ++nIndex)
     {
         if (!txdb.ErasePrivacyVNextTreeLeaf(nIndex))
@@ -230,10 +241,130 @@ bool TrimPrivacyVNextTreeStore(CTxDB& txdb, uint64_t nNewSize,
             return false;
         }
     }
+    return true;
+}
 
-    if (!txdb.WritePrivacyVNextTreeStoreSize(nNewSize))
+bool CollectPrivacyVNextEpochLeaves(
+    const CEpochState& state,
+    std::vector<PrivacyVNextOutputLeaf>& vLeavesOut,
+    std::string& strErrorOut)
+{
+    vLeavesOut.clear();
+    strErrorOut.clear();
+
+    for (size_t t = 0; t < state.vVNextActiveTxIds.size(); ++t)
     {
-        strErrorOut = "could not persist the trimmed IV5 tree store size";
+        const uint256& hashTx = state.vVNextActiveTxIds[t];
+        CTransaction tx;
+        uint256 hashBlock;
+        if (!GetTransaction(hashTx, tx, hashBlock))
+        {
+            strErrorOut = strprintf("IV5 epoch transaction %s is not retrievable",
+                                    hashTx.ToString().substr(0, 20).c_str());
+            return false;
+        }
+        if (!tx.IsPrivacyVNext() || !tx.privacyVNext.IsPresent())
+            continue;
+
+        PrivacyVNextStateEffects effects;
+        const PrivacyVNextPayloadValidation validation =
+            ExtractPrivacyVNextPayloadEffects(
+                static_cast<uint32_t>(tx.nVersion),
+                tx.privacyVNext.vchPayload, effects);
+        if (!validation.IsValid())
+        {
+            strErrorOut = "IV5 epoch payload does not revalidate: " +
+                          validation.strError;
+            return false;
+        }
+        vLeavesOut.insert(vLeavesOut.end(), effects.outputLeaves.begin(),
+                          effects.outputLeaves.end());
+    }
+    return true;
+}
+
+bool SyncPrivacyVNextTreeStore(CTxDB& txdb, int nThroughEpoch,
+                               std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    if (nThroughEpoch < 0)
+        return true;
+
+    CEpochState target;
+    if (!g_dagManager.GetEpochState(nThroughEpoch, target))
+        return true;
+    if (target.nSerVersion < EPOCHSTATE_SER_VERSION_V4)
+        return true;
+
+    uint64_t nStored = 0;
+    if (!txdb.ReadPrivacyVNextTreeStoreSize(nStored))
+        nStored = 0;
+    if (nStored == target.nVNextTreeSize)
+        return true;
+
+    // Resume from the epoch boundary the store already sits on. A store that sits between
+    // two boundaries cannot be resumed, so it is trimmed back to the last one it passed.
+    int nResume = -1;
+    uint64_t nResumeSize = 0;
+    std::vector<unsigned char> resumeState;
+    if (nStored > 0)
+    {
+        for (int nEpoch = nThroughEpoch; nEpoch >= 0; --nEpoch)
+        {
+            CEpochState state;
+            if (!g_dagManager.GetEpochState(nEpoch, state) ||
+                state.nSerVersion < EPOCHSTATE_SER_VERSION_V4)
+                continue;
+            if (state.nVNextTreeSize > nStored)
+                continue;
+            nResume = nEpoch;
+            nResumeSize = state.nVNextTreeSize;
+            resumeState = state.vchVNextTreeState;
+            break;
+        }
+    }
+    if (nResume < 0)
+    {
+        PrivacyVNextEpochSeed seed;
+        if (!LoadPrivacyVNextEpochSeed(seed, strErrorOut))
+            return false;
+        resumeState = seed.vchTreeState;
+        nResumeSize = 0;
+    }
+    if (nStored != nResumeSize &&
+        !TrimPrivacyVNextTreeStore(txdb, nResumeSize, resumeState, strErrorOut))
+        return false;
+
+    std::vector<unsigned char> treeState = resumeState;
+    for (int nEpoch = nResume + 1; nEpoch <= nThroughEpoch; ++nEpoch)
+    {
+        CEpochState state;
+        if (!g_dagManager.GetEpochState(nEpoch, state) ||
+            state.nSerVersion < EPOCHSTATE_SER_VERSION_V4)
+            continue;
+
+        std::vector<PrivacyVNextOutputLeaf> vLeaves;
+        if (!CollectPrivacyVNextEpochLeaves(state, vLeaves, strErrorOut))
+            return false;
+        if (!GrowPrivacyVNextTreeStore(txdb, vLeaves, treeState, strErrorOut))
+            return false;
+        if (treeState != state.vchVNextTreeState)
+        {
+            strErrorOut = strprintf(
+                "IV5 tree store replay of epoch %d does not reproduce the epoch frontier",
+                nEpoch);
+            return false;
+        }
+    }
+
+    uint64_t nFinal = 0;
+    if (!txdb.ReadPrivacyVNextTreeStoreSize(nFinal))
+        nFinal = 0;
+    if (nFinal != target.nVNextTreeSize)
+    {
+        strErrorOut = strprintf(
+            "IV5 tree store reached %" PRIu64 " leaves but epoch %d records %" PRIu64,
+            nFinal, nThroughEpoch, target.nVNextTreeSize);
         return false;
     }
     return true;

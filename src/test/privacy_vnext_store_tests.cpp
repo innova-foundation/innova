@@ -190,4 +190,94 @@ BOOST_AUTO_TEST_CASE(a_trimmed_store_matches_a_freshly_grown_one)
         BOOST_CHECK(vFromPaths[i].vchRecord == vFromLeaves[i].vchRecord);
 }
 
+// A store that is behind the frontier must refuse to append rather than write leaves at
+// indices consensus never assigned. Recovery is the sync path's job, not the caller's.
+BOOST_AUTO_TEST_CASE(growing_a_store_that_lags_the_frontier_fails_closed)
+{
+    CTxDB txdb("r+");
+    std::string strError;
+
+    std::vector<PrivacyVNextOutputLeaf> vLeaves;
+    for (uint64_t i = 0; i < 40; ++i)
+        vLeaves.push_back(StoreTestLeaf(2000 + i));
+
+    std::vector<unsigned char> state = EmptyVNextTreeState();
+    ResetStore(txdb, state);
+    BOOST_REQUIRE_MESSAGE(
+        GrowPrivacyVNextTreeStore(txdb, vLeaves, state, strError), strError);
+
+    // The frontier has moved on; the store has not. Appending against it would place the
+    // next leaf at the wrong index.
+    ResetStore(txdb, EmptyVNextTreeState());
+    std::vector<PrivacyVNextOutputLeaf> vMore;
+    vMore.push_back(StoreTestLeaf(3000));
+    BOOST_CHECK(!GrowPrivacyVNextTreeStore(txdb, vMore, state, strError));
+    BOOST_CHECK(!strError.empty());
+
+    uint64_t nStored = 1;
+    BOOST_REQUIRE(ReadPrivacyVNextTreeStoreSize(txdb, nStored));
+    BOOST_CHECK_EQUAL(nStored, 0U);
+}
+
+// Trimming lowers the recorded size before erasing, so an interrupted trim can never leave
+// the store claiming leaves it no longer holds.
+BOOST_AUTO_TEST_CASE(a_trim_never_claims_more_than_it_holds)
+{
+    CTxDB txdb("r+");
+    std::string strError;
+
+    std::vector<PrivacyVNextOutputLeaf> vLeaves;
+    for (uint64_t i = 0; i < 50; ++i)
+        vLeaves.push_back(StoreTestLeaf(4000 + i));
+
+    std::vector<unsigned char> state = EmptyVNextTreeState();
+    ResetStore(txdb, state);
+    BOOST_REQUIRE_MESSAGE(
+        GrowPrivacyVNextTreeStore(txdb, vLeaves, state, strError), strError);
+
+    // Recover the frontier the shorter tree has by replaying it, then trim to it. Every
+    // leaf and node the trimmed store still reports must be readable, at every position.
+    const std::vector<PrivacyVNextOutputLeaf> vShort(vLeaves.begin(),
+                                                     vLeaves.begin() + 20);
+    std::vector<unsigned char> shortState = EmptyVNextTreeState();
+    {
+        std::vector<unsigned char> nextRoot;
+        uint64_t nNextSize = 0;
+        for (size_t i = 0; i < vShort.size(); ++i)
+        {
+            const std::vector<PrivacyVNextOutputLeaf> vOne(vShort.begin() + i,
+                                                           vShort.begin() + i + 1);
+            std::vector<unsigned char> nextState;
+            BOOST_REQUIRE_MESSAGE(
+                ApplyPrivacyVNextOutputLeaves(shortState, vOne, nextState,
+                                              nextRoot, nNextSize, strError),
+                strError);
+            shortState.swap(nextState);
+        }
+        BOOST_REQUIRE_EQUAL(nNextSize, 20U);
+    }
+
+    BOOST_REQUIRE_MESSAGE(
+        TrimPrivacyVNextTreeStore(txdb, 20, shortState, strError), strError);
+    uint64_t nStored = 0;
+    BOOST_REQUIRE(ReadPrivacyVNextTreeStoreSize(txdb, nStored));
+    BOOST_CHECK_EQUAL(nStored, 20U);
+
+    for (uint64_t nTarget = 0; nTarget < nStored; ++nTarget)
+    {
+        std::vector<uint64_t> vTargets;
+        vTargets.push_back(nTarget);
+        std::vector<unsigned char> vchPaths;
+        BOOST_REQUIRE_MESSAGE(
+            ReadPrivacyVNextTreePaths(txdb, nStored, vTargets, vchPaths, strError),
+            strError);
+        std::vector<PrivacyVNextMembershipWitness> vWitnesses;
+        PrivacyVNextDigest root;
+        BOOST_REQUIRE_MESSAGE(
+            BuildPrivacyVNextWitnessesFromPaths(shortState, vTargets, vchPaths,
+                                                vWitnesses, root, strError),
+            strError);
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
