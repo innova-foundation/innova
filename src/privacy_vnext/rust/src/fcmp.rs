@@ -46,6 +46,8 @@ const RESPONSE_HEADER_LEN: usize = 4;
 const RESPONSE_RECORD_LEN: usize = 256;
 const BATCH_HEADER_LEN: usize = 8;
 const PROVER_RNG_DOMAIN: &[u8] = b"Innova/IV5/FCMP++/ProverRng/v1";
+/// Where the signable hash sits in a proving request, after the header and the root.
+const SIGNABLE_HASH_OFFSET: usize = 40;
 const BATCH_RNG_DOMAIN: &[u8] = b"Innova/IV5/FCMP++/BatchWeights/v1";
 
 type EdPoint = <Ed25519 as Ciphersuite>::G;
@@ -458,7 +460,24 @@ pub(super) fn prove(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         witnesses,
     } = parse_proving_request(request)?;
     let count = witnesses.len();
-    let mut rng = deterministic_rng(PROVER_RNG_DOMAIN, &[request]);
+    // Seed from everything in the request except the signable hash.
+    //
+    // The hash a payload signs covers the pseudo-outputs the payload names, and those are
+    // this rerandomization's output. Seeding the rerandomization from the hash as well
+    // would make the two define each other, and no payload carrying an input could then be
+    // built. The seed still binds the caller entropy, which must be nonzero and freshly
+    // drawn per transaction, along with the root and every witness.
+    let mut rng = deterministic_rng(
+        PROVER_RNG_DOMAIN,
+        &[
+            request
+                .get(..SIGNABLE_HASH_OFFSET)
+                .ok_or(ResultCode::BadLength)?,
+            request
+                .get(SIGNABLE_HASH_OFFSET + 32..)
+                .ok_or(ResultCode::BadLength)?,
+        ],
+    );
     let t_generator = monero_t();
     let u_generator = EdwardsPoint((*FCMP_PLUS_PLUS_U).into());
     let v_generator = EdwardsPoint((*FCMP_PLUS_PLUS_V).into());
@@ -853,6 +872,78 @@ mod tests {
         let verification = verification_request_from_response(root_bytes, signable_hash, &response)
             .expect("verification request");
         verify(&verification).expect("a proof over a real witness must verify");
+    }
+
+    // Pseudo-outputs must not depend on the signable hash that covers them: two hashes
+    // give the same pseudo-outputs and key images, each proof verifying under its own.
+    #[test]
+    fn pseudo_outputs_do_not_depend_on_the_signable_hash() {
+        let mut rng = ChaCha20Rng::from_seed([0x63; 32]);
+        let x = EdScalar::from(23_u64);
+        let y = EdScalar::from(29_u64);
+        let output = FcmpOutput::new(
+            (<Ed25519 as Ciphersuite>::generator() * x) + (monero_t() * y),
+            <Ed25519 as Ciphersuite>::generator() * EdScalar::from(31_u64),
+            <Ed25519 as Ciphersuite>::generator() * EdScalar::from(37_u64),
+        )
+        .expect("test output is nonidentity");
+
+        let mut leaves = vec![output];
+        while leaves.len() < 45 {
+            leaves.push(random_output(&mut rng));
+        }
+        let mut leaf_bytes = Vec::new();
+        for leaf in &leaves {
+            append_output(&mut leaf_bytes, leaf);
+        }
+        let state = tree_from_leaves(&leaf_bytes);
+        let witness_response = crate::tree::witness(&witness_request(&state, &[0], &leaf_bytes))
+            .expect("witness must be produced");
+        let root_bytes: [u8; 32] = witness_response[12..44]
+            .try_into()
+            .expect("root is 32 bytes");
+        let record = &witness_response[48..];
+
+        let build = |signable_hash: [u8; 32]| {
+            let mut request = Vec::new();
+            request.extend_from_slice(&SCHEMA.to_le_bytes());
+            request.push(LAYERS);
+            request.push(ROOT_CURVE_HELIOS);
+            request.push(1);
+            request.extend_from_slice(&[0; 3]);
+            request.extend_from_slice(&root_bytes);
+            request.extend_from_slice(&signable_hash);
+            request.extend_from_slice(&[0x4d; 32]);
+            append_scalar::<Ed25519>(&mut request, x);
+            append_scalar::<Ed25519>(&mut request, y);
+            request.extend_from_slice(record);
+            request
+        };
+
+        let first_hash = [0x01; 32];
+        let second_hash = [0x02; 32];
+        let first = prove(&build(first_hash)).expect("first proof");
+        let second = prove(&build(second_hash)).expect("second proof");
+
+        // The construction record leads the response: pseudo-output then key image.
+        assert_eq!(&first[4..68], &second[4..68]);
+
+        // Each proof must still be bound to the hash it was made under.
+        verify(
+            &verification_request_from_response(root_bytes, first_hash, &first)
+                .expect("verification request"),
+        )
+        .expect("first proof verifies under its own hash");
+        verify(
+            &verification_request_from_response(root_bytes, second_hash, &second)
+                .expect("verification request"),
+        )
+        .expect("second proof verifies under its own hash");
+        assert!(verify(
+            &verification_request_from_response(root_bytes, second_hash, &first)
+                .expect("verification request"),
+        )
+        .is_err());
     }
 
     // Two leaves of a deep tree, reaching nonzero branch indexes and a partial leaf branch
