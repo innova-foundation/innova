@@ -68,6 +68,7 @@ pub const CAP_KEY_DERIVATION: u32 = 1 << 10;
 pub const CAP_NOTE_SCAN: u32 = 1 << 11;
 const CAP_PAYLOAD_SCAN: u32 = 1 << 16;
 pub const CAP_TREE_EXTEND: u32 = 1 << 17;
+pub const CAP_PAYLOAD_SIGNING_HASH: u32 = 1 << 18;
 pub const CAP_NOTE_ENCRYPT: u32 = 1 << 12;
 pub const CAP_VALUE_PROVE: u32 = 1 << 13;
 pub const CAP_PAYLOAD_EFFECTS: u32 = 1 << 14;
@@ -89,7 +90,8 @@ const IMPLEMENTED_CAPABILITIES: u32 = CAP_PROTOCOL_CONTRACT
     | CAP_VALUE_PROVE
     | CAP_PAYLOAD_EFFECTS
     | CAP_NULLIFIER_ACCUMULATOR
-    | CAP_TREE_EXTEND;
+    | CAP_TREE_EXTEND
+    | CAP_PAYLOAD_SIGNING_HASH;
 const CONSENSUS_CAPABILITIES: u32 = 0;
 pub const NOTE_SHIELD: u8 = 0;
 pub const NOTE_UNSHIELD: u8 = 1;
@@ -1070,6 +1072,33 @@ pub unsafe extern "C" fn innova_privacy_vnext_payload_validate(
         // SAFETY: null was checked and the caller guarantees `request_len`
         // readable bytes. The payload parser performs all framing checks.
         payload::validate(unsafe { slice::from_raw_parts(request, request_len) })
+    })
+}
+
+/// Hash a payload prefix so a builder's proofs bind to the value validation recomputes.
+///
+/// # Safety
+///
+/// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_payload_signing_hash(
+    request: *const u8,
+    request_len: usize,
+    out: *mut u8,
+    out_len: usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        // SAFETY: request validation precedes this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        if out.is_null() || out_len != DIGEST_SIZE {
+            return Err(ResultCode::BadLength);
+        }
+        let hash = payload::signing_hash(request)?;
+        // SAFETY: null and exact length were checked above. The C contract requires
+        // `out` to identify writable caller-owned storage of `out_len` bytes.
+        unsafe { ptr::copy_nonoverlapping(hash.as_ptr(), out, DIGEST_SIZE) };
+        Ok(())
     })
 }
 

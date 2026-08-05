@@ -362,6 +362,94 @@ struct PrivacyVNextMembershipWitness
     PrivacyVNextMembershipWitness() : nLeafIndex(0) {}
 };
 
+// One encrypted output, ready to be serialized into a payload. Distinct from
+// PrivacyVNextEncryptedNote, which carries the single ciphertext a scan reads back.
+struct PrivacyVNextEncryptedOutput
+{
+    uint32_t nOutputIndex;
+    PrivacyVNextOutputLeaf leaf;        // O, I and C, in payload order
+    PrivacyVNextDigest ephemeral;
+    std::vector<unsigned char> vchRecipientCiphertext;
+    std::vector<unsigned char> vchOutgoingCiphertext;
+
+    PrivacyVNextEncryptedOutput() : nOutputIndex(0) { ephemeral.fill(0); }
+};
+
+// Encrypt one output to a recipient address.
+//
+// `y` and `mask` are the note's openings and `keyImageBase` its I point; the caller keeps
+// them to spend the note later.
+bool EncryptPrivacyVNextNote(
+    uint8_t nNetwork,
+    uint8_t nAddressType,
+    uint32_t nOutputIndex,
+    const PrivacyVNextDigest& genesis,
+    const PrivacyVNextDigest& recipientSpend,
+    const PrivacyVNextDigest& recipientView,
+    const PrivacyVNextDigest& outgoingSecret,
+    const PrivacyVNextDigest& ephemeralSecret,
+    uint64_t nAmount,
+    const PrivacyVNextDigest& y,
+    const PrivacyVNextDigest& mask,
+    const PrivacyVNextDigest& keyImageBase,
+    PrivacyVNextEncryptedOutput& noteOut,
+    std::string& error);
+
+// What proving one input yields, beyond the shared proof itself.
+struct PrivacyVNextSpendConstruction
+{
+    PrivacyVNextDigest pseudoOut;
+    PrivacyVNextDigest keyImage;
+    PrivacyVNextDigest pseudoOutMaskDelta;   // caller-secret; added to the note mask
+    PrivacyVNextDigest senderAuthority;
+    std::vector<unsigned char> vchSenderDisclosureProof;
+
+    PrivacyVNextSpendConstruction()
+    {
+        pseudoOut.fill(0);
+        keyImage.fill(0);
+        pseudoOutMaskDelta.fill(0);
+        senderAuthority.fill(0);
+    }
+
+    void Clear();
+    ~PrivacyVNextSpendConstruction() { Clear(); }
+};
+
+// One input's secrets and its membership witness record.
+struct PrivacyVNextSpendInput
+{
+    PrivacyVNextDigest spendScalar;          // x
+    PrivacyVNextDigest commitmentScalar;     // y
+    PrivacyVNextOutputLeaf leaf;
+    std::vector<unsigned char> vchWitnessRecord;  // from the witness builder, spliced verbatim
+
+    void Clear();
+    ~PrivacyVNextSpendInput() { Clear(); }
+};
+
+// Hash a serialized payload prefix so the proofs a builder makes bind to the value
+// validation will recompute. The prefix runs through the finality body and stops before
+// the first proof section.
+bool HashPrivacyVNextPayloadPrefix(
+    uint32_t nWireVersion,
+    const std::vector<unsigned char>& vchPrefix,
+    PrivacyVNextDigest& hashOut,
+    std::string& error);
+
+// Exact upstream proof size for a given input count at the fixed layer depth.
+bool GetPrivacyVNextProofSize(uint32_t nInputs, size_t& nSizeOut, std::string& error);
+
+// Prove membership for every input against one finalized root.
+bool ProvePrivacyVNextMembership(
+    const PrivacyVNextDigest& finalizedRoot,
+    const PrivacyVNextDigest& signableHash,
+    const PrivacyVNextDigest& entropy,
+    const std::vector<PrivacyVNextSpendInput>& inputs,
+    std::vector<PrivacyVNextSpendConstruction>& constructions,
+    std::vector<unsigned char>& vchProof,
+    std::string& error);
+
 // Builds one witness per target from sibling paths a caller read out of a tree store.
 // The request carries only the paths, so this serves any tree the layout allows.
 bool BuildPrivacyVNextWitnessesFromPaths(

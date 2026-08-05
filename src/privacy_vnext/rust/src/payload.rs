@@ -711,6 +711,26 @@ pub(crate) fn validate(request: &[u8]) -> Result<(), ResultCode> {
     validate_payload(wire_version, payload).map(|_| ())
 }
 
+/// Hash of the serialized payload prefix; the single definition shared by builder
+/// and validator.
+pub(crate) fn signing_hash(request: &[u8]) -> Result<[u8; 32], ResultCode> {
+    if request.len() < VALIDATION_PREFIX_SIZE + 4 {
+        return Err(ResultCode::BadLength);
+    }
+    if u16::from_le_bytes([request[0], request[1]]) != PAYLOAD_SCHEMA_U16 {
+        return Err(ResultCode::UnsupportedFormat);
+    }
+    if request[2] != 0 || request[3] != 0 {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    let wire_version = u32::from_le_bytes(
+        request[4..8]
+            .try_into()
+            .map_err(|_| ResultCode::BadLength)?,
+    );
+    Ok(signable_hash(wire_version, &request[8..]))
+}
+
 pub(crate) fn effects(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     let (wire_version, payload) = request_parts(request)?;
     validate_payload(wire_version, payload)?.encode()

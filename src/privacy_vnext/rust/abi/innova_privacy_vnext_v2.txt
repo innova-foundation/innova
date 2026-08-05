@@ -23,6 +23,7 @@ functions:
   innova_privacy_vnext_nullifier_root(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_tree_witness(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_payload_scan(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_payload_signing_hash(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_len)
   innova_privacy_vnext_payload_validate(const uint8_t *request, size_t request_len)
   innova_privacy_vnext_payload_effects(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_address_encode(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
@@ -58,7 +59,8 @@ capabilities:
   bit-15 nullifier-accumulator-update-and-root
   bit-16 payload-output-scanning
   bit-17 tree-extension
-implemented-capabilities: bits 0 through 17
+  bit-18 payload-signing-hash
+implemented-capabilities: bits 0 through 18
 consensus-capabilities: none
 fixed-output-length: 32
 parameter-digest: sha256(../contract/iv5_protocol_v1.json)
@@ -248,6 +250,14 @@ nullifier-state-and-root:
   empty-root: first-32-bytes(blake2b-512(Innova/IV5/NullifierAccumulator/Empty/v1))
   step-root: first-32-bytes(blake2b-512(Innova/IV5/NullifierAccumulator/Step/v1, previous-root, previous-count-u64-le, key-image))
   exact-spent-membership: C++ LevelDB keys and epoch undo remain authoritative; this bounded state is the deterministic epoch commitment
+payload-signing-hash-request:
+  fields: schema-u16-le, reserved-zero-2, outer-wire-version-u32-le, payload-prefix-to-eof
+  payload-prefix: the canonical payload serialized through its finality body, exclusive of
+    every proof section
+  output-exact-size: 32
+  behavior: the hash a spend's proofs bind to is defined only here, so a builder that
+    serializes the prefix differently from the validator produces proofs that fail their
+    own verification rather than reaching the network
 payload-validation-request:
   fields: outer-wire-version-u32-le, canonical-payload-to-eof
   exact outer versions: 2000..2008 under the normative envelope matrix

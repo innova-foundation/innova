@@ -166,6 +166,7 @@ OBJS= \
     obj/shielded.o \
     obj/privacy_vnext_ffi.o \
     obj/privacy_vnext_store.o \
+    obj/privacy_vnext_builder.o \
     obj/zkproof.o \
     obj/verifycache.o \
     obj/lelantus.o \
@@ -234,6 +235,7 @@ TEST_OBJS= \
     obj/test/fcmp_root_tests.o \
     obj/test/privacy_vnext_abi_tests.o \
     obj/test/privacy_vnext_store_tests.o \
+    obj/test/privacy_vnext_builder_tests.o \
     obj/test/idag_validation_tests.o \
     obj/test/shielded_nullifier_binding_tests.o \
     obj/test/finality_vote_binding_tests.o \

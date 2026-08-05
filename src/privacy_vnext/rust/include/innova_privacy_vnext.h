@@ -62,6 +62,7 @@ extern "C" {
 #define INNOVA_PRIVACY_VNEXT_CAP_NULLIFIER_ACCUMULATOR (1u << 15)
 #define INNOVA_PRIVACY_VNEXT_CAP_PAYLOAD_SCAN (1u << 16)
 #define INNOVA_PRIVACY_VNEXT_CAP_TREE_EXTEND (1u << 17)
+#define INNOVA_PRIVACY_VNEXT_CAP_PAYLOAD_SIGNING_HASH (1u << 18)
 #define INNOVA_PRIVACY_VNEXT_IMPLEMENTED_CAPABILITIES \
     (INNOVA_PRIVACY_VNEXT_CAP_PROTOCOL_CONTRACT | \
      INNOVA_PRIVACY_VNEXT_CAP_FCMP_PROOF_SIZE | \
@@ -80,6 +81,7 @@ extern "C" {
      INNOVA_PRIVACY_VNEXT_CAP_PAYLOAD_EFFECTS | \
      INNOVA_PRIVACY_VNEXT_CAP_NULLIFIER_ACCUMULATOR | \
      INNOVA_PRIVACY_VNEXT_CAP_TREE_EXTEND | \
+     INNOVA_PRIVACY_VNEXT_CAP_PAYLOAD_SIGNING_HASH | \
      INNOVA_PRIVACY_VNEXT_CAP_PAYLOAD_SCAN)
 
 #define INNOVA_PRIVACY_VNEXT_OP_SHIELD (1u << 0)
@@ -205,6 +207,11 @@ int32_t innova_privacy_vnext_tree_witness(
     size_t out_capacity,
     size_t *out_written);
 /* Request: outer-wire-version-u32-le followed by one canonical payload. */
+int32_t innova_privacy_vnext_payload_signing_hash(
+    const uint8_t *request,
+    size_t request_len,
+    uint8_t *out,
+    size_t out_len);
 int32_t innova_privacy_vnext_payload_validate(
     const uint8_t *request,
     size_t request_len);

@@ -9,7 +9,7 @@
 namespace iv5
 {
 static const char PROTOCOL_CONTRACT_SHA256[] =
-    "78efdd143b59bc3f4e2c9c2029a5e3138f1b7777d60cf2302f209ab8cabe25df";
+    "e96d83a0e7ead16045f92b8f0ac87a2fc5c4d98048d494a7a1a09c0662a3ef04";
 static const uint16_t PROTOCOL_SCHEMA = 1;
 static const unsigned char ENVELOPE_MARKER[5] = {
     0xff, 0x49, 0x56, 0x35, 0x50

@@ -1244,6 +1244,294 @@ bool ScanPrivacyVNextPayload(
     return true;
 }
 
+void PrivacyVNextSpendConstruction::Clear()
+{
+    OPENSSL_cleanse(pseudoOutMaskDelta.data(), pseudoOutMaskDelta.size());
+    pseudoOut.fill(0);
+    keyImage.fill(0);
+    senderAuthority.fill(0);
+    if (!vchSenderDisclosureProof.empty())
+        OPENSSL_cleanse(&vchSenderDisclosureProof[0],
+                        vchSenderDisclosureProof.size());
+    vchSenderDisclosureProof.clear();
+}
+
+void PrivacyVNextSpendInput::Clear()
+{
+    OPENSSL_cleanse(spendScalar.data(), spendScalar.size());
+    OPENSSL_cleanse(commitmentScalar.data(), commitmentScalar.size());
+    if (!vchWitnessRecord.empty())
+        OPENSSL_cleanse(&vchWitnessRecord[0], vchWitnessRecord.size());
+    vchWitnessRecord.clear();
+}
+
+bool EncryptPrivacyVNextNote(
+    uint8_t nNetwork,
+    uint8_t nAddressType,
+    uint32_t nOutputIndex,
+    const PrivacyVNextDigest& genesis,
+    const PrivacyVNextDigest& recipientSpend,
+    const PrivacyVNextDigest& recipientView,
+    const PrivacyVNextDigest& outgoingSecret,
+    const PrivacyVNextDigest& ephemeralSecret,
+    uint64_t nAmount,
+    const PrivacyVNextDigest& y,
+    const PrivacyVNextDigest& mask,
+    const PrivacyVNextDigest& keyImageBase,
+    PrivacyVNextEncryptedOutput& noteOut,
+    std::string& error)
+{
+    noteOut = PrivacyVNextEncryptedOutput();
+    error.clear();
+
+    uint8_t request[INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_REQUEST_SIZE] = {0};
+    request[0] = static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA);
+    request[1] = 0;
+    request[2] = nNetwork;
+    request[3] = nAddressType;
+    PutLE32(request + 4, nOutputIndex);
+    std::memcpy(request + 8, genesis.data(), 32);
+    std::memcpy(request + 40, recipientSpend.data(), 32);
+    std::memcpy(request + 72, recipientView.data(), 32);
+    std::memcpy(request + 104, outgoingSecret.data(), 32);
+    std::memcpy(request + 136, ephemeralSecret.data(), 32);
+    PutLE64(request + 168, nAmount);
+    std::memcpy(request + 176, y.data(), 32);
+    std::memcpy(request + 208, mask.data(), 32);
+    std::memcpy(request + 240, keyImageBase.data(), 32);
+
+    uint8_t result[INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_RESULT_SIZE] = {0};
+    size_t written = 0;
+    const int32_t rc = innova_privacy_vnext_note_encrypt(
+        request, sizeof(request), result, sizeof(result), &written);
+    OPENSSL_cleanse(request, sizeof(request));
+    if (rc != INNOVA_PRIVACY_VNEXT_VALID || written != sizeof(result))
+    {
+        OPENSSL_cleanse(result, sizeof(result));
+        error = ResultError("IV5 note encryption", rc);
+        return false;
+    }
+
+    noteOut.nOutputIndex = nOutputIndex;
+    std::memcpy(noteOut.leaf.owner.data(), result + 8, 32);
+    std::memcpy(noteOut.leaf.nullifierBase.data(), result + 40, 32);
+    std::memcpy(noteOut.leaf.commitment.data(), result + 72, 32);
+    std::memcpy(noteOut.ephemeral.data(), result + 104, 32);
+    noteOut.vchRecipientCiphertext.assign(
+        result + 136,
+        result + 136 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE);
+    noteOut.vchOutgoingCiphertext.assign(
+        result + 136 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE,
+        result + 136 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE +
+            INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE);
+    OPENSSL_cleanse(result, sizeof(result));
+    return true;
+}
+
+bool HashPrivacyVNextPayloadPrefix(
+    uint32_t nWireVersion,
+    const std::vector<unsigned char>& vchPrefix,
+    PrivacyVNextDigest& hashOut,
+    std::string& error)
+{
+    hashOut.fill(0);
+    error.clear();
+    if (vchPrefix.empty())
+    {
+        error = "IV5 signing hash needs a payload prefix";
+        return false;
+    }
+
+    std::vector<uint8_t> request;
+    request.reserve(8 + vchPrefix.size());
+    request.push_back(static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA));
+    request.push_back(0);
+    request.push_back(0);
+    request.push_back(0);
+    for (size_t i = 0; i < 4; ++i)
+        request.push_back(static_cast<uint8_t>(nWireVersion >> (8 * i)));
+    request.insert(request.end(), vchPrefix.begin(), vchPrefix.end());
+    if (request.size() > INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES)
+    {
+        error = "IV5 signing hash request exceeds the payload bound";
+        return false;
+    }
+
+    const int32_t rc = innova_privacy_vnext_payload_signing_hash(
+        &request[0], request.size(), hashOut.data(), hashOut.size());
+    if (rc != INNOVA_PRIVACY_VNEXT_VALID)
+    {
+        hashOut.fill(0);
+        error = ResultError("IV5 payload signing hash", rc);
+        return false;
+    }
+    return true;
+}
+
+bool GetPrivacyVNextProofSize(uint32_t nInputs, size_t& nSizeOut,
+                              std::string& error)
+{
+    nSizeOut = 0;
+    error.clear();
+    size_t nSize = 0;
+    const int32_t rc = innova_privacy_vnext_fcmp_proof_size(
+        nInputs, INNOVA_PRIVACY_VNEXT_TREE_LAYERS, &nSize);
+    if (rc != INNOVA_PRIVACY_VNEXT_VALID || nSize == 0)
+    {
+        error = ResultError("IV5 proof size", rc);
+        return false;
+    }
+    nSizeOut = nSize;
+    return true;
+}
+
+bool ProvePrivacyVNextMembership(
+    const PrivacyVNextDigest& finalizedRoot,
+    const PrivacyVNextDigest& signableHash,
+    const PrivacyVNextDigest& entropy,
+    const std::vector<PrivacyVNextSpendInput>& inputs,
+    std::vector<PrivacyVNextSpendConstruction>& constructions,
+    std::vector<unsigned char>& vchProof,
+    std::string& error)
+{
+    constructions.clear();
+    vchProof.clear();
+    error.clear();
+
+    if (inputs.empty() || inputs.size() > INNOVA_PRIVACY_VNEXT_MAX_INPUTS)
+    {
+        error = "IV5 membership proof needs between one and sixteen inputs";
+        return false;
+    }
+    PrivacyVNextDigest zero;
+    zero.fill(0);
+    if (entropy == zero)
+    {
+        error = "IV5 membership proof needs nonzero caller entropy";
+        return false;
+    }
+
+    static const size_t nHeader = 8;
+    std::vector<uint8_t> request;
+    request.resize(nHeader + 96, 0);
+    request[0] = static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA);
+    request[1] = 0;
+    request[2] = INNOVA_PRIVACY_VNEXT_TREE_LAYERS;
+    request[3] = 2;   // Helios root curve
+    request[4] = static_cast<uint8_t>(inputs.size());
+    std::memcpy(&request[nHeader], finalizedRoot.data(), 32);
+    std::memcpy(&request[nHeader + 32], signableHash.data(), 32);
+    std::memcpy(&request[nHeader + 64], entropy.data(), 32);
+
+    for (size_t i = 0; i < inputs.size(); ++i)
+    {
+        if (inputs[i].vchWitnessRecord.empty())
+        {
+            OPENSSL_cleanse(&request[0], request.size());
+            error = "IV5 membership proof input is missing its witness record";
+            return false;
+        }
+        request.insert(request.end(), inputs[i].spendScalar.begin(),
+                       inputs[i].spendScalar.end());
+        request.insert(request.end(), inputs[i].commitmentScalar.begin(),
+                       inputs[i].commitmentScalar.end());
+        // The witness record already opens with the target's own O-I-C leaf and carries
+        // the branches in proving order, so it splices in verbatim.
+        request.insert(request.end(), inputs[i].vchWitnessRecord.begin(),
+                       inputs[i].vchWitnessRecord.end());
+    }
+    if (request.size() > INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES)
+    {
+        OPENSSL_cleanse(&request[0], request.size());
+        error = "IV5 membership proof request exceeds the payload bound";
+        return false;
+    }
+
+    size_t required = 0;
+    int32_t rc = innova_privacy_vnext_fcmp_prove(&request[0], request.size(),
+                                                 NULL, 0, &required);
+    if (rc != INNOVA_PRIVACY_VNEXT_VALID || required == 0 ||
+        required > INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES)
+    {
+        OPENSSL_cleanse(&request[0], request.size());
+        error = ResultError("IV5 membership proof size query", rc);
+        return false;
+    }
+    std::vector<uint8_t> response(required, 0);
+    size_t written = 0;
+    rc = innova_privacy_vnext_fcmp_prove(&request[0], request.size(),
+                                         &response[0], response.size(),
+                                         &written);
+    OPENSSL_cleanse(&request[0], request.size());
+    if (rc != INNOVA_PRIVACY_VNEXT_VALID || written != required)
+    {
+        OPENSSL_cleanse(&response[0], response.size());
+        error = ResultError("IV5 membership proof", rc);
+        return false;
+    }
+
+    static const size_t nRespHeader =
+        INNOVA_PRIVACY_VNEXT_FCMP_PROVE_RESPONSE_HEADER_SIZE;
+    static const size_t nRecord =
+        INNOVA_PRIVACY_VNEXT_FCMP_PROVE_RESPONSE_RECORD_SIZE;
+    if (written < nRespHeader + (inputs.size() * nRecord) + 4 ||
+        response[0] != static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA) ||
+        response[1] != 0 ||
+        response[2] != INNOVA_PRIVACY_VNEXT_TREE_LAYERS ||
+        response[3] != static_cast<uint8_t>(inputs.size()))
+    {
+        OPENSSL_cleanse(&response[0], response.size());
+        error = "non-canonical IV5 membership proof response";
+        return false;
+    }
+
+    constructions.resize(inputs.size());
+    for (size_t i = 0; i < inputs.size(); ++i)
+    {
+        const size_t at = nRespHeader + (i * nRecord);
+        std::memcpy(constructions[i].pseudoOut.data(), &response[at], 32);
+        std::memcpy(constructions[i].keyImage.data(), &response[at + 32], 32);
+        std::memcpy(constructions[i].pseudoOutMaskDelta.data(),
+                    &response[at + INNOVA_PRIVACY_VNEXT_FCMP_PROVE_MASK_DELTA_OFFSET],
+                    32);
+        std::memcpy(constructions[i].senderAuthority.data(),
+                    &response[at + INNOVA_PRIVACY_VNEXT_FCMP_PROVE_SENDER_AUTHORITY_OFFSET],
+                    32);
+        constructions[i].vchSenderDisclosureProof.assign(
+            response.begin() + at + INNOVA_PRIVACY_VNEXT_FCMP_PROVE_SENDER_PROOF_OFFSET,
+            response.begin() + at + INNOVA_PRIVACY_VNEXT_FCMP_PROVE_SENDER_PROOF_OFFSET +
+                INNOVA_PRIVACY_VNEXT_SENDER_DISCLOSURE_PROOF_SIZE);
+    }
+
+    const size_t nLenAt = nRespHeader + (inputs.size() * nRecord);
+    uint32_t nProofLen = 0;
+    for (size_t b = 0; b < 4; ++b)
+        nProofLen |= static_cast<uint32_t>(response[nLenAt + b]) << (8 * b);
+    if (written != nLenAt + 4 + nProofLen)
+    {
+        constructions.clear();
+        OPENSSL_cleanse(&response[0], response.size());
+        error = "IV5 membership proof length does not match its response";
+        return false;
+    }
+    // The proof must be exactly the size upstream fixes for this input count, or the
+    // payload it goes into cannot be the canonical one a verifier expects.
+    size_t nExpected = 0;
+    if (!GetPrivacyVNextProofSize(static_cast<uint32_t>(inputs.size()),
+                                  nExpected, error) ||
+        nExpected != nProofLen)
+    {
+        constructions.clear();
+        OPENSSL_cleanse(&response[0], response.size());
+        if (error.empty())
+            error = "IV5 membership proof is not the exact upstream size";
+        return false;
+    }
+    vchProof.assign(response.begin() + nLenAt + 4, response.end());
+    OPENSSL_cleanse(&response[0], response.size());
+    return true;
+}
+
 static bool RunPrivacyVNextWitnessRequest(
     const std::vector<uint8_t>& request,
     const std::vector<uint64_t>& vTargetLeafIndexes,

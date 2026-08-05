@@ -130,6 +130,7 @@ def verify_configuration_and_abi() -> None:
             "innova_privacy_vnext_nullifier_update",
             "innova_privacy_vnext_nullifier_root",
             "innova_privacy_vnext_tree_witness",
+            "innova_privacy_vnext_payload_signing_hash",
             "innova_privacy_vnext_payload_validate",
             "innova_privacy_vnext_payload_effects",
             "innova_privacy_vnext_payload_scan",
