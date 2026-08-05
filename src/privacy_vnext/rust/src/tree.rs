@@ -1201,6 +1201,41 @@ mod tests {
         (store, state.expect("at least one batch"))
     }
 
+    // A rollback restores the store by re-reporting the spine for the frontier it rolled
+    // back to, which is an append of no leaves. That must report the same nodes the same
+    // size reached by appending, or a trimmed store disagrees with a grown one.
+    #[test]
+    fn an_empty_extension_reports_the_spine_without_moving_the_tree() {
+        for count in [1_u64, 38, 45, 90, 684, 700] {
+            let all = leaves(count);
+            let (grown, state) = extend_into_store(&all);
+
+            let mut request = vec![1, 0, 0, 0];
+            request.extend_from_slice(&state);
+            request.extend_from_slice(&0_u32.to_le_bytes());
+            let response = extend(&request).expect("empty extension");
+            assert_eq!(&response[..STATE_SIZE], &state[..], "count={count}");
+
+            let reported = usize::from(u16::from_le_bytes([
+                response[STATE_SIZE],
+                response[STATE_SIZE + 1],
+            ]));
+            assert!(reported > 0, "count={count}");
+            for index in 0..reported {
+                let at = STATE_SIZE + 4 + (index * EXTENSION_NODE_SIZE);
+                let level = response[at];
+                let node = u64::from_le_bytes(response[at + 4..at + 12].try_into().expect("index"));
+                let mut point = [0_u8; 32];
+                point.copy_from_slice(&response[at + 12..at + 44]);
+                assert_eq!(
+                    grown.get(&(level, node)),
+                    Some(&point),
+                    "count={count} level={level} index={node}"
+                );
+            }
+        }
+    }
+
     // The store a caller builds from the reported nodes must equal the tree a full rebuild
     // produces. If it ever diverged, a served path would open a root nobody else holds.
     #[test]

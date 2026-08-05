@@ -116,6 +116,27 @@ bool ApplyPrivacyVNextOutputLeaves(
     uint64_t& nextSize,
     std::string& error);
 
+// One per-level node an append created or changed.
+struct PrivacyVNextTreeNode
+{
+    uint8_t nLevel;
+    uint64_t nIndex;
+    PrivacyVNextDigest point;
+
+    PrivacyVNextTreeNode() : nLevel(0), nIndex(0) { point.fill(0); }
+};
+
+// Apply output leaves and additionally report the nodes the append touched, so a caller
+// keeping a tree store can persist them.
+bool ExtendPrivacyVNextOutputLeaves(
+    const std::vector<unsigned char>& currentState,
+    const std::vector<PrivacyVNextOutputLeaf>& leaves,
+    std::vector<unsigned char>& nextState,
+    std::vector<unsigned char>& nextRoot,
+    uint64_t& nextSize,
+    std::vector<PrivacyVNextTreeNode>& nodes,
+    std::string& error);
+
 bool ApplyPrivacyVNextNullifiers(
     const std::vector<unsigned char>& currentState,
     const std::vector<PrivacyVNextDigest>& keyImages,
@@ -340,6 +361,16 @@ struct PrivacyVNextMembershipWitness
 
     PrivacyVNextMembershipWitness() : nLeafIndex(0) {}
 };
+
+// Builds one witness per target from sibling paths a caller read out of a tree store.
+// The request carries only the paths, so this serves any tree the layout allows.
+bool BuildPrivacyVNextWitnessesFromPaths(
+    const std::vector<unsigned char>& treeState,
+    const std::vector<uint64_t>& vTargetLeafIndexes,
+    const std::vector<unsigned char>& vchPaths,
+    std::vector<PrivacyVNextMembershipWitness>& witnesses,
+    PrivacyVNextDigest& treeRoot,
+    std::string& error);
 
 // Builds one witness per target against the supplied tree. The whole leaf set
 // travels in one request, so the request bound caps the tree this can serve far

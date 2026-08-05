@@ -1420,6 +1420,53 @@ bool CTxDB::EraseEpochState(int nEpoch)
     return Erase(make_pair(string("epochstate"), nEpoch));
 }
 
+bool CTxDB::WritePrivacyVNextTreeLeaf(uint64_t nIndex,
+                                      const std::vector<unsigned char>& vchLeaf)
+{
+    return Write(make_pair(string("iv5treeleaf"), nIndex), vchLeaf);
+}
+
+bool CTxDB::ReadPrivacyVNextTreeLeaf(uint64_t nIndex,
+                                     std::vector<unsigned char>& vchLeaf)
+{
+    return Read(make_pair(string("iv5treeleaf"), nIndex), vchLeaf);
+}
+
+bool CTxDB::ErasePrivacyVNextTreeLeaf(uint64_t nIndex)
+{
+    return Erase(make_pair(string("iv5treeleaf"), nIndex));
+}
+
+bool CTxDB::WritePrivacyVNextTreeNode(int nLevel, uint64_t nIndex,
+                                      const std::vector<unsigned char>& vchPoint)
+{
+    return Write(make_pair(string("iv5treenode"), make_pair(nLevel, nIndex)),
+                 vchPoint);
+}
+
+bool CTxDB::ReadPrivacyVNextTreeNode(int nLevel, uint64_t nIndex,
+                                     std::vector<unsigned char>& vchPoint)
+{
+    return Read(make_pair(string("iv5treenode"), make_pair(nLevel, nIndex)),
+                vchPoint);
+}
+
+bool CTxDB::ErasePrivacyVNextTreeNode(int nLevel, uint64_t nIndex)
+{
+    return Erase(make_pair(string("iv5treenode"), make_pair(nLevel, nIndex)));
+}
+
+bool CTxDB::WritePrivacyVNextTreeStoreSize(uint64_t nSize)
+{
+    return Write(string("iv5treestoresize"), nSize);
+}
+
+bool CTxDB::ReadPrivacyVNextTreeStoreSize(uint64_t& nSize)
+{
+    nSize = 0;
+    return Read(string("iv5treestoresize"), nSize);
+}
+
 bool CTxDB::IterateEpochStates(std::map<int, CEpochState>& mapOut)
 {
     mapOut.clear();

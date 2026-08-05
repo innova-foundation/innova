@@ -439,6 +439,107 @@ bool ApplyPrivacyVNextOutputLeaves(
     return DecodePrivacyVNextTreeState(nextState, nextRoot, nextSize, error);
 }
 
+bool ExtendPrivacyVNextOutputLeaves(
+    const std::vector<unsigned char>& currentState,
+    const std::vector<PrivacyVNextOutputLeaf>& leaves,
+    std::vector<unsigned char>& nextState,
+    std::vector<unsigned char>& nextRoot,
+    uint64_t& nextSize,
+    std::vector<PrivacyVNextTreeNode>& nodes,
+    std::string& error)
+{
+    nextState.clear();
+    nextRoot.clear();
+    nextSize = 0;
+    nodes.clear();
+    error.clear();
+    if (currentState.size() != INNOVA_PRIVACY_VNEXT_TREE_STATE_SIZE)
+    {
+        error = "invalid IV5 current tree-state length";
+        return false;
+    }
+    if (leaves.size() > INNOVA_PRIVACY_VNEXT_MAX_OUTPUTS)
+    {
+        error = "IV5 output update exceeds ABI limit";
+        return false;
+    }
+
+    std::vector<uint8_t> request;
+    request.reserve(8 + currentState.size() + leaves.size() * 96);
+    request.push_back(1);
+    request.push_back(0);
+    request.push_back(0);
+    request.push_back(0);
+    request.insert(request.end(), currentState.begin(), currentState.end());
+    const uint32_t count = static_cast<uint32_t>(leaves.size());
+    for (size_t i = 0; i < 4; ++i)
+        request.push_back(static_cast<uint8_t>(count >> (8 * i)));
+    for (size_t i = 0; i < leaves.size(); ++i)
+    {
+        request.insert(request.end(), leaves[i].owner.begin(),
+                       leaves[i].owner.end());
+        request.insert(request.end(), leaves[i].nullifierBase.begin(),
+                       leaves[i].nullifierBase.end());
+        request.insert(request.end(), leaves[i].commitment.begin(),
+                       leaves[i].commitment.end());
+    }
+
+    size_t required = 0;
+    int32_t result = innova_privacy_vnext_tree_extend(
+        &request[0], request.size(), NULL, 0, &required);
+    if (result != INNOVA_PRIVACY_VNEXT_VALID ||
+        required < INNOVA_PRIVACY_VNEXT_TREE_STATE_SIZE + 4 ||
+        required > INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES)
+    {
+        error = ResultError("IV5 tree extension size query", result);
+        return false;
+    }
+    std::vector<uint8_t> response(required, 0);
+    size_t written = 0;
+    result = innova_privacy_vnext_tree_extend(
+        &request[0], request.size(), &response[0], response.size(), &written);
+    if (result != INNOVA_PRIVACY_VNEXT_VALID || written != required)
+    {
+        error = ResultError("IV5 tree extension", result);
+        return false;
+    }
+
+    nextState.assign(response.begin(),
+                     response.begin() + INNOVA_PRIVACY_VNEXT_TREE_STATE_SIZE);
+    const size_t nCountOffset = INNOVA_PRIVACY_VNEXT_TREE_STATE_SIZE;
+    const size_t nNodeCount =
+        static_cast<size_t>(response[nCountOffset]) |
+        (static_cast<size_t>(response[nCountOffset + 1]) << 8);
+    if (response[nCountOffset + 2] != 0 || response[nCountOffset + 3] != 0)
+    {
+        error = "IV5 tree extension header is not canonical";
+        return false;
+    }
+    if (written != nCountOffset + 4 + (nNodeCount * 44))
+    {
+        error = "IV5 tree extension length does not match its node count";
+        return false;
+    }
+    nodes.resize(nNodeCount);
+    for (size_t i = 0; i < nNodeCount; ++i)
+    {
+        const size_t at = nCountOffset + 4 + (i * 44);
+        if (response[at + 1] != 0 || response[at + 2] != 0 ||
+            response[at + 3] != 0)
+        {
+            error = "IV5 tree extension node record is not canonical";
+            return false;
+        }
+        nodes[i].nLevel = response[at];
+        uint64_t nIndex = 0;
+        for (size_t b = 0; b < 8; ++b)
+            nIndex |= static_cast<uint64_t>(response[at + 4 + b]) << (8 * b);
+        nodes[i].nIndex = nIndex;
+        std::memcpy(nodes[i].point.data(), &response[at + 12], 32);
+    }
+    return DecodePrivacyVNextTreeState(nextState, nextRoot, nextSize, error);
+}
+
 bool DecodePrivacyVNextNullifierState(
     const std::vector<unsigned char>& state,
     std::vector<unsigned char>& root,
@@ -1143,6 +1244,13 @@ bool ScanPrivacyVNextPayload(
     return true;
 }
 
+static bool RunPrivacyVNextWitnessRequest(
+    const std::vector<uint8_t>& request,
+    const std::vector<uint64_t>& vTargetLeafIndexes,
+    std::vector<PrivacyVNextMembershipWitness>& witnesses,
+    PrivacyVNextDigest& treeRoot,
+    std::string& error);
+
 bool BuildPrivacyVNextWitnesses(
     const std::vector<unsigned char>& treeState,
     const std::vector<PrivacyVNextOutputLeaf>& leaves,
@@ -1223,6 +1331,20 @@ bool BuildPrivacyVNextWitnesses(
         offset += nLeafSize;
     }
 
+    return RunPrivacyVNextWitnessRequest(request, vTargetLeafIndexes, witnesses,
+                                         treeRoot, error);
+}
+
+// Issue one witness request and decode its response. Both request modes answer in the
+// same format, so the decode belongs in one place.
+static bool RunPrivacyVNextWitnessRequest(
+    const std::vector<uint8_t>& request,
+    const std::vector<uint64_t>& vTargetLeafIndexes,
+    std::vector<PrivacyVNextMembershipWitness>& witnesses,
+    PrivacyVNextDigest& treeRoot,
+    std::string& error)
+{
+    static const size_t nLeafSize = 96;
     size_t required = 0;
     int32_t result = innova_privacy_vnext_tree_witness(
         &request[0], request.size(), NULL, 0, &required);
@@ -1297,6 +1419,76 @@ bool BuildPrivacyVNextWitnesses(
         return false;
     }
     return true;
+}
+
+bool BuildPrivacyVNextWitnessesFromPaths(
+    const std::vector<unsigned char>& treeState,
+    const std::vector<uint64_t>& vTargetLeafIndexes,
+    const std::vector<unsigned char>& vchPaths,
+    std::vector<PrivacyVNextMembershipWitness>& witnesses,
+    PrivacyVNextDigest& treeRoot,
+    std::string& error)
+{
+    witnesses.clear();
+    treeRoot.fill(0);
+    error.clear();
+
+    if (treeState.size() != INNOVA_PRIVACY_VNEXT_TREE_STATE_SIZE)
+    {
+        error = "IV5 witness needs the exact canonical tree state";
+        return false;
+    }
+    if (vTargetLeafIndexes.empty() ||
+        vTargetLeafIndexes.size() > INNOVA_PRIVACY_VNEXT_MAX_INPUTS)
+    {
+        error = "IV5 witness needs between one and sixteen targets";
+        return false;
+    }
+    if (vchPaths.empty())
+    {
+        error = "IV5 path-mode witness needs the targets' sibling paths";
+        return false;
+    }
+    for (size_t i = 0; i < vTargetLeafIndexes.size(); ++i)
+    {
+        for (size_t j = 0; j < i; ++j)
+        {
+            if (vTargetLeafIndexes[j] == vTargetLeafIndexes[i])
+            {
+                error = "IV5 witness targets repeat a leaf index";
+                return false;
+            }
+        }
+    }
+
+    static const size_t nHeader = 4;
+    const size_t nRequest = nHeader + INNOVA_PRIVACY_VNEXT_TREE_STATE_SIZE +
+                            (vTargetLeafIndexes.size() * 8) + vchPaths.size();
+    if (nRequest > INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES)
+    {
+        error = "IV5 path-mode witness request needs " +
+                std::to_string(nRequest) + " bytes, over the " +
+                std::to_string((size_t)INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES) +
+                " bound";
+        return false;
+    }
+
+    std::vector<uint8_t> request(nRequest, 0);
+    request[0] = static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA);
+    request[1] = 0;
+    request[2] = static_cast<uint8_t>(vTargetLeafIndexes.size());
+    request[3] = 1;
+    std::memcpy(&request[nHeader], &treeState[0], treeState.size());
+    size_t offset = nHeader + treeState.size();
+    for (size_t i = 0; i < vTargetLeafIndexes.size(); ++i)
+    {
+        PutLE64(&request[offset], vTargetLeafIndexes[i]);
+        offset += 8;
+    }
+    std::memcpy(&request[offset], &vchPaths[0], vchPaths.size());
+
+    return RunPrivacyVNextWitnessRequest(request, vTargetLeafIndexes, witnesses,
+                                         treeRoot, error);
 }
 
 bool ProvePrivacyVNextValue(

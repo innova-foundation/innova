@@ -674,6 +674,21 @@ public:
     bool ReadEpochStateSchema(int& nVersion);
     bool HasEpochStateSchema();
 
+    // IV5 tree store. A derived index of the finalized IV5 tree, rebuildable from the
+    // chain, held so a membership witness can be read by leaf index instead of replaying
+    // every leaf. Not consensus state: the epoch state's root remains the authority.
+    bool WritePrivacyVNextTreeLeaf(uint64_t nIndex,
+                                   const std::vector<unsigned char>& vchLeaf);
+    bool ReadPrivacyVNextTreeLeaf(uint64_t nIndex, std::vector<unsigned char>& vchLeaf);
+    bool ErasePrivacyVNextTreeLeaf(uint64_t nIndex);
+    bool WritePrivacyVNextTreeNode(int nLevel, uint64_t nIndex,
+                                   const std::vector<unsigned char>& vchPoint);
+    bool ReadPrivacyVNextTreeNode(int nLevel, uint64_t nIndex,
+                                  std::vector<unsigned char>& vchPoint);
+    bool ErasePrivacyVNextTreeNode(int nLevel, uint64_t nIndex);
+    bool WritePrivacyVNextTreeStoreSize(uint64_t nSize);
+    bool ReadPrivacyVNextTreeStoreSize(uint64_t& nSize);
+
     // IDAG finality vote persistence
     bool WriteFinalityVote(const uint256& nullifier, const CFinalityVote& vote);
     bool ReadFinalityVote(const uint256& nullifier, CFinalityVote& vote);
