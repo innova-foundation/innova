@@ -85,6 +85,13 @@ for name, value in mapping.items():
     require(numeric_constant(cpp, name) == value, "C++ mismatch for " + name)
     require(numeric_constant(rust, name) == value, "Rust mismatch for " + name)
 
+abi_path = ROOT / "src/privacy_vnext/rust/abi/innova_privacy_vnext_v2.txt"
+abi_sha256 = hashlib.sha256(abi_path.read_bytes()).hexdigest()
+require(
+    contract["fcmp_abi"]["abi_schema_sha256"] == abi_sha256,
+    "contract records a stale ABI digest; the ABI text is " + abi_sha256,
+)
+
 contract_sha256 = hashlib.sha256(raw).hexdigest()
 require(
     'PROTOCOL_CONTRACT_SHA256[] =\n    "' + contract_sha256 + '"' in cpp,
