@@ -111,6 +111,9 @@ static const size_t EPOCHSTATE_VNEXT_NULLIFIER_STATE_SIZE = 44;
 static const size_t EPOCHSTATE_VNEXT_DIGEST_SIZE = 32;
 static const size_t EPOCHSTATE_VNEXT_MAX_ACTIVE_TXS = 65536;
 static const size_t EPOCHSTATE_VNEXT_MAX_NULLIFIERS = 1048576;
+// How many finalized epochs back a spend's proving anchor may sit (~30 min post-DAG),
+// so a transaction crossing an epoch boundary before confirming stays valid.
+static const int EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS = 6;
 
 struct CEpochState
 {
@@ -424,6 +427,12 @@ public:
 
     /** Resolve finalized state from the caller's transaction, including staged WriteBatch data. */
     bool GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
+                                    CEpochState& stateOut) const;
+
+    /** The finalized epoch state `nEpochsBack` epochs before the one nBlockHeight resolves to.
+     *  The epoch number is derived from the chain, not from node-local state, so the set of
+     *  states a block may be validated against is the same on every node. */
+    bool GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight, int nEpochsBack,
                                     CEpochState& stateOut) const;
 
     /** Validate that V3 persistence ends at the exact completed epoch required by pBest and

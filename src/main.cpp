@@ -1517,9 +1517,40 @@ static bool ValidatePrivacyVNextFinalizedContext(
         nExpectedTreeSize = seed.nTreeSize;
     }
 
-    if (!std::equal(effects.finalizedRoot.begin(),
-                    effects.finalizedRoot.end(), expectedRoot.begin()) ||
-        effects.nFinalizedTreeSize != nExpectedTreeSize)
+    // A spend may anchor to any of the last few finalized roots; the tree only grows and
+    // double spends are caught by the nullifier set.
+    bool fAnchorMatches =
+        std::equal(effects.finalizedRoot.begin(), effects.finalizedRoot.end(),
+                   expectedRoot.begin()) &&
+        effects.nFinalizedTreeSize == nExpectedTreeSize;
+    if (!fAnchorMatches &&
+        finalizedState.nSerVersion >= EPOCHSTATE_SER_VERSION_V4)
+    {
+        for (int nBack = 1;
+             !fAnchorMatches && nBack < EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS;
+             ++nBack)
+        {
+            CEpochState olderState;
+            if (!g_dagManager.GetFinalizedEpochStateAsOf(txdb, nContextHeight,
+                                                         nBack, olderState))
+                break;
+            if (!olderState.fFinalized ||
+                olderState.nSerVersion < EPOCHSTATE_SER_VERSION_V4 ||
+                olderState.vchVNextRoot.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE ||
+                olderState.vchVNextParameterDigest.size() !=
+                    EPOCHSTATE_VNEXT_DIGEST_SIZE)
+                continue;
+            if (std::equal(effects.finalizedRoot.begin(),
+                           effects.finalizedRoot.end(),
+                           olderState.vchVNextRoot.begin()) &&
+                effects.nFinalizedTreeSize == olderState.nVNextTreeSize)
+            {
+                fAnchorMatches = true;
+                expectedParameterDigest = olderState.vchVNextParameterDigest;
+            }
+        }
+    }
+    if (!fAnchorMatches)
     {
         strError = "payload finalized root or tree size does not match consensus state";
         return false;
@@ -9665,6 +9696,18 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
         if (!SyncPrivacyVNextTreeStore(txdb, nStoreEpoch, strStoreError))
             printf("SetBestChain: IV5 tree store did not reach epoch %d: %s\n",
                    nStoreEpoch, strStoreError.c_str());
+
+        // A note is only spendable once its position in the tree is known, and that is
+        // fixed by the epoch that placed it. Same reporting rule as the store: wallet
+        // bookkeeping must not be able to fail the tip.
+        LOCK(cs_setpwalletRegistered);
+        for (CWallet* pwallet : setpwalletRegistered)
+        {
+            std::string strWalletError;
+            if (!pwallet->AssignPrivacyVNextLeafIndices(nStoreEpoch, strWalletError))
+                printf("SetBestChain: IV5 wallet leaf indices for epoch %d: %s\n",
+                       nStoreEpoch, strWalletError.c_str());
+        }
     }
 
     // Check the version of the last 100 blocks to see if we need to upgrade:

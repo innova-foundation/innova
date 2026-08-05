@@ -3189,6 +3189,27 @@ bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
     return true;
 }
 
+bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
+                                             int nEpochsBack,
+                                             CEpochState& stateOut) const
+{
+    if (nEpochsBack < 0)
+        return false;
+    const int nAsOfEpoch = GetEpochForHeight(nBlockHeight) - 1;
+    int nFinHeight = 0;
+    if (!TryGetDeterministicFinalizedHeight(txdb, nAsOfEpoch, nFinHeight))
+        return false;
+
+    const int nFinEpoch = GetEpochForHeight(nFinHeight) - nEpochsBack;
+    if (nFinEpoch < 0)
+        return false;
+    CEpochState state;
+    if (!txdb.ReadEpochState(nFinEpoch, state) || state.nEpoch != nFinEpoch)
+        return false;
+    stateOut = state;
+    return true;
+}
+
 bool CDAGManager::ValidateEpochStateTip(const CBlockIndex* pBest,
                                         std::string& strError) const
 {

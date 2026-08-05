@@ -1673,13 +1673,17 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
     obj.push_back(Pair("privacy_vnext_tree_root", strVNextTreeRoot));
     obj.push_back(Pair("privacy_vnext_tree_size", nVNextTreeSize));
     obj.push_back(Pair("privacy_vnext_tree_store_size", nVNextStoreSize));
+    obj.push_back(Pair("privacy_vnext_max_anchor_age_epochs",
+                       EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS));
+    if (pwalletMain)
+        obj.push_back(Pair("privacy_vnext_balance",
+                           ValueFromAmount(pwalletMain->GetPrivacyVNextBalance())));
     obj.push_back(Pair("privacy_vnext_max_inputs",
                        (int)vnextAbi.nMaxInputs));
     obj.push_back(Pair("privacy_vnext_max_outputs",
                        (int)vnextAbi.nMaxOutputs));
     obj.push_back(Pair("privacy_vnext_max_payload_bytes",
                        (int)vnextAbi.nMaxPayloadBytes));
-    obj.push_back(Pair("privacy_vnext_supported_operations", Array()));
     Array requiredOperations;
     requiredOperations.push_back("shield");
     requiredOperations.push_back("unshield");
@@ -1689,6 +1693,9 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
     requiredOperations.push_back("m_of_n_mint");
     requiredOperations.push_back("reclaim");
     requiredOperations.push_back("conditional_migration");
+    // Empty until IV5 consensus is ready.
+    obj.push_back(Pair("privacy_vnext_supported_operations",
+                       fVNextReady ? requiredOperations : Array()));
     obj.push_back(Pair("privacy_vnext_required_operations", requiredOperations));
     obj.push_back(Pair("privacy_vnext_note_operations", requiredOperations));
     Array finalityProfiles;

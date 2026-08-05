@@ -1032,6 +1032,76 @@ BOOST_AUTO_TEST_CASE(deterministic_finalized_height_distinguishes_missing_from_z
     BOOST_CHECK(!manager.TryGetDeterministicFinalizedHeight(7, nHeight));
 }
 
+// A spend may anchor to a recent root rather than only the newest, so the accessor that
+// names those roots must reach back a fixed number of epochs and no further. The epoch it
+// resolves is derived from the chain, so every node offers a spend the same set.
+BOOST_AUTO_TEST_CASE(finalized_epoch_state_walks_back_a_bounded_number_of_epochs)
+{
+    CDAGManager manager;
+    CTxDB txdb("rw");
+    BOOST_REQUIRE(txdb.TxnBegin());
+
+    // Derive the epoch the height resolves to rather than assuming an interval, then pick
+    // a finalized height inside it so the resolved epoch is that same one.
+    int nHeight = 0;
+    for (int h = 1; h <= 1000000; ++h)
+    {
+        if (GetEpochForHeight(h) - 1 >= 3)
+        {
+            nHeight = h;
+            break;
+        }
+    }
+    BOOST_REQUIRE(nHeight > 0);
+    const int nAsOfEpoch = GetEpochForHeight(nHeight) - 1;
+    BOOST_REQUIRE(nAsOfEpoch >= 3);
+    int nFinalizedHeight = -1;
+    for (int h = nHeight; h >= 0; --h)
+    {
+        if (GetEpochForHeight(h) == nAsOfEpoch)
+        {
+            nFinalizedHeight = h;
+            break;
+        }
+    }
+    BOOST_REQUIRE(nFinalizedHeight >= 0);
+
+    for (int i = 0; i < 3; ++i)
+    {
+        CEpochState state;
+        state.nEpoch = nAsOfEpoch - i;
+        state.hashBoundaryBlock = uint256(0x80000001 + i);
+        state.nFinalizedHeightAsOf = (i == 0) ? nFinalizedHeight : 0;
+        state.nBlockCount = 0;
+        CCurveTree tree;
+        BOOST_REQUIRE(manager.WriteEpochState(txdb, state, tree));
+    }
+
+    // Each step back must name exactly one earlier epoch.
+    CEpochState resolved;
+    for (int nBack = 0; nBack < 3; ++nBack)
+    {
+        BOOST_REQUIRE(manager.GetFinalizedEpochStateAsOf(txdb, nHeight, nBack,
+                                                         resolved));
+        BOOST_CHECK_EQUAL(resolved.nEpoch, nAsOfEpoch - nBack);
+    }
+
+    // Past what the chain holds, and below epoch zero, there is nothing to offer.
+    BOOST_CHECK(!manager.GetFinalizedEpochStateAsOf(txdb, nHeight, 3, resolved));
+    BOOST_CHECK(!manager.GetFinalizedEpochStateAsOf(txdb, nHeight, -1, resolved));
+    BOOST_CHECK(!manager.GetFinalizedEpochStateAsOf(txdb, nHeight, nAsOfEpoch + 1,
+                                                    resolved));
+
+    // The zero-step form must agree with the accessor that takes no age at all.
+    CEpochState latest;
+    BOOST_REQUIRE(manager.GetFinalizedEpochStateAsOf(txdb, nHeight, latest));
+    BOOST_REQUIRE(manager.GetFinalizedEpochStateAsOf(txdb, nHeight, 0, resolved));
+    BOOST_CHECK_EQUAL(latest.nEpoch, resolved.nEpoch);
+    BOOST_CHECK(latest.hashBoundaryBlock == resolved.hashBoundaryBlock);
+
+    txdb.TxnAbort();
+}
+
 BOOST_AUTO_TEST_CASE(v3_startup_requires_exact_highest_completed_epoch)
 {
     DAGHarness h;
