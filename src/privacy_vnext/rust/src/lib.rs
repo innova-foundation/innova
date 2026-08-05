@@ -67,6 +67,7 @@ pub const CAP_ADDRESS_CODEC: u32 = 1 << 9;
 pub const CAP_KEY_DERIVATION: u32 = 1 << 10;
 pub const CAP_NOTE_SCAN: u32 = 1 << 11;
 const CAP_PAYLOAD_SCAN: u32 = 1 << 16;
+pub const CAP_TREE_EXTEND: u32 = 1 << 17;
 pub const CAP_NOTE_ENCRYPT: u32 = 1 << 12;
 pub const CAP_VALUE_PROVE: u32 = 1 << 13;
 pub const CAP_PAYLOAD_EFFECTS: u32 = 1 << 14;
@@ -87,7 +88,8 @@ const IMPLEMENTED_CAPABILITIES: u32 = CAP_PROTOCOL_CONTRACT
     | CAP_NOTE_ENCRYPT
     | CAP_VALUE_PROVE
     | CAP_PAYLOAD_EFFECTS
-    | CAP_NULLIFIER_ACCUMULATOR;
+    | CAP_NULLIFIER_ACCUMULATOR
+    | CAP_TREE_EXTEND;
 const CONSENSUS_CAPABILITIES: u32 = 0;
 pub const NOTE_SHIELD: u8 = 0;
 pub const NOTE_UNSHIELD: u8 = 1;
@@ -812,6 +814,27 @@ pub unsafe extern "C" fn innova_privacy_vnext_tree_update(
         let request = unsafe { slice::from_raw_parts(request, request_len) };
         let state = tree::update(request)?;
         write_variable_output(&state, out, out_capacity, out_written)
+    })
+}
+
+/// `innova_privacy_vnext_tree_update` that also reports every per-level node it changed.
+/// # Safety
+///
+/// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_tree_extend(
+    request: *const u8,
+    request_len: usize,
+    out: *mut u8,
+    out_capacity: usize,
+    out_written: *mut usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        // SAFETY: request validation precedes this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        let extension = tree::extend(request)?;
+        write_variable_output(&extension, out, out_capacity, out_written)
     })
 }
 

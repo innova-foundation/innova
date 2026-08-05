@@ -29,6 +29,10 @@ const LEAF_SIZE: usize = 96;
 const MAX_UPDATE_LEAVES: usize = 16;
 const LEVEL_SIZE: usize = 36;
 const MAX_LEAVES: u64 = 38 * 18 * 38 * 18 * 38 * 18 * 38 * 18;
+const EXTENSION_NODE_SIZE: usize = 44;
+/// One batch fills at most one node per level and may spill into the next, and the batch is
+/// far narrower than the smallest branch, so two per level bounds every append.
+const MAX_EXTENSION_NODES: usize = 2 * TREE_LAYERS;
 
 type SelenePoint = <Selene as Ciphersuite>::G;
 type SeleneScalar = <Selene as Ciphersuite>::F;
@@ -287,7 +291,28 @@ fn grow_parent(
     }
 }
 
-fn append_parent(state: &mut TreeState, level: usize, child: LevelHash) -> Result<(), ResultCode> {
+/// One node an append created or changed, as `(level, index within the level, hash)`.
+type TreeNode = (u8, u64, LevelHash);
+
+/// Keep the newest value for a node an append touched more than once.
+fn record_node(nodes: &mut Vec<TreeNode>, level: usize, index: u64, hash: LevelHash) {
+    let level = u8::try_from(level).expect("tree layer count fits u8");
+    for entry in nodes.iter_mut() {
+        if entry.0 == level && entry.1 == index {
+            entry.2 = hash;
+            return;
+        }
+    }
+    nodes.push((level, index, hash));
+}
+
+fn append_parent(
+    state: &mut TreeState,
+    level: usize,
+    child: LevelHash,
+    child_index: u64,
+    nodes: &mut Vec<TreeNode>,
+) -> Result<(), ResultCode> {
     if level >= TREE_LAYERS {
         return Err(ResultCode::ResourceLimit);
     }
@@ -296,16 +321,27 @@ fn append_parent(state: &mut TreeState, level: usize, child: LevelHash) -> Resul
     state.counts[level] = state.counts[level]
         .checked_add(1)
         .ok_or(ResultCode::InternalLocalStateFailure)?;
+    // A completed child at `child_index` belongs to the parent that covers it, so the
+    // index follows the same division the branch layout uses. The root is never a child of
+    // any branch, so it is left out of the store.
+    let index = child_index / u64::try_from(capacity(level)).expect("tree radix fits u64");
+    if level + 1 < TREE_LAYERS {
+        record_node(nodes, level, index, state.hashes[level]);
+    }
     if usize::from(state.counts[level]) == capacity(level) && level + 1 < TREE_LAYERS {
         let completed = state.hashes[level];
         state.counts[level] = 0;
         state.hashes[level] = empty_hash(level);
-        append_parent(state, level + 1, completed)?;
+        append_parent(state, level + 1, completed, index, nodes)?;
     }
     Ok(())
 }
 
-fn append_leaf(state: &mut TreeState, bytes: &[u8]) -> Result<(), ResultCode> {
+fn append_leaf(
+    state: &mut TreeState,
+    bytes: &[u8],
+    nodes: &mut Vec<TreeNode>,
+) -> Result<(), ResultCode> {
     if state.size == MAX_LEAVES {
         return Err(ResultCode::ResourceLimit);
     }
@@ -329,11 +365,13 @@ fn append_leaf(state: &mut TreeState, bytes: &[u8]) -> Result<(), ResultCode> {
         .checked_add(1)
         .ok_or(ResultCode::InternalLocalStateFailure)?;
     state.size = state.size.checked_add(1).ok_or(ResultCode::ResourceLimit)?;
+    let index = (state.size - 1) / u64::try_from(capacity(0)).expect("tree radix fits u64");
+    record_node(nodes, 0, index, state.hashes[0]);
     if usize::from(state.counts[0]) == capacity(0) {
         let completed = state.hashes[0];
         state.counts[0] = 0;
         state.hashes[0] = empty_hash(0);
-        append_parent(state, 1, completed)?;
+        append_parent(state, 1, completed, index, nodes)?;
     }
     Ok(())
 }
@@ -366,6 +404,44 @@ fn fold_root(state: &TreeState) -> Result<HeliosPoint, ResultCode> {
 }
 
 pub(crate) fn update(request: &[u8]) -> Result<[u8; STATE_SIZE], ResultCode> {
+    let (state, _) = grow(request)?;
+    Ok(serialize_state(&state))
+}
+
+/// Record the rightmost node of every level as a witness path sees it, folding the
+/// frontier's partial spine so the store matches a full rebuild.
+fn record_spine(state: &TreeState, nodes: &mut Vec<TreeNode>) -> Result<(), ResultCode> {
+    let mut current: Option<LevelHash> = None;
+    let mut index = state.size;
+    for level in 0..TREE_LAYERS {
+        index /= u64::try_from(capacity(level)).expect("tree radix fits u64");
+        current = match (current, state.counts[level] != 0) {
+            (None, false) => None,
+            (None, true) => Some(state.hashes[level]),
+            (Some(child), has_existing) => {
+                let existing = if has_existing {
+                    state.hashes[level]
+                } else {
+                    empty_hash(level)
+                };
+                let offset = if has_existing {
+                    usize::from(state.counts[level])
+                } else {
+                    0
+                };
+                Some(grow_parent(level, existing, offset, child)?)
+            }
+        };
+        if let (Some(hash), true) = (current, level + 1 < TREE_LAYERS) {
+            record_node(nodes, level, index, hash);
+        }
+    }
+    Ok(())
+}
+
+/// Append the request's leaves and report the frontier plus every node touched.
+/// `update` and `extend` share this, so persisted nodes cannot drift from the frontier.
+fn grow(request: &[u8]) -> Result<(TreeState, Vec<TreeNode>), ResultCode> {
     if request.len() < UPDATE_HEADER_SIZE + LEAF_COUNT_SIZE {
         return Err(ResultCode::BadLength);
     }
@@ -406,13 +482,41 @@ pub(crate) fn update(request: &[u8]) -> Result<[u8; STATE_SIZE], ResultCode> {
     if request.len() != leaves_start + leaves_size {
         return Err(ResultCode::BadLength);
     }
+    let mut nodes = Vec::new();
     for leaf in request[leaves_start..].chunks_exact(LEAF_SIZE) {
-        append_leaf(&mut state, leaf)?;
+        append_leaf(&mut state, leaf, &mut nodes)?;
     }
     if state.counts != expected_counts(state.size) {
         return Err(ResultCode::InternalLocalStateFailure);
     }
-    Ok(serialize_state(&state))
+    record_spine(&state, &mut nodes)?;
+    if nodes.len() > MAX_EXTENSION_NODES {
+        return Err(ResultCode::ResourceLimit);
+    }
+    Ok((state, nodes))
+}
+
+/// Emit the frontier plus every per-level node the append created or changed. With the
+/// leaves these are all a path-mode witness needs; none of it is consensus state.
+pub(crate) fn extend(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
+    let (state, mut nodes) = grow(request)?;
+    nodes.sort_unstable_by_key(|entry| (entry.0, entry.1));
+
+    let mut result = Vec::with_capacity(STATE_SIZE + 4 + (nodes.len() * EXTENSION_NODE_SIZE));
+    result.extend_from_slice(&serialize_state(&state));
+    result.extend_from_slice(
+        &u16::try_from(nodes.len())
+            .expect("node count is bounded by MAX_EXTENSION_NODES")
+            .to_le_bytes(),
+    );
+    result.extend_from_slice(&[0_u8; 2]);
+    for (level, index, hash) in nodes {
+        result.push(level);
+        result.extend_from_slice(&[0_u8; 3]);
+        result.extend_from_slice(&index.to_le_bytes());
+        result.extend_from_slice(&point_bytes(hash));
+    }
+    Ok(result)
 }
 
 pub(crate) fn root(request: &[u8]) -> Result<[u8; ROOT_SIZE], ResultCode> {
@@ -929,7 +1033,7 @@ fn witness_from_leaves(
     // count, not just the root.
     let mut replayed = empty_state();
     for leaf in leaves.chunks_exact(LEAF_SIZE) {
-        append_leaf(&mut replayed, leaf)?;
+        append_leaf(&mut replayed, leaf, &mut Vec::new())?;
     }
     if serialize_state(&replayed) != serialize_state(state) {
         return Err(ResultCode::InternalLocalStateFailure);
@@ -1043,6 +1147,102 @@ mod tests {
             }
         }
         witness(&request)
+    }
+
+    /// What a caller persists from the reported nodes, keyed by level and index.
+    type NodeStore = std::collections::HashMap<(u8, u64), [u8; 32]>;
+
+    /// Replay every batch through `extend`, keeping the reported nodes in a store.
+    fn extend_into_store(all: &[[u8; LEAF_SIZE]]) -> (NodeStore, [u8; STATE_SIZE]) {
+        let mut store = std::collections::HashMap::new();
+        let mut state: Option<[u8; STATE_SIZE]> = None;
+        for batch in all.chunks(MAX_UPDATE_LEAVES) {
+            let mut request = match state {
+                None => vec![1, 0, 1, 0],
+                Some(previous) => {
+                    let mut header = vec![1, 0, 0, 0];
+                    header.extend_from_slice(&previous);
+                    header
+                }
+            };
+            request.extend_from_slice(
+                &u32::try_from(batch.len())
+                    .expect("test leaf count is bounded")
+                    .to_le_bytes(),
+            );
+            for leaf in batch {
+                request.extend_from_slice(leaf);
+            }
+            let response = extend(&request).expect("extension");
+            assert!(response.len() >= STATE_SIZE + 4);
+            let count = usize::from(u16::from_le_bytes([
+                response[STATE_SIZE],
+                response[STATE_SIZE + 1],
+            ]));
+            assert_eq!(
+                response.len(),
+                STATE_SIZE + 4 + (count * EXTENSION_NODE_SIZE)
+            );
+            assert!(count <= MAX_EXTENSION_NODES);
+            for index in 0..count {
+                let at = STATE_SIZE + 4 + (index * EXTENSION_NODE_SIZE);
+                let level = response[at];
+                assert_eq!(&response[at + 1..at + 4], &[0, 0, 0]);
+                let node =
+                    u64::from_le_bytes(response[at + 4..at + 12].try_into().expect("node index"));
+                let mut point = [0_u8; 32];
+                point.copy_from_slice(&response[at + 12..at + 44]);
+                store.insert((level, node), point);
+            }
+            let mut next = [0_u8; STATE_SIZE];
+            next.copy_from_slice(&response[..STATE_SIZE]);
+            state = Some(next);
+        }
+        (store, state.expect("at least one batch"))
+    }
+
+    // The store a caller builds from the reported nodes must equal the tree a full rebuild
+    // produces. If it ever diverged, a served path would open a root nobody else holds.
+    #[test]
+    fn the_reported_nodes_reproduce_the_rebuilt_tree() {
+        for count in [1_u64, 16, 17, 38, 39, 76, 684, 685, 700] {
+            let all = leaves(count);
+            let (store, state) = extend_into_store(&all);
+            assert_eq!(state, grow(&all));
+
+            let mut flat = Vec::new();
+            for leaf in &all {
+                flat.extend_from_slice(leaf);
+            }
+            let levels = rebuild_levels(&flat).expect("levels");
+
+            // Every node a path can open must be in the store and must agree with the
+            // rebuild. The root is excluded because no branch ever holds it as a child.
+            let mut expected = 0_usize;
+            for (level, nodes) in levels.iter().enumerate().take(TREE_LAYERS - 1) {
+                let mut reachable = count.div_ceil(38);
+                for inner in 1..=level {
+                    reachable = reachable.div_ceil(u64::try_from(capacity(inner)).expect("radix"));
+                }
+                for index in 0..reachable {
+                    let key = (u8::try_from(level).expect("level"), index);
+                    let stored = store.get(&key).unwrap_or_else(|| {
+                        panic!("count={count} missing node level={level} index={index}")
+                    });
+                    assert_eq!(
+                        *stored,
+                        point_bytes(nodes[usize::try_from(index).expect("index")]),
+                        "count={count} level={level} index={index}"
+                    );
+                    expected += 1;
+                }
+            }
+            assert_eq!(
+                store.len(),
+                expected,
+                "count={count} store holds extra nodes"
+            );
+        }
     }
 
     // A rollback only ever makes the last node of each level partial, so a persisted tree can

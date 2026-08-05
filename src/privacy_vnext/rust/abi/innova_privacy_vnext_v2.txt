@@ -17,6 +17,7 @@ functions:
   innova_privacy_vnext_fcmp_verify(const uint8_t *request, size_t request_len)
   innova_privacy_vnext_fcmp_batch_verify(const uint8_t *request, size_t request_len, uint32_t request_count)
   innova_privacy_vnext_tree_update(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_tree_extend(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_tree_root(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_nullifier_update(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_nullifier_root(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
@@ -56,7 +57,8 @@ capabilities:
   bit-14 validated-payload-state-effects
   bit-15 nullifier-accumulator-update-and-root
   bit-16 payload-output-scanning
-implemented-capabilities: bits 0 through 16
+  bit-17 tree-extension
+implemented-capabilities: bits 0 through 17
 consensus-capabilities: none
 fixed-output-length: 32
 parameter-digest: sha256(../contract/iv5_protocol_v1.json)
@@ -118,6 +120,22 @@ value-prove-response:
   fields: schema-u16-le, output-count-u8, input-count-u8, output-commitments-32, range-proof-length-u32-le, range-proof, balance-proof-64, binding-signature-64
   range-proof: empty for zero outputs, otherwise one canonical aggregate Bulletproof+
   behavior: prove and independently verify range, signed public/private balance, and binding signature before returning
+tree-extend-request:
+  fields: identical to the tree-update request
+tree-extend-response:
+  fields: state-300, node-count-u16-le, reserved-zero-2, node-records
+  node-record: level-u8, reserved-zero-3, index-u64-le, point-32
+  node-record-size: 44
+  maximum-node-count: 16
+  level: 0 is the layer of leaf-chunk hashes; the root layer is never reported because no
+    branch holds the root as a child
+  index: position within that level, matching the branch layout a witness path opens
+  ordering: ascending by level then index, with one record per node
+  behavior: append exactly as tree-update does and additionally report every node the append
+    created or changed, including the folded rightmost node of each level
+  caller-obligation: persist the reported nodes under their level and index; together with the
+    leaves they are everything a path-mode witness request needs
+  guarantee: a store built from these records equals a full rebuild of the same leaves
 tree-witness-request:
   fields: schema-u16-le, target-count-u8, mode-u8, state-300, target-leaf-indices-u64-le-each, mode-tail
   mode: leaves-0, path-1; any other value is consensus-invalid

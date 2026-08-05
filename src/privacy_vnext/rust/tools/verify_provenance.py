@@ -125,6 +125,7 @@ def verify_configuration_and_abi() -> None:
             "innova_privacy_vnext_fcmp_verify",
             "innova_privacy_vnext_fcmp_batch_verify",
             "innova_privacy_vnext_tree_update",
+            "innova_privacy_vnext_tree_extend",
             "innova_privacy_vnext_tree_root",
             "innova_privacy_vnext_nullifier_update",
             "innova_privacy_vnext_nullifier_root",
