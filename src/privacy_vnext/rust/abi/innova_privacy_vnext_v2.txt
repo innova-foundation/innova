@@ -119,15 +119,27 @@ value-prove-response:
   range-proof: empty for zero outputs, otherwise one canonical aggregate Bulletproof+
   behavior: prove and independently verify range, signed public/private balance, and binding signature before returning
 tree-witness-request:
-  fields: schema-u16-le, target-count-u8, reserved-zero-u8, state-300, target-leaf-indices-u64-le-each, leaf-count-u32-le, leaves
+  fields: schema-u16-le, target-count-u8, mode-u8, state-300, target-leaf-indices-u64-le-each, mode-tail
+  mode: leaves-0, path-1; any other value is consensus-invalid
   target-count: 1 to 16
+  target-leaf-index: strictly below the tree size the supplied state declares, and distinct across targets
+  guarantee: the emitted root is the root of the supplied state, and each record opens that root
+  state-authority: none in either mode; the caller names the tree
+  caller-obligation: take the state from consensus and bind the proving root to a chain anchor; this operation cannot distinguish a chain tree from a fabricated one
+tree-witness-request-mode-leaves:
+  mode-tail: leaf-count-u32-le, leaves
   leaf-count: exactly the tree size the supplied state declares
-  target-leaf-index: strictly below leaf-count and distinct across targets
   behavior: rebuild every level from the supplied leaves, replay the append frontier, and require the serialized result to equal the supplied state before emitting
   maximum-serviceable-tree-size: 2727 leaves for one target and 2726 for sixteen; the whole leaf set travels in one request, so a larger tree exceeds the request bound and returns resource-limit
-  guarantee: the emitted root is the root of the supplied state, and each record opens that root
-  state-authority: none; the state is recomputed from the supplied leaves, so a self-consistent fabricated tree yields a self-consistent fabricated root
-  caller-obligation: take the state from consensus and bind the proving root to a chain anchor; this operation cannot distinguish a chain tree from a fabricated one
+  state-consistency: proven; a state that the supplied leaves do not produce is rejected
+tree-witness-request-mode-path:
+  mode-tail: per-target path, in target order, with no length prefixes
+  path-fields: leaf-branch-96-each, then one branch per level 1 through 7 of compressed-points-32-each
+  branch-widths: fixed by the tree size and the target index, so a short trailing branch cannot be padded to look full and a caller cannot choose a width
+  branch-encoding: compressed points, unlike the response, which emits x-coordinates because the prover reads coordinates
+  behavior: hash the leaf branch, then require each level's branch to carry the node computed below it at the position the geometry fixes, and require the last fold to equal the root of the supplied state
+  maximum-serviceable-tree-size: the full tree capacity; one path is at most 9600 bytes regardless of tree size
+  state-consistency: not proven; the path is checked against the supplied state only, so the caller must supply the state consensus recorded
 tree-witness-response:
   fields: tree-root-output-44, witness-count-u8, reserved-zero-3, per-target-records
   record-fields: output-96, leaf-count-u8, reserved-zero-3, leaves-96-each, four-helios-branches-of-18-scalars, three-selene-branches-of-38-scalars

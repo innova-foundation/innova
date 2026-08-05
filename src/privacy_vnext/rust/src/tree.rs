@@ -431,6 +431,8 @@ const WITNESS_HEADER_SIZE: usize = 4;
 const WITNESS_TARGET_SIZE: usize = 8;
 const MAX_WITNESS_TARGETS: usize = 16;
 const SCALAR_SIZE: usize = 32;
+const WITNESS_MODE_LEAVES: u8 = 0;
+const WITNESS_MODE_PATH: u8 = 1;
 
 /// One node hash per level, every node retained. The append frontier cannot name a
 /// leaf's siblings, so witnesses rebuild whole levels from the caller's leaves.
@@ -634,20 +636,176 @@ fn append_witness_record(
     Ok(())
 }
 
-/// Emit membership witnesses for one tree, rebuilt from the caller's leaves.
+/// Where a target's path sits inside one branch. Both fields follow from the tree size
+/// and target index, so a short trailing branch cannot be padded out to look full.
+#[derive(Clone, Copy)]
+struct BranchGeometry {
+    len: usize,
+    position: usize,
+}
+
+/// Branch shape at every level for one target; index 0 is the leaf branch.
+fn path_geometry(size: u64, target: u64) -> Result<[BranchGeometry; TREE_LAYERS], ResultCode> {
+    if target >= size || size > MAX_LEAVES {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    let mut children = usize::try_from(size).map_err(|_| ResultCode::ResourceLimit)?;
+    let mut node = usize::try_from(target).map_err(|_| ResultCode::ResourceLimit)?;
+    let mut geometry = [BranchGeometry {
+        len: 0,
+        position: 0,
+    }; TREE_LAYERS];
+    for (level, entry) in geometry.iter_mut().enumerate() {
+        let cap = capacity(level);
+        let start = (node / cap) * cap;
+        if start >= children {
+            return Err(ResultCode::InternalLocalStateFailure);
+        }
+        *entry = BranchGeometry {
+            len: cap.min(children - start),
+            position: node - start,
+        };
+        node /= cap;
+        children = children.div_ceil(cap);
+    }
+    if children != 1 || node != 0 {
+        return Err(ResultCode::InternalLocalStateFailure);
+    }
+    Ok(geometry)
+}
+
+/// Hash one full leaf branch into its level-one node.
 ///
-/// The whole leaf set travels in one request, so the request bound caps the tree this can
-/// serve far below `MAX_LEAVES`. Serving a larger tree needs a request carrying the path's
-/// siblings instead of every leaf, which in turn needs per-level node hashes to be
-/// persisted rather than only the frontier.
+/// Matches `rebuild_levels`: every leaf contributes six scalars at its own position.
+fn hash_leaf_branch(leaves: &[u8]) -> Result<LevelHash, ResultCode> {
+    if leaves.is_empty() || leaves.len() > LEAF_SIZE * capacity(0) {
+        return Err(ResultCode::InternalLocalStateFailure);
+    }
+    let mut scalars = Vec::with_capacity(6 * capacity(0));
+    for leaf in leaves.chunks_exact(LEAF_SIZE) {
+        scalars.extend_from_slice(&leaf_scalars(leaf)?);
+    }
+    Ok(LevelHash::Selene(
+        hash_grow::<Selene>(
+            &SELENE_TREE_GENERATORS,
+            *SELENE_HASH_INIT,
+            0,
+            SeleneScalar::ZERO,
+            &scalars,
+        )
+        .ok_or(ResultCode::InternalLocalStateFailure)?,
+    ))
+}
+
+/// Read one branch of level-`level` children from the request.
+fn parse_branch(level: usize, bytes: &[u8]) -> Result<Vec<LevelHash>, ResultCode> {
+    if !bytes.len().is_multiple_of(SCALAR_SIZE) {
+        return Err(ResultCode::BadLength);
+    }
+    let mut children = Vec::with_capacity(bytes.len() / SCALAR_SIZE);
+    for encoded in bytes.chunks_exact(SCALAR_SIZE) {
+        children.push(if level.is_multiple_of(2) {
+            LevelHash::Helios(parse_helios(encoded)?)
+        } else {
+            LevelHash::Selene(parse_selene(encoded)?)
+        });
+    }
+    Ok(children)
+}
+
+/// Bytes one target's path occupies in a path-mode request.
+fn path_request_size(geometry: &[BranchGeometry; TREE_LAYERS]) -> Result<usize, ResultCode> {
+    let mut total = geometry[0]
+        .len
+        .checked_mul(LEAF_SIZE)
+        .ok_or(ResultCode::ResourceLimit)?;
+    for entry in geometry.iter().skip(1) {
+        total = total
+            .checked_add(
+                entry
+                    .len
+                    .checked_mul(SCALAR_SIZE)
+                    .ok_or(ResultCode::ResourceLimit)?,
+            )
+            .ok_or(ResultCode::ResourceLimit)?;
+    }
+    Ok(total)
+}
+
+/// Verify one supplied path and emit its witness record. The path is authentic exactly
+/// when folding it lands on the frontier's root.
+fn append_path_record(
+    geometry: &[BranchGeometry; TREE_LAYERS],
+    path: &[u8],
+    root: HeliosPoint,
+    out: &mut Vec<u8>,
+) -> Result<(), ResultCode> {
+    let leaf_bytes = geometry[0]
+        .len
+        .checked_mul(LEAF_SIZE)
+        .ok_or(ResultCode::ResourceLimit)?;
+    if path.len() < leaf_bytes {
+        return Err(ResultCode::BadLength);
+    }
+    let leaves = &path[..leaf_bytes];
+
+    let mut branches: [Vec<LevelHash>; TREE_LAYERS] = std::array::from_fn(|_| Vec::new());
+    let mut cursor = leaf_bytes;
+    let mut node = hash_leaf_branch(leaves)?;
+    for level in 1..TREE_LAYERS {
+        let width = geometry[level]
+            .len
+            .checked_mul(SCALAR_SIZE)
+            .ok_or(ResultCode::ResourceLimit)?;
+        let end = cursor.checked_add(width).ok_or(ResultCode::ResourceLimit)?;
+        if path.len() < end {
+            return Err(ResultCode::BadLength);
+        }
+        let children = parse_branch(level, &path[cursor..end])?;
+        cursor = end;
+        if geometry[level].position >= children.len() {
+            return Err(ResultCode::InternalLocalStateFailure);
+        }
+        if point_bytes(children[geometry[level].position]) != point_bytes(node) {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+        node = hash_branch(level, &children)?;
+        branches[level] = children;
+    }
+    if cursor != path.len() {
+        return Err(ResultCode::BadLength);
+    }
+    match node {
+        LevelHash::Helios(folded) if folded == root => {}
+        _ => return Err(ResultCode::ConsensusInvalid),
+    }
+
+    let target = geometry[0].position;
+    out.extend_from_slice(&leaves[target * LEAF_SIZE..(target + 1) * LEAF_SIZE]);
+    out.push(u8::try_from(geometry[0].len).map_err(|_| ResultCode::InternalLocalStateFailure)?);
+    out.extend_from_slice(&[0_u8; 3]);
+    out.extend_from_slice(leaves);
+    for level in (1..TREE_LAYERS).step_by(2) {
+        append_branch(level, &branches[level], out)?;
+    }
+    for level in (2..TREE_LAYERS).step_by(2) {
+        append_branch(level, &branches[level], out)?;
+    }
+    Ok(())
+}
+
+/// Emit membership witnesses for one tree. Mode 0 rebuilds from the whole leaf set;
+/// mode 1 takes path siblings and checks only consistency with the supplied frontier,
+/// so the caller must pass the consensus frontier.
 pub(crate) fn witness(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
-    if request.len() < WITNESS_HEADER_SIZE + STATE_SIZE + LEAF_COUNT_SIZE {
+    if request.len() < WITNESS_HEADER_SIZE + STATE_SIZE {
         return Err(ResultCode::BadLength);
     }
     if u16::from_le_bytes([request[0], request[1]]) != TREE_SCHEMA {
         return Err(ResultCode::UnsupportedFormat);
     }
-    if request[3] != 0 {
+    let mode = request[3];
+    if mode != WITNESS_MODE_LEAVES && mode != WITNESS_MODE_PATH {
         return Err(ResultCode::ConsensusInvalid);
     }
     let target_count = usize::from(request[2]);
@@ -667,7 +825,7 @@ pub(crate) fn witness(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
                 .ok_or(ResultCode::ResourceLimit)?,
         )
         .ok_or(ResultCode::ResourceLimit)?;
-    if request.len() < targets_end + LEAF_COUNT_SIZE {
+    if request.len() < targets_end {
         return Err(ResultCode::BadLength);
     }
 
@@ -688,6 +846,59 @@ pub(crate) fn witness(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         targets.push(value);
     }
 
+    if mode == WITNESS_MODE_PATH {
+        return witness_from_paths(&state, &targets, &request[targets_end..]);
+    }
+    witness_from_leaves(&state, &targets, request, targets_end)
+}
+
+/// Serve witnesses from caller-supplied paths, without holding the leaf set.
+fn witness_from_paths(
+    state: &TreeState,
+    targets: &[u64],
+    mut paths: &[u8],
+) -> Result<Vec<u8>, ResultCode> {
+    let root = fold_root(state)?;
+    let mut result = witness_response_header(state, targets.len(), root);
+    for target in targets {
+        let geometry = path_geometry(state.size, *target)?;
+        let size = path_request_size(&geometry)?;
+        if paths.len() < size {
+            return Err(ResultCode::BadLength);
+        }
+        let (path, rest) = paths.split_at(size);
+        paths = rest;
+        append_path_record(&geometry, path, root, &mut result)?;
+    }
+    if !paths.is_empty() {
+        return Err(ResultCode::BadLength);
+    }
+    Ok(result)
+}
+
+/// The witness response preamble, shared by both request modes.
+fn witness_response_header(state: &TreeState, target_count: usize, root: HeliosPoint) -> Vec<u8> {
+    let mut result = Vec::new();
+    result.extend_from_slice(&TREE_SCHEMA.to_le_bytes());
+    result.push(u8::try_from(TREE_LAYERS).expect("tree layer count fits u8"));
+    result.push(2);
+    result.extend_from_slice(&state.size.to_le_bytes());
+    result.extend_from_slice(root.to_bytes().as_ref());
+    result.push(u8::try_from(target_count).expect("target count is bounded by 16"));
+    result.extend_from_slice(&[0_u8; 3]);
+    result
+}
+
+/// Serve witnesses by rebuilding the whole tree from the caller's leaves.
+fn witness_from_leaves(
+    state: &TreeState,
+    targets: &[u64],
+    request: &[u8],
+    targets_end: usize,
+) -> Result<Vec<u8>, ResultCode> {
+    if request.len() < targets_end + LEAF_COUNT_SIZE {
+        return Err(ResultCode::BadLength);
+    }
     let leaf_count = usize::try_from(u32::from_le_bytes(
         request[targets_end..targets_end + LEAF_COUNT_SIZE]
             .try_into()
@@ -720,7 +931,7 @@ pub(crate) fn witness(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     for leaf in leaves.chunks_exact(LEAF_SIZE) {
         append_leaf(&mut replayed, leaf)?;
     }
-    if serialize_state(&replayed) != request[WITNESS_HEADER_SIZE..state_end] {
+    if serialize_state(&replayed) != serialize_state(state) {
         return Err(ResultCode::InternalLocalStateFailure);
     }
 
@@ -733,16 +944,9 @@ pub(crate) fn witness(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         return Err(ResultCode::InternalLocalStateFailure);
     }
 
-    let mut result = Vec::new();
-    result.extend_from_slice(&TREE_SCHEMA.to_le_bytes());
-    result.push(u8::try_from(TREE_LAYERS).expect("tree layer count fits u8"));
-    result.push(2);
-    result.extend_from_slice(&state.size.to_le_bytes());
-    result.extend_from_slice(root.to_bytes().as_ref());
-    result.push(u8::try_from(target_count).expect("target count is bounded by 16"));
-    result.extend_from_slice(&[0_u8; 3]);
+    let mut result = witness_response_header(state, targets.len(), root);
     for target in targets {
-        append_witness_record(&levels, leaves, target, &mut result)?;
+        append_witness_record(&levels, leaves, *target, &mut result)?;
     }
     Ok(result)
 }
@@ -800,6 +1004,222 @@ mod tests {
 
     fn leaves(count: u64) -> Vec<[u8; LEAF_SIZE]> {
         (0..count).map(leaf).collect()
+    }
+
+    /// Build a path-mode request the way a node holding per-level nodes would.
+    fn path_witness_call(
+        state: &[u8; STATE_SIZE],
+        targets: &[u64],
+        all: &[[u8; LEAF_SIZE]],
+    ) -> Result<Vec<u8>, ResultCode> {
+        let mut flat = Vec::with_capacity(all.len() * LEAF_SIZE);
+        for leaf in all {
+            flat.extend_from_slice(leaf);
+        }
+        let levels = rebuild_levels(&flat)?;
+
+        let mut request = Vec::new();
+        request.extend_from_slice(&TREE_SCHEMA.to_le_bytes());
+        request.push(u8::try_from(targets.len()).expect("target count is bounded"));
+        request.push(WITNESS_MODE_PATH);
+        request.extend_from_slice(state);
+        for target in targets {
+            request.extend_from_slice(&target.to_le_bytes());
+        }
+        for target in targets {
+            let size = u64::try_from(all.len()).expect("test leaf count is bounded");
+            let geometry = path_geometry(size, *target)?;
+            let mut node = usize::try_from(*target).expect("bounded");
+            let mut start = (node / capacity(0)) * capacity(0);
+            for leaf in &all[start..start + geometry[0].len] {
+                request.extend_from_slice(leaf);
+            }
+            for level in 1..TREE_LAYERS {
+                node /= capacity(level - 1);
+                start = (node / capacity(level)) * capacity(level);
+                for child in &levels[level - 1][start..start + geometry[level].len] {
+                    request.extend_from_slice(&point_bytes(*child));
+                }
+            }
+        }
+        witness(&request)
+    }
+
+    // A rollback only ever makes the last node of each level partial, so a persisted tree can
+    // be trimmed by deleting past the new size and rehashing one node per level from children
+    // it already holds. Every earlier node must survive a trim untouched for that to hold.
+    #[test]
+    fn a_shorter_tree_only_changes_the_last_node_of_each_level() {
+        let long = leaves(800);
+        let full = {
+            let mut flat = Vec::new();
+            for entry in &long {
+                flat.extend_from_slice(entry);
+            }
+            rebuild_levels(&flat).expect("levels")
+        };
+
+        for trimmed in [1_usize, 37, 38, 39, 76, 683, 684, 685, 799] {
+            let mut flat = Vec::new();
+            for entry in &long[..trimmed] {
+                flat.extend_from_slice(entry);
+            }
+            let short = rebuild_levels(&flat).expect("levels");
+            for level in 0..TREE_LAYERS {
+                assert!(short[level].len() <= full[level].len());
+                for index in 0..short[level].len().saturating_sub(1) {
+                    assert_eq!(
+                        point_bytes(short[level][index]),
+                        point_bytes(full[level][index]),
+                        "trimmed={trimmed} level={level} index={index}"
+                    );
+                }
+            }
+        }
+    }
+
+    // Path mode must be indistinguishable from a full rebuild. Any divergence would hand a
+    // spender a witness opening a root the rest of the network does not hold.
+    #[test]
+    fn path_mode_matches_the_leaf_rebuild() {
+        for count in [1_u64, 2, 37, 38, 39, 76, 683, 684, 685, 723] {
+            let all = leaves(count);
+            let state = grow(&all);
+            let last = count - 1;
+            let mut targets = vec![0_u64, count / 2, last];
+            targets.dedup();
+            for target in targets {
+                let expected = witness_call(&state, &[target], &all).expect("leaf-mode witness");
+                let actual = path_witness_call(&state, &[target], &all).expect("path-mode witness");
+                assert_eq!(actual, expected, "count={count} target={target}");
+            }
+        }
+    }
+
+    #[test]
+    fn path_mode_serves_many_targets_in_one_request() {
+        let all = leaves(700);
+        let state = grow(&all);
+        let targets: Vec<u64> = (0..MAX_WITNESS_TARGETS as u64).map(|i| i * 43).collect();
+        let expected = witness_call(&state, &targets, &all).expect("leaf-mode witness");
+        let actual = path_witness_call(&state, &targets, &all).expect("path-mode witness");
+        assert_eq!(actual, expected);
+    }
+
+    // The path is only authentic because it folds onto the frontier's own root, so every
+    // way of corrupting it must be refused rather than producing a witness.
+    #[test]
+    fn path_mode_rejects_a_forged_path() {
+        let all = leaves(700);
+        let state = grow(&all);
+        let good = {
+            let mut flat = Vec::new();
+            for leaf in &all {
+                flat.extend_from_slice(leaf);
+            }
+            flat
+        };
+        let levels = rebuild_levels(&good).expect("levels");
+
+        let build = |mutate: &dyn Fn(&mut Vec<u8>)| -> Result<Vec<u8>, ResultCode> {
+            let target = 100_u64;
+            let geometry = path_geometry(700, target).expect("geometry");
+            let mut request = Vec::new();
+            request.extend_from_slice(&TREE_SCHEMA.to_le_bytes());
+            request.push(1);
+            request.push(WITNESS_MODE_PATH);
+            request.extend_from_slice(&state);
+            request.extend_from_slice(&target.to_le_bytes());
+            let mut node = usize::try_from(target).expect("bounded");
+            let mut start = (node / capacity(0)) * capacity(0);
+            for leaf in &all[start..start + geometry[0].len] {
+                request.extend_from_slice(leaf);
+            }
+            for level in 1..TREE_LAYERS {
+                node /= capacity(level - 1);
+                start = (node / capacity(level)) * capacity(level);
+                for child in &levels[level - 1][start..start + geometry[level].len] {
+                    request.extend_from_slice(&point_bytes(*child));
+                }
+            }
+            mutate(&mut request);
+            witness(&request)
+        };
+
+        assert!(build(&|_| {}).is_ok());
+
+        // A sibling leaf swapped for another real leaf.
+        assert_eq!(
+            build(&|request| {
+                let offset = WITNESS_HEADER_SIZE + STATE_SIZE + WITNESS_TARGET_SIZE;
+                request[offset..offset + LEAF_SIZE].copy_from_slice(&leaf(9_999));
+            }),
+            Err(ResultCode::ConsensusInvalid)
+        );
+
+        // A flipped bit anywhere in the sibling hashes.
+        let branch_start =
+            WITNESS_HEADER_SIZE + STATE_SIZE + WITNESS_TARGET_SIZE + (38 * LEAF_SIZE);
+        assert!(build(&|request| {
+            request[branch_start] ^= 1;
+        })
+        .is_err());
+
+        // A truncated or over-long path.
+        assert_eq!(
+            build(&|request| {
+                request.pop();
+            }),
+            Err(ResultCode::BadLength)
+        );
+        assert_eq!(
+            build(&|request| {
+                request.push(0);
+            }),
+            Err(ResultCode::BadLength)
+        );
+    }
+
+    #[test]
+    fn path_mode_rejects_a_mismatched_request_mode() {
+        let all = leaves(40);
+        let state = grow(&all);
+        let mut request = Vec::new();
+        request.extend_from_slice(&TREE_SCHEMA.to_le_bytes());
+        request.push(1);
+        request.push(WITNESS_MODE_PATH);
+        request.extend_from_slice(&state);
+        request.extend_from_slice(&0_u64.to_le_bytes());
+
+        // A path-mode request carrying a leaf-mode body has no path at all.
+        assert_eq!(witness(&request), Err(ResultCode::BadLength));
+
+        let mut leaf_body = request.clone();
+        leaf_body.extend_from_slice(&40_u32.to_le_bytes());
+        for entry in &all {
+            leaf_body.extend_from_slice(entry);
+        }
+        assert!(witness(&leaf_body).is_err());
+    }
+
+    // The point of path mode: what the request carries no longer scales with the tree.
+    #[test]
+    fn path_mode_request_size_is_independent_of_tree_size() {
+        let widest: [BranchGeometry; TREE_LAYERS] = std::array::from_fn(|level| BranchGeometry {
+            len: capacity(level),
+            position: 0,
+        });
+        let widest = path_request_size(&widest).expect("size");
+        assert_eq!(widest, (38 * LEAF_SIZE) + ((4 * 18 + 3 * 38) * SCALAR_SIZE));
+
+        let fixed = WITNESS_HEADER_SIZE + STATE_SIZE + (MAX_WITNESS_TARGETS * WITNESS_TARGET_SIZE);
+        assert!(fixed + (MAX_WITNESS_TARGETS * widest) <= crate::MAX_PAYLOAD_BYTES as usize);
+
+        // Every serviceable tree size uses the same request, up to the tree's own bound.
+        for size in [1_u64, 38, 684, 1_000_000, 1_000_000_000, MAX_LEAVES] {
+            let geometry = path_geometry(size, size - 1).expect("geometry");
+            assert!(path_request_size(&geometry).expect("size") <= widest);
+        }
     }
 
     // A witness is computed from a full rebuild while the chain tracks only the frontier.
@@ -943,7 +1363,7 @@ mod tests {
 
         request[0] = 1;
         request[1] = 0;
-        request[3] = 1;
+        request[3] = 3;
         assert_eq!(witness(&request), Err(ResultCode::ConsensusInvalid));
 
         request[3] = 0;
