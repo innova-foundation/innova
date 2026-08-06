@@ -1539,6 +1539,11 @@ bool CTxDB::IterateEpochStates(std::map<int, CEpochState>& mapOut)
                 ssValue >> state.hashVNextFinalizedAnchor;
                 ssValue >> state.nVNextFinalizedHeight;
                 ssValue >> state.vVNextActiveBlockTxCounts;
+                // Field order must track CEpochState's serializer exactly: this reader
+                // decodes by hand, so a field added there and missed here is read as the
+                // next field's length.
+                if (state.nSerVersion >= EPOCHSTATE_SER_VERSION_V5)
+                    ssValue >> state.nVNextPoolBalance;
                 ssValue >> state.vVNextActiveTxIds;
                 ssValue >> state.hashVNextActiveTxSet;
                 if (state.vchVNextTreeState.size() !=
