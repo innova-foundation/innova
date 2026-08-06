@@ -8671,6 +8671,19 @@ public:
                             return FailClosed(entry, strWalletError.c_str());
                     }
 
+                    // Shielded outputs are found by trial-decrypting the block's payloads, which the
+                    // per-transaction sync above does not do. Mirrors the disconnect side.
+                    if (entry.pindex->nHeight >= FORK_HEIGHT_SHIELDED)
+                    {
+                        for (CWallet* pwallet : setpwalletRegistered)
+                        {
+                            std::string strWalletError;
+                            if (!pwallet->ScanBlockForShieldedNotesChecked(
+                                    entry.block, entry.pindex, strWalletError))
+                                return FailClosed(entry, strWalletError.c_str());
+                        }
+                    }
+
                     uiInterface.NotifyRanksUpdated();
                 }
                 else
