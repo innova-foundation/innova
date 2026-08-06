@@ -10,6 +10,7 @@
 
 #include "txdb.h"
 #include "wallet.h"
+#include "privacy_vnext_builder.h"
 #include "privacy_vnext_ffi.h"
 #include "walletdb.h"
 #include "crypter.h"
@@ -10744,6 +10745,196 @@ bool CWallet::DisconnectShieldedBlockChecked(
     return DisconnectPrivacyVNextBlock(block, pindex, strErrorOut);
 }
 
+bool CWallet::CreatePrivacyVNextShield(
+    const std::string& strFromAddress,
+    size_t nMaxInputs,
+    bool fCommit,
+    CWalletTx& wtxNew,
+    int64_t& nValueShieldedOut,
+    size_t& nInputsUsedOut,
+    std::string& strErrorOut)
+{
+    extern uint8_t PrivacyVNextNetworkIdForWallet();
+    wtxNew.SetNull();
+    nValueShieldedOut = 0;
+    nInputsUsedOut = 0;
+    strErrorOut.clear();
+
+    if (nMaxInputs == 0 || nMaxInputs > PRIVACY_VNEXT_SHIELD_MAX_INPUTS)
+        nMaxInputs = PRIVACY_VNEXT_SHIELD_MAX_INPUTS;
+
+    CBitcoinAddress fromAddress(strFromAddress);
+    if (!fromAddress.IsValid())
+    {
+        strErrorOut = "invalid transparent address to shield from";
+        return false;
+    }
+    CScript scriptFrom;
+    scriptFrom.SetDestination(fromAddress.Get());
+
+    if (vchPrivacyVNextSeed.size() != 32)
+    {
+        strErrorOut = "the wallet has no unlocked IV5 seed; run z_createiv5seed first";
+        return false;
+    }
+
+    // Take the anchor from the same finalized state a validator will check against.
+    std::vector<unsigned char> vchRoot;
+    uint64_t nTreeSize = 0;
+    {
+        LOCK(cs_main);
+        CTxDB txdb("r");
+        CEpochState finalized;
+        if (g_dagManager.GetFinalizedEpochStateAsOf(txdb, nBestHeight, finalized) &&
+            finalized.nSerVersion >= EPOCHSTATE_SER_VERSION_V4 &&
+            finalized.vchVNextRoot.size() == EPOCHSTATE_VNEXT_DIGEST_SIZE)
+        {
+            vchRoot = finalized.vchVNextRoot;
+            nTreeSize = finalized.nVNextTreeSize;
+        }
+        else
+        {
+            // Before any epoch has carried the pool, the canonical empty accumulator is
+            // what consensus compares against.
+            PrivacyVNextEpochSeed seed;
+            if (!LoadPrivacyVNextEpochSeed(seed, strErrorOut))
+                return false;
+            vchRoot = seed.vchRoot;
+            nTreeSize = seed.nTreeSize;
+        }
+    }
+    if (vchRoot.size() != 32)
+    {
+        strErrorOut = "IV5 finalized root is unavailable";
+        return false;
+    }
+
+    // Select only this address's confirmed outputs, largest first so the residue shrinks
+    // fastest across repeated sweeps.
+    std::vector<COutput> vCoins;
+    AvailableCoins(vCoins, true);
+    std::vector<const COutput*> vSelected;
+    int64_t nSelected = 0;
+    for (size_t i = 0; i < vCoins.size(); ++i)
+    {
+        if (!vCoins[i].fSpendable)
+            continue;
+        if (vCoins[i].tx->vout[vCoins[i].i].scriptPubKey != scriptFrom)
+            continue;
+        vSelected.push_back(&vCoins[i]);
+    }
+    std::sort(vSelected.begin(), vSelected.end(),
+              [](const COutput* a, const COutput* b) {
+                  return a->tx->vout[a->i].nValue > b->tx->vout[b->i].nValue;
+              });
+    if (vSelected.size() > nMaxInputs)
+        vSelected.resize(nMaxInputs);
+    for (size_t i = 0; i < vSelected.size(); ++i)
+        nSelected += vSelected[i]->tx->vout[vSelected[i]->i].nValue;
+
+    if (vSelected.empty())
+    {
+        strErrorOut = "no spendable outputs for that address";
+        return false;
+    }
+
+    // The fee is flat, so every selected output is worth including once a shield exists at
+    // all; only the group as a whole has to clear it.
+    const int64_t nFee = MIN_TX_FEE_SHIELDED;
+    if (nSelected <= nFee)
+    {
+        strErrorOut = strprintf(
+            "selected %s which does not cover the %s shield fee",
+            FormatMoney(nSelected).c_str(), FormatMoney(nFee).c_str());
+        return false;
+    }
+    const int64_t nShielded = nSelected - nFee;
+
+    // One internal receiver, two notes. The count is public but the split is not, so a
+    // constant arity keeps every shield the same shape on the wire.
+    PrivacyVNextDigest seedDigest;
+    std::memcpy(seedDigest.data(), &vchPrivacyVNextSeed[0], 32);
+    PrivacyVNextDigest genesis;
+    const uint256 hashGenesis = GetGenesisBlockHash();
+    std::memcpy(genesis.data(), hashGenesis.begin(), 32);
+    const uint8_t nNetwork = PrivacyVNextNetworkIdForWallet();
+
+    PrivacyVNextDerivedKeys keys;
+    if (!DerivePrivacyVNextKeys(seedDigest, genesis, 0, nNetwork, 0, keys,
+                                strErrorOut))
+        return false;
+
+    std::vector<PrivacyVNextNewOutput> vOutputs(2);
+    for (size_t i = 0; i < vOutputs.size(); ++i)
+    {
+        vOutputs[i].recipient.nNetwork = nNetwork;
+        vOutputs[i].recipient.nAddressType = 0;
+        vOutputs[i].recipient.spendPublic = keys.spendPublic;
+        vOutputs[i].recipient.viewPublic = keys.viewPublic;
+    }
+    vOutputs[0].nAmount = (uint64_t)(nShielded / 2);
+    vOutputs[1].nAmount = (uint64_t)(nShielded - (nShielded / 2));
+
+    PrivacyVNextDigest finalizedRoot;
+    std::memcpy(finalizedRoot.data(), &vchRoot[0], 32);
+    std::vector<unsigned char> vchPayload;
+    if (!BuildPrivacyVNextShieldPayload(nNetwork, genesis,
+                                        keys.outgoingViewSecret, finalizedRoot,
+                                        nTreeSize, (uint64_t)nSelected,
+                                        (uint64_t)nFee, vOutputs, vchPayload,
+                                        strErrorOut))
+        return false;
+
+    CTransaction txNew;
+    txNew.nVersion = SHIELDED_TX_VERSION_VNEXT;
+    txNew.privacyVNext.vchPayload = vchPayload;
+    for (size_t i = 0; i < vSelected.size(); ++i)
+        txNew.vin.push_back(
+            CTxIn(vSelected[i]->tx->GetHash(), vSelected[i]->i));
+    // No transparent output at all: the entire selected value crosses into the pool, so
+    // there is no change address to tie back to the inputs.
+
+    // Stamp the clock only now that the proving work is done. Doing it before, as the
+    // legacy builders must because their binding signature covers it, would publish how
+    // long this wallet took to build the transaction.
+    txNew.nTime = GetAdjustedTime();
+
+    int nIn = 0;
+    for (size_t i = 0; i < vSelected.size(); ++i)
+    {
+        if (!SignSignature(*this, vSelected[i]->tx->vout[vSelected[i]->i].scriptPubKey,
+                           txNew, nIn++))
+        {
+            strErrorOut = "failed to sign a transparent input of the shield";
+            return false;
+        }
+    }
+
+    std::string strReason;
+    if (!IsStandardTx(txNew, strReason))
+    {
+        strErrorOut = "the built shield is nonstandard: " + strReason;
+        return false;
+    }
+
+    *static_cast<CTransaction*>(&wtxNew) = txNew;
+    wtxNew.BindWallet(this);
+    wtxNew.fTimeReceivedIsTxTime = true;
+    nValueShieldedOut = nShielded;
+    nInputsUsedOut = vSelected.size();
+
+    if (fCommit)
+    {
+        CReserveKey reservekey(this);
+        if (!CommitTransaction(wtxNew, reservekey))
+        {
+            strErrorOut = "the shield was built but could not be committed";
+            return false;
+        }
+    }
+    return true;
+}
+
 static uint8_t PrivacyVNextNetworkId()
 {
     extern bool fTestNet;
@@ -10751,6 +10942,11 @@ static uint8_t PrivacyVNextNetworkId()
     if (fRegTest)
         return 2;
     return fTestNet ? 1 : 0;
+}
+
+uint8_t PrivacyVNextNetworkIdForWallet()
+{
+    return PrivacyVNextNetworkId();
 }
 
 // Notes reach the IV5 tree when their epoch finalizes, not when their block

@@ -378,6 +378,7 @@ extern json_spirit::Value z_listaddresses(const json_spirit::Array& params, bool
 extern json_spirit::Value z_getbalance(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_gettotalbalance(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_shield(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value z_shieldall(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_mintmofncoldstake(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_reclaimmofncoldstake(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value n_newmofnmemberkey(const json_spirit::Array& params, bool fHelp);

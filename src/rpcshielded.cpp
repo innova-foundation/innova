@@ -1592,6 +1592,107 @@ Value z_importviewingkey(const Array& params, bool fHelp)
     return ShieldedAddressToString(addr);
 }
 
+Value z_shieldall(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 2)
+        throw runtime_error(
+            "z_shieldall [fromaddress] [maxinputs]\n"
+            "Moves transparent coins into the IV5 private pool.\n"
+            "\nSweeps only one transparent address per call, so a single transaction never\n"
+            "groups addresses the chain has not already grouped. Omit fromaddress to shield\n"
+            "the address holding the most value. The whole selected value moves: there is no\n"
+            "transparent change output.\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"txid\": \"...\",        (string) the shield transaction\n"
+            "  \"address\": \"...\",     (string) the transparent address swept\n"
+            "  \"inputs\": n,          (numeric) outputs consumed\n"
+            "  \"shielded\": x.xxx,    (numeric) value moved into the pool\n"
+            "  \"remaining\": n        (numeric) outputs still unshielded at that address\n"
+            "}\n");
+
+    if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight : 0))
+        throw JSONRPCError(RPC_INVALID_REQUEST,
+                           "the IV5 pool is not active on this network yet");
+
+    EnsureWalletIsUnlocked();
+
+    std::string strFrom;
+    if (params.size() > 0)
+        strFrom = params[0].get_str();
+    size_t nMaxInputs = PRIVACY_VNEXT_SHIELD_MAX_INPUTS;
+    if (params.size() > 1)
+    {
+        const int64_t nRequested = params[1].get_int64();
+        if (nRequested < 1)
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "maxinputs must be at least one");
+        nMaxInputs = (size_t)nRequested;
+    }
+
+    // No address given: sweep the one holding the most.
+    if (strFrom.empty())
+    {
+        std::map<std::string, int64_t> mapByAddress;
+        std::vector<COutput> vCoins;
+        pwalletMain->AvailableCoins(vCoins, true);
+        for (size_t i = 0; i < vCoins.size(); ++i)
+        {
+            if (!vCoins[i].fSpendable)
+                continue;
+            CTxDestination dest;
+            if (!ExtractDestination(vCoins[i].tx->vout[vCoins[i].i].scriptPubKey, dest))
+                continue;
+            mapByAddress[CBitcoinAddress(dest).ToString()] +=
+                vCoins[i].tx->vout[vCoins[i].i].nValue;
+        }
+        int64_t nBest = 0;
+        for (std::map<std::string, int64_t>::const_iterator it = mapByAddress.begin();
+             it != mapByAddress.end(); ++it)
+        {
+            if (it->second > nBest)
+            {
+                nBest = it->second;
+                strFrom = it->first;
+            }
+        }
+        if (strFrom.empty())
+            throw JSONRPCError(RPC_WALLET_INSUFFICIENT_FUNDS,
+                               "no spendable transparent outputs to shield");
+    }
+
+    CWalletTx wtx;
+    int64_t nShielded = 0;
+    size_t nInputs = 0;
+    std::string strError;
+    if (!pwalletMain->CreatePrivacyVNextShield(strFrom, nMaxInputs, true, wtx,
+                                               nShielded, nInputs, strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+
+    // Report what is left at that address so a caller can loop until it reaches zero.
+    int64_t nRemaining = 0;
+    {
+        CBitcoinAddress addr(strFrom);
+        CScript scriptFrom;
+        scriptFrom.SetDestination(addr.Get());
+        std::vector<COutput> vCoins;
+        pwalletMain->AvailableCoins(vCoins, true);
+        for (size_t i = 0; i < vCoins.size(); ++i)
+        {
+            if (vCoins[i].fSpendable &&
+                vCoins[i].tx->vout[vCoins[i].i].scriptPubKey == scriptFrom)
+                ++nRemaining;
+        }
+    }
+
+    Object result;
+    result.push_back(Pair("txid", wtx.GetHash().GetHex()));
+    result.push_back(Pair("address", strFrom));
+    result.push_back(Pair("inputs", (int64_t)nInputs));
+    result.push_back(Pair("shielded", ValueFromAmount(nShielded)));
+    result.push_back(Pair("remaining", (int64_t)nRemaining));
+    return result;
+}
+
 Value z_getshieldedinfo(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() > 0)

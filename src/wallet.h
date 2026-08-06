@@ -33,6 +33,11 @@ extern bool fConfChange;
 class CAccountingEntry;
 class CWalletTx;
 class CReserveKey;
+// Bound on how many transparent outputs one shield sweeps. Chosen so the signed
+// transaction stays well inside the standard size limit, since legacy sighash costs
+// grow with both the input count and the whole transaction.
+static const size_t PRIVACY_VNEXT_SHIELD_MAX_INPUTS = 50;
+
 class COutput;
 class CCoinControl;
 class CScript;
@@ -552,6 +557,17 @@ public:
     bool GenerateNewPrivacyVNextAddress(
         uint8_t addressType, std::string& addressOut,
         uint32_t& indexOut, std::string& strError);
+    // Build, sign and optionally broadcast a shield. Sweeps only UTXOs paying `strFromAddress`
+    // so no new address grouping is published; moves the whole value, so no transparent change.
+    bool CreatePrivacyVNextShield(
+        const std::string& strFromAddress,
+        size_t nMaxInputs,
+        bool fCommit,
+        CWalletTx& wtxNew,
+        int64_t& nValueShieldedOut,
+        size_t& nInputsUsedOut,
+        std::string& strErrorOut);
+
     bool AddShieldedSpendingKey(const CShieldedPaymentAddress& addr, const CShieldedSpendingKey& key);
     bool AddShieldedViewingKey(const CShieldedPaymentAddress& addr, const CShieldedIncomingViewingKey& ivk);
     bool HaveShieldedSpendingKey(const CShieldedPaymentAddress& addr) const;
