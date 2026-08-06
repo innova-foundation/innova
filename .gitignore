@@ -50,6 +50,7 @@ __pycache__/
 *.pyc
 # local testnet metrics / scratch
 testnet_metrics/
+BUGSMASHERS.md
 # transient per-node patch scripts
 patch_node1*.py
 
