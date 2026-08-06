@@ -98,13 +98,24 @@ struct PrivacyVNextStateEffects
     PrivacyVNextDigest finalizedRoot;
     uint64_t nFinalizedTreeSize;
     PrivacyVNextDigest parameterDigest;
+    // Signed value crossing the transparent boundary: positive enters the pool.
+    int64_t nTransparentValueBalance;
+    uint64_t nFee;
     std::vector<PrivacyVNextDigest> keyImages;
     std::vector<PrivacyVNextOutputLeaf> outputLeaves;
 
-    PrivacyVNextStateEffects() : nFinalizedTreeSize(0)
+    PrivacyVNextStateEffects()
+        : nFinalizedTreeSize(0), nTransparentValueBalance(0), nFee(0)
     {
         finalizedRoot.fill(0);
         parameterDigest.fill(0);
+    }
+
+    // What this transaction adds to, or takes from, the pool. Every operation obeys the
+    // same identity: the value that crossed the boundary, less the fee the miner takes.
+    int64_t PoolDelta() const
+    {
+        return nTransparentValueBalance - static_cast<int64_t>(nFee);
     }
 };
 

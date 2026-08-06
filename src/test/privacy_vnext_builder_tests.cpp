@@ -675,6 +675,131 @@ BOOST_AUTO_TEST_CASE(an_iv5_transaction_is_standard)
                         "IV5 transaction judged nonstandard: " + reason);
 }
 
+// Pool balance accounting: a shield reports exactly what it moved; a transfer reports
+// only the fee leaving.
+BOOST_AUTO_TEST_CASE(payload_effects_report_what_the_pool_gained_or_lost)
+{
+    std::string error;
+    const PrivacyVNextDigest seed = BuilderDigest(0x3d);
+    const PrivacyVNextDigest genesis = BuilderDigest(0x11);
+    PrivacyVNextDerivedKeys keys;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextKeys(seed, genesis, 0, 2, 0, keys, error), error);
+
+    PrivacyVNextEpochSeed epochSeed;
+    BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextEpochSeed(epochSeed, error), error);
+    std::vector<unsigned char> vchRoot;
+    uint64_t nTreeSize = 0;
+    BOOST_REQUIRE_MESSAGE(
+        DecodePrivacyVNextTreeState(epochSeed.vchTreeState, vchRoot, nTreeSize,
+                                    error),
+        error);
+    PrivacyVNextDigest emptyRoot;
+    std::memcpy(emptyRoot.data(), &vchRoot[0], 32);
+
+    const uint64_t nValueIn = 9000;
+    const uint64_t nFee = 100;
+    std::vector<PrivacyVNextNewOutput> outs;
+    outs.resize(1);
+    outs[0].recipient.nNetwork = 2;
+    outs[0].recipient.nAddressType = 0;
+    outs[0].recipient.spendPublic = keys.spendPublic;
+    outs[0].recipient.viewPublic = keys.viewPublic;
+    outs[0].nAmount = nValueIn - nFee;
+
+    std::vector<unsigned char> shieldPayload;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextShieldPayload(2, genesis, keys.outgoingViewSecret,
+                                       emptyRoot, nTreeSize, nValueIn, nFee,
+                                       outs, shieldPayload, error),
+        error);
+
+    PrivacyVNextStateEffects shieldEffects;
+    BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(
+        INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, shieldPayload,
+        shieldEffects).IsValid());
+
+    // A shield moves the transparent value in and pays the fee out of it, so the pool
+    // gains exactly what the notes are worth.
+    BOOST_CHECK_EQUAL(shieldEffects.nTransparentValueBalance, (int64_t)nValueIn);
+    BOOST_CHECK_EQUAL(shieldEffects.nFee, nFee);
+    BOOST_CHECK_EQUAL(shieldEffects.PoolDelta(), (int64_t)(nValueIn - nFee));
+    BOOST_CHECK(shieldEffects.PoolDelta() > 0);
+
+    // The note the shield created, spent onward, must take only the fee out of the pool.
+    CTxDB txdb("r+");
+    std::vector<unsigned char> treeState = epochSeed.vchTreeState;
+    BOOST_REQUIRE_MESSAGE(
+        TrimPrivacyVNextTreeStore(txdb, 0, treeState, error), error);
+    BOOST_REQUIRE_MESSAGE(
+        GrowPrivacyVNextTreeStore(txdb, shieldEffects.outputLeaves, treeState,
+                                  error),
+        error);
+    uint64_t nGrownSize = 0;
+    BOOST_REQUIRE_MESSAGE(
+        DecodePrivacyVNextTreeState(treeState, vchRoot, nGrownSize, error), error);
+
+    std::vector<PrivacyVNextScanMatch> matches;
+    std::vector<PrivacyVNextDigest> spentImages;
+    uint8_t nOutputCount = 0;
+    std::vector<PrivacyVNextScanKey> vKeys(1);
+    vKeys[0].scanSecret = keys.viewSecret;
+    vKeys[0].spendMaterial = keys.spendSecret;
+    BOOST_REQUIRE_MESSAGE(
+        ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 2, 0,
+                                INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                shieldPayload, vKeys, matches, spentImages,
+                                nOutputCount, error),
+        error);
+    BOOST_REQUIRE_EQUAL(matches.size(), 1U);
+
+    std::vector<uint64_t> vTargets;
+    vTargets.push_back(0);
+    std::vector<unsigned char> vchPaths;
+    BOOST_REQUIRE_MESSAGE(
+        ReadPrivacyVNextTreePaths(txdb, nGrownSize, vTargets, vchPaths, error),
+        error);
+    std::vector<PrivacyVNextMembershipWitness> vWitnesses;
+    PrivacyVNextDigest treeRoot;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextWitnessesFromPaths(treeState, vTargets, vchPaths,
+                                            vWitnesses, treeRoot, error),
+        error);
+
+    std::vector<PrivacyVNextSpendNote> spends;
+    spends.resize(1);
+    spends[0].spendSecret = matches[0].spendSecret;
+    spends[0].y = matches[0].y;
+    spends[0].mask = matches[0].mask;
+    spends[0].nAmount = matches[0].nAmount;
+    spends[0].leaf = shieldEffects.outputLeaves[0];
+    spends[0].vchWitnessRecord = vWitnesses[0].vchRecord;
+
+    std::vector<PrivacyVNextNewOutput> onward;
+    onward.resize(1);
+    onward[0].recipient = outs[0].recipient;
+    onward[0].nAmount = matches[0].nAmount - nFee;
+
+    std::vector<unsigned char> transferPayload;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextTransferPayload(2, genesis, keys.outgoingViewSecret,
+                                         treeRoot, nGrownSize, nFee, spends,
+                                         onward, transferPayload, error),
+        error);
+
+    PrivacyVNextStateEffects transferEffects;
+    BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(
+        INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, transferPayload,
+        transferEffects).IsValid());
+    BOOST_CHECK_EQUAL(transferEffects.nTransparentValueBalance, 0);
+    BOOST_CHECK_EQUAL(transferEffects.PoolDelta(), -(int64_t)nFee);
+
+    // The pair leaves the pool holding what it received.
+    const int64_t nPool = shieldEffects.PoolDelta() + transferEffects.PoolDelta();
+    BOOST_CHECK_EQUAL(nPool, (int64_t)(nValueIn - nFee - nFee));
+    BOOST_CHECK(nPool > 0);
+}
+
 // A transfer that does not balance must be refused before any proving work.
 BOOST_AUTO_TEST_CASE(an_unbalanced_transfer_is_refused)
 {

@@ -95,7 +95,10 @@ CScript BuildDAGParentScript(const std::vector<uint256>& vParents);
 // byte tolerantly, mirroring the CBlockDAGData::nInferredK legacy-field pattern.
 static const unsigned char EPOCHSTATE_SER_VERSION_V3 = 1;
 static const unsigned char EPOCHSTATE_SER_VERSION_V4 = 2;
-static const unsigned char EPOCHSTATE_SER_VERSION = EPOCHSTATE_SER_VERSION_V4;
+// V5 adds the running IV5 pool balance. Kept as its own version so a V4 record, which never
+// carried the field, cannot be read as though it declared a zero balance.
+static const unsigned char EPOCHSTATE_SER_VERSION_V5 = 3;
+static const unsigned char EPOCHSTATE_SER_VERSION = EPOCHSTATE_SER_VERSION_V5;
 // DB-wide epoch-state schema marker (key "epochstateschema"). Absent/0 = pre-deterministic-anchor
 // regime (records may have been computed off a node-local tip); EPOCHSTATE_SCHEMA_V2 = records are
 // written under the deterministic anchor (post FORK_HEIGHT_EPOCH_STATE_V2). Gates the upgrade guard.
@@ -153,6 +156,10 @@ struct CEpochState
     int nVNextFinalizedHeight;
     std::vector<unsigned int> vVNextActiveBlockTxCounts;
     std::vector<uint256> vVNextActiveTxIds;
+    // Total value the IV5 pool holds: every shield adds, every unshield and fee subtracts.
+    // Consensus refuses to let this go negative, so the pool can never pay out more than
+    // was put into it however a proof behaves. Serialized from V5.
+    int64_t nVNextPoolBalance;
     uint256 hashVNextActiveTxSet;
 
     CEpochState()
@@ -176,6 +183,7 @@ struct CEpochState
         nVNextTreeSize = 0;
         hashVNextNullifierRoot = 0;
         nVNextNullifierCount = 0;
+        nVNextPoolBalance = 0;
         hashVNextFinalizedAnchor = 0;
         nVNextFinalizedHeight = 0;
         hashVNextActiveTxSet = 0;
@@ -236,6 +244,8 @@ struct CEpochState
                 s, pthis->vVNextActiveBlockTxCounts,
                 EPOCHSTATE_VNEXT_MAX_ACTIVE_TXS,
                 nType, nVersion, ser_action);
+            if (nSerVersion >= EPOCHSTATE_SER_VERSION_V5)
+                READWRITE(nVNextPoolBalance);
             nSerSize += ::SerReadWriteLimitedVector(
                 s, pthis->vVNextActiveTxIds,
                 EPOCHSTATE_VNEXT_MAX_ACTIVE_TXS,

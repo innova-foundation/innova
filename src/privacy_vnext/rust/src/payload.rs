@@ -20,12 +20,15 @@ const MAX_FINALITY_BODY_BYTES: usize = 65_536;
 const MAX_PROOF_SECTION_BYTES: usize = 65_536;
 const TREE_CAPACITY: u64 = 38_u64.pow(4) * 18_u64.pow(4);
 const SIGNING_DOMAIN: &[u8] = b"Innova/IV5/Signing/v1";
-const EFFECTS_HEADER_BYTES: usize = 76;
+const EFFECTS_HEADER_BYTES: usize = 92;
 
 struct PayloadEffects {
     finalized_root: [u8; 32],
     finalized_tree_size: u64,
     parameter_digest: [u8; 32],
+    /// Signed value crossing the transparent boundary: positive enters the pool.
+    transparent_value_balance: i64,
+    fee: u64,
     key_images: Vec<[u8; 32]>,
     output_leaves: Vec<([u8; 32], [u8; 32], [u8; 32])>,
 }
@@ -44,6 +47,10 @@ impl PayloadEffects {
         encoded.extend_from_slice(&self.finalized_root);
         encoded.extend_from_slice(&self.finalized_tree_size.to_le_bytes());
         encoded.extend_from_slice(&self.parameter_digest);
+        // The caller needs both to derive what the pool gained or lost:
+        // pool delta = transparent value balance - fee, for every operation.
+        encoded.extend_from_slice(&self.transparent_value_balance.to_le_bytes());
+        encoded.extend_from_slice(&self.fee.to_le_bytes());
         for key_image in &self.key_images {
             encoded.extend_from_slice(key_image);
         }
@@ -541,6 +548,8 @@ fn validate_payload(wire_version: u32, payload: &[u8]) -> Result<PayloadEffects,
         finalized_root,
         finalized_tree_size,
         parameter_digest,
+        transparent_value_balance,
+        fee,
         key_images,
         output_leaves,
     })

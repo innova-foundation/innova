@@ -279,8 +279,10 @@ payload-scan-response:
   key-images: every key image the payload spends, so a caller can retire its own notes without a second decode
   authentication: every opened note is authenticated by its own tag before decryption, so an output that is not the caller's is skipped rather than reported
 payload-effects-response:
-  header-exact-size: 76
-  header-fields: schema-u16-le, input-count-u8, output-count-u8, finalized-root-32, finalized-tree-size-u64-le, parameter-digest-32
+  header-exact-size: 92
+  header-fields: schema-u16-le, input-count-u8, output-count-u8, finalized-root-32, finalized-tree-size-u64-le, parameter-digest-32, transparent-value-balance-i64-le, fee-u64-le
+  pool-delta: transparent-value-balance minus fee, for every operation; the caller tracks the
+    running total so no more value can leave the pool than entered it
   trailing-fields: input-count key-images-32 followed by output-count O-I-C leaves-96
   behavior: rerun complete payload validation before returning ordered state effects; no C++ payload re-decoding is permitted
 payload-validation:

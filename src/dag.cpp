@@ -32,6 +32,8 @@ uint256 CEpochState::GetDigest() const
         ss << vchVNextParameterDigest << hashVNextFinalizedAnchor;
         ss << nVNextFinalizedHeight << vVNextActiveBlockTxCounts;
         ss << vVNextActiveTxIds << hashVNextActiveTxSet;
+        if (nSerVersion >= EPOCHSTATE_SER_VERSION_V5)
+            ss << nVNextPoolBalance;
     }
     return ss.GetHash();
 }
@@ -2494,9 +2496,13 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                 prevState.hashVNextNullifierRoot;
             state.nVNextNullifierCount =
                 prevState.nVNextNullifierCount;
+            // The pool balance is cumulative over the whole chain, not per epoch.
+            state.nVNextPoolBalance = prevState.nVNextPoolBalance;
         }
         else
         {
+            // The pool starts empty at activation, so the first epoch begins at zero.
+            state.nVNextPoolBalance = 0;
             state.vchVNextTreeState = vNextSeed.vchTreeState;
             state.vchVNextRoot = vNextSeed.vchRoot;
             state.nVNextTreeSize = vNextSeed.nTreeSize;
@@ -2629,6 +2635,34 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                 state.vchVNextTreeState.swap(nextState);
                 state.vchVNextRoot.swap(nextRoot);
                 state.nVNextTreeSize = nextSize;
+
+                // Track what the pool holds and refuse to let it go negative. Whatever a
+                // proof does inside the pool, no more value can leave it than entered, so a
+                // soundness failure is bounded by the deposits rather than the money supply.
+                const int64_t nDelta = effects.PoolDelta();
+                if ((nDelta > 0 && state.nVNextPoolBalance > MAX_MONEY - nDelta) ||
+                    (nDelta < 0 && state.nVNextPoolBalance < std::numeric_limits<int64_t>::min() - nDelta))
+                {
+                    strError = strprintf(
+                        "epoch %d IV5 pool balance overflows on transaction %s",
+                        nEpoch, txit->GetHash().ToString().substr(0, 20).c_str());
+                    return false;
+                }
+                state.nVNextPoolBalance += nDelta;
+                if (state.nVNextPoolBalance < 0)
+                {
+                    strError = strprintf(
+                        "epoch %d IV5 transaction %s takes more from the pool than it holds",
+                        nEpoch, txit->GetHash().ToString().substr(0, 20).c_str());
+                    return false;
+                }
+                if (state.nVNextPoolBalance > MAX_MONEY)
+                {
+                    strError = strprintf(
+                        "epoch %d IV5 pool balance exceeds the money supply",
+                        nEpoch);
+                    return false;
+                }
 
                 uint64_t nextNullifierCount = 0;
                 if (!ApplyPrivacyVNextNullifiers(
