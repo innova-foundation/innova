@@ -559,7 +559,9 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 (IsLegacyShieldedTransactionVersion(tx.nVersion) &&
                  (IsLegacyPrivacyPolicyDisabled() ||
                   IsBoundaryAActiveAtHeight(nCandidateHeight))) ||
-                tx.nVersion == SHIELDED_TX_VERSION_VNEXT)
+                (tx.nVersion == SHIELDED_TX_VERSION_VNEXT &&
+                 (!IsBoundaryBActiveAtHeight(nCandidateHeight) ||
+                  !IsShieldedVNextConsensusReady())))
                 continue;
 
             // IDAG: Skip transactions already in DAG sibling blocks

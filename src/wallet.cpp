@@ -2513,7 +2513,9 @@ void CWalletTx::RelayWalletTransaction(CTxDB& txdb, bool fForceRelay)
                 (IsLegacyShieldedTransactionVersion(tx.nVersion) &&
                  (IsLegacyPrivacyPolicyDisabled() ||
                   IsBoundaryAActiveAtHeight(nCandidateHeight))) ||
-                tx.nVersion == SHIELDED_TX_VERSION_VNEXT)
+                (tx.nVersion == SHIELDED_TX_VERSION_VNEXT &&
+                 (!IsBoundaryBActiveAtHeight(nCandidateHeight) ||
+                  !IsShieldedVNextConsensusReady())))
                 continue;
             uint256 hash = tx.GetHash();
             if (!txdb.ContainsTx(hash))
@@ -2534,7 +2536,9 @@ void CWalletTx::RelayWalletTransaction(CTxDB& txdb, bool fForceRelay)
             (IsLegacyShieldedTransactionVersion(nVersion) &&
              (IsLegacyPrivacyPolicyDisabled() ||
               IsBoundaryAActiveAtHeight(nCandidateHeight))) ||
-            nVersion == SHIELDED_TX_VERSION_VNEXT)
+            (nVersion == SHIELDED_TX_VERSION_VNEXT &&
+             (!IsBoundaryBActiveAtHeight(nCandidateHeight) ||
+              !IsShieldedVNextConsensusReady())))
             return;
         uint256 hash = GetHash();
         if (!txdb.ContainsTx(hash))
