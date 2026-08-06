@@ -423,6 +423,125 @@ BOOST_AUTO_TEST_CASE(memoized_effects_match_a_full_validation)
         rejected).IsValid());
 }
 
+// A shield spends no note, so it carries no membership proof.
+BOOST_AUTO_TEST_CASE(a_shield_carries_no_membership_proof_and_stays_spendable)
+{
+    CTxDB txdb("r+");
+    std::string error;
+
+    const PrivacyVNextDigest seed = BuilderDigest(0x6c);
+    const PrivacyVNextDigest genesis = BuilderDigest(0x11);
+    PrivacyVNextDerivedKeys keys;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextKeys(seed, genesis, 0, 2, 0, keys, error), error);
+
+    PrivacyVNextEpochSeed epochSeed;
+    BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextEpochSeed(epochSeed, error), error);
+    std::vector<unsigned char> treeState = epochSeed.vchTreeState;
+    BOOST_REQUIRE_MESSAGE(
+        TrimPrivacyVNextTreeStore(txdb, 0, treeState, error), error);
+
+    std::vector<unsigned char> vchRoot;
+    uint64_t nTreeSize = 0;
+    BOOST_REQUIRE_MESSAGE(
+        DecodePrivacyVNextTreeState(treeState, vchRoot, nTreeSize, error), error);
+    BOOST_REQUIRE_EQUAL(nTreeSize, 0U);
+    PrivacyVNextDigest emptyRoot;
+    std::memcpy(emptyRoot.data(), &vchRoot[0], 32);
+
+    // Shielding into an empty pool must work.
+    const uint64_t nValueIn = 10000;
+    const uint64_t nFee = 100;
+    std::vector<PrivacyVNextNewOutput> outs;
+    outs.resize(1);
+    outs[0].recipient.nNetwork = 2;
+    outs[0].recipient.nAddressType = 0;
+    outs[0].recipient.spendPublic = keys.spendPublic;
+    outs[0].recipient.viewPublic = keys.viewPublic;
+    outs[0].nAmount = nValueIn - nFee;
+
+    std::vector<unsigned char> shieldPayload;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextShieldPayload(2, genesis, keys.outgoingViewSecret,
+                                       emptyRoot, nTreeSize, nValueIn, nFee,
+                                       outs, shieldPayload, error),
+        error);
+
+    // A shield is a fraction of a transfer because it proves no membership.
+    size_t nTransferProof = 0;
+    BOOST_REQUIRE(GetPrivacyVNextProofSize(1, nTransferProof, error));
+    BOOST_CHECK_MESSAGE(shieldPayload.size() < nTransferProof,
+                        "a shield must be smaller than a single membership proof");
+
+    PrivacyVNextStateEffects shieldEffects;
+    const PrivacyVNextPayloadValidation shieldValid =
+        ExtractPrivacyVNextPayloadEffects(
+            INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, shieldPayload,
+            shieldEffects);
+    BOOST_REQUIRE_MESSAGE(shieldValid.IsValid(), shieldValid.strError);
+    BOOST_CHECK_EQUAL(shieldEffects.keyImages.size(), 0U);
+    BOOST_REQUIRE_EQUAL(shieldEffects.outputLeaves.size(), 1U);
+
+    // The shielded note must then be findable, placeable, and spendable.
+    BOOST_REQUIRE_MESSAGE(
+        GrowPrivacyVNextTreeStore(txdb, shieldEffects.outputLeaves, treeState,
+                                  error),
+        error);
+    BOOST_REQUIRE_MESSAGE(
+        DecodePrivacyVNextTreeState(treeState, vchRoot, nTreeSize, error), error);
+    BOOST_REQUIRE_EQUAL(nTreeSize, 1U);
+
+    std::vector<PrivacyVNextScanMatch> matches;
+    std::vector<PrivacyVNextDigest> keyImages;
+    uint8_t nOutputCount = 0;
+    std::vector<PrivacyVNextScanKey> vKeys(1);
+    vKeys[0].scanSecret = keys.viewSecret;
+    vKeys[0].spendMaterial = keys.spendSecret;
+    BOOST_REQUIRE_MESSAGE(
+        ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 2, 0,
+                                INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                shieldPayload, vKeys, matches, keyImages,
+                                nOutputCount, error),
+        error);
+    BOOST_REQUIRE_EQUAL(matches.size(), 1U);
+    BOOST_CHECK_EQUAL(matches[0].nAmount, nValueIn - nFee);
+
+    std::vector<uint64_t> vTargets;
+    vTargets.push_back(0);
+    std::vector<unsigned char> vchPaths;
+    BOOST_REQUIRE_MESSAGE(
+        ReadPrivacyVNextTreePaths(txdb, nTreeSize, vTargets, vchPaths, error),
+        error);
+    std::vector<PrivacyVNextMembershipWitness> vWitnesses;
+    PrivacyVNextDigest treeRoot;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextWitnessesFromPaths(treeState, vTargets, vchPaths,
+                                            vWitnesses, treeRoot, error),
+        error);
+
+    std::vector<PrivacyVNextSpendNote> spends;
+    spends.resize(1);
+    spends[0].spendSecret = matches[0].spendSecret;
+    spends[0].y = matches[0].y;
+    spends[0].mask = matches[0].mask;
+    spends[0].nAmount = matches[0].nAmount;
+    spends[0].leaf = shieldEffects.outputLeaves[0];
+    spends[0].vchWitnessRecord = vWitnesses[0].vchRecord;
+
+    std::vector<PrivacyVNextNewOutput> onward;
+    onward.resize(1);
+    onward[0].recipient = outs[0].recipient;
+    onward[0].nAmount = matches[0].nAmount - nFee;
+
+    std::vector<unsigned char> transferPayload;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextTransferPayload(2, genesis, keys.outgoingViewSecret,
+                                         treeRoot, nTreeSize, nFee, spends,
+                                         onward, transferPayload, error),
+        error);
+    BOOST_CHECK(transferPayload.size() > shieldPayload.size());
+}
+
 // A transfer that does not balance must be refused before any proving work.
 BOOST_AUTO_TEST_CASE(an_unbalanced_transfer_is_refused)
 {

@@ -64,4 +64,18 @@ bool BuildPrivacyVNextTransferPayload(
     std::vector<unsigned char>& vchPayloadOut,
     std::string& strErrorOut);
 
+// Build a shield payload (no membership proof). `nTransparentValueIn` must equal outputs
+// plus fee.
+bool BuildPrivacyVNextShieldPayload(
+    uint8_t nNetwork,
+    const PrivacyVNextDigest& genesis,
+    const PrivacyVNextDigest& outgoingViewSecret,
+    const PrivacyVNextDigest& finalizedRoot,
+    uint64_t nFinalizedTreeSize,
+    uint64_t nTransparentValueIn,
+    uint64_t nFee,
+    const std::vector<PrivacyVNextNewOutput>& outputs,
+    std::vector<unsigned char>& vchPayloadOut,
+    std::string& strErrorOut);
+
 #endif // INNOVA_PRIVACY_VNEXT_BUILDER_H

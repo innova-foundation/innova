@@ -19,6 +19,7 @@ namespace
 
 // Every disclosure bit set: nothing is revealed, and the outputs need a range proof.
 const uint8_t VNEXT_DISCLOSURE_PRIVATE = 7;
+const uint8_t VNEXT_OPERATION_SHIELD = 0;
 const uint8_t VNEXT_OPERATION_TRANSFER = 2;
 
 void PutCompactSize(std::vector<unsigned char>& out, uint64_t nSize)
@@ -100,12 +101,19 @@ void PrivacyVNextSpendNote::Clear()
     nAmount = 0;
 }
 
-bool BuildPrivacyVNextTransferPayload(
+// One path for every payload shape.
+//
+// A shield is simply the case with no notes spent: it takes its value from the transparent
+// side instead, so it names no pseudo-outputs and needs no membership proof. Keeping both in
+// one function is what stops the two drifting apart in how they serialize or balance.
+static bool BuildPrivacyVNextPayload(
     uint8_t nNetwork,
+    uint8_t nOperation,
     const PrivacyVNextDigest& genesis,
     const PrivacyVNextDigest& outgoingViewSecret,
     const PrivacyVNextDigest& finalizedRoot,
     uint64_t nFinalizedTreeSize,
+    int64_t nTransparentValueBalance,
     uint64_t nFee,
     const std::vector<PrivacyVNextSpendNote>& spends,
     const std::vector<PrivacyVNextNewOutput>& outputs,
@@ -115,9 +123,9 @@ bool BuildPrivacyVNextTransferPayload(
     vchPayloadOut.clear();
     strErrorOut.clear();
 
-    if (spends.empty() || spends.size() > INNOVA_PRIVACY_VNEXT_MAX_INPUTS)
+    if (spends.size() > INNOVA_PRIVACY_VNEXT_MAX_INPUTS)
     {
-        strErrorOut = "an IV5 transfer needs between one and sixteen inputs";
+        strErrorOut = "an IV5 payload takes at most sixteen inputs";
         return false;
     }
     if (outputs.empty() || outputs.size() > INNOVA_PRIVACY_VNEXT_MAX_OUTPUTS)
@@ -126,9 +134,10 @@ bool BuildPrivacyVNextTransferPayload(
         return false;
     }
 
-    // A private transfer moves no value across the transparent boundary, so the inputs
-    // must cover the outputs and the fee exactly.
-    uint64_t nIn = 0;
+    // Inputs plus any transparent value entering the pool must cover the outputs and the
+    // fee exactly, or the value proof cannot balance.
+    uint64_t nIn = nTransparentValueBalance > 0
+                       ? (uint64_t)nTransparentValueBalance : 0;
     for (size_t i = 0; i < spends.size(); ++i)
     {
         if (spends[i].nAmount > std::numeric_limits<uint64_t>::max() - nIn)
@@ -156,7 +165,7 @@ bool BuildPrivacyVNextTransferPayload(
     if (nIn != nOut)
     {
         strErrorOut = strprintf(
-            "IV5 transfer does not balance: %" PRIu64 " in against %" PRIu64 " out",
+            "IV5 payload does not balance: %" PRIu64 " in against %" PRIu64 " out",
             nIn, nOut);
         return false;
     }
@@ -223,7 +232,8 @@ bool BuildPrivacyVNextTransferPayload(
     provisional[0] = 1;
     std::vector<PrivacyVNextSpendConstruction> vDraft;
     std::vector<unsigned char> vchDraftProof;
-    if (!ProvePrivacyVNextMembership(finalizedRoot, provisional, entropy,
+    if (!vProveInputs.empty() &&
+        !ProvePrivacyVNextMembership(finalizedRoot, provisional, entropy,
                                      vProveInputs, vDraft, vchDraftProof,
                                      strErrorOut))
         return false;
@@ -231,7 +241,7 @@ bool BuildPrivacyVNextTransferPayload(
     std::vector<unsigned char> prefix;
     prefix.push_back(static_cast<unsigned char>(iv5::PROTOCOL_SCHEMA));
     prefix.push_back(0);
-    prefix.push_back(VNEXT_OPERATION_TRANSFER);
+    prefix.push_back(nOperation);
     prefix.push_back(0);                         // finality profile: none
     prefix.push_back(0);                         // authorization: owner
     prefix.push_back(VNEXT_DISCLOSURE_PRIVATE);
@@ -242,7 +252,7 @@ bool BuildPrivacyVNextTransferPayload(
     PutBytes(prefix, parameterDigest);
     PutBytes(prefix, finalizedRoot);
     PutU64(prefix, nFinalizedTreeSize);
-    PutI64(prefix, 0);                           // no transparent value moves
+    PutI64(prefix, nTransparentValueBalance);
     PutU64(prefix, nFee);
 
     PutCompactSize(prefix, vDraft.size());
@@ -271,7 +281,8 @@ bool BuildPrivacyVNextTransferPayload(
 
     std::vector<PrivacyVNextSpendConstruction> vFinal;
     std::vector<unsigned char> vchMembership;
-    if (!ProvePrivacyVNextMembership(finalizedRoot, signingHash, entropy,
+    if (!vProveInputs.empty() &&
+        !ProvePrivacyVNextMembership(finalizedRoot, signingHash, entropy,
                                      vProveInputs, vFinal, vchMembership,
                                      strErrorOut))
         return false;
@@ -339,7 +350,10 @@ bool BuildPrivacyVNextTransferPayload(
     if (!RandomScalar(valueEntropy, strErrorOut))
         return false;
     PrivacyVNextValueProof valueProof;
-    if (!ProvePrivacyVNextValue(vPseudoOuts, vValueOutputs, 0, nFee, signingHash,
+    // The balance the proof signs must be the one the prefix declares, or the payload names
+    // a transparent movement its own proof does not cover.
+    if (!ProvePrivacyVNextValue(vPseudoOuts, vValueOutputs,
+                                nTransparentValueBalance, nFee, signingHash,
                                 valueEntropy, excessMask, valueProof,
                                 strErrorOut))
         return false;
@@ -386,4 +400,57 @@ bool BuildPrivacyVNextTransferPayload(
 
     vchPayloadOut.swap(payload);
     return true;
+}
+
+bool BuildPrivacyVNextTransferPayload(
+    uint8_t nNetwork,
+    const PrivacyVNextDigest& genesis,
+    const PrivacyVNextDigest& outgoingViewSecret,
+    const PrivacyVNextDigest& finalizedRoot,
+    uint64_t nFinalizedTreeSize,
+    uint64_t nFee,
+    const std::vector<PrivacyVNextSpendNote>& spends,
+    const std::vector<PrivacyVNextNewOutput>& outputs,
+    std::vector<unsigned char>& vchPayloadOut,
+    std::string& strErrorOut)
+{
+    if (spends.empty())
+    {
+        vchPayloadOut.clear();
+        strErrorOut = "an IV5 transfer needs at least one input";
+        return false;
+    }
+    // A transfer moves nothing across the transparent boundary.
+    return BuildPrivacyVNextPayload(nNetwork, VNEXT_OPERATION_TRANSFER, genesis,
+                                    outgoingViewSecret, finalizedRoot,
+                                    nFinalizedTreeSize, 0, nFee, spends, outputs,
+                                    vchPayloadOut, strErrorOut);
+}
+
+bool BuildPrivacyVNextShieldPayload(
+    uint8_t nNetwork,
+    const PrivacyVNextDigest& genesis,
+    const PrivacyVNextDigest& outgoingViewSecret,
+    const PrivacyVNextDigest& finalizedRoot,
+    uint64_t nFinalizedTreeSize,
+    uint64_t nTransparentValueIn,
+    uint64_t nFee,
+    const std::vector<PrivacyVNextNewOutput>& outputs,
+    std::vector<unsigned char>& vchPayloadOut,
+    std::string& strErrorOut)
+{
+    vchPayloadOut.clear();
+    strErrorOut.clear();
+    if (nTransparentValueIn > (uint64_t)std::numeric_limits<int64_t>::max())
+    {
+        strErrorOut = "IV5 shield value is out of range";
+        return false;
+    }
+    // Positive balance is value entering the pool; no note is spent, so there is no
+    // membership proof and the payload is a fraction of a transfer's size.
+    return BuildPrivacyVNextPayload(
+        nNetwork, VNEXT_OPERATION_SHIELD, genesis, outgoingViewSecret,
+        finalizedRoot, nFinalizedTreeSize, (int64_t)nTransparentValueIn, nFee,
+        std::vector<PrivacyVNextSpendNote>(), outputs, vchPayloadOut,
+        strErrorOut);
 }
