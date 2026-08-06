@@ -253,7 +253,7 @@ Value z_createiv5seed(const Array& params, bool fHelp)
     result.push_back(Pair("generation", 1));
     result.push_back(Pair("next_address_index", 0));
     result.push_back(Pair("secret_exported", false));
-    result.push_back(Pair("transactions_active", false));
+    result.push_back(Pair("transactions_active", IsShieldedVNextConsensusReady()));
     return result;
 }
 
@@ -279,7 +279,7 @@ Value z_getnewiv5address(const Array& params, bool fHelp)
     result.push_back(Pair("address_type", 0));
     result.push_back(Pair("address_index", (int64_t)index));
     result.push_back(Pair("generation", 1));
-    result.push_back(Pair("transactions_active", false));
+    result.push_back(Pair("transactions_active", IsShieldedVNextConsensusReady()));
     return result;
 }
 
@@ -1731,6 +1731,12 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
     obj.push_back(Pair("legacy_transaction_versions", std::string("2000-2007")));
     obj.push_back(Pair("privacy_vnext_transaction_version", SHIELDED_TX_VERSION_VNEXT));
     obj.push_back(Pair("privacy_vnext_consensus_ready", fVNextReady));
+    // Whether consensus will accept an IV5 transaction right now. This is not the same
+    // question as the product declaring itself consensus-active: the linked ABI reports
+    // consensus-active zero until that is separately reviewed, so the field above stays
+    // false on a rehearsal network where payloads are in fact being accepted.
+    obj.push_back(Pair("privacy_vnext_transactions_accepted",
+                       IsShieldedVNextConsensusReady()));
     obj.push_back(Pair("privacy_vnext_abi_linked", fVNextAbiLinked));
     obj.push_back(Pair("privacy_vnext_abi_status",
                        fVNextAbiLinked ? std::string("linked_fail_closed")
