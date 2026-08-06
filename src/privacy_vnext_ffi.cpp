@@ -2,6 +2,14 @@
 // Distributed under the MIT/X11 software license.
 
 #include "privacy_vnext_ffi.h"
+#include <deque>
+#include <map>
+
+#include "hash.h"
+#include "sync.h"
+#include "util.h"
+#include "uint256.h"
+#include "verifycache.h"
 
 #include "privacy_vnext/iv5_protocol.h"
 #include "privacy_vnext/rust/include/innova_privacy_vnext.h"
@@ -791,7 +799,7 @@ PrivacyVNextPayloadValidation ValidatePrivacyVNextPayload(
     return validation;
 }
 
-PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffects(
+static PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffectsUncached(
     uint32_t wireVersion,
     const std::vector<unsigned char>& payload,
     PrivacyVNextStateEffects& effects)
@@ -905,6 +913,77 @@ PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffects(
         validation.strError = "unknown local IV5 effects failure";
         return validation;
     }
+}
+
+namespace
+{
+// Memoized effects for payloads already validated in full (proofs dominate connect cost;
+// the same payload is validated at mempool entry, connect and replay). Only successes are
+// recorded, keyed on the outer wire version and the whole payload.
+CCriticalSection cs_vnextEffects;
+std::map<uint256, PrivacyVNextStateEffects> mapVNextEffects;
+std::deque<uint256> dequeVNextEffects;
+const size_t VNEXT_EFFECTS_CACHE_MAX = 65536;
+
+uint256 VNextEffectsCacheKey(uint32_t wireVersion,
+                             const std::vector<unsigned char>& payload)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << (uint32_t)wireVersion;
+    ss << payload;
+    // Height is fixed: a payload's validity is a pure function of its bytes and its outer
+    // version, so no verdict here can straddle a fork gate.
+    return VerifyProofCacheKey(VERIFYCACHE_IV5_PAYLOAD, 0, ss.GetHash());
+}
+} // namespace
+
+void ClearPrivacyVNextEffectsCache()
+{
+    LOCK(cs_vnextEffects);
+    mapVNextEffects.clear();
+    dequeVNextEffects.clear();
+}
+
+PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffects(
+    uint32_t wireVersion,
+    const std::vector<unsigned char>& payload,
+    PrivacyVNextStateEffects& effects)
+{
+    if (!VerifyProofCacheEnabled())
+        return ExtractPrivacyVNextPayloadEffectsUncached(wireVersion, payload,
+                                                         effects);
+
+    const uint256 key = VNextEffectsCacheKey(wireVersion, payload);
+    {
+        LOCK(cs_vnextEffects);
+        std::map<uint256, PrivacyVNextStateEffects>::const_iterator it =
+            mapVNextEffects.find(key);
+        if (it != mapVNextEffects.end())
+        {
+            effects = it->second;
+            PrivacyVNextPayloadValidation hit;
+            hit.nResult = INNOVA_PRIVACY_VNEXT_VALID;
+            hit.fLocalFailure = false;
+            return hit;
+        }
+    }
+
+    const PrivacyVNextPayloadValidation validation =
+        ExtractPrivacyVNextPayloadEffectsUncached(wireVersion, payload, effects);
+    if (!validation.IsValid())
+        return validation;
+
+    LOCK(cs_vnextEffects);
+    if (mapVNextEffects.insert(std::make_pair(key, effects)).second)
+    {
+        dequeVNextEffects.push_back(key);
+        while (dequeVNextEffects.size() > VNEXT_EFFECTS_CACHE_MAX)
+        {
+            mapVNextEffects.erase(dequeVNextEffects.front());
+            dequeVNextEffects.pop_front();
+        }
+    }
+    return validation;
 }
 
 PrivacyVNextScannedNote::PrivacyVNextScannedNote()

@@ -36,7 +36,10 @@ enum VerifyCacheDomain
                                       // never on a recomputed statement hash -- a statement-keyed cache
                                       // would false-accept a distinct invalid proof over the same statement.
     VERIFYCACHE_FCMP           = 3,
-    VERIFYCACHE_NULLIFIER_BIND = 4
+    VERIFYCACHE_NULLIFIER_BIND = 4,
+    VERIFYCACHE_IV5_PAYLOAD    = 5    // keyed on the outer wire version and the FULL payload
+                                      // bytes, never on a recomputed statement hash, for the
+                                      // same reason the NullStake domain is
 };
 
 // Bump whenever a cached verifier's accept/reject behavior changes, so entries

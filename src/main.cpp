@@ -9871,6 +9871,7 @@ static void MarkFailedSubtree(CBlockIndex* pindex, bool fInvalidate, std::vector
 bool InvalidateBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError)
 {
     VerifyProofCacheClear();
+    ClearPrivacyVNextEffectsCache();
     if (!pindex)
         { strError = "null block index"; return false; }
     if (pindex == pindexGenesisBlock)
@@ -9908,6 +9909,7 @@ bool InvalidateBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError)
 bool ReconsiderBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError)
 {
     VerifyProofCacheClear();
+    ClearPrivacyVNextEffectsCache();
     if (!pindex)
         { strError = "null block index"; return false; }
 

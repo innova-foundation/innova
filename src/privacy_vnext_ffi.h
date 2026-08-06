@@ -145,6 +145,10 @@ bool ApplyPrivacyVNextNullifiers(
     uint64_t& nextCount,
     std::string& error);
 
+// Drop every memoized payload verdict. Required wherever the verify-once cache is
+// cleared, so entries from an abandoned chain cannot be carried into a new one.
+void ClearPrivacyVNextEffectsCache();
+
 // Rust performs complete payload/proof validation before returning this frame.
 // A malformed frame after successful validation is local state failure.
 PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffects(

@@ -297,6 +297,132 @@ BOOST_AUTO_TEST_CASE(a_note_placed_in_the_tree_can_be_spent)
     BOOST_CHECK_EQUAL(effects.nFinalizedTreeSize, nTreeSize);
 }
 
+// Memoized effects must equal full-validation effects and must not survive a cache clear.
+BOOST_AUTO_TEST_CASE(memoized_effects_match_a_full_validation)
+{
+    CTxDB txdb("r+");
+    std::string error;
+
+    const PrivacyVNextDigest seed = BuilderDigest(0x5b);
+    const PrivacyVNextDigest genesis = BuilderDigest(0x11);
+    PrivacyVNextDerivedKeys keys;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextKeys(seed, genesis, 0, 2, 0, keys, error), error);
+
+    const uint64_t nAmount = 4000;
+    PrivacyVNextEncryptedOutput funding;
+    BOOST_REQUIRE_MESSAGE(
+        EncryptPrivacyVNextNote(2, 0, 0, genesis, keys.spendPublic,
+                                keys.viewPublic, keys.outgoingViewSecret,
+                                BuilderScalar(41), nAmount, BuilderScalar(43),
+                                BuilderScalar(47), keys.spendPublic, funding,
+                                error),
+        error);
+
+    PrivacyVNextEpochSeed epochSeed;
+    BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextEpochSeed(epochSeed, error), error);
+    std::vector<unsigned char> treeState = epochSeed.vchTreeState;
+    BOOST_REQUIRE_MESSAGE(
+        TrimPrivacyVNextTreeStore(txdb, 0, treeState, error), error);
+    std::vector<PrivacyVNextOutputLeaf> vLeaves;
+    vLeaves.push_back(funding.leaf);
+    BOOST_REQUIRE_MESSAGE(
+        GrowPrivacyVNextTreeStore(txdb, vLeaves, treeState, error), error);
+
+    std::vector<unsigned char> vchRoot;
+    uint64_t nTreeSize = 0;
+    BOOST_REQUIRE_MESSAGE(
+        DecodePrivacyVNextTreeState(treeState, vchRoot, nTreeSize, error), error);
+    std::vector<uint64_t> vTargets;
+    vTargets.push_back(0);
+    std::vector<unsigned char> vchPaths;
+    BOOST_REQUIRE_MESSAGE(
+        ReadPrivacyVNextTreePaths(txdb, nTreeSize, vTargets, vchPaths, error),
+        error);
+    std::vector<PrivacyVNextMembershipWitness> vWitnesses;
+    PrivacyVNextDigest treeRoot;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextWitnessesFromPaths(treeState, vTargets, vchPaths,
+                                            vWitnesses, treeRoot, error),
+        error);
+
+    PrivacyVNextEncryptedNote onChain;
+    onChain.nOutputIndex = 0;
+    onChain.genesis = genesis;
+    onChain.leafO = funding.leaf.owner;
+    onChain.leafI = funding.leaf.nullifierBase;
+    onChain.leafC = funding.leaf.commitment;
+    onChain.ephemeral = funding.ephemeral;
+    onChain.vchCiphertext = funding.vchRecipientCiphertext;
+    PrivacyVNextScannedNote scanned;
+    BOOST_REQUIRE_MESSAGE(
+        ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, 2, 0, onChain,
+                             keys.viewSecret, keys.spendSecret, scanned, error),
+        error);
+
+    std::vector<PrivacyVNextSpendNote> spends;
+    spends.resize(1);
+    spends[0].spendSecret = scanned.spendSecret;
+    spends[0].y = scanned.y;
+    spends[0].mask = scanned.mask;
+    spends[0].nAmount = scanned.nAmount;
+    spends[0].leaf = funding.leaf;
+    spends[0].vchWitnessRecord = vWitnesses[0].vchRecord;
+
+    std::vector<PrivacyVNextNewOutput> outs;
+    outs.resize(1);
+    outs[0].recipient.nNetwork = 2;
+    outs[0].recipient.nAddressType = 0;
+    outs[0].recipient.spendPublic = keys.spendPublic;
+    outs[0].recipient.viewPublic = keys.viewPublic;
+    outs[0].nAmount = nAmount - 50;
+
+    PrivacyVNextDigest finalizedRoot;
+    std::memcpy(finalizedRoot.data(), &vchRoot[0], 32);
+    std::vector<unsigned char> payload;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextTransferPayload(2, genesis, keys.outgoingViewSecret,
+                                         finalizedRoot, nTreeSize, 50, spends,
+                                         outs, payload, error),
+        error);
+
+    // Cold, then warm, then cold again.
+    ClearPrivacyVNextEffectsCache();
+    PrivacyVNextStateEffects cold;
+    BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(
+        INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, payload, cold).IsValid());
+    PrivacyVNextStateEffects warm;
+    BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(
+        INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, payload, warm).IsValid());
+    ClearPrivacyVNextEffectsCache();
+    PrivacyVNextStateEffects recold;
+    BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(
+        INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, payload, recold).IsValid());
+
+    BOOST_CHECK(warm.finalizedRoot == cold.finalizedRoot);
+    BOOST_CHECK_EQUAL(warm.nFinalizedTreeSize, cold.nFinalizedTreeSize);
+    BOOST_CHECK(warm.parameterDigest == cold.parameterDigest);
+    BOOST_REQUIRE_EQUAL(warm.keyImages.size(), cold.keyImages.size());
+    for (size_t i = 0; i < cold.keyImages.size(); ++i)
+        BOOST_CHECK(warm.keyImages[i] == cold.keyImages[i]);
+    BOOST_REQUIRE_EQUAL(warm.outputLeaves.size(), cold.outputLeaves.size());
+    for (size_t i = 0; i < cold.outputLeaves.size(); ++i)
+    {
+        BOOST_CHECK(warm.outputLeaves[i].owner == cold.outputLeaves[i].owner);
+        BOOST_CHECK(warm.outputLeaves[i].commitment ==
+                    cold.outputLeaves[i].commitment);
+    }
+    BOOST_CHECK(recold.keyImages.size() == cold.keyImages.size());
+
+    // A payload the cache has never seen must still be rejected on its own merits.
+    std::vector<unsigned char> tampered = payload;
+    tampered[tampered.size() - 1] ^= 0x01;
+    PrivacyVNextStateEffects rejected;
+    BOOST_CHECK(!ExtractPrivacyVNextPayloadEffects(
+        INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, tampered,
+        rejected).IsValid());
+}
+
 // A transfer that does not balance must be refused before any proving work.
 BOOST_AUTO_TEST_CASE(an_unbalanced_transfer_is_refused)
 {
