@@ -2476,7 +2476,10 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
             strError = "IV5 epoch seed unavailable: " + strError;
             return false;
         }
-        state.nSerVersion = EPOCHSTATE_SER_VERSION_V4;
+        // Write at the current version, not a pinned one: a field added to the record
+        // is only serialized when the version says it is there, so pinning this silently
+        // drops every later addition.
+        state.nSerVersion = EPOCHSTATE_SER_VERSION;
         state.vchVNextParameterDigest = vNextSeed.vchParameterDigest;
         if (fHavePredecessor &&
             prevState.nSerVersion >= EPOCHSTATE_SER_VERSION_V4)
