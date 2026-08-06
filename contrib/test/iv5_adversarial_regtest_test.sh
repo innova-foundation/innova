@@ -21,12 +21,13 @@ RPC=27900
 IDNS=7865
 RPCUSER="iv5adv"
 RPCPASS="iv5advpass"
+WALLETPASS="iv5walletpass"
 
-# Boundary B activates early; the first post-DAG epoch ends at 310, and the pool
-# balance only reaches the epoch state once an epoch completes.
-BOUNDARY_B=20
-FUND_HEIGHT=140
-EPOCH_HEIGHT=330
+# Boundary B must not precede the schema-V3 epoch height (311 on regtest): a shield
+# before it confirms but its notes never reach the tree.
+BOUNDARY_B=311
+FUND_HEIGHT=340
+EPOCH_HEIGHT=630
 
 PASSED=0
 FAILED=0
@@ -47,8 +48,11 @@ is_int()   { echo "$1" | grep -qE '^[0-9]+$'; }
 
 stop_node() {
     rpc stop >/dev/null 2>&1 || true
-    for _ in $(seq 1 60); do
-        pgrep -f "datadir=$NODE_DIR" >/dev/null 2>&1 || return 0
+    # Match the daemon's exact argv. A bare datadir match also catches the
+    # short-lived rpc helper processes, which share that fragment, so the node
+    # never looks gone and the restart is skipped entirely.
+    for _ in $(seq 1 180); do
+        pgrep -f -- "-datadir=$NODE_DIR -regtest -daemon" >/dev/null 2>&1 || return 0
         sleep 1
     done
     return 1
@@ -124,9 +128,25 @@ fi
 header "2. A shield puts real value into the pool"
 # ============================================================
 
+# The IV5 seed is spend authority for every note the wallet will own, so it is only
+# created into an encrypted wallet. Encrypting stops the daemon, so restart and unlock.
+rpc encryptwallet "$WALLETPASS" >/dev/null 2>&1
+for _ in $(seq 1 60); do
+    pgrep -f "datadir=$NODE_DIR" >/dev/null 2>&1 || break
+    sleep 1
+done
+start_node || { fail "node did not restart after encrypting the wallet"; exit 1; }
+success "wallet encrypted and node restarted"
+
+UNLOCK="$(rpc walletpassphrase "$WALLETPASS" 3600 2>&1)"
+if echo "$UNLOCK" | grep -qiE "error"; then
+    fail "could not unlock the wallet: $(echo "$UNLOCK" | head -2)"
+    exit 1
+fi
+
 SEED="$(rpc z_createiv5seed 2>&1)"
 if echo "$SEED" | grep -q '"created"'; then
-    success "IV5 seed created"
+    success "IV5 seed created into the encrypted wallet"
 else
     fail "z_createiv5seed failed: $(echo "$SEED" | head -2)"
     exit 1
@@ -149,10 +169,14 @@ fi
 # It must reach a block, not merely the mempool.
 mine_to $(( $(height) + 3 )) || true
 CONF="$(rpc gettransaction "$TXID" 2>&1)"
-if echo "$CONF" | grep -q '"confirmations"'; then
-    success "shield confirmed in a block"
+# gettransaction reports confirmations 0 in the mempool; require real depth and a
+# block hash so a miner that drops IV5 transactions fails.
+CONFIRMATIONS="$(jnum "$CONF" confirmations)"
+CONFBLOCK="$(jstr "$CONF" blockhash)"
+if [ -n "$CONFIRMATIONS" ] && [ "$CONFIRMATIONS" -ge 1 ] && [ ${#CONFBLOCK} -eq 64 ]; then
+    success "shield confirmed in a block ($CONFIRMATIONS confirmation(s))"
 else
-    fail "shield did not confirm: $(echo "$CONF" | head -2)"
+    fail "shield did not confirm: confirmations='$CONFIRMATIONS' blockhash='$CONFBLOCK'"
 fi
 
 # ============================================================
@@ -193,11 +217,19 @@ else
     fail "store ($STORE_AFTER) disagrees with the epoch tree ($TREE_AFTER)"
 fi
 
-# The wallet must be able to see what it shielded.
+# The wallet must be able to see what it shielded. Value that reaches the tree
+# but never reaches the owner's wallet is value the owner cannot spend, so this
+# is a failure and not a warning.
+NOTES_AFTER="$(jnum "$INFO" privacy_vnext_note_count)"
+if [ "${NOTES_AFTER:-0}" -ge 1 ] 2>/dev/null; then
+    success "wallet detected its own shielded output(s): $NOTES_AFTER note(s)"
+else
+    fail "wallet detected no shielded notes (note_count=${NOTES_AFTER:-?})"
+fi
 if [ "$(echo "$BAL_AFTER > ${BAL_BEFORE:-0}" | bc -l 2>/dev/null)" = "1" ]; then
     success "wallet reports the shielded balance: $BAL_AFTER INN"
 else
-    warn "wallet shielded balance did not increase (before=${BAL_BEFORE:-?} after=${BAL_AFTER:-?})"
+    fail "wallet shielded balance did not increase (before=${BAL_BEFORE:-?} after=${BAL_AFTER:-?})"
 fi
 
 # ============================================================
@@ -243,6 +275,7 @@ PRE_STORE="$(jnum "$PRE_INFO" privacy_vnext_tree_store_size)"
 PRE_ROOT="$(jstr "$PRE_INFO" privacy_vnext_tree_root)"
 
 if stop_node && start_node; then
+    rpc walletpassphrase "$WALLETPASS" 3600 >/dev/null 2>&1
     POST_INFO="$(rpc z_getshieldedinfo 2>/dev/null)"
     POST_TREE="$(jnum "$POST_INFO" privacy_vnext_tree_size)"
     POST_STORE="$(jnum "$POST_INFO" privacy_vnext_tree_store_size)"
