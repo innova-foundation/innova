@@ -728,7 +728,11 @@ bool CTransaction::ReadFromDisk(COutPoint prevout)
 
 bool IsStandardTx(const CTransaction& tx, string& reason)
 {
-    if (tx.nVersion > CTransaction::CURRENT_VERSION && tx.nVersion != ANON_TXN_VERSION && tx.nVersion != NAMECOIN_TX_VERSION && !tx.IsShielded()) { //WIP
+    // IsShielded() is false once an IV5 payload is present, so an IV5 transaction has to be
+    // admitted on its own terms or every one of them is nonstandard and never relays. Only
+    // mainnet consults this, which is why the regtest and testnet paths never showed it.
+    if (tx.nVersion > CTransaction::CURRENT_VERSION && tx.nVersion != ANON_TXN_VERSION &&
+        tx.nVersion != NAMECOIN_TX_VERSION && !tx.IsShielded() && !tx.IsPrivacyVNext()) { //WIP
         reason = "version";
         return false;
     }

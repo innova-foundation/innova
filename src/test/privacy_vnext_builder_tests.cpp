@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "../privacy_vnext/rust/include/innova_privacy_vnext.h"
+#include "../main.h"
 #include "../privacy_vnext_builder.h"
 #include "../privacy_vnext_ffi.h"
 #include "../privacy_vnext_store.h"
@@ -649,6 +650,29 @@ BOOST_AUTO_TEST_CASE(parallel_warming_agrees_with_sequential_validation)
     WarmPrivacyVNextEffectsCache(vOdd, 2);
     WarmPrivacyVNextEffectsCache(
         std::vector<std::pair<uint32_t, const std::vector<unsigned char>*> >(), 4);
+}
+
+// Standardness is only consulted on mainnet; IV5 transactions must be standard.
+BOOST_AUTO_TEST_CASE(an_iv5_transaction_is_standard)
+{
+    CTransaction tx;
+    tx.nVersion = SHIELDED_TX_VERSION_VNEXT;
+    tx.vin.resize(1);
+    tx.vin[0].prevout.hash = uint256(1);
+    tx.vin[0].prevout.n = 0;
+    tx.vin[0].scriptSig << OP_1;
+    tx.vout.resize(1);
+    tx.vout[0].nValue = 1000;
+    tx.vout[0].scriptPubKey.SetDestination(CKeyID(uint160(7)));
+    tx.privacyVNext.vchPayload.assign(64, 0x11);
+
+    BOOST_REQUIRE(tx.IsPrivacyVNext());
+    // The helper excludes payload-bearing transactions.
+    BOOST_CHECK(!tx.IsShielded());
+
+    std::string reason;
+    BOOST_CHECK_MESSAGE(IsStandardTx(tx, reason),
+                        "IV5 transaction judged nonstandard: " + reason);
 }
 
 // A transfer that does not balance must be refused before any proving work.
