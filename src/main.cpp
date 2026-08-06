@@ -671,6 +671,14 @@ bool CTransaction::ReadFromDisk(CTxDB& txdb, COutPoint prevout)
     return ReadFromDisk(txdb, prevout, txindex);
 }
 
+bool CTransaction::ReadFromDisk(CTxDB& txdb, const uint256& hashTx, CTxIndex& txindexRet)
+{
+    SetNull();
+    if (!txdb.ReadTxIndex(hashTx, txindexRet))
+        return false;
+    return ReadFromDisk(txindexRet.pos);
+}
+
 bool CTransaction::ReadFromDisk(COutPoint prevout)
 {
     CTxDB txdb("r");
@@ -2739,7 +2747,7 @@ bool GetTransaction(const uint256 &hash, CTransaction &tx, uint256 &hashBlock, b
         }
         CTxDB txdb("r");
         CTxIndex txindex;
-        if (tx.ReadFromDisk(txdb, COutPoint(hash, 0), txindex))
+        if (tx.ReadFromDisk(txdb, hash, txindex))
         {
             CBlock block;
             if (block.ReadFromDisk(txindex.pos.nFile, txindex.pos.nBlockPos, false))

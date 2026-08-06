@@ -1442,6 +1442,10 @@ public:
     bool ReadFromDisk(CTxDB& txdb, COutPoint prevout, CTxIndex& txindexRet);
     bool ReadFromDisk(CTxDB& txdb, COutPoint prevout);
     bool ReadFromDisk(COutPoint prevout);
+    // Fetch by hash. The outpoint overloads resolve an input and must reject an
+    // out-of-range index; a fully shielded transaction carries no transparent
+    // outputs, so that bound would make it unreadable.
+    bool ReadFromDisk(CTxDB& txdb, const uint256& hashTx, CTxIndex& txindexRet);
 
     bool DisconnectInputs(CTxDB& txdb);
 
