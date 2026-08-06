@@ -153,6 +153,17 @@ void Shutdown(void* parg)
             delete idns;
         }
         Finalise();
+        // Drop the pid file last, once the databases are flushed and the datadir lock is
+        // about to go. Left behind, it names a process that has exited, so anything that
+        // reads it to decide whether a node is still running gets a stale answer.
+        try
+        {
+            fs::remove(GetPidFile());
+        }
+        catch (const std::exception& e)
+        {
+            printf("Shutdown : could not remove the pid file: %s\n", e.what());
+        }
         /*
         SecureMsgShutdown();
 
@@ -161,7 +172,6 @@ void Shutdown(void* parg)
         bitdb.Flush(false);
         StopNode();
         bitdb.Flush(true);
-        fs::remove(GetPidFile());
         UnregisterWallet(pwalletMain);
         delete pwalletMain;
         */
