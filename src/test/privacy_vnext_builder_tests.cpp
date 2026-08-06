@@ -542,6 +542,115 @@ BOOST_AUTO_TEST_CASE(a_shield_carries_no_membership_proof_and_stays_spendable)
     BOOST_CHECK(transferPayload.size() > shieldPayload.size());
 }
 
+// Concurrent cache warming must match the sequential validator exactly.
+BOOST_AUTO_TEST_CASE(parallel_warming_agrees_with_sequential_validation)
+{
+    std::string error;
+    const PrivacyVNextDigest seed = BuilderDigest(0x2e);
+    const PrivacyVNextDigest genesis = BuilderDigest(0x11);
+    PrivacyVNextDerivedKeys keys;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextKeys(seed, genesis, 0, 2, 0, keys, error), error);
+
+    PrivacyVNextEpochSeed epochSeed;
+    BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextEpochSeed(epochSeed, error), error);
+    std::vector<unsigned char> vchRoot;
+    uint64_t nTreeSize = 0;
+    BOOST_REQUIRE_MESSAGE(
+        DecodePrivacyVNextTreeState(epochSeed.vchTreeState, vchRoot, nTreeSize,
+                                    error),
+        error);
+    PrivacyVNextDigest emptyRoot;
+    std::memcpy(emptyRoot.data(), &vchRoot[0], 32);
+
+    // Shields need no membership proof, so a batch of distinct ones is cheap to build.
+    const size_t nCount = 8;
+    std::vector<std::vector<unsigned char> > vPayloads;
+    for (size_t i = 0; i < nCount; ++i)
+    {
+        std::vector<PrivacyVNextNewOutput> outs;
+        outs.resize(1);
+        outs[0].recipient.nNetwork = 2;
+        outs[0].recipient.nAddressType = 0;
+        outs[0].recipient.spendPublic = keys.spendPublic;
+        outs[0].recipient.viewPublic = keys.viewPublic;
+        outs[0].nAmount = 1000 + (uint64_t)i;   // distinct value, distinct payload
+
+        std::vector<unsigned char> payload;
+        BOOST_REQUIRE_MESSAGE(
+            BuildPrivacyVNextShieldPayload(2, genesis, keys.outgoingViewSecret,
+                                           emptyRoot, nTreeSize,
+                                           outs[0].nAmount + 10, 10, outs,
+                                           payload, error),
+            error);
+        vPayloads.push_back(payload);
+    }
+
+    // Cold sequential pass is the reference.
+    ClearPrivacyVNextEffectsCache();
+    std::vector<PrivacyVNextStateEffects> vSequential(nCount);
+    for (size_t i = 0; i < nCount; ++i)
+    {
+        BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(
+            INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, vPayloads[i],
+            vSequential[i]).IsValid());
+    }
+
+    // Same batch, warmed concurrently from cold.
+    ClearPrivacyVNextEffectsCache();
+    std::vector<std::pair<uint32_t, const std::vector<unsigned char>*> > vWarm;
+    for (size_t i = 0; i < nCount; ++i)
+        vWarm.push_back(std::make_pair(
+            (uint32_t)INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, &vPayloads[i]));
+    WarmPrivacyVNextEffectsCache(vWarm, 4);
+
+    for (size_t i = 0; i < nCount; ++i)
+    {
+        PrivacyVNextStateEffects warmed;
+        BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(
+            INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, vPayloads[i],
+            warmed).IsValid());
+        BOOST_CHECK(warmed.finalizedRoot == vSequential[i].finalizedRoot);
+        BOOST_CHECK_EQUAL(warmed.nFinalizedTreeSize,
+                          vSequential[i].nFinalizedTreeSize);
+        BOOST_REQUIRE_EQUAL(warmed.outputLeaves.size(),
+                            vSequential[i].outputLeaves.size());
+        for (size_t j = 0; j < warmed.outputLeaves.size(); ++j)
+            BOOST_CHECK(warmed.outputLeaves[j].commitment ==
+                        vSequential[i].outputLeaves[j].commitment);
+    }
+
+    // An invalid payload in the batch must not be cached by the warm pass, so the
+    // sequential validator still rejects it on its own terms.
+    std::vector<unsigned char> tampered = vPayloads[0];
+    tampered[tampered.size() - 1] ^= 0x01;
+    ClearPrivacyVNextEffectsCache();
+    std::vector<std::pair<uint32_t, const std::vector<unsigned char>*> > vMixed;
+    vMixed.push_back(std::make_pair(
+        (uint32_t)INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, &tampered));
+    vMixed.push_back(std::make_pair(
+        (uint32_t)INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, &vPayloads[1]));
+    WarmPrivacyVNextEffectsCache(vMixed, 2);
+
+    PrivacyVNextStateEffects rejected;
+    BOOST_CHECK(!ExtractPrivacyVNextPayloadEffects(
+        INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, tampered,
+        rejected).IsValid());
+    PrivacyVNextStateEffects accepted;
+    BOOST_CHECK(ExtractPrivacyVNextPayloadEffects(
+        INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, vPayloads[1],
+        accepted).IsValid());
+
+    // A null entry and a single-item batch must both be no-ops rather than faults.
+    std::vector<std::pair<uint32_t, const std::vector<unsigned char>*> > vOdd;
+    vOdd.push_back(std::make_pair((uint32_t)0, (const std::vector<unsigned char>*)NULL));
+    vOdd.push_back(std::make_pair(
+        (uint32_t)INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, &vPayloads[2]));
+    WarmPrivacyVNextEffectsCache(vOdd, 2);
+    WarmPrivacyVNextEffectsCache(
+        std::vector<std::pair<uint32_t, const std::vector<unsigned char>*> >(), 4);
+}
+
 // A transfer that does not balance must be refused before any proving work.
 BOOST_AUTO_TEST_CASE(an_unbalanced_transfer_is_refused)
 {

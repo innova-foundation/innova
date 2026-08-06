@@ -149,6 +149,13 @@ bool ApplyPrivacyVNextNullifiers(
 // cleared, so entries from an abandoned chain cannot be carried into a new one.
 void ClearPrivacyVNextEffectsCache();
 
+// Validate payloads concurrently to prefill the effects cache; results are discarded
+// and the sequential validator still decides. Pointers must outlive the call;
+// `nThreads` of zero picks a count from the machine.
+void WarmPrivacyVNextEffectsCache(
+    const std::vector<std::pair<uint32_t, const std::vector<unsigned char>*> >& vPayloads,
+    int nThreads);
+
 // Rust performs complete payload/proof validation before returning this frame.
 // A malformed frame after successful validation is local state failure.
 PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffects(

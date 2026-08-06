@@ -7736,6 +7736,25 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
     if (IsBoundaryBActiveAtHeight(pindex->nHeight))
     {
+        // Verify the block's payloads concurrently before validating them in order. Each
+        // costs tens of milliseconds cold, so a block of them cannot be connected serially
+        // inside a block interval during a sync, where nothing has been seen before. This
+        // only fills the effects cache; every consensus decision still happens below, in
+        // order, and an invalid payload is simply left uncached for that loop to reject.
+        {
+            std::vector<std::pair<uint32_t, const std::vector<unsigned char>*> > vWarm;
+            vWarm.reserve(activeBlock.vtx.size());
+            for (const CTransaction& tx : activeBlock.vtx)
+            {
+                if (tx.IsPrivacyVNext() && tx.privacyVNext.IsPresent())
+                    vWarm.push_back(std::make_pair(
+                        static_cast<uint32_t>(tx.nVersion),
+                        &tx.privacyVNext.vchPayload));
+            }
+            WarmPrivacyVNextEffectsCache(
+                vWarm, (int)GetArg("-parverify", 0));
+        }
+
         std::set<uint256> setBlockPrivacyVNextNullifiers;
         for (const CTransaction& tx : activeBlock.vtx)
         {

@@ -2,7 +2,10 @@
 // Distributed under the MIT/X11 software license.
 
 #include "privacy_vnext_ffi.h"
+#include <atomic>
 #include <deque>
+#include <thread>
+#include <utility>
 #include <map>
 
 #include "hash.h"
@@ -942,6 +945,52 @@ void ClearPrivacyVNextEffectsCache()
     LOCK(cs_vnextEffects);
     mapVNextEffects.clear();
     dequeVNextEffects.clear();
+}
+
+void WarmPrivacyVNextEffectsCache(
+    const std::vector<std::pair<uint32_t, const std::vector<unsigned char>*> >& vPayloads,
+    int nThreads)
+{
+    // With the cache off there is nothing to fill, and a single payload gains nothing from
+    // a thread it would have to wait for anyway.
+    if (!VerifyProofCacheEnabled() || vPayloads.size() < 2)
+        return;
+
+    unsigned int nWorkers = nThreads > 0 ? (unsigned int)nThreads
+                                         : std::thread::hardware_concurrency();
+    if (nWorkers == 0)
+        nWorkers = 1;
+    if (nWorkers > vPayloads.size())
+        nWorkers = (unsigned int)vPayloads.size();
+    if (nWorkers > 64)
+        nWorkers = 64;
+    if (nWorkers < 2)
+        return;
+
+    std::atomic<size_t> next(0);
+    std::vector<std::thread> vWorkers;
+    vWorkers.reserve(nWorkers);
+    for (unsigned int i = 0; i < nWorkers; ++i)
+    {
+        vWorkers.push_back(std::thread([&vPayloads, &next]() {
+            for (;;)
+            {
+                const size_t index = next.fetch_add(1);
+                if (index >= vPayloads.size())
+                    return;
+                if (!vPayloads[index].second)
+                    continue;
+                PrivacyVNextStateEffects discarded;
+                // The verdict is deliberately dropped: this call exists for the entry it
+                // leaves behind, and a rejection is the sequential validator's to report.
+                ExtractPrivacyVNextPayloadEffects(vPayloads[index].first,
+                                                  *vPayloads[index].second,
+                                                  discarded);
+            }
+        }));
+    }
+    for (size_t i = 0; i < vWorkers.size(); ++i)
+        vWorkers[i].join();
 }
 
 PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffects(
