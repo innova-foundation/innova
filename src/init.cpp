@@ -1189,6 +1189,14 @@ bool AppInit2()
             const int64_t nB = GetArg("-regtestboundaryb", (int64_t)PRIVACY_VNEXT_HEIGHT_UNSET);
             if (nB < 0 || nB > (int64_t)PRIVACY_VNEXT_HEIGHT_UNSET)
                 return InitError(_("-regtestboundaryb is out of range"));
+            // The IV5 tree is maintained only by the schema-V3 epoch build; a pool active before it
+            // would confirm shields whose notes never reach the tree and can never be spent.
+            if (nB < (int64_t)FORK_HEIGHT_EPOCH_STATE_V3)
+                return InitError(strprintf(
+                    _("-regtestboundaryb=%d is below the epoch-state V3 height %d; the IV5 "
+                      "tree is not maintained before that height, so shielded value would "
+                      "be unspendable"),
+                    (int)nB, FORK_HEIGHT_EPOCH_STATE_V3));
             nRegtestBoundaryBHeight = (int)nB;
         }
         fRegtestShieldedVNextRehearsal = GetBoolArg("-regtestiv5rehearsal", false);
