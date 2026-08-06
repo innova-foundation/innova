@@ -1783,8 +1783,14 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
     obj.push_back(Pair("privacy_vnext_max_anchor_age_epochs",
                        EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS));
     if (pwalletMain)
+    {
         obj.push_back(Pair("privacy_vnext_balance",
                            ValueFromAmount(pwalletMain->GetPrivacyVNextBalance())));
+        obj.push_back(Pair("privacy_vnext_unconfirmed_balance",
+                           ValueFromAmount(pwalletMain->GetPrivacyVNextUnconfirmedBalance())));
+        obj.push_back(Pair("privacy_vnext_note_count",
+                           (int64_t)pwalletMain->GetPrivacyVNextNoteCount()));
+    }
     obj.push_back(Pair("privacy_vnext_max_inputs",
                        (int)vnextAbi.nMaxInputs));
     obj.push_back(Pair("privacy_vnext_max_outputs",

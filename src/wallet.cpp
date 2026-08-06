@@ -11009,6 +11009,16 @@ int64_t CWallet::GetPrivacyVNextUnconfirmedBalance() const
     return nTotal;
 }
 
+size_t CWallet::GetPrivacyVNextNoteCount() const
+{
+    LOCK(cs_shielded);
+    size_t nCount = 0;
+    for (size_t i = 0; i < vPrivacyVNextNotes.size(); ++i)
+        if (!vPrivacyVNextNotes[i].fSpent)
+            nCount++;
+    return nCount;
+}
+
 // Largest first, so a spend reaches its target with the fewest inputs and stays
 // inside the per-proof input bound.
 bool CWallet::SelectPrivacyVNextNotes(

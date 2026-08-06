@@ -284,6 +284,9 @@ public:
     // position, which a note only gains once its epoch finalizes.
     int64_t GetPrivacyVNextBalance() const;
     int64_t GetPrivacyVNextUnconfirmedBalance() const;
+    // Unspent notes held, spendable or not. Separates "nothing was ever
+    // detected" from "detected but not yet spendable".
+    size_t GetPrivacyVNextNoteCount() const;
     bool SelectPrivacyVNextNotes(int64_t nTargetValue, int nSpendHeight,
                                  std::vector<CPrivacyVNextWalletNote>& vSelected,
                                  int64_t& nSelectedValue) const;
