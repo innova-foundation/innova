@@ -2639,28 +2639,14 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                 // Track what the pool holds and refuse to let it go negative. Whatever a
                 // proof does inside the pool, no more value can leave it than entered, so a
                 // soundness failure is bounded by the deposits rather than the money supply.
-                const int64_t nDelta = effects.PoolDelta();
-                if ((nDelta > 0 && state.nVNextPoolBalance > MAX_MONEY - nDelta) ||
-                    (nDelta < 0 && state.nVNextPoolBalance < std::numeric_limits<int64_t>::min() - nDelta))
+                std::string strPoolError;
+                if (!ApplyPrivacyVNextPoolDelta(state.nVNextPoolBalance,
+                                                effects.PoolDelta(), strPoolError))
                 {
                     strError = strprintf(
-                        "epoch %d IV5 pool balance overflows on transaction %s",
-                        nEpoch, txit->GetHash().ToString().substr(0, 20).c_str());
-                    return false;
-                }
-                state.nVNextPoolBalance += nDelta;
-                if (state.nVNextPoolBalance < 0)
-                {
-                    strError = strprintf(
-                        "epoch %d IV5 transaction %s takes more from the pool than it holds",
-                        nEpoch, txit->GetHash().ToString().substr(0, 20).c_str());
-                    return false;
-                }
-                if (state.nVNextPoolBalance > MAX_MONEY)
-                {
-                    strError = strprintf(
-                        "epoch %d IV5 pool balance exceeds the money supply",
-                        nEpoch);
+                        "epoch %d IV5 transaction %s: %s", nEpoch,
+                        txit->GetHash().ToString().substr(0, 20).c_str(),
+                        strPoolError.c_str());
                     return false;
                 }
 
@@ -3220,6 +3206,36 @@ bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
     if (!txdb.ReadEpochState(nFinEpoch, state) || state.nEpoch != nFinEpoch)
         return false;
     stateOut = state;
+    return true;
+}
+
+bool ApplyPrivacyVNextPoolDelta(int64_t& nBalance, int64_t nDelta,
+                                std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    if (nBalance < 0 || nBalance > MAX_MONEY)
+    {
+        strErrorOut = "the running IV5 pool balance is already out of range";
+        return false;
+    }
+    if ((nDelta > 0 && nBalance > MAX_MONEY - nDelta) ||
+        (nDelta < 0 && nBalance < std::numeric_limits<int64_t>::min() - nDelta))
+    {
+        strErrorOut = "the IV5 pool balance overflows";
+        return false;
+    }
+    const int64_t nNext = nBalance + nDelta;
+    if (nNext < 0)
+    {
+        strErrorOut = "takes more from the IV5 pool than it holds";
+        return false;
+    }
+    if (nNext > MAX_MONEY)
+    {
+        strErrorOut = "the IV5 pool balance exceeds the money supply";
+        return false;
+    }
+    nBalance = nNext;
     return true;
 }
 

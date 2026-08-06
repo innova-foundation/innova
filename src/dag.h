@@ -118,6 +118,11 @@ static const size_t EPOCHSTATE_VNEXT_MAX_NULLIFIERS = 1048576;
 // so a transaction crossing an epoch boundary before confirming stays valid.
 static const int EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS = 6;
 
+// Apply one IV5 tx's pool delta to a running balance. Returns false, leaving `nBalance`
+// untouched, if the result would be negative, exceed the money supply, or overflow.
+bool ApplyPrivacyVNextPoolDelta(int64_t& nBalance, int64_t nDelta,
+                                std::string& strErrorOut);
+
 struct CEpochState
 {
     int nEpoch;

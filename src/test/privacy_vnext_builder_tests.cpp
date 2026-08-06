@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "../privacy_vnext/rust/include/innova_privacy_vnext.h"
+#include "../dag.h"
 #include "../main.h"
 #include "../privacy_vnext_builder.h"
 #include "../privacy_vnext_ffi.h"
@@ -798,6 +799,64 @@ BOOST_AUTO_TEST_CASE(payload_effects_report_what_the_pool_gained_or_lost)
     const int64_t nPool = shieldEffects.PoolDelta() + transferEffects.PoolDelta();
     BOOST_CHECK_EQUAL(nPool, (int64_t)(nValueIn - nFee - nFee));
     BOOST_CHECK(nPool > 0);
+}
+
+// The pool may not go negative; driven directly since no honest tx can reach it.
+BOOST_AUTO_TEST_CASE(the_pool_balance_refuses_to_go_negative)
+{
+    std::string error;
+    int64_t nPool = 0;
+
+    // Value entering accumulates.
+    BOOST_REQUIRE(ApplyPrivacyVNextPoolDelta(nPool, 5000, error));
+    BOOST_CHECK_EQUAL(nPool, 5000);
+    BOOST_REQUIRE(ApplyPrivacyVNextPoolDelta(nPool, 2500, error));
+    BOOST_CHECK_EQUAL(nPool, 7500);
+
+    // Value leaving is fine while the pool covers it, including to exactly empty.
+    BOOST_REQUIRE(ApplyPrivacyVNextPoolDelta(nPool, -7500, error));
+    BOOST_CHECK_EQUAL(nPool, 0);
+
+    // One satoshi more than the pool holds is refused.
+    BOOST_CHECK(!ApplyPrivacyVNextPoolDelta(nPool, -1, error));
+    BOOST_CHECK(!error.empty());
+    BOOST_CHECK_EQUAL(nPool, 0);   // rejected leaves the balance untouched
+
+    nPool = 1000;
+    BOOST_CHECK(!ApplyPrivacyVNextPoolDelta(nPool, -1001, error));
+    BOOST_CHECK_EQUAL(nPool, 1000);
+    BOOST_REQUIRE(ApplyPrivacyVNextPoolDelta(nPool, -1000, error));
+    BOOST_CHECK_EQUAL(nPool, 0);
+
+    // The pool can never hold more than the money supply.
+    nPool = 0;
+    BOOST_CHECK(!ApplyPrivacyVNextPoolDelta(nPool, MAX_MONEY + 1, error));
+    BOOST_CHECK_EQUAL(nPool, 0);
+    BOOST_REQUIRE(ApplyPrivacyVNextPoolDelta(nPool, MAX_MONEY, error));
+    BOOST_CHECK_EQUAL(nPool, MAX_MONEY);
+    BOOST_CHECK(!ApplyPrivacyVNextPoolDelta(nPool, 1, error));
+    BOOST_CHECK_EQUAL(nPool, MAX_MONEY);
+
+    // Overflow in either direction is refused, not wrapped.
+    nPool = 1;
+    BOOST_CHECK(!ApplyPrivacyVNextPoolDelta(
+        nPool, std::numeric_limits<int64_t>::max(), error));
+    BOOST_CHECK_EQUAL(nPool, 1);
+    BOOST_CHECK(!ApplyPrivacyVNextPoolDelta(
+        nPool, std::numeric_limits<int64_t>::min(), error));
+    BOOST_CHECK_EQUAL(nPool, 1);
+
+    // A balance that is already out of range cannot be extended.
+    int64_t nCorrupt = -1;
+    BOOST_CHECK(!ApplyPrivacyVNextPoolDelta(nCorrupt, 100, error));
+    nCorrupt = MAX_MONEY + 1;
+    BOOST_CHECK(!ApplyPrivacyVNextPoolDelta(nCorrupt, -100, error));
+
+    // Shield then transfer: the pool gains the shielded value, then loses only the fee.
+    nPool = 0;
+    BOOST_REQUIRE(ApplyPrivacyVNextPoolDelta(nPool, 9000 - 100, error));
+    BOOST_REQUIRE(ApplyPrivacyVNextPoolDelta(nPool, -100, error));
+    BOOST_CHECK_EQUAL(nPool, 8800);
 }
 
 // A transfer that does not balance must be refused before any proving work.
