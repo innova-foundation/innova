@@ -252,10 +252,12 @@ wait_rpc_down() {
     local pid
     for ((attempt=0; attempt<45; attempt++)); do
         if ! rpc "$node" getinfo >/dev/null 2>&1; then
-            # RPC stops before Berkeley DB/LevelDB flushes and the datadir lock
-            # are released.  Starting the replacement in that window produces
-            # a false restart failure (or, worse, two processes racing the same
-            # generation).  Require the recorded daemon process to be gone.
+            # RPC stops before the DB flush and datadir lock release. Wait until no process holds
+            # the datadir (the lock, not the pid file, is authoritative).
+            if pgrep -f "datadir=$(node_dir "$node")" >/dev/null 2>&1; then
+                sleep 1
+                continue
+            fi
             if [ ! -s "$pidfile" ]; then
                 return 0
             fi
