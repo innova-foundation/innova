@@ -821,6 +821,13 @@ bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
                                     int64_t& nReleasedOut,
                                     bool& fLocalFailure,
                                     std::string& strError);
+
+/** Whether an IV5 transaction still anchors inside the consensus window at
+ *  nHeight. Block assembly must apply this: the window is finite, so a mempool
+ *  transaction can age out between acceptance and selection. */
+bool CheckPrivacyVNextFinalizedAnchor(CTxDB& txdb, int nHeight,
+                                      const CTransaction& tx,
+                                      std::string& strError);
 bool GetKeyImage(CTxDB* ptxdb, ec_point& keyImage, CKeyImageSpent& keyImageSpent, bool& fInMempool);
 int GetAnonTxnPreImage(const CTransaction& tx, uint256& hashOut);
 bool TxnHashInSystem(CTxDB* ptxdb, uint256& txnHash);

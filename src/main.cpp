@@ -1582,6 +1582,32 @@ static bool ValidatePrivacyVNextFinalizedContext(
     return true;
 }
 
+// Whether an IV5 transaction's anchor is still inside the consensus window at a height;
+// otherwise a miner keeps selecting a transaction its own ConnectBlock rejects.
+bool CheckPrivacyVNextFinalizedAnchor(CTxDB& txdb, int nHeight,
+                                      const CTransaction& tx,
+                                      std::string& strError)
+{
+    strError.clear();
+    if (!tx.IsPrivacyVNext())
+        return true;
+
+    PrivacyVNextStateEffects effects;
+    const PrivacyVNextPayloadValidation validation =
+        ExtractPrivacyVNextPayloadEffects(
+            static_cast<uint32_t>(tx.nVersion), tx.privacyVNext.vchPayload,
+            effects);
+    if (!validation.IsValid())
+    {
+        strError = validation.strError;
+        return false;
+    }
+
+    bool fLocalFailure = false;
+    return ValidatePrivacyVNextFinalizedContext(txdb, nHeight, effects,
+                                                fLocalFailure, strError);
+}
+
 // Transparent value an IV5 transaction moves across the pool boundary. The pool delta
 // is the pool's share; whatever the transparent side contributes beyond it is the fee.
 bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
@@ -9948,6 +9974,34 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
     // allowed to fail the tip, and the catch-up is left until the node is synced.
     if (!fIsInitialDownload && IsBoundaryBActiveAtHeight(nBestHeight))
     {
+        // An anchor that has aged out of the window can never come back, so the
+        // transaction holding it is unminable and only occupies the pool.
+        {
+            std::vector<CTransaction> vStaleAnchors;
+            {
+                LOCK(mempool.cs);
+                for (std::map<uint256, CTransaction>::const_iterator it =
+                         mempool.mapTx.begin();
+                     it != mempool.mapTx.end(); ++it)
+                {
+                    if (!it->second.IsPrivacyVNext())
+                        continue;
+                    std::string strAnchorError;
+                    if (!CheckPrivacyVNextFinalizedAnchor(
+                            txdb, nBestHeight + 1, it->second, strAnchorError))
+                        vStaleAnchors.push_back(it->second);
+                }
+            }
+            for (size_t i = 0; i < vStaleAnchors.size(); ++i)
+            {
+                printf("SetBestChain: evicting IV5 tx %s, anchor is outside the "
+                       "window at height %d\n",
+                       vStaleAnchors[i].GetHash().ToString().substr(0,10).c_str(),
+                       nBestHeight + 1);
+                mempool.remove(vStaleAnchors[i]);
+            }
+        }
+
         const int nStoreEpoch = GetEpochForHeight(nBestHeight) - 1;
         std::string strStoreError;
         if (!SyncPrivacyVNextTreeStore(txdb, nStoreEpoch, strStoreError))

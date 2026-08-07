@@ -660,6 +660,20 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             }
             if (tx.IsPrivacyVNext())
             {
+                // The anchor window is finite and the tip has moved since this
+                // transaction was accepted. Selecting one that has aged out builds a
+                // block this node's own ConnectBlock rejects, every round.
+                std::string strAnchorError;
+                if (!CheckPrivacyVNextFinalizedAnchor(txdb, nCandidateHeight, tx,
+                                                      strAnchorError))
+                {
+                    printf("CreateNewBlock: IV5 anchor no longer valid at height %d, "
+                           "skipping tx %s: %s\n", nCandidateHeight,
+                           tx.GetHash().ToString().substr(0,10).c_str(),
+                           strAnchorError.c_str());
+                    continue;
+                }
+
                 int64_t nAbsorbed = 0;
                 int64_t nReleased = 0;
                 bool fFlowLocalFailure = false;
