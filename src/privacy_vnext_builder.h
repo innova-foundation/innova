@@ -52,12 +52,17 @@ struct PrivacyVNextNewOutput
 // Every disclosure bit is set, so nothing about the sender, the recipient or the amounts is
 // revealed and the outputs carry a range proof. Payloads that disclose any of those are a
 // separate shape and are not built here.
+//
+// `transparentBinding` is GetPrivacyVNextTransparentBinding of the transaction that will
+// carry the payload. It has to be known before proving, because the proofs bind to a hash
+// of the prefix it sits in.
 bool BuildPrivacyVNextTransferPayload(
     uint8_t nNetwork,
     const PrivacyVNextDigest& genesis,
     const PrivacyVNextDigest& outgoingViewSecret,
     const PrivacyVNextDigest& finalizedRoot,
     uint64_t nFinalizedTreeSize,
+    const PrivacyVNextDigest& transparentBinding,
     uint64_t nFee,
     const std::vector<PrivacyVNextSpendNote>& spends,
     const std::vector<PrivacyVNextNewOutput>& outputs,
@@ -72,6 +77,7 @@ bool BuildPrivacyVNextUnshieldPayload(
     const PrivacyVNextDigest& outgoingViewSecret,
     const PrivacyVNextDigest& finalizedRoot,
     uint64_t nFinalizedTreeSize,
+    const PrivacyVNextDigest& transparentBinding,
     uint64_t nTransparentValueOut,
     uint64_t nFee,
     const std::vector<PrivacyVNextSpendNote>& spends,
@@ -87,6 +93,7 @@ bool BuildPrivacyVNextShieldPayload(
     const PrivacyVNextDigest& outgoingViewSecret,
     const PrivacyVNextDigest& finalizedRoot,
     uint64_t nFinalizedTreeSize,
+    const PrivacyVNextDigest& transparentBinding,
     uint64_t nTransparentValueIn,
     uint64_t nFee,
     const std::vector<PrivacyVNextNewOutput>& outputs,

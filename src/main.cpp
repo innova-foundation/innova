@@ -1483,6 +1483,50 @@ int64_t CTransaction::GetMinFee(unsigned int nBlockSize, enum GetMinFee_mode mod
     return nMinFee;
 }
 
+// What an IV5 payload commits its transaction's transparent side to.
+//
+// The payload's signing hash covers the payload prefix, so anything placed in the prefix
+// is covered by every proof the payload carries. This digest goes there, and consensus
+// holds it against the transaction the payload arrives in.
+//
+// Scope is the output vector and the lock time. A spend has no transparent input, so no
+// SignatureHash covers its outputs and vout is its entire mutable surface: retargeting a
+// scriptPubKey, restating an amount, appending an output or dropping the vector must all
+// break this. vin is deliberately absent. On a shield the inputs are signed over the whole
+// serialized transaction, which already contains this payload, so binding scriptSigs would
+// make the signature depend on a digest that depends on the signature; binding prevouts
+// would only restate a commitment SIGHASH_ALL already makes. A spend has no input to bind
+// at all, and an input a third party appends can only add value it must itself authorize.
+// nTime is excluded on purpose: it is stamped at broadcast, after proving, so that the
+// wallet's proving time does not become a fingerprint.
+//
+// An empty vout is not a special case; it hashes as a zero-length vector, which is what
+// shields and transfers commit to.
+uint256 GetPrivacyVNextTransparentBinding(const CTransaction& tx)
+{
+    static const char* pszDomain = "Innova/IV5/TransparentBinding/v1";
+    CHashWriter ss(SER_GETHASH, PROTOCOL_VERSION);
+    ss.write(pszDomain, strlen(pszDomain));
+    ss << tx.vout;
+    ss << tx.nLockTime;
+    return ss.GetHash();
+}
+
+bool CheckPrivacyVNextTransparentBinding(const CTransaction& tx,
+                                         const PrivacyVNextStateEffects& effects,
+                                         std::string& strError)
+{
+    strError.clear();
+    const uint256 expected = GetPrivacyVNextTransparentBinding(tx);
+    if (!std::equal(effects.transparentBinding.begin(),
+                    effects.transparentBinding.end(), expected.begin()))
+    {
+        strError = "IV5 payload does not bind this transaction's transparent outputs";
+        return false;
+    }
+    return true;
+}
+
 static bool ValidatePrivacyVNextFinalizedContext(
     CTxDB& txdb, int nContextHeight,
     const PrivacyVNextStateEffects& effects,
@@ -1676,20 +1720,10 @@ bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
         strError = "IV5 pool delta is out of range";
         return false;
     }
-    // Only a declared negative balance is an unshield. A transfer declares zero
-    // and still has a negative delta, because its fee leaves the pool for the
-    // miner; that release is bounded by the fee and has no transparent output to
-    // redirect, so it is sound.
-    //
-    // An unshield is not: the signing hash covers the payload prefix only, and a
-    // transaction with no transparent input carries no signature over its outputs
-    // either, so whoever assembles the block can retarget or drop the output and
-    // keep the released value. Refuse until the payload binds the transparent side.
-    if (effects.nTransparentValueBalance < 0)
-    {
-        strError = "IV5 unshield is not enabled: the transparent output is not bound to the payload";
+    // Every IV5 shape is checked, not just the releasing ones: released value is safe only
+    // if the payload named the outputs that receive it.
+    if (!CheckPrivacyVNextTransparentBinding(tx, effects, strError))
         return false;
-    }
 
     if (nDelta > 0)
         nAbsorbedOut = nDelta;
@@ -1751,6 +1785,11 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
         if (!validation.IsValid())
             return error("CTxMemPool::accept() : invalid IV5 payload effects: %s",
                          validation.strError.c_str());
+
+        std::string strBindingError;
+        if (!CheckPrivacyVNextTransparentBinding(tx, effects, strBindingError))
+            return tx.DoS(100, error("CTxMemPool::accept() : %s",
+                                     strBindingError.c_str()));
 
         bool fContextLocalFailure = false;
         std::string strContextError;
@@ -4519,6 +4558,17 @@ bool ValidatePrivacyVNextNullifierPersistence(
                     validation.strError.c_str());
                 return false;
             }
+            std::string strBindingError;
+            if (!CheckPrivacyVNextTransparentBinding(tx, effects,
+                                                     strBindingError))
+            {
+                strError = strprintf(
+                    "accepted IV5 payload %s: %s",
+                    tx.GetHash().ToString().substr(0,10).c_str(),
+                    strBindingError.c_str());
+                return false;
+            }
+
             bool fContextLocalFailure = false;
             std::string strContextError;
             if (!ValidatePrivacyVNextFinalizedContext(
@@ -8079,6 +8129,15 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             if (!validation.IsValid())
                 return DoS(100, error("ConnectBlock() : invalid IV5 payload effects: %s",
                                       validation.strError.c_str()));
+
+            // Ahead of anything that consumes the payload's value: a rewritten
+            // transparent side makes every number below describe a different
+            // transaction from the one the proofs cover.
+            std::string strBindingError;
+            if (!CheckPrivacyVNextTransparentBinding(tx, effects, strBindingError))
+                return DoS(100, error("ConnectBlock() : %s for %s",
+                                      strBindingError.c_str(),
+                                      tx.GetHash().ToString().substr(0,10).c_str()));
 
             bool fContextLocalFailure = false;
             std::string strContextError;

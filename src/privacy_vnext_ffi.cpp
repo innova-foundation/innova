@@ -879,6 +879,8 @@ static PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffectsUncached(
         effects.nFee = 0;
         for (size_t i = 0; i < 8; ++i)
             effects.nFee |= static_cast<uint64_t>(encoded[84 + i]) << (8 * i);
+        std::copy(encoded.begin() + 92, encoded.begin() + 124,
+                  effects.transparentBinding.begin());
 
         size_t offset = INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_HEADER_SIZE;
         effects.keyImages.resize(inputCount);

@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "status": "integration_review_only",
+  "consensus_enabled": false,
+  "upstream": {
+    "repository": "https://github.com/monero-oxide/monero-oxide.git",
+    "branch_observed": "fcmp++",
+    "commit": "76399e58bfc7e652d900936f84b3785ea59ab4cd",
+    "commit_tree": "18eb6a7f525e9413a8b7dcea28fd4c2b1180f9c7",
+    "parent": "6313959f906fe754909754ac642134237dae42a9",
+    "commit_timestamp_utc": "2026-07-09T09:05:47Z",
+    "github_commit_signature_verified": true
+  },
+  "dependency_lock": {
+    "path_at_commit": "Cargo.lock",
+    "git_blob": "67bef50f489563bdd8883147b9444126f97adf62",
+    "sha256": "ed36d0720d8f9edd9ebc479ad84adb0763b24d739ecce3271d35bc2ca59a0747"
+  },
+  "rust_toolchain": {
+    "path_at_commit": "rust-toolchain.toml",
+    "git_blob": "857955b9997d05c97f71b5356bb2c307eafd6945",
+    "sha256": "f53198ae4fdecfd87da36fe431c771b54c51e975d01c0e99f653bc14d5d48211"
+  },
+  "component_trees": {
+    "full_chain_membership_proofs": "4350e4a902093fcaa6e898324e419f01ac2c584f",
+    "generalized_bulletproofs": "160793b98181d6c61d4ec5063a4afa4ad410eaf5",
+    "helioselene": "89df10d4f04c760fc6f8b230872703b1f219d433",
+    "ec_divisors": "c18a9e59ec397738a6bf9c66e8ca2a1ad22d7851",
+    "monero_fcmp_plus_plus": "49e090270ba09bbc79c65718e5a002ca49bb0cd7"
+  },
+  "residual_risks": {
+    "generalized_bulletproofs_fixed_protocol_audited": false,
+    "innova_composition_reviewed": false,
+    "innova_metadata_c_abi_implemented": true,
+    "innova_proof_or_verification_c_abi_implemented": false,
+    "note": "The upstream audit inventory states that the currently used drafted Generalized Bulletproofs fix has not been audited. The implemented caller-owned, panic-contained C ABI exposes provenance metadata only. This lock is a reproducible design input, not approval to enable version 2008."
+  }
+}

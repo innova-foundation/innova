@@ -623,50 +623,199 @@ fi
 assert_coinbase_conserved "transfer" "$XFER_HEIGHT"
 
 # ============================================================
-header "7. An unshield is refused while its output is unbound"
+header "7. An unshield releases pool value to the output it named"
 # ============================================================
 
-# The payload's signing hash covers the payload prefix only, and a transaction
-# that spends notes has no transparent input, so nothing signs the output an
-# unshield pays to: whoever assembles the block can retarget or drop it and keep
-# the released value as fee. Both ends fail closed until the prefix commits to
-# the transparent side. This section is the regression test that they stay shut,
-# and inverts once that binding lands.
+# An unshield's transparent output is covered by the vout/nLockTime digest in the
+# payload prefix, which consensus recomputes from the carrying transaction.
 T_ADDR="$(rpc 0 getnewaddress 2>&1 | tr -d '"[:space:]')"
 [ ${#T_ADDR} -ge 20 ] || { fail "getnewaddress failed"; exit 1; }
 
-NOTES_BEFORE_UNSH="$(jget "$(rpc 0 z_getshieldedinfo 2>/dev/null)" privacy_vnext_note_count)"
 UNSH="$(rpc 0 z_iv5unshield "$T_ADDR" "$UNSHIELD_AMOUNT" 2>&1)"
 UNSH_TXID="$(jget "$UNSH" txid)"
+UNSH_NOTES="$(jget "$UNSH" notes)"
 if [ ${#UNSH_TXID} -eq 64 ]; then
-    fail "z_iv5unshield produced a transaction while the output is unbound: ${UNSH_TXID:0:16}"
-elif echo "$UNSH" | grep -qi "not enabled"; then
-    success "the wallet refuses to build an unshield and says why"
+    success "unshield built and accepted: $UNSHIELD_AMOUNT INN from $UNSH_NOTES note(s), txid ${UNSH_TXID:0:16}"
 else
-    fail "z_iv5unshield failed for the wrong reason: $(echo "$UNSH" | head -2)"
+    fail "z_iv5unshield failed: $(echo "$UNSH" | head -3)"
+    exit 1
 fi
 
-# Refusing must not cost the sender anything: no note may be marked spent.
-NOTES_AFTER_UNSH="$(jget "$(rpc 0 z_getshieldedinfo 2>/dev/null)" privacy_vnext_note_count)"
-if [ "$NOTES_BEFORE_UNSH" = "$NOTES_AFTER_UNSH" ]; then
-    success "the refused unshield consumed no notes (still $NOTES_AFTER_UNSH)"
+# Captured before it confirms; the tamper cases below rewrite exactly these bytes.
+UNSH_RAW="$(rpc 0 getrawtransaction "$UNSH_TXID" 2>/dev/null | tr -d '"[:space:]')"
+[ ${#UNSH_RAW} -gt 100 ] || { fail "could not fetch the raw unshield"; exit 1; }
+
+UNSH_TARGET=$(( $(height 0) + 3 ))
+mine_to 0 "$UNSH_TARGET" || { fail "could not mine the unshield"; exit 1; }
+wait_sync "$UNSH_TARGET" || { fail "peers did not accept the unshield block"; exit 1; }
+
+UC="$(rpc 0 gettransaction "$UNSH_TXID" 2>&1)"
+UNSH_BLOCK="$(jget "$UC" blockhash)"
+UNSH_CONF="$(jget "$UC" confirmations)"
+if [ ${#UNSH_BLOCK} -eq 64 ] && is_int "$UNSH_CONF" && [ "$UNSH_CONF" -ge 1 ]; then
+    success "unshield confirmed in a block ($UNSH_CONF confirmation(s))"
 else
-    fail "the refused unshield lost notes: $NOTES_BEFORE_UNSH -> $NOTES_AFTER_UNSH"
+    fail "unshield did not confirm: confirmations='$UNSH_CONF' blockhash='$UNSH_BLOCK'"
+    exit 1
 fi
 
-# The transparent recipient must be untouched.
+UNSH_HEIGHT="$(jget "$(rpc 0 getblock "$UNSH_BLOCK" 2>/dev/null)" height)"
+if [ "$(block_hash 1 "$UNSH_HEIGHT")" = "$UNSH_BLOCK" ] && \
+   [ "$(block_hash 2 "$UNSH_HEIGHT")" = "$UNSH_BLOCK" ]; then
+    success "peers that did not build the unshield accepted its block at height $UNSH_HEIGHT"
+else
+    fail "the unshield block did not converge across the fleet"
+fi
+
+# Exactly one transparent output, for exactly the requested amount, to exactly
+# the requested address.
+URAW="$(rpc 0 getrawtransaction "$UNSH_TXID" 1 2>&1)"
+UVOUT="$(jlen "$URAW" vout)"
+UVIN="$(jlen "$URAW" vin)"
+UOUT_VALUE="$(echo "$URAW" | python3 -c '
+import json, sys
+try: print("%.8f" % float(json.load(sys.stdin)["vout"][0]["value"]))
+except Exception: pass
+')"
+UOUT_ADDR="$(echo "$URAW" | python3 -c '
+import json, sys
+try:
+    a = json.load(sys.stdin)["vout"][0]["scriptPubKey"].get("addresses") or []
+    print(a[0] if a else "")
+except Exception: pass
+')"
+if [ "$UVOUT" = "1" ] && [ "$UVIN" = "0" ]; then
+    success "unshield carries exactly one transparent output and no transparent input"
+else
+    fail "unshield has the wrong transparent shape (vin=$UVIN vout=$UVOUT)"
+fi
+if feq "${UOUT_VALUE:-0}" "$UNSHIELD_AMOUNT"; then
+    success "the transparent output pays exactly $UOUT_VALUE INN"
+else
+    fail "the transparent output pays $UOUT_VALUE INN, expected $UNSHIELD_AMOUNT"
+fi
+if [ "$UOUT_ADDR" = "$T_ADDR" ]; then
+    success "the transparent output pays the address that was asked for"
+else
+    fail "the transparent output pays $UOUT_ADDR, expected $T_ADDR"
+fi
+
 TBAL="$(rpc 0 getreceivedbyaddress "$T_ADDR" 0 2>/dev/null | tr -d '"[:space:]')"
-if feq "${TBAL:-0}" "0"; then
-    success "no transparent value was released"
+if feq "${TBAL:-0}" "$UNSHIELD_AMOUNT"; then
+    success "the recipient address received $TBAL INN"
 else
-    fail "the transparent address received $TBAL from a refused unshield"
+    fail "the recipient address received $TBAL INN, expected $UNSHIELD_AMOUNT"
+fi
+
+# The released value is the transaction's own input, not a surplus: the miner may
+# take the fee and nothing more.
+assert_coinbase_conserved "unshield" "$UNSH_HEIGHT"
+
+# ============================================================
+header "7b. A rewritten transparent side is refused"
+# ============================================================
+
+# Both rewrites keep the payload intact and change only the transparent side: retarget
+# the output, or delete it (released value would fall to the fee).
+tamper_vout() {
+    RAWHEX="$1" MODE="$2" python3 - <<'PY'
+import os, sys
+
+raw = bytes.fromhex(os.environ["RAWHEX"])
+mode = os.environ["MODE"]
+pos = 0
+
+def take(n):
+    global pos
+    chunk = raw[pos:pos + n]
+    if len(chunk) != n:
+        raise SystemExit("truncated transaction")
+    pos += n
+    return chunk
+
+def compact():
+    first = take(1)[0]
+    if first < 253:
+        return first
+    if first == 253:
+        return int.from_bytes(take(2), "little")
+    if first == 254:
+        return int.from_bytes(take(4), "little")
+    return int.from_bytes(take(8), "little")
+
+def put_compact(n):
+    if n < 253:
+        return bytes([n])
+    if n <= 0xffff:
+        return b"\xfd" + n.to_bytes(2, "little")
+    return b"\xfe" + n.to_bytes(4, "little")
+
+start = pos
+take(4)                      # nVersion
+take(4)                      # nTime
+for _ in range(compact()):   # vin
+    take(36)
+    take(compact())
+    take(4)
+head = raw[start:pos]
+
+vout = []
+for _ in range(compact()):
+    value = int.from_bytes(take(8), "little", signed=True)
+    vout.append((value, take(compact())))
+tail = raw[pos:]             # nLockTime and the payload envelope, untouched
+
+if mode == "retarget":
+    value, script = vout[0]
+    script = bytearray(script)
+    # A P2PKH script is OP_DUP OP_HASH160 <20> OP_EQUALVERIFY OP_CHECKSIG, so
+    # this repoints the payment at a different key hash and changes nothing else.
+    script[-3] ^= 0xff
+    vout[0] = (value, bytes(script))
+elif mode == "delete":
+    vout = []
+else:
+    raise SystemExit("unknown tamper mode")
+
+body = put_compact(len(vout))
+for value, script in vout:
+    body += value.to_bytes(8, "little", signed=True) + put_compact(len(script)) + script
+sys.stdout.write((head + body + tail).hex())
+PY
+}
+
+for mode in retarget delete; do
+    TAMPERED="$(tamper_vout "$UNSH_RAW" "$mode")"
+    if [ ${#TAMPERED} -lt 100 ] || [ "$TAMPERED" = "$UNSH_RAW" ]; then
+        fail "could not build the $mode tamper case"
+        continue
+    fi
+    for n in 0 1; do
+        REJECT="$(rpc "$n" sendrawtransaction "$TAMPERED" 2>&1)"
+        if echo "$REJECT" | grep -qi "bind"; then
+            success "node$n refuses the $mode tamper because the payload does not bind it"
+        elif echo "$REJECT" | grep -qiE "error|denied|rejected|invalid"; then
+            fail "node$n refused the $mode tamper, but not on the binding: $(echo "$REJECT" | head -2)"
+        else
+            fail "node$n ACCEPTED a $mode-tampered unshield: $REJECT"
+        fi
+    done
+done
+
+# Tampering must not have moved any value: the honest output stands, and nothing
+# else was paid.
+TBAL_AFTER="$(rpc 0 getreceivedbyaddress "$T_ADDR" 0 2>/dev/null | tr -d '"[:space:]')"
+if feq "${TBAL_AFTER:-0}" "$UNSHIELD_AMOUNT"; then
+    success "the recipient still holds exactly $TBAL_AFTER INN after both tamper attempts"
+else
+    fail "a tamper attempt changed the recipient balance to $TBAL_AFTER INN"
 fi
 
 # ============================================================
 header "8. A confirmed spend cannot be replayed or respent"
 # ============================================================
 
-for pair in "transfer:$XFER_TXID"; do
+for pair in "transfer:$XFER_TXID" "unshield:$UNSH_TXID"; do
     NAME="${pair%%:*}"
     TXID="${pair#*:}"
     RAW="$(rpc 0 getrawtransaction "$TXID" 2>/dev/null | tr -d '"[:space:]')"
@@ -734,13 +883,12 @@ POOL_UNCONF_1="$(jget "$INFO" privacy_vnext_unconfirmed_balance)"
 TREE_1="$(jget "$INFO" privacy_vnext_tree_size)"
 STORE_1="$(jget "$INFO" privacy_vnext_tree_store_size)"
 
-# A transfer moves value inside the pool, so the only thing the pool loses is
-# the fee. Once unshield is bound and re-enabled, its released amount is added
-# here too.
-EXPECTED_DROP="$(python3 -c "print('%.8f' % ($SHIELD_FEE))")"
+# A transfer moves value inside the pool, so it costs the pool only its fee. An
+# unshield additionally takes the released amount out of the pool entirely.
+EXPECTED_DROP="$(python3 -c "print('%.8f' % ($SHIELD_FEE + $UNSHIELD_AMOUNT + $SHIELD_FEE))")"
 ACTUAL_DROP="$(python3 -c "print('%.8f' % ((float('${POOL_BAL_0:-0}') + float('${POOL_UNCONF_0:-0}')) - (float('${POOL_BAL_1:-0}') + float('${POOL_UNCONF_1:-0}'))))")"
 if feq "$ACTUAL_DROP" "$EXPECTED_DROP"; then
-    success "pool value fell by exactly $ACTUAL_DROP INN (the transfer fee)"
+    success "pool value fell by exactly $ACTUAL_DROP INN (both fees and the unshielded amount)"
 else
     fail "pool value fell by $ACTUAL_DROP INN, expected $EXPECTED_DROP (before ${POOL_BAL_0}/${POOL_UNCONF_0}, after ${POOL_BAL_1}/${POOL_UNCONF_1})"
 fi

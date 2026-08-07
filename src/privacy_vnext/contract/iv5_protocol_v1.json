@@ -34,7 +34,7 @@
   },
   "fcmp_abi": {
     "schema": 1,
-    "abi_schema_sha256": "7cdcf732e610e3c364cdcd7517e611384c6189297f68f0c510c34fe25e2c0d80",
+    "abi_schema_sha256": "6efd2ab9499c8c5bb0ad9324447ad4aebc0fb2c5d70c5b5add2bde7e0743237b",
     "layers": 8,
     "root_curve_id": 2,
     "maximum_inputs": 16,
@@ -238,6 +238,7 @@
       "finalized_tree_size_u64",
       "transparent_value_balance_i64",
       "fee_u64",
+      "transparent_binding_32",
       "inputs",
       "outputs",
       "sender_disclosures",
@@ -301,6 +302,7 @@
       "fcmp-membership-section-is-empty-with-zero-inputs-and-otherwise-has-the-exact-upstream-eight-layer-proof-size-and-verifies-against-the-finalized-root-signing-hash-pseudo-outs-and-key-images",
       "exposed-amount-openings-must-open-the-corresponding-output-commitment-as-opening-times-ed25519-G-plus-value-times-monero-H",
       "range-section-is-nonempty-only-when-at-least-one-output-amount-is-hidden-and-is-a-canonical-aggregate-monero-bulletproof-plus-verified-against-all-output-commitments",
+      "transparent-binding-is-32-opaque-header-bytes-inside-the-signing-hash-that-the-caller-requires-to-equal-a-domain-separated-digest-of-the-carrying-transactions-output-vector-and-lock-time",
       "value-balance-section-is-always-an-exact-64-byte-schnorr-excess-proof-bound-to-the-signing-hash-pseudo-outs-output-commitments-transparent-value-balance-and-fee",
       "operation-section-is-empty-for-shield-unshield-and-transfer",
       "nullsend-delegation-m-of-n-reclaim-migration-and-finality-objects-return-unsupported-format-until-a-normative-typed-operation-proof-frame-and-verifier-are-frozen",
@@ -380,14 +382,17 @@
     "consensus_status": "disabled"
   },
   "payload_state_effects": {
-    "header_bytes": 76,
+    "header_bytes": 124,
     "header_fields": [
       "schema_u16_le",
       "input_count_u8",
       "output_count_u8",
       "finalized_root_32",
       "finalized_tree_size_u64_le",
-      "parameter_digest_32"
+      "parameter_digest_32",
+      "transparent_value_balance_i64_le",
+      "fee_u64_le",
+      "transparent_binding_32"
     ],
     "trailing_fields": [
       "ordered_key_images_32_each",
@@ -423,6 +428,7 @@
   },
   "transcripts": {
     "signing": "Innova/IV5/Signing/v1",
+    "transparent_binding": "Innova/IV5/TransparentBinding/v1",
     "parameter_digest": "Innova/IV5/ParameterDigest/v1",
     "note_leaf": "Innova/IV5/NoteLeaf/v1",
     "nullifier": "Innova/IV5/Nullifier/v1",
@@ -491,6 +497,7 @@
     "ordered_outputs",
     "transparent_value_balance",
     "fee",
+    "transparent_binding",
     "disclosures",
     "finality_body"
   ],
