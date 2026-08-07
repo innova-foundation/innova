@@ -27,6 +27,9 @@ const UPDATE_HEADER_SIZE: usize = 4;
 const LEAF_COUNT_SIZE: usize = 4;
 const LEAF_SIZE: usize = 96;
 const MAX_UPDATE_LEAVES: usize = 16;
+// A payload consensus accepts must always fit one update. Raising the output bound
+// alone would turn a valid payload into an epoch-build failure on every node.
+const _: () = assert!(MAX_UPDATE_LEAVES >= crate::MAX_OUTPUTS as usize);
 const LEVEL_SIZE: usize = 36;
 const MAX_LEAVES: u64 = 38 * 18 * 38 * 18 * 38 * 18 * 38 * 18;
 const EXTENSION_NODE_SIZE: usize = 44;

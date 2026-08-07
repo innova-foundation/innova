@@ -67,6 +67,9 @@ bool DecodePrivacyVNextNullifierState(
     uint64_t& nullifierCount,
     std::string& error);
 
+// Outcome of judging a payload. `fLocalFailure` is only for node-local failures
+// (allocation, stream) and never for anything payload-derived: consumers shut down on
+// it. A contained verifier panic is a deterministic reject.
 struct PrivacyVNextPayloadValidation
 {
     int32_t nResult;

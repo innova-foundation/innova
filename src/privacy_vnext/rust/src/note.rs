@@ -731,7 +731,9 @@ fn encode_result(
     result.extend_from_slice(&opened.y);
     result.extend_from_slice(&opened.mask);
     result.extend_from_slice(&opened.key_image);
-    debug_assert_eq!(result.len(), SCAN_RESULT_BYTES);
+    // Checked, not debug-asserted: the C++ decoder reads this at fixed offsets and
+    // the assertion is compiled out of every shipped build.
+    assert_eq!(result.len(), SCAN_RESULT_BYTES);
     result
 }
 
