@@ -18,6 +18,7 @@
 #include "dag.h"
 #include "privacy_vnext_store.h"
 #include "finality.h"
+#include "privacy_vnext/iv5_protocol.h"
 #include "privacy_vnext_ffi.h"
 
 #include <string>
@@ -221,6 +222,18 @@ static void SetPublicShieldedRecipient(CShieldedOutputDescription& output,
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
     ss << addr;
     output.vchRecipientScript.assign(ss.begin(), ss.end());
+}
+
+// A set bit hides that field, so the flags read the mask inverted.
+void PrivacyVNextDisclosureToJSON(uint8_t nDisclosureMask, Object& out)
+{
+    out.push_back(Pair("disclosure_mask", (int)nDisclosureMask));
+    out.push_back(Pair("discloses_sender",
+                       (nDisclosureMask & iv5::DISCLOSURE_HIDE_SENDER) == 0));
+    out.push_back(Pair("discloses_receiver",
+                       (nDisclosureMask & iv5::DISCLOSURE_HIDE_RECEIVER) == 0));
+    out.push_back(Pair("discloses_amount",
+                       (nDisclosureMask & iv5::DISCLOSURE_HIDE_AMOUNT) == 0));
 }
 
 static void RequireLegacyPrivacyCreationEnabled()
@@ -1695,19 +1708,29 @@ Value z_shieldall(const Array& params, bool fHelp)
 
 Value z_iv5transfer(const Array& params, bool fHelp)
 {
-    if (fHelp || params.size() != 2)
+    if (fHelp || params.size() < 2 || params.size() > 3)
         throw runtime_error(
-            "z_iv5transfer <toaddress> <amount>\n"
+            "z_iv5transfer <toaddress> <amount> [disclosure]\n"
             "Spends shielded notes to another IV5 address.\n"
             "\nNothing crosses the transparent boundary, so the transaction has no\n"
-            "transparent input or output and reveals no sender, recipient or amount.\n"
-            "Change returns to this wallet as a second note.\n"
+            "transparent input or output. Change returns to this wallet as a second\n"
+            "note.\n"
+            "\n<disclosure> is a three-bit mask; each SET bit hides that field. It\n"
+            "defaults to 7, which reveals nothing. Clearing bit 1 publishes the\n"
+            "spending authority of each note consumed, bit 2 the recipient address of\n"
+            "each output, and bit 4 the amount of each output. Everything published\n"
+            "is proved against what the transaction already commits to, so a\n"
+            "disclosure cannot name a different address or amount.\n"
             "\nResult:\n"
             "{\n"
-            "  \"txid\": \"...\",     (string) the transfer transaction\n"
-            "  \"amount\": x.xxx,   (numeric) value sent\n"
-            "  \"fee\": x.xxx,      (numeric) fee paid\n"
-            "  \"notes\": n         (numeric) notes consumed\n"
+            "  \"txid\": \"...\",             (string) the transfer transaction\n"
+            "  \"amount\": x.xxx,           (numeric) value sent\n"
+            "  \"fee\": x.xxx,              (numeric) fee paid\n"
+            "  \"notes\": n,                (numeric) notes consumed\n"
+            "  \"disclosure_mask\": n,      (numeric) the mask the payload declares\n"
+            "  \"discloses_sender\": bool,  (boolean) spend authorities are published\n"
+            "  \"discloses_receiver\": bool,(boolean) recipient addresses are published\n"
+            "  \"discloses_amount\": bool   (boolean) output amounts are published\n"
             "}\n");
 
     if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight : 0))
@@ -1718,13 +1741,23 @@ Value z_iv5transfer(const Array& params, bool fHelp)
 
     const std::string strTo = params[0].get_str();
     const int64_t nAmount = AmountFromValue(params[1]);
+    // Default: disclose nothing.
+    int nDisclosure = iv5::WALLET_DEFAULT_DISCLOSURE_MASK;
+    if (params.size() > 2)
+    {
+        nDisclosure = params[2].get_int();
+        if (nDisclosure < 0 || nDisclosure > iv5::DISCLOSURE_MASK)
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                               "disclosure must be a three-bit mask, 0 to 7");
+    }
+    const uint8_t nMask = (uint8_t)nDisclosure;
 
     CWalletTx wtx;
     int64_t nFee = 0;
     size_t nNotes = 0;
     std::string strError;
-    if (!pwalletMain->CreatePrivacyVNextTransfer(strTo, nAmount, true, wtx, nFee,
-                                                 nNotes, strError))
+    if (!pwalletMain->CreatePrivacyVNextTransfer(strTo, nAmount, nMask, true,
+                                                 wtx, nFee, nNotes, strError))
         throw JSONRPCError(RPC_WALLET_ERROR, strError);
 
     Object result;
@@ -1732,6 +1765,7 @@ Value z_iv5transfer(const Array& params, bool fHelp)
     result.push_back(Pair("amount", ValueFromAmount(nAmount)));
     result.push_back(Pair("fee", ValueFromAmount(nFee)));
     result.push_back(Pair("notes", (int64_t)nNotes));
+    PrivacyVNextDisclosureToJSON(nMask, result);
     return result;
 }
 
@@ -1926,6 +1960,9 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
     // Release-evidence field; fixed protocol contract.
     obj.push_back(Pair("privacy_vnext_disclosure_modes",
                        requiredDisclosureModes));
+    // Mask used when the caller passes none.
+    obj.push_back(Pair("privacy_vnext_wallet_default_disclosure_mask",
+                       (int)iv5::WALLET_DEFAULT_DISCLOSURE_MASK));
     obj.push_back(Pair("privacy_vnext_required_nullstake_generations",
                        (int)SHIELDED_VNEXT_NULLSTAKE_GENERATION_COUNT));
     Array requiredNullStakeGenerations;

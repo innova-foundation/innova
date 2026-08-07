@@ -161,6 +161,11 @@ extern std::string HexBits(unsigned int nBits);
 extern std::string HelpRequiringPassphrase();
 extern void EnsureWalletIsUnlocked();
 
+// Describe an IV5 disclosure mask so a caller can see what a payload publishes.
+// Defined in rpcshielded.cpp.
+extern void PrivacyVNextDisclosureToJSON(uint8_t nDisclosureMask,
+                                         json_spirit::Object& out);
+
 // Q0lSQ1VJVEJSRUFLRVI=
 // Utilities: convert hex-encoded Values
 // (throws error if not hex).

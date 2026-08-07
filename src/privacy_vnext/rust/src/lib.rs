@@ -46,6 +46,7 @@ const NETWORK_ID_MAX: u8 = 2;
 const ADDRESS_COMPONENT_SIZE: usize = 70;
 const KEY_DERIVATION_REQUEST_SIZE: usize = 72;
 const KEY_DERIVATION_OUTPUT_SIZE: usize = 232;
+const RECEIVER_DISCLOSURE_REQUEST_SIZE: usize = 264;
 // One definition only: a second copy of this length silently rejected every
 // request when the note format changed.
 use note::ENCRYPT_REQUEST_BYTES as NOTE_ENCRYPT_REQUEST_SIZE;
@@ -71,6 +72,7 @@ pub const CAP_NOTE_SCAN: u32 = 1 << 11;
 const CAP_PAYLOAD_SCAN: u32 = 1 << 16;
 pub const CAP_TREE_EXTEND: u32 = 1 << 17;
 pub const CAP_PAYLOAD_SIGNING_HASH: u32 = 1 << 18;
+pub const CAP_RECEIVER_DISCLOSURE_PROVE: u32 = 1 << 19;
 pub const CAP_NOTE_ENCRYPT: u32 = 1 << 12;
 pub const CAP_VALUE_PROVE: u32 = 1 << 13;
 pub const CAP_PAYLOAD_EFFECTS: u32 = 1 << 14;
@@ -93,7 +95,8 @@ const IMPLEMENTED_CAPABILITIES: u32 = CAP_PROTOCOL_CONTRACT
     | CAP_PAYLOAD_EFFECTS
     | CAP_NULLIFIER_ACCUMULATOR
     | CAP_TREE_EXTEND
-    | CAP_PAYLOAD_SIGNING_HASH;
+    | CAP_PAYLOAD_SIGNING_HASH
+    | CAP_RECEIVER_DISCLOSURE_PROVE;
 const CONSENSUS_CAPABILITIES: u32 = 0;
 pub const NOTE_SHIELD: u8 = 0;
 pub const NOTE_UNSHIELD: u8 = 1;
@@ -1101,6 +1104,77 @@ pub unsafe extern "C" fn innova_privacy_vnext_payload_signing_hash(
         // `out` to identify writable caller-owned storage of `out_len` bytes.
         unsafe { ptr::copy_nonoverlapping(hash.as_ptr(), out, DIGEST_SIZE) };
         Ok(())
+    })
+}
+
+/// Prove one output's receiver disclosure once the prefix hash is known.
+/// # Safety
+///
+/// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_receiver_disclosure_prove(
+    request: *const u8,
+    request_len: usize,
+    out: *mut u8,
+    out_capacity: usize,
+    out_written: *mut usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        if request_len != RECEIVER_DISCLOSURE_REQUEST_SIZE {
+            return Err(ResultCode::BadLength);
+        }
+        // SAFETY: request validation and the exact length check precede this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        if u16::from_le_bytes([request[0], request[1]]) != PAYLOAD_SCHEMA_U16 {
+            return Err(ResultCode::UnsupportedFormat);
+        }
+        if request[2] != 0 || request[3] != 0 {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+        let field = |at: usize| -> [u8; 32] {
+            let mut bytes = [0_u8; 32];
+            bytes.copy_from_slice(&request[at..at + 32]);
+            bytes
+        };
+        let output_index = u32::from_le_bytes([request[4], request[5], request[6], request[7]]);
+        let spend = field(8);
+        let view = field(40);
+        let output_o = field(72);
+        let ephemeral = field(104);
+        let mut ephemeral_secret = field(136);
+        let mut output_y = field(168);
+        let signable_hash = field(200);
+        let entropy = field(232);
+        let proved = disclosure::prove_receiver(
+            &spend,
+            &view,
+            &output_o,
+            &ephemeral,
+            &ephemeral_secret,
+            &output_y,
+            &signable_hash,
+            output_index,
+            &entropy,
+        );
+        ephemeral_secret.zeroize();
+        output_y.zeroize();
+        let proof = proved.map_err(|_| ResultCode::ConsensusInvalid)?;
+        // Self-verify, so a disclosure the network would reject never leaves the prover.
+        if !disclosure::verify_receiver(
+            &spend,
+            &view,
+            &output_o,
+            &ephemeral,
+            &signable_hash,
+            output_index,
+            &proof,
+        )
+        .map_err(|_| ResultCode::InternalLocalStateFailure)?
+        {
+            return Err(ResultCode::InternalLocalStateFailure);
+        }
+        write_variable_output(&proof, out, out_capacity, out_written)
     })
 }
 

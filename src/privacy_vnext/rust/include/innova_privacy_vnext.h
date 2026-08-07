@@ -39,6 +39,8 @@ extern "C" {
 #define INNOVA_PRIVACY_VNEXT_FCMP_PROVE_SENDER_AUTHORITY_OFFSET 96u
 #define INNOVA_PRIVACY_VNEXT_FCMP_PROVE_SENDER_PROOF_OFFSET 128u
 #define INNOVA_PRIVACY_VNEXT_SENDER_DISCLOSURE_PROOF_SIZE 128u
+#define INNOVA_PRIVACY_VNEXT_RECEIVER_DISCLOSURE_PROOF_SIZE 160u
+#define INNOVA_PRIVACY_VNEXT_RECEIVER_DISCLOSURE_REQUEST_SIZE 264u
 #define INNOVA_PRIVACY_VNEXT_VALUE_PROVE_HEADER_SIZE 116u
 #define INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_HEADER_SIZE 124u
 #define INNOVA_PRIVACY_VNEXT_NULLIFIER_STATE_SIZE 44u
@@ -63,6 +65,7 @@ extern "C" {
 #define INNOVA_PRIVACY_VNEXT_CAP_PAYLOAD_SCAN (1u << 16)
 #define INNOVA_PRIVACY_VNEXT_CAP_TREE_EXTEND (1u << 17)
 #define INNOVA_PRIVACY_VNEXT_CAP_PAYLOAD_SIGNING_HASH (1u << 18)
+#define INNOVA_PRIVACY_VNEXT_CAP_RECEIVER_DISCLOSURE_PROVE (1u << 19)
 #define INNOVA_PRIVACY_VNEXT_IMPLEMENTED_CAPABILITIES \
     (INNOVA_PRIVACY_VNEXT_CAP_PROTOCOL_CONTRACT | \
      INNOVA_PRIVACY_VNEXT_CAP_FCMP_PROOF_SIZE | \
@@ -82,6 +85,7 @@ extern "C" {
      INNOVA_PRIVACY_VNEXT_CAP_NULLIFIER_ACCUMULATOR | \
      INNOVA_PRIVACY_VNEXT_CAP_TREE_EXTEND | \
      INNOVA_PRIVACY_VNEXT_CAP_PAYLOAD_SIGNING_HASH | \
+     INNOVA_PRIVACY_VNEXT_CAP_RECEIVER_DISCLOSURE_PROVE | \
      INNOVA_PRIVACY_VNEXT_CAP_PAYLOAD_SCAN)
 
 #define INNOVA_PRIVACY_VNEXT_OP_SHIELD (1u << 0)
@@ -258,6 +262,15 @@ int32_t innova_privacy_vnext_note_encrypt(
     size_t out_capacity,
     size_t *out_written);
 int32_t innova_privacy_vnext_value_prove(
+    const uint8_t *request,
+    size_t request_len,
+    uint8_t *out,
+    size_t out_capacity,
+    size_t *out_written);
+
+/* Prove one output's receiver disclosure (the sender side comes from fcmp_prove).
+ * Self-verifies before returning. */
+int32_t innova_privacy_vnext_receiver_disclosure_prove(
     const uint8_t *request,
     size_t request_len,
     uint8_t *out,

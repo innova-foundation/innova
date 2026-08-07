@@ -17,8 +17,6 @@
 namespace
 {
 
-// Every disclosure bit set: nothing is revealed, and the outputs need a range proof.
-const uint8_t VNEXT_DISCLOSURE_PRIVATE = 7;
 const uint8_t VNEXT_OPERATION_SHIELD = 0;
 const uint8_t VNEXT_OPERATION_UNSHIELD = 1;
 const uint8_t VNEXT_OPERATION_TRANSFER = 2;
@@ -89,6 +87,18 @@ std::vector<unsigned char> AsVector(const PrivacyVNextDigest& d)
     return std::vector<unsigned char>(d.begin(), d.end());
 }
 
+// Openings a receiver disclosure needs after encryption, wiped on every exit path.
+struct RetainedScalars
+{
+    std::vector<PrivacyVNextDigest> v;
+
+    ~RetainedScalars()
+    {
+        for (size_t i = 0; i < v.size(); ++i)
+            OPENSSL_cleanse(v[i].data(), v[i].size());
+    }
+};
+
 } // namespace
 
 void PrivacyVNextSpendNote::Clear()
@@ -110,6 +120,7 @@ void PrivacyVNextSpendNote::Clear()
 static bool BuildPrivacyVNextPayload(
     uint8_t nNetwork,
     uint8_t nOperation,
+    uint8_t nDisclosureMask,
     const PrivacyVNextDigest& genesis,
     const PrivacyVNextDigest& outgoingViewSecret,
     const PrivacyVNextDigest& finalizedRoot,
@@ -124,6 +135,19 @@ static bool BuildPrivacyVNextPayload(
 {
     vchPayloadOut.clear();
     strErrorOut.clear();
+
+    if (nDisclosureMask > iv5::DISCLOSURE_MASK)
+    {
+        strErrorOut = "an IV5 disclosure mask is three bits";
+        return false;
+    }
+    // A clear bit puts the field on the wire; a set bit keeps it hidden.
+    const bool fDiscloseSender =
+        (nDisclosureMask & iv5::DISCLOSURE_HIDE_SENDER) == 0;
+    const bool fDiscloseReceiver =
+        (nDisclosureMask & iv5::DISCLOSURE_HIDE_RECEIVER) == 0;
+    const bool fDiscloseAmount =
+        (nDisclosureMask & iv5::DISCLOSURE_HIDE_AMOUNT) == 0;
 
     if (spends.size() > INNOVA_PRIVACY_VNEXT_MAX_INPUTS)
     {
@@ -199,9 +223,17 @@ static bool BuildPrivacyVNextPayload(
     if (!RandomScalar(entropy, strErrorOut))
         return false;
 
-    // Encrypt every output, keeping the openings the value proof needs.
+    // Encrypt every output. Openings survive the loop for the receiver disclosure and
+    // are wiped when the builder returns.
     std::vector<PrivacyVNextEncryptedOutput> vEncrypted(outputs.size());
     std::vector<PrivacyVNextDigest> vOutputMasks(outputs.size());
+    RetainedScalars ephemeralSecrets;
+    RetainedScalars outputYs;
+    if (fDiscloseReceiver)
+    {
+        ephemeralSecrets.v.resize(outputs.size());
+        outputYs.v.resize(outputs.size());
+    }
     for (size_t i = 0; i < outputs.size(); ++i)
     {
         PrivacyVNextDigest ephemeralSecret;
@@ -210,19 +242,21 @@ static bool BuildPrivacyVNextPayload(
             !RandomScalar(outY, strErrorOut) ||
             !RandomScalar(vOutputMasks[i], strErrorOut))
             return false;
-        if (!EncryptPrivacyVNextNote(
-                nNetwork, outputs[i].recipient.nAddressType,
-                static_cast<uint32_t>(i), genesis,
-                outputs[i].recipient.spendPublic, outputs[i].recipient.viewPublic,
-                outgoingViewSecret, ephemeralSecret, outputs[i].nAmount, outY,
-                vOutputMasks[i], vEncrypted[i], strErrorOut))
+        const bool fEncrypted = EncryptPrivacyVNextNote(
+            nNetwork, outputs[i].recipient.nAddressType,
+            static_cast<uint32_t>(i), genesis,
+            outputs[i].recipient.spendPublic, outputs[i].recipient.viewPublic,
+            outgoingViewSecret, ephemeralSecret, outputs[i].nAmount, outY,
+            vOutputMasks[i], vEncrypted[i], strErrorOut);
+        if (fEncrypted && fDiscloseReceiver)
         {
-            OPENSSL_cleanse(ephemeralSecret.data(), ephemeralSecret.size());
-            OPENSSL_cleanse(outY.data(), outY.size());
-            return false;
+            ephemeralSecrets.v[i] = ephemeralSecret;
+            outputYs.v[i] = outY;
         }
         OPENSSL_cleanse(ephemeralSecret.data(), ephemeralSecret.size());
         OPENSSL_cleanse(outY.data(), outY.size());
+        if (!fEncrypted)
+            return false;
     }
 
     std::vector<PrivacyVNextSpendInput> vProveInputs(spends.size());
@@ -255,7 +289,7 @@ static bool BuildPrivacyVNextPayload(
     prefix.push_back(nOperation);
     prefix.push_back(0);                         // finality profile: none
     prefix.push_back(0);                         // authorization: owner
-    prefix.push_back(VNEXT_DISCLOSURE_PRIVATE);
+    prefix.push_back(nDisclosureMask);
     prefix.push_back(0);                         // finality object: none
     prefix.push_back(nNetwork);
     prefix.push_back(0);                         // reserved
@@ -285,7 +319,32 @@ static bool BuildPrivacyVNextPayload(
         PutVector(prefix, vEncrypted[i].vchRecipientCiphertext);
         PutVector(prefix, vEncrypted[i].vchOutgoingCiphertext);
     }
-    // Every disclosure bit is set, so no sender, receiver or amount records follow.
+    // Disclosed records, in the order the decoder reads them: senders per input, then
+    // receivers per output, then amounts per output. They sit inside the signing hash, so
+    // a payload cannot be re-disclosed after its proofs are made.
+    if (fDiscloseSender)
+    {
+        for (size_t i = 0; i < vDraft.size(); ++i)
+            PutBytes(prefix, vDraft[i].senderAuthority);
+    }
+    if (fDiscloseReceiver)
+    {
+        for (size_t i = 0; i < outputs.size(); ++i)
+        {
+            PutBytes(prefix, outputs[i].recipient.spendPublic);
+            PutBytes(prefix, outputs[i].recipient.viewPublic);
+        }
+    }
+    if (fDiscloseAmount)
+    {
+        // The disclosed amount is the same value the commitment was made over, so the
+        // builder has no way to publish one figure and commit to another.
+        for (size_t i = 0; i < outputs.size(); ++i)
+        {
+            PutU64(prefix, outputs[i].nAmount);
+            PutBytes(prefix, vOutputMasks[i]);
+        }
+    }
     PutVector(prefix, std::vector<unsigned char>());   // empty finality body
 
     PrivacyVNextDigest signingHash;
@@ -309,8 +368,11 @@ static bool BuildPrivacyVNextPayload(
     }
     for (size_t i = 0; i < vFinal.size(); ++i)
     {
+        // The authority is named in the prefix from the draft pass but proved in the
+        // final one, so the two passes must agree on it as well.
         if (vFinal[i].pseudoOut != vDraft[i].pseudoOut ||
-            vFinal[i].keyImage != vDraft[i].keyImage)
+            vFinal[i].keyImage != vDraft[i].keyImage ||
+            vFinal[i].senderAuthority != vDraft[i].senderAuthority)
         {
             strErrorOut = "IV5 proving is not deterministic in its entropy";
             return false;
@@ -388,14 +450,58 @@ static bool BuildPrivacyVNextPayload(
         }
     }
 
+    // Sender proofs in input order, then receiver proofs in output order.
+    std::vector<unsigned char> vchDisclosureProofs;
+    if (fDiscloseSender)
+    {
+        for (size_t i = 0; i < vFinal.size(); ++i)
+        {
+            if (vFinal[i].vchSenderDisclosureProof.size() !=
+                INNOVA_PRIVACY_VNEXT_SENDER_DISCLOSURE_PROOF_SIZE)
+            {
+                strErrorOut = "IV5 sender disclosure proof has the wrong size";
+                return false;
+            }
+            vchDisclosureProofs.insert(
+                vchDisclosureProofs.end(),
+                vFinal[i].vchSenderDisclosureProof.begin(),
+                vFinal[i].vchSenderDisclosureProof.end());
+        }
+    }
+    if (fDiscloseReceiver)
+    {
+        for (size_t i = 0; i < outputs.size(); ++i)
+        {
+            PrivacyVNextDigest receiverEntropy;
+            if (!RandomScalar(receiverEntropy, strErrorOut))
+                return false;
+            std::vector<unsigned char> vchReceiverProof;
+            const bool fProved = ProvePrivacyVNextReceiverDisclosure(
+                static_cast<uint32_t>(i), outputs[i].recipient.spendPublic,
+                outputs[i].recipient.viewPublic, vEncrypted[i].leaf.owner,
+                vEncrypted[i].ephemeral, ephemeralSecrets.v[i], outputYs.v[i],
+                signingHash, receiverEntropy, vchReceiverProof, strErrorOut);
+            OPENSSL_cleanse(receiverEntropy.data(), receiverEntropy.size());
+            if (!fProved)
+                return false;
+            vchDisclosureProofs.insert(vchDisclosureProofs.end(),
+                                       vchReceiverProof.begin(),
+                                       vchReceiverProof.end());
+        }
+    }
+
     std::vector<unsigned char> payload = prefix;
     PutVector(payload, vchMembership);
-    PutVector(payload, valueProof.vchRangeProof);
+    // A disclosed amount is checked against its own commitment instead, so the range proof
+    // is left out. It is still constructed above, because the value proof produces the
+    // output commitments alongside it.
+    PutVector(payload, fDiscloseAmount ? std::vector<unsigned char>()
+                                       : valueProof.vchRangeProof);
     PutVector(payload, std::vector<unsigned char>(
                            valueProof.balanceProof.begin(),
                            valueProof.balanceProof.end()));
     PutVector(payload, std::vector<unsigned char>());   // operation proof: none
-    PutVector(payload, std::vector<unsigned char>());   // disclosure proofs: none
+    PutVector(payload, vchDisclosureProofs);
     PutVector(payload, std::vector<unsigned char>(
                            valueProof.bindingSignature.begin(),
                            valueProof.bindingSignature.end()));
@@ -418,6 +524,7 @@ static bool BuildPrivacyVNextPayload(
 
 bool BuildPrivacyVNextTransferPayload(
     uint8_t nNetwork,
+    uint8_t nDisclosureMask,
     const PrivacyVNextDigest& genesis,
     const PrivacyVNextDigest& outgoingViewSecret,
     const PrivacyVNextDigest& finalizedRoot,
@@ -436,7 +543,8 @@ bool BuildPrivacyVNextTransferPayload(
         return false;
     }
     // A transfer moves nothing across the transparent boundary.
-    return BuildPrivacyVNextPayload(nNetwork, VNEXT_OPERATION_TRANSFER, genesis,
+    return BuildPrivacyVNextPayload(nNetwork, VNEXT_OPERATION_TRANSFER,
+                                    nDisclosureMask, genesis,
                                     outgoingViewSecret, finalizedRoot,
                                     nFinalizedTreeSize, transparentBinding, 0,
                                     nFee, spends, outputs, vchPayloadOut,
@@ -445,6 +553,7 @@ bool BuildPrivacyVNextTransferPayload(
 
 bool BuildPrivacyVNextUnshieldPayload(
     uint8_t nNetwork,
+    uint8_t nDisclosureMask,
     const PrivacyVNextDigest& genesis,
     const PrivacyVNextDigest& outgoingViewSecret,
     const PrivacyVNextDigest& finalizedRoot,
@@ -476,14 +585,15 @@ bool BuildPrivacyVNextUnshieldPayload(
     }
     // Negative balance is value the pool releases to the transparent side.
     return BuildPrivacyVNextPayload(
-        nNetwork, VNEXT_OPERATION_UNSHIELD, genesis, outgoingViewSecret,
-        finalizedRoot, nFinalizedTreeSize, transparentBinding,
-        -(int64_t)nTransparentValueOut, nFee, spends, outputs, vchPayloadOut,
-        strErrorOut);
+        nNetwork, VNEXT_OPERATION_UNSHIELD, nDisclosureMask, genesis,
+        outgoingViewSecret, finalizedRoot, nFinalizedTreeSize,
+        transparentBinding, -(int64_t)nTransparentValueOut, nFee, spends,
+        outputs, vchPayloadOut, strErrorOut);
 }
 
 bool BuildPrivacyVNextShieldPayload(
     uint8_t nNetwork,
+    uint8_t nDisclosureMask,
     const PrivacyVNextDigest& genesis,
     const PrivacyVNextDigest& outgoingViewSecret,
     const PrivacyVNextDigest& finalizedRoot,
@@ -505,9 +615,9 @@ bool BuildPrivacyVNextShieldPayload(
     // Positive balance is value entering the pool; no note is spent, so there is no
     // membership proof and the payload is a fraction of a transfer's size.
     return BuildPrivacyVNextPayload(
-        nNetwork, VNEXT_OPERATION_SHIELD, genesis, outgoingViewSecret,
-        finalizedRoot, nFinalizedTreeSize, transparentBinding,
-        (int64_t)nTransparentValueIn, nFee,
+        nNetwork, VNEXT_OPERATION_SHIELD, nDisclosureMask, genesis,
+        outgoingViewSecret, finalizedRoot, nFinalizedTreeSize,
+        transparentBinding, (int64_t)nTransparentValueIn, nFee,
         std::vector<PrivacyVNextSpendNote>(), outputs, vchPayloadOut,
         strErrorOut);
 }

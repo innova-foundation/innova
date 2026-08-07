@@ -581,9 +581,13 @@ public:
 
     // Spend notes to a shielded recipient. Nothing crosses the transparent
     // boundary, so the transaction carries no transparent input or output at all.
+    //
+    // `nDisclosureMask` chooses what the payload reveals; a set bit hides that field, so
+    // iv5::WALLET_DEFAULT_DISCLOSURE_MASK reveals nothing.
     bool CreatePrivacyVNextTransfer(
         const std::string& strToAddress,
         int64_t nAmount,
+        uint8_t nDisclosureMask,
         bool fCommit,
         CWalletTx& wtxNew,
         int64_t& nFeeOut,

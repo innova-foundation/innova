@@ -285,7 +285,7 @@ BOOST_AUTO_TEST_CASE(a_note_placed_in_the_tree_can_be_spent)
 
     std::vector<unsigned char> payload;
     BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextTransferPayload(2, genesis, keys.outgoingViewSecret,
+        BuildPrivacyVNextTransferPayload(2, 7, genesis, keys.outgoingViewSecret,
                                          finalizedRoot, nTreeSize,
                                          kNoTransparentSide, nFee, spends,
                                          outs, payload, error),
@@ -393,7 +393,7 @@ BOOST_AUTO_TEST_CASE(memoized_effects_match_a_full_validation)
     std::memcpy(finalizedRoot.data(), &vchRoot[0], 32);
     std::vector<unsigned char> payload;
     BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextTransferPayload(2, genesis, keys.outgoingViewSecret,
+        BuildPrivacyVNextTransferPayload(2, 7, genesis, keys.outgoingViewSecret,
                                          finalizedRoot, nTreeSize,
                                          kNoTransparentSide, 50, spends,
                                          outs, payload, error),
@@ -475,7 +475,7 @@ BOOST_AUTO_TEST_CASE(a_shield_carries_no_membership_proof_and_stays_spendable)
 
     std::vector<unsigned char> shieldPayload;
     BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextShieldPayload(2, genesis, keys.outgoingViewSecret,
+        BuildPrivacyVNextShieldPayload(2, 7, genesis, keys.outgoingViewSecret,
                                        emptyRoot, nTreeSize, kNoTransparentSide,
                                        nValueIn, nFee, outs, shieldPayload,
                                        error),
@@ -550,7 +550,7 @@ BOOST_AUTO_TEST_CASE(a_shield_carries_no_membership_proof_and_stays_spendable)
 
     std::vector<unsigned char> transferPayload;
     BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextTransferPayload(2, genesis, keys.outgoingViewSecret,
+        BuildPrivacyVNextTransferPayload(2, 7, genesis, keys.outgoingViewSecret,
                                          treeRoot, nTreeSize, kNoTransparentSide,
                                          nFee, spends, onward, transferPayload,
                                          error),
@@ -594,7 +594,7 @@ BOOST_AUTO_TEST_CASE(parallel_warming_agrees_with_sequential_validation)
 
         std::vector<unsigned char> payload;
         BOOST_REQUIRE_MESSAGE(
-            BuildPrivacyVNextShieldPayload(2, genesis, keys.outgoingViewSecret,
+            BuildPrivacyVNextShieldPayload(2, 7, genesis, keys.outgoingViewSecret,
                                            emptyRoot, nTreeSize,
                                            kNoTransparentSide,
                                            outs[0].nAmount + 10, 10, outs,
@@ -725,7 +725,7 @@ BOOST_AUTO_TEST_CASE(payload_effects_report_what_the_pool_gained_or_lost)
 
     std::vector<unsigned char> shieldPayload;
     BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextShieldPayload(2, genesis, keys.outgoingViewSecret,
+        BuildPrivacyVNextShieldPayload(2, 7, genesis, keys.outgoingViewSecret,
                                        emptyRoot, nTreeSize, kNoTransparentSide,
                                        nValueIn, nFee, outs, shieldPayload,
                                        error),
@@ -800,7 +800,7 @@ BOOST_AUTO_TEST_CASE(payload_effects_report_what_the_pool_gained_or_lost)
 
     std::vector<unsigned char> transferPayload;
     BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextTransferPayload(2, genesis, keys.outgoingViewSecret,
+        BuildPrivacyVNextTransferPayload(2, 7, genesis, keys.outgoingViewSecret,
                                          treeRoot, nGrownSize, kNoTransparentSide,
                                          nFee, spends, onward, transferPayload,
                                          error),
@@ -892,7 +892,7 @@ BOOST_AUTO_TEST_CASE(an_unbalanced_transfer_is_refused)
 
     std::vector<unsigned char> payload;
     BOOST_CHECK(!BuildPrivacyVNextTransferPayload(
-        2, BuilderDigest(0x11), BuilderScalar(3), BuilderDigest(0x22), 1,
+        2, 7, BuilderDigest(0x11), BuilderScalar(3), BuilderDigest(0x22), 1,
         kNoTransparentSide, 100, spends, outs, payload, error));
     BOOST_CHECK(!error.empty());
     BOOST_CHECK(payload.empty());
@@ -994,7 +994,7 @@ BOOST_AUTO_TEST_CASE(an_unshield_binds_the_transparent_output_it_pays)
     std::memcpy(finalizedRoot.data(), &vchRoot[0], 32);
     std::vector<unsigned char> payload;
     BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextUnshieldPayload(2, genesis, keys.outgoingViewSecret,
+        BuildPrivacyVNextUnshieldPayload(2, 7, genesis, keys.outgoingViewSecret,
                                          finalizedRoot, nTreeSize, binding,
                                          nReleased, nFee, spends, outs, payload,
                                          error),
@@ -1101,7 +1101,7 @@ BOOST_AUTO_TEST_CASE(an_empty_transparent_side_is_bound_like_any_other)
 
     std::vector<unsigned char> payload;
     BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextShieldPayload(2, genesis, keys.outgoingViewSecret,
+        BuildPrivacyVNextShieldPayload(2, 7, genesis, keys.outgoingViewSecret,
                                        emptyRoot, epochSeed.nTreeSize,
                                        kNoTransparentSide, nValueIn, nFee, outs,
                                        payload, error),
@@ -1120,6 +1120,272 @@ BOOST_AUTO_TEST_CASE(an_empty_transparent_side_is_bound_like_any_other)
                 << OP_EQUALVERIFY << OP_CHECKSIG;
     siphoned.vout.push_back(CTxOut(4000, scriptThief));
     BOOST_CHECK(!CheckPrivacyVNextTransparentBinding(siphoned, effects, error));
+}
+
+namespace
+{
+
+// Offset where disclosed records start (end of output records); stated independently
+// of the builder.
+size_t DisclosureRecordsAt(size_t nInputs, size_t nOutputs)
+{
+    const size_t nHeader = 9 + 32 + 32 + 32 + 8 + 8 + 8 + 32;
+    const size_t nOutputRecord =
+        96 + 1 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE + 1 +
+        INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE;
+    return nHeader + 1 + (nInputs * 64) + 1 + (nOutputs * nOutputRecord);
+}
+
+uint64_t ReadLE64At(const std::vector<unsigned char>& v, size_t at)
+{
+    uint64_t value = 0;
+    for (size_t i = 0; i < 8; ++i)
+        value |= (uint64_t)v[at + i] << (8 * i);
+    return value;
+}
+
+// One funded note, its witness, and the keys that own it: everything the mask cases below
+// need to build a real spend.
+struct FundedNote
+{
+    PrivacyVNextDigest genesis;
+    PrivacyVNextDerivedKeys keys;
+    std::vector<PrivacyVNextSpendNote> spends;
+    PrivacyVNextDigest finalizedRoot;
+    uint64_t nTreeSize;
+    uint64_t nAmount;
+};
+
+void FundOneNote(CTxDB& txdb, FundedNote& funded, unsigned char seedFill)
+{
+    std::string error;
+    funded.genesis = BuilderDigest(0x11);
+    funded.nAmount = 5000;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextKeys(BuilderDigest(seedFill), funded.genesis, 0, 2, 0,
+                               funded.keys, error),
+        error);
+
+    PrivacyVNextEncryptedOutput funding;
+    BOOST_REQUIRE_MESSAGE(
+        EncryptPrivacyVNextNote(2, 0, 0, funded.genesis, funded.keys.spendPublic,
+                                funded.keys.viewPublic,
+                                funded.keys.outgoingViewSecret, BuilderScalar(29),
+                                funded.nAmount, BuilderScalar(31),
+                                BuilderScalar(37), funding, error),
+        error);
+
+    PrivacyVNextEpochSeed epochSeed;
+    BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextEpochSeed(epochSeed, error), error);
+    std::vector<unsigned char> treeState = epochSeed.vchTreeState;
+    BOOST_REQUIRE_MESSAGE(TrimPrivacyVNextTreeStore(txdb, 0, treeState, error),
+                          error);
+    std::vector<PrivacyVNextOutputLeaf> vLeaves;
+    vLeaves.push_back(funding.leaf);
+    BOOST_REQUIRE_MESSAGE(
+        GrowPrivacyVNextTreeStore(txdb, vLeaves, treeState, error), error);
+
+    std::vector<unsigned char> vchRoot;
+    BOOST_REQUIRE_MESSAGE(
+        DecodePrivacyVNextTreeState(treeState, vchRoot, funded.nTreeSize, error),
+        error);
+    std::vector<uint64_t> vTargets;
+    vTargets.push_back(0);
+    std::vector<unsigned char> vchPaths;
+    BOOST_REQUIRE_MESSAGE(
+        ReadPrivacyVNextTreePaths(txdb, funded.nTreeSize, treeState, vTargets,
+                                  vchPaths, error),
+        error);
+    std::vector<PrivacyVNextMembershipWitness> vWitnesses;
+    PrivacyVNextDigest treeRoot;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextWitnessesFromPaths(treeState, vTargets, vchPaths,
+                                            vWitnesses, treeRoot, error),
+        error);
+
+    PrivacyVNextEncryptedNote onChain;
+    onChain.nOutputIndex = 0;
+    onChain.genesis = funded.genesis;
+    onChain.leafO = funding.leaf.owner;
+    onChain.leafC = funding.leaf.commitment;
+    onChain.ephemeral = funding.ephemeral;
+    onChain.vchCiphertext = funding.vchRecipientCiphertext;
+    PrivacyVNextScannedNote scanned;
+    BOOST_REQUIRE_MESSAGE(
+        ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, 2, 0, onChain,
+                             funded.keys.viewSecret, funded.keys.spendSecret,
+                             scanned, error),
+        error);
+
+    funded.spends.resize(1);
+    funded.spends[0].spendSecret = scanned.spendSecret;
+    funded.spends[0].y = scanned.y;
+    funded.spends[0].mask = scanned.mask;
+    funded.spends[0].nAmount = scanned.nAmount;
+    funded.spends[0].leaf = funding.leaf;
+    funded.spends[0].vchWitnessRecord = vWitnesses[0].vchRecord;
+    std::memcpy(funded.finalizedRoot.data(), &vchRoot[0], 32);
+}
+
+} // namespace
+
+// Every allowed mask must round-trip through the consensus decoder.
+BOOST_AUTO_TEST_CASE(every_disclosure_mask_round_trips_through_consensus)
+{
+    CTxDB txdb("r+");
+    std::string error;
+    FundedNote funded;
+    FundOneNote(txdb, funded, 0x51);
+
+    const uint64_t nFee = 100;
+    std::vector<PrivacyVNextNewOutput> outs;
+    outs.resize(1);
+    outs[0].recipient.nNetwork = 2;
+    outs[0].recipient.nAddressType = 0;
+    outs[0].recipient.spendPublic = funded.keys.spendPublic;
+    outs[0].recipient.viewPublic = funded.keys.viewPublic;
+    outs[0].nAmount = funded.nAmount - nFee;
+
+    size_t vSizes[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    for (uint8_t nMask = 0; nMask <= 7; ++nMask)
+    {
+        std::vector<unsigned char> payload;
+        BOOST_REQUIRE_MESSAGE(
+            BuildPrivacyVNextTransferPayload(
+                2, nMask, funded.genesis, funded.keys.outgoingViewSecret,
+                funded.finalizedRoot, funded.nTreeSize, kNoTransparentSide, nFee,
+                funded.spends, outs, payload, error),
+            strprintf("mask %d: %s", (int)nMask, error.c_str()));
+
+        uint8_t nOperation = 0;
+        uint8_t nDeclared = 0;
+        BOOST_REQUIRE(iv5::ReadDeclaredEnvelope(&payload[0], payload.size(),
+                                                nOperation, nDeclared));
+        BOOST_CHECK_EQUAL((int)nDeclared, (int)nMask);
+        BOOST_CHECK_EQUAL((int)nOperation, (int)iv5::NOTE_TRANSFER);
+
+        const PrivacyVNextPayloadValidation validation =
+            ValidatePrivacyVNextPayload(
+                INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, payload);
+        BOOST_CHECK_MESSAGE(validation.IsValid(),
+                            strprintf("mask %d: %s", (int)nMask,
+                                      validation.strError.c_str()));
+
+        PrivacyVNextStateEffects effects;
+        const PrivacyVNextPayloadValidation extracted =
+            ExtractPrivacyVNextPayloadEffects(
+                INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, payload, effects);
+        BOOST_REQUIRE_MESSAGE(extracted.IsValid(), extracted.strError);
+        BOOST_CHECK_EQUAL(effects.keyImages.size(), 1U);
+        BOOST_CHECK_EQUAL(effects.outputLeaves.size(), 1U);
+        // A transfer declares a zero transparent balance; the fee is what leaves
+        // the pool, so its delta is negative and that is not an unshield.
+        BOOST_CHECK_EQUAL(effects.nTransparentValueBalance, 0);
+        BOOST_CHECK_EQUAL(effects.PoolDelta(), -(int64_t)nFee);
+
+        vSizes[nMask] = payload.size();
+    }
+
+    // Publishing the amounts replaces the range proof with the openings, so it costs
+    // less on the wire than hiding them; publishing anything else costs more.
+    for (uint8_t nMask = 0; nMask < 4; ++nMask)
+        BOOST_CHECK(vSizes[nMask] < vSizes[nMask + 4]);
+    BOOST_CHECK(vSizes[7] < vSizes[6]);
+    BOOST_CHECK(vSizes[7] < vSizes[5]);
+    BOOST_CHECK(vSizes[7] < vSizes[4]);
+
+    std::vector<unsigned char> payload;
+    BOOST_CHECK(!BuildPrivacyVNextTransferPayload(
+        2, 8, funded.genesis, funded.keys.outgoingViewSecret,
+        funded.finalizedRoot, funded.nTreeSize, kNoTransparentSide, nFee,
+        funded.spends, outs, payload, error));
+    BOOST_CHECK(payload.empty());
+}
+
+// Disclosed values must match the payload's commitments and be covered by the signing hash.
+BOOST_AUTO_TEST_CASE(a_disclosure_must_be_true_and_cannot_be_restated)
+{
+    CTxDB txdb("r+");
+    std::string error;
+    FundedNote funded;
+    FundOneNote(txdb, funded, 0x53);
+
+    const uint64_t nFee = 100;
+    std::vector<PrivacyVNextNewOutput> outs;
+    outs.resize(1);
+    outs[0].recipient.nNetwork = 2;
+    outs[0].recipient.nAddressType = 0;
+    outs[0].recipient.spendPublic = funded.keys.spendPublic;
+    outs[0].recipient.viewPublic = funded.keys.viewPublic;
+    outs[0].nAmount = funded.nAmount - nFee;
+
+    const size_t nDisclosuresAt = DisclosureRecordsAt(1, 1);
+
+    // Mask 3 publishes the amounts only.
+    std::vector<unsigned char> amountDisclosed;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextTransferPayload(
+            2, 3, funded.genesis, funded.keys.outgoingViewSecret,
+            funded.finalizedRoot, funded.nTreeSize, kNoTransparentSide, nFee,
+            funded.spends, outs, amountDisclosed, error),
+        error);
+    BOOST_REQUIRE(amountDisclosed.size() > nDisclosuresAt + 40);
+    // The published figure is the amount actually paid, not a number beside it.
+    BOOST_CHECK_EQUAL(ReadLE64At(amountDisclosed, nDisclosuresAt),
+                      outs[0].nAmount);
+
+    // An amount overstated by one is refused.
+    std::vector<unsigned char> overstated = amountDisclosed;
+    overstated[nDisclosuresAt] = (unsigned char)(overstated[nDisclosuresAt] + 1);
+    BOOST_CHECK(!ValidatePrivacyVNextPayload(
+                     INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, overstated)
+                     .IsValid());
+
+    // The opening is checked too.
+    std::vector<unsigned char> reopened = amountDisclosed;
+    reopened[nDisclosuresAt + 8] ^= 1;
+    BOOST_CHECK(!ValidatePrivacyVNextPayload(
+                     INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, reopened)
+                     .IsValid());
+
+    // Mask 5 publishes the recipient addresses only.
+    std::vector<unsigned char> receiverDisclosed;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextTransferPayload(
+            2, 5, funded.genesis, funded.keys.outgoingViewSecret,
+            funded.finalizedRoot, funded.nTreeSize, kNoTransparentSide, nFee,
+            funded.spends, outs, receiverDisclosed, error),
+        error);
+    BOOST_REQUIRE(receiverDisclosed.size() > nDisclosuresAt + 64);
+    // The published address is the address the output pays.
+    BOOST_CHECK(std::equal(funded.keys.spendPublic.begin(),
+                           funded.keys.spendPublic.end(),
+                           receiverDisclosed.begin() + nDisclosuresAt));
+    BOOST_CHECK(std::equal(funded.keys.viewPublic.begin(),
+                           funded.keys.viewPublic.end(),
+                           receiverDisclosed.begin() + nDisclosuresAt + 32));
+
+    // Name a different recipient and the disclosure proof no longer opens the output.
+    std::vector<unsigned char> misattributed = receiverDisclosed;
+    misattributed[nDisclosuresAt] ^= 1;
+    BOOST_CHECK(!ValidatePrivacyVNextPayload(
+                     INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, misattributed)
+                     .IsValid());
+
+    // Mask 6 publishes the spending authority of each note consumed.
+    std::vector<unsigned char> senderDisclosed;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextTransferPayload(
+            2, 6, funded.genesis, funded.keys.outgoingViewSecret,
+            funded.finalizedRoot, funded.nTreeSize, kNoTransparentSide, nFee,
+            funded.spends, outs, senderDisclosed, error),
+        error);
+    BOOST_REQUIRE(senderDisclosed.size() > nDisclosuresAt + 32);
+    std::vector<unsigned char> impersonated = senderDisclosed;
+    impersonated[nDisclosuresAt] ^= 1;
+    BOOST_CHECK(!ValidatePrivacyVNextPayload(
+                     INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, impersonated)
+                     .IsValid());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

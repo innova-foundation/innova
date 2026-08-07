@@ -1645,6 +1645,7 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "z_shield"              && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "z_unshield"            && n > 2) ConvertTo<double>(params[2]);
     if (strMethod == "z_iv5transfer"         && n > 1) ConvertTo<double>(params[1]);
+    if (strMethod == "z_iv5transfer"         && n > 2) ConvertTo<int64_t>(params[2]);
     if (strMethod == "z_iv5unshield"         && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "z_send"                && n > 2) ConvertTo<double>(params[2]);
     if (strMethod == "z_send"                && n > 3) ConvertTo<int64_t>(params[3]);

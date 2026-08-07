@@ -862,6 +862,262 @@ mod tests {
         request
     }
 
+    // A shield that publishes its amount. `declared` is what the disclosure record says;
+    // the commitment is always over `true_amount`, and every proof is made over whatever
+    // prefix results, so a lie here is not a corrupted payload but a consistent one.
+    fn disclosed_amount_request(true_amount: u64, declared: u64) -> Vec<u8> {
+        disclosed_amount_request_with_range(true_amount, declared, false)
+    }
+
+    fn disclosed_amount_request_with_range(
+        true_amount: u64,
+        declared: u64,
+        include_range: bool,
+    ) -> Vec<u8> {
+        let point = ED25519_BASEPOINT_POINT.compress().to_bytes();
+        let output_mask = Scalar::from(3_u64).to_bytes();
+        let output_commitment =
+            value::commitment(true_amount, &output_mask).expect("valid commitment");
+        let state = tree::update(&[1, 0, 1, 0, 0, 0, 0, 0]).expect("empty canonical tree state");
+        let root = tree::root(&state).expect("empty canonical tree root");
+        let fee = 1_u64;
+        let balance = i64::try_from(true_amount).expect("test amount fits") + 1;
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+        // Mask 3 keeps the sender and the recipient hidden and publishes the amounts.
+        payload.extend_from_slice(&[NOTE_SHIELD, 0, 0, 3, FINALITY_OBJECT_NONE, 1, 0]);
+        payload.extend_from_slice(&[0x11; 32]);
+        payload.extend_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+        payload.extend_from_slice(&root[12..44]);
+        payload.extend_from_slice(&0_u64.to_le_bytes());
+        payload.extend_from_slice(&balance.to_le_bytes());
+        payload.extend_from_slice(&fee.to_le_bytes());
+        payload.extend_from_slice(&TEST_TRANSPARENT_BINDING);
+
+        compact_size(&mut payload, 0);
+        compact_size(&mut payload, 1);
+        payload.extend_from_slice(&point);
+        payload.extend_from_slice(&output_commitment);
+        payload.extend_from_slice(&point);
+        vector(&mut payload, &[1, 2]);
+        vector(&mut payload, &[3]);
+
+        payload.extend_from_slice(&declared.to_le_bytes());
+        payload.extend_from_slice(&output_mask);
+        vector(&mut payload, &[]);
+
+        let signing_hash = signable_hash(2008, &payload);
+        let excess = (-Scalar::from(3_u64)).to_bytes();
+        let balance_proof = value::prove_balance(
+            &[],
+            &[output_commitment],
+            balance,
+            fee,
+            &excess,
+            &signing_hash,
+            &[0x42; 32],
+        )
+        .expect("valid balance proof");
+        let binding_signature = value::prove_binding_signature(
+            &[],
+            &[output_commitment],
+            balance,
+            fee,
+            &excess,
+            &signing_hash,
+            &[0x43; 32],
+        )
+        .expect("valid binding signature");
+        vector(&mut payload, &[]);
+        // Published amounts carry no range proof: each is checked against its commitment.
+        let range_proof = if include_range {
+            value::prove_range(&[true_amount], &[output_mask], &[0x41; 32])
+                .expect("valid range proof")
+                .1
+        } else {
+            Vec::new()
+        };
+        vector(&mut payload, &range_proof);
+        vector(&mut payload, &balance_proof);
+        vector(&mut payload, &[]);
+        vector(&mut payload, &[]);
+        vector(&mut payload, &binding_signature);
+
+        let mut request = 2008_u32.to_le_bytes().to_vec();
+        request.extend_from_slice(&payload);
+        request
+    }
+
+    // A false published amount with proofs made over its own prefix: only the opening
+    // check catches it.
+    #[test]
+    fn a_published_amount_must_open_the_commitment_it_names() {
+        let honest = disclosed_amount_request(9, 9);
+        assert_eq!(validate(&honest), Ok(()));
+
+        assert_eq!(
+            validate(&disclosed_amount_request(9, 10)),
+            Err(ResultCode::ConsensusInvalid),
+            "an overstated amount must not be accepted"
+        );
+        assert_eq!(
+            validate(&disclosed_amount_request(9, 8)),
+            Err(ResultCode::ConsensusInvalid),
+            "an understated amount must not be accepted"
+        );
+        assert_eq!(
+            validate(&disclosed_amount_request(9, 0)),
+            Err(ResultCode::ConsensusInvalid),
+            "a zeroed amount must not be accepted"
+        );
+
+        // A payload that publishes its amounts must not also carry a range proof, or the
+        // value would be established two ways that could disagree.
+        assert_eq!(
+            validate(&disclosed_amount_request_with_range(9, 9, true)),
+            Err(ResultCode::ConsensusInvalid)
+        );
+    }
+
+    // A shield disclosing the recipient address of its one output; `named` is the
+    // claimed address, the output always pays the true one.
+    fn disclosed_receiver_request(
+        genesis: &[u8; 32],
+        encrypted: &[u8],
+        named: ([u8; 32], [u8; 32]),
+    ) -> Vec<u8> {
+        let true_spend = (ED25519_BASEPOINT_POINT * Scalar::from(3_u64))
+            .compress()
+            .to_bytes();
+        let true_view = (ED25519_BASEPOINT_POINT * Scalar::from(5_u64))
+            .compress()
+            .to_bytes();
+        let ephemeral_secret = Scalar::from(13_u64).to_bytes();
+        let output_y = Scalar::from(17_u64).to_bytes();
+        let output_mask = Scalar::from(19_u64).to_bytes();
+        let amount = 99_u64;
+        let fee = 1_u64;
+
+        let state = tree::update(&[1, 0, 1, 0, 0, 0, 0, 0]).expect("empty canonical tree state");
+        let root = tree::root(&state).expect("empty canonical tree root");
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+        // Mask 5 hides the sender and the amount and publishes the recipient.
+        payload.extend_from_slice(&[NOTE_SHIELD, 0, 0, 5, FINALITY_OBJECT_NONE, 1, 0]);
+        payload.extend_from_slice(genesis);
+        payload.extend_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+        payload.extend_from_slice(&root[12..44]);
+        payload.extend_from_slice(&0_u64.to_le_bytes());
+        payload.extend_from_slice(&(i64::try_from(amount).expect("fits") + 1).to_le_bytes());
+        payload.extend_from_slice(&fee.to_le_bytes());
+        payload.extend_from_slice(&TEST_TRANSPARENT_BINDING);
+        compact_size(&mut payload, 0);
+        compact_size(&mut payload, 1);
+        payload.extend_from_slice(&encrypted[8..40]);
+        payload.extend_from_slice(&encrypted[72..104]);
+        payload.extend_from_slice(&encrypted[104..136]);
+        vector(&mut payload, &encrypted[136..313]);
+        vector(&mut payload, &encrypted[313..522]);
+
+        payload.extend_from_slice(&named.0);
+        payload.extend_from_slice(&named.1);
+        vector(&mut payload, &[]);
+
+        // Every proof, including the receiver disclosure, is made over the prefix that
+        // carries the claim, so nothing here is stale or mismatched.
+        let signing_hash = signable_hash(2008, &payload);
+        let output_o: [u8; 32] = encrypted[8..40].try_into().expect("O is 32 bytes");
+        let ephemeral: [u8; 32] = encrypted[104..136].try_into().expect("R is 32 bytes");
+        let receiver_proof = disclosure::prove_receiver(
+            &true_spend,
+            &true_view,
+            &output_o,
+            &ephemeral,
+            &ephemeral_secret,
+            &output_y,
+            &signing_hash,
+            0,
+            &[0x44; 32],
+        )
+        .expect("the true address always has a proof");
+
+        let (commitments, range_proof) =
+            value::prove_range(&[amount], &[output_mask], &[0x41; 32]).expect("valid range proof");
+        let excess = (-Scalar::from(19_u64)).to_bytes();
+        let balance = i64::try_from(amount).expect("fits") + 1;
+        let balance_proof = value::prove_balance(
+            &[],
+            &commitments,
+            balance,
+            fee,
+            &excess,
+            &signing_hash,
+            &[0x42; 32],
+        )
+        .expect("valid balance proof");
+        let binding_signature = value::prove_binding_signature(
+            &[],
+            &commitments,
+            balance,
+            fee,
+            &excess,
+            &signing_hash,
+            &[0x43; 32],
+        )
+        .expect("valid binding signature");
+        vector(&mut payload, &[]);
+        vector(&mut payload, &range_proof);
+        vector(&mut payload, &balance_proof);
+        vector(&mut payload, &[]);
+        vector(&mut payload, &receiver_proof);
+        vector(&mut payload, &binding_signature);
+
+        let mut request = 2008_u32.to_le_bytes().to_vec();
+        request.extend_from_slice(&payload);
+        request
+    }
+
+    // A forged recipient with a real proof over its own prefix: only the address
+    // check catches it.
+    #[test]
+    fn a_published_recipient_must_be_the_one_the_output_pays() {
+        let genesis = [0x11_u8; 32];
+        let (encrypted, _, _) = encrypted_output(&genesis, 0);
+        let true_spend = (ED25519_BASEPOINT_POINT * Scalar::from(3_u64))
+            .compress()
+            .to_bytes();
+        let true_view = (ED25519_BASEPOINT_POINT * Scalar::from(5_u64))
+            .compress()
+            .to_bytes();
+
+        assert_eq!(
+            validate(&disclosed_receiver_request(
+                &genesis,
+                &encrypted,
+                (true_spend, true_view)
+            )),
+            Ok(())
+        );
+
+        let other_spend = (ED25519_BASEPOINT_POINT * Scalar::from(23_u64))
+            .compress()
+            .to_bytes();
+        let other_view = (ED25519_BASEPOINT_POINT * Scalar::from(29_u64))
+            .compress()
+            .to_bytes();
+        for named in [
+            (other_spend, other_view),
+            (other_spend, true_view),
+            (true_spend, other_view),
+        ] {
+            assert_eq!(
+                validate(&disclosed_receiver_request(&genesis, &encrypted, named)),
+                Err(ResultCode::ConsensusInvalid),
+                "a payload must not name an address its output does not pay"
+            );
+        }
+    }
+
     fn encrypted_output_to(
         genesis: &[u8; 32],
         index: u32,

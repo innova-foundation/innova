@@ -229,7 +229,7 @@ pub(crate) fn receiver_tweak(
     )
 }
 
-#[allow(dead_code, clippy::similar_names, clippy::too_many_arguments)]
+#[allow(clippy::similar_names, clippy::too_many_arguments)]
 pub(crate) fn prove_receiver(
     spend_bytes: &[u8; 32],
     view_bytes: &[u8; 32],
@@ -425,6 +425,13 @@ mod tests {
         .unwrap();
         assert!(verify_sender(&authority, &o_tilde, &hash, 2, &proof).unwrap());
         assert!(!verify_sender(&authority, &o_tilde, &hash, 3, &proof).unwrap());
+
+        // Naming a different authority over the same input must not verify, or a
+        // disclosed sender would be whoever the payload chose to name.
+        let other = (ED25519_BASEPOINT_POINT * Scalar::from(7_u64))
+            .compress()
+            .to_bytes();
+        assert!(!verify_sender(&other, &o_tilde, &hash, 2, &proof).unwrap());
     }
 
     #[test]
@@ -465,5 +472,22 @@ mod tests {
         .unwrap();
         assert!(verify_receiver(&spend, &view, &output_o, &ephemeral, &hash, 1, &proof,).unwrap());
         assert!(!verify_receiver(&spend, &view, &output_o, &ephemeral, &hash, 0, &proof,).unwrap());
+
+        // The address is checked, not merely carried: substituting either half of a
+        // different, perfectly valid address must fail.
+        let other_spend = (ED25519_BASEPOINT_POINT * Scalar::from(23_u64))
+            .compress()
+            .to_bytes();
+        let other_view = (ED25519_BASEPOINT_POINT * Scalar::from(29_u64))
+            .compress()
+            .to_bytes();
+        assert!(
+            !verify_receiver(&other_spend, &view, &output_o, &ephemeral, &hash, 1, &proof)
+                .unwrap()
+        );
+        assert!(
+            !verify_receiver(&spend, &other_view, &output_o, &ephemeral, &hash, 1, &proof)
+                .unwrap()
+        );
     }
 }

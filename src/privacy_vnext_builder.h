@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "privacy_vnext/iv5_protocol.h"
 #include "privacy_vnext_ffi.h"
 
 // Assembles a canonical IV5 payload from a wallet's notes.
@@ -47,17 +48,15 @@ struct PrivacyVNextNewOutput
     PrivacyVNextNewOutput() : nAmount(0) {}
 };
 
-// Build a fully private transfer payload.
-//
-// Every disclosure bit is set, so nothing about the sender, the recipient or the amounts is
-// revealed and the outputs carry a range proof. Payloads that disclose any of those are a
-// separate shape and are not built here.
-//
-// `transparentBinding` is GetPrivacyVNextTransparentBinding of the transaction that will
-// carry the payload. It has to be known before proving, because the proofs bind to a hash
-// of the prefix it sits in.
+// Disclosure mask: a set bit hides that field (7 = nothing disclosed, 0 = senders,
+// recipients and amounts disclosed). Disclosed fields are proved against the commitments;
+// disclosed amounts replace the range proof.
+
+// Build a transfer payload. `transparentBinding` is GetPrivacyVNextTransparentBinding of
+// the carrying transaction; it is part of the proved prefix.
 bool BuildPrivacyVNextTransferPayload(
     uint8_t nNetwork,
+    uint8_t nDisclosureMask,
     const PrivacyVNextDigest& genesis,
     const PrivacyVNextDigest& outgoingViewSecret,
     const PrivacyVNextDigest& finalizedRoot,
@@ -73,6 +72,7 @@ bool BuildPrivacyVNextTransferPayload(
 // `outputs` are the change notes only.
 bool BuildPrivacyVNextUnshieldPayload(
     uint8_t nNetwork,
+    uint8_t nDisclosureMask,
     const PrivacyVNextDigest& genesis,
     const PrivacyVNextDigest& outgoingViewSecret,
     const PrivacyVNextDigest& finalizedRoot,
@@ -89,6 +89,7 @@ bool BuildPrivacyVNextUnshieldPayload(
 // plus fee.
 bool BuildPrivacyVNextShieldPayload(
     uint8_t nNetwork,
+    uint8_t nDisclosureMask,
     const PrivacyVNextDigest& genesis,
     const PrivacyVNextDigest& outgoingViewSecret,
     const PrivacyVNextDigest& finalizedRoot,

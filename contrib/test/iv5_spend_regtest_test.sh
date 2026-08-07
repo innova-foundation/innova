@@ -73,6 +73,20 @@ except Exception:
 ' <<< "$1" 2>/dev/null
 }
 
+# Field of a nested object, one level down.
+jget2() {
+    OUTER="$2" FIELD="$3" python3 -c '
+import json, os, sys
+try:
+    v = json.load(sys.stdin).get(os.environ["OUTER"], {}).get(os.environ["FIELD"], None)
+    if isinstance(v, bool): print(str(v).lower())
+    elif v is None: print("")
+    else: print(v)
+except Exception:
+    pass
+' <<< "$1" 2>/dev/null
+}
+
 jlen() {
     FIELD="$2" python3 -c '
 import json, os, sys
@@ -461,6 +475,27 @@ else
     exit 1
 fi
 
+# Each shield leaves two notes, and only notes inside the finalized anchor can be
+# spent. The later sections spend four times, so sweep two more addresses while the
+# anchor these will land in is still ahead of us. Each sweep is confirmed before the
+# next is built: a shield names the tree it saw, so one built over an unconfirmed
+# sibling would be left holding an anchor the chain has already moved past.
+EXTRA_SHIELDS=0
+for _ in 1 2; do
+    MORE_TXID="$(jget "$(rpc 0 z_shieldall 2>&1)" txid)"
+    [ ${#MORE_TXID} -eq 64 ] || break
+    EXTRA_SHIELDS=$((EXTRA_SHIELDS + 1))
+    EXTRA_TARGET=$(( $(height 0) + 2 ))
+    mine_to 0 "$EXTRA_TARGET" >/dev/null || break
+    wait_sync "$EXTRA_TARGET" >/dev/null || break
+done
+if [ "$EXTRA_SHIELDS" -eq 2 ]; then
+    success "swept two further addresses into the pool for the later spends"
+else
+    fail "only $EXTRA_SHIELDS further sweep(s) confirmed; the spend sections need four notes"
+    exit 1
+fi
+
 mine_to 0 "$SHIELD_CONFIRM_HEIGHT" || { fail "could not confirm the shield"; exit 1; }
 wait_sync "$SHIELD_CONFIRM_HEIGHT" || { fail "peers did not accept the shield block"; exit 1; }
 SHIELD_CONF="$(rpc 0 gettransaction "$SHIELD_TXID" 2>&1)"
@@ -621,6 +656,112 @@ else
 fi
 
 assert_coinbase_conserved "transfer" "$XFER_HEIGHT"
+
+# The default transfer must reveal nothing, or privacy is something a user has to
+# ask for rather than something they have.
+XFER_MASK="$(jget2 "$XRAW" privacy_vnext disclosure_mask)"
+if [ "$XFER_MASK" = "7" ]; then
+    success "a transfer with no disclosure argument declares mask 7"
+else
+    fail "the default transfer declared mask '$XFER_MASK', expected 7"
+fi
+
+# ============================================================
+header "6b. Disclosed transfers confirm on the same chain"
+# ============================================================
+
+# Mask 0 publishes everything and mask 5 publishes the recipient only. Both are
+# ordinary pool transactions: they spend notes, name no transparent value, and
+# have to survive the same validation as a fully private transfer.
+#
+# These pay the address section 6 already used rather than a fresh one, because a
+# wallet only ever scans derivation index 0: nPrivacyVNextIndexCount is fixed at 1
+# and AllocatePrivacyVNextIndex has no caller, so value paid to any later address
+# z_getnewiv5address issues is invisible to the wallet that issued it. Section 9
+# would then report the difference as pool value that vanished.
+disclosed_transfer() {
+    local mask="$1" want_sender="$2" want_receiver="$3" want_amount="$4"
+    local addr="$5"
+    local result txid declared
+
+    if [ ${#addr} -lt 20 ]; then
+        fail "mask $mask: no recipient address"
+        return 1
+    fi
+
+    result="$(rpc 0 z_iv5transfer "$addr" "$DISCLOSED_AMOUNT" "$mask" 2>&1)"
+    txid="$(jget "$result" txid)"
+    if [ ${#txid} -ne 64 ]; then
+        fail "mask $mask: z_iv5transfer failed: $(echo "$result" | head -3)"
+        return 1
+    fi
+    declared="$(jget "$result" disclosure_mask)"
+    if [ "$declared" = "$mask" ] && \
+       [ "$(jget "$result" discloses_sender)" = "$want_sender" ] && \
+       [ "$(jget "$result" discloses_receiver)" = "$want_receiver" ] && \
+       [ "$(jget "$result" discloses_amount)" = "$want_amount" ]; then
+        success "mask $mask: built and reported (sender=$want_sender receiver=$want_receiver amount=$want_amount)"
+    else
+        fail "mask $mask: the wallet reported mask '$declared' with the wrong flags"
+        return 1
+    fi
+
+    local target
+    target=$(( $(height 0) + 3 ))
+    mine_to 0 "$target" || { fail "mask $mask: could not mine the transfer"; return 1; }
+    wait_sync "$target" || { fail "mask $mask: peers did not accept the block"; return 1; }
+
+    local conf block confs raw
+    conf="$(rpc 0 gettransaction "$txid" 2>&1)"
+    block="$(jget "$conf" blockhash)"
+    confs="$(jget "$conf" confirmations)"
+    if [ ${#block} -eq 64 ] && is_int "$confs" && [ "$confs" -ge 1 ]; then
+        success "mask $mask: confirmed in a block ($confs confirmation(s))"
+    else
+        fail "mask $mask: did not confirm (confirmations='$confs')"
+        return 1
+    fi
+
+    local h
+    h="$(jget "$(rpc 0 getblock "$block" 2>/dev/null)" height)"
+    if [ "$(block_hash 1 "$h")" = "$block" ] && [ "$(block_hash 2 "$h")" = "$block" ]; then
+        success "mask $mask: peers that did not build it accepted its block at height $h"
+    else
+        fail "mask $mask: the block did not converge across the fleet"
+    fi
+
+    # What the chain reports about the transaction must be the mask it was asked for.
+    raw="$(rpc 0 getrawtransaction "$txid" 1 2>&1)"
+    if [ "$(jget2 "$raw" privacy_vnext disclosure_mask)" = "$mask" ] && \
+       [ "$(jget2 "$raw" privacy_vnext discloses_sender)" = "$want_sender" ] && \
+       [ "$(jget2 "$raw" privacy_vnext discloses_receiver)" = "$want_receiver" ] && \
+       [ "$(jget2 "$raw" privacy_vnext discloses_amount)" = "$want_amount" ]; then
+        success "mask $mask: the confirmed transaction declares it on chain"
+    else
+        fail "mask $mask: the confirmed transaction does not declare mask $mask"
+    fi
+
+    if [ "$(jlen "$raw" vin)" = "0" ] && [ "$(jlen "$raw" vout)" = "0" ]; then
+        success "mask $mask: still carries no transparent input or output"
+    else
+        fail "mask $mask: leaked transparent value"
+    fi
+
+    assert_coinbase_conserved "mask-$mask transfer" "$h"
+    return 0
+}
+
+DISCLOSED_AMOUNT=1
+disclosed_transfer 0 true true true "$TO_ADDR" || warn "the fully disclosed transfer did not complete"
+disclosed_transfer 5 false true false "$TO_ADDR" || warn "the mixed-mask transfer did not complete"
+
+# An out-of-range mask is a caller error, not something the wallet quietly rounds.
+BAD_MASK="$(rpc 0 z_iv5transfer "$TO_ADDR" "$DISCLOSED_AMOUNT" 8 2>&1)"
+if echo "$BAD_MASK" | grep -qi "three-bit"; then
+    success "a mask above 7 is refused"
+else
+    fail "a mask above 7 was not refused: $(echo "$BAD_MASK" | head -2)"
+fi
 
 # ============================================================
 header "7. An unshield releases pool value to the output it named"
@@ -890,8 +1031,10 @@ TREE_1="$(jget "$INFO" privacy_vnext_tree_size)"
 STORE_1="$(jget "$INFO" privacy_vnext_tree_store_size)"
 
 # A transfer moves value inside the pool, so it costs the pool only its fee. An
-# unshield additionally takes the released amount out of the pool entirely.
-EXPECTED_DROP="$(python3 -c "print('%.8f' % ($SHIELD_FEE + $UNSHIELD_AMOUNT + $SHIELD_FEE))")"
+# unshield additionally takes the released amount out of the pool entirely. Four
+# transfers run before this point: the private one and the two disclosed ones in 6b,
+# plus the unshield.
+EXPECTED_DROP="$(python3 -c "print('%.8f' % ((4 * $SHIELD_FEE) + $UNSHIELD_AMOUNT))")"
 ACTUAL_DROP="$(python3 -c "print('%.8f' % ((float('${POOL_BAL_0:-0}') + float('${POOL_UNCONF_0:-0}')) - (float('${POOL_BAL_1:-0}') + float('${POOL_UNCONF_1:-0}'))))")"
 if feq "$ACTUAL_DROP" "$EXPECTED_DROP"; then
     success "pool value fell by exactly $ACTUAL_DROP INN (both fees and the unshielded amount)"

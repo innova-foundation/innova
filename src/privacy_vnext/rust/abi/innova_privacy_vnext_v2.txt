@@ -32,6 +32,7 @@ functions:
   innova_privacy_vnext_note_scan(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_note_encrypt(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_value_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_receiver_disclosure_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
 result-codes:
   0 valid
   1 consensus-invalid
@@ -60,7 +61,8 @@ capabilities:
   bit-16 payload-output-scanning
   bit-17 tree-extension
   bit-18 payload-signing-hash
-implemented-capabilities: bits 0 through 18
+  bit-19 receiver-disclosure-proof
+implemented-capabilities: bits 0 through 19
 consensus-capabilities: none
 fixed-output-length: 32
 parameter-digest: sha256(../contract/iv5_protocol_v1.json)
@@ -122,6 +124,15 @@ value-prove-response:
   fields: schema-u16-le, output-count-u8, input-count-u8, output-commitments-32, range-proof-length-u32-le, range-proof, balance-proof-64, binding-signature-64
   range-proof: empty for zero outputs, otherwise one canonical aggregate Bulletproof+
   behavior: prove and independently verify range, signed public/private balance, and binding signature before returning
+receiver-disclosure-prove-request:
+  exact-size: 264
+  fields: schema-u16-le, reserved-zero-2, output-index-u32-le, recipient-spend-32, recipient-view-32, output-O-32, ephemeral-public-32, ephemeral-secret-32, output-y-32, signable-hash-32, caller-entropy-32
+  behavior: prove and then independently verify the receiver disclosure before returning
+receiver-disclosure-prove-response:
+  exact-size: 160
+  fields: one receiver-disclosure proof, as the payload's disclosure section carries it
+  pairing: the sender disclosure is emitted by fcmp-prove; this covers the receiver side, which
+    has no proving carrier of its own
 tree-extend-request:
   fields: identical to the tree-update request
 tree-extend-response:

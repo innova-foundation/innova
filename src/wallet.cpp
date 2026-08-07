@@ -10932,7 +10932,9 @@ bool CWallet::CreatePrivacyVNextShield(
     PrivacyVNextBindingOf(txNew, transparentBinding);
 
     std::vector<unsigned char> vchPayload;
-    if (!BuildPrivacyVNextShieldPayload(nNetwork, genesis,
+    if (!BuildPrivacyVNextShieldPayload(nNetwork,
+                                        iv5::WALLET_DEFAULT_DISCLOSURE_MASK,
+                                        genesis,
                                         keys.outgoingViewSecret, finalizedRoot,
                                         nTreeSize, transparentBinding,
                                         (uint64_t)nSelected,
@@ -11181,6 +11183,7 @@ static bool BuildPrivacyVNextSpend(
     const PrivacyVNextDigest& outgoingViewSecret,
     const PrivacyVNextDigest& transparentBinding,
     uint8_t nNetwork,
+    uint8_t nDisclosureMask,
     int64_t nFee,
     int64_t nTransparentOut,
     std::vector<unsigned char>& vchPayloadOut,
@@ -11257,14 +11260,15 @@ static bool BuildPrivacyVNextSpend(
 
     if (nTransparentOut > 0)
         return BuildPrivacyVNextUnshieldPayload(
-            nNetwork, genesis, outgoingViewSecret, finalizedRoot, nTreeSize,
-            transparentBinding, (uint64_t)nTransparentOut, (uint64_t)nFee,
-            vSpends, vShieldedOutputs, vchPayloadOut, strErrorOut);
+            nNetwork, nDisclosureMask, genesis, outgoingViewSecret,
+            finalizedRoot, nTreeSize, transparentBinding,
+            (uint64_t)nTransparentOut, (uint64_t)nFee, vSpends,
+            vShieldedOutputs, vchPayloadOut, strErrorOut);
 
     return BuildPrivacyVNextTransferPayload(
-        nNetwork, genesis, outgoingViewSecret, finalizedRoot, nTreeSize,
-        transparentBinding, (uint64_t)nFee, vSpends, vShieldedOutputs,
-        vchPayloadOut, strErrorOut);
+        nNetwork, nDisclosureMask, genesis, outgoingViewSecret, finalizedRoot,
+        nTreeSize, transparentBinding, (uint64_t)nFee, vSpends,
+        vShieldedOutputs, vchPayloadOut, strErrorOut);
 }
 
 // Common front half: validate the amount, pick notes and derive the wallet's own
@@ -11355,6 +11359,7 @@ static bool PreparePrivacyVNextSpend(
 bool CWallet::CreatePrivacyVNextTransfer(
     const std::string& strToAddress,
     int64_t nAmount,
+    uint8_t nDisclosureMask,
     bool fCommit,
     CWalletTx& wtxNew,
     int64_t& nFeeOut,
@@ -11365,6 +11370,12 @@ bool CWallet::CreatePrivacyVNextTransfer(
     nFeeOut = 0;
     nNotesUsedOut = 0;
     strErrorOut.clear();
+
+    if (nDisclosureMask > iv5::DISCLOSURE_MASK)
+    {
+        strErrorOut = "an IV5 disclosure mask is three bits";
+        return false;
+    }
 
     std::vector<CPrivacyVNextWalletNote> vNotes;
     int64_t nSelected = 0;
@@ -11407,7 +11418,8 @@ bool CWallet::CreatePrivacyVNextTransfer(
     std::vector<unsigned char> vchPayload;
     if (!BuildPrivacyVNextSpend(vNotes, vOutputs, genesis,
                                 changeKeys.outgoingViewSecret, transparentBinding,
-                                nNetwork, nFee, 0, vchPayload, strErrorOut))
+                                nNetwork, nDisclosureMask, nFee, 0, vchPayload,
+                                strErrorOut))
         return false;
 
     txNew.privacyVNext.vchPayload = vchPayload;
@@ -11497,7 +11509,8 @@ bool CWallet::CreatePrivacyVNextUnshield(
     std::vector<unsigned char> vchPayload;
     if (!BuildPrivacyVNextSpend(vNotes, vOutputs, genesis,
                                 changeKeys.outgoingViewSecret, transparentBinding,
-                                nNetwork, nFee, nAmount, vchPayload, strErrorOut))
+                                nNetwork, iv5::WALLET_DEFAULT_DISCLOSURE_MASK,
+                                nFee, nAmount, vchPayload, strErrorOut))
         return false;
 
     txNew.privacyVNext.vchPayload = vchPayload;

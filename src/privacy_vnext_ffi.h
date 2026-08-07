@@ -508,4 +508,22 @@ bool ProvePrivacyVNextValue(
     PrivacyVNextValueProof& proof,
     std::string& error);
 
+// Prove that a disclosed recipient address is the address one output actually pays.
+//
+// Proving membership already yields each input's sender disclosure, so only the receiver
+// side needs a call of its own. The Rust side verifies the proof before returning, so a
+// success means it checks against the same signing hash consensus will recompute.
+bool ProvePrivacyVNextReceiverDisclosure(
+    uint32_t nOutputIndex,
+    const PrivacyVNextDigest& recipientSpend,
+    const PrivacyVNextDigest& recipientView,
+    const PrivacyVNextDigest& outputOwner,
+    const PrivacyVNextDigest& ephemeralPublic,
+    const PrivacyVNextDigest& ephemeralSecret,
+    const PrivacyVNextDigest& outputY,
+    const PrivacyVNextDigest& signableHash,
+    const PrivacyVNextDigest& entropy,
+    std::vector<unsigned char>& vchProofOut,
+    std::string& error);
+
 #endif // INN_PRIVACY_VNEXT_FFI_H

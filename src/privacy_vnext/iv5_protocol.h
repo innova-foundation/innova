@@ -4,12 +4,13 @@
 #ifndef INN_IV5_PROTOCOL_H
 #define INN_IV5_PROTOCOL_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace iv5
 {
 static const char PROTOCOL_CONTRACT_SHA256[] =
-    "6f7e1714ec2cc41ba11c2e376d1e134979ae362fe6d623db811b3f4c67669bce";
+    "14b3d48a9908fcf52c5864f21eadc94f34dc5e03579f1e41b7ac97d16877443a";
 static const uint16_t PROTOCOL_SCHEMA = 1;
 static const unsigned char ENVELOPE_MARKER[5] = {
     0xff, 0x49, 0x56, 0x35, 0x50
@@ -68,6 +69,24 @@ static const uint8_t WALLET_DEFAULT_DISCLOSURE_MASK = 7;
 inline bool IsKnownNoteOperation(uint8_t operation)
 {
     return operation <= NOTE_CONDITIONAL_MIGRATION || operation == NOTE_OPERATION_NONE;
+}
+
+// Read the declared operation and mask from the fixed header. Not a decoder; consensus
+// acts only on the Rust decoder's output.
+inline bool ReadDeclaredEnvelope(const unsigned char* payload, size_t nSize,
+                                 uint8_t& operationOut, uint8_t& disclosureMaskOut)
+{
+    static const size_t HEADER_BYTES = 9;
+    if (payload == 0 || nSize < HEADER_BYTES)
+        return false;
+    const uint16_t schema =
+        (uint16_t)payload[0] | ((uint16_t)payload[1] << 8);
+    if (schema != PROTOCOL_SCHEMA || payload[5] > DISCLOSURE_MASK ||
+        !IsKnownNoteOperation(payload[2]))
+        return false;
+    operationOut = payload[2];
+    disclosureMaskOut = payload[5];
+    return true;
 }
 
 inline bool IsKnownTypedContract(uint8_t operation, uint8_t profile,

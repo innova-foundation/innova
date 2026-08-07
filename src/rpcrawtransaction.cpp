@@ -11,6 +11,7 @@
 #include "init.h"
 #include "main.h"
 #include "net.h"
+#include "privacy_vnext/iv5_protocol.h"
 #include "wallet.h"
 
 using namespace std;
@@ -145,6 +146,23 @@ void TxToJSON(const CTransaction& tx, const uint256 hashBlock, Object& entry)
             shieldedOutputs.push_back(obj);
         }
         entry.push_back(Pair("shielded_outputs", shieldedOutputs));
+    }
+
+    if (tx.IsPrivacyVNext() && !tx.privacyVNext.vchPayload.empty())
+    {
+        uint8_t nOperation = 0;
+        uint8_t nDisclosureMask = 0;
+        Object obj;
+        obj.push_back(Pair("payload_size",
+                           (int64_t)tx.privacyVNext.vchPayload.size()));
+        if (iv5::ReadDeclaredEnvelope(&tx.privacyVNext.vchPayload[0],
+                                      tx.privacyVNext.vchPayload.size(),
+                                      nOperation, nDisclosureMask))
+        {
+            obj.push_back(Pair("operation", (int)nOperation));
+            PrivacyVNextDisclosureToJSON(nDisclosureMask, obj);
+        }
+        entry.push_back(Pair("privacy_vnext", obj));
     }
 
     if (hashBlock != 0)
