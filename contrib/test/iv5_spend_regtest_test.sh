@@ -670,22 +670,15 @@ fi
 header "6b. Disclosed transfers confirm on the same chain"
 # ============================================================
 
-# Mask 0 publishes everything and mask 5 publishes the recipient only. Both are
-# ordinary pool transactions: they spend notes, name no transparent value, and
-# have to survive the same validation as a fully private transfer.
-#
-# These pay the address section 6 already used rather than a fresh one, because a
-# wallet only ever scans derivation index 0: nPrivacyVNextIndexCount is fixed at 1
-# and AllocatePrivacyVNextIndex has no caller, so value paid to any later address
-# z_getnewiv5address issues is invisible to the wallet that issued it. Section 9
-# would then report the difference as pool value that vanished.
+# Masks 0 (all public) and 5 (recipient only). Each pays a freshly issued address, so
+# section 9 also checks the scan covers every issued index.
 disclosed_transfer() {
     local mask="$1" want_sender="$2" want_receiver="$3" want_amount="$4"
-    local addr="$5"
-    local result txid declared
+    local addr result txid declared
 
+    addr="$(jget "$(rpc 0 z_getnewiv5address 2>&1)" address)"
     if [ ${#addr} -lt 20 ]; then
-        fail "mask $mask: no recipient address"
+        fail "mask $mask: z_getnewiv5address failed"
         return 1
     fi
 
@@ -752,8 +745,8 @@ disclosed_transfer() {
 }
 
 DISCLOSED_AMOUNT=1
-disclosed_transfer 0 true true true "$TO_ADDR" || warn "the fully disclosed transfer did not complete"
-disclosed_transfer 5 false true false "$TO_ADDR" || warn "the mixed-mask transfer did not complete"
+disclosed_transfer 0 true true true || warn "the fully disclosed transfer did not complete"
+disclosed_transfer 5 false true false || warn "the mixed-mask transfer did not complete"
 
 # An out-of-range mask is a caller error, not something the wallet quietly rounds.
 BAD_MASK="$(rpc 0 z_iv5transfer "$TO_ADDR" "$DISCLOSED_AMOUNT" 8 2>&1)"
