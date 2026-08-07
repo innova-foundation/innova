@@ -319,6 +319,11 @@ fn parse_payload_prefix(
     for _ in 0..output_count {
         let owner = cursor.array()?;
         validate_ed25519_point(owner)?;
+        // I = Hp(O), so two leaves that share O share a key image: whichever is spent
+        // first consumes both, and the value behind the other is unrecoverable.
+        if output_owners.contains(&owner) {
+            return Err(ResultCode::ConsensusInvalid);
+        }
         output_owners.push(owner);
         // I is derived, not declared: a sender that could choose it could publish owner
         // material and link every note paid to one address.
@@ -1338,6 +1343,54 @@ mod tests {
         assert_eq!(
             validate(&missing_disclosures),
             Err(ResultCode::ConsensusInvalid)
+        );
+    }
+
+    // Two leaves sharing an owner key share I = Hp(O); the prefix parser (the single
+    // decode path) must refuse it.
+    #[test]
+    fn payload_rejects_a_repeated_output_owner() {
+        let genesis = [0x11_u8; 32];
+        let (encrypted, _, _) = encrypted_output(&genesis, 0);
+        let two_outputs = |second_owner: &[u8; 32]| -> Vec<u8> {
+            let state =
+                tree::update(&[1, 0, 1, 0, 0, 0, 0, 0]).expect("empty canonical tree state");
+            let root = tree::root(&state).expect("empty canonical tree root");
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+            payload.extend_from_slice(&[NOTE_SHIELD, 0, 0, 7, FINALITY_OBJECT_NONE, 1, 0]);
+            payload.extend_from_slice(&genesis);
+            payload.extend_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+            payload.extend_from_slice(&root[12..44]);
+            payload.extend_from_slice(&0_u64.to_le_bytes());
+            payload.extend_from_slice(&100_i64.to_le_bytes());
+            payload.extend_from_slice(&1_u64.to_le_bytes());
+            payload.extend_from_slice(&TEST_TRANSPARENT_BINDING);
+            compact_size(&mut payload, 0);
+            compact_size(&mut payload, 2);
+            for owner in [&encrypted[8..40], &second_owner[..]] {
+                payload.extend_from_slice(owner);
+                payload.extend_from_slice(&encrypted[72..104]);
+                payload.extend_from_slice(&encrypted[104..136]);
+                vector(&mut payload, &encrypted[136..313]);
+                vector(&mut payload, &encrypted[313..522]);
+            }
+            payload
+        };
+
+        let mut repeated = [0_u8; 32];
+        repeated.copy_from_slice(&encrypted[8..40]);
+        assert_eq!(
+            parse_payload_prefix(2008, &two_outputs(&repeated)).err(),
+            Some(ResultCode::ConsensusInvalid)
+        );
+
+        let distinct = (ED25519_BASEPOINT_POINT * Scalar::from(29_u64))
+            .compress()
+            .to_bytes();
+        assert!(
+            parse_payload_prefix(2008, &two_outputs(&distinct)).is_ok(),
+            "distinct owners must still parse"
         );
     }
 }

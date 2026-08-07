@@ -11754,15 +11754,24 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
         const uint256 hashTx = tx.GetHash();
         for (size_t m = 0; m < vMatches.size(); ++m)
         {
+            // Two notes sharing a key image are one spendable note: I = Hp(O), so a
+            // sender who repeats an output key across transactions can otherwise get
+            // a wallet that credits on receipt to count value it can never spend.
             bool fDuplicate = false;
             for (size_t n = 0; !fDuplicate && n < vPrivacyVNextNotes.size(); ++n)
-                fDuplicate = vPrivacyVNextNotes[n].txhash == hashTx &&
-                             vPrivacyVNextNotes[n].nOutputIndex ==
-                                 vMatches[m].nOutputIndex;
+                fDuplicate = (vPrivacyVNextNotes[n].txhash == hashTx &&
+                              vPrivacyVNextNotes[n].nOutputIndex ==
+                                  vMatches[m].nOutputIndex) ||
+                             (vPrivacyVNextNotes[n].vchKeyImage.size() == 32 &&
+                              std::memcmp(&vPrivacyVNextNotes[n].vchKeyImage[0],
+                                          vMatches[m].keyImage.data(), 32) == 0);
             for (size_t n = 0; !fDuplicate && n < vNewNotes.size(); ++n)
-                fDuplicate = vNewNotes[n].txhash == hashTx &&
-                             vNewNotes[n].nOutputIndex ==
-                                 vMatches[m].nOutputIndex;
+                fDuplicate = (vNewNotes[n].txhash == hashTx &&
+                              vNewNotes[n].nOutputIndex ==
+                                  vMatches[m].nOutputIndex) ||
+                             (vNewNotes[n].vchKeyImage.size() == 32 &&
+                              std::memcmp(&vNewNotes[n].vchKeyImage[0],
+                                          vMatches[m].keyImage.data(), 32) == 0);
             if (fDuplicate)
                 continue;
 
