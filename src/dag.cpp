@@ -2525,8 +2525,6 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
 
     std::set<uint256> setSeenShieldedNullifiers;
     std::set<uint256> setVNextEpochNullifiers;
-    std::set<COutPoint> setOrderedSpentOutputs;
-    std::set<uint256> setOrderedSpentNullifiers;
     std::map<uint256, CFinalityVote> mapEpochVotes;
     CFinalityTallyCertificate bestCert;
     bool fHaveBestCert = false;
@@ -2550,11 +2548,9 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                                  it->ToString().substr(0, 20).c_str());
             return false;
         }
-        // V3 resolves sibling double-spends by the exact boundary-derived order:
-        // the first active transaction wins, independent of cached/live nDAGOrder.
+        // One derivation of a block's active set, shared with ConnectBlock.
         const std::set<uint256> setDAGSkippedTxs =
-            GetDAGSkippedTxsFromSiblingSpends(block, setOrderedSpentOutputs,
-                                              setOrderedSpentNullifiers);
+            GetDAGSkippedTxsForBlock(block, mi->second);
         const CBlock activeBlock = GetDAGActiveBlock(block, setDAGSkippedTxs);
 
         if (fBuildVNext)
@@ -2575,19 +2571,6 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
         {
             if (fBuildVNext)
                 state.vVNextActiveTxIds.push_back(txit->GetHash());
-            if (!txit->IsCoinBase() && !txit->IsCoinStake())
-            {
-                for (std::vector<CTxIn>::const_iterator iit = txit->vin.begin();
-                     iit != txit->vin.end(); ++iit)
-                    setOrderedSpentOutputs.insert(iit->prevout);
-                for (std::vector<CShieldedSpendDescription>::const_iterator sit =
-                         txit->vShieldedSpend.begin(); sit != txit->vShieldedSpend.end(); ++sit)
-                    setOrderedSpentNullifiers.insert(sit->nullifier);
-                // Must mirror the connect-time sibling skip set exactly, or the
-                // epoch tree would absorb leaves from a transaction ConnectBlock
-                // treated as inactive.
-                AppendPrivacyVNextSpendTags(*txit, setOrderedSpentNullifiers);
-            }
             for (std::vector<CShieldedOutputDescription>::const_iterator oit =
                      txit->vShieldedOutput.begin(); oit != txit->vShieldedOutput.end(); ++oit)
             {
@@ -2624,6 +2607,17 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                         "epoch %d IV5 effects extraction failed for transaction %s: %s",
                         nEpoch, txit->GetHash().ToString().substr(0, 20).c_str(),
                         validation.strError.c_str());
+                    return false;
+                }
+                // The leaves and pool delta are only valid against the transparent side they were proved over.
+                std::string strBindingError;
+                if (!CheckPrivacyVNextTransparentBinding(*txit, effects,
+                                                         strBindingError))
+                {
+                    strError = strprintf(
+                        "epoch %d IV5 transaction %s: %s", nEpoch,
+                        txit->GetHash().ToString().substr(0, 20).c_str(),
+                        strBindingError.c_str());
                     return false;
                 }
                 const std::vector<unsigned char> effectDigest(
