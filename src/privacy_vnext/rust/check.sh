@@ -5,6 +5,15 @@ set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 cd "$ROOT"
 
+if [ ! -d vendor ]; then
+    echo "privacy-vNext: vendor/ is absent, so nothing can be checked against it." >&2
+    echo "  restore it first, syncing upstream so the set matches what this gate" >&2
+    echo "  compares against -- the wrapper lock alone resolves far fewer crates:" >&2
+    echo "    CARGO_NET_OFFLINE=false cargo vendor --locked --versioned-dirs \\" >&2
+    echo "      --sync upstream/Cargo.toml" >&2
+    exit 1
+fi
+
 python3 tools/verify_provenance.py
 
 actual_rustc=$(rustc --version)

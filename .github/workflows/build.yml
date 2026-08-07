@@ -991,6 +991,24 @@ jobs:
           fetch-depth: 0
       - name: Install pinned Rust toolchain only
         run: rustup toolchain install 1.94.1 --profile minimal --component clippy
+      - name: Restore vendored crates
+        working-directory: src/privacy_vnext/rust
+        # vendor/ is not in history, and .cargo/config.toml pins the build offline
+        # against it, so a fresh checkout cannot fetch anything: the gate that reads
+        # vendor/ exits on the missing directory instead of comparing digests.
+        # Re-fetch from crates.io at the locked versions -- verify_provenance.py then
+        # checks what arrived against the recorded manifest, which is the tamper check.
+        # --sync is required, not optional: the wrapper's own lock resolves 70 registry
+        # crates while the gate compares against upstream's 158, so vendoring the
+        # wrapper alone restores a set the check then calls inexact.
+        run: |
+          set -eu
+          CARGO_NET_OFFLINE=false cargo vendor --locked --versioned-dirs \
+            --sync upstream/Cargo.toml >/dev/null
+          restored=$(find vendor -maxdepth 1 -mindepth 1 -type d | wc -l)
+          expected=$(python3 -c 'import tomllib; print(sum(1 for p in tomllib.load(open("upstream/Cargo.lock","rb"))["package"] if p.get("checksum")))')
+          echo "restored $restored vendored crates, upstream lock names $expected"
+          test "$restored" -eq "$expected"
       - name: Verify vendored provenance and run locked offline Rust gate
         run: src/privacy_vnext/rust/check.sh
 
