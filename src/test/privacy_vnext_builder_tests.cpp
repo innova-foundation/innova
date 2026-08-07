@@ -916,8 +916,7 @@ BOOST_AUTO_TEST_CASE(an_unshield_binds_the_transparent_output_it_pays)
         EncryptPrivacyVNextNote(2, 0, 0, genesis, keys.spendPublic,
                                 keys.viewPublic, keys.outgoingViewSecret,
                                 BuilderScalar(41), nAmount, BuilderScalar(43),
-                                BuilderScalar(47), keys.spendPublic, funding,
-                                error),
+                                BuilderScalar(47), funding, error),
         error);
 
     PrivacyVNextEpochSeed epochSeed;
@@ -938,7 +937,8 @@ BOOST_AUTO_TEST_CASE(an_unshield_binds_the_transparent_output_it_pays)
     vTargets.push_back(0);
     std::vector<unsigned char> vchPaths;
     BOOST_REQUIRE_MESSAGE(
-        ReadPrivacyVNextTreePaths(txdb, nTreeSize, vTargets, vchPaths, error),
+        ReadPrivacyVNextTreePaths(txdb, nTreeSize, treeState, vTargets, vchPaths,
+                                  error),
         error);
     std::vector<PrivacyVNextMembershipWitness> vWitnesses;
     PrivacyVNextDigest treeRoot;
@@ -951,7 +951,6 @@ BOOST_AUTO_TEST_CASE(an_unshield_binds_the_transparent_output_it_pays)
     onChain.nOutputIndex = 0;
     onChain.genesis = genesis;
     onChain.leafO = funding.leaf.owner;
-    onChain.leafI = funding.leaf.nullifierBase;
     onChain.leafC = funding.leaf.commitment;
     onChain.ephemeral = funding.ephemeral;
     onChain.vchCiphertext = funding.vchRecipientCiphertext;
