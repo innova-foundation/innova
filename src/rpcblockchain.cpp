@@ -2493,6 +2493,29 @@ Value getepochinfo(const Array& params, bool fHelp)
         for (const uint256& hash : state.vBlockHashes)
             blocks.push_back(hash.GetHex());
         result.push_back(Pair("blocks", blocks));
+
+        // IV5 accumulators, with per-block active-tx counts aligned with "blocks". A merge
+        // block contributes zero: it is never connected.
+        if (state.nSerVersion >= EPOCHSTATE_SER_VERSION_V4)
+        {
+            result.push_back(Pair("iv5_tree_root",
+                                  HexStr(state.vchVNextRoot)));
+            result.push_back(Pair("iv5_tree_size",
+                                  (int64_t)state.nVNextTreeSize));
+            result.push_back(Pair("iv5_nullifier_count",
+                                  (int64_t)state.nVNextNullifierCount));
+            result.push_back(Pair("iv5_active_tx_count",
+                                  (int64_t)state.vVNextActiveTxIds.size()));
+            Array activeCounts;
+            for (std::vector<unsigned int>::const_iterator it =
+                     state.vVNextActiveBlockTxCounts.begin();
+                 it != state.vVNextActiveBlockTxCounts.end(); ++it)
+                activeCounts.push_back((int64_t)*it);
+            result.push_back(Pair("iv5_active_block_tx_counts", activeCounts));
+            if (state.nSerVersion >= EPOCHSTATE_SER_VERSION_V5)
+                result.push_back(Pair("iv5_pool_balance",
+                                      ValueFromAmount(state.nVNextPoolBalance)));
+        }
     }
     else
     {

@@ -2342,15 +2342,9 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
     }
 
 
-    // Refuse a partial canonical block set. Every pprev-chain block in the epoch
-    // must appear exactly once in the boundary-derived DAG order, and the block
-    // index chain itself must be height-contiguous.
-    // Finality tracker state is connected only along the canonical pprev chain.
-    // Merge/sibling blocks still contribute their conflict-filtered transaction
-    // effects to the epoch roots, but their finality payloads have not passed
-    // ConnectBlock's stateful vote/certificate checks and therefore must not
-    // influence the deterministic tier.
-    std::set<uint256> setCanonicalFinalityBlocks;
+    // Every pprev-chain block in the epoch appears exactly once in the DAG order and the chain is
+    // height-contiguous; merge/sibling blocks contribute ordering only.
+    std::set<uint256> setCanonicalConnectedBlocks;
     const CBlockIndex* pChain = pBoundary;
     while (pChain && pChain->nHeight >= state.nHeightStart)
     {
@@ -2360,7 +2354,7 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                                  nEpoch, pChain->nHeight);
             return false;
         }
-        setCanonicalFinalityBlocks.insert(pChain->GetBlockHash());
+        setCanonicalConnectedBlocks.insert(pChain->GetBlockHash());
         if (pChain->nHeight > state.nHeightStart &&
             (!pChain->pprev || pChain->pprev->nHeight != pChain->nHeight - 1))
         {
@@ -2553,9 +2547,14 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
             GetDAGSkippedTxsForBlock(block, mi->second);
         const CBlock activeBlock = GetDAGActiveBlock(block, setDAGSkippedTxs);
 
+        // A merge block is never connected, so none of its transaction effects may reach the epoch's
+        // roots, pool, key images or id list.
+        const bool fConnectedBlock = setCanonicalConnectedBlocks.count(*it) != 0;
+
         if (fBuildVNext)
         {
-            if (state.vVNextActiveTxIds.size() + activeBlock.vtx.size() >
+            const size_t nActiveTxs = fConnectedBlock ? activeBlock.vtx.size() : 0;
+            if (state.vVNextActiveTxIds.size() + nActiveTxs >
                 EPOCHSTATE_VNEXT_MAX_ACTIVE_TXS)
             {
                 strError = strprintf(
@@ -2563,12 +2562,17 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                 return false;
             }
             state.vVNextActiveBlockTxCounts.push_back(
-                static_cast<unsigned int>(activeBlock.vtx.size()));
+                static_cast<unsigned int>(nActiveTxs));
         }
+        if (!fConnectedBlock)
+            continue;
 
         for (std::vector<CTransaction>::const_iterator txit = activeBlock.vtx.begin();
              txit != activeBlock.vtx.end(); ++txit)
         {
+            // Both replayers re-derive leaf positions from this list and a merge
+            // block's transaction has no txindex entry to retrieve, so the list
+            // must name exactly the transactions whose leaves the tree absorbed.
             if (fBuildVNext)
                 state.vVNextActiveTxIds.push_back(txit->GetHash());
             for (std::vector<CShieldedOutputDescription>::const_iterator oit =
@@ -2587,14 +2591,7 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                     nullifierRootHasher << sit->nullifier;
             }
 
-            // Same fence the finality payloads get, and for the same reason: an
-            // IV5 payload carries consensus state -- output leaves, a pool delta
-            // and spent key images -- that only ConnectBlock validates, and
-            // ConnectBlock runs along the canonical chain alone. Applying a merge
-            // block's payload would put leaves and pool value into the epoch roots
-            // against an anchor, a binding and a key-image set nothing checked.
-            if (fBuildVNext && txit->IsPrivacyVNext() &&
-                setCanonicalFinalityBlocks.count(*it))
+            if (fBuildVNext && txit->IsPrivacyVNext())
             {
                 PrivacyVNextStateEffects effects;
                 const PrivacyVNextPayloadValidation validation =
@@ -2697,13 +2694,6 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                 state.nVNextNullifierCount = nextNullifierCount;
             }
         }
-
-        // A DAG merge block is structurally accepted before it becomes a
-        // pprev-chain block. Ignore its finality-tagged outputs here; if that
-        // block later becomes canonical, ConnectBlock validates and persists
-        // them and the reorg rebuild includes them through this exact set.
-        if (!setCanonicalFinalityBlocks.count(*it))
-            continue;
 
         std::vector<CFinalityTallyCertificate> vCerts;
         FinalityEnvelopeDecodeResult certEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
