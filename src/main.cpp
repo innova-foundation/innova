@@ -5627,13 +5627,22 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
     if (!IsCoinBase())
     {
         const int nContextHeight = pindexBlock ? pindexBlock->nHeight : nBestHeight;
+        // Fork gates use the carrying block's height; the mempool and miner pass the previous
+        // index, so at the activation height a transaction can clear their gate and fail here.
+        int nInclusionHeight = nAnonCandidateHeight;
+        if (nInclusionHeight < 0)
+        {
+            nInclusionHeight = nContextHeight;
+            if (!fBlock && nInclusionHeight < std::numeric_limits<int>::max())
+                ++nInclusionHeight;
+        }
         if (IsShielded() &&
             (IsLegacyPrivacyPolicyDisabled() ||
-             IsBoundaryAActiveAtHeight(nContextHeight)))
+             IsBoundaryAActiveAtHeight(nInclusionHeight)))
             return DoS(100, error("ConnectInputs() : legacy shielded transaction version %d is disabled in this network/era",
                                   nVersion));
         if (IsPrivacyVNext() &&
-            (!IsBoundaryBActiveAtHeight(nContextHeight) ||
+            (!IsBoundaryBActiveAtHeight(nInclusionHeight) ||
              !IsShieldedVNextConsensusReady()))
             return DoS(100, error("ConnectInputs() : privacy-vNext is inactive before Boundary B"));
         // Coinstake exemptions below may only be claimed by the kernel-validated
