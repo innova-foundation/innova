@@ -1512,6 +1512,21 @@ int64_t CTransaction::GetMinFee(unsigned int nBlockSize, enum GetMinFee_mode mod
 //
 // An empty vout is not a special case; it hashes as a zero-length vector, which is what
 // shields and transfers commit to.
+// The chain context every payload must declare to be ours. Lives here because the
+// genesis constants do; the FFI layer stamps it onto each validation request so the
+// network id and genesis hash are consensus-checked with the rest of the header.
+uint8_t PrivacyVNextLocalNetworkId()
+{
+    if (fRegTest)
+        return 2;
+    return fTestNet ? 1 : 0;
+}
+
+void PrivacyVNextLocalGenesis(unsigned char out[32])
+{
+    std::memcpy(out, GetGenesisBlockHash().begin(), 32);
+}
+
 uint256 GetPrivacyVNextTransparentBinding(const CTransaction& tx)
 {
     static const char* pszDomain = "Innova/IV5/TransparentBinding/v1";
@@ -8884,6 +8899,20 @@ private:
         return recoveryRecord.IsValid();
     }
 
+    // A shielded scan failure is recorded for rescan and never stops the node: its inputs
+    // are peer-published bytes.
+    static void WalletScanDegraded(const Entry& entry, CWallet* pwallet,
+                                   const char* pszReason)
+    {
+        const int nHeight = entry.pindex ? entry.pindex->nHeight : -1;
+        printf("ReplayBestChainEffects: shielded wallet %s scan failed for block at "
+               "height %d: %s. The chain transition stands; this wallet's view of "
+               "that block is incomplete. Run z_rescaniv5 to reprocess it.\n",
+               entry.fConnect ? "connect" : "disconnect", nHeight, pszReason);
+        if (pwallet && nHeight >= 0)
+            pwallet->MarkPrivacyVNextScanGap(nHeight);
+    }
+
     bool FailClosed(const Entry& entry, const char* pszReason) const
     {
         const int nHeight = entry.pindex ? entry.pindex->nHeight : -1;
@@ -9076,7 +9105,8 @@ public:
                             std::string strWalletError;
                             if (!pwallet->ScanBlockForShieldedNotesChecked(
                                     entry.block, entry.pindex, strWalletError))
-                                return FailClosed(entry, strWalletError.c_str());
+                                WalletScanDegraded(entry, pwallet,
+                                                   strWalletError.c_str());
                         }
                     }
 
@@ -9104,9 +9134,10 @@ public:
                         {
                             std::string strWalletError;
                             if (!pwallet->DisconnectShieldedBlockRecoveryChecked(
-                                    entry.block, entry.pindex,
-                                    strWalletError))
-                                return FailClosed(entry, strWalletError.c_str());
+                                    entry.block, entry.setDAGSkippedTxs,
+                                    entry.pindex, strWalletError))
+                                WalletScanDegraded(entry, pwallet,
+                                                   strWalletError.c_str());
                         }
                     }
 
@@ -10126,11 +10157,14 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
 
     nTimeBestReceived = GetTime();
 
-    // Keep the IV5 tree store level with the epoch chain it indexes. The store is derived
-    // and rebuildable, so a failure is reported and retried on the next block rather than
-    // allowed to fail the tip, and the catch-up is left until the node is synced.
-    if (!fIsInitialDownload && IsBoundaryBActiveAtHeight(nBestHeight))
+    if (IsBoundaryBActiveAtHeight(nBestHeight))
     {
+      const int nStoreEpoch = GetEpochForHeight(nBestHeight) - 1;
+
+      // Keep the derived IV5 tree store level with the epoch chain; a failure is reported and
+      // retried on the next block, never failing the tip.
+      if (!fIsInitialDownload)
+      {
         // An anchor that has aged out of the window can never come back, so the
         // transaction holding it is unminable and only occupies the pool.
         {
@@ -10159,23 +10193,24 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
             }
         }
 
-        const int nStoreEpoch = GetEpochForHeight(nBestHeight) - 1;
         std::string strStoreError;
         if (!SyncPrivacyVNextTreeStore(txdb, nStoreEpoch, strStoreError))
             printf("SetBestChain: IV5 tree store did not reach epoch %d: %s\n",
                    nStoreEpoch, strStoreError.c_str());
+      }
 
-        // A note is only spendable once its position in the tree is known, and that is
-        // fixed by the epoch that placed it. Same reporting rule as the store: wallet
-        // bookkeeping must not be able to fail the tip.
+      // Assign leaf indices even during initial download: an epoch passed unassigned is never
+      // revisited. Wallet bookkeeping must not fail the tip.
+      {
         LOCK(cs_setpwalletRegistered);
         for (CWallet* pwallet : setpwalletRegistered)
         {
             std::string strWalletError;
             if (!pwallet->AssignPrivacyVNextLeafIndices(nStoreEpoch, strWalletError))
-                printf("SetBestChain: IV5 wallet leaf indices for epoch %d: %s\n",
+                printf("SetBestChain: IV5 wallet leaf indices through epoch %d: %s\n",
                        nStoreEpoch, strWalletError.c_str());
         }
+      }
     }
 
     // Check the version of the last 100 blocks to see if we need to upgrade:

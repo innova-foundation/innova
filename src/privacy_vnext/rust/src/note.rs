@@ -15,7 +15,7 @@ use zeroize::Zeroize;
 
 use crate::{disclosure, value, ResultCode, ADDRESS_TYPE_MAX, NETWORK_ID_MAX, PAYLOAD_SCHEMA_U16};
 
-const CIPHERTEXT_VERSION: u8 = 1;
+pub(crate) const CIPHERTEXT_VERSION: u8 = 1;
 const SCAN_FULL: u8 = 0;
 const SCAN_VIEW_ONLY: u8 = 1;
 const SCAN_OUTGOING: u8 = 2;
@@ -24,8 +24,8 @@ const KEY_IMAGE_BASE_DOMAIN: &[u8] = b"Innova/IV5/NoteKeyImageBase/v1";
 const RECIPIENT_PLAINTEXT_BYTES: usize = 144;
 const OUTGOING_PLAINTEXT_BYTES: usize = 208;
 const TAG_BYTES: usize = 32;
-const RECIPIENT_CIPHERTEXT_BYTES: usize = 1 + RECIPIENT_PLAINTEXT_BYTES + TAG_BYTES;
-const OUTGOING_CIPHERTEXT_BYTES: usize = 1 + OUTGOING_PLAINTEXT_BYTES + TAG_BYTES;
+pub(crate) const RECIPIENT_CIPHERTEXT_BYTES: usize = 1 + RECIPIENT_PLAINTEXT_BYTES + TAG_BYTES;
+pub(crate) const OUTGOING_CIPHERTEXT_BYTES: usize = 1 + OUTGOING_PLAINTEXT_BYTES + TAG_BYTES;
 const SCAN_RESULT_BYTES: usize = 212;
 pub(crate) const ENCRYPT_REQUEST_BYTES: usize = 272;
 const ENCRYPT_RESULT_BYTES: usize = 586;

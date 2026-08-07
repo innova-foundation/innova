@@ -279,16 +279,41 @@ public:
     // Index 0 always exists as the default receive index; scanning covers every
     // index issued, since a note only opens under the one it was sent to.
     uint32_t nPrivacyVNextIndexCount;
+    // Lowest height whose IV5 payloads this wallet did not process. Persisted, because
+    // a note that was never detected leaves nothing behind to notice it by, and
+    // unshield is retired: value in an undetected note has no recovery path but a
+    // rescan. -1 means every connected block was scanned.
+    int nPrivacyVNextScanGapHeight;
+    void MarkPrivacyVNextScanGap(int nHeight);
+    int GetPrivacyVNextScanGapHeight() const;
+    void ClearPrivacyVNextScanGap(int nScannedFromHeight);
     // Derivation indices a scan must cover; follows address issuance rather than
     // the separately persisted count, so an issued address is never outside it.
     uint32_t GetPrivacyVNextScanIndexCount() const;
     bool AllocatePrivacyVNextIndex(uint32_t& nIndexOut, std::string& strErrorOut);
-    bool AssignPrivacyVNextLeafIndices(int nEpoch, std::string& strErrorOut);
-    bool ApplyPrivacyVNextBlock(const CBlock& block, const CBlockIndex* pindex,
+    // Assigns tree positions for every epoch up to `nThroughEpoch` that still holds an
+    // unplaced note of ours, not just the most recent one.
+    bool AssignPrivacyVNextLeafIndices(int nThroughEpoch, std::string& strErrorOut);
+    bool AssignPrivacyVNextLeafIndicesForEpoch(int nEpoch,
+                                               std::string& strErrorOut);
+    // `setDAGSkippedTxs` is the connect-time sibling skip set. A skipped transaction
+    // spent nothing and placed nothing, so scanning it would mark live notes spent.
+    bool ApplyPrivacyVNextBlock(const CBlock& block,
+                                const std::set<uint256>& setDAGSkippedTxs,
+                                const CBlockIndex* pindex,
                                 std::string& strErrorOut);
+    // Reprocess connected blocks from `nFromHeight`. The only way back to a note the
+    // connect-time scan missed, and the only use a restored seed has.
+    bool RescanPrivacyVNextBlocks(int nFromHeight, int& nBlocksOut,
+                                  std::string& strErrorOut);
     bool DisconnectPrivacyVNextBlock(const CBlock& block,
+                                     const std::set<uint256>& setDAGSkippedTxs,
                                      const CBlockIndex* pindex,
                                      std::string& strErrorOut);
+    bool ReadConnectTimeDAGSkippedTxs(const CBlock& block,
+                                      const CBlockIndex* pindex,
+                                      std::set<uint256>& setOut,
+                                      std::string& strErrorOut);
     // Spendable means confirmed to the shielded depth and holding a tree
     // position, which a note only gains once its epoch finalizes.
     int64_t GetPrivacyVNextBalance() const;
@@ -349,6 +374,7 @@ public:
         fFileBacked = false;
         nMasterKeyMaxID = 0;
         nPrivacyVNextIndexCount = 1;
+        nPrivacyVNextScanGapHeight = -1;
         pwalletdbEncryption = NULL;
         nOrderPosNext = 0;
         nTimeFirstKey = 0;
@@ -565,6 +591,12 @@ public:
     bool UnlockPrivacyVNextSeed(
         const CKeyingMaterial& vMasterKeyIn, std::string& strError);
     bool CreatePrivacyVNextSeed(std::string& strError);
+    // Restore a seed from a backup. `nAddressIndexHint` is how many addresses were
+    // issued under it, which the seed itself does not record and only issued indices
+    // are scanned for.
+    bool ImportPrivacyVNextSeed(const CKeyingMaterial& seedIn,
+                                uint32_t nAddressIndexHint,
+                                std::string& strError);
     bool HasPrivacyVNextSeed() const;
     bool IsPrivacyVNextSeedUnlocked() const;
     bool GetPrivacyVNextSeed(CKeyingMaterial& seedOut) const;
@@ -628,8 +660,8 @@ public:
         const std::set<uint256>& setDAGSkippedTxs,
         std::string& strErrorOut);
     bool DisconnectShieldedBlockRecoveryChecked(
-        const CBlock& block, const CBlockIndex* pindex,
-        std::string& strErrorOut);
+        const CBlock& block, const std::set<uint256>& setDAGSkippedTxs,
+        const CBlockIndex* pindex, std::string& strErrorOut);
     bool DisconnectAuxiliaryBlockRecoveryChecked(
         const CBlock& block,
         const std::set<uint256>& setDAGSkippedTxs,

@@ -14,7 +14,9 @@ use crate::{
     PRODUCT_CONTRACT, TREE_LAYERS,
 };
 
-const VALIDATION_PREFIX_SIZE: usize = 4;
+/// `[wire version u32][network u8][reserved 3][genesis 32]`.
+/// The caller supplies its own chain context and the parser compares.
+const VALIDATION_PREFIX_SIZE: usize = 40;
 const MAX_CIPHERTEXT_BYTES: usize = 4_096;
 const MAX_FINALITY_BODY_BYTES: usize = 65_536;
 const MAX_PROOF_SECTION_BYTES: usize = 65_536;
@@ -210,13 +212,21 @@ fn signable_hash(wire_version: u32, payload_prefix: &[u8]) -> [u8; 32] {
     transcript.finalize().into()
 }
 
+/// A note is only openable in the one encoding a wallet knows, so an output carrying
+/// any other length or version byte is unspendable the moment it enters the tree.
+fn read_ciphertext(cursor: &mut Cursor<'_>, expected: usize) -> Result<Vec<u8>, ResultCode> {
+    let bytes = cursor.vector(MAX_CIPHERTEXT_BYTES)?;
+    if bytes.len() != expected || bytes[0] != crate::note::CIPHERTEXT_VERSION {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    Ok(bytes.to_vec())
+}
+
 /// Everything a canonical payload declares before its disclosures and proofs.
 struct PayloadPrefix<'a> {
     cursor: Cursor<'a>,
-    operation: u8,
     disclosure_mask: u8,
     finality_object: u8,
-    network: u8,
     genesis: [u8; 32],
     parameter_digest: [u8; 32],
     finalized_root: [u8; 32],
@@ -238,15 +248,15 @@ struct PayloadPrefix<'a> {
     output_outgoing_ciphertexts: Vec<Vec<u8>>,
 }
 
-/// Read the header, inputs and outputs of a canonical payload.
-///
-/// Validation and wallet scanning share this, so a payload is never decoded two
-/// different ways and a scan cannot disagree with what consensus accepted.
+/// Read the header, inputs and outputs of a canonical payload. Shared by validation
+/// and scanning; `expected_genesis` is absent only for a scan.
 #[allow(clippy::too_many_lines)] // Mirrors the normative payload field order in one audit path.
-fn parse_payload_prefix(
+fn parse_payload_prefix<'a>(
     wire_version: u32,
-    payload: &[u8],
-) -> Result<PayloadPrefix<'_>, ResultCode> {
+    payload: &'a [u8],
+    expected_network: u8,
+    expected_genesis: Option<&[u8; 32]>,
+) -> Result<PayloadPrefix<'a>, ResultCode> {
     let mut cursor = Cursor::new(payload);
     if cursor.u16()? != PAYLOAD_SCHEMA_U16 {
         return Err(ResultCode::UnsupportedFormat);
@@ -260,7 +270,11 @@ fn parse_payload_prefix(
     if cursor.u8()? != 0 {
         return Err(ResultCode::ConsensusInvalid);
     }
-    if network > NETWORK_ID_MAX
+    // Pinned here rather than left to the caller: a payload built for another chain is
+    // not this chain's to accept, and a field consensus only parses is a field an
+    // attacker chooses freely.
+    if network != expected_network
+        || network > NETWORK_ID_MAX
         || authorization > AUTH_M_OF_N_HIDDEN_SIGNERS
         || !envelope_allows(
             wire_version,
@@ -283,6 +297,9 @@ fn parse_payload_prefix(
 
     let genesis = cursor.array::<32>()?;
     validate_nonzero(&genesis)?;
+    if expected_genesis.is_some_and(|expected| *expected != genesis) {
+        return Err(ResultCode::ConsensusInvalid);
+    }
     let parameter_digest = cursor.array::<32>()?;
     if parameter_digest.as_slice() != &Sha256::digest(PRODUCT_CONTRACT)[..] {
         return Err(ResultCode::ConsensusInvalid);
@@ -346,21 +363,20 @@ fn parse_payload_prefix(
         }
         output_note_ephemerals.push(note_ephemeral);
         output_tweak_ephemerals.push(tweak_ephemeral);
-        let recipient_ciphertext = cursor.vector(MAX_CIPHERTEXT_BYTES)?.to_vec();
-        let outgoing_ciphertext = cursor.vector(MAX_CIPHERTEXT_BYTES)?.to_vec();
-        if recipient_ciphertext.is_empty() || outgoing_ciphertext.is_empty() {
-            return Err(ResultCode::ConsensusInvalid);
-        }
+        // Pinned lengths, not a range: a length consensus accepts but the scanner
+        // rejects is a caller-fatal code a peer gets to choose.
+        let recipient_ciphertext =
+            read_ciphertext(&mut cursor, crate::note::RECIPIENT_CIPHERTEXT_BYTES)?;
+        let outgoing_ciphertext =
+            read_ciphertext(&mut cursor, crate::note::OUTGOING_CIPHERTEXT_BYTES)?;
         output_recipient_ciphertexts.push(recipient_ciphertext);
         output_outgoing_ciphertexts.push(outgoing_ciphertext);
     }
 
     Ok(PayloadPrefix {
         cursor,
-        operation,
         disclosure_mask,
         finality_object,
-        network,
         genesis,
         parameter_digest,
         finalized_root,
@@ -381,14 +397,16 @@ fn parse_payload_prefix(
 }
 
 #[allow(clippy::too_many_lines)] // Mirrors the normative payload field order in one audit path.
-fn validate_payload(wire_version: u32, payload: &[u8]) -> Result<PayloadEffects, ResultCode> {
+fn validate_payload(
+    wire_version: u32,
+    payload: &[u8],
+    expected_network: u8,
+    expected_genesis: &[u8; 32],
+) -> Result<PayloadEffects, ResultCode> {
     let PayloadPrefix {
         mut cursor,
-        operation,
         disclosure_mask,
         finality_object,
-        network,
-        genesis,
         parameter_digest,
         finalized_root,
         finalized_tree_size,
@@ -402,8 +420,12 @@ fn validate_payload(wire_version: u32, payload: &[u8]) -> Result<PayloadEffects,
         output_commitments,
         output_tweak_ephemerals,
         ..
-    } = parse_payload_prefix(wire_version, payload)?;
-    let _ = (operation, network, genesis);
+    } = parse_payload_prefix(
+        wire_version,
+        payload,
+        expected_network,
+        Some(expected_genesis),
+    )?;
     let input_count = key_images.len();
     let output_count = output_owners.len();
 
@@ -587,7 +609,8 @@ fn validate_payload(wire_version: u32, payload: &[u8]) -> Result<PayloadEffects,
     })
 }
 
-fn request_parts(request: &[u8]) -> Result<(u32, &[u8]), ResultCode> {
+/// Split a validation request into the local chain context and the payload it judges.
+fn request_parts(request: &[u8]) -> Result<(u32, u8, [u8; 32], &[u8]), ResultCode> {
     if request.len() < VALIDATION_PREFIX_SIZE + 1 {
         return Err(ResultCode::BadLength);
     }
@@ -595,11 +618,26 @@ fn request_parts(request: &[u8]) -> Result<(u32, &[u8]), ResultCode> {
         return Err(ResultCode::ResourceLimit);
     }
     let wire_version = u32::from_le_bytes(
-        request[..VALIDATION_PREFIX_SIZE]
+        request[..4]
             .try_into()
             .map_err(|_| ResultCode::InternalLocalStateFailure)?,
     );
-    Ok((wire_version, &request[VALIDATION_PREFIX_SIZE..]))
+    let network = request[4];
+    if request[5..8] != [0_u8; 3] || network > NETWORK_ID_MAX {
+        return Err(ResultCode::BadLength);
+    }
+    let genesis: [u8; 32] = request[8..VALIDATION_PREFIX_SIZE]
+        .try_into()
+        .map_err(|_| ResultCode::InternalLocalStateFailure)?;
+    if genesis.iter().all(|byte| *byte == 0) {
+        return Err(ResultCode::BadLength);
+    }
+    Ok((
+        wire_version,
+        network,
+        genesis,
+        &request[VALIDATION_PREFIX_SIZE..],
+    ))
 }
 
 const SCAN_REQUEST_HEADER_BYTES: usize = 16;
@@ -656,10 +694,9 @@ pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         return Err(ResultCode::BadLength);
     }
 
-    let prefix = parse_payload_prefix(wire_version, &request[payload_start..])?;
-    if prefix.network != network {
-        return Err(ResultCode::ConsensusInvalid);
-    }
+    // The scanner holds no independent genesis, so the chain binding is authenticated
+    // by the note tag rather than compared here.
+    let prefix = parse_payload_prefix(wire_version, &request[payload_start..], network, None)?;
 
     let key_image_count =
         u8::try_from(prefix.key_images.len()).map_err(|_| ResultCode::ResourceLimit)?;
@@ -693,23 +730,16 @@ pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
             scan_request.extend_from_slice(&prefix.output_tweak_ephemerals[index]);
             scan_request.extend_from_slice(ciphertext);
 
-            // A tag mismatch means this output is not this key's, which is the common
-            // case. Anything else is a malformed request the caller must see.
+            // Bytes here are peer-chosen: an output this key cannot open is simply not
+            // ours, whatever the failure, so no scan failure may propagate to the caller.
             let scanned = match crate::note::scan(&scan_request) {
-                Ok(scanned) => scanned,
-                Err(ResultCode::ConsensusInvalid) => {
+                Ok(scanned) if scanned.len() == NOTE_SCAN_RESULT_BYTES => scanned,
+                _ => {
                     scan_request.zeroize();
                     continue;
                 }
-                Err(code) => {
-                    scan_request.zeroize();
-                    return Err(code);
-                }
             };
             scan_request.zeroize();
-            if scanned.len() != NOTE_SCAN_RESULT_BYTES {
-                return Err(ResultCode::InternalLocalStateFailure);
-            }
 
             let key_index = u16::try_from(key).map_err(|_| ResultCode::ResourceLimit)?;
             records.extend_from_slice(&key_index.to_le_bytes());
@@ -748,8 +778,8 @@ pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
 }
 
 pub(crate) fn validate(request: &[u8]) -> Result<(), ResultCode> {
-    let (wire_version, payload) = request_parts(request)?;
-    validate_payload(wire_version, payload).map(|_| ())
+    let (wire_version, network, genesis, payload) = request_parts(request)?;
+    validate_payload(wire_version, payload, network, &genesis).map(|_| ())
 }
 
 /// Hash of the serialized payload prefix; the single definition shared by builder
@@ -773,8 +803,8 @@ pub(crate) fn signing_hash(request: &[u8]) -> Result<[u8; 32], ResultCode> {
 }
 
 pub(crate) fn effects(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
-    let (wire_version, payload) = request_parts(request)?;
-    validate_payload(wire_version, payload)?.encode()
+    let (wire_version, network, genesis, payload) = request_parts(request)?;
+    validate_payload(wire_version, payload, network, &genesis)?.encode()
 }
 
 #[cfg(test)]
@@ -789,6 +819,28 @@ mod tests {
     // Stands in for whatever the caller commits its transparent side to; the payload
     // decoder carries these bytes and never interprets them.
     const TEST_TRANSPARENT_BINDING: [u8; 32] = [0x5a; 32];
+    const TEST_NETWORK: u8 = 1;
+    const TEST_GENESIS: [u8; 32] = [0x11; 32];
+
+    fn validation_request(payload: &[u8]) -> Vec<u8> {
+        validation_request_for(TEST_NETWORK, &TEST_GENESIS, payload)
+    }
+
+    fn validation_request_for(network: u8, genesis: &[u8; 32], payload: &[u8]) -> Vec<u8> {
+        let mut request = 2008_u32.to_le_bytes().to_vec();
+        request.push(network);
+        request.extend_from_slice(&[0_u8; 3]);
+        request.extend_from_slice(genesis);
+        request.extend_from_slice(payload);
+        request
+    }
+
+    // A ciphertext of the canonical length whose body no key can open.
+    fn opaque_ciphertext(length: usize) -> Vec<u8> {
+        let mut bytes = vec![0x5c_u8; length];
+        bytes[0] = crate::note::CIPHERTEXT_VERSION;
+        bytes
+    }
 
     // Fields of a canonical note-encryption result.
     const ENCRYPTED_O: core::ops::Range<usize> = 8..40;
@@ -859,8 +911,8 @@ mod tests {
         payload.extend_from_slice(&output_commitment);
         payload.extend_from_slice(&point);
         payload.extend_from_slice(&second_point);
-        vector(&mut payload, &[1, 2]);
-        vector(&mut payload, &[3]);
+        vector(&mut payload, &opaque_ciphertext(crate::note::RECIPIENT_CIPHERTEXT_BYTES));
+        vector(&mut payload, &opaque_ciphertext(crate::note::OUTGOING_CIPHERTEXT_BYTES));
 
         vector(&mut payload, &[]);
         let signing_hash = signable_hash(2008, &payload);
@@ -894,9 +946,7 @@ mod tests {
         vector(&mut payload, &[]);
         vector(&mut payload, &binding_signature);
 
-        let mut request = 2008_u32.to_le_bytes().to_vec();
-        request.extend_from_slice(&payload);
-        request
+        validation_request(&payload)
     }
 
     // A shield that publishes its amount. `declared` is what the disclosure record says;
@@ -940,8 +990,8 @@ mod tests {
         payload.extend_from_slice(&output_commitment);
         payload.extend_from_slice(&point);
         payload.extend_from_slice(&second_point);
-        vector(&mut payload, &[1, 2]);
-        vector(&mut payload, &[3]);
+        vector(&mut payload, &opaque_ciphertext(crate::note::RECIPIENT_CIPHERTEXT_BYTES));
+        vector(&mut payload, &opaque_ciphertext(crate::note::OUTGOING_CIPHERTEXT_BYTES));
 
         payload.extend_from_slice(&declared.to_le_bytes());
         payload.extend_from_slice(&output_mask);
@@ -984,9 +1034,7 @@ mod tests {
         vector(&mut payload, &[]);
         vector(&mut payload, &binding_signature);
 
-        let mut request = 2008_u32.to_le_bytes().to_vec();
-        request.extend_from_slice(&payload);
-        request
+        validation_request(&payload)
     }
 
     // A false published amount with proofs made over its own prefix: only the opening
@@ -1112,9 +1160,7 @@ mod tests {
         vector(&mut payload, &receiver_proof);
         vector(&mut payload, &binding_signature);
 
-        let mut request = 2008_u32.to_le_bytes().to_vec();
-        request.extend_from_slice(&payload);
-        request
+        validation_request(&payload)
     }
 
     // A forged recipient with a real proof over its own prefix: only the address
@@ -1447,8 +1493,7 @@ mod tests {
         vector(&mut payload, &[]);
         vector(&mut payload, &binding_signature);
 
-        let mut request = 2008_u32.to_le_bytes().to_vec();
-        request.extend_from_slice(&payload);
+        let request = validation_request(&payload);
         let encoded = effects(&request).expect("the payload must validate");
 
         let scanned = scan_outputs(&scan_request(0, &view_secret, &spend_secret, &payload))
@@ -1605,8 +1650,7 @@ mod tests {
         vector(&mut payload, &[]);
         vector(&mut payload, &binding_signature);
 
-        let mut request = 2008_u32.to_le_bytes().to_vec();
-        request.extend_from_slice(&payload);
+        let request = validation_request(&payload);
         let encoded = effects(&request).expect("three same-address outputs must validate");
         assert_eq!(encoded.len(), EFFECTS_HEADER_BYTES + (3 * 96));
 
@@ -1789,7 +1833,7 @@ mod tests {
         let mut repeated = [0_u8; 32];
         repeated.copy_from_slice(&encrypted[ENCRYPTED_O]);
         assert_eq!(
-            parse_payload_prefix(2008, &two_outputs(&repeated)).err(),
+            parse_payload_prefix(2008, &two_outputs(&repeated), TEST_NETWORK, Some(&genesis)).err(),
             Some(ResultCode::ConsensusInvalid)
         );
 
@@ -1797,8 +1841,147 @@ mod tests {
             .compress()
             .to_bytes();
         assert!(
-            parse_payload_prefix(2008, &two_outputs(&distinct)).is_ok(),
+            parse_payload_prefix(2008, &two_outputs(&distinct), TEST_NETWORK, Some(&genesis)).is_ok(),
             "distinct owners must still parse"
         );
+    }
+
+    // The declared network and genesis must be compared against the local chain.
+    #[test]
+    fn payload_pins_the_declared_chain_to_the_local_one() {
+        let request = valid_request();
+        assert_eq!(validate(&request), Ok(()));
+
+        let payload = &request[VALIDATION_PREFIX_SIZE..];
+        for network in 0..=NETWORK_ID_MAX {
+            if network == TEST_NETWORK {
+                continue;
+            }
+            assert_eq!(
+                validate(&validation_request_for(network, &TEST_GENESIS, payload)),
+                Err(ResultCode::ConsensusInvalid),
+                "a payload declaring another network must not validate here"
+            );
+        }
+
+        assert_eq!(
+            validate(&validation_request_for(
+                TEST_NETWORK,
+                &[0x22; 32],
+                payload
+            )),
+            Err(ResultCode::ConsensusInvalid),
+            "a payload declaring another genesis must not validate here"
+        );
+    }
+
+    // An output whose ciphertext no wallet can decode must never reach the tree.
+    #[test]
+    fn payload_pins_the_note_ciphertext_encoding() {
+        let genesis = TEST_GENESIS;
+        let (encrypted, _, _) = encrypted_output(&genesis, 0);
+        let recipient = &encrypted[136..313];
+        let outgoing = &encrypted[313..522];
+
+        let build = |recipient: &[u8], outgoing: &[u8]| -> Vec<u8> {
+            let state =
+                tree::update(&[1, 0, 1, 0, 0, 0, 0, 0]).expect("empty canonical tree state");
+            let root = tree::root(&state).expect("empty canonical tree root");
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+            payload.extend_from_slice(&[NOTE_SHIELD, 0, 0, 7, FINALITY_OBJECT_NONE, 1, 0]);
+            payload.extend_from_slice(&genesis);
+            payload.extend_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+            payload.extend_from_slice(&root[12..44]);
+            payload.extend_from_slice(&0_u64.to_le_bytes());
+            payload.extend_from_slice(&100_i64.to_le_bytes());
+            payload.extend_from_slice(&1_u64.to_le_bytes());
+            payload.extend_from_slice(&TEST_TRANSPARENT_BINDING);
+            compact_size(&mut payload, 0);
+            compact_size(&mut payload, 1);
+            payload.extend_from_slice(&encrypted[8..40]);
+            payload.extend_from_slice(&encrypted[72..104]);
+            payload.extend_from_slice(&encrypted[104..136]);
+            vector(&mut payload, recipient);
+            vector(&mut payload, outgoing);
+            payload
+        };
+
+        assert!(
+            parse_payload_prefix(2008, &build(recipient, outgoing), TEST_NETWORK, Some(&genesis))
+                .is_ok(),
+            "the canonical encoding must still parse"
+        );
+
+        let mut short = recipient.to_vec();
+        short.truncate(recipient.len() - 1);
+        let mut long = recipient.to_vec();
+        long.push(0);
+        let mut wrong_version = recipient.to_vec();
+        wrong_version[0] = crate::note::CIPHERTEXT_VERSION.wrapping_add(1);
+        for broken in [vec![1_u8], short, long, wrong_version] {
+            assert_eq!(
+                parse_payload_prefix(2008, &build(&broken, outgoing), TEST_NETWORK, Some(&genesis))
+                    .err(),
+                Some(ResultCode::ConsensusInvalid),
+                "a non-canonical recipient ciphertext must not parse"
+            );
+        }
+        assert_eq!(
+            parse_payload_prefix(
+                2008,
+                &build(recipient, &outgoing[..outgoing.len() - 1]),
+                TEST_NETWORK,
+                Some(&genesis)
+            )
+            .err(),
+            Some(ResultCode::ConsensusInvalid),
+            "a non-canonical outgoing ciphertext must not parse"
+        );
+    }
+
+    // A scan over published bytes may only yield "not mine" or a reproducible
+    // rejection, never a node-local failure class.
+    #[test]
+    fn a_scan_reports_no_class_a_published_byte_can_choose() {
+        let genesis = TEST_GENESIS;
+        let (encrypted, spend_secret, view_secret) = encrypted_output(&genesis, 0);
+        let payload = payload_with_output(&genesis, &encrypted);
+        assert_eq!(
+            scan_outputs(&scan_request(0, &view_secret, &spend_secret, &payload))
+                .expect("the owner's own note must scan")[2],
+            1
+        );
+
+        // Layout of the payload tail: the recipient ciphertext, then the outgoing one,
+        // each behind its own one-byte length.
+        let outgoing_at = payload.len() - crate::note::OUTGOING_CIPHERTEXT_BYTES;
+        let recipient_at = outgoing_at - 1 - crate::note::RECIPIENT_CIPHERTEXT_BYTES;
+        assert_eq!(
+            payload[recipient_at],
+            crate::note::CIPHERTEXT_VERSION,
+            "the recipient ciphertext must start where this test expects"
+        );
+
+        for at in [
+            recipient_at,     // version byte: read as a length error, not a tag mismatch
+            recipient_at + 1, // encrypted body
+            recipient_at + crate::note::RECIPIENT_CIPHERTEXT_BYTES - 1, // tag
+            outgoing_at,
+            outgoing_at + 1,
+            payload.len() - 1,
+        ] {
+            let mut broken = payload.clone();
+            broken[at] ^= 0xff;
+            for kind in [0_u8, 1, 2] {
+                match scan_outputs(&scan_request(kind, &view_secret, &spend_secret, &broken)) {
+                    // Opening or not opening are both answers; only the class matters.
+                    Ok(_) | Err(ResultCode::ConsensusInvalid) => {}
+                    Err(code) => panic!(
+                        "byte {at} let a published payload choose the failure class {code:?}"
+                    ),
+                }
+            }
+        }
     }
 }

@@ -432,6 +432,14 @@ public:
         return Write(std::string("iv5idxcount"), nCount, true);
     }
 
+    // Lowest height whose IV5 payloads were not processed, or -1 for none. Survives a
+    // restart because nothing else records that a block went unscanned.
+    bool WritePrivacyVNextScanGap(int nHeight)
+    {
+        nWalletDBUpdated++;
+        return Write(std::string("iv5scangap"), nHeight, true);
+    }
+
     bool WritePrivacyVNextNote(const uint256& txhash, uint32_t nOutputIndex,
                                const CPrivacyVNextWalletNote& note)
     {

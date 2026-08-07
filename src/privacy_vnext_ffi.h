@@ -78,6 +78,11 @@ struct PrivacyVNextPayloadValidation
     bool IsValid() const { return nResult == 0; }
 };
 
+// The chain id a payload must declare for this node to accept it; every validation
+// request carries it. Fixed for the life of the process.
+uint8_t PrivacyVNextLocalNetworkId();
+void PrivacyVNextLocalGenesis(unsigned char out[32]);
+
 // Validates outer-version binding and canonical payload shape. Proof
 // verification remains a separate contextual ABI operation.
 PrivacyVNextPayloadValidation ValidatePrivacyVNextPayload(

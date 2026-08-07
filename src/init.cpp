@@ -924,7 +924,8 @@ bool RecoverPendingShieldedWalletTransitionImpl(
                           block, it->pindex, it->setDAGSkippedTxs,
                           strWalletError)
                     : pwallet->DisconnectShieldedBlockRecoveryChecked(
-                          block, it->pindex, strWalletError);
+                          block, it->setDAGSkippedTxs, it->pindex,
+                          strWalletError);
             }
             if (fApplied && !it->fConnect)
                 fApplied = pwallet->DisconnectAuxiliaryBlockRecoveryChecked(
