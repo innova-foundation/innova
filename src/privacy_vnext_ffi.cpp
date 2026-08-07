@@ -1125,9 +1125,8 @@ bool ScanPrivacyVNextNote(
     std::memcpy(&request[44], scanSecret.data(), 32);
     std::memcpy(&request[76], spendMaterial.data(), 32);
     std::memcpy(&request[108], note.leafO.data(), 32);
-    std::memcpy(&request[140], note.leafI.data(), 32);
-    std::memcpy(&request[172], note.leafC.data(), 32);
-    std::memcpy(&request[204], note.ephemeral.data(), 32);
+    std::memcpy(&request[140], note.leafC.data(), 32);
+    std::memcpy(&request[172], note.ephemeral.data(), 32);
     std::memcpy(&request[INNOVA_PRIVACY_VNEXT_NOTE_SCAN_PREFIX_SIZE],
                 &note.vchCiphertext[0], nExpectedCiphertext);
 
@@ -1412,7 +1411,6 @@ bool EncryptPrivacyVNextNote(
     uint64_t nAmount,
     const PrivacyVNextDigest& y,
     const PrivacyVNextDigest& mask,
-    const PrivacyVNextDigest& keyImageBase,
     PrivacyVNextEncryptedOutput& noteOut,
     std::string& error)
 {
@@ -1433,7 +1431,6 @@ bool EncryptPrivacyVNextNote(
     PutLE64(request + 168, nAmount);
     std::memcpy(request + 176, y.data(), 32);
     std::memcpy(request + 208, mask.data(), 32);
-    std::memcpy(request + 240, keyImageBase.data(), 32);
 
     uint8_t result[INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_RESULT_SIZE] = {0};
     size_t written = 0;

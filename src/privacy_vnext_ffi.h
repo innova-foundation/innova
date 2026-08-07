@@ -237,13 +237,13 @@ static const uint8_t PRIVACY_VNEXT_SCAN_FULL = 0;
 static const uint8_t PRIVACY_VNEXT_SCAN_VIEW_ONLY = 1;
 static const uint8_t PRIVACY_VNEXT_SCAN_OUTGOING = 2;
 
-// The public part of one IV5 output, as it appears on chain.
+// The public part of one IV5 output, as it appears on chain. The leaf's I point is
+// derived from O by the scanner, so it is not carried here.
 struct PrivacyVNextEncryptedNote
 {
     uint32_t nOutputIndex;
     PrivacyVNextDigest genesis;
     PrivacyVNextDigest leafO;
-    PrivacyVNextDigest leafI;
     PrivacyVNextDigest leafC;
     PrivacyVNextDigest ephemeral;
     std::vector<unsigned char> vchCiphertext;
@@ -253,7 +253,6 @@ struct PrivacyVNextEncryptedNote
     {
         genesis.fill(0);
         leafO.fill(0);
-        leafI.fill(0);
         leafC.fill(0);
         ephemeral.fill(0);
     }
@@ -399,8 +398,8 @@ struct PrivacyVNextEncryptedOutput
 
 // Encrypt one output to a recipient address.
 //
-// `y` and `mask` are the note's openings and `keyImageBase` its I point; the caller keeps
-// them to spend the note later.
+// `y` and `mask` are the note's openings; the caller keeps them to spend the note later.
+// The leaf's I point is derived from the note's own O and never supplied.
 bool EncryptPrivacyVNextNote(
     uint8_t nNetwork,
     uint8_t nAddressType,
@@ -413,7 +412,6 @@ bool EncryptPrivacyVNextNote(
     uint64_t nAmount,
     const PrivacyVNextDigest& y,
     const PrivacyVNextDigest& mask,
-    const PrivacyVNextDigest& keyImageBase,
     PrivacyVNextEncryptedOutput& noteOut,
     std::string& error);
 

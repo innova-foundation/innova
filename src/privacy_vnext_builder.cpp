@@ -209,15 +209,12 @@ static bool BuildPrivacyVNextPayload(
             !RandomScalar(outY, strErrorOut) ||
             !RandomScalar(vOutputMasks[i], strErrorOut))
             return false;
-        // The note's own I point is derived from its owner material by the encryptor; the
-        // recipient's spend key seeds it here.
         if (!EncryptPrivacyVNextNote(
                 nNetwork, outputs[i].recipient.nAddressType,
                 static_cast<uint32_t>(i), genesis,
                 outputs[i].recipient.spendPublic, outputs[i].recipient.viewPublic,
                 outgoingViewSecret, ephemeralSecret, outputs[i].nAmount, outY,
-                vOutputMasks[i], outputs[i].recipient.spendPublic, vEncrypted[i],
-                strErrorOut))
+                vOutputMasks[i], vEncrypted[i], strErrorOut))
         {
             OPENSSL_cleanse(ephemeralSecret.data(), ephemeralSecret.size());
             OPENSSL_cleanse(outY.data(), outY.size());
@@ -277,8 +274,8 @@ static bool BuildPrivacyVNextPayload(
     PutCompactSize(prefix, vEncrypted.size());
     for (size_t i = 0; i < vEncrypted.size(); ++i)
     {
+        // I is absent by design: validators derive it from this output's own owner key.
         PutBytes(prefix, vEncrypted[i].leaf.owner);
-        PutBytes(prefix, vEncrypted[i].leaf.nullifierBase);
         PutBytes(prefix, vEncrypted[i].leaf.commitment);
         PutBytes(prefix, vEncrypted[i].ephemeral);
         PutVector(prefix, vEncrypted[i].vchRecipientCiphertext);
