@@ -90,6 +90,86 @@ BOOST_AUTO_TEST_CASE(privacy_vnext_seed_record_is_encrypted_and_checked)
     BOOST_CHECK(!error.empty());
 }
 
+// Issuance must stop exactly where scanning stops. A scan covers indices below
+// PRIVACY_VNEXT_MAX_SCAN_KEYS, so an address issued at or above the bound is
+// receivable and permanently invisible, and unshield is retired, so value paid to it
+// has no recovery path. Starting one index below the bound reaches both the last
+// issuable address and the first refused one without 1024 round trips.
+BOOST_AUTO_TEST_CASE(privacy_vnext_address_issuance_stops_at_the_scan_bound)
+{
+    // All wallet files share one mock database and the seed record cannot be
+    // overwritten, so adopt an existing seed or write one (order-independent).
+    const std::string walletFile("iv5-seed-wallet-test.dat");
+    CKeyingMaterial masterKey(32, 0x31);
+    CPrivacyVNextSeedRecord record;
+    {
+        CWalletDB walletdb(walletFile);
+        if (!walletdb.ReadPrivacyVNextSeed(record))
+        {
+            CSecret seed(32, 0);
+            for (size_t i = 0; i < seed.size(); ++i)
+                seed[i] = static_cast<unsigned char>(i + 1);
+            record.nGeneration = PRIVACY_VNEXT_WALLET_SEED_GENERATION;
+            record.hashSeedCommitment = Hash(seed.begin(), seed.end());
+            record.nNextAddressIndex = 0;
+            BOOST_REQUIRE(EncryptSecret(masterKey, seed, uint256(1),
+                                        record.vchCryptedSeed));
+            BOOST_REQUIRE(walletdb.WritePrivacyVNextSeed(record));
+        }
+    // Advance the persisted counter through the same durable step issuance uses,
+    // without deriving a thousand keys.
+        BOOST_REQUIRE(record.nNextAddressIndex < PRIVACY_VNEXT_MAX_SCAN_KEYS);
+        while (record.nNextAddressIndex + 1 < PRIVACY_VNEXT_MAX_SCAN_KEYS)
+        {
+            BOOST_REQUIRE(walletdb.AdvancePrivacyVNextSeedIndex(
+                record, record.nNextAddressIndex + 1));
+            record.nNextAddressIndex += 1;
+        }
+    }
+    BOOST_REQUIRE_EQUAL(record.nNextAddressIndex,
+                        PRIVACY_VNEXT_MAX_SCAN_KEYS - 1);
+
+    CWallet localWallet(walletFile);
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(localWallet.LoadPrivacyVNextSeedRecord(record, error),
+                          error);
+    BOOST_REQUIRE_MESSAGE(localWallet.UnlockPrivacyVNextSeed(masterKey, error),
+                          error);
+
+    // The last index a scan reaches is still issuable. This is also the control for
+    // the refusal below: it shows the wallet can issue here at all.
+    std::string address;
+    uint32_t addressIndex = 0xffffffffU;
+    BOOST_REQUIRE_MESSAGE(localWallet.GenerateNewPrivacyVNextAddress(
+                              0, address, addressIndex, error), error);
+    BOOST_CHECK_EQUAL(addressIndex, PRIVACY_VNEXT_MAX_SCAN_KEYS - 1);
+    BOOST_CHECK(!address.empty());
+    // What makes the address safe to hand out is that a scan covers its index.
+    BOOST_CHECK_LT(addressIndex, localWallet.GetPrivacyVNextScanIndexCount());
+    BOOST_CHECK_EQUAL(localWallet.privacyVNextSeedRecord.nNextAddressIndex,
+                      PRIVACY_VNEXT_MAX_SCAN_KEYS);
+
+    // The next index is outside every scan, so issuance must refuse it.
+    std::string beyond;
+    uint32_t beyondIndex = 0xffffffffU;
+    error.clear();
+    BOOST_CHECK(!localWallet.GenerateNewPrivacyVNextAddress(
+        0, beyond, beyondIndex, error));
+    BOOST_CHECK(!error.empty());
+    BOOST_CHECK(beyond.empty());
+
+    // A refusal that still advanced the counter would leave the persisted record
+    // ahead of what a scan covers, which is the same failure one step later.
+    BOOST_CHECK_EQUAL(localWallet.privacyVNextSeedRecord.nNextAddressIndex,
+                      PRIVACY_VNEXT_MAX_SCAN_KEYS);
+    CPrivacyVNextSeedRecord persisted;
+    {
+        CWalletDB walletdb(walletFile);
+        BOOST_REQUIRE(walletdb.ReadPrivacyVNextSeed(persisted));
+    }
+    BOOST_CHECK_EQUAL(persisted.nNextAddressIndex, PRIVACY_VNEXT_MAX_SCAN_KEYS);
+}
+
 class CSelectionTestWallet : public CWallet
 {
 public:
