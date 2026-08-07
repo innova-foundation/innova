@@ -1512,8 +1512,7 @@ bool CheckPrivacyVNextTransparentBinding(const CTransaction& tx,
 {
     strError.clear();
     const uint256 expected = GetPrivacyVNextTransparentBinding(tx);
-    if (effects.transparentBinding.size() != 32 ||
-        !std::equal(effects.transparentBinding.begin(),
+    if (!std::equal(effects.transparentBinding.begin(),
                     effects.transparentBinding.end(), expected.begin()))
     {
         strError = "IV5 payload does not bind this transaction's transparent outputs";
