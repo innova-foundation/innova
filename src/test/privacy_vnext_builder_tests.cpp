@@ -64,7 +64,6 @@ BOOST_AUTO_TEST_CASE(an_encrypted_output_reopens_under_its_own_keys)
     onChain.nOutputIndex = 0;
     onChain.genesis = genesis;
     onChain.leafO = note.leaf.owner;
-    onChain.leafI = note.leaf.nullifierBase;
     onChain.leafC = note.leaf.commitment;
     onChain.ephemeral = note.ephemeral;
     onChain.vchCiphertext = note.vchRecipientCiphertext;
@@ -240,7 +239,6 @@ BOOST_AUTO_TEST_CASE(a_note_placed_in_the_tree_can_be_spent)
     onChain.nOutputIndex = 0;
     onChain.genesis = genesis;
     onChain.leafO = funding.leaf.owner;
-    onChain.leafI = funding.leaf.nullifierBase;
     onChain.leafC = funding.leaf.commitment;
     onChain.ephemeral = funding.ephemeral;
     onChain.vchCiphertext = funding.vchRecipientCiphertext;
@@ -352,7 +350,6 @@ BOOST_AUTO_TEST_CASE(memoized_effects_match_a_full_validation)
     onChain.nOutputIndex = 0;
     onChain.genesis = genesis;
     onChain.leafO = funding.leaf.owner;
-    onChain.leafI = funding.leaf.nullifierBase;
     onChain.leafC = funding.leaf.commitment;
     onChain.ephemeral = funding.ephemeral;
     onChain.vchCiphertext = funding.vchRecipientCiphertext;

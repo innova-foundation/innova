@@ -198,27 +198,35 @@ note-ciphertext:
   outgoing-exact-size: 209
   construction: unique-key ChaCha20 stream from pinned rand_chacha ChaCha20Rng, then keyed BLAKE2b-256 encrypt-then-MAC
   kdf: BLAKE2b-512 over a domain, secret material, and length-prefixed associated data; first 32 bytes encrypt and last 32 bytes authenticate
-  associated-data: schema, network, address-type, output-index, genesis, O, I, C, and ephemeral public key
+  associated-data: schema, network, address-type, output-index, genesis, O, I, C, and ephemeral public key, with I derived from O by note-key-image-base
   recipient-secret: ephemeral-DH shared point from recipient view key
   outgoing-secret: wallet outgoing-view secret scalar bytes
   recipient-plaintext: schema, network, address-type, output-index, recipient spend/view public keys, amount, y, and commitment mask
   outgoing-plaintext: recipient plaintext followed by ephemeral secret scalar
+note-key-image-base:
+  derivation: I = Elligator2-hash-to-point(first-32-bytes(blake2b-512(Innova/IV5/NoteKeyImageBase/v1, O)))
+  hash-to-point: upstream monero-ed25519 unbiased Point::hash, which clears the cofactor
+  input: only this output's own one-time key O
+  identity-result: consensus-invalid
+  rule: I is never carried on the wire in any request or in the payload; every producer and
+    every validator recomputes it from O, so a sender cannot choose it and it can carry no
+    owner material that would link the notes paid to one address
 note-encrypt-request:
-  exact-size: 272
-  fields: schema-u16-le, network-u8, address-type-u8, output-index-u32-le, genesis-32, recipient-spend-32, recipient-view-32, outgoing-secret-32, ephemeral-secret-32, amount-u64-le, y-32, mask-32, I-32
+  exact-size: 240
+  fields: schema-u16-le, network-u8, address-type-u8, output-index-u32-le, genesis-32, recipient-spend-32, recipient-view-32, outgoing-secret-32, ephemeral-secret-32, amount-u64-le, y-32, mask-32
 note-encrypt-result:
   exact-size: 522
   fields: schema-u16-le, network-u8, address-type-u8, output-index-u32-le, O-I-C-ephemeral-128, recipient-ciphertext-177, outgoing-ciphertext-209
   self-check: outgoing ciphertext is independently authenticated, decrypted, and matched to every input and public output component before return
 note-scan-request:
-  prefix-exact-size: 236
-  fields: schema-u16-le, scan-kind-u8, network-u8, address-type-u8, reserved-zero-3, output-index-u32-le, genesis-32, scan-secret-32, spend-material-32, O-I-C-ephemeral-128, ciphertext-to-eof
+  prefix-exact-size: 204
+  fields: schema-u16-le, scan-kind-u8, network-u8, address-type-u8, reserved-zero-3, output-index-u32-le, genesis-32, scan-secret-32, spend-material-32, O-C-ephemeral-96, ciphertext-to-eof
   scan-kinds: 0 full-spend, 1 view-only, 2 outgoing
   spend-material: base spend secret for full-spend; all zero for view-only and outgoing
 note-scan-result:
   exact-size: 212
   fields: schema-u16-le, scan-kind-u8, network-u8, address-type-u8, reserved-zero-3, output-index-u32-le, amount-u64-le, recipient-spend-32, recipient-view-32, derived-spend-secret-or-zero-32, y-32, mask-32, key-image-or-zero-32
-  validation: authenticate before decrypting; verify all context fields, address linkage, O opening, C opening, ephemeral relation for outgoing scans, and I-times-derived-spend-secret key image for full scans
+  validation: authenticate before decrypting; verify all context fields, address linkage, O opening, C opening, ephemeral relation for outgoing scans, and I-times-derived-spend-secret key image for full scans, with I derived from O by note-key-image-base
 tree-state:
   exact-size: 300
   fields: schema-u16-le, layers-u8, reserved-zero-u8, size-u64-le, eight-level-records
@@ -296,6 +304,7 @@ payload-validation:
   six bounded proof sections in fixed normative order
   signing-hash: blake2b-256(Innova/IV5/Signing/v1, outer-wire-version-u32-le, canonical-payload-through-finality-body)
   hidden-spend-input: pseudo-out-32 then nullifier-key-image-32; source leaves are never serialized in the base input
+  output-record-points: owner-O-32, commitment-C-32, ephemeral-32; the leaf's I is derived from O by note-key-image-base and is absent from the record
   membership: exact upstream proof size and full FCMP++ verification against finalized-root, signing-hash, pseudo-outs, and key-images
   exposed-amount: C equals opening-times-Ed25519-G plus value-times-Monero-H
   hidden-amount-range: canonical aggregate Monero Bulletproof+ over all output commitments; deterministic verifier weights bind signing-hash, commitments, and proof
