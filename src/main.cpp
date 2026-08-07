@@ -1182,6 +1182,16 @@ bool CTransaction::CheckTransaction() const
 {
     if (IsPrivacyVNext())
     {
+        // A coinbase and a coinstake are settled by the block's subsidy rules, not
+        // by ConnectInputs, so the pool flow that backs a payload is never applied
+        // to them. The epoch build still reads their payload, so a payload here
+        // would credit the pool and plant leaves with nothing on the transparent
+        // side paying for it.
+        if (IsCoinBase())
+            return DoS(100, error("CTransaction::CheckTransaction() : IV5 payload cannot be coinbase"));
+        if (IsCoinStake())
+            return DoS(100, error("CTransaction::CheckTransaction() : IV5 payload cannot be coinstake"));
+
         // Versions 2000-2002 are legacy pool envelopes that block assembly never mines;
         // refuse them here so they cannot pin the mempool. One envelope per operation.
         if (nVersion >= SHIELDED_TX_VERSION && nVersion <= SHIELDED_TX_VERSION_FCMP)

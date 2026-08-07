@@ -2604,7 +2604,14 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                     nullifierRootHasher << sit->nullifier;
             }
 
-            if (fBuildVNext && txit->IsPrivacyVNext())
+            // Same fence the finality payloads get, and for the same reason: an
+            // IV5 payload carries consensus state -- output leaves, a pool delta
+            // and spent key images -- that only ConnectBlock validates, and
+            // ConnectBlock runs along the canonical chain alone. Applying a merge
+            // block's payload would put leaves and pool value into the epoch roots
+            // against an anchor, a binding and a key-image set nothing checked.
+            if (fBuildVNext && txit->IsPrivacyVNext() &&
+                setCanonicalFinalityBlocks.count(*it))
             {
                 PrivacyVNextStateEffects effects;
                 const PrivacyVNextPayloadValidation validation =

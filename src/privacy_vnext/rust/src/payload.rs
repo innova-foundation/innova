@@ -1142,6 +1142,7 @@ mod tests {
         payload.extend_from_slice(&0_u64.to_le_bytes());
         payload.extend_from_slice(&((99 * 3) + 1_i64).to_le_bytes());
         payload.extend_from_slice(&1_u64.to_le_bytes());
+        payload.extend_from_slice(&TEST_TRANSPARENT_BINDING);
         compact_size(&mut payload, 0);
         compact_size(&mut payload, outputs.len());
         for encrypted in &outputs {
