@@ -780,7 +780,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_note_encrypt(
     })
 }
 
-/// Construct and self-verify canonical IV5 range, balance, and binding proofs.
+/// Construct and self-verify the canonical IV5 range proof and value balance proof.
 ///
 /// # Safety
 ///

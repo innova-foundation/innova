@@ -532,9 +532,6 @@ static bool BuildPrivacyVNextPayload(
                            valueProof.balanceProof.end()));
     PutVector(payload, std::vector<unsigned char>());   // operation proof: none
     PutVector(payload, vchDisclosureProofs);
-    PutVector(payload, std::vector<unsigned char>(
-                           valueProof.bindingSignature.begin(),
-                           valueProof.bindingSignature.end()));
 
     // Run the decoder consensus uses before handing the payload back, so a payload that
     // would be rejected never leaves the builder.

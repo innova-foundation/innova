@@ -453,7 +453,7 @@ BOOST_AUTO_TEST_CASE(note_and_value_construction_cross_the_c_abi)
             valueResult.size(), &valueWritten),
         INNOVA_PRIVACY_VNEXT_VALID);
     valueResult.resize(valueWritten);
-    BOOST_REQUIRE(valueResult.size() >= 40 + 128);
+    BOOST_REQUIRE(valueResult.size() >= 40 + 64);
     BOOST_CHECK_EQUAL(valueResult[0], 1U);
     BOOST_CHECK_EQUAL(valueResult[2], 1U);
     BOOST_CHECK_EQUAL(valueResult[3], 0U);
@@ -463,7 +463,7 @@ BOOST_AUTO_TEST_CASE(note_and_value_construction_cross_the_c_abi)
     const uint32_t rangeSize = ReadLE32(&valueResult[36]);
     BOOST_CHECK_GT(rangeSize, 0U);
     BOOST_CHECK_EQUAL(valueResult.size(),
-                      static_cast<size_t>(40 + rangeSize + 128));
+                      static_cast<size_t>(40 + rangeSize + 64));
 }
 
 // The wrappers own the request framing, so a note encrypted through the raw ABI
@@ -1069,12 +1069,8 @@ BOOST_AUTO_TEST_CASE(cpp_value_proof_bridge_is_bounded_and_canonical)
     PrivacyVNextDigest zero;
     zero.fill(0);
     PrivacyVNextDigest balanceHead;
-    PrivacyVNextDigest bindingHead;
     std::memcpy(balanceHead.data(), proof.balanceProof.data(), 32);
-    std::memcpy(bindingHead.data(), proof.bindingSignature.data(), 32);
     BOOST_CHECK(balanceHead != zero);
-    BOOST_CHECK(bindingHead != zero);
-    BOOST_CHECK(balanceHead != bindingHead);
 
     // Proving is deterministic in the supplied entropy.
     PrivacyVNextValueProof repeated;
