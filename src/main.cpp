@@ -1623,19 +1623,25 @@ bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
         strError = "IV5 pool delta is out of range";
         return false;
     }
-    // An unshield releases pool value to transparent outputs the payload does
-    // not commit to: the signing hash covers the payload prefix only, and a
-    // transaction with no transparent input carries no signature over its
-    // outputs either. Whoever assembles the block can retarget or drop that
-    // output and take the released value as fee. Refuse the shape until the
-    // payload binds the transparent side.
-    if (nDelta < 0)
+    // Only a declared negative balance is an unshield. A transfer declares zero
+    // and still has a negative delta, because its fee leaves the pool for the
+    // miner; that release is bounded by the fee and has no transparent output to
+    // redirect, so it is sound.
+    //
+    // An unshield is not: the signing hash covers the payload prefix only, and a
+    // transaction with no transparent input carries no signature over its outputs
+    // either, so whoever assembles the block can retarget or drop the output and
+    // keep the released value. Refuse until the payload binds the transparent side.
+    if (effects.nTransparentValueBalance < 0)
     {
         strError = "IV5 unshield is not enabled: the transparent output is not bound to the payload";
         return false;
     }
 
-    nAbsorbedOut = nDelta;
+    if (nDelta > 0)
+        nAbsorbedOut = nDelta;
+    else
+        nReleasedOut = -nDelta;
     return true;
 }
 
