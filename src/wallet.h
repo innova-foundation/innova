@@ -279,6 +279,9 @@ public:
     // Index 0 always exists as the default receive index; scanning covers every
     // index issued, since a note only opens under the one it was sent to.
     uint32_t nPrivacyVNextIndexCount;
+    // Derivation indices a scan must cover; follows address issuance rather than
+    // the separately persisted count, so an issued address is never outside it.
+    uint32_t GetPrivacyVNextScanIndexCount() const;
     bool AllocatePrivacyVNextIndex(uint32_t& nIndexOut, std::string& strErrorOut);
     bool AssignPrivacyVNextLeafIndices(int nEpoch, std::string& strErrorOut);
     bool ApplyPrivacyVNextBlock(const CBlock& block, const CBlockIndex* pindex,

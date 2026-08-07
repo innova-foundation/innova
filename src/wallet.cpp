@@ -11544,6 +11544,27 @@ bool CWallet::CreatePrivacyVNextUnshield(
     return true;
 }
 
+// How many derivation indices a scan must cover.
+//
+// Address issuance advances the seed record's own counter, so that counter -- not
+// the separately persisted scan count -- is what says which indices can hold
+// value. Deriving the bound from it keeps one source of truth: two counters that
+// have to agree is how every address after the first came to be issued into a
+// range no scan reached. Index 0 is always live because change and the shield
+// receiver derive there whether or not an address was ever issued.
+uint32_t CWallet::GetPrivacyVNextScanIndexCount() const
+{
+    LOCK(cs_shielded);
+    uint32_t nCount = privacyVNextSeedRecord.nNextAddressIndex;
+    if (nCount < 1)
+        nCount = 1;
+    if (nCount < nPrivacyVNextIndexCount)
+        nCount = nPrivacyVNextIndexCount;
+    if (nCount > PRIVACY_VNEXT_MAX_SCAN_KEYS)
+        nCount = PRIVACY_VNEXT_MAX_SCAN_KEYS;
+    return nCount;
+}
+
 bool CWallet::AllocatePrivacyVNextIndex(uint32_t& nIndexOut,
                                         std::string& strErrorOut)
 {
@@ -11612,8 +11633,9 @@ bool CWallet::AssignPrivacyVNextLeafIndices(int nEpoch, std::string& strErrorOut
     std::memcpy(genesis.data(), hashGenesis.begin(), 32);
     const uint8_t nNetwork = PrivacyVNextNetworkId();
 
-    std::vector<PrivacyVNextScanKey> vKeys(nPrivacyVNextIndexCount);
-    for (uint32_t i = 0; i < nPrivacyVNextIndexCount; ++i)
+    const uint32_t nScanKeys = GetPrivacyVNextScanIndexCount();
+    std::vector<PrivacyVNextScanKey> vKeys(nScanKeys);
+    for (uint32_t i = 0; i < nScanKeys; ++i)
     {
         PrivacyVNextDerivedKeys keys;
         std::string strKeyError;
@@ -11741,8 +11763,9 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
 
     // Every index this wallet has issued: a note only opens under the one it was
     // sent to, so missing an index would hide received value rather than fail.
-    std::vector<PrivacyVNextScanKey> vKeys(nPrivacyVNextIndexCount);
-    for (uint32_t i = 0; i < nPrivacyVNextIndexCount; ++i)
+    const uint32_t nScanKeys = GetPrivacyVNextScanIndexCount();
+    std::vector<PrivacyVNextScanKey> vKeys(nScanKeys);
+    for (uint32_t i = 0; i < nScanKeys; ++i)
     {
         PrivacyVNextDerivedKeys keys;
         std::string strKeyError;
