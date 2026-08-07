@@ -556,6 +556,39 @@ else
     exit 1
 fi
 
+# nTime is outside the IV5 binding hash: re-stamping gives a new txid over the same
+# payload and key image, so the key-image check is reached past txid dedup.
+restamp_raw() {
+    local raw="$1"
+    local le="${raw:8:8}"
+    local n=$(( 16#${le:6:2}${le:4:2}${le:2:2}${le:0:2} ))
+    n=$(( n - 1 ))
+    local h
+    h="$(printf '%08x' "$n")"
+    echo "${raw:0:8}${h:6:2}${h:4:2}${h:2:2}${h:0:2}${raw:16}"
+}
+
+# While the transfer is still unconfirmed its key image is only reserved in the
+# mempool, which is a different refusal path from the on-disk spent-key set.
+XFER_RAW="$(rpc 0 getrawtransaction "$XFER_TXID" 2>/dev/null | tr -d '"[:space:]')"
+XFER_TWIN="$(restamp_raw "$XFER_RAW")"
+if [ ${#XFER_RAW} -gt 100 ] && [ "$XFER_TWIN" != "$XFER_RAW" ] && \
+   [ ${#XFER_TWIN} -eq ${#XFER_RAW} ]; then
+    success "built a distinct transaction carrying the same IV5 payload"
+else
+    fail "could not re-stamp the transfer into a distinct transaction"
+fi
+
+RESERVED="$(rpc 0 sendrawtransaction "$XFER_TWIN" 2>&1)"
+RESERVED_TXID="$(echo "$RESERVED" | tr -d '"[:space:]')"
+if [ ${#RESERVED_TXID} -eq 64 ]; then
+    fail "the mempool accepted a second spend of a reserved note: ${RESERVED_TXID:0:16}"
+elif echo "$RESERVED" | grep -qiE "reserved|already|consumed|spent|denied|error"; then
+    success "the mempool refuses a distinct transaction reusing a reserved key image"
+else
+    fail "the reserved-key-image double spend was refused for the wrong reason: $(echo "$RESERVED" | head -2)"
+fi
+
 XFER_TARGET=$(( $(height 0) + 3 ))
 mine_to 0 "$XFER_TARGET" || { fail "could not mine the transfer"; exit 1; }
 wait_sync "$XFER_TARGET" || { fail "peers did not accept the transfer block"; exit 1; }
@@ -630,7 +663,7 @@ else
 fi
 
 # ============================================================
-header "8. A confirmed spend cannot be replayed"
+header "8. A confirmed spend cannot be replayed or respent"
 # ============================================================
 
 for pair in "transfer:$XFER_TXID"; do
@@ -653,6 +686,41 @@ for pair in "transfer:$XFER_TXID"; do
         success "a peer also refuses the replayed $NAME"
     else
         fail "a peer accepted a replay of the confirmed $NAME: $REPLAY1"
+    fi
+
+    # Resubmitting the same bytes never reaches the key-image logic: txid dedup
+    # answers first. A re-stamped twin has a different txid and the same key
+    # image, which is the case an attacker actually has.
+    TWIN="$(restamp_raw "$RAW")"
+    if [ "$TWIN" = "$RAW" ]; then
+        fail "could not re-stamp the confirmed $NAME"
+        continue
+    fi
+    DS="$(rpc 0 sendrawtransaction "$TWIN" 2>&1)"
+    DS_TXID="$(echo "$DS" | tr -d '"[:space:]')"
+    if [ ${#DS_TXID} -eq 64 ]; then
+        fail "a distinct transaction respent the confirmed $NAME note: ${DS_TXID:0:16}"
+    elif echo "$DS" | grep -qiE "consumed|spent|already|denied|error"; then
+        success "a distinct transaction reusing the confirmed $NAME key image is refused"
+    else
+        fail "the $NAME key-image double spend was refused for the wrong reason: $(echo "$DS" | head -2)"
+    fi
+
+    DS1="$(rpc 1 sendrawtransaction "$TWIN" 2>&1)"
+    DS1_TXID="$(echo "$DS1" | tr -d '"[:space:]')"
+    if [ ${#DS1_TXID} -eq 64 ]; then
+        fail "a peer accepted a distinct respend of the confirmed $NAME: ${DS1_TXID:0:16}"
+    elif echo "$DS1" | grep -qiE "consumed|spent|already|denied|error"; then
+        success "a peer also refuses the distinct $NAME key-image double spend"
+    else
+        fail "a peer refused the $NAME double spend for the wrong reason: $(echo "$DS1" | head -2)"
+    fi
+
+    # Neither refusal may disturb the pool: the note stays spent exactly once.
+    if [ "$(rpc 0 getrawmempool 2>/dev/null | tr -d '"[:space:], ' | wc -c)" -le 4 ]; then
+        success "no double-spend attempt was left sitting in the mempool"
+    else
+        fail "a refused double spend is still in the mempool"
     fi
 done
 
