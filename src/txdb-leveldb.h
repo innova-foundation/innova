@@ -665,6 +665,9 @@ public:
     // Epoch state persistence
     bool WriteEpochState(int nEpoch, const CEpochState& state);
     bool ReadEpochState(int nEpoch, CEpochState& state);
+    // Whether the record exists at all, without decoding it: separates a record the
+    // chain has not written from one this node cannot read.
+    TxDBReadStatus ProbeEpochState(int nEpoch);
     bool EraseEpochState(int nEpoch);
     bool IterateEpochStates(std::map<int, CEpochState>& mapOut);
     bool IterateCurveTreeEpochs(std::map<int, CCurveTree>& mapOut);

@@ -3213,15 +3213,38 @@ bool CDAGManager::GetFinalizedEpochStateAsOf(int nBlockHeight, CEpochState& stat
 bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
                                              CEpochState& stateOut) const
 {
+    bool fLocalFailure = false;
+    return GetFinalizedEpochStateAsOf(txdb, nBlockHeight, stateOut,
+                                      fLocalFailure);
+}
+
+// A miss is the chain's answer and reads the same on every node; anything else -- an
+// I/O error, or bytes that will not decode -- is this node's own problem.
+static bool EpochStateReadIsLocalFailure(CTxDB& txdb, int nEpoch)
+{
+    return txdb.ProbeEpochState(nEpoch) != TXDB_READ_NOT_FOUND;
+}
+
+bool CDAGManager::GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
+                                             CEpochState& stateOut,
+                                             bool& fLocalFailureOut) const
+{
+    fLocalFailureOut = false;
     const int nAsOfEpoch = GetEpochForHeight(nBlockHeight) - 1;
     int nFinHeight = 0;
     if (!TryGetDeterministicFinalizedHeight(txdb, nAsOfEpoch, nFinHeight))
+    {
+        fLocalFailureOut = EpochStateReadIsLocalFailure(txdb, nAsOfEpoch);
         return false;
+    }
 
     const int nFinEpoch = GetEpochForHeight(nFinHeight);
     CEpochState state;
     if (!txdb.ReadEpochState(nFinEpoch, state) || state.nEpoch != nFinEpoch)
+    {
+        fLocalFailureOut = EpochStateReadIsLocalFailure(txdb, nFinEpoch);
         return false;
+    }
     stateOut = state;
     return true;
 }

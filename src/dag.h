@@ -444,6 +444,13 @@ public:
     bool GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
                                     CEpochState& stateOut) const;
 
+    /** Same, reporting whether a failure was node-local. A record the chain has not
+     *  written yet is absent on every node and must stay a consensus outcome; a record
+     *  this node cannot read or decode is local and must not become one. */
+    bool GetFinalizedEpochStateAsOf(CTxDB& txdb, int nBlockHeight,
+                                    CEpochState& stateOut,
+                                    bool& fLocalFailureOut) const;
+
     /** The finalized epoch state `nEpochsBack` epochs before the one nBlockHeight resolves to.
      *  The epoch number is derived from the chain, not from node-local state, so the set of
      *  states a block may be validated against is the same on every node. */

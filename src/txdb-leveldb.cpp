@@ -1415,6 +1415,12 @@ bool CTxDB::ReadEpochState(int nEpoch, CEpochState& state)
     return Read(make_pair(string("epochstate"), nEpoch), state);
 }
 
+TxDBReadStatus CTxDB::ProbeEpochState(int nEpoch)
+{
+    string strValue;
+    return ReadRawValueStatus(make_pair(string("epochstate"), nEpoch), strValue);
+}
+
 bool CTxDB::EraseEpochState(int nEpoch)
 {
     return Erase(make_pair(string("epochstate"), nEpoch));

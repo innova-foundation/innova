@@ -1152,4 +1152,53 @@ BOOST_AUTO_TEST_CASE(nullifier_accumulator_is_canonical_and_bounded)
         nextState, nextRoot, nextCount, error));
 }
 
+// The verifier reads only (wireVersion, payload), so no payload result, including a
+// contained panic, may be reported as node-local.
+BOOST_AUTO_TEST_CASE(payload_results_are_never_reported_as_node_local)
+{
+    std::vector<std::vector<unsigned char> > vCorpus;
+    vCorpus.push_back(std::vector<unsigned char>());
+    vCorpus.push_back(std::vector<unsigned char>(1, 0));
+    vCorpus.push_back(std::vector<unsigned char>(32, 0xff));
+    vCorpus.push_back(
+        std::vector<unsigned char>(INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES + 1, 0));
+    // Reproducible pseudo-random bodies: the point is coverage of the decoder's
+    // failure classes, not any particular byte string.
+    uint32_t nState = 0x1234567u;
+    for (size_t nCase = 0; nCase < 48; ++nCase)
+    {
+        std::vector<unsigned char> payload(1 + (nCase * 37) % 4096);
+        for (size_t i = 0; i < payload.size(); ++i)
+        {
+            nState = nState * 1103515245u + 12345u;
+            payload[i] = static_cast<unsigned char>(nState >> 16);
+        }
+        vCorpus.push_back(payload);
+    }
+
+    const uint32_t vWireVersions[] = {0, 1, 2007, 2008, 2009, 0xffffffffu};
+    for (size_t v = 0; v < sizeof(vWireVersions) / sizeof(vWireVersions[0]); ++v)
+    {
+        for (size_t c = 0; c < vCorpus.size(); ++c)
+        {
+            const PrivacyVNextPayloadValidation validation =
+                ValidatePrivacyVNextPayload(vWireVersions[v], vCorpus[c]);
+            BOOST_CHECK_MESSAGE(
+                !validation.fLocalFailure,
+                "payload validation reported a node-local failure: " +
+                    validation.strError);
+
+            PrivacyVNextStateEffects effects;
+            const PrivacyVNextPayloadValidation extracted =
+                ExtractPrivacyVNextPayloadEffects(vWireVersions[v], vCorpus[c],
+                                                  effects);
+            BOOST_CHECK_MESSAGE(
+                !extracted.fLocalFailure,
+                "payload effects reported a node-local failure: " +
+                    extracted.strError);
+            BOOST_CHECK_EQUAL(validation.IsValid(), extracted.IsValid());
+        }
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -749,10 +749,10 @@ PrivacyVNextPayloadValidation ValidatePrivacyVNextPayload(
         request.insert(request.end(), payload.begin(), payload.end());
         validation.nResult = innova_privacy_vnext_payload_validate(
             &request[0], request.size());
-        validation.fLocalFailure =
-            validation.nResult == INNOVA_PRIVACY_VNEXT_CONTAINED_PANIC ||
-            validation.nResult ==
-                INNOVA_PRIVACY_VNEXT_INTERNAL_LOCAL_STATE_FAILURE;
+        // The Rust entry point reads only (wireVersion, payload), so every result it
+        // returns, including a contained panic, is deterministic across nodes and is a
+        // consensus verdict; only the C++-side conditions below stay node-local.
+        validation.fLocalFailure = false;
         switch (validation.nResult)
         {
         case INNOVA_PRIVACY_VNEXT_VALID:
@@ -774,18 +774,20 @@ PrivacyVNextPayloadValidation ValidatePrivacyVNextPayload(
             validation.strError = "contained Rust IV5 panic";
             break;
         case INNOVA_PRIVACY_VNEXT_INTERNAL_LOCAL_STATE_FAILURE:
-            validation.strError = "Rust IV5 internal/local-state failure";
+            validation.strError = "Rust IV5 internal-state failure";
             break;
         default:
-            validation.nResult =
-                INNOVA_PRIVACY_VNEXT_INTERNAL_LOCAL_STATE_FAILURE;
-            validation.fLocalFailure = true;
-            validation.strError = "unknown Rust IV5 result class";
+            // Left non-zero so IsValid() stays false; the raw code is kept for the log
+            // rather than folded into a class it does not belong to.
+            validation.strError = "unknown Rust IV5 result class " +
+                                  std::to_string(validation.nResult);
             break;
         }
     }
     catch (const std::exception& e)
     {
+        // Reached only by allocation or stream failure on this side of the FFI, which
+        // is genuinely node-local: another node may have the memory this one lacks.
         validation.nResult =
             INNOVA_PRIVACY_VNEXT_INTERNAL_LOCAL_STATE_FAILURE;
         validation.fLocalFailure = true;
@@ -799,6 +801,18 @@ PrivacyVNextPayloadValidation ValidatePrivacyVNextPayload(
         validation.fLocalFailure = true;
         validation.strError = "unknown local IV5 validation failure";
     }
+    return validation;
+}
+
+static PrivacyVNextPayloadValidation& DeterministicVNextEffectsReject(
+    PrivacyVNextStateEffects& effects,
+    PrivacyVNextPayloadValidation& validation,
+    const char* pszError)
+{
+    effects = PrivacyVNextStateEffects();
+    validation.nResult = INNOVA_PRIVACY_VNEXT_CONSENSUS_INVALID;
+    validation.fLocalFailure = false;
+    validation.strError = pszError;
     return validation;
 }
 
@@ -830,9 +844,11 @@ static PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffectsUncached(
             required < INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_HEADER_SIZE ||
             required > INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES)
         {
-            validation.nResult =
-                INNOVA_PRIVACY_VNEXT_INTERNAL_LOCAL_STATE_FAILURE;
-            validation.fLocalFailure = true;
+            // Same pure inputs as the validate call that just succeeded, so a
+            // disagreement here is a property of the payload and this binary, not of
+            // this node.
+            validation.nResult = INNOVA_PRIVACY_VNEXT_CONSENSUS_INVALID;
+            validation.fLocalFailure = false;
             validation.strError = "Rust IV5 effects-size query failed after validation";
             return validation;
         }
@@ -843,26 +859,30 @@ static PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffectsUncached(
             &request[0], request.size(), &encoded[0], encoded.size(), &written);
         if (result != INNOVA_PRIVACY_VNEXT_VALID || written != required)
         {
-            validation.nResult =
-                INNOVA_PRIVACY_VNEXT_INTERNAL_LOCAL_STATE_FAILURE;
-            validation.fLocalFailure = true;
+            validation.nResult = INNOVA_PRIVACY_VNEXT_CONSENSUS_INVALID;
+            validation.fLocalFailure = false;
             validation.strError = "Rust IV5 effects extraction changed after validation";
             return validation;
         }
 
+        // The encoded effects are a function of the payload alone, so a shape this
+        // side refuses is refused identically everywhere: reject rather than stop.
         if (encoded[0] != 1 || encoded[1] != 0)
-            throw std::runtime_error("unsupported IV5 effects schema");
+            return DeterministicVNextEffectsReject(
+                effects, validation, "unsupported IV5 effects schema");
         const size_t inputCount = encoded[2];
         const size_t outputCount = encoded[3];
         if (inputCount > INNOVA_PRIVACY_VNEXT_MAX_INPUTS ||
             outputCount > INNOVA_PRIVACY_VNEXT_MAX_OUTPUTS)
-            throw std::runtime_error("IV5 effects count exceeds ABI limits");
+            return DeterministicVNextEffectsReject(
+                effects, validation, "IV5 effects count exceeds ABI limits");
         const size_t exactSize =
             INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_HEADER_SIZE +
             inputCount * INNOVA_PRIVACY_VNEXT_DIGEST_SIZE +
             outputCount * 3 * INNOVA_PRIVACY_VNEXT_DIGEST_SIZE;
         if (encoded.size() != exactSize)
-            throw std::runtime_error("non-canonical IV5 effects length");
+            return DeterministicVNextEffectsReject(
+                effects, validation, "non-canonical IV5 effects length");
 
         std::copy(encoded.begin() + 4, encoded.begin() + 36,
                   effects.finalizedRoot.begin());
@@ -905,12 +925,14 @@ static PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffectsUncached(
             offset += 32;
         }
         if (offset != encoded.size())
-            throw std::runtime_error("trailing IV5 effects bytes");
+            return DeterministicVNextEffectsReject(
+                effects, validation, "trailing IV5 effects bytes");
         validation.strError.clear();
         return validation;
     }
     catch (const std::exception& e)
     {
+        // Only allocation and container failures remain; those are node-local.
         effects = PrivacyVNextStateEffects();
         validation.nResult = INNOVA_PRIVACY_VNEXT_INTERNAL_LOCAL_STATE_FAILURE;
         validation.fLocalFailure = true;
@@ -2014,5 +2036,50 @@ bool ProvePrivacyVNextValue(
     offset += nRangeProof;
     std::memcpy(proof.balanceProof.data(), &response[offset], 64);
     std::memcpy(proof.bindingSignature.data(), &response[offset + 64], 64);
+    return true;
+}
+
+bool ProvePrivacyVNextReceiverDisclosure(
+    uint32_t nOutputIndex,
+    const PrivacyVNextDigest& recipientSpend,
+    const PrivacyVNextDigest& recipientView,
+    const PrivacyVNextDigest& outputOwner,
+    const PrivacyVNextDigest& ephemeralPublic,
+    const PrivacyVNextDigest& ephemeralSecret,
+    const PrivacyVNextDigest& outputY,
+    const PrivacyVNextDigest& signableHash,
+    const PrivacyVNextDigest& entropy,
+    std::vector<unsigned char>& vchProofOut,
+    std::string& error)
+{
+    vchProofOut.clear();
+    error.clear();
+
+    std::vector<uint8_t> request(
+        INNOVA_PRIVACY_VNEXT_RECEIVER_DISCLOSURE_REQUEST_SIZE, 0);
+    request[0] = static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA);
+    request[1] = 0;
+    PutLE32(&request[4], nOutputIndex);
+    std::memcpy(&request[8], recipientSpend.data(), 32);
+    std::memcpy(&request[40], recipientView.data(), 32);
+    std::memcpy(&request[72], outputOwner.data(), 32);
+    std::memcpy(&request[104], ephemeralPublic.data(), 32);
+    std::memcpy(&request[136], ephemeralSecret.data(), 32);
+    std::memcpy(&request[168], outputY.data(), 32);
+    std::memcpy(&request[200], signableHash.data(), 32);
+    std::memcpy(&request[232], entropy.data(), 32);
+
+    std::vector<uint8_t> response(
+        INNOVA_PRIVACY_VNEXT_RECEIVER_DISCLOSURE_PROOF_SIZE, 0);
+    size_t written = 0;
+    const int32_t result = innova_privacy_vnext_receiver_disclosure_prove(
+        &request[0], request.size(), &response[0], response.size(), &written);
+    OPENSSL_cleanse(&request[0], request.size());
+    if (result != INNOVA_PRIVACY_VNEXT_VALID || written != response.size())
+    {
+        error = ResultError("IV5 receiver disclosure proof", result);
+        return false;
+    }
+    vchProofOut.assign(response.begin(), response.end());
     return true;
 }

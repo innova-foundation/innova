@@ -1545,12 +1545,15 @@ static bool ValidatePrivacyVNextFinalizedContext(
     fLocalFailure = false;
     strError.clear();
 
+    // The epoch state consulted is fixed by nContextHeight, so a not-yet-produced state is
+    // the chain's answer; only an unreadable record is local.
     CEpochState finalizedState;
     if (!g_dagManager.GetFinalizedEpochStateAsOf(
-            txdb, nContextHeight, finalizedState))
+            txdb, nContextHeight, finalizedState, fLocalFailure))
     {
-        fLocalFailure = true;
-        strError = "finalized epoch state is unavailable";
+        strError = fLocalFailure
+                       ? "finalized epoch state cannot be read; -reindex/resync required"
+                       : "no finalized epoch state exists at this height";
         return false;
     }
 
@@ -1559,8 +1562,14 @@ static bool ValidatePrivacyVNextFinalizedContext(
     uint64_t nExpectedTreeSize = 0;
     if (finalizedState.nSerVersion >= EPOCHSTATE_SER_VERSION_V4)
     {
-        if (!finalizedState.fFinalized ||
-            finalizedState.vchVNextRoot.size() !=
+        // Whether the anchor epoch is finalized is chain state; the digest widths are
+        // already enforced by the record decoder, so failing them means local damage.
+        if (!finalizedState.fFinalized)
+        {
+            strError = "the anchor epoch is not finalized";
+            return false;
+        }
+        if (finalizedState.vchVNextRoot.size() !=
                 EPOCHSTATE_VNEXT_DIGEST_SIZE ||
             finalizedState.vchVNextParameterDigest.size() !=
                 EPOCHSTATE_VNEXT_DIGEST_SIZE)
