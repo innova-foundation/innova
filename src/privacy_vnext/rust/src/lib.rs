@@ -1141,8 +1141,9 @@ pub unsafe extern "C" fn innova_privacy_vnext_receiver_disclosure_prove(
         let spend = field(8);
         let view = field(40);
         let output_o = field(72);
-        let ephemeral = field(104);
-        let mut ephemeral_secret = field(136);
+        // The tweak ephemeral, never the one that keys the note ciphertext.
+        let tweak_ephemeral = field(104);
+        let mut tweak_ephemeral_secret = field(136);
         let mut output_y = field(168);
         let signable_hash = field(200);
         let entropy = field(232);
@@ -1150,14 +1151,14 @@ pub unsafe extern "C" fn innova_privacy_vnext_receiver_disclosure_prove(
             &spend,
             &view,
             &output_o,
-            &ephemeral,
-            &ephemeral_secret,
+            &tweak_ephemeral,
+            &tweak_ephemeral_secret,
             &output_y,
             &signable_hash,
             output_index,
             &entropy,
         );
-        ephemeral_secret.zeroize();
+        tweak_ephemeral_secret.zeroize();
         output_y.zeroize();
         let proof = proved.map_err(|_| ResultCode::ConsensusInvalid)?;
         // Self-verify, so a disclosure the network would reject never leaves the prover.
@@ -1165,7 +1166,7 @@ pub unsafe extern "C" fn innova_privacy_vnext_receiver_disclosure_prove(
             &spend,
             &view,
             &output_o,
-            &ephemeral,
+            &tweak_ephemeral,
             &signable_hash,
             output_index,
             &proof,

@@ -1150,7 +1150,8 @@ bool ScanPrivacyVNextNote(
     std::memcpy(&request[76], spendMaterial.data(), 32);
     std::memcpy(&request[108], note.leafO.data(), 32);
     std::memcpy(&request[140], note.leafC.data(), 32);
-    std::memcpy(&request[172], note.ephemeral.data(), 32);
+    std::memcpy(&request[172], note.noteEphemeral.data(), 32);
+    std::memcpy(&request[204], note.tweakEphemeral.data(), 32);
     std::memcpy(&request[INNOVA_PRIVACY_VNEXT_NOTE_SCAN_PREFIX_SIZE],
                 &note.vchCiphertext[0], nExpectedCiphertext);
 
@@ -1431,7 +1432,8 @@ bool EncryptPrivacyVNextNote(
     const PrivacyVNextDigest& recipientSpend,
     const PrivacyVNextDigest& recipientView,
     const PrivacyVNextDigest& outgoingSecret,
-    const PrivacyVNextDigest& ephemeralSecret,
+    const PrivacyVNextDigest& noteEphemeralSecret,
+    const PrivacyVNextDigest& tweakEphemeralSecret,
     uint64_t nAmount,
     const PrivacyVNextDigest& y,
     const PrivacyVNextDigest& mask,
@@ -1451,10 +1453,11 @@ bool EncryptPrivacyVNextNote(
     std::memcpy(request + 40, recipientSpend.data(), 32);
     std::memcpy(request + 72, recipientView.data(), 32);
     std::memcpy(request + 104, outgoingSecret.data(), 32);
-    std::memcpy(request + 136, ephemeralSecret.data(), 32);
-    PutLE64(request + 168, nAmount);
-    std::memcpy(request + 176, y.data(), 32);
-    std::memcpy(request + 208, mask.data(), 32);
+    std::memcpy(request + 136, noteEphemeralSecret.data(), 32);
+    std::memcpy(request + 168, tweakEphemeralSecret.data(), 32);
+    PutLE64(request + 200, nAmount);
+    std::memcpy(request + 208, y.data(), 32);
+    std::memcpy(request + 240, mask.data(), 32);
 
     uint8_t result[INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_RESULT_SIZE] = {0};
     size_t written = 0;
@@ -1472,13 +1475,14 @@ bool EncryptPrivacyVNextNote(
     std::memcpy(noteOut.leaf.owner.data(), result + 8, 32);
     std::memcpy(noteOut.leaf.nullifierBase.data(), result + 40, 32);
     std::memcpy(noteOut.leaf.commitment.data(), result + 72, 32);
-    std::memcpy(noteOut.ephemeral.data(), result + 104, 32);
+    std::memcpy(noteOut.noteEphemeral.data(), result + 104, 32);
+    std::memcpy(noteOut.tweakEphemeral.data(), result + 136, 32);
     noteOut.vchRecipientCiphertext.assign(
-        result + 136,
-        result + 136 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE);
+        result + 168,
+        result + 168 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE);
     noteOut.vchOutgoingCiphertext.assign(
-        result + 136 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE,
-        result + 136 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE +
+        result + 168 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE,
+        result + 168 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE +
             INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE);
     OPENSSL_cleanse(result, sizeof(result));
     return true;
@@ -2044,8 +2048,8 @@ bool ProvePrivacyVNextReceiverDisclosure(
     const PrivacyVNextDigest& recipientSpend,
     const PrivacyVNextDigest& recipientView,
     const PrivacyVNextDigest& outputOwner,
-    const PrivacyVNextDigest& ephemeralPublic,
-    const PrivacyVNextDigest& ephemeralSecret,
+    const PrivacyVNextDigest& tweakEphemeralPublic,
+    const PrivacyVNextDigest& tweakEphemeralSecret,
     const PrivacyVNextDigest& outputY,
     const PrivacyVNextDigest& signableHash,
     const PrivacyVNextDigest& entropy,
@@ -2063,8 +2067,8 @@ bool ProvePrivacyVNextReceiverDisclosure(
     std::memcpy(&request[8], recipientSpend.data(), 32);
     std::memcpy(&request[40], recipientView.data(), 32);
     std::memcpy(&request[72], outputOwner.data(), 32);
-    std::memcpy(&request[104], ephemeralPublic.data(), 32);
-    std::memcpy(&request[136], ephemeralSecret.data(), 32);
+    std::memcpy(&request[104], tweakEphemeralPublic.data(), 32);
+    std::memcpy(&request[136], tweakEphemeralSecret.data(), 32);
     std::memcpy(&request[168], outputY.data(), 32);
     std::memcpy(&request[200], signableHash.data(), 32);
     std::memcpy(&request[232], entropy.data(), 32);

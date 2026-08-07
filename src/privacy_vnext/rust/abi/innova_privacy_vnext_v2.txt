@@ -134,7 +134,9 @@ value-prove-response:
   behavior: prove and independently verify range, signed public/private balance, and binding signature before returning
 receiver-disclosure-prove-request:
   exact-size: 264
-  fields: schema-u16-le, reserved-zero-2, output-index-u32-le, recipient-spend-32, recipient-view-32, output-O-32, ephemeral-public-32, ephemeral-secret-32, output-y-32, signable-hash-32, caller-entropy-32
+  fields: schema-u16-le, reserved-zero-2, output-index-u32-le, recipient-spend-32, recipient-view-32, output-O-32, tweak-ephemeral-public-32, tweak-ephemeral-secret-32, output-y-32, signable-hash-32, caller-entropy-32
+  ephemeral-rule: the tweak ephemeral only; supplying the note ephemeral proves nothing about O and
+    would publish the key the ciphertext is under
   behavior: prove and then independently verify the receiver disclosure before returning
 receiver-disclosure-prove-response:
   exact-size: 160
@@ -212,16 +214,26 @@ key-derivation-transcript:
 key-derivation-output:
   exact-size: 232
   fields: schema-u16-le, network-u8, address-type-u8, address-index-u32-le, five-secret-scalars-32-each, spend-public-32, view-public-32
+note-ephemeral-keys:
+  count: two independent, distinct ephemeral scalars per output
+  note-ephemeral: R1 = G*r1; its shared point V*r1 keys the recipient ciphertext and is never published
+  tweak-ephemeral: R2 = G*r2; its shared point V*r2 derives the address tweak and is what a receiver
+    disclosure publishes
+  address-tweak: blake2b-512-to-scalar(Innova/IV5/ReceiverTweak/v1, V*r2, R2, spend, view, output-index)
+  owner-key: O = spend + tweak-times-Ed25519-G + y-times-Monero-T
+  separation-rule: the point a disclosure opens keys nothing, so disclosing an output proves which
+    address it pays without exposing the amount, y, or the commitment mask
+  equal-ephemerals: consensus-invalid in the payload and rejected by note encryption
 note-ciphertext:
   recipient-exact-size: 177
-  outgoing-exact-size: 209
+  outgoing-exact-size: 241
   construction: unique-key ChaCha20 stream from pinned rand_chacha ChaCha20Rng, then keyed BLAKE2b-256 encrypt-then-MAC
   kdf: BLAKE2b-512 over a domain, secret material, and length-prefixed associated data; first 32 bytes encrypt and last 32 bytes authenticate
-  associated-data: schema, network, address-type, output-index, genesis, O, I, C, and ephemeral public key, with I derived from O by note-key-image-base
-  recipient-secret: ephemeral-DH shared point from recipient view key
+  associated-data: schema, network, address-type, output-index, genesis, O, I, C, note-ephemeral, and tweak-ephemeral, with I derived from O by note-key-image-base
+  recipient-secret: note-ephemeral-DH shared point from recipient view key
   outgoing-secret: wallet outgoing-view secret scalar bytes
   recipient-plaintext: schema, network, address-type, output-index, recipient spend/view public keys, amount, y, and commitment mask
-  outgoing-plaintext: recipient plaintext followed by ephemeral secret scalar
+  outgoing-plaintext: recipient plaintext followed by the note-ephemeral and tweak-ephemeral secret scalars
 note-key-image-base:
   derivation: I = Elligator2-hash-to-point(first-32-bytes(blake2b-512(Innova/IV5/NoteKeyImageBase/v1, O)))
   hash-to-point: upstream monero-ed25519 unbiased Point::hash, which clears the cofactor
@@ -231,21 +243,23 @@ note-key-image-base:
     every validator recomputes it from O, so a sender cannot choose it and it can carry no
     owner material that would link the notes paid to one address
 note-encrypt-request:
-  exact-size: 240
-  fields: schema-u16-le, network-u8, address-type-u8, output-index-u32-le, genesis-32, recipient-spend-32, recipient-view-32, outgoing-secret-32, ephemeral-secret-32, amount-u64-le, y-32, mask-32
+  exact-size: 272
+  fields: schema-u16-le, network-u8, address-type-u8, output-index-u32-le, genesis-32, recipient-spend-32, recipient-view-32, outgoing-secret-32, note-ephemeral-secret-32, tweak-ephemeral-secret-32, amount-u64-le, y-32, mask-32
+  ephemeral-secrets: both nonzero canonical scalars, independently drawn, and distinct
 note-encrypt-result:
-  exact-size: 522
-  fields: schema-u16-le, network-u8, address-type-u8, output-index-u32-le, O-I-C-ephemeral-128, recipient-ciphertext-177, outgoing-ciphertext-209
+  exact-size: 586
+  fields: schema-u16-le, network-u8, address-type-u8, output-index-u32-le, O-I-C-160 with note-ephemeral and tweak-ephemeral, recipient-ciphertext-177, outgoing-ciphertext-241
   self-check: outgoing ciphertext is independently authenticated, decrypted, and matched to every input and public output component before return
 note-scan-request:
-  prefix-exact-size: 204
-  fields: schema-u16-le, scan-kind-u8, network-u8, address-type-u8, reserved-zero-3, output-index-u32-le, genesis-32, scan-secret-32, spend-material-32, O-C-ephemeral-96, ciphertext-to-eof
+  prefix-exact-size: 236
+  fields: schema-u16-le, scan-kind-u8, network-u8, address-type-u8, reserved-zero-3, output-index-u32-le, genesis-32, scan-secret-32, spend-material-32, O-C-note-ephemeral-tweak-ephemeral-128, ciphertext-to-eof
   scan-kinds: 0 full-spend, 1 view-only, 2 outgoing
   spend-material: base spend secret for full-spend; all zero for view-only and outgoing
 note-scan-result:
   exact-size: 212
   fields: schema-u16-le, scan-kind-u8, network-u8, address-type-u8, reserved-zero-3, output-index-u32-le, amount-u64-le, recipient-spend-32, recipient-view-32, derived-spend-secret-or-zero-32, y-32, mask-32, key-image-or-zero-32
-  validation: authenticate before decrypting; verify all context fields, address linkage, O opening, C opening, ephemeral relation for outgoing scans, and I-times-derived-spend-secret key image for full scans, with I derived from O by note-key-image-base
+  validation: authenticate before decrypting; verify all context fields, address linkage, O opening, C opening, both ephemeral relations for outgoing scans, and I-times-derived-spend-secret key image for full scans, with I derived from O by note-key-image-base
+  scan-cost: a recipient scan derives only the note shared point to authenticate; the tweak shared point is derived after the tag passes, so a candidate that is not the caller's costs one scalar multiplication as before
 tree-state:
   exact-size: 300
   fields: schema-u16-le, layers-u8, reserved-zero-u8, size-u64-le, eight-level-records
@@ -326,13 +340,13 @@ payload-validation:
     is a digest of the carrying transaction's transparent outputs and lock time
   signing-hash: blake2b-256(Innova/IV5/Signing/v1, outer-wire-version-u32-le, canonical-payload-through-finality-body)
   hidden-spend-input: pseudo-out-32 then nullifier-key-image-32; source leaves are never serialized in the base input
-  output-record-points: owner-O-32, commitment-C-32, ephemeral-32; the leaf's I is derived from O by note-key-image-base and is absent from the record
+  output-record-points: owner-O-32, commitment-C-32, note-ephemeral-32, tweak-ephemeral-32, which must differ; the leaf's I is derived from O by note-key-image-base and is absent from the record
   membership: exact upstream proof size and full FCMP++ verification against finalized-root, signing-hash, pseudo-outs, and key-images
   exposed-amount: C equals opening-times-Ed25519-G plus value-times-Monero-H
   hidden-amount-range: canonical aggregate Monero Bulletproof+ over all output commitments; deterministic verifier weights bind signing-hash, commitments, and proof
   value-balance: exact 64-byte Schnorr excess proof binds signing-hash, pseudo-outs, output commitments, signed transparent value balance, and fee
   binding-signature: distinct exact 64-byte Schnorr signature under the value-excess key binds signing-hash, pseudo-outs, output commitments, signed transparent value balance, and fee
   sender-disclosure: source-spend-authority-32 plus a 128-byte proof of the authority discrete log and the Monero-T rerandomization linking it to the exact FCMP O-tilde input
-  receiver-disclosure: recipient-spend-32 and view-32 plus a 160-byte proof containing the ephemeral-view shared point, a DLEQ proof, and the Monero-T output-opening proof
+  receiver-disclosure: recipient-spend-32 and view-32 plus a 160-byte proof containing the tweak-ephemeral-view shared point, a DLEQ proof of that point against the tweak ephemeral, and the Monero-T output-opening proof; the note ephemeral is never opened, so a disclosed output keeps its amount, y, and mask
   disclosure-proof-order: all sender proofs in input order, then all receiver proofs in output order; exposed amounts need no extra proof beyond their verified openings
   remaining-inactive-work: operation-proof cryptographic verification

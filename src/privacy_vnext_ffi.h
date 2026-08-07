@@ -243,13 +243,18 @@ static const uint8_t PRIVACY_VNEXT_SCAN_OUTGOING = 2;
 
 // The public part of one IV5 output, as it appears on chain. The leaf's I point is
 // derived from O by the scanner, so it is not carried here.
+//
+// Two ephemeral keys: noteEphemeral keys the ciphertext and tweakEphemeral fixes the
+// address tweak. A receiver disclosure opens the second one's shared point, so the first
+// is what keeps the note closed to everyone but its owner.
 struct PrivacyVNextEncryptedNote
 {
     uint32_t nOutputIndex;
     PrivacyVNextDigest genesis;
     PrivacyVNextDigest leafO;
     PrivacyVNextDigest leafC;
-    PrivacyVNextDigest ephemeral;
+    PrivacyVNextDigest noteEphemeral;
+    PrivacyVNextDigest tweakEphemeral;
     std::vector<unsigned char> vchCiphertext;
 
     PrivacyVNextEncryptedNote()
@@ -258,7 +263,8 @@ struct PrivacyVNextEncryptedNote
         genesis.fill(0);
         leafO.fill(0);
         leafC.fill(0);
-        ephemeral.fill(0);
+        noteEphemeral.fill(0);
+        tweakEphemeral.fill(0);
     }
 };
 
@@ -393,17 +399,24 @@ struct PrivacyVNextEncryptedOutput
 {
     uint32_t nOutputIndex;
     PrivacyVNextOutputLeaf leaf;        // O, I and C, in payload order
-    PrivacyVNextDigest ephemeral;
+    PrivacyVNextDigest noteEphemeral;   // keys the ciphertext
+    PrivacyVNextDigest tweakEphemeral;  // fixes the address tweak; disclosable
     std::vector<unsigned char> vchRecipientCiphertext;
     std::vector<unsigned char> vchOutgoingCiphertext;
 
-    PrivacyVNextEncryptedOutput() : nOutputIndex(0) { ephemeral.fill(0); }
+    PrivacyVNextEncryptedOutput() : nOutputIndex(0)
+    {
+        noteEphemeral.fill(0);
+        tweakEphemeral.fill(0);
+    }
 };
 
 // Encrypt one output to a recipient address.
 //
 // `y` and `mask` are the note's openings; the caller keeps them to spend the note later.
-// The leaf's I point is derived from the note's own O and never supplied.
+// The leaf's I point is derived from the note's own O and never supplied. The two
+// ephemeral secrets must be independently drawn and distinct: only the tweak one is ever
+// opened by a disclosure.
 bool EncryptPrivacyVNextNote(
     uint8_t nNetwork,
     uint8_t nAddressType,
@@ -412,7 +425,8 @@ bool EncryptPrivacyVNextNote(
     const PrivacyVNextDigest& recipientSpend,
     const PrivacyVNextDigest& recipientView,
     const PrivacyVNextDigest& outgoingSecret,
-    const PrivacyVNextDigest& ephemeralSecret,
+    const PrivacyVNextDigest& noteEphemeralSecret,
+    const PrivacyVNextDigest& tweakEphemeralSecret,
     uint64_t nAmount,
     const PrivacyVNextDigest& y,
     const PrivacyVNextDigest& mask,
@@ -518,8 +532,8 @@ bool ProvePrivacyVNextReceiverDisclosure(
     const PrivacyVNextDigest& recipientSpend,
     const PrivacyVNextDigest& recipientView,
     const PrivacyVNextDigest& outputOwner,
-    const PrivacyVNextDigest& ephemeralPublic,
-    const PrivacyVNextDigest& ephemeralSecret,
+    const PrivacyVNextDigest& tweakEphemeralPublic,
+    const PrivacyVNextDigest& tweakEphemeralSecret,
     const PrivacyVNextDigest& outputY,
     const PrivacyVNextDigest& signableHash,
     const PrivacyVNextDigest& entropy,

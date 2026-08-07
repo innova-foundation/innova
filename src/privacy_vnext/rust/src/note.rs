@@ -19,16 +19,16 @@ const CIPHERTEXT_VERSION: u8 = 1;
 const SCAN_FULL: u8 = 0;
 const SCAN_VIEW_ONLY: u8 = 1;
 const SCAN_OUTGOING: u8 = 2;
-const SCAN_PREFIX_BYTES: usize = 204;
+const SCAN_PREFIX_BYTES: usize = 236;
 const KEY_IMAGE_BASE_DOMAIN: &[u8] = b"Innova/IV5/NoteKeyImageBase/v1";
 const RECIPIENT_PLAINTEXT_BYTES: usize = 144;
-const OUTGOING_PLAINTEXT_BYTES: usize = 176;
+const OUTGOING_PLAINTEXT_BYTES: usize = 208;
 const TAG_BYTES: usize = 32;
 const RECIPIENT_CIPHERTEXT_BYTES: usize = 1 + RECIPIENT_PLAINTEXT_BYTES + TAG_BYTES;
 const OUTGOING_CIPHERTEXT_BYTES: usize = 1 + OUTGOING_PLAINTEXT_BYTES + TAG_BYTES;
 const SCAN_RESULT_BYTES: usize = 212;
-pub(crate) const ENCRYPT_REQUEST_BYTES: usize = 240;
-const ENCRYPT_RESULT_BYTES: usize = 522;
+pub(crate) const ENCRYPT_REQUEST_BYTES: usize = 272;
+const ENCRYPT_RESULT_BYTES: usize = 586;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NoteError {
@@ -158,9 +158,10 @@ fn associated_data(
     output_o: &[u8; 32],
     output_i: &[u8; 32],
     output_c: &[u8; 32],
-    ephemeral: &[u8; 32],
+    note_ephemeral: &[u8; 32],
+    tweak_ephemeral: &[u8; 32],
 ) -> Vec<u8> {
-    let mut data = Vec::with_capacity(172);
+    let mut data = Vec::with_capacity(204);
     data.extend_from_slice(b"Innova/IV5/NoteAssociatedData/v1");
     data.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
     data.push(network);
@@ -170,7 +171,10 @@ fn associated_data(
     data.extend_from_slice(output_o);
     data.extend_from_slice(output_i);
     data.extend_from_slice(output_c);
-    data.extend_from_slice(ephemeral);
+    // Both ephemerals: swapping either one must break the tag rather than silently
+    // leaving the note undecryptable or the owner key underivable.
+    data.extend_from_slice(note_ephemeral);
+    data.extend_from_slice(tweak_ephemeral);
     data
 }
 
@@ -277,11 +281,15 @@ struct EncryptedNote {
     output_o: [u8; 32],
     output_i: [u8; 32],
     output_c: [u8; 32],
-    ephemeral: [u8; 32],
+    note_ephemeral: [u8; 32],
+    tweak_ephemeral: [u8; 32],
     recipient_ciphertext: Vec<u8>,
     outgoing_ciphertext: Vec<u8>,
 }
 
+/// Encrypt one note under two independent ephemeral keys: one for the note, one for
+/// the address tweak. The receiver disclosure publishes the tweak's shared point, so
+/// that point must never key the ciphertext.
 #[allow(clippy::too_many_arguments)]
 fn encrypt_note(
     network: u8,
@@ -291,7 +299,8 @@ fn encrypt_note(
     recipient_spend: &[u8; 32],
     recipient_view: &[u8; 32],
     outgoing_secret_bytes: &[u8; 32],
-    ephemeral_secret_bytes: &[u8; 32],
+    note_ephemeral_secret_bytes: &[u8; 32],
+    tweak_ephemeral_secret_bytes: &[u8; 32],
     amount: u64,
     y_bytes: &[u8; 32],
     mask_bytes: &[u8; 32],
@@ -305,17 +314,27 @@ fn encrypt_note(
     let spend = canonical_point(recipient_spend)?;
     let view = canonical_point(recipient_view)?;
     canonical_scalar(outgoing_secret_bytes, true)?;
-    let ephemeral_secret = canonical_scalar(ephemeral_secret_bytes, true)?;
+    let note_ephemeral_secret = canonical_scalar(note_ephemeral_secret_bytes, true)?;
+    let tweak_ephemeral_secret = canonical_scalar(tweak_ephemeral_secret_bytes, true)?;
+    // Independence is the whole property: one is published by a disclosure, the other
+    // stays secret for the life of the note.
+    if note_ephemeral_secret == tweak_ephemeral_secret {
+        return Err(NoteError::InvalidEncoding);
+    }
     let y = canonical_scalar(y_bytes, true)?;
     canonical_scalar(mask_bytes, false)?;
 
-    let ephemeral = (ED25519_BASEPOINT_POINT * ephemeral_secret)
+    let note_ephemeral = (ED25519_BASEPOINT_POINT * note_ephemeral_secret)
         .compress()
         .to_bytes();
-    let shared = (view * ephemeral_secret).compress().to_bytes();
+    let mut note_shared = (view * note_ephemeral_secret).compress().to_bytes();
+    let tweak_ephemeral = (ED25519_BASEPOINT_POINT * tweak_ephemeral_secret)
+        .compress()
+        .to_bytes();
+    let tweak_shared = (view * tweak_ephemeral_secret).compress().to_bytes();
     let tweak = disclosure::receiver_tweak(
-        &shared,
-        &ephemeral,
+        &tweak_shared,
+        &tweak_ephemeral,
         recipient_spend,
         recipient_view,
         output_index,
@@ -334,7 +353,8 @@ fn encrypt_note(
         &output_o,
         &output_i,
         &output_c,
-        &ephemeral,
+        &note_ephemeral,
+        &tweak_ephemeral,
     );
 
     let mut recipient_plaintext = Vec::with_capacity(RECIPIENT_PLAINTEXT_BYTES);
@@ -349,13 +369,14 @@ fn encrypt_note(
     recipient_plaintext.extend_from_slice(mask_bytes);
     let recipient_ciphertext = encrypt(
         b"Innova/IV5/NoteEncryption/Recipient/v1",
-        &shared,
+        &note_shared,
         &associated_data,
         &recipient_plaintext,
     );
 
     let mut outgoing_plaintext = recipient_plaintext.clone();
-    outgoing_plaintext.extend_from_slice(ephemeral_secret_bytes);
+    outgoing_plaintext.extend_from_slice(note_ephemeral_secret_bytes);
+    outgoing_plaintext.extend_from_slice(tweak_ephemeral_secret_bytes);
     let outgoing_ciphertext = encrypt(
         b"Innova/IV5/NoteEncryption/Outgoing/v1",
         outgoing_secret_bytes,
@@ -364,12 +385,14 @@ fn encrypt_note(
     );
     recipient_plaintext.zeroize();
     outgoing_plaintext.zeroize();
+    note_shared.zeroize();
 
     Ok(EncryptedNote {
         output_o,
         output_i,
         output_c,
-        ephemeral,
+        note_ephemeral,
+        tweak_ephemeral,
         recipient_ciphertext,
         outgoing_ciphertext,
     })
@@ -390,7 +413,8 @@ pub(crate) fn encrypt_request(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     let recipient_spend = reader.array().map_err(ResultCode::from)?;
     let recipient_view = reader.array().map_err(ResultCode::from)?;
     let outgoing_secret = reader.array().map_err(ResultCode::from)?;
-    let ephemeral_secret = reader.array().map_err(ResultCode::from)?;
+    let note_ephemeral_secret = reader.array().map_err(ResultCode::from)?;
+    let tweak_ephemeral_secret = reader.array().map_err(ResultCode::from)?;
     let amount = reader.u64().map_err(ResultCode::from)?;
     let y = reader.array().map_err(ResultCode::from)?;
     let mask = reader.array().map_err(ResultCode::from)?;
@@ -403,7 +427,8 @@ pub(crate) fn encrypt_request(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         &recipient_spend,
         &recipient_view,
         &outgoing_secret,
-        &ephemeral_secret,
+        &note_ephemeral_secret,
+        &tweak_ephemeral_secret,
         amount,
         &y,
         &mask,
@@ -421,7 +446,8 @@ pub(crate) fn encrypt_request(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         &[0_u8; 32],
         &encrypted.output_o,
         &encrypted.output_c,
-        &encrypted.ephemeral,
+        &encrypted.note_ephemeral,
+        &encrypted.tweak_ephemeral,
         &encrypted.outgoing_ciphertext,
     )
     .map_err(ResultCode::from)?;
@@ -442,7 +468,8 @@ pub(crate) fn encrypt_request(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     result.extend_from_slice(&encrypted.output_o);
     result.extend_from_slice(&encrypted.output_i);
     result.extend_from_slice(&encrypted.output_c);
-    result.extend_from_slice(&encrypted.ephemeral);
+    result.extend_from_slice(&encrypted.note_ephemeral);
+    result.extend_from_slice(&encrypted.tweak_ephemeral);
     result.extend_from_slice(&encrypted.recipient_ciphertext);
     result.extend_from_slice(&encrypted.outgoing_ciphertext);
     if result.len() != ENCRYPT_RESULT_BYTES {
@@ -498,13 +525,17 @@ fn scan_receiver(
     spend_material: &[u8; 32],
     output_o_bytes: &[u8; 32],
     output_c_bytes: &[u8; 32],
-    ephemeral_bytes: &[u8; 32],
+    note_ephemeral_bytes: &[u8; 32],
+    tweak_ephemeral_bytes: &[u8; 32],
     ciphertext: &[u8],
 ) -> Result<OpenedNote, NoteError> {
     let view_secret = canonical_scalar(view_secret_bytes, true)?;
     canonical_point(output_c_bytes)?;
-    let ephemeral = canonical_point(ephemeral_bytes)?;
-    let shared = (ephemeral * view_secret).compress().to_bytes();
+    let note_ephemeral = canonical_point(note_ephemeral_bytes)?;
+    let tweak_ephemeral = canonical_point(tweak_ephemeral_bytes)?;
+    // Only the note key is needed to decide whether this output is ours, so the second
+    // multiplication is paid on a match rather than on every candidate.
+    let mut note_shared = (note_ephemeral * view_secret).compress().to_bytes();
     let output_i_bytes = key_image_base(output_o_bytes)?;
     let associated_data = associated_data(
         network,
@@ -514,15 +545,18 @@ fn scan_receiver(
         output_o_bytes,
         &output_i_bytes,
         output_c_bytes,
-        ephemeral_bytes,
+        note_ephemeral_bytes,
+        tweak_ephemeral_bytes,
     );
-    let mut plaintext = decrypt(
+    let plaintext = decrypt(
         b"Innova/IV5/NoteEncryption/Recipient/v1",
-        &shared,
+        &note_shared,
         &associated_data,
         ciphertext,
         RECIPIENT_PLAINTEXT_BYTES,
-    )?;
+    );
+    note_shared.zeroize();
+    let mut plaintext = plaintext?;
     let (recipient_spend, recipient_view, amount, y_bytes, mask) =
         parse_plaintext(&plaintext, network, address_type, output_index)?;
     plaintext.zeroize();
@@ -534,9 +568,10 @@ fn scan_receiver(
     }
     let spend = canonical_point(&recipient_spend)?;
     let y = canonical_scalar(&y_bytes, true)?;
+    let tweak_shared = (tweak_ephemeral * view_secret).compress().to_bytes();
     let tweak = disclosure::receiver_tweak(
-        &shared,
-        ephemeral_bytes,
+        &tweak_shared,
+        tweak_ephemeral_bytes,
         &recipient_spend,
         &recipient_view,
         output_index,
@@ -589,7 +624,8 @@ fn scan_outgoing(
     spend_material: &[u8; 32],
     output_o_bytes: &[u8; 32],
     output_c_bytes: &[u8; 32],
-    ephemeral_bytes: &[u8; 32],
+    note_ephemeral_bytes: &[u8; 32],
+    tweak_ephemeral_bytes: &[u8; 32],
     ciphertext: &[u8],
 ) -> Result<OpenedNote, NoteError> {
     if spend_material.iter().any(|byte| *byte != 0) {
@@ -606,7 +642,8 @@ fn scan_outgoing(
         output_o_bytes,
         &output_i_bytes,
         output_c_bytes,
-        ephemeral_bytes,
+        note_ephemeral_bytes,
+        tweak_ephemeral_bytes,
     );
     let mut plaintext = decrypt(
         b"Innova/IV5/NoteEncryption/Outgoing/v1",
@@ -617,25 +654,40 @@ fn scan_outgoing(
     )?;
     let (recipient_spend, recipient_view, amount, y_bytes, mask) =
         parse_plaintext(&plaintext, network, address_type, output_index)?;
-    let ephemeral_secret_bytes: [u8; 32] = plaintext[RECIPIENT_PLAINTEXT_BYTES..]
+    let mut note_ephemeral_secret_bytes: [u8; 32] = plaintext
+        [RECIPIENT_PLAINTEXT_BYTES..RECIPIENT_PLAINTEXT_BYTES + 32]
+        .try_into()
+        .map_err(|_| NoteError::BadLength)?;
+    let mut tweak_ephemeral_secret_bytes: [u8; 32] = plaintext
+        [RECIPIENT_PLAINTEXT_BYTES + 32..]
         .try_into()
         .map_err(|_| NoteError::BadLength)?;
     plaintext.zeroize();
-    let ephemeral_secret = canonical_scalar(&ephemeral_secret_bytes, true)?;
-    if (ED25519_BASEPOINT_POINT * ephemeral_secret)
+    let note_ephemeral_secret = canonical_scalar(&note_ephemeral_secret_bytes, true)?;
+    let tweak_ephemeral_secret = canonical_scalar(&tweak_ephemeral_secret_bytes, true)?;
+    note_ephemeral_secret_bytes.zeroize();
+    tweak_ephemeral_secret_bytes.zeroize();
+    // Both must open, or the sender's own record does not describe an output the
+    // recipient can find and spend.
+    if (ED25519_BASEPOINT_POINT * note_ephemeral_secret)
         .compress()
         .to_bytes()
-        != *ephemeral_bytes
+        != *note_ephemeral_bytes
+        || (ED25519_BASEPOINT_POINT * tweak_ephemeral_secret)
+            .compress()
+            .to_bytes()
+            != *tweak_ephemeral_bytes
+        || note_ephemeral_secret == tweak_ephemeral_secret
     {
         return Err(NoteError::InvalidProof);
     }
     let spend = canonical_point(&recipient_spend)?;
     let view = canonical_point(&recipient_view)?;
     let y = canonical_scalar(&y_bytes, true)?;
-    let shared = (view * ephemeral_secret).compress().to_bytes();
+    let tweak_shared = (view * tweak_ephemeral_secret).compress().to_bytes();
     let tweak = disclosure::receiver_tweak(
-        &shared,
-        ephemeral_bytes,
+        &tweak_shared,
+        tweak_ephemeral_bytes,
         &recipient_spend,
         &recipient_view,
         output_index,
@@ -683,6 +735,47 @@ fn encode_result(
     result
 }
 
+/// Attempt a recipient ciphertext with one candidate KDF secret and public leaf
+/// fields only, i.e. what an observer holding a published point can run.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn try_open_recipient(
+    network: u8,
+    address_type: u8,
+    output_index: u32,
+    genesis: &[u8; 32],
+    output_o: &[u8; 32],
+    output_c: &[u8; 32],
+    note_ephemeral: &[u8; 32],
+    tweak_ephemeral: &[u8; 32],
+    ciphertext: &[u8],
+    candidate_secret: &[u8; 32],
+) -> Option<u64> {
+    let output_i = key_image_base(output_o).ok()?;
+    let associated_data = associated_data(
+        network,
+        address_type,
+        output_index,
+        genesis,
+        output_o,
+        &output_i,
+        output_c,
+        note_ephemeral,
+        tweak_ephemeral,
+    );
+    let plaintext = decrypt(
+        b"Innova/IV5/NoteEncryption/Recipient/v1",
+        candidate_secret,
+        &associated_data,
+        ciphertext,
+        RECIPIENT_PLAINTEXT_BYTES,
+    )
+    .ok()?;
+    let (_, _, amount, _, _) =
+        parse_plaintext(&plaintext, network, address_type, output_index).ok()?;
+    Some(amount)
+}
+
 pub(crate) fn scan(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     if request.len() < SCAN_PREFIX_BYTES + 1 {
         return Err(ResultCode::BadLength);
@@ -709,7 +802,8 @@ pub(crate) fn scan(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     let spend_material = reader.array().map_err(ResultCode::from)?;
     let output_o = reader.array().map_err(ResultCode::from)?;
     let output_c = reader.array().map_err(ResultCode::from)?;
-    let ephemeral = reader.array().map_err(ResultCode::from)?;
+    let note_ephemeral = reader.array().map_err(ResultCode::from)?;
+    let tweak_ephemeral = reader.array().map_err(ResultCode::from)?;
     let ciphertext = reader
         .take(request.len() - SCAN_PREFIX_BYTES)
         .map_err(ResultCode::from)?;
@@ -733,7 +827,8 @@ pub(crate) fn scan(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
             &spend_material,
             &output_o,
             &output_c,
-            &ephemeral,
+            &note_ephemeral,
+            &tweak_ephemeral,
             ciphertext,
         ),
         SCAN_OUTGOING => scan_outgoing(
@@ -745,7 +840,8 @@ pub(crate) fn scan(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
             &spend_material,
             &output_o,
             &output_c,
-            &ephemeral,
+            &note_ephemeral,
+            &tweak_ephemeral,
             ciphertext,
         ),
         _ => Err(NoteError::Unsupported),
@@ -780,7 +876,8 @@ mod tests {
         request.extend_from_slice(&spend_material);
         request.extend_from_slice(&note.output_o);
         request.extend_from_slice(&note.output_c);
-        request.extend_from_slice(&note.ephemeral);
+        request.extend_from_slice(&note.note_ephemeral);
+        request.extend_from_slice(&note.tweak_ephemeral);
         request.extend_from_slice(ciphertext);
         request
     }
@@ -795,6 +892,7 @@ mod tests {
             &(ED25519_BASEPOINT_POINT * view_secret).compress().to_bytes(),
             &Scalar::from(7_u64).to_bytes(),
             &Scalar::from(ephemeral_secret).to_bytes(),
+            &Scalar::from(ephemeral_secret + 1).to_bytes(),
             99,
             &Scalar::from(17_u64).to_bytes(),
             &Scalar::from(19_u64).to_bytes(),
@@ -831,6 +929,7 @@ mod tests {
         );
         request.extend_from_slice(&Scalar::from(7_u64).to_bytes());
         request.extend_from_slice(&Scalar::from(13_u64).to_bytes());
+        request.extend_from_slice(&Scalar::from(14_u64).to_bytes());
         request.extend_from_slice(&99_u64.to_le_bytes());
         request.extend_from_slice(&Scalar::from(17_u64).to_bytes());
         request.extend_from_slice(&Scalar::from(19_u64).to_bytes());
@@ -960,14 +1059,16 @@ mod tests {
             )),
             Err(ResultCode::ConsensusInvalid)
         );
-        let mut wrong_note = EncryptedNote {
+        let clone_note = || EncryptedNote {
             output_o: note.output_o,
             output_i: note.output_i,
             output_c: note.output_c,
-            ephemeral: note.ephemeral,
+            note_ephemeral: note.note_ephemeral,
+            tweak_ephemeral: note.tweak_ephemeral,
             recipient_ciphertext: note.recipient_ciphertext.clone(),
             outgoing_ciphertext: note.outgoing_ciphertext.clone(),
         };
+        let mut wrong_note = clone_note();
         wrong_note.output_c[0] ^= 1;
         assert_eq!(
             scan(&scan_request(
@@ -979,5 +1080,50 @@ mod tests {
             )),
             Err(ResultCode::ConsensusInvalid)
         );
+
+        // Both ephemerals sit in the associated data, so exchanging them changes the
+        // note key and the tweak at once and must fail on the tag.
+        let mut swapped = clone_note();
+        swapped.note_ephemeral = note.tweak_ephemeral;
+        swapped.tweak_ephemeral = note.note_ephemeral;
+        assert_eq!(
+            scan(&scan_request(
+                SCAN_FULL,
+                view_secret.to_bytes(),
+                spend_secret.to_bytes(),
+                &swapped,
+                &swapped.recipient_ciphertext,
+            )),
+            Err(ResultCode::ConsensusInvalid)
+        );
+    }
+
+    // The receiver disclosure publishes the tweak's shared point. If that point also
+    // keyed the ciphertext, publishing it would open the note.
+    #[test]
+    fn the_disclosed_shared_point_is_not_the_note_key() {
+        let (note, _, view_secret, _) = test_note();
+        let tweak_ephemeral = canonical_point(&note.tweak_ephemeral).unwrap();
+        let note_ephemeral = canonical_point(&note.note_ephemeral).unwrap();
+        assert_ne!(note.note_ephemeral, note.tweak_ephemeral);
+
+        // What a receiver disclosure publishes.
+        let disclosed = (tweak_ephemeral * view_secret).compress().to_bytes();
+        // What the ciphertext is keyed under.
+        let note_shared = (note_ephemeral * view_secret).compress().to_bytes();
+        assert_ne!(disclosed, note_shared);
+
+        // The disclosed point still determines the tweak, so the address linkage the
+        // disclosure proves is unchanged.
+        let spend = (ED25519_BASEPOINT_POINT * Scalar::from(3_u64))
+            .compress()
+            .to_bytes();
+        let view = (ED25519_BASEPOINT_POINT * view_secret).compress().to_bytes();
+        let tweak =
+            disclosure::receiver_tweak(&disclosed, &note.tweak_ephemeral, &spend, &view, 7);
+        let expected = canonical_point(&spend).unwrap()
+            + (ED25519_BASEPOINT_POINT * tweak)
+            + (monero_t() * Scalar::from(17_u64));
+        assert_eq!(expected.compress().to_bytes(), note.output_o);
     }
 }

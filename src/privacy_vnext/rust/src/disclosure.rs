@@ -216,16 +216,26 @@ pub(crate) fn verify_sender(
     )?)
 }
 
+/// Derive the address tweak from the shared point a receiver disclosure may publish.
+///
+/// The output's second ephemeral key feeds this and nothing else. The first keys the
+/// note ciphertext, so a disclosure proves who an output pays without opening it.
 pub(crate) fn receiver_tweak(
-    shared: &[u8; 32],
-    ephemeral: &[u8; 32],
+    tweak_shared: &[u8; 32],
+    tweak_ephemeral: &[u8; 32],
     spend: &[u8; 32],
     view: &[u8; 32],
     output_index: u32,
 ) -> Scalar {
     hash_to_scalar(
         b"Innova/IV5/ReceiverTweak/v1",
-        &[shared, ephemeral, spend, view, &output_index.to_le_bytes()],
+        &[
+            tweak_shared,
+            tweak_ephemeral,
+            spend,
+            view,
+            &output_index.to_le_bytes(),
+        ],
     )
 }
 
@@ -234,8 +244,8 @@ pub(crate) fn prove_receiver(
     spend_bytes: &[u8; 32],
     view_bytes: &[u8; 32],
     output_o_bytes: &[u8; 32],
-    ephemeral_bytes: &[u8; 32],
-    ephemeral_secret_bytes: &[u8; 32],
+    tweak_ephemeral_bytes: &[u8; 32],
+    tweak_ephemeral_secret_bytes: &[u8; 32],
     output_y_bytes: &[u8; 32],
     signable_hash: &[u8; 32],
     output_index: u32,
@@ -244,8 +254,8 @@ pub(crate) fn prove_receiver(
     let spend = canonical_point(spend_bytes)?;
     let view = canonical_point(view_bytes)?;
     let output_o = canonical_point(output_o_bytes)?;
-    let ephemeral = canonical_point(ephemeral_bytes)?;
-    let ephemeral_secret = canonical_scalar(ephemeral_secret_bytes)?;
+    let ephemeral = canonical_point(tweak_ephemeral_bytes)?;
+    let ephemeral_secret = canonical_scalar(tweak_ephemeral_secret_bytes)?;
     let output_y = canonical_scalar(output_y_bytes)?;
     if ephemeral != ED25519_BASEPOINT_POINT * ephemeral_secret {
         return Err(DisclosureError::InvalidProof);
@@ -254,7 +264,7 @@ pub(crate) fn prove_receiver(
     let shared_bytes = shared.compress().to_bytes();
     let tweak = receiver_tweak(
         &shared_bytes,
-        ephemeral_bytes,
+        tweak_ephemeral_bytes,
         spend_bytes,
         view_bytes,
         output_index,
@@ -269,13 +279,13 @@ pub(crate) fn prove_receiver(
         b"Innova/IV5/Disclosure/Receiver/DleqNonce/v1",
         &[
             entropy,
-            ephemeral_secret_bytes,
+            tweak_ephemeral_secret_bytes,
             signable_hash,
             &index_bytes,
             spend_bytes,
             view_bytes,
             output_o_bytes,
-            ephemeral_bytes,
+            tweak_ephemeral_bytes,
             &shared_bytes,
         ],
     );
@@ -292,7 +302,7 @@ pub(crate) fn prove_receiver(
             spend_bytes,
             view_bytes,
             output_o_bytes,
-            ephemeral_bytes,
+            tweak_ephemeral_bytes,
             &shared_bytes,
             &a_g.compress().to_bytes(),
             &a_v.compress().to_bytes(),
@@ -303,7 +313,7 @@ pub(crate) fn prove_receiver(
     context.extend_from_slice(spend_bytes);
     context.extend_from_slice(view_bytes);
     context.extend_from_slice(output_o_bytes);
-    context.extend_from_slice(ephemeral_bytes);
+    context.extend_from_slice(tweak_ephemeral_bytes);
     context.extend_from_slice(&shared_bytes);
     let output_proof = schnorr_prove(
         b"Innova/IV5/Disclosure/Receiver/OutputNonce/v1",
@@ -329,7 +339,7 @@ pub(crate) fn verify_receiver(
     spend_bytes: &[u8; 32],
     view_bytes: &[u8; 32],
     output_o_bytes: &[u8; 32],
-    ephemeral_bytes: &[u8; 32],
+    tweak_ephemeral_bytes: &[u8; 32],
     signable_hash: &[u8; 32],
     output_index: u32,
     proof: &[u8],
@@ -340,7 +350,7 @@ pub(crate) fn verify_receiver(
     let spend = canonical_point(spend_bytes)?;
     let view = canonical_point(view_bytes)?;
     let output_o = canonical_point(output_o_bytes)?;
-    let ephemeral = canonical_point(ephemeral_bytes)?;
+    let ephemeral = canonical_point(tweak_ephemeral_bytes)?;
     let mut shared_bytes = [0_u8; 32];
     shared_bytes.copy_from_slice(&proof[..32]);
     let shared = canonical_point(&shared_bytes)?;
@@ -362,7 +372,7 @@ pub(crate) fn verify_receiver(
             spend_bytes,
             view_bytes,
             output_o_bytes,
-            ephemeral_bytes,
+            tweak_ephemeral_bytes,
             &shared_bytes,
             &a_g.compress().to_bytes(),
             &a_v.compress().to_bytes(),
@@ -374,7 +384,7 @@ pub(crate) fn verify_receiver(
 
     let tweak = receiver_tweak(
         &shared_bytes,
-        ephemeral_bytes,
+        tweak_ephemeral_bytes,
         spend_bytes,
         view_bytes,
         output_index,
@@ -387,7 +397,7 @@ pub(crate) fn verify_receiver(
     context.extend_from_slice(spend_bytes);
     context.extend_from_slice(view_bytes);
     context.extend_from_slice(output_o_bytes);
-    context.extend_from_slice(ephemeral_bytes);
+    context.extend_from_slice(tweak_ephemeral_bytes);
     context.extend_from_slice(&shared_bytes);
     schnorr_verify(
         b"Innova/IV5/Disclosure/Receiver/OutputChallenge/v1",
