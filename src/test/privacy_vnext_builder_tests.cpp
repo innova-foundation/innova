@@ -62,7 +62,7 @@ BOOST_AUTO_TEST_CASE(an_encrypted_output_reopens_under_its_own_keys)
     BOOST_REQUIRE_MESSAGE(
         EncryptPrivacyVNextNote(2, 0, 0, genesis, keys.spendPublic,
                                 keys.viewPublic, keys.outgoingViewSecret,
-                                BuilderScalar(13), nAmount,
+                                BuilderScalar(13), BuilderScalar(14), nAmount,
                                 BuilderScalar(17), BuilderScalar(19), note,
                                 error),
         error);
@@ -77,7 +77,8 @@ BOOST_AUTO_TEST_CASE(an_encrypted_output_reopens_under_its_own_keys)
     onChain.genesis = genesis;
     onChain.leafO = note.leaf.owner;
     onChain.leafC = note.leaf.commitment;
-    onChain.ephemeral = note.ephemeral;
+    onChain.noteEphemeral = note.noteEphemeral;
+    onChain.tweakEphemeral = note.tweakEphemeral;
     onChain.vchCiphertext = note.vchRecipientCiphertext;
 
     PrivacyVNextScannedNote scanned;
@@ -209,8 +210,9 @@ BOOST_AUTO_TEST_CASE(a_note_placed_in_the_tree_can_be_spent)
     BOOST_REQUIRE_MESSAGE(
         EncryptPrivacyVNextNote(2, 0, 0, genesis, keys.spendPublic,
                                 keys.viewPublic, keys.outgoingViewSecret,
-                                BuilderScalar(29), nAmount, BuilderScalar(31),
-                                BuilderScalar(37), funding, error),
+                                BuilderScalar(29), BuilderScalar(30), nAmount,
+                                BuilderScalar(31), BuilderScalar(37), funding,
+                                error),
         error);
 
     // Place it in the tree, then reopen it by scanning as the wallet would.
@@ -252,7 +254,8 @@ BOOST_AUTO_TEST_CASE(a_note_placed_in_the_tree_can_be_spent)
     onChain.genesis = genesis;
     onChain.leafO = funding.leaf.owner;
     onChain.leafC = funding.leaf.commitment;
-    onChain.ephemeral = funding.ephemeral;
+    onChain.noteEphemeral = funding.noteEphemeral;
+    onChain.tweakEphemeral = funding.tweakEphemeral;
     onChain.vchCiphertext = funding.vchRecipientCiphertext;
     PrivacyVNextScannedNote scanned;
     BOOST_REQUIRE_MESSAGE(
@@ -327,8 +330,9 @@ BOOST_AUTO_TEST_CASE(memoized_effects_match_a_full_validation)
     BOOST_REQUIRE_MESSAGE(
         EncryptPrivacyVNextNote(2, 0, 0, genesis, keys.spendPublic,
                                 keys.viewPublic, keys.outgoingViewSecret,
-                                BuilderScalar(41), nAmount, BuilderScalar(43),
-                                BuilderScalar(47), funding, error),
+                                BuilderScalar(41), BuilderScalar(42), nAmount,
+                                BuilderScalar(43), BuilderScalar(47), funding,
+                                error),
         error);
 
     PrivacyVNextEpochSeed epochSeed;
@@ -364,7 +368,8 @@ BOOST_AUTO_TEST_CASE(memoized_effects_match_a_full_validation)
     onChain.genesis = genesis;
     onChain.leafO = funding.leaf.owner;
     onChain.leafC = funding.leaf.commitment;
-    onChain.ephemeral = funding.ephemeral;
+    onChain.noteEphemeral = funding.noteEphemeral;
+    onChain.tweakEphemeral = funding.tweakEphemeral;
     onChain.vchCiphertext = funding.vchRecipientCiphertext;
     PrivacyVNextScannedNote scanned;
     BOOST_REQUIRE_MESSAGE(
@@ -915,8 +920,9 @@ BOOST_AUTO_TEST_CASE(an_unshield_binds_the_transparent_output_it_pays)
     BOOST_REQUIRE_MESSAGE(
         EncryptPrivacyVNextNote(2, 0, 0, genesis, keys.spendPublic,
                                 keys.viewPublic, keys.outgoingViewSecret,
-                                BuilderScalar(41), nAmount, BuilderScalar(43),
-                                BuilderScalar(47), funding, error),
+                                BuilderScalar(41), BuilderScalar(42), nAmount,
+                                BuilderScalar(43), BuilderScalar(47), funding,
+                                error),
         error);
 
     PrivacyVNextEpochSeed epochSeed;
@@ -952,7 +958,8 @@ BOOST_AUTO_TEST_CASE(an_unshield_binds_the_transparent_output_it_pays)
     onChain.genesis = genesis;
     onChain.leafO = funding.leaf.owner;
     onChain.leafC = funding.leaf.commitment;
-    onChain.ephemeral = funding.ephemeral;
+    onChain.noteEphemeral = funding.noteEphemeral;
+    onChain.tweakEphemeral = funding.tweakEphemeral;
     onChain.vchCiphertext = funding.vchRecipientCiphertext;
     PrivacyVNextScannedNote scanned;
     BOOST_REQUIRE_MESSAGE(
@@ -1130,8 +1137,9 @@ namespace
 size_t DisclosureRecordsAt(size_t nInputs, size_t nOutputs)
 {
     const size_t nHeader = 9 + 32 + 32 + 32 + 8 + 8 + 8 + 32;
+    // O, C and two ephemeral keys, then the two length-prefixed ciphertexts.
     const size_t nOutputRecord =
-        96 + 1 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE + 1 +
+        128 + 1 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE + 1 +
         INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE;
     return nHeader + 1 + (nInputs * 64) + 1 + (nOutputs * nOutputRecord);
 }
@@ -1170,7 +1178,8 @@ void FundOneNote(CTxDB& txdb, FundedNote& funded, unsigned char seedFill)
     BOOST_REQUIRE_MESSAGE(
         EncryptPrivacyVNextNote(2, 0, 0, funded.genesis, funded.keys.spendPublic,
                                 funded.keys.viewPublic,
-                                funded.keys.outgoingViewSecret, BuilderScalar(29),
+                                funded.keys.outgoingViewSecret,
+                                BuilderScalar(29), BuilderScalar(30),
                                 funded.nAmount, BuilderScalar(31),
                                 BuilderScalar(37), funding, error),
         error);
@@ -1208,7 +1217,8 @@ void FundOneNote(CTxDB& txdb, FundedNote& funded, unsigned char seedFill)
     onChain.genesis = funded.genesis;
     onChain.leafO = funding.leaf.owner;
     onChain.leafC = funding.leaf.commitment;
-    onChain.ephemeral = funding.ephemeral;
+    onChain.noteEphemeral = funding.noteEphemeral;
+    onChain.tweakEphemeral = funding.tweakEphemeral;
     onChain.vchCiphertext = funding.vchRecipientCiphertext;
     PrivacyVNextScannedNote scanned;
     BOOST_REQUIRE_MESSAGE(

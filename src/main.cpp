@@ -2877,7 +2877,10 @@ int CMerkleTx::GetBlocksToMaturity() const
 {
     if (!(IsCoinBase() || IsCoinStake()))
         return 0;
-    int nWalletMaturity = fRegTest ? nCoinbaseMaturity : nCoinbaseMaturity + 10;
+    // A generated output is spendable only once GetDepthInMainChain() exceeds
+    // nCoinbaseMaturity, matching ConnectInputs.
+    int nWalletMaturity =
+        fRegTest ? nCoinbaseMaturity + 1 : nCoinbaseMaturity + 10;
     return max(0, nWalletMaturity - GetDepthInMainChain());
 }
 

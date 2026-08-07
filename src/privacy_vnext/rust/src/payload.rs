@@ -230,7 +230,10 @@ struct PayloadPrefix<'a> {
     /// Derived from each owner key, never read from the wire.
     output_nullifier_bases: Vec<[u8; 32]>,
     output_commitments: Vec<[u8; 32]>,
-    output_ephemeral_keys: Vec<[u8; 32]>,
+    /// Keys the recipient ciphertext; never published by any disclosure.
+    output_note_ephemerals: Vec<[u8; 32]>,
+    /// Determines the address tweak; a receiver disclosure publishes its shared point.
+    output_tweak_ephemerals: Vec<[u8; 32]>,
     output_recipient_ciphertexts: Vec<Vec<u8>>,
     output_outgoing_ciphertexts: Vec<Vec<u8>>,
 }
@@ -313,7 +316,8 @@ fn parse_payload_prefix(
     let mut output_owners = Vec::with_capacity(output_count);
     let mut output_nullifier_bases = Vec::with_capacity(output_count);
     let mut output_commitments = Vec::with_capacity(output_count);
-    let mut output_ephemeral_keys = Vec::with_capacity(output_count);
+    let mut output_note_ephemerals = Vec::with_capacity(output_count);
+    let mut output_tweak_ephemerals = Vec::with_capacity(output_count);
     let mut output_recipient_ciphertexts = Vec::with_capacity(output_count);
     let mut output_outgoing_ciphertexts = Vec::with_capacity(output_count);
     for _ in 0..output_count {
@@ -331,9 +335,17 @@ fn parse_payload_prefix(
         let commitment = cursor.array()?;
         validate_ed25519_point(commitment)?;
         output_commitments.push(commitment);
-        let ephemeral = cursor.array()?;
-        validate_ed25519_point(ephemeral)?;
-        output_ephemeral_keys.push(ephemeral);
+        // Two ephemerals: the first keys the note, the second determines the tweak and is
+        // the only one a receiver disclosure ever opens.
+        let note_ephemeral = cursor.array()?;
+        validate_ed25519_point(note_ephemeral)?;
+        let tweak_ephemeral = cursor.array()?;
+        validate_ed25519_point(tweak_ephemeral)?;
+        if note_ephemeral == tweak_ephemeral {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+        output_note_ephemerals.push(note_ephemeral);
+        output_tweak_ephemerals.push(tweak_ephemeral);
         let recipient_ciphertext = cursor.vector(MAX_CIPHERTEXT_BYTES)?.to_vec();
         let outgoing_ciphertext = cursor.vector(MAX_CIPHERTEXT_BYTES)?.to_vec();
         if recipient_ciphertext.is_empty() || outgoing_ciphertext.is_empty() {
@@ -361,7 +373,8 @@ fn parse_payload_prefix(
         output_owners,
         output_nullifier_bases,
         output_commitments,
-        output_ephemeral_keys,
+        output_note_ephemerals,
+        output_tweak_ephemerals,
         output_recipient_ciphertexts,
         output_outgoing_ciphertexts,
     })
@@ -387,7 +400,7 @@ fn validate_payload(wire_version: u32, payload: &[u8]) -> Result<PayloadEffects,
         output_owners,
         output_nullifier_bases,
         output_commitments,
-        output_ephemeral_keys,
+        output_tweak_ephemerals,
         ..
     } = parse_payload_prefix(wire_version, payload)?;
     let _ = (operation, network, genesis);
@@ -528,7 +541,7 @@ fn validate_payload(wire_version: u32, payload: &[u8]) -> Result<PayloadEffects,
             spend,
             view,
             &output_owners[output_index],
-            &output_ephemeral_keys[output_index],
+            &output_tweak_ephemerals[output_index],
             &signing_hash,
             u32::try_from(output_index).map_err(|_| ResultCode::ResourceLimit)?,
             &disclosure_proof[disclosure_offset..end],
@@ -593,7 +606,7 @@ const SCAN_REQUEST_HEADER_BYTES: usize = 16;
 const SCAN_KEY_BYTES: usize = 64;
 const MAX_SCAN_KEYS: usize = 1024;
 const SCAN_RESPONSE_HEADER_BYTES: usize = 6;
-const NOTE_SCAN_PREFIX_BYTES: usize = 204;
+const NOTE_SCAN_PREFIX_BYTES: usize = 236;
 const NOTE_SCAN_RESULT_BYTES: usize = 212;
 const SCAN_RECORD_BYTES: usize = 2 + 4 + 96 + NOTE_SCAN_RESULT_BYTES;
 const SCAN_OUTGOING: u8 = 2;
@@ -676,7 +689,8 @@ pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
             scan_request.extend_from_slice(&request[key_at + 32..key_at + 64]);
             scan_request.extend_from_slice(&prefix.output_owners[index]);
             scan_request.extend_from_slice(&prefix.output_commitments[index]);
-            scan_request.extend_from_slice(&prefix.output_ephemeral_keys[index]);
+            scan_request.extend_from_slice(&prefix.output_note_ephemerals[index]);
+            scan_request.extend_from_slice(&prefix.output_tweak_ephemerals[index]);
             scan_request.extend_from_slice(ciphertext);
 
             // A tag mismatch means this output is not this key's, which is the common
@@ -765,7 +779,9 @@ pub(crate) fn effects(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
 
 #[cfg(test)]
 mod tests {
-    use curve25519_dalek::{constants::ED25519_BASEPOINT_POINT, scalar::Scalar};
+    use curve25519_dalek::{
+        constants::ED25519_BASEPOINT_POINT, edwards::CompressedEdwardsY, scalar::Scalar,
+    };
 
     use super::*;
     use crate::tree;
@@ -773,6 +789,23 @@ mod tests {
     // Stands in for whatever the caller commits its transparent side to; the payload
     // decoder carries these bytes and never interprets them.
     const TEST_TRANSPARENT_BINDING: [u8; 32] = [0x5a; 32];
+
+    // Fields of a canonical note-encryption result.
+    const ENCRYPTED_O: core::ops::Range<usize> = 8..40;
+    const ENCRYPTED_C: core::ops::Range<usize> = 72..104;
+    const ENCRYPTED_TWEAK_EPHEMERAL: core::ops::Range<usize> = 136..168;
+    const ENCRYPTED_EPHEMERALS: core::ops::Range<usize> = 104..168;
+    const ENCRYPTED_RECIPIENT: core::ops::Range<usize> = 168..345;
+    const ENCRYPTED_OUTGOING: core::ops::Range<usize> = 345..586;
+
+    // One output record, in payload order: O, C, both ephemerals, then the ciphertexts.
+    fn put_output(payload: &mut Vec<u8>, encrypted: &[u8]) {
+        payload.extend_from_slice(&encrypted[ENCRYPTED_O]);
+        payload.extend_from_slice(&encrypted[ENCRYPTED_C]);
+        payload.extend_from_slice(&encrypted[ENCRYPTED_EPHEMERALS]);
+        vector(payload, &encrypted[ENCRYPTED_RECIPIENT]);
+        vector(payload, &encrypted[ENCRYPTED_OUTGOING]);
+    }
 
     fn compact_size(output: &mut Vec<u8>, value: usize) {
         if value <= 252 {
@@ -801,6 +834,9 @@ mod tests {
 
     fn valid_request() -> Vec<u8> {
         let point = ED25519_BASEPOINT_POINT.compress().to_bytes();
+        let second_point = (ED25519_BASEPOINT_POINT * Scalar::from(2_u64))
+            .compress()
+            .to_bytes();
         let output_mask = Scalar::from(3_u64).to_bytes();
         let output_commitment = value::commitment(9, &output_mask).expect("valid commitment");
         let state = tree::update(&[1, 0, 1, 0, 0, 0, 0, 0]).expect("empty canonical tree state");
@@ -822,6 +858,7 @@ mod tests {
         payload.extend_from_slice(&point);
         payload.extend_from_slice(&output_commitment);
         payload.extend_from_slice(&point);
+        payload.extend_from_slice(&second_point);
         vector(&mut payload, &[1, 2]);
         vector(&mut payload, &[3]);
 
@@ -875,6 +912,9 @@ mod tests {
         include_range: bool,
     ) -> Vec<u8> {
         let point = ED25519_BASEPOINT_POINT.compress().to_bytes();
+        let second_point = (ED25519_BASEPOINT_POINT * Scalar::from(2_u64))
+            .compress()
+            .to_bytes();
         let output_mask = Scalar::from(3_u64).to_bytes();
         let output_commitment =
             value::commitment(true_amount, &output_mask).expect("valid commitment");
@@ -899,6 +939,7 @@ mod tests {
         payload.extend_from_slice(&point);
         payload.extend_from_slice(&output_commitment);
         payload.extend_from_slice(&point);
+        payload.extend_from_slice(&second_point);
         vector(&mut payload, &[1, 2]);
         vector(&mut payload, &[3]);
 
@@ -992,7 +1033,7 @@ mod tests {
         let true_view = (ED25519_BASEPOINT_POINT * Scalar::from(5_u64))
             .compress()
             .to_bytes();
-        let ephemeral_secret = Scalar::from(13_u64).to_bytes();
+        let tweak_ephemeral_secret = Scalar::from(14_u64).to_bytes();
         let output_y = Scalar::from(17_u64).to_bytes();
         let output_mask = Scalar::from(19_u64).to_bytes();
         let amount = 99_u64;
@@ -1013,11 +1054,7 @@ mod tests {
         payload.extend_from_slice(&TEST_TRANSPARENT_BINDING);
         compact_size(&mut payload, 0);
         compact_size(&mut payload, 1);
-        payload.extend_from_slice(&encrypted[8..40]);
-        payload.extend_from_slice(&encrypted[72..104]);
-        payload.extend_from_slice(&encrypted[104..136]);
-        vector(&mut payload, &encrypted[136..313]);
-        vector(&mut payload, &encrypted[313..522]);
+        put_output(&mut payload, encrypted);
 
         payload.extend_from_slice(&named.0);
         payload.extend_from_slice(&named.1);
@@ -1026,14 +1063,17 @@ mod tests {
         // Every proof, including the receiver disclosure, is made over the prefix that
         // carries the claim, so nothing here is stale or mismatched.
         let signing_hash = signable_hash(2008, &payload);
-        let output_o: [u8; 32] = encrypted[8..40].try_into().expect("O is 32 bytes");
-        let ephemeral: [u8; 32] = encrypted[104..136].try_into().expect("R is 32 bytes");
+        let output_o: [u8; 32] = encrypted[ENCRYPTED_O].try_into().expect("O is 32 bytes");
+        // The disclosure names the tweak ephemeral, never the one that keys the note.
+        let tweak_ephemeral: [u8; 32] = encrypted[ENCRYPTED_TWEAK_EPHEMERAL]
+            .try_into()
+            .expect("R2 is 32 bytes");
         let receiver_proof = disclosure::prove_receiver(
             &true_spend,
             &true_view,
             &output_o,
-            &ephemeral,
-            &ephemeral_secret,
+            &tweak_ephemeral,
+            &tweak_ephemeral_secret,
             &output_y,
             &signing_hash,
             0,
@@ -1118,13 +1158,132 @@ mod tests {
         }
     }
 
+    // Mask 5 publishes the recipient and hides the amount: the published receiver
+    // point must be useless against the ciphertext.
+    #[test]
+    fn a_published_receiver_disclosure_does_not_open_the_amount() {
+        let genesis = [0x11_u8; 32];
+        let (encrypted, _, view_secret) = encrypted_output(&genesis, 0);
+        let true_spend = (ED25519_BASEPOINT_POINT * Scalar::from(3_u64))
+            .compress()
+            .to_bytes();
+        let true_view = (ED25519_BASEPOINT_POINT * Scalar::from(5_u64))
+            .compress()
+            .to_bytes();
+        let request =
+            disclosed_receiver_request(&genesis, &encrypted, (true_spend, true_view));
+        assert_eq!(validate(&request), Ok(()));
+        let payload = &request[VALIDATION_PREFIX_SIZE..];
+
+        // Everything from here on reads the serialized payload and nothing else.
+        let mut prefix = parse_payload_prefix(2008, payload).expect("the payload decodes");
+        assert_eq!(prefix.disclosure_mask, 5);
+        // Mask 5: the sender is hidden, one receiver record follows the outputs, and the
+        // amounts are hidden.
+        let named_spend = prefix.cursor.array::<32>().expect("receiver spend");
+        let named_view = prefix.cursor.array::<32>().expect("receiver view");
+        assert_eq!(named_spend, true_spend);
+        assert_eq!(named_view, true_view);
+        prefix
+            .cursor
+            .vector(MAX_FINALITY_BODY_BYTES)
+            .expect("finality body");
+        for _ in 0..4 {
+            prefix
+                .cursor
+                .vector(MAX_PROOF_SECTION_BYTES)
+                .expect("proof section before the disclosures");
+        }
+        let disclosure_section = prefix
+            .cursor
+            .vector(MAX_PROOF_SECTION_BYTES)
+            .expect("disclosure section");
+        assert_eq!(disclosure_section.len(), disclosure::RECEIVER_PROOF_BYTES);
+        let published: [u8; 32] = disclosure_section[..32]
+            .try_into()
+            .expect("the disclosure leads with its shared point");
+
+        let owner = prefix.output_owners[0];
+        let commitment = prefix.output_commitments[0];
+        let note_ephemeral = prefix.output_note_ephemerals[0];
+        let tweak_ephemeral = prefix.output_tweak_ephemerals[0];
+        let ciphertext = prefix.output_recipient_ciphertexts[0].clone();
+
+        // The published point is exactly the shared secret behind the tweak, so the attempt
+        // below is aimed at the right value and not at noise.
+        let view_point = |bytes: &[u8; 32]| {
+            (CompressedEdwardsY(*bytes)
+                .decompress()
+                .expect("a payload ephemeral is canonical")
+                * view_secret)
+                .compress()
+                .to_bytes()
+        };
+        assert_eq!(published, view_point(&tweak_ephemeral));
+
+        // The owner opens the note, so the ciphertext really does carry the amount.
+        assert_eq!(
+            crate::note::try_open_recipient(
+                1,
+                0,
+                0,
+                &genesis,
+                &owner,
+                &commitment,
+                &note_ephemeral,
+                &tweak_ephemeral,
+                &ciphertext,
+                &view_point(&note_ephemeral),
+            ),
+            Some(99)
+        );
+
+        // The observer holding the published point must not.
+        assert_eq!(
+            crate::note::try_open_recipient(
+                1,
+                0,
+                0,
+                &genesis,
+                &owner,
+                &commitment,
+                &note_ephemeral,
+                &tweak_ephemeral,
+                &ciphertext,
+                &published,
+            ),
+            None,
+            "the disclosed shared point decrypted the note"
+        );
+
+        // Nor may the raw ephemerals or the disclosed address stand in for it.
+        for candidate in [note_ephemeral, tweak_ephemeral, named_spend, named_view] {
+            assert_eq!(
+                crate::note::try_open_recipient(
+                    1,
+                    0,
+                    0,
+                    &genesis,
+                    &owner,
+                    &commitment,
+                    &note_ephemeral,
+                    &tweak_ephemeral,
+                    &ciphertext,
+                    &candidate,
+                ),
+                None,
+                "a public payload field decrypted the note"
+            );
+        }
+    }
+
     fn encrypted_output_to(
         genesis: &[u8; 32],
         index: u32,
         ephemeral_secret: u64,
         mask: u64,
     ) -> Vec<u8> {
-        let mut request = vec![0_u8; 240];
+        let mut request = vec![0_u8; 272];
         request[..2].copy_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
         request[2] = 1;
         request[4..8].copy_from_slice(&index.to_le_bytes());
@@ -1141,9 +1300,10 @@ mod tests {
         );
         request[104..136].copy_from_slice(&Scalar::from(7_u64).to_bytes());
         request[136..168].copy_from_slice(&Scalar::from(ephemeral_secret).to_bytes());
-        request[168..176].copy_from_slice(&99_u64.to_le_bytes());
-        request[176..208].copy_from_slice(&Scalar::from(17_u64).to_bytes());
-        request[208..240].copy_from_slice(&Scalar::from(mask).to_bytes());
+        request[168..200].copy_from_slice(&Scalar::from(ephemeral_secret + 1).to_bytes());
+        request[200..208].copy_from_slice(&99_u64.to_le_bytes());
+        request[208..240].copy_from_slice(&Scalar::from(17_u64).to_bytes());
+        request[240..272].copy_from_slice(&Scalar::from(mask).to_bytes());
         crate::note::encrypt_request(&request).expect("canonical note")
     }
 
@@ -1170,11 +1330,7 @@ mod tests {
         payload.extend_from_slice(&TEST_TRANSPARENT_BINDING);
         compact_size(&mut payload, 0);
         compact_size(&mut payload, 1);
-        payload.extend_from_slice(&encrypted[8..40]);
-        payload.extend_from_slice(&encrypted[72..104]);
-        payload.extend_from_slice(&encrypted[104..136]);
-        vector(&mut payload, &encrypted[136..313]);
-        vector(&mut payload, &encrypted[313..522]);
+        put_output(&mut payload, encrypted);
         payload
     }
 
@@ -1407,11 +1563,7 @@ mod tests {
         compact_size(&mut payload, 0);
         compact_size(&mut payload, outputs.len());
         for encrypted in &outputs {
-            payload.extend_from_slice(&encrypted[8..40]);
-            payload.extend_from_slice(&encrypted[72..104]);
-            payload.extend_from_slice(&encrypted[104..136]);
-            vector(&mut payload, &encrypted[136..313]);
-            vector(&mut payload, &encrypted[313..522]);
+            put_output(&mut payload, encrypted);
         }
         vector(&mut payload, &[]);
 
@@ -1624,18 +1776,18 @@ mod tests {
             payload.extend_from_slice(&TEST_TRANSPARENT_BINDING);
             compact_size(&mut payload, 0);
             compact_size(&mut payload, 2);
-            for owner in [&encrypted[8..40], &second_owner[..]] {
+            for owner in [&encrypted[ENCRYPTED_O], &second_owner[..]] {
                 payload.extend_from_slice(owner);
-                payload.extend_from_slice(&encrypted[72..104]);
-                payload.extend_from_slice(&encrypted[104..136]);
-                vector(&mut payload, &encrypted[136..313]);
-                vector(&mut payload, &encrypted[313..522]);
+                payload.extend_from_slice(&encrypted[ENCRYPTED_C]);
+                payload.extend_from_slice(&encrypted[ENCRYPTED_EPHEMERALS]);
+                vector(&mut payload, &encrypted[ENCRYPTED_RECIPIENT]);
+                vector(&mut payload, &encrypted[ENCRYPTED_OUTGOING]);
             }
             payload
         };
 
         let mut repeated = [0_u8; 32];
-        repeated.copy_from_slice(&encrypted[8..40]);
+        repeated.copy_from_slice(&encrypted[ENCRYPTED_O]);
         assert_eq!(
             parse_payload_prefix(2008, &two_outputs(&repeated)).err(),
             Some(ResultCode::ConsensusInvalid)

@@ -34,13 +34,14 @@
   },
   "fcmp_abi": {
     "schema": 1,
-    "abi_schema_sha256": "c7dc45d4d052f3b22ba0376969b8e6a03010f25e854d4692b2bac929b275cb4f",
+    "abi_schema_sha256": "c31a328fbb80879bbef475939ea0139cf972652188b2fd553b5bba56e22fe080",
     "layers": 8,
     "root_curve_id": 2,
     "maximum_inputs": 16,
     "maximum_batch_requests": 16,
     "maximum_aggregate_batch_inputs": 16,
-    "prover_rng_domain": "Innova/IV5/FCMP++/ProverRng/v1",
+    "rerandomize_rng_domain": "Innova/IV5/FCMP++/RerandomizeRng/v1",
+    "proof_rng_domain": "Innova/IV5/FCMP++/ProofRng/v1",
     "batch_weight_domain": "Innova/IV5/FCMP++/BatchWeights/v1",
     "proving_request_field_order": [
       "schema_u16_le",
@@ -254,7 +255,8 @@
     "output_field_order": [
       "leaf_o_32",
       "leaf_c_32",
-      "ephemeral_key_32",
+      "note_ephemeral_key_32",
+      "tweak_ephemeral_key_32",
       "recipient_ciphertext",
       "outgoing_ciphertext"
     ],
@@ -273,7 +275,7 @@
     },
     "record_encodings": {
       "input": "fixed-64-bytes-pseudo-out-and-nullifier-key-image",
-      "output": "fixed-96-byte-point-prefix-then-two-canonical-compact-size-byte-vectors",
+      "output": "fixed-128-byte-point-prefix-then-two-canonical-compact-size-byte-vectors",
       "sender_disclosure": "fixed-32-byte-source-spend-authority-point",
       "receiver_disclosure": "fixed-64-byte-recipient-spend-and-view-public-points",
       "amount_disclosure": "fixed-40-bytes-value-u64-le-and-opening-scalar",
@@ -291,7 +293,9 @@
       "genesis-hash-must-be-nonzero",
       "parameter-digest-must-equal-the-abi-parameter-digest",
       "finalized-root-must-be-a-canonical-nonidentity-helios-point",
-      "pseudo-out-key-image-output-address-and-ephemeral-points-must-be-canonical-nonidentity-torsion-free-ed25519-points",
+      "pseudo-out-key-image-output-address-and-both-ephemeral-points-must-be-canonical-nonidentity-torsion-free-ed25519-points",
+      "an-outputs-note-ephemeral-and-tweak-ephemeral-must-differ",
+      "only-the-tweak-ephemeral-shared-point-is-published-by-a-receiver-disclosure-so-a-disclosed-output-keeps-its-amount-y-and-mask",
       "source-leaves-never-appear-in-hidden-base-input-records",
       "output-leaf-i-is-derived-from-that-output-own-o-and-never-appears-on-the-wire",
       "recipient-and-outgoing-ciphertexts-must-be-nonempty",
@@ -323,7 +327,13 @@
     "construction": "unique-key-chacha20-stream-then-keyed-blake2b-256-encrypt-then-mac",
     "kdf": "blake2b-512-domain-secret-and-length-prefixed-associated-data",
     "recipient_ciphertext_bytes": 177,
-    "outgoing_ciphertext_bytes": 209,
+    "outgoing_ciphertext_bytes": 241,
+    "ephemeral_keys": {
+      "count": 2,
+      "note_ephemeral": "R1 = G*r1; the shared point V*r1 keys the recipient ciphertext and is never published",
+      "tweak_ephemeral": "R2 = G*r2; the shared point V*r2 derives the address tweak and is what a receiver disclosure publishes",
+      "independence": "r1 and r2 are drawn independently and must differ"
+    },
     "associated_data": [
       "schema",
       "network",
@@ -333,17 +343,18 @@
       "leaf_o",
       "leaf_i",
       "leaf_c",
-      "ephemeral_public"
+      "note_ephemeral_public",
+      "tweak_ephemeral_public"
     ],
     "scan_kinds": {
       "0": "full-spend",
       "1": "view-only",
       "2": "outgoing"
     },
-    "scan_request_prefix_bytes": 204,
+    "scan_request_prefix_bytes": 236,
     "scan_result_bytes": 212,
-    "encrypt_request_bytes": 240,
-    "encrypt_result_bytes": 522,
+    "encrypt_request_bytes": 272,
+    "encrypt_result_bytes": 586,
     "encrypt_result_fields": [
       "schema",
       "network",
@@ -352,7 +363,8 @@
       "leaf_o",
       "leaf_i",
       "leaf_c",
-      "ephemeral_public",
+      "note_ephemeral_public",
+      "tweak_ephemeral_public",
       "recipient_ciphertext",
       "outgoing_ciphertext"
     ],
@@ -459,7 +471,8 @@
     "disclosure_amount": "Innova/IV5/Disclosure/Amount/v1",
     "nullsend": "Innova/IV5/NullSend/v1",
     "nullstake": "Innova/IV5/NullStake/v1",
-    "fcmp_prover_rng": "Innova/IV5/FCMP++/ProverRng/v1",
+    "fcmp_rerandomize_rng": "Innova/IV5/FCMP++/RerandomizeRng/v1",
+    "fcmp_proof_rng": "Innova/IV5/FCMP++/ProofRng/v1",
     "fcmp_batch_weights": "Innova/IV5/FCMP++/BatchWeights/v1"
   },
   "signing_hash": {

@@ -99,6 +99,18 @@ struct RetainedScalars
     }
 };
 
+// The draft pass's proof is never serialized, so nothing else wipes it.
+struct RetainedBytes
+{
+    std::vector<unsigned char> v;
+
+    ~RetainedBytes()
+    {
+        if (!v.empty())
+            OPENSSL_cleanse(&v[0], v.size());
+    }
+};
+
 } // namespace
 
 void PrivacyVNextSpendNote::Clear()
@@ -227,18 +239,22 @@ static bool BuildPrivacyVNextPayload(
     // are wiped when the builder returns.
     std::vector<PrivacyVNextEncryptedOutput> vEncrypted(outputs.size());
     std::vector<PrivacyVNextDigest> vOutputMasks(outputs.size());
-    RetainedScalars ephemeralSecrets;
+    RetainedScalars tweakEphemeralSecrets;
     RetainedScalars outputYs;
     if (fDiscloseReceiver)
     {
-        ephemeralSecrets.v.resize(outputs.size());
+        tweakEphemeralSecrets.v.resize(outputs.size());
         outputYs.v.resize(outputs.size());
     }
     for (size_t i = 0; i < outputs.size(); ++i)
     {
-        PrivacyVNextDigest ephemeralSecret;
+        // Two independent ephemerals per output. A receiver disclosure opens the tweak
+        // one's shared point on chain, so the note is keyed under the other.
+        PrivacyVNextDigest noteEphemeralSecret;
+        PrivacyVNextDigest tweakEphemeralSecret;
         PrivacyVNextDigest outY;
-        if (!RandomScalar(ephemeralSecret, strErrorOut) ||
+        if (!RandomScalar(noteEphemeralSecret, strErrorOut) ||
+            !RandomScalar(tweakEphemeralSecret, strErrorOut) ||
             !RandomScalar(outY, strErrorOut) ||
             !RandomScalar(vOutputMasks[i], strErrorOut))
             return false;
@@ -246,14 +262,16 @@ static bool BuildPrivacyVNextPayload(
             nNetwork, outputs[i].recipient.nAddressType,
             static_cast<uint32_t>(i), genesis,
             outputs[i].recipient.spendPublic, outputs[i].recipient.viewPublic,
-            outgoingViewSecret, ephemeralSecret, outputs[i].nAmount, outY,
-            vOutputMasks[i], vEncrypted[i], strErrorOut);
+            outgoingViewSecret, noteEphemeralSecret, tweakEphemeralSecret,
+            outputs[i].nAmount, outY, vOutputMasks[i], vEncrypted[i],
+            strErrorOut);
         if (fEncrypted && fDiscloseReceiver)
         {
-            ephemeralSecrets.v[i] = ephemeralSecret;
+            tweakEphemeralSecrets.v[i] = tweakEphemeralSecret;
             outputYs.v[i] = outY;
         }
-        OPENSSL_cleanse(ephemeralSecret.data(), ephemeralSecret.size());
+        OPENSSL_cleanse(noteEphemeralSecret.data(), noteEphemeralSecret.size());
+        OPENSSL_cleanse(tweakEphemeralSecret.data(), tweakEphemeralSecret.size());
         OPENSSL_cleanse(outY.data(), outY.size());
         if (!fEncrypted)
             return false;
@@ -269,17 +287,19 @@ static bool BuildPrivacyVNextPayload(
     }
 
     // The prefix the proofs bind to already names each input's pseudo-output, but those
-    // only exist once the prover has run. The prover is deterministic in the caller's
-    // entropy, so it is run twice with the same entropy: once to learn the pseudo-outputs
-    // and key images, and again to prove against the hash they produce.
+    // only exist once the prover has run. Rerandomization is deterministic in the caller's
+    // entropy and independent of the signing hash, so the prover is run twice with the same
+    // entropy: once to learn the pseudo-outputs and key images, and again to prove against
+    // the hash they produce. Proof nonces are drawn from a hash-dependent stream, so the
+    // two passes share none of them.
     PrivacyVNextDigest provisional;
     provisional.fill(0);
     provisional[0] = 1;
     std::vector<PrivacyVNextSpendConstruction> vDraft;
-    std::vector<unsigned char> vchDraftProof;
+    RetainedBytes draftProof;
     if (!vProveInputs.empty() &&
         !ProvePrivacyVNextMembership(finalizedRoot, provisional, entropy,
-                                     vProveInputs, vDraft, vchDraftProof,
+                                     vProveInputs, vDraft, draftProof.v,
                                      strErrorOut))
         return false;
 
@@ -315,7 +335,8 @@ static bool BuildPrivacyVNextPayload(
         // I is absent by design: validators derive it from this output's own owner key.
         PutBytes(prefix, vEncrypted[i].leaf.owner);
         PutBytes(prefix, vEncrypted[i].leaf.commitment);
-        PutBytes(prefix, vEncrypted[i].ephemeral);
+        PutBytes(prefix, vEncrypted[i].noteEphemeral);
+        PutBytes(prefix, vEncrypted[i].tweakEphemeral);
         PutVector(prefix, vEncrypted[i].vchRecipientCiphertext);
         PutVector(prefix, vEncrypted[i].vchOutgoingCiphertext);
     }
@@ -479,8 +500,9 @@ static bool BuildPrivacyVNextPayload(
             const bool fProved = ProvePrivacyVNextReceiverDisclosure(
                 static_cast<uint32_t>(i), outputs[i].recipient.spendPublic,
                 outputs[i].recipient.viewPublic, vEncrypted[i].leaf.owner,
-                vEncrypted[i].ephemeral, ephemeralSecrets.v[i], outputYs.v[i],
-                signingHash, receiverEntropy, vchReceiverProof, strErrorOut);
+                vEncrypted[i].tweakEphemeral, tweakEphemeralSecrets.v[i],
+                outputYs.v[i], signingHash, receiverEntropy, vchReceiverProof,
+                strErrorOut);
             OPENSSL_cleanse(receiverEntropy.data(), receiverEntropy.size());
             if (!fProved)
                 return false;

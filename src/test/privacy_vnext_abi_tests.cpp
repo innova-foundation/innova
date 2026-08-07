@@ -331,10 +331,12 @@ BOOST_AUTO_TEST_CASE(note_and_value_construction_cross_the_c_abi)
     std::memcpy(encryptRequest + 40, keys + 168, 32);
     std::memcpy(encryptRequest + 72, keys + 200, 32);
     std::memcpy(encryptRequest + 104, keys + 72, 32);
+    // Two independent ephemeral secrets: one keys the note, one fixes the tweak.
     encryptRequest[136] = 7;
-    PutLE64(encryptRequest + 168, 9);
-    encryptRequest[176] = 5;
-    encryptRequest[208] = 3;
+    encryptRequest[168] = 11;
+    PutLE64(encryptRequest + 200, 9);
+    encryptRequest[208] = 5;
+    encryptRequest[240] = 3;
 
     uint8_t encrypted[INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_RESULT_SIZE] = {0};
     size_t encryptedWritten = 0;
@@ -358,10 +360,10 @@ BOOST_AUTO_TEST_CASE(note_and_value_construction_cross_the_c_abi)
     std::memcpy(&scanRequest[12], keyRequest + 40, 32);
     std::memcpy(&scanRequest[44], keys + 40, 32);
     std::memcpy(&scanRequest[76], keys + 8, 32);
-    // O then C then the ephemeral key: the scanner rederives I from O.
+    // O, then C and both ephemeral keys: the scanner rederives I from O.
     std::memcpy(&scanRequest[108], encrypted + 8, 32);
-    std::memcpy(&scanRequest[140], encrypted + 72, 64);
-    std::memcpy(&scanRequest[204], encrypted + 136,
+    std::memcpy(&scanRequest[140], encrypted + 72, 96);
+    std::memcpy(&scanRequest[236], encrypted + 168,
                 INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE);
 
     uint8_t fullScan[INNOVA_PRIVACY_VNEXT_NOTE_SCAN_RESULT_SIZE] = {0};
@@ -398,7 +400,7 @@ BOOST_AUTO_TEST_CASE(note_and_value_construction_cross_the_c_abi)
                        INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE);
     scanRequest[2] = 2;
     std::memcpy(&scanRequest[44], keys + 72, 32);
-    std::memcpy(&scanRequest[204], encrypted + 313,
+    std::memcpy(&scanRequest[236], encrypted + 345,
                 INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE);
     uint8_t outgoingScan[INNOVA_PRIVACY_VNEXT_NOTE_SCAN_RESULT_SIZE] = {0};
     size_t outgoingScanWritten = 0;
@@ -491,9 +493,10 @@ BOOST_AUTO_TEST_CASE(cpp_note_scan_bridge_matches_the_raw_abi)
     std::memcpy(encryptRequest + 72, keys.viewPublic.data(), 32);
     std::memcpy(encryptRequest + 104, keys.outgoingViewSecret.data(), 32);
     encryptRequest[136] = 7;
-    PutLE64(encryptRequest + 168, 9);
-    encryptRequest[176] = 5;
-    encryptRequest[208] = 3;
+    encryptRequest[168] = 11;
+    PutLE64(encryptRequest + 200, 9);
+    encryptRequest[208] = 5;
+    encryptRequest[240] = 3;
 
     uint8_t encrypted[INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_RESULT_SIZE] = {0};
     size_t encryptedWritten = 0;
@@ -508,10 +511,11 @@ BOOST_AUTO_TEST_CASE(cpp_note_scan_bridge_matches_the_raw_abi)
     note.genesis = genesis;
     std::memcpy(note.leafO.data(), encrypted + 8, 32);
     std::memcpy(note.leafC.data(), encrypted + 72, 32);
-    std::memcpy(note.ephemeral.data(), encrypted + 104, 32);
+    std::memcpy(note.noteEphemeral.data(), encrypted + 104, 32);
+    std::memcpy(note.tweakEphemeral.data(), encrypted + 136, 32);
     note.vchCiphertext.assign(
-        encrypted + 136,
-        encrypted + 136 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE);
+        encrypted + 168,
+        encrypted + 168 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE);
 
     PrivacyVNextScannedNote full;
     BOOST_REQUIRE_MESSAGE(
@@ -554,8 +558,8 @@ BOOST_AUTO_TEST_CASE(cpp_note_scan_bridge_matches_the_raw_abi)
 
     PrivacyVNextEncryptedNote outgoingNote = note;
     outgoingNote.vchCiphertext.assign(
-        encrypted + 313,
-        encrypted + 313 + INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE);
+        encrypted + 345,
+        encrypted + 345 + INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE);
     PrivacyVNextScannedNote outgoing;
     BOOST_REQUIRE_MESSAGE(
         ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_OUTGOING, 1, 0, outgoingNote,
@@ -867,9 +871,10 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
     std::memcpy(encryptRequest + 72, keys.viewPublic.data(), 32);
     std::memcpy(encryptRequest + 104, keys.outgoingViewSecret.data(), 32);
     encryptRequest[136] = 13;
-    PutLE64(encryptRequest + 168, 99);
-    encryptRequest[176] = 17;
-    encryptRequest[208] = 19;
+    encryptRequest[168] = 23;
+    PutLE64(encryptRequest + 200, 99);
+    encryptRequest[208] = 17;
+    encryptRequest[240] = 19;
 
     uint8_t encrypted[INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_RESULT_SIZE] = {0};
     size_t encryptedWritten = 0;
@@ -917,17 +922,17 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
     payload.insert(payload.end(), 32, 0x5a);
     payload.push_back(0);
     payload.push_back(1);
-    // O, then C and the ephemeral key: the leaf's I is derived, not serialized.
+    // O, then C and both ephemeral keys: the leaf's I is derived, not serialized.
     payload.insert(payload.end(), encrypted + 8, encrypted + 40);
-    payload.insert(payload.end(), encrypted + 72, encrypted + 136);
+    payload.insert(payload.end(), encrypted + 72, encrypted + 168);
     payload.push_back(static_cast<unsigned char>(
         INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE));
-    payload.insert(payload.end(), encrypted + 136,
-                   encrypted + 136 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE);
+    payload.insert(payload.end(), encrypted + 168,
+                   encrypted + 168 + INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE);
     payload.push_back(static_cast<unsigned char>(
         INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE));
-    payload.insert(payload.end(), encrypted + 313,
-                   encrypted + 313 + INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE);
+    payload.insert(payload.end(), encrypted + 345,
+                   encrypted + 345 + INNOVA_PRIVACY_VNEXT_OUTGOING_CIPHERTEXT_SIZE);
 
     uint8_t nOutputCount = 0;
     std::vector<PrivacyVNextScanKey> vKeys(1);
