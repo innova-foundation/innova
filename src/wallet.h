@@ -5,6 +5,7 @@
 #ifndef BITCOIN_WALLET_H
 #define BITCOIN_WALLET_H
 
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -293,9 +294,11 @@ public:
     // Unspent notes held, spendable or not. Separates "nothing was ever
     // detected" from "detected but not yet spendable".
     size_t GetPrivacyVNextNoteCount() const;
-    bool SelectPrivacyVNextNotes(int64_t nTargetValue, int nSpendHeight,
-                                 std::vector<CPrivacyVNextWalletNote>& vSelected,
-                                 int64_t& nSelectedValue) const;
+    bool SelectPrivacyVNextNotes(
+        int64_t nTargetValue, int nSpendHeight,
+        std::vector<CPrivacyVNextWalletNote>& vSelected,
+        int64_t& nSelectedValue,
+        uint64_t nAnchorTreeSize = std::numeric_limits<uint64_t>::max()) const;
 
     std::map<uint256, CColdStakeDelegation> mapColdStakeDelegations;  // hashOwner -> delegation
     bool AddColdStakeDelegation(const CColdStakeDelegation& deleg);

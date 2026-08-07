@@ -4,6 +4,8 @@
 #include "privacy_vnext_store.h"
 
 #include <cstring>
+#include <map>
+#include <utility>
 
 #include "dag.h"
 #include "main.h"
@@ -371,6 +373,7 @@ bool SyncPrivacyVNextTreeStore(CTxDB& txdb, int nThroughEpoch,
 }
 
 bool ReadPrivacyVNextTreePaths(CTxDB& txdb, uint64_t nTreeSize,
+                               const std::vector<unsigned char>& vchTreeState,
                                const std::vector<uint64_t>& vTargetLeafIndexes,
                                std::vector<unsigned char>& vchPathsOut,
                                std::string& strErrorOut)
@@ -386,12 +389,36 @@ bool ReadPrivacyVNextTreePaths(CTxDB& txdb, uint64_t nTreeSize,
     uint64_t nStored = 0;
     if (!txdb.ReadPrivacyVNextTreeStoreSize(nStored))
         nStored = 0;
-    if (nStored != nTreeSize)
+    if (nStored < nTreeSize)
     {
         strErrorOut = strprintf(
             "IV5 tree store holds %" PRIu64 " leaves but the witness needs %" PRIu64,
             nStored, nTreeSize);
         return false;
+    }
+
+    // An empty extension of the anchor frontier reports that frontier's spine: one node
+    // per level, exactly the nodes a later append would have overwritten in the store.
+    std::map<std::pair<int, uint64_t>, std::vector<unsigned char> > mapFrontier;
+    {
+        std::vector<unsigned char> nextState;
+        std::vector<unsigned char> nextRoot;
+        uint64_t nNextSize = 0;
+        std::vector<PrivacyVNextTreeNode> vSpine;
+        if (!ExtendPrivacyVNextOutputLeaves(
+                vchTreeState, std::vector<PrivacyVNextOutputLeaf>(), nextState,
+                nextRoot, nNextSize, vSpine, strErrorOut))
+            return false;
+        if (nNextSize != nTreeSize)
+        {
+            strErrorOut = strprintf(
+                "IV5 anchor frontier is at %" PRIu64 " but the witness needs %" PRIu64,
+                nNextSize, nTreeSize);
+            return false;
+        }
+        for (size_t i = 0; i < vSpine.size(); ++i)
+            mapFrontier[std::make_pair((int)vSpine[i].nLevel, vSpine[i].nIndex)]
+                .assign(vSpine[i].point.begin(), vSpine[i].point.end());
     }
 
     for (size_t t = 0; t < vTargetLeafIndexes.size(); ++t)
@@ -419,6 +446,19 @@ bool ReadPrivacyVNextTreePaths(CTxDB& txdb, uint64_t nTreeSize,
         {
             for (uint64_t i = 0; i < geometry[nLevel].nLength; ++i)
             {
+                const std::pair<int, uint64_t> key(
+                    static_cast<int>(nLevel - 1), geometry[nLevel].nStart + i);
+                std::map<std::pair<int, uint64_t>,
+                         std::vector<unsigned char> >::const_iterator itFrontier =
+                    mapFrontier.find(key);
+                if (itFrontier != mapFrontier.end() &&
+                    itFrontier->second.size() == VNEXT_POINT_SIZE)
+                {
+                    vchPathsOut.insert(vchPathsOut.end(),
+                                       itFrontier->second.begin(),
+                                       itFrontier->second.end());
+                    continue;
+                }
                 std::vector<unsigned char> vchPoint;
                 if (!txdb.ReadPrivacyVNextTreeNode(
                         static_cast<int>(nLevel - 1),

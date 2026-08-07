@@ -93,7 +93,8 @@ BOOST_AUTO_TEST_CASE(stored_paths_reproduce_the_replayed_witness)
 
     std::vector<unsigned char> vchPaths;
     BOOST_REQUIRE_MESSAGE(
-        ReadPrivacyVNextTreePaths(txdb, nStored, vTargets, vchPaths, strError),
+        ReadPrivacyVNextTreePaths(txdb, nStored, state, vTargets, vchPaths,
+                                  strError),
         strError);
 
     std::vector<PrivacyVNextMembershipWitness> vFromPaths;
@@ -145,8 +146,8 @@ BOOST_AUTO_TEST_CASE(a_trimmed_store_matches_a_freshly_grown_one)
 
     std::vector<unsigned char> vchShortPaths;
     BOOST_REQUIRE_MESSAGE(
-        ReadPrivacyVNextTreePaths(txdb, nShort, vTargets, vchShortPaths,
-                                  strError),
+        ReadPrivacyVNextTreePaths(txdb, nShort, shortState, vTargets,
+                                  vchShortPaths, strError),
         strError);
 
     // Extend past it, then roll back to exactly where it was.
@@ -164,8 +165,8 @@ BOOST_AUTO_TEST_CASE(a_trimmed_store_matches_a_freshly_grown_one)
 
     std::vector<unsigned char> vchTrimmedPaths;
     BOOST_REQUIRE_MESSAGE(
-        ReadPrivacyVNextTreePaths(txdb, nShort, vTargets, vchTrimmedPaths,
-                                  strError),
+        ReadPrivacyVNextTreePaths(txdb, nShort, shortState, vTargets,
+                                  vchTrimmedPaths, strError),
         strError);
     BOOST_CHECK(vchTrimmedPaths == vchShortPaths);
 
@@ -269,7 +270,8 @@ BOOST_AUTO_TEST_CASE(a_trim_never_claims_more_than_it_holds)
         vTargets.push_back(nTarget);
         std::vector<unsigned char> vchPaths;
         BOOST_REQUIRE_MESSAGE(
-            ReadPrivacyVNextTreePaths(txdb, nStored, vTargets, vchPaths, strError),
+            ReadPrivacyVNextTreePaths(txdb, nStored, shortState, vTargets, vchPaths,
+                                      strError),
             strError);
         std::vector<PrivacyVNextMembershipWitness> vWitnesses;
         PrivacyVNextDigest root;
@@ -278,6 +280,89 @@ BOOST_AUTO_TEST_CASE(a_trim_never_claims_more_than_it_holds)
                                                 vWitnesses, root, strError),
             strError);
     }
+}
+
+// The store routinely runs ahead of a spend's finalized anchor; serving the older anchor
+// must give the witness the store gave at that size.
+BOOST_AUTO_TEST_CASE(paths_serve_an_anchor_older_than_the_store)
+{
+    CTxDB txdb("r+");
+    std::string strError;
+
+    std::vector<PrivacyVNextOutputLeaf> vLeaves;
+    for (uint64_t i = 0; i < 200; ++i)
+        vLeaves.push_back(StoreTestLeaf(5000 + i));
+
+    // Targets on both sides of a level-0 boundary, plus the last leaf of the anchor,
+    // which is the one whose ancestors were still partial when the anchor was current.
+    std::vector<uint64_t> vTargets;
+    vTargets.push_back(0);
+    vTargets.push_back(37);
+    vTargets.push_back(38);
+    vTargets.push_back(74);
+
+    const size_t nAnchor = 75;
+    const std::vector<PrivacyVNextOutputLeaf> vAnchorLeaves(
+        vLeaves.begin(), vLeaves.begin() + nAnchor);
+
+    std::vector<unsigned char> anchorState = EmptyVNextTreeState();
+    ResetStore(txdb, anchorState);
+    BOOST_REQUIRE_MESSAGE(
+        GrowPrivacyVNextTreeStore(txdb, vAnchorLeaves, anchorState, strError),
+        strError);
+
+    std::vector<unsigned char> vchAtAnchor;
+    BOOST_REQUIRE_MESSAGE(
+        ReadPrivacyVNextTreePaths(txdb, nAnchor, anchorState, vTargets,
+                                  vchAtAnchor, strError),
+        strError);
+
+    // Grow past the anchor, which rewrites the trailing node of each level.
+    std::vector<unsigned char> laterState = anchorState;
+    const std::vector<PrivacyVNextOutputLeaf> vRest(vLeaves.begin() + nAnchor,
+                                                    vLeaves.end());
+    BOOST_REQUIRE_MESSAGE(
+        GrowPrivacyVNextTreeStore(txdb, vRest, laterState, strError), strError);
+    uint64_t nStored = 0;
+    BOOST_REQUIRE(ReadPrivacyVNextTreeStoreSize(txdb, nStored));
+    BOOST_REQUIRE_EQUAL(nStored, vLeaves.size());
+
+    std::vector<unsigned char> vchAfterGrowth;
+    BOOST_REQUIRE_MESSAGE(
+        ReadPrivacyVNextTreePaths(txdb, nAnchor, anchorState, vTargets,
+                                  vchAfterGrowth, strError),
+        strError);
+    BOOST_CHECK(vchAfterGrowth == vchAtAnchor);
+
+    // The witness must still fold onto the anchor root, not the store's current one.
+    std::vector<PrivacyVNextMembershipWitness> vFromPaths;
+    PrivacyVNextDigest rootFromPaths;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextWitnessesFromPaths(anchorState, vTargets,
+                                            vchAfterGrowth, vFromPaths,
+                                            rootFromPaths, strError),
+        strError);
+
+    std::vector<PrivacyVNextMembershipWitness> vFromLeaves;
+    PrivacyVNextDigest rootFromLeaves;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextWitnesses(anchorState, vAnchorLeaves, vTargets,
+                                   vFromLeaves, rootFromLeaves, strError),
+        strError);
+    BOOST_CHECK(rootFromPaths == rootFromLeaves);
+    BOOST_REQUIRE_EQUAL(vFromPaths.size(), vFromLeaves.size());
+    for (size_t i = 0; i < vFromPaths.size(); ++i)
+        BOOST_CHECK(vFromPaths[i].vchRecord == vFromLeaves[i].vchRecord);
+
+    // An anchor the store cannot reach yet still has to fail closed.
+    std::vector<unsigned char> vchTooNew;
+    BOOST_CHECK(!ReadPrivacyVNextTreePaths(txdb, nStored + 1, laterState,
+                                           vTargets, vchTooNew, strError));
+
+    // So does a frontier that does not describe the requested size.
+    std::vector<unsigned char> vchMismatched;
+    BOOST_CHECK(!ReadPrivacyVNextTreePaths(txdb, nAnchor, laterState, vTargets,
+                                           vchMismatched, strError));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

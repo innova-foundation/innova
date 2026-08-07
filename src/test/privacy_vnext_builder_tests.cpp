@@ -226,7 +226,8 @@ BOOST_AUTO_TEST_CASE(a_note_placed_in_the_tree_can_be_spent)
     vTargets.push_back(0);
     std::vector<unsigned char> vchPaths;
     BOOST_REQUIRE_MESSAGE(
-        ReadPrivacyVNextTreePaths(txdb, nTreeSize, vTargets, vchPaths, error),
+        ReadPrivacyVNextTreePaths(txdb, nTreeSize, treeState, vTargets,
+                                  vchPaths, error),
         error);
     std::vector<PrivacyVNextMembershipWitness> vWitnesses;
     PrivacyVNextDigest treeRoot;
@@ -339,7 +340,8 @@ BOOST_AUTO_TEST_CASE(memoized_effects_match_a_full_validation)
     vTargets.push_back(0);
     std::vector<unsigned char> vchPaths;
     BOOST_REQUIRE_MESSAGE(
-        ReadPrivacyVNextTreePaths(txdb, nTreeSize, vTargets, vchPaths, error),
+        ReadPrivacyVNextTreePaths(txdb, nTreeSize, treeState, vTargets,
+                                  vchPaths, error),
         error);
     std::vector<PrivacyVNextMembershipWitness> vWitnesses;
     PrivacyVNextDigest treeRoot;
@@ -512,7 +514,8 @@ BOOST_AUTO_TEST_CASE(a_shield_carries_no_membership_proof_and_stays_spendable)
     vTargets.push_back(0);
     std::vector<unsigned char> vchPaths;
     BOOST_REQUIRE_MESSAGE(
-        ReadPrivacyVNextTreePaths(txdb, nTreeSize, vTargets, vchPaths, error),
+        ReadPrivacyVNextTreePaths(txdb, nTreeSize, treeState, vTargets,
+                                  vchPaths, error),
         error);
     std::vector<PrivacyVNextMembershipWitness> vWitnesses;
     PrivacyVNextDigest treeRoot;
@@ -758,7 +761,8 @@ BOOST_AUTO_TEST_CASE(payload_effects_report_what_the_pool_gained_or_lost)
     vTargets.push_back(0);
     std::vector<unsigned char> vchPaths;
     BOOST_REQUIRE_MESSAGE(
-        ReadPrivacyVNextTreePaths(txdb, nGrownSize, vTargets, vchPaths, error),
+        ReadPrivacyVNextTreePaths(txdb, nGrownSize, treeState, vTargets,
+                                  vchPaths, error),
         error);
     std::vector<PrivacyVNextMembershipWitness> vWitnesses;
     PrivacyVNextDigest treeRoot;

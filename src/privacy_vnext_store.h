@@ -40,7 +40,9 @@ bool CollectPrivacyVNextEpochLeaves(const CEpochState& state,
                                     std::string& strErrorOut);
 
 // Read the sibling path for each target, framed as a path-mode witness request tail.
+// Trailing nodes per level come from the anchor frontier, which may be older than the store.
 bool ReadPrivacyVNextTreePaths(CTxDB& txdb, uint64_t nTreeSize,
+                               const std::vector<unsigned char>& vchTreeState,
                                const std::vector<uint64_t>& vTargetLeafIndexes,
                                std::vector<unsigned char>& vchPathsOut,
                                std::string& strErrorOut);

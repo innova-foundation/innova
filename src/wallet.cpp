@@ -11020,12 +11020,13 @@ size_t CWallet::GetPrivacyVNextNoteCount() const
     return nCount;
 }
 
-// Largest first, so a spend reaches its target with the fewest inputs and stays
-// inside the per-proof input bound.
+// Largest first, to stay inside the per-proof input bound. `nAnchorTreeSize` drops notes
+// the anchor's tree does not contain yet.
 bool CWallet::SelectPrivacyVNextNotes(
     int64_t nTargetValue, int nSpendHeight,
     std::vector<CPrivacyVNextWalletNote>& vSelected,
-    int64_t& nSelectedValue) const
+    int64_t& nSelectedValue,
+    uint64_t nAnchorTreeSize) const
 {
     vSelected.clear();
     nSelectedValue = 0;
@@ -11036,7 +11037,8 @@ bool CWallet::SelectPrivacyVNextNotes(
     std::vector<const CPrivacyVNextWalletNote*> vCandidates;
     for (size_t i = 0; i < vPrivacyVNextNotes.size(); ++i)
     {
-        if (PrivacyVNextNoteIsSpendable(vPrivacyVNextNotes[i], nSpendHeight))
+        if (PrivacyVNextNoteIsSpendable(vPrivacyVNextNotes[i], nSpendHeight) &&
+            vPrivacyVNextNotes[i].nLeafIndex < nAnchorTreeSize)
             vCandidates.push_back(&vPrivacyVNextNotes[i]);
     }
     std::sort(vCandidates.begin(), vCandidates.end(),
@@ -11064,9 +11066,9 @@ bool CWallet::SelectPrivacyVNextNotes(
     return false;
 }
 
-// The anchor a spend proves against, and the tree state its witnesses are cut
-// from. Both must come from the same finalized epoch or the paths fold onto a
-// root no validator will accept.
+// Anchor and tree state for a spend; both must come from the same finalized epoch.
+// Uses the newest of the last EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS finalized roots
+// that the local tree store can serve witnesses for.
 static bool LoadPrivacyVNextSpendAnchor(std::vector<unsigned char>& vchStateOut,
                                         std::vector<unsigned char>& vchRootOut,
                                         uint64_t& nTreeSizeOut,
@@ -11078,23 +11080,50 @@ static bool LoadPrivacyVNextSpendAnchor(std::vector<unsigned char>& vchStateOut,
 
     LOCK(cs_main);
     CTxDB txdb("r");
-    CEpochState finalized;
-    if (!g_dagManager.GetFinalizedEpochStateAsOf(txdb, nBestHeight, finalized) ||
-        finalized.nSerVersion < EPOCHSTATE_SER_VERSION_V4 ||
-        finalized.vchVNextRoot.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE)
+    uint64_t nStored = 0;
+    if (!txdb.ReadPrivacyVNextTreeStoreSize(nStored))
+        nStored = 0;
+
+    bool fSawFinalized = false;
+    bool fSawEmptyTree = false;
+    for (int nBack = 0; nBack < EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS; ++nBack)
     {
+        CEpochState finalized;
+        const bool fHave =
+            nBack == 0
+                ? g_dagManager.GetFinalizedEpochStateAsOf(txdb, nBestHeight,
+                                                          finalized)
+                : g_dagManager.GetFinalizedEpochStateAsOf(txdb, nBestHeight,
+                                                          nBack, finalized);
+        if (!fHave)
+            break;
+        if (finalized.nSerVersion < EPOCHSTATE_SER_VERSION_V4 ||
+            finalized.vchVNextRoot.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE)
+            continue;
+        fSawFinalized = true;
+        if (finalized.nVNextTreeSize == 0)
+        {
+            fSawEmptyTree = true;
+            continue;
+        }
+        if (finalized.nVNextTreeSize > nStored)
+            continue;
+        vchStateOut = finalized.vchVNextTreeState;
+        vchRootOut = finalized.vchVNextRoot;
+        nTreeSizeOut = finalized.nVNextTreeSize;
+        return true;
+    }
+
+    if (!fSawFinalized)
         strErrorOut = "no finalized IV5 epoch state is available to spend against";
-        return false;
-    }
-    if (finalized.nVNextTreeSize == 0)
-    {
+    else if (fSawEmptyTree)
         strErrorOut = "the IV5 tree is empty; nothing has been shielded yet";
-        return false;
-    }
-    vchStateOut = finalized.vchVNextTreeState;
-    vchRootOut = finalized.vchVNextRoot;
-    nTreeSizeOut = finalized.nVNextTreeSize;
-    return true;
+    else
+        strErrorOut = strprintf(
+            "the IV5 tree store holds %" PRIu64 " leaves and covers none of the "
+            "last %d finalized roots; wait for it to catch up",
+            nStored, EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS);
+    return false;
 }
 
 // Shared body of the two spend paths. `nTransparentOut` is zero for a transfer
@@ -11123,9 +11152,14 @@ static bool BuildPrivacyVNextSpend(
     std::vector<uint64_t> vLeafIndexes(vNotes.size());
     for (size_t i = 0; i < vNotes.size(); ++i)
     {
+        // Selection already excluded these, so reaching one means the anchor moved
+        // backwards between selection and build.
         if (vNotes[i].nLeafIndex >= nTreeSize)
         {
-            strErrorOut = "a selected note is not yet in the finalized IV5 tree";
+            strErrorOut = strprintf(
+                "a selected note sits at IV5 leaf %" PRIu64 " but the anchor tree "
+                "holds %" PRIu64 "; retry the spend",
+                vNotes[i].nLeafIndex, nTreeSize);
             return false;
         }
         vLeafIndexes[i] = vNotes[i].nLeafIndex;
@@ -11135,8 +11169,8 @@ static bool BuildPrivacyVNextSpend(
     {
         LOCK(cs_main);
         CTxDB txdb("r");
-        if (!ReadPrivacyVNextTreePaths(txdb, nTreeSize, vLeafIndexes, vchPaths,
-                                       strErrorOut))
+        if (!ReadPrivacyVNextTreePaths(txdb, nTreeSize, vchTreeState,
+                                       vLeafIndexes, vchPaths, strErrorOut))
             return false;
     }
 
@@ -11226,12 +11260,32 @@ static bool PreparePrivacyVNextSpend(
         LOCK(cs_main);
         nSpendHeight = nBestHeight;
     }
+
+    // Pick the anchor before the notes: only notes already inside that anchor's
+    // tree can be proved against it, and a shortfall caused by the anchor lagging
+    // is a different problem from an empty wallet.
+    std::vector<unsigned char> vchAnchorState;
+    std::vector<unsigned char> vchAnchorRoot;
+    uint64_t nAnchorTreeSize = 0;
+    if (!LoadPrivacyVNextSpendAnchor(vchAnchorState, vchAnchorRoot,
+                                     nAnchorTreeSize, strErrorOut))
+        return false;
+
     if (!pwallet->SelectPrivacyVNextNotes(nAmount + nFee, nSpendHeight, vNotesOut,
-                                          nSelectedOut))
+                                          nSelectedOut, nAnchorTreeSize))
     {
-        strErrorOut = strprintf(
-            "insufficient spendable shielded balance: need %s including the %s fee",
-            FormatMoney(nAmount + nFee).c_str(), FormatMoney(nFee).c_str());
+        int64_t nIgnored = 0;
+        std::vector<CPrivacyVNextWalletNote> vAll;
+        if (pwallet->SelectPrivacyVNextNotes(nAmount + nFee, nSpendHeight, vAll,
+                                             nIgnored))
+            strErrorOut = strprintf(
+                "%s is spendable only once the finalized IV5 tree reaches the "
+                "notes holding it; the anchor tree holds %" PRIu64 " leaves",
+                FormatMoney(nAmount + nFee).c_str(), nAnchorTreeSize);
+        else
+            strErrorOut = strprintf(
+                "insufficient spendable shielded balance: need %s including the %s fee",
+                FormatMoney(nAmount + nFee).c_str(), FormatMoney(nFee).c_str());
         return false;
     }
 
