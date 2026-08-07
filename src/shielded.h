@@ -64,6 +64,17 @@ inline bool IsShieldedVNextConsensusReady()
     return fRegTest && fRegtestShieldedVNextRehearsal;
 }
 
+// Regtest-only hold on wallet leaf-index assignment (-regtestiv5holdleafindex), to reach
+// the unplaced-notes state a restart leaves behind. Wallet-side only; no consensus rule
+// reads it.
+extern bool fRegtestHoldPrivacyVNextLeafIndex;
+
+inline bool IsPrivacyVNextLeafIndexAssignmentHeld()
+{
+    extern bool fRegTest;
+    return fRegTest && fRegtestHoldPrivacyVNextLeafIndex;
+}
+
 /** vNext privacy envelope after the common tx header:
  *    0xff || "IV5P" || uint16_le(schema=1) || CompactSize(length) || payload
  *  The marker keeps it disjoint from older vectors; the bound is checked before allocation. */
