@@ -10750,6 +10750,32 @@ bool CWallet::DisconnectShieldedBlockChecked(
     return DisconnectPrivacyVNextBlock(block, pindex, strErrorOut);
 }
 
+// The commitment the payload must carry for the transaction it will travel in.
+static void PrivacyVNextBindingOf(const CTransaction& tx,
+                                  PrivacyVNextDigest& bindingOut)
+{
+    const uint256 binding = GetPrivacyVNextTransparentBinding(tx);
+    std::memcpy(bindingOut.data(), binding.begin(), 32);
+}
+
+// Re-derive the binding from the finished transaction before it is committed. The
+// payload is already proven at this point, so a transparent side that changed after
+// the binding was taken would spend the notes for a transaction consensus rejects.
+static bool PrivacyVNextBindingHolds(const CTransaction& tx,
+                                     const PrivacyVNextDigest& binding,
+                                     std::string& strErrorOut)
+{
+    PrivacyVNextDigest actual;
+    PrivacyVNextBindingOf(tx, actual);
+    if (actual != binding)
+    {
+        strErrorOut = "the built IV5 transaction no longer matches the transparent "
+                      "binding its payload proved";
+        return false;
+    }
+    return true;
+}
+
 bool CWallet::CreatePrivacyVNextShield(
     const std::string& strFromAddress,
     size_t nMaxInputs,
@@ -10882,27 +10908,36 @@ bool CWallet::CreatePrivacyVNextShield(
 
     PrivacyVNextDigest finalizedRoot;
     std::memcpy(finalizedRoot.data(), &vchRoot[0], 32);
-    std::vector<unsigned char> vchPayload;
-    if (!BuildPrivacyVNextShieldPayload(nNetwork, genesis,
-                                        keys.outgoingViewSecret, finalizedRoot,
-                                        nTreeSize, (uint64_t)nSelected,
-                                        (uint64_t)nFee, vOutputs, vchPayload,
-                                        strErrorOut))
-        return false;
 
+    // The transparent side is settled before proving, because the payload commits to it
+    // and the proofs bind to the payload.
     CTransaction txNew;
     txNew.nVersion = SHIELDED_TX_VERSION_VNEXT;
-    txNew.privacyVNext.vchPayload = vchPayload;
     for (size_t i = 0; i < vSelected.size(); ++i)
         txNew.vin.push_back(
             CTxIn(vSelected[i]->tx->GetHash(), vSelected[i]->i));
     // No transparent output at all: the entire selected value crosses into the pool, so
     // there is no change address to tie back to the inputs.
+    PrivacyVNextDigest transparentBinding;
+    PrivacyVNextBindingOf(txNew, transparentBinding);
+
+    std::vector<unsigned char> vchPayload;
+    if (!BuildPrivacyVNextShieldPayload(nNetwork, genesis,
+                                        keys.outgoingViewSecret, finalizedRoot,
+                                        nTreeSize, transparentBinding,
+                                        (uint64_t)nSelected,
+                                        (uint64_t)nFee, vOutputs, vchPayload,
+                                        strErrorOut))
+        return false;
+    txNew.privacyVNext.vchPayload = vchPayload;
 
     // Stamp the clock only now that the proving work is done. Doing it before, as the
     // legacy builders must because their binding signature covers it, would publish how
     // long this wallet took to build the transaction.
     txNew.nTime = GetAdjustedTime();
+
+    if (!PrivacyVNextBindingHolds(txNew, transparentBinding, strErrorOut))
+        return false;
 
     int nIn = 0;
     for (size_t i = 0; i < vSelected.size(); ++i)
@@ -11105,6 +11140,7 @@ static bool BuildPrivacyVNextSpend(
     const std::vector<PrivacyVNextNewOutput>& vShieldedOutputs,
     const PrivacyVNextDigest& genesis,
     const PrivacyVNextDigest& outgoingViewSecret,
+    const PrivacyVNextDigest& transparentBinding,
     uint8_t nNetwork,
     int64_t nFee,
     int64_t nTransparentOut,
@@ -11178,12 +11214,13 @@ static bool BuildPrivacyVNextSpend(
     if (nTransparentOut > 0)
         return BuildPrivacyVNextUnshieldPayload(
             nNetwork, genesis, outgoingViewSecret, finalizedRoot, nTreeSize,
-            (uint64_t)nTransparentOut, (uint64_t)nFee, vSpends, vShieldedOutputs,
-            vchPayloadOut, strErrorOut);
+            transparentBinding, (uint64_t)nTransparentOut, (uint64_t)nFee,
+            vSpends, vShieldedOutputs, vchPayloadOut, strErrorOut);
 
     return BuildPrivacyVNextTransferPayload(
         nNetwork, genesis, outgoingViewSecret, finalizedRoot, nTreeSize,
-        (uint64_t)nFee, vSpends, vShieldedOutputs, vchPayloadOut, strErrorOut);
+        transparentBinding, (uint64_t)nFee, vSpends, vShieldedOutputs,
+        vchPayloadOut, strErrorOut);
 }
 
 // Common front half: validate the amount, pick notes and derive the wallet's own
@@ -11292,18 +11329,24 @@ bool CWallet::CreatePrivacyVNextTransfer(
     vOutputs[1].recipient.viewPublic = changeKeys.viewPublic;
     vOutputs[1].nAmount = (uint64_t)nChange;
 
-    std::vector<unsigned char> vchPayload;
-    if (!BuildPrivacyVNextSpend(vNotes, vOutputs, genesis,
-                                changeKeys.outgoingViewSecret, nNetwork, nFee, 0,
-                                vchPayload, strErrorOut))
-        return false;
-
+    // A transfer consumes notes, not outputs, and pays a note: it names no
+    // transparent input or output, and the payload commits to exactly that.
     CTransaction txNew;
     txNew.nVersion = SHIELDED_TX_VERSION_VNEXT;
+    PrivacyVNextDigest transparentBinding;
+    PrivacyVNextBindingOf(txNew, transparentBinding);
+
+    std::vector<unsigned char> vchPayload;
+    if (!BuildPrivacyVNextSpend(vNotes, vOutputs, genesis,
+                                changeKeys.outgoingViewSecret, transparentBinding,
+                                nNetwork, nFee, 0, vchPayload, strErrorOut))
+        return false;
+
     txNew.privacyVNext.vchPayload = vchPayload;
-    // A transfer consumes notes, not outputs, and pays a note: no transparent
-    // input or output exists to tie it to anything.
     txNew.nTime = GetAdjustedTime();
+
+    if (!PrivacyVNextBindingHolds(txNew, transparentBinding, strErrorOut))
+        return false;
 
     *static_cast<CTransaction*>(&wtxNew) = txNew;
     wtxNew.BindWallet(this);
@@ -11337,15 +11380,9 @@ bool CWallet::CreatePrivacyVNextUnshield(
     nNotesUsedOut = 0;
     strErrorOut.clear();
 
-    // Consensus refuses a released-value payload: nothing binds the transparent
-    // output it pays to, so whoever mines it can retarget or drop that output
-    // and keep the released value as fee. Building one would spend the notes for
-    // nothing. Flip this once the payload commits to the transparent side.
     if (!PRIVACY_VNEXT_UNSHIELD_ENABLED)
     {
-        strErrorOut = "unshield is not enabled: the payload does not yet bind its "
-                      "transparent output, so the released value could be "
-                      "redirected by whoever mines it";
+        strErrorOut = "unshield is not enabled in this build";
         return false;
     }
 
@@ -11380,19 +11417,27 @@ bool CWallet::CreatePrivacyVNextUnshield(
     vOutputs[0].nAmount = (uint64_t)(nChange / 2);
     vOutputs[1].nAmount = (uint64_t)(nChange - (nChange / 2));
 
-    std::vector<unsigned char> vchPayload;
-    if (!BuildPrivacyVNextSpend(vNotes, vOutputs, genesis,
-                                changeKeys.outgoingViewSecret, nNetwork, nFee,
-                                nAmount, vchPayload, strErrorOut))
-        return false;
-
+    // The recipient output exists before the payload does: it is what the payload
+    // commits to, and the proofs bind to that commitment.
     CTransaction txNew;
     txNew.nVersion = SHIELDED_TX_VERSION_VNEXT;
-    txNew.privacyVNext.vchPayload = vchPayload;
     CScript scriptTo;
     scriptTo.SetDestination(toAddress.Get());
     txNew.vout.push_back(CTxOut(nAmount, scriptTo));
+    PrivacyVNextDigest transparentBinding;
+    PrivacyVNextBindingOf(txNew, transparentBinding);
+
+    std::vector<unsigned char> vchPayload;
+    if (!BuildPrivacyVNextSpend(vNotes, vOutputs, genesis,
+                                changeKeys.outgoingViewSecret, transparentBinding,
+                                nNetwork, nFee, nAmount, vchPayload, strErrorOut))
+        return false;
+
+    txNew.privacyVNext.vchPayload = vchPayload;
     txNew.nTime = GetAdjustedTime();
+
+    if (!PrivacyVNextBindingHolds(txNew, transparentBinding, strErrorOut))
+        return false;
 
     std::string strReason;
     if (!IsStandardTx(txNew, strReason))

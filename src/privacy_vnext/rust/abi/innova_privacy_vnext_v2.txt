@@ -279,8 +279,8 @@ payload-scan-response:
   key-images: every key image the payload spends, so a caller can retire its own notes without a second decode
   authentication: every opened note is authenticated by its own tag before decryption, so an output that is not the caller's is skipped rather than reported
 payload-effects-response:
-  header-exact-size: 92
-  header-fields: schema-u16-le, input-count-u8, output-count-u8, finalized-root-32, finalized-tree-size-u64-le, parameter-digest-32, transparent-value-balance-i64-le, fee-u64-le
+  header-exact-size: 124
+  header-fields: schema-u16-le, input-count-u8, output-count-u8, finalized-root-32, finalized-tree-size-u64-le, parameter-digest-32, transparent-value-balance-i64-le, fee-u64-le, transparent-binding-32
   pool-delta: transparent-value-balance minus fee, for every operation; the caller tracks the
     running total so no more value can leave the pool than entered it
   trailing-fields: input-count key-images-32 followed by output-count O-I-C leaves-96
@@ -294,6 +294,9 @@ payload-validation:
   input/output limits: 16/16 pending benchmark cap selection
   disclosure records derived only from mask bits 1, 2, and 4
   six bounded proof sections in fixed normative order
+  transparent-binding: 32 opaque header bytes after the fee, inside the signing hash and
+    therefore covered by every proof; the caller alone defines what they must equal, which
+    is a digest of the carrying transaction's transparent outputs and lock time
   signing-hash: blake2b-256(Innova/IV5/Signing/v1, outer-wire-version-u32-le, canonical-payload-through-finality-body)
   hidden-spend-input: pseudo-out-32 then nullifier-key-image-32; source leaves are never serialized in the base input
   membership: exact upstream proof size and full FCMP++ verification against finalized-root, signing-hash, pseudo-outs, and key-images

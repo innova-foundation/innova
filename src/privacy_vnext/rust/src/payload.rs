@@ -20,7 +20,7 @@ const MAX_FINALITY_BODY_BYTES: usize = 65_536;
 const MAX_PROOF_SECTION_BYTES: usize = 65_536;
 const TREE_CAPACITY: u64 = 38_u64.pow(4) * 18_u64.pow(4);
 const SIGNING_DOMAIN: &[u8] = b"Innova/IV5/Signing/v1";
-const EFFECTS_HEADER_BYTES: usize = 92;
+const EFFECTS_HEADER_BYTES: usize = 124;
 
 struct PayloadEffects {
     finalized_root: [u8; 32],
@@ -29,6 +29,8 @@ struct PayloadEffects {
     /// Signed value crossing the transparent boundary: positive enters the pool.
     transparent_value_balance: i64,
     fee: u64,
+    /// Opaque commitment to the including transaction's transparent side.
+    transparent_binding: [u8; 32],
     key_images: Vec<[u8; 32]>,
     output_leaves: Vec<([u8; 32], [u8; 32], [u8; 32])>,
 }
@@ -51,6 +53,9 @@ impl PayloadEffects {
         // pool delta = transparent value balance - fee, for every operation.
         encoded.extend_from_slice(&self.transparent_value_balance.to_le_bytes());
         encoded.extend_from_slice(&self.fee.to_le_bytes());
+        // The caller checks this against the transaction carrying the payload; the
+        // digest's construction is the caller's, so it stays opaque here.
+        encoded.extend_from_slice(&self.transparent_binding);
         for key_image in &self.key_images {
             encoded.extend_from_slice(key_image);
         }
@@ -218,6 +223,7 @@ struct PayloadPrefix<'a> {
     finalized_tree_size: u64,
     transparent_value_balance: i64,
     fee: u64,
+    transparent_binding: [u8; 32],
     pseudo_outs: Vec<[u8; 32]>,
     key_images: Vec<[u8; 32]>,
     output_owners: Vec<[u8; 32]>,
@@ -285,6 +291,10 @@ fn parse_payload_prefix(
     }
     let transparent_value_balance = cursor.i64()?;
     let fee = cursor.u64()?;
+    // Sits inside the region the signing hash covers, so the proofs bind to it and the
+    // transparent side of the transaction can no longer be rewritten after proving. Any
+    // 32 bytes are structurally valid: what they must equal is the caller's rule.
+    let transparent_binding = cursor.array::<32>()?;
 
     let input_count = bounded_count(&mut cursor, MAX_INPUTS)?;
     let mut pseudo_outs = Vec::with_capacity(input_count);
@@ -339,6 +349,7 @@ fn parse_payload_prefix(
         finalized_tree_size,
         transparent_value_balance,
         fee,
+        transparent_binding,
         pseudo_outs,
         key_images,
         output_owners,
@@ -364,6 +375,7 @@ fn validate_payload(wire_version: u32, payload: &[u8]) -> Result<PayloadEffects,
         finalized_tree_size,
         transparent_value_balance,
         fee,
+        transparent_binding,
         pseudo_outs,
         key_images,
         output_owners,
@@ -550,6 +562,7 @@ fn validate_payload(wire_version: u32, payload: &[u8]) -> Result<PayloadEffects,
         parameter_digest,
         transparent_value_balance,
         fee,
+        transparent_binding,
         key_images,
         output_leaves,
     })
@@ -752,6 +765,10 @@ mod tests {
     use super::*;
     use crate::tree;
 
+    // Stands in for whatever the caller commits its transparent side to; the payload
+    // decoder carries these bytes and never interprets them.
+    const TEST_TRANSPARENT_BINDING: [u8; 32] = [0x5a; 32];
+
     fn compact_size(output: &mut Vec<u8>, value: usize) {
         if value <= 252 {
             output.push(u8::try_from(value).expect("compact test value is bounded"));
@@ -792,6 +809,7 @@ mod tests {
         payload.extend_from_slice(&0_u64.to_le_bytes());
         payload.extend_from_slice(&10_i64.to_le_bytes());
         payload.extend_from_slice(&1_u64.to_le_bytes());
+        payload.extend_from_slice(&TEST_TRANSPARENT_BINDING);
 
         compact_size(&mut payload, 0);
 
@@ -885,6 +903,7 @@ mod tests {
         payload.extend_from_slice(&0_u64.to_le_bytes());
         payload.extend_from_slice(&100_i64.to_le_bytes());
         payload.extend_from_slice(&1_u64.to_le_bytes());
+        payload.extend_from_slice(&TEST_TRANSPARENT_BINDING);
         compact_size(&mut payload, 0);
         compact_size(&mut payload, 1);
         payload.extend_from_slice(&encrypted[8..40]);
@@ -1018,7 +1037,7 @@ mod tests {
         assert_eq!(scanned[2], 1);
         assert_eq!(scanned[3], 0);
 
-        // The validated effects carry the leaf after its 76-byte header and no key
+        // The validated effects carry the leaf right after the header and no key
         // images, so the scan's leaf must be byte-identical to it.
         let validated_leaf = &encoded[EFFECTS_HEADER_BYTES..EFFECTS_HEADER_BYTES + 96];
         let scanned_leaf = &scanned[12..108];
@@ -1105,13 +1124,40 @@ mod tests {
             &state_effects[44..76],
             &Sha256::digest(PRODUCT_CONTRACT)[..]
         );
-        assert_eq!(&state_effects[76..108], &request[135..167]);
-        assert_eq!(&state_effects[108..140], &request[167..199]);
-        assert_eq!(&state_effects[140..172], &request[199..231]);
+        assert_eq!(&state_effects[76..84], &10_i64.to_le_bytes());
+        assert_eq!(&state_effects[84..92], &1_u64.to_le_bytes());
+        // The caller cannot check the transparent side against anything unless the
+        // payload's own bytes reach it unchanged.
+        assert_eq!(&state_effects[92..124], &TEST_TRANSPARENT_BINDING);
+        let leaves = EFFECTS_HEADER_BYTES;
+        assert_eq!(&state_effects[leaves..leaves + 32], &request[167..199]);
+        assert_eq!(
+            &state_effects[leaves + 32..leaves + 64],
+            &request[199..231]
+        );
+        assert_eq!(
+            &state_effects[leaves + 64..leaves + 96],
+            &request[231..263]
+        );
 
         let mut trailing = request;
         trailing.push(0);
         assert_eq!(validate(&trailing), Err(ResultCode::ConsensusInvalid));
+    }
+
+    // The binding must stay inside the signing hash so the proofs cover it.
+    #[test]
+    fn transparent_binding_is_covered_by_the_signing_hash() {
+        const BINDING_OFFSET: usize = VALIDATION_PREFIX_SIZE + 129;
+        let request = valid_request();
+        assert_eq!(
+            &request[BINDING_OFFSET..BINDING_OFFSET + 32],
+            &TEST_TRANSPARENT_BINDING
+        );
+
+        let mut restated = request;
+        restated[BINDING_OFFSET] ^= 1;
+        assert_eq!(validate(&restated), Err(ResultCode::ConsensusInvalid));
     }
 
     #[test]
@@ -1123,7 +1169,7 @@ mod tests {
 
     #[test]
     fn payload_rejects_noncanonical_lengths_context_and_points() {
-        const INPUT_COUNT_OFFSET: usize = VALIDATION_PREFIX_SIZE + 129;
+        const INPUT_COUNT_OFFSET: usize = VALIDATION_PREFIX_SIZE + 161;
         const PARAMETER_DIGEST_OFFSET: usize = VALIDATION_PREFIX_SIZE + 41;
         let request = valid_request();
 

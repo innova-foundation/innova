@@ -114,6 +114,7 @@ static bool BuildPrivacyVNextPayload(
     const PrivacyVNextDigest& outgoingViewSecret,
     const PrivacyVNextDigest& finalizedRoot,
     uint64_t nFinalizedTreeSize,
+    const PrivacyVNextDigest& transparentBinding,
     int64_t nTransparentValueBalance,
     uint64_t nFee,
     const std::vector<PrivacyVNextSpendNote>& spends,
@@ -267,6 +268,9 @@ static bool BuildPrivacyVNextPayload(
     PutU64(prefix, nFinalizedTreeSize);
     PutI64(prefix, nTransparentValueBalance);
     PutU64(prefix, nFee);
+    // Before the proofs, so the signing hash covers it and no assembler can restate the
+    // transparent side of a payload that already verified.
+    PutBytes(prefix, transparentBinding);
 
     PutCompactSize(prefix, vDraft.size());
     for (size_t i = 0; i < vDraft.size(); ++i)
@@ -421,6 +425,7 @@ bool BuildPrivacyVNextTransferPayload(
     const PrivacyVNextDigest& outgoingViewSecret,
     const PrivacyVNextDigest& finalizedRoot,
     uint64_t nFinalizedTreeSize,
+    const PrivacyVNextDigest& transparentBinding,
     uint64_t nFee,
     const std::vector<PrivacyVNextSpendNote>& spends,
     const std::vector<PrivacyVNextNewOutput>& outputs,
@@ -436,8 +441,9 @@ bool BuildPrivacyVNextTransferPayload(
     // A transfer moves nothing across the transparent boundary.
     return BuildPrivacyVNextPayload(nNetwork, VNEXT_OPERATION_TRANSFER, genesis,
                                     outgoingViewSecret, finalizedRoot,
-                                    nFinalizedTreeSize, 0, nFee, spends, outputs,
-                                    vchPayloadOut, strErrorOut);
+                                    nFinalizedTreeSize, transparentBinding, 0,
+                                    nFee, spends, outputs, vchPayloadOut,
+                                    strErrorOut);
 }
 
 bool BuildPrivacyVNextUnshieldPayload(
@@ -446,6 +452,7 @@ bool BuildPrivacyVNextUnshieldPayload(
     const PrivacyVNextDigest& outgoingViewSecret,
     const PrivacyVNextDigest& finalizedRoot,
     uint64_t nFinalizedTreeSize,
+    const PrivacyVNextDigest& transparentBinding,
     uint64_t nTransparentValueOut,
     uint64_t nFee,
     const std::vector<PrivacyVNextSpendNote>& spends,
@@ -473,8 +480,9 @@ bool BuildPrivacyVNextUnshieldPayload(
     // Negative balance is value the pool releases to the transparent side.
     return BuildPrivacyVNextPayload(
         nNetwork, VNEXT_OPERATION_UNSHIELD, genesis, outgoingViewSecret,
-        finalizedRoot, nFinalizedTreeSize, -(int64_t)nTransparentValueOut, nFee,
-        spends, outputs, vchPayloadOut, strErrorOut);
+        finalizedRoot, nFinalizedTreeSize, transparentBinding,
+        -(int64_t)nTransparentValueOut, nFee, spends, outputs, vchPayloadOut,
+        strErrorOut);
 }
 
 bool BuildPrivacyVNextShieldPayload(
@@ -483,6 +491,7 @@ bool BuildPrivacyVNextShieldPayload(
     const PrivacyVNextDigest& outgoingViewSecret,
     const PrivacyVNextDigest& finalizedRoot,
     uint64_t nFinalizedTreeSize,
+    const PrivacyVNextDigest& transparentBinding,
     uint64_t nTransparentValueIn,
     uint64_t nFee,
     const std::vector<PrivacyVNextNewOutput>& outputs,
@@ -500,7 +509,8 @@ bool BuildPrivacyVNextShieldPayload(
     // membership proof and the payload is a fraction of a transfer's size.
     return BuildPrivacyVNextPayload(
         nNetwork, VNEXT_OPERATION_SHIELD, genesis, outgoingViewSecret,
-        finalizedRoot, nFinalizedTreeSize, (int64_t)nTransparentValueIn, nFee,
+        finalizedRoot, nFinalizedTreeSize, transparentBinding,
+        (int64_t)nTransparentValueIn, nFee,
         std::vector<PrivacyVNextSpendNote>(), outputs, vchPayloadOut,
         strErrorOut);
 }

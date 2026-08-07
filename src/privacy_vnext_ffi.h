@@ -101,6 +101,9 @@ struct PrivacyVNextStateEffects
     // Signed value crossing the transparent boundary: positive enters the pool.
     int64_t nTransparentValueBalance;
     uint64_t nFee;
+    // What the payload committed its transaction's transparent side to, checked by
+    // consensus against GetPrivacyVNextTransparentBinding of the carrying transaction.
+    PrivacyVNextDigest transparentBinding;
     std::vector<PrivacyVNextDigest> keyImages;
     std::vector<PrivacyVNextOutputLeaf> outputLeaves;
 
@@ -109,6 +112,7 @@ struct PrivacyVNextStateEffects
     {
         finalizedRoot.fill(0);
         parameterDigest.fill(0);
+        transparentBinding.fill(0);
     }
 
     // What this transaction adds to, or takes from, the pool. Every operation obeys the

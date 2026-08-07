@@ -17,6 +17,7 @@
 #include "hashblock.h"
 #include "shielded.h"
 #include "nullstake.h"
+#include "privacy_vnext_ffi.h"
 
 #include <list>
 #include <vector>
@@ -811,6 +812,17 @@ bool IsSynchronized();
 bool IsInitialBlockDownload();
 std::string GetWarnings(std::string strFor);
 bool GetTransaction(const uint256 &hash, CTransaction &tx, uint256 &hashBlock, bool s=false);
+
+/** Digest an IV5 payload commits to so its transaction's transparent side cannot be
+ *  rewritten after the proofs are made. Covers the output vector and the lock time;
+ *  see the definition in main.cpp for why that is the whole attack surface. */
+uint256 GetPrivacyVNextTransparentBinding(const CTransaction& tx);
+
+/** Hold an accepted payload's declared binding against the transaction carrying it.
+ *  A mismatch is deterministic-invalid, never a local failure. */
+bool CheckPrivacyVNextTransparentBinding(const CTransaction& tx,
+                                         const PrivacyVNextStateEffects& effects,
+                                         std::string& strError);
 
 /** Transparent value an IV5 transaction moves across the pool boundary: what the
  *  pool absorbs must be covered by the transparent inputs, what it releases is
