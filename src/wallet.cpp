@@ -11392,6 +11392,10 @@ bool CWallet::CreatePrivacyVNextTransfer(
     vOutputs[1].recipient.spendPublic = changeKeys.spendPublic;
     vOutputs[1].recipient.viewPublic = changeKeys.viewPublic;
     vOutputs[1].nAmount = (uint64_t)nChange;
+    // A fixed position tells the payee which output is the sender's change, and the
+    // payee is the one party who can already open the other one.
+    if (GetRandInt(2) == 1)
+        std::swap(vOutputs[0], vOutputs[1]);
 
     // A transfer consumes notes, not outputs, and pays a note: it names no
     // transparent input or output, and the payload commits to exactly that.
