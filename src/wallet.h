@@ -571,6 +571,28 @@ public:
         size_t& nInputsUsedOut,
         std::string& strErrorOut);
 
+    // Spend notes to a shielded recipient. Nothing crosses the transparent
+    // boundary, so the transaction carries no transparent input or output at all.
+    bool CreatePrivacyVNextTransfer(
+        const std::string& strToAddress,
+        int64_t nAmount,
+        bool fCommit,
+        CWalletTx& wtxNew,
+        int64_t& nFeeOut,
+        size_t& nNotesUsedOut,
+        std::string& strErrorOut);
+
+    // Spend notes back out to a transparent address. The payload releases the
+    // amount and the transaction pays it to that address.
+    bool CreatePrivacyVNextUnshield(
+        const std::string& strToAddress,
+        int64_t nAmount,
+        bool fCommit,
+        CWalletTx& wtxNew,
+        int64_t& nFeeOut,
+        size_t& nNotesUsedOut,
+        std::string& strErrorOut);
+
     bool AddShieldedSpendingKey(const CShieldedPaymentAddress& addr, const CShieldedSpendingKey& key);
     bool AddShieldedViewingKey(const CShieldedPaymentAddress& addr, const CShieldedIncomingViewingKey& ivk);
     bool HaveShieldedSpendingKey(const CShieldedPaymentAddress& addr) const;

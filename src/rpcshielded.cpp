@@ -1693,6 +1693,92 @@ Value z_shieldall(const Array& params, bool fHelp)
     return result;
 }
 
+Value z_iv5transfer(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 2)
+        throw runtime_error(
+            "z_iv5transfer <toaddress> <amount>\n"
+            "Spends shielded notes to another IV5 address.\n"
+            "\nNothing crosses the transparent boundary, so the transaction has no\n"
+            "transparent input or output and reveals no sender, recipient or amount.\n"
+            "Change returns to this wallet as a second note.\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"txid\": \"...\",     (string) the transfer transaction\n"
+            "  \"amount\": x.xxx,   (numeric) value sent\n"
+            "  \"fee\": x.xxx,      (numeric) fee paid\n"
+            "  \"notes\": n         (numeric) notes consumed\n"
+            "}\n");
+
+    if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight : 0))
+        throw JSONRPCError(RPC_INVALID_REQUEST,
+                           "the IV5 pool is not active on this network yet");
+
+    EnsureWalletIsUnlocked();
+
+    const std::string strTo = params[0].get_str();
+    const int64_t nAmount = AmountFromValue(params[1]);
+
+    CWalletTx wtx;
+    int64_t nFee = 0;
+    size_t nNotes = 0;
+    std::string strError;
+    if (!pwalletMain->CreatePrivacyVNextTransfer(strTo, nAmount, true, wtx, nFee,
+                                                 nNotes, strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+
+    Object result;
+    result.push_back(Pair("txid", wtx.GetHash().GetHex()));
+    result.push_back(Pair("amount", ValueFromAmount(nAmount)));
+    result.push_back(Pair("fee", ValueFromAmount(nFee)));
+    result.push_back(Pair("notes", (int64_t)nNotes));
+    return result;
+}
+
+Value z_iv5unshield(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() != 2)
+        throw runtime_error(
+            "z_iv5unshield <toaddress> <amount>\n"
+            "Spends shielded notes back out to a transparent address.\n"
+            "\nThe amount and the receiving address are public, as they must be to\n"
+            "land in a transparent output. Which notes paid for it is not, and any\n"
+            "change stays in the pool.\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"txid\": \"...\",     (string) the unshield transaction\n"
+            "  \"address\": \"...\",  (string) the transparent address paid\n"
+            "  \"amount\": x.xxx,   (numeric) value released from the pool\n"
+            "  \"fee\": x.xxx,      (numeric) fee paid\n"
+            "  \"notes\": n         (numeric) notes consumed\n"
+            "}\n");
+
+    if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight : 0))
+        throw JSONRPCError(RPC_INVALID_REQUEST,
+                           "the IV5 pool is not active on this network yet");
+
+    EnsureWalletIsUnlocked();
+
+    const std::string strTo = params[0].get_str();
+    const int64_t nAmount = AmountFromValue(params[1]);
+
+    CWalletTx wtx;
+    int64_t nFee = 0;
+    size_t nNotes = 0;
+    std::string strError;
+    if (!pwalletMain->CreatePrivacyVNextUnshield(strTo, nAmount, true, wtx, nFee,
+                                                 nNotes, strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+
+    Object result;
+    result.push_back(Pair("txid", wtx.GetHash().GetHex()));
+    result.push_back(Pair("address", strTo));
+    result.push_back(Pair("amount", ValueFromAmount(nAmount)));
+    result.push_back(Pair("fee", ValueFromAmount(nFee)));
+    result.push_back(Pair("notes", (int64_t)nNotes));
+    return result;
+}
+
 Value z_getshieldedinfo(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() > 0)

@@ -11,6 +11,7 @@
 #include "txdb.h"
 #include "wallet.h"
 #include "privacy_vnext_builder.h"
+#include "privacy_vnext_store.h"
 #include "privacy_vnext_ffi.h"
 #include "walletdb.h"
 #include "crypter.h"
@@ -11061,6 +11062,349 @@ bool CWallet::SelectPrivacyVNextNotes(
     vSelected.clear();
     nSelectedValue = 0;
     return false;
+}
+
+// The anchor a spend proves against, and the tree state its witnesses are cut
+// from. Both must come from the same finalized epoch or the paths fold onto a
+// root no validator will accept.
+static bool LoadPrivacyVNextSpendAnchor(std::vector<unsigned char>& vchStateOut,
+                                        std::vector<unsigned char>& vchRootOut,
+                                        uint64_t& nTreeSizeOut,
+                                        std::string& strErrorOut)
+{
+    vchStateOut.clear();
+    vchRootOut.clear();
+    nTreeSizeOut = 0;
+
+    LOCK(cs_main);
+    CTxDB txdb("r");
+    CEpochState finalized;
+    if (!g_dagManager.GetFinalizedEpochStateAsOf(txdb, nBestHeight, finalized) ||
+        finalized.nSerVersion < EPOCHSTATE_SER_VERSION_V4 ||
+        finalized.vchVNextRoot.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE)
+    {
+        strErrorOut = "no finalized IV5 epoch state is available to spend against";
+        return false;
+    }
+    if (finalized.nVNextTreeSize == 0)
+    {
+        strErrorOut = "the IV5 tree is empty; nothing has been shielded yet";
+        return false;
+    }
+    vchStateOut = finalized.vchVNextTreeState;
+    vchRootOut = finalized.vchVNextRoot;
+    nTreeSizeOut = finalized.nVNextTreeSize;
+    return true;
+}
+
+// Shared body of the two spend paths. `nTransparentOut` is zero for a transfer
+// and the released amount for an unshield; `vShieldedOutputs` carries whatever
+// stays in the pool, which for an unshield is only the change.
+static bool BuildPrivacyVNextSpend(
+    const std::vector<CPrivacyVNextWalletNote>& vNotes,
+    const std::vector<PrivacyVNextNewOutput>& vShieldedOutputs,
+    const PrivacyVNextDigest& genesis,
+    const PrivacyVNextDigest& outgoingViewSecret,
+    uint8_t nNetwork,
+    int64_t nFee,
+    int64_t nTransparentOut,
+    std::vector<unsigned char>& vchPayloadOut,
+    std::string& strErrorOut)
+{
+    vchPayloadOut.clear();
+
+    std::vector<unsigned char> vchTreeState;
+    std::vector<unsigned char> vchRoot;
+    uint64_t nTreeSize = 0;
+    if (!LoadPrivacyVNextSpendAnchor(vchTreeState, vchRoot, nTreeSize,
+                                     strErrorOut))
+        return false;
+
+    std::vector<uint64_t> vLeafIndexes(vNotes.size());
+    for (size_t i = 0; i < vNotes.size(); ++i)
+    {
+        if (vNotes[i].nLeafIndex >= nTreeSize)
+        {
+            strErrorOut = "a selected note is not yet in the finalized IV5 tree";
+            return false;
+        }
+        vLeafIndexes[i] = vNotes[i].nLeafIndex;
+    }
+
+    std::vector<unsigned char> vchPaths;
+    {
+        LOCK(cs_main);
+        CTxDB txdb("r");
+        if (!ReadPrivacyVNextTreePaths(txdb, nTreeSize, vLeafIndexes, vchPaths,
+                                       strErrorOut))
+            return false;
+    }
+
+    std::vector<PrivacyVNextMembershipWitness> vWitnesses;
+    PrivacyVNextDigest treeRoot;
+    if (!BuildPrivacyVNextWitnessesFromPaths(vchTreeState, vLeafIndexes,
+                                             vchPaths, vWitnesses, treeRoot,
+                                             strErrorOut))
+        return false;
+    if (vWitnesses.size() != vNotes.size())
+    {
+        strErrorOut = "the node returned the wrong number of IV5 witnesses";
+        return false;
+    }
+    if (!std::equal(treeRoot.begin(), treeRoot.end(), vchRoot.begin()))
+    {
+        strErrorOut = "IV5 witnesses do not fold onto the finalized root";
+        return false;
+    }
+
+    std::vector<PrivacyVNextSpendNote> vSpends(vNotes.size());
+    for (size_t i = 0; i < vNotes.size(); ++i)
+    {
+        const CPrivacyVNextWalletNote& note = vNotes[i];
+        std::memcpy(vSpends[i].spendSecret.data(), &note.vchSpendSecret[0], 32);
+        std::memcpy(vSpends[i].y.data(), &note.vchY[0], 32);
+        std::memcpy(vSpends[i].mask.data(), &note.vchMask[0], 32);
+        std::memcpy(vSpends[i].leaf.owner.data(), &note.vchOwner[0], 32);
+        std::memcpy(vSpends[i].leaf.nullifierBase.data(),
+                    &note.vchNullifierBase[0], 32);
+        std::memcpy(vSpends[i].leaf.commitment.data(), &note.vchCommitment[0], 32);
+        vSpends[i].nAmount = note.nAmount;
+        vSpends[i].vchWitnessRecord = vWitnesses[i].vchRecord;
+    }
+
+    PrivacyVNextDigest finalizedRoot;
+    std::memcpy(finalizedRoot.data(), &vchRoot[0], 32);
+
+    if (nTransparentOut > 0)
+        return BuildPrivacyVNextUnshieldPayload(
+            nNetwork, genesis, outgoingViewSecret, finalizedRoot, nTreeSize,
+            (uint64_t)nTransparentOut, (uint64_t)nFee, vSpends, vShieldedOutputs,
+            vchPayloadOut, strErrorOut);
+
+    return BuildPrivacyVNextTransferPayload(
+        nNetwork, genesis, outgoingViewSecret, finalizedRoot, nTreeSize,
+        (uint64_t)nFee, vSpends, vShieldedOutputs, vchPayloadOut, strErrorOut);
+}
+
+// Common front half: validate the amount, pick notes and derive the wallet's own
+// change recipient. The caller supplies where the value goes.
+static bool PreparePrivacyVNextSpend(
+    CWallet* pwallet,
+    int64_t nAmount,
+    int64_t& nFeeOut,
+    std::vector<CPrivacyVNextWalletNote>& vNotesOut,
+    int64_t& nSelectedOut,
+    PrivacyVNextDigest& genesisOut,
+    PrivacyVNextDerivedKeys& changeKeysOut,
+    uint8_t& nNetworkOut,
+    std::string& strErrorOut)
+{
+    vNotesOut.clear();
+    nSelectedOut = 0;
+    nFeeOut = 0;
+
+    if (nAmount <= 0)
+    {
+        strErrorOut = "amount must be positive";
+        return false;
+    }
+    if (pwallet->vchPrivacyVNextSeed.size() != 32)
+    {
+        strErrorOut = "the wallet has no unlocked IV5 seed; run z_createiv5seed first";
+        return false;
+    }
+
+    const int64_t nFee = MIN_TX_FEE_SHIELDED;
+    if (nAmount > MAX_MONEY - nFee)
+    {
+        strErrorOut = "amount is out of range";
+        return false;
+    }
+
+    int nSpendHeight = 0;
+    {
+        LOCK(cs_main);
+        nSpendHeight = nBestHeight;
+    }
+    if (!pwallet->SelectPrivacyVNextNotes(nAmount + nFee, nSpendHeight, vNotesOut,
+                                          nSelectedOut))
+    {
+        strErrorOut = strprintf(
+            "insufficient spendable shielded balance: need %s including the %s fee",
+            FormatMoney(nAmount + nFee).c_str(), FormatMoney(nFee).c_str());
+        return false;
+    }
+
+    PrivacyVNextDigest seedDigest;
+    std::memcpy(seedDigest.data(), &pwallet->vchPrivacyVNextSeed[0], 32);
+    const uint256 hashGenesis = GetGenesisBlockHash();
+    std::memcpy(genesisOut.data(), hashGenesis.begin(), 32);
+    nNetworkOut = PrivacyVNextNetworkIdForWallet();
+
+    // Change comes back to the wallet's own first index, the same receiver a
+    // shield pays into.
+    if (!DerivePrivacyVNextKeys(seedDigest, genesisOut, 0, nNetworkOut, 0,
+                                changeKeysOut, strErrorOut))
+        return false;
+
+    nFeeOut = nFee;
+    return true;
+}
+
+bool CWallet::CreatePrivacyVNextTransfer(
+    const std::string& strToAddress,
+    int64_t nAmount,
+    bool fCommit,
+    CWalletTx& wtxNew,
+    int64_t& nFeeOut,
+    size_t& nNotesUsedOut,
+    std::string& strErrorOut)
+{
+    wtxNew.SetNull();
+    nFeeOut = 0;
+    nNotesUsedOut = 0;
+    strErrorOut.clear();
+
+    std::vector<CPrivacyVNextWalletNote> vNotes;
+    int64_t nSelected = 0;
+    int64_t nFee = 0;
+    PrivacyVNextDigest genesis;
+    PrivacyVNextDerivedKeys changeKeys;
+    uint8_t nNetwork = 0;
+    if (!PreparePrivacyVNextSpend(this, nAmount, nFee, vNotes, nSelected, genesis,
+                                  changeKeys, nNetwork, strErrorOut))
+        return false;
+
+    PrivacyVNextAddressComponents recipient;
+    if (!DecodePrivacyVNextAddress(strToAddress, nNetwork, recipient,
+                                   strErrorOut))
+        return false;
+
+    // Two outputs whatever the split, so a transfer and its change are the same
+    // shape as every other IV5 transaction on the wire.
+    const int64_t nChange = nSelected - nAmount - nFee;
+    std::vector<PrivacyVNextNewOutput> vOutputs(2);
+    vOutputs[0].recipient = recipient;
+    vOutputs[0].nAmount = (uint64_t)nAmount;
+    vOutputs[1].recipient.nNetwork = nNetwork;
+    vOutputs[1].recipient.nAddressType = 0;
+    vOutputs[1].recipient.spendPublic = changeKeys.spendPublic;
+    vOutputs[1].recipient.viewPublic = changeKeys.viewPublic;
+    vOutputs[1].nAmount = (uint64_t)nChange;
+
+    std::vector<unsigned char> vchPayload;
+    if (!BuildPrivacyVNextSpend(vNotes, vOutputs, genesis,
+                                changeKeys.outgoingViewSecret, nNetwork, nFee, 0,
+                                vchPayload, strErrorOut))
+        return false;
+
+    CTransaction txNew;
+    txNew.nVersion = SHIELDED_TX_VERSION_VNEXT;
+    txNew.privacyVNext.vchPayload = vchPayload;
+    // A transfer consumes notes, not outputs, and pays a note: no transparent
+    // input or output exists to tie it to anything.
+    txNew.nTime = GetAdjustedTime();
+
+    *static_cast<CTransaction*>(&wtxNew) = txNew;
+    wtxNew.BindWallet(this);
+    wtxNew.fTimeReceivedIsTxTime = true;
+    nFeeOut = nFee;
+    nNotesUsedOut = vNotes.size();
+
+    if (fCommit)
+    {
+        CReserveKey reservekey(this);
+        if (!CommitTransaction(wtxNew, reservekey))
+        {
+            strErrorOut = "the transfer was built but could not be committed";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool CWallet::CreatePrivacyVNextUnshield(
+    const std::string& strToAddress,
+    int64_t nAmount,
+    bool fCommit,
+    CWalletTx& wtxNew,
+    int64_t& nFeeOut,
+    size_t& nNotesUsedOut,
+    std::string& strErrorOut)
+{
+    wtxNew.SetNull();
+    nFeeOut = 0;
+    nNotesUsedOut = 0;
+    strErrorOut.clear();
+
+    CBitcoinAddress toAddress(strToAddress);
+    if (!toAddress.IsValid())
+    {
+        strErrorOut = "invalid transparent address to unshield to";
+        return false;
+    }
+
+    std::vector<CPrivacyVNextWalletNote> vNotes;
+    int64_t nSelected = 0;
+    int64_t nFee = 0;
+    PrivacyVNextDigest genesis;
+    PrivacyVNextDerivedKeys changeKeys;
+    uint8_t nNetwork = 0;
+    if (!PreparePrivacyVNextSpend(this, nAmount, nFee, vNotes, nSelected, genesis,
+                                  changeKeys, nNetwork, strErrorOut))
+        return false;
+
+    // Only the change stays in the pool. The arity is still two so the payload
+    // does not announce whether an unshield left change behind.
+    const int64_t nChange = nSelected - nAmount - nFee;
+    std::vector<PrivacyVNextNewOutput> vOutputs(2);
+    for (size_t i = 0; i < vOutputs.size(); ++i)
+    {
+        vOutputs[i].recipient.nNetwork = nNetwork;
+        vOutputs[i].recipient.nAddressType = 0;
+        vOutputs[i].recipient.spendPublic = changeKeys.spendPublic;
+        vOutputs[i].recipient.viewPublic = changeKeys.viewPublic;
+    }
+    vOutputs[0].nAmount = (uint64_t)(nChange / 2);
+    vOutputs[1].nAmount = (uint64_t)(nChange - (nChange / 2));
+
+    std::vector<unsigned char> vchPayload;
+    if (!BuildPrivacyVNextSpend(vNotes, vOutputs, genesis,
+                                changeKeys.outgoingViewSecret, nNetwork, nFee,
+                                nAmount, vchPayload, strErrorOut))
+        return false;
+
+    CTransaction txNew;
+    txNew.nVersion = SHIELDED_TX_VERSION_VNEXT;
+    txNew.privacyVNext.vchPayload = vchPayload;
+    CScript scriptTo;
+    scriptTo.SetDestination(toAddress.Get());
+    txNew.vout.push_back(CTxOut(nAmount, scriptTo));
+    txNew.nTime = GetAdjustedTime();
+
+    std::string strReason;
+    if (!IsStandardTx(txNew, strReason))
+    {
+        strErrorOut = "the built unshield is nonstandard: " + strReason;
+        return false;
+    }
+
+    *static_cast<CTransaction*>(&wtxNew) = txNew;
+    wtxNew.BindWallet(this);
+    wtxNew.fTimeReceivedIsTxTime = true;
+    nFeeOut = nFee;
+    nNotesUsedOut = vNotes.size();
+
+    if (fCommit)
+    {
+        CReserveKey reservekey(this);
+        if (!CommitTransaction(wtxNew, reservekey))
+        {
+            strErrorOut = "the unshield was built but could not be committed";
+            return false;
+        }
+    }
+    return true;
 }
 
 bool CWallet::AllocatePrivacyVNextIndex(uint32_t& nIndexOut,
