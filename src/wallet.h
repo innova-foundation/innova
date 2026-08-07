@@ -291,16 +291,29 @@ public:
     // the separately persisted count, so an issued address is never outside it.
     uint32_t GetPrivacyVNextScanIndexCount() const;
     bool AllocatePrivacyVNextIndex(uint32_t& nIndexOut, std::string& strErrorOut);
-    bool AssignPrivacyVNextLeafIndices(int nEpoch, std::string& strErrorOut);
-    bool ApplyPrivacyVNextBlock(const CBlock& block, const CBlockIndex* pindex,
+    // Assigns tree positions for every epoch up to `nThroughEpoch` that still holds an
+    // unplaced note of ours, not just the most recent one.
+    bool AssignPrivacyVNextLeafIndices(int nThroughEpoch, std::string& strErrorOut);
+    bool AssignPrivacyVNextLeafIndicesForEpoch(int nEpoch,
+                                               std::string& strErrorOut);
+    // `setDAGSkippedTxs` is the connect-time sibling skip set. A skipped transaction
+    // spent nothing and placed nothing, so scanning it would mark live notes spent.
+    bool ApplyPrivacyVNextBlock(const CBlock& block,
+                                const std::set<uint256>& setDAGSkippedTxs,
+                                const CBlockIndex* pindex,
                                 std::string& strErrorOut);
     bool DisconnectPrivacyVNextBlock(const CBlock& block,
                                      const CBlockIndex* pindex,
                                      std::string& strErrorOut);
     // Spendable means confirmed to the shielded depth and holding a tree
     // position, which a note only gains once its epoch finalizes.
+                                     const std::set<uint256>& setDAGSkippedTxs,
     int64_t GetPrivacyVNextBalance() const;
     int64_t GetPrivacyVNextUnconfirmedBalance() const;
+    bool ReadConnectTimeDAGSkippedTxs(const CBlock& block,
+                                      const CBlockIndex* pindex,
+                                      std::set<uint256>& setOut,
+                                      std::string& strErrorOut);
     // Unspent notes held, spendable or not. Separates "nothing was ever
     // detected" from "detected but not yet spendable".
     size_t GetPrivacyVNextNoteCount() const;
@@ -361,6 +374,7 @@ public:
         nOrderPosNext = 0;
         nTimeFirstKey = 0;
         privacyVNextSeedRecord.SetNull();
+        nPrivacyVNextScanGapHeight = -1;
         vchPrivacyVNextSeed.clear();
     }
 
@@ -374,7 +388,6 @@ public:
 
     //Innova Name DB
     std::vector<uint256> vWalletUpdated;
-        nPrivacyVNextScanGapHeight = -1;
     std::vector<uint256> vCheckNewNames;
 
     std::map<CTxDestination, std::string> mapAddressBook;
@@ -637,8 +650,8 @@ public:
         const std::set<uint256>& setDAGSkippedTxs,
         std::string& strErrorOut);
     bool DisconnectShieldedBlockRecoveryChecked(
-        const CBlock& block, const CBlockIndex* pindex,
-        std::string& strErrorOut);
+        const CBlock& block, const std::set<uint256>& setDAGSkippedTxs,
+        const CBlockIndex* pindex, std::string& strErrorOut);
     bool DisconnectAuxiliaryBlockRecoveryChecked(
         const CBlock& block,
         const std::set<uint256>& setDAGSkippedTxs,

@@ -609,9 +609,10 @@ BOOST_AUTO_TEST_CASE(wallet_multiblock_disconnect_is_independent_of_final_tree)
     // No shielded tree or per-block snapshot is installed.  This models replay
     // after a multi-block reorg has already left the new branch's final tree in
     // global storage; disconnect cleanup must use note identities only.
+    const std::set<uint256> kNoDAGSkippedTxs;
     std::string error;
     BOOST_REQUIRE(wallet.DisconnectShieldedBlockRecoveryChecked(
-        secondBlock, &secondIndex, error));
+        secondBlock, kNoDAGSkippedTxs, &secondIndex, error));
     BOOST_REQUIRE_EQUAL(wallet.vShieldedNotes.size(), 3U);
     BOOST_CHECK_EQUAL(wallet.vShieldedNotes[0].txhash.ToString(),
                       firstTx.GetHash().ToString());
@@ -623,11 +624,11 @@ BOOST_AUTO_TEST_CASE(wallet_multiblock_disconnect_is_independent_of_final_tree)
     // A crash after the Berkeley DB commit but before outbox acknowledgement
     // replays this exact block.  The second disconnect must be a no-op.
     BOOST_REQUIRE(wallet.DisconnectShieldedBlockRecoveryChecked(
-        secondBlock, &secondIndex, error));
+        secondBlock, kNoDAGSkippedTxs, &secondIndex, error));
     BOOST_REQUIRE_EQUAL(wallet.vShieldedNotes.size(), 3U);
 
     BOOST_REQUIRE(wallet.DisconnectShieldedBlockRecoveryChecked(
-        firstBlock, &firstIndex, error));
+        firstBlock, kNoDAGSkippedTxs, &firstIndex, error));
     BOOST_REQUIRE_EQUAL(wallet.vShieldedNotes.size(), 2U);
     BOOST_CHECK_EQUAL(wallet.vShieldedNotes[0].txhash.ToString(),
                       unrelatedNote.txhash.ToString());

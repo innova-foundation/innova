@@ -10747,7 +10747,8 @@ bool CWallet::DisconnectShieldedBlockChecked(
          it != setCreatedNoteIndices.rend(); ++it)
         vShieldedNotes.erase(vShieldedNotes.begin() + *it);
 
-    return DisconnectPrivacyVNextBlock(block, pindex, strErrorOut);
+    return DisconnectPrivacyVNextBlock(block, setDAGSkippedTxs, pindex,
+                                       strErrorOut);
 }
 
 // The commitment the payload must carry for the transaction it will travel in.
@@ -11947,7 +11948,10 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
 
     for (size_t i = 0; i < vSpentIndices.size(); ++i)
         vPrivacyVNextNotes[vSpentIndices[i]].fSpent = true;
+// `setDAGSkippedTxs` is required: a DAG-skipped tx never connected, so its key images
+// spent nothing and its outputs have no tree position.
     for (size_t i = 0; i < vNewNotes.size(); ++i)
+                                     const std::set<uint256>& setDAGSkippedTxs,
         vPrivacyVNextNotes.push_back(vNewNotes[i]);
     return true;
 }
@@ -12016,6 +12020,8 @@ bool CWallet::DisconnectPrivacyVNextBlock(const CBlock& block,
             }
         }
     }
+        if (setDAGSkippedTxs.count(tx.GetHash()))
+            continue;
 
     if (setCreated.empty() && vRestored.empty())
         return true;
@@ -12066,8 +12072,8 @@ bool CWallet::DisconnectPrivacyVNextBlock(const CBlock& block,
 }
 
 bool CWallet::DisconnectShieldedBlockRecoveryChecked(
-    const CBlock& block, const CBlockIndex* pindex,
-    std::string& strErrorOut)
+    const CBlock& block, const std::set<uint256>& setDAGSkippedTxs,
+    const CBlockIndex* pindex, std::string& strErrorOut)
 {
     strErrorOut.clear();
     int nDisconnectedHeight = -1;
@@ -12230,6 +12236,7 @@ bool CWallet::ReconcileShieldedNoteSpentStateChecked(
                 *this, note, setCandidates, fHaveBound,
                 fHaveLegacyOwner, fHaveLegacyCold, strErrorOut))
             return false;
+                                          const std::set<uint256>& setDAGSkippedTxs,
 
         bool fFoundCanonicalSpend = false;
         for (std::set<uint256>::const_iterator candidateIt =
@@ -12247,6 +12254,10 @@ bool CWallet::ReconcileShieldedNoteSpentStateChecked(
             if (status == TXDB_READ_NOT_FOUND)
                 continue;
 
+        // Mirrors the connect side: a skipped transaction created no note and spent
+        // none, so undoing it would restore a note this block never consumed.
+        if (setDAGSkippedTxs.count(tx.GetHash()))
+            continue;
             CTransaction txSpend;
             CTxIndex txindex;
             if (!txdb.ReadDiskTx(nfs.txnHash, txSpend, txindex) ||
@@ -12378,14 +12389,57 @@ bool CWallet::ApplyShieldedBlockRecoveryChecked(
     }
 
     bool fFoundOwnedOutput = false;
-    return ApplyWalletShieldedBlock(*this, block, pindex, NULL,
-                                    fFoundOwnedOutput, strErrorOut,
-                                    &setDAGSkippedTxs);
+    if (!ApplyWalletShieldedBlock(*this, block, pindex, NULL,
+                                  fFoundOwnedOutput, strErrorOut,
+                                  &setDAGSkippedTxs))
+        return false;
+    // Recovery replays the legacy shielded side only; the IV5 payloads in these blocks
+    // are never trial-decrypted here, so the block is left for a rescan to cover.
+    if (pindex)
+        MarkPrivacyVNextScanGap(pindex->nHeight);
+    return true;
+}
+
+// The exact sibling skip set ConnectBlock used for this block. Every wallet-side read
+// of a block's contents has to agree with it, or the wallet records effects the chain
+// never applied.
+bool CWallet::ReadConnectTimeDAGSkippedTxs(const CBlock& block,
+                                           const CBlockIndex* pindex,
+                                           std::set<uint256>& setOut,
+                                           std::string& strErrorOut)
+{
+    setOut.clear();
+    LOCK(cs_main);
+    if (!pindex || !pindex->phashBlock ||
+        pindex->GetBlockHash() != block.GetHash())
+    {
+        strErrorOut = "shielded wallet scan received a missing or mismatched block index";
+        return false;
+    }
+    if (pindex->nHeight < FORK_HEIGHT_DAG)
+        return true;
+    CTxDB txdb("r");
+    const TxDBReadStatus status =
+        txdb.ReadDAGSkippedTxsStatus(block, setOut, strErrorOut);
+    if (status != TXDB_READ_FOUND)
+    {
+        if (strErrorOut.empty())
+            strErrorOut = status == TXDB_READ_NOT_FOUND
+                ? "exact connect-time DAG active set is missing"
+                : "exact connect-time DAG active set is corrupt";
+        return false;
+    }
+    return true;
 }
 
 bool CWallet::ScanBlockForShieldedNotesChecked(const CBlock& block,
                                                const CBlockIndex* pindex,
                                                std::string& strErrorOut)
+    // The IV5 side is undone from the same skip set the connect scan used, so a note
+    // this block created is erased and one it consumed becomes spendable again.
+    if (!DisconnectPrivacyVNextBlock(block, setDAGSkippedTxs, pindex, strErrorOut))
+        return false;
+
 {
     bool fFoundOwnedOutput = false;
     if (!ApplyWalletShieldedBlock(*this, block, pindex, NULL,
@@ -12393,29 +12447,9 @@ bool CWallet::ScanBlockForShieldedNotesChecked(const CBlock& block,
         return false;
 
     std::set<uint256> setDAGSkippedTxs;
-    {
-        LOCK(cs_main);
-        if (!pindex || !pindex->phashBlock ||
-            pindex->GetBlockHash() != block.GetHash())
-        {
-            strErrorOut = "shielded wallet scan received a missing or mismatched block index";
-            return false;
-        }
-        if (pindex->nHeight >= FORK_HEIGHT_DAG)
-        {
-            CTxDB txdb("r");
-            const TxDBReadStatus status = txdb.ReadDAGSkippedTxsStatus(
-                block, setDAGSkippedTxs, strErrorOut);
-            if (status != TXDB_READ_FOUND)
-            {
-                if (strErrorOut.empty())
-                    strErrorOut = status == TXDB_READ_NOT_FOUND
-                        ? "exact connect-time DAG active set is missing"
-                        : "exact connect-time DAG active set is corrupt";
-                return false;
-            }
-        }
-    }
+    if (!ReadConnectTimeDAGSkippedTxs(block, pindex, setDAGSkippedTxs,
+                                      strErrorOut))
+        return false;
     const int nHeight = pindex->nHeight;
 
     // Deferred key imports (after cs_shielded release to preserve lock ordering)
@@ -12556,7 +12590,7 @@ bool CWallet::ScanBlockForShieldedNotesChecked(const CBlock& block,
                 printf("ScanBlockForShieldedNotes() : imported silent payment spend key for output idx=%u\n", imp.idx);
         }
     }
-    return ApplyPrivacyVNextBlock(block, pindex, strErrorOut);
+    return ApplyPrivacyVNextBlock(block, setDAGSkippedTxs, pindex, strErrorOut);
 }
 
 void CWallet::ScanBlockForShieldedNotes(const CBlock& block, int nHeight)
