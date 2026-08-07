@@ -1608,6 +1608,30 @@ bool CheckPrivacyVNextFinalizedAnchor(CTxDB& txdb, int nHeight,
                                                 fLocalFailure, strError);
 }
 
+bool GetPrivacyVNextPoolDelta(const PrivacyVNextStateEffects& effects,
+                              int64_t& nDeltaOut,
+                              std::string& strError)
+{
+    nDeltaOut = 0;
+    strError.clear();
+
+    const int64_t nBalance = effects.nTransparentValueBalance;
+    if (nBalance == std::numeric_limits<int64_t>::min() ||
+        !MoneyRange(nBalance < 0 ? -nBalance : nBalance))
+    {
+        strError = "IV5 transparent value balance is out of range";
+        return false;
+    }
+    if (effects.nFee > (uint64_t)MAX_MONEY)
+    {
+        strError = "IV5 fee is out of range";
+        return false;
+    }
+    // Both operands are in [-MAX_MONEY, MAX_MONEY], so the difference cannot overflow.
+    nDeltaOut = nBalance - (int64_t)effects.nFee;
+    return true;
+}
+
 // Transparent value an IV5 transaction moves across the pool boundary. The pool delta
 // is the pool's share; whatever the transparent side contributes beyond it is the fee.
 bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
@@ -1638,12 +1662,9 @@ bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
         return false;
     }
 
-    const int64_t nDelta = effects.PoolDelta();
-    if (nDelta == std::numeric_limits<int64_t>::min())
-    {
-        strError = "IV5 pool delta is INT64_MIN";
+    int64_t nDelta = 0;
+    if (!GetPrivacyVNextPoolDelta(effects, nDelta, strError))
         return false;
-    }
     if (!MoneyRange(nDelta < 0 ? -nDelta : nDelta))
     {
         strError = "IV5 pool delta is out of range";
@@ -6199,9 +6220,9 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
 
             if (fUndoPrivacyVNextPool)
             {
-                const int64_t nDelta = effects.PoolDelta();
+                int64_t nDelta = 0;
                 std::string strPoolError;
-                if (nDelta == std::numeric_limits<int64_t>::min() ||
+                if (!GetPrivacyVNextPoolDelta(effects, nDelta, strPoolError) ||
                     !ApplyPrivacyVNextPoolDelta(nPrivacyVNextPool, -nDelta,
                                                 strPoolError))
                 {
@@ -8071,9 +8092,11 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                     strContextError.c_str()));
             }
 
+            int64_t nPoolDelta = 0;
             std::string strPoolError;
-            if (!ApplyPrivacyVNextPoolDelta(nPrivacyVNextPool,
-                                            effects.PoolDelta(), strPoolError))
+            if (!GetPrivacyVNextPoolDelta(effects, nPoolDelta, strPoolError) ||
+                !ApplyPrivacyVNextPoolDelta(nPrivacyVNextPool, nPoolDelta,
+                                            strPoolError))
                 return DoS(100, error("ConnectBlock() : IV5 transaction %s %s",
                                       tx.GetHash().ToString().substr(0,10).c_str(),
                                       strPoolError.c_str()));

@@ -2646,9 +2646,12 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                 // Track what the pool holds and refuse to let it go negative. Whatever a
                 // proof does inside the pool, no more value can leave it than entered, so a
                 // soundness failure is bounded by the deposits rather than the money supply.
+                int64_t nPoolDelta = 0;
                 std::string strPoolError;
-                if (!ApplyPrivacyVNextPoolDelta(state.nVNextPoolBalance,
-                                                effects.PoolDelta(), strPoolError))
+                if (!GetPrivacyVNextPoolDelta(effects, nPoolDelta,
+                                              strPoolError) ||
+                    !ApplyPrivacyVNextPoolDelta(state.nVNextPoolBalance,
+                                                nPoolDelta, strPoolError))
                 {
                     strError = strprintf(
                         "epoch %d IV5 transaction %s: %s", nEpoch,

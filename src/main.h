@@ -827,6 +827,14 @@ bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
                                     bool& fLocalFailure,
                                     std::string& strError);
 
+/** Pool delta of a payload's effects, range-checked before the subtraction rather
+ *  than after it. PoolDelta() subtracts in int64_t, so the operands have to be
+ *  bounded first or the result is already undefined by the time it is inspected. */
+struct PrivacyVNextStateEffects;
+bool GetPrivacyVNextPoolDelta(const PrivacyVNextStateEffects& effects,
+                              int64_t& nDeltaOut,
+                              std::string& strError);
+
 /** Whether an IV5 transaction still anchors inside the consensus window at
  *  nHeight. Block assembly must apply this: the window is finite, so a mempool
  *  transaction can age out between acceptance and selection. */
