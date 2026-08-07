@@ -38,6 +38,12 @@ class CReserveKey;
 // grow with both the input count and the whole transaction.
 static const size_t PRIVACY_VNEXT_SHIELD_MAX_INPUTS = 50;
 
+// An unshield's transparent output is not covered by the payload's signing hash,
+// and a transaction spending only notes carries no signature over its outputs, so
+// the released value can be redirected by whoever mines it. Enable once the
+// payload commits to the transparent side.
+static const bool PRIVACY_VNEXT_UNSHIELD_ENABLED = false;
+
 class COutput;
 class CCoinControl;
 class CScript;

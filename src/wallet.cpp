@@ -11337,6 +11337,18 @@ bool CWallet::CreatePrivacyVNextUnshield(
     nNotesUsedOut = 0;
     strErrorOut.clear();
 
+    // Consensus refuses a released-value payload: nothing binds the transparent
+    // output it pays to, so whoever mines it can retarget or drop that output
+    // and keep the released value as fee. Building one would spend the notes for
+    // nothing. Flip this once the payload commits to the transparent side.
+    if (!PRIVACY_VNEXT_UNSHIELD_ENABLED)
+    {
+        strErrorOut = "unshield is not enabled: the payload does not yet bind its "
+                      "transparent output, so the released value could be "
+                      "redirected by whoever mines it";
+        return false;
+    }
+
     CBitcoinAddress toAddress(strToAddress);
     if (!toAddress.IsValid())
     {
