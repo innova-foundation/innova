@@ -16,9 +16,9 @@ INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 TEST_DIR="${IV5_ADV_TEST_DIR:-/tmp/innova_iv5_adversarial_$$}"
 NODE_DIR="$TEST_DIR/node0"
-PORT=27845
-RPC=27900
-IDNS=7865
+PORT="${IV5_ADV_PORT:-27845}"
+RPC="${IV5_ADV_RPC:-27900}"
+IDNS="${IV5_ADV_IDNS:-7865}"
 RPCUSER="iv5adv"
 RPCPASS="iv5advpass"
 WALLETPASS="iv5walletpass"

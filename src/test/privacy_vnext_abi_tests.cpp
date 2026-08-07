@@ -915,6 +915,8 @@ BOOST_AUTO_TEST_CASE(cpp_payload_scan_matches_the_validated_effects)
     uint8_t fee[8] = {0};
     PutLE64(fee, 1);
     payload.insert(payload.end(), fee, fee + 8);
+    // Transparent binding: opaque to the decoder, so any 32 bytes parse.
+    payload.insert(payload.end(), 32, 0x5a);
     payload.push_back(0);
     payload.push_back(1);
     payload.insert(payload.end(), encrypted + 8, encrypted + 104);
