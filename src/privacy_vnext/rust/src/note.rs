@@ -27,7 +27,7 @@ const TAG_BYTES: usize = 32;
 const RECIPIENT_CIPHERTEXT_BYTES: usize = 1 + RECIPIENT_PLAINTEXT_BYTES + TAG_BYTES;
 const OUTGOING_CIPHERTEXT_BYTES: usize = 1 + OUTGOING_PLAINTEXT_BYTES + TAG_BYTES;
 const SCAN_RESULT_BYTES: usize = 212;
-const ENCRYPT_REQUEST_BYTES: usize = 240;
+pub(crate) const ENCRYPT_REQUEST_BYTES: usize = 240;
 const ENCRYPT_RESULT_BYTES: usize = 522;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

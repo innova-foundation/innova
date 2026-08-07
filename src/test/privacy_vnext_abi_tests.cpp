@@ -494,7 +494,6 @@ BOOST_AUTO_TEST_CASE(cpp_note_scan_bridge_matches_the_raw_abi)
     PutLE64(encryptRequest + 168, 9);
     encryptRequest[176] = 5;
     encryptRequest[208] = 3;
-    std::memcpy(encryptRequest + 240, keys.spendPublic.data(), 32);
 
     uint8_t encrypted[INNOVA_PRIVACY_VNEXT_NOTE_ENCRYPT_RESULT_SIZE] = {0};
     size_t encryptedWritten = 0;
