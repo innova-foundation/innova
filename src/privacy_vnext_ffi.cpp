@@ -92,6 +92,19 @@ std::string ResultError(const char* operation, int32_t result)
     return std::string(operation) + " returned result " +
            std::to_string(result);
 }
+
+// [wire version u32][network u8][reserved 3][genesis 32]
+const size_t kValidationPrefixSize = 40;
+
+void PutValidationPrefix(uint8_t* bytes, uint32_t wireVersion)
+{
+    PutLE32(bytes, wireVersion);
+    bytes[4] = PrivacyVNextLocalNetworkId();
+    bytes[5] = 0;
+    bytes[6] = 0;
+    bytes[7] = 0;
+    PrivacyVNextLocalGenesis(bytes + 8);
+}
 } // namespace
 
 PrivacyVNextDerivedKeys::PrivacyVNextDerivedKeys()
@@ -740,13 +753,11 @@ PrivacyVNextPayloadValidation ValidatePrivacyVNextPayload(
             return validation;
         }
 
-        std::vector<uint8_t> request;
-        request.reserve(4 + payload.size());
-        request.push_back(static_cast<uint8_t>(wireVersion));
-        request.push_back(static_cast<uint8_t>(wireVersion >> 8));
-        request.push_back(static_cast<uint8_t>(wireVersion >> 16));
-        request.push_back(static_cast<uint8_t>(wireVersion >> 24));
-        request.insert(request.end(), payload.begin(), payload.end());
+        std::vector<uint8_t> request(kValidationPrefixSize + payload.size(), 0);
+        PutValidationPrefix(&request[0], wireVersion);
+        if (!payload.empty())
+            std::memcpy(&request[kValidationPrefixSize], &payload[0],
+                        payload.size());
         validation.nResult = innova_privacy_vnext_payload_validate(
             &request[0], request.size());
         // The Rust entry point reads only (wireVersion, payload), so every result it
@@ -829,13 +840,11 @@ static PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffectsUncached(
 
     try
     {
-        std::vector<uint8_t> request(4 + payload.size());
-        request[0] = static_cast<uint8_t>(wireVersion);
-        request[1] = static_cast<uint8_t>(wireVersion >> 8);
-        request[2] = static_cast<uint8_t>(wireVersion >> 16);
-        request[3] = static_cast<uint8_t>(wireVersion >> 24);
+        std::vector<uint8_t> request(kValidationPrefixSize + payload.size(), 0);
+        PutValidationPrefix(&request[0], wireVersion);
         if (!payload.empty())
-            std::memcpy(&request[4], &payload[0], payload.size());
+            std::memcpy(&request[kValidationPrefixSize], &payload[0],
+                        payload.size());
 
         size_t required = 0;
         int32_t result = innova_privacy_vnext_payload_effects(

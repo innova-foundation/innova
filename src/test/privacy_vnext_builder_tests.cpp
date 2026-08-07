@@ -43,6 +43,16 @@ PrivacyVNextDigest NoTransparentSideBinding()
 
 const PrivacyVNextDigest kNoTransparentSide = NoTransparentSideBinding();
 
+// Payloads must declare the chain this binary runs on.
+PrivacyVNextDigest LocalGenesis()
+{
+    PrivacyVNextDigest d;
+    PrivacyVNextLocalGenesis(d.data());
+    return d;
+}
+
+const uint8_t kNetwork = PrivacyVNextLocalNetworkId();
+
 } // namespace
 
 BOOST_AUTO_TEST_SUITE(privacy_vnext_builder_tests)
@@ -51,16 +61,16 @@ BOOST_AUTO_TEST_SUITE(privacy_vnext_builder_tests)
 BOOST_AUTO_TEST_CASE(an_encrypted_output_reopens_under_its_own_keys)
 {
     const PrivacyVNextDigest seed = BuilderDigest(0x21);
-    const PrivacyVNextDigest genesis = BuilderDigest(0x11);
+    const PrivacyVNextDigest genesis = LocalGenesis();
     PrivacyVNextDerivedKeys keys;
     std::string error;
     BOOST_REQUIRE_MESSAGE(
-        DerivePrivacyVNextKeys(seed, genesis, 0, 2, 0, keys, error), error);
+        DerivePrivacyVNextKeys(seed, genesis, 0, kNetwork, 0, keys, error), error);
 
     const uint64_t nAmount = 123456;
     PrivacyVNextEncryptedOutput note;
     BOOST_REQUIRE_MESSAGE(
-        EncryptPrivacyVNextNote(2, 0, 0, genesis, keys.spendPublic,
+        EncryptPrivacyVNextNote(kNetwork, 0, 0, genesis, keys.spendPublic,
                                 keys.viewPublic, keys.outgoingViewSecret,
                                 BuilderScalar(13), nAmount,
                                 BuilderScalar(17), BuilderScalar(19), note,
@@ -82,7 +92,7 @@ BOOST_AUTO_TEST_CASE(an_encrypted_output_reopens_under_its_own_keys)
 
     PrivacyVNextScannedNote scanned;
     BOOST_REQUIRE_MESSAGE(
-        ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, 2, 0, onChain,
+        ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, kNetwork, 0, onChain,
                              keys.viewSecret, keys.spendSecret, scanned, error),
         error);
     BOOST_CHECK_EQUAL(scanned.nAmount, nAmount);
@@ -198,16 +208,16 @@ BOOST_AUTO_TEST_CASE(a_note_placed_in_the_tree_can_be_spent)
     std::string error;
 
     const PrivacyVNextDigest seed = BuilderDigest(0x77);
-    const PrivacyVNextDigest genesis = BuilderDigest(0x11);
+    const PrivacyVNextDigest genesis = LocalGenesis();
     PrivacyVNextDerivedKeys keys;
     BOOST_REQUIRE_MESSAGE(
-        DerivePrivacyVNextKeys(seed, genesis, 0, 2, 0, keys, error), error);
+        DerivePrivacyVNextKeys(seed, genesis, 0, kNetwork, 0, keys, error), error);
 
     // Create the note that will be spent.
     const uint64_t nAmount = 5000;
     PrivacyVNextEncryptedOutput funding;
     BOOST_REQUIRE_MESSAGE(
-        EncryptPrivacyVNextNote(2, 0, 0, genesis, keys.spendPublic,
+        EncryptPrivacyVNextNote(kNetwork, 0, 0, genesis, keys.spendPublic,
                                 keys.viewPublic, keys.outgoingViewSecret,
                                 BuilderScalar(29), nAmount, BuilderScalar(31),
                                 BuilderScalar(37), funding, error),
@@ -256,7 +266,7 @@ BOOST_AUTO_TEST_CASE(a_note_placed_in_the_tree_can_be_spent)
     onChain.vchCiphertext = funding.vchRecipientCiphertext;
     PrivacyVNextScannedNote scanned;
     BOOST_REQUIRE_MESSAGE(
-        ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, 2, 0, onChain,
+        ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, kNetwork, 0, onChain,
                              keys.viewSecret, keys.spendSecret, scanned, error),
         error);
     BOOST_REQUIRE_EQUAL(scanned.nAmount, nAmount);
@@ -274,7 +284,7 @@ BOOST_AUTO_TEST_CASE(a_note_placed_in_the_tree_can_be_spent)
     const uint64_t nFee = 100;
     std::vector<PrivacyVNextNewOutput> outs;
     outs.resize(1);
-    outs[0].recipient.nNetwork = 2;
+    outs[0].recipient.nNetwork = kNetwork;
     outs[0].recipient.nAddressType = 0;
     outs[0].recipient.spendPublic = keys.spendPublic;
     outs[0].recipient.viewPublic = keys.viewPublic;
@@ -285,7 +295,7 @@ BOOST_AUTO_TEST_CASE(a_note_placed_in_the_tree_can_be_spent)
 
     std::vector<unsigned char> payload;
     BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextTransferPayload(2, 7, genesis, keys.outgoingViewSecret,
+        BuildPrivacyVNextTransferPayload(kNetwork, 7, genesis, keys.outgoingViewSecret,
                                          finalizedRoot, nTreeSize,
                                          kNoTransparentSide, nFee, spends,
                                          outs, payload, error),
@@ -317,15 +327,15 @@ BOOST_AUTO_TEST_CASE(memoized_effects_match_a_full_validation)
     std::string error;
 
     const PrivacyVNextDigest seed = BuilderDigest(0x5b);
-    const PrivacyVNextDigest genesis = BuilderDigest(0x11);
+    const PrivacyVNextDigest genesis = LocalGenesis();
     PrivacyVNextDerivedKeys keys;
     BOOST_REQUIRE_MESSAGE(
-        DerivePrivacyVNextKeys(seed, genesis, 0, 2, 0, keys, error), error);
+        DerivePrivacyVNextKeys(seed, genesis, 0, kNetwork, 0, keys, error), error);
 
     const uint64_t nAmount = 4000;
     PrivacyVNextEncryptedOutput funding;
     BOOST_REQUIRE_MESSAGE(
-        EncryptPrivacyVNextNote(2, 0, 0, genesis, keys.spendPublic,
+        EncryptPrivacyVNextNote(kNetwork, 0, 0, genesis, keys.spendPublic,
                                 keys.viewPublic, keys.outgoingViewSecret,
                                 BuilderScalar(41), nAmount, BuilderScalar(43),
                                 BuilderScalar(47), funding, error),
@@ -368,7 +378,7 @@ BOOST_AUTO_TEST_CASE(memoized_effects_match_a_full_validation)
     onChain.vchCiphertext = funding.vchRecipientCiphertext;
     PrivacyVNextScannedNote scanned;
     BOOST_REQUIRE_MESSAGE(
-        ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, 2, 0, onChain,
+        ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, kNetwork, 0, onChain,
                              keys.viewSecret, keys.spendSecret, scanned, error),
         error);
 
@@ -383,7 +393,7 @@ BOOST_AUTO_TEST_CASE(memoized_effects_match_a_full_validation)
 
     std::vector<PrivacyVNextNewOutput> outs;
     outs.resize(1);
-    outs[0].recipient.nNetwork = 2;
+    outs[0].recipient.nNetwork = kNetwork;
     outs[0].recipient.nAddressType = 0;
     outs[0].recipient.spendPublic = keys.spendPublic;
     outs[0].recipient.viewPublic = keys.viewPublic;
@@ -393,7 +403,7 @@ BOOST_AUTO_TEST_CASE(memoized_effects_match_a_full_validation)
     std::memcpy(finalizedRoot.data(), &vchRoot[0], 32);
     std::vector<unsigned char> payload;
     BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextTransferPayload(2, 7, genesis, keys.outgoingViewSecret,
+        BuildPrivacyVNextTransferPayload(kNetwork, 7, genesis, keys.outgoingViewSecret,
                                          finalizedRoot, nTreeSize,
                                          kNoTransparentSide, 50, spends,
                                          outs, payload, error),
@@ -443,10 +453,10 @@ BOOST_AUTO_TEST_CASE(a_shield_carries_no_membership_proof_and_stays_spendable)
     std::string error;
 
     const PrivacyVNextDigest seed = BuilderDigest(0x6c);
-    const PrivacyVNextDigest genesis = BuilderDigest(0x11);
+    const PrivacyVNextDigest genesis = LocalGenesis();
     PrivacyVNextDerivedKeys keys;
     BOOST_REQUIRE_MESSAGE(
-        DerivePrivacyVNextKeys(seed, genesis, 0, 2, 0, keys, error), error);
+        DerivePrivacyVNextKeys(seed, genesis, 0, kNetwork, 0, keys, error), error);
 
     PrivacyVNextEpochSeed epochSeed;
     BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextEpochSeed(epochSeed, error), error);
@@ -467,7 +477,7 @@ BOOST_AUTO_TEST_CASE(a_shield_carries_no_membership_proof_and_stays_spendable)
     const uint64_t nFee = 100;
     std::vector<PrivacyVNextNewOutput> outs;
     outs.resize(1);
-    outs[0].recipient.nNetwork = 2;
+    outs[0].recipient.nNetwork = kNetwork;
     outs[0].recipient.nAddressType = 0;
     outs[0].recipient.spendPublic = keys.spendPublic;
     outs[0].recipient.viewPublic = keys.viewPublic;
@@ -475,7 +485,7 @@ BOOST_AUTO_TEST_CASE(a_shield_carries_no_membership_proof_and_stays_spendable)
 
     std::vector<unsigned char> shieldPayload;
     BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextShieldPayload(2, 7, genesis, keys.outgoingViewSecret,
+        BuildPrivacyVNextShieldPayload(kNetwork, 7, genesis, keys.outgoingViewSecret,
                                        emptyRoot, nTreeSize, kNoTransparentSide,
                                        nValueIn, nFee, outs, shieldPayload,
                                        error),
@@ -512,7 +522,7 @@ BOOST_AUTO_TEST_CASE(a_shield_carries_no_membership_proof_and_stays_spendable)
     vKeys[0].scanSecret = keys.viewSecret;
     vKeys[0].spendMaterial = keys.spendSecret;
     BOOST_REQUIRE_MESSAGE(
-        ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 2, 0,
+        ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, kNetwork, 0,
                                 INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
                                 shieldPayload, vKeys, matches, keyImages,
                                 nOutputCount, error),
@@ -550,7 +560,7 @@ BOOST_AUTO_TEST_CASE(a_shield_carries_no_membership_proof_and_stays_spendable)
 
     std::vector<unsigned char> transferPayload;
     BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextTransferPayload(2, 7, genesis, keys.outgoingViewSecret,
+        BuildPrivacyVNextTransferPayload(kNetwork, 7, genesis, keys.outgoingViewSecret,
                                          treeRoot, nTreeSize, kNoTransparentSide,
                                          nFee, spends, onward, transferPayload,
                                          error),
@@ -563,10 +573,10 @@ BOOST_AUTO_TEST_CASE(parallel_warming_agrees_with_sequential_validation)
 {
     std::string error;
     const PrivacyVNextDigest seed = BuilderDigest(0x2e);
-    const PrivacyVNextDigest genesis = BuilderDigest(0x11);
+    const PrivacyVNextDigest genesis = LocalGenesis();
     PrivacyVNextDerivedKeys keys;
     BOOST_REQUIRE_MESSAGE(
-        DerivePrivacyVNextKeys(seed, genesis, 0, 2, 0, keys, error), error);
+        DerivePrivacyVNextKeys(seed, genesis, 0, kNetwork, 0, keys, error), error);
 
     PrivacyVNextEpochSeed epochSeed;
     BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextEpochSeed(epochSeed, error), error);
@@ -586,7 +596,7 @@ BOOST_AUTO_TEST_CASE(parallel_warming_agrees_with_sequential_validation)
     {
         std::vector<PrivacyVNextNewOutput> outs;
         outs.resize(1);
-        outs[0].recipient.nNetwork = 2;
+        outs[0].recipient.nNetwork = kNetwork;
         outs[0].recipient.nAddressType = 0;
         outs[0].recipient.spendPublic = keys.spendPublic;
         outs[0].recipient.viewPublic = keys.viewPublic;
@@ -594,7 +604,7 @@ BOOST_AUTO_TEST_CASE(parallel_warming_agrees_with_sequential_validation)
 
         std::vector<unsigned char> payload;
         BOOST_REQUIRE_MESSAGE(
-            BuildPrivacyVNextShieldPayload(2, 7, genesis, keys.outgoingViewSecret,
+            BuildPrivacyVNextShieldPayload(kNetwork, 7, genesis, keys.outgoingViewSecret,
                                            emptyRoot, nTreeSize,
                                            kNoTransparentSide,
                                            outs[0].nAmount + 10, 10, outs,
@@ -697,10 +707,10 @@ BOOST_AUTO_TEST_CASE(payload_effects_report_what_the_pool_gained_or_lost)
 {
     std::string error;
     const PrivacyVNextDigest seed = BuilderDigest(0x3d);
-    const PrivacyVNextDigest genesis = BuilderDigest(0x11);
+    const PrivacyVNextDigest genesis = LocalGenesis();
     PrivacyVNextDerivedKeys keys;
     BOOST_REQUIRE_MESSAGE(
-        DerivePrivacyVNextKeys(seed, genesis, 0, 2, 0, keys, error), error);
+        DerivePrivacyVNextKeys(seed, genesis, 0, kNetwork, 0, keys, error), error);
 
     PrivacyVNextEpochSeed epochSeed;
     BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextEpochSeed(epochSeed, error), error);
@@ -717,7 +727,7 @@ BOOST_AUTO_TEST_CASE(payload_effects_report_what_the_pool_gained_or_lost)
     const uint64_t nFee = 100;
     std::vector<PrivacyVNextNewOutput> outs;
     outs.resize(1);
-    outs[0].recipient.nNetwork = 2;
+    outs[0].recipient.nNetwork = kNetwork;
     outs[0].recipient.nAddressType = 0;
     outs[0].recipient.spendPublic = keys.spendPublic;
     outs[0].recipient.viewPublic = keys.viewPublic;
@@ -725,7 +735,7 @@ BOOST_AUTO_TEST_CASE(payload_effects_report_what_the_pool_gained_or_lost)
 
     std::vector<unsigned char> shieldPayload;
     BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextShieldPayload(2, 7, genesis, keys.outgoingViewSecret,
+        BuildPrivacyVNextShieldPayload(kNetwork, 7, genesis, keys.outgoingViewSecret,
                                        emptyRoot, nTreeSize, kNoTransparentSide,
                                        nValueIn, nFee, outs, shieldPayload,
                                        error),
@@ -763,7 +773,7 @@ BOOST_AUTO_TEST_CASE(payload_effects_report_what_the_pool_gained_or_lost)
     vKeys[0].scanSecret = keys.viewSecret;
     vKeys[0].spendMaterial = keys.spendSecret;
     BOOST_REQUIRE_MESSAGE(
-        ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, 2, 0,
+        ScanPrivacyVNextPayload(PRIVACY_VNEXT_SCAN_FULL, kNetwork, 0,
                                 INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
                                 shieldPayload, vKeys, matches, spentImages,
                                 nOutputCount, error),
@@ -800,7 +810,7 @@ BOOST_AUTO_TEST_CASE(payload_effects_report_what_the_pool_gained_or_lost)
 
     std::vector<unsigned char> transferPayload;
     BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextTransferPayload(2, 7, genesis, keys.outgoingViewSecret,
+        BuildPrivacyVNextTransferPayload(kNetwork, 7, genesis, keys.outgoingViewSecret,
                                          treeRoot, nGrownSize, kNoTransparentSide,
                                          nFee, spends, onward, transferPayload,
                                          error),
@@ -892,7 +902,7 @@ BOOST_AUTO_TEST_CASE(an_unbalanced_transfer_is_refused)
 
     std::vector<unsigned char> payload;
     BOOST_CHECK(!BuildPrivacyVNextTransferPayload(
-        2, 7, BuilderDigest(0x11), BuilderScalar(3), BuilderDigest(0x22), 1,
+        kNetwork, 7, LocalGenesis(), BuilderScalar(3), BuilderDigest(0x22), 1,
         kNoTransparentSide, 100, spends, outs, payload, error));
     BOOST_CHECK(!error.empty());
     BOOST_CHECK(payload.empty());
@@ -905,15 +915,15 @@ BOOST_AUTO_TEST_CASE(an_unshield_binds_the_transparent_output_it_pays)
     std::string error;
 
     const PrivacyVNextDigest seed = BuilderDigest(0x5b);
-    const PrivacyVNextDigest genesis = BuilderDigest(0x11);
+    const PrivacyVNextDigest genesis = LocalGenesis();
     PrivacyVNextDerivedKeys keys;
     BOOST_REQUIRE_MESSAGE(
-        DerivePrivacyVNextKeys(seed, genesis, 0, 2, 0, keys, error), error);
+        DerivePrivacyVNextKeys(seed, genesis, 0, kNetwork, 0, keys, error), error);
 
     const uint64_t nAmount = 9000;
     PrivacyVNextEncryptedOutput funding;
     BOOST_REQUIRE_MESSAGE(
-        EncryptPrivacyVNextNote(2, 0, 0, genesis, keys.spendPublic,
+        EncryptPrivacyVNextNote(kNetwork, 0, 0, genesis, keys.spendPublic,
                                 keys.viewPublic, keys.outgoingViewSecret,
                                 BuilderScalar(41), nAmount, BuilderScalar(43),
                                 BuilderScalar(47), funding, error),
@@ -956,7 +966,7 @@ BOOST_AUTO_TEST_CASE(an_unshield_binds_the_transparent_output_it_pays)
     onChain.vchCiphertext = funding.vchRecipientCiphertext;
     PrivacyVNextScannedNote scanned;
     BOOST_REQUIRE_MESSAGE(
-        ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, 2, 0, onChain,
+        ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, kNetwork, 0, onChain,
                              keys.viewSecret, keys.spendSecret, scanned, error),
         error);
 
@@ -973,7 +983,7 @@ BOOST_AUTO_TEST_CASE(an_unshield_binds_the_transparent_output_it_pays)
     const uint64_t nReleased = 6000;
     std::vector<PrivacyVNextNewOutput> outs;
     outs.resize(1);
-    outs[0].recipient.nNetwork = 2;
+    outs[0].recipient.nNetwork = kNetwork;
     outs[0].recipient.nAddressType = 0;
     outs[0].recipient.spendPublic = keys.spendPublic;
     outs[0].recipient.viewPublic = keys.viewPublic;
@@ -994,7 +1004,7 @@ BOOST_AUTO_TEST_CASE(an_unshield_binds_the_transparent_output_it_pays)
     std::memcpy(finalizedRoot.data(), &vchRoot[0], 32);
     std::vector<unsigned char> payload;
     BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextUnshieldPayload(2, 7, genesis, keys.outgoingViewSecret,
+        BuildPrivacyVNextUnshieldPayload(kNetwork, 7, genesis, keys.outgoingViewSecret,
                                          finalizedRoot, nTreeSize, binding,
                                          nReleased, nFee, spends, outs, payload,
                                          error),
@@ -1075,10 +1085,10 @@ BOOST_AUTO_TEST_CASE(an_empty_transparent_side_is_bound_like_any_other)
 {
     std::string error;
     const PrivacyVNextDigest seed = BuilderDigest(0x6c);
-    const PrivacyVNextDigest genesis = BuilderDigest(0x11);
+    const PrivacyVNextDigest genesis = LocalGenesis();
     PrivacyVNextDerivedKeys keys;
     BOOST_REQUIRE_MESSAGE(
-        DerivePrivacyVNextKeys(seed, genesis, 0, 2, 0, keys, error), error);
+        DerivePrivacyVNextKeys(seed, genesis, 0, kNetwork, 0, keys, error), error);
 
     PrivacyVNextEpochSeed epochSeed;
     BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextEpochSeed(epochSeed, error), error);
@@ -1089,7 +1099,7 @@ BOOST_AUTO_TEST_CASE(an_empty_transparent_side_is_bound_like_any_other)
     const uint64_t nFee = 100;
     std::vector<PrivacyVNextNewOutput> outs;
     outs.resize(1);
-    outs[0].recipient.nNetwork = 2;
+    outs[0].recipient.nNetwork = kNetwork;
     outs[0].recipient.nAddressType = 0;
     outs[0].recipient.spendPublic = keys.spendPublic;
     outs[0].recipient.viewPublic = keys.viewPublic;
@@ -1101,7 +1111,7 @@ BOOST_AUTO_TEST_CASE(an_empty_transparent_side_is_bound_like_any_other)
 
     std::vector<unsigned char> payload;
     BOOST_REQUIRE_MESSAGE(
-        BuildPrivacyVNextShieldPayload(2, 7, genesis, keys.outgoingViewSecret,
+        BuildPrivacyVNextShieldPayload(kNetwork, 7, genesis, keys.outgoingViewSecret,
                                        emptyRoot, epochSeed.nTreeSize,
                                        kNoTransparentSide, nValueIn, nFee, outs,
                                        payload, error),
@@ -1159,16 +1169,16 @@ struct FundedNote
 void FundOneNote(CTxDB& txdb, FundedNote& funded, unsigned char seedFill)
 {
     std::string error;
-    funded.genesis = BuilderDigest(0x11);
+    funded.genesis = LocalGenesis();
     funded.nAmount = 5000;
     BOOST_REQUIRE_MESSAGE(
-        DerivePrivacyVNextKeys(BuilderDigest(seedFill), funded.genesis, 0, 2, 0,
+        DerivePrivacyVNextKeys(BuilderDigest(seedFill), funded.genesis, 0, kNetwork, 0,
                                funded.keys, error),
         error);
 
     PrivacyVNextEncryptedOutput funding;
     BOOST_REQUIRE_MESSAGE(
-        EncryptPrivacyVNextNote(2, 0, 0, funded.genesis, funded.keys.spendPublic,
+        EncryptPrivacyVNextNote(kNetwork, 0, 0, funded.genesis, funded.keys.spendPublic,
                                 funded.keys.viewPublic,
                                 funded.keys.outgoingViewSecret, BuilderScalar(29),
                                 funded.nAmount, BuilderScalar(31),
@@ -1212,7 +1222,7 @@ void FundOneNote(CTxDB& txdb, FundedNote& funded, unsigned char seedFill)
     onChain.vchCiphertext = funding.vchRecipientCiphertext;
     PrivacyVNextScannedNote scanned;
     BOOST_REQUIRE_MESSAGE(
-        ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, 2, 0, onChain,
+        ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, kNetwork, 0, onChain,
                              funded.keys.viewSecret, funded.keys.spendSecret,
                              scanned, error),
         error);
@@ -1240,7 +1250,7 @@ BOOST_AUTO_TEST_CASE(every_disclosure_mask_round_trips_through_consensus)
     const uint64_t nFee = 100;
     std::vector<PrivacyVNextNewOutput> outs;
     outs.resize(1);
-    outs[0].recipient.nNetwork = 2;
+    outs[0].recipient.nNetwork = kNetwork;
     outs[0].recipient.nAddressType = 0;
     outs[0].recipient.spendPublic = funded.keys.spendPublic;
     outs[0].recipient.viewPublic = funded.keys.viewPublic;
@@ -1313,7 +1323,7 @@ BOOST_AUTO_TEST_CASE(a_disclosure_must_be_true_and_cannot_be_restated)
     const uint64_t nFee = 100;
     std::vector<PrivacyVNextNewOutput> outs;
     outs.resize(1);
-    outs[0].recipient.nNetwork = 2;
+    outs[0].recipient.nNetwork = kNetwork;
     outs[0].recipient.nAddressType = 0;
     outs[0].recipient.spendPublic = funded.keys.spendPublic;
     outs[0].recipient.viewPublic = funded.keys.viewPublic;

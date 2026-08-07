@@ -1466,6 +1466,13 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
             LOCK(pwallet->cs_shielded);
             pwallet->nPrivacyVNextIndexCount = nCount;
         }
+        else if (strType == "iv5scangap")
+        {
+            int nHeight = -1;
+            ssValue >> nHeight;
+            LOCK(pwallet->cs_shielded);
+            pwallet->nPrivacyVNextScanGapHeight = nHeight < 0 ? -1 : nHeight;
+        }
         else if (strType == "iv5note")
         {
             uint256 txhash;

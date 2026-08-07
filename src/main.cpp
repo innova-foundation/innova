@@ -1512,6 +1512,21 @@ int64_t CTransaction::GetMinFee(unsigned int nBlockSize, enum GetMinFee_mode mod
 //
 // An empty vout is not a special case; it hashes as a zero-length vector, which is what
 // shields and transfers commit to.
+// The chain context every payload must declare to be ours. Lives here because the
+// genesis constants do; the FFI layer stamps it onto each validation request so the
+// network id and genesis hash are consensus-checked with the rest of the header.
+uint8_t PrivacyVNextLocalNetworkId()
+{
+    if (fRegTest)
+        return 2;
+    return fTestNet ? 1 : 0;
+}
+
+void PrivacyVNextLocalGenesis(unsigned char out[32])
+{
+    std::memcpy(out, GetGenesisBlockHash().begin(), 32);
+}
+
 uint256 GetPrivacyVNextTransparentBinding(const CTransaction& tx)
 {
     static const char* pszDomain = "Innova/IV5/TransparentBinding/v1";
@@ -8881,6 +8896,20 @@ private:
         return recoveryRecord.IsValid();
     }
 
+    // A shielded scan failure is recorded for rescan and never stops the node: its inputs
+    // are peer-published bytes.
+    static void WalletScanDegraded(const Entry& entry, CWallet* pwallet,
+                                   const char* pszReason)
+    {
+        const int nHeight = entry.pindex ? entry.pindex->nHeight : -1;
+        printf("ReplayBestChainEffects: shielded wallet %s scan failed for block at "
+               "height %d: %s. The chain transition stands; this wallet's view of "
+               "that block is incomplete. Run z_rescaniv5 to reprocess it.\n",
+               entry.fConnect ? "connect" : "disconnect", nHeight, pszReason);
+        if (pwallet && nHeight >= 0)
+            pwallet->MarkPrivacyVNextScanGap(nHeight);
+    }
+
     bool FailClosed(const Entry& entry, const char* pszReason) const
     {
         const int nHeight = entry.pindex ? entry.pindex->nHeight : -1;
@@ -9073,7 +9102,8 @@ public:
                             std::string strWalletError;
                             if (!pwallet->ScanBlockForShieldedNotesChecked(
                                     entry.block, entry.pindex, strWalletError))
-                                return FailClosed(entry, strWalletError.c_str());
+                                WalletScanDegraded(entry, pwallet,
+                                                   strWalletError.c_str());
                         }
                     }
 
@@ -9101,9 +9131,10 @@ public:
                         {
                             std::string strWalletError;
                             if (!pwallet->DisconnectShieldedBlockRecoveryChecked(
-                                    entry.block, entry.pindex,
-                                    strWalletError))
-                                return FailClosed(entry, strWalletError.c_str());
+                                    entry.block, entry.setDAGSkippedTxs,
+                                    entry.pindex, strWalletError))
+                                WalletScanDegraded(entry, pwallet,
+                                                   strWalletError.c_str());
                         }
                     }
 

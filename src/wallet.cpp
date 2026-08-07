@@ -11680,6 +11680,41 @@ bool CWallet::AssignPrivacyVNextLeafIndices(int nEpoch, std::string& strErrorOut
         for (size_t m = 0; m < vMatches.size(); ++m)
         {
             for (size_t n = 0; n < vPrivacyVNextNotes.size(); ++n)
+// A block whose payloads were not scanned is a block whose notes this wallet does not
+// know it owns. Unshield is retired, so an undetected note is value with no recovery
+// path other than reprocessing the block: keep the lowest such height durably.
+void CWallet::MarkPrivacyVNextScanGap(int nHeight)
+{
+    if (nHeight < 0)
+        return;
+    LOCK(cs_shielded);
+    if (nPrivacyVNextScanGapHeight >= 0 && nPrivacyVNextScanGapHeight <= nHeight)
+        return;
+    nPrivacyVNextScanGapHeight = nHeight;
+    if (fFileBacked)
+        CWalletDB(strWalletFile, "r+").WritePrivacyVNextScanGap(nHeight);
+    printf("CWallet: IV5 scan gap recorded at height %d; run z_rescaniv5 to "
+           "reprocess from there\n", nHeight);
+}
+
+int CWallet::GetPrivacyVNextScanGapHeight() const
+{
+    LOCK(cs_shielded);
+    return nPrivacyVNextScanGapHeight;
+}
+
+// Only a rescan that actually covered the gap may clear it.
+void CWallet::ClearPrivacyVNextScanGap(int nScannedFromHeight)
+{
+    LOCK(cs_shielded);
+    if (nPrivacyVNextScanGapHeight < 0 ||
+        nScannedFromHeight > nPrivacyVNextScanGapHeight)
+        return;
+    nPrivacyVNextScanGapHeight = -1;
+    if (fFileBacked)
+        CWalletDB(strWalletFile, "r+").WritePrivacyVNextScanGap(-1);
+}
+
             {
                 CPrivacyVNextWalletNote& note = vPrivacyVNextNotes[n];
                 if (note.fLeafIndexKnown || note.txhash != hashTx ||

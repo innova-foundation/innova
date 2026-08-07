@@ -216,6 +216,9 @@ int32_t innova_privacy_vnext_payload_signing_hash(
     size_t request_len,
     uint8_t *out,
     size_t out_len);
+/* Request: outer-wire-version-u32-le, network-id-u8, three zero bytes, the caller's
+ * genesis hash, then one canonical payload. The payload's own network and genesis are
+ * checked against the caller's. */
 int32_t innova_privacy_vnext_payload_validate(
     const uint8_t *request,
     size_t request_len);
@@ -225,6 +228,7 @@ int32_t innova_privacy_vnext_payload_scan(
     uint8_t *out,
     size_t out_capacity,
     size_t *out_written);
+/* Same request framing as innova_privacy_vnext_payload_validate. */
 int32_t innova_privacy_vnext_payload_effects(
     const uint8_t *request,
     size_t request_len,

@@ -279,6 +279,14 @@ public:
     // Index 0 always exists as the default receive index; scanning covers every
     // index issued, since a note only opens under the one it was sent to.
     uint32_t nPrivacyVNextIndexCount;
+    // Lowest height whose IV5 payloads this wallet did not process. Persisted, because
+    // a note that was never detected leaves nothing behind to notice it by, and
+    // unshield is retired: value in an undetected note has no recovery path but a
+    // rescan. -1 means every connected block was scanned.
+    int nPrivacyVNextScanGapHeight;
+    void MarkPrivacyVNextScanGap(int nHeight);
+    int GetPrivacyVNextScanGapHeight() const;
+    void ClearPrivacyVNextScanGap(int nScannedFromHeight);
     // Derivation indices a scan must cover; follows address issuance rather than
     // the separately persisted count, so an issued address is never outside it.
     uint32_t GetPrivacyVNextScanIndexCount() const;
@@ -366,6 +374,7 @@ public:
 
     //Innova Name DB
     std::vector<uint256> vWalletUpdated;
+        nPrivacyVNextScanGapHeight = -1;
     std::vector<uint256> vCheckNewNames;
 
     std::map<CTxDestination, std::string> mapAddressBook;
