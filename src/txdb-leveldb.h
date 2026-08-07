@@ -689,6 +689,9 @@ public:
     bool WritePrivacyVNextTreeStoreSize(uint64_t nSize);
     bool ReadPrivacyVNextTreeStoreSize(uint64_t& nSize);
 
+    bool WritePrivacyVNextPoolValue(int64_t nValue);
+    TxDBReadStatus ReadPrivacyVNextPoolValueStatus(int64_t& nValue);
+
     // IDAG finality vote persistence
     bool WriteFinalityVote(const uint256& nullifier, const CFinalityVote& vote);
     bool ReadFinalityVote(const uint256& nullifier, CFinalityVote& vote);

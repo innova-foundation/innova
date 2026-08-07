@@ -1467,6 +1467,17 @@ bool CTxDB::ReadPrivacyVNextTreeStoreSize(uint64_t& nSize)
     return Read(string("iv5treestoresize"), nSize);
 }
 
+bool CTxDB::WritePrivacyVNextPoolValue(int64_t nValue)
+{
+    return Write(string("iv5pool"), nValue);
+}
+
+TxDBReadStatus CTxDB::ReadPrivacyVNextPoolValueStatus(int64_t& nValue)
+{
+    nValue = 0;
+    return ReadExactStatus(string("iv5pool"), nValue);
+}
+
 bool CTxDB::IterateEpochStates(std::map<int, CEpochState>& mapOut)
 {
     mapOut.clear();

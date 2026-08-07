@@ -6068,6 +6068,18 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
         return error("DisconnectBlock() : invalid finality vote envelope for height %d (decode=%d)",
                      pindex->nHeight, (int)voteEnvelopeFailure);
 
+    // Reverse the pool in the exact order ConnectBlock applied it. A deposit
+    // followed by a release is valid forward but underflows if undone in the
+    // same order.
+    const bool fUndoPrivacyVNextPool =
+        pindex && IsBoundaryBActiveAtHeight(pindex->nHeight);
+    int64_t nPrivacyVNextPool = 0;
+    if (fUndoPrivacyVNextPool &&
+        txdb.ReadPrivacyVNextPoolValueStatus(nPrivacyVNextPool) !=
+            TXDB_READ_FOUND)
+        return error("DisconnectBlock() : missing IV5 pool balance record; "
+                     "-reindex/resync required");
+
     // Disconnect in reverse order
     for (int i = vtx.size()-1; i >= 0; i--)
     {
@@ -6120,10 +6132,29 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
                 if (!txdb.ErasePrivacyVNextNullifier(keyImage))
                     return error("DisconnectBlock() : IV5 spent-key erase failed");
             }
+
+            if (fUndoPrivacyVNextPool)
+            {
+                const int64_t nDelta = effects.PoolDelta();
+                std::string strPoolError;
+                if (nDelta == std::numeric_limits<int64_t>::min() ||
+                    !ApplyPrivacyVNextPoolDelta(nPrivacyVNextPool, -nDelta,
+                                                strPoolError))
+                {
+                    StartShutdown();
+                    return error("DisconnectBlock() : IV5 pool reversal for %s "
+                                 "is inconsistent (-reindex/resync required)",
+                                 vtx[i].GetHash().ToString().substr(0,10).c_str());
+                }
+            }
         }
         if (!vtx[i].DisconnectInputs(txdb))
             return false;
     }
+
+    if (fUndoPrivacyVNextPool &&
+        !txdb.WritePrivacyVNextPoolValue(nPrivacyVNextPool))
+        return error("DisconnectBlock() : IV5 pool balance write failed");
 
     if (pindex->nHeight >= FORK_HEIGHT_DAG)
     {
@@ -7919,6 +7950,23 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 vWarm, (int)GetArg("-parverify", 0));
         }
 
+        // Enforce the pool balance where released value is credited, so the offending block is
+        // rejected rather than the later epoch build failing.
+        int64_t nPrivacyVNextPool = 0;
+        {
+            const TxDBReadStatus poolStatus =
+                txdb.ReadPrivacyVNextPoolValueStatus(nPrivacyVNextPool);
+            if (poolStatus == TXDB_READ_ERROR ||
+                (poolStatus == TXDB_READ_NOT_FOUND &&
+                 pindex->nHeight != FORK_HEIGHT_BOUNDARY_B))
+                return TransientFailure(error(
+                    "ConnectBlock() : IV5 pool balance record is %s; "
+                    "-reindex/resync required",
+                    poolStatus == TXDB_READ_ERROR ? "corrupt" : "missing"));
+            if (poolStatus == TXDB_READ_NOT_FOUND)
+                nPrivacyVNextPool = 0;
+        }
+
         std::set<uint256> setBlockPrivacyVNextNullifiers;
         for (const CTransaction& tx : activeBlock.vtx)
         {
@@ -7959,6 +8007,13 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                     strContextError.c_str()));
             }
 
+            std::string strPoolError;
+            if (!ApplyPrivacyVNextPoolDelta(nPrivacyVNextPool,
+                                            effects.PoolDelta(), strPoolError))
+                return DoS(100, error("ConnectBlock() : IV5 transaction %s %s",
+                                      tx.GetHash().ToString().substr(0,10).c_str(),
+                                      strPoolError.c_str()));
+
             for (size_t i = 0; i < effects.keyImages.size(); ++i)
             {
                 uint256 keyImage;
@@ -7997,6 +8052,12 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 }
             }
         }
+
+        // Written on every Boundary-B block, so a later block can tell a pool that
+        // is genuinely empty from a record this node never had.
+        if (!fJustCheck && !txdb.WritePrivacyVNextPoolValue(nPrivacyVNextPool))
+            return TransientFailure(error(
+                "ConnectBlock() : IV5 pool balance write failed"));
     }
 
     if (pindex->nHeight >= FORK_HEIGHT_SHIELDED && !fJustCheck)
