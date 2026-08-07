@@ -1222,7 +1222,8 @@ mod tests {
         let payload = &request[VALIDATION_PREFIX_SIZE..];
 
         // Everything from here on reads the serialized payload and nothing else.
-        let mut prefix = parse_payload_prefix(2008, payload).expect("the payload decodes");
+        let mut prefix = parse_payload_prefix(2008, payload, TEST_NETWORK, Some(&genesis))
+            .expect("the payload decodes");
         assert_eq!(prefix.disclosure_mask, 5);
         // Mask 5: the sender is hidden, one receiver record follows the outputs, and the
         // amounts are hidden.
@@ -1880,8 +1881,8 @@ mod tests {
     fn payload_pins_the_note_ciphertext_encoding() {
         let genesis = TEST_GENESIS;
         let (encrypted, _, _) = encrypted_output(&genesis, 0);
-        let recipient = &encrypted[136..313];
-        let outgoing = &encrypted[313..522];
+        let recipient = &encrypted[ENCRYPTED_RECIPIENT];
+        let outgoing = &encrypted[ENCRYPTED_OUTGOING];
 
         let build = |recipient: &[u8], outgoing: &[u8]| -> Vec<u8> {
             let state =
@@ -1899,9 +1900,9 @@ mod tests {
             payload.extend_from_slice(&TEST_TRANSPARENT_BINDING);
             compact_size(&mut payload, 0);
             compact_size(&mut payload, 1);
-            payload.extend_from_slice(&encrypted[8..40]);
-            payload.extend_from_slice(&encrypted[72..104]);
-            payload.extend_from_slice(&encrypted[104..136]);
+            payload.extend_from_slice(&encrypted[ENCRYPTED_O]);
+            payload.extend_from_slice(&encrypted[ENCRYPTED_C]);
+            payload.extend_from_slice(&encrypted[ENCRYPTED_EPHEMERALS]);
             vector(&mut payload, recipient);
             vector(&mut payload, outgoing);
             payload
