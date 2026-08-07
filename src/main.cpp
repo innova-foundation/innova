@@ -3334,6 +3334,33 @@ bool CheckFCMPSpendRoots(const CTransaction& tx, int nBlockHeight,
     return true;
 }
 
+// An IV5 transaction's spend tags live in its payload, not in vin or
+// vShieldedSpend. Collecting them keeps the double-spend view of a DAG sibling
+// set complete; a payload that does not decode contributes nothing, and the
+// block carrying it is rejected by the validation that decodes it again.
+void AppendPrivacyVNextSpendTags(const CTransaction& tx,
+                                 std::set<uint256>& setTagsOut)
+{
+    if (!tx.IsPrivacyVNext() || !tx.privacyVNext.IsPresent())
+        return;
+
+    PrivacyVNextStateEffects effects;
+    const PrivacyVNextPayloadValidation validation =
+        ExtractPrivacyVNextPayloadEffects(
+            static_cast<uint32_t>(tx.nVersion), tx.privacyVNext.vchPayload,
+            effects);
+    if (!validation.IsValid())
+        return;
+
+    for (size_t i = 0; i < effects.keyImages.size(); ++i)
+    {
+        uint256 keyImage;
+        memcpy(keyImage.begin(), effects.keyImages[i].data(),
+               effects.keyImages[i].size());
+        setTagsOut.insert(keyImage);
+    }
+}
+
 bool TransactionConflictsWithDAGSiblingSpends(const CTransaction& tx,
                                               const std::set<COutPoint>& setDAGSpentOutputs,
                                               const std::set<uint256>& setDAGSpentNullifiers)
@@ -3347,6 +3374,16 @@ bool TransactionConflictsWithDAGSiblingSpends(const CTransaction& tx,
 
     for (const CShieldedSpendDescription& spend : tx.vShieldedSpend)
         if (setDAGSpentNullifiers.count(spend.nullifier))
+            return true;
+
+    // Without this an IV5 double-spend across siblings kills the later block
+    // instead of the later transaction, which lets anyone destroy an honest
+    // miner's block by broadcasting two spends of one note to disjoint peers.
+    std::set<uint256> setTags;
+    AppendPrivacyVNextSpendTags(tx, setTags);
+    for (std::set<uint256>::const_iterator it = setTags.begin();
+         it != setTags.end(); ++it)
+        if (setDAGSpentNullifiers.count(*it))
             return true;
 
     return false;
@@ -3467,6 +3504,7 @@ static std::set<uint256> GetDAGSkippedTxsForBlockInternal(const CBlock& block,
                 setDAGSpentOutputs.insert(txin.prevout);
             for (const CShieldedSpendDescription& spend : sibTx.vShieldedSpend)
                 setDAGSpentNullifiers.insert(spend.nullifier);
+            AppendPrivacyVNextSpendTags(sibTx, setDAGSpentNullifiers);
         }
     }
 

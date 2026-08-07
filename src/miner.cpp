@@ -504,6 +504,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         // fees to the coinbase value.
         std::set<uint256> setDAGSiblingTxids;
         std::set<COutPoint> setDAGSiblingSpentOutpoints;
+        std::set<uint256> setDAGSiblingSpentTags;
         if (nHeight >= FORK_HEIGHT_DAG && pindexPrev->phashBlock)
         {
             std::set<uint256> siblings;
@@ -539,6 +540,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                     setDAGSiblingTxids.insert(sibTx.GetHash());
                     BOOST_FOREACH(const CTxIn& txin, sibTx.vin)
                         setDAGSiblingSpentOutpoints.insert(txin.prevout);
+                    AppendPrivacyVNextSpendTags(sibTx, setDAGSiblingSpentTags);
                 }
             }
         }
@@ -569,6 +571,19 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 continue;
             if (TransactionSpendsAnyOutpoint(tx, setDAGSiblingSpentOutpoints))
                 continue;
+            // A note already spent by a sibling makes this transaction inactive at
+            // connect time; including it only wastes the space.
+            if (!setDAGSiblingSpentTags.empty())
+            {
+                std::set<uint256> setTags;
+                AppendPrivacyVNextSpendTags(tx, setTags);
+                bool fSpentBySibling = false;
+                for (std::set<uint256>::const_iterator it = setTags.begin();
+                     !fSpentBySibling && it != setTags.end(); ++it)
+                    fSpentBySibling = setDAGSiblingSpentTags.count(*it) > 0;
+                if (fSpentBySibling)
+                    continue;
+            }
 
             // Transparent finality votes use existing UTXOs as stake proofs.
             // Consensus rejects blocks that both commit such a vote and spend

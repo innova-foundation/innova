@@ -135,6 +135,11 @@ int64_t GetBlockSizePenalty(unsigned int nBlockSize, unsigned int nMedianSize);
 /** Apply adaptive block size penalty to a reward amount. */
 int64_t ApplyBlockSizePenalty(int64_t nReward, const CBlock& block, const CBlockIndex* pindexPrev);
 bool CheckFinalityStakeProofsNotSpentInBlock(const CBlock& block, const std::vector<CFinalityVote>& vVotes);
+/** Collect an IV5 transaction's payload key images as spend tags, so DAG
+ *  sibling-conflict resolution sees them alongside vin outpoints and legacy
+ *  nullifiers. */
+void AppendPrivacyVNextSpendTags(const CTransaction& tx,
+                                 std::set<uint256>& setTagsOut);
 bool TransactionConflictsWithDAGSiblingSpends(const CTransaction& tx,
                                               const std::set<COutPoint>& setDAGSpentOutputs,
                                               const std::set<uint256>& setDAGSpentNullifiers);

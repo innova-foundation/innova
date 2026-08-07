@@ -2583,6 +2583,10 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                 for (std::vector<CShieldedSpendDescription>::const_iterator sit =
                          txit->vShieldedSpend.begin(); sit != txit->vShieldedSpend.end(); ++sit)
                     setOrderedSpentNullifiers.insert(sit->nullifier);
+                // Must mirror the connect-time sibling skip set exactly, or the
+                // epoch tree would absorb leaves from a transaction ConnectBlock
+                // treated as inactive.
+                AppendPrivacyVNextSpendTags(*txit, setOrderedSpentNullifiers);
             }
             for (std::vector<CShieldedOutputDescription>::const_iterator oit =
                      txit->vShieldedOutput.begin(); oit != txit->vShieldedOutput.end(); ++oit)
