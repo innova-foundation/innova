@@ -1182,6 +1182,12 @@ bool CTransaction::CheckTransaction() const
 {
     if (IsPrivacyVNext())
     {
+        // Versions 2000-2002 are legacy pool envelopes that block assembly never mines;
+        // refuse them here so they cannot pin the mempool. One envelope per operation.
+        if (nVersion >= SHIELDED_TX_VERSION && nVersion <= SHIELDED_TX_VERSION_FCMP)
+            return DoS(100, error("CTransaction::CheckTransaction() : an IV5 payload "
+                                  "may not ride legacy pool version %d", nVersion));
+
         const PrivacyVNextPayloadValidation validation =
             ValidatePrivacyVNextPayload(
                 static_cast<uint32_t>(nVersion),

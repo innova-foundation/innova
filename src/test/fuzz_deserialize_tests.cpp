@@ -2180,6 +2180,30 @@ BOOST_AUTO_TEST_CASE(public_networks_consensus_reject_all_legacy_shielded_versio
     }
 }
 
+// Versions 2000-2002 envelopes are refused by block assembly, so consensus refuses them
+// outright rather than let them relay and pin the mempool.
+BOOST_AUTO_TEST_CASE(a_payload_may_not_ride_a_legacy_pool_version)
+{
+    for (int nVersion = SHIELDED_TX_VERSION;
+         nVersion <= SHIELDED_TX_VERSION_FCMP; ++nVersion)
+    {
+        CTransaction tx;
+        tx.nVersion = nVersion;
+        tx.privacyVNext.SetPresent();
+        tx.privacyVNext.vchPayload.assign(64, 0x11);
+        BOOST_REQUIRE(tx.IsPrivacyVNext());
+        BOOST_REQUIRE(!tx.IsShielded());
+        BOOST_CHECK(!tx.CheckTransaction());
+        BOOST_CHECK_EQUAL(tx.nDoS, 100);
+    }
+
+    // The rule stops before the finality/M-of-N profiles: those envelopes carry no
+    // pool operation and are not selected from the mempool by block assembly, so
+    // widening the range would break them.
+    BOOST_CHECK(SHIELDED_TX_VERSION_NULLSTAKE > SHIELDED_TX_VERSION_FCMP);
+    BOOST_CHECK(SHIELDED_TX_VERSION_VNEXT > SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM);
+}
+
 BOOST_AUTO_TEST_CASE(future_versions_do_not_inherit_legacy_privacy_predicates)
 {
     const int futureVersions[] = {
