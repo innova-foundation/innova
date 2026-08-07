@@ -233,7 +233,147 @@ else
 fi
 
 # ============================================================
-header "5. A reorg takes the pool back with it"
+header "5. Shielding does not create supply"
+# ============================================================
+
+# The pool is a value counterparty: coins it absorbs are not also spendable as
+# fee. If they are, the block that carried the shield pays its miner the whole
+# shielded amount on top of the subsidy.
+coinbase_value() {
+    local bh cb
+    bh="$(rpc getblockhash "$1" 2>/dev/null | tr -d '"[:space:]')"
+    [ -n "$bh" ] || return 1
+    cb="$(rpc getblock "$bh" 2>/dev/null | sed -n '/"tx"/,/]/p' | grep -oE '[a-f0-9]{64}' | head -1)"
+    [ -n "$cb" ] || return 1
+    rpc getrawtransaction "$cb" 1 2>/dev/null |
+        grep -oE '"value" : [0-9.]+' | grep -oE '[0-9.]+$' | paste -sd+ - | bc
+}
+
+SHIELD_HEIGHT="$(jnum "$(rpc getblock "$CONFBLOCK" 2>/dev/null)" height)"
+
+if is_int "$SHIELD_HEIGHT"; then
+    CB_SHIELD="$(coinbase_value "$SHIELD_HEIGHT")"
+    CB_PLAIN="$(coinbase_value $(( SHIELD_HEIGHT - 1 )))"
+    # The shield block's coinbase may exceed a plain one only by the fee.
+    if [ -n "$CB_SHIELD" ] && [ -n "$CB_PLAIN" ] && \
+       [ "$(echo "$CB_SHIELD - $CB_PLAIN < 1" | bc -l 2>/dev/null)" = "1" ]; then
+        success "shield block coinbase is $CB_SHIELD against $CB_PLAIN for a plain block"
+    else
+        fail "shielded value was also paid out as fee: coinbase $CB_SHIELD vs $CB_PLAIN (shielded $SHIELDED)"
+    fi
+else
+    warn "could not locate the shield block height; supply check skipped"
+fi
+
+# ============================================================
+header "6. A transfer spends notes without touching transparent value"
+# ============================================================
+
+# A spend anchors to a finalized epoch state; a single regtest node cannot reach
+# quorum, so spend sections do not apply here and the pool is deposit-only.
+CUR_EPOCH=$(( ( $(height) - 11 ) / 300 + 1 ))
+FIN_AS_OF="$(jnum "$(rpc getepochinfo $CUR_EPOCH 2>/dev/null)" finalized_height_as_of)"
+CAN_SPEND=0
+if is_int "$FIN_AS_OF" && [ "$FIN_AS_OF" -gt 0 ]; then
+    CAN_SPEND=1
+else
+    warn "no finalized epoch state on this chain (finalized_height_as_of=$FIN_AS_OF);"
+    warn "  spends cannot anchor, so sections 6-8 are skipped. Finality needs a"
+    warn "  committee quorum, which one regtest node cannot form."
+fi
+
+if [ "$CAN_SPEND" = "1" ]; then
+
+TO_ADDR="$(jstr "$(rpc z_getnewiv5address 2>&1)" address)"
+[ -n "$TO_ADDR" ] || TO_ADDR="$(rpc z_getnewiv5address 2>&1 | grep -oE '[a-zA-Z0-9]{40,}' | head -1)"
+
+XFER="$(rpc z_iv5transfer "$TO_ADDR" 100 2>&1)"
+XFER_TXID="$(jstr "$XFER" txid)"
+if [ ${#XFER_TXID} -eq 64 ]; then
+    success "transfer built and accepted: 100 INN, txid ${XFER_TXID:0:16}"
+else
+    fail "z_iv5transfer failed: $(echo "$XFER" | head -3)"
+fi
+
+if [ ${#XFER_TXID} -eq 64 ]; then
+    mine_to $(( $(height) + 3 )) || true
+    XC="$(rpc gettransaction "$XFER_TXID" 2>&1)"
+    XCONF="$(jnum "$XC" confirmations)"
+    XRAW="$(rpc getrawtransaction "$XFER_TXID" 1 2>&1)"
+    XVOUT="$(echo "$XRAW" | grep -cE '"value" : ')"
+    if [ -n "$XCONF" ] && [ "$XCONF" -ge 1 ] 2>/dev/null; then
+        success "transfer confirmed ($XCONF confirmation(s))"
+    else
+        fail "transfer did not confirm: confirmations='$XCONF'"
+    fi
+    # A transfer is entirely inside the pool: no transparent output may appear.
+    if [ "$XVOUT" -eq 0 ]; then
+        success "transfer carries no transparent output"
+    else
+        fail "transfer leaked $XVOUT transparent output(s)"
+    fi
+fi
+
+# ============================================================
+header "7. An unshield releases pool value to a transparent address"
+# ============================================================
+
+T_ADDR="$(rpc getnewaddress 2>&1 | tr -d '"[:space:]')"
+UNSH="$(rpc z_iv5unshield "$T_ADDR" 50 2>&1)"
+UNSH_TXID="$(jstr "$UNSH" txid)"
+if [ ${#UNSH_TXID} -eq 64 ]; then
+    success "unshield built and accepted: 50 INN to $T_ADDR, txid ${UNSH_TXID:0:16}"
+else
+    fail "z_iv5unshield failed: $(echo "$UNSH" | head -3)"
+fi
+
+if [ ${#UNSH_TXID} -eq 64 ]; then
+    mine_to $(( $(height) + 3 )) || true
+    UC="$(rpc gettransaction "$UNSH_TXID" 2>&1)"
+    UCONF="$(jnum "$UC" confirmations)"
+    if [ -n "$UCONF" ] && [ "$UCONF" -ge 1 ] 2>/dev/null; then
+        success "unshield confirmed ($UCONF confirmation(s))"
+    else
+        fail "unshield did not confirm: confirmations='$UCONF'"
+    fi
+    URAW="$(rpc getrawtransaction "$UNSH_TXID" 1 2>&1)"
+    UVAL="$(echo "$URAW" | grep -oE '"value" : [0-9.]+' | grep -oE '[0-9.]+$' | head -1)"
+    if [ "$(echo "$UVAL == 50" | bc -l 2>/dev/null)" = "1" ]; then
+        success "unshield paid exactly 50.00000000 INN to the transparent output"
+    else
+        fail "unshield transparent output is $UVAL, expected 50"
+    fi
+    # The released value has to come out of the pool, not out of thin air.
+    UB="$(coinbase_value "$(jnum "$(rpc getblock "$(jstr "$UC" blockhash)" 2>/dev/null)" height)")"
+    if [ -n "$UB" ] && [ "$(echo "$UB < 100" | bc -l 2>/dev/null)" = "1" ]; then
+        success "unshield block coinbase stayed at $UB"
+    else
+        fail "unshield inflated its block's coinbase to $UB"
+    fi
+fi
+
+# ============================================================
+header "8. A spent note cannot be spent twice"
+# ============================================================
+
+if [ ${#XFER_TXID} -eq 64 ]; then
+    XR="$(rpc getrawtransaction "$XFER_TXID" 2>/dev/null | tr -d '"[:space:]')"
+    if [ -n "$XR" ] && [ ${#XR} -gt 100 ]; then
+        DBL="$(rpc sendrawtransaction "$XR" 2>&1)"
+        if echo "$DBL" | grep -qiE "already|error|denied|exists|consumed"; then
+            success "replaying a confirmed transfer is refused"
+        else
+            fail "the chain accepted a replay of a confirmed transfer: $DBL"
+        fi
+    else
+        warn "could not fetch the raw transfer; double-spend case skipped"
+    fi
+fi
+
+fi   # CAN_SPEND
+
+# ============================================================
+header "9. A reorg takes the pool back with it"
 # ============================================================
 
 REORG_FROM=$(( $(height) - 8 ))
@@ -266,7 +406,7 @@ else
 fi
 
 # ============================================================
-header "6. The pool survives a restart"
+header "10. The pool survives a restart"
 # ============================================================
 
 PRE_INFO="$(rpc z_getshieldedinfo 2>/dev/null)"
@@ -296,7 +436,7 @@ else
 fi
 
 # ============================================================
-header "7. The node reports no errors"
+header "11. The node reports no errors"
 # ============================================================
 
 ERRORS="$(jstr "$(rpc getinfo 2>/dev/null)" errors)"
