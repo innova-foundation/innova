@@ -10154,11 +10154,14 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
 
     nTimeBestReceived = GetTime();
 
-    // Keep the IV5 tree store level with the epoch chain it indexes. The store is derived
-    // and rebuildable, so a failure is reported and retried on the next block rather than
-    // allowed to fail the tip, and the catch-up is left until the node is synced.
-    if (!fIsInitialDownload && IsBoundaryBActiveAtHeight(nBestHeight))
+    if (IsBoundaryBActiveAtHeight(nBestHeight))
     {
+      const int nStoreEpoch = GetEpochForHeight(nBestHeight) - 1;
+
+      // Keep the derived IV5 tree store level with the epoch chain; a failure is reported and
+      // retried on the next block, never failing the tip.
+      if (!fIsInitialDownload)
+      {
         // An anchor that has aged out of the window can never come back, so the
         // transaction holding it is unminable and only occupies the pool.
         {
@@ -10187,23 +10190,24 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
             }
         }
 
-        const int nStoreEpoch = GetEpochForHeight(nBestHeight) - 1;
         std::string strStoreError;
         if (!SyncPrivacyVNextTreeStore(txdb, nStoreEpoch, strStoreError))
             printf("SetBestChain: IV5 tree store did not reach epoch %d: %s\n",
                    nStoreEpoch, strStoreError.c_str());
+      }
 
-        // A note is only spendable once its position in the tree is known, and that is
-        // fixed by the epoch that placed it. Same reporting rule as the store: wallet
-        // bookkeeping must not be able to fail the tip.
+      // Assign leaf indices even during initial download: an epoch passed unassigned is never
+      // revisited. Wallet bookkeeping must not fail the tip.
+      {
         LOCK(cs_setpwalletRegistered);
         for (CWallet* pwallet : setpwalletRegistered)
         {
             std::string strWalletError;
             if (!pwallet->AssignPrivacyVNextLeafIndices(nStoreEpoch, strWalletError))
-                printf("SetBestChain: IV5 wallet leaf indices for epoch %d: %s\n",
+                printf("SetBestChain: IV5 wallet leaf indices through epoch %d: %s\n",
                        nStoreEpoch, strWalletError.c_str());
         }
+      }
     }
 
     // Check the version of the last 100 blocks to see if we need to upgrade:

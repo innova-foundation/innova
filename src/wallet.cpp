@@ -11572,6 +11572,41 @@ uint32_t CWallet::GetPrivacyVNextScanIndexCount() const
     return nCount;
 }
 
+// A block whose payloads were not scanned is a block whose notes this wallet does not
+// know it owns. Unshield is retired, so an undetected note is value with no recovery
+// path other than reprocessing the block: keep the lowest such height durably.
+void CWallet::MarkPrivacyVNextScanGap(int nHeight)
+{
+    if (nHeight < 0)
+        return;
+    LOCK(cs_shielded);
+    if (nPrivacyVNextScanGapHeight >= 0 && nPrivacyVNextScanGapHeight <= nHeight)
+        return;
+    nPrivacyVNextScanGapHeight = nHeight;
+    if (fFileBacked)
+        CWalletDB(strWalletFile, "r+").WritePrivacyVNextScanGap(nHeight);
+    printf("CWallet: IV5 scan gap recorded at height %d; run z_rescaniv5 to "
+           "reprocess from there\n", nHeight);
+}
+
+int CWallet::GetPrivacyVNextScanGapHeight() const
+{
+    LOCK(cs_shielded);
+    return nPrivacyVNextScanGapHeight;
+}
+
+// Only a rescan that actually covered the gap may clear it.
+void CWallet::ClearPrivacyVNextScanGap(int nScannedFromHeight)
+{
+    LOCK(cs_shielded);
+    if (nPrivacyVNextScanGapHeight < 0 ||
+        nScannedFromHeight > nPrivacyVNextScanGapHeight)
+        return;
+    nPrivacyVNextScanGapHeight = -1;
+    if (fFileBacked)
+        CWalletDB(strWalletFile, "r+").WritePrivacyVNextScanGap(-1);
+}
+
 bool CWallet::AllocatePrivacyVNextIndex(uint32_t& nIndexOut,
                                         std::string& strErrorOut)
 {
@@ -11600,10 +11635,65 @@ bool CWallet::AllocatePrivacyVNextIndex(uint32_t& nIndexOut,
     return true;
 }
 
+// Assign tree positions to notes still missing one, walking the epochs those notes
+// wait on (bounded by `nThroughEpoch`). A note without a position cannot be spent.
+bool CWallet::AssignPrivacyVNextLeafIndices(int nThroughEpoch,
+                                            std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    if (nThroughEpoch < 0)
+        return true;
+
+    std::set<int> setEpochs;
+    {
+        LOCK(cs_shielded);
+        for (size_t i = 0; i < vPrivacyVNextNotes.size(); ++i)
+        {
+            const CPrivacyVNextWalletNote& note = vPrivacyVNextNotes[i];
+            if (note.fLeafIndexKnown || note.nHeight <= 0)
+                continue;
+            const int nEpoch = GetEpochForHeight(note.nHeight);
+            if (nEpoch >= 0 && nEpoch <= nThroughEpoch)
+                setEpochs.insert(nEpoch);
+        }
+        if (!setEpochs.empty() && vchPrivacyVNextSeed.size() != 32 &&
+            privacyVNextSeedRecord.nGeneration != 0)
+        {
+            // Without the seed the epoch walk cannot recognise our own outputs, and
+            // nothing else will come back to these epochs.
+            const int nGapBefore = nPrivacyVNextScanGapHeight;
+            MarkPrivacyVNextScanGap(GetEpochBoundaryHeight(*setEpochs.begin(),
+                                                           nBestHeight));
+            // The state is already recorded and visible; repeating it once per block
+            // for as long as the wallet stays locked says nothing new.
+            if (nGapBefore == nPrivacyVNextScanGapHeight)
+                return true;
+            strErrorOut = "IV5 seed is locked; notes are still without a tree position";
+            return false;
+        }
+    }
+
+    bool fOk = true;
+    for (std::set<int>::const_iterator it = setEpochs.begin();
+         it != setEpochs.end(); ++it)
+    {
+        std::string strEpochError;
+        if (AssignPrivacyVNextLeafIndicesForEpoch(*it, strEpochError))
+            continue;
+        // One unreadable epoch must not stop the others: each carries different notes.
+        fOk = false;
+        if (!strErrorOut.empty())
+            strErrorOut += "; ";
+        strErrorOut += strEpochError;
+    }
+    return fOk;
+}
+
 // A note reaches the IV5 tree when its epoch finalizes, in the order the epoch
 // state fixes: active transactions in sequence, each contributing its outputs.
 // Walking that order gives every note of ours its exact position.
-bool CWallet::AssignPrivacyVNextLeafIndices(int nEpoch, std::string& strErrorOut)
+bool CWallet::AssignPrivacyVNextLeafIndicesForEpoch(int nEpoch,
+                                                    std::string& strErrorOut)
 {
     strErrorOut.clear();
 
@@ -11632,7 +11722,11 @@ bool CWallet::AssignPrivacyVNextLeafIndices(int nEpoch, std::string& strErrorOut
         return true;
 
     if (vchPrivacyVNextSeed.size() != 32)
-        return true;
+    {
+        strErrorOut = strprintf("IV5 seed is locked; epoch %d leaf positions are "
+                                "still unassigned", nEpoch);
+        return false;
+    }
     PrivacyVNextDigest seed;
     std::memcpy(seed.data(), &vchPrivacyVNextSeed[0], 32);
     PrivacyVNextDigest genesis;
@@ -11687,41 +11781,6 @@ bool CWallet::AssignPrivacyVNextLeafIndices(int nEpoch, std::string& strErrorOut
         for (size_t m = 0; m < vMatches.size(); ++m)
         {
             for (size_t n = 0; n < vPrivacyVNextNotes.size(); ++n)
-// A block whose payloads were not scanned is a block whose notes this wallet does not
-// know it owns. Unshield is retired, so an undetected note is value with no recovery
-// path other than reprocessing the block: keep the lowest such height durably.
-void CWallet::MarkPrivacyVNextScanGap(int nHeight)
-{
-    if (nHeight < 0)
-        return;
-    LOCK(cs_shielded);
-    if (nPrivacyVNextScanGapHeight >= 0 && nPrivacyVNextScanGapHeight <= nHeight)
-        return;
-    nPrivacyVNextScanGapHeight = nHeight;
-    if (fFileBacked)
-        CWalletDB(strWalletFile, "r+").WritePrivacyVNextScanGap(nHeight);
-    printf("CWallet: IV5 scan gap recorded at height %d; run z_rescaniv5 to "
-           "reprocess from there\n", nHeight);
-}
-
-int CWallet::GetPrivacyVNextScanGapHeight() const
-{
-    LOCK(cs_shielded);
-    return nPrivacyVNextScanGapHeight;
-}
-
-// Only a rescan that actually covered the gap may clear it.
-void CWallet::ClearPrivacyVNextScanGap(int nScannedFromHeight)
-{
-    LOCK(cs_shielded);
-    if (nPrivacyVNextScanGapHeight < 0 ||
-        nScannedFromHeight > nPrivacyVNextScanGapHeight)
-        return;
-    nPrivacyVNextScanGapHeight = -1;
-    if (fFileBacked)
-        CWalletDB(strWalletFile, "r+").WritePrivacyVNextScanGap(-1);
-}
-
             {
                 CPrivacyVNextWalletNote& note = vPrivacyVNextNotes[n];
                 if (note.fLeafIndexKnown || note.txhash != hashTx ||
