@@ -658,6 +658,22 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 }
                 nFee += tx.nValueBalance;
             }
+            if (tx.IsPrivacyVNext())
+            {
+                int64_t nAbsorbed = 0;
+                int64_t nReleased = 0;
+                bool fFlowLocalFailure = false;
+                std::string strFlowError;
+                if (!GetPrivacyVNextTransparentFlow(tx, nAbsorbed, nReleased,
+                                                    fFlowLocalFailure, strFlowError))
+                {
+                    printf("CreateNewBlock: IV5 pool flow unavailable, skipping tx: %s\n",
+                           strFlowError.c_str());
+                    continue;
+                }
+                nFee += nReleased;
+                nFee -= nAbsorbed;
+            }
             double dFeePerKb =  double(nFee) / (double(nTxSize)/1000.0);
 
             if (porphan)
@@ -750,6 +766,23 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 };
                 if (tx.IsShielded() && tx.nValueBalance != 0)
                     nTxFees += tx.nValueBalance;
+                if (tx.IsPrivacyVNext())
+                {
+                    int64_t nAbsorbed = 0;
+                    int64_t nReleased = 0;
+                    bool fFlowLocalFailure = false;
+                    std::string strFlowError;
+                    if (!GetPrivacyVNextTransparentFlow(tx, nAbsorbed, nReleased,
+                                                        fFlowLocalFailure, strFlowError))
+                    {
+                        printf("CreateNewBlock() : IV5 pool flow unavailable for %s: %s\n",
+                               tx.GetHash().ToString().substr(0,10).c_str(),
+                               strFlowError.c_str());
+                        continue;
+                    }
+                    nTxFees += nReleased;
+                    nTxFees -= nAbsorbed;
+                }
                 nFee = nTxFees;
             };
             // TODO: must this be done twice!?

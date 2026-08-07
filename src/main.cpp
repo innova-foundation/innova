@@ -1197,6 +1197,11 @@ bool CTransaction::CheckTransaction() const
                                   validation.strError.c_str()));
         if (!IsShieldedVNextConsensusReady())
             return DoS(100, error("CTransaction::CheckTransaction() : IV5 consensus implementation is inactive"));
+        // Value accounting picks one shape per transaction: a payload is settled
+        // against the pool, legacy fields against nValueBalance. Carrying both
+        // would leave the legacy side unvalidated and unaccounted.
+        if (nValueBalance != 0 || !vShieldedSpend.empty() || !vShieldedOutput.empty())
+            return DoS(100, error("CTransaction::CheckTransaction() : IV5 payload cannot carry legacy shielded fields"));
     }
 
     // Versions 2000--2007 never activated on a public network; their decoder is kept for
@@ -1577,6 +1582,54 @@ static bool ValidatePrivacyVNextFinalizedContext(
     return true;
 }
 
+// Transparent value an IV5 transaction moves across the pool boundary. The pool delta
+// is the pool's share; whatever the transparent side contributes beyond it is the fee.
+bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
+                                    int64_t& nAbsorbedOut,
+                                    int64_t& nReleasedOut,
+                                    bool& fLocalFailure,
+                                    std::string& strError)
+{
+    nAbsorbedOut = 0;
+    nReleasedOut = 0;
+    fLocalFailure = false;
+    strError.clear();
+
+    PrivacyVNextStateEffects effects;
+    const PrivacyVNextPayloadValidation validation =
+        ExtractPrivacyVNextPayloadEffects(
+            static_cast<uint32_t>(tx.nVersion), tx.privacyVNext.vchPayload,
+            effects);
+    if (validation.fLocalFailure)
+    {
+        fLocalFailure = true;
+        strError = validation.strError;
+        return false;
+    }
+    if (!validation.IsValid())
+    {
+        strError = validation.strError;
+        return false;
+    }
+
+    const int64_t nDelta = effects.PoolDelta();
+    if (nDelta == std::numeric_limits<int64_t>::min())
+    {
+        strError = "IV5 pool delta is INT64_MIN";
+        return false;
+    }
+    if (!MoneyRange(nDelta < 0 ? -nDelta : nDelta))
+    {
+        strError = "IV5 pool delta is out of range";
+        return false;
+    }
+    if (nDelta > 0)
+        nAbsorbedOut = nDelta;
+    else
+        nReleasedOut = -nDelta;
+    return true;
+}
+
 bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                         bool* pfMissingInputs, bool fOnlyCheckWithoutAdding)
 {
@@ -1767,6 +1820,30 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
 
             if (tx.IsShielded() && tx.nValueBalance != 0)
                 nFees += tx.nValueBalance;
+
+            if (tx.IsPrivacyVNext())
+            {
+                // Same counterparty rule the block accounting uses: without it a
+                // shield's transparent inputs read as an enormous fee.
+                int64_t nAbsorbed = 0;
+                int64_t nReleased = 0;
+                bool fFlowLocalFailure = false;
+                std::string strFlowError;
+                if (!GetPrivacyVNextTransparentFlow(tx, nAbsorbed, nReleased,
+                                                    fFlowLocalFailure, strFlowError))
+                {
+                    if (fFlowLocalFailure)
+                        StartShutdown();
+                    return error("CTxMemPool::accept() : IV5 pool flow rejected: %s",
+                                 strFlowError.c_str());
+                }
+                if (nReleased > MAX_MONEY - nFees)
+                    return error("CTxMemPool::accept() : IV5 released value overflow");
+                nFees += nReleased;
+                nFees -= nAbsorbed;
+                if (nFees < 0)
+                    return error("CTxMemPool::accept() : IV5 transaction does not cover its pool flow");
+            }
 
             GetMinFee_mode feeMode = GMF_RELAY;
 
@@ -5889,11 +5966,40 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
             if (IsShielded() && nValueBalance < 0)
                 nEffectiveOut += (-nValueBalance); // shielded value absorbed from transparent
 
-            if (nValueIn < nEffectiveOut)
+            int64_t nEffectiveIn = nValueIn;
+            if (IsPrivacyVNext())
+            {
+                int64_t nAbsorbed = 0;
+                int64_t nReleased = 0;
+                bool fFlowLocalFailure = false;
+                std::string strFlowError;
+                if (!GetPrivacyVNextTransparentFlow(*this, nAbsorbed, nReleased,
+                                                    fFlowLocalFailure, strFlowError))
+                {
+                    if (fFlowLocalFailure)
+                    {
+                        StartShutdown();
+                        return error("ConnectInputs() : local IV5 pool-flow failure for %s: %s",
+                                     GetHash().ToString().substr(0,10).c_str(),
+                                     strFlowError.c_str());
+                    }
+                    return DoS(100, error("ConnectInputs() : %s IV5 pool flow rejected: %s",
+                                          GetHash().ToString().substr(0,10).c_str(),
+                                          strFlowError.c_str()));
+                }
+                if (nAbsorbed > MAX_MONEY - nEffectiveOut)
+                    return DoS(100, error("ConnectInputs() : IV5 absorbed value overflow"));
+                nEffectiveOut += nAbsorbed;
+                if (nReleased > MAX_MONEY - nEffectiveIn)
+                    return DoS(100, error("ConnectInputs() : IV5 released value overflow"));
+                nEffectiveIn += nReleased;
+            }
+
+            if (nEffectiveIn < nEffectiveOut)
                 return DoS(100, error("ConnectInputs() : %s value in < value out", GetHash().ToString().substr(0,10).c_str()));
 
             // Tally transaction fees
-            int64_t nTxFee = nValueIn - nEffectiveOut;
+            int64_t nTxFee = nEffectiveIn - nEffectiveOut;
             if (nTxFee < 0)
                 return DoS(100, error("ConnectInputs() : %s nTxFee < 0", GetHash().ToString().substr(0,10).c_str()));
 
@@ -6799,6 +6905,37 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                         return DoS(100, error("ConnectBlock() : shielded value balance overflow (shield)"));
                     nTxValueOut += nAbsBalance;
                 }
+            }
+
+            if (tx.IsPrivacyVNext())
+            {
+                // The pool's share is the IV5 transaction's counterparty; without it a shield's inputs
+                // would look like surplus payable to the miner as fee.
+                int64_t nAbsorbed = 0;
+                int64_t nReleased = 0;
+                bool fFlowLocalFailure = false;
+                std::string strFlowError;
+                if (!GetPrivacyVNextTransparentFlow(tx, nAbsorbed, nReleased,
+                                                    fFlowLocalFailure, strFlowError))
+                {
+                    if (fFlowLocalFailure)
+                    {
+                        StartShutdown();
+                        return TransientFailure(error(
+                            "ConnectBlock() : local IV5 pool-flow failure for %s: %s",
+                            tx.GetHash().ToString().substr(0,10).c_str(),
+                            strFlowError.c_str()));
+                    }
+                    return DoS(100, error("ConnectBlock() : IV5 pool flow rejected for %s: %s",
+                                          tx.GetHash().ToString().substr(0,10).c_str(),
+                                          strFlowError.c_str()));
+                }
+                if (nAbsorbed > std::numeric_limits<int64_t>::max() - nTxValueOut)
+                    return DoS(100, error("ConnectBlock() : IV5 absorbed value overflow"));
+                nTxValueOut += nAbsorbed;
+                if (nReleased > std::numeric_limits<int64_t>::max() - nTxValueIn)
+                    return DoS(100, error("ConnectBlock() : IV5 released value overflow"));
+                nTxValueIn += nReleased;
             }
 
             if (nTxValueIn > std::numeric_limits<int64_t>::max() - nValueIn)

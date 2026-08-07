@@ -811,6 +811,16 @@ bool IsSynchronized();
 bool IsInitialBlockDownload();
 std::string GetWarnings(std::string strFor);
 bool GetTransaction(const uint256 &hash, CTransaction &tx, uint256 &hashBlock, bool s=false);
+
+/** Transparent value an IV5 transaction moves across the pool boundary: what the
+ *  pool absorbs must be covered by the transparent inputs, what it releases is
+ *  available to the transparent outputs. Fee accounting must apply this wherever
+ *  it applies the legacy nValueBalance, or a shield's inputs read as fee. */
+bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
+                                    int64_t& nAbsorbedOut,
+                                    int64_t& nReleasedOut,
+                                    bool& fLocalFailure,
+                                    std::string& strError);
 bool GetKeyImage(CTxDB* ptxdb, ec_point& keyImage, CKeyImageSpent& keyImageSpent, bool& fInMempool);
 int GetAnonTxnPreImage(const CTransaction& tx, uint256& hashOut);
 bool TxnHashInSystem(CTxDB* ptxdb, uint256& txnHash);
