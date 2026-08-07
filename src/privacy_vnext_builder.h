@@ -64,6 +64,21 @@ bool BuildPrivacyVNextTransferPayload(
     std::vector<unsigned char>& vchPayloadOut,
     std::string& strErrorOut);
 
+// Build an unshield payload. Spent notes must cover `nTransparentValueOut` + fee + change;
+// `outputs` are the change notes only.
+bool BuildPrivacyVNextUnshieldPayload(
+    uint8_t nNetwork,
+    const PrivacyVNextDigest& genesis,
+    const PrivacyVNextDigest& outgoingViewSecret,
+    const PrivacyVNextDigest& finalizedRoot,
+    uint64_t nFinalizedTreeSize,
+    uint64_t nTransparentValueOut,
+    uint64_t nFee,
+    const std::vector<PrivacyVNextSpendNote>& spends,
+    const std::vector<PrivacyVNextNewOutput>& outputs,
+    std::vector<unsigned char>& vchPayloadOut,
+    std::string& strErrorOut);
+
 // Build a shield payload (no membership proof). `nTransparentValueIn` must equal outputs
 // plus fee.
 bool BuildPrivacyVNextShieldPayload(

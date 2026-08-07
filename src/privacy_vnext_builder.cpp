@@ -20,6 +20,7 @@ namespace
 // Every disclosure bit set: nothing is revealed, and the outputs need a range proof.
 const uint8_t VNEXT_DISCLOSURE_PRIVATE = 7;
 const uint8_t VNEXT_OPERATION_SHIELD = 0;
+const uint8_t VNEXT_OPERATION_UNSHIELD = 1;
 const uint8_t VNEXT_OPERATION_TRANSFER = 2;
 
 void PutCompactSize(std::vector<unsigned char>& out, uint64_t nSize)
@@ -161,6 +162,18 @@ static bool BuildPrivacyVNextPayload(
             return false;
         }
         nOut += outputs[i].nAmount;
+    }
+    // Value leaving the pool is spent by the payload just as a new note is: it is
+    // covered by the inputs and settled on the transparent side.
+    if (nTransparentValueBalance < 0)
+    {
+        const uint64_t nLeaving = (uint64_t)(-(nTransparentValueBalance + 1)) + 1;
+        if (nLeaving > std::numeric_limits<uint64_t>::max() - nOut)
+        {
+            strErrorOut = "IV5 unshield amount overflows";
+            return false;
+        }
+        nOut += nLeaving;
     }
     if (nIn != nOut)
     {
@@ -425,6 +438,43 @@ bool BuildPrivacyVNextTransferPayload(
                                     outgoingViewSecret, finalizedRoot,
                                     nFinalizedTreeSize, 0, nFee, spends, outputs,
                                     vchPayloadOut, strErrorOut);
+}
+
+bool BuildPrivacyVNextUnshieldPayload(
+    uint8_t nNetwork,
+    const PrivacyVNextDigest& genesis,
+    const PrivacyVNextDigest& outgoingViewSecret,
+    const PrivacyVNextDigest& finalizedRoot,
+    uint64_t nFinalizedTreeSize,
+    uint64_t nTransparentValueOut,
+    uint64_t nFee,
+    const std::vector<PrivacyVNextSpendNote>& spends,
+    const std::vector<PrivacyVNextNewOutput>& outputs,
+    std::vector<unsigned char>& vchPayloadOut,
+    std::string& strErrorOut)
+{
+    vchPayloadOut.clear();
+    strErrorOut.clear();
+    if (spends.empty())
+    {
+        strErrorOut = "an IV5 unshield needs at least one input";
+        return false;
+    }
+    if (nTransparentValueOut == 0)
+    {
+        strErrorOut = "an IV5 unshield must release a non-zero amount";
+        return false;
+    }
+    if (nTransparentValueOut > (uint64_t)std::numeric_limits<int64_t>::max())
+    {
+        strErrorOut = "IV5 unshield value is out of range";
+        return false;
+    }
+    // Negative balance is value the pool releases to the transparent side.
+    return BuildPrivacyVNextPayload(
+        nNetwork, VNEXT_OPERATION_UNSHIELD, genesis, outgoingViewSecret,
+        finalizedRoot, nFinalizedTreeSize, -(int64_t)nTransparentValueOut, nFee,
+        spends, outputs, vchPayloadOut, strErrorOut);
 }
 
 bool BuildPrivacyVNextShieldPayload(
