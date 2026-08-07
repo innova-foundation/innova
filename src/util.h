@@ -159,7 +159,12 @@ int LogPrintStr(const std::string &str);
     template<TINYFORMAT_ARGTYPES(n)>                                                 \
     static inline bool error(const char* format, TINYFORMAT_VARARGS(n))              \
     {                                                                                \
-        LogPrintStr("ERROR: " + tfm::format(format, TINYFORMAT_PASSARGS(n)) + "\n"); \
+        /* Errors log whatever -debug says, matching the varargs error(). Routing   \
+           these through LogPrintStr hid every rejection that carries an argument,  \
+           which is most of them, from an operator running without -debug. */       \
+        OutputDebugStringF(                                                          \
+            "ERROR: %s\n",                                                           \
+            tfm::format(format, TINYFORMAT_PASSARGS(n)).c_str());                    \
         return false;                                                                \
     }                                                                                \
     /*   Log error and return n */                                                   \

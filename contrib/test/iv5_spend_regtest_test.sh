@@ -791,8 +791,14 @@ for mode in retarget delete; do
         continue
     fi
     for n in 0 1; do
+        # sendrawtransaction collapses every mempool refusal to one message, so the
+        # reason is only in the node's own log. Read it there rather than accept a
+        # refusal that might be for some unrelated reason.
+        LOGLEN=$(wc -l < "$TEST_DIR/node$n/regtest/debug.log" 2>/dev/null || echo 0)
         REJECT="$(rpc "$n" sendrawtransaction "$TAMPERED" 2>&1)"
-        if echo "$REJECT" | grep -qi "bind"; then
+        REASON="$(tail -n +$((LOGLEN + 1)) "$TEST_DIR/node$n/regtest/debug.log" 2>/dev/null |
+                  grep -i "does not bind" | head -1)"
+        if [ -n "$REASON" ]; then
             success "node$n refuses the $mode tamper because the payload does not bind it"
         elif echo "$REJECT" | grep -qiE "error|denied|rejected|invalid"; then
             fail "node$n refused the $mode tamper, but not on the binding: $(echo "$REJECT" | head -2)"
