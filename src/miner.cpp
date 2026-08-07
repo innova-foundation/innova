@@ -545,6 +545,9 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             }
         }
 
+        // The height this block would occupy. Both selection passes gate on it.
+        const int nCandidateHeight = pindexPrev->nHeight + 1;
+
         // This vector will be sorted into a priority queue:
         vector<TxPriority> vecPriority;
         vecPriority.reserve(mempool.mapTx.size());
@@ -554,7 +557,6 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             if (tx.IsCoinBase() || tx.IsCoinStake() || !tx.IsFinal())
                 continue;
 
-            const int nCandidateHeight = pindexPrev->nHeight + 1;
             if ((tx.nVersion == ANON_TXN_VERSION &&
                  (IsLegacyPrivacyPolicyDisabled() ||
                   nCandidateHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION)) ||
@@ -822,6 +824,22 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             nTxSigOps += tx.GetP2SHSigOpCount(mapInputs);
             if (nBlockSigOps + nTxSigOps >= MAX_BLOCK_SIGOPS)
                 continue;
+
+            // Orphan-queue transactions skipped selection, and nothing else checks the
+            // anchor; an aged-out anchor would make ConnectBlock reject the block.
+            if (tx.IsPrivacyVNext())
+            {
+                std::string strAnchorError;
+                if (!CheckPrivacyVNextFinalizedAnchor(txdb, nCandidateHeight, tx,
+                                                      strAnchorError))
+                {
+                    printf("CreateNewBlock: IV5 anchor no longer valid at height %d, "
+                           "skipping tx %s: %s\n", nCandidateHeight,
+                           tx.GetHash().ToString().substr(0,10).c_str(),
+                           strAnchorError.c_str());
+                    continue;
+                }
+            }
 
             if (!tx.ConnectInputs(txdb, mapInputs, mapTestPoolTmp, CDiskTxPos(1,1,1), pindexPrev, false, true, MANDATORY_SCRIPT_VERIFY_FLAGS))
                 continue;
