@@ -99,6 +99,18 @@ struct RetainedScalars
     }
 };
 
+// The draft pass's proof is never serialized, so nothing else wipes it.
+struct RetainedBytes
+{
+    std::vector<unsigned char> v;
+
+    ~RetainedBytes()
+    {
+        if (!v.empty())
+            OPENSSL_cleanse(&v[0], v.size());
+    }
+};
+
 } // namespace
 
 void PrivacyVNextSpendNote::Clear()
@@ -269,17 +281,19 @@ static bool BuildPrivacyVNextPayload(
     }
 
     // The prefix the proofs bind to already names each input's pseudo-output, but those
-    // only exist once the prover has run. The prover is deterministic in the caller's
-    // entropy, so it is run twice with the same entropy: once to learn the pseudo-outputs
-    // and key images, and again to prove against the hash they produce.
+    // only exist once the prover has run. Rerandomization is deterministic in the caller's
+    // entropy and independent of the signing hash, so the prover is run twice with the same
+    // entropy: once to learn the pseudo-outputs and key images, and again to prove against
+    // the hash they produce. Proof nonces are drawn from a hash-dependent stream, so the
+    // two passes share none of them.
     PrivacyVNextDigest provisional;
     provisional.fill(0);
     provisional[0] = 1;
     std::vector<PrivacyVNextSpendConstruction> vDraft;
-    std::vector<unsigned char> vchDraftProof;
+    RetainedBytes draftProof;
     if (!vProveInputs.empty() &&
         !ProvePrivacyVNextMembership(finalizedRoot, provisional, entropy,
-                                     vProveInputs, vDraft, vchDraftProof,
+                                     vProveInputs, vDraft, draftProof.v,
                                      strErrorOut))
         return false;
 

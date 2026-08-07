@@ -92,12 +92,20 @@ fcmp-common:
   aggregate-batch-input-limit: 16
 fcmp-prove-request:
   header-fields: schema-u16-le, layers-u8, root-curve-u8, input-count-u8, reserved-zero-3, finalized-root-32, signable-hash-32, caller-entropy-32
-  caller-entropy: nonzero and domain-separated through Innova/IV5/FCMP++/ProverRng/v1
+  caller-entropy: nonzero and freshly drawn per transaction; it seeds both prover streams
   per-input-fields: spend-scalar-x-32, commitment-scalar-y-32, output-O-I-C-96, leaf-count-u8, reserved-zero-3, leaves, four-Helios-field-branches, three-Selene-field-branches
   leaves: 1..38 output tuples; the spent output must occur
   Helios-field-branch: exactly 18 canonical scalars
   Selene-field-branch: exactly 38 canonical scalars
   behavior: derive rerandomized inputs and branch blinds, prove, then self-verify against finalized-root and signable-hash before returning
+  prover-randomness: two ChaCha20 streams, each seeded by Blake2b-512 over its own domain
+  rerandomize-stream: Innova/IV5/FCMP++/RerandomizeRng/v1 over the request excluding the signable
+    hash; supplies RerandomizedOutput only, so pseudo-outs, key images and sender authorities do
+    not depend on the hash that names them
+  proof-stream: Innova/IV5/FCMP++/ProofRng/v1 over the whole request including the signable hash;
+    supplies every SAL nonce, branch blind and membership-proof draw
+  nonce-separation-rule: a caller proving one input twice under one entropy and two hashes shares
+    no proof nonce between the passes, so the spend key is not recoverable from the two proofs
 fcmp-prove-response:
   fields: schema-u16-le, layers-u8, input-count-u8, per-input-construction-record-256, proof-length-u32-le, proof
   per-input-construction-record: pseudo-out-32, key-image-32, pseudo-out-mask-delta-r-c-32, sender-authority-32, sender-disclosure-proof-128

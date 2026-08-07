@@ -45,7 +45,10 @@ const VERIFY_HEADER_LEN: usize = 72;
 const RESPONSE_HEADER_LEN: usize = 4;
 const RESPONSE_RECORD_LEN: usize = 256;
 const BATCH_HEADER_LEN: usize = 8;
-const PROVER_RNG_DOMAIN: &[u8] = b"Innova/IV5/FCMP++/ProverRng/v1";
+/// Seeds the rerandomization draw, which must not depend on the signable hash.
+const RERANDOMIZE_RNG_DOMAIN: &[u8] = b"Innova/IV5/FCMP++/RerandomizeRng/v1";
+/// Seeds every proof nonce, which must depend on the signable hash they are challenged under.
+const PROOF_RNG_DOMAIN: &[u8] = b"Innova/IV5/FCMP++/ProofRng/v1";
 /// Where the signable hash sits in a proving request, after the header and the root.
 const SIGNABLE_HASH_OFFSET: usize = 40;
 const BATCH_RNG_DOMAIN: &[u8] = b"Innova/IV5/FCMP++/BatchWeights/v1";
@@ -460,24 +463,19 @@ pub(super) fn prove(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         witnesses,
     } = parse_proving_request(request)?;
     let count = witnesses.len();
-    // Seed from everything in the request except the signable hash.
-    //
-    // The hash a payload signs covers the pseudo-outputs the payload names, and those are
-    // this rerandomization's output. Seeding the rerandomization from the hash as well
-    // would make the two define each other, and no payload carrying an input could then be
-    // built. The seed still binds the caller entropy, which must be nonzero and freshly
-    // drawn per transaction, along with the root and every witness.
-    let mut rng = deterministic_rng(
-        PROVER_RNG_DOMAIN,
-        &[
-            request
-                .get(..SIGNABLE_HASH_OFFSET)
-                .ok_or(ResultCode::BadLength)?,
-            request
-                .get(SIGNABLE_HASH_OFFSET + 32..)
-                .ok_or(ResultCode::BadLength)?,
-        ],
-    );
+    // Two streams. The rerandomization must not depend on the signable hash (the hash
+    // covers the pseudo-outputs it produces). Every proof nonce must depend on the hash, or
+    // two proofs under different challenges would share alpha and reveal the spend key.
+    let rerandomize_pieces = [
+        request
+            .get(..SIGNABLE_HASH_OFFSET)
+            .ok_or(ResultCode::BadLength)?,
+        request
+            .get(SIGNABLE_HASH_OFFSET + 32..)
+            .ok_or(ResultCode::BadLength)?,
+    ];
+    let mut rerandomize_rng = deterministic_rng(RERANDOMIZE_RNG_DOMAIN, &rerandomize_pieces);
+    let mut proof_rng = deterministic_rng(PROOF_RNG_DOMAIN, &[request]);
     let t_generator = monero_t();
     let u_generator = EdwardsPoint((*FCMP_PLUS_PLUS_U).into());
     let v_generator = EdwardsPoint((*FCMP_PLUS_PLUS_V).into());
@@ -501,14 +499,14 @@ pub(super) fn prove(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
             i_decomposition,
             i_blind_decomposition,
             c_decomposition,
-        ) = rerandomize_with_nonzero_blinds(&mut rng, &witness.path.output);
+        ) = rerandomize_with_nonzero_blinds(&mut rerandomize_rng, &witness.path.output);
         let mut pseudo_out_mask_delta = -rerandomized.c_blind();
         let mut rerandomized_y = witness.y - rerandomized.o_blind();
         let opening = OpenedInputTuple::open(&rerandomized, &witness.x, &witness.y)
             .ok_or(ResultCode::ConsensusInvalid)?;
         let input = rerandomized.input();
         let (key_image, authorization) =
-            SpendAuthAndLinkability::prove(&mut rng, signable_hash, &opening);
+            SpendAuthAndLinkability::prove(&mut proof_rng, signable_hash, &opening);
         let key_image_bytes = key_image.to_bytes();
         if !unique_key_images.insert(key_image_bytes) {
             return Err(ResultCode::ConsensusInvalid);
@@ -559,26 +557,28 @@ pub(super) fn prove(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         ));
     }
 
+    // Branch blinds and the membership proof itself hide nothing the prefix names, so they
+    // belong to the hash-dependent stream with the rest of the proof randomness.
     let mut branch_1_blinds = Vec::with_capacity(c1_blinds);
     for _ in 0..c1_blinds {
         branch_1_blinds.push(BranchBlind::new(
             SELENE_FCMP_GENERATORS.generators.h(),
-            random_c1_decomposition(&mut rng),
+            random_c1_decomposition(&mut proof_rng),
         ));
     }
     let mut branch_2_blinds = Vec::with_capacity(c2_blinds);
     for _ in 0..c2_blinds {
         branch_2_blinds.push(BranchBlind::new(
             HELIOS_FCMP_GENERATORS.generators.h(),
-            random_c2_decomposition(&mut rng),
+            random_c2_decomposition(&mut proof_rng),
         ));
     }
 
     let blinded = branches
         .blind(output_blinds, branch_1_blinds, branch_2_blinds)
         .map_err(|_| ResultCode::ConsensusInvalid)?;
-    let membership =
-        Fcmp::prove(&mut rng, &FCMP_PARAMS, blinded).map_err(|_| ResultCode::ConsensusInvalid)?;
+    let membership = Fcmp::prove(&mut proof_rng, &FCMP_PARAMS, blinded)
+        .map_err(|_| ResultCode::ConsensusInvalid)?;
     let proof = FcmpPlusPlus::new(inputs_and_authorizations, membership);
     let expected_size = FcmpPlusPlus::proof_size(count, usize::from(LAYERS));
     let mut proof_bytes = Vec::with_capacity(expected_size);
@@ -944,6 +944,136 @@ mod tests {
                 .expect("verification request"),
         )
         .is_err());
+    }
+
+    // Two passes under one entropy share pseudo-outputs, but a reused SAL nonce across
+    // them would leak the spend key.
+    #[test]
+    fn sal_nonces_are_not_reused_across_signable_hashes() {
+        // Per-input serialized layout: O~, I~, R, then P, A, B, R_O, R_P, R_L, then
+        // s_alpha, s_beta, s_delta, s_y, s_z, s_r_p.
+        const SAL_COMMITMENTS: core::ops::Range<usize> = 96..288;
+        const S_BETA: usize = 320;
+        const S_Z: usize = 416;
+
+        let mut rng = ChaCha20Rng::from_seed([0x5b; 32]);
+        let x = EdScalar::from(41_u64);
+        let y = EdScalar::from(43_u64);
+        let output = FcmpOutput::new(
+            (<Ed25519 as Ciphersuite>::generator() * x) + (monero_t() * y),
+            <Ed25519 as Ciphersuite>::generator() * EdScalar::from(47_u64),
+            <Ed25519 as Ciphersuite>::generator() * EdScalar::from(53_u64),
+        )
+        .expect("test output is nonidentity");
+
+        let mut leaves = vec![output];
+        while leaves.len() < 45 {
+            leaves.push(random_output(&mut rng));
+        }
+        let mut leaf_bytes = Vec::new();
+        for leaf in &leaves {
+            append_output(&mut leaf_bytes, leaf);
+        }
+        let state = tree_from_leaves(&leaf_bytes);
+        let witness_response = crate::tree::witness(&witness_request(&state, &[0], &leaf_bytes))
+            .expect("witness must be produced");
+        let root_bytes: [u8; 32] = witness_response[12..44]
+            .try_into()
+            .expect("root is 32 bytes");
+        let record = &witness_response[48..];
+
+        let build = |signable_hash: [u8; 32]| {
+            let mut request = Vec::new();
+            request.extend_from_slice(&SCHEMA.to_le_bytes());
+            request.push(LAYERS);
+            request.push(ROOT_CURVE_HELIOS);
+            request.push(1);
+            request.extend_from_slice(&[0; 3]);
+            request.extend_from_slice(&root_bytes);
+            request.extend_from_slice(&signable_hash);
+            // One entropy across both passes: that is what the caller does.
+            request.extend_from_slice(&[0x5c; 32]);
+            append_scalar::<Ed25519>(&mut request, x);
+            append_scalar::<Ed25519>(&mut request, y);
+            request.extend_from_slice(record);
+            request
+        };
+
+        let first_hash = [0x11; 32];
+        let second_hash = [0x22; 32];
+        let first = prove(&build(first_hash)).expect("first proof");
+        let second = prove(&build(second_hash)).expect("second proof");
+
+        // The prefix the hash covers must still be reproducible, or the caller cannot build
+        // a payload at all.
+        assert_eq!(&first[4..68], &second[4..68]);
+
+        // One input: the response is the header, one construction record, the proof length,
+        // then the proof.
+        let proof_at = RESPONSE_HEADER_LEN + RESPONSE_RECORD_LEN + 4;
+        let first_sal = &first[proof_at..];
+        let second_sal = &second[proof_at..];
+
+        // Every SAL commitment is a function of the nonces and the opening alone, never of
+        // the challenge. Two passes over one opening that share a nonce therefore publish
+        // byte-identical commitments.
+        assert_ne!(
+            &first_sal[SAL_COMMITMENTS],
+            &second_sal[SAL_COMMITMENTS],
+            "the two passes published the same SAL commitments, so a nonce was reused"
+        );
+
+        // The recovery an auditor performed: with beta and r_z reused, the differences of
+        // the published responses are (e1-e2)*r_i and (e1-e2)*x*r_i, whose quotient is the
+        // spend key. It needs no secret and no transcript, only the two proofs.
+        let delta = |at: usize| -> EdScalar {
+            let left = decode_scalar::<Ed25519>(
+                first_sal[at..at + 32]
+                    .try_into()
+                    .expect("SAL response is 32 bytes"),
+            )
+            .expect("canonical SAL response");
+            let right = decode_scalar::<Ed25519>(
+                second_sal[at..at + 32]
+                    .try_into()
+                    .expect("SAL response is 32 bytes"),
+            )
+            .expect("canonical SAL response");
+            left - right
+        };
+        let delta_beta = delta(S_BETA);
+        let delta_z = delta(S_Z);
+        let inverse = Option::<EdScalar>::from(delta_beta.invert())
+            .expect("independent responses differ, so the difference is invertible");
+        let recovered = delta_z * inverse;
+        let authority = decode_group::<Ed25519>(
+            first[100..132]
+                .try_into()
+                .expect("sender authority is 32 bytes"),
+        )
+        .expect("the response publishes a canonical authority");
+        assert_eq!(
+            authority,
+            <Ed25519 as Ciphersuite>::generator() * x,
+            "the response must publish G*x, or this test recovers nothing"
+        );
+        assert_ne!(
+            <Ed25519 as Ciphersuite>::generator() * recovered,
+            authority,
+            "the spend key was recovered from the two published proofs"
+        );
+
+        // Both proofs must still be bound to the hash each was made under.
+        verify(
+            &verification_request_from_response(root_bytes, first_hash, &first)
+                .expect("verification request"),
+        )
+        .expect("first proof verifies under its own hash");
+        verify(
+            &verification_request_from_response(root_bytes, second_hash, &second)
+                .expect("verification request"),
+        )
+        .expect("second proof verifies under its own hash");
     }
 
     // Two leaves of a deep tree, reaching nonzero branch indexes and a partial leaf branch

@@ -34,13 +34,14 @@
   },
   "fcmp_abi": {
     "schema": 1,
-    "abi_schema_sha256": "c7dc45d4d052f3b22ba0376969b8e6a03010f25e854d4692b2bac929b275cb4f",
+    "abi_schema_sha256": "a2a53ae972a8be55662ad032c859b4b74afb0ee98e7b00797f81bb4142941911",
     "layers": 8,
     "root_curve_id": 2,
     "maximum_inputs": 16,
     "maximum_batch_requests": 16,
     "maximum_aggregate_batch_inputs": 16,
-    "prover_rng_domain": "Innova/IV5/FCMP++/ProverRng/v1",
+    "rerandomize_rng_domain": "Innova/IV5/FCMP++/RerandomizeRng/v1",
+    "proof_rng_domain": "Innova/IV5/FCMP++/ProofRng/v1",
     "batch_weight_domain": "Innova/IV5/FCMP++/BatchWeights/v1",
     "proving_request_field_order": [
       "schema_u16_le",
@@ -459,7 +460,8 @@
     "disclosure_amount": "Innova/IV5/Disclosure/Amount/v1",
     "nullsend": "Innova/IV5/NullSend/v1",
     "nullstake": "Innova/IV5/NullStake/v1",
-    "fcmp_prover_rng": "Innova/IV5/FCMP++/ProverRng/v1",
+    "fcmp_rerandomize_rng": "Innova/IV5/FCMP++/RerandomizeRng/v1",
+    "fcmp_proof_rng": "Innova/IV5/FCMP++/ProofRng/v1",
     "fcmp_batch_weights": "Innova/IV5/FCMP++/BatchWeights/v1"
   },
   "signing_hash": {
