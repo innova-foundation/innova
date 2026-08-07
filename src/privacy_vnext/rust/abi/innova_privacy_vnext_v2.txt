@@ -337,7 +337,7 @@ payload-validation:
   five bounded proof sections in fixed normative order
   transparent-binding: 32 opaque header bytes after the fee, inside the signing hash and
     therefore covered by every proof; the caller alone defines what they must equal, which
-    is a digest of the carrying transaction's transparent outputs and lock time
+    is a digest of the carrying transaction's input prevouts, outputs and lock time
   signing-hash: blake2b-256(Innova/IV5/Signing/v1, outer-wire-version-u32-le, canonical-payload-through-finality-body)
   hidden-spend-input: pseudo-out-32 then nullifier-key-image-32; source leaves are never serialized in the base input
   output-record-points: owner-O-32, commitment-C-32, note-ephemeral-32, tweak-ephemeral-32, which must differ; the leaf's I is derived from O by note-key-image-base and is absent from the record

@@ -34,7 +34,7 @@
   },
   "fcmp_abi": {
     "schema": 1,
-    "abi_schema_sha256": "c6ce7bbe56a9164821b19fffd7372513a357b2d9627a7295ff985ecdf6d7b7f8",
+    "abi_schema_sha256": "c86a2b04dc83e0e9f3236ef9dcf37533f29e881a763d9687f56a3bf212f6b355",
     "layers": 8,
     "root_curve_id": 2,
     "maximum_inputs": 16,
@@ -305,7 +305,7 @@
       "fcmp-membership-section-is-empty-with-zero-inputs-and-otherwise-has-the-exact-upstream-eight-layer-proof-size-and-verifies-against-the-finalized-root-signing-hash-pseudo-outs-and-key-images",
       "exposed-amount-openings-must-open-the-corresponding-output-commitment-as-opening-times-ed25519-G-plus-value-times-monero-H",
       "range-section-is-nonempty-only-when-at-least-one-output-amount-is-hidden-and-is-a-canonical-aggregate-monero-bulletproof-plus-verified-against-all-output-commitments",
-      "transparent-binding-is-32-opaque-header-bytes-inside-the-signing-hash-that-the-caller-requires-to-equal-a-domain-separated-digest-of-the-carrying-transactions-output-vector-and-lock-time",
+      "transparent-binding-is-32-opaque-header-bytes-inside-the-signing-hash-that-the-caller-requires-to-equal-a-domain-separated-digest-of-the-carrying-transactions-input-prevouts-output-vector-and-lock-time",
       "value-balance-section-is-always-an-exact-64-byte-schnorr-excess-proof-bound-to-the-signing-hash-pseudo-outs-output-commitments-transparent-value-balance-and-fee",
       "operation-section-is-empty-for-shield-unshield-and-transfer",
       "nullsend-delegation-m-of-n-reclaim-migration-and-finality-objects-return-unsupported-format-until-a-normative-typed-operation-proof-frame-and-verifier-are-frozen",
@@ -438,7 +438,7 @@
   },
   "transcripts": {
     "signing": "Innova/IV5/Signing/v1",
-    "transparent_binding": "Innova/IV5/TransparentBinding/v1",
+    "transparent_binding": "Innova/IV5/TransparentBinding/v2",
     "parameter_digest": "Innova/IV5/ParameterDigest/v1",
     "note_leaf": "Innova/IV5/NoteLeaf/v1",
     "nullifier": "Innova/IV5/Nullifier/v1",

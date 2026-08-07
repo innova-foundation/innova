@@ -40,8 +40,8 @@ class CReserveKey;
 static const size_t PRIVACY_VNEXT_SHIELD_MAX_INPUTS = 50;
 
 // Released value is safe to build only because the payload prefix carries
-// GetPrivacyVNextTransparentBinding, which consensus checks against the outputs the
-// transaction actually pays. Never enable this ahead of that check.
+// GetPrivacyVNextTransparentBinding, which consensus checks against the inputs and
+// outputs the transaction actually carries. Never enable this ahead of that check.
 static const bool PRIVACY_VNEXT_UNSHIELD_ENABLED = true;
 
 class COutput;

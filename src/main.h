@@ -819,8 +819,8 @@ std::string GetWarnings(std::string strFor);
 bool GetTransaction(const uint256 &hash, CTransaction &tx, uint256 &hashBlock, bool s=false);
 
 /** Digest an IV5 payload commits to so its transaction's transparent side cannot be
- *  rewritten after the proofs are made. Covers the output vector and the lock time;
- *  see the definition in main.cpp for why that is the whole attack surface. */
+ *  rewritten after the proofs are made. Covers the input prevouts, the output vector and
+ *  the lock time; see the definition in main.cpp for the scope's boundaries. */
 uint256 GetPrivacyVNextTransparentBinding(const CTransaction& tx);
 
 /** Hold an accepted payload's declared binding against the transaction carrying it.

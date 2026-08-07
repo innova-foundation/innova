@@ -1077,21 +1077,45 @@ BOOST_AUTO_TEST_CASE(an_unshield_binds_the_transparent_output_it_pays)
             !CheckPrivacyVNextTransparentBinding(delayed, effects, error));
     }
 
-    // Everything the binding does not cover must leave it intact: the broadcast
-    // timestamp, and an input a third party appends without the sender's consent.
+    // An appended third-party input is refused.
+    {
+        CTransaction padded = tx;
+        padded.vin.push_back(CTxIn(uint256((uint64_t)7), 0));
+        BOOST_CHECK(!CheckPrivacyVNextTransparentBinding(padded, effects, error));
+    }
+
+    // nTime is outside the binding so the wallet can stamp it after proving.
     {
         CTransaction restamped = tx;
         restamped.nTime += 1234;
         BOOST_CHECK(
             CheckPrivacyVNextTransparentBinding(restamped, effects, error));
-        CTransaction padded = tx;
-        padded.vin.push_back(CTxIn(uint256((uint64_t)7), 0));
-        BOOST_CHECK(CheckPrivacyVNextTransparentBinding(padded, effects, error));
+    }
+
+    // scriptSig is not bound (SignatureHash covers the whole transaction).
+    {
+        CTransaction signedInput = tx;
+        signedInput.vin.push_back(CTxIn(uint256((uint64_t)7), 0));
+        PrivacyVNextDigest inputBinding;
+        const uint256 hashInputBinding =
+            GetPrivacyVNextTransparentBinding(signedInput);
+        std::memcpy(inputBinding.data(), hashInputBinding.begin(), 32);
+        PrivacyVNextStateEffects inputEffects = effects;
+        inputEffects.transparentBinding = inputBinding;
+        BOOST_CHECK_MESSAGE(
+            CheckPrivacyVNextTransparentBinding(signedInput, inputEffects, error),
+            error);
+        signedInput.vin[0].scriptSig << OP_1;
+        BOOST_CHECK_MESSAGE(
+            CheckPrivacyVNextTransparentBinding(signedInput, inputEffects, error),
+            error);
+        signedInput.vin[0].prevout.n = 1;
+        BOOST_CHECK(
+            !CheckPrivacyVNextTransparentBinding(signedInput, inputEffects, error));
     }
 }
 
-// A shield and a transfer carry no transparent output, and that is itself what they
-// commit to: an output appended to either must break the binding.
+// An empty transparent vector is bound too: appending an input or output breaks the binding.
 BOOST_AUTO_TEST_CASE(an_empty_transparent_side_is_bound_like_any_other)
 {
     std::string error;
@@ -1116,15 +1140,20 @@ BOOST_AUTO_TEST_CASE(an_empty_transparent_side_is_bound_like_any_other)
     outs[0].recipient.viewPublic = keys.viewPublic;
     outs[0].nAmount = nValueIn - nFee;
 
+    // Shield inputs are fixed before the payload is built, so binding them has no cycle.
     CTransaction tx;
     tx.nVersion = SHIELDED_TX_VERSION_VNEXT;
     tx.vin.push_back(CTxIn(uint256((uint64_t)11), 0));
+    PrivacyVNextDigest binding;
+    const uint256 hashBinding = GetPrivacyVNextTransparentBinding(tx);
+    std::memcpy(binding.data(), hashBinding.begin(), 32);
+    BOOST_CHECK(binding != kNoTransparentSide);
 
     std::vector<unsigned char> payload;
     BOOST_REQUIRE_MESSAGE(
         BuildPrivacyVNextShieldPayload(LocalNetwork(), 7, genesis, keys.outgoingViewSecret,
                                        emptyRoot, epochSeed.nTreeSize,
-                                       kNoTransparentSide, nValueIn, nFee, outs,
+                                       binding, nValueIn, nFee, outs,
                                        payload, error),
         error);
     tx.privacyVNext.vchPayload = payload;
@@ -1141,6 +1170,34 @@ BOOST_AUTO_TEST_CASE(an_empty_transparent_side_is_bound_like_any_other)
                 << OP_EQUALVERIFY << OP_CHECKSIG;
     siphoned.vout.push_back(CTxOut(4000, scriptThief));
     BOOST_CHECK(!CheckPrivacyVNextTransparentBinding(siphoned, effects, error));
+
+    // Swapping the consumed output breaks the binding.
+    CTransaction redirected = tx;
+    redirected.vin[0].prevout.hash = uint256((uint64_t)12);
+    BOOST_CHECK(!CheckPrivacyVNextTransparentBinding(redirected, effects, error));
+
+    // Transfer shape: nothing signs it, so the binding keeps inputs off it.
+    CTransaction transfer;
+    transfer.nVersion = SHIELDED_TX_VERSION_VNEXT;
+    std::vector<unsigned char> transferPayload;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextShieldPayload(LocalNetwork(), 7, genesis, keys.outgoingViewSecret,
+                                       emptyRoot, epochSeed.nTreeSize,
+                                       kNoTransparentSide, nValueIn, nFee, outs,
+                                       transferPayload, error),
+        error);
+    transfer.privacyVNext.vchPayload = transferPayload;
+    PrivacyVNextStateEffects transferEffects;
+    BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(
+        INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, transferPayload,
+        transferEffects).IsValid());
+    BOOST_CHECK_MESSAGE(
+        CheckPrivacyVNextTransparentBinding(transfer, transferEffects, error), error);
+
+    CTransaction grafted = transfer;
+    grafted.vin.push_back(CTxIn(uint256((uint64_t)13), 0));
+    BOOST_CHECK(
+        !CheckPrivacyVNextTransparentBinding(grafted, transferEffects, error));
 }
 
 namespace
