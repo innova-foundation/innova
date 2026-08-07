@@ -1098,9 +1098,15 @@ bool CWallet::GenerateNewPrivacyVNextAddress(
         strError = "unlocked IV5 wallet seed is unavailable";
         return false;
     }
-    if (privacyVNextSeedRecord.nNextAddressIndex == 0xffffffffU)
+    // Issuance stops where scanning stops. A scan covers indices below
+    // PRIVACY_VNEXT_MAX_SCAN_KEYS and the ABI refuses more, so an address issued at or
+    // above that bound is receivable and permanently invisible: value paid to it would
+    // never be detected, and unshield is retired, so nothing recovers it.
+    if (privacyVNextSeedRecord.nNextAddressIndex >= PRIVACY_VNEXT_MAX_SCAN_KEYS)
     {
-        strError = "IV5 address index is exhausted";
+        strError = strprintf(
+            "IV5 address indices are exhausted at %u; a further address could not be "
+            "scanned for", PRIVACY_VNEXT_MAX_SCAN_KEYS);
         return false;
     }
 
