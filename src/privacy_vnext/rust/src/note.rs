@@ -8,7 +8,7 @@ use curve25519_dalek::{
     scalar::Scalar,
     traits::IsIdentity,
 };
-use monero_ed25519::CompressedPoint;
+use monero_ed25519::{CompressedPoint, Point as MoneroPoint};
 use rand_chacha::ChaCha20Rng;
 use rand_core::{RngCore, SeedableRng};
 use zeroize::Zeroize;
@@ -19,14 +19,15 @@ const CIPHERTEXT_VERSION: u8 = 1;
 const SCAN_FULL: u8 = 0;
 const SCAN_VIEW_ONLY: u8 = 1;
 const SCAN_OUTGOING: u8 = 2;
-const SCAN_PREFIX_BYTES: usize = 236;
+const SCAN_PREFIX_BYTES: usize = 204;
+const KEY_IMAGE_BASE_DOMAIN: &[u8] = b"Innova/IV5/NoteKeyImageBase/v1";
 const RECIPIENT_PLAINTEXT_BYTES: usize = 144;
 const OUTGOING_PLAINTEXT_BYTES: usize = 176;
 const TAG_BYTES: usize = 32;
 const RECIPIENT_CIPHERTEXT_BYTES: usize = 1 + RECIPIENT_PLAINTEXT_BYTES + TAG_BYTES;
 const OUTGOING_CIPHERTEXT_BYTES: usize = 1 + OUTGOING_PLAINTEXT_BYTES + TAG_BYTES;
 const SCAN_RESULT_BYTES: usize = 212;
-const ENCRYPT_REQUEST_BYTES: usize = 272;
+pub(crate) const ENCRYPT_REQUEST_BYTES: usize = 240;
 const ENCRYPT_RESULT_BYTES: usize = 522;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -124,6 +125,28 @@ fn monero_t() -> EdwardsPoint {
     CompressedEdwardsY(CompressedPoint::T.to_bytes())
         .decompress()
         .expect("the pinned Monero T encoding must decompress")
+}
+
+/// Derive a note's key-image base I by hashing its one-time output key O.
+/// I is cleartext in every leaf, so it must not be owner-derived; Elligator 2 clears
+/// the cofactor, so the result is in the prime-order subgroup.
+fn key_image_base(output_o: &[u8; 32]) -> Result<[u8; 32], NoteError> {
+    canonical_point(output_o)?;
+    let mut hash = Blake2b512::new();
+    Digest::update(&mut hash, KEY_IMAGE_BASE_DOMAIN);
+    Digest::update(&mut hash, output_o);
+    let digest = hash.finalize();
+    let mut seed = [0_u8; 32];
+    seed.copy_from_slice(&digest[..32]);
+    let derived = MoneroPoint::hash(seed).compress().to_bytes();
+    // Only the negligible identity case can fail here, and it must fail closed.
+    canonical_point(&derived)?;
+    Ok(derived)
+}
+
+/// Derive I for a caller outside this module, mapping the error to the shared ABI code.
+pub(crate) fn key_image_base_checked(output_o: &[u8; 32]) -> Result<[u8; 32], ResultCode> {
+    key_image_base(output_o).map_err(ResultCode::from)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -272,7 +295,6 @@ fn encrypt_note(
     amount: u64,
     y_bytes: &[u8; 32],
     mask_bytes: &[u8; 32],
-    output_i: &[u8; 32],
 ) -> Result<EncryptedNote, NoteError> {
     if network > NETWORK_ID_MAX
         || address_type > ADDRESS_TYPE_MAX
@@ -282,7 +304,6 @@ fn encrypt_note(
     }
     let spend = canonical_point(recipient_spend)?;
     let view = canonical_point(recipient_view)?;
-    canonical_point(output_i)?;
     canonical_scalar(outgoing_secret_bytes, true)?;
     let ephemeral_secret = canonical_scalar(ephemeral_secret_bytes, true)?;
     let y = canonical_scalar(y_bytes, true)?;
@@ -302,6 +323,7 @@ fn encrypt_note(
     let output_o = (spend + (ED25519_BASEPOINT_POINT * tweak) + (monero_t() * y))
         .compress()
         .to_bytes();
+    let output_i = key_image_base(&output_o)?;
     let output_c = value::commitment(amount, mask_bytes).map_err(|_| NoteError::InvalidEncoding)?;
     canonical_point(&output_c)?;
     let associated_data = associated_data(
@@ -310,7 +332,7 @@ fn encrypt_note(
         output_index,
         genesis,
         &output_o,
-        output_i,
+        &output_i,
         &output_c,
         &ephemeral,
     );
@@ -345,7 +367,7 @@ fn encrypt_note(
 
     Ok(EncryptedNote {
         output_o,
-        output_i: *output_i,
+        output_i,
         output_c,
         ephemeral,
         recipient_ciphertext,
@@ -372,7 +394,6 @@ pub(crate) fn encrypt_request(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     let amount = reader.u64().map_err(ResultCode::from)?;
     let y = reader.array().map_err(ResultCode::from)?;
     let mask = reader.array().map_err(ResultCode::from)?;
-    let output_i = reader.array().map_err(ResultCode::from)?;
     reader.finish().map_err(ResultCode::from)?;
     let encrypted = encrypt_note(
         network,
@@ -386,7 +407,6 @@ pub(crate) fn encrypt_request(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         amount,
         &y,
         &mask,
-        &output_i,
     )
     .map_err(ResultCode::from)?;
 
@@ -400,7 +420,6 @@ pub(crate) fn encrypt_request(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         &outgoing_secret,
         &[0_u8; 32],
         &encrypted.output_o,
-        &encrypted.output_i,
         &encrypted.output_c,
         &encrypted.ephemeral,
         &encrypted.outgoing_ciphertext,
@@ -478,7 +497,6 @@ fn scan_receiver(
     view_secret_bytes: &[u8; 32],
     spend_material: &[u8; 32],
     output_o_bytes: &[u8; 32],
-    output_i_bytes: &[u8; 32],
     output_c_bytes: &[u8; 32],
     ephemeral_bytes: &[u8; 32],
     ciphertext: &[u8],
@@ -487,13 +505,14 @@ fn scan_receiver(
     canonical_point(output_c_bytes)?;
     let ephemeral = canonical_point(ephemeral_bytes)?;
     let shared = (ephemeral * view_secret).compress().to_bytes();
+    let output_i_bytes = key_image_base(output_o_bytes)?;
     let associated_data = associated_data(
         network,
         address_type,
         output_index,
         genesis,
         output_o_bytes,
-        output_i_bytes,
+        &output_i_bytes,
         output_c_bytes,
         ephemeral_bytes,
     );
@@ -529,7 +548,7 @@ fn scan_receiver(
     {
         return Err(NoteError::InvalidProof);
     }
-    let output_i = canonical_point(output_i_bytes)?;
+    let output_i = canonical_point(&output_i_bytes)?;
     let (spend_secret, key_image) = if full {
         let base_spend = canonical_scalar(spend_material, true)?;
         if (ED25519_BASEPOINT_POINT * base_spend).compress().to_bytes() != recipient_spend {
@@ -569,7 +588,6 @@ fn scan_outgoing(
     outgoing_secret_bytes: &[u8; 32],
     spend_material: &[u8; 32],
     output_o_bytes: &[u8; 32],
-    output_i_bytes: &[u8; 32],
     output_c_bytes: &[u8; 32],
     ephemeral_bytes: &[u8; 32],
     ciphertext: &[u8],
@@ -579,13 +597,14 @@ fn scan_outgoing(
     }
     canonical_scalar(outgoing_secret_bytes, true)?;
     canonical_point(output_c_bytes)?;
+    let output_i_bytes = key_image_base(output_o_bytes)?;
     let associated_data = associated_data(
         network,
         address_type,
         output_index,
         genesis,
         output_o_bytes,
-        output_i_bytes,
+        &output_i_bytes,
         output_c_bytes,
         ephemeral_bytes,
     );
@@ -628,7 +647,6 @@ fn scan_outgoing(
     {
         return Err(NoteError::InvalidProof);
     }
-    canonical_point(output_i_bytes)?;
     Ok(OpenedNote {
         amount,
         recipient_spend,
@@ -690,7 +708,6 @@ pub(crate) fn scan(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     let scan_secret = reader.array().map_err(ResultCode::from)?;
     let spend_material = reader.array().map_err(ResultCode::from)?;
     let output_o = reader.array().map_err(ResultCode::from)?;
-    let output_i = reader.array().map_err(ResultCode::from)?;
     let output_c = reader.array().map_err(ResultCode::from)?;
     let ephemeral = reader.array().map_err(ResultCode::from)?;
     let ciphertext = reader
@@ -715,7 +732,6 @@ pub(crate) fn scan(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
             &scan_secret,
             &spend_material,
             &output_o,
-            &output_i,
             &output_c,
             &ephemeral,
             ciphertext,
@@ -728,7 +744,6 @@ pub(crate) fn scan(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
             &scan_secret,
             &spend_material,
             &output_o,
-            &output_i,
             &output_c,
             &ephemeral,
             ciphertext,
@@ -764,41 +779,34 @@ mod tests {
         request.extend_from_slice(&scan_secret);
         request.extend_from_slice(&spend_material);
         request.extend_from_slice(&note.output_o);
-        request.extend_from_slice(&note.output_i);
         request.extend_from_slice(&note.output_c);
         request.extend_from_slice(&note.ephemeral);
         request.extend_from_slice(ciphertext);
         request
     }
 
-    fn test_note() -> (EncryptedNote, Scalar, Scalar, Scalar) {
-        let spend_secret = Scalar::from(3_u64);
-        let view_secret = Scalar::from(5_u64);
-        let outgoing_secret = Scalar::from(7_u64);
-        let recipient_spend = (ED25519_BASEPOINT_POINT * spend_secret)
-            .compress()
-            .to_bytes();
-        let recipient_view = (ED25519_BASEPOINT_POINT * view_secret)
-            .compress()
-            .to_bytes();
-        let output_i = (ED25519_BASEPOINT_POINT * Scalar::from(11_u64))
-            .compress()
-            .to_bytes();
-        let note = encrypt_note(
+    fn note_to(ephemeral_secret: u64, spend_secret: Scalar, view_secret: Scalar) -> EncryptedNote {
+        encrypt_note(
             1,
             0,
             7,
             &[0x71; 32],
-            &recipient_spend,
-            &recipient_view,
-            &outgoing_secret.to_bytes(),
-            &Scalar::from(13_u64).to_bytes(),
+            &(ED25519_BASEPOINT_POINT * spend_secret).compress().to_bytes(),
+            &(ED25519_BASEPOINT_POINT * view_secret).compress().to_bytes(),
+            &Scalar::from(7_u64).to_bytes(),
+            &Scalar::from(ephemeral_secret).to_bytes(),
             99,
             &Scalar::from(17_u64).to_bytes(),
             &Scalar::from(19_u64).to_bytes(),
-            &output_i,
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    fn test_note() -> (EncryptedNote, Scalar, Scalar, Scalar) {
+        let spend_secret = Scalar::from(3_u64);
+        let view_secret = Scalar::from(5_u64);
+        let outgoing_secret = Scalar::from(7_u64);
+        let note = note_to(13, spend_secret, view_secret);
         (note, spend_secret, view_secret, outgoing_secret)
     }
 
@@ -826,11 +834,6 @@ mod tests {
         request.extend_from_slice(&99_u64.to_le_bytes());
         request.extend_from_slice(&Scalar::from(17_u64).to_bytes());
         request.extend_from_slice(&Scalar::from(19_u64).to_bytes());
-        request.extend_from_slice(
-            &(ED25519_BASEPOINT_POINT * Scalar::from(11_u64))
-                .compress()
-                .to_bytes(),
-        );
         assert_eq!(request.len(), ENCRYPT_REQUEST_BYTES);
         let response = encrypt_request(&request).unwrap();
         assert_eq!(response.len(), ENCRYPT_RESULT_BYTES);
@@ -881,6 +884,55 @@ mod tests {
         nullifier_request.extend_from_slice(&1_u32.to_le_bytes());
         nullifier_request.extend_from_slice(&key_image);
         assert!(crate::nullifier::update(&nullifier_request).is_ok());
+    }
+
+    // I is cleartext in every leaf. Two notes paid to one address must not share it, or
+    // anyone holding that address could enumerate every note ever sent to it.
+    #[test]
+    fn same_address_outputs_get_distinct_recomputable_key_image_bases() {
+        let spend_secret = Scalar::from(3_u64);
+        let view_secret = Scalar::from(5_u64);
+        let recipient_spend = (ED25519_BASEPOINT_POINT * spend_secret)
+            .compress()
+            .to_bytes();
+
+        let mut seen = std::collections::BTreeSet::new();
+        for ephemeral_secret in [13_u64, 23, 29, 31, 37] {
+            let note = note_to(ephemeral_secret, spend_secret, view_secret);
+
+            // Nothing owner-derived may appear in the leaf's I.
+            assert_ne!(note.output_i, recipient_spend);
+            assert_ne!(
+                note.output_i,
+                (ED25519_BASEPOINT_POINT * view_secret).compress().to_bytes()
+            );
+            // Anyone holding the leaf recomputes I from O alone.
+            assert_eq!(key_image_base(&note.output_o).unwrap(), note.output_i);
+            assert!(seen.insert(note.output_i), "I repeated across outputs");
+            assert!(seen.contains(&note.output_i));
+        }
+        assert_eq!(seen.len(), 5);
+    }
+
+    // The wallet spends with the I it recomputes from the leaf, so the scanner's key
+    // image must be exactly x times that same derived point.
+    #[test]
+    fn scanned_key_image_uses_the_derived_base() {
+        let (note, spend_secret, view_secret, _) = test_note();
+        let full = scan(&scan_request(
+            SCAN_FULL,
+            view_secret.to_bytes(),
+            spend_secret.to_bytes(),
+            &note,
+            &note.recipient_ciphertext,
+        ))
+        .unwrap();
+        let derived_spend = canonical_scalar(&full[84..116].try_into().unwrap(), true).unwrap();
+        let base = canonical_point(&key_image_base(&note.output_o).unwrap()).unwrap();
+        assert_eq!(
+            &full[180..212],
+            (base * derived_spend).compress().to_bytes().as_slice()
+        );
     }
 
     #[test]

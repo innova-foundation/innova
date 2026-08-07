@@ -46,7 +46,9 @@ const NETWORK_ID_MAX: u8 = 2;
 const ADDRESS_COMPONENT_SIZE: usize = 70;
 const KEY_DERIVATION_REQUEST_SIZE: usize = 72;
 const KEY_DERIVATION_OUTPUT_SIZE: usize = 232;
-const NOTE_ENCRYPT_REQUEST_SIZE: usize = 272;
+// One definition only: a second copy of this length silently rejected every
+// request when the note format changed.
+use note::ENCRYPT_REQUEST_BYTES as NOTE_ENCRYPT_REQUEST_SIZE;
 const KEY_DERIVATION_LABELS: [&[u8]; 5] = [
     b"Innova/IV5/Key/spend/v1",
     b"Innova/IV5/Key/view/v1",

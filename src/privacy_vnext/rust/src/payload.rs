@@ -221,6 +221,7 @@ struct PayloadPrefix<'a> {
     pseudo_outs: Vec<[u8; 32]>,
     key_images: Vec<[u8; 32]>,
     output_owners: Vec<[u8; 32]>,
+    /// Derived from each owner key, never read from the wire.
     output_nullifier_bases: Vec<[u8; 32]>,
     output_commitments: Vec<[u8; 32]>,
     output_ephemeral_keys: Vec<[u8; 32]>,
@@ -309,9 +310,9 @@ fn parse_payload_prefix(
         let owner = cursor.array()?;
         validate_ed25519_point(owner)?;
         output_owners.push(owner);
-        let nullifier_base = cursor.array()?;
-        validate_ed25519_point(nullifier_base)?;
-        output_nullifier_bases.push(nullifier_base);
+        // I is derived, not declared: a sender that could choose it could publish owner
+        // material and link every note paid to one address.
+        output_nullifier_bases.push(crate::note::key_image_base_checked(&owner)?);
         let commitment = cursor.array()?;
         validate_ed25519_point(commitment)?;
         output_commitments.push(commitment);
@@ -574,7 +575,7 @@ const SCAN_REQUEST_HEADER_BYTES: usize = 16;
 const SCAN_KEY_BYTES: usize = 64;
 const MAX_SCAN_KEYS: usize = 1024;
 const SCAN_RESPONSE_HEADER_BYTES: usize = 6;
-const NOTE_SCAN_PREFIX_BYTES: usize = 236;
+const NOTE_SCAN_PREFIX_BYTES: usize = 204;
 const NOTE_SCAN_RESULT_BYTES: usize = 212;
 const SCAN_RECORD_BYTES: usize = 2 + 4 + 96 + NOTE_SCAN_RESULT_BYTES;
 const SCAN_OUTGOING: u8 = 2;
@@ -656,7 +657,6 @@ pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
             scan_request.extend_from_slice(&request[key_at..key_at + 32]);
             scan_request.extend_from_slice(&request[key_at + 32..key_at + 64]);
             scan_request.extend_from_slice(&prefix.output_owners[index]);
-            scan_request.extend_from_slice(&prefix.output_nullifier_bases[index]);
             scan_request.extend_from_slice(&prefix.output_commitments[index]);
             scan_request.extend_from_slice(&prefix.output_ephemeral_keys[index]);
             scan_request.extend_from_slice(ciphertext);
@@ -797,7 +797,6 @@ mod tests {
 
         compact_size(&mut payload, 1);
         payload.extend_from_slice(&point);
-        payload.extend_from_slice(&point);
         payload.extend_from_slice(&output_commitment);
         payload.extend_from_slice(&point);
         vector(&mut payload, &[1, 2]);
@@ -840,37 +839,41 @@ mod tests {
         request
     }
 
-    fn encrypted_output(genesis: &[u8; 32], index: u32) -> (Vec<u8>, Scalar, Scalar) {
-        let spend_secret = Scalar::from(3_u64);
-        let view_secret = Scalar::from(5_u64);
-        let outgoing_secret = Scalar::from(7_u64);
-        let mut request = vec![0_u8; 272];
+    fn encrypted_output_to(
+        genesis: &[u8; 32],
+        index: u32,
+        ephemeral_secret: u64,
+        mask: u64,
+    ) -> Vec<u8> {
+        let mut request = vec![0_u8; 240];
         request[..2].copy_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
         request[2] = 1;
         request[4..8].copy_from_slice(&index.to_le_bytes());
         request[8..40].copy_from_slice(genesis);
         request[40..72].copy_from_slice(
-            &(ED25519_BASEPOINT_POINT * spend_secret)
+            &(ED25519_BASEPOINT_POINT * Scalar::from(3_u64))
                 .compress()
                 .to_bytes(),
         );
         request[72..104].copy_from_slice(
-            &(ED25519_BASEPOINT_POINT * view_secret)
+            &(ED25519_BASEPOINT_POINT * Scalar::from(5_u64))
                 .compress()
                 .to_bytes(),
         );
-        request[104..136].copy_from_slice(&outgoing_secret.to_bytes());
-        request[136..168].copy_from_slice(&Scalar::from(13_u64).to_bytes());
+        request[104..136].copy_from_slice(&Scalar::from(7_u64).to_bytes());
+        request[136..168].copy_from_slice(&Scalar::from(ephemeral_secret).to_bytes());
         request[168..176].copy_from_slice(&99_u64.to_le_bytes());
         request[176..208].copy_from_slice(&Scalar::from(17_u64).to_bytes());
-        request[208..240].copy_from_slice(&Scalar::from(19_u64).to_bytes());
-        request[240..272].copy_from_slice(
-            &(ED25519_BASEPOINT_POINT * Scalar::from(11_u64))
-                .compress()
-                .to_bytes(),
-        );
-        let encrypted = crate::note::encrypt_request(&request).expect("canonical note");
-        (encrypted, spend_secret, view_secret)
+        request[208..240].copy_from_slice(&Scalar::from(mask).to_bytes());
+        crate::note::encrypt_request(&request).expect("canonical note")
+    }
+
+    fn encrypted_output(genesis: &[u8; 32], index: u32) -> (Vec<u8>, Scalar, Scalar) {
+        (
+            encrypted_output_to(genesis, index, 13, 19),
+            Scalar::from(3_u64),
+            Scalar::from(5_u64),
+        )
     }
 
     fn payload_with_output(genesis: &[u8; 32], encrypted: &[u8]) -> Vec<u8> {
@@ -888,7 +891,6 @@ mod tests {
         compact_size(&mut payload, 0);
         compact_size(&mut payload, 1);
         payload.extend_from_slice(&encrypted[8..40]);
-        payload.extend_from_slice(&encrypted[40..72]);
         payload.extend_from_slice(&encrypted[72..104]);
         payload.extend_from_slice(&encrypted[104..136]);
         vector(&mut payload, &encrypted[136..313]);
@@ -1091,6 +1093,123 @@ mod tests {
         );
     }
 
+    // The leaves consensus records are the whole on-chain footprint of an output. Paying
+    // one address repeatedly must leave no constant in them, or holding that address is
+    // enough to enumerate every note ever sent to it.
+    #[test]
+    fn repeated_payments_to_one_address_share_no_leaf_field() {
+        let genesis = [0x11_u8; 32];
+        let masks = [19_u64, 23, 29];
+        let ephemerals = [13_u64, 31, 37];
+        let outputs: Vec<Vec<u8>> = (0..3)
+            .map(|index| {
+                encrypted_output_to(
+                    &genesis,
+                    u32::try_from(index).expect("index is bounded"),
+                    ephemerals[index],
+                    masks[index],
+                )
+            })
+            .collect();
+
+        let state = tree::update(&[1, 0, 1, 0, 0, 0, 0, 0]).expect("empty canonical tree state");
+        let root = tree::root(&state).expect("empty canonical tree root");
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+        payload.extend_from_slice(&[NOTE_SHIELD, 0, 0, 7, FINALITY_OBJECT_NONE, 1, 0]);
+        payload.extend_from_slice(&genesis);
+        payload.extend_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+        payload.extend_from_slice(&root[12..44]);
+        payload.extend_from_slice(&0_u64.to_le_bytes());
+        payload.extend_from_slice(&((99 * 3) + 1_i64).to_le_bytes());
+        payload.extend_from_slice(&1_u64.to_le_bytes());
+        compact_size(&mut payload, 0);
+        compact_size(&mut payload, outputs.len());
+        for encrypted in &outputs {
+            payload.extend_from_slice(&encrypted[8..40]);
+            payload.extend_from_slice(&encrypted[72..104]);
+            payload.extend_from_slice(&encrypted[104..136]);
+            vector(&mut payload, &encrypted[136..313]);
+            vector(&mut payload, &encrypted[313..522]);
+        }
+        vector(&mut payload, &[]);
+
+        let signing_hash = signable_hash(2008, &payload);
+        let mask_bytes: Vec<[u8; 32]> = masks.iter().map(|m| Scalar::from(*m).to_bytes()).collect();
+        let commitments: Vec<[u8; 32]> = mask_bytes
+            .iter()
+            .map(|mask| value::commitment(99, mask).expect("valid commitment"))
+            .collect();
+        let (range_commitments, range_proof) =
+            value::prove_range(&[99, 99, 99], &mask_bytes, &[0x41; 32]).expect("valid range proof");
+        assert_eq!(range_commitments, commitments);
+        let excess = (-(Scalar::from(19_u64) + Scalar::from(23_u64) + Scalar::from(29_u64)))
+            .to_bytes();
+        let balance_proof = value::prove_balance(
+            &[],
+            &commitments,
+            298,
+            1,
+            &excess,
+            &signing_hash,
+            &[0x42; 32],
+        )
+        .expect("valid balance proof");
+        let binding_signature = value::prove_binding_signature(
+            &[],
+            &commitments,
+            298,
+            1,
+            &excess,
+            &signing_hash,
+            &[0x43; 32],
+        )
+        .expect("valid binding signature");
+        vector(&mut payload, &[]);
+        vector(&mut payload, &range_proof);
+        vector(&mut payload, &balance_proof);
+        vector(&mut payload, &[]);
+        vector(&mut payload, &[]);
+        vector(&mut payload, &binding_signature);
+
+        let mut request = 2008_u32.to_le_bytes().to_vec();
+        request.extend_from_slice(&payload);
+        let encoded = effects(&request).expect("three same-address outputs must validate");
+        assert_eq!(encoded.len(), EFFECTS_HEADER_BYTES + (3 * 96));
+
+        let spend_public = (ED25519_BASEPOINT_POINT * Scalar::from(3_u64))
+            .compress()
+            .to_bytes();
+        let view_public = (ED25519_BASEPOINT_POINT * Scalar::from(5_u64))
+            .compress()
+            .to_bytes();
+        let mut bases = std::collections::BTreeSet::new();
+        let mut owners = std::collections::BTreeSet::new();
+        for index in 0..3 {
+            let leaf = &encoded[EFFECTS_HEADER_BYTES + (index * 96)..][..96];
+            let owner: [u8; 32] = leaf[..32].try_into().expect("O is 32 bytes");
+            let base: [u8; 32] = leaf[32..64].try_into().expect("I is 32 bytes");
+            assert_ne!(base, spend_public, "I must not carry the address spend key");
+            assert_ne!(base, view_public, "I must not carry the address view key");
+            assert_eq!(
+                base,
+                crate::note::key_image_base_checked(&owner).expect("I is derived from O"),
+                "consensus must derive I from this leaf's own O"
+            );
+            assert!(bases.insert(base), "two same-address outputs share an I");
+            assert!(owners.insert(owner), "two same-address outputs share an O");
+        }
+        assert_eq!(bases.len(), 3);
+
+        // Nothing in the serialized payload equals any leaf I: it is not on the wire at all.
+        for base in &bases {
+            assert!(
+                !payload.windows(32).any(|window| window == base),
+                "a derived I must never be serialized"
+            );
+        }
+    }
+
     #[test]
     fn canonical_payload_is_accepted_without_trailing_bytes() {
         let request = valid_request();
@@ -1105,9 +1224,15 @@ mod tests {
             &state_effects[44..76],
             &Sha256::digest(PRODUCT_CONTRACT)[..]
         );
-        assert_eq!(&state_effects[76..108], &request[135..167]);
-        assert_eq!(&state_effects[108..140], &request[167..199]);
-        assert_eq!(&state_effects[140..172], &request[199..231]);
+        // O and C come straight off the wire; I is derived from O and never travels.
+        let leaf = &state_effects[EFFECTS_HEADER_BYTES..];
+        let owner: [u8; 32] = request[135..167].try_into().expect("owner is 32 bytes");
+        assert_eq!(&leaf[..32], &owner);
+        assert_eq!(
+            &leaf[32..64],
+            &crate::note::key_image_base_checked(&owner).expect("owner hashes to a point")
+        );
+        assert_eq!(&leaf[64..96], &request[167..199]);
 
         let mut trailing = request;
         trailing.push(0);

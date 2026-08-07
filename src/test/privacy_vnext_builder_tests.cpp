@@ -51,8 +51,8 @@ BOOST_AUTO_TEST_CASE(an_encrypted_output_reopens_under_its_own_keys)
         EncryptPrivacyVNextNote(2, 0, 0, genesis, keys.spendPublic,
                                 keys.viewPublic, keys.outgoingViewSecret,
                                 BuilderScalar(13), nAmount,
-                                BuilderScalar(17), BuilderScalar(19),
-                                keys.spendPublic, note, error),
+                                BuilderScalar(17), BuilderScalar(19), note,
+                                error),
         error);
     BOOST_CHECK_EQUAL(note.vchRecipientCiphertext.size(),
                       (size_t)INNOVA_PRIVACY_VNEXT_RECIPIENT_CIPHERTEXT_SIZE);
@@ -64,7 +64,6 @@ BOOST_AUTO_TEST_CASE(an_encrypted_output_reopens_under_its_own_keys)
     onChain.nOutputIndex = 0;
     onChain.genesis = genesis;
     onChain.leafO = note.leaf.owner;
-    onChain.leafI = note.leaf.nullifierBase;
     onChain.leafC = note.leaf.commitment;
     onChain.ephemeral = note.ephemeral;
     onChain.vchCiphertext = note.vchRecipientCiphertext;
@@ -199,8 +198,7 @@ BOOST_AUTO_TEST_CASE(a_note_placed_in_the_tree_can_be_spent)
         EncryptPrivacyVNextNote(2, 0, 0, genesis, keys.spendPublic,
                                 keys.viewPublic, keys.outgoingViewSecret,
                                 BuilderScalar(29), nAmount, BuilderScalar(31),
-                                BuilderScalar(37), keys.spendPublic, funding,
-                                error),
+                                BuilderScalar(37), funding, error),
         error);
 
     // Place it in the tree, then reopen it by scanning as the wallet would.
@@ -241,7 +239,6 @@ BOOST_AUTO_TEST_CASE(a_note_placed_in_the_tree_can_be_spent)
     onChain.nOutputIndex = 0;
     onChain.genesis = genesis;
     onChain.leafO = funding.leaf.owner;
-    onChain.leafI = funding.leaf.nullifierBase;
     onChain.leafC = funding.leaf.commitment;
     onChain.ephemeral = funding.ephemeral;
     onChain.vchCiphertext = funding.vchRecipientCiphertext;
@@ -318,8 +315,7 @@ BOOST_AUTO_TEST_CASE(memoized_effects_match_a_full_validation)
         EncryptPrivacyVNextNote(2, 0, 0, genesis, keys.spendPublic,
                                 keys.viewPublic, keys.outgoingViewSecret,
                                 BuilderScalar(41), nAmount, BuilderScalar(43),
-                                BuilderScalar(47), keys.spendPublic, funding,
-                                error),
+                                BuilderScalar(47), funding, error),
         error);
 
     PrivacyVNextEpochSeed epochSeed;
@@ -354,7 +350,6 @@ BOOST_AUTO_TEST_CASE(memoized_effects_match_a_full_validation)
     onChain.nOutputIndex = 0;
     onChain.genesis = genesis;
     onChain.leafO = funding.leaf.owner;
-    onChain.leafI = funding.leaf.nullifierBase;
     onChain.leafC = funding.leaf.commitment;
     onChain.ephemeral = funding.ephemeral;
     onChain.vchCiphertext = funding.vchRecipientCiphertext;
