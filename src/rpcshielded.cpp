@@ -270,6 +270,120 @@ Value z_createiv5seed(const Array& params, bool fHelp)
     return result;
 }
 
+Value z_exportiv5seed(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 0)
+        throw runtime_error(
+            "z_exportiv5seed\n"
+            "Returns the wallet's IV5 seed as hex, with the number of addresses issued\n"
+            "under it. The seed and that count restore every IV5 note this wallet can\n"
+            "hold: keep it as secret as the wallet passphrase.\n");
+
+    EnsureWalletIsUnlocked();
+
+    CKeyingMaterial seed;
+    if (!pwalletMain->GetPrivacyVNextSeed(seed))
+        throw JSONRPCError(RPC_WALLET_ERROR, "this wallet holds no unlocked IV5 seed");
+
+    Object result;
+    result.push_back(Pair("seed", HexStr(seed.begin(), seed.end())));
+    result.push_back(Pair("generation", 1));
+    result.push_back(Pair("address_index_count",
+                          (int64_t)pwalletMain->GetPrivacyVNextScanIndexCount()));
+    return result;
+}
+
+Value z_importiv5seed(const Array& params, bool fHelp)
+{
+    if (fHelp || params.empty() || params.size() > 3)
+        throw runtime_error(
+            "z_importiv5seed <seedhex> [addressindexcount] [rescan=true]\n"
+            "Restores an IV5 seed exported by z_exportiv5seed into a wallet that has\n"
+            "none. Notes are recovered from the chain by the rescan, not from the seed,\n"
+            "so a wallet with an existing seed is refused rather than overwritten.\n");
+
+    EnsureWalletIsUnlocked();
+
+    const std::string strSeed = params[0].get_str();
+    if (strSeed.size() != 64 || !IsHex(strSeed))
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "an IV5 seed is 64 hex characters");
+    const std::vector<unsigned char> vchSeed = ParseHex(strSeed);
+    CKeyingMaterial seed(vchSeed.begin(), vchSeed.end());
+
+    uint32_t nAddressIndexHint = 0;
+    if (params.size() > 1)
+    {
+        const int64_t nHint = params[1].get_int64();
+        if (nHint < 0 || nHint > (int64_t)PRIVACY_VNEXT_MAX_SCAN_KEYS)
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                               strprintf("addressindexcount must be between 0 and %u",
+                                         PRIVACY_VNEXT_MAX_SCAN_KEYS));
+        nAddressIndexHint = (uint32_t)nHint;
+    }
+    const bool fRescan = params.size() > 2 ? params[2].get_bool() : true;
+
+    std::string strError;
+    if (!pwalletMain->ImportPrivacyVNextSeed(seed, nAddressIndexHint, strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+
+    Object result;
+    result.push_back(Pair("imported", true));
+    result.push_back(Pair("address_index_count", (int64_t)nAddressIndexHint));
+    if (fRescan)
+    {
+        int nBlocks = 0;
+        std::string strRescanError;
+        if (!pwalletMain->RescanPrivacyVNextBlocks(0, nBlocks, strRescanError))
+            throw JSONRPCError(RPC_WALLET_ERROR,
+                               "seed imported but the rescan failed: " + strRescanError);
+        result.push_back(Pair("blocks_rescanned", nBlocks));
+    }
+    result.push_back(Pair("rescanned", fRescan));
+    result.push_back(Pair("notes", (int64_t)pwalletMain->GetPrivacyVNextNoteCount()));
+    return result;
+}
+
+Value z_rescaniv5(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 1)
+        throw runtime_error(
+            "z_rescaniv5 [fromheight]\n"
+            "Reprocesses the IV5 payloads of connected blocks from <fromheight>.\n"
+            "Defaults to the lowest height this wallet is known to have left unscanned,\n"
+            "or 0 if none is recorded. Detection is the only way a note is ever found,\n"
+            "so this is the recovery path for a block skipped while the wallet was\n"
+            "locked or for a seed imported after the fact.\n");
+
+    EnsureWalletIsUnlocked();
+
+    int nFromHeight = pwalletMain->GetPrivacyVNextScanGapHeight();
+    if (nFromHeight < 0)
+        nFromHeight = 0;
+    if (params.size() > 0)
+    {
+        const int64_t nRequested = params[0].get_int64();
+        if (nRequested < 0)
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "fromheight must not be negative");
+        nFromHeight = (int)std::min<int64_t>(nRequested, std::numeric_limits<int>::max());
+    }
+
+    const int64_t nBefore = (int64_t)pwalletMain->GetPrivacyVNextNoteCount();
+    int nBlocks = 0;
+    std::string strError;
+    if (!pwalletMain->RescanPrivacyVNextBlocks(nFromHeight, nBlocks, strError))
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
+
+    Object result;
+    result.push_back(Pair("from_height", nFromHeight));
+    result.push_back(Pair("blocks_rescanned", nBlocks));
+    result.push_back(Pair("notes_before", nBefore));
+    result.push_back(Pair("notes_after",
+                          (int64_t)pwalletMain->GetPrivacyVNextNoteCount()));
+    result.push_back(Pair("scan_gap_height",
+                          pwalletMain->GetPrivacyVNextScanGapHeight()));
+    return result;
+}
+
 Value z_getnewiv5address(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() > 0)
@@ -1910,6 +2024,11 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
                            ValueFromAmount(pwalletMain->GetPrivacyVNextUnconfirmedBalance())));
         obj.push_back(Pair("privacy_vnext_note_count",
                            (int64_t)pwalletMain->GetPrivacyVNextNoteCount()));
+        obj.push_back(Pair("privacy_vnext_seed_unlocked",
+                           pwalletMain->IsPrivacyVNextSeedUnlocked()));
+        // Lowest unscanned height; -1 means none (else run z_rescaniv5).
+        obj.push_back(Pair("privacy_vnext_scan_gap_height",
+                           pwalletMain->GetPrivacyVNextScanGapHeight()));
     }
     obj.push_back(Pair("privacy_vnext_max_inputs",
                        (int)vnextAbi.nMaxInputs));

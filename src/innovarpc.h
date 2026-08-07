@@ -378,6 +378,9 @@ extern json_spirit::Value nyx(const json_spirit::Array& params, bool fHelp);
 
 extern json_spirit::Value z_getnewaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_createiv5seed(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value z_exportiv5seed(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value z_importiv5seed(const json_spirit::Array& params, bool fHelp);
+extern json_spirit::Value z_rescaniv5(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_getnewiv5address(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_listaddresses(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value z_getbalance(const json_spirit::Array& params, bool fHelp);

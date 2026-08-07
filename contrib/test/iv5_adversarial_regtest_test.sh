@@ -436,7 +436,82 @@ else
 fi
 
 # ============================================================
-header "11. The node reports no errors"
+header "11. A payload that lands while the seed is locked is not lost"
+# ============================================================
+
+# A locked wallet cannot trial-decrypt and unshield is retired, so a missed note is
+# recovered only by reprocessing its block. The node must stay up and recover on request.
+rpc walletpassphrase "$WALLETPASS" 3600 >/dev/null 2>&1
+mine_to $(( $(height) + 25 )) || true
+NOTES_BEFORE="$(jnum "$(rpc z_getshieldedinfo 2>/dev/null)" privacy_vnext_note_count)"
+SHIELD2="$(rpc z_shieldall 2>&1)"
+TXID2="$(jstr "$SHIELD2" txid)"
+if [ ${#TXID2} -ne 64 ]; then
+    warn "no second shield could be built; locked-wallet case skipped"
+else
+    rpc walletlock >/dev/null 2>&1
+    mine_to $(( $(height) + 4 )) || true
+
+    if rpc getinfo >/dev/null 2>&1; then
+        success "the node stayed up while a payload confirmed against a locked seed"
+    else
+        fail "the node went down when a payload confirmed against a locked seed"
+    fi
+
+    LOCKED_INFO="$(rpc z_getshieldedinfo 2>/dev/null)"
+    GAP="$(jnum "$LOCKED_INFO" privacy_vnext_scan_gap_height)"
+    NOTES_LOCKED="$(jnum "$LOCKED_INFO" privacy_vnext_note_count)"
+    if is_int "$GAP" && [ "$GAP" -ge 0 ]; then
+        success "the skipped block was recorded as a scan gap at height $GAP"
+    else
+        fail "a block went unscanned with no gap recorded (scan_gap_height=$GAP)"
+    fi
+    if [ "$NOTES_LOCKED" = "$NOTES_BEFORE" ]; then
+        success "the note was not credited while the seed was locked ($NOTES_LOCKED)"
+    else
+        warn "note count moved while locked ($NOTES_BEFORE -> $NOTES_LOCKED)"
+    fi
+
+    rpc walletpassphrase "$WALLETPASS" 3600 >/dev/null 2>&1
+    RESCAN="$(rpc z_rescaniv5 2>&1)"
+    NOTES_AFTER="$(jnum "$RESCAN" notes_after)"
+    GAP_AFTER="$(jnum "$(rpc z_getshieldedinfo 2>/dev/null)" privacy_vnext_scan_gap_height)"
+    if is_int "$NOTES_AFTER" && is_int "$NOTES_BEFORE" && \
+       [ "$NOTES_AFTER" -gt "$NOTES_BEFORE" ]; then
+        success "z_rescaniv5 recovered the missed note ($NOTES_BEFORE -> $NOTES_AFTER)"
+    else
+        fail "z_rescaniv5 did not recover the missed note: $(echo "$RESCAN" | head -3)"
+    fi
+    if [ "$GAP_AFTER" = "-1" ]; then
+        success "the scan gap cleared once the blocks were reprocessed"
+    else
+        fail "the scan gap survived the rescan (scan_gap_height=$GAP_AFTER)"
+    fi
+fi
+
+# ============================================================
+header "12. The seed can be backed up and cannot be overwritten"
+# ============================================================
+
+EXPORT="$(rpc z_exportiv5seed 2>&1)"
+SEEDHEX="$(jstr "$EXPORT" seed)"
+if [ ${#SEEDHEX} -eq 64 ] && echo "$SEEDHEX" | grep -qE '^[0-9a-f]+$'; then
+    success "z_exportiv5seed returned a 32-byte seed"
+else
+    fail "z_exportiv5seed did not return a seed: $(echo "$EXPORT" | head -2)"
+fi
+
+# Importing over a live seed would leave every note already recorded unspendable
+# material under a seed that cannot derive it.
+OVERWRITE="$(rpc z_importiv5seed "${SEEDHEX:-00}" 2>&1)"
+if echo "$OVERWRITE" | grep -qi "already holds"; then
+    success "importing over an existing seed is refused"
+else
+    fail "a seed import over a live seed was not refused: $(echo "$OVERWRITE" | head -2)"
+fi
+
+# ============================================================
+header "13. The node reports no errors"
 # ============================================================
 
 ERRORS="$(jstr "$(rpc getinfo 2>/dev/null)" errors)"

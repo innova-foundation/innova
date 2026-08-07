@@ -1055,6 +1055,86 @@ bool CWallet::CreatePrivacyVNextSeed(std::string& strError)
     return true;
 }
 
+// Restore a seed this wallet did not generate; seed plus rescan recovers every note.
+// Refuses to overwrite an existing seed, whose recorded notes it could not derive.
+bool CWallet::ImportPrivacyVNextSeed(const CKeyingMaterial& seedIn,
+                                     uint32_t nAddressIndexHint,
+                                     std::string& strError)
+{
+    LOCK(cs_wallet);
+    strError.clear();
+    if (!fFileBacked)
+    {
+        strError = "IV5 seed import requires a file-backed wallet";
+        return false;
+    }
+    if (!IsCrypted())
+    {
+        strError = "encrypt the wallet before importing an IV5 seed";
+        return false;
+    }
+    if (IsLocked() || vMasterKey.size() != WALLET_CRYPTO_KEY_SIZE)
+    {
+        strError = "wallet must be unlocked to import an IV5 seed";
+        return false;
+    }
+    if (privacyVNextSeedRecord.nGeneration != 0)
+    {
+        strError = "this wallet already holds an IV5 seed";
+        return false;
+    }
+    if (seedIn.size() != 32)
+    {
+        strError = "an IV5 seed is 32 bytes";
+        return false;
+    }
+    // The seed does not record how many addresses were issued under it, and only
+    // issued indices are scanned. The caller restores that count here.
+    if (nAddressIndexHint > PRIVACY_VNEXT_MAX_SCAN_KEYS)
+    {
+        strError = strprintf("an IV5 address index count may not exceed %u",
+                             PRIVACY_VNEXT_MAX_SCAN_KEYS);
+        return false;
+    }
+    bool fAllZero = true;
+    for (size_t i = 0; i < seedIn.size(); ++i)
+        fAllZero = fAllZero && seedIn[i] == 0;
+    if (fAllZero)
+    {
+        strError = "an IV5 seed may not be zero";
+        return false;
+    }
+
+    CSecret seed(seedIn.begin(), seedIn.end());
+    CPrivacyVNextSeedRecord record;
+    record.nGeneration = PRIVACY_VNEXT_WALLET_SEED_GENERATION;
+    record.hashSeedCommitment = Hash(seed.begin(), seed.end());
+    record.nNextAddressIndex = nAddressIndexHint;
+    if (!EncryptSecret(vMasterKey, seed, PrivacyVNextSeedEncryptionIV(),
+                       record.vchCryptedSeed) ||
+        record.vchCryptedSeed.size() !=
+            PRIVACY_VNEXT_WALLET_SEED_CIPHERTEXT_SIZE)
+    {
+        OPENSSL_cleanse(&seed[0], seed.size());
+        strError = "could not encrypt the imported IV5 seed";
+        return false;
+    }
+
+    CWalletDB walletdb(strWalletFile);
+    if (!walletdb.WritePrivacyVNextSeed(record))
+    {
+        OPENSSL_cleanse(&seed[0], seed.size());
+        strError = "could not durably persist the imported IV5 seed";
+        return false;
+    }
+    privacyVNextSeedRecord = record;
+    vchPrivacyVNextSeed.assign(seed.begin(), seed.end());
+    OPENSSL_cleanse(&seed[0], seed.size());
+    // Nothing before this point was scanned under this seed.
+    MarkPrivacyVNextScanGap(0);
+    return true;
+}
+
 bool CWallet::HasPrivacyVNextSeed() const
 {
     LOCK(cs_wallet);
@@ -11088,13 +11168,31 @@ bool CWallet::SelectPrivacyVNextNotes(
         return false;
 
     LOCK(cs_shielded);
+    // Spendability comes from the chain's spent-key index, not fSpent: the two
+    // diverge when a block went unscanned, and trusting fSpent reselects a consumed note.
+    CTxDB txdb("r");
     std::vector<const CPrivacyVNextWalletNote*> vCandidates;
+    std::vector<const CPrivacyVNextWalletNote*> vConsumed;
     for (size_t i = 0; i < vPrivacyVNextNotes.size(); ++i)
     {
-        if (PrivacyVNextNoteIsSpendable(vPrivacyVNextNotes[i], nSpendHeight) &&
-            vPrivacyVNextNotes[i].nLeafIndex < nAnchorTreeSize)
-            vCandidates.push_back(&vPrivacyVNextNotes[i]);
+        if (!PrivacyVNextNoteIsSpendable(vPrivacyVNextNotes[i], nSpendHeight) ||
+            vPrivacyVNextNotes[i].nLeafIndex >= nAnchorTreeSize)
+            continue;
+        uint256 keyImage;
+        std::memcpy(keyImage.begin(), &vPrivacyVNextNotes[i].vchKeyImage[0], 32);
+        CShieldedNullifierSpent spent;
+        if (txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent) ==
+            TXDB_READ_FOUND)
+        {
+            vConsumed.push_back(&vPrivacyVNextNotes[i]);
+            continue;
+        }
+        vCandidates.push_back(&vPrivacyVNextNotes[i]);
     }
+    if (!vConsumed.empty())
+        printf("SelectPrivacyVNextNotes: %u note(s) marked unspent here are already "
+               "spent on chain and were skipped; run z_rescaniv5\n",
+               (unsigned)vConsumed.size());
     std::sort(vCandidates.begin(), vCandidates.end(),
               [](const CPrivacyVNextWalletNote* a,
                  const CPrivacyVNextWalletNote* b) {
@@ -11840,7 +11938,10 @@ bool CWallet::AssignPrivacyVNextLeafIndicesForEpoch(int nEpoch,
     return true;
 }
 
+// `setDAGSkippedTxs` is required: a DAG-skipped tx never connected, so its key images
+// spent nothing and its outputs have no tree position.
 bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
+                                     const std::set<uint256>& setDAGSkippedTxs,
                                      const CBlockIndex* pindex,
                                      std::string& strErrorOut)
 {
@@ -11852,8 +11953,28 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
     }
 
     LOCK(cs_shielded);
-    if (vchPrivacyVNextSeed.size() != 32)
+    bool fHasPayload = false;
+    for (unsigned int i = 0; !fHasPayload && i < block.vtx.size(); ++i)
+        fHasPayload = block.vtx[i].IsPrivacyVNext() &&
+                      block.vtx[i].privacyVNext.IsPresent() &&
+                      !setDAGSkippedTxs.count(block.vtx[i].GetHash());
+    if (!fHasPayload)
         return true;
+
+    if (vchPrivacyVNextSeed.size() != 32)
+    {
+        // A locked wallet cannot trial-decrypt; record the height as a scan gap instead of
+        // reporting the block scanned.
+        if (privacyVNextSeedRecord.nGeneration != 0)
+        {
+            MarkPrivacyVNextScanGap(pindex->nHeight);
+            strErrorOut = strprintf(
+                "IV5 seed is locked; block %d carries shielded payloads that were not "
+                "scanned", pindex->nHeight);
+            return false;
+        }
+        return true;
+    }
 
     PrivacyVNextDigest seed;
     std::memcpy(seed.data(), &vchPrivacyVNextSeed[0], 32);
@@ -11886,6 +12007,8 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
     {
         const CTransaction& tx = block.vtx[i];
         if (!tx.IsPrivacyVNext() || !tx.privacyVNext.IsPresent())
+            continue;
+        if (setDAGSkippedTxs.count(tx.GetHash()))
             continue;
 
         std::vector<PrivacyVNextScanMatch> vMatches;
@@ -12013,15 +12136,100 @@ bool CWallet::ApplyPrivacyVNextBlock(const CBlock& block,
 
     for (size_t i = 0; i < vSpentIndices.size(); ++i)
         vPrivacyVNextNotes[vSpentIndices[i]].fSpent = true;
-// `setDAGSkippedTxs` is required: a DAG-skipped tx never connected, so its key images
-// spent nothing and its outputs have no tree position.
     for (size_t i = 0; i < vNewNotes.size(); ++i)
-                                     const std::set<uint256>& setDAGSkippedTxs,
         vPrivacyVNextNotes.push_back(vNewNotes[i]);
     return true;
 }
 
+// Reprocess the IV5 payloads of already-connected blocks.
+//
+// The connect-time scan is the only thing that ever detects a note, so any block it
+// skipped -- a locked seed, a scan that failed, a seed imported after the fact -- holds
+// value this wallet does not know about. Note detection is idempotent: a note already
+// held is recognised by its transaction and output index and left alone.
+bool CWallet::RescanPrivacyVNextBlocks(int nFromHeight, int& nBlocksOut,
+                                       std::string& strErrorOut)
+{
+    nBlocksOut = 0;
+    strErrorOut.clear();
+    if (nFromHeight < 0)
+        nFromHeight = 0;
+
+    if (!IsPrivacyVNextSeedUnlocked())
+    {
+        strErrorOut = "the IV5 seed must be unlocked to rescan";
+        return false;
+    }
+
+    CBlockIndex* pindex = NULL;
+    int nTipHeight = 0;
+    {
+        LOCK(cs_main);
+        if (!pindexBest)
+        {
+            strErrorOut = "IV5 rescan cannot run without a best-chain tip";
+            return false;
+        }
+        nTipHeight = pindexBest->nHeight;
+        pindex = pindexGenesisBlock;
+        while (pindex && pindex->nHeight < nFromHeight)
+            pindex = pindex->pnext;
+    }
+
+    const int nStartHeight = pindex ? pindex->nHeight : nFromHeight;
+    while (pindex && !fShutdown)
+    {
+        if (pindex->nHeight >= FORK_HEIGHT_SHIELDED)
+        {
+            CBlock block;
+            if (!block.ReadFromDisk(pindex, true) ||
+                block.GetHash() != pindex->GetBlockHash())
+            {
+                strErrorOut = strprintf(
+                    "IV5 rescan could not read canonical block at height %d",
+                    pindex->nHeight);
+                return false;
+            }
+            std::set<uint256> setDAGSkippedTxs;
+            if (!ReadConnectTimeDAGSkippedTxs(block, pindex, setDAGSkippedTxs,
+                                              strErrorOut))
+                return false;
+            if (!ApplyPrivacyVNextBlock(block, setDAGSkippedTxs, pindex,
+                                        strErrorOut))
+                return false;
+            nBlocksOut++;
+        }
+        if ((pindex->nHeight % 1000) == 0 && nTipHeight > nStartHeight)
+            uiInterface.InitMessage(strprintf(
+                "%s %d/%d %s...", _("Rescanning shielded").c_str(),
+                pindex->nHeight, nTipHeight, _("blocks").c_str()));
+        pindex = pindex->pnext;
+    }
+    if (fShutdown && pindex)
+    {
+        strErrorOut = "IV5 rescan interrupted by shutdown";
+        return false;
+    }
+
+    // Notes recovered here have no tree position yet; assignment covers every epoch
+    // they landed in, so the rescan leaves them spendable rather than merely visible.
+    int nAssignThroughEpoch = -1;
+    {
+        LOCK(cs_main);
+        nAssignThroughEpoch = GetEpochForHeight(nBestHeight) - 1;
+    }
+    std::string strAssignError;
+    if (nAssignThroughEpoch >= 0 &&
+        !AssignPrivacyVNextLeafIndices(nAssignThroughEpoch, strAssignError))
+        printf("RescanPrivacyVNextBlocks: leaf-index assignment through epoch %d: "
+               "%s\n", nAssignThroughEpoch, strAssignError.c_str());
+
+    ClearPrivacyVNextScanGap(nStartHeight);
+    return true;
+}
+
 bool CWallet::DisconnectPrivacyVNextBlock(const CBlock& block,
+                                          const std::set<uint256>& setDAGSkippedTxs,
                                           const CBlockIndex* pindex,
                                           std::string& strErrorOut)
 {
@@ -12038,6 +12246,10 @@ bool CWallet::DisconnectPrivacyVNextBlock(const CBlock& block,
     {
         const CTransaction& tx = block.vtx[i];
         if (!tx.IsPrivacyVNext() || !tx.privacyVNext.IsPresent())
+            continue;
+        // Mirrors the connect side: a skipped transaction created no note and spent
+        // none, so undoing it would restore a note this block never consumed.
+        if (setDAGSkippedTxs.count(tx.GetHash()))
             continue;
         setBlockTxHashes.insert(tx.GetHash());
 
@@ -12085,8 +12297,6 @@ bool CWallet::DisconnectPrivacyVNextBlock(const CBlock& block,
             }
         }
     }
-        if (setDAGSkippedTxs.count(tx.GetHash()))
-            continue;
 
     if (setCreated.empty() && vRestored.empty())
         return true;
@@ -12180,6 +12390,11 @@ bool CWallet::DisconnectShieldedBlockRecoveryChecked(
         else
             vRetainedNotes.push_back(note);
     }
+    // The IV5 side is undone from the same skip set the connect scan used, so a note
+    // this block created is erased and one it consumed becomes spendable again.
+    if (!DisconnectPrivacyVNextBlock(block, setDAGSkippedTxs, pindex, strErrorOut))
+        return false;
+
     if (setEraseIndices.empty())
         return true;
 
@@ -12301,7 +12516,6 @@ bool CWallet::ReconcileShieldedNoteSpentStateChecked(
                 *this, note, setCandidates, fHaveBound,
                 fHaveLegacyOwner, fHaveLegacyCold, strErrorOut))
             return false;
-                                          const std::set<uint256>& setDAGSkippedTxs,
 
         bool fFoundCanonicalSpend = false;
         for (std::set<uint256>::const_iterator candidateIt =
@@ -12319,10 +12533,6 @@ bool CWallet::ReconcileShieldedNoteSpentStateChecked(
             if (status == TXDB_READ_NOT_FOUND)
                 continue;
 
-        // Mirrors the connect side: a skipped transaction created no note and spent
-        // none, so undoing it would restore a note this block never consumed.
-        if (setDAGSkippedTxs.count(tx.GetHash()))
-            continue;
             CTransaction txSpend;
             CTxIndex txindex;
             if (!txdb.ReadDiskTx(nfs.txnHash, txSpend, txindex) ||
@@ -12500,11 +12710,6 @@ bool CWallet::ReadConnectTimeDAGSkippedTxs(const CBlock& block,
 bool CWallet::ScanBlockForShieldedNotesChecked(const CBlock& block,
                                                const CBlockIndex* pindex,
                                                std::string& strErrorOut)
-    // The IV5 side is undone from the same skip set the connect scan used, so a note
-    // this block created is erased and one it consumed becomes spendable again.
-    if (!DisconnectPrivacyVNextBlock(block, setDAGSkippedTxs, pindex, strErrorOut))
-        return false;
-
 {
     bool fFoundOwnedOutput = false;
     if (!ApplyWalletShieldedBlock(*this, block, pindex, NULL,

@@ -302,18 +302,22 @@ public:
                                 const std::set<uint256>& setDAGSkippedTxs,
                                 const CBlockIndex* pindex,
                                 std::string& strErrorOut);
+    // Reprocess connected blocks from `nFromHeight`. The only way back to a note the
+    // connect-time scan missed, and the only use a restored seed has.
+    bool RescanPrivacyVNextBlocks(int nFromHeight, int& nBlocksOut,
+                                  std::string& strErrorOut);
     bool DisconnectPrivacyVNextBlock(const CBlock& block,
+                                     const std::set<uint256>& setDAGSkippedTxs,
                                      const CBlockIndex* pindex,
                                      std::string& strErrorOut);
-    // Spendable means confirmed to the shielded depth and holding a tree
-    // position, which a note only gains once its epoch finalizes.
-                                     const std::set<uint256>& setDAGSkippedTxs,
-    int64_t GetPrivacyVNextBalance() const;
-    int64_t GetPrivacyVNextUnconfirmedBalance() const;
     bool ReadConnectTimeDAGSkippedTxs(const CBlock& block,
                                       const CBlockIndex* pindex,
                                       std::set<uint256>& setOut,
                                       std::string& strErrorOut);
+    // Spendable means confirmed to the shielded depth and holding a tree
+    // position, which a note only gains once its epoch finalizes.
+    int64_t GetPrivacyVNextBalance() const;
+    int64_t GetPrivacyVNextUnconfirmedBalance() const;
     // Unspent notes held, spendable or not. Separates "nothing was ever
     // detected" from "detected but not yet spendable".
     size_t GetPrivacyVNextNoteCount() const;
@@ -370,11 +374,11 @@ public:
         fFileBacked = false;
         nMasterKeyMaxID = 0;
         nPrivacyVNextIndexCount = 1;
+        nPrivacyVNextScanGapHeight = -1;
         pwalletdbEncryption = NULL;
         nOrderPosNext = 0;
         nTimeFirstKey = 0;
         privacyVNextSeedRecord.SetNull();
-        nPrivacyVNextScanGapHeight = -1;
         vchPrivacyVNextSeed.clear();
     }
 
@@ -587,6 +591,12 @@ public:
     bool UnlockPrivacyVNextSeed(
         const CKeyingMaterial& vMasterKeyIn, std::string& strError);
     bool CreatePrivacyVNextSeed(std::string& strError);
+    // Restore a seed from a backup. `nAddressIndexHint` is how many addresses were
+    // issued under it, which the seed itself does not record and only issued indices
+    // are scanned for.
+    bool ImportPrivacyVNextSeed(const CKeyingMaterial& seedIn,
+                                uint32_t nAddressIndexHint,
+                                std::string& strError);
     bool HasPrivacyVNextSeed() const;
     bool IsPrivacyVNextSeedUnlocked() const;
     bool GetPrivacyVNextSeed(CKeyingMaterial& seedOut) const;
