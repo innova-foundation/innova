@@ -10776,6 +10776,16 @@ static bool PrivacyVNextBindingHolds(const CTransaction& tx,
     return true;
 }
 
+// Spread a value across two notes at a uniformly random point. A fixed split lets an
+// observer who can compute the total -- which the cleartext balance and fee give for a
+// shield -- read both note values straight off it.
+static void SplitPrivacyVNextValue(int64_t nTotal, uint64_t& nFirstOut,
+                                   uint64_t& nSecondOut)
+{
+    nFirstOut = nTotal > 0 ? GetRand((uint64_t)nTotal + 1) : 0;
+    nSecondOut = (uint64_t)nTotal - nFirstOut;
+}
+
 bool CWallet::CreatePrivacyVNextShield(
     const std::string& strFromAddress,
     size_t nMaxInputs,
@@ -10881,8 +10891,9 @@ bool CWallet::CreatePrivacyVNextShield(
     }
     const int64_t nShielded = nSelected - nFee;
 
-    // One internal receiver, two notes. The count is public but the split is not, so a
-    // constant arity keeps every shield the same shape on the wire.
+    // One internal receiver, two notes. A constant arity keeps every shield the same
+    // shape on the wire; the split is drawn below so that knowing the balance and the
+    // fee -- both cleartext -- does not give either note's value.
     PrivacyVNextDigest seedDigest;
     std::memcpy(seedDigest.data(), &vchPrivacyVNextSeed[0], 32);
     PrivacyVNextDigest genesis;
@@ -10903,8 +10914,7 @@ bool CWallet::CreatePrivacyVNextShield(
         vOutputs[i].recipient.spendPublic = keys.spendPublic;
         vOutputs[i].recipient.viewPublic = keys.viewPublic;
     }
-    vOutputs[0].nAmount = (uint64_t)(nShielded / 2);
-    vOutputs[1].nAmount = (uint64_t)(nShielded - (nShielded / 2));
+    SplitPrivacyVNextValue(nShielded, vOutputs[0].nAmount, vOutputs[1].nAmount);
 
     PrivacyVNextDigest finalizedRoot;
     std::memcpy(finalizedRoot.data(), &vchRoot[0], 32);
@@ -11468,8 +11478,7 @@ bool CWallet::CreatePrivacyVNextUnshield(
         vOutputs[i].recipient.spendPublic = changeKeys.spendPublic;
         vOutputs[i].recipient.viewPublic = changeKeys.viewPublic;
     }
-    vOutputs[0].nAmount = (uint64_t)(nChange / 2);
-    vOutputs[1].nAmount = (uint64_t)(nChange - (nChange / 2));
+    SplitPrivacyVNextValue(nChange, vOutputs[0].nAmount, vOutputs[1].nAmount);
 
     // The recipient output exists before the payload does: it is what the payload
     // commits to, and the proofs bind to that commitment.
