@@ -1519,6 +1519,22 @@ bool BuildNoteTallyTierProofs(int nTier,
     vStatements[2].blind = activeCapBlind;
     vStatements[2].pvchOut = &proofsOut.vchActiveCap;
 
+    // Derive the same points the validator will, from the openings this builder holds. A
+    // proof over a point the validator does not reach is unusable on the network, so the
+    // divergence has to surface here rather than as a rejected certificate.
+    PrivacyVNextDigest activePoint = ZeroDigest();
+    PrivacyVNextDigest winningPoint = ZeroDigest();
+    if (!CommitScaled(Ed25519ScalarFromInt64(nPrivateActive), privateActiveBlind,
+                      activePoint, pstrError) ||
+        !CommitScaled(Ed25519ScalarFromInt64(nPrivateWinning), privateWinningBlind,
+                      winningPoint, pstrError))
+        return false;
+    PrivacyVNextDigest vExpected[3];
+    if (!DeriveTierStatementPoints(nTier, activePoint, winningPoint, nTransparentActive,
+                                   nTransparentWinning, vExpected[0], vExpected[1],
+                                   vExpected[2], pstrError))
+        return false;
+
     for (int i = 0; i < 3; i++)
     {
         PrivacyVNextDigest seed = entropy;
@@ -1530,6 +1546,11 @@ bool BuildNoteTallyTierProofs(int nTier,
                                     commitment, *vStatements[i].pvchOut, error))
         {
             Fail(pstrError, "note tally statement could not be range-proved");
+            return false;
+        }
+        if (commitment != vExpected[i])
+        {
+            Fail(pstrError, "note tally range proof is over a point the validator misses");
             return false;
         }
         if (vStatements[i].pvchOut->size() > FINALITY_NOTE_MAX_RANGE_PROOF_BYTES)
