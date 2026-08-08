@@ -621,6 +621,88 @@ bool CTxDB::CountPrivacyVNextNullifiers(
     return true;
 }
 
+bool CTxDB::WritePrivacyVNextOutputBase(
+    const uint256& base, const CShieldedNullifierSpent& created)
+{
+    return Write(make_pair(string("iv5ob"), base), created);
+}
+
+TxDBReadStatus CTxDB::ReadPrivacyVNextOutputBaseStatus(
+    const uint256& base, CShieldedNullifierSpent& created)
+{
+    const TxDBReadStatus status = ReadExactStatus(
+        make_pair(string("iv5ob"), base), created);
+    if (status == TXDB_READ_FOUND && created.txnHash == 0)
+        return TXDB_READ_ERROR;
+    return status;
+}
+
+bool CTxDB::ErasePrivacyVNextOutputBase(const uint256& base)
+{
+    return Erase(make_pair(string("iv5ob"), base));
+}
+
+bool CTxDB::CountPrivacyVNextOutputBases(
+    uint64_t& nCount, std::string& strError)
+{
+    nCount = 0;
+    strError.clear();
+    if (activeBatch)
+    {
+        strError = "cannot audit the IV5 output-base index inside an active batch";
+        return false;
+    }
+
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << string("iv5ob");
+    const std::string strPrefix = ssPrefix.str();
+    leveldb::Iterator* it = pdb->NewIterator(leveldb::ReadOptions());
+    it->Seek(strPrefix);
+    while (it->Valid())
+    {
+        const std::string strKey = it->key().ToString();
+        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
+            break;
+        try
+        {
+            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(),
+                              SER_DISK, CLIENT_VERSION);
+            std::pair<std::string, uint256> key;
+            ssKey >> key;
+            if (key.first != "iv5ob" || ssKey.size() != 0 || key.second == 0)
+                throw std::ios_base::failure("non-canonical IV5 output-base record key");
+
+            const leveldb::Slice value = it->value();
+            CDataStream ssValue(value.data(), value.data() + value.size(),
+                                SER_DISK, CLIENT_VERSION);
+            CShieldedNullifierSpent created;
+            ssValue >> created;
+            if (ssValue.size() != 0 || created.txnHash == 0)
+                throw std::ios_base::failure("non-canonical IV5 output-base record value");
+            if (nCount == std::numeric_limits<uint64_t>::max())
+                throw std::ios_base::failure("IV5 output-base record count overflow");
+            ++nCount;
+        }
+        catch (const std::exception& e)
+        {
+            strError = strprintf("invalid IV5 output-base index record: %s",
+                                 e.what());
+            delete it;
+            return false;
+        }
+        it->Next();
+    }
+
+    const leveldb::Status status = it->status();
+    delete it;
+    if (!status.ok())
+    {
+        strError = "IV5 output-base iterator failure: " + status.ToString();
+        return false;
+    }
+    return true;
+}
+
 bool CTxDB::WriteShieldedAnchor(const uint256& anchor)
 {
     return Write(make_pair(string("sa"), anchor), true);

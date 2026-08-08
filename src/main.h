@@ -136,11 +136,11 @@ int64_t GetBlockSizePenalty(unsigned int nBlockSize, unsigned int nMedianSize);
 /** Apply adaptive block size penalty to a reward amount. */
 int64_t ApplyBlockSizePenalty(int64_t nReward, const CBlock& block, const CBlockIndex* pindexPrev);
 bool CheckFinalityStakeProofsNotSpentInBlock(const CBlock& block, const std::vector<CFinalityVote>& vVotes);
-/** Collect an IV5 transaction's payload key images as spend tags, so DAG
- *  sibling-conflict resolution sees them alongside vin outpoints and legacy
- *  nullifiers. */
-void AppendPrivacyVNextSpendTags(const CTransaction& tx,
-                                 std::set<uint256>& setTagsOut);
+/** Collect an IV5 transaction's payload key images and output owners as conflict
+ *  tags, so DAG sibling-conflict resolution sees them alongside vin outpoints and
+ *  legacy nullifiers. */
+void AppendPrivacyVNextConflictTags(const CTransaction& tx,
+                                    std::set<uint256>& setTagsOut);
 bool TransactionConflictsWithDAGSiblingSpends(const CTransaction& tx,
                                               const std::set<COutPoint>& setDAGSpentOutputs,
                                               const std::set<uint256>& setDAGSpentNullifiers);
@@ -782,10 +782,10 @@ bool ValidateAndMigrateShieldedGenesisCommitmentIndexes(CTxDB& txdb, std::string
 // disk positions.  Never reconstructs from the mutable live DAG.
 bool ValidateAndRecoverDAGActiveSetPersistence(CTxDB& txdb,
                                                std::string& strError);
-// Replay the Boundary-B active chain against exact IV5 spent-key ownership.
-// This is startup validation only and never reconstructs or mutates records.
-bool ValidatePrivacyVNextNullifierPersistence(CTxDB& txdb,
-                                              std::string& strError);
+// Replay the Boundary-B active chain against exact IV5 spent-key and output-owner
+// ownership. This is startup validation only and never reconstructs or mutates records.
+bool ValidatePrivacyVNextIndexPersistence(CTxDB& txdb,
+                                          std::string& strError);
 
 void RegisterWallet(CWallet* pwalletIn);
 void UnregisterWallet(CWallet* pwalletIn);
@@ -2627,6 +2627,12 @@ public:
     // reverse map makes removal independent of re-running proof verification.
     std::map<uint256, CShieldedNullifierSpent> mapPrivacyVNextNullifier;
     std::map<uint256, std::vector<uint256> > mapPrivacyVNextTxNullifiers;
+
+    // Output owners are reserved on the same terms as key images. Two accepted
+    // transactions issuing one owner cannot both connect, so a miner that selected
+    // both would keep solving blocks its own ConnectBlock refuses.
+    std::map<uint256, CShieldedNullifierSpent> mapPrivacyVNextOutputBase;
+    std::map<uint256, std::vector<uint256> > mapPrivacyVNextTxOutputBases;
 
     bool accept(CTxDB& txdb, CTransaction &tx,
                 bool fCheckInputs, bool* pfMissingInputs, bool fOnlyCheckWithoutAdding=false);
