@@ -19,6 +19,7 @@ use zeroize::Zeroize;
 
 mod disclosure;
 mod fcmp;
+mod hash_to_point;
 mod note;
 mod nullifier;
 mod payload;
