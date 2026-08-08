@@ -2303,6 +2303,19 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
     obj.push_back(Pair("privacy_vnext_tree_root", strVNextTreeRoot));
     obj.push_back(Pair("privacy_vnext_tree_size", nVNextTreeSize));
     obj.push_back(Pair("privacy_vnext_tree_store_size", nVNextStoreSize));
+    // Pool total for all holders; privacy_vnext_balance is this wallet's.
+    {
+        int64_t nVNextPool = 0;
+        CTxDB txdb("r");
+        const TxDBReadStatus poolStatus =
+            txdb.ReadPrivacyVNextPoolValueStatus(nVNextPool);
+        obj.push_back(Pair("privacy_vnext_pool_value",
+                           poolStatus == TXDB_READ_FOUND
+                               ? ValueFromAmount(nVNextPool) : Value::null));
+    }
+    obj.push_back(Pair("privacy_vnext_fee_note_height", FORK_HEIGHT_IV5_FEE_NOTE));
+    obj.push_back(Pair("privacy_vnext_fee_note_active",
+                       IsIV5FeeNoteActiveAtHeight(nBestHeight)));
     obj.push_back(Pair("privacy_vnext_max_anchor_age_epochs",
                        EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS));
     if (pwalletMain)

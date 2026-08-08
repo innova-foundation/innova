@@ -35,6 +35,9 @@ FINALIZED_HEIGHT=1210
 SPEND_HEIGHT=1245
 TRANSFER_AMOUNT=100
 UNSHIELD_AMOUNT=50
+# The unshield-retirement / coinbase-fee-note fork, placed above everything the
+# earlier sections do so they keep exercising the pre-retirement behaviour.
+FEE_NOTE_HEIGHT=1400
 SHIELD_FEE="0.00100000"
 
 PASSED=0
@@ -121,6 +124,24 @@ except Exception: pass
     rpc "$1" getrawtransaction "$cb" 1 2>/dev/null | python3 -c '
 import json, sys
 try: print("%.8f" % sum(float(o["value"]) for o in json.load(sys.stdin)["vout"]))
+except Exception: pass
+'
+}
+
+# Version of a block's coinbase: 2008 says it carried an IV5 fee note.
+coinbase_version() {
+    local bh cb
+    bh="$(block_hash "$1" "$2")"
+    [ ${#bh} -eq 64 ] || return 1
+    cb="$(rpc "$1" getblock "$bh" 2>/dev/null | python3 -c '
+import json, sys
+try: print(json.load(sys.stdin)["tx"][0])
+except Exception: pass
+')"
+    [ ${#cb} -eq 64 ] || return 1
+    rpc "$1" getrawtransaction "$cb" 1 2>/dev/null | python3 -c '
+import json, sys
+try: print(json.load(sys.stdin)["version"])
 except Exception: pass
 '
 }
@@ -319,6 +340,7 @@ write_config() {
         echo "finalityvotemode=transparent"
         echo "regtestboundaryb=$BOUNDARY_B"
         echo "regtestiv5rehearsal=1"
+        echo "regtestiv5feenote=$FEE_NOTE_HEIGHT"
         for ((peer=0; peer<NUM_NODES; peer++)); do
             [ "$peer" -eq "$node" ] && continue
             echo "addnode=127.0.0.1:$(node_port "$peer")"
@@ -1106,7 +1128,61 @@ else
 fi
 
 # ============================================================
-header "10. The fleet reports no errors"
+header "10. Crossing the unshield-retirement fork"
+# ============================================================
+
+# Past FEE_NOTE_HEIGHT an unshield must be refused while a transfer (pool delta
+# negative by its fee) still works.
+if mine_to 0 "$FEE_NOTE_HEIGHT" && wait_sync "$FEE_NOTE_HEIGHT"; then
+    success "the fleet reached the retirement fork at $FEE_NOTE_HEIGHT"
+
+    RETIRED="$(rpc 0 z_iv5unshield "$T_ADDR" 1 2>&1)"
+    if echo "$RETIRED" | grep -qi "retired"; then
+        success "the wallet refuses to build an unshield past the fork"
+    else
+        fail "z_iv5unshield did not report retirement: $(echo "$RETIRED" | head -2)"
+    fi
+
+    # The pre-fork unshield is a real released payload. Re-offering it at a
+    # post-fork tip runs the whole relay path against the retired sign.
+    if [ -n "${UNSH_RAW:-}" ]; then
+        rpc 0 sendrawtransaction "$UNSH_RAW" >/dev/null 2>&1
+        if rpc 0 getrawmempool 2>/dev/null | grep -q "$UNSH_TXID"; then
+            fail "relay re-admitted a released payload past the retirement fork"
+        else
+            success "relay refuses a released payload past the retirement fork"
+        fi
+    fi
+
+    POST_XFER="$(rpc 0 z_iv5transfer "$TO_ADDR" 1 2>&1)"
+    POST_TXID="$(jget "$POST_XFER" txid)"
+    if [ ${#POST_TXID} -eq 64 ]; then
+        success "a transfer is still accepted past the fork: ${POST_TXID:0:16}"
+        POST_H=$(( $(height 0) + 2 ))
+        if mine_to 0 "$POST_H" && wait_sync "$POST_H"; then
+            POST_BLOCK="$(jget "$(rpc 0 getrawtransaction "$POST_TXID" 1 2>/dev/null)" blockhash)"
+            POST_XH="$(jget "$(rpc 0 getblock "$POST_BLOCK" 2>/dev/null)" height)"
+            if [ -n "$POST_XH" ]; then
+                success "the post-fork transfer confirmed at height $POST_XH"
+                POST_VER="$(coinbase_version 0 "$POST_XH")"
+                if [ "$POST_VER" = "2008" ]; then
+                    success "its block's coinbase collected the transfer fee as a pool note"
+                else
+                    fail "the coinbase of the transfer's block is version $POST_VER, expected 2008"
+                fi
+            else
+                fail "the post-fork transfer did not confirm"
+            fi
+        fi
+    else
+        fail "a transfer was refused past the retirement fork: $(echo "$POST_XFER" | head -2)"
+    fi
+else
+    fail "the fleet could not reach the retirement fork at $FEE_NOTE_HEIGHT"
+fi
+
+# ============================================================
+header "11. The fleet reports no errors"
 # ============================================================
 
 ERR_OK=1
