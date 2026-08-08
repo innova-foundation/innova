@@ -34,7 +34,7 @@
   },
   "fcmp_abi": {
     "schema": 1,
-    "abi_schema_sha256": "c31a328fbb80879bbef475939ea0139cf972652188b2fd553b5bba56e22fe080",
+    "abi_schema_sha256": "c86a2b04dc83e0e9f3236ef9dcf37533f29e881a763d9687f56a3bf212f6b355",
     "layers": 8,
     "root_curve_id": 2,
     "maximum_inputs": 16,
@@ -265,8 +265,7 @@
       "range",
       "value_balance",
       "operation",
-      "disclosure",
-      "binding_signature"
+      "disclosure"
     ],
     "validation_request": {
       "field_order": ["outer_wire_version_u32_le", "payload_to_eof"],
@@ -306,12 +305,12 @@
       "fcmp-membership-section-is-empty-with-zero-inputs-and-otherwise-has-the-exact-upstream-eight-layer-proof-size-and-verifies-against-the-finalized-root-signing-hash-pseudo-outs-and-key-images",
       "exposed-amount-openings-must-open-the-corresponding-output-commitment-as-opening-times-ed25519-G-plus-value-times-monero-H",
       "range-section-is-nonempty-only-when-at-least-one-output-amount-is-hidden-and-is-a-canonical-aggregate-monero-bulletproof-plus-verified-against-all-output-commitments",
-      "transparent-binding-is-32-opaque-header-bytes-inside-the-signing-hash-that-the-caller-requires-to-equal-a-domain-separated-digest-of-the-carrying-transactions-output-vector-and-lock-time",
+      "transparent-binding-is-32-opaque-header-bytes-inside-the-signing-hash-that-the-caller-requires-to-equal-a-domain-separated-digest-of-the-carrying-transactions-input-prevouts-output-vector-and-lock-time",
       "value-balance-section-is-always-an-exact-64-byte-schnorr-excess-proof-bound-to-the-signing-hash-pseudo-outs-output-commitments-transparent-value-balance-and-fee",
       "operation-section-is-empty-for-shield-unshield-and-transfer",
       "nullsend-delegation-m-of-n-reclaim-migration-and-finality-objects-return-unsupported-format-until-a-normative-typed-operation-proof-frame-and-verifier-are-frozen",
       "disclosure-section-is-exactly-128-bytes-per-sender-record-followed-by-160-bytes-per-receiver-record-and-empty-when-neither-dimension-is-exposed",
-      "binding-signature-section-is-an-exact-64-byte-schnorr-signature-under-the-value-excess-key-bound-to-the-signing-hash-pseudo-outs-output-commitments-transparent-value-balance-and-fee"
+      "exactly-one-signature-is-produced-under-the-value-excess-key-because-a-second-one-over-the-same-signing-hash-restates-the-first-and-makes-the-excess-mask-solvable-if-their-challenge-domains-coincide"
     ],
     "canonical_rules": [
       "all-enums-must-be-known",
@@ -387,10 +386,9 @@
       "output_commitments",
       "range_proof_length",
       "aggregate_bulletproof_plus",
-      "balance_proof_64",
-      "binding_signature_64"
+      "balance_proof_64"
     ],
-    "self_check": "range-balance-and-binding-proofs-must-all-verify-before-return",
+    "self_check": "range-and-balance-proofs-must-both-verify-before-return",
     "consensus_status": "disabled"
   },
   "payload_state_effects": {
@@ -440,7 +438,7 @@
   },
   "transcripts": {
     "signing": "Innova/IV5/Signing/v1",
-    "transparent_binding": "Innova/IV5/TransparentBinding/v1",
+    "transparent_binding": "Innova/IV5/TransparentBinding/v2",
     "parameter_digest": "Innova/IV5/ParameterDigest/v1",
     "note_leaf": "Innova/IV5/NoteLeaf/v1",
     "nullifier": "Innova/IV5/Nullifier/v1",
@@ -449,8 +447,6 @@
     "nullifier_accumulator_step": "Innova/IV5/NullifierAccumulator/Step/v1",
     "value_balance_nonce": "Innova/IV5/BalanceProof/Nonce/v1",
     "value_balance_challenge": "Innova/IV5/BalanceProof/Challenge/v1",
-    "binding_signature_nonce": "Innova/IV5/BindingSignature/Nonce/v1",
-    "binding_signature_challenge": "Innova/IV5/BindingSignature/Challenge/v1",
     "range_prover_rng": "Innova/IV5/RangeProof/Prove/v1",
     "range_verifier_rng": "Innova/IV5/RangeProof/Verify/v1",
     "disclosure_sender": "Innova/IV5/Disclosure/Sender/v1",
@@ -488,8 +484,7 @@
       "range_proof",
       "value_balance_proof",
       "operation_proof",
-      "disclosure_proof",
-      "binding_signature"
+      "disclosure_proof"
     ]
   },
   "signing_transcript_field_order": [

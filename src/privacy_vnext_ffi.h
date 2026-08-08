@@ -318,7 +318,6 @@ struct PrivacyVNextValueProof
     std::vector<PrivacyVNextDigest> vOutputCommitments;
     std::vector<unsigned char> vchRangeProof;
     std::array<unsigned char, 64> balanceProof;
-    std::array<unsigned char, 64> bindingSignature;
 
     PrivacyVNextValueProof();
     void Clear();

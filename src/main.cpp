@@ -1493,25 +1493,6 @@ int64_t CTransaction::GetMinFee(unsigned int nBlockSize, enum GetMinFee_mode mod
     return nMinFee;
 }
 
-// What an IV5 payload commits its transaction's transparent side to.
-//
-// The payload's signing hash covers the payload prefix, so anything placed in the prefix
-// is covered by every proof the payload carries. This digest goes there, and consensus
-// holds it against the transaction the payload arrives in.
-//
-// Scope is the output vector and the lock time. A spend has no transparent input, so no
-// SignatureHash covers its outputs and vout is its entire mutable surface: retargeting a
-// scriptPubKey, restating an amount, appending an output or dropping the vector must all
-// break this. vin is deliberately absent. On a shield the inputs are signed over the whole
-// serialized transaction, which already contains this payload, so binding scriptSigs would
-// make the signature depend on a digest that depends on the signature; binding prevouts
-// would only restate a commitment SIGHASH_ALL already makes. A spend has no input to bind
-// at all, and an input a third party appends can only add value it must itself authorize.
-// nTime is excluded on purpose: it is stamped at broadcast, after proving, so that the
-// wallet's proving time does not become a fingerprint.
-//
-// An empty vout is not a special case; it hashes as a zero-length vector, which is what
-// shields and transfers commit to.
 // The chain context every payload must declare to be ours. Lives here because the
 // genesis constants do; the FFI layer stamps it onto each validation request so the
 // network id and genesis hash are consensus-checked with the rest of the header.
@@ -1527,11 +1508,40 @@ void PrivacyVNextLocalGenesis(unsigned char out[32])
     std::memcpy(out, GetGenesisBlockHash().begin(), 32);
 }
 
+// What an IV5 payload commits its transaction's transparent side to.
+//
+// The payload's signing hash covers the payload prefix, so anything placed in the prefix
+// is covered by every proof the payload carries. This digest goes there, and consensus
+// holds it against the transaction the payload arrives in.
+//
+// Scope is the input prevouts, the output vector and the lock time. A spend has no
+// transparent input, so no SignatureHash covers it and its whole transparent surface is
+// mutable: retargeting a scriptPubKey, restating an amount, appending an output or an
+// input, or dropping either vector must all break this.
+//
+// Only the prevouts of vin, never the scriptSigs. A shield's inputs are signed over the
+// whole serialized transaction, which already contains this payload, so binding a
+// scriptSig would make the signature depend on a digest that depends on the signature.
+// Prevouts carry no such cycle: the wallet fixes them before it proves, and signs after.
+// A spend binds an empty vector, which is what makes it a spend -- an appended transparent
+// input would otherwise let a third party attribute a private transfer to an address of
+// their choosing.
+//
+// nTime is excluded on purpose: it is stamped at broadcast, after proving, so that the
+// wallet's proving time does not become a fingerprint. It is inside the txid, so a spend's
+// txid stays third-party mutable and nothing may key on it; the wallet retires notes by
+// key image for that reason.
+//
+// An empty vector is not a special case; it hashes as a zero-length vector, which is what
+// a shield's outputs and a spend's inputs commit to.
 uint256 GetPrivacyVNextTransparentBinding(const CTransaction& tx)
 {
-    static const char* pszDomain = "Innova/IV5/TransparentBinding/v1";
+    static const char* pszDomain = "Innova/IV5/TransparentBinding/v2";
     CHashWriter ss(SER_GETHASH, PROTOCOL_VERSION);
     ss.write(pszDomain, strlen(pszDomain));
+    ss << (unsigned int)tx.vin.size();
+    for (unsigned int i = 0; i < tx.vin.size(); i++)
+        ss << tx.vin[i].prevout;
     ss << tx.vout;
     ss << tx.nLockTime;
     return ss.GetHash();
@@ -1546,7 +1556,7 @@ bool CheckPrivacyVNextTransparentBinding(const CTransaction& tx,
     if (!std::equal(effects.transparentBinding.begin(),
                     effects.transparentBinding.end(), expected.begin()))
     {
-        strError = "IV5 payload does not bind this transaction's transparent outputs";
+        strError = "IV5 payload does not bind this transaction's transparent side";
         return false;
     }
     return true;

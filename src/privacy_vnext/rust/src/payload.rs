@@ -575,21 +575,8 @@ fn validate_payload(
         disclosure_offset = end;
     }
 
-    let binding_signature = cursor.vector(MAX_PROOF_SECTION_BYTES)?;
-    if !value::verify_binding_signature(
-        &pseudo_outs,
-        &output_commitments,
-        transparent_value_balance,
-        fee,
-        &signing_hash,
-        binding_signature,
-    )
-    .map_err(|error| match error {
-        value::ValueError::ResourceLimit => ResultCode::ResourceLimit,
-        _ => ResultCode::ConsensusInvalid,
-    })? {
-        return Err(ResultCode::ConsensusInvalid);
-    }
+    // The balance proof is the value signature; the payload ends here. A second
+    // signature under the same excess key is not carried.
     cursor.finish()?;
     let output_leaves = output_owners
         .into_iter()
@@ -903,6 +890,12 @@ mod tests {
     }
 
     fn valid_request() -> Vec<u8> {
+        validation_request(&valid_payload().0)
+    }
+
+    /// The canonical shield payload, with the signing hash and excess mask a test needs
+    /// to forge material the format is supposed to have no room for.
+    fn valid_payload() -> (Vec<u8>, [u8; 32], [u8; 32], [u8; 32]) {
         let point = ED25519_BASEPOINT_POINT.compress().to_bytes();
         let second_point = (ED25519_BASEPOINT_POINT * Scalar::from(2_u64))
             .compress()
@@ -943,34 +936,24 @@ mod tests {
         let (range_commitments, range_proof) =
             value::prove_range(&[9], &[output_mask], &[0x41; 32]).expect("valid range proof");
         assert_eq!(range_commitments, vec![output_commitment]);
+        let excess = (-Scalar::from(3_u64)).to_bytes();
         let balance_proof = value::prove_balance(
             &[],
             &[output_commitment],
             10,
             1,
-            &(-Scalar::from(3_u64)).to_bytes(),
+            &excess,
             &signing_hash,
             &[0x42; 32],
         )
         .expect("valid balance proof");
-        let binding_signature = value::prove_binding_signature(
-            &[],
-            &[output_commitment],
-            10,
-            1,
-            &(-Scalar::from(3_u64)).to_bytes(),
-            &signing_hash,
-            &[0x43; 32],
-        )
-        .expect("valid binding signature");
         vector(&mut payload, &[]);
         vector(&mut payload, &range_proof);
         vector(&mut payload, &balance_proof);
         vector(&mut payload, &[]);
         vector(&mut payload, &[]);
-        vector(&mut payload, &binding_signature);
 
-        validation_request(&payload)
+        (payload, signing_hash, excess, output_commitment)
     }
 
     // A shield that publishes its amount. `declared` is what the disclosure record says;
@@ -1039,16 +1022,6 @@ mod tests {
             &[0x42; 32],
         )
         .expect("valid balance proof");
-        let binding_signature = value::prove_binding_signature(
-            &[],
-            &[output_commitment],
-            balance,
-            fee,
-            &excess,
-            &signing_hash,
-            &[0x43; 32],
-        )
-        .expect("valid binding signature");
         vector(&mut payload, &[]);
         // Published amounts carry no range proof: each is checked against its commitment.
         let range_proof = if include_range {
@@ -1062,7 +1035,6 @@ mod tests {
         vector(&mut payload, &balance_proof);
         vector(&mut payload, &[]);
         vector(&mut payload, &[]);
-        vector(&mut payload, &binding_signature);
 
         validation_request(&payload)
     }
@@ -1173,22 +1145,11 @@ mod tests {
             &[0x42; 32],
         )
         .expect("valid balance proof");
-        let binding_signature = value::prove_binding_signature(
-            &[],
-            &commitments,
-            balance,
-            fee,
-            &excess,
-            &signing_hash,
-            &[0x43; 32],
-        )
-        .expect("valid binding signature");
         vector(&mut payload, &[]);
         vector(&mut payload, &range_proof);
         vector(&mut payload, &balance_proof);
         vector(&mut payload, &[]);
         vector(&mut payload, &receiver_proof);
-        vector(&mut payload, &binding_signature);
 
         validation_request(&payload)
     }
@@ -1506,22 +1467,11 @@ mod tests {
             &[0x42; 32],
         )
         .expect("valid balance proof");
-        let binding_signature = value::prove_binding_signature(
-            &[],
-            &[output_commitment],
-            100,
-            1,
-            &excess,
-            &signing_hash,
-            &[0x43; 32],
-        )
-        .expect("valid binding signature");
         vector(&mut payload, &[]);
         vector(&mut payload, &range_proof);
         vector(&mut payload, &balance_proof);
         vector(&mut payload, &[]);
         vector(&mut payload, &[]);
-        vector(&mut payload, &binding_signature);
 
         let request = validation_request(&payload);
         let encoded = effects(&request).expect("the payload must validate");
@@ -1663,22 +1613,11 @@ mod tests {
             &[0x42; 32],
         )
         .expect("valid balance proof");
-        let binding_signature = value::prove_binding_signature(
-            &[],
-            &commitments,
-            298,
-            1,
-            &excess,
-            &signing_hash,
-            &[0x43; 32],
-        )
-        .expect("valid binding signature");
         vector(&mut payload, &[]);
         vector(&mut payload, &range_proof);
         vector(&mut payload, &balance_proof);
         vector(&mut payload, &[]);
         vector(&mut payload, &[]);
-        vector(&mut payload, &binding_signature);
 
         let request = validation_request(&payload);
         let encoded = effects(&request).expect("three same-address outputs must validate");
@@ -1749,6 +1688,38 @@ mod tests {
         let mut trailing = request;
         trailing.push(0);
         assert_eq!(validate(&trailing), Err(ResultCode::ConsensusInvalid));
+    }
+
+    // Exactly one signature under the excess key; a second over the same signing hash
+    // is refused by the format.
+    #[test]
+    fn a_second_value_signature_has_nowhere_to_go() {
+        let (payload, signing_hash, excess, output_commitment) = valid_payload();
+        assert_eq!(validate(&validation_request(&payload)), Ok(()));
+
+        let second = value::prove_balance(
+            &[],
+            &[output_commitment],
+            10,
+            1,
+            &excess,
+            &signing_hash,
+            &[0x43; 32],
+        )
+        .expect("a second signature under the same key is trivially producible");
+        assert!(
+            value::verify_balance(&[], &[output_commitment], 10, 1, &signing_hash, &second)
+                .expect("the forged section verifies on its own"),
+            "the appended section must be a real signature, not noise"
+        );
+
+        let mut two_signatures = payload;
+        vector(&mut two_signatures, &second);
+        assert_eq!(
+            validate(&validation_request(&two_signatures)),
+            Err(ResultCode::ConsensusInvalid),
+            "the payload must end at its single value signature"
+        );
     }
 
     // The binding must stay inside the signing hash so the proofs cover it.

@@ -942,6 +942,58 @@ for mode in retarget delete; do
     done
 done
 
+# Nothing signs a spend's transparent side, so the binding alone refuses a grafted
+# input. The prevout must be a real confirmed output to hit that refusal.
+GRAFT_SRC="$(rpc 0 listunspent 1 2>/dev/null |
+    python3 -c '
+import json, sys
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for row in rows:
+    if row.get("confirmations", 0) >= 1:
+        print(row["txid"], row["vout"])
+        break
+')"
+GRAFT_TXID="${GRAFT_SRC%% *}"
+GRAFT_N="${GRAFT_SRC##* }"
+if [ ${#GRAFT_TXID} -ne 64 ]; then
+    fail "no confirmed output available to graft onto the unshield"
+else
+    GRAFTED="$(RAWHEX="$UNSH_RAW" PREVTXID="$GRAFT_TXID" PREVN="$GRAFT_N" python3 - <<'PY'
+import os, sys
+
+raw = bytes.fromhex(os.environ["RAWHEX"])
+head = raw[:8]                                  # nVersion and nTime
+rest = raw[8:]
+if rest[0] != 0:
+    raise SystemExit("the unshield was expected to carry no transparent input")
+prevout = bytes.fromhex(os.environ["PREVTXID"])[::-1]
+prevout += int(os.environ["PREVN"]).to_bytes(4, "little")
+vin = b"\x01" + prevout + b"\x00" + b"\xff\xff\xff\xff"
+sys.stdout.write((head + vin + rest[1:]).hex())
+PY
+)"
+    if [ ${#GRAFTED} -le ${#UNSH_RAW} ]; then
+        fail "could not build the grafted-input tamper case"
+    else
+        for n in 0 1; do
+            LOGLEN=$(wc -l < "$TEST_DIR/node$n/regtest/debug.log" 2>/dev/null || echo 0)
+            REJECT="$(rpc "$n" sendrawtransaction "$GRAFTED" 2>&1)"
+            REASON="$(tail -n +$((LOGLEN + 1)) "$TEST_DIR/node$n/regtest/debug.log" 2>/dev/null |
+                      grep -i "does not bind" | head -1)"
+            if [ -n "$REASON" ]; then
+                success "node$n refuses a grafted transparent input because the payload does not bind it"
+            elif echo "$REJECT" | grep -qiE "error|denied|rejected|invalid"; then
+                fail "node$n refused the graft, but not on the binding: $(echo "$REJECT" | head -2)"
+            else
+                fail "node$n ACCEPTED an unshield with a grafted transparent input: $REJECT"
+            fi
+        done
+    fi
+fi
+
 # Tampering must not have moved any value: the honest output stands, and nothing
 # else was paid.
 TBAL_AFTER="$(rpc 0 getreceivedbyaddress "$T_ADDR" 0 2>/dev/null | tr -d '"[:space:]')"

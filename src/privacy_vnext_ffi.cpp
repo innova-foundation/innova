@@ -1110,7 +1110,6 @@ void PrivacyVNextValueProof::Clear()
     vOutputCommitments.clear();
     vchRangeProof.clear();
     balanceProof.fill(0);
-    bindingSignature.fill(0);
 }
 
 bool ScanPrivacyVNextNote(
@@ -2018,7 +2017,7 @@ bool ProvePrivacyVNextValue(
         return false;
     }
 
-    const size_t nFixed = 4 + (vOutputs.size() * 32) + 4 + 128;
+    const size_t nFixed = 4 + (vOutputs.size() * 32) + 4 + 64;
     if (written != response.size() || written < nFixed ||
         response[0] != static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA) ||
         response[1] != 0 ||
@@ -2048,7 +2047,6 @@ bool ProvePrivacyVNextValue(
                                response.begin() + offset + nRangeProof);
     offset += nRangeProof;
     std::memcpy(proof.balanceProof.data(), &response[offset], 64);
-    std::memcpy(proof.bindingSignature.data(), &response[offset + 64], 64);
     return true;
 }
 

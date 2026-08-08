@@ -179,6 +179,8 @@ fn excess_point(
     Ok(excess)
 }
 
+/// Schnorr proof of knowledge of the value-excess mask: inputs, outputs, balance and fee
+/// sum to zero. Sign only once per key; two challenge domains would reveal the mask.
 pub(crate) fn prove_balance(
     pseudo_outs: &[[u8; 32]],
     outputs: &[[u8; 32]],
@@ -238,69 +240,6 @@ pub(crate) fn verify_balance(
     let excess_encoded = excess.compress().to_bytes();
     let challenge = hash_to_scalar(
         b"Innova/IV5/BalanceProof/Challenge/v1",
-        &[signable_hash, &excess_encoded, &nonce_bytes],
-    );
-    Ok((ED25519_BASEPOINT_POINT * response) == (nonce + (excess * challenge)))
-}
-
-pub(crate) fn prove_binding_signature(
-    pseudo_outs: &[[u8; 32]],
-    outputs: &[[u8; 32]],
-    transparent_value_balance: i64,
-    fee: u64,
-    excess_mask_bytes: &[u8; 32],
-    signable_hash: &[u8; 32],
-    entropy: &[u8; 32],
-) -> Result<[u8; 64], ValueError> {
-    let excess_mask = canonical_scalar(excess_mask_bytes)?;
-    let excess = excess_point(pseudo_outs, outputs, transparent_value_balance, fee)?;
-    if excess != ED25519_BASEPOINT_POINT * excess_mask {
-        return Err(ValueError::InvalidProof);
-    }
-
-    let excess_encoded = excess.compress().to_bytes();
-    let mut nonce = hash_to_scalar(
-        b"Innova/IV5/BindingSignature/Nonce/v1",
-        &[entropy, excess_mask_bytes, signable_hash, &excess_encoded],
-    );
-    if nonce == Scalar::ZERO {
-        nonce = Scalar::ONE;
-    }
-    let nonce_encoded = (ED25519_BASEPOINT_POINT * nonce).compress().to_bytes();
-    let challenge = hash_to_scalar(
-        b"Innova/IV5/BindingSignature/Challenge/v1",
-        &[signable_hash, &excess_encoded, &nonce_encoded],
-    );
-    let response = nonce + (challenge * excess_mask);
-
-    let mut signature = [0_u8; 64];
-    signature[..32].copy_from_slice(&nonce_encoded);
-    signature[32..].copy_from_slice(&response.to_bytes());
-    Ok(signature)
-}
-
-pub(crate) fn verify_binding_signature(
-    pseudo_outs: &[[u8; 32]],
-    outputs: &[[u8; 32]],
-    transparent_value_balance: i64,
-    fee: u64,
-    signable_hash: &[u8; 32],
-    signature: &[u8],
-) -> Result<bool, ValueError> {
-    if signature.len() != 64 {
-        return Err(ValueError::BadLength);
-    }
-    let mut nonce_bytes = [0_u8; 32];
-    nonce_bytes.copy_from_slice(&signature[..32]);
-    let nonce = canonical_point(&nonce_bytes, false)?;
-    let mut response_bytes = [0_u8; 32];
-    response_bytes.copy_from_slice(&signature[32..]);
-    let response = canonical_scalar(&response_bytes)?;
-
-    let excess = excess_point(pseudo_outs, outputs, transparent_value_balance, fee)?;
-    let excess_encoded = excess.compress().to_bytes();
-    let challenge = hash_to_scalar(
-        b"Innova/IV5/BindingSignature/Challenge/v1",
         &[signable_hash, &excess_encoded, &nonce_bytes],
     );
     Ok((ED25519_BASEPOINT_POINT * response) == (nonce + (excess * challenge)))
@@ -422,16 +361,6 @@ pub(crate) fn prove_request(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         &entropy,
     )
     .map_err(result_code)?;
-    let binding_signature = prove_binding_signature(
-        &pseudo_outs,
-        &output_commitments,
-        transparent_value_balance,
-        fee,
-        &excess_mask,
-        &signable_hash,
-        &entropy,
-    )
-    .map_err(result_code)?;
 
     if (output_count != 0
         && !verify_range(&output_commitments, &range_proof, &signable_hash).map_err(result_code)?)
@@ -442,15 +371,6 @@ pub(crate) fn prove_request(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
             fee,
             &signable_hash,
             &balance_proof,
-        )
-        .map_err(result_code)?
-        || !verify_binding_signature(
-            &pseudo_outs,
-            &output_commitments,
-            transparent_value_balance,
-            fee,
-            &signable_hash,
-            &binding_signature,
         )
         .map_err(result_code)?
     {
@@ -471,7 +391,6 @@ pub(crate) fn prove_request(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     );
     response.extend_from_slice(&range_proof);
     response.extend_from_slice(&balance_proof);
-    response.extend_from_slice(&binding_signature);
     Ok(response)
 }
 
@@ -528,31 +447,11 @@ mod tests {
         assert!(verify_balance(&[input], &[output], 0, 10, &signable_hash, &proof).unwrap());
         assert!(!verify_balance(&[input], &[output], 0, 11, &signable_hash, &proof).unwrap());
 
-        let binding = prove_binding_signature(
-            &[input],
-            &[output],
-            0,
-            10,
-            &scalar(3),
-            &signable_hash,
-            &[24_u8; 32],
-        )
-        .unwrap();
+        let mut malformed = proof;
+        malformed[63] ^= 1;
         assert!(
-            verify_binding_signature(&[input], &[output], 0, 10, &signable_hash, &binding,)
-                .unwrap()
+            !verify_balance(&[input], &[output], 0, 10, &signable_hash, &malformed).unwrap_or(false)
         );
-        let mut malformed_binding = binding;
-        malformed_binding[63] ^= 1;
-        assert!(!verify_binding_signature(
-            &[input],
-            &[output],
-            0,
-            10,
-            &signable_hash,
-            &malformed_binding,
-        )
-        .unwrap_or(false));
 
         let shielded = commitment(50, &scalar(7)).unwrap();
         let shield_proof = prove_balance(
@@ -602,7 +501,44 @@ mod tests {
         let response = prove_request(&request).unwrap();
         assert_eq!(&response[..4], &[1, 0, 1, 1]);
         assert_eq!(&response[4..36], &commitment(90, &scalar(2)).unwrap());
+        // One signature under the value-excess key, and the response ends there: a second
+        // one over the same message would be recoverable material, not extra assurance.
+        let range_length = u32::from_le_bytes(response[36..40].try_into().unwrap()) as usize;
+        assert_eq!(response.len(), 40 + range_length + 64);
         request.push(0);
         assert_eq!(prove_request(&request), Err(ResultCode::BadLength));
+    }
+
+    /// Nonce reuse across two challenge domains reveals the excess mask; the format
+    /// therefore carries one value signature.
+    #[test]
+    fn one_nonce_under_two_challenges_recovers_the_excess_mask() {
+        let input = commitment(100, &scalar(5)).unwrap();
+        let output = commitment(90, &scalar(2)).unwrap();
+        let excess_mask_bytes = scalar(3);
+        let excess_mask = canonical_scalar(&excess_mask_bytes).unwrap();
+        let signable_hash = [31_u8; 32];
+        let entropy = [32_u8; 32];
+
+        let excess = excess_point(&[input], &[output], 0, 10).unwrap();
+        assert_eq!(excess, ED25519_BASEPOINT_POINT * excess_mask);
+        let excess_encoded = excess.compress().to_bytes();
+
+        let nonce = hash_to_scalar(
+            b"Innova/IV5/BalanceProof/Nonce/v1",
+            &[&entropy, &excess_mask_bytes, &signable_hash, &excess_encoded],
+        );
+        let nonce_encoded = (ED25519_BASEPOINT_POINT * nonce).compress().to_bytes();
+        let sign_with = |domain: &[u8]| {
+            let challenge =
+                hash_to_scalar(domain, &[&signable_hash, &excess_encoded, &nonce_encoded]);
+            (challenge, nonce + (challenge * excess_mask))
+        };
+        let (challenge_one, response_one) = sign_with(b"Innova/IV5/BalanceProof/Challenge/v1");
+        let (challenge_two, response_two) = sign_with(b"Innova/IV5/BindingSignature/Challenge/v1");
+        assert_ne!(challenge_one, challenge_two);
+
+        let recovered = (response_one - response_two) * (challenge_one - challenge_two).invert();
+        assert_eq!(recovered, excess_mask);
     }
 }

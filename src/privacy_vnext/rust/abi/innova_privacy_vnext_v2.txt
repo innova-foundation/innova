@@ -129,9 +129,9 @@ value-prove-request:
   trailing-fields: input-count pseudo-outs-32 followed by output-count amount-u64-le-and-mask-32 openings
   counts: each 0..16; exact request EOF
 value-prove-response:
-  fields: schema-u16-le, output-count-u8, input-count-u8, output-commitments-32, range-proof-length-u32-le, range-proof, balance-proof-64, binding-signature-64
+  fields: schema-u16-le, output-count-u8, input-count-u8, output-commitments-32, range-proof-length-u32-le, range-proof, balance-proof-64
   range-proof: empty for zero outputs, otherwise one canonical aggregate Bulletproof+
-  behavior: prove and independently verify range, signed public/private balance, and binding signature before returning
+  behavior: prove and independently verify range and signed public/private balance before returning
 receiver-disclosure-prove-request:
   exact-size: 264
   fields: schema-u16-le, reserved-zero-2, output-index-u32-le, recipient-spend-32, recipient-view-32, output-O-32, tweak-ephemeral-public-32, tweak-ephemeral-secret-32, output-y-32, signable-hash-32, caller-entropy-32
@@ -334,10 +334,10 @@ payload-validation:
   canonical nonidentity Helios finalized root and bounded tree size
   input/output limits: 16/16 pending benchmark cap selection
   disclosure records derived only from mask bits 1, 2, and 4
-  six bounded proof sections in fixed normative order
+  five bounded proof sections in fixed normative order
   transparent-binding: 32 opaque header bytes after the fee, inside the signing hash and
     therefore covered by every proof; the caller alone defines what they must equal, which
-    is a digest of the carrying transaction's transparent outputs and lock time
+    is a digest of the carrying transaction's input prevouts, outputs and lock time
   signing-hash: blake2b-256(Innova/IV5/Signing/v1, outer-wire-version-u32-le, canonical-payload-through-finality-body)
   hidden-spend-input: pseudo-out-32 then nullifier-key-image-32; source leaves are never serialized in the base input
   output-record-points: owner-O-32, commitment-C-32, note-ephemeral-32, tweak-ephemeral-32, which must differ; the leaf's I is derived from O by note-key-image-base and is absent from the record
@@ -345,7 +345,7 @@ payload-validation:
   exposed-amount: C equals opening-times-Ed25519-G plus value-times-Monero-H
   hidden-amount-range: canonical aggregate Monero Bulletproof+ over all output commitments; deterministic verifier weights bind signing-hash, commitments, and proof
   value-balance: exact 64-byte Schnorr excess proof binds signing-hash, pseudo-outs, output commitments, signed transparent value balance, and fee
-  binding-signature: distinct exact 64-byte Schnorr signature under the value-excess key binds signing-hash, pseudo-outs, output commitments, signed transparent value balance, and fee
+  value-signature-count: exactly one signature under the value-excess key; a second one over the same signing hash restates the first and makes the excess mask solvable if their challenge domains ever coincide
   sender-disclosure: source-spend-authority-32 plus a 128-byte proof of the authority discrete log and the Monero-T rerandomization linking it to the exact FCMP O-tilde input
   receiver-disclosure: recipient-spend-32 and view-32 plus a 160-byte proof containing the tweak-ephemeral-view shared point, a DLEQ proof of that point against the tweak ephemeral, and the Monero-T output-opening proof; the note ephemeral is never opened, so a disclosed output keeps its amount, y, and mask
   disclosure-proof-order: all sender proofs in input order, then all receiver proofs in output order; exposed amounts need no extra proof beyond their verified openings
