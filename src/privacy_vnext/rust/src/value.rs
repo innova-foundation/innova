@@ -387,7 +387,7 @@ impl<'a> Reader<'a> {
     }
 }
 
-fn result_code(error: ValueError) -> ResultCode {
+pub(crate) fn result_code(error: ValueError) -> ResultCode {
     match error {
         ValueError::BadLength => ResultCode::BadLength,
         ValueError::ResourceLimit => ResultCode::ResourceLimit,

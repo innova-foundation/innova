@@ -1004,10 +1004,27 @@ fn parse_membership_proving_request(
     })
 }
 
+/// Per-input material a vote needs and a bare verification request cannot carry: the sigma
+/// witness for the rerandomized owner key, and the shift the amount commitment's mask took.
+pub(crate) struct MembershipSecrets {
+    pub o_tilde: [u8; 32],
+    pub c_tilde: [u8; 32],
+    pub rerandomized_y: [u8; 32],
+    pub mask_delta: [u8; 32],
+}
+
 /// Produce a membership-only instance. The result is a canonical verification request: there is
 /// no wallet-only metadata to hold back, unlike the spend path's construction response.
 #[allow(dead_code)]
 pub(crate) fn prove_membership(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
+    Ok(prove_membership_with_secrets(request)?.0)
+}
+
+/// The same instance, with the per-input secrets the vote sigma is built from. One body, so a
+/// vote can never be proved against a different rerandomization than the one it verifies.
+pub(crate) fn prove_membership_with_secrets(
+    request: &[u8],
+) -> Result<(Vec<u8>, Vec<MembershipSecrets>), ResultCode> {
     let ParsedMembershipProvingRequest {
         root_bytes,
         witnesses,
@@ -1030,6 +1047,7 @@ pub(crate) fn prove_membership(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
 
     let mut output_blinds = Vec::with_capacity(count);
     let mut tuples = Vec::with_capacity(count);
+    let mut secrets = Vec::with_capacity(count);
     for witness in &witnesses {
         let (
             rerandomized,
@@ -1048,6 +1066,12 @@ pub(crate) fn prove_membership(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
         tuple[64..96].copy_from_slice(&input.R());
         tuple[96..].copy_from_slice(&input.C_tilde());
         tuples.push(tuple);
+        secrets.push(MembershipSecrets {
+            o_tilde: input.O_tilde(),
+            c_tilde: input.C_tilde(),
+            rerandomized_y: (witness.y - rerandomized.o_blind()).to_repr(),
+            mask_delta: (-rerandomized.c_blind()).to_repr(),
+        });
         output_blinds.push(OutputBlinds::new(
             OBlind::new(t_generator, o_decomposition),
             IBlind::new(u_generator, v_generator, i_decomposition),
@@ -1087,7 +1111,7 @@ pub(crate) fn prove_membership(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
 
     let verification = encode_membership_request(root_bytes, &tuples, &proof_bytes)?;
     verify_membership(&verification)?;
-    Ok(verification)
+    Ok((verification, secrets))
 }
 
 #[cfg(test)]

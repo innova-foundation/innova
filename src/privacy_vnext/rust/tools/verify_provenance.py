@@ -110,7 +110,8 @@ def verify_configuration_and_abi() -> None:
         "wrapper does not compile the pinned FCMP++ source dependency",
     )
     header = (ROOT / "include/innova_privacy_vnext.h").read_text(encoding="utf-8")
-    exported = set(re.findall(r"innova_privacy_vnext_[a-z_]+(?=\()", header))
+    # Digits are part of an export name, so a letters-only class truncates one silently.
+    exported = set(re.findall(r"innova_privacy_vnext_[a-z0-9_]+(?=\()", header))
     require(
         exported
         == {
@@ -142,6 +143,13 @@ def verify_configuration_and_abi() -> None:
             "innova_privacy_vnext_value_prove",
             "innova_privacy_vnext_receiver_disclosure_prove",
             "innova_privacy_vnext_amount_equality_prove",
+            "innova_privacy_vnext_vote_membership_prove",
+            "innova_privacy_vnext_vote_membership_verify",
+            "innova_privacy_vnext_vote_sigma_prove",
+            "innova_privacy_vnext_vote_sigma_verify",
+            "innova_privacy_vnext_ed25519_combine",
+            "innova_privacy_vnext_range_prove",
+            "innova_privacy_vnext_range_verify",
         },
         "ABI differs from the caller-owned v2 contract",
     )

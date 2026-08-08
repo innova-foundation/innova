@@ -25,6 +25,7 @@ mod nullifier;
 mod payload;
 mod tree;
 mod value;
+mod vote;
 
 const ABI_VERSION: u32 = 2;
 const DIGEST_SIZE: usize = 32;
@@ -76,6 +77,10 @@ pub const CAP_TREE_EXTEND: u32 = 1 << 17;
 pub const CAP_PAYLOAD_SIGNING_HASH: u32 = 1 << 18;
 pub const CAP_RECEIVER_DISCLOSURE_PROVE: u32 = 1 << 19;
 pub const CAP_AMOUNT_EQUALITY_PROVE: u32 = 1 << 20;
+pub const CAP_VOTE_MEMBERSHIP: u32 = 1 << 21;
+pub const CAP_VOTE_SIGMA: u32 = 1 << 22;
+pub const CAP_ED25519_COMBINE: u32 = 1 << 23;
+pub const CAP_RANGE_PROOF: u32 = 1 << 24;
 pub const CAP_NOTE_ENCRYPT: u32 = 1 << 12;
 pub const CAP_VALUE_PROVE: u32 = 1 << 13;
 pub const CAP_PAYLOAD_EFFECTS: u32 = 1 << 14;
@@ -100,7 +105,11 @@ const IMPLEMENTED_CAPABILITIES: u32 = CAP_PROTOCOL_CONTRACT
     | CAP_TREE_EXTEND
     | CAP_PAYLOAD_SIGNING_HASH
     | CAP_RECEIVER_DISCLOSURE_PROVE
-    | CAP_AMOUNT_EQUALITY_PROVE;
+    | CAP_AMOUNT_EQUALITY_PROVE
+    | CAP_VOTE_MEMBERSHIP
+    | CAP_VOTE_SIGMA
+    | CAP_ED25519_COMBINE
+    | CAP_RANGE_PROOF;
 const CONSENSUS_CAPABILITIES: u32 = 0;
 pub const NOTE_SHIELD: u8 = 0;
 pub const NOTE_UNSHIELD: u8 = 1;
@@ -1271,6 +1280,172 @@ pub unsafe extern "C" fn innova_privacy_vnext_payload_effects(
         let request = unsafe { slice::from_raw_parts(request, request_len) };
         let effects = payload::effects(request)?;
         write_variable_output(&effects, out, out_capacity, out_written)
+    })
+}
+
+/// Prove a membership-only instance for a note vote and report its sigma witnesses.
+///
+/// Response: `schema_u16 || input_count_u8 || reserved_u8_zero || input_count * (o_tilde_32 ||
+/// c_tilde_32 || rerandomized_y_32 || mask_delta_32) || request_len_u32_le || request`.
+/// The two scalars are caller-secret construction material and must be zeroized once the vote
+/// and its shares are built.
+///
+/// # Safety
+///
+/// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_vote_membership_prove(
+    request: *const u8,
+    request_len: usize,
+    out: *mut u8,
+    out_capacity: usize,
+    out_written: *mut usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        // SAFETY: request validation precedes this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        let response = vote::membership_prove(request)?;
+        write_variable_output(&response, out, out_capacity, out_written)
+    })
+}
+
+/// Verify one membership-only instance. No key image and no signable hash take part.
+///
+/// # Safety
+///
+/// `request` must identify `request_len` readable caller-owned bytes.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_vote_membership_verify(
+    request: *const u8,
+    request_len: usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        // SAFETY: request validation precedes this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        fcmp::verify_membership(request)
+    })
+}
+
+/// Prove the note-vote authorization sigma and derive its epoch tag.
+///
+/// Request: `schema_u16 || reserved_u16_zero || epoch_u64_le || o_tilde_32 || c_tilde_32 ||
+/// binding_32 || x_32 || rerandomized_y_32 || entropy_32`. Response: `tag_32 || proof_128`.
+/// `binding` is the caller's digest over every consensus field the vote must not be
+/// detachable from; the membership proof itself binds no message.
+///
+/// # Safety
+///
+/// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_vote_sigma_prove(
+    request: *const u8,
+    request_len: usize,
+    out: *mut u8,
+    out_capacity: usize,
+    out_written: *mut usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        // SAFETY: request validation precedes this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        let response = vote::sigma_prove(request)?;
+        write_variable_output(&response, out, out_capacity, out_written)
+    })
+}
+
+/// Verify the note-vote authorization sigma against a caller-rebuilt statement.
+///
+/// Request: `schema_u16 || reserved_u16_zero || epoch_u64_le || o_tilde_32 || c_tilde_32 ||
+/// binding_32 || tag_32 || proof_128`.
+///
+/// # Safety
+///
+/// `request` must identify `request_len` readable caller-owned bytes.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_vote_sigma_verify(
+    request: *const u8,
+    request_len: usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        // SAFETY: request validation precedes this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        vote::sigma_verify(request)
+    })
+}
+
+/// Sum caller-named `scalar * point` terms over ed25519.
+///
+/// Request: `schema_u16 || reserved_u16_zero || term_count_u16_le || reserved_u16_zero ||
+/// term_count * (source_u8 || reserved_u8_zero_3 || scalar_32 || point_32)`. Source 0 takes
+/// the supplied point, 1 the pinned Monero H, 2 the ed25519 basepoint; a generator term must
+/// carry a zero point. Output is one 32-byte point and may be the identity.
+///
+/// # Safety
+///
+/// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_ed25519_combine(
+    request: *const u8,
+    request_len: usize,
+    out: *mut u8,
+    out_capacity: usize,
+    out_written: *mut usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        // SAFETY: request validation precedes this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        let point = vote::combine(request)?;
+        write_variable_output(&point, out, out_capacity, out_written)
+    })
+}
+
+/// Range-prove one commitment opening.
+///
+/// Request: `schema_u16 || reserved_u16_zero || amount_u64_le || mask_32 || entropy_32`.
+/// Response: `commitment_32 || proof_len_u32_le || proof`. The commitment travels back so a
+/// caller can require it to equal the point it derived for itself.
+///
+/// # Safety
+///
+/// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_range_prove(
+    request: *const u8,
+    request_len: usize,
+    out: *mut u8,
+    out_capacity: usize,
+    out_written: *mut usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        // SAFETY: request validation precedes this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        let response = vote::range_prove(request)?;
+        write_variable_output(&response, out, out_capacity, out_written)
+    })
+}
+
+/// Verify a single-commitment range proof over a caller-derived point.
+///
+/// Request: `schema_u16 || reserved_u16_zero || commitment_32 || signable_hash_32 || proof`.
+///
+/// # Safety
+///
+/// `request` must identify `request_len` readable caller-owned bytes.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_range_verify(
+    request: *const u8,
+    request_len: usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        // SAFETY: request validation precedes this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        vote::range_verify(request)
     })
 }
 

@@ -33,6 +33,14 @@ functions:
   innova_privacy_vnext_note_encrypt(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_value_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_receiver_disclosure_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_amount_equality_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_vote_membership_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_vote_membership_verify(const uint8_t *request, size_t request_len)
+  innova_privacy_vnext_vote_sigma_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_vote_sigma_verify(const uint8_t *request, size_t request_len)
+  innova_privacy_vnext_ed25519_combine(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_range_prove(const uint8_t *request, size_t request_len, uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_range_verify(const uint8_t *request, size_t request_len)
 result-codes:
   0 valid
   1 consensus-invalid
@@ -62,7 +70,12 @@ capabilities:
   bit-17 tree-extension
   bit-18 payload-signing-hash
   bit-19 receiver-disclosure-proof
-implemented-capabilities: bits 0 through 19
+  bit-20 amount-equality-proof
+  bit-21 vote-membership-proof
+  bit-22 vote-authorization-sigma
+  bit-23 ed25519-point-combination
+  bit-24 single-commitment-range-proof
+implemented-capabilities: bits 0 through 24
 consensus-capabilities: none
 fixed-output-length: 32
 parameter-digest: sha256(../contract/iv5_protocol_v1.json)
@@ -308,6 +321,57 @@ amount-equality-request:
   behavior: Schnorr knowledge of the mask behind commitment minus amount-times-Monero-H,
     which proves the commitment holds exactly that amount without publishing its opening;
     the identity statement is refused, and the prover self-verifies before returning
+vote-membership-prove-request:
+  fields: identical to the membership proving request the vote path shares with the spend path
+vote-membership-prove-response:
+  fields: schema-u16-le, input-count-u8, reserved-zero-u8, per-input-secret-128, request-length-u32-le, canonical-membership-verify-request
+  per-input-secret: o-tilde-32, c-tilde-32, rerandomized-y-32, mask-delta-32
+  rerandomized-y: the T-component witness of O-tilde; the sigma's second witness
+  mask-delta: the shift C-tilde's mask took, so the caller adds it to the note mask to open C-tilde
+  secret-output-policy: both scalars are caller-secret and must be zeroized once the vote and its shares exist
+  behavior: prove and self-verify exactly as the membership-only entry does
+vote-membership-verify-request:
+  fields: the canonical membership verify request; no key image and no signable hash take part
+vote-sigma-request:
+  exact-size: 204
+  fields: schema-u16-le, reserved-zero-2, epoch-u64-le, o-tilde-32, c-tilde-32, binding-32, x-32, rerandomized-y-32, entropy-32
+  binding: the caller's digest over every consensus field the vote must not be detachable from,
+    which for a note vote is the deterministic anchor roots, the voted block hash and height,
+    the membership-proof hash, the committee set hash, and the hash of the vote's share bytes
+  statement: O-tilde equals x times Ed25519-G plus rerandomized-y times Monero-T, and the tag
+    equals x times the pinned epoch tag base
+  behavior: prove and self-verify before returning; a witness that does not open the statement
+    and an all-zero entropy are both refused
+vote-sigma-response:
+  exact-size: 160
+  fields: tag-32, proof-128
+  proof: R1-32, R2-32, s-x-32, s-y-32 under one challenge over the epoch, the tag base, O-tilde,
+    C-tilde, the tag, the binding, and both nonce points
+vote-sigma-verify-request:
+  exact-size: 268
+  fields: schema-u16-le, reserved-zero-2, epoch-u64-le, o-tilde-32, c-tilde-32, binding-32, tag-32, proof-128
+  points: canonical nonidentity torsion-free encodings, including both nonce points and the tag
+ed25519-combine-request:
+  fields: schema-u16-le, reserved-zero-2, term-count-u16-le, reserved-zero-2, term-count terms
+  term: source-u8, reserved-zero-3, scalar-32, point-32
+  source: 0 supplied point, 1 pinned Monero H, 2 Ed25519 basepoint
+  generator-term: the 32 point bytes must be zero, so a generator term cannot smuggle a point
+  supplied-point: canonical torsion-free encoding; the identity is admitted
+  maximum-term-count: 1024; a longer sum is chained by feeding the running total back as a supplied point
+  output-exact-size: 32
+  identity-output: legal, and what a certificate whose winner drew no note vote derives
+range-prove-request:
+  exact-size: 76
+  fields: schema-u16-le, reserved-zero-2, amount-u64-le, mask-32, entropy-32
+range-prove-response:
+  fields: commitment-32, proof-length-u32-le, proof
+  commitment: mask times Ed25519-G plus amount times Monero-H, returned so a caller can require
+    it to equal the point it derived for itself
+range-verify-request:
+  fields: schema-u16-le, reserved-zero-2, commitment-32, signable-hash-32, proof-to-eof
+  commitment: canonical nonidentity point the caller derived; a supplied proof commitment is
+    never what is checked, because a Bulletproof+ binds only to the point it is over
+  signable-hash: seeds the batch-verifier weights only, exactly as the aggregate range path does
 payload-validation-request:
   fields: outer-wire-version-u32-le, canonical-payload-to-eof
   exact outer versions: 2000..2008 under the normative envelope matrix

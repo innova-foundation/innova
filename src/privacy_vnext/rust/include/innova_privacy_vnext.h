@@ -73,6 +73,10 @@ extern "C" {
 #define INNOVA_PRIVACY_VNEXT_CAP_PAYLOAD_SIGNING_HASH (1u << 18)
 #define INNOVA_PRIVACY_VNEXT_CAP_RECEIVER_DISCLOSURE_PROVE (1u << 19)
 #define INNOVA_PRIVACY_VNEXT_CAP_AMOUNT_EQUALITY_PROVE (1u << 20)
+#define INNOVA_PRIVACY_VNEXT_CAP_VOTE_MEMBERSHIP (1u << 21)
+#define INNOVA_PRIVACY_VNEXT_CAP_VOTE_SIGMA (1u << 22)
+#define INNOVA_PRIVACY_VNEXT_CAP_ED25519_COMBINE (1u << 23)
+#define INNOVA_PRIVACY_VNEXT_CAP_RANGE_PROOF (1u << 24)
 #define INNOVA_PRIVACY_VNEXT_IMPLEMENTED_CAPABILITIES \
     (INNOVA_PRIVACY_VNEXT_CAP_PROTOCOL_CONTRACT | \
      INNOVA_PRIVACY_VNEXT_CAP_FCMP_PROOF_SIZE | \
@@ -94,6 +98,10 @@ extern "C" {
      INNOVA_PRIVACY_VNEXT_CAP_PAYLOAD_SIGNING_HASH | \
      INNOVA_PRIVACY_VNEXT_CAP_RECEIVER_DISCLOSURE_PROVE | \
      INNOVA_PRIVACY_VNEXT_CAP_AMOUNT_EQUALITY_PROVE | \
+     INNOVA_PRIVACY_VNEXT_CAP_VOTE_MEMBERSHIP | \
+     INNOVA_PRIVACY_VNEXT_CAP_VOTE_SIGMA | \
+     INNOVA_PRIVACY_VNEXT_CAP_ED25519_COMBINE | \
+     INNOVA_PRIVACY_VNEXT_CAP_RANGE_PROOF | \
      INNOVA_PRIVACY_VNEXT_CAP_PAYLOAD_SCAN)
 
 #define INNOVA_PRIVACY_VNEXT_OP_SHIELD (1u << 0)
@@ -298,6 +306,71 @@ int32_t innova_privacy_vnext_amount_equality_prove(
     uint8_t *out,
     size_t out_capacity,
     size_t *out_written);
+
+/* Prove a membership-only instance for a note vote and report the per-input
+ * sigma witnesses, which depend on blinds the prover draws internally.
+ * Response: schema_u16 || input_count_u8 || reserved_u8_zero || input_count *
+ * (o_tilde_32 || c_tilde_32 || rerandomized_y_32 || mask_delta_32) ||
+ * request_len_u32_le || request. The two scalars are caller-secret. */
+int32_t innova_privacy_vnext_vote_membership_prove(
+    const uint8_t *request,
+    size_t request_len,
+    uint8_t *out,
+    size_t out_capacity,
+    size_t *out_written);
+
+/* Verify one membership-only instance. No key image and no signable hash take
+ * part, so nothing here binds the proof to a message. */
+int32_t innova_privacy_vnext_vote_membership_verify(
+    const uint8_t *request,
+    size_t request_len);
+
+/* Prove the note-vote authorization sigma and derive its epoch tag.
+ * Request: schema_u16 || reserved_u16_zero || epoch_u64_le || o_tilde_32 ||
+ * c_tilde_32 || binding_32 || x_32 || rerandomized_y_32 || entropy_32.
+ * Response: tag_32 || proof_128. */
+int32_t innova_privacy_vnext_vote_sigma_prove(
+    const uint8_t *request,
+    size_t request_len,
+    uint8_t *out,
+    size_t out_capacity,
+    size_t *out_written);
+
+/* Verify the note-vote authorization sigma against a caller-rebuilt statement.
+ * Request: schema_u16 || reserved_u16_zero || epoch_u64_le || o_tilde_32 ||
+ * c_tilde_32 || binding_32 || tag_32 || proof_128. */
+int32_t innova_privacy_vnext_vote_sigma_verify(
+    const uint8_t *request,
+    size_t request_len);
+
+/* Sum caller-named scalar*point terms over ed25519.
+ * Request: schema_u16 || reserved_u16_zero || term_count_u16_le ||
+ * reserved_u16_zero || term_count * (source_u8 || reserved_u8_zero_3 ||
+ * scalar_32 || point_32). Source 0 supplied, 1 Monero H, 2 ed25519 basepoint;
+ * a generator term must carry a zero point. Output may be the identity. */
+int32_t innova_privacy_vnext_ed25519_combine(
+    const uint8_t *request,
+    size_t request_len,
+    uint8_t *out,
+    size_t out_capacity,
+    size_t *out_written);
+
+/* Range-prove one commitment opening.
+ * Request: schema_u16 || reserved_u16_zero || amount_u64_le || mask_32 ||
+ * entropy_32. Response: commitment_32 || proof_len_u32_le || proof. */
+int32_t innova_privacy_vnext_range_prove(
+    const uint8_t *request,
+    size_t request_len,
+    uint8_t *out,
+    size_t out_capacity,
+    size_t *out_written);
+
+/* Verify a single-commitment range proof over a caller-derived point.
+ * Request: schema_u16 || reserved_u16_zero || commitment_32 ||
+ * signable_hash_32 || proof. */
+int32_t innova_privacy_vnext_range_verify(
+    const uint8_t *request,
+    size_t request_len);
 
 #ifdef __cplusplus
 }

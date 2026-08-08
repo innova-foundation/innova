@@ -34,7 +34,7 @@
   },
   "fcmp_abi": {
     "schema": 1,
-    "abi_schema_sha256": "311f0576264729c97d29ae663be5b7220a2d42945b2c65ebfaee8a231d5b3cf0",
+    "abi_schema_sha256": "04f61b0247707cd2bcaa99c74f5236496787aa96a043426387bea3c459d893a8",
     "layers": 8,
     "root_curve_id": 2,
     "maximum_inputs": 16,
