@@ -609,8 +609,16 @@ fn validate_payload(
     })
 }
 
+/// The local chain context a validation request carries, and the payload it judges.
+struct ValidationRequest<'a> {
+    wire_version: u32,
+    network: u8,
+    genesis: [u8; 32],
+    payload: &'a [u8],
+}
+
 /// Split a validation request into the local chain context and the payload it judges.
-fn request_parts(request: &[u8]) -> Result<(u32, u8, [u8; 32], &[u8]), ResultCode> {
+fn request_parts(request: &[u8]) -> Result<ValidationRequest<'_>, ResultCode> {
     if request.len() < VALIDATION_PREFIX_SIZE + 1 {
         return Err(ResultCode::BadLength);
     }
@@ -632,12 +640,12 @@ fn request_parts(request: &[u8]) -> Result<(u32, u8, [u8; 32], &[u8]), ResultCod
     if genesis.iter().all(|byte| *byte == 0) {
         return Err(ResultCode::BadLength);
     }
-    Ok((
+    Ok(ValidationRequest {
         wire_version,
         network,
         genesis,
-        &request[VALIDATION_PREFIX_SIZE..],
-    ))
+        payload: &request[VALIDATION_PREFIX_SIZE..],
+    })
 }
 
 const SCAN_REQUEST_HEADER_BYTES: usize = 16;
@@ -778,7 +786,12 @@ pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
 }
 
 pub(crate) fn validate(request: &[u8]) -> Result<(), ResultCode> {
-    let (wire_version, network, genesis, payload) = request_parts(request)?;
+    let ValidationRequest {
+        wire_version,
+        network,
+        genesis,
+        payload,
+    } = request_parts(request)?;
     validate_payload(wire_version, payload, network, &genesis).map(|_| ())
 }
 
@@ -803,7 +816,12 @@ pub(crate) fn signing_hash(request: &[u8]) -> Result<[u8; 32], ResultCode> {
 }
 
 pub(crate) fn effects(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
-    let (wire_version, network, genesis, payload) = request_parts(request)?;
+    let ValidationRequest {
+        wire_version,
+        network,
+        genesis,
+        payload,
+    } = request_parts(request)?;
     validate_payload(wire_version, payload, network, &genesis)?.encode()
 }
 
@@ -911,8 +929,14 @@ mod tests {
         payload.extend_from_slice(&output_commitment);
         payload.extend_from_slice(&point);
         payload.extend_from_slice(&second_point);
-        vector(&mut payload, &opaque_ciphertext(crate::note::RECIPIENT_CIPHERTEXT_BYTES));
-        vector(&mut payload, &opaque_ciphertext(crate::note::OUTGOING_CIPHERTEXT_BYTES));
+        vector(
+            &mut payload,
+            &opaque_ciphertext(crate::note::RECIPIENT_CIPHERTEXT_BYTES),
+        );
+        vector(
+            &mut payload,
+            &opaque_ciphertext(crate::note::OUTGOING_CIPHERTEXT_BYTES),
+        );
 
         vector(&mut payload, &[]);
         let signing_hash = signable_hash(2008, &payload);
@@ -990,8 +1014,14 @@ mod tests {
         payload.extend_from_slice(&output_commitment);
         payload.extend_from_slice(&point);
         payload.extend_from_slice(&second_point);
-        vector(&mut payload, &opaque_ciphertext(crate::note::RECIPIENT_CIPHERTEXT_BYTES));
-        vector(&mut payload, &opaque_ciphertext(crate::note::OUTGOING_CIPHERTEXT_BYTES));
+        vector(
+            &mut payload,
+            &opaque_ciphertext(crate::note::RECIPIENT_CIPHERTEXT_BYTES),
+        );
+        vector(
+            &mut payload,
+            &opaque_ciphertext(crate::note::OUTGOING_CIPHERTEXT_BYTES),
+        );
 
         payload.extend_from_slice(&declared.to_le_bytes());
         payload.extend_from_slice(&output_mask);
@@ -1216,8 +1246,7 @@ mod tests {
         let true_view = (ED25519_BASEPOINT_POINT * Scalar::from(5_u64))
             .compress()
             .to_bytes();
-        let request =
-            disclosed_receiver_request(&genesis, &encrypted, (true_spend, true_view));
+        let request = disclosed_receiver_request(&genesis, &encrypted, (true_spend, true_view));
         assert_eq!(validate(&request), Ok(()));
         let payload = &request[VALIDATION_PREFIX_SIZE..];
 
@@ -1622,8 +1651,8 @@ mod tests {
         let (range_commitments, range_proof) =
             value::prove_range(&[99, 99, 99], &mask_bytes, &[0x41; 32]).expect("valid range proof");
         assert_eq!(range_commitments, commitments);
-        let excess = (-(Scalar::from(19_u64) + Scalar::from(23_u64) + Scalar::from(29_u64)))
-            .to_bytes();
+        let excess =
+            (-(Scalar::from(19_u64) + Scalar::from(23_u64) + Scalar::from(29_u64))).to_bytes();
         let balance_proof = value::prove_balance(
             &[],
             &commitments,
@@ -1842,7 +1871,8 @@ mod tests {
             .compress()
             .to_bytes();
         assert!(
-            parse_payload_prefix(2008, &two_outputs(&distinct), TEST_NETWORK, Some(&genesis)).is_ok(),
+            parse_payload_prefix(2008, &two_outputs(&distinct), TEST_NETWORK, Some(&genesis))
+                .is_ok(),
             "distinct owners must still parse"
         );
     }
@@ -1866,11 +1896,7 @@ mod tests {
         }
 
         assert_eq!(
-            validate(&validation_request_for(
-                TEST_NETWORK,
-                &[0x22; 32],
-                payload
-            )),
+            validate(&validation_request_for(TEST_NETWORK, &[0x22; 32], payload)),
             Err(ResultCode::ConsensusInvalid),
             "a payload declaring another genesis must not validate here"
         );
@@ -1909,8 +1935,13 @@ mod tests {
         };
 
         assert!(
-            parse_payload_prefix(2008, &build(recipient, outgoing), TEST_NETWORK, Some(&genesis))
-                .is_ok(),
+            parse_payload_prefix(
+                2008,
+                &build(recipient, outgoing),
+                TEST_NETWORK,
+                Some(&genesis)
+            )
+            .is_ok(),
             "the canonical encoding must still parse"
         );
 
@@ -1922,8 +1953,13 @@ mod tests {
         wrong_version[0] = crate::note::CIPHERTEXT_VERSION.wrapping_add(1);
         for broken in [vec![1_u8], short, long, wrong_version] {
             assert_eq!(
-                parse_payload_prefix(2008, &build(&broken, outgoing), TEST_NETWORK, Some(&genesis))
-                    .err(),
+                parse_payload_prefix(
+                    2008,
+                    &build(&broken, outgoing),
+                    TEST_NETWORK,
+                    Some(&genesis)
+                )
+                .err(),
                 Some(ResultCode::ConsensusInvalid),
                 "a non-canonical recipient ciphertext must not parse"
             );

@@ -658,8 +658,7 @@ fn scan_outgoing(
         [RECIPIENT_PLAINTEXT_BYTES..RECIPIENT_PLAINTEXT_BYTES + 32]
         .try_into()
         .map_err(|_| NoteError::BadLength)?;
-    let mut tweak_ephemeral_secret_bytes: [u8; 32] = plaintext
-        [RECIPIENT_PLAINTEXT_BYTES + 32..]
+    let mut tweak_ephemeral_secret_bytes: [u8; 32] = plaintext[RECIPIENT_PLAINTEXT_BYTES + 32..]
         .try_into()
         .map_err(|_| NoteError::BadLength)?;
     plaintext.zeroize();
@@ -890,8 +889,12 @@ mod tests {
             0,
             7,
             &[0x71; 32],
-            &(ED25519_BASEPOINT_POINT * spend_secret).compress().to_bytes(),
-            &(ED25519_BASEPOINT_POINT * view_secret).compress().to_bytes(),
+            &(ED25519_BASEPOINT_POINT * spend_secret)
+                .compress()
+                .to_bytes(),
+            &(ED25519_BASEPOINT_POINT * view_secret)
+                .compress()
+                .to_bytes(),
             &Scalar::from(7_u64).to_bytes(),
             &Scalar::from(ephemeral_secret).to_bytes(),
             &Scalar::from(ephemeral_secret + 1).to_bytes(),
@@ -1005,7 +1008,9 @@ mod tests {
             assert_ne!(note.output_i, recipient_spend);
             assert_ne!(
                 note.output_i,
-                (ED25519_BASEPOINT_POINT * view_secret).compress().to_bytes()
+                (ED25519_BASEPOINT_POINT * view_secret)
+                    .compress()
+                    .to_bytes()
             );
             // Anyone holding the leaf recomputes I from O alone.
             assert_eq!(key_image_base(&note.output_o).unwrap(), note.output_i);
@@ -1120,9 +1125,10 @@ mod tests {
         let spend = (ED25519_BASEPOINT_POINT * Scalar::from(3_u64))
             .compress()
             .to_bytes();
-        let view = (ED25519_BASEPOINT_POINT * view_secret).compress().to_bytes();
-        let tweak =
-            disclosure::receiver_tweak(&disclosed, &note.tweak_ephemeral, &spend, &view, 7);
+        let view = (ED25519_BASEPOINT_POINT * view_secret)
+            .compress()
+            .to_bytes();
+        let tweak = disclosure::receiver_tweak(&disclosed, &note.tweak_ephemeral, &spend, &view, 7);
         let expected = canonical_point(&spend).unwrap()
             + (ED25519_BASEPOINT_POINT * tweak)
             + (monero_t() * Scalar::from(17_u64));

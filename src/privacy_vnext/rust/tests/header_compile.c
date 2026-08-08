@@ -13,7 +13,9 @@ _Static_assert(INNOVA_PRIVACY_VNEXT_REQUIRED_OPERATIONS == 0x7ffu,
                "required operations changed");
 _Static_assert(sizeof(innova_privacy_vnext_contract) == 104u,
                "contract metadata layout changed");
-_Static_assert(INNOVA_PRIVACY_VNEXT_IMPLEMENTED_CAPABILITIES == 131071u,
+/* Bits 17-19 are tree_extend, payload_signing_hash and receiver_disclosure_prove.
+   This is a tripwire, so adding a capability is meant to require editing it here. */
+_Static_assert(INNOVA_PRIVACY_VNEXT_IMPLEMENTED_CAPABILITIES == 1048575u,
                "implemented capabilities changed");
 _Static_assert(INNOVA_PRIVACY_VNEXT_VALID == 0, "valid result changed");
 _Static_assert(INNOVA_PRIVACY_VNEXT_INTERNAL_LOCAL_STATE_FAILURE == 6,

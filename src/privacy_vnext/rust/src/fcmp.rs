@@ -1018,8 +1018,7 @@ mod tests {
         // the challenge. Two passes over one opening that share a nonce therefore publish
         // byte-identical commitments.
         assert_ne!(
-            &first_sal[SAL_COMMITMENTS],
-            &second_sal[SAL_COMMITMENTS],
+            &first_sal[SAL_COMMITMENTS], &second_sal[SAL_COMMITMENTS],
             "the two passes published the same SAL commitments, so a nonce was reused"
         );
 

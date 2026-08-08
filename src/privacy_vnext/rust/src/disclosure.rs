@@ -492,12 +492,10 @@ mod tests {
             .compress()
             .to_bytes();
         assert!(
-            !verify_receiver(&other_spend, &view, &output_o, &ephemeral, &hash, 1, &proof)
-                .unwrap()
+            !verify_receiver(&other_spend, &view, &output_o, &ephemeral, &hash, 1, &proof).unwrap()
         );
         assert!(
-            !verify_receiver(&spend, &other_view, &output_o, &ephemeral, &hash, 1, &proof)
-                .unwrap()
+            !verify_receiver(&spend, &other_view, &output_o, &ephemeral, &hash, 1, &proof).unwrap()
         );
     }
 }
