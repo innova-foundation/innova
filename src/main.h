@@ -847,6 +847,32 @@ bool GetPrivacyVNextPoolDelta(const PrivacyVNextStateEffects& effects,
                               int64_t& nDeltaOut,
                               std::string& strError);
 
+/** Apply one payload's collateral attestations to the watch set; the only writer of
+ *  that index. An attestation's key image must never reach the spent-key index.
+ *  `setBlockAttestations` catches repeats within the block. */
+bool ConnectPrivacyVNextAttestations(CTxDB& txdb,
+                                     const CTransaction& tx,
+                                     const PrivacyVNextStateEffects& effects,
+                                     int nHeight,
+                                     bool fJustCheck,
+                                     std::set<uint256>& setBlockAttestations,
+                                     bool& fLocalFailure,
+                                     std::string& strError);
+
+/** Exact inverse of the connect transition: erase what this transaction wrote. */
+bool DisconnectPrivacyVNextAttestations(CTxDB& txdb,
+                                        const CTransaction& tx,
+                                        const PrivacyVNextStateEffects& effects,
+                                        std::string& strError);
+
+/** Whether a collateralnode's note is registered now: attested on chain and unspent.
+ *  Derived, never stored, so a spend is the deregistration. */
+bool IsPrivacyVNextCollateralRegistered(
+    CTxDB& txdb,
+    const uint256& keyImage,
+    CPrivacyVNextCollateralAttestation& attestedOut,
+    bool& fLocalFailure);
+
 /** Whether an IV5 transaction still anchors inside the consensus window at
  *  nHeight. Block assembly must apply this: the window is finite, so a mempool
  *  transaction can age out between acceptance and selection. */

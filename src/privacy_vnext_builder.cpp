@@ -20,6 +20,7 @@ namespace
 const uint8_t VNEXT_OPERATION_SHIELD = 0;
 const uint8_t VNEXT_OPERATION_UNSHIELD = 1;
 const uint8_t VNEXT_OPERATION_TRANSFER = 2;
+const uint8_t VNEXT_OPERATION_COLLATERAL_REGISTER = 8;
 
 void PutCompactSize(std::vector<unsigned char>& out, uint64_t nSize)
 {
@@ -647,4 +648,178 @@ bool BuildPrivacyVNextShieldPayload(
         transparentBinding, (int64_t)nTransparentValueIn, nFee,
         std::vector<PrivacyVNextSpendNote>(), outputs, vchPayloadOut,
         strErrorOut);
+}
+
+// An attestation is its own path rather than a case of the payload builder above.
+//
+// It creates no note, moves no value and carries no balance proof, so every step that
+// builder takes to make the value sides meet has nothing to do here; what it does instead
+// is prove the one commitment it names opens to the collateral tier.
+bool BuildPrivacyVNextCollateralAttestationPayload(
+    uint8_t nNetwork,
+    const PrivacyVNextDigest& genesis,
+    const PrivacyVNextDigest& finalizedRoot,
+    uint64_t nFinalizedTreeSize,
+    const PrivacyVNextDigest& transparentBinding,
+    const PrivacyVNextDigest& registrationContext,
+    const PrivacyVNextSpendNote& collateral,
+    std::vector<unsigned char>& vchPayloadOut,
+    PrivacyVNextDigest& keyImageOut,
+    std::string& strErrorOut)
+{
+    vchPayloadOut.clear();
+    keyImageOut.fill(0);
+    strErrorOut.clear();
+
+    if (collateral.nAmount != INNOVA_PRIVACY_VNEXT_COLLATERAL_ATTESTATION_AMOUNT)
+    {
+        strErrorOut = "an IV5 collateral attestation names a note of exactly "
+                      "25000 INN";
+        return false;
+    }
+    if (collateral.vchWitnessRecord.empty())
+    {
+        strErrorOut = "an IV5 collateral attestation is missing its membership witness";
+        return false;
+    }
+    bool fContext = false;
+    for (size_t i = 0; i < registrationContext.size(); ++i)
+        fContext = fContext || registrationContext[i] != 0;
+    if (!fContext)
+    {
+        strErrorOut = "an IV5 collateral attestation needs a registration context";
+        return false;
+    }
+
+    PrivacyVNextEpochSeed seed;
+    if (!LoadPrivacyVNextEpochSeed(seed, strErrorOut))
+        return false;
+    if (seed.vchParameterDigest.size() != 32)
+    {
+        strErrorOut = "IV5 parameter digest is unavailable";
+        return false;
+    }
+    PrivacyVNextDigest parameterDigest;
+    std::memcpy(parameterDigest.data(), &seed.vchParameterDigest[0], 32);
+
+    PrivacyVNextDigest entropy;
+    if (!RandomScalar(entropy, strErrorOut))
+        return false;
+
+    std::vector<PrivacyVNextSpendInput> vProveInputs(1);
+    vProveInputs[0].spendScalar = collateral.spendSecret;
+    vProveInputs[0].commitmentScalar = collateral.y;
+    vProveInputs[0].leaf = collateral.leaf;
+    vProveInputs[0].vchWitnessRecord = collateral.vchWitnessRecord;
+
+    // Two passes for the same reason a spend needs them: the prefix names the
+    // pseudo-output, and the hash over that prefix is what the proof binds to.
+    PrivacyVNextDigest provisional;
+    provisional.fill(0);
+    provisional[0] = 1;
+    std::vector<PrivacyVNextSpendConstruction> vDraft;
+    RetainedBytes draftProof;
+    if (!ProvePrivacyVNextMembership(finalizedRoot, provisional, entropy,
+                                     vProveInputs, vDraft, draftProof.v,
+                                     strErrorOut))
+        return false;
+    if (vDraft.size() != 1)
+    {
+        strErrorOut = "IV5 attestation proving returned the wrong input count";
+        return false;
+    }
+
+    std::vector<unsigned char> prefix;
+    prefix.push_back(static_cast<unsigned char>(iv5::PROTOCOL_SCHEMA));
+    prefix.push_back(0);
+    prefix.push_back(VNEXT_OPERATION_COLLATERAL_REGISTER);
+    prefix.push_back(0);                         // finality profile: none
+    prefix.push_back(0);                         // authorization: owner
+    prefix.push_back(iv5::DISCLOSURE_MASK);      // fully private: the only mask allowed
+    prefix.push_back(0);                         // finality object: none
+    prefix.push_back(nNetwork);
+    prefix.push_back(0);                         // reserved
+    PutBytes(prefix, genesis);
+    PutBytes(prefix, parameterDigest);
+    PutBytes(prefix, finalizedRoot);
+    PutU64(prefix, nFinalizedTreeSize);
+    PutI64(prefix, 0);                           // nothing crosses the boundary
+    PutU64(prefix, 0);                           // and no fee is taken
+    PutBytes(prefix, transparentBinding);
+
+    PutCompactSize(prefix, 1);
+    PutBytes(prefix, vDraft[0].pseudoOut);
+    PutBytes(prefix, vDraft[0].keyImage);
+    PutCompactSize(prefix, 0);                   // no note is created
+    // Inside the prefix the signing hash covers, so the proof below is bound to this
+    // node's identity, endpoint and payout address and to no other.
+    PutBytes(prefix, registrationContext);
+    PutVector(prefix, std::vector<unsigned char>());   // empty finality body
+
+    PrivacyVNextDigest signingHash;
+    if (!HashPrivacyVNextPayloadPrefix(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                       prefix, signingHash, strErrorOut))
+        return false;
+
+    std::vector<PrivacyVNextSpendConstruction> vFinal;
+    std::vector<unsigned char> vchMembership;
+    if (!ProvePrivacyVNextMembership(finalizedRoot, signingHash, entropy,
+                                     vProveInputs, vFinal, vchMembership,
+                                     strErrorOut))
+        return false;
+    if (vFinal.size() != 1 || vFinal[0].pseudoOut != vDraft[0].pseudoOut ||
+        vFinal[0].keyImage != vDraft[0].keyImage)
+    {
+        strErrorOut = "IV5 attestation proving is not deterministic in its entropy";
+        return false;
+    }
+
+    // The mask behind the re-randomized commitment is the note's own plus what the
+    // re-randomization added; that is the secret the tier proof knows.
+    std::vector<unsigned char> rerandomizedMask;
+    if (!Ed25519ScalarAdd(AsVector(collateral.mask),
+                          AsVector(vFinal[0].pseudoOutMaskDelta),
+                          rerandomizedMask) ||
+        rerandomizedMask.size() != 32)
+    {
+        strErrorOut = "IV5 attestation mask accumulation failed";
+        return false;
+    }
+    PrivacyVNextDigest amountMask;
+    std::memcpy(amountMask.data(), &rerandomizedMask[0], 32);
+    OPENSSL_cleanse(&rerandomizedMask[0], rerandomizedMask.size());
+
+    PrivacyVNextDigest amountEntropy;
+    std::vector<unsigned char> vchAmountProof;
+    bool fProved = RandomScalar(amountEntropy, strErrorOut);
+    if (fProved)
+        fProved = ProvePrivacyVNextAmountEquality(
+            vFinal[0].pseudoOut,
+            INNOVA_PRIVACY_VNEXT_COLLATERAL_ATTESTATION_AMOUNT, amountMask,
+            signingHash, amountEntropy, vchAmountProof, strErrorOut);
+    OPENSSL_cleanse(amountMask.data(), amountMask.size());
+    OPENSSL_cleanse(amountEntropy.data(), amountEntropy.size());
+    if (!fProved)
+        return false;
+
+    std::vector<unsigned char> payload = prefix;
+    PutVector(payload, vchMembership);
+    PutVector(payload, std::vector<unsigned char>());   // no range proof
+    PutVector(payload, std::vector<unsigned char>());   // no balance proof
+    PutVector(payload, vchAmountProof);                 // the tier proof
+    PutVector(payload, std::vector<unsigned char>());   // no disclosures
+
+    const PrivacyVNextPayloadValidation validation =
+        ValidatePrivacyVNextPayload(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                    payload);
+    if (!validation.IsValid())
+    {
+        strErrorOut = "the built IV5 attestation does not validate: " +
+                      validation.strError;
+        return false;
+    }
+
+    keyImageOut = vFinal[0].keyImage;
+    vchPayloadOut.swap(payload);
+    return true;
 }

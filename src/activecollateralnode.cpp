@@ -40,10 +40,28 @@ void CActiveCollateralnode::ManageStatus()
                 return;
             }
         } else {
-            service = CService(strCollateralNodeAddr);
+            // CService parses .onion via CNetAddr::SetSpecial before any DNS lookup, so a
+            // hidden-service endpoint needs no separate path.
+            service = CService(strCollateralNodeAddr, GetDefaultPort());
+            if (!service.IsValid()) {
+                notCapableReason = "collateralnodeaddr is not a usable address: " + strCollateralNodeAddr;
+                status = COLLATERALNODE_NOT_CAPABLE;
+                printf("CActiveCollateralnode::ManageStatus() - not capable: %s\n", notCapableReason.c_str());
+                return;
+            }
         }
 
-        printf("CActiveCollateralnode::ManageStatus() - Checking inbound connection to '%s'\n", service.ToString().c_str());
+        // Self-dial reachability check. An onion endpoint needs the Tor proxy; without one
+        // the check is skipped rather than failed.
+        const bool fOnionEndpoint = service.IsTor();
+        proxyType torProxy;
+        const bool fTorProxy = GetProxy(NET_TOR, torProxy);
+        if (fOnionEndpoint && !fTorProxy) {
+            printf("CActiveCollateralnode::ManageStatus() - '%s' is a hidden service and no Tor "
+                   "proxy is configured; skipping the reachability check\n",
+                   service.ToString().c_str());
+        } else {
+            printf("CActiveCollateralnode::ManageStatus() - Checking inbound connection to '%s'\n", service.ToString().c_str());
 
             if(!ConnectNode((CAddress)service, service.ToString().c_str())){
                 notCapableReason = "Could not connect to " + service.ToString();
@@ -51,6 +69,7 @@ void CActiveCollateralnode::ManageStatus()
                 printf("CActiveCollateralnode::ManageStatus() - not capable: %s\n", notCapableReason.c_str());
                 return;
             }
+        }
 
         if(!pwalletMain){
             notCapableReason = "Wallet not initialized.";

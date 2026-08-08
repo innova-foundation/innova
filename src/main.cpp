@@ -1548,6 +1548,159 @@ uint256 GetPrivacyVNextTransparentBinding(const CTransaction& tx)
     return ss.GetHash();
 }
 
+bool ConnectPrivacyVNextAttestations(CTxDB& txdb,
+                                     const CTransaction& tx,
+                                     const PrivacyVNextStateEffects& effects,
+                                     int nHeight,
+                                     bool fJustCheck,
+                                     std::set<uint256>& setBlockAttestations,
+                                     bool& fLocalFailure,
+                                     std::string& strError)
+{
+    fLocalFailure = false;
+    strError.clear();
+
+    for (size_t i = 0; i < effects.attestationKeyImages.size(); ++i)
+    {
+        uint256 keyImage;
+        memcpy(keyImage.begin(), effects.attestationKeyImages[i].data(),
+               effects.attestationKeyImages[i].size());
+        if (!setBlockAttestations.insert(keyImage).second)
+        {
+            strError = strprintf("duplicate IV5 attestation %s in active DAG block",
+                                 keyImage.ToString().substr(0,10).c_str());
+            return false;
+        }
+
+        // An attestation over a spent note proves nothing about live collateral,
+        // so the note must still be unspent when it is made.
+        CShieldedNullifierSpent spent;
+        const TxDBReadStatus spentStatus =
+            txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
+        if (spentStatus == TXDB_READ_ERROR)
+        {
+            fLocalFailure = true;
+            strError = strprintf(
+                "corrupt IV5 spent-key index for %s; -reindex/resync required",
+                keyImage.ToString().substr(0,10).c_str());
+            return false;
+        }
+        if (spentStatus == TXDB_READ_FOUND)
+        {
+            strError = strprintf(
+                "IV5 attestation %s names a note already spent by %s",
+                keyImage.ToString().substr(0,10).c_str(),
+                spent.txnHash.ToString().substr(0,10).c_str());
+            return false;
+        }
+
+        // One node per note. The record is never replaced and is erased only by
+        // its own disconnect, so connect and disconnect stay exact inverses; an
+        // operator changing endpoints moves the collateral to a fresh note and
+        // attests to that one.
+        CPrivacyVNextCollateralAttestation prior;
+        const TxDBReadStatus watchStatus =
+            txdb.ReadPrivacyVNextCollateralStatus(keyImage, prior);
+        if (watchStatus == TXDB_READ_ERROR)
+        {
+            fLocalFailure = true;
+            strError = strprintf(
+                "corrupt IV5 collateral index for %s; -reindex/resync required",
+                keyImage.ToString().substr(0,10).c_str());
+            return false;
+        }
+        if (watchStatus == TXDB_READ_FOUND)
+        {
+            strError = strprintf(
+                "IV5 collateral %s was already attested by %s",
+                keyImage.ToString().substr(0,10).c_str(),
+                prior.txnHash.ToString().substr(0,10).c_str());
+            return false;
+        }
+
+        if (fJustCheck)
+            continue;
+        const CPrivacyVNextCollateralAttestation attested(
+            tx.GetHash(),
+            uint256(std::vector<unsigned char>(
+                effects.registrationContext.begin(),
+                effects.registrationContext.end())),
+            nHeight);
+        if (!txdb.WritePrivacyVNextCollateral(keyImage, attested))
+        {
+            fLocalFailure = true;
+            strError = "IV5 collateral attestation write failed";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool DisconnectPrivacyVNextAttestations(CTxDB& txdb,
+                                        const CTransaction& tx,
+                                        const PrivacyVNextStateEffects& effects,
+                                        std::string& strError)
+{
+    strError.clear();
+    for (size_t j = effects.attestationKeyImages.size(); j > 0; --j)
+    {
+        uint256 keyImage;
+        memcpy(keyImage.begin(), effects.attestationKeyImages[j - 1].data(),
+               effects.attestationKeyImages[j - 1].size());
+        CPrivacyVNextCollateralAttestation attested;
+        const TxDBReadStatus status =
+            txdb.ReadPrivacyVNextCollateralStatus(keyImage, attested);
+        if (status != TXDB_READ_FOUND || attested.txnHash != tx.GetHash())
+        {
+            strError = strprintf(
+                "IV5 collateral undo record is %s or owned by another attestation for %s",
+                status == TXDB_READ_NOT_FOUND ? "missing" :
+                status == TXDB_READ_ERROR ? "corrupt" : "mismatched",
+                keyImage.ToString().substr(0,10).c_str());
+            return false;
+        }
+        if (!txdb.ErasePrivacyVNextCollateral(keyImage))
+        {
+            strError = "IV5 collateral erase failed";
+            return false;
+        }
+    }
+    return true;
+}
+
+bool IsPrivacyVNextCollateralRegistered(
+    CTxDB& txdb,
+    const uint256& keyImage,
+    CPrivacyVNextCollateralAttestation& attestedOut,
+    bool& fLocalFailure)
+{
+    attestedOut = CPrivacyVNextCollateralAttestation();
+    fLocalFailure = false;
+
+    const TxDBReadStatus watchStatus =
+        txdb.ReadPrivacyVNextCollateralStatus(keyImage, attestedOut);
+    if (watchStatus == TXDB_READ_ERROR)
+    {
+        fLocalFailure = true;
+        return false;
+    }
+    if (watchStatus != TXDB_READ_FOUND)
+        return false;
+
+    CShieldedNullifierSpent spent;
+    const TxDBReadStatus spentStatus =
+        txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
+    if (spentStatus == TXDB_READ_ERROR)
+    {
+        fLocalFailure = true;
+        return false;
+    }
+    // The spend is the deregistration. Nothing is erased for it: the record stays
+    // and simply stops meaning "registered", which is what makes a reorg that
+    // reorders the attestation and the spend land the same way on every node.
+    return spentStatus != TXDB_READ_FOUND;
+}
+
 bool CheckPrivacyVNextTransparentBinding(const CTransaction& tx,
                                          const PrivacyVNextStateEffects& effects,
                                          std::string& strError)
@@ -6695,27 +6848,15 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
 
             // Exact reverse of the connect order: attestations were written after
             // the spent keys and before the output bases.
-            for (size_t j = effects.attestationKeyImages.size(); j > 0; --j)
             {
-                uint256 keyImage;
-                memcpy(keyImage.begin(),
-                       effects.attestationKeyImages[j - 1].data(),
-                       effects.attestationKeyImages[j - 1].size());
-                CPrivacyVNextCollateralAttestation attested;
-                const TxDBReadStatus status =
-                    txdb.ReadPrivacyVNextCollateralStatus(keyImage, attested);
-                if (status != TXDB_READ_FOUND ||
-                    attested.txnHash != vtx[i].GetHash())
+                std::string strAttestError;
+                if (!DisconnectPrivacyVNextAttestations(txdb, vtx[i], effects,
+                                                        strAttestError))
                 {
                     StartShutdown();
-                    return error("DisconnectBlock() : IV5 collateral undo record is %s or "
-                                 "owned by another attestation for %s (-reindex/resync required)",
-                                 status == TXDB_READ_NOT_FOUND ? "missing" :
-                                 status == TXDB_READ_ERROR ? "corrupt" : "mismatched",
-                                 keyImage.ToString().substr(0,10).c_str());
+                    return error("DisconnectBlock() : %s (-reindex/resync required)",
+                                 strAttestError.c_str());
                 }
-                if (!txdb.ErasePrivacyVNextCollateral(keyImage))
-                    return error("DisconnectBlock() : IV5 collateral erase failed");
             }
 
             for (size_t j = effects.keyImages.size(); j > 0; --j)
@@ -8673,77 +8814,25 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 }
             }
 
-            // A collateral attestation names a note without consuming it. Its key
-            // image is recorded here and nowhere else: the spent-key index above is
-            // what makes a note unmovable, so routing an attestation through it
-            // would destroy the collateral it was meant to prove.
-            //
-            // Registration is not stored, it is derived: watched here and absent
-            // from the spent-key index. A later spend of the note therefore
-            // deregisters the node by itself, is never blocked, and needs no undo
-            // record — disconnecting either side restores exactly the state the
-            // other side saw.
-            for (size_t i = 0; i < effects.attestationKeyImages.size(); ++i)
+            // A collateral attestation names a note without consuming it, so its
+            // key image goes to the watch set and never to the spent-key index
+            // above; a note recorded there can never move again.
             {
-                uint256 keyImage;
-                memcpy(keyImage.begin(), effects.attestationKeyImages[i].data(),
-                       effects.attestationKeyImages[i].size());
-                if (!setBlockPrivacyVNextAttestations.insert(keyImage).second)
-                    return DoS(100, error(
-                        "ConnectBlock() : duplicate IV5 attestation %s in active DAG block",
-                        keyImage.ToString().substr(0,10).c_str()));
-
-                // An attestation over a spent note proves nothing about live
-                // collateral, so the note must still be unspent when it is made.
-                CShieldedNullifierSpent spent;
-                const TxDBReadStatus spentStatus =
-                    txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
-                if (spentStatus == TXDB_READ_ERROR)
+                bool fAttestLocalFailure = false;
+                std::string strAttestError;
+                if (!ConnectPrivacyVNextAttestations(
+                        txdb, tx, effects, pindex->nHeight, fJustCheck,
+                        setBlockPrivacyVNextAttestations, fAttestLocalFailure,
+                        strAttestError))
                 {
-                    StartShutdown();
-                    return TransientFailure(error(
-                        "ConnectBlock() : corrupt IV5 spent-key index for %s; "
-                        "-reindex/resync required",
-                        keyImage.ToString().substr(0,10).c_str()));
-                }
-                if (spentStatus == TXDB_READ_FOUND)
-                    return DoS(100, error(
-                        "ConnectBlock() : IV5 attestation %s names a note already spent by %s",
-                        keyImage.ToString().substr(0,10).c_str(),
-                        spent.txnHash.ToString().substr(0,10).c_str()));
-
-                // One node per note. The record is replaced by nothing and erased
-                // only by its own disconnect, so connect and disconnect stay exact
-                // inverses; an operator rotating endpoints moves the collateral to
-                // a fresh note and attests to that.
-                CPrivacyVNextCollateralAttestation prior;
-                const TxDBReadStatus watchStatus =
-                    txdb.ReadPrivacyVNextCollateralStatus(keyImage, prior);
-                if (watchStatus == TXDB_READ_ERROR)
-                {
-                    StartShutdown();
-                    return TransientFailure(error(
-                        "ConnectBlock() : corrupt IV5 collateral index for %s; "
-                        "-reindex/resync required",
-                        keyImage.ToString().substr(0,10).c_str()));
-                }
-                if (watchStatus == TXDB_READ_FOUND)
-                    return DoS(100, error(
-                        "ConnectBlock() : IV5 collateral %s was already attested by %s",
-                        keyImage.ToString().substr(0,10).c_str(),
-                        prior.txnHash.ToString().substr(0,10).c_str()));
-
-                if (!fJustCheck)
-                {
-                    const CPrivacyVNextCollateralAttestation attested(
-                        tx.GetHash(),
-                        uint256(std::vector<unsigned char>(
-                            effects.registrationContext.begin(),
-                            effects.registrationContext.end())),
-                        pindex->nHeight);
-                    if (!txdb.WritePrivacyVNextCollateral(keyImage, attested))
+                    if (fAttestLocalFailure)
+                    {
+                        StartShutdown();
                         return TransientFailure(error(
-                            "ConnectBlock() : IV5 collateral attestation write failed"));
+                            "ConnectBlock() : %s", strAttestError.c_str()));
+                    }
+                    return DoS(100, error("ConnectBlock() : %s",
+                                          strAttestError.c_str()));
                 }
             }
 

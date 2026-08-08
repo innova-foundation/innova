@@ -519,6 +519,7 @@ TEST_OBJS= \
     obj/test/privacy_vnext_abi_tests.o \
     obj/test/privacy_vnext_store_tests.o \
     obj/test/privacy_vnext_builder_tests.o \
+    obj/test/privacy_vnext_collateral_tests.o \
     obj/test/idag_validation_tests.o \
     obj/test/shielded_nullifier_binding_tests.o \
     obj/test/finality_vote_binding_tests.o \

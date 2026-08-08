@@ -101,4 +101,19 @@ bool BuildPrivacyVNextShieldPayload(
     std::vector<unsigned char>& vchPayloadOut,
     std::string& strErrorOut);
 
+// Build a collateralnode attestation payload. The note is named, not spent; its key image
+// goes to the collateral watch set. `registrationContext` (node identity, endpoint, payout)
+// is in the signing hash.
+bool BuildPrivacyVNextCollateralAttestationPayload(
+    uint8_t nNetwork,
+    const PrivacyVNextDigest& genesis,
+    const PrivacyVNextDigest& finalizedRoot,
+    uint64_t nFinalizedTreeSize,
+    const PrivacyVNextDigest& transparentBinding,
+    const PrivacyVNextDigest& registrationContext,
+    const PrivacyVNextSpendNote& collateral,
+    std::vector<unsigned char>& vchPayloadOut,
+    PrivacyVNextDigest& keyImageOut,
+    std::string& strErrorOut);
+
 #endif // INNOVA_PRIVACY_VNEXT_BUILDER_H
