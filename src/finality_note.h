@@ -348,6 +348,48 @@ bool ResolveNoteTallyCoverage(const std::vector<const CNoteFinalityVote*>& vConn
                               std::vector<const CNoteFinalityVote*>& vCoveredOut,
                               std::string* pstrError = NULL);
 
+/** What one committee member produces from an epoch's connected note votes. */
+struct CNoteTallyCommitteePass
+{
+    std::vector<uint256> vAcceptedTags;
+    std::vector<CNoteVoteComplaint> vComplaints;
+    // Evaluations at this member's own x, summed over the accepted votes. Only the sum
+    // ever leaves the member, which is what keeps an individual weight unopenable.
+    CNoteTallyPlainShare aggregateActive;
+    CNoteTallyPlainShare aggregateWinning;
+    bool fHaveActive;
+    bool fHaveWinning;
+
+    CNoteTallyCommitteePass()
+    {
+        fHaveActive = false;
+        fHaveWinning = false;
+    }
+};
+
+/** Decrypt this member's evaluation of every connected vote, complain about the ones that
+ *  do not open their coefficients, and sum the rest. A vote is taken at most once: the tag
+ *  is the note's one identity per epoch. */
+bool RunNoteTallyCommitteePass(const std::vector<const CNoteFinalityVote*>& vConnectedVotes,
+                               const uint256& hashWinner,
+                               const CFinalityTallyConfig& config,
+                               const CKey& keyMember,
+                               int nMemberIndex,
+                               CNoteTallyCommitteePass& passOut,
+                               std::string* pstrError = NULL);
+
+/** Interpolate an aggregate opening from M members' partials and require it to open the
+ *  point a validator recomputes. Deriving the check from the votes rather than trusting the
+ *  interpolation is what makes a poisoned share show up as a failure to open. */
+bool OpenNoteTallyAggregate(const std::vector<CNoteTallyPlainShare>& vPartials,
+                            int nThreshold,
+                            const PrivacyVNextDigest& expectedPoint,
+                            int64_t& nWeightOut,
+                            uint256& weightBlindOut,
+                            int64_t& nRewardOut,
+                            uint256& rewardBlindOut,
+                            std::string* pstrError = NULL);
+
 /** The whole private side of a certificate, as a pure function of the connected vote set.
  *  Both aggregates are recomputed here; a certificate never supplies them. */
 bool CheckNoteTallyCertificate(int nTier,

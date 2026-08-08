@@ -17,7 +17,6 @@ pub(crate) const SIGMA_PROVE_REQUEST_BYTES: usize = 204;
 pub(crate) const SIGMA_PROOF_BYTES: usize = 128;
 pub(crate) const SIGMA_PROVE_RESPONSE_BYTES: usize = 32 + SIGMA_PROOF_BYTES;
 pub(crate) const SIGMA_VERIFY_REQUEST_BYTES: usize = 140 + SIGMA_PROOF_BYTES;
-pub(crate) const COMBINE_TERM_BYTES: usize = 68;
 pub(crate) const MAX_COMBINE_TERMS: usize = 1024;
 pub(crate) const RANGE_PROVE_REQUEST_BYTES: usize = 76;
 

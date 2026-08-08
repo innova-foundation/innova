@@ -1559,6 +1559,105 @@ bool CheckNoteTallyTierProofs(int nTier,
     return true;
 }
 
+bool RunNoteTallyCommitteePass(const std::vector<const CNoteFinalityVote*>& vConnectedVotes,
+                               const uint256& hashWinner,
+                               const CFinalityTallyConfig& config,
+                               const CKey& keyMember,
+                               int nMemberIndex,
+                               CNoteTallyCommitteePass& passOut,
+                               std::string* pstrError)
+{
+    passOut = CNoteTallyCommitteePass();
+    if (nMemberIndex < 0 || nMemberIndex >= (int)config.vCommitteePubKeys.size() ||
+        !keyMember.IsValid() || config.nThresholdM <= 0)
+    {
+        Fail(pstrError, "note tally pass has no usable committee position");
+        return false;
+    }
+
+    std::vector<CNoteTallyPlainShare> vActive;
+    std::vector<CNoteTallyPlainShare> vWinning;
+    std::set<uint256> setSeenTags;
+    for (size_t i = 0; i < vConnectedVotes.size(); i++)
+    {
+        const CNoteFinalityVote* pvote = vConnectedVotes[i];
+        if (pvote == NULL)
+        {
+            Fail(pstrError, "note tally pass was handed a missing vote");
+            return false;
+        }
+        const uint256 tag = pvote->GetVoteTag();
+        if (tag == 0 || !setSeenTags.insert(tag).second)
+        {
+            Fail(pstrError, "note tally pass saw a repeated vote tag");
+            return false;
+        }
+
+        CNoteTallyPlainShare plain;
+        bool fComplainable = false;
+        if (DecryptNoteVoteShareForRecipient(pvote->share, config, keyMember, nMemberIndex,
+                                             plain, &fComplainable))
+        {
+            passOut.vAcceptedTags.push_back(tag);
+            vActive.push_back(plain);
+            if (pvote->hashBlock == hashWinner)
+                vWinning.push_back(plain);
+            continue;
+        }
+        if (!fComplainable)
+        {
+            Fail(pstrError, "note tally pass could not read its own share");
+            return false;
+        }
+        // A share this member cannot use is excluded only with evidence, so a member
+        // that simply dislikes a voter cannot drop it.
+        CNoteVoteComplaint complaint;
+        if (BuildNoteVoteComplaint(complaint, *pvote, config, keyMember, nMemberIndex))
+            passOut.vComplaints.push_back(complaint);
+    }
+
+    passOut.fHaveActive = AggregateNoteTallyPlainShares(vActive, passOut.aggregateActive);
+    passOut.fHaveWinning = AggregateNoteTallyPlainShares(vWinning, passOut.aggregateWinning);
+    return true;
+}
+
+bool OpenNoteTallyAggregate(const std::vector<CNoteTallyPlainShare>& vPartials,
+                            int nThreshold,
+                            const PrivacyVNextDigest& expectedPoint,
+                            int64_t& nWeightOut,
+                            uint256& weightBlindOut,
+                            int64_t& nRewardOut,
+                            uint256& rewardBlindOut,
+                            std::string* pstrError)
+{
+    uint256 weight, reward;
+    if (!RecoverNoteTallySecrets(vPartials, nThreshold, weight, weightBlindOut, reward,
+                                 rewardBlindOut))
+    {
+        Fail(pstrError, "note tally aggregate could not be interpolated");
+        return false;
+    }
+    if (!Ed25519ScalarToMoney(weight, nWeightOut) ||
+        !Ed25519ScalarToMoney(reward, nRewardOut))
+    {
+        Fail(pstrError, "note tally aggregate opened outside the money range");
+        return false;
+    }
+
+    // The opening is only usable if it opens the point the validator recomputes. A share
+    // that passed its coefficient check cannot fail here, so a failure means the covered
+    // set the committee summed is not the set the certificate will name.
+    PrivacyVNextDigest derived = ZeroDigest();
+    if (!CommitScaled(weight, weightBlindOut, derived, pstrError))
+        return false;
+    if (derived != expectedPoint)
+    {
+        Fail(pstrError, "note tally aggregate does not open the recomputed commitment");
+        return false;
+    }
+    return true;
+}
+
 bool ResolveNoteTallyCoverage(const std::vector<const CNoteFinalityVote*>& vConnectedVotes,
                               const std::vector<uint256>& vCertVoteTags,
                               const std::vector<CNoteVoteComplaint>& vComplaints,
