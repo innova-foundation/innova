@@ -1793,6 +1793,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
     std::vector<std::pair<ec_point, CKeyImageSpent> >
         vAnonRelayKeyImages;
     std::vector<uint256> vPrivacyVNextKeyImages;
+    std::vector<uint256> vPrivacyVNextOutputBases;
     if (tx.nVersion == ANON_TXN_VERSION &&
         (IsLegacyPrivacyPolicyDisabled() ||
          nEffectiveMempoolHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION))
@@ -1874,6 +1875,36 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                              spent.txnHash.ToString().substr(0,10).c_str());
             vPrivacyVNextKeyImages.push_back(keyImage);
         }
+
+        // Relaying an owner the chain already carries would only produce a
+        // transaction every miner's ConnectBlock refuses.
+        std::set<uint256> setTransactionOutputBases;
+        vPrivacyVNextOutputBases.reserve(effects.outputLeaves.size());
+        for (size_t i = 0; i < effects.outputLeaves.size(); ++i)
+        {
+            uint256 base;
+            memcpy(base.begin(), effects.outputLeaves[i].nullifierBase.data(),
+                   effects.outputLeaves[i].nullifierBase.size());
+            if (!setTransactionOutputBases.insert(base).second)
+                return error("CTxMemPool::accept() : duplicate IV5 output owner %s",
+                             base.ToString().substr(0,10).c_str());
+
+            CShieldedNullifierSpent created;
+            const TxDBReadStatus status =
+                txdb.ReadPrivacyVNextOutputBaseStatus(base, created);
+            if (status == TXDB_READ_ERROR)
+            {
+                StartShutdown();
+                return error("CTxMemPool::accept() : IV5 output-base index is corrupt for %s; "
+                             "-reindex/resync required",
+                             base.ToString().substr(0,10).c_str());
+            }
+            if (status == TXDB_READ_FOUND)
+                return error("CTxMemPool::accept() : IV5 output owner %s was already issued by %s",
+                             base.ToString().substr(0,10).c_str(),
+                             created.txnHash.ToString().substr(0,10).c_str());
+            vPrivacyVNextOutputBases.push_back(base);
+        }
     }
 
     // Coinbase is only valid in a block, not as a loose transaction
@@ -1910,6 +1941,17 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                 return error("CTxMemPool::accept() : IV5 spent key %s is reserved by %s",
                              it->ToString().substr(0,10).c_str(),
                              spentIt->second.txnHash.ToString().substr(0,10).c_str());
+        }
+        for (std::vector<uint256>::const_iterator it =
+                 vPrivacyVNextOutputBases.begin();
+             it != vPrivacyVNextOutputBases.end(); ++it)
+        {
+            std::map<uint256, CShieldedNullifierSpent>::const_iterator baseIt =
+                mapPrivacyVNextOutputBase.find(*it);
+            if (baseIt != mapPrivacyVNextOutputBase.end())
+                return error("CTxMemPool::accept() : IV5 output owner %s is reserved by %s",
+                             it->ToString().substr(0,10).c_str(),
+                             baseIt->second.txnHash.ToString().substr(0,10).c_str());
         }
     }
 
@@ -2379,6 +2421,14 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                     spent.nIndex = i;
                     mapPrivacyVNextNullifier[vPrivacyVNextKeyImages[i]] = spent;
                 }
+                mapPrivacyVNextTxOutputBases[hash] = vPrivacyVNextOutputBases;
+                for (size_t i = 0; i < vPrivacyVNextOutputBases.size(); ++i)
+                {
+                    CShieldedNullifierSpent created;
+                    created.txnHash = hash;
+                    created.nIndex = i;
+                    mapPrivacyVNextOutputBase[vPrivacyVNextOutputBases[i]] = created;
+                }
             }
 
             if (tx.nVersion == ANON_TXN_VERSION)
@@ -2684,6 +2734,36 @@ bool CTxMemPool::remove(const CTransaction &tx, bool fRecursive)
                     }
                     mapPrivacyVNextTxNullifiers.erase(reverseIt);
                 }
+
+                std::map<uint256, std::vector<uint256> >::iterator baseReverseIt =
+                    mapPrivacyVNextTxOutputBases.find(hash);
+                if (baseReverseIt == mapPrivacyVNextTxOutputBases.end())
+                {
+                    StartShutdown();
+                    printf("CTxMemPool::remove: missing IV5 output-base reservation for %s\n",
+                           hash.ToString().substr(0,10).c_str());
+                }
+                else
+                {
+                    for (std::vector<uint256>::const_iterator it =
+                             baseReverseIt->second.begin();
+                         it != baseReverseIt->second.end(); ++it)
+                    {
+                        std::map<uint256, CShieldedNullifierSpent>::iterator baseIt =
+                            mapPrivacyVNextOutputBase.find(*it);
+                        if (baseIt == mapPrivacyVNextOutputBase.end() ||
+                            baseIt->second.txnHash != hash)
+                        {
+                            StartShutdown();
+                            printf("CTxMemPool::remove: mismatched IV5 output-base reservation %s for %s\n",
+                                   it->ToString().substr(0,10).c_str(),
+                                   hash.ToString().substr(0,10).c_str());
+                            continue;
+                        }
+                        mapPrivacyVNextOutputBase.erase(baseIt);
+                    }
+                    mapPrivacyVNextTxOutputBases.erase(baseReverseIt);
+                }
             }
 
             nTransactionsUpdated++;
@@ -2768,6 +2848,24 @@ bool CTxMemPool::removeConflicts(const CTransaction &tx)
                 remove(txToRemove, true);
             }
         }
+        for (size_t i = 0; i < effects.outputLeaves.size(); ++i)
+        {
+            uint256 base;
+            memcpy(base.begin(), effects.outputLeaves[i].nullifierBase.data(),
+                   effects.outputLeaves[i].nullifierBase.size());
+            std::map<uint256, CShieldedNullifierSpent>::const_iterator baseIt =
+                mapPrivacyVNextOutputBase.find(base);
+            if (baseIt == mapPrivacyVNextOutputBase.end() ||
+                baseIt->second.txnHash == tx.GetHash())
+                continue;
+            std::map<uint256, CTransaction>::const_iterator txIt =
+                mapTx.find(baseIt->second.txnHash);
+            if (txIt != mapTx.end())
+            {
+                const CTransaction txToRemove = txIt->second;
+                remove(txToRemove, true);
+            }
+        }
     }
 
     return true;
@@ -2826,6 +2924,23 @@ void CTxMemPool::RemoveDAGConflicts(const uint256& hashBlock)
                 mapPrivacyVNextTxNullifiers.erase(reverseIt);
             }
 
+            std::map<uint256, std::vector<uint256> >::iterator baseReverseIt =
+                mapPrivacyVNextTxOutputBases.find(txHash);
+            if (baseReverseIt != mapPrivacyVNextTxOutputBases.end())
+            {
+                for (std::vector<uint256>::const_iterator it =
+                         baseReverseIt->second.begin();
+                     it != baseReverseIt->second.end(); ++it)
+                {
+                    std::map<uint256, CShieldedNullifierSpent>::iterator baseIt =
+                        mapPrivacyVNextOutputBase.find(*it);
+                    if (baseIt != mapPrivacyVNextOutputBase.end() &&
+                        baseIt->second.txnHash == txHash)
+                        mapPrivacyVNextOutputBase.erase(baseIt);
+                }
+                mapPrivacyVNextTxOutputBases.erase(baseReverseIt);
+            }
+
             mapTx.erase(txHash);
             nRemoved++;
             ++nTransactionsUpdated;
@@ -2846,6 +2961,8 @@ void CTxMemPool::clear()
     mapShieldedNullifier.clear();
     mapPrivacyVNextNullifier.clear();
     mapPrivacyVNextTxNullifiers.clear();
+    mapPrivacyVNextOutputBase.clear();
+    mapPrivacyVNextTxOutputBases.clear();
     setDAGSeenTxids.clear();
     ++nTransactionsUpdated;
 }
@@ -3447,12 +3564,20 @@ bool CheckFCMPSpendRoots(const CTransaction& tx, int nBlockHeight,
     return true;
 }
 
-// An IV5 transaction's spend tags live in its payload, not in vin or
+// An IV5 transaction's conflict tags live in its payload, not in vin or
 // vShieldedSpend. Collecting them keeps the double-spend view of a DAG sibling
 // set complete; a payload that does not decode contributes nothing, and the
 // block carrying it is rejected by the validation that decodes it again.
-void AppendPrivacyVNextSpendTags(const CTransaction& tx,
-                                 std::set<uint256>& setTagsOut)
+//
+// Output owners are tagged as well as key images, because consensus refuses a
+// second issue of an owner already on chain. Without this an owner reissued
+// across siblings would kill the later block rather than the later transaction,
+// which is the same block-destruction lever a cross-sibling double spend would
+// be. The owner tag is domain separated so it can never alias a key image; the
+// key-image tag stays the raw point, because the skipped-transaction set it
+// feeds is consensus state.
+void AppendPrivacyVNextConflictTags(const CTransaction& tx,
+                                    std::set<uint256>& setTagsOut)
 {
     if (!tx.IsPrivacyVNext() || !tx.privacyVNext.IsPresent())
         return;
@@ -3471,6 +3596,15 @@ void AppendPrivacyVNextSpendTags(const CTransaction& tx,
         memcpy(keyImage.begin(), effects.keyImages[i].data(),
                effects.keyImages[i].size());
         setTagsOut.insert(keyImage);
+    }
+
+    for (size_t i = 0; i < effects.outputLeaves.size(); ++i)
+    {
+        CHashWriter ss(SER_GETHASH, 0);
+        ss << std::string("Innova/IV5/OutputOwnerConflictTag/v1");
+        ss.write((const char*)effects.outputLeaves[i].nullifierBase.data(),
+                 effects.outputLeaves[i].nullifierBase.size());
+        setTagsOut.insert(ss.GetHash());
     }
 }
 
@@ -3493,7 +3627,7 @@ bool TransactionConflictsWithDAGSiblingSpends(const CTransaction& tx,
     // instead of the later transaction, which lets anyone destroy an honest
     // miner's block by broadcasting two spends of one note to disjoint peers.
     std::set<uint256> setTags;
-    AppendPrivacyVNextSpendTags(tx, setTags);
+    AppendPrivacyVNextConflictTags(tx, setTags);
     for (std::set<uint256>::const_iterator it = setTags.begin();
          it != setTags.end(); ++it)
         if (setDAGSpentNullifiers.count(*it))
@@ -3617,7 +3751,7 @@ static std::set<uint256> GetDAGSkippedTxsForBlockInternal(const CBlock& block,
                 setDAGSpentOutputs.insert(txin.prevout);
             for (const CShieldedSpendDescription& spend : sibTx.vShieldedSpend)
                 setDAGSpentNullifiers.insert(spend.nullifier);
-            AppendPrivacyVNextSpendTags(sibTx, setDAGSpentNullifiers);
+            AppendPrivacyVNextConflictTags(sibTx, setDAGSpentNullifiers);
         }
     }
 
@@ -4536,7 +4670,7 @@ bool IsSynchronized() {
   return rc;
 }
 
-bool ValidatePrivacyVNextNullifierPersistence(
+bool ValidatePrivacyVNextIndexPersistence(
     CTxDB& txdb, std::string& strError)
 {
     LOCK(cs_main);
@@ -4553,6 +4687,7 @@ bool ValidatePrivacyVNextNullifierPersistence(
     std::reverse(vBoundaryBChain.begin(), vBoundaryBChain.end());
 
     std::set<uint256> setExpectedKeyImages;
+    std::set<uint256> setExpectedOutputBases;
     for (std::vector<CBlockIndex*>::const_iterator blockIt =
              vBoundaryBChain.begin();
          blockIt != vBoundaryBChain.end(); ++blockIt)
@@ -4653,6 +4788,32 @@ bool ValidatePrivacyVNextNullifierPersistence(
                     return false;
                 }
             }
+
+            for (size_t i = 0; i < effects.outputLeaves.size(); ++i)
+            {
+                uint256 base;
+                memcpy(base.begin(),
+                       effects.outputLeaves[i].nullifierBase.data(),
+                       effects.outputLeaves[i].nullifierBase.size());
+                if (!setExpectedOutputBases.insert(base).second)
+                {
+                    strError = strprintf(
+                        "duplicate IV5 output owner %s in active chain",
+                        base.ToString().substr(0,10).c_str());
+                    return false;
+                }
+                CShieldedNullifierSpent created;
+                const TxDBReadStatus status =
+                    txdb.ReadPrivacyVNextOutputBaseStatus(base, created);
+                if (status != TXDB_READ_FOUND ||
+                    created.txnHash != tx.GetHash() || created.nIndex != i)
+                {
+                    strError = strprintf(
+                        "IV5 output-base record %s is missing, corrupt, or owned by another output",
+                        base.ToString().substr(0,10).c_str());
+                    return false;
+                }
+            }
         }
     }
 
@@ -4665,6 +4826,18 @@ bool ValidatePrivacyVNextNullifierPersistence(
             "IV5 spent-key index count mismatch (persisted=%" PRIu64 ", expected=%" PRIu64 ")",
             nPersistedCount,
             static_cast<uint64_t>(setExpectedKeyImages.size()));
+        return false;
+    }
+
+    uint64_t nPersistedBases = 0;
+    if (!txdb.CountPrivacyVNextOutputBases(nPersistedBases, strError))
+        return false;
+    if (nPersistedBases != setExpectedOutputBases.size())
+    {
+        strError = strprintf(
+            "IV5 output-base index count mismatch (persisted=%" PRIu64 ", expected=%" PRIu64 ")",
+            nPersistedBases,
+            static_cast<uint64_t>(setExpectedOutputBases.size()));
         return false;
     }
     return true;
@@ -6305,6 +6478,31 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
                 return error("DisconnectBlock() : accepted IV5 payload cannot be decoded: %s; "
                              "local state is inconsistent (-reindex/resync required)",
                              validation.strError.c_str());
+            }
+
+            // Exact reverse of the connect order: output bases were written last.
+            for (size_t j = effects.outputLeaves.size(); j > 0; --j)
+            {
+                uint256 base;
+                memcpy(base.begin(),
+                       effects.outputLeaves[j - 1].nullifierBase.data(),
+                       effects.outputLeaves[j - 1].nullifierBase.size());
+                CShieldedNullifierSpent created;
+                const TxDBReadStatus status =
+                    txdb.ReadPrivacyVNextOutputBaseStatus(base, created);
+                if (status != TXDB_READ_FOUND ||
+                    created.txnHash != vtx[i].GetHash() ||
+                    created.nIndex != j - 1)
+                {
+                    StartShutdown();
+                    return error("DisconnectBlock() : IV5 output-base undo record is %s or "
+                                 "owned by another output for %s (-reindex/resync required)",
+                                 status == TXDB_READ_NOT_FOUND ? "missing" :
+                                 status == TXDB_READ_ERROR ? "corrupt" : "mismatched",
+                                 base.ToString().substr(0,10).c_str());
+                }
+                if (!txdb.ErasePrivacyVNextOutputBase(base))
+                    return error("DisconnectBlock() : IV5 output-base erase failed");
             }
 
             for (size_t j = effects.keyImages.size(); j > 0; --j)
@@ -8165,6 +8363,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         }
 
         std::set<uint256> setBlockPrivacyVNextNullifiers;
+        std::set<uint256> setBlockPrivacyVNextOutputBases;
         for (const CTransaction& tx : activeBlock.vtx)
         {
             if (!tx.IsPrivacyVNext())
@@ -8257,6 +8456,49 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                     if (!txdb.WritePrivacyVNextNullifier(keyImage, spent))
                         return TransientFailure(error(
                             "ConnectBlock() : IV5 spent-key write failed"));
+                }
+            }
+
+            // Owner uniqueness is enforced where value enters the pool, because that
+            // is the only point at which it can still be refused. I = Hp(O), so a
+            // second leaf carrying an owner already on chain shares the first leaf's
+            // key image: whichever is spent first consumes both, and unshield is
+            // retired, so the other one's value is destroyed with no way back.
+            for (size_t i = 0; i < effects.outputLeaves.size(); ++i)
+            {
+                uint256 base;
+                memcpy(base.begin(), effects.outputLeaves[i].nullifierBase.data(),
+                       effects.outputLeaves[i].nullifierBase.size());
+                if (!setBlockPrivacyVNextOutputBases.insert(base).second)
+                    return DoS(100, error(
+                        "ConnectBlock() : duplicate IV5 output owner %s in active DAG block",
+                        base.ToString().substr(0,10).c_str()));
+
+                CShieldedNullifierSpent prior;
+                const TxDBReadStatus status =
+                    txdb.ReadPrivacyVNextOutputBaseStatus(base, prior);
+                if (status == TXDB_READ_ERROR)
+                {
+                    StartShutdown();
+                    return TransientFailure(error(
+                        "ConnectBlock() : corrupt IV5 output-base index for %s; "
+                        "-reindex/resync required",
+                        base.ToString().substr(0,10).c_str()));
+                }
+                if (status == TXDB_READ_FOUND)
+                    return DoS(100, error(
+                        "ConnectBlock() : IV5 output owner %s was already issued by %s",
+                        base.ToString().substr(0,10).c_str(),
+                        prior.txnHash.ToString().substr(0,10).c_str()));
+
+                if (!fJustCheck)
+                {
+                    CShieldedNullifierSpent created;
+                    created.txnHash = tx.GetHash();
+                    created.nIndex = i;
+                    if (!txdb.WritePrivacyVNextOutputBase(base, created))
+                        return TransientFailure(error(
+                            "ConnectBlock() : IV5 output-base write failed"));
                 }
             }
         }

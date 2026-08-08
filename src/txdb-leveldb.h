@@ -526,6 +526,21 @@ public:
     bool CountPrivacyVNextNullifiers(uint64_t& nCount,
                                     std::string& strError);
 
+    // Exact full-chain membership of every IV5 output's nullifier base I = Hp(O).
+    // Two leaves that share an owner key O share I, hence share the key image any
+    // spend of either publishes: spending one marks both, so the second is value
+    // that can never be moved again. Value never leaves the pool, so that value is
+    // destroyed. A payload already refuses a repeated owner among its own outputs
+    // and a proof refuses a repeated key image among its own inputs; this index is
+    // what makes the same statement across transactions.
+    bool WritePrivacyVNextOutputBase(const uint256& base,
+                                     const CShieldedNullifierSpent& created);
+    TxDBReadStatus ReadPrivacyVNextOutputBaseStatus(
+        const uint256& base, CShieldedNullifierSpent& created);
+    bool ErasePrivacyVNextOutputBase(const uint256& base);
+    bool CountPrivacyVNextOutputBases(uint64_t& nCount,
+                                      std::string& strError);
+
     bool WriteShieldedAnchor(const uint256& anchor);
     bool ReadShieldedAnchor(const uint256& anchor);
     TxDBReadStatus ReadShieldedAnchorStatus(const uint256& anchor);

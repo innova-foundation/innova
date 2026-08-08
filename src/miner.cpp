@@ -540,7 +540,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                     setDAGSiblingTxids.insert(sibTx.GetHash());
                     BOOST_FOREACH(const CTxIn& txin, sibTx.vin)
                         setDAGSiblingSpentOutpoints.insert(txin.prevout);
-                    AppendPrivacyVNextSpendTags(sibTx, setDAGSiblingSpentTags);
+                    AppendPrivacyVNextConflictTags(sibTx, setDAGSiblingSpentTags);
                 }
             }
         }
@@ -578,7 +578,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             if (!setDAGSiblingSpentTags.empty())
             {
                 std::set<uint256> setTags;
-                AppendPrivacyVNextSpendTags(tx, setTags);
+                AppendPrivacyVNextConflictTags(tx, setTags);
                 bool fSpentBySibling = false;
                 for (std::set<uint256>::const_iterator it = setTags.begin();
                      !fSpentBySibling && it != setTags.end(); ++it)

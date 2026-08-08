@@ -1645,6 +1645,7 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "getblocktemplate"       && n > 0) ConvertTo<Object>(params[0]);
     if (strMethod == "listsinceblock"         && n > 1) ConvertTo<int64_t>(params[1]);
 
+    if (strMethod == "z_shieldall"           && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "z_shield"              && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "z_unshield"            && n > 2) ConvertTo<double>(params[2]);
     if (strMethod == "z_iv5transfer"         && n > 1) ConvertTo<double>(params[1]);

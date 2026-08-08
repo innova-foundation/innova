@@ -1862,10 +1862,10 @@ bool AppInit2()
     {
         CTxDB txdbPrivacyVNext("r");
         std::string strPrivacyVNextError;
-        if (!ValidatePrivacyVNextNullifierPersistence(
+        if (!ValidatePrivacyVNextIndexPersistence(
                 txdbPrivacyVNext, strPrivacyVNextError))
             return InitError(strprintf(_(
-                "IV5 spent-key persistence validation failed: %s. "
+                "IV5 index persistence validation failed: %s. "
                 "The chain database is incomplete or inconsistent; preserve "
                 "wallet.dat and restart with -reindex or resync."),
                 strPrivacyVNextError.c_str()));

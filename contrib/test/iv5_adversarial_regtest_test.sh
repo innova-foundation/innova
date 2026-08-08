@@ -511,7 +511,100 @@ else
 fi
 
 # ============================================================
-header "13. The node reports no errors"
+header "13. An output owner already on chain cannot be issued again"
+# ============================================================
+
+# I = Hp(O): two leaves with one owner key share a key image, so spending one burns
+# the other. Case: copy a confirmed shield's payload into a second transaction funded
+# by other coins, re-issuing the same output owners.
+
+# hex byte-order reversal, for the internal (little-endian) form of a txid
+rev_hex() { echo "$1" | sed 's/../& /g' | awk '{for(i=NF;i>0;i--) printf "%s",$i}'; }
+le32()    { printf '%08x' "$1" | sed 's/../& /g' | awk '{for(i=NF;i>0;i--) printf "%s",$i}'; }
+
+rpc walletpassphrase "$WALLETPASS" 3600 >/dev/null 2>&1
+mine_to $(( $(height) + 25 )) || true
+
+# A small, self-contained shield: one address, one input, so the payload declares a
+# balance a single fresh output can cover again.
+VICTIM_ADDR="$(rpc getnewaddress 2>&1 | tr -d '"[:space:]')"
+rpc sendtoaddress "$VICTIM_ADDR" 40 >/dev/null 2>&1
+mine_to $(( $(height) + 3 )) || true
+SH="$(rpc z_shieldall "$VICTIM_ADDR" 1 2>&1)"
+SH_TXID="$(jstr "$SH" txid)"
+SH_AMOUNT="$(jnum "$SH" shielded)"
+if [ ${#SH_TXID} -eq 64 ]; then
+    success "single-input shield built: $SH_AMOUNT INN, txid ${SH_TXID:0:16}"
+else
+    fail "could not build the single-input shield: $(echo "$SH" | head -3)"
+fi
+
+REISSUE_DONE=0
+if [ ${#SH_TXID} -eq 64 ]; then
+    mine_to $(( $(height) + 3 )) || true
+    SH_CONF="$(jnum "$(rpc gettransaction "$SH_TXID" 2>&1)" confirmations)"
+    if [ -n "$SH_CONF" ] && [ "$SH_CONF" -ge 1 ] 2>/dev/null; then
+        success "the shield whose owners will be re-issued is confirmed"
+    else
+        fail "the single-input shield did not confirm (confirmations='$SH_CONF')"
+    fi
+
+    # Fund the replay from a different address, with enough to cover the balance the
+    # copied payload declares: short of it the transaction is refused for its value
+    # rather than for the owner, which would prove nothing.
+    ATTACK_ADDR="$(rpc getnewaddress 2>&1 | tr -d '"[:space:]')"
+    ATTACK_FUND="$(echo "${SH_AMOUNT:-0} + 5" | bc -l 2>/dev/null)"
+    rpc sendtoaddress "$ATTACK_ADDR" "$ATTACK_FUND" >/dev/null 2>&1
+    mine_to $(( $(height) + 3 )) || true
+    UTXO="$(rpc listunspent 1 9999999 "[\"$ATTACK_ADDR\"]" 2>/dev/null)"
+    FUND_TXID="$(echo "$UTXO" | grep -oE '"txid" *: *"[a-f0-9]{64}"' | grep -oE '[a-f0-9]{64}' | head -1)"
+    FUND_VOUT="$(echo "$UTXO" | grep -oE '"vout" *: *[0-9]+' | grep -oE '[0-9]+$' | head -1)"
+
+    SH_RAW="$(rpc getrawtransaction "$SH_TXID" 2>/dev/null | tr -d '"[:space:]')"
+    # vout count 0, nLockTime 0, then the 0xff "IV5P" marker and schema 1.
+    ENV_OFF="$(awk -v s="$SH_RAW" 'BEGIN{print index(s, "0000000000ff495635500100")}')"
+    if [ -n "$FUND_TXID" ] && [ -n "$FUND_VOUT" ] && [ "${ENV_OFF:-0}" -gt 0 ] 2>/dev/null; then
+        ENVELOPE="${SH_RAW:$(( ENV_OFF - 1 + 10 ))}"
+        REISSUE_RAW="d8070000$(le32 "$(date +%s)")01$(rev_hex "$FUND_TXID")$(le32 "$FUND_VOUT")00ffffffff0000000000$ENVELOPE"
+        SIGNED="$(rpc signrawtransaction "$REISSUE_RAW" 2>&1)"
+        SIGNED_HEX="$(jstr "$SIGNED" hex)"
+        COMPLETE="$(echo "$SIGNED" | grep -o '"complete" *: *[a-z]*' | grep -o '[a-z]*$')"
+        if [ ${#SIGNED_HEX} -gt 100 ] && [ "$COMPLETE" = "true" ]; then
+            success "a second transaction carrying the same payload was assembled and signed"
+            REISSUE_DONE=1
+        else
+            fail "could not sign the re-issue transaction: $(echo "$SIGNED" | head -3)"
+        fi
+    else
+        fail "could not locate the payload envelope or a funding output (offset=$ENV_OFF utxo=$FUND_TXID:$FUND_VOUT)"
+    fi
+fi
+
+if [ "$REISSUE_DONE" = "1" ]; then
+    # Decide on the chain, not on the submitting RPC's reply: the transaction id is
+    # known before submission, so whether it reached a block is a direct question.
+    EXPECT_TXID="$(python3 -c 'import hashlib,sys; b=bytes.fromhex(sys.argv[1]); print(hashlib.sha256(hashlib.sha256(b).digest()).digest()[::-1].hex())' "$SIGNED_HEX" 2>/dev/null)"
+    # sendrawtransaction reports every rejection as a bare "TX rejected", so the reason
+    # has to be read off the node. Anchor the search at the current end of the log.
+    LOG_MARK="$(wc -l < "$NODE_DIR/regtest/debug.log" 2>/dev/null || echo 0)"
+    rpc sendrawtransaction "$SIGNED_HEX" >/dev/null 2>&1
+    REASON="$(tail -n +$(( LOG_MARK + 1 )) "$NODE_DIR/regtest/debug.log" 2>/dev/null |
+              grep -aE "IV5 output owner .* was already issued by" | head -1)"
+    mine_to $(( $(height) + 3 )) || true
+    RCONF="$(jnum "$(rpc gettransaction "$EXPECT_TXID" 2>&1)" confirmations)"
+
+    if [ -n "$RCONF" ] && [ "$RCONF" -ge 1 ] 2>/dev/null; then
+        fail "consensus accepted a second issue of an on-chain output owner: txid ${EXPECT_TXID:0:16} confirmed $RCONF deep"
+    elif [ -n "$REASON" ]; then
+        success "the re-issue was refused as an owner already on chain"
+    else
+        fail "the re-issue never confirmed, but not by the owner rule"
+        tail -n +$(( LOG_MARK + 1 )) "$NODE_DIR/regtest/debug.log" 2>/dev/null | tail -12
+    fi
+fi
+
+# ============================================================
+header "14. The node reports no errors"
 # ============================================================
 
 ERRORS="$(jstr "$(rpc getinfo 2>/dev/null)" errors)"
