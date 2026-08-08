@@ -1823,6 +1823,286 @@ Value z_shieldall(const Array& params, bool fHelp)
     return result;
 }
 
+// One transparent address and what a migration still has to do about it.
+struct PoolMigrationCandidate
+{
+    std::string strAddress;
+    int64_t nSelectable;   // value the next shield from this address would carry
+    int64_t nTotal;        // spendable value sitting at the address
+    int64_t nOutputs;
+};
+
+// Grouped by script, since the shield builder selects on script equality. Re-derived from
+// spendable outputs before every transaction, so an interrupted run resumes without a cursor.
+static void SurveyPoolMigration(size_t nMaxInputs,
+                                std::vector<PoolMigrationCandidate>& vCandidatesOut,
+                                int64_t& nUnaddressedOutputsOut,
+                                int64_t& nUnaddressedValueOut)
+{
+    vCandidatesOut.clear();
+    nUnaddressedOutputsOut = 0;
+    nUnaddressedValueOut = 0;
+
+    std::map<CScript, std::vector<int64_t> > mapByScript;
+    std::vector<COutput> vCoins;
+    pwalletMain->AvailableCoins(vCoins, true);
+    for (size_t i = 0; i < vCoins.size(); ++i)
+    {
+        if (!vCoins[i].fSpendable)
+            continue;
+        const CTxOut& out = vCoins[i].tx->vout[vCoins[i].i];
+        mapByScript[out.scriptPubKey].push_back(out.nValue);
+    }
+
+    for (std::map<CScript, std::vector<int64_t> >::iterator it = mapByScript.begin();
+         it != mapByScript.end(); ++it)
+    {
+        int64_t nTotal = 0;
+        for (size_t i = 0; i < it->second.size(); ++i)
+            nTotal += it->second[i];
+
+        // Scripts that do not round-trip through an address (cold-stake, bare pubkey) cannot be
+        // built from; counted and reported, not dropped.
+        CTxDestination dest;
+        CScript scriptRoundTrip;
+        if (ExtractDestination(it->first, dest))
+            scriptRoundTrip.SetDestination(dest);
+        if (scriptRoundTrip != it->first)
+        {
+            nUnaddressedOutputsOut += (int64_t)it->second.size();
+            nUnaddressedValueOut += nTotal;
+            continue;
+        }
+
+        // Largest first, matching the builder's selection.
+        std::vector<int64_t> vValues = it->second;
+        std::sort(vValues.begin(), vValues.end(),
+                  [](int64_t a, int64_t b) { return a > b; });
+        if (vValues.size() > nMaxInputs)
+            vValues.resize(nMaxInputs);
+
+        PoolMigrationCandidate c;
+        c.strAddress = CBitcoinAddress(dest).ToString();
+        c.nSelectable = 0;
+        for (size_t i = 0; i < vValues.size(); ++i)
+            c.nSelectable += vValues[i];
+        c.nTotal = nTotal;
+        c.nOutputs = (int64_t)it->second.size();
+        vCandidatesOut.push_back(c);
+    }
+}
+
+Value z_migratetopool(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 2)
+        throw runtime_error(
+            "z_migratetopool [maxtransactions] [maxinputspertx]\n"
+            "Moves this wallet's transparent coins into the IV5 private pool.\n"
+            "\nSends one transaction per transparent address, never one that spends from\n"
+            "two, so the migration does not tell the chain which addresses share an owner.\n"
+            "An address holding more outputs than one transaction can carry is swept over\n"
+            "several, largest value first.\n"
+            "\nBounded, not background: it sends at most maxtransactions (default 10) and\n"
+            "returns. Nothing is remembered between calls -- the work left is read back off\n"
+            "the wallet's own unspent outputs -- so calling again continues, and an\n"
+            "interrupted run resumes with no recovery step. Drive it from a loop while\n"
+            "\"more\" is true.\n"
+            "\nAn address whose value does not cover the flat shield fee cannot be moved at\n"
+            "all. It is skipped and reported under \"skipped\", never retried within a call,\n"
+            "so a loop on \"more\" terminates instead of spinning on it.\n"
+            "\nResult:\n"
+            "{\n"
+            "  \"sent\": n,                    (numeric) transactions sent by this call\n"
+            "  \"transactions\": [             (array) one entry per transaction sent\n"
+            "    {\"txid\":\"...\", \"address\":\"...\", \"inputs\":n, \"shielded\":x.xxx, \"fee\":x.xxx}\n"
+            "  ],\n"
+            "  \"shielded\": x.xxx,            (numeric) value moved into the pool\n"
+            "  \"fees\": x.xxx,                (numeric) fees paid\n"
+            "  \"addresses_remaining\": n,     (numeric) addresses another call would sweep\n"
+            "  \"outputs_remaining\": n,       (numeric) their unspent outputs\n"
+            "  \"value_remaining\": x.xxx,     (numeric) their value\n"
+            "  \"unsweepable_addresses\": n,   (numeric) addresses no call can move\n"
+            "  \"unsweepable_outputs\": n,     (numeric) their unspent outputs\n"
+            "  \"unsweepable_value\": x.xxx,   (numeric) their value\n"
+            "  \"unaddressed_outputs\": n,     (numeric) outputs no address names\n"
+            "  \"unaddressed_value\": x.xxx,   (numeric) their value\n"
+            "  \"skipped\": [                  (array) why each unsweepable address stayed\n"
+            "    {\"address\":\"...\", \"outputs\":n, \"value\":x.xxx, \"reason\":\"...\"}\n"
+            "  ],\n"
+            "  \"more\": true|false,           (boolean) another call would send more\n"
+            "  \"complete\": true|false        (boolean) nothing transparent is left at all\n"
+            "}\n");
+
+    // Gate on the next block's height, not the tip.
+    if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight + 1 : 0))
+        throw JSONRPCError(RPC_INVALID_REQUEST,
+                           "the IV5 pool is not active on this network yet");
+
+    EnsureWalletIsUnlocked();
+
+    // Builder precondition, checked once rather than failing per address.
+    if (!pwalletMain->IsPrivacyVNextSeedUnlocked())
+        throw JSONRPCError(RPC_WALLET_ERROR,
+                           "this wallet holds no unlocked IV5 seed; run z_createiv5seed first");
+
+    size_t nMaxTxns = PRIVACY_VNEXT_MIGRATE_DEFAULT_TXNS;
+    if (params.size() > 0)
+    {
+        const int64_t nRequested = params[0].get_int64();
+        if (nRequested < 1)
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                               "maxtransactions must be at least one");
+        if (nRequested > (int64_t)PRIVACY_VNEXT_MIGRATE_MAX_TXNS)
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                               strprintf("maxtransactions is capped at %u so one call stays bounded",
+                                         (unsigned)PRIVACY_VNEXT_MIGRATE_MAX_TXNS));
+        nMaxTxns = (size_t)nRequested;
+    }
+
+    size_t nMaxInputs = PRIVACY_VNEXT_SHIELD_MAX_INPUTS;
+    if (params.size() > 1)
+    {
+        const int64_t nRequested = params[1].get_int64();
+        if (nRequested < 1)
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "maxinputspertx must be at least one");
+        // Clamped as the builder clamps it.
+        nMaxInputs = (size_t)std::min<int64_t>(nRequested,
+                                               (int64_t)PRIVACY_VNEXT_SHIELD_MAX_INPUTS);
+    }
+
+    const int64_t nFee = MIN_TX_FEE_SHIELDED;
+
+    Array arrSent;
+    int64_t nMovedTotal = 0;
+    int64_t nFeesTotal = 0;
+    // A failed address is never retried in this call, so the loop terminates.
+    std::map<std::string, std::string> mapGaveUp;
+
+    while (arrSent.size() < nMaxTxns)
+    {
+        std::vector<PoolMigrationCandidate> vCandidates;
+        int64_t nUnaddressedOutputs = 0;
+        int64_t nUnaddressedValue = 0;
+        SurveyPoolMigration(nMaxInputs, vCandidates, nUnaddressedOutputs, nUnaddressedValue);
+
+        // Largest selectable value first.
+        const PoolMigrationCandidate* pNext = NULL;
+        for (size_t i = 0; i < vCandidates.size(); ++i)
+        {
+            // Strictly greater, matching the builder: a group worth exactly the fee is refused.
+            if (vCandidates[i].nSelectable <= nFee)
+                continue;
+            if (mapGaveUp.count(vCandidates[i].strAddress))
+                continue;
+            if (!pNext || vCandidates[i].nSelectable > pNext->nSelectable)
+                pNext = &vCandidates[i];
+        }
+        if (!pNext)
+            break;
+
+        const std::string strFrom = pNext->strAddress;
+        CWalletTx wtx;
+        int64_t nShielded = 0;
+        size_t nInputs = 0;
+        std::string strError;
+        if (!pwalletMain->CreatePrivacyVNextShield(strFrom, nMaxInputs, true, wtx,
+                                                   nShielded, nInputs, strError))
+        {
+            // A build failure skips the address without aborting the run.
+            mapGaveUp[strFrom] = strError;
+            continue;
+        }
+
+        nMovedTotal += nShielded;
+        nFeesTotal += nFee;
+
+        Object objTx;
+        objTx.push_back(Pair("txid", wtx.GetHash().GetHex()));
+        objTx.push_back(Pair("address", strFrom));
+        objTx.push_back(Pair("inputs", (int64_t)nInputs));
+        objTx.push_back(Pair("shielded", ValueFromAmount(nShielded)));
+        objTx.push_back(Pair("fee", ValueFromAmount(nFee)));
+        arrSent.push_back(objTx);
+    }
+
+    // Final survey: what a fresh call would act on.
+    std::vector<PoolMigrationCandidate> vFinal;
+    int64_t nUnaddressedOutputs = 0;
+    int64_t nUnaddressedValue = 0;
+    SurveyPoolMigration(nMaxInputs, vFinal, nUnaddressedOutputs, nUnaddressedValue);
+
+    int64_t nAddrRemaining = 0, nOutRemaining = 0, nValueRemaining = 0;
+    int64_t nStuckAddrs = 0, nStuckOutputs = 0, nStuckValue = 0;
+    Array arrSkipped;
+    std::set<std::string> setReported;
+    for (size_t i = 0; i < vFinal.size(); ++i)
+    {
+        const PoolMigrationCandidate& c = vFinal[i];
+        std::map<std::string, std::string>::const_iterator itGaveUp =
+            mapGaveUp.find(c.strAddress);
+        const bool fSweepable = c.nSelectable > nFee && itGaveUp == mapGaveUp.end();
+        if (fSweepable)
+        {
+            ++nAddrRemaining;
+            nOutRemaining += c.nOutputs;
+            nValueRemaining += c.nTotal;
+            continue;
+        }
+        ++nStuckAddrs;
+        nStuckOutputs += c.nOutputs;
+        nStuckValue += c.nTotal;
+        setReported.insert(c.strAddress);
+
+        Object objSkip;
+        objSkip.push_back(Pair("address", c.strAddress));
+        objSkip.push_back(Pair("outputs", c.nOutputs));
+        objSkip.push_back(Pair("value", ValueFromAmount(c.nTotal)));
+        objSkip.push_back(Pair("reason",
+            itGaveUp != mapGaveUp.end()
+                ? itGaveUp->second
+                : strprintf("%s does not cover the %s shield fee",
+                            FormatMoney(c.nSelectable).c_str(),
+                            FormatMoney(nFee).c_str())));
+        arrSkipped.push_back(objSkip);
+    }
+
+    // Report addresses whose build failed after inputs were marked spent; they no longer
+    // appear in the survey.
+    for (std::map<std::string, std::string>::const_iterator it = mapGaveUp.begin();
+         it != mapGaveUp.end(); ++it)
+    {
+        if (setReported.count(it->first))
+            continue;
+        ++nStuckAddrs;
+        Object objSkip;
+        objSkip.push_back(Pair("address", it->first));
+        objSkip.push_back(Pair("outputs", (int64_t)0));
+        objSkip.push_back(Pair("value", ValueFromAmount(0)));
+        objSkip.push_back(Pair("reason", it->second));
+        arrSkipped.push_back(objSkip);
+    }
+
+    Object result;
+    result.push_back(Pair("sent", (int64_t)arrSent.size()));
+    result.push_back(Pair("transactions", arrSent));
+    result.push_back(Pair("shielded", ValueFromAmount(nMovedTotal)));
+    result.push_back(Pair("fees", ValueFromAmount(nFeesTotal)));
+    result.push_back(Pair("addresses_remaining", nAddrRemaining));
+    result.push_back(Pair("outputs_remaining", nOutRemaining));
+    result.push_back(Pair("value_remaining", ValueFromAmount(nValueRemaining)));
+    result.push_back(Pair("unsweepable_addresses", nStuckAddrs));
+    result.push_back(Pair("unsweepable_outputs", nStuckOutputs));
+    result.push_back(Pair("unsweepable_value", ValueFromAmount(nStuckValue)));
+    result.push_back(Pair("unaddressed_outputs", nUnaddressedOutputs));
+    result.push_back(Pair("unaddressed_value", ValueFromAmount(nUnaddressedValue)));
+    result.push_back(Pair("skipped", arrSkipped));
+    // "more": call again; "complete": nothing left, including fee-limited residue.
+    result.push_back(Pair("more", nAddrRemaining > 0));
+    result.push_back(Pair("complete",
+                          nAddrRemaining == 0 && nStuckAddrs == 0 && nUnaddressedOutputs == 0));
+    return result;
+}
+
 Value z_iv5transfer(const Array& params, bool fHelp)
 {
     if (fHelp || params.size() < 2 || params.size() > 3)

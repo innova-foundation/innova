@@ -39,6 +39,12 @@ class CReserveKey;
 // grow with both the input count and the whole transaction.
 static const size_t PRIVACY_VNEXT_SHIELD_MAX_INPUTS = 50;
 
+// A whole-wallet migration runs as repeated bounded calls rather than one long one, so
+// the RPC stays answerable and the caller keeps control. Proving dominates the cost of
+// each shield, so the ceiling is what keeps a single call from blocking for minutes.
+static const size_t PRIVACY_VNEXT_MIGRATE_DEFAULT_TXNS = 10;
+static const size_t PRIVACY_VNEXT_MIGRATE_MAX_TXNS = 100;
+
 // Released value is safe to build only because the payload prefix carries
 // GetPrivacyVNextTransparentBinding, which consensus checks against the inputs and
 // outputs the transaction actually carries. Never enable this ahead of that check.
