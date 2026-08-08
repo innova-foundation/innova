@@ -76,7 +76,8 @@ impl PayloadEffects {
             encoded.extend_from_slice(commitment);
         }
         encoded.push(
-            u8::try_from(self.attestation_key_images.len()).map_err(|_| ResultCode::ResourceLimit)?,
+            u8::try_from(self.attestation_key_images.len())
+                .map_err(|_| ResultCode::ResourceLimit)?,
         );
         encoded.extend_from_slice(&self.registration_context);
         for key_image in &self.attestation_key_images {

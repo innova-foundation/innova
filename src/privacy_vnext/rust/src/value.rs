@@ -570,7 +570,8 @@ mod tests {
 
         for wrong in [TIER - 1, TIER + 1, 0] {
             assert!(
-                !verify_amount_equality(&commitment, wrong, &signable_hash, &proof).unwrap_or(false),
+                !verify_amount_equality(&commitment, wrong, &signable_hash, &proof)
+                    .unwrap_or(false),
                 "a proof for the tier must not verify at {wrong}"
             );
             let off_tier = super::commitment(wrong, &mask).unwrap();
@@ -595,7 +596,8 @@ mod tests {
         // proof must not stand in for this one's.
         let foreign = super::commitment(TIER, &scalar(11)).unwrap();
         let foreign_proof =
-            prove_amount_equality(&foreign, TIER, &scalar(11), &signable_hash, &[0x64; 32]).unwrap();
+            prove_amount_equality(&foreign, TIER, &scalar(11), &signable_hash, &[0x64; 32])
+                .unwrap();
         assert!(verify_amount_equality(&foreign, TIER, &signable_hash, &foreign_proof).unwrap());
         assert!(
             !verify_amount_equality(&commitment, TIER, &signable_hash, &foreign_proof)

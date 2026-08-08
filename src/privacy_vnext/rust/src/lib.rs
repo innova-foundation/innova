@@ -166,8 +166,7 @@ pub const fn envelope_allows(
     finality_object: u8,
     disclosure_mask: u8,
 ) -> bool {
-    let known_operation =
-        operation <= NOTE_COLLATERAL_REGISTER || operation == NOTE_OPERATION_NONE;
+    let known_operation = operation <= NOTE_COLLATERAL_REGISTER || operation == NOTE_OPERATION_NONE;
     if !known_operation
         || profile > FINALITY_NULLSTAKE_V3
         || authorization > AUTH_M_OF_N_HIDDEN_SIGNERS
