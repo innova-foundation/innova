@@ -10,7 +10,13 @@ USE_NATIVETOR:=1
 USE_IPFS:=1
 UNAME_S := $(shell uname -s)
 HOMEBREW_PREFIX := $(shell brew --prefix 2>/dev/null)
-BDB_BREW_PREFIX := $(shell brew --prefix berkeley-db@4 2>/dev/null)
+# brew --prefix answers with a path whether or not the formula is installed, so
+# select on the header being present instead. 5 is tried first: that is what the
+# Linux build links against.
+BDB_BREW_PREFIX := $(shell for f in berkeley-db@5 berkeley-db@4 berkeley-db; do \
+    p=$$(brew --prefix $$f 2>/dev/null); \
+    if [ -f "$$p/include/db_cxx.h" ]; then echo "$$p"; break; fi; \
+  done)
 
 LINK:=$(CXX)
 UNAME_M := $(shell uname -m)
