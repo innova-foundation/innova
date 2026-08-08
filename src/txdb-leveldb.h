@@ -541,6 +541,21 @@ public:
     bool CountPrivacyVNextOutputBases(uint64_t& nCount,
                                       std::string& strError);
 
+    // Collateralnode attestations, keyed on the key image the attestation published.
+    //
+    // Deliberately a separate namespace from the spent-key index: an attestation consumes
+    // nothing, and a key image recorded as spent is a note that can never move again.
+    // Registration is the derived predicate "watched and not yet spent", so a later spend
+    // deregisters by itself and neither index ever has to be edited to undo the other.
+    bool WritePrivacyVNextCollateral(
+        const uint256& keyImage,
+        const CPrivacyVNextCollateralAttestation& attested);
+    TxDBReadStatus ReadPrivacyVNextCollateralStatus(
+        const uint256& keyImage,
+        CPrivacyVNextCollateralAttestation& attested);
+    bool ErasePrivacyVNextCollateral(const uint256& keyImage);
+    bool CountPrivacyVNextCollateral(uint64_t& nCount, std::string& strError);
+
     bool WriteShieldedAnchor(const uint256& anchor);
     bool ReadShieldedAnchor(const uint256& anchor);
     TxDBReadStatus ReadShieldedAnchorStatus(const uint256& anchor);

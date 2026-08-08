@@ -703,6 +703,90 @@ bool CTxDB::CountPrivacyVNextOutputBases(
     return true;
 }
 
+bool CTxDB::WritePrivacyVNextCollateral(
+    const uint256& keyImage, const CPrivacyVNextCollateralAttestation& attested)
+{
+    return Write(make_pair(string("iv5cn"), keyImage), attested);
+}
+
+TxDBReadStatus CTxDB::ReadPrivacyVNextCollateralStatus(
+    const uint256& keyImage, CPrivacyVNextCollateralAttestation& attested)
+{
+    const TxDBReadStatus status = ReadExactStatus(
+        make_pair(string("iv5cn"), keyImage), attested);
+    if (status == TXDB_READ_FOUND &&
+        (attested.txnHash == 0 || attested.contextDigest == 0 ||
+         attested.nHeight < 0))
+        return TXDB_READ_ERROR;
+    return status;
+}
+
+bool CTxDB::ErasePrivacyVNextCollateral(const uint256& keyImage)
+{
+    return Erase(make_pair(string("iv5cn"), keyImage));
+}
+
+bool CTxDB::CountPrivacyVNextCollateral(uint64_t& nCount, std::string& strError)
+{
+    nCount = 0;
+    strError.clear();
+    if (activeBatch)
+    {
+        strError = "cannot audit the IV5 collateral index inside an active batch";
+        return false;
+    }
+
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << string("iv5cn");
+    const std::string strPrefix = ssPrefix.str();
+    leveldb::Iterator* it = pdb->NewIterator(leveldb::ReadOptions());
+    it->Seek(strPrefix);
+    while (it->Valid())
+    {
+        const std::string strKey = it->key().ToString();
+        if (strKey.compare(0, strPrefix.size(), strPrefix) != 0)
+            break;
+        try
+        {
+            CDataStream ssKey(strKey.data(), strKey.data() + strKey.size(),
+                              SER_DISK, CLIENT_VERSION);
+            std::pair<std::string, uint256> key;
+            ssKey >> key;
+            if (key.first != "iv5cn" || ssKey.size() != 0 || key.second == 0)
+                throw std::ios_base::failure("non-canonical IV5 collateral record key");
+
+            const leveldb::Slice value = it->value();
+            CDataStream ssValue(value.data(), value.data() + value.size(),
+                                SER_DISK, CLIENT_VERSION);
+            CPrivacyVNextCollateralAttestation attested;
+            ssValue >> attested;
+            if (ssValue.size() != 0 || attested.txnHash == 0 ||
+                attested.contextDigest == 0 || attested.nHeight < 0)
+                throw std::ios_base::failure("non-canonical IV5 collateral record value");
+            if (nCount == std::numeric_limits<uint64_t>::max())
+                throw std::ios_base::failure("IV5 collateral record count overflow");
+            ++nCount;
+        }
+        catch (const std::exception& e)
+        {
+            strError = strprintf("invalid IV5 collateral index record: %s",
+                                 e.what());
+            delete it;
+            return false;
+        }
+        it->Next();
+    }
+
+    const leveldb::Status status = it->status();
+    delete it;
+    if (!status.ok())
+    {
+        strError = "IV5 collateral iterator failure: " + status.ToString();
+        return false;
+    }
+    return true;
+}
+
 bool CTxDB::WriteShieldedAnchor(const uint256& anchor)
 {
     return Write(make_pair(string("sa"), anchor), true);

@@ -9,9 +9,9 @@ use zeroize::Zeroize;
 
 use crate::{
     disclosure, envelope_allows, fcmp, validate_public_key, value, ResultCode, ADDRESS_TYPE_MAX,
-    AUTH_M_OF_N_HIDDEN_SIGNERS, FINALITY_OBJECT_NONE, MAX_INPUTS, MAX_OUTPUTS, MAX_PAYLOAD_BYTES,
-    NETWORK_ID_MAX, NOTE_SHIELD, NOTE_TRANSFER, NOTE_UNSHIELD, PAYLOAD_SCHEMA_U16,
-    PRODUCT_CONTRACT, TREE_LAYERS,
+    AUTH_M_OF_N_HIDDEN_SIGNERS, COLLATERAL_ATTESTATION_AMOUNT, FINALITY_OBJECT_NONE, MAX_INPUTS,
+    MAX_OUTPUTS, MAX_PAYLOAD_BYTES, NETWORK_ID_MAX, NOTE_COLLATERAL_REGISTER, NOTE_SHIELD,
+    NOTE_TRANSFER, NOTE_UNSHIELD, PAYLOAD_SCHEMA_U16, PRODUCT_CONTRACT, TREE_LAYERS,
 };
 
 /// `[wire version u32][network u8][reserved 3][genesis 32]`.
@@ -23,6 +23,8 @@ const MAX_PROOF_SECTION_BYTES: usize = 65_536;
 const TREE_CAPACITY: u64 = 38_u64.pow(4) * 18_u64.pow(4);
 const SIGNING_DOMAIN: &[u8] = b"Innova/IV5/Signing/v1";
 const EFFECTS_HEADER_BYTES: usize = 124;
+/// Attestation count and registration context, after the key images and output leaves.
+const EFFECTS_TRAILER_BYTES: usize = 33;
 
 struct PayloadEffects {
     finalized_root: [u8; 32],
@@ -35,6 +37,11 @@ struct PayloadEffects {
     transparent_binding: [u8; 32],
     key_images: Vec<[u8; 32]>,
     output_leaves: Vec<([u8; 32], [u8; 32], [u8; 32])>,
+    /// Key images an attestation published without spending anything; kept out of
+    /// `key_images` so the caller never marks a collateral note spent.
+    attestation_key_images: Vec<[u8; 32]>,
+    /// What an attestation bound its off-chain registration context to; zero otherwise.
+    registration_context: [u8; 32],
 }
 
 impl PayloadEffects {
@@ -42,6 +49,8 @@ impl PayloadEffects {
         let capacity = EFFECTS_HEADER_BYTES
             .checked_add(self.key_images.len() * 32)
             .and_then(|size| size.checked_add(self.output_leaves.len() * 96))
+            .and_then(|size| size.checked_add(EFFECTS_TRAILER_BYTES))
+            .and_then(|size| size.checked_add(self.attestation_key_images.len() * 32))
             .ok_or(ResultCode::ResourceLimit)?;
         let mut encoded = Vec::with_capacity(capacity);
         encoded.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
@@ -65,6 +74,13 @@ impl PayloadEffects {
             encoded.extend_from_slice(owner);
             encoded.extend_from_slice(nullifier_base);
             encoded.extend_from_slice(commitment);
+        }
+        encoded.push(
+            u8::try_from(self.attestation_key_images.len()).map_err(|_| ResultCode::ResourceLimit)?,
+        );
+        encoded.extend_from_slice(&self.registration_context);
+        for key_image in &self.attestation_key_images {
+            encoded.extend_from_slice(key_image);
         }
         Ok(encoded)
     }
@@ -225,6 +241,7 @@ fn read_ciphertext(cursor: &mut Cursor<'_>, expected: usize) -> Result<Vec<u8>, 
 /// Everything a canonical payload declares before its disclosures and proofs.
 struct PayloadPrefix<'a> {
     cursor: Cursor<'a>,
+    operation: u8,
     disclosure_mask: u8,
     finality_object: u8,
     genesis: [u8; 32],
@@ -246,6 +263,10 @@ struct PayloadPrefix<'a> {
     output_tweak_ephemerals: Vec<[u8; 32]>,
     output_recipient_ciphertexts: Vec<Vec<u8>>,
     output_outgoing_ciphertexts: Vec<Vec<u8>>,
+    /// Present only for an attestation. Opaque here: it digests the node identity, endpoint
+    /// and payout address the caller owns, and sits inside the region the signing hash
+    /// covers so the spend-authorization proof binds it.
+    registration_context: [u8; 32],
 }
 
 /// Read the header, inputs and outputs of a canonical payload. Shared by validation
@@ -290,7 +311,10 @@ fn parse_payload_prefix<'a>(
     // Extended operations fail closed before proof verification until their typed frame and
     // verifier exist.
     if finality_object != FINALITY_OBJECT_NONE
-        || !matches!(operation, NOTE_SHIELD | NOTE_UNSHIELD | NOTE_TRANSFER)
+        || !matches!(
+            operation,
+            NOTE_SHIELD | NOTE_UNSHIELD | NOTE_TRANSFER | NOTE_COLLATERAL_REGISTER
+        )
     {
         return Err(ResultCode::UnsupportedFormat);
     }
@@ -373,8 +397,17 @@ fn parse_payload_prefix<'a>(
         output_outgoing_ciphertexts.push(outgoing_ciphertext);
     }
 
+    // Inside the signed prefix, so an attestation cannot be repackaged from a transfer
+    // proof or replayed under another node's identity.
+    let mut registration_context = [0_u8; 32];
+    if operation == NOTE_COLLATERAL_REGISTER {
+        registration_context = cursor.array()?;
+        validate_nonzero(&registration_context)?;
+    }
+
     Ok(PayloadPrefix {
         cursor,
+        operation,
         disclosure_mask,
         finality_object,
         genesis,
@@ -393,6 +426,7 @@ fn parse_payload_prefix<'a>(
         output_tweak_ephemerals,
         output_recipient_ciphertexts,
         output_outgoing_ciphertexts,
+        registration_context,
     })
 }
 
@@ -405,6 +439,7 @@ fn validate_payload(
 ) -> Result<PayloadEffects, ResultCode> {
     let PayloadPrefix {
         mut cursor,
+        operation,
         disclosure_mask,
         finality_object,
         parameter_digest,
@@ -419,6 +454,7 @@ fn validate_payload(
         output_nullifier_bases,
         output_commitments,
         output_tweak_ephemerals,
+        registration_context,
         ..
     } = parse_payload_prefix(
         wire_version,
@@ -428,6 +464,20 @@ fn validate_payload(
     )?;
     let input_count = key_images.len();
     let output_count = output_owners.len();
+
+    // An attestation moves nothing: one hidden note is named, no leaf is created, no value
+    // crosses the boundary and no fee is taken. Pinned before any proof runs, so the shape
+    // the effects below describe is the only shape that can reach them.
+    let is_attestation = operation == NOTE_COLLATERAL_REGISTER;
+    if is_attestation
+        && (input_count != 1
+            || output_count != 0
+            || transparent_value_balance != 0
+            || fee != 0
+            || disclosure_mask != 7)
+    {
+        return Err(ResultCode::ConsensusInvalid);
+    }
 
     let mut sender_authorities = Vec::new();
     if disclosure_mask & 1 == 0 {
@@ -503,8 +553,15 @@ fn validate_payload(
         return Err(ResultCode::ConsensusInvalid);
     }
 
+    // An attestation carries the amount proof below in place of the balance proof: its one
+    // pseudo-output is not a value flow to conserve but a commitment to open at a fixed
+    // amount, and the balance statement over it would be false for any nonzero note.
     let balance_proof = cursor.vector(MAX_PROOF_SECTION_BYTES)?;
-    if balance_proof.is_empty()
+    if is_attestation {
+        if !balance_proof.is_empty() {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+    } else if balance_proof.is_empty()
         || !value::verify_balance(
             &pseudo_outs,
             &output_commitments,
@@ -522,7 +579,24 @@ fn validate_payload(
     }
 
     let operation_proof = cursor.vector(MAX_PROOF_SECTION_BYTES)?;
-    if !operation_proof.is_empty() {
+    if is_attestation {
+        // Against the re-randomized commitment, never a leaf; the challenge folds the commitment
+        // and signing hash so an amount proof cannot be moved.
+        if operation_proof.len() != value::AMOUNT_EQUALITY_PROOF_BYTES
+            || !value::verify_amount_equality(
+                &pseudo_outs[0],
+                COLLATERAL_ATTESTATION_AMOUNT,
+                &signing_hash,
+                operation_proof,
+            )
+            .map_err(|error| match error {
+                value::ValueError::ResourceLimit => ResultCode::ResourceLimit,
+                _ => ResultCode::ConsensusInvalid,
+            })?
+        {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+    } else if !operation_proof.is_empty() {
         return Err(ResultCode::ConsensusInvalid);
     }
 
@@ -584,6 +658,14 @@ fn validate_payload(
         .zip(output_commitments)
         .map(|((owner, nullifier_base), commitment)| (owner, nullifier_base, commitment))
         .collect();
+    // The split the caller's spend path depends on. An attestation's key image proves the
+    // note is the prover's and unspent; it consumes nothing, so it is reported apart from
+    // the spends and the spend list stays empty.
+    let (key_images, attestation_key_images) = if is_attestation {
+        (Vec::new(), key_images)
+    } else {
+        (key_images, Vec::new())
+    };
     Ok(PayloadEffects {
         finalized_root,
         finalized_tree_size,
@@ -593,6 +675,8 @@ fn validate_payload(
         transparent_binding,
         key_images,
         output_leaves,
+        attestation_key_images,
+        registration_context,
     })
 }
 
@@ -693,8 +777,15 @@ pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     // by the note tag rather than compared here.
     let prefix = parse_payload_prefix(wire_version, &request[payload_start..], network, None)?;
 
+    // An attestation's key image is published without spending anything, so a wallet that
+    // read it here would retire its own collateral note the moment it registered it.
+    let spent_key_images: &[[u8; 32]] = if prefix.operation == NOTE_COLLATERAL_REGISTER {
+        &[]
+    } else {
+        &prefix.key_images
+    };
     let key_image_count =
-        u8::try_from(prefix.key_images.len()).map_err(|_| ResultCode::ResourceLimit)?;
+        u8::try_from(spent_key_images.len()).map_err(|_| ResultCode::ResourceLimit)?;
     let mut records = Vec::new();
     let mut matches: u8 = 0;
     for index in 0..prefix.output_owners.len() {
@@ -758,7 +849,7 @@ pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     result.push(key_image_count);
     result.push(output_count);
     result.push(0);
-    for key_image in &prefix.key_images {
+    for key_image in spent_key_images {
         result.extend_from_slice(key_image);
     }
     result.extend_from_slice(&records);
@@ -1621,7 +1712,10 @@ mod tests {
 
         let request = validation_request(&payload);
         let encoded = effects(&request).expect("three same-address outputs must validate");
-        assert_eq!(encoded.len(), EFFECTS_HEADER_BYTES + (3 * 96));
+        assert_eq!(
+            encoded.len(),
+            EFFECTS_HEADER_BYTES + (3 * 96) + EFFECTS_TRAILER_BYTES
+        );
 
         let spend_public = (ED25519_BASEPOINT_POINT * Scalar::from(3_u64))
             .compress()
@@ -1662,7 +1756,13 @@ mod tests {
         assert_eq!(validate(&request), Ok(()));
 
         let state_effects = effects(&request).expect("valid payload has canonical state effects");
-        assert_eq!(state_effects.len(), EFFECTS_HEADER_BYTES + 96);
+        assert_eq!(
+            state_effects.len(),
+            EFFECTS_HEADER_BYTES + 96 + EFFECTS_TRAILER_BYTES
+        );
+        // Nothing was attested, so the trailer is an empty count and a zero context.
+        assert_eq!(state_effects[EFFECTS_HEADER_BYTES + 96], 0);
+        assert_eq!(&state_effects[EFFECTS_HEADER_BYTES + 97..], &[0_u8; 32]);
         assert_eq!(&state_effects[..2], &PAYLOAD_SCHEMA_U16.to_le_bytes());
         assert_eq!(state_effects[2], 0);
         assert_eq!(state_effects[3], 1);

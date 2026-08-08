@@ -47,6 +47,7 @@ const ADDRESS_COMPONENT_SIZE: usize = 70;
 const KEY_DERIVATION_REQUEST_SIZE: usize = 72;
 const KEY_DERIVATION_OUTPUT_SIZE: usize = 232;
 const RECEIVER_DISCLOSURE_REQUEST_SIZE: usize = 264;
+const AMOUNT_EQUALITY_REQUEST_SIZE: usize = 140;
 // One definition only: a second copy of this length silently rejected every
 // request when the note format changed.
 use note::ENCRYPT_REQUEST_BYTES as NOTE_ENCRYPT_REQUEST_SIZE;
@@ -73,6 +74,7 @@ const CAP_PAYLOAD_SCAN: u32 = 1 << 16;
 pub const CAP_TREE_EXTEND: u32 = 1 << 17;
 pub const CAP_PAYLOAD_SIGNING_HASH: u32 = 1 << 18;
 pub const CAP_RECEIVER_DISCLOSURE_PROVE: u32 = 1 << 19;
+pub const CAP_AMOUNT_EQUALITY_PROVE: u32 = 1 << 20;
 pub const CAP_NOTE_ENCRYPT: u32 = 1 << 12;
 pub const CAP_VALUE_PROVE: u32 = 1 << 13;
 pub const CAP_PAYLOAD_EFFECTS: u32 = 1 << 14;
@@ -96,7 +98,8 @@ const IMPLEMENTED_CAPABILITIES: u32 = CAP_PROTOCOL_CONTRACT
     | CAP_NULLIFIER_ACCUMULATOR
     | CAP_TREE_EXTEND
     | CAP_PAYLOAD_SIGNING_HASH
-    | CAP_RECEIVER_DISCLOSURE_PROVE;
+    | CAP_RECEIVER_DISCLOSURE_PROVE
+    | CAP_AMOUNT_EQUALITY_PROVE;
 const CONSENSUS_CAPABILITIES: u32 = 0;
 pub const NOTE_SHIELD: u8 = 0;
 pub const NOTE_UNSHIELD: u8 = 1;
@@ -106,7 +109,13 @@ pub const NOTE_DELEGATION_CREATE: u8 = 4;
 pub const NOTE_M_OF_N_MINT: u8 = 5;
 pub const NOTE_RECLAIM: u8 = 6;
 pub const NOTE_CONDITIONAL_MIGRATION: u8 = 7;
+/// Collateralnode collateral attestation. Spends nothing: its key image is recorded in the
+/// caller's watch set, never in the spent set.
+pub const NOTE_COLLATERAL_REGISTER: u8 = 8;
 pub const NOTE_OPERATION_NONE: u8 = 255;
+/// Atomic units one collateralnode must attest to. Single tier; the value is proved against
+/// the re-randomized commitment and never appears on the wire.
+pub const COLLATERAL_ATTESTATION_AMOUNT: u64 = 25_000 * 100_000_000;
 pub const FINALITY_NONE: u8 = 0;
 pub const FINALITY_NULLSTAKE_V1: u8 = 1;
 pub const FINALITY_NULLSTAKE_V2: u8 = 2;
@@ -157,7 +166,7 @@ pub const fn envelope_allows(
     disclosure_mask: u8,
 ) -> bool {
     let known_operation =
-        operation <= NOTE_CONDITIONAL_MIGRATION || operation == NOTE_OPERATION_NONE;
+        operation <= NOTE_COLLATERAL_REGISTER || operation == NOTE_OPERATION_NONE;
     if !known_operation
         || profile > FINALITY_NULLSTAKE_V3
         || authorization > AUTH_M_OF_N_HIDDEN_SIGNERS
@@ -194,7 +203,13 @@ pub const fn envelope_allows(
                 )
         }
         2007 => operation == NOTE_RECLAIM && authorization == AUTH_OWNER,
-        2008 => true,
+        // An attestation publishes a persistent per-node pseudonym by design; the rest of
+        // the note must stay hidden, so the fully private mask is the only one allowed and
+        // the sender authority a lower mask would publish never exists.
+        2008 => {
+            operation != NOTE_COLLATERAL_REGISTER
+                || (disclosure_mask == 7 && authorization == AUTH_OWNER)
+        }
         _ => false,
     }
 }
@@ -1179,6 +1194,64 @@ pub unsafe extern "C" fn innova_privacy_vnext_receiver_disclosure_prove(
     })
 }
 
+/// Prove one commitment opens to a fixed amount, without publishing its opening.
+///
+/// Request: `schema_u16 || reserved_u16_zero || amount_u64_le || commitment_32 || mask_32 ||
+/// signable_hash_32 || entropy_32`. The commitment must be the re-randomized one the same
+/// payload names; naming a leaf identifies it.
+///
+/// # Safety
+///
+/// Input and output pointers must satisfy the ABI-v2 caller-ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_amount_equality_prove(
+    request: *const u8,
+    request_len: usize,
+    out: *mut u8,
+    out_capacity: usize,
+    out_written: *mut usize,
+) -> i32 {
+    ffi_boundary(|| {
+        validate_request(request, request_len)?;
+        if request_len != AMOUNT_EQUALITY_REQUEST_SIZE {
+            return Err(ResultCode::BadLength);
+        }
+        // SAFETY: request validation and the exact length check precede this read.
+        let request = unsafe { slice::from_raw_parts(request, request_len) };
+        if u16::from_le_bytes([request[0], request[1]]) != PAYLOAD_SCHEMA_U16 {
+            return Err(ResultCode::UnsupportedFormat);
+        }
+        if request[2] != 0 || request[3] != 0 {
+            return Err(ResultCode::ConsensusInvalid);
+        }
+        let field = |at: usize| -> [u8; 32] {
+            let mut bytes = [0_u8; 32];
+            bytes.copy_from_slice(&request[at..at + 32]);
+            bytes
+        };
+        let amount = u64::from_le_bytes(
+            request[4..12]
+                .try_into()
+                .map_err(|_| ResultCode::BadLength)?,
+        );
+        let commitment = field(12);
+        let mut mask = field(44);
+        let signable_hash = field(76);
+        let entropy = field(108);
+        let proved =
+            value::prove_amount_equality(&commitment, amount, &mask, &signable_hash, &entropy);
+        mask.zeroize();
+        let proof = proved.map_err(|_| ResultCode::ConsensusInvalid)?;
+        // Self-verify, so a proof the network would reject never leaves the prover.
+        if !value::verify_amount_equality(&commitment, amount, &signable_hash, &proof)
+            .map_err(|_| ResultCode::InternalLocalStateFailure)?
+        {
+            return Err(ResultCode::InternalLocalStateFailure);
+        }
+        write_variable_output(&proof, out, out_capacity, out_written)
+    })
+}
+
 /// Validate a canonical IV5 payload and extract its ordered state effects.
 ///
 /// # Safety
@@ -1258,6 +1331,61 @@ mod tests {
             FINALITY_OBJECT_NONE,
             7
         ));
+    }
+
+    // An attestation publishes a key image that stays linked to the note forever, so the
+    // grammar must not admit one that also publishes the sender authority, an amount, or a
+    // recipient, and no wire version before 2008 may carry the operation at all.
+    #[test]
+    fn a_collateral_attestation_is_admitted_only_fully_private_at_2008() {
+        assert!(envelope_allows(
+            2008,
+            NOTE_COLLATERAL_REGISTER,
+            FINALITY_NONE,
+            AUTH_OWNER,
+            FINALITY_OBJECT_NONE,
+            7
+        ));
+        for mask in 0..7 {
+            assert!(
+                !envelope_allows(
+                    2008,
+                    NOTE_COLLATERAL_REGISTER,
+                    FINALITY_NONE,
+                    AUTH_OWNER,
+                    FINALITY_OBJECT_NONE,
+                    mask
+                ),
+                "mask {mask} must not carry an attestation"
+            );
+        }
+        for authorization in [
+            AUTH_COLD_STAKER,
+            AUTH_M_OF_N_PUBLIC_SIGNERS,
+            AUTH_M_OF_N_HIDDEN_SIGNERS,
+        ] {
+            assert!(!envelope_allows(
+                2008,
+                NOTE_COLLATERAL_REGISTER,
+                FINALITY_NONE,
+                authorization,
+                FINALITY_OBJECT_NONE,
+                7
+            ));
+        }
+        for wire_version in [2000, 2001, 2002, 2003, 2004, 2005, 2006, 2007] {
+            assert!(
+                !envelope_allows(
+                    wire_version,
+                    NOTE_COLLATERAL_REGISTER,
+                    FINALITY_NONE,
+                    AUTH_OWNER,
+                    FINALITY_OBJECT_NONE,
+                    7
+                ),
+                "wire version {wire_version} must not carry an attestation"
+            );
+        }
     }
 
     #[test]

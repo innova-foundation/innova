@@ -603,6 +603,44 @@ public:
 };
 
 
+// One collateralnode attestation, keyed in txdb on the key image it published.
+//
+// The context digest is what the attestation bound into its signing hash, so the node
+// list can hold an announcement to the identity, endpoint and payout address the chain
+// already accepted, without re-reading the registering transaction for every gossip
+// message. It carries no value and never reaches the spent-key index.
+class CPrivacyVNextCollateralAttestation
+{
+public:
+    uint256 txnHash;
+    uint256 contextDigest;
+    int32_t nHeight;
+
+    CPrivacyVNextCollateralAttestation()
+    {
+        txnHash = 0;
+        contextDigest = 0;
+        nHeight = -1;
+    }
+
+    CPrivacyVNextCollateralAttestation(const uint256& txnHashIn,
+                                       const uint256& contextDigestIn,
+                                       int32_t nHeightIn)
+    {
+        txnHash = txnHashIn;
+        contextDigest = contextDigestIn;
+        nHeight = nHeightIn;
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(txnHash);
+        READWRITE(contextDigest);
+        READWRITE(nHeight);
+    )
+};
+
+
 class CIncrementalMerkleTree
 {
 public:

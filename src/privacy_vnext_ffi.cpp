@@ -885,10 +885,21 @@ static PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffectsUncached(
             outputCount > INNOVA_PRIVACY_VNEXT_MAX_OUTPUTS)
             return DeterministicVNextEffectsReject(
                 effects, validation, "IV5 effects count exceeds ABI limits");
-        const size_t exactSize =
+        const size_t trailerAt =
             INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_HEADER_SIZE +
             inputCount * INNOVA_PRIVACY_VNEXT_DIGEST_SIZE +
             outputCount * 3 * INNOVA_PRIVACY_VNEXT_DIGEST_SIZE;
+        if (encoded.size() <
+            trailerAt + INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_TRAILER_SIZE)
+            return DeterministicVNextEffectsReject(
+                effects, validation, "truncated IV5 effects trailer");
+        const size_t attestationCount = encoded[trailerAt];
+        if (attestationCount > INNOVA_PRIVACY_VNEXT_MAX_INPUTS)
+            return DeterministicVNextEffectsReject(
+                effects, validation, "IV5 effects count exceeds ABI limits");
+        const size_t exactSize =
+            trailerAt + INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_TRAILER_SIZE +
+            attestationCount * INNOVA_PRIVACY_VNEXT_DIGEST_SIZE;
         if (encoded.size() != exactSize)
             return DeterministicVNextEffectsReject(
                 effects, validation, "non-canonical IV5 effects length");
@@ -932,6 +943,18 @@ static PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffectsUncached(
             std::copy(encoded.begin() + offset, encoded.begin() + offset + 32,
                       effects.outputLeaves[i].commitment.begin());
             offset += 32;
+        }
+        ++offset;  // attestation count, already read
+        std::copy(encoded.begin() + offset, encoded.begin() + offset + 32,
+                  effects.registrationContext.begin());
+        offset += 32;
+        effects.attestationKeyImages.resize(attestationCount);
+        for (size_t i = 0; i < attestationCount; ++i)
+        {
+            std::copy(encoded.begin() + offset,
+                      encoded.begin() + offset + INNOVA_PRIVACY_VNEXT_DIGEST_SIZE,
+                      effects.attestationKeyImages[i].begin());
+            offset += INNOVA_PRIVACY_VNEXT_DIGEST_SIZE;
         }
         if (offset != encoded.size())
             return DeterministicVNextEffectsReject(
@@ -2089,6 +2112,45 @@ bool ProvePrivacyVNextReceiverDisclosure(
     if (result != INNOVA_PRIVACY_VNEXT_VALID || written != response.size())
     {
         error = ResultError("IV5 receiver disclosure proof", result);
+        return false;
+    }
+    vchProofOut.assign(response.begin(), response.end());
+    return true;
+}
+
+// Prove one commitment opens to a fixed amount. The commitment must be the re-randomized
+// one the payload names: a proof against a leaf would identify the note.
+bool ProvePrivacyVNextAmountEquality(
+    const PrivacyVNextDigest& commitment,
+    uint64_t nAmount,
+    const PrivacyVNextDigest& mask,
+    const PrivacyVNextDigest& signableHash,
+    const PrivacyVNextDigest& entropy,
+    std::vector<unsigned char>& vchProofOut,
+    std::string& error)
+{
+    vchProofOut.clear();
+    error.clear();
+
+    std::vector<uint8_t> request(
+        INNOVA_PRIVACY_VNEXT_AMOUNT_EQUALITY_REQUEST_SIZE, 0);
+    request[0] = static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA);
+    request[1] = 0;
+    PutLE64(&request[4], nAmount);
+    std::memcpy(&request[12], commitment.data(), 32);
+    std::memcpy(&request[44], mask.data(), 32);
+    std::memcpy(&request[76], signableHash.data(), 32);
+    std::memcpy(&request[108], entropy.data(), 32);
+
+    std::vector<uint8_t> response(
+        INNOVA_PRIVACY_VNEXT_AMOUNT_EQUALITY_PROOF_SIZE, 0);
+    size_t written = 0;
+    const int32_t result = innova_privacy_vnext_amount_equality_prove(
+        &request[0], request.size(), &response[0], response.size(), &written);
+    OPENSSL_cleanse(&request[0], request.size());
+    if (result != INNOVA_PRIVACY_VNEXT_VALID || written != response.size())
+    {
+        error = ResultError("IV5 amount equality proof", result);
         return false;
     }
     vchProofOut.assign(response.begin(), response.end());

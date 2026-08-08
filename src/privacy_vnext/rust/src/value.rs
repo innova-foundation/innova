@@ -245,6 +245,94 @@ pub(crate) fn verify_balance(
     Ok((ED25519_BASEPOINT_POINT * response) == (nonce + (excess * challenge)))
 }
 
+pub(crate) const AMOUNT_EQUALITY_PROOF_BYTES: usize = 64;
+
+/// The amount-equality statement `commitment - amount*H`, which is `mask*G` exactly when
+/// the commitment holds `amount`. The identity is refused: a zero mask accepts anything.
+fn amount_equality_statement(
+    commitment: &[u8; 32],
+    amount: u64,
+) -> Result<EdwardsPoint, ValueError> {
+    let statement = canonical_point(commitment, false)? - (monero_h() * Scalar::from(amount));
+    if statement.is_identity() {
+        return Err(ValueError::InvalidProof);
+    }
+    Ok(statement)
+}
+
+/// Schnorr knowledge of the mask behind `commitment - amount*H`: the commitment holds
+/// `amount`. Run on a re-randomized commitment; the challenge binds commitment and amount.
+pub(crate) fn prove_amount_equality(
+    commitment: &[u8; 32],
+    amount: u64,
+    mask_bytes: &[u8; 32],
+    signable_hash: &[u8; 32],
+    entropy: &[u8; 32],
+) -> Result<[u8; AMOUNT_EQUALITY_PROOF_BYTES], ValueError> {
+    let mask = canonical_scalar(mask_bytes)?;
+    let statement = amount_equality_statement(commitment, amount)?;
+    if statement != ED25519_BASEPOINT_POINT * mask {
+        return Err(ValueError::InvalidProof);
+    }
+
+    let statement_encoded = statement.compress().to_bytes();
+    let mut nonce = hash_to_scalar(
+        b"Innova/IV5/AmountEquality/Nonce/v1",
+        &[entropy, mask_bytes, signable_hash, &statement_encoded],
+    );
+    if nonce == Scalar::ZERO {
+        nonce = Scalar::ONE;
+    }
+    let nonce_encoded = (ED25519_BASEPOINT_POINT * nonce).compress().to_bytes();
+    let challenge = hash_to_scalar(
+        b"Innova/IV5/AmountEquality/Challenge/v1",
+        &[
+            signable_hash,
+            commitment,
+            &amount.to_le_bytes(),
+            &statement_encoded,
+            &nonce_encoded,
+        ],
+    );
+    let response = nonce + (challenge * mask);
+
+    let mut proof = [0_u8; AMOUNT_EQUALITY_PROOF_BYTES];
+    proof[..32].copy_from_slice(&nonce_encoded);
+    proof[32..].copy_from_slice(&response.to_bytes());
+    Ok(proof)
+}
+
+pub(crate) fn verify_amount_equality(
+    commitment: &[u8; 32],
+    amount: u64,
+    signable_hash: &[u8; 32],
+    proof: &[u8],
+) -> Result<bool, ValueError> {
+    if proof.len() != AMOUNT_EQUALITY_PROOF_BYTES {
+        return Err(ValueError::BadLength);
+    }
+    let mut nonce_bytes = [0_u8; 32];
+    nonce_bytes.copy_from_slice(&proof[..32]);
+    let nonce = canonical_point(&nonce_bytes, false)?;
+    let mut response_bytes = [0_u8; 32];
+    response_bytes.copy_from_slice(&proof[32..]);
+    let response = canonical_scalar(&response_bytes)?;
+
+    let statement = amount_equality_statement(commitment, amount)?;
+    let statement_encoded = statement.compress().to_bytes();
+    let challenge = hash_to_scalar(
+        b"Innova/IV5/AmountEquality/Challenge/v1",
+        &[
+            signable_hash,
+            commitment,
+            &amount.to_le_bytes(),
+            &statement_encoded,
+            &nonce_bytes,
+        ],
+    );
+    Ok((ED25519_BASEPOINT_POINT * response) == (nonce + (statement * challenge)))
+}
+
 struct Reader<'a> {
     bytes: &'a [u8],
     position: usize,
@@ -465,6 +553,77 @@ mod tests {
         )
         .unwrap();
         assert!(verify_balance(&[], &[shielded], 51, 1, &signable_hash, &shield_proof).unwrap());
+    }
+
+    // The collateral tier is proved, never published; this proof alone separates
+    // 25,000 from 24,999.
+    #[test]
+    fn an_amount_proof_holds_for_one_amount_only() {
+        const TIER: u64 = 25_000 * 100_000_000;
+        let mask = scalar(7);
+        let commitment = commitment(TIER, &mask).unwrap();
+        let signable_hash = [0x61_u8; 32];
+        let proof =
+            prove_amount_equality(&commitment, TIER, &mask, &signable_hash, &[0x62; 32]).unwrap();
+        assert!(verify_amount_equality(&commitment, TIER, &signable_hash, &proof).unwrap());
+
+        for wrong in [TIER - 1, TIER + 1, 0] {
+            assert!(
+                !verify_amount_equality(&commitment, wrong, &signable_hash, &proof).unwrap_or(false),
+                "a proof for the tier must not verify at {wrong}"
+            );
+            let off_tier = super::commitment(wrong, &mask).unwrap();
+            assert!(
+                !verify_amount_equality(&off_tier, TIER, &signable_hash, &proof).unwrap_or(false),
+                "a note holding {wrong} must not pass the tier check"
+            );
+            assert_eq!(
+                prove_amount_equality(&off_tier, TIER, &mask, &signable_hash, &[0x62; 32]),
+                Err(ValueError::InvalidProof),
+                "a prover must not be able to claim the tier for {wrong}"
+            );
+        }
+
+        // The proof travels with a payload, so it must not survive being moved to another.
+        assert!(
+            !verify_amount_equality(&commitment, TIER, &[0x63; 32], &proof).unwrap_or(false),
+            "a proof must not verify under another payload's signing hash"
+        );
+
+        // Mix and match: a second note of the same tier has a different commitment, and its
+        // proof must not stand in for this one's.
+        let foreign = super::commitment(TIER, &scalar(11)).unwrap();
+        let foreign_proof =
+            prove_amount_equality(&foreign, TIER, &scalar(11), &signable_hash, &[0x64; 32]).unwrap();
+        assert!(verify_amount_equality(&foreign, TIER, &signable_hash, &foreign_proof).unwrap());
+        assert!(
+            !verify_amount_equality(&commitment, TIER, &signable_hash, &foreign_proof)
+                .unwrap_or(false),
+            "a proof made against a foreign commitment must not verify against this one"
+        );
+    }
+
+    // A zero mask puts `C - amount*H` at the identity, where any nonce verifies; the
+    // registering wallet can grind for it, so it must be refused.
+    #[test]
+    fn an_amount_proof_refuses_an_identity_statement() {
+        const TIER: u64 = 25_000 * 100_000_000;
+        let zero_mask = Scalar::ZERO.to_bytes();
+        let commitment = commitment(TIER, &zero_mask).unwrap();
+        assert_eq!(
+            prove_amount_equality(&commitment, TIER, &zero_mask, &[0x71; 32], &[0x72; 32]),
+            Err(ValueError::InvalidProof)
+        );
+
+        // The forgery the check exists to stop: a transcript built with no secret at all.
+        let nonce = Scalar::from(9_u64);
+        let mut forged = [0_u8; AMOUNT_EQUALITY_PROOF_BYTES];
+        forged[..32].copy_from_slice(&(ED25519_BASEPOINT_POINT * nonce).compress().to_bytes());
+        forged[32..].copy_from_slice(&nonce.to_bytes());
+        assert_eq!(
+            verify_amount_equality(&commitment, TIER, &[0x71; 32], &forged),
+            Err(ValueError::InvalidProof)
+        );
     }
 
     #[test]

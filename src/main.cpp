@@ -1795,6 +1795,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
         vAnonRelayKeyImages;
     std::vector<uint256> vPrivacyVNextKeyImages;
     std::vector<uint256> vPrivacyVNextOutputBases;
+    std::vector<uint256> vPrivacyVNextAttestations;
     if (tx.nVersion == ANON_TXN_VERSION &&
         (IsLegacyPrivacyPolicyDisabled() ||
          nEffectiveMempoolHeight >= FORK_HEIGHT_RINGSIG_DEPRECATION))
@@ -1877,6 +1878,52 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
             vPrivacyVNextKeyImages.push_back(keyImage);
         }
 
+        // An attestation the chain would refuse is worth no relay either, and a
+        // miner that built on one would produce a block every peer rejects.
+        std::set<uint256> setTransactionAttestations;
+        vPrivacyVNextAttestations.reserve(effects.attestationKeyImages.size());
+        for (size_t i = 0; i < effects.attestationKeyImages.size(); ++i)
+        {
+            uint256 keyImage;
+            memcpy(keyImage.begin(), effects.attestationKeyImages[i].data(),
+                   effects.attestationKeyImages[i].size());
+            if (!setTransactionAttestations.insert(keyImage).second)
+                return error("CTxMemPool::accept() : duplicate IV5 attestation %s",
+                             keyImage.ToString().substr(0,10).c_str());
+
+            CShieldedNullifierSpent spent;
+            const TxDBReadStatus spentStatus =
+                txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
+            if (spentStatus == TXDB_READ_ERROR)
+            {
+                StartShutdown();
+                return error("CTxMemPool::accept() : IV5 spent-key index is corrupt for %s; "
+                             "-reindex/resync required",
+                             keyImage.ToString().substr(0,10).c_str());
+            }
+            if (spentStatus == TXDB_READ_FOUND)
+                return error("CTxMemPool::accept() : IV5 attestation %s names a note already "
+                             "spent by %s",
+                             keyImage.ToString().substr(0,10).c_str(),
+                             spent.txnHash.ToString().substr(0,10).c_str());
+
+            CPrivacyVNextCollateralAttestation attested;
+            const TxDBReadStatus watchStatus =
+                txdb.ReadPrivacyVNextCollateralStatus(keyImage, attested);
+            if (watchStatus == TXDB_READ_ERROR)
+            {
+                StartShutdown();
+                return error("CTxMemPool::accept() : IV5 collateral index is corrupt for %s; "
+                             "-reindex/resync required",
+                             keyImage.ToString().substr(0,10).c_str());
+            }
+            if (watchStatus == TXDB_READ_FOUND)
+                return error("CTxMemPool::accept() : IV5 collateral %s was already attested by %s",
+                             keyImage.ToString().substr(0,10).c_str(),
+                             attested.txnHash.ToString().substr(0,10).c_str());
+            vPrivacyVNextAttestations.push_back(keyImage);
+        }
+
         // Relaying an owner the chain already carries would only produce a
         // transaction every miner's ConnectBlock refuses.
         std::set<uint256> setTransactionOutputBases;
@@ -1942,6 +1989,17 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                 return error("CTxMemPool::accept() : IV5 spent key %s is reserved by %s",
                              it->ToString().substr(0,10).c_str(),
                              spentIt->second.txnHash.ToString().substr(0,10).c_str());
+        }
+        for (std::vector<uint256>::const_iterator it =
+                 vPrivacyVNextAttestations.begin();
+             it != vPrivacyVNextAttestations.end(); ++it)
+        {
+            std::map<uint256, CShieldedNullifierSpent>::const_iterator attIt =
+                mapPrivacyVNextAttestation.find(*it);
+            if (attIt != mapPrivacyVNextAttestation.end())
+                return error("CTxMemPool::accept() : IV5 collateral %s is reserved by %s",
+                             it->ToString().substr(0,10).c_str(),
+                             attIt->second.txnHash.ToString().substr(0,10).c_str());
         }
         for (std::vector<uint256>::const_iterator it =
                  vPrivacyVNextOutputBases.begin();
@@ -2430,6 +2488,14 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                     created.nIndex = i;
                     mapPrivacyVNextOutputBase[vPrivacyVNextOutputBases[i]] = created;
                 }
+                mapPrivacyVNextTxAttestations[hash] = vPrivacyVNextAttestations;
+                for (size_t i = 0; i < vPrivacyVNextAttestations.size(); ++i)
+                {
+                    CShieldedNullifierSpent attested;
+                    attested.txnHash = hash;
+                    attested.nIndex = i;
+                    mapPrivacyVNextAttestation[vPrivacyVNextAttestations[i]] = attested;
+                }
             }
 
             if (tx.nVersion == ANON_TXN_VERSION)
@@ -2765,6 +2831,36 @@ bool CTxMemPool::remove(const CTransaction &tx, bool fRecursive)
                     }
                     mapPrivacyVNextTxOutputBases.erase(baseReverseIt);
                 }
+
+                std::map<uint256, std::vector<uint256> >::iterator attReverseIt =
+                    mapPrivacyVNextTxAttestations.find(hash);
+                if (attReverseIt == mapPrivacyVNextTxAttestations.end())
+                {
+                    StartShutdown();
+                    printf("CTxMemPool::remove: missing IV5 attestation reservation for %s\n",
+                           hash.ToString().substr(0,10).c_str());
+                }
+                else
+                {
+                    for (std::vector<uint256>::const_iterator it =
+                             attReverseIt->second.begin();
+                         it != attReverseIt->second.end(); ++it)
+                    {
+                        std::map<uint256, CShieldedNullifierSpent>::iterator attIt =
+                            mapPrivacyVNextAttestation.find(*it);
+                        if (attIt == mapPrivacyVNextAttestation.end() ||
+                            attIt->second.txnHash != hash)
+                        {
+                            StartShutdown();
+                            printf("CTxMemPool::remove: mismatched IV5 attestation reservation %s for %s\n",
+                                   it->ToString().substr(0,10).c_str(),
+                                   hash.ToString().substr(0,10).c_str());
+                            continue;
+                        }
+                        mapPrivacyVNextAttestation.erase(attIt);
+                    }
+                    mapPrivacyVNextTxAttestations.erase(attReverseIt);
+                }
             }
 
             nTransactionsUpdated++;
@@ -2843,6 +2939,27 @@ bool CTxMemPool::removeConflicts(const CTransaction &tx)
                 continue;
             std::map<uint256, CTransaction>::const_iterator txIt =
                 mapTx.find(spentIt->second.txnHash);
+            if (txIt != mapTx.end())
+            {
+                const CTransaction txToRemove = txIt->second;
+                remove(txToRemove, true);
+            }
+        }
+        // A spend of an attested note is legitimate and simply deregisters the node,
+        // but a second attestation of the same note is not, so only a pending
+        // attestation is evicted here and never a pending spend.
+        for (size_t i = 0; i < effects.attestationKeyImages.size(); ++i)
+        {
+            uint256 keyImage;
+            memcpy(keyImage.begin(), effects.attestationKeyImages[i].data(),
+                   effects.attestationKeyImages[i].size());
+            std::map<uint256, CShieldedNullifierSpent>::const_iterator attIt =
+                mapPrivacyVNextAttestation.find(keyImage);
+            if (attIt == mapPrivacyVNextAttestation.end() ||
+                attIt->second.txnHash == tx.GetHash())
+                continue;
+            std::map<uint256, CTransaction>::const_iterator txIt =
+                mapTx.find(attIt->second.txnHash);
             if (txIt != mapTx.end())
             {
                 const CTransaction txToRemove = txIt->second;
@@ -2942,6 +3059,23 @@ void CTxMemPool::RemoveDAGConflicts(const uint256& hashBlock)
                 mapPrivacyVNextTxOutputBases.erase(baseReverseIt);
             }
 
+            std::map<uint256, std::vector<uint256> >::iterator attReverseIt =
+                mapPrivacyVNextTxAttestations.find(txHash);
+            if (attReverseIt != mapPrivacyVNextTxAttestations.end())
+            {
+                for (std::vector<uint256>::const_iterator it =
+                         attReverseIt->second.begin();
+                     it != attReverseIt->second.end(); ++it)
+                {
+                    std::map<uint256, CShieldedNullifierSpent>::iterator attIt =
+                        mapPrivacyVNextAttestation.find(*it);
+                    if (attIt != mapPrivacyVNextAttestation.end() &&
+                        attIt->second.txnHash == txHash)
+                        mapPrivacyVNextAttestation.erase(attIt);
+                }
+                mapPrivacyVNextTxAttestations.erase(attReverseIt);
+            }
+
             mapTx.erase(txHash);
             nRemoved++;
             ++nTransactionsUpdated;
@@ -2964,6 +3098,8 @@ void CTxMemPool::clear()
     mapPrivacyVNextTxNullifiers.clear();
     mapPrivacyVNextOutputBase.clear();
     mapPrivacyVNextTxOutputBases.clear();
+    mapPrivacyVNextAttestation.clear();
+    mapPrivacyVNextTxAttestations.clear();
     setDAGSeenTxids.clear();
     ++nTransactionsUpdated;
 }
@@ -3605,6 +3741,17 @@ void AppendPrivacyVNextConflictTags(const CTransaction& tx,
         ss << std::string("Innova/IV5/OutputOwnerConflictTag/v1");
         ss.write((const char*)effects.outputLeaves[i].nullifierBase.data(),
                  effects.outputLeaves[i].nullifierBase.size());
+        setTagsOut.insert(ss.GetHash());
+    }
+
+    // Two attestations of one note across siblings conflict. Domain-separated from the
+    // key-image tag, so an attestation and a spend of the same note do not.
+    for (size_t i = 0; i < effects.attestationKeyImages.size(); ++i)
+    {
+        CHashWriter ss(SER_GETHASH, 0);
+        ss << std::string("Innova/IV5/CollateralAttestationConflictTag/v1");
+        ss.write((const char*)effects.attestationKeyImages[i].data(),
+                 effects.attestationKeyImages[i].size());
         setTagsOut.insert(ss.GetHash());
     }
 }
@@ -4689,6 +4836,7 @@ bool ValidatePrivacyVNextIndexPersistence(
 
     std::set<uint256> setExpectedKeyImages;
     std::set<uint256> setExpectedOutputBases;
+    std::set<uint256> setExpectedAttestations;
     for (std::vector<CBlockIndex*>::const_iterator blockIt =
              vBoundaryBChain.begin();
          blockIt != vBoundaryBChain.end(); ++blockIt)
@@ -4790,6 +4938,33 @@ bool ValidatePrivacyVNextIndexPersistence(
                 }
             }
 
+            for (size_t i = 0; i < effects.attestationKeyImages.size(); ++i)
+            {
+                uint256 keyImage;
+                memcpy(keyImage.begin(),
+                       effects.attestationKeyImages[i].data(),
+                       effects.attestationKeyImages[i].size());
+                if (!setExpectedAttestations.insert(keyImage).second)
+                {
+                    strError = strprintf(
+                        "duplicate IV5 attestation %s in active chain",
+                        keyImage.ToString().substr(0,10).c_str());
+                    return false;
+                }
+                CPrivacyVNextCollateralAttestation attested;
+                const TxDBReadStatus status =
+                    txdb.ReadPrivacyVNextCollateralStatus(keyImage, attested);
+                if (status != TXDB_READ_FOUND ||
+                    attested.txnHash != tx.GetHash())
+                {
+                    strError = strprintf(
+                        "IV5 collateral record %s is missing, corrupt, or owned by "
+                        "another attestation",
+                        keyImage.ToString().substr(0,10).c_str());
+                    return false;
+                }
+            }
+
             for (size_t i = 0; i < effects.outputLeaves.size(); ++i)
             {
                 uint256 base;
@@ -4839,6 +5014,18 @@ bool ValidatePrivacyVNextIndexPersistence(
             "IV5 output-base index count mismatch (persisted=%" PRIu64 ", expected=%" PRIu64 ")",
             nPersistedBases,
             static_cast<uint64_t>(setExpectedOutputBases.size()));
+        return false;
+    }
+
+    uint64_t nPersistedAttestations = 0;
+    if (!txdb.CountPrivacyVNextCollateral(nPersistedAttestations, strError))
+        return false;
+    if (nPersistedAttestations != setExpectedAttestations.size())
+    {
+        strError = strprintf(
+            "IV5 collateral index count mismatch (persisted=%" PRIu64 ", expected=%" PRIu64 ")",
+            nPersistedAttestations,
+            static_cast<uint64_t>(setExpectedAttestations.size()));
         return false;
     }
     return true;
@@ -6504,6 +6691,31 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
                 }
                 if (!txdb.ErasePrivacyVNextOutputBase(base))
                     return error("DisconnectBlock() : IV5 output-base erase failed");
+            }
+
+            // Exact reverse of the connect order: attestations were written after
+            // the spent keys and before the output bases.
+            for (size_t j = effects.attestationKeyImages.size(); j > 0; --j)
+            {
+                uint256 keyImage;
+                memcpy(keyImage.begin(),
+                       effects.attestationKeyImages[j - 1].data(),
+                       effects.attestationKeyImages[j - 1].size());
+                CPrivacyVNextCollateralAttestation attested;
+                const TxDBReadStatus status =
+                    txdb.ReadPrivacyVNextCollateralStatus(keyImage, attested);
+                if (status != TXDB_READ_FOUND ||
+                    attested.txnHash != vtx[i].GetHash())
+                {
+                    StartShutdown();
+                    return error("DisconnectBlock() : IV5 collateral undo record is %s or "
+                                 "owned by another attestation for %s (-reindex/resync required)",
+                                 status == TXDB_READ_NOT_FOUND ? "missing" :
+                                 status == TXDB_READ_ERROR ? "corrupt" : "mismatched",
+                                 keyImage.ToString().substr(0,10).c_str());
+                }
+                if (!txdb.ErasePrivacyVNextCollateral(keyImage))
+                    return error("DisconnectBlock() : IV5 collateral erase failed");
             }
 
             for (size_t j = effects.keyImages.size(); j > 0; --j)
@@ -8365,6 +8577,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
         std::set<uint256> setBlockPrivacyVNextNullifiers;
         std::set<uint256> setBlockPrivacyVNextOutputBases;
+        std::set<uint256> setBlockPrivacyVNextAttestations;
         for (const CTransaction& tx : activeBlock.vtx)
         {
             if (!tx.IsPrivacyVNext())
@@ -8457,6 +8670,80 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                     if (!txdb.WritePrivacyVNextNullifier(keyImage, spent))
                         return TransientFailure(error(
                             "ConnectBlock() : IV5 spent-key write failed"));
+                }
+            }
+
+            // A collateral attestation names a note without consuming it. Its key
+            // image is recorded here and nowhere else: the spent-key index above is
+            // what makes a note unmovable, so routing an attestation through it
+            // would destroy the collateral it was meant to prove.
+            //
+            // Registration is not stored, it is derived: watched here and absent
+            // from the spent-key index. A later spend of the note therefore
+            // deregisters the node by itself, is never blocked, and needs no undo
+            // record — disconnecting either side restores exactly the state the
+            // other side saw.
+            for (size_t i = 0; i < effects.attestationKeyImages.size(); ++i)
+            {
+                uint256 keyImage;
+                memcpy(keyImage.begin(), effects.attestationKeyImages[i].data(),
+                       effects.attestationKeyImages[i].size());
+                if (!setBlockPrivacyVNextAttestations.insert(keyImage).second)
+                    return DoS(100, error(
+                        "ConnectBlock() : duplicate IV5 attestation %s in active DAG block",
+                        keyImage.ToString().substr(0,10).c_str()));
+
+                // An attestation over a spent note proves nothing about live
+                // collateral, so the note must still be unspent when it is made.
+                CShieldedNullifierSpent spent;
+                const TxDBReadStatus spentStatus =
+                    txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
+                if (spentStatus == TXDB_READ_ERROR)
+                {
+                    StartShutdown();
+                    return TransientFailure(error(
+                        "ConnectBlock() : corrupt IV5 spent-key index for %s; "
+                        "-reindex/resync required",
+                        keyImage.ToString().substr(0,10).c_str()));
+                }
+                if (spentStatus == TXDB_READ_FOUND)
+                    return DoS(100, error(
+                        "ConnectBlock() : IV5 attestation %s names a note already spent by %s",
+                        keyImage.ToString().substr(0,10).c_str(),
+                        spent.txnHash.ToString().substr(0,10).c_str()));
+
+                // One node per note. The record is replaced by nothing and erased
+                // only by its own disconnect, so connect and disconnect stay exact
+                // inverses; an operator rotating endpoints moves the collateral to
+                // a fresh note and attests to that.
+                CPrivacyVNextCollateralAttestation prior;
+                const TxDBReadStatus watchStatus =
+                    txdb.ReadPrivacyVNextCollateralStatus(keyImage, prior);
+                if (watchStatus == TXDB_READ_ERROR)
+                {
+                    StartShutdown();
+                    return TransientFailure(error(
+                        "ConnectBlock() : corrupt IV5 collateral index for %s; "
+                        "-reindex/resync required",
+                        keyImage.ToString().substr(0,10).c_str()));
+                }
+                if (watchStatus == TXDB_READ_FOUND)
+                    return DoS(100, error(
+                        "ConnectBlock() : IV5 collateral %s was already attested by %s",
+                        keyImage.ToString().substr(0,10).c_str(),
+                        prior.txnHash.ToString().substr(0,10).c_str()));
+
+                if (!fJustCheck)
+                {
+                    const CPrivacyVNextCollateralAttestation attested(
+                        tx.GetHash(),
+                        uint256(std::vector<unsigned char>(
+                            effects.registrationContext.begin(),
+                            effects.registrationContext.end())),
+                        pindex->nHeight);
+                    if (!txdb.WritePrivacyVNextCollateral(keyImage, attested))
+                        return TransientFailure(error(
+                            "ConnectBlock() : IV5 collateral attestation write failed"));
                 }
             }
 

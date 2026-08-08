@@ -114,6 +114,11 @@ struct PrivacyVNextStateEffects
     PrivacyVNextDigest transparentBinding;
     std::vector<PrivacyVNextDigest> keyImages;
     std::vector<PrivacyVNextOutputLeaf> outputLeaves;
+    // Key images a collateral attestation published without spending. Must never reach
+    // the spent-key index, or a live collateral note would read as consumed.
+    std::vector<PrivacyVNextDigest> attestationKeyImages;
+    // What an attestation bound its off-chain node context to; zero otherwise.
+    PrivacyVNextDigest registrationContext;
 
     PrivacyVNextStateEffects()
         : nFinalizedTreeSize(0), nTransparentValueBalance(0), nFee(0)
@@ -121,6 +126,7 @@ struct PrivacyVNextStateEffects
         finalizedRoot.fill(0);
         parameterDigest.fill(0);
         transparentBinding.fill(0);
+        registrationContext.fill(0);
     }
 
     // What this transaction adds to, or takes from, the pool. Every operation obeys the
@@ -534,6 +540,19 @@ bool ProvePrivacyVNextValue(
 // Proving membership already yields each input's sender disclosure, so only the receiver
 // side needs a call of its own. The Rust side verifies the proof before returning, so a
 // success means it checks against the same signing hash consensus will recompute.
+// Prove one commitment opens to a fixed amount without publishing its opening.
+//
+// The commitment must be the re-randomized one from the same proving instance: a proof run
+// against a leaf commitment names the leaf the membership proof exists to hide.
+bool ProvePrivacyVNextAmountEquality(
+    const PrivacyVNextDigest& commitment,
+    uint64_t nAmount,
+    const PrivacyVNextDigest& mask,
+    const PrivacyVNextDigest& signableHash,
+    const PrivacyVNextDigest& entropy,
+    std::vector<unsigned char>& vchProofOut,
+    std::string& error);
+
 bool ProvePrivacyVNextReceiverDisclosure(
     uint32_t nOutputIndex,
     const PrivacyVNextDigest& recipientSpend,

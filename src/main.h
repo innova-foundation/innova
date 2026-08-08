@@ -2633,6 +2633,12 @@ public:
     // both would keep solving blocks its own ConnectBlock refuses.
     std::map<uint256, CShieldedNullifierSpent> mapPrivacyVNextOutputBase;
     std::map<uint256, std::vector<uint256> > mapPrivacyVNextTxOutputBases;
+    // Collateral attestations pending in the mempool. Kept apart from the spent-key
+    // reservations above: an attestation and a real spend of the same note are both valid
+    // and only their block order decides the outcome, so an attestation in flight must
+    // never keep the spend out of the mempool.
+    std::map<uint256, CShieldedNullifierSpent> mapPrivacyVNextAttestation;
+    std::map<uint256, std::vector<uint256> > mapPrivacyVNextTxAttestations;
 
     bool accept(CTxDB& txdb, CTransaction &tx,
                 bool fCheckInputs, bool* pfMissingInputs, bool fOnlyCheckWithoutAdding=false);
