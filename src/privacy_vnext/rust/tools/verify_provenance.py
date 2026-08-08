@@ -141,6 +141,7 @@ def verify_configuration_and_abi() -> None:
             "innova_privacy_vnext_note_encrypt",
             "innova_privacy_vnext_value_prove",
             "innova_privacy_vnext_receiver_disclosure_prove",
+            "innova_privacy_vnext_amount_equality_prove",
         },
         "ABI differs from the caller-owned v2 contract",
     )

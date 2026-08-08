@@ -299,6 +299,15 @@ payload-signing-hash-request:
   behavior: the hash a spend's proofs bind to is defined only here, so a builder that
     serializes the prefix differently from the validator produces proofs that fail their
     own verification rather than reaching the network
+amount-equality-request:
+  fields: schema-u16-le, reserved-zero-2, amount-u64-le, commitment-32, mask-32, signable-hash-32, entropy-32
+  request-exact-size: 140
+  output-exact-size: 64
+  commitment: the re-randomized C-tilde of the same proving instance, never an on-chain
+    leaf commitment, which would identify the note the membership proof hides
+  behavior: Schnorr knowledge of the mask behind commitment minus amount-times-Monero-H,
+    which proves the commitment holds exactly that amount without publishing its opening;
+    the identity statement is refused, and the prover self-verifies before returning
 payload-validation-request:
   fields: outer-wire-version-u32-le, canonical-payload-to-eof
   exact outer versions: 2000..2008 under the normative envelope matrix
@@ -325,6 +334,12 @@ payload-effects-response:
   pool-delta: transparent-value-balance minus fee, for every operation; the caller tracks the
     running total so no more value can leave the pool than entered it
   trailing-fields: input-count key-images-32 followed by output-count O-I-C leaves-96
+  trailer-exact-size: 33
+  trailer-fields: attestation-count-u8, registration-context-32, attestation-count key-images-32
+  attestation-key-images: key images a collateral attestation published without spending
+    anything; reported apart from the spends because the caller's spend path records what
+    it is handed, and a note recorded as spent can never move again
+  registration-context: what an attestation bound its off-chain node context to; zero otherwise
   behavior: rerun complete payload validation before returning ordered state effects; no C++ payload re-decoding is permitted
 payload-validation:
   strict canonical CompactSize and no trailing bytes
@@ -349,4 +364,11 @@ payload-validation:
   sender-disclosure: source-spend-authority-32 plus a 128-byte proof of the authority discrete log and the Monero-T rerandomization linking it to the exact FCMP O-tilde input
   receiver-disclosure: recipient-spend-32 and view-32 plus a 160-byte proof containing the tweak-ephemeral-view shared point, a DLEQ proof of that point against the tweak ephemeral, and the Monero-T output-opening proof; the note ephemeral is never opened, so a disclosed output keeps its amount, y, and mask
   disclosure-proof-order: all sender proofs in input order, then all receiver proofs in output order; exposed amounts need no extra proof beyond their verified openings
-  remaining-inactive-work: operation-proof cryptographic verification
+  collateral-attestation: outer version 2008 operation 8, disclosure mask 7 and owner
+    authorization only; exactly one input, no outputs, zero transparent value balance and
+    zero fee; a 32-byte nonzero registration context follows the outputs, inside the
+    signing hash, so a transfer's authorization cannot be repackaged as an attestation and
+    one node's attestation cannot be replayed under another node's identity; the balance
+    proof section is empty and the operation proof carries the 64-byte amount-equality
+    proof over the payload's own pseudo-output at 2500000000000 atomic units
+  remaining-inactive-work: none
