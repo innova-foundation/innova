@@ -45,9 +45,8 @@ static const size_t PRIVACY_VNEXT_SHIELD_MAX_INPUTS = 50;
 static const size_t PRIVACY_VNEXT_MIGRATE_DEFAULT_TXNS = 10;
 static const size_t PRIVACY_VNEXT_MIGRATE_MAX_TXNS = 100;
 
-// Released value is safe to build only because the payload prefix carries
-// GetPrivacyVNextTransparentBinding, which consensus checks against the inputs and
-// outputs the transaction actually carries. Never enable this ahead of that check.
+// Pre-retirement build policy; past FORK_HEIGHT_IV5_FEE_NOTE unshield is refused in
+// consensus. Before it, released value is bound by GetPrivacyVNextTransparentBinding.
 static const bool PRIVACY_VNEXT_UNSHIELD_ENABLED = true;
 
 class COutput;
@@ -618,6 +617,14 @@ public:
         CWalletTx& wtxNew,
         int64_t& nValueShieldedOut,
         size_t& nInputsUsedOut,
+        std::string& strErrorOut);
+
+    // Build a post-fork coinbase's fee-note payload; consensus fixes everything but the
+    // recipient. `txCoinbase` must already carry its final outputs, which the payload binds.
+    bool BuildPrivacyVNextFeeNote(
+        int64_t nAmount,
+        const CTransaction& txCoinbase,
+        std::vector<unsigned char>& vchPayloadOut,
         std::string& strErrorOut);
 
     // Spend notes to a shielded recipient. Nothing crosses the transparent

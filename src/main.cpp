@@ -258,6 +258,7 @@ int64_t nLastCoinStakeSearchTime = GetAdjustedTime();
 int nCoinbaseMaturity = 65; //75 on Mainnet I n n o v a
 CBlockIndex* pindexGenesisBlock = NULL;
 int nRegtestBoundaryBHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
+int nRegtestIV5FeeNoteHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
 bool fRegtestShieldedVNextRehearsal = false;
 bool fRegtestHoldPrivacyVNextLeafIndex = false;
 int nBestHeight = -1;
@@ -1183,13 +1184,9 @@ bool CTransaction::CheckTransaction() const
 {
     if (IsPrivacyVNext())
     {
-        // A coinbase and a coinstake are settled by the block's subsidy rules, not
-        // by ConnectInputs, so the pool flow that backs a payload is never applied
-        // to them. The epoch build still reads their payload, so a payload here
-        // would credit the pool and plant leaves with nothing on the transparent
-        // side paying for it.
-        if (IsCoinBase())
-            return DoS(100, error("CTransaction::CheckTransaction() : IV5 payload cannot be coinbase"));
+        // Coinbase and coinstake value is settled by subsidy rules, not ConnectInputs, so a
+        // payload would credit the pool unbacked. Exception: from the fee-note fork a coinbase
+        // carries the fee note; ConnectBlock enforces its block-level equality and height gate.
         if (IsCoinStake())
             return DoS(100, error("CTransaction::CheckTransaction() : IV5 payload cannot be coinstake"));
 
@@ -1214,6 +1211,29 @@ bool CTransaction::CheckTransaction() const
                                   validation.strError.c_str()));
         if (!IsShieldedVNextConsensusReady())
             return DoS(100, error("CTransaction::CheckTransaction() : IV5 consensus implementation is inactive"));
+        if (IsCoinBase())
+        {
+            PrivacyVNextStateEffects coinbaseEffects;
+            const PrivacyVNextPayloadValidation coinbaseResult =
+                ExtractPrivacyVNextPayloadEffects(static_cast<uint32_t>(nVersion),
+                                                  privacyVNext.vchPayload,
+                                                  coinbaseEffects);
+            if (coinbaseResult.fLocalFailure)
+            {
+                StartShutdown();
+                return error("CTransaction::CheckTransaction() : local IV5 failure: %s",
+                             coinbaseResult.strError.c_str());
+            }
+            if (!coinbaseResult.IsValid())
+                return DoS(100, error("CTransaction::CheckTransaction() : %s",
+                                      coinbaseResult.strError.c_str()));
+            if (!coinbaseEffects.keyImages.empty())
+                return DoS(100, error("CTransaction::CheckTransaction() : coinbase IV5 payload spends notes"));
+            if (coinbaseEffects.nFee != 0)
+                return DoS(100, error("CTransaction::CheckTransaction() : coinbase IV5 payload charges a fee"));
+            if (coinbaseEffects.nTransparentValueBalance <= 0)
+                return DoS(100, error("CTransaction::CheckTransaction() : coinbase IV5 payload takes no value into the pool"));
+        }
         // Value accounting picks one shape per transaction: a payload is settled
         // against the pool, legacy fields against nValueBalance. Carrying both
         // would leave the legacy side unvalidated and unaccounted.
@@ -1727,18 +1747,40 @@ bool GetPrivacyVNextPoolDelta(const PrivacyVNextStateEffects& effects,
     return true;
 }
 
+bool CheckPrivacyVNextUnshieldRetired(int64_t nDeclaredBalance, int nHeight,
+                                      std::string& strError)
+{
+    strError.clear();
+    if (!IsIV5FeeNoteActiveAtHeight(nHeight))
+        return true;
+    if (nDeclaredBalance < 0)
+    {
+        strError = strprintf(
+            "IV5 unshield is retired from height %d: payload declares %" PRId64
+            " leaving the pool", FORK_HEIGHT_IV5_FEE_NOTE, -nDeclaredBalance);
+        return false;
+    }
+    return true;
+}
+
 // Transparent value an IV5 transaction moves across the pool boundary. The pool delta
 // is the pool's share; whatever the transparent side contributes beyond it is the fee.
 bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
                                     int64_t& nAbsorbedOut,
                                     int64_t& nReleasedOut,
                                     bool& fLocalFailure,
-                                    std::string& strError)
+                                    std::string& strError,
+                                    int64_t* pnDeclaredFeeOut,
+                                    int64_t* pnDeclaredBalanceOut)
 {
     nAbsorbedOut = 0;
     nReleasedOut = 0;
     fLocalFailure = false;
     strError.clear();
+    if (pnDeclaredFeeOut)
+        *pnDeclaredFeeOut = 0;
+    if (pnDeclaredBalanceOut)
+        *pnDeclaredBalanceOut = 0;
 
     PrivacyVNextStateEffects effects;
     const PrivacyVNextPayloadValidation validation =
@@ -1769,6 +1811,12 @@ bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
     // if the payload named the outputs that receive it.
     if (!CheckPrivacyVNextTransparentBinding(tx, effects, strError))
         return false;
+
+    // GetPrivacyVNextPoolDelta has already range-checked both fields.
+    if (pnDeclaredFeeOut)
+        *pnDeclaredFeeOut = (int64_t)effects.nFee;
+    if (pnDeclaredBalanceOut)
+        *pnDeclaredBalanceOut = effects.nTransparentValueBalance;
 
     if (nDelta > 0)
         nAbsorbedOut = nDelta;
@@ -1836,6 +1884,14 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
         if (!CheckPrivacyVNextTransparentBinding(tx, effects, strBindingError))
             return tx.DoS(100, error("CTxMemPool::accept() : %s",
                                      strBindingError.c_str()));
+
+        // Judged at the height this transaction would occupy, not the tip: one
+        // accepted before the fork must not be relayable into a block after it.
+        std::string strRetiredError;
+        if (!CheckPrivacyVNextUnshieldRetired(effects.nTransparentValueBalance,
+                                              nEffectiveMempoolHeight,
+                                              strRetiredError))
+            return error("CTxMemPool::accept() : %s", strRetiredError.c_str());
 
         bool fContextLocalFailure = false;
         std::string strContextError;
@@ -6353,14 +6409,18 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                 nEffectiveOut += (-nValueBalance); // shielded value absorbed from transparent
 
             int64_t nEffectiveIn = nValueIn;
+            int64_t nDeclaredPayloadFee = 0;
             if (IsPrivacyVNext())
             {
                 int64_t nAbsorbed = 0;
                 int64_t nReleased = 0;
+                int64_t nDeclaredBalance = 0;
                 bool fFlowLocalFailure = false;
                 std::string strFlowError;
                 if (!GetPrivacyVNextTransparentFlow(*this, nAbsorbed, nReleased,
-                                                    fFlowLocalFailure, strFlowError))
+                                                    fFlowLocalFailure, strFlowError,
+                                                    &nDeclaredPayloadFee,
+                                                    &nDeclaredBalance))
                 {
                     if (fFlowLocalFailure)
                     {
@@ -6373,6 +6433,12 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                                           GetHash().ToString().substr(0,10).c_str(),
                                           strFlowError.c_str()));
                 }
+                std::string strRetiredError;
+                if (!CheckPrivacyVNextUnshieldRetired(nDeclaredBalance,
+                                                      nInclusionHeight,
+                                                      strRetiredError))
+                    return DoS(100, error("ConnectInputs() : %s",
+                                          strRetiredError.c_str()));
                 if (nAbsorbed > MAX_MONEY - nEffectiveOut)
                     return DoS(100, error("ConnectInputs() : IV5 absorbed value overflow"));
                 nEffectiveOut += nAbsorbed;
@@ -6388,6 +6454,16 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
             int64_t nTxFee = nEffectiveIn - nEffectiveOut;
             if (nTxFee < 0)
                 return DoS(100, error("ConnectInputs() : %s nTxFee < 0", GetHash().ToString().substr(0,10).c_str()));
+
+            // From the fee-note fork the coinbase allowance drops the declared IV5 fees and the fee
+            // note credits them back; the declared fee must therefore be covered by the inputs.
+            if (IsPrivacyVNext() &&
+                IsIV5FeeNoteActiveAtHeight(nInclusionHeight) &&
+                nTxFee < nDeclaredPayloadFee)
+                return DoS(100, error("ConnectInputs() : %s declares an IV5 fee of %" PRId64
+                                      " but its transparent side pays %" PRId64,
+                                      GetHash().ToString().substr(0,10).c_str(),
+                                      nDeclaredPayloadFee, nTxFee));
 
             // enforce transaction fees for every block
             if (nTxFee < GetMinFee())
@@ -7096,6 +7172,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     int64_t nValueOut = 0;
     int64_t nAmountBurned = 0;
     int64_t nStakeReward = 0;
+    // Declared IV5 fees of this block's active transactions. From the fee-note fork
+    // on this sum leaves the transparent coinbase allowance and is the exact value a
+    // coinbase note may credit to the pool. One derivation feeds both.
+    int64_t nIV5FeeSum = 0;
     unsigned int nSigOps = 0;
 
     //DiskTxPos pos(pindex->GetBlockPos(), GetSizeOfCompactSize(vtx.size()));
@@ -7276,6 +7356,33 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 return DoS(100, error("ConnectBlock() : coinbase GetValueOut overflow: %s", e.what()));
             }
             nValueOut += nCoinbaseValue;
+            // A coinbase fee note takes value into the pool, where it still exists.
+            // Counting only the transparent claim here would shrink the money supply
+            // by the note's amount on every block that carries one.
+            if (tx.IsPrivacyVNext())
+            {
+                int64_t nCoinbaseAbsorbed = 0;
+                int64_t nCoinbaseReleased = 0;
+                bool fFlowLocalFailure = false;
+                std::string strFlowError;
+                if (!GetPrivacyVNextTransparentFlow(tx, nCoinbaseAbsorbed,
+                                                    nCoinbaseReleased,
+                                                    fFlowLocalFailure, strFlowError))
+                {
+                    if (fFlowLocalFailure)
+                    {
+                        StartShutdown();
+                        return TransientFailure(error(
+                            "ConnectBlock() : local IV5 pool-flow failure for the coinbase: %s",
+                            strFlowError.c_str()));
+                    }
+                    return DoS(100, error("ConnectBlock() : coinbase IV5 pool flow rejected: %s",
+                                          strFlowError.c_str()));
+                }
+                if (nCoinbaseAbsorbed > std::numeric_limits<int64_t>::max() - nValueOut)
+                    return DoS(100, error("ConnectBlock() : coinbase IV5 absorbed value overflow"));
+                nValueOut += nCoinbaseAbsorbed;
+            }
         }
         else
         {
@@ -7355,10 +7462,12 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 // would look like surplus payable to the miner as fee.
                 int64_t nAbsorbed = 0;
                 int64_t nReleased = 0;
+                int64_t nDeclaredPayloadFee = 0;
                 bool fFlowLocalFailure = false;
                 std::string strFlowError;
                 if (!GetPrivacyVNextTransparentFlow(tx, nAbsorbed, nReleased,
-                                                    fFlowLocalFailure, strFlowError))
+                                                    fFlowLocalFailure, strFlowError,
+                                                    &nDeclaredPayloadFee))
                 {
                     if (fFlowLocalFailure)
                     {
@@ -7372,6 +7481,9 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                           tx.GetHash().ToString().substr(0,10).c_str(),
                                           strFlowError.c_str()));
                 }
+                if (nDeclaredPayloadFee > std::numeric_limits<int64_t>::max() - nIV5FeeSum)
+                    return DoS(100, error("ConnectBlock() : IV5 fee sum overflow"));
+                nIV5FeeSum += nDeclaredPayloadFee;
                 if (nAbsorbed > std::numeric_limits<int64_t>::max() - nTxValueOut)
                     return DoS(100, error("ConnectBlock() : IV5 absorbed value overflow"));
                 nTxValueOut += nAbsorbed;
@@ -7508,6 +7620,44 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             return DoS(100, error("ConnectBlock() : finality tally share invalid: %s", strShareError.c_str()));
     }
 
+    // From the fee-note fork the coinbase may carry one note worth exactly the declared IV5
+    // fees, and the transparent allowance drops the same sum. This equality is the only
+    // thing backing the note.
+    const bool fIV5FeeNoteFork = IsIV5FeeNoteActiveAtHeight(pindex->nHeight);
+    if (vtx[0].IsPrivacyVNext())
+    {
+        if (!fIV5FeeNoteFork)
+            return DoS(100, error("ConnectBlock() : coinbase IV5 payload before height %d",
+                                  FORK_HEIGHT_IV5_FEE_NOTE));
+
+        PrivacyVNextStateEffects coinbaseEffects;
+        const PrivacyVNextPayloadValidation coinbaseValidation =
+            ExtractPrivacyVNextPayloadEffects(
+                static_cast<uint32_t>(vtx[0].nVersion),
+                vtx[0].privacyVNext.vchPayload, coinbaseEffects);
+        if (coinbaseValidation.fLocalFailure)
+        {
+            StartShutdown();
+            return TransientFailure(error(
+                "ConnectBlock() : local IV5 payload-effects failure for the coinbase: %s",
+                coinbaseValidation.strError.c_str()));
+        }
+        if (!coinbaseValidation.IsValid())
+            return DoS(100, error("ConnectBlock() : invalid coinbase IV5 payload effects: %s",
+                                  coinbaseValidation.strError.c_str()));
+
+        if (!coinbaseEffects.keyImages.empty())
+            return DoS(100, error("ConnectBlock() : coinbase IV5 payload spends notes"));
+        if (coinbaseEffects.nFee != 0)
+            return DoS(100, error("ConnectBlock() : coinbase IV5 payload charges a fee"));
+        if (nIV5FeeSum <= 0)
+            return DoS(100, error("ConnectBlock() : coinbase IV5 note in a block with no IV5 fees"));
+        if (coinbaseEffects.nTransparentValueBalance != nIV5FeeSum)
+            return DoS(100, error("ConnectBlock() : coinbase IV5 note declares %" PRId64
+                                  " against a block IV5 fee sum of %" PRId64,
+                                  coinbaseEffects.nTransparentValueBalance, nIV5FeeSum));
+    }
+
     if (IsProofOfWork())
     {
         // Historical compatibility: the original code used pindexBest->nHeight
@@ -7517,7 +7667,19 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         int nRewardHeight = pindex->nHeight;
         if (pindex->nHeight < FORK_HEIGHT_TIGHTER_DRIFT && pindex->nHeight > 0)
             nRewardHeight = pindex->nHeight - 1;
-        int64_t nReward = GetProofOfWorkReward(nRewardHeight, nFees);
+        int64_t nAllowedFees = nFees;
+        if (fIV5FeeNoteFork)
+        {
+            // ConnectInputs holds every payload's declared fee at or below what its
+            // transparent side actually handed over, so this subtraction cannot go
+            // negative on a block whose transactions all connected.
+            if (nIV5FeeSum > nFees)
+                return DoS(100, error("ConnectBlock() : block IV5 fee sum %" PRId64
+                                      " exceeds the fees it collected %" PRId64,
+                                      nIV5FeeSum, nFees));
+            nAllowedFees -= nIV5FeeSum;
+        }
+        int64_t nReward = GetProofOfWorkReward(nRewardHeight, nAllowedFees);
 
         // Adaptive block size penalty (post-DAG): reduce allowed reward for oversized blocks
         nReward = ApplyBlockSizePenalty(nReward, *this, pindex->pprev);
@@ -8393,6 +8555,14 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             if (!CheckPrivacyVNextTransparentBinding(tx, effects, strBindingError))
                 return DoS(100, error("ConnectBlock() : %s for %s",
                                       strBindingError.c_str(),
+                                      tx.GetHash().ToString().substr(0,10).c_str()));
+
+            std::string strRetiredError;
+            if (!CheckPrivacyVNextUnshieldRetired(
+                    effects.nTransparentValueBalance, pindex->nHeight,
+                    strRetiredError))
+                return DoS(100, error("ConnectBlock() : %s for %s",
+                                      strRetiredError.c_str(),
                                       tx.GetHash().ToString().substr(0,10).c_str()));
 
             bool fContextLocalFailure = false;

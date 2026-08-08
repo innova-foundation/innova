@@ -444,6 +444,9 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
     // Collect memory pool transactions into the block
     int64_t nFees = 0;
+    // Declared IV5 fees of the selected transactions. Post-fork they settle in the pool,
+    // so they leave the transparent allowance exactly as ConnectBlock drops them.
+    int64_t nIV5FeeSum = 0;
     {
         LOCK2(cs_main, mempool.cs);
         CTxDB txdb("r");
@@ -697,13 +700,28 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
                 int64_t nAbsorbed = 0;
                 int64_t nReleased = 0;
+                int64_t nDeclaredBalance = 0;
                 bool fFlowLocalFailure = false;
                 std::string strFlowError;
                 if (!GetPrivacyVNextTransparentFlow(tx, nAbsorbed, nReleased,
-                                                    fFlowLocalFailure, strFlowError))
+                                                    fFlowLocalFailure, strFlowError,
+                                                    NULL, &nDeclaredBalance))
                 {
                     printf("CreateNewBlock: IV5 pool flow unavailable, skipping tx: %s\n",
                            strFlowError.c_str());
+                    continue;
+                }
+                // A transaction accepted before the fork may still be sitting in the
+                // mempool; selecting it now builds a block this node's own
+                // ConnectBlock rejects.
+                std::string strRetiredError;
+                if (!CheckPrivacyVNextUnshieldRetired(nDeclaredBalance,
+                                                      nCandidateHeight,
+                                                      strRetiredError))
+                {
+                    printf("CreateNewBlock: skipping tx %s: %s\n",
+                           tx.GetHash().ToString().substr(0,10).c_str(),
+                           strRetiredError.c_str());
                     continue;
                 }
                 nFee += nReleased;
@@ -831,6 +849,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
             // Orphan-queue transactions skipped selection, and nothing else checks the
             // anchor; an aged-out anchor would make ConnectBlock reject the block.
+            int64_t nDeclaredPayloadFee = 0;
             if (tx.IsPrivacyVNext())
             {
                 std::string strAnchorError;
@@ -841,6 +860,32 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                            "skipping tx %s: %s\n", nCandidateHeight,
                            tx.GetHash().ToString().substr(0,10).c_str(),
                            strAnchorError.c_str());
+                    continue;
+                }
+
+                int64_t nAbsorbed = 0;
+                int64_t nReleased = 0;
+                int64_t nDeclaredBalance = 0;
+                bool fFlowLocalFailure = false;
+                std::string strFlowError;
+                if (!GetPrivacyVNextTransparentFlow(tx, nAbsorbed, nReleased,
+                                                    fFlowLocalFailure, strFlowError,
+                                                    &nDeclaredPayloadFee,
+                                                    &nDeclaredBalance))
+                {
+                    printf("CreateNewBlock: IV5 pool flow unavailable for %s: %s\n",
+                           tx.GetHash().ToString().substr(0,10).c_str(),
+                           strFlowError.c_str());
+                    continue;
+                }
+                std::string strRetiredError;
+                if (!CheckPrivacyVNextUnshieldRetired(nDeclaredBalance,
+                                                      nCandidateHeight,
+                                                      strRetiredError))
+                {
+                    printf("CreateNewBlock: skipping tx %s: %s\n",
+                           tx.GetHash().ToString().substr(0,10).c_str(),
+                           strRetiredError.c_str());
                     continue;
                 }
             }
@@ -857,6 +902,9 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             nBlockSigOps += nTxSigOps;
             //nFees += nTxFees;
             nFees += nFee;
+            // One derivation of the sum the coinbase allowance drops and the coinbase
+            // note credits back, over exactly the transactions this block carries.
+            nIV5FeeSum += nDeclaredPayloadFee;
 
             if (fDebug && GetBoolArg("-printpriority"))
             {
@@ -998,15 +1046,51 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         nLastBlockTx = nBlockTx;
         nLastBlockSize = nBlockSize;
 
+        // Post-fork the block's IV5 fees go to the pool, not the transparent coinbase;
+        // nFees already includes them, so they are removed from the claim.
+        const bool fIV5FeeNoteFork = IsIV5FeeNoteActiveAtHeight(nHeight);
+        int64_t nAllowedFees = nFees;
+        if (fIV5FeeNoteFork)
+            nAllowedFees -= nIV5FeeSum;
+
+        // Placed before the reward is computed (the size penalty reads the serialized
+        // block); dropped if the final payload size differs, since a larger claimed block
+        // could overpay.
+        bool fFeeNote = false;
+        size_t nFeeNoteBytes = 0;
+        if (!fProofOfStake && fIV5FeeNoteFork && nIV5FeeSum > 0 && pwallet)
+        {
+            std::vector<unsigned char> vchProvisional;
+            std::string strNoteError;
+            if (!pwallet->BuildPrivacyVNextFeeNote(nIV5FeeSum, pblock->vtx[0],
+                                                   vchProvisional, strNoteError))
+            {
+                printf("CreateNewBlock: not collecting %" PRId64 " of IV5 fees "
+                       "(they are burned): %s\n", nIV5FeeSum, strNoteError.c_str());
+            }
+            else if (nBlockSize + vchProvisional.size() + 64 >= nBlockMaxSize)
+            {
+                printf("CreateNewBlock: no room for the IV5 fee note; %" PRId64
+                       " of IV5 fees are burned\n", nIV5FeeSum);
+            }
+            else
+            {
+                nFeeNoteBytes = vchProvisional.size();
+                pblock->vtx[0].nVersion = SHIELDED_TX_VERSION_VNEXT;
+                pblock->vtx[0].privacyVNext.vchPayload.swap(vchProvisional);
+                fFeeNote = true;
+            }
+        }
+
         int nRewardHeight = nHeight;
         if (nHeight < FORK_HEIGHT_TIGHTER_DRIFT && nHeight > 0)
             nRewardHeight = nHeight - 1;
-        int64_t blockValue = GetProofOfWorkReward(nRewardHeight, nFees);
+        int64_t blockValue = GetProofOfWorkReward(nRewardHeight, nAllowedFees);
         if (!fProofOfStake)
             blockValue = ApplyBlockSizePenalty(blockValue, *pblock, pindexPrev);
         if (!MoneyRange(blockValue))
         {
-            printf("CreateNewBlock: ERROR: blockValue %" PRId64 " out of MoneyRange (nHeight=%d, nFees=%" PRId64 ")\n", blockValue, nHeight, nFees);
+            printf("CreateNewBlock: ERROR: blockValue %" PRId64 " out of MoneyRange (nHeight=%d, nFees=%" PRId64 ")\n", blockValue, nHeight, nAllowedFees);
             return NULL;
         }
         int64_t collateralnodePayment = GetCollateralnodePayment(pindexPrev->nHeight+1, blockValue);
@@ -1028,6 +1112,32 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
         if (!fProofOfStake){
             pblock->vtx[0].vout[0].nValue = blockValue;
+        }
+
+        // The payload binds the output vector, which only settles here. Rebuild it
+        // against the final coinbase; anything that changes its size invalidates the
+        // penalty already applied above, so drop the note rather than publish a claim
+        // computed over a block that no longer exists.
+        if (fFeeNote)
+        {
+            std::vector<unsigned char> vchFinal;
+            std::string strNoteError;
+            if (!pwallet->BuildPrivacyVNextFeeNote(nIV5FeeSum, pblock->vtx[0],
+                                                   vchFinal, strNoteError) ||
+                vchFinal.size() != nFeeNoteBytes)
+            {
+                printf("CreateNewBlock: dropping the IV5 fee note; %" PRId64
+                       " of IV5 fees are burned: %s\n", nIV5FeeSum,
+                       strNoteError.empty() ? "payload size is not stable"
+                                            : strNoteError.c_str());
+                pblock->vtx[0].privacyVNext.SetNull();
+                pblock->vtx[0].nVersion = CTransaction::CURRENT_VERSION;
+                fFeeNote = false;
+            }
+            else
+            {
+                pblock->vtx[0].privacyVNext.vchPayload.swap(vchFinal);
+            }
         }
 
         if (pFees)

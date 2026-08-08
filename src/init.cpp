@@ -627,6 +627,7 @@ std::string HelpMessage()
         "  -fullreplayverify      " + _("Force full ECDSA verification of all historic blocks (no checkpoint signature skip)") + "\n" +
         "  -acceptepochstate      " + _("Grandfather pre-marker epoch-state records as deterministic (only if they were written by a deterministic-anchor build; otherwise resync)") + "\n" +
         "  -regtestboundaryb=<n>  " + _("Regtest only: Boundary-B rehearsal activation height") + "\n" +
+        "  -regtestiv5feenote=<n>  " + _("Regtest only: IV5 fee-note / unshield-retirement activation height") + "\n" +
         "  -regtestiv5rehearsal   " + _("Regtest only: treat vNext as consensus ready for state-transition rehearsal (no IV5 verifier)") + "\n" +
         "  -regtestiv5holdleafindex " + _("Regtest only: hold IV5 wallet leaf-index assignment, leaving received notes unspendable") + "\n" +
 
@@ -1204,6 +1205,25 @@ bool AppInit2()
         fRegtestShieldedVNextRehearsal = GetBoolArg("-regtestiv5rehearsal", false);
         printf("Boundary-B rehearsal: height=%d ready=%d (regtest only; IV5 verifier is NOT wired into consensus)\n",
                nRegtestBoundaryBHeight, (int)fRegtestShieldedVNextRehearsal);
+    }
+
+    if (mapArgs.count("-regtestiv5feenote"))
+    {
+        if (!fRegTest)
+            return InitError(_("-regtestiv5feenote requires -regtest"));
+        const int64_t nF = GetArg("-regtestiv5feenote", (int64_t)PRIVACY_VNEXT_HEIGHT_UNSET);
+        if (nF < 0 || nF > (int64_t)PRIVACY_VNEXT_HEIGHT_UNSET)
+            return InitError(_("-regtestiv5feenote is out of range"));
+        // The rule set only has meaning once the pool exists: before Boundary B no
+        // payload can be mined at all, so an earlier height would gate nothing and
+        // would make the pre-fork side of the boundary untestable.
+        if (nF < (int64_t)FORK_HEIGHT_BOUNDARY_B)
+            return InitError(strprintf(
+                _("-regtestiv5feenote=%d is below the Boundary-B height %d"),
+                (int)nF, FORK_HEIGHT_BOUNDARY_B));
+        nRegtestIV5FeeNoteHeight = (int)nF;
+        printf("IV5 fee-note/unshield-retirement fork height: %d (regtest only)\n",
+               nRegtestIV5FeeNoteHeight);
     }
 
     // Holding leaf-index assignment leaves received notes unspendable, so it exists

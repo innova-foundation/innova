@@ -464,6 +464,34 @@ inline bool IsBoundaryBActiveAtHeight(int nHeight)
     return IsBoundaryBConfigured() && nHeight >= FORK_HEIGHT_BOUNDARY_B;
 }
 
+// One flag day for the IV5 pool boundary: unshield is retired (no payload may
+// declare a negative transparent value balance) and the pool's fees stop crossing
+// to transparent coinbase value, settling instead as a coinbase note. The two
+// belong together -- retiring unshield while the fee channel still pays out
+// transparently leaves a full-value exit for anyone who mines their own block.
+//
+// Scheduled with Boundary B, which is itself unset on public networks until the
+// FCMP++ candidate is reviewed, so this fails closed there too. Regtest sets it
+// explicitly with -regtestiv5feenote so both sides of the boundary are reachable.
+extern int nRegtestIV5FeeNoteHeight;
+
+inline int GetForkHeightIV5FeeNote()
+{
+    extern bool fRegTest;
+    return fRegTest ? nRegtestIV5FeeNoteHeight : PRIVACY_VNEXT_HEIGHT_UNSET;
+}
+#define FORK_HEIGHT_IV5_FEE_NOTE (GetForkHeightIV5FeeNote())
+
+inline bool IsIV5FeeNoteConfigured()
+{
+    return FORK_HEIGHT_IV5_FEE_NOTE != PRIVACY_VNEXT_HEIGHT_UNSET;
+}
+
+inline bool IsIV5FeeNoteActiveAtHeight(int nHeight)
+{
+    return IsIV5FeeNoteConfigured() && nHeight >= FORK_HEIGHT_IV5_FEE_NOTE;
+}
+
 // Public testnet/mainnet candidates stop creating and relaying legacy privacy
 // transactions immediately, before the consensus boundary. Regtest retains
 // the historical formats solely for deterministic replay and rejection tests.
@@ -833,11 +861,17 @@ bool CheckPrivacyVNextTransparentBinding(const CTransaction& tx,
  *  pool absorbs must be covered by the transparent inputs, what it releases is
  *  available to the transparent outputs. Fee accounting must apply this wherever
  *  it applies the legacy nValueBalance, or a shield's inputs read as fee. */
+/*  pnDeclaredFeeOut/pnDeclaredBalanceOut return the payload's own cleartext fields
+ *  from the same extraction the flow is derived from. Post-fork the coinbase note
+ *  and the transparent coinbase allowance are both keyed on the declared fee, so
+ *  taking it from a second extraction would be a second derivation of one value. */
 bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
                                     int64_t& nAbsorbedOut,
                                     int64_t& nReleasedOut,
                                     bool& fLocalFailure,
-                                    std::string& strError);
+                                    std::string& strError,
+                                    int64_t* pnDeclaredFeeOut = NULL,
+                                    int64_t* pnDeclaredBalanceOut = NULL);
 
 /** Pool delta of a payload's effects, range-checked before the subtraction rather
  *  than after it. PoolDelta() subtracts in int64_t, so the operands have to be
@@ -846,6 +880,11 @@ struct PrivacyVNextStateEffects;
 bool GetPrivacyVNextPoolDelta(const PrivacyVNextStateEffects& effects,
                               int64_t& nDeltaOut,
                               std::string& strError);
+
+/** Refuse a payload declaring pool value leaving to the transparent side, from
+ *  FORK_HEIGHT_IV5_FEE_NOTE on. Keyed on the declared balance, never the pool delta. */
+bool CheckPrivacyVNextUnshieldRetired(int64_t nDeclaredBalance, int nHeight,
+                                      std::string& strError);
 
 /** Whether an IV5 transaction still anchors inside the consensus window at
  *  nHeight. Block assembly must apply this: the window is finite, so a mempool

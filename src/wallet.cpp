@@ -10873,6 +10873,96 @@ static void SplitPrivacyVNextValue(int64_t nTotal, uint64_t& nFirstOut,
     nSecondOut = (uint64_t)nTotal - nFirstOut;
 }
 
+bool CWallet::BuildPrivacyVNextFeeNote(
+    int64_t nAmount,
+    const CTransaction& txCoinbase,
+    std::vector<unsigned char>& vchPayloadOut,
+    std::string& strErrorOut)
+{
+    extern uint8_t PrivacyVNextNetworkIdForWallet();
+    vchPayloadOut.clear();
+    strErrorOut.clear();
+
+    if (nAmount <= 0 || !MoneyRange(nAmount))
+    {
+        strErrorOut = "IV5 fee-note amount is out of range";
+        return false;
+    }
+    if (vchPrivacyVNextSeed.size() != 32)
+    {
+        strErrorOut = "the wallet has no unlocked IV5 seed; run z_createiv5seed first";
+        return false;
+    }
+
+    // Same finalized state a validator anchors against. An output-only payload
+    // carries no membership proof, so the seed anchor serves before any epoch has
+    // held the pool.
+    std::vector<unsigned char> vchRoot;
+    uint64_t nTreeSize = 0;
+    {
+        LOCK(cs_main);
+        CTxDB txdb("r");
+        CEpochState finalized;
+        if (g_dagManager.GetFinalizedEpochStateAsOf(txdb, nBestHeight, finalized) &&
+            finalized.nSerVersion >= EPOCHSTATE_SER_VERSION_V4 &&
+            finalized.vchVNextRoot.size() == EPOCHSTATE_VNEXT_DIGEST_SIZE)
+        {
+            vchRoot = finalized.vchVNextRoot;
+            nTreeSize = finalized.nVNextTreeSize;
+        }
+        else
+        {
+            PrivacyVNextEpochSeed seed;
+            if (!LoadPrivacyVNextEpochSeed(seed, strErrorOut))
+                return false;
+            vchRoot = seed.vchRoot;
+            nTreeSize = seed.nTreeSize;
+        }
+    }
+    if (vchRoot.size() != 32)
+    {
+        strErrorOut = "IV5 finalized root is unavailable";
+        return false;
+    }
+
+    PrivacyVNextDigest seedDigest;
+    std::memcpy(seedDigest.data(), &vchPrivacyVNextSeed[0], 32);
+    PrivacyVNextDigest genesis;
+    const uint256 hashGenesis = GetGenesisBlockHash();
+    std::memcpy(genesis.data(), hashGenesis.begin(), 32);
+    const uint8_t nNetwork = PrivacyVNextNetworkIdForWallet();
+
+    PrivacyVNextDerivedKeys keys;
+    if (!DerivePrivacyVNextKeys(seedDigest, genesis, 0, nNetwork, 0, keys,
+                                strErrorOut))
+        return false;
+
+    // One note: consensus keys on the declared balance, not on the output count, but
+    // a single output is the smallest payload that carries the whole sum.
+    std::vector<PrivacyVNextNewOutput> vOutputs(1);
+    vOutputs[0].recipient.nNetwork = nNetwork;
+    vOutputs[0].recipient.nAddressType = 0;
+    vOutputs[0].recipient.spendPublic = keys.spendPublic;
+    vOutputs[0].recipient.viewPublic = keys.viewPublic;
+    vOutputs[0].nAmount = (uint64_t)nAmount;
+
+    PrivacyVNextDigest finalizedRoot;
+    std::memcpy(finalizedRoot.data(), &vchRoot[0], 32);
+
+    PrivacyVNextDigest transparentBinding;
+    PrivacyVNextBindingOf(txCoinbase, transparentBinding);
+
+    // The amount is published with its opening so anyone can check the note against the
+    // block's IV5 fee sum; the recipient stays hidden and no range proof is needed.
+    const uint8_t nMask = (uint8_t)(iv5::DISCLOSURE_HIDE_SENDER |
+                                    iv5::DISCLOSURE_HIDE_RECEIVER);
+    return BuildPrivacyVNextShieldPayload(nNetwork, nMask, genesis,
+                                          keys.outgoingViewSecret, finalizedRoot,
+                                          nTreeSize, transparentBinding,
+                                          (uint64_t)nAmount, 0, vOutputs,
+                                          vchPayloadOut, strErrorOut);
+}
+
 bool CWallet::CreatePrivacyVNextShield(
     const std::string& strFromAddress,
     size_t nMaxInputs,
@@ -11568,6 +11658,17 @@ bool CWallet::CreatePrivacyVNextUnshield(
     if (!PRIVACY_VNEXT_UNSHIELD_ENABLED)
     {
         strErrorOut = "unshield is not enabled in this build";
+        return false;
+    }
+
+    // Keyed on the height the transaction would occupy, not the tip: one built at
+    // the last pre-fork height would still be relayed and mined after it.
+    const int nCandidateHeight = nBestHeight == std::numeric_limits<int>::max()
+                                     ? nBestHeight : nBestHeight + 1;
+    if (IsIV5FeeNoteActiveAtHeight(nCandidateHeight))
+    {
+        strErrorOut = strprintf("IV5 unshield is retired at height %d",
+                                FORK_HEIGHT_IV5_FEE_NOTE);
         return false;
     }
 
