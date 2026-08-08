@@ -16,8 +16,8 @@ use helioselene::{Helios, Selene};
 use monero_ed25519::CompressedPoint;
 use monero_fcmp_plus_plus::{
     fcmps::{
-        BranchBlind, Branches, CBlind, Fcmp, IBlind, IBlindBlind, OBlind, OutputBlinds, Path,
-        TreeRoot,
+        BranchBlind, Branches, CBlind, Fcmp, IBlind, IBlindBlind, Input as MembershipInput, OBlind,
+        OutputBlinds, Path, TreeRoot,
     },
     sal::{OpenedInputTuple, RerandomizedOutput, SpendAuthAndLinkability},
     Curves, FcmpPlusPlus, FCMP_PARAMS, HELIOS_FCMP_GENERATORS, SELENE_FCMP_GENERATORS,
@@ -219,6 +219,60 @@ struct ParsedProvingRequest {
     witnesses: Vec<ProvingWitness>,
 }
 
+/// One witness record: the opening, the leaf, and the branch it sits under. The record is the
+/// same for every proof shape, so the membership-only request reads it with this too.
+fn parse_witness(reader: &mut Reader<'_>, t: EdPoint) -> Result<ProvingWitness, ResultCode> {
+    let x = decode_scalar::<Ed25519>(reader.array()?)?;
+    if bool::from(x.is_zero()) {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    let y = decode_scalar::<Ed25519>(reader.array()?)?;
+    let output = decode_output(reader)?;
+    if output.O() != (<Ed25519 as Ciphersuite>::generator() * x) + (t * y) {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+
+    let leaf_count = usize::from(reader.u8()?);
+    if leaf_count == 0 || leaf_count > C1_BRANCH_LEN {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    reader.zeroes(3)?;
+    let mut leaves = Vec::with_capacity(leaf_count);
+    for _ in 0..leaf_count {
+        leaves.push(decode_output(reader)?);
+    }
+    if !leaves.iter().any(|candidate| candidate == &output) {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+
+    let mut curve_2_layers = Vec::with_capacity(C2_LAYER_COUNT);
+    for _ in 0..C2_LAYER_COUNT {
+        let mut branch = Vec::with_capacity(C2_BRANCH_LEN);
+        for _ in 0..C2_BRANCH_LEN {
+            branch.push(decode_scalar::<Helios>(reader.array()?)?);
+        }
+        curve_2_layers.push(branch);
+    }
+    let mut curve_1_layers = Vec::with_capacity(C1_LAYER_COUNT);
+    for _ in 0..C1_LAYER_COUNT {
+        let mut branch = Vec::with_capacity(C1_BRANCH_LEN);
+        for _ in 0..C1_BRANCH_LEN {
+            branch.push(decode_scalar::<Selene>(reader.array()?)?);
+        }
+        curve_1_layers.push(branch);
+    }
+    Ok(ProvingWitness {
+        x,
+        y,
+        path: Path {
+            output,
+            leaves,
+            curve_2_layers,
+            curve_1_layers,
+        },
+    })
+}
+
 fn parse_proving_request(request: &[u8]) -> Result<ParsedProvingRequest, ResultCode> {
     if request.len() < PROVE_HEADER_LEN {
         return Err(ResultCode::BadLength);
@@ -240,55 +294,7 @@ fn parse_proving_request(request: &[u8]) -> Result<ParsedProvingRequest, ResultC
     let t = monero_t();
     let mut witnesses = Vec::with_capacity(count);
     for _ in 0..count {
-        let x = decode_scalar::<Ed25519>(reader.array()?)?;
-        if bool::from(x.is_zero()) {
-            return Err(ResultCode::ConsensusInvalid);
-        }
-        let y = decode_scalar::<Ed25519>(reader.array()?)?;
-        let output = decode_output(&mut reader)?;
-        if output.O() != (<Ed25519 as Ciphersuite>::generator() * x) + (t * y) {
-            return Err(ResultCode::ConsensusInvalid);
-        }
-
-        let leaf_count = usize::from(reader.u8()?);
-        if leaf_count == 0 || leaf_count > C1_BRANCH_LEN {
-            return Err(ResultCode::ConsensusInvalid);
-        }
-        reader.zeroes(3)?;
-        let mut leaves = Vec::with_capacity(leaf_count);
-        for _ in 0..leaf_count {
-            leaves.push(decode_output(&mut reader)?);
-        }
-        if !leaves.iter().any(|candidate| candidate == &output) {
-            return Err(ResultCode::ConsensusInvalid);
-        }
-
-        let mut curve_2_layers = Vec::with_capacity(C2_LAYER_COUNT);
-        for _ in 0..C2_LAYER_COUNT {
-            let mut branch = Vec::with_capacity(C2_BRANCH_LEN);
-            for _ in 0..C2_BRANCH_LEN {
-                branch.push(decode_scalar::<Helios>(reader.array()?)?);
-            }
-            curve_2_layers.push(branch);
-        }
-        let mut curve_1_layers = Vec::with_capacity(C1_LAYER_COUNT);
-        for _ in 0..C1_LAYER_COUNT {
-            let mut branch = Vec::with_capacity(C1_BRANCH_LEN);
-            for _ in 0..C1_BRANCH_LEN {
-                branch.push(decode_scalar::<Selene>(reader.array()?)?);
-            }
-            curve_1_layers.push(branch);
-        }
-        witnesses.push(ProvingWitness {
-            x,
-            y,
-            path: Path {
-                output,
-                leaves,
-                curve_2_layers,
-                curve_1_layers,
-            },
-        });
+        witnesses.push(parse_witness(&mut reader, t)?);
     }
     reader.finish()?;
     Ok(ParsedProvingRequest {
@@ -733,7 +739,11 @@ pub(crate) fn input_o_tilde(
         .map_err(|_| ResultCode::InternalLocalStateFailure)
 }
 
-pub(super) fn verify_batch(request: &[u8], expected_count: u32) -> Result<(), ResultCode> {
+/// The length-framed batch envelope, which is the same whatever the framed requests prove.
+fn parse_batch_frame(
+    request: &[u8],
+    expected_count: u32,
+) -> Result<(Vec<&[u8]>, usize), ResultCode> {
     if request.len() < BATCH_HEADER_LEN {
         return Err(ResultCode::BadLength);
     }
@@ -760,6 +770,11 @@ pub(super) fn verify_batch(request: &[u8], expected_count: u32) -> Result<(), Re
         requests.push(reader.bytes(len)?);
     }
     reader.finish()?;
+    Ok((requests, declared_inputs))
+}
+
+pub(super) fn verify_batch(request: &[u8], expected_count: u32) -> Result<(), ResultCode> {
+    let (requests, declared_inputs) = parse_batch_frame(request, expected_count)?;
 
     let mut actual_inputs = 0_usize;
     for item in &requests {
@@ -772,6 +787,307 @@ pub(super) fn verify_batch(request: &[u8], expected_count: u32) -> Result<(), Re
         return Err(ResultCode::ConsensusInvalid);
     }
     verify_requests(&requests)
+}
+
+// Membership-only instance: the bare FCMP over the tree, with no spend authorization and
+// no key image. It commits to no message and is replayable; binding it to a statement is
+// the caller's job.
+
+/// Header through the root: schema, layers, root curve, count, padding, root.
+const MEMBERSHIP_HEADER_LEN: usize = 40;
+/// The proving request adds entropy for the rerandomization draw.
+const MEMBERSHIP_PROVE_HEADER_LEN: usize = MEMBERSHIP_HEADER_LEN + 32;
+/// One re-randomized input tuple: O~, I~, R, C~. A key image would be a fifth point.
+const MEMBERSHIP_INPUT_LEN: usize = 128;
+const MEMBERSHIP_RNG_DOMAIN: &[u8] = b"Innova/IV5/FCMP++/MembershipRng/v1";
+const MEMBERSHIP_BATCH_RNG_DOMAIN: &[u8] = b"Innova/IV5/FCMP++/MembershipBatchWeights/v1";
+
+// `Fcmp::verify` panics, rather than erroring, when the layer count's parity disagrees with the
+// tree root's curve. The layer count is a constant here, so half the pin is compile-time.
+const _: () = assert!(
+    LAYERS.is_multiple_of(2),
+    "an even layer count is what makes a Helios root the only root Fcmp::verify accepts"
+);
+
+struct ParsedMembership {
+    root: FcmpRoot,
+    inputs: Vec<MembershipInput<C1Scalar>>,
+    proof: Fcmp<Curves>,
+    input_count: usize,
+}
+
+fn encode_membership_request(
+    root_bytes: [u8; 32],
+    tuples: &[[u8; MEMBERSHIP_INPUT_LEN]],
+    proof: &[u8],
+) -> Result<Vec<u8>, ResultCode> {
+    let count = tuples.len();
+    validate_count(count)?;
+    let mut request = Vec::with_capacity(
+        MEMBERSHIP_HEADER_LEN
+            .checked_add(count * MEMBERSHIP_INPUT_LEN)
+            .and_then(|size| size.checked_add(4 + proof.len()))
+            .ok_or(ResultCode::ResourceLimit)?,
+    );
+    request.extend_from_slice(&SCHEMA.to_le_bytes());
+    request.push(LAYERS);
+    request.push(ROOT_CURVE_HELIOS);
+    request.push(u8::try_from(count).map_err(|_| ResultCode::ResourceLimit)?);
+    request.extend_from_slice(&[0; 3]);
+    request.extend_from_slice(&root_bytes);
+    for tuple in tuples {
+        request.extend_from_slice(tuple);
+    }
+    request.extend_from_slice(
+        &u32::try_from(proof.len())
+            .map_err(|_| ResultCode::ResourceLimit)?
+            .to_le_bytes(),
+    );
+    request.extend_from_slice(proof);
+    if request.len() > MAX_BYTES {
+        return Err(ResultCode::ResourceLimit);
+    }
+    Ok(request)
+}
+
+fn parse_membership_request(request: &[u8]) -> Result<ParsedMembership, ResultCode> {
+    if request.len() < MEMBERSHIP_HEADER_LEN {
+        return Err(ResultCode::BadLength);
+    }
+    let mut reader = Reader::new(request);
+    check_schema_and_layers(&mut reader)?;
+    let root_curve = reader.u8()?;
+    let count = usize::from(reader.u8()?);
+    validate_count(count)?;
+    reader.zeroes(3)?;
+    let root = decode_root(root_curve, reader.array()?)?;
+
+    let mut inputs = Vec::with_capacity(count);
+    for _ in 0..count {
+        let o_tilde = decode_group::<Ed25519>(reader.array()?)?;
+        let i_tilde = decode_group::<Ed25519>(reader.array()?)?;
+        let r = decode_group::<Ed25519>(reader.array()?)?;
+        let c_tilde = decode_group::<Ed25519>(reader.array()?)?;
+        inputs.push(
+            MembershipInput::new(o_tilde, i_tilde, r, c_tilde)
+                .map_err(|_| ResultCode::ConsensusInvalid)?,
+        );
+    }
+
+    let proof_len = usize::try_from(reader.u32()?).map_err(|_| ResultCode::ResourceLimit)?;
+    // Fixing the length before the read is also what keeps `Fcmp::read`'s own size arithmetic
+    // away from its underflow case.
+    if proof_len != Fcmp::<Curves>::proof_size(count, usize::from(LAYERS)) {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    let proof_bytes = reader.bytes(proof_len)?;
+    reader.finish()?;
+    let mut encoded = proof_bytes;
+    let proof = Fcmp::<Curves>::read(&mut encoded, count, usize::from(LAYERS))
+        .map_err(|_| ResultCode::ConsensusInvalid)?;
+    if !encoded.is_empty() {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    Ok(ParsedMembership {
+        root,
+        inputs,
+        proof,
+        input_count: count,
+    })
+}
+
+fn verify_membership_requests(requests: &[&[u8]]) -> Result<(), ResultCode> {
+    validate_count(requests.len())?;
+    let mut parsed = Vec::with_capacity(requests.len());
+    let mut total_inputs = 0_usize;
+    for request in requests {
+        let proof = parse_membership_request(request)?;
+        total_inputs = total_inputs
+            .checked_add(proof.input_count)
+            .ok_or(ResultCode::ResourceLimit)?;
+        if total_inputs > MAX_INPUTS {
+            return Err(ResultCode::ResourceLimit);
+        }
+        parsed.push(proof);
+    }
+
+    let mut rng = deterministic_rng(MEMBERSHIP_BATCH_RNG_DOMAIN, requests);
+    // No ed25519 batch verifier is built at all: nothing here queues onto one, and a request
+    // that names no key image has nothing to check against it.
+    let mut c1_verifier = generalized_bulletproofs::Generators::batch_verifier();
+    let mut c2_verifier = generalized_bulletproofs::Generators::batch_verifier();
+    for proof in &parsed {
+        // The decoder admits only a Helios root, and the layer count is pinned even. Restated
+        // at the call site so the argument pair `Fcmp::verify` panics on cannot be assembled
+        // by a later edit to either side.
+        if !matches!(proof.root, TreeRoot::C2(_)) {
+            return Err(ResultCode::UnsupportedFormat);
+        }
+        proof
+            .proof
+            .verify(
+                &mut rng,
+                &mut c1_verifier,
+                &mut c2_verifier,
+                &FCMP_PARAMS,
+                proof.root,
+                usize::from(LAYERS),
+                &proof.inputs,
+            )
+            .map_err(|_| ResultCode::ConsensusInvalid)?;
+    }
+    let c1_valid = SELENE_FCMP_GENERATORS.generators.verify(c1_verifier);
+    let c2_valid = HELIOS_FCMP_GENERATORS.generators.verify(c2_verifier);
+    if !(c1_valid && c2_valid) {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub(crate) fn verify_membership(request: &[u8]) -> Result<(), ResultCode> {
+    verify_membership_requests(&[request])
+}
+
+#[allow(dead_code)]
+pub(crate) fn verify_membership_batch(
+    request: &[u8],
+    expected_count: u32,
+) -> Result<(), ResultCode> {
+    let (requests, declared_inputs) = parse_batch_frame(request, expected_count)?;
+
+    let mut actual_inputs = 0_usize;
+    for item in &requests {
+        let parsed = parse_membership_request(item)?;
+        actual_inputs = actual_inputs
+            .checked_add(parsed.input_count)
+            .ok_or(ResultCode::ResourceLimit)?;
+    }
+    if actual_inputs != declared_inputs {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    verify_membership_requests(&requests)
+}
+
+struct ParsedMembershipProvingRequest {
+    root_bytes: [u8; 32],
+    witnesses: Vec<ProvingWitness>,
+}
+
+fn parse_membership_proving_request(
+    request: &[u8],
+) -> Result<ParsedMembershipProvingRequest, ResultCode> {
+    if request.len() < MEMBERSHIP_PROVE_HEADER_LEN {
+        return Err(ResultCode::BadLength);
+    }
+    let mut reader = Reader::new(request);
+    check_schema_and_layers(&mut reader)?;
+    let root_curve = reader.u8()?;
+    let count = usize::from(reader.u8()?);
+    validate_count(count)?;
+    reader.zeroes(3)?;
+    let root_bytes = reader.array()?;
+    let _ = decode_root(root_curve, root_bytes)?;
+    if reader.array::<32>()?.iter().all(|byte| *byte == 0) {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+
+    let t = monero_t();
+    let mut witnesses = Vec::with_capacity(count);
+    for _ in 0..count {
+        witnesses.push(parse_witness(&mut reader, t)?);
+    }
+    reader.finish()?;
+    Ok(ParsedMembershipProvingRequest {
+        root_bytes,
+        witnesses,
+    })
+}
+
+/// Produce a membership-only instance. The result is a canonical verification request: there is
+/// no wallet-only metadata to hold back, unlike the spend path's construction response.
+#[allow(dead_code)]
+pub(crate) fn prove_membership(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
+    let ParsedMembershipProvingRequest {
+        root_bytes,
+        witnesses,
+    } = parse_membership_proving_request(request)?;
+    let count = witnesses.len();
+    // One stream: a membership proof binds no message, so freshness of O~ rests entirely
+    // on the caller varying entropy.
+    let mut rng = deterministic_rng(MEMBERSHIP_RNG_DOMAIN, &[request]);
+    let t_generator = monero_t();
+    let u_generator = EdwardsPoint((*FCMP_PLUS_PLUS_U).into());
+    let v_generator = EdwardsPoint((*FCMP_PLUS_PLUS_V).into());
+
+    let paths = witnesses
+        .iter()
+        .map(|witness| witness.path.clone())
+        .collect::<Vec<_>>();
+    let branches = Branches::new(paths).ok_or(ResultCode::ConsensusInvalid)?;
+    let c1_blinds = branches.necessary_c1_blinds();
+    let c2_blinds = branches.necessary_c2_blinds();
+
+    let mut output_blinds = Vec::with_capacity(count);
+    let mut tuples = Vec::with_capacity(count);
+    for witness in &witnesses {
+        let (
+            rerandomized,
+            o_decomposition,
+            i_decomposition,
+            i_blind_decomposition,
+            c_decomposition,
+        ) = rerandomize_with_nonzero_blinds(&mut rng, &witness.path.output);
+        // The rerandomization is the only part of the spend path this shares. Neither
+        // `OpenedInputTuple::open` nor `SpendAuthAndLinkability::prove` runs, so no key image is
+        // computed, let alone published.
+        let input = rerandomized.input();
+        let mut tuple = [0_u8; MEMBERSHIP_INPUT_LEN];
+        tuple[..32].copy_from_slice(&input.O_tilde());
+        tuple[32..64].copy_from_slice(&input.I_tilde());
+        tuple[64..96].copy_from_slice(&input.R());
+        tuple[96..].copy_from_slice(&input.C_tilde());
+        tuples.push(tuple);
+        output_blinds.push(OutputBlinds::new(
+            OBlind::new(t_generator, o_decomposition),
+            IBlind::new(u_generator, v_generator, i_decomposition),
+            IBlindBlind::new(t_generator, i_blind_decomposition),
+            CBlind::new(<Ed25519 as Ciphersuite>::generator(), c_decomposition),
+        ));
+    }
+
+    let mut branch_1_blinds = Vec::with_capacity(c1_blinds);
+    for _ in 0..c1_blinds {
+        branch_1_blinds.push(BranchBlind::new(
+            SELENE_FCMP_GENERATORS.generators.h(),
+            random_c1_decomposition(&mut rng),
+        ));
+    }
+    let mut branch_2_blinds = Vec::with_capacity(c2_blinds);
+    for _ in 0..c2_blinds {
+        branch_2_blinds.push(BranchBlind::new(
+            HELIOS_FCMP_GENERATORS.generators.h(),
+            random_c2_decomposition(&mut rng),
+        ));
+    }
+
+    let blinded = branches
+        .blind(output_blinds, branch_1_blinds, branch_2_blinds)
+        .map_err(|_| ResultCode::ConsensusInvalid)?;
+    let membership =
+        Fcmp::prove(&mut rng, &FCMP_PARAMS, blinded).map_err(|_| ResultCode::ConsensusInvalid)?;
+    let expected_size = Fcmp::<Curves>::proof_size(count, usize::from(LAYERS));
+    let mut proof_bytes = Vec::with_capacity(expected_size);
+    membership
+        .write(&mut proof_bytes)
+        .map_err(|_| ResultCode::InternalLocalStateFailure)?;
+    if proof_bytes.len() != expected_size {
+        return Err(ResultCode::InternalLocalStateFailure);
+    }
+
+    let verification = encode_membership_request(root_bytes, &tuples, &proof_bytes)?;
+    verify_membership(&verification)?;
+    Ok(verification)
 }
 
 #[cfg(test)]
@@ -1207,8 +1523,16 @@ mod tests {
         assert!(decode_root(ROOT_CURVE_HELIOS, foreign_root).is_ok());
         assert_eq!(prove(&request), Err(ResultCode::ConsensusInvalid));
     }
-    use super::*;
+    use std::{
+        panic::{catch_unwind, AssertUnwindSafe},
+        sync::OnceLock,
+    };
+
+    use ciphersuite::group::ff::Field as _;
     use ec_divisors::DivisorCurve as _;
+    use rand_core::RngCore as _;
+
+    use super::*;
 
     fn hash_values<C: Ciphersuite>(
         initial: C::G,
@@ -1250,10 +1574,10 @@ mod tests {
         .expect("random output is nonidentity")
     }
 
-    fn real_proving_request() -> (Vec<u8>, [u8; 32], [u8; 32]) {
-        let mut rng = ChaCha20Rng::from_seed([0x42; 32]);
-        let x = EdScalar::from(7_u64);
-        let y = EdScalar::from(11_u64);
+    /// A synthetic eight-layer witness: the root the leaf proves to, and the witness record the
+    /// request formats share. Building the tree by hand keeps this independent of `tree`.
+    fn synthetic_witness(seed: [u8; 32], x: EdScalar, y: EdScalar) -> ([u8; 32], Vec<u8>) {
+        let mut rng = ChaCha20Rng::from_seed(seed);
         let output = FcmpOutput::new(
             (<Ed25519 as Ciphersuite>::generator() * x) + (monero_t() * y),
             <Ed25519 as Ciphersuite>::generator() * EdScalar::from(13_u64),
@@ -1309,9 +1633,33 @@ mod tests {
             c1_layers.push(c1);
         }
         let root = root.expect("eight layers end on Helios");
-        let root_bytes = root.to_bytes();
-        let signable_hash = [0x51; 32];
 
+        let mut record = Vec::new();
+        append_scalar::<Ed25519>(&mut record, x);
+        append_scalar::<Ed25519>(&mut record, y);
+        append_output(&mut record, &output);
+        record.push(u8::try_from(leaves.len()).expect("leaf count is bounded"));
+        record.extend_from_slice(&[0; 3]);
+        for leaf in leaves {
+            append_output(&mut record, &leaf);
+        }
+        for branch in c2_layers {
+            for scalar in branch {
+                append_scalar::<Helios>(&mut record, scalar);
+            }
+        }
+        for branch in c1_layers {
+            for scalar in branch {
+                append_scalar::<Selene>(&mut record, scalar);
+            }
+        }
+        (root.to_bytes(), record)
+    }
+
+    fn real_proving_request() -> (Vec<u8>, [u8; 32], [u8; 32]) {
+        let (root_bytes, record) =
+            synthetic_witness([0x42; 32], EdScalar::from(7_u64), EdScalar::from(11_u64));
+        let signable_hash = [0x51; 32];
         let mut request = Vec::new();
         request.extend_from_slice(&SCHEMA.to_le_bytes());
         request.push(LAYERS);
@@ -1321,25 +1669,26 @@ mod tests {
         request.extend_from_slice(&root_bytes);
         request.extend_from_slice(&signable_hash);
         request.extend_from_slice(&[0x73; 32]);
-        append_scalar::<Ed25519>(&mut request, x);
-        append_scalar::<Ed25519>(&mut request, y);
-        append_output(&mut request, &output);
-        request.push(u8::try_from(leaves.len()).expect("leaf count is bounded"));
-        request.extend_from_slice(&[0; 3]);
-        for leaf in leaves {
-            append_output(&mut request, &leaf);
-        }
-        for branch in c2_layers {
-            for scalar in branch {
-                append_scalar::<Helios>(&mut request, scalar);
-            }
-        }
-        for branch in c1_layers {
-            for scalar in branch {
-                append_scalar::<Selene>(&mut request, scalar);
-            }
-        }
+        request.extend_from_slice(&record);
         (request, root_bytes, signable_hash)
+    }
+
+    /// A membership-only proving request over one synthetic witness. Same header as the spend
+    /// request through the root, then entropy, then the witness records. No signable hash,
+    /// because nothing here is challenged under one.
+    fn membership_proving_request(root_bytes: [u8; 32], records: &[&[u8]]) -> Vec<u8> {
+        let mut request = Vec::new();
+        request.extend_from_slice(&SCHEMA.to_le_bytes());
+        request.push(LAYERS);
+        request.push(ROOT_CURVE_HELIOS);
+        request.push(u8::try_from(records.len()).expect("test count is bounded"));
+        request.extend_from_slice(&[0; 3]);
+        request.extend_from_slice(&root_bytes);
+        request.extend_from_slice(&[0x9e; 32]);
+        for record in records {
+            request.extend_from_slice(record);
+        }
+        request
     }
 
     fn batch_request(requests: &[&[u8]], total_inputs: u8) -> Vec<u8> {
@@ -1406,6 +1755,343 @@ mod tests {
             &3_u32.to_le_bytes()
         );
         assert_eq!(&request[VERIFY_HEADER_LEN + 68..], &proof);
+    }
+
+    fn random_tuple(rng: &mut ChaCha20Rng) -> [u8; MEMBERSHIP_INPUT_LEN] {
+        let mut tuple = [0_u8; MEMBERSHIP_INPUT_LEN];
+        for slot in 0..4 {
+            tuple[slot * 32..(slot + 1) * 32]
+                .copy_from_slice(&EdPoint::random(&mut *rng).to_bytes());
+        }
+        tuple
+    }
+
+    fn random_membership_proof(rng: &mut ChaCha20Rng, count: usize) -> Vec<u8> {
+        let mut proof = vec![0_u8; Fcmp::<Curves>::proof_size(count, usize::from(LAYERS))];
+        rng.fill_bytes(&mut proof);
+        proof
+    }
+
+    fn membership_request_bytes(
+        layers: u8,
+        root_curve: u8,
+        count: u8,
+        root: [u8; 32],
+        tuples: &[[u8; MEMBERSHIP_INPUT_LEN]],
+        proof: &[u8],
+    ) -> Vec<u8> {
+        let mut request = Vec::new();
+        request.extend_from_slice(&SCHEMA.to_le_bytes());
+        request.push(layers);
+        request.push(root_curve);
+        request.push(count);
+        request.extend_from_slice(&[0; 3]);
+        request.extend_from_slice(&root);
+        for tuple in tuples {
+            request.extend_from_slice(tuple);
+        }
+        request.extend_from_slice(
+            &u32::try_from(proof.len())
+                .expect("test proof is bounded")
+                .to_le_bytes(),
+        );
+        request.extend_from_slice(proof);
+        request
+    }
+
+    fn rejects_without_unwinding<T>(
+        label: &str,
+        entry_point: &str,
+        call: impl FnOnce() -> Result<T, ResultCode>,
+    ) {
+        let Ok(result) = catch_unwind(AssertUnwindSafe(call)) else {
+            panic!("{label} unwound out of the membership {entry_point}");
+        };
+        assert!(result.is_err(), "{label} was accepted by the {entry_point}");
+    }
+
+    /// One 32-byte slot of the first input tuple in an encoded membership request.
+    fn tuple_at(request: &[u8], slot: usize) -> [u8; 32] {
+        request[MEMBERSHIP_HEADER_LEN + (slot * 32)..][..32]
+            .try_into()
+            .expect("a tuple slot is 32 bytes")
+    }
+
+    fn helios_root(scale: u64) -> [u8; 32] {
+        let mut bytes = [0_u8; 32];
+        bytes.copy_from_slice(
+            <Helios as Ciphersuite>::G::to_bytes(
+                &(*HELIOS_HASH_INIT * <Helios as Ciphersuite>::F::from(scale)),
+            )
+            .as_ref(),
+        );
+        bytes
+    }
+
+    fn selene_root(scale: u64) -> [u8; 32] {
+        let mut bytes = [0_u8; 32];
+        bytes.copy_from_slice(
+            <Selene as Ciphersuite>::G::to_bytes(
+                &(*SELENE_HASH_INIT * <Selene as Ciphersuite>::F::from(scale)),
+            )
+            .as_ref(),
+        );
+        bytes
+    }
+
+    const MEMBERSHIP_X: u64 = 19;
+    const MEMBERSHIP_Y: u64 = 23;
+
+    /// One real eight-layer membership instance, shared because proving one is the dominant
+    /// cost in this module: the instance, the root it proves to, and the witness record.
+    fn shared_membership_instance() -> &'static (Vec<u8>, [u8; 32], Vec<u8>) {
+        static INSTANCE: OnceLock<(Vec<u8>, [u8; 32], Vec<u8>)> = OnceLock::new();
+        INSTANCE.get_or_init(|| {
+            let (root_bytes, record) = synthetic_witness(
+                [0x24; 32],
+                EdScalar::from(MEMBERSHIP_X),
+                EdScalar::from(MEMBERSHIP_Y),
+            );
+            let request = membership_proving_request(root_bytes, &[&record]);
+            let instance =
+                prove_membership(&request).expect("membership instance must be produced");
+            (instance, root_bytes, record)
+        })
+    }
+
+    fn instance_tuple(instance: &[u8]) -> [u8; MEMBERSHIP_INPUT_LEN] {
+        instance[MEMBERSHIP_HEADER_LEN..][..MEMBERSHIP_INPUT_LEN]
+            .try_into()
+            .expect("an input tuple is a fixed width")
+    }
+
+    fn instance_proof(instance: &[u8]) -> &[u8] {
+        &instance[MEMBERSHIP_HEADER_LEN + MEMBERSHIP_INPUT_LEN + 4..]
+    }
+
+    // The whole point of the membership shape is that the spend authorization never runs, so
+    // the instance must prove and verify with no SAL, no signable hash, and no key image
+    // anywhere in its bytes.
+    #[test]
+    fn membership_instance_proves_and_verifies_without_sal() {
+        let x = EdScalar::from(MEMBERSHIP_X);
+        let y = EdScalar::from(MEMBERSHIP_Y);
+        let (instance, root_bytes, record) = shared_membership_instance();
+        let instance = instance.clone();
+        let root_bytes = *root_bytes;
+        let request = membership_proving_request(root_bytes, &[record]);
+
+        // Exact size: header, one input tuple, the length, and a bare FCMP. There is no room
+        // for a key image or a SAL, and the gap to the fused proof is exactly those fifteen
+        // points.
+        let membership_proof_len = Fcmp::<Curves>::proof_size(1, usize::from(LAYERS));
+        assert_eq!(
+            instance.len(),
+            MEMBERSHIP_HEADER_LEN + MEMBERSHIP_INPUT_LEN + 4 + membership_proof_len
+        );
+        assert_eq!(
+            FcmpPlusPlus::proof_size(1, usize::from(LAYERS)) - membership_proof_len,
+            15 * 32
+        );
+
+        verify_membership(&instance).expect("the instance must verify");
+        verify_membership_batch(&batch_request(&[&instance], 1), 1)
+            .expect("a one-item batch equals a single verification");
+        verify_membership_batch(&batch_request(&[&instance, &instance], 2), 2)
+            .expect("a shared batch must verify");
+
+        // The prover holds everything a key image needs and still publishes none. Recomputing
+        // it from the same rerandomization is the direct check that it is absent.
+        let mut rng = deterministic_rng(MEMBERSHIP_RNG_DOMAIN, &[request.as_slice()]);
+        let output = decode_output(&mut Reader::new(&record[64..])).expect("witness names a leaf");
+        let (rerandomized, ..) = rerandomize_with_nonzero_blinds(&mut rng, &output);
+        assert_eq!(
+            &instance[MEMBERSHIP_HEADER_LEN..][..32],
+            &rerandomized.input().O_tilde()
+        );
+        let opening =
+            OpenedInputTuple::open(&rerandomized, &x, &y).expect("the witness opens its own tuple");
+        let (key_image, _authorization) = SpendAuthAndLinkability::prove(
+            &mut ChaCha20Rng::from_seed([0x31; 32]),
+            [0x00; 32],
+            &opening,
+        );
+        let key_image_bytes = key_image.to_bytes();
+        assert!(
+            !instance
+                .windows(32)
+                .any(|window| window == key_image_bytes.as_slice()),
+            "the instance published the spend key image"
+        );
+
+        // The two request shapes must stay distinct in both directions, or a vote and a spend
+        // could be fed to each other's verifier.
+        assert!(parse_verification_request(&instance).is_err());
+        let spend = encode_verification_request(
+            root_bytes,
+            [0x51; 32],
+            &[tuple_at(&instance, 3)],
+            &[tuple_at(&instance, 0)],
+            &vec![0_u8; FcmpPlusPlus::proof_size(1, usize::from(LAYERS))],
+        )
+        .expect("a spend-shaped request encodes");
+        assert!(parse_membership_request(&spend).is_err());
+
+        let mut malleated = instance;
+        *malleated.last_mut().expect("the instance is nonempty") ^= 1;
+        assert_eq!(
+            verify_membership(&malleated),
+            Err(ResultCode::ConsensusInvalid)
+        );
+    }
+
+    // `Fcmp::verify` panics rather than errors when the tree root's curve disagrees with the
+    // layer count's parity. The panic sits past the commitment reads, so only a structurally
+    // valid proof reaches it: a garbage proof errors out first and would prove nothing here.
+    #[test]
+    fn membership_verification_pins_the_layer_count_and_root_curve() {
+        let (instance, _root_bytes, _record) = shared_membership_instance();
+        let tuple = instance_tuple(instance);
+        let proof = instance_proof(instance);
+
+        // The pinned pair verifies, so the rejections below are the pin itself and not a shared
+        // parse failure that would pass whatever the pin did.
+        verify_membership(instance).expect("the pinned pair must verify");
+
+        let wrong_curve = membership_request_bytes(LAYERS, 1, 1, selene_root(5), &[tuple], proof);
+        assert_eq!(
+            catch_unwind(AssertUnwindSafe(|| verify_membership(&wrong_curve))).ok(),
+            Some(Err(ResultCode::UnsupportedFormat)),
+            "a Selene root reached Fcmp::verify at an even layer count"
+        );
+
+        for layers in [0_u8, 1, 7, 9, 16, 255] {
+            let wrong_layers = membership_request_bytes(
+                layers,
+                ROOT_CURVE_HELIOS,
+                1,
+                helios_root(5),
+                &[tuple],
+                proof,
+            );
+            assert_eq!(
+                catch_unwind(AssertUnwindSafe(|| verify_membership(&wrong_layers))).ok(),
+                Some(Err(ResultCode::UnsupportedFormat)),
+                "layer count {layers} reached the verifier"
+            );
+        }
+
+        // The same root byte on the proving side, where the prover's own self-verification is
+        // what would reach the panic.
+        let (root_bytes, record) = synthetic_witness(
+            [0x24; 32],
+            EdScalar::from(MEMBERSHIP_X),
+            EdScalar::from(MEMBERSHIP_Y),
+        );
+        let mut wrong_curve_proving = membership_proving_request(root_bytes, &[&record]);
+        wrong_curve_proving[3] = 1;
+        assert_eq!(
+            catch_unwind(AssertUnwindSafe(|| prove_membership(&wrong_curve_proving))).ok(),
+            Some(Err(ResultCode::UnsupportedFormat)),
+            "a Selene root reached the prover's self-verification"
+        );
+    }
+
+    // The vote path is P2P-reachable, so an unwind out of the verifier is a denial of service
+    // and not merely a wrong answer. Every malformed shape must come back as an error.
+    #[test]
+    fn malformed_membership_requests_error_instead_of_unwinding() {
+        let mut rng = ChaCha20Rng::from_seed([0xc3; 32]);
+        let tuple = random_tuple(&mut rng);
+        let proof = random_membership_proof(&mut rng, 1);
+        let root = helios_root(5);
+        let well_formed =
+            membership_request_bytes(LAYERS, ROOT_CURVE_HELIOS, 1, root, &[tuple], &proof);
+
+        let mut identity_tuple = tuple;
+        identity_tuple[..32].copy_from_slice(&EdPoint::identity().to_bytes());
+        let mut nonzero_padding = well_formed.clone();
+        nonzero_padding[5] = 1;
+        let mut truncated_proof = well_formed.clone();
+        truncated_proof.truncate(truncated_proof.len() - 1);
+        let mut trailing = well_formed.clone();
+        trailing.push(0);
+        let mut oversized_length = well_formed.clone();
+        oversized_length[MEMBERSHIP_HEADER_LEN + MEMBERSHIP_INPUT_LEN..][..4]
+            .copy_from_slice(&u32::MAX.to_le_bytes());
+
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("empty", Vec::new()),
+            ("one byte", vec![1]),
+            ("header only", well_formed[..MEMBERSHIP_HEADER_LEN].to_vec()),
+            (
+                "zero inputs",
+                membership_request_bytes(LAYERS, ROOT_CURVE_HELIOS, 0, root, &[], &proof),
+            ),
+            (
+                "more inputs than the bound",
+                membership_request_bytes(LAYERS, ROOT_CURVE_HELIOS, 17, root, &[tuple], &proof),
+            ),
+            (
+                "count disagrees with the tuples present",
+                membership_request_bytes(LAYERS, ROOT_CURVE_HELIOS, 2, root, &[tuple], &proof),
+            ),
+            (
+                "identity in the input tuple",
+                membership_request_bytes(
+                    LAYERS,
+                    ROOT_CURVE_HELIOS,
+                    1,
+                    root,
+                    &[identity_tuple],
+                    &proof,
+                ),
+            ),
+            (
+                "identity root",
+                membership_request_bytes(LAYERS, ROOT_CURVE_HELIOS, 1, [0; 32], &[tuple], &proof),
+            ),
+            (
+                "proof shorter than the layer count requires",
+                membership_request_bytes(
+                    LAYERS,
+                    ROOT_CURVE_HELIOS,
+                    1,
+                    root,
+                    &[tuple],
+                    &proof[..proof.len() - 32],
+                ),
+            ),
+            ("nonzero padding", nonzero_padding),
+            ("truncated proof", truncated_proof),
+            ("trailing bytes", trailing),
+            ("proof length beyond the buffer", oversized_length),
+            ("a spend request fed to the membership decoder", {
+                let (spend, _, _) = real_proving_request();
+                spend
+            }),
+            // The one case that runs the whole circuit rather than failing at the decoder: a
+            // real proof against a root it was not built for.
+            ("a real proof under a foreign root", {
+                let (instance, _, _) = shared_membership_instance();
+                membership_request_bytes(
+                    LAYERS,
+                    ROOT_CURVE_HELIOS,
+                    1,
+                    helios_root(9),
+                    &[instance_tuple(instance)],
+                    instance_proof(instance),
+                )
+            }),
+        ];
+
+        for (label, request) in cases {
+            rejects_without_unwinding(label, "verifier", || verify_membership(&request));
+            rejects_without_unwinding(label, "batch verifier", || {
+                verify_membership_batch(&request, 1)
+            });
+            rejects_without_unwinding(label, "prover", || prove_membership(&request));
+        }
     }
 
     #[test]

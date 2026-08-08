@@ -538,7 +538,8 @@ mod tests {
         let mut malformed = proof;
         malformed[63] ^= 1;
         assert!(
-            !verify_balance(&[input], &[output], 0, 10, &signable_hash, &malformed).unwrap_or(false)
+            !verify_balance(&[input], &[output], 0, 10, &signable_hash, &malformed)
+                .unwrap_or(false)
         );
 
         let shielded = commitment(50, &scalar(7)).unwrap();
@@ -685,7 +686,12 @@ mod tests {
 
         let nonce = hash_to_scalar(
             b"Innova/IV5/BalanceProof/Nonce/v1",
-            &[&entropy, &excess_mask_bytes, &signable_hash, &excess_encoded],
+            &[
+                &entropy,
+                &excess_mask_bytes,
+                &signable_hash,
+                &excess_encoded,
+            ],
         );
         let nonce_encoded = (ED25519_BASEPOINT_POINT * nonce).compress().to_bytes();
         let sign_with = |domain: &[u8]| {
