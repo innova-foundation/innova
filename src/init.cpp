@@ -628,6 +628,7 @@ std::string HelpMessage()
         "  -acceptepochstate      " + _("Grandfather pre-marker epoch-state records as deterministic (only if they were written by a deterministic-anchor build; otherwise resync)") + "\n" +
         "  -regtestboundaryb=<n>  " + _("Regtest only: Boundary-B rehearsal activation height") + "\n" +
         "  -regtestiv5feenote=<n>  " + _("Regtest only: IV5 fee-note / unshield-retirement activation height") + "\n" +
+        "  -regtestiv5notevote=<n>  " + _("Regtest only: IV5 note-weighted finality voting activation height") + "\n" +
         "  -regtestiv5rehearsal   " + _("Regtest only: treat vNext as consensus ready for state-transition rehearsal (no IV5 verifier)") + "\n" +
         "  -regtestiv5holdleafindex " + _("Regtest only: hold IV5 wallet leaf-index assignment, leaving received notes unspendable") + "\n" +
 
@@ -1224,6 +1225,23 @@ bool AppInit2()
         nRegtestIV5FeeNoteHeight = (int)nF;
         printf("IV5 fee-note/unshield-retirement fork height: %d (regtest only)\n",
                nRegtestIV5FeeNoteHeight);
+    }
+
+    if (mapArgs.count("-regtestiv5notevote"))
+    {
+        if (!fRegTest)
+            return InitError(_("-regtestiv5notevote requires -regtest"));
+        const int64_t nF = GetArg("-regtestiv5notevote", (int64_t)PRIVACY_VNEXT_HEIGHT_UNSET);
+        if (nF < 0 || nF > (int64_t)PRIVACY_VNEXT_HEIGHT_UNSET)
+            return InitError(_("-regtestiv5notevote is out of range"));
+        // A note has to exist before it can vote, so an earlier height would gate nothing.
+        if (nF < (int64_t)FORK_HEIGHT_BOUNDARY_B)
+            return InitError(strprintf(
+                _("-regtestiv5notevote=%d is below the Boundary-B height %d"),
+                (int)nF, FORK_HEIGHT_BOUNDARY_B));
+        nRegtestIV5NoteVoteHeight = (int)nF;
+        printf("IV5 note-vote fork height: %d (regtest only)\n",
+               nRegtestIV5NoteVoteHeight);
     }
 
     // Holding leaf-index assignment leaves received notes unspendable, so it exists

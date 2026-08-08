@@ -969,6 +969,11 @@ bool CNoteVoteComplaint::IsValidBasic(std::string* pstrError) const
         Fail(pstrError, "note vote complaint names no vote");
         return false;
     }
+    // An envelope that carries no ephemeral key names no shared point, so there is nothing
+    // to reveal and nothing to prove: the share is its own evidence. That case is the one
+    // empty form; every other complaint must carry both fields.
+    if (vchSharedPoint.empty() && vchDleqProof.empty())
+        return true;
     if (vchSharedPoint.size() != 33 || vchDleqProof.size() != FINALITY_NOTE_DLEQ_SIZE)
     {
         Fail(pstrError, "note vote complaint proof has the wrong length");
@@ -1068,16 +1073,24 @@ bool BuildNoteVoteComplaint(CNoteVoteComplaint& complaint,
         return false;
     }
 
+    complaint.nVersion = FINALITY_NOTE_COMPLAINT_VERSION;
+    complaint.nEpoch = vote.nEpoch;
+    complaint.voteTag = vote.GetVoteTag();
+    complaint.hashShare = vote.share.GetHash();
+    complaint.nRecipientIndex = nRecipientIndex;
+    complaint.vchSharedPoint.clear();
+    complaint.vchDleqProof.clear();
+
     int nEnvelopeRecipient = -1;
     CPubKey pubEphemeral;
     std::vector<unsigned char> vchCiphertext;
     if (!ParseNoteShareEnvelope(vote.share.vEncryptedRecipientShares[nRecipientIndex],
-                                nEnvelopeRecipient, pubEphemeral, vchCiphertext))
+                                nEnvelopeRecipient, pubEphemeral, vchCiphertext) ||
+        nEnvelopeRecipient != nRecipientIndex)
     {
-        // An envelope that does not even parse names no ephemeral key, so there is no
-        // shared point to reveal and no DLEQ to make. The share itself is the evidence.
-        Fail(pstrError, "note vote share envelope carries no ephemeral key to open");
-        return false;
+        // An envelope that does not parse names no ephemeral key, so there is no shared
+        // point to reveal and no discrete log to relate. Anyone sees this from the share.
+        return true;
     }
 
     unsigned char sharedBytes[33];
@@ -1087,11 +1100,6 @@ bool BuildNoteVoteComplaint(CNoteVoteComplaint& complaint,
         return false;
     }
 
-    complaint.nVersion = FINALITY_NOTE_COMPLAINT_VERSION;
-    complaint.nEpoch = vote.nEpoch;
-    complaint.voteTag = vote.GetVoteTag();
-    complaint.hashShare = vote.share.GetHash();
-    complaint.nRecipientIndex = nRecipientIndex;
     complaint.vchSharedPoint.assign(sharedBytes, sharedBytes + 33);
 
     Secp256k1Context c;
@@ -1178,8 +1186,20 @@ bool CheckNoteVoteComplaint(const CNoteVoteComplaint& complaint,
             nEnvelopeRecipient, pubEphemeral, vchCiphertext) ||
         nEnvelopeRecipient != complaint.nRecipientIndex)
     {
-        // Anyone can see this without a proof, so the complaint stands on the share.
+        // Anyone sees this without a proof, so the complaint stands on the share alone —
+        // but only in its one canonical empty form.
+        if (!complaint.vchSharedPoint.empty() || !complaint.vchDleqProof.empty())
+        {
+            Fail(pstrError, "note vote complaint reveals a point for an unopenable envelope");
+            return false;
+        }
         return true;
+    }
+    if (complaint.vchSharedPoint.size() != 33 ||
+        complaint.vchDleqProof.size() != FINALITY_NOTE_DLEQ_SIZE)
+    {
+        Fail(pstrError, "note vote complaint reveals nothing about a readable envelope");
+        return false;
     }
 
     // The DLEQ is what makes the revealed point the recipient's own shared secret rather

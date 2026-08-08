@@ -259,6 +259,7 @@ int nCoinbaseMaturity = 65; //75 on Mainnet I n n o v a
 CBlockIndex* pindexGenesisBlock = NULL;
 int nRegtestBoundaryBHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
 int nRegtestIV5FeeNoteHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
+int nRegtestIV5NoteVoteHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
 bool fRegtestShieldedVNextRehearsal = false;
 bool fRegtestHoldPrivacyVNextLeafIndex = false;
 int nBestHeight = -1;

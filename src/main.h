@@ -482,6 +482,36 @@ inline int GetForkHeightIV5FeeNote()
 }
 #define FORK_HEIGHT_IV5_FEE_NOTE (GetForkHeightIV5FeeNote())
 
+// F2: note-weighted finality voting. One flag day carries the whole set -- the vote
+// envelope, the share carrier with its VSS coefficients, the complaint object, the v4
+// certificate and its coverage carve-out -- because every one of them is
+// consensus-visible and retrofitting any of them would cost a second flag day on a chain
+// that needs every node upgraded before the first.
+//
+// Transparent votes stay permanently valid on both sides of this height: they are the
+// liveness floor a stalled committee falls back to.
+//
+// The pool must exist before a note can be voted, so this is scheduled after Boundary B
+// and stays unset on public networks until the FCMP++ candidate is reviewed.
+extern int nRegtestIV5NoteVoteHeight;
+
+inline int GetForkHeightIV5NoteVote()
+{
+    extern bool fRegTest;
+    return fRegTest ? nRegtestIV5NoteVoteHeight : PRIVACY_VNEXT_HEIGHT_UNSET;
+}
+#define FORK_HEIGHT_IV5_NOTE_VOTE (GetForkHeightIV5NoteVote())
+
+inline bool IsIV5NoteVoteConfigured()
+{
+    return FORK_HEIGHT_IV5_NOTE_VOTE != PRIVACY_VNEXT_HEIGHT_UNSET;
+}
+
+inline bool IsIV5NoteVoteActiveAtHeight(int nHeight)
+{
+    return IsIV5NoteVoteConfigured() && nHeight >= FORK_HEIGHT_IV5_NOTE_VOTE;
+}
+
 inline bool IsIV5FeeNoteConfigured()
 {
     return FORK_HEIGHT_IV5_FEE_NOTE != PRIVACY_VNEXT_HEIGHT_UNSET;
