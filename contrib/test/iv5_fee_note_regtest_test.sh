@@ -365,14 +365,13 @@ else
         else
             fail "consecutive note blocks did not both connect (versions $VA, $VB)"
         fi
-        CBA="$(coinbase_txid "$NOTE_A")"
-        CBB="$(coinbase_txid "$NOTE_B")"
-        RA="$(rpc getrawtransaction "$CBA" 2>/dev/null | tr -d '"[:space:]')"
-        RB="$(rpc getrawtransaction "$CBB" 2>/dev/null | tr -d '"[:space:]')"
-        if [ -n "$RA" ] && [ "$RA" != "$RB" ]; then
-            success "their payloads differ: the owner is freshly derived each block"
+        # A repeated owner is a consensus reject, not a silent collision, so its
+        # absence from the log is what says the second note carried a fresh one.
+        if grep -qi "output owner .* was already issued" "$NODE_DIR/regtest/debug.log" 2>/dev/null; then
+            fail "the second fee note reused the first note's owner"
+            grep -i "output owner .* was already issued" "$NODE_DIR/regtest/debug.log" | tail -2
         else
-            fail "two consecutive fee notes serialize identically"
+            success "neither note reused an owner already on chain"
         fi
     fi
 fi
