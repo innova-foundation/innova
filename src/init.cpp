@@ -628,6 +628,7 @@ std::string HelpMessage()
         "  -acceptepochstate      " + _("Grandfather pre-marker epoch-state records as deterministic (only if they were written by a deterministic-anchor build; otherwise resync)") + "\n" +
         "  -regtestboundaryb=<n>  " + _("Regtest only: Boundary-B rehearsal activation height") + "\n" +
         "  -regtestiv5rehearsal   " + _("Regtest only: treat vNext as consensus ready for state-transition rehearsal (no IV5 verifier)") + "\n" +
+        "  -regtestiv5holdleafindex " + _("Regtest only: hold IV5 wallet leaf-index assignment, leaving received notes unspendable") + "\n" +
 
         "\n" + _("Block creation options:") + "\n" +
         "  -blockminsize=<n>      "   + _("Set minimum block size in bytes (default: 0)") + "\n" +
@@ -1203,6 +1204,17 @@ bool AppInit2()
         fRegtestShieldedVNextRehearsal = GetBoolArg("-regtestiv5rehearsal", false);
         printf("Boundary-B rehearsal: height=%d ready=%d (regtest only; IV5 verifier is NOT wired into consensus)\n",
                nRegtestBoundaryBHeight, (int)fRegtestShieldedVNextRehearsal);
+    }
+
+    // Holding leaf-index assignment leaves received notes unspendable, so it exists
+    // only to let a harness reproduce that state deliberately.
+    if (GetBoolArg("-regtestiv5holdleafindex", false))
+    {
+        if (!fRegTest)
+            return InitError(_("-regtestiv5holdleafindex requires -regtest"));
+        fRegtestHoldPrivacyVNextLeafIndex = true;
+        printf("IV5 leaf-index assignment held (regtest only); notes will stay "
+               "unspendable until it is released\n");
     }
 
     fCNLock = GetBoolArg("-cnconflock");

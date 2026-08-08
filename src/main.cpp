@@ -259,6 +259,7 @@ int nCoinbaseMaturity = 65; //75 on Mainnet I n n o v a
 CBlockIndex* pindexGenesisBlock = NULL;
 int nRegtestBoundaryBHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
 bool fRegtestShieldedVNextRehearsal = false;
+bool fRegtestHoldPrivacyVNextLeafIndex = false;
 int nBestHeight = -1;
 bool CollateralNReorgBlock = true;
 uint256 nBestChainTrust = 0;
@@ -10453,6 +10454,7 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
 
       // Assign leaf indices even during initial download: an epoch passed unassigned is never
       // revisited. Wallet bookkeeping must not fail the tip.
+      if (!IsPrivacyVNextLeafIndexAssignmentHeld())
       {
         LOCK(cs_setpwalletRegistered);
         for (CWallet* pwallet : setpwalletRegistered)
