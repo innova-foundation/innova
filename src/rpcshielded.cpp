@@ -1738,7 +1738,10 @@ Value z_shieldall(const Array& params, bool fHelp)
             "  \"remaining\": n        (numeric) outputs still unshielded at that address\n"
             "}\n");
 
-    if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight : 0))
+    // The transaction being built lands in the next block, so gate on the height it
+    // would occupy. Gating on the tip refuses a transaction consensus would accept in
+    // the activation block itself.
+    if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight + 1 : 0))
         throw JSONRPCError(RPC_INVALID_REQUEST,
                            "the IV5 pool is not active on this network yet");
 
@@ -1847,7 +1850,10 @@ Value z_iv5transfer(const Array& params, bool fHelp)
             "  \"discloses_amount\": bool   (boolean) output amounts are published\n"
             "}\n");
 
-    if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight : 0))
+    // The transaction being built lands in the next block, so gate on the height it
+    // would occupy. Gating on the tip refuses a transaction consensus would accept in
+    // the activation block itself.
+    if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight + 1 : 0))
         throw JSONRPCError(RPC_INVALID_REQUEST,
                            "the IV5 pool is not active on this network yet");
 
@@ -1901,7 +1907,10 @@ Value z_iv5unshield(const Array& params, bool fHelp)
             "  \"notes\": n         (numeric) notes consumed\n"
             "}\n");
 
-    if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight : 0))
+    // The transaction being built lands in the next block, so gate on the height it
+    // would occupy. Gating on the tip refuses a transaction consensus would accept in
+    // the activation block itself.
+    if (!IsBoundaryBActiveAtHeight(pindexBest ? pindexBest->nHeight + 1 : 0))
         throw JSONRPCError(RPC_INVALID_REQUEST,
                            "the IV5 pool is not active on this network yet");
 
