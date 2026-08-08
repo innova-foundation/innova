@@ -141,6 +141,10 @@ bool IsLogOpen();
 bool LogAcceptCategory(const char* category);
 /* Send a string to the log output */
 int LogPrintStr(const std::string &str);
+/* Declared ahead of the templates below that call it. The call is non-dependent,
+   so clang binds it at template definition time and never sees the attributed
+   declaration further down; g++ only tolerates that under -fpermissive. */
+int OutputDebugStringF(const char* pszFormat, ...);
 
 #define LogPrintf(...) LogPrint(NULL, __VA_ARGS__)
 
