@@ -128,6 +128,24 @@ except Exception: pass
 '
 }
 
+# Version of a block's coinbase: 2008 says it carried an IV5 fee note.
+coinbase_version() {
+    local bh cb
+    bh="$(block_hash "$1" "$2")"
+    [ ${#bh} -eq 64 ] || return 1
+    cb="$(rpc "$1" getblock "$bh" 2>/dev/null | python3 -c '
+import json, sys
+try: print(json.load(sys.stdin)["tx"][0])
+except Exception: pass
+')"
+    [ ${#cb} -eq 64 ] || return 1
+    rpc "$1" getrawtransaction "$cb" 1 2>/dev/null | python3 -c '
+import json, sys
+try: print(json.load(sys.stdin)["version"])
+except Exception: pass
+'
+}
+
 feq() { [ "$(python3 -c "print(1 if abs($1 - $2) < 1e-8 else 0)" 2>/dev/null)" = "1" ]; }
 
 # A spend block's coinbase may exceed a plain one by the spend's fee and by
@@ -1146,12 +1164,7 @@ if mine_to 0 "$FEE_NOTE_HEIGHT" && wait_sync "$FEE_NOTE_HEIGHT"; then
             POST_XH="$(jget "$(rpc 0 getblock "$POST_BLOCK" 2>/dev/null)" height)"
             if [ -n "$POST_XH" ]; then
                 success "the post-fork transfer confirmed at height $POST_XH"
-                POST_CB="$(rpc 0 getblock "$POST_BLOCK" 2>/dev/null | python3 -c '"'"'
-import json, sys
-try: print(json.load(sys.stdin)["tx"][0])
-except Exception: pass
-'"'"')"
-                POST_VER="$(jget "$(rpc 0 getrawtransaction "$POST_CB" 1 2>/dev/null)" version)"
+                POST_VER="$(coinbase_version 0 "$POST_XH")"
                 if [ "$POST_VER" = "2008" ]; then
                     success "its block's coinbase collected the transfer fee as a pool note"
                 else
