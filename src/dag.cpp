@@ -399,6 +399,9 @@ CBlockIndex* CDAGManager::SelectBestDAGTip() const
             continue;
 
         CBlockIndex* pindex = mi->second;
+        // An invalidated tip stays in the set; skip it or the miner keeps building on it.
+        if (pindex->IsInvalid())
+            continue;
         if (pindex->nHeight >= FORK_HEIGHT_DAG && pindex->IsProofOfStake())
             continue;
 

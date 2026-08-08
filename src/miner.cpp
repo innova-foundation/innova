@@ -160,6 +160,10 @@ static bool IsBetterPoWTemplateParent(const CBlockIndex* pCandidate, const CBloc
 {
     if (!pCandidate)
         return false;
+    // Refuse invalidated blocks and their descendants; building on them yields blocks
+    // this node's own ConnectBlock rejects.
+    if (pCandidate->IsInvalid())
+        return false;
     if (IsPostDAGProofOfStakeIndex(pCandidate))
         return false;
     if (!pBest)

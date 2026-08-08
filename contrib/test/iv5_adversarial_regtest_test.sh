@@ -392,6 +392,19 @@ else
         fail "after rollback the store ($REORG_STORE) and tree ($REORG_TREE) disagree"
     fi
 
+    # The miner must resume on the restored chain: the invalidated index stays in the
+    # block index and must not be chosen as a parent.
+    ROLLED_BACK_HEIGHT="$(height)"
+    rpc setgenerate true 3 >/dev/null 2>&1
+    sleep 8
+    MINED_AFTER_INVALIDATE="$(height)"
+    if is_int "$MINED_AFTER_INVALIDATE" && is_int "$ROLLED_BACK_HEIGHT" && \
+       [ "$MINED_AFTER_INVALIDATE" -gt "$ROLLED_BACK_HEIGHT" ]; then
+        success "mining resumed after invalidateblock ($ROLLED_BACK_HEIGHT -> $MINED_AFTER_INVALIDATE)"
+    else
+        fail "mining is stuck after invalidateblock: height stayed at $MINED_AFTER_INVALIDATE"
+    fi
+
     rpc reconsiderblock "$ROLLBACK_HASH" >/dev/null 2>&1
     sleep 5
     mine_to $(( REORG_FROM + 12 )) || true
