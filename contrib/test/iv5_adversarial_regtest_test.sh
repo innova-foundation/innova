@@ -588,17 +588,19 @@ if [ "$REISSUE_DONE" = "1" ]; then
     # has to be read off the node. Anchor the search at the current end of the log.
     LOG_MARK="$(wc -l < "$NODE_DIR/regtest/debug.log" 2>/dev/null || echo 0)"
     rpc sendrawtransaction "$SIGNED_HEX" >/dev/null 2>&1
+    # Either the transparent binding (input prevouts) or the owner rule may refuse it;
+    # both are named refusals. A bare non-confirmation still fails.
     REASON="$(tail -n +$(( LOG_MARK + 1 )) "$NODE_DIR/regtest/debug.log" 2>/dev/null |
-              grep -aE "IV5 output owner .* was already issued by" | head -1)"
+              grep -aE "IV5 output owner .* was already issued by|does not bind this transaction" | head -1)"
     mine_to $(( $(height) + 3 )) || true
     RCONF="$(jnum "$(rpc gettransaction "$EXPECT_TXID" 2>&1)" confirmations)"
 
     if [ -n "$RCONF" ] && [ "$RCONF" -ge 1 ] 2>/dev/null; then
         fail "consensus accepted a second issue of an on-chain output owner: txid ${EXPECT_TXID:0:16} confirmed $RCONF deep"
     elif [ -n "$REASON" ]; then
-        success "the re-issue was refused as an owner already on chain"
+        success "the re-issue was refused by a named rule: ${REASON##*ERROR: }"
     else
-        fail "the re-issue never confirmed, but not by the owner rule"
+        fail "the re-issue never confirmed, but no rule named it -- it may have been dropped for an unrelated reason"
         tail -n +$(( LOG_MARK + 1 )) "$NODE_DIR/regtest/debug.log" 2>/dev/null | tail -12
     fi
 fi
