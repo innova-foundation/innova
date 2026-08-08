@@ -376,6 +376,7 @@ OBJS= \
     obj/silentpayments.o \
     obj/dandelion.o \
     obj/finality.o \
+    obj/finality_note.o \
     obj/dag.o \
     obj/rpcsmessage.o \
     obj/rpcnyx.o \
@@ -457,6 +458,7 @@ OBJS= \
     obj/silentpayments.o \
     obj/dandelion.o \
     obj/finality.o \
+    obj/finality_note.o \
     obj/dag.o \
     obj/script.o \
     obj/sync.o \

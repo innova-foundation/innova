@@ -573,6 +573,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/silentpayments.h \
     src/dandelion.h \
     src/finality.h \
+    src/finality_note.h \
     src/dag.h \
     src/init.h \
     src/bootstrap.h \
@@ -797,6 +798,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/silentpayments.cpp \
     src/dandelion.cpp \
     src/finality.cpp \
+    src/finality_note.cpp \
     src/dag.cpp
 
 #### I n n o v a sources

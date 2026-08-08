@@ -2156,3 +2156,366 @@ bool ProvePrivacyVNextAmountEquality(
     vchProofOut.assign(response.begin(), response.end());
     return true;
 }
+
+PrivacyVNextVoteMembership::PrivacyVNextVoteMembership()
+{
+    oTilde.fill(0);
+    cTilde.fill(0);
+    rerandomizedY.fill(0);
+    maskDelta.fill(0);
+}
+
+PrivacyVNextCombineTerm::PrivacyVNextCombineTerm()
+{
+    nSource = PRIVACY_VNEXT_TERM_SUPPLIED;
+    scalar.fill(0);
+    point.fill(0);
+}
+
+bool ProvePrivacyVNextVoteMembership(
+    const PrivacyVNextDigest& finalizedRoot,
+    const PrivacyVNextDigest& entropy,
+    const PrivacyVNextSpendInput& input,
+    PrivacyVNextVoteMembership& membershipOut,
+    std::string& error)
+{
+    membershipOut = PrivacyVNextVoteMembership();
+    error.clear();
+
+    PrivacyVNextDigest zero;
+    zero.fill(0);
+    if (entropy == zero)
+    {
+        error = "IV5 vote membership proof needs nonzero caller entropy";
+        return false;
+    }
+    if (input.vchWitnessRecord.empty())
+    {
+        error = "IV5 vote membership proof is missing its witness record";
+        return false;
+    }
+
+    // No signable hash travels here: a membership proof is challenged under no message,
+    // which is the whole reason the vote sigma exists.
+    static const size_t nHeader = 8;
+    std::vector<uint8_t> request;
+    request.resize(nHeader + 64, 0);
+    request[0] = static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA);
+    request[1] = 0;
+    request[2] = INNOVA_PRIVACY_VNEXT_TREE_LAYERS;
+    request[3] = 2;   // Helios root curve
+    request[4] = 1;
+    std::memcpy(&request[nHeader], finalizedRoot.data(), 32);
+    std::memcpy(&request[nHeader + 32], entropy.data(), 32);
+    request.insert(request.end(), input.spendScalar.begin(), input.spendScalar.end());
+    request.insert(request.end(), input.commitmentScalar.begin(),
+                   input.commitmentScalar.end());
+    request.insert(request.end(), input.vchWitnessRecord.begin(),
+                   input.vchWitnessRecord.end());
+    if (request.size() > INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES)
+    {
+        OPENSSL_cleanse(&request[0], request.size());
+        error = "IV5 vote membership request exceeds the payload bound";
+        return false;
+    }
+
+    size_t required = 0;
+    int32_t rc = innova_privacy_vnext_vote_membership_prove(&request[0], request.size(),
+                                                            NULL, 0, &required);
+    if (rc != INNOVA_PRIVACY_VNEXT_VALID || required <= 136 ||
+        required > INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES)
+    {
+        OPENSSL_cleanse(&request[0], request.size());
+        error = ResultError("IV5 vote membership proof size query", rc);
+        return false;
+    }
+    std::vector<uint8_t> response(required, 0);
+    size_t written = 0;
+    rc = innova_privacy_vnext_vote_membership_prove(&request[0], request.size(),
+                                                    &response[0], response.size(),
+                                                    &written);
+    OPENSSL_cleanse(&request[0], request.size());
+    if (rc != INNOVA_PRIVACY_VNEXT_VALID || written != required)
+    {
+        OPENSSL_cleanse(&response[0], response.size());
+        error = ResultError("IV5 vote membership proof", rc);
+        return false;
+    }
+    if (response[0] != static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA) ||
+        response[1] != 0 || response[2] != 1 || response[3] != 0)
+    {
+        OPENSSL_cleanse(&response[0], response.size());
+        error = "IV5 vote membership proof returned an unexpected header";
+        return false;
+    }
+    const size_t nSecrets = 4 + 128;
+    const uint32_t nRequestLen = ReadLE32(&response[nSecrets]);
+    if (nRequestLen == 0 || response.size() != nSecrets + 4 + nRequestLen)
+    {
+        OPENSSL_cleanse(&response[0], response.size());
+        error = "IV5 vote membership proof returned a truncated instance";
+        return false;
+    }
+    std::memcpy(membershipOut.oTilde.data(), &response[4], 32);
+    std::memcpy(membershipOut.cTilde.data(), &response[36], 32);
+    std::memcpy(membershipOut.rerandomizedY.data(), &response[68], 32);
+    std::memcpy(membershipOut.maskDelta.data(), &response[100], 32);
+    membershipOut.vchRequest.assign(response.begin() + nSecrets + 4, response.end());
+    OPENSSL_cleanse(&response[0], response.size());
+    return true;
+}
+
+bool VerifyPrivacyVNextVoteMembership(
+    const std::vector<unsigned char>& vchRequest,
+    std::string& error)
+{
+    error.clear();
+    if (vchRequest.empty() ||
+        vchRequest.size() > INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES)
+    {
+        error = "IV5 vote membership instance has an unusable length";
+        return false;
+    }
+    const int32_t rc = innova_privacy_vnext_vote_membership_verify(
+        &vchRequest[0], vchRequest.size());
+    if (rc != INNOVA_PRIVACY_VNEXT_VALID)
+    {
+        error = ResultError("IV5 vote membership verification", rc);
+        return false;
+    }
+    return true;
+}
+
+namespace
+{
+const size_t kVoteSigmaProofSize = 128;
+
+void PutVoteSigmaStatement(std::vector<uint8_t>& request,
+                           uint64_t nEpoch,
+                           const PrivacyVNextDigest& oTilde,
+                           const PrivacyVNextDigest& cTilde,
+                           const PrivacyVNextDigest& binding)
+{
+    request.assign(12, 0);
+    request[0] = static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA);
+    request[1] = 0;
+    PutLE64(&request[4], nEpoch);
+    request.insert(request.end(), oTilde.begin(), oTilde.end());
+    request.insert(request.end(), cTilde.begin(), cTilde.end());
+    request.insert(request.end(), binding.begin(), binding.end());
+}
+} // namespace
+
+bool ProvePrivacyVNextVoteSigma(
+    uint64_t nEpoch,
+    const PrivacyVNextDigest& oTilde,
+    const PrivacyVNextDigest& cTilde,
+    const PrivacyVNextDigest& binding,
+    const PrivacyVNextDigest& x,
+    const PrivacyVNextDigest& rerandomizedY,
+    const PrivacyVNextDigest& entropy,
+    PrivacyVNextDigest& tagOut,
+    std::vector<unsigned char>& vchProofOut,
+    std::string& error)
+{
+    tagOut.fill(0);
+    vchProofOut.clear();
+    error.clear();
+
+    std::vector<uint8_t> request;
+    PutVoteSigmaStatement(request, nEpoch, oTilde, cTilde, binding);
+    request.insert(request.end(), x.begin(), x.end());
+    request.insert(request.end(), rerandomizedY.begin(), rerandomizedY.end());
+    request.insert(request.end(), entropy.begin(), entropy.end());
+
+    std::vector<uint8_t> response(32 + kVoteSigmaProofSize, 0);
+    size_t written = 0;
+    const int32_t rc = innova_privacy_vnext_vote_sigma_prove(
+        &request[0], request.size(), &response[0], response.size(), &written);
+    OPENSSL_cleanse(&request[0], request.size());
+    if (rc != INNOVA_PRIVACY_VNEXT_VALID || written != response.size())
+    {
+        error = ResultError("IV5 vote sigma proof", rc);
+        return false;
+    }
+    std::memcpy(tagOut.data(), &response[0], 32);
+    vchProofOut.assign(response.begin() + 32, response.end());
+    return true;
+}
+
+bool VerifyPrivacyVNextVoteSigma(
+    uint64_t nEpoch,
+    const PrivacyVNextDigest& oTilde,
+    const PrivacyVNextDigest& cTilde,
+    const PrivacyVNextDigest& binding,
+    const PrivacyVNextDigest& tag,
+    const std::vector<unsigned char>& vchProof,
+    std::string& error)
+{
+    error.clear();
+    if (vchProof.size() != kVoteSigmaProofSize)
+    {
+        error = "IV5 vote sigma has the wrong proof length";
+        return false;
+    }
+    std::vector<uint8_t> request;
+    PutVoteSigmaStatement(request, nEpoch, oTilde, cTilde, binding);
+    request.insert(request.end(), tag.begin(), tag.end());
+    request.insert(request.end(), vchProof.begin(), vchProof.end());
+
+    const int32_t rc = innova_privacy_vnext_vote_sigma_verify(&request[0], request.size());
+    if (rc != INNOVA_PRIVACY_VNEXT_VALID)
+    {
+        error = ResultError("IV5 vote sigma verification", rc);
+        return false;
+    }
+    return true;
+}
+
+bool CombinePrivacyVNextPoints(
+    const std::vector<PrivacyVNextCombineTerm>& vTerms,
+    PrivacyVNextDigest& pointOut,
+    std::string& error)
+{
+    error.clear();
+    pointOut.fill(0);
+
+    PrivacyVNextDigest zero;
+    zero.fill(0);
+
+    // The ABI bounds one call at 1024 terms; a longer sum chains by feeding the running
+    // total back as a supplied point, so callers never have to know the bound.
+    const size_t nChunk = 1024;
+    bool fHaveRunning = false;
+    PrivacyVNextDigest running;
+    running.fill(0);
+
+    size_t nOffset = 0;
+    do
+    {
+        std::vector<PrivacyVNextCombineTerm> vChunk;
+        if (fHaveRunning)
+        {
+            PrivacyVNextCombineTerm carry;
+            carry.nSource = PRIVACY_VNEXT_TERM_SUPPLIED;
+            carry.scalar[0] = 1;
+            carry.point = running;
+            vChunk.push_back(carry);
+        }
+        while (nOffset < vTerms.size() && vChunk.size() < nChunk)
+            vChunk.push_back(vTerms[nOffset++]);
+
+        std::vector<uint8_t> request(8, 0);
+        request[0] = static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA);
+        request[1] = 0;
+        request[4] = static_cast<uint8_t>(vChunk.size() & 0xff);
+        request[5] = static_cast<uint8_t>((vChunk.size() >> 8) & 0xff);
+        for (size_t i = 0; i < vChunk.size(); ++i)
+        {
+            if (vChunk[i].nSource != PRIVACY_VNEXT_TERM_SUPPLIED &&
+                vChunk[i].point != zero)
+            {
+                error = "IV5 point combination generator term carries a point";
+                return false;
+            }
+            request.push_back(vChunk[i].nSource);
+            request.insert(request.end(), 3, 0);
+            request.insert(request.end(), vChunk[i].scalar.begin(), vChunk[i].scalar.end());
+            request.insert(request.end(), vChunk[i].point.begin(), vChunk[i].point.end());
+        }
+
+        std::vector<uint8_t> response(32, 0);
+        size_t written = 0;
+        const int32_t rc = innova_privacy_vnext_ed25519_combine(
+            &request[0], request.size(), &response[0], response.size(), &written);
+        if (rc != INNOVA_PRIVACY_VNEXT_VALID || written != response.size())
+        {
+            error = ResultError("IV5 point combination", rc);
+            return false;
+        }
+        std::memcpy(running.data(), &response[0], 32);
+        fHaveRunning = true;
+    } while (nOffset < vTerms.size());
+
+    pointOut = running;
+    return true;
+}
+
+bool ProvePrivacyVNextRange(
+    uint64_t nAmount,
+    const PrivacyVNextDigest& mask,
+    const PrivacyVNextDigest& entropy,
+    PrivacyVNextDigest& commitmentOut,
+    std::vector<unsigned char>& vchProofOut,
+    std::string& error)
+{
+    commitmentOut.fill(0);
+    vchProofOut.clear();
+    error.clear();
+
+    std::vector<uint8_t> request(12, 0);
+    request[0] = static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA);
+    request[1] = 0;
+    PutLE64(&request[4], nAmount);
+    request.insert(request.end(), mask.begin(), mask.end());
+    request.insert(request.end(), entropy.begin(), entropy.end());
+
+    size_t required = 0;
+    int32_t rc = innova_privacy_vnext_range_prove(&request[0], request.size(),
+                                                  NULL, 0, &required);
+    if (rc != INNOVA_PRIVACY_VNEXT_VALID || required <= 36 ||
+        required > INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES)
+    {
+        OPENSSL_cleanse(&request[0], request.size());
+        error = ResultError("IV5 range proof size query", rc);
+        return false;
+    }
+    std::vector<uint8_t> response(required, 0);
+    size_t written = 0;
+    rc = innova_privacy_vnext_range_prove(&request[0], request.size(),
+                                          &response[0], response.size(), &written);
+    OPENSSL_cleanse(&request[0], request.size());
+    if (rc != INNOVA_PRIVACY_VNEXT_VALID || written != required)
+    {
+        error = ResultError("IV5 range proof", rc);
+        return false;
+    }
+    const uint32_t nProofLen = ReadLE32(&response[32]);
+    if (nProofLen == 0 || response.size() != 36 + nProofLen)
+    {
+        error = "IV5 range proof returned a truncated response";
+        return false;
+    }
+    std::memcpy(commitmentOut.data(), &response[0], 32);
+    vchProofOut.assign(response.begin() + 36, response.end());
+    return true;
+}
+
+bool VerifyPrivacyVNextRange(
+    const PrivacyVNextDigest& commitment,
+    const PrivacyVNextDigest& signableHash,
+    const std::vector<unsigned char>& vchProof,
+    std::string& error)
+{
+    error.clear();
+    if (vchProof.empty() ||
+        vchProof.size() > INNOVA_PRIVACY_VNEXT_MAX_PAYLOAD_BYTES)
+    {
+        error = "IV5 range proof has an unusable length";
+        return false;
+    }
+    std::vector<uint8_t> request(4, 0);
+    request[0] = static_cast<uint8_t>(iv5::PROTOCOL_SCHEMA);
+    request[1] = 0;
+    request.insert(request.end(), commitment.begin(), commitment.end());
+    request.insert(request.end(), signableHash.begin(), signableHash.end());
+    request.insert(request.end(), vchProof.begin(), vchProof.end());
+
+    const int32_t rc = innova_privacy_vnext_range_verify(&request[0], request.size());
+    if (rc != INNOVA_PRIVACY_VNEXT_VALID)
+    {
+        error = ResultError("IV5 range proof verification", rc);
+        return false;
+    }
+    return true;
+}

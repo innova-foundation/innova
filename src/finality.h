@@ -14,6 +14,7 @@
 #include "core.h"
 #include "script.h"
 #include "curvetree.h"
+#include "finality_note.h"
 #include "nullstake.h"
 
 #include <vector>
@@ -629,6 +630,13 @@ public:
     // from FORK_HEIGHT_TALLY_GOVERNANCE.
     std::vector<uint16_t> vSignerIndexes;
     std::vector<std::vector<unsigned char> > vSignerSigs;
+    // nVersion >= 4 (F2): the note-vote side. The tags name which connected note votes the
+    // certificate counts; the complaints are the only thing that lets it leave one out.
+    // Neither aggregate point appears here: both are recomputed from the covered votes'
+    // own commitments, so a certificate can never name a sum it did not earn.
+    std::vector<uint256> vNoteVoteTags;
+    std::vector<CNoteVoteComplaint> vNoteComplaints;
+    CNoteTallyTierProofs noteTierProofs;
     // Runtime provenance only; never added to the legacy certificate bytes.
     bool fCanonicalEnvelope;
 
@@ -694,6 +702,24 @@ public:
             nSerSize += ::SerReadWriteLimitedByteVectors(
                 s, pthis->vSignerSigs, FINALITY_MAX_TALLY_COMMITTEE, 80,
                 nType, nVersion, ser_action);
+        }
+        if (pthis->nVersion >= FINALITY_NOTE_CERT_VERSION)
+        {
+            nSerSize += ::SerReadWriteLimitedVector(s, pthis->vNoteVoteTags,
+                                                     FINALITY_MAX_VOTES,
+                                                     nType, nVersion, ser_action);
+            nSerSize += ::SerReadWriteLimitedVector(s, pthis->vNoteComplaints,
+                                                     FINALITY_MAX_VOTES,
+                                                     nType, nVersion, ser_action);
+            nSerSize += ::SerReadWriteLimitedVector(
+                s, pthis->noteTierProofs.vchTierSlack,
+                FINALITY_NOTE_MAX_RANGE_PROOF_BYTES, nType, nVersion, ser_action);
+            nSerSize += ::SerReadWriteLimitedVector(
+                s, pthis->noteTierProofs.vchWinningCap,
+                FINALITY_NOTE_MAX_RANGE_PROOF_BYTES, nType, nVersion, ser_action);
+            nSerSize += ::SerReadWriteLimitedVector(
+                s, pthis->noteTierProofs.vchActiveCap,
+                FINALITY_NOTE_MAX_RANGE_PROOF_BYTES, nType, nVersion, ser_action);
         }
     )
 

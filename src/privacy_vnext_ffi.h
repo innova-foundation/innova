@@ -566,4 +566,92 @@ bool ProvePrivacyVNextReceiverDisclosure(
     std::vector<unsigned char>& vchProofOut,
     std::string& error);
 
+// One note-vote membership instance plus the witnesses its sigma is built from. The two
+// scalars are secret construction material: zeroize them once the vote and share exist.
+struct PrivacyVNextVoteMembership
+{
+    PrivacyVNextDigest oTilde;
+    PrivacyVNextDigest cTilde;
+    PrivacyVNextDigest rerandomizedY;
+    PrivacyVNextDigest maskDelta;
+    std::vector<unsigned char> vchRequest;
+
+    PrivacyVNextVoteMembership();
+};
+
+bool ProvePrivacyVNextVoteMembership(
+    const PrivacyVNextDigest& finalizedRoot,
+    const PrivacyVNextDigest& entropy,
+    const PrivacyVNextSpendInput& input,
+    PrivacyVNextVoteMembership& membershipOut,
+    std::string& error);
+
+bool VerifyPrivacyVNextVoteMembership(
+    const std::vector<unsigned char>& vchRequest,
+    std::string& error);
+
+// Prove the note-vote authorization sigma. `binding` is the caller's digest over every
+// consensus field the vote must not be detachable from; the membership proof binds none.
+bool ProvePrivacyVNextVoteSigma(
+    uint64_t nEpoch,
+    const PrivacyVNextDigest& oTilde,
+    const PrivacyVNextDigest& cTilde,
+    const PrivacyVNextDigest& binding,
+    const PrivacyVNextDigest& x,
+    const PrivacyVNextDigest& rerandomizedY,
+    const PrivacyVNextDigest& entropy,
+    PrivacyVNextDigest& tagOut,
+    std::vector<unsigned char>& vchProofOut,
+    std::string& error);
+
+bool VerifyPrivacyVNextVoteSigma(
+    uint64_t nEpoch,
+    const PrivacyVNextDigest& oTilde,
+    const PrivacyVNextDigest& cTilde,
+    const PrivacyVNextDigest& binding,
+    const PrivacyVNextDigest& tag,
+    const std::vector<unsigned char>& vchProof,
+    std::string& error);
+
+// One term of an ed25519 linear combination. A generator term must leave `point` zero.
+enum PrivacyVNextCombineSource
+{
+    PRIVACY_VNEXT_TERM_SUPPLIED = 0,
+    PRIVACY_VNEXT_TERM_MONERO_H = 1,
+    PRIVACY_VNEXT_TERM_ED25519_G = 2
+};
+
+struct PrivacyVNextCombineTerm
+{
+    uint8_t nSource;
+    PrivacyVNextDigest scalar;
+    PrivacyVNextDigest point;
+
+    PrivacyVNextCombineTerm();
+};
+
+// Sum scalar*point over the terms. Chains internally, so any term count is accepted.
+// The identity is a legal result and is what an empty term list produces.
+bool CombinePrivacyVNextPoints(
+    const std::vector<PrivacyVNextCombineTerm>& vTerms,
+    PrivacyVNextDigest& pointOut,
+    std::string& error);
+
+// Range-prove one opening. `commitmentOut` is the point the proof is over, so a caller can
+// require it to equal the point it derived for itself.
+bool ProvePrivacyVNextRange(
+    uint64_t nAmount,
+    const PrivacyVNextDigest& mask,
+    const PrivacyVNextDigest& entropy,
+    PrivacyVNextDigest& commitmentOut,
+    std::vector<unsigned char>& vchProofOut,
+    std::string& error);
+
+// Verify a range proof over a point the caller derived. Never pass a supplied point.
+bool VerifyPrivacyVNextRange(
+    const PrivacyVNextDigest& commitment,
+    const PrivacyVNextDigest& signableHash,
+    const std::vector<unsigned char>& vchProof,
+    std::string& error);
+
 #endif // INN_PRIVACY_VNEXT_FFI_H
