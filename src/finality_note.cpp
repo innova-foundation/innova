@@ -586,10 +586,32 @@ uint256 ComputeNoteVoteBinding(const CNoteFinalityVote& vote)
     return ss.GetHash();
 }
 
-bool CheckNoteVote(const CNoteFinalityVote& vote, std::string* pstrError)
+bool CheckNoteVote(const CNoteFinalityVote& vote,
+                   int nThresholdM,
+                   int nCommitteeN,
+                   std::string* pstrError)
 {
     if (!vote.IsValidBasic(pstrError))
         return false;
+
+    // A threshold of one would let a single member open this voter's exact weight, which
+    // is the one thing the share split exists to prevent.
+    if (nThresholdM < 2 || nThresholdM > nCommitteeN ||
+        nCommitteeN > (int)FINALITY_NOTE_MAX_VSS_COEFFICIENTS)
+    {
+        Fail(pstrError, "note vote has no usable committee to check its share against");
+        return false;
+    }
+    if ((int)vote.share.vVssCoefficients.size() != nThresholdM)
+    {
+        Fail(pstrError, "note vote share degree is not the committee threshold");
+        return false;
+    }
+    if ((int)vote.share.vEncryptedRecipientShares.size() != nCommitteeN)
+    {
+        Fail(pstrError, "note vote share does not reach every committee member");
+        return false;
+    }
 
     PrivacyVNextDigest oTilde = ZeroDigest();
     PrivacyVNextDigest cTilde = ZeroDigest();
@@ -640,11 +662,13 @@ bool BuildNoteVoteShare(CNoteVoteShare& share,
                         const CFinalityTallyConfig& config,
                         std::string* pstrError)
 {
-    if (!config.fCommitteeValid || config.nThresholdM <= 0 ||
+    // M of one is a committee that opens individual weights, so it is not a committee a
+    // note vote can share to.
+    if (!config.fCommitteeValid || config.nThresholdM < 2 ||
         config.nThresholdM > (int)config.vCommitteePubKeys.size() ||
         config.vCommitteePubKeys.size() > FINALITY_NOTE_MAX_VSS_COEFFICIENTS)
     {
-        Fail(pstrError, "note vote share needs a valid M-of-N committee");
+        Fail(pstrError, "note vote share needs a valid M-of-N committee with M above one");
         return false;
     }
     if (nAmount < 0 || nAmount > MAX_MONEY || nReward < 0 || nReward > MAX_MONEY)

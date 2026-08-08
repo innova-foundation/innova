@@ -231,10 +231,19 @@ public:
  *  otherwise be replayed under has to reach this, because nothing else binds them. */
 uint256 ComputeNoteVoteBinding(const CNoteFinalityVote& vote);
 
-/** Full validation of one vote in isolation: structure, the K_0 == C~ rule, the sigma, and
- *  the membership proof. Chain context (the anchor the roots must equal, the inclusion
- *  window, tag uniqueness) is the caller's, exactly as for transparent votes. */
-bool CheckNoteVote(const CNoteFinalityVote& vote, std::string* pstrError = NULL);
+/** Full validation of one vote against the committee its epoch names: structure, the share
+ *  shape, the K_0 == C~ rule, the sigma, and the membership proof. Chain context (the
+ *  anchor the roots must equal, the inclusion window, tag uniqueness) is the caller's,
+ *  exactly as for transparent votes.
+ *
+ *  The threshold and committee size are consensus values, not the voter's to pick: a share
+ *  of degree 0 lets one member open that voter's exact weight, and one of a degree above
+ *  the committee's threshold interpolates to the wrong sum while every individual
+ *  evaluation still passes its own check, which is unopenable and unattributable at once. */
+bool CheckNoteVote(const CNoteFinalityVote& vote,
+                   int nThresholdM,
+                   int nCommitteeN,
+                   std::string* pstrError = NULL);
 
 /** Build the encrypted shares and the VSS coefficients for one vote's opening.
  *  `maskTilde` is the note mask shifted by the membership proof's commitment blind, so
@@ -248,8 +257,9 @@ bool BuildNoteVoteShare(CNoteVoteShare& share,
                         std::string* pstrError = NULL);
 
 /** Decrypt one recipient's envelope and check it against the VSS coefficients.
- *  `fVssFailed` separates a share that decrypts but does not open the commitment from one
- *  that does not decrypt at all; both are complainable, neither is a local error. */
+ *  `pfComplainable` marks a failure the share itself caused, whether it did not decrypt or
+ *  decrypted to values that open no coefficient; both are the voter's fault and a complaint
+ *  covers either. A false result with it clear is a local failure and accuses nobody. */
 bool DecryptNoteVoteShareForRecipient(const CNoteVoteShare& share,
                                       const CFinalityTallyConfig& config,
                                       const CKey& keyRecipient,
