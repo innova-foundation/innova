@@ -3201,14 +3201,19 @@ void RelayCollaTeralStatus(const int sessionID, const int newState, const int ne
     }
 }
 
-void RelayCollaTeralElectionEntry(const CTxIn vin, const CService addr, const std::vector<unsigned char> vchSig, const int64_t nNow, const CPubKey pubkey, const CPubKey pubkey2, const int count, const int current, const int64_t lastUpdated, const int protocolVersion)
+// A legacy registration ends after the protocol version; an attested one appends the key
+// image and pool payout address, so older peers still parse every announcement.
+void RelayCollaTeralElectionEntry(const CTxIn vin, const CService addr, const std::vector<unsigned char> vchSig, const int64_t nNow, const CPubKey pubkey, const CPubKey pubkey2, const int count, const int current, const int64_t lastUpdated, const int protocolVersion, const uint256 attestationKeyImage, const std::string strPoolPayout)
 {
     LOCK(cs_vNodes);
     BOOST_FOREACH(CNode* pnode, vNodes)
     {
         if(!pnode->fRelayTxes) continue;
 
-        pnode->PushMessage("isee", vin, addr, vchSig, nNow, pubkey, pubkey2, count, current, lastUpdated, protocolVersion);
+        if (attestationKeyImage == 0)
+            pnode->PushMessage("isee", vin, addr, vchSig, nNow, pubkey, pubkey2, count, current, lastUpdated, protocolVersion);
+        else
+            pnode->PushMessage("isee", vin, addr, vchSig, nNow, pubkey, pubkey2, count, current, lastUpdated, protocolVersion, attestationKeyImage, strPoolPayout);
     }
 }
 
@@ -3223,12 +3228,15 @@ void RelayCollaTeralElectionEntry(const CTxIn vin, const CService addr, const st
 }
 */
 
-void SendCollaTeralElectionEntry(const CTxIn vin, const CService addr, const std::vector<unsigned char> vchSig, const int64_t nNow, const CPubKey pubkey, const CPubKey pubkey2, const int count, const int current, const int64_t lastUpdated, const int protocolVersion)
+void SendCollaTeralElectionEntry(const CTxIn vin, const CService addr, const std::vector<unsigned char> vchSig, const int64_t nNow, const CPubKey pubkey, const CPubKey pubkey2, const int count, const int current, const int64_t lastUpdated, const int protocolVersion, const uint256 attestationKeyImage, const std::string strPoolPayout)
 {
     LOCK(cs_vNodes);
     BOOST_FOREACH(CNode* pnode, vNodes)
     {
-        pnode->PushMessage("isee", vin, addr, vchSig, nNow, pubkey, pubkey2, count, current, lastUpdated, protocolVersion);
+        if (attestationKeyImage == 0)
+            pnode->PushMessage("isee", vin, addr, vchSig, nNow, pubkey, pubkey2, count, current, lastUpdated, protocolVersion);
+        else
+            pnode->PushMessage("isee", vin, addr, vchSig, nNow, pubkey, pubkey2, count, current, lastUpdated, protocolVersion, attestationKeyImage, strPoolPayout);
     }
 }
 

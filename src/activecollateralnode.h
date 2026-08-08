@@ -50,7 +50,10 @@ public:
     bool StopCollateralNode(CTxIn vin, CService service, CKey key, CPubKey pubKey, std::string& errorMessage); // stop any collateralnode
 
     bool Register(std::string strService, std::string strKey, std::string txHash, std::string strOutputIndex, std::string& errorMessage); // register remote collateralnode
-    bool Register(CTxIn vin, CService service, CKey key, CPubKey pubKey, CKey keyCollateralnode, CPubKey pubKeyCollateralnode, std::string &retErrorMessage); // register any collateralnode
+    // `attestationKeyImage` and `strPoolPayout` are set only for a node registered by
+    // private attestation; a transparent-outpoint registration leaves them empty and is
+    // announced exactly as it always has been.
+    bool Register(CTxIn vin, CService service, CKey key, CPubKey pubKey, CKey keyCollateralnode, CPubKey pubKeyCollateralnode, std::string &retErrorMessage, uint256 attestationKeyImage = 0, std::string strPoolPayout = ""); // register any collateralnode
     bool RegisterByPubKey(std::string strService, std::string strKeyCollateralnode, std::string collateralAddress, std::string& errorMessage); // register for a specific collateral address
 
     // get 25000 INN input that can be used for the collateralnode

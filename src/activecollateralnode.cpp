@@ -282,7 +282,7 @@ bool CActiveCollateralnode::Register(std::string strService, std::string strKeyC
     return Register(vin, CService(strService), keyCollateralAddress, pubKeyCollateralAddress, keyCollateralnode, pubKeyCollateralnode, errorMessage);
 }
 
-bool CActiveCollateralnode::Register(CTxIn vin, CService service, CKey keyCollateralAddress, CPubKey pubKeyCollateralAddress, CKey keyCollateralnode, CPubKey pubKeyCollateralnode, std::string &retErrorMessage) {
+bool CActiveCollateralnode::Register(CTxIn vin, CService service, CKey keyCollateralAddress, CPubKey pubKeyCollateralAddress, CKey keyCollateralnode, CPubKey pubKeyCollateralnode, std::string &retErrorMessage, uint256 attestationKeyImage, std::string strPoolPayout) {
     std::string errorMessage;
     std::vector<unsigned char> vchCollateralNodeSignature;
     std::string strCollateralNodeSignMessage;
@@ -330,13 +330,15 @@ bool CActiveCollateralnode::Register(CTxIn vin, CService service, CKey keyCollat
     if(!found) {
         printf("CActiveCollateralnode::Register() - Adding to collateralnode list service: %s - vin: %s\n", service.ToString().c_str(), vin.ToString().c_str());
         CCollateralNode mn(service, vin, pubKeyCollateralAddress, vchCollateralNodeSignature, masterNodeSignatureTime, pubKeyCollateralnode, PROTOCOL_VERSION);
+        mn.attestationKeyImage = attestationKeyImage;
+        mn.strPoolPayout = strPoolPayout;
         mn.UpdateLastSeen(masterNodeSignatureTime);
         vecCollateralnodes.push_back(mn);
     }
 
     //send to all peers
     printf("CActiveCollateralnode::Register() - SendCollaTeralElectionEntry vin = %s\n", vin.ToString().c_str());
-    SendCollaTeralElectionEntry(vin, service, vchCollateralNodeSignature, masterNodeSignatureTime, pubKeyCollateralAddress, pubKeyCollateralnode, -1, -1, masterNodeSignatureTime, PROTOCOL_VERSION);
+    SendCollaTeralElectionEntry(vin, service, vchCollateralNodeSignature, masterNodeSignatureTime, pubKeyCollateralAddress, pubKeyCollateralnode, -1, -1, masterNodeSignatureTime, PROTOCOL_VERSION, attestationKeyImage, strPoolPayout);
 
     return true;
 }

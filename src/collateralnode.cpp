@@ -102,6 +102,26 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         // 70047 and greater
         vRecv >> vin >> addr >> vchSig >> sigTime >> pubkey >> pubkey2 >> count >> current >> lastUpdated >> protocolVersion;
 
+        // An attested registration appends its key image and pool payee address; older peers
+        // send neither and are read as before.
+        uint256 attestationKeyImage = 0;
+        std::string strPoolPayout;
+        if (!vRecv.empty()) {
+            try {
+                vRecv >> attestationKeyImage >> strPoolPayout;
+            } catch (const std::exception&) {
+                if (fDebugCN) printf("isee - malformed attested registration\n");
+                Misbehaving(pfrom->GetId(), 20, "malformed collateralnode attestation");
+                return;
+            }
+            if (attestationKeyImage == 0 ||
+                strPoolPayout.size() > MAX_POOL_PAYOUT_CHARS) {
+                if (fDebugCN) printf("isee - attested registration is not well formed\n");
+                Misbehaving(pfrom->GetId(), 20, "malformed collateralnode attestation");
+                return;
+            }
+        }
+
         // 2-minute future timestamp tolerance
         if (sigTime > pindexBest->GetBlockTime() + 120) {
             if (fDebugCN) printf("isee - Signature rejected, too far into the future %s\n", vin.ToString().c_str());
@@ -211,7 +231,13 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
         // make sure the vout that was signed is related to the transaction that spawned the collateralnode
         //  - this is expensive, so it's only done once per collateralnode
         //  - if sigTime is newer than our chain, this will probably never work, so don't bother.
-        if(!colLateralSigner.IsVinAssociatedWithPubkey(vin, pubkey)) {
+        // An attested node has no transparent outpoint; it is identified by its key image.
+        if (attestationKeyImage != 0) {
+            if (vin.prevout.hash != attestationKeyImage || vin.prevout.n != 0) {
+                if (fDebugCN) printf("isee - attested entry does not name its own key image\n");
+                return;
+            }
+        } else if(!colLateralSigner.IsVinAssociatedWithPubkey(vin, pubkey)) {
             if (fDebugCN) printf("isee - Got mismatched pubkey and vin\n");
             return;
         }
@@ -220,8 +246,13 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
 
         // make sure it's still unspent
         //  - this is checked later by .check() in many places and by ThreadCheckCollaTeralPool()
+        CCollateralNode candidate(addr, vin, pubkey, vchSig, sigTime, pubkey2,
+                                  protocolVersion);
+        candidate.attestationKeyImage = attestationKeyImage;
+        candidate.strPoolPayout = strPoolPayout;
+
         std::string vinError;
-        if(CheckCollateralnodeVin(vin,vinError,pindexBest)){
+        if(CheckCollateralnodeCollateral(candidate,vinError,pindexBest)){
             if (fDebugCN && fDebugNet) printf("isee - Accepted input for collateralnode entry %i %i\n", count, current);
 
             //if(GetInputAge(vin, pindexBest) < (nBestHeight > BLOCK_START_COLLATERALNODE_DELAYPAY ? COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY : COLLATERALNODE_MIN_CONFIRMATIONS)){
@@ -234,7 +265,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
             addrman.Add(CAddress(addr), pfrom->addr, 2*60*60);
 
             // add our collateralnode
-            CCollateralNode mn(addr, vin, pubkey, vchSig, sigTime, pubkey2, protocolVersion);
+            CCollateralNode mn = candidate;
             mn.UpdateLastSeen(lastUpdated);
             CBlockIndex* pindex = pindexBest;
 
@@ -246,7 +277,7 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
             }
 
             if(count == -1 && !isLocal)
-                RelayCollaTeralElectionEntry(vin, addr, vchSig, sigTime, pubkey, pubkey2, count, current, lastUpdated, protocolVersion);
+                RelayCollaTeralElectionEntry(vin, addr, vchSig, sigTime, pubkey, pubkey2, count, current, lastUpdated, protocolVersion, attestationKeyImage, strPoolPayout);
 
             // no need to look up the payment amounts right now, they aren't eligible for payment now anyway
             //int payments = mn.UpdateLastPaidAmounts(pindex, 1000, value); // do a search back 1000 blocks when receiving a new collateralnode to find their last payment, payments = number of payments received, value = amount
@@ -256,8 +287,8 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
                 LOCK(cs_main);
 
                 std::string finalError;
-                if (!CheckCollateralnodeVin(vin, finalError, pindexBest)) {
-                    if (fDebugCN) printf("isee - Final UTXO check failed (TOCTOU prevented): %s\n", finalError.c_str());
+                if (!CheckCollateralnodeCollateral(candidate, finalError, pindexBest)) {
+                    if (fDebugCN) printf("isee - Final collateral check failed (TOCTOU prevented): %s\n", finalError.c_str());
                     return;
                 }
 
@@ -431,12 +462,18 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
                 mn.Check(true);
                 if(mn.IsEnabled()) {
                     if(fDebugCN && fDebugNet) printf("iseg - Sending collateralnode entry - %s \n", mn.addr.ToString().c_str());
-                    pfrom->PushMessage("isee", mn.vin, mn.addr, mn.sig, mn.now, mn.pubkey, mn.pubkey2, count, i, mn.lastTimeSeen, mn.protocolVersion);
+                    if (mn.IsAttested())
+                        pfrom->PushMessage("isee", mn.vin, mn.addr, mn.sig, mn.now, mn.pubkey, mn.pubkey2, count, i, mn.lastTimeSeen, mn.protocolVersion, mn.attestationKeyImage, mn.strPoolPayout);
+                    else
+                        pfrom->PushMessage("isee", mn.vin, mn.addr, mn.sig, mn.now, mn.pubkey, mn.pubkey2, count, i, mn.lastTimeSeen, mn.protocolVersion);
                     sent++;
                 }
             } else if (vin == mn.vin) {
                 if(fDebugCN && fDebugNet) printf("iseg - Sending collateralnode entry - %s \n", mn.addr.ToString().c_str());
-                pfrom->PushMessage("isee", mn.vin, mn.addr, mn.sig, mn.now, mn.pubkey, mn.pubkey2, count, i, mn.lastTimeSeen, mn.protocolVersion);
+                if (mn.IsAttested())
+                    pfrom->PushMessage("isee", mn.vin, mn.addr, mn.sig, mn.now, mn.pubkey, mn.pubkey2, count, i, mn.lastTimeSeen, mn.protocolVersion, mn.attestationKeyImage, mn.strPoolPayout);
+                else
+                    pfrom->PushMessage("isee", mn.vin, mn.addr, mn.sig, mn.now, mn.pubkey, mn.pubkey2, count, i, mn.lastTimeSeen, mn.protocolVersion);
                 sent++;
                 printf("iseg - Sent 1 collateralnode entries to %s\n", pfrom->addr.ToString().c_str());
                 printf("DEBUG-ISEG end peer=%s sent=%d fDisconnect=%d\n", pfrom->addr.ToString().c_str(), sent, pfrom->fDisconnect);
@@ -1249,16 +1286,72 @@ void CCollateralNode::Check(bool forceCheck)
     }
 
     if(!unitTest){
-        std::string vinError;
-        if(!CheckCollateralnodeVin(vin,vinError,pindexBest)) {
-                enabled = 3; //MN input was spent, disable checks for this MN
-                if (fDebug) printf("error checking collateralnode %s: %s\n", vin.prevout.ToString().c_str(), vinError.c_str());
-                status = "vin was spent";
+        std::string collateralError;
+        if(!CheckCollateralnodeCollateral(*this, collateralError, pindexBest)) {
+                enabled = 3; //collateral is gone, disable checks for this CN
+                if (fDebug) printf("error checking collateralnode %s: %s\n", vin.prevout.ToString().c_str(), collateralError.c_str());
+                status = IsAttested() ? "collateral was spent" : "vin was spent";
                 return;
             }
         }
     status = "OK";
     enabled = 1; // OK
+}
+
+uint256 GetCollateralnodeRegistrationContext(const CPubKey& pubkey2,
+                                             const CService& addr,
+                                             const std::string& strPoolPayout)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("Innova/IV5/CollateralnodeRegistrationContext/v1");
+    ss << pubkey2.Raw();
+    ss << addr.ToString();
+    ss << strPoolPayout;
+    return ss.GetHash();
+}
+
+bool CheckCollateralnodeCollateral(const CCollateralNode& mn,
+                                   std::string& errorMessage,
+                                   CBlockIndex* pindex)
+{
+    if (!mn.IsAttested())
+    {
+        CTxIn vin = mn.vin;
+        return CheckCollateralnodeVin(vin, errorMessage, pindex);
+    }
+
+    // Registered means attested and not yet spent, read straight off the chain's own
+    // indexes. There is no lock and nothing to release: the spend that ends the
+    // registration is an ordinary one that consensus never refuses.
+    CTxDB txdb("r");
+    CPrivacyVNextCollateralAttestation attested;
+    bool fLocalFailure = false;
+    if (!IsPrivacyVNextCollateralRegistered(txdb, mn.attestationKeyImage,
+                                            attested, fLocalFailure))
+    {
+        errorMessage = fLocalFailure
+            ? "the IV5 collateral index is unreadable"
+            : "attested collateral is spent or was never registered";
+        return false;
+    }
+    if (pindex != NULL &&
+        pindex->nHeight - attested.nHeight < COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY)
+    {
+        errorMessage = strprintf("attestation has only %d/%d more confirms",
+                                 pindex->nHeight - attested.nHeight,
+                                 COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY);
+        return false;
+    }
+    // The endpoint and payout address this node announces must be the ones its
+    // attestation committed to, or a relay could rewrite either of them.
+    if (attested.contextDigest !=
+        GetCollateralnodeRegistrationContext(mn.pubkey2, mn.addr,
+                                             mn.strPoolPayout))
+    {
+        errorMessage = "announcement does not match the attested registration context";
+        return false;
+    }
+    return true;
 }
 
 bool CheckCollateralnodeVin(CTxIn& vin, std::string& errorMessage, CBlockIndex* pindex) {

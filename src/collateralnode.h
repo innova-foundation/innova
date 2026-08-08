@@ -42,6 +42,9 @@ class uint256;
 #define COLLATERALNODE_CHECK_SECONDS               10
 
 #define COLLATERALNODE_FAIR_PAYMENT_MINIMUM         200
+// An IV5 address is 70 bytes of components in Base58Check; the bound only has to keep a
+// peer from choosing the length, and the digest check rejects anything else anyway.
+#define MAX_POOL_PAYOUT_CHARS                       128
 #define COLLATERALNODE_FAIR_PAYMENT_ROUNDS          3
 
 using namespace std;
@@ -66,6 +69,23 @@ int CountCollateralnodesAboveProtocol(int protocolVersion);
 
 void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataStream& vRecv);
 bool CheckCollateralnodeVin(CTxIn& vin, std::string& errorMessage, CBlockIndex *pindex);
+
+// What an IV5 collateral attestation commits to on chain.
+//
+// The announcement carries the node's identity key, its endpoint and its pool payout
+// address; the attestation carries only this digest of them, inside the region its
+// spend-authorization proof signs. Recomputing it here is what stops an announcement being
+// relayed with any of the three replaced, and what stops one node's attestation being
+// claimed by another.
+uint256 GetCollateralnodeRegistrationContext(const CPubKey& pubkey2,
+                                             const CService& addr,
+                                             const std::string& strPoolPayout);
+
+// Whether a node's collateral is live: a transparent outpoint, or a private attestation
+// whose key image is watched and unspent. No deadline on either form.
+bool CheckCollateralnodeCollateral(const CCollateralNode& mn,
+                                   std::string& errorMessage,
+                                   CBlockIndex* pindex);
 
 // For storing payData
 class CCollateralNPayData
@@ -163,6 +183,14 @@ public:
     int nRank;
 
 
+    // Set when this node registered by attestation rather than by transparent outpoint.
+    // The key image is the note's public pseudonym: the node is registered until it appears
+    // in a spend, at which point it is simply gone.
+    uint256 attestationKeyImage;
+    std::string strPoolPayout;
+
+    bool IsAttested() const { return attestationKeyImage != 0; }
+
     //the dsq count from the last dsq broadcast of this node
     int64_t nLastDsq;
     CCollateralNode(CService newAddr, CTxIn newVin, CPubKey newPubkey, std::vector<unsigned char> newSig, int64_t newNow, CPubKey newPubkey2, int protocolVersionIn)
@@ -190,6 +218,7 @@ public:
         payValue = 0;
         payRate = 0;
         payCount = 0;
+        attestationKeyImage = 0;
     }
 
     uint256 CalculateScore(int mod=1, int64_t nBlockHeight=0);
