@@ -1675,10 +1675,14 @@ bool RunNoteTallyCommitteePass(const std::vector<const CNoteFinalityVote*>& vCon
             return false;
         }
         // A share this member cannot use is excluded only with evidence, so a member
-        // that simply dislikes a voter cannot drop it.
+        // that simply dislikes a voter cannot drop it. A vote that ends up neither
+        // accepted nor complained of would leave a cover set no certificate can satisfy,
+        // so failing to build the evidence has to fail the pass rather than pass quietly.
         CNoteVoteComplaint complaint;
-        if (BuildNoteVoteComplaint(complaint, *pvote, config, keyMember, nMemberIndex))
-            passOut.vComplaints.push_back(complaint);
+        if (!BuildNoteVoteComplaint(complaint, *pvote, config, keyMember, nMemberIndex,
+                                    pstrError))
+            return false;
+        passOut.vComplaints.push_back(complaint);
     }
 
     passOut.fHaveActive = AggregateNoteTallyPlainShares(vActive, passOut.aggregateActive);
