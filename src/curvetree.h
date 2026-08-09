@@ -105,6 +105,14 @@ static const uint32_t FCMP_PROOF_VERSION_BLINDED = 3;
 static const uint32_t FCMP_PROOF_VERSION_ENCRYPTED = 4;
 static const uint32_t FCMP_PROOF_VERSION_IPA = 5;
 static const uint32_t FCMP_PROOF_VERSION_CROSSCURVE = 6;
+
+// CURRENT is the creation default, not a recommendation: IPA binds neither the
+// claimed root nor the leaf commitment, which is why the verifier confines it to
+// regtest. CROSSCURVE does bind both, but VerifyFCMPProofUncached rejects any
+// version above IPA and its serialized entry points have no callers, so moving
+// CURRENT there would make creation produce proofs consensus rejects. Both are
+// the 2002 prototype, superseded by vendored FCMP++ under 2008; the fix is
+// retiring that envelope, not renumbering this.
 static const uint32_t FCMP_PROOF_VERSION_CURRENT = FCMP_PROOF_VERSION_IPA;
 
 
