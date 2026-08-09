@@ -218,13 +218,19 @@ header "2. Pre-fork: the miner is paid the IV5 fee transparently"
 
 mine_to_exact "$BOUNDARY_B" || { fail "could not mine to $BOUNDARY_B"; exit 1; }
 
-PLAIN_H=$(( BOUNDARY_B + 1 ))
+# Blocks are compared one against the next, so confirm any pending setup
+# transactions before measuring.
+for _ in $(seq 1 10); do
+    MEMPOOL="$(rpc getrawmempool 2>/dev/null | tr -d '[:space:]')"
+    [ "$MEMPOOL" = "[]" ] && break
+    mine_to_exact $(( $(height) + 1 )) || break
+done
+
+PLAIN_H=$(( $(height) + 1 ))
 mine_to_exact "$PLAIN_H" || { fail "could not mine to $PLAIN_H"; exit 1; }
 
-# The baseline is only a baseline if the block really is empty. A stray wallet
-# transaction pays its fee into the coinbase, which shifts every later
-# comparison by that fee and reports as a fee-note accounting fault. Advance
-# until a block carries the coinbase alone rather than assuming this one does.
+# Belt and braces on the drain above: the baseline is only a baseline if the
+# block really is empty, and a fee landing here shifts every later comparison.
 for _ in $(seq 1 6); do
     [ "$(block_tx_count "$PLAIN_H")" = "1" ] && break
     PLAIN_H=$(( PLAIN_H + 1 ))
