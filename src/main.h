@@ -237,9 +237,7 @@ inline int GetForkHeightShielded() {
 // deleting the checks keeps every >= site rejecting, including the consensus
 // ones in ConnectInputs, ConnectBlock and AcceptBlock.
 inline int GetForkHeightRingSigDeprecation() {
-    extern bool fRegTest;
-    extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 1 : ShiftMainnetV5Activation(7815000);
+    return 0;
 }
 #define FORK_HEIGHT_RINGSIG_DEPRECATION (GetForkHeightRingSigDeprecation())
 
