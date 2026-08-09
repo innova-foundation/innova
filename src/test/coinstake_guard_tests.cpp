@@ -327,6 +327,17 @@ BOOST_AUTO_TEST_CASE(privacy_vnext_product_contract_keeps_all_required_modes)
                                     iv5::NOTE_CONDITIONAL_MIGRATION,
                                     iv5::FINALITY_NONE, iv5::AUTH_OWNER,
                                     iv5::FINALITY_OBJECT_NONE, 0));
+    // The mirror must know the operation the Rust decoder assigns to a collateral
+    // attestation, or the raw-transaction view reports nothing about one.
+    BOOST_CHECK_EQUAL((int)iv5::NOTE_COLLATERAL_REGISTER, 8);
+    BOOST_CHECK(iv5::IsKnownNoteOperation(iv5::NOTE_COLLATERAL_REGISTER));
+    BOOST_CHECK(iv5::EnvelopeAllows(2008, iv5::NOTE_COLLATERAL_REGISTER,
+                                    iv5::FINALITY_NONE, iv5::AUTH_OWNER,
+                                    iv5::FINALITY_OBJECT_NONE, 7));
+    // Still refused on every earlier wire version.
+    BOOST_CHECK(!iv5::EnvelopeAllows(2001, iv5::NOTE_COLLATERAL_REGISTER,
+                                     iv5::FINALITY_NONE, iv5::AUTH_OWNER,
+                                     iv5::FINALITY_OBJECT_NONE, 7));
 }
 
 BOOST_AUTO_TEST_CASE(public_private_staking_guard_precedes_wallet_mutation)

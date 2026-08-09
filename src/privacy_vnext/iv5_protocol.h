@@ -32,6 +32,7 @@ enum NoteOperation
     NOTE_M_OF_N_MINT = 5,
     NOTE_RECLAIM = 6,
     NOTE_CONDITIONAL_MIGRATION = 7,
+    NOTE_COLLATERAL_REGISTER = 8,
     NOTE_OPERATION_NONE = 255
 };
 
@@ -68,7 +69,7 @@ static const uint8_t WALLET_DEFAULT_DISCLOSURE_MASK = 7;
 
 inline bool IsKnownNoteOperation(uint8_t operation)
 {
-    return operation <= NOTE_CONDITIONAL_MIGRATION || operation == NOTE_OPERATION_NONE;
+    return operation <= NOTE_COLLATERAL_REGISTER || operation == NOTE_OPERATION_NONE;
 }
 
 // Read the declared operation and mask from the fixed header. Not a decoder; consensus

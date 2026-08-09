@@ -39,6 +39,7 @@ rpc() { "$INNOVAD" -datadir="$NODE_DIR" -regtest -rpcuser=$RPCUSER \
         -rpcpassword=$RPCPASS -rpcport=$RPC "$@" 2>&1; }
 
 height() { rpc getblockcount 2>/dev/null | tr -d '"[:space:]'; }
+jstr()   { echo "$1" | sed -n "s/.*\"$2\" *: *\"\([^\"]*\)\".*/\1/p" | head -1; }
 is_int() { echo "$1" | grep -qE '^[0-9]+$'; }
 
 stop_node() {
@@ -67,7 +68,7 @@ mine_to_exact() {
     is_int "$h" || return 1
     [ "$h" -ge "$target" ] && return 0
     rpc setgenerate true $(( target - h )) >/dev/null 2>&1
-    for _ in $(seq 1 300); do
+    for _ in $(seq 1 1200); do
         sleep 2
         h="$(height)"
         is_int "$h" || continue
@@ -125,7 +126,7 @@ done
 start_node || { fail "node did not restart after encrypting the wallet"; exit 1; }
 rpc walletpassphrase "$WALLETPASS" 3600 >/dev/null 2>&1
 rpc z_createiv5seed >/dev/null 2>&1
-PAYOUT="$(rpc z_getnewiv5address 2>/dev/null | tr -d '"[:space:]')"
+PAYOUT="$(jstr "$(rpc z_getnewiv5address 2>/dev/null)" address)"
 if [ -z "$PAYOUT" ]; then
     fail "could not issue an IV5 payout address"
     exit 1
