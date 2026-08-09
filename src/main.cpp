@@ -6855,6 +6855,13 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
             &voteEnvelopeFailure))
         return error("DisconnectBlock() : invalid finality vote envelope for height %d (decode=%d)",
                      pindex->nHeight, (int)voteEnvelopeFailure);
+    std::vector<CNoteFinalityVote> vNoteFinalityVotes;
+    FinalityEnvelopeDecodeResult noteVoteEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
+    if (!ExtractNoteFinalityVotesFromBlockForHeight(
+            activeBlock, pindex->nHeight, vNoteFinalityVotes,
+            &noteVoteEnvelopeFailure))
+        return error("DisconnectBlock() : invalid note finality vote envelope for height %d (decode=%d)",
+                     pindex->nHeight, (int)noteVoteEnvelopeFailure);
 
     // Reverse the pool in the exact order ConnectBlock applied it. A deposit
     // followed by a release is valid forward but underflows if undone in the
@@ -6996,6 +7003,10 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
         if (!vFinalityVotes.empty() &&
             !g_finalityTracker.DisconnectBlockVotes(txdb, pindex->GetBlockHash(), vFinalityVotes))
             return error("DisconnectBlock() : DisconnectBlockVotes failed");
+
+        if (!vNoteFinalityVotes.empty() &&
+            !g_finalityTracker.DisconnectBlockNoteVotes(txdb, pindex->GetBlockHash(), vNoteFinalityVotes))
+            return error("DisconnectBlock() : DisconnectBlockNoteVotes failed");
 
         // D2: roll back committee self-rotations carried in this block.
         std::vector<CFinalityCommitteeRotation> vCommitteeRotations = ExtractFinalityCommitteeRotationsFromBlock(activeBlock);
@@ -7569,6 +7580,18 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             strFinalityCapacityError.c_str()));
     if (!vFinalityVotes.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
         return DoS(100, error("ConnectBlock() : finality votes are only valid in post-DAG proof-of-work blocks"));
+    std::vector<CNoteFinalityVote> vNoteFinalityVotes;
+    FinalityEnvelopeDecodeResult noteVoteEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
+    if (!ExtractNoteFinalityVotesFromBlockForHeight(
+            activeBlock, pindex->nHeight, vNoteFinalityVotes,
+            &noteVoteEnvelopeFailure))
+        return DoS(100, error(
+            "ConnectBlock() : invalid note finality vote envelope for height %d (decode=%d)",
+            pindex->nHeight, (int)noteVoteEnvelopeFailure));
+    if (!vNoteFinalityVotes.empty() && IsProofOfStake())
+        return DoS(100, error("ConnectBlock() : note finality votes are only valid in proof-of-work blocks"));
+    if (vNoteFinalityVotes.size() > (size_t)FINALITY_MAX_BLOCK_NOTE_VOTES)
+        return DoS(100, error("ConnectBlock() : too many note finality votes in block"));
     std::vector<CFinalityTallyShare> vFinalityShares = ExtractFinalityTallySharesFromBlock(activeBlock);
     if (!vFinalityShares.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
         return DoS(100, error("ConnectBlock() : finality tally shares are only valid in post-DAG proof-of-work blocks"));
@@ -9266,6 +9289,20 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                     "ConnectBlock() : ConnectBlockVotes local state/persistence failure"));
             return DoS(100, error(
                 "ConnectBlock() : ConnectBlockVotes deterministic validation failure"));
+        }
+    }
+    if (!fJustCheck && !vNoteFinalityVotes.empty())
+    {
+        FinalityResult finalityResult = FINALITY_RESULT_INVALID;
+        if (!g_finalityTracker.ConnectBlockNoteVotes(
+                txdb, pindex->GetBlockHash(), vNoteFinalityVotes,
+                pindex->nHeight, &finalityResult))
+        {
+            if (finalityResult == FINALITY_RESULT_LOCAL_STATE)
+                return TransientFailure(error(
+                    "ConnectBlock() : ConnectBlockNoteVotes local state/persistence failure"));
+            return DoS(100, error(
+                "ConnectBlock() : ConnectBlockNoteVotes deterministic validation failure"));
         }
     }
     if (!fJustCheck && !vFinalityShares.empty())

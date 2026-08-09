@@ -512,9 +512,9 @@ bool CNoteFinalityVote::IsValidBasic(std::string* pstrError) const
         Fail(pstrError, "note vote version is not the F2 version");
         return false;
     }
-    if (nEpoch < 0 || nHeight < 0 || nTime < 0)
+    if (nEpoch < 0 || nHeight < 0)
     {
-        Fail(pstrError, "note vote carries a negative epoch, height or time");
+        Fail(pstrError, "note vote carries a negative epoch or height");
         return false;
     }
     if (hashBlock == 0 || hashCurveRoot == 0 || hashNullifierRoot == 0 ||
@@ -531,6 +531,12 @@ bool CNoteFinalityVote::IsValidBasic(std::string* pstrError) const
     if (vchSigma.size() != FINALITY_NOTE_SIGMA_SIZE)
     {
         Fail(pstrError, "note vote sigma has the wrong length");
+        return false;
+    }
+    if (vchWeightFloorProof.empty() ||
+        vchWeightFloorProof.size() > FINALITY_NOTE_MAX_RANGE_PROOF_BYTES)
+    {
+        Fail(pstrError, "note vote weight-floor proof has an unusable length");
         return false;
     }
     if (vchMembership.size() < FINALITY_NOTE_MEMBERSHIP_MIN ||
@@ -577,13 +583,117 @@ uint256 ComputeNoteVoteBinding(const CNoteFinalityVote& vote)
     ss << vote.hashNullifierRoot;
     ss << vote.hashBlock;
     ss << vote.nHeight;
-    ss << vote.nTime;
     ss << Hash(vote.vchMembership.begin(), vote.vchMembership.end());
     ss << vote.committeeSetHash;
+    // A re-randomized floor proof over the same point verifies just as well, so leaving it
+    // unbound would let a relaying peer mint a second byte-distinct vote under one tag.
+    ss << Hash(vote.vchWeightFloorProof.begin(), vote.vchWeightFloorProof.end());
     // The share hash is what makes one share structurally the vote's own: a mutated or
     // duplicated share reaches a different digest and no longer matches any sigma.
     ss << vote.share.GetHash();
     return ss.GetHash();
+}
+
+bool DeriveNoteVoteWeightFloorPoint(const PrivacyVNextDigest& cTilde,
+                                    PrivacyVNextDigest& pointOut,
+                                    std::string* pstrError)
+{
+    std::vector<PrivacyVNextCombineTerm> vTerms(2);
+    vTerms[0].nSource = PRIVACY_VNEXT_TERM_SUPPLIED;
+    vTerms[0].scalar = Ed25519ScalarToDigest(Ed25519ScalarFromUint64(1));
+    vTerms[0].point = cTilde;
+    vTerms[1].nSource = PRIVACY_VNEXT_TERM_MONERO_H;
+    vTerms[1].scalar = Ed25519ScalarToDigest(
+        Ed25519ScalarNeg(Ed25519ScalarFromInt64(FINALITY_MIN_VOTE_WEIGHT)));
+
+    std::string error;
+    if (!CombinePrivacyVNextPoints(vTerms, pointOut, error))
+    {
+        Fail(pstrError, "note vote weight-floor point could not be derived");
+        return false;
+    }
+    return true;
+}
+
+bool BuildNoteVoteWeightFloorProof(int64_t nAmount,
+                                   const uint256& maskTilde,
+                                   const PrivacyVNextDigest& entropy,
+                                   std::vector<unsigned char>& vchProofOut,
+                                   std::string* pstrError)
+{
+    vchProofOut.clear();
+    if (nAmount < FINALITY_MIN_VOTE_WEIGHT || nAmount > MAX_MONEY)
+    {
+        Fail(pstrError, "note vote weight is outside the range the floor allows");
+        return false;
+    }
+
+    PrivacyVNextDigest commitment = ZeroDigest();
+    std::string error;
+    if (!ProvePrivacyVNextRange((uint64_t)(nAmount - FINALITY_MIN_VOTE_WEIGHT),
+                                Ed25519ScalarToDigest(maskTilde), entropy, commitment,
+                                vchProofOut, error))
+    {
+        Fail(pstrError, "note vote weight floor could not be range-proved");
+        vchProofOut.clear();
+        return false;
+    }
+    if (vchProofOut.size() > FINALITY_NOTE_MAX_RANGE_PROOF_BYTES)
+    {
+        Fail(pstrError, "note vote weight-floor proof exceeds its carrier bound");
+        vchProofOut.clear();
+        return false;
+    }
+
+    // The proof is only usable if it lands on the point a validator reaches from C~ alone.
+    // Surfacing a divergent opening here beats emitting a vote the network rejects.
+    PrivacyVNextDigest cTilde = ZeroDigest();
+    if (!CommitScaled(Ed25519ScalarFromInt64(nAmount), maskTilde, cTilde, pstrError))
+    {
+        vchProofOut.clear();
+        return false;
+    }
+    PrivacyVNextDigest expected = ZeroDigest();
+    if (!DeriveNoteVoteWeightFloorPoint(cTilde, expected, pstrError))
+    {
+        vchProofOut.clear();
+        return false;
+    }
+    if (commitment != expected)
+    {
+        Fail(pstrError, "note vote weight-floor proof is over a point the validator misses");
+        vchProofOut.clear();
+        return false;
+    }
+    return true;
+}
+
+bool CheckNoteVoteWeightFloorProof(const CNoteFinalityVote& vote, std::string* pstrError)
+{
+    if (vote.vchWeightFloorProof.empty() ||
+        vote.vchWeightFloorProof.size() > FINALITY_NOTE_MAX_RANGE_PROOF_BYTES)
+    {
+        Fail(pstrError, "note vote weight-floor proof has an unusable length");
+        return false;
+    }
+
+    PrivacyVNextDigest cTilde = ZeroDigest();
+    if (!vote.GetCTilde(cTilde))
+    {
+        Fail(pstrError, "note vote membership instance carries no input tuple");
+        return false;
+    }
+    PrivacyVNextDigest floorPoint = ZeroDigest();
+    if (!DeriveNoteVoteWeightFloorPoint(cTilde, floorPoint, pstrError))
+        return false;
+
+    std::string error;
+    if (!VerifyPrivacyVNextRange(floorPoint, ZeroDigest(), vote.vchWeightFloorProof, error))
+    {
+        Fail(pstrError, "note vote does not reach the minimum vote weight");
+        return false;
+    }
+    return true;
 }
 
 bool CheckNoteVote(const CNoteFinalityVote& vote,
@@ -646,6 +756,8 @@ bool CheckNoteVote(const CNoteFinalityVote& vote,
         Fail(pstrError, "note vote sigma does not verify");
         return false;
     }
+    if (!CheckNoteVoteWeightFloorProof(vote, pstrError))
+        return false;
     if (!VerifyPrivacyVNextVoteMembership(vote.vchMembership, error))
     {
         Fail(pstrError, "note vote membership proof does not verify");

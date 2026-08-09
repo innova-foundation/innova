@@ -12,6 +12,7 @@
 #include "privacy_vnext_ffi.h"
 #include "serialize.h"
 #include "uint256.h"
+#include "util.h"
 
 struct CFinalityTallyConfig;
 
@@ -33,6 +34,19 @@ static const size_t FINALITY_NOTE_MAX_ENVELOPE_BYTES = 4096;
 static const size_t FINALITY_NOTE_MAX_RANGE_PROOF_BYTES = 4096;
 // One coefficient per polynomial degree, so this tracks the committee threshold.
 static const size_t FINALITY_NOTE_MAX_VSS_COEFFICIENTS = 64;
+
+/** Consensus floor on the weight one finality vote may carry.
+ *
+ *  The tally denominator is cast weight, and an epoch's canonical vote set is capped, so
+ *  without a floor an attacker fills every slot with dust, crowds out the honest heavy
+ *  votes, and owns ~100% of the weight the tiers compare against. The floor prices that
+ *  capture: filling the epoch cap costs at least
+ *  FINALITY_CANONICAL_CERT_MAX_NULLIFIERS * FINALITY_MIN_VOTE_WEIGHT of real stake.
+ *
+ *  A transparent vote proves it in the clear; a note vote proves C~ - W_min*H opens to a
+ *  non-negative amount, leaking the single bit "at least the floor". Review this against
+ *  circulating supply before scheduling the activation on a public network. */
+static const int64_t FINALITY_MIN_VOTE_WEIGHT = 100 * COIN;
 
 // Fixed layout of a one-input membership verification request, which is where a vote's
 // O~ and C~ live. Reading them from the proof is what stops a vote from naming one pair
@@ -136,21 +150,24 @@ public:
     int nEpoch;
     uint256 hashBlock;
     int nHeight;
-    int64_t nTime;
     uint256 hashCurveRoot;
     uint256 hashNullifierRoot;
     uint256 committeeSetHash;
     std::vector<unsigned char> vchMembership;   // canonical membership verify request
     std::vector<unsigned char> vchTag;          // T_e = x*U_e, the once-per-epoch dedup key
     std::vector<unsigned char> vchSigma;
+    // Range proof over C~ - W_min*H: the vote weighs at least the consensus floor.
+    std::vector<unsigned char> vchWeightFloorProof;
     CNoteVoteShare share;
+
+    // No timestamp: an anonymous vote stamped at proving time is a wallet-pipeline
+    // fingerprint, and every field the tally needs is already an epoch-derived constant.
 
     CNoteFinalityVote()
     {
         nVersion = FINALITY_NOTE_VOTE_VERSION;
         nEpoch = 0;
         nHeight = 0;
-        nTime = 0;
     }
 
     IMPLEMENT_SERIALIZE
@@ -160,7 +177,6 @@ public:
         READWRITE(pthis->nEpoch);
         READWRITE(pthis->hashBlock);
         READWRITE(pthis->nHeight);
-        READWRITE(pthis->nTime);
         READWRITE(pthis->hashCurveRoot);
         READWRITE(pthis->hashNullifierRoot);
         READWRITE(pthis->committeeSetHash);
@@ -172,6 +188,9 @@ public:
                                                  nType, nVersion, ser_action);
         nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchSigma,
                                                  FINALITY_NOTE_SIGMA_SIZE,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchWeightFloorProof,
+                                                 FINALITY_NOTE_MAX_RANGE_PROOF_BYTES,
                                                  nType, nVersion, ser_action);
         READWRITE(pthis->share);
     )
@@ -230,6 +249,28 @@ public:
 /** The digest the vote's sigma challenge covers. Every field a whole valid vote could
  *  otherwise be replayed under has to reach this, because nothing else binds them. */
 uint256 ComputeNoteVoteBinding(const CNoteFinalityVote& vote);
+
+/** Recompute C~ - W_min*H, the point the weight-floor proof must be over.
+ *
+ *  The commitment comes from the vote's own membership instance, which its sigma binds.
+ *  A supplied point would let any weight claim any floor, so this is the only source the
+ *  verifier ever reads. */
+bool DeriveNoteVoteWeightFloorPoint(const PrivacyVNextDigest& cTilde,
+                                    PrivacyVNextDigest& pointOut,
+                                    std::string* pstrError = NULL);
+
+/** Prove the vote's note weighs at least the floor. `maskTilde` opens C~ with `nAmount`.
+ *  Fails for an amount under the floor: the shifted point's H-coefficient is negative and
+ *  has no in-range opening. */
+bool BuildNoteVoteWeightFloorProof(int64_t nAmount,
+                                   const uint256& maskTilde,
+                                   const PrivacyVNextDigest& entropy,
+                                   std::vector<unsigned char>& vchProofOut,
+                                   std::string* pstrError = NULL);
+
+/** Verify a weight-floor proof against the point derived from the vote's own C~. */
+bool CheckNoteVoteWeightFloorProof(const CNoteFinalityVote& vote,
+                                   std::string* pstrError = NULL);
 
 /** Full validation of one vote against the committee its epoch names: structure, the share
  *  shape, the K_0 == C~ rule, the sigma, and the membership proof. Chain context (the

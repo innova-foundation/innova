@@ -186,7 +186,6 @@ CNoteFinalityVote MakeVote(const CNoteVoteShare& share,
     vote.nEpoch = share.nEpoch;
     vote.hashBlock = hashBlock;
     vote.nHeight = 7000 + share.nEpoch;
-    vote.nTime = 1700000000;
     vote.hashCurveRoot = uint256(0x4321);
     vote.hashNullifierRoot = uint256(0x8765);
     vote.committeeSetHash = share.committeeSetHash;
@@ -194,6 +193,9 @@ CNoteFinalityVote MakeVote(const CNoteVoteShare& share,
                                                pOTilde ? *pOTilde : ZeroDigest(), cTilde);
     vote.vchTag.assign(FINALITY_NOTE_POINT_SIZE, nTagSeed);
     vote.vchSigma.assign(FINALITY_NOTE_SIGMA_SIZE, 0x11);
+    // Filler of a legal length: every case below rejects at or before the sigma, which
+    // runs ahead of the weight-floor verification.
+    vote.vchWeightFloorProof.assign(672, 0x33);
     vote.share = share;
     return vote;
 }
@@ -1142,7 +1144,7 @@ BOOST_AUTO_TEST_CASE(note_vote_binding_covers_every_replayable_field)
     BOOST_CHECK(ComputeNoteVoteBinding(mutated) != binding);
 
     mutated = base;
-    mutated.nTime = base.nTime + 1;
+    mutated.vchWeightFloorProof[0] ^= 0x01;
     BOOST_CHECK(ComputeNoteVoteBinding(mutated) != binding);
 
     mutated = base;
@@ -1278,14 +1280,26 @@ BOOST_AUTO_TEST_CASE(note_vote_sigma_binds_the_vote_and_gates_the_membership_pro
     std::vector<CKey> vKeys(3);
     const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 2);
 
+    // At the floor, so this vote can carry a real weight-floor proof and the membership
+    // proof stays the only thing left to reject it.
+    const int64_t nAmount = FINALITY_MIN_VOTE_WEIGHT;
     const uint256 mask = RandomScalar();
-    const CNoteVoteShare share = MakeShare(config, 907, 777000, mask, 21, RandomScalar());
+    const CNoteVoteShare share = MakeShare(config, 907, nAmount, mask, 21, RandomScalar());
     PrivacyVNextDigest cTilde = ZeroDigest();
     BOOST_REQUIRE(share.GetCommitment(cTilde));
 
     const uint256 x = RandomScalar();
     const PrivacyVNextDigest oTilde = BasePointMultiple(x);
     CNoteFinalityVote vote = MakeVote(share, uint256(0x4444), cTilde, 0x61, &oTilde);
+    {
+        PrivacyVNextDigest entropySeed;
+        entropySeed.fill(0x6f);
+        std::string strFloorError;
+        BOOST_REQUIRE_MESSAGE(
+            BuildNoteVoteWeightFloorProof(nAmount, mask, entropySeed,
+                                          vote.vchWeightFloorProof, &strFloorError),
+            strFloorError);
+    }
 
     const uint256 binding = ComputeNoteVoteBinding(vote);
     PrivacyVNextDigest bindingDigest = ZeroDigest();
@@ -1334,7 +1348,7 @@ BOOST_AUTO_TEST_CASE(note_vote_sigma_binds_the_vote_and_gates_the_membership_pro
     BOOST_CHECK_EQUAL(strError, strSigmaError);
 
     mutated = vote;
-    mutated.nTime = vote.nTime + 1;
+    mutated.vchWeightFloorProof[0] ^= 0x01;
     BOOST_CHECK(!CheckNoteVote(mutated, config.nThresholdM, config.nThresholdN, &strError));
     BOOST_CHECK_EQUAL(strError, strSigmaError);
 

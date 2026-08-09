@@ -967,6 +967,30 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 nBlockSize += nVoteCommitSize + 64;
             }
 
+            // Note votes ride their own coinbase outputs and mint nothing: a vote is not a
+            // pool operation, so the coinbase IV5 payload is deliberately untouched here.
+            if (IsIV5NoteVoteActiveAtHeight(nHeight))
+            {
+                std::vector<CNoteFinalityVote> vNoteVotes =
+                    g_finalityTracker.GetPendingNoteVotesForBlock(nHeight);
+                for (const CNoteFinalityVote& vote : vNoteVotes)
+                {
+                    CScript voteScript;
+                    if (!BuildNoteFinalityVoteScript(vote, voteScript))
+                        continue;
+                    unsigned int nVoteCommitSize =
+                        ::GetSerializeSize(voteScript, SER_NETWORK, PROTOCOL_VERSION);
+                    if (nBlockSize + nVoteCommitSize + 16 >= nBlockMaxSize)
+                        break;
+
+                    CTxOut voteOut;
+                    voteOut.nValue = 0;
+                    voteOut.scriptPubKey = voteScript;
+                    pblock->vtx[0].vout.push_back(voteOut);
+                    nBlockSize += nVoteCommitSize + 16;
+                }
+            }
+
             std::vector<CFinalityTallyShare> vFinalityShares;
             if (!IsLegacyPrivacyPolicyDisabled() &&
                 !IsBoundaryAActiveAtHeight(nHeight))

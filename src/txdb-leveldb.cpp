@@ -2658,6 +2658,65 @@ bool CTxDB::IterateFinalityConnectedVoteBlocks(std::map<uint256, std::vector<uin
     return true;
 }
 
+bool CTxDB::WriteNoteFinalityVote(const uint256& hashVote, const CNoteFinalityVote& vote)
+{
+    return Write(make_pair(string("finalitynotevote"), hashVote), vote);
+}
+
+bool CTxDB::ReadNoteFinalityVote(const uint256& hashVote, CNoteFinalityVote& vote)
+{
+    return Read(make_pair(string("finalitynotevote"), hashVote), vote);
+}
+
+bool CTxDB::EraseNoteFinalityVote(const uint256& hashVote)
+{
+    return Erase(make_pair(string("finalitynotevote"), hashVote));
+}
+
+bool CTxDB::IterateNoteFinalityVotes(std::map<uint256, CNoteFinalityVote>& mapOut)
+{
+    if (!IterateFinalityRecords(GetInstance(), "finalitynotevote", mapOut))
+        return false;
+    for (std::map<uint256, CNoteFinalityVote>::const_iterator it = mapOut.begin();
+         it != mapOut.end(); ++it)
+        if (it->first == 0 || it->second.GetHash() != it->first ||
+            !it->second.IsValidBasic())
+        {
+            printf("IterateNoteFinalityVotes: FATAL key/value or structural mismatch; "
+                   "-reindex/resync required\n");
+            mapOut.clear();
+            return false;
+        }
+    return true;
+}
+
+bool CTxDB::WriteFinalityConnectedNoteVoteBlock(const uint256& hashBlock, const std::vector<uint256>& vVoteHashes)
+{
+    return Write(make_pair(string("finalityconnnvb"), hashBlock), vVoteHashes);
+}
+
+bool CTxDB::EraseFinalityConnectedNoteVoteBlock(const uint256& hashBlock)
+{
+    return Erase(make_pair(string("finalityconnnvb"), hashBlock));
+}
+
+bool CTxDB::IterateFinalityConnectedNoteVoteBlocks(std::map<uint256, std::vector<uint256> >& mapOut)
+{
+    if (!IterateFinalityVectorRecords(GetInstance(), "finalityconnnvb",
+                                      FINALITY_MAX_BLOCK_NOTE_VOTES, mapOut))
+        return false;
+    for (std::map<uint256, std::vector<uint256> >::const_iterator it = mapOut.begin();
+         it != mapOut.end(); ++it)
+    {
+        const std::set<uint256> unique(it->second.begin(), it->second.end());
+        if (it->first == 0 ||
+            it->second.size() > (size_t)FINALITY_MAX_BLOCK_NOTE_VOTES ||
+            unique.size() != it->second.size() || unique.count(uint256(0)))
+            return false;
+    }
+    return true;
+}
+
 bool CTxDB::WriteFinalityConnectedShareBlock(const uint256& hashBlock, const std::vector<uint256>& vShareHashes)
 {
     return Write(make_pair(string("finalityconnsb"), hashBlock), vShareHashes);
@@ -3635,6 +3694,7 @@ bool CTxDB::LoadBlockIndex()
                          "committee in PinFinalityCommitteeConstants before shipping mainnet.");
     }
     if (!g_finalityTracker.LoadVotes(*this) ||
+        !g_finalityTracker.LoadNoteVotes(*this) ||
         !g_finalityTracker.LoadTallyShares(*this) ||
         !g_finalityTracker.LoadTallyCertificates(*this) ||
         !g_finalityTracker.LoadCommitteeRotations(*this))

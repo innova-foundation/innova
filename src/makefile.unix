@@ -524,6 +524,7 @@ TEST_OBJS= \
     obj/test/bulletproof_ac_tests.o \
     obj/test/finality_tally_tests.o \
     obj/test/finality_note_tests.o \
+    obj/test/finality_note_carrier_tests.o \
     obj/test/fcmp_root_tests.o \
     obj/test/privacy_vnext_abi_tests.o \
     obj/test/privacy_vnext_store_tests.o \
