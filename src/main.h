@@ -2735,6 +2735,14 @@ public:
     std::map<uint256, CShieldedNullifierSpent> mapPrivacyVNextAttestation;
     std::map<uint256, std::vector<uint256> > mapPrivacyVNextTxAttestations;
 
+    // A pending spend retires the note it names for registration, so an attestation of
+    // the same key image can never connect behind it.
+    bool HasPendingPrivacyVNextSpend(const uint256& keyImage) const;
+    // Drop attestations made unconnectable by an accepted spend. The spend itself is
+    // never delayed or refused for an attestation in flight.
+    size_t EvictPrivacyVNextAttestationsSpentBy(
+        const std::vector<uint256>& vKeyImages, const uint256& hashSpend);
+
     bool accept(CTxDB& txdb, CTransaction &tx,
                 bool fCheckInputs, bool* pfMissingInputs, bool fOnlyCheckWithoutAdding=false);
     bool addUnchecked(const uint256& hash, CTransaction &tx);

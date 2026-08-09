@@ -22,6 +22,40 @@ using namespace std;
 
 extern unsigned int nMinerSleep;
 
+// Key images a payload consumes, and the ones it only names. A collateral attestation
+// names one without spending it, so the two sets are reported apart.
+static bool ReadPrivacyVNextTxKeyImages(const CTransaction& tx,
+                                        std::vector<uint256>& vSpentOut,
+                                        std::vector<uint256>& vAttestedOut)
+{
+    vSpentOut.clear();
+    vAttestedOut.clear();
+    if (!tx.IsPrivacyVNext())
+        return true;
+
+    PrivacyVNextStateEffects effects;
+    const PrivacyVNextPayloadValidation validation =
+        ExtractPrivacyVNextPayloadEffects(
+            static_cast<uint32_t>(tx.nVersion), tx.privacyVNext.vchPayload,
+            effects);
+    if (!validation.IsValid())
+        return false;
+
+    for (size_t i = 0; i < effects.keyImages.size(); ++i)
+    {
+        uint256 keyImage;
+        std::memcpy(keyImage.begin(), effects.keyImages[i].data(), 32);
+        vSpentOut.push_back(keyImage);
+    }
+    for (size_t i = 0; i < effects.attestationKeyImages.size(); ++i)
+    {
+        uint256 keyImage;
+        std::memcpy(keyImage.begin(), effects.attestationKeyImages[i].data(), 32);
+        vAttestedOut.push_back(keyImage);
+    }
+    return true;
+}
+
 static bool TransactionSpendsAnyOutpoint(const CTransaction& tx,
                                          const std::set<COutPoint>& setOutpoints)
 {
@@ -740,6 +774,10 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
         // Collect transactions into block
         map<uint256, CTxIndex> mapTestPool;
+        // Key images already consumed by a transaction in this block. ConnectBlock reads
+        // the spent-key index as it goes, so an attestation ordered after a spend of the
+        // note it names is rejected and takes the whole block with it.
+        std::set<uint256> setBlockPrivacyVNextSpent;
         uint64_t nBlockSize = 1000;
         uint64_t nBlockTx = 0;
         int nBlockSigOps = 100;
@@ -850,8 +888,31 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             // Orphan-queue transactions skipped selection, and nothing else checks the
             // anchor; an aged-out anchor would make ConnectBlock reject the block.
             int64_t nDeclaredPayloadFee = 0;
+            std::vector<uint256> vTxPrivacyVNextSpent;
             if (tx.IsPrivacyVNext())
             {
+                std::vector<uint256> vTxPrivacyVNextAttested;
+                if (!ReadPrivacyVNextTxKeyImages(tx, vTxPrivacyVNextSpent,
+                                                 vTxPrivacyVNextAttested))
+                {
+                    printf("CreateNewBlock: IV5 payload effects unavailable, skipping tx %s\n",
+                           tx.GetHash().ToString().substr(0,10).c_str());
+                    continue;
+                }
+                bool fCollateralAlreadySpent = false;
+                for (size_t i = 0; i < vTxPrivacyVNextAttested.size(); ++i)
+                {
+                    if (!setBlockPrivacyVNextSpent.count(vTxPrivacyVNextAttested[i]))
+                        continue;
+                    printf("CreateNewBlock: dropping IV5 attestation %s; this block "
+                           "already spends the collateral it names\n",
+                           tx.GetHash().ToString().substr(0,10).c_str());
+                    fCollateralAlreadySpent = true;
+                    break;
+                }
+                if (fCollateralAlreadySpent)
+                    continue;
+
                 std::string strAnchorError;
                 if (!CheckPrivacyVNextFinalizedAnchor(txdb, nCandidateHeight, tx,
                                                       strAnchorError))
@@ -897,6 +958,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
             // Added
             pblock->vtx.push_back(tx);
+            for (size_t i = 0; i < vTxPrivacyVNextSpent.size(); ++i)
+                setBlockPrivacyVNextSpent.insert(vTxPrivacyVNextSpent[i]);
             nBlockSize += nTxSize;
             ++nBlockTx;
             nBlockSigOps += nTxSigOps;

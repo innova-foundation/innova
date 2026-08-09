@@ -2210,6 +2210,15 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                 return error("CTxMemPool::accept() : IV5 collateral %s is reserved by %s",
                              it->ToString().substr(0,10).c_str(),
                              attIt->second.txnHash.ToString().substr(0,10).c_str());
+            // A pending spend of the same note retires it: the attestation can never
+            // connect after that spend, and a miner that put both in one block, spend
+            // first, would build a block its own ConnectBlock rejects.
+            if (HasPendingPrivacyVNextSpend(*it))
+                return error("CTxMemPool::accept() : IV5 collateral %s is already being "
+                             "spent by %s",
+                             it->ToString().substr(0,10).c_str(),
+                             mapPrivacyVNextNullifier[*it].txnHash
+                                 .ToString().substr(0,10).c_str());
         }
         for (std::vector<uint256>::const_iterator it =
                  vPrivacyVNextOutputBases.begin();
@@ -2678,6 +2687,10 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                 printf("CTxMemPool::accept() : replacing tx %s with new version\n", ptxOld->GetHash().ToString().c_str());
                 remove(*ptxOld);
             }
+
+            if (tx.IsPrivacyVNext())
+                EvictPrivacyVNextAttestationsSpentBy(vPrivacyVNextKeyImages, hash);
+
             addUnchecked(hash, tx);
 
             if (tx.IsPrivacyVNext())
@@ -2933,6 +2946,47 @@ bool CTxMemPool::addUnchecked(const uint256& hash, CTransaction &tx)
     return true;
 }
 
+
+bool CTxMemPool::HasPendingPrivacyVNextSpend(const uint256& keyImage) const
+{
+    LOCK(cs);
+    return mapPrivacyVNextNullifier.count(keyImage) != 0;
+}
+
+// An attestation is only ever refused or dropped for a spend, never the other way
+// round: the spend is an ordinary transaction consensus does not delay, and it is
+// itself the deregistration.
+size_t CTxMemPool::EvictPrivacyVNextAttestationsSpentBy(
+    const std::vector<uint256>& vKeyImages, const uint256& hashSpend)
+{
+    LOCK(cs);
+    std::set<uint256> setDoomed;
+    for (size_t i = 0; i < vKeyImages.size(); ++i)
+    {
+        std::map<uint256, CShieldedNullifierSpent>::const_iterator attIt =
+            mapPrivacyVNextAttestation.find(vKeyImages[i]);
+        if (attIt != mapPrivacyVNextAttestation.end())
+            setDoomed.insert(attIt->second.txnHash);
+    }
+
+    size_t nRemoved = 0;
+    for (std::set<uint256>::const_iterator it = setDoomed.begin();
+         it != setDoomed.end(); ++it)
+    {
+        std::map<uint256, CTransaction>::const_iterator txIt = mapTx.find(*it);
+        if (txIt == mapTx.end())
+            continue;
+        // remove() erases the map entry and then reads the transaction it was handed,
+        // so it must not be the one still living in the map.
+        const CTransaction doomed = txIt->second;
+        printf("CTxMemPool: dropping IV5 attestation %s; %s spends the collateral it "
+               "names\n", it->ToString().substr(0,10).c_str(),
+               hashSpend.ToString().substr(0,10).c_str());
+        if (remove(doomed))
+            nRemoved++;
+    }
+    return nRemoved;
+}
 
 bool CTxMemPool::remove(const CTransaction &tx, bool fRecursive)
 {
