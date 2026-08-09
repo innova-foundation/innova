@@ -747,6 +747,16 @@ public:
     bool WriteFinalityConnectedVoteBlock(const uint256& hashBlock, const std::vector<uint256>& vNullifiers);
     bool EraseFinalityConnectedVoteBlock(const uint256& hashBlock);
     bool IterateFinalityConnectedVoteBlocks(std::map<uint256, std::vector<uint256> >& mapOut);
+    // F2 note votes, keyed by vote hash, plus their per-block carrier index. A tag can
+    // legitimately name two distinct objects (an equivocation), so the vote hash rather
+    // than the tag is what identifies a stored record.
+    bool WriteNoteFinalityVote(const uint256& hashVote, const CNoteFinalityVote& vote);
+    bool ReadNoteFinalityVote(const uint256& hashVote, CNoteFinalityVote& vote);
+    bool EraseNoteFinalityVote(const uint256& hashVote);
+    bool IterateNoteFinalityVotes(std::map<uint256, CNoteFinalityVote>& mapOut);
+    bool WriteFinalityConnectedNoteVoteBlock(const uint256& hashBlock, const std::vector<uint256>& vVoteHashes);
+    bool EraseFinalityConnectedNoteVoteBlock(const uint256& hashBlock);
+    bool IterateFinalityConnectedNoteVoteBlocks(std::map<uint256, std::vector<uint256> >& mapOut);
     bool WriteFinalityConnectedShareBlock(const uint256& hashBlock, const std::vector<uint256>& vShareHashes);
     bool EraseFinalityConnectedShareBlock(const uint256& hashBlock);
     bool IterateFinalityConnectedShareBlocks(std::map<uint256, std::vector<uint256> >& mapOut);

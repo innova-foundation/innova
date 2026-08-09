@@ -2339,6 +2339,133 @@ FinalityEnvelopeDecodeResult ExtractFinalityTallyCertificateForHeight(
         ? FINALITY_ENVELOPE_VALID : FINALITY_ENVELOPE_INVALID;
 }
 
+bool BuildNoteFinalityVoteScript(const CNoteFinalityVote& vote, CScript& scriptOut)
+{
+    scriptOut.clear();
+    if (!vote.IsValidBasic())
+        return false;
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << vote;
+    return BuildCanonicalTaggedFinalityScript(
+        FINALITY_NOTE_VOTE_TAG,
+        std::vector<unsigned char>(ss.begin(), ss.end()), scriptOut);
+}
+
+bool ExtractNoteFinalityVote(const CScript& scriptPubKey, CNoteFinalityVote& voteOut)
+{
+    std::vector<unsigned char> vPayload;
+    if (!ExtractCanonicalTaggedOpReturnPayload(scriptPubKey, FINALITY_NOTE_VOTE_TAG,
+                                               vPayload))
+        return false;
+    try {
+        CDataStream ss(vPayload, SER_NETWORK, PROTOCOL_VERSION);
+        CNoteFinalityVote vote;
+        ss >> vote;
+        if (!ss.empty())
+            return false;
+        voteOut = vote;
+    } catch (const std::exception&) {
+        return false;
+    }
+    return true;
+}
+
+FinalityEnvelopeDecodeResult ExtractNoteFinalityVoteForHeight(
+    const CScript& scriptPubKey, int nHeight, CNoteFinalityVote& voteOut)
+{
+    if (!IsIV5NoteVoteActiveAtHeight(nHeight))
+        return FINALITY_ENVELOPE_NO_MATCH;
+    if (!ScriptCarriesFinalityTag(scriptPubKey, FINALITY_NOTE_VOTE_TAG))
+        return FINALITY_ENVELOPE_NO_MATCH;
+    return ExtractNoteFinalityVote(scriptPubKey, voteOut)
+        ? FINALITY_ENVELOPE_VALID : FINALITY_ENVELOPE_INVALID;
+}
+
+bool ExtractNoteFinalityVotesFromBlockForHeight(
+    const CBlock& block, int nHeight, std::vector<CNoteFinalityVote>& vVotesOut,
+    FinalityEnvelopeDecodeResult* pFailure)
+{
+    vVotesOut.clear();
+    if (pFailure)
+        *pFailure = FINALITY_ENVELOPE_NO_MATCH;
+    if (block.vtx.empty())
+        return true;
+    for (const CTxOut& out : block.vtx[0].vout)
+    {
+        CNoteFinalityVote vote;
+        FinalityEnvelopeDecodeResult result = ExtractNoteFinalityVoteForHeight(
+            out.scriptPubKey, nHeight, vote);
+        if (result == FINALITY_ENVELOPE_NO_MATCH)
+            continue;
+        if (result != FINALITY_ENVELOPE_VALID)
+        {
+            vVotesOut.clear();
+            if (pFailure)
+                *pFailure = result;
+            return false;
+        }
+        vVotesOut.push_back(vote);
+    }
+    return true;
+}
+
+uint256 GetNoteVoteSemanticIdentity(const CNoteFinalityVote& vote)
+{
+    // Everything the tally reads. Proof bytes are deliberately absent: a second encoding
+    // of the same statement is a re-carry, not an equivocation, so a relaying peer cannot
+    // manufacture a conflict out of a vote it merely forwarded.
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << vote.nVersion;
+    ss << vote.nEpoch;
+    ss << vote.hashBlock;
+    ss << vote.nHeight;
+    ss << vote.hashCurveRoot;
+    ss << vote.hashNullifierRoot;
+    ss << vote.committeeSetHash;
+    ss << vote.vchTag;
+    ss << vote.share.GetHash();
+    PrivacyVNextDigest cTilde;
+    cTilde.fill(0);
+    vote.GetCTilde(cTilde);
+    ss << std::vector<unsigned char>(cTilde.begin(), cTilde.end());
+    return ss.GetHash();
+}
+
+void ResolveNoteVoteCounting(
+    const std::vector<const CNoteFinalityVote*>& vCarried,
+    std::map<uint256, const CNoteFinalityVote*>& mapCountedOut,
+    std::set<uint256>& setEquivocatedOut)
+{
+    mapCountedOut.clear();
+    setEquivocatedOut.clear();
+
+    std::map<uint256, uint256> mapIdentityByTag;
+    for (size_t i = 0; i < vCarried.size(); i++)
+    {
+        const CNoteFinalityVote* pvote = vCarried[i];
+        if (pvote == NULL)
+            continue;
+        const uint256 tag = pvote->GetVoteTag();
+        if (tag == 0)
+            continue;
+        const uint256 identity = GetNoteVoteSemanticIdentity(*pvote);
+
+        std::map<uint256, uint256>::iterator itSeen = mapIdentityByTag.find(tag);
+        if (itSeen == mapIdentityByTag.end())
+        {
+            mapIdentityByTag.insert(std::make_pair(tag, identity));
+            mapCountedOut[tag] = pvote;
+            continue;
+        }
+        if (itSeen->second == identity)
+            continue;   // the same vote re-carried by another block
+        // A second identity retires the tag for the epoch. Dropping the first one too is
+        // what makes the outcome independent of the order carriers connected in.
+        setEquivocatedOut.insert(tag);
+        mapCountedOut.erase(tag);
+    }
+}
+
 bool ExtractFinalityVotesFromBlockForHeight(
     const CBlock& block, int nHeight, std::vector<CFinalityVote>& vVotesOut,
     FinalityEnvelopeDecodeResult* pFailure)
@@ -2869,6 +2996,52 @@ static bool PushFinalityVoteMessage(CNode* pnode, const CFinalityVote& vote)
         return false;
     pnode->PushMessage("fvote", vote);
     return true;
+}
+
+// Note-vote relay guards. A note vote is the most expensive object on this wire (a
+// membership proof plus two range-proof verifications) and the cheapest to fabricate a
+// near-duplicate of, so relay pays for verification at most once per envelope and each
+// peer gets a budget sized to what a whole epoch could legitimately carry.
+static CCriticalSection cs_noteVoteRelay;
+static std::map<uint256, bool> mapNoteVoteVerifyCache;
+static std::map<NodeId, std::pair<int64_t, int> > mapNoteVotePeerBudget;
+
+static const size_t NOTE_VOTE_VERIFY_CACHE_MAX = 4096;
+static const int NOTE_VOTE_PEER_BUDGET_SECONDS = 60;
+static const int NOTE_VOTE_PEER_BUDGET =
+    (int)FINALITY_CANONICAL_CERT_MAX_NULLIFIERS * 2;
+
+static bool NoteVotePeerBudgetAllows(NodeId id, int64_t nNow)
+{
+    LOCK(cs_noteVoteRelay);
+    std::pair<int64_t, int>& budget = mapNoteVotePeerBudget[id];
+    if (nNow - budget.first >= NOTE_VOTE_PEER_BUDGET_SECONDS)
+    {
+        budget.first = nNow;
+        budget.second = 0;
+    }
+    if (budget.second >= NOTE_VOTE_PEER_BUDGET)
+        return false;
+    budget.second++;
+    return true;
+}
+
+static bool NoteVoteVerifyCacheLookup(const uint256& hashVote, bool& fValidOut)
+{
+    LOCK(cs_noteVoteRelay);
+    std::map<uint256, bool>::const_iterator it = mapNoteVoteVerifyCache.find(hashVote);
+    if (it == mapNoteVoteVerifyCache.end())
+        return false;
+    fValidOut = it->second;
+    return true;
+}
+
+static void NoteVoteVerifyCacheStore(const uint256& hashVote, bool fValid)
+{
+    LOCK(cs_noteVoteRelay);
+    if (mapNoteVoteVerifyCache.size() >= NOTE_VOTE_VERIFY_CACHE_MAX)
+        mapNoteVoteVerifyCache.clear();
+    mapNoteVoteVerifyCache[hashVote] = fValid;
 }
 
 static bool PushFinalityTallyCertificateMessage(
@@ -4633,6 +4806,13 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb,
     if (vote.nullifier != expectedNullifier.GetHash())
         return reject("nullifier mismatch");
 
+    // A transparent vote states its weight in the clear, so the floor is a direct
+    // comparison. Gated on the note-vote fork because it retires votes that were valid
+    // before it, and both sides of the tally have to move at the same height.
+    if (IsIV5NoteVoteActiveAtHeight(nEffectiveContextHeight) &&
+        vote.nVoteWeight < FINALITY_MIN_VOTE_WEIGHT)
+        return reject("vote weight is below the minimum vote weight");
+
     int64_t nExpectedReward = GetFinalityVoteReward(vote.nVoteWeight, GetEpochInterval(vote.nHeight));
     if (vote.nReward != nExpectedReward)
         return reject("vote reward mismatch");
@@ -6247,6 +6427,388 @@ bool CFinalityTracker::DisconnectBlockVotes(CTxDB& txdb, const uint256& hashBloc
     return RecomputeFinalityStateFromEpoch(nEarliestEpoch);
 }
 
+bool CFinalityTracker::CheckNoteVoteForContext(const CNoteFinalityVote& vote, CTxDB& txdb,
+                                               std::string* pstrError, int nContextHeight,
+                                               FinalityResult* pResult) const
+{
+    auto reject = [&](const std::string& strReason) -> bool {
+        if (pstrError)
+            *pstrError = strReason;
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_INVALID, false);
+    };
+    auto localState = [&](const std::string& strReason) -> bool {
+        if (pstrError)
+            *pstrError = strReason;
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_LOCAL_STATE, false);
+    };
+
+    if (pResult)
+        *pResult = FINALITY_RESULT_INVALID;
+
+    const int nEffectiveContextHeight = nContextHeight >= 0
+        ? nContextHeight
+        : (nBestHeight == std::numeric_limits<int>::max()
+               ? nBestHeight : nBestHeight + 1);
+    if (!IsIV5NoteVoteActiveAtHeight(nEffectiveContextHeight))
+        return reject("note finality votes are not active at this height");
+
+    if (GetEpochForHeight(vote.nHeight) != vote.nEpoch ||
+        GetEpochBoundaryHeight(vote.nEpoch, vote.nHeight) != vote.nHeight)
+        return reject("note vote height is not this epoch boundary");
+
+    // R1: an epoch-E vote is block-valid only inside E's own [H_E, H_E+K) blocks, which is
+    // what freezes the connected vote set a certificate has to cover.
+    if (nContextHeight >= 0)
+    {
+        int nBoundary = GetEpochBoundaryHeight(vote.nEpoch, nContextHeight);
+        if (nContextHeight < nBoundary ||
+            nContextHeight >= nBoundary + FINALITY_VOTE_INCLUSION_WINDOW)
+            return reject("note finality vote outside epoch vote-inclusion window");
+    }
+
+    std::map<uint256, CBlockIndex*>::iterator miEpoch = mapBlockIndex.find(vote.hashBlock);
+    if (miEpoch == mapBlockIndex.end())
+        return reject("note vote epoch block is not known");
+    if (miEpoch->second == NULL)
+        return localState("note vote epoch block index entry is corrupt");
+    CBlockIndex* pEpochBlock = miEpoch->second;
+    if (pEpochBlock->nHeight != vote.nHeight)
+        return reject("note vote epoch block height mismatch");
+    if (!pEpochBlock->IsProofOfWork())
+        return reject("note finality votes must target proof-of-work epoch blocks");
+
+    // The committee the vote shared to is consensus state, not the voter's choice: a share
+    // split to some other set is one no quorum can ever open.
+    std::vector<CPubKey> vCommittee;
+    int nThresholdM = 0;
+    uint256 committeeSetHash = 0;
+    if (!GetCommitteeForEpoch(vote.nEpoch, vCommittee, nThresholdM, committeeSetHash))
+        return localState("note vote has no canonical committee for its epoch");
+    if (vote.committeeSetHash != committeeSetHash)
+        return reject("note vote does not name the canonical committee for its epoch");
+
+    // Anchor deterministically from the including block's context. Reading the node-local
+    // finalized tip in a connect path is the ConnectBlock-split class.
+    CEpochState finalizedEpochState;
+    const FinalityResult anchorResult = ResolveFinalityAnchorForContext(
+        txdb, nContextHeight, GetFinalizedHeight(), finalizedEpochState);
+    if (anchorResult == FINALITY_RESULT_INVALID)
+        return reject("note vote requires an already-finalized epoch");
+    if (anchorResult == FINALITY_RESULT_LOCAL_STATE)
+        return localState("note vote requires unavailable finalized epoch state");
+    if (vote.hashCurveRoot != finalizedEpochState.hashCurveRoot ||
+        vote.hashNullifierRoot != finalizedEpochState.hashNullifierRoot)
+        return reject("note vote not anchored to last finalized epoch root");
+
+    std::string strError;
+    if (!CheckNoteVote(vote, nThresholdM, (int)vCommittee.size(), &strError))
+        return reject(strError);
+
+    return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
+}
+
+void CFinalityTracker::RecomputeNoteVoteCounting()
+{
+    mapEpochCountedNoteVotes.clear();
+    mapEpochEquivocatedNoteVotes.clear();
+
+    std::map<int, std::vector<const CNoteFinalityVote*> > mapEpochCarried;
+    for (const auto& pair : mapBlockConnectedNoteVotes)
+    {
+        for (const uint256& hashVote : pair.second)
+        {
+            std::map<uint256, CNoteFinalityVote>::const_iterator it =
+                mapNoteVotesByHash.find(hashVote);
+            if (it == mapNoteVotesByHash.end())
+                continue;
+            mapEpochCarried[it->second.nEpoch].push_back(&it->second);
+        }
+    }
+
+    for (const auto& pair : mapEpochCarried)
+    {
+        std::map<uint256, const CNoteFinalityVote*> mapCounted;
+        std::set<uint256> setEquivocated;
+        ResolveNoteVoteCounting(pair.second, mapCounted, setEquivocated);
+        std::map<uint256, uint256>& mapEpoch = mapEpochCountedNoteVotes[pair.first];
+        for (const auto& counted : mapCounted)
+            mapEpoch[counted.first] = counted.second->GetHash();
+        if (!setEquivocated.empty())
+            mapEpochEquivocatedNoteVotes[pair.first] = setEquivocated;
+        if (mapEpoch.empty())
+            mapEpochCountedNoteVotes.erase(pair.first);
+    }
+}
+
+bool CFinalityTracker::ConnectBlockNoteVotes(CTxDB& txdb, const uint256& hashBlock,
+                                             const std::vector<CNoteFinalityVote>& vVotes,
+                                             int nBlockHeight,
+                                             FinalityResult* pResult,
+                                             bool fCheckVotes)
+{
+    if (pResult)
+        *pResult = FINALITY_RESULT_INVALID;
+    if (vVotes.empty())
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
+
+    if (vVotes.size() > (size_t)FINALITY_MAX_BLOCK_NOTE_VOTES)
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_INVALID, false);
+
+    // In-block tag uniqueness. Unlike a cross-block conflict this is entirely the
+    // producer's doing, so it stays block-invalidating.
+    std::set<uint256> setBlockTags;
+    for (const CNoteFinalityVote& vote : vVotes)
+    {
+        const uint256 tag = vote.GetVoteTag();
+        if (tag == 0 || !setBlockTags.insert(tag).second)
+            return ReturnFinalityResult(pResult, FINALITY_RESULT_INVALID, false);
+    }
+
+    if (fCheckVotes)
+    {
+        for (const CNoteFinalityVote& vote : vVotes)
+        {
+            std::string strError;
+            FinalityResult checkResult = FINALITY_RESULT_INVALID;
+            if (!CheckNoteVoteForContext(vote, txdb, &strError, nBlockHeight, &checkResult))
+            {
+                if (fDebug)
+                    printf("ConnectBlockNoteVotes: rejected vote in block %s: %s\n",
+                           hashBlock.ToString().substr(0,20).c_str(), strError.c_str());
+                return ReturnFinalityResult(pResult, checkResult, false);
+            }
+        }
+    }
+
+    LOCK(cs_finality);
+
+    // Epoch capacity is measured over distinct tags the epoch has seen at all, counted or
+    // dropped: an equivocator must not be able to buy extra slots by conflicting itself.
+    {
+        std::map<int, std::set<uint256> > mapEpochTags;
+        for (const auto& pair : mapBlockConnectedNoteVotes)
+        {
+            if (pair.first == hashBlock)
+                continue;
+            for (const uint256& hashVote : pair.second)
+            {
+                std::map<uint256, CNoteFinalityVote>::const_iterator it =
+                    mapNoteVotesByHash.find(hashVote);
+                if (it == mapNoteVotesByHash.end())
+                    continue;
+                mapEpochTags[it->second.nEpoch].insert(it->second.GetVoteTag());
+            }
+        }
+        for (const CNoteFinalityVote& vote : vVotes)
+        {
+            std::set<uint256>& setEpoch = mapEpochTags[vote.nEpoch];
+            setEpoch.insert(vote.GetVoteTag());
+            if (setEpoch.size() > FINALITY_CANONICAL_CERT_MAX_NULLIFIERS)
+                return ReturnFinalityResult(pResult, FINALITY_RESULT_INVALID, false);
+        }
+    }
+
+    std::vector<uint256> vHashes;
+    vHashes.reserve(vVotes.size());
+    for (const CNoteFinalityVote& vote : vVotes)
+    {
+        const uint256 hashVote = vote.GetHash();
+        if (!txdb.WriteNoteFinalityVote(hashVote, vote))
+            return ReturnFinalityResult(pResult, FINALITY_RESULT_LOCAL_STATE, false);
+        mapNoteVotesByHash[hashVote] = vote;
+        mapPendingNoteVotes.erase(hashVote);
+        vHashes.push_back(hashVote);
+    }
+
+    std::vector<uint256>& vCarried = mapBlockConnectedNoteVotes[hashBlock];
+    vCarried = vHashes;   // idempotent: never append to a stale/reloaded entry
+    if (!txdb.WriteFinalityConnectedNoteVoteBlock(hashBlock, vCarried))
+    {
+        mapBlockConnectedNoteVotes.erase(hashBlock);
+        return ReturnFinalityResult(pResult, FINALITY_RESULT_LOCAL_STATE, false);
+    }
+
+    RecomputeNoteVoteCounting();
+    return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
+}
+
+bool CFinalityTracker::DisconnectBlockNoteVotes(CTxDB& txdb, const uint256& hashBlock,
+                                                const std::vector<CNoteFinalityVote>& vVotes)
+{
+    if (vVotes.empty())
+        return true;
+
+    LOCK(cs_finality);
+    mapBlockConnectedNoteVotes.erase(hashBlock);
+    if (!txdb.EraseFinalityConnectedNoteVoteBlock(hashBlock))
+        return false;
+
+    for (const CNoteFinalityVote& vote : vVotes)
+    {
+        const uint256 hashVote = vote.GetHash();
+        // The same vote may be carried by several connected DAG blocks; drop the object
+        // only when the last of them is gone, or a partial reorg would lose a vote a
+        // surviving block still legitimately carries.
+        bool fStillConnected = false;
+        for (const auto& pair : mapBlockConnectedNoteVotes)
+        {
+            if (std::find(pair.second.begin(), pair.second.end(), hashVote) !=
+                pair.second.end())
+            {
+                fStillConnected = true;
+                break;
+            }
+        }
+        if (fStillConnected)
+            continue;
+        if (!txdb.EraseNoteFinalityVote(hashVote))
+            return false;
+        mapNoteVotesByHash.erase(hashVote);
+    }
+
+    RecomputeNoteVoteCounting();
+    return true;
+}
+
+bool CFinalityTracker::LoadNoteVotes(CTxDB& txdb)
+{
+    LOCK(cs_finality);
+    mapNoteVotesByHash.clear();
+    mapBlockConnectedNoteVotes.clear();
+    if (!txdb.IterateNoteFinalityVotes(mapNoteVotesByHash))
+        return false;
+    if (!txdb.IterateFinalityConnectedNoteVoteBlocks(mapBlockConnectedNoteVotes))
+        return false;
+    RecomputeNoteVoteCounting();
+    return true;
+}
+
+bool CFinalityTracker::AddPendingNoteVote(const CNoteFinalityVote& vote, CTxDB& txdb,
+                                          std::string* pstrError)
+{
+    const uint256 hashVote = vote.GetHash();
+    {
+        LOCK(cs_finality);
+        if (mapNoteVotesByHash.count(hashVote) || mapPendingNoteVotes.count(hashVote))
+            return false;
+    }
+    // Relay-time context only: the window is a connect-time rule and a relayed vote may
+    // legitimately arrive before the block that will carry it.
+    if (!CheckNoteVoteForContext(vote, txdb, pstrError, -1, NULL))
+        return false;
+
+    LOCK(cs_finality);
+    mapPendingNoteVotes[hashVote] = vote;
+    return true;
+}
+
+bool CFinalityTracker::HaveNoteVote(const uint256& hashVote) const
+{
+    LOCK(cs_finality);
+    return mapNoteVotesByHash.count(hashVote) || mapPendingNoteVotes.count(hashVote);
+}
+
+std::vector<CNoteFinalityVote> CFinalityTracker::GetPendingNoteVotesForBlock(
+    int nBlockHeight, unsigned int nMaxVotes) const
+{
+    LOCK(cs_finality);
+
+    std::vector<CNoteFinalityVote> vVotes;
+    if (!IsIV5NoteVoteActiveAtHeight(nBlockHeight))
+        return vVotes;
+    const int nBlockEpoch = GetEpochForHeight(nBlockHeight);
+
+    // Offer only what the epoch still has room for, or the produced block would fail the
+    // same capacity rule at connect on every node that receives it.
+    {
+        std::set<uint256> setEpochTags;
+        for (const auto& pair : mapBlockConnectedNoteVotes)
+            for (const uint256& hashVote : pair.second)
+            {
+                std::map<uint256, CNoteFinalityVote>::const_iterator it =
+                    mapNoteVotesByHash.find(hashVote);
+                if (it != mapNoteVotesByHash.end() && it->second.nEpoch == nBlockEpoch)
+                    setEpochTags.insert(it->second.GetVoteTag());
+            }
+        if (setEpochTags.size() >= FINALITY_CANONICAL_CERT_MAX_NULLIFIERS)
+            return vVotes;
+        nMaxVotes = std::min<unsigned int>(
+            nMaxVotes,
+            (unsigned int)(FINALITY_CANONICAL_CERT_MAX_NULLIFIERS - setEpochTags.size()));
+    }
+
+    for (const auto& pair : mapPendingNoteVotes)
+    {
+        const CNoteFinalityVote& vote = pair.second;
+        if (vote.nEpoch != nBlockEpoch)
+            continue;
+        const int nBoundary = GetEpochBoundaryHeight(vote.nEpoch, nBlockHeight);
+        if (nBlockHeight < nBoundary ||
+            nBlockHeight >= nBoundary + FINALITY_VOTE_INCLUSION_WINDOW)
+            continue;
+        // A tag already retired for this epoch can never count again, so offering it
+        // would only spend block space.
+        std::map<int, std::set<uint256> >::const_iterator itEquiv =
+            mapEpochEquivocatedNoteVotes.find(vote.nEpoch);
+        if (itEquiv != mapEpochEquivocatedNoteVotes.end() &&
+            itEquiv->second.count(vote.GetVoteTag()))
+            continue;
+        vVotes.push_back(vote);
+        if (vVotes.size() >= nMaxVotes)
+            break;
+    }
+    return vVotes;
+}
+
+std::vector<CNoteFinalityVote> CFinalityTracker::GetCountedEpochNoteVotes(int nEpoch) const
+{
+    LOCK(cs_finality);
+    std::vector<CNoteFinalityVote> vVotes;
+    std::map<int, std::map<uint256, uint256> >::const_iterator it =
+        mapEpochCountedNoteVotes.find(nEpoch);
+    if (it == mapEpochCountedNoteVotes.end())
+        return vVotes;
+    for (const auto& pair : it->second)
+    {
+        std::map<uint256, CNoteFinalityVote>::const_iterator itVote =
+            mapNoteVotesByHash.find(pair.second);
+        if (itVote != mapNoteVotesByHash.end())
+            vVotes.push_back(itVote->second);
+    }
+    return vVotes;
+}
+
+int CFinalityTracker::GetEpochNoteVoteCount(int nEpoch) const
+{
+    LOCK(cs_finality);
+    std::map<int, std::map<uint256, uint256> >::const_iterator it =
+        mapEpochCountedNoteVotes.find(nEpoch);
+    return it == mapEpochCountedNoteVotes.end() ? 0 : (int)it->second.size();
+}
+
+int CFinalityTracker::GetEpochEquivocatedNoteVoteCount(int nEpoch) const
+{
+    LOCK(cs_finality);
+    std::map<int, std::set<uint256> >::const_iterator it =
+        mapEpochEquivocatedNoteVotes.find(nEpoch);
+    return it == mapEpochEquivocatedNoteVotes.end() ? 0 : (int)it->second.size();
+}
+
+NoteVoteCountingState CFinalityTracker::GetNoteVoteCountingState(
+    int nEpoch, const uint256& tag) const
+{
+    LOCK(cs_finality);
+    std::map<int, std::set<uint256> >::const_iterator itEquiv =
+        mapEpochEquivocatedNoteVotes.find(nEpoch);
+    if (itEquiv != mapEpochEquivocatedNoteVotes.end() && itEquiv->second.count(tag))
+        return NOTE_VOTE_EQUIVOCATED;
+    std::map<int, std::map<uint256, uint256> >::const_iterator itCounted =
+        mapEpochCountedNoteVotes.find(nEpoch);
+    if (itCounted != mapEpochCountedNoteVotes.end() && itCounted->second.count(tag))
+        return NOTE_VOTE_COUNTED;
+    return NOTE_VOTE_UNSEEN;
+}
+
 bool CFinalityTracker::ConnectBlockTallyCertificates(
     CTxDB& txdb, const uint256& hashBlock,
     const std::vector<CFinalityTallyCertificate>& vCerts, int nBlockHeight,
@@ -7575,6 +8137,11 @@ bool CFinalityTracker::RestoreCommittedStateAfterAbort()
         mapPendingVotes.clear();
         mapConnectedVotes.clear();
         mapBlockConnectedVoteNullifiers.clear();
+        mapNoteVotesByHash.clear();
+        mapBlockConnectedNoteVotes.clear();
+        mapEpochCountedNoteVotes.clear();
+        mapEpochEquivocatedNoteVotes.clear();
+        mapPendingNoteVotes.clear();
         mapEpochVoters.clear();
         mapEpochTransparentVoteCount.clear();
         mapEpochPrivateVoteCount.clear();
@@ -7596,7 +8163,7 @@ bool CFinalityTracker::RestoreCommittedStateAfterAbort()
     }
 
     CTxDB txdb("r");
-    if (!LoadVotes(txdb) || !LoadTallyShares(txdb) ||
+    if (!LoadVotes(txdb) || !LoadNoteVotes(txdb) || !LoadTallyShares(txdb) ||
         !LoadTallyCertificates(txdb) || !LoadCommitteeRotations(txdb))
         return error("RestoreCommittedStateAfterAbort: committed finality state could not "
                      "be reconstructed; restart with -reindex/resync");
@@ -7625,6 +8192,14 @@ void CFinalityTracker::PruneOldEpochs(int nCurrentEpoch)
                 mapVoteHashByNullifier.erase(hit);
             mapPendingVotes.erase(it++);
         }
+        else
+            ++it;
+    }
+
+    for (auto it = mapPendingNoteVotes.begin(); it != mapPendingNoteVotes.end(); )
+    {
+        if (it->second.nEpoch < nMinEpoch && !mapNoteVotesByHash.count(it->first))
+            it = mapPendingNoteVotes.erase(it);
         else
             ++it;
     }
@@ -7739,6 +8314,66 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
             }
         }
 
+        return true;
+    }
+    else if (strCommand == FINALITY_NOTE_VOTE_COMMAND)
+    {
+        if (!IsIV5NoteVoteActiveAtHeight(nBestHeight + 1))
+            return false;
+        if (!NoteVotePeerBudgetAllows(pfrom->GetId(), GetTime()))
+            return false;
+
+        CNoteFinalityVote vote;
+        try {
+            vRecv >> vote;
+        } catch (const std::exception&) {
+            return false;
+        }
+        if (!vRecv.empty())
+            return false;
+
+        const uint256 hashVote = vote.GetHash();
+        if (g_finalityTracker.HaveNoteVote(hashVote))
+            return true;
+
+        // The cache exists to stop a rejected envelope being re-proved once per peer;
+        // an accepted one is already short-circuited by HaveNoteVote above.
+        bool fCachedValid = false;
+        if (NoteVoteVerifyCacheLookup(hashVote, fCachedValid) && !fCachedValid)
+            return false;
+
+        // Cheap structure first: the proofs behind it are the expensive part.
+        if (!vote.IsValidBasic())
+        {
+            NoteVoteVerifyCacheStore(hashVote, false);
+            return false;
+        }
+        int nCurrentEpoch = 0;
+        CBlockIndex* pBest = pindexBest;
+        if (pBest)
+            nCurrentEpoch = GetEpochForHeight(pBest->nHeight);
+        if (vote.nEpoch > nCurrentEpoch + 1 || vote.nEpoch + 2 < nCurrentEpoch)
+            return false;
+
+        CTxDB txdb("r");
+        std::string strError;
+        const bool fValid = g_finalityTracker.AddPendingNoteVote(vote, txdb, &strError);
+        NoteVoteVerifyCacheStore(hashVote, fValid);
+        if (!fValid)
+        {
+            if (fDebug)
+                printf("ProcessMessageFinality: rejected note vote from peer %s: %s\n",
+                       pfrom->addr.ToString().c_str(), strError.c_str());
+            return false;
+        }
+
+        LOCK(cs_vNodes);
+        for (CNode* pnode : vNodes)
+        {
+            if (pnode == pfrom)
+                continue;
+            pnode->PushMessage(FINALITY_NOTE_VOTE_COMMAND, vote);
+        }
         return true;
     }
     else if (strCommand == "ftshare")

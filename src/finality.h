@@ -82,10 +82,18 @@ static const unsigned char FINALITY_COMMITTEE_ROTATION_TAG[4] = { 0x49, 0x46, 0x
 // decoders and are never reinterpreted as the canonical schema.
 static const unsigned char FINALITY_CANONICAL_VOTE_TAG[4] = { 0x49, 0x46, 0x43, 0x56 }; // "IFCV"
 static const unsigned char FINALITY_CANONICAL_TALLY_CERT_TAG[4] = { 0x49, 0x46, 0x43, 0x43 }; // "IFCC"
+// F2 note-vote carrier: one coinbase OP_RETURN output over a single push, bounded by
+// MAX_SCRIPT_SIZE. Never the coinbase IV5 payload, whose value rule stays closed.
+static const unsigned char FINALITY_NOTE_VOTE_TAG[4] = { 0x49, 0x46, 0x4e, 0x56 }; // "IFNV"
 static const char FINALITY_CANONICAL_VOTE_COMMAND[] = "fvotea";
 static const char FINALITY_CANONICAL_TALLY_CERT_COMMAND[] = "ftcerta";
+static const char FINALITY_NOTE_VOTE_COMMAND[] = "fnvote";
 static const uint32_t FINALITY_CANONICAL_VOTE_VERSION = 1;
 static const uint32_t FINALITY_CANONICAL_TALLY_CERT_VERSION = 1;
+// Per-block cap on note-vote carriers, mirroring FINALITY_MAX_BLOCK_VOTES for the
+// transparent path. At the envelope's working size the full set sits inside the
+// penalty-free generation target with room for ordinary traffic alongside.
+static const int FINALITY_MAX_BLOCK_NOTE_VOTES = 32;
 // LevelDB-only envelope generation, independent of network envelope versions: records
 // the decoded carrier so a restart cannot change the object's hash/signature domain.
 static const int FINALITY_DISK_ENVELOPE_GENERATION = 1;
@@ -1010,6 +1018,33 @@ bool ExtractFinalityTallyCertificatesFromBlockForHeight(
     const CBlock& block, int nHeight,
     std::vector<CFinalityTallyCertificate>& vCertsOut,
     FinalityEnvelopeDecodeResult* pFailure = NULL);
+/** Note-vote carrier: one vote, one coinbase output, one push. Unknown data below the
+ *  F2 height; at and above it a tagged script must decode or the block is invalid. */
+bool BuildNoteFinalityVoteScript(const CNoteFinalityVote& vote, CScript& scriptOut);
+bool ExtractNoteFinalityVote(const CScript& scriptPubKey, CNoteFinalityVote& voteOut);
+FinalityEnvelopeDecodeResult ExtractNoteFinalityVoteForHeight(
+    const CScript& scriptPubKey, int nHeight, CNoteFinalityVote& voteOut);
+bool ExtractNoteFinalityVotesFromBlockForHeight(
+    const CBlock& block, int nHeight, std::vector<CNoteFinalityVote>& vVotesOut,
+    FinalityEnvelopeDecodeResult* pFailure = NULL);
+
+/** How one note-vote tag resolves across every connected carrier that names it. */
+enum NoteVoteCountingState
+{
+    NOTE_VOTE_UNSEEN = 0,
+    NOTE_VOTE_COUNTED,      // one semantic identity, carried by one or more blocks
+    NOTE_VOTE_EQUIVOCATED   // two identities under one tag: counts for neither
+};
+
+/** Tally identity of a note vote. A tag carried with two identities counts for
+ *  neither (vote-level drop, carrier blocks stay valid); identical statements in
+ *  different encodings are one vote. */
+uint256 GetNoteVoteSemanticIdentity(const CNoteFinalityVote& vote);
+void ResolveNoteVoteCounting(
+    const std::vector<const CNoteFinalityVote*>& vCarried,
+    std::map<uint256, const CNoteFinalityVote*>& mapCountedOut,
+    std::set<uint256>& setEquivocatedOut);
+
 const char* GetFinalityVoteCommandForHeight(int nHeight);
 const char* GetFinalityTallyCertificateCommandForHeight(int nHeight);
 /** P2P relay objects target tip+1.  Exposed as a pure helper so the A-1
@@ -1113,6 +1148,40 @@ public:
                            int nBlockHeight = -1,
                            FinalityResult* pResult = NULL);
     bool DisconnectBlockVotes(CTxDB& txdb, const uint256& hashBlock, const std::vector<CFinalityVote>& vVotes);
+
+    /** Stateless + chain-context validation of one note vote carried at nContextHeight.
+     *  nContextHeight < 0 is a relay pre-check and skips the inclusion window. */
+    bool CheckNoteVoteForContext(const CNoteFinalityVote& vote, CTxDB& txdb,
+                                 std::string* pstrError = NULL,
+                                 int nContextHeight = -1,
+                                 FinalityResult* pResult = NULL) const;
+
+    /** Connect/disconnect a block's note votes. Validation invalidates the block;
+     *  recording never does. fCheckVotes=false skips validation (tests only). The carrier
+     *  index records every carried instance so reorg teardown stays symmetric. */
+    bool ConnectBlockNoteVotes(CTxDB& txdb, const uint256& hashBlock,
+                               const std::vector<CNoteFinalityVote>& vVotes,
+                               int nBlockHeight = -1,
+                               FinalityResult* pResult = NULL,
+                               bool fCheckVotes = true);
+    bool DisconnectBlockNoteVotes(CTxDB& txdb, const uint256& hashBlock,
+                                  const std::vector<CNoteFinalityVote>& vVotes);
+    /** Load persisted connected note votes and their carrier index at startup. */
+    bool LoadNoteVotes(CTxDB& txdb);
+    /** Relay-side pending note votes (verify-once, gossiped). */
+    bool AddPendingNoteVote(const CNoteFinalityVote& vote, CTxDB& txdb,
+                            std::string* pstrError = NULL);
+    bool HaveNoteVote(const uint256& hashVote) const;
+    std::vector<CNoteFinalityVote> GetPendingNoteVotesForBlock(
+        int nBlockHeight,
+        unsigned int nMaxVotes = FINALITY_MAX_BLOCK_NOTE_VOTES) const;
+    /** Note votes an epoch's tally may count: the tags that resolved to exactly one
+     *  identity. Equivocated tags are deliberately absent, so certificate coverage and
+     *  connect-time agree on one set. */
+    std::vector<CNoteFinalityVote> GetCountedEpochNoteVotes(int nEpoch) const;
+    int GetEpochNoteVoteCount(int nEpoch) const;
+    int GetEpochEquivocatedNoteVoteCount(int nEpoch) const;
+    NoteVoteCountingState GetNoteVoteCountingState(int nEpoch, const uint256& tag) const;
     bool ConnectBlockTallyShares(CTxDB& txdb, const uint256& hashBlock,
                                  const std::vector<CFinalityTallyShare>& vShares,
                                  int nBlockHeight = -1,
@@ -1300,6 +1369,14 @@ private:
     std::map<uint256, CFinalityVote> mapPendingVotes;
     std::map<uint256, CFinalityVote> mapConnectedVotes;
     std::map<uint256, std::vector<uint256>> mapBlockConnectedVoteNullifiers;
+    // F2 note votes. The carrier index is the single maintained record; the per-epoch
+    // counted/equivocated view below is recomputed from it in full and never patched, so
+    // connect, disconnect, restart and fresh sync cannot drift apart.
+    std::map<uint256, CNoteFinalityVote> mapNoteVotesByHash;
+    std::map<uint256, std::vector<uint256>> mapBlockConnectedNoteVotes;
+    std::map<int, std::map<uint256, uint256>> mapEpochCountedNoteVotes;   // epoch -> tag -> vote hash
+    std::map<int, std::set<uint256>> mapEpochEquivocatedNoteVotes;
+    std::map<uint256, CNoteFinalityVote> mapPendingNoteVotes;
     std::map<int, std::set<CKeyID>> mapEpochVoters;  // one vote per key per epoch
     std::map<int, int> mapEpochTransparentVoteCount;
     std::map<int, int> mapEpochPrivateVoteCount;
@@ -1349,6 +1426,9 @@ private:
      *  prefix makes ordinary connect/disconnect work bounded by the affected
      *  finality window instead of total chain history. cs_finality must be held. */
     bool RecomputeFinalityStateFromEpoch(int nRequestedEpoch);
+    /** Rebuild the counted/equivocated view of every epoch the carrier index touches.
+     *  cs_finality must be held. */
+    void RecomputeNoteVoteCounting();
 };
 
 
