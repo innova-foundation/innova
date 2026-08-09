@@ -55,6 +55,7 @@ public:
     // announced exactly as it always has been.
     bool Register(CTxIn vin, CService service, CKey key, CPubKey pubKey, CKey keyCollateralnode, CPubKey pubKeyCollateralnode, std::string &retErrorMessage, uint256 attestationKeyImage = 0, std::string strPoolPayout = ""); // register any collateralnode
     bool RegisterByPubKey(std::string strService, std::string strKeyCollateralnode, std::string collateralAddress, std::string& errorMessage); // register for a specific collateral address
+    bool RegisterFromPrivateCollateral(std::string& errorMessage); // re-announce a persisted IV5 collateral attestation
 
     // get 25000 INN input that can be used for the collateralnode
     bool GetCollateralNodeVin(CTxIn& vin, CPubKey& pubkey, CKey& secretKey);

@@ -3,6 +3,7 @@
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #include "protocol.h"
+#include "txdb.h"
 #include "activecollateralnode.h"
 #include "collateralnodeconfig.h"
 #include <boost/lexical_cast.hpp>
@@ -88,6 +89,15 @@ void CActiveCollateralnode::ManageStatus()
         status = COLLATERALNODE_NOT_CAPABLE;
         notCapableReason = "Unknown. Check debug.log for more information.\n";
 
+        // A private registration lives in the wallet, not in a transparent outpoint, so
+        // nothing in the coin search below can find it. Without this a restarted node
+        // never re-announces and expires off every peer's list.
+        if(RegisterFromPrivateCollateral(errorMessage)) {
+            status = COLLATERALNODE_IS_CAPABLE;
+            notCapableReason = "";
+            return;
+        }
+
         // Choose coins to use
         CPubKey pubKeyCollateralAddress;
         CKey keyCollateralAddress;
@@ -131,6 +141,56 @@ void CActiveCollateralnode::ManageStatus()
     if(!Dseep(errorMessage)) {
         printf("CActiveCollateralnode::ManageStatus() - Error on Ping: %s", errorMessage.c_str());
     }
+}
+
+// Re-announce from a persisted private registration once its attestation is
+// COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY deep; once per start.
+bool CActiveCollateralnode::RegisterFromPrivateCollateral(std::string& errorMessage) {
+    if(pwalletMain == NULL || pwalletMain->IsLocked()) return false;
+
+    std::vector<CPrivacyVNextCollateralRegistration> vRecords;
+    pwalletMain->ListPrivacyVNextCollateralRegistrations(vRecords);
+    if(vRecords.empty()) return false;
+
+    CPubKey pubKeyCollateralnode;
+    CKey keyCollateralnode;
+    if(!colLateralSigner.SetKey(strCollateralNodePrivKey, errorMessage, keyCollateralnode, pubKeyCollateralnode))
+        return false;
+
+    CTxDB txdb("r");
+    for (size_t i = 0; i < vRecords.size(); ++i) {
+        const CPrivacyVNextCollateralRegistration& record = vRecords[i];
+        CPrivacyVNextCollateralAttestation attested;
+        bool fLocalFailure = false;
+        if(!IsPrivacyVNextCollateralRegistered(txdb, record.keyImage, attested, fLocalFailure))
+            continue;
+        if(nBestHeight - attested.nHeight + 1 < COLLATERALNODE_MIN_CONFIRMATIONS_NOPAY)
+            continue;
+        // The bound tuple can never change for this key image, so a drifted config
+        // would only produce announcements every peer rejects.
+        const CService recordService(record.strAddr);
+        if(attested.contextDigest != GetCollateralnodeRegistrationContext(pubKeyCollateralnode, recordService, record.strPoolPayout)) {
+            errorMessage = "the current configuration no longer hashes to the attested registration context";
+            printf("CActiveCollateralnode::RegisterFromPrivateCollateral() - %s\n", errorMessage.c_str());
+            continue;
+        }
+        CKey keyAnnounce;
+        if(!pwalletMain->GetKey(CKeyID(record.announceKeyId), keyAnnounce)) {
+            errorMessage = "the announce key for a private registration is missing from this wallet";
+            printf("CActiveCollateralnode::RegisterFromPrivateCollateral() - %s\n", errorMessage.c_str());
+            continue;
+        }
+
+        const CTxIn recordVin(COutPoint(record.keyImage, 0));
+        if(!Register(recordVin, recordService, keyAnnounce, keyAnnounce.GetPubKey(), keyCollateralnode, pubKeyCollateralnode, errorMessage, record.keyImage, record.strPoolPayout)) {
+            printf("CActiveCollateralnode::RegisterFromPrivateCollateral() - Error on Register: %s\n", errorMessage.c_str());
+            continue;
+        }
+        vin = recordVin;
+        service = recordService;
+        return true;
+    }
+    return false;
 }
 
 // Send stop iseep to network for remote collateralnode
