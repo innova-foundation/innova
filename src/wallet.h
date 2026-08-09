@@ -319,10 +319,44 @@ public:
                                       const CBlockIndex* pindex,
                                       std::set<uint256>& setOut,
                                       std::string& strErrorOut);
+    // Collateral attestations this wallet owns, keyed by the key image the chain
+    // watches. Presence is the note-exclusion lock; nothing else records it.
+    std::map<uint256, CPrivacyVNextCollateralRegistration> mapPrivacyVNextCollateral;
+    bool AddPrivacyVNextCollateralRegistration(
+        const CPrivacyVNextCollateralRegistration& record,
+        std::string& strErrorOut);
+    bool SetPrivacyVNextCollateralAttestationTx(const uint256& keyImage,
+                                                const uint256& hashAttestation,
+                                                std::string& strErrorOut);
+    bool ReleasePrivacyVNextCollateralRegistration(const uint256& keyImage,
+                                                   std::string& strErrorOut);
+    bool GetPrivacyVNextCollateralRegistration(
+        const uint256& keyImage,
+        CPrivacyVNextCollateralRegistration& recordOut) const;
+    void ListPrivacyVNextCollateralRegistrations(
+        std::vector<CPrivacyVNextCollateralRegistration>& vRecordsOut) const;
+    bool IsPrivacyVNextCollateralLocked(const uint256& keyImage) const;
+    bool IsPrivacyVNextNoteCollateralLocked(
+        const CPrivacyVNextWalletNote& note) const;
+    // Notes that could still be attested, best provenance first. Nothing here is
+    // chosen on the operator's behalf: the register command prints what it picked.
+    bool ListPrivacyVNextCollateralCandidates(
+        std::vector<CPrivacyVNextCollateralCandidate>& vOut,
+        std::string& strErrorOut) const;
+    bool CreatePrivacyVNextCollateralAttestation(
+        const CPrivacyVNextWalletNote& note,
+        const uint256& hashContext,
+        bool fCommit,
+        CWalletTx& wtxNew,
+        uint256& keyImageOut,
+        std::string& strErrorOut);
     // Spendable means confirmed to the shielded depth and holding a tree
     // position, which a note only gains once its epoch finalizes.
+    // Collateral-locked notes are in none of these totals; they are reported on
+    // their own so the operator sees the value without it looking spendable.
     int64_t GetPrivacyVNextBalance() const;
     int64_t GetPrivacyVNextUnconfirmedBalance() const;
+    int64_t GetPrivacyVNextCollateralBalance() const;
     // Unspent notes held, spendable or not. Separates "nothing was ever
     // detected" from "detected but not yet spendable".
     size_t GetPrivacyVNextNoteCount() const;

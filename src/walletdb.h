@@ -456,6 +456,22 @@ public:
                                     std::make_pair(txhash, nOutputIndex)));
     }
 
+    // Keyed by key image: that is what the chain watches and what a spend consumes, so
+    // the record and the exclusion it drives cannot drift apart.
+    bool WritePrivacyVNextCollateral(
+        const CPrivacyVNextCollateralRegistration& record)
+    {
+        nWalletDBUpdated++;
+        return Write(std::make_pair(std::string("iv5coll"), record.keyImage),
+                     record, true);
+    }
+
+    bool ErasePrivacyVNextCollateral(const uint256& keyImage)
+    {
+        nWalletDBUpdated++;
+        return Erase(std::make_pair(std::string("iv5coll"), keyImage));
+    }
+
     bool WritePrivacyVNextNoteSpent(const uint256& txhash, uint32_t nOutputIndex,
                                     bool fSpent)
     {

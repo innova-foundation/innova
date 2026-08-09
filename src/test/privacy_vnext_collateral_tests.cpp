@@ -583,4 +583,135 @@ BOOST_AUTO_TEST_CASE(an_attestation_is_bound_to_one_registration_context)
         "a transfer must not become an attestation by relabelling");
 }
 
+namespace
+{
+
+// What CTxMemPool::accept writes once a transaction is admitted, so the policy helpers
+// below are exercised against the same bookkeeping the real path keeps.
+void ReserveInMempool(CTransaction& tx, const PrivacyVNextStateEffects& effects)
+{
+    const uint256 hash = tx.GetHash();
+    LOCK(mempool.cs);
+    mempool.addUnchecked(hash, tx);
+
+    std::vector<uint256> vKeyImages;
+    for (size_t i = 0; i < effects.keyImages.size(); ++i)
+    {
+        CShieldedNullifierSpent spent;
+        spent.txnHash = hash;
+        spent.nIndex = i;
+        vKeyImages.push_back(AsUint256(effects.keyImages[i]));
+        mempool.mapPrivacyVNextNullifier[vKeyImages.back()] = spent;
+    }
+    mempool.mapPrivacyVNextTxNullifiers[hash] = vKeyImages;
+
+    std::vector<uint256> vBases;
+    for (size_t i = 0; i < effects.outputLeaves.size(); ++i)
+    {
+        CShieldedNullifierSpent created;
+        created.txnHash = hash;
+        created.nIndex = i;
+        vBases.push_back(AsUint256(effects.outputLeaves[i].nullifierBase));
+        mempool.mapPrivacyVNextOutputBase[vBases.back()] = created;
+    }
+    mempool.mapPrivacyVNextTxOutputBases[hash] = vBases;
+
+    std::vector<uint256> vAttestations;
+    for (size_t i = 0; i < effects.attestationKeyImages.size(); ++i)
+    {
+        CShieldedNullifierSpent attested;
+        attested.txnHash = hash;
+        attested.nIndex = i;
+        vAttestations.push_back(AsUint256(effects.attestationKeyImages[i]));
+        mempool.mapPrivacyVNextAttestation[vAttestations.back()] = attested;
+    }
+    mempool.mapPrivacyVNextTxAttestations[hash] = vAttestations;
+}
+
+} // namespace
+
+// A spend and an attestation of one key image must never share the mempool; the
+// attestation always gives way.
+BOOST_AUTO_TEST_CASE(a_spend_and_an_attestation_of_one_note_never_wait_together)
+{
+    CTxDB txdb("r+");
+    std::string error;
+
+    FundedNote note;
+    BOOST_REQUIRE_MESSAGE(FundNote(txdb, 0xb1, kTier, note, error), error);
+
+    std::vector<unsigned char> attestationPayload;
+    PrivacyVNextDigest keyImage;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextCollateralAttestationPayload(
+            LocalNetwork(), LocalGenesis(), note.finalizedRoot, note.nTreeSize,
+            NoTransparentSide(), CollateralDigest(0xb2), note.spend,
+            attestationPayload, keyImage, error),
+        error);
+
+    std::vector<PrivacyVNextSpendNote> spends;
+    spends.push_back(note.spend);
+    std::vector<PrivacyVNextNewOutput> outs(1);
+    outs[0].recipient.nNetwork = LocalNetwork();
+    outs[0].recipient.nAddressType = 0;
+    outs[0].recipient.spendPublic = note.keys.spendPublic;
+    outs[0].recipient.viewPublic = note.keys.viewPublic;
+    outs[0].nAmount = kTier - 100;
+    std::vector<unsigned char> spendPayload;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextTransferPayload(
+            LocalNetwork(), 7, LocalGenesis(), note.keys.outgoingViewSecret,
+            note.finalizedRoot, note.nTreeSize, NoTransparentSide(), 100,
+            spends, outs, spendPayload, error),
+        error);
+
+    PrivacyVNextStateEffects attestationEffects;
+    BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(
+                      INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                      attestationPayload, attestationEffects)
+                      .IsValid());
+    PrivacyVNextStateEffects spendEffects;
+    BOOST_REQUIRE(ExtractPrivacyVNextPayloadEffects(
+                      INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, spendPayload,
+                      spendEffects)
+                      .IsValid());
+    BOOST_REQUIRE_EQUAL(attestationEffects.attestationKeyImages.size(), 1U);
+    BOOST_REQUIRE_EQUAL(spendEffects.keyImages.size(), 1U);
+    // The same note, so the same key image on both sides.
+    BOOST_REQUIRE(spendEffects.keyImages[0] ==
+                  attestationEffects.attestationKeyImages[0]);
+    const uint256 watched = AsUint256(keyImage);
+
+    CTransaction attestation = CarryingTx(attestationPayload, 1500000020);
+    CTransaction spend = CarryingTx(spendPayload, 1500000021);
+
+    mempool.clear();
+    ReserveInMempool(attestation, attestationEffects);
+    BOOST_REQUIRE_EQUAL(mempool.size(), 1U);
+    // Nothing spends it yet, so an arriving attestation would be admitted.
+    BOOST_CHECK(!mempool.HasPendingPrivacyVNextSpend(watched));
+
+    // The spend arrives: the attestation can no longer connect and is dropped, with its
+    // reservation released.
+    BOOST_CHECK_EQUAL(mempool.EvictPrivacyVNextAttestationsSpentBy(
+                          std::vector<uint256>(1, watched), spend.GetHash()),
+                      1U);
+    BOOST_CHECK_EQUAL(mempool.size(), 0U);
+    BOOST_CHECK_EQUAL(mempool.mapPrivacyVNextAttestation.count(watched), 0U);
+    BOOST_CHECK_EQUAL(mempool.mapPrivacyVNextTxAttestations.count(
+                          attestation.GetHash()), 0U);
+    // The reverse bookkeeping stayed consistent; remove() halts the node if it does not.
+    BOOST_CHECK(!fRequestShutdown);
+
+    // With the spend reserved, an attestation of the same note is the one refused.
+    ReserveInMempool(spend, spendEffects);
+    BOOST_CHECK(mempool.HasPendingPrivacyVNextSpend(watched));
+    BOOST_CHECK_EQUAL(mempool.EvictPrivacyVNextAttestationsSpentBy(
+                          std::vector<uint256>(1, watched), spend.GetHash()),
+                      0U);
+    BOOST_CHECK_EQUAL(mempool.size(), 1U);
+
+    mempool.clear();
+}
+
 BOOST_AUTO_TEST_SUITE_END()

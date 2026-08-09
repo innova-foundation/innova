@@ -8,6 +8,7 @@
 #include "uint256.h"
 
 #include <stdint.h>
+#include <string>
 #include <vector>
 
 static const uint32_t PRIVACY_VNEXT_WALLET_SEED_GENERATION = 1;
@@ -68,6 +69,106 @@ struct CPrivacyVNextWalletNote
         READWRITE(vchY);
         READWRITE(vchMask);
         READWRITE(vchKeyImage);
+    )
+};
+
+// How a candidate collateral note came to exist, best first, ranked by what its funding
+// tx made public. A shield ties collateral to identified coins, so it is last and never
+// chosen by default.
+enum PrivacyVNextNoteProvenance
+{
+    IV5_NOTE_SELF_TRANSFER = 0,
+    IV5_NOTE_RECEIVED_TRANSFER = 1,
+    IV5_NOTE_DISCLOSED_TRANSFER = 2,
+    IV5_NOTE_PROVENANCE_UNKNOWN = 3,
+    IV5_NOTE_SHIELD_FUNDED = 4
+};
+
+struct CPrivacyVNextCollateralCandidate
+{
+    CPrivacyVNextWalletNote note;
+    uint256 keyImage;
+    int nProvenance;
+    int nAgeBlocks;
+
+    CPrivacyVNextCollateralCandidate()
+        : keyImage(0), nProvenance(IV5_NOTE_PROVENANCE_UNKNOWN), nAgeBlocks(0) {}
+};
+
+// Provenance dominates age. Oldest first within a class (weakens timing correlation),
+// then (txhash, index) so a dry run and the following register pick the same note.
+inline bool PrivacyVNextCollateralCandidateBetter(
+    const CPrivacyVNextCollateralCandidate& a,
+    const CPrivacyVNextCollateralCandidate& b)
+{
+    if (a.nProvenance != b.nProvenance)
+        return a.nProvenance < b.nProvenance;
+    if (a.note.nHeight != b.note.nHeight)
+        return a.note.nHeight < b.note.nHeight;
+    if (a.note.txhash != b.note.txhash)
+        return a.note.txhash < b.note.txhash;
+    return a.note.nOutputIndex < b.note.nOutputIndex;
+}
+
+// A collateral attestation this wallet published or is about to. Persisted so the note is
+// never picked for an ordinary spend, which would permanently retire its key image for
+// registration.
+class CPrivacyVNextCollateralRegistration
+{
+public:
+    uint256 keyImage;
+    uint256 fundingTxHash;
+    uint32_t nFundingOutputIndex;
+    // Zero until the attestation is built; set once, at broadcast.
+    uint256 attestationTxHash;
+    // The digest the payload bound. Nothing may change the tuple behind it for this key
+    // image, so it is kept alongside its components to detect later config drift.
+    uint256 hashContext;
+    std::vector<unsigned char> vchCollateralPubKey;
+    // Wallet key the announcement is signed with, and today's transparent payee.
+    uint160 announceKeyId;
+    std::string strAddr;
+    std::string strPoolPayout;
+    int64_t nTimeCreated;
+
+    CPrivacyVNextCollateralRegistration()
+    {
+        SetNull();
+    }
+
+    void SetNull()
+    {
+        keyImage = 0;
+        fundingTxHash = 0;
+        nFundingOutputIndex = 0;
+        attestationTxHash = 0;
+        hashContext = 0;
+        vchCollateralPubKey.clear();
+        announceKeyId = 0;
+        strAddr.clear();
+        strPoolPayout.clear();
+        nTimeCreated = 0;
+    }
+
+    bool IsValid() const
+    {
+        return keyImage != 0 && !strAddr.empty() &&
+               strPoolPayout.size() <= 128 && !vchCollateralPubKey.empty() &&
+               vchCollateralPubKey.size() <= 65;
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(keyImage);
+        READWRITE(fundingTxHash);
+        READWRITE(nFundingOutputIndex);
+        READWRITE(attestationTxHash);
+        READWRITE(hashContext);
+        READWRITE(vchCollateralPubKey);
+        READWRITE(announceKeyId);
+        READWRITE(strAddr);
+        READWRITE(strPoolPayout);
+        READWRITE(nTimeCreated);
     )
 };
 

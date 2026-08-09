@@ -211,7 +211,10 @@ void ProcessMessageCollateralnode(CNode* pfrom, std::string& strCommand, CDataSt
                         mn.protocolVersion = protocolVersion;
                         mn.addr = addr;
 
-                        RelayCollaTeralElectionEntry(vin, addr, vchSig, sigTime, pubkey, pubkey2, count, current, lastUpdated, protocolVersion);
+                        // The attestation tail travels with the update too: a peer that
+                        // does not hold the entry yet cannot admit an attested node
+                        // without it, and would have to iseg-pull to find it.
+                        RelayCollaTeralElectionEntry(vin, addr, vchSig, sigTime, pubkey, pubkey2, count, current, lastUpdated, protocolVersion, attestationKeyImage, strPoolPayout);
                     }
                 }
 

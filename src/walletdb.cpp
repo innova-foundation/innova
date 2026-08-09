@@ -1502,6 +1502,21 @@ ReadKeyValue(CWallet* pwallet, CDataStream& ssKey, CDataStream& ssValue,
             if (!fDuplicate)
                 pwallet->vPrivacyVNextNotes.push_back(note);
         }
+        else if (strType == "iv5coll")
+        {
+            uint256 keyImage;
+            ssKey >> keyImage;
+            CPrivacyVNextCollateralRegistration record;
+            ssValue >> record;
+            if (record.keyImage != keyImage || !record.IsValid())
+            {
+                strErr = "Error reading wallet database: malformed IV5 collateral record";
+                return false;
+            }
+
+            LOCK(pwallet->cs_shielded);
+            pwallet->mapPrivacyVNextCollateral[keyImage] = record;
+        }
         else if (strType == "csdeleg")
         {
             uint256 hashOwner;
