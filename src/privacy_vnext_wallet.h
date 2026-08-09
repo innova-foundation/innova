@@ -72,6 +72,44 @@ struct CPrivacyVNextWalletNote
     )
 };
 
+// How a candidate collateral note came to exist, best first, ranked by what its funding
+// tx made public. A shield ties collateral to identified coins, so it is last and never
+// chosen by default.
+enum PrivacyVNextNoteProvenance
+{
+    IV5_NOTE_SELF_TRANSFER = 0,
+    IV5_NOTE_RECEIVED_TRANSFER = 1,
+    IV5_NOTE_DISCLOSED_TRANSFER = 2,
+    IV5_NOTE_PROVENANCE_UNKNOWN = 3,
+    IV5_NOTE_SHIELD_FUNDED = 4
+};
+
+struct CPrivacyVNextCollateralCandidate
+{
+    CPrivacyVNextWalletNote note;
+    uint256 keyImage;
+    int nProvenance;
+    int nAgeBlocks;
+
+    CPrivacyVNextCollateralCandidate()
+        : keyImage(0), nProvenance(IV5_NOTE_PROVENANCE_UNKNOWN), nAgeBlocks(0) {}
+};
+
+// Provenance dominates age. Oldest first within a class (weakens timing correlation),
+// then (txhash, index) so a dry run and the following register pick the same note.
+inline bool PrivacyVNextCollateralCandidateBetter(
+    const CPrivacyVNextCollateralCandidate& a,
+    const CPrivacyVNextCollateralCandidate& b)
+{
+    if (a.nProvenance != b.nProvenance)
+        return a.nProvenance < b.nProvenance;
+    if (a.note.nHeight != b.note.nHeight)
+        return a.note.nHeight < b.note.nHeight;
+    if (a.note.txhash != b.note.txhash)
+        return a.note.txhash < b.note.txhash;
+    return a.note.nOutputIndex < b.note.nOutputIndex;
+}
+
 // A collateral attestation this wallet published or is about to. Persisted so the note is
 // never picked for an ordinary spend, which would permanently retire its key image for
 // registration.

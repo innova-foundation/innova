@@ -338,6 +338,18 @@ public:
     bool IsPrivacyVNextCollateralLocked(const uint256& keyImage) const;
     bool IsPrivacyVNextNoteCollateralLocked(
         const CPrivacyVNextWalletNote& note) const;
+    // Notes that could still be attested, best provenance first. Nothing here is
+    // chosen on the operator's behalf: the register command prints what it picked.
+    bool ListPrivacyVNextCollateralCandidates(
+        std::vector<CPrivacyVNextCollateralCandidate>& vOut,
+        std::string& strErrorOut) const;
+    bool CreatePrivacyVNextCollateralAttestation(
+        const CPrivacyVNextWalletNote& note,
+        const uint256& hashContext,
+        bool fCommit,
+        CWalletTx& wtxNew,
+        uint256& keyImageOut,
+        std::string& strErrorOut);
     // Spendable means confirmed to the shielded depth and holding a tree
     // position, which a note only gains once its epoch finalizes.
     // Collateral-locked notes are in none of these totals; they are reported on

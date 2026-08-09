@@ -13,6 +13,7 @@
 #include "privacy_vnext_builder.h"
 #include "privacy_vnext_store.h"
 #include "privacy_vnext_ffi.h"
+#include "privacy_vnext/rust/include/innova_privacy_vnext.h"
 #include "walletdb.h"
 #include "crypter.h"
 #include "ui_interface.h"
@@ -11802,6 +11803,238 @@ bool CWallet::CreatePrivacyVNextTransfer(
         if (!CommitTransaction(wtxNew, reservekey))
         {
             strErrorOut = "the transfer was built but could not be committed";
+            return false;
+        }
+    }
+    return true;
+}
+
+// Classify a note's funding from the creating tx's declared operation and mask;
+// mapWallet membership separates self-carved notes from third-party ones.
+static int ClassifyPrivacyVNextFunding(const CWallet* pwallet,
+                                       const uint256& hashFunding)
+{
+    bool fSelfBuilt = false;
+    {
+        LOCK(pwallet->cs_wallet);
+        fSelfBuilt = pwallet->mapWallet.count(hashFunding) != 0;
+    }
+
+    CTransaction txFunding;
+    uint256 hashBlock = 0;
+    if (!GetTransaction(hashFunding, txFunding, hashBlock, true) ||
+        !txFunding.IsPrivacyVNext() ||
+        txFunding.privacyVNext.vchPayload.empty())
+        return IV5_NOTE_PROVENANCE_UNKNOWN;
+
+    uint8_t nOperation = 0;
+    uint8_t nMask = 0;
+    if (!iv5::ReadDeclaredEnvelope(&txFunding.privacyVNext.vchPayload[0],
+                                   txFunding.privacyVNext.vchPayload.size(),
+                                   nOperation, nMask))
+        return IV5_NOTE_PROVENANCE_UNKNOWN;
+
+    if (nOperation == iv5::NOTE_SHIELD)
+        return IV5_NOTE_SHIELD_FUNDED;
+    if (nOperation != iv5::NOTE_TRANSFER)
+        return IV5_NOTE_PROVENANCE_UNKNOWN;
+    if (nMask != iv5::DISCLOSURE_MASK)
+        return IV5_NOTE_DISCLOSED_TRANSFER;
+    return fSelfBuilt ? IV5_NOTE_SELF_TRANSFER : IV5_NOTE_RECEIVED_TRANSFER;
+}
+
+// Attestable notes ranked by provenance class, then oldest first, then
+// (txhash, index) so a dry run and the register that follows pick the same note.
+bool CWallet::ListPrivacyVNextCollateralCandidates(
+    std::vector<CPrivacyVNextCollateralCandidate>& vOut,
+    std::string& strErrorOut) const
+{
+    vOut.clear();
+    strErrorOut.clear();
+
+    std::vector<unsigned char> vchAnchorState;
+    std::vector<unsigned char> vchAnchorRoot;
+    uint64_t nAnchorTreeSize = 0;
+    if (!LoadPrivacyVNextSpendAnchor(vchAnchorState, vchAnchorRoot,
+                                     nAnchorTreeSize, strErrorOut))
+        return false;
+
+    int nSpendHeight = 0;
+    {
+        LOCK(cs_main);
+        nSpendHeight = nBestHeight;
+    }
+
+    CTxDB txdb("r");
+    {
+        LOCK(cs_shielded);
+        for (size_t i = 0; i < vPrivacyVNextNotes.size(); ++i)
+        {
+            const CPrivacyVNextWalletNote& note = vPrivacyVNextNotes[i];
+            if (note.nAmount != INNOVA_PRIVACY_VNEXT_COLLATERAL_ATTESTATION_AMOUNT)
+                continue;
+            if (!PrivacyVNextNoteIsSpendable(note, nSpendHeight) ||
+                note.nLeafIndex >= nAnchorTreeSize)
+                continue;
+
+            uint256 keyImage;
+            std::memcpy(keyImage.begin(), &note.vchKeyImage[0], 32);
+            if (mapPrivacyVNextCollateral.count(keyImage))
+                continue;
+
+            // One attestation per key image, ever: the chain's watch record survives
+            // the spend, so a note already attested can never be registered again.
+            CShieldedNullifierSpent spent;
+            if (txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent) !=
+                TXDB_READ_NOT_FOUND)
+                continue;
+            CPrivacyVNextCollateralAttestation attested;
+            if (txdb.ReadPrivacyVNextCollateralStatus(keyImage, attested) !=
+                TXDB_READ_NOT_FOUND)
+                continue;
+            {
+                LOCK(mempool.cs);
+                if (mempool.mapPrivacyVNextNullifier.count(keyImage) ||
+                    mempool.mapPrivacyVNextAttestation.count(keyImage))
+                    continue;
+            }
+
+            CPrivacyVNextCollateralCandidate candidate;
+            candidate.note = note;
+            candidate.keyImage = keyImage;
+            candidate.nAgeBlocks = nSpendHeight - note.nHeight;
+            vOut.push_back(candidate);
+        }
+    }
+
+    // Classification reads mapWallet and the block index, so it runs with cs_shielded
+    // released rather than nesting the two.
+    for (size_t i = 0; i < vOut.size(); ++i)
+        vOut[i].nProvenance = ClassifyPrivacyVNextFunding(this, vOut[i].note.txhash);
+
+    std::sort(vOut.begin(), vOut.end(),
+              PrivacyVNextCollateralCandidateBetter);
+    return true;
+}
+
+// Build the attestation. It spends nothing: the note is named, its key image is
+// published to the watch set, and the note stays where it is.
+bool CWallet::CreatePrivacyVNextCollateralAttestation(
+    const CPrivacyVNextWalletNote& note,
+    const uint256& hashContext,
+    bool fCommit,
+    CWalletTx& wtxNew,
+    uint256& keyImageOut,
+    std::string& strErrorOut)
+{
+    wtxNew.SetNull();
+    keyImageOut = 0;
+    strErrorOut.clear();
+
+    if (!HasPrivacyVNextSeed())
+    {
+        strErrorOut = "this wallet has no IV5 seed; run z_createiv5seed";
+        return false;
+    }
+    if (!IsPrivacyVNextSeedUnlocked() || vchPrivacyVNextSeed.size() != 32)
+    {
+        strErrorOut = "the IV5 seed is locked; run walletpassphrase first";
+        return false;
+    }
+    if (!note.IsComplete() ||
+        note.nAmount != INNOVA_PRIVACY_VNEXT_COLLATERAL_ATTESTATION_AMOUNT)
+    {
+        strErrorOut = "a collateral attestation names a complete note of exactly "
+                      "25000 INN";
+        return false;
+    }
+
+    std::vector<unsigned char> vchAnchorState;
+    std::vector<unsigned char> vchAnchorRoot;
+    uint64_t nTreeSize = 0;
+    if (!LoadPrivacyVNextSpendAnchor(vchAnchorState, vchAnchorRoot, nTreeSize,
+                                     strErrorOut))
+        return false;
+    if (!note.fLeafIndexKnown || note.nLeafIndex >= nTreeSize)
+    {
+        strErrorOut = "the note has no position under the anchor this node can prove "
+                      "against; wait for its epoch to finalize";
+        return false;
+    }
+
+    std::vector<uint64_t> vLeafIndexes(1, note.nLeafIndex);
+    std::vector<unsigned char> vchPaths;
+    {
+        LOCK(cs_main);
+        CTxDB txdb("r");
+        if (!ReadPrivacyVNextTreePaths(txdb, nTreeSize, vchAnchorState,
+                                       vLeafIndexes, vchPaths, strErrorOut))
+            return false;
+    }
+    std::vector<PrivacyVNextMembershipWitness> vWitnesses;
+    PrivacyVNextDigest treeRoot;
+    if (!BuildPrivacyVNextWitnessesFromPaths(vchAnchorState, vLeafIndexes,
+                                             vchPaths, vWitnesses, treeRoot,
+                                             strErrorOut))
+        return false;
+    if (vWitnesses.size() != 1 ||
+        !std::equal(treeRoot.begin(), treeRoot.end(), vchAnchorRoot.begin()))
+    {
+        strErrorOut = "the IV5 witness does not fold onto the finalized root";
+        return false;
+    }
+
+    PrivacyVNextSpendNote collateral;
+    std::memcpy(collateral.spendSecret.data(), &note.vchSpendSecret[0], 32);
+    std::memcpy(collateral.y.data(), &note.vchY[0], 32);
+    std::memcpy(collateral.mask.data(), &note.vchMask[0], 32);
+    std::memcpy(collateral.leaf.owner.data(), &note.vchOwner[0], 32);
+    std::memcpy(collateral.leaf.nullifierBase.data(), &note.vchNullifierBase[0], 32);
+    std::memcpy(collateral.leaf.commitment.data(), &note.vchCommitment[0], 32);
+    collateral.nAmount = note.nAmount;
+    collateral.vchWitnessRecord = vWitnesses[0].vchRecord;
+
+    PrivacyVNextDigest genesis;
+    const uint256 hashGenesis = GetGenesisBlockHash();
+    std::memcpy(genesis.data(), hashGenesis.begin(), 32);
+    PrivacyVNextDigest finalizedRoot;
+    std::memcpy(finalizedRoot.data(), &vchAnchorRoot[0], 32);
+    PrivacyVNextDigest context;
+    std::memcpy(context.data(), hashContext.begin(), 32);
+
+    CTransaction txNew;
+    txNew.nVersion = SHIELDED_TX_VERSION_VNEXT;
+    PrivacyVNextDigest transparentBinding;
+    PrivacyVNextBindingOf(txNew, transparentBinding);
+
+    std::vector<unsigned char> vchPayload;
+    PrivacyVNextDigest keyImage;
+    if (!BuildPrivacyVNextCollateralAttestationPayload(
+            PrivacyVNextNetworkIdForWallet(), genesis, finalizedRoot, nTreeSize,
+            transparentBinding, context, collateral, vchPayload, keyImage,
+            strErrorOut))
+        return false;
+
+    txNew.privacyVNext.vchPayload = vchPayload;
+    // Stamped after proving, not before: proving takes seconds and a build-time stamp
+    // would date the wallet pipeline rather than the broadcast.
+    txNew.nTime = GetAdjustedTime();
+
+    if (!PrivacyVNextBindingHolds(txNew, transparentBinding, strErrorOut))
+        return false;
+
+    std::memcpy(keyImageOut.begin(), keyImage.data(), 32);
+
+    *static_cast<CTransaction*>(&wtxNew) = txNew;
+    wtxNew.BindWallet(this);
+    wtxNew.fTimeReceivedIsTxTime = true;
+
+    if (fCommit)
+    {
+        CReserveKey reservekey(this);
+        if (!CommitTransaction(wtxNew, reservekey))
+        {
+            strErrorOut = "the attestation was built but could not be committed";
             return false;
         }
     }

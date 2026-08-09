@@ -677,4 +677,33 @@ BOOST_AUTO_TEST_CASE(privacy_vnext_collateral_lock_excludes_a_note_across_reload
     }
 }
 
+// Ranking for a private registration: provenance dominates age (an old shield-funded
+// note ranks below a fresh mask-7 self-transfer); within a class the oldest note wins.
+BOOST_AUTO_TEST_CASE(privacy_vnext_collateral_candidates_rank_by_provenance_then_age)
+{
+    std::vector<CPrivacyVNextCollateralCandidate> v(5);
+    v[0].nProvenance = IV5_NOTE_SHIELD_FUNDED;
+    v[0].note.nHeight = 10;
+    v[1].nProvenance = IV5_NOTE_SELF_TRANSFER;
+    v[1].note.nHeight = 900;
+    v[2].nProvenance = IV5_NOTE_SELF_TRANSFER;
+    v[2].note.nHeight = 400;
+    v[3].nProvenance = IV5_NOTE_DISCLOSED_TRANSFER;
+    v[3].note.nHeight = 20;
+    v[4].nProvenance = IV5_NOTE_RECEIVED_TRANSFER;
+    v[4].note.nHeight = 800;
+
+    std::sort(v.begin(), v.end(), PrivacyVNextCollateralCandidateBetter);
+
+    BOOST_CHECK_EQUAL(v[0].nProvenance, (int)IV5_NOTE_SELF_TRANSFER);
+    BOOST_CHECK_EQUAL(v[0].note.nHeight, 400);
+    BOOST_CHECK_EQUAL(v[1].nProvenance, (int)IV5_NOTE_SELF_TRANSFER);
+    BOOST_CHECK_EQUAL(v[1].note.nHeight, 900);
+    BOOST_CHECK_EQUAL(v[2].nProvenance, (int)IV5_NOTE_RECEIVED_TRANSFER);
+    BOOST_CHECK_EQUAL(v[3].nProvenance, (int)IV5_NOTE_DISCLOSED_TRANSFER);
+    // Last whatever its age, and never the default pick.
+    BOOST_CHECK_EQUAL(v[4].nProvenance, (int)IV5_NOTE_SHIELD_FUNDED);
+    BOOST_CHECK_EQUAL(v[4].note.nHeight, 10);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
