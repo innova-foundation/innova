@@ -19,10 +19,17 @@
 #include <openssl/crypto.h>
 #include <boost/thread/once.hpp>
 
+// Prototype envelopes 2000-2002, superseded by 2008. Each extends the one
+// before it, so 2003-2007 still serialize their fields and the constants stay.
+// Never activated on a public network; rejected off regtest.
 static const int SHIELDED_TX_VERSION = 2000;
 
-static const int SHIELDED_TX_VERSION_DSP = 2001;
+// The first disclosure mask: a 3-bit nPrivacyMode plus per-spend and per-output
+// plaintext value/blind. 2008 carries the production form.
+static const int SHIELDED_TX_VERSION_DSP_PROTOTYPE = 2001;
 
+// Threshold at which a spend must prove tree membership (IsFCMP()), backed by
+// the in-tree curve tree that vendored FCMP++ replaces.
 static const int SHIELDED_TX_VERSION_FCMP = 2002;
 
 static const int SHIELDED_TX_VERSION_NULLSTAKE = 2003;
@@ -42,11 +49,10 @@ static const int SHIELDED_TX_VERSION_MOFN_MINT = 2006;
 // cv_plain carve-out -- but ONLY after the note has been staking-inactive for the reclaim timelock.
 static const int SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM = 2007;
 
-// Reserved exclusively for the externally reviewed Boundary-B privacy
-// protocol. Merely defining its distinct wire envelope does not activate it:
-// context-free validation remains fail closed until the complete vNext proof
-// implementation and Boundary-B state transition are consensus ready.
-static const int SHIELDED_TX_VERSION_VNEXT = 2008;
+// Dynamic Selective Privacy: the sole production shielded envelope. A self-describing
+// payload declares its operation and 3-bit disclosure mask in a fixed header (see
+// privacy_vnext/iv5_protocol.h); membership is proven by vendored FCMP++.
+static const int SHIELDED_TX_VERSION_DSP = 2008;
 static const size_t SHIELDED_VNEXT_MAX_PAYLOAD_SIZE = 256 * 1024;
 
 // Boundary B must not be inferred merely from a configured height. This stays

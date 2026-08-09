@@ -2601,7 +2601,7 @@ void CWalletTx::RelayWalletTransaction(CTxDB& txdb, bool fForceRelay)
                 (IsLegacyShieldedTransactionVersion(tx.nVersion) &&
                  (IsLegacyPrivacyPolicyDisabled() ||
                   IsBoundaryAActiveAtHeight(nCandidateHeight))) ||
-                (tx.nVersion == SHIELDED_TX_VERSION_VNEXT &&
+                (tx.nVersion == SHIELDED_TX_VERSION_DSP &&
                  (!IsBoundaryBActiveAtHeight(nCandidateHeight) ||
                   !IsShieldedVNextConsensusReady())))
                 continue;
@@ -2624,7 +2624,7 @@ void CWalletTx::RelayWalletTransaction(CTxDB& txdb, bool fForceRelay)
             (IsLegacyShieldedTransactionVersion(nVersion) &&
              (IsLegacyPrivacyPolicyDisabled() ||
               IsBoundaryAActiveAtHeight(nCandidateHeight))) ||
-            (nVersion == SHIELDED_TX_VERSION_VNEXT &&
+            (nVersion == SHIELDED_TX_VERSION_DSP &&
              (!IsBoundaryBActiveAtHeight(nCandidateHeight) ||
               !IsShieldedVNextConsensusReady())))
             return;
@@ -11100,7 +11100,7 @@ bool CWallet::CreatePrivacyVNextShield(
     // The transparent side is settled before proving, because the payload commits to it
     // and the proofs bind to the payload.
     CTransaction txNew;
-    txNew.nVersion = SHIELDED_TX_VERSION_VNEXT;
+    txNew.nVersion = SHIELDED_TX_VERSION_DSP;
     for (size_t i = 0; i < vSelected.size(); ++i)
         txNew.vin.push_back(
             CTxIn(vSelected[i]->tx->GetHash(), vSelected[i]->i));
@@ -11774,7 +11774,7 @@ bool CWallet::CreatePrivacyVNextTransfer(
     // A transfer consumes notes, not outputs, and pays a note: it names no
     // transparent input or output, and the payload commits to exactly that.
     CTransaction txNew;
-    txNew.nVersion = SHIELDED_TX_VERSION_VNEXT;
+    txNew.nVersion = SHIELDED_TX_VERSION_DSP;
     PrivacyVNextDigest transparentBinding;
     PrivacyVNextBindingOf(txNew, transparentBinding);
 
@@ -12003,7 +12003,7 @@ bool CWallet::CreatePrivacyVNextCollateralAttestation(
     std::memcpy(context.data(), hashContext.begin(), 32);
 
     CTransaction txNew;
-    txNew.nVersion = SHIELDED_TX_VERSION_VNEXT;
+    txNew.nVersion = SHIELDED_TX_VERSION_DSP;
     PrivacyVNextDigest transparentBinding;
     PrivacyVNextBindingOf(txNew, transparentBinding);
 
@@ -12105,7 +12105,7 @@ bool CWallet::CreatePrivacyVNextUnshield(
     // The recipient output exists before the payload does: it is what the payload
     // commits to, and the proofs bind to that commitment.
     CTransaction txNew;
-    txNew.nVersion = SHIELDED_TX_VERSION_VNEXT;
+    txNew.nVersion = SHIELDED_TX_VERSION_DSP;
     CScript scriptTo;
     scriptTo.SetDestination(toAddress.Get());
     txNew.vout.push_back(CTxOut(nAmount, scriptTo));

@@ -691,7 +691,7 @@ BOOST_AUTO_TEST_CASE(parallel_warming_agrees_with_sequential_validation)
 BOOST_AUTO_TEST_CASE(an_iv5_transaction_is_standard)
 {
     CTransaction tx;
-    tx.nVersion = SHIELDED_TX_VERSION_VNEXT;
+    tx.nVersion = SHIELDED_TX_VERSION_DSP;
     tx.vin.resize(1);
     tx.vin[0].prevout.hash = uint256(1);
     tx.vin[0].prevout.n = 0;
@@ -1005,7 +1005,7 @@ BOOST_AUTO_TEST_CASE(an_unshield_binds_the_transparent_output_it_pays)
     scriptTo << OP_DUP << OP_HASH160 << ToByteVector(uint160((uint64_t)1))
              << OP_EQUALVERIFY << OP_CHECKSIG;
     CTransaction tx;
-    tx.nVersion = SHIELDED_TX_VERSION_VNEXT;
+    tx.nVersion = SHIELDED_TX_VERSION_DSP;
     tx.vout.push_back(CTxOut((int64_t)nReleased, scriptTo));
     PrivacyVNextDigest binding;
     const uint256 hashBinding = GetPrivacyVNextTransparentBinding(tx);
@@ -1142,7 +1142,7 @@ BOOST_AUTO_TEST_CASE(an_empty_transparent_side_is_bound_like_any_other)
 
     // Shield inputs are fixed before the payload is built, so binding them has no cycle.
     CTransaction tx;
-    tx.nVersion = SHIELDED_TX_VERSION_VNEXT;
+    tx.nVersion = SHIELDED_TX_VERSION_DSP;
     tx.vin.push_back(CTxIn(uint256((uint64_t)11), 0));
     PrivacyVNextDigest binding;
     const uint256 hashBinding = GetPrivacyVNextTransparentBinding(tx);
@@ -1178,7 +1178,7 @@ BOOST_AUTO_TEST_CASE(an_empty_transparent_side_is_bound_like_any_other)
 
     // Transfer shape: nothing signs it, so the binding keeps inputs off it.
     CTransaction transfer;
-    transfer.nVersion = SHIELDED_TX_VERSION_VNEXT;
+    transfer.nVersion = SHIELDED_TX_VERSION_DSP;
     std::vector<unsigned char> transferPayload;
     BOOST_REQUIRE_MESSAGE(
         BuildPrivacyVNextShieldPayload(LocalNetwork(), 7, genesis, keys.outgoingViewSecret,

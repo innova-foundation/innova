@@ -604,7 +604,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 (IsLegacyShieldedTransactionVersion(tx.nVersion) &&
                  (IsLegacyPrivacyPolicyDisabled() ||
                   IsBoundaryAActiveAtHeight(nCandidateHeight))) ||
-                (tx.nVersion == SHIELDED_TX_VERSION_VNEXT &&
+                (tx.nVersion == SHIELDED_TX_VERSION_DSP &&
                  (!IsBoundaryBActiveAtHeight(nCandidateHeight) ||
                   !IsShieldedVNextConsensusReady())))
                 continue;
@@ -1163,7 +1163,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             else
             {
                 nFeeNoteBytes = vchProvisional.size();
-                pblock->vtx[0].nVersion = SHIELDED_TX_VERSION_VNEXT;
+                pblock->vtx[0].nVersion = SHIELDED_TX_VERSION_DSP;
                 pblock->vtx[0].privacyVNext.vchPayload.swap(vchProvisional);
                 fFeeNote = true;
             }

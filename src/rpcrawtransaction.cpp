@@ -107,7 +107,7 @@ void TxToJSON(const CTransaction& tx, const uint256 hashBlock, Object& entry)
     if (tx.IsShielded())
     {
         entry.push_back(Pair("valueBalance", ValueFromAmount(tx.nValueBalance)));
-        if (tx.nVersion >= SHIELDED_TX_VERSION_DSP)
+        if (tx.nVersion >= SHIELDED_TX_VERSION_DSP_PROTOTYPE)
         {
             entry.push_back(Pair("privacy_mode", (int)tx.nPrivacyMode));
             entry.push_back(Pair("hide_sender", DSP_HideSender(tx.nPrivacyMode)));

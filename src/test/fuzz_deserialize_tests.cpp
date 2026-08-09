@@ -1026,7 +1026,7 @@ BOOST_AUTO_TEST_CASE(shielded_recipient_payload_decoding_is_exact_and_versioned)
     CShieldedPaymentAddress decodedAddress;
     CShieldedNote decodedNote;
     BOOST_REQUIRE(DecodeShieldedRecipientPayload(
-        SHIELDED_TX_VERSION_DSP, addressBytes, kind,
+        SHIELDED_TX_VERSION_DSP_PROTOTYPE, addressBytes, kind,
         decodedAddress, decodedNote));
     BOOST_CHECK_EQUAL(kind, SHIELDED_RECIPIENT_ADDRESS);
     BOOST_CHECK(decodedAddress == address);
@@ -1058,19 +1058,19 @@ BOOST_AUTO_TEST_CASE(shielded_recipient_payload_decoding_is_exact_and_versioned)
     std::vector<unsigned char> trailingAddress = addressBytes;
     trailingAddress.push_back(0x00);
     BOOST_CHECK(!DecodeShieldedRecipientPayload(
-        SHIELDED_TX_VERSION_DSP, trailingAddress, kind,
+        SHIELDED_TX_VERSION_DSP_PROTOTYPE, trailingAddress, kind,
         decodedAddress, decodedNote));
     std::vector<unsigned char> shortNote = noteBytes;
     shortNote.pop_back();
     BOOST_CHECK(!DecodeShieldedRecipientPayload(
-        SHIELDED_TX_VERSION_DSP, shortNote, kind,
+        SHIELDED_TX_VERSION_DSP_PROTOTYPE, shortNote, kind,
         decodedAddress, decodedNote));
 
     BOOST_CHECK(!DecodeShieldedRecipientPayload(
         SHIELDED_TX_VERSION, addressBytes, kind,
         decodedAddress, decodedNote));
     BOOST_CHECK(!DecodeShieldedRecipientPayload(
-        SHIELDED_TX_VERSION_VNEXT, addressBytes, kind,
+        SHIELDED_TX_VERSION_DSP, addressBytes, kind,
         decodedAddress, decodedNote));
 
     const std::vector<unsigned char> empty;
@@ -1535,7 +1535,7 @@ BOOST_AUTO_TEST_CASE(shielded_transaction_vectors_accept_exact_consensus_maxima)
 BOOST_AUTO_TEST_CASE(shielded_transaction_optional_vectors_preserve_wire_and_reject_plus_one)
 {
     CTransaction dsp;
-    dsp.nVersion = SHIELDED_TX_VERSION_DSP;
+    dsp.nVersion = SHIELDED_TX_VERSION_DSP_PROTOTYPE;
     CShieldedSpendDescription dspSpend;
     dspSpend.nullifier = uint256(1);
     dspSpend.vchPlaintextBlind.assign(BLINDING_FACTOR_SIZE, 0xf1);
@@ -2022,7 +2022,7 @@ BOOST_AUTO_TEST_CASE(active_v5_envelope_trailing_bytes_remain_accepted)
 BOOST_AUTO_TEST_CASE(reserved_vnext_is_not_a_legacy_privacy_envelope)
 {
     CTransaction emptyVNext;
-    emptyVNext.nVersion = SHIELDED_TX_VERSION_VNEXT;
+    emptyVNext.nVersion = SHIELDED_TX_VERSION_DSP;
 
     BOOST_CHECK(!emptyVNext.IsShielded());
     BOOST_CHECK(!emptyVNext.IsDSP());
@@ -2057,7 +2057,7 @@ BOOST_AUTO_TEST_CASE(reserved_vnext_is_not_a_legacy_privacy_envelope)
 BOOST_AUTO_TEST_CASE(vnext_envelope_marker_schema_and_length_are_strict)
 {
     CTransaction tx;
-    tx.nVersion = SHIELDED_TX_VERSION_VNEXT;
+    tx.nVersion = SHIELDED_TX_VERSION_DSP;
     tx.privacyVNext.vchPayload.push_back(0x01);
     tx.privacyVNext.vchPayload.push_back(0x02);
     tx.privacyVNext.vchPayload.push_back(0x03);
@@ -2083,7 +2083,7 @@ BOOST_AUTO_TEST_CASE(vnext_envelope_marker_schema_and_length_are_strict)
     uint16_t schema = 0;
     std::vector<unsigned char> payload;
     framed >> schema >> payload;
-    BOOST_CHECK_EQUAL(wireVersion, SHIELDED_TX_VERSION_VNEXT);
+    BOOST_CHECK_EQUAL(wireVersion, SHIELDED_TX_VERSION_DSP);
     BOOST_CHECK_EQUAL(schema, static_cast<uint16_t>(iv5::PROTOCOL_SCHEMA));
     BOOST_CHECK(payload == tx.privacyVNext.vchPayload);
     BOOST_CHECK(framed.empty());
@@ -2201,14 +2201,14 @@ BOOST_AUTO_TEST_CASE(a_payload_may_not_ride_a_legacy_pool_version)
     // pool operation and are not selected from the mempool by block assembly, so
     // widening the range would break them.
     BOOST_CHECK(SHIELDED_TX_VERSION_NULLSTAKE > SHIELDED_TX_VERSION_FCMP);
-    BOOST_CHECK(SHIELDED_TX_VERSION_VNEXT > SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM);
+    BOOST_CHECK(SHIELDED_TX_VERSION_DSP > SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM);
 }
 
 BOOST_AUTO_TEST_CASE(future_versions_do_not_inherit_legacy_privacy_predicates)
 {
     const int futureVersions[] = {
-        SHIELDED_TX_VERSION_VNEXT,
-        SHIELDED_TX_VERSION_VNEXT + 1,
+        SHIELDED_TX_VERSION_DSP,
+        SHIELDED_TX_VERSION_DSP + 1,
         std::numeric_limits<int>::max()
     };
 

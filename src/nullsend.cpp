@@ -174,7 +174,7 @@ bool CNullSendSession::AssembleTransaction()
     CTransaction txNew;
 
     bool fUseFCMP = (nBestHeight >= FORK_HEIGHT_FCMP_VALIDATION);
-    txNew.nVersion = fUseFCMP ? SHIELDED_TX_VERSION_FCMP : SHIELDED_TX_VERSION_DSP;
+    txNew.nVersion = fUseFCMP ? SHIELDED_TX_VERSION_FCMP : SHIELDED_TX_VERSION_DSP_PROTOTYPE;
     txNew.nTime = GetTime();
     txNew.nPrivacyMode = nPrivacyMode;
 
@@ -953,7 +953,7 @@ bool CNullSendSession::AssembleTransactionChaumian()
     CTransaction txNew;
 
     bool fUseFCMP = (nBestHeight >= FORK_HEIGHT_FCMP_VALIDATION);
-    txNew.nVersion = fUseFCMP ? SHIELDED_TX_VERSION_FCMP : SHIELDED_TX_VERSION_DSP;
+    txNew.nVersion = fUseFCMP ? SHIELDED_TX_VERSION_FCMP : SHIELDED_TX_VERSION_DSP_PROTOTYPE;
     txNew.nTime = GetTime();
     txNew.nPrivacyMode = nPrivacyMode;
 

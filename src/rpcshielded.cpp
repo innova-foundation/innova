@@ -1180,7 +1180,7 @@ Value z_send(const Array& params, bool fHelp)
 
     CTransaction txNew;
     bool fUseFCMP = (nCurrentHeight >= FORK_HEIGHT_FCMP_VALIDATION);
-    txNew.nVersion = fUseFCMP ? SHIELDED_TX_VERSION_FCMP : SHIELDED_TX_VERSION_DSP;
+    txNew.nVersion = fUseFCMP ? SHIELDED_TX_VERSION_FCMP : SHIELDED_TX_VERSION_DSP_PROTOTYPE;
     txNew.nTime = GetAdjustedTime();
     txNew.nPrivacyMode = nMode;
 
@@ -2252,7 +2252,7 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
     obj.push_back(Pair("boundary_b_configured", IsBoundaryBConfigured()));
     obj.push_back(Pair("boundary_b_active", IsBoundaryBActiveAtHeight(nCurrentHeight)));
     obj.push_back(Pair("legacy_transaction_versions", std::string("2000-2007")));
-    obj.push_back(Pair("privacy_vnext_transaction_version", SHIELDED_TX_VERSION_VNEXT));
+    obj.push_back(Pair("privacy_vnext_transaction_version", SHIELDED_TX_VERSION_DSP));
     obj.push_back(Pair("privacy_vnext_consensus_ready", fVNextReady));
     // Whether consensus will accept an IV5 transaction right now. This is not the same
     // question as the product declaring itself consensus-active: the linked ABI reports

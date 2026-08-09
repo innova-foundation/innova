@@ -230,8 +230,12 @@ inline int GetForkHeightShielded() {
 }
 #define FORK_HEIGHT_SHIELDED (GetForkHeightShielded())
 
-// Hard fork height for ring signature deprecation
-// ANON_TXN_VERSION (1000) rejected after this height
+// ANON_TXN_VERSION (1000) is retired on every network from genesis. A full
+// replay of mainnet to 7,889,246 counted zero ring-signature transactions ever
+// -- no outputs, no key images, nothing unclaimed -- so rejecting from height 0
+// cannot change how any historical block validates. Returning 0 rather than
+// deleting the checks keeps every >= site rejecting, including the consensus
+// ones in ConnectInputs, ConnectBlock and AcceptBlock.
 inline int GetForkHeightRingSigDeprecation() {
     extern bool fRegTest;
     extern bool fTestNet;
@@ -240,7 +244,7 @@ inline int GetForkHeightRingSigDeprecation() {
 #define FORK_HEIGHT_RINGSIG_DEPRECATION (GetForkHeightRingSigDeprecation())
 
 // Hard fork height for Dynamic Selective Privacy
-// 3-bit nPrivacyMode field in SHIELDED_TX_VERSION_DSP (2001)
+// 3-bit nPrivacyMode field in SHIELDED_TX_VERSION_DSP_PROTOTYPE (2001)
 inline int GetForkHeightDSP() {
     extern bool fRegTest;
     extern bool fTestNet;
@@ -1065,7 +1069,7 @@ public:
     std::vector<CTxOut> vout;
     unsigned int nLockTime;
 
-    // Distinct canonical envelope for SHIELDED_TX_VERSION_VNEXT. It remains
+    // Distinct canonical envelope for SHIELDED_TX_VERSION_DSP. It remains
     // consensus inactive until Boundary B and never aliases legacy fields.
     CShieldedVNextEnvelope privacyVNext;
 
@@ -1109,9 +1113,9 @@ public:
         READWRITE(vin);
         READWRITE(vout);
         READWRITE(nLockTime);
-        if (this->nVersion == SHIELDED_TX_VERSION_VNEXT)
+        if (this->nVersion == SHIELDED_TX_VERSION_DSP)
             READWRITE(privacyVNext);
-        if (this->nVersion == SHIELDED_TX_VERSION || this->nVersion == SHIELDED_TX_VERSION_DSP
+        if (this->nVersion == SHIELDED_TX_VERSION || this->nVersion == SHIELDED_TX_VERSION_DSP_PROTOTYPE
             || this->nVersion == SHIELDED_TX_VERSION_FCMP || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE
             || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 || this->nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD
             || this->nVersion == SHIELDED_TX_VERSION_MOFN_MINT
@@ -1158,7 +1162,7 @@ public:
                                                          MAX_SHIELDED_OUTPUTS,
                                                          nType, nVersion, ser_action);
             READWRITE(nValueBalance);
-            if (this->nVersion >= SHIELDED_TX_VERSION_DSP)
+            if (this->nVersion >= SHIELDED_TX_VERSION_DSP_PROTOTYPE)
             {
                 READWRITE(nPrivacyMode);
                 for (size_t i = 0; i < vShieldedSpend.size(); i++)
@@ -1258,7 +1262,7 @@ public:
         ss << vin;
         ss << vout;
         ss << nLockTime;
-        if (nVersion == SHIELDED_TX_VERSION || nVersion == SHIELDED_TX_VERSION_DSP
+        if (nVersion == SHIELDED_TX_VERSION || nVersion == SHIELDED_TX_VERSION_DSP_PROTOTYPE
             || nVersion == SHIELDED_TX_VERSION_FCMP || nVersion == SHIELDED_TX_VERSION_NULLSTAKE
             || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD
             || nVersion == SHIELDED_TX_VERSION_MOFN_MINT
@@ -1275,7 +1279,7 @@ public:
                 ss << vShieldedSpend[i].vAnonSet;
                 ss << vShieldedSpend[i].lelantusSerial;
                 // DSP fields included in sighash to prevent mode/value malleability.
-                if (nVersion >= SHIELDED_TX_VERSION_DSP)
+                if (nVersion >= SHIELDED_TX_VERSION_DSP_PROTOTYPE)
                 {
                     ss << vShieldedSpend[i].nPlaintextValue;
                     ss << vShieldedSpend[i].vchPlaintextBlind;
@@ -1299,7 +1303,7 @@ public:
                 ss << vShieldedOutput[i].vchEncCiphertext;
                 ss << vShieldedOutput[i].vchOutCiphertext;
                 ss << vShieldedOutput[i].rangeProof;
-                if (nVersion >= SHIELDED_TX_VERSION_DSP)
+                if (nVersion >= SHIELDED_TX_VERSION_DSP_PROTOTYPE)
                 {
                     ss << vShieldedOutput[i].nPlaintextValue;
                     ss << vShieldedOutput[i].vchPlaintextBlind;
@@ -1318,7 +1322,7 @@ public:
                 }
             }
             ss << nValueBalance;
-            if (nVersion == SHIELDED_TX_VERSION_DSP || nVersion == SHIELDED_TX_VERSION_FCMP
+            if (nVersion == SHIELDED_TX_VERSION_DSP_PROTOTYPE || nVersion == SHIELDED_TX_VERSION_FCMP
                 || nVersion == SHIELDED_TX_VERSION_NULLSTAKE || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2
                 || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_COLD || nVersion == SHIELDED_TX_VERSION_MOFN_MINT
                 || nVersion == SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM)
@@ -1415,7 +1419,7 @@ public:
 
     bool IsPrivacyVNext() const
     {
-        return nVersion == SHIELDED_TX_VERSION_VNEXT ||
+        return nVersion == SHIELDED_TX_VERSION_DSP ||
                (IsLegacyShieldedTransactionVersion(nVersion) &&
                 privacyVNext.IsPresent());
     }
@@ -1432,7 +1436,7 @@ public:
     {
         // Only the enumerated legacy shielded envelope carries the DSP fields;
         // reserved versions must not inherit them.
-        return IsShielded() && nVersion >= SHIELDED_TX_VERSION_DSP;
+        return IsShielded() && nVersion >= SHIELDED_TX_VERSION_DSP_PROTOTYPE;
     }
 
     bool IsFCMP() const

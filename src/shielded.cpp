@@ -467,7 +467,7 @@ bool DecodeShieldedRecipientPayload(
     if (vchPayload.empty())
         return true;
     if (!IsLegacyShieldedTransactionVersion(nTxVersion) ||
-        nTxVersion < SHIELDED_TX_VERSION_DSP)
+        nTxVersion < SHIELDED_TX_VERSION_DSP_PROTOTYPE)
         return false;
 
     CShieldedPaymentAddress canonicalAddressShape;

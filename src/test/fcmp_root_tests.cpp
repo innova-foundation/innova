@@ -309,7 +309,7 @@ BOOST_AUTO_TEST_CASE(binding_sighash_covers_fcmp_proof_and_root_for_all_fcmp_ver
 BOOST_AUTO_TEST_CASE(binding_sighash_covers_dsp_fields_for_versions_2001_to_2005)
 {
     const int versions[] = {
-        SHIELDED_TX_VERSION_DSP,
+        SHIELDED_TX_VERSION_DSP_PROTOTYPE,
         SHIELDED_TX_VERSION_FCMP,
         SHIELDED_TX_VERSION_NULLSTAKE,
         SHIELDED_TX_VERSION_NULLSTAKE_V2,
