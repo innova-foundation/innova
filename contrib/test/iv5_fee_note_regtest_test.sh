@@ -220,9 +220,23 @@ mine_to_exact "$BOUNDARY_B" || { fail "could not mine to $BOUNDARY_B"; exit 1; }
 
 PLAIN_H=$(( BOUNDARY_B + 1 ))
 mine_to_exact "$PLAIN_H" || { fail "could not mine to $PLAIN_H"; exit 1; }
+
+# The baseline is only a baseline if the block really is empty. A stray wallet
+# transaction pays its fee into the coinbase, which shifts every later
+# comparison by that fee and reports as a fee-note accounting fault. Advance
+# until a block carries the coinbase alone rather than assuming this one does.
+for _ in $(seq 1 6); do
+    [ "$(block_tx_count "$PLAIN_H")" = "1" ] && break
+    PLAIN_H=$(( PLAIN_H + 1 ))
+    mine_to_exact "$PLAIN_H" || { fail "could not mine to $PLAIN_H"; exit 1; }
+done
+if [ "$(block_tx_count "$PLAIN_H")" != "1" ]; then
+    fail "no transaction-free block found for the baseline"; exit 1
+fi
+
 PLAIN_CB="$(coinbase_value "$PLAIN_H")"
 [ -n "$PLAIN_CB" ] || { fail "could not read a plain coinbase"; exit 1; }
-success "a block with no transactions pays $PLAIN_CB"
+success "a block with no transactions pays $PLAIN_CB (height $PLAIN_H)"
 
 POOL_BEFORE="$(pool_value)"
 SH="$(rpc z_shieldall 2>&1)"
@@ -290,7 +304,14 @@ fi
 if feq "$FORK_CB" "$PLAIN_CB"; then
     success "the fork coinbase pays $FORK_CB transparently: the IV5 fee is not claimed"
 else
-    fail "the fork coinbase pays $FORK_CB against $PLAIN_CB for a plain block; the IV5 fee was claimed transparently as well as noted"
+    # Which side it lands on names a different fault, so do not report both as
+    # a double claim: above the baseline is the mint this test exists to catch,
+    # below it means the baseline block was not fee-free.
+    if python3 -c "import sys; sys.exit(0 if float('$FORK_CB') > float('$PLAIN_CB') else 1)"; then
+        fail "the fork coinbase pays $FORK_CB against $PLAIN_CB for a plain block; the IV5 fee was claimed transparently as well as noted"
+    else
+        fail "the fork coinbase pays $FORK_CB, below the $PLAIN_CB baseline; the baseline block carried fees a plain block should not have"
+    fi
 fi
 
 FORK_LEN="$(coinbase_raw_len "$FEE_NOTE")"
