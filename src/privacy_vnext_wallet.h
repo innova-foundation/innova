@@ -8,6 +8,7 @@
 #include "uint256.h"
 
 #include <stdint.h>
+#include <string>
 #include <vector>
 
 static const uint32_t PRIVACY_VNEXT_WALLET_SEED_GENERATION = 1;
@@ -68,6 +69,68 @@ struct CPrivacyVNextWalletNote
         READWRITE(vchY);
         READWRITE(vchMask);
         READWRITE(vchKeyImage);
+    )
+};
+
+// A collateral attestation this wallet published or is about to. Persisted so the note is
+// never picked for an ordinary spend, which would permanently retire its key image for
+// registration.
+class CPrivacyVNextCollateralRegistration
+{
+public:
+    uint256 keyImage;
+    uint256 fundingTxHash;
+    uint32_t nFundingOutputIndex;
+    // Zero until the attestation is built; set once, at broadcast.
+    uint256 attestationTxHash;
+    // The digest the payload bound. Nothing may change the tuple behind it for this key
+    // image, so it is kept alongside its components to detect later config drift.
+    uint256 hashContext;
+    std::vector<unsigned char> vchCollateralPubKey;
+    // Wallet key the announcement is signed with, and today's transparent payee.
+    uint160 announceKeyId;
+    std::string strAddr;
+    std::string strPoolPayout;
+    int64_t nTimeCreated;
+
+    CPrivacyVNextCollateralRegistration()
+    {
+        SetNull();
+    }
+
+    void SetNull()
+    {
+        keyImage = 0;
+        fundingTxHash = 0;
+        nFundingOutputIndex = 0;
+        attestationTxHash = 0;
+        hashContext = 0;
+        vchCollateralPubKey.clear();
+        announceKeyId = 0;
+        strAddr.clear();
+        strPoolPayout.clear();
+        nTimeCreated = 0;
+    }
+
+    bool IsValid() const
+    {
+        return keyImage != 0 && !strAddr.empty() &&
+               strPoolPayout.size() <= 128 && !vchCollateralPubKey.empty() &&
+               vchCollateralPubKey.size() <= 65;
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(keyImage);
+        READWRITE(fundingTxHash);
+        READWRITE(nFundingOutputIndex);
+        READWRITE(attestationTxHash);
+        READWRITE(hashContext);
+        READWRITE(vchCollateralPubKey);
+        READWRITE(announceKeyId);
+        READWRITE(strAddr);
+        READWRITE(strPoolPayout);
+        READWRITE(nTimeCreated);
     )
 };
 

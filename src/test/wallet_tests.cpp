@@ -1,8 +1,11 @@
 #include <boost/test/unit_test.hpp>
 
+#include <cstring>
+
 #include "main.h"
 #include "privacy_vnext_ffi.h"
 #include "wallet.h"
+#include "walletdb.h"
 
 // how many times to run all the tests to have a chance to catch errors that only show up with particular random shuffles
 #define RUN_TESTS 100
@@ -539,6 +542,139 @@ BOOST_AUTO_TEST_CASE(privacy_vnext_selection_honours_depth_position_and_bound)
     BOOST_REQUIRE(many.SelectPrivacyVNextNotes(16, nSpendHeight, vSelected, nValue));
     BOOST_CHECK_EQUAL(vSelected.size(), PRIVACY_VNEXT_MAX_SPEND_INPUTS);
     BOOST_CHECK_EQUAL(nValue, 16);
+}
+
+namespace
+{
+
+CPrivacyVNextCollateralRegistration MakeCollateralRecord(
+    const CPrivacyVNextWalletNote& note)
+{
+    CPrivacyVNextCollateralRegistration record;
+    std::memcpy(record.keyImage.begin(), &note.vchKeyImage[0], 32);
+    record.fundingTxHash = note.txhash;
+    record.nFundingOutputIndex = note.nOutputIndex;
+    record.hashContext = uint256(0x5c);
+    record.vchCollateralPubKey.assign(33, 0x02);
+    record.announceKeyId = uint160(0x11);
+    record.strAddr = "127.0.0.1:14539";
+    record.strPoolPayout = "iv5payoutaddress";
+    record.nTimeCreated = 1;
+    return record;
+}
+
+// nBestHeight drives the balance views, and the harness leaves it at genesis.
+struct BestHeightOverride
+{
+    int nSaved;
+    explicit BestHeightOverride(int nHeight) : nSaved(nBestHeight)
+    {
+        nBestHeight = nHeight;
+    }
+    ~BestHeightOverride() { nBestHeight = nSaved; }
+};
+
+} // namespace
+
+// Largest-first selection would pick a 25,000 collateral note first, and spending it
+// deregisters the collateralnode permanently. The exclusion must survive a wallet
+// reload; only release lifts it.
+BOOST_AUTO_TEST_CASE(privacy_vnext_collateral_lock_excludes_a_note_across_reload)
+{
+    const std::string walletFile("iv5-collateral-lock-test.dat");
+    const int nSpendHeight = 1000;
+    const int nDeep = nSpendHeight - MIN_SHIELDED_SPEND_DEPTH;
+    const CPrivacyVNextWalletNote collateral = MakeVNextNote(2500000000000ULL,
+                                                             nDeep, true, 7);
+    const CPrivacyVNextWalletNote ordinary = MakeVNextNote(500, nDeep, true, 8);
+    const CPrivacyVNextCollateralRegistration record =
+        MakeCollateralRecord(collateral);
+
+    {
+        CWalletDB walletdb(walletFile);
+        BOOST_REQUIRE(walletdb.WritePrivacyVNextNote(collateral.txhash,
+                                                     collateral.nOutputIndex,
+                                                     collateral));
+        BOOST_REQUIRE(walletdb.WritePrivacyVNextNote(ordinary.txhash,
+                                                     ordinary.nOutputIndex,
+                                                     ordinary));
+    }
+
+    std::vector<CPrivacyVNextWalletNote> vSelected;
+    int64_t nValue = 0;
+
+    // Unlocked, the collateral note is what an ordinary spend reaches for first.
+    {
+        CWallet before(walletFile);
+        BOOST_REQUIRE_EQUAL(CWalletDB(walletFile).LoadWallet(&before), DB_LOAD_OK);
+        BOOST_REQUIRE_EQUAL(before.vPrivacyVNextNotes.size(), 2U);
+        BOOST_REQUIRE(before.SelectPrivacyVNextNotes(100, nSpendHeight, vSelected,
+                                                     nValue));
+        BOOST_CHECK_EQUAL(vSelected.size(), 1U);
+        BOOST_CHECK_EQUAL(vSelected[0].nAmount, collateral.nAmount);
+    }
+
+    {
+        CWallet locked(walletFile);
+        BOOST_REQUIRE_EQUAL(CWalletDB(walletFile).LoadWallet(&locked), DB_LOAD_OK);
+        std::string error;
+        BOOST_REQUIRE_MESSAGE(
+            locked.AddPrivacyVNextCollateralRegistration(record, error), error);
+        BOOST_CHECK(locked.IsPrivacyVNextCollateralLocked(record.keyImage));
+
+        // A small spend now takes the ordinary note, and the collateral note is
+        // unreachable at any target.
+        BOOST_REQUIRE(locked.SelectPrivacyVNextNotes(100, nSpendHeight, vSelected,
+                                                     nValue));
+        BOOST_CHECK_EQUAL(vSelected.size(), 1U);
+        BOOST_CHECK_EQUAL(vSelected[0].nAmount, ordinary.nAmount);
+        BOOST_CHECK(!locked.SelectPrivacyVNextNotes(1000, nSpendHeight, vSelected,
+                                                    nValue));
+
+        BestHeightOverride height(nSpendHeight);
+        BOOST_CHECK_EQUAL(locked.GetPrivacyVNextBalance(),
+                          (int64_t)ordinary.nAmount);
+        BOOST_CHECK_EQUAL(locked.GetPrivacyVNextCollateralBalance(),
+                          (int64_t)collateral.nAmount);
+        BOOST_CHECK_EQUAL(locked.GetPrivacyVNextUnconfirmedBalance(), 0);
+    }
+
+    // A fresh wallet over the same file: the lock is a record, not process state.
+    {
+        CWallet reloaded(walletFile);
+        BOOST_REQUIRE_EQUAL(CWalletDB(walletFile).LoadWallet(&reloaded), DB_LOAD_OK);
+        BOOST_CHECK(reloaded.IsPrivacyVNextCollateralLocked(record.keyImage));
+        CPrivacyVNextCollateralRegistration loaded;
+        BOOST_REQUIRE(reloaded.GetPrivacyVNextCollateralRegistration(
+            record.keyImage, loaded));
+        BOOST_CHECK_EQUAL(loaded.strAddr, record.strAddr);
+        BOOST_CHECK_EQUAL(loaded.strPoolPayout, record.strPoolPayout);
+        BOOST_CHECK(loaded.hashContext == record.hashContext);
+        BOOST_CHECK(loaded.fundingTxHash == collateral.txhash);
+
+        BOOST_REQUIRE(reloaded.SelectPrivacyVNextNotes(100, nSpendHeight, vSelected,
+                                                       nValue));
+        BOOST_CHECK_EQUAL(vSelected.size(), 1U);
+        BOOST_CHECK_EQUAL(vSelected[0].nAmount, ordinary.nAmount);
+
+        // Release is the deliberate deregistration path and the only way back.
+        std::string error;
+        BOOST_REQUIRE_MESSAGE(
+            reloaded.ReleasePrivacyVNextCollateralRegistration(record.keyImage,
+                                                               error), error);
+        BOOST_CHECK(!reloaded.IsPrivacyVNextCollateralLocked(record.keyImage));
+        BOOST_REQUIRE(reloaded.SelectPrivacyVNextNotes(100, nSpendHeight, vSelected,
+                                                       nValue));
+        BOOST_CHECK_EQUAL(vSelected[0].nAmount, collateral.nAmount);
+    }
+
+    // The release is persisted too, or the next restart would re-lock a note the
+    // operator deliberately freed.
+    {
+        CWallet released(walletFile);
+        BOOST_REQUIRE_EQUAL(CWalletDB(walletFile).LoadWallet(&released), DB_LOAD_OK);
+        BOOST_CHECK(!released.IsPrivacyVNextCollateralLocked(record.keyImage));
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
