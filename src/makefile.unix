@@ -757,11 +757,15 @@ obj/%.o: %.cc
 endif
 
 PRIVACY_VNEXT_RUST_DIR := $(CURDIR)/privacy_vnext/rust
-PRIVACY_VNEXT_RUST_PROFILE := debug
-PRIVACY_VNEXT_RUST_FLAGS :=
-ifdef RELEASE
+# The vendored proof library is a dependency, not the code under test, so it is
+# built optimized even for debug builds of the daemon: unoptimized, its proof
+# math put the unit suite over an hour, which is long enough that a release gate
+# gets skipped. Set PRIVACY_VNEXT_RUST_DEBUG=1 to step through the crate itself.
 PRIVACY_VNEXT_RUST_PROFILE := release
 PRIVACY_VNEXT_RUST_FLAGS := --release
+ifdef PRIVACY_VNEXT_RUST_DEBUG
+PRIVACY_VNEXT_RUST_PROFILE := debug
+PRIVACY_VNEXT_RUST_FLAGS :=
 endif
 PRIVACY_VNEXT_RUST_LIB := $(PRIVACY_VNEXT_RUST_DIR)/target/$(PRIVACY_VNEXT_RUST_PROFILE)/libinnova_privacy_vnext.a
 PRIVACY_VNEXT_RUST_INPUTS := \
