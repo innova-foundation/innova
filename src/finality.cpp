@@ -9361,6 +9361,20 @@ static bool ProduceNoteFinalityVote(CTxDB& txdb, CBlockIndex* pEpochBlock,
         nIncludingHeight >= nBoundary + FINALITY_VOTE_INCLUSION_WINDOW)
         return false;
 
+    // The cast set lives in memory, and a vote that is pending but not yet connected
+    // leaves no record a restart can read. Voting again in that epoch would put a
+    // second identity under one tag and retire both, so the epoch already open when
+    // this process started is skipped. It costs at most one epoch after a restart.
+    static int nFirstEpochSeen = -1;
+    if (nFirstEpochSeen < 0)
+        nFirstEpochSeen = (nIncludingHeight > nBoundary) ? nCurrentEpoch : -2;
+    if (nFirstEpochSeen == nCurrentEpoch)
+    {
+        if (fDebug)
+            printf("ProduceNoteFinalityVote: skipping epoch %d, already open at "
+                   "startup and any earlier vote is unrecorded\n", nCurrentEpoch);
+        return false;
+    }
 
     CFinalityTallyConfig config;
     if (!GetNoteVoteCommitteeConfig(nCurrentEpoch, config))
@@ -9411,9 +9425,11 @@ static bool ProduceNoteFinalityVote(CTxDB& txdb, CBlockIndex* pEpochBlock,
 
     uint256 keyImage = 0;
     memcpy(keyImage.begin(), &note.vchKeyImage[0], 32);
-    // Before the first proof: a failure after this point costs this epoch's vote, which
-    // is cheaper than a second identity under the same tag.
-    setCast.insert(keyImage);
+    // The note is recorded as cast only once a vote is actually pending, further down.
+    // Equivocation needs a vote that was relayed; a failure before that relayed nothing,
+    // so retrying is safe. Recording it here instead burned a note per attempt, and a
+    // wallet whose stake is entirely shielded has no other vote to set nLastEpochVoted,
+    // so the voter retries through the whole window and drains every eligible note.
 
     CNoteVoteBuildContext ctx;
     ctx.nEpoch = nCurrentEpoch;
@@ -9465,6 +9481,10 @@ static bool ProduceNoteFinalityVote(CTxDB& txdb, CBlockIndex* pEpochBlock,
                nCurrentEpoch, strError.c_str());
         return false;
     }
+
+    // Pending now, so a second vote on this note would be a second identity under one
+    // tag and retire both.
+    setCast.insert(keyImage);
 
     printf("ProduceNoteFinalityVote: epoch=%d height=%d anchor=%s tag=%s\n",
            nCurrentEpoch, nEpochHeight,
