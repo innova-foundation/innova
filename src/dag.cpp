@@ -3367,7 +3367,8 @@ bool CDAGManager::ValidateEpochStateTip(const CBlockIndex* pBest,
     return true;
 }
 
-bool CDAGManager::GetLastFinalizedEpochState(CEpochState& stateOut) const
+bool CDAGManager::GetLastFinalizedEpochState(CEpochState& stateOut,
+                                             bool fRequireCurveRoot) const
 {
     int nFinalizedEpoch = GetEpochForHeight(g_finalityTracker.GetFinalizedHeight());
 
@@ -3378,7 +3379,7 @@ bool CDAGManager::GetLastFinalizedEpochState(CEpochState& stateOut) const
         std::map<int, CEpochState>::const_iterator it = mapEpochState.find(nEpoch);
         if (it == mapEpochState.end())
             continue;
-        if (it->second.hashCurveRoot == 0)
+        if (fRequireCurveRoot && it->second.hashCurveRoot == 0)
             continue;
         stateOut = it->second;
         return true;

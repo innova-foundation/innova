@@ -365,6 +365,22 @@ public:
         std::vector<CPrivacyVNextWalletNote>& vSelected,
         int64_t& nSelectedValue,
         uint64_t nAnchorTreeSize = std::numeric_limits<uint64_t>::max()) const;
+    // The note this wallet would weigh a finality vote with, and the membership witness
+    // cut from the anchor the vote must prove against. The anchor is the caller's: a note
+    // vote names one exact finalized epoch, so this never falls back to an older root the
+    // way a spend does. `setSkipKeyImages` carries the notes already voted this epoch,
+    // because a second vote under one note's tag retires both.
+    bool SelectPrivacyVNextVoteNote(
+        CTxDB& txdb,
+        const std::vector<unsigned char>& vchAnchorState,
+        const std::vector<unsigned char>& vchAnchorRoot,
+        uint64_t nAnchorTreeSize,
+        int nSpendHeight,
+        int64_t nMinAmount,
+        const std::set<uint256>& setSkipKeyImages,
+        CPrivacyVNextWalletNote& noteOut,
+        std::vector<unsigned char>& vchWitnessRecordOut,
+        std::string& strErrorOut) const;
 
     std::map<uint256, CColdStakeDelegation> mapColdStakeDelegations;  // hashOwner -> delegation
     bool AddColdStakeDelegation(const CColdStakeDelegation& deleg);

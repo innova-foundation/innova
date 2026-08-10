@@ -15,7 +15,9 @@
 #include "../main.h"
 #include "../privacy_vnext/iv5_protocol.h"
 #include "../privacy_vnext_ffi.h"
+#include "../privacy_vnext_store.h"
 #include "../serialize.h"
+#include "../txdb.h"
 #include "../util.h"
 #include "../zkproof.h"
 
@@ -1406,6 +1408,503 @@ BOOST_AUTO_TEST_CASE(note_vote_sigma_binds_the_vote_and_gates_the_membership_pro
     BOOST_CHECK(!CheckNoteVote(mutated, config.nThresholdM, config.nThresholdN, &strError));
     BOOST_CHECK_EQUAL(strError, strSigmaError);
     BOOST_CHECK(mutated.GetVoteTag() != vote.GetVoteTag());
+}
+
+// --- The producer -----------------------------------------------------------
+//
+// Every case above builds its vote around a membership request that is deliberately not a
+// real proof. These run the producer instead, over a note actually placed in the IV5 tree,
+// so the membership proof is real and CheckNoteVote is reached in full.
+
+namespace
+{
+
+// One note in the IV5 tree and the material a vote over it is built from.
+struct VotableNote
+{
+    PrivacyVNextSpendInput input;
+    PrivacyVNextDigest mask;
+    uint256 hashAnchorRoot;
+    uint64_t nAmount;
+    uint64_t nTreeSize;
+
+    VotableNote() : hashAnchorRoot(0), nAmount(0), nTreeSize(0) {}
+};
+
+// Reset the tree store to one leaf we own, then cut that leaf's witness from it. The
+// anchor root and the witness come from the same frontier, which is the only pairing
+// that folds onto a root a validator accepts.
+void FundVotableNote(CTxDB& txdb, VotableNote& funded, unsigned char nSeed,
+                     uint64_t nAmount)
+{
+    std::string error;
+    PrivacyVNextDigest genesis;
+    PrivacyVNextLocalGenesis(genesis.data());
+    const uint8_t nNetwork = PrivacyVNextLocalNetworkId();
+
+    PrivacyVNextDigest seed;
+    seed.fill(nSeed);
+    PrivacyVNextDerivedKeys keys;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextKeys(seed, genesis, 0, nNetwork, 0, keys, error), error);
+
+    // Canonical field elements: a repeated byte overflows the group order.
+    PrivacyVNextDigest noteEphemeral, tweakEphemeral, outY, outMask;
+    noteEphemeral.fill(0);
+    tweakEphemeral.fill(0);
+    outY.fill(0);
+    outMask.fill(0);
+    noteEphemeral[0] = (unsigned char)(nSeed ^ 0x11);
+    tweakEphemeral[0] = (unsigned char)(nSeed ^ 0x22);
+    outY[0] = (unsigned char)(nSeed ^ 0x33);
+    outMask[0] = (unsigned char)(nSeed ^ 0x44);
+    PrivacyVNextEncryptedOutput funding;
+    BOOST_REQUIRE_MESSAGE(
+        EncryptPrivacyVNextNote(nNetwork, 0, 0, genesis, keys.spendPublic,
+                                keys.viewPublic, keys.outgoingViewSecret,
+                                noteEphemeral, tweakEphemeral, nAmount, outY,
+                                outMask, funding, error),
+        error);
+
+    PrivacyVNextEpochSeed epochSeed;
+    BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextEpochSeed(epochSeed, error), error);
+    std::vector<unsigned char> treeState = epochSeed.vchTreeState;
+    BOOST_REQUIRE_MESSAGE(TrimPrivacyVNextTreeStore(txdb, 0, treeState, error), error);
+    std::vector<PrivacyVNextOutputLeaf> vLeaves(1, funding.leaf);
+    BOOST_REQUIRE_MESSAGE(
+        GrowPrivacyVNextTreeStore(txdb, vLeaves, treeState, error), error);
+
+    std::vector<unsigned char> vchRoot;
+    BOOST_REQUIRE_MESSAGE(
+        DecodePrivacyVNextTreeState(treeState, vchRoot, funded.nTreeSize, error), error);
+    BOOST_REQUIRE_EQUAL(vchRoot.size(), 32U);
+
+    std::vector<uint64_t> vTargets(1, 0);
+    std::vector<unsigned char> vchPaths;
+    BOOST_REQUIRE_MESSAGE(
+        ReadPrivacyVNextTreePaths(txdb, funded.nTreeSize, treeState, vTargets,
+                                  vchPaths, error),
+        error);
+    std::vector<PrivacyVNextMembershipWitness> vWitnesses;
+    PrivacyVNextDigest treeRoot;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextWitnessesFromPaths(treeState, vTargets, vchPaths,
+                                            vWitnesses, treeRoot, error),
+        error);
+    BOOST_REQUIRE_EQUAL(vWitnesses.size(), 1U);
+    BOOST_REQUIRE(std::equal(treeRoot.begin(), treeRoot.end(), vchRoot.begin()));
+
+    PrivacyVNextEncryptedNote onChain;
+    onChain.nOutputIndex = 0;
+    onChain.genesis = genesis;
+    onChain.leafO = funding.leaf.owner;
+    onChain.leafC = funding.leaf.commitment;
+    onChain.noteEphemeral = funding.noteEphemeral;
+    onChain.tweakEphemeral = funding.tweakEphemeral;
+    onChain.vchCiphertext = funding.vchRecipientCiphertext;
+    PrivacyVNextScannedNote scanned;
+    BOOST_REQUIRE_MESSAGE(
+        ScanPrivacyVNextNote(PRIVACY_VNEXT_SCAN_FULL, nNetwork, 0, onChain,
+                             keys.viewSecret, keys.spendSecret, scanned, error),
+        error);
+    BOOST_REQUIRE_EQUAL(scanned.nAmount, nAmount);
+
+    funded.input.spendScalar = scanned.spendSecret;
+    funded.input.commitmentScalar = scanned.y;
+    funded.input.leaf = funding.leaf;
+    funded.input.vchWitnessRecord = vWitnesses[0].vchRecord;
+    funded.mask = scanned.mask;
+    funded.nAmount = scanned.nAmount;
+    funded.hashAnchorRoot = 0;
+    memcpy(funded.hashAnchorRoot.begin(), &vchRoot[0], 32);
+}
+
+// Chain context a note vote is checked against, restored on the way out. The note-vote
+// fork height, the block the vote targets and the finalized epoch state are all global.
+struct ScopedNoteVoteContext
+{
+    int nNoteVoteHeightSaved;
+    uint256 hashBlock;
+    CBlockIndex index;
+    CBlockIndex* pOldIndex;
+    bool fHadOldIndex;
+    CTxDB& txdb;
+    int nEpochStateKey;
+    CEpochState original;
+    bool fHadOriginal;
+
+    ScopedNoteVoteContext(CTxDB& txdbIn, const uint256& hashBlockIn, int nBlockHeight,
+                          int nEpochStateKeyIn)
+        : nNoteVoteHeightSaved(nRegtestIV5NoteVoteHeight), hashBlock(hashBlockIn),
+          pOldIndex(NULL), fHadOldIndex(false), txdb(txdbIn),
+          nEpochStateKey(nEpochStateKeyIn), fHadOriginal(false)
+    {
+        nRegtestIV5NoteVoteHeight = 0;
+
+        std::map<uint256, CBlockIndex*>::iterator itOld = mapBlockIndex.find(hashBlock);
+        if (itOld != mapBlockIndex.end())
+        {
+            fHadOldIndex = true;
+            pOldIndex = itOld->second;
+        }
+        index.nHeight = nBlockHeight;
+        index.nFlags = 0;   // proof of work, which a note vote must target
+        mapBlockIndex[hashBlock] = &index;
+        index.phashBlock = &mapBlockIndex.find(hashBlock)->first;
+
+        fHadOriginal = txdb.ReadEpochState(nEpochStateKey, original);
+        txdb.EraseEpochState(nEpochStateKey);
+    }
+
+    ~ScopedNoteVoteContext()
+    {
+        if (fHadOriginal)
+            txdb.WriteEpochState(nEpochStateKey, original);
+        else
+            txdb.EraseEpochState(nEpochStateKey);
+        if (fHadOldIndex)
+            mapBlockIndex[hashBlock] = pOldIndex;
+        else
+            mapBlockIndex.erase(hashBlock);
+        nRegtestIV5NoteVoteHeight = nNoteVoteHeightSaved;
+    }
+};
+
+CNoteVoteBuildContext VoteContext(const VotableNote& funded, int nEpoch)
+{
+    CNoteVoteBuildContext ctx;
+    ctx.nEpoch = nEpoch;
+    ctx.nHeight = GetEpochBoundaryHeight(nEpoch, 0);
+    ctx.hashBlock = uint256(0x9001);
+    ctx.hashAnchorRoot = funded.hashAnchorRoot;
+    ctx.hashNullifierRoot = uint256(0x9002);
+    ctx.nAmount = (int64_t)funded.nAmount;
+    ctx.nReward = 11;
+    return ctx;
+}
+
+} // namespace
+
+// The whole contract, end to end: a vote built over a note that is really in the tree has
+// to pass the checker consensus runs, with the real membership proof rather than the
+// stand-in every case above uses.
+BOOST_AUTO_TEST_CASE(a_produced_note_vote_passes_the_checker)
+{
+    ScopedTallyArgs scopedArgs;
+    CTxDB txdb("r+");
+    std::vector<CKey> vKeys(4);
+    const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 3);
+
+    VotableNote funded;
+    FundVotableNote(txdb, funded, 0x71, (uint64_t)FINALITY_MIN_VOTE_WEIGHT + 4200);
+    const CNoteVoteBuildContext ctx = VoteContext(funded, 907);
+
+    CNoteFinalityVote vote;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(
+        BuildNoteFinalityVote(ctx, funded.input, funded.mask, config, vote, &strError),
+        strError);
+
+    BOOST_CHECK(CheckNoteVote(vote, config.nThresholdM, config.nThresholdN, &strError));
+
+    // The vote names the epoch it was asked for and the anchor it proved against, and the
+    // proof's own root field is that anchor rather than one declared beside it.
+    BOOST_CHECK_EQUAL(vote.nEpoch, ctx.nEpoch);
+    BOOST_CHECK(vote.hashCurveRoot == funded.hashAnchorRoot);
+    BOOST_CHECK(memcmp(&vote.vchMembership[FINALITY_NOTE_MEMBERSHIP_HEADER],
+                       funded.hashAnchorRoot.begin(), 32) == 0);
+    BOOST_CHECK(vote.committeeSetHash == config.committeeSetHash);
+
+    // Share shape is the committee's, not the voter's, and K_0 is the commitment the
+    // membership proof re-randomized rather than the note's own leaf commitment.
+    BOOST_CHECK_EQUAL((int)vote.share.vVssCoefficients.size(), config.nThresholdM);
+    BOOST_CHECK_EQUAL((int)vote.share.vEncryptedRecipientShares.size(),
+                      config.nThresholdN);
+    PrivacyVNextDigest cTilde = ZeroDigest();
+    PrivacyVNextDigest commitment = ZeroDigest();
+    BOOST_REQUIRE(vote.GetCTilde(cTilde));
+    BOOST_REQUIRE(vote.share.GetCommitment(commitment));
+    BOOST_CHECK(commitment == cTilde);
+    BOOST_CHECK(cTilde != funded.input.leaf.commitment);
+
+    // Every committee member can open its own evaluation, which is what makes the vote
+    // tallyable rather than merely well-formed.
+    for (size_t i = 0; i < vKeys.size(); i++)
+    {
+        CNoteTallyPlainShare plain;
+        bool fComplainable = false;
+        BOOST_CHECK(DecryptNoteVoteShareForRecipient(vote.share, config, vKeys[i],
+                                                     (int)i, plain, &fComplainable));
+        BOOST_CHECK(CheckNoteVoteVssEvaluation(vote.share, plain, &strError));
+    }
+}
+
+// Nothing half-built ever leaves the producer: an input it cannot satisfy yields no vote
+// at all, because a partial vote relayed is a peer's rejection and a producer's wasted
+// block space.
+BOOST_AUTO_TEST_CASE(note_vote_production_fails_closed)
+{
+    ScopedTallyArgs scopedArgs;
+    CTxDB txdb("r+");
+    std::vector<CKey> vKeys(3);
+    const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 2);
+
+    VotableNote funded;
+    FundVotableNote(txdb, funded, 0x72, (uint64_t)FINALITY_MIN_VOTE_WEIGHT);
+    const CNoteVoteBuildContext base = VoteContext(funded, 908);
+
+    CNoteFinalityVote vote;
+    std::string strError;
+
+    // No finalized anchor: nothing to prove against, so nothing is produced.
+    CNoteVoteBuildContext ctx = base;
+    ctx.hashAnchorRoot = 0;
+    BOOST_CHECK(!BuildNoteFinalityVote(ctx, funded.input, funded.mask, config, vote,
+                                       &strError));
+    BOOST_CHECK_EQUAL(strError, "note vote has no finalized anchor to build against");
+    BOOST_CHECK(vote.vchMembership.empty() && vote.vchSigma.empty());
+
+    // Under the floor there is no weight-floor proof to make, so the vote is refused here
+    // rather than at the first peer that checks it.
+    ctx = base;
+    ctx.nAmount = FINALITY_MIN_VOTE_WEIGHT - 1;
+    BOOST_CHECK(!BuildNoteFinalityVote(ctx, funded.input, funded.mask, config, vote,
+                                       &strError));
+    BOOST_CHECK_EQUAL(strError,
+                      "note vote weight or reward is outside the range a vote may carry");
+    BOOST_CHECK(vote.vchMembership.empty());
+
+    // A committee of one opens this voter's exact weight, which is the one thing the
+    // share split exists to prevent.
+    std::vector<CKey> vSolo(1);
+    const CFinalityTallyConfig soloConfig = MakeNoteCommittee(vSolo, 1);
+    BOOST_CHECK(!BuildNoteFinalityVote(base, funded.input, funded.mask, soloConfig, vote,
+                                       &strError));
+    BOOST_CHECK_EQUAL(strError,
+                      "note vote needs a valid M-of-N committee with M above one");
+
+    // No witness, no membership proof. A note may be ours and still have no position
+    // under the anchor the vote has to name.
+    PrivacyVNextSpendInput witnessless;
+    witnessless.spendScalar = funded.input.spendScalar;
+    witnessless.commitmentScalar = funded.input.commitmentScalar;
+    witnessless.leaf = funded.input.leaf;
+    BOOST_CHECK(!BuildNoteFinalityVote(base, witnessless, funded.mask, config, vote,
+                                       &strError));
+    BOOST_CHECK_EQUAL(strError,
+                      "note vote has no membership witness for the anchor tree");
+
+    // A mask that does not open the note's own commitment reaches a C~ the membership
+    // proof never produced, so K_0 cannot be the vote's commitment.
+    PrivacyVNextDigest wrongMask = funded.mask;
+    wrongMask[0] ^= 0x01;
+    BOOST_CHECK(!BuildNoteFinalityVote(base, funded.input, wrongMask, config, vote,
+                                       &strError));
+    BOOST_CHECK_EQUAL(strError,
+                      "note vote share does not open the membership proof's commitment");
+    BOOST_CHECK(vote.vchMembership.empty() && vote.vchTag.empty());
+}
+
+// The tag is one note's single identity for one epoch. Two runs over the same note reach
+// it again -- which is why the producer may only run once per note per epoch -- and a
+// different epoch reaches a different one.
+BOOST_AUTO_TEST_CASE(one_note_reaches_one_tag_per_epoch)
+{
+    ScopedTallyArgs scopedArgs;
+    CTxDB txdb("r+");
+    std::vector<CKey> vKeys(3);
+    const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 2);
+
+    VotableNote funded;
+    FundVotableNote(txdb, funded, 0x73, (uint64_t)FINALITY_MIN_VOTE_WEIGHT + 9);
+    const CNoteVoteBuildContext ctx = VoteContext(funded, 909);
+
+    CNoteFinalityVote first, second;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(
+        BuildNoteFinalityVote(ctx, funded.input, funded.mask, config, first, &strError),
+        strError);
+    BOOST_REQUIRE_MESSAGE(
+        BuildNoteFinalityVote(ctx, funded.input, funded.mask, config, second, &strError),
+        strError);
+
+    // Same tag, different bytes: running the producer twice inside one epoch mints a
+    // second identity under one tag, and a tag with two identities counts for neither.
+    BOOST_CHECK(first.GetVoteTag() == second.GetVoteTag());
+    BOOST_CHECK(first.GetVoteTag() != 0);
+    BOOST_CHECK(first.GetHash() != second.GetHash());
+    std::vector<const CNoteFinalityVote*> vCarried;
+    vCarried.push_back(&first);
+    vCarried.push_back(&second);
+    std::map<uint256, const CNoteFinalityVote*> mapCounted;
+    std::set<uint256> setEquivocated;
+    ResolveNoteVoteCounting(vCarried, mapCounted, setEquivocated);
+    BOOST_CHECK(mapCounted.empty());
+    BOOST_CHECK_EQUAL(setEquivocated.size(), 1U);
+
+    CNoteVoteBuildContext nextEpoch = ctx;
+    nextEpoch.nEpoch = ctx.nEpoch + 1;
+    CNoteFinalityVote later;
+    BOOST_REQUIRE_MESSAGE(
+        BuildNoteFinalityVote(nextEpoch, funded.input, funded.mask, config, later,
+                              &strError),
+        strError);
+    BOOST_CHECK(later.GetVoteTag() != first.GetVoteTag());
+    BOOST_CHECK(CheckNoteVote(later, config.nThresholdM, config.nThresholdN, &strError));
+}
+
+// With a real membership proof the sigma is the only thing left to reject a mutated vote,
+// which is where the binding is actually load-bearing: nothing the producer put in the
+// vote can be restated by a relaying peer.
+BOOST_AUTO_TEST_CASE(a_produced_note_vote_is_bound_to_the_fields_it_declares)
+{
+    ScopedTallyArgs scopedArgs;
+    CTxDB txdb("r+");
+    std::vector<CKey> vKeys(3);
+    const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 2);
+
+    VotableNote funded;
+    FundVotableNote(txdb, funded, 0x74, (uint64_t)FINALITY_MIN_VOTE_WEIGHT + 77);
+    const CNoteVoteBuildContext ctx = VoteContext(funded, 910);
+
+    CNoteFinalityVote vote;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(
+        BuildNoteFinalityVote(ctx, funded.input, funded.mask, config, vote, &strError),
+        strError);
+
+    const std::string strSigmaError = "note vote sigma does not verify";
+    CNoteFinalityVote mutated = vote;
+    mutated.nEpoch = vote.nEpoch + 1;
+    mutated.share.nEpoch = mutated.nEpoch;
+    BOOST_CHECK(!CheckNoteVote(mutated, config.nThresholdM, config.nThresholdN,
+                               &strError));
+    BOOST_CHECK_EQUAL(strError, strSigmaError);
+
+    mutated = vote;
+    mutated.hashBlock = uint256(0x9999);
+    BOOST_CHECK(!CheckNoteVote(mutated, config.nThresholdM, config.nThresholdN,
+                               &strError));
+    BOOST_CHECK_EQUAL(strError, strSigmaError);
+
+    mutated = vote;
+    mutated.nHeight = vote.nHeight + 1;
+    BOOST_CHECK(!CheckNoteVote(mutated, config.nThresholdM, config.nThresholdN,
+                               &strError));
+    BOOST_CHECK_EQUAL(strError, strSigmaError);
+
+    mutated = vote;
+    mutated.hashNullifierRoot = uint256(0x9003);
+    BOOST_CHECK(!CheckNoteVote(mutated, config.nThresholdM, config.nThresholdN,
+                               &strError));
+    BOOST_CHECK_EQUAL(strError, strSigmaError);
+
+    // The weight-floor proof re-randomizes over the same point, so leaving it unbound
+    // would let a peer mint a byte-distinct twin under this vote's own tag.
+    mutated = vote;
+    mutated.vchWeightFloorProof[0] ^= 0x01;
+    BOOST_CHECK(!CheckNoteVote(mutated, config.nThresholdM, config.nThresholdN,
+                               &strError));
+    BOOST_CHECK_EQUAL(strError, strSigmaError);
+
+    // Swapping the anchor for another real root strands the vote at the structural check,
+    // before either the sigma or the membership verification runs.
+    VotableNote other;
+    FundVotableNote(txdb, other, 0x75, (uint64_t)FINALITY_MIN_VOTE_WEIGHT + 5);
+    BOOST_REQUIRE(other.hashAnchorRoot != funded.hashAnchorRoot);
+    mutated = vote;
+    mutated.hashCurveRoot = other.hashAnchorRoot;
+    BOOST_CHECK(!CheckNoteVote(mutated, config.nThresholdM, config.nThresholdN,
+                               &strError));
+    BOOST_CHECK_EQUAL(strError,
+                      "note vote membership root differs from the declared anchor");
+}
+
+// The anchor a note vote declares is the finalized epoch's IV5 note-tree root, because
+// that is the root its membership proof is over and the one IsValidBasic pins the proof's
+// own root field to. CEpochState::hashCurveRoot is the retired ring-signature curve tree
+// and is a different value entirely -- zero on a chain that never carried one -- so a
+// context check reading it rejects every note vote that could ever exist.
+BOOST_AUTO_TEST_CASE(note_vote_context_anchors_to_the_iv5_tree_root)
+{
+    ScopedTallyArgs scopedArgs;
+    CTxDB txdb("r+");
+    std::vector<CKey> vKeys(3);
+    const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 2);
+
+    CFinalityTracker tracker;
+    tracker.SetInitialFinalityCommittee(config.vCommitteePubKeys, config.nThresholdM);
+
+    // An epoch whose boundary is past the DAG fork, so the anchor resolves from the
+    // persisted epoch state the way a connecting block resolves it.
+    const int nVoteEpoch = 3;
+    const int nVoteHeight = GetEpochBoundaryHeight(nVoteEpoch, 0);
+    BOOST_REQUIRE_EQUAL(GetEpochForHeight(nVoteHeight), nVoteEpoch);
+    BOOST_REQUIRE(nVoteHeight >= FORK_HEIGHT_EPOCH_STATE_V2);
+    const int nAnchorEpoch = nVoteEpoch - 1;
+    const int nFinalizedHeight = GetEpochBoundaryHeight(nAnchorEpoch, 0) + 1;
+    BOOST_REQUIRE_EQUAL(GetEpochForHeight(nFinalizedHeight), nAnchorEpoch);
+
+    const uint256 hashEpochBlock(0x9101);
+    ScopedNoteVoteContext context(txdb, hashEpochBlock, nVoteHeight, nAnchorEpoch);
+
+    const uint256 hashIV5Root(0x9102);
+    const uint256 hashNullifierRoot(0x9103);
+    CEpochState anchor;
+    anchor.nEpoch = nAnchorEpoch;
+    anchor.nFinalizedHeightAsOf = nFinalizedHeight;
+    anchor.nSerVersion = EPOCHSTATE_SER_VERSION_V4;
+    // The retired curve tree's root, deliberately not the IV5 one. A validator that
+    // compares the vote against this field can never accept a real membership proof.
+    anchor.hashCurveRoot = uint256(0x9104);
+    anchor.hashNullifierRoot = hashNullifierRoot;
+    anchor.vchVNextRoot.assign(hashIV5Root.begin(), hashIV5Root.end());
+    anchor.nVNextTreeSize = 1;
+    BOOST_REQUIRE(txdb.WriteEpochState(nAnchorEpoch, anchor));
+
+    const int64_t nAmount = FINALITY_MIN_VOTE_WEIGHT;
+    const uint256 mask = RandomScalar();
+    const CNoteVoteShare share =
+        MakeShare(config, nVoteEpoch, nAmount, mask, 13, RandomScalar());
+    PrivacyVNextDigest cTilde = ZeroDigest();
+    BOOST_REQUIRE(share.GetCommitment(cTilde));
+
+    CNoteFinalityVote vote = MakeVote(share, hashEpochBlock, cTilde, 0x62);
+    vote.nHeight = nVoteHeight;
+    vote.hashCurveRoot = hashIV5Root;
+    vote.hashNullifierRoot = hashNullifierRoot;
+    vote.vchMembership = MakeMembershipRequest(vote.hashCurveRoot, ZeroDigest(), cTilde);
+    BOOST_REQUIRE(vote.IsValidBasic());
+
+    // The anchor check has to pass this vote through to the proof checks. Reaching the
+    // sigma is what says the anchor was accepted: the sigma here is filler, and nothing
+    // between the two can reject anything.
+    std::string strError;
+    FinalityResult result = FINALITY_RESULT_OK;
+    BOOST_CHECK(!tracker.CheckNoteVoteForContext(vote, txdb, &strError, nVoteHeight,
+                                                 &result));
+    BOOST_CHECK_EQUAL(strError, "note vote sigma does not verify");
+    BOOST_CHECK_EQUAL((int)result, (int)FINALITY_RESULT_INVALID);
+
+    // A vote naming any other root is still rejected as unanchored, so the fix widens
+    // nothing: it only points the comparison at the tree the proof is actually over.
+    CNoteFinalityVote strayAnchor = vote;
+    strayAnchor.hashCurveRoot = anchor.hashCurveRoot;
+    strayAnchor.vchMembership =
+        MakeMembershipRequest(strayAnchor.hashCurveRoot, ZeroDigest(), cTilde);
+    BOOST_CHECK(!tracker.CheckNoteVoteForContext(strayAnchor, txdb, &strError,
+                                                 nVoteHeight, &result));
+    BOOST_CHECK_EQUAL(strError, "note vote not anchored to last finalized epoch root");
+
+    // An anchor epoch that carries no IV5 root at all is this node's missing state, not
+    // the vote's fault, so it must not be attributed to the producer.
+    CEpochState rootless = anchor;
+    rootless.vchVNextRoot.clear();
+    BOOST_REQUIRE(txdb.WriteEpochState(nAnchorEpoch, rootless));
+    BOOST_CHECK(!tracker.CheckNoteVoteForContext(vote, txdb, &strError, nVoteHeight,
+                                                 &result));
+    BOOST_CHECK_EQUAL(strError, "note vote anchor epoch carries no IV5 tree root");
+    BOOST_CHECK_EQUAL((int)result, (int)FINALITY_RESULT_LOCAL_STATE);
 }
 
 BOOST_AUTO_TEST_SUITE_END()

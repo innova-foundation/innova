@@ -301,6 +301,37 @@ bool CommitScaled(const uint256& valueScalar, const uint256& blindScalar,
     }
     return true;
 }
+
+// Proving entropy, drawn fresh per proof. It is never derived from note material: the
+// re-randomization is the only thing separating the vote's O~/C~ from the leaf, so entropy
+// anyone could recompute from the note would undo it.
+bool DrawProofEntropy(PrivacyVNextDigest& out)
+{
+    for (int nTry = 0; nTry < 8; nTry++)
+    {
+        if (RAND_bytes(out.data(), (int)out.size()) != 1)
+            return false;
+        // The prover rejects an all-zero draw, so retry rather than hand it one.
+        for (size_t i = 0; i < out.size(); i++)
+        {
+            if (out[i] != 0)
+                return true;
+        }
+    }
+    return false;
+}
+
+bool DrawScalar(uint256& out)
+{
+    unsigned char buf[32];
+    if (RAND_bytes(buf, sizeof(buf)) != 1)
+        return false;
+    out = 0;
+    memcpy(out.begin(), buf, sizeof(buf));
+    OPENSSL_cleanse(buf, sizeof(buf));
+    out = Ed25519ScalarReduce(out);
+    return true;
+}
 } // namespace
 
 uint256 Ed25519ScalarReduce(const uint256& value)
@@ -764,6 +795,162 @@ bool CheckNoteVote(const CNoteFinalityVote& vote,
         return false;
     }
     return true;
+}
+
+bool BuildNoteFinalityVote(const CNoteVoteBuildContext& ctx,
+                           const PrivacyVNextSpendInput& input,
+                           const PrivacyVNextDigest& noteMask,
+                           const CFinalityTallyConfig& config,
+                           CNoteFinalityVote& voteOut,
+                           std::string* pstrError)
+{
+    voteOut = CNoteFinalityVote();
+
+    if (ctx.nEpoch < 0 || ctx.nHeight < 0 || ctx.hashBlock == 0 ||
+        ctx.hashAnchorRoot == 0 || ctx.hashNullifierRoot == 0)
+    {
+        Fail(pstrError, "note vote has no finalized anchor to build against");
+        return false;
+    }
+    // Below the floor there is no weight-floor proof to make: the shifted point's
+    // H-coefficient is negative and opens to nothing in range.
+    if (ctx.nAmount < FINALITY_MIN_VOTE_WEIGHT || ctx.nAmount > MAX_MONEY ||
+        ctx.nReward < 0 || ctx.nReward > MAX_MONEY)
+    {
+        Fail(pstrError, "note vote weight or reward is outside the range a vote may carry");
+        return false;
+    }
+    if (!config.fCommitteeValid || config.nThresholdM < 2 ||
+        config.nThresholdM > (int)config.vCommitteePubKeys.size() ||
+        config.vCommitteePubKeys.size() > FINALITY_NOTE_MAX_VSS_COEFFICIENTS ||
+        config.committeeSetHash == 0)
+    {
+        Fail(pstrError, "note vote needs a valid M-of-N committee with M above one");
+        return false;
+    }
+    if (input.vchWitnessRecord.empty())
+    {
+        Fail(pstrError, "note vote has no membership witness for the anchor tree");
+        return false;
+    }
+
+    PrivacyVNextDigest finalizedRoot = ZeroDigest();
+    memcpy(finalizedRoot.data(), ctx.hashAnchorRoot.begin(), 32);
+
+    // Membership first: O~ and C~ come out of this request, and the vote reads them back
+    // out of it rather than restating them alongside.
+    PrivacyVNextDigest entropy = ZeroDigest();
+    if (!DrawProofEntropy(entropy))
+    {
+        Fail(pstrError, "note vote could not draw proving entropy");
+        return false;
+    }
+    PrivacyVNextVoteMembership membership;
+    std::string error;
+    const bool fMembership = ProvePrivacyVNextVoteMembership(finalizedRoot, entropy,
+                                                             input, membership, error);
+    OPENSSL_cleanse(entropy.data(), entropy.size());
+    if (!fMembership)
+    {
+        Fail(pstrError, "note vote membership proof could not be built");
+        return false;
+    }
+
+    // The re-randomization shifted the commitment's blind, so amount*H + maskTilde*G is
+    // C~ and the note's own mask opens nothing the vote publishes.
+    uint256 maskTilde = Ed25519ScalarAdd(Ed25519ScalarFromDigest(noteMask),
+                                         Ed25519ScalarFromDigest(membership.maskDelta));
+    uint256 rewardBlind = 0;
+    bool fOk = DrawScalar(rewardBlind);
+    if (!fOk)
+        Fail(pstrError, "note vote could not draw its reward blind");
+
+    if (fOk)
+    {
+        voteOut.nVersion = FINALITY_NOTE_VOTE_VERSION;
+        voteOut.nEpoch = ctx.nEpoch;
+        voteOut.hashBlock = ctx.hashBlock;
+        voteOut.nHeight = ctx.nHeight;
+        voteOut.hashCurveRoot = ctx.hashAnchorRoot;
+        voteOut.hashNullifierRoot = ctx.hashNullifierRoot;
+        voteOut.committeeSetHash = config.committeeSetHash;
+        voteOut.vchMembership = membership.vchRequest;
+
+        voteOut.share.nEpoch = ctx.nEpoch;
+        voteOut.share.committeeSetHash = config.committeeSetHash;
+        fOk = BuildNoteVoteShare(voteOut.share, ctx.nAmount, maskTilde, ctx.nReward,
+                                 rewardBlind, config, pstrError);
+    }
+
+    // K_0 == C~ is a consensus rule, so a share that does not reach the membership
+    // proof's own commitment is a vote the network would reject: stop here instead.
+    if (fOk)
+    {
+        PrivacyVNextDigest commitment = ZeroDigest();
+        fOk = voteOut.share.GetCommitment(commitment) && commitment == membership.cTilde;
+        if (!fOk)
+            Fail(pstrError, "note vote share does not open the membership proof's commitment");
+    }
+
+    if (fOk)
+    {
+        PrivacyVNextDigest floorEntropy = ZeroDigest();
+        fOk = DrawProofEntropy(floorEntropy);
+        if (!fOk)
+            Fail(pstrError, "note vote could not draw proving entropy");
+        else
+        {
+            fOk = BuildNoteVoteWeightFloorProof(ctx.nAmount, maskTilde, floorEntropy,
+                                                voteOut.vchWeightFloorProof, pstrError);
+            OPENSSL_cleanse(floorEntropy.data(), floorEntropy.size());
+        }
+    }
+
+    // Sigma last. Its challenge covers the binding over every field above, so nothing
+    // already built can be restated under this signature.
+    if (fOk)
+    {
+        const uint256 binding = ComputeNoteVoteBinding(voteOut);
+        PrivacyVNextDigest bindingDigest = ZeroDigest();
+        memcpy(bindingDigest.data(), binding.begin(), 32);
+        PrivacyVNextDigest sigmaEntropy = ZeroDigest();
+        fOk = DrawProofEntropy(sigmaEntropy);
+        if (!fOk)
+            Fail(pstrError, "note vote could not draw proving entropy");
+        else
+        {
+            PrivacyVNextDigest tag = ZeroDigest();
+            std::vector<unsigned char> vchSigma;
+            fOk = ProvePrivacyVNextVoteSigma((uint64_t)ctx.nEpoch, membership.oTilde,
+                                             membership.cTilde, bindingDigest,
+                                             input.spendScalar, membership.rerandomizedY,
+                                             sigmaEntropy, tag, vchSigma, error);
+            OPENSSL_cleanse(sigmaEntropy.data(), sigmaEntropy.size());
+            if (!fOk)
+                Fail(pstrError, "note vote sigma could not be proved");
+            else
+            {
+                voteOut.vchTag.assign(tag.begin(), tag.end());
+                voteOut.vchSigma = vchSigma;
+            }
+        }
+    }
+
+    // Construction material, not vote content: holding it past here would let anything
+    // that later reads this process reopen the commitment the vote exists to hide.
+    OPENSSL_cleanse(maskTilde.begin(), 32);
+    OPENSSL_cleanse(rewardBlind.begin(), 32);
+    OPENSSL_cleanse(membership.maskDelta.data(), membership.maskDelta.size());
+    OPENSSL_cleanse(membership.rerandomizedY.data(), membership.rerandomizedY.size());
+
+    // Verify what was built with the checker consensus runs, so a vote that would be
+    // rejected on arrival never leaves the producer.
+    if (fOk)
+        fOk = CheckNoteVote(voteOut, config.nThresholdM,
+                            (int)config.vCommitteePubKeys.size(), pstrError);
+    if (!fOk)
+        voteOut = CNoteFinalityVote();
+    return fOk;
 }
 
 bool BuildNoteVoteShare(CNoteVoteShare& share,

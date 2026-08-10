@@ -286,6 +286,57 @@ bool CheckNoteVote(const CNoteFinalityVote& vote,
                    int nCommitteeN,
                    std::string* pstrError = NULL);
 
+/** What one note vote's construction takes from consensus state.
+ *
+ *  None of it is the voter's to choose. `hashAnchorRoot` is the IV5 note-tree root of the
+ *  finalized epoch the including block will resolve, which is both the root the membership
+ *  proof is against and the value the vote declares; anchoring to anything a node computes
+ *  locally is what splits a chain when two nodes disagree about it. */
+struct CNoteVoteBuildContext
+{
+    int nEpoch;
+    int nHeight;
+    uint256 hashBlock;
+    uint256 hashAnchorRoot;
+    uint256 hashNullifierRoot;
+    int64_t nAmount;
+    int64_t nReward;
+
+    CNoteVoteBuildContext()
+    {
+        nEpoch = 0;
+        nHeight = 0;
+        hashBlock = 0;
+        hashAnchorRoot = 0;
+        hashNullifierRoot = 0;
+        nAmount = 0;
+        nReward = 0;
+    }
+};
+
+/** Build one note vote from a note the caller holds, in the order the checks read it.
+ *
+ *  Membership comes first because it produces the re-randomized O~/C~ every later step is
+ *  over, then the share of that commitment's opening, then the weight-floor proof, and the
+ *  sigma last: its challenge covers all of them, which is the only thing making the vote
+ *  undetachable from the proof it was built from.
+ *
+ *  `input` carries the note's spend and commitment scalars and the witness record cut from
+ *  the anchor tree; `noteMask` opens the note's own commitment. Proving entropy is drawn
+ *  here rather than taken from the caller, so it is never a function of note material.
+ *
+ *  No timestamp is stamped anywhere: an anonymous vote dated at proving time is a
+ *  wallet-pipeline fingerprint.
+ *
+ *  Fails closed. A failure leaves `voteOut` null rather than partially built, and the
+ *  result is re-checked with CheckNoteVote before it is returned. */
+bool BuildNoteFinalityVote(const CNoteVoteBuildContext& ctx,
+                           const PrivacyVNextSpendInput& input,
+                           const PrivacyVNextDigest& noteMask,
+                           const CFinalityTallyConfig& config,
+                           CNoteFinalityVote& voteOut,
+                           std::string* pstrError = NULL);
+
 /** Build the encrypted shares and the VSS coefficients for one vote's opening.
  *  `maskTilde` is the note mask shifted by the membership proof's commitment blind, so
  *  amount*H + maskTilde*G is exactly the vote's C~. */

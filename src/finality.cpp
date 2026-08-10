@@ -52,13 +52,12 @@ bool ExtractFinalityStakeKeyID(const CScript& scriptPubKey,
     return CBitcoinAddress(dest).GetKeyID(keyIDOut);
 }
 
-/** Resolve the finalized epoch anchor without conflating "nothing has
- * finalized yet" with missing/corrupt local persistence.  The former makes a
- * private vote/certificate deterministically premature; only an expected
- * state record that cannot be recovered is a transient local-state failure. */
+/** Resolve the finalized epoch anchor. Nothing finalized yet is a deterministic premature
+ * verdict; only an unrecoverable expected record is a transient local failure. */
+// fRequireCurveRoot: an IV5-root caller must not skip epochs with an empty legacy curve root.
 static FinalityResult ResolveFinalityAnchorForContext(
     CTxDB& txdb, int nContextHeight, int nLiveFinalizedHeight,
-    CEpochState& stateOut)
+    CEpochState& stateOut, bool fRequireCurveRoot = true)
 {
     int nFinalizedHeight = 0;
     if (nContextHeight >= 0)
@@ -90,7 +89,7 @@ static FinalityResult ResolveFinalityAnchorForContext(
 
     if (nLiveFinalizedHeight <= 0)
         return FINALITY_RESULT_INVALID;
-    if (!g_dagManager.GetLastFinalizedEpochState(stateOut) ||
+    if (!g_dagManager.GetLastFinalizedEpochState(stateOut, fRequireCurveRoot) ||
         stateOut.nEpoch != GetEpochForHeight(nLiveFinalizedHeight))
         return FINALITY_RESULT_LOCAL_STATE;
     return FINALITY_RESULT_OK;
@@ -6490,13 +6489,26 @@ bool CFinalityTracker::CheckNoteVoteForContext(const CNoteFinalityVote& vote, CT
     // Anchor deterministically from the including block's context. Reading the node-local
     // finalized tip in a connect path is the ConnectBlock-split class.
     CEpochState finalizedEpochState;
+    // A note vote anchors to the IV5 root, so an empty legacy curve root is not a
+    // reason to skip an epoch. Requiring one refused every vote on a chain with no
+    // legacy shielded history -- which is every IV5 chain.
     const FinalityResult anchorResult = ResolveFinalityAnchorForContext(
-        txdb, nContextHeight, GetFinalizedHeight(), finalizedEpochState);
+        txdb, nContextHeight, GetFinalizedHeight(), finalizedEpochState,
+        false /* fRequireCurveRoot */);
     if (anchorResult == FINALITY_RESULT_INVALID)
         return reject("note vote requires an already-finalized epoch");
     if (anchorResult == FINALITY_RESULT_LOCAL_STATE)
         return localState("note vote requires unavailable finalized epoch state");
-    if (vote.hashCurveRoot != finalizedEpochState.hashCurveRoot ||
+    // A note vote's membership proof is over the IV5 note tree, and IsValidBasic pins the
+    // proof's own root field to the anchor the vote declares. That anchor is therefore the
+    // epoch's IV5 root, not CEpochState::hashCurveRoot, which is the retired
+    // ring-signature curve tree and is zero on a chain that never carried one.
+    if (finalizedEpochState.vchVNextRoot.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE)
+        return localState("note vote anchor epoch carries no IV5 tree root");
+    uint256 hashAnchorRoot = 0;
+    memcpy(hashAnchorRoot.begin(), &finalizedEpochState.vchVNextRoot[0],
+           EPOCHSTATE_VNEXT_DIGEST_SIZE);
+    if (vote.hashCurveRoot != hashAnchorRoot ||
         vote.hashNullifierRoot != finalizedEpochState.hashNullifierRoot)
         return reject("note vote not anchored to last finalized epoch root");
 
@@ -9285,6 +9297,201 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
 }
 
 
+// ---------------------------------------------------------------------------
+// IV5 Note Finality Votes
+// ---------------------------------------------------------------------------
+
+// The committee an epoch's note votes must share to. It is consensus state, so the local
+// -finalitytally* configuration has no say in it: a share split to any other set is one no
+// quorum can ever open, and CheckNoteVoteForContext rejects the vote that carries it.
+static bool GetNoteVoteCommitteeConfig(int nEpoch, CFinalityTallyConfig& configOut)
+{
+    std::vector<CPubKey> vCommittee;
+    int nThresholdM = 0;
+    uint256 committeeSetHash = 0;
+    if (!GetCanonicalFinalityCommittee(nEpoch, vCommittee, nThresholdM, committeeSetHash))
+        return false;
+    if (nThresholdM < 2 || nThresholdM > (int)vCommittee.size() ||
+        vCommittee.size() > FINALITY_NOTE_MAX_VSS_COEFFICIENTS || committeeSetHash == 0)
+        return false;
+
+    configOut = CFinalityTallyConfig();
+    configOut.fCommitteeValid = true;
+    configOut.fThresholdValid = true;
+    configOut.nThresholdM = nThresholdM;
+    configOut.nThresholdN = (int)vCommittee.size();
+    configOut.committeeSetHash = committeeSetHash;
+    configOut.vCommitteePubKeys = vCommittee;
+    return true;
+}
+
+// Notes this process has already voted with, per epoch.
+//
+// The tag T_e = x*U_e is one note's single identity for one epoch, and two votes under one
+// tag count for neither: re-proving a note in the same epoch destroys the vote it already
+// cast. The tag is only reachable by proving, so the note's key image stands in for it
+// here, and it is recorded before the first proof rather than after the last, which makes
+// the rule at-most-once rather than at-least-once. Guarded by cs_main, which every caller
+// already holds.
+static std::map<int, std::set<uint256> > mapNoteVotesCastByEpoch;
+
+static bool ProduceNoteFinalityVote(CTxDB& txdb, CBlockIndex* pEpochBlock,
+                                    int nCurrentEpoch, int nEpochHeight,
+                                    const std::string& strVoteMode)
+{
+    if (!pwalletMain || !pEpochBlock)
+        return false;
+    // The note vote is the private tier; an operator who asked for transparent only gets
+    // transparent only.
+    if (strVoteMode == "transparent")
+        return false;
+    // A note vote must target a proof-of-work epoch block, so proving against any other
+    // kind only produces something every peer rejects.
+    if (!pEpochBlock->IsProofOfWork())
+        return false;
+
+    const int nIncludingHeight = pindexBest ? pindexBest->nHeight + 1 : nEpochHeight;
+    if (!IsIV5NoteVoteActiveAtHeight(nIncludingHeight))
+        return false;
+
+    // Outside the epoch's inclusion window no block may carry the vote, so proving one
+    // only spends time. This is the same window ConnectBlockNoteVotes enforces.
+    const int nBoundary = GetEpochBoundaryHeight(nCurrentEpoch, nIncludingHeight);
+    if (nIncludingHeight < nBoundary ||
+        nIncludingHeight >= nBoundary + FINALITY_VOTE_INCLUSION_WINDOW)
+        return false;
+
+
+    CFinalityTallyConfig config;
+    if (!GetNoteVoteCommitteeConfig(nCurrentEpoch, config))
+    {
+        if (fDebug)
+            printf("ProduceNoteFinalityVote: epoch %d has no canonical committee a note "
+                   "vote can share to\n", nCurrentEpoch);
+        return false;
+    }
+
+    // Anchor to the finalized epoch the including block will resolve, never to this
+    // node's live finalized tip: a proof against node-local finality is valid on some
+    // nodes and invalid on others, which is a chain split.
+    CEpochState anchorState;
+    const FinalityResult anchorResult = ResolveFinalityAnchorForContext(
+        txdb, nIncludingHeight, g_finalityTracker.GetFinalizedHeight(), anchorState);
+    if (anchorResult != FINALITY_RESULT_OK)
+    {
+        if (fDebug)
+            printf("ProduceNoteFinalityVote: no finalized anchor for height %d "
+                   "(result=%d); not voting\n", nIncludingHeight, (int)anchorResult);
+        return false;
+    }
+    if (anchorState.vchVNextRoot.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE ||
+        anchorState.vchVNextTreeState.empty() || anchorState.nVNextTreeSize == 0)
+    {
+        if (fDebug)
+            printf("ProduceNoteFinalityVote: finalized epoch %d carries no IV5 tree to "
+                   "prove against\n", anchorState.nEpoch);
+        return false;
+    }
+
+    std::set<uint256>& setCast = mapNoteVotesCastByEpoch[nCurrentEpoch];
+
+    CPrivacyVNextWalletNote note;
+    std::vector<unsigned char> vchWitnessRecord;
+    std::string strError;
+    if (!pwalletMain->SelectPrivacyVNextVoteNote(
+            txdb, anchorState.vchVNextTreeState, anchorState.vchVNextRoot,
+            anchorState.nVNextTreeSize, pindexBest ? pindexBest->nHeight : nEpochHeight,
+            FINALITY_MIN_VOTE_WEIGHT, setCast, note, vchWitnessRecord, strError))
+    {
+        if (fDebug)
+            printf("ProduceNoteFinalityVote: no eligible note for epoch %d: %s\n",
+                   nCurrentEpoch, strError.c_str());
+        return false;
+    }
+
+    uint256 keyImage = 0;
+    memcpy(keyImage.begin(), &note.vchKeyImage[0], 32);
+    // Before the first proof: a failure after this point costs this epoch's vote, which
+    // is cheaper than a second identity under the same tag.
+    setCast.insert(keyImage);
+
+    CNoteVoteBuildContext ctx;
+    ctx.nEpoch = nCurrentEpoch;
+    ctx.nHeight = nEpochHeight;
+    ctx.hashBlock = pEpochBlock->GetBlockHash();
+    memcpy(ctx.hashAnchorRoot.begin(), &anchorState.vchVNextRoot[0],
+           EPOCHSTATE_VNEXT_DIGEST_SIZE);
+    ctx.hashNullifierRoot = anchorState.hashNullifierRoot;
+    ctx.nAmount = (int64_t)note.nAmount;
+    ctx.nReward = GetFinalityVoteReward(ctx.nAmount, GetEpochInterval(nEpochHeight));
+
+    PrivacyVNextDigest noteMask;
+    PrivacyVNextSpendInput input;
+    memcpy(noteMask.data(), &note.vchMask[0], 32);
+    memcpy(input.spendScalar.data(), &note.vchSpendSecret[0], 32);
+    memcpy(input.commitmentScalar.data(), &note.vchY[0], 32);
+    memcpy(input.leaf.owner.data(), &note.vchOwner[0], 32);
+    memcpy(input.leaf.nullifierBase.data(), &note.vchNullifierBase[0], 32);
+    memcpy(input.leaf.commitment.data(), &note.vchCommitment[0], 32);
+    input.vchWitnessRecord = vchWitnessRecord;
+
+    CNoteFinalityVote vote;
+    const bool fBuilt = BuildNoteFinalityVote(ctx, input, noteMask, config, vote,
+                                              &strError);
+    OPENSSL_cleanse(noteMask.data(), noteMask.size());
+    if (!fBuilt)
+    {
+        printf("ProduceNoteFinalityVote: could not build a note vote for epoch %d: %s\n",
+               nCurrentEpoch, strError.c_str());
+        return false;
+    }
+
+    // A restart clears the cast set, so the tracker is the second guard: a tag this epoch
+    // already counts is this note's own earlier vote, and a byte-distinct twin under it
+    // would retire both.
+    const uint256 tag = vote.GetVoteTag();
+    if (g_finalityTracker.GetNoteVoteCountingState(nCurrentEpoch, tag) !=
+        NOTE_VOTE_UNSEEN)
+    {
+        if (fDebug)
+            printf("ProduceNoteFinalityVote: epoch %d already carries this note's tag; "
+                   "not casting a second\n", nCurrentEpoch);
+        return false;
+    }
+
+    if (!g_finalityTracker.AddPendingNoteVote(vote, txdb, &strError))
+    {
+        printf("ProduceNoteFinalityVote: epoch %d vote was refused locally: %s\n",
+               nCurrentEpoch, strError.c_str());
+        return false;
+    }
+
+    printf("ProduceNoteFinalityVote: epoch=%d height=%d anchor=%s tag=%s\n",
+           nCurrentEpoch, nEpochHeight,
+           ctx.hashAnchorRoot.ToString().substr(0, 10).c_str(),
+           tag.ToString().substr(0, 10).c_str());
+
+    LOCK(cs_vNodes);
+    for (CNode* pnode : vNodes)
+        pnode->PushMessage(FINALITY_NOTE_VOTE_COMMAND, vote);
+    return true;
+}
+
+// Drop the cast record for epochs the chain has left behind, so a long-running node does
+// not accumulate one set per epoch forever.
+static void PruneNoteVotesCast(int nCurrentEpoch)
+{
+    std::map<int, std::set<uint256> >::iterator it = mapNoteVotesCastByEpoch.begin();
+    while (it != mapNoteVotesCastByEpoch.end())
+    {
+        if (it->first < nCurrentEpoch - 1)
+            mapNoteVotesCastByEpoch.erase(it++);
+        else
+            ++it;
+    }
+}
+
+
 bool ProduceFinalityVote()
 {
     if (!pwalletMain)
@@ -9356,14 +9563,27 @@ bool ProduceFinalityVote()
 
     std::map<CKeyID, CFinalityVoteCoinGroup> mapGroups;
     CTxDB txdb("r");
+
+    // Both private tiers, in one place so every exit below casts them: the legacy
+    // nullstake vote where it is still allowed, and the IV5 note vote that replaces it.
+    // Each gates itself, so a node holding stake for only one of them casts only that.
+    PruneNoteVotesCast(nCurrentEpoch);
+    auto castPrivateVotes = [&]() -> bool {
+        bool fCast = fAllowPrivate && ProducePrivateNullStakeFinalityVote(
+                         txdb, pEpochBlock, nCurrentEpoch, nEpochHeight,
+                         tallyConfig, strVoteMode);
+        if (ProduceNoteFinalityVote(txdb, pEpochBlock, nCurrentEpoch, nEpochHeight,
+                                    strVoteMode))
+            fCast = true;
+        return fCast;
+    };
+
     // Cast the FAST transparent vote FIRST so it lands within the epoch inclusion
     // window [H_E, H_E+K) and keeps finality advancing; cast the slower private (FCMP)
     // vote afterwards. The private vote's proof generation can otherwise push the
     // transparent vote past the window on heavily-loaded nodes, stalling finalization.
     if (!fAllowTransparent)
-        return (fAllowPrivate && ProducePrivateNullStakeFinalityVote(
-                    txdb, pEpochBlock, nCurrentEpoch, nEpochHeight,
-                    tallyConfig, strVoteMode));
+        return castPrivateVotes();
 
     std::vector<COutput> vCoins;
     pwalletMain->AvailableCoins(vCoins);
@@ -9426,9 +9646,7 @@ bool ProduceFinalityVote()
     }
 
     if (!pBestGroup || pBestGroup->nWeight <= 0)
-        return (fAllowPrivate && ProducePrivateNullStakeFinalityVote(
-                    txdb, pEpochBlock, nCurrentEpoch, nEpochHeight,
-                    tallyConfig, strVoteMode));
+        return castPrivateVotes();
 
     CHashWriter nullifierHash(SER_GETHASH, 0);
     CPubKey pubkey = pBestGroup->key.GetPubKey();
@@ -9452,14 +9670,10 @@ bool ProduceFinalityVote()
         vote.MarkCanonicalEnvelope();
 
     if (!vote.Sign(pBestGroup->key))
-        return (fAllowPrivate && ProducePrivateNullStakeFinalityVote(
-                    txdb, pEpochBlock, nCurrentEpoch, nEpochHeight,
-                    tallyConfig, strVoteMode));
+        return castPrivateVotes();
 
     if (!g_finalityTracker.AddVote(vote))
-        return (fAllowPrivate && ProducePrivateNullStakeFinalityVote(
-                    txdb, pEpochBlock, nCurrentEpoch, nEpochHeight,
-                    tallyConfig, strVoteMode));
+        return castPrivateVotes();
 
     printf("ProduceFinalityVote: epoch=%d height=%d weight=%s\n",
            nCurrentEpoch, nEpochHeight, FormatMoney(pBestGroup->nWeight).c_str());
@@ -9472,12 +9686,9 @@ bool ProduceFinalityVote()
         }
     }
 
-    // Transparent vote is in; now cast the private (hidden-weight) vote for the v3
-    // tally certificate. Done last so its slower FCMP proof can't delay the
-    // finality-advancing transparent vote past the inclusion window.
-    if (fAllowPrivate)
-        ProducePrivateNullStakeFinalityVote(txdb, pEpochBlock, nCurrentEpoch,
-                                            nEpochHeight, tallyConfig,
-                                            strVoteMode);
+    // Transparent vote is in; now cast the private (hidden-weight) votes. Done last so
+    // their slower proofs can't delay the finality-advancing transparent vote past the
+    // inclusion window.
+    castPrivateVotes();
     return true;
 }

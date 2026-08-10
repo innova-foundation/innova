@@ -11476,6 +11476,94 @@ bool CWallet::SelectPrivacyVNextNotes(
     return false;
 }
 
+bool CWallet::SelectPrivacyVNextVoteNote(
+    CTxDB& txdb,
+    const std::vector<unsigned char>& vchAnchorState,
+    const std::vector<unsigned char>& vchAnchorRoot,
+    uint64_t nAnchorTreeSize,
+    int nSpendHeight,
+    int64_t nMinAmount,
+    const std::set<uint256>& setSkipKeyImages,
+    CPrivacyVNextWalletNote& noteOut,
+    std::vector<unsigned char>& vchWitnessRecordOut,
+    std::string& strErrorOut) const
+{
+    noteOut = CPrivacyVNextWalletNote();
+    vchWitnessRecordOut.clear();
+    strErrorOut.clear();
+
+    if (vchAnchorRoot.size() != EPOCHSTATE_VNEXT_DIGEST_SIZE ||
+        vchAnchorState.empty() || nAnchorTreeSize == 0)
+    {
+        strErrorOut = "the finalized anchor carries no IV5 tree to prove against";
+        return false;
+    }
+    if (nMinAmount <= 0)
+    {
+        strErrorOut = "a note vote needs a positive weight floor";
+        return false;
+    }
+
+    LOCK(cs_shielded);
+    const CPrivacyVNextWalletNote* pBest = NULL;
+    for (size_t i = 0; i < vPrivacyVNextNotes.size(); ++i)
+    {
+        const CPrivacyVNextWalletNote& note = vPrivacyVNextNotes[i];
+        if (!PrivacyVNextNoteIsSpendable(note, nSpendHeight) ||
+            note.nLeafIndex >= nAnchorTreeSize)
+            continue;
+        if (note.nAmount > (uint64_t)MAX_MONEY || (int64_t)note.nAmount < nMinAmount)
+            continue;
+        uint256 keyImage;
+        if (!PrivacyVNextNoteKeyImage(note, keyImage))
+            continue;
+        if (setSkipKeyImages.count(keyImage))
+            continue;
+        // A collateral note is weight this wallet holds but must not move; a vote does
+        // not move it, and the attestation's key image is already public, so voting with
+        // it would tie the collateralnode to a vote. Leave it out.
+        if (mapPrivacyVNextCollateral.count(keyImage))
+            continue;
+        // The chain's spent-key index, not the local flag, decides what is still ours.
+        CShieldedNullifierSpent spent;
+        if (txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent) == TXDB_READ_FOUND)
+            continue;
+        if (!pBest || note.nAmount > pBest->nAmount ||
+            (note.nAmount == pBest->nAmount &&
+             (note.txhash < pBest->txhash ||
+              (note.txhash == pBest->txhash &&
+               note.nOutputIndex < pBest->nOutputIndex))))
+            pBest = &note;
+    }
+    if (!pBest)
+    {
+        strErrorOut = "no unspent IV5 note reaches the minimum vote weight under this anchor";
+        return false;
+    }
+
+    std::vector<uint64_t> vLeafIndexes(1, pBest->nLeafIndex);
+    std::vector<unsigned char> vchPaths;
+    if (!ReadPrivacyVNextTreePaths(txdb, nAnchorTreeSize, vchAnchorState,
+                                   vLeafIndexes, vchPaths, strErrorOut))
+        return false;
+
+    std::vector<PrivacyVNextMembershipWitness> vWitnesses;
+    PrivacyVNextDigest treeRoot;
+    if (!BuildPrivacyVNextWitnessesFromPaths(vchAnchorState, vLeafIndexes, vchPaths,
+                                             vWitnesses, treeRoot, strErrorOut))
+        return false;
+    if (vWitnesses.size() != 1 ||
+        !std::equal(treeRoot.begin(), treeRoot.end(), vchAnchorRoot.begin()))
+    {
+        strErrorOut = "the IV5 witness does not fold onto the finalized anchor root";
+        return false;
+    }
+
+    noteOut = *pBest;
+    vchWitnessRecordOut = vWitnesses[0].vchRecord;
+    return true;
+}
+
 // Anchor and tree state for a spend; both must come from the same finalized epoch.
 // Uses the newest of the last EPOCHSTATE_VNEXT_MAX_ANCHOR_AGE_EPOCHS finalized roots
 // that the local tree store can serve witnesses for.

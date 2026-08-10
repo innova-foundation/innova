@@ -433,7 +433,10 @@ public:
     int GetDeterministicFinalizedHeight(int nUpToEpoch) const;
 
     /** Get the most recent finalized epoch state known to the DAG manager. */
-    bool GetLastFinalizedEpochState(CEpochState& stateOut) const;
+    /** Most recent finalized epoch state. fRequireCurveRoot skips epochs with an empty
+     *  legacy curve root; callers anchoring to the IV5 root must pass false. */
+    bool GetLastFinalizedEpochState(CEpochState& stateOut,
+                                    bool fRequireCurveRoot = true) const;
 
     /** Block-relative finalized epoch state: deterministic from the chain up to the
      *  epoch preceding nBlockHeight's epoch. Use this (not GetLastFinalizedEpochState)
