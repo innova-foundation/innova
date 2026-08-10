@@ -3948,13 +3948,8 @@ int SecureMsgEncrypt(SecureMessage& smsg, std::string& addressFrom, std::string&
         printf("SecureMsgEncrypt: RAND_bytes failed for IV generation\n");
         return 11;
     }
-    {
-        static CCriticalSection cs_iv_counter;
-        static uint64_t nIVCounter = 0;
-        LOCK(cs_iv_counter);
-        uint64_t nCounter = ++nIVCounter;
-        memcpy(&smsg.iv[8], &nCounter, 8);
-    }
+    // The IV stays fully random: it travels in cleartext, and any counter in it would let
+    // observers order and count one sender's messages.
 
 
     // -- Generate a new random EC key pair with private key called r and public key called R.
