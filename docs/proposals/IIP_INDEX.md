@@ -144,7 +144,7 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **Category** | Privacy |
 | **Status** | Active |
 | **Fork Height** | 7,815,000 (mainnet) |
-| **TX Version** | `SHIELDED_TX_VERSION_DSP = 2001` |
+| **TX Version** | `SHIELDED_TX_VERSION_DSP_PROTOTYPE = 2001` (prototype; production DSP is `SHIELDED_TX_VERSION_DSP = 2008`) |
 | **Author** | 0xcircuitbreaker |
 
 **Abstract**: Introduces a 3-bit `nPrivacyMode` field in shielded transactions enabling 8 distinct privacy configurations. Each bit independently controls one privacy dimension: sender identity (Lelantus/FCMP++ proof), receiver identity (encrypted output), and transaction amount (Pedersen commitment + range proof). This enables regulatory compliance use cases while maintaining full privacy as the default.

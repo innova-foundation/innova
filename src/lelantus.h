@@ -7,6 +7,7 @@
 
 #include "uint256.h"
 #include "serialize.h"
+#include "v5activation.h"
 #include "zkproof.h"
 
 #include <vector>
@@ -22,11 +23,12 @@ static const int LELANTUS_MIN_SET_SIZE = 16;
 static const int LELANTUS_MAX_SET_SIZE = 1024;
 static const int LELANTUS_GENESIS_SEED_COUNT = LELANTUS_MIN_SET_SIZE;
 
-// Fork height for serial v2
+// Fork height for serial v2. Routed through the ladder shift so it stays ordered
+// after FORK_HEIGHT_SHIELDED; the base keeps a 60,000-block stagger after it.
 inline int GetForkHeightSerialV2() {
     extern bool fRegTest;
     extern bool fTestNet;
-    return (fRegTest || fTestNet) ? 2 : 8020000;
+    return (fRegTest || fTestNet) ? 2 : ShiftMainnetV5Activation(7870000);
 }
 #define FORK_HEIGHT_SERIAL_V2 (GetForkHeightSerialV2())
 

@@ -264,7 +264,7 @@ fresh trusted mainnet tip; the effective height of any gate is base + shift.
 | Cold staking (P2CS) | `FORK_HEIGHT_COLD_STAKING` | 7,800,000 | cold-staking scripts; also the CN-payment / tighter-drift base hardening |
 | Shielded | `FORK_HEIGHT_SHIELDED` | 7,810,000 | shielded (zk) transactions; nullifier-binding is born here |
 | RingSig deprecation | `FORK_HEIGHT_RINGSIG_DEPRECATION` | 7,815,000 | rejects legacy `ANON_TXN_VERSION` ring-sig txns |
-| DSP (Dynamic Selective Privacy) | `FORK_HEIGHT_DSP` | 7,815,000 | 3-bit `nPrivacyMode` field in `SHIELDED_TX_VERSION_DSP` |
+| DSP (Dynamic Selective Privacy) | `FORK_HEIGHT_DSP` | 7,815,000 | 3-bit `nPrivacyMode` field in `SHIELDED_TX_VERSION_DSP_PROTOTYPE` (2001). Production DSP is the 2008 envelope's disclosure mask. |
 | NullSend / CoinJoin | `FORK_HEIGHT_NULLSEND` (`= FORK_HEIGHT_CJOIN`) | 7,820,000 | NullSend CoinJoin-style mixing |
 | FCMP++ | `FORK_HEIGHT_FCMP` (`= FORK_HEIGHT_FCMP_VALIDATION`) | 7,820,000 | FCMP++ curve-tree membership proofs |
 | NullStake V1 | `FORK_HEIGHT_NULLSTAKE` | 7,825,000 | private staking via ZK kernel proofs |

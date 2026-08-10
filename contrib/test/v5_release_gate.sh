@@ -27,6 +27,17 @@ INTEGRATION_SUITES=(
     "$SCRIPT_DIR/idag_hidden_finality_stress_test.sh"
     "$SCRIPT_DIR/idag_stress_test.sh"
     "$SCRIPT_DIR/idag_tps_test.sh"
+    # The 2008 envelope is the shipping privacy system; unit tests do not reach
+    # these end-to-end paths.
+    "$SCRIPT_DIR/iv5_adversarial_regtest_test.sh"
+    "$SCRIPT_DIR/iv5_spend_regtest_test.sh"
+    "$SCRIPT_DIR/iv5_boundary_b_regtest_test.sh"
+    "$SCRIPT_DIR/iv5_fee_note_regtest_test.sh"
+    "$SCRIPT_DIR/iv5_migration_regtest_test.sh"
+    "$SCRIPT_DIR/iv5_tree_store_regtest_test.sh"
+    "$SCRIPT_DIR/iv5_leaf_index_catchup_regtest_test.sh"
+    "$SCRIPT_DIR/iv5_dag_sibling_regtest_test.sh"
+    "$SCRIPT_DIR/iv5_collateral_rpc_regtest_test.sh"
 )
 
 log() {
