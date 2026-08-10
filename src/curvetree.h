@@ -23,13 +23,19 @@ inline int GetForkHeightFCMP() {
 }
 #define FORK_HEIGHT_FCMP (GetForkHeightFCMP())
 
-// FCMP_PROOF_VERSION_IPA carries no argument binding the claimed tree root, so
-// it verifies against any root and proves no membership. Public networks never
-// accept it at any height; regtest retains it for replay and rejection tests.
-// Mainnet membership proofs come from the privacy-vNext verifier instead.
+// The in-tree path proof establishes knowledge of an opening of a point the
+// prover supplies, which any invented pair of vectors satisfies. No value is
+// ever recomputed from leaf through siblings to the claimed root, so it proves
+// no membership in anything and cannot be repaired where it stands: the
+// statement carries no witness about a tree. CROSSCURVE is no better -- it
+// chains layers by assigning the prover's own commitments, so its root
+// comparison compares a value to itself.
+//
+// Regtest accepted it until now, which made every membership test there
+// vacuous. No network accepts it at any height. Membership comes from the
+// vNext verifier, over the tree it actually proves against.
 inline bool IsLegacyFCMPProofAccepted() {
-    extern bool fRegTest;
-    return fRegTest;
+    return false;
 }
 
 static const size_t SECP256K1_POINT_SIZE = 33;

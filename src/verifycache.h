@@ -42,9 +42,10 @@ enum VerifyCacheDomain
                                       // same reason the NullStake domain is
 };
 
-// Bump whenever a cached verifier's accept/reject behavior changes, so entries
-// recorded under the old semantics cannot satisfy a lookup under the new ones.
-static const uint32_t VERIFYCACHE_SEMANTICS_VERSION = 1;
+// Bump whenever a cached verifier's accept/reject behavior changes, so entries recorded
+// under the old semantics cannot satisfy a lookup.
+// 2: the in-tree FCMP path proof is rejected on every network.
+static const uint32_t VERIFYCACHE_SEMANTICS_VERSION = 2;
 
 // The only supported way to build a cache key: binds domain, semantics version, height
 // and network so a verdict below a fork gate never satisfies a check above it.

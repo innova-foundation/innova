@@ -565,6 +565,10 @@ BOOST_AUTO_TEST_CASE(fcmp_v5_legacy_wire_compatibility_is_preserved)
     // verifier accepts it against two different claimed roots.  Preserve this
     // legacy behavior only for V5 history; a sound replacement needs a new,
     // fork-gated proof version rather than an in-place encoding change.
+    // Characterizing the raw algorithm, which consensus no longer reaches: it
+    // accepts against a root the leaf is not under, because the statement it
+    // proves says nothing about any tree. The rejection that matters is at the
+    // consensus verifier below, not here.
     const std::vector<unsigned char> unrelatedRoot(32, 0x25);
     BOOST_REQUIRE(root != unrelatedRoot);
     BOOST_CHECK(VerifyFCMPProofV5(unrelatedRoot, leaf.vchCommitment,
@@ -594,8 +598,8 @@ BOOST_AUTO_TEST_CASE(fcmp_v5_legacy_wire_compatibility_is_preserved)
     // reason the version is confined to regtest.
     fRegTest = true;
     VerifyProofCacheClear();
-    BOOST_CHECK(VerifyFCMPProof(claimedTree.GetRootNode(), activeProof, leaf, nTestHeight));
-    BOOST_CHECK(VerifyFCMPProof(unrelatedTree.GetRootNode(), activeProof, leaf, nTestHeight));
+    BOOST_CHECK(!VerifyFCMPProof(claimedTree.GetRootNode(), activeProof, leaf, nTestHeight));
+    BOOST_CHECK(!VerifyFCMPProof(unrelatedTree.GetRootNode(), activeProof, leaf, nTestHeight));
 
     // Public networks reject it at every height, including against the tree that
     // really contains the leaf.

@@ -243,11 +243,11 @@ BOOST_AUTO_TEST_CASE(v5_unbound_membership_is_stopped_at_public_relay_policy)
                                      unrelatedTree.GetRoot(),
                                      rootError));
 
-    // V5-00 characterization: matching the root field in the transaction is
-    // only envelope equality.  The active V5 verifier also accepts this proof
-    // for a tree which demonstrably does not contain the supplied commitment.
-    BOOST_CHECK(VerifyFCMPProof(unrelatedTree.GetRootNode(), proof,
-                                suppliedLeaf, 0 /* below every gate */));
+    // Matching the root field in the transaction is only envelope equality. The
+    // proof itself establishes no membership, so the verifier rejects it for the
+    // unrelated tree at any height, gate or no gate.
+    BOOST_CHECK(!VerifyFCMPProof(unrelatedTree.GetRootNode(), proof,
+                                 suppliedLeaf, 0 /* below every gate */));
 
     // Confirm that nDoS is a reliable sentinel for the next validation stage:
     // an isolated context-free check sees the intentionally zero nullifier.
