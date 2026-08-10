@@ -1238,7 +1238,6 @@ BOOST_AUTO_TEST_CASE(anonymous_chain_effects_are_outer_batch_atomic_and_fail_clo
     }
     BOOST_REQUIRE(txdb.TxnAbort());
 }
-}
 
 BOOST_AUTO_TEST_CASE(anonymous_block_key_image_duplicates_are_candidate_local)
 {
