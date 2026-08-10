@@ -2251,21 +2251,12 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
 
 bool SecureMsgSendTyping(const std::string& addrFrom, const std::string& addrTo)
 {
-    // Typing notification format: [addrFrom(34 bytes)] + [addrTo(34 bytes)]
-    // Sent as cleartext P2P — NOT encrypted (it's ephemeral, no PoW needed)
-    // Only the intended recipient processes it (checks addrTo against their addresses)
+    // Typing notifications are not sent over the network: a flooded (addrFrom, addrTo)
+    // pair would publish the correspondence graph. The local path below still fires for
+    // an address this wallet holds.
 
     if (addrFrom.empty() || addrTo.empty())
         return false;
-
-    std::vector<unsigned char> vchData;
-    // Write from address length + data
-    uint8_t nFromLen = (uint8_t)std::min(addrFrom.size(), (size_t)255);
-    uint8_t nToLen = (uint8_t)std::min(addrTo.size(), (size_t)255);
-    vchData.push_back(nFromLen);
-    vchData.insert(vchData.end(), addrFrom.begin(), addrFrom.begin() + nFromLen);
-    vchData.push_back(nToLen);
-    vchData.insert(vchData.end(), addrTo.begin(), addrTo.begin() + nToLen);
 
     // Check if addrTo is one of our own addresses (local loopback for same-wallet testing)
     CWallet* pwallet = pwalletMain;
@@ -2280,17 +2271,6 @@ bool SecureMsgSendTyping(const std::string& addrFrom, const std::string& addrTo)
                 // Local loopback — fire signal directly without P2P
                 NotifySecMsgTyping(addrFrom);
             }
-        }
-    }
-
-    // Broadcast to all smsg-enabled peers (they will filter by addrTo)
-    {
-        LOCK(cs_vNodes);
-        for (std::vector<CNode*>::iterator it = vNodes.begin(); it != vNodes.end(); ++it)
-        {
-            CNode* pnode = *it;
-            if (pnode->smsgData.fEnabled)
-                pnode->PushMessage("smsgTyping", vchData);
         }
     }
 
@@ -3423,13 +3403,25 @@ int SecureMsgReceive(CNode* pfrom, std::vector<unsigned char>& vchData)
 
     for (uint32_t i = 0; i < nBunch; ++i)
     {
-        if (vchData.size() - n < SMSG_HDR_LEN)
+        // Unsigned, so an n past the end wraps instead of comparing small.
+        if (n > vchData.size() || vchData.size() - n < SMSG_HDR_LEN)
         {
             printf("Error: not enough data sent, n = %u.\n", n);
             break;
         };
 
         SecureMessage* psmsg = (SecureMessage*) &vchData[n];
+
+        // nPayload is peer-supplied; the payload must be fully buffered before the
+        // validator reads it.
+        const uint64_t nDeclared =
+            (uint64_t)SMSG_HDR_LEN + (uint64_t)psmsg->nPayload;
+        if ((uint64_t)(vchData.size() - n) < nDeclared)
+        {
+            printf("Error: message payload runs past the data sent, n = %u.\n", n);
+            pfrom->Misbehaving(1, "smsgData truncated message");
+            break;
+        };
 
         int rv;
         if ((rv = SecureMsgValidate(&vchData[n], &vchData[n + SMSG_HDR_LEN], psmsg->nPayload)) != 0)
@@ -3457,7 +3449,7 @@ int SecureMsgReceive(CNode* pfrom, std::vector<unsigned char>& vchData)
             // message recipient is not this node (or failed)
         };
 
-        n += SMSG_HDR_LEN + psmsg->nPayload;
+        n += (uint32_t)nDeclared;   // bounded against the buffer above
     };
 
     // -- if messages have been added, bucket must exist now
