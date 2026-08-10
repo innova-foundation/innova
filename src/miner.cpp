@@ -476,6 +476,44 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         }
     }
 
+    // Per-epoch finality-reward settlement. At H_E + FINALITY_VOTE_INCLUSION_WINDOW the
+    // epoch's vote set is frozen, and this block owes every counted transparent voter
+    // exactly one payment. Derive it from the SAME committed set ConnectBlock will use
+    // (the ancestor window blocks), never from tracker state, so the template's coinbase
+    // allowance matches the validator's. Carrying a vote pays nothing on any other block.
+    std::vector<CTxOut> vFinalitySettlementOutputs;
+    int64_t nFinalitySettlementTotal = 0;
+    if (!fProofOfStake)
+    {
+        int nSettlementEpoch = -1;
+        if (IsFinalitySettlementHeight(nHeight, &nSettlementEpoch))
+        {
+            std::vector<CFinalityVote> vSettlementVotes;
+            std::string strSettleError;
+            if (!GatherFinalitySettlementVotes(pindexPrev, nSettlementEpoch, vSettlementVotes, &strSettleError) ||
+                !BuildFinalitySettlementOutputs(vSettlementVotes, vFinalitySettlementOutputs,
+                                                nFinalitySettlementTotal, &strSettleError))
+            {
+                // Fail closed: every validator would reject a template without the settlement.
+                printf("CreateNewBlock: cannot build finality settlement for epoch %d at height %d: %s\n",
+                       nSettlementEpoch, nHeight, strSettleError.c_str());
+                return NULL;
+            }
+
+            // Reserve room up front: the settlement outputs are mandatory, so transaction
+            // selection must not be able to crowd them out of the block.
+            unsigned int nSettlementSize = 0;
+            for (const CTxOut& out : vFinalitySettlementOutputs)
+                nSettlementSize += ::GetSerializeSize(out, SER_NETWORK, PROTOCOL_VERSION);
+            if (nSettlementSize + 1000 < nBlockMaxSize)
+                nBlockMaxSize -= nSettlementSize;
+            else
+                nBlockMaxSize = 1000;
+            nBlockPrioritySize = std::min(nBlockMaxSize, nBlockPrioritySize);
+            nBlockMinSize = std::min(nBlockMaxSize, nBlockMinSize);
+        }
+    }
+
     // Collect memory pool transactions into the block
     int64_t nFees = 0;
     // Declared IV5 fees of the selected transactions. Post-fork they settle in the pool,
@@ -1001,9 +1039,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             vVotesEmbedded.reserve(vFinalityVotesForBlock.size());
             for (const CFinalityVote& vote : vFinalityVotesForBlock)
             {
-                if (nFinalityRewardTotal > MAX_MONEY - vote.nReward)
-                    break;
-
+                // No reward accumulation here: carrying a vote mints nothing, so there is
+                // no per-vote total to overflow-check. The epoch total is settled below.
                 CScript voteScript;
                 if (!BuildFinalityVoteScriptForHeight(vote, nHeight, voteScript))
                     continue;
@@ -1011,24 +1048,28 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 if (nBlockSize + nVoteCommitSize + 64 >= nBlockMaxSize)
                     break;
 
+                // Commitment only. Carrying a vote mints nothing -- the voter is paid
+                // once for the whole epoch at the settlement height, below.
                 CTxOut voteOut;
                 voteOut.nValue = 0;
                 voteOut.scriptPubKey = voteScript;
                 pblock->vtx[0].vout.push_back(voteOut);
                 vVotesEmbedded.push_back(vote);
 
-                CPubKey pubkey(vote.vchPubKey);
-                if (!pubkey.IsValid())
-                    continue;
-
-                CTxOut rewardOut;
-                rewardOut.nValue = vote.nReward;
-                rewardOut.scriptPubKey = GetScriptForDestination(pubkey.GetID());
-                pblock->vtx[0].vout.push_back(rewardOut);
-
-                nFinalityRewardTotal += vote.nReward;
                 nBlockSize += nVoteCommitSize + 64;
             }
+
+            // Epoch settlement leg (space already reserved above).
+            for (const CTxOut& settleOut : vFinalitySettlementOutputs)
+            {
+                pblock->vtx[0].vout.push_back(settleOut);
+                nBlockSize += ::GetSerializeSize(settleOut, SER_NETWORK, PROTOCOL_VERSION);
+            }
+            nFinalityRewardTotal = nFinalitySettlementTotal;
+            if (nFinalityRewardTotal > 0)
+                printf("CreateNewBlock: finality settlement at height %d pays %u voter(s), total %s\n",
+                       nHeight, (unsigned int)vFinalitySettlementOutputs.size(),
+                       FormatMoney(nFinalityRewardTotal).c_str());
 
             // Note votes ride their own coinbase outputs and mint nothing: a vote is not a
             // pool operation, so the coinbase IV5 payload is deliberately untouched here.

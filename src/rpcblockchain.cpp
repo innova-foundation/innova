@@ -208,7 +208,8 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
                                strprintf("stored block has invalid finality vote envelope (decode=%d)",
                                          (int)voteEnvelopeFailure));
         Array voteArray;
-        int64_t nFinalityReward = 0;
+        int64_t nFinalityVoteValue = 0;   // rewards of the votes this block carries
+        int64_t nFinalityReward = 0;      // finality value this block actually mints
         for (const CFinalityVote& vote : vFinalityVotes)
         {
             Object voteObj;
@@ -246,10 +247,29 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
                 voteObj.push_back(Pair("stake_utxos", (int)vote.vStakeProof.size()));
             }
             voteArray.push_back(voteObj);
-            if (vote.nReward > 0 && nFinalityReward <= MAX_MONEY - vote.nReward)
-                nFinalityReward += vote.nReward;
+            if (vote.nReward > 0 && nFinalityVoteValue <= MAX_MONEY - vote.nReward)
+                nFinalityVoteValue += vote.nReward;
         }
         result.push_back(Pair("finality_votes", voteArray));
+        // What this block CARRIES (informational) versus what it MINTS. Carrying a vote
+        // mints nothing; the whole epoch is paid at its settlement height.
+        result.push_back(Pair("finality_vote_value_carried", FormatMoney(nFinalityVoteValue)));
+        int nSettlementEpoch = -1;
+        if (IsFinalitySettlementHeight(blockindex->nHeight, &nSettlementEpoch))
+        {
+            std::vector<CFinalityVote> vSettlementVotes;
+            std::vector<CTxOut> vSettlementLeg;
+            if (GatherFinalitySettlementVotes(blockindex->pprev, nSettlementEpoch, vSettlementVotes) &&
+                BuildFinalitySettlementOutputs(vSettlementVotes, vSettlementLeg, nFinalityReward))
+            {
+                Object settleObj;
+                settleObj.push_back(Pair("epoch", nSettlementEpoch));
+                settleObj.push_back(Pair("counted_votes", (int)vSettlementVotes.size()));
+                settleObj.push_back(Pair("paid_voters", (int)vSettlementLeg.size()));
+                settleObj.push_back(Pair("total", FormatMoney(nFinalityReward)));
+                result.push_back(Pair("finality_settlement", settleObj));
+            }
+        }
         result.push_back(Pair("finality_reward", FormatMoney(nFinalityReward)));
         std::vector<CFinalityTallyShare> vShares = ExtractFinalityTallySharesFromBlock(block);
         Array shareArray;

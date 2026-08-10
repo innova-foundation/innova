@@ -937,23 +937,36 @@ Value getblocktemplate(const Array& params, bool fHelp)
                 }
     }
     if (fDebug && fDebugNet) printf("getblock : payee = %i, bCollateralnode = %i\n",payee != CScript(),bCollateralnodePayments);
-    // Post-DAG the coinbase carries embedded finality-vote reward outputs; exclude them
-    // from the collateralnode-payment base so payee_amount matches what the validator
-    // accepts. ConnectBlock sizes the CN payment on the block reward only (the HIGH#1 fix
-    // in main.cpp); reporting the raw GetValueOut() base here would tell an external/pool
-    // miner to pay a CN amount no block can carry -> its block gets DoS-rejected.
-    int64_t nTmplFinalityReward = 0;
+    // Exclude minted finality reward from the CN-payment base so payee_amount matches
+    // ConnectBlock, which sizes the CN payment on the subsidy only. Only the settlement
+    // block mints; its leg is derived here from the same ancestor window as ConnectBlock.
+    const int nTmplHeight = pindexPrev->nHeight + 1;
     std::vector<CFinalityVote> vTemplateVotes;
     FinalityEnvelopeDecodeResult templateEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
     if (!ExtractFinalityVotesFromBlockForHeight(
-            *pblock, pindexPrev->nHeight + 1, vTemplateVotes,
+            *pblock, nTmplHeight, vTemplateVotes,
             &templateEnvelopeFailure))
         throw JSONRPCError(RPC_INTERNAL_ERROR,
                            strprintf("locally-built block template has invalid finality envelope (decode=%d)",
                                      (int)templateEnvelopeFailure));
-    for (const CFinalityVote& fv : vTemplateVotes)
-        nTmplFinalityReward += fv.nReward;
-    int64_t nTmplCNBase = pblock->vtx[0].GetValueOut() - nTmplFinalityReward;
+    int64_t nTmplFinalityReward = 0;
+    int nTmplSettlementEpoch = -1;
+    if (IsFinalitySettlementHeight(nTmplHeight, &nTmplSettlementEpoch))
+    {
+        std::vector<CFinalityVote> vTmplSettlementVotes;
+        std::vector<CTxOut> vTmplSettlementLeg;
+        std::string strTmplSettleError;
+        if (!GatherFinalitySettlementVotes(pindexPrev, nTmplSettlementEpoch,
+                                           vTmplSettlementVotes, &strTmplSettleError) ||
+            !BuildFinalitySettlementOutputs(vTmplSettlementVotes, vTmplSettlementLeg,
+                                            nTmplFinalityReward, &strTmplSettleError))
+            throw JSONRPCError(RPC_INTERNAL_ERROR,
+                               strprintf("cannot derive finality settlement for epoch %d at height %d: %s",
+                                         nTmplSettlementEpoch, nTmplHeight,
+                                         strTmplSettleError.c_str()));
+    }
+    int64_t nTmplCNBase = FinalityCollateralnodePaymentBase(pblock->vtx[0].GetValueOut(),
+                                                           nTmplFinalityReward);
     if(payee != CScript()){
 		CTxDestination address1;
 		ExtractDestination(payee, address1);

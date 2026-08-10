@@ -3803,56 +3803,8 @@ static void QueueDAGMergeParentInventories(CNode* pfrom, CBlockIndex* pindex, st
         QueueDAGSideBlockWithAncestors(pfrom, vDAGParents[i], setQueued, setVisiting, 0);
 }
 
-static bool CheckFinalityVoteRewardOutputs(const CBlock& block, const std::vector<CFinalityVote>& vVotes, int64_t& nFinalityRewardOut)
-{
-    nFinalityRewardOut = 0;
-    if (vVotes.empty())
-        return true;
-    if (vVotes.size() > FINALITY_MAX_BLOCK_VOTES)
-        return error("CheckFinalityVoteRewardOutputs() : too many finality votes in block");
-    if (block.vtx.empty())
-        return false;
-
-    std::set<uint256> setNullifiers;
-    std::vector<bool> vMatched(block.vtx[0].vout.size(), false);
-
-    for (const CFinalityVote& vote : vVotes)
-    {
-        if (!setNullifiers.insert(vote.nullifier).second)
-            return error("CheckFinalityVoteRewardOutputs() : duplicate finality vote nullifier");
-        if (vote.IsPrivate())
-            continue;
-        if (vote.nReward < 0 || !MoneyRange(vote.nReward))
-            return error("CheckFinalityVoteRewardOutputs() : finality reward out of range");
-        if (nFinalityRewardOut > MAX_MONEY - vote.nReward)
-            return error("CheckFinalityVoteRewardOutputs() : finality reward total overflow");
-
-        CPubKey pubkey(vote.vchPubKey);
-        if (!pubkey.IsValid())
-            return error("CheckFinalityVoteRewardOutputs() : finality vote pubkey invalid");
-        CScript rewardScript = GetScriptForDestination(pubkey.GetID());
-
-        bool fFoundReward = (vote.nReward == 0);
-        for (unsigned int i = 0; i < block.vtx[0].vout.size(); i++)
-        {
-            if (vMatched[i])
-                continue;
-            const CTxOut& out = block.vtx[0].vout[i];
-            if (out.nValue == vote.nReward && out.scriptPubKey == rewardScript)
-            {
-                vMatched[i] = true;
-                fFoundReward = true;
-                break;
-            }
-        }
-        if (!fFoundReward)
-            return error("CheckFinalityVoteRewardOutputs() : missing finality reward output for voter");
-
-        nFinalityRewardOut += vote.nReward;
-    }
-
-    return true;
-}
+// Finality rewards are minted once per epoch at the settlement height
+// (CheckFinalitySettlementOutputs), not per carrier block.
 
 bool CheckFinalityStakeProofsNotSpentInBlock(const CBlock& block, const std::vector<CFinalityVote>& vVotes)
 {
@@ -8009,13 +7961,16 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     // LogPrint("bench", "    - Verify %u txins: %.2fms (%.3fms/txin) [%.2fs]\n", nInputs - 1, 0.001 * (nTime2 - nTimeStart), nInputs <= 1 ? 0 : 0.001 * (nTime2 - nTimeStart) / (nInputs-1), nTimeVerify * 0.000001);
 
 
+    // Extra coinbase money this block is allowed to mint on top of the block subsidy.
+    // Non-zero on exactly one block per epoch -- the settlement block below.
     int64_t nFinalityRewardOut = 0;
     if (!vFinalityVotes.empty())
     {
         if (!CheckFinalityStakeProofsNotSpentInBlock(activeBlock, vFinalityVotes))
             return DoS(100, error("ConnectBlock() : finality stake proof spent in including block"));
-        if (!CheckFinalityVoteRewardOutputs(activeBlock, vFinalityVotes, nFinalityRewardOut))
-            return DoS(100, error("ConnectBlock() : finality vote reward outputs invalid"));
+        std::string strVoteCommitError;
+        if (!CheckFinalityVoteCommitments(activeBlock, vFinalityVotes, &strVoteCommitError))
+            return DoS(100, error("ConnectBlock() : finality vote commitments invalid: %s", strVoteCommitError.c_str()));
         for (const CFinalityVote& vote : vFinalityVotes)
         {
             std::string strVoteError;
@@ -8032,6 +7987,43 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             }
         }
     }
+
+    // Per-epoch finality-reward settlement. Every counted epoch-E vote is paid exactly
+    // once, in the canonical block at H_E + FINALITY_VOTE_INCLUSION_WINDOW, from the
+    // frozen vote set the epoch's own window blocks committed. Re-carrying a vote across
+    // several canonical window blocks changes nothing: the settlement dedupes by
+    // nullifier, and no other block is allowed any finality reward at all.
+    //
+    // The payout is derived from the ancestor chain (GatherFinalitySettlementVotes),
+    // never from mutable tracker state such as mapConnectedVotes, so producer and
+    // validator compute the same coinbase allowance. Coupling a money allowance to
+    // order-dependent live state is what produced the reward-base mismatch and the
+    // private-finality ConnectBlock split; the settlement set is anchor-pure instead.
+    //
+    // Reorg: the mint is an ordinary coinbase output, so it reverses through the normal
+    // UTXO disconnect. The settlement block's ancestors ARE the window blocks, so the
+    // window can never be reorged out from under a still-connected settlement block.
+    // Whatever block becomes canonical at this height re-derives the set from ITS
+    // ancestors and re-pays accordingly. DisconnectBlockVotes is decoupled from payment.
+    //
+    // Private tier: vSettlementVotes already carries both tiers. The private leg plugs in
+    // at this same call, alongside CheckFinalitySettlementOutputs -- see the PRIVATE-TIER
+    // PLUG-IN POINT in BuildFinalitySettlementOutputs (finality.cpp). It mints sealed
+    // reward notes, so it lands in the shielded-pool delta rather than in
+    // nFinalityRewardOut, and it is inert until the note-tally layer is wired.
+    {
+        int nSettlementEpoch = -1;
+        if (IsFinalitySettlementHeight(pindex->nHeight, &nSettlementEpoch))
+        {
+            std::vector<CFinalityVote> vSettlementVotes;
+            std::string strSettleError;
+            if (!GatherFinalitySettlementVotes(pindex->pprev, nSettlementEpoch, vSettlementVotes, &strSettleError))
+                return DoS(100, error("ConnectBlock() : finality settlement set unavailable: %s", strSettleError.c_str()));
+            if (!CheckFinalitySettlementOutputs(activeBlock, vSettlementVotes, nFinalityRewardOut, &strSettleError))
+                return DoS(100, error("ConnectBlock() : finality settlement outputs invalid: %s", strSettleError.c_str()));
+        }
+    }
+
     for (const CFinalityTallyCertificate& cert : vFinalityCerts)
     {
         std::string strCertError;
@@ -8776,14 +8768,11 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 // make sure the ranks are updated
                 GetCollateralnodeRanks(pindexBest);
 
-                // Exclude embedded finality-vote reward outputs from the collateralnode-payment base.
-                // The miner sizes the CN payment on the block reward only (miner.cpp:894), so the
-                // validator must too; using the raw vtx[0].GetValueOut() -- which also includes the
-                // finality-vote rewards -- makes every post-DAG block that carries a vote (the default
-                // post-DAG case) fail this check and get DoS-rejected -> block-production stall.
-                // Reuse the exact nFinalityRewardOut already computed above (from activeBlock, and the
-                // same total the coinbase cap nAllowedCoinbase enforces) so the two bases can never drift.
-                int64_t collateralnodePaymentAmount = GetCollateralnodePayment(pindex->nHeight, vtx[0].GetValueOut() - nFinalityRewardOut);
+                // Subsidy only: the finality settlement in the coinbase is owed to voters. Uses the
+                // same nFinalityRewardOut as the coinbase cap so miner and validator agree.
+                int64_t nCNPaymentBase =
+                    FinalityCollateralnodePaymentBase(vtx[0].GetValueOut(), nFinalityRewardOut);
+                int64_t collateralnodePaymentAmount = GetCollateralnodePayment(pindex->nHeight, nCNPaymentBase);
 
                 // If we don't already have its previous block, skip collateralnode payment step
                 if (pindex != NULL)

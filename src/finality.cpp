@@ -2127,6 +2127,235 @@ std::vector<CFinalityVote> ExtractFinalityVotesFromBlock(const CBlock& block)
     return vVotes;
 }
 
+//
+// Per-epoch finality-reward settlement.
+//
+
+bool CheckFinalityVoteCommitments(const CBlock& block, const std::vector<CFinalityVote>& vVotes,
+                                  std::string* pstrError)
+{
+    auto reject = [&](const std::string& strReason) -> bool {
+        if (pstrError)
+            *pstrError = strReason;
+        return false;
+    };
+
+    if (vVotes.empty())
+        return true;
+    if (vVotes.size() > FINALITY_MAX_BLOCK_VOTES)
+        return reject("too many finality votes in block");
+    if (block.vtx.empty())
+        return reject("block has no coinbase");
+
+    std::set<uint256> setNullifiers;
+    for (const CFinalityVote& vote : vVotes)
+    {
+        if (!setNullifiers.insert(vote.nullifier).second)
+            return reject("duplicate finality vote nullifier");
+        if (vote.IsPrivate())
+            continue;
+        if (vote.nReward < 0 || !MoneyRange(vote.nReward))
+            return reject("finality reward out of range");
+        CPubKey pubkey(vote.vchPubKey);
+        if (!pubkey.IsValid())
+            return reject("finality vote pubkey invalid");
+    }
+
+    // Deliberately no payment accounting: a carrying block's coinbase allowance is the
+    // block subsidy alone, so re-embedding a vote across several canonical blocks buys
+    // the carrier nothing. All finality reward is minted at the epoch settlement height.
+    return true;
+}
+
+void CollectFinalitySettlementVotes(const std::vector<std::vector<CFinalityVote> >& vWindowBlockVotes,
+                                    int nEpoch,
+                                    std::vector<CFinalityVote>& vVotesOut)
+{
+    vVotesOut.clear();
+    std::set<uint256> setSeen;
+    // vWindowBlockVotes is in ascending window-block order; within a block, coinbase
+    // vout order. That total order is what makes the settlement reproducible.
+    for (const std::vector<CFinalityVote>& vBlockVotes : vWindowBlockVotes)
+    {
+        for (const CFinalityVote& vote : vBlockVotes)
+        {
+            if (vote.nEpoch != nEpoch)
+                continue;
+            // One payment per counted vote: a vote re-embedded by several window blocks
+            // pays only at its first occurrence, so producer and validator agree on order.
+            if (!setSeen.insert(vote.nullifier).second)
+                continue;
+            vVotesOut.push_back(vote);
+        }
+    }
+}
+
+bool GatherFinalitySettlementVotes(const CBlockIndex* pindexPrev, int nEpoch,
+                                   std::vector<CFinalityVote>& vVotesOut,
+                                   std::string* pstrError)
+{
+    auto reject = [&](const std::string& strReason) -> bool {
+        if (pstrError)
+            *pstrError = strReason;
+        vVotesOut.clear();
+        return false;
+    };
+
+    vVotesOut.clear();
+    if (!pindexPrev)
+        return reject("settlement has no parent block");
+
+    const int nBoundary = GetEpochBoundaryHeight(nEpoch, pindexPrev->nHeight);
+    const int nWindowTop = nBoundary + FINALITY_VOTE_INCLUSION_WINDOW - 1;
+    if (pindexPrev->nHeight != nWindowTop)
+        return reject("settlement parent is not the top of the epoch vote-inclusion window");
+
+    // Walk the ancestor chain down to the epoch boundary. This is the canonical
+    // (selected-parent) chain of the settlement block, so the window it covers is
+    // exactly the set of blocks whose votes ConnectBlock validated on this chain.
+    std::vector<const CBlockIndex*> vWindow;
+    vWindow.reserve(FINALITY_VOTE_INCLUSION_WINDOW);
+    for (const CBlockIndex* p = pindexPrev; p && p->nHeight >= nBoundary; p = p->pprev)
+        vWindow.push_back(p);
+    if (vWindow.empty() || vWindow.back()->nHeight != nBoundary)
+        return reject("settlement vote-inclusion window is incomplete");
+
+    std::vector<std::vector<CFinalityVote> > vWindowBlockVotes;
+    vWindowBlockVotes.reserve(vWindow.size());
+    for (int i = (int)vWindow.size() - 1; i >= 0; i--)   // ascending height
+    {
+        CBlock blockWindow;
+        if (!blockWindow.ReadFromDisk(vWindow[i], true))
+            return reject("settlement window block not readable");
+
+        // Decode at the window block's own height (envelope encoding changes at
+        // Boundary A). Votes live in the coinbase, which is never DAG-skipped, so the
+        // raw block and its DAG-active view carry the same vote set.
+        std::vector<CFinalityVote> vBlockVotes;
+        if (!ExtractFinalityVotesFromBlockForHeight(blockWindow, vWindow[i]->nHeight, vBlockVotes))
+            return reject("settlement window block carries an undecodable vote envelope");
+        vWindowBlockVotes.push_back(vBlockVotes);
+    }
+
+    CollectFinalitySettlementVotes(vWindowBlockVotes, nEpoch, vVotesOut);
+    return true;
+}
+
+bool BuildFinalitySettlementOutputs(const std::vector<CFinalityVote>& vCountedVotes,
+                                    std::vector<CTxOut>& vOutputsOut,
+                                    int64_t& nTotalOut,
+                                    std::string* pstrError)
+{
+    auto reject = [&](const std::string& strReason) -> bool {
+        if (pstrError)
+            *pstrError = strReason;
+        vOutputsOut.clear();
+        nTotalOut = 0;
+        return false;
+    };
+
+    vOutputsOut.clear();
+    nTotalOut = 0;
+
+    // Canonical order by nullifier, so the settlement coinbase is byte-reproducible
+    // by any producer from the same frozen set.
+    std::vector<const CFinalityVote*> vTransparent;
+    std::set<uint256> setNullifiers;
+    for (const CFinalityVote& vote : vCountedVotes)
+    {
+        if (!setNullifiers.insert(vote.nullifier).second)
+            return reject("duplicate nullifier in settlement vote set");
+        if (vote.IsPrivate())
+            continue;
+        vTransparent.push_back(&vote);
+    }
+    std::sort(vTransparent.begin(), vTransparent.end(),
+              [](const CFinalityVote* a, const CFinalityVote* b) { return a->nullifier < b->nullifier; });
+
+    std::set<CScript> setPayees;
+    for (const CFinalityVote* pvote : vTransparent)
+    {
+        if (pvote->nReward < 0 || !MoneyRange(pvote->nReward))
+            return reject("settlement reward out of range");
+        if (nTotalOut > MAX_MONEY - pvote->nReward)
+            return reject("settlement reward total overflow");
+
+        CPubKey pubkey(pvote->vchPubKey);
+        if (!pubkey.IsValid())
+            return reject("settlement payee pubkey invalid");
+        CScript scriptPayee = GetScriptForDestination(pubkey.GetID());
+        // The nullifier is consensus-bound to H(pubkey || epoch), so distinct counted
+        // votes in one epoch always have distinct payees. Fail closed if that ever
+        // breaks rather than pay one payee twice out of one allowance.
+        if (!setPayees.insert(scriptPayee).second)
+            return reject("duplicate settlement payee");
+
+        nTotalOut += pvote->nReward;
+        if (pvote->nReward == 0)
+            continue;   // nothing to mint for a zero-weight voter
+        vOutputsOut.push_back(CTxOut(pvote->nReward, scriptPayee));
+    }
+
+    // PRIVATE-TIER PLUG-IN POINT.
+    // The private (NullStake) leg settles at this same freeze point and this same
+    // height, from the private subset of vCountedVotes (vote.IsPrivate()). It adds a
+    // second output shape -- sealed reward notes, whose value lives in a commitment
+    // rather than in CTxOut::nValue -- so it contributes to the block's shielded-pool
+    // delta instead of to nTotalOut here, and its per-vote amount comes from the epoch
+    // tally certificate's rewardBudgetCommitment rather than from vote.nReward (CheckVote
+    // pins private nReward to 0). Nothing above needs to change: the frozen set already
+    // carries both tiers, the settlement height is shared, and the reorg behaviour is the
+    // same re-derivation. It is NOT wired today because private votes carry no finality
+    // weight yet -- the note-tally layer (RunNoteTallyCommitteePass / OpenNoteTallyAggregate
+    // / CheckNoteTallyCertificate in finality_note.cpp) has no callers.
+
+    return true;
+}
+
+bool CheckFinalitySettlementOutputs(const CBlock& block,
+                                    const std::vector<CFinalityVote>& vCountedVotes,
+                                    int64_t& nTotalOut,
+                                    std::string* pstrError)
+{
+    auto reject = [&](const std::string& strReason) -> bool {
+        if (pstrError)
+            *pstrError = strReason;
+        nTotalOut = 0;
+        return false;
+    };
+
+    nTotalOut = 0;
+    std::vector<CTxOut> vRequired;
+    if (!BuildFinalitySettlementOutputs(vCountedVotes, vRequired, nTotalOut, pstrError))
+    {
+        nTotalOut = 0;
+        return false;
+    }
+    if (vRequired.empty())
+        return true;
+    if (block.vtx.empty())
+        return reject("settlement block has no coinbase");
+
+    // Payees are unique (see BuildFinalitySettlementOutputs), so an exact
+    // script -> amount match is unambiguous and order-independent.
+    std::map<CScript, int64_t> mapRequired;
+    for (const CTxOut& out : vRequired)
+        mapRequired[out.scriptPubKey] = out.nValue;
+
+    std::set<CScript> setMatched;
+    for (const CTxOut& out : block.vtx[0].vout)
+    {
+        std::map<CScript, int64_t>::const_iterator it = mapRequired.find(out.scriptPubKey);
+        if (it == mapRequired.end() || out.nValue != it->second)
+            continue;
+        setMatched.insert(out.scriptPubKey);
+    }
+    if (setMatched.size() != mapRequired.size())
+        return reject("missing finality settlement output for counted voter");
+
+    return true;
+}
+
 CScript BuildFinalityTallyCertificateScript(const CFinalityTallyCertificate& cert)
 {
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);

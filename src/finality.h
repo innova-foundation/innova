@@ -28,6 +28,7 @@ class CDataStream;
 class CTxDB;
 class CTransaction;
 class CBlock;
+class CBlockIndex;
 
 static const int FINALITY_EPOCH_INTERVAL_PRE_DAG = 60;    // blocks per epoch pre-DAG
 static const int FINALITY_EPOCH_INTERVAL_POST_DAG = 300;  // blocks per epoch post-DAG (5 min at 1s blocks)
@@ -223,6 +224,52 @@ inline int GetEpochBoundaryHeight(int nEpoch, int nHeight)
         return nDAGFork + (nEpoch - nPreDAGEpochs) * FINALITY_EPOCH_INTERVAL_POST_DAG;
     }
     return nEpoch * FINALITY_EPOCH_INTERVAL_PRE_DAG;
+}
+
+// Per-epoch finality-reward settlement.
+//
+// A vote is COUNTED once per epoch (keyed by nullifier) but may legitimately be
+// carried by more than one canonical block inside the inclusion window
+// [H_E, H_E + FINALITY_VOTE_INCLUSION_WINDOW). Paying the carrying block made the
+// payout a function of how many canonical blocks re-embedded the vote, so a producer
+// of several window blocks collected up to K payouts for one counted vote, with no
+// per-epoch reconciliation.
+//
+// Payment is instead settled ONCE per epoch, in the canonical block at
+// H_E + FINALITY_VOTE_INCLUSION_WINDOW: a single height (so a single canonical block),
+// inside epoch E (K << the epoch interval), and exactly where the epoch's vote set is
+// frozen -- the inclusion window has just closed, which is also the height at which a
+// tally certificate for E becomes block-valid (R2). Producer and validators derive the
+// payout from that same frozen, chain-derived set, never from node-local tracker state,
+// so the coinbase money allowance cannot drift between them.
+static const int FINALITY_SETTLEMENT_OFFSET = FINALITY_VOTE_INCLUSION_WINDOW;
+
+/** Settlement height of epoch nEpoch (nHeightHint only selects the pre/post-DAG regime). */
+inline int GetFinalitySettlementHeight(int nEpoch, int nHeightHint)
+{
+    return GetEpochBoundaryHeight(nEpoch, nHeightHint) + FINALITY_SETTLEMENT_OFFSET;
+}
+
+/** Base for the collateralnode share of a coinbase: the coinbase value minus the
+ *  pass-through finality reward (nonzero only on the settlement block). */
+inline int64_t FinalityCollateralnodePaymentBase(int64_t nCoinbaseValueOut, int64_t nFinalityRewardOut)
+{
+    int64_t nBase = nCoinbaseValueOut - nFinalityRewardOut;
+    return (nBase < 0) ? 0 : nBase;
+}
+
+/** True iff nHeight is the settlement height of the epoch containing it. Settlement
+ *  exists only post-DAG, where finality votes exist at all. */
+inline bool IsFinalitySettlementHeight(int nHeight, int* pnEpochOut = NULL)
+{
+    if (nHeight < GetForkHeightDAG())
+        return false;
+    int nEpoch = GetEpochForHeight(nHeight);
+    if (GetFinalitySettlementHeight(nEpoch, nHeight) != nHeight)
+        return false;
+    if (pnEpochOut)
+        *pnEpochOut = nEpoch;
+    return true;
 }
 
 /** Compute POEM entropy weight for a block hash.
@@ -1053,6 +1100,41 @@ bool UseCanonicalFinalityTrafficForTip(int nTipHeight);
 /** True when the next candidate after nTipHeight is at/after the first legal
  *  certificate height for nEpoch. */
 bool IsFinalityVoteWindowClosedForTip(int nEpoch, int nTipHeight);
+
+/** Frozen vote set that epoch nEpoch settles: walks pindexPrev's ancestors over
+ *  [H_E, H_E + K) and returns epoch-E votes deduped by nullifier in canonical order.
+ *  Pure function of the ancestor chain; both tiers are returned. */
+bool GatherFinalitySettlementVotes(const CBlockIndex* pindexPrev, int nEpoch,
+                                   std::vector<CFinalityVote>& vVotesOut,
+                                   std::string* pstrError = NULL);
+
+/** Dedupe half of the enumerator. vWindowBlockVotes is in ascending window-block order;
+ *  the first occurrence of each nullifier is kept, so a re-carried vote is paid once. */
+void CollectFinalitySettlementVotes(const std::vector<std::vector<CFinalityVote> >& vWindowBlockVotes,
+                                    int nEpoch,
+                                    std::vector<CFinalityVote>& vVotesOut);
+
+/** Transparent settlement leg: exactly one P2PKH output per counted transparent voter,
+ *  paying that vote's consensus-bound nReward, in canonical (nullifier-sorted) order.
+ *  nTotalOut is the sum, which is the settlement block's extra coinbase allowance. */
+bool BuildFinalitySettlementOutputs(const std::vector<CFinalityVote>& vCountedVotes,
+                                    std::vector<CTxOut>& vOutputsOut,
+                                    int64_t& nTotalOut,
+                                    std::string* pstrError = NULL);
+
+/** Consensus check for a settlement block: its coinbase must carry the full settlement
+ *  leg for vCountedVotes. Returns the settled total in nTotalOut (0 on failure). */
+bool CheckFinalitySettlementOutputs(const CBlock& block,
+                                    const std::vector<CFinalityVote>& vCountedVotes,
+                                    int64_t& nTotalOut,
+                                    std::string* pstrError = NULL);
+
+/** Structural check for the vote commitments a non-settlement block carries. Carrying a
+ *  vote pays nothing, so this validates shape only (per-block cap, no duplicate
+ *  nullifier in one block, valid payee key, reward in range). */
+bool CheckFinalityVoteCommitments(const CBlock& block,
+                                  const std::vector<CFinalityVote>& vVotes,
+                                  std::string* pstrError = NULL);
 
 /** Private-vote nullifier binding: epoch-scoped vote tag for a note-bound
  *  nullifier point, and the context hash its binding proof commits to. */
