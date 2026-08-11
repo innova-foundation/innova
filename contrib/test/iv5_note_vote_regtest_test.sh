@@ -76,8 +76,75 @@ SHIELD_SWEEPS=4
 FINALIZED_HEIGHT=1210
 FINALIZED_EPOCH=4
 
-# Boundaries observed for note votes, all after the finalized height exists.
-NOTE_VOTE_EPOCHS="5 6 7"
+# CPU miner threads for the long haul. Single-threaded regtest mines ~1.6
+# blocks/s on the build host and a seated committee is thousands of blocks away,
+# so the run is mining-bound. setgenerate's third argument is the thread count.
+#
+# N threads overshoot a target by up to N-1 blocks, because each one finishes the
+# block it is on. The fleet-setup sections below step between fixed heights only
+# a few blocks apart, and an overshoot there skips a confirmation entirely, so
+# mining stays single-threaded until those are done and MINE_THREADS_NOW is
+# raised. Every target after that is either hundreds of blocks away or an epoch
+# boundary with a 24-block inclusion window, both of which absorb the overshoot.
+# Default 1. Producing blocks faster than the fleet can follow deadlocks a
+# peer's block fetch outright: it ends up holding a header whose parent it never
+# requested, reports "waiting for in-flight blocks" with nothing in flight, and
+# never recovers no matter how long the run waits. Raise this only to reproduce
+# that; the run is long, but a wedged fleet does not finish at all.
+MINE_THREADS="${IV5_NOTE_VOTE_MINE_THREADS:-1}"
+MINE_THREADS_NOW=1
+# Blocks mined before the fleet has to catch up. Left unbounded, node0 outruns
+# its peers by hundreds of blocks and their fetch wedges: the peer ends up
+# holding a header whose parent it never requested, reporting "waiting for
+# in-flight blocks" with nothing in flight, and it does not recover. Keeping the
+# gap small never puts them in that state.
+MINE_CHUNK="${IV5_NOTE_VOTE_MINE_CHUNK:-50}"
+
+# Epoch E spans [11 + 300*(E-1), 310 + 300*(E-1)].
+epoch_start() { echo $(( 11 + ($1 - 1) * 300 )); }
+epoch_end()   { echo $(( 310 + ($1 - 1) * 300 )); }
+
+# ---------------------------------------------------------------------------
+# The term this run seats a committee for.
+#
+# Regtest draws 3 seats at M=2 over a 2-epoch term, refuses a registry smaller
+# than 2N, and anchors the draw 2 epochs back. So: 6 registrations, all
+# confirmed at or below the FIRST height of the anchor epoch; the seed is that
+# epoch's END block; the draw is carried by the epoch ending the term's lead-in
+# and appears once the chain crosses into the term.
+#
+# The term is this late because the registrations cost 6 x 25000 INN of real
+# collateral and node0 is the only miner: at 50 INN a block it does not hold
+# 150000 INN until roughly height 3050.
+# ---------------------------------------------------------------------------
+COMMITTEE_TERM_EPOCH=16
+COMMITTEE_ANCHOR_EPOCH=$(( COMMITTEE_TERM_EPOCH - 2 ))
+COMMITTEE_CARRIER_EPOCH=$(( COMMITTEE_TERM_EPOCH - 1 ))
+COMMITTEE_ANCHOR_HEIGHT="$(epoch_start "$COMMITTEE_ANCHOR_EPOCH")"
+# The carrier epoch's state is built when the chain crosses into the term.
+COMMITTEE_SEATED_HEIGHT=$(( $(epoch_end "$COMMITTEE_CARRIER_EPOCH") + 1 ))
+
+# Six rows is the floor: 3 seats x the 2N registry minimum. Two rows per member
+# key and one seat per key means the draw seats exactly the three node keys
+# whichever rows win.
+COLLATERAL_ROWS=6
+COLLATERAL_VALUE=25000
+# Shielded per row. Deliberately not 25000: a note whose value entered the pool
+# as an exact-25000 shield is publicly linkable to the transparent coins that
+# funded it, and the registration RPC refuses to pick one by default. The
+# attestable note is carved out of this by an in-pool transfer instead.
+COLLATERAL_SHIELD_VALUE=25500
+
+# Node0 holds ~153000 INN of mature coinbase by here; all inside epoch 11.
+POOL_FUND_HEIGHT=3150
+# Inside epoch 12, so epoch 11's build has put the shielded notes in the tree.
+CARVE_HEIGHT="$(epoch_start 12)"
+# Inside epoch 13, so epoch 12's build has put the carved notes in the tree.
+# Every registration must then confirm at or below COMMITTEE_ANCHOR_HEIGHT.
+REGISTER_HEIGHT="$(epoch_start 13)"
+
+# Boundaries observed for note votes. Both epochs of the term the draw seats.
+NOTE_VOTE_EPOCHS="16 17"
 # Blocks mined past a boundary while the vote is pending. Stays inside
 # FINALITY_VOTE_INCLUSION_WINDOW (24) so every one of them may carry the vote.
 NOTE_VOTE_WINDOW=10
@@ -118,7 +185,7 @@ TALLY_CERT_TAG_HEX="49464343"
 # NOTE_VOTE_EPOCHS, and the certificate has to be carried by a block of that same
 # epoch: the deterministic tier reads the epoch's OWN blocks, so a cert carried a
 # whole epoch later is block-valid and tier-irrelevant.
-TALLY_EPOCH=5
+TALLY_EPOCH=16
 # H_E + FINALITY_VOTE_INCLUSION_WINDOW is the freeze point: before it the counted
 # note-vote set still grows and no certificate can satisfy connect-time coverage.
 TALLY_WINDOW_CLOSE=$(( 11 + (TALLY_EPOCH - 1) * 300 + 24 ))
@@ -229,7 +296,7 @@ wait_ports_free() {
     local n port busy
     for _ in $(seq 1 60); do
         busy=""
-        for ((n=0; n<NUM_NODES; n++)); do
+        for ((n=0; n<=NUM_NODES; n++)); do
             for port in "$(node_port "$n")" "$(node_rpc "$n")" "$(node_idns "$n")"; do
                 port_in_use "$port" && busy="$busy $port"
             done
@@ -303,15 +370,33 @@ wait_sync() {
     return 1
 }
 
+# Mine on NODE until TARGET, in chunks, letting the fleet catch up between them.
+# Mining far ahead of the peers wedges their block fetch, so the gap is bounded.
+mine_to() {
+    local node="$1" target="$2" h stop
+    h="$(height "$node")"
+    is_int "$h" || return 1
+    while [ "$h" -lt "$target" ]; do
+        stop=$(( h + MINE_CHUNK ))
+        [ "$stop" -gt "$target" ] && stop="$target"
+        mine_chunk "$node" "$stop" || return 1
+        wait_sync "$stop" 180 >/dev/null 2>&1 || \
+            warn "the fleet lagged past height $stop; continuing"
+        h="$(height "$node")"
+        is_int "$h" || return 1
+    done
+    return 0
+}
+
 # Mine on NODE until TARGET. Re-arms the miner if height stalls: setgenerate
 # takes a block count, and a template that loses a race consumes one.
-mine_to() {
+mine_chunk() {
     local node="$1" target="$2" h last stall=0
     h="$(height "$node")"
     is_int "$h" || return 1
     [ "$h" -ge "$target" ] && return 0
     last="$h"
-    rpc "$node" setgenerate true $((target - h)) >/dev/null 2>&1
+    rpc "$node" setgenerate true $((target - h)) "$MINE_THREADS_NOW" >/dev/null 2>&1
     for ((i=0; i<3000; i++)); do
         h="$(height "$node")"
         if is_int "$h" && [ "$h" -ge "$target" ]; then
@@ -326,7 +411,7 @@ mine_to() {
             [ $((h % 100)) -eq 0 ] && log "  ...height $h/$target"
         fi
         if [ "$stall" -ge 20 ]; then
-            rpc "$node" setgenerate true $((target - h)) >/dev/null 2>&1
+            rpc "$node" setgenerate true $((target - h)) "$MINE_THREADS_NOW" >/dev/null 2>&1
             stall=0
         fi
         sleep 1
@@ -361,6 +446,62 @@ fund_peer() {
         mine_to 0 $(( $(height 0) + 1 )) || return 1
     done
     return 1
+}
+
+# Mine COUNT blocks on node0 and wait for the fleet, so a transaction just
+# broadcast is confirmed everywhere before the next one is built on top of it.
+confirm_on() {
+    local count="${1:-2}" target
+    target=$(( $(height 0) + count ))
+    mine_to 0 "$target" >/dev/null || return 1
+    wait_sync "$target" >/dev/null || return 1
+    return 0
+}
+
+# Drive the transparent vote round at every epoch boundary in [from, to]. Skipping
+# a boundary stalls finalization.
+advance_through_epochs() {
+    local from="$1" to="$2" e b
+    for ((e=from; e<=to; e++)); do
+        b="$(epoch_start "$e")"
+        log "  epoch $e boundary at height $b"
+        vote_round "$b" || return 1
+    done
+    return 0
+}
+
+# "<txhash>:<index>" for each attestable 25000 INN note, one per line. This is
+# exactly the identifier finality-register takes.
+collateral_note_ids() {
+    rpc "$1" collateralnode collateral-notes 2>/dev/null | python3 -c '
+import json, sys
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for c in doc.get("candidates", []):
+    n = c.get("note")
+    if n: print(n)
+'
+}
+
+# The compressed member pubkeys the chain says are seated right now, one per
+# line, in seat order.
+committee_seats() {
+    rpc "$1" getfinalityinfo 2>/dev/null | python3 -c '
+import json, sys
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for k in ("committee", "committee_seats", "committee_members", "committee_pubkeys"):
+    v = doc.get(k)
+    if isinstance(v, list):
+        for s in v:
+            print(s if not isinstance(s, dict)
+                  else (s.get("pubkey") or s.get("member_pubkey") or ""))
+        break
+'
 }
 
 votes_in_range() {
@@ -479,10 +620,12 @@ write_config() {
 }
 
 cleanup() {
-    local n
-    for ((n=0; n<NUM_NODES; n++)); do rpc "$n" setgenerate false 0 >/dev/null 2>&1 || true; done
-    for ((n=0; n<NUM_NODES; n++)); do rpc "$n" stop >/dev/null 2>&1 || true; done
-    for ((n=0; n<NUM_NODES; n++)); do
+    # The reorg section starts a fourth node from an empty datadir, so teardown
+    # covers one more than the fleet size.
+    local n last=$((NUM_NODES))
+    for ((n=0; n<=last; n++)); do rpc "$n" setgenerate false 0 >/dev/null 2>&1 || true; done
+    for ((n=0; n<=last; n++)); do rpc "$n" stop >/dev/null 2>&1 || true; done
+    for ((n=0; n<=last; n++)); do
         if ! wait_rpc_down "$n"; then
             warn "node$n did not stop; killing it by pid"
             force_kill_node "$n"
@@ -586,29 +729,7 @@ else
     fail "a node did not report an unseated collateral-registry-draw committee"
 fi
 
-# Everything from section 7 on needs a SEATED committee, and seats are won, not
-# configured. What this harness still has to grow, in order:
-#
-#   1. node0 imports COMMITTEE_WIFS so its wallet holds the private half of each
-#      member key (collateralnode finality-register refuses a key it cannot
-#      decrypt to), and each node keeps its own finalitytallyprivkey.
-#   2. After the finalized height exists, node0 carves six 25000 INN IV5 notes
-#      with z_iv5transfer -- two per member key -- and lets the next epoch build
-#      put them in the tree.
-#   3. node0 runs `collateralnode finality-register <pubkey> <txid:n> confirm`
-#      six times. Six rows is the floor: regtest draws 3 seats and refuses a
-#      registry smaller than 2N. Two rows per key and one seat per key means the
-#      draw seats exactly the three node keys whichever rows win.
-#   4. Every registration must confirm at or below the first height of epoch
-#      (term - 2). The seats then appear when the epoch ending the term's lead-in
-#      is built, and the term they serve is the two epochs after that.
-#   5. NOTE_VOTE_EPOCHS and TALLY_EPOCH move into that term.
-#
-# Until then the sections below have no committee to share to and will fail.
-SEATED="$(jget "$(rpc 0 getfinalityinfo 2>/dev/null)" committee_seated)"
-if [ "$SEATED" != "true" ]; then
-    fail "no committee is seated: the registration flow above is not implemented in this harness yet, so the note-vote and certificate rounds cannot run"
-fi
+# The seats are won further down, in sections 5a-5d. Nothing is configured.
 
 # ============================================================
 header "2. node0 holds an IV5 seed in an encrypted wallet"
@@ -773,6 +894,241 @@ for e in 2 3; do
         exit 1
     fi
 done
+
+# ============================================================
+header "5a. node0 holds the private half of every member key"
+# ============================================================
+
+# finality-register refuses a key this wallet cannot decrypt to: a seat nobody
+# can serve is worse than no seat. Each node keeps its own finalitytallyprivkey,
+# so the registering wallet has to hold all three.
+IMPORT_OK=1
+for ((k=0; k<NUM_NODES; k++)); do
+    IMP="$(rpc 0 importprivkey "${COMMITTEE_WIFS[$k]}" "member$k" false 2>&1)"
+    if echo "$IMP" | grep -qiE "error|invalid"; then
+        fail "importing member key $k failed: $(echo "$IMP" | head -2)"
+        IMPORT_OK=0
+    fi
+done
+[ "$IMPORT_OK" -eq 1 ] || exit 1
+
+success "node0 imported the private half of all $NUM_NODES member keys"
+
+# ============================================================
+header "5b. Six 25000 INN collateral notes are carved in the pool"
+# ============================================================
+
+# Past the fixed-height fleet setup: the rest is thousands of blocks and epoch
+# boundaries, so the miner can use every core.
+MINE_THREADS_NOW="$MINE_THREADS"
+log "raising the miner to $MINE_THREADS_NOW threads for the run to the committee term"
+
+# Everything up to the anchor epoch needs a vote round at each boundary: an
+# epoch that misses one is not HARD, the finalized height stops advancing, and
+# a note in an unfinalized epoch is not attestable.
+advance_through_epochs 5 11 || { fail "the epoch 5-11 vote rounds failed"; exit 1; }
+
+log "mining to $POOL_FUND_HEIGHT, where node0's mature coinbase covers $COLLATERAL_ROWS x $COLLATERAL_SHIELD_VALUE INN"
+mine_to 0 "$POOL_FUND_HEIGHT" || { fail "could not mine to the pool-funding height"; exit 1; }
+wait_sync "$POOL_FUND_HEIGHT" || { fail "fleet did not sync to the pool-funding height"; exit 1; }
+
+BAL="$(rpc 0 getbalance 2>/dev/null | tr -d '"[:space:]')"
+NEEDED=$(( COLLATERAL_ROWS * COLLATERAL_SHIELD_VALUE ))
+if [ "$(python3 -c "print(1 if float('${BAL:-0}') >= $NEEDED else 0)")" = "1" ]; then
+    success "node0 holds $BAL INN, enough for $COLLATERAL_ROWS collateral notes"
+else
+    fail "node0 holds $BAL INN but needs $NEEDED; raise POOL_FUND_HEIGHT"
+    exit 1
+fi
+
+# One consolidating send per row, then one sweep per row. z_shieldall moves a
+# single address's whole value with no transparent change, so consolidating
+# first is what turns ~500 coinbase outputs into one shieldable note.
+SHIELDED_ROWS=0
+for ((r=0; r<COLLATERAL_ROWS; r++)); do
+    RADDR="$(rpc 0 getnewaddress "collateral$r" 2>/dev/null | tr -d '"[:space:]')"
+    [ ${#RADDR} -ge 20 ] || { fail "could not create a consolidation address"; break; }
+    SENT="$(fund_peer "$RADDR" "$COLLATERAL_SHIELD_VALUE")"
+    [ ${#SENT} -eq 64 ] || { fail "consolidating row $r failed"; break; }
+    confirm_on 2 || { fail "could not confirm consolidation $r"; break; }
+    SH="$(rpc 0 z_shieldall "$RADDR" 2>&1)"
+    SH_TXID="$(jget "$SH" txid)"
+    if [ ${#SH_TXID} -ne 64 ]; then
+        fail "shielding row $r failed: $(echo "$SH" | head -2)"
+        break
+    fi
+    confirm_on 2 || { fail "could not confirm shield $r"; break; }
+    SHIELDED_ROWS=$((SHIELDED_ROWS + 1))
+    log "  row $r: $(jget "$SH" shielded) INN into the pool"
+done
+if [ "$SHIELDED_ROWS" -eq "$COLLATERAL_ROWS" ]; then
+    success "$SHIELDED_ROWS x ~$COLLATERAL_SHIELD_VALUE INN entered the pool"
+else
+    fail "only $SHIELDED_ROWS of $COLLATERAL_ROWS rows reached the pool"
+    exit 1
+fi
+
+# Cross into epoch 12: the epoch build indexes those notes and, because the
+# epoch goes HARD, finalizes them into the anchor a spend proves against.
+advance_through_epochs 12 12 || { fail "the epoch 12 vote round failed"; exit 1; }
+mine_to 0 $((CARVE_HEIGHT + 10)) || { fail "could not mine into epoch 12"; exit 1; }
+wait_sync $((CARVE_HEIGHT + 10)) || { fail "fleet did not sync into epoch 12"; exit 1; }
+
+IV5ADDR="$(jget "$(rpc 0 z_getnewiv5address 2>&1)" address)"
+if [ ${#IV5ADDR} -ge 20 ]; then
+    success "node0 holds an IV5 address to carve the collateral notes to"
+else
+    fail "could not create an IV5 address for the carve: $(rpc 0 z_getnewiv5address 2>&1 | head -2)"
+    exit 1
+fi
+
+# The carve. An exact-25000 SHIELD is publicly linkable, so the attestable note
+# is made by an in-pool transfer out of the larger notes above.
+CARVED=0
+for ((r=0; r<COLLATERAL_ROWS; r++)); do
+    TR="$(rpc 0 z_iv5transfer "$IV5ADDR" "$COLLATERAL_VALUE" 2>&1)"
+    TR_TXID="$(jget "$TR" txid)"
+    if [ ${#TR_TXID} -ne 64 ]; then
+        fail "carving note $r failed: $(echo "$TR" | head -3)"
+        break
+    fi
+    confirm_on 3 || { fail "could not confirm carve $r"; break; }
+    CARVED=$((CARVED + 1))
+    log "  carved note $r ($COLLATERAL_VALUE INN, txid ${TR_TXID:0:16})"
+done
+if [ "$CARVED" -eq "$COLLATERAL_ROWS" ]; then
+    success "$CARVED exact-$COLLATERAL_VALUE INN notes carved by in-pool transfer"
+else
+    fail "only $CARVED of $COLLATERAL_ROWS collateral notes were carved"
+    exit 1
+fi
+
+# ============================================================
+header "5c. Six finality-member registrations confirm below the anchor height"
+# ============================================================
+
+# Cross into epoch 13 so epoch 12 is built AND finalized: a note is attestable
+# only once its leaf index is inside the finalized spend anchor.
+advance_through_epochs 13 13 || { fail "the epoch 13 vote round failed"; exit 1; }
+mine_to 0 $((REGISTER_HEIGHT + 10)) || { fail "could not mine into epoch 13"; exit 1; }
+wait_sync $((REGISTER_HEIGHT + 10)) || { fail "fleet did not sync into epoch 13"; exit 1; }
+
+NOTE_IDS=()
+while read -r nid; do [ -n "$nid" ] && NOTE_IDS+=("$nid"); done < <(collateral_note_ids 0)
+if [ "${#NOTE_IDS[@]}" -ge "$COLLATERAL_ROWS" ]; then
+    success "${#NOTE_IDS[@]} attestable $COLLATERAL_VALUE INN note(s) are visible to the wallet"
+else
+    fail "only ${#NOTE_IDS[@]} attestable note(s); the carve did not finalize into the anchor"
+    rpc 0 collateralnode collateral-notes 2>&1 | head -20
+    exit 1
+fi
+
+# Two rows per member key. Three distinct keys across six rows, and one seat per
+# key, means the draw seats exactly these three whichever rows win.
+REGISTERED=0
+REG_KEYIMAGES=()
+for ((r=0; r<COLLATERAL_ROWS; r++)); do
+    KEYIDX=$(( r % NUM_NODES ))
+    REG="$(rpc 0 collateralnode finality-register "${COMMITTEE_PUBKEYS[$KEYIDX]}" \
+              "${NOTE_IDS[$r]}" confirm 2>&1)"
+    REG_TXID="$(jget "$REG" registration_txid)"
+    if [ ${#REG_TXID} -ne 64 ]; then
+        fail "registration $r (key $KEYIDX) failed: $(echo "$REG" | head -4)"
+        break
+    fi
+    KI="$(jget "$REG" key_image)"
+    [ -n "$KI" ] && REG_KEYIMAGES+=("$KI")
+    confirm_on 3 || { fail "could not confirm registration $r"; break; }
+    REGISTERED=$((REGISTERED + 1))
+    log "  registered row $r under member key $KEYIDX (txid ${REG_TXID:0:16})"
+done
+if [ "$REGISTERED" -eq "$COLLATERAL_ROWS" ]; then
+    success "$REGISTERED finality-member registrations confirmed"
+else
+    fail "only $REGISTERED of $COLLATERAL_ROWS registrations confirmed"
+    exit 1
+fi
+
+REG_TIP="$(height 0)"
+if [ "$REG_TIP" -le "$COMMITTEE_ANCHOR_HEIGHT" ]; then
+    success "every registration confirmed at height $REG_TIP, at or below the anchor height $COMMITTEE_ANCHOR_HEIGHT"
+else
+    fail "registrations ran past the anchor height ($REG_TIP > $COMMITTEE_ANCHOR_HEIGHT): they cannot be drawn for term $COMMITTEE_TERM_EPOCH"
+    exit 1
+fi
+
+# The registry the draw will read, asked for at exactly the height the draw
+# anchors to. This is the same snapshot function the consensus draw calls.
+REGISTRY="$(rpc 0 collateralnode finality-registry "$COMMITTEE_ANCHOR_HEIGHT" 2>&1)"
+REGISTRY_N="$(jget "$REGISTRY" count)"
+if is_int "$REGISTRY_N" && [ "$REGISTRY_N" -ge "$COLLATERAL_ROWS" ]; then
+    success "the registry holds $REGISTRY_N member rows at the anchor height"
+else
+    fail "the registry holds $REGISTRY_N rows at height $COMMITTEE_ANCHOR_HEIGHT, expected >= $COLLATERAL_ROWS"
+    exit 1
+fi
+
+# ============================================================
+header "5d. The chain draws a committee from that registry"
+# ============================================================
+
+advance_through_epochs 14 15 || { fail "the epoch 14-15 vote rounds failed"; exit 1; }
+log "mining to $COMMITTEE_SEATED_HEIGHT, where epoch $COMMITTEE_CARRIER_EPOCH is built and carries the draw"
+mine_to 0 "$COMMITTEE_SEATED_HEIGHT" || { fail "could not mine to the seating height"; exit 1; }
+wait_sync "$COMMITTEE_SEATED_HEIGHT" || { fail "fleet did not sync to the seating height"; exit 1; }
+
+SEAT_OK=1
+SEAT_M=""
+for ((n=0; n<NUM_NODES; n++)); do
+    FI="$(rpc "$n" getfinalityinfo 2>/dev/null)"
+    [ "$(jget "$FI" committee_seated)" = "true" ] || SEAT_OK=0
+    [ "$(jget "$FI" committee_source)" = "collateral_registry_draw" ] || SEAT_OK=0
+    M="$(jget "$FI" committee_threshold_m)"
+    [ -z "$SEAT_M" ] && SEAT_M="$M"
+    [ "$M" = "$SEAT_M" ] || SEAT_OK=0
+done
+if [ "$SEAT_OK" -eq 1 ]; then
+    success "every node reports a seated committee drawn from the collateral registry (M=$SEAT_M)"
+else
+    fail "the committee did not seat on every node"
+    for ((n=0; n<NUM_NODES; n++)); do
+        echo "  node$n: $(rpc "$n" getfinalityinfo 2>/dev/null | head -40)"
+    done
+    exit 1
+fi
+
+# The seats must be exactly the three registered member keys, and identical on
+# every node: the draw is a consensus object, not a local opinion.
+SEATS0="$(committee_seats 0 | sort | tr '\n' ' ')"
+EXPECTED_SEATS="$(printf '%s\n' "${COMMITTEE_PUBKEYS[@]}" | sort | tr '\n' ' ')"
+if [ "$SEATS0" = "$EXPECTED_SEATS" ]; then
+    success "the drawn seats are exactly the three registered member keys"
+else
+    fail "drawn seats [$SEATS0] are not the registered keys [$EXPECTED_SEATS]"
+fi
+
+SEATS_AGREE=1
+for ((n=1; n<NUM_NODES; n++)); do
+    [ "$(committee_seats "$n" | tr '\n' ' ')" = "$(committee_seats 0 | tr '\n' ' ')" ] || SEATS_AGREE=0
+done
+if [ "$SEATS_AGREE" -eq 1 ]; then
+    success "all $NUM_NODES nodes resolve the identical committee in the identical seat order"
+else
+    fail "the nodes disagree about the drawn committee"
+    exit 1
+fi
+
+CARRIER_DIGESTS="$(for ((n=0; n<NUM_NODES; n++)); do
+    jget "$(rpc "$n" getepochinfo "$COMMITTEE_CARRIER_EPOCH" 2>/dev/null)" epoch_state_digest
+done | sort -u | wc -l | tr -d ' ')"
+SETHASHES="$(for ((n=0; n<NUM_NODES; n++)); do
+    jget "$(rpc "$n" getfinalityinfo 2>/dev/null)" committee_set_hash
+done | sort -u | wc -l | tr -d ' ')"
+if [ "$CARRIER_DIGESTS" = "1" ] && [ "$SETHASHES" = "1" ]; then
+    success "the carrier epoch $COMMITTEE_CARRIER_EPOCH has one state digest and one committee set hash across the fleet"
+else
+    fail "the carrier epoch digest or committee set hash differs across nodes (digests=$CARRIER_DIGESTS sethashes=$SETHASHES)"
+fi
 
 # ============================================================
 header "6. Note-vote rounds over the finalized chain"
@@ -1168,7 +1524,209 @@ else
 fi
 
 # ============================================================
-header "15. The fleet reports no errors"
+header "15. A reorg that releases a seated member does not move the committee"
+# ============================================================
+
+# The chain-split case, driven the way two honest nodes actually differ.
+#
+# Two branches share everything through the anchor epoch and fork INSIDE the
+# term's lead-in. On the losing branch a seated member's collateral is released;
+# on the winning branch it never is. A node that reorganises from the first to
+# the second stages the epoch suffix -- and so redraws the committee -- BEFORE
+# it disconnects the losing branch, so its registry handle still holds the
+# release. A node that syncs the winning branch from nothing never saw it.
+#
+# Both are at the same height on the same chain. If the spend filter is not
+# bounded by the anchor height, the first drops the released row and promotes
+# the next candidate while the second keeps it: two committees, two epoch-state
+# digests, and no self-heal, because the draw is stored rather than rederived.
+REORG_RUN=1
+if [ "${#REG_KEYIMAGES[@]}" -lt 1 ]; then
+    warn "no registration key image was captured; skipping the reorg divergence test"
+    REORG_RUN=0
+fi
+
+if [ "$REORG_RUN" -eq 1 ]; then
+    FORK_HEIGHT="$(height 0)"
+    log "forking the fleet at height $FORK_HEIGHT (anchor height is $COMMITTEE_ANCHOR_HEIGHT)"
+
+    # node2 leaves the mesh and becomes the branch that never sees the release.
+    for ((p=0; p<NUM_NODES; p++)); do
+        [ "$p" -eq 2 ] && continue
+        rpc 2 disconnectnode "127.0.0.1:$(node_port "$p")" >/dev/null 2>&1 || true
+        rpc "$p" disconnectnode "127.0.0.1:$(node_port 2)" >/dev/null 2>&1 || true
+    done
+    sleep 3
+    P2="$(peer_count 2)"
+    if [ "$P2" = "0" ]; then
+        success "node2 is partitioned from the fleet at height $FORK_HEIGHT"
+    else
+        warn "node2 still reports $P2 peer(s); the partition may be incomplete"
+    fi
+
+    # Branch X (node0/node1): release a seated member's collateral and spend it.
+    RELEASED_KI="${REG_KEYIMAGES[0]}"
+    REL="$(rpc 0 collateralnode releaseprivate "$RELEASED_KI" 2>&1)"
+    if echo "$REL" | grep -q '"released"'; then
+        success "node0 released the hold on collateral note ${RELEASED_KI:0:16}"
+    else
+        warn "releaseprivate did not report a release: $(echo "$REL" | head -2)"
+    fi
+
+    # Spend it. 20000 INN is chosen so the released note is the only unlocked
+    # note that can cover it: the other five collateral notes are still held by
+    # their own registrations, and everything else in this wallet's pool is
+    # carve change or a section-4 sweep.
+    SPEND="$(rpc 0 z_iv5transfer "$IV5ADDR" 20000 2>&1)"
+    SPEND_TXID="$(jget "$SPEND" txid)"
+    if [ ${#SPEND_TXID} -eq 64 ]; then
+        success "node0 spent the released collateral on branch X (txid ${SPEND_TXID:0:16})"
+    else
+        warn "the branch-X release spend failed: $(echo "$SPEND" | head -3)"
+    fi
+
+    # mine_chunk, not mine_to: mine_to waits for the fleet to catch up, and the
+    # node it would wait for is the one this section has just partitioned off.
+    mine_chunk 0 $((FORK_HEIGHT + 12)) || warn "branch X did not extend"
+    X_TIP="$(height 0)"
+
+    # The driver has to actually fire, or the rest of this section proves
+    # nothing. On branch X the release is committed and sits ABOVE the anchor
+    # height, so the registry read at the tip must have lost a row while the
+    # registry read at the anchor height must not have.
+    REG_X_TIP="$(jget "$(rpc 0 collateralnode finality-registry "$X_TIP" 2>&1)" count)"
+    REG_X_ANCHOR="$(jget "$(rpc 0 collateralnode finality-registry "$COMMITTEE_ANCHOR_HEIGHT" 2>&1)" count)"
+    log "  branch X registry: $REG_X_TIP rows at the tip $X_TIP, $REG_X_ANCHOR rows at the anchor $COMMITTEE_ANCHOR_HEIGHT"
+    DRIVER_FIRED=0
+    if is_int "$REG_X_TIP" && is_int "$REG_X_ANCHOR" && [ "$REG_X_TIP" -lt "$REG_X_ANCHOR" ]; then
+        DRIVER_FIRED=1
+        success "the release deregistered a row on branch X ($REG_X_TIP at the tip vs $REG_X_ANCHOR at the anchor)"
+    else
+        warn "the branch-X spend did not consume a registered note; the divergence driver did not fire"
+    fi
+    if [ "$DRIVER_FIRED" -eq 1 ] && [ "$REG_X_ANCHOR" -ge "$COLLATERAL_ROWS" ]; then
+        success "the anchored registry is unmoved by a release above the anchor height"
+    elif [ "$DRIVER_FIRED" -eq 1 ]; then
+        fail "a release above the anchor height changed the ANCHORED registry ($REG_X_ANCHOR < $COLLATERAL_ROWS)"
+    fi
+
+    # Branch Y (node2): longer, and it never carried the release.
+    rpc 2 setgenerate true 30 "$MINE_THREADS_NOW" >/dev/null 2>&1
+    for _ in $(seq 1 300); do
+        Y="$(height 2)"
+        is_int "$Y" && [ "$Y" -ge $((X_TIP + 8)) ] && break
+        sleep 1
+    done
+    rpc 2 setgenerate false 0 >/dev/null 2>&1
+    Y_TIP="$(height 2)"
+    log "branch X tip=$X_TIP  branch Y tip=$Y_TIP"
+
+    if [ "$Y_TIP" -gt "$X_TIP" ]; then
+        success "branch Y ($Y_TIP) outruns branch X ($X_TIP), so the fleet must reorganise onto it"
+    else
+        warn "branch Y did not outrun branch X; the reorg may not trigger"
+    fi
+
+    # Rejoin. node0 reorganises X -> Y with the release still in its database.
+    connect_mesh
+    wait_peers >/dev/null 2>&1 || warn "the mesh did not fully re-form"
+    REORG_OK=0
+    for _ in $(seq 1 240); do
+        H0="$(height 0)"; H2="$(height 2)"
+        if is_int "$H0" && is_int "$H2" && [ "$H0" = "$H2" ]; then REORG_OK=1; break; fi
+        sleep 1
+    done
+    if [ "$REORG_OK" -eq 1 ]; then
+        success "node0 reorganised onto branch Y and the fleet is at one height ($(height 0))"
+    else
+        fail "the fleet did not converge after the partition (node0=$(height 0) node2=$(height 2))"
+    fi
+
+    if grep -qE "REORGANIZE|Reorganize" "$(node_log 0)" 2>/dev/null; then
+        success "node0's log records the reorganisation"
+    else
+        warn "node0 logged no reorganisation; it may have had nothing to disconnect"
+    fi
+
+    # A fourth node, started from an empty datadir, syncs branch Y from nothing.
+    # This is the other half of the claim: same chain, no history of the release.
+    FRESH=3
+    rm -rf "$(node_dir "$FRESH")"
+    NUM_NODES=$((NUM_NODES + 1))
+    write_config "$FRESH"
+    NUM_NODES=$((NUM_NODES - 1))
+    # A fresh node holds no member secret and needs none: it only has to derive
+    # the same committee from the same chain.
+    sed -i "/^finalitytallyprivkey=/d" "$(node_dir "$FRESH")/innova.conf"
+    "$INNOVAD" -datadir="$(node_dir "$FRESH")" -regtest -daemon >/dev/null 2>&1
+    if wait_rpc "$FRESH"; then
+        for ((p=0; p<NUM_NODES; p++)); do
+            rpc "$FRESH" addnode "127.0.0.1:$(node_port "$p")" onetry >/dev/null 2>&1 || true
+        done
+        TARGET="$(height 0)"
+        SYNCED=0
+        for _ in $(seq 1 1200); do
+            HF="$(height "$FRESH")"
+            if is_int "$HF" && [ "$HF" -ge "$TARGET" ]; then SYNCED=1; break; fi
+            sleep 1
+        done
+        if [ "$SYNCED" -eq 1 ]; then
+            success "a fresh node synced branch Y from nothing to height $(height "$FRESH")"
+        else
+            fail "the fresh node did not sync (height=$(height "$FRESH") target=$TARGET)"
+        fi
+
+        # THE ASSERTION. The reorganised node and the fresh node must hold the
+        # same committee and the same carrier-epoch digest.
+        R_SEATS="$(committee_seats 0 | tr '\n' ' ')"
+        F_SEATS="$(committee_seats "$FRESH" | tr '\n' ' ')"
+        R_SET="$(jget "$(rpc 0 getfinalityinfo 2>/dev/null)" committee_set_hash)"
+        F_SET="$(jget "$(rpc "$FRESH" getfinalityinfo 2>/dev/null)" committee_set_hash)"
+        R_DIG="$(jget "$(rpc 0 getepochinfo "$COMMITTEE_CARRIER_EPOCH" 2>/dev/null)" epoch_state_digest)"
+        F_DIG="$(jget "$(rpc "$FRESH" getepochinfo "$COMMITTEE_CARRIER_EPOCH" 2>/dev/null)" epoch_state_digest)"
+
+        if [ -n "$R_SEATS" ] && [ "$R_SEATS" = "$F_SEATS" ]; then
+            success "the reorganised node and the fresh node draw the identical committee"
+            log "  seats: $R_SEATS"
+        else
+            fail "COMMITTEE SPLIT: reorganised [$R_SEATS] vs fresh-synced [$F_SEATS]"
+        fi
+        if [ -n "$R_SET" ] && [ "$R_SET" = "$F_SET" ]; then
+            success "both nodes report the same committee set hash ${R_SET:0:16}"
+        else
+            fail "COMMITTEE SET HASH SPLIT: reorganised $R_SET vs fresh-synced $F_SET"
+        fi
+        if [ -n "$R_DIG" ] && [ "$R_DIG" = "$F_DIG" ]; then
+            success "the carrier epoch $COMMITTEE_CARRIER_EPOCH digest is identical on both (${R_DIG:0:16})"
+        else
+            fail "EPOCH STATE DIGEST SPLIT: reorganised $R_DIG vs fresh-synced $F_DIG"
+        fi
+
+        # What the whole section rests on: the reorganising node held the losing
+        # branch's release in its database while it restaged the epoch suffix,
+        # and the fresh node never had it. If those two agree, the draw is a
+        # function of the chain and not of how a node arrived at it.
+        if [ "$DRIVER_FIRED" -eq 1 ]; then
+            success "the divergence was driven with a real release above the anchor height"
+        else
+            warn "the committee agreement above was not driven by an actual release"
+        fi
+        R_ANCHOR="$(jget "$(rpc 0 collateralnode finality-registry "$COMMITTEE_ANCHOR_HEIGHT" 2>&1)" count)"
+        F_ANCHOR="$(jget "$(rpc "$FRESH" collateralnode finality-registry "$COMMITTEE_ANCHOR_HEIGHT" 2>&1)" count)"
+        if [ -n "$R_ANCHOR" ] && [ "$R_ANCHOR" = "$F_ANCHOR" ]; then
+            success "both nodes read the identical anchored registry ($R_ANCHOR rows at height $COMMITTEE_ANCHOR_HEIGHT)"
+        else
+            fail "ANCHORED REGISTRY SPLIT: reorganised $R_ANCHOR rows vs fresh-synced $F_ANCHOR rows"
+        fi
+
+        rpc "$FRESH" stop >/dev/null 2>&1 || true
+    else
+        fail "the fresh node did not start"
+    fi
+fi
+
+# ============================================================
+header "16. The fleet reports no errors"
 # ============================================================
 
 ERR_OK=1
