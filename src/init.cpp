@@ -28,6 +28,7 @@
 #include "dandelion.h"
 #include "finality.h"
 #include "dag.h"
+#include "activationdump.h"
 
 #ifdef USE_NATIVETOR
 #include "tor/anonymize.h" //Tor native optional integration (Flag -nativetor=1)
@@ -395,6 +396,11 @@ bool AppInit(int argc, char* argv[])
             Shutdown(NULL);
         };
         ReadConfigFile(mapArgs, mapMultiArgs);
+
+        // -printactivations must never fork (the daemon parent rewrites innovad.pid). The default
+        // config carries daemon=1, so the value is replaced outright rather than soft-set.
+        if (GetBoolArg("-printactivations", false))
+            SetArg("-daemon", "0");
 
         if (mapArgs.count("-?") || mapArgs.count("--help"))
         {
@@ -1253,6 +1259,15 @@ bool AppInit2()
         fRegtestHoldPrivacyVNextLeafIndex = true;
         printf("IV5 leaf-index assignment held (regtest only); notes will stay "
                "unspendable until it is released\n");
+    }
+
+    // Reports the ladder without touching chain state or the datadir lock. Exits rather than
+    // returning false, since an init failure removes the running daemon's pid file.
+    if (GetBoolArg("-printactivations", false))
+    {
+        fprintf(stdout, "%s", GetActivationLadderJSON().c_str());
+        fflush(stdout);
+        exit(0);
     }
 
     fCNLock = GetBoolArg("-cnconflock");
