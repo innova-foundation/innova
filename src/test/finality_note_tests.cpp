@@ -335,6 +335,72 @@ void TestResealEnvelope(CNoteVoteShare& share,
     share.vEncryptedRecipientShares[nRecipientIndex].assign(ssOut.begin(), ssOut.end());
 }
 
+// --- F2 certificate helpers ---------------------------------------------------
+
+struct ScopedNoteVoteFork
+{
+    int nSaved;
+    explicit ScopedNoteVoteFork(int nHeight) : nSaved(nRegtestIV5NoteVoteHeight)
+    {
+        nRegtestIV5NoteVoteHeight = nHeight;
+    }
+    ~ScopedNoteVoteFork() { nRegtestIV5NoteVoteHeight = nSaved; }
+};
+
+// A structurally-complete v4 certificate. The tier proofs are filler of a legal
+// length: IsValidBasic and the digests only read their bytes, and the cases that
+// need a proof to actually verify build a real one.
+CFinalityTallyCertificate MakeNoteCert(int nEpoch, int nHeight,
+                                       const uint256& committeeSetHash)
+{
+    CFinalityTallyCertificate cert;
+    cert.nVersion = FINALITY_NOTE_CERT_VERSION;
+    cert.nEpoch = nEpoch;
+    cert.nHeight = nHeight;
+    cert.hashBlock = uint256(0xbeef01);
+    cert.nTier = FINALITY_HARD;
+    cert.nConsecutiveHardCount = 0;
+    cert.committeeSetHash = committeeSetHash;
+    cert.nTransparentActiveWeight = 0;
+    cert.nTransparentWinningWeight = 0;
+    cert.nTransparentRewardBudget = 0;
+    cert.vVoteNullifiers.push_back(uint256(0x7001));
+    cert.vNoteVoteTags.push_back(uint256(0x3001));
+    cert.vNoteVoteTags.push_back(uint256(0x3002));
+    cert.noteTierProofs.vchTierSlack.assign(64, 0x71);
+    cert.noteTierProofs.vchWinningCap.assign(64, 0x72);
+    cert.noteTierProofs.vchActiveCap.assign(64, 0x73);
+    return cert;
+}
+
+CNoteVoteComplaint MakeStubComplaint(int nEpoch, const uint256& voteTag,
+                                     unsigned char nSeed)
+{
+    CNoteVoteComplaint complaint;
+    complaint.nEpoch = nEpoch;
+    complaint.voteTag = voteTag;
+    complaint.hashShare = uint256(0x4000 + nSeed);
+    complaint.nRecipientIndex = 0;
+    complaint.vchSharedPoint.assign(33, nSeed);
+    complaint.vchDleqProof.assign(FINALITY_NOTE_DLEQ_SIZE, nSeed);
+    return complaint;
+}
+
+void SignCertByCommittee(CFinalityTallyCertificate& cert, std::vector<CKey>& vKeys,
+                         int nCount)
+{
+    cert.vSignerIndexes.clear();
+    cert.vSignerSigs.clear();
+    const uint256 digest = cert.GetSignatureDigest();
+    for (int i = 0; i < nCount; i++)
+    {
+        std::vector<unsigned char> sig;
+        BOOST_REQUIRE(vKeys[i].Sign(digest, sig));
+        cert.vSignerIndexes.push_back((uint16_t)i);
+        cert.vSignerSigs.push_back(sig);
+    }
+}
+
 CFinalityVote MakeTransparentVote(int nEpoch, const uint256& hashBlock, int nHeight,
                                   int64_t nWeight, const CKey& key, int nSeed)
 {
@@ -1905,6 +1971,418 @@ BOOST_AUTO_TEST_CASE(note_vote_context_anchors_to_the_iv5_tree_root)
                                                  &result));
     BOOST_CHECK_EQUAL(strError, "note vote anchor epoch carries no IV5 tree root");
     BOOST_CHECK_EQUAL((int)result, (int)FINALITY_RESULT_LOCAL_STATE);
+}
+
+// --- F2 certificate schema (increment A) --------------------------------------
+
+BOOST_AUTO_TEST_CASE(note_cert_identity_and_signature_digest_cover_the_note_fields)
+{
+    ScopedNoteVoteFork fork(0);
+    ScopedTallyArgs scopedArgs;
+    std::vector<CKey> vKeys(3);
+    const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 2);
+
+    CFinalityTallyCertificate cert = MakeNoteCert(11, GetEpochBoundaryHeight(11, 0),
+                                                  config.committeeSetHash);
+    cert.vNoteComplaints.push_back(MakeStubComplaint(11, uint256(0x3101), 0x41));
+
+    const uint256 baseHash = cert.GetHash();
+    const uint256 baseDigest = cert.GetSignatureDigest();
+
+    // The complaint set decides which connected votes the certificate may leave out,
+    // so it changes the covered set and therefore the tier the certificate can prove.
+    // If it were outside the identity a relay could swap it without changing the hash;
+    // if it were outside the digest the committee would never have signed the coverage.
+    CFinalityTallyCertificate swapped = cert;
+    swapped.vNoteComplaints[0] = MakeStubComplaint(11, uint256(0x3102), 0x42);
+    BOOST_CHECK(swapped.GetHash() != baseHash);
+    BOOST_CHECK(swapped.GetSignatureDigest() != baseDigest);
+
+    CFinalityTallyCertificate stripped = cert;
+    stripped.vNoteComplaints.clear();
+    BOOST_CHECK(stripped.GetHash() != baseHash);
+    BOOST_CHECK(stripped.GetSignatureDigest() != baseDigest);
+
+    CFinalityTallyCertificate retagged = cert;
+    retagged.vNoteVoteTags[1] = uint256(0x3999);
+    BOOST_CHECK(retagged.GetHash() != baseHash);
+    BOOST_CHECK(retagged.GetSignatureDigest() != baseDigest);
+
+    CFinalityTallyCertificate reproved = cert;
+    reproved.noteTierProofs.vchWinningCap.assign(64, 0x7f);
+    BOOST_CHECK(reproved.GetHash() != baseHash);
+    BOOST_CHECK(reproved.GetSignatureDigest() != baseDigest);
+
+    // A v3 certificate's bytes must not move: the note fields enter both hashes only
+    // from v4, so every certificate that already exists keeps its identity.
+    CFinalityTallyCertificate v3 = cert;
+    v3.nVersion = 3;
+    v3.vNoteVoteTags.clear();
+    v3.vNoteComplaints.clear();
+    v3.noteTierProofs = CNoteTallyTierProofs();
+    CFinalityTallyCertificate v3WithNoteBytes = v3;
+    v3WithNoteBytes.vNoteVoteTags.push_back(uint256(0x3001));
+    BOOST_CHECK(v3WithNoteBytes.GetHash() == v3.GetHash());
+    BOOST_CHECK(v3WithNoteBytes.GetSignatureDigest() == v3.GetSignatureDigest());
+
+    // The signatures are what authorize a note tally, so the binding has to survive
+    // all the way through them: a swapped complaint set must invalidate the signatures
+    // the committee produced over the original coverage.
+    SignCertByCommittee(cert, vKeys, 2);
+    std::string strError;
+    BOOST_CHECK(CheckTallyCertificateCommitteeSignatures(
+        cert, config.vCommitteePubKeys, config.nThresholdM, config.committeeSetHash,
+        &strError));
+
+    CFinalityTallyCertificate forged = cert;
+    forged.vNoteComplaints[0] = MakeStubComplaint(11, uint256(0x3102), 0x42);
+    BOOST_CHECK(!CheckTallyCertificateCommitteeSignatures(
+        forged, config.vCommitteePubKeys, config.nThresholdM, config.committeeSetHash,
+        &strError));
+
+    CFinalityTallyCertificate droppedComplaint = cert;
+    droppedComplaint.vNoteComplaints.clear();
+    BOOST_CHECK(!CheckTallyCertificateCommitteeSignatures(
+        droppedComplaint, config.vCommitteePubKeys, config.nThresholdM,
+        config.committeeSetHash, &strError));
+}
+
+BOOST_AUTO_TEST_CASE(note_cert_version_is_gated_on_the_note_vote_fork)
+{
+    ScopedTallyArgs scopedArgs;
+    std::vector<CKey> vKeys(3);
+    const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 2);
+
+    const int nEpoch = 12;
+    const int nBoundary = GetEpochBoundaryHeight(nEpoch, 0);
+    std::string strError;
+
+    {
+        // Unconfigured fork: v4 does not exist at any height. This is the state of
+        // every public network, so the whole schema stays inert there.
+        ScopedNoteVoteFork fork(PRIVACY_VNEXT_HEIGHT_UNSET);
+        CFinalityTallyCertificate cert = MakeNoteCert(nEpoch, nBoundary,
+                                                      config.committeeSetHash);
+        BOOST_CHECK(!cert.IsValidBasic(&strError));
+        BOOST_CHECK_EQUAL(strError,
+                          "note tally certificate version before note-vote activation");
+    }
+
+    {
+        // Configured above this certificate's boundary: still rejected.
+        ScopedNoteVoteFork fork(nBoundary + 1);
+        CFinalityTallyCertificate cert = MakeNoteCert(nEpoch, nBoundary,
+                                                      config.committeeSetHash);
+        BOOST_CHECK(!cert.IsValidBasic(&strError));
+        BOOST_CHECK_EQUAL(strError,
+                          "note tally certificate version before note-vote activation");
+    }
+
+    {
+        ScopedNoteVoteFork fork(nBoundary);
+        CFinalityTallyCertificate cert = MakeNoteCert(nEpoch, nBoundary,
+                                                      config.committeeSetHash);
+        BOOST_CHECK_MESSAGE(cert.IsValidBasic(&strError), strError);
+
+        // Below the fork the note fields must be absent entirely, at every version
+        // that could carry them on the wire.
+        for (int nVersion = 1; nVersion <= 3; nVersion++)
+        {
+            CFinalityTallyCertificate older = cert;
+            older.nVersion = nVersion;
+            older.vSignerIndexes.clear();
+            older.vSignerSigs.clear();
+            BOOST_CHECK(!older.IsValidBasic(&strError));
+            BOOST_CHECK_EQUAL(strError,
+                              "pre-v4 tally certificate must not carry note fields");
+        }
+
+        // Half a note side is not a note side: a certificate that names tags but
+        // proves no tier, or proves a tier over nothing, has a claim nothing backs.
+        // These two rules are also what make HasNoteWeight() -- which the gates key
+        // on -- true exactly when a note tally is present.
+        CFinalityTallyCertificate tagsOnly = cert;
+        tagsOnly.noteTierProofs = CNoteTallyTierProofs();
+        BOOST_CHECK(!tagsOnly.IsValidBasic(&strError));
+        BOOST_CHECK_EQUAL(strError,
+                          "tally certificate note tier proof has an unusable length");
+
+        CFinalityTallyCertificate proofsOnly = cert;
+        proofsOnly.vNoteVoteTags.clear();
+        BOOST_CHECK(!proofsOnly.IsValidBasic(&strError));
+        BOOST_CHECK_EQUAL(strError,
+                          "tally certificate proves a note tier over no votes");
+
+        // A certificate that only complains still has to prove its tier, so it can
+        // never reach the gates with a note side HasNoteWeight() cannot see.
+        CFinalityTallyCertificate complaintsOnly = cert;
+        complaintsOnly.vNoteVoteTags.clear();
+        complaintsOnly.noteTierProofs = CNoteTallyTierProofs();
+        complaintsOnly.vNoteComplaints.push_back(
+            MakeStubComplaint(nEpoch, uint256(0x3201), 0x52));
+        BOOST_CHECK(!complaintsOnly.HasNoteWeight());
+        BOOST_CHECK(!complaintsOnly.IsValidBasic(&strError));
+        BOOST_CHECK_EQUAL(strError,
+                          "tally certificate note tier proof has an unusable length");
+
+        CFinalityTallyCertificate dupTag = cert;
+        dupTag.vNoteVoteTags[1] = dupTag.vNoteVoteTags[0];
+        BOOST_CHECK(!dupTag.IsValidBasic(&strError));
+        BOOST_CHECK_EQUAL(strError,
+                          "duplicate or zero tally certificate note vote tag");
+
+        CFinalityTallyCertificate coverAndComplain = cert;
+        coverAndComplain.vNoteComplaints.push_back(
+            MakeStubComplaint(nEpoch, coverAndComplain.vNoteVoteTags[0], 0x51));
+        BOOST_CHECK(!coverAndComplain.IsValidBasic(&strError));
+        BOOST_CHECK_EQUAL(strError,
+                          "tally certificate both covers and complains of a vote");
+
+        CFinalityTallyCertificate oversizedProof = cert;
+        oversizedProof.noteTierProofs.vchActiveCap.assign(
+            FINALITY_NOTE_MAX_RANGE_PROOF_BYTES + 1, 0x74);
+        BOOST_CHECK(!oversizedProof.IsValidBasic(&strError));
+        BOOST_CHECK_EQUAL(strError,
+                          "tally certificate note tier proof has an unusable length");
+
+        // The retired secp tally and the note tally are different tallies. One
+        // certificate claiming both would have two thresholds and one tier.
+        CFinalityTallyCertificate both = cert;
+        both.vTallyShareHashes.push_back(uint256(0x8001));
+        BOOST_CHECK(!both.IsValidBasic(&strError));
+        BOOST_CHECK_EQUAL(
+            strError, "tally certificate carries both legacy private and note weight");
+
+        BOOST_CHECK(cert.nVersion == FINALITY_NOTE_CERT_VERSION);
+        CFinalityTallyCertificate tooNew = cert;
+        tooNew.nVersion = FINALITY_NOTE_CERT_VERSION + 1;
+        BOOST_CHECK(!tooNew.IsValidBasic(&strError));
+        BOOST_CHECK_EQUAL(strError, "unsupported tally certificate version");
+    }
+}
+
+BOOST_AUTO_TEST_CASE(note_cert_coverage_carve_out_requires_a_valid_complaint)
+{
+    ScopedTallyArgs scopedArgs;
+    std::vector<CKey> vKeys(3);
+    const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 2);
+
+    const int nEpoch = 913;
+    const int64_t nAmount = 250000;
+    const uint256 mask = RandomScalar();
+    const CNoteVoteShare honest =
+        MakeShare(config, nEpoch, nAmount, mask, 9, RandomScalar());
+    const PrivacyVNextDigest cTilde = CommitPoint(Ed25519ScalarFromInt64(nAmount), mask);
+
+    const CNoteVoteShare second =
+        MakeShare(config, nEpoch, 111000, RandomScalar(), 4, RandomScalar());
+
+    CNoteTallyPlainShare plainOther;
+    BOOST_REQUIRE(DecryptNoteVoteShareForRecipient(second, config, vKeys[0], 0,
+                                                   plainOther));
+    CNoteVoteShare poisoned = honest;
+    TestResealEnvelope(poisoned, vKeys[0], 0, plainOther);
+
+    CNoteFinalityVote voteGood = MakeVote(honest, uint256(0x1111), cTilde, 0x61);
+    CNoteFinalityVote voteAlso = MakeVote(second, uint256(0x1111), cTilde, 0x62);
+    CNoteFinalityVote votePoisoned = MakeVote(poisoned, uint256(0x1111), cTilde, 0x63);
+
+    std::vector<const CNoteFinalityVote*> vConnected;
+    vConnected.push_back(&voteGood);
+    vConnected.push_back(&voteAlso);
+    vConnected.push_back(&votePoisoned);
+
+    std::string strError;
+    std::vector<uint256> vAllTags;
+    for (size_t i = 0; i < vConnected.size(); i++)
+        vAllTags.push_back(vConnected[i]->GetVoteTag());
+
+    // Covering everything connected needs no complaint at all.
+    std::vector<const CNoteFinalityVote*> vCovered;
+    BOOST_CHECK_MESSAGE(
+        ResolveNoteTallyCoverage(vConnected, vAllTags,
+                                 std::vector<CNoteVoteComplaint>(), config, vCovered,
+                                 &strError), strError);
+    BOOST_CHECK_EQUAL(vCovered.size(), (size_t)3);
+
+    // Dropping a vote with no complaint deflates the denominator, which is the
+    // censorship this rule exists to price.
+    std::vector<uint256> vShortTags;
+    vShortTags.push_back(voteGood.GetVoteTag());
+    vShortTags.push_back(voteAlso.GetVoteTag());
+    BOOST_CHECK(!ResolveNoteTallyCoverage(vConnected, vShortTags,
+                                          std::vector<CNoteVoteComplaint>(), config,
+                                          vCovered, &strError));
+    BOOST_CHECK_EQUAL(strError,
+                      "note tally certificate omits a vote with no valid complaint");
+
+    // With the evidence, the same omission is the intended carve-out.
+    CNoteVoteComplaint complaint;
+    BOOST_REQUIRE_MESSAGE(BuildNoteVoteComplaint(complaint, votePoisoned, config,
+                                                 vKeys[0], 0, &strError), strError);
+    std::vector<CNoteVoteComplaint> vComplaints(1, complaint);
+    BOOST_CHECK_MESSAGE(ResolveNoteTallyCoverage(vConnected, vShortTags, vComplaints,
+                                                 config, vCovered, &strError),
+                        strError);
+    BOOST_CHECK_EQUAL(vCovered.size(), (size_t)2);
+
+    // A complaint against an honest share must not buy an omission, or one hostile
+    // member could drop any voter it disliked.
+    CNoteVoteComplaint falseComplaint;
+    BOOST_REQUIRE(BuildNoteVoteComplaint(falseComplaint, voteAlso, config, vKeys[0], 0,
+                                         &strError));
+    std::vector<uint256> vDropHonest;
+    vDropHonest.push_back(voteGood.GetVoteTag());
+    vDropHonest.push_back(votePoisoned.GetVoteTag());
+    std::vector<CNoteVoteComplaint> vFalse(1, falseComplaint);
+    BOOST_CHECK(!ResolveNoteTallyCoverage(vConnected, vDropHonest, vFalse, config,
+                                          vCovered, &strError));
+
+    // THE TRAP the connect path must avoid. Coverage hard-fails on a repeated tag,
+    // and an equivocated tag IS a repeated tag among the raw carried votes -- so
+    // feeding the raw set would let one anonymous equivocator make an epoch
+    // permanently uncertifiable. CheckTallyCertificate therefore feeds
+    // GetCountedEpochNoteVotes, whose view holds one identity per tag by
+    // construction and drops equivocated tags entirely.
+    CNoteFinalityVote equivocation = votePoisoned;
+    equivocation.hashBlock = uint256(0x2222);
+    BOOST_CHECK(equivocation.GetVoteTag() == votePoisoned.GetVoteTag());
+    std::vector<const CNoteFinalityVote*> vRaw = vConnected;
+    vRaw.push_back(&equivocation);
+    BOOST_CHECK(!ResolveNoteTallyCoverage(vRaw, vAllTags,
+                                          std::vector<CNoteVoteComplaint>(), config,
+                                          vCovered, &strError));
+    BOOST_CHECK_EQUAL(strError, "note tally coverage saw a repeated vote tag");
+
+    // The counted view GetCountedEpochNoteVotes is built from resolves that same raw
+    // set into one identity per tag and drops the equivocated tag entirely, so the
+    // set the validator actually receives can never trip the repeated-tag failure.
+    std::map<uint256, const CNoteFinalityVote*> mapCounted;
+    std::set<uint256> setEquivocated;
+    ResolveNoteVoteCounting(vRaw, mapCounted, setEquivocated);
+    BOOST_CHECK_EQUAL(setEquivocated.size(), (size_t)1);
+    BOOST_CHECK(setEquivocated.count(votePoisoned.GetVoteTag()));
+    BOOST_CHECK(!mapCounted.count(votePoisoned.GetVoteTag()));
+    BOOST_CHECK_EQUAL(mapCounted.size(), (size_t)2);
+
+    std::vector<const CNoteFinalityVote*> vCountedPtrs;
+    std::vector<uint256> vCountedTags;
+    for (std::map<uint256, const CNoteFinalityVote*>::const_iterator it =
+             mapCounted.begin(); it != mapCounted.end(); ++it)
+    {
+        vCountedPtrs.push_back(it->second);
+        vCountedTags.push_back(it->first);
+    }
+    BOOST_CHECK_MESSAGE(
+        ResolveNoteTallyCoverage(vCountedPtrs, vCountedTags,
+                                 std::vector<CNoteVoteComplaint>(), config, vCovered,
+                                 &strError), strError);
+    BOOST_CHECK_EQUAL(vCovered.size(), (size_t)2);
+}
+
+BOOST_AUTO_TEST_CASE(note_weight_is_not_legacy_private_weight)
+{
+    ScopedNoteVoteFork fork(0);
+    ScopedTallyArgs scopedArgs;
+    std::vector<CKey> vKeys(3);
+    const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 2);
+
+    const int nEpoch = 14;
+    CFinalityTallyCertificate cert = MakeNoteCert(nEpoch, GetEpochBoundaryHeight(nEpoch, 0),
+                                                  config.committeeSetHash);
+    cert.vNoteComplaints.push_back(MakeStubComplaint(nEpoch, uint256(0x3101), 0x43));
+    SignCertByCommittee(cert, vKeys, 2);
+
+    std::string strError;
+    BOOST_CHECK_MESSAGE(cert.IsValidBasic(&strError), strError);
+
+    // The whole point of the separate predicate: HasPrivateWeight() drives the
+    // retired-secp disable gates and the Boundary-A miner skip, which must keep
+    // rejecting the legacy path while admitting v4.
+    BOOST_CHECK(cert.HasNoteWeight());
+    BOOST_CHECK(!cert.HasPrivateWeight());
+
+    CFinalityTallyCertificate legacy = cert;
+    legacy.vNoteVoteTags.clear();
+    legacy.vNoteComplaints.clear();
+    legacy.noteTierProofs = CNoteTallyTierProofs();
+    legacy.vTallyShareHashes.push_back(uint256(0x8001));
+    BOOST_CHECK(!legacy.HasNoteWeight());
+    BOOST_CHECK(legacy.HasPrivateWeight());
+
+    // Canonical envelope: schema 2 is the only one that transports a note tally, and
+    // it has to carry the signer set too -- a v4 certificate's authorization IS its
+    // signatures, since its range proofs cannot be rebuilt byte-for-byte. The
+    // canonical carrier has its own signing domain, so the committee signs after the
+    // certificate is marked, exactly as a producer would.
+    cert.MarkCanonicalEnvelope();
+    SignCertByCommittee(cert, vKeys, 2);
+    CCanonicalFinalityTallyCertificateEnvelope envelope;
+    BOOST_REQUIRE(envelope.FromLogical(cert));
+    BOOST_CHECK_EQUAL(envelope.nLogicalVersion,
+                      FINALITY_CANONICAL_TALLY_CERT_VERSION_NOTE);
+    BOOST_CHECK_EQUAL(envelope.nCertificateVersion, FINALITY_NOTE_CERT_VERSION);
+
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << envelope;
+    CCanonicalFinalityTallyCertificateEnvelope decodedEnvelope;
+    ss >> decodedEnvelope;
+    BOOST_CHECK(ss.empty());
+
+    CFinalityTallyCertificate decoded;
+    BOOST_REQUIRE(decodedEnvelope.ToLogical(decoded));
+    BOOST_CHECK(decoded.IsCanonicalEnvelope());
+    BOOST_CHECK(decoded.HasNoteWeight());
+    BOOST_CHECK(decoded.vNoteVoteTags == cert.vNoteVoteTags);
+    BOOST_CHECK(decoded.vNoteComplaints.size() == cert.vNoteComplaints.size());
+    BOOST_CHECK(decoded.vNoteComplaints[0].GetHash() ==
+                cert.vNoteComplaints[0].GetHash());
+    BOOST_CHECK(decoded.noteTierProofs.vchTierSlack ==
+                cert.noteTierProofs.vchTierSlack);
+    BOOST_CHECK(decoded.vSignerIndexes == cert.vSignerIndexes);
+    BOOST_CHECK(decoded.vSignerSigs == cert.vSignerSigs);
+    // The round trip has to preserve the signed content exactly, or the committee's
+    // signatures would not survive being carried in a block.
+    BOOST_CHECK(decoded.GetSignatureDigest() == cert.GetSignatureDigest());
+    BOOST_CHECK(decoded.GetHash() == cert.GetHash());
+    BOOST_CHECK(CheckTallyCertificateCommitteeSignatures(
+        decoded, config.vCommitteePubKeys, config.nThresholdM,
+        config.committeeSetHash, &strError));
+
+    // Schema 2 is unreadable before the fork, so a pre-fork block cannot carry a
+    // well-formed note certificate at all.
+    {
+        ScopedNoteVoteFork closed(PRIVACY_VNEXT_HEIGHT_UNSET);
+        CFinalityTallyCertificate rejected;
+        BOOST_CHECK(!decodedEnvelope.ToLogical(rejected));
+    }
+
+    // Schema 1 keeps its exact meaning: it refuses a note certificate outright, and
+    // refuses to hand one back even if an in-memory envelope claims one.
+    CFinalityTallyCertificate transparent = cert;
+    transparent.nVersion = 2;
+    transparent.vNoteVoteTags.clear();
+    transparent.vNoteComplaints.clear();
+    transparent.noteTierProofs = CNoteTallyTierProofs();
+    transparent.vSignerIndexes.clear();
+    transparent.vSignerSigs.clear();
+    transparent.MarkCanonicalEnvelope();
+    CCanonicalFinalityTallyCertificateEnvelope legacyEnvelope;
+    BOOST_REQUIRE(legacyEnvelope.FromLogical(transparent));
+    BOOST_CHECK_EQUAL(legacyEnvelope.nLogicalVersion,
+                      FINALITY_CANONICAL_TALLY_CERT_VERSION);
+
+    CCanonicalFinalityTallyCertificateEnvelope smuggled = legacyEnvelope;
+    smuggled.vNoteVoteTags.push_back(uint256(0x3001));
+    CFinalityTallyCertificate smuggledOut;
+    BOOST_CHECK(!smuggled.ToLogical(smuggledOut));
+
+    // A schema-2 envelope naming a non-v4 certificate is not a second spelling of a
+    // transparent certificate.
+    CCanonicalFinalityTallyCertificateEnvelope crossed = decodedEnvelope;
+    crossed.nCertificateVersion = 2;
+    CFinalityTallyCertificate crossedOut;
+    BOOST_CHECK(!crossed.ToLogical(crossedOut));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

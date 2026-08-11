@@ -91,6 +91,9 @@ static const char FINALITY_CANONICAL_TALLY_CERT_COMMAND[] = "ftcerta";
 static const char FINALITY_NOTE_VOTE_COMMAND[] = "fnvote";
 static const uint32_t FINALITY_CANONICAL_VOTE_VERSION = 1;
 static const uint32_t FINALITY_CANONICAL_TALLY_CERT_VERSION = 1;
+// F2 note-tally schema. Schema 1 stays byte-identical; only a certificate that
+// actually carries a note tally uses schema 2.
+static const uint32_t FINALITY_CANONICAL_TALLY_CERT_VERSION_NOTE = 2;
 // Per-block cap on note-vote carriers, mirroring FINALITY_MAX_BLOCK_VOTES for the
 // transparent path. At the envelope's working size the full set sits inside the
 // penalty-free generation target with room for ordinary traffic alongside.
@@ -783,11 +786,21 @@ public:
     bool IsCanonicalEnvelope() const { return fCanonicalEnvelope; }
     void MarkCanonicalEnvelope() { fCanonicalEnvelope = true; }
     bool HasPrivateWeight() const;
+    /** F2: the certificate carries a note-vote tally. Deliberately NOT folded into
+     *  HasPrivateWeight(): that predicate drives the retired-secp disable gates and
+     *  the Boundary-A miner skip, which must keep rejecting the legacy path while
+     *  admitting v4. */
+    bool HasNoteWeight() const;
     bool IsValidBasic(std::string* pstrError = NULL) const;
 };
 
 /** Boundary-A canonical transparent certificate schema.  Private commitments,
- * tally-share hashes, and private proof blobs are intentionally absent. */
+ * tally-share hashes, and private proof blobs are intentionally absent.
+ *
+ * Logical schema 2 (F2) additionally transports the note-vote tally: the covered
+ * tags, the complaints that justify every omission, the tier range proofs, and the
+ * committee signer-set that authorizes them. Schema 1 keeps its exact bytes, so
+ * pre-F2 certificates round-trip unchanged. */
 class CCanonicalFinalityTallyCertificateEnvelope
 {
 public:
@@ -805,6 +818,12 @@ public:
     int64_t nTransparentWinningWeight;
     int64_t nTransparentRewardBudget;
     std::vector<uint256> vVoteNullifiers;
+    // nLogicalVersion >= 2 only.
+    std::vector<uint16_t> vSignerIndexes;
+    std::vector<std::vector<unsigned char> > vSignerSigs;
+    std::vector<uint256> vNoteVoteTags;
+    std::vector<CNoteVoteComplaint> vNoteComplaints;
+    CNoteTallyTierProofs noteTierProofs;
 
     CCanonicalFinalityTallyCertificateEnvelope()
         : nLogicalVersion(FINALITY_CANONICAL_TALLY_CERT_VERSION),
@@ -836,6 +855,32 @@ public:
             s, pthis->vVoteNullifiers,
             FINALITY_CANONICAL_CERT_MAX_NULLIFIERS,
             nType, nVersion, ser_action);
+        // The schema field is the envelope's own consensus data, so the gate must
+        // test the member and not the stream version the macro injects.
+        if (pthis->nLogicalVersion >= FINALITY_CANONICAL_TALLY_CERT_VERSION_NOTE)
+        {
+            nSerSize += ::SerReadWriteLimitedVector(
+                s, pthis->vSignerIndexes, FINALITY_MAX_TALLY_COMMITTEE,
+                nType, nVersion, ser_action);
+            nSerSize += ::SerReadWriteLimitedByteVectors(
+                s, pthis->vSignerSigs, FINALITY_MAX_TALLY_COMMITTEE, 80,
+                nType, nVersion, ser_action);
+            nSerSize += ::SerReadWriteLimitedVector(
+                s, pthis->vNoteVoteTags, FINALITY_MAX_VOTES,
+                nType, nVersion, ser_action);
+            nSerSize += ::SerReadWriteLimitedVector(
+                s, pthis->vNoteComplaints, FINALITY_MAX_VOTES,
+                nType, nVersion, ser_action);
+            nSerSize += ::SerReadWriteLimitedVector(
+                s, pthis->noteTierProofs.vchTierSlack,
+                FINALITY_NOTE_MAX_RANGE_PROOF_BYTES, nType, nVersion, ser_action);
+            nSerSize += ::SerReadWriteLimitedVector(
+                s, pthis->noteTierProofs.vchWinningCap,
+                FINALITY_NOTE_MAX_RANGE_PROOF_BYTES, nType, nVersion, ser_action);
+            nSerSize += ::SerReadWriteLimitedVector(
+                s, pthis->noteTierProofs.vchActiveCap,
+                FINALITY_NOTE_MAX_RANGE_PROOF_BYTES, nType, nVersion, ser_action);
+        }
     )
 
     bool FromLogical(const CFinalityTallyCertificate& cert);

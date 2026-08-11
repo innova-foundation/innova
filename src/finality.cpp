@@ -1613,20 +1613,26 @@ static bool CanonicalVoteHasExactEmptyPrivateProof(const CFinalityVote& vote)
            std::equal(actual.begin(), actual.end(), expected.begin());
 }
 
+// The legacy-private fields a canonical certificate never carries. fAllowSignerSet
+// keeps the schema-1 rule byte-for-byte (no signer-set at all) while letting the F2
+// schema carry the M-of-N signatures that authorize its note tally.
 static bool CanonicalCertificateHasExactEmptyOmittedFields(
-    const CFinalityTallyCertificate& cert)
+    const CFinalityTallyCertificate& cert, bool fAllowSignerSet = false)
 {
     CFinalityTallyCertificate empty;
     CDataStream actual(SER_NETWORK, PROTOCOL_VERSION);
     CDataStream expected(SER_NETWORK, PROTOCOL_VERSION);
     actual << cert.activeWeightCommitment << cert.winningWeightCommitment
            << cert.rewardBudgetCommitment << cert.vTallyShareHashes
-           << cert.vchAggregateThresholdProof << cert.vchRewardBudgetProof
-           << cert.vSignerIndexes << cert.vSignerSigs;
+           << cert.vchAggregateThresholdProof << cert.vchRewardBudgetProof;
     expected << empty.activeWeightCommitment << empty.winningWeightCommitment
              << empty.rewardBudgetCommitment << empty.vTallyShareHashes
-             << empty.vchAggregateThresholdProof << empty.vchRewardBudgetProof
-             << empty.vSignerIndexes << empty.vSignerSigs;
+             << empty.vchAggregateThresholdProof << empty.vchRewardBudgetProof;
+    if (!fAllowSignerSet)
+    {
+        actual << cert.vSignerIndexes << cert.vSignerSigs;
+        expected << empty.vSignerIndexes << empty.vSignerSigs;
+    }
     return actual.size() == expected.size() &&
            std::equal(actual.begin(), actual.end(), expected.begin());
 }
@@ -1681,15 +1687,35 @@ bool CCanonicalFinalityVoteEnvelope::ToLogical(CFinalityVote& voteOut) const
 bool CCanonicalFinalityTallyCertificateEnvelope::FromLogical(
     const CFinalityTallyCertificate& cert)
 {
-    if (!cert.IsCanonicalEnvelope() || cert.nVersion < 1 || cert.nVersion > 2 ||
-        cert.HasPrivateWeight() ||
-        !CanonicalCertificateHasExactEmptyOmittedFields(cert) ||
-        cert.vVoteNullifiers.size() > FINALITY_CANONICAL_CERT_MAX_NULLIFIERS ||
-        !cert.vSignerIndexes.empty() || !cert.vSignerSigs.empty())
+    // Schema 2 exists only for a note-bearing v4 certificate; everything else keeps
+    // schema 1 exactly, so no pre-F2 certificate changes its encoding.
+    const bool fNoteSchema = (cert.nVersion == FINALITY_NOTE_CERT_VERSION);
+    if (!cert.IsCanonicalEnvelope() || cert.HasPrivateWeight() ||
+        cert.vVoteNullifiers.size() > FINALITY_CANONICAL_CERT_MAX_NULLIFIERS)
         return false;
+    if (fNoteSchema)
+    {
+        if (!cert.HasNoteWeight() ||
+            !CanonicalCertificateHasExactEmptyOmittedFields(cert, true))
+            return false;
+    }
+    else
+    {
+        if (cert.nVersion < 1 || cert.nVersion > 2 ||
+            !CanonicalCertificateHasExactEmptyOmittedFields(cert) ||
+            !cert.vSignerIndexes.empty() || !cert.vSignerSigs.empty() ||
+            cert.HasNoteWeight() || !cert.vNoteComplaints.empty())
+            return false;
+    }
 
-    nLogicalVersion = FINALITY_CANONICAL_TALLY_CERT_VERSION;
+    nLogicalVersion = fNoteSchema ? FINALITY_CANONICAL_TALLY_CERT_VERSION_NOTE
+                                  : FINALITY_CANONICAL_TALLY_CERT_VERSION;
     nCertificateVersion = cert.nVersion;
+    vSignerIndexes = cert.vSignerIndexes;
+    vSignerSigs = cert.vSignerSigs;
+    vNoteVoteTags = cert.vNoteVoteTags;
+    vNoteComplaints = cert.vNoteComplaints;
+    noteTierProofs = cert.noteTierProofs;
     nEpoch = cert.nEpoch;
     hashBlock = cert.hashBlock;
     nHeight = cert.nHeight;
@@ -1708,13 +1734,40 @@ bool CCanonicalFinalityTallyCertificateEnvelope::FromLogical(
 bool CCanonicalFinalityTallyCertificateEnvelope::ToLogical(
     CFinalityTallyCertificate& certOut) const
 {
-    if (nLogicalVersion != FINALITY_CANONICAL_TALLY_CERT_VERSION ||
-        nCertificateVersion < 1 || nCertificateVersion > 2 ||
-        vVoteNullifiers.size() > FINALITY_CANONICAL_CERT_MAX_NULLIFIERS)
+    if (vVoteNullifiers.size() > FINALITY_CANONICAL_CERT_MAX_NULLIFIERS)
+        return false;
+    // Each schema admits exactly one certificate version, so a note-bearing cert can
+    // never arrive under schema 1 and a transparent one can never arrive under 2.
+    if (nLogicalVersion == FINALITY_CANONICAL_TALLY_CERT_VERSION)
+    {
+        if (nCertificateVersion < 1 || nCertificateVersion > 2)
+            return false;
+        // Schema 1 does not serialize these, so a non-empty one can only come from an
+        // in-memory envelope; it must not smuggle a note side into a schema-1 cert.
+        if (!vSignerIndexes.empty() || !vSignerSigs.empty() || !vNoteVoteTags.empty() ||
+            !vNoteComplaints.empty() || !noteTierProofs.IsNull())
+            return false;
+    }
+    else if (nLogicalVersion == FINALITY_CANONICAL_TALLY_CERT_VERSION_NOTE)
+    {
+        if (nCertificateVersion != FINALITY_NOTE_CERT_VERSION)
+            return false;
+        // The schema is only readable once note votes are live. IsValidBasic repeats
+        // this on the decoded certificate; refusing it here keeps a pre-fork block
+        // from carrying a well-formed object at all.
+        if (!IsIV5NoteVoteActiveAtHeight(nHeight))
+            return false;
+    }
+    else
         return false;
 
     CFinalityTallyCertificate cert;
     cert.nVersion = nCertificateVersion;
+    cert.vSignerIndexes = vSignerIndexes;
+    cert.vSignerSigs = vSignerSigs;
+    cert.vNoteVoteTags = vNoteVoteTags;
+    cert.vNoteComplaints = vNoteComplaints;
+    cert.noteTierProofs = noteTierProofs;
     cert.nEpoch = nEpoch;
     cert.hashBlock = hashBlock;
     cert.nHeight = nHeight;
@@ -4430,6 +4483,24 @@ bool CFinalityTallyAggregatePartial::IsValidBasic() const
     return true;
 }
 
+// Note-tally fields, appended to both the identity and the signed content. The
+// complaint set changes the covered set, so both must commit to it (by complaint hash).
+static void FinalityAppendNoteCertFields(CHashWriter& ss,
+                                         const std::vector<uint256>& vNoteVoteTags,
+                                         const std::vector<CNoteVoteComplaint>& vNoteComplaints,
+                                         const CNoteTallyTierProofs& noteTierProofs)
+{
+    ss << vNoteVoteTags;
+    std::vector<uint256> vComplaintHashes;
+    vComplaintHashes.reserve(vNoteComplaints.size());
+    for (size_t i = 0; i < vNoteComplaints.size(); i++)
+        vComplaintHashes.push_back(vNoteComplaints[i].GetHash());
+    ss << vComplaintHashes;
+    ss << noteTierProofs.vchTierSlack;
+    ss << noteTierProofs.vchWinningCap;
+    ss << noteTierProofs.vchActiveCap;
+}
+
 uint256 CFinalityTallyCertificate::GetSignatureDigest() const
 {
     if (fCanonicalEnvelope)
@@ -4450,6 +4521,9 @@ uint256 CFinalityTallyCertificate::GetSignatureDigest() const
         canonical << nTransparentWinningWeight;
         canonical << nTransparentRewardBudget;
         canonical << vVoteNullifiers;
+        if (nVersion >= FINALITY_NOTE_CERT_VERSION)
+            FinalityAppendNoteCertFields(canonical, vNoteVoteTags, vNoteComplaints,
+                                         noteTierProofs);
         return canonical.GetHash();
     }
 
@@ -4477,6 +4551,8 @@ uint256 CFinalityTallyCertificate::GetSignatureDigest() const
     ss << vTallyShareHashes;
     ss << vchAggregateThresholdProof;
     ss << vchRewardBudgetProof;
+    if (nVersion >= FINALITY_NOTE_CERT_VERSION)
+        FinalityAppendNoteCertFields(ss, vNoteVoteTags, vNoteComplaints, noteTierProofs);
     return ss.GetHash();
 }
 
@@ -4500,6 +4576,13 @@ uint256 CFinalityTallyCertificate::GetHash() const
         canonical << nTransparentWinningWeight;
         canonical << nTransparentRewardBudget;
         canonical << vVoteNullifiers;
+        if (nVersion >= FINALITY_NOTE_CERT_VERSION)
+        {
+            FinalityAppendNoteCertFields(canonical, vNoteVoteTags, vNoteComplaints,
+                                         noteTierProofs);
+            canonical << vSignerIndexes;
+            canonical << vSignerSigs;
+        }
         return canonical.GetHash();
     }
 
@@ -4529,6 +4612,8 @@ uint256 CFinalityTallyCertificate::GetHash() const
         ss << vSignerIndexes;
         ss << vSignerSigs;
     }
+    if (nVersion >= FINALITY_NOTE_CERT_VERSION)
+        FinalityAppendNoteCertFields(ss, vNoteVoteTags, vNoteComplaints, noteTierProofs);
     return ss.GetHash();
 }
 
@@ -4540,10 +4625,20 @@ bool CFinalityTallyCertificate::HasPrivateWeight() const
            !vTallyShareHashes.empty();
 }
 
+bool CFinalityTallyCertificate::HasNoteWeight() const
+{
+    return !vNoteVoteTags.empty() || !noteTierProofs.IsNull();
+}
+
 bool CFinalityTallyCertificate::IsValidBasic(std::string* pstrError) const
 {
-    if (nVersion < 1 || nVersion > 3)
+    if (nVersion < 1 || nVersion > FINALITY_NOTE_CERT_VERSION)
         return FinalityReject(pstrError, "unsupported tally certificate version");
+    // F2 gate on cert.nHeight, pinned to cert.nEpoch, so the rule depends only on the
+    // certificate bytes. Rejects v4 where the note-vote fork is unconfigured.
+    if (nVersion >= FINALITY_NOTE_CERT_VERSION && !IsIV5NoteVoteActiveAtHeight(nHeight))
+        return FinalityReject(pstrError,
+                              "note tally certificate version before note-vote activation");
     if (nEpoch < 0 || nHeight < 0)
         return FinalityReject(pstrError, "invalid tally certificate epoch or height");
     if (hashBlock == 0)
@@ -4602,6 +4697,75 @@ bool CFinalityTallyCertificate::IsValidBasic(std::string* pstrError) const
         return FinalityReject(pstrError, "pre-v3 tally certificate must not carry a signer-set");
     }
 
+    // v4 (F2) carries the note-vote tally. Structural bounds only; coverage and the
+    // range proofs need the connected vote set and are checked in CheckTallyCertificate.
+    if (nVersion >= FINALITY_NOTE_CERT_VERSION)
+    {
+        if (vNoteVoteTags.size() > FINALITY_MAX_VOTES ||
+            vNoteComplaints.size() > FINALITY_MAX_VOTES)
+            return FinalityReject(pstrError, "tally certificate note set size out of range");
+
+        std::set<uint256> setTags;
+        for (size_t i = 0; i < vNoteVoteTags.size(); i++)
+        {
+            if (vNoteVoteTags[i] == 0 || !setTags.insert(vNoteVoteTags[i]).second)
+                return FinalityReject(pstrError,
+                                      "duplicate or zero tally certificate note vote tag");
+        }
+
+        // One complaint per tag: two complaints naming one vote would let a producer
+        // pad the set without changing what it actually excludes.
+        std::set<uint256> setComplaintTags;
+        for (size_t i = 0; i < vNoteComplaints.size(); i++)
+        {
+            if (!vNoteComplaints[i].IsValidBasic(pstrError))
+                return false;
+            if (!setComplaintTags.insert(vNoteComplaints[i].voteTag).second)
+                return FinalityReject(pstrError,
+                                      "tally certificate complains of one vote twice");
+            if (setTags.count(vNoteComplaints[i].voteTag))
+                return FinalityReject(pstrError,
+                                      "tally certificate both covers and complains of a vote");
+        }
+
+        // The note side is either wholly absent or wholly present. A cert that names
+        // tags but proves no tier, or complains without proving one, would otherwise
+        // reach the tally with a claim nothing backs.
+        const bool fNoteSideEmpty = vNoteVoteTags.empty() && vNoteComplaints.empty() &&
+                                    noteTierProofs.IsNull();
+        if (!fNoteSideEmpty)
+        {
+            if (vNoteVoteTags.empty() && vNoteComplaints.empty())
+                return FinalityReject(pstrError,
+                                      "tally certificate proves a note tier over no votes");
+            const std::vector<unsigned char>* vProofs[3] = {
+                &noteTierProofs.vchTierSlack, &noteTierProofs.vchWinningCap,
+                &noteTierProofs.vchActiveCap
+            };
+            for (int i = 0; i < 3; i++)
+            {
+                if (vProofs[i]->empty() ||
+                    vProofs[i]->size() > FINALITY_NOTE_MAX_RANGE_PROOF_BYTES)
+                    return FinalityReject(pstrError,
+                                          "tally certificate note tier proof has an unusable length");
+            }
+        }
+        // The two rules above give HasNoteWeight() its meaning: a certificate that
+        // passes here has either no note fields at all, or all three tier proofs
+        // present -- so the predicate the gates key on is true exactly when there is
+        // a note tally to gate, including for a certificate that only complains.
+
+        // The retired secp aggregate and the note tally are different tallies; one
+        // certificate must not claim both.
+        if (HasNoteWeight() && HasPrivateWeight())
+            return FinalityReject(pstrError,
+                                  "tally certificate carries both legacy private and note weight");
+    }
+    else if (!vNoteVoteTags.empty() || !vNoteComplaints.empty() || !noteTierProofs.IsNull())
+    {
+        return FinalityReject(pstrError, "pre-v4 tally certificate must not carry note fields");
+    }
+
     if (HasPrivateWeight())
     {
         if (nVersion < 2)
@@ -4618,6 +4782,15 @@ bool CFinalityTallyCertificate::IsValidBasic(std::string* pstrError) const
             return FinalityReject(pstrError, "private tally certificate invalid aggregate threshold proof");
         if (vchRewardBudgetProof.empty() || vchRewardBudgetProof.size() > BPAC_V3_MAX_PROOF_SIZE)
             return FinalityReject(pstrError, "private tally certificate invalid reward budget proof");
+    }
+    else if (HasNoteWeight())
+    {
+        // A note tally's weight is in the covered votes' commitments, not in these
+        // fields, so the transparent threshold below is not its threshold. The tier
+        // claim is proved by noteTierProofs against recomputed aggregates in
+        // CheckTallyCertificate; there is nothing structural to check here.
+        if (committeeSetHash == 0)
+            return FinalityReject(pstrError, "note tally certificate missing committee set hash");
     }
     else if (nTier != FINALITY_NONE)
     {
@@ -5132,6 +5305,12 @@ bool CFinalityTracker::CheckTallyCertificate(
         (IsLegacyPrivacyPolicyDisabled() ||
          IsBoundaryAActiveAtHeight(nEffectiveContextHeight)))
         return reject("legacy private tally certificates are disabled pending privacy vNext");
+    // The note tally is the live private path, so it is gated on its own fork rather
+    // than the retired-secp disable above. IsValidBasic already gated on the cert's
+    // own boundary height; this pins the containing context too.
+    if ((cert.nVersion >= FINALITY_NOTE_CERT_VERSION || cert.HasNoteWeight()) &&
+        !IsIV5NoteVoteActiveAtHeight(nEffectiveContextHeight))
+        return reject("note tally certificates are not active at this height");
     if (GetEpochForHeight(cert.nHeight) != cert.nEpoch ||
         GetEpochBoundaryHeight(cert.nEpoch, cert.nHeight) != cert.nHeight)
         return reject("tally certificate height is not this epoch boundary");
@@ -5141,7 +5320,13 @@ bool CFinalityTracker::CheckTallyCertificate(
     // cert's (consensus-validated) epoch-boundary height so the rule is
     // deterministic. The resolver is consensus-uniform; while no committee is
     // pinned for the epoch it is inert (certs validate as pre-fork).
-    if (!fSkipCommitteeSigs && cert.HasPrivateWeight() && cert.nHeight >= FORK_HEIGHT_TALLY_GOVERNANCE)
+    // A note certificate's authorization IS its signer-set: the covered set and the
+    // tier proofs are only trustworthy because >= M of the canonical committee signed
+    // the digest that now covers them. So it takes the same path, unconditionally --
+    // note votes exist only after their own fork, well past governance.
+    if (!fSkipCommitteeSigs &&
+        ((cert.HasPrivateWeight() && cert.nHeight >= FORK_HEIGHT_TALLY_GOVERNANCE) ||
+         cert.HasNoteWeight()))
     {
         std::vector<CPubKey> vCommittee;
         int nM = 0;
@@ -5424,7 +5609,8 @@ bool CFinalityTracker::CheckTallyCertificate(
     // frozen connected vote set; no alternative tier, root or order is a valid representation.
     if (cert.IsCanonicalEnvelope())
     {
-        if (!CanonicalCertificateHasExactEmptyOmittedFields(cert))
+        const bool fNoteCert = cert.HasNoteWeight();
+        if (!CanonicalCertificateHasExactEmptyOmittedFields(cert, fNoteCert))
             return reject("canonical tally certificate has non-empty omitted fields");
         CFinalityTallyCertificate expected;
         std::string strCanonicalError;
@@ -5432,9 +5618,31 @@ bool CFinalityTracker::CheckTallyCertificate(
                 vMatchedVotes, expected, &strCanonicalError))
             return reject("canonical tally certificate cannot be rebuilt: " +
                           strCanonicalError);
-        if (cert.GetHash() != expected.GetHash() ||
-            cert.GetSignatureDigest() != expected.GetSignatureDigest())
-            return reject("canonical tally certificate is not the exact deterministic result");
+        if (!fNoteCert)
+        {
+            if (cert.GetHash() != expected.GetHash() ||
+                cert.GetSignatureDigest() != expected.GetSignatureDigest())
+                return reject("canonical tally certificate is not the exact deterministic result");
+        }
+        else
+        {
+            // A note certificate cannot be rebuilt byte-for-byte: its range proofs are
+            // entropy-bearing, so two honest committees produce different valid proofs
+            // over the same votes. The transparent skeleton is still exactly one value
+            // and is compared field-by-field here; the note side is authorized instead
+            // by the M-of-N signatures checked above and proved below.
+            if (cert.hashBlock != expected.hashBlock ||
+                cert.nHeight != expected.nHeight ||
+                cert.nEpoch != expected.nEpoch ||
+                cert.hashCurveRoot != expected.hashCurveRoot ||
+                cert.hashNullifierRoot != expected.hashNullifierRoot ||
+                cert.nConsecutiveHardCount != expected.nConsecutiveHardCount ||
+                cert.nTransparentActiveWeight != expected.nTransparentActiveWeight ||
+                cert.nTransparentWinningWeight != expected.nTransparentWinningWeight ||
+                cert.nTransparentRewardBudget != expected.nTransparentRewardBudget ||
+                cert.vVoteNullifiers != expected.vVoteNullifiers)
+                return reject("canonical note tally certificate transparent skeleton is not the deterministic result");
+        }
     }
 
     if (cert.HasPrivateWeight())
@@ -5483,6 +5691,48 @@ bool CFinalityTracker::CheckTallyCertificate(
                                                nTransparentRewardBudget,
                                                pstrError))
             return false;
+    }
+    else if (cert.HasNoteWeight())
+    {
+        // F2 note tally. Every input below is a pure function of the connected chain
+        // plus the certificate bytes: the counted note-vote view is rebuilt in full on
+        // connect/disconnect/load, the committee is the epoch's consensus committee,
+        // and the transparent weights are the ones recomputed above -- never the
+        // values the certificate supplied.
+        std::vector<CPubKey> vNoteCommittee;
+        int nNoteM = 0;
+        uint256 noteSetHash;
+        if (!GetCommitteeForEpoch(cert.nEpoch, vNoteCommittee, nNoteM, noteSetHash))
+            return localState("note tally certificate has no canonical committee for its epoch");
+        if (cert.committeeSetHash != noteSetHash)
+            return reject("note tally certificate does not name the canonical committee for its epoch");
+
+        CFinalityTallyConfig noteConfig;
+        noteConfig.fCommitteeValid = true;
+        noteConfig.fEnabled = true;
+        noteConfig.nThresholdM = nNoteM;
+        noteConfig.nThresholdN = (int)vNoteCommittee.size();
+        noteConfig.committeeSetHash = noteSetHash;
+        noteConfig.vCommitteePubKeys = vNoteCommittee;
+
+        // The COUNTED view, not the raw carried votes. An equivocated tag appears
+        // twice among the carried votes, and ResolveNoteTallyCoverage hard-fails on a
+        // repeated tag -- so feeding it the raw set would let one anonymous
+        // equivocator make every epoch permanently uncertifiable.
+        const std::vector<CNoteFinalityVote> vCounted =
+            GetCountedEpochNoteVotes(cert.nEpoch);
+        std::vector<const CNoteFinalityVote*> vCountedPtrs;
+        vCountedPtrs.reserve(vCounted.size());
+        for (size_t i = 0; i < vCounted.size(); i++)
+            vCountedPtrs.push_back(&vCounted[i]);
+
+        std::string strNoteError;
+        if (!CheckNoteTallyCertificate(cert.nTier, cert.hashBlock, vCountedPtrs,
+                                       cert.vNoteVoteTags, cert.vNoteComplaints,
+                                       noteConfig, nTransparentActiveWeight,
+                                       nTransparentWinningWeight, cert.noteTierProofs,
+                                       &strNoteError))
+            return reject(strNoteError);
     }
     else
     {
