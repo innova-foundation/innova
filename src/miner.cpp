@@ -1148,27 +1148,6 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                 nBlockSize += nCertCommitSize + 16;
             }
 
-            // D2 self-governance: embed any fully-signed pending committee rotation
-            // (effective epoch in the future, within the A2 lookahead). ConnectBlock
-            // re-validates and applies it to the canonical-set state.
-            std::vector<CFinalityCommitteeRotation> vFinalityRots;
-            if (!IsLegacyPrivacyPolicyDisabled() &&
-                !IsBoundaryAActiveAtHeight(nHeight))
-                vFinalityRots =
-                    g_finalityTracker.GetPendingCommitteeRotationsForBlock(nHeight);
-            for (const CFinalityCommitteeRotation& rot : vFinalityRots)
-            {
-                CScript rotScript = BuildFinalityCommitteeRotationScript(rot);
-                unsigned int nRotCommitSize = ::GetSerializeSize(rotScript, SER_NETWORK, PROTOCOL_VERSION);
-                if (nBlockSize + nRotCommitSize + 16 >= nBlockMaxSize)
-                    break;
-
-                CTxOut rotOut;
-                rotOut.nValue = 0;
-                rotOut.scriptPubKey = rotScript;
-                pblock->vtx[0].vout.push_back(rotOut);
-                nBlockSize += nRotCommitSize + 16;
-            }
         }
 
         nLastBlockTx = nBlockTx;

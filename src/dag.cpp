@@ -34,6 +34,11 @@ uint256 CEpochState::GetDigest() const
         ss << vVNextActiveTxIds << hashVNextActiveTxSet;
         if (nSerVersion >= EPOCHSTATE_SER_VERSION_V5)
             ss << nVNextPoolBalance;
+        // Covered from V6 so two nodes that drew different committees disagree here,
+        // at the epoch record, instead of silently accepting each other's blocks and
+        // splitting later on a certificate. V5 records hash exactly as before.
+        if (nSerVersion >= EPOCHSTATE_SER_VERSION_V6)
+            ss << vFinalityCommittee << nFinalityCommitteeM;
     }
     return ss.GetHash();
 }
@@ -2547,8 +2552,12 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
         }
         // Write at the current version, not a pinned one: a field added to the record
         // is only serialized when the version says it is there, so pinning this silently
-        // drops every later addition.
-        state.nSerVersion = EPOCHSTATE_SER_VERSION;
+        // drops every later addition. The one exception is a field a fork introduces:
+        // the drawn committee does not exist below FORK_HEIGHT_IV5_NOTE_VOTE, and writing
+        // its version there would change records the fork does not reach.
+        state.nSerVersion = IsIV5NoteVoteActiveAtHeight(state.nHeightEnd)
+                                ? EPOCHSTATE_SER_VERSION
+                                : EPOCHSTATE_SER_VERSION_V5;
         state.vchVNextParameterDigest = vNextSeed.vchParameterDigest;
         if (fHavePredecessor &&
             prevState.nSerVersion >= EPOCHSTATE_SER_VERSION_V4)

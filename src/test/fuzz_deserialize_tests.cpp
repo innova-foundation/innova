@@ -672,9 +672,6 @@ BOOST_AUTO_TEST_CASE(consensus_proof_versions_preserve_legacy_stream_shadowing)
             CFinalityTallyShare(), 2,
             context.nType, context.nVersion);
         CheckLegacyShadowedVersionContext(
-            CFinalityCommitteeRotation(), 1,
-            context.nType, context.nVersion);
-        CheckLegacyShadowedVersionContext(
             CFinalityCertSignature(), 1,
             context.nType, context.nVersion);
         CheckLegacyShadowedVersionContext(
@@ -1323,18 +1320,6 @@ BOOST_AUTO_TEST_CASE(finality_envelopes_accept_maxima_and_reject_max_plus_one)
     CFinalityTallyCertificate oversizedCertificate = certificate;
     oversizedCertificate.vVoteNullifiers.push_back(uint256(4));
     BOOST_CHECK(RejectsWithoutThrow(oversizedCertificate));
-
-    CFinalityCommitteeRotation rotation;
-    rotation.vNewPubKeys.assign(
-        FINALITY_MAX_TALLY_COMMITTEE, std::vector<unsigned char>(33, 0x41));
-    rotation.vSignerIndexes.resize(FINALITY_MAX_TALLY_COMMITTEE);
-    rotation.vSignerSigs.assign(
-        FINALITY_MAX_TALLY_COMMITTEE, std::vector<unsigned char>(80, 0x42));
-    BOOST_CHECK(RoundTripsAtLimit(rotation));
-
-    CFinalityCommitteeRotation oversizedRotation = rotation;
-    oversizedRotation.vNewPubKeys.push_back(std::vector<unsigned char>(33, 0x43));
-    BOOST_CHECK(RejectsWithoutThrow(oversizedRotation));
 }
 
 BOOST_AUTO_TEST_CASE(proof_envelopes_accept_maxima_and_reject_max_plus_one)

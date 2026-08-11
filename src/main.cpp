@@ -7161,12 +7161,6 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
         if (!vNoteFinalityVotes.empty() &&
             !g_finalityTracker.DisconnectBlockNoteVotes(txdb, pindex->GetBlockHash(), vNoteFinalityVotes))
             return error("DisconnectBlock() : DisconnectBlockNoteVotes failed");
-
-        // D2: roll back committee self-rotations carried in this block.
-        std::vector<CFinalityCommitteeRotation> vCommitteeRotations = ExtractFinalityCommitteeRotationsFromBlock(activeBlock);
-        if (!vCommitteeRotations.empty() &&
-            !g_finalityTracker.DisconnectBlockCommitteeRotations(txdb, pindex->GetBlockHash(), vCommitteeRotations))
-            return error("DisconnectBlock() : DisconnectBlockCommitteeRotations failed");
     }
 
     if (pindex->nHeight >= FORK_HEIGHT_SHIELDED)
@@ -7759,12 +7753,6 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             pindex->nHeight, (int)certEnvelopeFailure));
     if (!vFinalityCerts.empty() && (pindex->nHeight < FORK_HEIGHT_DAG || IsProofOfStake()))
         return DoS(100, error("ConnectBlock() : finality tally certificates are only valid in post-DAG proof-of-work blocks"));
-
-    // D2: committee self-rotations ride post-fork proof-of-work blocks.
-    std::vector<CFinalityCommitteeRotation> vCommitteeRotations = ExtractFinalityCommitteeRotationsFromBlock(activeBlock);
-    if (!vCommitteeRotations.empty() &&
-        (pindex->nHeight < FORK_HEIGHT_TALLY_GOVERNANCE || IsProofOfStake()))
-        return DoS(100, error("ConnectBlock() : committee rotations are only valid in post-governance-fork proof-of-work blocks"));
 
     bool fFCMPBatchVerified = false;
     if (pindex->nHeight >= FORK_HEIGHT_FCMP_VALIDATION)
@@ -9524,20 +9512,6 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 "ConnectBlock() : ConnectBlockTallyCertificates deterministic validation failure"));
         }
     }
-    if (!fJustCheck && !vCommitteeRotations.empty())
-    {
-        FinalityResult finalityResult = FINALITY_RESULT_INVALID;
-        if (!g_finalityTracker.ConnectBlockCommitteeRotations(
-                txdb, pindex->GetBlockHash(), vCommitteeRotations,
-                pindex->nHeight, &finalityResult))
-        {
-            if (finalityResult == FINALITY_RESULT_LOCAL_STATE)
-                return TransientFailure(error(
-                    "ConnectBlock() : ConnectBlockCommitteeRotations local state/persistence failure"));
-            return DoS(100, error(
-                "ConnectBlock() : ConnectBlockCommitteeRotations deterministic validation failure"));
-        }
-    }
 
     // innova: collect valid name tx
     // NOTE: tx.UpdateCoins should not affect this loop, probably...
@@ -9778,6 +9752,17 @@ static bool StageEpochStateRange(CTxDB& txdb, CBlockIndex* pTip,
                                           pBoundary, state, tree, strError,
                                           pPrevState, pPrevTree))
             return false;
+        // The epoch that ends a term's lead-in carries that term's drawn committee.
+        // Seated here, in the same transaction that writes the record, so the draw
+        // happens exactly once per term on every node instead of once per validation.
+        bool fCommitteeLocalFailure = false;
+        if (!SeatFinalityCommitteeForEpochState(txdb, state, fCommitteeLocalFailure,
+                                                strError))
+        {
+            strError = strprintf("committee draw for epoch %d failed: %s", nEpoch,
+                                 strError.c_str());
+            return false;
+        }
         if (!g_dagManager.WriteEpochState(txdb, state, tree))
         {
             strError = strprintf("state/tree write failed for epoch %d", nEpoch);

@@ -77,7 +77,6 @@ static const int FINALITY_MAX_TALLY_COMMITTEE = 64;  // bounded m-of-n committee
 static const unsigned char FINALITY_VOTE_TAG[4] = { 0x49, 0x46, 0x56, 0x54 }; // "IFVT"
 static const unsigned char FINALITY_TALLY_CERT_TAG[4] = { 0x49, 0x46, 0x54, 0x43 }; // "IFTC"
 static const unsigned char FINALITY_TALLY_SHARE_TAG[4] = { 0x49, 0x46, 0x54, 0x53 }; // "IFTS"
-static const unsigned char FINALITY_COMMITTEE_ROTATION_TAG[4] = { 0x49, 0x46, 0x43, 0x52 }; // "IFCR"
 // Boundary-A canonical transparent-finality envelopes deliberately use new
 // tags and commands.  The legacy tags and commands above remain historical
 // decoders and are never reinterpreted as the canonical schema.
@@ -181,16 +180,9 @@ struct CFinalityTallyConfig
 bool ParseFinalityTallyThreshold(const std::string& strThreshold, int& nMOut, int& nNOut);
 uint256 ComputeFinalityTallyCommitteeHash(int nM, const std::vector<CPubKey>& vPubKeys);
 CFinalityTallyConfig GetFinalityTallyConfig();
-// Local committee tally private key (-finalitytallyprivkey). Used by the
-// committee-rotation RPCs to sign a rotation as a current-committee member.
+// Local committee tally private key (-finalitytallyprivkey). A node holds a seat
+// when this key is the member key one of its collateral registrations published.
 bool GetFinalityTallyPrivateKey(CKey& keyOut);
-
-/** D2: pin the canonical finality committee at startup (before rotations load).
- *  Testnet pins a consensus-constant committee; regtest pins from local config
- *  for test flexibility; mainnet pins the launch committee. Called once during
- *  block-index load, before LoadCommitteeRotations. Inert until the governance
- *  fork height regardless (CheckTallyCertificate is height-gated). */
-void PinFinalityCommitteeConstants();
 
 /** Get epoch interval for a given height: 60 pre-DAG, 300 post-DAG */
 int GetForkHeightDAG(); // defined in main.h (inline)
@@ -230,6 +222,52 @@ inline int GetEpochBoundaryHeight(int nEpoch, int nHeight)
         return nDAGFork + (nEpoch - nPreDAGEpochs) * FINALITY_EPOCH_INTERVAL_POST_DAG;
     }
     return nEpoch * FINALITY_EPOCH_INTERVAL_PRE_DAG;
+}
+
+// ---------------------------------------------------------------------------
+// Stake-derived finality committee
+// ---------------------------------------------------------------------------
+//
+// Seats are drawn from the IV5 collateral registrations that published a tally key
+// (NOTE_FINALITY_MEMBER_REGISTER). Nothing about a seat is granted: a registration
+// buys a lottery ticket, the chain's own entropy draws the winners, and the draw is
+// redone from scratch every term, so no seat-holder has any say in who follows it.
+
+/** Seats in one committee. */
+static const int FINALITY_COMMITTEE_SEATS = 32;
+/** Signatures a certificate needs. Just over 2N/3: below that a colluding third of
+ *  the seats certifies on its own, above it a silent third stops certification. */
+static const int FINALITY_COMMITTEE_THRESHOLD_M = 22;
+/** Epochs one committee serves. 288 post-DAG epochs is about a day.
+ *  Every draw is a chance for an attacker to land a majority, so the draw rate is
+ *  the attack rate: drawing per epoch would run 288 of those lotteries a day
+ *  against one registry instead of one. */
+static const int FINALITY_COMMITTEE_TERM_EPOCHS = 288;
+/** Epochs between the registration snapshot and the term it seats.
+ *  Registration closes at the start of epoch (term - LAG) and the seed is that same
+ *  epoch's block hashes, which do not exist yet, so a registrant cannot grind a key
+ *  image against a known seed. The seed is fixed once the epoch ends and the snapshot
+ *  is already closed by then, so a producer grinding block hashes cannot add rows. */
+static const int FINALITY_COMMITTEE_DRAW_LAG_EPOCHS = 2;
+/** Registry rows required per seat before any committee is seated. A committee drawn
+ *  from a registry barely bigger than itself is a committee everyone can enumerate
+ *  and nearly everyone is on; seat nothing and let the epoch certify transparent-only
+ *  rather than pretend that is privacy. */
+static const int FINALITY_COMMITTEE_MIN_REGISTRY_MULTIPLE = 2;
+
+/** Regtest runs the same machinery on a committee three nodes can actually staff.
+ *  Only the shape changes; the draw, the gates and the term boundary do not. */
+int GetFinalityCommitteeSeats();
+int GetFinalityCommitteeThresholdM();
+int GetFinalityCommitteeTermEpochs();
+
+/** First epoch of the term containing nEpoch. */
+inline int GetFinalityCommitteeTermEpoch(int nEpoch)
+{
+    if (nEpoch < 0)
+        return -1;
+    const int nTerm = GetFinalityCommitteeTermEpochs();
+    return (nEpoch / nTerm) * nTerm;
 }
 
 // Per-epoch finality-reward settlement.
@@ -614,15 +652,75 @@ bool VerifyMofNCommitteeSignatures(const std::vector<CPubKey>& vCommitteePubKeys
 
 class CFinalityTallyCertificate;
 
-/** D2: resolve the canonical finality committee for an epoch. The set is a
- *  consensus value (fork-pinned initial set, advanced by connected self-rotations
- *  — see GetForkHeightTallyGovernance). Returns false if no committee is pinned
- *  for nEpoch yet (pre-activation/transitional), in which case the signer-set
- *  rule is inert. nMOut/setHashOut are the threshold and committee-set hash. */
-bool GetCanonicalFinalityCommittee(int nEpoch,
+/** One term's drawn committee. Seat order is the member index every voter shares
+ *  against and every signer signs at, so it is part of the result, not a detail. */
+struct CFinalityCommitteeDraw
+{
+    int nTermEpoch;
+    int nAnchorEpoch;
+    int nAnchorHeight;
+    uint256 seed;
+    std::vector<CPubKey> vSeats;            // seat i == member index i
+    std::vector<uint256> vSeatKeyImages;    // the registration behind each seat
+    int nThresholdM;
+    uint256 setHash;
+    size_t nRegistrySize;                   // rows the draw ran over
+    bool fSeated;
+
+    CFinalityCommitteeDraw()
+        : nTermEpoch(-1), nAnchorEpoch(-1), nAnchorHeight(-1), seed(0),
+          nThresholdM(0), setHash(0), nRegistrySize(0), fSeated(false) {}
+};
+
+/** Draw the committee for the term beginning at nTermEpoch.
+ *
+ *  Reads exactly two things, both functions of the connected ancestry: the epoch
+ *  state of epoch (nTermEpoch - LAG), for the seed, and the collateral registry as
+ *  of that epoch's first height, for the candidates. Nothing here consults
+ *  nBestHeight, pindexBest, the mempool, the live finality streak or any local
+ *  configuration, so two nodes on the same chain draw the same committee.
+ *
+ *  txdbEpoch may carry an active write batch (the epoch-state read is a point read
+ *  and must see staged records). txdbRegistry must NOT: the registry enumeration is
+ *  an iterator, which cannot see pending writes, and would then disagree with the
+ *  spent-index point reads beside it. Reading the anchor epoch's record through both
+ *  is what proves the batch does not reach the rows being enumerated.
+ *
+ *  Returns false only on a local failure (fLocalFailureOut set), which includes a
+ *  transaction that is itself rebuilding the anchor epoch. A registry too thin to draw
+ *  from is a consensus outcome: drawOut.fSeated stays false and the caller seats
+ *  nothing. */
+bool DrawFinalityCommitteeForTerm(CTxDB& txdbEpoch, CTxDB& txdbRegistry,
+                                  int nTermEpoch,
+                                  CFinalityCommitteeDraw& drawOut,
+                                  bool& fLocalFailureOut,
+                                  std::string& strError);
+
+/** Resolve the committee that governs nEpoch, from the connected chain.
+ *
+ *  The set is drawn once per term and carried by the epoch state of the epoch that
+ *  ends immediately before the term. Reading it back rather than redrawing is what
+ *  makes the committee fixed for the whole term even though registrations keep
+ *  arriving and collateral keeps being spent.
+ *
+ *  Returns false when nEpoch's term seated nothing (no committee, so the signer-set
+ *  rule is inert and the epoch certifies transparent-only). pfLocalFailure, when
+ *  given, separates "this node cannot read its own epoch state" from that. */
+bool GetCanonicalFinalityCommittee(CTxDB& txdb, int nEpoch,
                                    std::vector<CPubKey>& vCommitteeOut,
                                    int& nMOut,
-                                   uint256& setHashOut);
+                                   uint256& setHashOut,
+                                   bool* pfLocalFailure = NULL);
+
+struct CEpochState;
+
+/** Fill in the drawn committee an epoch state carries, if it is the epoch that ends a
+ *  term's lead-in. Called once per epoch state as it is built, inside the caller's
+ *  best-chain transaction, so the record that is written and the record every other
+ *  node writes for the same epoch are the same bytes. A no-op below
+ *  FORK_HEIGHT_IV5_NOTE_VOTE and for every epoch that does not lead a term. */
+bool SeatFinalityCommitteeForEpochState(CTxDB& txdb, CEpochState& state,
+                                        bool& fLocalFailureOut, std::string& strError);
 
 /** D2: verify a v3 tally certificate carries >= M canonical-committee signatures
  *  over its GetSignatureDigest(). Pure (no chain state) so it is unit-testable
@@ -890,124 +988,10 @@ public:
     bool ToLogical(CFinalityTallyCertificate& certOut) const;
 };
 
-/** D2 self-governance: the committee rotates itself. A rotation is authorized by
- *  >= M signatures from the CURRENT committee over the NEW set + threshold, takes
- *  effect at nEffectiveEpoch, and chains to the set it descends from
- *  (hashPrevCommitteeSet). No central key is involved. */
-class CFinalityCommitteeRotation
-{
-public:
-    int nVersion;
-    int nEffectiveEpoch;
-    uint256 hashPrevCommitteeSet;                          // canonical set this rotation descends from
-    uint8_t nNewThresholdM;
-    std::vector<std::vector<unsigned char> > vNewPubKeys;  // new N-set (compressed)
-    std::vector<uint16_t> vSignerIndexes;                  // signers from the PREV set
-    std::vector<std::vector<unsigned char> > vSignerSigs;
-
-    CFinalityCommitteeRotation()
-    {
-        nVersion = 1;
-        nEffectiveEpoch = 0;
-        nNewThresholdM = 0;
-    }
-
-    IMPLEMENT_SERIALIZE
-    (
-        CFinalityCommitteeRotation* pthis =
-            const_cast<CFinalityCommitteeRotation*>(this);
-        READWRITE(nVersion);
-        READWRITE(nEffectiveEpoch);
-        READWRITE(hashPrevCommitteeSet);
-        READWRITE(nNewThresholdM);
-        nSerSize += ::SerReadWriteLimitedByteVectors(
-            s, pthis->vNewPubKeys, FINALITY_MAX_TALLY_COMMITTEE, 33,
-            nType, nVersion, ser_action);
-        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vSignerIndexes,
-                                                 FINALITY_MAX_TALLY_COMMITTEE,
-                                                 nType, nVersion, ser_action);
-        nSerSize += ::SerReadWriteLimitedByteVectors(
-            s, pthis->vSignerSigs, FINALITY_MAX_TALLY_COMMITTEE, 80,
-            nType, nVersion, ser_action);
-    )
-
-    uint256 GetHash() const;            // full identity (includes signatures)
-    uint256 GetSignatureDigest() const; // what the prev committee signs (excludes sigs)
-    bool IsValidBasic(std::string* pstrError = NULL) const;  // structural: new-set well-formed
-    // Resolve the new set into pubkeys (returns false on any malformed key).
-    bool GetNewCommittee(std::vector<CPubKey>& vOut, int& nMOut, uint256& setHashOut) const;
-};
-
-/** A connected canonical-pprev block carrying one committee-rotation
- *  candidate. Production connects these carriers at distinct, strictly
- *  increasing heights; the explicit position also lets restart/disconnect
- *  reject persistence that violates that invariant. */
-struct CFinalityCommitteeRotationCarrier
-{
-    int nBlockHeight;
-    uint256 hashBlock;
-    CFinalityCommitteeRotation rotation;
-
-    CFinalityCommitteeRotationCarrier()
-        : nBlockHeight(-1)
-    {
-    }
-
-    CFinalityCommitteeRotationCarrier(int nHeightIn, const uint256& hashBlockIn,
-                                      const CFinalityCommitteeRotation& rotationIn)
-        : nBlockHeight(nHeightIn), hashBlock(hashBlockIn), rotation(rotationIn)
-    {
-    }
-};
-
-/** Select the canonical candidate for one effective epoch.  Candidates carried
- *  before nV3ActivationHeight preserve the historical lowest-content-digest
- *  rule.  If none predate V3, the earliest canonical-pprev carrier wins and
- *  later, necessarily higher, valid carriers are no-ops.  The hash tie-break is
- *  fail-closed determinism for malformed/non-production carrier sets. */
-bool SelectCanonicalFinalityCommitteeRotation(
-    const std::vector<CFinalityCommitteeRotationCarrier>& vCarriers,
-    int nV3ActivationHeight,
-    CFinalityCommitteeRotation& rotationOut,
-    uint256* phashCarrierOut = NULL);
-
-/** Verify a rotation is authorized by >= M signatures from the given PREV
- *  committee over its GetSignatureDigest(). Stateless (no chain context); the
- *  effective-epoch bound + prev-set chaining are checked when the rotation is
- *  applied to the canonical-set state. */
-bool CheckFinalityCommitteeRotation(const CFinalityCommitteeRotation& rot,
-                                    const std::vector<CPubKey>& vPrevPubKeys,
-                                    int nPrevThresholdM,
-                                    const uint256& hashPrevSet,
-                                    std::string* pstrError = NULL);
-
-/** Committee rotations ride the coinbase OP_RETURN, like votes/certs/shares. */
-CScript BuildFinalityCommitteeRotationScript(const CFinalityCommitteeRotation& rot);
-bool ExtractFinalityCommitteeRotation(const CScript& scriptPubKey, CFinalityCommitteeRotation& rotOut);
-std::vector<CFinalityCommitteeRotation> ExtractFinalityCommitteeRotationsFromBlock(const CBlock& block);
-// Gossip a fully-signed pending rotation (ftrot) so non-proposing miners can embed it.
-void RelayFinalityCommitteeRotation(const CFinalityCommitteeRotation& rot);
 /** Relay a validated tally certificate using the command/envelope selected for
  *  the next candidate height. */
 void RelayFinalityTallyCertificate(const CFinalityTallyCertificate& cert);
 
-/** Max epochs ahead a rotation may take effect (A2: keeps rotations timely and
- *  prevents pre-dating). */
-static const int FINALITY_ROTATION_MAX_LOOKAHEAD = 4;
-
-/** A1 recovery: if HARD finality has not advanced for more than this many epochs,
- *  a fork-pinned recovery committee may ALSO authorize a certificate (union with
- *  the canonical committee), so a dead or sub-threshold primary committee cannot
- *  freeze HARD finality — and thus FCMP shielded spends — permanently. */
-static const int FINALITY_RECOVERY_GAP_EPOCHS = 6;
-
-/** Pure predicate: is a certificate for nCertEpoch within the recovery window
- *  given the current finalized height? Deterministic (nFinalizedHeight is a pure
- *  function of the connected chain), so all nodes agree. */
-bool FinalityCertInRecoveryWindow(int nCertEpoch, int nFinalizedHeight);
-
-/** Resolve the fork-pinned recovery committee (returns false if not pinned). */
-bool GetRecoveryFinalityCommittee(std::vector<CPubKey>& vOut, int& nMOut, uint256& setHashOut);
 
 /** 2c-4b: M-of-N certificate production. Because the BPAC proofs are builder-
  *  randomized, committee members sign ONE builder's candidate certificate. This
@@ -1207,8 +1191,6 @@ public:
         nPendingFinalizedHeight = 0;
         hashPendingFinalized = 0;
         nFinalitySummaryDirtyFromEpoch = -1;
-        nInitialCommitteeM = 0;
-        nRecoveryCommitteeM = 0;
     }
 
     /** Add a vote to the tracker. Returns true if vote was accepted. */
@@ -1356,50 +1338,17 @@ public:
      *  transaction aborts. Memory-only relay objects are discarded. */
     bool RestoreCommittedStateAfterAbort();
 
-    /** D2 self-governing committee. The canonical committee for an epoch is the
-     *  fork-pinned initial set advanced by connected M-of-N self-rotations. */
-    // Pin the initial committee (fork-pinned network constant, or test setup).
-    void SetInitialFinalityCommittee(const std::vector<CPubKey>& vPubKeys, int nM);
-    // Pin the A1 recovery committee (separate fork-pinned set).
-    void SetRecoveryFinalityCommittee(const std::vector<CPubKey>& vPubKeys, int nM);
-    bool GetRecoveryCommittee(std::vector<CPubKey>& vOut, int& nMOut, uint256& setHashOut) const;
-    // Resolve the canonical committee for nEpoch (initial set + applied rotations
-    // with effectiveEpoch <= nEpoch). Returns false if no committee is pinned.
-    bool GetCommitteeForEpoch(int nEpoch, std::vector<CPubKey>& vOut, int& nMOut, uint256& setHashOut) const;
-    // Apply a connected rotation (A2: at most one per effective epoch; must chain
-    // to the set active just before it; lowest-hash tie-break on conflict).
-    bool ConnectCommitteeRotation(const CFinalityCommitteeRotation& rot, std::string* pstrError = NULL);
-    void DisconnectCommitteeRotation(int nEffectiveEpoch);
+    // Resolve the committee governing nEpoch out of the connected chain's epoch
+    // state. Returns false when that term seated nothing.
+    bool GetCommitteeForEpoch(CTxDB& txdb, int nEpoch, std::vector<CPubKey>& vOut,
+                              int& nMOut, uint256& setHashOut,
+                              bool* pfLocalFailure = NULL) const;
     // 2c-4b: collect a committee member's signature over a candidate certificate;
     // when M distinct valid signatures are gathered for the same candidate, the
     // complete certificate is assembled into *pAssembledOut (pfAssembled=true).
     bool AddCertSignature(const CFinalityCertSignature& msg, CTxDB& txdb,
                           CFinalityTallyCertificate* pAssembledOut, bool* pfAssembled,
                           std::string* pstrError = NULL);
-    // Block-level: connect/disconnect rotations carried in a block, with the A2
-    // effective-epoch lookahead bound enforced against the connecting block's
-    // epoch, reorg-safe via a per-block carrier index + LevelDB persistence.
-    bool ConnectBlockCommitteeRotations(CTxDB& txdb, const uint256& hashBlock,
-                                        const std::vector<CFinalityCommitteeRotation>& vRots,
-                                        int nBlockHeight,
-                                        FinalityResult* pResult = NULL);
-    bool DisconnectBlockCommitteeRotations(CTxDB& txdb, const uint256& hashBlock,
-                                           const std::vector<CFinalityCommitteeRotation>& vRots);
-    // Reload connected rotations from LevelDB at startup (into the canonical state).
-    bool LoadCommitteeRotations(CTxDB& txdb);
-    // D2 production rotation: hold a fully-signed (>= M) rotation that has been
-    // proposed but not yet mined, so the miner can embed it. Validated against the
-    // committee active immediately before its effective epoch, exactly as
-    // ConnectCommitteeRotation will re-check it at connect time.
-    bool AddPendingCommitteeRotation(const CFinalityCommitteeRotation& rot, std::string* pstrError = NULL);
-    // Pending rotations a block at nBlockHeight may embed: still in the future
-    // (effective epoch > the block's epoch), within the A2 lookahead, and not yet
-    // connected. Drops any that no longer validate against the current canonical set.
-    std::vector<CFinalityCommitteeRotation> GetPendingCommitteeRotationsForBlock(int nBlockHeight, unsigned int nMax = 2) const;
-    bool HasPendingCommitteeRotation() const;
-    // Connected (applied) committee rotations, keyed by effective epoch — for RPC
-    // observability (getfinalityinfo) and rotation e2e verification.
-    std::map<int, CFinalityCommitteeRotation> GetConnectedRotations() const;
 
     /** Check if a block at the given height is finalized */
     bool IsFinalized(int nHeight) const;
@@ -1537,21 +1486,6 @@ private:
     std::map<uint256, CNoteTallyAggregatePartial> mapNoteTallyPartials;
     std::map<uint256, uint256> mapNoteTallyPartialBySlot;
     std::map<uint256, std::vector<uint256>> mapBlockConnectedTallyShares;
-    // D2 canonical committee state: the fork-pinned initial set + connected
-    // self-rotations keyed by effective epoch (a pure function of connected
-    // rotations; reorg-safe via Disconnect).
-    std::vector<CPubKey> vInitialCommittee;
-    int nInitialCommitteeM;
-    uint256 hashInitialCommitteeSet;
-    std::vector<CPubKey> vRecoveryCommittee;
-    int nRecoveryCommitteeM;
-    uint256 hashRecoveryCommitteeSet;
-    std::map<int, CFinalityCommitteeRotation> mapConnectedRotations;
-    // Reorg-safe per-block carrier: block hash -> effective epochs it connected.
-    std::map<uint256, std::vector<int> > mapBlockConnectedRotations;
-    // D2 production: fully-signed rotations proposed but not yet mined, keyed by
-    // effective epoch (in-memory; relay/RPC-time only, like pending certs).
-    std::map<int, CFinalityCommitteeRotation> mapPendingRotations;
     // 2c-4b cert-production: candidate certs + collected member signatures keyed
     // by the candidate's GetSignatureDigest() (in-memory; relay-time only).
     std::map<uint256, CFinalityTallyCertificate> mapCandidateCerts;

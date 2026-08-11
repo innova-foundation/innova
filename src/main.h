@@ -975,12 +975,15 @@ struct CPrivacyVNextRegistryEntry
  *  would answer differently from the point reads beside it. A finalized anchor wants
  *  committed state, so this is a constraint on the caller, not a limitation.
  *
- *  The caller owns the anchor. The committee draw that follows this increment takes it
- *  from the deterministic finalized height its epoch state carries, and plugs in here:
- *  the seed derivation and the draw consume this sequence, GetCommitteeForEpoch resolves
- *  against the drawn set instead of the fork-pinned key list in finality.h, and
- *  CFinalityCommitteeRotation together with the recovery committee stop having anything
- *  to resolve. Nothing in this increment reads or writes any of them. */
+ *  The caller owns the anchor. DrawFinalityCommitteeForTerm supplies the first height of
+ *  epoch (term - FINALITY_COMMITTEE_DRAW_LAG_EPOCHS) and only after that epoch's own state
+ *  reports it finalized, which is what keeps every row this reads below the depth a reorg
+ *  may reach and therefore already committed rather than staged in someone's batch.
+ *
+ *  The spend filter is NOT anchored: a registration whose collateral was spent at any
+ *  height up to the reading block drops out. That is deterministic per block and fixed for
+ *  a term because the draw is taken once and stored, and it cannot be used to buy seats --
+ *  removing rows only promotes the rows below the cut, never the remover's own. */
 bool GetPrivacyVNextCollateralSnapshot(
     CTxDB& txdb,
     int nAnchorHeight,

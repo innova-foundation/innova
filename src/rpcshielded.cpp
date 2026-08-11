@@ -2369,6 +2369,7 @@ Value z_getshieldedinfo(const Array& params, bool fHelp)
     finalityObjects.push_back("vote");
     finalityObjects.push_back("tally_share");
     finalityObjects.push_back("certificate");
+    // Retired; number 4 stays reserved.
     finalityObjects.push_back("committee_rotation");
     obj.push_back(Pair("privacy_vnext_finality_objects", finalityObjects));
     obj.push_back(Pair("privacy_vnext_required_privacy_modes",

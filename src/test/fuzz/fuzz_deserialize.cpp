@@ -66,7 +66,6 @@ enum DeserializeTarget
     DESERIALIZE_FINALITY_AGGREGATE_PARTIAL,
     DESERIALIZE_FINALITY_CERTIFICATE,
     DESERIALIZE_CANONICAL_FINALITY_CERTIFICATE,
-    DESERIALIZE_FINALITY_ROTATION,
     DESERIALIZE_PRIVATE_FINALITY_PROOF,
     DESERIALIZE_FCMP_PROOF,
     DESERIALIZE_BULLETPROOF_RANGE,
@@ -115,9 +114,6 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
         break;
     case DESERIALIZE_CANONICAL_FINALITY_CERTIFICATE:
         (void)TryDeserializeEnvelope<CCanonicalFinalityTallyCertificateEnvelope>(payload, payloadSize);
-        break;
-    case DESERIALIZE_FINALITY_ROTATION:
-        (void)TryDeserializeEnvelope<CFinalityCommitteeRotation>(payload, payloadSize);
         break;
     case DESERIALIZE_PRIVATE_FINALITY_PROOF:
         (void)TryDeserializeEnvelope<CPrivateFinalityVoteProof>(payload, payloadSize);

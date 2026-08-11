@@ -508,9 +508,6 @@ static const CRPCCommand vRPCCommands[] =
     { "getfinalityinfo",        &getfinalityinfo,        true,   false },
     { "submitfinalitytallyshare", &submitfinalitytallyshare, false, false },
     { "submitfinalitytallycert", &submitfinalitytallycert, false, false },
-    { "createcommitteerotation", &createcommitteerotation, false, false },
-    { "signcommitteerotation",  &signcommitteerotation,  false, false },
-    { "submitcommitteerotation", &submitcommitteerotation, false, false },
     { "isblockfinalized",       &isblockfinalized,       true,   false },
 
     /* DAG consensus commands */
@@ -1734,7 +1731,6 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "name_filter"            && n > 2) ConvertTo<boost::int64_t>(params[2]);
     if (strMethod == "name_filter"            && n > 3) ConvertTo<boost::int64_t>(params[3]);
     if (strMethod == "sendtoname"             && n > 1) ConvertTo<double>(params[1]);
-    if (strMethod == "createcommitteerotation" && n > 2) ConvertTo<boost::int64_t>(params[2]);
 
     return params;
 }

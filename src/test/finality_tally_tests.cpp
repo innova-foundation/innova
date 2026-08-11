@@ -1494,16 +1494,6 @@ BOOST_AUTO_TEST_CASE(finality_deserializers_enforce_consensus_vector_maxima_befo
     CDataStream ssCertTooLarge(SER_NETWORK, PROTOCOL_VERSION);
     ssCertTooLarge << certTooLarge;
     BOOST_CHECK_THROW(ssCertTooLarge >> decodedCert, std::ios_base::failure);
-
-    CFinalityCommitteeRotation rotationTooLarge;
-    rotationTooLarge.vNewPubKeys.assign(
-        FINALITY_MAX_TALLY_COMMITTEE + 1,
-        std::vector<unsigned char>(33, 0x02));
-    CDataStream ssRotationTooLarge(SER_NETWORK, PROTOCOL_VERSION);
-    ssRotationTooLarge << rotationTooLarge;
-    CFinalityCommitteeRotation decodedRotation;
-    BOOST_CHECK_THROW(ssRotationTooLarge >> decodedRotation,
-                      std::ios_base::failure);
 }
 
 BOOST_AUTO_TEST_CASE(finality_abort_restores_only_committed_state)

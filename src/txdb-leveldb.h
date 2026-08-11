@@ -770,15 +770,6 @@ public:
     bool EraseFinalityConnectedCertBlock(const uint256& hashBlock);
     bool IterateFinalityConnectedCertBlocks(std::map<uint256, std::vector<uint256> >& mapOut);
 
-    // D2 self-governing committee rotations (keyed by effective epoch) + the
-    // reorg-safe per-block carrier index.
-    bool WriteFinalityCommitteeRotation(int nEffectiveEpoch, const CFinalityCommitteeRotation& rot);
-    bool ReadFinalityCommitteeRotation(int nEffectiveEpoch, CFinalityCommitteeRotation& rot);
-    bool EraseFinalityCommitteeRotation(int nEffectiveEpoch);
-    bool IterateFinalityCommitteeRotations(std::map<int, CFinalityCommitteeRotation>& mapOut);
-    bool WriteFinalityConnectedRotationBlock(const uint256& hashBlock, const std::vector<int>& vEffEpochs);
-    bool EraseFinalityConnectedRotationBlock(const uint256& hashBlock);
-    bool IterateFinalityConnectedRotationBlocks(std::map<uint256, std::vector<int> >& mapOut);
 private:
     bool LoadBlockIndexGuts();
 };

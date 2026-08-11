@@ -1636,6 +1636,42 @@ struct ScopedNoteVoteContext
     }
 };
 
+// Seat a committee the way the chain does: the epoch that ends a term's lead-in
+// carries the seats, and the resolver reads them back from there. Restores whatever
+// record was in that slot, so cases stay independent.
+struct ScopedCommitteeCarrier
+{
+    CTxDB& txdb;
+    int nCarrierEpoch;
+    CEpochState original;
+    bool fHadOriginal;
+
+    ScopedCommitteeCarrier(CTxDB& txdbIn, int nEpochServed,
+                           const std::vector<CPubKey>& vSeats, int nThresholdM)
+        : txdb(txdbIn), fHadOriginal(false)
+    {
+        nCarrierEpoch = GetFinalityCommitteeTermEpoch(nEpochServed) - 1;
+        fHadOriginal = txdb.ReadEpochState(nCarrierEpoch, original);
+
+        CEpochState carrier;
+        carrier.nEpoch = nCarrierEpoch;
+        carrier.nSerVersion = EPOCHSTATE_SER_VERSION_V6;
+        for (size_t i = 0; i < vSeats.size(); i++)
+            carrier.vFinalityCommittee.push_back(
+                std::vector<unsigned char>(vSeats[i].begin(), vSeats[i].end()));
+        carrier.nFinalityCommitteeM = nThresholdM;
+        BOOST_REQUIRE(txdb.WriteEpochState(nCarrierEpoch, carrier));
+    }
+
+    ~ScopedCommitteeCarrier()
+    {
+        if (fHadOriginal)
+            txdb.WriteEpochState(nCarrierEpoch, original);
+        else
+            txdb.EraseEpochState(nCarrierEpoch);
+    }
+};
+
 CNoteVoteBuildContext VoteContext(const VotableNote& funded, int nEpoch)
 {
     CNoteVoteBuildContext ctx;
@@ -1899,11 +1935,12 @@ BOOST_AUTO_TEST_CASE(note_vote_context_anchors_to_the_iv5_tree_root)
     const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 2);
 
     CFinalityTracker tracker;
-    tracker.SetInitialFinalityCommittee(config.vCommitteePubKeys, config.nThresholdM);
 
     // An epoch whose boundary is past the DAG fork, so the anchor resolves from the
     // persisted epoch state the way a connecting block resolves it.
     const int nVoteEpoch = 3;
+    ScopedCommitteeCarrier committee(txdb, nVoteEpoch, config.vCommitteePubKeys,
+                                     config.nThresholdM);
     const int nVoteHeight = GetEpochBoundaryHeight(nVoteEpoch, 0);
     BOOST_REQUIRE_EQUAL(GetEpochForHeight(nVoteHeight), nVoteEpoch);
     BOOST_REQUIRE(nVoteHeight >= FORK_HEIGHT_EPOCH_STATE_V2);

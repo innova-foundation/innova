@@ -251,202 +251,6 @@ bool VerifyMofNCommitteeSignatures(const std::vector<CPubKey>& vCommitteePubKeys
     return true;
 }
 
-// ---- D2 self-governing committee: rotation record + canonical-set state ----
-
-uint256 CFinalityCommitteeRotation::GetSignatureDigest() const
-{
-    CHashWriter ss(SER_GETHASH, 0);
-    ss << std::string("Innova/Finality/Rotate/v1");
-    ss << nVersion;
-    ss << nEffectiveEpoch;
-    ss << hashPrevCommitteeSet;
-    ss << (int)nNewThresholdM;
-    ss << (int)vNewPubKeys.size();
-    for (const std::vector<unsigned char>& pk : vNewPubKeys)
-        ss << pk;
-    return ss.GetHash();
-}
-
-uint256 CFinalityCommitteeRotation::GetHash() const
-{
-    CHashWriter ss(SER_GETHASH, 0);
-    ss << GetSignatureDigest();
-    ss << vSignerIndexes;
-    ss << vSignerSigs;
-    return ss.GetHash();
-}
-
-bool CFinalityCommitteeRotation::IsValidBasic(std::string* pstrError) const
-{
-    auto reject = [&](const std::string& s) -> bool { if (pstrError) *pstrError = s; return false; };
-    if (nVersion != 1)
-        return reject("unsupported committee rotation version");
-    if (nEffectiveEpoch < 0)
-        return reject("committee rotation has negative effective epoch");
-    if (nNewThresholdM < 1)
-        return reject("committee rotation threshold below 1");
-    if ((int)vNewPubKeys.size() < nNewThresholdM ||
-        (int)vNewPubKeys.size() > FINALITY_MAX_TALLY_COMMITTEE)
-        return reject("committee rotation new-set size out of range");
-    std::set<std::vector<unsigned char> > setKeys;
-    for (const std::vector<unsigned char>& pk : vNewPubKeys)
-    {
-        if (pk.size() != 33)
-            return reject("committee rotation new key not compressed");
-        CPubKey check(pk.begin(), pk.end());
-        if (!check.IsValid() || !check.IsFullyValid())
-            return reject("committee rotation new key invalid");
-        if (!setKeys.insert(pk).second)
-            return reject("committee rotation duplicate new key");
-    }
-    if (vSignerIndexes.size() != vSignerSigs.size())
-        return reject("committee rotation signer index/sig count mismatch");
-    if (vSignerIndexes.empty())
-        return reject("committee rotation has no signers");
-    return true;
-}
-
-bool CFinalityCommitteeRotation::GetNewCommittee(std::vector<CPubKey>& vOut,
-                                                 int& nMOut,
-                                                 uint256& setHashOut) const
-{
-    vOut.clear();
-    for (const std::vector<unsigned char>& pk : vNewPubKeys)
-    {
-        CPubKey p(pk.begin(), pk.end());
-        if (!p.IsValid() || !p.IsFullyValid() || !p.IsCompressed())
-            return false;
-        vOut.push_back(p);
-    }
-    nMOut = nNewThresholdM;
-    setHashOut = ComputeFinalityTallyCommitteeHash(nMOut, vOut);
-    return true;
-}
-
-bool SelectCanonicalFinalityCommitteeRotation(
-    const std::vector<CFinalityCommitteeRotationCarrier>& vCarriers,
-    int nV3ActivationHeight,
-    CFinalityCommitteeRotation& rotationOut,
-    uint256* phashCarrierOut)
-{
-    if (vCarriers.empty())
-        return false;
-
-    const int nEffectiveEpoch = vCarriers[0].rotation.nEffectiveEpoch;
-    const CFinalityCommitteeRotationCarrier* pLegacyWinner = NULL;
-    const CFinalityCommitteeRotationCarrier* pV3Winner = NULL;
-    for (std::vector<CFinalityCommitteeRotationCarrier>::const_iterator it =
-             vCarriers.begin(); it != vCarriers.end(); ++it)
-    {
-        if (it->nBlockHeight < 0 ||
-            it->rotation.nEffectiveEpoch != nEffectiveEpoch)
-            return false;
-
-        if (it->nBlockHeight < nV3ActivationHeight)
-        {
-            if (pLegacyWinner == NULL ||
-                it->rotation.GetSignatureDigest() <
-                    pLegacyWinner->rotation.GetSignatureDigest() ||
-                (it->rotation.GetSignatureDigest() ==
-                     pLegacyWinner->rotation.GetSignatureDigest() &&
-                 it->hashBlock < pLegacyWinner->hashBlock))
-                pLegacyWinner = &*it;
-        }
-        else if (pV3Winner == NULL ||
-                 it->nBlockHeight < pV3Winner->nBlockHeight ||
-                 (it->nBlockHeight == pV3Winner->nBlockHeight &&
-                  it->hashBlock < pV3Winner->hashBlock))
-        {
-            pV3Winner = &*it;
-        }
-    }
-
-    // A pre-V3 carrier was already interpreted under the historical rule and
-    // cannot be reinterpreted merely because the database later crosses V3.
-    const CFinalityCommitteeRotationCarrier* pWinner =
-        pLegacyWinner != NULL ? pLegacyWinner : pV3Winner;
-    if (pWinner == NULL)
-        return false;
-    rotationOut = pWinner->rotation;
-    if (phashCarrierOut)
-        *phashCarrierOut = pWinner->hashBlock;
-    return true;
-}
-
-bool CheckFinalityCommitteeRotation(const CFinalityCommitteeRotation& rot,
-                                    const std::vector<CPubKey>& vPrevPubKeys,
-                                    int nPrevThresholdM,
-                                    const uint256& hashPrevSet,
-                                    std::string* pstrError)
-{
-    auto reject = [&](const std::string& s) -> bool { if (pstrError) *pstrError = s; return false; };
-    if (!rot.IsValidBasic(pstrError))
-        return false;
-    if (rot.hashPrevCommitteeSet != hashPrevSet)
-        return reject("committee rotation does not chain to the current committee set");
-    std::vector<CPubKey> vNew; int nNewM; uint256 newSetHash;
-    if (!rot.GetNewCommittee(vNew, nNewM, newSetHash))
-        return reject("committee rotation new set does not parse");
-    // Authorized by >= M signatures from the CURRENT (prev) committee.
-    return VerifyMofNCommitteeSignatures(vPrevPubKeys, nPrevThresholdM,
-                                         rot.vSignerIndexes, rot.vSignerSigs,
-                                         rot.GetSignatureDigest(), pstrError);
-}
-
-// A rotation is authorized by EITHER the canonical prior committee OR (if that committee cannot
-// authorize) the recovery committee -- so a lost/dead/sub-threshold primary can be permanently healed
-// with a fresh committee, rather than depending on recovery certs forever (D2 audit MEDIUM-2). The
-// rotation's own hashPrevCommitteeSet + signatures select which committee is checked (it must chain to
-// and be M-of-N-signed by exactly one of them), so this adds no ambiguity. Recovery is already trusted
-// to sign certificates in the recovery window, so authorizing a rotation is within the same trust.
-bool CheckCommitteeRotationAuthorized(const CFinalityCommitteeRotation& rot,
-                                      const std::vector<CPubKey>& vCanonical, int nCanonicalM,
-                                      const uint256& hashCanonicalSet, std::string* pstrError)
-{
-    std::string errCanonical;
-    if (CheckFinalityCommitteeRotation(rot, vCanonical, nCanonicalM, hashCanonicalSet, &errCanonical))
-        return true;
-    std::vector<CPubKey> vRec; int nRecM = 0; uint256 recSetHash;
-    if (g_finalityTracker.GetRecoveryCommittee(vRec, nRecM, recSetHash) &&
-        CheckFinalityCommitteeRotation(rot, vRec, nRecM, recSetHash, NULL))
-        return true;
-    if (pstrError) *pstrError = errCanonical;
-    return false;
-}
-
-void CFinalityTracker::SetInitialFinalityCommittee(const std::vector<CPubKey>& vPubKeys, int nM)
-{
-    LOCK(cs_finality);
-    vInitialCommittee = vPubKeys;
-    nInitialCommitteeM = nM;
-    hashInitialCommitteeSet = vPubKeys.empty() ? uint256(0)
-                              : ComputeFinalityTallyCommitteeHash(nM, vPubKeys);
-}
-
-void CFinalityTracker::SetRecoveryFinalityCommittee(const std::vector<CPubKey>& vPubKeys, int nM)
-{
-    LOCK(cs_finality);
-    vRecoveryCommittee = vPubKeys;
-    nRecoveryCommitteeM = nM;
-    hashRecoveryCommitteeSet = vPubKeys.empty() ? uint256(0)
-                               : ComputeFinalityTallyCommitteeHash(nM, vPubKeys);
-}
-
-bool CFinalityTracker::GetRecoveryCommittee(std::vector<CPubKey>& vOut, int& nMOut, uint256& setHashOut) const
-{
-    LOCK(cs_finality);
-    if (vRecoveryCommittee.empty())
-        return false;
-    vOut = vRecoveryCommittee;
-    nMOut = nRecoveryCommitteeM;
-    setHashOut = hashRecoveryCommitteeSet;
-    return true;
-}
-
-bool GetRecoveryFinalityCommittee(std::vector<CPubKey>& vOut, int& nMOut, uint256& setHashOut)
-{
-    return g_finalityTracker.GetRecoveryCommittee(vOut, nMOut, setHashOut);
-}
 
 uint256 CFinalityCertSignature::GetHash() const
 {
@@ -509,22 +313,12 @@ bool CFinalityTracker::AddCertSignature(const CFinalityCertSignature& msg, CTxDB
     if (!CheckTallyCertificate(cand, txdb, &strErr, NULL, true, -1, true))
         return reject(std::string("cert-signature candidate invalid: ") + strErr);
 
-    // Resolve the committee that must authorize this epoch (canonical, or the
-    // recovery committee inside the recovery window), then verify the signature.
+    // Resolve the committee that must authorize this epoch, then verify the signature.
     std::vector<CPubKey> vCommittee; int nM = 0; uint256 setHash;
-    if (!GetCommitteeForEpoch(cand.nEpoch, vCommittee, nM, setHash))
+    if (!GetCommitteeForEpoch(txdb, cand.nEpoch, vCommittee, nM, setHash))
         return reject("no canonical committee for candidate epoch");
     if (cand.committeeSetHash != setHash)
-    {
-        std::vector<CPubKey> vRec; int nRecM = 0; uint256 recSet;
-        if (GetRecoveryCommittee(vRec, nRecM, recSet) && cand.committeeSetHash == recSet &&
-            FinalityCertInRecoveryWindow(cand.nEpoch, GetFinalizedHeight()))
-        {
-            vCommittee = vRec; nM = nRecM; setHash = recSet;
-        }
-        else
-            return reject("cert-signature candidate committee-set mismatch");
-    }
+        return reject("cert-signature candidate committee-set mismatch");
 
     uint256 digest = cand.GetSignatureDigest();
     if (msg.nSignerIndex >= vCommittee.size())
@@ -559,270 +353,269 @@ bool CFinalityTracker::AddCertSignature(const CFinalityCertSignature& msg, CTxDB
     return true; // newly stored
 }
 
-bool FinalityCertInRecoveryWindow(int nCertEpoch, int nFinalizedHeight)
-{
-    // The recovery committee is authorized only once HARD finality has lagged the
-    // cert's epoch by more than the gap. nFinalizedHeight==0 means nothing has
-    // ever finalized — recovery is available once the chain is itself past the
-    // gap (epoch 0 + gap), so a committee that never bootstraps can be recovered.
-    int nFinalizedEpoch = GetEpochForHeight(nFinalizedHeight);
-    return nCertEpoch > nFinalizedEpoch + FINALITY_RECOVERY_GAP_EPOCHS;
-}
 
-bool CFinalityTracker::GetCommitteeForEpoch(int nEpoch, std::vector<CPubKey>& vOut,
-                                            int& nMOut, uint256& setHashOut) const
-{
-    LOCK(cs_finality);
-    if (vInitialCommittee.empty())
-        return false;
-    vOut = vInitialCommittee;
-    nMOut = nInitialCommitteeM;
-    setHashOut = hashInitialCommitteeSet;
-    // Apply connected rotations in effective-epoch order; each must chain to the
-    // set active immediately before it (else it is ignored — it could not have
-    // been Connected without chaining, this is defense in depth).
-    for (std::map<int, CFinalityCommitteeRotation>::const_iterator it = mapConnectedRotations.begin();
-         it != mapConnectedRotations.end(); ++it)
-    {
-        if (it->first > nEpoch)
-            break;
-        const CFinalityCommitteeRotation& rot = it->second;
-        if (rot.hashPrevCommitteeSet != setHashOut)
-            continue;
-        std::vector<CPubKey> vNew; int nNewM; uint256 newSetHash;
-        if (!rot.GetNewCommittee(vNew, nNewM, newSetHash))
-            continue;
-        vOut = vNew; nMOut = nNewM; setHashOut = newSetHash;
-    }
-    return true;
-}
+// ---------------------------------------------------------------------------
+// Stake-derived finality committee
+// ---------------------------------------------------------------------------
 
-bool CFinalityTracker::ConnectCommitteeRotation(const CFinalityCommitteeRotation& rot, std::string* pstrError)
-{
-    auto reject = [&](const std::string& s) -> bool { if (pstrError) *pstrError = s; return false; };
-    LOCK(cs_finality);
-    if (vInitialCommittee.empty())
-        return reject("no canonical committee pinned");
-
-    // The committee active immediately before this rotation's effective epoch.
-    std::vector<CPubKey> vPrev; int nPrevM; uint256 prevSetHash;
-    if (!GetCommitteeForEpoch(rot.nEffectiveEpoch - 1, vPrev, nPrevM, prevSetHash))
-        return reject("no committee resolvable before rotation effective epoch");
-
-    if (!CheckCommitteeRotationAuthorized(rot, vPrev, nPrevM, prevSetHash, pstrError))
-        return false;
-
-    // A2 determinism: at most one rotation per effective epoch; deterministic
-    // lowest-hash tie-break so all nodes converge on the same chain.
-    std::map<int, CFinalityCommitteeRotation>::iterator it = mapConnectedRotations.find(rot.nEffectiveEpoch);
-    if (it != mapConnectedRotations.end())
-    {
-        // Identity + tie-break on the SIGNATURE DIGEST (signed content), never GetHash(): ECDSA signatures
-        // are third-party malleable (S -> n-S, DER re-encode), so keying on GetHash() would let a re-signed
-        // same-content rotation defeat idempotency and let a signer/miner GRIND the deterministic tie-break.
-        // The resulting committee is derived from the content (set+M+owner) alone, so equal digests ARE the
-        // same rotation, and the lower-digest winner is canonical and un-grindable.
-        if (it->second.GetSignatureDigest() == rot.GetSignatureDigest())
-            return true; // idempotent: same rotation content re-applied (load/reorg/re-sign)
-        if (it->second.GetSignatureDigest() < rot.GetSignatureDigest())
-            return reject("committee rotation superseded by lower-digest rotation at same epoch");
-        it->second = rot;
-        return true;
-    }
-    mapConnectedRotations[rot.nEffectiveEpoch] = rot;
-    return true;
-}
-
-void CFinalityTracker::DisconnectCommitteeRotation(int nEffectiveEpoch)
-{
-    LOCK(cs_finality);
-    mapConnectedRotations.erase(nEffectiveEpoch);
-}
-
-bool CFinalityTracker::AddPendingCommitteeRotation(const CFinalityCommitteeRotation& rot, std::string* pstrError)
-{
-    auto reject = [&](const std::string& s) -> bool { if (pstrError) *pstrError = s; return false; };
-    LOCK(cs_finality);
-    if (vInitialCommittee.empty())
-        return reject("no canonical committee pinned");
-    // Validate exactly as ConnectCommitteeRotation will at connect time: authorized
-    // by >= M signatures from the committee active immediately before the effective
-    // epoch (cs_finality is recursive, so GetCommitteeForEpoch can re-lock).
-    std::vector<CPubKey> vPrev; int nPrevM = 0; uint256 prevSetHash;
-    if (!GetCommitteeForEpoch(rot.nEffectiveEpoch - 1, vPrev, nPrevM, prevSetHash))
-        return reject("no committee resolvable before rotation effective epoch");
-    if (!CheckCommitteeRotationAuthorized(rot, vPrev, nPrevM, prevSetHash, pstrError))
-        return false;
-    if (mapConnectedRotations.count(rot.nEffectiveEpoch))
-        return reject("a rotation is already connected at that effective epoch");
-    mapPendingRotations[rot.nEffectiveEpoch] = rot;
-    return true;
-}
-
-std::vector<CFinalityCommitteeRotation> CFinalityTracker::GetPendingCommitteeRotationsForBlock(int nBlockHeight, unsigned int nMax) const
-{
-    LOCK(cs_finality);
-    std::vector<CFinalityCommitteeRotation> vOut;
-    int nBlockEpoch = GetEpochForHeight(nBlockHeight);
-    for (std::map<int, CFinalityCommitteeRotation>::const_iterator it = mapPendingRotations.begin();
-         it != mapPendingRotations.end(); ++it)
-    {
-        const CFinalityCommitteeRotation& rot = it->second;
-        // A2: future effective epoch, within the lookahead, not already connected.
-        if (rot.nEffectiveEpoch <= nBlockEpoch ||
-            rot.nEffectiveEpoch > nBlockEpoch + FINALITY_ROTATION_MAX_LOOKAHEAD ||
-            mapConnectedRotations.count(rot.nEffectiveEpoch))
-            continue;
-        // Re-validate against the current canonical set (it may have advanced).
-        std::vector<CPubKey> vPrev; int nPrevM = 0; uint256 prevSetHash;
-        if (!GetCommitteeForEpoch(rot.nEffectiveEpoch - 1, vPrev, nPrevM, prevSetHash))
-            continue;
-        if (!CheckCommitteeRotationAuthorized(rot, vPrev, nPrevM, prevSetHash, NULL))
-            continue;
-        vOut.push_back(rot);
-        if (vOut.size() >= nMax)
-            break;
-    }
-    return vOut;
-}
-
-bool CFinalityTracker::HasPendingCommitteeRotation() const
-{
-    LOCK(cs_finality);
-    return !mapPendingRotations.empty();
-}
-
-std::map<int, CFinalityCommitteeRotation> CFinalityTracker::GetConnectedRotations() const
-{
-    LOCK(cs_finality);
-    return mapConnectedRotations;
-}
-
-// Testnet pinned 2-of-3 finality committee over the well-known secp256k1 test
-// keys (private scalars 0x01/0x02/0x03 -> P0/P1/P2, in this fixed order). Each of
-// the three committee seeds holds one matching finalitytallyprivkey, so the live
-// testnet can assemble M-of-N private-finality certificates and exercise committee
-// self-rotation and recovery end-to-end. The set hash is order-sensitive, so the
-// seed -finalitytallypubkey config must list these in the same order. Testnet only:
-// these keys are public, which is acceptable off mainnet (committee-key secrecy is
-// not the certificate trust boundary).
-static const char* TESTNET_FINALITY_COMMITTEE_PUBKEYS[] = {
-    "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
-    "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5",
-    "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
-};
-static const int TESTNET_FINALITY_COMMITTEE_M = 2;
-
-// MAINNET launch finality committee (3-of-5) + recovery committee (3-of-5).
-// These are the REAL launch committee public keys (pinned 2026-07-07). Only the PUBLIC keys are here;
-// the private keys are held by the Innova Foundation across its producer hosts (a founder-attested
-// federation, not trustless BFT -- consistent with the tally-privacy trust model). The committee is
-// pinned from launch (a network constant) so the M-of-N signer-set rule has a trust root from the first
-// height a private cert can exist; pinning it in a LATER release would require signatures on
-// already-accepted historical certs and permanently split old vs new binaries. On mainnet the signature
-// requirement activates at FORK_HEIGHT_TALLY_GOVERNANCE (== FORK_HEIGHT_DAG, no unauthenticated window).
-// Order is consensus-relevant (the committee set hash is order-sensitive): the finalitytallypubkey
-// entries in each producer's innova.conf MUST list these in the same order. To decentralize later,
-// rotate the committee on-chain (no new binary / no split).
-static const char* MAINNET_FINALITY_COMMITTEE_PUBKEYS[] = {
-    "021f16d69279899beb18a343457e79822553958138fe9ed15399d5d98699fe50f1",
-    "03f588fdc18ff0cc5601d7ac84320cb8050f7ba05645b4f994c4885fe1dafb93d6",
-    "0242e664ce3a77cbc707cafcb8b53bf7db4cb17836bd04af1089c7713a874d1f85",
-    "03fbb5d13d76a1cdba13b786c96214a611f6d7187850684fa84e7201d252b23340",
-    "027cd1f55f84f4bca1538a581aa4208aa77769127c1ff5781f1eb0b837508a4fc2",
-};
-static const int MAINNET_FINALITY_COMMITTEE_M = 3;
-static const char* MAINNET_RECOVERY_COMMITTEE_PUBKEYS[] = {
-    "024418b153a8ed226865b3da22e3d2911d05813d41b7f57ebf776599acaf370435",
-    "0298f708300de0a08d3c0dd50fb37f015dc78650ee30709ae4279534d94e3b519a",
-    "03684ec3b0e2746d372dd02f010b85bdb985a38b96b51ee812a2f584faf0eeb546",
-    "03c95b86d868cd3c245993cb865f6632295383f8ac509075257687bab773309af1",
-    "020b17943a23b5db5fb14f5f4953182f16b5277096bc9d5dd6d7be9066aee2545e",
-};
-static const int MAINNET_RECOVERY_COMMITTEE_M = 3;
-
-// Parse a hardcoded compressed-pubkey list; returns false (empty out) if any entry is not a valid
-// fully-valid compressed secp256k1 point. Order is preserved (the committee set hash is order-sensitive).
-static bool ParsePinnedCommittee(const char* const* pubkeyHexes, int count, std::vector<CPubKey>& out)
-{
-    out.clear();
-    for (int i = 0; i < count; i++)
-    {
-        std::vector<unsigned char> vch = ParseHex(pubkeyHexes[i]);
-        CPubKey pk(vch.begin(), vch.end());
-        if (!pk.IsValid() || !pk.IsFullyValid() || !pk.IsCompressed())
-        {
-            out.clear();
-            return false;
-        }
-        out.push_back(pk);
-    }
-    return true;
-}
-
-void PinFinalityCommitteeConstants()
+int GetFinalityCommitteeSeats()
 {
     extern bool fRegTest;
-    extern bool fTestNet;
-
-    if (fTestNet)
-    {
-        std::vector<CPubKey> vPubKeys;
-        if (!ParsePinnedCommittee(TESTNET_FINALITY_COMMITTEE_PUBKEYS,
-                                  (int)ARRAYLEN(TESTNET_FINALITY_COMMITTEE_PUBKEYS), vPubKeys))
-        {
-            printf("PinFinalityCommitteeConstants: WARNING invalid testnet committee pubkey\n");
-            return;
-        }
-        g_finalityTracker.SetInitialFinalityCommittee(vPubKeys, TESTNET_FINALITY_COMMITTEE_M);
-        printf("PinFinalityCommitteeConstants: pinned testnet committee %d-of-%d\n",
-               TESTNET_FINALITY_COMMITTEE_M, (int)vPubKeys.size());
-        return;
-    }
-
-    if (!fRegTest)
-    {
-        // Mainnet: pin the launch committee + recovery committee from constants, so the M-of-N
-        // signer-set trust root exists from the first height a private cert can exist
-        // (FORK_HEIGHT_TALLY_GOVERNANCE == FORK_HEIGHT_DAG). Pinned from launch -> no later-pin split.
-        std::vector<CPubKey> vCommittee, vRecovery;
-        if (ParsePinnedCommittee(MAINNET_FINALITY_COMMITTEE_PUBKEYS,
-                                 (int)ARRAYLEN(MAINNET_FINALITY_COMMITTEE_PUBKEYS), vCommittee))
-        {
-            g_finalityTracker.SetInitialFinalityCommittee(vCommittee, MAINNET_FINALITY_COMMITTEE_M);
-            printf("PinFinalityCommitteeConstants: pinned mainnet committee %d-of-%d\n",
-                   MAINNET_FINALITY_COMMITTEE_M, (int)vCommittee.size());
-        }
-        else
-            printf("PinFinalityCommitteeConstants: FATAL invalid mainnet committee pubkey -- committee UNPINNED\n");
-        if (ParsePinnedCommittee(MAINNET_RECOVERY_COMMITTEE_PUBKEYS,
-                                 (int)ARRAYLEN(MAINNET_RECOVERY_COMMITTEE_PUBKEYS), vRecovery))
-        {
-            g_finalityTracker.SetRecoveryFinalityCommittee(vRecovery, MAINNET_RECOVERY_COMMITTEE_M);
-            printf("PinFinalityCommitteeConstants: pinned mainnet recovery committee %d-of-%d\n",
-                   MAINNET_RECOVERY_COMMITTEE_M, (int)vRecovery.size());
-        }
-        return;
-    }
-
-    // Regtest: pin from the locally-configured committee so end-to-end tests can
-    // drive a committee with a known private key.
-    CFinalityTallyConfig cfg = GetFinalityTallyConfig();
-    if (cfg.fCommitteeValid && !cfg.vCommitteePubKeys.empty())
-        g_finalityTracker.SetInitialFinalityCommittee(cfg.vCommitteePubKeys, cfg.nThresholdM);
+    return fRegTest ? 3 : FINALITY_COMMITTEE_SEATS;
 }
 
-bool GetCanonicalFinalityCommittee(int nEpoch,
+int GetFinalityCommitteeThresholdM()
+{
+    extern bool fRegTest;
+    return fRegTest ? 2 : FINALITY_COMMITTEE_THRESHOLD_M;
+}
+
+int GetFinalityCommitteeTermEpochs()
+{
+    extern bool fRegTest;
+    return fRegTest ? 2 : FINALITY_COMMITTEE_TERM_EPOCHS;
+}
+
+// The seed for one term's draw.
+//
+// Binds the shape as well as the entropy: a build that changed the seat count or the
+// threshold would otherwise draw from the same seed as one that did not, and the two
+// would disagree about a committee while agreeing about the seed that produced it.
+static uint256 FinalityCommitteeDrawSeed(int nTermEpoch, int nSeats, int nThresholdM,
+                                         const CEpochState& anchorState)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("Innova/Finality/CommitteeDraw/v1");
+    ss << nTermEpoch;
+    ss << nSeats;
+    ss << nThresholdM;
+    ss << anchorState.nEpoch;
+    ss << anchorState.vBlockHashes;
+    return ss.GetHash();
+}
+
+// A registration's position in the draw. Keyed on the key image, which is the one
+// part of a registration its holder cannot choose after the fact.
+static uint256 FinalityCommitteeSeatOrder(const uint256& seed, const uint256& keyImage)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string("Innova/Finality/CommitteeSeat/v1");
+    ss << seed;
+    ss << keyImage;
+    return ss.GetHash();
+}
+
+bool DrawFinalityCommitteeForTerm(CTxDB& txdbEpoch, CTxDB& txdbRegistry,
+                                  int nTermEpoch,
+                                  CFinalityCommitteeDraw& drawOut,
+                                  bool& fLocalFailureOut,
+                                  std::string& strError)
+{
+    drawOut = CFinalityCommitteeDraw();
+    fLocalFailureOut = false;
+    strError.clear();
+
+    const int nSeats = GetFinalityCommitteeSeats();
+    const int nThresholdM = GetFinalityCommitteeThresholdM();
+    const int nAnchorEpoch = nTermEpoch - FINALITY_COMMITTEE_DRAW_LAG_EPOCHS;
+
+    drawOut.nTermEpoch = nTermEpoch;
+    drawOut.nAnchorEpoch = nAnchorEpoch;
+    drawOut.nThresholdM = nThresholdM;
+
+    if (nTermEpoch < 0 || nAnchorEpoch < 0)
+        return true;   // no chain behind the term yet; seat nothing
+
+    const int nAnchorHeight = GetEpochBoundaryHeight(nAnchorEpoch, 0);
+    drawOut.nAnchorHeight = nAnchorHeight;
+
+    // The seed's entropy. Read through the caller's handle so a staged record is
+    // visible: the epoch that carries the draw is built in the same batch.
+    CEpochState anchorState;
+    if (!txdbEpoch.ReadEpochState(nAnchorEpoch, anchorState) ||
+        anchorState.nEpoch != nAnchorEpoch)
+        return true;   // the chain has not produced that epoch's state; seat nothing
+
+    // What makes the registry read below safe to take from a batch-free handle.
+    //
+    // The registry enumeration cannot see an in-flight write batch, so it is only the
+    // right answer if no in-flight batch is adding to or rolling back a registration
+    // at or below the anchor height. Reading the anchor epoch's record through both
+    // handles decides exactly that: if the caller's transaction had rebuilt any part
+    // of the anchor epoch -- which is what a reorg reaching down to the anchor height
+    // necessarily does -- the staged record would differ from the committed one. Equal
+    // records mean the transaction's fork point is past the anchor epoch's end, so
+    // every row this reads was committed before the transaction opened and is the same
+    // row on every node.
+    //
+    // A disagreement is reported as a local failure, never as "seat nothing": seating
+    // a different committee than a peer is a split, whereas refusing the transaction
+    // leaves this node on its current chain to try again a block at a time.
+    CEpochState anchorCommitted;
+    if (!txdbRegistry.ReadEpochState(nAnchorEpoch, anchorCommitted) ||
+        anchorCommitted.GetDigest() != anchorState.GetDigest())
+    {
+        fLocalFailureOut = true;
+        strError = strprintf(
+            "epoch %d is being rebuilt in this transaction, so its committee draw "
+            "cannot read a settled registration snapshot", nAnchorEpoch);
+        return false;
+    }
+
+    drawOut.seed = FinalityCommitteeDrawSeed(nTermEpoch, nSeats, nThresholdM, anchorState);
+
+    std::vector<CPrivacyVNextRegistryEntry> vRegistry;
+    bool fRegistryLocalFailure = false;
+    std::string strRegistryError;
+    if (!GetPrivacyVNextCollateralSnapshot(txdbRegistry, nAnchorHeight, true /* members only */,
+                                           vRegistry, fRegistryLocalFailure, strRegistryError))
+    {
+        fLocalFailureOut = fRegistryLocalFailure;
+        strError = strRegistryError;
+        return false;
+    }
+    drawOut.nRegistrySize = vRegistry.size();
+
+    // Thin-registry rule. Seating a committee that is most of the registry tells
+    // everyone who the members are and leaves almost no one to have been a candidate.
+    if ((int)vRegistry.size() < nSeats * FINALITY_COMMITTEE_MIN_REGISTRY_MULTIPLE)
+        return true;
+
+    std::vector<std::pair<std::pair<uint256, uint256>, size_t> > vOrder;
+    vOrder.reserve(vRegistry.size());
+    for (size_t i = 0; i < vRegistry.size(); ++i)
+    {
+        // The key image is the tie-break, and it is unique per row, so the order is
+        // total without appealing to the input sequence.
+        vOrder.push_back(std::make_pair(
+            std::make_pair(FinalityCommitteeSeatOrder(drawOut.seed, vRegistry[i].keyImage),
+                           vRegistry[i].keyImage),
+            i));
+    }
+    std::sort(vOrder.begin(), vOrder.end());
+
+    // One seat per member key. Two seats behind one key would seal two Shamir shares
+    // to the same recipient, which is one share for threshold purposes while counting
+    // as two, so M-of-N would open on fewer parties than it names.
+    std::set<std::vector<unsigned char> > setSeated;
+    for (size_t i = 0; i < vOrder.size() && (int)drawOut.vSeats.size() < nSeats; ++i)
+    {
+        const CPrivacyVNextRegistryEntry& entry = vRegistry[vOrder[i].second];
+        if (!setSeated.insert(entry.vchMemberKey).second)
+            continue;
+        CPubKey pubkey(entry.vchMemberKey);
+        if (!pubkey.IsValid() || !pubkey.IsFullyValid() || !pubkey.IsCompressed())
+            continue;   // the registration decoder already refused these; belt and braces
+        drawOut.vSeats.push_back(pubkey);
+        drawOut.vSeatKeyImages.push_back(entry.keyImage);
+    }
+
+    if ((int)drawOut.vSeats.size() < nSeats)
+        return true;   // too few distinct member keys to fill the seats
+
+    drawOut.setHash = ComputeFinalityTallyCommitteeHash(nThresholdM, drawOut.vSeats);
+    drawOut.fSeated = true;
+    return true;
+}
+
+bool SeatFinalityCommitteeForEpochState(CTxDB& txdb, CEpochState& state,
+                                        bool& fLocalFailureOut, std::string& strError)
+{
+    fLocalFailureOut = false;
+    strError.clear();
+    state.vFinalityCommittee.clear();
+    state.nFinalityCommitteeM = 0;
+
+    if (state.nSerVersion < EPOCHSTATE_SER_VERSION_V6)
+        return true;   // below FORK_HEIGHT_IV5_NOTE_VOTE there is no committee to carry
+
+    // Exactly one epoch per term carries the draw: the one that ends immediately
+    // before it. Drawing here rather than on demand is what makes the committee a
+    // term constant — registrations keep arriving and collateral keeps being spent,
+    // and a resolver that redrew per block would answer differently as they did.
+    const int nTermEpoch = state.nEpoch + 1;
+    if (nTermEpoch != GetFinalityCommitteeTermEpoch(nTermEpoch))
+        return true;
+
+    // A batch-free handle for the registry iterator. The block being connected owns
+    // txdb's write batch; an iterator cannot see it, and the snapshot's spent-index
+    // point reads beside it would answer from committed state anyway, so mixing the
+    // two is what would make the two halves disagree.
+    CTxDB txdbRegistry("r");
+    CFinalityCommitteeDraw draw;
+    if (!DrawFinalityCommitteeForTerm(txdb, txdbRegistry, nTermEpoch, draw,
+                                      fLocalFailureOut, strError))
+        return false;
+    if (!draw.fSeated)
+        return true;
+
+    for (size_t i = 0; i < draw.vSeats.size(); ++i)
+        state.vFinalityCommittee.push_back(
+            std::vector<unsigned char>(draw.vSeats[i].begin(), draw.vSeats[i].end()));
+    state.nFinalityCommitteeM = draw.nThresholdM;
+    return true;
+}
+
+bool CFinalityTracker::GetCommitteeForEpoch(CTxDB& txdb, int nEpoch,
+                                            std::vector<CPubKey>& vOut,
+                                            int& nMOut, uint256& setHashOut,
+                                            bool* pfLocalFailure) const
+{
+    if (pfLocalFailure)
+        *pfLocalFailure = false;
+    vOut.clear();
+    nMOut = 0;
+    setHashOut = 0;
+
+    const int nTermEpoch = GetFinalityCommitteeTermEpoch(nEpoch);
+    if (nTermEpoch <= 0)
+        return false;   // the first term has no epoch behind it to carry a draw
+
+    // The draw lives in the epoch state that ends the term's lead-in. Reading it back
+    // makes the committee a pure function of a record every node on this chain holds
+    // byte-identically, rather than of whatever each node's registry looks like now.
+    CEpochState carrier;
+    if (!txdb.ReadEpochState(nTermEpoch - 1, carrier) || carrier.nEpoch != nTermEpoch - 1)
+        return false;
+    if (carrier.vFinalityCommittee.empty() || carrier.nFinalityCommitteeM <= 0)
+        return false;   // that term seated nothing: transparent-only certification
+
+    std::vector<CPubKey> vSeats;
+    for (size_t i = 0; i < carrier.vFinalityCommittee.size(); ++i)
+    {
+        CPubKey pubkey(carrier.vFinalityCommittee[i]);
+        if (!pubkey.IsValid() || !pubkey.IsFullyValid() || !pubkey.IsCompressed())
+        {
+            // A record this node cannot decode is this node's problem, not the
+            // chain's: calling it a consensus outcome would reject blocks every
+            // healthy peer accepts.
+            if (pfLocalFailure)
+                *pfLocalFailure = true;
+            return false;
+        }
+        vSeats.push_back(pubkey);
+    }
+    if (carrier.nFinalityCommitteeM > (int)vSeats.size())
+    {
+        if (pfLocalFailure)
+            *pfLocalFailure = true;
+        return false;
+    }
+
+    vOut = vSeats;
+    nMOut = carrier.nFinalityCommitteeM;
+    setHashOut = ComputeFinalityTallyCommitteeHash(nMOut, vOut);
+    return true;
+}
+
+bool GetCanonicalFinalityCommittee(CTxDB& txdb, int nEpoch,
                                    std::vector<CPubKey>& vCommitteeOut,
                                    int& nMOut,
-                                   uint256& setHashOut)
+                                   uint256& setHashOut,
+                                   bool* pfLocalFailure)
 {
-    // The canonical committee is consensus state: the fork-pinned initial set
-    // advanced by connected M-of-N self-rotations (CFinalityTracker). Returns
-    // false if no committee is pinned for nEpoch yet (pre-activation), in which
-    // case the signer-set rule in CheckTallyCertificate stays inert — this is
-    // consensus-uniform because the pinned set is a network constant.
-    return g_finalityTracker.GetCommitteeForEpoch(nEpoch, vCommitteeOut, nMOut, setHashOut);
+    return g_finalityTracker.GetCommitteeForEpoch(txdb, nEpoch, vCommitteeOut, nMOut,
+                                                  setHashOut, pfLocalFailure);
 }
 
 // A committee signature is part of a certificate's identity, so an unenforced
@@ -2824,47 +2617,6 @@ const char* GetFinalityTallyCertificateCommandForHeight(int nHeight)
         ? FINALITY_CANONICAL_TALLY_CERT_COMMAND : "ftcert";
 }
 
-CScript BuildFinalityCommitteeRotationScript(const CFinalityCommitteeRotation& rot)
-{
-    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
-    ss << rot;
-    std::vector<unsigned char> vchData;
-    vchData.reserve(4 + ss.size());
-    vchData.insert(vchData.end(), FINALITY_COMMITTEE_ROTATION_TAG, FINALITY_COMMITTEE_ROTATION_TAG + 4);
-    vchData.insert(vchData.end(), ss.begin(), ss.end());
-    CScript script;
-    script << OP_RETURN << vchData;
-    return script;
-}
-
-bool ExtractFinalityCommitteeRotation(const CScript& scriptPubKey, CFinalityCommitteeRotation& rotOut)
-{
-    std::vector<unsigned char> vPayload;
-    if (!ExtractTaggedOpReturnPayload(scriptPubKey, FINALITY_COMMITTEE_ROTATION_TAG, vPayload))
-        return false;
-    try {
-        CDataStream ss(vPayload, SER_NETWORK, PROTOCOL_VERSION);
-        ss >> rotOut;
-    } catch (const std::exception&) {
-        return false;
-    }
-    return true;
-}
-
-std::vector<CFinalityCommitteeRotation> ExtractFinalityCommitteeRotationsFromBlock(const CBlock& block)
-{
-    std::vector<CFinalityCommitteeRotation> vRots;
-    if (block.vtx.empty())
-        return vRots;
-    for (const CTxOut& out : block.vtx[0].vout)
-    {
-        CFinalityCommitteeRotation rot;
-        if (ExtractFinalityCommitteeRotation(out.scriptPubKey, rot))
-            vRots.push_back(rot);
-    }
-    return vRots;
-}
-
 CScript BuildFinalityTallyShareScript(const CFinalityTallyShare& share)
 {
     CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
@@ -3420,16 +3172,6 @@ static void RelayFinalityCertSignature(const CFinalityCertSignature& msg)
         pnode->PushMessage("ftcsig", msg);
 }
 
-// Non-static (declared in finality.h): the committee-rotation RPC gossips a
-// fully-signed pending rotation so any miner can embed it.
-void RelayFinalityCommitteeRotation(const CFinalityCommitteeRotation& rot)
-{
-    if (LegacyPrivateFinalityTrafficDisabledAtTip())
-        return;
-    LOCK(cs_vNodes);
-    for (CNode* pnode : vNodes)
-        pnode->PushMessage("ftrot", rot);
-}
 
 static bool FinalityRecoverGroupFromPartials(CFinalityTallyGroupWork& group,
                                              const std::vector<CFinalityTallyAggregatePartial>& vPartials,
@@ -3672,10 +3414,13 @@ static bool FinalityBuildAndRelayCertificateForCohort(
     CFinalityTallyConfig cfg = GetFinalityTallyConfig();
     std::vector<CPubKey> vCommittee; int nCommitteeM = 0; uint256 committeeSetHashCanon;
     CKey memberKey;
+    // Production-side, so a batch-free handle is both available and correct.
+    CTxDB txdbCommittee("r");
     bool fSignAsCommittee = (cert.nHeight >= FORK_HEIGHT_TALLY_GOVERNANCE) &&
                             cfg.nLocalCommitteeIndex >= 0 &&
                             GetFinalityTallyPrivateKey(memberKey) &&
-                            GetCanonicalFinalityCommittee(cert.nEpoch, vCommittee, nCommitteeM, committeeSetHashCanon);
+                            GetCanonicalFinalityCommittee(txdbCommittee, cert.nEpoch, vCommittee,
+                                                          nCommitteeM, committeeSetHashCanon);
     if (fSignAsCommittee)
     {
         cert.nVersion = 3;
@@ -5381,57 +5126,24 @@ bool CFinalityTracker::CheckTallyCertificate(
         std::vector<CPubKey> vCommittee;
         int nM = 0;
         uint256 setHash;
-        if (!GetCanonicalFinalityCommittee(cert.nEpoch, vCommittee, nM, setHash))
+        bool fCommitteeLocalFailure = false;
+        if (!GetCanonicalFinalityCommittee(txdb, cert.nEpoch, vCommittee, nM, setHash,
+                                           &fCommitteeLocalFailure))
         {
-            // Relay callers historically tolerate an unconfigured committee (in
-            // particular regtest).  A block-context caller cannot: the pinned
-            // committee is required local consensus state, not evidence that the
-            // peer's certificate is bad.
+            // No committee is seated for this epoch's term, so the epoch certifies
+            // transparent-only and a certificate claiming committee authorization has
+            // none to claim. A record this node cannot read is a different thing and
+            // must not become a verdict on the peer's certificate.
+            if (fCommitteeLocalFailure)
+                return localState("finality committee record cannot be read; -reindex/resync required");
             if (nContextHeight >= 0)
-                return localState("canonical finality committee is unavailable");
+                return reject("no finality committee is seated for this certificate's term");
         }
         else
         {
-            // A1 recovery (union): if the cert is signed by the pinned recovery
-            // committee AND HARD finality has stalled past the gap for this
-            // epoch, accept it from the recovery set — a dead/sub-threshold
-            // primary committee cannot otherwise be unstuck. The slow-but-alive
-            // primary still works via the canonical path.
-            std::vector<CPubKey> vRec; int nRecM = 0; uint256 recSetHash;
-            // Recovery-window gate uses the deterministic finalized height as of the
-            // including block (relay-time: live tip), so the recovery-committee path is
-            // accepted/rejected identically on every node.
-            int nRecoveryFinalizedHeight = GetFinalizedHeight();
-            if (nContextHeight >= 0)
-            {
-                const int nAsOfEpoch = GetEpochForHeight(nContextHeight) - 1;
-                if (nContextHeight >= FORK_HEIGHT_EPOCH_STATE_V2)
-                {
-                    if (!g_dagManager.TryGetDeterministicFinalizedHeight(
-                            txdb, nAsOfEpoch, nRecoveryFinalizedHeight))
-                        return localState(strprintf(
-                            "missing deterministic finalized-height state for epoch %d",
-                            nAsOfEpoch));
-                }
-                else
-                    nRecoveryFinalizedHeight =
-                        g_dagManager.GetDeterministicFinalizedHeight(nAsOfEpoch);
-            }
-            if (cert.committeeSetHash != setHash &&
-                GetRecoveryFinalityCommittee(vRec, nRecM, recSetHash) &&
-                cert.committeeSetHash == recSetHash &&
-                FinalityCertInRecoveryWindow(cert.nEpoch, nRecoveryFinalizedHeight))
-            {
-                std::string strSig;
-                if (!CheckTallyCertificateCommitteeSignatures(cert, vRec, nRecM, recSetHash, &strSig))
-                    return reject(strSig);
-            }
-            else
-            {
-                std::string strSig;
-                if (!CheckTallyCertificateCommitteeSignatures(cert, vCommittee, nM, setHash, &strSig))
-                    return reject(strSig);
-            }
+            std::string strSig;
+            if (!CheckTallyCertificateCommitteeSignatures(cert, vCommittee, nM, setHash, &strSig))
+                return reject(strSig);
         }
     }
 
@@ -5752,8 +5464,12 @@ bool CFinalityTracker::CheckTallyCertificate(
         std::vector<CPubKey> vNoteCommittee;
         int nNoteM = 0;
         uint256 noteSetHash;
-        if (!GetCommitteeForEpoch(cert.nEpoch, vNoteCommittee, nNoteM, noteSetHash))
-            return localState("note tally certificate has no canonical committee for its epoch");
+        bool fNoteCommitteeLocalFailure = false;
+        if (!GetCommitteeForEpoch(txdb, cert.nEpoch, vNoteCommittee, nNoteM, noteSetHash,
+                                  &fNoteCommitteeLocalFailure))
+            return fNoteCommitteeLocalFailure
+                       ? localState("finality committee record cannot be read; -reindex/resync required")
+                       : reject("no finality committee is seated for this certificate's term");
         if (cert.committeeSetHash != noteSetHash)
             return reject("note tally certificate does not name the canonical committee for its epoch");
 
@@ -7176,8 +6892,12 @@ bool CFinalityTracker::CheckNoteVoteForContext(const CNoteFinalityVote& vote, CT
     std::vector<CPubKey> vCommittee;
     int nThresholdM = 0;
     uint256 committeeSetHash = 0;
-    if (!GetCommitteeForEpoch(vote.nEpoch, vCommittee, nThresholdM, committeeSetHash))
-        return localState("note vote has no canonical committee for its epoch");
+    bool fCommitteeLocalFailure = false;
+    if (!GetCommitteeForEpoch(txdb, vote.nEpoch, vCommittee, nThresholdM, committeeSetHash,
+                              &fCommitteeLocalFailure))
+        return fCommitteeLocalFailure
+                   ? localState("finality committee record cannot be read; -reindex/resync required")
+                   : reject("no finality committee is seated for this vote's term");
     if (vote.committeeSetHash != committeeSetHash)
         return reject("note vote does not name the canonical committee for its epoch");
 
@@ -7568,606 +7288,6 @@ bool CFinalityTracker::ConnectBlockTallyCertificates(
         return ReturnFinalityResult(pResult, FINALITY_RESULT_LOCAL_STATE, false);
 
     return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
-}
-
-bool CFinalityTracker::ConnectBlockCommitteeRotations(CTxDB& txdb, const uint256& hashBlock,
-                                                      const std::vector<CFinalityCommitteeRotation>& vRots,
-                                                      int nBlockHeight,
-                                                      FinalityResult* pResult)
-{
-    if (pResult)
-        *pResult = FINALITY_RESULT_INVALID;
-    if (vRots.empty())
-        return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
-
-    int nBlockEpoch = GetEpochForHeight(nBlockHeight);
-    std::vector<CFinalityCommitteeRotation> vSorted = vRots;
-    std::sort(vSorted.begin(), vSorted.end(),
-              [](const CFinalityCommitteeRotation& a,
-                 const CFinalityCommitteeRotation& b) {
-                  if (a.nEffectiveEpoch != b.nEffectiveEpoch)
-                      return a.nEffectiveEpoch < b.nEffectiveEpoch;
-                  return a.GetSignatureDigest() < b.GetSignatureDigest();
-              });
-    std::set<int> setEffEpochs;
-    for (const CFinalityCommitteeRotation& rot : vSorted)
-    {
-        // A2 lookahead bound: a rotation must take effect strictly after the
-        // connecting block's epoch and within the bounded window (no pre-dating,
-        // no far-future scheduling). One rotation per effective epoch in a block.
-        if (rot.nEffectiveEpoch <= nBlockEpoch ||
-            rot.nEffectiveEpoch > nBlockEpoch + FINALITY_ROTATION_MAX_LOOKAHEAD)
-            return error("ConnectBlockCommitteeRotations: rotation effective epoch %d out of window (block epoch %d)",
-                         rot.nEffectiveEpoch, nBlockEpoch);
-        if (!setEffEpochs.insert(rot.nEffectiveEpoch).second)
-            return error("ConnectBlockCommitteeRotations: duplicate effective epoch in block");
-
-    }
-
-    // Runtime application must match startup's ascending map iteration. Keep a
-    // snapshot so a later invalid dependent rotation cannot leave an earlier one
-    // installed after ConnectBlock aborts its DB transaction.
-    std::map<int, CFinalityCommitteeRotation> mapBefore;
-    {
-        LOCK(cs_finality);
-        mapBefore = mapConnectedRotations;
-    }
-    for (const CFinalityCommitteeRotation& rot : vSorted)
-    {
-        bool fV3ExistingCandidate = false;
-        if (nBlockHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
-        {
-            LOCK(cs_finality);
-            std::map<int, CFinalityCommitteeRotation>::const_iterator existing =
-                mapConnectedRotations.find(rot.nEffectiveEpoch);
-            fV3ExistingCandidate =
-                existing != mapConnectedRotations.end();
-        }
-
-        if (fV3ExistingCandidate)
-        {
-            // V3 finality state is connected only on the canonical pprev chain,
-            // so an existing carrier must be at a strictly lower height.  Check
-            // that invariant before treating this independently valid later
-            // competitor as a retained no-op.  This also covers
-            // an identical signed-content digest with different ECDSA bytes:
-            // rewriting that value would make the persisted record depend on
-            // which re-signature arrived last.  Validate every candidate
-            // against the committee immediately before its epoch, retain its
-            // carrier below, and leave the active/persisted winner untouched.
-            bool fHaveEarlierCarrier = false;
-            {
-                LOCK(cs_finality);
-                for (std::map<uint256, std::vector<int> >::const_iterator bit =
-                         mapBlockConnectedRotations.begin();
-                     bit != mapBlockConnectedRotations.end(); ++bit)
-                {
-                    if (std::find(bit->second.begin(), bit->second.end(),
-                                  rot.nEffectiveEpoch) == bit->second.end())
-                        continue;
-                    std::map<uint256, CBlockIndex*>::const_iterator miCarrier =
-                        mapBlockIndex.find(bit->first);
-                    if (miCarrier == mapBlockIndex.end() ||
-                        miCarrier->second == NULL ||
-                        miCarrier->second->nHeight >= nBlockHeight)
-                    {
-                        mapConnectedRotations = mapBefore;
-                        error("ConnectBlockCommitteeRotations: V3 carrier-order "
-                              "invariant failed for epoch %d (existing=%s, "
-                              "candidate height=%d)",
-                              rot.nEffectiveEpoch,
-                              bit->first.ToString().substr(0,20).c_str(),
-                              nBlockHeight);
-                        return ReturnFinalityResult(
-                            pResult, FINALITY_RESULT_LOCAL_STATE, false);
-                    }
-                    fHaveEarlierCarrier = true;
-                }
-                if (!fHaveEarlierCarrier)
-                {
-                    mapConnectedRotations = mapBefore;
-                    error("ConnectBlockCommitteeRotations: V3 winner for epoch "
-                          "%d has no connected canonical-pprev carrier",
-                          rot.nEffectiveEpoch);
-                    return ReturnFinalityResult(
-                        pResult, FINALITY_RESULT_LOCAL_STATE, false);
-                }
-            }
-            std::vector<CPubKey> vPrev;
-            int nPrevM = 0;
-            uint256 hashPrev;
-            std::string strError;
-            if (!GetCommitteeForEpoch(rot.nEffectiveEpoch - 1,
-                                      vPrev, nPrevM, hashPrev))
-            {
-                LOCK(cs_finality);
-                mapConnectedRotations = mapBefore;
-                error("ConnectBlockCommitteeRotations: local committee state is "
-                      "unavailable before epoch %d", rot.nEffectiveEpoch);
-                return ReturnFinalityResult(pResult,
-                                            FINALITY_RESULT_LOCAL_STATE, false);
-            }
-            if (!CheckCommitteeRotationAuthorized(rot, vPrev, nPrevM,
-                                                  hashPrev, &strError))
-            {
-                LOCK(cs_finality);
-                mapConnectedRotations = mapBefore;
-                error("ConnectBlockCommitteeRotations: rejected later V3 "
-                      "candidate in block %s: %s",
-                      hashBlock.ToString().substr(0,20).c_str(),
-                      strError.c_str());
-                return ReturnFinalityResult(pResult,
-                                            FINALITY_RESULT_INVALID, false);
-            }
-            continue;
-        }
-
-        std::string strError;
-        std::vector<CPubKey> vPrev;
-        int nPrevM = 0;
-        uint256 hashPrev;
-        if (!GetCommitteeForEpoch(rot.nEffectiveEpoch - 1,
-                                  vPrev, nPrevM, hashPrev))
-        {
-            LOCK(cs_finality);
-            mapConnectedRotations = mapBefore;
-            error("ConnectBlockCommitteeRotations: local committee state is "
-                  "unavailable before epoch %d", rot.nEffectiveEpoch);
-            return ReturnFinalityResult(pResult,
-                                        FINALITY_RESULT_LOCAL_STATE, false);
-        }
-        if (!CheckCommitteeRotationAuthorized(rot, vPrev, nPrevM,
-                                              hashPrev, &strError))
-        {
-            LOCK(cs_finality);
-            mapConnectedRotations = mapBefore;
-            error("ConnectBlockCommitteeRotations: rejected rotation in block %s: %s",
-                  hashBlock.ToString().substr(0,20).c_str(), strError.c_str());
-            return ReturnFinalityResult(pResult,
-                                        FINALITY_RESULT_INVALID, false);
-        }
-        if (!ConnectCommitteeRotation(rot, &strError))
-        {
-            LOCK(cs_finality);
-            mapConnectedRotations = mapBefore;
-            error("ConnectBlockCommitteeRotations: rejected rotation in block %s: %s",
-                  hashBlock.ToString().substr(0,20).c_str(), strError.c_str());
-            return ReturnFinalityResult(pResult,
-                                        FINALITY_RESULT_INVALID, false);
-        }
-        if (!txdb.WriteFinalityCommitteeRotation(rot.nEffectiveEpoch, rot))
-        {
-            LOCK(cs_finality);
-            mapConnectedRotations = mapBefore;
-            return ReturnFinalityResult(pResult,
-                                        FINALITY_RESULT_LOCAL_STATE, false);
-        }
-    }
-
-    LOCK(cs_finality);
-    std::vector<int>& vEpochs = mapBlockConnectedRotations[hashBlock];
-    vEpochs.clear();
-    for (const CFinalityCommitteeRotation& rot : vSorted)
-        vEpochs.push_back(rot.nEffectiveEpoch);
-    if (!txdb.WriteFinalityConnectedRotationBlock(hashBlock, vEpochs))
-    {
-        mapConnectedRotations = mapBefore;
-        mapBlockConnectedRotations.erase(hashBlock);
-        return ReturnFinalityResult(pResult,
-                                    FINALITY_RESULT_LOCAL_STATE, false);
-    }
-    return ReturnFinalityResult(pResult, FINALITY_RESULT_OK, true);
-}
-
-bool CFinalityTracker::DisconnectBlockCommitteeRotations(CTxDB& txdb, const uint256& hashBlock,
-                                                         const std::vector<CFinalityCommitteeRotation>& vRots)
-{
-    if (vRots.empty())
-        return true;
-
-    LOCK(cs_finality);
-    const std::map<int, CFinalityCommitteeRotation> mapConnectedBefore = mapConnectedRotations;
-    const std::map<uint256, std::vector<int> > mapCarriersBefore = mapBlockConnectedRotations;
-    const std::map<int, CFinalityCommitteeRotation> mapPendingBefore = mapPendingRotations;
-    const auto RestoreRotationMemory = [&]() {
-        mapConnectedRotations = mapConnectedBefore;
-        mapBlockConnectedRotations = mapCarriersBefore;
-        mapPendingRotations = mapPendingBefore;
-    };
-    int nEpochSchema = 0;
-    const bool fSchemaRead = txdb.ReadEpochStateSchema(nEpochSchema);
-    if (!fSchemaRead && txdb.HasEpochStateSchema())
-    {
-        RestoreRotationMemory();
-        return error("DisconnectBlockCommitteeRotations: unreadable epoch-state schema; "
-                     "-reindex/resync required");
-    }
-    const bool fStrictV3 = fSchemaRead && nEpochSchema >= EPOCHSTATE_SCHEMA_V3;
-    std::set<int> setDisconnectEpochs;
-    for (std::vector<CFinalityCommitteeRotation>::const_iterator it = vRots.begin();
-         it != vRots.end(); ++it)
-        setDisconnectEpochs.insert(it->nEffectiveEpoch);
-
-    for (std::set<int>::const_iterator eit = setDisconnectEpochs.begin();
-         eit != setDisconnectEpochs.end(); ++eit)
-    {
-        const int nEff = *eit;
-        // A rotation for one effective epoch may be re-embedded in multiple
-        // distinct-height canonical-pprev blocks. Only tear it down when no
-        // other connected pprev carrier remains; otherwise re-resolve the
-        // earliest survivor and rewrite memory + DB. Finality payloads in DAG
-        // merge/sibling blocks are deliberately outside connected tracker state.
-        std::vector<CFinalityCommitteeRotationCarrier> vSurviving;
-        for (const std::pair<const uint256, std::vector<int> >& carrier : mapBlockConnectedRotations)
-        {
-            if (carrier.first == hashBlock)
-                continue;
-            if (std::find(carrier.second.begin(), carrier.second.end(), nEff) == carrier.second.end())
-                continue;
-            std::map<uint256, CBlockIndex*>::iterator itIdx = mapBlockIndex.find(carrier.first);
-            if (itIdx == mapBlockIndex.end() || itIdx->second == NULL)
-            {
-                if (fStrictV3)
-                {
-                    RestoreRotationMemory();
-                    return error("DisconnectBlockCommitteeRotations: V3 carrier block %s "
-                                 "is missing from the block index; -reindex/resync required",
-                                 carrier.first.ToString().substr(0,20).c_str());
-                }
-                continue;
-            }
-            CBlock blkCarrier;
-            if (!blkCarrier.ReadFromDisk(itIdx->second, true))
-            {
-                if (fStrictV3)
-                {
-                    RestoreRotationMemory();
-                    return error("DisconnectBlockCommitteeRotations: V3 carrier block %s "
-                                 "cannot be read; -reindex/resync required",
-                                 carrier.first.ToString().substr(0,20).c_str());
-                }
-                continue;
-            }
-            std::vector<CFinalityCommitteeRotation> vOther =
-                ExtractFinalityCommitteeRotationsFromBlock(blkCarrier);
-            bool fFound = false;
-            for (const CFinalityCommitteeRotation& r : vOther)
-                if (r.nEffectiveEpoch == nEff)
-                {
-                    if (fFound && fStrictV3)
-                    {
-                        RestoreRotationMemory();
-                        return error("DisconnectBlockCommitteeRotations: V3 carrier block %s "
-                                     "has duplicate rotations for epoch %d; -reindex/resync required",
-                                     carrier.first.ToString().substr(0,20).c_str(), nEff);
-                    }
-                    fFound = true;
-                    vSurviving.push_back(CFinalityCommitteeRotationCarrier(
-                        itIdx->second->nHeight, carrier.first, r));
-                }
-            if (!fFound && fStrictV3)
-            {
-                RestoreRotationMemory();
-                return error("DisconnectBlockCommitteeRotations: V3 carrier block %s "
-                             "does not contain its recorded epoch %d rotation; "
-                             "-reindex/resync required",
-                             carrier.first.ToString().substr(0,20).c_str(), nEff);
-            }
-        }
-
-        if (vSurviving.empty())
-        {
-            DisconnectCommitteeRotation(nEff);
-            if (!txdb.EraseFinalityCommitteeRotation(nEff))
-            {
-                RestoreRotationMemory();
-                return false;
-            }
-        }
-        else
-        {
-            CFinalityCommitteeRotation winner;
-            if (!SelectCanonicalFinalityCommitteeRotation(
-                    vSurviving, FORK_HEIGHT_EPOCH_STATE_V3, winner))
-            {
-                RestoreRotationMemory();
-                return error("DisconnectBlockCommitteeRotations: cannot resolve canonical "
-                             "carrier for epoch %d", nEff);
-            }
-            mapConnectedRotations[nEff] = winner;
-            if (!txdb.WriteFinalityCommitteeRotation(nEff, winner))
-            {
-                RestoreRotationMemory();
-                return false;
-            }
-        }
-    }
-    mapBlockConnectedRotations.erase(hashBlock);
-    if (!txdb.EraseFinalityConnectedRotationBlock(hashBlock))
-    {
-        RestoreRotationMemory();
-        return false;
-    }
-
-    // A later rotation may have been authorized only by a rotation just removed.
-    // Re-evaluate the chain from the pinned committee and recursively drop every
-    // runtime/persisted orphan instead of silently skipping it until restart.
-    std::vector<CPubKey> vActive = vInitialCommittee;
-    int nActiveM = nInitialCommitteeM;
-    uint256 hashActive = hashInitialCommitteeSet;
-    std::vector<int> vOrphanEpochs;
-    for (std::map<int, CFinalityCommitteeRotation>::const_iterator it =
-             mapConnectedRotations.begin(); it != mapConnectedRotations.end(); ++it)
-    {
-        const CFinalityCommitteeRotation& candidate = it->second;
-        std::vector<CPubKey> vNew;
-        int nNewM = 0;
-        uint256 hashNew;
-        if (candidate.hashPrevCommitteeSet != hashActive ||
-            !CheckCommitteeRotationAuthorized(candidate, vActive, nActiveM, hashActive, NULL) ||
-            !candidate.GetNewCommittee(vNew, nNewM, hashNew))
-        {
-            vOrphanEpochs.push_back(it->first);
-            continue;
-        }
-        vActive = vNew;
-        nActiveM = nNewM;
-        hashActive = hashNew;
-    }
-    for (std::vector<int>::const_iterator oit = vOrphanEpochs.begin();
-         oit != vOrphanEpochs.end(); ++oit)
-    {
-        mapConnectedRotations.erase(*oit);
-        if (!txdb.EraseFinalityCommitteeRotation(*oit))
-        {
-            RestoreRotationMemory();
-            return false;
-        }
-        for (std::map<uint256, std::vector<int> >::iterator bit =
-                 mapBlockConnectedRotations.begin(); bit != mapBlockConnectedRotations.end(); )
-        {
-            std::vector<int>& vEpochs = bit->second;
-            vEpochs.erase(std::remove(vEpochs.begin(), vEpochs.end(), *oit), vEpochs.end());
-            if (vEpochs.empty())
-            {
-                if (!txdb.EraseFinalityConnectedRotationBlock(bit->first))
-                {
-                    RestoreRotationMemory();
-                    return false;
-                }
-                mapBlockConnectedRotations.erase(bit++);
-            }
-            else
-            {
-                if (!txdb.WriteFinalityConnectedRotationBlock(bit->first, vEpochs))
-                {
-                    RestoreRotationMemory();
-                    return false;
-                }
-                ++bit;
-            }
-        }
-    }
-
-    // Pending rotations are runtime-only; prune any whose predecessor set no
-    // longer resolves after the recursive connected-chain cleanup.
-    for (std::map<int, CFinalityCommitteeRotation>::iterator it = mapPendingRotations.begin();
-         it != mapPendingRotations.end(); )
-    {
-        std::vector<CPubKey> vPrev;
-        int nPrevM = 0;
-        uint256 hashPrev;
-        if (!GetCommitteeForEpoch(it->first - 1, vPrev, nPrevM, hashPrev) ||
-            !CheckCommitteeRotationAuthorized(it->second, vPrev, nPrevM, hashPrev, NULL))
-            mapPendingRotations.erase(it++);
-        else
-            ++it;
-    }
-    return true;
-}
-
-bool CFinalityTracker::LoadCommitteeRotations(CTxDB& txdb)
-{
-    LOCK(cs_finality);
-    std::map<int, CFinalityCommitteeRotation> mapRots;
-    if (!txdb.IterateFinalityCommitteeRotations(mapRots))
-        return false;
-    const std::map<int, CFinalityCommitteeRotation> mapConnectedBefore =
-        mapConnectedRotations;
-
-    for (std::map<int, CFinalityCommitteeRotation>::const_iterator it = mapRots.begin();
-         it != mapRots.end(); ++it)
-    {
-        if (it->first != it->second.nEffectiveEpoch)
-            return error("LoadCommitteeRotations: FATAL key epoch %d does not match "
-                         "record epoch %d -- -reindex/resync required",
-                         it->first, it->second.nEffectiveEpoch);
-    }
-
-    std::map<uint256, std::vector<int> > mapRotBlocks;
-    if (!txdb.IterateFinalityConnectedRotationBlocks(mapRotBlocks))
-        return false;
-
-    int nEpochSchema = 0;
-    const bool fSchemaRead = txdb.ReadEpochStateSchema(nEpochSchema);
-    if (!fSchemaRead && txdb.HasEpochStateSchema())
-        return error("LoadCommitteeRotations: FATAL epoch-state schema marker is corrupt -- "
-                     "-reindex/resync required");
-    const bool fStrictV3 = fSchemaRead && nEpochSchema >= EPOCHSTATE_SCHEMA_V3;
-
-    std::set<uint256> setCanonicalBlocks;
-    if (fStrictV3 && !mapRotBlocks.empty())
-    {
-        uint256 hashBest;
-        if (!txdb.ReadHashBestChain(hashBest))
-            return error("LoadCommitteeRotations: FATAL V3 best-chain pointer is missing -- "
-                         "-reindex/resync required");
-        std::map<uint256, CBlockIndex*>::const_iterator itBest = mapBlockIndex.find(hashBest);
-        if (itBest == mapBlockIndex.end() || itBest->second == NULL)
-            return error("LoadCommitteeRotations: FATAL V3 best-chain index %s is missing -- "
-                         "-reindex/resync required",
-                         hashBest.ToString().substr(0,20).c_str());
-        for (const CBlockIndex* pindex = itBest->second; pindex != NULL;
-             pindex = pindex->pprev)
-        {
-            if (!setCanonicalBlocks.insert(pindex->GetBlockHash()).second)
-                return error("LoadCommitteeRotations: FATAL cycle in V3 best-chain index at %s -- "
-                             "-reindex/resync required",
-                             pindex->GetBlockHash().ToString().substr(0,20).c_str());
-        }
-    }
-
-    std::set<int> setReferenced;
-    std::map<int, std::vector<CFinalityCommitteeRotationCarrier> > mapCandidates;
-    for (std::map<uint256, std::vector<int> >::const_iterator it = mapRotBlocks.begin();
-         it != mapRotBlocks.end(); ++it)
-    {
-        std::set<int> setCarrierEpochs;
-        for (std::vector<int>::const_iterator eit = it->second.begin();
-             eit != it->second.end(); ++eit)
-        {
-            if (!setCarrierEpochs.insert(*eit).second)
-                return error("LoadCommitteeRotations: FATAL carrier %s repeats epoch %d -- "
-                             "-reindex/resync required",
-                             it->first.ToString().substr(0,20).c_str(), *eit);
-            if (!mapRots.count(*eit))
-                return error("LoadCommitteeRotations: FATAL carrier references missing "
-                             "rotation epoch %d -- -reindex/resync required", *eit);
-            setReferenced.insert(*eit);
-        }
-
-        if (!fStrictV3)
-            continue;
-        if (setCarrierEpochs.empty())
-            return error("LoadCommitteeRotations: FATAL empty V3 carrier record for block %s -- "
-                         "-reindex/resync required",
-                         it->first.ToString().substr(0,20).c_str());
-
-        std::map<uint256, CBlockIndex*>::const_iterator itIdx = mapBlockIndex.find(it->first);
-        if (itIdx == mapBlockIndex.end() || itIdx->second == NULL)
-            return error("LoadCommitteeRotations: FATAL V3 carrier block %s is missing "
-                         "from the block index -- -reindex/resync required",
-                         it->first.ToString().substr(0,20).c_str());
-        if (!setCanonicalBlocks.count(it->first))
-            return error("LoadCommitteeRotations: FATAL V3 carrier block %s is not on "
-                         "the persisted best chain -- -reindex/resync required",
-                         it->first.ToString().substr(0,20).c_str());
-
-        CBlock block;
-        if (!block.ReadFromDisk(itIdx->second, true))
-            return error("LoadCommitteeRotations: FATAL V3 carrier block %s cannot be read -- "
-                         "-reindex/resync required",
-                         it->first.ToString().substr(0,20).c_str());
-        if (itIdx->second->nHeight < FORK_HEIGHT_TALLY_GOVERNANCE ||
-            !itIdx->second->IsProofOfWork())
-            return error("LoadCommitteeRotations: FATAL invalid V3 carrier context at height %d -- "
-                         "-reindex/resync required", itIdx->second->nHeight);
-
-        std::vector<CFinalityCommitteeRotation> vBlockRots =
-            ExtractFinalityCommitteeRotationsFromBlock(block);
-        std::set<int> setExtractedEpochs;
-        for (std::vector<CFinalityCommitteeRotation>::const_iterator rit =
-                 vBlockRots.begin(); rit != vBlockRots.end(); ++rit)
-        {
-            if (!setExtractedEpochs.insert(rit->nEffectiveEpoch).second)
-                return error("LoadCommitteeRotations: FATAL V3 carrier block %s contains "
-                             "duplicate rotations for epoch %d -- -reindex/resync required",
-                             it->first.ToString().substr(0,20).c_str(),
-                             rit->nEffectiveEpoch);
-            const int nBlockEpoch = GetEpochForHeight(itIdx->second->nHeight);
-            if (rit->nEffectiveEpoch <= nBlockEpoch ||
-                rit->nEffectiveEpoch > nBlockEpoch + FINALITY_ROTATION_MAX_LOOKAHEAD)
-                return error("LoadCommitteeRotations: FATAL V3 carrier block %s has "
-                             "out-of-window effective epoch %d -- -reindex/resync required",
-                             it->first.ToString().substr(0,20).c_str(),
-                             rit->nEffectiveEpoch);
-            mapCandidates[rit->nEffectiveEpoch].push_back(
-                CFinalityCommitteeRotationCarrier(itIdx->second->nHeight,
-                                                  it->first, *rit));
-        }
-        if (setExtractedEpochs != setCarrierEpochs)
-            return error("LoadCommitteeRotations: FATAL V3 carrier block %s content/index "
-                         "mismatch -- -reindex/resync required",
-                         it->first.ToString().substr(0,20).c_str());
-    }
-
-    if (setReferenced.size() != mapRots.size())
-        return error("LoadCommitteeRotations: FATAL unpaired rotation/carrier records -- "
-                     "-reindex/resync required");
-
-    if (fStrictV3)
-    {
-        for (std::map<int, CFinalityCommitteeRotation>::const_iterator it = mapRots.begin();
-             it != mapRots.end(); ++it)
-        {
-            CFinalityCommitteeRotation expected;
-            uint256 hashExpectedCarrier;
-            if (!SelectCanonicalFinalityCommitteeRotation(
-                    mapCandidates[it->first], FORK_HEIGHT_EPOCH_STATE_V3,
-                    expected, &hashExpectedCarrier))
-                return error("LoadCommitteeRotations: FATAL no canonical V3 carrier for "
-                             "epoch %d -- -reindex/resync required", it->first);
-            if (expected.GetSignatureDigest() != it->second.GetSignatureDigest())
-                return error("LoadCommitteeRotations: FATAL persisted rotation for epoch %d "
-                             "does not match canonical carrier %s -- -reindex/resync required",
-                             it->first,
-                             hashExpectedCarrier.ToString().substr(0,20).c_str());
-        }
-    }
-
-    // Apply in ascending effective-epoch order so each chains onto the prior set.
-    for (std::map<int, CFinalityCommitteeRotation>::const_iterator it = mapRots.begin();
-         it != mapRots.end(); ++it)
-    {
-        std::string strError;
-        if (!ConnectCommitteeRotation(it->second, &strError))
-        {
-            mapConnectedRotations = mapConnectedBefore;
-            return error("LoadCommitteeRotations: FATAL invalid chained rotation at epoch %d: "
-                         "%s -- -reindex/resync required", it->first, strError.c_str());
-        }
-    }
-
-    // A later V3 no-op candidate must be independently authorized too.  It can
-    // become the winner after a reorg removes an earlier carrier, so accepting
-    // an unverifiable fallback here would make restart/reorg behavior diverge.
-    if (fStrictV3)
-    {
-        for (std::map<int, std::vector<CFinalityCommitteeRotationCarrier> >::const_iterator it =
-                 mapCandidates.begin(); it != mapCandidates.end(); ++it)
-        {
-            std::vector<CPubKey> vPrev;
-            int nPrevM = 0;
-            uint256 hashPrev;
-            if (!GetCommitteeForEpoch(it->first - 1, vPrev, nPrevM, hashPrev))
-            {
-                mapConnectedRotations = mapConnectedBefore;
-                return error("LoadCommitteeRotations: FATAL cannot resolve the committee "
-                             "before candidate epoch %d -- -reindex/resync required",
-                             it->first);
-            }
-            for (std::vector<CFinalityCommitteeRotationCarrier>::const_iterator cit =
-                     it->second.begin(); cit != it->second.end(); ++cit)
-            {
-                std::string strError;
-                if (!CheckCommitteeRotationAuthorized(cit->rotation, vPrev, nPrevM,
-                                                      hashPrev, &strError))
-                {
-                    mapConnectedRotations = mapConnectedBefore;
-                    return error("LoadCommitteeRotations: FATAL invalid fallback candidate "
-                                 "for epoch %d in carrier %s: %s -- -reindex/resync required",
-                                 it->first,
-                                 cit->hashBlock.ToString().substr(0,20).c_str(),
-                                 strError.c_str());
-                }
-            }
-        }
-    }
-
-    mapBlockConnectedRotations = mapRotBlocks;
-    if (!mapRots.empty())
-        printf("LoadCommitteeRotations: loaded %d connected committee rotations\n", (int)mapRots.size());
-    return true;
 }
 
 bool CFinalityTracker::ConnectBlockTallyShares(
@@ -8859,9 +7979,6 @@ bool CFinalityTracker::RestoreCommittedStateAfterAbort()
         mapNoteTallyPartials.clear();
         mapNoteTallyPartialBySlot.clear();
         mapBlockConnectedTallyShares.clear();
-        mapConnectedRotations.clear();
-        mapBlockConnectedRotations.clear();
-        mapPendingRotations.clear();
         mapCandidateCerts.clear();
         mapCollectedCertSigs.clear();
         mapPendingTallyCertificates.clear();
@@ -8873,7 +7990,7 @@ bool CFinalityTracker::RestoreCommittedStateAfterAbort()
 
     CTxDB txdb("r");
     if (!LoadVotes(txdb) || !LoadNoteVotes(txdb) || !LoadTallyShares(txdb) ||
-        !LoadTallyCertificates(txdb) || !LoadCommitteeRotations(txdb))
+        !LoadTallyCertificates(txdb))
         return error("RestoreCommittedStateAfterAbort: committed finality state could not "
                      "be reconstructed; restart with -reindex/resync");
     return true;
@@ -9328,24 +8445,6 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
             }
         }
 
-        return true;
-    }
-    else if (strCommand == "ftrot")
-    {
-        if (LegacyPrivateFinalityTrafficDisabledAtTip())
-            return false;
-        // D2 self-governance: a fully-signed committee rotation, gossiped so any
-        // miner can embed it. AddPendingCommitteeRotation re-verifies the >= M
-        // signatures against the committee active before its effective epoch.
-        CFinalityCommitteeRotation rot;
-        vRecv >> rot;
-        if (g_finalityTracker.AddPendingCommitteeRotation(rot, NULL))
-        {
-            LOCK(cs_vNodes);
-            for (CNode* pnode : vNodes)
-                if (pnode != pfrom)
-                    pnode->PushMessage("ftrot", rot);
-        }
         return true;
     }
     else if (strCommand == "fvreq")
@@ -10427,7 +9526,9 @@ static bool GetNoteVoteCommitteeConfig(int nEpoch, CFinalityTallyConfig& configO
     std::vector<CPubKey> vCommittee;
     int nThresholdM = 0;
     uint256 committeeSetHash = 0;
-    if (!GetCanonicalFinalityCommittee(nEpoch, vCommittee, nThresholdM, committeeSetHash))
+    // Production-side, so a batch-free handle is both available and correct.
+    CTxDB txdb("r");
+    if (!GetCanonicalFinalityCommittee(txdb, nEpoch, vCommittee, nThresholdM, committeeSetHash))
         return false;
     if (nThresholdM < 2 || nThresholdM > (int)vCommittee.size() ||
         vCommittee.size() > FINALITY_NOTE_MAX_VSS_COEFFICIENTS || committeeSetHash == 0)

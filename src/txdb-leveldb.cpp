@@ -2850,64 +2850,6 @@ bool CTxDB::IterateFinalityConnectedCertBlocks(std::map<uint256, std::vector<uin
     return true;
 }
 
-bool CTxDB::WriteFinalityCommitteeRotation(int nEffectiveEpoch, const CFinalityCommitteeRotation& rot)
-{
-    return Write(make_pair(string("finalityrot"), nEffectiveEpoch), rot);
-}
-
-bool CTxDB::ReadFinalityCommitteeRotation(int nEffectiveEpoch, CFinalityCommitteeRotation& rot)
-{
-    return Read(make_pair(string("finalityrot"), nEffectiveEpoch), rot);
-}
-
-bool CTxDB::EraseFinalityCommitteeRotation(int nEffectiveEpoch)
-{
-    return Erase(make_pair(string("finalityrot"), nEffectiveEpoch));
-}
-
-bool CTxDB::IterateFinalityCommitteeRotations(std::map<int, CFinalityCommitteeRotation>& mapOut)
-{
-    if (!IterateFinalityRecords(GetInstance(), "finalityrot", mapOut))
-        return false;
-    for (std::map<int, CFinalityCommitteeRotation>::const_iterator it = mapOut.begin();
-         it != mapOut.end(); ++it)
-        if (it->first <= 0 || it->second.nEffectiveEpoch != it->first ||
-            !it->second.IsValidBasic())
-        {
-            printf("IterateFinalityCommitteeRotations: FATAL key/value or structural "
-                   "mismatch; -reindex/resync required\n");
-            mapOut.clear();
-            return false;
-        }
-    return true;
-}
-
-bool CTxDB::WriteFinalityConnectedRotationBlock(const uint256& hashBlock, const std::vector<int>& vEffEpochs)
-{
-    return Write(make_pair(string("finalityconnrot"), hashBlock), vEffEpochs);
-}
-
-bool CTxDB::EraseFinalityConnectedRotationBlock(const uint256& hashBlock)
-{
-    return Erase(make_pair(string("finalityconnrot"), hashBlock));
-}
-
-bool CTxDB::IterateFinalityConnectedRotationBlocks(std::map<uint256, std::vector<int> >& mapOut)
-{
-    if (!IterateFinalityVectorRecords(GetInstance(), "finalityconnrot",
-                                      FINALITY_MAX_VOTES, mapOut))
-        return false;
-    for (std::map<uint256, std::vector<int> >::const_iterator it = mapOut.begin();
-         it != mapOut.end(); ++it)
-    {
-        const std::set<int> unique(it->second.begin(), it->second.end());
-        if (it->first == 0 || it->second.size() > FINALITY_MAX_VOTES ||
-            unique.size() != it->second.size() ||
-            (!unique.empty() && *unique.begin() <= 0))
-            return false;
-    }
-    return true;
-}
 
 bool CTxDB::IterateDAGLinks(std::map<uint256, CBlockDAGData>& mapOut)
 {
@@ -3757,30 +3699,12 @@ bool CTxDB::LoadBlockIndex()
         return error("CTxDB::LoadBlockIndex() : FATAL -- epoch-state load failed (corrupt or holed "
                      "epoch-state records -> divergent deterministic finalized-height anchor). "
                      "Recover by removing the chain database (keep wallet.dat) and resyncing, or -reindex.");
-    PinFinalityCommitteeConstants(); // before rotations load
-    {
-        // Release gate (defense-in-depth): a mainnet node must never run with an empty finality
-        // committee. If it did, private tally certificates would be accepted with NO M-of-N committee
-        // authorization from FORK_HEIGHT_TALLY_GOVERNANCE onward (GetCommitteeForEpoch returns false ->
-        // the signature check is skipped -> accept-all). Refuse to start rather than run unpinned; the
-        // mainnet committee is pinned from constants in PinFinalityCommitteeConstants, so this only fires
-        // if a build ships with an empty/invalid committee.
-        extern bool fRegTest;
-        extern bool fTestNet;
-        std::vector<CPubKey> vChk; int nChkM = 0; uint256 hashChk;
-        if (!fRegTest && !fTestNet &&
-            !g_finalityTracker.GetCommitteeForEpoch(0, vChk, nChkM, hashChk))
-            return error("LoadBlockIndex : FATAL -- mainnet finality committee is UNPINNED; refusing to "
-                         "start (the M-of-N governance trust root would be absent). Pin the launch "
-                         "committee in PinFinalityCommitteeConstants before shipping mainnet.");
-    }
     if (!g_finalityTracker.LoadVotes(*this) ||
         !g_finalityTracker.LoadNoteVotes(*this) ||
         !g_finalityTracker.LoadTallyShares(*this) ||
-        !g_finalityTracker.LoadTallyCertificates(*this) ||
-        !g_finalityTracker.LoadCommitteeRotations(*this))
+        !g_finalityTracker.LoadTallyCertificates(*this))
         return error("CTxDB::LoadBlockIndex() : FATAL -- persisted finality vote/share/"
-                     "certificate/rotation state is corrupt or incomplete. Recover with "
+                     "certificate state is corrupt or incomplete. Recover with "
                      "-reindex/resync.");
 
     // Load hashBestChain pointer to end of best chain

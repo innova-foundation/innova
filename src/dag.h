@@ -98,7 +98,11 @@ static const unsigned char EPOCHSTATE_SER_VERSION_V4 = 2;
 // V5 adds the running IV5 pool balance. Kept as its own version so a V4 record, which never
 // carried the field, cannot be read as though it declared a zero balance.
 static const unsigned char EPOCHSTATE_SER_VERSION_V5 = 3;
-static const unsigned char EPOCHSTATE_SER_VERSION = EPOCHSTATE_SER_VERSION_V5;
+// V6 adds the drawn finality committee. The epoch that ends immediately before a term
+// carries the seats that term serves under; every other epoch carries none. Its own
+// version so a V5 record cannot be read as an epoch that deliberately seated nobody.
+static const unsigned char EPOCHSTATE_SER_VERSION_V6 = 4;
+static const unsigned char EPOCHSTATE_SER_VERSION = EPOCHSTATE_SER_VERSION_V6;
 // DB-wide epoch-state schema marker (key "epochstateschema"). Absent/0 = pre-deterministic-anchor
 // regime (records may have been computed off a node-local tip); EPOCHSTATE_SCHEMA_V2 = records are
 // written under the deterministic anchor (post FORK_HEIGHT_EPOCH_STATE_V2). Gates the upgrade guard.
@@ -109,6 +113,9 @@ static const int EPOCHSTATE_SCHEMA_V3 = 3;
 // Boundary B appends independently versioned IV5 accumulator/finality fields.
 // Existing V3 records remain byte-identical and continue to deserialize as v1.
 static const int EPOCHSTATE_SCHEMA_V4 = 4;
+// The maximum committee this record can carry, so a corrupt or hostile record cannot
+// make deserialization allocate without bound.
+static const size_t EPOCHSTATE_MAX_COMMITTEE_SEATS = 64;
 static const size_t EPOCHSTATE_VNEXT_TREE_STATE_SIZE = 300;
 static const size_t EPOCHSTATE_VNEXT_NULLIFIER_STATE_SIZE = 44;
 static const size_t EPOCHSTATE_VNEXT_DIGEST_SIZE = 32;
@@ -166,6 +173,16 @@ struct CEpochState
     // was put into it however a proof behaves. Serialized from V5.
     int64_t nVNextPoolBalance;
     uint256 hashVNextActiveTxSet;
+    // The finality committee drawn for the term that starts at nEpoch + 1, in seat
+    // order (seat i is member index i). Only an epoch that ends a term's lead-in
+    // carries seats; everywhere else this is empty and no committee exists.
+    //
+    // The draw is stored rather than recomputed on demand because it is only a term
+    // constant if it is fixed once: registrations keep arriving and collateral keeps
+    // being spent, so a resolver that redrew per block would hand out a different
+    // committee mid-term and invalidate certificates its own peers already accepted.
+    std::vector<std::vector<unsigned char> > vFinalityCommittee;  // 33-byte compressed
+    int32_t nFinalityCommitteeM;
 
     CEpochState()
     {
@@ -185,6 +202,7 @@ struct CEpochState
         fFinalized = false;
         nFinalizedHeightAsOf = 0;
         nSerVersion = EPOCHSTATE_SER_VERSION_V3;
+        nFinalityCommitteeM = 0;
         nVNextTreeSize = 0;
         hashVNextNullifierRoot = 0;
         nVNextNullifierCount = 0;
@@ -256,6 +274,14 @@ struct CEpochState
                 EPOCHSTATE_VNEXT_MAX_ACTIVE_TXS,
                 nType, nVersion, ser_action);
             READWRITE(hashVNextActiveTxSet);
+            if (nSerVersion >= EPOCHSTATE_SER_VERSION_V6)
+            {
+                nSerSize += ::SerReadWriteLimitedByteVectors(
+                    s, pthis->vFinalityCommittee,
+                    EPOCHSTATE_MAX_COMMITTEE_SEATS, 33,
+                    nType, nVersion, ser_action);
+                READWRITE(nFinalityCommitteeM);
+            }
         }
     )
 };

@@ -16,10 +16,11 @@
 # Configuration this harness needs that the spend harness does not:
 #   -regtestiv5notevote=<h>  the note-vote fork; init refuses a height below
 #                            Boundary B (src/init.cpp)
-#   -finalitytallypubkey/-finalitytallythreshold  regtest pins the CANONICAL
-#                            committee from the local tally config, and a note
-#                            vote with no canonical committee to share to is
-#                            never built (GetNoteVoteCommitteeConfig)
+#   -finalitytallyprivkey    the ONLY committee key a node is configured with.
+#                            There is no pinned committee any more: seats are
+#                            drawn per term from the IV5 collateral registry, and
+#                            a node serves a seat only when the drawn set names
+#                            the pubkey of this secret
 #   -finalityvotemode=auto   "transparent" returns before the note vote is even
 #                            attempted
 #   -debug -debugnet         every producer gate log is behind if(fDebug), and
@@ -84,26 +85,28 @@ NOTE_VOTE_WINDOW=10
 # cycle and the note vote's proofs are the slow part of the call.
 NOTE_VOTE_SETTLE=30
 
-# The canonical committee a note vote shares to. Regtest pins it from this local
-# config (PinFinalityCommitteeConstants), so every node must list the same keys
-# in the same order -- the set hash is order-sensitive. These are the well-known
-# secp256k1 test points for scalars 1/2/3, the same set the pinned testnet
-# committee uses; a note vote needs threshold M >= 2.
-COMMITTEE_PUBKEYS=(
-    "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
-    "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
-    "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
-)
-COMMITTEE_THRESHOLD="2-of-3"
-
-# The matching secrets, one seat per node, in the same order. Scalars 1/2/3 --
-# the secrets behind the well-known points above. A tally member has to hold one:
-# a note certificate's authorization IS its M-of-N signature set, and the shares
-# are sealed to these keys.
+# One member secret per node. These are NOT a committee: nothing is pinned. A node
+# holds a seat only if some IV5 collateral registration published the matching
+# pubkey and that registration wins the term's draw, which is what the registration
+# section below arranges. Scalars 1/2/3, the well-known secp256k1 test points.
 COMMITTEE_PRIVKEYS=(
     "0000000000000000000000000000000000000000000000000000000000000001"
     "0000000000000000000000000000000000000000000000000000000000000002"
     "0000000000000000000000000000000000000000000000000000000000000003"
+)
+# The same three secrets in wallet-import form (regtest secret prefix 230), so the
+# wallet that registers a note can hold the private half of the member key it
+# publishes -- collateralnode finality-register refuses a key it cannot decrypt to.
+COMMITTEE_WIFS=(
+    "b2N2W7suGMid823gCRnQ72m2EwD31FNCScGyhUgmw4LhmdmxgjPn"
+    "b2N2W7suGMid823gCRnQ72m2EwD31FNCScGyhUgmw4Lhn8iV52zc"
+    "b2N2W7suGMid823gCRnQ72m2EwD31FNCScGyhUgmw4LhndY5atD1"
+)
+# The matching compressed pubkeys, for asserting which seats the draw produced.
+COMMITTEE_PUBKEYS=(
+    "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+    "02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5"
+    "02f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9"
 )
 
 # OP_RETURN payload tag of a note-vote coinbase envelope ("IFNV").
@@ -459,17 +462,10 @@ write_config() {
         echo "regtestboundaryb=$BOUNDARY_B"
         echo "regtestiv5rehearsal=1"
         echo "regtestiv5notevote=$NOTE_VOTE_HEIGHT"
-        # Regtest pins the canonical committee from this config. The tally MODE
-        # stays off: the legacy certificate machinery is not on this path, and a
-        # note vote's committee comes from the canonical set, not the local one.
-        echo "finalitytallythreshold=$COMMITTEE_THRESHOLD"
-        for key in "${COMMITTEE_PUBKEYS[@]}"; do
-            echo "finalitytallypubkey=$key"
-        done
-        # Each node holds the secret for its own seat, which is what makes it a
-        # tally member: the note tally resolves the seat from the CANONICAL
-        # committee by matching this key's pubkey, never from the local pubkey
-        # ordering. Without it a node relays note votes but never tallies them.
+        # No committee is configured anywhere: the canonical set is drawn from the
+        # IV5 collateral registry and carried by the chain's own epoch state. The
+        # only thing a node is told is the secret it would serve a seat with, and
+        # the seat itself has to be won by a registration.
         echo "finalitytallyprivkey=${COMMITTEE_PRIVKEYS[$node]}"
         # Every producer gate log is behind fDebug, and -debug deliberately does
         # NOT imply -debugnet, which carries the peer-side receive line.
@@ -565,15 +561,53 @@ else
     exit 1
 fi
 
-COMMITTEE_OK=1
+# No pinned committee exists any more, on any network. Assert the negative
+# directly: nothing configures a committee, and the resolver says so.
+PINNED=0
 for ((n=0; n<NUM_NODES; n++)); do
-    grep -qiE "unknown -finalitytally|committee pubkey and threshold config are valid" \
-        "$(node_log "$n")" 2>/dev/null && COMMITTEE_OK=0
+    grep -q "finalitytallypubkey" "$(node_dir "$n")/innova.conf" && PINNED=1
+    grep -q "finalitytallythreshold" "$(node_dir "$n")/innova.conf" && PINNED=1
 done
-if [ "$COMMITTEE_OK" -eq 1 ]; then
-    success "the canonical $COMMITTEE_THRESHOLD committee config was accepted on every node"
+if [ "$PINNED" -eq 0 ]; then
+    success "no node is configured with a committee key or threshold"
 else
-    fail "a node complained about the finality tally committee configuration"
+    fail "a node still carries pinned committee configuration"
+fi
+
+DRAW_OK=1
+for ((n=0; n<NUM_NODES; n++)); do
+    FI="$(rpc "$n" getfinalityinfo 2>/dev/null)"
+    [ "$(jget "$FI" committee_source)" = "collateral_registry_draw" ] || DRAW_OK=0
+    [ "$(jget "$FI" committee_seated)" = "false" ] || DRAW_OK=0
+done
+if [ "$DRAW_OK" -eq 1 ]; then
+    success "every node resolves its committee from the collateral registry draw, and none is seated yet"
+else
+    fail "a node did not report an unseated collateral-registry-draw committee"
+fi
+
+# Everything from section 7 on needs a SEATED committee, and seats are won, not
+# configured. What this harness still has to grow, in order:
+#
+#   1. node0 imports COMMITTEE_WIFS so its wallet holds the private half of each
+#      member key (collateralnode finality-register refuses a key it cannot
+#      decrypt to), and each node keeps its own finalitytallyprivkey.
+#   2. After the finalized height exists, node0 carves six 25000 INN IV5 notes
+#      with z_iv5transfer -- two per member key -- and lets the next epoch build
+#      put them in the tree.
+#   3. node0 runs `collateralnode finality-register <pubkey> <txid:n> confirm`
+#      six times. Six rows is the floor: regtest draws 3 seats and refuses a
+#      registry smaller than 2N. Two rows per key and one seat per key means the
+#      draw seats exactly the three node keys whichever rows win.
+#   4. Every registration must confirm at or below the first height of epoch
+#      (term - 2). The seats then appear when the epoch ending the term's lead-in
+#      is built, and the term they serve is the two epochs after that.
+#   5. NOTE_VOTE_EPOCHS and TALLY_EPOCH move into that term.
+#
+# Until then the sections below have no committee to share to and will fail.
+SEATED="$(jget "$(rpc 0 getfinalityinfo 2>/dev/null)" committee_seated)"
+if [ "$SEATED" != "true" ]; then
+    fail "no committee is seated: the registration flow above is not implemented in this harness yet, so the note-vote and certificate rounds cannot run"
 fi
 
 # ============================================================

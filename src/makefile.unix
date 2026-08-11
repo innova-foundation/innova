@@ -538,6 +538,7 @@ TEST_OBJS= \
     obj/test/finality_committee_sig_tests.o \
     obj/test/halfagg_stake_tests.o \
     obj/test/epoch_state_determinism_tests.o \
+    obj/test/finality_committee_draw_tests.o \
     obj/test/finality_settlement_tests.o \
     obj/test/name_index_recovery_tests.o \
     obj/test/fuzz_deserialize_tests.o \
@@ -646,6 +647,9 @@ check-coinstake-guard: test_innova
 
 check-finality-committee-sig: test_innova
 	./test_innova --run_test=finality_committee_sig_tests
+
+check-finality-committee-draw: test_innova
+	./test_innova --run_test=finality_committee_draw_tests
 
 check-halfagg-stake: test_innova
 	./test_innova --run_test=halfagg_stake_tests
