@@ -15,9 +15,19 @@
 // the new binary beforehand.
 //
 // Set against tip 7,888,500 (2026-08-09). First gate 8,400,000 leads it by
-// 511,500 blocks (~89 days); the last gate (base 8,060,000) lands ~134 days
-// out. Recheck before tagging: the tip advances ~5,760 blocks a day, so this
-// margin decays by a day for every day it sits unreleased.
+// 511,500 blocks, ~89 days at the 15-second pre-DAG spacing. Gates after the DAG
+// gate (base 7,950,000) arrive at 1-second spacing, so the last one lands about
+// a day after DAG activation rather than a further month out: ~116 days total,
+// not the ~134 a flat 15-second reading gives.
+//
+// Recheck before tagging: the tip advances ~5,760 blocks a day, so this margin
+// decays by a day for every day it sits unreleased.
+//
+// Changing SHIFT also moves terminal coin supply. Post-DAG rewards are divided
+// by the block-spacing ratio, so every block the shift moves across the DAG gate
+// is paid on the other side of that divisor, and the PoW tier boundaries in
+// GetProofOfWorkReward are derived from the gate's height. Both have to be
+// recomputed here, not just the margin.
 static const int MAINNET_V5_ACTIVATION_BASE = 7800000;
 static const int MAINNET_V5_ACTIVATION_SHIFT = 600000;    // first gate 8,400,000
 

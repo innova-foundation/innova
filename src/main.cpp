@@ -4825,20 +4825,37 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
       nSubsidy = 0.2 * COIN;
     else if (nHeight <= 8500000) // 0.15 Coin PoW Reward to release 37,500 INN in 250,000 blocks
       nSubsidy = 0.15 * COIN;
-    else if (nHeight <= 8750000) // 0.1 Coin PoW Reward to release 1 CollateralNode in 250,000 blocks
+    // Tiers from here on are counted in post-DAG blocks, which arrive 15x
+    // faster. Each boundary is its 15s-cadence height stretched from the DAG
+    // fork by the same ratio the reward below is divided by:
+    //
+    //     height = FORK_HEIGHT_DAG + 15 * (original_height - FORK_HEIGHT_DAG)
+    //
+    // so a tier still spans the wall-clock time, and pays the INN, that the 15s
+    // schedule promised. Left unstretched each would elapse in about three days
+    // instead of six weeks: the rate stays right and the totals come out at a
+    // fifteenth, ending meaningful PoW subsidy roughly eight months early and
+    // taking the collateralnode share with it.
+    //
+    // Derived from FORK_HEIGHT_DAG = ShiftMainnetV5Activation(7950000) =
+    // 8,550,000. NOT shift-invariant: moving MAINNET_V5_ACTIVATION_SHIFT moves
+    // the fork, so every boundary here must be recomputed from the line above,
+    // and terminal supply moves with it -- blocks that cross the fork change
+    // which side of the divisor pays them.
+    else if (nHeight <= 11550000) // 0.1 Coin PoW Reward to release 1 CollateralNode (was <= 8,750,000)
       nSubsidy = 0.1 * COIN;
-    else if (nHeight <= 9000000) // 0.05 Coin PoW Reward to release 12,500 INN in 250,000 blocks
+    else if (nHeight <= 15300000) // 0.05 Coin PoW Reward to release 12,500 INN (was <= 9,000,000)
       nSubsidy = 0.05 * COIN;
-    else if (nHeight <= 9250000) // 0.01 Coin PoW Reward to release 2,500 INN in 250,000 blocks
+    else if (nHeight <= 19050000) // 0.01 Coin PoW Reward to release 2,500 INN (was <= 9,250,000)
       nSubsidy = 0.01 * COIN;
-    else if (nHeight <= 9500000) // 0.05 Coin PoW Reward to release 12,500 INN in 250,000 blocks
+    else if (nHeight <= 22800000) // 0.05 Coin PoW Reward to release 12,500 INN (was <= 9,500,000)
       nSubsidy = 0.05 * COIN;
-    else if (nHeight <= 9750000) // 0.1 Coin PoW Reward to release 1 CollateralNode in 250,000 blocks
+    else if (nHeight <= 26550000) // 0.1 Coin PoW Reward to release 1 CollateralNode (was <= 9,750,000)
       nSubsidy = 0.1 * COIN;
-    else if (nHeight <= 10000000) // 0.2 Coin PoW Reward to release 50,000 INN in 250,000 blocks
+    else if (nHeight <= 30300000) // 0.2 Coin PoW Reward to release 50,000 INN (was <= 10,000,000)
       nSubsidy = 0.2 * COIN;
-    else if (nHeight >= 10000000) // 0.0001 Coin PoW Reward to release ~200 INN per year
-      nSubsidy = 0.0001 * COIN; // Final PoW Reward 0.0001 INN @ block 10 mln
+    else // 0.0001 Coin PoW Reward to release ~200 INN per year
+      nSubsidy = 0.0001 * COIN; // Final PoW Reward 0.0001 INN (was @ block 10 mln)
 
     // IDAG emission-rate correction: post-DAG blocks come 15x faster (1s vs 15s pre-DAG, see
     // GetTargetSpacingForHeight). The tier schedule above encodes the intended per-block emission at the
