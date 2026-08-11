@@ -1677,4 +1677,78 @@ BOOST_AUTO_TEST_CASE(v4_restart_conflict_reorg_and_shortening_converge_exactly)
     BOOST_CHECK_EQUAL(branchCount, baselineCount);
 }
 
+// IterateEpochStates decodes an epoch-state record by hand rather than with
+// `>> state`, so it has to be kept in step with CEpochState's serializer field for
+// field. A V6 record carries the drawn finality committee; a reader that stops at V5
+// leaves those bytes unread, the record throws "trailing epoch-state bytes", the whole
+// enumeration fails closed, and every path that enumerates -- EraseEpochStateSuffix on
+// the reorg path among them -- fails with it, which stops the node accepting blocks.
+//
+// MUTATION: delete the EPOCHSTATE_SER_VERSION_V6 branch from the reader in
+// txdb-leveldb.cpp and this case fails on the very first committee record.
+BOOST_AUTO_TEST_CASE(iterate_epoch_states_reads_every_field_the_serializer_writes)
+{
+    PrivacyVNextEpochSeed seed;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextEpochSeed(seed, strError), strError);
+
+    const int E = 920001;
+    CEpochState state;
+    state.nEpoch = E;
+    state.nHeightStart = 1;
+    state.nHeightEnd = 1;
+    state.hashBoundaryBlock = uint256(0x92000101);
+    state.vBlockHashes.push_back(state.hashBoundaryBlock);
+    state.nBlockCount = 1;
+    state.nTxCount = 1;
+    state.nSerVersion = EPOCHSTATE_SER_VERSION_V6;
+    state.vchVNextTreeState = seed.vchTreeState;
+    state.vchVNextRoot = seed.vchRoot;
+    state.nVNextTreeSize = seed.nTreeSize;
+    state.vchVNextNullifierState = seed.vchNullifierState;
+    state.hashVNextNullifierRoot = uint256(seed.vchNullifierRoot);
+    state.nVNextNullifierCount = seed.nNullifierCount;
+    state.vchVNextParameterDigest = seed.vchParameterDigest;
+    state.nVNextPoolBalance = 4242;
+    // Three seats, each a distinct compressed key shape.
+    for (int i = 0; i < 3; i++)
+    {
+        std::vector<unsigned char> seat(33, (unsigned char)(0x40 + i));
+        seat[0] = (unsigned char)(0x02 + (i & 1));
+        state.vFinalityCommittee.push_back(seat);
+    }
+    state.nFinalityCommitteeM = 2;
+
+    // The whole-struct round trip is what the hand reader has to reproduce.
+    CDataStream encoded(SER_DISK, CLIENT_VERSION);
+    encoded << state;
+    CEpochState decoded;
+    encoded >> decoded;
+    BOOST_REQUIRE(encoded.empty());
+    BOOST_CHECK(decoded.vFinalityCommittee == state.vFinalityCommittee);
+    BOOST_CHECK_EQUAL(decoded.nFinalityCommitteeM, state.nFinalityCommitteeM);
+
+    CTxDB txdb("rw");
+    CEpochState saved;
+    const bool fHadSaved = txdb.ReadEpochState(E, saved);
+    BOOST_REQUIRE(txdb.WriteEpochState(E, state));
+
+    std::map<int, CEpochState> mapStates;
+    const bool fIterated = txdb.IterateEpochStates(mapStates);
+    if (fHadSaved)
+        txdb.WriteEpochState(E, saved);
+    else
+        txdb.EraseEpochState(E);
+
+    BOOST_REQUIRE_MESSAGE(fIterated,
+                          "IterateEpochStates rejected a record CEpochState wrote");
+    std::map<int, CEpochState>::const_iterator it = mapStates.find(E);
+    BOOST_REQUIRE(it != mapStates.end());
+    BOOST_CHECK_EQUAL(it->second.nSerVersion, EPOCHSTATE_SER_VERSION_V6);
+    BOOST_CHECK(it->second.vFinalityCommittee == state.vFinalityCommittee);
+    BOOST_CHECK_EQUAL(it->second.nFinalityCommitteeM, state.nFinalityCommitteeM);
+    BOOST_CHECK_EQUAL(it->second.nVNextPoolBalance, state.nVNextPoolBalance);
+    BOOST_CHECK(it->second.GetDigest() == state.GetDigest());
+}
+
 BOOST_AUTO_TEST_SUITE_END()
