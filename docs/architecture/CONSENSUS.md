@@ -142,6 +142,56 @@ tally certificates are carried inside PoW blocks. `ConnectBlock()` (`main.cpp`)
 rejects finality votes, shares, and certificates that appear anywhere but a
 post-DAG PoW block.
 
+### 3.1 Why stake does not produce blocks here
+
+The reason is specific to the ordering rule, not to DAGs generally. GHOSTDAG and
+DAGKNIGHT are proved in the proof-of-work model, and the proof uses it three
+times: `k` is derived from a Poisson tail whose rate parameter is hashpower, so
+it bounds an anticone only because blocks arrive at a metered rate; blue-set
+selection counts blocks as votes, and "an attacker cannot assemble a larger
+k-cluster" is a statement about relative computational power; and DAGKNIGHT
+infers `k` from observed DAG width, which is evidence about latency only while
+width is expensive to manufacture. Block creation that costs nothing voids all
+three, and it does so more sharply than in a longest-chain protocol, because a
+blockDAG counts every block in the cluster rather than only a longest path.
+
+The claim is therefore not that a DAG cannot use stake. Several deployed systems
+pair the two, but they are a different construction: the DAG is a mempool or
+gossip structure and ordering comes from a BFT rule over a known validator set,
+rate-limited by identity at one vertex per validator per round. The only
+published proof-of-stake blockDAG, Fantomette, kept the DAG shape by adding a
+VRF lottery, security deposits and checkpointing -- which replaces the parts of
+GHOSTDAG that make it GHOSTDAG.
+
+Innova has a further constraint no such system has faced: its stake is hidden
+note value in the shielded pool. There is no registered validator set to give
+one slot each, no public weight to run a lottery against, and nothing
+identifiable to slash. Private stake appears in the literature only in
+chain-based protocols, never in a DAG.
+
+### 3.2 If this is revisited
+
+Stake would gain block production; it would never trade finality for it.
+Finality is the stronger guarantee and the one proof-of-work cannot supply, and
+post-DAG subsidy is small enough that renting hashrate is cheap -- so
+irreversibility rests on the finality layer, not on accumulated work. Moving
+stake off finality to produce blocks would exchange the guarantee only stake can
+give for one the chain already has.
+
+The open problem is not the lottery. It is role separation: today producers and
+finalizers are distinct populations, so a producer cannot certify its own block.
+If stake did both, a majority staker could produce and finalize together, which
+is what the finality gadget exists to prevent. The usual answer is separate
+sortition per role in the same slot, and with hidden weights that separation
+cannot be publicly verified. That is the question to answer first, and it is
+research rather than engineering.
+
+One piece already exists: the per-epoch vote tag in
+`privacy_vnext/rust/src/vote.rs` is VRF-shaped, and a per-slot domain would give
+one tag per note per slot -- so two blocks under one tag are self-evidently
+equivocation, without any identity. That is the property other designs needed a
+registered validator set to obtain.
+
 ---
 
 ## 4. Epoch finality (`finality.cpp` / `finality.h`)
