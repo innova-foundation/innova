@@ -2150,17 +2150,25 @@ bool BuildFinalitySettlementOutputs(const std::vector<CFinalityVote>& vCountedVo
     }
 
     // PRIVATE-TIER PLUG-IN POINT.
-    // The private (NullStake) leg settles at this same freeze point and this same
-    // height, from the private subset of vCountedVotes (vote.IsPrivate()). It adds a
-    // second output shape -- sealed reward notes, whose value lives in a commitment
-    // rather than in CTxOut::nValue -- so it contributes to the block's shielded-pool
-    // delta instead of to nTotalOut here, and its per-vote amount comes from the epoch
-    // tally certificate's rewardBudgetCommitment rather than from vote.nReward (CheckVote
-    // pins private nReward to 0). Nothing above needs to change: the frozen set already
-    // carries both tiers, the settlement height is shared, and the reorg behaviour is the
-    // same re-derivation. It is NOT wired today because private votes carry no finality
-    // weight yet -- the note-tally layer (RunNoteTallyCommitteePass / OpenNoteTallyAggregate
-    // / CheckNoteTallyCertificate in finality_note.cpp) has no callers.
+    // The note tier settles from the note votes, not from vCountedVotes: a note vote is
+    // not a CFinalityVote and its amount lives in the vote's own reward commitment R
+    // rather than in any int64 field. It adds a second output shape -- reward notes,
+    // whose value lives in a commitment -- so it contributes to the block's shielded-pool
+    // delta instead of to nTotalOut here.
+    //
+    // NOT wired. What is in place: R is authenticated (share coefficient L_0 == R, the
+    // reward evaluations check against L_k, the aggregate opens strictly to sum R_i).
+    // What is missing before any of it may mint:
+    //   - a carrier for CNoteVoteRewardProof, which the vote names by hash but cannot
+    //     hold: 4.7 KB of range proofs on top of a 7 KB membership proof does not fit
+    //     MAX_SCRIPT_SIZE. Without a carried proof, R is a number the voter chose, and
+    //     minting it would be an unbounded issue.
+    //   - a sealed payout descriptor on the vote, so a mint has an owner to pay.
+    //   - the mint itself in BOTH ConnectBlock and BuildEpochState, since the note tree
+    //     and the pool balance are epoch-state and the coinbase allowance is not.
+    // R2 also puts epoch E's certificate no earlier than H_E + 24, which is this very
+    // height, so the note leg cannot settle here at all: it belongs one settlement later,
+    // at H_{E+1} + 24, minting for E only if a v4 certificate for E connected in between.
 
     return true;
 }
@@ -2505,6 +2513,11 @@ uint256 GetNoteVoteSemanticIdentity(const CNoteFinalityVote& vote)
     ss << vote.committeeSetHash;
     ss << vote.vchTag;
     ss << vote.share.GetHash();
+    // R and the proof it names decide what this tag is paid, so two carriers that
+    // disagree about either are two different votes and the tag counts for neither.
+    // Leaving them out would make a redirected payout look like a re-carry.
+    ss << vote.vchRewardCommitment;
+    ss << vote.hashRewardProof;
     PrivacyVNextDigest cTilde;
     cTilde.fill(0);
     vote.GetCTilde(cTilde);
@@ -8837,20 +8850,21 @@ static bool ProcessNoteTallyCommitteeEpoch(int nEpoch)
     // validator recomputes them; the interpolation is only accepted if it opens them.
     PrivacyVNextDigest activePoint;
     PrivacyVNextDigest winningPoint;
+    PrivacyVNextDigest rewardPoint;
     activePoint.fill(0);
     winningPoint.fill(0);
+    rewardPoint.fill(0);
     if (!DeriveNoteTallyAggregates(vCovered, hashWinner, activePoint, winningPoint,
-                                   &strError))
+                                   rewardPoint, &strError))
         return fDidWork;
 
     int64_t nPrivateActive = 0;
     int64_t nPrivateReward = 0;
     uint256 activeBlind = 0;
     uint256 activeRewardBlind = 0;
-    bool fHaveActiveReward = false;
-    if (!OpenNoteTallyAggregate(vActiveShares, config.nThresholdM, activePoint,
+    if (!OpenNoteTallyAggregate(vActiveShares, config.nThresholdM, activePoint, rewardPoint,
                                 nPrivateActive, activeBlind, nPrivateReward,
-                                activeRewardBlind, &fHaveActiveReward, &strError))
+                                activeRewardBlind, &strError))
     {
         if (fDebug)
             printf("ProcessNoteTallyCommitteeEpoch: epoch %d active aggregate did not "
@@ -8862,12 +8876,28 @@ static bool ProcessNoteTallyCommitteeEpoch(int nEpoch)
     uint256 winningBlind = 0;
     if (fWinnerHasNoteVotes)
     {
+        // The winning subset's reward aggregate is over the same subset, which is not the
+        // set anything is paid over; derive it here so the strict open has a point to
+        // check against rather than weakening the open for one caller.
+        std::vector<const CNoteFinalityVote*> vWinnersOnly;
+        for (size_t i = 0; i < vCovered.size(); i++)
+            if (vCovered[i]->hashBlock == hashWinner)
+                vWinnersOnly.push_back(vCovered[i]);
+        PrivacyVNextDigest winningActive;
+        PrivacyVNextDigest winningWinning;
+        PrivacyVNextDigest winningReward;
+        winningActive.fill(0);
+        winningWinning.fill(0);
+        winningReward.fill(0);
+        if (!DeriveNoteTallyAggregates(vWinnersOnly, hashWinner, winningActive,
+                                       winningWinning, winningReward, &strError))
+            return fDidWork;
+
         int64_t nWinningReward = 0;
         uint256 winningRewardBlind = 0;
-        bool fHaveWinningReward = false;
         if (!OpenNoteTallyAggregate(vWinningShares, config.nThresholdM, winningPoint,
-                                    nPrivateWinning, winningBlind, nWinningReward,
-                                    winningRewardBlind, &fHaveWinningReward, &strError))
+                                    winningReward, nPrivateWinning, winningBlind,
+                                    nWinningReward, winningRewardBlind, &strError))
         {
             if (fDebug)
                 printf("ProcessNoteTallyCommitteeEpoch: epoch %d winning aggregate did "
@@ -8946,14 +8976,14 @@ static bool ProcessNoteTallyCommitteeEpoch(int nEpoch)
     if (fDebug)
         printf("ProcessNoteTallyCommitteeEpoch: epoch %d tier=%d covered=%u "
                "complaints=%u note_active=%s note_winning=%s transparent_active=%s "
-               "transparent_winning=%s reward=%d assembled=%d\n",
+               "transparent_winning=%s reward=%s assembled=%d\n",
                nEpoch, (int)tier, (unsigned int)vCoveredTags.size(),
                (unsigned int)cert.vNoteComplaints.size(),
                FormatMoney(nPrivateActive).c_str(),
                FormatMoney(nPrivateWinning).c_str(),
                FormatMoney(skeleton.nTransparentActiveWeight).c_str(),
                FormatMoney(skeleton.nTransparentWinningWeight).c_str(),
-               fHaveActiveReward ? 1 : 0, fAssembled ? 1 : 0);
+               FormatMoney(nPrivateReward).c_str(), fAssembled ? 1 : 0);
 
     if (fAssembled && g_finalityTracker.AddTallyCertificate(assembled))
     {
@@ -9658,7 +9688,6 @@ static bool ProduceNoteFinalityVote(CTxDB& txdb, CBlockIndex* pEpochBlock,
            EPOCHSTATE_VNEXT_DIGEST_SIZE);
     ctx.hashNullifierRoot = anchorState.hashNullifierRoot;
     ctx.nAmount = (int64_t)note.nAmount;
-    ctx.nReward = GetFinalityVoteReward(ctx.nAmount, GetEpochInterval(nEpochHeight));
 
     PrivacyVNextDigest noteMask;
     PrivacyVNextSpendInput input;
@@ -9671,8 +9700,13 @@ static bool ProduceNoteFinalityVote(CTxDB& txdb, CBlockIndex* pEpochBlock,
     input.vchWitnessRecord = vchWitnessRecord;
 
     CNoteFinalityVote vote;
+    // The reward proof does not fit the vote's script, so it comes back beside the vote.
+    // Nothing carries it yet -- the settlement leg that spends it is not wired -- so it is
+    // built and checked here and goes no further; a vote whose proof could not be built
+    // is refused rather than cast unpayable.
+    CNoteVoteRewardProof rewardProof;
     const bool fBuilt = BuildNoteFinalityVote(ctx, input, noteMask, config, vote,
-                                              &strError);
+                                              rewardProof, &strError);
     OPENSSL_cleanse(noteMask.data(), noteMask.size());
     if (!fBuilt)
     {

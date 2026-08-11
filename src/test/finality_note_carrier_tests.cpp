@@ -157,6 +157,13 @@ CNoteFinalityVote MakeCarrierVote(const CFinalityTallyConfig& config,
         BuildNoteVoteWeightFloorProof(nAmount, maskTilde, ProofEntropy(0x91),
                                       vote.vchWeightFloorProof, &strError),
         strError);
+    // R is the share's own L_0, which is the rule; the reward proof it names rides in a
+    // carrier of its own and no case here reaches a proof verifier.
+    PrivacyVNextDigest rewardCommitment;
+    rewardCommitment.fill(0);
+    BOOST_REQUIRE(share.GetRewardCommitment(rewardCommitment));
+    vote.vchRewardCommitment.assign(rewardCommitment.begin(), rewardCommitment.end());
+    vote.hashRewardProof = uint256(0x5700 + nTagSeed);
     vote.share = share;
     BOOST_REQUIRE_MESSAGE(vote.IsValidBasic(&strError), strError);
     return vote;
@@ -589,6 +596,11 @@ BOOST_AUTO_TEST_CASE(note_vote_weight_floor_rejects_a_supplied_commitment_point)
     vote.vchTag.assign(FINALITY_NOTE_POINT_SIZE, 0x71);
     vote.vchSigma.assign(FINALITY_NOTE_SIGMA_SIZE, 0x11);
     vote.vchWeightFloorProof = vchDustProof;
+    PrivacyVNextDigest dustReward;
+    dustReward.fill(0);
+    BOOST_REQUIRE(share.GetRewardCommitment(dustReward));
+    vote.vchRewardCommitment.assign(dustReward.begin(), dustReward.end());
+    vote.hashRewardProof = uint256(0x5771);
     vote.share = share;
     BOOST_REQUIRE(vote.IsValidBasic(&strError));
     BOOST_CHECK(!CheckNoteVoteWeightFloorProof(vote, &strError));

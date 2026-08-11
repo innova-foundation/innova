@@ -170,6 +170,9 @@ std::vector<unsigned char> BuildNoteShareAAD(const CNoteVoteShare& share,
     ss << share.nEpoch;
     ss << share.committeeSetHash;
     ss << share.vVssCoefficients;
+    // The reward coefficients are what the sealed reward evaluation is now checked
+    // against, so they belong to what this ciphertext is authenticated under.
+    ss << share.vRewardVssCoefficients;
     ss << nRecipientIndex;
     ss << std::vector<unsigned char>(pubEphemeral.begin(), pubEphemeral.end());
     return std::vector<unsigned char>(ss.begin(), ss.end());
@@ -458,6 +461,42 @@ bool CNoteVoteShare::GetCommitment(PrivacyVNextDigest& commitmentOut) const
     return DigestFromBytes(vVssCoefficients[0], commitmentOut);
 }
 
+bool CNoteVoteShare::GetRewardCommitment(PrivacyVNextDigest& commitmentOut) const
+{
+    if (vRewardVssCoefficients.empty())
+        return false;
+    return DigestFromBytes(vRewardVssCoefficients[0], commitmentOut);
+}
+
+uint256 CNoteVoteRewardProof::GetHash() const
+{
+    return SerializeHash(*this);
+}
+
+bool CNoteVoteRewardProof::IsValidBasic(std::string* pstrError) const
+{
+    if (vchQuotient.size() != FINALITY_NOTE_POINT_SIZE ||
+        vchCoinAge.size() != FINALITY_NOTE_POINT_SIZE)
+    {
+        Fail(pstrError, "note vote reward proof auxiliary commitment is not a point");
+        return false;
+    }
+    if (vProofs.size() != (size_t)NOTE_VOTE_REWARD_STATEMENT_COUNT)
+    {
+        Fail(pstrError, "note vote reward proof does not carry every statement");
+        return false;
+    }
+    for (size_t i = 0; i < vProofs.size(); i++)
+    {
+        if (vProofs[i].empty() || vProofs[i].size() > FINALITY_NOTE_MAX_RANGE_PROOF_BYTES)
+        {
+            Fail(pstrError, "note vote reward proof statement has an unusable length");
+            return false;
+        }
+    }
+    return true;
+}
+
 bool CNoteVoteShare::IsValidBasic(std::string* pstrError) const
 {
     if (nVersion != FINALITY_NOTE_SHARE_VERSION)
@@ -486,6 +525,22 @@ bool CNoteVoteShare::IsValidBasic(std::string* pstrError) const
         if (vVssCoefficients[i].size() != FINALITY_NOTE_POINT_SIZE)
         {
             Fail(pstrError, "note vote share coefficient is not a point");
+            return false;
+        }
+    }
+    // One reward coefficient per weight coefficient. A shorter reward vector would let a
+    // voter share a reward polynomial of a degree the committee never agreed to, which
+    // interpolates to the wrong sum while every individual evaluation still checks.
+    if (vRewardVssCoefficients.size() != vVssCoefficients.size())
+    {
+        Fail(pstrError, "note vote share reward coefficient count is not the weight count");
+        return false;
+    }
+    for (size_t i = 0; i < vRewardVssCoefficients.size(); i++)
+    {
+        if (vRewardVssCoefficients[i].size() != FINALITY_NOTE_POINT_SIZE)
+        {
+            Fail(pstrError, "note vote share reward coefficient is not a point");
             return false;
         }
     }
@@ -536,6 +591,11 @@ bool CNoteFinalityVote::GetCTilde(PrivacyVNextDigest& out) const
     return true;
 }
 
+bool CNoteFinalityVote::GetRewardCommitment(PrivacyVNextDigest& out) const
+{
+    return DigestFromBytes(vchRewardCommitment, out);
+}
+
 bool CNoteFinalityVote::IsValidBasic(std::string* pstrError) const
 {
     if (nVersion != FINALITY_NOTE_VOTE_VERSION)
@@ -568,6 +628,16 @@ bool CNoteFinalityVote::IsValidBasic(std::string* pstrError) const
         vchWeightFloorProof.size() > FINALITY_NOTE_MAX_RANGE_PROOF_BYTES)
     {
         Fail(pstrError, "note vote weight-floor proof has an unusable length");
+        return false;
+    }
+    if (vchRewardCommitment.size() != FINALITY_NOTE_POINT_SIZE)
+    {
+        Fail(pstrError, "note vote reward commitment is not a point");
+        return false;
+    }
+    if (hashRewardProof == 0)
+    {
+        Fail(pstrError, "note vote names no reward proof");
         return false;
     }
     if (vchMembership.size() < FINALITY_NOTE_MEMBERSHIP_MIN ||
@@ -619,6 +689,11 @@ uint256 ComputeNoteVoteBinding(const CNoteFinalityVote& vote)
     // A re-randomized floor proof over the same point verifies just as well, so leaving it
     // unbound would let a relaying peer mint a second byte-distinct vote under one tag.
     ss << Hash(vote.vchWeightFloorProof.begin(), vote.vchWeightFloorProof.end());
+    // R and its proof. R decides what this vote is paid, so leaving it unbound would let
+    // a relaying peer swap in another commitment -- one it can open -- under a sigma that
+    // still verifies, and be paid out of the epoch's mint for a vote it did not cast.
+    ss << vote.vchRewardCommitment;
+    ss << vote.hashRewardProof;
     // The share hash is what makes one share structurally the vote's own: a mutated or
     // duplicated share reaches a different digest and no longer matches any sigma.
     ss << vote.share.GetHash();
@@ -727,6 +802,353 @@ bool CheckNoteVoteWeightFloorProof(const CNoteFinalityVote& vote, std::string* p
     return true;
 }
 
+namespace
+{
+// One term of a statement point. A generator term carries no point of its own.
+PrivacyVNextCombineTerm SuppliedTerm(const uint256& scalar, const PrivacyVNextDigest& point)
+{
+    PrivacyVNextCombineTerm term;
+    term.nSource = PRIVACY_VNEXT_TERM_SUPPLIED;
+    term.scalar = Ed25519ScalarToDigest(scalar);
+    term.point = point;
+    return term;
+}
+
+PrivacyVNextCombineTerm MoneroHTerm(const uint256& scalar)
+{
+    PrivacyVNextCombineTerm term;
+    term.nSource = PRIVACY_VNEXT_TERM_MONERO_H;
+    term.scalar = Ed25519ScalarToDigest(scalar);
+    return term;
+}
+
+// The three divisors the reward formula truncates by, as field scalars.
+const int64_t NOTE_REWARD_SECONDS_PER_DAY = 24 * 60 * 60;
+const int64_t NOTE_REWARD_DAYS_PER_YEAR = 365;
+
+/** Split one weight into the quotients and remainders GetFinalityVoteReward truncates by.
+ *
+ *  Every product below is bounded by MAX_MONEY * nEpochInterval, so the int64 arithmetic
+ *  is exact for any weight and interval consensus can present; the caller range-checks
+ *  both before calling. */
+bool DecomposeNoteVoteReward(int64_t nAmount, int nEpochInterval,
+                             int64_t& nQuotientOut, int64_t& nCoinRemainderOut,
+                             int64_t& nCoinAgeOut, int64_t& nDayRemainderOut,
+                             int64_t& nRewardOut, int64_t& nYearRemainderOut)
+{
+    if (nAmount < 0 || nAmount > MAX_MONEY || nEpochInterval <= 0)
+        return false;
+    if (nAmount != 0 && nEpochInterval > std::numeric_limits<int64_t>::max() / nAmount)
+        return false;
+
+    const int64_t nProduct = nAmount * (int64_t)nEpochInterval;
+    nQuotientOut = nProduct / COIN;
+    nCoinRemainderOut = nProduct % COIN;
+    nCoinAgeOut = nQuotientOut / NOTE_REWARD_SECONDS_PER_DAY;
+    nDayRemainderOut = nQuotientOut % NOTE_REWARD_SECONDS_PER_DAY;
+
+    if (nCoinAgeOut != 0 &&
+        COIN_YEAR_REWARD > std::numeric_limits<int64_t>::max() / nCoinAgeOut)
+        return false;
+    const int64_t nRewardProduct = nCoinAgeOut * COIN_YEAR_REWARD;
+    nRewardOut = nRewardProduct / NOTE_REWARD_DAYS_PER_YEAR;
+    nYearRemainderOut = nRewardProduct % NOTE_REWARD_DAYS_PER_YEAR;
+
+    // GetFinalityVoteReward saturates at MAX_MONEY, which would break the exact identity
+    // the proof rests on. Unreachable for a weight in the money range at any interval
+    // this chain schedules, so refuse rather than silently prove a different statement.
+    if (nRewardOut > MAX_MONEY)
+        return false;
+    return nRewardOut == GetFinalityVoteReward(nAmount, nEpochInterval);
+}
+} // namespace
+
+bool DeriveNoteVoteRewardStatementPoints(const PrivacyVNextDigest& cTilde,
+                                         const PrivacyVNextDigest& rewardCommitment,
+                                         const CNoteVoteRewardProof& proof,
+                                         int nEpochInterval,
+                                         std::vector<PrivacyVNextDigest>& vPointsOut,
+                                         std::string* pstrError)
+{
+    vPointsOut.clear();
+    if (nEpochInterval <= 0)
+    {
+        Fail(pstrError, "note vote reward statement has no epoch interval");
+        return false;
+    }
+    PrivacyVNextDigest quotient = ZeroDigest();
+    PrivacyVNextDigest coinAge = ZeroDigest();
+    if (!DigestFromBytes(proof.vchQuotient, quotient) ||
+        !DigestFromBytes(proof.vchCoinAge, coinAge))
+    {
+        Fail(pstrError, "note vote reward proof auxiliary commitment is not a point");
+        return false;
+    }
+
+    const uint256 one = Ed25519ScalarFromUint64(1);
+    const uint256 interval = Ed25519ScalarFromInt64((int64_t)nEpochInterval);
+    const uint256 negInterval = Ed25519ScalarNeg(interval);
+    const uint256 coin = Ed25519ScalarFromInt64(COIN);
+    const uint256 negCoin = Ed25519ScalarNeg(coin);
+    const uint256 day = Ed25519ScalarFromInt64(NOTE_REWARD_SECONDS_PER_DAY);
+    const uint256 negDay = Ed25519ScalarNeg(day);
+    const uint256 yearReward = Ed25519ScalarFromInt64(COIN_YEAR_REWARD);
+    const uint256 negYearReward = Ed25519ScalarNeg(yearReward);
+    const uint256 year = Ed25519ScalarFromInt64(NOTE_REWARD_DAYS_PER_YEAR);
+    const uint256 negYear = Ed25519ScalarNeg(year);
+    const uint256 negOne = Ed25519ScalarNeg(one);
+
+    std::vector<std::vector<PrivacyVNextCombineTerm> > vStatements(
+        NOTE_VOTE_REWARD_STATEMENT_COUNT);
+
+    // r1 = interval*w - COIN*q1, as a point: interval*C~ - COIN*Q.
+    vStatements[NOTE_VOTE_REWARD_COIN_REMAINDER].push_back(SuppliedTerm(interval, cTilde));
+    vStatements[NOTE_VOTE_REWARD_COIN_REMAINDER].push_back(SuppliedTerm(negCoin, quotient));
+    // COIN-1-r1, the other half of 0 <= r1 < COIN.
+    vStatements[NOTE_VOTE_REWARD_COIN_REMAINDER_SLACK].push_back(
+        MoneroHTerm(Ed25519ScalarFromInt64(COIN - 1)));
+    vStatements[NOTE_VOTE_REWARD_COIN_REMAINDER_SLACK].push_back(
+        SuppliedTerm(negInterval, cTilde));
+    vStatements[NOTE_VOTE_REWARD_COIN_REMAINDER_SLACK].push_back(
+        SuppliedTerm(coin, quotient));
+
+    // r2 = q1 - 86400*a.
+    vStatements[NOTE_VOTE_REWARD_DAY_REMAINDER].push_back(SuppliedTerm(one, quotient));
+    vStatements[NOTE_VOTE_REWARD_DAY_REMAINDER].push_back(SuppliedTerm(negDay, coinAge));
+    vStatements[NOTE_VOTE_REWARD_DAY_REMAINDER_SLACK].push_back(
+        MoneroHTerm(Ed25519ScalarFromInt64(NOTE_REWARD_SECONDS_PER_DAY - 1)));
+    vStatements[NOTE_VOTE_REWARD_DAY_REMAINDER_SLACK].push_back(
+        SuppliedTerm(negOne, quotient));
+    vStatements[NOTE_VOTE_REWARD_DAY_REMAINDER_SLACK].push_back(SuppliedTerm(day, coinAge));
+
+    // a itself. Without it a prover could pick a remainder that makes the quotient
+    // non-integral, which leaves the "quotient" a field element of no bounded size.
+    vStatements[NOTE_VOTE_REWARD_COIN_AGE].push_back(SuppliedTerm(one, coinAge));
+
+    // r3 = COIN_YEAR_REWARD*a - 365*f.
+    vStatements[NOTE_VOTE_REWARD_YEAR_REMAINDER].push_back(
+        SuppliedTerm(yearReward, coinAge));
+    vStatements[NOTE_VOTE_REWARD_YEAR_REMAINDER].push_back(
+        SuppliedTerm(negYear, rewardCommitment));
+    vStatements[NOTE_VOTE_REWARD_YEAR_REMAINDER_SLACK].push_back(
+        MoneroHTerm(Ed25519ScalarFromInt64(NOTE_REWARD_DAYS_PER_YEAR - 1)));
+    vStatements[NOTE_VOTE_REWARD_YEAR_REMAINDER_SLACK].push_back(
+        SuppliedTerm(negYearReward, coinAge));
+    vStatements[NOTE_VOTE_REWARD_YEAR_REMAINDER_SLACK].push_back(
+        SuppliedTerm(year, rewardCommitment));
+
+    // f itself, so the epoch's sum of rewards cannot be made to wrap the group order.
+    vStatements[NOTE_VOTE_REWARD_VALUE].push_back(SuppliedTerm(one, rewardCommitment));
+
+    vPointsOut.resize(NOTE_VOTE_REWARD_STATEMENT_COUNT);
+    for (size_t i = 0; i < vStatements.size(); i++)
+    {
+        std::string error;
+        if (!CombinePrivacyVNextPoints(vStatements[i], vPointsOut[i], error))
+        {
+            vPointsOut.clear();
+            Fail(pstrError, "note vote reward statement point could not be derived");
+            return false;
+        }
+    }
+    return true;
+}
+
+bool BuildNoteVoteRewardProof(int64_t nAmount,
+                              const uint256& maskTilde,
+                              const uint256& rewardBlind,
+                              int nEpochInterval,
+                              CNoteVoteRewardProof& proofOut,
+                              PrivacyVNextDigest& rewardCommitmentOut,
+                              std::string* pstrError)
+{
+    proofOut = CNoteVoteRewardProof();
+    rewardCommitmentOut = ZeroDigest();
+
+    int64_t nQuotient = 0, nCoinRemainder = 0, nCoinAge = 0;
+    int64_t nDayRemainder = 0, nReward = 0, nYearRemainder = 0;
+    if (!DecomposeNoteVoteReward(nAmount, nEpochInterval, nQuotient, nCoinRemainder,
+                                 nCoinAge, nDayRemainder, nReward, nYearRemainder))
+    {
+        Fail(pstrError, "note vote reward could not be decomposed for its weight");
+        return false;
+    }
+
+    uint256 quotientBlind = 0;
+    uint256 coinAgeBlind = 0;
+    if (!DrawScalar(quotientBlind) || !DrawScalar(coinAgeBlind))
+    {
+        Fail(pstrError, "note vote reward proof could not draw its blinds");
+        return false;
+    }
+
+    PrivacyVNextDigest quotientPoint = ZeroDigest();
+    PrivacyVNextDigest coinAgePoint = ZeroDigest();
+    bool fOk = CommitScaled(Ed25519ScalarFromInt64(nQuotient), quotientBlind,
+                            quotientPoint, pstrError) &&
+               CommitScaled(Ed25519ScalarFromInt64(nCoinAge), coinAgeBlind,
+                            coinAgePoint, pstrError) &&
+               CommitScaled(Ed25519ScalarFromInt64(nReward), rewardBlind,
+                            rewardCommitmentOut, pstrError);
+    if (fOk)
+    {
+        proofOut.vchQuotient.assign(quotientPoint.begin(), quotientPoint.end());
+        proofOut.vchCoinAge.assign(coinAgePoint.begin(), coinAgePoint.end());
+    }
+
+    // The blind of every derived point follows from the three the prover drew, exactly as
+    // its value follows from the three equations. Deriving them rather than drawing them
+    // is what makes each statement land on the point the validator recomputes.
+    const uint256 interval = Ed25519ScalarFromInt64((int64_t)nEpochInterval);
+    const uint256 coin = Ed25519ScalarFromInt64(COIN);
+    const uint256 day = Ed25519ScalarFromInt64(NOTE_REWARD_SECONDS_PER_DAY);
+    const uint256 yearReward = Ed25519ScalarFromInt64(COIN_YEAR_REWARD);
+    const uint256 year = Ed25519ScalarFromInt64(NOTE_REWARD_DAYS_PER_YEAR);
+
+    const uint256 coinRemainderBlind =
+        Ed25519ScalarSub(Ed25519ScalarMul(interval, maskTilde),
+                         Ed25519ScalarMul(coin, quotientBlind));
+    const uint256 dayRemainderBlind =
+        Ed25519ScalarSub(quotientBlind, Ed25519ScalarMul(day, coinAgeBlind));
+    const uint256 yearRemainderBlind =
+        Ed25519ScalarSub(Ed25519ScalarMul(yearReward, coinAgeBlind),
+                         Ed25519ScalarMul(year, rewardBlind));
+
+    std::vector<int64_t> vValues(NOTE_VOTE_REWARD_STATEMENT_COUNT, 0);
+    std::vector<uint256> vBlinds(NOTE_VOTE_REWARD_STATEMENT_COUNT);
+    vValues[NOTE_VOTE_REWARD_COIN_REMAINDER] = nCoinRemainder;
+    vBlinds[NOTE_VOTE_REWARD_COIN_REMAINDER] = coinRemainderBlind;
+    vValues[NOTE_VOTE_REWARD_COIN_REMAINDER_SLACK] = COIN - 1 - nCoinRemainder;
+    vBlinds[NOTE_VOTE_REWARD_COIN_REMAINDER_SLACK] = Ed25519ScalarNeg(coinRemainderBlind);
+    vValues[NOTE_VOTE_REWARD_DAY_REMAINDER] = nDayRemainder;
+    vBlinds[NOTE_VOTE_REWARD_DAY_REMAINDER] = dayRemainderBlind;
+    vValues[NOTE_VOTE_REWARD_DAY_REMAINDER_SLACK] =
+        NOTE_REWARD_SECONDS_PER_DAY - 1 - nDayRemainder;
+    vBlinds[NOTE_VOTE_REWARD_DAY_REMAINDER_SLACK] = Ed25519ScalarNeg(dayRemainderBlind);
+    vValues[NOTE_VOTE_REWARD_COIN_AGE] = nCoinAge;
+    vBlinds[NOTE_VOTE_REWARD_COIN_AGE] = coinAgeBlind;
+    vValues[NOTE_VOTE_REWARD_YEAR_REMAINDER] = nYearRemainder;
+    vBlinds[NOTE_VOTE_REWARD_YEAR_REMAINDER] = yearRemainderBlind;
+    vValues[NOTE_VOTE_REWARD_YEAR_REMAINDER_SLACK] =
+        NOTE_REWARD_DAYS_PER_YEAR - 1 - nYearRemainder;
+    vBlinds[NOTE_VOTE_REWARD_YEAR_REMAINDER_SLACK] = Ed25519ScalarNeg(yearRemainderBlind);
+    vValues[NOTE_VOTE_REWARD_VALUE] = nReward;
+    vBlinds[NOTE_VOTE_REWARD_VALUE] = rewardBlind;
+
+    // Derive the points the validator will reach from this weight's own C~ and prove
+    // against those, so a proof that would be rejected on arrival never leaves the
+    // producer.
+    PrivacyVNextDigest cTilde = ZeroDigest();
+    std::vector<PrivacyVNextDigest> vPoints;
+    if (fOk)
+        fOk = CommitScaled(Ed25519ScalarFromInt64(nAmount), maskTilde, cTilde, pstrError) &&
+              DeriveNoteVoteRewardStatementPoints(cTilde, rewardCommitmentOut, proofOut,
+                                                  nEpochInterval, vPoints, pstrError);
+
+    for (size_t i = 0; fOk && i < vPoints.size(); i++)
+    {
+        if (vValues[i] < 0)
+        {
+            Fail(pstrError, "note vote reward statement value is negative");
+            fOk = false;
+            break;
+        }
+        PrivacyVNextDigest entropy = ZeroDigest();
+        if (!DrawProofEntropy(entropy))
+        {
+            Fail(pstrError, "note vote reward proof could not draw proving entropy");
+            fOk = false;
+            break;
+        }
+        PrivacyVNextDigest commitment = ZeroDigest();
+        std::vector<unsigned char> vchProof;
+        std::string error;
+        const bool fProved = ProvePrivacyVNextRange((uint64_t)vValues[i],
+                                                    Ed25519ScalarToDigest(vBlinds[i]),
+                                                    entropy, commitment, vchProof, error);
+        OPENSSL_cleanse(entropy.data(), entropy.size());
+        if (!fProved || vchProof.empty() ||
+            vchProof.size() > FINALITY_NOTE_MAX_RANGE_PROOF_BYTES)
+        {
+            Fail(pstrError, "note vote reward statement could not be range-proved");
+            fOk = false;
+            break;
+        }
+        if (commitment != vPoints[i])
+        {
+            Fail(pstrError, "note vote reward statement lands on a point the validator misses");
+            fOk = false;
+            break;
+        }
+        proofOut.vProofs.push_back(vchProof);
+    }
+
+    OPENSSL_cleanse(quotientBlind.begin(), 32);
+    OPENSSL_cleanse(coinAgeBlind.begin(), 32);
+    for (size_t i = 0; i < vBlinds.size(); i++)
+        OPENSSL_cleanse(vBlinds[i].begin(), 32);
+
+    if (fOk)
+        fOk = proofOut.IsValidBasic(pstrError);
+    if (!fOk)
+    {
+        proofOut = CNoteVoteRewardProof();
+        rewardCommitmentOut = ZeroDigest();
+    }
+    return fOk;
+}
+
+bool CheckNoteVoteRewardProof(const CNoteFinalityVote& vote,
+                              const CNoteVoteRewardProof& proof,
+                              std::string* pstrError)
+{
+    if (!proof.IsValidBasic(pstrError))
+        return false;
+    // The vote's own choice of proof, not whichever one a payer found lying about.
+    if (proof.GetHash() != vote.hashRewardProof)
+    {
+        Fail(pstrError, "note vote reward proof is not the one the vote names");
+        return false;
+    }
+
+    PrivacyVNextDigest cTilde = ZeroDigest();
+    PrivacyVNextDigest rewardCommitment = ZeroDigest();
+    if (!vote.GetCTilde(cTilde))
+    {
+        Fail(pstrError, "note vote membership instance carries no input tuple");
+        return false;
+    }
+    if (!vote.GetRewardCommitment(rewardCommitment))
+    {
+        Fail(pstrError, "note vote reward commitment is not a point");
+        return false;
+    }
+
+    // The interval is the one the vote's own epoch-boundary height selects. Reading it
+    // from anything the vote carries would let a voter name the interval that pays best.
+    const int nEpochInterval = GetEpochInterval(vote.nHeight);
+    std::vector<PrivacyVNextDigest> vPoints;
+    if (!DeriveNoteVoteRewardStatementPoints(cTilde, rewardCommitment, proof,
+                                             nEpochInterval, vPoints, pstrError))
+        return false;
+    if (vPoints.size() != proof.vProofs.size())
+    {
+        Fail(pstrError, "note vote reward proof statement count does not match");
+        return false;
+    }
+
+    for (size_t i = 0; i < vPoints.size(); i++)
+    {
+        std::string error;
+        if (!VerifyPrivacyVNextRange(vPoints[i], ZeroDigest(), proof.vProofs[i], error))
+        {
+            Fail(pstrError, "note vote reward proof does not show the formula's reward");
+            return false;
+        }
+    }
+    return true;
+}
+
 bool CheckNoteVote(const CNoteFinalityVote& vote,
                    int nThresholdM,
                    int nCommitteeN,
@@ -743,7 +1165,8 @@ bool CheckNoteVote(const CNoteFinalityVote& vote,
         Fail(pstrError, "note vote has no usable committee to check its share against");
         return false;
     }
-    if ((int)vote.share.vVssCoefficients.size() != nThresholdM)
+    if ((int)vote.share.vVssCoefficients.size() != nThresholdM ||
+        (int)vote.share.vRewardVssCoefficients.size() != nThresholdM)
     {
         Fail(pstrError, "note vote share degree is not the committee threshold");
         return false;
@@ -772,6 +1195,19 @@ bool CheckNoteVote(const CNoteFinalityVote& vote,
         return false;
     }
 
+    // L_0 == R, the reward side of the same rule. Without it the reward evaluations
+    // authenticate against a commitment the vote never published and the reward proof
+    // constrains, so a voter could prove the right reward and share a different one.
+    PrivacyVNextDigest rewardCommitment = ZeroDigest();
+    PrivacyVNextDigest rewardCoefficient = ZeroDigest();
+    if (!vote.GetRewardCommitment(rewardCommitment) ||
+        !vote.share.GetRewardCommitment(rewardCoefficient) ||
+        rewardCoefficient != rewardCommitment)
+    {
+        Fail(pstrError, "note vote share coefficient L_0 is not the vote's reward commitment");
+        return false;
+    }
+
     const uint256 binding = ComputeNoteVoteBinding(vote);
     PrivacyVNextDigest bindingDigest;
     memcpy(bindingDigest.data(), binding.begin(), 32);
@@ -794,6 +1230,10 @@ bool CheckNoteVote(const CNoteFinalityVote& vote,
         Fail(pstrError, "note vote membership proof does not verify");
         return false;
     }
+    // The reward proof is deliberately not checked here: it rides beside the vote, so a
+    // validator holding only the vote cannot check it, and a vote whose proof was never
+    // carried has to be a vote that counts and cannot be paid rather than an invalid one.
+    // CheckNoteVoteRewardProof is what the payer runs, against the proof this vote named.
     return true;
 }
 
@@ -802,9 +1242,11 @@ bool BuildNoteFinalityVote(const CNoteVoteBuildContext& ctx,
                            const PrivacyVNextDigest& noteMask,
                            const CFinalityTallyConfig& config,
                            CNoteFinalityVote& voteOut,
+                           CNoteVoteRewardProof& rewardProofOut,
                            std::string* pstrError)
 {
     voteOut = CNoteFinalityVote();
+    rewardProofOut = CNoteVoteRewardProof();
 
     if (ctx.nEpoch < 0 || ctx.nHeight < 0 || ctx.hashBlock == 0 ||
         ctx.hashAnchorRoot == 0 || ctx.hashNullifierRoot == 0)
@@ -814,10 +1256,16 @@ bool BuildNoteFinalityVote(const CNoteVoteBuildContext& ctx,
     }
     // Below the floor there is no weight-floor proof to make: the shifted point's
     // H-coefficient is negative and opens to nothing in range.
-    if (ctx.nAmount < FINALITY_MIN_VOTE_WEIGHT || ctx.nAmount > MAX_MONEY ||
-        ctx.nReward < 0 || ctx.nReward > MAX_MONEY)
+    if (ctx.nAmount < FINALITY_MIN_VOTE_WEIGHT || ctx.nAmount > MAX_MONEY)
     {
-        Fail(pstrError, "note vote weight or reward is outside the range a vote may carry");
+        Fail(pstrError, "note vote weight is outside the range a vote may carry");
+        return false;
+    }
+    const int nEpochInterval = GetEpochInterval(ctx.nHeight);
+    const int64_t nReward = GetFinalityVoteReward(ctx.nAmount, nEpochInterval);
+    if (nReward < 0 || nReward > MAX_MONEY)
+    {
+        Fail(pstrError, "note vote reward is outside the range a vote may carry");
         return false;
     }
     if (!config.fCommitteeValid || config.nThresholdM < 2 ||
@@ -878,18 +1326,44 @@ bool BuildNoteFinalityVote(const CNoteVoteBuildContext& ctx,
 
         voteOut.share.nEpoch = ctx.nEpoch;
         voteOut.share.committeeSetHash = config.committeeSetHash;
-        fOk = BuildNoteVoteShare(voteOut.share, ctx.nAmount, maskTilde, ctx.nReward,
+        fOk = BuildNoteVoteShare(voteOut.share, ctx.nAmount, maskTilde, nReward,
                                  rewardBlind, config, pstrError);
     }
 
-    // K_0 == C~ is a consensus rule, so a share that does not reach the membership
-    // proof's own commitment is a vote the network would reject: stop here instead.
+    // The reward proof recomputes the reward from the weight, so it is what decides what
+    // R commits to; ctx.nReward only has to agree with it. Building R here and requiring
+    // the share's L_0 to equal it keeps one value behind both.
+    PrivacyVNextDigest rewardCommitment = ZeroDigest();
+    if (fOk)
+    {
+        fOk = BuildNoteVoteRewardProof(ctx.nAmount, maskTilde, rewardBlind,
+                                       nEpochInterval, rewardProofOut,
+                                       rewardCommitment, pstrError);
+        if (fOk)
+        {
+            voteOut.vchRewardCommitment.assign(rewardCommitment.begin(),
+                                               rewardCommitment.end());
+            voteOut.hashRewardProof = rewardProofOut.GetHash();
+        }
+    }
+
+    // K_0 == C~ and L_0 == R are consensus rules, so a share that does not reach the
+    // membership proof's own commitment, or the reward the proof is over, is a vote the
+    // network would reject: stop here instead.
     if (fOk)
     {
         PrivacyVNextDigest commitment = ZeroDigest();
         fOk = voteOut.share.GetCommitment(commitment) && commitment == membership.cTilde;
         if (!fOk)
             Fail(pstrError, "note vote share does not open the membership proof's commitment");
+    }
+    if (fOk)
+    {
+        PrivacyVNextDigest rewardCoefficient = ZeroDigest();
+        fOk = voteOut.share.GetRewardCommitment(rewardCoefficient) &&
+              rewardCoefficient == rewardCommitment;
+        if (!fOk)
+            Fail(pstrError, "note vote share does not open the vote's reward commitment");
     }
 
     if (fOk)
@@ -948,8 +1422,16 @@ bool BuildNoteFinalityVote(const CNoteVoteBuildContext& ctx,
     if (fOk)
         fOk = CheckNoteVote(voteOut, config.nThresholdM,
                             (int)config.vCommitteePubKeys.size(), pstrError);
+    // The proof is checked here rather than at connect, because this is the only place
+    // both halves are in hand at once. A producer that emits a vote whose proof does not
+    // verify has cast a vote it can never be paid for.
+    if (fOk)
+        fOk = CheckNoteVoteRewardProof(voteOut, rewardProofOut, pstrError);
     if (!fOk)
+    {
         voteOut = CNoteFinalityVote();
+        rewardProofOut = CNoteVoteRewardProof();
+    }
     return fOk;
 }
 
@@ -983,6 +1465,7 @@ bool BuildNoteVoteShare(CNoteVoteShare& share,
 
     share.nVersion = FINALITY_NOTE_SHARE_VERSION;
     share.vVssCoefficients.clear();
+    share.vRewardVssCoefficients.clear();
     share.vEncryptedRecipientShares.clear();
 
     const int nDegree = config.nThresholdM - 1;
@@ -997,7 +1480,8 @@ bool BuildNoteVoteShare(CNoteVoteShare& share,
     }
 
     // K_k = a_k*H + b_k*G. K_0 is the vote's own commitment by construction, so any M
-    // accepted evaluations interpolate to an opening of it and of nothing else.
+    // accepted evaluations interpolate to an opening of it and of nothing else. L_k is
+    // the same construction over the reward pair, so the same holds of the reward.
     for (size_t k = 0; k < vWeight.size(); k++)
     {
         PrivacyVNextDigest coefficient = ZeroDigest();
@@ -1005,6 +1489,12 @@ bool BuildNoteVoteShare(CNoteVoteShare& share,
             return false;
         share.vVssCoefficients.push_back(
             std::vector<unsigned char>(coefficient.begin(), coefficient.end()));
+
+        PrivacyVNextDigest rewardCoefficient = ZeroDigest();
+        if (!CommitScaled(vReward[k], vRewardBlind[k], rewardCoefficient, pstrError))
+            return false;
+        share.vRewardVssCoefficients.push_back(
+            std::vector<unsigned char>(rewardCoefficient.begin(), rewardCoefficient.end()));
     }
 
     for (size_t i = 0; i < config.vCommitteePubKeys.size(); i++)
@@ -1079,13 +1569,15 @@ bool CheckNoteVoteVssEvaluation(const CNoteVoteShare& share,
                                 const CNoteTallyPlainShare& plain,
                                 std::string* pstrError)
 {
-    if (share.vVssCoefficients.empty() || plain.nX <= 0)
+    if (share.vVssCoefficients.empty() || plain.nX <= 0 ||
+        share.vRewardVssCoefficients.size() != share.vVssCoefficients.size())
     {
         Fail(pstrError, "note vote share has nothing to check the evaluation against");
         return false;
     }
 
     std::vector<PrivacyVNextCombineTerm> vTerms;
+    std::vector<PrivacyVNextCombineTerm> vRewardTerms;
     const uint256 x = Ed25519ScalarFromUint64((uint64_t)plain.nX);
     uint256 power = Ed25519ScalarFromUint64(1);
     for (size_t k = 0; k < share.vVssCoefficients.size(); k++)
@@ -1093,18 +1585,23 @@ bool CheckNoteVoteVssEvaluation(const CNoteVoteShare& share,
         PrivacyVNextCombineTerm term;
         term.nSource = PRIVACY_VNEXT_TERM_SUPPLIED;
         term.scalar = Ed25519ScalarToDigest(power);
-        if (!DigestFromBytes(share.vVssCoefficients[k], term.point))
+        PrivacyVNextCombineTerm rewardTerm = term;
+        if (!DigestFromBytes(share.vVssCoefficients[k], term.point) ||
+            !DigestFromBytes(share.vRewardVssCoefficients[k], rewardTerm.point))
         {
             Fail(pstrError, "note vote share coefficient is not a point");
             return false;
         }
         vTerms.push_back(term);
+        vRewardTerms.push_back(rewardTerm);
         power = Ed25519ScalarMul(power, x);
     }
 
     PrivacyVNextDigest expected = ZeroDigest();
+    PrivacyVNextDigest expectedReward = ZeroDigest();
     std::string error;
-    if (!CombinePrivacyVNextPoints(vTerms, expected, error))
+    if (!CombinePrivacyVNextPoints(vTerms, expected, error) ||
+        !CombinePrivacyVNextPoints(vRewardTerms, expectedReward, error))
     {
         Fail(pstrError, "note vote share coefficient sum could not be derived");
         return false;
@@ -1115,6 +1612,17 @@ bool CheckNoteVoteVssEvaluation(const CNoteVoteShare& share,
     if (actual != expected)
     {
         Fail(pstrError, "note vote share evaluation does not open its coefficients");
+        return false;
+    }
+    // The reward pair, against L_k. This is what makes a shared reward the voter's own
+    // published R rather than any scalar it liked, and it is what lets the aggregate
+    // reward open strictly instead of being tolerated when it will not.
+    PrivacyVNextDigest actualReward = ZeroDigest();
+    if (!CommitScaled(plain.evalReward, plain.evalRewardBlind, actualReward, pstrError))
+        return false;
+    if (actualReward != expectedReward)
+    {
+        Fail(pstrError, "note vote share reward evaluation does not open its coefficients");
         return false;
     }
     return true;
@@ -1645,11 +2153,13 @@ bool DeriveNoteTallyAggregates(const std::vector<const CNoteFinalityVote*>& vVot
                                const uint256& hashWinner,
                                PrivacyVNextDigest& activeOut,
                                PrivacyVNextDigest& winningOut,
+                               PrivacyVNextDigest& rewardOut,
                                std::string* pstrError)
 {
     const uint256 one = Ed25519ScalarFromUint64(1);
     std::vector<PrivacyVNextCombineTerm> vActive;
     std::vector<PrivacyVNextCombineTerm> vWinning;
+    std::vector<PrivacyVNextCombineTerm> vReward;
     for (size_t i = 0; i < vVotes.size(); i++)
     {
         if (vVotes[i] == NULL)
@@ -1660,19 +2170,23 @@ bool DeriveNoteTallyAggregates(const std::vector<const CNoteFinalityVote*>& vVot
         PrivacyVNextCombineTerm term;
         term.nSource = PRIVACY_VNEXT_TERM_SUPPLIED;
         term.scalar = Ed25519ScalarToDigest(one);
-        if (!vVotes[i]->GetCTilde(term.point))
+        PrivacyVNextCombineTerm rewardTerm = term;
+        if (!vVotes[i]->GetCTilde(term.point) ||
+            !vVotes[i]->GetRewardCommitment(rewardTerm.point))
         {
             Fail(pstrError, "note tally aggregate could not read a vote commitment");
             return false;
         }
         vActive.push_back(term);
+        vReward.push_back(rewardTerm);
         if (vVotes[i]->hashBlock == hashWinner)
             vWinning.push_back(term);
     }
 
     std::string error;
     if (!CombinePrivacyVNextPoints(vActive, activeOut, error) ||
-        !CombinePrivacyVNextPoints(vWinning, winningOut, error))
+        !CombinePrivacyVNextPoints(vWinning, winningOut, error) ||
+        !CombinePrivacyVNextPoints(vReward, rewardOut, error))
     {
         Fail(pstrError, "note tally aggregate could not be derived");
         return false;
@@ -2047,16 +2561,15 @@ bool RunNoteTallyCommitteePass(const std::vector<const CNoteFinalityVote*>& vCon
 bool OpenNoteTallyAggregate(const std::vector<CNoteTallyPlainShare>& vPartials,
                             int nThreshold,
                             const PrivacyVNextDigest& expectedPoint,
+                            const PrivacyVNextDigest& expectedRewardPoint,
                             int64_t& nWeightOut,
                             uint256& weightBlindOut,
                             int64_t& nRewardOut,
                             uint256& rewardBlindOut,
-                            bool* pfHaveReward,
                             std::string* pstrError)
 {
+    nWeightOut = 0;
     nRewardOut = 0;
-    if (pfHaveReward)
-        *pfHaveReward = false;
 
     uint256 weight, reward;
     if (!RecoverNoteTallySecrets(vPartials, nThreshold, weight, weightBlindOut, reward,
@@ -2070,23 +2583,18 @@ bool OpenNoteTallyAggregate(const std::vector<CNoteTallyPlainShare>& vPartials,
         Fail(pstrError, "note tally aggregate opened outside the money range");
         return false;
     }
-    // The reward pair has no VSS coefficients behind it, so any voter can share a reward
-    // value that passes every check and still interpolates out of range. Failing here
-    // would hand that voter an unattributable jam of the whole epoch's private weight,
-    // and nothing in a v4 certificate reads the reward, so it is reported as absent
-    // instead. Make this strict again once the reward shares are authenticated.
-    if (Ed25519ScalarToMoney(reward, nRewardOut))
-    {
-        if (pfHaveReward)
-            *pfHaveReward = true;
-    }
-    else
+    // Strict, now that the reward evaluations authenticate against L_k. A reward that
+    // will not open is a share that did not pass its coefficient check, which is what a
+    // complaint names -- so this fails against a nameable voter instead of jamming the
+    // epoch's whole private weight anonymously.
+    if (!Ed25519ScalarToMoney(reward, nRewardOut))
     {
         nRewardOut = 0;
-        rewardBlindOut = uint256(0);
+        Fail(pstrError, "note tally reward aggregate opened outside the money range");
+        return false;
     }
 
-    // The opening is only usable if it opens the point the validator recomputes. A share
+    // The opening is only usable if it opens the points the validator recomputes. A share
     // that passed its coefficient check cannot fail here, so a failure means the covered
     // set the committee summed is not the set the certificate will name.
     PrivacyVNextDigest derived = ZeroDigest();
@@ -2095,6 +2603,14 @@ bool OpenNoteTallyAggregate(const std::vector<CNoteTallyPlainShare>& vPartials,
     if (derived != expectedPoint)
     {
         Fail(pstrError, "note tally aggregate does not open the recomputed commitment");
+        return false;
+    }
+    PrivacyVNextDigest derivedReward = ZeroDigest();
+    if (!CommitScaled(reward, rewardBlindOut, derivedReward, pstrError))
+        return false;
+    if (derivedReward != expectedRewardPoint)
+    {
+        Fail(pstrError, "note tally reward aggregate does not open the recomputed commitment");
         return false;
     }
     return true;
@@ -2605,8 +3121,9 @@ bool CheckNoteTallyCertificate(int nTier,
 
     PrivacyVNextDigest activePoint = ZeroDigest();
     PrivacyVNextDigest winningPoint = ZeroDigest();
+    PrivacyVNextDigest rewardPoint = ZeroDigest();
     if (!DeriveNoteTallyAggregates(vCovered, hashWinner, activePoint, winningPoint,
-                                   pstrError))
+                                   rewardPoint, pstrError))
         return false;
 
     return CheckNoteTallyTierProofs(nTier, activePoint, winningPoint, nTransparentActive,

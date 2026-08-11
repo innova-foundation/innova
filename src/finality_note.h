@@ -44,6 +44,37 @@ static const size_t FINALITY_NOTE_MAX_RANGE_PROOF_BYTES = 4096;
 // One coefficient per polynomial degree, so this tracks the committee threshold.
 static const size_t FINALITY_NOTE_MAX_VSS_COEFFICIENTS = 64;
 
+/** The statements a vote's reward-correctness proof is made of, in wire order.
+ *
+ *  GetFinalityVoteReward is three truncating divisions:
+ *
+ *      w*interval = COIN*q1 + r1,  0 <= r1 < COIN
+ *      q1         = 86400*a  + r2, 0 <= r2 < 86400
+ *      CYR*a      = 365*f    + r3, 0 <= r3 < 365
+ *
+ *  The vote publishes Pedersen commitments to q1 and a; the three remainders are not
+ *  published at all, because each is a fixed linear combination of commitments both
+ *  sides derive (r1 from C~ and Q, r2 from Q and A, r3 from A and R). The three
+ *  equations therefore hold by construction rather than by proof, and every statement
+ *  left is a range statement over a derived point.
+ *
+ *  Each remainder needs two: the proof itself for `0 <= r`, and a proof over
+ *  (bound-1)*H - P for `r <= bound-1`. Only the lower halves bound the reward from
+ *  above, so they are what supply safety rests on; the upper halves are what makes the
+ *  committed reward EQUAL the formula rather than merely not exceed it. */
+enum NoteVoteRewardStatement
+{
+    NOTE_VOTE_REWARD_COIN_REMAINDER = 0,        // r1 >= 0
+    NOTE_VOTE_REWARD_COIN_REMAINDER_SLACK = 1,  // r1 <= COIN-1
+    NOTE_VOTE_REWARD_DAY_REMAINDER = 2,         // r2 >= 0
+    NOTE_VOTE_REWARD_DAY_REMAINDER_SLACK = 3,   // r2 <= 86399
+    NOTE_VOTE_REWARD_COIN_AGE = 4,              // a  >= 0
+    NOTE_VOTE_REWARD_YEAR_REMAINDER = 5,        // r3 >= 0
+    NOTE_VOTE_REWARD_YEAR_REMAINDER_SLACK = 6,  // r3 <= 364
+    NOTE_VOTE_REWARD_VALUE = 7,                 // f  >= 0
+    NOTE_VOTE_REWARD_STATEMENT_COUNT = 8
+};
+
 /** Consensus floor on the weight one finality vote may carry.
  *
  *  The tally denominator is cast weight, and an epoch's canonical vote set is capped, so
@@ -119,6 +150,13 @@ public:
     // K_k = a_k*H + b_k*G over the weight and blind polynomials. K_0 must equal the
     // vote's C~, which is what ties every accepted share set to the vote's own weight.
     std::vector<std::vector<unsigned char> > vVssCoefficients;
+    // L_k = c_k*H + d_k*G over the reward and reward-blind polynomials, the same
+    // construction one curve-pair over. L_0 must equal the vote's R, so a reward
+    // evaluation is checkable against a published commitment exactly as a weight
+    // evaluation is. Without it a voter shares any reward scalar it likes and nothing
+    // detects it, and a garbage scalar jams the epoch's whole private tally with no way
+    // to name who did it.
+    std::vector<std::vector<unsigned char> > vRewardVssCoefficients;
     std::vector<std::vector<unsigned char> > vEncryptedRecipientShares;
 
     CNoteVoteShare()
@@ -137,6 +175,9 @@ public:
             s, pthis->vVssCoefficients, FINALITY_NOTE_MAX_VSS_COEFFICIENTS,
             FINALITY_NOTE_POINT_SIZE, nType, nVersion, ser_action);
         nSerSize += ::SerReadWriteLimitedByteVectors(
+            s, pthis->vRewardVssCoefficients, FINALITY_NOTE_MAX_VSS_COEFFICIENTS,
+            FINALITY_NOTE_POINT_SIZE, nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedByteVectors(
             s, pthis->vEncryptedRecipientShares, FINALITY_NOTE_MAX_VSS_COEFFICIENTS,
             FINALITY_NOTE_MAX_ENVELOPE_BYTES, nType, nVersion, ser_action);
     )
@@ -145,6 +186,45 @@ public:
     bool IsValidBasic(std::string* pstrError = NULL) const;
     /** K_0, the coefficient consensus requires to equal the vote's C~. */
     bool GetCommitment(PrivacyVNextDigest& commitmentOut) const;
+    /** L_0, the coefficient consensus requires to equal the vote's R. */
+    bool GetRewardCommitment(PrivacyVNextDigest& commitmentOut) const;
+};
+
+/** The proof that a vote's committed reward is the formula's reward for its own weight.
+ *
+ *  Two auxiliary commitments and the range proofs over the points derived from them; see
+ *  NoteVoteRewardStatement for what each statement is. Q and A hide their values under
+ *  fresh blinds, so nothing here narrows the weight beyond what the vote already leaks.
+ *
+ *  Carried beside the vote rather than inside it. One note vote is one OP_RETURN and one
+ *  script is MAX_SCRIPT_SIZE; the membership proof alone is ~7 KB of that 10 KB, and
+ *  eight single-value range proofs are ~4.7 KB more, so a vote carrying this could not be
+ *  put in a block at all. The vote commits to it by hash instead, which binds it just as
+ *  tightly -- and nothing reads the reward until it is paid, so a vote whose proof was
+ *  never carried is unpayable rather than invalid. */
+class CNoteVoteRewardProof
+{
+public:
+    std::vector<unsigned char> vchQuotient;   // Q = q1*H + b_q*G
+    std::vector<unsigned char> vchCoinAge;    // A = a*H  + b_a*G
+    std::vector<std::vector<unsigned char> > vProofs;
+
+    IMPLEMENT_SERIALIZE
+    (
+        CNoteVoteRewardProof* pthis = const_cast<CNoteVoteRewardProof*>(this);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchQuotient,
+                                                 FINALITY_NOTE_POINT_SIZE,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchCoinAge,
+                                                 FINALITY_NOTE_POINT_SIZE,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedByteVectors(
+            s, pthis->vProofs, NOTE_VOTE_REWARD_STATEMENT_COUNT,
+            FINALITY_NOTE_MAX_RANGE_PROOF_BYTES, nType, nVersion, ser_action);
+    )
+
+    uint256 GetHash() const;
+    bool IsValidBasic(std::string* pstrError = NULL) const;
 };
 
 /** A note-weighted finality vote.
@@ -167,6 +247,16 @@ public:
     std::vector<unsigned char> vchSigma;
     // Range proof over C~ - W_min*H: the vote weighs at least the consensus floor.
     std::vector<unsigned char> vchWeightFloorProof;
+    // R, the vote's own reward commitment. Consensus requires it to equal the share's
+    // L_0, so the reward a voter shares is the reward it published and not some other
+    // scalar.
+    std::vector<unsigned char> vchRewardCommitment;
+    // CNoteVoteRewardProof::GetHash() of the proof that R commits GetFinalityVoteReward
+    // of the weight inside this vote's own C~. The proof does not fit in the same script
+    // as the membership proof, so it rides beside the vote and this pins which one is
+    // the vote's: with C~ tied to a real tree leaf by the membership proof, a proof that
+    // hashes to this bounds the reward by staked value rather than by a claim.
+    uint256 hashRewardProof;
     CNoteVoteShare share;
 
     // No timestamp: an anonymous vote stamped at proving time is a wallet-pipeline
@@ -177,6 +267,7 @@ public:
         nVersion = FINALITY_NOTE_VOTE_VERSION;
         nEpoch = 0;
         nHeight = 0;
+        hashRewardProof = 0;
     }
 
     IMPLEMENT_SERIALIZE
@@ -201,6 +292,10 @@ public:
         nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchWeightFloorProof,
                                                  FINALITY_NOTE_MAX_RANGE_PROOF_BYTES,
                                                  nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchRewardCommitment,
+                                                 FINALITY_NOTE_POINT_SIZE,
+                                                 nType, nVersion, ser_action);
+        READWRITE(pthis->hashRewardProof);
         READWRITE(pthis->share);
     )
 
@@ -209,6 +304,8 @@ public:
     uint256 GetVoteTag() const;
     bool GetOTilde(PrivacyVNextDigest& out) const;
     bool GetCTilde(PrivacyVNextDigest& out) const;
+    /** R as a point. False when the field is not a 32-byte encoding. */
+    bool GetRewardCommitment(PrivacyVNextDigest& out) const;
     bool IsValidBasic(std::string* pstrError = NULL) const;
 };
 
@@ -281,6 +378,43 @@ bool BuildNoteVoteWeightFloorProof(int64_t nAmount,
 bool CheckNoteVoteWeightFloorProof(const CNoteFinalityVote& vote,
                                    std::string* pstrError = NULL);
 
+/** Rebuild the points the reward statements are over, identically on both sides.
+ *
+ *  Every point is a linear combination of C~, R, Q and A under public coefficients, so a
+ *  prover cannot pick one and a validator cannot accept one from the wire. `nEpochInterval`
+ *  is GetEpochInterval of the vote's own epoch-boundary height, never a value the vote
+ *  carries. Returns NOTE_VOTE_REWARD_STATEMENT_COUNT points in enum order. */
+bool DeriveNoteVoteRewardStatementPoints(const PrivacyVNextDigest& cTilde,
+                                         const PrivacyVNextDigest& rewardCommitment,
+                                         const CNoteVoteRewardProof& proof,
+                                         int nEpochInterval,
+                                         std::vector<PrivacyVNextDigest>& vPointsOut,
+                                         std::string* pstrError = NULL);
+
+/** Build the reward-correctness proof for one vote.
+ *
+ *  `maskTilde` opens C~ with `nAmount` and `rewardBlind` opens the reward commitment with
+ *  GetFinalityVoteReward(nAmount, nEpochInterval); the reward is recomputed here rather
+ *  than taken from the caller, so a caller that miscomputed it cannot smuggle the wrong
+ *  value past its own proof. `rewardCommitmentOut` is the R the vote must publish. */
+bool BuildNoteVoteRewardProof(int64_t nAmount,
+                              const uint256& maskTilde,
+                              const uint256& rewardBlind,
+                              int nEpochInterval,
+                              CNoteVoteRewardProof& proofOut,
+                              PrivacyVNextDigest& rewardCommitmentOut,
+                              std::string* pstrError = NULL);
+
+/** Verify a reward proof against the points derived from one vote's own C~ and R.
+ *
+ *  The proof travels beside the vote, so the first thing checked is that it is the proof
+ *  the vote committed to: without that a payer could pick whichever carried proof it
+ *  liked. Not part of CheckNoteVote -- a vote is valid without its proof having been
+ *  carried, and unpayable until it has. */
+bool CheckNoteVoteRewardProof(const CNoteFinalityVote& vote,
+                              const CNoteVoteRewardProof& proof,
+                              std::string* pstrError = NULL);
+
 /** Full validation of one vote against the committee its epoch names: structure, the share
  *  shape, the K_0 == C~ rule, the sigma, and the membership proof. Chain context (the
  *  anchor the roots must equal, the inclusion window, tag uniqueness) is the caller's,
@@ -309,7 +443,11 @@ struct CNoteVoteBuildContext
     uint256 hashAnchorRoot;
     uint256 hashNullifierRoot;
     int64_t nAmount;
-    int64_t nReward;
+
+    // No reward field: the reward is GetFinalityVoteReward of nAmount at this height's
+    // interval and nothing else, so the builder derives it and the caller cannot name a
+    // different one. Carrying it here made the same value reachable from two places, and
+    // the proof and the share would then be over two different rewards.
 
     CNoteVoteBuildContext()
     {
@@ -319,7 +457,6 @@ struct CNoteVoteBuildContext
         hashAnchorRoot = 0;
         hashNullifierRoot = 0;
         nAmount = 0;
-        nReward = 0;
     }
 };
 
@@ -337,6 +474,10 @@ struct CNoteVoteBuildContext
  *  No timestamp is stamped anywhere: an anonymous vote dated at proving time is a
  *  wallet-pipeline fingerprint.
  *
+ *  `rewardProofOut` is the proof the vote's hashRewardProof names. It comes back beside
+ *  the vote rather than inside it because it does not fit the vote's script; a producer
+ *  that drops it has cast a vote it cannot be paid for.
+ *
  *  Fails closed. A failure leaves `voteOut` null rather than partially built, and the
  *  result is re-checked with CheckNoteVote before it is returned. */
 bool BuildNoteFinalityVote(const CNoteVoteBuildContext& ctx,
@@ -344,11 +485,13 @@ bool BuildNoteFinalityVote(const CNoteVoteBuildContext& ctx,
                            const PrivacyVNextDigest& noteMask,
                            const CFinalityTallyConfig& config,
                            CNoteFinalityVote& voteOut,
+                           CNoteVoteRewardProof& rewardProofOut,
                            std::string* pstrError = NULL);
 
-/** Build the encrypted shares and the VSS coefficients for one vote's opening.
+/** Build the encrypted shares and both VSS coefficient vectors for one vote's opening.
  *  `maskTilde` is the note mask shifted by the membership proof's commitment blind, so
- *  amount*H + maskTilde*G is exactly the vote's C~. */
+ *  amount*H + maskTilde*G is exactly the vote's C~, and reward*H + rewardBlind*G is
+ *  exactly the R the vote publishes. */
 bool BuildNoteVoteShare(CNoteVoteShare& share,
                         int64_t nAmount,
                         const uint256& maskTilde,
@@ -368,7 +511,10 @@ bool DecryptNoteVoteShareForRecipient(const CNoteVoteShare& share,
                                       CNoteTallyPlainShare& plainOut,
                                       bool* pfComplainable = NULL);
 
-/** Check one evaluation against the coefficient vector: a*H + b*G == sum x^k K_k. */
+/** Check one evaluation against both coefficient vectors: the weight pair against
+ *  sum x^k K_k and the reward pair against sum x^k L_k. A share that opens one and not
+ *  the other is as unusable as one that opens neither, and is complainable for the same
+ *  reason: it is the voter's own material either way. */
 bool CheckNoteVoteVssEvaluation(const CNoteVoteShare& share,
                                 const CNoteTallyPlainShare& plain,
                                 std::string* pstrError = NULL);
@@ -401,12 +547,17 @@ bool CheckNoteVoteComplaint(const CNoteVoteComplaint& complaint,
                             const CFinalityTallyConfig& config,
                             std::string* pstrError = NULL);
 
-/** Validator-side aggregates. Supplied points are never accepted anywhere: both are
- *  recomputed from the covered votes' own commitments. */
+/** Validator-side aggregates. Supplied points are never accepted anywhere: all three are
+ *  recomputed from the covered votes' own commitments.
+ *
+ *  `rewardOut` is sum R_i over the SAME covered set as `activeOut`, not over the winning
+ *  subset: a counted vote is paid whether or not it named the winner, exactly as the
+ *  transparent settlement pays every counted voter. */
 bool DeriveNoteTallyAggregates(const std::vector<const CNoteFinalityVote*>& vVotes,
                                const uint256& hashWinner,
                                PrivacyVNextDigest& activeOut,
                                PrivacyVNextDigest& winningOut,
+                               PrivacyVNextDigest& rewardOut,
                                std::string* pstrError = NULL);
 
 /** The three statements a certificate's private tier claim rests on, in cert order. */
@@ -490,24 +641,22 @@ bool RunNoteTallyCommitteePass(const std::vector<const CNoteFinalityVote*>& vCon
                                std::string* pstrError = NULL);
 
 /** Interpolate an aggregate opening from M members' partials and require it to open the
- *  point a validator recomputes. Deriving the check from the votes rather than trusting the
- *  interpolation is what makes a poisoned share show up as a failure to open.
+ *  points a validator recomputes. Deriving the check from the votes rather than trusting
+ *  the interpolation is what makes a poisoned share show up as a failure to open.
  *
- *  The weight pair opens strictly. The reward pair does not: VSS coefficients are published
- *  for the weight polynomials only, so a reward evaluation is unauthenticated and any voter
- *  can share a value that passes every check yet interpolates outside the money range. A
- *  strict reward would let that one voter block the whole epoch's aggregate opening with no
- *  way to say who did it. A reward that will not open therefore clears `pfHaveReward` and
- *  leaves nRewardOut at zero instead of failing. Authenticate the reward shares before any
- *  caller spends this value. */
+ *  Both pairs open strictly. Both are authenticated the same way -- an evaluation reaches
+ *  a member only through CheckNoteVoteVssEvaluation, which now checks the reward pair
+ *  against L_k as it checks the weight pair against K_k -- so a reward that will not open
+ *  is an unusable share, and an unusable share is what a complaint names. Failing here is
+ *  therefore attributable, which is exactly what tolerating it used to cost. */
 bool OpenNoteTallyAggregate(const std::vector<CNoteTallyPlainShare>& vPartials,
                             int nThreshold,
                             const PrivacyVNextDigest& expectedPoint,
+                            const PrivacyVNextDigest& expectedRewardPoint,
                             int64_t& nWeightOut,
                             uint256& weightBlindOut,
                             int64_t& nRewardOut,
                             uint256& rewardBlindOut,
-                            bool* pfHaveReward = NULL,
                             std::string* pstrError = NULL);
 
 /** One committee member's summed evaluations for one epoch's note tally, sealed to the
