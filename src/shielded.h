@@ -198,6 +198,9 @@ enum ShieldedVNextOperation
     SHIELDED_VNEXT_OPERATION_M_OF_N_MINT = iv5::NOTE_M_OF_N_MINT,
     SHIELDED_VNEXT_OPERATION_RECLAIM = iv5::NOTE_RECLAIM,
     SHIELDED_VNEXT_OPERATION_CONDITIONAL_MIGRATION = iv5::NOTE_CONDITIONAL_MIGRATION,
+    SHIELDED_VNEXT_OPERATION_COLLATERAL_REGISTER = iv5::NOTE_COLLATERAL_REGISTER,
+    SHIELDED_VNEXT_OPERATION_FINALITY_MEMBER_REGISTER =
+        iv5::NOTE_FINALITY_MEMBER_REGISTER,
     SHIELDED_VNEXT_OPERATION_NONE = iv5::NOTE_OPERATION_NONE
 };
 
@@ -609,18 +612,29 @@ public:
 };
 
 
-// One collateralnode attestation, keyed in txdb on the key image it published.
+// One collateral attestation, keyed in txdb on the key image it published.
 //
 // The context digest is what the attestation bound into its signing hash, so the node
 // list can hold an announcement to the identity, endpoint and payout address the chain
 // already accepted, without re-reading the registering transaction for every gossip
 // message. It carries no value and never reaches the spent-key index.
+//
+// vchMemberKey is the tally-encryption key a finality-member registration published, and
+// is empty for a collateralnode-only attestation. One row for both operations, because
+// they compete for one slot: a note is registered once for ever, so the collateral buys
+// exactly one service and the key is what says which.
+//
+// The row gained that field after the operations shipped, so a record written before it
+// no longer decodes and reads back as a corrupt index. That is fail-closed and asks for
+// the -reindex it needs; both operations are reachable only where Boundary B is set,
+// which is regtest alone.
 class CPrivacyVNextCollateralAttestation
 {
 public:
     uint256 txnHash;
     uint256 contextDigest;
     int32_t nHeight;
+    std::vector<unsigned char> vchMemberKey;
 
     CPrivacyVNextCollateralAttestation()
     {
@@ -638,11 +652,31 @@ public:
         nHeight = nHeightIn;
     }
 
+    CPrivacyVNextCollateralAttestation(
+        const uint256& txnHashIn,
+        const uint256& contextDigestIn,
+        int32_t nHeightIn,
+        const std::vector<unsigned char>& vchMemberKeyIn)
+    {
+        txnHash = txnHashIn;
+        contextDigest = contextDigestIn;
+        nHeight = nHeightIn;
+        vchMemberKey = vchMemberKeyIn;
+    }
+
+    // Whether this registration claims a finality-committee seat rather than only
+    // proving collateral.
+    bool IsFinalityMember() const
+    {
+        return vchMemberKey.size() == iv5::FINALITY_MEMBER_KEY_BYTES;
+    }
+
     IMPLEMENT_SERIALIZE
     (
         READWRITE(txnHash);
         READWRITE(contextDigest);
         READWRITE(nHeight);
+        READWRITE(vchMemberKey);
     )
 };
 

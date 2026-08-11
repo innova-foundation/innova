@@ -939,6 +939,56 @@ bool IsPrivacyVNextCollateralRegistered(
     CPrivacyVNextCollateralAttestation& attestedOut,
     bool& fLocalFailure);
 
+/** One active registration in a height-anchored snapshot of the registry. */
+struct CPrivacyVNextRegistryEntry
+{
+    uint256 keyImage;
+    uint256 contextDigest;
+    uint256 txnHash;
+    int32_t nHeight;
+    /** 33 bytes for a finality-committee member, empty for a collateralnode. */
+    std::vector<unsigned char> vchMemberKey;
+
+    CPrivacyVNextRegistryEntry()
+        : keyImage(0), contextDigest(0), txnHash(0), nHeight(-1) {}
+
+    bool IsFinalityMember() const
+    {
+        return vchMemberKey.size() == iv5::FINALITY_MEMBER_KEY_BYTES;
+    }
+
+    /** Key-image order, which is what makes a snapshot's sequence node independent. */
+    bool operator<(const CPrivacyVNextRegistryEntry& other) const
+    {
+        return keyImage < other.keyImage;
+    }
+};
+
+/** Registrations active as of nAnchorHeight, in key-image order.
+ *
+ *  Reads only the two indexes, which are exact functions of the ancestry connected
+ *  so far, and never nBestHeight, pindexBest, the mempool or a live finality height:
+ *  an anchor taken from what a node has seen rather than from what the block being
+ *  validated descends from is what splits a chain.
+ *
+ *  Needs a CTxDB with no open write batch: an iterator cannot see pending writes and
+ *  would answer differently from the point reads beside it. A finalized anchor wants
+ *  committed state, so this is a constraint on the caller, not a limitation.
+ *
+ *  The caller owns the anchor. The committee draw that follows this increment takes it
+ *  from the deterministic finalized height its epoch state carries, and plugs in here:
+ *  the seed derivation and the draw consume this sequence, GetCommitteeForEpoch resolves
+ *  against the drawn set instead of the fork-pinned key list in finality.h, and
+ *  CFinalityCommitteeRotation together with the recovery committee stop having anything
+ *  to resolve. Nothing in this increment reads or writes any of them. */
+bool GetPrivacyVNextCollateralSnapshot(
+    CTxDB& txdb,
+    int nAnchorHeight,
+    bool fMembersOnly,
+    std::vector<CPrivacyVNextRegistryEntry>& vOut,
+    bool& fLocalFailure,
+    std::string& strError);
+
 /** Refuse a payload declaring pool value leaving to the transparent side, from
  *  FORK_HEIGHT_IV5_FEE_NOTE on. Keyed on the declared balance, never the pool delta. */
 bool CheckPrivacyVNextUnshieldRetired(int64_t nDeclaredBalance, int nHeight,

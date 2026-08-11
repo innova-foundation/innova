@@ -44,8 +44,13 @@ extern "C" {
 #define INNOVA_PRIVACY_VNEXT_AMOUNT_EQUALITY_REQUEST_SIZE 140u
 #define INNOVA_PRIVACY_VNEXT_VALUE_PROVE_HEADER_SIZE 116u
 #define INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_HEADER_SIZE 124u
-/* Attestation count and registration context, after the key images and output leaves. */
-#define INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_TRAILER_SIZE 33u
+/* Compressed secp256k1 tally-encryption key of one finality-committee member. */
+#define INNOVA_PRIVACY_VNEXT_FINALITY_MEMBER_KEY_SIZE 33u
+/*
+ * Attestation count, registration context and member key, after the key images and
+ * output leaves. Fixed width and always present.
+ */
+#define INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_TRAILER_SIZE 66u
 /* Atomic units one collateralnode attests to; proved, never published. */
 #define INNOVA_PRIVACY_VNEXT_COLLATERAL_ATTESTATION_AMOUNT 2500000000000ull
 #define INNOVA_PRIVACY_VNEXT_AMOUNT_EQUALITY_PROOF_SIZE 64u
@@ -156,6 +161,20 @@ int32_t innova_privacy_vnext_provenance_digest(uint8_t *out, size_t out_len);
 
 /* SHA-256 of the fixed, explicitly non-consensus product contract. */
 int32_t innova_privacy_vnext_parameter_digest(uint8_t *out, size_t out_len);
+/* Accepted parameter digests as "count_u8 || 32 bytes each", own digest first.
+ * A NULL out with zero capacity is a size query. */
+int32_t innova_privacy_vnext_accepted_parameter_digests(
+    uint8_t *out,
+    size_t out_capacity,
+    size_t *out_written);
+/* Whether the envelope table admits one typed contract. Decodes nothing. */
+int32_t innova_privacy_vnext_envelope_allows(
+    uint32_t wire_version,
+    uint8_t operation,
+    uint8_t profile,
+    uint8_t authorization,
+    uint8_t finality_object,
+    uint8_t disclosure_mask);
 int32_t innova_privacy_vnext_contract_metadata(
     innova_privacy_vnext_contract *out,
     size_t out_len);

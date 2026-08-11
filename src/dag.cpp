@@ -1319,14 +1319,27 @@ bool CDAGManager::LoadEpochStates(CTxDB& txdb)
                "-reindex/resync required\n", (int)mapStates.size(), (int)mapTrees.size());
         return false;
     }
-    PrivacyVNextEpochSeed expectedVNextSeed;
     if (nSchema >= EPOCHSTATE_SCHEMA_V4)
     {
+        // The seed must load and must carry a digest this build accepts. Persisted
+        // states are judged against the accepted set below rather than against this
+        // seed, so what is checked here is the library, not the chain.
+        PrivacyVNextEpochSeed expectedVNextSeed;
         std::string seedError;
         if (!LoadPrivacyVNextEpochSeed(expectedVNextSeed, seedError))
         {
             printf("LoadEpochStates: FATAL IV5 epoch seed unavailable: %s\n",
                    seedError.c_str());
+            return false;
+        }
+        if (expectedVNextSeed.vchParameterDigest.size() !=
+                EPOCHSTATE_VNEXT_DIGEST_SIZE ||
+            !IsAcceptedPrivacyVNextParameterDigest(
+                &expectedVNextSeed.vchParameterDigest[0],
+                expectedVNextSeed.vchParameterDigest.size()))
+        {
+            printf("LoadEpochStates: FATAL IV5 epoch seed carries a parameter "
+                   "digest this build does not accept\n");
             return false;
         }
     }
@@ -1428,8 +1441,15 @@ bool CDAGManager::LoadEpochStates(CTxDB& txdb)
                     EPOCHSTATE_VNEXT_NULLIFIER_STATE_SIZE ||
                 state.vchVNextRoot.size() !=
                     EPOCHSTATE_VNEXT_DIGEST_SIZE ||
-                state.vchVNextParameterDigest !=
-                    expectedVNextSeed.vchParameterDigest ||
+                // Any digest this build accepts, not this build's own alone. Pinning it
+                // here made a contract edit a fatal resync for every node that already
+                // had IV5 state, which is a worse outcome than judging that state under
+                // the superseded text it was written with.
+                state.vchVNextParameterDigest.size() !=
+                    EPOCHSTATE_VNEXT_DIGEST_SIZE ||
+                !IsAcceptedPrivacyVNextParameterDigest(
+                    &state.vchVNextParameterDigest[0],
+                    state.vchVNextParameterDigest.size()) ||
                 !DecodePrivacyVNextTreeState(state.vchVNextTreeState,
                                              checkedVNextRoot,
                                              checkedVNextSize,
@@ -2533,12 +2553,18 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
         if (fHavePredecessor &&
             prevState.nSerVersion >= EPOCHSTATE_SER_VERSION_V4)
         {
-            if (prevState.vchVNextParameterDigest !=
-                vNextSeed.vchParameterDigest)
+            if (prevState.vchVNextParameterDigest.size() !=
+                    EPOCHSTATE_VNEXT_DIGEST_SIZE ||
+                !IsAcceptedPrivacyVNextParameterDigest(
+                    &prevState.vchVNextParameterDigest[0],
+                    prevState.vchVNextParameterDigest.size()))
             {
-                strError = "IV5 predecessor parameter digest mismatch";
+                strError = "IV5 predecessor parameter digest is not one this "
+                           "build accepts";
                 return false;
             }
+            // Inherited, never restamped: the digest is fixed at the chain's first IV5 epoch so builds agree.
+            state.vchVNextParameterDigest = prevState.vchVNextParameterDigest;
             state.vchVNextTreeState = prevState.vchVNextTreeState;
             state.vchVNextRoot = prevState.vchVNextRoot;
             state.nVNextTreeSize = prevState.nVNextTreeSize;
@@ -2677,9 +2703,16 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
                         strBindingError.c_str());
                     return false;
                 }
+                // This chain's digest, or any other this build accepts: the digest is a
+                // provenance tag no rule branches on, and refusing the superseded one
+                // would invalidate every payload built before the contract text was
+                // corrected. Matches what ConnectBlock admits, so epoch build and block
+                // connect never disagree about a transaction.
                 const std::vector<unsigned char> effectDigest(
                     effects.parameterDigest.begin(), effects.parameterDigest.end());
-                if (effectDigest != state.vchVNextParameterDigest)
+                if (effectDigest != state.vchVNextParameterDigest &&
+                    !IsAcceptedPrivacyVNextParameterDigest(
+                        &effectDigest[0], effectDigest.size()))
                 {
                     strError = strprintf(
                         "epoch %d IV5 transaction %s has wrong parameter digest",

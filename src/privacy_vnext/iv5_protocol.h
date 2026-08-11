@@ -6,11 +6,30 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 namespace iv5
 {
 static const char PROTOCOL_CONTRACT_SHA256[] =
-    "e65eaaa660c07e806f5b7e7c9550709929b9c2e9ba4cfd1e4fe56dcd384c9d5f";
+    "f0259cccfe96b0665a26b1774e2794222ceb8093d800d886cb1646f760f3710b";
+// Protocol-contract digests still accepted on a payload built before this one.
+//
+// The digest is a provenance tag no validation rule branches on -- it is only ever
+// compared for equality -- so accepting a bounded prior set weakens no rule and is what
+// stops a contract edit from invalidating re-validation of every payload already on
+// chain. An entry belongs here only when the contract text changed without changing a
+// rule; a rule change needs a fork, not a digest.
+//
+// The list is mirrored from the linked Rust library rather than trusted on its own:
+// LoadPrivacyVNextAbiInfo refuses a build whose two lists disagree.
+//
+// e65eaaa6: operation 8 was written into the contract text and operation 9 was added.
+static const char* const PROTOCOL_CONTRACT_SHA256_PRIOR[] = {
+    "e65eaaa660c07e806f5b7e7c9550709929b9c2e9ba4cfd1e4fe56dcd384c9d5f"
+};
+static const size_t PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT =
+    sizeof(PROTOCOL_CONTRACT_SHA256_PRIOR) /
+    sizeof(PROTOCOL_CONTRACT_SHA256_PRIOR[0]);
 static const uint16_t PROTOCOL_SCHEMA = 1;
 static const unsigned char ENVELOPE_MARKER[5] = {
     0xff, 0x49, 0x56, 0x35, 0x50
@@ -33,8 +52,21 @@ enum NoteOperation
     NOTE_RECLAIM = 6,
     NOTE_CONDITIONAL_MIGRATION = 7,
     NOTE_COLLATERAL_REGISTER = 8,
+    // Collateral attestation plus the key other voters seal tally shares to. A separate
+    // operation because an operation code fixes its own layout.
+    NOTE_FINALITY_MEMBER_REGISTER = 9,
     NOTE_OPERATION_NONE = 255
 };
+
+// Compressed secp256k1 encoding length of a committee member's tally-encryption key.
+static const size_t FINALITY_MEMBER_KEY_BYTES = 33;
+
+// Operations that name a hidden note without consuming it.
+inline bool IsAttestationOperation(uint8_t operation)
+{
+    return operation == NOTE_COLLATERAL_REGISTER ||
+           operation == NOTE_FINALITY_MEMBER_REGISTER;
+}
 
 enum FinalityProfile
 {
@@ -69,7 +101,8 @@ static const uint8_t WALLET_DEFAULT_DISCLOSURE_MASK = 7;
 
 inline bool IsKnownNoteOperation(uint8_t operation)
 {
-    return operation <= NOTE_COLLATERAL_REGISTER || operation == NOTE_OPERATION_NONE;
+    return operation <= NOTE_FINALITY_MEMBER_REGISTER ||
+           operation == NOTE_OPERATION_NONE;
 }
 
 // Read the declared operation and mask from the fixed header. Not a decoder; consensus
@@ -143,10 +176,27 @@ inline bool EnvelopeAllows(int wireVersion, uint8_t operation,
     case 2007:
         return operation == NOTE_RECLAIM && authorization == AUTH_OWNER;
     case 2008:
-        return true;
+        // An attestation publishes a persistent per-node pseudonym by design; the rest of
+        // the note must stay hidden, so the fully private mask is the only one allowed and
+        // the sender authority a lower mask would publish never exists.
+        return !IsAttestationOperation(operation) ||
+               (disclosureMask == DISCLOSURE_MASK && authorization == AUTH_OWNER);
     default:
         return false;
     }
+}
+
+// Whether a hex digest is one this build judges payloads under.
+inline bool IsAcceptedContractDigestHex(const char* pszDigest)
+{
+    if (pszDigest == 0)
+        return false;
+    if (strcmp(pszDigest, PROTOCOL_CONTRACT_SHA256) == 0)
+        return true;
+    for (size_t i = 0; i < PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT; ++i)
+        if (strcmp(pszDigest, PROTOCOL_CONTRACT_SHA256_PRIOR[i]) == 0)
+            return true;
+    return false;
 }
 } // namespace iv5
 

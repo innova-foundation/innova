@@ -122,10 +122,16 @@ pub const NOTE_CONDITIONAL_MIGRATION: u8 = 7;
 /// Collateralnode collateral attestation. Spends nothing: its key image is recorded in the
 /// caller's watch set, never in the spent set.
 pub const NOTE_COLLATERAL_REGISTER: u8 = 8;
+/// Finality-committee member registration: the collateral attestation above plus the
+/// long-lived encryption key other voters seal their VSS evaluations to. A separate
+/// operation because each operation's layout is frozen.
+pub const NOTE_FINALITY_MEMBER_REGISTER: u8 = 9;
 pub const NOTE_OPERATION_NONE: u8 = 255;
 /// Atomic units one collateralnode must attest to. Single tier; the value is proved against
 /// the re-randomized commitment and never appears on the wire.
 pub const COLLATERAL_ATTESTATION_AMOUNT: u64 = 25_000 * 100_000_000;
+/// Compressed secp256k1 encoding length of a committee member's tally-encryption key.
+pub const FINALITY_MEMBER_KEY_BYTES: usize = 33;
 pub const FINALITY_NONE: u8 = 0;
 pub const FINALITY_NULLSTAKE_V1: u8 = 1;
 pub const FINALITY_NULLSTAKE_V2: u8 = 2;
@@ -166,6 +172,51 @@ const ABI_SCHEMA: &[u8] = include_bytes!("../abi/innova_privacy_vnext_v2.txt");
 const PRODUCT_CONTRACT: &[u8] = include_bytes!("../../contract/iv5_protocol_v1.json");
 const PROVENANCE: &[u8] = include_bytes!("../provenance.json");
 
+/// Operations that name a hidden note without consuming it. Shared by the shape rules and the
+/// payload parser.
+#[must_use]
+pub const fn is_attestation_operation(operation: u8) -> bool {
+    matches!(
+        operation,
+        NOTE_COLLATERAL_REGISTER | NOTE_FINALITY_MEMBER_REGISTER
+    )
+}
+
+/// Protocol-contract digests this binary accepts on a payload, besides its own.
+///
+/// The parameter digest is a provenance tag, not a rule selector: nothing in the validator
+/// branches on its value, it is only ever compared for equality. Accepting a bounded prior
+/// set therefore weakens no rule, and it is what stops a contract edit from invalidating
+/// re-validation of every payload already on chain.
+///
+/// An entry may be added only when the contract text changed without changing a rule --
+/// documentation catching up to code. The list stays short and append-only; a rule change
+/// needs a fork, not a digest.
+///
+/// e65eaaa6: the text before operation 8 was written down and operation 9 was added. Both
+/// were already enforced by this binary's predecessor, so payloads carrying it are judged
+/// by exactly the rules they were built under.
+const PRIOR_PARAMETER_DIGESTS: [[u8; 32]; 1] = [[
+    0xe6, 0x5e, 0xaa, 0xa6, 0x60, 0xc0, 0x7e, 0x80, 0x6f, 0x5b, 0x7e, 0x7c, 0x95, 0x50, 0x70, 0x99,
+    0x29, 0xb9, 0xc2, 0xe9, 0xba, 0x4c, 0xfd, 0x1e, 0x4f, 0xe5, 0x6d, 0xcd, 0x38, 0x4c, 0x9d, 0x5f,
+]];
+
+/// Whether a payload's declared parameter digest is one this binary judges payloads under.
+#[must_use]
+pub fn parameter_digest_is_accepted(digest: &[u8; 32]) -> bool {
+    if digest[..] == Sha256::digest(PRODUCT_CONTRACT)[..] {
+        return true;
+    }
+    PRIOR_PARAMETER_DIGESTS
+        .iter()
+        .any(|prior| prior == digest)
+}
+
+#[must_use]
+pub const fn accepted_parameter_digest_count() -> usize {
+    PRIOR_PARAMETER_DIGESTS.len() + 1
+}
+
 #[must_use]
 pub const fn envelope_allows(
     wire_version: u32,
@@ -175,7 +226,8 @@ pub const fn envelope_allows(
     finality_object: u8,
     disclosure_mask: u8,
 ) -> bool {
-    let known_operation = operation <= NOTE_COLLATERAL_REGISTER || operation == NOTE_OPERATION_NONE;
+    let known_operation =
+        operation <= NOTE_FINALITY_MEMBER_REGISTER || operation == NOTE_OPERATION_NONE;
     if !known_operation
         || profile > FINALITY_NULLSTAKE_V3
         || authorization > AUTH_M_OF_N_HIDDEN_SIGNERS
@@ -214,9 +266,11 @@ pub const fn envelope_allows(
         2007 => operation == NOTE_RECLAIM && authorization == AUTH_OWNER,
         // An attestation publishes a persistent per-node pseudonym by design; the rest of
         // the note must stay hidden, so the fully private mask is the only one allowed and
-        // the sender authority a lower mask would publish never exists.
+        // the sender authority a lower mask would publish never exists. Both attestation
+        // operations are bound by it: a member registration is an attestation that also
+        // publishes an encryption key, and exposing its sender would name the collateral.
         2008 => {
-            operation != NOTE_COLLATERAL_REGISTER
+            !is_attestation_operation(operation)
                 || (disclosure_mask == 7 && authorization == AUTH_OWNER)
         }
         _ => false,
@@ -573,6 +627,79 @@ pub unsafe extern "C" fn innova_privacy_vnext_parameter_digest(
     out_len: usize,
 ) -> i32 {
     ffi_boundary(|| copy_digest(PRODUCT_CONTRACT, out, out_len))
+}
+
+/// Copy or size-query every parameter digest this binary accepts on a payload.
+///
+/// Emitted as `count_u8 || 32 bytes each`, this binary's own digest first, then the prior
+/// digests in declaration order. The caller mirrors this list rather than keeping a copy.
+///
+/// Passing `out == NULL` and `out_capacity == 0` is a valid size query.
+///
+/// # Safety
+///
+/// `out_written` must identify writable caller-owned `usize` storage. A non-null `out`
+/// must identify at least `out_capacity` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn innova_privacy_vnext_accepted_parameter_digests(
+    out: *mut u8,
+    out_capacity: usize,
+    out_written: *mut usize,
+) -> i32 {
+    ffi_boundary(|| {
+        if out_written.is_null() || (out.is_null() != (out_capacity == 0)) {
+            return Err(ResultCode::BadLength);
+        }
+        let count = accepted_parameter_digest_count();
+        let required = 1 + count * DIGEST_SIZE;
+        // SAFETY: null was checked and the C contract requires writable storage.
+        unsafe { out_written.write(required) };
+        if out.is_null() {
+            return Ok(());
+        }
+        if out_capacity < required {
+            return Err(ResultCode::ResourceLimit);
+        }
+        let mut encoded = Vec::with_capacity(required);
+        encoded.push(u8::try_from(count).map_err(|_| ResultCode::ResourceLimit)?);
+        encoded.extend_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+        for prior in &PRIOR_PARAMETER_DIGESTS {
+            encoded.extend_from_slice(prior);
+        }
+        if encoded.len() != required {
+            return Err(ResultCode::InternalLocalStateFailure);
+        }
+        // SAFETY: the non-null caller buffer is at least `required` bytes.
+        unsafe { ptr::copy_nonoverlapping(encoded.as_ptr(), out, required) };
+        Ok(())
+    })
+}
+
+/// Whether the decoder's envelope table admits one typed contract: `INNOVA_PRIVACY_VNEXT_VALID`
+/// or `INNOVA_PRIVACY_VNEXT_CONSENSUS_INVALID`. Decodes and activates nothing.
+#[no_mangle]
+pub extern "C" fn innova_privacy_vnext_envelope_allows(
+    wire_version: u32,
+    operation: u8,
+    profile: u8,
+    authorization: u8,
+    finality_object: u8,
+    disclosure_mask: u8,
+) -> i32 {
+    ffi_boundary(|| {
+        if envelope_allows(
+            wire_version,
+            operation,
+            profile,
+            authorization,
+            finality_object,
+            disclosure_mask,
+        ) {
+            Ok(())
+        } else {
+            Err(ResultCode::ConsensusInvalid)
+        }
+    })
 }
 
 /// Copy the fixed, non-consensus product contract into caller-owned storage.

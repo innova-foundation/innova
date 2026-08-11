@@ -3,15 +3,16 @@ use ciphersuite::group::{Group, GroupEncoding};
 use curve25519_dalek::scalar::Scalar;
 use helioselene::HeliosPoint;
 use monero_fcmp_plus_plus::FcmpPlusPlus;
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 
 use zeroize::Zeroize;
 
 use crate::{
-    disclosure, envelope_allows, fcmp, validate_public_key, value, ResultCode, ADDRESS_TYPE_MAX,
-    AUTH_M_OF_N_HIDDEN_SIGNERS, COLLATERAL_ATTESTATION_AMOUNT, FINALITY_OBJECT_NONE, MAX_INPUTS,
-    MAX_OUTPUTS, MAX_PAYLOAD_BYTES, NETWORK_ID_MAX, NOTE_COLLATERAL_REGISTER, NOTE_SHIELD,
-    NOTE_TRANSFER, NOTE_UNSHIELD, PAYLOAD_SCHEMA_U16, PRODUCT_CONTRACT, TREE_LAYERS,
+    disclosure, envelope_allows, fcmp, is_attestation_operation, parameter_digest_is_accepted,
+    validate_public_key, value, ResultCode, ADDRESS_TYPE_MAX, AUTH_M_OF_N_HIDDEN_SIGNERS,
+    COLLATERAL_ATTESTATION_AMOUNT, FINALITY_MEMBER_KEY_BYTES, FINALITY_OBJECT_NONE, MAX_INPUTS,
+    MAX_OUTPUTS, MAX_PAYLOAD_BYTES, NETWORK_ID_MAX, NOTE_FINALITY_MEMBER_REGISTER, NOTE_SHIELD,
+    NOTE_TRANSFER, NOTE_UNSHIELD, PAYLOAD_SCHEMA_U16, TREE_LAYERS,
 };
 
 /// `[wire version u32][network u8][reserved 3][genesis 32]`.
@@ -23,8 +24,15 @@ const MAX_PROOF_SECTION_BYTES: usize = 65_536;
 const TREE_CAPACITY: u64 = 38_u64.pow(4) * 18_u64.pow(4);
 const SIGNING_DOMAIN: &[u8] = b"Innova/IV5/Signing/v1";
 const EFFECTS_HEADER_BYTES: usize = 124;
-/// Attestation count and registration context, after the key images and output leaves.
-const EFFECTS_TRAILER_BYTES: usize = 33;
+/// Attestation count, registration context and member key, after the key images and
+/// output leaves. Fixed width and always present: an optional trailer would make the
+/// encoded length depend on a field the caller has not parsed yet.
+const EFFECTS_TRAILER_BYTES: usize = 1 + 32 + FINALITY_MEMBER_KEY_BYTES;
+/// secp256k1's field prime, big-endian, for the canonical-encoding check on a member key.
+const SECP256K1_FIELD_PRIME: [u8; 32] = [
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+    0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0xff, 0xff, 0xfc, 0x2f,
+];
 
 struct PayloadEffects {
     finalized_root: [u8; 32],
@@ -42,6 +50,8 @@ struct PayloadEffects {
     attestation_key_images: Vec<[u8; 32]>,
     /// What an attestation bound its off-chain registration context to; zero otherwise.
     registration_context: [u8; 32],
+    /// The tally-encryption key a finality-member registration published; zero otherwise.
+    member_key: [u8; FINALITY_MEMBER_KEY_BYTES],
 }
 
 impl PayloadEffects {
@@ -80,6 +90,7 @@ impl PayloadEffects {
                 .map_err(|_| ResultCode::ResourceLimit)?,
         );
         encoded.extend_from_slice(&self.registration_context);
+        encoded.extend_from_slice(&self.member_key);
         for key_image in &self.attestation_key_images {
             encoded.extend_from_slice(key_image);
         }
@@ -268,6 +279,9 @@ struct PayloadPrefix<'a> {
     /// and payout address the caller owns, and sits inside the region the signing hash
     /// covers so the spend-authorization proof binds it.
     registration_context: [u8; 32],
+    /// Present only for a finality-member registration: the compressed secp256k1 key other
+    /// voters seal their VSS evaluations to. Zero for every other operation.
+    member_key: [u8; FINALITY_MEMBER_KEY_BYTES],
 }
 
 /// Read the header, inputs and outputs of a canonical payload. Shared by validation
@@ -312,10 +326,8 @@ fn parse_payload_prefix<'a>(
     // Extended operations fail closed before proof verification until their typed frame and
     // verifier exist.
     if finality_object != FINALITY_OBJECT_NONE
-        || !matches!(
-            operation,
-            NOTE_SHIELD | NOTE_UNSHIELD | NOTE_TRANSFER | NOTE_COLLATERAL_REGISTER
-        )
+        || !(matches!(operation, NOTE_SHIELD | NOTE_UNSHIELD | NOTE_TRANSFER)
+            || is_attestation_operation(operation))
     {
         return Err(ResultCode::UnsupportedFormat);
     }
@@ -326,7 +338,10 @@ fn parse_payload_prefix<'a>(
         return Err(ResultCode::ConsensusInvalid);
     }
     let parameter_digest = cursor.array::<32>()?;
-    if parameter_digest.as_slice() != &Sha256::digest(PRODUCT_CONTRACT)[..] {
+    // The bounded accepted set, not this binary's own digest alone: the digest is a
+    // provenance tag no rule branches on, and pinning it to one value makes a contract
+    // edit invalidate re-validation of every payload already on chain.
+    if !parameter_digest_is_accepted(&parameter_digest) {
         return Err(ResultCode::ConsensusInvalid);
     }
     let finalized_root = cursor.array()?;
@@ -401,9 +416,16 @@ fn parse_payload_prefix<'a>(
     // Inside the signed prefix, so an attestation cannot be repackaged from a transfer
     // proof or replayed under another node's identity.
     let mut registration_context = [0_u8; 32];
-    if operation == NOTE_COLLATERAL_REGISTER {
+    let mut member_key = [0_u8; FINALITY_MEMBER_KEY_BYTES];
+    if is_attestation_operation(operation) {
         registration_context = cursor.array()?;
         validate_nonzero(&registration_context)?;
+        // The key itself, not a digest (VSS evaluations are sealed to it), inside the
+        // signed prefix so it cannot be swapped after the collateral is proved.
+        if operation == NOTE_FINALITY_MEMBER_REGISTER {
+            member_key = cursor.array()?;
+            validate_compressed_secp256k1(&member_key)?;
+        }
     }
 
     Ok(PayloadPrefix {
@@ -428,7 +450,21 @@ fn parse_payload_prefix<'a>(
         output_recipient_ciphertexts,
         output_outgoing_ciphertexts,
         registration_context,
+        member_key,
     })
+}
+
+/// Whether 33 bytes are a canonical compressed secp256k1 x-coordinate encoding.
+/// Structural only; the on-curve check belongs to the caller.
+fn validate_compressed_secp256k1(bytes: &[u8; FINALITY_MEMBER_KEY_BYTES]) -> Result<(), ResultCode> {
+    if bytes[0] != 2 && bytes[0] != 3 {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    validate_nonzero(&bytes[1..])?;
+    if bytes[1..] >= SECP256K1_FIELD_PRIME[..] {
+        return Err(ResultCode::ConsensusInvalid);
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_lines)] // Mirrors the normative payload field order in one audit path.
@@ -456,6 +492,7 @@ fn validate_payload(
         output_commitments,
         output_tweak_ephemerals,
         registration_context,
+        member_key,
         ..
     } = parse_payload_prefix(
         wire_version,
@@ -469,7 +506,7 @@ fn validate_payload(
     // An attestation moves nothing: one hidden note is named, no leaf is created, no value
     // crosses the boundary and no fee is taken. Pinned before any proof runs, so the shape
     // the effects below describe is the only shape that can reach them.
-    let is_attestation = operation == NOTE_COLLATERAL_REGISTER;
+    let is_attestation = is_attestation_operation(operation);
     if is_attestation
         && (input_count != 1
             || output_count != 0
@@ -678,6 +715,7 @@ fn validate_payload(
         output_leaves,
         attestation_key_images,
         registration_context,
+        member_key,
     })
 }
 
@@ -778,9 +816,9 @@ pub(crate) fn scan_outputs(request: &[u8]) -> Result<Vec<u8>, ResultCode> {
     // by the note tag rather than compared here.
     let prefix = parse_payload_prefix(wire_version, &request[payload_start..], network, None)?;
 
-    // An attestation's key image is published without spending anything, so a wallet that
-    // read it here would retire its own collateral note the moment it registered it.
-    let spent_key_images: &[[u8; 32]] = if prefix.operation == NOTE_COLLATERAL_REGISTER {
+    // Attestation key images spend nothing; a wallet reading them here would retire its
+    // own collateral note. Applies to both attestation operations.
+    let spent_key_images: &[[u8; 32]] = if is_attestation_operation(prefix.operation) {
         &[]
     } else {
         &prefix.key_images
@@ -910,8 +948,10 @@ mod tests {
         constants::ED25519_BASEPOINT_POINT, edwards::CompressedEdwardsY, scalar::Scalar,
     };
 
+    use sha2::Sha256;
+
     use super::*;
-    use crate::tree;
+    use crate::{tree, NOTE_COLLATERAL_REGISTER, PRIOR_PARAMETER_DIGESTS, PRODUCT_CONTRACT};
 
     // Stands in for whatever the caller commits its transparent side to; the payload
     // decoder carries these bytes and never interprets them.
@@ -988,6 +1028,15 @@ mod tests {
     /// The canonical shield payload, with the signing hash and excess mask a test needs
     /// to forge material the format is supposed to have no room for.
     fn valid_payload() -> (Vec<u8>, [u8; 32], [u8; 32], [u8; 32]) {
+        let mut digest = [0_u8; 32];
+        digest.copy_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+        valid_payload_with_digest(&digest)
+    }
+
+    /// The same payload under a chosen parameter digest, with proofs rebuilt over it.
+    fn valid_payload_with_digest(
+        parameter_digest: &[u8; 32],
+    ) -> (Vec<u8>, [u8; 32], [u8; 32], [u8; 32]) {
         let point = ED25519_BASEPOINT_POINT.compress().to_bytes();
         let second_point = (ED25519_BASEPOINT_POINT * Scalar::from(2_u64))
             .compress()
@@ -1000,7 +1049,7 @@ mod tests {
         payload.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
         payload.extend_from_slice(&[NOTE_SHIELD, 0, 0, 7, FINALITY_OBJECT_NONE, 1, 0]);
         payload.extend_from_slice(&[0x11; 32]);
-        payload.extend_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+        payload.extend_from_slice(parameter_digest);
         payload.extend_from_slice(&root[12..44]);
         payload.extend_from_slice(&0_u64.to_le_bytes());
         payload.extend_from_slice(&10_i64.to_le_bytes());
@@ -1761,9 +1810,13 @@ mod tests {
             state_effects.len(),
             EFFECTS_HEADER_BYTES + 96 + EFFECTS_TRAILER_BYTES
         );
-        // Nothing was attested, so the trailer is an empty count and a zero context.
+        // Nothing was attested, so the trailer is an empty count, a zero context and a
+        // zero member key.
         assert_eq!(state_effects[EFFECTS_HEADER_BYTES + 96], 0);
-        assert_eq!(&state_effects[EFFECTS_HEADER_BYTES + 97..], &[0_u8; 32]);
+        assert_eq!(
+            &state_effects[EFFECTS_HEADER_BYTES + 97..],
+            &[0_u8; 32 + FINALITY_MEMBER_KEY_BYTES]
+        );
         assert_eq!(&state_effects[..2], &PAYLOAD_SCHEMA_U16.to_le_bytes());
         assert_eq!(state_effects[2], 0);
         assert_eq!(state_effects[3], 1);
@@ -2092,5 +2145,162 @@ mod tests {
                 }
             }
         }
+    }
+    // A contract edit that changes no rule must not invalidate re-validation of every
+    // payload already on chain, and the digest is the only thing that would make it: it
+    // sits inside the signing hash, so a payload built under the old text cannot be
+    // edited into the new one, only rebuilt.
+    #[test]
+    fn a_payload_under_a_prior_contract_digest_still_validates() {
+        let mut current = [0_u8; 32];
+        current.copy_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+        assert!(parameter_digest_is_accepted(&current));
+        assert!(
+            !PRIOR_PARAMETER_DIGESTS.contains(&current),
+            "this build's own digest must not also be listed as a prior one"
+        );
+
+        validate(&validation_request(&valid_payload().0))
+            .expect("a payload under this build's own digest must validate");
+
+        for prior in &PRIOR_PARAMETER_DIGESTS {
+            assert!(parameter_digest_is_accepted(prior));
+            validate(&validation_request(&valid_payload_with_digest(prior).0))
+                .expect("a payload under an accepted prior digest must validate");
+        }
+    }
+
+    // The set stays bounded, or the tag stops meaning anything.
+    #[test]
+    fn a_payload_under_an_unlisted_contract_digest_is_refused() {
+        for stray in [[0_u8; 32], [0xff_u8; 32], [0x5a_u8; 32]] {
+            assert!(!parameter_digest_is_accepted(&stray));
+            assert_eq!(
+                validate(&validation_request(&valid_payload_with_digest(&stray).0)),
+                Err(ResultCode::ConsensusInvalid),
+                "a payload naming an unknown contract must be refused"
+            );
+        }
+
+        // One bit off an accepted digest is an unknown digest.
+        let mut current = [0_u8; 32];
+        current.copy_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+        for bit in [0_usize, 7, 31] {
+            let mut near = current;
+            near[bit] ^= 1;
+            assert!(!parameter_digest_is_accepted(&near));
+            assert_eq!(
+                validate(&validation_request(&valid_payload_with_digest(&near).0)),
+                Err(ResultCode::ConsensusInvalid)
+            );
+        }
+    }
+
+    // The two attestation operations are one shape apart from one field, and the parser
+    // has to agree with the envelope table about which operations those are.
+    #[test]
+    fn both_attestation_operations_are_shaped_alike() {
+        assert!(is_attestation_operation(NOTE_COLLATERAL_REGISTER));
+        assert!(is_attestation_operation(NOTE_FINALITY_MEMBER_REGISTER));
+        for operation in [
+            NOTE_SHIELD,
+            NOTE_UNSHIELD,
+            NOTE_TRANSFER,
+            crate::NOTE_NULLSEND,
+            crate::NOTE_M_OF_N_MINT,
+            crate::NOTE_OPERATION_NONE,
+        ] {
+            assert!(!is_attestation_operation(operation));
+        }
+
+        // Only the fully private mask, and only owner authorization, for both.
+        for operation in [NOTE_COLLATERAL_REGISTER, NOTE_FINALITY_MEMBER_REGISTER] {
+            assert!(envelope_allows(2008, operation, 0, 0, FINALITY_OBJECT_NONE, 7));
+            for mask in 0..7_u8 {
+                assert!(
+                    !envelope_allows(2008, operation, 0, 0, FINALITY_OBJECT_NONE, mask),
+                    "an attestation must not expose its sender or its note"
+                );
+            }
+            for authorization in 1..=AUTH_M_OF_N_HIDDEN_SIGNERS {
+                assert!(!envelope_allows(
+                    2008,
+                    operation,
+                    0,
+                    authorization,
+                    FINALITY_OBJECT_NONE,
+                    7
+                ));
+            }
+            // No earlier envelope carries either of them.
+            for wire_version in 2000..2008_u32 {
+                assert!(!envelope_allows(
+                    wire_version,
+                    operation,
+                    0,
+                    0,
+                    FINALITY_OBJECT_NONE,
+                    7
+                ));
+            }
+        }
+
+        // Nothing past the last operation is known.
+        assert!(!envelope_allows(
+            2008,
+            NOTE_FINALITY_MEMBER_REGISTER + 1,
+            0,
+            0,
+            FINALITY_OBJECT_NONE,
+            7
+        ));
+    }
+
+    // A member key is consensus data, so no two byte strings may name one key and a
+    // string that names none must be refused outright.
+    #[test]
+    fn a_member_key_encoding_is_canonical_or_refused() {
+        let mut key = [0_u8; FINALITY_MEMBER_KEY_BYTES];
+        key[0] = 2;
+        key[FINALITY_MEMBER_KEY_BYTES - 1] = 1;
+        validate_compressed_secp256k1(&key).expect("a canonical even-y key is accepted");
+        key[0] = 3;
+        validate_compressed_secp256k1(&key).expect("a canonical odd-y key is accepted");
+
+        // Every prefix but the two parity tags, including the uncompressed ones.
+        for prefix in [0_u8, 1, 4, 5, 6, 7, 0xff] {
+            let mut bad = key;
+            bad[0] = prefix;
+            assert_eq!(
+                validate_compressed_secp256k1(&bad),
+                Err(ResultCode::ConsensusInvalid)
+            );
+        }
+
+        // A zero x, and every x at or above the field prime.
+        let mut zero = [0_u8; FINALITY_MEMBER_KEY_BYTES];
+        zero[0] = 2;
+        assert_eq!(
+            validate_compressed_secp256k1(&zero),
+            Err(ResultCode::ConsensusInvalid)
+        );
+        let mut at_prime = [0_u8; FINALITY_MEMBER_KEY_BYTES];
+        at_prime[0] = 2;
+        at_prime[1..].copy_from_slice(&SECP256K1_FIELD_PRIME);
+        assert_eq!(
+            validate_compressed_secp256k1(&at_prime),
+            Err(ResultCode::ConsensusInvalid)
+        );
+        let mut above_prime = at_prime;
+        above_prime[FINALITY_MEMBER_KEY_BYTES - 1] = 0xff;
+        assert_eq!(
+            validate_compressed_secp256k1(&above_prime),
+            Err(ResultCode::ConsensusInvalid)
+        );
+        // One below the prime is the largest canonical x.
+        let mut below_prime = at_prime;
+        below_prime[FINALITY_MEMBER_KEY_BYTES - 1] = 0x2e;
+        validate_compressed_secp256k1(&below_prime)
+            .expect("the largest canonical x must be accepted");
     }
 }

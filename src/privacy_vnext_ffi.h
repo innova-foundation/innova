@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "privacy_vnext/iv5_protocol.h"
+
 struct PrivacyVNextAbiInfo
 {
     bool fLinked;
@@ -93,6 +95,19 @@ PrivacyVNextPayloadValidation ValidatePrivacyVNextPayload(
     const std::vector<unsigned char>& payload);
 
 typedef std::array<unsigned char, 32> PrivacyVNextDigest;
+typedef std::array<unsigned char, iv5::FINALITY_MEMBER_KEY_BYTES>
+    PrivacyVNextMemberKey;
+
+// Whether a payload's declared parameter digest is one this build judges payloads under.
+//
+// Answered from the linked Rust library's own list, so there is one accepted set and not
+// a C++ copy of it that can drift.
+bool IsAcceptedPrivacyVNextParameterDigest(const unsigned char* pDigest,
+                                           size_t nSize);
+
+// Whether 33 bytes decode to a point on secp256k1 (the Rust decoder checks only
+// canonical encoding).
+bool IsPrivacyVNextMemberKeyOnCurve(const unsigned char* pKey, size_t nSize);
 
 struct PrivacyVNextOutputLeaf
 {
@@ -119,6 +134,9 @@ struct PrivacyVNextStateEffects
     std::vector<PrivacyVNextDigest> attestationKeyImages;
     // What an attestation bound its off-chain node context to; zero otherwise.
     PrivacyVNextDigest registrationContext;
+    // Tally-encryption key a finality-member registration published (raw, since voters
+    // encrypt to it); all-zero for every other operation.
+    PrivacyVNextMemberKey memberKey;
 
     PrivacyVNextStateEffects()
         : nFinalizedTreeSize(0), nTransparentValueBalance(0), nFee(0)
@@ -127,6 +145,16 @@ struct PrivacyVNextStateEffects
         parameterDigest.fill(0);
         transparentBinding.fill(0);
         registrationContext.fill(0);
+        memberKey.fill(0);
+    }
+
+    // Whether this payload registered a finality-committee member.
+    bool HasMemberKey() const
+    {
+        for (size_t i = 0; i < memberKey.size(); ++i)
+            if (memberKey[i] != 0)
+                return true;
+        return false;
     }
 
     // What this transaction adds to, or takes from, the pool. Every operation obeys the

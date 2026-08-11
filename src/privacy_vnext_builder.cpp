@@ -17,10 +17,11 @@
 namespace
 {
 
-const uint8_t VNEXT_OPERATION_SHIELD = 0;
-const uint8_t VNEXT_OPERATION_UNSHIELD = 1;
-const uint8_t VNEXT_OPERATION_TRANSFER = 2;
-const uint8_t VNEXT_OPERATION_COLLATERAL_REGISTER = 8;
+// Aliases of the protocol enum, never independent numbers: a builder that names its own
+// operation codes is a second decoder table nothing cross-checks.
+const uint8_t VNEXT_OPERATION_SHIELD = iv5::NOTE_SHIELD;
+const uint8_t VNEXT_OPERATION_UNSHIELD = iv5::NOTE_UNSHIELD;
+const uint8_t VNEXT_OPERATION_TRANSFER = iv5::NOTE_TRANSFER;
 
 void PutCompactSize(std::vector<unsigned char>& out, uint64_t nSize)
 {
@@ -650,18 +651,17 @@ bool BuildPrivacyVNextShieldPayload(
         strErrorOut);
 }
 
-// An attestation is its own path rather than a case of the payload builder above.
-//
-// It creates no note, moves no value and carries no balance proof, so every step that
-// builder takes to make the value sides meet has nothing to do here; what it does instead
-// is prove the one commitment it names opens to the collateral tier.
-bool BuildPrivacyVNextCollateralAttestationPayload(
+// Attestation payload (no note, no value, no balance proof): proves the named commitment
+// opens to the collateral tier. Shared by both attestation operations.
+static bool BuildPrivacyVNextAttestationPayload(
+    uint8_t nOperation,
     uint8_t nNetwork,
     const PrivacyVNextDigest& genesis,
     const PrivacyVNextDigest& finalizedRoot,
     uint64_t nFinalizedTreeSize,
     const PrivacyVNextDigest& transparentBinding,
     const PrivacyVNextDigest& registrationContext,
+    const std::vector<unsigned char>& vchMemberKey,
     const PrivacyVNextSpendNote& collateral,
     std::vector<unsigned char>& vchPayloadOut,
     PrivacyVNextDigest& keyImageOut,
@@ -670,6 +670,30 @@ bool BuildPrivacyVNextCollateralAttestationPayload(
     vchPayloadOut.clear();
     keyImageOut.fill(0);
     strErrorOut.clear();
+
+    if (!iv5::IsAttestationOperation(nOperation))
+    {
+        strErrorOut = "IV5 attestation building was asked for an operation that "
+                      "is not one";
+        return false;
+    }
+    const bool fMember = nOperation == iv5::NOTE_FINALITY_MEMBER_REGISTER;
+    if (fMember != (vchMemberKey.size() == iv5::FINALITY_MEMBER_KEY_BYTES))
+    {
+        strErrorOut = fMember
+            ? "an IV5 finality member registration needs a 33-byte "
+              "compressed tally-encryption key"
+            : "a collateralnode attestation carries no tally-encryption key";
+        return false;
+    }
+    // Refused here as well as by consensus, so a wallet cannot spend a proof on a
+    // registration the chain will reject.
+    if (fMember && !IsPrivacyVNextMemberKeyOnCurve(&vchMemberKey[0],
+                                                   vchMemberKey.size()))
+    {
+        strErrorOut = "the IV5 tally-encryption key is not a point on secp256k1";
+        return false;
+    }
 
     if (collateral.nAmount != INNOVA_PRIVACY_VNEXT_COLLATERAL_ATTESTATION_AMOUNT)
     {
@@ -732,7 +756,7 @@ bool BuildPrivacyVNextCollateralAttestationPayload(
     std::vector<unsigned char> prefix;
     prefix.push_back(static_cast<unsigned char>(iv5::PROTOCOL_SCHEMA));
     prefix.push_back(0);
-    prefix.push_back(VNEXT_OPERATION_COLLATERAL_REGISTER);
+    prefix.push_back(nOperation);
     prefix.push_back(0);                         // finality profile: none
     prefix.push_back(0);                         // authorization: owner
     prefix.push_back(iv5::DISCLOSURE_MASK);      // fully private: the only mask allowed
@@ -754,6 +778,8 @@ bool BuildPrivacyVNextCollateralAttestationPayload(
     // Inside the prefix the signing hash covers, so the proof below is bound to this
     // node's identity, endpoint and payout address and to no other.
     PutBytes(prefix, registrationContext);
+    if (fMember)
+        prefix.insert(prefix.end(), vchMemberKey.begin(), vchMemberKey.end());
     PutVector(prefix, std::vector<unsigned char>());   // empty finality body
 
     PrivacyVNextDigest signingHash;
@@ -822,4 +848,42 @@ bool BuildPrivacyVNextCollateralAttestationPayload(
     keyImageOut = vFinal[0].keyImage;
     vchPayloadOut.swap(payload);
     return true;
+}
+
+bool BuildPrivacyVNextCollateralAttestationPayload(
+    uint8_t nNetwork,
+    const PrivacyVNextDigest& genesis,
+    const PrivacyVNextDigest& finalizedRoot,
+    uint64_t nFinalizedTreeSize,
+    const PrivacyVNextDigest& transparentBinding,
+    const PrivacyVNextDigest& registrationContext,
+    const PrivacyVNextSpendNote& collateral,
+    std::vector<unsigned char>& vchPayloadOut,
+    PrivacyVNextDigest& keyImageOut,
+    std::string& strErrorOut)
+{
+    return BuildPrivacyVNextAttestationPayload(
+        iv5::NOTE_COLLATERAL_REGISTER, nNetwork, genesis, finalizedRoot,
+        nFinalizedTreeSize, transparentBinding, registrationContext,
+        std::vector<unsigned char>(), collateral, vchPayloadOut, keyImageOut,
+        strErrorOut);
+}
+
+bool BuildPrivacyVNextFinalityMemberRegistrationPayload(
+    uint8_t nNetwork,
+    const PrivacyVNextDigest& genesis,
+    const PrivacyVNextDigest& finalizedRoot,
+    uint64_t nFinalizedTreeSize,
+    const PrivacyVNextDigest& transparentBinding,
+    const PrivacyVNextDigest& registrationContext,
+    const std::vector<unsigned char>& vchMemberKey,
+    const PrivacyVNextSpendNote& collateral,
+    std::vector<unsigned char>& vchPayloadOut,
+    PrivacyVNextDigest& keyImageOut,
+    std::string& strErrorOut)
+{
+    return BuildPrivacyVNextAttestationPayload(
+        iv5::NOTE_FINALITY_MEMBER_REGISTER, nNetwork, genesis, finalizedRoot,
+        nFinalizedTreeSize, transparentBinding, registrationContext,
+        vchMemberKey, collateral, vchPayloadOut, keyImageOut, strErrorOut);
 }

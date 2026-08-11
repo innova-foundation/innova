@@ -12010,6 +12010,7 @@ bool CWallet::ListPrivacyVNextCollateralCandidates(
 bool CWallet::CreatePrivacyVNextCollateralAttestation(
     const CPrivacyVNextWalletNote& note,
     const uint256& hashContext,
+    const std::vector<unsigned char>& vchMemberKey,
     bool fCommit,
     CWalletTx& wtxNew,
     uint256& keyImageOut,
@@ -12097,10 +12098,16 @@ bool CWallet::CreatePrivacyVNextCollateralAttestation(
 
     std::vector<unsigned char> vchPayload;
     PrivacyVNextDigest keyImage;
-    if (!BuildPrivacyVNextCollateralAttestationPayload(
-            PrivacyVNextNetworkIdForWallet(), genesis, finalizedRoot, nTreeSize,
-            transparentBinding, context, collateral, vchPayload, keyImage,
-            strErrorOut))
+    const bool fMember = !vchMemberKey.empty();
+    if (fMember
+            ? !BuildPrivacyVNextFinalityMemberRegistrationPayload(
+                  PrivacyVNextNetworkIdForWallet(), genesis, finalizedRoot,
+                  nTreeSize, transparentBinding, context, vchMemberKey,
+                  collateral, vchPayload, keyImage, strErrorOut)
+            : !BuildPrivacyVNextCollateralAttestationPayload(
+                  PrivacyVNextNetworkIdForWallet(), genesis, finalizedRoot,
+                  nTreeSize, transparentBinding, context, collateral,
+                  vchPayload, keyImage, strErrorOut))
         return false;
 
     txNew.privacyVNext.vchPayload = vchPayload;

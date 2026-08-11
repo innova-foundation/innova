@@ -5,11 +5,18 @@
 
 #include "privacy_vnext_ffi.h"
 #include "privacy_vnext_wallet.h"
+#include "util.h"
 #include "serialize.h"
 #include "privacy_vnext/iv5_protocol.h"
 #include "privacy_vnext/rust/include/innova_privacy_vnext.h"
 
+#include "json/json_spirit_reader_template.h"
+#include "json/json_spirit_utils.h"
+#include "json/json_spirit_value.h"
+
 #include <cstring>
+#include <set>
+#include <string>
 #include <vector>
 
 namespace
@@ -1201,5 +1208,230 @@ BOOST_AUTO_TEST_CASE(payload_results_are_never_reported_as_node_local)
         }
     }
 }
+
+// The envelope table exists twice: the Rust decoder judges payloads with it, and the C++
+// header answers "what does this payload declare about itself" with a copy. A combination
+// the two disagree on is a payload one side admits and the other refuses, which is a
+// chain split at the first block carrying it.
+//
+// Checked exhaustively rather than by inspection, over every wire version either side
+// names and every enum value either side calls known, plus one past each so a table that
+// grew on one side alone is caught. This is how the operation-8 and operation-9 wiring
+// was verified.
+//
+// Mutation proving this: change any one arm of iv5::EnvelopeAllows -- for instance make
+// 2008 return true unconditionally, which is what it did before operation 9 -- and the
+// case fails naming the exact tuple.
+BOOST_AUTO_TEST_CASE(the_envelope_table_is_the_same_table_on_both_sides)
+{
+    size_t nAdmitted = 0;
+    size_t nCompared = 0;
+    for (uint32_t nVersion = 1999; nVersion <= 2010; ++nVersion)
+    {
+        for (int nOperationIndex = 0; nOperationIndex <= 11; ++nOperationIndex)
+        {
+            // Every known operation, one past the last, and the reserved sentinel.
+            const uint8_t nOperation =
+                nOperationIndex == 11
+                    ? iv5::NOTE_OPERATION_NONE
+                    : static_cast<uint8_t>(nOperationIndex);
+            for (uint8_t nProfile = 0; nProfile <= iv5::FINALITY_NULLSTAKE_V3 + 1;
+                 ++nProfile)
+            for (uint8_t nAuth = 0;
+                 nAuth <= iv5::AUTH_M_OF_N_HIDDEN_SIGNERS + 1; ++nAuth)
+            for (uint8_t nObject = 0;
+                 nObject <= iv5::FINALITY_OBJECT_COMMITTEE_ROTATION + 1; ++nObject)
+            for (uint8_t nMask = 0; nMask <= iv5::DISCLOSURE_MASK + 1; ++nMask)
+            {
+                const bool fLocal = iv5::EnvelopeAllows(
+                    (int)nVersion, nOperation, nProfile, nAuth, nObject, nMask);
+                const bool fRust =
+                    innova_privacy_vnext_envelope_allows(
+                        nVersion, nOperation, nProfile, nAuth, nObject, nMask) ==
+                    INNOVA_PRIVACY_VNEXT_VALID;
+                ++nCompared;
+                if (fLocal)
+                    ++nAdmitted;
+                BOOST_REQUIRE_MESSAGE(
+                    fLocal == fRust,
+                    strprintf("envelope table disagrees at version %u operation %u "
+                              "profile %u auth %u object %u mask %u: local %d rust %d",
+                              nVersion, (unsigned)nOperation, (unsigned)nProfile,
+                              (unsigned)nAuth, (unsigned)nObject, (unsigned)nMask,
+                              (int)fLocal, (int)fRust));
+            }
+        }
+    }
+    // A table that admits nothing would agree trivially.
+    BOOST_CHECK_GT(nCompared, 20000U);
+    BOOST_CHECK_GT(nAdmitted, 0U);
+
+    // The two registry operations, spelled out against the table both sides share.
+    BOOST_CHECK(iv5::EnvelopeAllows(2008, iv5::NOTE_COLLATERAL_REGISTER, 0,
+                                    iv5::AUTH_OWNER, iv5::FINALITY_OBJECT_NONE,
+                                    iv5::DISCLOSURE_MASK));
+    BOOST_CHECK(iv5::EnvelopeAllows(2008, iv5::NOTE_FINALITY_MEMBER_REGISTER, 0,
+                                    iv5::AUTH_OWNER, iv5::FINALITY_OBJECT_NONE,
+                                    iv5::DISCLOSURE_MASK));
+    BOOST_CHECK(!iv5::EnvelopeAllows(2008, iv5::NOTE_FINALITY_MEMBER_REGISTER, 0,
+                                     iv5::AUTH_OWNER, iv5::FINALITY_OBJECT_NONE,
+                                     0));
+    BOOST_CHECK(!iv5::EnvelopeAllows(2007, iv5::NOTE_FINALITY_MEMBER_REGISTER, 0,
+                                     iv5::AUTH_OWNER, iv5::FINALITY_OBJECT_NONE,
+                                     iv5::DISCLOSURE_MASK));
+    BOOST_CHECK(iv5::IsKnownNoteOperation(iv5::NOTE_FINALITY_MEMBER_REGISTER));
+    BOOST_CHECK(!iv5::IsKnownNoteOperation(iv5::NOTE_FINALITY_MEMBER_REGISTER + 1));
+    BOOST_CHECK(iv5::IsAttestationOperation(iv5::NOTE_COLLATERAL_REGISTER));
+    BOOST_CHECK(iv5::IsAttestationOperation(iv5::NOTE_FINALITY_MEMBER_REGISTER));
+    BOOST_CHECK(!iv5::IsAttestationOperation(iv5::NOTE_TRANSFER));
+}
+
+// The normative contract names every operation the decoder admits.
+BOOST_AUTO_TEST_CASE(the_normative_contract_names_every_operation_the_decoder_admits)
+{
+    size_t nRequired = 0;
+    int32_t result =
+        innova_privacy_vnext_protocol_contract(NULL, 0, &nRequired);
+    BOOST_REQUIRE_EQUAL(result, INNOVA_PRIVACY_VNEXT_VALID);
+    BOOST_REQUIRE_GT(nRequired, 0U);
+    std::vector<uint8_t> contract(nRequired);
+    size_t nWritten = 0;
+    result = innova_privacy_vnext_protocol_contract(&contract[0], contract.size(),
+                                                     &nWritten);
+    BOOST_REQUIRE_EQUAL(result, INNOVA_PRIVACY_VNEXT_VALID);
+    BOOST_REQUIRE_EQUAL(nWritten, nRequired);
+
+    using namespace json_spirit;
+    json_spirit::Value parsed;
+    const std::string strContract(contract.begin(), contract.end());
+    BOOST_REQUIRE_MESSAGE(json_spirit::read_string(strContract, parsed),
+                          "the normative contract must be readable JSON");
+    const json_spirit::Object& root = parsed.get_obj();
+
+    // Every operation the decoder knows is named, and nothing else is.
+    const json_spirit::Object& operations =
+        find_value(root, "note_operations").get_obj();
+    std::set<int> setNamed;
+    for (size_t i = 0; i < operations.size(); ++i)
+        setNamed.insert(operations[i].value_.get_int());
+    for (int nOperation = 0; nOperation <= 255; ++nOperation)
+    {
+        const bool fKnown =
+            iv5::IsKnownNoteOperation(static_cast<uint8_t>(nOperation));
+        BOOST_REQUIRE_MESSAGE(
+            fKnown == (setNamed.count(nOperation) != 0),
+            strprintf("the contract and the decoder disagree about operation %d",
+                      nOperation));
+    }
+
+    // And the 2008 envelope lists them, because that envelope is the one that carries
+    // the registry operations.
+    const json_spirit::Object& capabilities =
+        find_value(root, "envelope_capabilities").get_obj();
+    const json_spirit::Object& envelope =
+        find_value(capabilities, "2008").get_obj();
+    const json_spirit::Array& allowed =
+        find_value(envelope, "note_operations").get_array();
+    std::set<int> setAllowed;
+    for (size_t i = 0; i < allowed.size(); ++i)
+        setAllowed.insert(allowed[i].get_int());
+    BOOST_CHECK(setAllowed == setNamed);
+    BOOST_CHECK_EQUAL(setAllowed.count(iv5::NOTE_COLLATERAL_REGISTER), 1U);
+    BOOST_CHECK_EQUAL(setAllowed.count(iv5::NOTE_FINALITY_MEMBER_REGISTER), 1U);
+
+    // The contract pins the ABI schema it was written against; a build where the two
+    // drift is a contract describing a different interface than the one linked in.
+    PrivacyVNextAbiInfo info;
+    BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextAbiInfo(info), info.strError);
+    const json_spirit::Object& abi =
+        find_value(root, "fcmp_abi").get_obj();
+    BOOST_CHECK_EQUAL(
+        find_value(abi, "abi_schema_sha256").get_str(),
+        info.strAbiSha256);
+
+    // The effects trailer the caller decodes is the width the contract states.
+    const json_spirit::Object& effects =
+        find_value(root, "payload_state_effects").get_obj();
+    BOOST_CHECK_EQUAL(find_value(effects, "trailer_bytes").get_int(),
+                      (int)INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_TRAILER_SIZE);
+    BOOST_CHECK_EQUAL(find_value(effects, "header_bytes").get_int(),
+                      (int)INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_HEADER_SIZE);
+}
+
+// A contract edit that changes no rule must not invalidate re-validation of every payload
+// already on chain, so this build accepts a bounded set of prior digests. The set exists
+// twice -- once in the decoder, once in the C++ header -- and a build whose two lists
+// disagree admits a payload on one side of the boundary and refuses it on the other.
+//
+// Mutation proving this: add or remove an entry from PROTOCOL_CONTRACT_SHA256_PRIOR
+// without matching PRIOR_PARAMETER_DIGESTS and LoadPrivacyVNextAbiInfo fails, which the
+// first assertion here reports.
+BOOST_AUTO_TEST_CASE(the_accepted_contract_digest_set_is_one_bounded_list)
+{
+    PrivacyVNextAbiInfo info;
+    BOOST_REQUIRE_MESSAGE(LoadPrivacyVNextAbiInfo(info), info.strError);
+
+    size_t nRequired = 0;
+    BOOST_REQUIRE_EQUAL(
+        innova_privacy_vnext_accepted_parameter_digests(NULL, 0, &nRequired),
+        INNOVA_PRIVACY_VNEXT_VALID);
+    BOOST_REQUIRE_EQUAL(
+        nRequired,
+        1 + (iv5::PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT + 1) *
+                INNOVA_PRIVACY_VNEXT_DIGEST_SIZE);
+    std::vector<uint8_t> encoded(nRequired);
+    size_t nWritten = 0;
+    BOOST_REQUIRE_EQUAL(
+        innova_privacy_vnext_accepted_parameter_digests(&encoded[0],
+                                                         encoded.size(),
+                                                         &nWritten),
+        INNOVA_PRIVACY_VNEXT_VALID);
+    BOOST_REQUIRE_EQUAL(nWritten, nRequired);
+    BOOST_REQUIRE_EQUAL((size_t)encoded[0],
+                        iv5::PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT + 1);
+
+    // This build's own digest is the first entry, and it is the one a payload is built
+    // with; the rest are accept-only.
+    BOOST_CHECK(IsAcceptedPrivacyVNextParameterDigest(
+        &encoded[1], INNOVA_PRIVACY_VNEXT_DIGEST_SIZE));
+    for (size_t i = 0; i < (size_t)encoded[0]; ++i)
+        BOOST_CHECK_MESSAGE(
+            IsAcceptedPrivacyVNextParameterDigest(
+                &encoded[1 + i * INNOVA_PRIVACY_VNEXT_DIGEST_SIZE],
+                INNOVA_PRIVACY_VNEXT_DIGEST_SIZE),
+            strprintf("accepted digest %d must be accepted", (int)i));
+
+    // The set is bounded and every entry is distinct: a duplicate would mean the
+    // superseded digest was never actually superseded.
+    std::set<std::string> setDigests;
+    for (size_t i = 0; i < (size_t)encoded[0]; ++i)
+        setDigests.insert(std::string(
+            encoded.begin() + 1 + i * INNOVA_PRIVACY_VNEXT_DIGEST_SIZE,
+            encoded.begin() + 1 + (i + 1) * INNOVA_PRIVACY_VNEXT_DIGEST_SIZE));
+    BOOST_CHECK_EQUAL(setDigests.size(), (size_t)encoded[0]);
+    BOOST_CHECK_LE((size_t)encoded[0], 8U);
+
+    // The hex list in the header is the same list.
+    BOOST_CHECK(iv5::IsAcceptedContractDigestHex(iv5::PROTOCOL_CONTRACT_SHA256));
+    for (size_t i = 0; i < iv5::PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT; ++i)
+        BOOST_CHECK(iv5::IsAcceptedContractDigestHex(
+            iv5::PROTOCOL_CONTRACT_SHA256_PRIOR[i]));
+    BOOST_CHECK(!iv5::IsAcceptedContractDigestHex(
+        "0000000000000000000000000000000000000000000000000000000000000000"));
+
+    // Nothing outside the list is accepted, including one bit off an entry.
+    uint8_t stray[INNOVA_PRIVACY_VNEXT_DIGEST_SIZE];
+    std::memset(stray, 0, sizeof(stray));
+    BOOST_CHECK(!IsAcceptedPrivacyVNextParameterDigest(stray, sizeof(stray)));
+    std::memset(stray, 0xff, sizeof(stray));
+    BOOST_CHECK(!IsAcceptedPrivacyVNextParameterDigest(stray, sizeof(stray)));
+    std::memcpy(stray, &encoded[1], sizeof(stray));
+    stray[0] ^= 1;
+    BOOST_CHECK(!IsAcceptedPrivacyVNextParameterDigest(stray, sizeof(stray)));
+    // A digest of the wrong width is not a digest.
+    BOOST_CHECK(!IsAcceptedPrivacyVNextParameterDigest(&encoded[1], 31));
+    BOOST_CHECK(!IsAcceptedPrivacyVNextParameterDigest(NULL, sizeof(stray)));
+}
+
 
 BOOST_AUTO_TEST_SUITE_END()

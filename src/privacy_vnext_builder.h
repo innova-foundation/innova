@@ -116,4 +116,19 @@ bool BuildPrivacyVNextCollateralAttestationPayload(
     PrivacyVNextDigest& keyImageOut,
     std::string& strErrorOut);
 
+// Build a finality-committee member registration payload: the attestation plus
+// `vchMemberKey`, a 33-byte compressed secp256k1 key covered by the signing hash.
+bool BuildPrivacyVNextFinalityMemberRegistrationPayload(
+    uint8_t nNetwork,
+    const PrivacyVNextDigest& genesis,
+    const PrivacyVNextDigest& finalizedRoot,
+    uint64_t nFinalizedTreeSize,
+    const PrivacyVNextDigest& transparentBinding,
+    const PrivacyVNextDigest& registrationContext,
+    const std::vector<unsigned char>& vchMemberKey,
+    const PrivacyVNextSpendNote& collateral,
+    std::vector<unsigned char>& vchPayloadOut,
+    PrivacyVNextDigest& keyImageOut,
+    std::string& strErrorOut);
+
 #endif // INNOVA_PRIVACY_VNEXT_BUILDER_H

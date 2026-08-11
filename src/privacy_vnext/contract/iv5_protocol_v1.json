@@ -34,7 +34,7 @@
   },
   "fcmp_abi": {
     "schema": 1,
-    "abi_schema_sha256": "04f61b0247707cd2bcaa99c74f5236496787aa96a043426387bea3c459d893a8",
+    "abi_schema_sha256": "fbf1256f88401af62977cfd6a7d6ed118f57520dc844bcf563e18109332d8967",
     "layers": 8,
     "root_curve_id": 2,
     "maximum_inputs": 16,
@@ -125,7 +125,23 @@
     "m_of_n_mint": 5,
     "reclaim": 6,
     "conditional_migration": 7,
+    "collateral_register": 8,
+    "finality_member_register": 9,
     "none": 255
+  },
+  "collateral_attestation": {
+    "amount_atomic_units": 2500000000000,
+    "operations": [8, 9],
+    "rules": [
+      "exactly-one-input-and-no-outputs",
+      "transparent-value-balance-and-fee-are-zero",
+      "disclosure-mask-is-seven-and-authorization-is-owner",
+      "value-balance-section-is-empty-and-the-operation-section-carries-the-amount-equality-proof",
+      "amount-equality-proof-is-verified-against-the-rerandomized-pseudo-out-and-the-signing-hash",
+      "the-published-key-image-is-watched-and-never-recorded-as-spent",
+      "one-registration-per-note-for-ever-across-both-operations",
+      "operation-9-additionally-publishes-a-canonical-compressed-secp256k1-tally-encryption-key-inside-the-signed-prefix"
+    ]
   },
   "finality_profiles": {
     "none": 0,
@@ -214,11 +230,13 @@
       "finality_objects": [0]
     },
     "2008": {
-      "note_operations": [0, 1, 2, 3, 4, 5, 6, 7, 255],
+      "note_operations": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 255],
       "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
       "finality_profiles": [0, 1, 2, 3],
       "authorization_modes": [0, 1, 2, 3],
-      "finality_objects": [0, 1, 2, 3, 4]
+      "finality_objects": [0, 1, 2, 3, 4],
+      "note_operation_8_and_9_disclosure_masks": [7],
+      "note_operation_8_and_9_authorization_modes": [0]
     }
   },
   "payload": {
@@ -242,6 +260,8 @@
       "transparent_binding_32",
       "inputs",
       "outputs",
+      "registration_context_32_for_note_operations_8_and_9",
+      "finality_member_key_33_for_note_operation_9",
       "sender_disclosures",
       "receiver_disclosures",
       "amount_disclosures",
@@ -306,8 +326,11 @@
       "exposed-amount-openings-must-open-the-corresponding-output-commitment-as-opening-times-ed25519-G-plus-value-times-monero-H",
       "range-section-is-nonempty-only-when-at-least-one-output-amount-is-hidden-and-is-a-canonical-aggregate-monero-bulletproof-plus-verified-against-all-output-commitments",
       "transparent-binding-is-32-opaque-header-bytes-inside-the-signing-hash-that-the-caller-requires-to-equal-a-domain-separated-digest-of-the-carrying-transactions-input-prevouts-output-vector-and-lock-time",
+      "registration-context-is-present-and-nonzero-only-for-note-operations-8-and-9-and-is-32-opaque-bytes-inside-the-signing-hash",
+      "finality-member-key-is-present-only-for-note-operation-9-and-is-33-bytes-whose-first-byte-is-2-or-3-and-whose-x-coordinate-is-nonzero-and-below-the-secp256k1-field-prime-with-the-on-curve-test-left-to-the-caller",
       "value-balance-section-is-always-an-exact-64-byte-schnorr-excess-proof-bound-to-the-signing-hash-pseudo-outs-output-commitments-transparent-value-balance-and-fee",
       "operation-section-is-empty-for-shield-unshield-and-transfer",
+      "operation-section-for-note-operations-8-and-9-is-the-exact-64-byte-amount-equality-proof-and-the-value-balance-section-is-empty",
       "nullsend-delegation-m-of-n-reclaim-migration-and-finality-objects-return-unsupported-format-until-a-normative-typed-operation-proof-frame-and-verifier-are-frozen",
       "disclosure-section-is-exactly-128-bytes-per-sender-record-followed-by-160-bytes-per-receiver-record-and-empty-when-neither-dimension-is-exposed",
       "exactly-one-signature-is-produced-under-the-value-excess-key-because-a-second-one-over-the-same-signing-hash-restates-the-first-and-makes-the-excess-mask-solvable-if-their-challenge-domains-coincide"
@@ -393,6 +416,7 @@
   },
   "payload_state_effects": {
     "header_bytes": 124,
+    "trailer_bytes": 66,
     "header_fields": [
       "schema_u16_le",
       "input_count_u8",
@@ -406,8 +430,13 @@
     ],
     "trailing_fields": [
       "ordered_key_images_32_each",
-      "ordered_output_leaves_o_i_c_96_each"
+      "ordered_output_leaves_o_i_c_96_each",
+      "attestation_key_image_count_u8",
+      "registration_context_32",
+      "finality_member_key_33",
+      "ordered_attestation_key_images_32_each"
     ],
+    "attestation_rule": "an-attestation-key-image-is-reported-apart-from-the-spends-and-the-spend-list-stays-empty-so-the-callers-spent-key-index-never-sees-it",
     "validation_rule": "complete-canonical-payload-and-proof-validation-precedes-extraction",
     "ownership_rule": "rust-decodes-effects-and-cpp-owns-atomic-leveldb-application",
     "consensus_status": "disabled"
@@ -512,6 +541,8 @@
   "parameter_digest": {
     "hash": "sha256",
     "status": "unfrozen-until-benchmark-caps-and-abi-v2-are-final",
+    "acceptance": "a-payload-is-accepted-under-this-digest-or-any-digest-in-the-implementations-bounded-accepted-prior-list",
+    "acceptance_rule": "the-digest-is-a-provenance-tag-that-no-validation-rule-branches-on-so-a-prior-digest-may-be-added-to-that-list-only-when-the-contract-text-changed-without-changing-a-rule",
     "required_components": [
       "upstream_revision",
       "vendored_source_sha256",
