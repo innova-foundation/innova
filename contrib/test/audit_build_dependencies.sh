@@ -129,7 +129,16 @@ grep -B2 -q 'contrib/test/v5_release_gate.sh --integration' "$ROOT/.github/workf
 integration_context=$(grep -B3 'contrib/test/v5_release_gate.sh --integration' "$ROOT/.github/workflows/build.yml")
 echo "$integration_context" | grep -q 'set -euo pipefail' || \
     fail "integration log pipeline can hide a failed release gate"
-policy_context=$(grep -A160 '^  release-policy:' "$ROOT/.github/workflows/build.yml")
+# Match within the job's own extent; a fixed -A window drifts as jobs change size.
+workflow_job() {
+    awk -v job="  $1:" '
+        $0 == job { inside = 1; next }
+        inside && /^  [^[:space:]#]/ { inside = 0 }
+        inside { print }
+    ' "$2"
+}
+
+policy_context=$(workflow_job release-policy "$ROOT/.github/workflows/build.yml")
 echo "$policy_context" | grep -q 'fetch-depth: 0' || \
     fail "release policy cannot verify source ancestry from a shallow checkout"
 echo "$policy_context" | grep -q 'environment: v5-release' || \
@@ -175,7 +184,7 @@ grep -q 'name: innova-macOS-arm64-signed' "$signing_workflow" || \
     fail "signed macOS package is not published as a distinct artifact"
 grep -q 'name: innova-win64-signed' "$signing_workflow" || \
     fail "signed Windows package is not published as a distinct artifact"
-rust_audit_context=$(grep -A20 '^  audit-rust-vnext:' "$ROOT/.github/workflows/build.yml")
+rust_audit_context=$(workflow_job audit-rust-vnext "$ROOT/.github/workflows/build.yml")
 echo "$rust_audit_context" | grep -q 'rustup toolchain install 1.94.1' || \
     fail "Rust audit lane does not install the pinned 1.94.1 toolchain"
 echo "$rust_audit_context" | grep -q 'src/privacy_vnext/rust/check.sh' || \
