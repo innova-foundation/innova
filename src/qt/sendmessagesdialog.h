@@ -23,9 +23,11 @@ class SendMessagesDialog : public QDialog
 
 public:
 
+    // Anonymous was never constructed at either call site: the GUI has only ever
+    // opened this dialog in Encrypted mode. Anonymous sending remains available
+    // over RPC (smsgsendanon / nyx sendanon).
     enum Mode {
         Encrypted,
-        Anonymous,
     };
 
     enum Type {
@@ -38,7 +40,6 @@ public:
 
     void setModel (MessageModel *model);
     void loadRow(int row);
-    bool checkMode(Mode mode);
     bool validate ();
 
     /** Set up the tab chain manually, as Qt messes up the tab chain by default in some cases (issue https://bugreports.qt-project.org/browse/QTBUG-10907).

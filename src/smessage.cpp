@@ -2216,29 +2216,10 @@ bool SecureMsgReceiveData(CNode* pfrom, std::string strCommand, CDataStream& vRe
         } else
         if (strCommand == "smsgTyping")
         {
-            // Typing notifications handled outside cs_smsg lock to avoid lock ordering issues
-            // Just parse and fire signal — no lock contention
-            int64_t now = GetTime();
-            if (now - pfrom->smsgData.lastTypingReceived >= 1)
-            {
-                pfrom->smsgData.lastTypingReceived = now;
-                pfrom->smsgData.nTypingViolations = 0;
-
-                std::vector<unsigned char> vchData;
-                vRecv >> vchData;
-
-                std::string senderAddr;
-                if (SecureMsgHandleTyping(pfrom, vchData, senderAddr))
-                {
-                    NotifySecMsgTyping(senderAddr);
-                }
-            }
-            else
-            {
-                pfrom->smsgData.nTypingViolations++;
-                if (pfrom->smsgData.nTypingViolations > 5)
-                    pfrom->Misbehaving(1, "smsgTyping rate limit");
-            }
+            // Accepted and ignored: nothing here sends one, but older peers do. Never
+            // surfaced to the UI, since the from-address is peer-controlled.
+            if (fDebugSmsg)
+                printf("Ignoring smsgTyping from peer %u.\n", pfrom->smsgData.nPeerId);
         } else
         {
             // Unknown message
@@ -2254,6 +2235,9 @@ bool SecureMsgSendTyping(const std::string& addrFrom, const std::string& addrTo)
     // Typing notifications are not sent over the network: a flooded (addrFrom, addrTo)
     // pair would publish the correspondence graph. The local path below still fires for
     // an address this wallet holds.
+
+    if (!fSecMsgEnabled)
+        return false;
 
     if (addrFrom.empty() || addrTo.empty())
         return false;
@@ -2274,50 +2258,6 @@ bool SecureMsgSendTyping(const std::string& addrFrom, const std::string& addrTo)
         }
     }
 
-    return true;
-}
-
-bool SecureMsgHandleTyping(CNode* pfrom, std::vector<unsigned char>& vchData, std::string& senderAddrOut)
-{
-    // Parse: [fromLen(1)] + [fromAddr] + [toLen(1)] + [toAddr]
-    if (vchData.size() < 4)
-        return false;
-
-    size_t pos = 0;
-    uint8_t nFromLen = vchData[pos++];
-    if (pos + nFromLen + 1 > vchData.size())
-        return false;
-
-    std::string addrFrom((char*)&vchData[pos], nFromLen);
-    pos += nFromLen;
-
-    uint8_t nToLen = vchData[pos++];
-    if (pos + nToLen > vchData.size())
-        return false;
-
-    std::string addrTo((char*)&vchData[pos], nToLen);
-
-    CWallet* pwallet = pwalletMain;
-    if (!pwallet)
-        return false;
-
-    CBitcoinAddress coinAddr(addrTo);
-    if (!coinAddr.IsValid())
-        return false;
-
-    CKeyID keyID;
-    if (!coinAddr.GetKeyID(keyID))
-        return false;
-
-    if (!pwallet->HaveKey(keyID))
-        return false; // Not for us
-
-    // Validate addrFrom
-    CBitcoinAddress coinAddrFrom(addrFrom);
-    if (!coinAddrFrom.IsValid())
-        return false;
-
-    senderAddrOut = addrFrom;
     return true;
 }
 
@@ -3886,7 +3826,8 @@ int SecureMsgEncrypt(SecureMessage& smsg, std::string& addressFrom, std::string&
 
     smsg.version[0] = 1;
     smsg.version[1] = 1;
-    smsg.timestamp = GetTime();
+    smsg.flags      = 0;    // reserved; no reader assigns meaning to it yet
+    smsg.timestamp  = GetTime();
 
 
     bool fSendAnonymous;
@@ -4058,13 +3999,13 @@ int SecureMsgEncrypt(SecureMessage& smsg, std::string& addressFrom, std::string&
     if (fSendAnonymous)
     {
         try {
-            vchPayload.resize(9 + lenMsgData);
+            vchPayload.resize(SMSG_PL_HDR_LEN_ANON + lenMsgData);
         } catch (std::exception& e) {
-            printf("vchPayload.resize %u threw: %s.\n", 9 + lenMsgData, e.what());
+            printf("vchPayload.resize %u threw: %s.\n", SMSG_PL_HDR_LEN_ANON + lenMsgData, e.what());
             return 8;
         };
 
-        memcpy(&vchPayload[9], pMsgData, lenMsgData);
+        memcpy(&vchPayload[SMSG_PL_HDR_LEN_ANON], pMsgData, lenMsgData);
 
         vchPayload[0] = 250; // id as anonymous message
         // -- next 4 bytes are unused - there to ensure encrypted payload always > 8 bytes
@@ -4223,8 +4164,8 @@ bool SecureMsgStemRelay(unsigned char* pHeader, unsigned char* pPayload, uint32_
 
 bool SecureMsgHandleStem(CNode* pfrom, std::vector<unsigned char>& vchData)
 {
-    // Validate: must be header + at least some payload
-    if (vchData.size() <= SMSG_HDR_LEN)
+    // Validate: must be header + at least one whole ciphertext block
+    if (vchData.size() < SMSG_HDR_LEN + SMSG_MIN_PAYLOAD_LEN)
     {
         printf("SecureMsgHandleStem: message too small (%zu)\n", vchData.size());
         return false;
@@ -4323,12 +4264,11 @@ void SecureMsgCheckStemTimeouts()
 
     for (SmsgStemEntry& entry : vExpired)
     {
-        if (entry.vchMessage.size() <= SMSG_HDR_LEN)
+        unsigned char* pH = NULL;
+        unsigned char* pP = NULL;
+        uint32_t nP = 0;
+        if (!SecureMsgSplitStored(entry.vchMessage, pH, pP, nP))
             continue;
-
-        unsigned char* pH = &entry.vchMessage[0];
-        unsigned char* pP = &entry.vchMessage[SMSG_HDR_LEN];
-        uint32_t nP = entry.vchMessage.size() - SMSG_HDR_LEN;
 
         {
             LOCK(cs_smsg);
@@ -4352,6 +4292,16 @@ int SecureMsgSend(std::string& addressFrom, std::string& addressTo, std::string&
 
     if (fDebugSmsg)
         printf("SecureMsgSend(%s, %s, ...)\n", addressFrom.c_str(), addressTo.c_str());
+
+    // Fail closed when messaging is off; otherwise the message is queued but never sent
+    // (no PoW thread) while callers report success.
+    if (!fSecMsgEnabled)
+    {
+        sError = "Secure messaging is disabled on this node. "
+                 "Set smsg=1 in innova.conf (or run smsgenable) to turn it on.";
+        printf("SecureMsgSend: refused, secure messaging is disabled.\n");
+        return 12;
+    };
 
     if (pwalletMain->IsLocked())
     {
@@ -4397,11 +4347,18 @@ int SecureMsgSend(std::string& addressFrom, std::string& addressTo, std::string&
 
 
     // -- Place message in send queue, proof of work will happen in a thread.
+    //    The last 8 bytes sample the ciphertext, matching SecMsgToken and the inbox key
+    //    in SecureMsgScanMessage (never &smsg.pPayload, a heap address).
     std::string sPrefix("qm");
     unsigned char chKey[18];
     memcpy(&chKey[0],  sPrefix.data(),  2);
     memcpy(&chKey[2],  &smsg.timestamp, 8);
-    memcpy(&chKey[10], &smsg.pPayload,  8);
+    if (smsg.nPayload < 8 || !smsg.pPayload)
+    {
+        sError = "Encrypted payload is too short to key.";
+        return 1;
+    };
+    memcpy(&chKey[10], smsg.pPayload,   8);
 
     SecMsgStored smsgSQ;
 
@@ -4475,7 +4432,12 @@ int SecureMsgSend(std::string& addressFrom, std::string& addressTo, std::string&
             unsigned char chKey[18];
             memcpy(&chKey[0],  sPrefix.data(),           2);
             memcpy(&chKey[2],  &smsgForOutbox.timestamp, 8);
-            memcpy(&chKey[10], &smsgForOutbox.pPayload,  8);   // sample
+            if (smsgForOutbox.nPayload < 8 || !smsgForOutbox.pPayload)
+            {
+                printf("SecureMsgSend(), outbox payload too short to key.\n");
+                return 1;
+            };
+            memcpy(&chKey[10], smsgForOutbox.pPayload,   8);   // sample
 
             SecMsgStored smsgOutbox;
 
@@ -4536,6 +4498,14 @@ int SecureMsgDecrypt(bool fTestOnly, std::string& address, unsigned char *pHeade
         || !pPayload)
     {
         printf("Error: null pointer to header or payload.\n");
+        return 1;
+    };
+
+    // Callers compute nPayload as vchMessage.size() - SMSG_HDR_LEN; recheck so a short
+    // record cannot reach the decoder. The smallest payload is one AES-CBC block.
+    if (nPayload < SMSG_MIN_PAYLOAD_LEN)
+    {
+        printf("Error: payload is too short, %u.\n", nPayload);
         return 1;
     };
 
@@ -4665,18 +4635,51 @@ int SecureMsgDecrypt(bool fTestOnly, std::string& address, unsigned char *pHeade
 
     unsigned char* pMsgData;
     bool fFromAnonymous;
+
+    // The MAC does not cover the IV, so a relay can choose the first plaintext block
+    // (byte 0 = branch, bytes 5-8 = declared length). Bound both against the decryption.
+    if (vchPayload.empty())
+    {
+        printf("Decrypted payload is empty.\n");
+        return 1;
+    };
+
     if ((uint32_t)vchPayload[0] == 250)
     {
         fFromAnonymous = true;
-        lenData = vchPayload.size() - (9);
+        if (vchPayload.size() < SMSG_PL_HDR_LEN_ANON)
+        {
+            printf("Decrypted anon payload is too short, %" PRIszu".\n", vchPayload.size());
+            return 1;
+        };
+        lenData = vchPayload.size() - SMSG_PL_HDR_LEN_ANON;
         memcpy(&lenPlain, &vchPayload[5], 4);
-        pMsgData = &vchPayload[9];
+        pMsgData = &vchPayload[SMSG_PL_HDR_LEN_ANON];
     } else
     {
         fFromAnonymous = false;
-        lenData = vchPayload.size() - (SMSG_PL_HDR_LEN);
+        if (vchPayload.size() < SMSG_PL_HDR_LEN)
+        {
+            printf("Decrypted payload is too short, %" PRIszu".\n", vchPayload.size());
+            return 1;
+        };
+        lenData = vchPayload.size() - SMSG_PL_HDR_LEN;
         memcpy(&lenPlain, &vchPayload[1+20+65], 4);
         pMsgData = &vchPayload[SMSG_PL_HDR_LEN];
+    };
+
+    // A sender can never legitimately declare more plaintext than the input cap,
+    // and an uncompressed body must actually be present in the buffer.
+    if (lenPlain > SMSG_MAX_MSG_BYTES)
+    {
+        printf("Declared plaintext length is too large, %u.\n", lenPlain);
+        return 1;
+    };
+
+    if (lenPlain <= 128 && lenPlain > lenData)
+    {
+        printf("Declared plaintext length %u exceeds the %u bytes carried.\n", lenPlain, lenData);
+        return 1;
     };
 
     try {
@@ -4788,4 +4791,22 @@ int SecureMsgDecrypt(bool fTestOnly, std::string& address, unsigned char *pHeade
 int SecureMsgDecrypt(bool fTestOnly, std::string& address, SecureMessage& smsg, MessageData& msg)
 {
     return SecureMsgDecrypt(fTestOnly, address, &smsg.hash[0], smsg.pPayload, smsg.nPayload, msg);
+};
+
+bool SecureMsgSplitStored(std::vector<unsigned char>& vchMessage,
+                          unsigned char*& pHeaderOut,
+                          unsigned char*& pPayloadOut,
+                          uint32_t& nPayloadOut)
+{
+    pHeaderOut  = NULL;
+    pPayloadOut = NULL;
+    nPayloadOut = 0;
+
+    if (vchMessage.size() < SMSG_HDR_LEN + SMSG_MIN_PAYLOAD_LEN)
+        return false;
+
+    pHeaderOut  = &vchMessage[0];
+    pPayloadOut = &vchMessage[SMSG_HDR_LEN];
+    nPayloadOut = (uint32_t)(vchMessage.size() - SMSG_HDR_LEN);
+    return true;
 };

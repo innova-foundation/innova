@@ -15,6 +15,11 @@
 
 const unsigned int SMSG_HDR_LEN         = 104;               // length of unencrypted header, 4 + 2 + 1 + 8 + 16 + 33 + 32 + 4 +4
 const unsigned int SMSG_PL_HDR_LEN      = 1+20+65+4;         // length of encrypted header in payload
+const unsigned int SMSG_PL_HDR_LEN_ANON = 1+4+4;             // same header with the from-address and signature omitted
+
+// Smallest payload any encrypt can emit: one AES-CBC block. Anything shorter is
+// a truncated record, and subtracting a header length from it wraps.
+const unsigned int SMSG_MIN_PAYLOAD_LEN = 16;
 
 const unsigned int SMSG_BUCKET_LEN      = 60 * 10;           // in seconds
 const unsigned int SMSG_RETENTION       = 60 * 60 * 48;      // in seconds
@@ -75,6 +80,17 @@ class SecureMessage
 public:
     SecureMessage()
     {
+        // Zero the whole header: every byte of it is broadcast, so none of it
+        // may be left uninitialised. flags in particular is never assigned by
+        // any writer and never consulted by any reader.
+        memset(hash, 0, sizeof(hash));
+        memset(version, 0, sizeof(version));
+        flags     = 0;
+        timestamp = 0;
+        memset(iv, 0, sizeof(iv));
+        memset(cpkR, 0, sizeof(cpkR));
+        memset(mac, 0, sizeof(mac));
+        memset(nonse, 0, sizeof(nonse));
         nPayload = 0;
         pPayload = NULL;
     };
@@ -414,8 +430,6 @@ extern std::map<uint256, SmsgStemEntry> mapSmsgStemState;
 /** Send an ephemeral typing notification via P2P. */
 bool SecureMsgSendTyping(const std::string& addrFrom, const std::string& addrTo);
 
-/** Handle incoming smsgTyping message. Returns the sender address if valid. */
-bool SecureMsgHandleTyping(CNode* pfrom, std::vector<unsigned char>& vchData, std::string& senderAddrOut);
 
 /** Canonical v1 proof transcript: header[4..103] || payload || payload. */
 bool SecureMsgComputeProofHash(const SecureMessage& smsg,
@@ -441,6 +455,14 @@ int SecureMsgEncrypt(SecureMessage& smsg, std::string& addressFrom, std::string&
 
 int SecureMsgDecrypt(bool fTestOnly, std::string& address, unsigned char *pHeader, unsigned char *pPayload, uint32_t nPayload, MessageData& msg);
 int SecureMsgDecrypt(bool fTestOnly, std::string& address, SecureMessage& smsg, MessageData& msg);
+
+/** Split a stored record (header || payload) into the pointers SecureMsgDecrypt
+ *  wants. Returns false when the record is too short to hold both, which is what
+ *  makes size() - SMSG_HDR_LEN wrap at the call sites that read the database. */
+bool SecureMsgSplitStored(std::vector<unsigned char>& vchMessage,
+                          unsigned char*& pHeaderOut,
+                          unsigned char*& pPayloadOut,
+                          uint32_t& nPayloadOut);
 
 
 

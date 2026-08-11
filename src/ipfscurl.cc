@@ -69,6 +69,11 @@ std::string replace_body;
  * @return true if 2xx */
 inline bool status_is_success(long code) { return code >= 200 && code <= 299; }
 
+/** Hard cap on a single response body. A CID names an object of any size and
+ *  is supplied by whoever sent the chat message, so the transport must bound
+ *  what it will buffer rather than trusting a check made after the fact. */
+static const uint64_t kMaxResponseBytes = 512ULL * 1024 * 1024;
+
 /** CURL callback for writing the result to a stream. */
 static size_t curl_cb_stream(
     /** [in] Pointer to the result. */
@@ -82,6 +87,14 @@ static size_t curl_cb_stream(
   std::iostream* response = static_cast<std::iostream*>(response_void);
 
   const size_t n = size * nmemb;
+
+  /* Returning short of n aborts the transfer with CURLE_WRITE_ERROR, which
+   * Perform() turns into an exception. */
+  const std::streampos written = response->tellp();
+  if (written < 0 ||
+      static_cast<uint64_t>(written) + n > kMaxResponseBytes) {
+    return 0;
+  }
 
   response->write(ptr, n);
 
@@ -221,8 +234,34 @@ void TransportCurl::HandleSetup() {
   /* https://curl.haxx.se/libcurl/c/CURLOPT_USERAGENT.html */
   curl_easy_setopt(curl_, CURLOPT_USERAGENT, "innova-ipfs-http-client");
 
-  /* https://curl.haxx.se/libcurl/c/CURLOPT_SSL_VERIFYPEER.html */
-  curl_easy_setopt(curl_, CURLOPT_SSL_VERIFYPEER, 0);
+  /* Verify the peer certificate and that it matches the host. This was
+   * disabled, which made every https gateway URL trivially interceptable.
+   * https://curl.haxx.se/libcurl/c/CURLOPT_SSL_VERIFYPEER.html */
+  curl_easy_setopt(curl_, CURLOPT_SSL_VERIFYPEER, 1);
+  /* https://curl.haxx.se/libcurl/c/CURLOPT_SSL_VERIFYHOST.html */
+  curl_easy_setopt(curl_, CURLOPT_SSL_VERIFYHOST, 2);
+
+  /* Only ever speak HTTP(S); a gateway string must not be able to select
+   * file:// or scp://. CURLOPT_PROTOCOLS is deprecated in favour of
+   * CURLOPT_PROTOCOLS_STR in curl 7.85+, but remains supported and is the one
+   * form that compiles against every version this tree builds on. */
+  curl_easy_setopt(curl_, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+
+  /* Do not follow redirects: a gateway must not be able to point the client at
+   * an arbitrary third host. */
+  curl_easy_setopt(curl_, CURLOPT_FOLLOWLOCATION, 0);
+
+  /* Bound the transfer in time as well as size. A stalled connection would
+   * otherwise hold the calling thread -- and, on the RPC path, cs_main -- open
+   * indefinitely. */
+  curl_easy_setopt(curl_, CURLOPT_CONNECTTIMEOUT, 30L);
+  curl_easy_setopt(curl_, CURLOPT_LOW_SPEED_LIMIT, 1L);
+  curl_easy_setopt(curl_, CURLOPT_LOW_SPEED_TIME, 120L);
+
+  /* Reject early when the server declares an oversized body. The write
+   * callback still enforces the cap when no length is declared. */
+  curl_easy_setopt(curl_, CURLOPT_MAXFILESIZE_LARGE,
+                   (curl_off_t)kMaxResponseBytes);
 
   curl_is_setup_ = true;
 }

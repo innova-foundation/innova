@@ -28,6 +28,11 @@ Value smsgenable(const Array& params, bool fHelp)
     if (fSecMsgEnabled)
         throw runtime_error("Secure messaging is already enabled.");
 
+    // An explicit -nosmsg is an operator decision; a runtime RPC must not undo it.
+    if (GetBoolArg("-nosmsg", false))
+        throw runtime_error("Secure messaging was force-disabled with -nosmsg. "
+                            "Remove it and set smsg=1 to enable messaging.");
+
     Object result;
     if (!SecureMsgEnable())
     {
@@ -65,6 +70,10 @@ Value smsgoptions(const Array& params, bool fHelp)
         throw runtime_error(
             "smsgoptions [list|set <optname> <value>]\n"
             "List and manage options.");
+
+    if (!fSecMsgEnabled)
+        throw runtime_error("Secure messaging is disabled. "
+                            "Set smsg=1 in innova.conf (or run smsgenable) to turn it on.");
 
     std::string mode = "list";
     if (params.size() > 0)
@@ -145,7 +154,8 @@ Value smsglocalkeys(const Array& params, bool fHelp)
             "List and manage keys.");
 
     if (!fSecMsgEnabled)
-        throw runtime_error("Secure messaging is disabled.");
+        throw runtime_error("Secure messaging is disabled. "
+                            "Set smsg=1 in innova.conf (or run smsgenable) to turn it on.");
 
     Object result;
 
@@ -353,7 +363,8 @@ Value smsgscanchain(const Array& params, bool fHelp)
             "Look for public keys in the block chain.");
 
     if (!fSecMsgEnabled)
-        throw runtime_error("Secure messaging is disabled.");
+        throw runtime_error("Secure messaging is disabled. "
+                            "Set smsg=1 in innova.conf (or run smsgenable) to turn it on.");
 
     Object result;
     if (!SecureMsgScanBlockChain())
@@ -374,7 +385,8 @@ Value smsgscanbuckets(const Array& params, bool fHelp)
             "Force rescan of all messages in the bucket store.");
 
     if (!fSecMsgEnabled)
-        throw runtime_error("Secure messaging is disabled.");
+        throw runtime_error("Secure messaging is disabled. "
+                            "Set smsg=1 in innova.conf (or run smsgenable) to turn it on.");
 
     if (pwalletMain->IsLocked())
         throw runtime_error("Wallet is locked.");
@@ -398,7 +410,8 @@ Value smsgaddkey(const Array& params, bool fHelp)
             "Add address, pubkey pair to database.");
 
     if (!fSecMsgEnabled)
-        throw runtime_error("Secure messaging is disabled.");
+        throw runtime_error("Secure messaging is disabled. "
+                            "Set smsg=1 in innova.conf (or run smsgenable) to turn it on.");
 
     std::string addr = params[0].get_str();
     std::string pubk = params[1].get_str();
@@ -433,7 +446,8 @@ Value smsggetpubkey(const Array& params, bool fHelp)
             "Tests localkeys first, then looks in public key db.\n");
 
     if (!fSecMsgEnabled)
-        throw runtime_error("Secure messaging is disabled.");
+        throw runtime_error("Secure messaging is disabled. "
+                            "Set smsg=1 in innova.conf (or run smsgenable) to turn it on.");
 
 
     std::string address   = params[0].get_str();
@@ -516,7 +530,8 @@ Value smsgsend(const Array& params, bool fHelp)
             "Send an encrypted message from addrFrom to addrTo.");
 
     if (!fSecMsgEnabled)
-        throw runtime_error("Secure messaging is disabled.");
+        throw runtime_error("Secure messaging is disabled. "
+                            "Set smsg=1 in innova.conf (or run smsgenable) to turn it on.");
 
     std::string addrFrom  = params[0].get_str();
     std::string addrTo    = params[1].get_str();
@@ -544,7 +559,8 @@ Value smsgsendanon(const Array& params, bool fHelp)
             "Send an anonymous encrypted message to addrTo.");
 
     if (!fSecMsgEnabled)
-        throw runtime_error("Secure messaging is disabled.");
+        throw runtime_error("Secure messaging is disabled. "
+                            "Set smsg=1 in innova.conf (or run smsgenable) to turn it on.");
 
     std::string addrFrom  = "anon";
     std::string addrTo    = params[0].get_str();
@@ -572,7 +588,8 @@ Value smsginbox(const Array& params, bool fHelp)
             "Warning: clear will delete all messages.");
 
     if (!fSecMsgEnabled)
-        throw runtime_error("Secure messaging is disabled.");
+        throw runtime_error("Secure messaging is disabled. "
+                            "Set smsg=1 in innova.conf (or run smsgenable) to turn it on.");
 
     if (pwalletMain->IsLocked())
         throw runtime_error("Wallet is locked.");
@@ -637,8 +654,11 @@ Value smsginbox(const Array& params, bool fHelp)
                     && !(smsgStored.status & SMSG_MASK_UNREAD))
                     continue;
 
-                uint32_t nPayload = smsgStored.vchMessage.size() - SMSG_HDR_LEN;
-                if (SecureMsgDecrypt(false, smsgStored.sAddrTo, &smsgStored.vchMessage[0], &smsgStored.vchMessage[SMSG_HDR_LEN], nPayload, msg) == 0)
+                unsigned char* pHeader = NULL;
+                unsigned char* pPayload = NULL;
+                uint32_t nPayload = 0;
+                if (SecureMsgSplitStored(smsgStored.vchMessage, pHeader, pPayload, nPayload)
+                    && SecureMsgDecrypt(false, smsgStored.sAddrTo, pHeader, pPayload, nPayload, msg) == 0)
                 {
                     Object objM;
                     objM.push_back(Pair("received", getTimeString(smsgStored.timeReceived, cbuf, sizeof(cbuf))));
@@ -685,7 +705,8 @@ Value smsgoutbox(const Array& params, bool fHelp)
             "Warning: clear will delete all sent messages.");
 
     if (!fSecMsgEnabled)
-        throw runtime_error("Secure messaging is disabled.");
+        throw runtime_error("Secure messaging is disabled. "
+                            "Set smsg=1 in innova.conf (or run smsgenable) to turn it on.");
 
     if (pwalletMain->IsLocked())
         throw runtime_error("Wallet is locked.");
@@ -738,9 +759,12 @@ Value smsgoutbox(const Array& params, bool fHelp)
             leveldb::Iterator* it = dbOutbox.pdb->NewIterator(leveldb::ReadOptions());
             while (dbOutbox.NextSmesg(it, sPrefix, chKey, smsgStored))
             {
-                uint32_t nPayload = smsgStored.vchMessage.size() - SMSG_HDR_LEN;
+                unsigned char* pHeader = NULL;
+                unsigned char* pPayload = NULL;
+                uint32_t nPayload = 0;
 
-                if (SecureMsgDecrypt(false, smsgStored.sAddrOutbox, &smsgStored.vchMessage[0], &smsgStored.vchMessage[SMSG_HDR_LEN], nPayload, msg) == 0)
+                if (SecureMsgSplitStored(smsgStored.vchMessage, pHeader, pPayload, nPayload)
+                    && SecureMsgDecrypt(false, smsgStored.sAddrOutbox, pHeader, pPayload, nPayload, msg) == 0)
                 {
                     Object objM;
                     objM.push_back(Pair("sent", getTimeString(msg.timestamp, cbuf, sizeof(cbuf))));
@@ -778,7 +802,8 @@ Value smsgbuckets(const Array& params, bool fHelp)
             "Display some statistics.");
 
     if (!fSecMsgEnabled)
-        throw runtime_error("Secure messaging is disabled.");
+        throw runtime_error("Secure messaging is disabled. "
+                            "Set smsg=1 in innova.conf (or run smsgenable) to turn it on.");
 
     std::string mode = "stats";
     if (params.size() > 0)

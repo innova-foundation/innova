@@ -87,8 +87,11 @@ public:
             leveldb::Iterator* it = dbSmsg.pdb->NewIterator(leveldb::ReadOptions());
             while (dbSmsg.NextSmesg(it, sPrefix, chKey, smsgStored))
             {
-                uint32_t nPayload = smsgStored.vchMessage.size() - SMSG_HDR_LEN;
-                if (SecureMsgDecrypt(false, smsgStored.sAddrTo, &smsgStored.vchMessage[0], &smsgStored.vchMessage[SMSG_HDR_LEN], nPayload, msg) == 0)
+                unsigned char* pHeader = NULL;
+                unsigned char* pPayload = NULL;
+                uint32_t nPayload = 0;
+                if (SecureMsgSplitStored(smsgStored.vchMessage, pHeader, pPayload, nPayload)
+                    && SecureMsgDecrypt(false, smsgStored.sAddrTo, pHeader, pPayload, nPayload, msg) == 0)
                 {
                     label = parent->getWalletModel()->getAddressTableModel()->labelForAddress(QString::fromStdString(msg.sFromAddress));
 
@@ -115,8 +118,11 @@ public:
             it = dbSmsg.pdb->NewIterator(leveldb::ReadOptions());
             while (dbSmsg.NextSmesg(it, sPrefix, chKey, smsgStored))
             {
-                uint32_t nPayload = smsgStored.vchMessage.size() - SMSG_HDR_LEN;
-                if (SecureMsgDecrypt(false, smsgStored.sAddrOutbox, &smsgStored.vchMessage[0], &smsgStored.vchMessage[SMSG_HDR_LEN], nPayload, msg) == 0)
+                unsigned char* pHeader = NULL;
+                unsigned char* pPayload = NULL;
+                uint32_t nPayload = 0;
+                if (SecureMsgSplitStored(smsgStored.vchMessage, pHeader, pPayload, nPayload)
+                    && SecureMsgDecrypt(false, smsgStored.sAddrOutbox, pHeader, pPayload, nPayload, msg) == 0)
                 {
                     label = parent->getWalletModel()->getAddressTableModel()->labelForAddress(QString::fromStdString(smsgStored.sAddrTo));
 
@@ -150,8 +156,11 @@ public:
         QDateTime sent_datetime;
         QDateTime received_datetime;
 
-        uint32_t nPayload = smsgStored.vchMessage.size() - SMSG_HDR_LEN;
-        if (SecureMsgDecrypt(false, smsgStored.sAddrTo, &smsgStored.vchMessage[0], &smsgStored.vchMessage[SMSG_HDR_LEN], nPayload, msg) == 0)
+        unsigned char* pHeader = NULL;
+        unsigned char* pPayload = NULL;
+        uint32_t nPayload = 0;
+        if (SecureMsgSplitStored(smsgStored.vchMessage, pHeader, pPayload, nPayload)
+            && SecureMsgDecrypt(false, smsgStored.sAddrTo, pHeader, pPayload, nPayload, msg) == 0)
         {
             label = parent->getWalletModel()->getAddressTableModel()->labelForAddress(QString::fromStdString(msg.sFromAddress));
 
@@ -188,8 +197,11 @@ public:
         QDateTime sent_datetime;
         QDateTime received_datetime;
 
-        uint32_t nPayload = smsgStored.vchMessage.size() - SMSG_HDR_LEN;
-        if (SecureMsgDecrypt(false, smsgStored.sAddrOutbox, &smsgStored.vchMessage[0], &smsgStored.vchMessage[SMSG_HDR_LEN], nPayload, msg) == 0)
+        unsigned char* pHeader = NULL;
+        unsigned char* pPayload = NULL;
+        uint32_t nPayload = 0;
+        if (SecureMsgSplitStored(smsgStored.vchMessage, pHeader, pPayload, nPayload)
+            && SecureMsgDecrypt(false, smsgStored.sAddrOutbox, pHeader, pPayload, nPayload, msg) == 0)
         {
             label = parent->getWalletModel()->getAddressTableModel()->labelForAddress(QString::fromStdString(smsgStored.sAddrTo));
 
@@ -433,10 +445,6 @@ MessageModel::StatusCode MessageModel::sendMessages(const QList<SendMessagesReci
     return OK;
 }
 
-MessageModel::StatusCode MessageModel::sendMessages(const QList<SendMessagesRecipient> &recipients)
-{
-    return sendMessages(recipients, "anon");
-}
 
 int MessageModel::rowCount(const QModelIndex &parent) const
 {

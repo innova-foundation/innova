@@ -78,7 +78,7 @@ Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Trib
 * Stealth addresses
 * Ring Signatures (16 Recommended, deprecated at IIP-0003)
 * Native Optional Tor Onion Node (-nativetor=1)
-* Encrypted Messaging (SecureMsg)
+* Encrypted Messaging (SecureMsg) — optional, disabled by default; enable with `smsg=1`
 * Multi-Signature Addresses & TXs
 * Atomic Swaps using UTXOs (BIP65 CLTV)
 * BIP39 Support (Coin Type 116)
@@ -87,7 +87,7 @@ Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Trib
 * Tribus PoW Algorithm comprising of 3 NIST5 algorithms
 * Tribus PoW/PoS Hybrid
 * Full decentralization
-* Hyperfile - IPFS API Implementation with Anonymous Decentralized File Uploads (UI and RPC)
+* Hyperfile - IPFS API Implementation for Decentralized File Uploads (UI and RPC)
 * Name Value System supporting the IDNS for fully & truly decentralized blockchain domains
 
 ### v5 Privacy & Consensus Stack
@@ -102,6 +102,27 @@ Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Trib
 * Epoch finality — M-of-N committee finality gadget with soft/hard tiers
 
 See [docs/architecture/](docs/architecture/) for the consensus and privacy design docs.
+
+### Off-chain encrypted messaging (SecureMsg / Nyx)
+
+Innova includes an optional off-chain encrypted messaging channel, **disabled by
+default**. Enable it with `smsg=1` in `innova.conf` (or `-smsg` on the command
+line) and restart; `-nosmsg` forces it off and overrides `-smsg`.
+
+When enabled, each message is encrypted to the recipient's public key using ECDH
+over secp256k1 with AES-256, authenticated with HMAC-SHA256, and carries a small
+proof of work. Messages are not routed to a destination — they are flooded to the
+whole network and every node stores them for 48 hours, so no relaying peer learns
+who a message is for. Nothing touches the blockchain and nothing is retained
+after 48 hours.
+
+This is a long-standing part of the wallet and is **not part of Innova's v5
+privacy stack**: it shares no code with FCMP++, the shielded pool, stealth
+addresses, or silent payments, and it has not had an external cryptographic
+review. It does not provide forward secrecy, and it decrypts with your wallet's
+own keys — there is no separate messaging identity. It has no group chat or
+channels; sending to several people is N independent 1:1 messages. Use it for
+convenience, not for information whose disclosure would harm you.
 
 ## Privacy & Protocol Innovations (IIPs)
 

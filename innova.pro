@@ -28,7 +28,6 @@ HEADERS += build/build.h \
            build/ui_intro.h \
            build/ui_managenamespage.h \
            build/ui_marketbrowser.h \
-           build/ui_messagepage.h \
            build/ui_mrichtextedit.h \
            build/ui_multisigaddressentry.h \
            build/ui_multisigdialog.h \
@@ -143,7 +142,6 @@ HEADERS += build/build.h \
            build/build/ui_intro.h \
            build/build/ui_managenamespage.h \
            build/build/ui_marketbrowser.h \
-           build/build/ui_messagepage.h \
            build/build/ui_mrichtextedit.h \
            build/build/ui_multisigaddressentry.h \
            build/build/ui_multisigdialog.h \
@@ -205,7 +203,6 @@ HEADERS += build/build.h \
            src/qt/managenamespage.h \
            src/qt/marketbrowser.h \
            src/qt/messagemodel.h \
-           src/qt/messagepage.h \
            src/qt/mintingfilterproxy.h \
            src/qt/mintingtablemodel.h \
            src/qt/mintingview.h \
@@ -544,7 +541,6 @@ FORMS += src/qt/forms/aboutdialog.ui \
          src/qt/forms/intro.ui \
          src/qt/forms/managenamespage.ui \
          src/qt/forms/marketbrowser.ui \
-         src/qt/forms/messagepage.ui \
          src/qt/forms/multisigaddressentry.ui \
          src/qt/forms/multisigdialog.ui \
          src/qt/forms/multisiginputentry.ui \
@@ -680,7 +676,6 @@ SOURCES += qrc_bitcoin.cpp \
            src/qt/managenamespage.cpp \
            src/qt/marketbrowser.cpp \
            src/qt/messagemodel.cpp \
-           src/qt/messagepage.cpp \
            src/qt/mintingfilterproxy.cpp \
            src/qt/mintingtablemodel.cpp \
            src/qt/mintingview.cpp \

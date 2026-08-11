@@ -44,9 +44,6 @@ SendMessagesDialog::SendMessagesDialog(Mode mode, Type type, QWidget *parent) :
 
     fNewRecipientAllowed = true;
 
-    if(mode == SendMessagesDialog::Anonymous)
-        ui->frameAddressFrom->hide();
-
     if(type == SendMessagesDialog::Page)
         ui->closeButton->hide();
 }
@@ -78,11 +75,6 @@ void SendMessagesDialog::loadRow(int row)
         if(entry)
             entry->loadRow(row);
     }
-}
-
-bool SendMessagesDialog::checkMode(Mode mode)
-{
-    return (mode == this->mode);
 }
 
 bool SendMessagesDialog::validate()
@@ -171,12 +163,8 @@ void SendMessagesDialog::on_sendButton_clicked()
         return;
     }
 
-    MessageModel::StatusCode sendstatus;
-
-    if(mode == SendMessagesDialog::Anonymous)
-        sendstatus = model->sendMessages(recipients);
-    else
-        sendstatus = model->sendMessages(recipients, ui->addressFrom->text());
+    MessageModel::StatusCode sendstatus =
+        model->sendMessages(recipients, ui->addressFrom->text());
 
     switch(sendstatus)
     {

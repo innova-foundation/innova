@@ -34,6 +34,11 @@ public:
     ~ChatWidget();
     void setModel(MessageModel *msgModel, WalletModel *walletModel);
 
+    /** Re-read the live messaging state and enable or disable the composer.
+     *  Called whenever the page is shown so the state is never a stale snapshot
+     *  taken before smsgenable/smsgdisable ran. */
+    void refreshMessagingEnabled();
+
     /** Check if a message is an encrypted file attachment.
      *  Format: [file:CID:encKeyHex:filename:sizeBytes] */
     static bool isFileMessage(const QString& text);
@@ -68,6 +73,7 @@ private:
 
     // Right panel -- conversation
     QLabel *chatHeader;
+    QLabel *messagingDisabledBanner;  // Shown when the messaging subsystem is off
     QLabel *ipfsBanner;  // Red banner when IPFS gateway unreachable
     QListWidget *chatView;
     QTextEdit *messageInput;

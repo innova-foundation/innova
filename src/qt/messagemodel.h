@@ -160,7 +160,6 @@ public:
     bool getAddressOrPubkey( QString &Address,  QString &Pubkey) const;
 
     // Send messages to a list of recipients
-    StatusCode sendMessages(const QList<SendMessagesRecipient> &recipients);
     StatusCode sendMessages(const QList<SendMessagesRecipient> &recipients, const QString &addressFrom);
     
     QSortFilterProxyModel *proxyModel;

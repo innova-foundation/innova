@@ -542,6 +542,7 @@ TEST_OBJS= \
     obj/test/name_index_recovery_tests.o \
     obj/test/fuzz_deserialize_tests.o \
     obj/test/smessage_hmac_tests.o \
+    obj/test/smessage_bounds_tests.o \
     obj/test/base58_tests.o \
     obj/test/bignum_tests.o \
     obj/test/key_tests.o \
@@ -669,6 +670,9 @@ check-fuzz-deserialize-limits: test_innova
 
 check-smessage-hmac: test_innova
 	./test_innova --run_test=smessage_hmac_tests
+
+check-smessage-bounds: test_innova
+	./test_innova --run_test=smessage_bounds_tests
 
 # A suite name is not a file name, so no glob over test/*.cpp can enumerate the
 # suites: shielded_nullifier_binding_tests.cpp defines two and test_innova.cpp

@@ -642,7 +642,6 @@ HEADERS += src/qt/bitcoingui.h \
     src/eccryptoverify.h \
     src/qt/nametablemodel.h \
     src/qt/managenamespage.h \
-    src/qt/messagepage.h \
     src/qt/messagemodel.h \
     src/qt/sendmessagesdialog.h \
     src/qt/sendmessagesentry.h \
@@ -757,7 +756,6 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/qt/idagpage.cpp \
     src/qt/nametablemodel.cpp \
     src/qt/managenamespage.cpp \
-    src/qt/messagepage.cpp \
     src/qt/messagemodel.cpp \
     src/qt/qcustomplot.cpp \
     src/qt/sendmessagesdialog.cpp \
@@ -821,7 +819,6 @@ FORMS += \
     src/qt/forms/askpassphrasedialog.ui \
     src/qt/forms/rpcconsole.ui \
     src/qt/forms/optionsdialog.ui \
-    src/qt/forms/messagepage.ui \
     src/qt/forms/statisticspage.ui \
     src/qt/forms/blockbrowser.ui \
     src/qt/forms/marketbrowser.ui \

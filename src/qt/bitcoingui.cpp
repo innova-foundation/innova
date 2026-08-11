@@ -5,9 +5,9 @@
  * The Bitcoin Developers 2011-2012
  */
 #include "bitcoingui.h"
+#include "smessage.h"
 #include "transactiontablemodel.h"
 #include "addressbookpage.h"
-#include "messagepage.h"
 #include "sendcoinsdialog.h"
 #include "signverifymessagedialog.h"
 #include "optionsdialog.h"
@@ -210,7 +210,6 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     nullsendPage = new NullSendPage(this);
     chatWidget = new ChatWidget(this);
     manageNamesPage = new ManageNamesPage(this);
-	//chatWindow = new ChatWindow(this);
 
     transactionsPage = new QWidget(this);
     QVBoxLayout *vbox = new QVBoxLayout();
@@ -229,7 +228,6 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     receiveCoinsPage = new AddressBookPage(AddressBookPage::ForEditing, AddressBookPage::ReceivingTab);
 
     sendCoinsPage = new SendCoinsDialog(this);
-    messagePage = new MessagePage(this);
 
     collateralnodeManagerPage = new CollateralnodeManager(this);
 
@@ -243,7 +241,6 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     centralWidget->addWidget(addressBookPage);
     centralWidget->addWidget(receiveCoinsPage);
     centralWidget->addWidget(sendCoinsPage);
-    centralWidget->addWidget(messagePage);
     centralWidget->addWidget(chatWidget);
     centralWidget->addWidget(statisticsPage);
     centralWidget->addWidget(idagPage);
@@ -255,7 +252,6 @@ BitcoinGUI::BitcoinGUI(QWidget *parent):
     centralWidget->addWidget(stakingPage);
     centralWidget->addWidget(privacyPage);
     centralWidget->addWidget(nullsendPage);
-	//centralWidget->addWidget(chatWindow);
     setCentralWidget(centralWidget);
 
     // Create status bar
@@ -411,10 +407,6 @@ void BitcoinGUI::createActions()
     manageNamesAction->setShortcut(QKeySequence(Qt::ALT + Qt::Key_0));
     tabGroup->addAction(manageNamesAction);
 
-	//chatAction = new QAction(QIcon(":/icons/msg"), tr("&Social"), this);
-    //chatAction->setToolTip(tr("View chat"));
-    //chatAction->setCheckable(true);
-    //tabGroup->addAction(chatAction);
 
     sendCoinsAction = new QAction(QIcon(":/icons/send"), tr("&Send coins"), this);
     sendCoinsAction->setToolTip(tr("Send coins to a Innova address"));
@@ -497,7 +489,6 @@ void BitcoinGUI::createActions()
 	connect(statisticsAction, SIGNAL(triggered()), this, SLOT(gotoStatisticsPage()));
     connect(idagAction, SIGNAL(triggered()), this, SLOT(gotoIDAGPage()));
 	connect(marketAction, SIGNAL(triggered()), this, SLOT(gotoMarketBrowser()));
-	//connect(chatAction, SIGNAL(triggered()), this, SLOT(gotoChatPage()));
     connect(sendCoinsAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
     connect(sendCoinsAction, SIGNAL(triggered()), this, SLOT(gotoSendCoinsPage()));
     connect(receiveCoinsAction, SIGNAL(triggered()), this, SLOT(showNormalIfMinimized()));
@@ -799,7 +790,6 @@ void BitcoinGUI::setWalletModel(WalletModel *walletModel)
         stakingPage->setModel(walletModel);
         privacyPage->setModel(walletModel);
         qobject_cast<NullSendPage*>(nullsendPage)->setModel(walletModel);
-		//chatWindow->setModel(clientModel);
 
         setEncryptionStatus(walletModel->getEncryptionStatus());
         connect(walletModel, SIGNAL(encryptionStatusChanged(int)), this, SLOT(setEncryptionStatus(int)));
@@ -822,12 +812,13 @@ void BitcoinGUI::setMessageModel(MessageModel *messageModel)
         connect(messageModel, SIGNAL(error(QString,QString,bool)), this, SLOT(error(QString,QString,bool)));
 
         // Put transaction list in tabs
-        messagePage->setModel(messageModel);
         chatWidget->setModel(messageModel, walletModel);
 
         // Balloon pop-up for new message
         connect(messageModel, SIGNAL(rowsInserted(QModelIndex,int,int)),
                 this, SLOT(incomingMessage(QModelIndex,int,int)));
+
+        updateMessagingActionState();
     }
 }
 
@@ -1429,20 +1420,30 @@ void BitcoinGUI::gotoMessagePage()
     messageAction->setChecked(true);
     centralWidget->setCurrentWidget(chatWidget);
 
+    // Read the live state on every entry rather than snapshotting it once at
+    // construction: smsgenable/smsgdisable can flip it while the GUI is up.
+    chatWidget->refreshMessagingEnabled();
+    updateMessagingActionState();
+
     exportAction->setEnabled(false);
     disconnect(exportAction, SIGNAL(triggered()), 0, 0);
 }
-/*
-void BitcoinGUI::gotoChatPage()
+
+void BitcoinGUI::updateMessagingActionState()
 {
-    chatAction->setChecked(true);
-    centralWidget->setCurrentWidget(chatWindow);
+    if (!messageAction)
+        return;
 
-	exportAction->setEnabled(true);
-    disconnect(exportAction, SIGNAL(triggered()), 0, 0);
-
+    if (fSecMsgEnabled)
+    {
+        messageAction->setToolTip(tr("View and Send Encrypted messages"));
+        messageAction->setStatusTip(tr("Encrypted Messaging"));
+    } else
+    {
+        messageAction->setToolTip(tr("Encrypted messaging is disabled - set smsg=1 in innova.conf to enable it"));
+        messageAction->setStatusTip(tr("Encrypted Messaging (disabled)"));
+    }
 }
-*/
 void BitcoinGUI::gotoSignMessageTab(QString addr)
 {
     // call show() in showTab_SM()

@@ -17,7 +17,6 @@ class CollateralnodeManager;
 class MultisigDialog;
 class OverviewPage;
 class AddressBookPage;
-class MessagePage;
 class StatisticsPage;
 class IDAGPage;
 class MarketBrowser;
@@ -115,7 +114,6 @@ private:
 	  CollateralnodeManager *collateralnodeManagerPage;
     AddressBookPage *addressBookPage;
     AddressBookPage *receiveCoinsPage;
-    MessagePage *messagePage;
     ChatWidget *chatWidget;
     SendCoinsDialog *sendCoinsPage;
     SignVerifyMessageDialog *signVerifyMessageDialog;
@@ -201,6 +199,8 @@ private:
     void createToolBars();
     /** Create system tray (notification) icon */
     void createTrayIcon();
+    /** Point the messaging tab's tooltip at the live subsystem state. */
+    void updateMessagingActionState();
 
 public slots:
     /** Set number of connections shown in the UI */
@@ -270,7 +270,6 @@ private slots:
     void gotoNullSendPage();
 
 
-    //void gotoChatPage();
 
     /** Show Sign/Verify Message dialog and switch to sign message tab */
     void gotoSignMessageTab(QString addr = "");

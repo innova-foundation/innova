@@ -2,7 +2,24 @@
 
 ## Overview
 
-Innova's encrypted file sharing system (Hyperfile) uses IPFS for decentralized storage. By default, wallets connect to `ipfs.innova-foundation.com:5001`. You can run your own IPFS gateway for maximum control, privacy, and no file size limits beyond the 10TB protocol maximum (`nyxmaxfilesize`).
+Innova's file sharing (Hyperfile) uses IPFS for decentralized storage. By default, wallets connect to `ipfs.innova-foundation.com:5001`. You can run your own IPFS gateway for maximum control, privacy, and no file size limits beyond the 10TB protocol maximum (`nyxmaxfilesize`).
+
+### What is and is not encrypted
+
+Two different paths share this gateway, and only one of them encrypts:
+
+* **Chat attachments** (the messaging tab) are encrypted client-side with
+  AES-256-GCM under a random per-file key before upload; the key travels inside
+  the encrypted message, not through IPFS.
+* **The Hyperfile tab and the `hyperfile*` RPCs upload in the clear.** There is
+  no encryption on that path.
+
+Uploads are not anonymous. The gateway you upload through — including the
+Foundation default — sees your IP address, and the default gateway string
+carries no URL scheme, so a stock wallet talks to it over plain HTTP. For
+chunked uploads the manifest is pinned in cleartext and publishes the chunk CIDs
+and the exact plaintext file size. Run your own gateway if any of that matters
+to you.
 
 ## File Size Tiers
 

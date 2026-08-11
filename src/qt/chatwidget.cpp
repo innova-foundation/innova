@@ -171,6 +171,17 @@ ChatWidget::ChatWidget(QWidget *parent) :
     chatHeader->setMinimumHeight(44);
     rightLayout->addWidget(chatHeader);
 
+    // Messaging-disabled banner (hidden by default)
+    messagingDisabledBanner = new QLabel();
+    messagingDisabledBanner->setWordWrap(true);
+    messagingDisabledBanner->setStyleSheet(
+        "background-color: #8a5b12; color: white; padding: 8px 12px; font-size: 12px; font-weight: bold;");
+    messagingDisabledBanner->setText(
+        tr("Secure messaging is disabled on this node, so messages cannot be sent or received. "
+           "Set smsg=1 in innova.conf and restart, or run smsgenable, to turn it on."));
+    messagingDisabledBanner->hide();
+    rightLayout->addWidget(messagingDisabledBanner);
+
     // IPFS gateway banner (hidden by default)
     ipfsBanner = new QLabel();
     ipfsBanner->setWordWrap(true);
@@ -261,7 +272,7 @@ ChatWidget::ChatWidget(QWidget *parent) :
     });
     connect(messageInput, &QTextEdit::textChanged, [this]() {
         // Send typing notification (rate-limited)
-        if (!currentContact.isEmpty() && !messageInput->toPlainText().trimmed().isEmpty())
+        if (fSecMsgEnabled && !currentContact.isEmpty() && !messageInput->toPlainText().trimmed().isEmpty())
             onSendTypingNotification();
 
         // Check for :shortcode pattern
@@ -354,6 +365,8 @@ void ChatWidget::setModel(MessageModel *msgModel, WalletModel *walletModel)
         connect(msgModel, SIGNAL(rowsInserted(QModelIndex,int,int)), this, SLOT(onNewMessage()));
         refreshContacts();
     }
+
+    refreshMessagingEnabled();
 
     // Connect typing notification signal from smessage layer (thread-safe)
     {
@@ -500,7 +513,7 @@ void ChatWidget::onContactSelected(int row)
         currentContact.left(16) + "..." + currentContact.right(6));
     chatHeader->setText(tr("  Chat with %1").arg(displayName));
 
-    sendButton->setEnabled(true);
+    sendButton->setEnabled(fSecMsgEnabled);
     deleteConversationButton->setEnabled(true);
     renameConversationButton->setEnabled(true);
 
@@ -686,10 +699,39 @@ void ChatWidget::addFileBubble(const QString& cid, const QString& encKeyHex,
     chatView->setItemWidget(item, bubbleWidget);
 }
 
+void ChatWidget::refreshMessagingEnabled()
+{
+    const bool fEnabled = fSecMsgEnabled;
+
+    messagingDisabledBanner->setVisible(!fEnabled);
+
+    messageInput->setReadOnly(!fEnabled);
+    messageInput->setPlaceholderText(fEnabled
+        ? tr("Type a message...")
+        : tr("Secure messaging is disabled - set smsg=1 in innova.conf to enable it."));
+
+    attachButton->setEnabled(fEnabled);
+    newChatButton->setEnabled(fEnabled);
+    sendButton->setEnabled(fEnabled && !currentContact.isEmpty()
+                           && !messageInput->toPlainText().trimmed().isEmpty());
+}
+
 void ChatWidget::onSendClicked()
 {
     if (!msgModel || currentContact.isEmpty())
         return;
+
+    // Re-check at the moment of the send. SecureMsgSend refuses too, but
+    // stopping here keeps the composer from clearing and from painting a bubble
+    // for a message that was never queued.
+    if (!fSecMsgEnabled)
+    {
+        refreshMessagingEnabled();
+        QMessageBox::warning(this, tr("Send Message"),
+            tr("Secure messaging is disabled on this node, so this message was not sent.\n\n"
+               "Set smsg=1 in innova.conf and restart, or run smsgenable, to turn it on."));
+        return;
+    }
 
     QString message = EmojiPicker::replaceShortcodes(messageInput->toPlainText().trimmed());
     if (message.isEmpty())
@@ -837,8 +879,8 @@ void ChatWidget::onFileUploadFinished()
 {
 #ifdef USE_IPFS
     // Re-enable UI
-    attachButton->setEnabled(true);
-    sendButton->setEnabled(!currentContact.isEmpty());
+    attachButton->setEnabled(fSecMsgEnabled);
+    sendButton->setEnabled(fSecMsgEnabled && !currentContact.isEmpty());
     attachButton->setToolTip(tr("Attach file (encrypted, uploaded via IPFS)"));
 
     QPair<QString, QString> result = uploadWatcher->result();
@@ -1363,6 +1405,11 @@ bool ChatWidget::downloadAndDecryptFile(const QString& cid, const QString& encKe
     std::string ipfsip = GetArg("-hyperfileip", "ipfs.innova-foundation.com:5001");
     std::unique_ptr<ipfs::Client> client;
     QByteArray downloadedBlob;
+
+    // In-memory download cap. The CID is sender-chosen, so check the cap against the stream
+    // before copying the buffer; the transport enforces its own cap too.
+    const qint64 dlMaxSize = 500 * 1024 * 1024;
+
     try {
         if (fLocal)
             client.reset(new ipfs::Client(ipfsip));
@@ -1371,6 +1418,15 @@ bool ChatWidget::downloadAndDecryptFile(const QString& cid, const QString& encKe
 
         std::stringstream ss;
         client->FilesGet(cid.toStdString(), &ss);
+
+        const std::streampos got = ss.tellp();
+        if (got < 0 || (qint64)got > dlMaxSize)
+        {
+            OPENSSL_cleanse(aesKey, 32);
+            OPENSSL_cleanse(aesNonce, 12);
+            QMessageBox::warning(this, tr("Error"), tr("Downloaded data exceeds the 500 MB limit."));
+            return false;
+        }
 
         std::string data = ss.str();
         downloadedBlob = QByteArray(data.c_str(), data.size());
@@ -1381,17 +1437,6 @@ bool ChatWidget::downloadAndDecryptFile(const QString& cid, const QString& encKe
         OPENSSL_cleanse(aesNonce, 12);
         QMessageBox::warning(this, tr("IPFS Error"),
             tr("Failed to download from IPFS: %1").arg(QString::fromStdString(e.what())));
-        return false;
-    }
-
-    // Size limit: reject downloads over 50MB to prevent OOM from malicious CIDs (CHAT-SEC-10)
-    // In-memory download cap: 500MB
-    qint64 dlMaxSize = 500 * 1024 * 1024;
-    if (downloadedBlob.size() > dlMaxSize)
-    {
-        OPENSSL_cleanse(aesKey, 32);
-        OPENSSL_cleanse(aesNonce, 12);
-        QMessageBox::warning(this, tr("Error"), tr("Downloaded data exceeds 500 MB limit."));
         return false;
     }
 

@@ -279,8 +279,6 @@ public:
         nWakeCounter    = 0;
         nPeerId         = 0;
         fEnabled        = false;
-        lastTypingReceived = 0;
-        nTypingViolations  = 0;
     };
 
     ~SecMsgNode() {};
@@ -291,8 +289,6 @@ public:
     uint32_t                    nWakeCounter;
     uint32_t                    nPeerId;
     bool                        fEnabled;
-    int64_t                     lastTypingReceived;  // Last typing timestamp (rate limiting)
-    uint32_t                    nTypingViolations;
 
 };
 

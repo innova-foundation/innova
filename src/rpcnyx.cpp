@@ -23,7 +23,8 @@ static void EnsureNyxEnabled()
     if (!GetBoolArg("-nyx", true))
         throw runtime_error("Nyx messaging is disabled. Set nyx=1 in innova.conf.");
     if (!fSecMsgEnabled)
-        throw runtime_error("Secure messaging is disabled. Run smsgenable or set smsg=1.");
+        throw runtime_error("Secure messaging is disabled. "
+                            "Set smsg=1 in innova.conf (or run smsgenable) to turn it on.");
 }
 
 static void EnsureWalletUnlocked()
@@ -181,11 +182,14 @@ static Value nyx_inbox(const Array& params)
             if ((int)nShown >= nCount)
                 continue;
 
-            uint32_t nPayload = smsgStored.vchMessage.size() - SMSG_HDR_LEN;
+            unsigned char* pHeader = NULL;
+            unsigned char* pPayload = NULL;
+            uint32_t nPayload = 0;
+            if (!SecureMsgSplitStored(smsgStored.vchMessage, pHeader, pPayload, nPayload))
+                continue;
+
             if (SecureMsgDecrypt(false, smsgStored.sAddrTo,
-                    &smsgStored.vchMessage[0],
-                    &smsgStored.vchMessage[SMSG_HDR_LEN],
-                    nPayload, msg) == 0)
+                    pHeader, pPayload, nPayload, msg) == 0)
             {
                 Object objM;
                 objM.push_back(Pair("msgid", KeyToHex(chKey)));
@@ -256,11 +260,12 @@ static Value nyx_outbox(const Array& params)
         leveldb::Iterator* it = dbOutbox.pdb->NewIterator(leveldb::ReadOptions());
         while (dbOutbox.NextSmesg(it, sPrefix, chKey, smsgStored))
         {
-            uint32_t nPayload = smsgStored.vchMessage.size() - SMSG_HDR_LEN;
-            if (SecureMsgDecrypt(false, smsgStored.sAddrOutbox,
-                    &smsgStored.vchMessage[0],
-                    &smsgStored.vchMessage[SMSG_HDR_LEN],
-                    nPayload, msg) == 0)
+            unsigned char* pHeader = NULL;
+            unsigned char* pPayload = NULL;
+            uint32_t nPayload = 0;
+            if (SecureMsgSplitStored(smsgStored.vchMessage, pHeader, pPayload, nPayload)
+                && SecureMsgDecrypt(false, smsgStored.sAddrOutbox,
+                    pHeader, pPayload, nPayload, msg) == 0)
             {
                 Object objM;
                 objM.push_back(Pair("msgid", KeyToHex(chKey)));
@@ -303,13 +308,16 @@ static Value nyx_read(const Array& params)
         throw runtime_error("Message not found.");
 
     MessageData msg;
-    uint32_t nPayload = smsgStored.vchMessage.size() - SMSG_HDR_LEN;
+    unsigned char* pHeader = NULL;
+    unsigned char* pPayload = NULL;
+    uint32_t nPayload = 0;
+    if (!SecureMsgSplitStored(smsgStored.vchMessage, pHeader, pPayload, nPayload))
+        throw runtime_error("Stored message is truncated.");
+
     std::string decryptAddr = smsgStored.sAddrTo.empty() ? smsgStored.sAddrOutbox : smsgStored.sAddrTo;
 
     if (SecureMsgDecrypt(false, decryptAddr,
-            &smsgStored.vchMessage[0],
-            &smsgStored.vchMessage[SMSG_HDR_LEN],
-            nPayload, msg) != 0)
+            pHeader, pPayload, nPayload, msg) != 0)
         throw runtime_error("Failed to decrypt message.");
 
     if (smsgStored.status & SMSG_MASK_UNREAD)
@@ -394,6 +402,11 @@ static Value nyx_enable(const Array& params)
         return result;
     }
 
+    // An explicit -nosmsg is an operator decision; a runtime RPC must not undo it.
+    if (GetBoolArg("-nosmsg", false))
+        throw runtime_error("Secure messaging was force-disabled with -nosmsg. "
+                            "Remove it and set smsg=1 to enable messaging.");
+
     Object result;
     if (!SecureMsgEnable())
         result.push_back(Pair("result", "Failed to enable Nyx messaging."));
@@ -428,14 +441,23 @@ static Value nyx_status(const Array& params)
     result.push_back(Pair("nyx_version", 1));
     result.push_back(Pair("encryption", "AES-256-CBC"));
 
+    // Only report settings this build actually reads.
     Object config;
     config.push_back(Pair("nyx", GetBoolArg("-nyx", true)));
-    config.push_back(Pair("nyxanon", GetBoolArg("-nyxanon", true)));
-    config.push_back(Pair("nyxgroups", GetBoolArg("-nyxgroups", true)));
-    config.push_back(Pair("nyxfiles", GetBoolArg("-nyxfiles", true)));
-    config.push_back(Pair("nyxchunksize", GetArg("-nyxchunksize", 1048576)));
-    config.push_back(Pair("nyxconcurrency", GetArg("-nyxconcurrency", 8)));
+    // The startup setting. smsg_enabled above is the live state, which
+    // smsgenable/smsgdisable can move away from this.
+    config.push_back(Pair("smsg_at_startup", !fNoSmsg));
+    config.push_back(Pair("nyxmaxfilesize", GetArg("-nyxmaxfilesize", "10995116277760")));
     result.push_back(Pair("config", config));
+
+    // State what the subsystem does not implement, so a caller cannot infer it
+    // from the absence of a setting.
+    Array unimplemented;
+    unimplemented.push_back("group messaging");
+    unimplemented.push_back("forward secrecy");
+    unimplemented.push_back("separate messaging identity");
+    unimplemented.push_back("delivery acknowledgement");
+    result.push_back(Pair("unimplemented", unimplemented));
 
     if (fSecMsgEnabled)
     {

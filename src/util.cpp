@@ -1316,14 +1316,12 @@ void WriteConfigFile(FILE* configFile)
     fputs ("addnode=93.228.101.127\n", configFile);
     fputs ("\n", configFile);
     fputs ("# Nyx Messaging Protocol\n", configFile);
-    fputs ("smsg=1\n", configFile);
+    fputs ("# Off-chain encrypted messaging. Disabled by default: it is not part\n", configFile);
+    fputs ("# of the shielded pool and has had no external cryptographic review.\n", configFile);
+    fputs ("# Set smsg=1 and restart to enable it.\n", configFile);
+    fputs ("smsg=0\n", configFile);
     fputs ("nyx=1\n", configFile);
-    fputs ("nyxanon=1\n", configFile);
-    fputs ("nyxgroups=1\n", configFile);
-    fputs ("nyxfiles=1\n", configFile);
-    fputs ("nyxchunksize=1048576\n", configFile);
     fputs ("nyxmaxfilesize=10995116277760\n", configFile);
-    fputs ("nyxconcurrency=8\n", configFile);
     fputs ("\n", configFile);
     fputs ("# IPFS Hyperfile Gateway\n", configFile);
     fputs ("hyperfilelocal=1\n", configFile);

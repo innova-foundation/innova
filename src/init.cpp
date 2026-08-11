@@ -661,7 +661,8 @@ std::string HelpMessage()
         "  -collateralnodeminprotocol=<n> " + _("Ignore collateralnodes less than version (example: 70007; default : 0)") + "\n" +
 
         "\n" + _("Secure messaging options:") + "\n" +
-        "  -nosmsg                                  " + _("Disable secure messaging.") + "\n" +
+        "  -smsg                                    " + _("Enable secure messaging (default: 0, off). Also settable as smsg=1 in innova.conf.") + "\n" +
+        "  -nosmsg                                  " + _("Force secure messaging off, overriding -smsg.") + "\n" +
         "  -debugsmsg                               " + _("Log extra debug messages.") + "\n" +
         "  -smsgscanchain                           " + _("Scan the block chain for public key addresses on startup.") + "\n";
 
@@ -1273,15 +1274,11 @@ bool AppInit2()
     fCNLock = GetBoolArg("-cnconflock");
     fNativeTor = GetBoolArg("-nativetor");
 
-    // Nyx Messaging defaults (overridable in innova.conf)
-    SoftSetBoolArg("-smsg", true);
+    // Nyx Messaging defaults (overridable in innova.conf).
+    // Secure messaging is opt-in: -smsg defaults to off and there is deliberately
+    // no SoftSet here. See the -smsg/-nosmsg resolution further down.
     SoftSetBoolArg("-nyx", true);
-    SoftSetBoolArg("-nyxanon", true);
-    SoftSetBoolArg("-nyxgroups", true);
-    SoftSetBoolArg("-nyxfiles", true);
-    SoftSetArg("-nyxchunksize", "1048576");
     SoftSetArg("-nyxmaxfilesize", "10995116277760");
-    SoftSetArg("-nyxconcurrency", "8");
 
     // Default IPFS gateway
     SoftSetBoolArg("-hyperfilelocal", true);
@@ -1367,7 +1364,6 @@ bool AppInit2()
     fDebugCN = GetBoolArg("-debugfs");
     fDebugRingSig = GetBoolArg("-debugringsig");
 
-    fNoSmsg = GetBoolArg("-nosmsg");
     fDisableStealth = GetBoolArg("-disablestealth"); // force-disable stealth transaction scanning
 
     fSPVMode = GetBoolArg("-spv", false);
@@ -1394,18 +1390,13 @@ bool AppInit2()
         if (!mapArgs.count("-maxorphanblocks"))
             SoftSetArg("-maxorphanblocks", "100");  // Reduce orphan block limit
 
-        // Disable non-essential features for constrained devices
-        if (!mapArgs.count("-nosmsg"))
-            SoftSetBoolArg("-nosmsg", true);        // Disable secure messaging
-        if (!mapArgs.count("-nohyperfile"))
-            SoftSetBoolArg("-nohyperfile", true);   // Disable IPFS/Hyperfile
+        // Messaging defaults are resolved below.
 
         // Header pruning: keep only recent headers to save memory
         int nMaxHeaders = GetArg("-maxheaders", 50000);
         printf("  Max headers in memory: %d\n", nMaxHeaders);
         printf("  Mempool limit: %s MB\n", GetArg("-maxmempool", "10").c_str());
         printf("  Staking: %s\n", fSPVStakingEnabled ? "enabled" : "disabled");
-        printf("  Secure messaging: disabled (constrained mode)\n");
     }
     else if (fSPVMode)
     {
@@ -1418,6 +1409,21 @@ bool AppInit2()
             SoftSetArg("-maxmempool", "10");
         if (!mapArgs.count("-maxorphantx"))
             SoftSetArg("-maxorphantx", "10");
+    }
+
+    // Secure messaging is opt-in (-smsg); -nosmsg still forces it off. Resolved after the SPV
+    // block so every parameter interaction is seen.
+    {
+        const bool fSmsgRequested = GetBoolArg("-smsg", false);
+        const bool fSmsgForcedOff = GetBoolArg("-nosmsg", false);
+        fNoSmsg = !fSmsgRequested || fSmsgForcedOff;
+
+        if (fSmsgRequested && fSmsgForcedOff)
+            printf("Secure messaging: -nosmsg overrides -smsg, messaging stays disabled\n");
+        else
+            printf("Secure messaging: %s\n", fNoSmsg
+                       ? "disabled (default; set smsg=1 in innova.conf to enable)"
+                       : "enabled by -smsg");
     }
 
     {
