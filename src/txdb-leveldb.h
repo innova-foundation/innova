@@ -555,6 +555,12 @@ public:
         CPrivacyVNextCollateralAttestation& attested);
     bool ErasePrivacyVNextCollateral(const uint256& keyImage);
     bool CountPrivacyVNextCollateral(uint64_t& nCount, std::string& strError);
+    // Every stored attestation with the key image it was recorded under. Storage only:
+    // which of these are still active at a height is a consensus predicate and lives with
+    // the caller that knows the height.
+    bool EnumeratePrivacyVNextCollateral(
+        std::vector<std::pair<uint256, CPrivacyVNextCollateralAttestation> >& vOut,
+        std::string& strError);
 
     bool WriteShieldedAnchor(const uint256& anchor);
     bool ReadShieldedAnchor(const uint256& anchor);

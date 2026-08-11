@@ -10,6 +10,8 @@ functions:
   innova_privacy_vnext_abi_hash(uint8_t *out, size_t out_len)
   innova_privacy_vnext_provenance_digest(uint8_t *out, size_t out_len)
   innova_privacy_vnext_parameter_digest(uint8_t *out, size_t out_len)
+  innova_privacy_vnext_accepted_parameter_digests(uint8_t *out, size_t out_capacity, size_t *out_written)
+  innova_privacy_vnext_envelope_allows(uint32_t wire_version, uint8_t operation, uint8_t profile, uint8_t authorization, uint8_t finality_object, uint8_t disclosure_mask)
   innova_privacy_vnext_contract_metadata(innova_privacy_vnext_contract *out, size_t out_len)
   innova_privacy_vnext_protocol_contract(uint8_t *out, size_t out_capacity, size_t *out_written)
   innova_privacy_vnext_fcmp_proof_size(uint32_t inputs, uint32_t layers, size_t *out_size)

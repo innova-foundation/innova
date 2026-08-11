@@ -18,6 +18,8 @@
 #include "privacy_vnext/rust/include/innova_privacy_vnext.h"
 
 #include <openssl/crypto.h>
+#include <openssl/ec.h>
+#include <openssl/obj_mac.h>
 
 #include <cstring>
 #include <stdexcept>   // std::runtime_error; not transitively included by libstdc++
@@ -297,6 +299,83 @@ PrivacyVNextAbiInfo::PrivacyVNextAbiInfo()
 {
 }
 
+namespace
+{
+// Read the linked library's accepted parameter digests as lowercase hex, own digest first.
+bool ReadAcceptedParameterDigests(std::vector<std::string>& vHexOut,
+                                  std::string& error)
+{
+    vHexOut.clear();
+    error.clear();
+
+    size_t required = 0;
+    int32_t result = innova_privacy_vnext_accepted_parameter_digests(
+        NULL, 0, &required);
+    if (result != INNOVA_PRIVACY_VNEXT_VALID || required < 1 ||
+        required > iv5::MAX_PAYLOAD_BYTES ||
+        (required - 1) % INNOVA_PRIVACY_VNEXT_DIGEST_SIZE != 0)
+    {
+        error = "accepted parameter digest size query failed";
+        return false;
+    }
+    std::vector<uint8_t> encoded(required);
+    size_t written = 0;
+    result = innova_privacy_vnext_accepted_parameter_digests(
+        &encoded[0], encoded.size(), &written);
+    if (result != INNOVA_PRIVACY_VNEXT_VALID || written != required)
+    {
+        error = "accepted parameter digest read failed";
+        return false;
+    }
+    const size_t nCount = encoded[0];
+    if (nCount == 0 ||
+        required != 1 + nCount * INNOVA_PRIVACY_VNEXT_DIGEST_SIZE)
+    {
+        error = "accepted parameter digest list is not canonical";
+        return false;
+    }
+    for (size_t i = 0; i < nCount; ++i)
+        vHexOut.push_back(HexDigest(&encoded[1 + i * INNOVA_PRIVACY_VNEXT_DIGEST_SIZE],
+                                    INNOVA_PRIVACY_VNEXT_DIGEST_SIZE));
+    return true;
+}
+} // namespace
+
+bool IsAcceptedPrivacyVNextParameterDigest(const unsigned char* pDigest,
+                                           size_t nSize)
+{
+    if (pDigest == NULL || nSize != INNOVA_PRIVACY_VNEXT_DIGEST_SIZE)
+        return false;
+    std::vector<std::string> vAccepted;
+    std::string error;
+    if (!ReadAcceptedParameterDigests(vAccepted, error))
+        return false;
+    const std::string strDigest = HexDigest(pDigest, nSize);
+    for (size_t i = 0; i < vAccepted.size(); ++i)
+        if (vAccepted[i] == strDigest)
+            return true;
+    return false;
+}
+
+bool IsPrivacyVNextMemberKeyOnCurve(const unsigned char* pKey, size_t nSize)
+{
+    if (pKey == NULL || nSize != iv5::FINALITY_MEMBER_KEY_BYTES)
+        return false;
+    // The Rust decoder already refused a non-canonical encoding; what is left is whether
+    // the x it names has a y at all, which is the algebraic test below and nothing about
+    // this node.
+    if (pKey[0] != 2 && pKey[0] != 3)
+        return false;
+    EC_KEY* pECKey = EC_KEY_new_by_curve_name(NID_secp256k1);
+    if (pECKey == NULL)
+        return false;
+    const unsigned char* pIn = pKey;
+    const bool fValid = o2i_ECPublicKey(&pECKey, &pIn, (long)nSize) != NULL &&
+                        pIn == pKey + nSize;
+    EC_KEY_free(pECKey);
+    return fValid;
+}
+
 bool LoadPrivacyVNextAbiInfo(PrivacyVNextAbiInfo& info)
 {
     info = PrivacyVNextAbiInfo();
@@ -342,6 +421,19 @@ bool LoadPrivacyVNextAbiInfo(PrivacyVNextAbiInfo& info)
         return Fail(info, error);
     if (info.strParameterDigest != iv5::PROTOCOL_CONTRACT_SHA256)
         return Fail(info, "Rust/C protocol contract digest mismatch");
+
+    // The two accepted-digest lists must be the same list. A build whose C++ header
+    // accepts a digest the decoder refuses -- or the reverse -- would admit a payload on
+    // one side of the boundary and reject it on the other.
+    std::vector<std::string> vAccepted;
+    if (!ReadAcceptedParameterDigests(vAccepted, error))
+        return Fail(info, error);
+    if (vAccepted.size() != iv5::PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT + 1 ||
+        vAccepted[0] != iv5::PROTOCOL_CONTRACT_SHA256)
+        return Fail(info, "Rust/C accepted parameter digest list mismatch");
+    for (size_t i = 0; i < iv5::PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT; ++i)
+        if (vAccepted[i + 1] != iv5::PROTOCOL_CONTRACT_SHA256_PRIOR[i])
+            return Fail(info, "Rust/C accepted parameter digest list mismatch");
 
     size_t protocolContractSize = 0;
     result = innova_privacy_vnext_protocol_contract(NULL, 0,
@@ -948,6 +1040,11 @@ static PrivacyVNextPayloadValidation ExtractPrivacyVNextPayloadEffectsUncached(
         std::copy(encoded.begin() + offset, encoded.begin() + offset + 32,
                   effects.registrationContext.begin());
         offset += 32;
+        std::copy(encoded.begin() + offset,
+                  encoded.begin() + offset +
+                      INNOVA_PRIVACY_VNEXT_FINALITY_MEMBER_KEY_SIZE,
+                  effects.memberKey.begin());
+        offset += INNOVA_PRIVACY_VNEXT_FINALITY_MEMBER_KEY_SIZE;
         effects.attestationKeyImages.resize(attestationCount);
         for (size_t i = 0; i < attestationCount; ++i)
         {

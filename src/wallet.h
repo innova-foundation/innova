@@ -343,9 +343,13 @@ public:
     bool ListPrivacyVNextCollateralCandidates(
         std::vector<CPrivacyVNextCollateralCandidate>& vOut,
         std::string& strErrorOut) const;
+    // vchMemberKey empty builds a collateralnode attestation; 33 compressed
+    // secp256k1 bytes build a finality-committee member registration instead.
+    // One entry point, because the two differ by that field alone.
     bool CreatePrivacyVNextCollateralAttestation(
         const CPrivacyVNextWalletNote& note,
         const uint256& hashContext,
+        const std::vector<unsigned char>& vchMemberKey,
         bool fCommit,
         CWalletTx& wtxNew,
         uint256& keyImageOut,

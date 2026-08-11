@@ -1581,6 +1581,32 @@ bool ConnectPrivacyVNextAttestations(CTxDB& txdb,
     fLocalFailure = false;
     strError.clear();
 
+    // The one place a member key becomes chain state, so the on-curve test the Rust
+    // decoder cannot make belongs here. A key that names no point on secp256k1 can never
+    // be encrypted to, so a registration carrying one would occupy a committee seat its
+    // holder could never serve. Pure function of the payload bytes, so every node refuses
+    // the same registrations.
+    std::vector<unsigned char> vchMemberKey;
+    if (effects.HasMemberKey())
+    {
+        // The registry exists to seat a committee that only note-weighted finality
+        // uses, so it rides that fork and nothing else. Keyed on the extracted key
+        // rather than on the payload's declared operation byte, because the header
+        // read is not a decoder and consensus must gate on what was actually proved.
+        if (!IsIV5NoteVoteActiveAtHeight(nHeight))
+        {
+            strError = "IV5 finality member registration is not active at this height";
+            return false;
+        }
+        if (!IsPrivacyVNextMemberKeyOnCurve(effects.memberKey.data(),
+                                            effects.memberKey.size()))
+        {
+            strError = "IV5 finality member registration key is not on secp256k1";
+            return false;
+        }
+        vchMemberKey.assign(effects.memberKey.begin(), effects.memberKey.end());
+    }
+
     for (size_t i = 0; i < effects.attestationKeyImages.size(); ++i)
     {
         uint256 keyImage;
@@ -1615,10 +1641,8 @@ bool ConnectPrivacyVNextAttestations(CTxDB& txdb,
             return false;
         }
 
-        // One node per note. The record is never replaced and is erased only by
-        // its own disconnect, so connect and disconnect stay exact inverses; an
-        // operator changing endpoints moves the collateral to a fresh note and
-        // attests to that one.
+        // One node per note across both attestation operations. The record is never replaced and
+        // is erased only by its own disconnect, so connect and disconnect stay exact inverses.
         CPrivacyVNextCollateralAttestation prior;
         const TxDBReadStatus watchStatus =
             txdb.ReadPrivacyVNextCollateralStatus(keyImage, prior);
@@ -1646,7 +1670,8 @@ bool ConnectPrivacyVNextAttestations(CTxDB& txdb,
             uint256(std::vector<unsigned char>(
                 effects.registrationContext.begin(),
                 effects.registrationContext.end())),
-            nHeight);
+            nHeight,
+            vchMemberKey);
         if (!txdb.WritePrivacyVNextCollateral(keyImage, attested))
         {
             fLocalFailure = true;
@@ -1720,6 +1745,94 @@ bool IsPrivacyVNextCollateralRegistered(
     // and simply stops meaning "registered", which is what makes a reorg that
     // reorders the attestation and the spend land the same way on every node.
     return spentStatus != TXDB_READ_FOUND;
+}
+
+// Every registration still active as of nAnchorHeight, in key-image order.
+//
+// Both indexes this reads are exact functions of the ancestry connected so far, so two
+// nodes connecting one block read the same rows and derive the same set. That is the whole
+// determinism argument, and it is why nothing here consults nBestHeight, pindexBest, the
+// mempool or any live finality height: an anchor taken from what a node has *seen* rather
+// than from what the block it is validating descends from is the shape of the private
+// finality split, and it is not repeated here.
+//
+// nAnchorHeight bounds the registrations by when they were recorded. The caller supplies
+// it and owns the choice: the committee draw that follows this increment anchors it to the
+// deterministic finalized height its epoch state carries, which is settled and cannot be
+// reorged out from under a snapshot.
+//
+// fMembersOnly selects registrations that published a tally-encryption key -- the
+// committee-eligible set. Without it the result is every collateral registration.
+bool GetPrivacyVNextCollateralSnapshot(
+    CTxDB& txdb,
+    int nAnchorHeight,
+    bool fMembersOnly,
+    std::vector<CPrivacyVNextRegistryEntry>& vOut,
+    bool& fLocalFailure,
+    std::string& strError)
+{
+    vOut.clear();
+    fLocalFailure = false;
+    strError.clear();
+
+    if (nAnchorHeight < 0)
+    {
+        strError = "an IV5 registration snapshot needs a nonnegative anchor height";
+        return false;
+    }
+
+    // Needs a handle with no open batch: an iterator cannot see pending writes and would
+    // otherwise disagree with the point reads below. A finalized anchor wants committed
+    // state, so the block being connected passes a separate read handle rather than its
+    // own write batch.
+    std::vector<std::pair<uint256, CPrivacyVNextCollateralAttestation> > vRows;
+    if (!txdb.EnumeratePrivacyVNextCollateral(vRows, strError))
+    {
+        fLocalFailure = true;
+        strError = "IV5 collateral index cannot be read (" + strError + ")";
+        return false;
+    }
+
+    for (size_t i = 0; i < vRows.size(); ++i)
+    {
+        const uint256& keyImage = vRows[i].first;
+        const CPrivacyVNextCollateralAttestation& attested = vRows[i].second;
+        if (attested.nHeight > nAnchorHeight)
+            continue;
+        if (fMembersOnly && !attested.IsFinalityMember())
+            continue;
+
+        CShieldedNullifierSpent spent;
+        const TxDBReadStatus spentStatus =
+            txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
+        if (spentStatus == TXDB_READ_ERROR)
+        {
+            fLocalFailure = true;
+            strError = strprintf(
+                "corrupt IV5 spent-key index for %s; -reindex/resync required",
+                keyImage.ToString().substr(0,10).c_str());
+            vOut.clear();
+            return false;
+        }
+        // Spent means the collateral is gone, so the registration it backed is gone with
+        // it. Read from the same connected ancestry as the row itself.
+        if (spentStatus == TXDB_READ_FOUND)
+            continue;
+
+        CPrivacyVNextRegistryEntry entry;
+        entry.keyImage = keyImage;
+        entry.contextDigest = attested.contextDigest;
+        entry.txnHash = attested.txnHash;
+        entry.nHeight = attested.nHeight;
+        entry.vchMemberKey = attested.vchMemberKey;
+        vOut.push_back(entry);
+    }
+
+    // Key-image order, so the set a caller sees does not depend on leveldb's iteration
+    // order. The seed derivation and the draw that follow this increment consume this
+    // sequence and must see one ordering on every node.
+    std::sort(vOut.begin(), vOut.end());
+    return true;
 }
 
 bool CheckPrivacyVNextTransparentBinding(const CTransaction& tx,
@@ -1841,11 +1954,18 @@ static bool ValidatePrivacyVNextFinalizedContext(
         strError = "payload finalized root or tree size does not match consensus state";
         return false;
     }
+    // The chain's own digest, or any digest this build still accepts. The digest is a
+    // provenance tag no rule branches on, so admitting the bounded prior set costs no
+    // rule and is what stops a contract edit from invalidating every payload already on
+    // chain. The accepted set is a compile-time property of the binary, so this answers
+    // the same way on every node running it.
     if (!std::equal(effects.parameterDigest.begin(),
                     effects.parameterDigest.end(),
-                    expectedParameterDigest.begin()))
+                    expectedParameterDigest.begin()) &&
+        !IsAcceptedPrivacyVNextParameterDigest(effects.parameterDigest.data(),
+                                               effects.parameterDigest.size()))
     {
-        strError = "payload parameter digest does not match consensus state";
+        strError = "payload parameter digest is not one this chain accepts";
         return false;
     }
     return true;
@@ -2087,6 +2207,17 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                              spent.txnHash.ToString().substr(0,10).c_str());
             vPrivacyVNextKeyImages.push_back(keyImage);
         }
+
+        // Judged at the height this transaction would occupy, mirroring what
+        // ConnectPrivacyVNextAttestations enforces: a member registration relayed
+        // before the note-vote fork is one a miner would build an unconnectable
+        // block around.
+        if (effects.HasMemberKey() &&
+            (!IsIV5NoteVoteActiveAtHeight(nEffectiveMempoolHeight) ||
+             !IsPrivacyVNextMemberKeyOnCurve(effects.memberKey.data(),
+                                             effects.memberKey.size())))
+            return error("CTxMemPool::accept() : IV5 finality member registration is "
+                         "inactive at this height or names no point on secp256k1");
 
         // An attestation the chain would refuse is worth no relay either, and a
         // miner that built on one would produce a block every peer rejects.
