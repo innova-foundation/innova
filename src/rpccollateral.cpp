@@ -194,7 +194,7 @@ Object PrivacyVNextChainLayer(const uint256& keyImage)
     CPrivacyVNextCollateralAttestation attested;
     const TxDBReadStatus watchStatus =
         txdb.ReadPrivacyVNextCollateralStatus(keyImage, attested);
-    CShieldedNullifierSpent spent;
+    CPrivacyVNextNullifierSpent spent;
     const TxDBReadStatus spentStatus =
         txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
 
@@ -906,7 +906,7 @@ Value collateralnode(const Array& params, bool fHelp)
         // this transaction unconnectable, so re-read all four sources before broadcast.
         {
             CTxDB txdb("r");
-            CShieldedNullifierSpent spent;
+            CPrivacyVNextNullifierSpent spent;
             if (txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent) !=
                 TXDB_READ_NOT_FOUND)
                 throw runtime_error("the note was spent while the proof was being "
@@ -1108,7 +1108,7 @@ Value collateralnode(const Array& params, bool fHelp)
         // this transaction unconnectable, so re-read all four sources before broadcast.
         {
             CTxDB txdb("r");
-            CShieldedNullifierSpent spent;
+            CPrivacyVNextNullifierSpent spent;
             if (txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent) !=
                 TXDB_READ_NOT_FOUND)
                 throw runtime_error("the note was spent while the proof was being "

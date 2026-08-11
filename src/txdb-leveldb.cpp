@@ -540,17 +540,19 @@ bool CTxDB::EraseShieldedNullifier(const uint256& nullifier)
 }
 
 bool CTxDB::WritePrivacyVNextNullifier(
-    const uint256& keyImage, const CShieldedNullifierSpent& spent)
+    const uint256& keyImage, const CPrivacyVNextNullifierSpent& spent)
 {
     return Write(make_pair(string("iv5nf"), keyImage), spent);
 }
 
 TxDBReadStatus CTxDB::ReadPrivacyVNextNullifierStatus(
-    const uint256& keyImage, CShieldedNullifierSpent& spent)
+    const uint256& keyImage, CPrivacyVNextNullifierSpent& spent)
 {
     const TxDBReadStatus status = ReadExactStatus(
         make_pair(string("iv5nf"), keyImage), spent);
-    if (status == TXDB_READ_FOUND && spent.txnHash == 0)
+    // A record without a spending tx or consuming height was written by no connected block;
+    // height-bounded readers must never see it.
+    if (status == TXDB_READ_FOUND && (spent.txnHash == 0 || spent.nHeight < 0))
         return TXDB_READ_ERROR;
     return status;
 }
@@ -593,9 +595,9 @@ bool CTxDB::CountPrivacyVNextNullifiers(
             const leveldb::Slice value = it->value();
             CDataStream ssValue(value.data(), value.data() + value.size(),
                                 SER_DISK, CLIENT_VERSION);
-            CShieldedNullifierSpent spent;
+            CPrivacyVNextNullifierSpent spent;
             ssValue >> spent;
-            if (ssValue.size() != 0 || spent.txnHash == 0)
+            if (ssValue.size() != 0 || spent.txnHash == 0 || spent.nHeight < 0)
                 throw std::ios_base::failure("non-canonical IV5 spent-key record value");
             if (nCount == std::numeric_limits<uint64_t>::max())
                 throw std::ios_base::failure("IV5 spent-key record count overflow");

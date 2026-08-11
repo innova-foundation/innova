@@ -612,6 +612,39 @@ public:
 };
 
 
+// One consumed IV5 key image with its consuming block height, for height-bounded queries.
+// Separate from CShieldedNullifierSpent, whose pre-IV5 records must stay decodable.
+class CPrivacyVNextNullifierSpent
+{
+public:
+    uint256 txnHash;
+    uint32_t nIndex;
+    int32_t nHeight;
+
+    CPrivacyVNextNullifierSpent()
+    {
+        txnHash = 0;
+        nIndex = 0;
+        nHeight = -1;
+    }
+
+    CPrivacyVNextNullifierSpent(const uint256& txnHashIn, uint32_t nIndexIn,
+                                int32_t nHeightIn)
+    {
+        txnHash = txnHashIn;
+        nIndex = nIndexIn;
+        nHeight = nHeightIn;
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        READWRITE(txnHash);
+        READWRITE(nIndex);
+        READWRITE(nHeight);
+    )
+};
+
+
 // One collateral attestation, keyed in txdb on the key image it published.
 //
 // The context digest is what the attestation bound into its signing hash, so the node

@@ -516,12 +516,12 @@ public:
         const uint256& nullifier, CShieldedNullifierSpent& nfs);
     bool EraseShieldedNullifier(const uint256& nullifier);
 
-    // Exact full-chain IV5 spent-key membership. These records deliberately
-    // use a distinct namespace from every historical privacy generation.
+    // Full-chain IV5 spent-key membership in its own namespace, with the consuming height
+    // so a reader anchored to a settled height can ask about that height.
     bool WritePrivacyVNextNullifier(const uint256& keyImage,
-                                    const CShieldedNullifierSpent& spent);
+                                    const CPrivacyVNextNullifierSpent& spent);
     TxDBReadStatus ReadPrivacyVNextNullifierStatus(
-        const uint256& keyImage, CShieldedNullifierSpent& spent);
+        const uint256& keyImage, CPrivacyVNextNullifierSpent& spent);
     bool ErasePrivacyVNextNullifier(const uint256& keyImage);
     bool CountPrivacyVNextNullifiers(uint64_t& nCount,
                                     std::string& strError);

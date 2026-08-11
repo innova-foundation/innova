@@ -1621,7 +1621,7 @@ bool ConnectPrivacyVNextAttestations(CTxDB& txdb,
 
         // An attestation over a spent note proves nothing about live collateral,
         // so the note must still be unspent when it is made.
-        CShieldedNullifierSpent spent;
+        CPrivacyVNextNullifierSpent spent;
         const TxDBReadStatus spentStatus =
             txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
         if (spentStatus == TXDB_READ_ERROR)
@@ -1733,7 +1733,7 @@ bool IsPrivacyVNextCollateralRegistered(
     if (watchStatus != TXDB_READ_FOUND)
         return false;
 
-    CShieldedNullifierSpent spent;
+    CPrivacyVNextNullifierSpent spent;
     const TxDBReadStatus spentStatus =
         txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
     if (spentStatus == TXDB_READ_ERROR)
@@ -1802,7 +1802,7 @@ bool GetPrivacyVNextCollateralSnapshot(
         if (fMembersOnly && !attested.IsFinalityMember())
             continue;
 
-        CShieldedNullifierSpent spent;
+        CPrivacyVNextNullifierSpent spent;
         const TxDBReadStatus spentStatus =
             txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
         if (spentStatus == TXDB_READ_ERROR)
@@ -1814,9 +1814,17 @@ bool GetPrivacyVNextCollateralSnapshot(
             vOut.clear();
             return false;
         }
-        // Spent means the collateral is gone, so the registration it backed is gone with
-        // it. Read from the same connected ancestry as the row itself.
-        if (spentStatus == TXDB_READ_FOUND)
+        // Spent means the collateral is gone, so the registration it backed is gone
+        // with it -- but only a spend at or below the anchor height counts, exactly as
+        // only a registration at or below it counts.
+        //
+        // Bare membership answers from whatever ancestry this node has committed,
+        // which during a reorg is the branch being replaced: it would drop a row the
+        // adopted branch never released while a node syncing that branch fresh keeps
+        // it, and the draw is stored rather than rederived, so a resync would not
+        // settle the disagreement. Every spend at or below the anchor is on ancestry
+        // both nodes share.
+        if (spentStatus == TXDB_READ_FOUND && spent.nHeight <= nAnchorHeight)
             continue;
 
         CPrivacyVNextRegistryEntry entry;
@@ -2191,7 +2199,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                 return error("CTxMemPool::accept() : duplicate IV5 spent key %s",
                              keyImage.ToString().substr(0,10).c_str());
 
-            CShieldedNullifierSpent spent;
+            CPrivacyVNextNullifierSpent spent;
             const TxDBReadStatus status =
                 txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
             if (status == TXDB_READ_ERROR)
@@ -2232,7 +2240,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                 return error("CTxMemPool::accept() : duplicate IV5 attestation %s",
                              keyImage.ToString().substr(0,10).c_str());
 
-            CShieldedNullifierSpent spent;
+            CPrivacyVNextNullifierSpent spent;
             const TxDBReadStatus spentStatus =
                 txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
             if (spentStatus == TXDB_READ_ERROR)
@@ -5289,14 +5297,16 @@ bool ValidatePrivacyVNextIndexPersistence(
                         keyImage.ToString().substr(0,10).c_str());
                     return false;
                 }
-                CShieldedNullifierSpent spent;
+                CPrivacyVNextNullifierSpent spent;
                 const TxDBReadStatus status =
                     txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
                 if (status != TXDB_READ_FOUND ||
-                    spent.txnHash != tx.GetHash() || spent.nIndex != i)
+                    spent.txnHash != tx.GetHash() || spent.nIndex != i ||
+                    spent.nHeight != pindex->nHeight)
                 {
                     strError = strprintf(
-                        "IV5 spent-key record %s is missing, corrupt, or owned by another input",
+                        "IV5 spent-key record %s is missing, corrupt, misplaced, or owned "
+                        "by another input",
                         keyImage.ToString().substr(0,10).c_str());
                     return false;
                 }
@@ -7102,12 +7112,16 @@ bool CBlock::DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fWriteNames)
                 uint256 keyImage;
                 memcpy(keyImage.begin(), effects.keyImages[j - 1].data(),
                        effects.keyImages[j - 1].size());
-                CShieldedNullifierSpent spent;
+                CPrivacyVNextNullifierSpent spent;
                 const TxDBReadStatus status =
                     txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent);
+                // The height is part of what connecting this block wrote, so undoing
+                // it has to find the height it wrote and no other: a record placed at
+                // a different height belongs to a block this one is not.
                 if (status != TXDB_READ_FOUND ||
                     spent.txnHash != vtx[i].GetHash() ||
-                    spent.nIndex != j - 1)
+                    spent.nIndex != j - 1 ||
+                    spent.nHeight != pindex->nHeight)
                 {
                     StartShutdown();
                     return error("DisconnectBlock() : IV5 spent-key undo record is %s or "
@@ -9159,7 +9173,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                         "ConnectBlock() : duplicate IV5 spent key %s in active DAG block",
                         keyImage.ToString().substr(0,10).c_str()));
 
-                CShieldedNullifierSpent prior;
+                CPrivacyVNextNullifierSpent prior;
                 const TxDBReadStatus status =
                     txdb.ReadPrivacyVNextNullifierStatus(keyImage, prior);
                 if (status == TXDB_READ_ERROR)
@@ -9178,9 +9192,13 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
                 if (!fJustCheck)
                 {
-                    CShieldedNullifierSpent spent;
+                    // The height this key was consumed at, so a reader anchored to a
+                    // settled height can ask whether the spend is inside its anchor
+                    // instead of whether this node happens to hold the record.
+                    CPrivacyVNextNullifierSpent spent;
                     spent.txnHash = tx.GetHash();
                     spent.nIndex = i;
+                    spent.nHeight = pindex->nHeight;
                     if (!txdb.WritePrivacyVNextNullifier(keyImage, spent))
                         return TransientFailure(error(
                             "ConnectBlock() : IV5 spent-key write failed"));

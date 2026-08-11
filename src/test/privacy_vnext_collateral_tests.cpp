@@ -226,7 +226,7 @@ BOOST_AUTO_TEST_CASE(an_attestation_is_watched_and_never_spent)
                       TXDB_READ_FOUND);
     BOOST_CHECK(attested.txnHash == tx.GetHash());
     BOOST_CHECK(attested.contextDigest == AsUint256(context));
-    CShieldedNullifierSpent spent;
+    CPrivacyVNextNullifierSpent spent;
     BOOST_CHECK_EQUAL(txdb.ReadPrivacyVNextNullifierStatus(watched, spent),
                       TXDB_READ_NOT_FOUND);
 
@@ -432,9 +432,10 @@ BOOST_AUTO_TEST_CASE(a_note_is_attested_once_and_only_while_unspent)
 
     // An attestation over a note the chain has already seen spent proves nothing about
     // live collateral.
-    CShieldedNullifierSpent spent;
+    CPrivacyVNextNullifierSpent spent;
     spent.txnHash = uint256(1);
     spent.nIndex = 0;
+    spent.nHeight = 900;
     BOOST_REQUIRE(txdb.WritePrivacyVNextNullifier(watched, spent));
     {
         std::set<uint256> setBlock;
@@ -484,9 +485,10 @@ BOOST_AUTO_TEST_CASE(a_spend_deregisters_and_a_reorg_restores)
 
     // The spend is an ordinary one: it writes the spent-key index and consults nothing
     // about registration, so there is no path by which it could be blocked.
-    CShieldedNullifierSpent spent;
+    CPrivacyVNextNullifierSpent spent;
     spent.txnHash = uint256(7);
     spent.nIndex = 0;
+    spent.nHeight = 900;
     BOOST_REQUIRE(txdb.WritePrivacyVNextNullifier(watched, spent));
     BOOST_CHECK(!IsPrivacyVNextCollateralRegistered(txdb, watched, live,
                                                     fLocalFailure));
@@ -810,7 +812,7 @@ BOOST_AUTO_TEST_CASE(a_member_key_survives_the_payload_and_the_index)
     BOOST_CHECK(attested.vchMemberKey == vchMember);
     BOOST_CHECK(attested.contextDigest == AsUint256(context));
     BOOST_CHECK_EQUAL(attested.nHeight, 950);
-    CShieldedNullifierSpent spent;
+    CPrivacyVNextNullifierSpent spent;
     BOOST_CHECK_EQUAL(txdb.ReadPrivacyVNextNullifierStatus(watched, spent),
                       TXDB_READ_NOT_FOUND);
 
@@ -1147,9 +1149,10 @@ BOOST_AUTO_TEST_CASE(a_registry_snapshot_is_anchored_and_ordered)
         BOOST_CHECK(vEntries[i - 1].keyImage < vEntries[i].keyImage);
 
     // A member whose collateral is spent loses the seat, with nothing erased for it.
-    CShieldedNullifierSpent spent;
+    CPrivacyVNextNullifierSpent spent;
     spent.txnHash = uint256(31);
     spent.nIndex = 0;
+    spent.nHeight = 900;
     BOOST_REQUIRE(txdb.WritePrivacyVNextNullifier(vMade[0].watched, spent));
     BOOST_REQUIRE(GetPrivacyVNextCollateralSnapshot(txdb, 1002, true, vEntries,
                                                     fLocalFailure, error));

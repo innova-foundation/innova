@@ -381,16 +381,28 @@ int GetFinalityCommitteeTermEpochs()
 // Binds the shape as well as the entropy: a build that changed the seat count or the
 // threshold would otherwise draw from the same seed as one that did not, and the two
 // would disagree about a committee while agreeing about the seed that produced it.
+//
+// The entropy is the anchor epoch's canonical end block alone. It cannot come earlier
+// than the registration cutoff: a seed already public by then is one a registrant
+// grinds a key image against offline, without bound. So the last word belongs to some
+// producer after the cutoff either way, and the only question is how many.
+//
+// vBlockHashes made that many. It is the epoch's whole DAG order, including merge and
+// sibling blocks, which never had to win a height race -- so a miner could hold one,
+// evaluate the seed it would produce, and release it only if favourable. The end block
+// carries the same entropy over one block at one height, and the order is derived from
+// it anyway. Grinding is reduced, not removed: that block's producer can still resample
+// by discarding a solution it could have published.
 static uint256 FinalityCommitteeDrawSeed(int nTermEpoch, int nSeats, int nThresholdM,
                                          const CEpochState& anchorState)
 {
     CHashWriter ss(SER_GETHASH, 0);
-    ss << std::string("Innova/Finality/CommitteeDraw/v1");
+    ss << std::string("Innova/Finality/CommitteeDraw/v2");
     ss << nTermEpoch;
     ss << nSeats;
     ss << nThresholdM;
     ss << anchorState.nEpoch;
-    ss << anchorState.vBlockHashes;
+    ss << anchorState.hashBoundaryBlock;
     return ss.GetHash();
 }
 
@@ -435,6 +447,13 @@ bool DrawFinalityCommitteeForTerm(CTxDB& txdbEpoch, CTxDB& txdbRegistry,
     if (!txdbEpoch.ReadEpochState(nAnchorEpoch, anchorState) ||
         anchorState.nEpoch != nAnchorEpoch)
         return true;   // the chain has not produced that epoch's state; seat nothing
+
+    // An epoch record with no end block never named the block the seed is taken from,
+    // and seeding from zero would hand every such term one predictable draw. Seating
+    // nothing is the answer every node reaches, because the field is part of the
+    // record's digest and so is the same on all of them.
+    if (anchorState.hashBoundaryBlock == 0)
+        return true;
 
     // What makes the registry read below safe to take from a batch-free handle.
     //

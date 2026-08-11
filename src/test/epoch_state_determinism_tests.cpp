@@ -1414,10 +1414,11 @@ BOOST_AUTO_TEST_CASE(v4_exact_nullifier_index_tracks_atomic_batches)
 {
     const uint256 keyImage = uint256(
         "42a1186f1c89f79361a76f5fe270c92c5c82f879f19512d62f6f46f2f6ef3108");
-    CShieldedNullifierSpent spent;
+    CPrivacyVNextNullifierSpent spent;
     spent.txnHash = uint256(
         "75f9f96e0e5a12341c547f1c3389cd55906f2fcedec4727a8989b95388b60401");
     spent.nIndex = 3;
+    spent.nHeight = 4200;
 
     CTxDB txdb("r+");
     BOOST_REQUIRE(txdb.TxnBegin());
@@ -1429,7 +1430,7 @@ BOOST_AUTO_TEST_CASE(v4_exact_nullifier_index_tracks_atomic_batches)
     BOOST_REQUIRE(txdb.CountPrivacyVNextNullifiers(
         nBaselineCount, strCountError));
 
-    CShieldedNullifierSpent observed;
+    CPrivacyVNextNullifierSpent observed;
     BOOST_CHECK_EQUAL(txdb.ReadPrivacyVNextNullifierStatus(keyImage, observed),
                       TXDB_READ_NOT_FOUND);
 
@@ -1440,6 +1441,7 @@ BOOST_AUTO_TEST_CASE(v4_exact_nullifier_index_tracks_atomic_batches)
         TXDB_READ_FOUND);
     BOOST_CHECK(observed.txnHash == spent.txnHash);
     BOOST_CHECK_EQUAL(observed.nIndex, spent.nIndex);
+    BOOST_CHECK_EQUAL(observed.nHeight, spent.nHeight);
     BOOST_REQUIRE(txdb.TxnAbort());
     BOOST_CHECK_EQUAL(txdb.ReadPrivacyVNextNullifierStatus(keyImage, observed),
                       TXDB_READ_NOT_FOUND);
@@ -1454,6 +1456,7 @@ BOOST_AUTO_TEST_CASE(v4_exact_nullifier_index_tracks_atomic_batches)
         TXDB_READ_FOUND);
     BOOST_CHECK(observed.txnHash == spent.txnHash);
     BOOST_CHECK_EQUAL(observed.nIndex, spent.nIndex);
+    BOOST_CHECK_EQUAL(observed.nHeight, spent.nHeight);
     uint64_t nCommittedCount = 0;
     BOOST_REQUIRE(reopened.CountPrivacyVNextNullifiers(
         nCommittedCount, strCountError));
@@ -1587,12 +1590,14 @@ BOOST_AUTO_TEST_CASE(v4_restart_conflict_reorg_and_shortening_converge_exactly)
         BOOST_CHECK(actual.GetDigest() == expected.GetDigest());
     };
 
-    CShieldedNullifierSpent ownerA;
+    CPrivacyVNextNullifierSpent ownerA;
     ownerA.txnHash = branchA.vVNextActiveTxIds[0];
     ownerA.nIndex = 0;
-    CShieldedNullifierSpent ownerB;
+    ownerA.nHeight = 4201;
+    CPrivacyVNextNullifierSpent ownerB;
     ownerB.txnHash = branchB.vVNextActiveTxIds[0];
     ownerB.nIndex = 0;
+    ownerB.nHeight = 4202;
     CCurveTree emptyTree;
     CDAGManager manager;
     CTxDB txdb("r+");
@@ -1619,12 +1624,13 @@ BOOST_AUTO_TEST_CASE(v4_restart_conflict_reorg_and_shortening_converge_exactly)
     BOOST_REQUIRE(restartedA.ReadCurveTreeAtEpoch(E, loadedTree));
     BOOST_CHECK(loadedTree.IsEmpty());
     checkExactState(loaded, branchA);
-    CShieldedNullifierSpent observed;
+    CPrivacyVNextNullifierSpent observed;
     BOOST_REQUIRE_EQUAL(
         restartedA.ReadPrivacyVNextNullifierStatus(keyImageA, observed),
         TXDB_READ_FOUND);
     BOOST_CHECK(observed.txnHash == ownerA.txnHash);
     BOOST_CHECK_EQUAL(observed.nIndex, ownerA.nIndex);
+    BOOST_CHECK_EQUAL(observed.nHeight, ownerA.nHeight);
     uint64_t branchCount = 0;
     BOOST_REQUIRE(restartedA.CountPrivacyVNextNullifiers(
         branchCount, strError));
@@ -1652,6 +1658,7 @@ BOOST_AUTO_TEST_CASE(v4_restart_conflict_reorg_and_shortening_converge_exactly)
         TXDB_READ_FOUND);
     BOOST_CHECK(observed.txnHash == ownerB.txnHash);
     BOOST_CHECK_EQUAL(observed.nIndex, ownerB.nIndex);
+    BOOST_CHECK_EQUAL(observed.nHeight, ownerB.nHeight);
     BOOST_REQUIRE(restartedB.CountPrivacyVNextNullifiers(
         branchCount, strError));
     BOOST_CHECK_EQUAL(branchCount, baselineCount + 1);

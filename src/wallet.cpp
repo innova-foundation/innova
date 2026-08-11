@@ -11433,7 +11433,7 @@ bool CWallet::SelectPrivacyVNextNotes(
             nCollateralLocked++;
             continue;
         }
-        CShieldedNullifierSpent spent;
+        CPrivacyVNextNullifierSpent spent;
         if (txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent) ==
             TXDB_READ_FOUND)
         {
@@ -11525,7 +11525,7 @@ bool CWallet::SelectPrivacyVNextVoteNote(
         if (mapPrivacyVNextCollateral.count(keyImage))
             continue;
         // The chain's spent-key index, not the local flag, decides what is still ours.
-        CShieldedNullifierSpent spent;
+        CPrivacyVNextNullifierSpent spent;
         if (txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent) == TXDB_READ_FOUND)
             continue;
         if (!pBest || note.nAmount > pBest->nAmount ||
@@ -11972,7 +11972,7 @@ bool CWallet::ListPrivacyVNextCollateralCandidates(
 
             // One attestation per key image, ever: the chain's watch record survives
             // the spend, so a note already attested can never be registered again.
-            CShieldedNullifierSpent spent;
+            CPrivacyVNextNullifierSpent spent;
             if (txdb.ReadPrivacyVNextNullifierStatus(keyImage, spent) !=
                 TXDB_READ_NOT_FOUND)
                 continue;
