@@ -126,8 +126,32 @@ namespace Checkpoints
         0
     };
 
-    const CCheckpointData &Checkpoints() {
+    // Regtest has no pinned hashes; falling through to the mainnet map rejected regtest block 2000.
+    MapCheckpoints mapCheckpointsRegtest =
+        boost::assign::map_list_of
+        ( 0, hashGenesisBlockRegTest )
+    ;
+
+    static const CCheckpointData dataRegtest = {
+        &mapCheckpointsRegtest,
+        0,
+        0,
+        0
+    };
+
+    static MapCheckpoints& ActiveCheckpoints()
+    {
+        if (fRegTest)
+            return mapCheckpointsRegtest;
         if (fTestNet)
+            return mapCheckpointsTestnet;
+        return mapCheckpoints;
+    }
+
+    const CCheckpointData &Checkpoints() {
+        if (fRegTest)
+            return dataRegtest;
+        else if (fTestNet)
             return dataTestnet;
         else
             return data;
@@ -135,25 +159,30 @@ namespace Checkpoints
 
     bool CheckHardened(int nHeight, const uint256& hash)
     {
-        MapCheckpoints& checkpoints = (fTestNet ? mapCheckpointsTestnet : mapCheckpoints);
+        MapCheckpoints& checkpoints = ActiveCheckpoints();
 
         MapCheckpoints::const_iterator i = checkpoints.find(nHeight);
         if (i == checkpoints.end()) return true;
         return hash == i->second;
     }
 
+    // Deliberately NOT ActiveCheckpoints(): this feeds IsInitialBlockDownload and the
+    // sync-progress estimate, and regtest has always read the mainnet number there.
+    // Changing it would move IBD-gated behaviour (signature-check skipping, mempool
+    // resurrection on reorg) on every regtest run, which is a separate change from
+    // stopping mainnet checkpoints rejecting regtest blocks.
     int GetTotalBlocksEstimate()
     {
         MapCheckpoints& checkpoints = (fTestNet ? mapCheckpointsTestnet : mapCheckpoints);
 
-		//if (checkpoints.empty())
-            //return 0;
+        if (checkpoints.empty())
+            return 0;
         return checkpoints.rbegin()->first;
     }
 
     CBlockIndex* GetLastCheckpoint(const std::map<uint256, CBlockIndex*>& mapBlockIndex)
     {
-        MapCheckpoints& checkpoints = (fTestNet ? mapCheckpointsTestnet : mapCheckpoints);
+        MapCheckpoints& checkpoints = ActiveCheckpoints();
 
         BOOST_REVERSE_FOREACH(const MapCheckpoints::value_type& i, checkpoints)
         {
