@@ -89,6 +89,9 @@ static const unsigned char FINALITY_NOTE_VOTE_TAG[4] = { 0x49, 0x46, 0x4e, 0x56 
 static const char FINALITY_CANONICAL_VOTE_COMMAND[] = "fvotea";
 static const char FINALITY_CANONICAL_TALLY_CERT_COMMAND[] = "ftcerta";
 static const char FINALITY_NOTE_VOTE_COMMAND[] = "fnvote";
+// The note tally's aggregate partial. A separate command from "ftpart" because it carries
+// a different object: mod-ell evaluations, not the legacy secp256k1 ones.
+static const char FINALITY_NOTE_TALLY_PARTIAL_COMMAND[] = "fnpart";
 static const uint32_t FINALITY_CANONICAL_VOTE_VERSION = 1;
 static const uint32_t FINALITY_CANONICAL_TALLY_CERT_VERSION = 1;
 // F2 note-tally schema. Schema 1 stays byte-identical; only a certificate that
@@ -1250,6 +1253,19 @@ public:
     /** Add a relayed encrypted committee aggregate partial. */
     bool AddTallyAggregatePartial(const CFinalityTallyAggregatePartial& partial, bool fCheck = true);
 
+    /** Validate a relayed note-tally partial against this node's view.
+     *
+     *  Relay admission only. Every covered tag must be a counted note vote for the epoch
+     *  and every complaint must verify against the vote it names, which bounds what one
+     *  source can flood; nothing here reaches a consensus decision, so a node with a
+     *  behind-the-tip view refuses a partial rather than disagreeing about a block. */
+    bool CheckNoteTallyAggregatePartial(const CNoteTallyAggregatePartial& partial,
+                                        std::string* pstrError = NULL) const;
+    bool AddNoteTallyAggregatePartial(const CNoteTallyAggregatePartial& partial,
+                                      bool fCheck = true);
+    std::vector<CNoteTallyAggregatePartial> GetEpochNoteTallyPartials(int nEpoch) const;
+    int GetEpochNoteTallyPartialCount(int nEpoch) const;
+
     /** Add a pending or connected tally certificate. */
     bool AddTallyCertificate(const CFinalityTallyCertificate& cert, bool fCheck = true, bool fRecordFinality = false);
 
@@ -1514,6 +1530,12 @@ private:
     // content digest that source already signed. A different digest for the same
     // key is an equivocation.
     std::map<std::pair<uint256, std::pair<int,int> >, uint256> mapTallyPartialBySource;
+    // F2 note-tally partials, relay/automation state only. The equivocation index keys on
+    // GetSourceSlot(), which folds the covered set into the slot: convergence requires a
+    // member to republish over a shrunken set, so only two contents for ONE covered set
+    // are an equivocation.
+    std::map<uint256, CNoteTallyAggregatePartial> mapNoteTallyPartials;
+    std::map<uint256, uint256> mapNoteTallyPartialBySlot;
     std::map<uint256, std::vector<uint256>> mapBlockConnectedTallyShares;
     // D2 canonical committee state: the fork-pinned initial set + connected
     // self-rotations keyed by effective epoch (a pure function of connected

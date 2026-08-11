@@ -96,8 +96,36 @@ COMMITTEE_PUBKEYS=(
 )
 COMMITTEE_THRESHOLD="2-of-3"
 
+# The matching secrets, one seat per node, in the same order. Scalars 1/2/3 --
+# the secrets behind the well-known points above. A tally member has to hold one:
+# a note certificate's authorization IS its M-of-N signature set, and the shares
+# are sealed to these keys.
+COMMITTEE_PRIVKEYS=(
+    "0000000000000000000000000000000000000000000000000000000000000001"
+    "0000000000000000000000000000000000000000000000000000000000000002"
+    "0000000000000000000000000000000000000000000000000000000000000003"
+)
+
 # OP_RETURN payload tag of a note-vote coinbase envelope ("IFNV").
 NOTE_VOTE_TAG_HEX="49464e56"
+# OP_RETURN payload tag of a canonical tally-certificate envelope ("IFCC").
+TALLY_CERT_TAG_HEX="49464343"
+
+# The epoch whose note tally is driven to a certificate. It must be one of
+# NOTE_VOTE_EPOCHS, and the certificate has to be carried by a block of that same
+# epoch: the deterministic tier reads the epoch's OWN blocks, so a cert carried a
+# whole epoch later is block-valid and tier-irrelevant.
+TALLY_EPOCH=5
+# H_E + FINALITY_VOTE_INCLUSION_WINDOW is the freeze point: before it the counted
+# note-vote set still grows and no certificate can satisfy connect-time coverage.
+TALLY_WINDOW_CLOSE=$(( 11 + (TALLY_EPOCH - 1) * 300 + 24 ))
+# Blocks mined past the freeze point, inside the same epoch, for the committee to
+# converge and for a miner to carry the certificate it assembles.
+TALLY_CARRY_HEIGHT=$(( TALLY_WINDOW_CLOSE + 40 ))
+# Seconds the chain rests at the freeze point. ThreadFinalityVoter drives
+# ProcessFinalityTallyCommittee on a 5s cycle, and the pass, the partial exchange
+# and the M-of-N signature round each need one.
+TALLY_SETTLE=45
 
 PASSED=0
 FAILED=0
@@ -360,11 +388,11 @@ producer_tag() {
     producer_success "$1" | head -1 | sed -n 's/.*tag=\([0-9a-f]*\).*/\1/p'
 }
 
-# Note-vote envelopes carried by a block's coinbase, one scriptPubKey hex per
-# line. The envelope is OP_RETURN <"IFNV" || vote>, so the tag sits immediately
+# Tagged finality envelopes carried by a block's coinbase, one scriptPubKey hex
+# per line. An envelope is OP_RETURN <tag || object>, so the tag sits immediately
 # after the push opcode whatever its width.
-notevote_scripts() {
-    local node="$1" h="$2" bh cb
+tagged_scripts() {
+    local node="$1" h="$2" tag_hex="$3" bh cb
     bh="$(block_hash "$node" "$h")"
     [ ${#bh} -eq 64 ] || return 1
     cb="$(rpc "$node" getblock "$bh" 2>/dev/null | python3 -c '
@@ -374,7 +402,7 @@ except Exception: pass
 ')"
     [ ${#cb} -eq 64 ] || return 1
     rpc "$node" getrawtransaction "$cb" 1 2>/dev/null | \
-    TAG="$NOTE_VOTE_TAG_HEX" python3 -c '
+    TAG="$tag_hex" python3 -c '
 import json, os, sys
 tag = os.environ["TAG"]
 try:
@@ -387,6 +415,8 @@ for out in tx.get("vout", []):
         print(h)
 '
 }
+
+notevote_scripts() { tagged_scripts "$1" "$2" "$NOTE_VOTE_TAG_HEX"; }
 
 # Every distinct note-vote envelope a node sees in [from, to], and the height of
 # the first block carrying each. Prints "height hex" lines.
@@ -436,6 +466,11 @@ write_config() {
         for key in "${COMMITTEE_PUBKEYS[@]}"; do
             echo "finalitytallypubkey=$key"
         done
+        # Each node holds the secret for its own seat, which is what makes it a
+        # tally member: the note tally resolves the seat from the CANONICAL
+        # committee by matching this key's pubkey, never from the local pubkey
+        # ordering. Without it a node relays note votes but never tallies them.
+        echo "finalitytallyprivkey=${COMMITTEE_PRIVKEYS[$node]}"
         # Every producer gate log is behind fDebug, and -debug deliberately does
         # NOT imply -debugnet, which carries the peer-side receive line.
         echo "debug=1"
@@ -720,6 +755,26 @@ for E in $NOTE_VOTE_EPOCHS; do
         exit 1
     }
     log "epoch $E: window mined to $((B + NOTE_VOTE_WINDOW))"
+
+    # The tally epoch gets two more stops inside its own span: one at the
+    # vote-inclusion window close, which is the freeze point the committee needs
+    # before any certificate can satisfy connect-time coverage, and one after it
+    # so a block of THIS epoch can carry the certificate the committee assembles.
+    if [ "$E" = "$TALLY_EPOCH" ]; then
+        log "epoch $E: mining to the vote-inclusion window close at $TALLY_WINDOW_CLOSE"
+        mine_to 0 "$TALLY_WINDOW_CLOSE" || { fail "epoch $E did not reach the freeze point"; exit 1; }
+        wait_sync "$TALLY_WINDOW_CLOSE" || { fail "fleet did not sync to the freeze point"; exit 1; }
+        log "epoch $E: resting ${TALLY_SETTLE}s for the note tally committee"
+        sleep "$TALLY_SETTLE"
+        log "epoch $E: mining to $TALLY_CARRY_HEIGHT so an own-epoch block can carry the certificate"
+        mine_to 0 "$TALLY_CARRY_HEIGHT" || { fail "epoch $E did not reach the carry height"; exit 1; }
+        wait_sync "$TALLY_CARRY_HEIGHT" || { fail "fleet did not sync to the carry height"; exit 1; }
+        # A second short rest and a few more blocks: the first carry may land
+        # before the M-of-N signature round completes on every node.
+        sleep 20
+        mine_to 0 $((TALLY_CARRY_HEIGHT + 20)) || { fail "epoch $E did not extend past the carry height"; exit 1; }
+        wait_sync $((TALLY_CARRY_HEIGHT + 20)) || { fail "fleet did not sync past the carry height"; exit 1; }
+    fi
 done
 
 E4="$(rpc 0 getepochinfo "$FINALIZED_EPOCH" 2>/dev/null)"
@@ -924,7 +979,162 @@ elif [ "$DEDUP_OK" -eq 1 ]; then
 fi
 
 # ============================================================
-header "12. The fleet reports no errors"
+header "12. The note tally committee runs over the counted set"
+# ============================================================
+
+# Increment B. Each node is a seat on the canonical committee, decrypts its own
+# evaluation of every counted note vote, sums them, seals the sum to the other
+# seats, and interpolates M of those partials into an opening of the aggregate a
+# validator recomputes from the votes' own commitments.
+TALLY_LINE=""
+TALLY_NODE=""
+for ((n=0; n<NUM_NODES; n++)); do
+    L="$(grep -F "ProcessNoteTallyCommitteeEpoch: epoch $TALLY_EPOCH tier=" "$(node_log "$n")" 2>/dev/null | tail -1)"
+    if [ -n "$L" ]; then
+        TALLY_LINE="$L"
+        TALLY_NODE="$n"
+        break
+    fi
+done
+if [ -n "$TALLY_LINE" ]; then
+    success "node$TALLY_NODE ran the note tally for epoch $TALLY_EPOCH"
+    log "  $TALLY_LINE"
+else
+    fail "no node ran the note tally committee pass for epoch $TALLY_EPOCH"
+    for ((n=0; n<NUM_NODES; n++)); do
+        grep -F "ProcessNoteTallyCommitteeEpoch:" "$(node_log "$n")" 2>/dev/null | tail -3
+    done
+fi
+
+# The note weight really entered the tier comparison: an opened aggregate of zero
+# would mean the committee summed nothing and the tier is transparent-only.
+NOTE_ACTIVE="$(echo "$TALLY_LINE" | sed -n 's/.*note_active=\([0-9.]*\).*/\1/p')"
+NOTE_COVERED="$(echo "$TALLY_LINE" | sed -n 's/.*covered=\([0-9]*\).*/\1/p')"
+if [ -n "$NOTE_ACTIVE" ] && ! feq "${NOTE_ACTIVE:-0}" 0 && \
+   is_int "${NOTE_COVERED:-x}" && [ "${NOTE_COVERED:-0}" -gt 0 ]; then
+    success "the committee opened $NOTE_COVERED covered note vote(s) to $NOTE_ACTIVE of note weight"
+else
+    fail "the note tally opened no weight (covered='$NOTE_COVERED' note_active='$NOTE_ACTIVE')"
+fi
+
+# Partials are relay/automation state, never consensus input, so the only thing
+# that has to be true of them on the wire is that peers accept them.
+PART_OK=0
+PART_REJECT=""
+for ((n=0; n<NUM_NODES; n++)); do
+    RX="$(grep -cF "received: fnpart" "$(node_log "$n")" 2>/dev/null)"
+    is_int "${RX:-x}" && [ "${RX:-0}" -gt 0 ] && PART_OK=1
+    R="$(grep -F "AddNoteTallyAggregatePartial: rejected partial" "$(node_log "$n")" 2>/dev/null | head -1)"
+    [ -n "$R" ] && PART_REJECT="node$n: $R"
+done
+if [ "$PART_OK" -eq 1 ] && [ -z "$PART_REJECT" ]; then
+    success "note tally partials relayed across the fleet and none were rejected"
+elif [ -n "$PART_REJECT" ]; then
+    fail "a node rejected a relayed note tally partial: $PART_REJECT"
+else
+    fail "no node received a note tally partial"
+fi
+
+# ============================================================
+header "13. A v4 note certificate connects in its own epoch"
+# ============================================================
+
+# The assembled certificate's hash, straight from the producer. The M-of-N
+# signature set is a note certificate's whole authorization: its range proofs are
+# entropy-bearing, so no validator can rebuild it byte-for-byte.
+# Every hash the fleet assembled, not just the first: a note certificate's range
+# proofs carry entropy, so each member's candidate is a different object and more
+# than one can reach the threshold. Which of them an epoch selects is decided
+# deterministically at connect time, so the epoch's certificate has to be one of
+# these -- but not necessarily any particular node's.
+NOTE_CERT_HASHES=""
+NOTE_CERT_LINE=""
+for ((n=0; n<NUM_NODES; n++)); do
+    while read -r L; do
+        [ -n "$L" ] || continue
+        [ -n "$NOTE_CERT_LINE" ] || NOTE_CERT_LINE="$L"
+        H="$(echo "$L" | sed -n 's/.*note certificate \([0-9a-f]\{64\}\).*/\1/p')"
+        [ -n "$H" ] && NOTE_CERT_HASHES="$NOTE_CERT_HASHES $H"
+    done < <(grep -F "FinalityNoteTally: epoch $TALLY_EPOCH note certificate " \
+                  "$(node_log "$n")" 2>/dev/null)
+done
+NOTE_CERT_HASHES="$(echo "$NOTE_CERT_HASHES" | tr ' ' '\n' | grep . | sort -u | tr '\n' ' ')"
+if [ -n "$NOTE_CERT_HASHES" ]; then
+    success "the committee assembled $(echo "$NOTE_CERT_HASHES" | wc -w | tr -d ' ') note certificate(s) for epoch $TALLY_EPOCH"
+    log "  $NOTE_CERT_LINE"
+else
+    fail "no M-of-N note certificate was assembled for epoch $TALLY_EPOCH"
+fi
+
+# A certificate envelope in a block of the tally epoch's own span. The
+# deterministic tier reads the epoch's OWN blocks, so a certificate carried a
+# whole epoch later is block-valid and tier-irrelevant.
+CERT_CARRY_HEIGHT=""
+for ((h=TALLY_WINDOW_CLOSE; h<=TALLY_CARRY_HEIGHT + 20; h++)); do
+    if [ -n "$(tagged_scripts 0 "$h" "$TALLY_CERT_TAG_HEX")" ]; then
+        CERT_CARRY_HEIGHT="$h"
+        break
+    fi
+done
+if [ -n "$CERT_CARRY_HEIGHT" ]; then
+    success "a tally certificate envelope is carried at height $CERT_CARRY_HEIGHT, inside epoch $TALLY_EPOCH"
+else
+    fail "no tally certificate envelope was carried inside epoch $TALLY_EPOCH [$TALLY_WINDOW_CLOSE, $((TALLY_CARRY_HEIGHT + 20))]"
+fi
+
+CERT_REJECT=""
+for ((n=0; n<NUM_NODES; n++)); do
+    R="$(grep -F "excluding finality tally certificate" "$(node_log "$n")" 2>/dev/null | tail -1)"
+    [ -n "$R" ] && CERT_REJECT="node$n: $R"
+done
+[ -z "$CERT_REJECT" ] && success "no node excluded a tally certificate from a block it built" \
+                      || warn "a node excluded a certificate at some point: $CERT_REJECT"
+
+# ============================================================
+header "14. The epoch's tier comes from the note-weighted certificate"
+# ============================================================
+
+TALLY_EI="$(rpc 0 getepochinfo "$TALLY_EPOCH" 2>/dev/null)"
+TALLY_CERT="$(jget "$TALLY_EI" finality_certificate)"
+TALLY_TIER="$(jget "$TALLY_EI" finality_tier)"
+TALLY_ROOT="$(jget "$TALLY_EI" vote_set_root)"
+TALLY_DIGEST="$(jget "$TALLY_EI" epoch_state_digest)"
+
+if [ -n "$TALLY_CERT" ] && ! is_zero_hex "$TALLY_CERT" && \
+   echo " $NOTE_CERT_HASHES " | grep -qF " $TALLY_CERT "; then
+    success "epoch $TALLY_EPOCH selected the note certificate ${TALLY_CERT:0:16} (tier=$TALLY_TIER)"
+elif [ -n "$TALLY_CERT" ] && ! is_zero_hex "$TALLY_CERT"; then
+    fail "epoch $TALLY_EPOCH selected certificate ${TALLY_CERT:0:16}, which is not one of the assembled note certificates:$NOTE_CERT_HASHES"
+else
+    fail "epoch $TALLY_EPOCH selected no certificate at all (finality_certificate=$TALLY_CERT)"
+fi
+
+if [ "$TALLY_TIER" = "hard" ]; then
+    success "epoch $TALLY_EPOCH is tier=$TALLY_TIER under the note-weighted certificate"
+else
+    fail "epoch $TALLY_EPOCH is tier=$TALLY_TIER"
+fi
+
+# The counted note votes are committed in hashVoteSetRoot, so fleet-wide equality
+# of the root and the whole epoch-state digest is the determinism claim: a
+# certificate is a function of the connected chain plus its own bytes, and the
+# node-local partial and complaint gossip that produced it never enters one.
+EPOCH_AGREE=1
+for ((n=1; n<NUM_NODES; n++)); do
+    PEER_EI="$(rpc "$n" getepochinfo "$TALLY_EPOCH" 2>/dev/null)"
+    [ "$(jget "$PEER_EI" finality_certificate)" = "$TALLY_CERT" ] || EPOCH_AGREE=0
+    [ "$(jget "$PEER_EI" vote_set_root)" = "$TALLY_ROOT" ] || EPOCH_AGREE=0
+    [ "$(jget "$PEER_EI" epoch_state_digest)" = "$TALLY_DIGEST" ] || EPOCH_AGREE=0
+    [ "$(jget "$PEER_EI" finality_tier)" = "$TALLY_TIER" ] || EPOCH_AGREE=0
+done
+if [ "$EPOCH_AGREE" -eq 1 ]; then
+    success "every node agrees on epoch $TALLY_EPOCH's certificate, vote-set root and state digest"
+else
+    fail "nodes disagree on epoch $TALLY_EPOCH's epoch state -- a note certificate has split the chain"
+fi
+
+# ============================================================
+header "15. The fleet reports no errors"
 # ============================================================
 
 ERR_OK=1

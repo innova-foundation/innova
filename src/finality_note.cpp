@@ -1703,6 +1703,36 @@ bool GetNoteTallyTierCoefficients(int nTier, int64_t& nWinningCoeff, int64_t& nA
 
 namespace
 {
+const char* NOTE_TALLY_STATEMENT_SHIFT_DOMAIN =
+    "Innova/IV5/NoteTally/StatementShift/v1";
+
+/** A public multiple of G every statement point is shifted by.
+ *
+ *  A statement whose opening is (0, 0) is the identity point, and there is no range proof
+ *  over it. That is not a corner case: it is exactly the shape an honest epoch takes when
+ *  every covered note vote names the winner, which makes the active and winning aggregates
+ *  equal and the winning cap's value AND blind both zero. Shifting by a scalar both sides
+ *  derive from the same public inputs leaves the H coefficient -- the value the range proof
+ *  is about -- untouched, and makes a zero blind unreachable except by grinding a fixed
+ *  point of the hash. */
+uint256 TierStatementShift(int nTier,
+                           const PrivacyVNextDigest& activePoint,
+                           const PrivacyVNextDigest& winningPoint,
+                           int64_t nTransparentActive,
+                           int64_t nTransparentWinning,
+                           int nStatement)
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string(NOTE_TALLY_STATEMENT_SHIFT_DOMAIN);
+    ss << nTier;
+    ss << std::vector<unsigned char>(activePoint.begin(), activePoint.end());
+    ss << std::vector<unsigned char>(winningPoint.begin(), winningPoint.end());
+    ss << nTransparentActive;
+    ss << nTransparentWinning;
+    ss << nStatement;
+    return Ed25519ScalarReduce(ss.GetHash());
+}
+
 // Derive the three statement points from the aggregates, exactly the same way on both
 // sides. The prover uses them only to self-check; the validator uses them as the points
 // it verifies against, and never accepts one from the wire.
@@ -1735,7 +1765,7 @@ bool DeriveTierStatementPoints(int nTier,
 
     // a_w*D_win - a_a*D_act + (a_w*T_win - a_a*T_act)*H. The H coefficient is the tier
     // slack, which an honest tally can range-prove and an overclaimed one cannot.
-    std::vector<PrivacyVNextCombineTerm> vTier(3);
+    std::vector<PrivacyVNextCombineTerm> vTier(4);
     vTier[0].nSource = PRIVACY_VNEXT_TERM_SUPPLIED;
     vTier[0].scalar = Ed25519ScalarToDigest(Ed25519ScalarFromInt64(nWinningCoeff));
     vTier[0].point = winningPoint;
@@ -1750,7 +1780,7 @@ bool DeriveTierStatementPoints(int nTier,
                          Ed25519ScalarFromInt64(nTransparentActive))));
 
     // D_act - D_win keeps the winning sum under the active sum.
-    std::vector<PrivacyVNextCombineTerm> vWinningCap(2);
+    std::vector<PrivacyVNextCombineTerm> vWinningCap(3);
     vWinningCap[0].nSource = PRIVACY_VNEXT_TERM_SUPPLIED;
     vWinningCap[0].scalar = Ed25519ScalarToDigest(one);
     vWinningCap[0].point = activePoint;
@@ -1760,13 +1790,26 @@ bool DeriveTierStatementPoints(int nTier,
 
     // (MAX_MONEY - T_act)*H - D_act keeps the summed weights inside the int64 the tier
     // arithmetic downstream is computed in.
-    std::vector<PrivacyVNextCombineTerm> vActiveCap(2);
+    std::vector<PrivacyVNextCombineTerm> vActiveCap(3);
     vActiveCap[0].nSource = PRIVACY_VNEXT_TERM_MONERO_H;
     vActiveCap[0].scalar =
         Ed25519ScalarToDigest(Ed25519ScalarFromInt64(MAX_MONEY - nTransparentActive));
     vActiveCap[1].nSource = PRIVACY_VNEXT_TERM_SUPPLIED;
     vActiveCap[1].scalar = Ed25519ScalarToDigest(negOne);
     vActiveCap[1].point = activePoint;
+
+    // The public G shift, one per statement. See TierStatementShift: without it the
+    // winning cap is the identity point whenever every covered note vote names the
+    // winner, and no range proof exists over the identity.
+    std::vector<PrivacyVNextCombineTerm>* vAll[3] = { &vTier, &vWinningCap, &vActiveCap };
+    for (int i = 0; i < 3; i++)
+    {
+        PrivacyVNextCombineTerm& shift = vAll[i]->back();
+        shift.nSource = PRIVACY_VNEXT_TERM_ED25519_G;
+        shift.scalar = Ed25519ScalarToDigest(
+            TierStatementShift(nTier, activePoint, winningPoint, nTransparentActive,
+                               nTransparentWinning, i));
+    }
 
     std::string error;
     if (!CombinePrivacyVNextPoints(vTier, tierOut, error) ||
@@ -1818,12 +1861,34 @@ bool BuildNoteTallyTierProofs(int nTier,
         return false;
     }
 
-    const uint256 tierBlind = Ed25519ScalarSub(
-        Ed25519ScalarMul(Ed25519ScalarFromInt64(nWinningCoeff), privateWinningBlind),
-        Ed25519ScalarMul(Ed25519ScalarFromInt64(nActiveCoeff), privateActiveBlind));
-    const uint256 winningCapBlind =
-        Ed25519ScalarSub(privateActiveBlind, privateWinningBlind);
-    const uint256 activeCapBlind = Ed25519ScalarNeg(privateActiveBlind);
+    // Derive the same points the validator will, from the openings this builder holds. A
+    // proof over a point the validator does not reach is unusable on the network, so the
+    // divergence has to surface here rather than as a rejected certificate.
+    PrivacyVNextDigest activePoint = ZeroDigest();
+    PrivacyVNextDigest winningPoint = ZeroDigest();
+    if (!CommitScaled(Ed25519ScalarFromInt64(nPrivateActive), privateActiveBlind,
+                      activePoint, pstrError) ||
+        !CommitScaled(Ed25519ScalarFromInt64(nPrivateWinning), privateWinningBlind,
+                      winningPoint, pstrError))
+        return false;
+
+    // Each statement's blind carries the same public G shift the validator's derived
+    // point does, so the value proved is unchanged and a (0, 0) opening -- the identity,
+    // which nothing can range-prove -- is unreachable.
+    const uint256 tierBlind = Ed25519ScalarAdd(
+        Ed25519ScalarSub(
+            Ed25519ScalarMul(Ed25519ScalarFromInt64(nWinningCoeff), privateWinningBlind),
+            Ed25519ScalarMul(Ed25519ScalarFromInt64(nActiveCoeff), privateActiveBlind)),
+        TierStatementShift(nTier, activePoint, winningPoint, nTransparentActive,
+                           nTransparentWinning, 0));
+    const uint256 winningCapBlind = Ed25519ScalarAdd(
+        Ed25519ScalarSub(privateActiveBlind, privateWinningBlind),
+        TierStatementShift(nTier, activePoint, winningPoint, nTransparentActive,
+                           nTransparentWinning, 1));
+    const uint256 activeCapBlind = Ed25519ScalarAdd(
+        Ed25519ScalarNeg(privateActiveBlind),
+        TierStatementShift(nTier, activePoint, winningPoint, nTransparentActive,
+                           nTransparentWinning, 2));
 
     struct Statement
     {
@@ -1842,16 +1907,6 @@ bool BuildNoteTallyTierProofs(int nTier,
     vStatements[2].blind = activeCapBlind;
     vStatements[2].pvchOut = &proofsOut.vchActiveCap;
 
-    // Derive the same points the validator will, from the openings this builder holds. A
-    // proof over a point the validator does not reach is unusable on the network, so the
-    // divergence has to surface here rather than as a rejected certificate.
-    PrivacyVNextDigest activePoint = ZeroDigest();
-    PrivacyVNextDigest winningPoint = ZeroDigest();
-    if (!CommitScaled(Ed25519ScalarFromInt64(nPrivateActive), privateActiveBlind,
-                      activePoint, pstrError) ||
-        !CommitScaled(Ed25519ScalarFromInt64(nPrivateWinning), privateWinningBlind,
-                      winningPoint, pstrError))
-        return false;
     PrivacyVNextDigest vExpected[3];
     if (!DeriveTierStatementPoints(nTier, activePoint, winningPoint, nTransparentActive,
                                    nTransparentWinning, vExpected[0], vExpected[1],
@@ -1996,8 +2051,13 @@ bool OpenNoteTallyAggregate(const std::vector<CNoteTallyPlainShare>& vPartials,
                             uint256& weightBlindOut,
                             int64_t& nRewardOut,
                             uint256& rewardBlindOut,
+                            bool* pfHaveReward,
                             std::string* pstrError)
 {
+    nRewardOut = 0;
+    if (pfHaveReward)
+        *pfHaveReward = false;
+
     uint256 weight, reward;
     if (!RecoverNoteTallySecrets(vPartials, nThreshold, weight, weightBlindOut, reward,
                                  rewardBlindOut))
@@ -2005,11 +2065,25 @@ bool OpenNoteTallyAggregate(const std::vector<CNoteTallyPlainShare>& vPartials,
         Fail(pstrError, "note tally aggregate could not be interpolated");
         return false;
     }
-    if (!Ed25519ScalarToMoney(weight, nWeightOut) ||
-        !Ed25519ScalarToMoney(reward, nRewardOut))
+    if (!Ed25519ScalarToMoney(weight, nWeightOut))
     {
         Fail(pstrError, "note tally aggregate opened outside the money range");
         return false;
+    }
+    // The reward pair has no VSS coefficients behind it, so any voter can share a reward
+    // value that passes every check and still interpolates out of range. Failing here
+    // would hand that voter an unattributable jam of the whole epoch's private weight,
+    // and nothing in a v4 certificate reads the reward, so it is reported as absent
+    // instead. Make this strict again once the reward shares are authenticated.
+    if (Ed25519ScalarToMoney(reward, nRewardOut))
+    {
+        if (pfHaveReward)
+            *pfHaveReward = true;
+    }
+    else
+    {
+        nRewardOut = 0;
+        rewardBlindOut = uint256(0);
     }
 
     // The opening is only usable if it opens the point the validator recomputes. A share
@@ -2021,6 +2095,415 @@ bool OpenNoteTallyAggregate(const std::vector<CNoteTallyPlainShare>& vPartials,
     if (derived != expectedPoint)
     {
         Fail(pstrError, "note tally aggregate does not open the recomputed commitment");
+        return false;
+    }
+    return true;
+}
+
+// --- The tally partial ------------------------------------------------------------
+//
+// The envelope encoding is the note share's, so one parser serves both; the AAD domain
+// below is what keeps a share envelope from ever opening as a partial envelope.
+
+static const char* NOTE_TALLY_PARTIAL_AAD_DOMAIN = "Innova/IV5/NoteTally/PartialAAD/v1";
+static const char* NOTE_TALLY_PARTIAL_CONTENT_DOMAIN =
+    "Innova/IV5/NoteTally/PartialContent/v1";
+static const char* NOTE_TALLY_PARTIAL_SLOT_DOMAIN = "Innova/IV5/NoteTally/PartialSlot/v1";
+
+template <typename Stream>
+static void AppendNoteTallyPartialContent(Stream& ss,
+                                          const CNoteTallyAggregatePartial& partial)
+{
+    ss << partial.nVersion;
+    ss << partial.nEpoch;
+    ss << partial.committeeSetHash;
+    ss << partial.hashWinner;
+    ss << partial.nSourceIndex;
+    ss << partial.vAcceptedTags;
+    ss << partial.vComplaints;
+    ss << partial.vEncryptedRecipientPartials;
+}
+
+static std::vector<unsigned char> BuildNoteTallyPartialAAD(
+    const CNoteTallyAggregatePartial& partial,
+    int nRecipientIndex,
+    const CPubKey& pubEphemeral)
+{
+    // Deliberately not over vEncryptedRecipientPartials: the envelopes are what this AAD
+    // authenticates, and they do not exist yet while the first of them is being sealed.
+    CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+    ss << std::string(NOTE_TALLY_PARTIAL_AAD_DOMAIN);
+    ss << partial.nVersion;
+    ss << partial.nEpoch;
+    ss << partial.committeeSetHash;
+    ss << partial.hashWinner;
+    ss << partial.nSourceIndex;
+    ss << partial.vAcceptedTags;
+    ss << partial.vComplaints;
+    ss << nRecipientIndex;
+    ss << std::vector<unsigned char>(pubEphemeral.begin(), pubEphemeral.end());
+    return std::vector<unsigned char>(ss.begin(), ss.end());
+}
+
+uint256 CNoteTallyAggregatePartial::GetContentDigest() const
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string(NOTE_TALLY_PARTIAL_CONTENT_DOMAIN);
+    AppendNoteTallyPartialContent(ss, *this);
+    return ss.GetHash();
+}
+
+uint256 CNoteTallyAggregatePartial::GetHash() const
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string(NOTE_TALLY_PARTIAL_CONTENT_DOMAIN);
+    AppendNoteTallyPartialContent(ss, *this);
+    ss << vchSourceSig;
+    return ss.GetHash();
+}
+
+uint256 CNoteTallyAggregatePartial::GetSourceSlot() const
+{
+    CHashWriter ss(SER_GETHASH, 0);
+    ss << std::string(NOTE_TALLY_PARTIAL_SLOT_DOMAIN);
+    ss << nVersion;
+    ss << nEpoch;
+    ss << committeeSetHash;
+    ss << hashWinner;
+    ss << nSourceIndex;
+    ss << vAcceptedTags;
+    return ss.GetHash();
+}
+
+bool CNoteTallyAggregatePartial::IsValidBasic(std::string* pstrError) const
+{
+    if (nVersion != FINALITY_NOTE_TALLY_PARTIAL_VERSION)
+    {
+        Fail(pstrError, "unsupported note tally partial version");
+        return false;
+    }
+    if (nEpoch < 0 || committeeSetHash == 0 || hashWinner == 0)
+    {
+        Fail(pstrError, "note tally partial names no epoch, committee or winner");
+        return false;
+    }
+    if (nSourceIndex < 0 ||
+        nSourceIndex >= (int)FINALITY_NOTE_MAX_VSS_COEFFICIENTS)
+    {
+        Fail(pstrError, "note tally partial source index out of range");
+        return false;
+    }
+    if (vAcceptedTags.size() > FINALITY_NOTE_MAX_TALLY_TAGS ||
+        vComplaints.size() > FINALITY_NOTE_MAX_TALLY_TAGS)
+    {
+        Fail(pstrError, "note tally partial exceeds its epoch vote bound");
+        return false;
+    }
+    if (vAcceptedTags.empty() && vComplaints.empty())
+    {
+        Fail(pstrError, "note tally partial carries neither a covered set nor evidence");
+        return false;
+    }
+    // Strictly ascending: the covered set is part of the slot a member signs once, so two
+    // orderings of one set must not be two signable contents.
+    for (size_t i = 0; i < vAcceptedTags.size(); i++)
+    {
+        if (vAcceptedTags[i] == 0)
+        {
+            Fail(pstrError, "note tally partial covers a zero tag");
+            return false;
+        }
+        if (i > 0 && !(vAcceptedTags[i - 1] < vAcceptedTags[i]))
+        {
+            Fail(pstrError, "note tally partial tags are not strictly ascending");
+            return false;
+        }
+    }
+    std::set<uint256> setAccepted(vAcceptedTags.begin(), vAcceptedTags.end());
+    std::set<uint256> setComplained;
+    for (size_t i = 0; i < vComplaints.size(); i++)
+    {
+        if (!vComplaints[i].IsValidBasic(pstrError))
+            return false;
+        if (vComplaints[i].nEpoch != nEpoch ||
+            vComplaints[i].nRecipientIndex != nSourceIndex)
+        {
+            Fail(pstrError, "note tally partial carries a complaint it did not file");
+            return false;
+        }
+        if (!setComplained.insert(vComplaints[i].voteTag).second)
+        {
+            Fail(pstrError, "note tally partial complains of one vote twice");
+            return false;
+        }
+        if (setAccepted.count(vComplaints[i].voteTag))
+        {
+            Fail(pstrError, "note tally partial both covers and complains of a vote");
+            return false;
+        }
+    }
+    if (vEncryptedRecipientPartials.empty() ||
+        vEncryptedRecipientPartials.size() > FINALITY_NOTE_MAX_VSS_COEFFICIENTS ||
+        nSourceIndex >= (int)vEncryptedRecipientPartials.size())
+    {
+        Fail(pstrError, "note tally partial envelope count does not fit its committee");
+        return false;
+    }
+    for (size_t i = 0; i < vEncryptedRecipientPartials.size(); i++)
+    {
+        if (vEncryptedRecipientPartials[i].empty() ||
+            vEncryptedRecipientPartials[i].size() > FINALITY_NOTE_MAX_ENVELOPE_BYTES)
+        {
+            Fail(pstrError, "note tally partial envelope has an unusable length");
+            return false;
+        }
+    }
+    if (vchSourceSig.empty() || vchSourceSig.size() > 80)
+    {
+        Fail(pstrError, "note tally partial has no usable source signature");
+        return false;
+    }
+    return true;
+}
+
+bool BuildEncryptedNoteTallyAggregatePartial(CNoteTallyAggregatePartial& partial,
+                                             const CNoteTallyCommitteePass& pass,
+                                             const CFinalityTallyConfig& config,
+                                             const CKey& keySource,
+                                             std::string* pstrError)
+{
+    if (!config.fCommitteeValid || config.nThresholdM <= 0 ||
+        config.nThresholdM > (int)config.vCommitteePubKeys.size() ||
+        config.vCommitteePubKeys.size() > FINALITY_NOTE_MAX_VSS_COEFFICIENTS ||
+        partial.committeeSetHash != config.committeeSetHash ||
+        partial.nEpoch < 0 || partial.hashWinner == 0 ||
+        partial.nSourceIndex < 0 ||
+        partial.nSourceIndex >= (int)config.vCommitteePubKeys.size() ||
+        !keySource.IsValid())
+    {
+        Fail(pstrError, "note tally partial has no usable committee position");
+        return false;
+    }
+
+    const CPubKey pubSource = keySource.GetPubKey();
+    if (!pubSource.IsValid() || !pubSource.IsCompressed() ||
+        !(pubSource == config.vCommitteePubKeys[partial.nSourceIndex]))
+    {
+        Fail(pstrError, "note tally partial source key is not the committee member it names");
+        return false;
+    }
+
+    // An evaluation sealed under one index but computed at another x interpolates to a
+    // different polynomial, so the pass has to be the one this member ran at this seat.
+    if ((pass.fHaveActive &&
+         (pass.aggregateActive.nRecipientIndex != partial.nSourceIndex ||
+          pass.aggregateActive.nX != partial.nSourceIndex + 1)) ||
+        (pass.fHaveWinning &&
+         (pass.aggregateWinning.nRecipientIndex != partial.nSourceIndex ||
+          pass.aggregateWinning.nX != partial.nSourceIndex + 1)))
+    {
+        Fail(pstrError, "note tally partial was handed a pass from another committee seat");
+        return false;
+    }
+
+    partial.nVersion = FINALITY_NOTE_TALLY_PARTIAL_VERSION;
+    partial.vAcceptedTags = pass.vAcceptedTags;
+    std::sort(partial.vAcceptedTags.begin(), partial.vAcceptedTags.end());
+    partial.vComplaints = pass.vComplaints;
+    partial.vEncryptedRecipientPartials.clear();
+    partial.vchSourceSig.clear();
+
+    for (size_t i = 0; i < config.vCommitteePubKeys.size(); i++)
+    {
+        const int nRecipientIndex = (int)i;
+        CKey ephemeralKey;
+        ephemeralKey.MakeNewKey(true);
+        const CPubKey ephemeralPubKey = ephemeralKey.GetPubKey();
+        if (!ephemeralKey.IsValid() || !ephemeralPubKey.IsValid() ||
+            !ephemeralPubKey.IsCompressed())
+        {
+            Fail(pstrError, "note tally partial could not draw an ephemeral key");
+            return false;
+        }
+
+        unsigned char sharedBytes[33];
+        std::vector<unsigned char> vchKey;
+        if (!ComputeSharedPoint(ephemeralKey, config.vCommitteePubKeys[i], sharedBytes) ||
+            !DeriveNoteShareKeyFromSharedPoint(sharedBytes, config.vCommitteePubKeys[i],
+                                               ephemeralPubKey, nRecipientIndex,
+                                               config.committeeSetHash, vchKey))
+        {
+            OPENSSL_cleanse(sharedBytes, sizeof(sharedBytes));
+            Fail(pstrError, "note tally partial could not derive its envelope key");
+            return false;
+        }
+        OPENSSL_cleanse(sharedBytes, sizeof(sharedBytes));
+
+        CDataStream ssPlain(SER_NETWORK, PROTOCOL_VERSION);
+        ssPlain << (uint32_t)FINALITY_NOTE_TALLY_PARTIAL_VERSION;
+        ssPlain << partial.nSourceIndex;
+        ssPlain << (int)(partial.nSourceIndex + 1);
+        ssPlain << (unsigned char)(pass.fHaveActive ? 1 : 0);
+        ssPlain << pass.aggregateActive.evalWeight;
+        ssPlain << pass.aggregateActive.evalWeightBlind;
+        ssPlain << pass.aggregateActive.evalReward;
+        ssPlain << pass.aggregateActive.evalRewardBlind;
+        ssPlain << (unsigned char)(pass.fHaveWinning ? 1 : 0);
+        ssPlain << pass.aggregateWinning.evalWeight;
+        ssPlain << pass.aggregateWinning.evalWeightBlind;
+        ssPlain << pass.aggregateWinning.evalReward;
+        ssPlain << pass.aggregateWinning.evalRewardBlind;
+
+        const std::vector<unsigned char> vchAAD =
+            BuildNoteTallyPartialAAD(partial, nRecipientIndex, ephemeralPubKey);
+        std::vector<unsigned char> vchCiphertext;
+        const bool fEncrypted = ChaCha20Poly1305Encrypt(
+            vchKey, std::vector<unsigned char>(ssPlain.begin(), ssPlain.end()),
+            vchAAD, vchCiphertext);
+        OPENSSL_cleanse(&vchKey[0], vchKey.size());
+        if (!fEncrypted)
+        {
+            Fail(pstrError, "note tally partial envelope could not be sealed");
+            return false;
+        }
+
+        CDataStream ssOut(SER_NETWORK, PROTOCOL_VERSION);
+        ssOut << (uint32_t)FINALITY_NOTE_SHARE_VERSION;
+        ssOut << nRecipientIndex;
+        ssOut << std::vector<unsigned char>(ephemeralPubKey.begin(), ephemeralPubKey.end());
+        ssOut << vchCiphertext;
+        partial.vEncryptedRecipientPartials.push_back(
+            std::vector<unsigned char>(ssOut.begin(), ssOut.end()));
+    }
+
+    if (!keySource.Sign(partial.GetContentDigest(), partial.vchSourceSig) ||
+        partial.vchSourceSig.empty())
+    {
+        Fail(pstrError, "note tally partial could not be signed by its source");
+        return false;
+    }
+    return partial.IsValidBasic(pstrError);
+}
+
+bool DecryptNoteTallyAggregatePartialForRecipient(const CNoteTallyAggregatePartial& partial,
+                                                  const CFinalityTallyConfig& config,
+                                                  const CKey& keyRecipient,
+                                                  int nRecipientIndex,
+                                                  CNoteTallyPlainShare& activeOut,
+                                                  bool& fHaveActiveOut,
+                                                  CNoteTallyPlainShare& winningOut,
+                                                  bool& fHaveWinningOut)
+{
+    activeOut = CNoteTallyPlainShare();
+    winningOut = CNoteTallyPlainShare();
+    fHaveActiveOut = false;
+    fHaveWinningOut = false;
+
+    if (nRecipientIndex < 0 ||
+        nRecipientIndex >= (int)config.vCommitteePubKeys.size() ||
+        nRecipientIndex >= (int)partial.vEncryptedRecipientPartials.size() ||
+        partial.nVersion != FINALITY_NOTE_TALLY_PARTIAL_VERSION ||
+        partial.committeeSetHash != config.committeeSetHash ||
+        partial.nSourceIndex < 0 ||
+        partial.nSourceIndex >= (int)config.vCommitteePubKeys.size() ||
+        !keyRecipient.IsValid())
+        return false;
+
+    const CPubKey pubRecipient = keyRecipient.GetPubKey();
+    if (!pubRecipient.IsValid() || !pubRecipient.IsCompressed() ||
+        !(pubRecipient == config.vCommitteePubKeys[nRecipientIndex]))
+        return false;
+
+    int nEnvelopeRecipient = -1;
+    CPubKey pubEphemeral;
+    std::vector<unsigned char> vchCiphertext;
+    if (!ParseNoteShareEnvelope(partial.vEncryptedRecipientPartials[nRecipientIndex],
+                                nEnvelopeRecipient, pubEphemeral, vchCiphertext) ||
+        nEnvelopeRecipient != nRecipientIndex)
+        return false;
+
+    unsigned char sharedBytes[33];
+    std::vector<unsigned char> vchKey;
+    if (!ComputeSharedPoint(keyRecipient, pubEphemeral, sharedBytes) ||
+        !DeriveNoteShareKeyFromSharedPoint(sharedBytes, pubRecipient, pubEphemeral,
+                                           nRecipientIndex, config.committeeSetHash,
+                                           vchKey))
+    {
+        OPENSSL_cleanse(sharedBytes, sizeof(sharedBytes));
+        return false;
+    }
+    OPENSSL_cleanse(sharedBytes, sizeof(sharedBytes));
+
+    const std::vector<unsigned char> vchAAD =
+        BuildNoteTallyPartialAAD(partial, nRecipientIndex, pubEphemeral);
+    std::vector<unsigned char> vchPlain;
+    const bool fDecrypted =
+        ChaCha20Poly1305Decrypt(vchCiphertext, vchKey, vchAAD, vchPlain);
+    OPENSSL_cleanse(&vchKey[0], vchKey.size());
+    if (!fDecrypted)
+        return false;
+
+    try
+    {
+        CDataStream ss(vchPlain, SER_NETWORK, PROTOCOL_VERSION);
+        uint32_t nPlainVersion = 0;
+        int nSourceIndex = -1;
+        int nX = 0;
+        unsigned char fActive = 0;
+        unsigned char fWinning = 0;
+        ss >> nPlainVersion;
+        ss >> nSourceIndex;
+        ss >> nX;
+        ss >> fActive;
+        ss >> activeOut.evalWeight;
+        ss >> activeOut.evalWeightBlind;
+        ss >> activeOut.evalReward;
+        ss >> activeOut.evalRewardBlind;
+        ss >> fWinning;
+        ss >> winningOut.evalWeight;
+        ss >> winningOut.evalWeightBlind;
+        ss >> winningOut.evalReward;
+        ss >> winningOut.evalRewardBlind;
+        if (!ss.empty() ||
+            nPlainVersion != FINALITY_NOTE_TALLY_PARTIAL_VERSION ||
+            nSourceIndex != partial.nSourceIndex ||
+            nX != partial.nSourceIndex + 1)
+            return false;
+        activeOut.nRecipientIndex = nSourceIndex;
+        activeOut.nX = nX;
+        winningOut.nRecipientIndex = nSourceIndex;
+        winningOut.nX = nX;
+        fHaveActiveOut = (fActive != 0);
+        fHaveWinningOut = (fWinning != 0);
+    }
+    catch (const std::exception&)
+    {
+        return false;
+    }
+    return true;
+}
+
+bool CheckNoteTallyAggregatePartialSignature(const CNoteTallyAggregatePartial& partial,
+                                             const CFinalityTallyConfig& config,
+                                             std::string* pstrError)
+{
+    if (partial.committeeSetHash != config.committeeSetHash ||
+        config.vCommitteePubKeys.empty())
+    {
+        Fail(pstrError, "note tally partial names a committee this node cannot check");
+        return false;
+    }
+    if (partial.nSourceIndex < 0 ||
+        partial.nSourceIndex >= (int)config.vCommitteePubKeys.size())
+    {
+        Fail(pstrError, "note tally partial source index out of committee range");
+        return false;
+    }
+    const CPubKey& pubSource = config.vCommitteePubKeys[partial.nSourceIndex];
+    if (!pubSource.IsValid() ||
+        !pubSource.Verify(partial.GetContentDigest(), partial.vchSourceSig))
+    {
+        Fail(pstrError, "note tally partial source signature invalid");
         return false;
     }
     return true;

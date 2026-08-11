@@ -2385,4 +2385,857 @@ BOOST_AUTO_TEST_CASE(note_weight_is_not_legacy_private_weight)
     BOOST_CHECK(!crossed.ToLogical(crossedOut));
 }
 
+namespace
+{
+
+// One voter's whole object: the share the committee sums and the vote that carries it,
+// with a C~ that really opens to the amount below.
+struct TalliedVote
+{
+    int64_t nAmount;
+    uint256 mask;
+    PrivacyVNextDigest cTilde;
+    CNoteVoteShare share;
+    CNoteFinalityVote vote;
+};
+
+TalliedVote MakeTalliedVote(const CFinalityTallyConfig& config, int nEpoch,
+                            const uint256& hashBlock, int64_t nAmount, int64_t nReward,
+                            unsigned char nTagSeed)
+{
+    TalliedVote out;
+    out.nAmount = nAmount;
+    out.mask = RandomScalar();
+    out.cTilde = CommitPoint(Ed25519ScalarFromInt64(nAmount), out.mask);
+    out.share = MakeShare(config, nEpoch, nAmount, out.mask, nReward, RandomScalar());
+    out.vote = MakeVote(out.share, hashBlock, out.cTilde, nTagSeed);
+    return out;
+}
+
+CNoteTallyAggregatePartial MakePartial(const CNoteTallyCommitteePass& pass,
+                                       const CFinalityTallyConfig& config,
+                                       const CKey& keyMember, int nMemberIndex,
+                                       int nEpoch, const uint256& hashWinner)
+{
+    CNoteTallyAggregatePartial partial;
+    partial.nEpoch = nEpoch;
+    partial.committeeSetHash = config.committeeSetHash;
+    partial.hashWinner = hashWinner;
+    partial.nSourceIndex = nMemberIndex;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(BuildEncryptedNoteTallyAggregatePartial(partial, pass, config,
+                                                                  keyMember, &strError),
+                          strError);
+    return partial;
+}
+
+// The producer's own selection step, reproduced here so the tests exercise what the
+// automation does rather than a restatement of it: take only the partials that agree on
+// the covered set, open both aggregates against the points recomputed from the votes.
+bool OpenCoveredAggregates(const std::vector<CNoteTallyAggregatePartial>& vPartials,
+                           const std::vector<const CNoteFinalityVote*>& vCovered,
+                           const std::vector<uint256>& vCoveredTags,
+                           const uint256& hashWinner,
+                           const CFinalityTallyConfig& config,
+                           const CKey& keyLocal, int nLocalIndex,
+                           int64_t& nActiveOut, uint256& activeBlindOut,
+                           int64_t& nWinningOut, uint256& winningBlindOut,
+                           bool& fHaveRewardOut, std::string& strError)
+{
+    bool fWinnerHasVotes = false;
+    for (size_t i = 0; i < vCovered.size(); i++)
+        if (vCovered[i]->hashBlock == hashWinner)
+            fWinnerHasVotes = true;
+
+    std::vector<CNoteTallyPlainShare> vActive;
+    std::vector<CNoteTallyPlainShare> vWinning;
+    std::set<int> setX;
+    for (size_t i = 0; i < vPartials.size(); i++)
+    {
+        if (vPartials[i].vAcceptedTags != vCoveredTags)
+            continue;
+        CNoteTallyPlainShare active, winning;
+        bool fHaveActive = false, fHaveWinning = false;
+        if (!DecryptNoteTallyAggregatePartialForRecipient(vPartials[i], config, keyLocal,
+                                                          nLocalIndex, active, fHaveActive,
+                                                          winning, fHaveWinning))
+            continue;
+        if (!fHaveActive || fHaveWinning != fWinnerHasVotes)
+            continue;
+        if (active.nX <= 0 || !setX.insert(active.nX).second)
+            continue;
+        vActive.push_back(active);
+        if (fHaveWinning)
+            vWinning.push_back(winning);
+    }
+    if ((int)vActive.size() < config.nThresholdM)
+    {
+        strError = "not enough agreeing partials";
+        return false;
+    }
+
+    PrivacyVNextDigest activePoint = ZeroDigest();
+    PrivacyVNextDigest winningPoint = ZeroDigest();
+    if (!DeriveNoteTallyAggregates(vCovered, hashWinner, activePoint, winningPoint,
+                                   &strError))
+        return false;
+
+    int64_t nReward = 0;
+    uint256 rewardBlind;
+    if (!OpenNoteTallyAggregate(vActive, config.nThresholdM, activePoint, nActiveOut,
+                                activeBlindOut, nReward, rewardBlind, &fHaveRewardOut,
+                                &strError))
+        return false;
+
+    nWinningOut = 0;
+    winningBlindOut = uint256(0);
+    if (fWinnerHasVotes)
+    {
+        int64_t nWinReward = 0;
+        uint256 winRewardBlind;
+        bool fHaveWinReward = false;
+        if (!OpenNoteTallyAggregate(vWinning, config.nThresholdM, winningPoint, nWinningOut,
+                                    winningBlindOut, nWinReward, winRewardBlind,
+                                    &fHaveWinReward, &strError))
+            return false;
+    }
+    return true;
+}
+
+std::vector<uint256> SortedTags(const std::vector<uint256>& vTags)
+{
+    std::vector<uint256> vOut = vTags;
+    std::sort(vOut.begin(), vOut.end());
+    return vOut;
+}
+
+} // namespace
+
+// Increment B's core loop: every member sums its own evaluation of the same covered set,
+// seals it to the others, and M of those partials interpolate to an opening of the point
+// the validator recomputes from the votes' own commitments.
+BOOST_AUTO_TEST_CASE(note_tally_partials_open_the_recomputed_aggregate)
+{
+    ScopedTallyArgs scopedArgs;
+    std::vector<CKey> vKeys(3);
+    const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 2);
+
+    const int nEpoch = 921;
+    const uint256 hashWinner(0x7711);
+    const uint256 hashOther(0x7722);
+
+    TalliedVote a = MakeTalliedVote(config, nEpoch, hashWinner, 400000, 7, 0x71);
+    TalliedVote b = MakeTalliedVote(config, nEpoch, hashWinner, 250000, 3, 0x72);
+    TalliedVote c = MakeTalliedVote(config, nEpoch, hashOther, 150000, 5, 0x73);
+
+    std::vector<const CNoteFinalityVote*> vCovered;
+    vCovered.push_back(&a.vote);
+    vCovered.push_back(&b.vote);
+    vCovered.push_back(&c.vote);
+    std::vector<uint256> vCoveredTags;
+    for (size_t i = 0; i < vCovered.size(); i++)
+        vCoveredTags.push_back(vCovered[i]->GetVoteTag());
+    vCoveredTags = SortedTags(vCoveredTags);
+
+    std::vector<CNoteTallyAggregatePartial> vPartials;
+    for (size_t i = 0; i < vKeys.size(); i++)
+    {
+        CNoteTallyCommitteePass pass;
+        std::string strError;
+        BOOST_REQUIRE_MESSAGE(RunNoteTallyCommitteePass(vCovered, hashWinner, config,
+                                                        vKeys[i], (int)i, pass, &strError),
+                              strError);
+        BOOST_CHECK(pass.vComplaints.empty());
+        BOOST_CHECK(pass.fHaveActive);
+        BOOST_CHECK(pass.fHaveWinning);
+        BOOST_CHECK(SortedTags(pass.vAcceptedTags) == vCoveredTags);
+        vPartials.push_back(MakePartial(pass, config, vKeys[i], (int)i, nEpoch, hashWinner));
+        BOOST_CHECK(vPartials.back().vAcceptedTags == vCoveredTags);
+        std::string strSig;
+        BOOST_CHECK_MESSAGE(
+            CheckNoteTallyAggregatePartialSignature(vPartials.back(), config, &strSig),
+            strSig);
+    }
+
+    int64_t nActive = 0, nWinning = 0;
+    uint256 activeBlind, winningBlind;
+    bool fHaveReward = false;
+    std::string strError;
+    BOOST_REQUIRE_MESSAGE(OpenCoveredAggregates(vPartials, vCovered, vCoveredTags,
+                                                hashWinner, config, vKeys[0], 0, nActive,
+                                                activeBlind, nWinning, winningBlind,
+                                                fHaveReward, strError), strError);
+    BOOST_CHECK_EQUAL(nActive, a.nAmount + b.nAmount + c.nAmount);
+    BOOST_CHECK_EQUAL(nWinning, a.nAmount + b.nAmount);
+    BOOST_CHECK(fHaveReward);
+    BOOST_CHECK(activeBlind ==
+                Ed25519ScalarAdd(Ed25519ScalarAdd(a.mask, b.mask), c.mask));
+
+    // The tier is the COMBINED comparison: transparent weights plus these openings.
+    // Nothing else is what makes a note vote carry finality weight at all.
+    CNoteTallyTierProofs proofs;
+    PrivacyVNextDigest entropy;
+    entropy.fill(0x5b);
+    const int64_t nTransparentActive = 100000;
+    const int64_t nTransparentWinning = 100000;
+    BOOST_REQUIRE_MESSAGE(
+        BuildNoteTallyTierProofs(FINALITY_HARD, nActive, activeBlind, nWinning,
+                                 winningBlind, nTransparentActive, nTransparentWinning,
+                                 entropy, proofs, &strError), strError);
+    PrivacyVNextDigest activePoint = ZeroDigest();
+    PrivacyVNextDigest winningPoint = ZeroDigest();
+    BOOST_REQUIRE(DeriveNoteTallyAggregates(vCovered, hashWinner, activePoint,
+                                            winningPoint, &strError));
+    BOOST_CHECK(CheckNoteTallyTierProofs(FINALITY_HARD, activePoint, winningPoint,
+                                         nTransparentActive, nTransparentWinning, proofs,
+                                         &strError));
+    // Without the note weight the same transparent pair is not HARD, so the proof above
+    // is exactly the note contribution.
+    BOOST_CHECK((nTransparentWinning + nWinning) * 3 >=
+                (nTransparentActive + nActive) * 2);
+    BOOST_CHECK(!(nTransparentWinning * 3 >= (nTransparentActive + nActive) * 2));
+
+    // MUTATION: an interpolation that does not open the recomputed point must fail, or a
+    // poisoned partial would set the epoch's private weight to whatever it liked. Sealing
+    // a tampered evaluation is the only way to reach that state, since the VSS check
+    // already caught a tampered per-vote share.
+    {
+        CNoteTallyCommitteePass tampered;
+        std::string strPassError;
+        BOOST_REQUIRE(RunNoteTallyCommitteePass(vCovered, hashWinner, config, vKeys[1], 1,
+                                                tampered, &strPassError));
+        tampered.aggregateActive.evalWeight =
+            Ed25519ScalarAdd(tampered.aggregateActive.evalWeight,
+                             Ed25519ScalarFromUint64(1));
+        std::vector<CNoteTallyAggregatePartial> vBad;
+        vBad.push_back(vPartials[0]);
+        vBad.push_back(MakePartial(tampered, config, vKeys[1], 1, nEpoch, hashWinner));
+        int64_t nBadActive = 0, nBadWinning = 0;
+        uint256 badActiveBlind, badWinningBlind;
+        bool fBadReward = false;
+        std::string strBadError;
+        BOOST_CHECK(!OpenCoveredAggregates(vBad, vCovered, vCoveredTags, hashWinner,
+                                           config, vKeys[0], 0, nBadActive, badActiveBlind,
+                                           nBadWinning, badWinningBlind, fBadReward,
+                                           strBadError));
+        BOOST_CHECK_EQUAL(strBadError,
+                          "note tally aggregate does not open the recomputed commitment");
+    }
+
+    // MUTATION: the covered set is part of what a partial says. Opening partials that
+    // summed three votes against the point of a two-vote set must fail rather than
+    // silently under- or over-counting the epoch's private weight.
+    {
+        std::vector<const CNoteFinalityVote*> vFewer;
+        vFewer.push_back(&a.vote);
+        vFewer.push_back(&b.vote);
+        std::vector<uint256> vFewerTags;
+        vFewerTags.push_back(a.vote.GetVoteTag());
+        vFewerTags.push_back(b.vote.GetVoteTag());
+        vFewerTags = SortedTags(vFewerTags);
+
+        PrivacyVNextDigest fewerActive = ZeroDigest();
+        PrivacyVNextDigest fewerWinning = ZeroDigest();
+        BOOST_REQUIRE(DeriveNoteTallyAggregates(vFewer, hashWinner, fewerActive,
+                                                fewerWinning, &strError));
+        std::vector<CNoteTallyPlainShare> vThreeVoteShares;
+        for (size_t i = 0; i < 2; i++)
+        {
+            CNoteTallyPlainShare active, winning;
+            bool fA = false, fW = false;
+            BOOST_REQUIRE(DecryptNoteTallyAggregatePartialForRecipient(
+                vPartials[i], config, vKeys[0], 0, active, fA, winning, fW));
+            vThreeVoteShares.push_back(active);
+        }
+        int64_t nOut = 0, nRewardOut = 0;
+        uint256 blindOut, rewardBlindOut;
+        bool fHave = false;
+        BOOST_CHECK(!OpenNoteTallyAggregate(vThreeVoteShares, config.nThresholdM,
+                                            fewerActive, nOut, blindOut, nRewardOut,
+                                            rewardBlindOut, &fHave, &strError));
+    }
+}
+
+// The required deviation from the dead code. Reward shares carry no VSS coefficients, so
+// any voter can share a reward that passes every check and interpolates out of range. If
+// that failed the opening, one voter could jam the whole epoch's private weight with
+// nothing that names it. The weight pair must stay strict.
+BOOST_AUTO_TEST_CASE(an_unopenable_reward_does_not_jam_the_note_weight)
+{
+    ScopedTallyArgs scopedArgs;
+    std::vector<CKey> vKeys(3);
+    const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 2);
+
+    const int nEpoch = 922;
+    const uint256 hashWinner(0x7811);
+
+    TalliedVote honest = MakeTalliedVote(config, nEpoch, hashWinner, 300000, 9, 0x81);
+    TalliedVote jammer = MakeTalliedVote(config, nEpoch, hashWinner, 500000, 4, 0x82);
+
+    // The jammer keeps the weight opening the coefficients commit to and replaces only
+    // the reward evaluation, which nothing checks.
+    for (size_t i = 0; i < vKeys.size(); i++)
+    {
+        CNoteTallyPlainShare plain;
+        BOOST_REQUIRE(DecryptNoteVoteShareForRecipient(jammer.share, config, vKeys[i],
+                                                       (int)i, plain));
+        // One constant at every x is the constant polynomial, so the jammer's reward
+        // interpolates to MAX_MONEY and the epoch total lands just outside the range.
+        plain.evalReward = Ed25519ScalarFromUint64((uint64_t)MAX_MONEY);
+        TestResealEnvelope(jammer.share, vKeys[i], (int)i, plain);
+    }
+    jammer.vote.share = jammer.share;
+
+    std::string strError;
+    // The forged reward is invisible to the per-share check, which is exactly why it
+    // cannot be attributed to anyone.
+    for (size_t i = 0; i < vKeys.size(); i++)
+    {
+        CNoteTallyPlainShare plain;
+        bool fComplainable = true;
+        BOOST_CHECK(DecryptNoteVoteShareForRecipient(jammer.vote.share, config, vKeys[i],
+                                                     (int)i, plain, &fComplainable));
+        BOOST_CHECK(CheckNoteVoteVssEvaluation(jammer.vote.share, plain, &strError));
+    }
+
+    std::vector<const CNoteFinalityVote*> vCovered;
+    vCovered.push_back(&honest.vote);
+    vCovered.push_back(&jammer.vote);
+    std::vector<uint256> vCoveredTags;
+    vCoveredTags.push_back(honest.vote.GetVoteTag());
+    vCoveredTags.push_back(jammer.vote.GetVoteTag());
+    vCoveredTags = SortedTags(vCoveredTags);
+
+    std::vector<CNoteTallyAggregatePartial> vPartials;
+    for (size_t i = 0; i < vKeys.size(); i++)
+    {
+        CNoteTallyCommitteePass pass;
+        BOOST_REQUIRE_MESSAGE(RunNoteTallyCommitteePass(vCovered, hashWinner, config,
+                                                        vKeys[i], (int)i, pass, &strError),
+                              strError);
+        BOOST_CHECK(pass.vComplaints.empty());
+        vPartials.push_back(MakePartial(pass, config, vKeys[i], (int)i, nEpoch, hashWinner));
+    }
+
+    // MUTATION: make the reward opening strict again (drop the fHaveReward carve-out in
+    // OpenNoteTallyAggregate) and this returns false -- the jammer has silently killed
+    // the epoch's private weight.
+    int64_t nActive = 0, nWinning = 0;
+    uint256 activeBlind, winningBlind;
+    bool fHaveReward = true;
+    BOOST_REQUIRE_MESSAGE(OpenCoveredAggregates(vPartials, vCovered, vCoveredTags,
+                                                hashWinner, config, vKeys[0], 0, nActive,
+                                                activeBlind, nWinning, winningBlind,
+                                                fHaveReward, strError), strError);
+    BOOST_CHECK(!fHaveReward);
+    BOOST_CHECK_EQUAL(nActive, honest.nAmount + jammer.nAmount);
+    BOOST_CHECK_EQUAL(nWinning, honest.nAmount + jammer.nAmount);
+    BOOST_CHECK(activeBlind == Ed25519ScalarAdd(honest.mask, jammer.mask));
+
+    // And the tier the certificate would claim is still provable, so the jam really is
+    // absent rather than merely reported.
+    CNoteTallyTierProofs proofs;
+    PrivacyVNextDigest entropy;
+    entropy.fill(0x2d);
+    BOOST_CHECK_MESSAGE(BuildNoteTallyTierProofs(FINALITY_HARD, nActive, activeBlind,
+                                                 nWinning, winningBlind, 0, 0, entropy,
+                                                 proofs, &strError), strError);
+
+    // The weight pair is NOT tolerated: an aggregate whose weight does not open the
+    // recomputed point still fails. MUTATION: relax the expectedPoint check and this
+    // passes, which would let a poisoned partial name any private weight it liked.
+    {
+        std::vector<CNoteTallyPlainShare> vShares;
+        for (size_t i = 0; i < 2; i++)
+        {
+            CNoteTallyPlainShare active, winning;
+            bool fA = false, fW = false;
+            BOOST_REQUIRE(DecryptNoteTallyAggregatePartialForRecipient(
+                vPartials[i], config, vKeys[0], 0, active, fA, winning, fW));
+            vShares.push_back(active);
+        }
+        const PrivacyVNextDigest wrongPoint =
+            CommitPoint(Ed25519ScalarFromInt64(nActive + 1), activeBlind);
+        int64_t nOut = 0, nRewardOut = 0;
+        uint256 blindOut, rewardBlindOut;
+        bool fHave = false;
+        BOOST_CHECK(!OpenNoteTallyAggregate(vShares, config.nThresholdM, wrongPoint, nOut,
+                                            blindOut, nRewardOut, rewardBlindOut, &fHave,
+                                            &strError));
+        BOOST_CHECK_EQUAL(strError,
+                          "note tally aggregate does not open the recomputed commitment");
+    }
+}
+
+// Convergence. A member that summed over a vote another member can prove unusable re-runs
+// against the smaller set; only partials naming the same covered set can be opened
+// together, and the equivocation slot must not suppress the re-run.
+BOOST_AUTO_TEST_CASE(note_tally_partials_converge_on_a_changed_complaint_set)
+{
+    ScopedTallyArgs scopedArgs;
+    std::vector<CKey> vKeys(3);
+    const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 2);
+
+    const int nEpoch = 923;
+    const uint256 hashWinner(0x7911);
+
+    TalliedVote a = MakeTalliedVote(config, nEpoch, hashWinner, 300000, 6, 0x91);
+    TalliedVote b = MakeTalliedVote(config, nEpoch, hashWinner, 200000, 6, 0x92);
+    TalliedVote bad = MakeTalliedVote(config, nEpoch, hashWinner, 900000, 6, 0x93);
+
+    // Member 1's envelope alone is poisoned, so member 0's first pass covers all three
+    // and member 1's covers two plus the evidence.
+    {
+        CNoteTallyPlainShare other;
+        BOOST_REQUIRE(DecryptNoteVoteShareForRecipient(a.share, config, vKeys[1], 1, other));
+        TestResealEnvelope(bad.share, vKeys[1], 1, other);
+        bad.vote.share = bad.share;
+    }
+
+    std::vector<const CNoteFinalityVote*> vAll;
+    vAll.push_back(&a.vote);
+    vAll.push_back(&b.vote);
+    vAll.push_back(&bad.vote);
+    std::vector<uint256> vAllTags;
+    for (size_t i = 0; i < vAll.size(); i++)
+        vAllTags.push_back(vAll[i]->GetVoteTag());
+    vAllTags = SortedTags(vAllTags);
+
+    std::string strError;
+    CNoteTallyCommitteePass pass0;
+    BOOST_REQUIRE_MESSAGE(RunNoteTallyCommitteePass(vAll, hashWinner, config, vKeys[0], 0,
+                                                    pass0, &strError), strError);
+    BOOST_CHECK(pass0.vComplaints.empty());
+    BOOST_CHECK(SortedTags(pass0.vAcceptedTags) == vAllTags);
+
+    CNoteTallyCommitteePass pass1;
+    BOOST_REQUIRE_MESSAGE(RunNoteTallyCommitteePass(vAll, hashWinner, config, vKeys[1], 1,
+                                                    pass1, &strError), strError);
+    BOOST_CHECK_EQUAL(pass1.vComplaints.size(), (size_t)1);
+    BOOST_CHECK(pass1.vComplaints[0].voteTag == bad.vote.GetVoteTag());
+    BOOST_CHECK_EQUAL(pass1.vAcceptedTags.size(), (size_t)2);
+
+    const CNoteTallyAggregatePartial partial0Wide =
+        MakePartial(pass0, config, vKeys[0], 0, nEpoch, hashWinner);
+    const CNoteTallyAggregatePartial partial1 =
+        MakePartial(pass1, config, vKeys[1], 1, nEpoch, hashWinner);
+    BOOST_CHECK(partial0Wide.vAcceptedTags == vAllTags);
+    BOOST_CHECK_EQUAL(partial1.vComplaints.size(), (size_t)1);
+
+    // The complaint rides inside the partial, which is the only reason member 0 ever
+    // learns the covered set has to shrink.
+    BOOST_CHECK(CheckNoteVoteComplaint(partial1.vComplaints[0], bad.vote, config,
+                                       &strError));
+
+    std::vector<const CNoteFinalityVote*> vCovered;
+    vCovered.push_back(&a.vote);
+    vCovered.push_back(&b.vote);
+    std::vector<uint256> vCoveredTags;
+    vCoveredTags.push_back(a.vote.GetVoteTag());
+    vCoveredTags.push_back(b.vote.GetVoteTag());
+    vCoveredTags = SortedTags(vCoveredTags);
+
+    CNoteTallyCommitteePass pass0Narrow;
+    BOOST_REQUIRE_MESSAGE(RunNoteTallyCommitteePass(vCovered, hashWinner, config, vKeys[0],
+                                                    0, pass0Narrow, &strError), strError);
+    BOOST_CHECK(SortedTags(pass0Narrow.vAcceptedTags) == vCoveredTags);
+    const CNoteTallyAggregatePartial partial0Narrow =
+        MakePartial(pass0Narrow, config, vKeys[0], 0, nEpoch, hashWinner);
+
+    // The re-run is a NEW slot, so a per-source equivocation index that ignored the
+    // covered set would suppress it and convergence would never complete. MUTATION: drop
+    // vAcceptedTags from GetSourceSlot() and these two collide.
+    BOOST_CHECK(partial0Wide.GetSourceSlot() != partial0Narrow.GetSourceSlot());
+    // Two different contents for ONE slot is the equivocation the index does catch.
+    const CNoteTallyAggregatePartial partial0Again =
+        MakePartial(pass0Narrow, config, vKeys[0], 0, nEpoch, hashWinner);
+    BOOST_CHECK(partial0Again.GetSourceSlot() == partial0Narrow.GetSourceSlot());
+    BOOST_CHECK(partial0Again.GetContentDigest() != partial0Narrow.GetContentDigest());
+
+    std::vector<CNoteTallyAggregatePartial> vPartials;
+    vPartials.push_back(partial0Wide);
+    vPartials.push_back(partial0Narrow);
+    vPartials.push_back(partial1);
+
+    int64_t nActive = 0, nWinning = 0;
+    uint256 activeBlind, winningBlind;
+    bool fHaveReward = false;
+    BOOST_REQUIRE_MESSAGE(OpenCoveredAggregates(vPartials, vCovered, vCoveredTags,
+                                                hashWinner, config, vKeys[0], 0, nActive,
+                                                activeBlind, nWinning, winningBlind,
+                                                fHaveReward, strError), strError);
+    BOOST_CHECK_EQUAL(nActive, a.nAmount + b.nAmount);
+    BOOST_CHECK(activeBlind == Ed25519ScalarAdd(a.mask, b.mask));
+
+    // MUTATION: select partials without requiring vAcceptedTags equality (mix member 0's
+    // wide partial with member 1's narrow one) and the aggregate no longer opens.
+    {
+        std::vector<CNoteTallyPlainShare> vMixed;
+        CNoteTallyPlainShare active, winning;
+        bool fA = false, fW = false;
+        BOOST_REQUIRE(DecryptNoteTallyAggregatePartialForRecipient(
+            partial0Wide, config, vKeys[0], 0, active, fA, winning, fW));
+        vMixed.push_back(active);
+        BOOST_REQUIRE(DecryptNoteTallyAggregatePartialForRecipient(
+            partial1, config, vKeys[0], 0, active, fA, winning, fW));
+        vMixed.push_back(active);
+
+        PrivacyVNextDigest coveredPoint = ZeroDigest();
+        PrivacyVNextDigest coveredWinning = ZeroDigest();
+        BOOST_REQUIRE(DeriveNoteTallyAggregates(vCovered, hashWinner, coveredPoint,
+                                                coveredWinning, &strError));
+        int64_t nOut = 0, nRewardOut = 0;
+        uint256 blindOut, rewardBlindOut;
+        bool fHave = false;
+        BOOST_CHECK(!OpenNoteTallyAggregate(vMixed, config.nThresholdM, coveredPoint, nOut,
+                                            blindOut, nRewardOut, rewardBlindOut, &fHave,
+                                            &strError));
+    }
+
+    // A partial is signed content: tampering with the covered set it names breaks the
+    // source signature, and the sealed evaluations stop opening at all.
+    {
+        CNoteTallyAggregatePartial forged = partial1;
+        forged.vAcceptedTags = vAllTags;
+        BOOST_CHECK(!CheckNoteTallyAggregatePartialSignature(forged, config, &strError));
+        CNoteTallyPlainShare active, winning;
+        bool fA = false, fW = false;
+        BOOST_CHECK(!DecryptNoteTallyAggregatePartialForRecipient(forged, config, vKeys[0],
+                                                                  0, active, fA, winning,
+                                                                  fW));
+    }
+
+    // Wire round-trip: what a peer decodes is what the source signed.
+    {
+        CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+        ss << partial1;
+        CNoteTallyAggregatePartial decoded;
+        ss >> decoded;
+        BOOST_CHECK(ss.empty());
+        BOOST_CHECK(decoded.GetHash() == partial1.GetHash());
+        BOOST_CHECK(decoded.GetContentDigest() == partial1.GetContentDigest());
+        BOOST_CHECK(decoded.GetSourceSlot() == partial1.GetSourceSlot());
+        BOOST_CHECK_MESSAGE(decoded.IsValidBasic(&strError), strError);
+        BOOST_CHECK(CheckNoteTallyAggregatePartialSignature(decoded, config, &strError));
+    }
+}
+
+// The trap the whole increment is built around: an equivocated tag is a repeated tag
+// among the raw carried votes, and every routine that resolves coverage hard-fails on
+// one. Feeding the committee pass the raw set instead of the counted view would let a
+// single anonymous equivocator make every epoch permanently uncertifiable.
+BOOST_AUTO_TEST_CASE(an_equivocated_note_tag_does_not_jam_the_committee_pass)
+{
+    ScopedTallyArgs scopedArgs;
+    std::vector<CKey> vKeys(3);
+    const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 2);
+
+    const int nEpoch = 924;
+    const uint256 hashWinner(0x7a11);
+
+    TalliedVote a = MakeTalliedVote(config, nEpoch, hashWinner, 300000, 6, 0xa1);
+    TalliedVote b = MakeTalliedVote(config, nEpoch, hashWinner, 200000, 6, 0xa2);
+    TalliedVote e = MakeTalliedVote(config, nEpoch, hashWinner, 900000, 6, 0xa3);
+    CNoteFinalityVote equivocation = e.vote;
+    equivocation.hashBlock = uint256(0x7a22);
+    BOOST_REQUIRE(equivocation.GetVoteTag() == e.vote.GetVoteTag());
+
+    std::vector<const CNoteFinalityVote*> vRaw;
+    vRaw.push_back(&a.vote);
+    vRaw.push_back(&b.vote);
+    vRaw.push_back(&e.vote);
+    vRaw.push_back(&equivocation);
+
+    // MUTATION: feed the producer the raw carried votes and the pass dies here, so no
+    // member ever publishes a partial and the epoch can never be certified.
+    std::string strError;
+    CNoteTallyCommitteePass jammed;
+    BOOST_CHECK(!RunNoteTallyCommitteePass(vRaw, hashWinner, config, vKeys[0], 0, jammed,
+                                           &strError));
+    BOOST_CHECK_EQUAL(strError, "note tally pass saw a repeated vote tag");
+
+    // The counted view drops the equivocated tag entirely and keeps one identity per tag,
+    // so the same epoch tallies normally.
+    std::map<uint256, const CNoteFinalityVote*> mapCounted;
+    std::set<uint256> setEquivocated;
+    ResolveNoteVoteCounting(vRaw, mapCounted, setEquivocated);
+    BOOST_CHECK_EQUAL(setEquivocated.size(), (size_t)1);
+    BOOST_CHECK(setEquivocated.count(e.vote.GetVoteTag()));
+    BOOST_CHECK_EQUAL(mapCounted.size(), (size_t)2);
+
+    std::vector<const CNoteFinalityVote*> vCounted;
+    std::vector<uint256> vCountedTags;
+    for (std::map<uint256, const CNoteFinalityVote*>::const_iterator it = mapCounted.begin();
+         it != mapCounted.end(); ++it)
+    {
+        vCounted.push_back(it->second);
+        vCountedTags.push_back(it->first);
+    }
+    vCountedTags = SortedTags(vCountedTags);
+
+    std::vector<CNoteTallyAggregatePartial> vPartials;
+    for (size_t i = 0; i < vKeys.size(); i++)
+    {
+        CNoteTallyCommitteePass pass;
+        BOOST_REQUIRE_MESSAGE(RunNoteTallyCommitteePass(vCounted, hashWinner, config,
+                                                        vKeys[i], (int)i, pass, &strError),
+                              strError);
+        BOOST_CHECK(SortedTags(pass.vAcceptedTags) == vCountedTags);
+        vPartials.push_back(MakePartial(pass, config, vKeys[i], (int)i, nEpoch, hashWinner));
+    }
+
+    int64_t nActive = 0, nWinning = 0;
+    uint256 activeBlind, winningBlind;
+    bool fHaveReward = false;
+    BOOST_REQUIRE_MESSAGE(OpenCoveredAggregates(vPartials, vCounted, vCountedTags,
+                                                hashWinner, config, vKeys[0], 0, nActive,
+                                                activeBlind, nWinning, winningBlind,
+                                                fHaveReward, strError), strError);
+    BOOST_CHECK_EQUAL(nActive, a.nAmount + b.nAmount);
+
+    // The equivocator's weight is excluded rather than counted, so it buys nothing.
+    BOOST_CHECK(nActive < a.nAmount + b.nAmount + e.nAmount);
+
+    // And the certificate over the counted set validates end to end, which is what
+    // "an equivocated tag must not jam certification" actually means.
+    CNoteTallyTierProofs proofs;
+    PrivacyVNextDigest entropy;
+    entropy.fill(0x66);
+    BOOST_REQUIRE_MESSAGE(BuildNoteTallyTierProofs(FINALITY_HARD, nActive, activeBlind,
+                                                   nWinning, winningBlind, 0, 0, entropy,
+                                                   proofs, &strError), strError);
+    BOOST_CHECK_MESSAGE(
+        CheckNoteTallyCertificate(FINALITY_HARD, hashWinner, vCounted, vCountedTags,
+                                  std::vector<CNoteVoteComplaint>(), config, 0, 0, proofs,
+                                  &strError), strError);
+}
+
+// A note certificate's whole authorization is its M-of-N signature set: the range proofs
+// are entropy-bearing, so no validator can rebuild one byte-for-byte and no two members
+// ever produce the same candidate. The collection has to assemble the version the
+// committee actually signed.
+BOOST_AUTO_TEST_CASE(assembling_a_note_certificate_keeps_the_version_it_was_signed_at)
+{
+    ScopedNoteVoteFork fork(0);
+    ScopedTallyArgs scopedArgs;
+    std::vector<CKey> vKeys(3);
+    const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 2);
+
+    const int nEpoch = 926;
+    CFinalityTallyCertificate cert =
+        MakeNoteCert(nEpoch, GetEpochBoundaryHeight(nEpoch, 0), config.committeeSetHash);
+    // A canonical-envelope certificate carries at least FINALITY_MIN_VOTERS nullifiers.
+    cert.vVoteNullifiers.push_back(uint256(0x7002));
+    cert.MarkCanonicalEnvelope();
+    cert.vSignerIndexes.clear();
+    cert.vSignerSigs.clear();
+    BOOST_REQUIRE_EQUAL(cert.nVersion, FINALITY_NOTE_CERT_VERSION);
+
+    // Every member signs the candidate as it stands, which is v4.
+    const uint256 signedDigest = cert.GetSignatureDigest();
+    std::map<uint16_t, std::vector<unsigned char> > collected;
+    for (int i = 0; i < 2; i++)
+    {
+        std::vector<unsigned char> sig;
+        BOOST_REQUIRE(vKeys[i].Sign(signedDigest, sig));
+        collected[(uint16_t)i] = sig;
+    }
+
+    // MUTATION: set cert.nVersion = 3 unconditionally in
+    // AssembleCertificateFromSignatures and this fails -- the assembler recomputes a v3
+    // digest, every signature is filtered out as invalid, and no note certificate can
+    // ever be assembled on any network.
+    CFinalityTallyCertificate assembled = cert;
+    BOOST_REQUIRE(AssembleCertificateFromSignatures(assembled, collected,
+                                                    config.vCommitteePubKeys, 2,
+                                                    config.committeeSetHash));
+    BOOST_CHECK_EQUAL(assembled.nVersion, FINALITY_NOTE_CERT_VERSION);
+    BOOST_CHECK_EQUAL(assembled.vSignerIndexes.size(), (size_t)2);
+    BOOST_CHECK(assembled.GetSignatureDigest() == signedDigest);
+    BOOST_CHECK(assembled.HasNoteWeight());
+    BOOST_CHECK(assembled.IsCanonicalEnvelope());
+
+    std::string strError;
+    BOOST_CHECK_MESSAGE(assembled.IsValidBasic(&strError), strError);
+    BOOST_CHECK(CheckTallyCertificateCommitteeSignatures(assembled,
+                                                          config.vCommitteePubKeys, 2,
+                                                          config.committeeSetHash,
+                                                          &strError));
+
+    // The v3 floor still applies to everything that predates the signer-set.
+    CFinalityTallyCertificate legacy = cert;
+    legacy.nVersion = 2;
+    legacy.vNoteVoteTags.clear();
+    legacy.vNoteComplaints.clear();
+    legacy.noteTierProofs = CNoteTallyTierProofs();
+    legacy.vSignerIndexes.clear();
+    legacy.vSignerSigs.clear();
+    CFinalityTallyCertificate promoted = legacy;
+    promoted.nVersion = 3;
+    const uint256 v3Digest = promoted.GetSignatureDigest();
+    std::map<uint16_t, std::vector<unsigned char> > legacySigs;
+    for (int i = 0; i < 2; i++)
+    {
+        std::vector<unsigned char> sig;
+        BOOST_REQUIRE(vKeys[i].Sign(v3Digest, sig));
+        legacySigs[(uint16_t)i] = sig;
+    }
+    BOOST_CHECK(AssembleCertificateFromSignatures(legacy, legacySigs,
+                                                  config.vCommitteePubKeys, 2,
+                                                  config.committeeSetHash));
+    BOOST_CHECK_EQUAL(legacy.nVersion, 3);
+}
+
+// Determinism. A certificate is checked against the connected chain plus its own bytes,
+// never against the producer's relay state, so a producer working from a stale view
+// builds an object that is rejected on every node rather than one that splits them.
+BOOST_AUTO_TEST_CASE(a_stale_view_note_certificate_is_rejected_not_split)
+{
+    ScopedTallyArgs scopedArgs;
+    std::vector<CKey> vKeys(3);
+    const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 2);
+
+    const int nEpoch = 925;
+    const uint256 hashWinner(0x7b11);
+
+    TalliedVote a = MakeTalliedVote(config, nEpoch, hashWinner, 300000, 6, 0xb1);
+    TalliedVote b = MakeTalliedVote(config, nEpoch, hashWinner, 200000, 6, 0xb2);
+    TalliedVote late = MakeTalliedVote(config, nEpoch, hashWinner, 400000, 6, 0xb3);
+
+    std::vector<const CNoteFinalityVote*> vStale;
+    vStale.push_back(&a.vote);
+    vStale.push_back(&b.vote);
+    std::vector<uint256> vStaleTags;
+    vStaleTags.push_back(a.vote.GetVoteTag());
+    vStaleTags.push_back(b.vote.GetVoteTag());
+    vStaleTags = SortedTags(vStaleTags);
+
+    std::vector<const CNoteFinalityVote*> vFresh = vStale;
+    vFresh.push_back(&late.vote);
+    std::vector<uint256> vFreshTags = vStaleTags;
+    vFreshTags.push_back(late.vote.GetVoteTag());
+    vFreshTags = SortedTags(vFreshTags);
+
+    std::string strError;
+    const auto tallyOver = [&](const std::vector<const CNoteFinalityVote*>& vCovered,
+                               const std::vector<uint256>& vTags,
+                               CNoteTallyTierProofs& proofsOut) {
+        std::vector<CNoteTallyAggregatePartial> vPartials;
+        for (size_t i = 0; i < vKeys.size(); i++)
+        {
+            CNoteTallyCommitteePass pass;
+            std::string strPassError;
+            BOOST_REQUIRE_MESSAGE(RunNoteTallyCommitteePass(vCovered, hashWinner, config,
+                                                            vKeys[i], (int)i, pass,
+                                                            &strPassError),
+                                  strPassError);
+            vPartials.push_back(MakePartial(pass, config, vKeys[i], (int)i, nEpoch,
+                                            hashWinner));
+        }
+        int64_t nActive = 0, nWinning = 0;
+        uint256 activeBlind, winningBlind;
+        bool fHaveReward = false;
+        std::string strOpenError;
+        BOOST_REQUIRE_MESSAGE(OpenCoveredAggregates(vPartials, vCovered, vTags, hashWinner,
+                                                    config, vKeys[0], 0, nActive,
+                                                    activeBlind, nWinning, winningBlind,
+                                                    fHaveReward, strOpenError),
+                              strOpenError);
+        PrivacyVNextDigest entropy;
+        entropy.fill(0x77);
+        std::string strProofError;
+        BOOST_REQUIRE_MESSAGE(BuildNoteTallyTierProofs(FINALITY_HARD, nActive, activeBlind,
+                                                       nWinning, winningBlind, 0, 0,
+                                                       entropy, proofsOut, &strProofError),
+                              strProofError);
+    };
+
+    CNoteTallyTierProofs staleProofs;
+    tallyOver(vStale, vStaleTags, staleProofs);
+    CNoteTallyTierProofs freshProofs;
+    tallyOver(vFresh, vFreshTags, freshProofs);
+
+    // Against the stale producer's own view the certificate is fine, which is why the
+    // producer built it at all.
+    BOOST_CHECK_MESSAGE(
+        CheckNoteTallyCertificate(FINALITY_HARD, hashWinner, vStale, vStaleTags,
+                                  std::vector<CNoteVoteComplaint>(), config, 0, 0,
+                                  staleProofs, &strError), strError);
+
+    // Against the connected set the block actually commits to it is rejected, with the
+    // same reason on every node: the input is the connected chain, not local state.
+    BOOST_CHECK(!CheckNoteTallyCertificate(FINALITY_HARD, hashWinner, vFresh, vStaleTags,
+                                           std::vector<CNoteVoteComplaint>(), config, 0, 0,
+                                           staleProofs, &strError));
+    BOOST_CHECK_EQUAL(strError,
+                      "note tally certificate omits a vote with no valid complaint");
+
+    // MUTATION: let the producer omit a connected vote it merely has no partial for (drop
+    // the coverage-equality rule) and the stale certificate above becomes valid, which is
+    // denominator deflation.
+    BOOST_CHECK_MESSAGE(
+        CheckNoteTallyCertificate(FINALITY_HARD, hashWinner, vFresh, vFreshTags,
+                                  std::vector<CNoteVoteComplaint>(), config, 0, 0,
+                                  freshProofs, &strError), strError);
+
+    // Rejection is a pure function of (connected votes, certificate bytes, committee,
+    // transparent weights). Repeating both checks gives the same answers, and the tier
+    // proofs of one covered set never verify against the other's recomputed points.
+    BOOST_CHECK(!CheckNoteTallyCertificate(FINALITY_HARD, hashWinner, vFresh, vStaleTags,
+                                           std::vector<CNoteVoteComplaint>(), config, 0, 0,
+                                           staleProofs, &strError));
+    BOOST_CHECK(!CheckNoteTallyCertificate(FINALITY_HARD, hashWinner, vFresh, vFreshTags,
+                                           std::vector<CNoteVoteComplaint>(), config, 0, 0,
+                                           staleProofs, &strError));
+    // The transparent weights enter the statement points, so a node recomputing a
+    // different transparent pair rejects rather than accepting a mixed tally.
+    BOOST_CHECK(!CheckNoteTallyCertificate(FINALITY_HARD, hashWinner, vFresh, vFreshTags,
+                                           std::vector<CNoteVoteComplaint>(), config, 10, 0,
+                                           freshProofs, &strError));
+}
+
+// The shape an honest epoch actually takes: every covered note vote names the winner, so
+// the active and winning aggregates are the SAME point and the winning cap's statement has
+// value 0 and blind 0 -- the identity, which nothing can range-prove. The public G shift
+// every statement carries is what makes that case provable at all.
+BOOST_AUTO_TEST_CASE(tier_proofs_survive_an_all_on_the_winner_note_tally)
+{
+    PrivacyVNextDigest entropy;
+    entropy.fill(0x11);
+    const uint256 blind = RandomScalar();
+    const int64_t nWeight = 500000;
+
+    // MUTATION: drop TierStatementShift from either side of DeriveTierStatementPoints or
+    // from the prover's blinds and this build fails with "note tally statement could not
+    // be range-proved", which is every honest note tally on a single-winner epoch.
+    std::string strError;
+    CNoteTallyTierProofs proofs;
+    BOOST_REQUIRE_MESSAGE(BuildNoteTallyTierProofs(FINALITY_HARD, nWeight, blind, nWeight,
+                                                   blind, 0, 0, entropy, proofs,
+                                                   &strError), strError);
+
+    const PrivacyVNextDigest point =
+        CommitPoint(Ed25519ScalarFromInt64(nWeight), blind);
+    BOOST_CHECK(CheckNoteTallyTierProofs(FINALITY_HARD, point, point, 0, 0, proofs,
+                                         &strError));
+
+    // The shift is a function of the points, so a substituted point moves the statement
+    // and its shift together and still fails to verify.
+    const PrivacyVNextDigest other =
+        CommitPoint(Ed25519ScalarFromInt64(nWeight + 1), blind);
+    BOOST_CHECK(!CheckNoteTallyTierProofs(FINALITY_HARD, other, point, 0, 0, proofs,
+                                          &strError));
+    BOOST_CHECK(!CheckNoteTallyTierProofs(FINALITY_HARD, point, other, 0, 0, proofs,
+                                          &strError));
+    BOOST_CHECK(!CheckNoteTallyTierProofs(FINALITY_SOFT, point, point, 0, 0, proofs,
+                                          &strError));
+    BOOST_CHECK(!CheckNoteTallyTierProofs(FINALITY_HARD, point, point, 1, 0, proofs,
+                                          &strError));
+
+    // The shift changes no value: an overclaimed tier is still unprovable.
+    CNoteTallyTierProofs overclaimed;
+    BOOST_CHECK(!BuildNoteTallyTierProofs(FINALITY_HARD, nWeight, blind, nWeight + 1,
+                                          blind, 0, 0, entropy, overclaimed, &strError));
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -24,7 +24,16 @@ struct CFinalityTallyConfig;
 static const uint32_t FINALITY_NOTE_VOTE_VERSION = 1;
 static const uint32_t FINALITY_NOTE_SHARE_VERSION = 1;
 static const uint32_t FINALITY_NOTE_COMPLAINT_VERSION = 1;
+static const uint32_t FINALITY_NOTE_TALLY_PARTIAL_VERSION = 1;
 static const int FINALITY_NOTE_CERT_VERSION = 4;
+
+/** Bound on the tags and complaints one tally partial may name.
+ *
+ *  An epoch's note-vote set is capped at the canonical certificate's vote-set bound
+ *  (ConnectBlockNoteVotes counts distinct tags, seen or dropped), so a partial naming more
+ *  than that names a set no epoch can hold. Kept here rather than reused from finality.h,
+ *  which includes this header and not the reverse. */
+static const size_t FINALITY_NOTE_MAX_TALLY_TAGS = 128;
 
 static const size_t FINALITY_NOTE_POINT_SIZE = 32;
 static const size_t FINALITY_NOTE_SIGMA_SIZE = 128;
@@ -482,7 +491,15 @@ bool RunNoteTallyCommitteePass(const std::vector<const CNoteFinalityVote*>& vCon
 
 /** Interpolate an aggregate opening from M members' partials and require it to open the
  *  point a validator recomputes. Deriving the check from the votes rather than trusting the
- *  interpolation is what makes a poisoned share show up as a failure to open. */
+ *  interpolation is what makes a poisoned share show up as a failure to open.
+ *
+ *  The weight pair opens strictly. The reward pair does not: VSS coefficients are published
+ *  for the weight polynomials only, so a reward evaluation is unauthenticated and any voter
+ *  can share a value that passes every check yet interpolates outside the money range. A
+ *  strict reward would let that one voter block the whole epoch's aggregate opening with no
+ *  way to say who did it. A reward that will not open therefore clears `pfHaveReward` and
+ *  leaves nRewardOut at zero instead of failing. Authenticate the reward shares before any
+ *  caller spends this value. */
 bool OpenNoteTallyAggregate(const std::vector<CNoteTallyPlainShare>& vPartials,
                             int nThreshold,
                             const PrivacyVNextDigest& expectedPoint,
@@ -490,7 +507,100 @@ bool OpenNoteTallyAggregate(const std::vector<CNoteTallyPlainShare>& vPartials,
                             uint256& weightBlindOut,
                             int64_t& nRewardOut,
                             uint256& rewardBlindOut,
+                            bool* pfHaveReward = NULL,
                             std::string* pstrError = NULL);
+
+/** One committee member's summed evaluations for one epoch's note tally, sealed to the
+ *  other members.
+ *
+ *  Not a CFinalityTallyAggregatePartial: that object carries secp256k1 scalars because the
+ *  legacy tally commitments live on that curve, and every note evaluation is modulo the
+ *  ed25519 group order.
+ *
+ *  Relay/automation state only. Consensus reads certificates and connected votes; a partial
+ *  never reaches a validation path, so a producer working from a stale view builds a
+ *  certificate that fails the connect-time recompute rather than one that splits a chain.
+ *
+ *  The complaints ride here because that is what makes the covered set converge: a member
+ *  that summed over a vote another member can prove unusable re-runs against the smaller
+ *  set and republishes. vAcceptedTags names the set the evaluations below are over, so a
+ *  producer can select exactly the partials that agree on it. */
+class CNoteTallyAggregatePartial
+{
+public:
+    uint32_t nVersion;
+    int nEpoch;
+    uint256 committeeSetHash;
+    uint256 hashWinner;
+    int nSourceIndex;
+    // Sorted, unique. The counted tags this member's evaluations were summed over.
+    std::vector<uint256> vAcceptedTags;
+    std::vector<CNoteVoteComplaint> vComplaints;
+    std::vector<std::vector<unsigned char> > vEncryptedRecipientPartials;
+    // Detached signature by the source member over GetContentDigest(): the source index
+    // has to be attributable or an equivocating member is unnameable.
+    std::vector<unsigned char> vchSourceSig;
+
+    CNoteTallyAggregatePartial()
+    {
+        nVersion = FINALITY_NOTE_TALLY_PARTIAL_VERSION;
+        nEpoch = 0;
+        nSourceIndex = -1;
+    }
+
+    IMPLEMENT_SERIALIZE
+    (
+        CNoteTallyAggregatePartial* pthis = const_cast<CNoteTallyAggregatePartial*>(this);
+        READWRITE(pthis->nVersion);
+        READWRITE(pthis->nEpoch);
+        READWRITE(pthis->committeeSetHash);
+        READWRITE(pthis->hashWinner);
+        READWRITE(pthis->nSourceIndex);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vAcceptedTags,
+                                                 FINALITY_NOTE_MAX_TALLY_TAGS,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vComplaints,
+                                                 FINALITY_NOTE_MAX_TALLY_TAGS,
+                                                 nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedByteVectors(
+            s, pthis->vEncryptedRecipientPartials,
+            FINALITY_NOTE_MAX_VSS_COEFFICIENTS, FINALITY_NOTE_MAX_ENVELOPE_BYTES,
+            nType, nVersion, ser_action);
+        nSerSize += ::SerReadWriteLimitedVector(s, pthis->vchSourceSig, 80,
+                                                 nType, nVersion, ser_action);
+    )
+
+    uint256 GetHash() const;            // full identity, source signature included
+    uint256 GetContentDigest() const;   // the signed content, source signature excluded
+    /** The (committee, epoch, source, winner, covered set) a member may sign once.
+     *  The covered set is part of the slot on purpose: convergence requires a member to
+     *  republish over a shrunken set, and only two contents for ONE set are equivocation. */
+    uint256 GetSourceSlot() const;
+    bool IsValidBasic(std::string* pstrError = NULL) const;
+};
+
+/** Seal one member's pass to every committee member and sign it. */
+bool BuildEncryptedNoteTallyAggregatePartial(CNoteTallyAggregatePartial& partial,
+                                             const CNoteTallyCommitteePass& pass,
+                                             const CFinalityTallyConfig& config,
+                                             const CKey& keySource,
+                                             std::string* pstrError = NULL);
+
+/** Open one recipient's envelope. Both aggregates travel together because the tier
+ *  comparison needs the winning subset opened against the same covered set. */
+bool DecryptNoteTallyAggregatePartialForRecipient(const CNoteTallyAggregatePartial& partial,
+                                                  const CFinalityTallyConfig& config,
+                                                  const CKey& keyRecipient,
+                                                  int nRecipientIndex,
+                                                  CNoteTallyPlainShare& activeOut,
+                                                  bool& fHaveActiveOut,
+                                                  CNoteTallyPlainShare& winningOut,
+                                                  bool& fHaveWinningOut);
+
+/** Verify the source member's signature against the committee it names. */
+bool CheckNoteTallyAggregatePartialSignature(const CNoteTallyAggregatePartial& partial,
+                                             const CFinalityTallyConfig& config,
+                                             std::string* pstrError = NULL);
 
 /** The whole private side of a certificate, as a pure function of the connected vote set.
  *  Both aggregates are recomputed here; a certificate never supplies them. */

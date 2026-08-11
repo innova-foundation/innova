@@ -1794,6 +1794,18 @@ bool CDAGManager::PruneDAGData(CTxDB& txdb, int nHeight)
 // CDAGManager: Epoch State Computation
 // ---------------------------------------------------------------------------
 
+// Strongest tier first; at equal tier a note-weighted certificate outranks a transparent one.
+// Pure in the certificates' bytes, so every node picks the same one.
+static bool FinalityCertificateOutranks(const CFinalityTallyCertificate& a,
+                                        const CFinalityTallyCertificate& b)
+{
+    if (a.nTier != b.nTier)
+        return a.nTier > b.nTier;
+    if (a.HasNoteWeight() != b.HasNoteWeight())
+        return a.HasNoteWeight();
+    return a.GetSignatureDigest() < b.GetSignatureDigest();
+}
+
 bool CDAGManager::BuildEpochStateV2Compat(int nEpoch, int nEpochInterval,
                                           const CBlockIndex* pAnchorTip,
                                           CEpochState& stateOut,
@@ -2069,6 +2081,10 @@ bool CDAGManager::BuildEpochStateV2Compat(int nEpoch, int nEpochInterval,
     // own blocks (vote.nEpoch == nEpoch), deduped + sorted by nullifier (std::map
     // gives canonical order) so CheckTallyCertificate can reproduce the digest.
     std::map<uint256, uint256> mapEpochVoteLeaves;   // nullifier -> vote.hashBlock
+    // F2 note-vote leaves, gathered from the epoch's own connected carriers exactly as
+    // the transparent leaves above are. Inert before the note-vote fork.
+    const bool fCommitNoteVotes = IsIV5NoteVoteActiveAtHeight(state.nHeightEnd);
+    std::vector<CNoteFinalityVote> vEpochNoteVotes;
 
     for (const uint256& hashBlock : state.vBlockHashes)
     {
@@ -2129,9 +2145,7 @@ bool CDAGManager::BuildEpochStateV2Compat(int nEpoch, int nEpochInterval,
         {
             if (cert.nEpoch != nEpoch)
                 continue;
-            if (!fHaveBestCert ||
-                cert.nTier > bestCert.nTier ||
-                (cert.nTier == bestCert.nTier && cert.GetSignatureDigest() < bestCert.GetSignatureDigest()))
+            if (!fHaveBestCert || FinalityCertificateOutranks(cert, bestCert))
             {
                 bestCert = cert;
                 fHaveBestCert = true;
@@ -2155,6 +2169,26 @@ bool CDAGManager::BuildEpochStateV2Compat(int nEpoch, int nEpochInterval,
             if (vote.nEpoch == nEpoch)
                 mapEpochVoteLeaves[vote.nullifier] = vote.hashBlock;
         }
+
+        if (fCommitNoteVotes)
+        {
+            std::vector<CNoteFinalityVote> vNoteVotes;
+            FinalityEnvelopeDecodeResult noteEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
+            if (!ExtractNoteFinalityVotesFromBlockForHeight(
+                    activeBlock, mi->second->nHeight, vNoteVotes, &noteEnvelopeFailure))
+            {
+                strError = strprintf("V2 epoch %d block %s has invalid note vote envelope "
+                                     "at height %d (decode=%d)",
+                                     nEpoch, hashBlock.ToString().substr(0, 20).c_str(),
+                                     mi->second->nHeight, (int)noteEnvelopeFailure);
+                return false;
+            }
+            for (size_t i = 0; i < vNoteVotes.size(); i++)
+            {
+                if (vNoteVotes[i].nEpoch == nEpoch)
+                    vEpochNoteVotes.push_back(vNoteVotes[i]);
+            }
+        }
     }
 
     if (!epochCurveTree.IsEmpty())
@@ -2172,6 +2206,24 @@ bool CDAGManager::BuildEpochStateV2Compat(int nEpoch, int nEpochInterval,
     {
         voteSetHasher << it->first;     // nullifier
         voteSetHasher << it->second;    // winning-block choice (vote.hashBlock)
+    }
+    if (fCommitNoteVotes)
+    {
+        // Counted, not carried: an equivocated tag counts for neither instance, so the
+        // committed set has to be the one the tally can actually cover.
+        std::vector<const CNoteFinalityVote*> vCarried;
+        vCarried.reserve(vEpochNoteVotes.size());
+        for (size_t i = 0; i < vEpochNoteVotes.size(); i++)
+            vCarried.push_back(&vEpochNoteVotes[i]);
+        std::map<uint256, const CNoteFinalityVote*> mapCountedNoteVotes;
+        std::set<uint256> setEquivocatedNoteVotes;
+        ResolveNoteVoteCounting(vCarried, mapCountedNoteVotes, setEquivocatedNoteVotes);
+        for (std::map<uint256, const CNoteFinalityVote*>::const_iterator it =
+                 mapCountedNoteVotes.begin(); it != mapCountedNoteVotes.end(); ++it)
+        {
+            voteSetHasher << it->first;             // note vote tag
+            voteSetHasher << it->second->hashBlock; // winning-block choice
+        }
     }
     state.hashVoteSetRoot = voteSetHasher.GetHash();
 
@@ -2523,6 +2575,11 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
     std::set<uint256> setSeenShieldedNullifiers;
     std::set<uint256> setVNextEpochNullifiers;
     std::map<uint256, CFinalityVote> mapEpochVotes;
+    // F2: the epoch's own note-vote carriers. Read from the epoch's own blocks, like every
+    // other leaf here, so the commitment stays a pure function of the anchor rather than of
+    // the node-local counted view the tracker maintains.
+    const bool fCommitNoteVotes = IsIV5NoteVoteActiveAtHeight(state.nHeightEnd);
+    std::vector<CNoteFinalityVote> vEpochNoteVotes;
     CFinalityTallyCertificate bestCert;
     bool fHaveBestCert = false;
 
@@ -2715,9 +2772,7 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
         {
             if (cit->nEpoch != nEpoch)
                 continue;
-            if (!fHaveBestCert || cit->nTier > bestCert.nTier ||
-                (cit->nTier == bestCert.nTier &&
-                 cit->GetSignatureDigest() < bestCert.GetSignatureDigest()))
+            if (!fHaveBestCert || FinalityCertificateOutranks(*cit, bestCert))
             {
                 bestCert = *cit;
                 fHaveBestCert = true;
@@ -2742,6 +2797,26 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
             if (vit->nEpoch == nEpoch)
                 mapEpochVotes[vit->nullifier] = *vit;
         }
+
+        if (fCommitNoteVotes)
+        {
+            std::vector<CNoteFinalityVote> vNoteVotes;
+            FinalityEnvelopeDecodeResult noteEnvelopeFailure = FINALITY_ENVELOPE_NO_MATCH;
+            if (!ExtractNoteFinalityVotesFromBlockForHeight(
+                    activeBlock, mi->second->nHeight, vNoteVotes, &noteEnvelopeFailure))
+            {
+                strError = strprintf("epoch %d block %s has invalid note vote envelope "
+                                     "at height %d (decode=%d)",
+                                     nEpoch, it->ToString().substr(0, 20).c_str(),
+                                     mi->second->nHeight, (int)noteEnvelopeFailure);
+                return false;
+            }
+            for (size_t i = 0; i < vNoteVotes.size(); i++)
+            {
+                if (vNoteVotes[i].nEpoch == nEpoch)
+                    vEpochNoteVotes.push_back(vNoteVotes[i]);
+            }
+        }
     }
 
     if (!epochCurveTree.IsEmpty() && !epochCurveTree.RebuildParentNodes())
@@ -2757,6 +2832,21 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
     for (std::map<uint256, CFinalityVote>::const_iterator it = mapEpochVotes.begin();
          it != mapEpochVotes.end(); ++it)
         voteSetHasher << it->first << it->second.hashBlock;
+    if (fCommitNoteVotes)
+    {
+        // Commit the counted note votes, not the carried ones: a tag counts iff every instance agrees,
+        // so the result is order-independent.
+        std::vector<const CNoteFinalityVote*> vCarried;
+        vCarried.reserve(vEpochNoteVotes.size());
+        for (size_t i = 0; i < vEpochNoteVotes.size(); i++)
+            vCarried.push_back(&vEpochNoteVotes[i]);
+        std::map<uint256, const CNoteFinalityVote*> mapCountedNoteVotes;
+        std::set<uint256> setEquivocatedNoteVotes;
+        ResolveNoteVoteCounting(vCarried, mapCountedNoteVotes, setEquivocatedNoteVotes);
+        for (std::map<uint256, const CNoteFinalityVote*>::const_iterator it =
+                 mapCountedNoteVotes.begin(); it != mapCountedNoteVotes.end(); ++it)
+            voteSetHasher << it->first << it->second->hashBlock;
+    }
     state.hashVoteSetRoot = voteSetHasher.GetHash();
 
     int nDetTier = FINALITY_NONE;
