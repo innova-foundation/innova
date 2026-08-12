@@ -602,7 +602,7 @@ success "NullStake V3: Chain stable after cold staking tests"
 # ============================================================
 header "PHASE 6: IDNS Name Registration"
 
-NAME_NEW=$(rpc1 name_new "dns:testdomain.inn" "192.168.1.1" 365 2>/dev/null)
+NAME_NEW=$(rpc1 name_new "dns:testdomain.inn" "192.168.1.1" 180 2>/dev/null)
 if [ -n "$NAME_NEW" ]; then
     mine_blocks 1
     success "IDNS: name_new registered dns:testdomain.inn"
@@ -614,7 +614,7 @@ if [ -n "$NAME_NEW" ]; then
         skip "IDNS: name_show did not return expected value"
     fi
 
-    NAME_UPDATE=$(rpc1 name_update "dns:testdomain.inn" "10.0.0.1" 365 2>/dev/null)
+    NAME_UPDATE=$(rpc1 name_update "dns:testdomain.inn" "10.0.0.1" 180 2>/dev/null)
     if [ -n "$NAME_UPDATE" ]; then
         mine_blocks 1
         success "IDNS: name_update changed value"

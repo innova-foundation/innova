@@ -5023,8 +5023,8 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
     // The pre-DAG reference is a compile-time CONSTANT (not the mutable global nTargetSpacing) so this
     // consensus divisor can never be perturbed by runtime state; the post-DAG spacing is read from
     // GetTargetSpacingForHeight (deterministic literal 1 post-DAG) so the ratio self-corrects if that
-    // block time is ever re-tuned. Keep PRE_DAG_TARGET_SPACING in sync with nTargetSpacing's init value.
-    static const int64_t PRE_DAG_TARGET_SPACING = 15; // seconds; matches nTargetSpacing init (main.cpp:185)
+    // block time is ever re-tuned. PRE_DAG_TARGET_SPACING now lives in main.h so the name index's rental
+    // conversion reads the same constant.
     if (nHeight >= FORK_HEIGHT_DAG)
         nSubsidy = nSubsidy * (int64_t)GetTargetSpacingForHeight(nHeight) / PRE_DAG_TARGET_SPACING;
 

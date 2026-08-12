@@ -373,10 +373,10 @@
          <item>
           <widget class="QSpinBox" name="registerDays">
            <property name="toolTip">
-            <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Set the number of days that will be added to the Name expire time.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+            <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Set the number of days that will be added to the Name expire time. Maximum 180 days.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
            </property>
            <property name="maximum">
-            <number>9999</number>
+            <number>180</number>
            </property>
            <property name="value">
             <number>30</number>

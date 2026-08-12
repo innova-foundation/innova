@@ -685,6 +685,11 @@ inline int GetReclaimTimelock()
 }
 #define RECLAIM_TIMELOCK (GetReclaimTimelock())
 
+// Compile-time target spacing for persisted or consensus-adjacent code: nTargetSpacing is
+// reassigned on regtest. Keep PRE_DAG_TARGET_SPACING in sync with its init value.
+static const int64_t PRE_DAG_TARGET_SPACING = 15;
+static const int64_t POST_DAG_TARGET_SPACING = 1;
+
 // IDAG: Fork-gated block time — 15s pre-DAG, 1s post-DAG
 inline unsigned int GetTargetSpacingForHeight(int nHeight)
 {

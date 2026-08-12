@@ -7,6 +7,7 @@
 #include <QTimer>
 
 #include "../wallet.h"
+#include "../namecoin.h"
 
 #include <vector>
 #include <algorithm>
@@ -295,7 +296,9 @@ QVariant NameTableModel::data(const QModelIndex &index, int role) const
             }
             else
             {
-                float days = (rec->nExpiresAt - pindexBest->nHeight) / 5760.0;  // 5760 - number of blocks per day on average
+                // Block spacing changes at the DAG gate, so convert the block
+                // distance to wall clock rather than assuming a fixed rate.
+                float days = NameBlocksToSeconds(pindexBest->nHeight, rec->nExpiresAt) / 86400.0f;
                 return days < 0 ? QString("%1 hours").arg(days * 24, 0, 'f', 1) : QString("%1 days").arg(days, 0, 'f', 1);
             }
         }

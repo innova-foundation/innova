@@ -12,12 +12,19 @@ struct NameIndexStats;
 static const int NAMECOIN_TX_VERSION = 0x0333; //0x0333 is initial version
 static const unsigned int MAX_NAME_LENGTH = 512;
 static const unsigned int MAX_VALUE_LENGTH = 20*1024;
-static const int MAX_RENTAL_DAYS = 100*365; //100 years
+// Maximum rental term for a name operation, in days. Six months.
+static const int MAX_RENTAL_DAYS = 180;
+// Term bound before the v5 gate. Kept so historical name txs re-index to the same
+// records; otherwise rebuilt and upgraded-in-place nodes would disagree on name state.
+static const int MAX_RENTAL_DAYS_PRE_V5 = 100*365;
 static const int OP_NAME_NEW = 0x01;
 static const int OP_NAME_UPDATE = 0x02;
 static const int OP_NAME_DELETE = 0x03;
 static const unsigned int NAMEINDEX_CHAIN_SIZE = 1000;
-static const int NAMEINDEX_CURSOR_SCHEMA = 1;
+// Bumped for the piecewise day->block conversion: stored nExpiresAt values from
+// the flat 5760-blocks-per-day formula are not comparable with the new ones, so
+// every node rebuilds rather than carrying a stale expiry across the upgrade.
+static const int NAMEINDEX_CURSOR_SCHEMA = 2;
 static const int NAMEINDEX_EFFECT_PROGRESS_SCHEMA = 1;
 static const uint32_t NAMEINDEX_MAX_TRANSITION_EFFECTS = 1000000;
 static const size_t NAMEINDEX_MAX_EFFECT_RECORD_ENTRIES = 1000000;
@@ -32,6 +39,23 @@ inline int GetIDNSReleaseHeight() {
     return 1200000;
 }
 #define RELEASE_HEIGHT (GetIDNSReleaseHeight())
+
+// Term bound in force for a name op mined at nHeight. The v5 gate is the IDNS
+// reset height, which is 0 off mainnet so clean chains carry the 180-day bound
+// from genesis.
+inline int GetMaxRentalDays(int nHeight)
+{
+    return nHeight >= FORK_HEIGHT_IDNS_RESET ? MAX_RENTAL_DAYS
+                                             : MAX_RENTAL_DAYS_PRE_V5;
+}
+
+// Blocks a rental of nRentalDays buys starting at nStartHeight. Spacing changes at the
+// DAG gate (15s -> 1s), so a term spanning the gate is converted piecewise.
+int64_t NameRentalBlocks(int64_t nStartHeight, int64_t nRentalDays);
+
+// Wall-clock seconds between two heights under the same piecewise spacing.
+// Inverse of NameRentalBlocks; negative when nToHeight < nFromHeight.
+int64_t NameBlocksToSeconds(int64_t nFromHeight, int64_t nToHeight);
 
 class CNameIndex
 {
@@ -78,6 +102,14 @@ public:
         READWRITE(nLastActiveChainIndex);
     )
 };
+
+// True when the IDNS reset has expired this record as of nAtHeight.
+// The reset is a chain event: it expires names registered before its height,
+// but only from that height onward.
+bool NameResetExpired(const CNameRecord& nameRec, int nAtHeight);
+
+// Recomputes nExpiresAt from the record's rental chain.
+bool CalculateExpiresAt(CNameRecord& nameRec);
 
 /** Recovery cursor for the name index (a separate Berkeley DB), written only after every
  *  name mutation of a committed block succeeds; a missing or mismatched cursor forces a rebuild. */

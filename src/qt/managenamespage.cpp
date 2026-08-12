@@ -8,6 +8,7 @@
 #include "base58.h"
 #include "main.h"
 #include "wallet.h"
+#include "namecoin.h"
 #include "guiconstants.h"
 #include "ui_interface.h"
 
@@ -371,6 +372,14 @@ void ManageNamesPage::on_submitNameButton_clicked()
     if (vchValue.empty() && (txType == "name_new" || txType == "name_update"))
     {
         QMessageBox::critical(this, tr("Value is empty"), tr("Enter value please"));
+        return;
+    }
+
+    if (days > MAX_RENTAL_DAYS || (txType == "name_new" && days < 1) || days < 0)
+    {
+        QMessageBox::critical(this, tr("Rental term out of range"),
+            tr("Rental days must be between %1 and %2.")
+                .arg(txType == "name_new" ? 1 : 0).arg(MAX_RENTAL_DAYS));
         return;
     }
 

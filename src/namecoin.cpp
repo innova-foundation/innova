@@ -81,6 +81,65 @@ string limitString(const string& inp, unsigned int size, string message = "")
     return ret;
 }
 
+static const int64_t NAME_SECONDS_PER_DAY = 86400;
+
+// Pre- and post-DAG spacing for the rental conversion. Compile-time constants, not
+// GetTargetSpacingForHeight: regtest reassigns nTargetSpacing and expiry heights persist.
+static void GetNameRentalSpacing(int64_t& nDagOut, int64_t& nPreOut, int64_t& nPostOut)
+{
+    extern bool fRegTest;
+    nDagOut = FORK_HEIGHT_DAG;
+    nPostOut = POST_DAG_TARGET_SPACING;
+    // Regtest mines 1s blocks on both sides of its gate.
+    nPreOut = fRegTest ? POST_DAG_TARGET_SPACING : PRE_DAG_TARGET_SPACING;
+}
+
+int64_t NameRentalBlocks(int64_t nStartHeight, int64_t nRentalDays)
+{
+    if (nRentalDays <= 0)
+        return 0;
+    // Clamp against the widest term any decodable name tx can carry, so a
+    // malformed script cannot overflow the seconds product.
+    if (nRentalDays > MAX_RENTAL_DAYS_PRE_V5)
+        nRentalDays = MAX_RENTAL_DAYS_PRE_V5;
+    if (nStartHeight < 0)
+        nStartHeight = 0;
+
+    int64_t nDag, nPre, nPost;
+    GetNameRentalSpacing(nDag, nPre, nPost);
+
+    const int64_t nSeconds = nRentalDays * NAME_SECONDS_PER_DAY;
+    if (nStartHeight >= nDag)
+        return nSeconds / nPost;
+
+    const int64_t nPreBlocks = nDag - nStartHeight;
+    const int64_t nPreSeconds = nPreBlocks * nPre;
+    if (nSeconds <= nPreSeconds)
+        return nSeconds / nPre;
+    return nPreBlocks + (nSeconds - nPreSeconds) / nPost;
+}
+
+int64_t NameBlocksToSeconds(int64_t nFromHeight, int64_t nToHeight)
+{
+    if (nToHeight < nFromHeight)
+        return -NameBlocksToSeconds(nToHeight, nFromHeight);
+
+    int64_t nDag, nPre, nPost;
+    GetNameRentalSpacing(nDag, nPre, nPost);
+
+    int64_t nSeconds = 0;
+    int64_t nAt = nFromHeight;
+    if (nAt < nDag)
+    {
+        const int64_t nSpan = std::min(nToHeight, nDag) - nAt;
+        nSeconds += nSpan * nPre;
+        nAt += nSpan;
+    }
+    if (nToHeight > nAt)
+        nSeconds += (nToHeight - nAt) * nPost;
+    return nSeconds;
+}
+
 // Calculate at which block will expire.
 bool CalculateExpiresAt(CNameRecord& nameRec)
 {
@@ -90,7 +149,14 @@ bool CalculateExpiresAt(CNameRecord& nameRec)
         return true;
     }
 
-    int64_t sum = 0;
+    if (nameRec.vtxPos.empty() || nameRec.nLastActiveChainIndex < 0 ||
+        (size_t)nameRec.nLastActiveChainIndex >= nameRec.vtxPos.size())
+        return error("CalculateExpiresAt() : record has no active rental chain");
+
+    // Each rental extends the running expiry, and is converted from the height
+    // it starts extending from, so a term that spans the DAG gate gets the
+    // pre-gate part at 15s and the remainder at 1s.
+    int64_t nExpires = nameRec.vtxPos[nameRec.nLastActiveChainIndex].nHeight;
     for(unsigned int i = nameRec.nLastActiveChainIndex; i < nameRec.vtxPos.size(); i++)
     {
         CTransaction tx;
@@ -101,14 +167,30 @@ bool CalculateExpiresAt(CNameRecord& nameRec)
         if (!DecodeNameTx(tx, nti, false))
             return error("CalculateExpiresAt() : %s is not namecoin tx, this should never happen", tx.GetHash().GetHex().c_str());
 
-        sum += nti.nRentalDays * 5760; //days to blocks. 5760 is average number of blocks per day
+        nExpires += NameRentalBlocks(nExpires, nti.nRentalDays);
+        if (nExpires >= INT_MAX)
+        {
+            nExpires = INT_MAX;
+            break;
+        }
     }
 
-    //limit to INT_MAX value
-    sum += nameRec.vtxPos[nameRec.nLastActiveChainIndex].nHeight;
-    nameRec.nExpiresAt = sum > INT_MAX ? INT_MAX : sum;
+    nameRec.nExpiresAt = (int)nExpires;
 
     return true;
+}
+
+// The IDNS reset is a chain event at its height: a name registered before the reset
+// height counts as expired only once the chain has reached that height.
+bool NameResetExpired(const CNameRecord& nameRec, int nAtHeight)
+{
+    const int nReset = FORK_HEIGHT_IDNS_RESET;
+    if (nReset <= 0 || nAtHeight < nReset || nameRec.vtxPos.empty())
+        return false;
+    if (nameRec.nLastActiveChainIndex < 0 ||
+        (size_t)nameRec.nLastActiveChainIndex >= nameRec.vtxPos.size())
+        return false;
+    return nameRec.vtxPos[nameRec.nLastActiveChainIndex].nHeight < nReset;
 }
 
 // Tests if name is active. You can optionaly specify at which height it is/was active.
@@ -128,14 +210,8 @@ bool NameActive(CNameDB& dbName, const vector<unsigned char> &vchName, int curre
     if (nameRec.deleted()) // last name op was name_delete
         return false;
 
-    // IDNS Reset: names whose last OP_NAME_NEW was registered before the reset
-    // height are treated as expired, allowing clean re-registration.
-    if (FORK_HEIGHT_IDNS_RESET > 0 && !nameRec.vtxPos.empty())
-    {
-        int nRegistrationHeight = nameRec.vtxPos[nameRec.nLastActiveChainIndex].nHeight;
-        if (nRegistrationHeight < FORK_HEIGHT_IDNS_RESET)
-            return false;
-    }
+    if (NameResetExpired(nameRec, currentBlockHeight))
+        return false;
 
     return currentBlockHeight <= nameRec.nExpiresAt;
 }
@@ -696,7 +772,10 @@ bool checkNameValues(NameTxInfo& ret)
     if (ret.op == OP_NAME_UPDATE && ret.nRentalDays < 0)
         ret.err_msg.append("rental days must be greater or equal 0.\n");
 
-    if (ret.nRentalDays > MAX_RENTAL_DAYS)
+    // Decode keeps the pre-v5 bound so historical name txs stay decodable and
+    // re-index identically. The 180-day term bound is enforced at creation
+    // (createNameScript) and, height-gated, on the indexing path (ConnectInputs).
+    if (ret.nRentalDays > MAX_RENTAL_DAYS_PRE_V5)
         ret.err_msg.append("rental days value is too large.\n");
 
     if (ret.err_msg != "")
@@ -1267,7 +1346,7 @@ Value name_mempool (const Array& params, bool fHelp)
             "    \"address\": \"xxxx\",         (string) address to which transaction was sent"
             "    \"address_is_mine\": \"xxxx\", (string) shows \"true\" if this is your address, otherwise not visible"
             "    \"operation\": \"xxxx\",       (string) name operation that was performed in this transaction"
-            "    \"days_added\": xxxx,          (numeric) days added (1 day = 5760 blocks) to name expiration time, not visible if 0"
+            "    \"days_added\": xxxx,          (numeric) days added to name expiration time, not visible if 0"
             "    \"value\": xxxx,               (numeric) name value in this transaction; not visible when name_delete was used"
             "  }\n"
             "]\n"
@@ -1549,6 +1628,14 @@ bool createNameScript(CScript& nameScript, const vector<unsigned char> &vchName,
         }
     }
 
+    // Creation always carries the current term bound; a longer term would not
+    // be indexable once mined.
+    if (nRentalDays > MAX_RENTAL_DAYS)
+    {
+        err_msg = strprintf("rental days must not exceed %d.\n", MAX_RENTAL_DAYS);
+        return false;
+    }
+
     vector<unsigned char> vchRentalDays = CBigNum(nRentalDays).getvch();
 
     //add name and rental days
@@ -1598,6 +1685,7 @@ Value name_new(const Array& params, bool fHelp)
         throw runtime_error(
                 "name_new <name> <value> <days> [address] [valueAsFilepath]\n"
                 "Creates new key->value pair which expires after specified number of days.\n"
+                "<days> must be between 1 and 180 (six months).\n"
                 "[address] to register the name to\n"
                 "If [valueAsFilepath] is non-zero it will interpret <value> as a filepath and try to write file contents in binary format\n"
                 "Cost is 0.9 INN To TX Fees and 0.1 To Name Registration."
@@ -1609,6 +1697,9 @@ Value name_new(const Array& params, bool fHelp)
     vector<unsigned char> vchName = vchFromValue(params[0]);
     vector<unsigned char> vchValue = vchFromValue(params[1]);
     int nRentalDays = params[2].get_int();
+    if (nRentalDays < 1 || nRentalDays > MAX_RENTAL_DAYS)
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+                           strprintf("<days> must be between 1 and %d", MAX_RENTAL_DAYS));
     string strAddress = "";
     if (params.size() == 4)
         string strAddress = params[3].get_str();
@@ -1761,6 +1852,7 @@ Value name_update(const Array& params, bool fHelp)
         throw runtime_error(
                 "name_update <name> <value> <days> [toaddress] [valueAsFilepath]\n"
                 "Update name and value, add days to expiration time and transfer a name to diffrent address.\n"
+                "<days> must be between 0 and 180 (six months).\n"
                 "If [valueAsFilepath] is non-zero it will interpret <value> as a filepath and try to write file contents in binary format."
                 + HelpRequiringPassphrase());
 
@@ -1770,6 +1862,9 @@ Value name_update(const Array& params, bool fHelp)
     vector<unsigned char> vchName = vchFromValue(params[0]);
     vector<unsigned char> vchValue = vchFromValue(params[1]);
     int nRentalDays = params[2].get_int();
+    if (nRentalDays < 0 || nRentalDays > MAX_RENTAL_DAYS)
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+                           strprintf("<days> must be between 0 and %d", MAX_RENTAL_DAYS));
     string strAddress = "";
     if (params.size() > 3)
         strAddress = params[3].get_str();
@@ -2907,11 +3002,11 @@ bool createNameIndexFile()
     const int nMaxHeight = pindexTip ? pindexTip->nHeight : -1;
     int nReportDone = 0;
 
-    // Start scanning from RELEASE_HEIGHT or IDNS reset height, whichever is later.
-    // When FORK_HEIGHT_IDNS_RESET > RELEASE_HEIGHT, old names are effectively wiped
-    // since we skip scanning pre-reset blocks entirely.
+    // Pre-reset blocks may be skipped only once the chain has passed the reset height,
+    // or a rebuilt index would differ from a continuously connected one.
     int nStartHeight = RELEASE_HEIGHT;
-    if (FORK_HEIGHT_IDNS_RESET > nStartHeight)
+    if (FORK_HEIGHT_IDNS_RESET > nStartHeight &&
+        nMaxHeight >= FORK_HEIGHT_IDNS_RESET)
     {
         nStartHeight = FORK_HEIGHT_IDNS_RESET;
         printf("IDNS reset active: scanning names from height %d (skipping pre-reset names)\n",
@@ -3216,13 +3311,21 @@ bool ConnectInputs(CTxDB& txdb,
     }
 
     bool fNameActive = fNameExists && !nameRec.deleted();
-    if (fNameActive && FORK_HEIGHT_IDNS_RESET > 0 &&
-        !nameRec.vtxPos.empty() &&
-        nameRec.vtxPos[nameRec.nLastActiveChainIndex].nHeight <
-            FORK_HEIGHT_IDNS_RESET)
+    if (fNameActive && NameResetExpired(nameRec, pindexBlock->nHeight))
         fNameActive = false;
     if (fNameActive && pindexBlock->nHeight > nameRec.nExpiresAt)
         fNameActive = false;
+
+    // Term bound, gated on the mined height so pre-gate history keeps indexing
+    // exactly as it did.
+    if (nti.nRentalDays > GetMaxRentalDays(pindexBlock->nHeight))
+    {
+        if (pindexBlock->nHeight > RELEASE_HEIGHT)
+            return error("%s rental term %d exceeds the %d-day bound",
+                         info.c_str(), nti.nRentalDays,
+                         GetMaxRentalDays(pindexBlock->nHeight));
+        return false;
+    }
 
     switch (nti.op)
     {
