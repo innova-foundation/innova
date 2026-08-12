@@ -78,6 +78,7 @@ HEADERS += build/build.h \
            src/init.h \
            src/innova_spinner_frames.h \
            src/innovarpc.h \
+           src/pod.h \
            src/ipa.h \
            src/kernel.h \
            src/kernelrecord.h \
@@ -613,6 +614,7 @@ SOURCES += qrc_bitcoin.cpp \
            src/protocol.cpp \
            src/ringsig.cpp \
            src/rpcblockchain.cpp \
+           src/pod.cpp \
            src/rpccollateral.cpp \
            src/rpcdump.cpp \
            src/rpchyperfile.cpp \
