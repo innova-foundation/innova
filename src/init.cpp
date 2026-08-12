@@ -591,7 +591,7 @@ std::string HelpMessage()
         "  -detachdb              " + _("Detach block and address databases. Increases shutdown time (default: 0)") + "\n" +
         "  -paytxfee=<amt>        " + _("Fee per KB to add to transactions you send") + "\n" +
         "  -mininput=<amt>        " + _("When creating transactions, ignore inputs with value less than this (default: 0.01)") + "\n" +
-        "  -enablefilerpc         " + _("Allow the RPC commands that read a file path on this machine (proofofdata, hyperfileupload, hyperfilepod) and publish what they find. Off by default: an RPC caller could otherwise publish any file this node's user can read (default: 0)") + "\n" +
+        "  -enablefilerpc         " + _("Allow the RPC commands that read a file path on this machine (proofofdata, hyperfileupload, hyperfilepod, and podverify's file-target form) and publish what they find. Off by default: an RPC caller could otherwise publish any file this node's user can read (default: 0)") + "\n" +
         "  -hyperfilelocal        " + _("Enable Hyperfile IPFS commands (default: 1)") + "\n" +
         "  -hyperfileip=<host:port> " + _("IPFS API endpoint Hyperfile uploads through. Its operator sees the file contents and this node's IP. There is no fallback endpoint (default: ipfs.innova-foundation.com:5001)") + "\n" +
 #ifdef QT_GUI

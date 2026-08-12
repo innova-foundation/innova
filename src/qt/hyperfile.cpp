@@ -227,7 +227,8 @@ void Hyperfile::on_createPodButton_clicked()
 
     QMessageBox successbox;
     successbox.setText("Hyperfile POD timestamp successful. Verify it later with "
-                       "podverify <file> <txid> in the debug console.");
+                       "podverify <sha256|cid> <txid> in the debug console. A file-path "
+                       "target there requires -enablefilerpc=1.");
     successbox.exec();
 #endif
 }

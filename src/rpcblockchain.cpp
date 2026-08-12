@@ -428,16 +428,22 @@ enum PodTargetKind
     POD_TARGET_CID,
 };
 
-static PodTargetKind PodClassifyTarget(const std::string& strTarget)
+// fFileAllowed is false unless -enablefilerpc is set. The filesystem is not
+// probed at all in that case: a stat here would answer "does this path exist"
+// for any RPC caller, which is the disclosure the flag exists to prevent.
+static PodTargetKind PodClassifyTarget(const std::string& strTarget, bool fFileAllowed)
 {
     if (strTarget.empty())
         return POD_TARGET_NONE;
     // A bare SHA-256 wins over a same-named file; say so in the help.
     if (strTarget.size() == 64 && IsHex(strTarget))
         return POD_TARGET_DIGEST;
-    boost::system::error_code ec;
-    if (boost::filesystem::is_regular_file(boost::filesystem::path(strTarget), ec))
-        return POD_TARGET_FILE;
+    if (fFileAllowed)
+    {
+        boost::system::error_code ec;
+        if (boost::filesystem::is_regular_file(boost::filesystem::path(strTarget), ec))
+            return POD_TARGET_FILE;
+    }
     std::vector<unsigned char> vLocator;
     if (PodCidToLocator(strTarget, vLocator))
         return POD_TARGET_CID;
@@ -541,6 +547,9 @@ Value podverify(const Array& params, bool fHelp)
             "4. \"cid\"      (string, optional) CIDv0 to compare against a hyperfile stamp's\n"
             "               locator, when the target is a file or a digest. A digest match with\n"
             "               a locator mismatch is reported as verified with a stale locator.\n"
+            "\nA file-path target reads a path on the node's filesystem and requires\n"
+            "-enablefilerpc=1. Digest and CID targets need no flag, so a stamp can always be\n"
+            "checked by anyone holding the digest.\n"
             "\nThe attested time is the time of the block containing the transaction, not the\n"
             "nTime the transaction claims for itself.\n"
             "\nStamps made before this release carry no digest on chain: they pay an address\n"
@@ -552,11 +561,15 @@ Value podverify(const Array& params, bool fHelp)
     uint256 hashTx;
     hashTx.SetHex(params[1].get_str());
 
+    const bool fFileAllowed = GetBoolArg("-enablefilerpc", false);
     std::string strTarget = params[0].get_str();
-    PodTargetKind kind = PodClassifyTarget(strTarget);
+    PodTargetKind kind = PodClassifyTarget(strTarget, fFileAllowed);
     if (kind == POD_TARGET_NONE)
         throw JSONRPCError(RPC_INVALID_PARAMETER,
-            "target is not a readable file, a 64-character SHA-256 hex digest, or a CIDv0.");
+            fFileAllowed
+                ? "target is not a readable file, a 64-character SHA-256 hex digest, or a CIDv0."
+                : "target is not a 64-character SHA-256 hex digest or a CIDv0. A file-path "
+                  "target requires -enablefilerpc=1.");
 
     std::vector<unsigned char> vSalt;
     if (params.size() > 2 && !params[2].get_str().empty())

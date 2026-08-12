@@ -143,7 +143,7 @@
           <item>
            <widget class="QLabel" name="label_2">
             <property name="text">
-             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-style:italic; color:#ff0000;&quot;&gt;*Note:&lt;/span&gt; The file is hashed on this machine and is never uploaded. Only the digest is published, in an OP_RETURN output. This costs a normal transaction fee; the 0.01 INN it moves is paid back to this wallet. Verify a stamp later with the &lt;span style=&quot; font-weight:600;&quot;&gt;podverify&lt;/span&gt; console command.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-style:italic; color:#ff0000;&quot;&gt;*Note:&lt;/span&gt; The file is hashed on this machine and is never uploaded. Only the digest is published, in an OP_RETURN output. This costs a normal transaction fee; the 0.01 INN it moves is paid back to this wallet. Verify a stamp later with the &lt;span style=&quot; font-weight:600;&quot;&gt;podverify&lt;/span&gt; console command. Verifying by file path needs -enablefilerpc=1; verifying by SHA-256 digest needs no flag.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
             </property>
             <property name="wordWrap">
              <bool>true</bool>
@@ -244,7 +244,7 @@
             <item>
              <widget class="QLabel" name="label_3">
               <property name="text">
-               <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Copies the published digest to the clipboard. To verify a stamp, run &lt;span style=&quot; font-weight:600;&quot;&gt;podverify &amp;lt;file&amp;gt; &amp;lt;txid&amp;gt; &amp;lt;salt&amp;gt;&lt;/span&gt; in the debug console.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+               <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;Copies the published digest to the clipboard. To verify a stamp, run &lt;span style=&quot; font-weight:600;&quot;&gt;podverify &amp;lt;file-sha256&amp;gt; &amp;lt;txid&amp;gt; &amp;lt;salt&amp;gt;&lt;/span&gt; in the debug console. A file-path target there requires -enablefilerpc=1.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
               </property>
               <property name="alignment">
                <set>Qt::AlignCenter</set>
