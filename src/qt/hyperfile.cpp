@@ -202,7 +202,15 @@ void Hyperfile::on_createPodButton_clicked()
     ui->checkButtonCloudflare->setHidden(false);
 
     std::vector<unsigned char> vLocator;
-    PodCidToLocator(strCid, vLocator);
+    const bool fHaveLocator = PodCidToLocator(strCid, vLocator);
+    if (!fHaveLocator)
+    {
+        QMessageBox notebox;
+        notebox.setText("The endpoint returned a CID that is not a CIDv0 sha2-256 multihash, "
+                        "so no retrieval locator was embedded in the stamp. The digest still "
+                        "binds the file; keep the CID yourself to fetch it later.");
+        notebox.exec();
+    }
 
     CWalletTx wtx;
     wtx.mapValue["comment"] = strCid;
