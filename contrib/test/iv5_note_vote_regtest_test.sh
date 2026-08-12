@@ -36,6 +36,15 @@
 # its own relay check refuses it as local state, the vote is never pushed, and
 # the note has already been burned in the per-epoch cast set.
 #
+# The second thing this settles is where the committee comes from. Every seat in
+# this run is one of the three well-known secp256k1 points 1G/2G/3G, which are also
+# the pubkeys of the three configured -finalitytallyprivkey scalars, so seat
+# identity, set hash, fleet agreement and the certificate are all equally produced
+# by an implementation that never reads the collateral registry. Section 5d holds
+# the chain inside the term BEFORE the one this run seats -- a term whose draw
+# anchors below every registration, which 5c proves is empty there -- and requires
+# nothing to be seated. That is the only check that separates the two.
+#
 # Regtest epoch layout: DAG fork 11, 300-block epochs, so epoch E covers
 # [11 + 300*(E-1), 310 + 300*(E-1)]. Boundary B sits at 311 because the IV5 tree
 # is only maintained by the schema-V3 epoch build.
@@ -149,10 +158,32 @@ COMMITTEE_ANCHOR_HEIGHT="$(epoch_start "$COMMITTEE_ANCHOR_EPOCH")"
 # The carrier epoch's state is built when the chain crosses into the term.
 COMMITTEE_SEATED_HEIGHT=$(( $(epoch_end "$COMMITTEE_CARRIER_EPOCH") + 1 ))
 
+# The term immediately before the one this run seats, and the height its draw
+# anchors to.
+#
+# This is the harness's one discriminator between a committee drawn from the
+# collateral registry and a committee that came from anywhere else. Every seat this
+# run produces is one of the three well-known secp256k1 points 1G/2G/3G, which are
+# also the pubkeys of the three configured -finalitytallyprivkey scalars, so an
+# implementation that ignored the registry and seated those three every term would
+# satisfy every other observation here. It would not satisfy this one: the previous
+# term anchors BELOW every registration, section 5c proves the registry is empty at
+# that height, and section 5d then requires the chain to seat nothing while it is
+# inside that term.
+PRE_TERM_EPOCH=$(( COMMITTEE_TERM_EPOCH - COMMITTEE_TERM_EPOCHS ))
+PRE_TERM_ANCHOR_EPOCH=$(( PRE_TERM_EPOCH - 2 ))
+PRE_TERM_ANCHOR_HEIGHT="$(epoch_start "$PRE_TERM_ANCHOR_EPOCH")"
+
+# The committee shape regtest draws: GetFinalityCommitteeSeats() seats at
+# GetFinalityCommitteeThresholdM(). Asserted, not just compared across nodes -- a
+# chain that agreed on M=1 or M=3 would otherwise pass.
+COMMITTEE_SEAT_COUNT=3
+COMMITTEE_THRESHOLD_M=2
+
 # Six rows is the floor: 3 seats x the 2N registry minimum. Two rows per member
 # key and one seat per key means the draw seats exactly the three node keys
 # whichever rows win.
-COLLATERAL_ROWS=6
+COLLATERAL_ROWS=$(( COMMITTEE_SEAT_COUNT * 2 ))
 COLLATERAL_VALUE=25000
 
 # Funding the pool. A shield never produces one note: it splits its value across
@@ -240,11 +271,15 @@ TALLY_SETTLE=45
 
 PASSED=0
 FAILED=0
+WARNED=0
+WARNINGS=()
 
 log()     { echo -e "${BLUE}[TEST]${NC} $*"; }
 success() { echo -e "${GREEN}[PASS]${NC} $*"; PASSED=$((PASSED + 1)); }
 fail()    { echo -e "${RED}[FAIL]${NC} $*"; FAILED=$((FAILED + 1)); }
-warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
+# Warns are advisory: no check pairs a warn with a PASS, so the pass count is fixed.
+# They are re-listed in Results because the run directory is deleted on success.
+warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; WARNED=$((WARNED + 1)); WARNINGS+=("$*"); }
 header()  { echo -e "\n${CYAN}========================================${NC}"; echo -e "${CYAN}  $*${NC}"; echo -e "${CYAN}========================================${NC}"; }
 
 node_dir()  { echo "$TEST_DIR/node$1"; }
@@ -267,6 +302,21 @@ jget() {
 import json, os, sys
 try:
     v = json.load(sys.stdin).get(os.environ["FIELD"], None)
+    if isinstance(v, bool): print(str(v).lower())
+    elif v is None: print("")
+    else: print(v)
+except Exception:
+    pass
+' <<< "$1" 2>/dev/null
+}
+
+# Field of a nested object: jget2 "$json" outer inner.
+jget2() {
+    OUTER="$2" INNER="$3" python3 -c '
+import json, os, sys
+try:
+    d = json.load(sys.stdin).get(os.environ["OUTER"], None)
+    v = d.get(os.environ["INNER"], None) if isinstance(d, dict) else None
     if isinstance(v, bool): print(str(v).lower())
     elif v is None: print("")
     else: print(v)
@@ -545,6 +595,20 @@ for k in ("committee", "committee_seats", "committee_members", "committee_pubkey
 '
 }
 
+# A 64-hex value that is not the all-zero hash. Every fleet-agreement check below
+# is guarded with this: an RPC that failed yields an empty field and an epoch with
+# no state yields the zero hash, and "all three nodes agree" is true of both.
+is_real_hash() { [ ${#1} -eq 64 ] && ! is_zero_hex "$1"; }
+
+# Reorganize() opens with an unconditional printf("REORGANIZE"), so this counts
+# actual block disconnections rather than a state a node could also have reached
+# by fast-forward.
+reorg_count() {
+    local c
+    c="$(grep -cF "REORGANIZE" "$(node_log "$1")" 2>/dev/null | tr -d '[:space:]')"
+    if is_int "$c"; then echo "$c"; else echo 0; fi
+}
+
 votes_in_range() {
     local node="$1" from="$2" to="$3" total=0 h c
     for ((h=from; h<=to; h++)); do
@@ -745,19 +809,49 @@ else
     exit 1
 fi
 
-# No pinned committee exists any more, on any network. Assert the negative
-# directly: nothing configures a committee, and the resolver says so.
+# The pinned-committee path is NOT gone from the daemon: GetFinalityTallyConfig
+# still parses -finalitytallypubkey and -finalitytallythreshold, and
+# CFinalityTallyConfig still computes a configured committeeSetHash from them. What
+# is asserted here is the narrower, true thing -- that path is unused in this run.
+# Both directions are checked, because the harness writing the configs is not
+# evidence about the daemon: no node is GIVEN those inputs, and every node reports
+# back that it holds zero configured committee pubkeys, no valid configured
+# committee and a zero configured set hash, with only its own member secret loaded.
 PINNED=0
 for ((n=0; n<NUM_NODES; n++)); do
-    grep -q "finalitytallypubkey" "$(node_dir "$n")/innova.conf" && PINNED=1
-    grep -q "finalitytallythreshold" "$(node_dir "$n")/innova.conf" && PINNED=1
+    grep -qE '^[[:space:]]*(finalitytallypubkey|finalitytallythreshold)[[:space:]]*=' \
+        "$(node_dir "$n")/innova.conf" && PINNED=1
 done
-if [ "$PINNED" -eq 0 ]; then
-    success "no node is configured with a committee key or threshold"
+CONFIG_OK=1
+CONFIG_WHY=""
+for ((n=0; n<NUM_NODES; n++)); do
+    FI="$(rpc "$n" getfinalityinfo 2>/dev/null)"
+    [ "$(jget "$FI" tally_pubkey_configured)" = "false" ] || \
+        { CONFIG_OK=0; CONFIG_WHY="node$n reports a configured committee pubkey"; }
+    [ "$(jget "$FI" tally_configured_pubkeys)" = "0" ] || \
+        { CONFIG_OK=0; CONFIG_WHY="node$n reports $(jget "$FI" tally_configured_pubkeys) configured pubkeys"; }
+    [ "$(jget "$FI" tally_committee_valid)" = "false" ] || \
+        { CONFIG_OK=0; CONFIG_WHY="node$n reports a valid CONFIGURED committee"; }
+    [ "$(jget "$FI" tally_threshold_valid)" = "false" ] || \
+        { CONFIG_OK=0; CONFIG_WHY="node$n reports a valid configured threshold"; }
+    is_zero_hex "$(jget "$FI" tally_committee_set_hash)" || \
+        { CONFIG_OK=0; CONFIG_WHY="node$n has a non-zero CONFIGURED committee set hash"; }
+    [ "$(jget "$FI" tally_privkey_valid)" = "true" ] || \
+        { CONFIG_OK=0; CONFIG_WHY="node$n did not load its member secret"; }
+done
+if [ "$PINNED" -eq 0 ] && [ "$CONFIG_OK" -eq 1 ]; then
+    success "the pinned-committee inputs are unused: no node is given one and every node reports 0 configured pubkeys, holding only its own member secret"
 else
-    fail "a node still carries pinned committee configuration"
+    fail "the pinned-committee path is in play (config files carry it: $PINNED; $CONFIG_WHY)"
+    exit 1
 fi
 
+# committee_source is a fixed string in the RPC, so it identifies WHICH resolver
+# this build ships, not where a seat came from. Where the seats came from is
+# settled in 5c/5d by PRE_TERM_ANCHOR_HEIGHT. committee_seated is false here for a
+# structural reason that holds for any implementation -- no epoch state exists yet,
+# so GetCommitteeForEpoch has no carrier record to read -- and is recorded as the
+# baseline rather than as evidence.
 DRAW_OK=1
 for ((n=0; n<NUM_NODES; n++)); do
     FI="$(rpc "$n" getfinalityinfo 2>/dev/null)"
@@ -765,7 +859,7 @@ for ((n=0; n<NUM_NODES; n++)); do
     [ "$(jget "$FI" committee_seated)" = "false" ] || DRAW_OK=0
 done
 if [ "$DRAW_OK" -eq 1 ]; then
-    success "every node resolves its committee from the collateral registry draw, and none is seated yet"
+    success "every node ships the collateral-registry-draw resolver and starts with nothing seated"
 else
     fail "a node did not report an unseated collateral-registry-draw committee"
 fi
@@ -775,10 +869,12 @@ fi
 # blocks away, so it is checked here rather than found there.
 NODE_TERM_LEN="$(jget "$(rpc 0 getfinalityinfo 2>/dev/null)" committee_term_epochs)"
 if [ "$NODE_TERM_LEN" = "$COMMITTEE_TERM_EPOCHS" ] && \
-   [ $(( COMMITTEE_TERM_EPOCH % COMMITTEE_TERM_EPOCHS )) -eq 0 ]; then
-    success "term $COMMITTEE_TERM_EPOCH is on the chain's $NODE_TERM_LEN-epoch term grid (anchor $COMMITTEE_ANCHOR_EPOCH, carrier $COMMITTEE_CARRIER_EPOCH)"
+   [ $(( COMMITTEE_TERM_EPOCH % COMMITTEE_TERM_EPOCHS )) -eq 0 ] && \
+   [ $(( PRE_TERM_EPOCH % COMMITTEE_TERM_EPOCHS )) -eq 0 ] && \
+   [ "$PRE_TERM_ANCHOR_HEIGHT" -le "$REGISTER_HEIGHT" ]; then
+    success "term $COMMITTEE_TERM_EPOCH is on the chain's $NODE_TERM_LEN-epoch term grid (anchor $COMMITTEE_ANCHOR_EPOCH, carrier $COMMITTEE_CARRIER_EPOCH), and the previous term $PRE_TERM_EPOCH anchors at $PRE_TERM_ANCHOR_HEIGHT, at or below the registration height $REGISTER_HEIGHT"
 else
-    fail "term $COMMITTEE_TERM_EPOCH is not a term start: the chain's term length is $NODE_TERM_LEN and the harness assumed $COMMITTEE_TERM_EPOCHS"
+    fail "the committee schedule is off the grid: term $COMMITTEE_TERM_EPOCH / previous term $PRE_TERM_EPOCH against a chain term length of $NODE_TERM_LEN (harness assumed $COMMITTEE_TERM_EPOCHS), previous anchor $PRE_TERM_ANCHOR_HEIGHT vs registration height $REGISTER_HEIGHT"
     exit 1
 fi
 
@@ -1149,6 +1245,20 @@ else
     exit 1
 fi
 
+# The same snapshot at the PREVIOUS term's anchor height. Every registration above
+# confirmed after this height, so a draw that reads the registry can seat nothing
+# for term $PRE_TERM_EPOCH. Section 5d then holds the chain inside that term and
+# requires exactly that. Without this row being empty, the unseated assertion there
+# would prove nothing, so the run stops here rather than reporting a pass it cannot
+# back.
+PRE_REGISTRY_N="$(jget "$(rpc 0 collateralnode finality-registry "$PRE_TERM_ANCHOR_HEIGHT" 2>&1)" count)"
+if [ "$PRE_REGISTRY_N" = "0" ]; then
+    success "the registry is empty at term $PRE_TERM_EPOCH's anchor height $PRE_TERM_ANCHOR_HEIGHT, so a registry-drawn committee cannot seat for that term"
+else
+    fail "the registry already holds '$PRE_REGISTRY_N' row(s) at height $PRE_TERM_ANCHOR_HEIGHT; term $PRE_TERM_EPOCH could legitimately seat and the discriminator in 5d would be worthless"
+    exit 1
+fi
+
 # ============================================================
 header "5d. The chain draws a committee from that registry"
 # ============================================================
@@ -1156,24 +1266,83 @@ header "5d. The chain draws a committee from that registry"
 # Every boundary from the register epoch to the carrier, not just the anchor's: a
 # skipped round leaves an epoch soft, and the finalized height stops advancing.
 advance_through_epochs $(( REGISTER_EPOCH + 1 )) "$COMMITTEE_CARRIER_EPOCH" || { fail "the epoch $(( REGISTER_EPOCH + 1 ))-$COMMITTEE_CARRIER_EPOCH vote rounds failed"; exit 1; }
+
+# ---------------------------------------------------------------------------
+# THE DISCRIMINATOR.
+#
+# The chain is now inside term $PRE_TERM_EPOCH. 5c proved the registry is empty at
+# that term's anchor height, so a committee drawn from the registry seats nothing
+# here. Every other observable this harness makes -- the seat identities, the set
+# hash, the fleet agreement, the certificate -- is equally produced by an
+# implementation that ignores the registry and seats the three configured member
+# keys every term, because those keys ARE 1G/2G/3G. This is the only check that
+# separates the two, and it separates them in the direction that matters: the
+# real draw MUST report nothing seated here, the fixed set MUST report seats.
+# ---------------------------------------------------------------------------
+PRE_SEAT_HEIGHT="$(height 0)"
+PRE_SEAT_OK=1
+PRE_SEAT_WHY=""
+for ((n=0; n<NUM_NODES; n++)); do
+    FI="$(rpc "$n" getfinalityinfo 2>/dev/null)"
+    T="$(jget "$FI" committee_term_epoch)"
+    S="$(jget "$FI" committee_seated)"
+    C="$(jget "$FI" committee_seat_count)"
+    [ "$T" = "$PRE_TERM_EPOCH" ] || { PRE_SEAT_OK=0; PRE_SEAT_WHY="node$n is in term '$T', not $PRE_TERM_EPOCH"; }
+    [ "$S" = "false" ]           || { PRE_SEAT_OK=0; PRE_SEAT_WHY="node$n reports committee_seated=$S"; }
+    [ "$C" = "0" ]               || { PRE_SEAT_OK=0; PRE_SEAT_WHY="node$n reports $C seat(s)"; }
+done
+if [ "$PRE_SEAT_OK" -eq 1 ]; then
+    success "at height $PRE_SEAT_HEIGHT the chain is in term $PRE_TERM_EPOCH and no node seats a committee, because that term's anchor registry was empty"
+else
+    fail "the seats do not come from the collateral registry: $PRE_SEAT_WHY, while term $PRE_TERM_EPOCH's anchor height $PRE_TERM_ANCHOR_HEIGHT held $PRE_REGISTRY_N registry rows"
+    for ((n=0; n<NUM_NODES; n++)); do
+        echo "  node$n: $(rpc "$n" getfinalityinfo 2>/dev/null | grep -E 'committee_(term_epoch|seated|seat_count|source)' | tr -d '\n')"
+    done
+    exit 1
+fi
+
+# The other half of the same claim, from the node's own forward-looking draw: the
+# term this run seats reads the registrations, at the anchor height the harness
+# computed, and reports it will seat. A resolver that never reads the registry
+# cannot produce this row.
+FI0="$(rpc 0 getfinalityinfo 2>/dev/null)"
+NEXT_TERM="$(jget2 "$FI0" committee_next_term_draw term_epoch)"
+NEXT_ANCHOR_H="$(jget2 "$FI0" committee_next_term_draw anchor_height)"
+NEXT_ROWS="$(jget2 "$FI0" committee_next_term_draw registry_rows)"
+NEXT_SEATED="$(jget2 "$FI0" committee_next_term_draw seated)"
+if [ "$NEXT_TERM" = "$COMMITTEE_TERM_EPOCH" ] && \
+   [ "$NEXT_ANCHOR_H" = "$COMMITTEE_ANCHOR_HEIGHT" ] && \
+   is_int "${NEXT_ROWS:-x}" && [ "${NEXT_ROWS:-0}" -ge "$COLLATERAL_ROWS" ] && \
+   [ "$NEXT_SEATED" = "true" ]; then
+    success "the term $COMMITTEE_TERM_EPOCH draw reads $NEXT_ROWS registry rows at anchor height $NEXT_ANCHOR_H and will seat"
+else
+    fail "the term $COMMITTEE_TERM_EPOCH draw does not read the registrations (term=$NEXT_TERM anchor=$NEXT_ANCHOR_H rows=$NEXT_ROWS seated=$NEXT_SEATED, expected $COMMITTEE_TERM_EPOCH/$COMMITTEE_ANCHOR_HEIGHT/>=$COLLATERAL_ROWS/true)"
+fi
+
 log "mining to $COMMITTEE_SEATED_HEIGHT, where epoch $COMMITTEE_CARRIER_EPOCH is built and carries the draw"
 mine_to 0 "$COMMITTEE_SEATED_HEIGHT" || { fail "could not mine to the seating height"; exit 1; }
 wait_sync "$COMMITTEE_SEATED_HEIGHT" || { fail "fleet did not sync to the seating height"; exit 1; }
 
+# M and the seat count are asserted against the values regtest is supposed to draw,
+# not merely compared between nodes: a chain that agreed fleet-wide on M=1 or M=3
+# would satisfy an equality-only check while certifying under the wrong threshold.
 SEAT_OK=1
-SEAT_M=""
+SEAT_WHY=""
 for ((n=0; n<NUM_NODES; n++)); do
     FI="$(rpc "$n" getfinalityinfo 2>/dev/null)"
-    [ "$(jget "$FI" committee_seated)" = "true" ] || SEAT_OK=0
-    [ "$(jget "$FI" committee_source)" = "collateral_registry_draw" ] || SEAT_OK=0
+    S="$(jget "$FI" committee_seated)"
+    T="$(jget "$FI" committee_term_epoch)"
     M="$(jget "$FI" committee_threshold_m)"
-    [ -z "$SEAT_M" ] && SEAT_M="$M"
-    [ "$M" = "$SEAT_M" ] || SEAT_OK=0
+    C="$(jget "$FI" committee_seat_count)"
+    [ "$S" = "true" ]                    || { SEAT_OK=0; SEAT_WHY="node$n committee_seated=$S"; }
+    [ "$T" = "$COMMITTEE_TERM_EPOCH" ]   || { SEAT_OK=0; SEAT_WHY="node$n is in term '$T', not $COMMITTEE_TERM_EPOCH"; }
+    [ "$M" = "$COMMITTEE_THRESHOLD_M" ]  || { SEAT_OK=0; SEAT_WHY="node$n threshold M='$M', expected $COMMITTEE_THRESHOLD_M"; }
+    [ "$C" = "$COMMITTEE_SEAT_COUNT" ]   || { SEAT_OK=0; SEAT_WHY="node$n seat count='$C', expected $COMMITTEE_SEAT_COUNT"; }
 done
 if [ "$SEAT_OK" -eq 1 ]; then
-    success "every node reports a seated committee drawn from the collateral registry (M=$SEAT_M)"
+    success "every node seats term $COMMITTEE_TERM_EPOCH's committee at exactly $COMMITTEE_SEAT_COUNT seats and M=$COMMITTEE_THRESHOLD_M"
 else
-    fail "the committee did not seat on every node"
+    fail "the committee did not seat as drawn on every node: $SEAT_WHY"
     for ((n=0; n<NUM_NODES; n++)); do
         echo "  node$n: $(rpc "$n" getfinalityinfo 2>/dev/null | head -40)"
     done
@@ -1190,27 +1359,51 @@ else
     fail "drawn seats [$SEATS0] are not the registered keys [$EXPECTED_SEATS]"
 fi
 
+# Ordered seat lists, each required to be a full committee first: three nodes that
+# all answered nothing are also three nodes that agree.
 SEATS_AGREE=1
-for ((n=1; n<NUM_NODES; n++)); do
-    [ "$(committee_seats "$n" | tr '\n' ' ')" = "$(committee_seats 0 | tr '\n' ' ')" ] || SEATS_AGREE=0
+SEATS_WHY=""
+for ((n=0; n<NUM_NODES; n++)); do
+    SN="$(committee_seats "$n" | grep -c . || true)"
+    is_int "$SN" && [ "$SN" -eq "$COMMITTEE_SEAT_COUNT" ] || \
+        { SEATS_AGREE=0; SEATS_WHY="node$n lists $SN seat(s), expected $COMMITTEE_SEAT_COUNT"; }
+    [ "$(committee_seats "$n" | tr '\n' ' ')" = "$(committee_seats 0 | tr '\n' ' ')" ] || \
+        { SEATS_AGREE=0; SEATS_WHY="node$n resolves a different seat list from node0"; }
 done
 if [ "$SEATS_AGREE" -eq 1 ]; then
-    success "all $NUM_NODES nodes resolve the identical committee in the identical seat order"
+    success "all $NUM_NODES nodes resolve the identical $COMMITTEE_SEAT_COUNT-seat committee in the identical seat order"
 else
-    fail "the nodes disagree about the drawn committee"
+    fail "the nodes disagree about the drawn committee: $SEATS_WHY"
     exit 1
 fi
 
-CARRIER_DIGESTS="$(for ((n=0; n<NUM_NODES; n++)); do
-    jget "$(rpc "$n" getepochinfo "$COMMITTEE_CARRIER_EPOCH" 2>/dev/null)" epoch_state_digest
-done | sort -u | wc -l | tr -d ' ')"
-SETHASHES="$(for ((n=0; n<NUM_NODES; n++)); do
-    jget "$(rpc "$n" getfinalityinfo 2>/dev/null)" committee_set_hash
-done | sort -u | wc -l | tr -d ' ')"
-if [ "$CARRIER_DIGESTS" = "1" ] && [ "$SETHASHES" = "1" ]; then
-    success "the carrier epoch $COMMITTEE_CARRIER_EPOCH has one state digest and one committee set hash across the fleet"
+# Fleet agreement on the two objects the draw produces. Counting distinct values is
+# not enough on its own: jget yields an empty string for a failed RPC and
+# getepochinfo yields the zero hash for an epoch it has not computed, so three
+# failures and three uncomputed epochs both count as one distinct value. Each value
+# has to be a real hash before agreement means anything.
+CARRIER_DIGEST=()
+SET_HASH=()
+for ((n=0; n<NUM_NODES; n++)); do
+    CARRIER_DIGEST+=("$(jget "$(rpc "$n" getepochinfo "$COMMITTEE_CARRIER_EPOCH" 2>/dev/null)" epoch_state_digest)")
+    SET_HASH+=("$(jget "$(rpc "$n" getfinalityinfo 2>/dev/null)" committee_set_hash)")
+done
+AGREE_OK=1
+AGREE_WHY=""
+for ((n=0; n<NUM_NODES; n++)); do
+    is_real_hash "${CARRIER_DIGEST[$n]}" || \
+        { AGREE_OK=0; AGREE_WHY="node$n has no carrier epoch digest ('${CARRIER_DIGEST[$n]}')"; }
+    is_real_hash "${SET_HASH[$n]}" || \
+        { AGREE_OK=0; AGREE_WHY="node$n has no committee set hash ('${SET_HASH[$n]}')"; }
+    [ "${CARRIER_DIGEST[$n]}" = "${CARRIER_DIGEST[0]}" ] || \
+        { AGREE_OK=0; AGREE_WHY="node$n's carrier epoch digest differs from node0's"; }
+    [ "${SET_HASH[$n]}" = "${SET_HASH[0]}" ] || \
+        { AGREE_OK=0; AGREE_WHY="node$n's committee set hash differs from node0's"; }
+done
+if [ "$AGREE_OK" -eq 1 ]; then
+    success "the carrier epoch $COMMITTEE_CARRIER_EPOCH has one non-zero state digest (${CARRIER_DIGEST[0]:0:16}) and one non-zero committee set hash (${SET_HASH[0]:0:16}) fleet-wide"
 else
-    fail "the carrier epoch digest or committee set hash differs across nodes (digests=$CARRIER_DIGESTS sethashes=$SETHASHES)"
+    fail "the carrier epoch digest or committee set hash is missing or divergent: $AGREE_WHY"
 fi
 
 # ============================================================
@@ -1555,13 +1748,19 @@ else
     fail "no tally certificate envelope was carried inside epoch $TALLY_EPOCH [$TALLY_WINDOW_CLOSE, $((TALLY_CARRY_HEIGHT + 20))]"
 fi
 
+# Advisory, not an assertion. A miner legitimately excludes a certificate it cannot
+# yet cover, so neither outcome is a verdict -- and a check whose clean side scores
+# a PASS would make the maximum attainable count depend on a benign race.
 CERT_REJECT=""
 for ((n=0; n<NUM_NODES; n++)); do
     R="$(grep -F "excluding finality tally certificate" "$(node_log "$n")" 2>/dev/null | tail -1)"
     [ -n "$R" ] && CERT_REJECT="node$n: $R"
 done
-[ -z "$CERT_REJECT" ] && success "no node excluded a tally certificate from a block it built" \
-                      || warn "a node excluded a certificate at some point: $CERT_REJECT"
+if [ -z "$CERT_REJECT" ]; then
+    log "no node excluded a tally certificate from a block it built"
+else
+    warn "a node excluded a certificate at some point: $CERT_REJECT"
+fi
 
 # ============================================================
 header "14. The epoch's tier comes from the note-weighted certificate"
@@ -1592,18 +1791,25 @@ fi
 # of the root and the whole epoch-state digest is the determinism claim: a
 # certificate is a function of the connected chain plus its own bytes, and the
 # node-local partial and complaint gossip that produced it never enters one.
+# node0's own values are required to be real first. getepochinfo answers an
+# uncomputed epoch with the zero hash for every one of these fields, and three
+# nodes reporting the zero hash agree just as well as three nodes reporting a
+# certificate.
 EPOCH_AGREE=1
+EPOCH_WHY=""
+is_real_hash "$TALLY_ROOT"   || { EPOCH_AGREE=0; EPOCH_WHY="node0's vote-set root is '$TALLY_ROOT'"; }
+is_real_hash "$TALLY_DIGEST" || { EPOCH_AGREE=0; EPOCH_WHY="node0's epoch state digest is '$TALLY_DIGEST'"; }
 for ((n=1; n<NUM_NODES; n++)); do
     PEER_EI="$(rpc "$n" getepochinfo "$TALLY_EPOCH" 2>/dev/null)"
-    [ "$(jget "$PEER_EI" finality_certificate)" = "$TALLY_CERT" ] || EPOCH_AGREE=0
-    [ "$(jget "$PEER_EI" vote_set_root)" = "$TALLY_ROOT" ] || EPOCH_AGREE=0
-    [ "$(jget "$PEER_EI" epoch_state_digest)" = "$TALLY_DIGEST" ] || EPOCH_AGREE=0
-    [ "$(jget "$PEER_EI" finality_tier)" = "$TALLY_TIER" ] || EPOCH_AGREE=0
+    [ "$(jget "$PEER_EI" finality_certificate)" = "$TALLY_CERT" ] || { EPOCH_AGREE=0; EPOCH_WHY="node$n has a different certificate"; }
+    [ "$(jget "$PEER_EI" vote_set_root)" = "$TALLY_ROOT" ] || { EPOCH_AGREE=0; EPOCH_WHY="node$n has a different vote-set root"; }
+    [ "$(jget "$PEER_EI" epoch_state_digest)" = "$TALLY_DIGEST" ] || { EPOCH_AGREE=0; EPOCH_WHY="node$n has a different epoch state digest"; }
+    [ "$(jget "$PEER_EI" finality_tier)" = "$TALLY_TIER" ] || { EPOCH_AGREE=0; EPOCH_WHY="node$n has a different tier"; }
 done
 if [ "$EPOCH_AGREE" -eq 1 ]; then
-    success "every node agrees on epoch $TALLY_EPOCH's certificate, vote-set root and state digest"
+    success "every node agrees on epoch $TALLY_EPOCH's certificate, vote-set root (${TALLY_ROOT:0:16}) and state digest (${TALLY_DIGEST:0:16})"
 else
-    fail "nodes disagree on epoch $TALLY_EPOCH's epoch state -- a note certificate has split the chain"
+    fail "epoch $TALLY_EPOCH's state is missing or divergent: $EPOCH_WHY"
 fi
 
 # ============================================================
@@ -1625,26 +1831,39 @@ header "15. A reorg that releases a seated member does not move the committee"
 # digests, and no self-heal, because the draw is stored rather than rederived.
 REORG_RUN=1
 if [ "${#REG_KEYIMAGES[@]}" -lt 1 ]; then
-    warn "no registration key image was captured; skipping the reorg divergence test"
+    fail "no registration key image was captured, so the reorg divergence test cannot run"
     REORG_RUN=0
 fi
 
 if [ "$REORG_RUN" -eq 1 ]; then
     FORK_HEIGHT="$(height 0)"
-    log "forking the fleet at height $FORK_HEIGHT (anchor height is $COMMITTEE_ANCHOR_HEIGHT)"
+    FORK_HASH="$(block_hash 0 "$FORK_HEIGHT")"
+    # Reorganize() prints unconditionally, so the count before the partition is the
+    # baseline the reorg has to beat. Anything already in the log -- a mining race
+    # earlier in the run -- would otherwise satisfy a bare grep.
+    REORG_BEFORE="$(reorg_count 0)"
+    log "forking the fleet at height $FORK_HEIGHT (${FORK_HASH:0:16}), anchor height is $COMMITTEE_ANCHOR_HEIGHT, node0 has logged $REORG_BEFORE REORGANIZE line(s) so far"
 
     # node2 leaves the mesh and becomes the branch that never sees the release.
-    for ((p=0; p<NUM_NODES; p++)); do
-        [ "$p" -eq 2 ] && continue
-        rpc 2 disconnectnode "127.0.0.1:$(node_port "$p")" >/dev/null 2>&1 || true
-        rpc "$p" disconnectnode "127.0.0.1:$(node_port 2)" >/dev/null 2>&1 || true
+    # Every node carries the others as addnode, so a single disconnect round races
+    # the reconnect timer; retry until node2 is provably alone. A leaked partition
+    # produces no divergence at all, so this is an assertion, not an observation.
+    PARTITIONED=0
+    P2=""
+    for _ in $(seq 1 10); do
+        for ((p=0; p<NUM_NODES; p++)); do
+            [ "$p" -eq 2 ] && continue
+            rpc 2 disconnectnode "127.0.0.1:$(node_port "$p")" >/dev/null 2>&1 || true
+            rpc "$p" disconnectnode "127.0.0.1:$(node_port 2)" >/dev/null 2>&1 || true
+        done
+        sleep 3
+        P2="$(peer_count 2)"
+        [ "$P2" = "0" ] && { PARTITIONED=1; break; }
     done
-    sleep 3
-    P2="$(peer_count 2)"
-    if [ "$P2" = "0" ]; then
+    if [ "$PARTITIONED" -eq 1 ]; then
         success "node2 is partitioned from the fleet at height $FORK_HEIGHT"
     else
-        warn "node2 still reports $P2 peer(s); the partition may be incomplete"
+        fail "node2 still reports $P2 peer(s) after 10 disconnect rounds; the branches cannot diverge"
     fi
 
     # Branch X (node0/node1): release a seated member's collateral and spend it.
@@ -1653,7 +1872,7 @@ if [ "$REORG_RUN" -eq 1 ]; then
     if echo "$REL" | grep -q '"released"'; then
         success "node0 released the hold on collateral note ${RELEASED_KI:0:16}"
     else
-        warn "releaseprivate did not report a release: $(echo "$REL" | head -2)"
+        fail "releaseprivate did not report a release, so there is no divergence to drive: $(echo "$REL" | head -2)"
     fi
 
     # Spend it. 20000 INN is chosen so the released note is the only unlocked
@@ -1665,12 +1884,12 @@ if [ "$REORG_RUN" -eq 1 ]; then
     if [ ${#SPEND_TXID} -eq 64 ]; then
         success "node0 spent the released collateral on branch X (txid ${SPEND_TXID:0:16})"
     else
-        warn "the branch-X release spend failed: $(echo "$SPEND" | head -3)"
+        fail "the branch-X release spend failed, so branch X does not carry the release: $(echo "$SPEND" | head -3)"
     fi
 
     # mine_chunk, not mine_to: mine_to waits for the fleet to catch up, and the
     # node it would wait for is the one this section has just partitioned off.
-    mine_chunk 0 $((FORK_HEIGHT + 12)) || warn "branch X did not extend"
+    mine_chunk 0 $((FORK_HEIGHT + 12)) || fail "branch X did not extend"
     X_TIP="$(height 0)"
 
     # The driver has to actually fire, or the rest of this section proves
@@ -1685,11 +1904,11 @@ if [ "$REORG_RUN" -eq 1 ]; then
         DRIVER_FIRED=1
         success "the release deregistered a row on branch X ($REG_X_TIP at the tip vs $REG_X_ANCHOR at the anchor)"
     else
-        warn "the branch-X spend did not consume a registered note; the divergence driver did not fire"
+        fail "the branch-X spend did not consume a registered note ($REG_X_TIP at the tip vs $REG_X_ANCHOR at the anchor); nothing in this section would then be driven by a release"
     fi
-    if [ "$DRIVER_FIRED" -eq 1 ] && [ "$REG_X_ANCHOR" -ge "$COLLATERAL_ROWS" ]; then
-        success "the anchored registry is unmoved by a release above the anchor height"
-    elif [ "$DRIVER_FIRED" -eq 1 ]; then
+    if is_int "$REG_X_ANCHOR" && [ "$REG_X_ANCHOR" -ge "$COLLATERAL_ROWS" ]; then
+        success "the anchored registry is unmoved by a release above the anchor height ($REG_X_ANCHOR rows)"
+    else
         fail "a release above the anchor height changed the ANCHORED registry ($REG_X_ANCHOR < $COLLATERAL_ROWS)"
     fi
 
@@ -1704,31 +1923,63 @@ if [ "$REORG_RUN" -eq 1 ]; then
     Y_TIP="$(height 2)"
     log "branch X tip=$X_TIP  branch Y tip=$Y_TIP"
 
-    if [ "$Y_TIP" -gt "$X_TIP" ]; then
+    if is_int "$Y_TIP" && is_int "$X_TIP" && [ "$Y_TIP" -gt "$X_TIP" ]; then
         success "branch Y ($Y_TIP) outruns branch X ($X_TIP), so the fleet must reorganise onto it"
     else
-        warn "branch Y did not outrun branch X; the reorg may not trigger"
+        fail "branch Y ($Y_TIP) did not outrun branch X ($X_TIP); node0 would have nothing to reorganise onto"
+    fi
+
+    # The two branches, identified by the block each holds at the first height above
+    # the fork. These are what the convergence check below compares -- heights are
+    # equal whether node0 reorganised onto Y or node2 abandoned Y for X, and only
+    # the hashes tell those apart.
+    X_FORK1="$(block_hash 0 $((FORK_HEIGHT + 1)))"
+    Y_FORK1="$(block_hash 2 $((FORK_HEIGHT + 1)))"
+    if [ ${#X_FORK1} -eq 64 ] && [ ${#Y_FORK1} -eq 64 ] && [ "$X_FORK1" != "$Y_FORK1" ]; then
+        success "the branches really diverged at $((FORK_HEIGHT + 1)): X holds ${X_FORK1:0:16}, Y holds ${Y_FORK1:0:16}"
+    else
+        fail "the branches did not diverge at $((FORK_HEIGHT + 1)) (X='$X_FORK1' Y='$Y_FORK1'); there is no reorg to observe"
     fi
 
     # Rejoin. node0 reorganises X -> Y with the release still in its database.
     connect_mesh
+    # Advisory: a peer slot that has not re-formed yet is a benign race, and the tip
+    # hash convergence below is the thing that actually has to happen.
     wait_peers >/dev/null 2>&1 || warn "the mesh did not fully re-form"
     REORG_OK=0
+    BH0=""
     for _ in $(seq 1 240); do
         H0="$(height 0)"; H2="$(height 2)"
-        if is_int "$H0" && is_int "$H2" && [ "$H0" = "$H2" ]; then REORG_OK=1; break; fi
+        if is_int "$H0" && is_int "$H2" && [ "$H0" = "$H2" ]; then
+            BH0="$(block_hash 0 "$H0")"
+            BH2="$(block_hash 2 "$H2")"
+            if [ ${#BH0} -eq 64 ] && [ "$BH0" = "$BH2" ]; then REORG_OK=1; break; fi
+        fi
         sleep 1
     done
     if [ "$REORG_OK" -eq 1 ]; then
-        success "node0 reorganised onto branch Y and the fleet is at one height ($(height 0))"
+        success "the fleet converged on one tip: height $(height 0), hash ${BH0:0:16}"
     else
-        fail "the fleet did not converge after the partition (node0=$(height 0) node2=$(height 2))"
+        fail "the fleet did not converge on one tip after the partition (node0=$(height 0)/$(block_hash 0 "$(height 0)") node2=$(height 2)/$(block_hash 2 "$(height 2)"))"
     fi
 
-    if grep -qE "REORGANIZE|Reorganize" "$(node_log 0)" 2>/dev/null; then
-        success "node0's log records the reorganisation"
+    # Which branch it converged ON. node0 has to be holding branch Y's block at the
+    # first height above the fork, which means it disconnected its own.
+    NOW_FORK1="$(block_hash 0 $((FORK_HEIGHT + 1)))"
+    if [ ${#Y_FORK1} -eq 64 ] && [ "$NOW_FORK1" = "$Y_FORK1" ] && [ "$Y_FORK1" != "$X_FORK1" ]; then
+        success "node0 replaced its own block at $((FORK_HEIGHT + 1)) (${X_FORK1:0:16}) with branch Y's (${Y_FORK1:0:16})"
     else
-        warn "node0 logged no reorganisation; it may have had nothing to disconnect"
+        fail "node0 did not adopt branch Y at $((FORK_HEIGHT + 1)): it holds ${NOW_FORK1:0:16}, branch X had ${X_FORK1:0:16} and branch Y ${Y_FORK1:0:16}"
+    fi
+
+    # And that it got there by disconnecting blocks rather than by fast-forward.
+    # Reorganize() prints REORGANIZE unconditionally, so a count that has not moved
+    # means no disconnect happened on this node.
+    REORG_AFTER="$(reorg_count 0)"
+    if [ "$REORG_AFTER" -gt "$REORG_BEFORE" ]; then
+        success "node0 logged a reorganisation ($REORG_BEFORE -> $REORG_AFTER REORGANIZE lines)"
+    else
+        fail "node0 logged no new reorganisation ($REORG_BEFORE -> $REORG_AFTER): it disconnected nothing"
     fi
 
     # A fourth node, started from an empty datadir, syncs branch Y from nothing.
@@ -1768,38 +2019,40 @@ if [ "$REORG_RUN" -eq 1 ]; then
         R_DIG="$(jget "$(rpc 0 getepochinfo "$COMMITTEE_CARRIER_EPOCH" 2>/dev/null)" epoch_state_digest)"
         F_DIG="$(jget "$(rpc "$FRESH" getepochinfo "$COMMITTEE_CARRIER_EPOCH" 2>/dev/null)" epoch_state_digest)"
 
-        if [ -n "$R_SEATS" ] && [ "$R_SEATS" = "$F_SEATS" ]; then
-            success "the reorganised node and the fresh node draw the identical committee"
+        # Each value has to be a real committee / real hash before equality means
+        # anything: two nodes that both answered nothing are also two nodes that
+        # agree.
+        R_SEAT_N="$(committee_seats 0 | grep -c . || true)"
+        if is_int "$R_SEAT_N" && [ "$R_SEAT_N" -eq "$COMMITTEE_SEAT_COUNT" ] && \
+           [ "$R_SEATS" = "$F_SEATS" ]; then
+            success "the reorganised node and the fresh node draw the identical $COMMITTEE_SEAT_COUNT-seat committee"
             log "  seats: $R_SEATS"
         else
-            fail "COMMITTEE SPLIT: reorganised [$R_SEATS] vs fresh-synced [$F_SEATS]"
+            fail "COMMITTEE SPLIT or empty: reorganised [$R_SEATS] vs fresh-synced [$F_SEATS]"
         fi
-        if [ -n "$R_SET" ] && [ "$R_SET" = "$F_SET" ]; then
+        if is_real_hash "$R_SET" && [ "$R_SET" = "$F_SET" ]; then
             success "both nodes report the same committee set hash ${R_SET:0:16}"
         else
-            fail "COMMITTEE SET HASH SPLIT: reorganised $R_SET vs fresh-synced $F_SET"
+            fail "COMMITTEE SET HASH SPLIT or empty: reorganised '$R_SET' vs fresh-synced '$F_SET'"
         fi
-        if [ -n "$R_DIG" ] && [ "$R_DIG" = "$F_DIG" ]; then
+        if is_real_hash "$R_DIG" && [ "$R_DIG" = "$F_DIG" ]; then
             success "the carrier epoch $COMMITTEE_CARRIER_EPOCH digest is identical on both (${R_DIG:0:16})"
         else
-            fail "EPOCH STATE DIGEST SPLIT: reorganised $R_DIG vs fresh-synced $F_DIG"
+            fail "EPOCH STATE DIGEST SPLIT or empty: reorganised '$R_DIG' vs fresh-synced '$F_DIG'"
         fi
 
-        # What the whole section rests on: the reorganising node held the losing
-        # branch's release in its database while it restaged the epoch suffix,
-        # and the fresh node never had it. If those two agree, the draw is a
-        # function of the chain and not of how a node arrived at it.
-        if [ "$DRIVER_FIRED" -eq 1 ]; then
-            success "the divergence was driven with a real release above the anchor height"
-        else
-            warn "the committee agreement above was not driven by an actual release"
-        fi
+        # What the whole section rests on, restated rather than re-asserted: the
+        # reorganising node held the losing branch's release in its database while
+        # it restaged the epoch suffix, and the fresh node never had it. That the
+        # release fired is already a hard assertion above (DRIVER_FIRED).
+        log "the agreement above was driven by a real release: branch X read $REG_X_TIP registry rows at its tip and $REG_X_ANCHOR at the anchor"
         R_ANCHOR="$(jget "$(rpc 0 collateralnode finality-registry "$COMMITTEE_ANCHOR_HEIGHT" 2>&1)" count)"
         F_ANCHOR="$(jget "$(rpc "$FRESH" collateralnode finality-registry "$COMMITTEE_ANCHOR_HEIGHT" 2>&1)" count)"
-        if [ -n "$R_ANCHOR" ] && [ "$R_ANCHOR" = "$F_ANCHOR" ]; then
+        if is_int "${R_ANCHOR:-x}" && [ "${R_ANCHOR:-0}" -ge "$COLLATERAL_ROWS" ] && \
+           [ "$R_ANCHOR" = "$F_ANCHOR" ]; then
             success "both nodes read the identical anchored registry ($R_ANCHOR rows at height $COMMITTEE_ANCHOR_HEIGHT)"
         else
-            fail "ANCHORED REGISTRY SPLIT: reorganised $R_ANCHOR rows vs fresh-synced $F_ANCHOR rows"
+            fail "ANCHORED REGISTRY SPLIT or empty: reorganised '$R_ANCHOR' rows vs fresh-synced '$F_ANCHOR' rows, expected >= $COLLATERAL_ROWS on both"
         fi
 
         rpc "$FRESH" stop >/dev/null 2>&1 || true
@@ -1876,5 +2129,15 @@ header "Results"
 # ============================================================
 echo -e "${GREEN}Passed: $PASSED${NC}"
 echo -e "${RED}Failed: $FAILED${NC}"
+echo -e "${YELLOW}Warnings: $WARNED${NC}"
+# The run directory is deleted on success, so a warn that scrolled past hours ago
+# would otherwise leave no trace. None of them can hide a missing assertion -- no
+# check has a warn on one side and a PASS on the other -- but they are the record
+# of what raced.
+if [ "$WARNED" -gt 0 ]; then
+    for w in "${WARNINGS[@]}"; do
+        echo -e "${YELLOW}  - $w${NC}"
+    done
+fi
 [ "$FAILED" -eq 0 ] || exit 1
 exit 0
