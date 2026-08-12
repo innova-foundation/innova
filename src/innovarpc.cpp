@@ -447,6 +447,7 @@ static const CRPCCommand vRPCCommands[] =
     { "nyx",                    &nyx,                    false,  false},
 
     { "proofofdata",          &proofofdata,              false,  true  },
+    { "podverify",            &podverify,                false,  false },
 
     // Innova Name Commands
     { "name_new",               &name_new,               false,  true },
@@ -522,8 +523,6 @@ static const CRPCCommand vRPCCommands[] =
     { "hyperfileversion",       &hyperfileversion,       true,   false },
     { "hyperfileupload",        &hyperfileupload,        false,  false },
     { "hyperfilepod",           &hyperfilepod,           false,  false },
-    { "hyperfileduo",           &hyperfileduo,           false,  false },
-    { "hyperfileduopod",        &hyperfileduopod,        false,  false },
     { "hyperfilegetblock",      &hyperfilegetblock,      true,   false },
     { "hyperfilegetstat",       &hyperfilegetstat,       true,   false },
 #endif
