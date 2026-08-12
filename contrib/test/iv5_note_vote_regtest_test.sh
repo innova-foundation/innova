@@ -1991,7 +1991,10 @@ if [ "$REORG_RUN" -eq 1 ]; then
     NUM_NODES=$((NUM_NODES - 1))
     # A fresh node holds no member secret and needs none: it only has to derive
     # the same committee from the same chain.
-    sed -i "/^finalitytallyprivkey=/d" "$(node_dir "$FRESH")/innova.conf"
+    # -i.bak, not -i: BSD sed reads the argument after -i as the backup suffix, so
+    # the bare form silently edits nothing and leaves the line in place.
+    sed -i.bak "/^finalitytallyprivkey=/d" "$(node_dir "$FRESH")/innova.conf"
+    rm -f "$(node_dir "$FRESH")/innova.conf.bak"
     "$INNOVAD" -datadir="$(node_dir "$FRESH")" -regtest -daemon >/dev/null 2>&1
     if wait_rpc "$FRESH"; then
         for ((p=0; p<NUM_NODES; p++)); do
