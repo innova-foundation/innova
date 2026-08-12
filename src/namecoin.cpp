@@ -30,7 +30,10 @@ extern std::string _(const char* psz);
 class CNamecoinHooks : public CHooks
 {
 public:
-	virtual bool IsNameFeeEnough(CTxDB& txdb, const CTransaction &tx);
+    virtual bool CheckNameTxShape(const CTransaction& tx, int nMinedHeight,
+                                  string& strReason);
+    virtual bool CheckNameTxFee(const CTransaction& tx, int64_t nFees,
+                                bool& fPaidNameFeeOut, string& strReason);
     //virtual bool CheckInputs(const CTransactionRef& tx, const CBlockIndex* pindexBlock, vector<nameTempProxy> &vName, const CDiskTxPos& pos, const CAmount& txFee);
     //virtual bool ConnectInputs(CTxDB& txdb, map<uint256, CTxIndex>& mapTestPool, const CTransaction& tx, vector<CTransaction>& vTxPrev, vector<CTxIndex>& vTxindex, const CBlockIndex* pindexBlock, const CDiskTxPos& txPos, vector<nameTempProxy>& vName);
     virtual bool DisconnectInputs(const CTransaction& tx);
@@ -694,6 +697,23 @@ CHooks* InitHook()
     return new CNamecoinHooks();
 }
 
+// A name op's fee is enough if it covers the rate at any of the last 10 PoW
+// blocks, which absorbs the rate drifting between broadcast and mining.
+bool NameFeeCovers(const CBlockIndex* pindexBlock, const NameTxInfo& nti,
+                   int64_t txFee)
+{
+    const CBlockIndex* lastPoW = GetLastBlockIndex(pindexBlock, false);
+    for (int i = 1; i <= 10 && lastPoW; i++)
+    {
+        if (txFee >= GetNameOpFee(lastPoW, nti.nRentalDays, nti.op,
+                                  nti.vchName, nti.vchValue))
+            return true;
+        lastPoW = lastPoW->pprev ? GetLastBlockIndex(lastPoW->pprev, false)
+                                 : NULL;
+    }
+    return false;
+}
+
 // version for connectInputs. Used when accepting blocks.
 bool IsNameFeeEnough(CTxDB& txdb, const CTransaction& tx,
                      const NameTxInfo& nti,
@@ -719,42 +739,73 @@ bool IsNameFeeEnough(CTxDB& txdb, const CTransaction& tx,
     }
     txFee = tx.GetValueIn(mapInputs) - tx.GetValueOut();
 
-
-    // scan last 10 PoW block for tx fee that matches the one specified in tx
-    const CBlockIndex* lastPoW = GetLastBlockIndex(pindexBlock, false);
-    //printf("IsNameFeeEnough(): pindexBlock->nHeight = %d, op = %s, nameSize = %lu, valueSize = %lu, nRentalDays = %d, txFee = %"PRI64d"\n",
-    //       lastPoW->nHeight, nameFromOp(nti.op).c_str(), nti.vchName.size(), nti.vchValue.size(), nti.nRentalDays, txFee);
-
-    bool txFeePass = false;
-    for (int i = 1; i <= 10; i++)
-    {
-        int64_t netFee = GetNameOpFee(lastPoW, nti.nRentalDays, nti.op, nti.vchName, nti.vchValue);
-        //printf("                 : netFee = %"PRI64d", lastPoW->nHeight = %d\n", netFee, lastPoW->nHeight);
-        if (txFee >= netFee)
-        {
-            txFeePass = true;
-            break;
-        }
-        lastPoW = GetLastBlockIndex(lastPoW->pprev, false);
-    }
-    return txFeePass;
+    return NameFeeCovers(pindexBlock, nti, txFee);
 }
 
-// version for mempool::accept. Used to check newly submited transaction that has yet to get in a block.
-bool CNamecoinHooks::IsNameFeeEnough(CTxDB& txdb, const CTransaction &tx)
+// Relay/production policy, input-independent half: does this tx carry a name operation
+// connect would index at nMinedHeight? Fee and name-DB rules are checked elsewhere.
+bool CNamecoinHooks::CheckNameTxShape(const CTransaction& tx, int nMinedHeight,
+                                      string& strReason)
 {
+    strReason.clear();
     if (tx.nVersion != NAMECOIN_TX_VERSION)
     {
-        printf("IsNameFeeEnough() Not Name TX Version, Returning False\n");
+        strReason = "not a name transaction";
         return false;
     }
 
     NameTxInfo nti;
     if (!DecodeNameTx(tx, nti))
+    {
+        strReason = "name script does not decode";
         return false;
+    }
 
-    map<uint256, CTxIndex> unused;
-    return ::IsNameFeeEnough(txdb, tx, nti, pindexBest, unused, false, false);
+    if (nti.op != OP_NAME_NEW && nti.op != OP_NAME_UPDATE &&
+        nti.op != OP_NAME_DELETE)
+    {
+        strReason = "unknown name operation";
+        return false;
+    }
+
+    if (nti.nRentalDays > GetMaxRentalDays(nMinedHeight))
+    {
+        strReason = strprintf("rental term %d exceeds the %d-day bound at height %d",
+                              nti.nRentalDays, GetMaxRentalDays(nMinedHeight),
+                              nMinedHeight);
+        return false;
+    }
+
+    return true;
+}
+
+// Relay/production policy, input-dependent half. name_delete buys no term and
+// owes no name fee, so it stays on the ordinary minimum like any other tx.
+bool CNamecoinHooks::CheckNameTxFee(const CTransaction& tx, int64_t nFees,
+                                    bool& fPaidNameFeeOut, string& strReason)
+{
+    fPaidNameFeeOut = false;
+    strReason.clear();
+
+    NameTxInfo nti;
+    if (tx.nVersion != NAMECOIN_TX_VERSION || !DecodeNameTx(tx, nti))
+    {
+        strReason = "not a decodable name transaction";
+        return false;
+    }
+
+    if (nti.op != OP_NAME_NEW && nti.op != OP_NAME_UPDATE)
+        return true;
+
+    if (!NameFeeCovers(pindexBest, nti, nFees))
+    {
+        strReason = strprintf("fee %" PRId64 " does not cover the rate for a %d-day term",
+                              nFees, nti.nRentalDays);
+        return false;
+    }
+
+    fPaidNameFeeOut = true;
+    return true;
 }
 
 bool checkNameValues(NameTxInfo& ret)

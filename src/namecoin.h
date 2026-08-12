@@ -401,6 +401,8 @@ std::vector<unsigned char> vchFromString(const std::string &str);
 std::string nameFromOp(int op);
 
 int64_t GetNameOpFee(const CBlockIndex* pindexBlock, const int nRentalDays, int op, const std::vector<unsigned char> &vchName, const std::vector<unsigned char> &vchValue);
+struct NameTxInfo;
+bool NameFeeCovers(const CBlockIndex* pindexBlock, const NameTxInfo& nti, int64_t txFee);
 CAmount GetNameOpFee2(const CBlockIndex* pindexBlock, const int nRentalDays, int op, const std::vector<unsigned char> &vchName, const std::vector<unsigned char> &vchValue);
 
 struct NameTxInfo

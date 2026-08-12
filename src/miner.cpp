@@ -10,6 +10,7 @@
 #include "collateralnode.h"
 #include "dag.h"
 #include "finality.h"
+#include "namecoin.h"
 
 #include <memory>
 
@@ -672,6 +673,21 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             // candidate block.
             if (TransactionSpendsAnyOutpoint(tx, setFinalityStakeProofOutpoints))
                 continue;
+
+            // The term bound moves with height, so a name tx the mempool took
+            // at an earlier height can be one connect would skip by the time it
+            // would be mined. Re-ask at the candidate height and leave it out.
+            if (tx.nVersion == NAMECOIN_TX_VERSION)
+            {
+                std::string strNameReason;
+                if (!hooks->CheckNameTxShape(tx, nCandidateHeight, strNameReason))
+                {
+                    printf("CreateNewBlock: excluding name transaction %s: %s\n",
+                           tx.GetHash().ToString().substr(0,10).c_str(),
+                           strNameReason.c_str());
+                    continue;
+                }
+            }
 
             COrphan* porphan = NULL;
             double dPriority = 0;

@@ -2329,8 +2329,17 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
     if (tx.IsCoinStake())
         return tx.DoS(100, error("CTxMemPool::accept() : coinstake as individual tx"));
 
-    //bool isNameTx = hooks->IsNameFeeEnough(txdb, tx); //accept name tx with correct fee.
-    bool isNameTx = tx.nVersion == NAMECOIN_TX_VERSION;
+    // A name op's scripts are nonstandard, so it is exempt only if it carries an operation
+    // connect would index at the candidate height. The fee half is checked below.
+    string strNameReason;
+    const bool isNameTx =
+        tx.nVersion == NAMECOIN_TX_VERSION &&
+        hooks->CheckNameTxShape(tx, nBestHeight + 1, strNameReason);
+    if (tx.nVersion == NAMECOIN_TX_VERSION && !isNameTx)
+        return error("CTxMemPool::accept() : name transaction %s rejected: %s",
+                     tx.GetHash().ToString().substr(0,10).c_str(),
+                     strNameReason.c_str());
+
     // Rather not work on nonstandard transactions (unless -testnet)
     string reason;
     if (!fTestNet && !IsStandardTx(tx, reason) && !isNameTx) //!IsStandardTx(tx, reason)
@@ -2788,7 +2797,19 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
 
             const bool fFeeExempt = nFees == 0 && IsPrivacyVNextFeeExemptShape(tx);
 
-            if (nFees < txMinFee && !isNameTx && !fFeeExempt)
+            // The name rate replaces the ordinary minimum only for the ops that
+            // owe it, and only once the tx is shown to have paid it.
+            bool fPaidNameFee = false;
+            if (isNameTx)
+            {
+                string strFeeReason;
+                if (!hooks->CheckNameTxFee(tx, nFees, fPaidNameFee, strFeeReason))
+                    return error("CTxMemPool::accept() : name transaction %s rejected: %s",
+                                 hash.ToString().substr(0,10).c_str(),
+                                 strFeeReason.c_str());
+            }
+
+            if (nFees < txMinFee && !fPaidNameFee && !fFeeExempt)
             {
                 return error("CTxMemPool::accept() : not enough fees %s, %" PRId64" < %" PRId64,
                              hash.ToString().c_str(),

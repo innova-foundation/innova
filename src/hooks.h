@@ -30,7 +30,17 @@ struct nameTempProxy;
 class CHooks
 {
 public:
-    virtual bool IsNameFeeEnough(CTxDB& txdb, const CTransaction& tx) = 0;
+    // Relay/production policy for a name-version tx, split so each half is asked
+    // where its inputs are known. Shape is input-independent and answers "would
+    // connect index this at nMinedHeight"; fee needs the resolved input value.
+    virtual bool CheckNameTxShape(const CTransaction& tx, int nMinedHeight,
+                                  std::string& strReason) = 0;
+    // False only when a name fee is owed and the tx does not cover it.
+    // fPaidNameFeeOut says the tx paid a name rate, and so has earned its way
+    // out of the ordinary minimum fee; an op that owes no name fee has not.
+    virtual bool CheckNameTxFee(const CTransaction& tx, int64_t nFees,
+                                bool& fPaidNameFeeOut,
+                                std::string& strReason) = 0;
     //virtual bool CheckInputs(const CTransactionRef& tx, const CBlockIndex* pindexBlock, std::vector<nameTempProxy> &vName, const CDiskTxPos& pos, const CAmount& txFee) = 0;
     //virtual bool ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTxIndex>& mapTestPool, const CDiskTxPos& posThisTx, const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, unsigned int flags, bool fValidateSig) = 0;
     virtual bool DisconnectInputs(const CTransaction& tx) = 0;
