@@ -1228,7 +1228,21 @@ Value collateralnode(const Array& params, bool fHelp)
         // snapshot never picks one from live node state.
         int nAnchorHeight = nBestHeight;
         if (params.size() >= 2)
-            nAnchorHeight = params[1].get_int();
+        {
+            // 'collateralnode' takes a different argument list per subcommand, so the
+            // client's conversion table cannot type this one and the height arrives as
+            // whatever the caller typed.
+            if (params[1].type() == int_type)
+                nAnchorHeight = params[1].get_int();
+            else
+            {
+                const std::string strHeight = params[1].get_str();
+                if (strHeight.empty() ||
+                    strHeight.find_first_not_of("0123456789") != std::string::npos)
+                    throw runtime_error("the anchor height must be a whole number");
+                nAnchorHeight = (int)atoi64(strHeight);
+            }
+        }
         if (nAnchorHeight < 0)
             throw runtime_error("the anchor height cannot be negative");
 
