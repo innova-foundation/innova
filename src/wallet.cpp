@@ -11785,9 +11785,28 @@ static bool PreparePrivacyVNextSpend(
                 "notes holding it; the anchor tree holds %" PRIu64 " leaves",
                 FormatMoney(nAmount + nFee).c_str(), nAnchorTreeSize);
         else
+        {
+            // Distinguish "not yet indexed" from "insufficient": change notes wait for the
+            // next epoch build.
+            const int64_t nSpendable = pwallet->GetPrivacyVNextBalance();
+            const int64_t nPending = pwallet->GetPrivacyVNextUnconfirmedBalance();
+            const int64_t nHeld = pwallet->GetPrivacyVNextCollateralBalance();
             strErrorOut = strprintf(
-                "insufficient spendable shielded balance: need %s including the %s fee",
-                FormatMoney(nAmount + nFee).c_str(), FormatMoney(nFee).c_str());
+                "insufficient spendable shielded balance: need %s including the %s "
+                "fee, and %s of %s is spendable now",
+                FormatMoney(nAmount + nFee).c_str(), FormatMoney(nFee).c_str(),
+                FormatMoney(nSpendable).c_str(),
+                FormatMoney(nSpendable + nPending + nHeld).c_str());
+            if (nPending > 0)
+                strErrorOut += strprintf(
+                    "; %s is waiting for %d confirmations or for the epoch build "
+                    "that gives it a tree position",
+                    FormatMoney(nPending).c_str(), MIN_SHIELDED_SPEND_DEPTH);
+            if (nHeld > 0)
+                strErrorOut += strprintf(
+                    "; %s is held against a collateral registration",
+                    FormatMoney(nHeld).c_str());
+        }
         return false;
     }
 
