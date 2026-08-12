@@ -1600,9 +1600,12 @@ fi
 
 # A block whose ConnectBlockNoteVotes rejected the vote is invalid, so a carrier
 # that every node holds at the same height is a connected vote on every node.
+# node0's hash has to be a real one first: three nodes whose getblockhash all
+# failed also return the same value.
 CONVERGED=1
 for H in $CARRY_HEIGHTS; do
     BH0="$(block_hash 0 "$H")"
+    [ ${#BH0} -eq 64 ] || CONVERGED=0
     for ((n=1; n<NUM_NODES; n++)); do
         [ "$(block_hash "$n" "$H")" = "$BH0" ] || CONVERGED=0
     done
