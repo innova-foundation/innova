@@ -12,7 +12,10 @@
 #include "init.h"
 #include "wallet.h"
 #include "walletdb.h"
+#include "pod.h"
 
+#include <QApplication>
+#include <QClipboard>
 #include <QScrollArea>
 #include <QUrl>
 #include <QFileDialog>
@@ -47,97 +50,84 @@ void ProofOfImage::on_createPushButton_clicked()
 {
     if(fileName == "")
     {
-  noImageSelected();
-  return;
+        noImageSelected();
+        return;
     }
-
-    //read whole file
-    std::ifstream imageFile;
-    imageFile.open(fileName.toStdString().c_str(), std::ios::binary);
-std::vector<char> imageContents((std::istreambuf_iterator<char>(imageFile)),
-                               std::istreambuf_iterator<char>());
-
-    //hash file
-    uint256 imagehash = SerializeHash(imageContents);
-    CKeyID keyid(Hash160(imagehash.begin(), imagehash.end()));
-    CBitcoinAddress baddr = CBitcoinAddress(keyid);
-    std::string addr = baddr.ToString();
-
-    ui->lineEdit->setText(QString::fromStdString(addr));
-
-    CAmount nAmount = 0.001 * COIN; // 0.001 INN Fee
-
-    // Wallet comments
-    CWalletTx wtx;
-    wtx.mapValue["comment"] = fileName.toStdString();
-	std::string sNarr = ui->edit->text().toStdString();
-    wtx.mapValue["to"]      = "Proof of Data";
 
     if (!pwalletMain)
     {
-	  QMessageBox errbox;
-	  errbox.setText("Error, Wallet is not available!");
-	  errbox.exec();
-      ui->txLineEdit->setText("ERROR: Wallet is not available!");
+        QMessageBox errbox;
+        errbox.setText("Error, Wallet is not available!");
+        errbox.exec();
+        ui->txLineEdit->setText("ERROR: Wallet is not available!");
+        return;
     }
-    else if (pwalletMain->IsLocked())
+
+    ui->lineEdit->clear();
+    ui->saltLineEdit->clear();
+    ui->txLineEdit->clear();
+
+    std::vector<unsigned char> vFileDigest;
+    std::string strError;
+    if (!PodHashFile(fileName.toStdString(), vFileDigest, strError))
     {
-	  QMessageBox unlockbox;
-	  unlockbox.setText("Error, Your wallet is locked! Please unlock your wallet!");
-	  unlockbox.exec();
-      ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send proof of data. Unlock your wallet!");
+        QMessageBox errbox;
+        errbox.setText(QString::fromStdString(strError));
+        errbox.exec();
+        ui->txLineEdit->setText(QString::fromStdString("ERROR: " + strError));
+        return;
     }
-    else if(pwalletMain->GetBalance() < 0.001)
+
+    const bool fBlinded = ui->blindCheckBox->isChecked();
+    int nType = fBlinded ? POD_TYPE_BLINDED : POD_TYPE_PLAIN;
+    std::vector<unsigned char> vSalt;
+    std::vector<unsigned char> vStampDigest = vFileDigest;
+    if (fBlinded)
     {
-	  QMessageBox error2box;
-	  error2box.setText("Error, You need at least 0.001 INN to send proof of data!");
-	  error2box.exec();
-      ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send proof of data.");
+        vSalt = PodNewSalt();
+        vStampDigest = PodBlindDigest(vFileDigest, vSalt);
     }
-    else
+
+    CWalletTx wtx;
+    wtx.mapValue["comment"] = ui->edit->text().toStdString();
+    wtx.mapValue["to"] = "Proof of Data";
+    wtx.mapValue["podsha256"] = HexStr(vFileDigest.begin(), vFileDigest.end());
+    if (fBlinded)
+        wtx.mapValue["podsalt"] = HexStr(vSalt.begin(), vSalt.end());
+
+    strError = PodCreateStamp(pwalletMain, nType, vStampDigest,
+                              std::vector<unsigned char>(), wtx);
+    if (strError != "")
     {
-      //std::string sNarr;
-      std::string strError = pwalletMain->SendMoneyToDestination(baddr.Get(), nAmount, sNarr, wtx);
+        QMessageBox errbox;
+        errbox.setText(QString::fromStdString(strError));
+        errbox.exec();
+        ui->txLineEdit->setText(QString::fromStdString("ERROR: " + strError));
+        return;
+    }
 
-     if(strError != "")
-     {
-        QMessageBox infobox;
-        infobox.setText(QString::fromStdString(strError));
-        infobox.exec();
-     }
-		QMessageBox successbox;
-		successbox.setText("Proof of Data, Successful!");
-		successbox.exec();
-        ui->txLineEdit->setText(QString::fromStdString(wtx.GetHash().GetHex()));
-     }
+    ui->lineEdit->setText(QString::fromStdString(HexStr(vStampDigest.begin(), vStampDigest.end())));
+    if (fBlinded)
+        ui->saltLineEdit->setText(QString::fromStdString(HexStr(vSalt.begin(), vSalt.end())));
+    ui->txLineEdit->setText(QString::fromStdString(wtx.GetHash().GetHex()));
 
-
+    QMessageBox successbox;
+    successbox.setText(fBlinded
+        ? "Proof of Data timestamped. Save the salt: without it this stamp proves nothing about the file."
+        : "Proof of Data timestamped. The published digest is the file's plain SHA-256.");
+    successbox.exec();
 }
 
 void ProofOfImage::on_checkButton_clicked()
 {
-    if(fileName == "")
+    if (ui->lineEdit->text().isEmpty())
     {
-  noImageSelected();
-  return;
+        QMessageBox errorbox;
+        errorbox.setText("No digest to copy. Create a timestamp first.");
+        errorbox.exec();
+        return;
     }
-
-//read whole file
-    std::ifstream imageFile;
-    imageFile.open(fileName.toStdString().c_str(), std::ios::binary);
-std::vector<char> imageContents((std::istreambuf_iterator<char>(imageFile)),
-                               std::istreambuf_iterator<char>());
-
-    //hash file
-    uint256 imagehash = SerializeHash(imageContents);
-    CKeyID keyid(Hash160(imagehash.begin(), imagehash.end()));
-    std::string addr = CBitcoinAddress(keyid).ToString();
-
-    //go to block explorer
-    std::string bexp = "https://chainz.cryptoid.info/inn/address.dws?";
-    //open url
-    QString link = QString::fromStdString(bexp + addr);
-    QDesktopServices::openUrl(QUrl(link));
+    QApplication::clipboard()->setText(ui->lineEdit->text());
 }
 
 void ProofOfImage::on_checkTxButton_clicked()
