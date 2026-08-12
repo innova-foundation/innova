@@ -263,6 +263,24 @@ BOOST_AUTO_TEST_CASE(term_spanning_the_dag_gate_is_six_real_months)
     const int64_t nSeconds = NameBlocksToSeconds(nStart, nStart + nBlocks);
     BOOST_CHECK_EQUAL(nSeconds, (int64_t)MAX_RENTAL_DAYS * SECONDS_PER_DAY);
 
+    // The reset sits between the v5 first gate and the DAG gate, so the very
+    // first registrations really do straddle the spacing change: the term must
+    // be converted at 15s up to the gate and 1s after it.
+    BOOST_REQUIRE(nStart + nBlocks > nDag);
+    const int64_t nPreGate = nDag - nStart;
+    BOOST_CHECK_EQUAL(NameBlocksToSeconds(nStart, nDag),
+                      nPreGate * PRE_DAG_TARGET_SPACING);
+    BOOST_CHECK_EQUAL(NameBlocksToSeconds(nDag, nStart + nBlocks),
+                      (nStart + nBlocks - nDag) * POST_DAG_TARGET_SPACING);
+
+    // Registering one block later buys the same wall clock, one 15s block of
+    // pre-gate room less.
+    BOOST_CHECK_EQUAL(
+        NameBlocksToSeconds(nStart + 1,
+                            nStart + 1 + NameRentalBlocks(nStart + 1,
+                                                          MAX_RENTAL_DAYS)),
+        nSeconds);
+
     // The legacy constant would have been short by the spacing ratio.
     const int64_t nLegacyBlocks = (int64_t)MAX_RENTAL_DAYS * 5760;
     const int64_t nLegacySeconds =

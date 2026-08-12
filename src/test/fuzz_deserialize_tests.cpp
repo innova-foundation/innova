@@ -2241,8 +2241,8 @@ BOOST_AUTO_TEST_CASE(v5_activation_shift_is_uniform)
                       MAINNET_V5_ACTIVATION_BASE + MAINNET_V5_ACTIVATION_SHIFT);
 }
 
-// Each gate depends on the stage below it being live. These orderings are the
-// reason a re-base may only move the shift, never an individual base.
+// Each gate depends on the stage below it being live. A re-base normally moves
+// the shift; moving one base is only sound if these orderings still hold.
 BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
 {
     NetFlagGuard guard;
@@ -2254,7 +2254,12 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
     BOOST_CHECK_EQUAL(GetForkHeightTighterDrift(), nFirst);
     BOOST_CHECK_EQUAL(GetForkHeightCNPaymentValidation(), nFirst);
     BOOST_CHECK_EQUAL(GetForkHeightColdStaking(), nFirst);
-    BOOST_CHECK_EQUAL(GetForkHeightIDNSReset(), nFirst);
+
+    // The IDNS reset has its own rung rather than sharing the first gate: it
+    // must run on a v5 network, and it must precede the DAG gate so no term it
+    // issues is converted under the pre-DAG spacing it will never see.
+    BOOST_CHECK(GetForkHeightIDNSReset() > nFirst);
+    BOOST_CHECK(GetForkHeightIDNSReset() < GetForkHeightDAG());
 
     // Shielded output support precedes anything that spends or proves over it.
     BOOST_CHECK(GetForkHeightShielded() > nFirst);
