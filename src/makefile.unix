@@ -541,6 +541,7 @@ TEST_OBJS= \
     obj/test/finality_committee_draw_tests.o \
     obj/test/finality_settlement_tests.o \
     obj/test/name_index_recovery_tests.o \
+    obj/test/name_rental_tests.o \
     obj/test/fuzz_deserialize_tests.o \
     obj/test/smessage_hmac_tests.o \
     obj/test/smessage_bounds_tests.o \
@@ -566,7 +567,7 @@ FUZZ_LINK_FLAGS ?= -O1 -g -fsanitize=fuzzer,address,undefined -fno-omit-frame-po
 FUZZ_DESERIALIZE_BIN ?= fuzz_deserialize
 FUZZ_DESERIALIZE_OBJ ?= obj/fuzz/fuzz_deserialize.o
 
-.PHONY: all innova-build audit-test-dependencies fuzz-deserialize fuzz-deserialize-libfuzzer check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-finality-settlement check-finality-note check-privacy-vnext check-name-index-recovery check-fuzz-deserialize-limits check-smessage-hmac check-all release-check
+.PHONY: all innova-build audit-test-dependencies fuzz-deserialize fuzz-deserialize-libfuzzer check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-finality-settlement check-finality-note check-privacy-vnext check-name-index-recovery check-name-rental check-fuzz-deserialize-limits check-smessage-hmac check-all release-check
 
 INNOVA_SPINNER ?= 1
 INNOVA_SPINNER_SCRIPT ?= ../contrib/innova_build_spinner.sh
@@ -669,6 +670,9 @@ check-privacy-vnext: test_innova
 check-name-index-recovery: test_innova
 	./test_innova --run_test=name_index_recovery_tests
 
+check-name-rental: test_innova
+	./test_innova --run_test=name_rental_tests
+
 check-fuzz-deserialize-limits: test_innova
 	./test_innova --run_test=fuzz_deserialize_tests
 
@@ -686,7 +690,7 @@ check-smessage-bounds: test_innova
 check-all: test_innova
 	./test_innova
 
-release-check: audit-test-dependencies innova-build check-all check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-finality-settlement check-finality-note check-privacy-vnext check-name-index-recovery check-fuzz-deserialize-limits check-smessage-hmac
+release-check: audit-test-dependencies innova-build check-all check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-finality-settlement check-finality-note check-privacy-vnext check-name-index-recovery check-name-rental check-fuzz-deserialize-limits check-smessage-hmac
 
 #
 # LevelDB support
