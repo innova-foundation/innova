@@ -2107,6 +2107,23 @@ bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
     return true;
 }
 
+// An attestation has no transparent side and no pool flow, so it pays no fee; callers
+// pair this with a computed fee of zero.
+bool IsPrivacyVNextFeeExemptShape(const CTransaction& tx)
+{
+    if (!tx.IsPrivacyVNext() || tx.privacyVNext.vchPayload.empty())
+        return false;
+    if (!tx.vin.empty() || !tx.vout.empty())
+        return false;
+    uint8_t nOperation = 0;
+    uint8_t nDisclosureMask = 0;
+    if (!iv5::ReadDeclaredEnvelope(&tx.privacyVNext.vchPayload[0],
+                                   tx.privacyVNext.vchPayload.size(),
+                                   nOperation, nDisclosureMask))
+        return false;
+    return iv5::IsAttestationOperation(nOperation);
+}
+
 bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
                         bool* pfMissingInputs, bool fOnlyCheckWithoutAdding)
 {
@@ -2769,7 +2786,9 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
 
             int64_t txMinFee = tx.GetMinFee(1000, feeMode, nSize);
 
-            if (nFees < txMinFee && !isNameTx)
+            const bool fFeeExempt = nFees == 0 && IsPrivacyVNextFeeExemptShape(tx);
+
+            if (nFees < txMinFee && !isNameTx && !fFeeExempt)
             {
                 return error("CTxMemPool::accept() : not enough fees %s, %" PRId64" < %" PRId64,
                              hash.ToString().c_str(),
@@ -6971,7 +6990,10 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
                                       nDeclaredPayloadFee, nTxFee));
 
             // enforce transaction fees for every block
-            if (nTxFee < GetMinFee())
+            // An IV5 attestation has no transparent side or pool flow, so it pays no fee.
+            const bool fAttestationNoFee =
+                nTxFee == 0 && IsPrivacyVNextFeeExemptShape(*this);
+            if (nTxFee < GetMinFee() && !fAttestationNoFee)
                 return fBlock? DoS(100, error("ConnectInputs() : %s not paying required fee=%s, paid=%s", GetHash().ToString().substr(0,10).c_str(), FormatMoney(GetMinFee()).c_str(), FormatMoney(nTxFee).c_str())) : false;
 
             nFees += nTxFee;

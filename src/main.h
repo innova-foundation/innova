@@ -905,6 +905,14 @@ bool GetPrivacyVNextTransparentFlow(const CTransaction& tx,
                                     int64_t* pnDeclaredFeeOut = NULL,
                                     int64_t* pnDeclaredBalanceOut = NULL);
 
+/** An IV5 attestation names a hidden note without consuming it: no transparent side,
+ *  no pool flow, and so no value in the transaction to pay a fee from. Callers must
+ *  still require the computed fee to be zero -- this only says the shape is one the
+ *  size-based floor cannot apply to. Its bond is the 25000 INN note it proves and the
+ *  single use of that note's key image, both of which relay and connect already
+ *  enforce. */
+bool IsPrivacyVNextFeeExemptShape(const CTransaction& tx);
+
 /** Pool delta of a payload's effects, range-checked before the subtraction rather
  *  than after it. PoolDelta() subtracts in int64_t, so the operands have to be
  *  bounded first or the result is already undefined by the time it is inspected. */

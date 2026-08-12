@@ -852,8 +852,14 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             // Transaction fee
             int64_t nMinFee = tx.GetMinFee(nBlockSize, GMF_BLOCK); // will get GMF_ANON if tx.nVersion == ANON_TXN_VERSION
 
+            // An IV5 attestation carries no value to pay a fee from, so the size-based
+            // floor and the free-transaction skip below would leave it unmineable for
+            // good. Relay makes the same exemption.
+            const bool fFeeExempt = IsPrivacyVNextFeeExemptShape(tx);
+
             // Skip free transactions if we're past the minimum block size:
-            if (fSortedByFee && (dFeePerKb < nMinTxFee) && (nBlockSize + nTxSize >= nBlockMinSize))
+            if (fSortedByFee && (dFeePerKb < nMinTxFee) &&
+                (nBlockSize + nTxSize >= nBlockMinSize) && !fFeeExempt)
                 continue;
 
             // Prioritize by fee once past the priority size or we run out of high-priority
@@ -916,7 +922,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
             };
             // TODO: must this be done twice!?
             // Need to look at COrphan
-            if (nFee < nMinFee)
+            if (nFee < nMinFee && !(nFee == 0 && fFeeExempt))
                 continue;
 
             nTxSigOps += tx.GetP2SHSigOpCount(mapInputs);
