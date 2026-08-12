@@ -117,25 +117,37 @@ epoch_end()   { echo $(( 310 + ($1 - 1) * 300 )); }
 # collateral, the pool has to be funded well past that (see POOL_SHIELD_TOTAL),
 # and node0 is the only miner at 50 INN a block.
 #
-# Every stage epoch below is derived from the term, because they are one
-# schedule: the funding shields must be built by the epoch the carve spends
-# against, the carved notes must be built AND finalized by the epoch that
-# registers them, and every registration must confirm at or below the anchor.
-# Shifting the term alone used to leave TALLY_EPOCH behind, which silently
-# skipped the whole certificate stage.
+# The whole schedule is derived, because it is one schedule: the funding shields
+# must be built by the epoch the carve spends against, the carved notes must be
+# built AND finalized by the epoch that registers them, every registration must
+# confirm at or below the anchor, and the term itself has to sit on the chain's
+# own term grid. Written out by hand, a shift left TALLY_EPOCH pointing outside
+# NOTE_VOTE_EPOCHS (which silently skipped the certificate stage) and put the term
+# on an odd epoch, where GetFinalityCommitteeTermEpoch never resolves to it and
+# the committee never seats.
 # ---------------------------------------------------------------------------
-COMMITTEE_TERM_EPOCH=19
+
+# Transparent value is shielded here, the collateral notes are carved out of it
+# one epoch later, and they are registered the epoch after that. Funding this
+# late because the pool has to hold well over 6 x 25000 INN (see
+# POOL_SHIELD_TOTAL) and node0 is the only miner at 50 INN a block.
+POOL_FUND_EPOCH=14
+CARVE_EPOCH=$(( POOL_FUND_EPOCH + 1 ))
+REGISTER_EPOCH=$(( CARVE_EPOCH + 1 ))
+
+# A term is GetFinalityCommitteeTermEpochs() epochs long and starts on a multiple
+# of that length: (epoch / len) * len. A term epoch off that grid is never the
+# current term of any epoch, so its draw is carried and then never resolved.
+COMMITTEE_TERM_EPOCHS=2
+# The draw anchors FINALITY_COMMITTEE_DRAW_LAG_EPOCHS back and the registrations
+# run through the register epoch, so the anchor epoch has to start after that
+# epoch ends: the term is at least REGISTER_EPOCH + 3, rounded up onto the grid.
+COMMITTEE_TERM_EPOCH=$(( ((REGISTER_EPOCH + 3 + COMMITTEE_TERM_EPOCHS - 1) / COMMITTEE_TERM_EPOCHS) * COMMITTEE_TERM_EPOCHS ))
 COMMITTEE_ANCHOR_EPOCH=$(( COMMITTEE_TERM_EPOCH - 2 ))
 COMMITTEE_CARRIER_EPOCH=$(( COMMITTEE_TERM_EPOCH - 1 ))
 COMMITTEE_ANCHOR_HEIGHT="$(epoch_start "$COMMITTEE_ANCHOR_EPOCH")"
 # The carrier epoch's state is built when the chain crosses into the term.
 COMMITTEE_SEATED_HEIGHT=$(( $(epoch_end "$COMMITTEE_CARRIER_EPOCH") + 1 ))
-
-# Transparent value is shielded here, the collateral notes are carved out of it
-# one epoch later, and they are registered the epoch after that.
-POOL_FUND_EPOCH=$(( COMMITTEE_TERM_EPOCH - 5 ))
-CARVE_EPOCH=$(( COMMITTEE_TERM_EPOCH - 4 ))
-REGISTER_EPOCH=$(( COMMITTEE_TERM_EPOCH - 3 ))
 
 # Six rows is the floor: 3 seats x the 2N registry minimum. Two rows per member
 # key and one seat per key means the draw seats exactly the three node keys
@@ -758,6 +770,18 @@ else
     fail "a node did not report an unseated collateral-registry-draw committee"
 fi
 
+# The term this run schedules has to be a term the chain recognises. A term epoch
+# off the grid is carried and then never resolved, and the seating stage is 5000
+# blocks away, so it is checked here rather than found there.
+NODE_TERM_LEN="$(jget "$(rpc 0 getfinalityinfo 2>/dev/null)" committee_term_epochs)"
+if [ "$NODE_TERM_LEN" = "$COMMITTEE_TERM_EPOCHS" ] && \
+   [ $(( COMMITTEE_TERM_EPOCH % COMMITTEE_TERM_EPOCHS )) -eq 0 ]; then
+    success "term $COMMITTEE_TERM_EPOCH is on the chain's $NODE_TERM_LEN-epoch term grid (anchor $COMMITTEE_ANCHOR_EPOCH, carrier $COMMITTEE_CARRIER_EPOCH)"
+else
+    fail "term $COMMITTEE_TERM_EPOCH is not a term start: the chain's term length is $NODE_TERM_LEN and the harness assumed $COMMITTEE_TERM_EPOCHS"
+    exit 1
+fi
+
 # The seats are won further down, in sections 5a-5d. Nothing is configured.
 
 # ============================================================
@@ -1129,7 +1153,9 @@ fi
 header "5d. The chain draws a committee from that registry"
 # ============================================================
 
-advance_through_epochs "$COMMITTEE_ANCHOR_EPOCH" "$COMMITTEE_CARRIER_EPOCH" || { fail "the epoch $COMMITTEE_ANCHOR_EPOCH-$COMMITTEE_CARRIER_EPOCH vote rounds failed"; exit 1; }
+# Every boundary from the register epoch to the carrier, not just the anchor's: a
+# skipped round leaves an epoch soft, and the finalized height stops advancing.
+advance_through_epochs $(( REGISTER_EPOCH + 1 )) "$COMMITTEE_CARRIER_EPOCH" || { fail "the epoch $(( REGISTER_EPOCH + 1 ))-$COMMITTEE_CARRIER_EPOCH vote rounds failed"; exit 1; }
 log "mining to $COMMITTEE_SEATED_HEIGHT, where epoch $COMMITTEE_CARRIER_EPOCH is built and carries the draw"
 mine_to 0 "$COMMITTEE_SEATED_HEIGHT" || { fail "could not mine to the seating height"; exit 1; }
 wait_sync "$COMMITTEE_SEATED_HEIGHT" || { fail "fleet did not sync to the seating height"; exit 1; }
