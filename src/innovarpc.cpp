@@ -519,12 +519,13 @@ static const CRPCCommand vRPCCommands[] =
     { "getdagconfidence",       &getdagconfidence,       true,   false },
 
 #ifdef USE_IPFS
-    /* Hyperfile / IPFS commands */
-    { "hyperfileversion",       &hyperfileversion,       true,   false },
-    { "hyperfileupload",        &hyperfileupload,        false,  false },
-    { "hyperfilepod",           &hyperfilepod,           false,  false },
-    { "hyperfilegetblock",      &hyperfilegetblock,      true,   false },
-    { "hyperfilegetstat",       &hyperfilegetstat,       true,   false },
+    /* Hyperfile / IPFS commands, all unlocked: each waits on a remote endpoint with only a
+       connect timeout, so holding cs_main would stall validation. */
+    { "hyperfileversion",       &hyperfileversion,       true,   true  },
+    { "hyperfileupload",        &hyperfileupload,        false,  true  },
+    { "hyperfilepod",           &hyperfilepod,           false,  true  },
+    { "hyperfilegetblock",      &hyperfilegetblock,      true,   true  },
+    { "hyperfilegetstat",       &hyperfilegetstat,       true,   true  },
 #endif
 
 };
