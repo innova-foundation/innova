@@ -117,7 +117,7 @@ epoch_end()   { echo $(( 310 + ($1 - 1) * 300 )); }
 # collateral and node0 is the only miner: at 50 INN a block it does not hold
 # 150000 INN until roughly height 3050.
 # ---------------------------------------------------------------------------
-COMMITTEE_TERM_EPOCH=16
+COMMITTEE_TERM_EPOCH=17
 COMMITTEE_ANCHOR_EPOCH=$(( COMMITTEE_TERM_EPOCH - 2 ))
 COMMITTEE_CARRIER_EPOCH=$(( COMMITTEE_TERM_EPOCH - 1 ))
 COMMITTEE_ANCHOR_HEIGHT="$(epoch_start "$COMMITTEE_ANCHOR_EPOCH")"
@@ -135,16 +135,19 @@ COLLATERAL_VALUE=25000
 # attestable note is carved out of this by an in-pool transfer instead.
 COLLATERAL_SHIELD_VALUE=25500
 
-# Node0 holds ~153000 INN of mature coinbase by here; all inside epoch 11.
-POOL_FUND_HEIGHT=3150
-# Inside epoch 12, so epoch 11's build has put the shielded notes in the tree.
-CARVE_HEIGHT="$(epoch_start 12)"
-# Inside epoch 13, so epoch 12's build has put the carved notes in the tree.
+# Node0 holds ~162000 INN of mature coinbase by here; all inside epoch 12.
+# Coinbase only counts once it is nCoinbaseMaturity deep, so the balance here
+# trails the height by ~200 blocks' worth of subsidy; 3150 measured 147250 and
+# was short. Epoch 12 leaves 160 blocks of headroom past this point.
+POOL_FUND_HEIGHT=3450
+# Inside epoch 13, so epoch 12's build has put the shielded notes in the tree.
+CARVE_HEIGHT="$(epoch_start 13)"
+# Inside epoch 14, so epoch 13's build has put the carved notes in the tree.
 # Every registration must then confirm at or below COMMITTEE_ANCHOR_HEIGHT.
-REGISTER_HEIGHT="$(epoch_start 13)"
+REGISTER_HEIGHT="$(epoch_start 14)"
 
 # Boundaries observed for note votes. Both epochs of the term the draw seats.
-NOTE_VOTE_EPOCHS="16 17"
+NOTE_VOTE_EPOCHS="17 18"
 # Blocks mined past a boundary while the vote is pending. Stays inside
 # FINALITY_VOTE_INCLUSION_WINDOW (24) so every one of them may carry the vote.
 NOTE_VOTE_WINDOW=10
@@ -926,7 +929,7 @@ log "raising the miner to $MINE_THREADS_NOW threads for the run to the committee
 # Everything up to the anchor epoch needs a vote round at each boundary: an
 # epoch that misses one is not HARD, the finalized height stops advancing, and
 # a note in an unfinalized epoch is not attestable.
-advance_through_epochs 5 11 || { fail "the epoch 5-11 vote rounds failed"; exit 1; }
+advance_through_epochs 5 12 || { fail "the epoch 5-12 vote rounds failed"; exit 1; }
 
 log "mining to $POOL_FUND_HEIGHT, where node0's mature coinbase covers $COLLATERAL_ROWS x $COLLATERAL_SHIELD_VALUE INN"
 mine_to 0 "$POOL_FUND_HEIGHT" || { fail "could not mine to the pool-funding height"; exit 1; }
@@ -970,7 +973,7 @@ fi
 
 # Cross into epoch 12: the epoch build indexes those notes and, because the
 # epoch goes HARD, finalizes them into the anchor a spend proves against.
-advance_through_epochs 12 12 || { fail "the epoch 12 vote round failed"; exit 1; }
+advance_through_epochs 13 13 || { fail "the epoch 13 vote round failed"; exit 1; }
 mine_to 0 $((CARVE_HEIGHT + 10)) || { fail "could not mine into epoch 12"; exit 1; }
 wait_sync $((CARVE_HEIGHT + 10)) || { fail "fleet did not sync into epoch 12"; exit 1; }
 
@@ -1009,7 +1012,7 @@ header "5c. Six finality-member registrations confirm below the anchor height"
 
 # Cross into epoch 13 so epoch 12 is built AND finalized: a note is attestable
 # only once its leaf index is inside the finalized spend anchor.
-advance_through_epochs 13 13 || { fail "the epoch 13 vote round failed"; exit 1; }
+advance_through_epochs 14 14 || { fail "the epoch 14 vote round failed"; exit 1; }
 mine_to 0 $((REGISTER_HEIGHT + 10)) || { fail "could not mine into epoch 13"; exit 1; }
 wait_sync $((REGISTER_HEIGHT + 10)) || { fail "fleet did not sync into epoch 13"; exit 1; }
 
@@ -1072,7 +1075,7 @@ fi
 header "5d. The chain draws a committee from that registry"
 # ============================================================
 
-advance_through_epochs 14 15 || { fail "the epoch 14-15 vote rounds failed"; exit 1; }
+advance_through_epochs 15 16 || { fail "the epoch 15-16 vote rounds failed"; exit 1; }
 log "mining to $COMMITTEE_SEATED_HEIGHT, where epoch $COMMITTEE_CARRIER_EPOCH is built and carries the draw"
 mine_to 0 "$COMMITTEE_SEATED_HEIGHT" || { fail "could not mine to the seating height"; exit 1; }
 wait_sync "$COMMITTEE_SEATED_HEIGHT" || { fail "fleet did not sync to the seating height"; exit 1; }
