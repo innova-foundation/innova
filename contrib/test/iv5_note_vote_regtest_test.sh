@@ -114,40 +114,64 @@ epoch_end()   { echo $(( 310 + ($1 - 1) * 300 )); }
 # and appears once the chain crosses into the term.
 #
 # The term is this late because the registrations cost 6 x 25000 INN of real
-# collateral and node0 is the only miner: at 50 INN a block it does not hold
-# 150000 INN until roughly height 3050.
+# collateral, the pool has to be funded well past that (see POOL_SHIELD_TOTAL),
+# and node0 is the only miner at 50 INN a block.
+#
+# Every stage epoch below is derived from the term, because they are one
+# schedule: the funding shields must be built by the epoch the carve spends
+# against, the carved notes must be built AND finalized by the epoch that
+# registers them, and every registration must confirm at or below the anchor.
+# Shifting the term alone used to leave TALLY_EPOCH behind, which silently
+# skipped the whole certificate stage.
 # ---------------------------------------------------------------------------
-COMMITTEE_TERM_EPOCH=17
+COMMITTEE_TERM_EPOCH=19
 COMMITTEE_ANCHOR_EPOCH=$(( COMMITTEE_TERM_EPOCH - 2 ))
 COMMITTEE_CARRIER_EPOCH=$(( COMMITTEE_TERM_EPOCH - 1 ))
 COMMITTEE_ANCHOR_HEIGHT="$(epoch_start "$COMMITTEE_ANCHOR_EPOCH")"
 # The carrier epoch's state is built when the chain crosses into the term.
 COMMITTEE_SEATED_HEIGHT=$(( $(epoch_end "$COMMITTEE_CARRIER_EPOCH") + 1 ))
 
+# Transparent value is shielded here, the collateral notes are carved out of it
+# one epoch later, and they are registered the epoch after that.
+POOL_FUND_EPOCH=$(( COMMITTEE_TERM_EPOCH - 5 ))
+CARVE_EPOCH=$(( COMMITTEE_TERM_EPOCH - 4 ))
+REGISTER_EPOCH=$(( COMMITTEE_TERM_EPOCH - 3 ))
+
 # Six rows is the floor: 3 seats x the 2N registry minimum. Two rows per member
 # key and one seat per key means the draw seats exactly the three node keys
 # whichever rows win.
 COLLATERAL_ROWS=6
 COLLATERAL_VALUE=25000
-# Shielded per row. Deliberately not 25000: a note whose value entered the pool
-# as an exact-25000 shield is publicly linkable to the transparent coins that
-# funded it, and the registration RPC refuses to pick one by default. The
-# attestable note is carved out of this by an in-pool transfer instead.
-COLLATERAL_SHIELD_VALUE=25500
 
-# Node0 holds ~162000 INN of mature coinbase by here; all inside epoch 12.
-# Coinbase only counts once it is nCoinbaseMaturity deep, so the balance here
-# trails the height by ~200 blocks' worth of subsidy; 3150 measured 147250 and
-# was short. Epoch 12 leaves 160 blocks of headroom past this point.
-POOL_FUND_HEIGHT=3450
-# Inside epoch 13, so epoch 12's build has put the shielded notes in the tree.
-CARVE_HEIGHT="$(epoch_start 13)"
-# Inside epoch 14, so epoch 13's build has put the carved notes in the tree.
+# Funding the pool. A shield never produces one note: it splits its value across
+# two notes at a uniformly random point, so no amount shielded in one step can be
+# made to land as a single 25000 INN note. The collateral note has to be carved
+# by an in-pool transfer, which is also what keeps it off the public link between
+# the transparent coins and a +25000 shield.
+#
+# Every carve is a spend, and a spend's change comes back as a note with no tree
+# position until the NEXT epoch build, so within the carve epoch each carve
+# strands whatever it over-selected. Selection is largest-first, so the strand is
+# bounded by the largest note it touches: six rows of 25500 (12 notes averaging
+# 12750) stranded ~7400 per carve and ran out after five. Many smaller shields
+# keep the strand small and the total covers 6 x 25000 with room for it.
+POOL_SHIELD_ROWS=16
+POOL_SHIELD_VALUE=11500
+POOL_SHIELD_TOTAL=$(( POOL_SHIELD_ROWS * POOL_SHIELD_VALUE ))
+
+# Inside POOL_FUND_EPOCH, far enough in that node0's MATURE coinbase covers
+# POOL_SHIELD_TOTAL -- coinbase only counts once it is nCoinbaseMaturity deep, so
+# the balance trails the height by ~200 blocks' worth of subsidy -- and early
+# enough that the ~4 blocks per shield row still land in the same epoch.
+POOL_FUND_HEIGHT=$(( $(epoch_start "$POOL_FUND_EPOCH") + 140 ))
+# The funding epoch's build has put the shielded notes in the tree by here.
+CARVE_HEIGHT="$(epoch_start "$CARVE_EPOCH")"
+# The carve epoch's build has put the carved notes in the tree by here.
 # Every registration must then confirm at or below COMMITTEE_ANCHOR_HEIGHT.
-REGISTER_HEIGHT="$(epoch_start 14)"
+REGISTER_HEIGHT="$(epoch_start "$REGISTER_EPOCH")"
 
 # Boundaries observed for note votes. Both epochs of the term the draw seats.
-NOTE_VOTE_EPOCHS="17 18"
+NOTE_VOTE_EPOCHS="$COMMITTEE_TERM_EPOCH $(( COMMITTEE_TERM_EPOCH + 1 ))"
 # Blocks mined past a boundary while the vote is pending. Stays inside
 # FINALITY_VOTE_INCLUSION_WINDOW (24) so every one of them may carry the vote.
 NOTE_VOTE_WINDOW=10
@@ -184,11 +208,13 @@ NOTE_VOTE_TAG_HEX="49464e56"
 # OP_RETURN payload tag of a canonical tally-certificate envelope ("IFCC").
 TALLY_CERT_TAG_HEX="49464343"
 
-# The epoch whose note tally is driven to a certificate. It must be one of
-# NOTE_VOTE_EPOCHS, and the certificate has to be carried by a block of that same
-# epoch: the deterministic tier reads the epoch's OWN blocks, so a cert carried a
-# whole epoch later is block-valid and tier-irrelevant.
-TALLY_EPOCH=16
+# The epoch whose note tally is driven to a certificate. It is the first of
+# NOTE_VOTE_EPOCHS and derived from it, because the certificate has to be carried
+# by a block of that same epoch: the deterministic tier reads the epoch's OWN
+# blocks, so a cert carried a whole epoch later is block-valid and
+# tier-irrelevant, and a TALLY_EPOCH outside NOTE_VOTE_EPOCHS is never reached at
+# all.
+TALLY_EPOCH="${NOTE_VOTE_EPOCHS%% *}"
 # H_E + FINALITY_VOTE_INCLUSION_WINDOW is the freeze point: before it the counted
 # note-vote set still grows and no certificate can satisfy connect-time coverage.
 TALLY_WINDOW_CLOSE=$(( 11 + (TALLY_EPOCH - 1) * 300 + 24 ))
@@ -929,18 +955,17 @@ log "raising the miner to $MINE_THREADS_NOW threads for the run to the committee
 # Everything up to the anchor epoch needs a vote round at each boundary: an
 # epoch that misses one is not HARD, the finalized height stops advancing, and
 # a note in an unfinalized epoch is not attestable.
-advance_through_epochs 5 12 || { fail "the epoch 5-12 vote rounds failed"; exit 1; }
+advance_through_epochs 5 "$POOL_FUND_EPOCH" || { fail "the epoch 5-$POOL_FUND_EPOCH vote rounds failed"; exit 1; }
 
-log "mining to $POOL_FUND_HEIGHT, where node0's mature coinbase covers $COLLATERAL_ROWS x $COLLATERAL_SHIELD_VALUE INN"
+log "mining to $POOL_FUND_HEIGHT, where node0's mature coinbase covers $POOL_SHIELD_ROWS x $POOL_SHIELD_VALUE INN"
 mine_to 0 "$POOL_FUND_HEIGHT" || { fail "could not mine to the pool-funding height"; exit 1; }
 wait_sync "$POOL_FUND_HEIGHT" || { fail "fleet did not sync to the pool-funding height"; exit 1; }
 
 BAL="$(rpc 0 getbalance 2>/dev/null | tr -d '"[:space:]')"
-NEEDED=$(( COLLATERAL_ROWS * COLLATERAL_SHIELD_VALUE ))
-if [ "$(python3 -c "print(1 if float('${BAL:-0}') >= $NEEDED else 0)")" = "1" ]; then
-    success "node0 holds $BAL INN, enough for $COLLATERAL_ROWS collateral notes"
+if [ "$(python3 -c "print(1 if float('${BAL:-0}') >= $POOL_SHIELD_TOTAL else 0)")" = "1" ]; then
+    success "node0 holds $BAL INN, enough to fund the pool with $POOL_SHIELD_TOTAL"
 else
-    fail "node0 holds $BAL INN but needs $NEEDED; raise POOL_FUND_HEIGHT"
+    fail "node0 holds $BAL INN but needs $POOL_SHIELD_TOTAL; raise POOL_FUND_HEIGHT"
     exit 1
 fi
 
@@ -948,10 +973,11 @@ fi
 # single address's whole value with no transparent change, so consolidating
 # first is what turns ~500 coinbase outputs into one shieldable note.
 SHIELDED_ROWS=0
-for ((r=0; r<COLLATERAL_ROWS; r++)); do
-    RADDR="$(rpc 0 getnewaddress "collateral$r" 2>/dev/null | tr -d '"[:space:]')"
+SHIELDED_TOTAL=0
+for ((r=0; r<POOL_SHIELD_ROWS; r++)); do
+    RADDR="$(rpc 0 getnewaddress "poolfund$r" 2>/dev/null | tr -d '"[:space:]')"
     [ ${#RADDR} -ge 20 ] || { fail "could not create a consolidation address"; break; }
-    SENT="$(fund_peer "$RADDR" "$COLLATERAL_SHIELD_VALUE")"
+    SENT="$(fund_peer "$RADDR" "$POOL_SHIELD_VALUE")"
     [ ${#SENT} -eq 64 ] || { fail "consolidating row $r failed"; break; }
     confirm_on 2 || { fail "could not confirm consolidation $r"; break; }
     SH="$(rpc 0 z_shieldall "$RADDR" 2>&1)"
@@ -962,20 +988,32 @@ for ((r=0; r<COLLATERAL_ROWS; r++)); do
     fi
     confirm_on 2 || { fail "could not confirm shield $r"; break; }
     SHIELDED_ROWS=$((SHIELDED_ROWS + 1))
-    log "  row $r: $(jget "$SH" shielded) INN into the pool"
+    SHIELDED_TOTAL="$(python3 -c "print(round($SHIELDED_TOTAL + float('$(jget "$SH" shielded)' or 0), 8))")"
+    log "  row $r: $(jget "$SH" shielded) INN into the pool (running total $SHIELDED_TOTAL)"
 done
-if [ "$SHIELDED_ROWS" -eq "$COLLATERAL_ROWS" ]; then
-    success "$SHIELDED_ROWS x ~$COLLATERAL_SHIELD_VALUE INN entered the pool"
+if [ "$SHIELDED_ROWS" -eq "$POOL_SHIELD_ROWS" ] && \
+   [ "$(python3 -c "print(1 if $SHIELDED_TOTAL >= $POOL_SHIELD_TOTAL else 0)")" = "1" ]; then
+    success "$SHIELDED_ROWS shields put $SHIELDED_TOTAL INN into the pool, over the $POOL_SHIELD_TOTAL the carve needs"
 else
-    fail "only $SHIELDED_ROWS of $COLLATERAL_ROWS rows reached the pool"
+    fail "only $SHIELDED_ROWS of $POOL_SHIELD_ROWS rows reached the pool ($SHIELDED_TOTAL of $POOL_SHIELD_TOTAL INN)"
     exit 1
 fi
 
-# Cross into epoch 12: the epoch build indexes those notes and, because the
-# epoch goes HARD, finalizes them into the anchor a spend proves against.
-advance_through_epochs 13 13 || { fail "the epoch 13 vote round failed"; exit 1; }
-mine_to 0 $((CARVE_HEIGHT + 10)) || { fail "could not mine into epoch 12"; exit 1; }
-wait_sync $((CARVE_HEIGHT + 10)) || { fail "fleet did not sync into epoch 12"; exit 1; }
+# The funding shields must all be inside POOL_FUND_EPOCH: a shield that lands in
+# the carve epoch is not in the tree the carve proves against.
+if [ "$(height 0)" -le "$(epoch_end "$POOL_FUND_EPOCH")" ]; then
+    success "every funding shield confirmed inside epoch $POOL_FUND_EPOCH, which the carve spends against"
+else
+    fail "the funding shields ran past epoch $POOL_FUND_EPOCH (tip $(height 0) > $(epoch_end "$POOL_FUND_EPOCH")); the last of them are not in the carve's tree"
+    exit 1
+fi
+
+# Cross into the carve epoch: the funding epoch's build indexes those notes and,
+# because the epoch goes HARD, finalizes them into the anchor a spend proves
+# against.
+advance_through_epochs "$CARVE_EPOCH" "$CARVE_EPOCH" || { fail "the epoch $CARVE_EPOCH vote round failed"; exit 1; }
+mine_to 0 $((CARVE_HEIGHT + 10)) || { fail "could not mine into epoch $CARVE_EPOCH"; exit 1; }
+wait_sync $((CARVE_HEIGHT + 10)) || { fail "fleet did not sync into epoch $CARVE_EPOCH"; exit 1; }
 
 IV5ADDR="$(jget "$(rpc 0 z_getnewiv5address 2>&1)" address)"
 if [ ${#IV5ADDR} -ge 20 ]; then
@@ -985,14 +1023,23 @@ else
     exit 1
 fi
 
-# The carve. An exact-25000 SHIELD is publicly linkable, so the attestable note
-# is made by an in-pool transfer out of the larger notes above.
+# The carve. A shield cannot produce a 25000 INN note at all -- it splits its
+# value across two notes at a random point -- so the attestable note is made by
+# an in-pool transfer, which also keeps it off the public link a +25000 shield
+# would draw to the transparent coins behind it.
+#
+# All six carves stay inside this one epoch on purpose. Selection is
+# largest-first, and once the carve epoch is built a 25000 INN collateral note is
+# the largest note the wallet holds: a seventh carve would spend one of the six
+# it just made and the count would never move.
 CARVED=0
 for ((r=0; r<COLLATERAL_ROWS; r++)); do
     TR="$(rpc 0 z_iv5transfer "$IV5ADDR" "$COLLATERAL_VALUE" 2>&1)"
     TR_TXID="$(jget "$TR" txid)"
     if [ ${#TR_TXID} -ne 64 ]; then
         fail "carving note $r failed: $(echo "$TR" | head -3)"
+        INFO="$(rpc 0 z_getshieldedinfo 2>/dev/null)"
+        log "  pool=$(jget "$INFO" privacy_vnext_pool_value) spendable=$(jget "$INFO" privacy_vnext_balance) pending=$(jget "$INFO" privacy_vnext_unconfirmed_balance) notes=$(jget "$INFO" privacy_vnext_note_count) anchor_leaves=$(jget "$INFO" privacy_vnext_tree_size)"
         break
     fi
     confirm_on 3 || { fail "could not confirm carve $r"; break; }
@@ -1006,15 +1053,22 @@ else
     exit 1
 fi
 
+if [ "$(height 0)" -le "$(epoch_end "$CARVE_EPOCH")" ]; then
+    success "all $CARVED carves confirmed inside epoch $CARVE_EPOCH, before its build makes them selectable"
+else
+    fail "the carves ran past epoch $CARVE_EPOCH (tip $(height 0) > $(epoch_end "$CARVE_EPOCH")); a later carve can spend an earlier collateral note"
+    exit 1
+fi
+
 # ============================================================
 header "5c. Six finality-member registrations confirm below the anchor height"
 # ============================================================
 
-# Cross into epoch 13 so epoch 12 is built AND finalized: a note is attestable
-# only once its leaf index is inside the finalized spend anchor.
-advance_through_epochs 14 14 || { fail "the epoch 14 vote round failed"; exit 1; }
-mine_to 0 $((REGISTER_HEIGHT + 10)) || { fail "could not mine into epoch 13"; exit 1; }
-wait_sync $((REGISTER_HEIGHT + 10)) || { fail "fleet did not sync into epoch 13"; exit 1; }
+# Cross into the register epoch so the carve epoch is built AND finalized: a note
+# is attestable only once its leaf index is inside the finalized spend anchor.
+advance_through_epochs "$REGISTER_EPOCH" "$REGISTER_EPOCH" || { fail "the epoch $REGISTER_EPOCH vote round failed"; exit 1; }
+mine_to 0 $((REGISTER_HEIGHT + 10)) || { fail "could not mine into epoch $REGISTER_EPOCH"; exit 1; }
+wait_sync $((REGISTER_HEIGHT + 10)) || { fail "fleet did not sync into epoch $REGISTER_EPOCH"; exit 1; }
 
 NOTE_IDS=()
 while read -r nid; do [ -n "$nid" ] && NOTE_IDS+=("$nid"); done < <(collateral_note_ids 0)
@@ -1075,7 +1129,7 @@ fi
 header "5d. The chain draws a committee from that registry"
 # ============================================================
 
-advance_through_epochs 15 16 || { fail "the epoch 15-16 vote rounds failed"; exit 1; }
+advance_through_epochs "$COMMITTEE_ANCHOR_EPOCH" "$COMMITTEE_CARRIER_EPOCH" || { fail "the epoch $COMMITTEE_ANCHOR_EPOCH-$COMMITTEE_CARRIER_EPOCH vote rounds failed"; exit 1; }
 log "mining to $COMMITTEE_SEATED_HEIGHT, where epoch $COMMITTEE_CARRIER_EPOCH is built and carries the draw"
 mine_to 0 "$COMMITTEE_SEATED_HEIGHT" || { fail "could not mine to the seating height"; exit 1; }
 wait_sync "$COMMITTEE_SEATED_HEIGHT" || { fail "fleet did not sync to the seating height"; exit 1; }
