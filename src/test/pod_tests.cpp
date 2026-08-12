@@ -160,6 +160,13 @@ BOOST_AUTO_TEST_CASE(pod_does_not_collide_with_stealth_or_narration)
     BOOST_CHECK(vch.size() != 33);
     BOOST_CHECK(!(vch.size() > 1 && vch[0] == 'n' && vch[1] == 'p'));
 
+    // IsAnonOutput keys on OP_RETURN followed by OP_ANON_MARKER. The stamp's
+    // second byte is the push length, so it must not land on that marker.
+    BOOST_CHECK(!tx.vout[0].IsAnonOutput());
+    BOOST_CHECK(!tx.vout[1].IsAnonOutput());
+    BOOST_CHECK((int)POD_PAYLOAD_SIZE != (int)OP_ANON_MARKER);
+    BOOST_CHECK((int)POD_LOCATOR_SIZE != (int)OP_ANON_MARKER);
+
     // The narration output the old POD relied on is not mistaken for a stamp.
     CScript scriptNarr;
     vector<unsigned char> vNp;

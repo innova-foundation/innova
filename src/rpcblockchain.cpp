@@ -525,9 +525,9 @@ Value proofofdata(const Array& params, bool fHelp)
 
 Value podverify(const Array& params, bool fHelp)
 {
-    if (fHelp || params.size() < 2 || params.size() > 3)
+    if (fHelp || params.size() < 2 || params.size() > 4)
         throw runtime_error(
-            "podverify <file|sha256-hex|cid> <txid> [salt-hex]\n"
+            "podverify <file|sha256-hex|cid> <txid> [salt-hex] [cid]\n"
             "\nChecks that a transaction carries a proof-of-data stamp for the given target,\n"
             "and reports the block time the stamp is anchored to.\n"
             "\nArguments:\n"
@@ -538,6 +538,9 @@ Value podverify(const Array& params, bool fHelp)
             "               A 64-hex string is always read as a digest, never as a filename.\n"
             "2. \"txid\"     (string, required) The stamp transaction id.\n"
             "3. \"salt-hex\" (string, optional) 32-byte salt, required for a blinded stamp.\n"
+            "4. \"cid\"      (string, optional) CIDv0 to compare against a hyperfile stamp's\n"
+            "               locator, when the target is a file or a digest. A digest match with\n"
+            "               a locator mismatch is reported as verified with a stale locator.\n"
             "\nThe attested time is the time of the block containing the transaction, not the\n"
             "nTime the transaction claims for itself.\n"
             "\nStamps made before this release carry no digest on chain: they pay an address\n"
@@ -594,6 +597,15 @@ Value podverify(const Array& params, bool fHelp)
         PodCidToLocator(strTarget, vTargetLocator);
     }
 
+    if (params.size() > 3 && !params[3].get_str().empty())
+    {
+        if (kind == POD_TARGET_CID)
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                "The target is already a CID; do not pass a fourth argument.");
+        if (!PodCidToLocator(params[3].get_str(), vTargetLocator))
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "cid is not a CIDv0 sha2-256 multihash.");
+    }
+
     Object obj;
     obj.push_back(Pair("txid", hashTx.GetHex()));
 
@@ -648,12 +660,15 @@ Value podverify(const Array& params, bool fHelp)
             strNote = "Stamp type is not understood by this build; digest not compared.";
         }
 
-        // A hyperfile stamp whose digest matches is proven even if the CID has rotated.
-        if (fMatch && stamp.nType == POD_TYPE_HYPERFILE && kind != POD_TARGET_CID
-            && !stamp.vLocator.empty() && !vTargetLocator.empty()
-            && stamp.vLocator != vTargetLocator)
+        // A hyperfile stamp whose digest matches is proven even if the CID rotated.
+        if (stamp.nType == POD_TYPE_HYPERFILE && kind != POD_TARGET_CID
+            && !vTargetLocator.empty())
         {
-            strNote = "Verified; locator stale.";
+            const bool fLocatorMatch = (stamp.vLocator == vTargetLocator);
+            obj.push_back(Pair("locatormatch", fLocatorMatch));
+            if (fMatch && !fLocatorMatch)
+                strNote = "Verified; locator stale. The digest binds, so the stamp still proves "
+                          "the file even though the CID on chain is not the one supplied.";
         }
     }
     else
