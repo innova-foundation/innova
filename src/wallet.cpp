@@ -11419,6 +11419,7 @@ bool CWallet::SelectPrivacyVNextNotes(
     std::vector<const CPrivacyVNextWalletNote*> vCandidates;
     std::vector<const CPrivacyVNextWalletNote*> vConsumed;
     size_t nCollateralLocked = 0;
+    size_t nPendingSpend = 0;
     for (size_t i = 0; i < vPrivacyVNextNotes.size(); ++i)
     {
         if (!PrivacyVNextNoteIsSpendable(vPrivacyVNextNotes[i], nSpendHeight) ||
@@ -11440,12 +11441,27 @@ bool CWallet::SelectPrivacyVNextNotes(
             vConsumed.push_back(&vPrivacyVNextNotes[i]);
             continue;
         }
+        // fSpent is set at block connect, so skip notes our own mempool spend already
+        // consumes; the mempool would reject the proof as a reserved key image.
+        {
+            LOCK(mempool.cs);
+            if (mempool.mapPrivacyVNextNullifier.count(keyImage) ||
+                mempool.mapPrivacyVNextAttestation.count(keyImage))
+            {
+                nPendingSpend++;
+                continue;
+            }
+        }
         vCandidates.push_back(&vPrivacyVNextNotes[i]);
     }
     if (!vConsumed.empty())
         printf("SelectPrivacyVNextNotes: %u note(s) marked unspent here are already "
                "spent on chain and were skipped; run z_rescaniv5\n",
                (unsigned)vConsumed.size());
+    if (nPendingSpend != 0)
+        printf("SelectPrivacyVNextNotes: %u note(s) named by an unconfirmed "
+               "transaction were skipped; they return if it does not confirm\n",
+               (unsigned)nPendingSpend);
     if (nCollateralLocked != 0)
         printf("SelectPrivacyVNextNotes: %u note(s) held against a collateral "
                "registration were skipped; release with "
