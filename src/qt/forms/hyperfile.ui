@@ -65,7 +65,7 @@
         <item>
           <widget class="QLabel" name="label_2">
            <property name="text">
-             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p align=&quot;center&quot;&gt;Innova's &lt;span style=&quot; font-weight:600;&quot;&gt;Hyperfile&lt;/span&gt; is our&lt;span style=&quot; font-weight:600;&quot;&gt; decentralized file uploading service&lt;/span&gt; using IPFS. IPFS is the Interplanetary Decentralized File System, Hyperfile utilizes the IPFS APIs, Public Gateways, and Infura's API to upload and pin files into space free and forever. You can utilize Hyperfile POD to upload files and also timestamp them with the Innova blockchain.&lt;/p&gt;&lt;p align=&quot;center&quot;&gt;Use this on the decentralized web at: &lt;a href=&quot;https://ipfs.infura.io/ipfs/QmdfxKo6HVgnegahHCXn4X3HoMg7NR3LwCTjCAyxgmCZic&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#ffea00;&quot;&gt;Infury&lt;/span&gt;&lt;/a&gt; | &lt;a href=&quot;https://github.com/innova-foundation/infury&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#fbff00;&quot;&gt;Infury Github&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;p align=&quot;center&quot;&gt;More Information on IPFS: &lt;a href=&quot;https://ipfs.io&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#fff700;&quot;&gt;https://ipfs.io&lt;/span&gt;&lt;/a&gt; | &lt;a href=&quot;https://infura.io&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#f3ff00;&quot;&gt;https://infura.io&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+             <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p align=&quot;center&quot;&gt;&lt;span style=&quot; font-weight:600;&quot;&gt;Hyperfile&lt;/span&gt; uploads a file to IPFS and can anchor its SHA-256 digest on the Innova chain.&lt;/p&gt;&lt;p align=&quot;center&quot;&gt;&lt;span style=&quot; font-weight:600; color:#ff5555;&quot;&gt;Uploads are public and effectively permanent.&lt;/span&gt; Once any peer pins or caches the file it cannot be recalled. The default endpoint &lt;span style=&quot; font-weight:600;&quot;&gt;ipfs.innova-foundation.com:5001&lt;/span&gt; is operated by the Innova Foundation, whose operator sees the file contents and this node&#39;s IP address. Set &lt;span style=&quot; font-weight:600;&quot;&gt;hyperfileip&lt;/span&gt; in innova.conf to your own IPFS node to avoid that. If you only want a timestamp, use &lt;span style=&quot; font-weight:600;&quot;&gt;Proof of Data&lt;/span&gt; instead: it uploads nothing.&lt;/p&gt;&lt;p align=&quot;center&quot;&gt;More information on IPFS: &lt;a href=&quot;https://ipfs.io&quot;&gt;&lt;span style=&quot; text-decoration: underline; color:#fff700;&quot;&gt;https://ipfs.io&lt;/span&gt;&lt;/a&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
           </property>
           <property name="wordWrap">
            <bool>true</bool>
@@ -188,7 +188,7 @@
                  </size>
                 </property>
                 <property name="text">
-                 <string>UPLOAD TO IPFS AND PAY 0.001 INN TO POD/TIMESTAMP</string>
+                 <string>UPLOAD TO IPFS AND TIMESTAMP ON CHAIN</string>
                 </property>
                 <property name="icon">
                  <iconset resource="../bitcoin.qrc">
@@ -230,7 +230,7 @@
          <item>
           <widget class="QLabel" name="hashLabel_2">
            <property name="text">
-            <string>Innova Hyperfile POD Address:</string>
+            <string>Published digest (SHA-256 of the file):</string>
            </property>
           </widget>
          </item>
@@ -275,7 +275,7 @@
               </size>
              </property>
              <property name="text">
-              <string>View Uploaded File on Infura</string>
+              <string>View Uploaded File on ipfs.io</string>
              </property>
             </widget>
            </item>
@@ -301,7 +301,7 @@
               </size>
              </property>
              <property name="text">
-              <string>View Uploaded File on Cloudflare</string>
+              <string>View Uploaded File on dweb.link</string>
              </property>
             </widget>
            </item>
