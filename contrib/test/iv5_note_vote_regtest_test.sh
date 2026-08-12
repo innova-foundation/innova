@@ -36,14 +36,9 @@
 # its own relay check refuses it as local state, the vote is never pushed, and
 # the note has already been burned in the per-epoch cast set.
 #
-# The second thing this settles is where the committee comes from. Every seat in
-# this run is one of the three well-known secp256k1 points 1G/2G/3G, which are also
-# the pubkeys of the three configured -finalitytallyprivkey scalars, so seat
-# identity, set hash, fleet agreement and the certificate are all equally produced
-# by an implementation that never reads the collateral registry. Section 5d holds
-# the chain inside the term BEFORE the one this run seats -- a term whose draw
-# anchors below every registration, which 5c proves is empty there -- and requires
-# nothing to be seated. That is the only check that separates the two.
+# The second thing it settles is where the committee comes from; see
+# PRE_TERM_EPOCH below for the check that separates a registry draw from a fixed
+# set, and why nothing else here does.
 #
 # Regtest epoch layout: DAG fork 11, 300-block epochs, so epoch E covers
 # [11 + 300*(E-1), 310 + 300*(E-1)]. Boundary B sits at 311 because the IV5 tree
@@ -281,6 +276,22 @@ fail()    { echo -e "${RED}[FAIL]${NC} $*"; FAILED=$((FAILED + 1)); }
 # They are re-listed in Results because the run directory is deleted on success.
 warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; WARNED=$((WARNED + 1)); WARNINGS+=("$*"); }
 header()  { echo -e "\n${CYAN}========================================${NC}"; echo -e "${CYAN}  $*${NC}"; echo -e "${CYAN}========================================${NC}"; }
+
+RESULTS_PRINTED=0
+print_results() {
+    RESULTS_PRINTED=1
+    header "Results"
+    echo -e "${GREEN}Passed: $PASSED${NC}"
+    echo -e "${RED}Failed: $FAILED${NC}"
+    echo -e "${YELLOW}Warnings: $WARNED${NC}"
+    # The only record of warns once the run directory is deleted.
+    if [ "$WARNED" -gt 0 ]; then
+        local w
+        for w in "${WARNINGS[@]}"; do
+            echo -e "${YELLOW}  - $w${NC}"
+        done
+    fi
+}
 
 node_dir()  { echo "$TEST_DIR/node$1"; }
 node_port() { echo $((BASE_PORT + $1)); }
@@ -745,6 +756,8 @@ cleanup() {
     else
         rm -rf "$TEST_DIR"
     fi
+    # Early exits still print the tally.
+    [ "$RESULTS_PRINTED" = "1" ] || print_results
 }
 trap cleanup EXIT
 
@@ -2128,19 +2141,6 @@ else
 fi
 
 # ============================================================
-header "Results"
-# ============================================================
-echo -e "${GREEN}Passed: $PASSED${NC}"
-echo -e "${RED}Failed: $FAILED${NC}"
-echo -e "${YELLOW}Warnings: $WARNED${NC}"
-# The run directory is deleted on success, so a warn that scrolled past hours ago
-# would otherwise leave no trace. None of them can hide a missing assertion -- no
-# check has a warn on one side and a PASS on the other -- but they are the record
-# of what raced.
-if [ "$WARNED" -gt 0 ]; then
-    for w in "${WARNINGS[@]}"; do
-        echo -e "${YELLOW}  - $w${NC}"
-    done
-fi
+print_results
 [ "$FAILED" -eq 0 ] || exit 1
 exit 0
