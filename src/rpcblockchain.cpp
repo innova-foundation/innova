@@ -567,13 +567,9 @@ Value podverify(const Array& params, bool fHelp)
         vSalt = ParseHex(strSalt);
     }
 
-    CTransaction tx;
-    uint256 hashBlock = 0;
-    if (!GetTransaction(hashTx, tx, hashBlock, true))
-        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "No transaction with that txid.");
-
     // Target digests. The file form yields both the modern SHA-256 and the digest
-    // the legacy path used, so one call answers either stamp shape.
+    // the legacy path used, so one call answers either stamp shape. It is computed
+    // before any lock is taken: the file is streamed twice and may be any size.
     std::vector<unsigned char> vTargetSha256;
     uint256 hashLegacy = 0;
     bool fHaveLegacyDigest = false;
@@ -605,6 +601,15 @@ Value podverify(const Array& params, bool fHelp)
         if (!PodCidToLocator(params[3].get_str(), vTargetLocator))
             throw JSONRPCError(RPC_INVALID_PARAMETER, "cid is not a CIDv0 sha2-256 multihash.");
     }
+
+    // Chain reads from here down. podverify never touches the wallet, so its
+    // dispatch row is unlocked and only cs_main is taken.
+    LOCK(cs_main);
+
+    CTransaction tx;
+    uint256 hashBlock = 0;
+    if (!GetTransaction(hashTx, tx, hashBlock, true))
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "No transaction with that txid.");
 
     Object obj;
     obj.push_back(Pair("txid", hashTx.GetHex()));
@@ -724,14 +729,11 @@ Value podverify(const Array& params, bool fHelp)
     // Anchoring. The block's time is the attested time; the transaction's own
     // nTime is chosen by its sender and proves nothing.
     CBlockIndex* pindex = NULL;
+    if (hashBlock != 0)
     {
-        LOCK(cs_main);
-        if (hashBlock != 0)
-        {
-            std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashBlock);
-            if (mi != mapBlockIndex.end() && mi->second->IsInMainChain())
-                pindex = mi->second;
-        }
+        std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashBlock);
+        if (mi != mapBlockIndex.end() && mi->second->IsInMainChain())
+            pindex = mi->second;
     }
 
     if (pindex)

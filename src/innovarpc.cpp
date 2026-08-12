@@ -447,7 +447,7 @@ static const CRPCCommand vRPCCommands[] =
     { "nyx",                    &nyx,                    false,  false},
 
     { "proofofdata",          &proofofdata,              false,  true  },
-    { "podverify",            &podverify,                false,  false },
+    { "podverify",            &podverify,                false,  true  },
 
     // Innova Name Commands
     { "name_new",               &name_new,               false,  true },
