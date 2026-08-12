@@ -3658,13 +3658,17 @@ bool PrepareNameIndexDisconnectTransition(
             return false;
         }
 
+        // Connect skips unindexable name txs and keeps connecting, so disconnect must
+        // decide from state alone: a tx that is not the indexed tail was never applied.
+        // Re-running the connect predicate is not possible after a rebuild.
         NameTxInfo nti;
         if (!DecodeNameTx(tx, nti))
         {
-            strError = strprintf(
-                "could not decode disconnected name transaction %s",
-                tx.GetHash().ToString().substr(0, 20).c_str());
-            return false;
+            printf("PrepareNameIndexDisconnectTransition() : name tx %s at "
+                   "height %d does not decode; connect did not index it\n",
+                   tx.GetHash().ToString().substr(0, 20).c_str(),
+                   pindex->nHeight);
+            continue;
         }
 
         bool fBeforeExists = false;
@@ -3674,16 +3678,27 @@ bool PrepareNameIndexDisconnectTransition(
             return false;
         if (!fBeforeExists || before.vtxPos.empty())
         {
-            strError = "disconnected name record is absent or empty";
-            return false;
+            printf("PrepareNameIndexDisconnectTransition() : name tx %s at "
+                   "height %d has no indexed record; connect did not index it\n",
+                   tx.GetHash().ToString().substr(0, 20).c_str(),
+                   pindex->nHeight);
+            continue;
         }
 
+        // A tail that cannot be read is local corruption, not a connect skip.
         CTransaction lastTx;
-        if (!lastTx.ReadFromDisk(before.vtxPos.back().txPos) ||
-            lastTx.GetHash() != tx.GetHash())
+        if (!lastTx.ReadFromDisk(before.vtxPos.back().txPos))
         {
-            strError = "disconnected name record tail does not match its transaction";
+            strError = "disconnected name record tail could not be read";
             return false;
+        }
+        if (lastTx.GetHash() != tx.GetHash())
+        {
+            printf("PrepareNameIndexDisconnectTransition() : name tx %s at "
+                   "height %d is not the indexed tail; connect did not index it\n",
+                   tx.GetHash().ToString().substr(0, 20).c_str(),
+                   pindex->nHeight);
+            continue;
         }
 
         CNameRecord after = before;

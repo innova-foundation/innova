@@ -1,6 +1,9 @@
 #include <boost/test/unit_test.hpp>
 
+#include "bignum.h"
+#include "main.h"
 #include "namecoin.h"
+#include "txdb.h"
 
 extern bool fRegTest;
 extern bool fTestNet;
@@ -32,6 +35,183 @@ private:
 };
 
 const int64_t SECONDS_PER_DAY = 86400;
+
+// A name script built without the creation-side term bound, so a term connect
+// will refuse can still be placed in a block.
+CScript MakeNameScript(const std::string& strName, int nRentalDays, int op,
+                       const std::string& strValue)
+{
+    const std::vector<unsigned char> vchName(strName.begin(), strName.end());
+    const std::vector<unsigned char> vchValue(strValue.begin(), strValue.end());
+    CScript script;
+    script << op << OP_DROP << vchName << CBigNum(nRentalDays).getvch()
+           << OP_2DROP << vchValue << OP_DROP;
+    script << OP_TRUE;
+    return script;
+}
+
+CTransaction MakeNameTx(const std::string& strName, int nRentalDays, int op,
+                        const std::string& strValue, const COutPoint& prevout,
+                        int64_t nValueOut, unsigned int nTime)
+{
+    CTransaction tx;
+    tx.nVersion = NAMECOIN_TX_VERSION;
+    tx.nTime = nTime;
+    tx.vin.push_back(CTxIn(prevout));
+    tx.vout.push_back(CTxOut(nValueOut,
+                             MakeNameScript(strName, nRentalDays, op, strValue)));
+    return tx;
+}
+
+// Proof-of-stake shaped so the disk round trip does not depend on a test
+// proof-of-work limit.
+void AddCoinbaseAndCoinstake(CBlock& block, unsigned int nSeed)
+{
+    CTransaction coinbase;
+    coinbase.nTime = nSeed;
+    coinbase.vin.resize(1);
+    coinbase.vin[0].prevout.SetNull();
+    coinbase.vout.push_back(CTxOut(1, CScript() << OP_TRUE));
+
+    CTransaction coinstake;
+    coinstake.nTime = nSeed + 1;
+    coinstake.vin.push_back(CTxIn(COutPoint(uint256(nSeed + 2), 0)));
+    coinstake.vout.push_back(CTxOut(0, CScript()));
+    coinstake.vout.push_back(CTxOut(1, CScript() << OP_TRUE));
+    BOOST_REQUIRE(coinstake.IsCoinStake());
+
+    block.vtx.push_back(coinbase);
+    block.vtx.push_back(coinstake);
+}
+
+// Writes the block and the tx-index entries ConnectBlock would have written,
+// at the positions ConnectBlock computes.
+void StoreBlock(CBlock& block, int nHeight, unsigned int& nFileOut,
+                unsigned int& nBlockPosOut)
+{
+    block.hashMerkleRoot = block.BuildMerkleTree();
+    nFileOut = 0;
+    nBlockPosOut = 0;
+    BOOST_REQUIRE(block.WriteToDisk(nFileOut, nBlockPosOut));
+
+    const uint64_t nHeaderBytes =
+        ::GetSerializeSize(CBlock(), SER_DISK, CLIENT_VERSION);
+    uint64_t nTxPos = (uint64_t)nBlockPosOut + nHeaderBytes -
+                      2 * GetSizeOfCompactSize(0) +
+                      GetSizeOfCompactSize(block.vtx.size());
+
+    CTxDB txdb("r+");
+    for (std::vector<CTransaction>::const_iterator it = block.vtx.begin();
+         it != block.vtx.end(); ++it)
+    {
+        BOOST_REQUIRE(txdb.AddTxIndex(
+            *it, CDiskTxPos(nFileOut, nBlockPosOut, (unsigned int)nTxPos),
+            nHeight));
+        nTxPos += ::GetSerializeSize(*it, SER_DISK, CLIENT_VERSION);
+    }
+}
+
+CNameIndexCursor MakeChainCursor(int nHeight, const uint256& hashBlock)
+{
+    CNameIndexCursor cursor;
+    cursor.nSchema = NAMEINDEX_CURSOR_SCHEMA;
+    cursor.nResetHeight = FORK_HEIGHT_IDNS_RESET;
+    cursor.nHeight = nHeight;
+    cursor.hashBlock = hashBlock;
+    return cursor;
+}
+
+void SeedIndexAt(const std::string& strName, const CNameIndexCursor& cursor)
+{
+    const std::vector<unsigned char> vchName(strName.begin(), strName.end());
+    CNameDB dbName("cr+");
+    BOOST_REQUIRE(dbName.TxnBegin());
+    BOOST_REQUIRE(dbName.EraseName(vchName));
+    BOOST_REQUIRE(dbName.EraseEffectProgress());
+    BOOST_REQUIRE(dbName.WriteCursor(cursor));
+    BOOST_REQUIRE(dbName.TxnCommit());
+}
+
+bool NameIsIndexed(const std::string& strName)
+{
+    const std::vector<unsigned char> vchName(strName.begin(), strName.end());
+    CNameDB dbName("r");
+    CNameRecord rec;
+    return dbName.ExistsName(vchName) && dbName.ReadName(vchName, rec) &&
+           !rec.vtxPos.empty();
+}
+
+// Connects a block holding one name tx spending a funding output, then
+// disconnects it.  Returns whether the disconnect preparation succeeded; a
+// false return is what drives ReplayBestChainEffects into FailClosed/shutdown.
+bool ConnectThenDisconnectNameTx(const std::string& strName, int nRentalDays,
+                                 int op, unsigned int nSeed,
+                                 bool fFundWithNameOutput,
+                                 bool& fIndexedAfterConnect,
+                                 bool& fIndexedAfterDisconnect)
+{
+    CBlock fundBlock;
+    AddCoinbaseAndCoinstake(fundBlock, nSeed);
+    CTransaction fundTx;
+    fundTx.nTime = nSeed + 3;
+    fundTx.vin.push_back(CTxIn(COutPoint(uint256(nSeed + 4), 0)));
+    fundTx.vout.push_back(CTxOut(
+        100 * COIN,
+        fFundWithNameOutput
+            ? MakeNameScript(strName, 30, OP_NAME_NEW, "prior")
+            : CScript() << OP_TRUE));
+    fundBlock.vtx.push_back(fundTx);
+    fundBlock.hashPrevBlock = uint256(nSeed + 5);
+    fundBlock.nTime = nSeed + 6;
+
+    unsigned int nFundFile = 0;
+    unsigned int nFundPos = 0;
+    StoreBlock(fundBlock, 10, nFundFile, nFundPos);
+
+    const CTransaction nameTx = MakeNameTx(
+        strName, nRentalDays, op, "value", COutPoint(fundTx.GetHash(), 0),
+        1 * COIN, nSeed + 7);
+
+    CBlock nameBlock;
+    AddCoinbaseAndCoinstake(nameBlock, nSeed + 8);
+    nameBlock.vtx.push_back(nameTx);
+    nameBlock.hashPrevBlock = fundBlock.GetHash();
+    nameBlock.nTime = nSeed + 12;
+
+    unsigned int nNameFile = 0;
+    unsigned int nNamePos = 0;
+    StoreBlock(nameBlock, 11, nNameFile, nNamePos);
+
+    uint256 hashPrevious = fundBlock.GetHash();
+    uint256 hashCurrent = nameBlock.GetHash();
+    CBlockIndex previous;
+    previous.phashBlock = &hashPrevious;
+    previous.nHeight = 10;
+    CBlockIndex current(nNameFile, nNamePos, nameBlock);
+    current.phashBlock = &hashCurrent;
+    current.pprev = &previous;
+    current.nHeight = 11;
+
+    const CNameIndexCursor cursorPrevious =
+        MakeChainCursor(previous.nHeight, hashPrevious);
+    SeedIndexAt(strName, cursorPrevious);
+
+    std::string strError;
+    {
+        CTxDB txdb("r+");
+        BOOST_REQUIRE_MESSAGE(
+            ApplyNameIndexConnectBlock(txdb, &current, strError), strError);
+    }
+    fIndexedAfterConnect = NameIsIndexed(strName);
+
+    strError.clear();
+    const bool fDisconnected =
+        ApplyNameIndexDisconnectBlock(nameBlock, &current, strError);
+    fIndexedAfterDisconnect = NameIsIndexed(strName);
+    if (!fDisconnected)
+        BOOST_TEST_MESSAGE("disconnect failed: " + strError);
+    return fDisconnected;
+}
 
 CNameRecord MakeRecord(int nRegistrationHeight)
 {
@@ -247,6 +427,85 @@ BOOST_AUTO_TEST_CASE(stacked_rentals_extend_from_the_running_expiry)
     BOOST_CHECK_EQUAL(nExpires, nAtOnce);
     BOOST_CHECK_EQUAL(NameBlocksToSeconds(nStart, nExpires),
                       60 * SECONDS_PER_DAY);
+}
+
+// Control: an indexable name op must still be applied at connect and undone at
+// disconnect, so the skip path below cannot be satisfied by never undoing
+// anything.
+BOOST_AUTO_TEST_CASE(indexable_name_op_connects_and_disconnects)
+{
+    bool fAfterConnect = false;
+    bool fAfterDisconnect = true;
+    BOOST_CHECK(ConnectThenDisconnectNameTx(
+        "control.inn", 30, OP_NAME_NEW, 0x51000, false,
+        fAfterConnect, fAfterDisconnect));
+    BOOST_CHECK(fAfterConnect);
+    BOOST_CHECK(!fAfterDisconnect);
+}
+
+// Connect skips a name op it will not index; Disconnect must treat the missing
+// index entry as expected, not corruption, or the first reorg over it halts the node.
+BOOST_AUTO_TEST_CASE(over_term_name_op_survives_a_reorg)
+{
+    BOOST_REQUIRE(GetMaxRentalDays(11) == MAX_RENTAL_DAYS);
+    bool fAfterConnect = true;
+    bool fAfterDisconnect = true;
+    BOOST_CHECK(ConnectThenDisconnectNameTx(
+        "overterm.inn", MAX_RENTAL_DAYS + 1, OP_NAME_NEW, 0x52000, false,
+        fAfterConnect, fAfterDisconnect));
+    BOOST_CHECK(!fAfterConnect);
+    BOOST_CHECK(!fAfterDisconnect);
+}
+
+// The same hazard predates the term bound: every connect-skip reason lands in
+// the same state. name_update against a name the index does not hold is one of
+// the original ones.
+BOOST_AUTO_TEST_CASE(update_of_an_absent_name_survives_a_reorg)
+{
+    bool fAfterConnect = true;
+    bool fAfterDisconnect = true;
+    BOOST_CHECK(ConnectThenDisconnectNameTx(
+        "absent.inn", 30, OP_NAME_UPDATE, 0x53000, true,
+        fAfterConnect, fAfterDisconnect));
+    BOOST_CHECK(!fAfterConnect);
+    BOOST_CHECK(!fAfterDisconnect);
+}
+
+// A name tx that does not decode is skipped at connect for the same reason, so
+// disconnect must not read it as corruption either.
+BOOST_AUTO_TEST_CASE(undecodable_name_tx_survives_a_reorg)
+{
+    CTransaction bogus;
+    bogus.nVersion = NAMECOIN_TX_VERSION;
+    bogus.nTime = 0x54000;
+    bogus.vin.push_back(CTxIn(COutPoint(uint256(0x54001), 0)));
+    bogus.vout.push_back(CTxOut(1, CScript() << OP_TRUE));
+
+    CBlock block;
+    AddCoinbaseAndCoinstake(block, 0x54002);
+    block.vtx.push_back(bogus);
+    block.hashPrevBlock = uint256(0x54006);
+    block.nTime = 0x54007;
+    block.hashMerkleRoot = block.BuildMerkleTree();
+
+    uint256 hashPrevious = block.hashPrevBlock;
+    uint256 hashCurrent = block.GetHash();
+    CBlockIndex previous;
+    previous.phashBlock = &hashPrevious;
+    previous.nHeight = 20;
+    CBlockIndex current;
+    current.phashBlock = &hashCurrent;
+    current.pprev = &previous;
+    current.nHeight = 21;
+
+    SeedIndexAt("undecodable.inn",
+                MakeChainCursor(current.nHeight, hashCurrent));
+
+    CPreparedNameIndexTransition prepared;
+    std::string strError;
+    BOOST_CHECK_MESSAGE(PrepareNameIndexDisconnectTransition(
+        block, &current, prepared, strError), strError);
+    BOOST_CHECK(prepared.vEffects.empty());
 }
 
 BOOST_AUTO_TEST_SUITE_END()

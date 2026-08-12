@@ -727,12 +727,14 @@ BOOST_AUTO_TEST_CASE(dag_skipped_name_tx_is_excluded_and_identity_bound)
         std::vector<unsigned char>({'d', 'a', 'g', '-', 's', 'k', 'i', 'p'});
     ResetEffectState(cleanupName, cursorCurrent);
 
+    // Undecodable is a connect-skip reason, so disconnect must undo nothing
+    // rather than fail, but the active set still binds the identity.
     CPreparedNameIndexTransition activePrepared;
     std::string strError;
     const std::set<uint256> setNoSkippedTxs;
-    BOOST_CHECK(!PrepareNameIndexDisconnectTransition(
-        block, &current, setNoSkippedTxs, activePrepared, strError));
-    BOOST_CHECK(strError.find("could not decode") != std::string::npos);
+    BOOST_REQUIRE_MESSAGE(PrepareNameIndexDisconnectTransition(
+        block, &current, setNoSkippedTxs, activePrepared, strError), strError);
+    BOOST_CHECK(activePrepared.vEffects.empty());
 
     std::set<uint256> setSkippedTxs;
     setSkippedTxs.insert(skippedNameTx.GetHash());
