@@ -924,10 +924,11 @@ qint64 ChatWidget::checkIPFSGateway()
         std::string ipfsip = GetArg("-hyperfileip", "ipfs.innova-foundation.com:5001");
 
         std::unique_ptr<ipfs::Client> client;
-        if (fLocal)
-            client.reset(new ipfs::Client(ipfsip));
-        else
-            client.reset(new ipfs::Client("https://ipfs.infura.io:5001"));
+        if (!fLocal)
+            throw std::runtime_error("Hyperfile is off. Set hyperfilelocal=1 and "
+                                     "hyperfileip=ipfs.innova-foundation.com:5001 in innova.conf. "
+                                     "There is no public fallback endpoint.");
+        client.reset(new ipfs::Client(ipfsip));
 
         ipfs::Json version;
         client->Version(&version);
@@ -1105,10 +1106,11 @@ bool ChatWidget::encryptAndUploadFile(const QString& filePath, QString& outCID, 
     std::string ipfsip = GetArg("-hyperfileip", "ipfs.innova-foundation.com:5001");
     std::unique_ptr<ipfs::Client> client;
     try {
-        if (fLocal)
-            client.reset(new ipfs::Client(ipfsip));
-        else
-            client.reset(new ipfs::Client("https://ipfs.infura.io:5001"));
+        if (!fLocal)
+            throw std::runtime_error("Hyperfile is off. Set hyperfilelocal=1 and "
+                                     "hyperfileip=ipfs.innova-foundation.com:5001 in innova.conf. "
+                                     "There is no public fallback endpoint.");
+        client.reset(new ipfs::Client(ipfsip));
     } catch (const std::exception& e) {
         file.close();
         OPENSSL_cleanse(aesKey, 32);
@@ -1198,10 +1200,11 @@ bool ChatWidget::encryptAndUploadFile(const QString& filePath, QString& outCID, 
             futures.append(QtConcurrent::run([fLocal, ipfsip, tp, idx]() -> QPair<int, QString> {
                 try {
                     std::unique_ptr<ipfs::Client> cl;
-                    if (fLocal)
-                        cl.reset(new ipfs::Client(ipfsip));
-                    else
-                        cl.reset(new ipfs::Client("https://ipfs.infura.io:5001"));
+                    if (!fLocal)
+                        throw std::runtime_error("Hyperfile is off. Set hyperfilelocal=1 and "
+                                     "hyperfileip=ipfs.innova-foundation.com:5001 in innova.conf. "
+                                     "There is no public fallback endpoint.");
+                    cl.reset(new ipfs::Client(ipfsip));
 
                     ipfs::Json add_result;
                     std::string bn = QFileInfo(tp).fileName().toStdString();
@@ -1411,10 +1414,11 @@ bool ChatWidget::downloadAndDecryptFile(const QString& cid, const QString& encKe
     const qint64 dlMaxSize = 500 * 1024 * 1024;
 
     try {
-        if (fLocal)
-            client.reset(new ipfs::Client(ipfsip));
-        else
-            client.reset(new ipfs::Client("https://ipfs.infura.io:5001"));
+        if (!fLocal)
+            throw std::runtime_error("Hyperfile is off. Set hyperfilelocal=1 and "
+                                     "hyperfileip=ipfs.innova-foundation.com:5001 in innova.conf. "
+                                     "There is no public fallback endpoint.");
+        client.reset(new ipfs::Client(ipfsip));
 
         std::stringstream ss;
         client->FilesGet(cid.toStdString(), &ss);

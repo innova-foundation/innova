@@ -282,6 +282,7 @@ extern json_spirit::Value gettxout(const json_spirit::Array& params, bool fHelp)
 extern json_spirit::Value importaddress(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value burn(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value proofofdata(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
+extern json_spirit::Value podverify(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value getfinalityinfo(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value submitfinalitytallyshare(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
 extern json_spirit::Value submitfinalitytallycert(const json_spirit::Array& params, bool fHelp); // in rpcblockchain.cpp
@@ -295,8 +296,6 @@ extern json_spirit::Value getdagconfidence(const json_spirit::Array& params, boo
 extern json_spirit::Value hyperfileversion(const json_spirit::Array& params, bool fHelp); // in rpchyperfile.cpp Innova Hyperfile
 extern json_spirit::Value hyperfileupload(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value hyperfilepod(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value hyperfileduo(const json_spirit::Array& params, bool fHelp);
-extern json_spirit::Value hyperfileduopod(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value hyperfilegetblock(const json_spirit::Array& params, bool fHelp);
 extern json_spirit::Value hyperfilegetstat(const json_spirit::Array& params, bool fHelp);
 

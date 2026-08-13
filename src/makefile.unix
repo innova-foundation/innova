@@ -362,6 +362,7 @@ OBJS= \
     obj/rpcmining.o \
     obj/rpcwallet.o \
     obj/rpcblockchain.o \
+    obj/pod.o \
     obj/rpcrawtransaction.o \
 	obj/rpchyperfile.o \
     obj/rpcshielded.o \
@@ -442,6 +443,7 @@ OBJS= \
     obj/rpcmining.o \
     obj/rpcwallet.o \
     obj/rpcblockchain.o \
+    obj/pod.o \
     obj/rpcrawtransaction.o \
     obj/rpcsmessage.o \
     obj/rpcnyx.o \
@@ -526,6 +528,7 @@ TEST_OBJS= \
     obj/test/finality_note_tests.o \
     obj/test/finality_note_carrier_tests.o \
     obj/test/fcmp_root_tests.o \
+    obj/test/pod_tests.o \
     obj/test/privacy_vnext_abi_tests.o \
     obj/test/privacy_vnext_store_tests.o \
     obj/test/privacy_vnext_builder_tests.o \

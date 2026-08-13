@@ -13,6 +13,7 @@
 #include "base58.h"
 #include "net.h"
 #include "ringsig.h"
+#include "pod.h"
 #include <errno.h>
 
 #include <algorithm>
@@ -418,81 +419,378 @@ Value dumpbootstrap(const Array& params, bool fHelp)
     return Value::null;
 }
 
+// Resolves the user's first argument into something a stamp can be checked against.
+enum PodTargetKind
+{
+    POD_TARGET_NONE = 0,
+    POD_TARGET_DIGEST,
+    POD_TARGET_FILE,
+    POD_TARGET_CID,
+};
+
+// fFileAllowed is false unless -enablefilerpc is set. The filesystem is not
+// probed at all in that case: a stat here would answer "does this path exist"
+// for any RPC caller, which is the disclosure the flag exists to prevent.
+static PodTargetKind PodClassifyTarget(const std::string& strTarget, bool fFileAllowed)
+{
+    if (strTarget.empty())
+        return POD_TARGET_NONE;
+    // A bare SHA-256 wins over a same-named file; say so in the help.
+    if (strTarget.size() == 64 && IsHex(strTarget))
+        return POD_TARGET_DIGEST;
+    if (fFileAllowed)
+    {
+        boost::system::error_code ec;
+        if (boost::filesystem::is_regular_file(boost::filesystem::path(strTarget), ec))
+            return POD_TARGET_FILE;
+    }
+    std::vector<unsigned char> vLocator;
+    if (PodCidToLocator(strTarget, vLocator))
+        return POD_TARGET_CID;
+    return POD_TARGET_NONE;
+}
+
 Value proofofdata(const Array& params, bool fHelp)
 {
-    if (fHelp || params.size() < 1)
-    throw runtime_error(
-        "proofofdata\n"
-        "\nArguments:\n"
-        "1. \"filelocation\"          (string, required) The file location of the file to upload (e.g. /home/name/file.jpg)\n"
-        "Returns the Innova address and transaction ID of the proof of data submission of the file hashed into an INN address");
+    if (fHelp || params.size() < 1 || params.size() > 2)
+        throw runtime_error(
+            "proofofdata <filelocation> [blinded]\n"
+            "\nAnchors a SHA-256 digest of a local file in an OP_RETURN output on the Innova\n"
+            "chain, so the file's existence at that block's time can be proven later.\n"
+            "The file is hashed locally and is never uploaded anywhere.\n"
+            "\nArguments:\n"
+            "1. \"filelocation\"   (string, required) Path to the file, read by this node.\n"
+            "2. blinded           (boolean, optional, default=true) Publish\n"
+            "                     SHA-256(SHA-256(file) || salt) rather than the file's plain\n"
+            "                     SHA-256. Save the returned salt: without it the stamp cannot\n"
+            "                     be proven, and it is stored only in this wallet.\n"
+            "\nWith blinded=false the on-chain digest is exactly what `sha256sum` prints, so\n"
+            "anyone can verify the stamp with coreutils and a block explorer - but the digest\n"
+            "then identifies the file to anyone who already holds a copy of it.\n"
+            "\nThe stamp costs a normal transaction fee. The 0.01 INN it moves is paid back to\n"
+            "this wallet; nothing is burned.\n"
+            "\nThis command reads a path on the node's filesystem and requires -enablefilerpc=1.\n"
+            "Verify a stamp with podverify.\n");
+
+    PodRequireFileRpc("proofofdata");
+
+    if (!pwalletMain)
+        throw JSONRPCError(RPC_WALLET_ERROR, "Wallet is not available.");
+
+    std::string strFile = params[0].get_str();
+    if (strFile.empty())
+        throw JSONRPCError(RPC_INVALID_PARAMETER, "filelocation is empty.");
+
+    bool fBlinded = true;
+    if (params.size() > 1)
+        fBlinded = params[1].get_bool();
+
+    boost::filesystem::path p(strFile);
+    std::string strBase = p.filename().string();
+
+    std::vector<unsigned char> vFileDigest;
+    std::string strError;
+    if (!PodHashFile(strFile, vFileDigest, strError))
+        throw JSONRPCError(RPC_INVALID_PARAMETER, strError);
+
+    std::vector<unsigned char> vSalt;
+    std::vector<unsigned char> vStampDigest = vFileDigest;
+    int nType = POD_TYPE_PLAIN;
+    if (fBlinded)
+    {
+        nType = POD_TYPE_BLINDED;
+        vSalt = PodNewSalt();
+        vStampDigest = PodBlindDigest(vFileDigest, vSalt);
+    }
+
+    CWalletTx wtx;
+    wtx.mapValue["comment"] = strBase;
+    wtx.mapValue["to"] = "Proof of Data";
+    wtx.mapValue["podsha256"] = HexStr(vFileDigest.begin(), vFileDigest.end());
+    if (fBlinded)
+        wtx.mapValue["podsalt"] = HexStr(vSalt.begin(), vSalt.end());
+
+    strError = PodCreateStamp(pwalletMain, nType, vStampDigest,
+                              std::vector<unsigned char>(), wtx);
+    if (strError != "")
+        throw JSONRPCError(RPC_WALLET_ERROR, strError);
 
     Object obj;
-    std::string userFile = params[0].get_str();
-    std::ifstream dataFile;
+    obj.push_back(Pair("filename",   strBase));
+    obj.push_back(Pair("type",       PodTypeName(nType)));
+    obj.push_back(Pair("filesha256", HexStr(vFileDigest.begin(), vFileDigest.end())));
+    if (fBlinded)
+        obj.push_back(Pair("salt",   HexStr(vSalt.begin(), vSalt.end())));
+    obj.push_back(Pair("stampdigest", HexStr(vStampDigest.begin(), vStampDigest.end())));
+    obj.push_back(Pair("podtxid",    wtx.GetHash().GetHex()));
+    if (fBlinded)
+        obj.push_back(Pair("warning",
+            "Save the salt. Without it this stamp proves nothing about the file."));
+    return obj;
+}
 
-    if(userFile == "")
+Value podverify(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() < 2 || params.size() > 4)
+        throw runtime_error(
+            "podverify <file|sha256-hex|cid> <txid> [salt-hex] [cid]\n"
+            "\nChecks that a transaction carries a proof-of-data stamp for the given target,\n"
+            "and reports the block time the stamp is anchored to.\n"
+            "\nArguments:\n"
+            "1. \"target\"   (string, required) One of:\n"
+            "                 - a path to a file on this node (hashed locally),\n"
+            "                 - a 64-character SHA-256 hex digest, as printed by sha256sum,\n"
+            "                 - an IPFS CIDv0, for stamps whose only binding is a CID.\n"
+            "               A 64-hex string is always read as a digest, never as a filename.\n"
+            "2. \"txid\"     (string, required) The stamp transaction id.\n"
+            "3. \"salt-hex\" (string, optional) 32-byte salt, required for a blinded stamp.\n"
+            "4. \"cid\"      (string, optional) CIDv0 to compare against a hyperfile stamp's\n"
+            "               locator, when the target is a file or a digest. A digest match with\n"
+            "               a locator mismatch is reported as verified with a stale locator.\n"
+            "\nA file-path target reads a path on the node's filesystem and requires\n"
+            "-enablefilerpc=1. Digest and CID targets need no flag, so a stamp can always be\n"
+            "checked by anyone holding the digest.\n"
+            "\nThe attested time is the time of the block containing the transaction, not the\n"
+            "nTime the transaction claims for itself.\n"
+            "\nStamps made before this release carry no digest on chain: they pay an address\n"
+            "derived from Hash160 of the digest. Those are reported with \"legacy\": true and\n"
+            "bind only 160 bits; the digest itself is not recoverable from the chain. A legacy\n"
+            "file stamp can only be checked by supplying the file, and a legacy hyperfile stamp\n"
+            "only by supplying its CID.\n");
+
+    uint256 hashTx;
+    hashTx.SetHex(params[1].get_str());
+
+    const bool fFileAllowed = GetBoolArg("-enablefilerpc", false);
+    std::string strTarget = params[0].get_str();
+    PodTargetKind kind = PodClassifyTarget(strTarget, fFileAllowed);
+    if (kind == POD_TARGET_NONE)
+        throw JSONRPCError(RPC_INVALID_PARAMETER,
+            fFileAllowed
+                ? "target is not a readable file, a 64-character SHA-256 hex digest, or a CIDv0."
+                : "target is not a 64-character SHA-256 hex digest or a CIDv0. A file-path "
+                  "target requires -enablefilerpc=1.");
+
+    std::vector<unsigned char> vSalt;
+    if (params.size() > 2 && !params[2].get_str().empty())
     {
-        return 0; //return with no value prev
+        std::string strSalt = params[2].get_str();
+        if (strSalt.size() != POD_SALT_SIZE * 2 || !IsHex(strSalt))
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "salt-hex must be 32 bytes of hex.");
+        vSalt = ParseHex(strSalt);
     }
 
-    std::string filename = userFile.c_str();
+    // Target digests. The file form yields both the modern SHA-256 and the digest
+    // the legacy path used, so one call answers either stamp shape. It is computed
+    // before any lock is taken: the file is streamed twice and may be any size.
+    std::vector<unsigned char> vTargetSha256;
+    uint256 hashLegacy = 0;
+    bool fHaveLegacyDigest = false;
+    std::vector<unsigned char> vTargetLocator;
 
-    boost::filesystem::path p(filename);
-    std::string basename = p.filename().string();
-
-    dataFile.open(userFile.c_str(), std::ios::binary);
-    std::vector<char> dataContents((std::istreambuf_iterator<char>(dataFile)), std::istreambuf_iterator<char>());
-
-    printf("POD Upload File Start: %s\n", basename.c_str());
-
-    //Hash the file for Innova POD
-    uint256 datahash = SerializeHash(dataContents);
-    CKeyID keyid(Hash160(datahash.begin(), datahash.end()));
-    CBitcoinAddress baddr = CBitcoinAddress(keyid);
-    std::string addr = baddr.ToString();
-
-    CAmount nAmount = 0.001 * COIN; // 0.001 INN Fee
-
-    // Wallet comments
-    CWalletTx wtx;
-    wtx.mapValue["comment"] = basename.c_str();
-    std::string sNarr = "POD";
-    wtx.mapValue["to"]      = "Proof of Data";
-
-    // Comment
-    // CWalletTx wtx;
-    // CScript podScript = CScript() << OP_RETURN; //CScript()
-    // if (!basename.c_str().empty()) {
-    //     if (basename.c_str().length() > MAX_OP_RETURN_RELAY - 3) //Max 45 Bytes
-    //         throw JSONRPCError(RPC_INVALID_PARAMETER, strprintf("Comment cannot be longer than %u characters", MAX_OP_RETURN_RELAY - 3));
-    //     podScript << ToByteVector("POD: " + basename.c_str());
-    // }
-
-    if (pwalletMain->IsLocked())
+    if (kind == POD_TARGET_DIGEST)
     {
-        obj.push_back(Pair("error",  "Error, Your wallet is locked! Please unlock your wallet!"));
-        //ui->txLineEdit->setText("ERROR: Your wallet is locked! Cannot send POD. Unlock your wallet!");
-    } else if (pwalletMain->GetBalance() < 0.001) {
-        obj.push_back(Pair("error",  "Error, You need at least 0.001 INN to send POD!"));
-        //ui->txLineEdit->setText("ERROR: You need at least a 0.001 INN balance to send POD.");
-    } else {
-        //std::string sNarr;
-        std::string strError = pwalletMain->SendMoneyToDestination(baddr.Get(), nAmount, sNarr, wtx);
+        vTargetSha256 = ParseHex(strTarget);
+    }
+    else if (kind == POD_TARGET_FILE)
+    {
+        std::string strError;
+        if (!PodHashFile(strTarget, vTargetSha256, strError))
+            throw JSONRPCError(RPC_INVALID_PARAMETER, strError);
+        if (!PodLegacyHashFile(strTarget, hashLegacy, strError))
+            throw JSONRPCError(RPC_INVALID_PARAMETER, strError);
+        fHaveLegacyDigest = true;
+    }
+    else // POD_TARGET_CID
+    {
+        PodCidToLocator(strTarget, vTargetLocator);
+    }
 
-        if(strError != "")
+    if (params.size() > 3 && !params[3].get_str().empty())
+    {
+        if (kind == POD_TARGET_CID)
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                "The target is already a CID; do not pass a fourth argument.");
+        if (!PodCidToLocator(params[3].get_str(), vTargetLocator))
+            throw JSONRPCError(RPC_INVALID_PARAMETER, "cid is not a CIDv0 sha2-256 multihash.");
+    }
+
+    // Chain reads from here down. podverify never touches the wallet, so its
+    // dispatch row is unlocked and only cs_main is taken.
+    LOCK(cs_main);
+
+    CTransaction tx;
+    uint256 hashBlock = 0;
+    if (!GetTransaction(hashTx, tx, hashBlock, true))
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "No transaction with that txid.");
+
+    Object obj;
+    obj.push_back(Pair("txid", hashTx.GetHex()));
+
+    CPodStamp stamp;
+    bool fHaveStamp = PodFindStamp(tx, stamp);
+    bool fMatch = false;
+    std::string strNote;
+
+    if (fHaveStamp)
+    {
+        obj.push_back(Pair("legacy", false));
+        obj.push_back(Pair("stampversion", stamp.nStampVersion));
+        obj.push_back(Pair("type", PodTypeName(stamp.nType)));
+        obj.push_back(Pair("typeid", stamp.nType));
+        obj.push_back(Pair("vout", stamp.nOut));
+        obj.push_back(Pair("stampdigest", HexStr(stamp.vDigest.begin(), stamp.vDigest.end())));
+
+        std::string strCid = PodLocatorToCid(stamp.vLocator);
+        if (!strCid.empty())
+            obj.push_back(Pair("locatorcid", strCid));
+
+        if (stamp.nStampVersion != (int)POD_STAMP_VERSION)
         {
-            obj.push_back(Pair("error",  strError.c_str()));
+            strNote = "Stamp version is not understood by this build; digest not compared.";
+        }
+        else if (kind == POD_TARGET_CID)
+        {
+            // A CID binds the locator only. It is a retrieval hint, never the proof.
+            fMatch = (!stamp.vLocator.empty() && stamp.vLocator == vTargetLocator);
+            obj.push_back(Pair("locatormatch", fMatch));
+            strNote = fMatch
+                ? "Locator matches, but the locator is only a retrieval hint. Supply the file "
+                  "or its SHA-256 to check the digest, which is what actually binds."
+                : "Locator does not match, or the stamp carries none. Supply the file or its "
+                  "SHA-256 to check the digest, which is what actually binds.";
+        }
+        else if (stamp.nType == POD_TYPE_PLAIN || stamp.nType == POD_TYPE_HYPERFILE)
+        {
+            fMatch = (vTargetSha256 == stamp.vDigest);
+            if (!vSalt.empty())
+                strNote = "This stamp is not blinded; the salt was ignored.";
+        }
+        else if (stamp.nType == POD_TYPE_BLINDED)
+        {
+            if (vSalt.empty())
+                throw JSONRPCError(RPC_INVALID_PARAMETER,
+                    "This is a blinded stamp; salt-hex is required to verify it.");
+            fMatch = (PodBlindDigest(vTargetSha256, vSalt) == stamp.vDigest);
+        }
+        else
+        {
+            strNote = "Stamp type is not understood by this build; digest not compared.";
         }
 
-        obj.push_back(Pair("filename",           basename.c_str()));
-        //obj.push_back(Pair("sizebytes",        size));
-        obj.push_back(Pair("podaddress",         addr.c_str()));
-        obj.push_back(Pair("podtxid",            wtx.GetHash().GetHex()));
+        // A hyperfile stamp whose digest matches is proven even if the CID rotated.
+        if (stamp.nType == POD_TYPE_HYPERFILE && kind != POD_TARGET_CID
+            && !vTargetLocator.empty())
+        {
+            const bool fLocatorMatch = (stamp.vLocator == vTargetLocator);
+            obj.push_back(Pair("locatormatch", fLocatorMatch));
+            if (fMatch && !fLocatorMatch)
+                strNote = "Verified; locator stale. The digest binds, so the stamp still proves "
+                          "the file even though the CID on chain is not the one supplied.";
+        }
+    }
+    else
+    {
+        // Legacy: the chain holds Hash160(digest) inside a P2PKH output, not the digest.
+        obj.push_back(Pair("legacy", true));
+        obj.push_back(Pair("type", "legacy-address"));
+
+        CKeyID keyidTarget;
+        bool fHaveTargetKey = false;
+        if (kind == POD_TARGET_FILE && fHaveLegacyDigest)
+        {
+            keyidTarget = CKeyID(Hash160(hashLegacy.begin(), hashLegacy.end()));
+            fHaveTargetKey = true;
+        }
+        else if (kind == POD_TARGET_CID)
+        {
+            keyidTarget = CKeyID(Hash160(strTarget.begin(), strTarget.end()));
+            fHaveTargetKey = true;
+        }
+        else
+        {
+            strNote = "This transaction carries no on-chain digest, and a legacy stamp cannot "
+                      "be checked from a bare SHA-256: the legacy digest is a double-SHA-256 "
+                      "over a length-prefixed copy of the file. Supply the file itself, or the "
+                      "CID for a legacy hyperfile stamp.";
+        }
+
+        if (fHaveTargetKey)
+        {
+            for (unsigned int i = 0; i < tx.vout.size(); i++)
+            {
+                CTxDestination dest;
+                if (!ExtractDestination(tx.vout[i].scriptPubKey, dest))
+                    continue;
+                const CKeyID* pkeyid = boost::get<CKeyID>(&dest);
+                if (pkeyid && *pkeyid == keyidTarget)
+                {
+                    fMatch = true;
+                    obj.push_back(Pair("vout", (int)i));
+                    break;
+                }
+            }
+            obj.push_back(Pair("podaddress", CBitcoinAddress(keyidTarget).ToString()));
+            if (fMatch)
+                strNote = "Legacy stamp. The chain holds only Hash160 of the digest, so this "
+                          "binds 160 bits, not 256, and the digest itself is not on chain.";
+        }
     }
 
-    return obj;
+    obj.push_back(Pair("match", fMatch));
 
+    // Anchoring. The block's time is the attested time; the transaction's own
+    // nTime is chosen by its sender and proves nothing.
+    CBlockIndex* pindex = NULL;
+    if (hashBlock != 0)
+    {
+        std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashBlock);
+        if (mi != mapBlockIndex.end() && mi->second->IsInMainChain())
+            pindex = mi->second;
+    }
+
+    if (pindex)
+    {
+        obj.push_back(Pair("blockhash", hashBlock.GetHex()));
+        obj.push_back(Pair("height", pindex->nHeight));
+        obj.push_back(Pair("blocktime", (boost::int64_t)pindex->GetBlockTime()));
+        obj.push_back(Pair("confirmations", nBestHeight - pindex->nHeight + 1));
+
+        int nFinalizedHeight = 0;
+        const int nCompletedEpoch = GetEpochForHeight(nBestHeight) - 1;
+        const bool fHaveFinalized = nCompletedEpoch >= 0
+            && g_dagManager.TryGetDeterministicFinalizedHeight(nCompletedEpoch, nFinalizedHeight);
+        if (fHaveFinalized)
+        {
+            obj.push_back(Pair("finalizedheight", nFinalizedHeight));
+            obj.push_back(Pair("finalized", pindex->nHeight <= nFinalizedHeight));
+        }
+        else
+        {
+            obj.push_back(Pair("finalized", false));
+            obj.push_back(Pair("finalizednote",
+                "No completed epoch state; this node cannot say whether the block is finalized."));
+        }
+    }
+    else if (hashBlock != 0)
+    {
+        obj.push_back(Pair("blockhash", hashBlock.GetHex()));
+        obj.push_back(Pair("confirmations", 0));
+        obj.push_back(Pair("finalized", false));
+        obj.push_back(Pair("blocknote", "Containing block is not in the main chain."));
+    }
+    else
+    {
+        obj.push_back(Pair("confirmations", 0));
+        obj.push_back(Pair("finalized", false));
+        obj.push_back(Pair("blocknote",
+            "Transaction is unconfirmed; it attests to no time until it is in a block."));
+    }
+
+    obj.push_back(Pair("txntime", (boost::int64_t)tx.nTime));
+    if (!strNote.empty())
+        obj.push_back(Pair("note", strNote));
+    return obj;
 }
 
 Value getbestblockhash(const Array& params, bool fHelp)

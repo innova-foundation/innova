@@ -604,6 +604,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/qt/transactionview.h \
     src/qt/walletmodel.h \
     src/innovarpc.h \
+    src/pod.h \
     src/qt/overviewpage.h \
     src/qt/csvmodelwriter.h \
     src/crypter.h \
@@ -737,6 +738,7 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/rpcwallet.cpp \
     src/rpccollateral.cpp \
     src/rpcblockchain.cpp \
+    src/pod.cpp \
     src/rpcrawtransaction.cpp \
     src/rpcsmessage.cpp \
     src/rpcnyx.cpp \

@@ -447,6 +447,7 @@ static const CRPCCommand vRPCCommands[] =
     { "nyx",                    &nyx,                    false,  false},
 
     { "proofofdata",          &proofofdata,              false,  true  },
+    { "podverify",            &podverify,                false,  true  },
 
     // Innova Name Commands
     { "name_new",               &name_new,               false,  true },
@@ -518,14 +519,13 @@ static const CRPCCommand vRPCCommands[] =
     { "getdagconfidence",       &getdagconfidence,       true,   false },
 
 #ifdef USE_IPFS
-    /* Hyperfile / IPFS commands */
-    { "hyperfileversion",       &hyperfileversion,       true,   false },
-    { "hyperfileupload",        &hyperfileupload,        false,  false },
-    { "hyperfilepod",           &hyperfilepod,           false,  false },
-    { "hyperfileduo",           &hyperfileduo,           false,  false },
-    { "hyperfileduopod",        &hyperfileduopod,        false,  false },
-    { "hyperfilegetblock",      &hyperfilegetblock,      true,   false },
-    { "hyperfilegetstat",       &hyperfilegetstat,       true,   false },
+    /* Hyperfile / IPFS commands, all unlocked: each waits on a remote endpoint with only a
+       connect timeout, so holding cs_main would stall validation. */
+    { "hyperfileversion",       &hyperfileversion,       true,   true  },
+    { "hyperfileupload",        &hyperfileupload,        false,  true  },
+    { "hyperfilepod",           &hyperfilepod,           false,  true  },
+    { "hyperfilegetblock",      &hyperfilegetblock,      true,   true  },
+    { "hyperfilegetstat",       &hyperfilegetstat,       true,   true  },
 #endif
 
 };
@@ -1601,6 +1601,7 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     //
     if (strMethod == "stop"                   && n > 0) ConvertTo<bool>(params[0]);
     if (strMethod == "setgenerate"            && n > 0) ConvertTo<bool>(params[0]);
+    if (strMethod == "proofofdata"            && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "setgenerate"            && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "setgenerate"            && n > 2) ConvertTo<int64_t>(params[2]);
     if (strMethod == "startmining"           && n > 0) ConvertTo<int64_t>(params[0]);

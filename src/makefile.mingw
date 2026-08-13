@@ -129,6 +129,7 @@ OBJS= \
     obj/rpcmining.o \
     obj/rpcwallet.o \
     obj/rpcblockchain.o \
+    obj/pod.o \
     obj/rpcrawtransaction.o \
     obj/rpcsmessage.o \
     obj/rpcnyx.o \
