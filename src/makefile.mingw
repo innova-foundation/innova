@@ -290,7 +290,7 @@ PRIVACY_VNEXT_RUST_LIB := $(PRIVACY_VNEXT_RUST_DIR)/target/$(PRIVACY_VNEXT_RUST_
 PRIVACY_VNEXT_RUST_INPUTS := \
 	$(PRIVACY_VNEXT_RUST_DIR)/Cargo.toml \
 	$(PRIVACY_VNEXT_RUST_DIR)/Cargo.lock \
-	$(PRIVACY_VNEXT_RUST_DIR)/src/lib.rs \
+	$(wildcard $(PRIVACY_VNEXT_RUST_DIR)/src/*.rs) \
 	$(PRIVACY_VNEXT_RUST_DIR)/abi/innova_privacy_vnext_v2.txt \
 	$(PRIVACY_VNEXT_RUST_DIR)/provenance.json \
 	$(CURDIR)/privacy_vnext/contract/iv5_protocol_v1.json
