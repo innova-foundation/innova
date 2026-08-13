@@ -10,6 +10,7 @@
 #include "collateralnode.h"
 #include "dag.h"
 #include "finality.h"
+#include "namecoin.h"
 
 #include <memory>
 
@@ -993,6 +994,17 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                            strRetiredError.c_str());
                     continue;
                 }
+            }
+
+            // A name tx connect will not index would be mined as an ordinary
+            // transaction and leave no name record, so keep it out of the
+            // template. Block validity is unaffected either way.
+            if (!NameTxWouldIndex(txdb, mapTestPoolTmp, tx, mapInputs,
+                                  pindexPrev))
+            {
+                printf("CreateNewBlock: skipping name tx %s: connect would not index it\n",
+                       tx.GetHash().ToString().substr(0,10).c_str());
+                continue;
             }
 
             if (!tx.ConnectInputs(txdb, mapInputs, mapTestPoolTmp, CDiskTxPos(1,1,1), pindexPrev, false, true, MANDATORY_SCRIPT_VERIFY_FLAGS))
