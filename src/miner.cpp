@@ -1449,6 +1449,7 @@ void StakeMiner(CWallet *pwallet)
     int nLastFinalityEpochVoted = -1;
     int nFinalityAttemptEpoch = -1;
     int nFinalityAttempts = 0;
+    int64_t nLastTallyPassMs = 0;
 
     while (true)
     {
@@ -1548,7 +1549,12 @@ void StakeMiner(CWallet *pwallet)
         }
         if (fPostDAGFinalityMode)
         {
-            ProcessFinalityTallyCommittee();
+            // Own rhythm: the faster vote poll below must not multiply this work.
+            if (GetTimeMillis() - nLastTallyPassMs >= FINALITY_VOTER_POLL_MS_PRE_DAG)
+            {
+                nLastTallyPassMs = GetTimeMillis();
+                ProcessFinalityTallyCommittee();
+            }
             if (fShouldProduceFinalityVote)
             {
                 if (nFinalityEpoch != nFinalityAttemptEpoch)

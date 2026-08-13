@@ -9150,6 +9150,7 @@ void ThreadFinalityVoter(void* parg)
     int nAttemptEpoch = -1;
     int nAttempts = 0;
     int64_t nPollMs = FINALITY_VOTER_POLL_MS_PRE_DAG;
+    int64_t nLastTallyPassMs = 0;
 
     while (!fShutdown)
     {
@@ -9174,13 +9175,15 @@ void ThreadFinalityVoter(void* parg)
         if (nCurrentHeight < FORK_HEIGHT_FINALITY)
             continue;
 
-        // The tally committee runs on every cycle, ahead of the vote-window gates
-        // below: a certificate is built once the window has CLOSED, and whether this
-        // node still owes a vote has nothing to do with it. The other caller is the
-        // staking loop, which -staking=0 never starts -- and post-DAG a staker produces
-        // no blocks anyway, so without this a vote-only node never tallies at all.
-        if (nCurrentHeight >= FORK_HEIGHT_DAG)
+        // Tally ahead of the vote-window gates (a certificate is built once the window
+        // closes) so a vote-only node without -staking still tallies; rate-limited
+        // separately from the vote poll.
+        if (nCurrentHeight >= FORK_HEIGHT_DAG &&
+            GetTimeMillis() - nLastTallyPassMs >= FINALITY_VOTER_POLL_MS_PRE_DAG)
+        {
+            nLastTallyPassMs = GetTimeMillis();
             ProcessFinalityTallyCommittee();
+        }
 
         int nCurrentEpoch = GetEpochForHeight(nCurrentHeight);
         int nEpochHeight = GetEpochBoundaryHeight(nCurrentEpoch, nCurrentHeight);
