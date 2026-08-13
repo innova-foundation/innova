@@ -111,15 +111,8 @@ bool NameResetExpired(const CNameRecord& nameRec, int nAtHeight);
 // Recomputes nExpiresAt from the record's rental chain.
 bool CalculateExpiresAt(CNameRecord& nameRec);
 
-/**
- * Recovery cursor for the auxiliary name index.
- *
- * The name index lives in a separate Berkeley DB and therefore cannot share
- * the chain LevelDB transaction.  Callers update this cursor only after every
- * name mutation for a committed block succeeds.  A missing or non-matching
- * cursor means that the index may be partially applied and must be rebuilt
- * from the canonical chain before it is used.
- */
+/** Recovery cursor for the name index (a separate Berkeley DB), written only after every
+ *  name mutation of a committed block succeeds; a missing or mismatched cursor forces a rebuild. */
 class CNameIndexCursor
 {
 public:
@@ -140,14 +133,8 @@ public:
     )
 };
 
-/**
- * Durable progress for an exact, caller-supplied name-index transition.
- *
- * This is intentionally a new auxiliary key rather than an extension of
- * CNameIndexCursor: deployed cursor bytes remain unchanged.  The progress
- * record is written in the same Berkeley DB transaction as the corresponding
- * name mutation and cursor, so an ambiguous commit can be retried safely.
- */
+/** Durable progress for a name-index transition, written in the same Berkeley DB transaction
+ *  as the mutation and cursor so an ambiguous commit can be retried. */
 class CNameIndexEffectProgress
 {
 public:
@@ -188,14 +175,8 @@ public:
     )
 };
 
-/**
- * One exact compare-and-swap mutation in a name transition.
- *
- * Both states are carried so connect and disconnect retries can distinguish
- * "not applied" from "already applied" without guessing from a transaction
- * tail.  The source transaction hash and direction are part of the effect
- * identity even when the before/after records happen to serialize similarly.
- */
+/** One compare-and-swap name mutation. Both states, the source tx hash and the direction
+ *  let a retry tell "applied" from "not applied". */
 class CNameIndexTransitionEffect
 {
 public:
@@ -330,14 +311,8 @@ uint256 ComputeNameIndexBlockTransitionIdentity(
     const CNameIndexCursor& cursorAfter,
     const std::set<uint256>& setDAGSkippedTxs = std::set<uint256>());
 
-/**
- * Stage one exact name mutation, its compatible legacy cursor, and durable
- * progress in the caller's already-active CNameDB transaction.
- *
- * The caller must abort its transaction on false and commit it on true.  A
- * retry after a successful/ambiguous commit returns true with
- * fAlreadyAppliedOut set and does not append/pop the record again.
- */
+/** Stage one name mutation, its cursor and progress in the caller's CNameDB transaction.
+ *  Abort on false, commit on true; a retry of an applied write sets fAlreadyAppliedOut. */
 bool StageNameIndexTransitionEffect(
     CNameDB& dbName, const uint256& hashTransition,
     uint32_t nEffect, uint32_t nEffectCount,
@@ -345,13 +320,6 @@ bool StageNameIndexTransitionEffect(
     const CNameIndexCursor& cursorAfter,
     bool& fAlreadyAppliedOut, std::string& strError,
     NameIndexEffectFault fault = NAMEINDEX_EFFECT_FAULT_NONE);
-
-// True when connect would index this name tx at pindexBlock.  Block templates
-// use it so they do not carry a name tx ConnectBlock will refuse to index.
-// Non-name transactions are not judged and always return true.
-bool NameTxWouldIndex(CTxDB& txdb, std::map<uint256, CTxIndex>& mapTestPool,
-                      const CTransaction& tx, MapPrevTx& mapInputs,
-                      const CBlockIndex* pindexBlock);
 
 // Prepare exact connect effects in block order using the same historical
 // validation/indexing semantics as CNamecoinHooks::ConnectBlock.

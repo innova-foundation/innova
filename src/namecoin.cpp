@@ -700,8 +700,7 @@ bool IsNameFeeEnough(CTxDB& txdb, const CTransaction& tx,
                      const CBlockIndex* pindexBlock,
                      const map<uint256, CTxIndex>& mapTestPool,
                      bool fBlock, bool fMiner,
-                     bool* pfLocalError = NULL,
-                     const int64_t* pnTxFeeIn = NULL)
+                     bool* pfLocalError = NULL)
 {
     if (pfLocalError)
         *pfLocalError = false;
@@ -709,24 +708,16 @@ bool IsNameFeeEnough(CTxDB& txdb, const CTransaction& tx,
     // get tx fee
     // Note: if fBlock and fMiner equal false then FetchInputs will search mempool
     int64_t txFee;
-    if (pnTxFeeIn)
+    MapPrevTx mapInputs;
+    bool fInvalid = false;
+    if (!const_cast<CTransaction&>(tx).FetchInputs(
+            txdb, mapTestPool, fBlock, fMiner, mapInputs, fInvalid))
     {
-        // Caller already fetched the inputs under its own fetch mode.
-        txFee = *pnTxFeeIn;
+        if (pfLocalError && !fInvalid)
+            *pfLocalError = true;
+        return false;
     }
-    else
-    {
-        MapPrevTx mapInputs;
-        bool fInvalid = false;
-        if (!const_cast<CTransaction&>(tx).FetchInputs(
-                txdb, mapTestPool, fBlock, fMiner, mapInputs, fInvalid))
-        {
-            if (pfLocalError && !fInvalid)
-                *pfLocalError = true;
-            return false;
-        }
-        txFee = tx.GetValueIn(mapInputs) - tx.GetValueOut();
-    }
+    txFee = tx.GetValueIn(mapInputs) - tx.GetValueOut();
 
 
     // scan last 10 PoW block for tx fee that matches the one specified in tx
@@ -734,9 +725,8 @@ bool IsNameFeeEnough(CTxDB& txdb, const CTransaction& tx,
     //printf("IsNameFeeEnough(): pindexBlock->nHeight = %d, op = %s, nameSize = %lu, valueSize = %lu, nRentalDays = %d, txFee = %"PRI64d"\n",
     //       lastPoW->nHeight, nameFromOp(nti.op).c_str(), nti.vchName.size(), nti.vchValue.size(), nti.nRentalDays, txFee);
 
-    // A chain shorter than the scan window runs out of PoW ancestors.
     bool txFeePass = false;
-    for (int i = 1; i <= 10 && lastPoW; i++)
+    for (int i = 1; i <= 10; i++)
     {
         int64_t netFee = GetNameOpFee(lastPoW, nti.nRentalDays, nti.op, nti.vchName, nti.vchValue);
         //printf("                 : netFee = %"PRI64d", lastPoW->nHeight = %d\n", netFee, lastPoW->nHeight);
@@ -2226,10 +2216,8 @@ bool CNameDB::ReadCursor(CNameIndexCursor& cursor)
     ssKey << std::string("nameindex-cursor");
     Dbt datKey(&ssKey[0], ssKey.size());
 
-    // The cursor has a fixed current-schema encoding: three integers and one
-    // uint256.  Read into an exactly-sized caller buffer so Berkeley DB rejects
-    // oversized values without first allocating according to attacker- or
-    // corruption-controlled record length.
+    // Fixed encoding (three integers and one uint256): read into an exactly-sized buffer
+    // so Berkeley DB rejects oversized values without allocating for them.
     const unsigned int nExpectedSize = ::GetSerializeSize(
         CNameIndexCursor(), SER_DISK, CLIENT_VERSION);
     static const unsigned int MAX_NAMEINDEX_CURSOR_SIZE = 64;
@@ -3014,10 +3002,8 @@ bool createNameIndexFile()
     const int nMaxHeight = pindexTip ? pindexTip->nHeight : -1;
     int nReportDone = 0;
 
-    // Pre-reset blocks may only be skipped once the chain has actually passed
-    // the reset height, because until then those names are still live. Skipping
-    // them unconditionally left a rebuilt node with an empty index while a node
-    // that stayed connected kept the same names -- two nodes, two answers.
+    // Pre-reset blocks may be skipped only once the chain has passed the reset height,
+    // or a rebuilt index would differ from a continuously connected one.
     int nStartHeight = RELEASE_HEIGHT;
     if (FORK_HEIGHT_IDNS_RESET > nStartHeight &&
         nMaxHeight >= FORK_HEIGHT_IDNS_RESET)
@@ -3276,8 +3262,7 @@ bool ConnectInputs(CTxDB& txdb,
         const CBlockIndex* pindexBlock,
         const CDiskTxPos& txPos,
         vector<nameTempProxy>& vName,
-        bool* pfLocalError,
-        const int64_t* pnTxFeeIn = NULL)
+        bool* pfLocalError)
 {
     if (pfLocalError)
         *pfLocalError = false;
@@ -3349,7 +3334,7 @@ bool ConnectInputs(CTxDB& txdb,
             //scan last 10 PoW block for tx fee that matches the one specified in tx
             bool fFeeLocalError = false;
             if (!IsNameFeeEnough(txdb, tx, nti, pindexBlock, mapTestPool,
-                                 true, false, &fFeeLocalError, pnTxFeeIn))
+                                 true, false, &fFeeLocalError))
             {
                 if (fFeeLocalError && pfLocalError)
                     *pfLocalError = true;
@@ -3371,7 +3356,7 @@ bool ConnectInputs(CTxDB& txdb,
             //scan last 10 PoW block for tx fee that matches the one specified in tx
             bool fFeeLocalError = false;
             if (!IsNameFeeEnough(txdb, tx, nti, pindexBlock, mapTestPool,
-                                 true, false, &fFeeLocalError, pnTxFeeIn))
+                                 true, false, &fFeeLocalError))
             {
                 if (fFeeLocalError && pfLocalError)
                     *pfLocalError = true;
@@ -3428,38 +3413,6 @@ bool ConnectInputs(CTxDB& txdb,
 
     vName.push_back(tmp);
     return true;
-}
-
-// Template-side mirror of the connect predicate: true when connect would index
-// this name tx.  The caller has already fetched the inputs, so the fee is
-// passed in rather than re-fetched under a different fetch mode.  Non-name txs
-// are not judged here.
-bool NameTxWouldIndex(CTxDB& txdb, map<uint256, CTxIndex>& mapTestPool,
-                      const CTransaction& tx, MapPrevTx& mapInputs,
-                      const CBlockIndex* pindexBlock)
-{
-    if (tx.nVersion != NAMECOIN_TX_VERSION)
-        return true;
-    if (!pindexBlock)
-        return false;
-
-    vector<CTransaction> vTxPrev;
-    vector<CTxIndex> vTxindex;
-    vTxPrev.reserve(tx.vin.size());
-    vTxindex.reserve(tx.vin.size());
-    for (unsigned int i = 0; i < tx.vin.size(); ++i)
-    {
-        MapPrevTx::const_iterator it = mapInputs.find(tx.vin[i].prevout.hash);
-        if (it == mapInputs.end())
-            return false;
-        vTxPrev.push_back(it->second.second);
-        vTxindex.push_back(it->second.first);
-    }
-
-    const int64_t nTxFee = tx.GetValueIn(mapInputs) - tx.GetValueOut();
-    vector<nameTempProxy> vName;
-    return ConnectInputs(txdb, mapTestPool, tx, vTxPrev, vTxindex, pindexBlock,
-                         CDiskTxPos(1, 1, 1), vName, NULL, &nTxFee);
 }
 
 bool PrepareNameIndexConnectTransition(
@@ -3705,13 +3658,9 @@ bool PrepareNameIndexDisconnectTransition(
             return false;
         }
 
-        // Connect refuses to index a name tx for many reasons (undecodable,
-        // insufficient fee, expired/absent target, term out of bounds, unknown
-        // op) and keeps connecting.  Disconnect must reach the same verdict
-        // from state alone: the index itself is the record of what connect
-        // applied, so a tx that is not the indexed tail was never applied and
-        // has nothing to undo.  Re-running the connect predicate is not an
-        // option - a node that rebuilt its index never ran connect.
+        // Connect skips unindexable name txs and keeps connecting, so disconnect must
+        // decide from state alone: a tx that is not the indexed tail was never applied.
+        // Re-running the connect predicate is not possible after a rebuild.
         NameTxInfo nti;
         if (!DecodeNameTx(tx, nti))
         {

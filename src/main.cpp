@@ -2329,13 +2329,8 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
     if (tx.IsCoinStake())
         return tx.DoS(100, error("CTxMemPool::accept() : coinstake as individual tx"));
 
-    // A name tx is exempt from standardness because its script shape is
-    // non-standard by construction. Require it to actually decode as a name op
-    // so the version tag alone cannot buy the exemption; the fee that pays for
-    // it is checked below, where the inputs are already fetched.
-    NameTxInfo ntiStandard;
-    const bool isNameTx = tx.nVersion == NAMECOIN_TX_VERSION &&
-                          DecodeNameTx(tx, ntiStandard);
+    //bool isNameTx = hooks->IsNameFeeEnough(txdb, tx); //accept name tx with correct fee.
+    bool isNameTx = tx.nVersion == NAMECOIN_TX_VERSION;
     // Rather not work on nonstandard transactions (unless -testnet)
     string reason;
     if (!fTestNet && !IsStandardTx(tx, reason) && !isNameTx) //!IsStandardTx(tx, reason)
@@ -2793,13 +2788,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
 
             const bool fFeeExempt = nFees == 0 && IsPrivacyVNextFeeExemptShape(tx);
 
-            // The name fee stands in for the relay minimum, so the exemption
-            // has to be paid for. Inputs are fetched by now, so the real fee
-            // check can run.
-            const bool fNameFeePaid =
-                isNameTx && hooks->IsNameFeeEnough(txdb, tx);
-
-            if (nFees < txMinFee && !fNameFeePaid && !fFeeExempt)
+            if (nFees < txMinFee && !isNameTx && !fFeeExempt)
             {
                 return error("CTxMemPool::accept() : not enough fees %s, %" PRId64" < %" PRId64,
                              hash.ToString().c_str(),
