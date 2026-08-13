@@ -49,6 +49,14 @@ static const int FINALITY_VOTE_WINDOW = 5;         // blocks after epoch boundar
 static const int FINALITY_VOTE_INCLUSION_WINDOW = 24;
 static const int FINALITY_MIN_VOTERS = 2;          // minimum unique voters for finality
 static const int FINALITY_CONFIRMATION_EPOCHS = 3;  // consecutive HARD epochs before binding finality (P2P propagation safety)
+// Producer-side poll period and the share of the inclusion window a producer still
+// starts a vote in. Node-local, not consensus. The post-DAG poll must sample faster than
+// the window, and the last quarter of the window is left for signing and relay.
+static const int64_t FINALITY_VOTER_POLL_MS_PRE_DAG = 5000;
+static const int64_t FINALITY_VOTER_POLL_MS_POST_DAG = 1000;
+// Bounded retries per epoch so a node with no eligible stake does not rescan
+// its wallet on every poll of the window.
+static const int FINALITY_VOTE_ATTEMPTS_PER_EPOCH = 4;
 static const int FINALITY_MAX_STAKE_PROOFS = 8;      // keep coinbase vote commitments under standard script element size
 
 /** Three-way result used by consensus callers.  Relay-facing APIs retain their
@@ -192,6 +200,24 @@ inline int GetEpochInterval(int nHeight)
     if (nHeight >= GetForkHeightDAG())
         return FINALITY_EPOCH_INTERVAL_POST_DAG;
     return FINALITY_EPOCH_INTERVAL_PRE_DAG;
+}
+
+/** Blocks after the epoch boundary in which this node still starts a vote.
+ *  Node-local; consensus accepts a vote anywhere in
+ *  [H_E, H_E + FINALITY_VOTE_INCLUSION_WINDOW). */
+inline int GetFinalityVoteProducerWindow(int nHeight)
+{
+    if (nHeight >= GetForkHeightDAG())
+        return (FINALITY_VOTE_INCLUSION_WINDOW * 3) / 4;
+    return FINALITY_VOTE_WINDOW;
+}
+
+/** Poll period of the vote-producing loops, in milliseconds. */
+inline int64_t GetFinalityVoterPollMs(int nHeight)
+{
+    if (nHeight >= GetForkHeightDAG())
+        return FINALITY_VOTER_POLL_MS_POST_DAG;
+    return FINALITY_VOTER_POLL_MS_PRE_DAG;
 }
 
 /** Get the epoch number for a given height.

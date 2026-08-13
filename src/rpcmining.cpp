@@ -224,7 +224,8 @@ Value getfinalitystakinginfo(const Array& params, bool fHelp)
     obj.push_back(Pair("epoch", nEpoch));
     obj.push_back(Pair("epoch_boundary_height", nEpochBoundary));
     obj.push_back(Pair("epoch_progress", nEpochProgress));
-    obj.push_back(Pair("vote_window", FINALITY_VOTE_WINDOW));
+    obj.push_back(Pair("vote_window", GetFinalityVoteProducerWindow(nHeight)));
+    obj.push_back(Pair("vote_inclusion_window", FINALITY_VOTE_INCLUSION_WINDOW));
     obj.push_back(Pair("eligible_weight", FormatMoney(nEligibleWeight)));
     obj.push_back(Pair("eligible_utxos", nEligibleUtxos));
     obj.push_back(Pair("eligible_keys", (int)setVoterKeys.size()));

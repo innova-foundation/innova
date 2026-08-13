@@ -1447,6 +1447,8 @@ void StakeMiner(CWallet *pwallet)
     bool fTryToSync = true;
     int64_t nTimeLastStake = 0;
     int nLastFinalityEpochVoted = -1;
+    int nFinalityAttemptEpoch = -1;
+    int nFinalityAttempts = 0;
 
     while (true)
     {
@@ -1539,16 +1541,29 @@ void StakeMiner(CWallet *pwallet)
                 nFinalityEpoch = GetEpochForHeight(pindexBest->nHeight);
                 int nEpochBoundary = GetEpochBoundaryHeight(nFinalityEpoch, pindexBest->nHeight);
                 int nEpochProgress = pindexBest->nHeight - nEpochBoundary;
-                fShouldProduceFinalityVote = (nEpochProgress < FINALITY_VOTE_WINDOW &&
-                                              nFinalityEpoch != nLastFinalityEpochVoted);
+                fShouldProduceFinalityVote =
+                    (nEpochProgress < GetFinalityVoteProducerWindow(pindexBest->nHeight) &&
+                     nFinalityEpoch != nLastFinalityEpochVoted);
             }
         }
         if (fPostDAGFinalityMode)
         {
             ProcessFinalityTallyCommittee();
-            if (fShouldProduceFinalityVote && ProduceFinalityVote())
-                nLastFinalityEpochVoted = nFinalityEpoch;
-            MilliSleep(5000);
+            if (fShouldProduceFinalityVote)
+            {
+                if (nFinalityEpoch != nFinalityAttemptEpoch)
+                {
+                    nFinalityAttemptEpoch = nFinalityEpoch;
+                    nFinalityAttempts = 0;
+                }
+                if (nFinalityAttempts < FINALITY_VOTE_ATTEMPTS_PER_EPOCH)
+                {
+                    nFinalityAttempts++;
+                    if (ProduceFinalityVote())
+                        nLastFinalityEpochVoted = nFinalityEpoch;
+                }
+            }
+            MilliSleep(FINALITY_VOTER_POLL_MS_POST_DAG);
             continue;
         }
 

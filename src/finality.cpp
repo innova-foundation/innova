@@ -9147,10 +9147,13 @@ void ThreadFinalityVoter(void* parg)
     }
 
     int nLastEpochVoted = -1;
+    int nAttemptEpoch = -1;
+    int nAttempts = 0;
+    int64_t nPollMs = FINALITY_VOTER_POLL_MS_PRE_DAG;
 
     while (!fShutdown)
     {
-        MilliSleep(5000);
+        MilliSleep(nPollMs);
 
         if (fShutdown)
             break;
@@ -9165,6 +9168,8 @@ void ThreadFinalityVoter(void* parg)
                 continue;
             nCurrentHeight = pindexBest->nHeight;
         }
+
+        nPollMs = GetFinalityVoterPollMs(nCurrentHeight);
 
         if (nCurrentHeight < FORK_HEIGHT_FINALITY)
             continue;
@@ -9181,11 +9186,23 @@ void ThreadFinalityVoter(void* parg)
         int nEpochHeight = GetEpochBoundaryHeight(nCurrentEpoch, nCurrentHeight);
         int nEpochProgress = nCurrentHeight - nEpochHeight;
 
-        if (nEpochProgress >= FINALITY_VOTE_WINDOW)
+        if (nEpochProgress >= GetFinalityVoteProducerWindow(nCurrentHeight))
             continue;
 
         if (nCurrentEpoch == nLastEpochVoted)
             continue;
+
+        // Retry across the window rather than once at its start: at 1s blocks a
+        // single sample misses whole epochs, and a missed voter resets the
+        // HARD-confirmation streak for everyone.
+        if (nCurrentEpoch != nAttemptEpoch)
+        {
+            nAttemptEpoch = nCurrentEpoch;
+            nAttempts = 0;
+        }
+        if (nAttempts >= FINALITY_VOTE_ATTEMPTS_PER_EPOCH)
+            continue;
+        nAttempts++;
 
         if (ProduceFinalityVote())
         {
