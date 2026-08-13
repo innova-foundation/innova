@@ -119,6 +119,8 @@ def verify_configuration_and_abi() -> None:
             "innova_privacy_vnext_abi_hash",
             "innova_privacy_vnext_provenance_digest",
             "innova_privacy_vnext_parameter_digest",
+            "innova_privacy_vnext_accepted_parameter_digests",
+            "innova_privacy_vnext_envelope_allows",
             "innova_privacy_vnext_contract_metadata",
             "innova_privacy_vnext_protocol_contract",
             "innova_privacy_vnext_fcmp_proof_size",
