@@ -1,5 +1,7 @@
 #include <boost/test/unit_test.hpp>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <vector>
 
@@ -1215,6 +1217,18 @@ size_t DisclosureRecordsAt(size_t nInputs, size_t nOutputs)
     return nHeader + 1 + (nInputs * 64) + 1 + (nOutputs * nOutputRecord);
 }
 
+// Bytes a compact-size length prefix occupies.
+size_t CompactSizeWidth(size_t nValue)
+{
+    if (nValue < 253)
+        return 1;
+    if (nValue <= 0xffff)
+        return 3;
+    if (nValue <= 0xffffffffULL)
+        return 5;
+    return 9;
+}
+
 uint64_t ReadLE64At(const std::vector<unsigned char>& v, size_t at)
 {
     uint64_t value = 0;
@@ -1381,6 +1395,203 @@ BOOST_AUTO_TEST_CASE(every_disclosure_mask_round_trips_through_consensus)
         funded.finalizedRoot, funded.nTreeSize, kNoTransparentSide, nFee,
         funded.spends, outs, payload, error));
     BOOST_CHECK(payload.empty());
+}
+
+// Each mask bit adds exactly its own record and the bits are independent, checked by
+// size arithmetic over all eight payloads. Sender record: inputs * (32 + 128); receiver
+// record: outputs * (64 + 160); the amount bit trades the range proof for openings.
+BOOST_AUTO_TEST_CASE(each_mask_publishes_exactly_the_fields_it_names)
+{
+    CTxDB txdb("r+");
+    std::string error;
+    FundedNote funded;
+    FundOneNote(txdb, funded, 0x57);
+
+    const uint64_t nFee = 100;
+    std::vector<PrivacyVNextNewOutput> outs;
+    outs.resize(1);
+    outs[0].recipient.nNetwork = LocalNetwork();
+    outs[0].recipient.nAddressType = 0;
+    outs[0].recipient.spendPublic = funded.keys.spendPublic;
+    outs[0].recipient.viewPublic = funded.keys.viewPublic;
+    outs[0].nAmount = funded.nAmount - nFee;
+
+    const size_t nDisclosuresAt = DisclosureRecordsAt(1, 1);
+    std::vector<unsigned char> vPayloads[8];
+    for (uint8_t nMask = 0; nMask <= 7; ++nMask)
+    {
+        BOOST_REQUIRE_MESSAGE(
+            BuildPrivacyVNextTransferPayload(
+                2, nMask, funded.genesis, funded.keys.outgoingViewSecret,
+                funded.finalizedRoot, funded.nTreeSize, kNoTransparentSide, nFee,
+                funded.spends, outs, vPayloads[nMask], error),
+            strprintf("mask %d: %s", (int)nMask, error.c_str()));
+        BOOST_REQUIRE_MESSAGE(
+            ValidatePrivacyVNextPayload(INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION,
+                                        vPayloads[nMask]).IsValid(),
+            strprintf("mask %d did not validate", (int)nMask));
+    }
+
+    // Byte-exact accounting: records in the prefix, proofs in one length-prefixed section.
+    // The remainder is the range proof, constant across the four masks that keep it.
+    for (uint8_t nMask = 0; nMask <= 7; ++nMask)
+    {
+        const bool fSender = (nMask & iv5::DISCLOSURE_HIDE_SENDER) == 0;
+        const bool fReceiver = (nMask & iv5::DISCLOSURE_HIDE_RECEIVER) == 0;
+        const bool fAmount = (nMask & iv5::DISCLOSURE_HIDE_AMOUNT) == 0;
+        // In the prefix: the authority per input, the address pair per output, and the
+        // value and its opening per output.
+        const size_t nRecords = (fSender ? 1 * 32 : 0) +
+                                (fReceiver ? 1 * 64 : 0) +
+                                (fAmount ? 1 * (8 + 32) : 0);
+        // In the shared proof section: a sender proof per input, a receiver proof per
+        // output. Mask 7 leaves it empty, and an empty vector still costs its length.
+        const size_t nProofs = (fSender ? 1 * 128 : 0) + (fReceiver ? 1 * 160 : 0);
+        const size_t nWidth = CompactSizeWidth(nProofs);
+        const ptrdiff_t nUnexplained =
+            (ptrdiff_t)vPayloads[nMask].size() -
+            (ptrdiff_t)vPayloads[iv5::DISCLOSURE_MASK].size() -
+            (ptrdiff_t)(nRecords + nProofs + nWidth -
+                        CompactSizeWidth(0));
+        // Only the range proof may remain, and only where the amounts are published.
+        if (!fAmount)
+            BOOST_CHECK_MESSAGE(nUnexplained == 0,
+                                strprintf("mask %d: %d bytes unaccounted for",
+                                          (int)nMask, (int)nUnexplained));
+        else
+            BOOST_CHECK_MESSAGE(
+                nUnexplained ==
+                    (ptrdiff_t)vPayloads[0].size() -
+                        (ptrdiff_t)vPayloads[iv5::DISCLOSURE_MASK].size() -
+                        (ptrdiff_t)(32 + 64 + 40 + 288 + CompactSizeWidth(288) -
+                                    CompactSizeWidth(0)),
+                strprintf("mask %d: range-proof trade differs by %d",
+                          (int)nMask, (int)nUnexplained));
+    }
+
+    // The sender authority, as published by bit 0 (masks 6 and 7 differ only there).
+    BOOST_REQUIRE(vPayloads[6].size() >= nDisclosuresAt + 32);
+    const std::vector<unsigned char> vAuthority(
+        vPayloads[6].begin() + nDisclosuresAt,
+        vPayloads[6].begin() + nDisclosuresAt + 32);
+    // A hidden field must be absent from the whole payload.
+    std::vector<unsigned char> vAddress;
+    vAddress.insert(vAddress.end(), funded.keys.spendPublic.begin(),
+                    funded.keys.spendPublic.end());
+    vAddress.insert(vAddress.end(), funded.keys.viewPublic.begin(),
+                    funded.keys.viewPublic.end());
+
+    for (uint8_t nMask = 0; nMask <= 7; ++nMask)
+    {
+        const std::vector<unsigned char>& payload = vPayloads[nMask];
+        const bool fAuthorityOnWire =
+            std::search(payload.begin(), payload.end(), vAuthority.begin(),
+                        vAuthority.end()) != payload.end();
+        const bool fAddressOnWire =
+            std::search(payload.begin(), payload.end(), vAddress.begin(),
+                        vAddress.end()) != payload.end();
+        BOOST_CHECK_MESSAGE(
+            fAuthorityOnWire == ((nMask & iv5::DISCLOSURE_HIDE_SENDER) == 0),
+            strprintf("mask %d: authority on wire %d", (int)nMask,
+                      (int)fAuthorityOnWire));
+        BOOST_CHECK_MESSAGE(
+            fAddressOnWire == ((nMask & iv5::DISCLOSURE_HIDE_RECEIVER) == 0),
+            strprintf("mask %d: address on wire %d", (int)nMask,
+                      (int)fAddressOnWire));
+
+        // A published amount is the amount paid, after the sender and receiver records.
+        if ((nMask & iv5::DISCLOSURE_HIDE_AMOUNT) == 0)
+        {
+            size_t at = nDisclosuresAt;
+            if ((nMask & iv5::DISCLOSURE_HIDE_SENDER) == 0)
+                at += 32;
+            if ((nMask & iv5::DISCLOSURE_HIDE_RECEIVER) == 0)
+                at += 64;
+            BOOST_REQUIRE(payload.size() >= at + 8);
+            BOOST_CHECK_MESSAGE(ReadLE64At(payload, at) == outs[0].nAmount,
+                                strprintf("mask %d: published amount %llu, paid %llu",
+                                          (int)nMask,
+                                          (unsigned long long)ReadLE64At(payload, at),
+                                          (unsigned long long)outs[0].nAmount));
+        }
+    }
+}
+
+// Every mask value past the three bits is refused, never folded into a known mask.
+BOOST_AUTO_TEST_CASE(a_mask_outside_three_bits_is_refused_not_folded)
+{
+    CTxDB txdb("r+");
+    std::string error;
+    FundedNote funded;
+    FundOneNote(txdb, funded, 0x59);
+
+    const uint64_t nFee = 100;
+    std::vector<PrivacyVNextNewOutput> outs;
+    outs.resize(1);
+    outs[0].recipient.nNetwork = LocalNetwork();
+    outs[0].recipient.nAddressType = 0;
+    outs[0].recipient.spendPublic = funded.keys.spendPublic;
+    outs[0].recipient.viewPublic = funded.keys.viewPublic;
+    outs[0].nAmount = funded.nAmount - nFee;
+
+    std::vector<unsigned char> payload;
+    BOOST_REQUIRE_MESSAGE(
+        BuildPrivacyVNextTransferPayload(
+            2, iv5::DISCLOSURE_MASK, funded.genesis,
+            funded.keys.outgoingViewSecret, funded.finalizedRoot,
+            funded.nTreeSize, kNoTransparentSide, nFee, funded.spends, outs,
+            payload, error),
+        error);
+    BOOST_REQUIRE(ValidatePrivacyVNextPayload(
+                      INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, payload)
+                      .IsValid());
+
+    // The mask the payload declares sits in the fixed header the signing hash covers.
+    const size_t nMaskAt = 5;
+    BOOST_REQUIRE_EQUAL((int)payload[nMaskAt], (int)iv5::DISCLOSURE_MASK);
+    for (unsigned nMask = iv5::DISCLOSURE_MASK + 1; nMask <= 255; ++nMask)
+    {
+        std::vector<unsigned char> restated = payload;
+        restated[nMaskAt] = (unsigned char)nMask;
+        uint8_t nOperation = 0;
+        uint8_t nDeclared = 0;
+        // The header reader refuses it, so nothing reports a mask it cannot name.
+        BOOST_CHECK_MESSAGE(
+            !iv5::ReadDeclaredEnvelope(&restated[0], restated.size(),
+                                       nOperation, nDeclared),
+            strprintf("mask %u was read as declarable", nMask));
+        // Both envelope tables refuse it for every operation the version carries.
+        BOOST_CHECK(!iv5::EnvelopeAllows(2008, iv5::NOTE_TRANSFER, 0,
+                                         iv5::AUTH_OWNER,
+                                         iv5::FINALITY_OBJECT_NONE,
+                                         (uint8_t)nMask));
+        BOOST_CHECK(innova_privacy_vnext_envelope_allows(
+                        2008, iv5::NOTE_TRANSFER, 0, iv5::AUTH_OWNER,
+                        iv5::FINALITY_OBJECT_NONE, (uint8_t)nMask) !=
+                    INNOVA_PRIVACY_VNEXT_VALID);
+        // And consensus refuses the payload carrying it.
+        const PrivacyVNextPayloadValidation validation =
+            ValidatePrivacyVNextPayload(
+                INNOVA_PRIVACY_VNEXT_TRANSACTION_VERSION, restated);
+        BOOST_CHECK_MESSAGE(!validation.IsValid(),
+                            strprintf("mask %u was accepted", nMask));
+        BOOST_CHECK_MESSAGE(!validation.fLocalFailure,
+                            strprintf("mask %u failed node-locally", nMask));
+    }
+
+    // The builder refuses to produce one in the first place, across the same range.
+    for (unsigned nMask = iv5::DISCLOSURE_MASK + 1; nMask <= 255; ++nMask)
+    {
+        std::vector<unsigned char> refused;
+        BOOST_CHECK_MESSAGE(
+            !BuildPrivacyVNextTransferPayload(
+                2, (uint8_t)nMask, funded.genesis,
+                funded.keys.outgoingViewSecret, funded.finalizedRoot,
+                funded.nTreeSize, kNoTransparentSide, nFee, funded.spends, outs,
+                refused, error),
+            strprintf("the builder produced mask %u", nMask));
+        BOOST_CHECK(refused.empty());
+    }
 }
 
 // Disclosed values must match the payload's commitments and be covered by the signing hash.
