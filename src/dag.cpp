@@ -3719,6 +3719,12 @@ const std::set<uint256>& CDAGManager::GetBoundedPast(const uint256& hashDescenda
         }
     }
 
+    if (past.size() > DAGKNIGHT_PAST_SET_MAX)
+    {
+        setDAGKnightPastScratch.swap(past);
+        return setDAGKnightPastScratch;
+    }
+
     // A pure cache with no ordering role, so a wholesale drop is always admissible.
     if (mapDAGKnightPastCache.size() >= (size_t)DAGKNIGHT_PAST_CACHE_MAX)
         mapDAGKnightPastCache.clear();

@@ -50,6 +50,8 @@ static const int DAGKNIGHT_ANCHOR_CACHE_MAX = 8192;
 // (bounded by DAGKNIGHT_MAX_ANTICONE_WINDOW) plus its merge candidates, and consecutive
 // anchors share nearly all of it, so a few hundred entries carry the reuse.
 static const int DAGKNIGHT_PAST_CACHE_MAX = 512;
+// Past sets larger than this are returned without being cached.
+static const size_t DAGKNIGHT_PAST_SET_MAX = 1024;
 
 static const int DAG_PARENT_CARRIER_SCHEMA_VERSION = 1;
 static const char DAG_PARENT_CARRIER_SCHEMA[] = "boundary_a_canonical_v1";
@@ -552,6 +554,8 @@ private:
     // Bounded past sets behind IsDAGAncestorWithinMergeDepth. Same derivation domain as
     // the anchor states -- a block's past -- so the two are invalidated together.
     mutable std::map<uint256, std::set<uint256> > mapDAGKnightPastCache;
+    // Holds a past set too large to retain, for the caller that asked for it.
+    mutable std::set<uint256> setDAGKnightPastScratch;
 
     /** Internal: get blue set with caching */
     std::set<uint256> GetBlueSetCached(const uint256& hashBlock) const;
@@ -573,6 +577,8 @@ private:
     bool IsDAGAncestor(const uint256& hashAncestor,
                        const uint256& hashDescendant,
                        int nMaxDepth) const;
+    /** Bounded past of hashDescendant, cached. The returned reference is only valid until
+     *  the next call, which may evict the cache, so consume it before asking again. */
     const std::set<uint256>& GetBoundedPast(const uint256& hashDescendant,
                                             int nDescendantHeight,
                                             int nMaxDepth) const;
