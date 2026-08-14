@@ -575,6 +575,7 @@ HEADERS += src/qt/bitcoingui.h \
     src/finality.h \
     src/finality_note.h \
     src/dag.h \
+    src/blockprofile.h \
     src/init.h \
     src/bootstrap.h \
     src/mruset.h \
@@ -799,7 +800,8 @@ SOURCES += src/qt/bitcoin.cpp src/qt/bitcoingui.cpp \
     src/dandelion.cpp \
     src/finality.cpp \
     src/finality_note.cpp \
-    src/dag.cpp
+    src/dag.cpp \
+    src/blockprofile.cpp
 
 #### I n n o v a sources
 

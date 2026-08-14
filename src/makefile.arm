@@ -328,6 +328,7 @@ OBJS= \
     obj/finality.o \
     obj/finality_note.o \
     obj/dag.o \
+    obj/blockprofile.o \
     obj/script.o \
     obj/sync.o \
     obj/util.o \
@@ -408,6 +409,7 @@ OBJS= \
     obj/finality.o \
     obj/finality_note.o \
     obj/dag.o \
+    obj/blockprofile.o \
     obj/script.o \
     obj/sync.o \
     obj/util.o \
