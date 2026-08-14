@@ -62,7 +62,11 @@ BOOST_AUTO_TEST_CASE(linked_contract_is_exact_and_consensus_disabled)
     BOOST_CHECK_EQUAL(info.strParameterDigest,
                       iv5::PROTOCOL_CONTRACT_SHA256);
     BOOST_CHECK_EQUAL(info.strAbiSha256.size(), 64U);
+    // Not just a well-formed digest: the archive has to report the manifest this
+    // build was compiled against. An archive the build system failed to relink
+    // answers with its old provenance and fails here.
     BOOST_CHECK_EQUAL(info.strProvenanceDigest.size(), 64U);
+    BOOST_CHECK_EQUAL(info.strProvenanceDigest, iv5::PROVENANCE_SHA256);
     BOOST_CHECK_EQUAL(info.strUpstreamRevision,
                       "76399e58bfc7e652d900936f84b3785ea59ab4cd");
 }
