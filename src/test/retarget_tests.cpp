@@ -56,6 +56,35 @@ unsigned int LegacyRetarget(unsigned int nPrevBits, int64_t nActualSpacing,
     return bnNew.GetCompact();
 }
 
+// Independent transcription of the retarget rule: interval 180/spacing, observation
+// clamped to [1/4, 4x], update prev * ((I-1)*T + 2A) / ((I+1)*T). Literal constants,
+// so an edit to main.cpp alone fails the sweep.
+unsigned int ReferenceRetarget(unsigned int nPrevBits, int64_t nActualSpan,
+                               unsigned int nEffectiveSpacing, int nWindow,
+                               const CBigNum& bnTargetLimit)
+{
+    if (nWindow < 1) nWindow = 1;
+    const int64_t nTargetSpan = (int64_t)nEffectiveSpacing * nWindow;
+
+    int64_t nMinSpan = nTargetSpan / 4;
+    if (nMinSpan < 1) nMinSpan = 1;
+    const int64_t nMaxSpan = nTargetSpan * 4;
+    if (nActualSpan < nMinSpan) nActualSpan = nMinSpan;
+    if (nActualSpan > nMaxSpan) nActualSpan = nMaxSpan;
+
+    const int64_t nInterval = 180 / (int64_t)nEffectiveSpacing;
+
+    CBigNum bnNew;
+    bnNew.SetCompact(nPrevBits);
+    bnNew *= ((nInterval - 1) * nTargetSpan + nActualSpan + nActualSpan);
+    bnNew /= ((nInterval + 1) * nTargetSpan);
+
+    if (bnNew <= 0 || bnNew > bnTargetLimit)
+        bnNew = bnTargetLimit;
+
+    return bnNew.GetCompact();
+}
+
 CBigNum TargetOf(unsigned int nBits)
 {
     CBigNum bn;
@@ -279,8 +308,8 @@ BOOST_AUTO_TEST_CASE(predag_retarget_bit_identical_over_random_targets)
     BOOST_CHECK(nLimitBits != 0);
 }
 
-// The window must never be applied pre-DAG: a window > 1 genuinely changes the
-// result, which is why the height gate is the load-bearing part of the fix.
+// The window must never apply pre-DAG. The guard is the `- FORK_HEIGHT_DAG`
+// subtraction in nAvailable; the height gate is a redundant fast path.
 BOOST_AUTO_TEST_CASE(window_would_change_predag_results)
 {
     const CBigNum bnLimit = CBigNum(~uint256(0) >> 20);
@@ -293,6 +322,75 @@ BOOST_AUTO_TEST_CASE(window_would_change_predag_results)
     BOOST_CHECK(nSingle != nWindowed);
     BOOST_CHECK(TargetOf(nSingle) == TargetOf(nBits));
     BOOST_CHECK(TargetOf(nWindowed) < TargetOf(nBits));
+}
+
+// Golden post-DAG targets computed from the rule outside this codebase; they pin the
+// smoothing interval and clamp, which the fixed point cannot (it is neutral for any I).
+BOOST_AUTO_TEST_CASE(postdag_gain_matches_hardcoded_golden_targets)
+{
+    const CBigNum bnLimit = CBigNum(~uint256(0) >> 1);
+    const unsigned int nPrev = 0x1d00ffffu;
+    BOOST_REQUIRE_EQUAL(TargetOf(nPrev).GetCompact(), nPrev); // canonical input
+
+    struct Golden { int64_t nSpan; unsigned int nSpacing; int nWindow; unsigned int nExpect; };
+    static const Golden kGolden[] = {
+        // Post-DAG: 1s spacing, full 60-block window.
+        { 240, 1, 60, 0x1d01087bu }, // 4x slow, at the max clamp => max ease
+        { 200, 1, 60, 0x1d010698u }, // slow, inside the clamp
+        {  60, 1, 60, 0x1d00ffffu }, // on target => exactly neutral
+        {  45, 1, 60, 0x1d00ff49u }, // fast => tightens (impossible pre-fix)
+        {  30, 1, 60, 0x1d00fe94u },
+        {  15, 1, 60, 0x1d00fddfu }, // 4x fast, at the min clamp => max tighten
+        // Partial windows during the fork transition.
+        {   7, 1, 12, 0x1d00fed1u },
+        {  12, 1, 12, 0x1d00ffffu },
+        {  30, 1, 12, 0x1d01043du },
+        // Window 1 at 1s spacing: the defect itself. The clamp floor rounds up
+        // to the target, so no observation tightens and 0s and 1s gaps are both
+        // neutral while anything slower eases.
+        {   0, 1,  1, 0x1d00ffffu },
+        {   1, 1,  1, 0x1d00ffffu },
+        {   4, 1,  1, 0x1d01087bu },
+    };
+
+    for (size_t i = 0; i < sizeof(kGolden) / sizeof(kGolden[0]); i++)
+    {
+        const Golden& g = kGolden[i];
+        unsigned int nGot = ComputeRetargetedBits(nPrev, g.nSpan, g.nSpacing,
+                                                  g.nWindow, true, bnLimit);
+        BOOST_CHECK_MESSAGE(nGot == g.nExpect,
+            "span " << g.nSpan << " spacing " << g.nSpacing << " window "
+            << g.nWindow << ": expected nBits " << g.nExpect << " got " << nGot);
+    }
+}
+
+// Breadth behind the golden points: sweep the post-DAG operating range against
+// the independent transcription above, which carries the interval and clamp
+// constants as literals of its own.
+BOOST_AUTO_TEST_CASE(postdag_gain_matches_independent_reference)
+{
+    const CBigNum bnLimit = CBigNum(~uint256(0) >> 1);
+    const unsigned int nPrev = 0x1d00ffffu;
+
+    size_t nChecked = 0, nOffTarget = 0;
+    for (int nWindow = 1; nWindow <= POST_DAG_RETARGET_WINDOW; nWindow++)
+    {
+        for (int64_t nSpan = 0; nSpan <= 5 * nWindow + 8; nSpan++)
+        {
+            unsigned int nGot = ComputeRetargetedBits(nPrev, nSpan, 1, nWindow, true, bnLimit);
+            unsigned int nWant = ReferenceRetarget(nPrev, nSpan, 1, nWindow, bnLimit);
+            BOOST_CHECK_MESSAGE(nGot == nWant,
+                "post-DAG span " << nSpan << " window " << nWindow << " diverged");
+            if (nGot != nPrev)
+                nOffTarget++;
+            nChecked++;
+        }
+    }
+    BOOST_CHECK(nChecked > 5000);
+    // Guard the guard: a sweep that only ever lands on the neutral fixed point
+    // would agree with any smoothing interval and prove nothing.
+    BOOST_CHECK_MESSAGE(nOffTarget > 1000,
+        "post-DAG sweep never moved the target -- it cannot pin the gain");
 }
 
 // End to end: the old observation runs away from the 1s target, the new one
@@ -462,6 +560,113 @@ BOOST_AUTO_TEST_CASE(gate_applies_window_only_at_and_after_the_dag_fork)
     BOOST_CHECK_MESSAGE(nNonNeutral > 0,
         "pre-DAG fixture cannot distinguish a window from a single gap -- "
         "it would not detect a window applied pre-DAG");
+}
+
+// For the first WINDOW blocks after the fork, the walk stays post-DAG. Without the
+// subtraction it would read 15s pre-DAG gaps and max-ease exactly when difficulty
+// must drop 15x. Fixture: 15s blocks to the fork, 1s after.
+BOOST_AUTO_TEST_CASE(window_at_the_dag_fork_never_spans_predag_history)
+{
+    TestNetGuard guard;
+    const int nDAG = FORK_HEIGHT_DAG;
+    const int nWin = POST_DAG_RETARGET_WINDOW;
+    BOOST_REQUIRE(nDAG > 2 && nDAG < 1000);
+
+    const CBigNum bnLimit = bnProofOfWorkLimit;
+    const unsigned int nBits = (bnLimit / 1000).GetCompact();
+
+    const int nBlocks = nDAG + nWin + 10;
+    std::vector<CBlockIndex> vChain;
+    BuildChain(vChain, nBlocks, 15, nBits); // pre-DAG cadence everywhere...
+    for (int i = nDAG; i < nBlocks; i++)    // ...then 1s from the fork block on
+        vChain[i].nTime = vChain[i - 1].nTime + 1;
+
+    // The very first post-DAG retarget (tip nDAG-1) legitimately reads the last
+    // 15s gap against the 1s target: there is no post-DAG history yet. It must
+    // ease, and it is the ONLY retarget allowed to see a pre-DAG gap.
+    unsigned int nFirst = GetNextTargetRequired(&vChain[nDAG - 1], false);
+    BOOST_CHECK_MESSAGE(TargetOf(nFirst) > TargetOf(nBits),
+        "the first post-DAG retarget should ease off the 15s cadence");
+
+    // From the fork block onward every observation is exactly on target.
+    size_t nDiscriminating = 0;
+    for (int h = nDAG; h < nBlocks - 1; h++)
+    {
+        const CBlockIndex* p = &vChain[h];
+        unsigned int nGot = GetNextTargetRequired(p, false);
+        BOOST_CHECK_MESSAGE(nGot == nBits,
+            "tip " << h << " (" << (h - nDAG) << " blocks past the fork): 1s "
+            "blocks are on target and must be neutral -- a window reaching into "
+            "15s history is the only way to move here");
+
+        // Confirm the pre-DAG prefix is visible to this fixture, so the neutrality above does not
+        // hold merely because every reachable window agrees.
+        int nCross = std::min(nWin, h);
+        int64_t nCrossSpan = (int64_t)p->nTime - (int64_t)vChain[h - nCross].nTime;
+        unsigned int nCrossed = ComputeRetargetedBits(nBits, nCrossSpan, 1, nCross,
+                                                      true, bnLimit);
+        if (nCrossed != nGot)
+            nDiscriminating++;
+    }
+
+    BOOST_CHECK_MESSAGE(nDiscriminating > (size_t)(nWin / 2),
+        "fork-transition fixture cannot tell a post-DAG-confined window from one "
+        "that reaches into pre-DAG history -- the neutrality checks above would "
+        "pass vacuously (got " << nDiscriminating << ")");
+}
+
+// Pin the window width: uneven post-DAG gaps make the result depend on the exact width and
+// span, which neutrality alone cannot detect.
+BOOST_AUTO_TEST_CASE(window_width_tracks_postdag_depth)
+{
+    TestNetGuard guard;
+    const int nDAG = FORK_HEIGHT_DAG;
+    const int nWin = POST_DAG_RETARGET_WINDOW;
+
+    const CBigNum bnLimit = bnProofOfWorkLimit;
+    const unsigned int nBits = (bnLimit / 1000).GetCompact();
+
+    const int nBlocks = nDAG + nWin + 20;
+    std::vector<CBlockIndex> vChain;
+    BuildChain(vChain, nBlocks, 15, nBits);
+    // Post-DAG gaps cycle 0/1/2 seconds: mean 1s (so the clamp stays off the
+    // rails) but no two window widths see the same average.
+    for (int i = nDAG; i < nBlocks; i++)
+        vChain[i].nTime = vChain[i - 1].nTime + (unsigned int)(i % 3);
+
+    size_t nDiscriminating = 0;
+    for (int h = nDAG; h < nBlocks - 1; h++)
+    {
+        const CBlockIndex* p = &vChain[h];
+
+        // The width the walk must produce: one gap until there is post-DAG
+        // history to span, then the post-DAG depth, capped at the window.
+        int nExpectWidth = h - nDAG;
+        if (nExpectWidth < 1) nExpectWidth = 1;
+        if (nExpectWidth > nWin) nExpectWidth = nWin;
+        BOOST_REQUIRE(h - nExpectWidth >= nDAG - 1);
+
+        int64_t nSpan = (int64_t)p->nTime - (int64_t)vChain[h - nExpectWidth].nTime;
+        unsigned int nWant = ComputeRetargetedBits(nBits, nSpan, 1, nExpectWidth,
+                                                   true, bnLimit);
+        BOOST_CHECK_MESSAGE(GetNextTargetRequired(p, false) == nWant,
+            "tip " << h << ": window walk did not produce width " << nExpectWidth
+            << " over span " << nSpan);
+
+        // Guard the guard: a neighbouring width must give a different answer,
+        // otherwise the equality above does not actually pin the width.
+        int nOther = (nExpectWidth < nWin) ? nExpectWidth + 1 : nExpectWidth - 1;
+        if (nOther >= 1 && h - nOther >= 0)
+        {
+            int64_t nOtherSpan = (int64_t)p->nTime - (int64_t)vChain[h - nOther].nTime;
+            if (ComputeRetargetedBits(nBits, nOtherSpan, 1, nOther, true, bnLimit) != nWant)
+                nDiscriminating++;
+        }
+    }
+
+    BOOST_CHECK_MESSAGE(nDiscriminating > (size_t)(nWin / 2),
+        "width fixture is not sensitive to the window width -- an off-by-one in "
+        "the walk would go unnoticed (got " << nDiscriminating << ")");
 }
 
 // On regtest GetNextTargetRequired must return the limit however fast blocks arrive, or
