@@ -13358,6 +13358,10 @@ bool LoadExternalBlockFile(FILE* fileIn)
     }
     printf("Loaded %i blocks (%i failed, %i already-indexed genesis) from external file in %" PRId64"ms\n",
            nLoaded, nFailed, nSkipped, GetTimeMillis() - nStart);
+    // Import is the only cold connect-from-genesis path, and the node may exit
+    // before RPC is reachable, so emit the phase breakdown here as well.
+    if (fBlockProfile)
+        printf("%s", BlockProfileReport().c_str());
     // A history-replay gate is evidence only when every framed block was
     // accepted.  Partial import with one or more rejected/corrupt frames must
     // never be reported as a successful replay.

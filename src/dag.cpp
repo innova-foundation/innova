@@ -3844,6 +3844,29 @@ bool CDAGManager::BuildDAGKnightAnchorState(
                                     vCandidates, strError))
         return false;
 
+    // Anticone counting asks the same (ancestor, descendant) questions repeatedly:
+    // the pressure pass below and the coloring pass further down walk the same
+    // candidates against an overlapping blue window. Each miss is a bounded BFS,
+    // so memoize within this call. The DAG is not mutated here, so a memoized
+    // answer is the answer IsDAGAncestor would recompute.
+    std::map<std::pair<uint256, uint256>, bool> mapAncestorMemo;
+    struct DAGKMemo
+    {
+        static bool Call(const CDAGManager* self,
+                         std::map<std::pair<uint256, uint256>, bool>& memo,
+                         const uint256& a, const uint256& b)
+        {
+            const std::pair<uint256, uint256> key(a, b);
+            std::map<std::pair<uint256, uint256>, bool>::const_iterator it =
+                memo.find(key);
+            if (it != memo.end())
+                return it->second;
+            const bool fResult = self->IsDAGAncestor(a, b, DAG_MERGE_DEPTH);
+            memo.insert(std::make_pair(key, fResult));
+            return fResult;
+        }
+    };
+
     int nPressure = 0;
     for (std::vector<uint256>::const_iterator cit = vCandidates.begin();
          cit != vCandidates.end(); ++cit)
@@ -3853,8 +3876,8 @@ bool CDAGManager::BuildDAGKnightAnchorState(
                  stateOut.vBlueWindow.begin();
              bit != stateOut.vBlueWindow.end(); ++bit)
         {
-            if (!IsDAGAncestor(*bit, *cit, DAG_MERGE_DEPTH) &&
-                !IsDAGAncestor(*cit, *bit, DAG_MERGE_DEPTH))
+            if (!DAGKMemo::Call(this, mapAncestorMemo, *bit, *cit) &&
+                !DAGKMemo::Call(this, mapAncestorMemo, *cit, *bit))
                 ++nAnticone;
         }
         nPressure = std::max(nPressure, nAnticone);
@@ -3885,8 +3908,8 @@ bool CDAGManager::BuildDAGKnightAnchorState(
                  stateOut.vBlueWindow.begin();
              bit != stateOut.vBlueWindow.end(); ++bit)
         {
-            if (!IsDAGAncestor(*bit, *cit, DAG_MERGE_DEPTH) &&
-                !IsDAGAncestor(*cit, *bit, DAG_MERGE_DEPTH))
+            if (!DAGKMemo::Call(this, mapAncestorMemo, *bit, *cit) &&
+                !DAGKMemo::Call(this, mapAncestorMemo, *cit, *bit))
                 ++nAnticone;
         }
         const bool fBlue = nAnticone <= stateOut.nInferredK;
