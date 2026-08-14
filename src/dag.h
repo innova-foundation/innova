@@ -553,6 +553,10 @@ private:
     void InvalidateBlueSetCacheForBlock(const uint256& hashBlock) const;
     void RebuildPendingChildIndex();
 
+    /** Drop the cached anchor states a change at hashRoot can alter: hashRoot and its
+     *  transitive DAG descendants. Falls back to dropping the whole cache past a bound. */
+    void InvalidateDAGKnightAnchorDescendants(const uint256& hashRoot) const;
+
     /** DAGKNIGHT: Infer local k from DAG neighborhood. */
     int InferLocalK(const uint256& hashBlock) const;
 
@@ -587,6 +591,10 @@ private:
 
 
 extern CDAGManager g_dagManager;
+
+// Anchor-cache differential test: when set, any DAG change drops every cached anchor
+// state. Both paths must produce identical colouring, ordering, score and k.
+extern bool fDAGKnightFullAnchorCacheInvalidation;
 
 
 #endif // INN_DAG_H

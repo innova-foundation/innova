@@ -15,6 +15,8 @@
 
 CDAGManager g_dagManager;
 
+bool fDAGKnightFullAnchorCacheInvalidation = false;
+
 uint256 CEpochState::GetDigest() const
 {
     CHashWriter ss(SER_GETHASH, 0);
@@ -275,6 +277,47 @@ void CDAGManager::InvalidateBlueSetCacheForBlock(const uint256& hashBlock) const
     mapDAGKnightAnchorCache.erase(hashBlock);
 }
 
+// An anchor state is built from exactly three inputs: its selected-parent state, its own
+// committed parent links, and ancestor queries that walk backwards from blocks in its own
+// past. All three are confined to the anchor's past, so a change at hashRoot can only be
+// observed by a block that has hashRoot in its past -- that is, by a transitive DAG
+// descendant. Everything else keeps a cached state a rebuild would reproduce byte for byte.
+//
+// The walk is bounded because it is a cache-maintenance cost, not a consensus one; past the
+// bound, dropping the whole cache is both cheaper and strictly more conservative.
+void CDAGManager::InvalidateDAGKnightAnchorDescendants(const uint256& hashRoot) const
+{
+    if (mapDAGKnightAnchorCache.empty())
+        return;
+    if (fDAGKnightFullAnchorCacheInvalidation)
+    {
+        mapDAGKnightAnchorCache.clear();
+        return;
+    }
+
+    std::vector<uint256> vStack(1, hashRoot);
+    std::set<uint256> setSeen;
+    while (!vStack.empty())
+    {
+        const uint256 hash = vStack.back();
+        vStack.pop_back();
+        if (!setSeen.insert(hash).second)
+            continue;
+        if (setSeen.size() > (size_t)DAGKNIGHT_ANCHOR_CACHE_MAX)
+        {
+            mapDAGKnightAnchorCache.clear();
+            return;
+        }
+        mapDAGKnightAnchorCache.erase(hash);
+        std::map<uint256, CBlockDAGData>::const_iterator dit = mapDAGData.find(hash);
+        if (dit == mapDAGData.end())
+            continue;
+        for (std::vector<uint256>::const_iterator it = dit->second.vDAGChildren.begin();
+             it != dit->second.vDAGChildren.end(); ++it)
+            vStack.push_back(*it);
+    }
+}
+
 void CDAGManager::RebuildPendingChildIndex()
 {
     mapPendingChildrenByParent.clear();
@@ -341,17 +384,17 @@ bool CDAGManager::InitBlockDAGData(CBlockIndex* pindex, const std::vector<uint25
     if (pendingIt != mapPendingChildrenByParent.end())
     {
         // A late parent changes the committed past of those pre-A children.
-        // V3/A validation normally prevents this path; clear disposable state
-        // so historical recovery cannot retain a stale anchor view.
-        BlockProfileCount("dagk_cache_clear", 1);
-        BlockProfileCount("dagk_cache_dropped", (int64_t)mapDAGKnightAnchorCache.size());
-        mapDAGKnightAnchorCache.clear();
+        // V3/A validation normally prevents this path; drop the disposable anchor
+        // state those children and their descendants were built from, so historical
+        // recovery cannot retain a stale anchor view.
         for (const uint256& hashChild : pendingIt->second)
         {
             AddChildNoDuplicate(data.vDAGChildren, hashChild);
             InvalidateBlueSetCacheForBlock(hashChild);
         }
         mapPendingChildrenByParent.erase(pendingIt);
+        BlockProfileCount("dagk_late_parent", 1);
+        InvalidateDAGKnightAnchorDescendants(hash);
     }
 
     // Update DAG tips: this block is a tip only if no earlier child referenced it.
@@ -1140,6 +1183,10 @@ void CDAGManager::RemoveBlockDAGData(const uint256& hashBlock)
     if (it == mapDAGData.end())
         return;
 
+    // Collect before the links are torn down: the descendants are found through them.
+    BlockProfileCount("dagk_remove_block", 1);
+    InvalidateDAGKnightAnchorDescendants(hashBlock);
+
     // Remove this block from its parents' child lists
     for (const uint256& hashParent : it->second.vDAGParents)
     {
@@ -1174,7 +1221,6 @@ void CDAGManager::RemoveBlockDAGData(const uint256& hashBlock)
     setDAGTips.erase(hashBlock);
     mapDAGData.erase(it);
     InvalidateBlueSetCacheForBlock(hashBlock);
-    mapDAGKnightAnchorCache.clear();
 }
 
 

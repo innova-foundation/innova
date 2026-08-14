@@ -252,6 +252,7 @@ TEST_OBJS= \
     obj/test/finality_committee_sig_tests.o \
     obj/test/halfagg_stake_tests.o \
     obj/test/epoch_state_determinism_tests.o \
+    obj/test/dagknight_anchor_cache_tests.o \
     obj/test/finality_settlement_tests.o \
     obj/test/name_index_recovery_tests.o \
     obj/test/name_rental_tests.o \
