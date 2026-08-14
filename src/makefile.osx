@@ -452,15 +452,11 @@ PRIVACY_VNEXT_RUST_PROFILE := debug
 PRIVACY_VNEXT_RUST_FLAGS :=
 endif
 PRIVACY_VNEXT_RUST_LIB := $(PRIVACY_VNEXT_RUST_DIR)/target/$(PRIVACY_VNEXT_RUST_PROFILE)/libinnova_privacy_vnext.a
-PRIVACY_VNEXT_RUST_INPUTS := \
-	$(PRIVACY_VNEXT_RUST_DIR)/Cargo.toml \
-	$(PRIVACY_VNEXT_RUST_DIR)/Cargo.lock \
-	$(wildcard $(PRIVACY_VNEXT_RUST_DIR)/src/*.rs) \
-	$(PRIVACY_VNEXT_RUST_DIR)/abi/innova_privacy_vnext_v2.txt \
-	$(PRIVACY_VNEXT_RUST_DIR)/provenance.json \
-	$(CURDIR)/privacy_vnext/contract/iv5_protocol_v1.json
-
-$(PRIVACY_VNEXT_RUST_LIB): $(PRIVACY_VNEXT_RUST_INPUTS)
+# Cargo is the freshness authority here: it tracks the crate's own sources and
+# the seven path dependencies under upstream/. A hand-written prerequisite list
+# covered neither and linked a stale consensus decoder. A no-op build leaves the
+# archive's timestamp alone, so this does not force a relink.
+$(PRIVACY_VNEXT_RUST_LIB): FORCE
 	cd $(PRIVACY_VNEXT_RUST_DIR) && cargo build --locked --offline $(PRIVACY_VNEXT_RUST_FLAGS)
 
 innovad: $(OBJS:obj/%=obj/%) $(PRIVACY_VNEXT_RUST_LIB)
