@@ -247,6 +247,7 @@ TEST_OBJS= \
     obj/test/finality_vote_binding_tests.o \
     obj/test/nullsend_binding_tests.o \
     obj/test/coinstake_guard_tests.o \
+    obj/test/retarget_tests.o \
     obj/test/finality_committee_sig_tests.o \
     obj/test/halfagg_stake_tests.o \
     obj/test/epoch_state_determinism_tests.o \

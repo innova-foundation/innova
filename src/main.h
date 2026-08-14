@@ -690,6 +690,11 @@ inline int GetReclaimTimelock()
 static const int64_t PRE_DAG_TARGET_SPACING = 15;
 static const int64_t POST_DAG_TARGET_SPACING = 1;
 
+// Blocks the post-DAG retarget observation spans. Timestamps are whole seconds, so a
+// single 1s gap can never read below target; a window restores a clamp floor strictly
+// below target (POST_DAG_RETARGET_WINDOW/4).
+static const int POST_DAG_RETARGET_WINDOW = 60;
+
 // IDAG: Fork-gated block time — 15s pre-DAG, 1s post-DAG
 inline unsigned int GetTargetSpacingForHeight(int nHeight)
 {
@@ -875,6 +880,11 @@ bool LoadExternalBlockFile(FILE* fileIn);
 
 bool CheckProofOfWork(uint256 hash, unsigned int nBits);
 unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfStake);
+// Pure retarget arithmetic: nActualSpan over nWindow blocks vs nEffectiveSpacing * nWindow.
+// nWindow == 1 reproduces the pre-DAG single-gap rule exactly.
+unsigned int ComputeRetargetedBits(unsigned int nPrevBits, int64_t nActualSpan,
+                                   unsigned int nEffectiveSpacing, int nWindow,
+                                   bool fTighterDrift, const CBigNum& bnTargetLimit);
 int64_t GetProofOfWorkReward(int nHeight, int64_t nFees);
 int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees);
 unsigned int ComputeMinWork(unsigned int nBase, int64_t nTime);
