@@ -14,6 +14,13 @@
 #include "uint256.h"
 #include "verifycache.h"
 
+namespace {
+// Defined with the effects cache below; the payload-verdict cache above uses the
+// identical key derivation so one payload has one cache identity.
+uint256 VNextEffectsCacheKey(uint32_t wireVersion,
+                             const std::vector<unsigned char>& payload);
+}
+
 #include "privacy_vnext/iv5_protocol.h"
 #include "privacy_vnext/rust/include/innova_privacy_vnext.h"
 
@@ -830,7 +837,7 @@ bool LoadPrivacyVNextEpochSeed(PrivacyVNextEpochSeed& seed,
     return true;
 }
 
-PrivacyVNextPayloadValidation ValidatePrivacyVNextPayload(
+static PrivacyVNextPayloadValidation ValidatePrivacyVNextPayloadUncached(
     uint32_t wireVersion,
     const std::vector<unsigned char>& payload)
 {
@@ -904,6 +911,37 @@ PrivacyVNextPayloadValidation ValidatePrivacyVNextPayload(
         validation.fLocalFailure = true;
         validation.strError = "unknown local IV5 validation failure";
     }
+    return validation;
+}
+
+// A payload's verdict is a pure function of its bytes and its outer version, so a
+// success observed once is reusable everywhere the same payload is revalidated.
+// This matters on the sync path in particular: CheckBlock runs once in
+// ProcessBlock and again inside ConnectBlock, and the effects extraction below
+// revalidates a third time, so an uncached verdict costs one full proof
+// verification per pass with nothing between passes able to change the answer.
+// Only successes are recorded, and the key is derived exactly as the effects
+// cache derives it, so a hit can never flip a verdict.
+PrivacyVNextPayloadValidation ValidatePrivacyVNextPayload(
+    uint32_t wireVersion,
+    const std::vector<unsigned char>& payload)
+{
+    if (!VerifyProofCacheEnabled())
+        return ValidatePrivacyVNextPayloadUncached(wireVersion, payload);
+
+    const uint256 key = VNextEffectsCacheKey(wireVersion, payload);
+    if (VerifyProofCacheCheck(key))
+    {
+        PrivacyVNextPayloadValidation hit;
+        hit.nResult = INNOVA_PRIVACY_VNEXT_VALID;
+        hit.fLocalFailure = false;
+        return hit;
+    }
+
+    const PrivacyVNextPayloadValidation validation =
+        ValidatePrivacyVNextPayloadUncached(wireVersion, payload);
+    if (validation.IsValid())
+        VerifyProofCacheStore(key);
     return validation;
 }
 
