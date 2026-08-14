@@ -391,7 +391,10 @@ LIBS += $(CURDIR)/leveldb/libleveldb.a $(CURDIR)/leveldb/libmemenv.a
 DEFS += $(addprefix -I,$(CURDIR)/leveldb/include) -DUSE_LEVELDB
 DEFS += $(addprefix -I,$(CURDIR)/leveldb/helpers)
 OBJS += obj/txdb-leveldb.o
-leveldb/libleveldb.a:
+# FORCE, not a prerequisite list: enumerating LevelDB's sources here would drift the
+# same way the IV5 archive's list did. Descend every time and let the nested make,
+# which does track its own sources, decide whether anything needs rebuilding.
+leveldb/libleveldb.a: FORCE
 	@echo "Building LevelDB ..."
 	+$(MAKE) -C leveldb CC="$(CC)" CXX="$(CXX)" \
 		CFLAGS="$(CFLAGS)" CXXFLAGS="$(CXXFLAGS)" LDFLAGS="$(LDFLAGS)" \

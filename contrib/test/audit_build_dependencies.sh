@@ -74,6 +74,8 @@ for name in makefile.unix makefile.osx; do
     done
     grep -Eq '^\$\(PRIVACY_VNEXT_RUST_LIB\): FORCE' "$makefile" || \
         fail "$name does not rebuild the IV5 archive unconditionally"
+    grep -Eq '^leveldb/libleveldb\.a: FORCE' "$makefile" || \
+        fail "$name does not re-enter the nested LevelDB build unconditionally"
 
     for target in check-legacy-aggregate check-bpac check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-smessage-hmac; do
         grep -q "^${target}: test_innova" "$makefile" || \
