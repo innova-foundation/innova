@@ -344,6 +344,149 @@ BOOST_AUTO_TEST_CASE(predag_controller_remains_stable)
         "pre-DAG controller should hold near 15s, got " << d);
 }
 
+// Chain-level coverage of GetNextTargetRequired, using testnet params (DAG fork at 60) so
+// a synthetic index chain reaches the fork.
+namespace {
+
+struct TestNetGuard
+{
+    bool fOldRegTest, fOldTestNet;
+    unsigned int nOldSpacing;
+    TestNetGuard() : fOldRegTest(fRegTest), fOldTestNet(fTestNet), nOldSpacing(nTargetSpacing)
+    {
+        fRegTest = false;
+        fTestNet = true;
+        // Restore the pre-DAG 15s spacing (regtest pins 1), or the fixture saturates the 4x clamp
+        // and cannot tell a single gap from a window.
+        nTargetSpacing = 15;
+    }
+    ~TestNetGuard()
+    {
+        fRegTest = fOldRegTest;
+        fTestNet = fOldTestNet;
+        nTargetSpacing = nOldSpacing;
+    }
+};
+
+// Build a PoW index chain whose blocks are nSpacing seconds apart.
+void BuildChain(std::vector<CBlockIndex>& vChain, int nBlocks, int nSpacing,
+                unsigned int nBits)
+{
+    vChain.clear();
+    vChain.resize(nBlocks);
+    for (int i = 0; i < nBlocks; i++)
+    {
+        vChain[i].nHeight = i;
+        vChain[i].nTime = 1700000000u + (unsigned int)(i * nSpacing);
+        vChain[i].nBits = nBits;
+        vChain[i].nFlags = 0; // proof-of-work
+        vChain[i].pprev = (i == 0) ? NULL : &vChain[i - 1];
+    }
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(gate_applies_window_only_at_and_after_the_dag_fork)
+{
+    TestNetGuard guard;
+    const int nDAG = FORK_HEIGHT_DAG;
+    BOOST_REQUIRE(nDAG > 2 && nDAG < 1000); // testnet fork must be reachable
+
+    const CBigNum bnLimit = bnProofOfWorkLimit;
+    const unsigned int nBits = (bnLimit / 1000).GetCompact();
+
+    // A chain running at 1 block/second. Post-DAG that is exactly on target, so
+    // once the window is wide the controller must hold difficulty steady.
+    std::vector<CBlockIndex> vChain;
+    BuildChain(vChain, nDAG + POST_DAG_RETARGET_WINDOW + 40, 1, nBits);
+
+    // Well past the fork with a full window: 1s blocks are on target => neutral.
+    const CBlockIndex* pTip = &vChain[nDAG + POST_DAG_RETARGET_WINDOW + 20];
+    unsigned int nOnTarget = GetNextTargetRequired(pTip, false);
+    BOOST_CHECK_MESSAGE(TargetOf(nOnTarget) == TargetOf(nBits),
+        "1s blocks past the DAG fork should be neutral, got a target change");
+
+    // Blocks at twice the 1s target must raise difficulty.
+    std::vector<CBlockIndex> vFast;
+    BuildChain(vFast, nDAG + POST_DAG_RETARGET_WINDOW + 40, 1, nBits);
+    for (size_t i = 1; i < vFast.size(); i++)
+    {
+        // Post-DAG: two blocks per second, i.e. the timestamp advances only on
+        // every second block. Pre-DAG: one per second, as built.
+        bool fPostDag = ((int)i > nDAG);
+        unsigned int nAdvance = (fPostDag && (i % 2) == 1) ? 0u : 1u;
+        vFast[i].nTime = vFast[i - 1].nTime + nAdvance;
+    }
+    const CBlockIndex* pFastTip = &vFast[nDAG + POST_DAG_RETARGET_WINDOW + 20];
+    unsigned int nFast = GetNextTargetRequired(pFastTip, false);
+    BOOST_CHECK_MESSAGE(TargetOf(nFast) < TargetOf(nBits),
+        "post-DAG blocks arriving faster than target must tighten difficulty");
+
+    // Alternating 5s/25s spacing (mean 15s): a single gap is off target but any
+    // window >= 2 is on target, so the results differ.
+    std::vector<CBlockIndex> vPre;
+    BuildChain(vPre, nDAG, 15, nBits);
+    for (size_t i = 1; i < vPre.size(); i++)
+        vPre[i].nTime = vPre[i - 1].nTime + ((i % 2) ? 5u : 25u);
+
+    size_t nNonNeutral = 0;
+    for (int h = 3; h < nDAG - 1; h++)
+    {
+        const CBlockIndex* p = &vPre[h];
+        unsigned int nGot = GetNextTargetRequired(p, false);
+        unsigned int nWant = LegacyRetarget(p->nBits,
+                                            (int64_t)p->nTime - (int64_t)p->pprev->nTime,
+                                            GetTargetSpacingForHeight(p->nHeight + 1),
+                                            (p->nHeight + 1) >= FORK_HEIGHT_TIGHTER_DRIFT,
+                                            bnLimit);
+        BOOST_CHECK_MESSAGE(nGot == nWant,
+            "pre-DAG height " << (p->nHeight + 1) << " diverged from the legacy decision");
+        // Discrimination check: feed the arithmetic the REAL elapsed span this
+        // fixture would present over an 8-block window and confirm it lands
+        // somewhere different. If it does not, the equality above proves nothing.
+        if (h >= 10)
+        {
+            unsigned int nSpacing = GetTargetSpacingForHeight(p->nHeight + 1);
+            bool fDrift = (p->nHeight + 1) >= FORK_HEIGHT_TIGHTER_DRIFT;
+            int64_t nSpan8 = (int64_t)p->nTime - (int64_t)vPre[h - 8].nTime;
+            unsigned int nWindowed = ComputeRetargetedBits(p->nBits, nSpan8, nSpacing, 8,
+                                                           fDrift, bnLimit);
+            if (nWindowed != nWant)
+                nNonNeutral++;
+        }
+    }
+
+    // Guard the guard: if a window and a single gap agree everywhere on this
+    // fixture (e.g. both saturating the clamp), the equality above passes
+    // vacuously and would not notice the gate being removed.
+    BOOST_CHECK_MESSAGE(nNonNeutral > 0,
+        "pre-DAG fixture cannot distinguish a window from a single gap -- "
+        "it would not detect a window applied pre-DAG");
+}
+
+// On regtest GetNextTargetRequired must return the limit however fast blocks arrive, or
+// regtest difficulty ramps under rapid generation.
+BOOST_AUTO_TEST_CASE(regtest_never_retargets_off_the_limit)
+{
+    bool fOldRegTest = fRegTest, fOldTestNet = fTestNet;
+    fRegTest = true;
+    fTestNet = false;
+
+    const unsigned int nLimitBits = bnProofOfWorkLimit.GetCompact();
+    const unsigned int nBits = (bnProofOfWorkLimit / 1000).GetCompact();
+
+    // All blocks share a timestamp: the fastest possible chain, which is what a
+    // regtest generate loop actually produces.
+    std::vector<CBlockIndex> vChain;
+    BuildChain(vChain, 200, 0, nBits);
+
+    for (int h = 3; h < 199; h++)
+        BOOST_CHECK_EQUAL(GetNextTargetRequired(&vChain[h], false), nLimitBits);
+
+    fRegTest = fOldRegTest;
+    fTestNet = fOldTestNet;
+}
+
 // The regtest short-circuit is behaviour preserving: regtest nBits is pinned at
 // the limit for every block, since the target starts there and can only rise.
 BOOST_AUTO_TEST_CASE(regtest_bits_were_already_pinned_at_the_limit)
