@@ -95,7 +95,8 @@ struct Harness
 
     ~Harness()
     {
-        for (size_t i = 0; i < vHashes.size(); i++)
+        // Children first, so the second replay does not take a late-parent path.
+        for (size_t i = vHashes.size(); i-- > 0; )
         {
             g_dagManager.RemoveBlockDAGData(vHashes[i]);
             mapBlockIndex.erase(vHashes[i]);
