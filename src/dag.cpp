@@ -271,20 +271,15 @@ void CDAGManager::AddChildNoDuplicate(std::vector<uint256>& vChildren, const uin
         vChildren.push_back(hashChild);
 }
 
+// Blue sets depend on neighbour colours and must be dropped here; DAGKNIGHT anchor state
+// does not (see InvalidateDAGKnightAnchorDescendants). Keep the two invalidations separate.
 void CDAGManager::InvalidateBlueSetCacheForBlock(const uint256& hashBlock) const
 {
     mapBlueSetCache.erase(hashBlock);
-    mapDAGKnightAnchorCache.erase(hashBlock);
 }
 
-// An anchor state is built from exactly three inputs: its selected-parent state, its own
-// committed parent links, and ancestor queries that walk backwards from blocks in its own
-// past. All three are confined to the anchor's past, so a change at hashRoot can only be
-// observed by a block that has hashRoot in its past -- that is, by a transitive DAG
-// descendant. Everything else keeps a cached state a rebuild would reproduce byte for byte.
-//
-// The walk is bounded because it is a cache-maintenance cost, not a consensus one; past the
-// bound, dropping the whole cache is both cheaper and strictly more conservative.
+// Anchor state depends only on the anchor's past, so a change at hashRoot affects only descendants.
+// Past the walk bound the whole cache is dropped.
 void CDAGManager::InvalidateDAGKnightAnchorDescendants(const uint256& hashRoot) const
 {
     if (mapDAGKnightAnchorCache.empty())
@@ -379,14 +374,10 @@ bool CDAGManager::InitBlockDAGData(CBlockIndex* pindex, const std::vector<uint25
         }
     }
 
-    // Attach children that arrived earlier while this parent was missing.
+    // Attach children that arrived while this parent was missing; their anchor view is stale.
     auto pendingIt = mapPendingChildrenByParent.find(hash);
     if (pendingIt != mapPendingChildrenByParent.end())
     {
-        // A late parent changes the committed past of those pre-A children.
-        // V3/A validation normally prevents this path; drop the disposable anchor
-        // state those children and their descendants were built from, so historical
-        // recovery cannot retain a stale anchor view.
         for (const uint256& hashChild : pendingIt->second)
         {
             AddChildNoDuplicate(data.vDAGChildren, hashChild);
@@ -394,8 +385,10 @@ bool CDAGManager::InitBlockDAGData(CBlockIndex* pindex, const std::vector<uint25
         }
         mapPendingChildrenByParent.erase(pendingIt);
         BlockProfileCount("dagk_late_parent", 1);
-        InvalidateDAGKnightAnchorDescendants(hash);
     }
+
+    // This block's own state (a re-added block may have one) and anything downstream of it.
+    InvalidateDAGKnightAnchorDescendants(hash);
 
     // Update DAG tips: this block is a tip only if no earlier child referenced it.
     if (data.vDAGChildren.empty())
