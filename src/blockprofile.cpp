@@ -63,7 +63,30 @@ const char* kPhaseNames[BP_PHASE_COUNT] = {
     "post_effects",
 };
 
+const int kMaxCounters = 24;
+const char* g_counterName[kMaxCounters];
+int64_t g_counterValue[kMaxCounters];
+int g_nCounters = 0;
+
 } // namespace
+
+void BlockProfileCount(const char* szName, int64_t nAmount)
+{
+    if (!fBlockProfile)
+        return;
+    std::lock_guard<std::mutex> lock(g_phaseMutex);
+    for (int i = 0; i < g_nCounters; i++)
+        if (strcmp(g_counterName[i], szName) == 0)
+        {
+            g_counterValue[i] += nAmount;
+            return;
+        }
+    if (g_nCounters >= kMaxCounters)
+        return;
+    g_counterName[g_nCounters] = szName;
+    g_counterValue[g_nCounters] = nAmount;
+    g_nCounters++;
+}
 
 const char* BlockPhaseName(int nPhase)
 {
@@ -100,6 +123,7 @@ void BlockProfileReset()
 {
     std::lock_guard<std::mutex> lock(g_phaseMutex);
     memset(g_phase, 0, sizeof(g_phase));
+    memset(g_counterValue, 0, sizeof(g_counterValue));
     g_nFirstHeight = -1;
     g_nLastHeight = -1;
     g_nBlocks = 0;
@@ -129,6 +153,13 @@ std::string BlockProfileReport()
         snprintf(buf, sizeof(buf), "%-18s %12" PRId64 " %12" PRId64 " %12" PRId64 " %12.2f\n",
                  kPhaseNames[i], g_phase[i].nCalls, g_phase[i].nExclusive,
                  g_phase[i].nInclusive, (double)g_phase[i].nExclusive / dBlocks);
+        s += buf;
+    }
+    for (int i = 0; i < g_nCounters; i++)
+    {
+        snprintf(buf, sizeof(buf), "%-18s %12" PRId64 " %12s %12s %12.2f\n",
+                 g_counterName[i], g_counterValue[i], "-", "-",
+                 (double)g_counterValue[i] / dBlocks);
         s += buf;
     }
     return s;

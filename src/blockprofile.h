@@ -38,6 +38,10 @@ enum BlockPhase
 
 extern bool fBlockProfile;
 
+// Named counters for breaking a phase down below timer granularity. Inert unless
+// -blockprofile is set; the name must be a string literal with static lifetime.
+void BlockProfileCount(const char* szName, int64_t nAmount);
+
 const char* BlockPhaseName(int nPhase);
 // Exclusive micros: time in this phase minus time in nested profiled phases.
 void BlockProfileAdd(int nPhase, int64_t nExclusiveMicros, int64_t nInclusiveMicros);

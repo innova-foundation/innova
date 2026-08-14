@@ -8,6 +8,7 @@
 #include "finality.h"
 #include "privacy_vnext_ffi.h"
 #include "util.h"
+#include "blockprofile.h"
 
 #include <algorithm>
 #include <queue>
@@ -342,6 +343,8 @@ bool CDAGManager::InitBlockDAGData(CBlockIndex* pindex, const std::vector<uint25
         // A late parent changes the committed past of those pre-A children.
         // V3/A validation normally prevents this path; clear disposable state
         // so historical recovery cannot retain a stale anchor view.
+        BlockProfileCount("dagk_cache_clear", 1);
+        BlockProfileCount("dagk_cache_dropped", (int64_t)mapDAGKnightAnchorCache.size());
         mapDAGKnightAnchorCache.clear();
         for (const uint256& hashChild : pendingIt->second)
         {
@@ -3843,6 +3846,8 @@ bool CDAGManager::BuildDAGKnightAnchorState(
                                     mi->second->nHeight,
                                     vCandidates, strError))
         return false;
+    BlockProfileCount("dagk_candidates", (int64_t)vCandidates.size());
+    BlockProfileCount("dagk_bluewindow", (int64_t)stateOut.vBlueWindow.size());
 
     // Anticone counting asks the same (ancestor, descendant) questions repeatedly:
     // the pressure pass below and the coloring pass further down walk the same
@@ -3861,6 +3866,7 @@ bool CDAGManager::BuildDAGKnightAnchorState(
                 memo.find(key);
             if (it != memo.end())
                 return it->second;
+            BlockProfileCount("dagk_ancestor_bfs", 1);
             const bool fResult = self->IsDAGAncestor(a, b, DAG_MERGE_DEPTH);
             memo.insert(std::make_pair(key, fResult));
             return fResult;
@@ -3993,6 +3999,8 @@ bool CDAGManager::EnsureDAGKnightAnchorState(
             return false;
     }
     std::reverse(vBuild.begin(), vBuild.end());
+    BlockProfileCount("dagk_states_built", (int64_t)vBuild.size());
+    BlockProfileCount("dagk_ensure_calls", 1);
     for (std::vector<uint256>::const_iterator it = vBuild.begin();
          it != vBuild.end(); ++it)
     {
