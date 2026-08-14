@@ -914,14 +914,8 @@ static PrivacyVNextPayloadValidation ValidatePrivacyVNextPayloadUncached(
     return validation;
 }
 
-// A payload's verdict is a pure function of its bytes and its outer version, so a
-// success observed once is reusable everywhere the same payload is revalidated.
-// This matters on the sync path in particular: CheckBlock runs once in
-// ProcessBlock and again inside ConnectBlock, and the effects extraction below
-// revalidates a third time, so an uncached verdict costs one full proof
-// verification per pass with nothing between passes able to change the answer.
-// Only successes are recorded, and the key is derived exactly as the effects
-// cache derives it, so a hit can never flip a verdict.
+// A payload's verdict is a pure function of its bytes and outer version, so successes are
+// cached under VerifyProofCacheKey with height fixed at 0.
 PrivacyVNextPayloadValidation ValidatePrivacyVNextPayload(
     uint32_t wireVersion,
     const std::vector<unsigned char>& payload)
@@ -929,7 +923,8 @@ PrivacyVNextPayloadValidation ValidatePrivacyVNextPayload(
     if (!VerifyProofCacheEnabled())
         return ValidatePrivacyVNextPayloadUncached(wireVersion, payload);
 
-    const uint256 key = VNextEffectsCacheKey(wireVersion, payload);
+    const uint256 key = VerifyProofCacheKey(VERIFYCACHE_IV5_PAYLOAD, 0,
+                                            VNextEffectsCacheKey(wireVersion, payload));
     if (VerifyProofCacheCheck(key))
     {
         PrivacyVNextPayloadValidation hit;

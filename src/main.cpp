@@ -9624,11 +9624,13 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     }
 
     // Write queued txindex changes
-    BLOCK_PHASE(BP_TXINDEX_WRITE);
-    for (map<uint256, CTxIndex>::iterator mi = mapQueuedChanges.begin(); mi != mapQueuedChanges.end(); ++mi)
     {
-        if (!txdb.UpdateTxIndex((*mi).first, (*mi).second))
-            return TransientFailure(error("ConnectBlock() : UpdateTxIndex failed"));
+        BLOCK_PHASE(BP_TXINDEX_WRITE);
+        for (map<uint256, CTxIndex>::iterator mi = mapQueuedChanges.begin(); mi != mapQueuedChanges.end(); ++mi)
+        {
+            if (!txdb.UpdateTxIndex((*mi).first, (*mi).second))
+                return TransientFailure(error("ConnectBlock() : UpdateTxIndex failed"));
+        }
     }
     if(GetBoolArg("-addrindex", false))
     {
