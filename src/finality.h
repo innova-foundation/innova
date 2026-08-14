@@ -15,6 +15,7 @@
 #include "script.h"
 #include "curvetree.h"
 #include "finality_note.h"
+#include "finality_schedule.h"
 #include "nullstake.h"
 
 #include <vector>
@@ -1551,6 +1552,29 @@ void ThreadFinalityVoter(void* parg);
 
 /** Create and broadcast a finality vote for the current epoch */
 bool ProduceFinalityVote();
+
+// ---------------------------------------------------------------------------
+// Vote scheduling (see finality_schedule.h for why this is event-driven)
+// ---------------------------------------------------------------------------
+
+/** Chain event: report a durably committed tip to the vote producers. Called
+ *  from the tip-publication path, so every boundary block is observed at the
+ *  instant it connects and no poll phase can step over an epoch. */
+void NotifyFinalityTipChanged(int nHeight);
+
+/** Producer: sleep until a tip advance leaves an epoch outstanding, or until
+ *  nTimeoutMs elapses. The timeout is a backstop only -- correctness comes from
+ *  the latch, which holds for the whole epoch, not from the poll period. */
+void WaitForFinalityVoteWork(int64_t nTimeoutMs);
+
+/** Producer: take an attempt at the outstanding epoch at nTipHeight. */
+FinalityVoteClaim ClaimFinalityVote(int nTipHeight, int& nEpochOut);
+
+/** Producer: hand an accepted claim back; fProduced settles the epoch. */
+void ReleaseFinalityVote(int nEpoch, bool fProduced);
+
+/** Test/RPC accessor for the process-wide vote schedule. */
+CFinalityVoteSchedule& GetFinalityVoteSchedule();
 
 /** Run one hidden-finality tally committee automation pass. */
 bool ProcessFinalityTallyCommittee();
