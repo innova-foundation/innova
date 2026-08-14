@@ -1446,7 +1446,7 @@ void StakeMiner(CWallet *pwallet)
 
     bool fTryToSync = true;
     int64_t nTimeLastStake = 0;
-    int nLastFinalityEpochVoted = -1;
+    int64_t nLastTallyPassMs = 0;
 
     while (true)
     {
@@ -1529,26 +1529,34 @@ void StakeMiner(CWallet *pwallet)
         // IDAG: after the DAG fork, stakers no longer create blocks. The
         // staking thread only produces transparent finality votes.
         bool fPostDAGFinalityMode = false;
-        bool fShouldProduceFinalityVote = false;
-        int nFinalityEpoch = -1;
+        int nFinalityTipHeight = -1;
         {
             LOCK(cs_main);
             if (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_DAG)
             {
                 fPostDAGFinalityMode = true;
-                nFinalityEpoch = GetEpochForHeight(pindexBest->nHeight);
-                int nEpochBoundary = GetEpochBoundaryHeight(nFinalityEpoch, pindexBest->nHeight);
-                int nEpochProgress = pindexBest->nHeight - nEpochBoundary;
-                fShouldProduceFinalityVote = (nEpochProgress < FINALITY_VOTE_WINDOW &&
-                                              nFinalityEpoch != nLastFinalityEpochVoted);
+                nFinalityTipHeight = pindexBest->nHeight;
             }
         }
         if (fPostDAGFinalityMode)
         {
-            ProcessFinalityTallyCommittee();
-            if (fShouldProduceFinalityVote && ProduceFinalityVote())
-                nLastFinalityEpochVoted = nFinalityEpoch;
-            MilliSleep(5000);
+            // Own rhythm: the vote wake below must not multiply this work.
+            if (GetTimeMillis() - nLastTallyPassMs >= FINALITY_VOTER_POLL_MS_PRE_DAG)
+            {
+                nLastTallyPassMs = GetTimeMillis();
+                ProcessFinalityTallyCommittee();
+            }
+            // Shares one schedule with ThreadFinalityVoter: the epoch is claimed,
+            // so whichever loop gets there first votes and the other does not
+            // duplicate it.
+            NotifyFinalityTipChanged(nFinalityTipHeight);
+            int nClaimedEpoch = -1;
+            if (ClaimFinalityVote(nFinalityTipHeight, nClaimedEpoch) == FINALITY_VOTE_CLAIM_OK)
+            {
+                bool fProduced = ProduceFinalityVote();
+                ReleaseFinalityVote(nClaimedEpoch, fProduced);
+            }
+            WaitForFinalityVoteWork(FINALITY_VOTER_POLL_MS_POST_DAG);
             continue;
         }
 

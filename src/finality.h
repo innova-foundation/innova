@@ -15,6 +15,7 @@
 #include "script.h"
 #include "curvetree.h"
 #include "finality_note.h"
+#include "finality_schedule.h"
 #include "nullstake.h"
 
 #include <vector>
@@ -49,6 +50,14 @@ static const int FINALITY_VOTE_WINDOW = 5;         // blocks after epoch boundar
 static const int FINALITY_VOTE_INCLUSION_WINDOW = 24;
 static const int FINALITY_MIN_VOTERS = 2;          // minimum unique voters for finality
 static const int FINALITY_CONFIRMATION_EPOCHS = 3;  // consecutive HARD epochs before binding finality (P2P propagation safety)
+// Producer-side poll period and the share of the inclusion window a producer still
+// starts a vote in. Node-local, not consensus. The post-DAG poll must sample faster than
+// the window, and the last quarter of the window is left for signing and relay.
+static const int64_t FINALITY_VOTER_POLL_MS_PRE_DAG = 5000;
+static const int64_t FINALITY_VOTER_POLL_MS_POST_DAG = 1000;
+// Bounded retries per epoch so a node with no eligible stake does not rescan
+// its wallet on every poll of the window.
+static const int FINALITY_VOTE_ATTEMPTS_PER_EPOCH = 4;
 static const int FINALITY_MAX_STAKE_PROOFS = 8;      // keep coinbase vote commitments under standard script element size
 
 /** Three-way result used by consensus callers.  Relay-facing APIs retain their
@@ -192,6 +201,24 @@ inline int GetEpochInterval(int nHeight)
     if (nHeight >= GetForkHeightDAG())
         return FINALITY_EPOCH_INTERVAL_POST_DAG;
     return FINALITY_EPOCH_INTERVAL_PRE_DAG;
+}
+
+/** Blocks after the epoch boundary in which this node still starts a vote.
+ *  Node-local; consensus accepts a vote anywhere in
+ *  [H_E, H_E + FINALITY_VOTE_INCLUSION_WINDOW). */
+inline int GetFinalityVoteProducerWindow(int nHeight)
+{
+    if (nHeight >= GetForkHeightDAG())
+        return (FINALITY_VOTE_INCLUSION_WINDOW * 3) / 4;
+    return FINALITY_VOTE_WINDOW;
+}
+
+/** Poll period of the vote-producing loops, in milliseconds. */
+inline int64_t GetFinalityVoterPollMs(int nHeight)
+{
+    if (nHeight >= GetForkHeightDAG())
+        return FINALITY_VOTER_POLL_MS_POST_DAG;
+    return FINALITY_VOTER_POLL_MS_PRE_DAG;
 }
 
 /** Get the epoch number for a given height.
@@ -1525,6 +1552,29 @@ void ThreadFinalityVoter(void* parg);
 
 /** Create and broadcast a finality vote for the current epoch */
 bool ProduceFinalityVote();
+
+// ---------------------------------------------------------------------------
+// Vote scheduling (see finality_schedule.h for why this is event-driven)
+// ---------------------------------------------------------------------------
+
+/** Chain event: report a durably committed tip to the vote producers. Called
+ *  from the tip-publication path, so every boundary block is observed at the
+ *  instant it connects and no poll phase can step over an epoch. */
+void NotifyFinalityTipChanged(int nHeight);
+
+/** Producer: sleep until a tip advance leaves an epoch outstanding, or until
+ *  nTimeoutMs elapses. The timeout is a backstop only -- correctness comes from
+ *  the latch, which holds for the whole epoch, not from the poll period. */
+void WaitForFinalityVoteWork(int64_t nTimeoutMs);
+
+/** Producer: take an attempt at the outstanding epoch at nTipHeight. */
+FinalityVoteClaim ClaimFinalityVote(int nTipHeight, int& nEpochOut);
+
+/** Producer: hand an accepted claim back; fProduced settles the epoch. */
+void ReleaseFinalityVote(int nEpoch, bool fProduced);
+
+/** Test/RPC accessor for the process-wide vote schedule. */
+CFinalityVoteSchedule& GetFinalityVoteSchedule();
 
 /** Run one hidden-finality tally committee automation pass. */
 bool ProcessFinalityTallyCommittee();

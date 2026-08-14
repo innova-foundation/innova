@@ -22,6 +22,9 @@
 #include <cstdlib>
 #include <cctype>
 #include <limits>
+#include <boost/date_time/posix_time/posix_time_types.hpp>
+#include <boost/thread/condition_variable.hpp>
+#include <boost/thread/mutex.hpp>
 
 CFinalityTracker g_finalityTracker;
 
@@ -9133,6 +9136,70 @@ int CountDecryptableFinalityTallyShares(int nEpoch)
 
 
 // ---------------------------------------------------------------------------
+// Vote scheduling
+// ---------------------------------------------------------------------------
+
+static CFinalityVoteSchedule g_finalityVoteSchedule;
+static boost::mutex g_mutexFinalityVoteWake;
+static boost::condition_variable g_condFinalityVoteWake;
+// Edge-triggered and consumed by the waiter; a level would spin for the rest of the epoch.
+static bool g_fFinalityVoteWakePending = false;
+
+CFinalityVoteSchedule& GetFinalityVoteSchedule()
+{
+    return g_finalityVoteSchedule;
+}
+
+void NotifyFinalityTipChanged(int nHeight)
+{
+    if (nHeight < FORK_HEIGHT_FINALITY)
+        return;
+
+    int nEpoch = GetEpochForHeight(nHeight);
+    int nBoundary = GetEpochBoundaryHeight(nEpoch, nHeight);
+
+    bool fWake = false;
+    {
+        boost::unique_lock<boost::mutex> lock(g_mutexFinalityVoteWake);
+        if (g_finalityVoteSchedule.OnTipChanged(nHeight, nEpoch, nBoundary))
+        {
+            g_fFinalityVoteWakePending = true;
+            fWake = true;
+        }
+    }
+    if (fWake)
+        g_condFinalityVoteWake.notify_all();
+}
+
+void WaitForFinalityVoteWork(int64_t nTimeoutMs)
+{
+    boost::unique_lock<boost::mutex> lock(g_mutexFinalityVoteWake);
+    if (g_fFinalityVoteWakePending)
+    {
+        g_fFinalityVoteWakePending = false;
+        return;
+    }
+    g_condFinalityVoteWake.timed_wait(lock,
+        boost::posix_time::milliseconds(nTimeoutMs));
+    g_fFinalityVoteWakePending = false;
+}
+
+FinalityVoteClaim ClaimFinalityVote(int nTipHeight, int& nEpochOut)
+{
+    boost::unique_lock<boost::mutex> lock(g_mutexFinalityVoteWake);
+    return g_finalityVoteSchedule.Claim(nTipHeight,
+                                        GetFinalityVoteProducerWindow(nTipHeight),
+                                        FINALITY_VOTE_ATTEMPTS_PER_EPOCH,
+                                        nEpochOut);
+}
+
+void ReleaseFinalityVote(int nEpoch, bool fProduced)
+{
+    boost::unique_lock<boost::mutex> lock(g_mutexFinalityVoteWake);
+    g_finalityVoteSchedule.Release(nEpoch, fProduced);
+}
+
+// ---------------------------------------------------------------------------
 // Finality Voter Thread
 // ---------------------------------------------------------------------------
 
@@ -9146,11 +9213,14 @@ void ThreadFinalityVoter(void* parg)
         return;
     }
 
-    int nLastEpochVoted = -1;
+    int64_t nPollMs = FINALITY_VOTER_POLL_MS_PRE_DAG;
+    int64_t nLastTallyPassMs = 0;
 
     while (!fShutdown)
     {
-        MilliSleep(5000);
+        // Woken by the tip hook. The timeout only bounds the tally pass and shutdown check; the
+        // latch decides whether this node owes a vote.
+        WaitForFinalityVoteWork(nPollMs);
 
         if (fShutdown)
             break;
@@ -9166,32 +9236,33 @@ void ThreadFinalityVoter(void* parg)
             nCurrentHeight = pindexBest->nHeight;
         }
 
+        nPollMs = GetFinalityVoterPollMs(nCurrentHeight);
+
         if (nCurrentHeight < FORK_HEIGHT_FINALITY)
             continue;
 
-        // The tally committee runs on every cycle, ahead of the vote-window gates
-        // below: a certificate is built once the window has CLOSED, and whether this
-        // node still owes a vote has nothing to do with it. The other caller is the
-        // staking loop, which -staking=0 never starts -- and post-DAG a staker produces
-        // no blocks anyway, so without this a vote-only node never tallies at all.
-        if (nCurrentHeight >= FORK_HEIGHT_DAG)
-            ProcessFinalityTallyCommittee();
-
-        int nCurrentEpoch = GetEpochForHeight(nCurrentHeight);
-        int nEpochHeight = GetEpochBoundaryHeight(nCurrentEpoch, nCurrentHeight);
-        int nEpochProgress = nCurrentHeight - nEpochHeight;
-
-        if (nEpochProgress >= FINALITY_VOTE_WINDOW)
-            continue;
-
-        if (nCurrentEpoch == nLastEpochVoted)
-            continue;
-
-        if (ProduceFinalityVote())
+        // Tally ahead of the vote-window gates (a certificate is built once the window
+        // closes) so a vote-only node without -staking still tallies; rate-limited
+        // separately from the vote poll.
+        if (nCurrentHeight >= FORK_HEIGHT_DAG &&
+            GetTimeMillis() - nLastTallyPassMs >= FINALITY_VOTER_POLL_MS_PRE_DAG)
         {
-            nLastEpochVoted = nCurrentEpoch;
-            g_finalityTracker.PruneOldEpochs(nCurrentEpoch);
+            nLastTallyPassMs = GetTimeMillis();
+            ProcessFinalityTallyCommittee();
         }
+
+        // A tip advance may have arrived while this pass was busy; the latch
+        // carries it, so claim against the tip as it stands now.
+        NotifyFinalityTipChanged(nCurrentHeight);
+
+        int nClaimedEpoch = -1;
+        if (ClaimFinalityVote(nCurrentHeight, nClaimedEpoch) != FINALITY_VOTE_CLAIM_OK)
+            continue;
+
+        bool fProduced = ProduceFinalityVote();
+        ReleaseFinalityVote(nClaimedEpoch, fProduced);
+        if (fProduced)
+            g_finalityTracker.PruneOldEpochs(nClaimedEpoch);
     }
 
     printf("ThreadFinalityVoter stopped\n");

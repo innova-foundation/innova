@@ -9906,6 +9906,10 @@ static void PublishDurablyCommittedBest(CBlockIndex* pindexCommitted)
     nBestHeight = pindexCommitted->nHeight;
     nBestChainTrust = pindexCommitted->nChainTrust;
     nTimeBestReceived = GetTime();
+
+    // Every durable tip is reported to the vote producers here, the one place all tip
+    // paths publish, so no epoch boundary goes unobserved.
+    NotifyFinalityTipChanged(pindexCommitted->nHeight);
 }
 
 static void RestoreCommittedFinalityOrShutdown(const char* pszContext)
