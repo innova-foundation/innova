@@ -266,6 +266,19 @@ void CheckShapeIsIndistinguishable(const Shape& shape)
                         shape.strName << ": ordering diverged from the unoptimized path");
     BOOST_CHECK_MESSAGE(reference.strRebuilt == cached.strRebuilt,
                         shape.strName << ": rebuilt ordering diverged");
+
+    // Arrival-order colouring can differ from a rebuild (late merge parents); both paths
+    // must agree with the rebuild on exactly the same shapes.
+    BOOST_CHECK_MESSAGE((reference.strCached == reference.strRebuilt) ==
+                            (cached.strCached == cached.strRebuilt),
+                        shape.strName << ": caching changed whether arrival-order colouring "
+                                         "matches a full recompute");
+}
+
+// For in-order shapes the cached result must also equal a from-scratch recolour.
+void CheckShapeMatchesFullRecompute(const Shape& shape)
+{
+    const RunResult cached = Run(shape, false);
     BOOST_CHECK_MESSAGE(cached.strCached == cached.strRebuilt,
                         shape.strName << ": cached ordering differs from a full recompute");
 }
@@ -438,21 +451,25 @@ Shape ReorgShape()
 BOOST_AUTO_TEST_CASE(linear_chain_ordering_is_invalidation_independent)
 {
     CheckShapeIsIndistinguishable(LinearShape(40));
+    CheckShapeMatchesFullRecompute(LinearShape(40));
 }
 
 BOOST_AUTO_TEST_CASE(sibling_and_merge_ordering_is_invalidation_independent)
 {
     CheckShapeIsIndistinguishable(SiblingsAndMergeShape());
+    CheckShapeMatchesFullRecompute(SiblingsAndMergeShape());
 }
 
 BOOST_AUTO_TEST_CASE(late_merge_parent_ordering_is_invalidation_independent)
 {
     CheckShapeIsIndistinguishable(LateMergeParentShape());
+    CheckShapeMatchesFullRecompute(LateMergeParentShape());
 }
 
 BOOST_AUTO_TEST_CASE(reorg_ordering_is_invalidation_independent)
 {
     CheckShapeIsIndistinguishable(ReorgShape());
+    CheckShapeMatchesFullRecompute(ReorgShape());
 }
 
 BOOST_AUTO_TEST_CASE(generated_chain_shapes_are_invalidation_independent)
