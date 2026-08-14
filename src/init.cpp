@@ -6,6 +6,7 @@
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "init.h"
+#include "blockprofile.h"
 #include "main.h"
 #include "txdb.h"
 #include "walletdb.h"
@@ -1350,6 +1351,7 @@ bool AppInit2()
     // ********************************************************* Step 3: parameter-to-internal-flags
 
     fDebug = GetBoolArg("-debug");
+    fBlockProfile = GetBoolArg("-blockprofile", false);
 
     // - debug implies fDebug*, unless otherwise specified, except net/fs/smsg since they are -really- noisy.
     if (fDebug)

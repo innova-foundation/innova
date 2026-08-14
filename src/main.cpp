@@ -27,6 +27,7 @@
 #include "curvetree.h"
 #include "finality.h"
 #include "dag.h"
+#include "blockprofile.h"
 #include "privacy_vnext_ffi.h"
 #include "privacy_vnext_store.h"
 #include <boost/algorithm/string/replace.hpp>
@@ -6520,7 +6521,12 @@ bool CTransaction::ConnectInputs(CTxDB& txdb, MapPrevTx inputs, map<uint256, CTx
             if (!(fBlock && !fFullReplayVerify && (nBestHeight < Checkpoints::GetTotalBlocksEstimate())))
             {
                 // Verify signature
-                if (!VerifySignature(txPrev, *this, i, flags, 0))
+                bool fSigOk;
+                {
+                    BLOCK_PHASE(BP_SIGVERIFY);
+                    fSigOk = VerifySignature(txPrev, *this, i, flags, 0);
+                }
+                if (!fSigOk)
                 {
                     if (flags & STANDARD_NOT_MANDATORY_VERIFY_FLAGS) {
                     // Check whether the failure was caused by a
@@ -7692,6 +7698,9 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         return true;
     };
 
+    BLOCK_PHASE(BP_CONNECTBLOCK);
+    if (!fJustCheck)
+        BlockProfileNoteHeight(pindex->nHeight);
     int64_t nConnectBlockStart = GetTimeMillis();
     int64_t nConnectCheckStart = GetTimeMillis();
 
@@ -7850,9 +7859,12 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
         if (!vBlockProofs.empty())
         {
-            if (!BatchVerifyFCMPProofs(fcmpRootNode, vBlockProofs, vBlockCommitments,
-                                       pindex->nHeight))
-                return DoS(100, error("ConnectBlock() : batch FCMP++ proof verification failed"));
+            {
+                BLOCK_PHASE(BP_FCMP_VERIFY);
+                if (!BatchVerifyFCMPProofs(fcmpRootNode, vBlockProofs, vBlockCommitments,
+                                           pindex->nHeight))
+                    return DoS(100, error("ConnectBlock() : batch FCMP++ proof verification failed"));
+            }
 
             fFCMPBatchVerified = true;
 
@@ -7963,7 +7975,12 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         else
         {
             bool fInvalid;
-            if (!tx.FetchInputs(txdb, mapQueuedChanges, true, false, mapInputs, fInvalid))
+            bool fFetchOk;
+            {
+                BLOCK_PHASE(BP_FETCHINPUTS);
+                fFetchOk = tx.FetchInputs(txdb, mapQueuedChanges, true, false, mapInputs, fInvalid);
+            }
+            if (!fFetchOk)
             {
                 if (fInvalid)
                     return DoS(100, error("ConnectBlock() : FetchInputs found invalid transaction %s",
@@ -8090,11 +8107,16 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             // validation.
             bool fValidatedCoinstake = IsProofOfStake() && (&tx == &vtx[1]);
             const int nTxDoSBeforeConnect = tx.nDoS;
-            if (!tx.ConnectInputs(txdb, mapInputs, mapQueuedChanges,
-                                  posThisTx, pindex, true, false, flags, true,
-                                  fFCMPBatchVerified, fValidatedCoinstake,
-                                  fHaveAnonEffectPlan, pindex->nHeight,
-                                  anonEffectPlan.nValueIn))
+            bool fConnectOk;
+            {
+                BLOCK_PHASE(BP_CONNECTINPUTS);
+                fConnectOk = tx.ConnectInputs(txdb, mapInputs, mapQueuedChanges,
+                                              posThisTx, pindex, true, false, flags, true,
+                                              fFCMPBatchVerified, fValidatedCoinstake,
+                                              fHaveAnonEffectPlan, pindex->nHeight,
+                                              anonEffectPlan.nValueIn);
+            }
+            if (!fConnectOk)
             {
                 if (tx.nDoS > nTxDoSBeforeConnect)
                     return DoS(tx.nDoS - nTxDoSBeforeConnect, false);
@@ -9602,6 +9624,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
     }
 
     // Write queued txindex changes
+    BLOCK_PHASE(BP_TXINDEX_WRITE);
     for (map<uint256, CTxIndex>::iterator mi = mapQueuedChanges.begin(); mi != mapQueuedChanges.end(); ++mi)
     {
         if (!txdb.UpdateTxIndex((*mi).first, (*mi).second))
@@ -10148,14 +10171,18 @@ public:
                     // (with the persisted DAG skip set) so mutations, cursor and progress commit together.
                     if (entry.pindex->nHeight >= RELEASE_HEIGHT)
                     {
+                        BLOCK_PHASE(BP_NAME_INDEX);
                         if (!ApplyNameIndexConnectBlock(
                                 txdb, entry.pindex,
                                 entry.setDAGSkippedTxs, strNameError))
                             return FailClosed(entry, strNameError.c_str());
                     }
-                    else if (!CommitNameIndexTip(entry.pindex,
-                                                 strNameError))
-                        return FailClosed(entry, strNameError.c_str());
+                    else
+                    {
+                        BLOCK_PHASE(BP_NAME_INDEX);
+                        if (!CommitNameIndexTip(entry.pindex, strNameError))
+                            return FailClosed(entry, strNameError.c_str());
+                    }
 
                     for (std::vector<CTransaction>::const_iterator txIt =
                              entry.block.vtx.begin();
@@ -10914,9 +10941,14 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
                              nEpoch);
             }
             std::string strEpochError;
-            if (!StageEpochStateRange(txdb, pindexNew, nEpoch, nEpoch,
-                                      mapStagedEpochStates, mapStagedEpochTrees,
-                                      strEpochError))
+            bool fEpochOk;
+            {
+                BLOCK_PHASE(BP_EPOCH_BUILD);
+                fEpochOk = StageEpochStateRange(txdb, pindexNew, nEpoch, nEpoch,
+                                                mapStagedEpochStates, mapStagedEpochTrees,
+                                                strEpochError);
+            }
+            if (!fEpochOk)
             {
                 txdb.TxnAbort();
                 RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
@@ -10972,7 +11004,12 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
         RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
         return error("SetBestChainInner() : WriteHashBestChain failed");
     }
-    if (!txdb.TxnCommit(true))
+    bool fCommitOk;
+    {
+        BLOCK_PHASE(BP_DB_COMMIT);
+        fCommitOk = txdb.TxnCommit(true);
+    }
+    if (!fCommitOk)
     {
         pCommittedEffects->Clear();
         RestoreCommittedFinalityOrShutdown("SetBestChainInner()");
@@ -11014,6 +11051,7 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
 
 bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanentInvalid)
 {
+    BLOCK_PHASE(BP_SETBESTCHAIN);
     if (pfPermanentInvalid) *pfPermanentInvalid = false;
     const bool fIsInitialDownload = IsInitialBlockDownload();
     uint256 hash = GetHash();
@@ -11211,14 +11249,17 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
 
     // Linear and genesis paths still have their single prebuilt batch here.
     // Reorg and postponed-reconnect batches were applied immediately above.
-    if (!committedEffects.IsEmpty() &&
-        !PublishAndReplayCommittedEffects(txdb, pindexNew, committedEffects,
-                                          "SetBestChain()"))
     {
-        printf("SetBestChain: durable tip published, but auxiliary post-commit "
-               "effects are incomplete; suppressing further notifications while "
-               "shutdown proceeds\n");
-        return true;
+        BLOCK_PHASE(BP_EFFECTS);
+        if (!committedEffects.IsEmpty() &&
+            !PublishAndReplayCommittedEffects(txdb, pindexNew, committedEffects,
+                                              "SetBestChain()"))
+        {
+            printf("SetBestChain: durable tip published, but auxiliary post-commit "
+                   "effects are incomplete; suppressing further notifications while "
+                   "shutdown proceeds\n");
+            return true;
+        }
     }
 
     uint256 nBestBlockTrust = (pindexBest->nHeight != 0 && pindexBest->pprev != NULL) ? (pindexBest->nChainTrust - pindexBest->pprev->nChainTrust) : pindexBest->nChainTrust;
@@ -11268,6 +11309,7 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool* pfPermanent
         }
 
         std::string strStoreError;
+        BLOCK_PHASE(BP_IV5_TREE);
         if (!SyncPrivacyVNextTreeStore(txdb, nStoreEpoch, strStoreError))
             printf("SetBestChain: IV5 tree store did not reach epoch %d: %s\n",
                    nStoreEpoch, strStoreError.c_str());
@@ -11508,6 +11550,7 @@ bool ReconsiderBlock(CTxDB& txdb, CBlockIndex* pindex, std::string& strError)
 
 bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const uint256& hashProof)
 {
+    BLOCK_PHASE(BP_ADDINDEX);
     int64_t nAddStart = GetTimeMillis();
     int64_t nDAGInitMs = 0;
     int64_t nDAGColorMs = 0;
@@ -11598,6 +11641,8 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
         else
         {
             int64_t nDAGTimer = GetTimeMillis();
+            {
+            BLOCK_PHASE(BP_DAG_INIT);
             if (!g_dagManager.InitBlockDAGData(pindexNew, vDAGParents))
             {
                 CleanupUncommittedIndex();
@@ -11610,9 +11655,12 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
                     g_dagManager.GetDAGData(hash, initializedData) &&
                     !initializedData.vDAGChildren.empty();
             }
+            }
             nDAGInitMs = GetTimeMillis() - nDAGTimer;
 
             nDAGTimer = GetTimeMillis();
+            {
+            BLOCK_PHASE(BP_DAG_COLOR);
             if (pindexNew->nHeight >= FORK_HEIGHT_DAGKNIGHT)
             {
                 if (!g_dagManager.ColorBlockDAGKnight(pindexNew))
@@ -11623,6 +11671,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
             }
             else
                 g_dagManager.ColorBlock(pindexNew);
+            }
             nDAGColorMs = GetTimeMillis() - nDAGTimer;
 
             // Use DAG score for best-chain comparison
@@ -11631,7 +11680,10 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
             if (fResolvedLateDAGChildren &&
                 pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
             {
-                g_dagManager.RebuildDAGOrderIncremental(pindexNew->nHeight - 1);
+                {
+                    BLOCK_PHASE(BP_DAG_ORDER);
+                    g_dagManager.RebuildDAGOrderIncremental(pindexNew->nHeight - 1);
+                }
                 pindexNew->nChainTrust = g_dagManager.ComputeDAGScore(pindexNew);
             }
 
@@ -11722,6 +11774,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
         // A side branch must survive restart immediately, but its index and
         // DAG graph are one invariant and therefore one transaction.
         const int64_t nDAGTimer = GetTimeMillis();
+        BLOCK_PHASE(BP_DAG_WRITE);
         CTxDB txdbDAG;
         if (!txdbDAG.TxnBegin())
         {
@@ -11954,6 +12007,7 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
 
 bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) const
 {
+    BLOCK_PHASE(BP_CHECKBLOCK);
     // These are checks that are independent of context
     // that can be verified before saving an orphan block.
 
@@ -11962,8 +12016,12 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
         return DoS(100, error("CheckBlock() : size limits failed"));
 
     // Check proof of work matches claimed amount
-    if (fCheckPOW && IsProofOfWork() && !CheckProofOfWork(GetPoWHash(), nBits))
-        return DoS(50, error("CheckBlock() : proof of work failed"));
+    if (fCheckPOW && IsProofOfWork())
+    {
+        BLOCK_PHASE(BP_POW);
+        if (!CheckProofOfWork(GetPoWHash(), nBits))
+            return DoS(50, error("CheckBlock() : proof of work failed"));
+    }
 
     // Check timestamp
     if (GetBlockTime() > FutureDrift(GetAdjustedTime()))
@@ -12039,6 +12097,8 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
 	}
 
     // Check transactions
+    {
+    BLOCK_PHASE(BP_CHECKTX);
     for (const CTransaction& tx : vtx)
     {
         if (!tx.CheckTransaction())
@@ -12047,6 +12107,7 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
         // ppcoin: check transaction timestamp
         if (GetBlockTime() < (int64_t)tx.nTime)
             return DoS(50, error("CheckBlock() : block timestamp earlier than transaction timestamp"));
+    }
     }
 
     // Check for duplicate txids. This is caught by ConnectInputs(),
@@ -12068,8 +12129,12 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
         return DoS(100, error("CheckBlock() : out-of-bounds SigOpCount"));
 
     // Check merkle root
-    if (fCheckMerkleRoot && hashMerkleRoot != BuildMerkleTree())
-        return DoS(100, error("CheckBlock() : hashMerkleRoot mismatch"));
+    if (fCheckMerkleRoot)
+    {
+        BLOCK_PHASE(BP_MERKLE);
+        if (hashMerkleRoot != BuildMerkleTree())
+            return DoS(100, error("CheckBlock() : hashMerkleRoot mismatch"));
+    }
 
 
     return true;
@@ -12078,6 +12143,7 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot, bool fCheckSig) c
 bool CBlock::AcceptBlock()
 {
     AssertLockHeld(cs_main);
+    BLOCK_PHASE(BP_ACCEPTBLOCK);
     int64_t nAcceptStart = GetTimeMillis();
 
     if (nVersion > CURRENT_VERSION)
@@ -12324,8 +12390,11 @@ bool CBlock::AcceptBlock()
     unsigned int nFile = -1;
     unsigned int nBlockPos = 0;
     int64_t nWriteDiskStart = GetTimeMillis();
-    if (!WriteToDisk(nFile, nBlockPos))
-        return error("AcceptBlock() : WriteToDisk failed");
+    {
+        BLOCK_PHASE(BP_WRITEDISK);
+        if (!WriteToDisk(nFile, nBlockPos))
+            return error("AcceptBlock() : WriteToDisk failed");
+    }
     int64_t nWriteDiskMs = GetTimeMillis() - nWriteDiskStart;
     int64_t nAddIndexStart = GetTimeMillis();
     if (!AddToBlockIndex(nFile, nBlockPos, hashProof))
@@ -12397,6 +12466,7 @@ bool ProcessBlock(CNode* pfrom, CBlock* pblock)
 {
     AssertLockHeld(cs_main);
 
+    BLOCK_PHASE(BP_PROCESSBLOCK);
     int64_t nStartTime = GetTimeMillis();
     // Check for duplicate
     uint256 hash = pblock->GetHash();

@@ -385,6 +385,7 @@ OBJS= \
     obj/finality.o \
     obj/finality_note.o \
     obj/dag.o \
+    obj/blockprofile.o \
     obj/rpcsmessage.o \
     obj/rpcnyx.o \
     obj/script.o \
@@ -468,6 +469,7 @@ OBJS= \
     obj/finality.o \
     obj/finality_note.o \
     obj/dag.o \
+    obj/blockprofile.o \
     obj/script.o \
     obj/sync.o \
     obj/util.o \

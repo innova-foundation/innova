@@ -10,6 +10,7 @@
 #include "bootstrap.h"
 #include "finality.h"
 #include "dag.h"
+#include "blockprofile.h"
 #include "base58.h"
 #include "net.h"
 #include "ringsig.h"
@@ -801,6 +802,23 @@ Value getbestblockhash(const Array& params, bool fHelp)
             "Returns the hash of the best block in the longest block chain.");
 
     return hashBestChain.GetHex();
+}
+
+Value getblockprofile(const Array& params, bool fHelp)
+{
+    if (fHelp || params.size() > 1)
+        throw runtime_error(
+            "getblockprofile [reset]\n"
+            "Per-phase block-connect timings accumulated since the last reset.\n"
+            "Requires -blockprofile at startup.");
+
+    const bool fReset = params.size() > 0 && params[0].get_bool();
+    Object obj;
+    obj.push_back(Pair("enabled", fBlockProfile));
+    obj.push_back(Pair("report", BlockProfileReport()));
+    if (fReset)
+        BlockProfileReset();
+    return obj;
 }
 
 Value getblockcount(const Array& params, bool fHelp)
