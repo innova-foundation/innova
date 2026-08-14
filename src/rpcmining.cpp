@@ -226,6 +226,15 @@ Value getfinalitystakinginfo(const Array& params, bool fHelp)
     obj.push_back(Pair("epoch_progress", nEpochProgress));
     obj.push_back(Pair("vote_window", GetFinalityVoteProducerWindow(nHeight)));
     obj.push_back(Pair("vote_inclusion_window", FINALITY_VOTE_INCLUSION_WINDOW));
+    // Producer scheduling state; separates failing to vote from having nothing to vote on.
+    // vote_epoch_latched trailing "epoch" means boundaries are going unobserved,
+    // and latched != voted with attempts spent means production itself is failing.
+    {
+        const CFinalityVoteSchedule& sched = GetFinalityVoteSchedule();
+        obj.push_back(Pair("vote_epoch_latched", sched.LatchedEpoch()));
+        obj.push_back(Pair("vote_epoch_voted", sched.VotedEpoch()));
+        obj.push_back(Pair("vote_epoch_attempts", sched.Attempts()));
+    }
     obj.push_back(Pair("eligible_weight", FormatMoney(nEligibleWeight)));
     obj.push_back(Pair("eligible_utxos", nEligibleUtxos));
     obj.push_back(Pair("eligible_keys", (int)setVoterKeys.size()));
