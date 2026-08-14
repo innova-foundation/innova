@@ -60,6 +60,21 @@ for name in makefile.unix makefile.osx; do
             fail "$name check-legacy-aggregate omits $suite"
     done
 
+    # The IV5 archive is a consensus input produced outside make's own dependency
+    # graph. Both the freshness guard and the provenance gate have to stay reachable
+    # from release-check, and the rule that builds the archive has to stay unconditional.
+    for target in check-privacy-vnext-freshness check-privacy-vnext-provenance; do
+        grep -q "^${target}:" "$makefile" || \
+            fail "$name does not define $target"
+        release_line=$(grep '^release-check:' "$makefile")
+        case " $release_line " in
+            *" $target "*) ;;
+            *) fail "$name release-check does not require $target" ;;
+        esac
+    done
+    grep -Eq '^\$\(PRIVACY_VNEXT_RUST_LIB\): FORCE' "$makefile" || \
+        fail "$name does not rebuild the IV5 archive unconditionally"
+
     for target in check-legacy-aggregate check-bpac check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-smessage-hmac; do
         grep -q "^${target}: test_innova" "$makefile" || \
             fail "$name does not define $target"
@@ -70,6 +85,15 @@ for name in makefile.unix makefile.osx; do
         esac
     done
 done
+
+freshness_gate="$ROOT/contrib/test/check_privacy_vnext_freshness.sh"
+[ -x "$freshness_gate" ] || fail "IV5 archive freshness guard is missing or not executable"
+grep -q 'PROVENANCE_SHA256' "$ROOT/src/privacy_vnext/iv5_protocol.h" || \
+    fail "consensus header declares no IV5 provenance digest to check the archive against"
+grep -q 'iv5::PROVENANCE_SHA256' "$ROOT/src/privacy_vnext_ffi.cpp" || \
+    fail "ABI load does not compare the linked archive's provenance against the header"
+grep -q 'LoadPrivacyVNextAbiInfo' "$ROOT/src/init.cpp" || \
+    fail "startup does not verify the linked IV5 decoder before running"
 
 staged_gate="$ROOT/contrib/test/build_staged_index.sh"
 [ -x "$staged_gate" ] || fail "isolated staged-index build helper is missing"

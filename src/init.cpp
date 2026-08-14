@@ -29,6 +29,7 @@
 #include "finality.h"
 #include "dag.h"
 #include "activationdump.h"
+#include "privacy_vnext_ffi.h"
 
 #ifdef USE_NATIVETOR
 #include "tor/anonymize.h" //Tor native optional integration (Flag -nativetor=1)
@@ -682,6 +683,16 @@ bool InitSanityCheck(void)
     {
         InitError("OpenSSL appears to lack support for elliptic curve cryptography. For more "
                   "information, visit https://en.bitcoin.it/wiki/OpenSSL_and_EC_Libraries");
+        return false;
+    };
+
+    // Refuse to start when the linked IV5 decoder's ABI version, contract, accepted digests or
+    // provenance manifest disagree with this binary.
+    PrivacyVNextAbiInfo vnextAbi;
+    if (!LoadPrivacyVNextAbiInfo(vnextAbi))
+    {
+        InitError("Linked IV5 privacy decoder failed its startup contract check: " +
+                  vnextAbi.strError);
         return false;
     };
 
