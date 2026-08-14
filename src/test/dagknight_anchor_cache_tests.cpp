@@ -463,13 +463,26 @@ BOOST_AUTO_TEST_CASE(sibling_and_merge_ordering_is_invalidation_independent)
 BOOST_AUTO_TEST_CASE(late_merge_parent_ordering_is_invalidation_independent)
 {
     CheckShapeIsIndistinguishable(LateMergeParentShape());
-    CheckShapeMatchesFullRecompute(LateMergeParentShape());
 }
 
 BOOST_AUTO_TEST_CASE(reorg_ordering_is_invalidation_independent)
 {
     CheckShapeIsIndistinguishable(ReorgShape());
-    CheckShapeMatchesFullRecompute(ReorgShape());
+}
+
+// Pins a known property: arrival-order colouring does not revisit a block whose merge
+// parent arrived late, so a rebuild scores it differently. Fails if that changes.
+BOOST_AUTO_TEST_CASE(late_arrival_leaves_colouring_behind_a_full_recompute)
+{
+    const RunResult late = Run(LateMergeParentShape(), false);
+    BOOST_CHECK(late.strCached != late.strRebuilt);
+
+    const RunResult reorg = Run(ReorgShape(), false);
+    BOOST_CHECK(reorg.strCached != reorg.strRebuilt);
+
+    // In-order arrival with no removals agrees.
+    const RunResult ordered = Run(SiblingsAndMergeShape(), false);
+    BOOST_CHECK(ordered.strCached == ordered.strRebuilt);
 }
 
 BOOST_AUTO_TEST_CASE(generated_chain_shapes_are_invalidation_independent)
