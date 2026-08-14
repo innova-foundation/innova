@@ -1254,6 +1254,15 @@ bool AppInit2()
                nRegtestIV5NoteVoteHeight);
     }
 
+    // Backstop for the whole ladder: Boundary B below A would run the privacy encodings A
+    // quarantines. Refuse to start.
+    if (!BoundaryOrderingHolds())
+        return InitError(strprintf(
+            _("Boundary B (%d) is below Boundary A (%d). Boundary B restores the "
+              "privacy modes Boundary A quarantines, so this would activate them "
+              "before the quarantine. Refusing to start."),
+            FORK_HEIGHT_BOUNDARY_B, FORK_HEIGHT_BOUNDARY_A));
+
     // Holding leaf-index assignment leaves received notes unspendable, so it exists
     // only to let a harness reproduce that state deliberately.
     if (GetBoolArg("-regtestiv5holdleafindex", false))

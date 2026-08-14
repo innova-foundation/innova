@@ -433,6 +433,12 @@ inline int GetForkHeightBoundaryA()
 // Keeping one shared sentinel makes accidental activation fail closed on every
 // network, including regtest, until that implementation is intentionally
 // introduced with its own tests.
+//
+// Tag-time gates, all three required before a height replaces the sentinel:
+//   1. FCMP++ candidate has passed independent review.
+//   2. Real post-DAG block rate confirmed on the live network.
+//   3. B set strictly after Boundary A (DAG + 300 = 8,550,300 on mainnet) with
+//      room before the post-Boundary-B staking slots at 8,660,000.
 static const int PRIVACY_VNEXT_HEIGHT_UNSET = 0x7fffffff;
 // Regtest-only rehearsal height for Boundary B (-regtestboundaryb). Stays unset
 // on mainnet and testnet. A height alone never activates Boundary B; readiness is
@@ -464,6 +470,15 @@ inline bool IsBoundaryBConfigured()
 inline bool IsBoundaryBActiveAtHeight(int nHeight)
 {
     return IsBoundaryBConfigured() && nHeight >= FORK_HEIGHT_BOUNDARY_B;
+}
+
+// Boundary B restores the privacy modes Boundary A quarantines, so no height may
+// exist where B is live and A is not. Unset boundaries sit at INT_MAX sentinels,
+// so an unscheduled pair satisfies this. Equality is the regtest rehearsal case:
+// one flag day carrying both, which still has no unquarantined window.
+inline bool BoundaryOrderingHolds()
+{
+    return FORK_HEIGHT_BOUNDARY_B >= FORK_HEIGHT_BOUNDARY_A;
 }
 
 // One flag day for the IV5 pool boundary: unshield is retired (no payload may

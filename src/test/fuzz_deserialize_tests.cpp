@@ -2189,6 +2189,12 @@ struct NetFlagGuard {
     ~NetFlagGuard() { fRegTest = fStoredRegTest; fTestNet = fStoredTestNet; }
 };
 
+struct RegtestBoundaryBGuard {
+    int nStored;
+    RegtestBoundaryBGuard() : nStored(nRegtestBoundaryBHeight) {}
+    ~RegtestBoundaryBGuard() { nRegtestBoundaryBHeight = nStored; }
+};
+
 bool VarIntReadThrows(const std::vector<unsigned char>& vch)
 {
     try {
@@ -2288,8 +2294,76 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
     BOOST_CHECK(GetForkHeightDAG() > GetForkHeightFinality());
     BOOST_CHECK(GetForkHeightDAGKnight() > GetForkHeightDAG());
 
+    // Boundary A rides the epoch-state V3 rung, so it follows the DAG gate.
+    BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), GetForkHeightDAG() + 300);
+    BOOST_CHECK(GetForkHeightBoundaryA() > GetForkHeightDAG());
+    BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), 8550300);
+
     // Boundary B stays unset on mainnet until privacy vNext is scheduled.
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryB(), PRIVACY_VNEXT_HEIGHT_UNSET);
+
+    // B restores what A quarantines, so B never precedes A on any rung.
+    BOOST_CHECK(BoundaryOrderingHolds());
+
+    // The post-Boundary-B staking slots are the tag-time ceiling for B. They must
+    // stay above A so the window B lands in is non-empty after any re-base.
+    const int nPostBoundaryB = ShiftMainnetV5Activation(8060000);
+    BOOST_CHECK_EQUAL(nPostBoundaryB, 8660000);
+    BOOST_CHECK_EQUAL(GetForkHeightNullStakeDelegSet(), nPostBoundaryB);
+    BOOST_CHECK_EQUAL(GetForkHeightNullStakeReclaim(), nPostBoundaryB);
+    BOOST_CHECK_EQUAL(GetForkHeightNullStakeB2C(), nPostBoundaryB);
+    BOOST_CHECK(nPostBoundaryB > GetForkHeightBoundaryA());
+
+    // Once B leaves the sentinel it has to land strictly inside that window.
+    BOOST_CHECK(!IsBoundaryBConfigured() ||
+                (GetForkHeightBoundaryB() > GetForkHeightBoundaryA() &&
+                 GetForkHeightBoundaryB() < nPostBoundaryB));
+}
+
+// The shipped ladder satisfies the ordering only because B is unset, which on its
+// own proves nothing. Drive an explicitly inverted pair on regtest -- the one
+// network where B is configurable -- and show the invariant fires.
+BOOST_AUTO_TEST_CASE(boundary_b_never_precedes_boundary_a)
+{
+    NetFlagGuard guard;
+    RegtestBoundaryBGuard boundaryGuard;
+
+    // As shipped, on every network.
+    fRegTest = false; fTestNet = false;
+    BOOST_CHECK(BoundaryOrderingHolds());
+    fRegTest = false; fTestNet = true;
+    BOOST_CHECK(BoundaryOrderingHolds());
+    fRegTest = true;  fTestNet = false;
+    nRegtestBoundaryBHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
+    BOOST_CHECK(BoundaryOrderingHolds());
+
+    const int nA = GetForkHeightBoundaryA();
+    BOOST_CHECK_EQUAL(nA, GetForkHeightDAG() + 300);
+    BOOST_CHECK(IsBoundaryAConfigured());
+
+    // Inverted: every B below A is rejected, and each one really does open a
+    // height where B is live while A is not.
+    const int vInverted[] = { 0, 1, nA - 300, nA - 2, nA - 1 };
+    for (unsigned int i = 0; i < sizeof(vInverted) / sizeof(vInverted[0]); i++) {
+        nRegtestBoundaryBHeight = vInverted[i];
+        BOOST_CHECK(!BoundaryOrderingHolds());
+        BOOST_CHECK(IsBoundaryBActiveAtHeight(vInverted[i]));
+        BOOST_CHECK(!IsBoundaryAActiveAtHeight(vInverted[i]));
+    }
+
+    // Equal is the regtest rehearsal shape: one flag day carrying both. It holds,
+    // because there is still no height with B live and A not.
+    nRegtestBoundaryBHeight = nA;
+    BOOST_CHECK(BoundaryOrderingHolds());
+    BOOST_CHECK(!IsBoundaryBActiveAtHeight(nA - 1));
+    BOOST_CHECK(IsBoundaryBActiveAtHeight(nA));
+    BOOST_CHECK(IsBoundaryAActiveAtHeight(nA));
+
+    // And strictly after.
+    nRegtestBoundaryBHeight = nA + 1;
+    BOOST_CHECK(BoundaryOrderingHolds());
+    BOOST_CHECK(!IsBoundaryBActiveAtHeight(nA));
+    BOOST_CHECK(IsBoundaryAActiveAtHeight(nA));
 }
 
 BOOST_AUTO_TEST_SUITE_END()
