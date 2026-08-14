@@ -46,6 +46,10 @@ static const int DAGKNIGHT_K_CEILING = 32;             // max inferred k (caps a
 static const int DAGKNIGHT_K_EMA_ALPHA = 64;           // ~25% weight to new sample
 static const int DAGKNIGHT_MAX_ANCHOR_CANDIDATES = 2048;
 static const int DAGKNIGHT_ANCHOR_CACHE_MAX = 8192;
+// Bounded past sets, keyed by descendant. One anchor's working set is its blue window
+// (bounded by DAGKNIGHT_MAX_ANTICONE_WINDOW) plus its merge candidates, and consecutive
+// anchors share nearly all of it, so a few hundred entries carry the reuse.
+static const int DAGKNIGHT_PAST_CACHE_MAX = 512;
 
 static const int DAG_PARENT_CARRIER_SCHEMA_VERSION = 1;
 static const char DAG_PARENT_CARRIER_SCHEMA[] = "boundary_a_canonical_v1";
@@ -545,6 +549,10 @@ private:
     // bytes from persisted parent links and block indexes.
     mutable std::map<uint256, CDAGKnightAnchorState> mapDAGKnightAnchorCache;
 
+    // Bounded past sets behind IsDAGAncestorWithinMergeDepth. Same derivation domain as
+    // the anchor states -- a block's past -- so the two are invalidated together.
+    mutable std::map<uint256, std::set<uint256> > mapDAGKnightPastCache;
+
     /** Internal: get blue set with caching */
     std::set<uint256> GetBlueSetCached(const uint256& hashBlock) const;
 
@@ -565,6 +573,11 @@ private:
     bool IsDAGAncestor(const uint256& hashAncestor,
                        const uint256& hashDescendant,
                        int nMaxDepth) const;
+    const std::set<uint256>& GetBoundedPast(const uint256& hashDescendant,
+                                            int nDescendantHeight,
+                                            int nMaxDepth) const;
+    bool IsDAGAncestorWithinMergeDepth(const uint256& hashAncestor,
+                                       const uint256& hashDescendant) const;
     bool CollectDAGKnightCandidates(
         const std::vector<uint256>& vParents,
         const uint256& hashSelectedParent,
@@ -594,7 +607,7 @@ extern CDAGManager g_dagManager;
 
 // Anchor-cache differential test: when set, any DAG change drops every cached anchor
 // state. Both paths must produce identical colouring, ordering, score and k.
-extern bool fDAGKnightFullAnchorCacheInvalidation;
+extern bool fDAGKnightUnoptimizedOrdering;
 
 
 #endif // INN_DAG_H

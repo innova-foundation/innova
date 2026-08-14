@@ -15,7 +15,7 @@
 
 CDAGManager g_dagManager;
 
-bool fDAGKnightFullAnchorCacheInvalidation = false;
+bool fDAGKnightUnoptimizedOrdering = false;
 
 uint256 CEpochState::GetDigest() const
 {
@@ -282,13 +282,14 @@ void CDAGManager::InvalidateBlueSetCacheForBlock(const uint256& hashBlock) const
 // Past the walk bound the whole cache is dropped.
 void CDAGManager::InvalidateDAGKnightAnchorDescendants(const uint256& hashRoot) const
 {
-    if (mapDAGKnightAnchorCache.empty())
-        return;
-    if (fDAGKnightFullAnchorCacheInvalidation)
+    if (fDAGKnightUnoptimizedOrdering)
     {
         mapDAGKnightAnchorCache.clear();
+        mapDAGKnightPastCache.clear();
         return;
     }
+    if (mapDAGKnightAnchorCache.empty() && mapDAGKnightPastCache.empty())
+        return;
 
     std::vector<uint256> vStack(1, hashRoot);
     std::set<uint256> setSeen;
@@ -301,9 +302,11 @@ void CDAGManager::InvalidateDAGKnightAnchorDescendants(const uint256& hashRoot) 
         if (setSeen.size() > (size_t)DAGKNIGHT_ANCHOR_CACHE_MAX)
         {
             mapDAGKnightAnchorCache.clear();
+            mapDAGKnightPastCache.clear();
             return;
         }
         mapDAGKnightAnchorCache.erase(hash);
+        mapDAGKnightPastCache.erase(hash);
         std::map<uint256, CBlockDAGData>::const_iterator dit = mapDAGData.find(hash);
         if (dit == mapDAGData.end())
             continue;
@@ -1643,6 +1646,7 @@ void CDAGManager::RebuildDAGOrder()
     // Clear blue set cache to avoid stale entries during rebuild
     mapBlueSetCache.clear();
     mapDAGKnightAnchorCache.clear();
+    mapDAGKnightPastCache.clear();
 
     // Re-color all blocks and recompute scores
     // Process blocks in height order
@@ -1707,6 +1711,7 @@ void CDAGManager::RebuildDAGOrderIncremental(int nCleanHeight)
     // Clear blue set cache to avoid stale entries during rebuild
     mapBlueSetCache.clear();
     mapDAGKnightAnchorCache.clear();
+    mapDAGKnightPastCache.clear();
 
     std::vector<std::pair<int, uint256>> vByHeight;
 
@@ -1848,6 +1853,7 @@ bool CDAGManager::PruneDAGData(CTxDB& txdb, int nHeight)
 
     nPrunedBelowHeight = nPruneBelow;
     mapDAGKnightAnchorCache.clear();
+    mapDAGKnightPastCache.clear();
 
     if (nPruned > 0)
         printf("PruneDAGData: pruned %d entries below height %d (%d remaining)\n",
@@ -3671,6 +3677,77 @@ bool CDAGManager::IsDAGAncestor(const uint256& hashAncestor,
     return false;
 }
 
+// The bounded past IsDAGAncestor compares against, materialised once per descendant.
+// Same traversal as IsDAGAncestor (queue order, visited bound, height cut) without the
+// early exit, so membership here equals that function's answer.
+const std::set<uint256>& CDAGManager::GetBoundedPast(const uint256& hashDescendant,
+                                                     int nDescendantHeight,
+                                                     int nMaxDepth) const
+{
+    std::map<uint256, std::set<uint256> >::const_iterator cit =
+        mapDAGKnightPastCache.find(hashDescendant);
+    if (cit != mapDAGKnightPastCache.end())
+        return cit->second;
+
+    std::set<uint256> past;
+    std::queue<uint256> queue;
+    std::set<uint256> visited;
+    queue.push(hashDescendant);
+    while (!queue.empty() &&
+           visited.size() <= (size_t)DAGKNIGHT_MAX_ANCHOR_CANDIDATES)
+    {
+        const uint256 hash = queue.front();
+        queue.pop();
+        if (!visited.insert(hash).second)
+            continue;
+        std::map<uint256, CBlockIndex*>::const_iterator hi =
+            mapBlockIndex.find(hash);
+        if (hi != mapBlockIndex.end() && hi->second &&
+            nDescendantHeight - hi->second->nHeight > nMaxDepth)
+            continue;
+        std::map<uint256, CBlockDAGData>::const_iterator dit =
+            mapDAGData.find(hash);
+        if (dit == mapDAGData.end())
+            continue;
+        for (std::vector<uint256>::const_iterator pit =
+                 dit->second.vDAGParents.begin();
+             pit != dit->second.vDAGParents.end(); ++pit)
+        {
+            past.insert(*pit);
+            if (!visited.count(*pit))
+                queue.push(*pit);
+        }
+    }
+
+    // A pure cache with no ordering role, so a wholesale drop is always admissible.
+    if (mapDAGKnightPastCache.size() >= (size_t)DAGKNIGHT_PAST_CACHE_MAX)
+        mapDAGKnightPastCache.clear();
+    return mapDAGKnightPastCache.insert(
+        std::make_pair(hashDescendant, past)).first->second;
+}
+
+// IsDAGAncestor over the bounded merge depth, answered from the cached past set.
+bool CDAGManager::IsDAGAncestorWithinMergeDepth(const uint256& hashAncestor,
+                                                const uint256& hashDescendant) const
+{
+    if (fDAGKnightUnoptimizedOrdering)
+        return IsDAGAncestor(hashAncestor, hashDescendant, DAG_MERGE_DEPTH);
+
+    if (hashAncestor == hashDescendant)
+        return true;
+    std::map<uint256, CBlockIndex*>::const_iterator ai =
+        mapBlockIndex.find(hashAncestor);
+    std::map<uint256, CBlockIndex*>::const_iterator di =
+        mapBlockIndex.find(hashDescendant);
+    if (ai == mapBlockIndex.end() || di == mapBlockIndex.end() ||
+        !ai->second || !di->second ||
+        ai->second->nHeight >= di->second->nHeight)
+        return false;
+
+    return GetBoundedPast(hashDescendant, di->second->nHeight,
+                          DAG_MERGE_DEPTH).count(hashAncestor) != 0;
+}
+
 bool CDAGManager::CollectDAGKnightCandidates(
     const std::vector<uint256>& vParents,
     const uint256& hashSelectedParent,
@@ -3712,7 +3789,7 @@ bool CDAGManager::CollectDAGKnightCandidates(
         }
         if (mi->second->nHeight < nMinHeight)
             continue;
-        if (IsDAGAncestor(hash, hashSelectedParent, DAG_MERGE_DEPTH))
+        if (IsDAGAncestorWithinMergeDepth(hash, hashSelectedParent))
             continue;
 
         vCandidates.push_back(hash);
@@ -3888,30 +3965,7 @@ bool CDAGManager::BuildDAGKnightAnchorState(
     BlockProfileCount("dagk_candidates", (int64_t)vCandidates.size());
     BlockProfileCount("dagk_bluewindow", (int64_t)stateOut.vBlueWindow.size());
 
-    // Anticone counting asks the same (ancestor, descendant) questions repeatedly:
-    // the pressure pass below and the coloring pass further down walk the same
-    // candidates against an overlapping blue window. Each miss is a bounded BFS,
-    // so memoize within this call. The DAG is not mutated here, so a memoized
-    // answer is the answer IsDAGAncestor would recompute.
-    std::map<std::pair<uint256, uint256>, bool> mapAncestorMemo;
-    struct DAGKMemo
-    {
-        static bool Call(const CDAGManager* self,
-                         std::map<std::pair<uint256, uint256>, bool>& memo,
-                         const uint256& a, const uint256& b)
-        {
-            const std::pair<uint256, uint256> key(a, b);
-            std::map<std::pair<uint256, uint256>, bool>::const_iterator it =
-                memo.find(key);
-            if (it != memo.end())
-                return it->second;
-            BlockProfileCount("dagk_ancestor_bfs", 1);
-            const bool fResult = self->IsDAGAncestor(a, b, DAG_MERGE_DEPTH);
-            memo.insert(std::make_pair(key, fResult));
-            return fResult;
-        }
-    };
-
+    // Anticone checks answer from the descendant's cached past, so each is a set lookup.
     int nPressure = 0;
     for (std::vector<uint256>::const_iterator cit = vCandidates.begin();
          cit != vCandidates.end(); ++cit)
@@ -3921,8 +3975,8 @@ bool CDAGManager::BuildDAGKnightAnchorState(
                  stateOut.vBlueWindow.begin();
              bit != stateOut.vBlueWindow.end(); ++bit)
         {
-            if (!DAGKMemo::Call(this, mapAncestorMemo, *bit, *cit) &&
-                !DAGKMemo::Call(this, mapAncestorMemo, *cit, *bit))
+            if (!IsDAGAncestorWithinMergeDepth(*bit, *cit) &&
+                !IsDAGAncestorWithinMergeDepth(*cit, *bit))
                 ++nAnticone;
         }
         nPressure = std::max(nPressure, nAnticone);
@@ -3953,8 +4007,8 @@ bool CDAGManager::BuildDAGKnightAnchorState(
                  stateOut.vBlueWindow.begin();
              bit != stateOut.vBlueWindow.end(); ++bit)
         {
-            if (!DAGKMemo::Call(this, mapAncestorMemo, *bit, *cit) &&
-                !DAGKMemo::Call(this, mapAncestorMemo, *cit, *bit))
+            if (!IsDAGAncestorWithinMergeDepth(*bit, *cit) &&
+                !IsDAGAncestorWithinMergeDepth(*cit, *bit))
                 ++nAnticone;
         }
         const bool fBlue = nAnticone <= stateOut.nInferredK;

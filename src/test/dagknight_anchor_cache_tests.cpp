@@ -1,21 +1,8 @@
 // Copyright (c) 2019-2026 The Innova developers
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
-//
-// DAGKNIGHT anchor-cache differential harness.
-//
-// The anchor cache is disposable, but which entries a DAG change drops is not: dropping
-// too few leaves a stale state that a later block inherits, and the block then colours,
-// scores and orders differently from a node that dropped everything. That is a chain
-// split, so the narrow invalidation is only admissible if it is indistinguishable from
-// the wide one on every chain shape.
-//
-// Each generated shape is replayed twice against the same event sequence -- once dropping
-// the whole cache on every change, once dropping only the reachable descendants -- and the
-// two runs must agree on every observable: per-block colour, score, inferred k, the
-// anchor-derived order/colour vector, the linear order from every anchor, and the selected
-// best tip. Each run is then re-derived from scratch with RebuildDAGOrder and must still
-// agree, which pins both paths to a full recomputation rather than only to each other.
+// DAGKnight differential: cached colouring must match the uncached reference and a
+// RebuildDAGOrder recomputation on every observable.
 
 #include <boost/test/unit_test.hpp>
 
@@ -234,10 +221,10 @@ struct RunResult
     std::string strRebuilt;   // observables after a from-scratch recolour
 };
 
-RunResult Run(const Shape& shape, bool fFullInvalidation)
+RunResult Run(const Shape& shape, bool fUnoptimized)
 {
-    const bool fSaved = fDAGKnightFullAnchorCacheInvalidation;
-    fDAGKnightFullAnchorCacheInvalidation = fFullInvalidation;
+    const bool fSaved = fDAGKnightUnoptimizedOrdering;
+    fDAGKnightUnoptimizedOrdering = fUnoptimized;
 
     RunResult result;
     {
@@ -264,22 +251,22 @@ RunResult Run(const Shape& shape, bool fFullInvalidation)
         result.strRebuilt = StateDigest(harness);
     }
 
-    fDAGKnightFullAnchorCacheInvalidation = fSaved;
+    fDAGKnightUnoptimizedOrdering = fSaved;
     return result;
 }
 
 void CheckShapeIsIndistinguishable(const Shape& shape)
 {
-    const RunResult full = Run(shape, true);
-    const RunResult targeted = Run(shape, false);
+    const RunResult reference = Run(shape, true);
+    const RunResult cached = Run(shape, false);
 
-    BOOST_CHECK_MESSAGE(full.strAccepts == targeted.strAccepts,
+    BOOST_CHECK_MESSAGE(reference.strAccepts == cached.strAccepts,
                         shape.strName << ": acceptance diverged");
-    BOOST_CHECK_MESSAGE(full.strCached == targeted.strCached,
-                        shape.strName << ": cached ordering diverged");
-    BOOST_CHECK_MESSAGE(full.strRebuilt == targeted.strRebuilt,
+    BOOST_CHECK_MESSAGE(reference.strCached == cached.strCached,
+                        shape.strName << ": ordering diverged from the unoptimized path");
+    BOOST_CHECK_MESSAGE(reference.strRebuilt == cached.strRebuilt,
                         shape.strName << ": rebuilt ordering diverged");
-    BOOST_CHECK_MESSAGE(targeted.strCached == targeted.strRebuilt,
+    BOOST_CHECK_MESSAGE(cached.strCached == cached.strRebuilt,
                         shape.strName << ": cached ordering differs from a full recompute");
 }
 
