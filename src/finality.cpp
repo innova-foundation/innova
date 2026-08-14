@@ -9142,6 +9142,8 @@ int CountDecryptableFinalityTallyShares(int nEpoch)
 static CFinalityVoteSchedule g_finalityVoteSchedule;
 static boost::mutex g_mutexFinalityVoteWake;
 static boost::condition_variable g_condFinalityVoteWake;
+// Edge-triggered and consumed by the waiter; a level would spin for the rest of the epoch.
+static bool g_fFinalityVoteWakePending = false;
 
 CFinalityVoteSchedule& GetFinalityVoteSchedule()
 {
@@ -9159,7 +9161,11 @@ void NotifyFinalityTipChanged(int nHeight)
     bool fWake = false;
     {
         boost::unique_lock<boost::mutex> lock(g_mutexFinalityVoteWake);
-        fWake = g_finalityVoteSchedule.OnTipChanged(nHeight, nEpoch, nBoundary);
+        if (g_finalityVoteSchedule.OnTipChanged(nHeight, nEpoch, nBoundary))
+        {
+            g_fFinalityVoteWakePending = true;
+            fWake = true;
+        }
     }
     if (fWake)
         g_condFinalityVoteWake.notify_all();
@@ -9168,10 +9174,14 @@ void NotifyFinalityTipChanged(int nHeight)
 void WaitForFinalityVoteWork(int64_t nTimeoutMs)
 {
     boost::unique_lock<boost::mutex> lock(g_mutexFinalityVoteWake);
-    if (g_finalityVoteSchedule.HasWork())
+    if (g_fFinalityVoteWakePending)
+    {
+        g_fFinalityVoteWakePending = false;
         return;
+    }
     g_condFinalityVoteWake.timed_wait(lock,
         boost::posix_time::milliseconds(nTimeoutMs));
+    g_fFinalityVoteWakePending = false;
 }
 
 FinalityVoteClaim ClaimFinalityVote(int nTipHeight, int& nEpochOut)

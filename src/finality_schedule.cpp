@@ -17,8 +17,10 @@ bool CFinalityVoteSchedule::OnTipChanged(int nHeight, int nEpoch, int nBoundary)
 {
     if (nEpoch < 0 || nBoundary < 0 || nHeight < nBoundary)
         return false;
+    // An edge, not a level: an epoch stays outstanding until it is voted, so
+    // reporting "work exists" on every tip would stop the producer ever sleeping.
     if (nEpoch == nLatchedEpoch)
-        return HasWork();
+        return false;
 
     // Latched in either direction: a reorg that lands the tip back in an earlier
     // epoch reopens that epoch's vote, which is what the old sampler did too.

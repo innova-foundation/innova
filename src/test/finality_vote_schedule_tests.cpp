@@ -96,6 +96,31 @@ int ScheduledVotes(int64_t nSpacingMs,
     return nVotes;
 }
 
+// The same schedule without NotifyFinalityTipChanged, so the producer sees the chain
+// only through its own poll.
+int ScheduledVotesWithoutChainEvents(int64_t nSpacingMs,
+                                     int64_t nPollMs,
+                                     int64_t nPhaseMs,
+                                     int nWindow,
+                                     int nEpochs)
+{
+    const int nBlocks = nEpochs * EPOCH_LEN;
+    const int64_t nEndMs = (int64_t)nBlocks * nSpacingMs;
+    CFinalityVoteSchedule sched;
+    int nVotes = 0;
+    for (int64_t t = nPhaseMs; t < nEndMs; t += nPollMs)
+    {
+        int nTip = (int)(t / nSpacingMs);
+        sched.OnTipChanged(nTip, EpochOf(nTip), BoundaryOf(EpochOf(nTip)));
+        int nEpoch = -1;
+        if (sched.Claim(nTip, nWindow, 4, nEpoch) != FINALITY_VOTE_CLAIM_OK)
+            continue;
+        sched.Release(nEpoch, true);
+        nVotes++;
+    }
+    return nVotes;
+}
+
 // Phases sampled across one poll period.
 std::vector<int64_t> PhaseSweep(int64_t nPollMs, int nSamples)
 {
@@ -227,6 +252,32 @@ BOOST_AUTO_TEST_CASE(scheduled_producer_survives_every_case_the_poll_dies_in)
                 nEpochs);
         }
     }
+}
+
+// The latch alone is still phase-locked; liveness comes from NotifyFinalityTipChanged
+// on the tip-publication path (PublishDurablyCommittedBest).
+BOOST_AUTO_TEST_CASE(chain_event_wake_is_what_defeats_the_lattice)
+{
+    const int64_t nSpacingMs = 500, nPollMs = 5000;  // stride 10, divides 300
+    const int nWindow = 5, nEpochs = 60, nSamples = 40;
+
+    std::vector<int64_t> vPhases = PhaseSweep(nPollMs, nSamples);
+    int nDeadWithoutEvents = 0;
+    for (size_t p = 0; p < vPhases.size(); p++)
+    {
+        if (ScheduledVotesWithoutChainEvents(nSpacingMs, nPollMs, vPhases[p],
+                                             nWindow, nEpochs) == 0)
+            nDeadWithoutEvents++;
+        // Wired to the chain, the same phase votes in every epoch.
+        BOOST_CHECK_EQUAL(
+            ScheduledVotes(nSpacingMs, nPollMs, vPhases[p], nWindow, nEpochs,
+                           nSpacingMs / 2),
+            nEpochs);
+    }
+    // Unwired, the schedule inherits the polled producer's dead fraction exactly.
+    BOOST_CHECK_EQUAL(nDeadWithoutEvents,
+                      LegacyDeadPhases(nSpacingMs, nPollMs, nWindow, nEpochs, nSamples));
+    BOOST_CHECK_GT(nDeadWithoutEvents, 0);
 }
 
 // The schedule is driven by the boundary block, so it does not depend on block spacing.
@@ -385,6 +436,39 @@ BOOST_AUTO_TEST_CASE(reorg_back_into_a_voted_epoch_reopens_it)
     BOOST_CHECK_EQUAL(sched.Attempts(), 0);
     BOOST_CHECK_EQUAL((int)sched.Claim(nBoundary + 3, 18, 4, nOut), (int)FINALITY_VOTE_CLAIM_OK);
     BOOST_CHECK_EQUAL(nOut, nEpoch);
+}
+
+// The wake is edge-triggered: exactly one wake per epoch, or the producer loops spin
+// for the rest of the epoch.
+BOOST_AUTO_TEST_CASE(wake_is_edge_triggered_once_per_epoch)
+{
+    CFinalityVoteSchedule sched;
+    const int nEpoch = 9, nBoundary = BoundaryOf(nEpoch);
+
+    int nWakes = 0;
+    for (int h = nBoundary; h < nBoundary + EPOCH_LEN; h++)
+    {
+        if (sched.OnTipChanged(h, EpochOf(h), BoundaryOf(EpochOf(h))))
+            nWakes++;
+    }
+    BOOST_CHECK_EQUAL(nWakes, 1);
+
+    // Still one per epoch after the attempt budget is spent and the epoch is stuck
+    // outstanding -- the case that would otherwise spin.
+    int nOut = -1;
+    for (int i = 0; i < 4; i++)
+    {
+        if (sched.Claim(nBoundary, 18, 4, nOut) == FINALITY_VOTE_CLAIM_OK)
+            sched.Release(nOut, false);
+    }
+    BOOST_CHECK(sched.HasWork());
+    nWakes = 0;
+    for (int h = nBoundary + 1; h < nBoundary + EPOCH_LEN; h++)
+    {
+        if (sched.OnTipChanged(h, EpochOf(h), BoundaryOf(EpochOf(h))))
+            nWakes++;
+    }
+    BOOST_CHECK_EQUAL(nWakes, 0);
 }
 
 BOOST_AUTO_TEST_CASE(nonsense_tip_reports_are_ignored)

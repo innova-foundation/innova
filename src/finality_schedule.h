@@ -25,8 +25,9 @@ public:
     void Reset();
 
     /** Chain event: the durable tip is nHeight, in epoch nEpoch which starts at
-     *  nBoundary. Returns true when this advance left an epoch outstanding, i.e.
-     *  the producer has work and should be woken. */
+     *  nBoundary. Returns true only on the edge where this advance newly left an
+     *  epoch outstanding, so the caller can wake the producer exactly once per
+     *  epoch rather than on every block. */
     bool OnTipChanged(int nHeight, int nEpoch, int nBoundary);
 
     /** Producer: take an attempt at the outstanding epoch. nProducerWindow is the
