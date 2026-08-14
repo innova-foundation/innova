@@ -240,6 +240,45 @@ BOOST_AUTO_TEST_CASE(predag_retarget_is_bit_identical)
     BOOST_CHECK(nChecked > 100000);
 }
 
+// Same bit-identity claim over a wide pseudorandom spread of nBits, a superset of real
+// pre-DAG history.
+BOOST_AUTO_TEST_CASE(predag_retarget_bit_identical_over_random_targets)
+{
+    const CBigNum bnLimit = CBigNum(~uint256(0) >> 20);
+    const unsigned int nLimitBits = bnLimit.GetCompact();
+    Rng rng(0xC0FFEEULL);
+
+    size_t nChecked = 0;
+    for (int i = 0; i < 60000; i++)
+    {
+        // Spread targets across the whole representable range below the limit,
+        // then hand both implementations the identical compact encoding.
+        int nShift = (int)(rng.Next() * 60.0);
+        CBigNum bnTarget = bnLimit >> nShift;
+        if (bnTarget <= 0) continue;
+        unsigned int nBits = bnTarget.GetCompact();
+        if (nBits == 0) continue;
+
+        // Real pre-DAG spacing is 15; keep a little variety around it.
+        static const unsigned int kSpacings[] = { 15, 30, 60, 90 };
+        unsigned int nSpacing = kSpacings[(int)(rng.Next() * 4.0) & 3];
+
+        // Gaps spanning stalls, backwards timestamps and normal operation.
+        int64_t nGap = (int64_t)(rng.Next() * 2000.0) - 500;
+        bool fTighterDrift = (rng.Next() < 0.5);
+
+        unsigned int nOld = LegacyRetarget(nBits, nGap, nSpacing, fTighterDrift, bnLimit);
+        unsigned int nNew = ComputeRetargetedBits(nBits, nGap, nSpacing, 1, fTighterDrift, bnLimit);
+        BOOST_CHECK_MESSAGE(nOld == nNew,
+            "pre-DAG divergence: bits=" << nBits << " spacing=" << nSpacing
+            << " drift=" << fTighterDrift << " gap=" << nGap
+            << " old=" << nOld << " new=" << nNew);
+        nChecked++;
+    }
+    BOOST_CHECK(nChecked > 50000);
+    BOOST_CHECK(nLimitBits != 0);
+}
+
 // The window must never be applied pre-DAG: a window > 1 genuinely changes the
 // result, which is why the height gate is the load-bearing part of the fix.
 BOOST_AUTO_TEST_CASE(window_would_change_predag_results)
