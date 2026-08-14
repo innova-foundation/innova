@@ -5132,12 +5132,61 @@ const CBlockIndex* GetLastBlockIndex(const CBlockIndex* pindex, bool fProofOfSta
     return pindex;
 }
 
+unsigned int ComputeRetargetedBits(unsigned int nPrevBits, int64_t nActualSpan,
+                                   unsigned int nEffectiveSpacing, int nWindow,
+                                   bool fTighterDrift, const CBigNum& bnTargetLimit)
+{
+    if (nWindow < 1) nWindow = 1;
+    int64_t nTargetSpan = (int64_t)nEffectiveSpacing * nWindow;
+
+    // Clamp the observation (tighter bounds post-fork, negative-only pre-fork)
+    if (!fTighterDrift)
+    {
+        if (nActualSpan < 0)
+            nActualSpan = nTargetSpan;
+    }
+    else
+    {
+        const int nClampFactor = 4;
+        int64_t nMinSpan = nTargetSpan / nClampFactor;
+        if (nMinSpan < 1) nMinSpan = 1;
+        int64_t nMaxSpan = nTargetSpan * nClampFactor;
+
+        if (nActualSpan < nMinSpan)
+        {
+            if (nActualSpan < 0)
+                printf("WARNING: ComputeRetargetedBits() : negative actual span %" PRId64 " (clamping to %" PRId64 ")\n",
+                       nActualSpan, nMinSpan);
+            nActualSpan = nMinSpan;
+        }
+        if (nActualSpan > nMaxSpan)
+            nActualSpan = nMaxSpan;
+    }
+
+    CBigNum bnNew;
+    bnNew.SetCompact(nPrevBits);
+    int64_t nSmoothTimespan = fTighterDrift ? 180 : nTargetTimespan;
+    int64_t nInterval = nSmoothTimespan / nEffectiveSpacing;
+    bnNew *= ((nInterval - 1) * nTargetSpan + nActualSpan + nActualSpan);
+    bnNew /= ((nInterval + 1) * nTargetSpan);
+
+    if (bnNew <= 0 || bnNew > bnTargetLimit)
+        bnNew = bnTargetLimit;
+
+    return bnNew.GetCompact();
+}
+
 unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfStake)
 {
     CBigNum bnTargetLimit = fProofOfStake ? bnProofOfStakeLimit : bnProofOfWorkLimit;
 
     if (pindexLast == NULL)
         return bnTargetLimit.GetCompact(); // genesis block
+
+    // Regtest does not retarget: nBits is pinned at the limit, so the post-DAG window
+    // below cannot ramp difficulty.
+    if (fRegTest)
+        return bnTargetLimit.GetCompact();
 
     const CBlockIndex* pindexPrev = GetLastBlockIndex(pindexLast, fProofOfStake);
     if (pindexPrev->pprev == NULL)
@@ -5146,46 +5195,33 @@ unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfS
     if (pindexPrevPrev->pprev == NULL)
         return bnTargetLimit.GetCompact(); // second block
 
-    int64_t nActualSpacing = pindexPrev->GetBlockTime() - pindexPrevPrev->GetBlockTime();
-
-    // Clamp nActualSpacing (tighter bounds post-fork, negative-only pre-fork)
     int nNextHeight = pindexLast->nHeight + 1;
     unsigned int nEffectiveSpacing = GetTargetSpacingForHeight(nNextHeight);
+    bool fTighterDrift = (nNextHeight >= FORK_HEIGHT_TIGHTER_DRIFT);
 
-    if (nNextHeight < FORK_HEIGHT_TIGHTER_DRIFT)
+    // Observation window. Pre-DAG it is 1, bit-identical to the old retarget. Post-DAG a
+    // 1s gap is at timestamp resolution, so a window is needed for difficulty to tighten;
+    // it only spans blocks at or after the DAG fork.
+    int nWindow = 1;
+    const CBlockIndex* pindexWindow = pindexPrevPrev;
+    if (nNextHeight >= FORK_HEIGHT_DAG)
     {
-        if (nActualSpacing < 0)
-            nActualSpacing = nEffectiveSpacing;
-    }
-    else
-    {
-        int nClampFactor = (nNextHeight >= FORK_HEIGHT_TIGHTER_DRIFT) ? 4 : 10;
-        int64_t nMinSpacing = (int64_t)nEffectiveSpacing / nClampFactor;
-        if (nMinSpacing < 1) nMinSpacing = 1;
-        int64_t nMaxSpacing = (int64_t)nEffectiveSpacing * nClampFactor;
-
-        if (nActualSpacing < nMinSpacing)
+        int nAvailable = pindexPrev->nHeight - FORK_HEIGHT_DAG;
+        int nWant = std::min(POST_DAG_RETARGET_WINDOW, nAvailable);
+        while (nWindow < nWant && pindexWindow->pprev)
         {
-            if (nActualSpacing < 0)
-                printf("WARNING: GetNextTargetRequired() : negative actual spacing %" PRId64 " (clamping to %" PRId64 ")\n",
-                       nActualSpacing, nMinSpacing);
-            nActualSpacing = nMinSpacing;
+            const CBlockIndex* pindexStep = GetLastBlockIndex(pindexWindow->pprev, fProofOfStake);
+            if (pindexStep == NULL || pindexStep->pprev == NULL)
+                break;
+            pindexWindow = pindexStep;
+            nWindow++;
         }
-        if (nActualSpacing > nMaxSpacing)
-            nActualSpacing = nMaxSpacing;
     }
 
-    CBigNum bnNew;
-    bnNew.SetCompact(pindexPrev->nBits);
-    int64_t nSmoothTimespan = (nNextHeight >= FORK_HEIGHT_TIGHTER_DRIFT) ? 180 : nTargetTimespan;
-    int64_t nInterval = nSmoothTimespan / nEffectiveSpacing;
-    bnNew *= ((nInterval - 1) * nEffectiveSpacing + nActualSpacing + nActualSpacing);
-    bnNew /= ((nInterval + 1) * nEffectiveSpacing);
+    int64_t nActualSpan = pindexPrev->GetBlockTime() - pindexWindow->GetBlockTime();
 
-    if (bnNew <= 0 || bnNew > bnTargetLimit)
-        bnNew = bnTargetLimit;
-
-    return bnNew.GetCompact();
+    return ComputeRetargetedBits(pindexPrev->nBits, nActualSpan, nEffectiveSpacing,
+                                 nWindow, fTighterDrift, bnTargetLimit);
 }
 
 bool CheckProofOfWork(uint256 hash, unsigned int nBits)
