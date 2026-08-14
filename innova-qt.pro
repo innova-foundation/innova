@@ -98,6 +98,10 @@ contains(RELEASE, 1) {
 win32-msvc:IV5_RUST_LIB = $$IV5_RUST_DIR/target/$$IV5_RUST_PROFILE/innova_privacy_vnext.lib
 else:IV5_RUST_LIB = $$IV5_RUST_DIR/target/$$IV5_RUST_PROFILE/libinnova_privacy_vnext.a
 privacy_vnext_rust.target = $$IV5_RUST_LIB
+# Without a dependency the archive is up to date once it exists and cargo never
+# runs again, linking whatever decoder was built first. Cargo tracks the real
+# sources, and a no-op build leaves the archive alone, so defer to it.
+privacy_vnext_rust.depends = FORCE
 win32:privacy_vnext_rust.commands = cd /d $$shell_path($$IV5_RUST_DIR) && cargo build --locked --offline $$IV5_RUST_FLAGS
 else:privacy_vnext_rust.commands = cd $$shell_path($$IV5_RUST_DIR) && cargo build --locked --offline $$IV5_RUST_FLAGS
 QMAKE_EXTRA_TARGETS += privacy_vnext_rust

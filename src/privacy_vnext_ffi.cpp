@@ -429,6 +429,17 @@ bool LoadPrivacyVNextAbiInfo(PrivacyVNextAbiInfo& info)
     if (info.strParameterDigest != iv5::PROTOCOL_CONTRACT_SHA256)
         return Fail(info, "Rust/C protocol contract digest mismatch");
 
+    // A stale archive answers with the manifest it was compiled against, so this is the
+    // one check that catches a decoder the build system failed to relink. Refuse the
+    // build rather than validate consensus payloads with an unknown decoder.
+    if (info.strProvenanceDigest != iv5::PROVENANCE_SHA256)
+        return Fail(info,
+                    "linked IV5 decoder was built from provenance " +
+                    info.strProvenanceDigest + " but this build expects " +
+                    std::string(iv5::PROVENANCE_SHA256) +
+                    "; rebuild the Rust library (make -f makefile.unix "
+                    "check-privacy-vnext-freshness)");
+
     // The two accepted-digest lists must be the same list. A build whose C++ header
     // accepts a digest the decoder refuses -- or the reverse -- would admit a payload on
     // one side of the boundary and reject it on the other.

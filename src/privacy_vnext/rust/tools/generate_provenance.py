@@ -26,6 +26,13 @@ UPSTREAM_LOCK_SHA256 = (
 TOOLCHAIN_SHA256 = (
     "f53198ae4fdecfd87da36fe431c771b54c51e975d01c0e99f653bc14d5d48211"
 )
+# The wrapper crate is the consensus decoder itself. Hashing only upstream and the
+# vendored registry left every file in this list unmeasured, so a payload-rule edit
+# changed no digest and no gate could see it.
+WRAPPER_SOURCE_DIRS = ("src", "include", "abi", "tests")
+# Cargo.lock and rust-toolchain.toml are already measured by their own sections;
+# Cargo.toml was only ever grepped for two substrings, so it is measured here.
+WRAPPER_SOURCE_FILES = ("Cargo.toml",)
 COMPONENT_GIT_TREES = {
     "crypto/fcmps": "4350e4a902093fcaa6e898324e419f01ac2c584f",
     "crypto/generalized-bulletproofs": "160793b98181d6c61d4ec5063a4afa4ad410eaf5",
@@ -52,6 +59,31 @@ def component_records() -> dict[str, dict[str, Any]]:
     return result
 
 
+def wrapper_record() -> dict[str, Any]:
+    """Measure the wrapper crate's own sources, not just its dependencies."""
+    entries: dict[str, Any] = {}
+    total = 0
+    for name in WRAPPER_SOURCE_DIRS:
+        digest, count = tree_sha256(ROOT / name, ("target",))
+        entries[name] = {"sha256_tree": digest, "file_count": count}
+        total += count
+    for name in WRAPPER_SOURCE_FILES:
+        entries[name] = {"sha256": sha256_file(ROOT / name)}
+        total += 1
+    contract = ROOT / "contract"
+    contract_digest, contract_count = tree_sha256(contract, ("target",))
+    entries["contract"] = {
+        "sha256_tree": contract_digest,
+        "file_count": contract_count,
+    }
+    total += contract_count
+    return {
+        "description": "wrapper crate sources compiled into the linked archive",
+        "entries": entries,
+        "file_count": total,
+    }
+
+
 def build_manifest() -> dict[str, Any]:
     upstream_digest, upstream_files = tree_sha256(UPSTREAM, ("target",))
     vendor_digest, vendor_files = tree_sha256(VENDOR, ("target",))
@@ -62,8 +94,9 @@ def build_manifest() -> dict[str, Any]:
     vendor_licenses = license_files(VENDOR)
     protocol_contract = ROOT.parent / "contract" / "iv5_protocol_v1.json"
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "non_consensus_contract_and_fcmp_proof_abi",
+        "wrapper": wrapper_record(),
         "consensus_enabled": False,
         "transaction_version_2008_enabled": False,
         "upstream": {

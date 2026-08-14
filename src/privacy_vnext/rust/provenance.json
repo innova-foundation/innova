@@ -3,7 +3,7 @@
     "ownership": "caller_owned_outputs_only",
     "panic_strategy": "unwind_and_catch_unwind",
     "schema_path": "abi/innova_privacy_vnext_v2.txt",
-    "schema_sha256": "04f61b0247707cd2bcaa99c74f5236496787aa96a043426387bea3c459d893a8",
+    "schema_sha256": "fbf1256f88401af62977cfd6a7d6ed118f57520dc844bcf563e18109332d8967",
     "version": 2
   },
   "consensus_enabled": false,
@@ -59,7 +59,7 @@
     "compatibility_summary_path": "contract/innova_privacy_vnext_product_v1.txt",
     "compatibility_summary_sha256": "aec6b77212eb579a18ba02f56cf92f2c55a8291faceace9513133ddda91d1be3",
     "contract_path": "../contract/iv5_protocol_v1.json",
-    "contract_sha256": "e65eaaa660c07e806f5b7e7c9550709929b9c2e9ba4cfd1e4fe56dcd384c9d5f",
+    "contract_sha256": "f0259cccfe96b0665a26b1774e2794222ceb8093d800d886cb1646f760f3710b",
     "scope": "normative inactive IV5 protocol contract; not activation"
   },
   "product_contract": {
@@ -134,7 +134,7 @@
     "path": "sbom.spdx.json",
     "sha256": "a4bd71a8f25e54ec6a96b3ef929d1580f83ed1789938e930adcc84b5b9599fbc"
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "status": "non_consensus_contract_and_fcmp_proof_abi",
   "transaction_version_2008_enabled": false,
   "upstream": {
@@ -177,8 +177,37 @@
     "cargo_locked_required": true,
     "cargo_offline_required": true,
     "directory": "vendor",
-    "file_count": 6789,
+    "file_count": 6806,
     "package_directory_count": 158,
-    "sha256_tree": "3366b39eb746bea0485822d092715ddfbcf84a812e39353cbe3ad58d1c6f18d0"
+    "sha256_tree": "ad16118daaaed9d2a7a64b2e1582d52d15e845750671d3bf321cc10ff7b4793e"
+  },
+  "wrapper": {
+    "description": "wrapper crate sources compiled into the linked archive",
+    "entries": {
+      "Cargo.toml": {
+        "sha256": "426fbd44b56dd5ce968cfd48109223e5423104000d6ff00cf9cd6d7fc598d2f3"
+      },
+      "abi": {
+        "file_count": 2,
+        "sha256_tree": "568d77212870d939ebdb49726b95b6d266911c3388dfcefbacfc7b6e4323055d"
+      },
+      "contract": {
+        "file_count": 1,
+        "sha256_tree": "e9de35676c4437d78709996a8ac729b90dcfdc035be0fa0ae1bca4e45850c75e"
+      },
+      "include": {
+        "file_count": 1,
+        "sha256_tree": "c7e01c3ec96edfeceafb7d59010c6fd48cfdada542e6e73edb283072f991a24d"
+      },
+      "src": {
+        "file_count": 10,
+        "sha256_tree": "d0086eff94993c72229a30cfe2c85b26b8790b1a8136ca3ee2c1845ab1431b03"
+      },
+      "tests": {
+        "file_count": 1,
+        "sha256_tree": "5dd938056fd45ee368ce328fcb21eb9c395fb980ec4235ade3c664c6daffd6c7"
+      }
+    },
+    "file_count": 16
   }
 }

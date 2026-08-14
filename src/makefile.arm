@@ -468,7 +468,9 @@ LIBS += $(CURDIR)/leveldb/libleveldb.a $(CURDIR)/leveldb/libmemenv.a
 DEFS += $(addprefix -I,$(CURDIR)/leveldb/include) -DUSE_LEVELDB
 DEFS += $(addprefix -I,$(CURDIR)/leveldb/helpers)
 OBJS += obj/txdb-leveldb.o
-leveldb/libleveldb.a:
+# FORCE, not a prerequisite list: enumerating LevelDB sources here would drift the
+# same way the IV5 archive list did. Let the nested make decide what to rebuild.
+leveldb/libleveldb.a: FORCE
 	@echo "Building LevelDB ..."; cd leveldb; CC=$(CC) CXX=$(CXX) make libleveldb.a libmemenv.a; cd ..;
 obj/txdb-leveldb.o: leveldb/libleveldb.a
 endif
@@ -550,15 +552,11 @@ PRIVACY_VNEXT_RUST_PROFILE := release
 PRIVACY_VNEXT_RUST_FLAGS := --release
 endif
 PRIVACY_VNEXT_RUST_LIB := $(PRIVACY_VNEXT_RUST_DIR)/target/$(PRIVACY_VNEXT_RUST_PROFILE)/libinnova_privacy_vnext.a
-PRIVACY_VNEXT_RUST_INPUTS := \
-	$(PRIVACY_VNEXT_RUST_DIR)/Cargo.toml \
-	$(PRIVACY_VNEXT_RUST_DIR)/Cargo.lock \
-	$(PRIVACY_VNEXT_RUST_DIR)/src/lib.rs \
-	$(PRIVACY_VNEXT_RUST_DIR)/abi/innova_privacy_vnext_v2.txt \
-	$(PRIVACY_VNEXT_RUST_DIR)/provenance.json \
-	$(CURDIR)/privacy_vnext/contract/iv5_protocol_v1.json
-
-$(PRIVACY_VNEXT_RUST_LIB): $(PRIVACY_VNEXT_RUST_INPUTS)
+# Cargo is the freshness authority here: it tracks the crate's own sources and
+# the seven path dependencies under upstream/. A hand-written prerequisite list
+# covered neither and linked a stale consensus decoder. A no-op build leaves the
+# archive's timestamp alone, so this does not force a relink.
+$(PRIVACY_VNEXT_RUST_LIB): FORCE
 	cd $(PRIVACY_VNEXT_RUST_DIR) && cargo build --locked --offline $(PRIVACY_VNEXT_RUST_FLAGS)
 
 innovad: $(OBJS:obj/%=obj/%) $(PRIVACY_VNEXT_RUST_LIB)

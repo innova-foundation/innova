@@ -2,6 +2,24 @@
 # Distributed under the MIT/X11 software license, see the accompanying
 # file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+# This cross-compile path predates the shielded and v5 trees and cannot link them.
+# OBJS names 45 objects where makefile.mingw names 77; none of the privacy_vnext
+# objects are among them and libinnova_privacy_vnext.a is never linked, while the
+# obj/main.o it would build carries 271 references to those symbols. It does not even
+# reach the link: with this guard bypassed it stops at "No rule to make target
+# obj/echo.o", so it cannot ship a stale decoder -- but objects have been added here
+# (pod.o, 2026-08-11) as though it were maintained, which is the trap this guard closes.
+#
+# Its only caller, contrib/gitian-descriptors/gitian-win32.yml, still drives the
+# i586-mingw32msvc toolchain Debian removed in 2012, and no workflow invokes it.
+# Windows releases are built by makefile.mingw (.github/workflows/build.yml), which
+# does carry the privacy objects and the archive.
+#
+# Revive it by porting makefile.mingw's OBJS and IV5 stanza, or delete both files.
+ifndef INNOVA_ALLOW_STALE_LINUX_MINGW
+$(error makefile.linux-mingw cannot build the v5 tree: it links no IV5 decoder. Use makefile.mingw for Windows, or set INNOVA_ALLOW_STALE_LINUX_MINGW=1 to proceed anyway)
+endif
+
 TARGET_PLATFORM:=i686
 #TARGET_PLATFORM:=x86_64
 
@@ -121,7 +139,9 @@ LIBS += $(CURDIR)/leveldb/libleveldb.a $(CURDIR)/leveldb/libmemenv.a
 DEFS += -I"$(CURDIR)/leveldb/include"
 DEFS += -I"$(CURDIR)/leveldb/helpers"
 OBJS += obj/txdb-leveldb.o
-leveldb/libleveldb.a:
+# FORCE, not a prerequisite list: enumerating LevelDB sources here would drift the
+# same way the IV5 archive list did. Let the nested make decide what to rebuild.
+leveldb/libleveldb.a: FORCE
 	@echo "Building LevelDB ..." && cd leveldb && CC=$(CC) CXX=$(CXX) TARGET_OS=OS_WINDOWS_CROSSCOMPILE CXXFLAGS="-I$(INCLUDEPATHS)" LDFLAGS="-L$(LIBPATHS)" $(MAKE) libleveldb.a libmemenv.a && $(RANLIB) libleveldb.a && $(RANLIB) libmemenv.a && cd ..
 obj/txdb-leveldb.o: leveldb/libleveldb.a
 

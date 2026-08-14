@@ -119,6 +119,8 @@ def verify_configuration_and_abi() -> None:
             "innova_privacy_vnext_abi_hash",
             "innova_privacy_vnext_provenance_digest",
             "innova_privacy_vnext_parameter_digest",
+            "innova_privacy_vnext_accepted_parameter_digests",
+            "innova_privacy_vnext_envelope_allows",
             "innova_privacy_vnext_contract_metadata",
             "innova_privacy_vnext_protocol_contract",
             "innova_privacy_vnext_fcmp_proof_size",
@@ -184,11 +186,28 @@ def verify_generated_files() -> None:
     )
 
 
+def verify_consensus_header_binding() -> None:
+    """The C++ constant must name the manifest the archive reports at runtime."""
+    header = ROOT.parent / "iv5_protocol.h"
+    text = header.read_text(encoding="utf-8")
+    match = re.search(
+        r"PROVENANCE_SHA256\[\]\s*=\s*\"([0-9a-f]{64})\"", text
+    )
+    require(match is not None, "iv5_protocol.h declares no PROVENANCE_SHA256")
+    actual = sha256_file(ROOT / "provenance.json")
+    require(
+        match.group(1) == actual,
+        "iv5_protocol.h PROVENANCE_SHA256 is stale: expected "
+        f"{actual}, found {match.group(1)}",
+    )
+
+
 def main() -> int:
     try:
         verify_locks_and_vendor()
         verify_configuration_and_abi()
         verify_generated_files()
+        verify_consensus_header_binding()
     except (OSError, ValueError, KeyError, tomllib.TOMLDecodeError, VerificationError) as error:
         print(f"privacy-vNext provenance: ERROR: {error}", file=sys.stderr)
         return 1

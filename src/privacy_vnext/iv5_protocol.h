@@ -30,6 +30,11 @@ static const char* const PROTOCOL_CONTRACT_SHA256_PRIOR[] = {
 static const size_t PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT =
     sizeof(PROTOCOL_CONTRACT_SHA256_PRIOR) /
     sizeof(PROTOCOL_CONTRACT_SHA256_PRIOR[0]);
+// SHA-256 of privacy_vnext/rust/provenance.json as compiled into the crate.
+// LoadPrivacyVNextAbiInfo refuses a mismatch; update together with the manifest
+// (verify_provenance.py checks).
+static const char PROVENANCE_SHA256[] =
+    "40b4747fa008d1762201243aab12f2d319e395da4fd5e019e9dbca00c9815e6a";
 static const uint16_t PROTOCOL_SCHEMA = 1;
 static const unsigned char ENVELOPE_MARKER[5] = {
     0xff, 0x49, 0x56, 0x35, 0x50
