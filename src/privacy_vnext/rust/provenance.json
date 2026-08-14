@@ -134,7 +134,7 @@
     "path": "sbom.spdx.json",
     "sha256": "a4bd71a8f25e54ec6a96b3ef929d1580f83ed1789938e930adcc84b5b9599fbc"
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "status": "non_consensus_contract_and_fcmp_proof_abi",
   "transaction_version_2008_enabled": false,
   "upstream": {
@@ -180,5 +180,34 @@
     "file_count": 6806,
     "package_directory_count": 158,
     "sha256_tree": "ad16118daaaed9d2a7a64b2e1582d52d15e845750671d3bf321cc10ff7b4793e"
+  },
+  "wrapper": {
+    "description": "wrapper crate sources compiled into the linked archive",
+    "entries": {
+      "Cargo.toml": {
+        "sha256": "426fbd44b56dd5ce968cfd48109223e5423104000d6ff00cf9cd6d7fc598d2f3"
+      },
+      "abi": {
+        "file_count": 2,
+        "sha256_tree": "568d77212870d939ebdb49726b95b6d266911c3388dfcefbacfc7b6e4323055d"
+      },
+      "contract": {
+        "file_count": 1,
+        "sha256_tree": "e9de35676c4437d78709996a8ac729b90dcfdc035be0fa0ae1bca4e45850c75e"
+      },
+      "include": {
+        "file_count": 1,
+        "sha256_tree": "c7e01c3ec96edfeceafb7d59010c6fd48cfdada542e6e73edb283072f991a24d"
+      },
+      "src": {
+        "file_count": 10,
+        "sha256_tree": "d0086eff94993c72229a30cfe2c85b26b8790b1a8136ca3ee2c1845ab1431b03"
+      },
+      "tests": {
+        "file_count": 1,
+        "sha256_tree": "5dd938056fd45ee368ce328fcb21eb9c395fb980ec4235ade3c664c6daffd6c7"
+      }
+    },
+    "file_count": 16
   }
 }
