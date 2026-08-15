@@ -33,6 +33,11 @@ enum BlockPhase
     BP_NAME_INDEX,
     BP_DB_COMMIT,
     BP_EFFECTS,
+    // post-commit effect breakdown
+    BP_WALLET_SYNC,
+    BP_SHIELD_SCAN,
+    BP_WALLET_LOCATOR,
+    BP_RECOVERY_CLEAR,
     BP_PHASE_COUNT
 };
 

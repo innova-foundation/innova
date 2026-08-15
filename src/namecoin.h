@@ -385,6 +385,37 @@ bool ApplyNameIndexRebuildBlock(
 // an empty chain; disconnect callers pass the newly committed predecessor.
 bool CommitNameIndexTip(const CBlockIndex* pindexTip, std::string& strError);
 
+// True when no transaction in the block can produce a name-index effect.  Only
+// a NAMECOIN_TX_VERSION transaction outside the DAG skip set reaches the name
+// operation walk, so such a block's transition is cursor/progress only.
+bool BlockHasNoNameEffects(const CBlock& block,
+                           const std::set<uint256>& setDAGSkippedTxs);
+
+// Connect-side cursor batching for initial block download.  A block with no
+// name effects writes nothing but the cursor and its progress marker, and both
+// are single keys the next block overwrites, so the intermediate writes are
+// dead.  Defer them and let one flush write the last block's transition -- the
+// exact call the unbatched path would have made for that block.
+//
+// The batch holds no Berkeley DB handle or transaction between blocks, so it
+// takes no page locks and no reader can see a partially applied transition.
+// An interrupted batch leaves the cursor behind the canonical tip, which is
+// the condition startup already recovers from by rebuilding the index.
+//
+// -nameindexbatch bounds the deferral and 0 disables it, restoring the
+// per-block commit.
+static const int NAMEINDEX_IBD_BATCH_BLOCKS_DEFAULT = 1000;
+int NameIndexBatchBlocks();
+bool NameIndexBatchingEnabled();
+
+bool DeferNameIndexCursor(const CBlock& block, CBlockIndex* pindex,
+                          const std::set<uint256>& setDAGSkippedTxs,
+                          std::string& strError);
+bool FlushNameIndexCursorBatch(std::string& strError);
+void DiscardNameIndexCursorBatch();
+bool HasPendingNameIndexCursor();
+int PendingNameIndexCursorBlocks();
+
 // Strictly checks schema/reset era and exact canonical tip equality.
 bool ValidateNameIndexTip(const CBlockIndex* pindexTip, std::string& strError);
 

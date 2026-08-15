@@ -152,6 +152,19 @@ void Shutdown(void* parg)
 
         FlushIBDBatch();
 
+        // Make a deferred name-index cursor durable so a clean stop during
+        // initial download does not force a rebuild on the next start.
+        extern bool HasPendingNameIndexCursor();
+        extern bool FlushNameIndexCursorBatch(std::string&);
+        if (HasPendingNameIndexCursor())
+        {
+            std::string strNameFlushError;
+            if (!FlushNameIndexCursorBatch(strNameFlushError))
+                printf("Shutdown : could not flush the deferred name-index "
+                       "cursor (%s); the index rebuilds on restart\n",
+                       strNameFlushError.c_str());
+        }
+
         if(idns) {
             delete idns;
         }
@@ -538,6 +551,7 @@ std::string HelpMessage()
         "  -wallet=<dir>          " + _("Specify wallet file (within data directory)") + "\n" +
         "  -dbcache=<n>           " + _("Set database cache size in megabytes (default: 300)") + "\n" +
         "  -dblogsize=<n>         " + _("Set database disk log size in megabytes (default: 100)") + "\n" +
+        "  -nameindexbatch=<n>    " + _("Blocks the name index may defer its cursor over during initial block download; 0 commits every block (default: 1000)") + "\n" +
         "  -timeout=<n>           " + _("Specify connection timeout in milliseconds (default: 5000)") + "\n" +
         "  -proxy=<ip:port>       " + _("Connect through socks proxy") + "\n" +
         "  -socks=<n>             " + _("Select the version of socks proxy to use (4-5, default: 5)") + "\n" +
