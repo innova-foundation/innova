@@ -4180,30 +4180,21 @@ bool TransactionConflictsWithDAGSiblingSpends(const CTransaction& tx,
     return false;
 }
 
-static bool DAGSiblingPrecedesBlock(const uint256& hashBlock,
-                                    const uint256& hashSibling,
-                                    bool fHaveCurrentDAGOrder,
-                                    const CBlockDAGData& currentDagData)
+// Sibling precedence is a consensus input, so it uses only committed data: (height,
+// hash), which is total and topologically consistent. nDAGOrder is node-local. Only
+// reachable from FORK_HEIGHT_DAG upward.
+bool DAGSiblingPrecedesBlock(const uint256& hashBlock,
+                             const uint256& hashSibling)
 {
     std::map<uint256, CBlockIndex*>::const_iterator miBlock = mapBlockIndex.find(hashBlock);
     std::map<uint256, CBlockIndex*>::const_iterator miSibling = mapBlockIndex.find(hashSibling);
-    if (miBlock != mapBlockIndex.end() && miBlock->second &&
-        miBlock->second->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
-    {
-        const int nBlockHeight = miBlock->second->nHeight;
-        const int nSiblingHeight =
-            (miSibling != mapBlockIndex.end() && miSibling->second)
-                ? miSibling->second->nHeight : -1;
-        return nSiblingHeight != nBlockHeight
-                   ? nSiblingHeight < nBlockHeight
-                   : hashSibling < hashBlock;
-    }
-    bool fSiblingPrecedes = (hashSibling < hashBlock);
-    CBlockDAGData siblingDagData;
-    if (fHaveCurrentDAGOrder && g_dagManager.GetDAGData(hashSibling, siblingDagData) &&
-        siblingDagData.nDAGOrder >= 0)
-        fSiblingPrecedes = siblingDagData.nDAGOrder < currentDagData.nDAGOrder;
-    return fSiblingPrecedes;
+    const int nBlockHeight =
+        (miBlock != mapBlockIndex.end() && miBlock->second) ? miBlock->second->nHeight : -1;
+    const int nSiblingHeight =
+        (miSibling != mapBlockIndex.end() && miSibling->second) ? miSibling->second->nHeight : -1;
+    return nSiblingHeight != nBlockHeight
+               ? nSiblingHeight < nBlockHeight
+               : hashSibling < hashBlock;
 }
 
 std::set<uint256> GetDAGSkippedTxsFromSiblingSpends(const CBlock& block,
@@ -4267,13 +4258,10 @@ static std::set<uint256> GetDAGSkippedTxsForBlockInternal(const CBlock& block,
     std::set<uint256> setDAGSpentNullifiers;
 
     std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(hashBlock);
-    CBlockDAGData currentDagData;
-    bool fHaveCurrentDAGOrder = g_dagManager.GetDAGData(hashBlock, currentDagData) &&
-                                currentDagData.nDAGOrder >= 0;
 
     for (const uint256& hashSibling : siblings)
     {
-        if (!DAGSiblingPrecedesBlock(hashBlock, hashSibling, fHaveCurrentDAGOrder, currentDagData))
+        if (!DAGSiblingPrecedesBlock(hashBlock, hashSibling))
             continue;
 
         std::map<uint256, CBlockIndex*>::iterator mi = mapBlockIndex.find(hashSibling);
@@ -12378,23 +12366,12 @@ bool CBlock::AcceptBlock()
                 return DoS(100, error("AcceptBlock() : DAG parent[%d] is self-reference", i));
 
             // Must exist in block index
+            // Defer a child whose committed parent is absent at every post-DAG height: it would be
+            // coloured against an incomplete parent set and never recoloured below V3. Not scored.
             if (!mapBlockIndex.count(vDAGParents[i]))
-            {
-                if (nHeight < FORK_HEIGHT_EPOCH_STATE_V3 &&
-                    IsInitialBlockDownload())
-                {
-                    if (fDebug)
-                        printf("AcceptBlock() : DAG merge parent[%d] %s not found during IBD, deferring validation\n",
-                               i, vDAGParents[i].ToString().substr(0, 20).c_str());
-                    continue;
-                }
-                if (nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
-                    return error("AcceptBlock() : V3 DAG merge parent[%d] %s is not available; "
-                                 "defer the child until every committed parent is present",
-                                 i, vDAGParents[i].ToString().substr(0, 20).c_str());
-                return DoS(10, error("AcceptBlock() : DAG merge parent[%d] %s not found",
-                                      i, vDAGParents[i].ToString().substr(0, 20).c_str()));
-            }
+                return error("AcceptBlock() : DAG merge parent[%d] %s is not available; "
+                             "defer the child until every committed parent is present",
+                             i, vDAGParents[i].ToString().substr(0, 20).c_str());
 
             // Merge parent must have lower height
             CBlockIndex* pMergeParent = mapBlockIndex[vDAGParents[i]];

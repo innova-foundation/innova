@@ -147,6 +147,9 @@ bool TransactionConflictsWithDAGSiblingSpends(const CTransaction& tx,
 std::set<uint256> GetDAGSkippedTxsFromSiblingSpends(const CBlock& block,
                                                     const std::set<COutPoint>& setDAGSpentOutputs,
                                                     const std::set<uint256>& setDAGSpentNullifiers);
+/** Which of two DAG siblings wins a spend conflict. Exported so the invariant that
+ *  it reads nothing but committed (height, hash) can be pinned by a test. */
+bool DAGSiblingPrecedesBlock(const uint256& hashBlock, const uint256& hashSibling);
 std::set<uint256> GetDAGSkippedTxsForBlock(const CBlock& block, const CBlockIndex* pindex);
 CBlock GetDAGActiveBlock(const CBlock& block, const std::set<uint256>& setDAGSkippedTxs);
 

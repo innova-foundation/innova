@@ -1117,20 +1117,14 @@ std::set<uint256> CDAGManager::GetDAGSiblingBlocks(const uint256& hashBlock) con
     if (it == mapDAGData.end())
         return siblings;
 
-    // Schema V3 conflict resolution is anchored to the block being validated.
-    // A locally known child of one of our parents is not consensus-relevant
-    // unless the current block actually reaches it through its committed DAG
-    // parents.  Including an unmerged local child made transaction activation
-    // depend on arrival order: a node that had seen the child skipped a
-    // conflicting transaction while a node that had not seen it connected the
-    // transaction.  Restrict V3 siblings to the anchor's past set.  Keep the
-    // historical behavior byte-for-byte before V3.
+    // A known child of a parent counts only if this block reaches it through its committed parents,
+    // otherwise activation depends on arrival order. Applies from FORK_HEIGHT_DAG.
     bool fRequireReachableSibling = false;
     std::set<uint256> setReachablePast;
     std::map<uint256, CBlockIndex*>::const_iterator miBlock =
         mapBlockIndex.find(hashBlock);
     if (miBlock != mapBlockIndex.end() && miBlock->second &&
-        miBlock->second->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
+        miBlock->second->nHeight >= FORK_HEIGHT_DAG)
     {
         fRequireReachableSibling = true;
         setReachablePast = GetPastSet(hashBlock, DAG_MERGE_DEPTH);

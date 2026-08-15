@@ -6,6 +6,9 @@
 #include "../txdb.h"
 #include "../wallet.h"
 
+extern bool fRegTest;
+extern bool fTestNet;
+
 BOOST_AUTO_TEST_SUITE(idag_validation_tests)
 
 namespace
@@ -491,6 +494,267 @@ BOOST_AUTO_TEST_CASE(v3_sibling_conflicts_ignore_unreachable_local_children)
     mapBlockIndex.erase(hMergedSibling);
     mapBlockIndex.erase(hParent);
     mapBlockIndex.erase(hGrandparent);
+}
+
+// The anchor-past restriction starts at FORK_HEIGHT_DAG, where every consumer of the sibling
+// set lives; the old gate admitted unmerged locally-known children below V3.
+BOOST_AUTO_TEST_CASE(dag_fork_sibling_conflicts_ignore_unreachable_local_children)
+{
+    const int nDAGHeight = FORK_HEIGHT_DAG;
+    BOOST_REQUIRE(nDAGHeight + 1 < FORK_HEIGHT_EPOCH_STATE_V3);
+
+    uint256 hGrandparent(720001);
+    uint256 hParent(720002);
+    uint256 hMergedSibling(720003);
+    uint256 hLocalOnlySibling(720004);
+    uint256 hBlock(720005);
+
+    CBlockIndex grandparent;
+    CBlockIndex parent;
+    CBlockIndex mergedSibling;
+    CBlockIndex localOnlySibling;
+    CBlockIndex block;
+    grandparent.nHeight = nDAGHeight;
+    parent.nHeight = nDAGHeight;
+    mergedSibling.nHeight = nDAGHeight + 1;
+    localOnlySibling.nHeight = nDAGHeight + 1;
+    block.nHeight = nDAGHeight + 2;
+    parent.pprev = &grandparent;
+    mergedSibling.pprev = &parent;
+    localOnlySibling.pprev = &parent;
+    block.pprev = &mergedSibling;
+
+    mapBlockIndex[hGrandparent] = &grandparent;
+    mapBlockIndex[hParent] = &parent;
+    mapBlockIndex[hMergedSibling] = &mergedSibling;
+    mapBlockIndex[hLocalOnlySibling] = &localOnlySibling;
+    mapBlockIndex[hBlock] = &block;
+    grandparent.phashBlock = &mapBlockIndex.find(hGrandparent)->first;
+    parent.phashBlock = &mapBlockIndex.find(hParent)->first;
+    mergedSibling.phashBlock = &mapBlockIndex.find(hMergedSibling)->first;
+    localOnlySibling.phashBlock = &mapBlockIndex.find(hLocalOnlySibling)->first;
+    block.phashBlock = &mapBlockIndex.find(hBlock)->first;
+
+    std::vector<uint256> grandparentParents;
+    std::vector<uint256> parentParents(1, hGrandparent);
+    std::vector<uint256> siblingParents(1, hParent);
+    std::vector<uint256> blockParents;
+    blockParents.push_back(hMergedSibling);
+    blockParents.push_back(hParent);
+
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&grandparent, grandparentParents));
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&parent, parentParents));
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&mergedSibling, siblingParents));
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&localOnlySibling, siblingParents));
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&block, blockParents));
+
+    const std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(hBlock);
+    BOOST_CHECK(siblings.count(hMergedSibling));
+    BOOST_CHECK_MESSAGE(!siblings.count(hLocalOnlySibling),
+                        "a sibling the block does not reach through its committed parents "
+                        "made the active set depend on what this node happened to receive");
+
+    g_dagManager.RemoveBlockDAGData(hBlock);
+    g_dagManager.RemoveBlockDAGData(hLocalOnlySibling);
+    g_dagManager.RemoveBlockDAGData(hMergedSibling);
+    g_dagManager.RemoveBlockDAGData(hParent);
+    g_dagManager.RemoveBlockDAGData(hGrandparent);
+    mapBlockIndex.erase(hBlock);
+    mapBlockIndex.erase(hLocalOnlySibling);
+    mapBlockIndex.erase(hMergedSibling);
+    mapBlockIndex.erase(hParent);
+    mapBlockIndex.erase(hGrandparent);
+}
+
+// Sibling spend conflicts must resolve independently of nDAGOrder, which is -1 until a
+// node-local rebuild runs. The merging block's hash sorts below its siblings while its
+// height sorts above, so hash-only and order-based rules disagree.
+BOOST_AUTO_TEST_CASE(dag_sibling_precedence_is_independent_of_dag_order_rebuilds)
+{
+    const int nDAGHeight = FORK_HEIGHT_DAG;
+    BOOST_REQUIRE(nDAGHeight + 3 < FORK_HEIGHT_EPOCH_STATE_V3);
+
+    CBlockIndex* pOldBest = pindexBest;
+
+    // hMerge is the smallest of the five, so the pre-rebuild hash rule answers "no
+    // sibling precedes me" while the height rule and any rebuilt order answer "both do".
+    uint256 hMerge(0x9da0001);
+    uint256 hSiblingA(0x9da0002);
+    uint256 hSiblingB(0x9da0003);
+    uint256 hParent(0x9da0004);
+    uint256 hChild(0x9da0005);
+    BOOST_REQUIRE(hMerge < hSiblingA && hMerge < hSiblingB);
+
+    CBlockIndex parent;
+    CBlockIndex siblingA;
+    CBlockIndex siblingB;
+    CBlockIndex child;
+    CBlockIndex merge;
+    parent.nHeight = nDAGHeight;
+    siblingA.nHeight = nDAGHeight + 1;
+    siblingB.nHeight = nDAGHeight + 1;
+    child.nHeight = nDAGHeight + 2;
+    merge.nHeight = nDAGHeight + 3;
+    siblingA.pprev = &parent;
+    siblingB.pprev = &parent;
+    child.pprev = &siblingA;
+    merge.pprev = &child;
+
+    mapBlockIndex[hParent] = &parent;
+    mapBlockIndex[hSiblingA] = &siblingA;
+    mapBlockIndex[hSiblingB] = &siblingB;
+    mapBlockIndex[hChild] = &child;
+    mapBlockIndex[hMerge] = &merge;
+    parent.phashBlock = &mapBlockIndex.find(hParent)->first;
+    siblingA.phashBlock = &mapBlockIndex.find(hSiblingA)->first;
+    siblingB.phashBlock = &mapBlockIndex.find(hSiblingB)->first;
+    child.phashBlock = &mapBlockIndex.find(hChild)->first;
+    merge.phashBlock = &mapBlockIndex.find(hMerge)->first;
+
+    std::vector<uint256> noParents;
+    std::vector<uint256> ofParent(1, hParent);
+    std::vector<uint256> ofSiblingA(1, hSiblingA);
+    // The merge commits the second height-(nDAGHeight+1) block and the shared parent, so
+    // both of them are siblings of the merge and both are inside its reachable past.
+    std::vector<uint256> ofChildAndParent;
+    ofChildAndParent.push_back(hChild);
+    ofChildAndParent.push_back(hSiblingB);
+    ofChildAndParent.push_back(hParent);
+
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&parent, noParents));
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&siblingA, ofParent));
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&siblingB, ofParent));
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&child, ofSiblingA));
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&merge, ofChildAndParent));
+
+    const std::set<uint256> siblings = g_dagManager.GetDAGSiblingBlocks(hMerge);
+    BOOST_REQUIRE(siblings.count(hSiblingA));
+    BOOST_REQUIRE(siblings.count(hSiblingB));
+
+    // Node A: no rebuild has ever run here, so every order is still unassigned.
+    CBlockDAGData dataFresh;
+    BOOST_REQUIRE(g_dagManager.GetDAGData(hMerge, dataFresh));
+    BOOST_REQUIRE_EQUAL(dataFresh.nDAGOrder, -1);
+    const bool fFreshA = DAGSiblingPrecedesBlock(hMerge, hSiblingA);
+    const bool fFreshB = DAGSiblingPrecedesBlock(hMerge, hSiblingB);
+
+    // Node B: restarted once, or crossed the tip-flood threshold more than 60s after its
+    // last rebuild. Same committed DAG, different local cache.
+    pindexBest = &merge;
+    g_dagManager.RebuildDAGOrder();
+    CBlockDAGData dataRebuilt;
+    CBlockDAGData dataSiblingA;
+    BOOST_REQUIRE(g_dagManager.GetDAGData(hMerge, dataRebuilt));
+    BOOST_REQUIRE(g_dagManager.GetDAGData(hSiblingA, dataSiblingA));
+    BOOST_REQUIRE_MESSAGE(dataRebuilt.nDAGOrder >= 0 && dataSiblingA.nDAGOrder >= 0,
+                          "the rebuild did not reach the shape, so the two node states are "
+                          "not actually different and the test proves nothing");
+    BOOST_REQUIRE_MESSAGE(dataSiblingA.nDAGOrder < dataRebuilt.nDAGOrder,
+                          "DAG order and hash order must disagree here or the shape cannot "
+                          "expose an order-dependent rule");
+    const bool fRebuiltA = DAGSiblingPrecedesBlock(hMerge, hSiblingA);
+    const bool fRebuiltB = DAGSiblingPrecedesBlock(hMerge, hSiblingB);
+
+    BOOST_CHECK_MESSAGE(fFreshA == fRebuiltA && fFreshB == fRebuiltB,
+                        "sibling precedence changed when only node-local DAG-order state "
+                        "changed: the two nodes accept different blocks");
+
+    // And the verdict both nodes reach is the committed one: a lower height always precedes.
+    BOOST_CHECK(fRebuiltA);
+    BOOST_CHECK(fRebuiltB);
+    // A block never precedes itself, and equal heights fall back to the committed hash.
+    BOOST_CHECK(!DAGSiblingPrecedesBlock(hSiblingA, hSiblingA));
+    BOOST_CHECK(DAGSiblingPrecedesBlock(hSiblingB, hSiblingA));
+    BOOST_CHECK(!DAGSiblingPrecedesBlock(hSiblingA, hSiblingB));
+
+    g_dagManager.RemoveBlockDAGData(hMerge);
+    g_dagManager.RemoveBlockDAGData(hChild);
+    g_dagManager.RemoveBlockDAGData(hSiblingB);
+    g_dagManager.RemoveBlockDAGData(hSiblingA);
+    g_dagManager.RemoveBlockDAGData(hParent);
+    mapBlockIndex.erase(hMerge);
+    mapBlockIndex.erase(hChild);
+    mapBlockIndex.erase(hSiblingB);
+    mapBlockIndex.erase(hSiblingA);
+    mapBlockIndex.erase(hParent);
+    pindexBest = pOldBest;
+}
+
+// BuildEpochStateV2Compat orders its epoch blue-before-red and sums trust over blue blocks
+// only, both read from mapDAGData.fBlue, which ColorBlock assigns as a side effect of
+// whichever blocks this node had when it coloured. That is consensus state through the
+// epoch digest, and the only thing keeping it away from mainnet is an unenforced coincidence
+// of heights: the first post-DAG epoch crosses at exactly FORK_HEIGHT_EPOCH_STATE_V3, so the
+// "<" in the caller's gate fails. Change the epoch interval or the V3 offset and the legacy
+// path silently becomes consensus. This replays the caller's gate over the whole fork
+// window and fails if any crossing ever reaches it.
+BOOST_AUTO_TEST_CASE(v2compat_epoch_build_is_unreachable_at_every_post_dag_crossing)
+{
+    const bool fOldRegTest = fRegTest;
+    const bool fOldTestNet = fTestNet;
+
+    struct CNetworkArm { const char* strName; bool fRegTestArm; bool fTestNetArm; };
+    const CNetworkArm arms[] = { { "mainnet", false, false },
+                                 { "regtest", true,  false },
+                                 { "testnet", false, true  } };
+
+    for (size_t i = 0; i < sizeof(arms) / sizeof(arms[0]); i++)
+    {
+        fRegTest = arms[i].fRegTestArm;
+        fTestNet = arms[i].fTestNetArm;
+
+        const int nDAG = FORK_HEIGHT_DAG;
+        const int nV2 = FORK_HEIGHT_EPOCH_STATE_V2;
+        const int nV3 = FORK_HEIGHT_EPOCH_STATE_V3;
+
+        // No post-DAG epoch may end before the V2 schema starts, or the pre-V2 builder
+        // would own a DAG-era epoch.
+        BOOST_CHECK_MESSAGE(nV2 == nDAG,
+                            std::string(arms[i].strName) +
+                                ": schema V2 must start exactly at the DAG fork");
+
+        if (nV3 == TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET)
+        {
+            // Documented release blocker: with the sentinel in place every post-DAG epoch
+            // on this network is built by the legacy fBlue path. Leave the arm here rather
+            // than assert a property the sentinel cannot satisfy -- but the moment a real
+            // height is set, the checks below start applying to it.
+            BOOST_CHECK_MESSAGE(arms[i].fTestNetArm,
+                                std::string(arms[i].strName) +
+                                    ": only public testnet may carry the V3 sentinel");
+            continue;
+        }
+
+        BOOST_CHECK_MESSAGE(nV3 == nDAG + FINALITY_EPOCH_INTERVAL_POST_DAG,
+                            std::string(arms[i].strName) +
+                                ": schema V3 must activate on the first post-DAG epoch "
+                                "crossing, otherwise the legacy fBlue epoch build becomes "
+                                "consensus for the epochs in between");
+
+        // Replay SetBestChainInner's gate over the fork window, including several epochs
+        // on each side of it.
+        const int nFrom = std::max(1, nDAG - 3 * FINALITY_EPOCH_INTERVAL_PRE_DAG);
+        const int nTo = nDAG + 3 * FINALITY_EPOCH_INTERVAL_POST_DAG;
+        for (int nHeight = nFrom; nHeight <= nTo; nHeight++)
+        {
+            const int nCurrentEpoch = GetEpochForHeight(nHeight);
+            const int nPreviousEpoch = GetEpochForHeight(nHeight - 1);
+            if (nCurrentEpoch <= nPreviousEpoch)
+                continue;
+            const int nEpochEnd =
+                GetEpochBoundaryHeight(nPreviousEpoch + 1, nHeight) - 1;
+            const bool fV2CompatRuns = (nHeight < nV3) && (nEpochEnd >= nV2);
+            BOOST_CHECK_MESSAGE(!fV2CompatRuns,
+                                std::string(arms[i].strName) +
+                                    ": epoch crossing at height " +
+                                    std::to_string(nHeight) +
+                                    " reaches BuildEpochStateV2Compat, which orders by "
+                                    "node-local fBlue");
+        }
+    }
+
+    fRegTest = fOldRegTest;
+    fTestNet = fOldTestNet;
 }
 
 BOOST_AUTO_TEST_CASE(wallet_shielded_positions_use_active_block_prefix)
