@@ -58,6 +58,19 @@ static const int64_t FINALITY_VOTER_POLL_MS_POST_DAG = 1000;
 // Bounded retries per epoch so a node with no eligible stake does not rescan
 // its wallet on every poll of the window.
 static const int FINALITY_VOTE_ATTEMPTS_PER_EPOCH = 4;
+// Ordering margin, in blocks, between the boundary block connecting here and this
+// node emitting the vote that names it. A peer cannot check a vote before it holds
+// the block the vote names, and under headers-first relay the body trails the header
+// by a getdata round trip, so a vote emitted at the instant of connect arrives first.
+// Two blocks rather than one because one only cancels the round trip that was lost,
+// leaving no slack for a peer that is fetching a large block or is a hop further out.
+// Node-local: consensus accepts a vote anywhere in the inclusion window either way,
+// and CFinalityVoteSchedule::Claim clamps this below the producer window so it can
+// never empty the emission band.
+static const int FINALITY_VOTE_EMIT_OFFSET = 2;
+// Cap on note votes held waiting for the block they name. Bounded because a peer
+// chooses the block hash a vote points at, so an unbounded hold is a memory sink.
+static const unsigned int FINALITY_MAX_DEFERRED_NOTE_VOTES = 256;
 static const int FINALITY_MAX_STAKE_PROOFS = 8;      // keep coinbase vote commitments under standard script element size
 
 /** Three-way result used by consensus callers.  Relay-facing APIs retain their
@@ -1320,10 +1333,23 @@ public:
                                   const std::vector<CNoteFinalityVote>& vVotes);
     /** Load persisted connected note votes and their carrier index at startup. */
     bool LoadNoteVotes(CTxDB& txdb);
-    /** Relay-side pending note votes (verify-once, gossiped). */
+    /** Relay-side pending note votes (verify-once, gossiped). pResult separates a vote
+     *  this node judged bad from one it could not judge yet. */
     bool AddPendingNoteVote(const CNoteFinalityVote& vote, CTxDB& txdb,
-                            std::string* pstrError = NULL);
+                            std::string* pstrError = NULL,
+                            FinalityResult* pResult = NULL);
     bool HaveNoteVote(const uint256& hashVote) const;
+    /** Hold a note vote whose epoch block has not arrived, keyed by that block. A note
+     *  vote is single-shot -- its producer retires the note in a per-epoch cast set and
+     *  never sends a second -- so dropping one costs the epoch that voter for good. */
+    void DeferNoteVoteForUnknownBlock(const CNoteFinalityVote& vote);
+    /** Blocks that held note votes are waiting on. */
+    std::vector<uint256> GetDeferredNoteVoteBlockHashes() const;
+    /** Hand back the held votes whose block is in setArrivedBlocks, dropping any whose
+     *  epoch the chain has left behind. */
+    std::vector<CNoteFinalityVote> TakeDeferredNoteVotes(
+        const std::set<uint256>& setArrivedBlocks, int nCurrentEpoch);
+    unsigned int GetDeferredNoteVoteCount() const;
     std::vector<CNoteFinalityVote> GetPendingNoteVotesForBlock(
         int nBlockHeight,
         unsigned int nMaxVotes = FINALITY_MAX_BLOCK_NOTE_VOTES) const;
@@ -1496,6 +1522,9 @@ private:
     std::map<int, std::map<uint256, uint256>> mapEpochCountedNoteVotes;   // epoch -> tag -> vote hash
     std::map<int, std::set<uint256>> mapEpochEquivocatedNoteVotes;
     std::map<uint256, CNoteFinalityVote> mapPendingNoteVotes;
+    // Note votes that arrived before the block they name, keyed by that block hash so
+    // the expensive re-check only runs once the block is actually here.
+    std::map<uint256, std::map<uint256, CNoteFinalityVote>> mapDeferredNoteVotes;
     std::map<int, std::set<CKeyID>> mapEpochVoters;  // one vote per key per epoch
     std::map<int, int> mapEpochTransparentVoteCount;
     std::map<int, int> mapEpochPrivateVoteCount;

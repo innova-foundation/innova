@@ -482,4 +482,147 @@ BOOST_AUTO_TEST_CASE(nonsense_tip_reports_are_ignored)
     BOOST_CHECK_EQUAL(sched.LatchedEpoch(), -1);
 }
 
+// ---------------------------------------------------------------------------
+// Emission ordering margin: votes are emitted a margin (in blocks) after the boundary.
+// ---------------------------------------------------------------------------
+
+BOOST_AUTO_TEST_CASE(emit_offset_holds_the_claim_until_the_tip_has_moved_on)
+{
+    CFinalityVoteSchedule sched;
+    const int nEpoch = 6, nBoundary = BoundaryOf(nEpoch), nWindow = 18, nOffset = 2;
+    BOOST_CHECK(sched.OnTipChanged(nBoundary, nEpoch, nBoundary));
+
+    int nOut = -1;
+    for (int nAhead = 0; nAhead < nOffset; nAhead++)
+    {
+        BOOST_CHECK_EQUAL(
+            (int)sched.Claim(nBoundary + nAhead, nWindow, 4, nOut, nOffset),
+            (int)FINALITY_VOTE_CLAIM_EARLY);
+        BOOST_CHECK_EQUAL(nOut, -1);
+    }
+    // Held, not lost: the latch is what carries the epoch, so the margin delays the
+    // vote and never costs it.
+    BOOST_CHECK(sched.HasWork());
+    BOOST_CHECK_EQUAL(sched.LatchedEpoch(), nEpoch);
+    // And it spends no attempt, or a margin of N would eat N of the retry budget.
+    BOOST_CHECK_EQUAL(sched.Attempts(), 0);
+
+    BOOST_CHECK_EQUAL((int)sched.Claim(nBoundary + nOffset, nWindow, 4, nOut, nOffset),
+                      (int)FINALITY_VOTE_CLAIM_OK);
+    BOOST_CHECK_EQUAL(nOut, nEpoch);
+    BOOST_CHECK_EQUAL(sched.Attempts(), 1);
+}
+
+// The node-local margin is clamped below the producer window so it can never cost an epoch.
+BOOST_AUTO_TEST_CASE(emit_offset_can_never_empty_the_emission_band)
+{
+    for (int nWindow = 1; nWindow <= 24; nWindow++)
+    {
+        for (int nOffset = 0; nOffset <= 30; nOffset++)
+        {
+            const int nEpoch = 5, nBoundary = BoundaryOf(nEpoch);
+            CFinalityVoteSchedule sched;
+            BOOST_CHECK(sched.OnTipChanged(nBoundary, nEpoch, nBoundary));
+
+            // Walk the tip across the whole window and record where a claim lands.
+            int nClaimedAt = -1;
+            for (int nAhead = 0; nAhead < nWindow; nAhead++)
+            {
+                int nOut = -1;
+                if (sched.Claim(nBoundary + nAhead, nWindow, 4, nOut, nOffset) ==
+                    FINALITY_VOTE_CLAIM_OK)
+                {
+                    nClaimedAt = nAhead;
+                    BOOST_CHECK_EQUAL(nOut, nEpoch);
+                    break;
+                }
+            }
+            // Some height inside the window always claims, for every offset.
+            BOOST_CHECK_MESSAGE(nClaimedAt >= 0,
+                                "no claim inside window " << nWindow
+                                << " at offset " << nOffset);
+            // And it is inside the window, which is what keeps the vote includable:
+            // the consensus rule accepts [boundary, boundary + inclusion window).
+            BOOST_CHECK(nClaimedAt < nWindow);
+            BOOST_CHECK(nClaimedAt <= nOffset);
+        }
+    }
+}
+
+// The margin is a block count off the latched boundary, so replaying an epoch at
+// several spacings must give the same emission height.
+BOOST_AUTO_TEST_CASE(emit_offset_is_independent_of_block_spacing)
+{
+    const int nEpoch = 9, nBoundary = BoundaryOf(nEpoch), nWindow = 18, nOffset = 2;
+
+    int nFirstEmission = -1;
+    // Blocks per producer poll: 1 block/poll at 1s spacing and a 1s poll, 5 at 200ms,
+    // and a fractional rate the other way is just a poll that sees no new block.
+    const int vStride[] = { 1, 2, 3, 5, 8 };
+    for (unsigned int i = 0; i < sizeof(vStride) / sizeof(vStride[0]); i++)
+    {
+        CFinalityVoteSchedule sched;
+        BOOST_CHECK(sched.OnTipChanged(nBoundary, nEpoch, nBoundary));
+
+        int nEmission = -1;
+        for (int nAhead = 0; nAhead < nWindow; nAhead += vStride[i])
+        {
+            int nOut = -1;
+            if (sched.Claim(nBoundary + nAhead, nWindow, 4, nOut, nOffset) ==
+                FINALITY_VOTE_CLAIM_OK)
+            {
+                nEmission = nAhead;
+                break;
+            }
+        }
+        // Every spacing emits, and never before the margin has actually elapsed.
+        BOOST_CHECK_MESSAGE(nEmission >= 0, "no emission at stride " << vStride[i]);
+        BOOST_CHECK(nEmission >= nOffset);
+        BOOST_CHECK(nEmission < nWindow);
+        if (i == 0)
+            nFirstEmission = nEmission;
+    }
+    BOOST_CHECK_EQUAL(nFirstEmission, nOffset);
+}
+
+// A reorg that moves the boundary moves both terms of the margin together, because
+// both are counted off the boundary the latch is holding. The margin therefore cannot
+// be satisfied by height carried over from the chain the reorg replaced.
+BOOST_AUTO_TEST_CASE(emit_offset_is_measured_against_the_relatched_boundary)
+{
+    CFinalityVoteSchedule sched;
+    const int nEpoch = 8, nBoundary = BoundaryOf(nEpoch), nWindow = 18, nOffset = 2;
+    const int nPrev = nEpoch - 1, nPrevBoundary = BoundaryOf(nPrev);
+
+    BOOST_CHECK(sched.OnTipChanged(nBoundary + 5, nEpoch, nBoundary));
+    int nOut = -1;
+    BOOST_CHECK_EQUAL((int)sched.Claim(nBoundary + 5, nWindow, 4, nOut, nOffset),
+                      (int)FINALITY_VOTE_CLAIM_OK);
+    sched.Release(nOut, true);
+
+    // The reorg lands the tip back in the previous epoch, which reopens it.
+    BOOST_CHECK(sched.OnTipChanged(nPrevBoundary, nPrev, nPrevBoundary));
+    BOOST_CHECK_EQUAL(sched.LatchedEpoch(), nPrev);
+    // The margin restarts from the boundary now latched, not from the height the
+    // node had already reached before the reorg.
+    BOOST_CHECK_EQUAL((int)sched.Claim(nPrevBoundary, nWindow, 4, nOut, nOffset),
+                      (int)FINALITY_VOTE_CLAIM_EARLY);
+    BOOST_CHECK_EQUAL((int)sched.Claim(nPrevBoundary + nOffset, nWindow, 4, nOut, nOffset),
+                      (int)FINALITY_VOTE_CLAIM_OK);
+    BOOST_CHECK_EQUAL(nOut, nPrev);
+}
+
+// An offset of 0 is the pre-fix behaviour, and the default, so every existing caller
+// and test keeps claiming at the boundary itself.
+BOOST_AUTO_TEST_CASE(emit_offset_defaults_to_no_margin)
+{
+    CFinalityVoteSchedule sched;
+    const int nEpoch = 11, nBoundary = BoundaryOf(nEpoch);
+    BOOST_CHECK(sched.OnTipChanged(nBoundary, nEpoch, nBoundary));
+    int nOut = -1;
+    BOOST_CHECK_EQUAL((int)sched.Claim(nBoundary, 18, 4, nOut),
+                      (int)FINALITY_VOTE_CLAIM_OK);
+    BOOST_CHECK_EQUAL(nOut, nEpoch);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

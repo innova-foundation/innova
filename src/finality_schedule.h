@@ -15,6 +15,7 @@ enum FinalityVoteClaim
     FINALITY_VOTE_CLAIM_BUSY,     //!< another producer holds the attempt
     FINALITY_VOTE_CLAIM_LATE,     //!< the producer window closed before the claim
     FINALITY_VOTE_CLAIM_SPENT,    //!< attempt budget for this epoch is used up
+    FINALITY_VOTE_CLAIM_EARLY,    //!< the ordering margin after the boundary has not elapsed
 };
 
 class CFinalityVoteSchedule
@@ -30,12 +31,13 @@ public:
      *  epoch rather than on every block. */
     bool OnTipChanged(int nHeight, int nEpoch, int nBoundary);
 
-    /** Producer: take an attempt at the outstanding epoch. nProducerWindow is the
-     *  node-local deadline in blocks after the boundary; <= 0 disables it. */
+    /** Producer: attempt the outstanding epoch. nProducerWindow is the deadline in blocks after
+     *  the boundary; nEmitOffset is the margin the tip must pass first. <= 0 disables either. */
     FinalityVoteClaim Claim(int nTipHeight,
                             int nProducerWindow,
                             int nMaxAttempts,
-                            int& nEpochOut);
+                            int& nEpochOut,
+                            int nEmitOffset = 0);
 
     /** Producer: hand an accepted claim back. fProduced settles the epoch. */
     void Release(int nEpoch, bool fProduced);

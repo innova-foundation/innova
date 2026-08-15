@@ -4874,9 +4874,11 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb,
             return reject("finality vote outside epoch vote-inclusion window");
     }
 
+    // Local state, not a verdict: see the matching note-vote path. A vote relayed
+    // ahead of the block it names is checkable as soon as that block arrives.
     std::map<uint256, CBlockIndex*>::iterator miEpoch = mapBlockIndex.find(vote.hashBlock);
     if (miEpoch == mapBlockIndex.end())
-        return reject("epoch block is not known");
+        return localState("epoch block is not known");
     if (miEpoch->second == NULL)
         return localState("epoch block index entry is corrupt");
     CBlockIndex* pEpochBlock = miEpoch->second;
@@ -6911,9 +6913,13 @@ bool CFinalityTracker::CheckNoteVoteForContext(const CNoteFinalityVote& vote, CT
             return reject("note finality vote outside epoch vote-inclusion window");
     }
 
+    // Not holding the block yet is this node's own state, not a property of the vote:
+    // the same vote is checkable the moment the block lands. Calling it invalid made a
+    // validity verdict out of node-local state -- the ConnectBlock-split class -- and
+    // penalised an honest peer for relaying ahead of the block body.
     std::map<uint256, CBlockIndex*>::iterator miEpoch = mapBlockIndex.find(vote.hashBlock);
     if (miEpoch == mapBlockIndex.end())
-        return reject("note vote epoch block is not known");
+        return localState("note vote epoch block is not known");
     if (miEpoch->second == NULL)
         return localState("note vote epoch block index entry is corrupt");
     CBlockIndex* pEpochBlock = miEpoch->second;
@@ -7146,22 +7152,99 @@ bool CFinalityTracker::LoadNoteVotes(CTxDB& txdb)
 }
 
 bool CFinalityTracker::AddPendingNoteVote(const CNoteFinalityVote& vote, CTxDB& txdb,
-                                          std::string* pstrError)
+                                          std::string* pstrError, FinalityResult* pResult)
 {
+    if (pResult)
+        *pResult = FINALITY_RESULT_INVALID;
     const uint256 hashVote = vote.GetHash();
     {
         LOCK(cs_finality);
         if (mapNoteVotesByHash.count(hashVote) || mapPendingNoteVotes.count(hashVote))
+        {
+            // Already held. Local state, so a caller that caches verdicts must not
+            // cache this one as a refusal.
+            if (pResult)
+                *pResult = FINALITY_RESULT_LOCAL_STATE;
             return false;
+        }
     }
     // Relay-time context only: the window is a connect-time rule and a relayed vote may
     // legitimately arrive before the block that will carry it.
-    if (!CheckNoteVoteForContext(vote, txdb, pstrError, -1, NULL))
+    if (!CheckNoteVoteForContext(vote, txdb, pstrError, -1, pResult))
         return false;
 
     LOCK(cs_finality);
     mapPendingNoteVotes[hashVote] = vote;
+    if (pResult)
+        *pResult = FINALITY_RESULT_OK;
     return true;
+}
+
+void CFinalityTracker::DeferNoteVoteForUnknownBlock(const CNoteFinalityVote& vote)
+{
+    const uint256 hashVote = vote.GetHash();
+    LOCK(cs_finality);
+    if (mapNoteVotesByHash.count(hashVote) || mapPendingNoteVotes.count(hashVote))
+        return;
+    unsigned int nHeld = 0;
+    for (const auto& pair : mapDeferredNoteVotes)
+        nHeld += (unsigned int)pair.second.size();
+    if (nHeld >= FINALITY_MAX_DEFERRED_NOTE_VOTES)
+        return;
+    mapDeferredNoteVotes[vote.hashBlock][hashVote] = vote;
+}
+
+std::vector<uint256> CFinalityTracker::GetDeferredNoteVoteBlockHashes() const
+{
+    LOCK(cs_finality);
+    std::vector<uint256> vBlocks;
+    vBlocks.reserve(mapDeferredNoteVotes.size());
+    for (const auto& pair : mapDeferredNoteVotes)
+        vBlocks.push_back(pair.first);
+    return vBlocks;
+}
+
+unsigned int CFinalityTracker::GetDeferredNoteVoteCount() const
+{
+    LOCK(cs_finality);
+    unsigned int nHeld = 0;
+    for (const auto& pair : mapDeferredNoteVotes)
+        nHeld += (unsigned int)pair.second.size();
+    return nHeld;
+}
+
+std::vector<CNoteFinalityVote> CFinalityTracker::TakeDeferredNoteVotes(
+    const std::set<uint256>& setArrivedBlocks, int nCurrentEpoch)
+{
+    LOCK(cs_finality);
+    std::vector<CNoteFinalityVote> vTaken;
+    std::map<uint256, std::map<uint256, CNoteFinalityVote> >::iterator it =
+        mapDeferredNoteVotes.begin();
+    while (it != mapDeferredNoteVotes.end())
+    {
+        if (setArrivedBlocks.count(it->first))
+        {
+            for (const auto& pair : it->second)
+                vTaken.push_back(pair.second);
+            mapDeferredNoteVotes.erase(it++);
+            continue;
+        }
+        // An epoch the chain has left behind can no longer carry the vote, so holding
+        // it would only grow the map until the cap starved a live one.
+        std::map<uint256, CNoteFinalityVote>::iterator itVote = it->second.begin();
+        while (itVote != it->second.end())
+        {
+            if (itVote->second.nEpoch < nCurrentEpoch - 1)
+                it->second.erase(itVote++);
+            else
+                ++itVote;
+        }
+        if (it->second.empty())
+            mapDeferredNoteVotes.erase(it++);
+        else
+            ++it;
+    }
+    return vTaken;
 }
 
 bool CFinalityTracker::HaveNoteVote(const uint256& hashVote) const
@@ -8218,7 +8301,21 @@ bool ProcessMessageFinality(CNode* pfrom, const std::string& strCommand, CDataSt
 
         CTxDB txdb("r");
         std::string strError;
-        const bool fValid = g_finalityTracker.AddPendingNoteVote(vote, txdb, &strError);
+        FinalityResult noteResult = FINALITY_RESULT_INVALID;
+        const bool fValid =
+            g_finalityTracker.AddPendingNoteVote(vote, txdb, &strError, &noteResult);
+        if (!fValid && noteResult == FINALITY_RESULT_LOCAL_STATE)
+        {
+            // Nothing here says the vote is bad; this node just cannot check it yet,
+            // normally because the block it names is still a getdata behind its header.
+            // Caching that as a refusal would burn the vote for good: a note vote is
+            // single-shot, so its producer will never send another.
+            g_finalityTracker.DeferNoteVoteForUnknownBlock(vote);
+            if (fDebug)
+                printf("ProcessMessageFinality: holding note vote from peer %s: %s\n",
+                       pfrom->addr.ToString().c_str(), strError.c_str());
+            return true;
+        }
         NoteVoteVerifyCacheStore(hashVote, fValid);
         if (!fValid)
         {
@@ -9190,7 +9287,8 @@ FinalityVoteClaim ClaimFinalityVote(int nTipHeight, int& nEpochOut)
     return g_finalityVoteSchedule.Claim(nTipHeight,
                                         GetFinalityVoteProducerWindow(nTipHeight),
                                         FINALITY_VOTE_ATTEMPTS_PER_EPOCH,
-                                        nEpochOut);
+                                        nEpochOut,
+                                        FINALITY_VOTE_EMIT_OFFSET);
 }
 
 void ReleaseFinalityVote(int nEpoch, bool fProduced)
@@ -9202,6 +9300,52 @@ void ReleaseFinalityVote(int nEpoch, bool fProduced)
 // ---------------------------------------------------------------------------
 // Finality Voter Thread
 // ---------------------------------------------------------------------------
+
+// Reconsider note votes that arrived ahead of the block they name, once that block is
+// here. Run on the voter loop rather than from the connect path: re-checking a note
+// vote verifies its proofs, which is far too much work to do while cs_main is held for
+// a block, and the inclusion window is 24 blocks against a 1s poll.
+static void ProcessDeferredNoteVotes(int nCurrentHeight)
+{
+    std::vector<uint256> vBlocks = g_finalityTracker.GetDeferredNoteVoteBlockHashes();
+    if (vBlocks.empty())
+        return;
+
+    std::set<uint256> setArrived;
+    {
+        LOCK(cs_main);
+        for (const uint256& hashBlock : vBlocks)
+            if (mapBlockIndex.count(hashBlock))
+                setArrived.insert(hashBlock);
+    }
+
+    std::vector<CNoteFinalityVote> vReady = g_finalityTracker.TakeDeferredNoteVotes(
+        setArrived, GetEpochForHeight(nCurrentHeight));
+    if (vReady.empty())
+        return;
+
+    CTxDB txdb("r");
+    for (const CNoteFinalityVote& vote : vReady)
+    {
+        std::string strError;
+        FinalityResult result = FINALITY_RESULT_INVALID;
+        if (!g_finalityTracker.AddPendingNoteVote(vote, txdb, &strError, &result))
+        {
+            // Dropped, not re-held: the block it was waiting on is here, so any
+            // remaining local-state failure is a node-level fault that re-holding
+            // would only turn into a re-verification loop.
+            if (fDebug)
+                printf("ProcessDeferredNoteVotes: dropped a held note vote: %s\n",
+                       strError.c_str());
+            continue;
+        }
+        printf("ProcessDeferredNoteVotes: accepted a note vote held for epoch block %s\n",
+               vote.hashBlock.ToString().substr(0, 10).c_str());
+        LOCK(cs_vNodes);
+        for (CNode* pnode : vNodes)
+            pnode->PushMessage(FINALITY_NOTE_VOTE_COMMAND, vote);
+    }
+}
 
 void ThreadFinalityVoter(void* parg)
 {
@@ -9250,6 +9394,10 @@ void ThreadFinalityVoter(void* parg)
             nLastTallyPassMs = GetTimeMillis();
             ProcessFinalityTallyCommittee();
         }
+
+        // Ahead of the claim: a vote this node held for a block that has since arrived
+        // still has to reach the pending set inside the same inclusion window.
+        ProcessDeferredNoteVotes(nCurrentHeight);
 
         // A tip advance may have arrived while this pass was busy; the latch
         // carries it, so claim against the tip as it stands now.

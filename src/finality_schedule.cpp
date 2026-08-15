@@ -34,13 +34,34 @@ bool CFinalityVoteSchedule::OnTipChanged(int nHeight, int nEpoch, int nBoundary)
 FinalityVoteClaim CFinalityVoteSchedule::Claim(int nTipHeight,
                                                int nProducerWindow,
                                                int nMaxAttempts,
-                                               int& nEpochOut)
+                                               int& nEpochOut,
+                                               int nEmitOffset)
 {
     nEpochOut = -1;
     if (!HasWork())
         return FINALITY_VOTE_CLAIM_IDLE;
     if (nInFlightEpoch == nLatchedEpoch)
         return FINALITY_VOTE_CLAIM_BUSY;
+    // Ordering margin. A vote names the boundary block, so a peer cannot check it
+    // before it holds that block; emitting in the same instant the boundary connects
+    // puts the vote ahead of the block body, which under headers-first relay still
+    // owes a getdata round trip. Counted in blocks, so the margin is whole block
+    // intervals at any spacing rather than a constant tuned to one.
+    //
+    // Clamped below the producer window, which is what keeps this node-local and
+    // unable to cost an epoch: the emission band is [min(offset, window-1), window),
+    // non-empty for any window >= 1. Both terms count blocks off the same latched
+    // boundary, so a reorg that moves the boundary moves them together and no block
+    // spacing can carry the tip out of the band between two polls without the LATE
+    // arm below catching it.
+    if (nEmitOffset > 0)
+    {
+        int nEffectiveOffset = nEmitOffset;
+        if (nProducerWindow > 0 && nEffectiveOffset > nProducerWindow - 1)
+            nEffectiveOffset = nProducerWindow - 1;
+        if (nTipHeight - nLatchedBoundary < nEffectiveOffset)
+            return FINALITY_VOTE_CLAIM_EARLY;
+    }
     // Measured against the tip now, not the tip that latched the boundary:
     // consensus only accepts the vote inside the inclusion window, so an epoch
     // observed late is already lost and must not cost a wallet scan.
