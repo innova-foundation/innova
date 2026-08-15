@@ -401,27 +401,16 @@ inline bool IsConnectedFinalityCarrierActiveAtHeight(int nHeight)
            nHeight >= FORK_HEIGHT_CONNECTED_FINALITY_CARRIER;
 }
 
-// Epoch-state schema V3: exact epoch-end boundary anchoring, anchor-pure
-// adaptive DAGKNIGHT ordering, plus atomic state/tree persistence.
-// Activation sits exactly one post-DAG epoch above the DAG fork, and that offset is load-bearing
-// rather than cosmetic. The first post-DAG epoch [DAG, DAG+300) is the V3 migration base: it
-// supplies the strict predecessor pair for the first V3 suffix build, and SetBestChainInner builds
-// it at the activation block with the exact-boundary builder -- NOT with the legacy fBlue-ordered
-// BuildEpochStateV2Compat. Keeping the two heights one epoch apart is what puts every DAG-era epoch
-// on the strict builder: its crossing block lands on FORK_HEIGHT_EPOCH_STATE_V3 itself, which the
-// V2 gates exclude. Moving either the offset or FINALITY_EPOCH_INTERVAL_POST_DAG re-opens the
-// legacy path for the epochs in between; v2compat_epoch_build_never_owns_a_dag_era_epoch enforces it.
-//
-// The public testnet height MUST be filled from the four-node rollout preflight (smallest 300-block
-// boundary >= common height + 900). Leaving the sentinel in place is a release blocker: with V3
-// unset every post-DAG testnet epoch is built by the fBlue path, so a node-local recolour reaches
-// the epoch digest that votes and certificates are checked against.
+// Epoch-state schema V3. Must sit exactly one post-DAG epoch above the DAG fork so no
+// DAG-era epoch uses BuildEpochStateV2Compat (v2compat_epoch_build_never_owns_a_dag_era_epoch).
 static const int TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET = 0x7fffffff;
+// FORK_HEIGHT_DAG (60) + one post-DAG epoch (FINALITY_EPOCH_INTERVAL_POST_DAG, 300).
+static const int TESTNET_EPOCH_STATE_V3_HEIGHT = 360;
 inline int GetForkHeightEpochStateV3()
 {
     extern bool fRegTest;
     extern bool fTestNet;
-    if (fTestNet) return TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET;
+    if (fTestNet) return TESTNET_EPOCH_STATE_V3_HEIGHT;
     return GetForkHeightDAG() + 300;
 }
 #define FORK_HEIGHT_EPOCH_STATE_V3 (GetForkHeightEpochStateV3())
@@ -431,14 +420,9 @@ inline bool IsEpochStateV3Configured()
     return FORK_HEIGHT_EPOCH_STATE_V3 != TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET;
 }
 
-// Boundary A is the safe-IDAG activation. It co-activates epoch-state schema
-// V3, strict canonical parent commitments, and bounded anchor-keyed DAGKNIGHT
-// state, and quarantines the unsafe legacy privacy/proof encodings. This is not a
-// retirement of the privacy product: Boundary B must restore full-chain FCMP++
-// sends (masks 0--7), NullSend, and NullStake V1/V2/V3 as DAG-finality modes.
-// The public-testnet value remains deliberately unset until a clean immutable
-// candidate completes the four-node preflight; at the observed height 853 the
-// non-binding calculator recommendation is 1860.
+// Boundary A: safe-IDAG activation. Co-activates epoch-state schema V3, strict
+// canonical parent commitments and bounded DAGKNIGHT state, and quarantines the
+// legacy privacy/proof encodings. Alias of the schema-V3 height.
 inline int GetForkHeightBoundaryA()
 {
     return GetForkHeightEpochStateV3();

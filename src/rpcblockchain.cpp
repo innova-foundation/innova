@@ -2000,7 +2000,7 @@ Value getfinalityinfo(const Array& params, bool fHelp)
         g_dagManager.GetEpochState(nCompletedEpoch, completedEpochState);
 
     std::string strEpochStateHealth = "ok";
-    if (fTestNet && FORK_HEIGHT_EPOCH_STATE_V3 == TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET)
+    if (!IsBoundaryAConfigured())
         strEpochStateHealth = "v3_activation_unset";
     else if (nRequiredEpochSchema == 0)
         strEpochStateHealth = "pre_activation";

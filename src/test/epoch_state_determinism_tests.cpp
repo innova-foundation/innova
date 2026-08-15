@@ -791,6 +791,60 @@ BOOST_AUTO_TEST_CASE(v3_reorg_suffix_includes_changed_migration_base)
                       nActivationEpoch + 1);
 }
 
+// Placement of schema V3 / Boundary A on every network. The height is a flag
+// day so the public-testnet value is pinned, and the derivations beside it fail
+// if the post-DAG offset or the epoch interval moves under that pinned value.
+BOOST_AUTO_TEST_CASE(epoch_state_v3_activates_one_post_dag_epoch_after_the_dag_fork)
+{
+    const bool fRegTestSaved = fRegTest;
+    const bool fTestNetSaved = fTestNet;
+
+    for (int i = 0; i < 3; ++i)
+    {
+        fRegTest = (i == 1);
+        fTestNet = (i == 2);
+        const char* pszNet = (i == 0) ? "mainnet" : (i == 1) ? "regtest" : "testnet";
+
+        const int nDAG = FORK_HEIGHT_DAG;
+        const int nV3 = FORK_HEIGHT_EPOCH_STATE_V3;
+
+        // Configured everywhere: an unset height makes every "< V3" gate vacuous.
+        BOOST_CHECK_MESSAGE(nV3 != TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET, pszNet);
+        BOOST_CHECK_MESSAGE(IsBoundaryAConfigured(), pszNet);
+
+        // Exactly one post-DAG epoch of lead, stated as the offset and again
+        // through the epoch numbering, so neither can move alone.
+        BOOST_CHECK_EQUAL(FORK_HEIGHT_EPOCH_STATE_V2, nDAG);
+        BOOST_CHECK_EQUAL(nV3, nDAG + FINALITY_EPOCH_INTERVAL_POST_DAG);
+        BOOST_CHECK_EQUAL(nV3 - nDAG, GetEpochInterval(nDAG));
+        BOOST_CHECK_EQUAL(GetEpochForHeight(nV3), GetEpochForHeight(nDAG) + 1);
+
+        // The strict builder rejects a partial epoch, so V3 has to be an exact
+        // epoch start whose predecessor is a complete post-DAG epoch.
+        const int nMigrationEpoch = GetEpochForHeight(nV3) - 1;
+        BOOST_CHECK_EQUAL(GetEpochBoundaryHeight(nMigrationEpoch, nV3), nDAG);
+        BOOST_CHECK_EQUAL(GetEpochBoundaryHeight(nMigrationEpoch + 1, nV3), nV3);
+
+        // Nothing DAG-era is left to the fBlue-dependent V2-compat builder: the
+        // migration base is the first post-DAG epoch, so every epoch the compat
+        // builder still owns ends below the DAG fork.
+        BOOST_CHECK_EQUAL(GetEpochForHeight(nDAG), nMigrationEpoch);
+
+        // Ladder ordering, and Boundary A as an alias of V3.
+        BOOST_CHECK(nDAG < nV3);
+        BOOST_CHECK_EQUAL(FORK_HEIGHT_BOUNDARY_A, nV3);
+        BOOST_CHECK(!IsBoundaryAActiveAtHeight(nV3 - 1));
+        BOOST_CHECK(IsBoundaryAActiveAtHeight(nV3));
+        BOOST_CHECK(FORK_HEIGHT_BOUNDARY_B >= FORK_HEIGHT_BOUNDARY_A);
+    }
+
+    fRegTest = fRegTestSaved;
+    fTestNet = fTestNetSaved;
+
+    // Pinned flag day: moving it must be a deliberate edit, not a side effect.
+    BOOST_CHECK_EQUAL(TESTNET_EPOCH_STATE_V3_HEIGHT, 360);
+}
+
 BOOST_AUTO_TEST_CASE(v2_testnet_linear_and_reorg_paths_are_byte_identical)
 {
     CEpochState linearState;
@@ -803,8 +857,13 @@ BOOST_AUTO_TEST_CASE(v2_testnet_linear_and_reorg_paths_are_byte_identical)
     // First derive the public-testnet V2 bytes through a clean linear arrival.
     {
         DAGHarness h(true);
-        BOOST_REQUIRE(FORK_HEIGHT_EPOCH_STATE_V3 ==
-                      TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET);
+        // On public testnet this epoch is the V3 migration base; the V2-compat
+        // builder must still be arrival-independent, since it produces the prefix.
+        BOOST_REQUIRE(IsBoundaryAConfigured());
+        BOOST_REQUIRE_EQUAL(FORK_HEIGHT_EPOCH_STATE_V3,
+                            FORK_HEIGHT_DAG + FINALITY_EPOCH_INTERVAL_POST_DAG);
+        BOOST_REQUIRE_EQUAL(GetEpochForHeight(FORK_HEIGHT_EPOCH_STATE_V3),
+                            GetEpochForHeight(FORK_HEIGHT_EPOCH_STATE_V2) + 1);
         const int E = GetEpochForHeight(FORK_HEIGHT_EPOCH_STATE_V2);
         const int hStart = GetEpochBoundaryHeight(E, FORK_HEIGHT_EPOCH_STATE_V2);
         const int hEnd = GetEpochBoundaryHeight(E + 1,
