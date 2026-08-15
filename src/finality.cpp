@@ -7233,6 +7233,15 @@ bool CFinalityTracker::AddPendingNoteVote(const CNoteFinalityVote& vote, CTxDB& 
     return true;
 }
 
+// Tip height for the hold bounds. Reads the plain height global rather than
+// dereferencing pindexBest: these run under cs_finality, which ConnectBlock takes while
+// holding cs_main, so this side must never reach for cs_main. A stale read only delays a
+// purge by a block, and the sentinel means "no chain yet", which disables the bound.
+static int DeferredNoteVoteTipHeight()
+{
+    return nBestHeight == std::numeric_limits<int>::max() ? -1 : nBestHeight;
+}
+
 unsigned int CFinalityTracker::PurgeDeferredNoteVotesLocked(int nTipHeight, int64_t nNow)
 {
     unsigned int nDropped = 0;
@@ -7285,7 +7294,7 @@ void CFinalityTracker::DeferNoteVoteForUnknownBlock(const CNoteFinalityVote& vot
         return;
     // Reclaim slots the bound has already retired before consulting the cap, so a
     // spammer's stale holds cannot squat on capacity an arriving honest vote needs.
-    PurgeDeferredNoteVotesLocked(pindexBest ? pindexBest->nHeight : -1, GetTime());
+    PurgeDeferredNoteVotesLocked(DeferredNoteVoteTipHeight(), GetTime());
     unsigned int nHeld = 0;
     for (const auto& pair : mapDeferredNoteVotes)
         nHeld += (unsigned int)pair.second.size();
@@ -7325,7 +7334,7 @@ std::vector<CNoteFinalityVote> CFinalityTracker::TakeDeferredNoteVotes(
     LOCK(cs_finality);
     std::vector<CNoteFinalityVote> vTaken;
     // Height and age bounds first: both retire only holds no carrier could still take.
-    PurgeDeferredNoteVotesLocked(pindexBest ? pindexBest->nHeight : -1, GetTime());
+    PurgeDeferredNoteVotesLocked(DeferredNoteVoteTipHeight(), GetTime());
     std::map<uint256, std::map<uint256, CDeferredNoteVote> >::iterator it =
         mapDeferredNoteVotes.begin();
     while (it != mapDeferredNoteVotes.end())
