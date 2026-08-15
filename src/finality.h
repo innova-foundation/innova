@@ -58,16 +58,10 @@ static const int64_t FINALITY_VOTER_POLL_MS_POST_DAG = 1000;
 // Bounded retries per epoch so a node with no eligible stake does not rescan
 // its wallet on every poll of the window.
 static const int FINALITY_VOTE_ATTEMPTS_PER_EPOCH = 4;
-// Ordering margin, in blocks, between the boundary block connecting here and this
-// node emitting the vote that names it. A peer cannot check a vote before it holds
-// the block the vote names, and under headers-first relay the body trails the header
-// by a getdata round trip, so a vote emitted at the instant of connect arrives first.
-// Two blocks rather than one because one only cancels the round trip that was lost,
-// leaving no slack for a peer that is fetching a large block or is a hop further out.
-// Node-local: consensus accepts a vote anywhere in the inclusion window either way,
-// and CFinalityVoteSchedule::Claim clamps this below the producer window so it can
-// never empty the emission band.
-static const int FINALITY_VOTE_EMIT_OFFSET = 2;
+// Blocks between the boundary block connecting and this node emitting the vote that
+// names it, so peers hold the block body before the vote arrives. Node-local;
+// CFinalityVoteSchedule clamps it below the producer window.
+static const int FINALITY_VOTE_EMIT_OFFSET_POST_DAG = 2;
 // Cap on note votes held waiting for the block they name. Bounded because a peer
 // chooses the block hash a vote points at, so an unbounded hold is a memory sink.
 static const unsigned int FINALITY_MAX_DEFERRED_NOTE_VOTES = 256;
@@ -224,6 +218,15 @@ inline int GetFinalityVoteProducerWindow(int nHeight)
     if (nHeight >= GetForkHeightDAG())
         return (FINALITY_VOTE_INCLUSION_WINDOW * 3) / 4;
     return FINALITY_VOTE_WINDOW;
+}
+
+/** Blocks the tip must advance past the boundary before this node emits its vote.
+ *  Zero pre-DAG, where the producer window is only FINALITY_VOTE_WINDOW blocks. */
+inline int GetFinalityVoteEmitOffset(int nHeight)
+{
+    if (nHeight >= GetForkHeightDAG())
+        return FINALITY_VOTE_EMIT_OFFSET_POST_DAG;
+    return 0;
 }
 
 /** Poll period of the vote-producing loops, in milliseconds. */

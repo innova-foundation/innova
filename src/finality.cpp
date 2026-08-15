@@ -9258,7 +9258,9 @@ void NotifyFinalityTipChanged(int nHeight)
     bool fWake = false;
     {
         boost::unique_lock<boost::mutex> lock(g_mutexFinalityVoteWake);
-        if (g_finalityVoteSchedule.OnTipChanged(nHeight, nEpoch, nBoundary))
+        if (g_finalityVoteSchedule.OnTipChanged(nHeight, nEpoch, nBoundary,
+                                                GetFinalityVoteProducerWindow(nHeight),
+                                                GetFinalityVoteEmitOffset(nHeight)))
         {
             g_fFinalityVoteWakePending = true;
             fWake = true;
@@ -9288,7 +9290,7 @@ FinalityVoteClaim ClaimFinalityVote(int nTipHeight, int& nEpochOut)
                                         GetFinalityVoteProducerWindow(nTipHeight),
                                         FINALITY_VOTE_ATTEMPTS_PER_EPOCH,
                                         nEpochOut,
-                                        FINALITY_VOTE_EMIT_OFFSET);
+                                        GetFinalityVoteEmitOffset(nTipHeight));
 }
 
 void ReleaseFinalityVote(int nEpoch, bool fProduced)

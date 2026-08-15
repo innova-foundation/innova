@@ -25,11 +25,14 @@ public:
 
     void Reset();
 
-    /** Chain event: the durable tip is nHeight, in epoch nEpoch which starts at
-     *  nBoundary. Returns true only on the edge where this advance newly left an
-     *  epoch outstanding, so the caller can wake the producer exactly once per
-     *  epoch rather than on every block. */
-    bool OnTipChanged(int nHeight, int nEpoch, int nBoundary);
+    /** Chain event: the durable tip is nHeight, in epoch nEpoch starting at nBoundary.
+     *  Returns true once per epoch, on the edge where an epoch is outstanding AND the
+     *  emission margin is reached. nProducerWindow only clamps nEmitOffset as Claim does. */
+    bool OnTipChanged(int nHeight, int nEpoch, int nBoundary,
+                      int nProducerWindow = 0, int nEmitOffset = 0);
+
+    /** The margin actually applied: never enough to empty the emission band. */
+    static int EffectiveEmitOffset(int nProducerWindow, int nEmitOffset);
 
     /** Producer: attempt the outstanding epoch. nProducerWindow is the deadline in blocks after
      *  the boundary; nEmitOffset is the margin the tip must pass first. <= 0 disables either. */
@@ -54,6 +57,9 @@ private:
     int nVotedEpoch;
     int nAttempts;
     int nInFlightEpoch;
+    // One wake per epoch even though the margin makes the edge a level for a couple of
+    // blocks: without this the producer would be re-woken on every block of the band.
+    bool fMarginSignalled;
 };
 
 #endif // INNOVA_FINALITY_SCHEDULE_H

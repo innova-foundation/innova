@@ -11,24 +11,50 @@ void CFinalityVoteSchedule::Reset()
     nVotedEpoch = -1;
     nAttempts = 0;
     nInFlightEpoch = -1;
+    fMarginSignalled = false;
 }
 
-bool CFinalityVoteSchedule::OnTipChanged(int nHeight, int nEpoch, int nBoundary)
+int CFinalityVoteSchedule::EffectiveEmitOffset(int nProducerWindow, int nEmitOffset)
+{
+    if (nEmitOffset <= 0)
+        return 0;
+    // Clamped below the producer window, which is what keeps the margin node-local and
+    // unable to cost an epoch: the emission band is [min(offset, window-1), window),
+    // non-empty for any window >= 1.
+    if (nProducerWindow > 0 && nEmitOffset > nProducerWindow - 1)
+        return nProducerWindow - 1;
+    return nEmitOffset;
+}
+
+bool CFinalityVoteSchedule::OnTipChanged(int nHeight, int nEpoch, int nBoundary,
+                                         int nProducerWindow, int nEmitOffset)
 {
     if (nEpoch < 0 || nBoundary < 0 || nHeight < nBoundary)
         return false;
+
+    if (nEpoch != nLatchedEpoch)
+    {
+        // Latched in either direction: a reorg that lands the tip back in an earlier
+        // epoch reopens that epoch's vote, which is what the old sampler did too.
+        nLatchedEpoch = nEpoch;
+        nLatchedBoundary = nBoundary;
+        nAttempts = 0;
+        nInFlightEpoch = -1;
+        fMarginSignalled = false;
+    }
+
     // An edge, not a level: an epoch stays outstanding until it is voted, so
     // reporting "work exists" on every tip would stop the producer ever sleeping.
-    if (nEpoch == nLatchedEpoch)
+    if (!HasWork() || fMarginSignalled)
+        return false;
+    // With a margin, wake when the tip reaches the edge, not at the boundary; waking early
+    // and sleeping a full poll lets a block burst cross the whole producer window.
+    if (nHeight - nLatchedBoundary <
+        EffectiveEmitOffset(nProducerWindow, nEmitOffset))
         return false;
 
-    // Latched in either direction: a reorg that lands the tip back in an earlier
-    // epoch reopens that epoch's vote, which is what the old sampler did too.
-    nLatchedEpoch = nEpoch;
-    nLatchedBoundary = nBoundary;
-    nAttempts = 0;
-    nInFlightEpoch = -1;
-    return HasWork();
+    fMarginSignalled = true;
+    return true;
 }
 
 FinalityVoteClaim CFinalityVoteSchedule::Claim(int nTipHeight,
@@ -42,26 +68,12 @@ FinalityVoteClaim CFinalityVoteSchedule::Claim(int nTipHeight,
         return FINALITY_VOTE_CLAIM_IDLE;
     if (nInFlightEpoch == nLatchedEpoch)
         return FINALITY_VOTE_CLAIM_BUSY;
-    // Ordering margin. A vote names the boundary block, so a peer cannot check it
-    // before it holds that block; emitting in the same instant the boundary connects
-    // puts the vote ahead of the block body, which under headers-first relay still
-    // owes a getdata round trip. Counted in blocks, so the margin is whole block
-    // intervals at any spacing rather than a constant tuned to one.
-    //
-    // Clamped below the producer window, which is what keeps this node-local and
-    // unable to cost an epoch: the emission band is [min(offset, window-1), window),
-    // non-empty for any window >= 1. Both terms count blocks off the same latched
-    // boundary, so a reorg that moves the boundary moves them together and no block
-    // spacing can carry the tip out of the band between two polls without the LATE
-    // arm below catching it.
-    if (nEmitOffset > 0)
-    {
-        int nEffectiveOffset = nEmitOffset;
-        if (nProducerWindow > 0 && nEffectiveOffset > nProducerWindow - 1)
-            nEffectiveOffset = nProducerWindow - 1;
-        if (nTipHeight - nLatchedBoundary < nEffectiveOffset)
-            return FINALITY_VOTE_CLAIM_EARLY;
-    }
+    // Ordering margin, in blocks: a vote names the boundary block, so it must not reach
+    // peers before that block does. Both terms count off the same latched boundary, so a
+    // reorg moves them together.
+    if (nTipHeight - nLatchedBoundary <
+        EffectiveEmitOffset(nProducerWindow, nEmitOffset))
+        return FINALITY_VOTE_CLAIM_EARLY;
     // Measured against the tip now, not the tip that latched the boundary:
     // consensus only accepts the vote inside the inclusion window, so an epoch
     // observed late is already lost and must not cost a wallet scan.

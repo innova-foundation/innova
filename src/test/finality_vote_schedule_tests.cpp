@@ -490,7 +490,7 @@ BOOST_AUTO_TEST_CASE(emit_offset_holds_the_claim_until_the_tip_has_moved_on)
 {
     CFinalityVoteSchedule sched;
     const int nEpoch = 6, nBoundary = BoundaryOf(nEpoch), nWindow = 18, nOffset = 2;
-    BOOST_CHECK(sched.OnTipChanged(nBoundary, nEpoch, nBoundary));
+    BOOST_CHECK(sched.OnTipChanged(nBoundary, nEpoch, nBoundary));  // no margin declared
 
     int nOut = -1;
     for (int nAhead = 0; nAhead < nOffset; nAhead++)
@@ -612,8 +612,57 @@ BOOST_AUTO_TEST_CASE(emit_offset_is_measured_against_the_relatched_boundary)
     BOOST_CHECK_EQUAL(nOut, nPrev);
 }
 
-// An offset of 0 is the pre-fix behaviour, and the default, so every existing caller
-// and test keeps claiming at the boundary itself.
+// Offset 0 is the default and claims at the boundary. The margin must also move the
+// wake, or the producer sleeps through the window after refusing its own claim.
+BOOST_AUTO_TEST_CASE(the_wake_edge_moves_with_the_margin)
+{
+    CFinalityVoteSchedule sched;
+    const int nEpoch = 12, nBoundary = BoundaryOf(nEpoch), nWindow = 18, nOffset = 2;
+
+    // The boundary itself is not the edge any more.
+    BOOST_CHECK(!sched.OnTipChanged(nBoundary, nEpoch, nBoundary, nWindow, nOffset));
+    BOOST_CHECK(sched.HasWork());
+    BOOST_CHECK(!sched.OnTipChanged(nBoundary + 1, nEpoch, nBoundary, nWindow, nOffset));
+
+    // Reaching the margin is, and a claim there succeeds -- the two agree, which is
+    // the whole point: the producer is woken exactly when it can act.
+    BOOST_CHECK(sched.OnTipChanged(nBoundary + nOffset, nEpoch, nBoundary, nWindow, nOffset));
+    int nOut = -1;
+    BOOST_CHECK_EQUAL((int)sched.Claim(nBoundary + nOffset, nWindow, 4, nOut, nOffset),
+                      (int)FINALITY_VOTE_CLAIM_OK);
+    BOOST_CHECK_EQUAL(nOut, nEpoch);
+
+    // Still one wake per epoch: the margin makes the edge a level for a couple of
+    // blocks, and re-waking on each of them would stop the producer ever sleeping.
+    for (int nAhead = nOffset + 1; nAhead < nWindow; nAhead++)
+        BOOST_CHECK(!sched.OnTipChanged(nBoundary + nAhead, nEpoch, nBoundary,
+                                        nWindow, nOffset));
+}
+
+// A margin wider than the window must still wake, or clamping the claim while leaving
+// the wake unclamped would strand the producer asleep for the whole epoch.
+BOOST_AUTO_TEST_CASE(the_wake_edge_survives_a_margin_wider_than_the_window)
+{
+    for (int nWindow = 1; nWindow <= 6; nWindow++)
+    {
+        CFinalityVoteSchedule sched;
+        const int nEpoch = 13, nBoundary = BoundaryOf(nEpoch), nOffset = 30;
+        int nWokeAt = -1;
+        for (int nAhead = 0; nAhead < nWindow; nAhead++)
+        {
+            if (sched.OnTipChanged(nBoundary + nAhead, nEpoch, nBoundary, nWindow, nOffset))
+            {
+                nWokeAt = nAhead;
+                break;
+            }
+        }
+        BOOST_CHECK_MESSAGE(nWokeAt >= 0, "never woke for window " << nWindow);
+        int nOut = -1;
+        BOOST_CHECK_EQUAL((int)sched.Claim(nBoundary + nWokeAt, nWindow, 4, nOut, nOffset),
+                          (int)FINALITY_VOTE_CLAIM_OK);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(emit_offset_defaults_to_no_margin)
 {
     CFinalityVoteSchedule sched;
