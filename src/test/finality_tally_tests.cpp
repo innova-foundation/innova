@@ -2078,8 +2078,17 @@ BOOST_AUTO_TEST_CASE(connect_context_rejects_note_votes_naming_unresolvable_epoc
     CFinalityTracker tracker;
     CTxDB txdb("r+");
 
-    const int nSavedNoteVoteHeight = nRegtestIV5NoteVoteHeight;
-    nRegtestIV5NoteVoteHeight = 1;
+    // Scoped, not restored by hand: a BOOST_REQUIRE added here later would throw past a
+    // manual restore and leave the fork height set for every case after this one.
+    struct ScopedNoteVoteHeight
+    {
+        int nSaved;
+        ScopedNoteVoteHeight(int nNew) : nSaved(nRegtestIV5NoteVoteHeight)
+        {
+            nRegtestIV5NoteVoteHeight = nNew;
+        }
+        ~ScopedNoteVoteHeight() { nRegtestIV5NoteVoteHeight = nSaved; }
+    } scopedNoteVoteHeight(1);
 
     const int voteEpoch = GetEpochForHeight(FORK_HEIGHT_DAG);
     const int voteHeight = GetEpochBoundaryHeight(voteEpoch, FORK_HEIGHT_DAG);
@@ -2135,8 +2144,6 @@ BOOST_AUTO_TEST_CASE(connect_context_rejects_note_votes_naming_unresolvable_epoc
     BOOST_CHECK(error !=
                 "note vote epoch block is not an ancestor of the including block");
     BOOST_CHECK(error != "note vote epoch block is not known");
-
-    nRegtestIV5NoteVoteHeight = nSavedNoteVoteHeight;
 }
 
 BOOST_AUTO_TEST_SUITE_END()
