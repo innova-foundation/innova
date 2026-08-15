@@ -551,7 +551,7 @@ std::string HelpMessage()
         "  -wallet=<dir>          " + _("Specify wallet file (within data directory)") + "\n" +
         "  -dbcache=<n>           " + _("Set database cache size in megabytes (default: 300)") + "\n" +
         "  -dblogsize=<n>         " + _("Set database disk log size in megabytes (default: 100)") + "\n" +
-        "  -nameindexbatch=<n>    " + _("Blocks the name index may defer its cursor over during initial block download; 0 commits every block (default: 1000)") + "\n" +
+        "  -nameindexbatch=<n>    " + _("Blocks the name index may defer its cursor over before committing, capped at 30 seconds; 0 commits every block (default: 1000)") + "\n" +
         "  -timeout=<n>           " + _("Specify connection timeout in milliseconds (default: 5000)") + "\n" +
         "  -proxy=<ip:port>       " + _("Connect through socks proxy") + "\n" +
         "  -socks=<n>             " + _("Select the version of socks proxy to use (4-5, default: 5)") + "\n" +

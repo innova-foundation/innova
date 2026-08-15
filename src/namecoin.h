@@ -391,22 +391,15 @@ bool CommitNameIndexTip(const CBlockIndex* pindexTip, std::string& strError);
 bool BlockHasNoNameEffects(const CBlock& block,
                            const std::set<uint256>& setDAGSkippedTxs);
 
-// Connect-side cursor batching for initial block download.  A block with no
-// name effects writes nothing but the cursor and its progress marker, and both
-// are single keys the next block overwrites, so the intermediate writes are
-// dead.  Defer them and let one flush write the last block's transition -- the
-// exact call the unbatched path would have made for that block.
-//
-// The batch holds no Berkeley DB handle or transaction between blocks, so it
-// takes no page locks and no reader can see a partially applied transition.
-// An interrupted batch leaves the cursor behind the canonical tip, which is
-// the condition startup already recovers from by rebuilding the index.
-//
-// -nameindexbatch bounds the deferral and 0 disables it, restoring the
-// per-block commit.
-static const int NAMEINDEX_IBD_BATCH_BLOCKS_DEFAULT = 1000;
+// Cursor-only blocks are deferred and flushed as one write of the last transition; an
+// interrupted batch leaves the cursor behind the tip, which startup rebuilds. Bounded by
+// block count and deferred age only, so IBD and tip-following share one path.
+static const int NAMEINDEX_BATCH_BLOCKS_DEFAULT = 1000;
+static const int64_t NAMEINDEX_BATCH_MAX_SECONDS = 30;
 int NameIndexBatchBlocks();
 bool NameIndexBatchingEnabled();
+// True once the pending batch has reached either bound.
+bool NameIndexCursorBatchDue();
 
 bool DeferNameIndexCursor(const CBlock& block, CBlockIndex* pindex,
                           const std::set<uint256>& setDAGSkippedTxs,

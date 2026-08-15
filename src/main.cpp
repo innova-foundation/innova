@@ -10526,13 +10526,9 @@ static bool PublishAndReplayCommittedEffects(CTxDB& txdb,
         return false;
     }
 
-    // Outside initial download the cadence stays per-block: the deferred
-    // cursor is durable before this transition is reported done, so a node
-    // following the tip commits exactly what it committed before. The block
-    // bound caps how far an interrupted download leaves the cursor behind.
-    if (HasPendingNameIndexCursor() &&
-        (!IsInitialBlockDownload() ||
-         PendingNameIndexCursorBlocks() >= NameIndexBatchBlocks()))
+    // Flush once the batch reaches its block count or its age bound, for catch-up and tip
+    // following alike.
+    if (NameIndexCursorBatchDue())
     {
         BLOCK_PHASE(BP_NAME_INDEX);
         std::string strNameError;

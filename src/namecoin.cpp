@@ -3853,6 +3853,7 @@ CBlockIndex* g_pPendingNameIndex = NULL;
 CNameIndexCursor g_pendingNameCursor;
 std::set<uint256> g_setPendingNameSkipped;
 int g_nPendingNameBlocks = 0;
+int64_t g_nPendingNameStarted = 0;
 
 } // namespace
 
@@ -3862,11 +3863,11 @@ int NameIndexBatchBlocks()
     if (nBatch < 0)
     {
         nBatch = (int)GetArg("-nameindexbatch",
-                             NAMEINDEX_IBD_BATCH_BLOCKS_DEFAULT);
+                             NAMEINDEX_BATCH_BLOCKS_DEFAULT);
         if (nBatch < 0)
             nBatch = 0;
-        if (nBatch > NAMEINDEX_IBD_BATCH_BLOCKS_DEFAULT)
-            nBatch = NAMEINDEX_IBD_BATCH_BLOCKS_DEFAULT;
+        if (nBatch > NAMEINDEX_BATCH_BLOCKS_DEFAULT)
+            nBatch = NAMEINDEX_BATCH_BLOCKS_DEFAULT;
     }
     return nBatch;
 }
@@ -3896,6 +3897,17 @@ void DiscardNameIndexCursorBatch()
     g_pendingNameCursor = CNameIndexCursor();
     g_setPendingNameSkipped.clear();
     g_nPendingNameBlocks = 0;
+    g_nPendingNameStarted = 0;
+}
+
+bool NameIndexCursorBatchDue()
+{
+    if (!g_fPendingNameCursor)
+        return false;
+    if (g_nPendingNameBlocks >= NameIndexBatchBlocks())
+        return true;
+    return g_nPendingNameStarted != 0 &&
+           GetTime() - g_nPendingNameStarted >= NAMEINDEX_BATCH_MAX_SECONDS;
 }
 
 bool DeferNameIndexCursor(const CBlock& block, CBlockIndex* pindex,
@@ -3913,6 +3925,8 @@ bool DeferNameIndexCursor(const CBlock& block, CBlockIndex* pindex,
     if (!setDAGSkippedTxs.empty() &&
         !ValidateNameIndexSkippedSet(block, setDAGSkippedTxs, strError))
         return false;
+    if (!g_fPendingNameCursor)
+        g_nPendingNameStarted = GetTime();
     g_pPendingNameIndex = pindex;
     g_pendingNameCursor = MakeNameIndexCursor(pindex);
     g_setPendingNameSkipped = setDAGSkippedTxs;
