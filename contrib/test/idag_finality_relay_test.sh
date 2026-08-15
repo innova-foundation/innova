@@ -638,6 +638,13 @@ mine_until_height_synced 0 11 || { fail "DAG activation mining failed"; exit 1; 
 wait_all_height 11 || { fail "peers did not sync to DAG activation"; exit 1; }
 success "DAG activation block relayed"
 
+# Votes are held until FINALITY_VOTE_EMIT_OFFSET_POST_DAG blocks past the boundary,
+# which here is the activation height, so mine out the margin first. The carrier
+# still lands inside the 24-block inclusion window from height 11.
+log "Mining out the vote-emission ordering margin"
+mine_until_height_synced 0 13 || { fail "emission-margin mining failed"; exit 1; }
+wait_all_height 13 || { fail "peers did not sync past the emission margin"; exit 1; }
+
 log "Waiting for node0 auto mode to produce the transparent bootstrap vote"
 if wait_for_pending_vote; then
     success "transparent bootstrap vote is pending"
@@ -710,6 +717,12 @@ fi
 log "Mining transparently to Boundary A at height $BOUNDARY_A_HEIGHT"
 mine_until_height_synced 0 "$BOUNDARY_A_HEIGHT" || { fail "failed to mine to Boundary A"; exit 1; }
 wait_all_height "$BOUNDARY_A_HEIGHT" 600 || { fail "Boundary A block did not relay"; exit 1; }
+
+# Boundary A is an epoch boundary too, so the same emission margin applies: the vote
+# is held until the tip is two blocks past it.
+MARGIN_HEIGHT=$((BOUNDARY_A_HEIGHT + 2))
+mine_until_height_synced 0 "$MARGIN_HEIGHT" || { fail "Boundary A margin mining failed"; exit 1; }
+wait_all_height "$MARGIN_HEIGHT" 600 || { fail "Boundary A margin blocks did not relay"; exit 1; }
 
 if wait_for_pending_vote; then
     success "auto mode produced the next transparent vote at Boundary A"
