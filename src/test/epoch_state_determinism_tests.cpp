@@ -834,6 +834,12 @@ BOOST_AUTO_TEST_CASE(epoch_state_v3_activates_one_post_dag_epoch_after_the_dag_f
         BOOST_CHECK(GetEpochBoundaryHeight(nMigrationEpoch, nV3) - 1 <
                     FORK_HEIGHT_EPOCH_STATE_V2);
 
+        // The connected-carrier rule only reaches BuildEpochStateV2Compat, below the DAG fork.
+        // Regtest sits two blocks later on purpose, to exercise both compatibility paths.
+        BOOST_CHECK_MESSAGE(IsConnectedFinalityCarrierConfigured(), pszNet);
+        BOOST_CHECK_EQUAL(FORK_HEIGHT_CONNECTED_FINALITY_CARRIER,
+                          fRegTest ? nDAG + 2 : nDAG);
+
         // Ladder ordering, and Boundary A as an alias of V3.
         BOOST_CHECK(nDAG < nV3);
         BOOST_CHECK_EQUAL(FORK_HEIGHT_BOUNDARY_A, nV3);

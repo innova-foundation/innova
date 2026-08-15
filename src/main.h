@@ -365,26 +365,13 @@ inline int GetForkHeightEpochStateV2()
 }
 #define FORK_HEIGHT_EPOCH_STATE_V2 (GetForkHeightEpochStateV2())
 
-// A schema-V2 epoch includes every block in its anchor-derived DAG order, but
-// finality votes/certificates become connected state only when their carrier is
-// on the canonical pprev chain.  From this fork onward the V2 builder therefore
-// commits finality carriers only from that connected chain while retaining all
-// non-finality merge-block effects.  The rule is selected by each carrier's own
-// height so bytes mined before activation remain historical even when activation
-// occurs part-way through an epoch.
-//
-// Public testnet must fill this from the same frozen four-node preflight that
-// schedules Boundary A: with mining paused at common height H, use H+1 and
-// recalculate if any node advances.  Mainnet has no post-DAG history and can
-// activate with DAG.  Regtest leaves two V2 carrier heights before activation so
-// both compatibility paths can be exercised in one epoch.
+// From this fork the V2 epoch builder commits carriers only from the connected pprev chain.
+// Regtest activates two blocks after the DAG fork to exercise both paths in one epoch.
 static const int TESTNET_CONNECTED_FINALITY_CARRIER_HEIGHT_UNSET = 0x7fffffff;
 inline int GetForkHeightConnectedFinalityCarrier()
 {
     extern bool fRegTest;
-    extern bool fTestNet;
     if (fRegTest) return GetForkHeightDAG() + 2;
-    if (fTestNet) return TESTNET_CONNECTED_FINALITY_CARRIER_HEIGHT_UNSET;
     return GetForkHeightDAG();
 }
 #define FORK_HEIGHT_CONNECTED_FINALITY_CARRIER (GetForkHeightConnectedFinalityCarrier())
