@@ -280,6 +280,14 @@ TEST_OBJS= \
     obj/test/accounting_tests.o \
     obj/test/miner_tests.o
 
+# The suite reads its JSON vectors from src/test/data.  Compiling the absolute
+# path in keeps that resolution independent of the caller's working directory.
+TESTDEFS = -DTEST_DATA_DIR=$(abspath test/data)
+obj/test/%.o: override CXXFLAGS += $(TESTDEFS)
+# The .P files record header dependencies, not flags, so a changed TESTDEFS would
+# otherwise leave a stale binary behind.
+$(TEST_OBJS): makefile.osx
+
 FUZZ_CXX ?= clang++
 FUZZ_COMPILE_FLAGS ?= -O1 -g -fsanitize=fuzzer-no-link,address,undefined -fno-omit-frame-pointer
 FUZZ_LINK_FLAGS ?= -O1 -g -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer

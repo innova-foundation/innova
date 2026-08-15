@@ -91,32 +91,55 @@ ParseScript(string s)
     return result;
 }
 
+// A vector file the suite cannot read is a hole, not a skip: the caller would
+// otherwise iterate an empty array and report success over vectors that never
+// ran.  Every failure path here is fatal to the calling case.
 Array
 read_json(const std::string& filename)
 {
     namespace fs = boost::filesystem;
-    fs::path testFile = fs::current_path() / "test" / "data" / filename;
-
+    std::vector<fs::path> vSearched;
+    vSearched.push_back(fs::current_path() / "test" / "data" / filename);
 #ifdef TEST_DATA_DIR
-    if (!fs::exists(testFile))
-    {
-        testFile = fs::path(BOOST_PP_STRINGIZE(TEST_DATA_DIR)) / filename;
-    }
+    vSearched.push_back(fs::path(BOOST_PP_STRINGIZE(TEST_DATA_DIR)) / filename);
 #endif
+
+    fs::path testFile;
+    for (size_t i = 0; i < vSearched.size(); i++)
+    {
+        if (fs::exists(vSearched[i]))
+        {
+            testFile = vSearched[i];
+            break;
+        }
+    }
+    if (testFile.empty())
+    {
+        string strSearched;
+        for (size_t i = 0; i < vSearched.size(); i++)
+            strSearched += "\n  " + vSearched[i].string();
+        BOOST_FAIL("test vector file " << filename << " not found; searched:" << strSearched);
+        return Array();
+    }
 
     ifstream ifs(testFile.string().c_str(), ifstream::in);
     Value v;
     if (!read_stream(ifs, v))
     {
         if (ifs.fail())
-            BOOST_ERROR("Cound not find/open " << filename);
+            BOOST_FAIL("could not open " << testFile.string());
         else
-            BOOST_ERROR("JSON syntax error in " << filename);
+            BOOST_FAIL("JSON syntax error in " << testFile.string());
         return Array();
     }
     if (v.type() != array_type)
     {
-        BOOST_ERROR(filename << " does not contain a json array");
+        BOOST_FAIL(testFile.string() << " does not contain a json array");
+        return Array();
+    }
+    if (v.get_array().empty())
+    {
+        BOOST_FAIL(testFile.string() << " contains no test vectors");
         return Array();
     }
 

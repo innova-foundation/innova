@@ -65,8 +65,6 @@ xCFLAGS=-mthreads -O3 $(EXT_OPTIONS) -Wall -Wextra -Wno-ignored-qualifiers -Wfor
 LDFLAGS=-Wl,--dynamicbase -Wl,--nxcompat -Wl,--high-entropy-va
 xLDFLAGS=$(LDFLAGS)
 
-TESTDEFS = -DTEST_DATA_DIR=$(abspath test/data)
-
 ifndef USE_UPNP
 	override USE_UPNP = -
 endif
