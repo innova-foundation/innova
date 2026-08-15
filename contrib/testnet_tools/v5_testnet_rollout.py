@@ -2,9 +2,10 @@
 """Read-only schema-V3 testnet preflight and activation calculator.
 
 This tool never stops daemons, mines, copies binaries, snapshots wallets, or
-changes remote configuration.  It verifies the four-node fleet is converged
-and quiescent, then calculates the first testnet epoch boundary with the
-required lead time.  Deployment remains a separately authorized operation.
+changes remote configuration.  It verifies the four-node fleet is converged and
+quiescent, reports the compiled Boundary-A height the fleet must carry, and
+calculates the first Boundary-B epoch boundary with the required lead time.
+Deployment remains a separately authorized operation.
 """
 
 from __future__ import annotations
@@ -39,6 +40,10 @@ from idag_four_node_differential import (  # noqa: E402
     load_inventory,
     reject_credentials,
     validate_ssh_options,
+)
+from check_v5_release_policy import (  # noqa: E402
+    PolicyError,
+    validate_testnet_activation_ladder,
 )
 from v5_release_evidence_schema import (  # noqa: E402
     PREFLIGHT_SCHEMA_VERSION,
@@ -549,11 +554,13 @@ def run_preflight(args: argparse.Namespace) -> Dict[str, Any]:
     binaries = [str(node["binary_sha256"]) for node in results]
     common_height = heights[0] if len(set(heights)) == 1 else -1
     common_hash = hashes[0] if len(set(hashes)) == 1 else ""
-    recommended = (
-        activation_height(common_height, args.boundary_origin, args.epoch_interval, args.lead_blocks)
-        if common_height >= 0
-        else -1
-    )
+    # Boundary A comes from the compiled ladder (testnet remines from genesis); the
+    # check below proves all four nodes carry it. Boundary B keeps the lead calculation.
+    try:
+        recommended = validate_testnet_activation_ladder(
+            Path(args.source_root) / "src" / "main.h")["boundary_a"]
+    except PolicyError as exc:
+        raise GateError("compiled testnet activation ladder is invalid: %s" % exc) from exc
     source_commit = local_git_head(args.source_root)
     source_clean = local_source_clean(args.source_root)
     expected_binary = args.expected_binary_sha256.lower()
@@ -794,6 +801,9 @@ def write_result(value: Dict[str, Any], output: Optional[Path]) -> None:
 
 
 def selftest() -> int:
+    # The preflight recommends the compiled Boundary A; its placement is part of the contract.
+    ladder = validate_testnet_activation_ladder(SCRIPT_DIR.parent.parent / "src" / "main.h")
+    assert ladder["boundary_a"] == ladder["dag"] + ladder["epoch_interval"]
     assert activation_height(0, 60, 300, 900) == 960
     assert activation_height(60, 60, 300, 900) == 960
     assert activation_height(61, 60, 300, 900) == 1260

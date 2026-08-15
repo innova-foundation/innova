@@ -226,22 +226,103 @@ def int_literal(value: str, constants: Mapping[str, str], stack: Optional[set] =
     return int_literal(constants[text], constants, seen)
 
 
-def configured_testnet_height(main_h: Path) -> int:
+def fork_function_body(text: str, name: str, source: Path) -> str:
+    function = re.search(name + r"\s*\([^)]*\)\s*\{(?P<body>.*?)\n\}", text, re.DOTALL)
+    if not function:
+        raise PolicyError("%s() not found in %s" % (name, source))
+    return function.group("body")
+
+
+def testnet_fork_height(text: str, constants: Mapping[str, str], name: str,
+                        source: Path) -> int:
+    body = fork_function_body(text, name, source)
+    match = re.search(r"if\s*\(\s*fTestNet\s*\)\s*return\s+([^;]+);", body)
+    if not match:
+        raise PolicyError("testnet return path not found in %s()" % name)
+    return int_literal(match.group(1), constants)
+
+
+def source_constants(text: str) -> Dict[str, str]:
+    return {
+        match.group(1): match.group(2).strip()
+        for match in re.finditer(r"(?:static\s+)?const\s+int\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]+);", text)
+    }
+
+
+def configured_post_dag_epoch_interval(finality_h: Path) -> int:
+    try:
+        text = finality_h.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise PolicyError("cannot read %s: %s" % (finality_h, exc)) from exc
+    match = re.search(r"FINALITY_EPOCH_INTERVAL_POST_DAG\s*=\s*([0-9]+)\s*;", text)
+    if not match:
+        raise PolicyError("FINALITY_EPOCH_INTERVAL_POST_DAG is missing or non-literal")
+    return int(match.group(1))
+
+
+def configured_boundary_b_height(text: str, constants: Mapping[str, str],
+                                 source: Path) -> int:
+    body = fork_function_body(text, "GetForkHeightBoundaryB", source)
+    match = re.search(r"return\s+fRegTest\s*\?[^:]+:\s*([^;]+);", body)
+    if not match:
+        match = re.search(r"return\s+([^;]+);", body)
+    if not match:
+        raise PolicyError("non-regtest return path not found in GetForkHeightBoundaryB()")
+    return int_literal(match.group(1), constants)
+
+
+def validate_testnet_activation_ladder(main_h: Path) -> Dict[str, int]:
+    """Check the compiled testnet v5 ladder against the placement rules that still bind.
+
+    The public testnet remines from genesis, so Boundary A is no longer scheduled from a
+    rollout preflight over live history: there is no common height to lead and no running
+    fleet to keep ahead of.  What stays load-bearing is the placement itself.  Boundary A
+    (an alias of schema V3) must sit exactly one post-DAG epoch above the DAG fork, which
+    is both an exact epoch boundary and the only offset that keeps every DAG-era epoch on
+    the strict builder rather than the fBlue V2-compat one.
+
+    Networks that do carry live history keep a lead rule: mainnet's is the trusted-tip
+    calculation in validate_release_metadata(), and Boundary B -- scheduled later against
+    a testnet that is running by then -- keeps required_boundary_b_activation_height().
+    """
     try:
         text = main_h.read_text(encoding="utf-8")
     except OSError as exc:
         raise PolicyError("cannot read %s: %s" % (main_h, exc)) from exc
-    constants = {
-        match.group(1): match.group(2).strip()
-        for match in re.finditer(r"(?:static\s+)?const\s+int\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;]+);", text)
+    constants = source_constants(text)
+
+    interval = configured_post_dag_epoch_interval(main_h.with_name("finality.h"))
+    if interval != REQUIRED_EPOCH_INTERVAL:
+        raise PolicyError("post-DAG epoch interval is %d, not the fixed %d"
+                          % (interval, REQUIRED_EPOCH_INTERVAL))
+
+    finality = testnet_fork_height(text, constants, "GetForkHeightFinality", main_h)
+    dag = testnet_fork_height(text, constants, "GetForkHeightDAG", main_h)
+    boundary_a = testnet_fork_height(text, constants, "GetForkHeightEpochStateV3", main_h)
+    boundary_b = configured_boundary_b_height(text, constants, main_h)
+
+    alias = fork_function_body(text, "GetForkHeightBoundaryA", main_h)
+    if not re.search(r"return\s+GetForkHeightEpochStateV3\s*\(\s*\)\s*;", alias):
+        raise PolicyError("Boundary A is not an alias of the schema-V3 height")
+
+    if not 0 < finality < dag:
+        raise PolicyError("testnet fork ladder is out of order: finality %d, DAG %d"
+                          % (finality, dag))
+    if boundary_a != dag + interval:
+        raise PolicyError(
+            "testnet Boundary A (%d) is not exactly one post-DAG epoch above the DAG fork "
+            "(%d + %d = %d)" % (boundary_a, dag, interval, dag + interval))
+    if boundary_b < boundary_a:
+        raise PolicyError("testnet Boundary B (%d) is below Boundary A (%d)"
+                          % (boundary_b, boundary_a))
+
+    return {
+        "finality": finality,
+        "dag": dag,
+        "epoch_interval": interval,
+        "boundary_a": boundary_a,
+        "boundary_b": boundary_b,
     }
-    function = re.search(r"GetForkHeightEpochStateV3\s*\([^)]*\)\s*\{(?P<body>.*?)\n\}", text, re.DOTALL)
-    if not function:
-        raise PolicyError("GetForkHeightEpochStateV3() not found in %s" % main_h)
-    match = re.search(r"if\s*\(\s*fTestNet\s*\)\s*return\s+([^;]+);", function.group("body"))
-    if not match:
-        raise PolicyError("testnet return path not found in GetForkHeightEpochStateV3()")
-    return int_literal(match.group(1), constants)
 
 
 def configured_mainnet_v5_shift(source_root: Path) -> int:
@@ -971,8 +1052,10 @@ def validate_evidence(evidence: Dict[str, Any], manifest: Dict[str, Any],
         raise PolicyError("preflight release parameters are not the fixed 900/300/60 policy")
     if activation != configured_height:
         raise PolicyError("source activation %d does not match configured height %d" % (activation, configured_height))
-    if common_height < 0 or activation != required_activation_height(common_height):
-        raise PolicyError("activation is not the smallest 60+300*k boundary with a 900-block lead")
+    # Boundary A is checked in validate_testnet_activation_ladder(). A remined testnet
+    # needs no 900-block lead over the tip; Boundary B still does, below.
+    if common_height < 0:
+        raise PolicyError("preflight common height must be non-negative")
 
     if any(node.get("boundary_a_configured") is not True or
            evidence_int(node.get("boundary_a_activation_height"), "nodes.boundary_a_activation_height") != activation or
@@ -1235,7 +1318,8 @@ def validate(main_h: Path,
 
     evidence_path = resolve_external_evidence(evidence_path, source_root)
 
-    height = configured_testnet_height(main_h)
+    ladder = validate_testnet_activation_ladder(main_h)
+    height = ladder["boundary_a"]
     if height == UNSET:
         raise PolicyError("public-testnet schema-V3 activation is unset (0x7fffffff)")
 
@@ -1267,6 +1351,7 @@ def selftest() -> int:
         artifact_dir = workspace / "artifacts"
         now = dt.datetime.now(dt.timezone.utc)
         main_h = root / "src" / "main.h"
+        finality_h = root / "src" / "finality.h"
         activation_h = root / "src" / "v5activation.h"
         evidence = private_dir / "v5-testnet-v3-preflight.json"
         release_gate_evidence = private_dir / "v5-release-gate-evidence.json"
@@ -1291,9 +1376,23 @@ def selftest() -> int:
 
         source_artifact.write_bytes(b"fixture immutable source artifact\n")
 
+        # Fixture ladder: Boundary A one post-DAG epoch above the DAG fork, aliased to V3.
         main_h.write_text(
             "static const int TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET = 0x7fffffff;\n"
-            "inline int GetForkHeightEpochStateV3()\n{\n if (fTestNet) return 1260;\n return 1;\n}\n",
+            "static const int TESTNET_EPOCH_STATE_V3_HEIGHT = 1260;\n"
+            "static const int PRIVACY_VNEXT_HEIGHT_UNSET = 0x7fffffff;\n"
+            "inline int GetForkHeightFinality()\n{\n if (fTestNet) return 955;\n return 7945000;\n}\n"
+            "inline int GetForkHeightDAG()\n{\n if (fTestNet) return 960;\n return 7950000;\n}\n"
+            "inline int GetForkHeightEpochStateV3()\n"
+            "{\n if (fTestNet) return TESTNET_EPOCH_STATE_V3_HEIGHT;\n"
+            " return GetForkHeightDAG() + 300;\n}\n"
+            "inline int GetForkHeightBoundaryA()\n{\n return GetForkHeightEpochStateV3();\n}\n"
+            "inline int GetForkHeightBoundaryB()\n"
+            "{\n return fRegTest ? nRegtestBoundaryBHeight : PRIVACY_VNEXT_HEIGHT_UNSET;\n}\n",
+            encoding="utf-8",
+        )
+        finality_h.write_text(
+            "static const int FINALITY_EPOCH_INTERVAL_POST_DAG = 300;\n",
             encoding="utf-8",
         )
         activation_h.write_text(
@@ -1424,7 +1523,7 @@ def selftest() -> int:
         git_output(root, ["init", "-q"])
         git_output(root, ["config", "user.email", "release-policy@example.invalid"])
         git_output(root, ["config", "user.name", "Release Policy Selftest"])
-        git_output(root, ["add", "src/main.h", "src/v5activation.h"])
+        git_output(root, ["add", "src/main.h", "src/finality.h", "src/v5activation.h"])
         git_output(root, ["commit", "-q", "-m", "fixture source"])
         source_commit = git_output(root, ["rev-parse", "HEAD"])
 
@@ -1610,6 +1709,39 @@ def selftest() -> int:
                     raise AssertionError("%s (unexpected error: %s)" % (message, exc))
                 return
             raise AssertionError(message)
+
+        # The structural placement rules read the tree, so mutate the tree to prove them.
+        clean_main_h = main_h.read_text(encoding="utf-8")
+        try:
+            main_h.write_text(
+                clean_main_h.replace("TESTNET_EPOCH_STATE_V3_HEIGHT = 1260;",
+                                     "TESTNET_EPOCH_STATE_V3_HEIGHT = 1560;"),
+                encoding="utf-8")
+            expect_failure("Boundary A off the first post-DAG epoch passed release policy",
+                           expected_error="one post-DAG epoch above the DAG fork")
+            main_h.write_text(
+                clean_main_h.replace(" return GetForkHeightEpochStateV3();",
+                                     " return TESTNET_EPOCH_STATE_V3_HEIGHT;"),
+                encoding="utf-8")
+            expect_failure("Boundary A detached from schema V3 passed release policy",
+                           expected_error="not an alias of the schema-V3 height")
+            main_h.write_text(
+                clean_main_h.replace("if (fTestNet) return 955;",
+                                     "if (fTestNet) return 1000;"),
+                encoding="utf-8")
+            expect_failure("out-of-order testnet fork ladder passed release policy",
+                           expected_error="fork ladder is out of order")
+        finally:
+            main_h.write_text(clean_main_h, encoding="utf-8")
+
+        clean_finality_h = finality_h.read_text(encoding="utf-8")
+        try:
+            finality_h.write_text(
+                clean_finality_h.replace("= 300;", "= 600;"), encoding="utf-8")
+            expect_failure("non-fixed post-DAG epoch interval passed release policy",
+                           expected_error="post-DAG epoch interval")
+        finally:
+            finality_h.write_text(clean_finality_h, encoding="utf-8")
 
         expect_failure("missing evidence passed release policy", evidence_override=None,
                        expected_error="explicit external evidence path")
