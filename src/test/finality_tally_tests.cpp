@@ -1931,4 +1931,212 @@ BOOST_AUTO_TEST_CASE(finality_validation_distinguishes_invalid_from_local_state)
     BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
 }
 
+// A linked run of PoW indexes ending at the tip, plus a same-height sibling that is
+// indexed but on no chain -- enough to tell "present in the index" from "ancestor of
+// the block being connected".
+struct ScopedIndexChain
+{
+    std::vector<CBlockIndex*> vIndex;
+    std::vector<uint256> vHashes;
+    std::vector<bool> vHadOld;
+    std::vector<CBlockIndex*> vOld;
+
+    ScopedIndexChain(unsigned int nHashSeed, int nBaseHeight, int nCount)
+    {
+        CBlockIndex* pprev = NULL;
+        for (int i = 0; i < nCount; i++)
+        {
+            const uint256 hash(nHashSeed + (unsigned int)i);
+            std::map<uint256, CBlockIndex*>::iterator itOld = mapBlockIndex.find(hash);
+            vHadOld.push_back(itOld != mapBlockIndex.end());
+            vOld.push_back(vHadOld.back() ? itOld->second : NULL);
+
+            CBlockIndex* p = new CBlockIndex();
+            p->nHeight = nBaseHeight + i;
+            p->nFlags = 0;   // PoW
+            p->pprev = pprev;
+            mapBlockIndex[hash] = p;
+            p->phashBlock = &mapBlockIndex.find(hash)->first;
+            vIndex.push_back(p);
+            vHashes.push_back(hash);
+            pprev = p;
+        }
+    }
+
+    CBlockIndex* Tip() const { return vIndex.back(); }
+    CBlockIndex* At(int i) const { return vIndex[i]; }
+    uint256 HashAt(int i) const { return vHashes[i]; }
+
+    ~ScopedIndexChain()
+    {
+        for (size_t i = 0; i < vHashes.size(); i++)
+        {
+            if (vHadOld[i])
+                mapBlockIndex[vHashes[i]] = vOld[i];
+            else
+                mapBlockIndex.erase(vHashes[i]);
+            delete vIndex[i];
+        }
+    }
+};
+
+// At connect, a vote whose named block cannot be resolved is a producer fault, not local
+// state. Both shapes below are deterministic on every node and must return INVALID.
+BOOST_AUTO_TEST_CASE(connect_context_rejects_votes_naming_unresolvable_epoch_blocks)
+{
+    ScopedFinalityRegtest network;
+    CFinalityTracker tracker;
+    CTxDB txdb("r+");
+
+    const int voteEpoch = GetEpochForHeight(FORK_HEIGHT_DAG);
+    const int voteHeight = GetEpochBoundaryHeight(voteEpoch, FORK_HEIGHT_DAG);
+
+    // Boundary block, two blocks of chain above it (the carrier), and a sibling at the
+    // boundary height that is indexed but not on the carrier's chain.
+    ScopedIndexChain chain(0xFC010001, voteHeight, 3);
+    ScopedIndexChain sibling(0xFC020001, voteHeight, 1);
+
+    CKey key;
+    key.MakeNewKey(true);
+    auto makeVote = [&](const uint256& hashNamed) {
+        CFinalityVote vote;
+        vote.nEpoch = voteEpoch;
+        vote.nHeight = voteHeight;
+        vote.hashBlock = hashNamed;
+        vote.nTime = GetTime();
+        vote.nVoteWeight = COIN;
+        vote.nReward = GetFinalityVoteReward(vote.nVoteWeight, GetEpochInterval(voteHeight));
+        vote.vStakeProof.push_back(COutPoint(uint256(0xFC030001), 0));
+        CPubKey pubkey = key.GetPubKey();
+        vote.vchPubKey.assign(pubkey.begin(), pubkey.end());
+        CHashWriter nullifierHash(SER_GETHASH, 0);
+        nullifierHash << vote.vchPubKey;
+        nullifierHash << vote.nEpoch;
+        vote.nullifier = nullifierHash.GetHash();
+        BOOST_REQUIRE(vote.Sign(key));
+        return vote;
+    };
+
+    const CFinalityVoteContext connectCtx = CFinalityVoteContext::Connect(chain.Tip());
+
+    // Sanity: the carrier really does reach the boundary block through its own parents,
+    // so the rejections below are about the vote, not a broken fixture.
+    BOOST_REQUIRE_EQUAL(GetFinalityAncestorOnChain(chain.Tip(), voteHeight,
+                                                   FINALITY_ANCESTOR_MAX_WALK),
+                        chain.At(0));
+
+    // (a) fabricated hash: in no node's index, so no node can ever resolve it.
+    std::string error;
+    FinalityResult result = FINALITY_RESULT_OK;
+    CFinalityVote fabricated = makeVote(uint256(0xDEADBEEF));
+    BOOST_CHECK(!tracker.CheckVote(fabricated, txdb, &error, connectCtx, &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
+    BOOST_CHECK_EQUAL(error, "epoch block is not known");
+
+    // The same vote at RELAY is still only local state: a peer may legitimately have
+    // sent it ahead of the block body, and that split is the whole point of the fix.
+    result = FINALITY_RESULT_OK;
+    error.clear();
+    BOOST_CHECK(!tracker.CheckVote(fabricated, txdb, &error,
+                                   CFinalityVoteContext::Relay(), &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_LOCAL_STATE);
+
+    // (b) real, indexed, right height, right PoW flag -- but on a sibling branch. The
+    // global index lookup passes it; only the ancestor walk catches it.
+    result = FINALITY_RESULT_OK;
+    error.clear();
+    CFinalityVote offChain = makeVote(sibling.HashAt(0));
+    BOOST_REQUIRE(mapBlockIndex.count(offChain.hashBlock));
+    BOOST_CHECK(!tracker.CheckVote(offChain, txdb, &error, connectCtx, &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
+    BOOST_CHECK_EQUAL(error, "epoch block is not an ancestor of the including block");
+
+    // Naming the carrier's own boundary block clears the ancestry rule and falls through
+    // to the stake-proof checks, so ancestry is what rejected (b) and nothing wider.
+    result = FINALITY_RESULT_OK;
+    error.clear();
+    CFinalityVote onChain = makeVote(chain.HashAt(0));
+    BOOST_CHECK(!tracker.CheckVote(onChain, txdb, &error, connectCtx, &result));
+    BOOST_CHECK(error != "epoch block is not an ancestor of the including block");
+    BOOST_CHECK(error != "epoch block is not known");
+
+    // A build context is a chain context too: the template builder must drop the vote
+    // rather than assemble a block its own peers will reject.
+    result = FINALITY_RESULT_OK;
+    error.clear();
+    BOOST_CHECK(!tracker.CheckVote(offChain, txdb, &error,
+                                   CFinalityVoteContext::Build(chain.Tip()), &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
+}
+
+// Same split on the note-vote path, which is the one that actually matters post-DAG: a
+// note vote rides the coinbase, so a producer picks its hashBlock directly, and holding
+// it at connect makes every node retry the same block without end.
+BOOST_AUTO_TEST_CASE(connect_context_rejects_note_votes_naming_unresolvable_epoch_blocks)
+{
+    ScopedFinalityRegtest network;
+    CFinalityTracker tracker;
+    CTxDB txdb("r+");
+
+    const int nSavedNoteVoteHeight = nRegtestIV5NoteVoteHeight;
+    nRegtestIV5NoteVoteHeight = 1;
+
+    const int voteEpoch = GetEpochForHeight(FORK_HEIGHT_DAG);
+    const int voteHeight = GetEpochBoundaryHeight(voteEpoch, FORK_HEIGHT_DAG);
+
+    ScopedIndexChain chain(0xFD010001, voteHeight, 3);
+    ScopedIndexChain sibling(0xFD020001, voteHeight, 1);
+    const CFinalityVoteContext connectCtx = CFinalityVoteContext::Connect(chain.Tip());
+
+    auto makeNoteVote = [&](const uint256& hashNamed) {
+        CNoteFinalityVote vote;
+        vote.nEpoch = voteEpoch;
+        vote.nHeight = voteHeight;
+        vote.hashBlock = hashNamed;
+        vote.vchTag.assign(FINALITY_NOTE_POINT_SIZE, 0);
+        vote.vchTag[0] = 0x5a;
+        return vote;
+    };
+
+    std::string error;
+    FinalityResult result = FINALITY_RESULT_OK;
+
+    // Fabricated hash at connect: a verdict, not a hold.
+    CNoteFinalityVote fabricated = makeNoteVote(uint256(0xFEEDFACE));
+    BOOST_CHECK(!tracker.CheckNoteVoteForContext(fabricated, txdb, &error, connectCtx,
+                                                 &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
+    BOOST_CHECK_EQUAL(error, "note vote epoch block is not known");
+
+    // The same vote at relay is still held, which is what took the committee e2e to zero
+    // vote rejections; the fix narrows that answer to relay, it does not withdraw it.
+    result = FINALITY_RESULT_OK;
+    error.clear();
+    BOOST_CHECK(!tracker.CheckNoteVoteForContext(fabricated, txdb, &error,
+                                                 CFinalityVoteContext::Relay(), &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_LOCAL_STATE);
+
+    // Indexed, right height, right flag, wrong branch.
+    result = FINALITY_RESULT_OK;
+    error.clear();
+    CNoteFinalityVote offChain = makeNoteVote(sibling.HashAt(0));
+    BOOST_CHECK(!tracker.CheckNoteVoteForContext(offChain, txdb, &error, connectCtx,
+                                                 &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
+    BOOST_CHECK_EQUAL(error,
+                      "note vote epoch block is not an ancestor of the including block");
+
+    // On-chain gets past ancestry and fails later, so ancestry rejected only the sibling.
+    result = FINALITY_RESULT_OK;
+    error.clear();
+    CNoteFinalityVote onChain = makeNoteVote(chain.HashAt(0));
+    BOOST_CHECK(!tracker.CheckNoteVoteForContext(onChain, txdb, &error, connectCtx,
+                                                 &result));
+    BOOST_CHECK(error !=
+                "note vote epoch block is not an ancestor of the including block");
+    BOOST_CHECK(error != "note vote epoch block is not known");
+
+    nRegtestIV5NoteVoteHeight = nSavedNoteVoteHeight;
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -3749,12 +3749,18 @@ BOOST_AUTO_TEST_CASE(tier_proofs_survive_an_all_on_the_winner_note_tally)
 // against the block instead of refusing it.
 
 namespace {
+// Default height sits far above any chain a unit test builds, so the height bound in
+// DeferNoteVoteForUnknownBlock never fires here and each case exercises one rule.
+static const int HELD_VOTE_UNREACHED_HEIGHT = 1 << 27;
+
 CNoteFinalityVote MakeHeldVote(int nEpoch, const uint256& hashBlock,
-                               unsigned char nTag)
+                               unsigned char nTag,
+                               int nHeight = HELD_VOTE_UNREACHED_HEIGHT)
 {
     CNoteFinalityVote vote;
     vote.nEpoch = nEpoch;
     vote.hashBlock = hashBlock;
+    vote.nHeight = nHeight;
     vote.vchTag.assign(32, nTag);
     return vote;
 }
@@ -3818,6 +3824,71 @@ BOOST_AUTO_TEST_CASE(held_note_votes_are_capped)
             MakeHeldVote(60, uint256(0xE0000000 + i), (unsigned char)(i & 0xFF)));
     BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteCount(),
                       FINALITY_MAX_DEFERRED_NOTE_VOTES);
+
+    // At the cap the NEW hold is refused, never an existing one evicted. The newcomer's
+    // sender still has it and its inv comes round again; an evicted hold has no second
+    // sender at all, because a note vote is cast once per epoch and never re-emitted.
+    const std::vector<uint256> vBefore = tracker.GetDeferredNoteVoteBlockHashes();
+    tracker.DeferNoteVoteForUnknownBlock(MakeHeldVote(60, uint256(0xE9990001), 0x7F));
+    BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteCount(),
+                      FINALITY_MAX_DEFERRED_NOTE_VOTES);
+    BOOST_CHECK(tracker.GetDeferredNoteVoteBlockHashes() == vBefore);
+}
+
+// The cap alone bounds memory but not availability: a peer that fills every slot with
+// votes for blocks it never delivers starves honest holds, and a starved note vote is
+// lost for the epoch. Both bounds below retire only holds that no block could still
+// carry, so freeing the slot cannot cost a vote that was still winnable.
+BOOST_AUTO_TEST_CASE(held_note_votes_are_bounded_by_window_and_age)
+{
+    CFinalityTracker tracker;
+    const int nEpoch = 70;
+    // Above any height a unit-test chain reaches, so the purge inside Defer cannot fire
+    // and every drop below is attributable to the explicit call that caused it.
+    const int nVoteHeight = HELD_VOTE_UNREACHED_HEIGHT;
+    const int64_t nNow = GetTime();
+
+    tracker.DeferNoteVoteForUnknownBlock(
+        MakeHeldVote(nEpoch, uint256(0xEA010001), 0x11, nVoteHeight));
+    BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteCount(), 1u);
+
+    // Inside the inclusion window a carrier is still possible, so the hold stands.
+    BOOST_CHECK_EQUAL(
+        tracker.PurgeDeferredNoteVotes(nVoteHeight + FINALITY_VOTE_INCLUSION_WINDOW, nNow),
+        0u);
+    BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteCount(), 1u);
+
+    // One block past it, R1 makes every remaining block an invalid carrier: releasing
+    // the vote now could not produce a valid block, so dropping it forfeits nothing.
+    BOOST_CHECK_EQUAL(
+        tracker.PurgeDeferredNoteVotes(nVoteHeight + FINALITY_VOTE_INCLUSION_WINDOW + 1,
+                                       nNow),
+        1u);
+    BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteCount(), 0u);
+
+    // A vote naming a height the chain has not reached is never retired by the window
+    // rule -- exactly the shape a spammer picks -- so the age backstop has to catch it.
+    const int64_t nInsertedAt = GetTime();
+    tracker.DeferNoteVoteForUnknownBlock(
+        MakeHeldVote(nEpoch, uint256(0xEA020001), 0x22, nVoteHeight));
+    BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteCount(), 1u);
+    BOOST_CHECK_EQUAL(tracker.PurgeDeferredNoteVotes(nVoteHeight, nNow), 0u);
+    BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteCount(), 1u);
+
+    // Margins either side of the bound rather than exactly on it, so a second of clock
+    // drift between the insert and the check cannot decide the result.
+    BOOST_CHECK_EQUAL(
+        tracker.PurgeDeferredNoteVotes(
+            nVoteHeight, nInsertedAt + FINALITY_MAX_DEFERRED_NOTE_VOTE_AGE - 5),
+        0u);
+    BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteCount(), 1u);
+
+    BOOST_CHECK_EQUAL(
+        tracker.PurgeDeferredNoteVotes(
+            nVoteHeight, nInsertedAt + FINALITY_MAX_DEFERRED_NOTE_VOTE_AGE + 5),
+        1u);
+    BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteCount(), 0u);
+    BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteBlockHashes().size(), 0u);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
