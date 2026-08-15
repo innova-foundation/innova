@@ -7066,7 +7066,6 @@ bool CFinalityTracker::ConnectBlockNoteVotes(CTxDB& txdb, const uint256& hashBlo
                                              FinalityResult* pResult,
                                              bool fCheckVotes)
 {
-    const int nBlockHeight = ctx.Height();
     if (pResult)
         *pResult = FINALITY_RESULT_INVALID;
     if (vVotes.empty())
