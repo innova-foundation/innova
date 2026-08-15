@@ -829,6 +829,10 @@ BOOST_AUTO_TEST_CASE(epoch_state_v3_activates_one_post_dag_epoch_after_the_dag_f
         // migration base is the first post-DAG epoch, so every epoch the compat
         // builder still owns ends below the DAG fork.
         BOOST_CHECK_EQUAL(GetEpochForHeight(nDAG), nMigrationEpoch);
+        // Mirrors the V2 staging predicates (crossing below V3, epoch ending at or
+        // above V2); no epoch satisfies both.
+        BOOST_CHECK(GetEpochBoundaryHeight(nMigrationEpoch, nV3) - 1 <
+                    FORK_HEIGHT_EPOCH_STATE_V2);
 
         // Ladder ordering, and Boundary A as an alias of V3.
         BOOST_CHECK(nDAG < nV3);
