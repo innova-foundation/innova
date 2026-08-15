@@ -1,6 +1,11 @@
 # Innova Improvement Proposals (IIPs)
 
-**Version 1.0 -- February 2026**
+**Version 1.1 -- August 2026**
+
+Statuses and heights in this document are checked against the source tree
+(`src/main.h`, `src/v5activation.h`, `src/curvetree.h`). Read
+[Activation status](#activation-status-read-this-before-the-tables) before the
+tables: a fork height alone does not mean a feature is live.
 
 ---
 
@@ -27,9 +32,41 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 |--------|---------|
 | **Draft** | Under development, not yet proposed for activation |
 | **Proposed** | Complete specification, pending activation |
+| **Scheduled** | Implemented, with a mainnet activation height set that the chain has not yet reached |
+| **Implemented (inactive)** | Implemented and exercised on regtest, but consensus-disabled on every public network; no mainnet activation height is in effect |
+| **Partly active** | Some mechanisms in the IIP are live on mainnet, others are not; the row states which |
 | **Active** | Activated on mainnet at the specified fork height |
 | **Superseded** | Replaced by a newer IIP |
 | **Deprecated** | No longer recommended for use |
+
+---
+
+## Activation status (read this before the tables)
+
+Two rules govern whether an IIP is live, and both must hold.
+
+**1. Mainnet gate heights are shifted.** No mainnet height is a literal in the
+source. Every gate returns `ShiftMainnetV5Activation(base)`, which adds
+`MAINNET_V5_ACTIVATION_SHIFT` (`src/v5activation.h`) to the base value, so the
+whole ladder moves as a unit and the gaps between gates cannot drift. The
+**Fork Height** column below is the *base*; the effective mainnet height is
+base + shift. At the current shift of 600,000 the first gate is 8,400,000, and
+no gate in the v5 ladder has been reached. The release preflight recomputes the
+shift against a fresh trusted mainnet tip, so these effective heights change
+when it does.
+
+**2. The legacy privacy envelopes are consensus-disabled regardless of height.**
+Transaction versions 2000–2007 are rejected on mainnet and testnet at every
+height by `IsLegacyPrivacyPolicyDisabled()` (`src/main.h`); their decoders are
+retained only for regtest replay and rejection tests. Their production
+replacement is the unified version-2008 envelope, which activates at
+Boundary B — `FORK_HEIGHT_BOUNDARY_B` (`src/main.h`) is a fail-closed sentinel
+on mainnet and testnet, pending an independent review of the FCMP++ candidate.
+So the privacy IIPs are **implemented, not enabled**: passing their ladder
+height would not turn them on. This is a staging decision, not a retirement of
+the privacy product; see
+[`docs/architecture/PRIVACY.md`](../architecture/PRIVACY.md) for the Boundary-B
+product contract.
 
 ---
 
@@ -37,28 +74,35 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 
 ### Consensus
 
-| IIP | Title | Category | Status | Fork Height | TX Version |
-|-----|-------|----------|--------|-------------|------------|
-| [IIP-0001](#iip-0001-cold-staking-p2cs) | Cold Staking (P2CS) | Consensus | Active | 7,800,000 | 1 |
-| [IIP-0003](#iip-0003-ring-signature-deprecation) | Ring Signature Deprecation | Consensus | Active | 7,815,000 | 1000 |
+Fork Height is the *base* height; the effective mainnet height is base + shift
+(see [Activation status](#activation-status-read-this-before-the-tables)).
+
+| IIP | Title | Category | Status | Fork Height (base) | TX Version |
+|-----|-------|----------|--------|--------------------|------------|
+| [IIP-0001](#iip-0001-cold-staking-p2cs) | Cold Staking (P2CS) | Consensus | Scheduled | 7,800,000 | 1 |
+| [IIP-0003](#iip-0003-ring-signature-deprecation) | Ring Signature Deprecation | Consensus | Active | 0 (all networks) | 1000 |
 
 ### Privacy
 
-| IIP | Title | Category | Status | Fork Height | TX Version |
-|-----|-------|----------|--------|-------------|------------|
-| [IIP-0002](#iip-0002-shielded-transactions) | Shielded Transactions | Privacy | Active | 7,810,000 | 2000 |
-| [IIP-0004](#iip-0004-dynamic-selective-privacy) | Dynamic Selective Privacy (DSP) | Privacy | Active | 7,815,000 | 2001 |
-| [IIP-0005](#iip-0005-confidential-coinjoin) | Confidential CoinJoin | Privacy | Active | 7,820,000 | 2000 |
-| [IIP-0006](#iip-0006-fcmp-full-chain-membership-proofs) | FCMP++ Full-Chain Membership Proofs | Privacy | Active | 7,820,000 | 2002 |
-| [IIP-0007](#iip-0007-silent-payments-and-silent-shielding) | Silent Payments + Silent Shielding | Privacy | Active | 7,810,000 | 2000 |
-| [IIP-0009](#iip-0009-nullstake-v1) | NullStake V1 (ZK Private Staking) | Privacy | Active | 7,825,000 | 2003 |
-| [IIP-0010](#iip-0010-nullstake-v2) | NullStake V2 (ZK Kernel Privacy) | Privacy | Proposed | 7,830,000 | 2004 |
+Every row here is gated on Boundary B, which is unset on mainnet and testnet.
+The base heights are retained for reference but are not in effect: versions
+2000–2007 are rejected on public networks at every height.
+
+| IIP | Title | Category | Status | Fork Height (base) | TX Version |
+|-----|-------|----------|--------|--------------------|------------|
+| [IIP-0002](#iip-0002-shielded-transactions) | Shielded Transactions | Privacy | Implemented (inactive) | 7,810,000 (not in effect) | 2000 |
+| [IIP-0004](#iip-0004-dynamic-selective-privacy) | Dynamic Selective Privacy (DSP) | Privacy | Implemented (inactive) | 7,815,000 (not in effect) | 2001 prototype; 2008 production |
+| [IIP-0005](#iip-0005-confidential-coinjoin) | Confidential CoinJoin | Privacy | Implemented (inactive) | 7,820,000 (not in effect) | 2000 |
+| [IIP-0006](#iip-0006-fcmp-full-chain-membership-proofs) | FCMP++ Full-Chain Membership Proofs | Privacy | Implemented (inactive) | 7,820,000 (not in effect) | 2002 |
+| [IIP-0007](#iip-0007-silent-payments-and-silent-shielding) | Silent Payments + Silent Shielding | Privacy | Partly active | none (see below) | 2000 for silent shielding |
+| [IIP-0009](#iip-0009-nullstake-v1) | NullStake V1 (ZK Private Staking) | Privacy | Implemented (inactive) | 7,825,000 (not in effect) | 2003 |
+| [IIP-0010](#iip-0010-nullstake-v2) | NullStake V2 (ZK Kernel Privacy) | Privacy | Implemented (inactive) | 7,830,000 (not in effect) | 2004 |
 
 ### Network
 
-| IIP | Title | Category | Status | Fork Height | TX Version |
-|-----|-------|----------|--------|-------------|------------|
-| [IIP-0008](#iip-0008-dandelion-network-privacy) | Dandelion++ Network Privacy | Network | Active | 7,810,000 | -- |
+| IIP | Title | Category | Status | Fork Height (base) | TX Version |
+|-----|-------|----------|--------|--------------------|------------|
+| [IIP-0008](#iip-0008-dandelion-network-privacy) | Dandelion++ Network Privacy | Network | Active | none — relay policy | -- |
 
 ---
 
@@ -71,8 +115,8 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **IIP** | 0001 |
 | **Title** | Cold Staking via Pay-to-Cold-Staking Scripts |
 | **Category** | Consensus |
-| **Status** | Active |
-| **Fork Height** | 7,800,000 (mainnet) |
+| **Status** | Scheduled |
+| **Fork Height** | base 7,800,000; effective = base + `MAINNET_V5_ACTIVATION_SHIFT` (8,400,000 at the current shift) |
 | **Author** | 0xcircuitbreaker |
 
 **Abstract**: Introduces Pay-to-Cold-Staking (P2CS) scripts that separate spending authority from staking authority. A P2CS output has two key hashes: the `staker` key can produce coinstake transactions, while only the `owner` key can create spending transactions. This enables hardware wallet cold staking where the spending key never touches an online machine.
@@ -93,8 +137,8 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **IIP** | 0002 |
 | **Title** | Shielded Transactions with Pedersen Commitments and Bulletproof Range Proofs |
 | **Category** | Privacy |
-| **Status** | Active |
-| **Fork Height** | 7,810,000 (mainnet) |
+| **Status** | Implemented (inactive) |
+| **Fork Height** | base 7,810,000, **not in effect** — version 2000 is rejected on mainnet and testnet at every height; activation is Boundary B, unset |
 | **TX Version** | `SHIELDED_TX_VERSION = 2000` |
 | **Author** | 0xcircuitbreaker |
 
@@ -127,11 +171,15 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **Title** | Deprecation of Legacy Ring Signatures |
 | **Category** | Consensus |
 | **Status** | Active |
-| **Fork Height** | 7,815,000 (mainnet) |
-| **TX Version** | `1000` (rejected after fork) |
+| **Fork Height** | 0 — `GetForkHeightRingSigDeprecation()` returns 0 on every network, so version 1000 is rejected from genesis |
+| **TX Version** | `1000` (rejected) |
 | **Author** | 0xcircuitbreaker |
 
-**Abstract**: Disables legacy ring signature transactions (TX version 1000) in favor of the superior privacy guarantees provided by IIP-0002 (Shielded Transactions) and IIP-0006 (FCMP++). Ring signatures with a fixed ring size of 16 provided limited anonymity; the shielded pool with Lelantus (N=64) and FCMP++ (full chain) provide strictly stronger guarantees.
+**Abstract**: Disables legacy ring signature transactions (TX version 1000). Ring signatures with a fixed ring size of 16 provided limited anonymity; the shielded pool with Lelantus (N=64) and FCMP++ (full chain) are the intended successors, and provide strictly stronger guarantees once Boundary B activates them.
+
+**Note on the effective height**: rejection is from height 0 on every network, not from a v5 ladder height. A full replay of mainnet to 7,889,246 counted zero ring-signature transactions ever — no outputs, no key images, nothing unclaimed — so rejecting from genesis cannot change how any historical block validates. `GetForkHeightRingSigDeprecation()` returns 0 rather than deleting the checks, which keeps every `>=` comparison site rejecting, including the consensus ones in `ConnectInputs`, `ConnectBlock`, and `AcceptBlock`.
+
+**Note on succession**: IIP-0002 and IIP-0006 are implemented but not consensus-enabled (see [Activation status](#activation-status-read-this-before-the-tables)). Ring signatures are therefore retired without their replacement being live: transparent transactions are the public-network path until Boundary B.
 
 ---
 
@@ -142,8 +190,8 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **IIP** | 0004 |
 | **Title** | Dynamic Selective Privacy (DSP) |
 | **Category** | Privacy |
-| **Status** | Active |
-| **Fork Height** | 7,815,000 (mainnet) |
+| **Status** | Implemented (inactive) |
+| **Fork Height** | base 7,815,000, **not in effect** — the 2001 prototype is rejected on public networks; production DSP rides version 2008, gated on Boundary B, unset |
 | **TX Version** | `SHIELDED_TX_VERSION_DSP_PROTOTYPE = 2001` (prototype; production DSP is `SHIELDED_TX_VERSION_DSP = 2008`) |
 | **Author** | 0xcircuitbreaker |
 
@@ -179,8 +227,8 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **IIP** | 0005 |
 | **Title** | Confidential CoinJoin with MuSig Blind Aggregation |
 | **Category** | Privacy |
-| **Status** | Active |
-| **Fork Height** | 7,820,000 (mainnet) |
+| **Status** | Implemented (inactive) |
+| **Fork Height** | base 7,820,000, **not in effect** — activation is Boundary B, unset |
 | **Author** | 0xcircuitbreaker |
 
 **Abstract**: Enables multi-party shielded CoinJoin transactions where participants collaboratively construct a shielded transaction with aggregated binding signatures. The protocol uses MuSig partial blind aggregation so that no single participant learns the values of other participants' inputs or outputs.
@@ -196,8 +244,8 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **IIP** | 0006 |
 | **Title** | Full-Chain Membership Proofs via Dual-Curve Trees |
 | **Category** | Privacy |
-| **Status** | Active |
-| **Fork Height** | 7,820,000 (mainnet) |
+| **Status** | Implemented (inactive) |
+| **Fork Height** | base 7,820,000 (`GetForkHeightFCMP()`, `curvetree.h`), **not in effect** — activation is Boundary B, unset pending independent review of the FCMP++ candidate |
 | **TX Version** | `SHIELDED_TX_VERSION_FCMP = 2002` |
 | **Author** | 0xcircuitbreaker |
 
@@ -224,8 +272,8 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **IIP** | 0007 |
 | **Title** | Silent Payments (BIP-352 Adaptation) with Silent Shielding |
 | **Category** | Privacy |
-| **Status** | Active |
-| **Fork Height** | 7,810,000 (mainnet) |
+| **Status** | Partly active |
+| **Fork Height** | none. Silent payments are wallet/addressing over transparent outputs (`sp_send`, `silentpayments.*`) and are live on mainnet with no height gate. Silent shielding needs the shielded pool, so it is inactive until Boundary B. |
 | **Author** | 0xcircuitbreaker |
 
 **Abstract**: Adapts BIP-352 Silent Payments for Innova, enabling recipients to publish a single static address `(B_scan, B_spend)` that senders use to derive unique one-time output keys via ECDH. Introduces **Silent Shielding** -- the first protocol combining BIP-352 stealth addressing with a ZK shielded pool in a single atomic transaction.
@@ -250,7 +298,7 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **Title** | Dandelion++ Network-Layer Transaction Privacy |
 | **Category** | Network |
 | **Status** | Active |
-| **Fork Height** | 7,810,000 (mainnet) |
+| **Fork Height** | none — Dandelion++ is relay policy, not a consensus rule. Enabled by default (`-dandelion`, `init.cpp`); no height gate. |
 | **Author** | 0xcircuitbreaker |
 
 **Abstract**: Implements the Dandelion++ two-phase relay protocol to prevent IP-to-transaction linking. Transactions first propagate through a private "stem" phase (forwarded to exactly one peer per hop), then transition to a public "fluff" phase (standard gossip broadcast). Shielded transactions receive mandatory stem phase for enhanced privacy.
@@ -274,9 +322,9 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **IIP** | 0009 |
 | **Title** | NullStake V1: Zero-Knowledge Private Staking via Sigma Protocol |
 | **Category** | Privacy |
-| **Status** | Active |
-| **Fork Height** | 7,825,000 (mainnet) |
-| **TX Version** | `SHIELDED_TX_VERSION_ZARCANUM = 2003` |
+| **Status** | Implemented (inactive) |
+| **Fork Height** | base 7,825,000, **not in effect** — activation is Boundary B, unset |
+| **TX Version** | `SHIELDED_TX_VERSION_NULLSTAKE = 2003` |
 | **Author** | 0xcircuitbreaker |
 
 **Abstract**: Enables shielded UTXOs to participate in Proof-of-Stake consensus without revealing stake amount, identity, or which UTXO is being staked. Uses a Sigma protocol to prove the kernel hash inequality `H_kernel < target * weight * value` in zero knowledge, with a Bulletproof range proof that the excess is non-negative and a Schnorr binding signature linking to the on-chain Pedersen commitment.
@@ -302,9 +350,9 @@ IIPs follow the convention established by Bitcoin Improvement Proposals (BIPs), 
 | **IIP** | 0010 |
 | **Title** | NullStake V2: ZK Kernel Privacy via Poseidon2 + Bulletproof Arithmetic Circuits |
 | **Category** | Privacy |
-| **Status** | Proposed |
-| **Fork Height** | 7,830,000 (mainnet) |
-| **TX Version** | `SHIELDED_TX_VERSION_ZARCANUM_V2 = 2004` |
+| **Status** | Implemented (inactive) |
+| **Fork Height** | base 7,830,000, **not in effect** — activation is Boundary B, unset |
+| **TX Version** | `SHIELDED_TX_VERSION_NULLSTAKE_V2 = 2004` |
 | **Supersedes** | IIP-0009 (V1 remains valid below fork height) |
 | **Author** | 0xcircuitbreaker |
 
