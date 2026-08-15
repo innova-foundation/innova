@@ -1820,11 +1820,15 @@ BOOST_AUTO_TEST_CASE(finality_validation_distinguishes_invalid_from_local_state)
     unavailableVote.nullifier = nullifierHash.GetHash();
     BOOST_REQUIRE(unavailableVote.Sign(key));
 
-    result = FINALITY_RESULT_INVALID;
+    // Not holding the epoch block is local state, not a verdict on the vote. The
+    // vote is checkable the moment the block lands, so calling it invalid made a
+    // node-local condition decide validity, and at connect that reaches DoS(100)
+    // against a peer whose only fault was relaying ahead of the block body.
+    result = FINALITY_RESULT_OK;
     error.clear();
     BOOST_CHECK(!tracker.CheckVote(unavailableVote, txdb, &error,
                                    voteHeight, &result));
-    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_LOCAL_STATE);
 
     // Once the claimed epoch block is known, an absent transaction index is
     // still peer-invalid: the outpoint simply does not exist.  An existing

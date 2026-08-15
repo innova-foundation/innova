@@ -3740,4 +3740,84 @@ BOOST_AUTO_TEST_CASE(tier_proofs_survive_an_all_on_the_winner_note_tally)
                                           blind, 0, 0, entropy, overclaimed, &strError));
 }
 
+// --- Votes that arrive before the block they name -----------------------------
+//
+// A note vote is single-shot: its producer retires the note in a per-epoch cast set
+// and never sends a second. So a vote dropped because the block it names had not
+// arrived yet costs that epoch a voter permanently, and two lost voters drop the
+// epoch below FINALITY_MIN_VOTERS. The relay path therefore holds such a vote
+// against the block instead of refusing it.
+
+namespace {
+CNoteFinalityVote MakeHeldVote(int nEpoch, const uint256& hashBlock,
+                               unsigned char nTag)
+{
+    CNoteFinalityVote vote;
+    vote.nEpoch = nEpoch;
+    vote.hashBlock = hashBlock;
+    vote.vchTag.assign(32, nTag);
+    return vote;
+}
+}  // namespace
+
+BOOST_AUTO_TEST_CASE(held_note_votes_come_back_when_their_block_arrives)
+{
+    CFinalityTracker tracker;
+    const uint256 hashBlockA(0xDEF10001), hashBlockB(0xDEF10002);
+    const int nEpoch = 40;
+
+    tracker.DeferNoteVoteForUnknownBlock(MakeHeldVote(nEpoch, hashBlockA, 0x11));
+    tracker.DeferNoteVoteForUnknownBlock(MakeHeldVote(nEpoch, hashBlockA, 0x22));
+    tracker.DeferNoteVoteForUnknownBlock(MakeHeldVote(nEpoch, hashBlockB, 0x33));
+    BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteCount(), 3u);
+    BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteBlockHashes().size(), 2u);
+
+    // Only the arrived block's votes come back; the rest stay held, so a block that
+    // is still missing does not drag unrelated votes through a failing re-check.
+    std::set<uint256> setArrived;
+    setArrived.insert(hashBlockA);
+    std::vector<CNoteFinalityVote> vReady =
+        tracker.TakeDeferredNoteVotes(setArrived, nEpoch);
+    BOOST_CHECK_EQUAL(vReady.size(), 2u);
+    for (const CNoteFinalityVote& vote : vReady)
+        BOOST_CHECK(vote.hashBlock == hashBlockA);
+    BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteCount(), 1u);
+
+    // Taken, not merely copied: a second pass must not replay the same votes into
+    // the verifier every poll.
+    BOOST_CHECK_EQUAL(tracker.TakeDeferredNoteVotes(setArrived, nEpoch).size(), 0u);
+    BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteCount(), 1u);
+}
+
+BOOST_AUTO_TEST_CASE(held_note_votes_are_dropped_once_their_epoch_is_past)
+{
+    CFinalityTracker tracker;
+    const uint256 hashBlock(0xDEF10003);
+    tracker.DeferNoteVoteForUnknownBlock(MakeHeldVote(20, hashBlock, 0x44));
+    BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteCount(), 1u);
+
+    // The previous epoch is still live -- its inclusion window can overlap the tip.
+    BOOST_CHECK_EQUAL(tracker.TakeDeferredNoteVotes(std::set<uint256>(), 21).size(), 0u);
+    BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteCount(), 1u);
+
+    // Two epochs back it can no longer be carried, so holding it would only let a
+    // block hash that never arrives occupy the cap for good.
+    BOOST_CHECK_EQUAL(tracker.TakeDeferredNoteVotes(std::set<uint256>(), 22).size(), 0u);
+    BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteCount(), 0u);
+    BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteBlockHashes().size(), 0u);
+}
+
+// A peer picks the block hash its vote points at, so an unbounded hold is a memory
+// sink a peer can drive with votes naming blocks that will never exist.
+BOOST_AUTO_TEST_CASE(held_note_votes_are_capped)
+{
+    CFinalityTracker tracker;
+    const unsigned int nOver = FINALITY_MAX_DEFERRED_NOTE_VOTES + 50;
+    for (unsigned int i = 0; i < nOver; i++)
+        tracker.DeferNoteVoteForUnknownBlock(
+            MakeHeldVote(60, uint256(0xE0000000 + i), (unsigned char)(i & 0xFF)));
+    BOOST_CHECK_EQUAL(tracker.GetDeferredNoteVoteCount(),
+                      FINALITY_MAX_DEFERRED_NOTE_VOTES);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
