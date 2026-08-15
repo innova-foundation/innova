@@ -403,10 +403,19 @@ inline bool IsConnectedFinalityCarrierActiveAtHeight(int nHeight)
 
 // Epoch-state schema V3: exact epoch-end boundary anchoring, anchor-pure
 // adaptive DAGKNIGHT ordering, plus atomic state/tree persistence.
-// A single V2 post-DAG epoch is deliberately completed first so it supplies the strict predecessor
-// pair for the first V3 build. The public testnet height MUST be filled from the four-node rollout
-// preflight (smallest 300-block boundary >= common height + 900); leaving the sentinel in place is
-// a release blocker and keeps existing public history on V2 meanwhile.
+// Activation sits exactly one post-DAG epoch above the DAG fork, and that offset is load-bearing
+// rather than cosmetic. The first post-DAG epoch [DAG, DAG+300) is the V3 migration base: it
+// supplies the strict predecessor pair for the first V3 suffix build, and SetBestChainInner builds
+// it at the activation block with the exact-boundary builder -- NOT with the legacy fBlue-ordered
+// BuildEpochStateV2Compat. Keeping the two heights one epoch apart is what puts every DAG-era epoch
+// on the strict builder: its crossing block lands on FORK_HEIGHT_EPOCH_STATE_V3 itself, which the
+// V2 gates exclude. Moving either the offset or FINALITY_EPOCH_INTERVAL_POST_DAG re-opens the
+// legacy path for the epochs in between; v2compat_epoch_build_never_owns_a_dag_era_epoch enforces it.
+//
+// The public testnet height MUST be filled from the four-node rollout preflight (smallest 300-block
+// boundary >= common height + 900). Leaving the sentinel in place is a release blocker: with V3
+// unset every post-DAG testnet epoch is built by the fBlue path, so a node-local recolour reaches
+// the epoch digest that votes and certificates are checked against.
 static const int TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET = 0x7fffffff;
 inline int GetForkHeightEpochStateV3()
 {
@@ -416,6 +425,11 @@ inline int GetForkHeightEpochStateV3()
     return GetForkHeightDAG() + 300;
 }
 #define FORK_HEIGHT_EPOCH_STATE_V3 (GetForkHeightEpochStateV3())
+
+inline bool IsEpochStateV3Configured()
+{
+    return FORK_HEIGHT_EPOCH_STATE_V3 != TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET;
+}
 
 // Boundary A is the safe-IDAG activation. It co-activates epoch-state schema
 // V3, strict canonical parent commitments, and bounded anchor-keyed DAGKNIGHT
@@ -543,6 +557,25 @@ int GetFirstV3EpochStateRebuildEpoch(int nForkHeight);
 /** First schema-V2 epoch whose linear boundary-crossing anchor can change after
  *  a reorg at nForkHeight. Pre-V2 history remains byte-for-byte legacy. */
 int GetFirstV2EpochStateRebuildEpoch(int nForkHeight);
+
+// Reachability of the legacy schema-V2 epoch builder. BuildEpochStateV2Compat reads
+// node-local mapDAGData.fBlue into CEpochState::GetDigest(), so it must never build an
+// epoch containing DAG-era blocks. Each of the three entry points calls its predicate.
+
+/** AddToBlockIndex: builds the completed epoch whose whole range predates schema V2. */
+bool V2CompatEpochBuildsAtIndexCrossing(int nHeight, int& nEpochOut);
+
+/** SetBestChainInner: stages the completed V2-range epoch at its exact crossing block. */
+bool V2CompatEpochStagesAtBestChainCrossing(int nHeight, int& nEpochOut);
+
+/** Reorganize: the epoch range the connect loop may stage, given the reorg's endpoints.
+ *  Returns false when the reorg takes the V3 path or predates V2 entirely. */
+bool V2CompatReorgStagesEpochRange(int nOldTipHeight, int nNewTipHeight, int nForkHeight,
+                                   int& nFirstEpochOut, int& nLastEpochOut);
+
+/** Reorganize: whether the connect-loop block at nHeight stages an epoch in that range. */
+bool V2CompatEpochStagesAtReorgCrossing(int nHeight, int nFirstStagedEpoch,
+                                        int nLastV2EpochToStage, int& nEpochOut);
 
 // Nullifier binding: above this height shielded spends and private finality
 // votes must carry a note-bound nullifier proof. Testnet relaunches the shielded

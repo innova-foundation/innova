@@ -399,10 +399,8 @@ public:
     /** Prune DAG data below nHeight - DAG_PRUNE_DEPTH, preserving epoch boundaries. */
     bool PruneDAGData(CTxDB& txdb, int nHeight);
 
-    /** Legacy V2 computation used only to create the migration-base epoch before V3 activates.
-     *  pAnchorTip: post-FORK_HEIGHT_EPOCH_STATE_V2, the CANONICAL tip block whose selected-parent
-     *  chain + committed DAG merges define the epoch's block set and order (deterministic, reorg-safe).
-     *  NULL (or pre-fork) falls back to the legacy live-best-tip derivation. */
+    /** Legacy V2 computation, only for epochs ending below FORK_HEIGHT_EPOCH_STATE_V2
+     *  (reads node-local fBlue). NULL pAnchorTip uses the legacy best-tip derivation. */
     bool ComputeEpochState(int nEpoch, int nEpochInterval, const CBlockIndex* pAnchorTip = NULL);
 
     /** Build schema-V2 bytes without touching the epoch cache. Optional predecessor

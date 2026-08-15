@@ -9754,6 +9754,92 @@ int GetFirstV2EpochStateRebuildEpoch(int nForkHeight)
                     GetEpochForHeight(nForkHeight));
 }
 
+// Legacy schema-V2 builder reachability. See the block comment in main.h: each of the
+// three call sites gates on the matching predicate here so there is one definition of
+// which epochs the fBlue-ordered builder may own.
+
+static bool IsEpochCrossingHeight(int nHeight, int& nCompletedEpochOut, int& nEpochEndOut)
+{
+    nCompletedEpochOut = -1;
+    nEpochEndOut = -1;
+    if (nHeight <= 0)
+        return false;
+    const int nCurrentEpoch = GetEpochForHeight(nHeight);
+    const int nPreviousEpoch = GetEpochForHeight(nHeight - 1);
+    if (nCurrentEpoch <= nPreviousEpoch)
+        return false;
+    nCompletedEpochOut = nPreviousEpoch;
+    nEpochEndOut = GetEpochBoundaryHeight(nPreviousEpoch + 1, nHeight) - 1;
+    return true;
+}
+
+bool V2CompatEpochBuildsAtIndexCrossing(int nHeight, int& nEpochOut)
+{
+    nEpochOut = -1;
+    if (nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
+        return false;
+    int nCompletedEpoch = -1;
+    int nEpochEnd = -1;
+    if (!IsEpochCrossingHeight(nHeight, nCompletedEpoch, nEpochEnd))
+        return false;
+    // V2-range epochs are staged by the best-chain / reorg paths instead, so that
+    // their state, tree and schema share the best-chain transaction.
+    if (nEpochEnd >= FORK_HEIGHT_EPOCH_STATE_V2)
+        return false;
+    nEpochOut = nCompletedEpoch;
+    return true;
+}
+
+bool V2CompatEpochStagesAtBestChainCrossing(int nHeight, int& nEpochOut)
+{
+    nEpochOut = -1;
+    if (nHeight >= FORK_HEIGHT_EPOCH_STATE_V3)
+        return false;
+    int nCompletedEpoch = -1;
+    int nEpochEnd = -1;
+    if (!IsEpochCrossingHeight(nHeight, nCompletedEpoch, nEpochEnd))
+        return false;
+    if (nEpochEnd < FORK_HEIGHT_EPOCH_STATE_V2)
+        return false;
+    nEpochOut = nCompletedEpoch;
+    return true;
+}
+
+bool V2CompatReorgStagesEpochRange(int nOldTipHeight, int nNewTipHeight, int nForkHeight,
+                                   int& nFirstEpochOut, int& nLastEpochOut)
+{
+    nFirstEpochOut = -1;
+    nLastEpochOut = -1;
+    const bool fV3EpochReorg =
+        (nOldTipHeight >= FORK_HEIGHT_EPOCH_STATE_V3) ||
+        (nNewTipHeight >= FORK_HEIGHT_EPOCH_STATE_V3);
+    const bool fV2EpochReorg = !fV3EpochReorg &&
+        ((nOldTipHeight >= FORK_HEIGHT_EPOCH_STATE_V2) ||
+         (nNewTipHeight >= FORK_HEIGHT_EPOCH_STATE_V2));
+    if (!fV2EpochReorg)
+        return false;
+    // V2 commits an epoch when the first block of the next epoch arrives. The exact
+    // crossing block is part of the V2 anchor, so an epoch whose final block is the
+    // fork point is affected as well.
+    nFirstEpochOut = GetFirstV2EpochStateRebuildEpoch(nForkHeight);
+    nLastEpochOut = GetEpochForHeight(nNewTipHeight) - 1;
+    return true;
+}
+
+bool V2CompatEpochStagesAtReorgCrossing(int nHeight, int nFirstStagedEpoch,
+                                        int nLastV2EpochToStage, int& nEpochOut)
+{
+    nEpochOut = -1;
+    int nCompletedEpoch = -1;
+    int nEpochEnd = -1;
+    if (!IsEpochCrossingHeight(nHeight, nCompletedEpoch, nEpochEnd))
+        return false;
+    if (nCompletedEpoch < nFirstStagedEpoch || nCompletedEpoch > nLastV2EpochToStage)
+        return false;
+    nEpochOut = nCompletedEpoch;
+    return true;
+}
+
 static bool StageV2EpochStateAtCrossing(
     CTxDB& txdb, CBlockIndex* pCrossing, int nEpoch, int nFirstEpoch,
     std::map<int, CEpochState>& mapStagedEpochStates,
@@ -10545,11 +10631,12 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
     std::map<int, CCurveTree> mapStagedEpochTrees;
     int nFirstStagedEpoch = -1;
     int nLastV2EpochToStage = -1;
+    const int nOldTipHeight = pindexBest ? pindexBest->nHeight : -1;
     const bool fV3EpochReorg =
-        (pindexBest && pindexBest->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3) ||
+        nOldTipHeight >= FORK_HEIGHT_EPOCH_STATE_V3 ||
         pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V3;
     const bool fV2EpochReorg = !fV3EpochReorg &&
-        ((pindexBest && pindexBest->nHeight >= FORK_HEIGHT_EPOCH_STATE_V2) ||
+        (nOldTipHeight >= FORK_HEIGHT_EPOCH_STATE_V2 ||
          pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V2);
     if (fV3EpochReorg)
     {
@@ -10579,11 +10666,10 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
     }
     else if (fV2EpochReorg)
     {
-        // V2 commits an epoch when the first block of the next epoch arrives.
-        // The exact crossing block is part of the V2 anchor, so an epoch whose
-        // final block is the fork point is affected as well.
-        nFirstStagedEpoch = GetFirstV2EpochStateRebuildEpoch(pfork->nHeight);
-        nLastV2EpochToStage = GetEpochForHeight(pindexNew->nHeight) - 1;
+        if (!V2CompatReorgStagesEpochRange(nOldTipHeight, pindexNew->nHeight,
+                                           pfork->nHeight, nFirstStagedEpoch,
+                                           nLastV2EpochToStage))
+            return error("Reorganize() : V2 epoch staging range disagreed with the reorg gate");
     }
 
     // Disconnect shorter branch
@@ -10617,21 +10703,17 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew,
 
         if (!IsInitialBlockDownload()) GetCollateralnodeRanks(pindex); // recalculate ranks for the this block hash if required
 
-        if (fV2EpochReorg && pindex->nHeight > 0)
+        int nReorgV2Epoch = -1;
+        if (fV2EpochReorg &&
+            V2CompatEpochStagesAtReorgCrossing(pindex->nHeight, nFirstStagedEpoch,
+                                               nLastV2EpochToStage, nReorgV2Epoch))
         {
-            const int nCurrentEpoch = GetEpochForHeight(pindex->nHeight);
-            const int nPreviousEpoch = GetEpochForHeight(pindex->nHeight - 1);
-            if (nCurrentEpoch > nPreviousEpoch &&
-                nPreviousEpoch >= nFirstStagedEpoch &&
-                nPreviousEpoch <= nLastV2EpochToStage)
-            {
-                std::string strEpochError;
-                if (!StageV2EpochStateAtCrossing(
-                        txdb, pindex, nPreviousEpoch, nFirstStagedEpoch,
-                        mapStagedEpochStates, mapStagedEpochTrees, strEpochError))
-                    return error("Reorganize() : V2 epoch %d build failed: %s",
-                                 nPreviousEpoch, strEpochError.c_str());
-            }
+            std::string strEpochError;
+            if (!StageV2EpochStateAtCrossing(
+                    txdb, pindex, nReorgV2Epoch, nFirstStagedEpoch,
+                    mapStagedEpochStates, mapStagedEpochTrees, strEpochError))
+                return error("Reorganize() : V2 epoch %d build failed: %s",
+                             nReorgV2Epoch, strEpochError.c_str());
         }
 
         if (pindex->nHeight >= FORK_HEIGHT_EPOCH_STATE_V2)
@@ -10834,40 +10916,30 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew,
 
     // V2 commits the completed epoch at the first block of the next epoch, inside this
     // best-chain transaction; the cache is published only after commit.
-    if (pindexNew->nHeight > 0 &&
-        pindexNew->nHeight < FORK_HEIGHT_EPOCH_STATE_V3)
+    int nBestChainV2Epoch = -1;
+    if (V2CompatEpochStagesAtBestChainCrossing(pindexNew->nHeight, nBestChainV2Epoch))
     {
-        const int nCurrentEpoch = GetEpochForHeight(pindexNew->nHeight);
-        const int nPreviousEpoch = GetEpochForHeight(pindexNew->nHeight - 1);
-        if (nCurrentEpoch > nPreviousEpoch)
+        if (!g_dagManager.EraseEpochStateSuffix(txdb, nBestChainV2Epoch))
         {
-            const int nEpochEnd =
-                GetEpochBoundaryHeight(nPreviousEpoch + 1, pindexNew->nHeight) - 1;
-            if (nEpochEnd >= FORK_HEIGHT_EPOCH_STATE_V2)
-            {
-                if (!g_dagManager.EraseEpochStateSuffix(txdb, nPreviousEpoch))
-                {
-                    txdb.TxnAbort();
-                    return error("SetBestChainInner() : failed to erase stale V2 suffix at epoch %d",
-                                 nPreviousEpoch);
-                }
-                std::string strEpochError;
-                if (!StageV2EpochStateAtCrossing(
-                        txdb, pindexNew, nPreviousEpoch, nPreviousEpoch,
-                        mapStagedEpochStates, mapStagedEpochTrees, strEpochError))
-                {
-                    txdb.TxnAbort();
-                    return error("SetBestChainInner() : V2 epoch %d build failed: %s",
-                                 nPreviousEpoch, strEpochError.c_str());
-                }
-                if (!txdb.WriteEpochStateSchema(EPOCHSTATE_SCHEMA_V2))
-                {
-                    txdb.TxnAbort();
-                    return error("SetBestChainInner() : V2 epoch schema write failed");
-                }
-                nFirstStagedEpoch = nPreviousEpoch;
-            }
+            txdb.TxnAbort();
+            return error("SetBestChainInner() : failed to erase stale V2 suffix at epoch %d",
+                         nBestChainV2Epoch);
         }
+        std::string strEpochError;
+        if (!StageV2EpochStateAtCrossing(
+                txdb, pindexNew, nBestChainV2Epoch, nBestChainV2Epoch,
+                mapStagedEpochStates, mapStagedEpochTrees, strEpochError))
+        {
+            txdb.TxnAbort();
+            return error("SetBestChainInner() : V2 epoch %d build failed: %s",
+                         nBestChainV2Epoch, strEpochError.c_str());
+        }
+        if (!txdb.WriteEpochStateSchema(EPOCHSTATE_SCHEMA_V2))
+        {
+            txdb.TxnAbort();
+            return error("SetBestChainInner() : V2 epoch schema write failed");
+        }
+        nFirstStagedEpoch = nBestChainV2Epoch;
     }
 
     // At the activation block, build the V3 migration base for the preceding epoch with the
@@ -11726,48 +11798,39 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, const u
             // Epoch state computation and pruning at epoch boundaries
             if (pindexNew->nHeight > 0)
             {
-                int nCurrentEpoch = GetEpochForHeight(pindexNew->nHeight);
-                int nPreviousEpoch = GetEpochForHeight(pindexNew->nHeight - 1);
-                if (nCurrentEpoch > nPreviousEpoch &&
-                    pindexNew->nHeight < FORK_HEIGHT_EPOCH_STATE_V3)
+                // Epochs predating V2 keep AddToBlockIndex timing; V2-range epochs are staged by
+                // SetBestChainInner/Reorganize inside the best-chain transaction.
+                int nCompletedEpoch = -1;
+                if (V2CompatEpochBuildsAtIndexCrossing(pindexNew->nHeight, nCompletedEpoch))
                 {
-                    int nCompletedEpoch = nPreviousEpoch;
                     int nEpochStart = GetEpochBoundaryHeight(nCompletedEpoch, pindexNew->nHeight);
                     int nEpochEnd = GetEpochBoundaryHeight(nCompletedEpoch + 1, pindexNew->nHeight) - 1;
                     int nEpochInterval = (nEpochEnd >= nEpochStart) ? (nEpochEnd - nEpochStart + 1) : GetEpochInterval(nEpochStart);
 
-                    // Epochs whose own range predates V2 retain their historical
-                    // AddToBlockIndex timing. V2-range epochs are staged later by
-                    // SetBestChainInner/Reorganize so their state/tree/schema share
-                    // the best-chain transaction and side-branch arrival cannot
-                    // mutate the canonical cache.
-                    if (nEpochEnd < FORK_HEIGHT_EPOCH_STATE_V2)
+                    bool fEpochV2 =
+                        (pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V2);
+                    if (!fEpochV2 ||
+                        (hashPrevBlock == hashBestChain &&
+                         pindexNew->nChainTrust > nBestChainTrust))
                     {
-                        bool fEpochV2 =
-                            (pindexNew->nHeight >= FORK_HEIGHT_EPOCH_STATE_V2);
-                        if (!fEpochV2 ||
-                            (hashPrevBlock == hashBestChain &&
-                             pindexNew->nChainTrust > nBestChainTrust))
-                        {
-                            const CBlockIndex* pV2Anchor = fEpochV2 ? pindexNew : NULL;
-                            if (!g_dagManager.ComputeEpochState(
-                                    nCompletedEpoch, nEpochInterval, pV2Anchor))
-                                return error("AddToBlockIndex() : V2 epoch %d build failed",
-                                             nCompletedEpoch);
+                        const CBlockIndex* pV2Anchor = fEpochV2 ? pindexNew : NULL;
+                        if (!g_dagManager.ComputeEpochState(
+                                nCompletedEpoch, nEpochInterval, pV2Anchor))
+                            return error("AddToBlockIndex() : V2 epoch %d build failed",
+                                         nCompletedEpoch);
 
-                            CTxDB txdbEpoch;
-                            if (!txdbEpoch.TxnBegin())
-                                return error("AddToBlockIndex() : V2 epoch TxnBegin failed");
-                            if (!g_dagManager.WriteEpochState(txdbEpoch, nCompletedEpoch) ||
-                                (fEpochV2 &&
-                                 !txdbEpoch.WriteEpochStateSchema(EPOCHSTATE_SCHEMA_V2)))
-                            {
-                                txdbEpoch.TxnAbort();
-                                return error("AddToBlockIndex() : V2 epoch state/schema write failed");
-                            }
-                            if (!txdbEpoch.TxnCommit())
-                                return error("AddToBlockIndex() : V2 epoch TxnCommit failed");
+                        CTxDB txdbEpoch;
+                        if (!txdbEpoch.TxnBegin())
+                            return error("AddToBlockIndex() : V2 epoch TxnBegin failed");
+                        if (!g_dagManager.WriteEpochState(txdbEpoch, nCompletedEpoch) ||
+                            (fEpochV2 &&
+                             !txdbEpoch.WriteEpochStateSchema(EPOCHSTATE_SCHEMA_V2)))
+                        {
+                            txdbEpoch.TxnAbort();
+                            return error("AddToBlockIndex() : V2 epoch state/schema write failed");
                         }
+                        if (!txdbEpoch.TxnCommit())
+                            return error("AddToBlockIndex() : V2 epoch TxnCommit failed");
                     }
                 }
 

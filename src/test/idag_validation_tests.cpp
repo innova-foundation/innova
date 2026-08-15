@@ -680,15 +680,35 @@ BOOST_AUTO_TEST_CASE(dag_sibling_precedence_is_independent_of_dag_order_rebuilds
     pindexBest = pOldBest;
 }
 
-// BuildEpochStateV2Compat orders its epoch blue-before-red and sums trust over blue blocks
-// only, both read from mapDAGData.fBlue, which ColorBlock assigns as a side effect of
-// whichever blocks this node had when it coloured. That is consensus state through the
-// epoch digest, and the only thing keeping it away from mainnet is an unenforced coincidence
-// of heights: the first post-DAG epoch crosses at exactly FORK_HEIGHT_EPOCH_STATE_V3, so the
-// "<" in the caller's gate fails. Change the epoch interval or the V3 offset and the legacy
-// path silently becomes consensus. This replays the caller's gate over the whole fork
-// window and fails if any crossing ever reaches it.
-BOOST_AUTO_TEST_CASE(v2compat_epoch_build_is_unreachable_at_every_post_dag_crossing)
+// BuildEpochStateV2Compat reads node-local fBlue, so it must never own an epoch with
+// DAG-era blocks. The margin is one block (the first post-DAG epoch crosses at
+// FORK_HEIGHT_EPOCH_STATE_V3). Drives the three production gate predicates.
+
+// Epoch boundaries are a pure function of the epoch number (GetEpochBoundaryHeight ignores
+// its height argument), so an epoch's last height is well defined without a chain.
+static int EpochEndHeightForTest(int nEpoch)
+{
+    return GetEpochBoundaryHeight(nEpoch + 1, 0) - 1;
+}
+
+static void CheckV2CompatEpochIsPreDAG(const std::string& strArm, const char* strSite,
+                                       int nHeight, int nEpoch)
+{
+    BOOST_CHECK_MESSAGE(
+        nEpoch >= 0,
+        strArm + ": " + strSite + " selected epoch " + std::to_string(nEpoch) +
+            " at height " + std::to_string(nHeight));
+    const int nEpochEnd = EpochEndHeightForTest(nEpoch);
+    BOOST_CHECK_MESSAGE(
+        nEpochEnd < FORK_HEIGHT_DAG,
+        strArm + ": " + strSite + " at height " + std::to_string(nHeight) +
+            " hands epoch " + std::to_string(nEpoch) + " (ending at height " +
+            std::to_string(nEpochEnd) + ") to BuildEpochStateV2Compat, which orders it "
+            "by node-local fBlue -- that epoch contains DAG-era blocks and its digest "
+            "is consensus");
+}
+
+BOOST_AUTO_TEST_CASE(v2compat_epoch_build_never_owns_a_dag_era_epoch)
 {
     const bool fOldRegTest = fRegTest;
     const bool fOldTestNet = fTestNet;
@@ -702,55 +722,108 @@ BOOST_AUTO_TEST_CASE(v2compat_epoch_build_is_unreachable_at_every_post_dag_cross
     {
         fRegTest = arms[i].fRegTestArm;
         fTestNet = arms[i].fTestNetArm;
+        const std::string strArm(arms[i].strName);
 
         const int nDAG = FORK_HEIGHT_DAG;
         const int nV2 = FORK_HEIGHT_EPOCH_STATE_V2;
-        const int nV3 = FORK_HEIGHT_EPOCH_STATE_V3;
 
         // No post-DAG epoch may end before the V2 schema starts, or the pre-V2 builder
-        // would own a DAG-era epoch.
+        // would own a DAG-era epoch through the AddToBlockIndex path.
         BOOST_CHECK_MESSAGE(nV2 == nDAG,
-                            std::string(arms[i].strName) +
-                                ": schema V2 must start exactly at the DAG fork");
+                            strArm + ": schema V2 must start exactly at the DAG fork");
 
-        if (nV3 == TESTNET_EPOCH_STATE_V3_HEIGHT_UNSET)
+        if (!IsEpochStateV3Configured())
         {
-            // Documented release blocker: with the sentinel in place every post-DAG epoch
-            // on this network is built by the legacy fBlue path. Leave the arm here rather
-            // than assert a property the sentinel cannot satisfy -- but the moment a real
-            // height is set, the checks below start applying to it.
+            // Release blocker: with V3 unset, every post-DAG epoch is owned by the
+            // fBlue builder. Only public testnet may sit here.
             BOOST_CHECK_MESSAGE(arms[i].fTestNetArm,
-                                std::string(arms[i].strName) +
-                                    ": only public testnet may carry the V3 sentinel");
+                                strArm + ": only public testnet may carry the V3 sentinel");
+            const int nFirstPostDAGCrossing =
+                GetEpochBoundaryHeight(GetEpochForHeight(nDAG) + 1, 0);
+            int nEpochSentinel = -1;
+            BOOST_CHECK_MESSAGE(
+                V2CompatEpochStagesAtBestChainCrossing(nFirstPostDAGCrossing, nEpochSentinel) &&
+                    EpochEndHeightForTest(nEpochSentinel) >= nDAG,
+                strArm + ": sentinel arm expected the fBlue builder to still own the first "
+                         "post-DAG epoch; if this stopped being true the sentinel branch is "
+                         "stale and must be removed");
             continue;
         }
 
-        BOOST_CHECK_MESSAGE(nV3 == nDAG + FINALITY_EPOCH_INTERVAL_POST_DAG,
-                            std::string(arms[i].strName) +
-                                ": schema V3 must activate on the first post-DAG epoch "
-                                "crossing, otherwise the legacy fBlue epoch build becomes "
-                                "consensus for the epochs in between");
+        BOOST_CHECK_MESSAGE(FORK_HEIGHT_EPOCH_STATE_V3 ==
+                                nDAG + FINALITY_EPOCH_INTERVAL_POST_DAG,
+                            strArm + ": schema V3 must activate on the first post-DAG epoch "
+                                     "crossing, otherwise the legacy fBlue epoch build "
+                                     "becomes consensus for the epochs in between");
 
-        // Replay SetBestChainInner's gate over the fork window, including several epochs
-        // on each side of it.
         const int nFrom = std::max(1, nDAG - 3 * FINALITY_EPOCH_INTERVAL_PRE_DAG);
         const int nTo = nDAG + 3 * FINALITY_EPOCH_INTERVAL_POST_DAG;
+
+        // Sites 1 and 2: AddToBlockIndex and SetBestChainInner, driven block by block
+        // across the whole fork window.
         for (int nHeight = nFrom; nHeight <= nTo; nHeight++)
         {
-            const int nCurrentEpoch = GetEpochForHeight(nHeight);
-            const int nPreviousEpoch = GetEpochForHeight(nHeight - 1);
-            if (nCurrentEpoch <= nPreviousEpoch)
-                continue;
-            const int nEpochEnd =
-                GetEpochBoundaryHeight(nPreviousEpoch + 1, nHeight) - 1;
-            const bool fV2CompatRuns = (nHeight < nV3) && (nEpochEnd >= nV2);
-            BOOST_CHECK_MESSAGE(!fV2CompatRuns,
-                                std::string(arms[i].strName) +
-                                    ": epoch crossing at height " +
-                                    std::to_string(nHeight) +
-                                    " reaches BuildEpochStateV2Compat, which orders by "
-                                    "node-local fBlue");
+            int nEpoch = -1;
+            if (V2CompatEpochBuildsAtIndexCrossing(nHeight, nEpoch))
+                CheckV2CompatEpochIsPreDAG(strArm, "AddToBlockIndex", nHeight, nEpoch);
+            if (V2CompatEpochStagesAtBestChainCrossing(nHeight, nEpoch))
+                CheckV2CompatEpochIsPreDAG(strArm, "SetBestChainInner", nHeight, nEpoch);
         }
+
+        // Site 3: Reorganize, gated on a staged-epoch range. Sweep each epoch boundary in the
+        // window, the block either side, and the fork and activation heights.
+        std::vector<int> vProbe;
+        vProbe.push_back(nDAG - 1);
+        vProbe.push_back(nDAG);
+        vProbe.push_back(nDAG + 1);
+        vProbe.push_back(FORK_HEIGHT_EPOCH_STATE_V3 - 1);
+        vProbe.push_back(FORK_HEIGHT_EPOCH_STATE_V3);
+        vProbe.push_back(FORK_HEIGHT_EPOCH_STATE_V3 + 1);
+        for (int nEpoch = GetEpochForHeight(nFrom); nEpoch <= GetEpochForHeight(nTo); nEpoch++)
+        {
+            const int nBoundary = GetEpochBoundaryHeight(nEpoch, 0);
+            vProbe.push_back(nBoundary - 1);
+            vProbe.push_back(nBoundary);
+            vProbe.push_back(nBoundary + 1);
+        }
+        for (size_t a = 0; a < vProbe.size(); a++)
+            for (size_t b = 0; b < vProbe.size(); b++)
+                for (size_t c = 0; c < vProbe.size(); c++)
+                {
+                    const int nOldTip = vProbe[a];
+                    const int nNewTip = vProbe[b];
+                    const int nForkHeight = vProbe[c];
+                    if (nOldTip < 1 || nNewTip < 1 || nForkHeight < 1)
+                        continue;
+                    // A reorg's common ancestor is at or below both tips.
+                    if (nForkHeight > nOldTip || nForkHeight > nNewTip)
+                        continue;
+
+                    int nFirstEpoch = -1;
+                    int nLastEpoch = -1;
+                    if (!V2CompatReorgStagesEpochRange(nOldTip, nNewTip, nForkHeight,
+                                                       nFirstEpoch, nLastEpoch))
+                        continue;
+
+                    // Every epoch the connect loop may stage must be pre-DAG. An empty
+                    // range (first > last) stages nothing and is vacuously safe.
+                    for (int nEpoch = nFirstEpoch; nEpoch <= nLastEpoch; nEpoch++)
+                        CheckV2CompatEpochIsPreDAG(strArm, "Reorganize (staged range)",
+                                                   nNewTip, nEpoch);
+
+                    // And the per-block crossing predicate must not reach outside it.
+                    for (size_t d = 0; d < vProbe.size(); d++)
+                    {
+                        const int nConnectHeight = vProbe[d];
+                        if (nConnectHeight <= nForkHeight || nConnectHeight > nNewTip)
+                            continue;
+                        int nEpochAtCrossing = -1;
+                        if (V2CompatEpochStagesAtReorgCrossing(nConnectHeight, nFirstEpoch,
+                                                               nLastEpoch, nEpochAtCrossing))
+                            CheckV2CompatEpochIsPreDAG(strArm, "Reorganize (connect loop)",
+                                                       nConnectHeight, nEpochAtCrossing);
+                    }
+                }
     }
 
     fRegTest = fOldRegTest;
