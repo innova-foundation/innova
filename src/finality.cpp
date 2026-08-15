@@ -2065,6 +2065,33 @@ void CollectFinalitySettlementVotes(const std::vector<std::vector<CFinalityVote>
     }
 }
 
+CFinalityVoteContext CFinalityVoteContext::Connect(const CBlockIndex* pindexCarrier)
+{
+    if (!pindexCarrier)
+        return CFinalityVoteContext(NULL, 0);
+    return CFinalityVoteContext(pindexCarrier, pindexCarrier->nHeight);
+}
+
+CFinalityVoteContext CFinalityVoteContext::Build(const CBlockIndex* pindexPrev)
+{
+    if (!pindexPrev)
+        return CFinalityVoteContext(NULL, 0);
+    return CFinalityVoteContext(pindexPrev, pindexPrev->nHeight + 1);
+}
+
+const CBlockIndex* GetFinalityAncestorOnChain(const CBlockIndex* pindexTip, int nHeight,
+                                              int nMaxWalk)
+{
+    if (!pindexTip || nHeight < 0 || pindexTip->nHeight < nHeight)
+        return NULL;
+    const CBlockIndex* p = pindexTip;
+    for (int i = 0; p && p->nHeight > nHeight && i < nMaxWalk; i++)
+        p = p->pprev;
+    if (!p || p->nHeight != nHeight)
+        return NULL;
+    return p;
+}
+
 bool GatherFinalitySettlementVotes(const CBlockIndex* pindexPrev, int nEpoch,
                                    std::vector<CFinalityVote>& vVotesOut,
                                    std::string* pstrError)
@@ -4821,9 +4848,10 @@ uint256 FinalityNullifierBindContext(int nEpoch, const uint256& hashEpochBlock)
 }
 
 bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb,
-                                 std::string* pstrError, int nContextHeight,
+                                 std::string* pstrError, const CFinalityVoteContext& ctx,
                                  FinalityResult* pResult) const
 {
+    const int nContextHeight = ctx.Height();
     auto reject = [&](const std::string& strReason) -> bool {
         if (pstrError)
             *pstrError = strReason;
@@ -4874,11 +4902,14 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb,
             return reject("finality vote outside epoch vote-inclusion window");
     }
 
-    // Local state, not a verdict: see the matching note-vote path. A vote relayed
-    // ahead of the block it names is checkable as soon as that block arrives.
+    // Relay only: a missing named block is local state. In a chain context the named
+    // block must be an ancestor of the carrier, so absence is invalid, not retryable.
     std::map<uint256, CBlockIndex*>::iterator miEpoch = mapBlockIndex.find(vote.hashBlock);
     if (miEpoch == mapBlockIndex.end())
-        return localState("epoch block is not known");
+        return ctx.IsRelay() ? localState("epoch block is not known")
+                             : reject("epoch block is not known");
+    // A null index entry is this node's own corruption in either context, and no peer
+    // can induce it, so it stays transient rather than condemning a block.
     if (miEpoch->second == NULL)
         return localState("epoch block index entry is corrupt");
     CBlockIndex* pEpochBlock = miEpoch->second;
@@ -4888,6 +4919,15 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb,
         return reject("finality votes require DAG epoch mode");
     if (!pEpochBlock->IsProofOfWork())
         return reject("finality votes must target proof-of-work epoch blocks");
+    // The lookup above is global: it says some block with this hash is indexed, not that
+    // it is the epoch boundary of the chain being extended, so a vote naming a
+    // sibling-branch boundary block passed it. Bind it to the carrier's own ancestors.
+    if (const CBlockIndex* pAnchor = ctx.AnchorTip())
+    {
+        if (GetFinalityAncestorOnChain(pAnchor, vote.nHeight,
+                                       FINALITY_ANCESTOR_MAX_WALK) != pEpochBlock)
+            return reject("epoch block is not an ancestor of the including block");
+    }
 
     if (vote.IsPrivate())
     {
@@ -6039,7 +6079,7 @@ bool CFinalityTracker::AddVote(const CFinalityVote& vote, bool fCheckStake, bool
     {
         CTxDB txdb("r");
         std::string strError;
-        if (!CheckVote(vote, txdb, &strError))
+        if (!CheckVote(vote, txdb, &strError, CFinalityVoteContext::Relay()))
         {
             if (fDebug)
                 printf("AddVote: rejected finality vote: %s\n", strError.c_str());
@@ -6709,9 +6749,10 @@ std::vector<CFinalityTallyShare> CFinalityTracker::GetPendingTallySharesForBlock
 
 bool CFinalityTracker::ConnectBlockVotes(CTxDB& txdb, const uint256& hashBlock,
                                         const std::vector<CFinalityVote>& vVotes,
-                                        int nBlockHeight,
+                                        const CFinalityVoteContext& ctx,
                                         FinalityResult* pResult)
 {
+    const int nBlockHeight = ctx.Height();
     if (pResult)
         *pResult = FINALITY_RESULT_INVALID;
     if (vVotes.empty())
@@ -6750,7 +6791,7 @@ bool CFinalityTracker::ConnectBlockVotes(CTxDB& txdb, const uint256& hashBlock,
 
         std::string strError;
         FinalityResult checkResult = FINALITY_RESULT_INVALID;
-        if (!CheckVote(vote, txdb, &strError, nBlockHeight, &checkResult))
+        if (!CheckVote(vote, txdb, &strError, ctx, &checkResult))
         {
             if (fDebug)
                 printf("ConnectBlockVotes: rejected vote in block %s: %s\n",
@@ -6875,9 +6916,11 @@ bool CFinalityTracker::DisconnectBlockVotes(CTxDB& txdb, const uint256& hashBloc
 }
 
 bool CFinalityTracker::CheckNoteVoteForContext(const CNoteFinalityVote& vote, CTxDB& txdb,
-                                               std::string* pstrError, int nContextHeight,
+                                               std::string* pstrError,
+                                               const CFinalityVoteContext& ctx,
                                                FinalityResult* pResult) const
 {
+    const int nContextHeight = ctx.Height();
     auto reject = [&](const std::string& strReason) -> bool {
         if (pstrError)
             *pstrError = strReason;
@@ -6913,13 +6956,14 @@ bool CFinalityTracker::CheckNoteVoteForContext(const CNoteFinalityVote& vote, CT
             return reject("note finality vote outside epoch vote-inclusion window");
     }
 
-    // Not holding the block yet is this node's own state, not a property of the vote:
-    // the same vote is checkable the moment the block lands. Calling it invalid made a
-    // validity verdict out of node-local state -- the ConnectBlock-split class -- and
-    // penalised an honest peer for relaying ahead of the block body.
+    // At relay, a missing named block is node-local state, not invalidity. In a chain
+    // context the named block must be an indexed ancestor on every node, so a miss is
+    // invalid everywhere and must not map to a transient failure.
     std::map<uint256, CBlockIndex*>::iterator miEpoch = mapBlockIndex.find(vote.hashBlock);
     if (miEpoch == mapBlockIndex.end())
-        return localState("note vote epoch block is not known");
+        return ctx.IsRelay() ? localState("note vote epoch block is not known")
+                             : reject("note vote epoch block is not known");
+    // Local corruption in either context, and unreachable by a peer, so it stays transient.
     if (miEpoch->second == NULL)
         return localState("note vote epoch block index entry is corrupt");
     CBlockIndex* pEpochBlock = miEpoch->second;
@@ -6927,6 +6971,14 @@ bool CFinalityTracker::CheckNoteVoteForContext(const CNoteFinalityVote& vote, CT
         return reject("note vote epoch block height mismatch");
     if (!pEpochBlock->IsProofOfWork())
         return reject("note finality votes must target proof-of-work epoch blocks");
+    // Presence in the global index is not membership of this chain: a boundary block from
+    // a sibling branch is indexed too.
+    if (const CBlockIndex* pAnchor = ctx.AnchorTip())
+    {
+        if (GetFinalityAncestorOnChain(pAnchor, vote.nHeight,
+                                       FINALITY_ANCESTOR_MAX_WALK) != pEpochBlock)
+            return reject("note vote epoch block is not an ancestor of the including block");
+    }
 
     // The committee the vote shared to is consensus state, not the voter's choice: a share
     // split to some other set is one no quorum can ever open.
@@ -7010,10 +7062,11 @@ void CFinalityTracker::RecomputeNoteVoteCounting()
 
 bool CFinalityTracker::ConnectBlockNoteVotes(CTxDB& txdb, const uint256& hashBlock,
                                              const std::vector<CNoteFinalityVote>& vVotes,
-                                             int nBlockHeight,
+                                             const CFinalityVoteContext& ctx,
                                              FinalityResult* pResult,
                                              bool fCheckVotes)
 {
+    const int nBlockHeight = ctx.Height();
     if (pResult)
         *pResult = FINALITY_RESULT_INVALID;
     if (vVotes.empty())
@@ -7038,7 +7091,7 @@ bool CFinalityTracker::ConnectBlockNoteVotes(CTxDB& txdb, const uint256& hashBlo
         {
             std::string strError;
             FinalityResult checkResult = FINALITY_RESULT_INVALID;
-            if (!CheckNoteVoteForContext(vote, txdb, &strError, nBlockHeight, &checkResult))
+            if (!CheckNoteVoteForContext(vote, txdb, &strError, ctx, &checkResult))
             {
                 if (fDebug)
                     printf("ConnectBlockNoteVotes: rejected vote in block %s: %s\n",
@@ -7170,7 +7223,8 @@ bool CFinalityTracker::AddPendingNoteVote(const CNoteFinalityVote& vote, CTxDB& 
     }
     // Relay-time context only: the window is a connect-time rule and a relayed vote may
     // legitimately arrive before the block that will carry it.
-    if (!CheckNoteVoteForContext(vote, txdb, pstrError, -1, pResult))
+    if (!CheckNoteVoteForContext(vote, txdb, pstrError, CFinalityVoteContext::Relay(),
+                                 pResult))
         return false;
 
     LOCK(cs_finality);
@@ -7180,18 +7234,71 @@ bool CFinalityTracker::AddPendingNoteVote(const CNoteFinalityVote& vote, CTxDB& 
     return true;
 }
 
+unsigned int CFinalityTracker::PurgeDeferredNoteVotesLocked(int nTipHeight, int64_t nNow)
+{
+    unsigned int nDropped = 0;
+    std::map<uint256, std::map<uint256, CDeferredNoteVote> >::iterator it =
+        mapDeferredNoteVotes.begin();
+    while (it != mapDeferredNoteVotes.end())
+    {
+        std::map<uint256, CDeferredNoteVote>::iterator itVote = it->second.begin();
+        while (itVote != it->second.end())
+        {
+            // Un-carriable: the chain is already past the last block that could have
+            // included this vote (R1), so releasing it could never produce a valid
+            // carrier. Dropping it therefore loses nothing that was still winnable.
+            const bool fWindowClosed =
+                nTipHeight >= 0 &&
+                nTipHeight > itVote->second.vote.nHeight + FINALITY_VOTE_INCLUSION_WINDOW;
+            // Backstop for a hold the height rule can never reach -- a fabricated block
+            // at a height the chain has not got to. The age is orders of magnitude above
+            // the window, so a hold this old had no carrier left either.
+            const bool fAgedOut =
+                itVote->second.nTimeHeld > 0 &&
+                nNow - itVote->second.nTimeHeld > FINALITY_MAX_DEFERRED_NOTE_VOTE_AGE;
+            if (fWindowClosed || fAgedOut)
+            {
+                it->second.erase(itVote++);
+                nDropped++;
+            }
+            else
+                ++itVote;
+        }
+        if (it->second.empty())
+            mapDeferredNoteVotes.erase(it++);
+        else
+            ++it;
+    }
+    return nDropped;
+}
+
+unsigned int CFinalityTracker::PurgeDeferredNoteVotes(int nTipHeight, int64_t nNow)
+{
+    LOCK(cs_finality);
+    return PurgeDeferredNoteVotesLocked(nTipHeight, nNow);
+}
+
 void CFinalityTracker::DeferNoteVoteForUnknownBlock(const CNoteFinalityVote& vote)
 {
     const uint256 hashVote = vote.GetHash();
     LOCK(cs_finality);
     if (mapNoteVotesByHash.count(hashVote) || mapPendingNoteVotes.count(hashVote))
         return;
+    // Reclaim slots the bound has already retired before consulting the cap, so a
+    // spammer's stale holds cannot squat on capacity an arriving honest vote needs.
+    PurgeDeferredNoteVotesLocked(pindexBest ? pindexBest->nHeight : -1, GetTime());
     unsigned int nHeld = 0;
     for (const auto& pair : mapDeferredNoteVotes)
         nHeld += (unsigned int)pair.second.size();
+    // Full: refuse the NEW hold rather than evict an existing one. The sender of this
+    // vote still holds it and its inv will come round again; an evicted hold has no
+    // second sender, because a note vote is cast once per epoch and never re-emitted.
     if (nHeld >= FINALITY_MAX_DEFERRED_NOTE_VOTES)
         return;
-    mapDeferredNoteVotes[vote.hashBlock][hashVote] = vote;
+    CDeferredNoteVote held;
+    held.vote = vote;
+    held.nTimeHeld = GetTime();
+    mapDeferredNoteVotes[vote.hashBlock][hashVote] = held;
 }
 
 std::vector<uint256> CFinalityTracker::GetDeferredNoteVoteBlockHashes() const
@@ -7218,23 +7325,25 @@ std::vector<CNoteFinalityVote> CFinalityTracker::TakeDeferredNoteVotes(
 {
     LOCK(cs_finality);
     std::vector<CNoteFinalityVote> vTaken;
-    std::map<uint256, std::map<uint256, CNoteFinalityVote> >::iterator it =
+    // Height and age bounds first: both retire only holds no carrier could still take.
+    PurgeDeferredNoteVotesLocked(pindexBest ? pindexBest->nHeight : -1, GetTime());
+    std::map<uint256, std::map<uint256, CDeferredNoteVote> >::iterator it =
         mapDeferredNoteVotes.begin();
     while (it != mapDeferredNoteVotes.end())
     {
         if (setArrivedBlocks.count(it->first))
         {
             for (const auto& pair : it->second)
-                vTaken.push_back(pair.second);
+                vTaken.push_back(pair.second.vote);
             mapDeferredNoteVotes.erase(it++);
             continue;
         }
         // An epoch the chain has left behind can no longer carry the vote, so holding
         // it would only grow the map until the cap starved a live one.
-        std::map<uint256, CNoteFinalityVote>::iterator itVote = it->second.begin();
+        std::map<uint256, CDeferredNoteVote>::iterator itVote = it->second.begin();
         while (itVote != it->second.end())
         {
-            if (itVote->second.nEpoch < nCurrentEpoch - 1)
+            if (itVote->second.vote.nEpoch < nCurrentEpoch - 1)
                 it->second.erase(itVote++);
             else
                 ++itVote;
@@ -10018,34 +10127,11 @@ bool ProduceFinalityVote()
     int nCurrentHeight = pindexBest->nHeight;
     int nCurrentEpoch = GetEpochForHeight(nCurrentHeight);
 
-    // If DAG is active, vote for the DAG-selected best tip
+    // Name the boundary block on the tip's own pprev chain, the chain the carrier is validated
+    // against; a DAG-score pick could name a sibling branch and lose the single-shot note vote.
     int nEpochHeight = GetEpochBoundaryHeight(nCurrentEpoch, nCurrentHeight);
-    CBlockIndex* pEpochBlock = NULL;
-    if (nCurrentHeight >= FORK_HEIGHT_DAG)
-    {
-        CBlockIndex* pDAGTip = g_dagManager.SelectBestDAGTip();
-        if (pDAGTip)
-        {
-            // Walk back to epoch boundary on the DAG selected-parent chain.
-            CBlockIndex* pWalk = pDAGTip;
-            std::set<uint256> setVisited;
-            while (pWalk && pWalk->nHeight > nEpochHeight && pWalk->phashBlock)
-            {
-                if (!setVisited.insert(pWalk->GetBlockHash()).second)
-                    break;
-                uint256 hashParent = g_dagManager.GetSelectedParent(pWalk->GetBlockHash());
-                std::map<uint256, CBlockIndex*>::iterator miParent = mapBlockIndex.find(hashParent);
-                if (miParent == mapBlockIndex.end())
-                    break;
-                pWalk = miParent->second;
-            }
-            if (pWalk && pWalk->nHeight == nEpochHeight)
-                pEpochBlock = pWalk;
-        }
-    }
-    if (!pEpochBlock)
-        pEpochBlock = FindBlockByHeight(nEpochHeight);
-    if (!pEpochBlock)
+    CBlockIndex* pEpochBlock = FindBlockByHeight(nEpochHeight);
+    if (!pEpochBlock || pEpochBlock->nHeight != nEpochHeight)
         return false;
 
     std::string strVoteMode = GetFinalityVoteModeArg();

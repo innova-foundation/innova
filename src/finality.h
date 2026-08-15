@@ -65,7 +65,61 @@ static const int FINALITY_VOTE_EMIT_OFFSET_POST_DAG = 2;
 // Cap on note votes held waiting for the block they name. Bounded because a peer
 // chooses the block hash a vote points at, so an unbounded hold is a memory sink.
 static const unsigned int FINALITY_MAX_DEFERRED_NOTE_VOTES = 256;
+// Wall-clock backstop on a single hold. The height-based purge below retires a hold
+// the moment the chain proves it un-carriable, but a vote naming a fabricated block at
+// a FUTURE height is never reached by it, so without this a spammer could occupy every
+// slot indefinitely and starve honest holds. A note vote is single-shot, so starvation
+// loses it for the epoch -- the age bound is what keeps the queue available, not just
+// bounded. Two orders of magnitude above the 24s inclusion window at 1s spacing.
+static const int64_t FINALITY_MAX_DEFERRED_NOTE_VOTE_AGE = 600;
 static const int FINALITY_MAX_STAKE_PROOFS = 8;      // keep coinbase vote commitments under standard script element size
+
+/** Chain context a finality vote is judged in. Relay may hold a vote whose block is
+ *  missing; Connect/Build judge it against one ancestor chain, where a missing boundary
+ *  block is deterministically invalid. Built only through the named factories. */
+class CFinalityVoteContext
+{
+public:
+    /** Gossip/mempool pre-check. Skips the connect-time inclusion window and holds on
+     *  unavailable local state. */
+    static CFinalityVoteContext Relay() { return CFinalityVoteContext(NULL, -1); }
+
+    /** Validating the block that carries the vote. */
+    static CFinalityVoteContext Connect(const CBlockIndex* pindexCarrier);
+
+    /** Assembling a block on top of pindexPrev; the carrier does not exist yet. */
+    static CFinalityVoteContext Build(const CBlockIndex* pindexPrev);
+
+    /** Chain context known only by height. Enforces every height-gated rule but cannot
+     *  check ancestry, so consensus callers must use Connect/Build instead; this exists
+     *  for unit tests and callers that hold no block index. */
+    static CFinalityVoteContext ChainHeight(int nHeightIn)
+    {
+        return CFinalityVoteContext(NULL, nHeightIn < 0 ? 0 : nHeightIn);
+    }
+
+    bool IsRelay() const { return nHeight < 0; }
+    /** Containing-block height; -1 at relay. */
+    int Height() const { return nHeight; }
+    /** Tip of the ancestor chain the named block must lie on; NULL when unavailable. */
+    const CBlockIndex* AnchorTip() const { return pindexAnchor; }
+
+private:
+    CFinalityVoteContext(const CBlockIndex* pindexAnchorIn, int nHeightIn)
+        : pindexAnchor(pindexAnchorIn), nHeight(nHeightIn) {}
+
+    const CBlockIndex* pindexAnchor;
+    int nHeight;
+};
+
+/** Resolve nHeight on pindexTip's own pprev chain (pindexTip included), identical on
+ *  every node. Returns NULL if not reachable within nMaxWalk steps. */
+const CBlockIndex* GetFinalityAncestorOnChain(const CBlockIndex* pindexTip, int nHeight,
+                                              int nMaxWalk);
+
+/** Walk bound for the ancestry check; unreachable for a vote that passed the
+ *  inclusion-window rule (R1). */
+static const int FINALITY_ANCESTOR_MAX_WALK = 4096;
 
 /** Three-way result used by consensus callers.  Relay-facing APIs retain their
  * bool return, while block connection can distinguish a provably bad object
@@ -1240,10 +1294,10 @@ public:
     bool AddVote(const CFinalityVote& vote, bool fCheckStake = true, bool fRecordFinality = false);
 
     /** Stateless consensus validation of a transparent or private finality vote.
-     *  nContextHeight is the containing block's height: when >= 0 it enforces the
-     *  fork-gated vote-inclusion window (R1); -1 (relay/pre-check) skips it. */
-    bool CheckVote(const CFinalityVote& vote, CTxDB& txdb, std::string* pstrError = NULL,
-                   int nContextHeight = -1,
+     *  ctx: a chain context enforces the inclusion window and ancestry (verdicts only);
+     *  Relay skips the window and may answer "local state". No default. */
+    bool CheckVote(const CFinalityVote& vote, CTxDB& txdb, std::string* pstrError,
+                   const CFinalityVoteContext& ctx,
                    FinalityResult* pResult = NULL) const;
 
     /** Stateless consensus validation of an aggregate hidden tally certificate.
@@ -1310,18 +1364,19 @@ public:
     std::vector<CFinalityTallyCertificate> GetPendingTallyCertificatesForBlock(int nBlockHeight, unsigned int nMaxCerts = 4) const;
     bool HasVoteNullifier(const uint256& nullifier) const;
 
-    /** Connect/disconnect votes included in a block. */
+    /** Connect/disconnect votes included in a block. ctx carries the block being
+     *  connected, so every embedded vote is judged against that block's own ancestors. */
     bool ConnectBlockVotes(CTxDB& txdb, const uint256& hashBlock,
                            const std::vector<CFinalityVote>& vVotes,
-                           int nBlockHeight = -1,
+                           const CFinalityVoteContext& ctx,
                            FinalityResult* pResult = NULL);
     bool DisconnectBlockVotes(CTxDB& txdb, const uint256& hashBlock, const std::vector<CFinalityVote>& vVotes);
 
-    /** Stateless + chain-context validation of one note vote carried at nContextHeight.
-     *  nContextHeight < 0 is a relay pre-check and skips the inclusion window. */
+    /** Stateless + chain-context validation of one note vote. See CheckVote for how ctx
+     *  splits verdicts from local state; no default, for the same reason. */
     bool CheckNoteVoteForContext(const CNoteFinalityVote& vote, CTxDB& txdb,
-                                 std::string* pstrError = NULL,
-                                 int nContextHeight = -1,
+                                 std::string* pstrError,
+                                 const CFinalityVoteContext& ctx,
                                  FinalityResult* pResult = NULL) const;
 
     /** Connect/disconnect a block's note votes. Validation invalidates the block;
@@ -1329,7 +1384,7 @@ public:
      *  index records every carried instance so reorg teardown stays symmetric. */
     bool ConnectBlockNoteVotes(CTxDB& txdb, const uint256& hashBlock,
                                const std::vector<CNoteFinalityVote>& vVotes,
-                               int nBlockHeight = -1,
+                               const CFinalityVoteContext& ctx,
                                FinalityResult* pResult = NULL,
                                bool fCheckVotes = true);
     bool DisconnectBlockNoteVotes(CTxDB& txdb, const uint256& hashBlock,
@@ -1344,8 +1399,18 @@ public:
     bool HaveNoteVote(const uint256& hashVote) const;
     /** Hold a note vote whose epoch block has not arrived, keyed by that block. A note
      *  vote is single-shot -- its producer retires the note in a per-epoch cast set and
-     *  never sends a second -- so dropping one costs the epoch that voter for good. */
+     *  never sends a second -- so dropping one costs the epoch that voter for good.
+     *
+     *  Bounded three ways, in this order: holds the chain has proven un-carriable are
+     *  purged first (lossless), then holds past FINALITY_MAX_DEFERRED_NOTE_VOTE_AGE, and
+     *  only then, if still at FINALITY_MAX_DEFERRED_NOTE_VOTES, the NEW hold is refused.
+     *  Refusing the newcomer rather than evicting an incumbent is deliberate: the
+     *  newcomer's sender still has it and can resend, while an evicted hold is gone. */
     void DeferNoteVoteForUnknownBlock(const CNoteFinalityVote& vote);
+    /** Drop held votes the chain has moved past or that have aged out. nTipHeight is the
+     *  chain tip; -1 uses the live tip. Exposed so the bound is testable without a clock
+     *  or a chain. */
+    unsigned int PurgeDeferredNoteVotes(int nTipHeight, int64_t nNow);
     /** Blocks that held note votes are waiting on. */
     std::vector<uint256> GetDeferredNoteVoteBlockHashes() const;
     /** Hand back the held votes whose block is in setArrivedBlocks, dropping any whose
@@ -1527,7 +1592,15 @@ private:
     std::map<uint256, CNoteFinalityVote> mapPendingNoteVotes;
     // Note votes that arrived before the block they name, keyed by that block hash so
     // the expensive re-check only runs once the block is actually here.
-    std::map<uint256, std::map<uint256, CNoteFinalityVote>> mapDeferredNoteVotes;
+    struct CDeferredNoteVote
+    {
+        CNoteFinalityVote vote;
+        int64_t nTimeHeld;
+        CDeferredNoteVote() : nTimeHeld(0) {}
+    };
+    std::map<uint256, std::map<uint256, CDeferredNoteVote>> mapDeferredNoteVotes;
+    /** Purge body; callers already hold cs_finality. */
+    unsigned int PurgeDeferredNoteVotesLocked(int nTipHeight, int64_t nNow);
     std::map<int, std::set<CKeyID>> mapEpochVoters;  // one vote per key per epoch
     std::map<int, int> mapEpochTransparentVoteCount;
     std::map<int, int> mapEpochPrivateVoteCount;

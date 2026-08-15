@@ -8227,7 +8227,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             std::string strVoteError;
             FinalityResult voteResult = FINALITY_RESULT_INVALID;
             if (!g_finalityTracker.CheckVote(vote, txdb, &strVoteError,
-                                             pindex->nHeight, &voteResult))
+                                             CFinalityVoteContext::Connect(pindex),
+                                             &voteResult))
             {
                 if (voteResult == FINALITY_RESULT_LOCAL_STATE)
                     return TransientFailure(error(
@@ -9580,7 +9581,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         FinalityResult finalityResult = FINALITY_RESULT_INVALID;
         if (!g_finalityTracker.ConnectBlockVotes(
                 txdb, pindex->GetBlockHash(), vFinalityVotes,
-                pindex->nHeight, &finalityResult))
+                CFinalityVoteContext::Connect(pindex), &finalityResult))
         {
             if (finalityResult == FINALITY_RESULT_LOCAL_STATE)
                 return TransientFailure(error(
@@ -9594,7 +9595,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         FinalityResult finalityResult = FINALITY_RESULT_INVALID;
         if (!g_finalityTracker.ConnectBlockNoteVotes(
                 txdb, pindex->GetBlockHash(), vNoteFinalityVotes,
-                pindex->nHeight, &finalityResult))
+                CFinalityVoteContext::Connect(pindex), &finalityResult))
         {
             if (finalityResult == FINALITY_RESULT_LOCAL_STATE)
                 return TransientFailure(error(

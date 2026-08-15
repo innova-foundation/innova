@@ -457,7 +457,8 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                      IsBoundaryAActiveAtHeight(nHeight)))
                     continue;
                 std::string strVoteError;
-                if (!g_finalityTracker.CheckVote(vote, txdbVoteCheck, &strVoteError, nHeight))
+                if (!g_finalityTracker.CheckVote(vote, txdbVoteCheck, &strVoteError,
+                                                 CFinalityVoteContext::Build(pindexPrev)))
                 {
                     printf("CreateNewBlock: excluding stale finality vote %s: %s\n",
                            vote.nullifier.ToString().substr(0,20).c_str(), strVoteError.c_str());
@@ -1101,6 +1102,20 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
                     g_finalityTracker.GetPendingNoteVotesForBlock(nHeight);
                 for (const CNoteFinalityVote& vote : vNoteVotes)
                 {
+                    // Relay accepted this vote without a chain to test it against.
+                    // Connect judges it against THIS block's ancestors, so a vote naming
+                    // a boundary block off our own chain would make the whole template
+                    // invalid. Drop it here instead. Ancestry only: the proofs were
+                    // verified once at relay and re-running them per template is far too
+                    // expensive at 1s spacing.
+                    const CBlockIndex* pNamed = GetFinalityAncestorOnChain(
+                        pindexPrev, vote.nHeight, FINALITY_ANCESTOR_MAX_WALK);
+                    if (!pNamed || pNamed->GetBlockHash() != vote.hashBlock)
+                    {
+                        printf("CreateNewBlock: excluding note vote for off-chain epoch block %s\n",
+                               vote.hashBlock.ToString().substr(0,20).c_str());
+                        continue;
+                    }
                     CScript voteScript;
                     if (!BuildNoteFinalityVoteScript(vote, voteScript))
                         continue;

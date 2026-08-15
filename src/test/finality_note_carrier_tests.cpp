@@ -380,7 +380,7 @@ BOOST_AUTO_TEST_CASE(note_vote_equivocation_leaves_both_carriers_valid)
     CTxDB txdb("r+");
     FinalityResult result = FINALITY_RESULT_INVALID;
     BOOST_REQUIRE(g_finalityTracker.ConnectBlockNoteVotes(
-        txdb, hashSiblingA, std::vector<CNoteFinalityVote>(1, voteA), 6100, &result,
+        txdb, hashSiblingA, std::vector<CNoteFinalityVote>(1, voteA), CFinalityVoteContext::ChainHeight(6100), &result,
         false));
     BOOST_CHECK_EQUAL(result, FINALITY_RESULT_OK);
     BOOST_CHECK_EQUAL(g_finalityTracker.GetNoteVoteCountingState(nEpoch, tag),
@@ -390,7 +390,7 @@ BOOST_AUTO_TEST_CASE(note_vote_equivocation_leaves_both_carriers_valid)
     // not be able to destroy another producer's block for the price of one note.
     result = FINALITY_RESULT_INVALID;
     BOOST_CHECK(g_finalityTracker.ConnectBlockNoteVotes(
-        txdb, hashSiblingB, std::vector<CNoteFinalityVote>(1, voteB), 6100, &result,
+        txdb, hashSiblingB, std::vector<CNoteFinalityVote>(1, voteB), CFinalityVoteContext::ChainHeight(6100), &result,
         false));
     BOOST_CHECK_EQUAL(result, FINALITY_RESULT_OK);
     BOOST_CHECK_EQUAL(g_finalityTracker.GetNoteVoteCountingState(nEpoch, tag),
@@ -428,9 +428,9 @@ BOOST_AUTO_TEST_CASE(note_vote_recarry_counts_once_and_survives_one_carrier)
 
     CTxDB txdb("r+");
     BOOST_REQUIRE(g_finalityTracker.ConnectBlockNoteVotes(
-        txdb, hashFirst, vVotes, 6100, NULL, false));
+        txdb, hashFirst, vVotes, CFinalityVoteContext::ChainHeight(6100), NULL, false));
     BOOST_REQUIRE(g_finalityTracker.ConnectBlockNoteVotes(
-        txdb, hashSecond, vVotes, 6100, NULL, false));
+        txdb, hashSecond, vVotes, CFinalityVoteContext::ChainHeight(6100), NULL, false));
     BOOST_CHECK_EQUAL(g_finalityTracker.GetEpochNoteVoteCount(nEpoch), 1);
     BOOST_CHECK_EQUAL(g_finalityTracker.GetCountedEpochNoteVotes(nEpoch).size(),
                       (size_t)1);
@@ -461,12 +461,12 @@ BOOST_AUTO_TEST_CASE(note_vote_block_cap_is_enforced)
     CTxDB txdb("r+");
     const uint256 hashBlock(0x53530001);
     BOOST_CHECK(!g_finalityTracker.ConnectBlockNoteVotes(
-        txdb, hashBlock, vVotes, 6100, NULL, false));
+        txdb, hashBlock, vVotes, CFinalityVoteContext::ChainHeight(6100), NULL, false));
 
     // The same block one vote lighter is accepted, so the cap is what rejected it.
     vVotes.pop_back();
     BOOST_REQUIRE(g_finalityTracker.ConnectBlockNoteVotes(
-        txdb, hashBlock, vVotes, 6100, NULL, false));
+        txdb, hashBlock, vVotes, CFinalityVoteContext::ChainHeight(6100), NULL, false));
     BOOST_CHECK_EQUAL(g_finalityTracker.GetEpochNoteVoteCount(nEpoch),
                       FINALITY_MAX_BLOCK_NOTE_VOTES);
     BOOST_REQUIRE(g_finalityTracker.DisconnectBlockNoteVotes(txdb, hashBlock, vVotes));
@@ -476,7 +476,7 @@ BOOST_AUTO_TEST_CASE(note_vote_block_cap_is_enforced)
     vDuplicate.push_back(vVotes[0]);
     vDuplicate.push_back(vVotes[0]);
     BOOST_CHECK(!g_finalityTracker.ConnectBlockNoteVotes(
-        txdb, hashBlock, vDuplicate, 6100, NULL, false));
+        txdb, hashBlock, vDuplicate, CFinalityVoteContext::ChainHeight(6100), NULL, false));
 }
 
 // The epoch's canonical vote set is capped, and an equivocator must not be able to buy
@@ -510,14 +510,14 @@ BOOST_AUTO_TEST_CASE(note_vote_epoch_capacity_counts_dropped_tags)
         const uint256 hashBlock(0x54540000 + (int)vCarriers.size());
         vCarriers.push_back(std::make_pair(hashBlock, vBlockVotes));
         BOOST_REQUIRE(g_finalityTracker.ConnectBlockNoteVotes(
-            txdb, hashBlock, vBlockVotes, 6100, NULL, false));
+            txdb, hashBlock, vBlockVotes, CFinalityVoteContext::ChainHeight(6100), NULL, false));
     }
     BOOST_CHECK_EQUAL(g_finalityTracker.GetEpochNoteVoteCount(nEpoch),
                       (int)FINALITY_CANONICAL_CERT_MAX_NULLIFIERS);
 
     const CNoteFinalityVote overflow = makeTagged(nTagSeed);
     BOOST_CHECK(!g_finalityTracker.ConnectBlockNoteVotes(
-        txdb, uint256(0x54549999), std::vector<CNoteFinalityVote>(1, overflow), 6100,
+        txdb, uint256(0x54549999), std::vector<CNoteFinalityVote>(1, overflow), CFinalityVoteContext::ChainHeight(6100),
         NULL, false));
 
     for (size_t i = 0; i < vCarriers.size(); i++)

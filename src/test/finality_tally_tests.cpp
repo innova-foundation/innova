@@ -1796,7 +1796,8 @@ BOOST_AUTO_TEST_CASE(finality_validation_distinguishes_invalid_from_local_state)
 
     CFinalityVote malformedVote;
     FinalityResult result = FINALITY_RESULT_OK;
-    BOOST_CHECK(!tracker.CheckVote(malformedVote, txdb, &error, -1, &result));
+    BOOST_CHECK(!tracker.CheckVote(malformedVote, txdb, &error,
+                                   CFinalityVoteContext::Relay(), &result));
     BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
 
     const int voteEpoch = GetEpochForHeight(FORK_HEIGHT_DAG);
@@ -1820,15 +1821,21 @@ BOOST_AUTO_TEST_CASE(finality_validation_distinguishes_invalid_from_local_state)
     unavailableVote.nullifier = nullifierHash.GetHash();
     BOOST_REQUIRE(unavailableVote.Sign(key));
 
-    // Not holding the epoch block is local state, not a verdict on the vote. The
-    // vote is checkable the moment the block lands, so calling it invalid made a
-    // node-local condition decide validity, and at connect that reaches DoS(100)
-    // against a peer whose only fault was relaying ahead of the block body.
+    // At RELAY, not holding the epoch block is local state, not a verdict on the vote.
     result = FINALITY_RESULT_OK;
     error.clear();
     BOOST_CHECK(!tracker.CheckVote(unavailableVote, txdb, &error,
-                                   voteHeight, &result));
+                                   CFinalityVoteContext::Relay(), &result));
     BOOST_CHECK_EQUAL(result, FINALITY_RESULT_LOCAL_STATE);
+
+    // In a CHAIN context the same miss is a verdict: a valid vote names an ancestor every
+    // node indexes. LOCAL_STATE here would make ConnectBlock re-request the block forever.
+    result = FINALITY_RESULT_OK;
+    error.clear();
+    BOOST_CHECK(!tracker.CheckVote(unavailableVote, txdb, &error,
+                                   CFinalityVoteContext::ChainHeight(voteHeight), &result));
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
+    BOOST_CHECK_EQUAL(error, "epoch block is not known");
 
     // Once the claimed epoch block is known, an absent transaction index is
     // still peer-invalid: the outpoint simply does not exist.  An existing
@@ -1838,7 +1845,7 @@ BOOST_AUTO_TEST_CASE(finality_validation_distinguishes_invalid_from_local_state)
     result = FINALITY_RESULT_LOCAL_STATE;
     error.clear();
     BOOST_CHECK(!tracker.CheckVote(unavailableVote, txdb, &error,
-                                   voteHeight, &result));
+                                   CFinalityVoteContext::ChainHeight(voteHeight), &result));
     BOOST_CHECK_EQUAL(result, FINALITY_RESULT_INVALID);
 
     ScopedRawTxIndexCleanup txIndexCleanup(
@@ -1852,7 +1859,7 @@ BOOST_AUTO_TEST_CASE(finality_validation_distinguishes_invalid_from_local_state)
     result = FINALITY_RESULT_INVALID;
     error.clear();
     BOOST_CHECK(!tracker.CheckVote(unavailableVote, txdb, &error,
-                                   voteHeight, &result));
+                                   CFinalityVoteContext::ChainHeight(voteHeight), &result));
     BOOST_CHECK_EQUAL(result, FINALITY_RESULT_LOCAL_STATE);
 
     CFinalityTallyCertificate malformedCert;

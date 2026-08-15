@@ -2389,7 +2389,7 @@ BOOST_AUTO_TEST_CASE(note_vote_context_anchors_to_the_iv5_tree_root)
     // between the two can reject anything.
     std::string strError;
     FinalityResult result = FINALITY_RESULT_OK;
-    BOOST_CHECK(!tracker.CheckNoteVoteForContext(vote, txdb, &strError, nVoteHeight,
+    BOOST_CHECK(!tracker.CheckNoteVoteForContext(vote, txdb, &strError, CFinalityVoteContext::ChainHeight(nVoteHeight),
                                                  &result));
     BOOST_CHECK_EQUAL(strError, "note vote sigma does not verify");
     BOOST_CHECK_EQUAL((int)result, (int)FINALITY_RESULT_INVALID);
@@ -2401,7 +2401,7 @@ BOOST_AUTO_TEST_CASE(note_vote_context_anchors_to_the_iv5_tree_root)
     strayAnchor.vchMembership =
         MakeMembershipRequest(strayAnchor.hashCurveRoot, ZeroDigest(), cTilde);
     BOOST_CHECK(!tracker.CheckNoteVoteForContext(strayAnchor, txdb, &strError,
-                                                 nVoteHeight, &result));
+                                                 CFinalityVoteContext::ChainHeight(nVoteHeight), &result));
     BOOST_CHECK_EQUAL(strError, "note vote not anchored to last finalized epoch root");
 
     // An anchor epoch that carries no IV5 root at all is this node's missing state, not
@@ -2409,7 +2409,7 @@ BOOST_AUTO_TEST_CASE(note_vote_context_anchors_to_the_iv5_tree_root)
     CEpochState rootless = anchor;
     rootless.vchVNextRoot.clear();
     BOOST_REQUIRE(txdb.WriteEpochState(nAnchorEpoch, rootless));
-    BOOST_CHECK(!tracker.CheckNoteVoteForContext(vote, txdb, &strError, nVoteHeight,
+    BOOST_CHECK(!tracker.CheckNoteVoteForContext(vote, txdb, &strError, CFinalityVoteContext::ChainHeight(nVoteHeight),
                                                  &result));
     BOOST_CHECK_EQUAL(strError, "note vote anchor epoch carries no IV5 tree root");
     BOOST_CHECK_EQUAL((int)result, (int)FINALITY_RESULT_LOCAL_STATE);
