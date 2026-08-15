@@ -6,6 +6,8 @@
 #include "../txdb.h"
 #include "../wallet.h"
 
+#include <algorithm>
+
 extern bool fRegTest;
 extern bool fTestNet;
 
@@ -678,6 +680,159 @@ BOOST_AUTO_TEST_CASE(dag_sibling_precedence_is_independent_of_dag_order_rebuilds
     mapBlockIndex.erase(hSiblingA);
     mapBlockIndex.erase(hParent);
     pindexBest = pOldBest;
+}
+
+// Schema-V3 epoch order ranks parents by nDAGScore, which below FORK_HEIGHT_DAGKNIGHT
+// ColorBlock rewrites on node-local rebuilds (mainnet: DAG+300 .. DAG+50,000; other
+// networks never hit this). The order must be stable across a rebuild.
+BOOST_AUTO_TEST_CASE(schema_v3_order_is_stable_across_a_dag_rebuild_below_dagknight)
+{
+    const bool fOldRegTest = fRegTest;
+    const bool fOldTestNet = fTestNet;
+    fRegTest = false;
+    fTestNet = false;   // mainnet fork heights
+
+    // The window this test exists for. If the ladder ever moves DAGKNIGHT to or below V3 the
+    // overlap is gone and this case is redundant rather than wrong -- but say so out loud.
+    BOOST_REQUIRE_MESSAGE(FORK_HEIGHT_EPOCH_STATE_V3 < FORK_HEIGHT_DAGKNIGHT,
+                          "mainnet no longer orders any ColorBlock-coloured block by the "
+                          "schema-V3 rule; this test no longer covers anything");
+
+    const int nBase = FORK_HEIGHT_EPOCH_STATE_V3 + 100;
+    BOOST_REQUIRE(nBase + 3 < FORK_HEIGHT_DAGKNIGHT);
+
+    CBlockIndex* pOldBest = pindexBest;
+
+    uint256 hParent(0x9db0001);
+    uint256 hSiblingA(0x9db0002);
+    uint256 hSiblingB(0x9db0003);
+    uint256 hChild(0x9db0004);
+    uint256 hMerge(0x9db0005);
+
+    CBlockIndex parent;
+    CBlockIndex siblingA;
+    CBlockIndex siblingB;
+    CBlockIndex child;
+    CBlockIndex merge;
+    parent.nHeight = nBase;
+    siblingA.nHeight = nBase + 1;
+    siblingB.nHeight = nBase + 1;
+    child.nHeight = nBase + 2;
+    merge.nHeight = nBase + 3;
+    parent.pprev = NULL;
+    siblingA.pprev = &parent;
+    siblingB.pprev = &parent;
+    child.pprev = &siblingA;
+    merge.pprev = &child;
+    // GetBlockTrust returns 0 for a zero target, which would leave every nDAGScore at 0 and
+    // make the parent ranking below meaningless. Give each block a real compact target.
+    parent.nBits = 0x1d00ffff;
+    siblingA.nBits = 0x1d00ffff;
+    siblingB.nBits = 0x1d00ffff;
+    child.nBits = 0x1d00ffff;
+    merge.nBits = 0x1d00ffff;
+
+    mapBlockIndex[hParent] = &parent;
+    mapBlockIndex[hSiblingA] = &siblingA;
+    mapBlockIndex[hSiblingB] = &siblingB;
+    mapBlockIndex[hChild] = &child;
+    mapBlockIndex[hMerge] = &merge;
+    parent.phashBlock = &mapBlockIndex.find(hParent)->first;
+    siblingA.phashBlock = &mapBlockIndex.find(hSiblingA)->first;
+    siblingB.phashBlock = &mapBlockIndex.find(hSiblingB)->first;
+    child.phashBlock = &mapBlockIndex.find(hChild)->first;
+    merge.phashBlock = &mapBlockIndex.find(hMerge)->first;
+
+    std::vector<uint256> noParents;
+    std::vector<uint256> ofParent(1, hParent);
+    std::vector<uint256> ofSiblingA(1, hSiblingA);
+    // Two committed parents, so GetDAGKnightSelectedParent has a real choice to make and the
+    // walk can move if the scores it ranks them by move.
+    std::vector<uint256> ofChildAndSiblingB;
+    ofChildAndSiblingB.push_back(hChild);
+    ofChildAndSiblingB.push_back(hSiblingB);
+
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&parent, noParents));
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&siblingA, ofParent));
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&siblingB, ofParent));
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&child, ofSiblingA));
+    BOOST_REQUIRE(g_dagManager.InitBlockDAGData(&merge, ofChildAndSiblingB));
+
+    // Node A: coloured block by block as each arrived, the way AddToBlockIndex does it.
+    g_dagManager.ColorBlock(&parent);
+    g_dagManager.ColorBlock(&siblingA);
+    g_dagManager.ColorBlock(&siblingB);
+    g_dagManager.ColorBlock(&child);
+    g_dagManager.ColorBlock(&merge);
+
+    pindexBest = &merge;
+
+    CBlockDAGData dataMergeFresh;
+    BOOST_REQUIRE(g_dagManager.GetDAGData(hMerge, dataMergeFresh));
+    const std::vector<uint256> vOrderFresh =
+        g_dagManager.GetDAGLinearOrder(hMerge, 0, true);
+    // Anti-vacuity: an empty or degenerate order, or a zero score, would let the comparison
+    // below pass without the shape ever reaching the code under test.
+    BOOST_REQUIRE_MESSAGE(!vOrderFresh.empty(),
+                          "the schema-V3 order came back empty, so this test compares nothing");
+    BOOST_REQUIRE_MESSAGE(vOrderFresh.size() >= 4,
+                          "the schema-V3 order did not take in the merge shape, so a stable "
+                          "answer below would prove nothing");
+    BOOST_REQUIRE_MESSAGE(std::find(vOrderFresh.begin(), vOrderFresh.end(), hMerge) !=
+                              vOrderFresh.end() &&
+                          std::find(vOrderFresh.begin(), vOrderFresh.end(), hSiblingB) !=
+                              vOrderFresh.end(),
+                          "the order is missing the merge or its second parent, so the "
+                          "selected-parent choice was never exercised");
+    BOOST_REQUIRE_MESSAGE(dataMergeFresh.nDAGScore != 0,
+                          "arrival colouring left nDAGScore at zero, so the ranking this test "
+                          "is about never happened");
+
+    // Node B: same committed DAG, but a rebuild has run since -- a restart, or the tip-flood
+    // timer in InitBlockDAGData firing more than 60s after the last one.
+    g_dagManager.RebuildDAGOrder();
+
+    CBlockDAGData dataMergeRebuilt;
+    CBlockDAGData dataSiblingBRebuilt;
+    BOOST_REQUIRE(g_dagManager.GetDAGData(hMerge, dataMergeRebuilt));
+    BOOST_REQUIRE(g_dagManager.GetDAGData(hSiblingB, dataSiblingBRebuilt));
+    // The rebuild has to have actually reached these blocks. nDAGOrder is -1 until one
+    // assigns it, so this separates "the order survived a rebuild" from "no rebuild ran".
+    BOOST_REQUIRE_MESSAGE(dataMergeRebuilt.nDAGOrder >= 0 &&
+                              dataSiblingBRebuilt.nDAGOrder >= 0,
+                          "the rebuild never reached this shape, so the two node states are not "
+                          "actually different and the comparison below proves nothing");
+    const std::vector<uint256> vOrderRebuilt =
+        g_dagManager.GetDAGLinearOrder(hMerge, 0, true);
+    BOOST_REQUIRE(!vOrderRebuilt.empty());
+
+    BOOST_CHECK_MESSAGE(vOrderFresh == vOrderRebuilt,
+                        "the schema-V3 epoch order changed when only node-local colouring state "
+                        "changed: two nodes with the same blocks build different epoch block "
+                        "lists, so their epoch digests differ and each rejects the other's "
+                        "votes and tally certificates");
+
+    // The score the walk ranks parents by must not move either -- an order that happens to
+    // survive a score change on this shape would still split on another.
+    BOOST_CHECK_MESSAGE(dataMergeFresh.nDAGScore == dataMergeRebuilt.nDAGScore,
+                        "ColorBlock produced a different nDAGScore on rebuild than on arrival, "
+                        "so GetDAGKnightSelectedParent ranks the same committed parents "
+                        "differently depending on local rebuild history");
+
+    g_dagManager.RemoveBlockDAGData(hMerge);
+    g_dagManager.RemoveBlockDAGData(hChild);
+    g_dagManager.RemoveBlockDAGData(hSiblingB);
+    g_dagManager.RemoveBlockDAGData(hSiblingA);
+    g_dagManager.RemoveBlockDAGData(hParent);
+    mapBlockIndex.erase(hMerge);
+    mapBlockIndex.erase(hChild);
+    mapBlockIndex.erase(hSiblingB);
+    mapBlockIndex.erase(hSiblingA);
+    mapBlockIndex.erase(hParent);
+    pindexBest = pOldBest;
+
+    fRegTest = fOldRegTest;
+    fTestNet = fOldTestNet;
 }
 
 // BuildEpochStateV2Compat reads node-local fBlue, so it must never own an epoch with
