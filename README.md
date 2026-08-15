@@ -61,10 +61,10 @@ today.
 ## Specifications
 
 * Total number of coins: 18,000,000 INN
-* Ideal block time: ~15 seconds
+* Ideal block time: ~15 seconds (pre-DAG target; ~1 second after the IDAG fork)
 * Stake interest: 6% annual static inflation
 * Confirmations: 10 blocks
-* Maturity: 75 blocks
+* Maturity: 75 blocks as the wallet reports it — consensus maturity is 65 (`nCoinbaseMaturity`), plus a 10-block wallet safety margin
 * Min stake age: 10 hours
 
 * Cost of Hybrid Collateral Nodes: 25,000 INN
