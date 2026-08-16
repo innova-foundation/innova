@@ -11,15 +11,19 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init iv5_tree_store_regtest_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 TEST_DIR="/tmp/innova_iv5_store_test"
 NODE_DIR="$TEST_DIR/node1"
 
-NODE_PORT=27645
-NODE_RPC=27700
-NODE_IDNS=7665
+NODE_PORT="$(iv5_port 0 27645)"
+NODE_RPC="$(iv5_port 1 27700)"
+NODE_IDNS="$(iv5_port 2 7665)"
 
 RPCUSER="iv5storetest"
 RPCPASS="testpass123"
@@ -53,7 +57,7 @@ json_number_field() {
 }
 
 cleanup() {
-    pkill -f "innovad.*innova_iv5_store_test" 2>/dev/null || true
+    iv5_kill_daemons "innova_iv5_store_test" TERM 2>/dev/null || true
     sleep 2
     rm -rf "$TEST_DIR"
 }

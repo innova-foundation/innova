@@ -11,14 +11,18 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init iv5_leaf_index_catchup_regtest_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 TEST_DIR="${IV5_LEAF_TEST_DIR:-/tmp/innova_iv5_leaf_$$}"
 NODE_DIR="$TEST_DIR/node0"
-PORT="${IV5_LEAF_PORT:-28950}"
-RPC="${IV5_LEAF_RPC:-29000}"
-IDNS="${IV5_LEAF_IDNS:-9060}"
+PORT="${IV5_LEAF_PORT:-$(iv5_port 0 28950)}"
+RPC="${IV5_LEAF_RPC:-$(iv5_port 1 29000)}"
+IDNS="${IV5_LEAF_IDNS:-$(iv5_port 2 9060)}"
 RPCUSER="iv5leaf"
 RPCPASS="iv5leafpass"
 WALLETPASS="iv5leafwallet"

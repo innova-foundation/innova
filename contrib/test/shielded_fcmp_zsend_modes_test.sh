@@ -10,13 +10,17 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init shielded_fcmp_zsend_modes_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 TEST_DIR="${FCMP_MODES_TEST_DIR:-/tmp/innova_fcmp_modes_$$}"
-BASE_PORT="${FCMP_MODES_BASE_PORT:-28640}"
-BASE_RPC="${FCMP_MODES_BASE_RPC:-29640}"
-BASE_IDNS="${FCMP_MODES_BASE_IDNS:-8660}"
+BASE_PORT="${FCMP_MODES_BASE_PORT:-$(iv5_port 0 28640)}"
+BASE_RPC="${FCMP_MODES_BASE_RPC:-$(iv5_port 16 29640)}"
+BASE_IDNS="${FCMP_MODES_BASE_IDNS:-$(iv5_port 32 8660)}"
 NUM_NODES=3
 FUNDING_HEIGHT=9
 RPCUSER="${FCMP_MODES_RPCUSER:-fcmpmodes}"
@@ -383,7 +387,7 @@ cleanup() {
     for ((node=0; node<NUM_NODES; node++)); do
         wait_rpc_down "$node" >/dev/null 2>&1 || true
     done
-    pkill -f "innovad.*${TEST_DIR}" 2>/dev/null || true
+    iv5_kill_daemons "${TEST_DIR}" TERM 2>/dev/null || true
     if [ "$FAILED" -gt 0 ]; then
         log "Preserving $TEST_DIR"
     else

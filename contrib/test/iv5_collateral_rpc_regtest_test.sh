@@ -11,14 +11,18 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init iv5_collateral_rpc_regtest_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 TEST_DIR="${IV5_CN_TEST_DIR:-/tmp/innova_iv5_cnrpc_$$}"
 NODE_DIR="$TEST_DIR/node0"
-PORT="${IV5_CN_PORT:-29700}"
-RPC="${IV5_CN_RPC:-29701}"
-IDNS="${IV5_CN_IDNS:-9702}"
+PORT="${IV5_CN_PORT:-$(iv5_port 0 29700)}"
+RPC="${IV5_CN_RPC:-$(iv5_port 1 29701)}"
+IDNS="${IV5_CN_IDNS:-$(iv5_port 2 9702)}"
 RPCUSER="iv5cn"
 RPCPASS="iv5cnpass"
 WALLETPASS="iv5cnwallet"

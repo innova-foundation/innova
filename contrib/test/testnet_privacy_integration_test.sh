@@ -15,6 +15,10 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init testnet_privacy_integration_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="$INNOVA_ROOT/src/innovad"
 
@@ -23,12 +27,12 @@ NODE1_DIR="$TEST_DIR/node1"
 NODE2_DIR="$TEST_DIR/node2"
 NODE3_DIR="$TEST_DIR/node3"
 
-NODE1_PORT=25530
-NODE2_PORT=25531
-NODE3_PORT=25532
-NODE1_RPC=25540
-NODE2_RPC=25541
-NODE3_RPC=25542
+NODE1_PORT="$(iv5_port 0 25530)"
+NODE2_PORT="$(iv5_port 1 25531)"
+NODE3_PORT="$(iv5_port 2 25532)"
+NODE1_RPC="$(iv5_port 3 25540)"
+NODE2_RPC="$(iv5_port 4 25541)"
+NODE3_RPC="$(iv5_port 5 25542)"
 
 RPCUSER="testnetpriv"
 RPCPASS="testnetprivpass"
@@ -132,9 +136,9 @@ wait_for_height() {
 
 cleanup() {
     log "Cleaning up..."
-    pkill -f "innovad.*innova_testnet_privacy" 2>/dev/null || true
+    iv5_kill_daemons "innova_testnet_privacy" TERM 2>/dev/null || true
     sleep 2
-    pkill -9 -f "innovad.*innova_testnet_privacy" 2>/dev/null || true
+    iv5_kill_daemons "innova_testnet_privacy" KILL 2>/dev/null || true
     sleep 1
     rm -rf "$TEST_DIR"
 }

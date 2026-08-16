@@ -16,16 +16,20 @@ MAGENTA='\033[0;35m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init privacy_stress_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="$INNOVA_ROOT/src/innovad"
 
 TEST_DIR="/tmp/innova_privacy_stress"
 NODE1_DIR="$TEST_DIR/node1"
 NODE2_DIR="$TEST_DIR/node2"
-NODE1_PORT=26530
-NODE1_RPC=26531
-NODE2_PORT=26540
-NODE2_RPC=26541
+NODE1_PORT="$(iv5_port 0 26530)"
+NODE1_RPC="$(iv5_port 1 26531)"
+NODE2_PORT="$(iv5_port 2 26540)"
+NODE2_RPC="$(iv5_port 3 26541)"
 
 PASSED=0
 FAILED=0
@@ -41,9 +45,9 @@ subsection() { echo -e "\n${MAGENTA}--- $1 ---${NC}"; }
 
 cleanup() {
     log "Cleaning up..."
-    pkill -f "innovad.*privacy_stress" 2>/dev/null || true
-    pkill -f "innovad.*node1" 2>/dev/null || true
-    pkill -f "innovad.*node2" 2>/dev/null || true
+    iv5_kill_daemons "privacy_stress" TERM 2>/dev/null || true
+    iv5_kill_daemons "node1" TERM 2>/dev/null || true
+    iv5_kill_daemons "node2" TERM 2>/dev/null || true
     sleep 3
     rm -rf "$TEST_DIR"
 }

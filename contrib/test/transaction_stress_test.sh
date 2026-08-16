@@ -14,6 +14,10 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init transaction_stress_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="$INNOVA_ROOT/src/innovad"
 
@@ -21,10 +25,10 @@ TEST_DIR="/tmp/innova_tx_stress"
 SENDER_DIR="$TEST_DIR/sender"
 RECEIVER_DIR="$TEST_DIR/receiver"
 
-SENDER_PORT=23445
-RECEIVER_PORT=23446
-SENDER_RPC=23500
-RECEIVER_RPC=23501
+SENDER_PORT="$(iv5_port 0 23445)"
+RECEIVER_PORT="$(iv5_port 1 23446)"
+SENDER_RPC="$(iv5_port 2 23500)"
+RECEIVER_RPC="$(iv5_port 3 23501)"
 
 PASSED=0
 FAILED=0
@@ -38,7 +42,7 @@ section() { echo -e "\n${CYAN}=== $1 ===${NC}"; }
 
 cleanup() {
     log "Cleaning up..."
-    pkill -f "innovad.*tx_stress" 2>/dev/null || true
+    iv5_kill_daemons "tx_stress" TERM 2>/dev/null || true
     sleep 2
     rm -rf "$TEST_DIR"
 }

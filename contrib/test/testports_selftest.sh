@@ -168,11 +168,8 @@ rm -f "$LOCKROOT/../a.base" "$LOCKROOT/../b.base" 2>/dev/null || true
 
 echo
 echo "=== 7. teardown never signals a non-daemon that matches the pattern ==="
-# This is the self-SIGTERM regression. A runner invoked as
-#   env INNOVAD=/path/src/innovad bash /path/full_milestone_test.sh
-# carries both 'innovad' and the harness name in its own argv, so
-# pkill -f "innovad.*milestone_test" killed the runner. Stand up a decoy with
-# exactly that argv shape and assert teardown leaves it alone.
+# Regression: a runner whose argv carries both 'innovad' and the harness name must not be
+# killed by teardown. The decoy has that argv shape; teardown matches by image.
 DECOY_TAG="selftest_milestone_$$"
 bash -c "exec -a 'env INNOVAD=/opt/innova/src/innovad bash /opt/t/${DECOY_TAG}.sh' sleep 300" &
 DECOY=$!

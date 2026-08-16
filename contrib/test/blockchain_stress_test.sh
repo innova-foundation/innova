@@ -14,6 +14,10 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init blockchain_stress_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="$INNOVA_ROOT/src/innovad"
 
@@ -22,12 +26,12 @@ NODE_A_DIR="$TEST_DIR/node_a"
 NODE_B_DIR="$TEST_DIR/node_b"
 NODE_C_DIR="$TEST_DIR/node_c"
 
-NODE_A_PORT=24445
-NODE_B_PORT=24446
-NODE_C_PORT=24447
-NODE_A_RPC=24500
-NODE_B_RPC=24501
-NODE_C_RPC=24502
+NODE_A_PORT="$(iv5_port 0 24445)"
+NODE_B_PORT="$(iv5_port 1 24446)"
+NODE_C_PORT="$(iv5_port 2 24447)"
+NODE_A_RPC="$(iv5_port 3 24500)"
+NODE_B_RPC="$(iv5_port 4 24501)"
+NODE_C_RPC="$(iv5_port 5 24502)"
 
 PASSED=0
 FAILED=0
@@ -41,7 +45,7 @@ section() { echo -e "\n${CYAN}=== $1 ===${NC}"; }
 
 cleanup() {
     log "Cleaning up..."
-    pkill -f "innovad.*blockchain_stress" 2>/dev/null || true
+    iv5_kill_daemons "blockchain_stress" TERM 2>/dev/null || true
     sleep 2
     rm -rf "$TEST_DIR"
 }

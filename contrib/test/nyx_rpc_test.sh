@@ -3,6 +3,10 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init nyx_rpc_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Build first
@@ -19,7 +23,7 @@ echo "Binary: $(ls -la $INNOVAD)"
 
 # Setup
 TEST_DIR="/tmp/nyx_rpc_test"
-pkill -f "innovad.*nyx_rpc_test" 2>/dev/null || true
+iv5_kill_daemons "nyx_rpc_test" TERM 2>/dev/null || true
 sleep 2
 rm -rf "$TEST_DIR"
 mkdir -p "$TEST_DIR"
@@ -30,8 +34,8 @@ server=1
 daemon=1
 rpcuser=nyxtest
 rpcpassword=nyxpass
-rpcport=28888
-port=28889
+rpcport="$(iv5_port 0 28888)"
+port="$(iv5_port 1 28889)"
 listen=0
 idns=0
 listenonion=0
@@ -46,7 +50,7 @@ RPC() {
 }
 
 cleanup() {
-    pkill -f "innovad.*nyx_rpc_test" 2>/dev/null || true
+    iv5_kill_daemons "nyx_rpc_test" TERM 2>/dev/null || true
     sleep 2
     rm -rf "$TEST_DIR"
 }

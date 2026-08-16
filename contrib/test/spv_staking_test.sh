@@ -14,6 +14,10 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init spv_staking_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="$INNOVA_ROOT/src/innovad"
 
@@ -22,12 +26,12 @@ FULL_DIR="$TEST_DIR/fullnode"
 SPV_DIR="$TEST_DIR/spvnode"
 VALIDATOR_DIR="$TEST_DIR/validator"
 
-FULL_PORT=21445
-SPV_PORT=21446
-VALIDATOR_PORT=21447
-FULL_RPC=21500
-SPV_RPC=21501
-VALIDATOR_RPC=21502
+FULL_PORT="$(iv5_port 0 21445)"
+SPV_PORT="$(iv5_port 1 21446)"
+VALIDATOR_PORT="$(iv5_port 2 21447)"
+FULL_RPC="$(iv5_port 3 21500)"
+SPV_RPC="$(iv5_port 4 21501)"
+VALIDATOR_RPC="$(iv5_port 5 21502)"
 
 PASSED=0
 FAILED=0
@@ -43,7 +47,7 @@ section() { echo -e "\n${CYAN}=== $1 ===${NC}"; }
 
 cleanup() {
     log "Cleaning up..."
-    pkill -f "innovad.*spv_test" 2>/dev/null || true
+    iv5_kill_daemons "spv_test" TERM 2>/dev/null || true
     sleep 2
     rm -rf "$TEST_DIR"
 }

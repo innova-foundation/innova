@@ -14,6 +14,10 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init wallet_stress_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="$INNOVA_ROOT/src/innovad"
 
@@ -21,10 +25,10 @@ TEST_DIR="/tmp/innova_wallet_stress"
 NODE1_DIR="$TEST_DIR/node1"
 NODE2_DIR="$TEST_DIR/node2"
 
-NODE1_PORT=22445
-NODE2_PORT=22446
-NODE1_RPC=22500
-NODE2_RPC=22501
+NODE1_PORT="$(iv5_port 0 22445)"
+NODE2_PORT="$(iv5_port 1 22446)"
+NODE1_RPC="$(iv5_port 2 22500)"
+NODE2_RPC="$(iv5_port 3 22501)"
 
 PASSED=0
 FAILED=0
@@ -44,7 +48,7 @@ get_json_val() {
 
 cleanup() {
     log "Cleaning up..."
-    pkill -f "innovad.*wallet_stress" 2>/dev/null || true
+    iv5_kill_daemons "wallet_stress" TERM 2>/dev/null || true
     sleep 2
     rm -rf "$TEST_DIR"
 }

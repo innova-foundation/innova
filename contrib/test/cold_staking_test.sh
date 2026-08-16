@@ -14,6 +14,10 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init cold_staking_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="$INNOVA_ROOT/src/innovad"
 
@@ -22,12 +26,12 @@ OWNER_DIR="$TEST_DIR/owner"
 STAKER_DIR="$TEST_DIR/staker"
 VALIDATOR_DIR="$TEST_DIR/validator"
 
-OWNER_PORT=20445
-STAKER_PORT=20446
-VALIDATOR_PORT=20447
-OWNER_RPC=20500
-STAKER_RPC=20501
-VALIDATOR_RPC=20502
+OWNER_PORT="$(iv5_port 0 20445)"
+STAKER_PORT="$(iv5_port 1 20446)"
+VALIDATOR_PORT="$(iv5_port 2 20447)"
+OWNER_RPC="$(iv5_port 3 20500)"
+STAKER_RPC="$(iv5_port 4 20501)"
+VALIDATOR_RPC="$(iv5_port 5 20502)"
 
 PASSED=0
 FAILED=0
@@ -43,7 +47,7 @@ section() { echo -e "\n${CYAN}=== $1 ===${NC}"; }
 
 cleanup() {
     log "Cleaning up..."
-    pkill -f "innovad.*cold_stake_test" 2>/dev/null || true
+    iv5_kill_daemons "cold_stake_test" TERM 2>/dev/null || true
     sleep 2
     rm -rf "$TEST_DIR"
 }

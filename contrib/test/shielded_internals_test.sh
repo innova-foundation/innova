@@ -16,13 +16,17 @@ MAGENTA='\033[0;35m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init shielded_internals_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="$INNOVA_ROOT/src/innovad"
 
 TEST_DIR="/tmp/innova_shielded_internals"
 NODE_DIR="$TEST_DIR/node"
-NODE_PORT=27530
-NODE_RPC=27531
+NODE_PORT="$(iv5_port 0 27530)"
+NODE_RPC="$(iv5_port 1 27531)"
 
 PASSED=0
 FAILED=0
@@ -38,7 +42,7 @@ subsection() { echo -e "\n${MAGENTA}--- $1 ---${NC}"; }
 
 cleanup() {
     log "Cleaning up..."
-    pkill -f "innovad.*shielded_internal" 2>/dev/null || true
+    iv5_kill_daemons "shielded_internal" TERM 2>/dev/null || true
     sleep 2
     rm -rf "$TEST_DIR"
 }

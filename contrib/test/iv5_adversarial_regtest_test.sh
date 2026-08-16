@@ -11,14 +11,18 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init iv5_adversarial_regtest_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 TEST_DIR="${IV5_ADV_TEST_DIR:-/tmp/innova_iv5_adversarial_$$}"
 NODE_DIR="$TEST_DIR/node0"
-PORT="${IV5_ADV_PORT:-27845}"
-RPC="${IV5_ADV_RPC:-27900}"
-IDNS="${IV5_ADV_IDNS:-7865}"
+PORT="${IV5_ADV_PORT:-$(iv5_port 0 27845)}"
+RPC="${IV5_ADV_RPC:-$(iv5_port 1 27900)}"
+IDNS="${IV5_ADV_IDNS:-$(iv5_port 2 7865)}"
 RPCUSER="iv5adv"
 RPCPASS="iv5advpass"
 WALLETPASS="iv5walletpass"
@@ -79,7 +83,7 @@ mine_to() {
 }
 
 cleanup() {
-    stop_node || pkill -f "datadir=$NODE_DIR" 2>/dev/null || true
+    stop_node || iv5_kill_daemons "datadir=$NODE_DIR" TERM 2>/dev/null || true
     [ "${IV5_ADV_KEEP_DIR:-0}" = "1" ] || rm -rf "$TEST_DIR"
 }
 trap cleanup EXIT

@@ -14,13 +14,17 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init rpc_stress_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="$INNOVA_ROOT/src/innovad"
 
 TEST_DIR="/tmp/innova_rpc_stress"
 NODE_DIR="$TEST_DIR/node"
-NODE_PORT=24445
-NODE_RPC=24500
+NODE_PORT="$(iv5_port 0 24445)"
+NODE_RPC="$(iv5_port 1 24500)"
 
 PASSED=0
 FAILED=0
@@ -34,7 +38,7 @@ section() { echo -e "\n${CYAN}=== $1 ===${NC}"; }
 
 cleanup() {
     log "Cleaning up..."
-    pkill -f "innovad.*rpc_stress" 2>/dev/null || true
+    iv5_kill_daemons "rpc_stress" TERM 2>/dev/null || true
     sleep 2
     rm -rf "$TEST_DIR"
 }

@@ -7,6 +7,10 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init quick_test || exit 1
 INNOVA_DIR="${SCRIPT_DIR}/../.."
 INNOVAD="${INNOVA_DIR}/src/innovad"
 TEST_DIR="/tmp/innova_quick_test"
@@ -41,8 +45,8 @@ server=1
 daemon=0
 rpcuser=test
 rpcpassword=testpass
-rpcport=19331
-port=19339
+rpcport="$(iv5_port 0 19331)"
+port="$(iv5_port 1 19339)"
 rpcallowip=127.0.0.1
 listen=0
 dnsseed=0

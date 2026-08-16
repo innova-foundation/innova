@@ -14,6 +14,10 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init coinjoin_stress_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="$INNOVA_ROOT/src/innovad"
 
@@ -22,12 +26,12 @@ NODE1_DIR="$TEST_DIR/node1"
 NODE2_DIR="$TEST_DIR/node2"
 NODE3_DIR="$TEST_DIR/node3"
 
-NODE1_PORT=26445
-NODE2_PORT=26446
-NODE3_PORT=26447
-NODE1_RPC=26500
-NODE2_RPC=26501
-NODE3_RPC=26502
+NODE1_PORT="$(iv5_port 0 26445)"
+NODE2_PORT="$(iv5_port 1 26446)"
+NODE3_PORT="$(iv5_port 2 26447)"
+NODE1_RPC="$(iv5_port 3 26500)"
+NODE2_RPC="$(iv5_port 4 26501)"
+NODE3_RPC="$(iv5_port 5 26502)"
 
 PASSED=0
 FAILED=0
@@ -41,7 +45,7 @@ section() { echo -e "\n${CYAN}=== $1 ===${NC}"; }
 
 cleanup() {
     log "Cleaning up..."
-    pkill -f "innovad.*coinjoin_stress" 2>/dev/null || true
+    iv5_kill_daemons "coinjoin_stress" TERM 2>/dev/null || true
     sleep 2
     rm -rf "$TEST_DIR"
 }

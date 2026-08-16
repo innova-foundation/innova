@@ -13,13 +13,17 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init idag_finality_relay_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 TEST_DIR="${IDAG_RELAY_TEST_DIR:-/tmp/innova_finality_relay_$$}"
-BASE_PORT="${IDAG_RELAY_BASE_PORT:-18240}"
-BASE_RPC="${IDAG_RELAY_BASE_RPC:-19240}"
-BASE_IDNS="${IDAG_RELAY_BASE_IDNS:-8440}"
+BASE_PORT="${IDAG_RELAY_BASE_PORT:-$(iv5_port 0 18240)}"
+BASE_RPC="${IDAG_RELAY_BASE_RPC:-$(iv5_port 16 19240)}"
+BASE_IDNS="${IDAG_RELAY_BASE_IDNS:-$(iv5_port 32 8440)}"
 NUM_NODES=3
 KEEP_DIR="${IDAG_RELAY_KEEP_DIR:-0}"
 RPCUSER="${IDAG_RELAY_RPCUSER:-relayfinality}"
@@ -502,7 +506,7 @@ cleanup() {
     for ((node=0; node<NUM_NODES; node++)); do
         wait_rpc_down "$node" >/dev/null 2>&1 || true
     done
-    pkill -f "innovad.*${TEST_DIR}" 2>/dev/null || true
+    iv5_kill_daemons "${TEST_DIR}" TERM 2>/dev/null || true
     if [ "$KEEP_DIR" = "1" ] || [ "$FAILED" -gt 0 ]; then
         log "Preserving $TEST_DIR"
     else
