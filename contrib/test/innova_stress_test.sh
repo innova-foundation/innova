@@ -13,6 +13,10 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# shellcheck source=lib/testports.sh
+source "$SCRIPT_DIR/lib/testports.sh"
+iv5_ports_init innova_stress_test || exit 1
 INNOVA_DIR="${SCRIPT_DIR}/../.."
 INNOVAD="${INNOVA_DIR}/src/innovad"
 INNOVA_CLI="${INNOVAD}"
@@ -22,7 +26,12 @@ TEST_DURATION=${TEST_DURATION:-300}
 TX_RATE=${TX_RATE:-10}
 CLEAN_START=${CLEAN_START:-false}
 
-TEST_DIR="/tmp/innova_stress_test"
+# Node n binds BASE_RPC+n and BASE_P2P+n; check_node_range refuses a node count
+# whose two ranges overlap.
+BASE_RPC="${STRESS_BASE_RPC:-$(iv5_port 0 15530)}"
+BASE_P2P="${STRESS_BASE_P2P:-$(iv5_port 16 15539)}"
+
+TEST_DIR="$(iv5_test_dir /tmp/innova_stress_test)"
 LOG_DIR="${TEST_DIR}/logs"
 RESULTS_FILE="${TEST_DIR}/results.json"
 
@@ -97,14 +106,34 @@ check_prerequisites() {
         fi
     done
 
+    check_node_range || exit 1
+
     log_success "Prerequisites OK"
+}
+
+# Node n takes BASE_RPC+n and BASE_P2P+n. Refuse a node count that makes the
+# two ranges overlap, and refuse to start on ports something else already holds.
+check_node_range() {
+    local span=$(( BASE_P2P > BASE_RPC ? BASE_P2P - BASE_RPC : BASE_RPC - BASE_P2P ))
+    if [[ $NUM_NODES -gt $span ]]; then
+        log_error "NUM_NODES=${NUM_NODES} overlaps the RPC and listen ranges (${span} apart)"
+        log_error "set STRESS_BASE_RPC/STRESS_BASE_P2P further apart, or use IV5_TEST_PORT_BASE=auto"
+        return 1
+    fi
+
+    local wanted=() i
+    for ((i=0; i<NUM_NODES; i++)); do
+        wanted+=( $((BASE_RPC + i)) $((BASE_P2P + i)) )
+    done
+    iv5_require_free_ports "${wanted[@]}" || return 1
+    return 0
 }
 
 create_node_config() {
     local node_id=$1
     local data_dir="${TEST_DIR}/node${node_id}"
-    local rpc_port=$((15530 + node_id))
-    local p2p_port=$((15539 + node_id))
+    local rpc_port=$((BASE_RPC + node_id))
+    local p2p_port=$((BASE_P2P + node_id))
 
     mkdir -p "${data_dir}"
 
@@ -133,9 +162,11 @@ maxconnections=50
 idns=0
 EOF
 
+    # 'i' must be local: main() uses the same loop counter.
+    local i
     for ((i=0; i<NUM_NODES; i++)); do
         if [[ $i -ne $node_id ]]; then
-            local other_port=$((15539 + i))
+            local other_port=$((BASE_P2P + i))
             echo "addnode=127.0.0.1:${other_port}" >> "${data_dir}/innova.conf"
         fi
     done
@@ -154,7 +185,7 @@ start_node() {
     local pid=$!
     echo $pid > "${data_dir}/innovad.pid"
 
-    local rpc_port=$((15530 + node_id))
+    local rpc_port=$((BASE_RPC + node_id))
     local max_wait=60
     local waited=0
 
@@ -197,7 +228,7 @@ rpc_call() {
     shift 2
     local params="$@"
 
-    local rpc_port=$((15530 + node_id))
+    local rpc_port=$((BASE_RPC + node_id))
 
     if [[ -z "$params" ]]; then
         params="[]"
