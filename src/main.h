@@ -920,32 +920,21 @@ unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfS
 unsigned int ComputeRetargetedBits(unsigned int nPrevBits, int64_t nActualSpan,
                                    unsigned int nEffectiveSpacing, int nWindow,
                                    bool fTighterDrift, const CBigNum& bnTargetLimit);
-// Issuance headroom left under the supply cap for the block that extends
-// pindexPrev. Reads only pindexPrev->nMoneySupply, which ConnectBlock derived
-// from that block's own ancestors, so the answer is a pure function of the
-// chain at the height being validated -- never of the node-local tip. Returns
-// INT64_MAX below the fork height, leaving every caller unclamped.
-//
-// nCommitted is issuance the same block already owes on another channel; it
-// comes off the headroom before the subsidy does, so the subsidy yields rather
-// than the block becoming unproducible.
-//
-// RESERVED, deliberately passed as 0 by every current caller. The one other
-// issuance channel is the finality settlement mint, and it cannot be netted off
-// here yet: CreateCoinStake computes the stake subsidy without the settlement
-// total in scope, so a validator that deducted it while the wallet did not would
-// reject the wallet's own blocks near the cap. Wiring it means deriving the total
-// once and handing it to both sides -- not recomputing it in the wallet. Until
-// then the settlement mint is unclamped and can carry supply past the cap by its
-// own amount.
+// Issuance headroom under the supply cap, from pindexPrev->nMoneySupply only; INT64_MAX
+// below the fork. nCommitted comes off first, so the subsidy yields.
 int64_t GetRemainingIssuance(const CBlockIndex* pindexPrev, int64_t nCommitted);
 int64_t ClampSubsidyToSupplyCap(int64_t nSubsidy, const CBlockIndex* pindexPrev, int64_t nCommitted);
 
+// The subsidy schedule before any clamp, fee or penalty. See subsidy.h -- the
+// finality reserve is a share of this, not of what a given block paid.
+int64_t GetBlockSubsidySchedule(int nHeight);
+
 // pindexPrev is the parent of the block being paid, and is what the supply
-// clamp reads; it has no default because a caller that passes the wrong parent
-// computes a different subsidy than its peers.
-int64_t GetProofOfWorkReward(int nHeight, int64_t nFees, const CBlockIndex* pindexPrev, int64_t nCommitted = 0);
-int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees, const CBlockIndex* pindexPrev, int64_t nCommitted = 0);
+// clamp reads. Nothing here has a default: a caller that passes the wrong
+// parent, or silently omits the settlement it owes, computes a different
+// subsidy than its peers and splits the chain.
+int64_t GetProofOfWorkReward(int nHeight, int64_t nFees, const CBlockIndex* pindexPrev, int64_t nCommitted);
+int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees, const CBlockIndex* pindexPrev, int64_t nCommitted);
 unsigned int ComputeMinWork(unsigned int nBase, int64_t nTime);
 unsigned int ComputeMinStake(unsigned int nBase, int64_t nTime, unsigned int nBlockTime);
 int GetNumBlocksOfPeers();
@@ -1107,7 +1096,8 @@ int GetIXConfirmations(uint256 nTXHash);
 bool AbortNode(const std::string &msg, const std::string &userMessage="");
 /** Increase a node's misbehavior score. */
 void Misbehaving(NodeId nodeid, int howmuch, const std::string& reason = "");
-int64_t GetCollateralnodePayment(int nHeight, int64_t blockValue);
+// The collateralnode share is reachable only through CBlockSubsidySplit (subsidy.h),
+// so no site can size it against its own base.
 
 
 bool IsStandardTx(const CTransaction& tx, std::string& reason);

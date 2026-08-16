@@ -26,6 +26,7 @@
 #include "lelantus.h"
 #include "curvetree.h"
 #include "finality.h"
+#include "subsidy.h"
 #include "dag.h"
 #include "blockprofile.h"
 #include "privacy_vnext_ffi.h"
@@ -4890,8 +4891,9 @@ int64_t ClampSubsidyToSupplyCap(int64_t nSubsidy, const CBlockIndex* pindexPrev,
     return (nSubsidy > nRemaining) ? nRemaining : nSubsidy;
 }
 
-// Proof of Work miner's coin base reward
-int64_t GetProofOfWorkReward(int nHeight, int64_t nFees, const CBlockIndex* pindexPrev, int64_t nCommitted)
+// The block subsidy schedule: height in, issuance out. No fees, supply clamp or size
+// penalty, so the finality reserve can be a share of it at any height.
+int64_t GetBlockSubsidySchedule(int nHeight)
 {
   int64_t nSubsidy = 1 * COIN;
 
@@ -4904,12 +4906,7 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees, const CBlockIndex* pind
        else
            nSubsidy = 50 * COIN;  // 50 INN per block
 
-       nSubsidy = ClampSubsidyToSupplyCap(nSubsidy, pindexPrev, nCommitted);
-
-       if (fDebug && GetBoolArg("-printcreation"))
-           printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
-
-       return nSubsidy + nFees;
+       return nSubsidy;
   } else if (fTestNet) {
        if (nHeight == 1)
            nSubsidy = 1000000 * COIN;  // 10m INN Premine for Testnet for testing
@@ -4922,12 +4919,7 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees, const CBlockIndex* pind
      else if (nHeight > 10000)
           nSubsidy = 10000; // PoW Reward 0.0001
 
-       nSubsidy = ClampSubsidyToSupplyCap(nSubsidy, pindexPrev, nCommitted);
-
-       if (fDebug && GetBoolArg("-printcreation"))
-           printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
-
-       return nSubsidy + nFees;
+       return nSubsidy;
    } else {
   // use nHeight parameter throughout
   if (nHeight == 1)
@@ -5071,15 +5063,21 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees, const CBlockIndex* pind
     if (nHeight >= FORK_HEIGHT_DAG)
         nSubsidy = nSubsidy * (int64_t)GetTargetSpacingForHeight(nHeight) / PRE_DAG_TARGET_SPACING;
 
-    // Total-supply cap. Applied last, so it clamps what the schedule actually
-    // pays rather than a pre-divisor figure, and only ever reduces the subsidy.
-    nSubsidy = ClampSubsidyToSupplyCap(nSubsidy, pindexPrev, nCommitted);
+      return nSubsidy;
+    }
+}
+
+// PoW coinbase reward: the schedule, clamped to the issuance headroom, plus fees.
+// nCommitted (the finality settlement payout, itself clamped) comes off the headroom
+// first, so the subsidy yields to it.
+int64_t GetProofOfWorkReward(int nHeight, int64_t nFees, const CBlockIndex* pindexPrev, int64_t nCommitted)
+{
+    int64_t nSubsidy = ClampSubsidyToSupplyCap(GetBlockSubsidySchedule(nHeight), pindexPrev, nCommitted);
 
     if (fDebug && GetBoolArg("-printcreation"))
-      printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
+        printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
 
-      return nSubsidy + nFees;
-    }
+    return nSubsidy + nFees;
 }
 
 const int YEARLY_BLOCKCOUNT = 2103792; // Amount of Blocks per year
@@ -7742,6 +7740,21 @@ bool SeedGenesisCommitments(CTxDB& txdb,
     return true;
 }
 
+
+// The coinstake's allowance: one subsidy, split at payment. Post-DAG PoS blocks are
+// rejected, so the finality reserve is zero here; routed through the split anyway.
+static CBlockSubsidySplit GetCoinStakeSubsidySplit(uint64_t nCoinAge, int64_t nFees,
+                                                   const CBlock& block, const CBlockIndex* pindex)
+{
+    const int64_t nSubsidy = GetProofOfStakeReward((int64_t)nCoinAge, 0, pindex->pprev, 0);
+    const int64_t nTotal = ApplyBlockSizePenalty(nSubsidy + nFees, block, pindex->pprev);
+    int64_t nIssuance = ApplyBlockSizePenalty(nSubsidy, block, pindex->pprev);
+    if (nIssuance > nTotal)
+        nIssuance = nTotal;
+    return CBlockSubsidySplit::ForBlock(pindex->nHeight, nIssuance, nTotal - nIssuance,
+                                        CollateralnodeShare::Paid);
+}
+
 bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                           bool fWriteNames, ConnectResult* pResult)
 {
@@ -8300,7 +8313,10 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
             std::string strSettleError;
             if (!GatherFinalitySettlementVotes(pindex->pprev, nSettlementEpoch, vSettlementVotes, &strSettleError))
                 return DoS(100, error("ConnectBlock() : finality settlement set unavailable: %s", strSettleError.c_str()));
-            if (!CheckFinalitySettlementOutputs(activeBlock, vSettlementVotes, nFinalityRewardOut, &strSettleError))
+            const int64_t nSettlementBudget =
+                GetClampedFinalitySettlementBudget(pindex->pprev, nSettlementEpoch, pindex->nHeight);
+            if (!CheckFinalitySettlementOutputs(activeBlock, vSettlementVotes, nSettlementBudget,
+                                                nFinalityRewardOut, &strSettleError))
                 return DoS(100, error("ConnectBlock() : finality settlement outputs invalid: %s", strSettleError.c_str()));
         }
     }
@@ -8383,15 +8399,25 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                       nIV5FeeSum, nFees));
             nAllowedFees -= nIV5FeeSum;
         }
-        int64_t nReward = GetProofOfWorkReward(nRewardHeight, nAllowedFees, pindex->pprev);
+        // One subsidy, split at payment; the settlement is netted off the headroom first.
+        int64_t nSubsidy = GetProofOfWorkReward(nRewardHeight, 0, pindex->pprev, nFinalityRewardOut);
 
-        // Adaptive block size penalty (post-DAG): reduce allowed reward for oversized blocks
-        nReward = ApplyBlockSizePenalty(nReward, *this, pindex->pprev);
+        // Adaptive block size penalty (post-DAG): applied to the whole allowance and to the
+        // issuance leg; truncation lands in the fee leg.
+        int64_t nBlockValue = ApplyBlockSizePenalty(nSubsidy + nAllowedFees, *this, pindex->pprev);
+        int64_t nIssuance = ApplyBlockSizePenalty(nSubsidy, *this, pindex->pprev);
+        if (nIssuance > nBlockValue)
+            nIssuance = nBlockValue;
 
-        // Check coinbase reward
-        if (nReward > MAX_MONEY - nFinalityRewardOut)
+        const CBlockSubsidySplit subsidySplit =
+            CBlockSubsidySplit::ForBlock(pindex->nHeight, nIssuance, nBlockValue - nIssuance,
+                                         CollateralnodeShare::Paid);
+
+        // Check coinbase reward. The finality reserve is withheld, so the allowance is the
+        // block's own paid shares plus the settlement leg.
+        if (subsidySplit.PaidToBlock() > MAX_MONEY - nFinalityRewardOut)
             return DoS(50, error("ConnectBlock() : finality reward overflow"));
-        int64_t nAllowedCoinbase = nReward + nFinalityRewardOut;
+        int64_t nAllowedCoinbase = subsidySplit.PaidToBlock() + nFinalityRewardOut;
 
         if (vtx[0].GetValueOut() > nAllowedCoinbase)
             return DoS(50, error("ConnectBlock() : coinbase reward exceeded (actual=%" PRId64" vs calculated=%" PRId64")",
@@ -8472,7 +8498,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 return DoS(100, error("ConnectBlock() : NullStake V2 stake FCMP proof invalid"));
 
             uint64_t nCoinAge = 1;  // Minimum coin-day for V2
-            int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees, pindex->pprev), *this, pindex->pprev);
+            int64_t nCalculatedStakeReward = GetCoinStakeSubsidySplit(nCoinAge, nFees, *this, pindex).PaidToBlock();
             if (nStakeReward > nCalculatedStakeReward)
                 return DoS(100, error("ConnectBlock() : NullStake V2 coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
         }
@@ -8596,7 +8622,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
             // V3 reward: same conservative approach as V2
             uint64_t nCoinAge = 1;
-            int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees, pindex->pprev), *this, pindex->pprev);
+            int64_t nCalculatedStakeReward = GetCoinStakeSubsidySplit(nCoinAge, nFees, *this, pindex).PaidToBlock();
             if (nStakeReward > nCalculatedStakeReward)
                 return DoS(100, error("ConnectBlock() : NullStake V3 coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
         }
@@ -8684,7 +8710,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 return DoS(100, error("ConnectBlock() : NullStake stake FCMP proof invalid"));
 
             uint64_t nCoinAge = nWeight > 0 ? (uint64_t)nWeight : 1;
-            int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees, pindex->pprev), *this, pindex->pprev);
+            int64_t nCalculatedStakeReward = GetCoinStakeSubsidySplit(nCoinAge, nFees, *this, pindex).PaidToBlock();
             if (nStakeReward > nCalculatedStakeReward)
                 return DoS(100, error("ConnectBlock() : NullStake coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
         }
@@ -8695,7 +8721,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 return TransientFailure(error("ConnectBlock() : %s unable to get coin age for coinstake",
                                               vtx[1].GetHash().ToString().substr(0,10).c_str()));
 
-            int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees, pindex->pprev), *this, pindex->pprev);
+            int64_t nCalculatedStakeReward = GetCoinStakeSubsidySplit(nCoinAge, nFees, *this, pindex).PaidToBlock();
 
             if (nStakeReward > nCalculatedStakeReward)
                 return DoS(100, error("ConnectBlock() : coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
@@ -8914,10 +8940,12 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 if (!vtx[1].GetCoinAge(txdb, nCoinAge))
                     return TransientFailure(error("CheckBlock-POS : %s unable to get coin age for coinstake, Can't Calculate Collateralnode Reward\n",
                                                   vtx[1].GetHash().ToString().substr(0,10).c_str()));
-                int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees, pindex->pprev), *this, pindex->pprev);
+                const CBlockSubsidySplit stakeSplit = GetCoinStakeSubsidySplit(nCoinAge, nFees, *this, pindex);
+                int64_t nCalculatedStakeReward = stakeSplit.PaidToBlock();
 
-                // Calculate expected collateralnodePaymentAmmount
-                int64_t collateralnodePaymentAmount = GetCollateralnodePayment(pindex->nHeight, nCalculatedStakeReward);
+                // Expected collateralnode payment: the split's own leg, never a share
+                // this site sized against a base it picked itself.
+                int64_t collateralnodePaymentAmount = stakeSplit.Collateralnode();
 
                 // If we don't already have its previous block, skip collateralnode payment step
                 if (pindex != NULL)
@@ -9053,7 +9081,8 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 // same nFinalityRewardOut as the coinbase cap so miner and validator agree.
                 int64_t nCNPaymentBase =
                     FinalityCollateralnodePaymentBase(vtx[0].GetValueOut(), nFinalityRewardOut);
-                int64_t collateralnodePaymentAmount = GetCollateralnodePayment(pindex->nHeight, nCNPaymentBase);
+                int64_t collateralnodePaymentAmount =
+                    CBlockSubsidySplit::CollateralnodeShareOfBase(nCNPaymentBase);
 
                 // If we don't already have its previous block, skip collateralnode payment step
                 if (pindex != NULL)
@@ -15494,9 +15523,3 @@ bool SendMessages(CNode* pto, bool fSendTrickle)
     return true;
 }
 
-int64_t GetCollateralnodePayment(int nHeight, int64_t blockValue)
-{
-    if (blockValue <= 0)
-        return 0;
-    return (blockValue / 100) * 65 + ((blockValue % 100) * 65) / 100;
-}

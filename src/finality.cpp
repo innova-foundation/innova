@@ -12,6 +12,7 @@
 #include "txdb.h"
 #include "base58.h"
 #include "kernel.h"
+#include "subsidy.h"
 
 #include <openssl/bn.h>
 #include <openssl/ec.h>
@@ -2143,7 +2144,24 @@ bool GatherFinalitySettlementVotes(const CBlockIndex* pindexPrev, int nEpoch,
     return true;
 }
 
+int64_t GetClampedFinalitySettlementBudget(const CBlockIndex* pindexPrev,
+                                           int nSettlementEpoch,
+                                           int nSettlementHeight)
+{
+    const int64_t nBudget = GetFinalityEpochBudget(nSettlementEpoch, nSettlementHeight);
+    if (nBudget <= 0)
+        return 0;
+
+    // Headroom is read from the parent before the subsidy. The settlement takes its share first
+    // and the subsidy takes the rest, so both stay within the headroom.
+    const int64_t nHeadroom = GetRemainingIssuance(pindexPrev, 0);
+    if (nHeadroom <= 0)
+        return 0;
+    return (nBudget > nHeadroom) ? nHeadroom : nBudget;
+}
+
 bool BuildFinalitySettlementOutputs(const std::vector<CFinalityVote>& vCountedVotes,
+                                    int64_t nEpochBudget,
                                     std::vector<CTxOut>& vOutputsOut,
                                     int64_t& nTotalOut,
                                     std::string* pstrError)
@@ -2174,13 +2192,15 @@ bool BuildFinalitySettlementOutputs(const std::vector<CFinalityVote>& vCountedVo
     std::sort(vTransparent.begin(), vTransparent.end(),
               [](const CFinalityVote* a, const CFinalityVote* b) { return a->nullifier < b->nullifier; });
 
+    // Fixed budget split equally among counted voters (B/V each), independent of stake.
+    // vote.nReward is the weight-derived entitlement, not the amount paid; a vote with
+    // zero entitlement is not a payee, so dust stake cannot dilute the split.
+    std::vector<CScript> vPayees;
     std::set<CScript> setPayees;
     for (const CFinalityVote* pvote : vTransparent)
     {
         if (pvote->nReward < 0 || !MoneyRange(pvote->nReward))
             return reject("settlement reward out of range");
-        if (nTotalOut > MAX_MONEY - pvote->nReward)
-            return reject("settlement reward total overflow");
 
         CPubKey pubkey(pvote->vchPubKey);
         if (!pubkey.IsValid())
@@ -2192,11 +2212,28 @@ bool BuildFinalitySettlementOutputs(const std::vector<CFinalityVote>& vCountedVo
         if (!setPayees.insert(scriptPayee).second)
             return reject("duplicate settlement payee");
 
-        nTotalOut += pvote->nReward;
         if (pvote->nReward == 0)
-            continue;   // nothing to mint for a zero-weight voter
-        vOutputsOut.push_back(CTxOut(pvote->nReward, scriptPayee));
+            continue;   // zero-entitlement voter: counted for finality, not a payee
+        vPayees.push_back(scriptPayee);
     }
+
+    if (nEpochBudget < 0 || !MoneyRange(nEpochBudget))
+        return reject("settlement epoch budget out of range");
+
+    if (!vPayees.empty() && nEpochBudget > 0)
+    {
+        const int64_t nPerVoter = nEpochBudget / (int64_t)vPayees.size();
+        if (nPerVoter > 0)
+        {
+            for (const CScript& scriptPayee : vPayees)
+                vOutputsOut.push_back(CTxOut(nPerVoter, scriptPayee));
+            nTotalOut = nPerVoter * (int64_t)vPayees.size();
+        }
+    }
+
+    // Unspent reserve (truncation remainder, or the whole budget when V is 0) is not
+    // minted: not rolled forward (unbounded accrual) and not paid to the producer
+    // (would reward censoring voters). The cap headroom keeps it for later blocks.
 
     // PRIVATE-TIER PLUG-IN POINT.
     // The note tier settles from the note votes, not from vCountedVotes: a note vote is
@@ -2224,6 +2261,7 @@ bool BuildFinalitySettlementOutputs(const std::vector<CFinalityVote>& vCountedVo
 
 bool CheckFinalitySettlementOutputs(const CBlock& block,
                                     const std::vector<CFinalityVote>& vCountedVotes,
+                                    int64_t nEpochBudget,
                                     int64_t& nTotalOut,
                                     std::string* pstrError)
 {
@@ -2236,7 +2274,7 @@ bool CheckFinalitySettlementOutputs(const CBlock& block,
 
     nTotalOut = 0;
     std::vector<CTxOut> vRequired;
-    if (!BuildFinalitySettlementOutputs(vCountedVotes, vRequired, nTotalOut, pstrError))
+    if (!BuildFinalitySettlementOutputs(vCountedVotes, nEpochBudget, vRequired, nTotalOut, pstrError))
     {
         nTotalOut = 0;
         return false;

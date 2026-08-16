@@ -10,6 +10,7 @@
 
 #include "txdb.h"
 #include "wallet.h"
+#include "subsidy.h"
 #include "privacy_vnext_builder.h"
 #include "privacy_vnext_store.h"
 #include "privacy_vnext_ffi.h"
@@ -5682,7 +5683,12 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                         int64_t nTimeWeight = nWeight > 0 ? nWeight : 1;
                         uint64_t nCoinAge = (uint64_t)((wnote.note.nValue / COIN) * nTimeWeight / (24 * 60 * 60));
                         if (nCoinAge == 0) nCoinAge = 1; // Minimum 1 coin-day
-                        int64_t nReward = GetProofOfStakeReward(nCoinAge, nFees, pindexPrev);
+                        // One subsidy, split at payment, from the shared function.
+                        const CBlockSubsidySplit stakeSplit = CBlockSubsidySplit::ForBlock(
+                            pindexPrev->nHeight + 1,
+                            GetProofOfStakeReward(nCoinAge, 0, pindexPrev, 0), nFees,
+                            CollateralnodeShare::Paid);
+                        int64_t nReward = stakeSplit.PaidToBlock();
                         if (nReward <= 0)
                             continue;
 
@@ -5792,7 +5798,7 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                                 }
 
                                 if (hasCNPayee) {
-                                    int64_t cnPayment = GetCollateralnodePayment(pindexPrev->nHeight+1, nReward);
+                                    int64_t cnPayment = stakeSplit.Collateralnode();
                                     if (cnPayment > 0 && cnPayment < nReward) {
                                         txNew.vout.push_back(CTxOut(cnPayment, cnPayee));
                                         txNew.nValueBalance += cnPayment;
@@ -6080,7 +6086,10 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                             txNew.nullstakeProofV3 = kernelProofV3;
 
                             uint64_t nCoinAge = 1;  // Conservative: matches consensus V3 validation
-                            int64_t nReward = GetProofOfStakeReward(nCoinAge, nFees, pindexPrev);
+                            int64_t nReward = CBlockSubsidySplit::ForBlock(
+                                pindexPrev->nHeight + 1,
+                                GetProofOfStakeReward(nCoinAge, 0, pindexPrev, 0), nFees,
+                                CollateralnodeShare::None).PaidToBlock();
                             if (nReward <= 0)
                                 continue;
 
@@ -6236,20 +6245,21 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
         }
     }
 
-    // Calculate coin age reward
-    int64_t nReward;
+    // Calculate coin age reward. One subsidy, split at payment: the split object
+    // below is the only source of both the credit and the collateralnode leg, so
+    // this wallet cannot size a share the validator will not agree with.
+    uint64_t nCoinAge = 0;
     {
-        uint64_t nCoinAge;
         CTxDB txdb("r");
         if (!txNew.GetCoinAge(txdb, nCoinAge))
             return error("CreateCoinStake() : failed to calculate coin age");
-
-        nReward = GetProofOfStakeReward(nCoinAge, nFees, pindexPrev);
-        if (nReward <= 0)
-            return false;
-
-        nCredit += nReward;
     }
+    const CBlockSubsidySplit stakeSplit = CBlockSubsidySplit::ForBlock(
+        pindexPrev->nHeight + 1, GetProofOfStakeReward((int64_t)nCoinAge, 0, pindexPrev, 0),
+        nFees, CollateralnodeShare::Paid);
+    if (stakeSplit.PaidToBlock() <= 0)
+        return false;
+    nCredit += stakeSplit.PaidToBlock();
 
 	// Collateralnode Payments
     int payments = 1;
@@ -6311,7 +6321,8 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
     }
 
     int64_t blockValue = nCredit;
-    int64_t collateralnodePayment = GetCollateralnodePayment(pindexPrev->nHeight+1, nReward);
+    // The collateralnode leg of the same split the credit above came from.
+    int64_t collateralnodePayment = stakeSplit.Collateralnode();
 
 
     // Set output amount

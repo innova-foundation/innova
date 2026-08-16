@@ -383,6 +383,7 @@ OBJS= \
     obj/silentpayments.o \
     obj/dandelion.o \
     obj/finality.o \
+    obj/subsidy.o \
     obj/finality_note.o \
     obj/finality_schedule.o \
     obj/dag.o \
@@ -468,6 +469,7 @@ OBJS= \
     obj/silentpayments.o \
     obj/dandelion.o \
     obj/finality.o \
+    obj/subsidy.o \
     obj/finality_note.o \
     obj/finality_schedule.o \
     obj/dag.o \

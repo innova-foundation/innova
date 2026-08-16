@@ -11,6 +11,7 @@
 #include "collateralnode.h"
 #include "innovarpc.h"
 #include "finality.h"
+#include "subsidy.h"
 #include "dag.h"
 #include "base58.h"
 
@@ -971,7 +972,10 @@ Value getblocktemplate(const Array& params, bool fHelp)
         std::string strTmplSettleError;
         if (!GatherFinalitySettlementVotes(pindexPrev, nTmplSettlementEpoch,
                                            vTmplSettlementVotes, &strTmplSettleError) ||
-            !BuildFinalitySettlementOutputs(vTmplSettlementVotes, vTmplSettlementLeg,
+            !BuildFinalitySettlementOutputs(vTmplSettlementVotes,
+                                            GetClampedFinalitySettlementBudget(
+                                                pindexPrev, nTmplSettlementEpoch, nTmplHeight),
+                                            vTmplSettlementLeg,
                                             nTmplFinalityReward, &strTmplSettleError))
             throw JSONRPCError(RPC_INTERNAL_ERROR,
                                strprintf("cannot derive finality settlement for epoch %d at height %d: %s",
@@ -985,10 +989,10 @@ Value getblocktemplate(const Array& params, bool fHelp)
 		ExtractDestination(payee, address1);
 		CBitcoinAddress address2(address1);
 		result.push_back(Pair("payee", address2.ToString().c_str()));
-		result.push_back(Pair("payee_amount", (int64_t)GetCollateralnodePayment(pindexPrev->nHeight+1, nTmplCNBase)));
+		result.push_back(Pair("payee_amount", (int64_t)CBlockSubsidySplit::CollateralnodeShareOfBase(nTmplCNBase)));
 	  } else {
         result.push_back(Pair("payee", fTestNet ? "8TestXXXXXXXXXXXXXXXXXXXXXXXXbCvpq" : "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw"));
-	result.push_back(Pair("payee_amount", (int64_t)GetCollateralnodePayment(pindexPrev->nHeight+1, nTmplCNBase)));
+	result.push_back(Pair("payee_amount", (int64_t)CBlockSubsidySplit::CollateralnodeShareOfBase(nTmplCNBase)));
     }
 
 	  result.push_back(Pair("collateralnode_payments", bCollateralnodePayments));

@@ -9,6 +9,7 @@
 #include "txdb.h"
 #include "bootstrap.h"
 #include "finality.h"
+#include "subsidy.h"
 #include "dag.h"
 #include "blockprofile.h"
 #include "base58.h"
@@ -262,7 +263,11 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, bool fPri
             std::vector<CFinalityVote> vSettlementVotes;
             std::vector<CTxOut> vSettlementLeg;
             if (GatherFinalitySettlementVotes(blockindex->pprev, nSettlementEpoch, vSettlementVotes) &&
-                BuildFinalitySettlementOutputs(vSettlementVotes, vSettlementLeg, nFinalityReward))
+                BuildFinalitySettlementOutputs(vSettlementVotes,
+                                               GetClampedFinalitySettlementBudget(
+                                                   blockindex->pprev, nSettlementEpoch,
+                                                   blockindex->nHeight),
+                                               vSettlementLeg, nFinalityReward))
             {
                 Object settleObj;
                 settleObj.push_back(Pair("epoch", nSettlementEpoch));

@@ -1243,20 +1243,36 @@ void CollectFinalitySettlementVotes(const std::vector<std::vector<CFinalityVote>
                                     int nEpoch,
                                     std::vector<CFinalityVote>& vVotesOut);
 
-/** Transparent settlement leg: exactly one P2PKH output per counted transparent voter,
- *  paying that vote's consensus-bound nReward, in canonical (nullifier-sorted) order.
- *  nTotalOut is the sum, which is the settlement block's extra coinbase allowance. */
+/** Transparent settlement leg: one P2PKH output per counted voter, each paying
+ *  nEpochBudget / V, nullifier-sorted. nTotalOut <= nEpochBudget. nEpochBudget has no
+ *  default so producer and validator settle against the same figure. */
 bool BuildFinalitySettlementOutputs(const std::vector<CFinalityVote>& vCountedVotes,
+                                    int64_t nEpochBudget,
                                     std::vector<CTxOut>& vOutputsOut,
                                     int64_t& nTotalOut,
                                     std::string* pstrError = NULL);
 
 /** Consensus check for a settlement block: its coinbase must carry the full settlement
- *  leg for vCountedVotes. Returns the settled total in nTotalOut (0 on failure). */
+ *  leg for vCountedVotes at nEpochBudget. Returns the settled total in nTotalOut
+ *  (0 on failure). */
 bool CheckFinalitySettlementOutputs(const CBlock& block,
                                     const std::vector<CFinalityVote>& vCountedVotes,
+                                    int64_t nEpochBudget,
                                     int64_t& nTotalOut,
                                     std::string* pstrError = NULL);
+
+/** The settlement budget for the epoch settling at nSettlementHeight, clamped to the
+ *  issuance headroom left under the supply cap for the block extending pindexPrev.
+ *
+ *  THE one function both the producer and every validator call. It is what makes the
+ *  settlement payable in every case: the clamp can only lower it, both sides lower it
+ *  identically from the same parent, and the block's own subsidy is then computed
+ *  against the headroom that remains. There is no state in which the required outputs
+ *  exceed what the block is allowed to mint, so there is no height at which no valid
+ *  block exists. */
+int64_t GetClampedFinalitySettlementBudget(const CBlockIndex* pindexPrev,
+                                           int nSettlementEpoch,
+                                           int nSettlementHeight);
 
 /** Structural check for the vote commitments a non-settlement block carries. Carrying a
  *  vote pays nothing, so this validates shape only (per-block cap, no duplicate
