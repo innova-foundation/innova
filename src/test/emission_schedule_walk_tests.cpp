@@ -66,7 +66,7 @@ static const int64_t nTestnetTail = 666LL;
 
 int64_t Subsidy(int nHeight)
 {
-    return GetProofOfWorkReward(nHeight, 0);
+    return GetBlockSubsidySchedule(nHeight);
 }
 
 // What the ladder pays at nHeight, read off the golden table.
@@ -135,7 +135,7 @@ BOOST_AUTO_TEST_CASE(regtest_pre_dag_emission_is_unchanged)
         BOOST_CHECK_EQUAL(Subsidy(nHeight), 50 * COIN);
 
     // Fees still ride on top.
-    BOOST_CHECK_EQUAL(GetProofOfWorkReward(5, 12345LL), 50 * COIN + 12345LL);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(5, 12345LL, NULL, 0), 50 * COIN + 12345LL);
 }
 
 // Every height from genesis past the last stretched boundary, with the split checked.
