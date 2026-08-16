@@ -125,20 +125,26 @@ uint256 GetBlockEntropy(const uint256& hashValue)
     return result;
 }
 
-int64_t GetFinalityVoteReward(int64_t nVoteWeight, int nEpochInterval)
+// Coin-age over nEpochUnits at nRatePerCoinYear. Integer truncation is deterministic: the
+// note and certificate proofs reproduce these exact quotients and remainders.
+int64_t GetFinalityVoteReward(int64_t nVoteWeight, int nEpochUnits, int64_t nRatePerCoinYear)
 {
-    if (nVoteWeight <= 0 || nEpochInterval <= 0)
+    if (nVoteWeight <= 0 || nEpochUnits <= 0 || nRatePerCoinYear <= 0)
         return 0;
 
-    // Match the legacy PoS reward curve using coin-age generated during one
-    // finality epoch. Integer truncation is intentional and deterministic.
-    CBigNum bnCoinAge = CBigNum(nVoteWeight) * nEpochInterval / COIN / (24 * 60 * 60);
+    CBigNum bnCoinAge = CBigNum(nVoteWeight) * nEpochUnits / COIN / (24 * 60 * 60);
     uint64_t nCoinAge = bnCoinAge.getuint64();
-    CBigNum bnReward = CBigNum(nCoinAge) * COIN_YEAR_REWARD / 365;
+    CBigNum bnReward = CBigNum(nCoinAge) * nRatePerCoinYear / 365;
     uint64_t nReward = bnReward.getuint64();
     if (nReward > (uint64_t)MAX_MONEY)
         return MAX_MONEY;
     return (int64_t)nReward;
+}
+
+int64_t GetFinalityVoteRewardAtHeight(int64_t nVoteWeight, int nHeight)
+{
+    return GetFinalityVoteReward(nVoteWeight, GetFinalityRewardUnits(nHeight),
+                                 GetFinalityVoteRate(nHeight));
 }
 
 static std::string ToLowerASCII(std::string str)
@@ -3884,7 +3890,8 @@ static CR1CSCircuit BuildFinalityRewardBudgetCircuit(const CFinalityTallyCertifi
     FinalityAddBitDecompositionConstraint(circuit, layout.nActiveBits, FINALITY_MONEY_BITS, 0);
     FinalityAddBitDecompositionConstraint(circuit, layout.nRewardBits, FINALITY_MONEY_BITS, 1);
 
-    int nEpochInterval = GetEpochInterval(cert.nHeight);
+    int nEpochInterval = GetFinalityRewardUnits(cert.nHeight);
+    const int64_t nVoteRate = GetFinalityVoteRate(cert.nHeight);
     {
         std::vector<CSparseEntry> wl, wr, wo, wv;
         FinalityAddBitSumTerms(wo, layout.nQ1Bits, FINALITY_Q64_BITS,
@@ -3912,7 +3919,7 @@ static CR1CSCircuit BuildFinalityRewardBudgetCircuit(const CFinalityTallyCertifi
         FinalityAddBitSumTerms(wo, layout.nR3Bits, FINALITY_REWARD_REMAINDER_BITS,
                                FieldFromUint64(1));
         FinalityAddBitSumTerms(wo, layout.nCoinAgeBits, FINALITY_Q64_BITS,
-                               FieldNeg(FieldFromUint64((uint64_t)COIN_YEAR_REWARD)));
+                               FieldNeg(FieldFromUint64((uint64_t)nVoteRate)));
         circuit.AddLinearConstraint(wl, wr, wo, wv, FieldFromUint64(0));
     }
 
@@ -4081,7 +4088,8 @@ bool CreateFinalityRewardBudgetProofV2(const CFinalityTallyCertificate& cert,
         vchRewardBlind.size() != BLINDING_FACTOR_SIZE)
         return false;
 
-    int nEpochInterval = GetEpochInterval(cert.nHeight);
+    int nEpochInterval = GetFinalityRewardUnits(cert.nHeight);
+    const int64_t nVoteRate = GetFinalityVoteRate(cert.nHeight);
     uint64_t nProduct = 0;
     if (!FinalityMulUint64((uint64_t)nPrivateActiveWeight, (uint64_t)nEpochInterval, nProduct))
         return false;
@@ -4090,13 +4098,13 @@ bool CreateFinalityRewardBudgetProofV2(const CFinalityTallyCertificate& cert,
     uint64_t nCoinAge = nQ1 / 86400;
     uint64_t nR2 = nQ1 % 86400;
     uint64_t nRewardProduct = 0;
-    if (!FinalityMulUint64(nCoinAge, (uint64_t)COIN_YEAR_REWARD, nRewardProduct))
+    if (!FinalityMulUint64(nCoinAge, (uint64_t)nVoteRate, nRewardProduct))
         return false;
     uint64_t nReward = nRewardProduct / 365;
     uint64_t nR3 = nRewardProduct % 365;
     if (nReward > (uint64_t)MAX_MONEY ||
         nPrivateRewardBudget != (int64_t)nReward ||
-        nPrivateRewardBudget != GetFinalityVoteReward(nPrivateActiveWeight, nEpochInterval))
+        nPrivateRewardBudget != GetFinalityVoteReward(nPrivateActiveWeight, nEpochInterval, nVoteRate))
         return false;
 
     CFinalityRewardCircuitLayout layout;
@@ -5086,7 +5094,7 @@ bool CFinalityTracker::CheckVote(const CFinalityVote& vote, CTxDB& txdb,
         vote.nVoteWeight < FINALITY_MIN_VOTE_WEIGHT)
         return reject("vote weight is below the minimum vote weight");
 
-    int64_t nExpectedReward = GetFinalityVoteReward(vote.nVoteWeight, GetEpochInterval(vote.nHeight));
+    int64_t nExpectedReward = GetFinalityVoteRewardAtHeight(vote.nVoteWeight, vote.nHeight);
     if (vote.nReward != nExpectedReward)
         return reject("vote reward mismatch");
 
@@ -9792,8 +9800,8 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
                 if (!GenerateBlindingFactor(vchRewardBlind))
                     continue;
 
-                int64_t nPrivateReward = GetFinalityVoteReward(wnote.note.nValue,
-                                                                GetEpochInterval(nEpochHeight));
+                int64_t nPrivateReward = GetFinalityVoteRewardAtHeight(wnote.note.nValue,
+                                                                       nEpochHeight);
                 CPedersenCommitment rewardCommitment;
                 if (!CreatePedersenCommitment(nPrivateReward, vchRewardBlind, rewardCommitment))
                     continue;
@@ -10267,7 +10275,7 @@ bool ProduceFinalityVote()
     vote.nHeight = nEpochHeight;
     vote.nTime = GetAdjustedTime();
     vote.nVoteWeight = pBestGroup->nWeight;
-    vote.nReward = GetFinalityVoteReward(vote.nVoteWeight, GetEpochInterval(nEpochHeight));
+    vote.nReward = GetFinalityVoteRewardAtHeight(vote.nVoteWeight, nEpochHeight);
     vote.nullifier = nullifier;
     vote.vStakeProof = pBestGroup->vOutpoints;
 

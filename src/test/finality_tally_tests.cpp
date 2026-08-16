@@ -1305,7 +1305,7 @@ BOOST_AUTO_TEST_CASE(private_tally_certificate_v2_bpac_proofs_reject_opening_blo
     const int64_t nPrivateWinning = 4000 * COIN;
     const int nHeight = 9000000;
     const int64_t nPrivateReward =
-        GetFinalityVoteReward(nPrivateActive, FINALITY_EPOCH_INTERVAL_POST_DAG);
+        GetFinalityVoteRewardAtHeight(nPrivateActive, nHeight);
     BOOST_REQUIRE_GT(nPrivateReward, 0);
 
     CFinalityTallyCertificate cert;
@@ -1810,8 +1810,8 @@ BOOST_AUTO_TEST_CASE(finality_validation_distinguishes_invalid_from_local_state)
     unavailableVote.hashBlock = uint256(0xFA130001);
     unavailableVote.nTime = GetTime();
     unavailableVote.nVoteWeight = COIN;
-    unavailableVote.nReward = GetFinalityVoteReward(
-        unavailableVote.nVoteWeight, GetEpochInterval(voteHeight));
+    unavailableVote.nReward = GetFinalityVoteRewardAtHeight(
+        unavailableVote.nVoteWeight, voteHeight);
     unavailableVote.vStakeProof.push_back(COutPoint(uint256(0xFA130002), 0));
     CPubKey pubkey = key.GetPubKey();
     unavailableVote.vchPubKey.assign(pubkey.begin(), pubkey.end());
@@ -2005,7 +2005,7 @@ BOOST_AUTO_TEST_CASE(connect_context_rejects_votes_naming_unresolvable_epoch_blo
         vote.hashBlock = hashNamed;
         vote.nTime = GetTime();
         vote.nVoteWeight = COIN;
-        vote.nReward = GetFinalityVoteReward(vote.nVoteWeight, GetEpochInterval(voteHeight));
+        vote.nReward = GetFinalityVoteRewardAtHeight(vote.nVoteWeight, voteHeight);
         vote.vStakeProof.push_back(COutPoint(uint256(0xFC030001), 0));
         CPubKey pubkey = key.GetPubKey();
         vote.vchPubKey.assign(pubkey.begin(), pubkey.end());

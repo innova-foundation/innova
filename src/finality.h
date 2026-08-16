@@ -33,6 +33,10 @@ class CBlockIndex;
 
 static const int FINALITY_EPOCH_INTERVAL_PRE_DAG = 60;    // blocks per epoch pre-DAG
 static const int FINALITY_EPOCH_INTERVAL_POST_DAG = 300;  // blocks per epoch post-DAG (5 min at 1s blocks)
+
+// Target yield on vote weight, per coin-year, in satoshi. Independent of the PoS
+// COIN_YEAR_REWARD; the realised yield equals this regardless of interval or spacing.
+static const int64_t FINALITY_VOTE_YEAR_REWARD = 0.06 * COIN; // 6% per year
 static const int FINALITY_THRESHOLD_NUM = 2;      // 2/3 threshold numerator
 static const int FINALITY_THRESHOLD_DEN = 3;      // 2/3 threshold denominator
 static const int64_t FINALITY_VOTE_MAX_AGE = 3600; // 1 hour max vote age
@@ -256,12 +260,32 @@ bool GetFinalityTallyPrivateKey(CKey& keyOut);
 
 /** Get epoch interval for a given height: 60 pre-DAG, 300 post-DAG */
 int GetForkHeightDAG(); // defined in main.h (inline)
+unsigned int GetTargetSpacingForHeight(int nHeight); // defined in main.h (inline)
 
 inline int GetEpochInterval(int nHeight)
 {
     if (nHeight >= GetForkHeightDAG())
         return FINALITY_EPOCH_INTERVAL_POST_DAG;
     return FINALITY_EPOCH_INTERVAL_PRE_DAG;
+}
+
+/** Seconds one epoch spans, the reward accrual span. Pre-DAG keeps the deployed
+ *  raw block count (frozen for compatibility); post-DAG is interval x target spacing. */
+inline int GetFinalityRewardUnits(int nHeight)
+{
+    if (nHeight < GetForkHeightDAG())
+        return FINALITY_EPOCH_INTERVAL_PRE_DAG; // frozen legacy multiplier
+    return GetEpochInterval(nHeight) * (int)GetTargetSpacingForHeight(nHeight);
+}
+
+/** Reward per coin-year at nHeight. Pre-DAG votes are frozen on the rate they were
+ *  validated against, so retuning FINALITY_VOTE_YEAR_REWARD cannot change the verdict
+ *  on any block below the fork. */
+inline int64_t GetFinalityVoteRate(int nHeight)
+{
+    if (nHeight < GetForkHeightDAG())
+        return 6000000; // frozen: COIN_YEAR_REWARD as deployed pre-DAG
+    return FINALITY_VOTE_YEAR_REWARD;
 }
 
 /** Blocks after the epoch boundary in which this node still starts a vote.
@@ -420,8 +444,11 @@ inline bool IsFinalitySettlementHeight(int nHeight, int* pnEpochOut = NULL)
  */
 uint256 GetBlockEntropy(const uint256& hashValue);
 
-/** Deterministic finality reward for a vote of nVoteWeight over one epoch. */
-int64_t GetFinalityVoteReward(int64_t nVoteWeight, int nEpochInterval);
+/** Deterministic finality reward for a vote of nVoteWeight over one epoch.
+ *  Prefer GetFinalityVoteRewardAtHeight; the explicit form exists for the proof
+ *  builders, which must embed the same two constants in their circuits. */
+int64_t GetFinalityVoteReward(int64_t nVoteWeight, int nEpochUnits, int64_t nRatePerCoinYear);
+int64_t GetFinalityVoteRewardAtHeight(int64_t nVoteWeight, int nHeight);
 
 /** Private NullStake finality proof envelope.
  *

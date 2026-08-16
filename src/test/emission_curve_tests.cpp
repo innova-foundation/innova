@@ -312,19 +312,28 @@ BOOST_AUTO_TEST_CASE(finality_vote_reward_rate_is_pinned)
                           POST_DAG_TARGET_SPACING,
                       300LL);
 
+    // The post-DAG multiplier is the epoch's duration in seconds, which at 300
+    // blocks x 1s is numerically the block count the pre-correction rule used.
+    // That coincidence is why correcting the units moves no post-DAG value.
+    BOOST_CHECK_EQUAL(GetFinalityRewardUnits(FORK_HEIGHT_DAG), 300);
+    BOOST_CHECK_EQUAL(GetFinalityVoteRate(FORK_HEIGHT_DAG), FINALITY_VOTE_YEAR_REWARD);
+
     // Truncation floor: below 288 INN of weight an epoch generates less than
     // one whole coin-day and the vote is paid nothing.
     const int64_t nFloor = 288LL * COIN;
-    BOOST_CHECK_EQUAL(GetFinalityVoteReward(nFloor - COIN, 300), 0LL);
-    BOOST_CHECK_EQUAL(GetFinalityVoteReward(nFloor, 300), COIN_YEAR_REWARD / 365);
-    BOOST_CHECK_EQUAL(GetFinalityVoteReward(nFloor, 300), 16438LL);
+    const int nPostDAG = FORK_HEIGHT_DAG;
+    BOOST_CHECK_EQUAL(GetFinalityVoteRewardAtHeight(nFloor - COIN, nPostDAG), 0LL);
+    BOOST_CHECK_EQUAL(GetFinalityVoteRewardAtHeight(nFloor, nPostDAG),
+                      FINALITY_VOTE_YEAR_REWARD / 365);
+    BOOST_CHECK_EQUAL(GetFinalityVoteRewardAtHeight(nFloor, nPostDAG), 16438LL);
 
     // At scale the channel is 6%/yr of the weight that votes: 105,120 epochs
     // per year at 300s each.
     const int64_t nEpochsPerYear = 31536000LL / 300LL;
     BOOST_CHECK_EQUAL(nEpochsPerYear, 105120LL);
     const int64_t nWeight = 1000000LL * COIN;               // 1,000,000 INN
-    const int64_t nYearly = GetFinalityVoteReward(nWeight, 300) * nEpochsPerYear;
+    const int64_t nYearly =
+        GetFinalityVoteRewardAtHeight(nWeight, nPostDAG) * nEpochsPerYear;
     BOOST_CHECK(nYearly > 59000LL * COIN);                  // ~6% of 1,000,000
     BOOST_CHECK(nYearly < 61000LL * COIN);
 
@@ -334,6 +343,65 @@ BOOST_AUTO_TEST_CASE(finality_vote_reward_rate_is_pinned)
     BOOST_CHECK_EQUAL(FINALITY_CANONICAL_CERT_MAX_NULLIFIERS, 128u);
     BOOST_CHECK_EQUAL(FORK_HEIGHT_BOUNDARY_A, FORK_HEIGHT_DAG + 300);
     BOOST_CHECK_EQUAL(FINALITY_MAX_STAKE_PROOFS, 8);
+}
+
+// The reward divides by 86,400 seconds, so its multiplier has to be a time. Post-DAG
+// it is the epoch's real span; pre-DAG it stays the block count the deployed rule used.
+BOOST_AUTO_TEST_CASE(finality_vote_reward_units_are_seconds_post_dag)
+{
+    MainnetEmissionGuard guard;
+
+    const int nPreDAG = FORK_HEIGHT_DAG - 1;
+    const int nPostDAG = FORK_HEIGHT_DAG;
+
+    // Pre-DAG stays on the deployed 60-block count and 6%/yr rate.
+    BOOST_CHECK_EQUAL(GetFinalityRewardUnits(nPreDAG), 60);
+    BOOST_CHECK_EQUAL(GetFinalityVoteRate(nPreDAG), 6000000LL);
+    BOOST_CHECK_EQUAL(GetEpochInterval(nPreDAG), FINALITY_EPOCH_INTERVAL_PRE_DAG);
+
+    // Post-DAG the multiplier is interval x target spacing.
+    BOOST_CHECK_EQUAL(GetFinalityRewardUnits(nPostDAG),
+                      GetEpochInterval(nPostDAG) *
+                          (int)GetTargetSpacingForHeight(nPostDAG));
+    BOOST_CHECK_EQUAL(GetTargetSpacingForHeight(nPostDAG), (unsigned int)POST_DAG_TARGET_SPACING);
+
+    // The correction moves no post-DAG value: the units it produces equal the block
+    // count the previous rule passed, at every weight.
+    const int64_t vWeights[] = { 288LL * COIN, 1000LL * COIN, 25000LL * COIN,
+                                 100000LL * COIN, 1000000LL * COIN };
+    for (size_t i = 0; i < sizeof(vWeights) / sizeof(vWeights[0]); i++)
+    {
+        BOOST_CHECK_EQUAL(GetFinalityVoteRewardAtHeight(vWeights[i], nPostDAG),
+                          GetFinalityVoteReward(vWeights[i],
+                                                FINALITY_EPOCH_INTERVAL_POST_DAG,
+                                                6000000LL));
+    }
+
+    // Annual yield equals FINALITY_VOTE_YEAR_REWARD for any interval and spacing.
+    const int64_t nWeight = 1000000LL * COIN;
+    const int vIntervals[] = { 60, 300, 600, 900 };
+    const int vSpacings[] = { 1, 2, 5, 15 };
+    for (size_t i = 0; i < sizeof(vIntervals) / sizeof(vIntervals[0]); i++)
+    {
+        for (size_t j = 0; j < sizeof(vSpacings) / sizeof(vSpacings[0]); j++)
+        {
+            const int nSeconds = vIntervals[i] * vSpacings[j];
+            const int64_t nPerEpoch =
+                GetFinalityVoteReward(nWeight, nSeconds, FINALITY_VOTE_YEAR_REWARD);
+            const int64_t nYearly = nPerEpoch * (31536000LL / nSeconds);
+            BOOST_CHECK_MESSAGE(nYearly > 59000LL * COIN && nYearly < 61000LL * COIN,
+                                "interval " << vIntervals[i] << " spacing " << vSpacings[j]
+                                            << " yielded " << nYearly);
+        }
+    }
+
+    // The rate is one named constant and the only input to the yield. Doubling it
+    // doubles the reward to within the one satoshi the /365 truncation can drop.
+    BOOST_CHECK_EQUAL(FINALITY_VOTE_YEAR_REWARD, 6000000LL);
+    const int64_t nDoubled =
+        GetFinalityVoteReward(nWeight, 300, FINALITY_VOTE_YEAR_REWARD * 2);
+    const int64_t nSingle = GetFinalityVoteReward(nWeight, 300, FINALITY_VOTE_YEAR_REWARD);
+    BOOST_CHECK(nDoubled - 2 * nSingle >= 0 && nDoubled - 2 * nSingle <= 1);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
