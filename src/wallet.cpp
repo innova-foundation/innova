@@ -5682,7 +5682,7 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                         int64_t nTimeWeight = nWeight > 0 ? nWeight : 1;
                         uint64_t nCoinAge = (uint64_t)((wnote.note.nValue / COIN) * nTimeWeight / (24 * 60 * 60));
                         if (nCoinAge == 0) nCoinAge = 1; // Minimum 1 coin-day
-                        int64_t nReward = GetProofOfStakeReward(nCoinAge, nFees);
+                        int64_t nReward = GetProofOfStakeReward(nCoinAge, nFees, pindexPrev);
                         if (nReward <= 0)
                             continue;
 
@@ -6080,7 +6080,7 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                             txNew.nullstakeProofV3 = kernelProofV3;
 
                             uint64_t nCoinAge = 1;  // Conservative: matches consensus V3 validation
-                            int64_t nReward = GetProofOfStakeReward(nCoinAge, nFees);
+                            int64_t nReward = GetProofOfStakeReward(nCoinAge, nFees, pindexPrev);
                             if (nReward <= 0)
                                 continue;
 
@@ -6244,7 +6244,7 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
         if (!txNew.GetCoinAge(txdb, nCoinAge))
             return error("CreateCoinStake() : failed to calculate coin age");
 
-        nReward = GetProofOfStakeReward(nCoinAge, nFees);
+        nReward = GetProofOfStakeReward(nCoinAge, nFees, pindexPrev);
         if (nReward <= 0)
             return false;
 

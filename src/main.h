@@ -334,6 +334,34 @@ inline int GetForkHeightDAG()
 }
 #define FORK_HEIGHT_DAG (GetForkHeightDAG())
 
+// Total-supply cap. From this height the block subsidy is clamped to the headroom
+// left under the cap (zero past it); fees are unaffected. Activates with the DAG fork.
+extern int nRegtestSupplyCapHeight;
+inline int GetForkHeightSupplyCap()
+{
+    extern bool fRegTest;
+    if (fRegTest && nRegtestSupplyCapHeight >= 0)
+        return nRegtestSupplyCapHeight;
+    return GetForkHeightDAG();
+}
+#define FORK_HEIGHT_SUPPLY_CAP (GetForkHeightSupplyCap())
+
+inline bool IsSupplyCapActiveAtHeight(int nHeight)
+{
+    return nHeight >= FORK_HEIGHT_SUPPLY_CAP;
+}
+
+// The supply cap: MAX_MONEY, except -regtestsupplycap may lower it on regtest.
+// The override can only lower the cap, so MoneyRange stays a superset.
+extern int64_t nRegtestSupplyCapAmount;
+inline int64_t GetSupplyCapAmount()
+{
+    extern bool fRegTest;
+    if (fRegTest && nRegtestSupplyCapAmount > 0 && nRegtestSupplyCapAmount < MAX_MONEY)
+        return nRegtestSupplyCapAmount;
+    return MAX_MONEY;
+}
+
 // IDAG privacy root transition: FCMP spends bind to the last finalized
 // epoch curve-tree snapshot instead of the mutable per-block tree.
 inline int GetForkHeightEpochRootFCMP()
@@ -892,8 +920,32 @@ unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfS
 unsigned int ComputeRetargetedBits(unsigned int nPrevBits, int64_t nActualSpan,
                                    unsigned int nEffectiveSpacing, int nWindow,
                                    bool fTighterDrift, const CBigNum& bnTargetLimit);
-int64_t GetProofOfWorkReward(int nHeight, int64_t nFees);
-int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees);
+// Issuance headroom left under the supply cap for the block that extends
+// pindexPrev. Reads only pindexPrev->nMoneySupply, which ConnectBlock derived
+// from that block's own ancestors, so the answer is a pure function of the
+// chain at the height being validated -- never of the node-local tip. Returns
+// INT64_MAX below the fork height, leaving every caller unclamped.
+//
+// nCommitted is issuance the same block already owes on another channel; it
+// comes off the headroom before the subsidy does, so the subsidy yields rather
+// than the block becoming unproducible.
+//
+// RESERVED, deliberately passed as 0 by every current caller. The one other
+// issuance channel is the finality settlement mint, and it cannot be netted off
+// here yet: CreateCoinStake computes the stake subsidy without the settlement
+// total in scope, so a validator that deducted it while the wallet did not would
+// reject the wallet's own blocks near the cap. Wiring it means deriving the total
+// once and handing it to both sides -- not recomputing it in the wallet. Until
+// then the settlement mint is unclamped and can carry supply past the cap by its
+// own amount.
+int64_t GetRemainingIssuance(const CBlockIndex* pindexPrev, int64_t nCommitted);
+int64_t ClampSubsidyToSupplyCap(int64_t nSubsidy, const CBlockIndex* pindexPrev, int64_t nCommitted);
+
+// pindexPrev is the parent of the block being paid, and is what the supply
+// clamp reads; it has no default because a caller that passes the wrong parent
+// computes a different subsidy than its peers.
+int64_t GetProofOfWorkReward(int nHeight, int64_t nFees, const CBlockIndex* pindexPrev, int64_t nCommitted = 0);
+int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees, const CBlockIndex* pindexPrev, int64_t nCommitted = 0);
 unsigned int ComputeMinWork(unsigned int nBase, int64_t nTime);
 unsigned int ComputeMinStake(unsigned int nBase, int64_t nTime, unsigned int nBlockTime);
 int GetNumBlocksOfPeers();

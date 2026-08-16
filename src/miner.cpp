@@ -1229,7 +1229,7 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         int nRewardHeight = nHeight;
         if (nHeight < FORK_HEIGHT_TIGHTER_DRIFT && nHeight > 0)
             nRewardHeight = nHeight - 1;
-        int64_t blockValue = GetProofOfWorkReward(nRewardHeight, nAllowedFees);
+        int64_t blockValue = GetProofOfWorkReward(nRewardHeight, nAllowedFees, pindexPrev);
         if (!fProofOfStake)
             blockValue = ApplyBlockSizePenalty(blockValue, *pblock, pindexPrev);
         if (!MoneyRange(blockValue))

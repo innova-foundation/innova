@@ -259,6 +259,8 @@ int64_t nLastCoinStakeSearchTime = GetAdjustedTime();
 int nCoinbaseMaturity = 65; //75 on Mainnet I n n o v a
 CBlockIndex* pindexGenesisBlock = NULL;
 int nRegtestBoundaryBHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
+int nRegtestSupplyCapHeight = -1;       // -1: follow the DAG fork like every other network
+int64_t nRegtestSupplyCapAmount = 0;    // 0: no override, cap is MAX_MONEY
 int nRegtestIV5FeeNoteHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
 int nRegtestIV5NoteVoteHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
 bool fRegtestShieldedVNextRehearsal = false;
@@ -4861,8 +4863,35 @@ bool ValidateAndRecoverDAGActiveSetPersistence(CTxDB& txdb,
     return true;
 }
 
+// Issuance headroom under the supply cap for the block extending pindexPrev. Reads only
+// pindexPrev->nMoneySupply, a fold over the block's ancestors, so it is deterministic.
+int64_t GetRemainingIssuance(const CBlockIndex* pindexPrev, int64_t nCommitted)
+{
+    // Height of the block being paid, taken from its own parent rather than the tip.
+    const int nHeight = pindexPrev ? pindexPrev->nHeight + 1 : 0;
+    if (!IsSupplyCapActiveAtHeight(nHeight))
+        return std::numeric_limits<int64_t>::max();
+
+    const int64_t nCap = GetSupplyCapAmount();
+    const int64_t nSupply = pindexPrev ? pindexPrev->nMoneySupply : 0;
+    if (nSupply >= nCap)
+        return 0;
+    int64_t nRemaining = nCap - nSupply;
+    if (nCommitted > 0)
+        nRemaining = (nCommitted >= nRemaining) ? 0 : nRemaining - nCommitted;
+    return nRemaining;
+}
+
+int64_t ClampSubsidyToSupplyCap(int64_t nSubsidy, const CBlockIndex* pindexPrev, int64_t nCommitted)
+{
+    if (nSubsidy <= 0)
+        return nSubsidy;
+    const int64_t nRemaining = GetRemainingIssuance(pindexPrev, nCommitted);
+    return (nSubsidy > nRemaining) ? nRemaining : nSubsidy;
+}
+
 // Proof of Work miner's coin base reward
-int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
+int64_t GetProofOfWorkReward(int nHeight, int64_t nFees, const CBlockIndex* pindexPrev, int64_t nCommitted)
 {
   int64_t nSubsidy = 1 * COIN;
 
@@ -4874,6 +4903,8 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
            nSubsidy = 0;  // Genesis block has no spendable reward
        else
            nSubsidy = 50 * COIN;  // 50 INN per block
+
+       nSubsidy = ClampSubsidyToSupplyCap(nSubsidy, pindexPrev, nCommitted);
 
        if (fDebug && GetBoolArg("-printcreation"))
            printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
@@ -4890,6 +4921,8 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
            nSubsidy = 0;
      else if (nHeight > 10000)
           nSubsidy = 10000; // PoW Reward 0.0001
+
+       nSubsidy = ClampSubsidyToSupplyCap(nSubsidy, pindexPrev, nCommitted);
 
        if (fDebug && GetBoolArg("-printcreation"))
            printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
@@ -5038,6 +5071,10 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
     if (nHeight >= FORK_HEIGHT_DAG)
         nSubsidy = nSubsidy * (int64_t)GetTargetSpacingForHeight(nHeight) / PRE_DAG_TARGET_SPACING;
 
+    // Total-supply cap. Applied last, so it clamps what the schedule actually
+    // pays rather than a pre-divisor figure, and only ever reduces the subsidy.
+    nSubsidy = ClampSubsidyToSupplyCap(nSubsidy, pindexPrev, nCommitted);
+
     if (fDebug && GetBoolArg("-printcreation"))
       printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
 
@@ -5048,15 +5085,14 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
 const int YEARLY_BLOCKCOUNT = 2103792; // Amount of Blocks per year
 
 // Proof of Stake miner's coin stake reward based on coin age spent (coin-days)
-int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees)
+int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees, const CBlockIndex* pindexPrev, int64_t nCommitted)
 {
-    // CON-AUDIT-2: Guard pindexBest NULL, use nBestHeight for reward calculation
-    int nHeight = 0;
-    {
-        LOCK(cs_main);
-        if (pindexBest)
-            nHeight = pindexBest->nHeight;
-    }
+    // Height of the block being paid, from its own parent, never the node's tip.
+    const int nHeight = pindexPrev ? pindexPrev->nHeight + 1 : 0;
+
+    // Unreachable: YEARLY_BLOCKCOUNT * 9000 == 18,934,128,000, and nHeight is an int.
+    // Retained because it states the intended shape -- past the cutoff, fees only --
+    // which is what the supply cap below actually delivers.
     if ((int64_t)nHeight > (int64_t)YEARLY_BLOCKCOUNT * 9000) // It's Over 9000!! [years] - Vegeta
         return nFees;
 
@@ -5065,6 +5101,11 @@ int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees)
 
     int64_t nSubsidy;
     nSubsidy = nCoinAge / 365 * nRewardCoinYear + nCoinAge % 365 * nRewardCoinYear / 365;
+
+    // Total-supply cap. Coin-age carries no height bound, so this is the only
+    // thing that ever stops the stake subsidy. Fees are added after the clamp and
+    // keep paying at and past the cap.
+    nSubsidy = ClampSubsidyToSupplyCap(nSubsidy, pindexPrev, nCommitted);
 
     if (fDebug && GetBoolArg("-printcreation"))
         printf("GetProofOfStakeReward(): create=%s nCoinAge=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nCoinAge);
@@ -8342,7 +8383,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                                       nIV5FeeSum, nFees));
             nAllowedFees -= nIV5FeeSum;
         }
-        int64_t nReward = GetProofOfWorkReward(nRewardHeight, nAllowedFees);
+        int64_t nReward = GetProofOfWorkReward(nRewardHeight, nAllowedFees, pindex->pprev);
 
         // Adaptive block size penalty (post-DAG): reduce allowed reward for oversized blocks
         nReward = ApplyBlockSizePenalty(nReward, *this, pindex->pprev);
@@ -8431,7 +8472,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 return DoS(100, error("ConnectBlock() : NullStake V2 stake FCMP proof invalid"));
 
             uint64_t nCoinAge = 1;  // Minimum coin-day for V2
-            int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees), *this, pindex->pprev);
+            int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees, pindex->pprev), *this, pindex->pprev);
             if (nStakeReward > nCalculatedStakeReward)
                 return DoS(100, error("ConnectBlock() : NullStake V2 coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
         }
@@ -8555,7 +8596,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
 
             // V3 reward: same conservative approach as V2
             uint64_t nCoinAge = 1;
-            int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees), *this, pindex->pprev);
+            int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees, pindex->pprev), *this, pindex->pprev);
             if (nStakeReward > nCalculatedStakeReward)
                 return DoS(100, error("ConnectBlock() : NullStake V3 coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
         }
@@ -8643,7 +8684,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 return DoS(100, error("ConnectBlock() : NullStake stake FCMP proof invalid"));
 
             uint64_t nCoinAge = nWeight > 0 ? (uint64_t)nWeight : 1;
-            int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees), *this, pindex->pprev);
+            int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees, pindex->pprev), *this, pindex->pprev);
             if (nStakeReward > nCalculatedStakeReward)
                 return DoS(100, error("ConnectBlock() : NullStake coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
         }
@@ -8654,7 +8695,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 return TransientFailure(error("ConnectBlock() : %s unable to get coin age for coinstake",
                                               vtx[1].GetHash().ToString().substr(0,10).c_str()));
 
-            int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees), *this, pindex->pprev);
+            int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees, pindex->pprev), *this, pindex->pprev);
 
             if (nStakeReward > nCalculatedStakeReward)
                 return DoS(100, error("ConnectBlock() : coinstake pays too much(actual=%" PRId64" vs calculated=%" PRId64")", nStakeReward, nCalculatedStakeReward));
@@ -8873,7 +8914,7 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 if (!vtx[1].GetCoinAge(txdb, nCoinAge))
                     return TransientFailure(error("CheckBlock-POS : %s unable to get coin age for coinstake, Can't Calculate Collateralnode Reward\n",
                                                   vtx[1].GetHash().ToString().substr(0,10).c_str()));
-                int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees), *this, pindex->pprev);
+                int64_t nCalculatedStakeReward = ApplyBlockSizePenalty(GetProofOfStakeReward(nCoinAge, nFees, pindex->pprev), *this, pindex->pprev);
 
                 // Calculate expected collateralnodePaymentAmmount
                 int64_t collateralnodePaymentAmount = GetCollateralnodePayment(pindex->nHeight, nCalculatedStakeReward);
