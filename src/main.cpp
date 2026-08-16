@@ -8409,6 +8409,9 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         if (nIssuance > nBlockValue)
             nIssuance = nBlockValue;
 
+        // PaidToBlock() is Producer() + Collateralnode(), which is the same number
+        // whichever collateralnode mode is asked for -- the mode only decides how
+        // that number is divided, and this check is on the total.
         const CBlockSubsidySplit subsidySplit =
             CBlockSubsidySplit::ForBlock(pindex->nHeight, nIssuance, nBlockValue - nIssuance,
                                          CollateralnodeShare::Paid);

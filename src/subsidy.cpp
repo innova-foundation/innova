@@ -40,6 +40,11 @@ int64_t GetFinalityEpochBudget(int nSettlementEpoch, int nHeightHint)
     const int nAccrualBegin = GetEpochBoundaryHeight(nSettlementEpoch - 1, nHeightHint);
     if (nAccrualBegin < 0 || nAccrualBegin >= nAccrualEnd)
         return 0;
+    // Adjacent boundaries are one epoch apart by construction. Fail closed on
+    // anything wider rather than walk a range a corrupted epoch number chose:
+    // a zero budget settles nothing, which is a state the rule already handles.
+    if (nAccrualEnd - nAccrualBegin > FINALITY_EPOCH_INTERVAL_POST_DAG)
+        return 0;
 
     // A closed sum over a height range. No block bodies, no index, no disk: the
     // per-block reserve is a function of height alone, so producer and validator
