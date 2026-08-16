@@ -16,7 +16,10 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from v5_release_evidence_schema import (
     MAINNET_ACTIVATION_BOUNDARY_B_BASE,
+    MAINNET_ACTIVATION_DAG_GATE_BASE,
     MAINNET_ACTIVATION_FIRST_GATE_BASE,
+    MAINNET_ACTIVATION_SHIFT_STEP,
+    MAINNET_PRE_DAG_EPOCH_INTERVAL,
     MAINNET_ACTIVATION_MAX_LEAD_BLOCKS,
     MAINNET_ACTIVATION_MIN_LEAD_BLOCKS,
     MAINNET_ACTIVATION_SHIFT_GRANULARITY,
@@ -452,6 +455,15 @@ def validate_mainnet_activation_ladder(
     if (first_gate != MAINNET_ACTIVATION_FIRST_GATE_BASE + shift
             or boundary_b_slot != MAINNET_ACTIVATION_BOUNDARY_B_BASE + shift):
         raise PolicyError("%s mainnet activation gates are not the fixed bases plus the shift" % field_prefix)
+    # The DAG gate has to be a pre-DAG epoch boundary or the fork block is not
+    # votable and the first post-DAG epoch starts late.
+    dag_gate = MAINNET_ACTIVATION_DAG_GATE_BASE + shift
+    if dag_gate % MAINNET_PRE_DAG_EPOCH_INTERVAL != 0:
+        raise PolicyError(
+            "%s mainnet DAG gate %d is not a multiple of the pre-DAG epoch interval %d; "
+            "only shifts that are multiples of %d satisfy both this and the %d granularity" %
+            (field_prefix, dag_gate, MAINNET_PRE_DAG_EPOCH_INTERVAL,
+             MAINNET_ACTIVATION_SHIFT_STEP, granularity))
 
     actual_lead = first_gate - trusted_tip
     if actual_lead < MAINNET_ACTIVATION_MIN_LEAD_BLOCKS:

@@ -13,10 +13,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "test"))
 
 from v5_release_evidence_schema import (  # noqa: E402
     MAINNET_ACTIVATION_BOUNDARY_B_BASE as BOUNDARY_B_BASE,
+    MAINNET_ACTIVATION_DAG_GATE_BASE as DAG_BASE,
     MAINNET_ACTIVATION_FIRST_GATE_BASE as BASE,
     MAINNET_ACTIVATION_MAX_LEAD_BLOCKS as MAXIMUM_LEAD,
     MAINNET_ACTIVATION_MIN_LEAD_BLOCKS as MINIMUM_LEAD,
     MAINNET_ACTIVATION_SHIFT_GRANULARITY as SHIFT_GRANULARITY,
+    MAINNET_ACTIVATION_SHIFT_STEP as SHIFT_STEP,
+    MAINNET_PRE_DAG_EPOCH_INTERVAL as EPOCH_INTERVAL,
 )
 
 
@@ -31,16 +34,20 @@ def activation_shift(trusted_tip: int) -> int:
     release policy accepts any shift whose first gate leads the trusted tip by
     between MINIMUM_LEAD and MAXIMUM_LEAD blocks, so a tag stays valid while the
     tip advances instead of expiring in about two days.
+
+    Steps by SHIFT_STEP, not SHIFT_GRANULARITY: the DAG gate must also land on a
+    pre-DAG epoch boundary, and only multiples of lcm(granularity, epoch) keep
+    both true.
     """
     if trusted_tip < 0:
         raise ValueError("trusted tip must be non-negative")
-    return ceil_to(max(0, trusted_tip + MINIMUM_LEAD - BASE), SHIFT_GRANULARITY)
+    return ceil_to(max(0, trusted_tip + MINIMUM_LEAD - BASE), SHIFT_STEP)
 
 
 def lead_bounds(trusted_tip: int) -> tuple:
     """Inclusive (min, max) shift the policy accepts for this tip."""
     lo = activation_shift(trusted_tip)
-    hi = (max(0, trusted_tip + MAXIMUM_LEAD - BASE) // SHIFT_GRANULARITY) * SHIFT_GRANULARITY
+    hi = (max(0, trusted_tip + MAXIMUM_LEAD - BASE) // SHIFT_STEP) * SHIFT_STEP
     return lo, max(lo, hi)
 
 
@@ -51,6 +58,10 @@ def result(trusted_tip: int, trusted_hash: str, shift_override: Optional[int] = 
     shift = activation_shift(trusted_tip) if shift_override is None else shift_override
     if shift < 0 or shift % SHIFT_GRANULARITY != 0:
         raise ValueError("shift must be a non-negative multiple of %d" % SHIFT_GRANULARITY)
+    if (DAG_BASE + shift) % EPOCH_INTERVAL != 0:
+        raise ValueError(
+            "DAG gate %d is not a multiple of the pre-DAG epoch interval %d; use a "
+            "shift that is a multiple of %d" % (DAG_BASE + shift, EPOCH_INTERVAL, SHIFT_STEP))
     lead = BASE + shift - trusted_tip
     if not MINIMUM_LEAD <= lead <= MAXIMUM_LEAD:
         raise ValueError(
@@ -64,40 +75,46 @@ def result(trusted_tip: int, trusted_hash: str, shift_override: Optional[int] = 
         "minimum_lead_blocks": MINIMUM_LEAD,
         "maximum_lead_blocks": MAXIMUM_LEAD,
         "shift_granularity": SHIFT_GRANULARITY,
+        "shift_step": SHIFT_STEP,
         "activation_shift": shift,
         "activation_shift_min": lo,
         "activation_shift_max": hi,
         "lead_blocks": lead,
         "first_v5_gate": BASE + shift,
+        "dag_gate": DAG_BASE + shift,
         "boundary_b_slot": BOUNDARY_B_BASE + shift,
     }
 
 
 def selftest() -> None:
-    # The floor is a minimum, so the smallest valid shift is the ceil of it.
+    # The floor is a minimum, and the step is lcm(granularity, epoch interval).
+    assert SHIFT_STEP % SHIFT_GRANULARITY == 0
+    assert (DAG_BASE + SHIFT_STEP) % EPOCH_INTERVAL == 0
     assert activation_shift(7_749_999) == 0
-    assert activation_shift(7_750_000) == 0
-    assert activation_shift(7_750_001) == 10_000
-    assert activation_shift(7_759_999) == 10_000
-    assert activation_shift(7_760_001) == 20_000
+    assert activation_shift(7_750_001) == 30_000
+    assert activation_shift(7_780_000) == 30_000
+    assert activation_shift(7_780_001) == 60_000
 
     # A band, not one required answer: every shift in it must be accepted.
-    tip = 7_917_192
+    tip = 7_917_298
     lo, hi = lead_bounds(tip)
-    assert lo == 170_000, lo
+    assert lo == 180_000, lo
     assert hi == 360_000, hi
-    for shift in range(lo, hi + 1, SHIFT_GRANULARITY):
+    for shift in range(lo, hi + 1, SHIFT_STEP):
         payload = result(tip, "ab" * 32, shift_override=shift)
         assert MINIMUM_LEAD <= payload["lead_blocks"] <= MAXIMUM_LEAD
+        assert payload["dag_gate"] % EPOCH_INTERVAL == 0
 
     # The shipped ladder is inside the band for the tip it was set against.
-    shipped = result(tip, "ab" * 32, shift_override=190_000)
-    assert shipped["first_v5_gate"] == 7_990_000
-    assert shipped["boundary_b_slot"] == 8_250_000
-    assert shipped["lead_blocks"] == 72_808
+    shipped = result(tip, "ab" * 32, shift_override=180_000)
+    assert shipped["first_v5_gate"] == 7_980_000
+    assert shipped["dag_gate"] == 8_130_000
+    assert shipped["boundary_b_slot"] == 8_240_000
+    assert shipped["lead_blocks"] == 62_702
 
-    # Out-of-band shifts are rejected at both ends, including the old 600,000.
-    for bad in (0, 160_000, 370_000, 600_000):
+    # Rejected: too short, too long, 600,000, and a shift inside the lead band
+    # that puts the DAG gate off an epoch boundary.
+    for bad in (0, 150_000, 370_000, 600_000, 190_000):
         try:
             result(tip, "ab" * 32, shift_override=bad)
         except ValueError:

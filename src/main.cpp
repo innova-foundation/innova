@@ -5002,27 +5002,27 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
     // taking the collateralnode share with it.
     //
     // Derived from FORK_HEIGHT_DAG = ShiftMainnetV5Activation(7950000) =
-    // 8,140,000. Moving MAINNET_V5_ACTIVATION_SHIFT moves the fork, so every
+    // 8,130,000. Moving MAINNET_V5_ACTIVATION_SHIFT moves the fork, so every
     // boundary here must be recomputed from the line above -- including which
     // rungs are stretched at all: a rung whose 15s height falls below the fork
     // belongs above this comment, unstretched. Terminal supply is invariant
     // under a correct re-derivation; it moves only if these literals are left
     // behind, which pays whole tiers on the wrong side of the divisor.
-    else if (nHeight <= 9790000)  // 0.2 Coin PoW Reward to release 50,000 INN (was <= 8,250,000)
+    else if (nHeight <= 9930000)  // 0.2 Coin PoW Reward to release 50,000 INN (was <= 8,250,000)
       nSubsidy = 0.2 * COIN;
-    else if (nHeight <= 13540000) // 0.15 Coin PoW Reward to release 37,500 INN (was <= 8,500,000)
+    else if (nHeight <= 13680000) // 0.15 Coin PoW Reward to release 37,500 INN (was <= 8,500,000)
       nSubsidy = 0.15 * COIN;
-    else if (nHeight <= 17290000) // 0.1 Coin PoW Reward to release 1 CollateralNode (was <= 8,750,000)
+    else if (nHeight <= 17430000) // 0.1 Coin PoW Reward to release 1 CollateralNode (was <= 8,750,000)
       nSubsidy = 0.1 * COIN;
-    else if (nHeight <= 21040000) // 0.05 Coin PoW Reward to release 12,500 INN (was <= 9,000,000)
+    else if (nHeight <= 21180000) // 0.05 Coin PoW Reward to release 12,500 INN (was <= 9,000,000)
       nSubsidy = 0.05 * COIN;
-    else if (nHeight <= 24790000) // 0.01 Coin PoW Reward to release 2,500 INN (was <= 9,250,000)
+    else if (nHeight <= 24930000) // 0.01 Coin PoW Reward to release 2,500 INN (was <= 9,250,000)
       nSubsidy = 0.01 * COIN;
-    else if (nHeight <= 28540000) // 0.05 Coin PoW Reward to release 12,500 INN (was <= 9,500,000)
+    else if (nHeight <= 28680000) // 0.05 Coin PoW Reward to release 12,500 INN (was <= 9,500,000)
       nSubsidy = 0.05 * COIN;
-    else if (nHeight <= 32290000) // 0.1 Coin PoW Reward to release 1 CollateralNode (was <= 9,750,000)
+    else if (nHeight <= 32430000) // 0.1 Coin PoW Reward to release 1 CollateralNode (was <= 9,750,000)
       nSubsidy = 0.1 * COIN;
-    else if (nHeight <= 36040000) // 0.2 Coin PoW Reward to release 50,000 INN (was <= 10,000,000)
+    else if (nHeight <= 36180000) // 0.2 Coin PoW Reward to release 50,000 INN (was <= 10,000,000)
       nSubsidy = 0.2 * COIN;
     else // 0.0001 Coin PoW Reward to release ~200 INN per year
       nSubsidy = 0.0001 * COIN; // Final PoW Reward 0.0001 INN (was @ block 10 mln)
