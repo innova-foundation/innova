@@ -50,7 +50,7 @@ source. Every gate returns `ShiftMainnetV5Activation(base)`, which adds
 `MAINNET_V5_ACTIVATION_SHIFT` (`src/v5activation.h`) to the base value, so the
 whole ladder moves as a unit and the gaps between gates cannot drift. The
 **Fork Height** column below is the *base*; the effective mainnet height is
-base + shift. At the current shift of 600,000 the first gate is 8,400,000, and
+base + shift. At the current shift of 180,000 the first gate is 7,980,000, and
 no gate in the v5 ladder has been reached. The release preflight recomputes the
 shift against a fresh trusted mainnet tip, so these effective heights change
 when it does.
@@ -116,7 +116,7 @@ The base heights are retained for reference but are not in effect: versions
 | **Title** | Cold Staking via Pay-to-Cold-Staking Scripts |
 | **Category** | Consensus |
 | **Status** | Scheduled |
-| **Fork Height** | base 7,800,000; effective = base + `MAINNET_V5_ACTIVATION_SHIFT` (8,400,000 at the current shift) |
+| **Fork Height** | base 7,800,000; effective = base + `MAINNET_V5_ACTIVATION_SHIFT` (7,980,000 at the current shift) |
 | **Author** | 0xcircuitbreaker |
 
 **Abstract**: Introduces Pay-to-Cold-Staking (P2CS) scripts that separate spending authority from staking authority. A P2CS output has two key hashes: the `staker` key can produce coinstake transactions, while only the `owner` key can create spending transactions. This enables hardware wallet cold staking where the spending key never touches an online machine.

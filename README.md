@@ -164,13 +164,13 @@ Innova Improvement Proposals (IIPs) formalize all protocol innovations. See [IIP
 Nothing in the v5 ladder has activated on mainnet. Mainnet gate heights are not
 literals in the source: every gate returns
 `ShiftMainnetV5Activation(base)`, adding `MAINNET_V5_ACTIVATION_SHIFT`
-(`src/v5activation.h`, currently 600,000) to its base, so the whole ladder moves
+(`src/v5activation.h`, currently 180,000) to its base, so the whole ladder moves
 as a unit. The effective heights below are base + shift for the current shift and
 are re-derived by the release preflight against a fresh mainnet tip.
 
 | IIP | Title | Status | Mainnet activation |
 |-----|-------|--------|--------------------|
-| [IIP-0001](docs/proposals/IIP_INDEX.md#iip-0001-cold-staking-p2cs) | Cold Staking (P2CS) | Scheduled | height 8,400,000 |
+| [IIP-0001](docs/proposals/IIP_INDEX.md#iip-0001-cold-staking-p2cs) | Cold Staking (P2CS) | Scheduled | height 7,980,000 |
 | [IIP-0002](docs/proposals/IIP_INDEX.md#iip-0002-shielded-transactions) | Shielded Transactions (Pedersen + Bulletproofs + Lelantus) | Implemented (inactive) | Boundary B — unset |
 | [IIP-0003](docs/proposals/IIP_INDEX.md#iip-0003-ring-signature-deprecation) | Ring Signature Deprecation | Active | height 0, all networks |
 | [IIP-0004](docs/proposals/IIP_INDEX.md#iip-0004-dynamic-selective-privacy) | Dynamic Selective Privacy (8 modes) | Implemented (inactive) | Boundary B — unset |
