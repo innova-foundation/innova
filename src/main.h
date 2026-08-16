@@ -929,10 +929,10 @@ int64_t ClampSubsidyToSupplyCap(int64_t nSubsidy, const CBlockIndex* pindexPrev,
 // finality reserve is a share of this, not of what a given block paid.
 int64_t GetBlockSubsidySchedule(int nHeight);
 
-// pindexPrev is the parent of the block being paid, and is what the supply
-// clamp reads. Nothing here has a default: a caller that passes the wrong
-// parent, or silently omits the settlement it owes, computes a different
-// subsidy than its peers and splits the chain.
+// pindexPrev is the parent of the block being paid; no defaults, since a wrong parent or
+// omitted settlement computes a different subsidy and splits the chain.
+// Subsidy before fees at or above FORK_HEIGHT_DAG.
+int64_t GetPostDagProofOfWorkSubsidy(int nHeight);
 int64_t GetProofOfWorkReward(int nHeight, int64_t nFees, const CBlockIndex* pindexPrev, int64_t nCommitted);
 int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees, const CBlockIndex* pindexPrev, int64_t nCommitted);
 unsigned int ComputeMinWork(unsigned int nBase, int64_t nTime);

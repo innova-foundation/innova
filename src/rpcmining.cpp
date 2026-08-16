@@ -244,7 +244,7 @@ Value getfinalitystakinginfo(const Array& params, bool fHelp)
     obj.push_back(Pair("eligible_keys", (int)setVoterKeys.size()));
     obj.push_back(Pair("pending_votes", g_finalityTracker.GetPendingVoteCount()));
     obj.push_back(Pair("pending_rewards", FormatMoney(g_finalityTracker.GetPendingRewardTotal())));
-    obj.push_back(Pair("expected_epoch_reward", FormatMoney(GetFinalityVoteReward(nEligibleWeight, GetEpochInterval(nHeight)))));
+    obj.push_back(Pair("expected_epoch_reward", FormatMoney(GetFinalityVoteRewardAtHeight(nEligibleWeight, nHeight))));
     obj.push_back(Pair("finality_tier", MiningFinalityTierName(g_finalityTracker.GetFinalityTier())));
     obj.push_back(Pair("consecutive_hard_epochs", g_finalityTracker.GetConsecutiveHardEpochCount()));
     obj.push_back(Pair("finalized_epoch", GetEpochForHeight(g_finalityTracker.GetFinalizedHeight())));

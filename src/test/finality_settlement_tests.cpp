@@ -36,7 +36,7 @@ Voter MakeVoter(int nEpoch, int nHeightBoundary, int64_t nWeight = VOTE_WEIGHT)
     v.vote.nEpoch = nEpoch;
     v.vote.nHeight = nHeightBoundary;
     v.vote.nVoteWeight = nWeight;
-    v.vote.nReward = GetFinalityVoteReward(nWeight, GetEpochInterval(nHeightBoundary));
+    v.vote.nReward = GetFinalityVoteRewardAtHeight(nWeight, nHeightBoundary);
     v.vote.vchPubKey = std::vector<unsigned char>(pubkey.begin(), pubkey.end());
 
     CHashWriter nf(SER_GETHASH, 0);

@@ -1378,15 +1378,16 @@ BOOST_AUTO_TEST_CASE(note_vote_reward_proof_pins_the_reward_to_the_weight)
 
     const CNoteVoteShare share = MakeShare(config, nEpoch, nAmount, mask, 0, rewardBlind);
     const CNoteFinalityVote probe = MakeVote(share, uint256(0x5001), cTilde, 0x91);
-    // The interval is a function of the vote's own height and of nothing it carries.
-    const int nInterval = GetEpochInterval(probe.nHeight);
-    const int64_t nReward = GetFinalityVoteReward(nAmount, nInterval);
+    // The reward constants are a function of the vote's own height and of nothing it carries.
+    const int nVoteHeight = probe.nHeight;
+    const int nInterval = GetFinalityRewardUnits(nVoteHeight);
+    const int64_t nReward = GetFinalityVoteRewardAtHeight(nAmount, nVoteHeight);
     BOOST_REQUIRE(nReward > 0);
 
     CNoteVoteRewardProof proof;
     PrivacyVNextDigest rewardPoint = ZeroDigest();
     std::string strError;
-    BOOST_REQUIRE_MESSAGE(BuildNoteVoteRewardProof(nAmount, mask, rewardBlind, nInterval,
+    BOOST_REQUIRE_MESSAGE(BuildNoteVoteRewardProof(nAmount, mask, rewardBlind, nVoteHeight,
                                                    proof, rewardPoint, &strError),
                           strError);
     BOOST_CHECK(rewardPoint == CommitPoint(Ed25519ScalarFromInt64(nReward), rewardBlind));
@@ -1487,12 +1488,16 @@ BOOST_AUTO_TEST_CASE(note_vote_reward_proof_pins_the_reward_to_the_weight)
         BOOST_CHECK(!CheckNoteVoteRewardProof(renamed, shuffled, &strError));
     }
 
-    // The interval is not the prover's to name. A proof built at a longer interval pays
-    // more, and the verifier reads the interval from the vote's height instead.
+    // The interval is not the prover's to name. A proof built at a height whose reward
+    // units differ commits a different reward, and the verifier derives the units from
+    // the vote's own height instead of from anything the proof was built at.
     {
+        const int nOtherHeight = GetForkHeightDAG() - 1;   // pre-DAG units, 60 not 300
+        BOOST_REQUIRE_NE(GetFinalityRewardUnits(nOtherHeight),
+                         GetFinalityRewardUnits(nVoteHeight));
         CNoteVoteRewardProof longer;
         PrivacyVNextDigest longerReward = ZeroDigest();
-        BOOST_REQUIRE(BuildNoteVoteRewardProof(nAmount, mask, rewardBlind, nInterval * 5,
+        BOOST_REQUIRE(BuildNoteVoteRewardProof(nAmount, mask, rewardBlind, nOtherHeight,
                                                longer, longerReward, &strError));
         BOOST_CHECK(longerReward != rewardPoint);
         CNoteFinalityVote greedy = vote;
@@ -1511,9 +1516,9 @@ BOOST_AUTO_TEST_CASE(note_vote_reward_proof_pins_the_reward_to_the_weight)
         CNoteVoteRewardProof dustProof;
         PrivacyVNextDigest dustReward = ZeroDigest();
         BOOST_REQUIRE_MESSAGE(BuildNoteVoteRewardProof(nDust, dustMask, dustBlind,
-                                                       nInterval, dustProof, dustReward,
+                                                       nVoteHeight, dustProof, dustReward,
                                                        &strError), strError);
-        const int64_t nDustReward = GetFinalityVoteReward(nDust, nInterval);
+        const int64_t nDustReward = GetFinalityVoteRewardAtHeight(nDust, nVoteHeight);
         BOOST_CHECK(dustReward ==
                     CommitPoint(Ed25519ScalarFromInt64(nDustReward), dustBlind));
         CNoteFinalityVote dustVote =
@@ -1995,7 +2000,7 @@ BOOST_AUTO_TEST_CASE(a_produced_note_vote_shares_the_formula_reward)
                                         &strError), strError);
 
     const int64_t nExpectedReward =
-        GetFinalityVoteReward(ctx.nAmount, GetEpochInterval(ctx.nHeight));
+        GetFinalityVoteRewardAtHeight(ctx.nAmount, ctx.nHeight);
     BOOST_REQUIRE(nExpectedReward > 0);
 
     // L_0 == R, the reward side of the K_0 == C~ rule.
@@ -2066,7 +2071,7 @@ BOOST_AUTO_TEST_CASE(a_reward_the_vote_did_not_commit_is_rejected)
     BOOST_REQUIRE(CheckNoteVote(vote, config.nThresholdM, config.nThresholdN, &strError));
 
     const int64_t nReward =
-        GetFinalityVoteReward(ctx.nAmount, GetEpochInterval(ctx.nHeight));
+        GetFinalityVoteRewardAtHeight(ctx.nAmount, ctx.nHeight);
 
     // A share whose reward polynomial commits some other value. L_0 stops naming R, so
     // the vote is rejected outright. MUTATION: drop the L_0 == R check in CheckNoteVote

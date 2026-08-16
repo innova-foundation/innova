@@ -831,12 +831,12 @@ const int64_t NOTE_REWARD_DAYS_PER_YEAR = 365;
  *  Every product below is bounded by MAX_MONEY * nEpochInterval, so the int64 arithmetic
  *  is exact for any weight and interval consensus can present; the caller range-checks
  *  both before calling. */
-bool DecomposeNoteVoteReward(int64_t nAmount, int nEpochInterval,
+bool DecomposeNoteVoteReward(int64_t nAmount, int nEpochInterval, int64_t nRatePerCoinYear,
                              int64_t& nQuotientOut, int64_t& nCoinRemainderOut,
                              int64_t& nCoinAgeOut, int64_t& nDayRemainderOut,
                              int64_t& nRewardOut, int64_t& nYearRemainderOut)
 {
-    if (nAmount < 0 || nAmount > MAX_MONEY || nEpochInterval <= 0)
+    if (nAmount < 0 || nAmount > MAX_MONEY || nEpochInterval <= 0 || nRatePerCoinYear <= 0)
         return false;
     if (nAmount != 0 && nEpochInterval > std::numeric_limits<int64_t>::max() / nAmount)
         return false;
@@ -848,9 +848,9 @@ bool DecomposeNoteVoteReward(int64_t nAmount, int nEpochInterval,
     nDayRemainderOut = nQuotientOut % NOTE_REWARD_SECONDS_PER_DAY;
 
     if (nCoinAgeOut != 0 &&
-        COIN_YEAR_REWARD > std::numeric_limits<int64_t>::max() / nCoinAgeOut)
+        nRatePerCoinYear > std::numeric_limits<int64_t>::max() / nCoinAgeOut)
         return false;
-    const int64_t nRewardProduct = nCoinAgeOut * COIN_YEAR_REWARD;
+    const int64_t nRewardProduct = nCoinAgeOut * nRatePerCoinYear;
     nRewardOut = nRewardProduct / NOTE_REWARD_DAYS_PER_YEAR;
     nYearRemainderOut = nRewardProduct % NOTE_REWARD_DAYS_PER_YEAR;
 
@@ -859,19 +859,23 @@ bool DecomposeNoteVoteReward(int64_t nAmount, int nEpochInterval,
     // this chain schedules, so refuse rather than silently prove a different statement.
     if (nRewardOut > MAX_MONEY)
         return false;
-    return nRewardOut == GetFinalityVoteReward(nAmount, nEpochInterval);
+    return nRewardOut == GetFinalityVoteReward(nAmount, nEpochInterval, nRatePerCoinYear);
 }
 } // namespace
 
 bool DeriveNoteVoteRewardStatementPoints(const PrivacyVNextDigest& cTilde,
                                          const PrivacyVNextDigest& rewardCommitment,
                                          const CNoteVoteRewardProof& proof,
-                                         int nEpochInterval,
+                                         int nHeight,
                                          std::vector<PrivacyVNextDigest>& vPointsOut,
                                          std::string* pstrError)
 {
     vPointsOut.clear();
-    if (nEpochInterval <= 0)
+    // Both constants come from the height, never from anything the vote carries, so a
+    // voter cannot name the pair that pays best and the two sides cannot disagree.
+    const int nEpochInterval = GetFinalityRewardUnits(nHeight);
+    const int64_t nRatePerCoinYear = GetFinalityVoteRate(nHeight);
+    if (nEpochInterval <= 0 || nRatePerCoinYear <= 0)
     {
         Fail(pstrError, "note vote reward statement has no epoch interval");
         return false;
@@ -892,7 +896,7 @@ bool DeriveNoteVoteRewardStatementPoints(const PrivacyVNextDigest& cTilde,
     const uint256 negCoin = Ed25519ScalarNeg(coin);
     const uint256 day = Ed25519ScalarFromInt64(NOTE_REWARD_SECONDS_PER_DAY);
     const uint256 negDay = Ed25519ScalarNeg(day);
-    const uint256 yearReward = Ed25519ScalarFromInt64(COIN_YEAR_REWARD);
+    const uint256 yearReward = Ed25519ScalarFromInt64(nRatePerCoinYear);
     const uint256 negYearReward = Ed25519ScalarNeg(yearReward);
     const uint256 year = Ed25519ScalarFromInt64(NOTE_REWARD_DAYS_PER_YEAR);
     const uint256 negYear = Ed25519ScalarNeg(year);
@@ -957,7 +961,7 @@ bool DeriveNoteVoteRewardStatementPoints(const PrivacyVNextDigest& cTilde,
 bool BuildNoteVoteRewardProof(int64_t nAmount,
                               const uint256& maskTilde,
                               const uint256& rewardBlind,
-                              int nEpochInterval,
+                              int nHeight,
                               CNoteVoteRewardProof& proofOut,
                               PrivacyVNextDigest& rewardCommitmentOut,
                               std::string* pstrError)
@@ -965,9 +969,12 @@ bool BuildNoteVoteRewardProof(int64_t nAmount,
     proofOut = CNoteVoteRewardProof();
     rewardCommitmentOut = ZeroDigest();
 
+    const int nEpochInterval = GetFinalityRewardUnits(nHeight);
+    const int64_t nRatePerCoinYear = GetFinalityVoteRate(nHeight);
+
     int64_t nQuotient = 0, nCoinRemainder = 0, nCoinAge = 0;
     int64_t nDayRemainder = 0, nReward = 0, nYearRemainder = 0;
-    if (!DecomposeNoteVoteReward(nAmount, nEpochInterval, nQuotient, nCoinRemainder,
+    if (!DecomposeNoteVoteReward(nAmount, nEpochInterval, nRatePerCoinYear, nQuotient, nCoinRemainder,
                                  nCoinAge, nDayRemainder, nReward, nYearRemainder))
     {
         Fail(pstrError, "note vote reward could not be decomposed for its weight");
@@ -1002,7 +1009,7 @@ bool BuildNoteVoteRewardProof(int64_t nAmount,
     const uint256 interval = Ed25519ScalarFromInt64((int64_t)nEpochInterval);
     const uint256 coin = Ed25519ScalarFromInt64(COIN);
     const uint256 day = Ed25519ScalarFromInt64(NOTE_REWARD_SECONDS_PER_DAY);
-    const uint256 yearReward = Ed25519ScalarFromInt64(COIN_YEAR_REWARD);
+    const uint256 yearReward = Ed25519ScalarFromInt64(nRatePerCoinYear);
     const uint256 year = Ed25519ScalarFromInt64(NOTE_REWARD_DAYS_PER_YEAR);
 
     const uint256 coinRemainderBlind =
@@ -1043,7 +1050,7 @@ bool BuildNoteVoteRewardProof(int64_t nAmount,
     if (fOk)
         fOk = CommitScaled(Ed25519ScalarFromInt64(nAmount), maskTilde, cTilde, pstrError) &&
               DeriveNoteVoteRewardStatementPoints(cTilde, rewardCommitmentOut, proofOut,
-                                                  nEpochInterval, vPoints, pstrError);
+                                                  nHeight, vPoints, pstrError);
 
     for (size_t i = 0; fOk && i < vPoints.size(); i++)
     {
@@ -1124,12 +1131,10 @@ bool CheckNoteVoteRewardProof(const CNoteFinalityVote& vote,
         return false;
     }
 
-    // The interval is the one the vote's own epoch-boundary height selects. Reading it
-    // from anything the vote carries would let a voter name the interval that pays best.
-    const int nEpochInterval = GetEpochInterval(vote.nHeight);
+    // The reward constants are the ones the vote's own epoch-boundary height selects.
     std::vector<PrivacyVNextDigest> vPoints;
     if (!DeriveNoteVoteRewardStatementPoints(cTilde, rewardCommitment, proof,
-                                             nEpochInterval, vPoints, pstrError))
+                                             vote.nHeight, vPoints, pstrError))
         return false;
     if (vPoints.size() != proof.vProofs.size())
     {
@@ -1261,8 +1266,7 @@ bool BuildNoteFinalityVote(const CNoteVoteBuildContext& ctx,
         Fail(pstrError, "note vote weight is outside the range a vote may carry");
         return false;
     }
-    const int nEpochInterval = GetEpochInterval(ctx.nHeight);
-    const int64_t nReward = GetFinalityVoteReward(ctx.nAmount, nEpochInterval);
+    const int64_t nReward = GetFinalityVoteRewardAtHeight(ctx.nAmount, ctx.nHeight);
     if (nReward < 0 || nReward > MAX_MONEY)
     {
         Fail(pstrError, "note vote reward is outside the range a vote may carry");
@@ -1337,7 +1341,7 @@ bool BuildNoteFinalityVote(const CNoteVoteBuildContext& ctx,
     if (fOk)
     {
         fOk = BuildNoteVoteRewardProof(ctx.nAmount, maskTilde, rewardBlind,
-                                       nEpochInterval, rewardProofOut,
+                                       ctx.nHeight, rewardProofOut,
                                        rewardCommitment, pstrError);
         if (fOk)
         {

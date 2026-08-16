@@ -381,26 +381,27 @@ bool CheckNoteVoteWeightFloorProof(const CNoteFinalityVote& vote,
 /** Rebuild the points the reward statements are over, identically on both sides.
  *
  *  Every point is a linear combination of C~, R, Q and A under public coefficients, so a
- *  prover cannot pick one and a validator cannot accept one from the wire. `nEpochInterval`
- *  is GetEpochInterval of the vote's own epoch-boundary height, never a value the vote
- *  carries. Returns NOTE_VOTE_REWARD_STATEMENT_COUNT points in enum order. */
+ *  prover cannot pick one and a validator cannot accept one from the wire. Both reward
+ *  constants are derived here from `nHeight`, the vote's own epoch-boundary height, never
+ *  from a value the vote carries. Returns NOTE_VOTE_REWARD_STATEMENT_COUNT points in enum
+ *  order. */
 bool DeriveNoteVoteRewardStatementPoints(const PrivacyVNextDigest& cTilde,
                                          const PrivacyVNextDigest& rewardCommitment,
                                          const CNoteVoteRewardProof& proof,
-                                         int nEpochInterval,
+                                         int nHeight,
                                          std::vector<PrivacyVNextDigest>& vPointsOut,
                                          std::string* pstrError = NULL);
 
 /** Build the reward-correctness proof for one vote.
  *
  *  `maskTilde` opens C~ with `nAmount` and `rewardBlind` opens the reward commitment with
- *  GetFinalityVoteReward(nAmount, nEpochInterval); the reward is recomputed here rather
+ *  GetFinalityVoteRewardAtHeight(nAmount, nHeight); the reward is recomputed here rather
  *  than taken from the caller, so a caller that miscomputed it cannot smuggle the wrong
  *  value past its own proof. `rewardCommitmentOut` is the R the vote must publish. */
 bool BuildNoteVoteRewardProof(int64_t nAmount,
                               const uint256& maskTilde,
                               const uint256& rewardBlind,
-                              int nEpochInterval,
+                              int nHeight,
                               CNoteVoteRewardProof& proofOut,
                               PrivacyVNextDigest& rewardCommitmentOut,
                               std::string* pstrError = NULL);
