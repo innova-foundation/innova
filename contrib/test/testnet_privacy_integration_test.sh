@@ -20,9 +20,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/testports.sh"
 iv5_ports_init testnet_privacy_integration_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-INNOVAD="$INNOVA_ROOT/src/innovad"
+INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
-TEST_DIR="/tmp/innova_testnet_privacy"
+TEST_DIR="$(iv5_test_dir /tmp/innova_testnet_privacy)"
 NODE1_DIR="$TEST_DIR/node1"
 NODE2_DIR="$TEST_DIR/node2"
 NODE3_DIR="$TEST_DIR/node3"

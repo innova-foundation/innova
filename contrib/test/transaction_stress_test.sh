@@ -19,9 +19,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/testports.sh"
 iv5_ports_init transaction_stress_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-INNOVAD="$INNOVA_ROOT/src/innovad"
+INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
-TEST_DIR="/tmp/innova_tx_stress"
+TEST_DIR="$(iv5_test_dir /tmp/innova_tx_stress)"
 SENDER_DIR="$TEST_DIR/sender"
 RECEIVER_DIR="$TEST_DIR/receiver"
 

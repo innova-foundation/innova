@@ -18,7 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/testports.sh"
 iv5_ports_init innova_stress_test || exit 1
 INNOVA_DIR="${SCRIPT_DIR}/../.."
-INNOVAD="${INNOVA_DIR}/src/innovad"
+INNOVAD="${INNOVAD:-${INNOVA_DIR}/src/innovad}"
 INNOVA_CLI="${INNOVAD}"
 
 NUM_NODES=${NUM_NODES:-3}

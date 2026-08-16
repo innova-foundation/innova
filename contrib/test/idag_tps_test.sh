@@ -16,7 +16,7 @@ iv5_ports_init idag_tps_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
-TEST_DIR="${TEST_DIR:-/tmp/innova_tps}"
+TEST_DIR="${TEST_DIR:-$(iv5_test_dir /tmp/innova_tps)}"
 NUM_NODES="${NUM_NODES:-4}"
 MIN_PEERS="${MIN_PEERS:-3}"
 BASE_PORT="${BASE_PORT:-$(iv5_port 0 29000)}"

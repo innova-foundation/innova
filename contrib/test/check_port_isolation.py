@@ -47,6 +47,17 @@ NOT_A_PORT = re.compile(r'(USER|PASS|WALLET|TIMEOUT|COUNT|WAIT|DIR|ALLOWIP|OFFSE
 BARE_LITERAL = re.compile(r'^"?(?:\$\{[A-Za-z_0-9]+:-)?\d{3,5}\}?"?$')
 # A port literal buried in arithmetic, e.g. idnsport=$((29200 + i)).
 ARITH_LITERAL = re.compile(r'\$\(\(\s*(\d{4,5})\s*\+')
+# A port literal in a URL or -rpcport flag, e.g. http://127.0.0.1:19331/.
+# quick_test bound the allocated port but polled 19331, so it waited 60s for a
+# node that was answering the whole time.
+URL_LITERAL = re.compile(r'(?:127\.0\.0\.1|localhost):(\d{4,5})')
+FLAG_LITERAL = re.compile(r'-(?:rpc)?port=(\d{4,5})')
+# A conf value must not carry quotes: innova.conf takes the value verbatim, so
+# rpcport="19331" is not a number.
+QUOTED_CONF = re.compile(r'^(rpcport|port|idnsport)="')
+# host:port passed as an RPC argument is data the node advertises, not a socket
+# this harness binds.
+IGNORE_URL = re.compile(r'(registerprivate|addnode\s+["\']?\$|collateralnode)')
 
 
 def is_port_var(name):
@@ -131,11 +142,28 @@ def main():
             if BARE_LITERAL.match(rhs):
                 failures.append(f"{rel}: {name} is a hardcoded port ({rhs}); route it through iv5_port")
         for lineno, line in enumerate(text.split("\n"), 1):
+            stripped = line.strip()
             m = ARITH_LITERAL.search(line)
             if m and "iv5_port" not in line:
                 failures.append(
                     f"{rel}:{lineno}: port literal {m.group(1)} in arithmetic "
-                    f"({line.strip()}); derive it from a base that iv5_port set")
+                    f"({stripped}); derive it from a base that iv5_port set")
+            # An address passed *to* an RPC (a collateralnode advertising a
+            # host:port) is data, not a socket this harness binds.
+            m = URL_LITERAL.search(line)
+            if m and not IGNORE_URL.search(line):
+                failures.append(
+                    f"{rel}:{lineno}: hardcoded {m.group(0)} ({stripped}); "
+                    f"the harness would poll a port it did not bind")
+            m = FLAG_LITERAL.search(line)
+            if m:
+                failures.append(
+                    f"{rel}:{lineno}: hardcoded {m.group(0)} ({stripped}); "
+                    f"use the variable iv5_port set")
+            if QUOTED_CONF.match(stripped):
+                failures.append(
+                    f"{rel}:{lineno}: conf value is quoted ({stripped}); "
+                    f"innova.conf takes the value verbatim, so this is not a number")
 
         # 3/4/5. evaluate under no base, and under two different bases
         legacy, err = evaluate(path, assignments, None)

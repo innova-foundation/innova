@@ -18,7 +18,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/testports.sh"
 iv5_ports_init regtest_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-INNOVAD="$INNOVA_ROOT/src/innovad"
+INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 REGTEST_DIR="/tmp/innova_regtest"
 NODE1_DIR="$REGTEST_DIR/node1"

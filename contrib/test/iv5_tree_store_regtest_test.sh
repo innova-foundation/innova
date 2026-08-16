@@ -18,7 +18,7 @@ iv5_ports_init iv5_tree_store_regtest_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
-TEST_DIR="/tmp/innova_iv5_store_test"
+TEST_DIR="$(iv5_test_dir /tmp/innova_iv5_store_test)"
 NODE_DIR="$TEST_DIR/node1"
 
 NODE_PORT="$(iv5_port 0 27645)"

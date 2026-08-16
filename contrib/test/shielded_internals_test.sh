@@ -21,9 +21,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/testports.sh"
 iv5_ports_init shielded_internals_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-INNOVAD="$INNOVA_ROOT/src/innovad"
+INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
-TEST_DIR="/tmp/innova_shielded_internals"
+TEST_DIR="$(iv5_test_dir /tmp/innova_shielded_internals)"
 NODE_DIR="$TEST_DIR/node"
 NODE_PORT="$(iv5_port 0 27530)"
 NODE_RPC="$(iv5_port 1 27531)"

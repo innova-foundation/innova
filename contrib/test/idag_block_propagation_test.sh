@@ -16,7 +16,7 @@ iv5_ports_init idag_block_propagation_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
-TEST_DIR="${TEST_DIR:-/tmp/innova_idag_block_prop}"
+TEST_DIR="${TEST_DIR:-$(iv5_test_dir /tmp/innova_idag_block_prop)}"
 NUM_NODES="${NUM_NODES:-5}"
 BASE_PORT="${BASE_PORT:-$(iv5_port 0 27980)}"
 BASE_RPC="${BASE_RPC:-$(iv5_port 16 28040)}"

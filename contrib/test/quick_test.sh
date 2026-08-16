@@ -12,8 +12,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/testports.sh"
 iv5_ports_init quick_test || exit 1
 INNOVA_DIR="${SCRIPT_DIR}/../.."
-INNOVAD="${INNOVA_DIR}/src/innovad"
-TEST_DIR="/tmp/innova_quick_test"
+INNOVAD="${INNOVAD:-${INNOVA_DIR}/src/innovad}"
+
+QUICK_RPC="$(iv5_port 0 19331)"
+QUICK_PORT="$(iv5_port 1 19339)"
+RPC_URL="http://127.0.0.1:${QUICK_RPC}/"
+
+TEST_DIR="$(iv5_test_dir /tmp/innova_quick_test)"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -45,8 +50,8 @@ server=1
 daemon=0
 rpcuser=test
 rpcpassword=testpass
-rpcport="$(iv5_port 0 19331)"
-port="$(iv5_port 1 19339)"
+rpcport=${QUICK_RPC}
+port=${QUICK_PORT}
 rpcallowip=127.0.0.1
 listen=0
 dnsseed=0
@@ -58,7 +63,7 @@ rpc() {
     curl -s --user test:testpass \
         --data-binary "{\"jsonrpc\":\"1.0\",\"id\":\"test\",\"method\":\"$1\",\"params\":$2}" \
         -H 'content-type:text/plain;' \
-        http://127.0.0.1:19331/ 2>/dev/null | jq -r '.result // .error.message // "null"'
+        "${RPC_URL}" 2>/dev/null | jq -r '.result // .error.message // "null"'
 }
 
 TESTS_PASSED=0
@@ -122,7 +127,7 @@ WAIT=0
 while ! curl -s --user test:testpass \
     --data-binary '{"jsonrpc":"1.0","id":"test","method":"getinfo","params":[]}' \
     -H 'content-type:text/plain;' \
-    http://127.0.0.1:19331/ > /dev/null 2>&1; do
+    "${RPC_URL}" > /dev/null 2>&1; do
     sleep 1
     WAIT=$((WAIT + 1))
     if [[ $WAIT -ge 60 ]]; then
@@ -189,7 +194,7 @@ if [[ -n "$ADDR" && "$ADDR" != "null" ]]; then
     VALID=$(curl -s --user test:testpass \
         --data-binary "{\"jsonrpc\":\"1.0\",\"id\":\"test\",\"method\":\"validateaddress\",\"params\":[\"$ADDR\"]}" \
         -H 'content-type:text/plain;' \
-        http://127.0.0.1:19331/ 2>/dev/null | jq -r '.result.isvalid // "false"')
+        "${RPC_URL}" 2>/dev/null | jq -r '.result.isvalid // "false"')
     if [[ "$VALID" == "true" ]]; then
         log_pass "Address validation works"
         TESTS_PASSED=$((TESTS_PASSED + 1))

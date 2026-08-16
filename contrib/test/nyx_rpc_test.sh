@@ -12,7 +12,7 @@ INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 # Build first
 cd "$INNOVA_ROOT/src"
 make -f makefile.osx INNOVA_SPINNER=0 -j$(sysctl -n hw.ncpu) 2>&1 | tail -1
-INNOVAD="$INNOVA_ROOT/src/innovad"
+INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 if [ ! -f "$INNOVAD" ]; then
     echo "FAIL: innovad not found after build"
@@ -22,7 +22,9 @@ fi
 echo "Binary: $(ls -la $INNOVAD)"
 
 # Setup
-TEST_DIR="/tmp/nyx_rpc_test"
+NYX_RPC="$(iv5_port 0 28888)"
+NYX_PORT="$(iv5_port 1 28889)"
+TEST_DIR="$(iv5_test_dir /tmp/nyx_rpc_test)"
 iv5_kill_daemons "nyx_rpc_test" TERM 2>/dev/null || true
 sleep 2
 rm -rf "$TEST_DIR"
@@ -34,8 +36,8 @@ server=1
 daemon=1
 rpcuser=nyxtest
 rpcpassword=nyxpass
-rpcport="$(iv5_port 0 28888)"
-port="$(iv5_port 1 28889)"
+rpcport=${NYX_RPC}
+port=${NYX_PORT}
 listen=0
 idns=0
 listenonion=0
@@ -46,7 +48,7 @@ nyx=1
 EOF
 
 RPC() {
-    "$INNOVAD" -datadir="$TEST_DIR" -regtest -rpcuser=nyxtest -rpcpassword=nyxpass -rpcport=28888 "$@" 2>&1
+    "$INNOVAD" -datadir="$TEST_DIR" -regtest -rpcuser=nyxtest -rpcpassword=nyxpass -rpcport=$NYX_RPC "$@" 2>&1
 }
 
 cleanup() {

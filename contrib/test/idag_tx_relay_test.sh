@@ -16,7 +16,7 @@ iv5_ports_init idag_tx_relay_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
-TEST_DIR="${TEST_DIR:-/tmp/innova_idag_tx_relay}"
+TEST_DIR="${TEST_DIR:-$(iv5_test_dir /tmp/innova_idag_tx_relay)}"
 BASE_PORT="${BASE_PORT:-$(iv5_port 0 27880)}"
 BASE_RPC="${BASE_RPC:-$(iv5_port 16 27940)}"
 BASE_IDNS="${BASE_IDNS:-$(iv5_port 32 7980)}"

@@ -19,7 +19,7 @@ iv5_ports_init idag_phase3_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
-TEST_DIR="/tmp/innova_dag_p3_test"
+TEST_DIR="$(iv5_test_dir /tmp/innova_dag_p3_test)"
 NODE1_DIR="$TEST_DIR/node1"
 NODE2_DIR="$TEST_DIR/node2"
 

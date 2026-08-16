@@ -19,9 +19,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/testports.sh"
 iv5_ports_init spv_staking_test || exit 1
 INNOVA_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-INNOVAD="$INNOVA_ROOT/src/innovad"
+INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
-TEST_DIR="/tmp/innova_spv_test"
+TEST_DIR="$(iv5_test_dir /tmp/innova_spv_test)"
 FULL_DIR="$TEST_DIR/fullnode"
 SPV_DIR="$TEST_DIR/spvnode"
 VALIDATOR_DIR="$TEST_DIR/validator"
