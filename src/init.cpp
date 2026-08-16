@@ -652,6 +652,8 @@ std::string HelpMessage()
         "  -fullreplayverify      " + _("Force full ECDSA verification of all historic blocks (no checkpoint signature skip)") + "\n" +
         "  -acceptepochstate      " + _("Grandfather pre-marker epoch-state records as deterministic (only if they were written by a deterministic-anchor build; otherwise resync)") + "\n" +
         "  -regtestboundaryb=<n>  " + _("Regtest only: Boundary-B rehearsal activation height") + "\n" +
+        "  -regtestsupplycapheight=<n> " + _("Regtest only: total-supply-cap activation height") + "\n" +
+        "  -regtestsupplycap=<n>  " + _("Regtest only: total-supply cap in satoshi (default MAX_MONEY)") + "\n" +
         "  -regtestiv5feenote=<n>  " + _("Regtest only: IV5 fee-note / unshield-retirement activation height") + "\n" +
         "  -regtestiv5notevote=<n>  " + _("Regtest only: IV5 note-weighted finality voting activation height") + "\n" +
         "  -regtestiv5rehearsal   " + _("Regtest only: treat vNext as consensus ready for state-transition rehearsal (no IV5 verifier)") + "\n" +
@@ -1216,6 +1218,33 @@ bool AppInit2()
         SoftSetBoolArg("-dnsseed", false);
         SoftSetBoolArg("-onionseed", false);
         SoftSetBoolArg("-listen", true);
+    }
+
+    // Supply-cap rehearsal knobs. Regtest only. The height defaults to the DAG
+    // fork like every other network; the amount lets a test chain actually reach
+    // the cap instead of having to mine 18,000,000 INN to cross the boundary.
+    if (mapArgs.count("-regtestsupplycapheight") || mapArgs.count("-regtestsupplycap"))
+    {
+        if (!fRegTest)
+            return InitError(_("-regtestsupplycapheight and -regtestsupplycap require -regtest"));
+        if (mapArgs.count("-regtestsupplycapheight"))
+        {
+            const int64_t nH = GetArg("-regtestsupplycapheight", -1);
+            if (nH < 0 || nH > (int64_t)std::numeric_limits<int>::max())
+                return InitError(_("-regtestsupplycapheight is out of range"));
+            nRegtestSupplyCapHeight = (int)nH;
+        }
+        if (mapArgs.count("-regtestsupplycap"))
+        {
+            const int64_t nAmount = GetArg("-regtestsupplycap", (int64_t)0);
+            // Only ever a lower cap: raising it above MAX_MONEY would put the clamp
+            // outside MoneyRange and make blocks the rest of the code rejects.
+            if (nAmount <= 0 || nAmount > MAX_MONEY)
+                return InitError(_("-regtestsupplycap must be above 0 and at most MAX_MONEY"));
+            nRegtestSupplyCapAmount = nAmount;
+        }
+        printf("Supply-cap rehearsal: height=%d cap=%" PRId64 " (regtest only)\n",
+               FORK_HEIGHT_SUPPLY_CAP, GetSupplyCapAmount());
     }
 
     // Boundary-B rehearsal knobs. Regtest only, and independent by design: a

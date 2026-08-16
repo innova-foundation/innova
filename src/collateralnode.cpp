@@ -5,6 +5,7 @@
 // Distributed under the MIT/X11 software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 #include "collateralnode.h"
+#include "subsidy.h"
 #include "activecollateralnode.h"
 #include "collateral.h"
 #include "txdb.h"
@@ -1194,7 +1195,9 @@ void CCollateralNode::UpdateLastPaidBlock(const CBlockIndex *pindex, int nMaxBlo
             if (block.IsProofOfWork())
             {
                 int64_t nBlockValue = block.vtx[0].GetValueOut();
-                int64_t nExpectedPayment = GetCollateralnodePayment(BlockReading->nHeight, nBlockValue);
+                // Node-local last-paid bookkeeping. nBlockValue is the base as PAID -- the
+                // finality reserve was never minted into it -- so the share applies directly.
+                int64_t nExpectedPayment = CBlockSubsidySplit::CollateralnodeShareOfBase(nBlockValue);
 
                 for (CTxOut txout : block.vtx[0].vout)
                     if(mnpayee == txout.scriptPubKey) {
@@ -1214,7 +1217,9 @@ void CCollateralNode::UpdateLastPaidBlock(const CBlockIndex *pindex, int nMaxBlo
             } else if (block.IsProofOfStake())
             {
                 int64_t nBlockValue = block.vtx[1].GetValueOut();
-                int64_t nExpectedPayment = GetCollateralnodePayment(BlockReading->nHeight, nBlockValue);
+                // Node-local last-paid bookkeeping. nBlockValue is the base as PAID -- the
+                // finality reserve was never minted into it -- so the share applies directly.
+                int64_t nExpectedPayment = CBlockSubsidySplit::CollateralnodeShareOfBase(nBlockValue);
 
                 for (CTxOut txout : block.vtx[1].vout)
                     if(mnpayee == txout.scriptPubKey) {

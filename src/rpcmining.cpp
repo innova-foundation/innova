@@ -11,6 +11,7 @@
 #include "collateralnode.h"
 #include "innovarpc.h"
 #include "finality.h"
+#include "subsidy.h"
 #include "dag.h"
 #include "base58.h"
 
@@ -50,7 +51,10 @@ Value getsubsidy(const Array& params, bool fHelp)
     else
         nShowHeight = nBestHeight+1; // block currently being solved
 
-    return (uint64_t)GetProofOfWorkReward(nShowHeight, 0);
+    // Display only. The supply clamp is evaluated against the current tip, so a
+    // query for a height other than the next one reports that height's schedule
+    // value under today's headroom, not a projection of the headroom.
+    return (uint64_t)GetProofOfWorkReward(nShowHeight, 0, pindexBest, 0);
 }
 
 Value getmininginfo(const Array& params, bool fHelp)
@@ -74,7 +78,7 @@ Value getmininginfo(const Array& params, bool fHelp)
     diff.push_back(Pair("search-interval",      (int)nLastCoinStakeSearchInterval));
     obj.push_back(Pair("difficulty",    diff));
 
-    obj.push_back(Pair("blockvalue",    (uint64_t)GetProofOfWorkReward(nBestHeight+1, 0)));
+    obj.push_back(Pair("blockvalue",    (uint64_t)GetProofOfWorkReward(nBestHeight+1, 0, pindexBest, 0)));
     obj.push_back(Pair("netmhashps",     GetPoWMHashPS()));
 
     obj.push_back(Pair("netstakeweight", GetPoSKernelPS()));
@@ -968,7 +972,10 @@ Value getblocktemplate(const Array& params, bool fHelp)
         std::string strTmplSettleError;
         if (!GatherFinalitySettlementVotes(pindexPrev, nTmplSettlementEpoch,
                                            vTmplSettlementVotes, &strTmplSettleError) ||
-            !BuildFinalitySettlementOutputs(vTmplSettlementVotes, vTmplSettlementLeg,
+            !BuildFinalitySettlementOutputs(vTmplSettlementVotes,
+                                            GetClampedFinalitySettlementBudget(
+                                                pindexPrev, nTmplSettlementEpoch, nTmplHeight),
+                                            vTmplSettlementLeg,
                                             nTmplFinalityReward, &strTmplSettleError))
             throw JSONRPCError(RPC_INTERNAL_ERROR,
                                strprintf("cannot derive finality settlement for epoch %d at height %d: %s",
@@ -982,10 +989,10 @@ Value getblocktemplate(const Array& params, bool fHelp)
 		ExtractDestination(payee, address1);
 		CBitcoinAddress address2(address1);
 		result.push_back(Pair("payee", address2.ToString().c_str()));
-		result.push_back(Pair("payee_amount", (int64_t)GetCollateralnodePayment(pindexPrev->nHeight+1, nTmplCNBase)));
+		result.push_back(Pair("payee_amount", (int64_t)CBlockSubsidySplit::CollateralnodeShareOfBase(nTmplCNBase)));
 	  } else {
         result.push_back(Pair("payee", fTestNet ? "8TestXXXXXXXXXXXXXXXXXXXXXXXXbCvpq" : "INNXXXXXXXXXXXXXXXXXXXXXXXXXZeeDTw"));
-	result.push_back(Pair("payee_amount", (int64_t)GetCollateralnodePayment(pindexPrev->nHeight+1, nTmplCNBase)));
+	result.push_back(Pair("payee_amount", (int64_t)CBlockSubsidySplit::CollateralnodeShareOfBase(nTmplCNBase)));
     }
 
 	  result.push_back(Pair("collateralnode_payments", bCollateralnodePayments));

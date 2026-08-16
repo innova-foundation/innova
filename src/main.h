@@ -334,6 +334,34 @@ inline int GetForkHeightDAG()
 }
 #define FORK_HEIGHT_DAG (GetForkHeightDAG())
 
+// Total-supply cap. From this height the block subsidy is clamped to the headroom
+// left under the cap (zero past it); fees are unaffected. Activates with the DAG fork.
+extern int nRegtestSupplyCapHeight;
+inline int GetForkHeightSupplyCap()
+{
+    extern bool fRegTest;
+    if (fRegTest && nRegtestSupplyCapHeight >= 0)
+        return nRegtestSupplyCapHeight;
+    return GetForkHeightDAG();
+}
+#define FORK_HEIGHT_SUPPLY_CAP (GetForkHeightSupplyCap())
+
+inline bool IsSupplyCapActiveAtHeight(int nHeight)
+{
+    return nHeight >= FORK_HEIGHT_SUPPLY_CAP;
+}
+
+// The supply cap: MAX_MONEY, except -regtestsupplycap may lower it on regtest.
+// The override can only lower the cap, so MoneyRange stays a superset.
+extern int64_t nRegtestSupplyCapAmount;
+inline int64_t GetSupplyCapAmount()
+{
+    extern bool fRegTest;
+    if (fRegTest && nRegtestSupplyCapAmount > 0 && nRegtestSupplyCapAmount < MAX_MONEY)
+        return nRegtestSupplyCapAmount;
+    return MAX_MONEY;
+}
+
 // IDAG privacy root transition: FCMP spends bind to the last finalized
 // epoch curve-tree snapshot instead of the mutable per-block tree.
 inline int GetForkHeightEpochRootFCMP()
@@ -892,8 +920,21 @@ unsigned int GetNextTargetRequired(const CBlockIndex* pindexLast, bool fProofOfS
 unsigned int ComputeRetargetedBits(unsigned int nPrevBits, int64_t nActualSpan,
                                    unsigned int nEffectiveSpacing, int nWindow,
                                    bool fTighterDrift, const CBigNum& bnTargetLimit);
-int64_t GetProofOfWorkReward(int nHeight, int64_t nFees);
-int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees);
+// Issuance headroom under the supply cap, from pindexPrev->nMoneySupply only; INT64_MAX
+// below the fork. nCommitted comes off first, so the subsidy yields.
+int64_t GetRemainingIssuance(const CBlockIndex* pindexPrev, int64_t nCommitted);
+int64_t ClampSubsidyToSupplyCap(int64_t nSubsidy, const CBlockIndex* pindexPrev, int64_t nCommitted);
+
+// The subsidy schedule before any clamp, fee or penalty. See subsidy.h -- the
+// finality reserve is a share of this, not of what a given block paid.
+int64_t GetBlockSubsidySchedule(int nHeight);
+
+// pindexPrev is the parent of the block being paid, and is what the supply
+// clamp reads. Nothing here has a default: a caller that passes the wrong
+// parent, or silently omits the settlement it owes, computes a different
+// subsidy than its peers and splits the chain.
+int64_t GetProofOfWorkReward(int nHeight, int64_t nFees, const CBlockIndex* pindexPrev, int64_t nCommitted);
+int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees, const CBlockIndex* pindexPrev, int64_t nCommitted);
 unsigned int ComputeMinWork(unsigned int nBase, int64_t nTime);
 unsigned int ComputeMinStake(unsigned int nBase, int64_t nTime, unsigned int nBlockTime);
 int GetNumBlocksOfPeers();
@@ -1055,7 +1096,8 @@ int GetIXConfirmations(uint256 nTXHash);
 bool AbortNode(const std::string &msg, const std::string &userMessage="");
 /** Increase a node's misbehavior score. */
 void Misbehaving(NodeId nodeid, int howmuch, const std::string& reason = "");
-int64_t GetCollateralnodePayment(int nHeight, int64_t blockValue);
+// The collateralnode share is reachable only through CBlockSubsidySplit (subsidy.h),
+// so no site can size it against its own base.
 
 
 bool IsStandardTx(const CTransaction& tx, std::string& reason);

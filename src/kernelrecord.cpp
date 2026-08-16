@@ -91,7 +91,8 @@ int64_t KernelRecord::getPoSReward(int nBits, int minutes)
     if( nWeight <  nStakeMinAge)
         return 0;
     uint64_t coinAge = (nValue * nWeight ) / (COIN * nOneDay);
-    PoSReward = GetProofOfStakeReward(coinAge, nWeight); //Needs Fixing
+    // Wallet UI estimate for a stake that would extend the current tip.
+    PoSReward = GetProofOfStakeReward(coinAge, nWeight, pindexBest, 0);
 	//PoSReward = GetProofOfStakeReward(coinAge, nBits, GetAdjustedTime() + minutes * 60);
     return PoSReward;
 }

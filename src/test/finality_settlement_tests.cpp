@@ -5,6 +5,7 @@
 
 #include "../main.h"
 #include "../finality.h"
+#include "../subsidy.h"
 #include "../key.h"
 
 #include <algorithm>
@@ -70,6 +71,14 @@ CBlock MakeSettlementBlock(int64_t nSubsidy, const CScript& scriptMiner,
 int PostDAGEpoch(int nOffsetEpochs)
 {
     return GetEpochForHeight(GetForkHeightDAG()) + nOffsetEpochs;
+}
+
+// A fixed epoch budget for the settlement leg. Divisible by every voter count
+// used below so the equal split is exact and the assertions stay arithmetic.
+static const int64_t TEST_EPOCH_BUDGET = 12 * COIN;
+static int64_t PerVoter(size_t nVoters)
+{
+    return nVoters ? TEST_EPOCH_BUDGET / (int64_t)nVoters : 0;
 }
 
 } // namespace
@@ -148,9 +157,9 @@ BOOST_AUTO_TEST_CASE(settlement_pays_each_counted_vote_once)
     std::vector<CTxOut> vSettlement;
     int64_t nTotal = 0;
     std::string strError;
-    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vCounted, vSettlement, nTotal, &strError));
+    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vCounted, TEST_EPOCH_BUDGET, vSettlement, nTotal, &strError));
     BOOST_CHECK_EQUAL(vSettlement.size(), 3u);
-    BOOST_CHECK_EQUAL(nTotal, a.vote.nReward + b.vote.nReward + c.vote.nReward);
+    BOOST_CHECK_EQUAL(nTotal, TEST_EPOCH_BUDGET);
 
     // One output per voter, at that voter's own bound reward.
     for (const Voter* p : { &a, &b, &c })
@@ -161,7 +170,7 @@ BOOST_AUTO_TEST_CASE(settlement_pays_each_counted_vote_once)
             if (out.scriptPubKey == PayeeScript(p->vote))
             {
                 nHits++;
-                BOOST_CHECK_EQUAL(out.nValue, p->vote.nReward);
+                BOOST_CHECK_EQUAL(out.nValue, PerVoter(3));
             }
         }
         BOOST_CHECK_EQUAL(nHits, 1);
@@ -173,7 +182,7 @@ BOOST_AUTO_TEST_CASE(settlement_pays_each_counted_vote_once)
     CBlock block = MakeSettlementBlock(5 * COIN, scriptMiner, vSettlement);
 
     int64_t nChecked = -1;
-    BOOST_CHECK(CheckFinalitySettlementOutputs(block, vCounted, nChecked, &strError));
+    BOOST_CHECK(CheckFinalitySettlementOutputs(block, vCounted, TEST_EPOCH_BUDGET, nChecked, &strError));
     BOOST_CHECK_EQUAL(nChecked, nTotal);
     // The extra coinbase allowance is exactly the settled total: coinbase value out
     // minus the subsidy leaves nothing unaccounted for.
@@ -204,17 +213,17 @@ BOOST_AUTO_TEST_CASE(settlement_pays_a_recarried_vote_exactly_once)
     std::vector<CTxOut> vSettlement;
     int64_t nTotal = 0;
     std::string strError;
-    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vCounted, vSettlement, nTotal, &strError));
+    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vCounted, TEST_EPOCH_BUDGET, vSettlement, nTotal, &strError));
 
     BOOST_CHECK_EQUAL(vSettlement.size(), 2u);
-    BOOST_CHECK_EQUAL(nTotal, attacker.vote.nReward + honest.vote.nReward);
+    BOOST_CHECK_EQUAL(nTotal, TEST_EPOCH_BUDGET);
 
-    // What the old per-carrier rule would have minted for the same window.
-    int64_t nLegacyPerCarrierTotal =
-        (int64_t)FINALITY_VOTE_INCLUSION_WINDOW * attacker.vote.nReward + honest.vote.nReward;
-    BOOST_CHECK(nLegacyPerCarrierTotal > nTotal);
-    BOOST_CHECK_EQUAL(nLegacyPerCarrierTotal - nTotal,
-                      (int64_t)(FINALITY_VOTE_INCLUSION_WINDOW - 1) * attacker.vote.nReward);
+    // Under a fixed budget the re-carry cannot inflate the mint at all: the total
+    // is the budget regardless of how many window blocks embedded the vote, and the
+    // attacker's own share is diluted by the honest voter rather than multiplied.
+    BOOST_CHECK_EQUAL(nTotal, TEST_EPOCH_BUDGET);
+    for (const CTxOut& out : vSettlement)
+        BOOST_CHECK_EQUAL(out.nValue, PerVoter(2));
 
     int nAttackerOutputs = 0;
     for (const CTxOut& out : vSettlement)
@@ -232,12 +241,12 @@ BOOST_AUTO_TEST_CASE(settlement_pays_a_recarried_vote_exactly_once)
     CScript scriptMiner = GetScriptForDestination(minerKey.GetPubKey().GetID());
     std::vector<CTxOut> vGreedy = vSettlement;
     for (int i = 1; i < FINALITY_VOTE_INCLUSION_WINDOW; i++)
-        vGreedy.push_back(CTxOut(attacker.vote.nReward, PayeeScript(attacker.vote)));
+        vGreedy.push_back(CTxOut(PerVoter(2), PayeeScript(attacker.vote)));
 
     const int64_t nSubsidy = 5 * COIN;
     CBlock greedyBlock = MakeSettlementBlock(nSubsidy, scriptMiner, vGreedy);
     int64_t nAllowedExtra = -1;
-    BOOST_REQUIRE(CheckFinalitySettlementOutputs(greedyBlock, vCounted, nAllowedExtra, &strError));
+    BOOST_REQUIRE(CheckFinalitySettlementOutputs(greedyBlock, vCounted, TEST_EPOCH_BUDGET, nAllowedExtra, &strError));
     BOOST_CHECK_EQUAL(nAllowedExtra, nTotal);
     // ConnectBlock: vtx[0].GetValueOut() > nReward + nFinalityRewardOut  =>  rejected.
     BOOST_CHECK(greedyBlock.vtx[0].GetValueOut() > nSubsidy + nAllowedExtra);
@@ -263,7 +272,7 @@ BOOST_AUTO_TEST_CASE(settlement_rejects_missing_or_short_payout)
     std::vector<CTxOut> vSettlement;
     int64_t nTotal = 0;
     std::string strError;
-    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vCounted, vSettlement, nTotal, &strError));
+    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vCounted, TEST_EPOCH_BUDGET, vSettlement, nTotal, &strError));
     BOOST_REQUIRE_EQUAL(vSettlement.size(), 2u);
 
     CKey minerKey;
@@ -273,33 +282,33 @@ BOOST_AUTO_TEST_CASE(settlement_rejects_missing_or_short_payout)
 
     // Whole leg omitted.
     CBlock empty = MakeSettlementBlock(5 * COIN, scriptMiner, std::vector<CTxOut>());
-    BOOST_CHECK(!CheckFinalitySettlementOutputs(empty, vCounted, nChecked, &strError));
+    BOOST_CHECK(!CheckFinalitySettlementOutputs(empty, vCounted, TEST_EPOCH_BUDGET, nChecked, &strError));
     BOOST_CHECK_EQUAL(nChecked, 0);
 
     // One payee dropped.
     std::vector<CTxOut> vShortSet(vSettlement.begin(), vSettlement.begin() + 1);
     CBlock dropped = MakeSettlementBlock(5 * COIN, scriptMiner, vShortSet);
-    BOOST_CHECK(!CheckFinalitySettlementOutputs(dropped, vCounted, nChecked, &strError));
+    BOOST_CHECK(!CheckFinalitySettlementOutputs(dropped, vCounted, TEST_EPOCH_BUDGET, nChecked, &strError));
     BOOST_CHECK_EQUAL(nChecked, 0);
 
     // One payee short-paid by a single innovai.
     std::vector<CTxOut> vShortPay = vSettlement;
     vShortPay[0].nValue -= 1;
     CBlock shortPaid = MakeSettlementBlock(5 * COIN, scriptMiner, vShortPay);
-    BOOST_CHECK(!CheckFinalitySettlementOutputs(shortPaid, vCounted, nChecked, &strError));
+    BOOST_CHECK(!CheckFinalitySettlementOutputs(shortPaid, vCounted, TEST_EPOCH_BUDGET, nChecked, &strError));
     BOOST_CHECK_EQUAL(nChecked, 0);
 
     // Redirected to the miner instead of the voter.
     std::vector<CTxOut> vRedirected = vSettlement;
     vRedirected[1].scriptPubKey = scriptMiner;
     CBlock redirected = MakeSettlementBlock(5 * COIN, scriptMiner, vRedirected);
-    BOOST_CHECK(!CheckFinalitySettlementOutputs(redirected, vCounted, nChecked, &strError));
+    BOOST_CHECK(!CheckFinalitySettlementOutputs(redirected, vCounted, TEST_EPOCH_BUDGET, nChecked, &strError));
     BOOST_CHECK_EQUAL(nChecked, 0);
 
     // The correct leg is accepted in any output order.
     std::vector<CTxOut> vReordered(vSettlement.rbegin(), vSettlement.rend());
     CBlock reordered = MakeSettlementBlock(5 * COIN, scriptMiner, vReordered);
-    BOOST_CHECK(CheckFinalitySettlementOutputs(reordered, vCounted, nChecked, &strError));
+    BOOST_CHECK(CheckFinalitySettlementOutputs(reordered, vCounted, TEST_EPOCH_BUDGET, nChecked, &strError));
     BOOST_CHECK_EQUAL(nChecked, nTotal);
 }
 
@@ -331,12 +340,12 @@ BOOST_AUTO_TEST_CASE(settlement_re_derives_across_a_reorg)
     int64_t nTotalA = 0, nTotalB = 0;
 
     CollectFinalitySettlementVotes(vWindowA, nEpoch, vCountedA);
-    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vCountedA, vLegA, nTotalA, &strError));
+    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vCountedA, TEST_EPOCH_BUDGET, vLegA, nTotalA, &strError));
     CollectFinalitySettlementVotes(vWindowB, nEpoch, vCountedB);
-    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vCountedB, vLegB, nTotalB, &strError));
+    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vCountedB, TEST_EPOCH_BUDGET, vLegB, nTotalB, &strError));
 
-    BOOST_CHECK_EQUAL(nTotalA, a.vote.nReward + b.vote.nReward);
-    BOOST_CHECK_EQUAL(nTotalB, a.vote.nReward + c.vote.nReward);
+    BOOST_CHECK_EQUAL(nTotalA, TEST_EPOCH_BUDGET);
+    BOOST_CHECK_EQUAL(nTotalB, TEST_EPOCH_BUDGET);
     BOOST_CHECK_EQUAL(vLegA.size(), 2u);
     BOOST_CHECK_EQUAL(vLegB.size(), 2u);
 
@@ -346,7 +355,7 @@ BOOST_AUTO_TEST_CASE(settlement_re_derives_across_a_reorg)
     std::vector<CTxOut> vLegARepeat;
     int64_t nTotalARepeat = 0;
     CollectFinalitySettlementVotes(vWindowA, nEpoch, vCountedARepeat);
-    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vCountedARepeat, vLegARepeat, nTotalARepeat, &strError));
+    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vCountedARepeat, TEST_EPOCH_BUDGET, vLegARepeat, nTotalARepeat, &strError));
     BOOST_CHECK_EQUAL(nTotalARepeat, nTotalA);
     BOOST_REQUIRE_EQUAL(vLegARepeat.size(), vLegA.size());
     for (size_t i = 0; i < vLegA.size(); i++)
@@ -361,9 +370,9 @@ BOOST_AUTO_TEST_CASE(settlement_re_derives_across_a_reorg)
     CScript scriptMiner = GetScriptForDestination(minerKey.GetPubKey().GetID());
     CBlock blockA = MakeSettlementBlock(5 * COIN, scriptMiner, vLegA);
     int64_t nChecked = -1;
-    BOOST_CHECK(CheckFinalitySettlementOutputs(blockA, vCountedA, nChecked, &strError));
+    BOOST_CHECK(CheckFinalitySettlementOutputs(blockA, vCountedA, TEST_EPOCH_BUDGET, nChecked, &strError));
     BOOST_CHECK_EQUAL(nChecked, nTotalA);
-    BOOST_CHECK(!CheckFinalitySettlementOutputs(blockA, vCountedB, nChecked, &strError));
+    BOOST_CHECK(!CheckFinalitySettlementOutputs(blockA, vCountedB, TEST_EPOCH_BUDGET, nChecked, &strError));
     BOOST_CHECK_EQUAL(nChecked, 0);
 
     // a is still paid exactly once on branch B even though branch B carries it twice.
@@ -401,8 +410,8 @@ BOOST_AUTO_TEST_CASE(settlement_leg_is_canonically_ordered)
     int64_t nTotalFwd = 0, nTotalRev = 0;
     CollectFinalitySettlementVotes(vWindowFwd, nEpoch, vFwd);
     CollectFinalitySettlementVotes(vWindowRev, nEpoch, vRev);
-    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vFwd, vLegFwd, nTotalFwd, &strError));
-    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vRev, vLegRev, nTotalRev, &strError));
+    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vFwd, TEST_EPOCH_BUDGET, vLegFwd, nTotalFwd, &strError));
+    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vRev, TEST_EPOCH_BUDGET, vLegRev, nTotalRev, &strError));
 
     BOOST_CHECK_EQUAL(nTotalFwd, nTotalRev);
     BOOST_REQUIRE_EQUAL(vLegFwd.size(), vLegRev.size());
@@ -442,9 +451,9 @@ BOOST_AUTO_TEST_CASE(settlement_transparent_leg_skips_private_votes)
     std::vector<CTxOut> vLeg;
     int64_t nTotal = 0;
     std::string strError;
-    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vCounted, vLeg, nTotal, &strError));
+    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vCounted, TEST_EPOCH_BUDGET, vLeg, nTotal, &strError));
     BOOST_CHECK_EQUAL(vLeg.size(), 1u);       // transparent leg only
-    BOOST_CHECK_EQUAL(nTotal, t.vote.nReward);
+    BOOST_CHECK_EQUAL(nTotal, TEST_EPOCH_BUDGET);   // the sole payee takes the whole budget
 }
 
 // Votes belonging to another epoch never enter this epoch's settlement.
@@ -469,8 +478,8 @@ BOOST_AUTO_TEST_CASE(settlement_ignores_votes_from_another_epoch)
     std::vector<CTxOut> vLeg;
     int64_t nTotal = 0;
     std::string strError;
-    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vCounted, vLeg, nTotal, &strError));
-    BOOST_CHECK_EQUAL(nTotal, mine.vote.nReward);
+    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vCounted, TEST_EPOCH_BUDGET, vLeg, nTotal, &strError));
+    BOOST_CHECK_EQUAL(nTotal, TEST_EPOCH_BUDGET);
 }
 
 // Carrying a vote is a commitment, not a payment: the carrier check validates shape
@@ -536,12 +545,12 @@ BOOST_AUTO_TEST_CASE(collateralnode_payment_base_excludes_settlement)
     std::vector<CTxOut> vLeg;
     int64_t nSettled = 0;
     std::string strError;
-    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vCounted, vLeg, nSettled, &strError));
+    BOOST_REQUIRE(BuildFinalitySettlementOutputs(vCounted, TEST_EPOCH_BUDGET, vLeg, nSettled, &strError));
     BOOST_REQUIRE(nSettled > 0);
 
     // Producer's base: the subsidy, split between the miner and the collateralnode.
     const int64_t nBlockValue = 5 * COIN;
-    int64_t nCNPayment = GetCollateralnodePayment(nSettlementHeight, nBlockValue);
+    int64_t nCNPayment = CBlockSubsidySplit::CollateralnodeShareOfBase(nBlockValue);
 
     CKey minerKey, cnKey;
     minerKey.MakeNewKey(true);
@@ -555,18 +564,18 @@ BOOST_AUTO_TEST_CASE(collateralnode_payment_base_excludes_settlement)
                                        vExtra);
 
     int64_t nFinalityRewardOut = -1;
-    BOOST_REQUIRE(CheckFinalitySettlementOutputs(block, vCounted, nFinalityRewardOut, &strError));
+    BOOST_REQUIRE(CheckFinalitySettlementOutputs(block, vCounted, TEST_EPOCH_BUDGET, nFinalityRewardOut, &strError));
     BOOST_CHECK_EQUAL(nFinalityRewardOut, nSettled);
 
     // ConnectBlock's base (the same helper it calls) reproduces the producer's exactly.
     int64_t nValidatorBase =
         FinalityCollateralnodePaymentBase(block.vtx[0].GetValueOut(), nFinalityRewardOut);
     BOOST_CHECK_EQUAL(nValidatorBase, nBlockValue);
-    BOOST_CHECK_EQUAL(GetCollateralnodePayment(nSettlementHeight, nValidatorBase), nCNPayment);
+    BOOST_CHECK_EQUAL(CBlockSubsidySplit::CollateralnodeShareOfBase(nValidatorBase), nCNPayment);
 
     // Without the subtraction the validator would demand more than the producer paid,
     // so every settlement block would be rejected for a bad collateralnode payment.
-    BOOST_CHECK(GetCollateralnodePayment(nSettlementHeight, block.vtx[0].GetValueOut()) > nCNPayment);
+    BOOST_CHECK(CBlockSubsidySplit::CollateralnodeShareOfBase(block.vtx[0].GetValueOut()) > nCNPayment);
 
     // On every non-settlement block nFinalityRewardOut is 0, so the base is untouched.
     BOOST_CHECK(!IsFinalitySettlementHeight(nSettlementHeight - 1));

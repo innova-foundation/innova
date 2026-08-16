@@ -10,6 +10,7 @@
 #include "collateralnode.h"
 #include "dag.h"
 #include "finality.h"
+#include "subsidy.h"
 #include "namecoin.h"
 
 #include <memory>
@@ -492,8 +493,13 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         {
             std::vector<CFinalityVote> vSettlementVotes;
             std::string strSettleError;
+            // Same budget function the validator calls, off the same parent: the
+            // reserve earlier blocks withheld, clamped to the issuance headroom.
+            const int64_t nSettlementBudget =
+                GetClampedFinalitySettlementBudget(pindexPrev, nSettlementEpoch, nHeight);
             if (!GatherFinalitySettlementVotes(pindexPrev, nSettlementEpoch, vSettlementVotes, &strSettleError) ||
-                !BuildFinalitySettlementOutputs(vSettlementVotes, vFinalitySettlementOutputs,
+                !BuildFinalitySettlementOutputs(vSettlementVotes, nSettlementBudget,
+                                                vFinalitySettlementOutputs,
                                                 nFinalitySettlementTotal, &strSettleError))
             {
                 // Fail closed: every validator would reject a template without the settlement.
@@ -1229,15 +1235,31 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
         int nRewardHeight = nHeight;
         if (nHeight < FORK_HEIGHT_TIGHTER_DRIFT && nHeight > 0)
             nRewardHeight = nHeight - 1;
-        int64_t blockValue = GetProofOfWorkReward(nRewardHeight, nAllowedFees);
+        // ONE subsidy, split at payment, from the same function every validator
+        // calls. The settlement this block owes is netted off the issuance
+        // headroom before the subsidy is computed, exactly as ConnectBlock does.
+        int64_t nSubsidy = GetProofOfWorkReward(nRewardHeight, 0, pindexPrev, nFinalitySettlementTotal);
+        int64_t blockValue = nSubsidy + nAllowedFees;
+        int64_t nIssuance = nSubsidy;
         if (!fProofOfStake)
+        {
             blockValue = ApplyBlockSizePenalty(blockValue, *pblock, pindexPrev);
+            nIssuance = ApplyBlockSizePenalty(nIssuance, *pblock, pindexPrev);
+        }
+        if (nIssuance > blockValue)
+            nIssuance = blockValue;
         if (!MoneyRange(blockValue))
         {
             printf("CreateNewBlock: ERROR: blockValue %" PRId64 " out of MoneyRange (nHeight=%d, nFees=%" PRId64 ")\n", blockValue, nHeight, nAllowedFees);
             return NULL;
         }
-        int64_t collateralnodePayment = GetCollateralnodePayment(pindexPrev->nHeight+1, blockValue);
+        const CBlockSubsidySplit subsidySplit =
+            CBlockSubsidySplit::ForBlock(nHeight, nIssuance, blockValue - nIssuance,
+                                         CollateralnodeShare::Paid);
+        // The finality reserve stays unminted here; it settles to the epoch's
+        // voters at H_E + K. What this block may pay out is the rest.
+        blockValue = subsidySplit.PaidToBlock();
+        int64_t collateralnodePayment = subsidySplit.Collateralnode();
 
         //create collateralnode payment
         if(payments > 1){

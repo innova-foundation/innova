@@ -383,6 +383,7 @@ OBJS= \
     obj/silentpayments.o \
     obj/dandelion.o \
     obj/finality.o \
+    obj/subsidy.o \
     obj/finality_note.o \
     obj/finality_schedule.o \
     obj/dag.o \
@@ -468,6 +469,7 @@ OBJS= \
     obj/silentpayments.o \
     obj/dandelion.o \
     obj/finality.o \
+    obj/subsidy.o \
     obj/finality_note.o \
     obj/finality_schedule.o \
     obj/dag.o \
@@ -544,6 +546,8 @@ TEST_OBJS= \
     obj/test/coinstake_guard_tests.o \
     obj/test/retarget_tests.o \
     obj/test/emission_curve_tests.o \
+    obj/test/supply_cap_tests.o \
+    obj/test/subsidy_split_tests.o \
     obj/test/finality_coldstart_tests.o \
     obj/test/finality_committee_sig_tests.o \
     obj/test/halfagg_stake_tests.o \
@@ -681,6 +685,7 @@ check-retarget: test_innova
 	./test_innova --run_test=retarget_tests
 check-emission-curve: test_innova
 	./test_innova --run_test=emission_curve_tests
+	./test_innova --run_test=supply_cap_tests
 
 check-finality-coldstart: test_innova
 	./test_innova --run_test=finality_coldstart_tests

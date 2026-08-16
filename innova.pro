@@ -70,6 +70,7 @@ HEADERS += build/build.h \
            src/eccryptoverify.h \
            src/ed25519_zk.h \
            src/finality.h \
+           src/subsidy.h \
            src/finality_note.h \
            src/hash.h \
            src/hashblock.h \
@@ -586,6 +587,7 @@ SOURCES += qrc_bitcoin.cpp \
            src/echo.c \
            src/ed25519_zk.cpp \
            src/finality.cpp \
+           src/subsidy.cpp \
            src/finality_note.cpp \
            src/hash.cpp \
            src/idns.cpp \
