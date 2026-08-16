@@ -2946,6 +2946,90 @@ bool BuildCanonicalTransparentFinalityCertificate(
     return true;
 }
 
+bool BuildNoteOnlyFinalitySkeleton(
+    int nEpoch,
+    const std::vector<CNoteFinalityVote>& vCountedNoteVotes,
+    CFinalityTallyCertificate& certOut,
+    std::string* pstrError)
+{
+    certOut = CFinalityTallyCertificate();
+    const auto reject = [&](const std::string& strReason) -> bool {
+        if (pstrError)
+            *pstrError = strReason;
+        return false;
+    };
+    if (pstrError)
+        pstrError->clear();
+    if (nEpoch < 0)
+        return reject("note-only skeleton has no epoch");
+
+    // The covered set can only shrink from the counted set, so a counted set already
+    // below the floor can never produce a certificate that clears it.
+    std::map<uint256, size_t> mapBlockVotes;
+    std::map<uint256, int> mapBlockHeight;
+    size_t nEpochVotes = 0;
+    for (size_t i = 0; i < vCountedNoteVotes.size(); i++)
+    {
+        const CNoteFinalityVote& vote = vCountedNoteVotes[i];
+        if (vote.nEpoch != nEpoch)
+            continue;
+        if (vote.hashBlock == 0 || vote.nHeight < 0)
+            return reject("note-only skeleton has a vote with no target block");
+        std::map<uint256, int>::const_iterator hit = mapBlockHeight.find(vote.hashBlock);
+        if (hit != mapBlockHeight.end() && hit->second != vote.nHeight)
+            return reject("note-only skeleton has inconsistent target heights");
+        mapBlockHeight[vote.hashBlock] = vote.nHeight;
+        mapBlockVotes[vote.hashBlock]++;
+        nEpochVotes++;
+    }
+    if (nEpochVotes < (size_t)FINALITY_MIN_VOTERS)
+        return reject("note-only skeleton has too few voters");
+
+    // The winner has to be chosen from data every committee member can see, because a
+    // member that picks a different candidate sums a different polynomial and its
+    // partial cannot be interpolated with the rest. Note weights are hidden, so the
+    // public rule is vote count with a hash tie-break. Consensus does not take this
+    // rule on trust: it accepts the named winner only if the tier proof opens for it,
+    // and only at SOFT or better, where the share is exclusive.
+    uint256 hashWinner = 0;
+    size_t nWinnerVotes = 0;
+    for (std::map<uint256, size_t>::const_iterator it = mapBlockVotes.begin();
+         it != mapBlockVotes.end(); ++it)
+    {
+        if (it->second > nWinnerVotes ||
+            (it->second == nWinnerVotes && (hashWinner == 0 || it->first < hashWinner)))
+        {
+            hashWinner = it->first;
+            nWinnerVotes = it->second;
+        }
+    }
+    if (hashWinner == 0)
+        return reject("note-only skeleton has no candidate winner");
+
+    const int nWinnerHeight = mapBlockHeight[hashWinner];
+    // Pin the epoch-boundary rule the validator applies, so a producer working from a
+    // vote set that names a non-boundary block emits nothing instead of a certificate
+    // that is rejected at connect.
+    if (GetEpochForHeight(nWinnerHeight) != nEpoch ||
+        GetEpochBoundaryHeight(nEpoch, nWinnerHeight) != nWinnerHeight)
+        return reject("note-only skeleton winner is not this epoch's boundary block");
+
+    // Exactly the fields the fNoteOnly branch of CheckTallyCertificate pins: an empty
+    // transparent skeleton, zero transparent weights, no nullifiers, no streak.
+    CFinalityTallyCertificate cert;
+    cert.nVersion = 2;
+    cert.nEpoch = nEpoch;
+    cert.hashBlock = hashWinner;
+    cert.nHeight = nWinnerHeight;
+    cert.nTier = FINALITY_NONE;
+    cert.nTransparentActiveWeight = 0;
+    cert.nTransparentWinningWeight = 0;
+    cert.nTransparentRewardBudget = 0;
+    cert.MarkCanonicalEnvelope();
+    certOut = cert;
+    return true;
+}
+
 static uint256 FinalityAutomationContextHash(const std::string& strDomain,
                                              const CFinalityTallyGroupKey& key,
                                              int nSourceIndex,
@@ -5483,6 +5567,10 @@ bool CFinalityTracker::CheckTallyCertificate(
             if (cert.hashCurveRoot != 0 || cert.hashNullifierRoot != 0 ||
                 cert.nConsecutiveHardCount != 0 || !cert.vVoteNullifiers.empty())
                 return reject("canonical note-only tally certificate has non-empty transparent skeleton");
+            // Note-only certificates need a strict majority for a unique winner:
+            // TENTATIVE (1/3) could be held by up to three blocks at once.
+            if (cert.nTier < FINALITY_SOFT)
+                return reject("canonical note-only tally certificate below the unique-winner tier");
         }
         CFinalityTallyCertificate expected;
         std::string strCanonicalError;
@@ -6240,7 +6328,11 @@ bool CFinalityTracker::CheckFinalityThreshold(int nEpoch, bool fLog)
         }
         if (pBestCert)
         {
-            int nVoterCount = (int)pBestCert->vVoteNullifiers.size();
+            // Note tags are voters the certificate counted, exactly as
+            // ComputeDeterministicEpochTier counts them; reading only the
+            // transparent leg reports an all-private epoch as having no voters.
+            int nVoterCount = (int)pBestCert->vVoteNullifiers.size() +
+                              (int)pBestCert->vNoteVoteTags.size();
             return ApplyFinalityDecision(nEpoch, pBestCert->hashBlock, pBestCert->nHeight,
                                          (FinalityTier)pBestCert->nTier, nVoterCount,
                                          pBestCert->nTransparentWinningWeight,
@@ -8955,13 +9047,31 @@ static bool ProcessNoteTallyCommitteeEpoch(int nEpoch)
     // A note tally only boosts that winner's tier; it never selects a different winner.
     CFinalityTallyCertificate skeleton;
     std::string strError;
-    if (!BuildCanonicalTransparentFinalityCertificate(
-            g_finalityTracker.GetConnectedEpochVotes(nEpoch), skeleton, &strError))
+    const std::vector<CFinalityVote> vConnectedTransparent =
+        g_finalityTracker.GetConnectedEpochVotes(nEpoch);
+    bool fNoteOnly = false;
+    if (!BuildCanonicalTransparentFinalityCertificate(vConnectedTransparent, skeleton,
+                                                      &strError))
     {
-        if (fDebug)
-            printf("ProcessNoteTallyCommitteeEpoch: epoch %d has no transparent "
-                   "skeleton: %s\n", nEpoch, strError.c_str());
-        return false;
+        // An epoch with transparent votes that still has no canonical result is a
+        // transparent problem (too few voters, no decision); it keeps the old
+        // behaviour exactly. Only an epoch with NO transparent vote at all falls
+        // through to the note leg, which is the case that had no producer.
+        if (!vConnectedTransparent.empty())
+        {
+            if (fDebug)
+                printf("ProcessNoteTallyCommitteeEpoch: epoch %d has no transparent "
+                       "skeleton: %s\n", nEpoch, strError.c_str());
+            return false;
+        }
+        if (!BuildNoteOnlyFinalitySkeleton(nEpoch, vCounted, skeleton, &strError))
+        {
+            if (fDebug)
+                printf("ProcessNoteTallyCommitteeEpoch: epoch %d has no note-only "
+                       "skeleton: %s\n", nEpoch, strError.c_str());
+            return false;
+        }
+        fNoteOnly = true;
     }
     const uint256 hashWinner = skeleton.hashBlock;
 
@@ -9032,6 +9142,11 @@ static bool ProcessNoteTallyCommitteeEpoch(int nEpoch)
     std::vector<uint256> vCoveredTags = pass.vAcceptedTags;
     std::sort(vCoveredTags.begin(), vCoveredTags.end());
     if (vCoveredTags.empty())
+        return false;
+    // With no transparent leg the note tags ARE the voter set, so the combined floor
+    // IsValidBasic applies falls entirely on them. Stop here rather than after the
+    // proving run, and never emit a candidate the validator would refuse.
+    if (fNoteOnly && vCoveredTags.size() < (size_t)FINALITY_MIN_VOTERS)
         return false;
 
     bool fDidWork = false;
@@ -9184,6 +9299,11 @@ static bool ProcessNoteTallyCommitteeEpoch(int nEpoch)
     const int64_t nTotalWinning = skeleton.nTransparentWinningWeight + nPrivateWinning;
     const FinalityTier tier = FinalityDetermineTier(nTotalActive, nTotalWinning);
     if (tier == FINALITY_NONE)
+        return fDidWork;
+    // A note-only certificate names a winner nothing rebuilds, so consensus only takes
+    // one whose share is exclusive. Mirror that floor here: a TENTATIVE candidate would
+    // be proved, signed, relayed and then rejected at connect.
+    if (fNoteOnly && tier < FINALITY_SOFT)
         return fDidWork;
 
     PrivacyVNextDigest entropy;

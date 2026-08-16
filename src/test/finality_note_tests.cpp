@@ -4060,4 +4060,306 @@ BOOST_AUTO_TEST_CASE(an_all_private_epoch_certifies_with_no_transparent_vote)
     }
 }
 
+// The case above stops at the free functions. ConnectBlock does not call those: it calls
+// CFinalityTracker::CheckTallyCertificate, and the two gates that live there -- the
+// matched-vote floor and the canonical rebuild -- were relaxed with no test driving them.
+// Reverting either hunk left the whole suite green, which is exactly how the original
+// one-gate-of-three defect survived. This drives a note-only certificate through the real
+// tracker path, against a real committee record and a real counted note-vote view.
+//
+// MUTATION (site 2): restore `if (nMatchedVotes == 0)` in CheckTallyCertificate and the
+// accepted case below fails with "tally certificate matched no votes".
+// MUTATION (site 3): drop the `!fNoteOnly &&` guard on
+// BuildCanonicalTransparentFinalityCertificate and it fails with "canonical tally
+// certificate cannot be rebuilt: canonical transparent certificate has too few voters".
+BOOST_AUTO_TEST_CASE(a_note_only_certificate_passes_the_tracker_check)
+{
+    ScopedTallyArgs scopedArgs;
+    CTxDB txdb("r+");
+    std::vector<CKey> vKeys(3);
+    const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 2);
+
+    // A low epoch whose boundary round-trips: the epoch interval changes at the DAG
+    // fork, so a high epoch number resolved against reference height 0 lands on a
+    // height that is not its own boundary and the certificate is refused on that rule
+    // before ever reaching the gates under test.
+    const int nEpoch = 3;
+    const int nHeight = GetEpochBoundaryHeight(nEpoch, 0);
+    BOOST_REQUIRE_EQUAL(GetEpochForHeight(nHeight), nEpoch);
+    BOOST_REQUIRE_EQUAL(GetEpochBoundaryHeight(nEpoch, nHeight), nHeight);
+    BOOST_REQUIRE(nHeight >= FORK_HEIGHT_DAG);
+    const uint256 hashWinner(0x9b22);
+    const int nContextHeight = nHeight + FINALITY_VOTE_INCLUSION_WINDOW;
+
+    // Registers hashWinner as a PoW block at the epoch boundary and turns the note-vote
+    // fork on; the committee is seated the way the chain seats it.
+    ScopedNoteVoteContext blockCtx(txdb, hashWinner, nHeight, nEpoch);
+    ScopedCommitteeCarrier carrier(txdb, nEpoch, config.vCommitteePubKeys, 2);
+
+    // Two note voters, no transparent voter anywhere in the epoch.
+    TalliedVote a = MakeTalliedVote(config, nEpoch, hashWinner, 400000, 7, 0xd1);
+    TalliedVote b = MakeTalliedVote(config, nEpoch, hashWinner, 350000, 7, 0xd2);
+    // MakeVote stamps a filler height; a real note vote names the epoch block it votes
+    // for, and the certificate's height is checked against that block's index entry.
+    a.vote.nHeight = nHeight;
+    b.vote.nHeight = nHeight;
+
+    CFinalityTracker tracker;
+    std::vector<CNoteFinalityVote> vBlockVotes;
+    vBlockVotes.push_back(a.vote);
+    vBlockVotes.push_back(b.vote);
+    // fCheckVotes=false: the per-vote proofs are exercised elsewhere; what is under test
+    // is the certificate path over the recorded counted view.
+    BOOST_REQUIRE(tracker.ConnectBlockNoteVotes(
+        txdb, hashWinner, vBlockVotes,
+        CFinalityVoteContext::ChainHeight(nContextHeight), NULL, false));
+    const std::vector<CNoteFinalityVote> vCountedVotes =
+        tracker.GetCountedEpochNoteVotes(nEpoch);
+    BOOST_REQUIRE_EQUAL(vCountedVotes.size(), 2u);
+
+    std::vector<const CNoteFinalityVote*> vCounted;
+    for (size_t i = 0; i < vCountedVotes.size(); i++)
+        vCounted.push_back(&vCountedVotes[i]);
+    std::vector<uint256> vCountedTags;
+    for (size_t i = 0; i < vCountedVotes.size(); i++)
+        vCountedTags.push_back(vCountedVotes[i].GetVoteTag());
+    vCountedTags = SortedTags(vCountedTags);
+
+    // The producer's own skeleton builder supplies the winner and the empty transparent
+    // side, so what the validator sees below is what the automation would emit.
+    std::string strError;
+    CFinalityTallyCertificate skeleton;
+    BOOST_REQUIRE_MESSAGE(
+        BuildNoteOnlyFinalitySkeleton(nEpoch, vCountedVotes, skeleton, &strError),
+        strError);
+    BOOST_CHECK(skeleton.hashBlock == hashWinner);
+    BOOST_CHECK_EQUAL(skeleton.nHeight, nHeight);
+    BOOST_CHECK_EQUAL(skeleton.nTransparentActiveWeight, 0);
+    BOOST_CHECK(skeleton.vVoteNullifiers.empty());
+    BOOST_CHECK(skeleton.IsCanonicalEnvelope());
+
+    std::vector<CNoteTallyAggregatePartial> vPartials;
+    for (size_t i = 0; i < vKeys.size(); i++)
+    {
+        CNoteTallyCommitteePass pass;
+        BOOST_REQUIRE_MESSAGE(RunNoteTallyCommitteePass(vCounted, hashWinner, config,
+                                                        vKeys[i], (int)i, pass, &strError),
+                              strError);
+        vPartials.push_back(MakePartial(pass, config, vKeys[i], (int)i, nEpoch, hashWinner));
+    }
+
+    int64_t nActive = 0, nWinning = 0, nReward = 0;
+    uint256 activeBlind, winningBlind;
+    BOOST_REQUIRE_MESSAGE(OpenCoveredAggregates(vPartials, vCounted, vCountedTags,
+                                                hashWinner, config, vKeys[0], 0, nActive,
+                                                activeBlind, nWinning, winningBlind,
+                                                nReward, strError), strError);
+
+    CNoteTallyTierProofs proofs;
+    PrivacyVNextDigest entropy;
+    entropy.fill(0x5c);
+    BOOST_REQUIRE_MESSAGE(BuildNoteTallyTierProofs(FINALITY_HARD, nActive, activeBlind,
+                                                   nWinning, winningBlind, 0, 0, entropy,
+                                                   proofs, &strError), strError);
+
+    CFinalityTallyCertificate cert = skeleton;
+    cert.nVersion = FINALITY_NOTE_CERT_VERSION;
+    cert.nTier = FINALITY_HARD;
+    cert.committeeSetHash = config.committeeSetHash;
+    cert.vNoteVoteTags = vCountedTags;
+    cert.noteTierProofs = proofs;
+    SignCertByCommittee(cert, vKeys, 2);
+    BOOST_REQUIRE(cert.vVoteNullifiers.empty());
+
+    // The gate under test: the real tracker path, in consensus mode.
+    FinalityResult result = FINALITY_RESULT_INVALID;
+    BOOST_CHECK_MESSAGE(tracker.CheckTallyCertificate(cert, txdb, &strError, NULL, false,
+                                                      nContextHeight, false, &result),
+                        strError);
+    BOOST_CHECK_EQUAL(result, FINALITY_RESULT_OK);
+
+    const auto rejects = [&](const CFinalityTallyCertificate& candidate,
+                             const std::string& strExpect) {
+        std::string strWhy;
+        BOOST_CHECK(!tracker.CheckTallyCertificate(candidate, txdb, &strWhy, NULL, false,
+                                                   nContextHeight, false, NULL));
+        BOOST_CHECK_EQUAL(strWhy, strExpect);
+    };
+
+    // The fNoteOnly branch pins the fields the rebuild would have pinned. A hole in any
+    // of them would let a note-only certificate carry transparent claims nothing checks.
+    {
+        CFinalityTallyCertificate roots = cert;
+        roots.hashCurveRoot = uint256(0x5151);
+        SignCertByCommittee(roots, vKeys, 2);
+        rejects(roots, "canonical note-only tally certificate has non-empty transparent skeleton");
+    }
+    {
+        CFinalityTallyCertificate streak = cert;
+        streak.nConsecutiveHardCount = 3;
+        SignCertByCommittee(streak, vKeys, 2);
+        rejects(streak, "canonical note-only tally certificate has non-empty transparent skeleton");
+    }
+
+    // Winner uniqueness in the note-only case rests entirely on the tier share being
+    // exclusive, because nothing rebuilds the winner. A 1/3 share is not exclusive.
+    {
+        CNoteTallyTierProofs tentativeProofs;
+        BOOST_REQUIRE_MESSAGE(
+            BuildNoteTallyTierProofs(FINALITY_TENTATIVE, nActive, activeBlind, nWinning,
+                                     winningBlind, 0, 0, entropy, tentativeProofs,
+                                     &strError), strError);
+        CFinalityTallyCertificate tentative = cert;
+        tentative.nTier = FINALITY_TENTATIVE;
+        tentative.noteTierProofs = tentativeProofs;
+        SignCertByCommittee(tentative, vKeys, 2);
+        rejects(tentative, "canonical note-only tally certificate below the unique-winner tier");
+    }
+
+    // Coverage equality against the connected counted view, driven through the tracker
+    // rather than the free function: dropping a connected note voter is still refused.
+    {
+        CFinalityTallyCertificate thin = cert;
+        thin.vNoteVoteTags.resize(1);
+        SignCertByCommittee(thin, vKeys, 2);
+        std::string strWhy;
+        BOOST_CHECK(!tracker.CheckTallyCertificate(thin, txdb, &strWhy, NULL, false,
+                                                   nContextHeight, false, NULL));
+        BOOST_CHECK_EQUAL(strWhy, "canonical tally certificate has too few voters");
+    }
+}
+
+// The producer half. Without this an all-private epoch still stalls: consensus accepts a
+// note-only certificate but the automation derived both its skeleton and its winner from
+// a transparent rebuild that fails at zero transparent votes.
+BOOST_AUTO_TEST_CASE(the_note_only_skeleton_builder_agrees_with_the_validator)
+{
+    const int nEpoch = 4;
+    const int nHeight = GetEpochBoundaryHeight(nEpoch, 0);
+    BOOST_REQUIRE_EQUAL(GetEpochForHeight(nHeight), nEpoch);
+    const uint256 hashA(0x7001), hashB(0x7002);
+
+    const auto voteFor = [&](const uint256& hashBlock, unsigned char nTag) {
+        CNoteFinalityVote vote;
+        vote.nEpoch = nEpoch;
+        vote.hashBlock = hashBlock;
+        vote.nHeight = nHeight;
+        vote.vchTag.assign(32, nTag);
+        return vote;
+    };
+
+    std::string strError;
+    CFinalityTallyCertificate skeleton;
+
+    // The winner is the most-named block, which is the only ranking available from public
+    // vote content -- note weights are hidden from the members that must agree on it.
+    {
+        std::vector<CNoteFinalityVote> vVotes;
+        vVotes.push_back(voteFor(hashB, 0x01));
+        vVotes.push_back(voteFor(hashB, 0x02));
+        vVotes.push_back(voteFor(hashA, 0x03));
+        BOOST_REQUIRE_MESSAGE(
+            BuildNoteOnlyFinalitySkeleton(nEpoch, vVotes, skeleton, &strError), strError);
+        BOOST_CHECK(skeleton.hashBlock == hashB);
+    }
+
+    // Ties break on the hash so two members never disagree, and their partials stay
+    // interpolable.
+    {
+        std::vector<CNoteFinalityVote> vVotes;
+        vVotes.push_back(voteFor(hashB, 0x04));
+        vVotes.push_back(voteFor(hashA, 0x05));
+        BOOST_REQUIRE_MESSAGE(
+            BuildNoteOnlyFinalitySkeleton(nEpoch, vVotes, skeleton, &strError), strError);
+        BOOST_CHECK(skeleton.hashBlock == (hashA < hashB ? hashA : hashB));
+    }
+
+    // The combined voter floor is the note tags alone here, so one note voter is one
+    // voter and the producer must not build on it.
+    {
+        std::vector<CNoteFinalityVote> vVotes(1, voteFor(hashA, 0x06));
+        BOOST_CHECK(!BuildNoteOnlyFinalitySkeleton(nEpoch, vVotes, skeleton, &strError));
+        BOOST_CHECK_EQUAL(strError, "note-only skeleton has too few voters");
+    }
+
+    // A vote naming a block that is not this epoch's boundary would be rejected at
+    // connect, so the producer refuses it rather than emitting a doomed certificate.
+    {
+        std::vector<CNoteFinalityVote> vVotes;
+        CNoteFinalityVote offA = voteFor(hashA, 0x07);
+        CNoteFinalityVote offB = voteFor(hashA, 0x08);
+        offA.nHeight = nHeight + 1;
+        offB.nHeight = nHeight + 1;
+        vVotes.push_back(offA);
+        vVotes.push_back(offB);
+        BOOST_CHECK(!BuildNoteOnlyFinalitySkeleton(nEpoch, vVotes, skeleton, &strError));
+        BOOST_CHECK_EQUAL(strError,
+                          "note-only skeleton winner is not this epoch's boundary block");
+    }
+
+    // One block, two heights, is a contradiction the tally must not silently pick from.
+    {
+        std::vector<CNoteFinalityVote> vVotes;
+        CNoteFinalityVote second = voteFor(hashA, 0x0a);
+        second.nHeight = nHeight + 1;
+        vVotes.push_back(voteFor(hashA, 0x09));
+        vVotes.push_back(second);
+        BOOST_CHECK(!BuildNoteOnlyFinalitySkeleton(nEpoch, vVotes, skeleton, &strError));
+        BOOST_CHECK_EQUAL(strError, "note-only skeleton has inconsistent target heights");
+    }
+}
+
+// A mixed epoch must be untouched by all of the above: it still has a transparent
+// skeleton, so it still takes the transparent rebuild and its winner still comes from
+// transparent weight, not from note-vote counts.
+BOOST_AUTO_TEST_CASE(a_mixed_epoch_still_takes_the_transparent_path)
+{
+    const int nEpoch = 935;
+    const int nHeight = GetEpochBoundaryHeight(nEpoch, 0);
+    const uint256 hashHeavy(0x8001), hashLight(0x8002);
+
+    // Two transparent voters, and the heavier weight is on hashHeavy.
+    std::vector<CFinalityVote> vVotes;
+    for (int i = 0; i < 2; i++)
+    {
+        CFinalityVote vote;
+        vote.nEpoch = nEpoch;
+        vote.nHeight = nHeight;
+        vote.hashBlock = hashHeavy;
+        vote.nVoteWeight = 100 * COIN;
+        vote.nReward = 0;
+        vote.nullifier = uint256(0x8100 + i);
+        vote.MarkCanonicalEnvelope();
+        vVotes.push_back(vote);
+    }
+
+    std::string strError;
+    CFinalityTallyCertificate transparent;
+    BOOST_REQUIRE_MESSAGE(BuildCanonicalTransparentFinalityCertificate(
+                              vVotes, transparent, &strError), strError);
+    BOOST_CHECK(transparent.hashBlock == hashHeavy);
+    BOOST_CHECK_EQUAL(transparent.vVoteNullifiers.size(), 2u);
+    BOOST_CHECK_EQUAL(transparent.nTransparentActiveWeight, 200 * COIN);
+
+    // Even if every note vote in the epoch named the other block, the transparent
+    // rebuild still succeeds and the producer never reaches the note-only branch --
+    // that branch is entered only when there is no transparent vote at all.
+    std::vector<CNoteFinalityVote> vNoteVotes;
+    for (int i = 0; i < 3; i++)
+    {
+        CNoteFinalityVote note;
+        note.nEpoch = nEpoch;
+        note.hashBlock = hashLight;
+        note.nHeight = nHeight;
+        note.vchTag.assign(32, (unsigned char)(0xb0 + i));
+        vNoteVotes.push_back(note);
+    }
+    CFinalityTallyCertificate noteOnly;
+    BOOST_REQUIRE(BuildNoteOnlyFinalitySkeleton(nEpoch, vNoteVotes, noteOnly, &strError));
+    BOOST_CHECK(noteOnly.hashBlock == hashLight);
+    // The two builders disagree, which is precisely why the producer's branch is keyed on
+    // an EMPTY connected transparent set rather than on the transparent build failing.
+    BOOST_CHECK(transparent.hashBlock != noteOnly.hashBlock);
+}
+
 BOOST_AUTO_TEST_SUITE_END()

@@ -1178,6 +1178,21 @@ bool BuildCanonicalTransparentFinalityCertificate(
     const std::vector<CFinalityVote>& vVotes,
     CFinalityTallyCertificate& certOut,
     std::string* pstrError = NULL);
+/** Skeleton for an epoch that carried no transparent vote at all.
+ *
+ *  The transparent builder above needs transparent votes to derive a winner from, so
+ *  an all-private epoch had no producer even once consensus accepted such a
+ *  certificate. This supplies the same skeleton from the note leg: the winner is the
+ *  counted note votes' most-named block (hash tie-break -- a public rule, so every
+ *  committee member converges on one candidate and their partials interpolate), and
+ *  every transparent field is left at the empty value CheckTallyCertificate pins for
+ *  a note-only certificate. nTier is left NONE for the caller to set from the opened
+ *  aggregates. */
+bool BuildNoteOnlyFinalitySkeleton(
+    int nEpoch,
+    const std::vector<CNoteFinalityVote>& vCountedNoteVotes,
+    CFinalityTallyCertificate& certOut,
+    std::string* pstrError = NULL);
 bool BuildFinalityVoteScriptForHeight(const CFinalityVote& vote, int nHeight,
                                       CScript& scriptOut);
 bool BuildFinalityTallyCertificateScriptForHeight(const CFinalityTallyCertificate& cert,
