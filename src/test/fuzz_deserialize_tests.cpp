@@ -2297,7 +2297,7 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
     // Boundary A rides the epoch-state V3 rung, so it follows the DAG gate.
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), GetForkHeightDAG() + 300);
     BOOST_CHECK(GetForkHeightBoundaryA() > GetForkHeightDAG());
-    BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), 8550300);
+    BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), 8130300);
 
     // Boundary B stays unset on mainnet until privacy vNext is scheduled.
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryB(), PRIVACY_VNEXT_HEIGHT_UNSET);

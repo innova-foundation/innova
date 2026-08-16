@@ -453,8 +453,8 @@ inline int GetForkHeightBoundaryA()
 // Tag-time gates, all three required before a height replaces the sentinel:
 //   1. FCMP++ candidate has passed independent review.
 //   2. Real post-DAG block rate confirmed on the live network.
-//   3. B set strictly after Boundary A (DAG + 300 = 8,550,300 on mainnet) with
-//      room before the post-Boundary-B staking slots at 8,660,000.
+//   3. B set strictly after Boundary A (DAG + 300 = 8,130,300 on mainnet) with
+//      room before the post-Boundary-B staking slots.
 static const int PRIVACY_VNEXT_HEIGHT_UNSET = 0x7fffffff;
 // Regtest-only rehearsal height for Boundary B (-regtestboundaryb). Stays unset
 // on mainnet and testnet. A height alone never activates Boundary B; readiness is
