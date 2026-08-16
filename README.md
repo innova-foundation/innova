@@ -31,11 +31,18 @@ Tribus Algo PoW/PoS Hybrid Cryptocurrency
 
 ## Intro
 
-Innova is a true optionally anonymous, untraceable, and secure hybrid cryptocurrency.
+Innova [INN] is an energy-efficient Proof-of-Work (Tribus algorithm, created by
+carsenk) and Proof-of-Stake hybrid cryptocurrency with an optional privacy stack.
 
 Ticker: INN
 
-Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Tribus Algorithm created by carsenk) and Proof-of-Stake cryptocurrency.
+The privacy stack (shielded pool, FCMP++, NullSend, NullStake, silent shielding)
+is implemented in this tree and exercised on regtest, but it is **not
+consensus-enabled on mainnet or testnet in this build**: the transaction versions
+it rides are rejected on public networks, and its activation boundary is
+deliberately unset. See [Privacy & Protocol Innovations](#privacy--protocol-innovations-iips)
+for the per-feature status. Transparent transactions are the public-network path
+today.
 
 ## Supported Operating Systems
 
@@ -54,10 +61,10 @@ Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Trib
 ## Specifications
 
 * Total number of coins: 18,000,000 INN
-* Ideal block time: ~15 seconds
+* Ideal block time: ~15 seconds (pre-DAG target; ~1 second after the IDAG fork)
 * Stake interest: 6% annual static inflation
 * Confirmations: 10 blocks
-* Maturity: 75 blocks
+* Maturity: 75 blocks as the wallet reports it — consensus maturity is 65 (`nCoinbaseMaturity`), plus a 10-block wallet safety margin
 * Min stake age: 10 hours
 
 * Cost of Hybrid Collateral Nodes: 25,000 INN
@@ -76,7 +83,7 @@ Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Trib
 
 * Hybrid PoW/PoS Collateral Nodes
 * Stealth addresses
-* Ring Signatures (16 Recommended, deprecated at IIP-0003)
+* Ring signatures (legacy tx version 1000) — retired; rejected on every network from height 0 (IIP-0003)
 * Native Optional Tor Onion Node (-nativetor=1)
 * Encrypted Messaging (SecureMsg) — optional, disabled by default; enable with `smsg=1`
 * Multi-Signature Addresses & TXs
@@ -90,18 +97,44 @@ Innova [INN] is an anonymous, untraceable, energy efficient, Proof-of-Work (Trib
 * Hyperfile - IPFS API Implementation for Decentralized File Uploads (UI and RPC)
 * Name Value System supporting the IDNS for fully & truly decentralized blockchain domains
 
-### v5 Privacy & Consensus Stack
+### v5 Consensus Stack
+
+What the v5 fork activates on public networks. Each is a height-gated flag day
+on the mainnet ladder (see [IIP table](#privacy--protocol-innovations-iips) for
+effective heights); none has activated yet on a mainnet whose tip is ~7.9M.
+
+* IDAG — DAG block-ordering layer for high throughput (~1 second post-DAG)
+* Epoch finality — M-of-N committee finality gadget with soft/hard tiers,
+  transparent-tier voting
+* POEM entropy weighting
+* IDNS name reset
+* Cold staking (P2CS)
+
+Already live on mainnet today, ungated: Dandelion++ transaction-origin privacy
+(relay policy, on by default), silent payments, stealth addresses, Proof of Data
+timestamping, and the IDNS name-value system.
+
+### v5 Privacy Stack — implemented, not consensus-enabled
+
+Implemented in this tree and regtest-mature, but **inert on every public
+network** in this build. The legacy envelopes (transaction versions 2000–2007)
+are rejected on mainnet and testnet at every height by
+`IsLegacyPrivacyPolicyDisabled()` (`main.h`), and the unified version-2008
+envelope that replaces them activates only at Boundary B, which is unset on
+mainnet and testnet (`FORK_HEIGHT_BOUNDARY_B`, `main.h`) pending an independent
+FCMP++ review. These features are not removed from the product — they are staged
+behind that boundary.
 
 * Shielded pool — Pedersen commitments, Bulletproofs, and Lelantus-style proofs
 * FCMP++ full-chain membership proofs (curve-tree + inner-product argument)
 * NullSend — confidential CoinJoin-style transaction mixing
-* NullStake — zero-knowledge private staking
-* Silent Payments and silent shielding
-* Dandelion++ network-level transaction-origin privacy
-* IDAG — DAG block-ordering layer for high throughput
-* Epoch finality — M-of-N committee finality gadget with soft/hard tiers
+* NullStake — zero-knowledge private staking (V1/V2/V3)
+* Silent shielding (the silent-payment/shielded-pool composition)
+* Dynamic Selective Privacy — the 3-bit disclosure mask
 
-See [docs/architecture/](docs/architecture/) for the consensus and privacy design docs.
+See [docs/architecture/](docs/architecture/) for the consensus and privacy design
+docs; [PRIVACY.md](docs/architecture/PRIVACY.md) and
+[CONSENSUS.md](docs/architecture/CONSENSUS.md) both carry the same status caveat.
 
 ### Off-chain encrypted messaging (SecureMsg / Nyx)
 
@@ -126,20 +159,33 @@ convenience, not for information whose disclosure would harm you.
 
 ## Privacy & Protocol Innovations (IIPs)
 
-Innova Improvement Proposals (IIPs) formalize all protocol innovations. See [IIP_INDEX.md](docs/proposals/IIP_INDEX.md) for full specifications.
+Innova Improvement Proposals (IIPs) formalize all protocol innovations. See [IIP_INDEX.md](docs/proposals/IIP_INDEX.md) for full specifications and the status vocabulary.
 
-| IIP | Title | Status | Fork Height |
-|-----|-------|--------|-------------|
-| [IIP-0001](docs/proposals/IIP_INDEX.md#iip-0001-cold-staking-p2cs) | Cold Staking (P2CS) | Active | 7,800,000 |
-| [IIP-0002](docs/proposals/IIP_INDEX.md#iip-0002-shielded-transactions) | Shielded Transactions (Pedersen + Bulletproofs + Lelantus) | Active | 7,810,000 |
-| [IIP-0003](docs/proposals/IIP_INDEX.md#iip-0003-ring-signature-deprecation) | Ring Signature Deprecation | Active | 7,815,000 |
-| [IIP-0004](docs/proposals/IIP_INDEX.md#iip-0004-dynamic-selective-privacy) | Dynamic Selective Privacy (8 modes) | Active | 7,815,000 |
-| [IIP-0005](docs/proposals/IIP_INDEX.md#iip-0005-confidential-coinjoin) | Confidential CoinJoin | Active | 7,820,000 |
-| [IIP-0006](docs/proposals/IIP_INDEX.md#iip-0006-fcmp-full-chain-membership-proofs) | FCMP++ Full-Chain Membership Proofs | Active | 7,820,000 |
-| [IIP-0007](docs/proposals/IIP_INDEX.md#iip-0007-silent-payments-and-silent-shielding) | Silent Payments + Silent Shielding | Active | 7,810,000 |
-| [IIP-0008](docs/proposals/IIP_INDEX.md#iip-0008-dandelion-network-privacy) | Dandelion++ Network Privacy | Active | 7,810,000 |
-| [IIP-0009](docs/proposals/IIP_INDEX.md#iip-0009-nullstake-v1) | NullStake V1 (ZK Private Staking) | Active | 7,825,000 |
-| [IIP-0010](docs/proposals/IIP_INDEX.md#iip-0010-nullstake-v2) | NullStake V2 (Poseidon2 + Bulletproof AC) | Proposed | 7,830,000 |
+Nothing in the v5 ladder has activated on mainnet. Mainnet gate heights are not
+literals in the source: every gate returns
+`ShiftMainnetV5Activation(base)`, adding `MAINNET_V5_ACTIVATION_SHIFT`
+(`src/v5activation.h`, currently 600,000) to its base, so the whole ladder moves
+as a unit. The effective heights below are base + shift for the current shift and
+are re-derived by the release preflight against a fresh mainnet tip.
+
+| IIP | Title | Status | Mainnet activation |
+|-----|-------|--------|--------------------|
+| [IIP-0001](docs/proposals/IIP_INDEX.md#iip-0001-cold-staking-p2cs) | Cold Staking (P2CS) | Scheduled | height 8,400,000 |
+| [IIP-0002](docs/proposals/IIP_INDEX.md#iip-0002-shielded-transactions) | Shielded Transactions (Pedersen + Bulletproofs + Lelantus) | Implemented (inactive) | Boundary B — unset |
+| [IIP-0003](docs/proposals/IIP_INDEX.md#iip-0003-ring-signature-deprecation) | Ring Signature Deprecation | Active | height 0, all networks |
+| [IIP-0004](docs/proposals/IIP_INDEX.md#iip-0004-dynamic-selective-privacy) | Dynamic Selective Privacy (8 modes) | Implemented (inactive) | Boundary B — unset |
+| [IIP-0005](docs/proposals/IIP_INDEX.md#iip-0005-confidential-coinjoin) | Confidential CoinJoin | Implemented (inactive) | Boundary B — unset |
+| [IIP-0006](docs/proposals/IIP_INDEX.md#iip-0006-fcmp-full-chain-membership-proofs) | FCMP++ Full-Chain Membership Proofs | Implemented (inactive) | Boundary B — unset |
+| [IIP-0007](docs/proposals/IIP_INDEX.md#iip-0007-silent-payments-and-silent-shielding) | Silent Payments + Silent Shielding | Partly active | silent payments: no gate, live. Silent shielding: Boundary B — unset |
+| [IIP-0008](docs/proposals/IIP_INDEX.md#iip-0008-dandelion-network-privacy) | Dandelion++ Network Privacy | Active | no fork height — relay policy, on by default |
+| [IIP-0009](docs/proposals/IIP_INDEX.md#iip-0009-nullstake-v1) | NullStake V1 (ZK Private Staking) | Implemented (inactive) | Boundary B — unset |
+| [IIP-0010](docs/proposals/IIP_INDEX.md#iip-0010-nullstake-v2) | NullStake V2 (Poseidon2 + Bulletproof AC) | Implemented (inactive) | Boundary B — unset |
+
+The privacy IIPs above carry a ladder height in the source
+(`FORK_HEIGHT_SHIELDED` and its siblings, `main.h`), but reaching it does not
+enable them: the transaction versions they ride (2000–2007) are rejected on
+mainnet and testnet at *every* height, and their production replacement is the
+version-2008 envelope gated on Boundary B, which is unset on public networks.
 
 ## Links
 
