@@ -2194,25 +2194,34 @@ bool DeriveNoteTallyAggregates(const std::vector<const CNoteFinalityVote*>& vVot
     return true;
 }
 
-bool GetNoteTallyTierCoefficients(int nTier, int64_t& nWinningCoeff, int64_t& nActiveCoeff)
+bool GetNoteTallyTierCoefficients(int nTier, int64_t& nWinningCoeff, int64_t& nActiveCoeff,
+                                  int64_t* pnStrictOffset)
 {
+    int64_t nOffset = 0;
     switch (nTier)
     {
     case FINALITY_HARD:
         nWinningCoeff = 3;
         nActiveCoeff = 2;
-        return true;
+        break;
     case FINALITY_SOFT:
         nWinningCoeff = 2;
         nActiveCoeff = 1;
-        return true;
+        // 2W - A - 1 >= 0, i.e. 2W > A. The unshifted statement would prove 2W >= A,
+        // which two blocks can satisfy at once at an even A, and a note-only
+        // certificate has nothing but this statement to name one winner with.
+        nOffset = 1;
+        break;
     case FINALITY_TENTATIVE:
         nWinningCoeff = 3;
         nActiveCoeff = 1;
-        return true;
+        break;
     default:
         return false;
     }
+    if (pnStrictOffset)
+        *pnStrictOffset = nOffset;
+    return true;
 }
 
 namespace
@@ -2262,7 +2271,8 @@ bool DeriveTierStatementPoints(int nTier,
 {
     int64_t nWinningCoeff = 0;
     int64_t nActiveCoeff = 0;
-    if (!GetNoteTallyTierCoefficients(nTier, nWinningCoeff, nActiveCoeff))
+    int64_t nStrictOffset = 0;
+    if (!GetNoteTallyTierCoefficients(nTier, nWinningCoeff, nActiveCoeff, &nStrictOffset))
     {
         Fail(pstrError, "note tally tier has no comparison coefficients");
         return false;
@@ -2277,8 +2287,9 @@ bool DeriveTierStatementPoints(int nTier,
     const uint256 one = Ed25519ScalarFromUint64(1);
     const uint256 negOne = Ed25519ScalarNeg(one);
 
-    // a_w*D_win - a_a*D_act + (a_w*T_win - a_a*T_act)*H. The H coefficient is the tier
-    // slack, which an honest tally can range-prove and an overclaimed one cannot.
+    // a_w*D_win - a_a*D_act + (a_w*T_win - a_a*T_act - offset)*H. The H coefficient is
+    // the tier slack, which an honest tally can range-prove and an overclaimed one
+    // cannot. The offset is the tier's strictness: SOFT proves 2W - A - 1 >= 0.
     std::vector<PrivacyVNextCombineTerm> vTier(4);
     vTier[0].nSource = PRIVACY_VNEXT_TERM_SUPPLIED;
     vTier[0].scalar = Ed25519ScalarToDigest(Ed25519ScalarFromInt64(nWinningCoeff));
@@ -2288,10 +2299,12 @@ bool DeriveTierStatementPoints(int nTier,
     vTier[1].point = activePoint;
     vTier[2].nSource = PRIVACY_VNEXT_TERM_MONERO_H;
     vTier[2].scalar = Ed25519ScalarToDigest(Ed25519ScalarSub(
-        Ed25519ScalarMul(Ed25519ScalarFromInt64(nWinningCoeff),
-                         Ed25519ScalarFromInt64(nTransparentWinning)),
-        Ed25519ScalarMul(Ed25519ScalarFromInt64(nActiveCoeff),
-                         Ed25519ScalarFromInt64(nTransparentActive))));
+        Ed25519ScalarSub(
+            Ed25519ScalarMul(Ed25519ScalarFromInt64(nWinningCoeff),
+                             Ed25519ScalarFromInt64(nTransparentWinning)),
+            Ed25519ScalarMul(Ed25519ScalarFromInt64(nActiveCoeff),
+                             Ed25519ScalarFromInt64(nTransparentActive))),
+        Ed25519ScalarFromInt64(nStrictOffset)));
 
     // D_act - D_win keeps the winning sum under the active sum.
     std::vector<PrivacyVNextCombineTerm> vWinningCap(3);
@@ -2352,7 +2365,8 @@ bool BuildNoteTallyTierProofs(int nTier,
 
     int64_t nWinningCoeff = 0;
     int64_t nActiveCoeff = 0;
-    if (!GetNoteTallyTierCoefficients(nTier, nWinningCoeff, nActiveCoeff))
+    int64_t nStrictOffset = 0;
+    if (!GetNoteTallyTierCoefficients(nTier, nWinningCoeff, nActiveCoeff, &nStrictOffset))
     {
         Fail(pstrError, "note tally tier has no comparison coefficients");
         return false;
@@ -2368,7 +2382,8 @@ bool BuildNoteTallyTierProofs(int nTier,
     }
 
     const int64_t nSlack = (nWinningCoeff * (nPrivateWinning + nTransparentWinning)) -
-                           (nActiveCoeff * (nPrivateActive + nTransparentActive));
+                           (nActiveCoeff * (nPrivateActive + nTransparentActive)) -
+                           nStrictOffset;
     if (nSlack < 0)
     {
         Fail(pstrError, "note tally opening does not reach the claimed tier");

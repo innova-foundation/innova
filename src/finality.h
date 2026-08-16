@@ -199,7 +199,9 @@ enum FinalityTier
 {
     FINALITY_NONE      = 0,   // below threshold or too few voters
     FINALITY_TENTATIVE = 1,   // >= 1/3 of epoch vote weight
-    FINALITY_SOFT      = 2,   // >= 1/2 of epoch vote weight
+    // Strict majority, not >= 1/2. At an even total weight two blocks can each hold
+    // exactly half, and a tier two blocks can hold at once is not a unique winner.
+    FINALITY_SOFT      = 2,   // > 1/2 of epoch vote weight
     FINALITY_HARD      = 3    // >= 2/3 of epoch vote weight
 };
 
@@ -989,7 +991,9 @@ public:
      *  the Boundary-A miner skip, which must keep rejecting the legacy path while
      *  admitting v4. */
     bool HasNoteWeight() const;
-    bool IsValidBasic(std::string* pstrError = NULL) const;
+    /** nOtherLegVoters: voters a not-yet-joined leg contributes, so the voter floor
+     *  applies to the whole epoch. Wire and block paths pass nothing. */
+    bool IsValidBasic(std::string* pstrError = NULL, size_t nOtherLegVoters = 0) const;
 };
 
 /** Boundary-A canonical transparent certificate schema.  Private commitments,
@@ -1170,12 +1174,27 @@ bool BuildCanonicalFinalityTallyCertificateScript(const CFinalityTallyCertificat
                                                     CScript& scriptOut);
 bool ExtractCanonicalFinalityTallyCertificate(const CScript& scriptPubKey,
                                                CFinalityTallyCertificate& certOut);
-/** Deterministically aggregate a complete connected transparent vote set into
- *  the Boundary-A canonical certificate domain.  This is deliberately pure:
- *  callers supply the frozen epoch vote set, and relay/miner state is updated
- *  only after the complete certificate has been constructed and validated. */
+/** Pure aggregation of a complete connected transparent vote set into the Boundary-A
+ *  canonical certificate. nOtherLegVoters counts voters from another leg (note tags on
+ *  v4) toward the voter floor; pass 0 when there is none. */
 bool BuildCanonicalTransparentFinalityCertificate(
     const std::vector<CFinalityVote>& vVotes,
+    CFinalityTallyCertificate& certOut,
+    std::string* pstrError = NULL,
+    size_t nOtherLegVoters = 0);
+/** Skeleton for an epoch that carried no transparent vote at all.
+ *
+ *  The transparent builder above needs transparent votes to derive a winner from, so
+ *  an all-private epoch had no producer even once consensus accepted such a
+ *  certificate. This supplies the same skeleton from the note leg: the winner is the
+ *  counted note votes' most-named block (hash tie-break -- a public rule, so every
+ *  committee member converges on one candidate and their partials interpolate), and
+ *  every transparent field is left at the empty value CheckTallyCertificate pins for
+ *  a note-only certificate. nTier is left NONE for the caller to set from the opened
+ *  aggregates. */
+bool BuildNoteOnlyFinalitySkeleton(
+    int nEpoch,
+    const std::vector<CNoteFinalityVote>& vCountedNoteVotes,
     CFinalityTallyCertificate& certOut,
     std::string* pstrError = NULL);
 bool BuildFinalityVoteScriptForHeight(const CFinalityVote& vote, int nHeight,

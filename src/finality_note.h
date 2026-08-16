@@ -573,8 +573,13 @@ struct CNoteTallyTierProofs
     }
 };
 
-/** Tier comparison coefficients, matching FinalityDetermineTier exactly. */
-bool GetNoteTallyTierCoefficients(int nTier, int64_t& nWinningCoeff, int64_t& nActiveCoeff);
+/** Tier comparison coefficients, matching FinalityDetermineTier exactly.
+ *
+ *  The claim proved is a_w*W - a_a*A - offset >= 0. The offset is what makes SOFT the
+ *  strict majority the plaintext predicate is: without it the statement admits W == A/2,
+ *  which two blocks can hold at once. */
+bool GetNoteTallyTierCoefficients(int nTier, int64_t& nWinningCoeff, int64_t& nActiveCoeff,
+                                  int64_t* pnStrictOffset = NULL);
 
 /** Committee side: range-prove the tier claim from the recovered aggregate opening. */
 bool BuildNoteTallyTierProofs(int nTier,

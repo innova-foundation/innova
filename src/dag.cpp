@@ -2981,7 +2981,7 @@ bool CDAGManager::BuildEpochState(int nEpoch, int nEpochInterval,
             }
             if (nWinnerWeight * 3 >= nEpochVoteWeight * 2)
                 nDetTier = FINALITY_HARD;
-            else if (nWinnerWeight * 2 >= nEpochVoteWeight)
+            else if (nWinnerWeight * 2 > nEpochVoteWeight)
                 nDetTier = FINALITY_SOFT;
             else if (nWinnerWeight * 3 >= nEpochVoteWeight)
                 nDetTier = FINALITY_TENTATIVE;
