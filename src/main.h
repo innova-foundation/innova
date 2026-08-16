@@ -1100,6 +1100,10 @@ void StakeMiner(CWallet *pwallet);
 void ResendWalletTransactions(bool fForce = false);
 
 bool Finalise();
+/** Persist the deferred wallet best-block locator, if one is pending. */
+bool FlushWalletBestChainLocator(std::string& strErrorOut);
+bool HasPendingWalletLocator();
+int PendingWalletLocatorBlocks();
 
 bool FindTransactionsByDestination(const CTxDestination &dest, std::vector<uint256> &vtxhash);
 

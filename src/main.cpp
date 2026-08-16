@@ -485,6 +485,80 @@ static bool SetWalletBestChainChecked(const CBlockLocator& loc,
     return true;
 }
 
+// Deferred wallet best-block locator. Safe because the locator only lags the durable
+// chain state and startup rescan catches it up; in-flight shielded state is covered by
+// the LevelDB recovery outbox.
+static const int WALLET_LOCATOR_BATCH_BLOCKS_DEFAULT = 1000;
+static const int64_t WALLET_LOCATOR_BATCH_MAX_SECONDS = 30;
+
+static bool g_fPendingWalletLocator = false;
+static CBlockLocator g_pendingWalletLocator;
+static int g_nPendingWalletLocatorBlocks = 0;
+static int64_t g_nPendingWalletLocatorStarted = 0;
+
+static int WalletLocatorBatchBlocks()
+{
+    static int nBatch = -1;
+    if (nBatch < 0)
+    {
+        nBatch = (int)GetArg("-walletlocatorbatch",
+                             WALLET_LOCATOR_BATCH_BLOCKS_DEFAULT);
+        if (nBatch < 0)
+            nBatch = 0;
+    }
+    return nBatch;
+}
+
+bool HasPendingWalletLocator()
+{
+    return g_fPendingWalletLocator;
+}
+
+int PendingWalletLocatorBlocks()
+{
+    return g_nPendingWalletLocatorBlocks;
+}
+
+// Same rule as the name-index cursor: flush on block count or on age, so a tip
+// follower stays near-current without a separate steady-state path.
+static bool WalletLocatorBatchDue()
+{
+    if (!g_fPendingWalletLocator)
+        return false;
+    if (WalletLocatorBatchBlocks() <= 0)
+        return true;
+    if (g_nPendingWalletLocatorBlocks >= WalletLocatorBatchBlocks())
+        return true;
+    return g_nPendingWalletLocatorStarted != 0 &&
+           GetTime() - g_nPendingWalletLocatorStarted >=
+               WALLET_LOCATOR_BATCH_MAX_SECONDS;
+}
+
+static void DeferWalletBestChain(const CBlockLocator& loc)
+{
+    g_pendingWalletLocator = loc;
+    if (!g_fPendingWalletLocator)
+    {
+        g_fPendingWalletLocator = true;
+        g_nPendingWalletLocatorBlocks = 0;
+        g_nPendingWalletLocatorStarted = GetTime();
+    }
+    g_nPendingWalletLocatorBlocks++;
+}
+
+bool FlushWalletBestChainLocator(std::string& strErrorOut)
+{
+    strErrorOut.clear();
+    if (!g_fPendingWalletLocator)
+        return true;
+    if (!SetWalletBestChainChecked(g_pendingWalletLocator, strErrorOut))
+        return false;
+    g_fPendingWalletLocator = false;
+    g_nPendingWalletLocatorBlocks = 0;
+    g_nPendingWalletLocatorStarted = 0;
+    return true;
+}
+
 // notify wallets about an updated transaction
 void static UpdatedTransaction(const uint256& hashTx)
 {
@@ -526,6 +600,15 @@ bool Finalise()
     SecureMsgShutdown();
     //nTransactionsUpdated++;
     mempool.AddTransactionsUpdated(1);
+
+    // Persist the deferred locator while the wallet is still registered. A miss
+    // here only costs a catch-up rescan on the next start, so it is not fatal.
+    std::string strLocatorError;
+    if (!FlushWalletBestChainLocator(strLocatorError))
+        printf("Finalise() : could not persist the deferred wallet best-block "
+               "locator: %s; the next start rescans from the last durable one\n",
+               strLocatorError.c_str());
+
     bitdb.Flush(false);
     StopNode();
     bitdb.Flush(true);
@@ -10693,7 +10776,9 @@ static bool PublishAndReplayCommittedEffects(CTxDB& txdb,
     {
         BLOCK_PHASE(BP_WALLET_LOCATOR);
         std::string strWalletError;
-        if (!SetWalletBestChainChecked(effects.GetLocator(), strWalletError))
+        DeferWalletBestChain(effects.GetLocator());
+        if (WalletLocatorBatchDue() &&
+            !FlushWalletBestChainLocator(strWalletError))
         {
             printf("%s: FATAL %s after durable chain commit; shutting down "
                    "with the prior wallet locator retained for rescan\n",
