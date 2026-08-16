@@ -15,6 +15,14 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from v5_release_evidence_schema import (
+    MAINNET_ACTIVATION_BOUNDARY_B_BASE,
+    MAINNET_ACTIVATION_DAG_GATE_BASE,
+    MAINNET_ACTIVATION_FIRST_GATE_BASE,
+    MAINNET_ACTIVATION_SHIFT_STEP,
+    MAINNET_PRE_DAG_EPOCH_INTERVAL,
+    MAINNET_ACTIVATION_MAX_LEAD_BLOCKS,
+    MAINNET_ACTIVATION_MIN_LEAD_BLOCKS,
+    MAINNET_ACTIVATION_SHIFT_GRANULARITY,
     PREFLIGHT_SCHEMA_VERSION,
     REQUIRED_BOUNDARY_ORIGIN,
     REQUIRED_CHECKS,
@@ -411,6 +419,68 @@ def validate_exact_int_list(value: Any, required: Tuple[int, ...], field: str) -
     return list(value)
 
 
+def validate_mainnet_activation_ladder(
+    trusted_tip: int,
+    shift: int,
+    lead: int,
+    granularity: int,
+    first_gate: int,
+    boundary_b_slot: int,
+    field_prefix: str = "release",
+) -> int:
+    """Accept any ladder whose first gate leads the trusted tip by a policy-legal
+    amount. Returns the actual lead in blocks.
+
+    This is deliberately a BAND, not a derived exact value. The previous revision
+    computed one required_shift from the tip and demanded equality, which pinned
+    a tag to roughly a two-day window -- it rejected a long lead and a short one
+    alike, so the deliberately short ladder the project now ships could not be
+    tagged at all.
+
+    Split out of validate_release_metadata so the predicate can be exercised
+    against the real source tree without assembling a full signed release
+    bundle; --selftest builds a synthetic main.h and proves nothing about it.
+    """
+    if trusted_tip < 0:
+        raise PolicyError("%s mainnet trusted tip must be non-negative" % field_prefix)
+    if (lead != MAINNET_ACTIVATION_MIN_LEAD_BLOCKS
+            or granularity != MAINNET_ACTIVATION_SHIFT_GRANULARITY):
+        raise PolicyError("%s mainnet activation inputs do not declare the %d/%d lead policy" %
+                          (field_prefix, MAINNET_ACTIVATION_MIN_LEAD_BLOCKS,
+                           MAINNET_ACTIVATION_SHIFT_GRANULARITY))
+    # Structural consistency: the whole ladder is one shift off fixed bases.
+    if shift < 0 or shift % granularity != 0:
+        raise PolicyError("%s mainnet activation shift must be a non-negative multiple of %d" %
+                          (field_prefix, granularity))
+    if (first_gate != MAINNET_ACTIVATION_FIRST_GATE_BASE + shift
+            or boundary_b_slot != MAINNET_ACTIVATION_BOUNDARY_B_BASE + shift):
+        raise PolicyError("%s mainnet activation gates are not the fixed bases plus the shift" % field_prefix)
+    # The DAG gate has to be a pre-DAG epoch boundary or the fork block is not
+    # votable and the first post-DAG epoch starts late.
+    dag_gate = MAINNET_ACTIVATION_DAG_GATE_BASE + shift
+    if dag_gate % MAINNET_PRE_DAG_EPOCH_INTERVAL != 0:
+        raise PolicyError(
+            "%s mainnet DAG gate %d is not a multiple of the pre-DAG epoch interval %d; "
+            "only shifts that are multiples of %d satisfy both this and the %d granularity" %
+            (field_prefix, dag_gate, MAINNET_PRE_DAG_EPOCH_INTERVAL,
+             MAINNET_ACTIVATION_SHIFT_STEP, granularity))
+
+    actual_lead = first_gate - trusted_tip
+    if actual_lead < MAINNET_ACTIVATION_MIN_LEAD_BLOCKS:
+        raise PolicyError(
+            "%s mainnet first gate %d leads trusted tip %d by only %d blocks; "
+            "policy floor is %d (the network must be fully upgraded before the flag day)" %
+            (field_prefix, first_gate, trusted_tip, actual_lead,
+             MAINNET_ACTIVATION_MIN_LEAD_BLOCKS))
+    if actual_lead > MAINNET_ACTIVATION_MAX_LEAD_BLOCKS:
+        raise PolicyError(
+            "%s mainnet first gate %d leads trusted tip %d by %d blocks, above the %d ceiling; "
+            "the v5 ladder is required to activate swiftly" %
+            (field_prefix, first_gate, trusted_tip, actual_lead,
+             MAINNET_ACTIVATION_MAX_LEAD_BLOCKS))
+    return actual_lead
+
+
 def validate_release_metadata(container: Mapping[str, Any], field_prefix: str) -> Dict[str, Any]:
     privacy = container.get("privacy_vnext")
     if not isinstance(privacy, dict) or set(privacy) != REQUIRED_PRIVACY_VNEXT_FIELDS:
@@ -509,12 +579,9 @@ def validate_release_metadata(container: Mapping[str, Any], field_prefix: str) -
     boundary_b_slot = evidence_int(
         mainnet.get("boundary_b_slot"), "%s.mainnet.boundary_b_slot" % field_prefix
     )
-    if trusted_tip < 0 or lead != 100000 or granularity != 10000:
-        raise PolicyError("%s mainnet activation inputs do not use fixed 100000/10000 policy" % field_prefix)
-    required_delta = max(0, trusted_tip + lead - 7800000)
-    required_shift = ((required_delta + granularity - 1) // granularity) * granularity
-    if shift != required_shift or first_gate != 7800000 + shift or boundary_b_slot != 8060000 + shift:
-        raise PolicyError("%s mainnet activation ladder does not match the trusted-tip calculation" % field_prefix)
+    validate_mainnet_activation_ladder(
+        trusted_tip, shift, lead, granularity, first_gate, boundary_b_slot, field_prefix
+    )
     digest_mainnet = dict(mainnet)
     digest_mainnet["trusted_tip_hash"] = validated_digest(
         mainnet.get("trusted_tip_hash"), "%s.mainnet.trusted_tip_hash" % field_prefix
@@ -1582,8 +1649,8 @@ def selftest() -> int:
                 "trusted_tip_height": 7_700_000,
                 "trusted_tip_hash": fixture_sha256("mainnet-trusted-tip"),
                 "trusted_tip_evidence_sha256": fixture_sha256("mainnet-tip-evidence"),
-                "minimum_lead_blocks": 100_000,
-                "shift_granularity": 10_000,
+                "minimum_lead_blocks": MAINNET_ACTIVATION_MIN_LEAD_BLOCKS,
+                "shift_granularity": MAINNET_ACTIVATION_SHIFT_GRANULARITY,
                 "activation_shift": 0,
                 "first_v5_gate": 7_800_000,
                 "boundary_b_slot": 8_060_000,
