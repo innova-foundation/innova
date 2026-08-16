@@ -249,8 +249,12 @@ ClientModel::DAGStatus ClientModel::getDAGStatus(int recentBlockCount) const
     status.height = pBest ? pBest->nHeight : 0;
     status.active = status.height >= FORK_HEIGHT_DAG;
     status.dagKnightActive = status.height >= FORK_HEIGHT_DAGKNIGHT;
+    // Report the same ordering contract getdaginfo does. The GUI showed the
+    // bare family name, so a node on a different adaptive-k or anchor rule
+    // looked identical to a correct one.
     status.orderingAlgorithm = status.active
-        ? (status.dagKnightActive ? QString("DAGKNIGHT") : QString("GHOSTDAG"))
+        ? (status.dagKnightActive ? QString(DAGKNIGHT_ORDERING_CONTRACT)
+                                  : QString("GHOSTDAG"))
         : QString("inactive");
     status.epoch = GetEpochForHeight(status.height);
     status.epochInterval = GetEpochInterval(status.height);

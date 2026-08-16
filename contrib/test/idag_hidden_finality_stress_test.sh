@@ -320,7 +320,17 @@ PRIVATE_VOTES=$(json_field "$FININFO" "private_votes")
 [ "$FORK_ACTIVE" = "true" ] && success "finality fork active" || fail "finality fork inactive"
 [ "$MODEL" = "active-epoch-committed-weight" ] && success "dynamic finality model reported" || fail "unexpected finality model: $MODEL"
 [ "$ABS_FLOOR" = "false" ] && success "absolute stake floor disabled" || fail "absolute stake floor not disabled"
-[ "$PRIVATE_MODE" = "hidden-weight-nullstake" ] && success "hidden finality mode reported" || fail "unexpected private finality mode: $PRIVATE_MODE"
+# private_finality_mode tracks Boundary B: 'disabled' below it, 'privacy_vnext' at
+# or above. Assert it against the boundary state in the same response.
+BOUNDARY_B_ACTIVE=$(json_field "$FININFO" "boundary_b_active")
+if [ "$BOUNDARY_B_ACTIVE" = "true" ]; then
+    EXPECTED_PRIVATE_MODE="privacy_vnext"
+else
+    EXPECTED_PRIVATE_MODE="disabled"
+fi
+[ "$PRIVATE_MODE" = "$EXPECTED_PRIVATE_MODE" ] \
+    && success "private finality mode is $PRIVATE_MODE, matching boundary_b_active=$BOUNDARY_B_ACTIVE" \
+    || fail "private finality mode is $PRIVATE_MODE, expected $EXPECTED_PRIVATE_MODE at boundary_b_active=$BOUNDARY_B_ACTIVE"
 [ "$TALLY_REQUIRED" = "true" ] && success "private votes require tally certificates" || fail "private tally gate not reported"
 [ "$PRIVATE_PROMOTION" = "false" ] && success "private promotion disabled without committee config" || fail "private promotion unexpectedly enabled"
 [ "$TALLY_THRESHOLD_VALID" = "false" ] && success "missing tally threshold reported invalid" || fail "missing tally threshold not reported invalid"

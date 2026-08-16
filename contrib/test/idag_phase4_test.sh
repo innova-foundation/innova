@@ -209,11 +209,21 @@ else
     fail "DAGKNIGHT should be active at height $BLOCKS: $DK_ACTIVE2"
 fi
 
+# Post-activation the RPC reports the full ordering contract string, not the family
+# name. Pin it and cross-check it against the advertised contract.
+DAGKNIGHT_CONTRACT="dagknight_adaptive_k_anchor_pure_v1"
 ALGO2=$(json_field "$DAGINFO2" "ordering_algorithm")
-if [ "$ALGO2" = "DAGKNIGHT" ]; then
-    success "Ordering algorithm switched to DAGKNIGHT"
+if [ "$ALGO2" = "$DAGKNIGHT_CONTRACT" ]; then
+    success "Ordering algorithm switched to $DAGKNIGHT_CONTRACT"
 else
-    fail "Expected DAGKNIGHT, got: $ALGO2"
+    fail "Expected $DAGKNIGHT_CONTRACT, got: $ALGO2"
+fi
+
+CONTRACT2=$(json_field "$DAGINFO2" "dagknight_contract")
+if [ "$CONTRACT2" = "$ALGO2" ]; then
+    success "ordering_algorithm matches the advertised dagknight_contract"
+else
+    fail "ordering_algorithm ($ALGO2) disagrees with dagknight_contract ($CONTRACT2)"
 fi
 
 # Check fork height field
