@@ -54,7 +54,7 @@ Value getsubsidy(const Array& params, bool fHelp)
     // Display only. The supply clamp is evaluated against the current tip, so a
     // query for a height other than the next one reports that height's schedule
     // value under today's headroom, not a projection of the headroom.
-    return (uint64_t)GetProofOfWorkReward(nShowHeight, 0, pindexBest);
+    return (uint64_t)GetProofOfWorkReward(nShowHeight, 0, pindexBest, 0);
 }
 
 Value getmininginfo(const Array& params, bool fHelp)
@@ -78,7 +78,7 @@ Value getmininginfo(const Array& params, bool fHelp)
     diff.push_back(Pair("search-interval",      (int)nLastCoinStakeSearchInterval));
     obj.push_back(Pair("difficulty",    diff));
 
-    obj.push_back(Pair("blockvalue",    (uint64_t)GetProofOfWorkReward(nBestHeight+1, 0, pindexBest)));
+    obj.push_back(Pair("blockvalue",    (uint64_t)GetProofOfWorkReward(nBestHeight+1, 0, pindexBest, 0)));
     obj.push_back(Pair("netmhashps",     GetPoWMHashPS()));
 
     obj.push_back(Pair("netstakeweight", GetPoSKernelPS()));

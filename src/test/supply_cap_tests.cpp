@@ -93,7 +93,7 @@ BOOST_AUTO_TEST_CASE(inert_below_fork_height)
                           std::numeric_limits<int64_t>::max());
         BOOST_CHECK_EQUAL(ClampSubsidyToSupplyCap(REGTEST_POW_SUBSIDY, &parent, 0),
                           REGTEST_POW_SUBSIDY);
-        BOOST_CHECK_EQUAL(GetProofOfWorkReward(vHeights[i] + 1, 0, &parent),
+        BOOST_CHECK_EQUAL(GetProofOfWorkReward(vHeights[i] + 1, 0, &parent, 0),
                           REGTEST_POW_SUBSIDY);
     }
 
@@ -101,8 +101,8 @@ BOOST_AUTO_TEST_CASE(inert_below_fork_height)
     // first block AT the fork height, is the first one clamped.
     CBlockIndex parentBelow = MakeParent(998, nOverCap);
     CBlockIndex parentAt = MakeParent(999, nOverCap);
-    BOOST_CHECK_EQUAL(GetProofOfWorkReward(999, 0, &parentBelow), REGTEST_POW_SUBSIDY);
-    BOOST_CHECK_EQUAL(GetProofOfWorkReward(1000, 0, &parentAt), 0);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(999, 0, &parentBelow, 0), REGTEST_POW_SUBSIDY);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(1000, 0, &parentAt, 0), 0);
 }
 
 // At the boundary the subsidy is clamped to the exact remainder -- not to zero,
@@ -118,18 +118,18 @@ BOOST_AUTO_TEST_CASE(clamps_to_exact_remainder_at_boundary)
     {
         CBlockIndex parent = MakeParent(100, nCap - vPartial[i]);
         BOOST_CHECK_EQUAL(GetRemainingIssuance(&parent, 0), vPartial[i]);
-        BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, 0, &parent), vPartial[i]);
+        BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, 0, &parent, 0), vPartial[i]);
         // Connecting that block lands the supply exactly on the cap.
         BOOST_CHECK_EQUAL(parent.nMoneySupply + vPartial[i], nCap);
     }
 
     // Headroom of exactly one subsidy: still a full payment, nothing clipped.
     CBlockIndex parentExact = MakeParent(100, nCap - REGTEST_POW_SUBSIDY);
-    BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, 0, &parentExact), REGTEST_POW_SUBSIDY);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, 0, &parentExact, 0), REGTEST_POW_SUBSIDY);
 
     // One satoshi more headroom than a subsidy: schedule value, cap not binding.
     CBlockIndex parentSlack = MakeParent(100, nCap - REGTEST_POW_SUBSIDY - 1);
-    BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, 0, &parentSlack), REGTEST_POW_SUBSIDY);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, 0, &parentSlack, 0), REGTEST_POW_SUBSIDY);
 }
 
 // Past the cap the subsidy is zero, and stays zero however far past it the
@@ -144,8 +144,8 @@ BOOST_AUTO_TEST_CASE(zero_subsidy_past_the_cap)
     {
         CBlockIndex parent = MakeParent(100, vSupply[i]);
         BOOST_CHECK_EQUAL(GetRemainingIssuance(&parent, 0), 0);
-        BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, 0, &parent), 0);
-        BOOST_CHECK_EQUAL(GetProofOfStakeReward(1000000, 0, &parent), 0);
+        BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, 0, &parent, 0), 0);
+        BOOST_CHECK_EQUAL(GetProofOfStakeReward(1000000, 0, &parent, 0), 0);
     }
 }
 
@@ -160,19 +160,19 @@ BOOST_AUTO_TEST_CASE(fees_still_pay_at_and_past_the_cap)
 
     // Past the cap: the whole reward is the fees.
     CBlockIndex parentPast = MakeParent(100, nCap);
-    BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, nFees, &parentPast), nFees);
-    BOOST_CHECK_EQUAL(GetProofOfStakeReward(1000000, nFees, &parentPast), nFees);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, nFees, &parentPast, 0), nFees);
+    BOOST_CHECK_EQUAL(GetProofOfStakeReward(1000000, nFees, &parentPast, 0), nFees);
 
     // Exactly at the boundary: partial subsidy plus the full fees.
     const int64_t nHeadroom = 2 * COIN;
     CBlockIndex parentEdge = MakeParent(100, nCap - nHeadroom);
-    BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, nFees, &parentEdge), nHeadroom + nFees);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, nFees, &parentEdge, 0), nHeadroom + nFees);
 
     // Fees are never themselves clamped: a fee larger than the remaining
     // headroom still pays in full, because fees are recycled value and add
     // nothing to supply.
     CBlockIndex parentTiny = MakeParent(100, nCap - 1);
-    BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, 100 * COIN, &parentTiny), 1 + 100 * COIN);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, 100 * COIN, &parentTiny, 0), 1 + 100 * COIN);
 }
 
 // The stake subsidy has no height bound of its own -- its "9000 years" cutoff
@@ -194,7 +194,7 @@ BOOST_AUTO_TEST_CASE(stake_reward_is_capped_regardless_of_coin_age)
     const int64_t vCoinAge[] = { 1000, 1000000, 1000000000, 100000000000LL };
     for (size_t i = 0; i < sizeof(vCoinAge) / sizeof(vCoinAge[0]); i++)
     {
-        const int64_t nReward = GetProofOfStakeReward(vCoinAge[i], 0, &parent);
+        const int64_t nReward = GetProofOfStakeReward(vCoinAge[i], 0, &parent, 0);
         BOOST_CHECK_EQUAL(nReward, nHeadroom);
     }
 
@@ -202,7 +202,7 @@ BOOST_AUTO_TEST_CASE(stake_reward_is_capped_regardless_of_coin_age)
     // rule closes: the reward there is strictly larger than the whole cap.
     SupplyCapGuard guardHigh(1000000, nCap);
     CBlockIndex parentLow = MakeParent(100, 0);
-    BOOST_CHECK(GetProofOfStakeReward(100000000000LL, 0, &parentLow) > nCap);
+    BOOST_CHECK(GetProofOfStakeReward(100000000000LL, 0, &parentLow, 0) > nCap);
 }
 
 // Issuance already committed elsewhere comes off the headroom before the subsidy; a
@@ -238,12 +238,12 @@ BOOST_AUTO_TEST_CASE(clamp_reads_only_the_parent)
     CBlockIndex parentB = MakeParent(100, nCap - 40 * COIN);
 
     // Same height, same schedule value, different headroom -> different subsidy.
-    BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, 0, &parentA), 3 * COIN);
-    BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, 0, &parentB), 40 * COIN);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, 0, &parentA, 0), 3 * COIN);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, 0, &parentB, 0), 40 * COIN);
 
     // Repeated evaluation is stable: no cache, no clock, no tip.
     for (int i = 0; i < 8; i++)
-        BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, 0, &parentA), 3 * COIN);
+        BOOST_CHECK_EQUAL(GetProofOfWorkReward(101, 0, &parentA, 0), 3 * COIN);
 
     // A NULL parent is the genesis/no-chain case: height 0, rule inert.
     BOOST_CHECK_EQUAL(GetRemainingIssuance(NULL, 0), std::numeric_limits<int64_t>::max());
@@ -267,9 +267,9 @@ BOOST_AUTO_TEST_CASE(mainnet_history_is_unchanged)
         const int nHeight = vHeights[i];
         CBlockIndex parentAtCap = MakeParent(nHeight - 1, MAX_MONEY);
         CBlockIndex parentEmpty = MakeParent(nHeight - 1, 0);
-        const int64_t nWithSupply = GetProofOfWorkReward(nHeight, 0, &parentAtCap);
-        const int64_t nWithout = GetProofOfWorkReward(nHeight, 0, &parentEmpty);
-        const int64_t nNoParent = GetProofOfWorkReward(nHeight, 0, NULL);
+        const int64_t nWithSupply = GetProofOfWorkReward(nHeight, 0, &parentAtCap, 0);
+        const int64_t nWithout = GetProofOfWorkReward(nHeight, 0, &parentEmpty, 0);
+        const int64_t nNoParent = GetProofOfWorkReward(nHeight, 0, NULL, 0);
         BOOST_CHECK_EQUAL(nWithSupply, nWithout);
         BOOST_CHECK_EQUAL(nWithSupply, nNoParent);
     }
@@ -277,7 +277,7 @@ BOOST_AUTO_TEST_CASE(mainnet_history_is_unchanged)
     // The first block at the DAG fork is the first one the cap can touch.
     CBlockIndex parentPre = MakeParent(FORK_HEIGHT_DAG - 1, MAX_MONEY);
     BOOST_CHECK_EQUAL(GetRemainingIssuance(&parentPre, 0), 0);
-    BOOST_CHECK_EQUAL(GetProofOfWorkReward(FORK_HEIGHT_DAG, 0, &parentPre), 0);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(FORK_HEIGHT_DAG, 0, &parentPre, 0), 0);
 
     // And one height earlier it is still unbounded.
     CBlockIndex parentPre2 = MakeParent(FORK_HEIGHT_DAG - 2, MAX_MONEY);
@@ -319,7 +319,7 @@ BOOST_AUTO_TEST_CASE(chain_walk_lands_exactly_on_the_cap)
     for (int nHeight = 1; nHeight <= 40; nHeight++)
     {
         CBlockIndex parent = MakeParent(nHeight - 1, nSupply);
-        const int64_t nSubsidy = GetProofOfWorkReward(nHeight, 0, &parent);
+        const int64_t nSubsidy = GetProofOfWorkReward(nHeight, 0, &parent, 0);
         BOOST_CHECK(nSubsidy >= 0);
         BOOST_CHECK(nSubsidy <= REGTEST_POW_SUBSIDY);
         if (nSubsidy > 0 && nSubsidy < REGTEST_POW_SUBSIDY && nHeight >= 5)

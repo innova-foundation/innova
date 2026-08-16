@@ -78,7 +78,7 @@ static const size_t nPreForkCount = sizeof(vPreFork) / sizeof(vPreFork[0]);
 // height, so these vectors pin the ladder itself and are unaffected by the cap.
 int64_t Subsidy(int nHeight)
 {
-    return GetProofOfWorkReward(nHeight, 0, NULL);
+    return GetProofOfWorkReward(nHeight, 0, NULL, 0);
 }
 
 // What the ladder pays at nHeight once the post-DAG divisor is applied.
