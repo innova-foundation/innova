@@ -991,7 +991,9 @@ public:
      *  the Boundary-A miner skip, which must keep rejecting the legacy path while
      *  admitting v4. */
     bool HasNoteWeight() const;
-    bool IsValidBasic(std::string* pstrError = NULL) const;
+    /** nOtherLegVoters: voters a not-yet-joined leg contributes, so the voter floor
+     *  applies to the whole epoch. Wire and block paths pass nothing. */
+    bool IsValidBasic(std::string* pstrError = NULL, size_t nOtherLegVoters = 0) const;
 };
 
 /** Boundary-A canonical transparent certificate schema.  Private commitments,
@@ -1172,14 +1174,14 @@ bool BuildCanonicalFinalityTallyCertificateScript(const CFinalityTallyCertificat
                                                     CScript& scriptOut);
 bool ExtractCanonicalFinalityTallyCertificate(const CScript& scriptPubKey,
                                                CFinalityTallyCertificate& certOut);
-/** Deterministically aggregate a complete connected transparent vote set into
- *  the Boundary-A canonical certificate domain.  This is deliberately pure:
- *  callers supply the frozen epoch vote set, and relay/miner state is updated
- *  only after the complete certificate has been constructed and validated. */
+/** Pure aggregation of a complete connected transparent vote set into the Boundary-A
+ *  canonical certificate. nOtherLegVoters counts voters from another leg (note tags on
+ *  v4) toward the voter floor; pass 0 when there is none. */
 bool BuildCanonicalTransparentFinalityCertificate(
     const std::vector<CFinalityVote>& vVotes,
     CFinalityTallyCertificate& certOut,
-    std::string* pstrError = NULL);
+    std::string* pstrError = NULL,
+    size_t nOtherLegVoters = 0);
 /** Skeleton for an epoch that carried no transparent vote at all.
  *
  *  The transparent builder above needs transparent votes to derive a winner from, so

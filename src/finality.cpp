@@ -2861,7 +2861,8 @@ static FinalityTier FinalityDetermineTier(int64_t nActiveWeight, int64_t nWinnin
 bool BuildCanonicalTransparentFinalityCertificate(
     const std::vector<CFinalityVote>& vVotes,
     CFinalityTallyCertificate& certOut,
-    std::string* pstrError)
+    std::string* pstrError,
+    size_t nOtherLegVoters)
 {
     certOut = CFinalityTallyCertificate();
     const auto reject = [&](const std::string& strReason) -> bool {
@@ -2871,8 +2872,14 @@ bool BuildCanonicalTransparentFinalityCertificate(
     };
     if (pstrError)
         pstrError->clear();
-    if (vVotes.size() < FINALITY_MIN_VOTERS)
+    // The floor counts all of the epoch's voters, including a second (note) leg; the skeleton
+    // is still a pure function of the transparent votes.
+    if (vVotes.size() + nOtherLegVoters < (size_t)FINALITY_MIN_VOTERS)
         return reject("canonical transparent certificate has too few voters");
+    // The winner and every transparent field come from these votes, so there has to be
+    // at least one. An epoch with none takes the note-only skeleton instead.
+    if (vVotes.empty())
+        return reject("canonical transparent certificate has no transparent vote");
     if (vVotes.size() > FINALITY_CANONICAL_CERT_MAX_NULLIFIERS)
         return reject("canonical transparent certificate exceeds its vote-set bound");
 
@@ -2940,7 +2947,7 @@ bool BuildCanonicalTransparentFinalityCertificate(
     cert.vVoteNullifiers.assign(setNullifiers.begin(), setNullifiers.end());
     cert.MarkCanonicalEnvelope();
     std::string strBasicError;
-    if (!cert.IsValidBasic(&strBasicError))
+    if (!cert.IsValidBasic(&strBasicError, nOtherLegVoters))
         return reject("canonical transparent certificate is invalid: " +
                       strBasicError);
     certOut = cert;
@@ -4572,7 +4579,8 @@ bool CFinalityTallyCertificate::HasNoteWeight() const
     return !vNoteVoteTags.empty() || !noteTierProofs.IsNull();
 }
 
-bool CFinalityTallyCertificate::IsValidBasic(std::string* pstrError) const
+bool CFinalityTallyCertificate::IsValidBasic(std::string* pstrError,
+                                             size_t nOtherLegVoters) const
 {
     if (nVersion < 1 || nVersion > FINALITY_NOTE_CERT_VERSION)
         return FinalityReject(pstrError, "unsupported tally certificate version");
@@ -4618,7 +4626,7 @@ bool CFinalityTallyCertificate::IsValidBasic(std::string* pstrError) const
     // domains), so the sum is the unique-voter count. Checking only the transparent
     // leg here would let a note-only certificate finalize on one voter.
     if (fCanonicalEnvelope &&
-        vVoteNullifiers.size() + (fNoteLeg ? vNoteVoteTags.size() : 0) <
+        vVoteNullifiers.size() + (fNoteLeg ? vNoteVoteTags.size() : 0) + nOtherLegVoters <
             (size_t)FINALITY_MIN_VOTERS)
         return FinalityReject(pstrError,
                               "canonical tally certificate has too few voters");
@@ -5575,9 +5583,16 @@ bool CFinalityTracker::CheckTallyCertificate(
         }
         CFinalityTallyCertificate expected;
         std::string strCanonicalError;
+        // The note tags count toward the rebuild's voter floor. They are deduped and
+        // bounded in IsValidBasic above, and CheckNoteTallyCertificate below resolves
+        // every one of them to a connected counted note vote and requires coverage
+        // equality with that set, so a tag cannot be invented to buy a floor. Without
+        // this an epoch with one transparent voter and the rest voting privately had
+        // no rebuildable skeleton and no certificate at all.
         if (!fNoteOnly &&
             !BuildCanonicalTransparentFinalityCertificate(
-                vMatchedVotes, expected, &strCanonicalError))
+                vMatchedVotes, expected, &strCanonicalError,
+                fNoteCert ? cert.vNoteVoteTags.size() : 0))
             return reject("canonical tally certificate cannot be rebuilt: " +
                           strCanonicalError);
         if (!fNoteCert)
@@ -9051,8 +9066,16 @@ static bool ProcessNoteTallyCommitteeEpoch(int nEpoch)
     const std::vector<CFinalityVote> vConnectedTransparent =
         g_finalityTracker.GetConnectedEpochVotes(nEpoch);
     bool fNoteOnly = false;
+    // The note leg supplies voters too. Counting them here is what lets an epoch with
+    // one transparent voter and the rest private build a skeleton: the transparent leg
+    // alone is under the floor, the epoch is not. The winner still comes from the
+    // transparent votes, so the validator rebuilds exactly this.
+    size_t nNoteVoters = 0;
+    for (size_t i = 0; i < vCounted.size(); i++)
+        if (vCounted[i].nEpoch == nEpoch)
+            nNoteVoters++;
     if (!BuildCanonicalTransparentFinalityCertificate(vConnectedTransparent, skeleton,
-                                                      &strError))
+                                                      &strError, nNoteVoters))
     {
         // An epoch with transparent votes that still has no canonical result is a
         // transparent problem (too few voters, no decision); it keeps the old
@@ -9144,10 +9167,12 @@ static bool ProcessNoteTallyCommitteeEpoch(int nEpoch)
     std::sort(vCoveredTags.begin(), vCoveredTags.end());
     if (vCoveredTags.empty())
         return false;
-    // With no transparent leg the note tags ARE the voter set, so the combined floor
-    // IsValidBasic applies falls entirely on them. Stop here rather than after the
-    // proving run, and never emit a candidate the validator would refuse.
-    if (fNoteOnly && vCoveredTags.size() < (size_t)FINALITY_MIN_VOTERS)
+    // The floor IsValidBasic applies is on the two legs together, and complaints can
+    // shrink the covered set below the counted set the skeleton was built against.
+    // Re-check it on the sets that actually go into the certificate, here rather than
+    // after the proving run, so no candidate the validator would refuse is ever emitted.
+    if (skeleton.vVoteNullifiers.size() + vCoveredTags.size() <
+        (size_t)FINALITY_MIN_VOTERS)
         return false;
 
     bool fDidWork = false;
