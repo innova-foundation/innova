@@ -294,8 +294,11 @@ BOOST_AUTO_TEST_CASE(terminal_pow_supply_after_the_dag_fork_is_pinned)
                      vStretched[i].nSubsidyBeforeSpacingScale;
         nPrevOrig = vStretched[i].nOriginal15sHeight;
     }
-    // Exactly the INN the 15s tier comments promise: 50,000 + 37,500 + 25,000
-    // + 12,500 + 2,500 + 12,500 + 25,000 + 50,000 INN.
+    // Exactly the INN the 15s tier comments promise over this span: the fork
+    // lands inside the 0.2 rung, so that one contributes its remainder
+    // (8,250,000 - 8,140,000 = 110,000 blocks -> 22,000 INN) and the seven full
+    // rungs above it contribute 37,500 + 25,000 + 12,500 + 2,500 + 12,500 +
+    // 25,000 + 50,000 = 165,000 INN. Total 187,000 INN.
     BOOST_CHECK_EQUAL(nIntended, 18700000000000LL);
     BOOST_CHECK(nSpanTotal <= nIntended);
     BOOST_CHECK_EQUAL(nIntended - nSpanTotal, 11800000LL);
