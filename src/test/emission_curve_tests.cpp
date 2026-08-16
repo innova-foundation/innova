@@ -350,6 +350,17 @@ BOOST_AUTO_TEST_CASE(finality_vote_reward_rate_is_pinned)
 BOOST_AUTO_TEST_CASE(finality_vote_reward_units_are_seconds_post_dag)
 {
     MainnetEmissionGuard guard;
+    // The harness boots regtest, which leaves the mutable nTargetSpacing global at 1.
+    // Pre-DAG mainnet spacing is 15, and the pre-fork multiplier has to be pinned
+    // against the value it really had, so restore it for the duration.
+    const unsigned int nSpacingSaved = nTargetSpacing;
+    nTargetSpacing = (unsigned int)PRE_DAG_TARGET_SPACING;
+    struct SpacingRestore
+    {
+        unsigned int nSaved;
+        ~SpacingRestore() { nTargetSpacing = nSaved; }
+    } spacingRestore = { nSpacingSaved };
+    BOOST_CHECK_EQUAL(GetTargetSpacingForHeight(FORK_HEIGHT_DAG - 1), 15u);
 
     const int nPreDAG = FORK_HEIGHT_DAG - 1;
     const int nPostDAG = FORK_HEIGHT_DAG;
