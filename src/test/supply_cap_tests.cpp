@@ -70,7 +70,9 @@ CBlockIndex MakeParent(int nHeight, int64_t nMoneySupply)
     return index;
 }
 
-const int64_t REGTEST_POW_SUBSIDY = 50 * COIN;   // flat regtest ladder value
+// The regtest ladder's first rung, paid below the regtest DAG fork. Above it the ladder
+// steps, so read the schedule rather than assume this value.
+const int64_t REGTEST_POW_SUBSIDY = 50 * COIN;
 
 } // namespace
 
@@ -94,14 +96,14 @@ BOOST_AUTO_TEST_CASE(inert_below_fork_height)
         BOOST_CHECK_EQUAL(ClampSubsidyToSupplyCap(REGTEST_POW_SUBSIDY, &parent, 0),
                           REGTEST_POW_SUBSIDY);
         BOOST_CHECK_EQUAL(GetProofOfWorkReward(vHeights[i] + 1, 0, &parent, 0),
-                          REGTEST_POW_SUBSIDY);
+                          GetBlockSubsidySchedule(vHeights[i] + 1));
     }
 
     // The parent one below the boundary pays a full subsidy; its child, the
     // first block AT the fork height, is the first one clamped.
     CBlockIndex parentBelow = MakeParent(998, nOverCap);
     CBlockIndex parentAt = MakeParent(999, nOverCap);
-    BOOST_CHECK_EQUAL(GetProofOfWorkReward(999, 0, &parentBelow, 0), REGTEST_POW_SUBSIDY);
+    BOOST_CHECK_EQUAL(GetProofOfWorkReward(999, 0, &parentBelow, 0), GetBlockSubsidySchedule(999));
     BOOST_CHECK_EQUAL(GetProofOfWorkReward(1000, 0, &parentAt, 0), 0);
 }
 
