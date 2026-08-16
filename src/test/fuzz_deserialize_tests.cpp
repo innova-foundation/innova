@@ -2308,7 +2308,7 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
     // The post-Boundary-B staking slots are the tag-time ceiling for B. They must
     // stay above A so the window B lands in is non-empty after any re-base.
     const int nPostBoundaryB = ShiftMainnetV5Activation(8060000);
-    BOOST_CHECK_EQUAL(nPostBoundaryB, 8660000);
+    BOOST_CHECK_EQUAL(nPostBoundaryB, 8240000);
     BOOST_CHECK_EQUAL(GetForkHeightNullStakeDelegSet(), nPostBoundaryB);
     BOOST_CHECK_EQUAL(GetForkHeightNullStakeReclaim(), nPostBoundaryB);
     BOOST_CHECK_EQUAL(GetForkHeightNullStakeB2C(), nPostBoundaryB);
