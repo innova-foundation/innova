@@ -893,6 +893,9 @@ unsigned int ComputeRetargetedBits(unsigned int nPrevBits, int64_t nActualSpan,
                                    unsigned int nEffectiveSpacing, int nWindow,
                                    bool fTighterDrift, const CBigNum& bnTargetLimit);
 int64_t GetProofOfWorkReward(int nHeight, int64_t nFees);
+// Subsidy before fees at a height at or above FORK_HEIGHT_DAG. Runs the same
+// stretched ladder and spacing divisor on every network, each from its own fork.
+int64_t GetPostDagProofOfWorkSubsidy(int nHeight);
 int64_t GetProofOfStakeReward(int64_t nCoinAge, int64_t nFees);
 unsigned int ComputeMinWork(unsigned int nBase, int64_t nTime);
 unsigned int ComputeMinStake(unsigned int nBase, int64_t nTime, unsigned int nBlockTime);

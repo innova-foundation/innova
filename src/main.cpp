@@ -4861,10 +4861,116 @@ bool ValidateAndRecoverDAGActiveSetPersistence(CTxDB& txdb,
     return true;
 }
 
+// One rung of the post-DAG proof-of-work ladder: the last height it pays,
+// counted in PRE-DAG-cadence blocks past FORK_HEIGHT_DAG, and the reward the
+// pre-DAG cadence assigns it.
+//
+// GetPostDagProofOfWorkSubsidy stretches the boundary by the block-spacing ratio
+// and divides the reward by the same ratio, so a rung keeps the wall-clock span
+// and the total payout the pre-DAG schedule promised. Storing the offset rather
+// than the absolute height makes the ladder shift-invariant: moving
+// MAINNET_V5_ACTIVATION_SHIFT moves every boundary with the fork.
+struct PoWPostDagTier
+{
+    int nOffsetLast;    // last height, in pre-DAG-cadence blocks past the fork
+    int64_t nSubsidy;   // pre-DAG-cadence reward, before the spacing divisor
+};
+
+// Mainnet. The rungs the 15s schedule ended at 8,750,000 / 9,000,000 /
+// 9,250,000 / 9,500,000 / 9,750,000 / 10,000,000, as offsets from the fork.
+static const PoWPostDagTier vPoWPostDagMainnet[] = {
+    {  200000,  10000000 },   // 0.1  INN
+    {  450000,   5000000 },   // 0.05
+    {  700000,   1000000 },   // 0.01
+    {  950000,   5000000 },   // 0.05
+    { 1200000,  10000000 },   // 0.1
+    { 1450000,  20000000 },   // 0.2
+};
+static const int64_t nPoWPostDagTailMainnet = 10000;      // 0.0001
+
+// Testnet: mainnet's rung rewards over rungs a hundredth as long (666666 satoshi a block
+// on the first rung).
+static const PoWPostDagTier vPoWPostDagTestnet[] = {
+    {   2000,  10000000 },
+    {   4500,   5000000 },
+    {   7000,   1000000 },
+    {   9500,   5000000 },
+    {  12000,  10000000 },
+    {  14500,  20000000 },
+};
+static const int64_t nPoWPostDagTailTestnet = 10000;
+
+// Regtest: the same rung shape, first post-fork rung paying exactly the pre-fork 50 INN,
+// over rungs short enough to mine across.
+static const PoWPostDagTier vPoWPostDagRegtest[] = {
+    {  20,  75000000000LL },   //  750 INN -> 50 INN after the divisor
+    {  40,  37500000000LL },   //  375     -> 25
+    {  60,   7500000000LL },   //   75     ->  5
+    {  80,  37500000000LL },   //  375     -> 25
+    { 100,  75000000000LL },   //  750     -> 50
+    { 120, 150000000000LL },   // 1500     -> 100
+};
+static const int64_t nPoWPostDagTailRegtest = 75000000LL;  // 0.75 -> 0.05
+
+static const PoWPostDagTier* GetPoWPostDagLadder(size_t& nCount, int64_t& nTail)
+{
+    if (fRegTest)
+    {
+        nCount = ARRAYLEN(vPoWPostDagRegtest);
+        nTail = nPoWPostDagTailRegtest;
+        return vPoWPostDagRegtest;
+    }
+    if (fTestNet)
+    {
+        nCount = ARRAYLEN(vPoWPostDagTestnet);
+        nTail = nPoWPostDagTailTestnet;
+        return vPoWPostDagTestnet;
+    }
+    nCount = ARRAYLEN(vPoWPostDagMainnet);
+    nTail = nPoWPostDagTailMainnet;
+    return vPoWPostDagMainnet;
+}
+
+// Post-DAG PoW subsidy, before fees, on every network. Rewards are divided by the
+// spacing ratio (PRE_DAG_TARGET_SPACING / GetTargetSpacingForHeight) and rung
+// boundaries stretched by the same ratio, preserving wall-clock issuance.
+int64_t GetPostDagProofOfWorkSubsidy(int nHeight)
+{
+    const int64_t nPostSpacing = (int64_t)GetTargetSpacingForHeight(nHeight);
+    size_t nCount = 0;
+    int64_t nSubsidy = 0;
+    const PoWPostDagTier* pLadder = GetPoWPostDagLadder(nCount, nSubsidy);
+
+    for (size_t i = 0; i < nCount; i++)
+    {
+        const int64_t nLast = (int64_t)FORK_HEIGHT_DAG +
+            (int64_t)pLadder[i].nOffsetLast * PRE_DAG_TARGET_SPACING / nPostSpacing;
+        if ((int64_t)nHeight <= nLast)
+        {
+            nSubsidy = pLadder[i].nSubsidy;
+            break;
+        }
+    }
+
+    return nSubsidy * nPostSpacing / PRE_DAG_TARGET_SPACING;
+}
+
 // Proof of Work miner's coin base reward
 int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
 {
   int64_t nSubsidy = 1 * COIN;
+
+  // Shared by every network from its own DAG fork height. Kept ahead of the
+  // per-network ladders below so those describe pre-DAG emission only.
+  if (nHeight >= FORK_HEIGHT_DAG)
+  {
+      nSubsidy = GetPostDagProofOfWorkSubsidy(nHeight);
+
+      if (fDebug && GetBoolArg("-printcreation"))
+          printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
+
+      return nSubsidy + nFees;
+  }
 
   // use nHeight parameter instead of pindexBest->nHeight
   // to correctly compute reward during validation of non-tip blocks
@@ -4886,10 +4992,8 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
            nSubsidy = 1 * COIN/2;
        else if (nHeight <= 5000)
            nSubsidy = 10 * COIN;
-       else if (nHeight > 5000) // Block 5000
+       else // Block 5000
            nSubsidy = 0;
-     else if (nHeight > 10000)
-          nSubsidy = 10000; // PoW Reward 0.0001
 
        if (fDebug && GetBoolArg("-printcreation"))
            printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
@@ -4993,50 +5097,11 @@ int64_t GetProofOfWorkReward(int nHeight, int64_t nFees)
       nSubsidy = 0.2 * COIN;
     else if (nHeight <= 8500000) // 0.15 Coin PoW Reward to release 37,500 INN in 250,000 blocks
       nSubsidy = 0.15 * COIN;
-    // Tiers from here on are counted in post-DAG blocks, which arrive 15x
-    // faster. Each boundary is its 15s-cadence height stretched from the DAG
-    // fork by the same ratio the reward below is divided by:
-    //
-    //     height = FORK_HEIGHT_DAG + 15 * (original_height - FORK_HEIGHT_DAG)
-    //
-    // so a tier still spans the wall-clock time, and pays the INN, that the 15s
-    // schedule promised. Left unstretched each would elapse in about three days
-    // instead of six weeks: the rate stays right and the totals come out at a
-    // fifteenth, ending meaningful PoW subsidy roughly eight months early and
-    // taking the collateralnode share with it.
-    //
-    // Derived from FORK_HEIGHT_DAG = ShiftMainnetV5Activation(7950000) =
-    // 8,550,000. NOT shift-invariant: moving MAINNET_V5_ACTIVATION_SHIFT moves
-    // the fork, so every boundary here must be recomputed from the line above,
-    // and terminal supply moves with it -- blocks that cross the fork change
-    // which side of the divisor pays them.
-    else if (nHeight <= 11550000) // 0.1 Coin PoW Reward to release 1 CollateralNode (was <= 8,750,000)
-      nSubsidy = 0.1 * COIN;
-    else if (nHeight <= 15300000) // 0.05 Coin PoW Reward to release 12,500 INN (was <= 9,000,000)
-      nSubsidy = 0.05 * COIN;
-    else if (nHeight <= 19050000) // 0.01 Coin PoW Reward to release 2,500 INN (was <= 9,250,000)
-      nSubsidy = 0.01 * COIN;
-    else if (nHeight <= 22800000) // 0.05 Coin PoW Reward to release 12,500 INN (was <= 9,500,000)
-      nSubsidy = 0.05 * COIN;
-    else if (nHeight <= 26550000) // 0.1 Coin PoW Reward to release 1 CollateralNode (was <= 9,750,000)
-      nSubsidy = 0.1 * COIN;
-    else if (nHeight <= 30300000) // 0.2 Coin PoW Reward to release 50,000 INN (was <= 10,000,000)
-      nSubsidy = 0.2 * COIN;
-    else // 0.0001 Coin PoW Reward to release ~200 INN per year
-      nSubsidy = 0.0001 * COIN; // Final PoW Reward 0.0001 INN (was @ block 10 mln)
-
-    // IDAG emission-rate correction: post-DAG blocks come 15x faster (1s vs 15s pre-DAG, see
-    // GetTargetSpacingForHeight). The tier schedule above encodes the intended per-block emission at the
-    // 15s cadence, so scale each post-DAG reward by the block-spacing ratio (= 1/15) to keep the emission
-    // RATE continuous across the DAG fork -- the same per-block reward at 1s blocks would otherwise be a
-    // ~15x inflation spike, and the whole schedule would mine out ~15x faster in wall-clock time.
-    // The pre-DAG reference is a compile-time CONSTANT (not the mutable global nTargetSpacing) so this
-    // consensus divisor can never be perturbed by runtime state; the post-DAG spacing is read from
-    // GetTargetSpacingForHeight (deterministic literal 1 post-DAG) so the ratio self-corrects if that
-    // block time is ever re-tuned. PRE_DAG_TARGET_SPACING now lives in main.h so the name index's rental
-    // conversion reads the same constant.
-    if (nHeight >= FORK_HEIGHT_DAG)
-        nSubsidy = nSubsidy * (int64_t)GetTargetSpacingForHeight(nHeight) / PRE_DAG_TARGET_SPACING;
+    else
+      // The rung the DAG fork opens into. Heights between 8,500,000 and the fork
+      // are still 15s blocks, so they are paid undivided; from the fork on,
+      // vPoWPostDagMainnet takes over with the same 0.1 INN rung, divided.
+      nSubsidy = 10000000; // 0.1 INN
 
     if (fDebug && GetBoolArg("-printcreation"))
       printf("GetProofOfWorkReward() : create=%s nSubsidy=%" PRId64"\n", FormatMoney(nSubsidy).c_str(), nSubsidy);
