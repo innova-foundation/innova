@@ -2850,7 +2850,8 @@ static FinalityTier FinalityDetermineTier(int64_t nActiveWeight, int64_t nWinnin
         return FINALITY_NONE;
     if (nWinningWeight * 3 >= nActiveWeight * 2)
         return FINALITY_HARD;
-    if (nWinningWeight * 2 >= nActiveWeight)
+    // Strict majority: `2W > A`. `2W >= A` would admit two blocks at an exact even split.
+    if (nWinningWeight * 2 > nActiveWeight)
         return FINALITY_SOFT;
     if (nWinningWeight * 3 >= nActiveWeight)
         return FINALITY_TENTATIVE;
@@ -3637,7 +3638,7 @@ static bool VerifyFinalityThresholdTier(int nTier, int64_t nActiveWeight, int64_
     if (nTier == FINALITY_HARD)
         return nWinningWeight * 3 >= nActiveWeight * 2;
     if (nTier == FINALITY_SOFT)
-        return nWinningWeight * 2 >= nActiveWeight;
+        return nWinningWeight * 2 > nActiveWeight;   // strict majority; see FinalityDetermineTier
     if (nTier == FINALITY_TENTATIVE)
         return nWinningWeight * 3 >= nActiveWeight;
     return nTier == FINALITY_NONE;
@@ -4758,7 +4759,7 @@ bool CFinalityTallyCertificate::IsValidBasic(std::string* pstrError) const
             nTransparentWinningWeight * 3 < nTransparentActiveWeight * 2)
             return FinalityReject(pstrError, "transparent hard tally below 2/3 threshold");
         if (nTier == FINALITY_SOFT &&
-            nTransparentWinningWeight * 2 < nTransparentActiveWeight)
+            nTransparentWinningWeight * 2 <= nTransparentActiveWeight)
             return FinalityReject(pstrError, "transparent soft tally below 1/2 threshold");
         if (nTier == FINALITY_TENTATIVE &&
             nTransparentWinningWeight * 3 < nTransparentActiveWeight)
@@ -6391,7 +6392,7 @@ bool CFinalityTracker::CheckFinalityThreshold(int nEpoch, bool fLog)
     FinalityTier tier = FINALITY_NONE;
     if (nBestBlockWeight * 3 >= nEpochVoteWeight * 2)      // >= 2/3
         tier = FINALITY_HARD;
-    else if (nBestBlockWeight * 2 >= nEpochVoteWeight)       // >= 1/2
+    else if (nBestBlockWeight * 2 > nEpochVoteWeight)        // > 1/2, strict
         tier = FINALITY_SOFT;
     else if (nBestBlockWeight * 3 >= nEpochVoteWeight)       // >= 1/3
         tier = FINALITY_TENTATIVE;
@@ -6468,7 +6469,7 @@ bool CFinalityTracker::ComputeDeterministicEpochTier(int nEpoch, bool fHaveEpoch
 
     if (nBestBlockWeight * 3 >= nEpochVoteWeight * 2)
         nTierOut = FINALITY_HARD;
-    else if (nBestBlockWeight * 2 >= nEpochVoteWeight)
+    else if (nBestBlockWeight * 2 > nEpochVoteWeight)
         nTierOut = FINALITY_SOFT;
     else if (nBestBlockWeight * 3 >= nEpochVoteWeight)
         nTierOut = FINALITY_TENTATIVE;

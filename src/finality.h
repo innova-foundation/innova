@@ -199,7 +199,9 @@ enum FinalityTier
 {
     FINALITY_NONE      = 0,   // below threshold or too few voters
     FINALITY_TENTATIVE = 1,   // >= 1/3 of epoch vote weight
-    FINALITY_SOFT      = 2,   // >= 1/2 of epoch vote weight
+    // Strict majority, not >= 1/2. At an even total weight two blocks can each hold
+    // exactly half, and a tier two blocks can hold at once is not a unique winner.
+    FINALITY_SOFT      = 2,   // > 1/2 of epoch vote weight
     FINALITY_HARD      = 3    // >= 2/3 of epoch vote weight
 };
 

@@ -862,7 +862,10 @@ BOOST_AUTO_TEST_CASE(tier_proofs_verify_only_against_the_derived_points_and_thei
     entropy.fill(0x3c);
 
     const int vTiers[3] = { FINALITY_HARD, FINALITY_SOFT, FINALITY_TENTATIVE };
-    const int64_t nPrivateActive = 3000;
+    // SOFT is a STRICT majority, so its statement is 2W - A - 1 >= 0 and the tight
+    // opening needs an odd active sum; at an even one the tightest opening carries a
+    // unit of slack. HARD and TENTATIVE have no offset and stay on 3000.
+    const int64_t vActive[3] = { 3000, 2999, 3000 };
     const int64_t vExactWinning[3] = { 2000, 1500, 1000 };
 
     for (int t = 0; t < 3; t++)
@@ -870,10 +873,14 @@ BOOST_AUTO_TEST_CASE(tier_proofs_verify_only_against_the_derived_points_and_thei
         const int nTier = vTiers[t];
         int64_t nWinningCoeff = 0;
         int64_t nActiveCoeff = 0;
-        BOOST_REQUIRE(GetNoteTallyTierCoefficients(nTier, nWinningCoeff, nActiveCoeff));
+        int64_t nStrictOffset = 0;
+        BOOST_REQUIRE(GetNoteTallyTierCoefficients(nTier, nWinningCoeff, nActiveCoeff,
+                                                   &nStrictOffset));
+        const int64_t nPrivateActive = vActive[t];
         const int64_t nPrivateWinning = vExactWinning[t];
         // The chosen opening clears the tier with no slack at all.
-        BOOST_REQUIRE_EQUAL(nWinningCoeff * nPrivateWinning, nActiveCoeff * nPrivateActive);
+        BOOST_REQUIRE_EQUAL(nWinningCoeff * nPrivateWinning,
+                            nActiveCoeff * nPrivateActive + nStrictOffset);
 
         const uint256 activeBlind = RandomScalar();
         const uint256 winningBlind = RandomScalar();
@@ -4360,6 +4367,237 @@ BOOST_AUTO_TEST_CASE(a_mixed_epoch_still_takes_the_transparent_path)
     // The two builders disagree, which is precisely why the producer's branch is keyed on
     // an EMPTY connected transparent set rather than on the transparent build failing.
     BOOST_CHECK(transparent.hashBlock != noteOnly.hashBlock);
+}
+
+// The note-only floor is justified as "a strict majority names one block". The SOFT
+// predicate was `2W >= A`, which admits W == A/2: at an even covered weight two blocks
+// each hold exactly half, both tier proofs open, and two note-only certificates naming
+// different winners are valid for one epoch at the same time -- with the choice falling
+// to a signature-digest tie-break rather than to the votes. That is the same
+// non-uniqueness TENTATIVE was refused for, one tier up.
+//
+// MUTATION: put `>=` back in FinalityDetermineTier and drop the SOFT case's offset in
+// GetNoteTallyTierCoefficients. nCertifiableWinners below goes from 0 to 2 -- two
+// simultaneously valid certificates -- and the transparent half-split records SOFT again.
+BOOST_AUTO_TEST_CASE(an_exact_half_of_the_note_weight_certifies_no_winner)
+{
+    ScopedTallyArgs scopedArgs;
+    std::vector<CKey> vKeys(3);
+    const CFinalityTallyConfig config = MakeNoteCommittee(vKeys, 2);
+
+    const int nEpoch = 941;
+    const uint256 hashA(0xa5a1), hashB(0xa5a2);
+    const int64_t nHalf = 250000;
+
+    // Equal weight on two different blocks, plus one atomic unit held back. Adding it
+    // later is what turns the split into the strict majority the floor now demands.
+    TalliedVote a = MakeTalliedVote(config, nEpoch, hashA, nHalf, 7, 0xe1);
+    TalliedVote b = MakeTalliedVote(config, nEpoch, hashB, nHalf, 7, 0xe2);
+    TalliedVote tip = MakeTalliedVote(config, nEpoch, hashA, 1, 7, 0xe3);
+
+    PrivacyVNextDigest entropy;
+    entropy.fill(0x2b);
+
+    // The producer's loop for ONE named candidate: the winning aggregate is a function
+    // of the winner, so every candidate needs its own committee pass. Returns whether a
+    // note-only certificate exists for that candidate, i.e. whether some tier at or above
+    // the note-only floor both proves and verifies against the recomputed aggregates.
+    const auto certifiable = [&](const std::vector<const CNoteFinalityVote*>& vCovered,
+                                 const std::vector<uint256>& vCoveredTags,
+                                 const uint256& hashCandidate,
+                                 int64_t& nActiveOut, int64_t& nWinningOut) -> bool {
+        std::string strError;
+        std::vector<CNoteTallyAggregatePartial> vPartials;
+        for (size_t i = 0; i < vKeys.size(); i++)
+        {
+            CNoteTallyCommitteePass pass;
+            BOOST_REQUIRE_MESSAGE(RunNoteTallyCommitteePass(vCovered, hashCandidate,
+                                                            config, vKeys[i], (int)i, pass,
+                                                            &strError), strError);
+            vPartials.push_back(MakePartial(pass, config, vKeys[i], (int)i, nEpoch,
+                                            hashCandidate));
+        }
+        uint256 activeBlind, winningBlind;
+        int64_t nReward = 0;
+        BOOST_REQUIRE_MESSAGE(OpenCoveredAggregates(vPartials, vCovered, vCoveredTags,
+                                                    hashCandidate, config, vKeys[0], 0,
+                                                    nActiveOut, activeBlind, nWinningOut,
+                                                    winningBlind, nReward, strError),
+                              strError);
+        const int vFloorTiers[2] = { FINALITY_SOFT, FINALITY_HARD };
+        for (int t = 0; t < 2; t++)
+        {
+            CNoteTallyTierProofs proofs;
+            if (!BuildNoteTallyTierProofs(vFloorTiers[t], nActiveOut, activeBlind,
+                                          nWinningOut, winningBlind, 0, 0, entropy, proofs,
+                                          &strError))
+                continue;
+            if (CheckNoteTallyCertificate(vFloorTiers[t], hashCandidate, vCovered,
+                                          vCoveredTags,
+                                          std::vector<CNoteVoteComplaint>(), config, 0, 0,
+                                          proofs, &strError))
+                return true;
+        }
+        return false;
+    };
+
+    const auto tagsOf = [](const std::vector<const CNoteFinalityVote*>& vCovered) {
+        std::vector<uint256> vTags;
+        for (size_t i = 0; i < vCovered.size(); i++)
+            vTags.push_back(vCovered[i]->GetVoteTag());
+        return SortedTags(vTags);
+    };
+
+    // --- the exact half split: no winner is exclusive, so none may certify ------------
+    {
+        std::vector<const CNoteFinalityVote*> vCovered;
+        vCovered.push_back(&a.vote);
+        vCovered.push_back(&b.vote);
+        const std::vector<uint256> vCoveredTags = tagsOf(vCovered);
+
+        int nCertifiableWinners = 0;
+        const uint256 vCandidates[2] = { hashA, hashB };
+        for (int i = 0; i < 2; i++)
+        {
+            int64_t nActive = 0, nWinning = 0;
+            const bool fCertifiable =
+                certifiable(vCovered, vCoveredTags, vCandidates[i], nActive, nWinning);
+            // Each block holds exactly half of an even total -- the shape the old
+            // predicate admitted twice over.
+            BOOST_CHECK_EQUAL(nActive, 2 * nHalf);
+            BOOST_CHECK_EQUAL(nWinning, nHalf);
+            BOOST_CHECK_EQUAL(nWinning * 2, nActive);
+            if (fCertifiable)
+                nCertifiableWinners++;
+        }
+        BOOST_CHECK_EQUAL(nCertifiableWinners, 0);
+
+        // The split does reach TENTATIVE, and that proof verifies -- which is exactly
+        // why the floor, not the proof, is what has to refuse it.
+        int64_t nActive = 0, nWinning = 0;
+        uint256 activeBlind, winningBlind;
+        {
+            std::string strError;
+            std::vector<CNoteTallyAggregatePartial> vPartials;
+            for (size_t i = 0; i < vKeys.size(); i++)
+            {
+                CNoteTallyCommitteePass pass;
+                BOOST_REQUIRE_MESSAGE(RunNoteTallyCommitteePass(vCovered, hashA, config,
+                                                                vKeys[i], (int)i, pass,
+                                                                &strError), strError);
+                vPartials.push_back(MakePartial(pass, config, vKeys[i], (int)i, nEpoch,
+                                                hashA));
+            }
+            int64_t nReward = 0;
+            BOOST_REQUIRE_MESSAGE(OpenCoveredAggregates(vPartials, vCovered, vCoveredTags,
+                                                        hashA, config, vKeys[0], 0, nActive,
+                                                        activeBlind, nWinning, winningBlind,
+                                                        nReward, strError), strError);
+            CNoteTallyTierProofs tentative;
+            BOOST_REQUIRE_MESSAGE(
+                BuildNoteTallyTierProofs(FINALITY_TENTATIVE, nActive, activeBlind, nWinning,
+                                         winningBlind, 0, 0, entropy, tentative, &strError),
+                strError);
+            BOOST_CHECK_MESSAGE(
+                CheckNoteTallyCertificate(FINALITY_TENTATIVE, hashA, vCovered, vCoveredTags,
+                                          std::vector<CNoteVoteComplaint>(), config, 0, 0,
+                                          tentative, &strError), strError);
+            BOOST_CHECK(FINALITY_TENTATIVE < FINALITY_SOFT);
+
+            // And half is not provable at the floor, for either candidate.
+            CNoteTallyTierProofs soft;
+            BOOST_CHECK(!BuildNoteTallyTierProofs(FINALITY_SOFT, nActive, activeBlind,
+                                                  nWinning, winningBlind, 0, 0, entropy,
+                                                  soft, &strError));
+            BOOST_CHECK_EQUAL(strError,
+                              "note tally opening does not reach the claimed tier");
+            BOOST_CHECK(soft.IsNull());
+        }
+    }
+
+    // --- one atomic unit past half: exactly one winner certifies ---------------------
+    {
+        std::vector<const CNoteFinalityVote*> vCovered;
+        vCovered.push_back(&a.vote);
+        vCovered.push_back(&b.vote);
+        vCovered.push_back(&tip.vote);
+        const std::vector<uint256> vCoveredTags = tagsOf(vCovered);
+
+        int nCertifiableWinners = 0;
+        uint256 hashCertified = 0;
+        const uint256 vCandidates[2] = { hashA, hashB };
+        for (int i = 0; i < 2; i++)
+        {
+            int64_t nActive = 0, nWinning = 0;
+            if (certifiable(vCovered, vCoveredTags, vCandidates[i], nActive, nWinning))
+            {
+                nCertifiableWinners++;
+                hashCertified = vCandidates[i];
+            }
+            BOOST_CHECK_EQUAL(nActive, 2 * nHalf + 1);
+        }
+        BOOST_CHECK_EQUAL(nCertifiableWinners, 1);
+        BOOST_CHECK(hashCertified == hashA);
+    }
+
+    // --- the plaintext predicate the note statement mirrors --------------------------
+    // ComputeDeterministicEpochTier is where the tier a block records comes from, and it
+    // read the same `2W >= A`. Two transparent voters of equal weight on different blocks
+    // are the same exact half split.
+    {
+        const int nTierEpoch = 942;
+        const int nHeightA = 90100, nHeightB = 90101;
+        std::vector<CKey> vVoterKeys(2);
+        for (size_t i = 0; i < vVoterKeys.size(); i++)
+            vVoterKeys[i].MakeNewKey(true);
+        const CFinalityTallyCertificate noCert;
+
+        CFinalityTracker tracker;
+        BOOST_REQUIRE(tracker.AddVote(
+            MakeTransparentVote(nTierEpoch, hashA, nHeightA, 1500, vVoterKeys[0], 21),
+            false, true));
+        BOOST_REQUIRE(tracker.AddVote(
+            MakeTransparentVote(nTierEpoch, hashB, nHeightB, 1500, vVoterKeys[1], 22),
+            false, true));
+
+        int nTier = FINALITY_NONE;
+        uint256 hashWinner = 0;
+        int nWinnerHeight = 0, nVoterCount = 0;
+        BOOST_REQUIRE(tracker.ComputeDeterministicEpochTier(nTierEpoch, false, noCert,
+                                                            nTier, hashWinner,
+                                                            nWinnerHeight, nVoterCount));
+        BOOST_CHECK_EQUAL(nTier, FINALITY_TENTATIVE);
+        BOOST_CHECK_EQUAL(nVoterCount, 2);
+    }
+
+    // An ODD total is unchanged by the strictness: 2W is even, so `2W >= A` and `2W > A`
+    // are the same predicate there. 1501 of 3001 is a majority on both readings, and the
+    // fix therefore moves nothing except the exact even split above.
+    {
+        const int nTierEpoch = 943;
+        const int nHeightA = 90200, nHeightB = 90201;
+        std::vector<CKey> vVoterKeys(2);
+        for (size_t i = 0; i < vVoterKeys.size(); i++)
+            vVoterKeys[i].MakeNewKey(true);
+        const CFinalityTallyCertificate noCert;
+
+        CFinalityTracker tracker;
+        BOOST_REQUIRE(tracker.AddVote(
+            MakeTransparentVote(nTierEpoch, hashA, nHeightA, 1501, vVoterKeys[0], 23),
+            false, true));
+        BOOST_REQUIRE(tracker.AddVote(
+            MakeTransparentVote(nTierEpoch, hashB, nHeightB, 1500, vVoterKeys[1], 24),
+            false, true));
+
+        int nTier = FINALITY_NONE;
+        uint256 hashWinner = 0;
+        int nWinnerHeight = 0, nVoterCount = 0;
+        BOOST_REQUIRE(tracker.ComputeDeterministicEpochTier(nTierEpoch, false, noCert,
+                                                            nTier, hashWinner,
+                                                            nWinnerHeight, nVoterCount));
+        BOOST_CHECK_EQUAL(nTier, FINALITY_SOFT);
+        BOOST_CHECK(hashWinner == hashA);
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()
