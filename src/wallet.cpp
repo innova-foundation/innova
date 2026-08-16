@@ -2469,6 +2469,22 @@ bool CWallet::ScanForWalletTransactionsChecked(CBlockIndex* pindexStart,
                     return false;
                 }
             }
+
+            // Notes are found by trial-decrypting the block's payloads, which
+            // AddToWalletIfInvolvingMe does not do. Mirrors the connect-side scan; idempotent.
+            if (pindex->nHeight >= FORK_HEIGHT_SHIELDED)
+            {
+                std::string strShieldedError;
+                if (!ScanBlockForShieldedNotesChecked(block, pindex,
+                                                      strShieldedError))
+                {
+                    strErrorOut = strprintf(
+                        "wallet rescan could not scan shielded payloads at height %d: %s",
+                        pindex->nHeight, strShieldedError.c_str());
+                    return false;
+                }
+            }
+
             pindex = pindex->pnext;
 
             // Update current height for progress

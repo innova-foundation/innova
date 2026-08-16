@@ -2359,6 +2359,29 @@ bool AppInit2()
         !pwalletMain->SetBestChainChecked(CBlockLocator(pindexBest)))
         return InitError("Wallet rescan completed but its best-block locator could not be persisted; check wallet storage and restart with -rescan.");
 
+    // Close a recorded IV5 scan gap here: its notes are unrecoverable by any other route now
+    // that unshield is retired.
+    {
+        const int nScanGap = pwalletMain->GetPrivacyVNextScanGapHeight();
+        if (nScanGap >= 0)
+        {
+            uiInterface.InitMessage(_("Reprocessing shielded payloads..."));
+            printf("Wallet has an IV5 scan gap at height %d; reprocessing from there\n",
+                   nScanGap);
+            int nGapBlocks = 0;
+            std::string strGapError;
+            if (!pwalletMain->RescanPrivacyVNextBlocks(nScanGap, nGapBlocks,
+                                                       strGapError))
+                return InitError(strprintf(
+                    "Shielded payload reprocessing failed at the recorded scan gap (height %d): %s. "
+                    "Notes paid to this wallet in the affected blocks would stay undetected; "
+                    "repair block data and restart, or run z_rescaniv5 once the node is up.",
+                    nScanGap, strGapError.c_str()));
+            printf("IV5 scan gap closed: reprocessed %d block(s) from height %d\n",
+                   nGapBlocks, nScanGap);
+        }
+    }
+
     if (fPendingShieldedWalletAcknowledgement)
     {
         std::string strAcknowledgementError;
