@@ -61,6 +61,10 @@ const char* kPhaseNames[BP_PHASE_COUNT] = {
     "name_index",
     "db_commit",
     "post_effects",
+    "wallet_sync",
+    "shield_scan",
+    "wallet_locator",
+    "recovery_clear",
 };
 
 const int kMaxCounters = 24;

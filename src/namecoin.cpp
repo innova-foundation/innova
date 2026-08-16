@@ -3829,6 +3829,143 @@ bool ApplyNameIndexConnectBlock(
         txdb, pindex, setNoSkippedTxs, strError);
 }
 
+bool BlockHasNoNameEffects(const CBlock& block,
+                           const std::set<uint256>& setDAGSkippedTxs)
+{
+    for (std::vector<CTransaction>::const_iterator it = block.vtx.begin();
+         it != block.vtx.end(); ++it)
+    {
+        if (it->nVersion != NAMECOIN_TX_VERSION)
+            continue;
+        if (setDAGSkippedTxs.empty() || !setDAGSkippedTxs.count(it->GetHash()))
+            return false;
+    }
+    return true;
+}
+
+namespace {
+
+// The last deferred block, held as the transition that flushing must apply.
+// Nothing else is retained: the intermediate blocks wrote only the same two
+// keys, so replaying the last block alone reaches the same bytes.
+bool g_fPendingNameCursor = false;
+CBlockIndex* g_pPendingNameIndex = NULL;
+CNameIndexCursor g_pendingNameCursor;
+std::set<uint256> g_setPendingNameSkipped;
+int g_nPendingNameBlocks = 0;
+int64_t g_nPendingNameStarted = 0;
+
+} // namespace
+
+int NameIndexBatchBlocks()
+{
+    static int nBatch = -1;
+    if (nBatch < 0)
+    {
+        nBatch = (int)GetArg("-nameindexbatch",
+                             NAMEINDEX_BATCH_BLOCKS_DEFAULT);
+        if (nBatch < 0)
+            nBatch = 0;
+        if (nBatch > NAMEINDEX_BATCH_BLOCKS_DEFAULT)
+            nBatch = NAMEINDEX_BATCH_BLOCKS_DEFAULT;
+    }
+    return nBatch;
+}
+
+// 0 turns deferral off: every block commits its own cursor, which is the
+// pre-batching path exactly. Kept as an operator switch and as the control
+// arm for measuring the change on one binary.
+bool NameIndexBatchingEnabled()
+{
+    return NameIndexBatchBlocks() > 0;
+}
+
+bool HasPendingNameIndexCursor()
+{
+    return g_fPendingNameCursor;
+}
+
+int PendingNameIndexCursorBlocks()
+{
+    return g_nPendingNameBlocks;
+}
+
+void DiscardNameIndexCursorBatch()
+{
+    g_fPendingNameCursor = false;
+    g_pPendingNameIndex = NULL;
+    g_pendingNameCursor = CNameIndexCursor();
+    g_setPendingNameSkipped.clear();
+    g_nPendingNameBlocks = 0;
+    g_nPendingNameStarted = 0;
+}
+
+bool NameIndexCursorBatchDue()
+{
+    if (!g_fPendingNameCursor)
+        return false;
+    if (g_nPendingNameBlocks >= NameIndexBatchBlocks())
+        return true;
+    return g_nPendingNameStarted != 0 &&
+           GetTime() - g_nPendingNameStarted >= NAMEINDEX_BATCH_MAX_SECONDS;
+}
+
+bool DeferNameIndexCursor(const CBlock& block, CBlockIndex* pindex,
+                          const std::set<uint256>& setDAGSkippedTxs,
+                          std::string& strError)
+{
+    strError.clear();
+    if (!pindex || !pindex->phashBlock)
+    {
+        strError = "name-index cursor defer is missing a block index";
+        return false;
+    }
+    // Same bound the prepared path enforces. An empty skip set cannot name a
+    // transaction outside its block, so it needs no walk.
+    if (!setDAGSkippedTxs.empty() &&
+        !ValidateNameIndexSkippedSet(block, setDAGSkippedTxs, strError))
+        return false;
+    if (!g_fPendingNameCursor)
+        g_nPendingNameStarted = GetTime();
+    g_pPendingNameIndex = pindex;
+    g_pendingNameCursor = MakeNameIndexCursor(pindex);
+    g_setPendingNameSkipped = setDAGSkippedTxs;
+    g_nPendingNameBlocks++;
+    g_fPendingNameCursor = true;
+    return true;
+}
+
+bool FlushNameIndexCursorBatch(std::string& strError)
+{
+    strError.clear();
+    if (!g_fPendingNameCursor)
+        return true;
+    if (!g_pPendingNameIndex || !g_pPendingNameIndex->phashBlock)
+    {
+        strError = "deferred name-index cursor lost its block index";
+        return false;
+    }
+
+    // Rebuild the effect-free transition the deferred block would have
+    // applied on its own and apply exactly that, so the committed bytes and
+    // the validation it passes through are the unbatched ones.
+    CPreparedNameIndexTransition prepared;
+    prepared.fConnect = true;
+    prepared.hashBlock = g_pPendingNameIndex->GetBlockHash();
+    prepared.cursorAfter = g_pendingNameCursor;
+    prepared.setDAGSkippedTxs = g_setPendingNameSkipped;
+    prepared.hashTransition = ComputeNameIndexBlockTransitionIdentity(
+        true, prepared.hashBlock, prepared.cursorAfter,
+        prepared.setDAGSkippedTxs);
+
+    bool fAlreadyApplied = false;
+    if (!ApplyPreparedNameIndexTransition(prepared, fAlreadyApplied, strError))
+        return false;
+
+    DiscardNameIndexCursorBatch();
+    return true;
+}
+
 bool ApplyNameIndexDisconnectBlock(
     const CBlock& block, const CBlockIndex* pindex,
     const std::set<uint256>& setDAGSkippedTxs,

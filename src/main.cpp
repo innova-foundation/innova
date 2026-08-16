@@ -10289,35 +10289,57 @@ public:
                     if (entry.pindex->nHeight >= RELEASE_HEIGHT)
                     {
                         BLOCK_PHASE(BP_NAME_INDEX);
-                        if (!ApplyNameIndexConnectBlock(
-                                txdb, entry.pindex,
-                                entry.setDAGSkippedTxs, strNameError))
-                            return FailClosed(entry, strNameError.c_str());
+                        // A block with no name operation writes only the cursor and progress marker; defer
+                        // them to one flush. A block with one flushes first and takes the per-block path.
+                        if (NameIndexBatchingEnabled() &&
+                            BlockHasNoNameEffects(entry.block,
+                                                  entry.setDAGSkippedTxs))
+                        {
+                            if (!DeferNameIndexCursor(
+                                    entry.block, entry.pindex,
+                                    entry.setDAGSkippedTxs, strNameError))
+                                return FailClosed(entry, strNameError.c_str());
+                        }
+                        else
+                        {
+                            if (!FlushNameIndexCursorBatch(strNameError))
+                                return FailClosed(entry, strNameError.c_str());
+                            if (!ApplyNameIndexConnectBlock(
+                                    txdb, entry.pindex,
+                                    entry.setDAGSkippedTxs, strNameError))
+                                return FailClosed(entry, strNameError.c_str());
+                        }
                     }
                     else
                     {
                         BLOCK_PHASE(BP_NAME_INDEX);
+                        if (!FlushNameIndexCursorBatch(strNameError))
+                            return FailClosed(entry, strNameError.c_str());
                         if (!CommitNameIndexTip(entry.pindex, strNameError))
                             return FailClosed(entry, strNameError.c_str());
                     }
 
-                    for (std::vector<CTransaction>::const_iterator txIt =
-                             entry.block.vtx.begin();
-                         txIt != entry.block.vtx.end(); ++txIt)
                     {
-                        if (entry.setDAGSkippedTxs.count(txIt->GetHash()))
-                            continue;
-                        std::string strWalletError;
-                        if (!SyncWithWalletsChecked(*txIt, &entry.block, true,
-                                                    true, strWalletError,
-                                                    &entry.setDAGSkippedTxs))
-                            return FailClosed(entry, strWalletError.c_str());
+                        BLOCK_PHASE(BP_WALLET_SYNC);
+                        for (std::vector<CTransaction>::const_iterator txIt =
+                                 entry.block.vtx.begin();
+                             txIt != entry.block.vtx.end(); ++txIt)
+                        {
+                            if (entry.setDAGSkippedTxs.count(txIt->GetHash()))
+                                continue;
+                            std::string strWalletError;
+                            if (!SyncWithWalletsChecked(*txIt, &entry.block, true,
+                                                        true, strWalletError,
+                                                        &entry.setDAGSkippedTxs))
+                                return FailClosed(entry, strWalletError.c_str());
+                        }
                     }
 
                     // Shielded outputs are found by trial-decrypting the block's payloads, which the
                     // per-transaction sync above does not do. Mirrors the disconnect side.
                     if (entry.pindex->nHeight >= FORK_HEIGHT_SHIELDED)
                     {
+                        BLOCK_PHASE(BP_SHIELD_SCAN);
                         for (CWallet* pwallet : setpwalletRegistered)
                         {
                             std::string strWalletError;
@@ -10335,6 +10357,10 @@ public:
                     // Commits the disconnect's mutations, predecessor cursor and progress in one Berkeley DB
                     // transaction, bound to the same connect-time DAG skip set.
                     std::string strNameError;
+                    // A disconnect reads the index it is undoing, so any
+                    // deferred cursor must be durable before it runs.
+                    if (!FlushNameIndexCursorBatch(strNameError))
+                        return FailClosed(entry, strNameError.c_str());
                     if (entry.pindex->nHeight >= RELEASE_HEIGHT)
                     {
                         if (!ApplyNameIndexDisconnectBlock(
@@ -10500,8 +10526,27 @@ static bool PublishAndReplayCommittedEffects(CTxDB& txdb,
         return false;
     }
 
+    // Flush once the batch reaches its block count or its age bound, for catch-up and tip
+    // following alike.
+    if (NameIndexCursorBatchDue())
+    {
+        BLOCK_PHASE(BP_NAME_INDEX);
+        std::string strNameError;
+        if (!FlushNameIndexCursorBatch(strNameError))
+        {
+            printf("%s: FATAL could not flush the deferred name-index cursor "
+                   "after a durable chain commit: %s; shutting down. The "
+                   "index rebuilds from the committed chain on restart\n",
+                   pszContext, strNameError.c_str());
+            StartShutdown();
+            effects.Clear();
+            return false;
+        }
+    }
+
     try
     {
+        BLOCK_PHASE(BP_WALLET_LOCATOR);
         std::string strWalletError;
         if (!SetWalletBestChainChecked(effects.GetLocator(), strWalletError))
         {
@@ -10531,8 +10576,13 @@ static bool PublishAndReplayCommittedEffects(CTxDB& txdb,
         return false;
     }
 
-    if (!ClearCommittedShieldedWalletRecovery(
-            txdb, effects.GetRecoveryRecord(), pszContext))
+    bool fRecoveryCleared;
+    {
+        BLOCK_PHASE(BP_RECOVERY_CLEAR);
+        fRecoveryCleared = ClearCommittedShieldedWalletRecovery(
+            txdb, effects.GetRecoveryRecord(), pszContext);
+    }
+    if (!fRecoveryCleared)
     {
         effects.Clear();
         return false;

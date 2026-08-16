@@ -385,6 +385,30 @@ bool ApplyNameIndexRebuildBlock(
 // an empty chain; disconnect callers pass the newly committed predecessor.
 bool CommitNameIndexTip(const CBlockIndex* pindexTip, std::string& strError);
 
+// True when no transaction in the block can produce a name-index effect.  Only
+// a NAMECOIN_TX_VERSION transaction outside the DAG skip set reaches the name
+// operation walk, so such a block's transition is cursor/progress only.
+bool BlockHasNoNameEffects(const CBlock& block,
+                           const std::set<uint256>& setDAGSkippedTxs);
+
+// Cursor-only blocks are deferred and flushed as one write of the last transition; an
+// interrupted batch leaves the cursor behind the tip, which startup rebuilds. Bounded by
+// block count and deferred age only, so IBD and tip-following share one path.
+static const int NAMEINDEX_BATCH_BLOCKS_DEFAULT = 1000;
+static const int64_t NAMEINDEX_BATCH_MAX_SECONDS = 30;
+int NameIndexBatchBlocks();
+bool NameIndexBatchingEnabled();
+// True once the pending batch has reached either bound.
+bool NameIndexCursorBatchDue();
+
+bool DeferNameIndexCursor(const CBlock& block, CBlockIndex* pindex,
+                          const std::set<uint256>& setDAGSkippedTxs,
+                          std::string& strError);
+bool FlushNameIndexCursorBatch(std::string& strError);
+void DiscardNameIndexCursorBatch();
+bool HasPendingNameIndexCursor();
+int PendingNameIndexCursorBlocks();
+
 // Strictly checks schema/reset era and exact canonical tip equality.
 bool ValidateNameIndexTip(const CBlockIndex* pindexTip, std::string& strError);
 
