@@ -16,9 +16,9 @@ INNOVAD="${INNOVAD:-$INNOVA_ROOT/src/innovad}"
 
 TEST_DIR="${IV5_POD_TEST_DIR:-/tmp/innova_iv5_pod_$$}"
 NUM_NODES=3
-BASE_PORT="${IV5_POD_BASE_PORT:-28650}"
-BASE_RPC="${IV5_POD_BASE_RPC:-28700}"
-BASE_IDNS="${IV5_POD_BASE_IDNS:-8760}"
+BASE_PORT="${IV5_POD_BASE_PORT:-29650}"
+BASE_RPC="${IV5_POD_BASE_RPC:-29700}"
+BASE_IDNS="${IV5_POD_BASE_IDNS:-9760}"
 RPCUSER="iv5pod"
 RPCPASS="iv5podpass"
 WALLETPASS="iv5podwallet"
@@ -307,6 +307,18 @@ trap cleanup EXIT
 header "IV5 POD shielded-funded stamp regtest"
 
 [ -x "$INNOVAD" ] || { fail "innovad not found at $INNOVAD"; exit 1; }
+
+# A busy port makes nodes exit at bind time with nothing logged.
+PORT_BUSY=""
+for ((n=0; n<NUM_NODES; n++)); do
+    for p in "$(node_port "$n")" "$(node_rpc "$n")" "$(node_idns "$n")"; do
+        ss -ltn 2>/dev/null | grep -qE "[:.]$p[[:space:]]" && PORT_BUSY="$PORT_BUSY $p"
+    done
+done
+if [ -n "$PORT_BUSY" ]; then
+    fail "port(s) already in use:$PORT_BUSY -- set IV5_POD_BASE_PORT/BASE_RPC/BASE_IDNS"
+    exit 1
+fi
 
 rm -rf "$TEST_DIR"
 mkdir -p "$TEST_DIR"
