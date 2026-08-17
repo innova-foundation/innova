@@ -948,7 +948,9 @@ bool IsStandardTx(const CTransaction& tx, string& reason)
     }
 
     // only one OP_RETURN txout per txn out is permitted
-    if (nDataOut > nTxnOut) {
+    // An IV5 vout may be a single data stamp; the payload's transparent binding covers it.
+    const bool fPrivacyVNextStamp = tx.IsPrivacyVNext() && nDataOut <= 1;
+    if (nDataOut > nTxnOut && !fPrivacyVNextStamp) {
         reason = "multi-op-return";
         return false;
     }
