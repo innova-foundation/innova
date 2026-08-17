@@ -94,7 +94,9 @@ inline const char* ClassifyActivationHeight(const CActivationHeightGate& g, int 
     extern bool fTestNet;
     if (g.pnSentinel && nHeight == *g.pnSentinel)
         return "sentinel";
-    if (g.pszMovableBy)
+    // Every startup override is regtest-guarded, so off regtest the argument
+    // cannot move the gate and the height is whatever the ladder says.
+    if (g.pszMovableBy && fRegTest)
         return "build-flag";
     if (!fRegTest && !fTestNet && g.fMainnetLadder)
         return "ladder";
@@ -153,6 +155,9 @@ inline std::string GetActivationLadderJSON()
       &GetForkHeightFinality, true, NULL, NULL, NULL, false, NULL, "activates_at", NULL, NULL },
     { "FORK_HEIGHT_DAG", "GetForkHeightDAG", "src/main.h",
       &GetForkHeightDAG, true, NULL, NULL, NULL, false, NULL, "activates_at", NULL, NULL },
+    { "FORK_HEIGHT_SUPPLY_CAP", "GetForkHeightSupplyCap", "src/main.h",
+      &GetForkHeightSupplyCap, true, NULL, NULL, "FORK_HEIGHT_DAG", false,
+      "-regtestsupplycapheight", "activates_at", NULL, NULL },
     { "FORK_HEIGHT_EPOCH_ROOT_FCMP", "GetForkHeightEpochRootFCMP", "src/main.h",
       &GetForkHeightEpochRootFCMP, true, NULL, NULL, "FORK_HEIGHT_DAG", false, NULL, "activates_at", NULL, NULL },
     { "FORK_HEIGHT_VOTESET_ROOT", "GetForkHeightVoteSetRoot", "src/main.h",
@@ -214,6 +219,8 @@ inline std::string GetActivationLadderJSON()
       &IsConnectedFinalityCarrierConfigured, true, NULL, "gate_predicate" },
     { "IsBoundaryAConfigured", "src/main.h",
       &IsBoundaryAConfigured, true, NULL, "gate_predicate" },
+    { "IsEpochStateV3Configured", "src/main.h",
+      &IsEpochStateV3Configured, true, NULL, "gate_predicate" },
     { "IsBoundaryBConfigured", "src/main.h",
       &IsBoundaryBConfigured, true, "-regtestboundaryb", "gate_predicate" },
     { "IsIV5FeeNoteConfigured", "src/main.h",
@@ -236,6 +243,7 @@ inline std::string GetActivationLadderJSON()
     { "IsBoundaryBActiveAtHeight", "src/main.h", "int nHeight" },
     { "IsIV5FeeNoteActiveAtHeight", "src/main.h", "int nHeight" },
     { "IsIV5NoteVoteActiveAtHeight", "src/main.h", "int nHeight" },
+    { "IsSupplyCapActiveAtHeight", "src/main.h", "int nHeight" },
     { "IsLegacyPrivateStakeCreationAllowed", "src/main.h", "StakingMode eMode, int nCandidateHeight" },
     { "IsFinalitySettlementHeight", "src/finality.h", "int nHeight, int* pnEpochOut" },
     };
@@ -245,6 +253,8 @@ inline std::string GetActivationLadderJSON()
     { "NULLSTAKE_PINNED_AGE", NULL, "src/main.h", NULLSTAKE_PINNED_AGE, "seconds" },
     { "RECLAIM_TIMELOCK", "GetReclaimTimelock", "src/main.h", RECLAIM_TIMELOCK, "blocks" },
     { "MIN_SHIELDED_SPEND_DEPTH", NULL, "src/shielded.h", MIN_SHIELDED_SPEND_DEPTH, "blocks" },
+    // The effective cap, not the MAX_MONEY literal: regtest may lower it.
+    { "GetSupplyCapAmount", "GetSupplyCapAmount", "src/main.h", GetSupplyCapAmount(), "satoshi" },
     { "FINALITY_EPOCH_INTERVAL_PRE_DAG", NULL, "src/finality.h", FINALITY_EPOCH_INTERVAL_PRE_DAG, "blocks" },
     { "FINALITY_EPOCH_INTERVAL_POST_DAG", NULL, "src/finality.h", FINALITY_EPOCH_INTERVAL_POST_DAG, "blocks" },
     { "FINALITY_VOTE_INCLUSION_WINDOW", NULL, "src/finality.h", FINALITY_VOTE_INCLUSION_WINDOW, "blocks" },
@@ -295,6 +305,8 @@ inline std::string GetActivationLadderJSON()
 
     ss << "  \"runtime_overrides\": {\n";
     ss << "    \"nRegtestBoundaryBHeight\": " << nRegtestBoundaryBHeight << ",\n";
+    ss << "    \"nRegtestSupplyCapHeight\": " << nRegtestSupplyCapHeight << ",\n";
+    ss << "    \"nRegtestSupplyCapAmount\": " << nRegtestSupplyCapAmount << ",\n";
     ss << "    \"nRegtestIV5FeeNoteHeight\": " << nRegtestIV5FeeNoteHeight << ",\n";
     ss << "    \"nRegtestIV5NoteVoteHeight\": " << nRegtestIV5NoteVoteHeight << ",\n";
     ss << "    \"fRegtestShieldedVNextRehearsal\": " << ActivationJsonBool(fRegtestShieldedVNextRehearsal) << ",\n";
