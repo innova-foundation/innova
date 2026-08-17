@@ -1604,6 +1604,7 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "setgenerate"            && n > 0) ConvertTo<bool>(params[0]);
     if (strMethod == "getblockprofile"        && n > 0) ConvertTo<bool>(params[0]);
     if (strMethod == "proofofdata"            && n > 1) ConvertTo<bool>(params[1]);
+    if (strMethod == "proofofdata"            && n > 2) ConvertTo<bool>(params[2]);
     if (strMethod == "setgenerate"            && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "setgenerate"            && n > 2) ConvertTo<int64_t>(params[2]);
     if (strMethod == "startmining"           && n > 0) ConvertTo<int64_t>(params[0]);
