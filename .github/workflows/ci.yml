@@ -73,6 +73,26 @@ jobs:
             CXXFLAGS="-Werror=return-type -Werror=format" \
             CFLAGS="-Werror=return-type -Werror=format"
 
+      # Reporting only. The graph stage fails on fact-base or emitter integrity,
+      # never on the readiness verdict: NOT READY is the state of the work, not a
+      # defect in the candidate. To make an unready verdict fail the build, set
+      # GRAPH_REQUIRE_READY: "1" in the env below -- it blocks every build until
+      # every in-scope rule is GREEN and all 14 release obligations are met.
+      # Runs on the qt5 leg only; it reads the binaries, not Qt.
+      - name: Readiness graph (report only)
+        if: matrix.qt == 5
+        env:
+          GRAPH_OUT: ${{ github.workspace }}/graph-readiness
+        run: contrib/test/v5_release_gate.sh --graph
+
+      - name: Upload readiness report
+        if: matrix.qt == 5 && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: readiness-report
+          path: ${{ github.workspace }}/graph-readiness
+          if-no-files-found: warn
+
       - name: Build Qt wallet
         run: |
           sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
