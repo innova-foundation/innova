@@ -308,6 +308,28 @@ wait_block_known() {
 
 unlock() { rpc "$1" walletpassphrase "$WALLETPASS" 36000 >/dev/null 2>&1; }
 
+iv5_tree_size()  { jget "$(rpc "$1" z_getshieldedinfo 2>/dev/null)" privacy_vnext_tree_size; }
+iv5_store_size() { jget "$(rpc "$1" z_getshieldedinfo 2>/dev/null)" privacy_vnext_tree_store_size; }
+
+# Two nodes on one tip must hold one tree. Size and store are compared rather than
+# a root because the tree root is not exposed, and a store that lags its own tree
+# is the wallet replayer stalling rather than the accumulator diverging.
+assert_iv5_agrees() {
+    local what="$1" t0 t1 s0 s1
+    t0="$(iv5_tree_size 0)";  t1="$(iv5_tree_size 1)"
+    s0="$(iv5_store_size 0)"; s1="$(iv5_store_size 1)"
+    if is_int "$t0" && is_int "$t1" && [ "$t0" = "$t1" ]; then
+        success "$what: both nodes hold a $t0-leaf IV5 tree"
+    else
+        fail "$what: the nodes hold different IV5 trees (node0=$t0 node1=$t1)"
+    fi
+    if is_int "$s0" && [ "$s0" = "$t0" ] && is_int "$s1" && [ "$s1" = "$t1" ]; then
+        success "$what: each node's tree store is level with its tree"
+    else
+        fail "$what: a tree store is not level with its tree (node0 $s0/$t0, node1 $s1/$t1)"
+    fi
+}
+
 encrypt_and_restart() {
     local node="$1"
     rpc "$node" encryptwallet "$WALLETPASS" >/dev/null 2>&1
@@ -640,6 +662,138 @@ if [ -n "$POOL" ] && [ -n "$BAL_V0" ] && [ -n "$BAL_V1" ]; then
 else
     fail "could not read the epoch pool balance"
 fi
+
+# ============================================================
+header "7. A losing chain that carried an IV5 payload is taken back"
+# ============================================================
+
+# Chain race: node1 connects an IV5 payload, then reorgs to a longer chain without it.
+# The disconnect must remove the leaf, nullifier and pool value, or the trees split.
+
+REORG_BASE="$(height 0)"
+unlock 0
+REFUND="$(rpc 0 sendtoaddress "$ADDR1" "$PEER_FUND" 2>&1 | tr -d '"[:space:]')"
+if [ ${#REFUND} -eq 64 ]; then
+    mine_to 0 $((REORG_BASE + 3)) || { fail "could not confirm the node1 re-funding"; exit 1; }
+    wait_sync $((REORG_BASE + 3)) || { fail "nodes did not resync after re-funding"; exit 1; }
+    success "node1 re-funded for the chain race"
+else
+    fail "could not re-fund node1: $REFUND"
+fi
+
+REORG_SPLIT="$(height 0)"
+TREE_BEFORE0="$(iv5_tree_size 0)"
+partition_nodes || { fail "the nodes could not be partitioned for the chain race"; exit 1; }
+
+unlock 1
+SHIELD_R="$(rpc 1 z_shieldall 2>&1)"
+TXR="$(jget "$SHIELD_R" txid)"
+if [ ${#TXR} -eq 64 ]; then
+    success "node1 built an IV5 shield the winning chain never sees (${TXR:0:16})"
+else
+    fail "node1 z_shieldall failed: $(echo "$SHIELD_R" | head -3)"
+fi
+
+# node1 connects its own payload on the side of the partition that is about to lose.
+mine_one 1 || { fail "node1 could not mine its shield"; exit 1; }
+LOSER_HEIGHT=$((REORG_SPLIT + 1))
+LOSER_BLOCK="$(block_hash 1 "$LOSER_HEIGHT")"
+if [ "$(block_contains_tx 1 "$LOSER_BLOCK" "$TXR")" = "yes" ]; then
+    success "node1 connected the payload in ${LOSER_BLOCK:0:16} at $LOSER_HEIGHT"
+else
+    fail "node1's block does not carry the IV5 payload"
+fi
+mine_one 1 || warn "node1 could not extend its losing chain"
+
+TREE_LOSER1="$(iv5_tree_size 1)"
+if is_int "$TREE_LOSER1" && is_int "$TREE_BEFORE0" && [ "$TREE_LOSER1" -gt "$TREE_BEFORE0" ]; then
+    success "node1's tree grew to $TREE_LOSER1 leaves while partitioned (was $TREE_BEFORE0)"
+else
+    warn "node1's tree did not grow on its losing chain ($TREE_BEFORE0 -> $TREE_LOSER1)"
+fi
+
+# The winning chain is longer and carries none of it.
+mine_to 0 $((REORG_SPLIT + 5)) || { fail "node0 could not build the winning chain"; exit 1; }
+
+connect_nodes
+wait_peers || { fail "the nodes did not re-peer after the chain race"; exit 1; }
+wait_same_tip || { fail "the nodes did not converge after the chain race"; exit 1; }
+REORG_TIP="$(best_hash 0)"
+success "both nodes converged on ${REORG_TIP:0:16} at height $(height 0)"
+
+# node1 must have left its own chain. If its tip is still the block it mined, the
+# reorg never happened and the rest of the section proves nothing.
+if [ "$(block_hash 1 "$LOSER_HEIGHT")" != "$LOSER_BLOCK" ]; then
+    success "node1 disconnected the block that carried its payload"
+else
+    fail "node1 never left its losing chain; the reorg under test did not occur"
+fi
+
+assert_iv5_agrees "after the chain reorg"
+
+# ============================================================
+header "8. Blocks that arrive out of order rebuild the same tree"
+# ============================================================
+
+# Every harness so far has delivered blocks in height order, because that is what
+# the relay does when nothing is behind. A node catching up, or one whose peer
+# serves an inv out of order, connects children before parents and has to hold
+# them until the gap closes. The question is whether the IV5 tree that results is
+# the same tree -- the accumulator is order-sensitive by construction, so a leaf
+# placed while a parent was still missing would leave two nodes permanently
+# disagreeing about the root while agreeing about the chain.
+
+OOO_SPLIT="$(height 0)"
+partition_nodes || { fail "the nodes could not be partitioned for the ordering test"; exit 1; }
+
+unlock 0
+SHIELD_O="$(rpc 0 z_shieldall 2>&1)"
+TXO="$(jget "$SHIELD_O" txid)"
+if [ ${#TXO} -eq 64 ]; then
+    success "node0 built an IV5 shield to carry in the run (${TXO:0:16})"
+else
+    warn "node0 z_shieldall produced no new shield: $(echo "$SHIELD_O" | head -2)"
+fi
+
+OOO_RUN=4
+mine_to 0 $((OOO_SPLIT + OOO_RUN)) || { fail "node0 could not mine the run"; exit 1; }
+OOO_TIP="$(best_hash 0)"
+
+# Capture the run as raw blocks, then hand them to node1 youngest first so every
+# block but the last arrives before its parent.
+OOO_OK=1
+for ((i=OOO_RUN; i>=1; i--)); do
+    h=$((OOO_SPLIT + i))
+    bh="$(block_hash 0 "$h")"
+    hex="$(rpc 0 getblock "$bh" 0 2>/dev/null | tr -d '"[:space:]')"
+    if [ ${#hex} -lt 100 ]; then
+        fail "could not read block $h as raw hex"
+        OOO_OK=0
+        break
+    fi
+    # An orphan is expected to be refused or parked; only the final parent has to
+    # be accepted, so the result of each individual call is not the assertion.
+    rpc 1 submitblock "$hex" >/dev/null 2>&1 || true
+done
+
+if [ "$OOO_OK" = "1" ]; then
+    success "delivered $OOO_RUN blocks to node1 in reverse height order"
+    # Give node1 the chance to connect the run once the parent closed the gap.
+    for _ in $(seq 1 90); do
+        [ "$(best_hash 1)" = "$OOO_TIP" ] && break
+        sleep 1
+    done
+    if [ "$(best_hash 1)" = "$OOO_TIP" ]; then
+        success "node1 reached the same tip from out-of-order delivery"
+    else
+        fail "node1 did not reach the tip after out-of-order delivery (at $(height 1), tip $(best_hash 1 | cut -c1-16) vs ${OOO_TIP:0:16})"
+    fi
+    assert_iv5_agrees "after out-of-order delivery"
+fi
+
+# Put the fleet back together so the section leaves no partition behind.
+connect_nodes
+wait_peers >/dev/null 2>&1 || true
 
 # ============================================================
 header "Results"

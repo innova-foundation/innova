@@ -767,8 +767,22 @@ disclosed_transfer() {
 }
 
 DISCLOSED_AMOUNT=1
-disclosed_transfer 0 true true true || warn "the fully disclosed transfer did not complete"
-disclosed_transfer 5 false true false || warn "the mixed-mask transfer did not complete"
+
+# Every three-bit mask: bit 0 spend authorities, bit 1 receiver addresses, bit 2
+# amounts (replaces the range proof). Each cleared bit changes the payload layout.
+mask_bit_flags() {
+    local m="$1"
+    echo "$(( (m & 1) == 0 ))|$(( (m & 2) == 0 ))|$(( (m & 4) == 0 ))"
+}
+
+for MASK in 0 1 2 3 4 5 6 7; do
+    IFS='|' read -r WS WR WA <<< "$(mask_bit_flags "$MASK")"
+    [ "$WS" = "1" ] && WS=true || WS=false
+    [ "$WR" = "1" ] && WR=true || WR=false
+    [ "$WA" = "1" ] && WA=true || WA=false
+    disclosed_transfer "$MASK" "$WS" "$WR" "$WA" || \
+        warn "the mask-$MASK transfer did not complete"
+done
 
 # An out-of-range mask is a caller error, not something the wallet quietly rounds.
 BAD_MASK="$(rpc 0 z_iv5transfer "$TO_ADDR" "$DISCLOSED_AMOUNT" 8 2>&1)"
