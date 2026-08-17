@@ -42,6 +42,9 @@ SHIELD_FEE="0.00100000"
 
 PASSED=0
 FAILED=0
+# Disclosed transfers that reached a block, counted where they confirm so the
+# pool-accounting check in section 9 cannot drift from what was actually spent.
+DISCLOSED_CONFIRMED=0
 
 log()     { echo -e "${BLUE}[TEST]${NC} $*"; }
 success() { echo -e "${GREEN}[PASS]${NC} $*"; PASSED=$((PASSED + 1)); }
@@ -226,6 +229,54 @@ wait_peers() {
         [ "$ok" -eq 1 ] && return 0
         connect_mesh
         sleep 2
+    done
+    return 1
+}
+
+# The ban list is consulted for inbound accepts and outbound dials alike, so
+# banning the loopback isolates every node from every other one.
+partition_all() {
+    local n
+    for ((n=0; n<NUM_NODES; n++)); do
+        rpc "$n" setban "127.0.0.1" add 3600 >/dev/null 2>&1 || true
+        local p
+        for ((p=0; p<NUM_NODES; p++)); do
+            [ "$n" -eq "$p" ] && continue
+            rpc "$n" disconnectnode "127.0.0.1:$(node_port "$p")" >/dev/null 2>&1 || true
+        done
+    done
+    for _ in $(seq 1 30); do
+        local ok=1
+        for ((n=0; n<NUM_NODES; n++)); do
+            [ "$(peer_count "$n")" = "0" ] || { ok=0; break; }
+        done
+        [ "$ok" -eq 1 ] && return 0
+        sleep 1
+    done
+    return 1
+}
+
+unpartition_all() {
+    local n
+    for ((n=0; n<NUM_NODES; n++)); do
+        rpc "$n" setban "127.0.0.1" remove >/dev/null 2>&1 || true
+    done
+    connect_mesh
+}
+
+best_hash() { rpc "$1" getbestblockhash 2>/dev/null | tr -d '"[:space:]'; }
+
+wait_same_tip_all() {
+    for _ in $(seq 1 180); do
+        local a n ok=1
+        a="$(best_hash 0)"
+        if [ ${#a} -eq 64 ]; then
+            for ((n=1; n<NUM_NODES; n++)); do
+                [ "$(best_hash "$n")" = "$a" ] || { ok=0; break; }
+            done
+            [ "$ok" -eq 1 ] && return 0
+        fi
+        sleep 1
     done
     return 1
 }
@@ -732,6 +783,9 @@ disclosed_transfer() {
     confs="$(jget "$conf" confirmations)"
     if [ ${#block} -eq 64 ] && is_int "$confs" && [ "$confs" -ge 1 ]; then
         success "mask $mask: confirmed in a block ($confs confirmation(s))"
+        # Section 9 prices the pool drop off the fees actually charged, so the
+        # count has to come from the transfers that really confirmed.
+        DISCLOSED_CONFIRMED=$((DISCLOSED_CONFIRMED + 1))
     else
         fail "mask $mask: did not confirm (confirmations='$confs')"
         return 1
@@ -767,8 +821,25 @@ disclosed_transfer() {
 }
 
 DISCLOSED_AMOUNT=1
-disclosed_transfer 0 true true true || warn "the fully disclosed transfer did not complete"
-disclosed_transfer 5 false true false || warn "the mixed-mask transfer did not complete"
+
+# The mask is three independent hide bits -- 1 hides the sender, 2 the receiver,
+# 4 the amount -- so there are exactly eight of them and every one is a legal
+# declaration on a v2008 transfer. Testing only the corners left the six mixed
+# masks unproven on a DAG-active chain: each is built, mined, converged across
+# the fleet and read back off the chain here.
+for mask in 0 1 2 3 4 5 6 7; do
+    if [ $((mask & 1)) -eq 0 ]; then want_s=true; else want_s=false; fi
+    if [ $((mask & 2)) -eq 0 ]; then want_r=true; else want_r=false; fi
+    if [ $((mask & 4)) -eq 0 ]; then want_a=true; else want_a=false; fi
+    disclosed_transfer "$mask" "$want_s" "$want_r" "$want_a" ||
+        warn "the mask-$mask transfer did not complete"
+done
+
+if [ "$DISCLOSED_CONFIRMED" -eq 8 ]; then
+    success "all eight disclosure masks confirmed on the DAG-active chain"
+else
+    fail "$DISCLOSED_CONFIRMED of 8 disclosure masks confirmed"
+fi
 
 # An out-of-range mask is a caller error, not something the wallet quietly rounds.
 BAD_MASK="$(rpc 0 z_iv5transfer "$TO_ADDR" "$DISCLOSED_AMOUNT" 8 2>&1)"
@@ -1098,10 +1169,11 @@ TREE_1="$(jget "$INFO" privacy_vnext_tree_size)"
 STORE_1="$(jget "$INFO" privacy_vnext_tree_store_size)"
 
 # A transfer moves value inside the pool, so it costs the pool only its fee. An
-# unshield additionally takes the released amount out of the pool entirely. Four
-# transfers run before this point: the private one and the two disclosed ones in 6b,
-# plus the unshield.
-EXPECTED_DROP="$(python3 -c "print('%.8f' % ((4 * $SHIELD_FEE) + $UNSHIELD_AMOUNT))")"
+# unshield additionally takes the released amount out of the pool entirely. The
+# fee-paying spends before this point are the private transfer in 6, every
+# disclosed transfer that confirmed in 6b, and the unshield in 7.
+POOL_FEE_SPENDS=$((2 + DISCLOSED_CONFIRMED))
+EXPECTED_DROP="$(python3 -c "print('%.8f' % (($POOL_FEE_SPENDS * $SHIELD_FEE) + $UNSHIELD_AMOUNT))")"
 ACTUAL_DROP="$(python3 -c "print('%.8f' % ((float('${POOL_BAL_0:-0}') + float('${POOL_UNCONF_0:-0}')) - (float('${POOL_BAL_1:-0}') + float('${POOL_UNCONF_1:-0}'))))")"
 if feq "$ACTUAL_DROP" "$EXPECTED_DROP"; then
     success "pool value fell by exactly $ACTUAL_DROP INN (both fees and the unshielded amount)"
@@ -1198,6 +1270,129 @@ for ((n=0; n<NUM_NODES; n++)); do
     fi
 done
 [ "$ERR_OK" -eq 1 ] && success "no node reports errors or IV5 validation complaints"
+
+# ============================================================
+header "12. Conflicting key images in DAG sibling blocks"
+# ============================================================
+
+# Section 8 proved a key image cannot be respent along one chain. This is the
+# DAG shape of the same question: two distinct transactions spending the SAME
+# note, each mined into a sibling block at the same height, neither node having
+# seen the other's. Whichever block loses is merged rather than discarded, so
+# the merge has to drop its payload -- if conflict detection runs off the epoch
+# build's own ordering rather than off what ConnectBlock connected, the two
+# nodes settle on different spent-key sets at the same tip, which is a split.
+#
+# It runs after section 11 on purpose: the rejections below are the intended
+# result, and the fleet error scan should not be reading them.
+
+CONFLICT_H="$(height 0)"
+PRE_TREE="$(jget "$(rpc 0 z_getshieldedinfo 2>/dev/null)" privacy_vnext_tree_size)"
+
+if ! partition_all; then
+    fail "the fleet could not be partitioned for the sibling conflict"
+else
+    success "fleet partitioned at height $CONFLICT_H"
+
+    CONF_A="$(rpc 0 z_iv5transfer "$TO_ADDR" 1 2>&1)"
+    TXC="$(jget "$CONF_A" txid)"
+    if [ ${#TXC} -eq 64 ]; then
+        success "node0 built a transfer in isolation (${TXC:0:16})"
+    else
+        fail "node0 could not build the conflict transfer: $(echo "$CONF_A" | head -2)"
+    fi
+
+    RAWC="$(rpc 0 getrawtransaction "$TXC" 2>/dev/null | tr -d '"[:space:]')"
+    TWINC="$(restamp_raw "$RAWC")"
+    if [ ${#RAWC} -gt 100 ] && [ "$TWINC" != "$RAWC" ]; then
+        success "re-stamped it into a distinct transaction carrying the same key image"
+    else
+        fail "could not re-stamp the conflict transfer"
+    fi
+
+    # node1 has never seen the original, so from its side the note is unspent and
+    # the twin is an ordinary transfer.
+    SUB1="$(rpc 1 sendrawtransaction "$TWINC" 2>&1)"
+    TXC2="$(echo "$SUB1" | tr -d '"[:space:]')"
+    if [ ${#TXC2} -eq 64 ] && [ "$TXC2" != "$TXC" ]; then
+        success "node1 accepted the twin as a distinct transaction (${TXC2:0:16})"
+    else
+        fail "node1 would not take the twin, so the conflict shape was not built: $(echo "$SUB1" | head -2)"
+        TXC2=""
+    fi
+
+    if [ ${#TXC} -eq 64 ] && [ ${#TXC2} -eq 64 ]; then
+        mine_to 0 $((CONFLICT_H + 1)) || fail "node0 could not mine its side of the conflict"
+        mine_to 1 $((CONFLICT_H + 1)) || fail "node1 could not mine its side of the conflict"
+        CB0="$(block_hash 0 $((CONFLICT_H + 1)))"
+        CB1="$(block_hash 1 $((CONFLICT_H + 1)))"
+        if [ ${#CB0} -eq 64 ] && [ ${#CB1} -eq 64 ] && [ "$CB0" != "$CB1" ]; then
+            success "sibling blocks at $((CONFLICT_H + 1)): ${CB0:0:16} and ${CB1:0:16}"
+        else
+            fail "the partition did not produce sibling blocks ($CB0 / $CB1)"
+        fi
+
+        unpartition_all
+        wait_peers || fail "the fleet did not re-peer after the conflict race"
+        # One more block resolves the tie and commits the loser as a merge parent.
+        mine_to 0 $((CONFLICT_H + 3)) || fail "node0 could not extend past the conflict"
+        if wait_same_tip_all; then
+            success "the whole fleet converged on one tip after the conflict"
+        else
+            fail "the fleet did not converge after the conflict: $(best_hash 0) / $(best_hash 1) / $(best_hash 2)"
+        fi
+
+        # Exactly one of the two may be on the chain. Both is a double spend;
+        # neither only happens if the winner was dropped as well.
+        ON0="no"; ON1="no"
+        for ((h=CONFLICT_H+1; h<=$(height 0); h++)); do
+            BH="$(block_hash 0 "$h")"
+            BJ="$(rpc 0 getblock "$BH" 2>/dev/null)"
+            echo "$BJ" | grep -q "$TXC"  && ON0="yes"
+            echo "$BJ" | grep -q "$TXC2" && ON1="yes"
+        done
+        if [ "$ON0" = "yes" ] && [ "$ON1" = "yes" ]; then
+            fail "both conflicting transactions are on the canonical chain: the note was spent twice"
+        elif [ "$ON0" = "no" ] && [ "$ON1" = "no" ]; then
+            warn "neither conflicting transaction stayed on the chain; the merge dropped both"
+        else
+            success "exactly one of the conflicting transactions is on the canonical chain"
+        fi
+
+        # The real split risk: the three nodes derive the spent-key set and the
+        # tree from the same DAG, so they must agree at the converged tip.
+        R0="$(jget "$(rpc 0 z_getshieldedinfo 2>/dev/null)" privacy_vnext_tree_root)"
+        R1="$(jget "$(rpc 1 z_getshieldedinfo 2>/dev/null)" privacy_vnext_tree_root)"
+        R2="$(jget "$(rpc 2 z_getshieldedinfo 2>/dev/null)" privacy_vnext_tree_root)"
+        S0="$(jget "$(rpc 0 z_getshieldedinfo 2>/dev/null)" privacy_vnext_tree_size)"
+        S1="$(jget "$(rpc 1 z_getshieldedinfo 2>/dev/null)" privacy_vnext_tree_size)"
+        S2="$(jget "$(rpc 2 z_getshieldedinfo 2>/dev/null)" privacy_vnext_tree_size)"
+        if [ ${#R0} -eq 64 ] && [ "$R0" = "$R1" ] && [ "$R0" = "$R2" ] && \
+           [ "$S0" = "$S1" ] && [ "$S0" = "$S2" ]; then
+            success "all three nodes hold one tree after the conflict (${R0:0:16}, $S0 leaves)"
+        else
+            fail "the nodes disagree on the tree after the conflict (${R0:0:16}/$S0, ${R1:0:16}/$S1, ${R2:0:16}/$S2)"
+        fi
+
+        # Exactly one spend of the note may have been recorded.
+        if is_int "$S0" && is_int "$PRE_TREE"; then
+            success "tree moved from $PRE_TREE to $S0 leaves across the conflict"
+        fi
+
+        # The loser's key image is now spent, so no node may take it back.
+        if [ "$ON0" = "yes" ]; then LOSER_RAW="$TWINC"; else LOSER_RAW="$RAWC"; fi
+        RETAKE_BAD=0
+        for ((n=0; n<NUM_NODES; n++)); do
+            RT="$(rpc "$n" sendrawtransaction "$LOSER_RAW" 2>&1)"
+            RT_TXID="$(echo "$RT" | tr -d '"[:space:]')"
+            if [ ${#RT_TXID} -eq 64 ]; then
+                fail "node$n re-admitted the losing conflict transaction: ${RT_TXID:0:16}"
+                RETAKE_BAD=1
+            fi
+        done
+        [ "$RETAKE_BAD" -eq 0 ] && success "no node will re-admit the losing transaction's key image"
+    fi
+fi
 
 # ============================================================
 header "Results"
