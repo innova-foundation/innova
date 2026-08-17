@@ -257,8 +257,8 @@ BOOST_AUTO_TEST_CASE(mainnet_fork_ladder_keeps_shielded_pool_born_safe)
                       7950000 + MAINNET_V5_ACTIVATION_SHIFT);
     BOOST_CHECK_EQUAL(GetForkHeightDAGKnight(),
                       8000000 + MAINNET_V5_ACTIVATION_SHIFT);
-    BOOST_CHECK_EQUAL(GetForkHeightNullStakeDelegSet(),
-                      8060000 + MAINNET_V5_ACTIVATION_SHIFT);
+    // DAGKNIGHT is the top rung; the M-of-N staking gates are not on the public ladder.
+    BOOST_CHECK_EQUAL(GetForkHeightNullStakeDelegSet(), PRIVACY_VNEXT_HEIGHT_UNSET);
 
     fRegTest = fRegTestSaved;
     fTestNet = fTestNetSaved;

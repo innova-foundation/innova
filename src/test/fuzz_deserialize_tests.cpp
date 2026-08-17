@@ -2237,7 +2237,7 @@ BOOST_AUTO_TEST_CASE(varint_rejects_out_of_range_rather_than_wrapping)
 BOOST_AUTO_TEST_CASE(v5_activation_shift_is_uniform)
 {
     BOOST_CHECK_EQUAL(ShiftMainnetV5Activation(7810000) - ShiftMainnetV5Activation(7800000), 10000);
-    BOOST_CHECK_EQUAL(ShiftMainnetV5Activation(8060000) - ShiftMainnetV5Activation(7800000), 260000);
+    BOOST_CHECK_EQUAL(ShiftMainnetV5Activation(8000000) - ShiftMainnetV5Activation(7800000), 200000);
     BOOST_CHECK_EQUAL(ShiftMainnetV5Activation(MAINNET_V5_ACTIVATION_BASE),
                       MAINNET_V5_ACTIVATION_BASE + MAINNET_V5_ACTIVATION_SHIFT);
 }
@@ -2280,9 +2280,12 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
     BOOST_CHECK(GetForkHeightNullStake() > GetForkHeightFCMP());
     BOOST_CHECK(GetForkHeightNullStakeV2() > GetForkHeightNullStake());
     BOOST_CHECK(GetForkHeightNullStakeV3() > GetForkHeightNullStakeV2());
-    BOOST_CHECK(GetForkHeightNullStakeB2C() > GetForkHeightNullStakeV3());
-    BOOST_CHECK(GetForkHeightNullStakeReclaim() >= GetForkHeightNullStakeV3());
-    BOOST_CHECK(GetForkHeightNullStakeDelegSet() >= GetForkHeightNullStakeV3());
+
+    // The three M-of-N rungs are retired from the public ladder and hold the unset
+    // sentinel, so they order after every scheduled rung and schedule nothing.
+    BOOST_CHECK_EQUAL(GetForkHeightNullStakeDelegSet(), PRIVACY_VNEXT_HEIGHT_UNSET);
+    BOOST_CHECK_EQUAL(GetForkHeightNullStakeReclaim(), PRIVACY_VNEXT_HEIGHT_UNSET);
+    BOOST_CHECK_EQUAL(GetForkHeightNullStakeB2C(), PRIVACY_VNEXT_HEIGHT_UNSET);
 
     // Finality certifies DAG order, so it must be live before the DAG turns on.
     BOOST_CHECK(GetForkHeightFinality() > GetForkHeightPoem());
@@ -2300,19 +2303,65 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
     // B restores what A quarantines, so B never precedes A on any rung.
     BOOST_CHECK(BoundaryOrderingHolds());
 
-    // The post-Boundary-B staking slots are the tag-time ceiling for B. They must
-    // stay above A so the window B lands in is non-empty after any re-base.
-    const int nPostBoundaryB = ShiftMainnetV5Activation(8060000);
-    BOOST_CHECK_EQUAL(nPostBoundaryB, 8240000);
-    BOOST_CHECK_EQUAL(GetForkHeightNullStakeDelegSet(), nPostBoundaryB);
-    BOOST_CHECK_EQUAL(GetForkHeightNullStakeReclaim(), nPostBoundaryB);
-    BOOST_CHECK_EQUAL(GetForkHeightNullStakeB2C(), nPostBoundaryB);
-    BOOST_CHECK(nPostBoundaryB > GetForkHeightBoundaryA());
-
-    // Once B leaves the sentinel it has to land strictly inside that window.
+    // DAGKNIGHT is the last scheduled rung; B is bounded below only: once it leaves
+    // the sentinel it must land at or after A.
+    BOOST_CHECK_EQUAL(GetForkHeightDAGKnight(), ShiftMainnetV5Activation(8000000));
     BOOST_CHECK(!IsBoundaryBConfigured() ||
-                (GetForkHeightBoundaryB() > GetForkHeightBoundaryA() &&
-                 GetForkHeightBoundaryB() < nPostBoundaryB));
+                GetForkHeightBoundaryB() >= GetForkHeightBoundaryA());
+}
+
+// A retired gate must never compare open: no reachable height clears it off regtest,
+// including 8,240,000. On regtest both sides of the fork stay reachable.
+BOOST_AUTO_TEST_CASE(retired_mofn_gates_never_open_on_a_public_network)
+{
+    NetFlagGuard guard;
+
+    const int vHeights[] = { 0, 1, 12, 14, 1500, 1600, 8130300, 8240000,
+                             PRIVACY_VNEXT_HEIGHT_UNSET - 1 };
+    const unsigned int nHeights = sizeof(vHeights) / sizeof(vHeights[0]);
+
+    for (int nPass = 0; nPass < 2; ++nPass)
+    {
+        fRegTest = false;
+        fTestNet = (nPass == 1);
+
+        BOOST_REQUIRE(IsLegacyPrivacyPolicyDisabled());
+        BOOST_CHECK_EQUAL(GetForkHeightNullStakeDelegSet(), PRIVACY_VNEXT_HEIGHT_UNSET);
+        BOOST_CHECK_EQUAL(GetForkHeightNullStakeReclaim(), PRIVACY_VNEXT_HEIGHT_UNSET);
+        BOOST_CHECK_EQUAL(GetForkHeightNullStakeB2C(), PRIVACY_VNEXT_HEIGHT_UNSET);
+
+        for (unsigned int i = 0; i < nHeights; ++i)
+        {
+            BOOST_CHECK(vHeights[i] < GetForkHeightNullStakeDelegSet());
+            BOOST_CHECK(vHeights[i] < GetForkHeightNullStakeReclaim());
+            BOOST_CHECK(vHeights[i] < GetForkHeightNullStakeB2C());
+        }
+    }
+
+    // The upstream seal that makes the retirement a second barrier rather than the
+    // only one: the envelopes these gates guarded never reach a gated call site.
+    fRegTest = false;
+    fTestNet = false;
+    for (int nVersion = SHIELDED_TX_VERSION_NULLSTAKE_COLD;
+         nVersion <= SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM; ++nVersion)
+    {
+        CTransaction tx;
+        tx.nVersion = nVersion;
+        BOOST_REQUIRE(tx.IsShielded());
+        BOOST_CHECK(!tx.CheckTransaction());
+        BOOST_CHECK_EQUAL(tx.nDoS, 100);
+    }
+
+    // Regtest keeps real heights, and B2C still follows DELEGSET so one 2006 note can
+    // exercise both sides of the B2C fork.
+    fRegTest = true;
+    fTestNet = false;
+    BOOST_CHECK(!IsLegacyPrivacyPolicyDisabled());
+    BOOST_CHECK_EQUAL(GetForkHeightNullStakeDelegSet(), 12);
+    BOOST_CHECK_EQUAL(GetForkHeightNullStakeReclaim(), 12);
+    BOOST_CHECK_EQUAL(GetForkHeightNullStakeB2C(), 14);
+    BOOST_CHECK(GetForkHeightNullStakeB2C() >= GetForkHeightNullStakeDelegSet());
+    BOOST_CHECK(GetForkHeightNullStakeDelegSet() < PRIVACY_VNEXT_HEIGHT_UNSET);
 }
 
 // The shipped ladder satisfies the ordering only because B is unset, which on its
