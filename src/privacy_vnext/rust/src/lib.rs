@@ -17,6 +17,8 @@ use monero_fcmp_plus_plus::FcmpPlusPlus;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
+#[cfg(test)]
+mod differential;
 mod disclosure;
 mod fcmp;
 mod hash_to_point;
