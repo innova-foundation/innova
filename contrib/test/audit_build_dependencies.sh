@@ -125,8 +125,18 @@ grep -Eq 'make .*makefile\.osx clean' "$ROOT/.github/workflows/build.yml" || \
     fail "release workflow does not start the macOS gate from a clean object tree"
 grep -q 'STRICT_WARNINGS=1 -f makefile.osx' "$ROOT/.github/workflows/build.yml" || \
     fail "release workflow does not enable the macOS return-type/format warning gate"
-grep -q 'STRICT_WARNINGS=1 -f makefile.osx' "$ROOT/.github/workflows/ci.yml" || \
-    fail "CI does not enable the macOS return-type/format warning gate"
+# CI's macOS leg runs the warning-gated build directly or via the macos_clean_sha256
+# producer; in the producer case the whole chain (CI call, clean tree, gate) is asserted.
+if ! grep -q 'STRICT_WARNINGS=1 -f makefile.osx' "$ROOT/.github/workflows/ci.yml"; then
+    macos_evidence="$ROOT/contrib/test/produce_macos_clean_evidence.sh"
+    grep -q 'produce_macos_clean_evidence.sh' "$ROOT/.github/workflows/ci.yml" || \
+        fail "CI does not enable the macOS return-type/format warning gate"
+    [ -x "$macos_evidence" ] || fail "CI runs a macOS evidence producer that is missing"
+    grep -q 'STRICT_WARNINGS=1 -f makefile.osx' "$macos_evidence" || \
+        fail "the macOS evidence producer does not enable the return-type/format warning gate"
+    grep -Eq 'make .*makefile\.osx clean' "$macos_evidence" || \
+        fail "the macOS evidence producer does not start from a clean object tree"
+fi
 
 release_gate="$ROOT/contrib/test/v5_release_gate.sh"
 unit_gate_body=$(sed -n '/^run_unit()/,/^}/p' "$release_gate")
@@ -141,8 +151,19 @@ echo "$all_gate_body" | grep -q 'run_static' || \
     fail "local --all gate omits static checks"
 echo "$all_gate_body" | grep -q 'run_unit' || \
     fail "local --all gate omits the clean build/unit gate"
-echo "$all_gate_body" | grep -q 'run_integration' || \
-    fail "local --all gate omits integration checks"
+# --all reaches the integration suites directly or via the integration_sha256 producer
+# (re-entering at --integration). The indirect route needs the phase, the producer in
+# the gate's array, and its invocation.
+if ! echo "$all_gate_body" | grep -q 'run_integration'; then
+    integration_evidence="$ROOT/contrib/test/produce_integration_evidence.sh"
+    echo "$all_gate_body" | grep -q 'run_verification' || \
+        fail "local --all gate omits integration checks"
+    grep -q 'produce_integration_evidence.sh' "$release_gate" || \
+        fail "local --all gate reaches the integration suites through nothing"
+    [ -x "$integration_evidence" ] || fail "the integration evidence producer is missing"
+    grep -q 'v5_release_gate.sh --integration' "$integration_evidence" || \
+        fail "the integration evidence producer does not run the integration gate"
+fi
 
 upload_count=$(grep -c 'uses: actions/upload-artifact@v5' "$ROOT/.github/workflows/build.yml")
 missing_file_error_count=$(grep -c 'if-no-files-found: error' "$ROOT/.github/workflows/build.yml")
