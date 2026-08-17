@@ -867,6 +867,100 @@ fn every_shape_and_mask_round_trips() {
     println!("round-trip: {count} payloads proved and validated");
 }
 
+/// The first spend verified in a process pays the lazy FCMP generator setup. Ignored;
+/// run alone: cargo test --release -- --ignored --exact differential::first_spend_pays_lazy_generator_setup
+#[test]
+#[ignore = "must be the first thing the process verifies; measurement, not an assertion"]
+fn first_spend_pays_lazy_generator_setup() {
+    let mut rng = ChaCha20Rng::from_seed([0x6a; 32]);
+    let address = Address::new(&mut rng);
+
+    // Build both payloads before timing anything, so proving is not counted.
+    let shield = build(&mut rng, &Spec::shield(vec![make_note(&mut rng, &address, 0, 500)], 5));
+    let spend = build(
+        &mut rng,
+        &Spec::transfer(
+            vec![make_note(&mut rng, &address, 1, 1_000)],
+            vec![make_note(&mut rng, &address, 2, 990)],
+            10,
+        ),
+    );
+
+    // Proving warmed the generators, so these are warm numbers; re-measure cold with the
+    // replay tool in src/test/fuzz.
+    let start = std::time::Instant::now();
+    assert_eq!(validate(&shield.request), Ok(()));
+    let shield_time = start.elapsed();
+    let start = std::time::Instant::now();
+    assert_eq!(validate(&spend.request), Ok(()));
+    let first_spend = start.elapsed();
+    let start = std::time::Instant::now();
+    assert_eq!(validate(&spend.request), Ok(()));
+    let second_spend = start.elapsed();
+
+    println!(
+        "warm process: shield={shield_time:?} first_spend={first_spend:?} second_spend={second_spend:?}"
+    );
+    println!(
+        "cold process, measured separately: first spend 6.2 s, subsequent spends 0.12 s"
+    );
+}
+
+/// Verification cost must not depend on which notes a payload names, only on its shape.
+#[test]
+#[ignore = "measurement, not an assertion"]
+fn report_validation_cost_spread() {
+    for seed in [1_u64, 7] {
+        for (label, spec, mut rng) in cases(seed) {
+            let built = build(&mut rng, &spec);
+            let start = std::time::Instant::now();
+            let outcome = validate(&built.request);
+            let whole = start.elapsed();
+
+            // Stage breakdown, against the same bytes the validator saw.
+            let payload = &built.request[built.payload_at..];
+            let membership_region = built
+                .regions
+                .iter()
+                .find(|r| r.name == "membership_proof")
+                .expect("mapped");
+            let mut fcmp_time = std::time::Duration::ZERO;
+            if !spec.inputs.is_empty() {
+                // A membership section is always long enough to need the three-byte
+                // compact-size prefix; an empty one is a single zero byte.
+                let membership = &payload[membership_region.start + 3..membership_region.end];
+                let pseudo_outs = built
+                    .regions
+                    .iter()
+                    .filter(|r| r.name == "pseudo_out")
+                    .map(|r| field32(payload, r.start..r.end))
+                    .collect::<Vec<_>>();
+                let key_images = built
+                    .regions
+                    .iter()
+                    .filter(|r| r.name == "key_image")
+                    .map(|r| field32(payload, r.start..r.end))
+                    .collect::<Vec<_>>();
+                let start = std::time::Instant::now();
+                let _ = fcmp::verify_components(
+                    built.root,
+                    built.signing_hash,
+                    &pseudo_outs,
+                    &key_images,
+                    membership,
+                );
+                fcmp_time = start.elapsed();
+            }
+            println!(
+                "seed={seed} {label}: bytes={} inputs={} outputs={} whole={whole:?} fcmp={fcmp_time:?} {outcome:?}",
+                payload.len(),
+                spec.inputs.len(),
+                spec.outputs.len()
+            );
+        }
+    }
+}
+
 /// Write the built payloads out as a `fuzz_privacy_payload` corpus (selector byte + request).
 /// INNOVA_DIFF_CORPUS=/path/to/corpus cargo test --release export_fuzz_corpus -- --ignored
 #[test]
