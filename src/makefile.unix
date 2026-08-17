@@ -653,7 +653,15 @@ obj/fuzz/%.o: %.c
 fuzz-block-header-libfuzzer: $(FUZZ_TRIBUS_OBJS)
 	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $(FUZZ_BLOCK_HEADER_BIN) $(FUZZ_BLOCK_HEADER_SRCS) $(FUZZ_TRIBUS_OBJS) $(LIBS)
 
-fuzz-all-libfuzzer: fuzz-deserialize-libfuzzer fuzz-script-libfuzzer fuzz-block-header-libfuzzer
+# The privacy ABI is a pure function of peer bytes, so its target links the Rust
+# archive and the header only -- no daemon sources, no globals, no node state.
+FUZZ_PRIVACY_PAYLOAD_BIN ?= fuzz_privacy_payload
+FUZZ_PRIVACY_PAYLOAD_SRCS ?= test/fuzz/fuzz_privacy_payload.cpp
+
+fuzz-privacy-payload-libfuzzer: $(PRIVACY_VNEXT_RUST_LIB)
+	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -I. -o $(FUZZ_PRIVACY_PAYLOAD_BIN) $(FUZZ_PRIVACY_PAYLOAD_SRCS) $(PRIVACY_VNEXT_RUST_LIB) -lpthread -ldl -lm
+
+fuzz-all-libfuzzer: fuzz-deserialize-libfuzzer fuzz-script-libfuzzer fuzz-block-header-libfuzzer fuzz-privacy-payload-libfuzzer
 
 check-legacy-aggregate: test_innova
 	./test_innova --run_test=allocator_tests,base32_tests,base58_tests,base64_tests,bignum_tests,Checkpoints_tests,DoS_tests,getarg_tests,key_tests,mruset_tests,multisig_tests,netbase_tests,ringsig_tests,rpc_tests,script_P2SH_tests,script_tests,sigopcount_tests,transaction_tests,uint160_tests,uint256_tests,util_tests,wallet_tests,accounting_tests,miner_tests
