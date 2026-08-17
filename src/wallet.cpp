@@ -5665,9 +5665,9 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                             if (nLeafIdx < 0)
                                 continue;
 
-                            if (!CreateFCMPProof(fcmpTree, (uint64_t)nLeafIdx, wnote.note.vchBlind,
-                                                  wnote.note.nValue, stakeSpend.cv, stakeSpend.fcmpProof))
-                                continue;
+                            // Retired: the path-proof layer that produced this
+                            // membership proof is gone, so the candidate is skipped.
+                            continue;
 
                             stakeSpend.curveTreeRoot = hashFCMPRoot;
                         }
@@ -6068,9 +6068,9 @@ bool CWallet::CreateCoinStake(const CKeyStore& keystore, unsigned int nBits, int
                                 if (nLeafIdx < 0)
                                     continue;
 
-                                if (!CreateFCMPProof(fcmpTree, (uint64_t)nLeafIdx, wnote.note.vchBlind,
-                                                      wnote.note.nValue, stakeSpend.cv, stakeSpend.fcmpProof))
-                                    continue;
+                                // Retired: the path-proof layer that produced this
+                                // membership proof is gone, so the candidate is skipped.
+                                continue;
 
                                 stakeSpend.curveTreeRoot = hashFCMPRoot;
                             }

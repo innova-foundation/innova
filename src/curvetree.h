@@ -23,21 +23,6 @@ inline int GetForkHeightFCMP() {
 }
 #define FORK_HEIGHT_FCMP (GetForkHeightFCMP())
 
-// The in-tree path proof establishes knowledge of an opening of a point the
-// prover supplies, which any invented pair of vectors satisfies. No value is
-// ever recomputed from leaf through siblings to the claimed root, so it proves
-// no membership in anything and cannot be repaired where it stands: the
-// statement carries no witness about a tree. CROSSCURVE is no better -- it
-// chains layers by assigning the prover's own commitments, so its root
-// comparison compares a value to itself.
-//
-// Regtest accepted it until now, which made every membership test there
-// vacuous. No network accepts it at any height. Membership comes from the
-// vNext verifier, over the tree it actually proves against.
-inline bool IsLegacyFCMPProofAccepted() {
-    return false;
-}
-
 static const size_t SECP256K1_POINT_SIZE = 33;
 static const size_t ED25519_POINT_SIZE = 32;
 static const size_t ED25519_SCALAR_SIZE = 32;
@@ -106,21 +91,6 @@ public:
 };
 
 
-static const uint32_t FCMP_PROOF_VERSION_LEGACY = 2;
-static const uint32_t FCMP_PROOF_VERSION_BLINDED = 3;
-static const uint32_t FCMP_PROOF_VERSION_ENCRYPTED = 4;
-static const uint32_t FCMP_PROOF_VERSION_IPA = 5;
-static const uint32_t FCMP_PROOF_VERSION_CROSSCURVE = 6;
-
-// CURRENT is the creation default, not a recommendation: IPA binds neither the
-// claimed root nor the leaf commitment, which is why the verifier confines it to
-// regtest. CROSSCURVE does bind both, but VerifyFCMPProofUncached rejects any
-// version above IPA and its serialized entry points have no callers, so moving
-// CURRENT there would make creation produce proofs consensus rejects. Both are
-// the 2002 prototype, superseded by vendored FCMP++ under 2008; the fix is
-// retiring that envelope, not renumbering this.
-static const uint32_t FCMP_PROOF_VERSION_CURRENT = FCMP_PROOF_VERSION_IPA;
-
 
 class CFCMPProof
 {
@@ -151,30 +121,6 @@ public:
     {
         return vchProof.size();
     }
-
-    uint32_t GetVersion() const
-    {
-        if (vchProof.size() < 4)
-            return 0;
-        uint32_t nVersion;
-        memcpy(&nVersion, vchProof.data(), 4);
-        return nVersion;
-    }
-
-    bool IsEncrypted() const
-    {
-        return GetVersion() >= FCMP_PROOF_VERSION_ENCRYPTED;
-    }
-
-    bool IsIPABased() const
-    {
-        return GetVersion() >= FCMP_PROOF_VERSION_IPA;
-    }
-
-    bool IsCrossCurve() const
-    {
-        return GetVersion() >= FCMP_PROOF_VERSION_CROSSCURVE;
-    }
 };
 
 
@@ -201,8 +147,6 @@ public:
 
     bool InsertLeaf(const CPedersenCommitment& commitment);
 
-    bool GetMembershipProof(uint64_t nLeafIndex, CFCMPProof& proofOut) const;
-
     static int GetTreeDepth(uint64_t nLeaves);
 
     static ECurveType GetCurveAtDepth(int nDepth)
@@ -221,17 +165,9 @@ public:
 };
 
 
-bool CreateFCMPProof(const CCurveTree& tree,
-                      uint64_t nLeafIndex,
-                      const std::vector<unsigned char>& vchBlind,
-                      const int64_t nValue,
-                      const CPedersenCommitment& cv,
-                      CFCMPProof& proofOut,
-                      uint32_t nVersion = FCMP_PROOF_VERSION_CURRENT);
-
-// nEvalHeight is the height whose rules this proof is judged under: the
-// containing block's height, or tip+1 for a mempool check. Not defaulted, so a
-// missing height is a compile error rather than an unbound cache key.
+// Always false: the path-proof layer is gone and no membership statement can
+// be recovered from this envelope. nEvalHeight is retained so every consensus
+// caller keeps passing the height it judges under.
 bool VerifyFCMPProof(const CCurveTreeNode& root,
                       const CFCMPProof& proof,
                       const CPedersenCommitment& cv,

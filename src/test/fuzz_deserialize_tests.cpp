@@ -1957,10 +1957,10 @@ BOOST_AUTO_TEST_CASE(shielded_v3_duplicate_commitment_index_rolls_back_to_predec
 BOOST_AUTO_TEST_CASE(active_v5_envelope_trailing_bytes_remain_accepted)
 {
     CFCMPProof fcmp;
-    fcmp.vchProof.push_back((unsigned char)(FCMP_PROOF_VERSION_IPA >> 0));
-    fcmp.vchProof.push_back((unsigned char)(FCMP_PROOF_VERSION_IPA >> 8));
-    fcmp.vchProof.push_back((unsigned char)(FCMP_PROOF_VERSION_IPA >> 16));
-    fcmp.vchProof.push_back((unsigned char)(FCMP_PROOF_VERSION_IPA >> 24));
+    // Historical v5 version prefix, written literally: the version constants
+    // went with the path-proof layer.
+    const unsigned char legacyV5Prefix[4] = { 0x05, 0x00, 0x00, 0x00 };
+    fcmp.vchProof.assign(legacyV5Prefix, legacyV5Prefix + 4);
     std::vector<unsigned char> encoded = SerializeEnvelope(fcmp);
     encoded.push_back(0xa5);
     encoded.push_back(0x5a);
@@ -2174,11 +2174,6 @@ BOOST_AUTO_TEST_CASE(future_versions_do_not_inherit_legacy_privacy_predicates)
         BOOST_CHECK(!tx.IsFCMP());
         BOOST_CHECK(!IsLegacyShieldedTransactionVersion(tx.nVersion));
     }
-
-    // The active verifier remains v5.  Dormant cross-curve/v6 code must not
-    // become consensus-active as an incidental consequence of reserving 2008.
-    BOOST_CHECK_EQUAL(FCMP_PROOF_VERSION_CURRENT, FCMP_PROOF_VERSION_IPA);
-    BOOST_CHECK(FCMP_PROOF_VERSION_CROSSCURVE > FCMP_PROOF_VERSION_CURRENT);
 }
 
 

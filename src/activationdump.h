@@ -229,8 +229,6 @@ inline std::string GetActivationLadderJSON()
       &IsIV5NoteVoteConfigured, true, "-regtestiv5notevote", "gate_predicate" },
     { "IsLegacyPrivacyPolicyDisabled", "src/main.h",
       &IsLegacyPrivacyPolicyDisabled, true, NULL, "gate_predicate" },
-    { "IsLegacyFCMPProofAccepted", "src/curvetree.h",
-      &IsLegacyFCMPProofAccepted, false, NULL, "gate_predicate" },
     { "IsShieldedVNextConsensusReady", "src/shielded.h",
       &IsShieldedVNextConsensusReady, true, "-regtestiv5rehearsal", "gate_predicate" },
     { "IsPrivacyVNextLeafIndexAssignmentHeld", "src/shielded.h",

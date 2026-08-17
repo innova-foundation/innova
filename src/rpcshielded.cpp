@@ -906,9 +906,10 @@ Value z_unshield(const Array& params, bool fHelp)
             if (nLeafIdx < 0)
                 throw JSONRPCError(RPC_INTERNAL_ERROR, strprintf("Spend %d commitment not found in curve tree", (int)i));
 
-            if (!CreateFCMPProof(spendability.fcmpTree, (uint64_t)nLeafIdx, wnote.note.vchBlind,
-                                  wnote.note.nValue, spend.cv, spend.fcmpProof))
-                throw JSONRPCError(RPC_INTERNAL_ERROR, strprintf("Failed to create FCMP proof for spend %d", (int)i));
+            // Retired: no membership proof can be built for a legacy
+            // shielded spend, and consensus rejects one without a proof.
+            throw JSONRPCError(RPC_INVALID_REQUEST,
+                               "legacy shielded spends are retired: the in-tree path-proof layer has been removed");
 
             spend.curveTreeRoot = spendability.hashFCMPRoot;
 
@@ -1324,10 +1325,10 @@ Value z_send(const Array& params, bool fHelp)
             if (nLeafIdx < 0)
                 throw JSONRPCError(RPC_INTERNAL_ERROR, strprintf("Spend %d commitment not found in curve tree", (int)i));
 
-            if (!CreateFCMPProof(spendability.fcmpTree, (uint64_t)nLeafIdx, wnote.note.vchBlind,
-                                  wnote.note.nValue, spend.cv, spend.fcmpProof))
-                throw JSONRPCError(RPC_INTERNAL_ERROR, strprintf("Failed to create FCMP proof for spend %d (leaf index %lld)",
-                                                                  (int)i, (long long)nLeafIdx));
+            // Retired: no membership proof can be built for a legacy
+            // shielded spend, and consensus rejects one without a proof.
+            throw JSONRPCError(RPC_INVALID_REQUEST,
+                               "legacy shielded spends are retired: the in-tree path-proof layer has been removed");
 
             spend.curveTreeRoot = spendability.hashFCMPRoot;
 
@@ -3080,11 +3081,10 @@ Value z_nullsend(const Array& params, bool fHelp)
                 throw JSONRPCError(RPC_INTERNAL_ERROR,
                     strprintf("Spend %d commitment not found in curve tree", (int)nSpendIdx));
 
-            if (!CreateFCMPProof(spendability.fcmpTree, (uint64_t)nLeafIdx,
-                                  wnote.note.vchBlind, wnote.note.nValue,
-                                  spend.cv, spend.fcmpProof))
-                throw JSONRPCError(RPC_INTERNAL_ERROR,
-                    strprintf("Failed to create FCMP proof for spend %d", (int)nSpendIdx));
+            // Retired: no membership proof can be built for a legacy
+            // shielded spend, and consensus rejects one without a proof.
+            throw JSONRPCError(RPC_INVALID_REQUEST,
+                               "legacy shielded spends are retired: the in-tree path-proof layer has been removed");
 
             spend.curveTreeRoot = spendability.hashFCMPRoot;
 
@@ -3868,9 +3868,10 @@ Value z_reclaimmofncoldstake(const Array& params, bool fHelp)
         int64_t nLeafIdx = spendability.fcmpTree.FindLeafIndex(spend.cv);
         if (nLeafIdx < 0)
             throw JSONRPCError(RPC_INTERNAL_ERROR, "Reclaim note leaf not found in curve tree");
-        if (!CreateFCMPProof(spendability.fcmpTree, (uint64_t)nLeafIdx, selNote.note.vchBlind,
-                              selNote.note.nValue, spend.cv, spend.fcmpProof))
-            throw JSONRPCError(RPC_INTERNAL_ERROR, "Failed to create reclaim FCMP proof");
+        // Retired: no membership proof can be built for a legacy
+        // shielded spend, and consensus rejects one without a proof.
+        throw JSONRPCError(RPC_INVALID_REQUEST,
+                           "legacy shielded spends are retired: the in-tree path-proof layer has been removed");
         spend.curveTreeRoot = spendability.hashFCMPRoot;
 
         txNew.vShieldedSpend.push_back(spend);

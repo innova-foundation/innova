@@ -15,6 +15,7 @@
 #include <openssl/ec.h>
 #include <algorithm>
 #include <openssl/obj_mac.h>
+#include <openssl/sha.h>
 #include <string.h>
 #include <vector>
 
@@ -209,29 +210,6 @@ void MutateBytes(std::vector<unsigned char>& bytes)
 {
     BOOST_REQUIRE(!bytes.empty());
     bytes[bytes.size() - 1] ^= 0x01;
-}
-
-bool ToUncompressedSecpPoint(const std::vector<unsigned char>& encoded,
-                             std::vector<unsigned char>& uncompressedOut)
-{
-    EC_GROUP* group = EC_GROUP_new_by_curve_name(NID_secp256k1);
-    BN_CTX* ctx = BN_CTX_new();
-    EC_POINT* point = group ? EC_POINT_new(group) : NULL;
-    bool ok = group && ctx && point &&
-              EC_POINT_oct2point(group, point, encoded.data(), encoded.size(), ctx) == 1 &&
-              EC_POINT_is_on_curve(group, point, ctx) == 1 &&
-              !EC_POINT_is_at_infinity(group, point);
-    if (ok)
-    {
-        uncompressedOut.resize(IPA_SECP256K1_POINT_UNCOMPRESSED);
-        ok = EC_POINT_point2oct(group, point, POINT_CONVERSION_UNCOMPRESSED,
-                               uncompressedOut.data(), uncompressedOut.size(), ctx) ==
-             uncompressedOut.size();
-    }
-    if (point) EC_POINT_free(point);
-    if (ctx) BN_CTX_free(ctx);
-    if (group) EC_GROUP_free(group);
-    return ok;
 }
 
 CBPACTestCase BuildValidBPACTestCase()
@@ -515,159 +493,6 @@ BOOST_AUTO_TEST_CASE(proof_deserialization_rejects_oversized_shapes_before_alloc
     encodedFCMP << maxFCMP;
     encodedFCMP >> decodedFCMP;
     BOOST_CHECK(decodedFCMP.vchProof == maxFCMP.vchProof);
-
-    // Inner v5 fields used to go through the generic 5 MiB vector decoder and
-    // could throw through the consensus verifier.  A malformed network proof
-    // must be a plain validation failure, never an exception or allocation.
-    CDataStream malformedV5(SER_NETWORK, PROTOCOL_VERSION);
-    malformedV5 << (uint32_t)FCMP_PROOF_VERSION_IPA;
-    malformedV5 << (uint32_t)PATH_IPA_VERSION;
-    malformedV5 << (int)1;
-    WriteCompactSize(malformedV5, PATH_IPA_LEGACY_BLOB_MAX_SIZE + 1);
-    std::vector<unsigned char> malformedV5Bytes(malformedV5.begin(), malformedV5.end());
-    bool fAccepted = true;
-    BOOST_CHECK_NO_THROW(fAccepted = VerifyFCMPProofV5(
-        std::vector<unsigned char>(32, 0x01),
-        std::vector<unsigned char>(IPA_SECP256K1_POINT, 0x02),
-        malformedV5Bytes));
-    BOOST_CHECK(!fAccepted);
-}
-
-BOOST_AUTO_TEST_CASE(fcmp_v5_legacy_wire_compatibility_is_preserved)
-{
-    BOOST_REQUIRE(CZKContext::Initialize());
-    BOOST_REQUIRE_EQUAL(PATH_IPA_LEGACY_BLOB_MAX_SIZE, FCMP_PROOF_MAX_SIZE);
-
-    std::vector<unsigned char> blind(IPA_SCALAR_SIZE, 0);
-    blind[IPA_SCALAR_SIZE - 1] = 7;
-    CPedersenCommitment leaf;
-    BOOST_REQUIRE(CreatePedersenCommitment(17, blind, leaf));
-
-    std::vector<std::vector<unsigned char> > siblings;
-    siblings.push_back(std::vector<unsigned char>(32, 0x42));
-    std::vector<unsigned char> proofBytes;
-    BOOST_REQUIRE(CreateFCMPProofV5(siblings, 0, 1, blind,
-                                    leaf.vchCommitment, proofBytes));
-    const std::vector<unsigned char> goldenProof = ParseHex(
-        "0500000001000000010000002102a96c22c9d4211cea9f84e168f7b842d9ee17cdf8ae21b2031456bffdd6171b5b"
-        "21033c934127b15d08b6817197cac5c7deddf738fc0b3a0e7fd8444b0d24ab483dda208b5ced9121856fae79922a"
-        "852542b51c101246d82a31fd172f22f21bf1143c6e20e346209e742c091cb11238053ee0bcb49c0878b38c02c98d"
-        "fda90699f1cc2fe900000000203a09914253006315682ee12ae1db3007e98478ef395d8776e390495b53124f11208b"
-        "70435b71c38b1c6baed52c03567e57ee3b73a8ee32a8c9df45557f93859b8f000000002102a7c0f07b05aeb35976"
-        "e5b4d20f77a0994ae326d1422dbf9bbd821a5e21c7b313");
-    BOOST_REQUIRE(proofBytes == goldenProof);
-
-    const std::vector<unsigned char> root(32, 0x24);
-    BOOST_REQUIRE(VerifyFCMPProofV5(root, leaf.vchCommitment, proofBytes));
-
-    // Evidence for the open V5 membership blocker: this proof was built from
-    // a prover-selected sibling digest, without a CCurveTree, and the active
-    // verifier accepts it against two different claimed roots.  Preserve this
-    // legacy behavior only for V5 history; a sound replacement needs a new,
-    // fork-gated proof version rather than an in-place encoding change.
-    // Characterizing the raw algorithm, which consensus no longer reaches: it
-    // accepts against a root the leaf is not under, because the statement it
-    // proves says nothing about any tree. The rejection that matters is at the
-    // consensus verifier below, not here.
-    const std::vector<unsigned char> unrelatedRoot(32, 0x25);
-    BOOST_REQUIRE(root != unrelatedRoot);
-    BOOST_CHECK(VerifyFCMPProofV5(unrelatedRoot, leaf.vchCommitment,
-                                  proofBytes));
-
-    // Exercise the public active verifier as consensus does.  One claimed
-    // tree contains the supplied leaf and the other contains a different
-    // commitment, yet the same self-selected V5 proof verifies under both.
-    std::vector<unsigned char> otherBlind(IPA_SCALAR_SIZE, 0);
-    otherBlind[IPA_SCALAR_SIZE - 1] = 9;
-    CPedersenCommitment otherLeaf;
-    BOOST_REQUIRE(CreatePedersenCommitment(23, otherBlind, otherLeaf));
-    CCurveTree claimedTree;
-    CCurveTree unrelatedTree;
-    BOOST_REQUIRE(claimedTree.InsertLeaf(leaf));
-    BOOST_REQUIRE(unrelatedTree.InsertLeaf(otherLeaf));
-    BOOST_REQUIRE(claimedTree.GetRoot() != unrelatedTree.GetRoot());
-
-    CFCMPProof activeProof;
-    activeProof.vchProof = proofBytes;
-
-    const bool fStoredRegTest = fRegTest;
-    const int nTestHeight = 0;
-
-    // Regtest keeps the legacy acceptance set exactly, including the unsound
-    // accept against a tree that does not contain the leaf. That accept is the
-    // reason the version is confined to regtest.
-    fRegTest = true;
-    VerifyProofCacheClear();
-    BOOST_CHECK(!VerifyFCMPProof(claimedTree.GetRootNode(), activeProof, leaf, nTestHeight));
-    BOOST_CHECK(!VerifyFCMPProof(unrelatedTree.GetRootNode(), activeProof, leaf, nTestHeight));
-
-    // Public networks reject it at every height, including against the tree that
-    // really contains the leaf.
-    fRegTest = false;
-    VerifyProofCacheClear();
-    BOOST_CHECK(!VerifyFCMPProof(claimedTree.GetRootNode(), activeProof, leaf, nTestHeight));
-    BOOST_CHECK(!VerifyFCMPProof(unrelatedTree.GetRootNode(), activeProof, leaf, nTestHeight));
-    BOOST_CHECK(!VerifyFCMPProof(claimedTree.GetRootNode(), activeProof, leaf, FORK_HEIGHT_FCMP));
-
-    fRegTest = fStoredRegTest;
-    VerifyProofCacheClear();
-
-    // The bounded parser must preserve the exact legacy field order and bytes.
-    CDataStream decodedStream(proofBytes, SER_NETWORK, PROTOCOL_VERSION);
-    uint32_t version = 0;
-    CPathIPAProof pathProof;
-    std::vector<unsigned char> decodedLeaf;
-    decodedStream >> version;
-    decodedStream >> pathProof;
-    decodedStream >> decodedLeaf;
-    BOOST_REQUIRE(decodedStream.empty());
-
-    CDataStream reencoded(SER_NETWORK, PROTOCOL_VERSION);
-    reencoded << version;
-    reencoded << pathProof;
-    reencoded << decodedLeaf;
-    const std::vector<unsigned char> reencodedBytes(reencoded.begin(),
-                                                     reencoded.end());
-    BOOST_CHECK_EQUAL_COLLECTIONS(proofBytes.begin(), proofBytes.end(),
-                                  reencodedBytes.begin(), reencodedBytes.end());
-
-    // The carried sibling commitment is likewise outside the enforced V5
-    // equation.  Mutating it leaves the same self-selected statement valid.
-    BOOST_REQUIRE(!pathProof.vchSiblingCommit.empty());
-    pathProof.vchSiblingCommit[0] ^= 0x01;
-    CDataStream siblingMutatedStream(SER_NETWORK, PROTOCOL_VERSION);
-    siblingMutatedStream << version;
-    siblingMutatedStream << pathProof;
-    siblingMutatedStream << decodedLeaf;
-    const std::vector<unsigned char> siblingMutatedProof(
-        siblingMutatedStream.begin(), siblingMutatedStream.end());
-    BOOST_REQUIRE(siblingMutatedProof.size() <= FCMP_PROOF_MAX_SIZE);
-    BOOST_CHECK(VerifyFCMPProofV5(root, leaf.vchCommitment,
-                                  siblingMutatedProof));
-
-    // Active v5 historically accepted ordinary trailing bytes inside the
-    // already-bounded 4 KiB proof envelope.
-    std::vector<unsigned char> withTrailing = proofBytes;
-    withTrailing.push_back(0xa5);
-    withTrailing.push_back(0x5a);
-    BOOST_REQUIRE(withTrailing.size() <= FCMP_PROOF_MAX_SIZE);
-    BOOST_CHECK(VerifyFCMPProofV5(root, leaf.vchCommitment, withTrailing));
-
-    // Preserve both standard SEC1 encodings for point-valued legacy fields.
-    BOOST_REQUIRE(ToUncompressedSecpPoint(pathProof.vchPositionCommit,
-                                          pathProof.vchPositionCommit));
-    BOOST_REQUIRE(ToUncompressedSecpPoint(pathProof.vchPathCommit,
-                                          pathProof.vchPathCommit));
-    BOOST_REQUIRE(ToUncompressedSecpPoint(decodedLeaf, decodedLeaf));
-
-    CDataStream uncompressedStream(SER_NETWORK, PROTOCOL_VERSION);
-    uncompressedStream << version;
-    uncompressedStream << pathProof;
-    uncompressedStream << decodedLeaf;
-    std::vector<unsigned char> uncompressedProof(uncompressedStream.begin(),
-                                                  uncompressedStream.end());
-    BOOST_REQUIRE(uncompressedProof.size() <= FCMP_PROOF_MAX_SIZE);
-    BOOST_CHECK(VerifyFCMPProofV5(root, decodedLeaf, uncompressedProof));
 }
 
 BOOST_AUTO_TEST_CASE(range_proof_malformed_ipa_point_returns_false_without_crash)
@@ -1410,6 +1235,116 @@ BOOST_AUTO_TEST_CASE(verify_cache_store_at_one_height_does_not_satisfy_another)
 
     VerifyProofCacheClear();
     BOOST_CHECK(!VerifyProofCacheCheck(keyBelow));
+}
+
+
+// The legacy path-proof layer is gone. What remains must still decode a
+// historical envelope and must never accept one. The witness built here is a
+// real membership witness for a real tree, so this fails if acceptance returns.
+BOOST_AUTO_TEST_CASE(legacy_fcmp_path_proof_parses_but_is_never_accepted)
+{
+    BOOST_REQUIRE(CZKContext::Initialize());
+
+    std::vector<unsigned char> blindA(IPA_SCALAR_SIZE, 0);
+    blindA[IPA_SCALAR_SIZE - 1] = 11;
+    std::vector<unsigned char> blindB(IPA_SCALAR_SIZE, 0);
+    blindB[IPA_SCALAR_SIZE - 1] = 13;
+    CPedersenCommitment leaf, sibling;
+    BOOST_REQUIRE(CreatePedersenCommitment(41, blindA, leaf));
+    BOOST_REQUIRE(CreatePedersenCommitment(43, blindB, sibling));
+
+    CCurveTree tree;
+    BOOST_REQUIRE(tree.InsertLeaf(leaf));
+    BOOST_REQUIRE(tree.InsertLeaf(sibling));
+    BOOST_REQUIRE(tree.RebuildParentNodes());
+    const CCurveTreeNode root = tree.GetRootNode();
+    BOOST_REQUIRE(!root.IsNull());
+    BOOST_REQUIRE_EQUAL(tree.FindLeafIndex(leaf), (int64_t)0);
+
+    // Not a malformed blob: hashing the leaf with its only sibling reproduces
+    // the tree root, which is the check the retired verifier performed.
+    CCurveTreeNode selfNode, siblingNode;
+    selfNode.nDepth = 0;
+    selfNode.curveType = CURVE_SECP256K1;
+    selfNode.vchPoint = leaf.vchCommitment;
+    siblingNode.nDepth = 0;
+    siblingNode.curveType = CURVE_SECP256K1;
+    siblingNode.vchPoint = sibling.vchCommitment;
+    std::vector<CCurveTreeNode> vChildren;
+    vChildren.push_back(selfNode);
+    vChildren.push_back(siblingNode);
+    BOOST_REQUIRE(HashCurveTreeChildren(0, vChildren).vchPoint == root.vchPoint);
+
+    auto AppendLE32 = [](std::vector<unsigned char>& v, uint32_t x) {
+        v.push_back((unsigned char)(x & 0xFF));
+        v.push_back((unsigned char)((x >> 8) & 0xFF));
+        v.push_back((unsigned char)((x >> 16) & 0xFF));
+        v.push_back((unsigned char)((x >> 24) & 0xFF));
+    };
+
+    // Historical v2 layout: depth, then one level of position/arity/siblings.
+    std::vector<unsigned char> path;
+    AppendLE32(path, 1);
+    AppendLE32(path, 0);
+    AppendLE32(path, 2);
+    AppendLE32(path, (uint32_t)sibling.vchCommitment.size());
+    path.insert(path.end(), sibling.vchCommitment.begin(),
+                sibling.vchCommitment.end());
+
+    const uint256 rootHash = root.GetHash();
+    const std::vector<unsigned char> pathCommit(32, 0x5c);
+
+    std::vector<unsigned char> blob;
+    AppendLE32(blob, 2);
+    blob.insert(blob.end(), rootHash.begin(), rootHash.end());
+    AppendLE32(blob, (uint32_t)path.size());
+    blob.insert(blob.end(), path.begin(), path.end());
+    blob.insert(blob.end(), pathCommit.begin(), pathCommit.end());
+
+    unsigned char challenge[32];
+    {
+        SHA256_CTX sha;
+        SHA256_Init(&sha);
+        SHA256_Update(&sha, "Innova_FCMP_Challenge_v2", 24);
+        SHA256_Update(&sha, rootHash.begin(), 32);
+        SHA256_Update(&sha, &pathCommit[0], 32);
+        SHA256_Update(&sha, leaf.vchCommitment.data(), leaf.vchCommitment.size());
+        SHA256_Final(challenge, &sha);
+    }
+    blob.insert(blob.end(), challenge, challenge + 32);
+    blob.insert(blob.end(), 32, 0x01);
+
+    CFCMPProof proof;
+    proof.vchProof = blob;
+    BOOST_REQUIRE(proof.GetSize() <= FCMP_PROOF_MAX_SIZE);
+
+    // PARSE: a historical envelope still round-trips byte for byte.
+    CDataStream encoded(SER_NETWORK, PROTOCOL_VERSION);
+    encoded << proof;
+    CFCMPProof decoded;
+    encoded >> decoded;
+    BOOST_CHECK(decoded.vchProof == proof.vchProof);
+    BOOST_CHECK(!decoded.IsNull());
+
+    // ACCEPT: never, on either network, at any height.
+    const bool fStoredRegTest = fRegTest;
+    const int nForkHeight = FORK_HEIGHT_FCMP;
+    const int heights[] = { 0, 1, nForkHeight, nForkHeight + 1, 1 << 30 };
+    for (int n = 0; n < 2; n++)
+    {
+        fRegTest = (n == 0);
+        for (size_t h = 0; h < sizeof(heights) / sizeof(heights[0]); h++)
+        {
+            VerifyProofCacheClear();
+            BOOST_CHECK(!VerifyFCMPProof(root, decoded, leaf, heights[h]));
+        }
+    }
+    fRegTest = fStoredRegTest;
+    VerifyProofCacheClear();
+
+    std::vector<CFCMPProof> vProofs(1, decoded);
+    std::vector<CPedersenCommitment> vLeaves(1, leaf);
+    BOOST_CHECK(!BatchVerifyFCMPProofs(root, vProofs, vLeaves, nForkHeight));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

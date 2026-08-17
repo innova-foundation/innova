@@ -9946,10 +9946,9 @@ static bool ProducePrivateNullStakeFinalityVote(CTxDB& txdb,
                 continue;
 
             CFCMPProof fcmpProof;
-            if (!CreateFCMPProof(finalizedCurveTree, (uint64_t)nLeafIdx,
-                                 wnote.note.vchBlind, wnote.note.nValue,
-                                 membershipLeaf, fcmpProof))
-                continue;
+            // Retired: a private vote carried a legacy path proof and that layer
+            // is gone, so the vote can no longer be produced over a legacy note.
+            continue;
 
             uint64_t nStakeModifier = pEpochBlock->pprev ?
                                       pEpochBlock->pprev->nStakeModifier :

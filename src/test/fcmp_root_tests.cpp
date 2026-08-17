@@ -208,12 +208,18 @@ BOOST_AUTO_TEST_CASE(v5_unbound_membership_is_stopped_at_public_relay_policy)
     CPedersenCommitment suppliedLeaf;
     BOOST_REQUIRE(CreatePedersenCommitment(17, blind, suppliedLeaf));
 
-    std::vector<std::vector<unsigned char> > proverSelectedSiblings;
-    proverSelectedSiblings.push_back(std::vector<unsigned char>(32, 0x42));
+    // A recorded v5 envelope for this leaf, kept as a byte fixture now that the
+    // prover that produced it is gone. Its siblings were prover-selected, so it
+    // never established membership in any tree.
     CFCMPProof proof;
-    BOOST_REQUIRE(CreateFCMPProofV5(proverSelectedSiblings, 0, 1, blind,
-                                    suppliedLeaf.vchCommitment,
-                                    proof.vchProof));
+    proof.vchProof = ParseHex(
+        "0500000001000000010000002102a96c22c9d4211cea9f84e168f7b842d9ee17cdf8ae21b2031456bffdd6171b5b"
+        "21033c934127b15d08b6817197cac5c7deddf738fc0b3a0e7fd8444b0d24ab483dda208b5ced9121856fae79922a"
+        "852542b51c101246d82a31fd172f22f21bf1143c6e20e346209e742c091cb11238053ee0bcb49c0878b38c02c98d"
+        "fda90699f1cc2fe900000000203a09914253006315682ee12ae1db3007e98478ef395d8776e390495b53124f11208b"
+        "70435b71c38b1c6baed52c03567e57ee3b73a8ee32a8c9df45557f93859b8f000000002102a7c0f07b05aeb35976"
+        "e5b4d20f77a0994ae326d1422dbf9bbd821a5e21c7b313");
+    BOOST_REQUIRE(!proof.IsNull());
 
     std::vector<unsigned char> unrelatedBlind(IPA_SCALAR_SIZE, 0);
     unrelatedBlind[IPA_SCALAR_SIZE - 1] = 9;
