@@ -867,6 +867,42 @@ fn every_shape_and_mask_round_trips() {
     println!("round-trip: {count} payloads proved and validated");
 }
 
+/// Write the built payloads out as a `fuzz_privacy_payload` corpus (selector byte + request).
+/// INNOVA_DIFF_CORPUS=/path/to/corpus cargo test --release export_fuzz_corpus -- --ignored
+#[test]
+#[ignore = "writes files; run explicitly to build a corpus"]
+fn export_fuzz_corpus() {
+    let Ok(directory) = std::env::var("INNOVA_DIFF_CORPUS") else {
+        println!("set INNOVA_DIFF_CORPUS to a directory to export");
+        return;
+    };
+    std::fs::create_dir_all(&directory).expect("corpus directory");
+    let mut written = 0_usize;
+
+    for (label, spec, mut rng) in cases(7) {
+        let built = build(&mut rng, &spec);
+        assert_eq!(validate(&built.request), Ok(()), "baseline: {label}");
+        let slug = label.replace([' ', '='], "_");
+        // Selector 0 and 1 are payload_validate and payload_effects; 2 is the signing hash.
+        for selector in [0_u8, 1, 2] {
+            let mut input = vec![selector];
+            input.extend_from_slice(&built.request);
+            std::fs::write(
+                format!("{directory}/payload_{slug}_sel{selector}.bin"),
+                &input,
+            )
+            .expect("write corpus entry");
+            written += 1;
+        }
+        // The bare payload without the chain-context prefix reaches the scan decoder.
+        let mut input = vec![3_u8];
+        input.extend_from_slice(&built.request[built.payload_at..]);
+        std::fs::write(format!("{directory}/scan_{slug}.bin"), &input).expect("write");
+        written += 1;
+    }
+    println!("exported {written} corpus entries to {directory}");
+}
+
 /// Report payload geometry and validation cost, so the sweep sizes below are chosen against
 /// measurement rather than guessed at.
 #[test]
@@ -1590,6 +1626,205 @@ fn proofs_do_not_transplant_between_payloads() {
         );
     }
 }
+
+/// The consensus decoder and the wallet decoder must never disagree about a payload.
+///
+/// They share `parse_payload_prefix` precisely so a wallet cannot credit a note consensus
+/// refused, or miss one it accepted. This is the differential that claim implies: over every
+/// mask and shape, a payload the validator accepted must scan to exactly its outputs, with
+/// the amounts it was built with, and a payload the validator rejected must not scan.
+#[test]
+fn the_wallet_decoder_agrees_with_the_consensus_decoder() {
+    const SCAN_RECORD_BYTES: usize = 2 + 4 + 96 + 212;
+    let mut checked = 0_usize;
+
+    for (label, spec, mut rng) in cases(6) {
+        let built = build(&mut rng, &spec);
+        assert_eq!(validate(&built.request), Ok(()), "baseline: {label}");
+
+        // One scan key per output recipient, view-only.
+        let mut request = Vec::new();
+        request.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+        request.push(1); // view-only
+        request.push(NETWORK);
+        request.push(ADDRESS_TYPE);
+        request.extend_from_slice(&[0_u8; 3]);
+        request.extend_from_slice(&WIRE_VERSION.to_le_bytes());
+        request.extend_from_slice(&1_u16.to_le_bytes()); // one key
+        request.extend_from_slice(&[0_u8; 2]);
+        let view_secret = spec
+            .outputs
+            .first()
+            .map_or_else(|| Scalar::ONE, |note| note.address.view_secret);
+        request.extend_from_slice(&view_secret.to_bytes());
+        request.extend_from_slice(&[0_u8; 32]);
+        let payload = &built.request[built.payload_at..];
+        request.extend_from_slice(payload);
+
+        let response = payload::scan_outputs(&request).expect("scanning a valid payload");
+        let matches = usize::from(response[4]);
+        assert_eq!(
+            matches,
+            spec.outputs.len(),
+            "the wallet must recover exactly the outputs consensus accepted: {label}"
+        );
+        for index in 0..matches {
+            let start = 6 + (index * SCAN_RECORD_BYTES);
+            let output_index = u32::from_le_bytes(
+                response[start + 2..start + 6].try_into().expect("4 bytes"),
+            ) as usize;
+            let record = &response[start + 6 + 96..start + SCAN_RECORD_BYTES];
+            let expected = spec.outputs[output_index].amount;
+            assert!(
+                record.windows(8).any(|window| window == expected.to_le_bytes()),
+                "output {output_index} must scan to the amount it was built with: {label}"
+            );
+            checked += 1;
+        }
+
+        // A payload the validator rejects must not decode for a wallet either. Walk the
+        // prefix the two decoders share.
+        for region in &built.regions {
+            if matches!(region.name, "genesis" | "parameter_digest") {
+                // The scanner authenticates the chain binding through the note tag and
+                // holds no digest of its own, so these two are consensus-only by design.
+                continue;
+            }
+            if region.start >= payload.len() {
+                continue;
+            }
+            let mut mutated = built.request.clone();
+            mutated[built.payload_at + region.start] ^= 0x01;
+            if validate(&mutated).is_ok() {
+                continue;
+            }
+            let mut scan = request.clone();
+            let scan_payload_at = scan.len() - payload.len();
+            scan[scan_payload_at + region.start] ^= 0x01;
+            if let Ok(response) = payload::scan_outputs(&scan) {
+                assert_eq!(
+                    usize::from(response[4]),
+                    0,
+                    "the wallet credited an output from a payload consensus rejected \
+                     (region {}): {label}",
+                    region.name
+                );
+            }
+            checked += 1;
+        }
+    }
+    println!("decoder differential: {checked} assertions");
+}
+
+/// Batch verification must agree with verifying one at a time: any batch with a
+/// corrupted member must fail.
+#[test]
+fn batch_verification_agrees_with_single_verification() {
+    let mut rng = ChaCha20Rng::from_seed([0xc7; 32]);
+    let address = Address::new(&mut rng);
+
+    // Four independent single-input proofs, each against its own anonymity set.
+    let mut requests = Vec::new();
+    for index in 0..4_u32 {
+        let note = make_note(&mut rng, &address, index, 1_000 + u64::from(index));
+        let anonymity = anonymity_set(&mut rng, &[note]);
+        let signable = {
+            let mut bytes = [0_u8; 32];
+            rng.fill_bytes(&mut bytes);
+            bytes
+        };
+        let entropy = {
+            let mut bytes = [0_u8; 32];
+            rng.fill_bytes(&mut bytes);
+            bytes[0] |= 1;
+            bytes
+        };
+        let (proofs, membership) = fcmp_prove(anonymity.root, signable, entropy, &anonymity.witnesses);
+        let mut request = Vec::new();
+        request.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+        request.push(8);
+        request.push(2);
+        request.push(1);
+        request.extend_from_slice(&[0; 3]);
+        request.extend_from_slice(&anonymity.root);
+        request.extend_from_slice(&signable);
+        request.extend_from_slice(&proofs[0].pseudo_out);
+        request.extend_from_slice(&proofs[0].key_image);
+        request.extend_from_slice(
+            &u32::try_from(membership.len()).expect("bounded").to_le_bytes(),
+        );
+        request.extend_from_slice(&membership);
+        assert_eq!(fcmp::verify(&request), Ok(()), "each proof verifies alone");
+        requests.push(request);
+    }
+
+    let frame = |members: &[Vec<u8>]| -> Vec<u8> {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+        frame.push(8);
+        frame.push(u8::try_from(members.len()).expect("bounded"));
+        frame.push(u8::try_from(members.len()).expect("one input each"));
+        frame.extend_from_slice(&[0; 2]);
+        for member in members {
+            frame.extend_from_slice(
+                &u32::try_from(member.len()).expect("bounded").to_le_bytes(),
+            );
+        }
+        for member in members {
+            frame.extend_from_slice(member);
+        }
+        frame
+    };
+
+    assert_eq!(
+        fcmp::verify_batch(&frame(&requests), 4),
+        Ok(()),
+        "a batch of four sound proofs must verify"
+    );
+
+    // Corrupt each member in turn, in the proof body rather than the header, and confirm
+    // the batch fails. A batch that accepts here is accepting a residual that cancelled.
+    let mut checked = 0_usize;
+    for index in 0..requests.len() {
+        for offset in [VERIFY_HEADER_BYTES + 80, VERIFY_HEADER_BYTES + 4_000] {
+            let mut corrupted = requests.clone();
+            if offset >= corrupted[index].len() {
+                continue;
+            }
+            corrupted[index][offset] ^= 0x01;
+            assert!(
+                fcmp::verify(&corrupted[index]).is_err(),
+                "the corrupted member must fail alone"
+            );
+            assert!(
+                fcmp::verify_batch(&frame(&corrupted), 4).is_err(),
+                "a batch containing member {index} corrupted at {offset} must fail"
+            );
+            checked += 1;
+        }
+    }
+
+    // Two corrupted members cannot cancel each other either.
+    let mut corrupted = requests.clone();
+    corrupted[0][VERIFY_HEADER_BYTES + 80] ^= 0x01;
+    corrupted[1][VERIFY_HEADER_BYTES + 80] ^= 0x01;
+    assert!(
+        fcmp::verify_batch(&frame(&corrupted), 4).is_err(),
+        "two corrupted members must not cancel in the weighted sum"
+    );
+
+    // The declared count must match the framed members, or a verifier could be handed a
+    // batch it silently under-checks.
+    assert!(
+        fcmp::verify_batch(&frame(&requests), 3).is_err(),
+        "a batch whose declared count disagrees with its frame must be refused"
+    );
+    println!("batch differential: {checked} single-member corruptions, all rejected");
+}
+
+/// Where a verification request's proof body starts: the fixed header, the root, the
+/// signable hash, one pseudo-output and key-image pair, and the proof length.
+const VERIFY_HEADER_BYTES: usize = 8 + 32 + 32 + 64 + 4;
 
 /// The tree root is a function of the leaf multiset in order, and incremental extension must
 /// agree with a single-shot build.
