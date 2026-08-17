@@ -49,7 +49,8 @@ static const WalkTier vRegtestLadder[] = {
     { 1811, 10000000000LL },   // 100
 };
 static const size_t nRegtestTiers = ARRAYLEN(vRegtestLadder);
-static const int64_t nRegtestTail = 5000000LL;     // 0.05 INN
+// Above the last rung regtest pays a flat funding tail for the multi-epoch harnesses.
+static const int64_t nRegtestTail = 50000000000LL; // 500 INN
 
 // Testnet, fork height 60. Rung lengths are a hundredth of mainnet's, so the
 // rewards -- and the truncation the divisor introduces -- are mainnet's exactly.
@@ -67,6 +68,22 @@ static const int64_t nTestnetTail = 666LL;
 int64_t Subsidy(int nHeight)
 {
     return GetBlockSubsidySchedule(nHeight);
+}
+
+// FNV-1a over the schedule at every nStep-th height in [nBegin, nEnd].
+uint64_t ScheduleDigest(int nBegin, int nEnd, int nStep)
+{
+    uint64_t nHash = 14695981039346656037ULL;
+    for (int nHeight = nBegin; nHeight <= nEnd; nHeight += nStep)
+    {
+        const uint64_t nValue = (uint64_t)Subsidy(nHeight);
+        for (int i = 0; i < 8; i++)
+        {
+            nHash ^= (nValue >> (i * 8)) & 0xFFULL;
+            nHash *= 1099511628211ULL;
+        }
+    }
+    return nHash;
 }
 
 // What the ladder pays at nHeight, read off the golden table.
@@ -224,8 +241,68 @@ BOOST_AUTO_TEST_CASE(regtest_collateralnode_split_is_pinned)
     // The tail below the last rung still pays both sides.
     const int64_t nTail = Subsidy(1812);
     BOOST_CHECK_EQUAL(nTail, nRegtestTail);
-    BOOST_CHECK_EQUAL(CBlockSubsidySplit::CollateralnodeShareOfBase(nTail), 3250000LL);
-    BOOST_CHECK_EQUAL(nTail - CBlockSubsidySplit::CollateralnodeShareOfBase(nTail), 1750000LL);
+    BOOST_CHECK_EQUAL(CBlockSubsidySplit::CollateralnodeShareOfBase(nTail), 32500000000LL);
+    BOOST_CHECK_EQUAL(nTail - CBlockSubsidySplit::CollateralnodeShareOfBase(nTail), 17500000000LL);
+}
+
+// A sole regtest miner must hold what the contrib/test harnesses spend, by the
+// height they spend it.
+BOOST_AUTO_TEST_CASE(regtest_supply_funds_the_harnesses_by_a_reachable_height)
+{
+    NetworkGuard guard(true, false);
+
+    // Deepest demand: POOL_SHIELD_ROWS x POOL_SHIELD_VALUE shielded before six
+    // 25,000 INN collateral notes, at POOL_FUND_EPOCH's funding height.
+    const int nHarnessFundHeight = 4051;                    // epoch 14 start + 140
+    const int64_t nHarnessNeeds = 184000LL * COIN;
+
+    // Sole-miner holdings: the schedule less the finality reserve (maturity is 1).
+    int64_t nProducer = 0;
+    int64_t nSchedule = 0;
+    for (int nHeight = 1; nHeight <= nHarnessFundHeight; nHeight++)
+    {
+        const int64_t nSubsidy = Subsidy(nHeight);
+        BOOST_CHECK(nSubsidy > 0);
+        nSchedule += nSubsidy;
+        nProducer += CBlockSubsidySplit::ForBlock(nHeight, nSubsidy, 0,
+                                                  CollateralnodeShare::None).Producer();
+    }
+
+    // Require headroom.
+    BOOST_CHECK(nProducer >= 3 * nHarnessNeeds);
+
+    // Well below the supply clamp.
+    BOOST_CHECK(nSchedule < MAX_MONEY / 4);
+
+    // The tail is the only rung above 1811 and must not decay.
+    BOOST_CHECK_EQUAL(Subsidy(1812), nRegtestTail);
+    BOOST_CHECK_EQUAL(Subsidy(nHarnessFundHeight), nRegtestTail);
+    BOOST_CHECK(nRegtestTail >= COIN);
+}
+
+// Regtest tuning must not move mainnet or testnet by one satoshi; these digests
+// fold the whole of both curves.
+BOOST_AUTO_TEST_CASE(regtest_tuning_cannot_move_mainnet_or_testnet)
+{
+    {
+        NetworkGuard guard(false, false);
+        // The launch ladder, every height.
+        BOOST_CHECK_EQUAL(ScheduleDigest(0, 20000, 1), 3287823252898471772ULL);
+        // Across the DAG fork, every height.
+        BOOST_CHECK_EQUAL(ScheduleDigest(8129000, 8131000, 1), 101140400797091916ULL);
+        // The whole curve: pre-DAG rungs, every stretched rung, and the tail
+        // past the last one at 36,180,000.
+        BOOST_CHECK_EQUAL(ScheduleDigest(0, 40000000, 997), 9230636210602489907ULL);
+    }
+    {
+        NetworkGuard guard(false, true);
+        // Every height across the premine, the fair-launch rung and the fork.
+        BOOST_CHECK_EQUAL(ScheduleDigest(0, 20000, 1), 13371504249081157510ULL);
+        // Every height across all six stretched rungs, which end at 217,560.
+        BOOST_CHECK_EQUAL(ScheduleDigest(0, 250000, 1), 3572667101601061254ULL);
+        // And well into the tail.
+        BOOST_CHECK_EQUAL(ScheduleDigest(0, 4000000, 997), 12941058667657213213ULL);
+    }
 }
 
 // Testnet pre-DAG: premine at height 1 and the fair-launch half coin below the fork.

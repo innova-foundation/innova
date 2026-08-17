@@ -5030,7 +5030,16 @@ static const PoWPostDagTier vPoWPostDagRegtest[] = {
     { 100,  75000000000LL },   //  750     -> 50
     { 120, 150000000000LL },   // 1500     -> 100
 };
-static const int64_t nPoWPostDagTailRegtest = 75000000LL;  // 0.75 -> 0.05
+// Regtest's tail funds harnesses, it does not model scarcity. The chain is a
+// fixture rebuilt from genesis every run, so a decaying tail buys nothing and
+// costs the multi-epoch harnesses their funding: the last rung ends at 1811 and
+// the committee harness has to hold six 25,000 INN collateral registrations by
+// height 4051, which a 0.05 INN tail cannot reach at any reachable height.
+// 500 INN a block clears that with room for the harness to grow, and still
+// leaves the MAX_MONEY clamp unreached until ~37,600 -- an order of magnitude
+// deeper than any harness in contrib/test mines. Mainnet and testnet keep their
+// own tails above; this constant is read only when fRegTest is set.
+static const int64_t nPoWPostDagTailRegtest = 750000000000LL;  // 7500 -> 500
 
 static const PoWPostDagTier* GetPoWPostDagLadder(size_t& nCount, int64_t& nTail)
 {

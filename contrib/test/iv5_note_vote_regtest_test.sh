@@ -119,7 +119,7 @@ epoch_end()   { echo $(( 310 + ($1 - 1) * 300 )); }
 #
 # The term is this late because the registrations cost 6 x 25000 INN of real
 # collateral, the pool has to be funded well past that (see POOL_SHIELD_TOTAL),
-# and node0 is the only miner at 50 INN a block.
+# and node0 is the only miner.
 #
 # The whole schedule is derived, because it is one schedule: the funding shields
 # must be built by the epoch the carve spends against, the carved notes must be
@@ -134,7 +134,8 @@ epoch_end()   { echo $(( 310 + ($1 - 1) * 300 )); }
 # Transparent value is shielded here, the collateral notes are carved out of it
 # one epoch later, and they are registered the epoch after that. Funding this
 # late because the pool has to hold well over 6 x 25000 INN (see
-# POOL_SHIELD_TOTAL) and node0 is the only miner at 50 INN a block.
+# POOL_SHIELD_TOTAL) and node0 is the only miner. The regtest ladder's last rung
+# ends at 1811, so this height is funded out of the post-ladder tail.
 POOL_FUND_EPOCH=14
 CARVE_EPOCH=$(( POOL_FUND_EPOCH + 1 ))
 REGISTER_EPOCH=$(( CARVE_EPOCH + 1 ))
