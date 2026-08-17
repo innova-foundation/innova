@@ -201,6 +201,34 @@ BOOST_AUTO_TEST_CASE(reserve_depends_on_height_alone)
     BOOST_CHECK_EQUAL(starved.PaidToBlock(), 0);
 }
 
+// Recomputes the share from FINALITY_RESERVE_BPS in a wider type and different shape than
+// BpsShare, so a rate change cannot cancel on both sides.
+BOOST_AUTO_TEST_CASE(reserve_is_exactly_the_declared_basis_point_share)
+{
+    MainnetGuard guard;
+
+    for (int nOffset : { 0, 1, 500, 12345, 300000, 1900000 })
+    {
+        const int nHeight = GetForkHeightDAG() + nOffset;
+        const int64_t nSchedule = GetBlockSubsidySchedule(nHeight);
+        BOOST_REQUIRE(nSchedule > 0);
+        // One basis point has to be a nonzero number of satoshi here, or the
+        // comparison has no resolution and proves nothing.
+        BOOST_REQUIRE(nSchedule / SUBSIDY_BPS_DEN > 0);
+
+        const int64_t nDeclared =
+            (int64_t)(((__int128)nSchedule * FINALITY_RESERVE_BPS) / SUBSIDY_BPS_DEN);
+        BOOST_CHECK_EQUAL(GetFinalityReservePerBlock(nHeight), nDeclared);
+
+        // ...and what the block keeps is the rest of the schedule exactly, so
+        // the two shares are one number divided, not two rates that agree.
+        const CBlockSubsidySplit split =
+            CBlockSubsidySplit::ForBlock(nHeight, nSchedule, 0, CollateralnodeShare::Paid);
+        BOOST_CHECK_EQUAL(split.FinalityReserve(), nDeclared);
+        BOOST_CHECK_EQUAL(split.PaidToBlock(), nSchedule - nDeclared);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 2. THE EPOCH RESERVE.
 // ---------------------------------------------------------------------------
@@ -229,6 +257,64 @@ BOOST_AUTO_TEST_CASE(epoch_budget_is_the_sum_of_the_preceding_epoch_reserves)
         // the settlement height, so every accruing block is an ancestor.
         BOOST_CHECK(nBoundary <= GetFinalitySettlementHeight(nEpoch, nBoundary));
     }
+}
+
+// Tested at the first schedule step, where the preceding, containing and earlier epochs
+// accrue different amounts and an off-by-one in the range is visible.
+BOOST_AUTO_TEST_CASE(epoch_budget_accrues_over_the_preceding_epoch_where_it_is_visible)
+{
+    MainnetGuard guard;
+
+    const int nFork = GetForkHeightDAG();
+    const int64_t nFirstRung = GetBlockSubsidySchedule(nFork);
+    BOOST_REQUIRE(nFirstRung > 0);
+
+    int nStep = -1;
+    for (int h = nFork + 1; h <= nFork + 2500000; h++)
+    {
+        if (GetBlockSubsidySchedule(h) != nFirstRung)
+        {
+            nStep = h;
+            break;
+        }
+    }
+    BOOST_REQUIRE(nStep > nFork);
+
+    // Settle the epoch AFTER the one the step falls in, so the accrual range is
+    // the mixed-rate epoch and its two neighbours are uniform and unequal.
+    const int nEpoch = GetEpochForHeight(nStep) + 1;
+    const int nHint = nFork;
+
+    auto SumReserve = [](int nBegin, int nEnd) {
+        int64_t nSum = 0;
+        for (int h = nBegin; h < nEnd; h++)
+            nSum += GetFinalityReservePerBlock(h);
+        return nSum;
+    };
+
+    const int nH2 = GetEpochBoundaryHeight(nEpoch - 2, nHint);
+    const int nH1 = GetEpochBoundaryHeight(nEpoch - 1, nHint);
+    const int nH0 = GetEpochBoundaryHeight(nEpoch, nHint);
+    const int nHp = GetEpochBoundaryHeight(nEpoch + 1, nHint);
+    BOOST_REQUIRE(nH2 < nH1 && nH1 < nH0 && nH0 < nHp);
+
+    const int64_t nBefore = SumReserve(nH2, nH1);
+    const int64_t nPreceding = SumReserve(nH1, nH0);
+    const int64_t nContaining = SumReserve(nH0, nHp);
+
+    // The three ranges are genuinely distinguishable here; without this the
+    // assertion below would hold under any of them.
+    BOOST_REQUIRE(nPreceding != nContaining);
+    BOOST_REQUIRE(nPreceding != nBefore);
+
+    BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nEpoch, nHint), nPreceding);
+    BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nEpoch + 1, nHint), nContaining);
+    BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nEpoch - 1, nHint), nBefore);
+
+    // A closed sum over a height range: the hint selects nothing, so producer
+    // and validator reach the same number from the epoch number alone.
+    for (int nOtherHint : { 0, 1, nFork, nH0, nHp + 999999 })
+        BOOST_CHECK_EQUAL(GetFinalityEpochBudget(nEpoch, nOtherHint), nPreceding);
 }
 
 // Over an epoch, what blocks withheld is what the next settlement pays:

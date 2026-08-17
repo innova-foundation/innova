@@ -2366,4 +2366,47 @@ BOOST_AUTO_TEST_CASE(boundary_b_never_precedes_boundary_a)
     BOOST_CHECK(IsBoundaryAActiveAtHeight(nA));
 }
 
+// Versions 2000-2007 are rejected on every public network at every height, context-free:
+// the identical transaction is accepted on regtest and refused on a public network.
+BOOST_AUTO_TEST_CASE(legacy_shielded_versions_are_refused_on_every_public_network)
+{
+    const bool fSavedRegTest = fRegTest;
+    const bool fSavedTestNet = fTestNet;
+    struct Restore
+    {
+        bool fRegTestSaved, fTestNetSaved;
+        ~Restore() { fRegTest = fRegTestSaved; fTestNet = fTestNetSaved; }
+    } restore = { fSavedRegTest, fSavedTestNet };
+
+    for (int nVersion = SHIELDED_TX_VERSION;
+         nVersion <= SHIELDED_TX_VERSION_NULLSTAKE_RECLAIM; nVersion++)
+    {
+        // A minimal well-formed legacy shielded transaction: one shielded
+        // output, so nothing else in the context-free checks has an opinion.
+        CTransaction tx;
+        tx.nVersion = nVersion;
+        tx.vin.push_back(CTxIn(COutPoint(uint256(0x5EA1), 0)));
+        tx.vout.push_back(CTxOut(CENT, CScript() << OP_TRUE));
+        tx.vShieldedOutput.push_back(CShieldedOutputDescription());
+        BOOST_REQUIRE(tx.IsShielded());
+
+        // Regtest keeps the historical decoder reachable, which is what makes
+        // the public-network verdicts below attributable to the seal.
+        fRegTest = true;
+        fTestNet = false;
+        BOOST_REQUIRE_MESSAGE(tx.CheckTransaction(),
+                              strprintf("version %d rejected under regtest", nVersion));
+
+        fRegTest = false;
+        fTestNet = false;
+        BOOST_CHECK_MESSAGE(!tx.CheckTransaction(),
+                            strprintf("version %d accepted on mainnet", nVersion));
+
+        fRegTest = false;
+        fTestNet = true;
+        BOOST_CHECK_MESSAGE(!tx.CheckTransaction(),
+                            strprintf("version %d accepted on testnet", nVersion));
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

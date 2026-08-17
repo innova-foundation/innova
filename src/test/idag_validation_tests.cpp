@@ -1154,4 +1154,143 @@ BOOST_AUTO_TEST_CASE(anonymous_preimage_is_wallet_independent_and_bounded)
     BOOST_CHECK_NE(GetAnonTxnPreImage(tx, pureHash), 0);
 }
 
+namespace
+{
+uint256 TestDAGParentHash(unsigned int i)
+{
+    return uint256(1000 + i);
+}
+
+// Same payload layout and push encoding BuildDAGParentScript emits, with the
+// count free so a value the builder refuses can still be handed to a decoder.
+CScript MakeIDAGCommitmentScript(unsigned int nCount)
+{
+    std::vector<unsigned char> vchData;
+    vchData.insert(vchData.end(), DAG_PARENT_TAG, DAG_PARENT_TAG + 4);
+    vchData.push_back((unsigned char)nCount);
+    for (unsigned int i = 0; i < nCount; i++)
+    {
+        const uint256 hash = TestDAGParentHash(i);
+        const unsigned char* p = hash.begin();
+        vchData.insert(vchData.end(), p, p + 32);
+    }
+    CScript script;
+    script << OP_RETURN << vchData;
+    return script;
+}
+} // namespace
+
+// The parent cap belongs to the decoder, not to AcceptBlock: AcceptBlock only
+// ever sees the set a decoder returned, so the count check is what has to hold.
+BOOST_AUTO_TEST_CASE(dag_parent_commitment_cap_is_enforced_by_the_canonical_decoder)
+{
+    const unsigned int nCap = (unsigned int)MAX_DAG_PARENTS;
+
+    // At the cap the canonical decoder accepts and returns the whole set.
+    {
+        const CScript script = MakeIDAGCommitmentScript(nCap);
+        std::vector<uint256> vParents;
+        std::string strError;
+        BOOST_CHECK_EQUAL((int)DecodeCanonicalDAGParentScript(script, vParents, strError),
+                          (int)DAG_PARENT_VALID);
+        BOOST_CHECK_EQUAL(vParents.size(), nCap);
+    }
+
+    // Past the cap, up to the widest count the one-byte field can name.
+    const unsigned int vOversized[] = { nCap + 1, nCap + 2, nCap + 3, 64, 65, 255 };
+    for (unsigned int nCount : vOversized)
+    {
+        const CScript script = MakeIDAGCommitmentScript(nCount);
+        std::vector<uint256> vParents;
+        std::string strError;
+        BOOST_CHECK_EQUAL((int)DecodeCanonicalDAGParentScript(script, vParents, strError),
+                          (int)DAG_PARENT_MALFORMED);
+        BOOST_CHECK(vParents.empty());
+        // Assert the count as the rejection reason: the re-encode comparison also fails on an
+        // oversized commitment and would mask the cap.
+        BOOST_CHECK(strError.find("parent count") != std::string::npos);
+
+        // The whole-coinbase extractor AcceptBlock calls refuses it too.
+        std::vector<CScript> vScripts;
+        vScripts.push_back(CScript() << OP_TRUE);
+        vScripts.push_back(script);
+        std::vector<uint256> vExtracted;
+        std::string strExtractError;
+        BOOST_CHECK(!ExtractCanonicalDAGParentCommitment(vScripts, vExtracted, strExtractError));
+        BOOST_CHECK(vExtracted.empty());
+    }
+
+    // The builder refuses to emit an oversized commitment, so a producer taking
+    // the ordinary path cannot create one either.
+    {
+        std::vector<uint256> vTooMany;
+        for (unsigned int i = 0; i <= nCap; i++)
+            vTooMany.push_back(TestDAGParentHash(i));
+        BOOST_CHECK(BuildDAGParentScript(vTooMany).empty());
+    }
+}
+
+// From the POEM height a block contributes its entropy weight to chain trust,
+// not the inverse-target work value. The two are different numbers for the same
+// block, so a node still on the old form ranks branches differently.
+BOOST_AUTO_TEST_CASE(chain_trust_is_the_poem_entropy_weight_from_the_gate)
+{
+    const bool fSavedRegTest = fRegTest;
+    const bool fSavedTestNet = fTestNet;
+    struct Restore
+    {
+        bool fRegTestSaved, fTestNetSaved;
+        ~Restore() { fRegTest = fRegTestSaved; fTestNet = fTestNetSaved; }
+    } restore = { fSavedRegTest, fSavedTestNet };
+    fRegTest = false;
+    fTestNet = false;
+
+    const unsigned int nBits = 0x1d00ffff;
+    CBigNum bnTarget;
+    bnTarget.SetCompact(nBits);
+    const uint256 nWorkValue = ((CBigNum(1) << 256) / (bnTarget + 1)).getuint256();
+
+    const uint256 hashBlock("0x00000000000000009051f1e2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6");
+    CBlockIndex index;
+    index.nHeight = FORK_HEIGHT_POEM;
+    index.nBits = nBits;
+    index.nFlags = 0;                 // proof of work
+    index.phashBlock = &hashBlock;
+    BOOST_REQUIRE(!index.IsProofOfStake());
+
+    const uint256 nEntropy = GetBlockEntropy(hashBlock);
+    // The two forms have to disagree for this block, or the assertion below
+    // would hold whichever branch ran.
+    BOOST_REQUIRE(nEntropy != nWorkValue);
+
+    BOOST_CHECK(index.GetBlockTrust() == nEntropy);
+
+    // One block below the gate the old inverse-target value is still what the
+    // already-connected history was ranked by.
+    index.nHeight = FORK_HEIGHT_POEM - 1;
+    BOOST_REQUIRE(index.nHeight < FORK_HEIGHT_DAG);
+    BOOST_CHECK(index.GetBlockTrust() == nWorkValue);
+}
+
+// The pre-Boundary-A decoder reads its payload through CScript::GetOp, which
+// refuses any push above MAX_SCRIPT_ELEMENT_SIZE. Below Boundary A the parent
+// count is therefore ceilinged by the script element size well before
+// MAX_DAG_PARENTS is reached, and a commitment naming more simply decodes to
+// nothing. Pinned because the two eras do not share a ceiling.
+BOOST_AUTO_TEST_CASE(pre_boundary_a_parent_count_is_ceilinged_by_the_script_element_size)
+{
+    const unsigned int nElementCeiling = (MAX_SCRIPT_ELEMENT_SIZE - 5) / 32;
+    BOOST_REQUIRE(nElementCeiling < (unsigned int)MAX_DAG_PARENTS);
+
+    BOOST_CHECK_EQUAL(ExtractDAGParents(MakeIDAGCommitmentScript(nElementCeiling)).size(),
+                      nElementCeiling);
+    BOOST_CHECK(ExtractDAGParents(MakeIDAGCommitmentScript(nElementCeiling + 1)).empty());
+
+    // Whatever the count byte names, the legacy path never yields more than the
+    // consensus maximum.
+    for (unsigned int nCount = 1; nCount <= 255; nCount++)
+        BOOST_CHECK(ExtractDAGParents(MakeIDAGCommitmentScript(nCount)).size()
+                        <= (size_t)MAX_DAG_PARENTS);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
