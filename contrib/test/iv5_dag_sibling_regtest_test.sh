@@ -310,18 +310,24 @@ unlock() { rpc "$1" walletpassphrase "$WALLETPASS" 36000 >/dev/null 2>&1; }
 
 iv5_tree_size()  { jget "$(rpc "$1" z_getshieldedinfo 2>/dev/null)" privacy_vnext_tree_size; }
 iv5_store_size() { jget "$(rpc "$1" z_getshieldedinfo 2>/dev/null)" privacy_vnext_tree_store_size; }
+iv5_tree_root()  { jget "$(rpc "$1" z_getshieldedinfo 2>/dev/null)" privacy_vnext_tree_root; }
 
-# Two nodes on one tip must hold one tree. Size and store are compared rather than
-# a root because the tree root is not exposed, and a store that lags its own tree
-# is the wallet replayer stalling rather than the accumulator diverging.
+# Two nodes on one tip must hold one tree; the root is order sensitive. Both values
+# come from the last COMPLETED epoch, so they move only at an epoch boundary.
 assert_iv5_agrees() {
-    local what="$1" t0 t1 s0 s1
+    local what="$1" t0 t1 s0 s1 r0 r1
     t0="$(iv5_tree_size 0)";  t1="$(iv5_tree_size 1)"
     s0="$(iv5_store_size 0)"; s1="$(iv5_store_size 1)"
+    r0="$(iv5_tree_root 0)";  r1="$(iv5_tree_root 1)"
     if is_int "$t0" && is_int "$t1" && [ "$t0" = "$t1" ]; then
         success "$what: both nodes hold a $t0-leaf IV5 tree"
     else
         fail "$what: the nodes hold different IV5 trees (node0=$t0 node1=$t1)"
+    fi
+    if [ -n "$r0" ] && [ "$r0" = "$r1" ]; then
+        success "$what: both nodes derived the same tree root (${r0:0:16})"
+    else
+        fail "$what: the nodes derived different tree roots ($r0 / $r1)"
     fi
     if is_int "$s0" && [ "$s0" = "$t0" ] && is_int "$s1" && [ "$s1" = "$t1" ]; then
         success "$what: each node's tree store is level with its tree"
@@ -705,11 +711,14 @@ else
 fi
 mine_one 1 || warn "node1 could not extend its losing chain"
 
+# The tree is named by the last COMPLETED epoch, so a race inside one epoch must
+# leave it exactly where it was. Anything else would mean a leaf reached the tree
+# without an epoch closing over it.
 TREE_LOSER1="$(iv5_tree_size 1)"
-if is_int "$TREE_LOSER1" && is_int "$TREE_BEFORE0" && [ "$TREE_LOSER1" -gt "$TREE_BEFORE0" ]; then
-    success "node1's tree grew to $TREE_LOSER1 leaves while partitioned (was $TREE_BEFORE0)"
+if [ "$TREE_LOSER1" = "$TREE_BEFORE0" ]; then
+    success "node1's mid-epoch payload did not move the tree ($TREE_BEFORE0 leaves)"
 else
-    warn "node1's tree did not grow on its losing chain ($TREE_BEFORE0 -> $TREE_LOSER1)"
+    fail "node1's tree moved inside an epoch ($TREE_BEFORE0 -> $TREE_LOSER1)"
 fi
 
 # The winning chain is longer and carries none of it.
@@ -765,7 +774,10 @@ OOO_OK=1
 for ((i=OOO_RUN; i>=1; i--)); do
     h=$((OOO_SPLIT + i))
     bh="$(block_hash 0 "$h")"
-    hex="$(rpc 0 getblock "$bh" 0 2>/dev/null | tr -d '"[:space:]')"
+    # getblock's second parameter is documented as a numeric verbosity (0 for raw
+    # hex) but the client converts it with ConvertTo<bool> and the RPC reads it
+    # with get_bool, so the documented 0 raises a type error and only false works.
+    hex="$(rpc 0 getblock "$bh" false 2>/dev/null | tr -d '"[:space:]')"
     if [ ${#hex} -lt 100 ]; then
         fail "could not read block $h as raw hex"
         OOO_OK=0
@@ -794,6 +806,78 @@ fi
 # Put the fleet back together so the section leaves no partition behind.
 connect_nodes
 wait_peers >/dev/null 2>&1 || true
+
+# ============================================================
+header "9. A reorg that undoes a CLOSED epoch takes its leaves back"
+# ============================================================
+
+# The tree is named by the last completed epoch, so only a reorg across an epoch
+# boundary can change it. node1 closes epoch 3 over its own IV5 payload, then a
+# longer chain takes that epoch away; the recomputed tree must match node0's.
+
+EPOCH3_END=910
+mine_to 0 $((EPOCH3_END - 6)) || { fail "could not approach the epoch-3 boundary"; exit 1; }
+wait_sync $((EPOCH3_END - 6)) || { fail "nodes did not sync before the boundary race"; exit 1; }
+
+unlock 0
+EFUND="$(rpc 0 sendtoaddress "$ADDR1" "$PEER_FUND" 2>&1 | tr -d '"[:space:]')"
+if [ ${#EFUND} -eq 64 ]; then
+    mine_to 0 $((EPOCH3_END - 4)) || { fail "could not confirm the boundary-race funding"; exit 1; }
+    wait_sync $((EPOCH3_END - 4)) || { fail "nodes did not resync before the boundary race"; exit 1; }
+    success "node1 funded ahead of the epoch-3 boundary"
+else
+    fail "could not fund node1 for the boundary race: $EFUND"
+fi
+
+TREE_PRE0="$(iv5_tree_size 0)"
+ROOT_PRE0="$(iv5_tree_root 0)"
+partition_nodes || { fail "the nodes could not be partitioned at the boundary"; exit 1; }
+
+unlock 1
+SHIELD_E="$(rpc 1 z_shieldall 2>&1)"
+TXE="$(jget "$SHIELD_E" txid)"
+if [ ${#TXE} -eq 64 ]; then
+    success "node1 built the payload its epoch will close over (${TXE:0:16})"
+else
+    fail "node1 z_shieldall failed at the boundary: $(echo "$SHIELD_E" | head -3)"
+fi
+
+# node1 closes epoch 3 over its own payload, then keeps going far enough that the
+# epoch is genuinely complete on its side.
+mine_to 1 $((EPOCH3_END + 3)) || { fail "node1 could not close epoch 3"; exit 1; }
+TREE_LOSER="$(iv5_tree_size 1)"
+ROOT_LOSER="$(iv5_tree_root 1)"
+if is_int "$TREE_LOSER" && is_int "$TREE_PRE0" && [ "$TREE_LOSER" -gt "$TREE_PRE0" ]; then
+    success "node1 closed epoch 3 with a larger tree ($TREE_PRE0 -> $TREE_LOSER leaves)"
+else
+    warn "node1's closed epoch did not grow the tree ($TREE_PRE0 -> $TREE_LOSER); the undo below is weaker"
+fi
+
+# node0 closes the same epoch over a longer chain that never saw the payload.
+mine_to 0 $((EPOCH3_END + 8)) || { fail "node0 could not close epoch 3 on the winning chain"; exit 1; }
+TREE_WINNER="$(iv5_tree_size 0)"
+ROOT_WINNER="$(iv5_tree_root 0)"
+
+connect_nodes
+wait_peers || { fail "the nodes did not re-peer at the boundary"; exit 1; }
+wait_same_tip || { fail "the nodes did not converge after the boundary race"; exit 1; }
+success "both nodes converged at height $(height 0) after the boundary race"
+
+if [ "$ROOT_LOSER" != "$ROOT_WINNER" ]; then
+    success "the two epoch-3 derivations really did differ (${ROOT_LOSER:0:12} vs ${ROOT_WINNER:0:12})"
+else
+    warn "both sides closed epoch 3 on the same root; the undo under test is untested"
+fi
+
+assert_iv5_agrees "after undoing a closed epoch"
+
+# The surviving tree has to be the winning chain's, not merely a tree the two
+# nodes happen to share.
+if [ "$(iv5_tree_root 1)" = "$ROOT_WINNER" ] && [ "$(iv5_tree_size 1)" = "$TREE_WINNER" ]; then
+    success "node1 rebuilt the winning chain's tree ($TREE_WINNER leaves, ${ROOT_WINNER:0:16})"
+else
+    fail "node1 kept a tree that is not the winning chain's (root $(iv5_tree_root 1) size $(iv5_tree_size 1), expected ${ROOT_WINNER} / $TREE_WINNER)"
+fi
 
 # ============================================================
 header "Results"
