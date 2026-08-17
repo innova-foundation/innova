@@ -121,11 +121,13 @@ transcript (`CIPATranscript`, domain `"Innova_IPA_v1"`) makes it
 non-interactive.
 
 The module is curve-generic (`EIPACurveType` selects secp256k1 or ed25519) and
-supplies the low-level scalar/point arithmetic for both. On top of the raw
-argument it builds path-membership proofs: `CPathIPAProof` /
-`CreatePathIPAProof` / `VerifyPathIPAProof` prove that a leaf commitment sits at
-a given position under a root, and `CreateFCMPProofV5` / `…V6` assemble the
-full membership proof (single-curve V5; cross-curve V6, Section 5).
+supplies the low-level scalar/point arithmetic for both. It is the arithmetic
+backend for `bulletproof_ac.*`.
+
+The path-membership layer that once sat on top of it (`CPathIPAProof`,
+`CreateFCMPProofV5` / `…V6` and their verifiers) has been removed: it proved
+knowledge of an opening of a prover-supplied point rather than membership in
+any tree. Membership comes from the vendored FCMP++ verifier instead.
 
 ---
 
