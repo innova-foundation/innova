@@ -55,10 +55,19 @@ jobs:
               qt6-base-dev qt6-base-dev-tools qt6-tools-dev qt6-tools-dev-tools
           fi
 
-      - name: Static release-audit checks
-        run: contrib/test/v5_release_gate.sh --static
+      # The qt5 leg produces linux_clean_sha256 instead of running the same
+      # commands loosely: the producer does the clean build and the aggregate and
+      # writes the document the release manifest digests. In place, because this
+      # checkout is disposable and the readiness step below needs the binaries.
+      - name: Clean Linux build evidence (linux_clean_sha256)
+        if: matrix.qt == 5
+        env:
+          V5_EVIDENCE_DIR: ${{ runner.temp }}/release-evidence
+          V5_EVIDENCE_IN_PLACE: "1"
+        run: contrib/test/produce_linux_clean_evidence.sh
 
       - name: Clean build with network-input warning gate
+        if: matrix.qt == 6
         run: |
           cd src
           make USE_NATIVETOR=- -f makefile.unix clean
@@ -67,6 +76,7 @@ jobs:
             CFLAGS="-Werror=return-type -Werror=format"
 
       - name: Full 38-translation-unit test aggregate
+        if: matrix.qt == 6
         run: |
           cd src
           make USE_NATIVETOR=- -f makefile.unix release-check \
@@ -93,15 +103,32 @@ jobs:
           path: ${{ github.workspace }}/graph-readiness
           if-no-files-found: warn
 
+      # Same commands as the qt6 leg below, run by the producer so the Qt5
+      # compatibility build leaves a document behind. It works on a copy of the
+      # tree, so the patched .pro and the generated makefiles stay out of the
+      # checkout the later steps measure.
+      - name: Qt5 compatibility evidence (qt5_compat_sha256)
+        if: matrix.qt == 5
+        env:
+          V5_EVIDENCE_DIR: ${{ runner.temp }}/release-evidence
+          V5_EVIDENCE_WORK: ${{ runner.temp }}/release-evidence-work
+        run: |
+          sudo strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5 || true
+          contrib/test/produce_qt5_compat_evidence.sh
+
+      - name: Upload verification evidence
+        if: matrix.qt == 5 && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-linux-qt5
+          path: ${{ runner.temp }}/release-evidence
+          if-no-files-found: warn
+
       - name: Build Qt wallet
+        if: matrix.qt == 6
         run: |
           sed -i 's/LIBS += -lcurl -lssl -lcrypto -lcrypt32 -lssh2 -lgcrypt -lidn2 -lgpg-error -lunistring -lwldap32 -ldb_cxx$$BDB_LIB_SUFFIX/LIBS += -lcurl -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX/' innova-qt.pro
-          if [ "${{ matrix.qt }}" = "5" ]; then
-            qmake_bin=qmake
-            sudo strip --remove-section=.note.ABI-tag /usr/lib/x86_64-linux-gnu/libQt5Core.so.5 || true
-          else
-            qmake_bin=/usr/lib/qt6/bin/qmake
-          fi
+          qmake_bin=/usr/lib/qt6/bin/qmake
           "$qmake_bin" -o Makefile.qt-tests innova-qt-test.pro
           make -f Makefile.qt-tests -j$(nproc)
           ./test_innova_qt
@@ -109,12 +136,26 @@ jobs:
             USE_UPNP=1 USE_QRCODE=1 USE_NATIVETOR=- STRICT_WARNINGS=1 innova-qt.pro
           make -f Makefile.qt-app -j$(nproc)
 
+      # Last, not first: it reports every verification document it cannot find,
+      # and on this leg the producers above are what put them there.
+      - name: Static release-audit checks
+        if: always()
+        env:
+          V5_EVIDENCE_DIR: ${{ runner.temp }}/release-evidence
+        run: contrib/test/v5_release_gate.sh --static
+
   ubuntu-sanitizers:
     runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
-        sanitizer: [address, undefined]
+        include:
+          - sanitizer: address
+            producer: produce_asan_lsan_evidence.sh
+            field: asan_lsan_sha256
+          - sanitizer: undefined
+            producer: produce_ubsan_evidence.sh
+            field: ubsan_sha256
     steps:
       - uses: actions/checkout@v5
         with:
@@ -127,27 +168,36 @@ jobs:
             libssl-dev libevent-dev bsdmainutils libboost-all-dev libdb++-dev \
             libminiupnpc-dev libcurl4-openssl-dev libgmp-dev libsecp256k1-dev
 
-      - name: Clean sanitizer build and 38-translation-unit test aggregate
+      # The sanitizer legs ran these commands and kept nothing: the leg was green
+      # or red and no digest could name it. The producer runs the same clean
+      # build and aggregate and writes ${{ matrix.field }}'s document, which the
+      # release gate then verifies and the manifest carries.
+      - name: Sanitizer evidence (${{ matrix.field }})
+        env:
+          V5_EVIDENCE_DIR: ${{ runner.temp }}/release-evidence
+          V5_EVIDENCE_IN_PLACE: "1"
+        run: contrib/test/${{ matrix.producer }}
+
+      - name: Targeted proof-path cases under the sanitizer
         env:
           ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:abort_on_error=1
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
         run: |
           cd src
-          make USE_NATIVETOR=- USE_IPFS=- -f makefile.unix clean
-          make USE_NATIVETOR=- USE_IPFS=- SANITIZE=${{ matrix.sanitizer }} \
-            CXXFLAGS="-O1 -Werror=return-type -Werror=format" \
-            CFLAGS="-O1 -Werror=return-type -Werror=format" \
-            -f makefile.unix -j$(nproc) innovad test_innova
           ./test_innova \
             --run_test=bulletproof_ac_tests/range_proof_malformed_ipa_point_returns_false_without_crash \
             --catch_system_errors=yes
           ./test_innova \
             --run_test=bulletproof_ac_tests/nullstake_mofn_kernel_proof_create_verify \
             --catch_system_errors=yes
-          make USE_NATIVETOR=- USE_IPFS=- SANITIZE=${{ matrix.sanitizer }} \
-            CXXFLAGS="-O1 -Werror=return-type -Werror=format" \
-            CFLAGS="-O1 -Werror=return-type -Werror=format" \
-            -f makefile.unix release-check
+
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-${{ matrix.sanitizer }}
+          path: ${{ runner.temp }}/release-evidence
+          if-no-files-found: warn
 
   macos-consensus:
     runs-on: macos-14
@@ -159,9 +209,18 @@ jobs:
       - name: Install dependencies
         run: brew install boost openssl@3 berkeley-db@5 miniupnpc libevent curl gmp secp256k1
 
-      - name: Clean macOS build and 38-translation-unit test aggregate
-        run: |
-          cd src
-          make STRICT_WARNINGS=1 -f makefile.osx clean
-          make STRICT_WARNINGS=1 -f makefile.osx -j$(sysctl -n hw.ncpu) innovad test_innova
-          make STRICT_WARNINGS=1 -f makefile.osx release-check
+      # Only a Darwin host can produce macos_clean_sha256, so this leg is its
+      # producer: the same clean build and aggregate, plus the document.
+      - name: Clean macOS build evidence (macos_clean_sha256)
+        env:
+          V5_EVIDENCE_DIR: ${{ runner.temp }}/release-evidence
+          V5_EVIDENCE_IN_PLACE: "1"
+        run: contrib/test/produce_macos_clean_evidence.sh
+
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-macos
+          path: ${{ runner.temp }}/release-evidence
+          if-no-files-found: warn
