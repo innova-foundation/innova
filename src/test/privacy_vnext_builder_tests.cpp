@@ -1766,4 +1766,67 @@ BOOST_AUTO_TEST_CASE(reused_output_material_yields_one_owner_for_two_notes)
                       TXDB_READ_NOT_FOUND);
 }
 
+// Relay policy carve-out: an IV5 envelope may carry exactly one data-stamp output despite
+// the data/value ratio rule; non-IV5 transactions are unaffected.
+namespace
+{
+
+CScript NullDataScript(size_t nPush)
+{
+    std::vector<unsigned char> vData(nPush, 0x2a);
+    CScript script;
+    script << OP_RETURN << vData;
+    return script;
+}
+
+CTransaction StampCarrier(int nVersion, size_t nDataOuts, size_t nPush = 38)
+{
+    CTransaction tx;
+    tx.nVersion = nVersion;
+    tx.nTime = GetAdjustedTime();
+    for (size_t i = 0; i < nDataOuts; ++i)
+        tx.vout.push_back(CTxOut(0, NullDataScript(nPush)));
+    return tx;
+}
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(an_iv5_envelope_may_carry_one_data_output_and_no_value_output)
+{
+    std::string reason;
+
+    CTransaction txStamp = StampCarrier(SHIELDED_TX_VERSION_DSP, 1);
+    BOOST_CHECK_MESSAGE(IsStandardTx(txStamp, reason),
+                        "IV5 stamp rejected as " + reason);
+
+    // The same shape on an ordinary transaction stays nonstandard.
+    reason.clear();
+    CTransaction txPlain = StampCarrier(CTransaction::CURRENT_VERSION, 1);
+    BOOST_CHECK(!IsStandardTx(txPlain, reason));
+    BOOST_CHECK_EQUAL(reason, "multi-op-return");
+
+    // A second data output is rejected.
+    reason.clear();
+    CTransaction txTwo = StampCarrier(SHIELDED_TX_VERSION_DSP, 2);
+    BOOST_CHECK(!IsStandardTx(txTwo, reason));
+    BOOST_CHECK_EQUAL(reason, "multi-op-return");
+
+    // An oversized push is still nonstandard.
+    reason.clear();
+    CTransaction txBig = StampCarrier(SHIELDED_TX_VERSION_DSP, 1,
+                                      MAX_OP_RETURN_RELAY + 1);
+    BOOST_CHECK(!IsStandardTx(txBig, reason));
+    BOOST_CHECK_EQUAL(reason, "scriptpubkey");
+
+    // With a transparent output the ratio rule passes without the carve-out.
+    reason.clear();
+    CTransaction txMixed = StampCarrier(SHIELDED_TX_VERSION_DSP, 1);
+    CScript scriptPay;
+    scriptPay << OP_DUP << OP_HASH160 << std::vector<unsigned char>(20, 0x11)
+              << OP_EQUALVERIFY << OP_CHECKSIG;
+    txMixed.vout.push_back(CTxOut(CENT, scriptPay));
+    BOOST_CHECK_MESSAGE(IsStandardTx(txMixed, reason),
+                        "IV5 stamp with a paying output rejected as " + reason);
+}
+
 BOOST_AUTO_TEST_SUITE_END()
