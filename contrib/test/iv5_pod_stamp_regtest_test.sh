@@ -437,11 +437,17 @@ vote_round 611  || { fail "epoch 3 vote round failed"; exit 1; }
 vote_round 911  || { fail "epoch 4 vote round failed"; exit 1; }
 vote_round 1211 || { fail "epoch 5 vote round failed"; exit 1; }
 
-FIN="$(jget "$(rpc 0 getepochinfo 4 2>/dev/null)" finalized_height_as_of)"
-if is_int "$FIN" && [ "$FIN" -gt 0 ]; then
-    success "the chain has a finalized height ($FIN) for a spend to anchor to"
+# Epoch E's state is built once the chain crosses into E+1, so read every epoch
+# the run produced and take the highest finalized height any of them reports.
+FIN=0
+for e in 2 3 4 5; do
+    F="$(jget "$(rpc 0 getepochinfo "$e" 2>/dev/null)" finalized_height_as_of)"
+    is_int "$F" && [ "$F" -gt "$FIN" ] && FIN="$F"
+done
+if [ "$FIN" -gt 0 ]; then
+    success "the chain has a finalized height ($FIN) for a pool spend to anchor to"
 else
-    fail "nothing finalized (finalized_height_as_of=$FIN); a pool spend cannot anchor"
+    fail "nothing finalized; a pool spend cannot anchor and the stamp cannot be built"
     exit 1
 fi
 
