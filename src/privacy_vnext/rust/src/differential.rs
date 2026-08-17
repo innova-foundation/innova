@@ -1627,15 +1627,17 @@ fn proofs_do_not_transplant_between_payloads() {
     }
 }
 
-/// The consensus decoder and the wallet decoder must never disagree about a payload.
-///
-/// They share `parse_payload_prefix` precisely so a wallet cannot credit a note consensus
-/// refused, or miss one it accepted. This is the differential that claim implies: over every
-/// mask and shape, a payload the validator accepted must scan to exactly its outputs, with
-/// the amounts it was built with, and a payload the validator rejected must not scan.
+/// The consensus and wallet decoders must agree about a payload's outputs. Every public
+/// output field is in the tag's associated data, so mutating one must stop the note opening.
 #[test]
 fn the_wallet_decoder_agrees_with_the_consensus_decoder() {
+    // Response: schema_u16 || matches_u8 || key_image_count_u8 || output_count_u8 || zero,
+    // then the spent key images, then one record per match.
     const SCAN_RECORD_BYTES: usize = 2 + 4 + 96 + 212;
+    const SCAN_RESPONSE_HEADER: usize = 6;
+    const MATCHES_AT: usize = 2;
+    let match_count = |response: &[u8]| usize::from(response[MATCHES_AT]);
+    let records_at = |response: &[u8]| SCAN_RESPONSE_HEADER + (usize::from(response[3]) * 32);
     let mut checked = 0_usize;
 
     for (label, spec, mut rng) in cases(6) {
@@ -1662,55 +1664,70 @@ fn the_wallet_decoder_agrees_with_the_consensus_decoder() {
         request.extend_from_slice(payload);
 
         let response = payload::scan_outputs(&request).expect("scanning a valid payload");
-        let matches = usize::from(response[4]);
+        let matches = match_count(&response);
         assert_eq!(
             matches,
             spec.outputs.len(),
             "the wallet must recover exactly the outputs consensus accepted: {label}"
         );
+        assert_eq!(
+            usize::from(response[3]),
+            spec.inputs.len(),
+            "the wallet must see the spends consensus saw: {label}"
+        );
+        let base = records_at(&response);
         for index in 0..matches {
-            let start = 6 + (index * SCAN_RECORD_BYTES);
+            let start = base + (index * SCAN_RECORD_BYTES);
             let output_index = u32::from_le_bytes(
                 response[start + 2..start + 6].try_into().expect("4 bytes"),
             ) as usize;
-            let record = &response[start + 6 + 96..start + SCAN_RECORD_BYTES];
+            // The record republishes O, the derived I and C before the opened note, so the
+            // wallet's view of the output is checkable against the payload's.
+            assert_eq!(
+                &response[start + 6..start + 38],
+                &spec.outputs[output_index].output_o,
+                "the scanned owner must be the one in the payload: {label}"
+            );
+            assert_eq!(
+                &response[start + 70..start + 102],
+                &spec.outputs[output_index].output_c,
+                "the scanned commitment must be the one in the payload: {label}"
+            );
+            let opened = &response[start + 102..start + SCAN_RECORD_BYTES];
             let expected = spec.outputs[output_index].amount;
             assert!(
-                record.windows(8).any(|window| window == expected.to_le_bytes()),
+                opened.windows(8).any(|window| window == expected.to_le_bytes()),
                 "output {output_index} must scan to the amount it was built with: {label}"
             );
-            checked += 1;
+            checked += 3;
         }
 
-        // A payload the validator rejects must not decode for a wallet either. Walk the
-        // prefix the two decoders share.
+        // Every public output field is inside the note's associated data, so changing any
+        // byte of any of them must break the tag and drop the match.
+        let scan_payload_at = request.len() - payload.len();
         for region in &built.regions {
-            if matches!(region.name, "genesis" | "parameter_digest") {
-                // The scanner authenticates the chain binding through the note tag and
-                // holds no digest of its own, so these two are consensus-only by design.
+            if !matches!(
+                region.name,
+                "output_owner"
+                    | "output_commitment"
+                    | "note_ephemeral"
+                    | "tweak_ephemeral"
+                    | "recipient_ciphertext"
+            ) {
                 continue;
             }
-            if region.start >= payload.len() {
-                continue;
-            }
-            let mut mutated = built.request.clone();
-            mutated[built.payload_at + region.start] ^= 0x01;
-            if validate(&mutated).is_ok() {
-                continue;
-            }
-            let mut scan = request.clone();
-            let scan_payload_at = scan.len() - payload.len();
-            scan[scan_payload_at + region.start] ^= 0x01;
-            if let Ok(response) = payload::scan_outputs(&scan) {
-                assert_eq!(
-                    usize::from(response[4]),
-                    0,
-                    "the wallet credited an output from a payload consensus rejected \
-                     (region {}): {label}",
+            for offset in region.start..region.end {
+                let mut scan = request.clone();
+                scan[scan_payload_at + offset] ^= 0x01;
+                let recovered =
+                    payload::scan_outputs(&scan).map_or(0, |response| match_count(&response));
+                assert!(
+                    recovered < matches,
+                    "changing byte {offset} of {} left every note opening: {label}",
                     region.name
                 );
+                checked += 1;
             }
-            checked += 1;
         }
     }
     println!("decoder differential: {checked} assertions");
@@ -1765,12 +1782,11 @@ fn batch_verification_agrees_with_single_verification() {
         frame.push(u8::try_from(members.len()).expect("bounded"));
         frame.push(u8::try_from(members.len()).expect("one input each"));
         frame.extend_from_slice(&[0; 2]);
+        // Length and body are interleaved, one member at a time.
         for member in members {
             frame.extend_from_slice(
                 &u32::try_from(member.len()).expect("bounded").to_le_bytes(),
             );
-        }
-        for member in members {
             frame.extend_from_slice(member);
         }
         frame
