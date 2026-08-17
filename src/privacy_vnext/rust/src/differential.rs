@@ -386,47 +386,56 @@ struct Spec {
     outputs: Vec<Note>,
     transparent_value_balance: i64,
     fee: u64,
+    /// Declared instead of the true leaf count. Signed by the prover, so only a rebuild can
+    /// test whether it is bound to the root.
+    declared_tree_size: Option<u64>,
+    /// Declared instead of `0`. No 2008 rule reads it; a rebuild asks whether that is true.
+    declared_authorization: u8,
+    /// A registration context, which turns the payload into an attestation.
+    registration_context: Option<[u8; 32]>,
 }
 
 impl Spec {
+    fn base(operation: u8, inputs: Vec<Note>, outputs: Vec<Note>, tvb: i64, fee: u64) -> Self {
+        Self {
+            operation,
+            disclosure_mask: 7,
+            inputs,
+            outputs,
+            transparent_value_balance: tvb,
+            fee,
+            declared_tree_size: None,
+            declared_authorization: 0,
+            registration_context: None,
+        }
+    }
+
     /// A shield: transparent value enters the pool, no inputs.
     fn shield(outputs: Vec<Note>, fee: u64) -> Self {
         let total = outputs.iter().map(|note| note.amount).sum::<u64>();
-        Self {
-            operation: NOTE_SHIELD,
-            disclosure_mask: 7,
-            inputs: Vec::new(),
-            outputs,
-            transparent_value_balance: i64::try_from(total + fee).expect("bounded"),
-            fee,
-        }
+        let tvb = i64::try_from(total + fee).expect("bounded");
+        Self::base(NOTE_SHIELD, Vec::new(), outputs, tvb, fee)
     }
 
     /// A transfer: nothing crosses the boundary, the fee comes out of the inputs.
     fn transfer(inputs: Vec<Note>, outputs: Vec<Note>, fee: u64) -> Self {
-        Self {
-            operation: NOTE_TRANSFER,
-            disclosure_mask: 7,
-            inputs,
-            outputs,
-            transparent_value_balance: 0,
-            fee,
-        }
+        Self::base(NOTE_TRANSFER, inputs, outputs, 0, fee)
     }
 
     /// An unshield: value leaves the pool.
     fn unshield(inputs: Vec<Note>, outputs: Vec<Note>, fee: u64) -> Self {
         let incoming = inputs.iter().map(|note| note.amount).sum::<u64>();
         let outgoing = outputs.iter().map(|note| note.amount).sum::<u64>();
-        Self {
-            operation: NOTE_UNSHIELD,
-            disclosure_mask: 7,
-            inputs,
-            outputs,
-            transparent_value_balance: i64::try_from(outgoing + fee).expect("bounded")
-                - i64::try_from(incoming).expect("bounded"),
-            fee,
-        }
+        let tvb = i64::try_from(outgoing + fee).expect("bounded")
+            - i64::try_from(incoming).expect("bounded");
+        Self::base(NOTE_UNSHIELD, inputs, outputs, tvb, fee)
+    }
+
+    /// A collateral attestation: one hidden note is named at a fixed amount, nothing moves.
+    fn attestation(operation: u8, input: Note, context: [u8; 32]) -> Self {
+        let mut spec = Self::base(operation, vec![input], Vec::new(), 0, 0);
+        spec.registration_context = Some(context);
+        spec
     }
 
     fn with_mask(mut self, mask: u8) -> Self {
@@ -516,7 +525,7 @@ fn build(rng: &mut ChaCha20Rng, spec: &Spec) -> Built {
     payload.push(0); // profile
     mark(&mut regions, "profile", start, payload.len());
     let start = payload.len();
-    payload.push(0); // authorization
+    payload.push(spec.declared_authorization);
     mark(&mut regions, "authorization", start, payload.len());
     let start = payload.len();
     payload.push(spec.disclosure_mask);
@@ -541,7 +550,7 @@ fn build(rng: &mut ChaCha20Rng, spec: &Spec) -> Built {
     payload.extend_from_slice(&root);
     mark(&mut regions, "finalized_root", start, payload.len());
     let start = payload.len();
-    payload.extend_from_slice(&tree_size.to_le_bytes());
+    payload.extend_from_slice(&spec.declared_tree_size.unwrap_or(tree_size).to_le_bytes());
     mark(&mut regions, "finalized_tree_size", start, payload.len());
     let start = payload.len();
     payload.extend_from_slice(&spec.transparent_value_balance.to_le_bytes());
@@ -587,6 +596,12 @@ fn build(rng: &mut ChaCha20Rng, spec: &Spec) -> Built {
         let start = payload.len();
         vector(&mut payload, &note.outgoing_ciphertext);
         mark(&mut regions, "outgoing_ciphertext", start, payload.len());
+    }
+
+    if let Some(context) = spec.registration_context {
+        let start = payload.len();
+        payload.extend_from_slice(&context);
+        mark(&mut regions, "registration_context", start, payload.len());
     }
 
     // Sender authorities: published when mask bit 0 is clear.
@@ -676,22 +691,45 @@ fn build(rng: &mut ChaCha20Rng, spec: &Spec) -> Built {
         excess -= note.mask;
     }
     let pseudo_outs = proofs.iter().map(|p| p.pseudo_out).collect::<Vec<_>>();
-    let balance_proof = value::prove_balance(
-        &pseudo_outs,
-        &output_commitments,
-        spec.transparent_value_balance,
-        spec.fee,
-        &excess.to_bytes(),
-        &signing_hash,
-        &entropy,
-    )
-    .expect("balance proof must be provable: the excess mask is derived, not guessed");
+    // An attestation carries an amount-equality proof in place of the balance proof: its one
+    // pseudo-output is a commitment to open at a fixed amount, not a flow to conserve.
+    let is_attestation = spec.registration_context.is_some();
+    let balance_proof = if is_attestation {
+        Vec::new()
+    } else {
+        value::prove_balance(
+            &pseudo_outs,
+            &output_commitments,
+            spec.transparent_value_balance,
+            spec.fee,
+            &excess.to_bytes(),
+            &signing_hash,
+            &entropy,
+        )
+        .expect("balance proof must be provable: the excess mask is derived, not guessed")
+        .to_vec()
+    };
     let start = payload.len();
     vector(&mut payload, &balance_proof);
     mark(&mut regions, "balance_proof", start, payload.len());
 
+    let operation_proof = if is_attestation {
+        // The rerandomized commitment's mask is the leaf mask plus the rerandomization delta.
+        let statement_mask = spec.inputs[0].mask + proofs[0].mask_delta;
+        value::prove_amount_equality(
+            &pseudo_outs[0],
+            spec.inputs[0].amount,
+            &statement_mask.to_bytes(),
+            &signing_hash,
+            &entropy,
+        )
+        .expect("amount-equality proof must be provable")
+        .to_vec()
+    } else {
+        Vec::new()
+    };
     let start = payload.len();
-    vector(&mut payload, &[]); // operation proof
+    vector(&mut payload, &operation_proof);
     mark(&mut regions, "operation_proof", start, payload.len());
 
     let mut disclosure_proof = Vec::new();
@@ -1311,6 +1349,62 @@ fn one_note_cannot_be_spent_twice_in_one_payload() {
         outcome.is_err(),
         "the prover must refuse to prove one note twice in one payload"
     );
+
+    // An honest prover refusing is not the property. A hostile one does not run this code,
+    // so the verifier must refuse the same shape on its own.
+    let honest = make_note(&mut rng, &address, 1, 1_000);
+    let anonymity = anonymity_set(&mut rng, &[spent, honest]);
+    let signable = [0x11_u8; 32];
+    let mut request = Vec::new();
+    request.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+    request.push(8);
+    request.push(2);
+    request.push(2);
+    request.extend_from_slice(&[0; 3]);
+    request.extend_from_slice(&anonymity.root);
+    request.extend_from_slice(&signable);
+    request.extend_from_slice(&entropy);
+    for witness in &anonymity.witnesses {
+        request.extend_from_slice(witness);
+    }
+    let response = fcmp::prove(&request).expect("two distinct notes prove");
+    let first = field32(&response, 4..36);
+    let first_image = field32(&response, 36..68);
+    let second = field32(&response, 260..292);
+    let second_image = field32(&response, 292..324);
+    assert_ne!(first_image, second_image, "two notes give two images");
+    let proof_start = 4 + (2 * FCMP_RESPONSE_RECORD);
+    let proof_len = u32::from_le_bytes(
+        response[proof_start..proof_start + 4]
+            .try_into()
+            .expect("4 bytes"),
+    ) as usize;
+    let membership = &response[proof_start + 4..proof_start + 4 + proof_len];
+
+    assert_eq!(
+        fcmp::verify_components(
+            anonymity.root,
+            signable,
+            &[first, second],
+            &[first_image, second_image],
+            membership,
+        ),
+        Ok(()),
+        "the honest two-input proof verifies"
+    );
+    // Now claim both inputs carry the first note's image, which is what spending one note
+    // twice would look like on the wire.
+    assert!(
+        fcmp::verify_components(
+            anonymity.root,
+            signable,
+            &[first, second],
+            &[first_image, first_image],
+            membership,
+        )
+        .is_err(),
+        "the verifier must refuse a proof naming one key image twice"
+    );
 }
 
 /// A disclosure mask reveals exactly its named fields: the record is present when the bit is
@@ -1542,13 +1636,16 @@ fn tree_root_is_deterministic_and_incremental() {
     assert_ne!(reordered, one_shot, "leaf order must be part of the tree state");
 }
 
-/// The nullifier accumulator must be order-sensitive and must refuse a repeat.
+/// The nullifier accumulator is a rolling hash over ordered key images: it refuses a repeat
+/// within one batch but not across batches. Cross-batch detection is the caller's spent-key
+/// index.
 #[test]
-fn nullifier_accumulator_rejects_a_repeat() {
-    let image = |seed: u8| {
-        let mut bytes = [seed; 32];
-        bytes[31] = 0x40;
-        bytes
+fn nullifier_accumulator_commits_to_an_ordered_sequence() {
+    // Key images are curve points, so the accumulator parses them as points.
+    let image = |seed: u64| {
+        (ED25519_BASEPOINT_POINT * Scalar::from(seed))
+            .compress()
+            .to_bytes()
     };
     let apply = |state: Option<&[u8]>, images: &[[u8; 32]]| {
         let mut request = Vec::new();
@@ -1572,12 +1669,26 @@ fn nullifier_accumulator_rejects_a_repeat() {
         "a rolling hash must not be order-independent, or a block's spends could be permuted"
     );
     assert!(
-        apply(Some(&first), &[image(1)]).is_err(),
-        "an already-accumulated key image must be refused"
-    );
-    assert!(
         apply(None, &[image(3), image(3)]).is_err(),
         "a repeat inside one batch must be refused"
+    );
+    // A rolling hash has no membership: re-accumulating an earlier image succeeds.
+    assert!(
+        apply(Some(&first), &[image(1)]).is_ok(),
+        "a rolling accumulator cannot detect a repeat against history; if this ever starts \
+         failing the module has grown a set and the caller's index may be reconsidered"
+    );
+
+    // Accumulating the same images in two batches must agree with one batch, or a block
+    // boundary would change the root a peer computes.
+    let split = apply(
+        Some(&apply(None, &[image(1)]).expect("first batch")),
+        &[image(2)],
+    )
+    .expect("second batch");
+    assert_eq!(
+        split, first,
+        "batching must not change the accumulator state"
     );
 }
 
@@ -1602,23 +1713,25 @@ fn note_ciphertext_is_authenticated() {
         request.extend_from_slice(&view_secret.to_bytes());
         request.extend_from_slice(&[0_u8; 32]);
         request.extend_from_slice(&note.output_o);
-        request.extend_from_slice(&note.output_i);
         request.extend_from_slice(&note.output_c);
         request.extend_from_slice(&note.note_ephemeral);
         request.extend_from_slice(&note.tweak_ephemeral);
-        request.extend_from_slice(
-            &u32::try_from(ciphertext.len()).expect("bounded").to_le_bytes(),
-        );
         request.extend_from_slice(ciphertext);
         request
     };
 
+    // The honest scan must succeed, or every rejection below is vacuous.
     let honest = note::scan(&scan_request(
         &address.view_secret,
         &subject,
         &subject.recipient_ciphertext,
-    ));
-    println!("note scan (honest) outcome: {:?}", honest.as_ref().map(Vec::len));
+    ))
+    .expect("the note must open under its own view key");
+    println!("note scan (honest): {} bytes", honest.len());
+    assert!(
+        honest.windows(8).any(|window| window == 1_234_u64.to_le_bytes()),
+        "the recovered note must carry the amount it was built with"
+    );
 
     // Wrong view key must not open it.
     assert!(
@@ -1673,6 +1786,237 @@ fn hash_to_point_is_deterministic_and_separated() {
     let joined = crate::hash_to_point::hash_to_point(b"Innova/IV5/Harness/A", &[b"abcd"]);
     let split = crate::hash_to_point::hash_to_point(b"Innova/IV5/Harness/A", &[b"ab", b"cd"]);
     assert_ne!(joined, split, "field boundaries must be framed, not concatenated");
+}
+
+// ---------------------------------------------------------------------------
+// 4. rebuild probes: fields the prover re-signs, which mutation can never reach
+// ---------------------------------------------------------------------------
+
+/// The declared tree size is not bound to the root by the validator (only the capacity
+/// bound). `ValidatePrivacyVNextFinalizedContext` pins `(finalizedRoot, nFinalizedTreeSize)`
+/// to a finalized epoch state. Fails if the validator starts binding the pair itself.
+#[test]
+fn declared_tree_size_is_checked_by_the_caller_not_the_validator() {
+    let mut rng = ChaCha20Rng::from_seed([0xf1; 32]);
+    let address = Address::new(&mut rng);
+    let inputs = vec![make_note(&mut rng, &address, 0, 1_000)];
+    let outputs = vec![make_note(&mut rng, &address, 0, 990)];
+
+    let honest = Spec::transfer(inputs.clone(), outputs.clone(), 10);
+    let built = build(&mut rng, &honest);
+    assert_eq!(validate(&built.request), Ok(()), "the honest payload validates");
+
+    let capacity = 38_u64.pow(4) * 18_u64.pow(4);
+    for claimed in [0_u64, 1, 44, 46, 1_000_000, capacity] {
+        let mut spec = Spec::transfer(inputs.clone(), outputs.clone(), 10);
+        spec.declared_tree_size = Some(claimed);
+        let mut case_rng = ChaCha20Rng::from_seed([0xf2; 32]);
+        let forged = build(&mut case_rng, &spec);
+        assert_eq!(
+            validate(&forged.request),
+            Ok(()),
+            "the validator does not bind the declared tree size to the root: {claimed}"
+        );
+    }
+
+    // The one bound it does enforce is the capacity ceiling.
+    let mut spec = Spec::transfer(inputs, outputs, 10);
+    spec.declared_tree_size = Some(capacity + 1);
+    let mut case_rng = ChaCha20Rng::from_seed([0xf2; 32]);
+    let forged = build(&mut case_rng, &spec);
+    assert_eq!(
+        validate(&forged.request),
+        Err(ResultCode::ResourceLimit),
+        "a tree size beyond capacity must be refused"
+    );
+}
+
+/// The authorization byte is range-checked but never verified.
+///
+/// Every value the envelope admits is accepted for a 2008 value transfer, and all four
+/// produce the same owner-authorized FCMP proof. Nothing downstream reads the field: it is
+/// absent from the effects frame the caller receives. So a payload may claim to be
+/// authorized by a hidden M-of-N committee while carrying an ordinary single-owner spend
+/// proof, and no layer contradicts it.
+///
+/// Unlike every neighbouring field -- an unknown operation, a nonzero finality object -- this
+/// one does not fail closed.
+#[test]
+fn the_authorization_byte_is_range_checked_but_unverified() {
+    let mut rng = ChaCha20Rng::from_seed([0xf3; 32]);
+    let address = Address::new(&mut rng);
+    let inputs = vec![make_note(&mut rng, &address, 0, 1_000)];
+    let outputs = vec![make_note(&mut rng, &address, 0, 990)];
+
+    let mut accepted = Vec::new();
+    for authorization in 0_u8..4 {
+        let mut spec = Spec::transfer(inputs.clone(), outputs.clone(), 10);
+        spec.declared_authorization = authorization;
+        let mut case_rng = ChaCha20Rng::from_seed([0xf4; 32]);
+        let built = build(&mut case_rng, &spec);
+        if validate(&built.request).is_ok() {
+            accepted.push(authorization);
+        }
+    }
+    println!("authorization values accepted for a 2008 transfer: {accepted:?}");
+    assert_eq!(
+        accepted,
+        vec![0_u8, 1, 2, 3],
+        "all four authorization values are accepted with the same owner proof"
+    );
+
+    // Out of range still fails closed, which is the whole of the field's enforcement.
+    let mut spec = Spec::transfer(inputs, outputs, 10);
+    spec.declared_authorization = 4;
+    let mut case_rng = ChaCha20Rng::from_seed([0xf4; 32]);
+    let built = build(&mut case_rng, &spec);
+    assert!(
+        validate(&built.request).is_err(),
+        "an authorization value outside the envelope must be refused"
+    );
+}
+
+/// Only attestation operations are bound to a shape. The three value operations are
+/// interchangeable labels; the caller enforces direction from the transparent balance, so a
+/// declared "shield" can drain the pool.
+#[test]
+fn only_attestation_operations_are_bound_to_a_shape() {
+    let mut rng = ChaCha20Rng::from_seed([0xf5; 32]);
+    let address = Address::new(&mut rng);
+    let inputs = vec![make_note(&mut rng, &address, 0, 1_000)];
+    let outputs = vec![make_note(&mut rng, &address, 0, 250)];
+
+    // Value leaves the pool: outgoing 250 plus fee 3 against incoming 1,000.
+    let mut spec = Spec::unshield(inputs.clone(), outputs.clone(), 3);
+    assert!(spec.transparent_value_balance < 0);
+    spec.operation = NOTE_SHIELD;
+    let mut case_rng = ChaCha20Rng::from_seed([0xf6; 32]);
+    let built = build(&mut case_rng, &spec);
+    println!(
+        "operation=NOTE_SHIELD with tvb={}: accepted",
+        spec.transparent_value_balance
+    );
+    assert_eq!(
+        validate(&built.request),
+        Ok(()),
+        "the value operations are not bound to the direction value moves"
+    );
+
+    // The attestation operations are bound, and that binding is what the caller's
+    // fee exemption rests on: declaring one forces one input, no output, no value, no fee.
+    let mut spec = Spec::unshield(inputs, outputs, 3);
+    spec.operation = crate::NOTE_COLLATERAL_REGISTER;
+    spec.registration_context = Some([0x4e; 32]);
+    let mut case_rng = ChaCha20Rng::from_seed([0xf6; 32]);
+    let built = build(&mut case_rng, &spec);
+    assert!(
+        validate(&built.request).is_err(),
+        "an attestation that moves value must be refused"
+    );
+}
+
+/// An empty payload validates: the pool delta `transparent_value_balance - fee` is zero.
+#[test]
+fn an_effectless_payload_has_no_pool_effect() {
+    let mut rng = ChaCha20Rng::from_seed([0xf7; 32]);
+    let balance = 500_i64;
+    let fee = 500_u64;
+    let spec = Spec::base(NOTE_TRANSFER, Vec::new(), Vec::new(), balance, fee);
+    let built = build(&mut rng, &spec);
+    assert_eq!(
+        validate(&built.request),
+        Ok(()),
+        "a payload with no input and no output validates"
+    );
+    assert_eq!(
+        balance - i64::try_from(fee).expect("bounded"),
+        0,
+        "the pool delta this shape produces must be zero"
+    );
+
+    // An unequal pair is a real flow and must still be provable only when it balances:
+    // with no commitments on either side the excess is (balance - fee) * H, which no
+    // multiple of G can equal.
+    let spec = Spec::base(NOTE_TRANSFER, Vec::new(), Vec::new(), 500, 100);
+    let mut case_rng = ChaCha20Rng::from_seed([0xf8; 32]);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        build(&mut case_rng, &spec)
+    }));
+    assert!(
+        outcome.is_err(),
+        "an unbalanced empty payload must not be provable at all"
+    );
+}
+
+/// An attestation must round-trip, and must be pinned to the exact collateral amount.
+#[test]
+fn an_attestation_round_trips_and_pins_its_amount() {
+    let mut rng = ChaCha20Rng::from_seed([0xf8; 32]);
+    let address = Address::new(&mut rng);
+    let collateral = make_note(&mut rng, &address, 0, crate::COLLATERAL_ATTESTATION_AMOUNT);
+    let spec = Spec::attestation(crate::NOTE_COLLATERAL_REGISTER, collateral, [0x3c; 32]);
+    let built = build(&mut rng, &spec);
+    assert_eq!(
+        validate(&built.request),
+        Ok(()),
+        "an attestation over a note holding exactly the collateral amount must validate"
+    );
+
+    // A note one unit short must not be able to attest.
+    let mut short_rng = ChaCha20Rng::from_seed([0xf9; 32]);
+    let address = Address::new(&mut short_rng);
+    let short = make_note(
+        &mut short_rng,
+        &address,
+        0,
+        crate::COLLATERAL_ATTESTATION_AMOUNT - 1,
+    );
+    let spec = Spec::attestation(crate::NOTE_COLLATERAL_REGISTER, short, [0x3d; 32]);
+    let built = build(&mut short_rng, &spec);
+    assert!(
+        validate(&built.request).is_err(),
+        "a note below the collateral amount must not attest"
+    );
+}
+
+/// One collateral note must not be able to back two different registrations. If it can, the
+/// caller alone stands between one deposit and any number of identities.
+#[test]
+fn one_collateral_note_backs_one_identity() {
+    let mut rng = ChaCha20Rng::from_seed([0xfa; 32]);
+    let address = Address::new(&mut rng);
+    let collateral = make_note(&mut rng, &address, 0, crate::COLLATERAL_ATTESTATION_AMOUNT);
+
+    let image_for = |context: [u8; 32], rng: &mut ChaCha20Rng| -> ([u8; 32], bool) {
+        let spec = Spec::attestation(crate::NOTE_COLLATERAL_REGISTER, collateral.clone(), context);
+        let built = build(rng, &spec);
+        let accepted = validate(&built.request).is_ok();
+        let region = built
+            .regions
+            .iter()
+            .find(|r| r.name == "key_image")
+            .expect("mapped");
+        (
+            field32(
+                &built.request,
+                built.payload_at + region.start..built.payload_at + region.end,
+            ),
+            accepted,
+        )
+    };
+
+    let (first_image, first_ok) = image_for([0x11; 32], &mut rng);
+    let (second_image, second_ok) = image_for([0x22; 32], &mut rng);
+    assert!(first_ok && second_ok, "both attestations validate in isolation");
+    println!(
+        "two registrations from one note share a key image: {}",
+        first_image == second_image
+    );
+    assert_eq!(
+        first_image, second_image,
+        "the shared key image is the only thing that can tie the two registrations together, \
+         so the caller must reject the second on it"
+    );
 }
 
 /// A balance proof is a proof of knowledge of one scalar. Two proofs under the same key over
