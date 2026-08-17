@@ -444,6 +444,11 @@ endif
 obj/build.h: FORCE
 	/bin/sh ../share/genbuild.sh obj/build.h
 version.cpp: obj/build.h
+# version.o carries BUILD_DESC, which the release gate trusts to say which commit
+# a binary was built from. The generated .P names build.h, but a parallel build can
+# compile version.o before the FORCE rule rewrites it, leaving the binary reporting
+# a commit it was not built from. State the order.
+obj/version.o: obj/build.h
 DEFS += -DHAVE_BUILD_INFO
 
 obj/scrypt-x86_64.o: scrypt-x86_64.S
