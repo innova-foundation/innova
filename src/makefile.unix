@@ -654,12 +654,13 @@ fuzz-block-header-libfuzzer: $(FUZZ_TRIBUS_OBJS)
 	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -o $(FUZZ_BLOCK_HEADER_BIN) $(FUZZ_BLOCK_HEADER_SRCS) $(FUZZ_TRIBUS_OBJS) $(LIBS)
 
 # The privacy ABI is a pure function of peer bytes, so its target links the Rust
-# archive and the header only -- no daemon sources, no globals, no node state.
+# archive and the header only -- no daemon sources, no globals, no node state. The
+# rule itself sits with PRIVACY_VNEXT_RUST_LIB below, because make expands a
+# prerequisite list when it reads the rule and the variable is defined further down.
 FUZZ_PRIVACY_PAYLOAD_BIN ?= fuzz_privacy_payload
 FUZZ_PRIVACY_PAYLOAD_SRCS ?= test/fuzz/fuzz_privacy_payload.cpp
-
-fuzz-privacy-payload-libfuzzer: $(PRIVACY_VNEXT_RUST_LIB)
-	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -I. -o $(FUZZ_PRIVACY_PAYLOAD_BIN) $(FUZZ_PRIVACY_PAYLOAD_SRCS) $(PRIVACY_VNEXT_RUST_LIB) -lpthread -ldl -lm
+FUZZ_PRIVACY_REPLAY_BIN ?= fuzz_privacy_replay
+FUZZ_PRIVACY_REPLAY_SRCS ?= test/fuzz/fuzz_privacy_replay.cpp
 
 fuzz-all-libfuzzer: fuzz-deserialize-libfuzzer fuzz-script-libfuzzer fuzz-block-header-libfuzzer fuzz-privacy-payload-libfuzzer
 
@@ -874,6 +875,13 @@ PRIVACY_VNEXT_RUST_LIB := $(PRIVACY_VNEXT_RUST_DIR)/target/$(PRIVACY_VNEXT_RUST_
 # archive's timestamp alone, so this does not force a relink.
 $(PRIVACY_VNEXT_RUST_LIB): FORCE
 	cd $(PRIVACY_VNEXT_RUST_DIR) && cargo build --locked --offline $(PRIVACY_VNEXT_RUST_FLAGS)
+
+fuzz-privacy-payload-libfuzzer: $(PRIVACY_VNEXT_RUST_LIB)
+	$(FUZZ_CXX) $(filter-out -D_FORTIFY_SOURCE=2,$(xCXXFLAGS)) $(FUZZ_LINK_FLAGS) -DINNOVA_FUZZ_STANDALONE -I. -o $(FUZZ_PRIVACY_PAYLOAD_BIN) $(FUZZ_PRIVACY_PAYLOAD_SRCS) $(PRIVACY_VNEXT_RUST_LIB) -lpthread -ldl -lm
+
+# Uninstrumented, so a duration measured here is the duration a node would spend.
+fuzz-privacy-replay: $(PRIVACY_VNEXT_RUST_LIB)
+	$(CXX) -O2 -I. -o $(FUZZ_PRIVACY_REPLAY_BIN) $(FUZZ_PRIVACY_REPLAY_SRCS) $(PRIVACY_VNEXT_RUST_LIB) -lpthread -ldl -lm
 
 innovad: $(OBJS:obj/%=obj/%) $(PRIVACY_VNEXT_RUST_LIB)
 	$(LINK) $(xCXXFLAGS) -o $@ $^ $(xLDFLAGS) $(LIBS) $(DARWIN_FRAMEWORKS)
