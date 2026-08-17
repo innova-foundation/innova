@@ -191,6 +191,65 @@ BOOST_AUTO_TEST_CASE(select_best_dag_tip_allows_non_best_chain_tip)
     pindexBest = oldBest;
 }
 
+// At and above V3 an equal DAG score breaks on higher height first, then hash. Here the
+// lower tip holds the lower hash, so the two rules disagree.
+BOOST_AUTO_TEST_CASE(v3_equal_dag_score_breaks_by_height_before_hash)
+{
+    CBlockIndex* oldBest = pindexBest;
+    BOOST_REQUIRE(g_dagManager.GetDAGTips().empty());
+
+    // A block whose compact target is zero contributes no trust, which is what
+    // makes two tips at different heights hold the identical score.
+    const uint256 hLow(0x0BA8001);
+    const uint256 hRoot(0x0BA8002);
+    const uint256 hHigh(0x0BA8003);
+    BOOST_REQUIRE(hLow < hHigh);
+
+    const int nV3 = FORK_HEIGHT_EPOCH_STATE_V3;
+    CBlockIndex lowTip;
+    CBlockIndex root;
+    CBlockIndex highTip;
+    lowTip.nHeight = nV3;
+    root.nHeight = nV3;
+    highTip.nHeight = nV3 + 1;
+    highTip.pprev = &root;
+    lowTip.nBits = 0;
+    root.nBits = 0;
+    highTip.nBits = 0;
+
+    mapBlockIndex[hLow] = &lowTip;
+    mapBlockIndex[hRoot] = &root;
+    mapBlockIndex[hHigh] = &highTip;
+    lowTip.phashBlock = &mapBlockIndex.find(hLow)->first;
+    root.phashBlock = &mapBlockIndex.find(hRoot)->first;
+    highTip.phashBlock = &mapBlockIndex.find(hHigh)->first;
+
+    std::vector<uint256> noParents;
+    std::vector<uint256> rootOnly;
+    rootOnly.push_back(hRoot);
+
+    g_dagManager.InitBlockDAGData(&lowTip, noParents);
+    g_dagManager.ColorBlock(&lowTip);
+    g_dagManager.InitBlockDAGData(&root, noParents);
+    g_dagManager.ColorBlock(&root);
+    g_dagManager.InitBlockDAGData(&highTip, rootOnly);
+    g_dagManager.ColorBlock(&highTip);
+
+    BOOST_REQUIRE_EQUAL(g_dagManager.GetDAGTips().size(), 2u);
+    BOOST_REQUIRE(g_dagManager.ComputeDAGScore(&lowTip) == g_dagManager.ComputeDAGScore(&highTip));
+
+    CBlockIndex* selected = g_dagManager.SelectBestDAGTip();
+    BOOST_CHECK(selected == &highTip);
+
+    g_dagManager.RemoveBlockDAGData(hHigh);
+    g_dagManager.RemoveBlockDAGData(hRoot);
+    g_dagManager.RemoveBlockDAGData(hLow);
+    mapBlockIndex.erase(hHigh);
+    mapBlockIndex.erase(hRoot);
+    mapBlockIndex.erase(hLow);
+    pindexBest = oldBest;
+}
+
 BOOST_AUTO_TEST_CASE(dag_sibling_conflict_detection_covers_nullifiers_and_prevouts)
 {
     std::set<COutPoint> spentOutputs;
