@@ -36,8 +36,11 @@ SPEND_HEIGHT=1245
 TRANSFER_AMOUNT=100
 UNSHIELD_AMOUNT=50
 # The unshield-retirement / coinbase-fee-note fork, placed above everything the
-# earlier sections do so they keep exercising the pre-retirement behaviour.
-FEE_NOTE_HEIGHT=1400
+# earlier sections do so they keep exercising the pre-retirement behaviour. The
+# mask sweep in 6b has to cross an epoch boundary to re-position its change, so
+# this sits above the boundary that sweep can reach (1511) and the one the
+# unshield after it can reach (1811).
+FEE_NOTE_HEIGHT=2000
 SHIELD_FEE="0.00100000"
 
 PASSED=0
@@ -265,6 +268,30 @@ unpartition_all() {
 }
 
 best_hash() { rpc "$1" getbestblockhash 2>/dev/null | tr -d '"[:space:]'; }
+
+# Post-DAG epochs run 300 blocks and start at 11 + 300k.
+next_epoch_start() {
+    python3 -c "
+import math
+h = $1
+k = max(0, int(math.ceil((h - 11) / 300.0)))
+print(11 + 300 * k)
+" 2>/dev/null
+}
+
+# A note is spendable only once an epoch build has given it a tree position, so
+# confirmations alone are not enough: a wallet that spends every positioned note
+# it owns has to wait for the next boundary before it can spend the change. This
+# is the per-wallet transfer rate the pool actually allows, and the mask sweep
+# below runs straight into it.
+mine_past_epoch_build() {
+    local target
+    target="$(next_epoch_start $(( $(height 0) + 1 )))"
+    is_int "$target" || return 1
+    target=$((target + 12))
+    log "  waiting on the epoch build at $target to position the change notes"
+    mine_to 0 "$target" && wait_sync "$target"
+}
 
 wait_same_tip_all() {
     for _ in $(seq 1 180); do
@@ -757,6 +784,14 @@ disclosed_transfer() {
 
     result="$(rpc 0 z_iv5transfer "$addr" "$DISCLOSED_AMOUNT" "$mask" 2>&1)"
     txid="$(jget "$result" txid)"
+    # Each transfer consumes a positioned note and leaves its change unpositioned,
+    # so a sweep of eight exhausts the wallet partway through and has to let an
+    # epoch build run before it can continue.
+    if [ ${#txid} -ne 64 ] && echo "$result" | grep -q "epoch build"; then
+        mine_past_epoch_build || true
+        result="$(rpc 0 z_iv5transfer "$addr" "$DISCLOSED_AMOUNT" "$mask" 2>&1)"
+        txid="$(jget "$result" txid)"
+    fi
     if [ ${#txid} -ne 64 ]; then
         fail "mask $mask: z_iv5transfer failed: $(echo "$result" | head -3)"
         return 1
@@ -860,6 +895,12 @@ T_ADDR="$(rpc 0 getnewaddress 2>&1 | tr -d '"[:space:]')"
 
 UNSH="$(rpc 0 z_iv5unshield "$T_ADDR" "$UNSHIELD_AMOUNT" 2>&1)"
 UNSH_TXID="$(jget "$UNSH" txid)"
+# The mask sweep leaves the wallet's remaining value in unpositioned change.
+if [ ${#UNSH_TXID} -ne 64 ] && echo "$UNSH" | grep -q "epoch build"; then
+    mine_past_epoch_build || true
+    UNSH="$(rpc 0 z_iv5unshield "$T_ADDR" "$UNSHIELD_AMOUNT" 2>&1)"
+    UNSH_TXID="$(jget "$UNSH" txid)"
+fi
 UNSH_NOTES="$(jget "$UNSH" notes)"
 if [ ${#UNSH_TXID} -eq 64 ]; then
     success "unshield built and accepted: $UNSHIELD_AMOUNT INN from $UNSH_NOTES note(s), txid ${UNSH_TXID:0:16}"
@@ -1296,6 +1337,15 @@ else
 
     CONF_A="$(rpc 0 z_iv5transfer "$TO_ADDR" 1 2>&1)"
     TXC="$(jget "$CONF_A" txid)"
+    if [ ${#TXC} -ne 64 ] && echo "$CONF_A" | grep -q "epoch build"; then
+        # Re-peer only long enough to let an epoch build run, then split again.
+        unpartition_all
+        mine_past_epoch_build || true
+        partition_all || fail "the fleet could not be re-partitioned"
+        CONFLICT_H="$(height 0)"
+        CONF_A="$(rpc 0 z_iv5transfer "$TO_ADDR" 1 2>&1)"
+        TXC="$(jget "$CONF_A" txid)"
+    fi
     if [ ${#TXC} -eq 64 ]; then
         success "node0 built a transfer in isolation (${TXC:0:16})"
     else
@@ -1374,9 +1424,52 @@ else
             fail "the nodes disagree on the tree after the conflict (${R0:0:16}/$S0, ${R1:0:16}/$S1, ${R2:0:16}/$S2)"
         fi
 
-        # Exactly one spend of the note may have been recorded.
-        if is_int "$S0" && is_int "$PRE_TREE"; then
-            success "tree moved from $PRE_TREE to $S0 leaves across the conflict"
+        # The tree does not move between epoch builds, so the counts above cannot
+        # say what the conflict recorded. Close the epoch that carries it and ask.
+        CONF_EPOCH_END=$(( $(next_epoch_start $((CONFLICT_H + 2))) - 1 ))
+        CONF_EPOCH="$(python3 -c "print(($CONFLICT_H - 11) // 300 + 1)" 2>/dev/null)"
+        if mine_to 0 $((CONF_EPOCH_END + 10)) && wait_sync $((CONF_EPOCH_END + 10)) && wait_same_tip_all; then
+            CE0="$(rpc 0 getepochinfo "$CONF_EPOCH" 2>/dev/null)"
+            CD0="$(jget "$CE0" epoch_state_digest)"
+            CD1="$(jget "$(rpc 1 getepochinfo "$CONF_EPOCH" 2>/dev/null)" epoch_state_digest)"
+            CD2="$(jget "$(rpc 2 getepochinfo "$CONF_EPOCH" 2>/dev/null)" epoch_state_digest)"
+            if [ ${#CD0} -eq 64 ] && [ "$CD0" = "$CD1" ] && [ "$CD0" = "$CD2" ]; then
+                success "all three nodes built the conflict epoch $CONF_EPOCH to the same digest (${CD0:0:16})"
+            else
+                fail "the conflict epoch built to different digests ($CD0 / $CD1 / $CD2)"
+            fi
+
+            # Whichever sibling lost is a merge parent inside this epoch and must
+            # contribute nothing -- if it contributes, the note was spent twice.
+            if [ "$(block_hash 0 $((CONFLICT_H + 1)))" = "$CB0" ]; then
+                LOSER_BLOCK="$CB1"
+            else
+                LOSER_BLOCK="$CB0"
+            fi
+            LOSER_COUNT="$(EPOCHJSON="$CE0" LOSERHASH="$LOSER_BLOCK" python3 -c '
+import json, os
+st = json.loads(os.environ["EPOCHJSON"])
+blocks = st.get("blocks", [])
+counts = st.get("iv5_active_block_tx_counts", [])
+print(dict(zip(blocks, counts)).get(os.environ["LOSERHASH"], -1))
+' 2>/dev/null)"
+            if [ "$LOSER_COUNT" = "0" ]; then
+                success "the losing sibling ${LOSER_BLOCK:0:16} contributes 0 transactions to the conflict epoch"
+            elif [ "$LOSER_COUNT" = "-1" ]; then
+                warn "the losing sibling ${LOSER_BLOCK:0:16} is not in the conflict epoch's DAG order"
+            else
+                fail "the losing sibling contributes $LOSER_COUNT transactions, so the note was spent twice"
+            fi
+
+            # Exactly one of the two spends may have reached the spent-key set.
+            CONF_NULLS="$(jget "$CE0" iv5_nullifier_count)"
+            if is_int "$CONF_NULLS" && [ "$CONF_NULLS" -ge 1 ]; then
+                success "the conflict epoch recorded $CONF_NULLS spent key image(s)"
+            else
+                fail "the conflict epoch recorded no spent key image (${CONF_NULLS:-?})"
+            fi
+        else
+            fail "could not close the epoch carrying the conflict"
         fi
 
         # The loser's key image is now spent, so no node may take it back.
