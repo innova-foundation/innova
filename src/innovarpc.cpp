@@ -1588,6 +1588,21 @@ void ConvertTo(Value& value, bool fAllowNull=false, int nDepth=0)
     }
 }
 
+// getblock documents verbosity as 0/1/2 while older callers pass a boolean; accept both
+// (ConvertTo<bool> throws on "0" and "2").
+void ConvertToBoolOrInt(Value& value)
+{
+    if (value.type() != str_type)
+        return;
+    Value parsed;
+    const std::string strJSON = value.get_str();
+    if (!read_string(strJSON, parsed))
+        throw runtime_error(string("Error parsing JSON:") + strJSON);
+    if (parsed.type() != bool_type && parsed.type() != int_type)
+        throw runtime_error(string("Expected a boolean or an integer, got:") + strJSON);
+    value = parsed;
+}
+
 // Convert strings to command-specific RPC representation
 Array RPCConvertValues(const std::string &strMethod, const std::vector<std::string> &strParams)
 {
@@ -1623,7 +1638,7 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     if (strMethod == "listreceivedbyaccount"  && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "getbalance"             && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "getbalance"             && n > 2) ConvertTo<bool>(params[2]);
-    if (strMethod == "getblock"               && n > 1) ConvertTo<bool>(params[1]);
+    if (strMethod == "getblock"               && n > 1) ConvertToBoolOrInt(params[1]);
 	if (strMethod == "getblockheader"         && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "getblock_old"           && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "getblockbynumber"       && n > 0) ConvertTo<int64_t>(params[0]);
