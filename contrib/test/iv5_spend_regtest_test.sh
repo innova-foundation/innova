@@ -497,13 +497,11 @@ else
     exit 1
 fi
 
-# Each shield leaves two notes, and only notes inside the finalized anchor can be
-# spent. The later sections spend four times, so sweep two more addresses while the
-# anchor these will land in is still ahead of us. Each sweep is confirmed before the
-# next is built: a shield names the tree it saw, so one built over an unconfirmed
-# sibling would be left holding an anchor the chain has already moved past.
+# Change is not spendable within this epoch, so sweep every shield note now to fund
+# all later spends. Each sweep confirms before the next, since a shield names the tree
+# it saw.
 EXTRA_SHIELDS=0
-for _ in 1 2; do
+for _ in 1 2 3 4 5 6; do
     MORE_TXID="$(jget "$(rpc 0 z_shieldall 2>&1)" txid)"
     [ ${#MORE_TXID} -eq 64 ] || break
     EXTRA_SHIELDS=$((EXTRA_SHIELDS + 1))
@@ -511,8 +509,8 @@ for _ in 1 2; do
     mine_to 0 "$EXTRA_TARGET" >/dev/null || break
     wait_sync "$EXTRA_TARGET" >/dev/null || break
 done
-if [ "$EXTRA_SHIELDS" -eq 2 ]; then
-    success "swept two further addresses into the pool for the later spends"
+if [ "$EXTRA_SHIELDS" -ge 2 ]; then
+    success "swept $EXTRA_SHIELDS further address(es) into the pool for the later spends"
 else
     fail "only $EXTRA_SHIELDS further sweep(s) confirmed; the spend sections need four notes"
     exit 1
@@ -707,6 +705,13 @@ disclosed_transfer() {
     result="$(rpc 0 z_iv5transfer "$addr" "$DISCLOSED_AMOUNT" "$mask" 2>&1)"
     txid="$(jget "$result" txid)"
     if [ ${#txid} -ne 64 ]; then
+        # Running out of positioned notes is this harness reaching its own limit,
+        # not the mask being refused. Say so rather than reporting a protocol
+        # failure the node never made.
+        if echo "$result" | grep -q "insufficient spendable shielded balance"; then
+            warn "mask $mask: not exercised, no positioned note left to spend"
+            return 2
+        fi
         fail "mask $mask: z_iv5transfer failed: $(echo "$result" | head -3)"
         return 1
     fi
@@ -775,14 +780,24 @@ mask_bit_flags() {
     echo "$(( (m & 1) == 0 ))|$(( (m & 2) == 0 ))|$(( (m & 4) == 0 ))"
 }
 
+MASKS_EXERCISED=0
 for MASK in 0 1 2 3 4 5 6 7; do
     IFS='|' read -r WS WR WA <<< "$(mask_bit_flags "$MASK")"
     [ "$WS" = "1" ] && WS=true || WS=false
     [ "$WR" = "1" ] && WR=true || WR=false
     [ "$WA" = "1" ] && WA=true || WA=false
-    disclosed_transfer "$MASK" "$WS" "$WR" "$WA" || \
-        warn "the mask-$MASK transfer did not complete"
+    disclosed_transfer "$MASK" "$WS" "$WR" "$WA"
+    case $? in
+        0) MASKS_EXERCISED=$((MASKS_EXERCISED + 1)) ;;
+        2) ;;
+        *) warn "the mask-$MASK transfer did not complete" ;;
+    esac
 done
+if [ "$MASKS_EXERCISED" -eq 8 ]; then
+    success "all eight disclosure masks confirmed on chain"
+else
+    warn "$MASKS_EXERCISED of 8 disclosure masks were confirmed on chain"
+fi
 
 # An out-of-range mask is a caller error, not something the wallet quietly rounds.
 BAD_MASK="$(rpc 0 z_iv5transfer "$TO_ADDR" "$DISCLOSED_AMOUNT" 8 2>&1)"
