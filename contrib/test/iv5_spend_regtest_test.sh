@@ -790,13 +790,15 @@ for MASK in 0 1 2 3 4 5 6 7; do
     case $? in
         0) MASKS_EXERCISED=$((MASKS_EXERCISED + 1)) ;;
         2) ;;
-        *) warn "the mask-$MASK transfer did not complete" ;;
+        *) ;;  # disclosed_transfer already failed with the reason
     esac
 done
+# All eight masks must be exercised; fewer means a refused mask or a note-supply
+# regression.
 if [ "$MASKS_EXERCISED" -eq 8 ]; then
     success "all eight disclosure masks confirmed on chain"
 else
-    warn "$MASKS_EXERCISED of 8 disclosure masks were confirmed on chain"
+    fail "only $MASKS_EXERCISED of 8 disclosure masks were confirmed on chain"
 fi
 
 # An out-of-range mask is a caller error, not something the wallet quietly rounds.

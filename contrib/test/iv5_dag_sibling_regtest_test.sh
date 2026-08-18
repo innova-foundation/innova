@@ -847,10 +847,13 @@ fi
 mine_to 1 $((EPOCH3_END + 3)) || { fail "node1 could not close epoch 3"; exit 1; }
 TREE_LOSER="$(iv5_tree_size 1)"
 ROOT_LOSER="$(iv5_tree_root 1)"
+# Premise, not a measurement: an epoch that committed no leaf gives the reorg
+# nothing to undo, and the assertion at the end of the section then holds for a
+# tree the two nodes shared all along.
 if is_int "$TREE_LOSER" && is_int "$TREE_PRE0" && [ "$TREE_LOSER" -gt "$TREE_PRE0" ]; then
     success "node1 closed epoch 3 with a larger tree ($TREE_PRE0 -> $TREE_LOSER leaves)"
 else
-    warn "node1's closed epoch did not grow the tree ($TREE_PRE0 -> $TREE_LOSER); the undo below is weaker"
+    fail "node1's closed epoch committed no leaf ($TREE_PRE0 -> $TREE_LOSER), so the reorg below has nothing to take back"
 fi
 
 # node0 closes the same epoch over a longer chain that never saw the payload.
@@ -863,10 +866,12 @@ wait_peers || { fail "the nodes did not re-peer at the boundary"; exit 1; }
 wait_same_tip || { fail "the nodes did not converge after the boundary race"; exit 1; }
 success "both nodes converged at height $(height 0) after the boundary race"
 
+# The second premise, and the load-bearing one: equal roots mean the two epoch-3
+# derivations agreed, so no divergent state was ever undone.
 if [ "$ROOT_LOSER" != "$ROOT_WINNER" ]; then
     success "the two epoch-3 derivations really did differ (${ROOT_LOSER:0:12} vs ${ROOT_WINNER:0:12})"
 else
-    warn "both sides closed epoch 3 on the same root; the undo under test is untested"
+    fail "both sides closed epoch 3 on the same root (${ROOT_LOSER:0:12}); the undo this section tests never happened"
 fi
 
 assert_iv5_agrees "after undoing a closed epoch"
