@@ -1318,6 +1318,16 @@ bool AppInit2()
               "before the quarantine. Refusing to start."),
             FORK_HEIGHT_BOUNDARY_B, FORK_HEIGHT_BOUNDARY_A));
 
+    // Every post-IDAG PoS block is refused, so the privacy boundaries must stay above the DAG
+    // gate or a privacy-encoded coinstake becomes buildable again.
+    if (!PrivateStakeIsFinalityOnly())
+        return InitError(strprintf(
+            _("Boundary A (%d) is not above the DAG gate (%d). Private staking is "
+              "finality-voting only after the DAG gate, so opening a privacy "
+              "boundary at or below it would make a private coinstake reachable. "
+              "Refusing to start."),
+            FORK_HEIGHT_BOUNDARY_A, FORK_HEIGHT_DAG));
+
     // Holding leaf-index assignment leaves received notes unspendable, so it exists
     // only to let a harness reproduce that state deliberately.
     if (GetBoolArg("-regtestiv5holdleafindex", false))

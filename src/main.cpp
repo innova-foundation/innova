@@ -8899,6 +8899,11 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
         {
             if (vtx[1].IsShielded())
             {
+                // Post-IDAG NullStake votes for finality and does not produce blocks. Already refused
+                // by CheckTransaction, AcceptBlock and ConnectInputs; this restates it.
+                if (!IsNullStakeBlockProductionReachableAtHeight(pindex->nHeight))
+                    return DoS(100, error("ConnectBlock() : NullStake block production is unreachable at height %d (private stake is finality-voting only)", pindex->nHeight));
+
                 // After the V2 fork, reject V1 proofs (they leak UTXO identity)
                 bool fNullStakeAllowed = (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE && pindex->nHeight >= FORK_HEIGHT_NULLSTAKE && pindex->nHeight < FORK_HEIGHT_NULLSTAKE_V2)
                     || (vtx[1].nVersion == SHIELDED_TX_VERSION_NULLSTAKE_V2 && pindex->nHeight >= FORK_HEIGHT_NULLSTAKE_V2)
@@ -8906,6 +8911,12 @@ bool CBlock::ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck,
                 if (!fNullStakeAllowed)
                     return DoS(100, error("ConnectBlock() : shielded transaction cannot be coinstake (Layer 2)"));
             }
+
+            // The vNext envelope carries NullStake only as finality votes; a coinstake-shaped v2008
+            // is refused by height so no builder can restore block production through it.
+            if (vtx[1].IsPrivacyVNext() &&
+                !IsPrivacyVNextCoinStakeReachableAtHeight(pindex->nHeight))
+                return DoS(100, error("ConnectBlock() : privacy-vNext transaction cannot be coinstake at height %d (private stake is finality-voting only)", pindex->nHeight));
 
             // Reject coinstake inputs from shielded transactions
             if (vtx[1].nVersion != SHIELDED_TX_VERSION_NULLSTAKE && vtx[1].nVersion != SHIELDED_TX_VERSION_NULLSTAKE_V2 && vtx[1].nVersion != SHIELDED_TX_VERSION_NULLSTAKE_COLD)

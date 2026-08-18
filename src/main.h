@@ -564,6 +564,36 @@ inline bool IsLegacyPrivacyPolicyDisabled()
     return !fRegTest;
 }
 
+// A privacy-encoded coinstake must be unreachable on every public network at every height.
+// The predicates below derive this from the gates; nullstake_finality_only_tests pins them.
+
+// Legacy NullStake (2003/2004/2005). Rejected by CheckTransaction, AcceptBlock and
+// ConnectInputs; ConnectBlock rejects all PoS blocks at or above the DAG gate. On
+// mainnet [FORK_HEIGHT_NULLSTAKE, FORK_HEIGHT_DAG) is closed by the legacy-privacy policy.
+inline bool IsNullStakeBlockProductionReachableAtHeight(int nHeight)
+{
+    if (IsLegacyPrivacyPolicyDisabled() || IsBoundaryAActiveAtHeight(nHeight))
+        return false;
+    if (nHeight >= FORK_HEIGHT_DAG)
+        return false;
+    return nHeight >= FORK_HEIGHT_NULLSTAKE;
+}
+
+// vNext NullStake (2008) is finality voting only: Boundary B >= A = DAG + 300, and PoS
+// block production ends at the DAG gate. PrivateStakeIsFinalityOnly() checks the ordering.
+inline bool IsPrivacyVNextCoinStakeReachableAtHeight(int nHeight)
+{
+    if (!IsBoundaryBActiveAtHeight(nHeight) || !IsShieldedVNextConsensusReady())
+        return false;
+    return nHeight < FORK_HEIGHT_DAG;
+}
+
+// Startup check of the ordering above: Boundary A must sit above the DAG gate.
+inline bool PrivateStakeIsFinalityOnly()
+{
+    return BoundaryOrderingHolds() && FORK_HEIGHT_BOUNDARY_A > FORK_HEIGHT_DAG;
+}
+
 /** First schema-V3 suffix epoch affected by a reorg whose common ancestor is nForkHeight.
  *  The migration-base epoch is the lower bound because older V2 history is an immutable input. */
 int GetFirstV3EpochStateRebuildEpoch(int nForkHeight);
