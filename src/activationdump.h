@@ -231,6 +231,10 @@ inline std::string GetActivationLadderJSON()
       &IsLegacyPrivacyPolicyDisabled, true, NULL, "gate_predicate" },
     { "IsShieldedVNextConsensusReady", "src/shielded.h",
       &IsShieldedVNextConsensusReady, true, "-regtestiv5rehearsal", "gate_predicate" },
+    // Post-IDAG stake votes for finality instead of producing blocks, so every
+    // height that may carry a privacy encoding has to sit above the DAG gate.
+    { "PrivateStakeIsFinalityOnly", "src/main.h",
+      &PrivateStakeIsFinalityOnly, true, "-regtestboundaryb", "gate_predicate" },
     { "IsPrivacyVNextLeafIndexAssignmentHeld", "src/shielded.h",
       &IsPrivacyVNextLeafIndexAssignmentHeld, true, "-regtestiv5holdleafindex", "wallet_predicate" },
     };
@@ -243,6 +247,8 @@ inline std::string GetActivationLadderJSON()
     { "IsIV5NoteVoteActiveAtHeight", "src/main.h", "int nHeight" },
     { "IsSupplyCapActiveAtHeight", "src/main.h", "int nHeight" },
     { "IsLegacyPrivateStakeCreationAllowed", "src/main.h", "StakingMode eMode, int nCandidateHeight" },
+    { "IsNullStakeBlockProductionReachableAtHeight", "src/main.h", "int nHeight" },
+    { "IsPrivacyVNextCoinStakeReachableAtHeight", "src/main.h", "int nHeight" },
     { "IsFinalitySettlementHeight", "src/finality.h", "int nHeight, int* pnEpochOut" },
     };
 
