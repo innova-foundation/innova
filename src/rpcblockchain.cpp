@@ -908,7 +908,7 @@ Value getblock(const Array& params, bool fHelp)
             "If verbosity is 2, returns an Object with information about block <hash> and information about each transaction. \n"
             "\nArguments:\n"
             "1. \"blockhash\"          (string, required) The block hash\n"
-            "2. verbosity              (numeric, optional, default=1) 0 for hex encoded data, 1 for a json object, and 2 for json object with transaction data\n"
+            "2. verbosity              (numeric or boolean, optional, default=1) 0 for hex encoded data, 1 for a json object, and 2 for json object with transaction data; false/true are accepted as 0/1\n"
             "\nResult (for verbosity = 0):\n"
             "\"data\"             (string) A string that is serialized, hex-encoded data for block 'hash'.\n"
             "\nResult (for verbosity = 1):\n"
@@ -952,9 +952,14 @@ Value getblock(const Array& params, bool fHelp)
     //std::string strHash = params[0].get_str();
 	//uint256 hash(uint256S(strHash));
 
+    // Documented 0/1/2. Boolean callers predate the numeric form and still work:
+    // false is 0, true is 1.
     int verbosity = 1;
     if (params.size() > 1) {
+        if (params[1].type() == bool_type)
             verbosity = params[1].get_bool() ? 1 : 0;
+        else
+            verbosity = params[1].get_int();
     }
 
     if (mapBlockIndex.count(hash) == 0)
@@ -983,8 +988,7 @@ Value getblock(const Array& params, bool fHelp)
         return strHex;
     }
 
-    //return blockToJSON(block, pblockindex, verbosity >= 2);
-	return blockToJSON(block, pblockindex, params.size() > 1 ? params[1].get_bool() : false);
+    return blockToJSON(block, pblockindex, verbosity >= 2);
 }
 
 Value getblockheader(const Array& params, bool fHelp)
