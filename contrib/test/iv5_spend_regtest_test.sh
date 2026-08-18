@@ -1126,11 +1126,10 @@ POOL_UNCONF_1="$(jget "$INFO" privacy_vnext_unconfirmed_balance)"
 TREE_1="$(jget "$INFO" privacy_vnext_tree_size)"
 STORE_1="$(jget "$INFO" privacy_vnext_tree_store_size)"
 
-# A transfer moves value inside the pool, so it costs the pool only its fee. An
-# unshield additionally takes the released amount out of the pool entirely. Four
-# transfers run before this point: the private one and the two disclosed ones in 6b,
-# plus the unshield.
-EXPECTED_DROP="$(python3 -c "print('%.8f' % ((4 * $SHIELD_FEE) + $UNSHIELD_AMOUNT))")"
+# Fee-paying spends: the section 6 transfer, every mask 6b confirmed, and the unshield.
+# Derived so it tracks 6b.
+FEE_PAYING_SPENDS=$(( MASKS_EXERCISED + 2 ))
+EXPECTED_DROP="$(python3 -c "print('%.8f' % (($FEE_PAYING_SPENDS * $SHIELD_FEE) + $UNSHIELD_AMOUNT))")"
 ACTUAL_DROP="$(python3 -c "print('%.8f' % ((float('${POOL_BAL_0:-0}') + float('${POOL_UNCONF_0:-0}')) - (float('${POOL_BAL_1:-0}') + float('${POOL_UNCONF_1:-0}'))))")"
 if feq "$ACTUAL_DROP" "$EXPECTED_DROP"; then
     success "pool value fell by exactly $ACTUAL_DROP INN (both fees and the unshielded amount)"
