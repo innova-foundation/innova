@@ -774,10 +774,10 @@ OOO_OK=1
 for ((i=OOO_RUN; i>=1; i--)); do
     h=$((OOO_SPLIT + i))
     bh="$(block_hash 0 "$h")"
-    # getblock's second parameter is documented as a numeric verbosity (0 for raw
-    # hex) but the client converts it with ConvertTo<bool> and the RPC reads it
-    # with get_bool, so the documented 0 raises a type error and only false works.
-    hex="$(rpc 0 getblock "$bh" false 2>/dev/null | tr -d '"[:space:]')"
+    # Verbosity 0 is the documented numeric form for raw hex. Boolean false means
+    # the same thing and both are accepted; the numeric form is used here so the
+    # form the help documents is the one a harness exercises.
+    hex="$(rpc 0 getblock "$bh" 0 2>/dev/null | tr -d '"[:space:]')"
     if [ ${#hex} -lt 100 ]; then
         fail "could not read block $h as raw hex"
         OOO_OK=0
