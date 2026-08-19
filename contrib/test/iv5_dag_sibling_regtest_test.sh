@@ -884,6 +884,380 @@ else
     fail "node1 kept a tree that is not the winning chain's (root $(iv5_tree_root 1) size $(iv5_tree_size 1), expected ${ROOT_WINNER} / $TREE_WINNER)"
 fi
 
+
+# ============================================================
+header "10. Two distinct spends of one note in sibling blocks"
+# ============================================================
+
+# Two different transactions spending one note on two nodes; only the DAG can resolve
+# it. Transparent voting drives finality; every premise is a hard failure.
+
+S10_OK=1
+s10_premise() { if [ "$1" = "1" ]; then success "$2"; else fail "$3"; S10_OK=0; fi; }
+
+# A distinct transaction carrying the same payload. nTime is not in the binding
+# hash for this transaction version, so the twin has a new txid, the same key
+# images and a payload that still verifies.
+restamp_raw() {
+    local raw="$1" le n h
+    le="${raw:8:8}"
+    n=$(( 16#${le:6:2}${le:4:2}${le:2:2}${le:0:2} ))
+    n=$(( n - 1 ))
+    h="$(printf '%08x' "$n")"
+    echo "${raw:0:8}${h:6:2}${h:4:2}${h:2:2}${h:0:2}${raw:16}"
+}
+
+debug_log()   { echo "$(node_dir "$1")/regtest/debug.log"; }
+log_lines()   { { wc -l < "$(debug_log "$1")" 2>/dev/null || echo 0; } | tr -d '[:space:]'; }
+
+# A refusal names the key image it refused and the transaction already holding
+# it, and is the only way to read a payload's key image from outside the node.
+# Both refusal texts put the key image in field 4 and the holder last.
+refused_field() {
+    local node="$1" from="$2" field="$3"
+    tail -n +"$((from + 1))" "$(debug_log "$node")" 2>/dev/null |
+        grep -oE "IV5 spent key [0-9a-f]+ (is reserved by|was already consumed by) [0-9a-f]+" |
+        tail -1 | awk -v f="$field" '{print (f=="ki") ? $4 : $NF}'
+}
+
+det_finalized_height() { jget "$(rpc "$1" getfinalityinfo 2>/dev/null)" deterministic_finalized_height; }
+
+# Transparent votes only: each wallet casts one, FINALITY_MIN_VOTERS is 2, and
+# both nodes hold coins under their own keys by now. Mining is paused at the
+# boundary so every vote lands inside the epoch's inclusion window.
+vote_round() {
+    local boundary="$1"
+    mine_to 0 "$boundary" || return 1
+    wait_sync "$boundary" || return 1
+    sleep 20
+    mine_to 0 $((boundary + 3)) || return 1
+    wait_sync $((boundary + 3)) || return 1
+}
+
+enable_finality_voting() {
+    local node="$1" dir
+    dir="$(node_dir "$node")"
+    stop_node "$node" || return 1
+    grep -v -e '^nofinalityvoting=' -e '^finalityvotemode=' "$dir/innova.conf" > "$dir/innova.conf.new"
+    {
+        echo "nofinalityvoting=0"
+        echo "finalityvotemode=transparent"
+    } >> "$dir/innova.conf.new"
+    mv "$dir/innova.conf.new" "$dir/innova.conf"
+    start_node "$node" || return 1
+    unlock "$node"
+}
+
+epoch_for_height() { python3 -c "h=$1; print(1 + (h - 11) // 300 if h >= 11 else 0)" 2>/dev/null; }
+epoch_end_height() { python3 -c "e=$1; print(310 + 300 * (e - 1))" 2>/dev/null; }
+
+# Present only once ConnectBlock wrote a txindex entry, which a merge block never
+# gets. Empty is the answer for a transaction the chain did not connect.
+confirmed_in() { jget "$(rpc "$1" getrawtransaction "$2" 1 2>/dev/null)" blockhash; }
+
+epoch_field() { jget "$(rpc "$1" getepochinfo "$2" 2>/dev/null)" "$3"; }
+
+# ---- premise: a chain that finalizes ----
+
+# One wallet casts one vote and FINALITY_MIN_VOTERS is 2, so both nodes have to
+# hold coins under their own keys. Section 9 shielded node1's transparent side,
+# which would leave it with nothing to vote on.
+unlock 0
+S10_FUND="$(rpc 0 sendtoaddress "$ADDR1" "$PEER_FUND" 2>&1 | tr -d '"[:space:]')"
+if [ ${#S10_FUND} -eq 64 ]; then
+    mine_to 0 $(( $(height 0) + 3 )) || { fail "could not confirm the voting stake"; S10_OK=0; }
+    wait_sync "$(height 0)" || { fail "the nodes did not sync the voting stake"; S10_OK=0; }
+fi
+S10_BAL1="$(rpc 1 getbalance 2>/dev/null | tr -d '"[:space:]')"
+s10_premise "$(python3 -c "print(1 if float('${S10_BAL1:-0}') > 0 else 0)" 2>/dev/null)" \
+    "node1 holds $S10_BAL1 INN of votable stake under its own key" \
+    "node1 has no votable stake, so no epoch can reach two voters (balance '$S10_BAL1')"
+
+for node in 0 1; do
+    enable_finality_voting "$node" || { fail "node$node did not restart with finality voting on"; S10_OK=0; }
+done
+connect_nodes
+wait_peers || { fail "the nodes did not re-peer after enabling finality voting"; S10_OK=0; }
+
+FIN_HEIGHT=0
+if [ "$S10_OK" = "1" ]; then
+    # Epoch E starts at 11 + 300*(E-1). Voting starts at the first boundary above
+    # the tip section 9 left, and a finalized height needs three consecutive HARD
+    # epochs, so at least three rounds run before one exists.
+    S10_START="$(height 0)"
+    NEXT_EPOCH=$(( $(epoch_for_height "$S10_START") + 1 ))
+    for round in 1 2 3 4 5; do
+        BOUND=$(( 11 + 300 * (NEXT_EPOCH - 1) ))
+        vote_round "$BOUND" || { fail "the epoch-$NEXT_EPOCH vote round failed"; S10_OK=0; break; }
+        # A tier is only carried by a COMPLETED epoch, so close this one before
+        # asking. One block past the next boundary is the earliest that is true,
+        # and it leaves the next round the whole vote window.
+        CLOSE=$(( BOUND + 301 ))
+        mine_to 0 "$CLOSE" || { fail "could not close epoch $NEXT_EPOCH"; S10_OK=0; break; }
+        wait_sync "$CLOSE" || { fail "the nodes did not sync while closing epoch $NEXT_EPOCH"; S10_OK=0; break; }
+        TIER="$(epoch_field 0 "$NEXT_EPOCH" finality_tier)"
+        log "  epoch $NEXT_EPOCH closed tier=$TIER at height $(height 0)"
+        FH="$(det_finalized_height 0)"
+        if is_int "$FH" && [ "$FH" -gt 0 ]; then FIN_HEIGHT="$FH"; break; fi
+        NEXT_EPOCH=$((NEXT_EPOCH + 1))
+    done
+fi
+s10_premise "$( [ "${FIN_HEIGHT:-0}" -gt 0 ] && echo 1 || echo 0 )" \
+    "transparent voting drove a deterministic finalized height of $FIN_HEIGHT" \
+    "no finalized height was reached, so no spend can be anchored (got '$FIN_HEIGHT')"
+
+# ---- premise: a note to spend ----
+
+SPEND_AMOUNT=1
+ZBAL0=""
+ZADDR0=""
+if [ "$S10_OK" = "1" ]; then
+    unlock 0
+    ZBAL0="$(jget "$(rpc 0 z_getshieldedinfo 2>/dev/null)" privacy_vnext_balance)"
+    ZADDR0="$(jget "$(rpc 0 z_getnewiv5address 2>&1)" address)"
+fi
+s10_premise "$(python3 -c "print(1 if float('${ZBAL0:-0}') >= $SPEND_AMOUNT + 1 else 0)" 2>/dev/null)" \
+    "node0 holds $ZBAL0 INN of spendable shielded value" \
+    "node0 has no shielded value to spend twice (balance '$ZBAL0')"
+s10_premise "$( [ ${#ZADDR0} -gt 20 ] && echo 1 || echo 0 )" \
+    "node0 allocated an IV5 destination for the spends" \
+    "could not allocate an IV5 destination address"
+
+# ---- premise: two distinct spends of one note, one per side ----
+
+DS_TXID_A=""
+DS_TXID_B=""
+DS_RAW_A=""
+DS_RAW_B=""
+DS_NOTES=0
+DS_KI_0=""
+DS_KI_1=""
+DS_HOLDER_0=""
+DS_HOLDER_1=""
+
+if [ "$S10_OK" = "1" ]; then
+    DS_SPLIT="$(height 0)"
+    partition_nodes || { fail "the nodes could not be partitioned for the double spend"; S10_OK=0; }
+fi
+
+if [ "$S10_OK" = "1" ]; then
+    unlock 0
+    XFER="$(rpc 0 z_iv5transfer "$ZADDR0" "$SPEND_AMOUNT" 2>&1)"
+    DS_TXID_A="$(jget "$XFER" txid)"
+    DS_NOTES="$(jget "$XFER" notes)"
+    if [ ${#DS_TXID_A} -eq 64 ]; then
+        DS_RAW_A="$(rpc 0 getrawtransaction "$DS_TXID_A" 2>/dev/null | tr -d '"[:space:]')"
+        DS_RAW_B="$(restamp_raw "$DS_RAW_A")"
+        # node1 never saw the first spend, so its mempool and its spent-key index
+        # are both clean and it judges the twin entirely on its own merits.
+        DS_TXID_B="$(rpc 1 sendrawtransaction "$DS_RAW_B" 2>&1 | tr -d '"[:space:]')"
+    fi
+fi
+
+s10_premise "$( [ ${#DS_TXID_A} -eq 64 ] && echo 1 || echo 0 )" \
+    "node0 built a spend of $SPEND_AMOUNT INN over ${DS_NOTES:-?} note(s) (${DS_TXID_A:0:16})" \
+    "node0 could not build the first spend: $(echo "${XFER:-}" | head -2)"
+s10_premise "$( [ ${#DS_TXID_B} -eq 64 ] && echo 1 || echo 0 )" \
+    "node1 accepted a second spend of the same note (${DS_TXID_B:0:16})" \
+    "node1 did not accept a second spend of the note: ${DS_TXID_B:0:120}"
+s10_premise "$( [ ${#DS_TXID_A} -eq 64 ] && [ ${#DS_TXID_B} -eq 64 ] && [ "$DS_TXID_A" != "$DS_TXID_B" ] && echo 1 || echo 0 )" \
+    "the two spends are different transactions (${DS_TXID_A:0:16} / ${DS_TXID_B:0:16})" \
+    "the two spends are not distinct transactions ($DS_TXID_A / $DS_TXID_B)"
+s10_premise "$( [ "$(in_mempool 0 "$DS_TXID_A")" = "yes" ] && [ "$(in_mempool 1 "$DS_TXID_B")" = "yes" ] && \
+                [ "$(in_mempool 0 "$DS_TXID_B")" = "no" ] && [ "$(in_mempool 1 "$DS_TXID_A")" = "no" ] && echo 1 || echo 0 )" \
+    "each node holds only its own spend: the conflict is in no single mempool" \
+    "a node holds both spends, so the conflict is inside one mempool and not a DAG case"
+
+# Cross-submit: both nodes must name the same refused key image before this counts as
+# a double spend.
+if [ "$S10_OK" = "1" ]; then
+    L0="$(log_lines 0)"
+    rpc 0 sendrawtransaction "$DS_RAW_B" >/dev/null 2>&1 || true
+    DS_KI_0="$(refused_field 0 "$L0" ki)"
+    DS_HOLDER_0="$(refused_field 0 "$L0" holder)"
+
+    L1="$(log_lines 1)"
+    rpc 1 sendrawtransaction "$DS_RAW_A" >/dev/null 2>&1 || true
+    DS_KI_1="$(refused_field 1 "$L1" ki)"
+    DS_HOLDER_1="$(refused_field 1 "$L1" holder)"
+fi
+
+s10_premise "$( [ -n "$DS_KI_0" ] && [ -n "$DS_KI_1" ] && [ "$DS_KI_0" = "$DS_KI_1" ] && echo 1 || echo 0 )" \
+    "both nodes independently name the same key image $DS_KI_0: the two spends spend one note" \
+    "the nodes did not agree that the two spends share a key image (node0 '$DS_KI_0', node1 '$DS_KI_1')"
+s10_premise "$( [ -n "$DS_HOLDER_0" ] && [ "$DS_HOLDER_0" = "${DS_TXID_A:0:10}" ] && \
+                [ -n "$DS_HOLDER_1" ] && [ "$DS_HOLDER_1" = "${DS_TXID_B:0:10}" ] && echo 1 || echo 0 )" \
+    "each refusal names that node's own spend as the holder of the key image" \
+    "a refusal named the wrong holder (node0 '$DS_HOLDER_0' vs ${DS_TXID_A:0:10}, node1 '$DS_HOLDER_1' vs ${DS_TXID_B:0:10})"
+
+# ---- premise: one spend per sibling block, and both blocks reach both nodes ----
+
+DS_HEIGHT=0
+DS_BLOCK_A=""
+DS_BLOCK_B=""
+if [ "$S10_OK" = "1" ]; then
+    mine_one 0 || { fail "node0 could not mine its spend"; S10_OK=0; }
+    mine_one 1 || { fail "node1 could not mine its spend"; S10_OK=0; }
+    DS_HEIGHT=$((DS_SPLIT + 1))
+    DS_BLOCK_A="$(block_hash 0 "$DS_HEIGHT")"
+    DS_BLOCK_B="$(block_hash 1 "$DS_HEIGHT")"
+fi
+
+s10_premise "$( [ ${#DS_BLOCK_A} -eq 64 ] && [ ${#DS_BLOCK_B} -eq 64 ] && [ "$DS_BLOCK_A" != "$DS_BLOCK_B" ] && echo 1 || echo 0 )" \
+    "two sibling blocks at height $DS_HEIGHT (${DS_BLOCK_A:0:16} / ${DS_BLOCK_B:0:16})" \
+    "the partition did not produce a sibling pair ($DS_BLOCK_A / $DS_BLOCK_B)"
+s10_premise "$( [ "$(block_contains_tx 0 "$DS_BLOCK_A" "$DS_TXID_A")" = "yes" ] && \
+                [ "$(block_contains_tx 1 "$DS_BLOCK_B" "$DS_TXID_B")" = "yes" ] && echo 1 || echo 0 )" \
+    "each sibling carries its own side's spend" \
+    "a sibling does not carry the spend its node built"
+
+if [ "$S10_OK" = "1" ]; then
+    connect_nodes
+    wait_peers || { fail "the nodes did not re-peer after the double-spend race"; S10_OK=0; }
+    wait_block_known 0 "$DS_BLOCK_B" || { fail "node0 never received the competing block"; S10_OK=0; }
+    wait_block_known 1 "$DS_BLOCK_A" || { fail "node1 never received the competing block"; S10_OK=0; }
+fi
+s10_premise "$( [ "$(jget "$(rpc 0 getblock "$DS_BLOCK_B" 2>/dev/null)" hash)" = "$DS_BLOCK_B" ] && \
+                [ "$(jget "$(rpc 1 getblock "$DS_BLOCK_A" 2>/dev/null)" hash)" = "$DS_BLOCK_A" ] && echo 1 || echo 0 )" \
+    "both sibling blocks reached both nodes" \
+    "a sibling block never reached the other node, so no node ever had to resolve the conflict"
+
+# ---- conclusion ----
+
+if [ "$S10_OK" != "1" ]; then
+    fail "section 10 premises did not hold; its conclusions were not run"
+else
+    DS_EPOCH="$(epoch_for_height "$DS_HEIGHT")"
+    DS_EPOCH_END="$(epoch_end_height "$DS_EPOCH")"
+    NULL_BEFORE="$(epoch_field 0 $((DS_EPOCH - 1)) iv5_nullifier_count)"
+
+    # One more block resolves the tie and commits the loser as a merge parent.
+    mine_one 0 || fail "node0 could not extend after the double-spend race"
+    wait_same_tip || fail "the nodes did not converge after the double-spend race"
+
+    CANON0="$(block_hash 0 "$DS_HEIGHT")"
+    CANON1="$(block_hash 1 "$DS_HEIGHT")"
+    if [ "$CANON0" = "$DS_BLOCK_A" ]; then
+        LOSER_BLOCK="$DS_BLOCK_B"; WIN_TX="$DS_TXID_A"; LOSE_TX="$DS_TXID_B"; LOSE_RAW="$DS_RAW_B"
+    else
+        LOSER_BLOCK="$DS_BLOCK_A"; WIN_TX="$DS_TXID_B"; LOSE_TX="$DS_TXID_A"; LOSE_RAW="$DS_RAW_A"
+    fi
+
+    if [ ${#CANON0} -eq 64 ] && [ "$CANON0" = "$CANON1" ] && \
+       { [ "$CANON0" = "$DS_BLOCK_A" ] || [ "$CANON0" = "$DS_BLOCK_B" ]; }; then
+        success "exactly one sibling is canonical at $DS_HEIGHT and both nodes name it (${CANON0:0:16})"
+    else
+        fail "the nodes do not agree on one canonical sibling (node0 $CANON0, node1 $CANON1)"
+    fi
+
+    # The chain writes a txindex entry only for what ConnectBlock connected, so
+    # the winner resolves to the canonical sibling and the loser resolves to
+    # nothing at all -- on both nodes.
+    W0="$(confirmed_in 0 "$WIN_TX")"; W1="$(confirmed_in 1 "$WIN_TX")"
+    L0C="$(confirmed_in 0 "$LOSE_TX")"; L1C="$(confirmed_in 1 "$LOSE_TX")"
+    if [ "$W0" = "$CANON0" ] && [ "$W1" = "$CANON0" ]; then
+        success "both nodes confirm the surviving spend ${WIN_TX:0:16} in the canonical sibling"
+    else
+        fail "the nodes disagree about the surviving spend (node0 '$W0', node1 '$W1', canonical $CANON0)"
+    fi
+    if [ -z "$L0C" ] && [ -z "$L1C" ]; then
+        success "neither node connected the losing spend ${LOSE_TX:0:16}"
+    else
+        fail "the losing spend was connected somewhere (node0 '$L0C', node1 '$L1C')"
+    fi
+
+    # The losing sibling has to be in the DAG as a merge block, or the conflict
+    # was resolved by throwing the block away and the epoch build never saw it.
+    MERGER="$(block_hash 0 $((DS_HEIGHT + 1)))"
+    if [ "$(block_has_dag_parent 0 "$MERGER" "$LOSER_BLOCK")" = "yes" ]; then
+        success "the canonical chain merged the losing sibling ${LOSER_BLOCK:0:16}"
+    else
+        fail "no canonical block merged the losing sibling; the DAG never had to resolve the conflict"
+    fi
+
+    # A distinct twin of the loser is the only respend attempt that reaches the
+    # key-image logic: the loser's own txid is refused by DAG-sibling dedup first.
+    # One re-stamp would land on the other sibling's exact bytes, which is refused
+    # by that same dedup, so the twin is stamped twice and matches neither.
+    LOSE_TWIN="$(restamp_raw "$(restamp_raw "$LOSE_RAW")")"
+    for n in 0 1; do
+        LN="$(log_lines "$n")"
+        RESP="$(rpc "$n" sendrawtransaction "$LOSE_TWIN" 2>&1 | tr -d '"[:space:]')"
+        REASON="$(tail -n +$((LN + 1)) "$(debug_log "$n")" 2>/dev/null | grep -c "was already consumed by")"
+        if [ ${#RESP} -eq 64 ]; then
+            fail "node$n accepted a respend of the note the canonical sibling already spent: ${RESP:0:16}"
+        elif [ "${REASON:-0}" -ge 1 ]; then
+            success "node$n refuses a respend because the key image was already consumed"
+        else
+            fail "node$n refused the respend for the wrong reason: $(echo "$RESP" | head -1 | cut -c1-120)"
+        fi
+    done
+
+    # Close the epoch the race sits in, so its state can be read.
+    mine_to 0 $((DS_EPOCH_END + 4)) || fail "could not close epoch $DS_EPOCH over the race"
+    wait_sync $((DS_EPOCH_END + 4)) || fail "the nodes did not sync while closing epoch $DS_EPOCH"
+    wait_same_tip || fail "the nodes hold different tips after closing epoch $DS_EPOCH"
+
+    # The active set is the id list both replayers walk. The losing sibling is in
+    # the epoch's DAG order and must contribute nothing to it.
+    ACTIVE_REPORT="$(EPOCHJSON="$(rpc 0 getepochinfo "$DS_EPOCH" 2>/dev/null)" \
+                     LOSER="$LOSER_BLOCK" WINNER="$CANON0" python3 <<'PY'
+import json, os, sys
+try:
+    st = json.loads(os.environ["EPOCHJSON"])
+except Exception as e:
+    print("ERROR parse"); sys.exit(0)
+blocks = st.get("blocks", [])
+counts = st.get("iv5_active_block_tx_counts", None)
+if counts is None or len(counts) != len(blocks):
+    print("ERROR counts"); sys.exit(0)
+idx = {h: c for h, c in zip(blocks, counts)}
+loser = os.environ["LOSER"]; winner = os.environ["WINNER"]
+if loser not in idx:
+    print("ERROR loser_not_ordered"); sys.exit(0)
+if winner not in idx:
+    print("ERROR winner_not_ordered"); sys.exit(0)
+print("OK %d %d" % (idx[loser], idx[winner]))
+PY
+)"
+    set -- $ACTIVE_REPORT
+    A_STATUS="$1"; A_LOSER="$2"; A_WINNER="$3"
+    if [ "$A_STATUS" != "OK" ]; then
+        fail "could not read the race epoch's IV5 active-set counts: $ACTIVE_REPORT"
+    elif [ "$A_LOSER" = "0" ] && [ "${A_WINNER:-0}" -ge 1 ]; then
+        success "the IV5 active set took the canonical sibling's $A_WINNER transaction(s) and none of the loser's"
+    else
+        fail "the IV5 active set is not one-sided (loser contributed $A_LOSER, winner $A_WINNER)"
+    fi
+
+    # The decisive count: one note was spent once, so the epoch's key-image set
+    # grew by exactly one spend's worth. Two would mean both siblings' spends
+    # reached the ledger.
+    NULL_AFTER="$(epoch_field 0 "$DS_EPOCH" iv5_nullifier_count)"
+    if is_int "$NULL_BEFORE" && is_int "$NULL_AFTER" && is_int "$DS_NOTES"; then
+        if [ $((NULL_AFTER - NULL_BEFORE)) -eq "$DS_NOTES" ]; then
+            success "the epoch recorded exactly one spend of the note ($NULL_BEFORE -> $NULL_AFTER key images)"
+        else
+            fail "the epoch recorded $((NULL_AFTER - NULL_BEFORE)) key images for a $DS_NOTES-note spend ($NULL_BEFORE -> $NULL_AFTER)"
+        fi
+    else
+        fail "could not read the epoch key-image counts ('$NULL_BEFORE' -> '$NULL_AFTER', notes '$DS_NOTES')"
+    fi
+
+    DS_DIGEST0="$(epoch_field 0 "$DS_EPOCH" epoch_state_digest)"
+    DS_DIGEST1="$(epoch_field 1 "$DS_EPOCH" epoch_state_digest)"
+    if [ ${#DS_DIGEST0} -eq 64 ] && [ "$DS_DIGEST0" = "$DS_DIGEST1" ]; then
+        success "both nodes derived the same epoch state over the resolved conflict (${DS_DIGEST0:0:16})"
+    else
+        fail "the nodes derived different epoch states over the conflict ($DS_DIGEST0 / $DS_DIGEST1)"
+    fi
+
+    assert_iv5_agrees "after resolving the sibling double spend"
+fi
+
+connect_nodes
+wait_peers >/dev/null 2>&1 || true
+
 # ============================================================
 header "Results"
 # ============================================================
