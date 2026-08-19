@@ -1189,7 +1189,11 @@ else
         elif [ "${REASON:-0}" -ge 1 ]; then
             success "node$n refuses a respend because the key image was already consumed"
         else
-            fail "node$n refused the respend for the wrong reason: $(echo "$RESP" | head -1 | cut -c1-120)"
+            # The RPC only ever says "TX rejected", so the reason has to come from
+            # the log or a wrong-reason refusal is indistinguishable from the right one.
+            OTHER="$(tail -n +$((LN + 1)) "$(debug_log "$n")" 2>/dev/null |
+                     grep -m1 -oE "CTxMemPool::accept\(\) : .*" | cut -c1-140)"
+            fail "node$n refused the respend for the wrong reason: ${OTHER:-$RESP}"
         fi
     done
 
