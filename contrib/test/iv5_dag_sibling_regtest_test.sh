@@ -1044,9 +1044,12 @@ fi
 # The second spend must come from a wallet that never saw the first, so node0 is
 # rolled back to a pre-build copy; a re-stamp would hit the output-owner index.
 if [ "$S10_OK" = "1" ]; then
+    # backupwallet keeps only the filename and writes under <datadir>/backups, and
+    # it locks the wallet for the copy without unlocking it again.
+    DS_BACKUP="$(node_dir 0)/regtest/backups/prespend_wallet.dat"
+    rm -f "$DS_BACKUP"
+    rpc 0 backupwallet "prespend_wallet.dat" >/dev/null 2>&1
     unlock 0
-    DS_BACKUP="$TEST_DIR/node0_prespend_wallet.dat"
-    rpc 0 backupwallet "$DS_BACKUP" >/dev/null 2>&1
 
     XFER_B="$(rpc 0 z_iv5transfer "$ZADDR0" "$SPEND_AMOUNT" 2>&1)"
     DS_TXID_FIRST="$(jget "$XFER_B" txid)"
@@ -1058,7 +1061,10 @@ if [ "$S10_OK" = "1" ]; then
         DS_TXID_B="$(rpc 1 sendrawtransaction "$DS_RAW_B" 2>&1 | tr -d '"[:space:]')"
     fi
 
-    if [ -s "$DS_BACKUP" ] && [ ${#DS_TXID_B} -eq 64 ]; then
+    if [ ! -s "$DS_BACKUP" ]; then
+        fail "node0 produced no pre-spend wallet copy, so the second spend cannot be built"
+        S10_OK=0
+    elif [ ${#DS_TXID_B} -eq 64 ]; then
         stop_node 0
         cp "$DS_BACKUP" "$(node_dir 0)/regtest/wallet.dat"
         rm -f "$(node_dir 0)/regtest/database/"*
@@ -1140,7 +1146,10 @@ if [ "$S10_OK" = "1" ]; then
     wait_block_known 0 "$DS_BLOCK_B" || { fail "node0 never received the competing block"; S10_OK=0; }
     wait_block_known 1 "$DS_BLOCK_A" || { fail "node1 never received the competing block"; S10_OK=0; }
 fi
-s10_premise "$( [ "$(jget "$(rpc 0 getblock "$DS_BLOCK_B" 2>/dev/null)" hash)" = "$DS_BLOCK_B" ] && \
+# Both sides are read back by hash, so the length test is what stops two empty
+# hashes from comparing equal and reporting a pass over a race that never ran.
+s10_premise "$( [ ${#DS_BLOCK_A} -eq 64 ] && [ ${#DS_BLOCK_B} -eq 64 ] && \
+                [ "$(jget "$(rpc 0 getblock "$DS_BLOCK_B" 2>/dev/null)" hash)" = "$DS_BLOCK_B" ] && \
                 [ "$(jget "$(rpc 1 getblock "$DS_BLOCK_A" 2>/dev/null)" hash)" = "$DS_BLOCK_A" ] && echo 1 || echo 0 )" \
     "both sibling blocks reached both nodes" \
     "a sibling block never reached the other node, so no node ever had to resolve the conflict"
