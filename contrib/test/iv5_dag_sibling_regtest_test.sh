@@ -1187,7 +1187,7 @@ else
     # nothing at all -- on both nodes.
     W0="$(confirmed_in 0 "$WIN_TX")"; W1="$(confirmed_in 1 "$WIN_TX")"
     L0C="$(confirmed_in 0 "$LOSE_TX")"; L1C="$(confirmed_in 1 "$LOSE_TX")"
-    if [ "$W0" = "$CANON0" ] && [ "$W1" = "$CANON0" ]; then
+    if [ ${#W0} -eq 64 ] && [ "$W0" = "$CANON0" ] && [ "$W1" = "$CANON0" ]; then
         success "both nodes confirm the surviving spend ${WIN_TX:0:16} in the canonical sibling"
     else
         fail "the nodes disagree about the surviving spend (node0 '$W0', node1 '$W1', canonical $CANON0)"
