@@ -1015,13 +1015,14 @@ if [ "$S10_OK" = "1" ]; then
     unlock 0
     ZBAL0="$(jget "$(rpc 0 z_getshieldedinfo 2>/dev/null)" privacy_vnext_balance)"
     ZADDR0="$(jget "$(rpc 0 z_getnewiv5address 2>&1)" address)"
+    ZADDR0B="$(jget "$(rpc 0 z_getnewiv5address 2>&1)" address)"
 fi
 s10_premise "$(python3 -c "print(1 if float('${ZBAL0:-0}') >= $SPEND_AMOUNT + 1 else 0)" 2>/dev/null)" \
     "node0 holds $ZBAL0 INN of spendable shielded value" \
     "node0 has no shielded value to spend twice (balance '$ZBAL0')"
-s10_premise "$( [ ${#ZADDR0} -gt 20 ] && echo 1 || echo 0 )" \
-    "node0 allocated an IV5 destination for the spends" \
-    "could not allocate an IV5 destination address"
+s10_premise "$( [ ${#ZADDR0} -gt 20 ] && [ ${#ZADDR0B} -gt 20 ] && [ "$ZADDR0" != "$ZADDR0B" ] && echo 1 || echo 0 )" \
+    "node0 allocated two IV5 destinations, one per spend" \
+    "could not allocate two distinct IV5 destination addresses"
 
 # ---- premise: two distinct spends of one note, one per side ----
 
@@ -1040,26 +1041,48 @@ if [ "$S10_OK" = "1" ]; then
     partition_nodes || { fail "the nodes could not be partitioned for the double spend"; S10_OK=0; }
 fi
 
+# The second spend must come from a wallet that never saw the first, so node0 is
+# rolled back to a pre-build copy; a re-stamp would hit the output-owner index.
 if [ "$S10_OK" = "1" ]; then
     unlock 0
-    XFER="$(rpc 0 z_iv5transfer "$ZADDR0" "$SPEND_AMOUNT" 2>&1)"
-    DS_TXID_A="$(jget "$XFER" txid)"
-    DS_NOTES="$(jget "$XFER" notes)"
-    if [ ${#DS_TXID_A} -eq 64 ]; then
-        DS_RAW_A="$(rpc 0 getrawtransaction "$DS_TXID_A" 2>/dev/null | tr -d '"[:space:]')"
-        DS_RAW_B="$(restamp_raw "$DS_RAW_A")"
-        # node1 never saw the first spend, so its mempool and its spent-key index
-        # are both clean and it judges the twin entirely on its own merits.
+    DS_BACKUP="$TEST_DIR/node0_prespend_wallet.dat"
+    rpc 0 backupwallet "$DS_BACKUP" >/dev/null 2>&1
+
+    XFER_B="$(rpc 0 z_iv5transfer "$ZADDR0" "$SPEND_AMOUNT" 2>&1)"
+    DS_TXID_FIRST="$(jget "$XFER_B" txid)"
+    DS_NOTES="$(jget "$XFER_B" notes)"
+    if [ ${#DS_TXID_FIRST} -eq 64 ]; then
+        DS_RAW_B="$(rpc 0 getrawtransaction "$DS_TXID_FIRST" 2>/dev/null | tr -d '"[:space:]')"
+        # node1 never saw it, so its mempool and its spent-key index are both clean
+        # and it judges the spend entirely on its own merits.
         DS_TXID_B="$(rpc 1 sendrawtransaction "$DS_RAW_B" 2>&1 | tr -d '"[:space:]')"
+    fi
+
+    if [ -s "$DS_BACKUP" ] && [ ${#DS_TXID_B} -eq 64 ]; then
+        stop_node 0
+        cp "$DS_BACKUP" "$(node_dir 0)/regtest/wallet.dat"
+        rm -f "$(node_dir 0)/regtest/database/"*
+        if start_node 0; then
+            unlock 0
+            XFER_A="$(rpc 0 z_iv5transfer "$ZADDR0B" "$SPEND_AMOUNT" 2>&1)"
+            DS_TXID_A="$(jget "$XFER_A" txid)"
+            DS_RAW_A="$(rpc 0 getrawtransaction "$DS_TXID_A" 2>/dev/null | tr -d '"[:space:]')"
+        else
+            fail "node0 did not restart on its pre-spend wallet"
+            S10_OK=0
+        fi
     fi
 fi
 
-s10_premise "$( [ ${#DS_TXID_A} -eq 64 ] && echo 1 || echo 0 )" \
-    "node0 built a spend of $SPEND_AMOUNT INN over ${DS_NOTES:-?} note(s) (${DS_TXID_A:0:16})" \
-    "node0 could not build the first spend: $(echo "${XFER:-}" | head -2)"
 s10_premise "$( [ ${#DS_TXID_B} -eq 64 ] && echo 1 || echo 0 )" \
-    "node1 accepted a second spend of the same note (${DS_TXID_B:0:16})" \
-    "node1 did not accept a second spend of the note: ${DS_TXID_B:0:120}"
+    "node1 holds a spend of $SPEND_AMOUNT INN over ${DS_NOTES:-?} note(s) (${DS_TXID_B:0:16})" \
+    "node1 did not accept the first spend: ${DS_TXID_B:0:120}${XFER_B:+ / }$(echo "${XFER_B:-}" | head -2)"
+s10_premise "$( [ ${#DS_TXID_A} -eq 64 ] && echo 1 || echo 0 )" \
+    "node0 rebuilt a second, independent spend of the same note (${DS_TXID_A:0:16})" \
+    "node0 could not rebuild a second spend of the note: $(echo "${XFER_A:-}" | head -2)"
+s10_premise "$( [ ${#DS_RAW_A} -gt 32 ] && [ ${#DS_RAW_B} -gt 32 ] && [ "${DS_RAW_A:16}" != "${DS_RAW_B:16}" ] && echo 1 || echo 0 )" \
+    "the two spends carry independently built payloads, not one payload re-stamped" \
+    "the two spends carry the same payload bytes, so they are not independent builds"
 s10_premise "$( [ ${#DS_TXID_A} -eq 64 ] && [ ${#DS_TXID_B} -eq 64 ] && [ "$DS_TXID_A" != "$DS_TXID_B" ] && echo 1 || echo 0 )" \
     "the two spends are different transactions (${DS_TXID_A:0:16} / ${DS_TXID_B:0:16})" \
     "the two spends are not distinct transactions ($DS_TXID_A / $DS_TXID_B)"
@@ -1175,11 +1198,9 @@ else
         fail "no canonical block merged the losing sibling; the DAG never had to resolve the conflict"
     fi
 
-    # A distinct twin of the loser is the only respend attempt that reaches the
+    # A re-stamped twin of the loser is the only respend attempt that reaches the
     # key-image logic: the loser's own txid is refused by DAG-sibling dedup first.
-    # One re-stamp would land on the other sibling's exact bytes, which is refused
-    # by that same dedup, so the twin is stamped twice and matches neither.
-    LOSE_TWIN="$(restamp_raw "$(restamp_raw "$LOSE_RAW")")"
+    LOSE_TWIN="$(restamp_raw "$LOSE_RAW")"
     for n in 0 1; do
         LN="$(log_lines "$n")"
         RESP="$(rpc "$n" sendrawtransaction "$LOSE_TWIN" 2>&1 | tr -d '"[:space:]')"
