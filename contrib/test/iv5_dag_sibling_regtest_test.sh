@@ -308,6 +308,11 @@ wait_block_known() {
 
 unlock() { rpc "$1" walletpassphrase "$WALLETPASS" 36000 >/dev/null 2>&1; }
 
+# Where the chain connected a transaction, empty when it connected it nowhere.
+# A merge block never gets a txindex entry, so empty is also the answer for a
+# transaction that only ever rode one.
+confirmed_in_block() { jget "$(rpc "$1" getrawtransaction "$2" 1 2>/dev/null)" blockhash; }
+
 iv5_tree_size()  { jget "$(rpc "$1" z_getshieldedinfo 2>/dev/null)" privacy_vnext_tree_size; }
 iv5_store_size() { jget "$(rpc "$1" z_getshieldedinfo 2>/dev/null)" privacy_vnext_tree_store_size; }
 iv5_tree_root()  { jget "$(rpc "$1" z_getshieldedinfo 2>/dev/null)" privacy_vnext_tree_root; }
@@ -381,6 +386,35 @@ INFO0="$(rpc 0 z_getshieldedinfo 2>/dev/null)"
 if [ "$(jget "$INFO0" boundary_b_active)" = "true" ] && \
    [ "$(jget "$INFO0" privacy_vnext_transactions_accepted)" = "true" ]; then
     success "Boundary B active at $BOUNDARY_B and consensus accepts IV5 transactions"
+
+# getblock's verbosity parameter: check all four forms before the races use it.
+VERB_BLOCK="$(best_hash 0)"
+VERB_OK=1
+[ ${#VERB_BLOCK} -eq 64 ] || VERB_OK=0
+VERB_HEX0="$(rpc 0 getblock "$VERB_BLOCK" 0 2>/dev/null | tr -d '"[:space:]')"
+VERB_HEXF="$(rpc 0 getblock "$VERB_BLOCK" false 2>/dev/null | tr -d '"[:space:]')"
+VERB_J1="$(jget "$(rpc 0 getblock "$VERB_BLOCK" 1 2>/dev/null)" hash)"
+VERB_JT="$(jget "$(rpc 0 getblock "$VERB_BLOCK" true 2>/dev/null)" hash)"
+VERB_J2="$(rpc 0 getblock "$VERB_BLOCK" 2 2>/dev/null)"
+VERB_TXOBJ="$(python3 -c '
+import json, sys
+try:
+    tx = json.load(sys.stdin).get("tx", [])
+    print("yes" if tx and isinstance(tx[0], dict) else "no")
+except Exception:
+    print("no")
+' <<< "$VERB_J2" 2>/dev/null)"
+if [ "$VERB_OK" = "1" ] && [ ${#VERB_HEX0} -ge 100 ] && [ "$VERB_HEX0" = "$VERB_HEXF" ] && \
+   [ "$VERB_J1" = "$VERB_BLOCK" ] && [ "$VERB_JT" = "$VERB_BLOCK" ]; then
+    success "getblock accepts 0/false and 1/true and agrees between the two forms"
+else
+    fail "getblock does not accept its documented numeric verbosity (hex0 ${#VERB_HEX0}, hexfalse ${#VERB_HEXF}, j1 '$VERB_J1', jtrue '$VERB_JT')"
+fi
+if [ "$VERB_TXOBJ" = "yes" ]; then
+    success "getblock verbosity 2 expands the block's transactions"
+else
+    fail "getblock verbosity 2 did not expand transactions: $(echo "$VERB_J2" | head -2)"
+fi
 else
     fail "IV5 is not accepting on node0"
     exit 1
@@ -724,6 +758,18 @@ fi
 # The winning chain is longer and carries none of it.
 mine_to 0 $((REORG_SPLIT + 5)) || { fail "node0 could not build the winning chain"; exit 1; }
 
+# Anti-vacuity, asserted while the partition still holds: two nodes that never
+# diverged converge trivially, and every check below this point would then be
+# reporting a race that did not happen.
+RACE_TIP0="$(best_hash 0)"
+RACE_TIP1="$(best_hash 1)"
+if [ ${#RACE_TIP0} -eq 64 ] && [ ${#RACE_TIP1} -eq 64 ] && [ "$RACE_TIP0" != "$RACE_TIP1" ] && \
+   [ "$(block_hash 1 "$LOSER_HEIGHT")" = "$LOSER_BLOCK" ]; then
+    success "the two chains diverged: node0 on ${RACE_TIP0:0:16}, node1 on ${RACE_TIP1:0:16} over its own payload"
+else
+    fail "the nodes did not diverge (node0 $RACE_TIP0, node1 $RACE_TIP1); the reorg below has nothing to undo"
+fi
+
 connect_nodes
 wait_peers || { fail "the nodes did not re-peer after the chain race"; exit 1; }
 wait_same_tip || { fail "the nodes did not converge after the chain race"; exit 1; }
@@ -751,47 +797,138 @@ header "8. Blocks that arrive out of order rebuild the same tree"
 # the same tree -- the accumulator is order-sensitive by construction, so a leaf
 # placed while a parent was still missing would leave two nodes permanently
 # disagreeing about the root while agreeing about the chain.
+#
+# The earlier version of this section delivered four blocks in reverse and put its
+# only IV5 payload in the FIRST block of the run, which is the one block whose
+# parent was already connected -- so the case it names, a v2008 block arriving
+# before its parent, never occurred. This one mines a longer run, puts the payload
+# in the middle of it, and delivers the run in a scrambled order that hands every
+# block to node1 before its parent, the payload block included. The block that
+# closes the gap is delivered last, and node1 is asserted to be still at the split
+# height until it arrives: a node that had already advanced was connecting the run
+# in order and was never holding anything.
 
 OOO_SPLIT="$(height 0)"
 partition_nodes || { fail "the nodes could not be partitioned for the ordering test"; exit 1; }
 
+OOO_RUN=8
+OOO_PAYLOAD_OFFSET=3
+
+# Two plain blocks first, so the payload lands at OOO_SPLIT+3 and has a parent
+# inside the run that the delivery order can withhold from it.
+mine_to 0 $((OOO_SPLIT + OOO_PAYLOAD_OFFSET - 1)) || { fail "node0 could not mine ahead of the payload"; exit 1; }
+
 unlock 0
 SHIELD_O="$(rpc 0 z_shieldall 2>&1)"
 TXO="$(jget "$SHIELD_O" txid)"
+OOO_OK=1
 if [ ${#TXO} -eq 64 ]; then
-    success "node0 built an IV5 shield to carry in the run (${TXO:0:16})"
+    success "node0 built an IV5 shield to carry mid-run (${TXO:0:16})"
 else
-    warn "node0 z_shieldall produced no new shield: $(echo "$SHIELD_O" | head -2)"
+    fail "node0 z_shieldall produced no shield for the ordering test: $(echo "$SHIELD_O" | head -2)"
+    OOO_OK=0
 fi
 
-OOO_RUN=4
 mine_to 0 $((OOO_SPLIT + OOO_RUN)) || { fail "node0 could not mine the run"; exit 1; }
 OOO_TIP="$(best_hash 0)"
 
-# Capture the run as raw blocks, then hand them to node1 youngest first so every
-# block but the last arrives before its parent.
-OOO_OK=1
-for ((i=OOO_RUN; i>=1; i--)); do
-    h=$((OOO_SPLIT + i))
-    bh="$(block_hash 0 "$h")"
-    # Verbosity 0 is the documented numeric form for raw hex. Boolean false means
-    # the same thing and both are accepted; the numeric form is used here so the
-    # form the help documents is the one a harness exercises.
-    hex="$(rpc 0 getblock "$bh" 0 2>/dev/null | tr -d '"[:space:]')"
-    if [ ${#hex} -lt 100 ]; then
-        fail "could not read block $h as raw hex"
-        OOO_OK=0
+# Which block actually carries the payload. Asserted rather than assumed: a shield
+# that landed outside the run, or in the first block of it, gives the reorder
+# nothing to hold.
+OOO_PAYLOAD_HEIGHT=0
+for ((i=1; i<=OOO_RUN; i++)); do
+    if [ "$(block_contains_tx 0 "$(block_hash 0 $((OOO_SPLIT + i)))" "$TXO")" = "yes" ]; then
+        OOO_PAYLOAD_HEIGHT=$((OOO_SPLIT + i))
+        OOO_PAYLOAD_OFFSET=$i
         break
     fi
-    # An orphan is expected to be refused or parked; only the final parent has to
-    # be accepted, so the result of each individual call is not the assertion.
-    rpc 1 submitblock "$hex" >/dev/null 2>&1 || true
 done
+if [ "$OOO_PAYLOAD_HEIGHT" -gt 0 ] && [ "$OOO_PAYLOAD_OFFSET" -ge 2 ]; then
+    success "the v2008 payload sits at offset $OOO_PAYLOAD_OFFSET of the run, so its parent is inside it"
+else
+    fail "the v2008 payload is not inside the run past its first block (offset '$OOO_PAYLOAD_OFFSET')"
+    OOO_OK=0
+fi
+
+# A scrambled delivery order, not a reverse one. Every entry but the last names a
+# block whose parent has not been delivered yet; the last is the split's own child,
+# which is the only block that can close the gap.
+OOO_ORDER=(5 3 8 4 7 2 6 1)
+if [ "${#OOO_ORDER[@]}" -ne "$OOO_RUN" ]; then
+    fail "the delivery order does not cover the run (${#OOO_ORDER[@]} of $OOO_RUN)"
+    OOO_OK=0
+fi
+
+# The premise the section rests on, computed from the order rather than asserted
+# about it: at the moment each block is handed over, has its parent already been?
+OOO_EARLY=0
+OOO_PAYLOAD_EARLY=0
+OOO_DELIVERED=""
+for idx in "${OOO_ORDER[@]}"; do
+    if echo " $OOO_DELIVERED " | grep -q " $((idx - 1)) " || [ "$idx" -eq 1 ]; then
+        :
+    else
+        OOO_EARLY=$((OOO_EARLY + 1))
+        [ "$idx" -eq "$OOO_PAYLOAD_OFFSET" ] && OOO_PAYLOAD_EARLY=1
+    fi
+    OOO_DELIVERED="$OOO_DELIVERED $idx"
+done
+if [ "$OOO_EARLY" -eq $((OOO_RUN - 1)) ] && [ "$OOO_PAYLOAD_EARLY" = "1" ]; then
+    success "the delivery order hands $OOO_EARLY of $OOO_RUN blocks over before their parents, the v2008 block among them"
+else
+    fail "the delivery order is not out of order ($OOO_EARLY early, payload early=$OOO_PAYLOAD_EARLY)"
+    OOO_OK=0
+fi
+
+# Deliver everything except the gap-closing block.
+if [ "$OOO_OK" = "1" ]; then
+    for idx in "${OOO_ORDER[@]}"; do
+        [ "$idx" -eq 1 ] && continue
+        h=$((OOO_SPLIT + idx))
+        bh="$(block_hash 0 "$h")"
+        # Verbosity 0 is the documented numeric form for raw hex; section 1 checks
+        # that the boolean form still means the same thing.
+        hex="$(rpc 0 getblock "$bh" 0 2>/dev/null | tr -d '"[:space:]')"
+        if [ ${#hex} -lt 100 ]; then
+            fail "could not read block $h as raw hex"
+            OOO_OK=0
+            break
+        fi
+        # An orphan is expected to be refused or parked; only the final parent has
+        # to be accepted, so the result of each individual call is not the assertion.
+        rpc 1 submitblock "$hex" >/dev/null 2>&1 || true
+    done
+fi
+
+# Nothing may have connected yet: every block delivered so far is missing an
+# ancestor. A node that advanced was not holding them, and the run below would then
+# be an ordinary in-order sync.
+if [ "$OOO_OK" = "1" ]; then
+    sleep 5
+    OOO_HELD="$(height 1)"
+    if is_int "$OOO_HELD" && [ "$OOO_HELD" -eq "$OOO_SPLIT" ]; then
+        success "node1 held $((OOO_RUN - 1)) parentless blocks without connecting any of them"
+    else
+        fail "node1 advanced to $OOO_HELD before the gap was closed, so nothing was held out of order"
+        OOO_OK=0
+    fi
+fi
+
+# Now the block that closes the gap.
+if [ "$OOO_OK" = "1" ]; then
+    bh="$(block_hash 0 $((OOO_SPLIT + 1)))"
+    hex="$(rpc 0 getblock "$bh" 0 2>/dev/null | tr -d '"[:space:]')"
+    if [ ${#hex} -ge 100 ]; then
+        rpc 1 submitblock "$hex" >/dev/null 2>&1 || true
+        success "delivered the gap-closing block last"
+    else
+        fail "could not read the gap-closing block as raw hex"
+        OOO_OK=0
+    fi
+fi
 
 if [ "$OOO_OK" = "1" ]; then
-    success "delivered $OOO_RUN blocks to node1 in reverse height order"
-    # Give node1 the chance to connect the run once the parent closed the gap.
-    for _ in $(seq 1 90); do
+    for _ in $(seq 1 120); do
         [ "$(best_hash 1)" = "$OOO_TIP" ] && break
         sleep 1
     done
@@ -800,6 +937,13 @@ if [ "$OOO_OK" = "1" ]; then
     else
         fail "node1 did not reach the tip after out-of-order delivery (at $(height 1), tip $(best_hash 1 | cut -c1-16) vs ${OOO_TIP:0:16})"
     fi
+    # The payload block specifically has to be the one the chain connected, not a
+    # block node1 kept as an orphan while agreeing on a shorter tip.
+    if [ "$(confirmed_in_block 1 "$TXO")" = "$(block_hash 0 "$OOO_PAYLOAD_HEIGHT")" ]; then
+        success "node1 connected the v2008 payload in the block it arrived parentless in"
+    else
+        fail "node1 did not connect the v2008 payload where the winner did (got '$(confirmed_in_block 1 "$TXO")')"
+    fi
     assert_iv5_agrees "after out-of-order delivery"
 fi
 
@@ -807,7 +951,6 @@ fi
 connect_nodes
 wait_peers >/dev/null 2>&1 || true
 
-# ============================================================
 header "9. A reorg that undoes a CLOSED epoch takes its leaves back"
 # ============================================================
 
@@ -860,6 +1003,20 @@ fi
 mine_to 0 $((EPOCH3_END + 8)) || { fail "node0 could not close epoch 3 on the winning chain"; exit 1; }
 TREE_WINNER="$(iv5_tree_size 0)"
 ROOT_WINNER="$(iv5_tree_root 0)"
+
+# Anti-vacuity, asserted while the partition still holds: the two nodes are on
+# different chains AND on different epoch-3 boundaries. Convergence between two
+# nodes that never parted is not a reorg across a v2008 block.
+B_TIP0="$(best_hash 0)"
+B_TIP1="$(best_hash 1)"
+B_BOUND0="$(block_hash 0 "$EPOCH3_END")"
+B_BOUND1="$(block_hash 1 "$EPOCH3_END")"
+if [ ${#B_TIP0} -eq 64 ] && [ ${#B_TIP1} -eq 64 ] && [ "$B_TIP0" != "$B_TIP1" ] && \
+   [ ${#B_BOUND0} -eq 64 ] && [ ${#B_BOUND1} -eq 64 ] && [ "$B_BOUND0" != "$B_BOUND1" ]; then
+    success "the chains diverged across the boundary: epoch-3 ends at ${B_BOUND0:0:12} on node0 and ${B_BOUND1:0:12} on node1"
+else
+    fail "the two chains did not diverge across the boundary (tips $B_TIP0 / $B_TIP1, boundaries $B_BOUND0 / $B_BOUND1)"
+fi
 
 connect_nodes
 wait_peers || { fail "the nodes did not re-peer at the boundary"; exit 1; }
@@ -950,10 +1107,6 @@ enable_finality_voting() {
 
 epoch_for_height() { python3 -c "h=$1; print(1 + (h - 11) // 300 if h >= 11 else 0)" 2>/dev/null; }
 epoch_end_height() { python3 -c "e=$1; print(310 + 300 * (e - 1))" 2>/dev/null; }
-
-# Present only once ConnectBlock wrote a txindex entry, which a merge block never
-# gets. Empty is the answer for a transaction the chain did not connect.
-confirmed_in() { jget "$(rpc "$1" getrawtransaction "$2" 1 2>/dev/null)" blockhash; }
 
 epoch_field() { jget "$(rpc "$1" getepochinfo "$2" 2>/dev/null)" "$3"; }
 
@@ -1185,8 +1338,8 @@ else
     # The chain writes a txindex entry only for what ConnectBlock connected, so
     # the winner resolves to the canonical sibling and the loser resolves to
     # nothing at all -- on both nodes.
-    W0="$(confirmed_in 0 "$WIN_TX")"; W1="$(confirmed_in 1 "$WIN_TX")"
-    L0C="$(confirmed_in 0 "$LOSE_TX")"; L1C="$(confirmed_in 1 "$LOSE_TX")"
+    W0="$(confirmed_in_block 0 "$WIN_TX")"; W1="$(confirmed_in_block 1 "$WIN_TX")"
+    L0C="$(confirmed_in_block 0 "$LOSE_TX")"; L1C="$(confirmed_in_block 1 "$LOSE_TX")"
     if [ ${#W0} -eq 64 ] && [ "$W0" = "$CANON0" ] && [ "$W1" = "$CANON0" ]; then
         success "both nodes confirm the surviving spend ${WIN_TX:0:16} in the canonical sibling"
     else

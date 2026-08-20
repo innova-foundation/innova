@@ -261,6 +261,7 @@ TEST_OBJS= \
     obj/test/halfagg_stake_tests.o \
     obj/test/epoch_state_determinism_tests.o \
     obj/test/dagknight_anchor_cache_tests.o \
+    obj/test/dag_privacy_interaction_tests.o \
     obj/test/finality_committee_draw_tests.o \
     obj/test/finality_settlement_tests.o \
     obj/test/finality_vote_schedule_tests.o \
@@ -299,7 +300,7 @@ FUZZ_LINK_FLAGS ?= -O1 -g -fsanitize=fuzzer,address,undefined -fno-omit-frame-po
 FUZZ_DESERIALIZE_BIN ?= fuzz_deserialize
 FUZZ_DESERIALIZE_OBJ ?= obj/fuzz/fuzz_deserialize.o
 
-.PHONY: all innova-build audit-test-dependencies fuzz-deserialize fuzz-deserialize-libfuzzer check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-emission-curve check-emission-schedule-walk check-finality-coldstart check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-finality-settlement check-finality-vote-schedule check-finality-note check-privacy-vnext check-name-index-recovery check-name-rental check-fuzz-deserialize-limits check-smessage-hmac check-all release-check check-privacy-vnext-provenance check-privacy-vnext-freshness
+.PHONY: all innova-build audit-test-dependencies fuzz-deserialize fuzz-deserialize-libfuzzer check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-emission-curve check-emission-schedule-walk check-finality-coldstart check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-dag-privacy-interaction check-finality-settlement check-finality-vote-schedule check-finality-note check-privacy-vnext check-name-index-recovery check-name-rental check-fuzz-deserialize-limits check-smessage-hmac check-all release-check check-privacy-vnext-provenance check-privacy-vnext-freshness
 
 INNOVA_SPINNER ?= 1
 INNOVA_SPINNER_SCRIPT ?= ../contrib/innova_build_spinner.sh
@@ -381,6 +382,9 @@ check-halfagg-stake: test_innova
 check-epoch-state-determinism: test_innova
 	./test_innova --run_test=epoch_state_determinism_tests
 
+check-dag-privacy-interaction: test_innova
+	./test_innova --run_test=dag_privacy_interaction_tests
+
 check-finality-settlement: test_innova
 	./test_innova --run_test=finality_settlement_tests
 
@@ -413,7 +417,7 @@ check-smessage-hmac: test_innova
 check-all: test_innova
 	./test_innova
 
-release-check: audit-test-dependencies innova-build check-all check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-emission-curve check-emission-schedule-walk check-finality-coldstart check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-finality-settlement check-finality-vote-schedule check-finality-note check-privacy-vnext check-name-index-recovery check-name-rental check-fuzz-deserialize-limits check-smessage-hmac check-privacy-vnext-provenance check-privacy-vnext-freshness
+release-check: audit-test-dependencies innova-build check-all check-legacy-aggregate check-bpac check-finality-tally check-fcmp check-idag-validation check-shielded-nullifier-binding check-finality-vote-binding check-nullsend-binding check-coinstake-guard check-emission-curve check-emission-schedule-walk check-finality-coldstart check-finality-committee-sig check-halfagg-stake check-epoch-state-determinism check-dag-privacy-interaction check-finality-settlement check-finality-vote-schedule check-finality-note check-privacy-vnext check-name-index-recovery check-name-rental check-fuzz-deserialize-limits check-smessage-hmac check-privacy-vnext-provenance check-privacy-vnext-freshness
 
 #
 # LevelDB support
