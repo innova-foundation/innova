@@ -135,6 +135,7 @@ run_evidence() {
     local orphaned
     orphaned="$(python3 - "$ROOT" "$RELEASE_POLICY" <<'PY'
 import ast
+import os
 import pathlib
 import subprocess
 import sys
@@ -160,11 +161,14 @@ SKIP = {".git", "vendor", "target", "node_modules"}
 
 
 def walk_sources():
-    for path in root.rglob("*"):
-        if any(part in SKIP for part in path.relative_to(root).parts):
-            continue
-        if path.is_file():
-            yield path
+    # Prune build trees, and any nested checkout: a worktree under this root is a
+    # second copy of the same sources and would be counted as its own producer.
+    for base, directories, files in os.walk(root):
+        directories[:] = [d for d in directories
+                          if d not in SKIP
+                          and not (pathlib.Path(base) / d / ".git").exists()]
+        for name in files:
+            yield pathlib.Path(base) / name
 
 
 RUNNABLE = (".sh", ".py", ".yml", ".yaml")
