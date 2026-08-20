@@ -354,7 +354,9 @@ CBlock* CreateNewBlock(CWallet* pwallet, bool fProofOfStake, int64_t* pFees)
 
             for (const auto& pair : vTipScores)
             {
-                if (vDAGParentsForBlock.size() >= (unsigned int)MAX_DAG_PARENTS)
+                // Cap on the height's own decoder: below Boundary A the commitment is read
+                // through CScript::GetOp and a wider one does not decode.
+                if (vDAGParentsForBlock.size() >= MaxDAGParentsAtHeight(nHeight))
                     break;
 
                 const uint256& hashTip = pair.second;
