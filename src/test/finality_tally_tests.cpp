@@ -601,6 +601,40 @@ BOOST_AUTO_TEST_CASE(canonical_certificate_validation_requires_exact_rebuild)
     rejected(permuted);
 }
 
+// SOFT names one block, so it needs a strict majority: an exactly even split names none,
+// since `2W >= A` at W == A/2 would give two siblings a SOFT certificate for one epoch.
+BOOST_AUTO_TEST_CASE(an_exactly_even_split_earns_no_soft_tier)
+{
+    ScopedFinalityRegtest network;
+    const int nTargetHeight = FORK_HEIGHT_BOUNDARY_A;
+    const int nEpoch = GetEpochForHeight(nTargetHeight);
+    const uint256 hashLeft(0xE201);
+    const uint256 hashRight(0xE202);
+
+    std::vector<CFinalityVote> votes;
+    for (int i = 0; i < FINALITY_MIN_VOTERS * 2; ++i)
+    {
+        CKey key;
+        key.MakeNewKey(true);
+        CFinalityVote vote = BuildTransparentVoteForCertificateCarrierTest(
+            key, nEpoch, nTargetHeight, (i % 2) ? hashRight : hashLeft);
+        vote.MarkCanonicalEnvelope();
+        votes.push_back(vote);
+    }
+
+    CFinalityTallyCertificate cert;
+    std::string error;
+    BOOST_REQUIRE_MESSAGE(
+        BuildCanonicalTransparentFinalityCertificate(votes, cert, &error), error);
+
+    // The premise: neither block holds more than half the active weight.
+    BOOST_REQUIRE_EQUAL(cert.nTransparentWinningWeight * 2,
+                        cert.nTransparentActiveWeight);
+    BOOST_CHECK_EQUAL(cert.nTier, (int)FINALITY_TENTATIVE);
+    BOOST_CHECK(cert.nTier != (int)FINALITY_SOFT);
+    BOOST_CHECK(cert.nTier != (int)FINALITY_HARD);
+}
+
 BOOST_AUTO_TEST_CASE(connected_tally_certificate_context_duplicate_is_not_reindexed)
 {
     CFinalityTallyCertificate cert;

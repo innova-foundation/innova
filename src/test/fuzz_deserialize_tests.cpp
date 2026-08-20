@@ -2133,6 +2133,25 @@ BOOST_AUTO_TEST_CASE(public_networks_consensus_reject_all_legacy_shielded_versio
     }
 }
 
+// The seal has to be what rejects the transaction, so the shape must be one
+// CheckTransaction otherwise accepts; a bare version number is refused by other rules too.
+BOOST_AUTO_TEST_CASE(the_public_network_seal_is_what_rejects_a_valid_legacy_shielded_shape)
+{
+    CTransaction linkShape;
+    linkShape.nVersion = SHIELDED_TX_VERSION;
+    CShieldedOutputDescription linkOutput;
+    linkOutput.vchMofNLink.assign(NULLSTAKE_MOFN_MINTLINK_SIZE, 0xa8);
+    linkShape.vShieldedOutput.push_back(linkOutput);
+
+    BOOST_REQUIRE(!IsLegacyPrivacyPolicyDisabled());
+    BOOST_REQUIRE(linkShape.CheckTransaction());
+
+    AnonMainnetModeGuard publicNetwork;
+    BOOST_REQUIRE(IsLegacyPrivacyPolicyDisabled());
+    BOOST_CHECK(!linkShape.CheckTransaction());
+    BOOST_CHECK_EQUAL(linkShape.nDoS, 100);
+}
+
 // Versions 2000-2002 envelopes are refused by block assembly, so consensus refuses them
 // outright rather than let them relay and pin the mempool.
 BOOST_AUTO_TEST_CASE(a_payload_may_not_ride_a_legacy_pool_version)

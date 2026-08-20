@@ -191,6 +191,81 @@ BOOST_AUTO_TEST_CASE(select_best_dag_tip_allows_non_best_chain_tip)
     pindexBest = oldBest;
 }
 
+// Equal DAG scores at or above V3 break by height, then hash; otherwise tips of equal
+// score at different heights order differently across nodes. Ties are built from
+// GetBlockEntropy: complements 1, 2, 4 weigh 1, 2, 3 units, so 1 + 2 ties 3.
+BOOST_AUTO_TEST_CASE(equal_dag_score_above_v3_breaks_by_height_before_hash)
+{
+    CBlockIndex* oldBest = pindexBest;
+
+    const uint256 hParent(4243000);
+    const uint256 hFirst = ~uint256(1);
+    const uint256 hSecond = ~uint256(2);
+    const uint256 hShort = ~uint256(4);
+
+    // The taller tip has to be the one a hash comparison would reject, or the rule
+    // and its negation would agree here and the case would prove nothing.
+    BOOST_REQUIRE(hShort < hSecond);
+
+    CBlockIndex parent, first, second, shortTip;
+    CBlockIndex* vBlocks[] = { &parent, &first, &second, &shortTip };
+    for (CBlockIndex* p : vBlocks)
+        p->nBits = 0x1d00ffff;      // a zero target would make every trust zero
+
+    parent.nHeight = FORK_HEIGHT_EPOCH_STATE_V3 + 1;
+    first.nHeight = parent.nHeight + 1;
+    second.nHeight = parent.nHeight + 2;    // the taller tip
+    shortTip.nHeight = parent.nHeight + 1;
+
+    first.pprev = &parent;
+    second.pprev = &first;
+    shortTip.pprev = &parent;
+
+    mapBlockIndex[hParent] = &parent;
+    mapBlockIndex[hFirst] = &first;
+    mapBlockIndex[hSecond] = &second;
+    mapBlockIndex[hShort] = &shortTip;
+    parent.phashBlock = &mapBlockIndex.find(hParent)->first;
+    first.phashBlock = &mapBlockIndex.find(hFirst)->first;
+    second.phashBlock = &mapBlockIndex.find(hSecond)->first;
+    shortTip.phashBlock = &mapBlockIndex.find(hShort)->first;
+
+    std::vector<uint256> noParents;
+    std::vector<uint256> onParent;
+    onParent.push_back(hParent);
+    std::vector<uint256> onFirst;
+    onFirst.push_back(hFirst);
+
+    g_dagManager.InitBlockDAGData(&parent, noParents);
+    g_dagManager.ColorBlock(&parent);
+    g_dagManager.InitBlockDAGData(&first, onParent);
+    g_dagManager.ColorBlock(&first);
+    g_dagManager.InitBlockDAGData(&second, onFirst);
+    g_dagManager.ColorBlock(&second);
+    g_dagManager.InitBlockDAGData(&shortTip, onParent);
+    g_dagManager.ColorBlock(&shortTip);
+
+    // The premise: the tips really are tied, so nothing but the tie-break decides.
+    const uint256 nTallScore = g_dagManager.ComputeDAGScore(&second);
+    const uint256 nShortScore = g_dagManager.ComputeDAGScore(&shortTip);
+    BOOST_REQUIRE_MESSAGE(nTallScore == nShortScore,
+                          "the tips are not tied: " + nTallScore.ToString() +
+                              " against " + nShortScore.ToString());
+
+    CBlockIndex* selected = g_dagManager.SelectBestDAGTip();
+    BOOST_CHECK(selected == &second);
+
+    g_dagManager.RemoveBlockDAGData(hShort);
+    g_dagManager.RemoveBlockDAGData(hSecond);
+    g_dagManager.RemoveBlockDAGData(hFirst);
+    g_dagManager.RemoveBlockDAGData(hParent);
+    mapBlockIndex.erase(hShort);
+    mapBlockIndex.erase(hSecond);
+    mapBlockIndex.erase(hFirst);
+    mapBlockIndex.erase(hParent);
+    pindexBest = oldBest;
+}
+
 BOOST_AUTO_TEST_CASE(dag_sibling_conflict_detection_covers_nullifiers_and_prevouts)
 {
     std::set<COutPoint> spentOutputs;

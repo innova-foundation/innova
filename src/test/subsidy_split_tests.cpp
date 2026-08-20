@@ -201,6 +201,28 @@ BOOST_AUTO_TEST_CASE(reserve_depends_on_height_alone)
     BOOST_CHECK_EQUAL(starved.PaidToBlock(), 0);
 }
 
+// Pins the rate against the schedule; the case above holds for any rate. Basis-point
+// rounding is under one satoshi, far below the smallest rate error.
+BOOST_AUTO_TEST_CASE(reserve_is_the_declared_basis_point_share_of_issuance)
+{
+    MainnetGuard guard;
+
+    const int vOffsets[] = { 1, 500, 12345, 250000 };
+    for (int nOffset : vOffsets)
+    {
+        const int nHeight = GetForkHeightDAG() + nOffset;
+        const int64_t nSchedule = GetBlockSubsidySchedule(nHeight);
+        BOOST_REQUIRE(nSchedule > 0);
+        BOOST_REQUIRE(nSchedule < MAX_MONEY / FINALITY_RESERVE_BPS);
+
+        const int64_t nReserve = GetFinalityReservePerBlock(nHeight);
+        const int64_t nExact = nSchedule * FINALITY_RESERVE_BPS;
+
+        BOOST_CHECK(nReserve * SUBSIDY_BPS_DEN <= nExact);
+        BOOST_CHECK(nReserve * SUBSIDY_BPS_DEN > nExact - SUBSIDY_BPS_DEN);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 2. THE EPOCH RESERVE.
 // ---------------------------------------------------------------------------
