@@ -594,6 +594,8 @@ BOOST_AUTO_TEST_CASE(the_epoch_digest_over_privacy_payloads_is_a_function_of_its
                                                        &prev, &prevTree), strError);
 
     BOOST_CHECK_EQUAL(first.GetDigest().GetHex(), second.GetDigest().GetHex());
+    BOOST_CHECK(!Contains(second.vBlockHashes, pFork->GetBlockHash()));
+    BOOST_CHECK(!Contains(second.vBlockHashes, pAfter->GetBlockHash()));
     BOOST_CHECK(first.vVNextActiveTxIds == second.vVNextActiveTxIds);
     BOOST_CHECK(first.vVNextActiveBlockTxCounts == second.vVNextActiveBlockTxCounts);
     BOOST_CHECK(first.hashVNextActiveTxSet == second.hashVNextActiveTxSet);
@@ -609,7 +611,6 @@ BOOST_AUTO_TEST_CASE(the_epoch_digest_over_privacy_payloads_is_a_function_of_its
     ss >> restarted;
     BOOST_CHECK_EQUAL(first.GetDigest().GetHex(), restarted.GetDigest().GetHex());
     BOOST_CHECK(restarted.vVNextActiveTxIds == first.vVNextActiveTxIds);
-    (void)pAfter;
 }
 
 // 3. Reorg across a v2008 block: the winning epoch holds nothing of the loser and is
@@ -727,7 +728,8 @@ BOOST_AUTO_TEST_CASE(late_arriving_blocks_cannot_move_the_epoch_the_boundary_nam
     BOOST_CHECK_MESSAGE(!Contains(afterArrivals.vVNextActiveTxIds, vLate[0].GetHash()),
                         "a block that arrived after the boundary reached the epoch's tree");
     BOOST_CHECK(!Contains(afterArrivals.vBlockHashes, pLateSibling->GetBlockHash()));
-    (void)pFork;
+    BOOST_CHECK(!Contains(afterArrivals.vBlockHashes, pFork->GetBlockHash()));
+    BOOST_CHECK(!Contains(afterArrivals.vBlockHashes, pAbove->GetBlockHash()));
 }
 
 BOOST_AUTO_TEST_SUITE_END()

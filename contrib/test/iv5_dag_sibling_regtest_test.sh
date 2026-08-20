@@ -850,33 +850,27 @@ else
     OOO_OK=0
 fi
 
-# A scrambled delivery order, not a reverse one. Every entry but the last names a
-# block whose parent has not been delivered yet; the last is the split's own child,
-# which is the only block that can close the gap.
+# A scrambled delivery order, not a reverse one. The split's own child is held to
+# the end, so nothing node1 receives before it has a CONNECTED parent -- delivering
+# a block whose parent is itself still an orphan is the same case.
 OOO_ORDER=(5 3 8 4 7 2 6 1)
-if [ "${#OOO_ORDER[@]}" -ne "$OOO_RUN" ]; then
-    fail "the delivery order does not cover the run (${#OOO_ORDER[@]} of $OOO_RUN)"
+OOO_LAST="${OOO_ORDER[$((${#OOO_ORDER[@]} - 1))]}"
+OOO_COVER="$(printf '%s\n' "${OOO_ORDER[@]}" | sort -n | tr '\n' ' ')"
+OOO_EXPECT="$(seq 1 "$OOO_RUN" | tr '\n' ' ')"
+if [ "$OOO_COVER" = "$OOO_EXPECT" ]; then
+    success "the delivery order is a permutation of the $OOO_RUN-block run"
+else
+    fail "the delivery order does not cover the run once each ($OOO_COVER vs $OOO_EXPECT)"
     OOO_OK=0
 fi
 
-# The premise the section rests on, computed from the order rather than asserted
-# about it: at the moment each block is handed over, has its parent already been?
-OOO_EARLY=0
-OOO_PAYLOAD_EARLY=0
-OOO_DELIVERED=""
-for idx in "${OOO_ORDER[@]}"; do
-    if echo " $OOO_DELIVERED " | grep -q " $((idx - 1)) " || [ "$idx" -eq 1 ]; then
-        :
-    else
-        OOO_EARLY=$((OOO_EARLY + 1))
-        [ "$idx" -eq "$OOO_PAYLOAD_OFFSET" ] && OOO_PAYLOAD_EARLY=1
-    fi
-    OOO_DELIVERED="$OOO_DELIVERED $idx"
-done
-if [ "$OOO_EARLY" -eq $((OOO_RUN - 1)) ] && [ "$OOO_PAYLOAD_EARLY" = "1" ]; then
-    success "the delivery order hands $OOO_EARLY of $OOO_RUN blocks over before their parents, the v2008 block among them"
+# The premise the section rests on, read off the order rather than asserted about
+# it: the gap-closing block is last, so the other seven arrive with no connected
+# parent, and the payload block is not the gap-closer.
+if [ "$OOO_LAST" -eq 1 ] && [ "$OOO_PAYLOAD_OFFSET" -ne 1 ]; then
+    success "the order withholds the gap-closing block, so $((OOO_RUN - 1)) blocks arrive with no connected parent, the v2008 block among them"
 else
-    fail "the delivery order is not out of order ($OOO_EARLY early, payload early=$OOO_PAYLOAD_EARLY)"
+    fail "the order does not withhold the gap-closing block (last=$OOO_LAST, payload offset=$OOO_PAYLOAD_OFFSET)"
     OOO_OK=0
 fi
 
@@ -937,12 +931,15 @@ if [ "$OOO_OK" = "1" ]; then
     else
         fail "node1 did not reach the tip after out-of-order delivery (at $(height 1), tip $(best_hash 1 | cut -c1-16) vs ${OOO_TIP:0:16})"
     fi
-    # The payload block specifically has to be the one the chain connected, not a
-    # block node1 kept as an orphan while agreeing on a shorter tip.
-    if [ "$(confirmed_in_block 1 "$TXO")" = "$(block_hash 0 "$OOO_PAYLOAD_HEIGHT")" ]; then
+    # The payload block specifically has to be the one node1's chain connected, not
+    # a block it kept as an orphan while agreeing on a shorter tip.
+    OOO_PAYLOAD_BLOCK="$(block_hash 1 "$OOO_PAYLOAD_HEIGHT")"
+    if [ ${#OOO_PAYLOAD_BLOCK} -eq 64 ] && \
+       [ "$OOO_PAYLOAD_BLOCK" = "$(block_hash 0 "$OOO_PAYLOAD_HEIGHT")" ] && \
+       [ "$(block_contains_tx 1 "$OOO_PAYLOAD_BLOCK" "$TXO")" = "yes" ]; then
         success "node1 connected the v2008 payload in the block it arrived parentless in"
     else
-        fail "node1 did not connect the v2008 payload where the winner did (got '$(confirmed_in_block 1 "$TXO")')"
+        fail "node1 did not connect the v2008 payload where the winner did (node1 has '$OOO_PAYLOAD_BLOCK' at $OOO_PAYLOAD_HEIGHT)"
     fi
     assert_iv5_agrees "after out-of-order delivery"
 fi
