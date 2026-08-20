@@ -386,6 +386,10 @@ INFO0="$(rpc 0 z_getshieldedinfo 2>/dev/null)"
 if [ "$(jget "$INFO0" boundary_b_active)" = "true" ] && \
    [ "$(jget "$INFO0" privacy_vnext_transactions_accepted)" = "true" ]; then
     success "Boundary B active at $BOUNDARY_B and consensus accepts IV5 transactions"
+else
+    fail "IV5 is not accepting on node0"
+    exit 1
+fi
 
 # getblock's verbosity parameter: check all four forms before the races use it.
 VERB_BLOCK="$(best_hash 0)"
@@ -414,10 +418,6 @@ if [ "$VERB_TXOBJ" = "yes" ]; then
     success "getblock verbosity 2 expands the block's transactions"
 else
     fail "getblock verbosity 2 did not expand transactions: $(echo "$VERB_J2" | head -2)"
-fi
-else
-    fail "IV5 is not accepting on node0"
-    exit 1
 fi
 
 # node1 needs transparent funds of its own so it can build an IV5 transaction
