@@ -790,23 +790,8 @@ assert_iv5_agrees "after the chain reorg"
 header "8. Blocks that arrive out of order rebuild the same tree"
 # ============================================================
 
-# Every harness so far has delivered blocks in height order, because that is what
-# the relay does when nothing is behind. A node catching up, or one whose peer
-# serves an inv out of order, connects children before parents and has to hold
-# them until the gap closes. The question is whether the IV5 tree that results is
-# the same tree -- the accumulator is order-sensitive by construction, so a leaf
-# placed while a parent was still missing would leave two nodes permanently
-# disagreeing about the root while agreeing about the chain.
-#
-# The earlier version of this section delivered four blocks in reverse and put its
-# only IV5 payload in the FIRST block of the run, which is the one block whose
-# parent was already connected -- so the case it names, a v2008 block arriving
-# before its parent, never occurred. This one mines a longer run, puts the payload
-# in the middle of it, and delivers the run in a scrambled order that hands every
-# block to node1 before its parent, the payload block included. The block that
-# closes the gap is delivered last, and node1 is asserted to be still at the split
-# height until it arrives: a node that had already advanced was connecting the run
-# in order and was never holding anything.
+# Out-of-order delivery: a run with the payload in the middle is delivered scrambled,
+# gap-closing block last. node1 must stay at the split height until the gap closes.
 
 OOO_SPLIT="$(height 0)"
 partition_nodes || { fail "the nodes could not be partitioned for the ordering test"; exit 1; }
@@ -948,6 +933,7 @@ fi
 connect_nodes
 wait_peers >/dev/null 2>&1 || true
 
+# ============================================================
 header "9. A reorg that undoes a CLOSED epoch takes its leaves back"
 # ============================================================
 
