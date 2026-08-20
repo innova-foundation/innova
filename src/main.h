@@ -450,11 +450,18 @@ inline int GetForkHeightBoundaryA()
 // network, including regtest, until that implementation is intentionally
 // introduced with its own tests.
 //
-// Tag-time gates, all three required before a height replaces the sentinel:
+// Tag-time gates before a height replaces the sentinel:
 //   1. FCMP++ candidate has passed independent review.
-//   2. Real post-DAG block rate confirmed on the live network.
-//   3. B set strictly after Boundary A (DAG + 300 = 8,130,300 on mainnet) with
-//      room before the post-Boundary-B staking slots.
+//   2. IsShieldedVNextConsensusReady() and the Rust CONSENSUS_CAPABILITIES word
+//      both carry the verifier, which a height alone does not do.
+//   3. B at or after Boundary A. v5 ships as one release, so the intended value
+//      is equality: B == A == DAG + 300. BoundaryOrderingHolds() permits it and
+//      no unquarantined window exists at equality, because the two flag days are
+//      the same block.
+//
+// An earlier revision required B strictly after A and a post-DAG block rate
+// measured on a live network first. Both assumed two releases with the DAG fork
+// running in between, and neither is reachable when one release carries both.
 static const int PRIVACY_VNEXT_HEIGHT_UNSET = 0x7fffffff;
 // Regtest-only rehearsal height for Boundary B (-regtestboundaryb). Stays unset
 // on mainnet and testnet. A height alone never activates Boundary B; readiness is
@@ -488,30 +495,29 @@ inline bool IsBoundaryBActiveAtHeight(int nHeight)
     return IsBoundaryBConfigured() && nHeight >= FORK_HEIGHT_BOUNDARY_B;
 }
 
-// Boundary B restores the privacy modes Boundary A quarantines, so no height may
-// exist where B is live and A is not. Unset boundaries sit at INT_MAX sentinels,
-// so an unscheduled pair satisfies this. Equality is the regtest rehearsal case:
-// one flag day carrying both, which still has no unquarantined window.
+// No height may have B live and A not. Unset boundaries are INT_MAX sentinels;
+// equality is the shipping case.
 inline bool BoundaryOrderingHolds()
 {
     return FORK_HEIGHT_BOUNDARY_B >= FORK_HEIGHT_BOUNDARY_A;
 }
 
-// One flag day for the IV5 pool boundary: unshield is retired (no payload may
-// declare a negative transparent value balance) and the pool's fees stop crossing
-// to transparent coinbase value, settling instead as a coinbase note. The two
-// belong together -- retiring unshield while the fee channel still pays out
-// transparently leaves a full-value exit for anyone who mines their own block.
-//
-// Scheduled with Boundary B, which is itself unset on public networks until the
-// FCMP++ candidate is reviewed, so this fails closed there too. Regtest sets it
-// explicitly with -regtestiv5feenote so both sides of the boundary are reachable.
+// IV5 pool boundary: unshield retired and pool fees settle as a coinbase note. Both
+// activate together, so this derives from Boundary B off regtest.
 extern int nRegtestIV5FeeNoteHeight;
+
+// Takes the Boundary-B height as an argument so the derivation is testable at
+// heights the public networks do not carry.
+inline int DeriveIV5FeeNoteHeight(int nBoundaryBHeight)
+{
+    return nBoundaryBHeight;
+}
 
 inline int GetForkHeightIV5FeeNote()
 {
     extern bool fRegTest;
-    return fRegTest ? nRegtestIV5FeeNoteHeight : PRIVACY_VNEXT_HEIGHT_UNSET;
+    return fRegTest ? nRegtestIV5FeeNoteHeight
+                    : DeriveIV5FeeNoteHeight(GetForkHeightBoundaryB());
 }
 #define FORK_HEIGHT_IV5_FEE_NOTE (GetForkHeightIV5FeeNote())
 

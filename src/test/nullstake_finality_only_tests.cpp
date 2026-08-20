@@ -258,4 +258,68 @@ BOOST_AUTO_TEST_CASE(checktransaction_refuses_every_nullstake_generation_publicl
     }
 }
 
+// No public-network height may have Boundary B live and the fee-note fork not yet live:
+// that gap is a full-value exit for a self-mining producer.
+BOOST_AUTO_TEST_CASE(pool_never_opens_while_unshield_is_still_permitted)
+{
+    NetworkGuard guard;
+
+    const char* const vNames[] = { "mainnet", "testnet" };
+    for (size_t nNet = 0; nNet < 2; nNet++)
+    {
+        if (nNet == 0)
+            SelectMainnet();
+        else
+            SelectTestnet();
+        const std::string strNet(vNames[nNet]);
+
+        // The derivation itself, read at heights these networks do not carry yet;
+        // comparing the two accessors proves nothing while both sit at the sentinel.
+        const int vHypothetical[] = { 1, 60, 360, 8130300, 8240000,
+                                      PRIVACY_VNEXT_HEIGHT_UNSET };
+        for (size_t j = 0; j < sizeof(vHypothetical) / sizeof(vHypothetical[0]); j++)
+            BOOST_CHECK_MESSAGE(
+                DeriveIV5FeeNoteHeight(vHypothetical[j]) == vHypothetical[j],
+                strNet + ": a Boundary B at " << vHypothetical[j] <<
+                    " does not carry the fee-note fork with it, so scheduling B "
+                    "would open the pool with unshield still permitted");
+
+        BOOST_CHECK_MESSAGE(
+            GetForkHeightIV5FeeNote() == GetForkHeightBoundaryB(),
+            strNet + ": the fee-note fork is not derived from Boundary B");
+
+        std::vector<int> vHeights = LadderProbeHeights();
+        vHeights.push_back(FORK_HEIGHT_BOUNDARY_B);
+        for (size_t i = 0; i < vHeights.size(); i++)
+            BOOST_CHECK_MESSAGE(
+                !IsBoundaryBActiveAtHeight(vHeights[i]) ||
+                    IsIV5FeeNoteActiveAtHeight(vHeights[i]),
+                strNet + " height " << vHeights[i] << " runs the IV5 pool while "
+                    "unshield is still permitted and pool fees still pay out "
+                    "transparently");
+    }
+}
+
+// Regtest keeps an independent fee-note knob so both sides of the boundary stay
+// reachable against a rehearsal B; there the two heights can differ.
+BOOST_AUTO_TEST_CASE(regtest_still_separates_the_fee_note_from_boundary_b)
+{
+    NetworkGuard guard;
+    SelectRegtest();
+
+    const int nSavedB = nRegtestBoundaryBHeight;
+    const int nSavedFee = nRegtestIV5FeeNoteHeight;
+
+    nRegtestBoundaryBHeight = 311;
+    nRegtestIV5FeeNoteHeight = 611;
+
+    BOOST_CHECK_EQUAL(FORK_HEIGHT_BOUNDARY_B, 311);
+    BOOST_CHECK_EQUAL(FORK_HEIGHT_IV5_FEE_NOTE, 611);
+    BOOST_CHECK(IsBoundaryBActiveAtHeight(400));
+    BOOST_CHECK(!IsIV5FeeNoteActiveAtHeight(400));
+
+    nRegtestBoundaryBHeight = nSavedB;
+    nRegtestIV5FeeNoteHeight = nSavedFee;
+}
+
 BOOST_AUTO_TEST_SUITE_END()
