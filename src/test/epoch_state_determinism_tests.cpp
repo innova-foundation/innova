@@ -93,7 +93,8 @@ struct DAGHarness
                      const std::vector<uint256>& parents, CBlockIndex* pprev,
                      bool fWriteBlock = true,
                      const CScript* pCarrierScript = NULL,
-                     const CScript* pSecondCarrierScript = NULL)
+                     const CScript* pSecondCarrierScript = NULL,
+                     const std::vector<CTransaction>* pExtraTxs = NULL)
     {
         CBlock block;
         block.nVersion = 1;
@@ -110,12 +111,13 @@ struct DAGHarness
             if (pSecondCarrierScript)
                 carrier.vout.push_back(CTxOut(0, *pSecondCarrierScript));
             block.vtx.push_back(carrier);
+        }
+        if (pExtraTxs)
+            block.vtx.insert(block.vtx.end(), pExtraTxs->begin(), pExtraTxs->end());
+        if (!block.vtx.empty())
             block.hashMerkleRoot = block.BuildMerkleTree();
-        }
         else
-        {
             block.hashMerkleRoot = uint256(seed);
-        }
         while (!CheckProofOfWork(block.GetHash(), block.nBits))
             ++block.nNonce;
 
@@ -1825,6 +1827,53 @@ BOOST_AUTO_TEST_CASE(iterate_epoch_states_reads_every_field_the_serializer_write
     BOOST_CHECK_EQUAL(it->second.nFinalityCommitteeM, state.nFinalityCommitteeM);
     BOOST_CHECK_EQUAL(it->second.nVNextPoolBalance, state.nVNextPoolBalance);
     BOOST_CHECK(it->second.GetDigest() == state.GetDigest());
+}
+
+// The harness can carry real transactions, and a block that carries any commits
+// to them. Blocks with no transactions keep the seeded placeholder root, which
+// is what the DAG-order cases rely on to stay distinct per seed.
+BOOST_AUTO_TEST_CASE(harness_blocks_carry_and_reread_their_transactions)
+{
+    DAGHarness h;
+
+    std::vector<uint256> vNoParents;
+    CBlockIndex* pEmpty = h.add(9101, 12, vNoParents, NULL);
+    CBlock readEmpty;
+    BOOST_REQUIRE(readEmpty.ReadFromDisk(pEmpty));
+    BOOST_CHECK(readEmpty.vtx.empty());
+    BOOST_CHECK(readEmpty.hashMerkleRoot == uint256(9101));
+
+    CScript carrierScript;
+    carrierScript << OP_RETURN;
+
+    std::vector<CTransaction> vExtra;
+    for (int i = 0; i < 2; i++)
+    {
+        CTransaction tx;
+        tx.nTime = (unsigned int)(1700000000 + 13);
+        CScript payload;
+        payload << OP_RETURN << (int64_t)(4400 + i);
+        tx.vout.push_back(CTxOut(0, payload));
+        vExtra.push_back(tx);
+    }
+    BOOST_REQUIRE(vExtra[0].GetHash() != vExtra[1].GetHash());
+
+    std::vector<uint256> vParents;
+    vParents.push_back(pEmpty->GetBlockHash());
+    CBlockIndex* pCarrying = h.add(9102, 13, vParents, pEmpty, true,
+                                   &carrierScript, NULL, &vExtra);
+
+    CBlock readBack;
+    BOOST_REQUIRE(readBack.ReadFromDisk(pCarrying));
+    BOOST_REQUIRE_EQUAL(readBack.vtx.size(), 3u);
+    BOOST_CHECK(readBack.vtx[1].GetHash() == vExtra[0].GetHash());
+    BOOST_CHECK(readBack.vtx[2].GetHash() == vExtra[1].GetHash());
+
+    // The stored root commits to the extras: dropping one changes it.
+    CBlock trimmed = readBack;
+    trimmed.vtx.pop_back();
+    trimmed.vMerkleTree.clear();
+    BOOST_CHECK(trimmed.BuildMerkleTree() != readBack.hashMerkleRoot);
 }
 
 BOOST_AUTO_TEST_SUITE_END()
