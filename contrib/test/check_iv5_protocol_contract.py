@@ -44,8 +44,15 @@ expected_note = {
     "m_of_n_mint": 5,
     "reclaim": 6,
     "conditional_migration": 7,
+    "collateral_register": 8,
+    "finality_member_register": 9,
     "none": 255,
 }
+# Consensus-defined but not surfaced to callers yet, so the RPC/release-schema checks
+# below skip them. Registration cannot go live while the attestation tag is the note's
+# own key image; remove an entry here when its operation is exposed, and this set must
+# be empty before release.
+not_yet_surfaced = {"collateral_register", "finality_member_register"}
 expected_profiles = {"none": 0, "nullstake_v1": 1, "nullstake_v2": 2, "nullstake_v3": 3}
 expected_auth = {"owner": 0, "cold_staker": 1, "m_of_n_public_signers": 2, "m_of_n_hidden_signers": 3}
 expected_objects = {"none": 0, "vote": 1, "tally_share": 2, "certificate": 3, "committee_rotation": 4}
@@ -66,6 +73,8 @@ mapping = {
     "NOTE_M_OF_N_MINT": 5,
     "NOTE_RECLAIM": 6,
     "NOTE_CONDITIONAL_MIGRATION": 7,
+    "NOTE_COLLATERAL_REGISTER": 8,
+    "NOTE_FINALITY_MEMBER_REGISTER": 9,
     "NOTE_OPERATION_NONE": 255,
     "FINALITY_NONE": 0,
     "FINALITY_NULLSTAKE_V1": 1,
@@ -100,14 +109,14 @@ require(
 require('include_bytes!("../../contract/iv5_protocol_v1.json")' in rust, "Rust does not hash canonical contract bytes")
 rpc = (ROOT / "src/rpcshielded.cpp").read_text(encoding="utf-8")
 for name in expected_note:
-    if name != "none":
+    if name != "none" and name not in not_yet_surfaced:
         require('"' + name + '"' in rpc, "RPC omits note operation " + name)
 for name in ("nullstake_v1", "nullstake_v2", "nullstake_v3"):
     require('"' + name + '"' in rpc, "RPC omits finality profile " + name)
 
 evidence = (ROOT / "contrib/test/v5_release_evidence_schema.py").read_text(encoding="utf-8")
 for name in expected_note:
-    if name != "none":
+    if name != "none" and name not in not_yet_surfaced:
         require('"' + name + '"' in evidence, "release schema omits note operation " + name)
 
 docs = (ROOT / "docs/architecture/IV5-PROTOCOL.md").read_text(encoding="utf-8")

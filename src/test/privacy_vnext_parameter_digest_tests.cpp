@@ -313,4 +313,33 @@ BOOST_AUTO_TEST_CASE(the_bootstrap_digest_is_pinned_not_the_local_builds_contrac
         "a bootstrap payload must not be judged against this build's contract hash");
 }
 
+// Writes the frozen genesis digest out literally, so an edit to the header constant
+// fails here.
+BOOST_AUTO_TEST_CASE(genesis_parameter_digest_is_frozen)
+{
+    static const char FROZEN[] =
+        "e34a1abae989c66e6d06906a83e419adac4ba04dc0a5dd7804a52fdad9df0387";
+    BOOST_CHECK_MESSAGE(
+        std::string(iv5::GENESIS_PARAMETER_DIGEST_SHA256) == std::string(FROZEN),
+        "GENESIS_PARAMETER_DIGEST_SHA256 was edited; it is consensus for every chain "
+        "that has stamped a first IV5 epoch, and re-deriving it from a new contract "
+        "text forks them");
+
+    // The property the derivation existed to produce, restated against the literal so it
+    // holds even if the constant is what moved.
+    std::vector<unsigned char> vchFrozen(32, 0);
+    BOOST_REQUIRE(iv5::DecodeDigestHex(FROZEN, &vchFrozen[0]));
+
+    std::vector<unsigned char> vchLibrary(INNOVA_PRIVACY_VNEXT_DIGEST_SIZE, 0);
+    BOOST_REQUIRE_EQUAL(
+        innova_privacy_vnext_parameter_digest(&vchLibrary[0], vchLibrary.size()),
+        INNOVA_PRIVACY_VNEXT_VALID);
+    BOOST_CHECK_MESSAGE(vchLibrary != vchFrozen,
+                        "the frozen genesis digest collided with this build's contract "
+                        "digest, so a chain value and a build value are confusable");
+    BOOST_CHECK_MESSAGE(
+        !IsAcceptedPrivacyVNextParameterDigest(&vchFrozen[0], vchFrozen.size()),
+        "the frozen genesis digest appeared on the build's contract-digest list");
+}
+
 BOOST_AUTO_TEST_SUITE_END()
