@@ -245,6 +245,7 @@ TEST_OBJS= \
     obj/test/privacy_vnext_store_tests.o \
     obj/test/privacy_vnext_builder_tests.o \
     obj/test/privacy_vnext_collateral_tests.o \
+    obj/test/privacy_vnext_disclosure_tests.o \
     obj/test/idag_validation_tests.o \
     obj/test/shielded_nullifier_binding_tests.o \
     obj/test/finality_vote_binding_tests.o \
@@ -398,7 +399,7 @@ check-finality-note: test_innova
 	./test_innova --run_test=finality_note_tests,finality_note_carrier_tests
 
 check-privacy-vnext: test_innova
-	./test_innova --run_test=privacy_vnext_abi_tests,privacy_vnext_builder_tests,privacy_vnext_store_tests,privacy_vnext_collateral_tests
+	./test_innova --run_test=privacy_vnext_abi_tests,privacy_vnext_builder_tests,privacy_vnext_store_tests,privacy_vnext_collateral_tests,privacy_vnext_disclosure_tests
 
 check-name-index-recovery: test_innova
 	./test_innova --run_test=name_index_recovery_tests

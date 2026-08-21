@@ -32,6 +32,15 @@ extern CHooks* hooks;
 extern bool fWalletUnlockStakingOnly;
 extern bool fConfChange;
 class CAccountingEntry;
+// Keys every self-pay output is sent to: a spend's change, and the receiver a shield
+// pays into. One function, so no self-pay site can be left on a user-facing index
+// while the others move.
+bool DerivePrivacyVNextChangeKeys(const PrivacyVNextDigest& seed,
+                                  const PrivacyVNextDigest& genesis,
+                                  uint8_t nNetwork,
+                                  PrivacyVNextDerivedKeys& keysOut,
+                                  std::string& strErrorOut);
+
 class CWalletTx;
 class CReserveKey;
 // Bound on how many transparent outputs one shield sweeps. Chosen so the signed
@@ -295,6 +304,12 @@ public:
     // Derivation indices a scan must cover; follows address issuance rather than
     // the separately persisted count, so an issued address is never outside it.
     uint32_t GetPrivacyVNextScanIndexCount() const;
+    // The one place a scan's key list is built: every issued index plus change.
+    bool BuildPrivacyVNextScanKeys(const PrivacyVNextDigest& seed,
+                                   const PrivacyVNextDigest& genesis,
+                                   uint8_t nNetwork,
+                                   std::vector<PrivacyVNextScanKey>& vKeysOut,
+                                   std::string& strErrorOut) const;
     bool AllocatePrivacyVNextIndex(uint32_t& nIndexOut, std::string& strErrorOut);
     // Assigns tree positions for every epoch up to `nThroughEpoch` that still holds an
     // unplaced note of ours, not just the most recent one.

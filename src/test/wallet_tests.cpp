@@ -93,11 +93,8 @@ BOOST_AUTO_TEST_CASE(privacy_vnext_seed_record_is_encrypted_and_checked)
     BOOST_CHECK(!error.empty());
 }
 
-// Issuance must stop exactly where scanning stops. A scan covers indices below
-// PRIVACY_VNEXT_MAX_SCAN_KEYS, so an address issued at or above the bound is
-// receivable and permanently invisible, and unshield is retired, so value paid to it
-// has no recovery path. Starting one index below the bound reaches both the last
-// issuable address and the first refused one without 1024 round trips.
+// Address issuance must stop where scanning stops (one key per issued index plus change);
+// an address issued past that bound is unrecoverable.
 BOOST_AUTO_TEST_CASE(privacy_vnext_address_issuance_stops_at_the_scan_bound)
 {
     // All wallet files share one mock database and the seed record cannot be
@@ -121,8 +118,8 @@ BOOST_AUTO_TEST_CASE(privacy_vnext_address_issuance_stops_at_the_scan_bound)
         }
     // Advance the persisted counter through the same durable step issuance uses,
     // without deriving a thousand keys.
-        BOOST_REQUIRE(record.nNextAddressIndex < PRIVACY_VNEXT_MAX_SCAN_KEYS);
-        while (record.nNextAddressIndex + 1 < PRIVACY_VNEXT_MAX_SCAN_KEYS)
+        BOOST_REQUIRE(record.nNextAddressIndex < PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES);
+        while (record.nNextAddressIndex + 1 < PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES)
         {
             BOOST_REQUIRE(walletdb.AdvancePrivacyVNextSeedIndex(
                 record, record.nNextAddressIndex + 1));
@@ -130,7 +127,7 @@ BOOST_AUTO_TEST_CASE(privacy_vnext_address_issuance_stops_at_the_scan_bound)
         }
     }
     BOOST_REQUIRE_EQUAL(record.nNextAddressIndex,
-                        PRIVACY_VNEXT_MAX_SCAN_KEYS - 1);
+                        PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES - 1);
 
     CWallet localWallet(walletFile);
     std::string error;
@@ -145,12 +142,12 @@ BOOST_AUTO_TEST_CASE(privacy_vnext_address_issuance_stops_at_the_scan_bound)
     uint32_t addressIndex = 0xffffffffU;
     BOOST_REQUIRE_MESSAGE(localWallet.GenerateNewPrivacyVNextAddress(
                               0, address, addressIndex, error), error);
-    BOOST_CHECK_EQUAL(addressIndex, PRIVACY_VNEXT_MAX_SCAN_KEYS - 1);
+    BOOST_CHECK_EQUAL(addressIndex, PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES - 1);
     BOOST_CHECK(!address.empty());
     // What makes the address safe to hand out is that a scan covers its index.
     BOOST_CHECK_LT(addressIndex, localWallet.GetPrivacyVNextScanIndexCount());
     BOOST_CHECK_EQUAL(localWallet.privacyVNextSeedRecord.nNextAddressIndex,
-                      PRIVACY_VNEXT_MAX_SCAN_KEYS);
+                      PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES);
 
     // The next index is outside every scan, so issuance must refuse it.
     std::string beyond;
@@ -164,13 +161,13 @@ BOOST_AUTO_TEST_CASE(privacy_vnext_address_issuance_stops_at_the_scan_bound)
     // A refusal that still advanced the counter would leave the persisted record
     // ahead of what a scan covers, which is the same failure one step later.
     BOOST_CHECK_EQUAL(localWallet.privacyVNextSeedRecord.nNextAddressIndex,
-                      PRIVACY_VNEXT_MAX_SCAN_KEYS);
+                      PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES);
     CPrivacyVNextSeedRecord persisted;
     {
         CWalletDB walletdb(walletFile);
         BOOST_REQUIRE(walletdb.ReadPrivacyVNextSeed(persisted));
     }
-    BOOST_CHECK_EQUAL(persisted.nNextAddressIndex, PRIVACY_VNEXT_MAX_SCAN_KEYS);
+    BOOST_CHECK_EQUAL(persisted.nNextAddressIndex, PRIVACY_VNEXT_MAX_ISSUED_ADDRESSES);
 }
 
 class CSelectionTestWallet : public CWallet
