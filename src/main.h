@@ -453,8 +453,11 @@ inline int GetForkHeightBoundaryA()
 // Tag-time gates, all three required before a height replaces the sentinel:
 //   1. FCMP++ candidate has passed independent review.
 //   2. Real post-DAG block rate confirmed on the live network.
-//   3. B set strictly after Boundary A (DAG + 300 = 8,130,300 on mainnet) with
-//      room before the post-Boundary-B staking slots.
+//   3. B set strictly after Boundary A (DAG + 300 = 8,220,300 on mainnet) with
+//      room before the post-Boundary-B staking slots. The ladder already reserves
+//      the slot: MAINNET_ACTIVATION_BOUNDARY_B_BASE + shift = 8,330,000, which
+//      check_v5_release_policy.py enforces and which clears the policy floor.
+//      Equality with A is the regtest rehearsal geometry, not this one.
 static const int PRIVACY_VNEXT_HEIGHT_UNSET = 0x7fffffff;
 // Regtest-only rehearsal height for Boundary B (-regtestboundaryb). Stays unset
 // on mainnet and testnet. A height alone never activates Boundary B; readiness is
