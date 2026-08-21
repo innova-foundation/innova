@@ -775,4 +775,95 @@ BOOST_AUTO_TEST_CASE(consecutive_budgets_partition_the_withheld_reserve)
     }
 }
 
+// The accrual range is an identity on GetEpochForHeight, so the map itself must be
+// non-decreasing and never skip; the identity check cannot detect that.
+BOOST_AUTO_TEST_CASE(the_epoch_map_is_non_decreasing_and_never_skips)
+{
+    for (const NetworkCase& net : vAllNetworks)
+    {
+        NetworkGuard guard(net.fRegTest, net.fTestNet);
+        BOOST_TEST_MESSAGE(net.strName);
+
+        const int nDAG = GetForkHeightDAG();
+        const int nSpan = 4 * FINALITY_EPOCH_INTERVAL_POST_DAG;
+        const int nFrom = (nDAG > nSpan) ? (nDAG - nSpan) : 0;
+        const int nTo = nDAG + nSpan;
+
+        int nPrev = GetEpochForHeight(nFrom);
+        for (int h = nFrom + 1; h <= nTo; h++)
+        {
+            const int nEpoch = GetEpochForHeight(h);
+            // Decreasing would order two boundaries backwards, and the identity
+            // check would still pass: it only asks which epoch each end names.
+            BOOST_REQUIRE_MESSAGE(nEpoch >= nPrev,
+                net.strName << " epoch map decreased at height " << h
+                            << ": " << nPrev << " -> " << nEpoch);
+            // Skipping would leave an epoch with an empty preimage while its
+            // settlement still comes due against a range built from boundaries.
+            BOOST_REQUIRE_MESSAGE(nEpoch - nPrev <= 1,
+                net.strName << " epoch map skipped at height " << h
+                            << ": " << nPrev << " -> " << nEpoch);
+            nPrev = nEpoch;
+        }
+    }
+}
+
+// A boundary inside its epoch passes the other range checks while settling blocks one
+// epoch early.
+BOOST_AUTO_TEST_CASE(each_boundary_is_the_first_height_of_its_epoch)
+{
+    for (const NetworkCase& net : vAllNetworks)
+    {
+        NetworkGuard guard(net.fRegTest, net.fTestNet);
+        BOOST_TEST_MESSAGE(net.strName);
+
+        const int nFirstPostDAG = GetEpochForHeight(GetForkHeightDAG());
+        const int vEpochs[] = { 1, nFirstPostDAG - 1, nFirstPostDAG,
+                                nFirstPostDAG + 1, nFirstPostDAG + 2,
+                                nFirstPostDAG + 1000 };
+
+        for (int nEpoch : vEpochs)
+        {
+            if (nEpoch < 1)
+                continue;
+            const int nBoundary = GetEpochBoundaryHeight(nEpoch, 0);
+            BOOST_CHECK_EQUAL(GetEpochForHeight(nBoundary), nEpoch);
+            if (nBoundary > 0)
+                BOOST_CHECK_MESSAGE(GetEpochForHeight(nBoundary - 1) == nEpoch - 1,
+                    net.strName << " boundary " << nBoundary << " is not the first"
+                                << " height of epoch " << nEpoch);
+        }
+    }
+}
+
+// The half-open pair is exactly the preimage of its epoch, stronger than the endpoints
+// agreeing.
+BOOST_AUTO_TEST_CASE(the_accrual_range_is_exactly_the_preimage_of_its_epoch)
+{
+    for (const NetworkCase& net : vAllNetworks)
+    {
+        NetworkGuard guard(net.fRegTest, net.fTestNet);
+        BOOST_TEST_MESSAGE(net.strName);
+
+        const int nFirstPostDAG = GetEpochForHeight(GetForkHeightDAG());
+        for (int nEpoch = nFirstPostDAG; nEpoch <= nFirstPostDAG + 3; nEpoch++)
+        {
+            int nBegin = -1;
+            int nEnd = -1;
+            BOOST_REQUIRE(GetFinalityAccrualRange(nEpoch, nBegin, nEnd));
+
+            for (int h = nBegin; h < nEnd; h++)
+                BOOST_REQUIRE_MESSAGE(GetEpochForHeight(h) == nEpoch - 1,
+                    net.strName << " height " << h << " is in epoch "
+                                << GetEpochForHeight(h) << " but settles in "
+                                << nEpoch);
+
+            // Nothing outside it belongs to the epoch that withheld.
+            if (nBegin > 0)
+                BOOST_CHECK(GetEpochForHeight(nBegin - 1) != nEpoch - 1);
+            BOOST_CHECK(GetEpochForHeight(nEnd) != nEpoch - 1);
+        }
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()
