@@ -1459,4 +1459,40 @@ BOOST_AUTO_TEST_CASE(effect_progress_read_is_exact_and_bounded)
     BOOST_REQUIRE(dbName.TxnCommit());
 }
 
+BOOST_AUTO_TEST_CASE(reset_wipe_guard_flags_only_the_truncated_terms)
+{
+    // Mainnet is the only network with a reset height.
+    CNetworkOverride mainnet(false, false);
+    const int nReset = FORK_HEIGHT_IDNS_RESET;
+    BOOST_REQUIRE(nReset > 0);
+
+    int nResetOut = 0;
+    int64_t nLost = 0;
+
+    // Registered before the reset, term ends past it: the reset takes the rest.
+    BOOST_CHECK(NameTermWipedByIDNSReset(nReset - 1, (int64_t)nReset + 500,
+                                         nResetOut, nLost));
+    BOOST_CHECK_EQUAL(nResetOut, nReset);
+    BOOST_CHECK_EQUAL(nLost, 500);
+
+    // Registered before the reset but expiring first: nothing extra is lost.
+    BOOST_CHECK(!NameTermWipedByIDNSReset(nReset - 1000, nReset - 1,
+                                          nResetOut, nLost));
+    BOOST_CHECK_EQUAL(nLost, 0);
+
+    // Exactly at the reset is the first surviving registration height, and a
+    // term ending exactly at the reset loses nothing.
+    BOOST_CHECK(!NameTermWipedByIDNSReset(nReset, (int64_t)nReset + 10000,
+                                          nResetOut, nLost));
+    BOOST_CHECK(!NameTermWipedByIDNSReset(nReset - 1, nReset,
+                                          nResetOut, nLost));
+
+    // Networks without a reset never flag.
+    {
+        CNetworkOverride regtest(true, false);
+        BOOST_REQUIRE_EQUAL(FORK_HEIGHT_IDNS_RESET, 0);
+        BOOST_CHECK(!NameTermWipedByIDNSReset(1, 1000000, nResetOut, nLost));
+    }
+}
+
 BOOST_AUTO_TEST_SUITE_END()

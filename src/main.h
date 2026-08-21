@@ -785,18 +785,15 @@ inline unsigned int GetTargetSpacingForHeight(int nHeight)
     return nTargetSpacing; // 15 seconds pre-DAG
 }
 
-// Hard fork height for IDNS name reset
-// names before this height treated as expired; 0 = no reset
-//
-// Its own rung on the ladder: after the v5 first gate, before the DAG gate, so
-// the reset lands on a network already running v5 and every term it issues is
-// converted by the piecewise post-DAG spacing rule. Names registered before it
-// expire; registrations resume at the reset. Changing this invalidates the
-// persisted name cursor and forces a rebuild.
+// IDNS name reset: names registered before this height expire; 0 = no reset.
+// Sits between the v5 first gate and the DAG gate. Changing it invalidates the
+// persisted name cursor. -regtestidnsreset overrides on regtest (0 = no reset).
+extern int nRegtestIDNSResetHeight;
+
 inline int GetForkHeightIDNSReset() {
     extern bool fRegTest;
     extern bool fTestNet;
-    if (fRegTest) return 0;     // No reset in regtest (clean chain)
+    if (fRegTest) return nRegtestIDNSResetHeight; // 0 unless rehearsing
     if (fTestNet) return 0;     // No reset in testnet (clean chain)
     return ShiftMainnetV5Activation(7900000); // Mainnet: between the v5 first gate and the DAG gate
 }

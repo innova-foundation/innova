@@ -196,6 +196,60 @@ bool NameResetExpired(const CNameRecord& nameRec, int nAtHeight)
     return nameRec.vtxPos[nameRec.nLastActiveChainIndex].nHeight < nReset;
 }
 
+// A term whose registration sits below the reset height is cut short there, so
+// any part of it past the reset is paid for and never delivered. Reports the
+// blocks that would be lost so the wallet can refuse before spending the fee.
+bool NameTermWipedByIDNSReset(int64_t nRegistrationHeight, int64_t nExpiresAt,
+                              int& nResetOut, int64_t& nBlocksLostOut)
+{
+    nResetOut = FORK_HEIGHT_IDNS_RESET;
+    nBlocksLostOut = 0;
+    if (nResetOut <= 0 || nRegistrationHeight >= nResetOut ||
+        nExpiresAt <= nResetOut)
+        return false;
+    nBlocksLostOut = nExpiresAt - nResetOut;
+    return true;
+}
+
+// Registration height of the term a name_update would extend. The reset keys
+// off the active chain's first entry, not off the update itself.
+static bool NameRegistrationHeight(const CNameRecord& nameRec, int64_t& nHeightOut)
+{
+    if (nameRec.vtxPos.empty() || nameRec.nLastActiveChainIndex < 0 ||
+        (size_t)nameRec.nLastActiveChainIndex >= nameRec.vtxPos.size())
+        return false;
+    nHeightOut = nameRec.vtxPos[nameRec.nLastActiveChainIndex].nHeight;
+    return true;
+}
+
+static bool RefuseNameTermWipedByIDNSReset(int64_t nRegistrationHeight,
+                                           int64_t nExpiresAt,
+                                           NameTxReturn& ret)
+{
+    int nReset = 0;
+    int64_t nBlocksLost = 0;
+    if (!NameTermWipedByIDNSReset(nRegistrationHeight, nExpiresAt, nReset,
+                                  nBlocksLost))
+        return false;
+    if (GetBoolArg("-allowwipednames", false))
+    {
+        printf("name op: term runs to height %" PRId64 " but the IDNS reset at "
+               "height %d expires it; %" PRId64 " blocks of the term are lost "
+               "(-allowwipednames)\n",
+               nExpiresAt, nReset, nBlocksLost);
+        return false;
+    }
+    ret.err_code = RPC_INVALID_PARAMETER;
+    ret.err_msg = strprintf(
+        "the IDNS reset at height %d expires every name registered before it. "
+        "This term would run to height %" PRId64 ", so %" PRId64 " blocks of it "
+        "would be wiped. Shorten <days> so the term ends by height %d, wait "
+        "until the chain passes it, or start with -allowwipednames to accept "
+        "the loss.",
+        nReset, nExpiresAt, nBlocksLost, nReset);
+    return true;
+}
+
 // Tests if name is active. You can optionaly specify at which height it is/was active.
 bool NameActive(CNameDB& dbName, const vector<unsigned char> &vchName, int currentBlockHeight = -1)
 {
@@ -1737,6 +1791,7 @@ Value name_new(const Array& params, bool fHelp)
                 "name_new <name> <value> <days> [address] [valueAsFilepath]\n"
                 "Creates new key->value pair which expires after specified number of days.\n"
                 "<days> must be between 1 and 180 (six months).\n"
+                "Refused if the IDNS reset would expire the name before the term ends; start with -allowwipednames to override.\n"
                 "[address] to register the name to\n"
                 "If [valueAsFilepath] is non-zero it will interpret <value> as a filepath and try to write file contents in binary format\n"
                 "Cost is 0.9 INN To TX Fees and 0.1 To Name Registration."
@@ -1823,6 +1878,15 @@ NameTxReturn name_new(const vector<unsigned char> &vchName,
             return ret;
         }
 
+        // Earliest height this registration can confirm at, which is also the
+        // height its term is measured from.
+        const int64_t nStartHeight = pindexBest ? pindexBest->nHeight + 1 : 0;
+        if (RefuseNameTermWipedByIDNSReset(
+                nStartHeight,
+                nStartHeight + NameRentalBlocks(nStartHeight, nRentalDays),
+                ret))
+            return ret;
+
         CWalletTx wtxIn = CWalletTx();
 
         CScript nameScript;
@@ -1904,6 +1968,7 @@ Value name_update(const Array& params, bool fHelp)
                 "name_update <name> <value> <days> [toaddress] [valueAsFilepath]\n"
                 "Update name and value, add days to expiration time and transfer a name to diffrent address.\n"
                 "<days> must be between 0 and 180 (six months).\n"
+                "Refused if the IDNS reset would expire the name before the extended term ends; start with -allowwipednames to override.\n"
                 "If [valueAsFilepath] is non-zero it will interpret <value> as a filepath and try to write file contents in binary format."
                 + HelpRequiringPassphrase());
 
@@ -2027,6 +2092,20 @@ NameTxReturn name_update(const vector<unsigned char> &vchName,
                 ret.err_msg = "name_update on an expired name";
                 return ret;
             }
+
+            // An update extends the running expiry of the existing chain, and
+            // the reset keys off that chain's registration height, so an update
+            // to a pre-reset name buys time the reset already wipes.
+            CNameRecord nameRecReset;
+            int64_t nRegistrationHeight = 0;
+            if (dbName.ReadName(vchName, nameRecReset) &&
+                NameRegistrationHeight(nameRecReset, nRegistrationHeight) &&
+                RefuseNameTermWipedByIDNSReset(
+                    nRegistrationHeight,
+                    (int64_t)nameRecReset.nExpiresAt +
+                        NameRentalBlocks(nameRecReset.nExpiresAt, nRentalDays),
+                    ret))
+                return ret;
         }
 
     //form script and send

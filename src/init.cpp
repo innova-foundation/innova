@@ -618,6 +618,7 @@ std::string HelpMessage()
 #endif
         "  -testnet               " + _("Use the test network") + "\n" +
         "  -regtest               " + _("Enter regression test mode (instant blocks, no stake age)") + "\n" +
+        "  -allowwipednames       " + _("Allow name registrations and updates whose term the IDNS reset would wipe (default: 0)") + "\n" +
         "  -debug                 " + _("Output extra debugging information. Implies all other -debug* options") + "\n" +
         "  -debugnet              " + _("Output extra network debugging information") + "\n" +
         "  -debugchain            " + _("Output extra blockchain debugging information") + "\n" +
@@ -652,6 +653,7 @@ std::string HelpMessage()
         "  -fullreplayverify      " + _("Force full ECDSA verification of all historic blocks (no checkpoint signature skip)") + "\n" +
         "  -acceptepochstate      " + _("Grandfather pre-marker epoch-state records as deterministic (only if they were written by a deterministic-anchor build; otherwise resync)") + "\n" +
         "  -regtestboundaryb=<n>  " + _("Regtest only: Boundary-B rehearsal activation height") + "\n" +
+        "  -regtestidnsreset=<n>  " + _("Regtest only: IDNS name-reset rehearsal height (default: 0, no reset)") + "\n" +
         "  -regtestsupplycapheight=<n> " + _("Regtest only: total-supply-cap activation height") + "\n" +
         "  -regtestsupplycap=<n>  " + _("Regtest only: total-supply cap in satoshi (default MAX_MONEY)") + "\n" +
         "  -regtestiv5feenote=<n>  " + _("Regtest only: IV5 fee-note / unshield-retirement activation height") + "\n" +
@@ -1271,6 +1273,18 @@ bool AppInit2()
         fRegtestShieldedVNextRehearsal = GetBoolArg("-regtestiv5rehearsal", false);
         printf("Boundary-B rehearsal: height=%d ready=%d (regtest only; IV5 verifier is NOT wired into consensus)\n",
                nRegtestBoundaryBHeight, (int)fRegtestShieldedVNextRehearsal);
+    }
+
+    if (mapArgs.count("-regtestidnsreset"))
+    {
+        if (!fRegTest)
+            return InitError(_("-regtestidnsreset requires -regtest"));
+        const int64_t nReset = GetArg("-regtestidnsreset", 0);
+        if (nReset < 0 || nReset > (int64_t)INT_MAX)
+            return InitError(_("-regtestidnsreset is out of range"));
+        nRegtestIDNSResetHeight = (int)nReset;
+        printf("IDNS reset rehearsal: height=%d (regtest only)\n",
+               nRegtestIDNSResetHeight);
     }
 
     if (mapArgs.count("-regtestiv5feenote"))

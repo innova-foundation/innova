@@ -264,6 +264,7 @@ int nRegtestSupplyCapHeight = -1;       // -1: follow the DAG fork like every ot
 int64_t nRegtestSupplyCapAmount = 0;    // 0: no override, cap is MAX_MONEY
 int nRegtestIV5FeeNoteHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
 int nRegtestIV5NoteVoteHeight = PRIVACY_VNEXT_HEIGHT_UNSET;
+int nRegtestIDNSResetHeight = 0;
 bool fRegtestShieldedVNextRehearsal = false;
 bool fRegtestHoldPrivacyVNextLeafIndex = false;
 int nBestHeight = -1;

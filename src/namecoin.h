@@ -415,6 +415,12 @@ bool ValidateNameIndexTip(const CBlockIndex* pindexTip, std::string& strError);
 // Recreates the index from canonical block data and writes the cursor last.
 bool createNameIndexFile();
 
+// True when the IDNS reset would cut a term short: its registration sits below
+// the reset height and it would otherwise still be live there.  nBlocksLostOut
+// is the part of the term that is paid for and never delivered.
+bool NameTermWipedByIDNSReset(int64_t nRegistrationHeight, int64_t nExpiresAt,
+                              int& nResetOut, int64_t& nBlocksLostOut);
+
 extern std::map<std::vector<unsigned char>, uint256> mapMyNames;
 extern std::map<std::vector<unsigned char>, std::set<uint256> > mapNamePending;
 
