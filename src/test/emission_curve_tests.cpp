@@ -103,7 +103,7 @@ BOOST_AUTO_TEST_CASE(dag_fork_sits_inside_the_stretch_window)
 {
     MainnetEmissionGuard guard;
 
-    BOOST_CHECK_EQUAL(MAINNET_V5_ACTIVATION_SHIFT, 180000);
+    BOOST_CHECK_EQUAL(MAINNET_V5_ACTIVATION_SHIFT, 270000);
     BOOST_CHECK_EQUAL(FORK_HEIGHT_DAG, 8220000);
     BOOST_CHECK_EQUAL(PRE_DAG_TARGET_SPACING, 15);
     BOOST_CHECK_EQUAL(POST_DAG_TARGET_SPACING, 1);
@@ -209,21 +209,21 @@ BOOST_AUTO_TEST_CASE(post_dag_per_block_rewards_are_pinned)
 
     BOOST_CHECK_EQUAL(Subsidy(FORK_HEIGHT_DAG),  1333333);   // 0.2  / 15
     BOOST_CHECK_EQUAL(Subsidy(8670000),          1333333);
-    BOOST_CHECK_EQUAL(Subsidy(9930001),          1000000);   // 0.15 / 15
+    BOOST_CHECK_EQUAL(Subsidy(8670001),          1000000);   // 0.15 / 15
     BOOST_CHECK_EQUAL(Subsidy(12420000),         1000000);
-    BOOST_CHECK_EQUAL(Subsidy(13680001),          666666);   // 0.1  / 15
-    BOOST_CHECK_EQUAL(Subsidy(17430000),          666666);
-    BOOST_CHECK_EQUAL(Subsidy(17430001),          333333);   // 0.05 / 15
-    BOOST_CHECK_EQUAL(Subsidy(21180000),          333333);
-    BOOST_CHECK_EQUAL(Subsidy(21180001),           66666);   // 0.01 / 15
-    BOOST_CHECK_EQUAL(Subsidy(24930000),           66666);
-    BOOST_CHECK_EQUAL(Subsidy(24930001),          333333);   // 0.05 / 15
-    BOOST_CHECK_EQUAL(Subsidy(28680000),          333333);
-    BOOST_CHECK_EQUAL(Subsidy(28680001),          666666);   // 0.1  / 15
-    BOOST_CHECK_EQUAL(Subsidy(32430000),          666666);
-    BOOST_CHECK_EQUAL(Subsidy(32430001),         1333333);   // 0.2  / 15
-    BOOST_CHECK_EQUAL(Subsidy(36180000),         1333333);
-    BOOST_CHECK_EQUAL(Subsidy(36180001),             666);   // tail 0.0001 / 15
+    BOOST_CHECK_EQUAL(Subsidy(12420001),          666666);   // 0.1  / 15
+    BOOST_CHECK_EQUAL(Subsidy(16170000),          666666);
+    BOOST_CHECK_EQUAL(Subsidy(16170001),          333333);   // 0.05 / 15
+    BOOST_CHECK_EQUAL(Subsidy(19920000),          333333);
+    BOOST_CHECK_EQUAL(Subsidy(19920001),           66666);   // 0.01 / 15
+    BOOST_CHECK_EQUAL(Subsidy(23670000),           66666);
+    BOOST_CHECK_EQUAL(Subsidy(23670001),          333333);   // 0.05 / 15
+    BOOST_CHECK_EQUAL(Subsidy(27420000),          333333);
+    BOOST_CHECK_EQUAL(Subsidy(27420001),          666666);   // 0.1  / 15
+    BOOST_CHECK_EQUAL(Subsidy(31170000),          666666);
+    BOOST_CHECK_EQUAL(Subsidy(31170001),         1333333);   // 0.2  / 15
+    BOOST_CHECK_EQUAL(Subsidy(34920000),         1333333);
+    BOOST_CHECK_EQUAL(Subsidy(34920001),             666);   // tail 0.0001 / 15
     BOOST_CHECK_EQUAL(Subsidy(60000000),             666);
 }
 
