@@ -4994,18 +4994,18 @@ struct PoWPostDagTier
 };
 
 // Mainnet. Every rung the 15s schedule placed above the DAG fork, as an offset
-// from it. Re-derived for FORK_HEIGHT_DAG = 8,130,000: the 8,250,000 and
+// from it. Re-derived for FORK_HEIGHT_DAG = 8,220,000: the 8,250,000 and
 // 8,500,000 rungs now sit above the gate, so they belong here rather than in the
-// pre-DAG ladder. Stretched, they end at 9,930,000 and 13,680,000.
+// pre-DAG ladder. Stretched, they end at 8,670,000 and 12,420,000.
 static const PoWPostDagTier vPoWPostDagMainnet[] = {
-    {  120000,  20000000 },   // 0.2  INN (was <= 8,250,000)
-    {  370000,  15000000 },   // 0.15     (was <= 8,500,000)
-    {  620000,  10000000 },   // 0.1      (was <= 8,750,000)
-    {  870000,   5000000 },   // 0.05     (was <= 9,000,000)
-    { 1120000,   1000000 },   // 0.01     (was <= 9,250,000)
-    { 1370000,   5000000 },   // 0.05     (was <= 9,500,000)
-    { 1620000,  10000000 },   // 0.1      (was <= 9,750,000)
-    { 1870000,  20000000 },   // 0.2      (was <= 10,000,000)
+    {   30000,  20000000 },   // 0.2  INN (was <= 8,250,000)
+    {  280000,  15000000 },   // 0.15     (was <= 8,500,000)
+    {  530000,  10000000 },   // 0.1      (was <= 8,750,000)
+    {  780000,   5000000 },   // 0.05     (was <= 9,000,000)
+    { 1030000,   1000000 },   // 0.01     (was <= 9,250,000)
+    { 1280000,   5000000 },   // 0.05     (was <= 9,500,000)
+    { 1530000,  10000000 },   // 0.1      (was <= 9,750,000)
+    { 1780000,  20000000 },   // 0.2      (was <= 10,000,000)
 };
 static const int64_t nPoWPostDagTailMainnet = 10000;      // 0.0001
 

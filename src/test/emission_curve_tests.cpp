@@ -54,14 +54,14 @@ struct StretchedTier
 };
 
 static const StretchedTier vStretched[] = {
-    {  9930000,  8250000,  20000000 },  // 0.2
-    { 13680000,  8500000,  15000000 },  // 0.15
-    { 17430000,  8750000,  10000000 },  // 0.1
-    { 21180000,  9000000,   5000000 },  // 0.05
-    { 24930000,  9250000,   1000000 },  // 0.01
-    { 28680000,  9500000,   5000000 },  // 0.05
-    { 32430000,  9750000,  10000000 },  // 0.1
-    { 36180000, 10000000,  20000000 },  // 0.2
+    {  8670000,  8250000,  20000000 },  // 0.2
+    { 12420000,  8500000,  15000000 },  // 0.15
+    { 16170000,  8750000,  10000000 },  // 0.1
+    { 19920000,  9000000,   5000000 },  // 0.05
+    { 23670000,  9250000,   1000000 },  // 0.01
+    { 27420000,  9500000,   5000000 },  // 0.05
+    { 31170000,  9750000,  10000000 },  // 0.1
+    { 34920000, 10000000,  20000000 },  // 0.2
 };
 static const size_t nStretchedCount = sizeof(vStretched) / sizeof(vStretched[0]);
 
@@ -104,7 +104,7 @@ BOOST_AUTO_TEST_CASE(dag_fork_sits_inside_the_stretch_window)
     MainnetEmissionGuard guard;
 
     BOOST_CHECK_EQUAL(MAINNET_V5_ACTIVATION_SHIFT, 180000);
-    BOOST_CHECK_EQUAL(FORK_HEIGHT_DAG, 8130000);
+    BOOST_CHECK_EQUAL(FORK_HEIGHT_DAG, 8220000);
     BOOST_CHECK_EQUAL(PRE_DAG_TARGET_SPACING, 15);
     BOOST_CHECK_EQUAL(POST_DAG_TARGET_SPACING, 1);
     BOOST_CHECK_EQUAL((int)GetTargetSpacingForHeight(FORK_HEIGHT_DAG),
@@ -208,9 +208,9 @@ BOOST_AUTO_TEST_CASE(post_dag_per_block_rewards_are_pinned)
     MainnetEmissionGuard guard;
 
     BOOST_CHECK_EQUAL(Subsidy(FORK_HEIGHT_DAG),  1333333);   // 0.2  / 15
-    BOOST_CHECK_EQUAL(Subsidy(9930000),          1333333);
+    BOOST_CHECK_EQUAL(Subsidy(8670000),          1333333);
     BOOST_CHECK_EQUAL(Subsidy(9930001),          1000000);   // 0.15 / 15
-    BOOST_CHECK_EQUAL(Subsidy(13680000),         1000000);
+    BOOST_CHECK_EQUAL(Subsidy(12420000),         1000000);
     BOOST_CHECK_EQUAL(Subsidy(13680001),          666666);   // 0.1  / 15
     BOOST_CHECK_EQUAL(Subsidy(17430000),          666666);
     BOOST_CHECK_EQUAL(Subsidy(17430001),          333333);   // 0.05 / 15

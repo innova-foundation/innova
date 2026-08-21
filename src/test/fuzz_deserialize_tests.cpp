@@ -2311,7 +2311,7 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
     // Boundary A rides the epoch-state V3 rung, so it follows the DAG gate.
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), GetForkHeightDAG() + 300);
     BOOST_CHECK(GetForkHeightBoundaryA() > GetForkHeightDAG());
-    BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), 8130300);
+    BOOST_CHECK_EQUAL(GetForkHeightBoundaryA(), 8220300);
 
     // Boundary B stays unset on mainnet until privacy vNext is scheduled.
     BOOST_CHECK_EQUAL(GetForkHeightBoundaryB(), PRIVACY_VNEXT_HEIGHT_UNSET);
@@ -2342,7 +2342,7 @@ BOOST_AUTO_TEST_CASE(v5_activation_ladder_preserves_stage_dependencies)
     // The post-Boundary-B staking slots are the tag-time ceiling for B. They must
     // stay above A so the window B lands in is non-empty after any re-base.
     const int nPostBoundaryB = ShiftMainnetV5Activation(8060000);
-    BOOST_CHECK_EQUAL(nPostBoundaryB, 8240000);
+    BOOST_CHECK_EQUAL(nPostBoundaryB, 8330000);
     BOOST_CHECK_EQUAL(GetForkHeightNullStakeDelegSet(), nPostBoundaryB);
     BOOST_CHECK_EQUAL(GetForkHeightNullStakeReclaim(), nPostBoundaryB);
     BOOST_CHECK_EQUAL(GetForkHeightNullStakeB2C(), nPostBoundaryB);
