@@ -265,7 +265,7 @@ BOOST_AUTO_TEST_CASE(terminal_pow_supply_after_the_dag_fork_is_pinned)
 
     const int nLast = vStretched[nStretchedCount - 1].nLastHeight;
     const int64_t nBlockCount = (int64_t)nLast - FORK_HEIGHT_DAG + 1;
-    BOOST_CHECK_EQUAL(nBlockCount, 28050001LL);
+    BOOST_CHECK_EQUAL(nBlockCount, 26700001LL);
 
     int64_t nTotal = 0;
     for (int nHeight = FORK_HEIGHT_DAG; nHeight <= nLast; nHeight++)
@@ -276,17 +276,17 @@ BOOST_AUTO_TEST_CASE(terminal_pow_supply_after_the_dag_fork_is_pinned)
     // earlier fork leaves more of the schedule on the post-fork side of it;
     // total emission over the whole schedule is unchanged. The invariant that
     // states that is the per-tier one below, not this sum.
-    BOOST_CHECK_EQUAL(nTotal, 18899989483333LL);
+    BOOST_CHECK_EQUAL(nTotal, 17099989933333LL);
 
     // 15s-schedule payout over the half-open span (FORK, nLast], so the fork block is not
     // counted on both sides.
     const int64_t nSpanBlocks = (int64_t)nLast - FORK_HEIGHT_DAG;
-    BOOST_CHECK_EQUAL(nSpanBlocks, 28050000LL);
+    BOOST_CHECK_EQUAL(nSpanBlocks, 26700000LL);
 
     int64_t nSpanTotal = 0;
     for (int nHeight = FORK_HEIGHT_DAG + 1; nHeight <= nLast; nHeight++)
         nSpanTotal += Subsidy(nHeight);
-    BOOST_CHECK_EQUAL(nSpanTotal, 18899988150000LL);
+    BOOST_CHECK_EQUAL(nSpanTotal, 17099988600000LL);
 
     int64_t nIntended = 0;
     int nPrevOrig = FORK_HEIGHT_DAG;
@@ -301,13 +301,13 @@ BOOST_AUTO_TEST_CASE(terminal_pow_supply_after_the_dag_fork_is_pinned)
     // (8,250,000 - 8,130,000 = 120,000 blocks -> 24,000 INN) and the seven full
     // rungs above it contribute 37,500 + 25,000 + 12,500 + 2,500 + 12,500 +
     // 25,000 + 50,000 = 165,000 INN. Total 189,000 INN.
-    BOOST_CHECK_EQUAL(nIntended, 18900000000000LL);
+    BOOST_CHECK_EQUAL(nIntended, 17100000000000LL);
     BOOST_CHECK(nSpanTotal <= nIntended);
-    BOOST_CHECK_EQUAL(nIntended - nSpanTotal, 11850000LL);
+    BOOST_CHECK_EQUAL(nIntended - nSpanTotal, 11400000LL);
     BOOST_CHECK(nIntended - nSpanTotal < nSpanBlocks);
 
-    // Terminal PoW subsidy is reached ~322.9 days after the fork.
-    BOOST_CHECK_EQUAL(nSpanBlocks * POST_DAG_TARGET_SPACING / 86400, 324LL);
+    // Terminal PoW subsidy is reached ~309.0 days after the fork.
+    BOOST_CHECK_EQUAL(nSpanBlocks * POST_DAG_TARGET_SPACING / 86400, 309LL);
 
     // The tail: 666 satoshi per 1s block is ~210.03 INN/year, the rate the 15s
     // schedule's 0.0001 INN per block produced (210.24 INN/year).

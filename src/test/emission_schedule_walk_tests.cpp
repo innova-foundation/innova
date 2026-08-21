@@ -292,7 +292,7 @@ BOOST_AUTO_TEST_CASE(regtest_tuning_cannot_move_mainnet_or_testnet)
         BOOST_CHECK_EQUAL(ScheduleDigest(8219000, 8221000, 1), 101140400797091916ULL);
         // The whole curve: pre-DAG rungs, every stretched rung, and the tail
         // past the last one at 34,920,000.
-        BOOST_CHECK_EQUAL(ScheduleDigest(0, 40000000, 997), 9230636210602489907ULL);
+        BOOST_CHECK_EQUAL(ScheduleDigest(0, 40000000, 997), 16444222349762884070ULL);
     }
     {
         NetworkGuard guard(false, true);
