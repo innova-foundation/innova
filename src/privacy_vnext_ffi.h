@@ -98,10 +98,8 @@ typedef std::array<unsigned char, 32> PrivacyVNextDigest;
 typedef std::array<unsigned char, iv5::FINALITY_MEMBER_KEY_BYTES>
     PrivacyVNextMemberKey;
 
-// Whether a payload's declared parameter digest is one this build judges payloads under.
-//
-// Answered from the linked Rust library's own list, so there is one accepted set and not
-// a C++ copy of it that can drift.
+// Whether a digest names a contract text this build's lineage published. Provenance
+// reporting only; must never gate consensus. Answered from the Rust library's list.
 bool IsAcceptedPrivacyVNextParameterDigest(const unsigned char* pDigest,
                                            size_t nSize);
 

@@ -999,6 +999,14 @@ bool CheckPrivacyVNextTransparentBinding(const CTransaction& tx,
                                          const PrivacyVNextStateEffects& effects,
                                          std::string& strError);
 
+/** Check a payload's parameter digest against the chain's (finalized epoch state, or
+ *  GENESIS_PARAMETER_DIGEST_SHA256 below the first IV5 epoch); never a self-derived value.
+ *  A mismatch is deterministic-invalid. */
+bool CheckPrivacyVNextParameterDigest(
+    const PrivacyVNextStateEffects& effects,
+    const std::vector<unsigned char>& vchChainDigest,
+    std::string& strError);
+
 /** Transparent value an IV5 transaction moves across the pool boundary: what the
  *  pool absorbs must be covered by the transparent inputs, what it releases is
  *  available to the transparent outputs. Fee accounting must apply this wherever

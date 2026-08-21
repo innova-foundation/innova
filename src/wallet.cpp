@@ -10926,6 +10926,7 @@ bool CWallet::BuildPrivacyVNextFeeNote(
     // carries no membership proof, so the seed anchor serves before any epoch has
     // held the pool.
     std::vector<unsigned char> vchRoot;
+    std::vector<unsigned char> vchParameterDigest;
     uint64_t nTreeSize = 0;
     {
         LOCK(cs_main);
@@ -10937,6 +10938,9 @@ bool CWallet::BuildPrivacyVNextFeeNote(
         {
             vchRoot = finalized.vchVNextRoot;
             nTreeSize = finalized.nVNextTreeSize;
+            // The digest belongs to the same record as the anchor: a validator reads
+            // both from the state this height names.
+            vchParameterDigest = finalized.vchVNextParameterDigest;
         }
         else
         {
@@ -10945,6 +10949,7 @@ bool CWallet::BuildPrivacyVNextFeeNote(
                 return false;
             vchRoot = seed.vchRoot;
             nTreeSize = seed.nTreeSize;
+            vchParameterDigest = seed.vchParameterDigest;
         }
     }
     if (vchRoot.size() != 32)
@@ -10988,7 +10993,8 @@ bool CWallet::BuildPrivacyVNextFeeNote(
                                           keys.outgoingViewSecret, finalizedRoot,
                                           nTreeSize, transparentBinding,
                                           (uint64_t)nAmount, 0, vOutputs,
-                                          vchPayloadOut, strErrorOut);
+                                          vchPayloadOut, strErrorOut,
+                                          &vchParameterDigest);
 }
 
 bool CWallet::CreatePrivacyVNextShield(
@@ -11026,6 +11032,7 @@ bool CWallet::CreatePrivacyVNextShield(
 
     // Take the anchor from the same finalized state a validator will check against.
     std::vector<unsigned char> vchRoot;
+    std::vector<unsigned char> vchParameterDigest;
     uint64_t nTreeSize = 0;
     {
         LOCK(cs_main);
@@ -11037,6 +11044,9 @@ bool CWallet::CreatePrivacyVNextShield(
         {
             vchRoot = finalized.vchVNextRoot;
             nTreeSize = finalized.nVNextTreeSize;
+            // The digest belongs to the same record as the anchor: a validator reads
+            // both from the state this height names.
+            vchParameterDigest = finalized.vchVNextParameterDigest;
         }
         else
         {
@@ -11047,6 +11057,7 @@ bool CWallet::CreatePrivacyVNextShield(
                 return false;
             vchRoot = seed.vchRoot;
             nTreeSize = seed.nTreeSize;
+            vchParameterDigest = seed.vchParameterDigest;
         }
     }
     if (vchRoot.size() != 32)
@@ -11144,7 +11155,7 @@ bool CWallet::CreatePrivacyVNextShield(
                                         nTreeSize, transparentBinding,
                                         (uint64_t)nSelected,
                                         (uint64_t)nFee, vOutputs, vchPayload,
-                                        strErrorOut))
+                                        strErrorOut, &vchParameterDigest))
         return false;
     txNew.privacyVNext.vchPayload = vchPayload;
 
@@ -11597,8 +11608,10 @@ bool CWallet::SelectPrivacyVNextVoteNote(
 static bool LoadPrivacyVNextSpendAnchor(std::vector<unsigned char>& vchStateOut,
                                         std::vector<unsigned char>& vchRootOut,
                                         uint64_t& nTreeSizeOut,
+                                        std::vector<unsigned char>& vchParameterDigestOut,
                                         std::string& strErrorOut)
 {
+    vchParameterDigestOut.clear();
     vchStateOut.clear();
     vchRootOut.clear();
     nTreeSizeOut = 0;
@@ -11636,6 +11649,9 @@ static bool LoadPrivacyVNextSpendAnchor(std::vector<unsigned char>& vchStateOut,
         vchStateOut = finalized.vchVNextTreeState;
         vchRootOut = finalized.vchVNextRoot;
         nTreeSizeOut = finalized.nVNextTreeSize;
+        // Same record as the anchor, because a validator reads both from the state the
+        // spend's height names.
+        vchParameterDigestOut = finalized.vchVNextParameterDigest;
         return true;
     }
 
@@ -11671,9 +11687,10 @@ static bool BuildPrivacyVNextSpend(
 
     std::vector<unsigned char> vchTreeState;
     std::vector<unsigned char> vchRoot;
+    std::vector<unsigned char> vchParameterDigest;
     uint64_t nTreeSize = 0;
     if (!LoadPrivacyVNextSpendAnchor(vchTreeState, vchRoot, nTreeSize,
-                                     strErrorOut))
+                                     vchParameterDigest, strErrorOut))
         return false;
 
     std::vector<uint64_t> vLeafIndexes(vNotes.size());
@@ -11741,12 +11758,12 @@ static bool BuildPrivacyVNextSpend(
             nNetwork, nDisclosureMask, genesis, outgoingViewSecret,
             finalizedRoot, nTreeSize, transparentBinding,
             (uint64_t)nTransparentOut, (uint64_t)nFee, vSpends,
-            vShieldedOutputs, vchPayloadOut, strErrorOut);
+            vShieldedOutputs, vchPayloadOut, strErrorOut, &vchParameterDigest);
 
     return BuildPrivacyVNextTransferPayload(
         nNetwork, nDisclosureMask, genesis, outgoingViewSecret, finalizedRoot,
         nTreeSize, transparentBinding, (uint64_t)nFee, vSpends,
-        vShieldedOutputs, vchPayloadOut, strErrorOut);
+        vShieldedOutputs, vchPayloadOut, strErrorOut, &vchParameterDigest);
 }
 
 // Common front half: validate the amount, pick notes and derive the wallet's own
@@ -11795,9 +11812,11 @@ static bool PreparePrivacyVNextSpend(
     // is a different problem from an empty wallet.
     std::vector<unsigned char> vchAnchorState;
     std::vector<unsigned char> vchAnchorRoot;
+    std::vector<unsigned char> vchAnchorParameterDigest;
     uint64_t nAnchorTreeSize = 0;
     if (!LoadPrivacyVNextSpendAnchor(vchAnchorState, vchAnchorRoot,
-                                     nAnchorTreeSize, strErrorOut))
+                                     nAnchorTreeSize, vchAnchorParameterDigest,
+                                     strErrorOut))
         return false;
 
     if (!pwallet->SelectPrivacyVNextNotes(nAmount + nFee, nSpendHeight, vNotesOut,
@@ -11988,9 +12007,11 @@ bool CWallet::ListPrivacyVNextCollateralCandidates(
 
     std::vector<unsigned char> vchAnchorState;
     std::vector<unsigned char> vchAnchorRoot;
+    std::vector<unsigned char> vchAnchorParameterDigest;
     uint64_t nAnchorTreeSize = 0;
     if (!LoadPrivacyVNextSpendAnchor(vchAnchorState, vchAnchorRoot,
-                                     nAnchorTreeSize, strErrorOut))
+                                     nAnchorTreeSize, vchAnchorParameterDigest,
+                                     strErrorOut))
         return false;
 
     int nSpendHeight = 0;
@@ -12086,9 +12107,10 @@ bool CWallet::CreatePrivacyVNextCollateralAttestation(
 
     std::vector<unsigned char> vchAnchorState;
     std::vector<unsigned char> vchAnchorRoot;
+    std::vector<unsigned char> vchAnchorParameterDigest;
     uint64_t nTreeSize = 0;
     if (!LoadPrivacyVNextSpendAnchor(vchAnchorState, vchAnchorRoot, nTreeSize,
-                                     strErrorOut))
+                                     vchAnchorParameterDigest, strErrorOut))
         return false;
     if (!note.fLeafIndexKnown || note.nLeafIndex >= nTreeSize)
     {
@@ -12149,11 +12171,13 @@ bool CWallet::CreatePrivacyVNextCollateralAttestation(
             ? !BuildPrivacyVNextFinalityMemberRegistrationPayload(
                   PrivacyVNextNetworkIdForWallet(), genesis, finalizedRoot,
                   nTreeSize, transparentBinding, context, vchMemberKey,
-                  collateral, vchPayload, keyImage, strErrorOut)
+                  collateral, vchPayload, keyImage, strErrorOut,
+                  &vchAnchorParameterDigest)
             : !BuildPrivacyVNextCollateralAttestationPayload(
                   PrivacyVNextNetworkIdForWallet(), genesis, finalizedRoot,
                   nTreeSize, transparentBinding, context, collateral,
-                  vchPayload, keyImage, strErrorOut))
+                  vchPayload, keyImage, strErrorOut,
+                  &vchAnchorParameterDigest))
         return false;
 
     txNew.privacyVNext.vchPayload = vchPayload;

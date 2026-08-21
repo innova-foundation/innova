@@ -1946,6 +1946,24 @@ bool CheckPrivacyVNextTransparentBinding(const CTransaction& tx,
     return true;
 }
 
+bool CheckPrivacyVNextParameterDigest(
+    const PrivacyVNextStateEffects& effects,
+    const std::vector<unsigned char>& vchChainDigest,
+    std::string& strError)
+{
+    strError.clear();
+    // Only the digest the chain carries: admitting digests compiled into the binary would
+    // make one block valid on some nodes and invalid on others.
+    if (vchChainDigest.size() != effects.parameterDigest.size() ||
+        !std::equal(effects.parameterDigest.begin(),
+                    effects.parameterDigest.end(), vchChainDigest.begin()))
+    {
+        strError = "IV5 payload parameter digest is not the one this chain carries";
+        return false;
+    }
+    return true;
+}
+
 static bool ValidatePrivacyVNextFinalizedContext(
     CTxDB& txdb, int nContextHeight,
     const PrivacyVNextStateEffects& effects,
@@ -2050,21 +2068,10 @@ static bool ValidatePrivacyVNextFinalizedContext(
         strError = "payload finalized root or tree size does not match consensus state";
         return false;
     }
-    // The chain's own digest, or any digest this build still accepts. The digest is a
-    // provenance tag no rule branches on, so admitting the bounded prior set costs no
-    // rule and is what stops a contract edit from invalidating every payload already on
-    // chain. The accepted set is a compile-time property of the binary, so this answers
-    // the same way on every node running it.
-    if (!std::equal(effects.parameterDigest.begin(),
-                    effects.parameterDigest.end(),
-                    expectedParameterDigest.begin()) &&
-        !IsAcceptedPrivacyVNextParameterDigest(effects.parameterDigest.data(),
-                                               effects.parameterDigest.size()))
-    {
-        strError = "payload parameter digest is not one this chain accepts";
-        return false;
-    }
-    return true;
+    // Judged against the digest the anchor epoch carries, which is the same record on
+    // every node at this height.
+    return CheckPrivacyVNextParameterDigest(effects, expectedParameterDigest,
+                                            strError);
 }
 
 // Whether an IV5 transaction's anchor is still inside the consensus window at a height;

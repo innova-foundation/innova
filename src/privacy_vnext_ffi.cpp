@@ -308,7 +308,7 @@ PrivacyVNextAbiInfo::PrivacyVNextAbiInfo()
 
 namespace
 {
-// Read the linked library's accepted parameter digests as lowercase hex, own digest first.
+// Read the linked library's published contract digests as lowercase hex, current first.
 bool ReadAcceptedParameterDigests(std::vector<std::string>& vHexOut,
                                   std::string& error)
 {
@@ -440,9 +440,9 @@ bool LoadPrivacyVNextAbiInfo(PrivacyVNextAbiInfo& info)
                     "; rebuild the Rust library (make -f makefile.unix "
                     "check-privacy-vnext-freshness)");
 
-    // The two accepted-digest lists must be the same list. A build whose C++ header
-    // accepts a digest the decoder refuses -- or the reverse -- would admit a payload on
-    // one side of the boundary and reject it on the other.
+    // The two published-contract lists must be the same list. Nothing branches on it,
+    // but the halves disagreeing means the C++ side and the decoder were not built from
+    // the same tree, which is the interesting failure here.
     std::vector<std::string> vAccepted;
     if (!ReadAcceptedParameterDigests(vAccepted, error))
         return Fail(info, error);
@@ -834,13 +834,13 @@ bool LoadPrivacyVNextEpochSeed(PrivacyVNextEpochSeed& seed,
         return false;
     }
 
-    uint8_t parameterDigest[INNOVA_PRIVACY_VNEXT_DIGEST_SIZE] = {0};
-    result = innova_privacy_vnext_parameter_digest(
-        parameterDigest, sizeof(parameterDigest));
-    if (result != INNOVA_PRIVACY_VNEXT_VALID)
+    // The pinned constant, never the linked library's own digest: first-epoch stamping and
+    // pre-epoch validity must not depend on what each node was compiled from.
+    unsigned char parameterDigest[INNOVA_PRIVACY_VNEXT_DIGEST_SIZE] = {0};
+    if (!iv5::DecodeDigestHex(iv5::GENESIS_PARAMETER_DIGEST_SHA256,
+                              parameterDigest))
     {
-        error = "Rust IV5 parameter digest returned result " +
-                std::to_string(result);
+        error = "IV5 genesis parameter digest is malformed";
         return false;
     }
     seed.vchParameterDigest.assign(
