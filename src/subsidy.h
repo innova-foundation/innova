@@ -7,6 +7,8 @@
 
 #include <stdint.h>
 
+#include <string>
+
 class CBlockIndex;
 
 // One subsidy per block, split at payment into finality reserve, collateralnode
@@ -46,6 +48,33 @@ int64_t SumFinalityReserve(int nBegin, int nEnd);
  *  settlement therefore pays nothing: its predecessor accrued at the pre-DAG
  *  rate, which is zero. */
 int64_t GetFinalityEpochBudget(int nSettlementEpoch);
+
+/** One block's reward at a height, for display surfaces. Derived from the
+ *  consensus schedule and CBlockSubsidySplit; never restate the ladder or rates. */
+struct CBlockRewardSummary
+{
+    int nHeight;
+    int nTargetSpacing;         // seconds between blocks at nHeight
+    bool fPostDag;              // nHeight is at or above this network's DAG fork
+    int64_t nSubsidy;           // issuance at nHeight: clamped, fees excluded
+    int64_t nProducer;          // producer's share when a collateralnode is paid
+    int64_t nCollateralnode;
+    int64_t nFinalityReserve;
+    int64_t nPerDay;            // nSubsidy over one day at nHeight's spacing
+};
+
+/** Evaluate the schedule at nHeight. pindexPrev is the parent of the block at
+ *  nHeight, as ConnectBlock would pass it, so the supply-cap clamp is the one
+ *  that block would actually meet; NULL leaves the clamp unreached. */
+CBlockRewardSummary GetBlockRewardSummary(int nHeight, const CBlockIndex* pindexPrev);
+
+/** "0.01333333 INN per block (~1152 INN/day)". Both figures are shown because
+ *  only the per-day one is comparable across the spacing change at the fork. */
+std::string FormatBlockRewardPerBlock(const CBlockRewardSummary& summary);
+
+/** "65% of the block reward -- 0.00866666 INN per block". The rate is divided
+ *  back out of the split, never restated. */
+std::string FormatCollateralnodeReward(const CBlockRewardSummary& summary);
 
 /** Whether this block pays a collateralnode. Not a bool: a bare true/false at a
  *  call site is the shape that silently takes the wrong branch. */

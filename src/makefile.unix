@@ -547,6 +547,7 @@ TEST_OBJS= \
     obj/test/nullstake_finality_only_tests.o \
     obj/test/retarget_tests.o \
     obj/test/emission_curve_tests.o \
+    obj/test/reward_display_tests.o \
     obj/test/supply_cap_tests.o \
     obj/test/subsidy_split_tests.o \
     obj/test/emission_schedule_walk_tests.o \
@@ -692,6 +693,7 @@ check-retarget: test_innova
 check-emission-curve: test_innova
 	./test_innova --run_test=emission_curve_tests
 	./test_innova --run_test=supply_cap_tests
+	./test_innova --run_test=reward_display_tests
 
 check-emission-schedule-walk: test_innova
 	./test_innova --run_test=emission_schedule_walk_tests

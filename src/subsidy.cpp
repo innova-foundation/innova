@@ -124,3 +124,60 @@ CBlockSubsidySplit CBlockSubsidySplit::ForBlock(int nBlockHeight,
     const int64_t nTotal = nProducer + nCollateralnode + nReserve;
     return CBlockSubsidySplit(nTotal, nProducer, nCollateralnode, nReserve);
 }
+
+static const int64_t SECONDS_PER_DAY = 24 * 60 * 60;
+
+CBlockRewardSummary GetBlockRewardSummary(int nHeight, const CBlockIndex* pindexPrev)
+{
+    CBlockRewardSummary summary;
+    summary.nHeight = nHeight;
+    summary.fPostDag = (nHeight >= FORK_HEIGHT_DAG);
+
+    // Same spacings as GetPostDagProofOfWorkSubsidy: the pre-DAG reference is the
+    // compile-time constant, never the mutable nTargetSpacing global.
+    summary.nTargetSpacing = summary.fPostDag
+                                 ? (int)GetTargetSpacingForHeight(nHeight)
+                                 : (int)PRE_DAG_TARGET_SPACING;
+
+    // Zero fees and zero committed settlement: what is wanted is the schedule
+    // this height pays, under the clamp a block here would meet, and nothing
+    // that belongs to one particular block body.
+    summary.nSubsidy = GetProofOfWorkReward(nHeight, 0, pindexPrev, 0);
+
+    // Paid: the collateralnode figure is what a payee would receive, which is
+    // the only reason to show it. The producer figure is therefore the share
+    // left on a block that pays one.
+    const CBlockSubsidySplit split = CBlockSubsidySplit::ForBlock(
+        nHeight, summary.nSubsidy, 0, CollateralnodeShare::Paid);
+    summary.nProducer = split.Producer();
+    summary.nCollateralnode = split.Collateralnode();
+    summary.nFinalityReserve = split.FinalityReserve();
+
+    const int64_t nBlocksPerDay = (summary.nTargetSpacing > 0)
+                                      ? SECONDS_PER_DAY / summary.nTargetSpacing : 0;
+    summary.nPerDay = summary.nSubsidy * nBlocksPerDay;
+
+    return summary;
+}
+
+std::string FormatBlockRewardPerBlock(const CBlockRewardSummary& summary)
+{
+    std::string str = FormatMoney(summary.nSubsidy) + " INN per block";
+    if (summary.nPerDay > 0)
+        str += " (~" + FormatMoney(summary.nPerDay) + " INN/day)";
+    return str;
+}
+
+std::string FormatCollateralnodeReward(const CBlockRewardSummary& summary)
+{
+    const int64_t nPaid = summary.nProducer + summary.nCollateralnode;
+    if (nPaid <= 0)
+        return "0 INN per block";
+
+    // Divide the rate back out rather than naming it: the one place 65% is
+    // written is CollateralnodeShareOfBase.
+    const int nPercent = (int)((summary.nCollateralnode * 100 + nPaid / 2) / nPaid);
+
+    return strprintf("%d%% of the block reward -- %s INN per block",
+                     nPercent, FormatMoney(summary.nCollateralnode).c_str());
+}

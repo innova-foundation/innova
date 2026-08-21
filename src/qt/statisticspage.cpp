@@ -1,6 +1,7 @@
 #include "statisticspage.h"
 #include "ui_statisticspage.h"
 #include "main.h"
+#include "subsidy.h"
 #include "wallet.h"
 #include "init.h"
 #include "base58.h"
@@ -117,219 +118,12 @@ void StatisticsPage::updateStatistics()
       phase = "Tribus Proof of Work with Proof of Stake";
   }
 
-  QString subsidy = "";
-  if (nHeight < 5000)
-    {
-        subsidy = "0.33 INN per block";
-    }
-  else if (nHeight < 10000)
-    {
-        subsidy = "0.66 INN per block";
-    }
-  else if (nHeight < 15000)
-    {
-        subsidy = "0.99 INN per block";
-    }
-  else if (nHeight < 20000)
-    {
-        subsidy = "1.32 INN per block";
-    }
-  else if (nHeight < 25000)
-    {
-        subsidy = "1.65 INN per block";
-    }
-  else if (nHeight < 27500)
-    {
-        subsidy = "1.485 INN per block";
-    }
-  else if (nHeight < 30000)
-    {
-        subsidy = "1.32 INN per block";
-    }
-  else if (nHeight < 32500)
-    {
-        subsidy = "1.155 INN per block";
-    }
-  else if (nHeight < 35000)
-    {
-        subsidy = "0.99 INN per block";
-    }
-  else if (nHeight < 37500)
-    {
-        subsidy = "0.825 INN per block";
-    }
-  else if (nHeight < 40000)
-    {
-        subsidy = "0.66 INN per block";
-    }
-  else if (nHeight < 42500)
-    {
-        subsidy = "0.495 INN per block";
-    }
-  else if (nHeight < 45000)
-    {
-        subsidy = "0.33 INN per block";
-    }
-  else if (nHeight < 47500)
-    {
-        subsidy = "0.165 INN per block";
-    }
-  else if (nHeight < 50000)
-    {
-        subsidy = "0.0825 INN per block";
-    }
-  else if (nHeight < 2000000)
-    {
-        subsidy = "0.0001 INN per block";
-    }
-  else if (nHeight < 2080000)
-    {
-        subsidy = "1 INN per block";
-    }
-  else if (nHeight < 2150000)
-    {
-        subsidy = "0.5 INN per block";
-    }
-  else if (nHeight < 2400000)
-    {
-        subsidy = "0.1 INN per block";
-    }
-  else if (nHeight < 2650000)
-    {
-        subsidy = "0.0001 INN per block";
-    }
-  else if (nHeight < 2750000)
-    {
-        subsidy = "0.15 INN per block";
-    }
-  else if (nHeight < 3000000)
-    {
-        subsidy = "0.2 INN per block";
-    }
-  else if (nHeight < 3250000)
-    {
-        subsidy = "0.25 INN per block";
-    }
-  else if (nHeight < 3500000)
-    {
-        subsidy = "0.5 INN per block";
-    }
-  else if (nHeight < 3750000)
-    {
-        subsidy = "0.75 INN per block";
-    }
-  else if (nHeight < 4000000)
-    {
-        subsidy = "1 INN per block";
-    }
-  else if (nHeight < 4025000)
-    {
-        subsidy = "0.75 INN per block";
-    }
-  else if (nHeight < 4250000)
-    {
-        subsidy = "0.5 INN per block";
-    }
-  else if (nHeight < 4500000)
-    {
-        subsidy = "0.25 INN per block";
-    }
-  else if (nHeight < 4750000)
-    {
-        subsidy = "0.2 INN per block";
-    }
-  else if (nHeight < 5000000)
-    {
-        subsidy = "0.15 INN per block";
-    }
-  else if (nHeight < 5250000)
-    {
-        subsidy = "0.1 INN per block";
-    }
-  else if (nHeight < 5500000)
-    {
-        subsidy = "0.05 INN per block";
-    }
-  else if (nHeight < 5750000)
-    {
-        subsidy = "0.01 INN per block";
-    }
-  else if (nHeight < 6000000)
-    {
-        subsidy = "0.1 INN per block";
-    }
-  else if (nHeight < 6250000)
-    {
-        subsidy = "0.15 INN per block";
-    }
-  else if (nHeight < 6500000)
-    {
-        subsidy = "0.2 INN per block";
-    }
-  else if (nHeight < 6750000)
-    {
-        subsidy = "0.25 INN per block";
-    }
-  else if (nHeight < 7000000)
-    {
-        subsidy = "0.5 INN per block";
-    }
-  else if (nHeight < 7250000)
-    {
-        subsidy = "0.75 INN per block";
-    }
-  else if (nHeight < 7500000)
-    {
-        subsidy = "1 INN per block";
-    }
-  else if (nHeight < 7525000)
-    {
-        subsidy = "0.75 INN per block";
-    }
-  else if (nHeight < 7750000)
-    {
-        subsidy = "0.5 INN per block";
-    }
-  else if (nHeight < 8000000)
-    {
-        subsidy = "0.25 INN per block";
-    }
-  else if (nHeight < 8250000)
-    {
-        subsidy = "0.2 INN per block";
-    }
-  else if (nHeight < 8500000)
-    {
-        subsidy = "0.15 INN per block";
-    }
-  else if (nHeight < 8750000)
-    {
-        subsidy = "0.1 INN per block";
-    }
-  else if (nHeight < 9000000)
-    {
-        subsidy = "0.05 INN per block";
-    }
-  else if (nHeight < 9250000)
-    {
-        subsidy = "0.01 INN per block";
-    }
-  else if (nHeight < 9500000)
-    {
-        subsidy = "0.05 INN per block";
-    }
-  else if (nHeight < 9750000)
-    {
-        subsidy = "0.1 INN per block";
-    }
-  else if (nHeight < 10000000)
-    {
-        subsidy = "0.2 INN per block";
-    }
-  else if (nHeight < 10250000)
-    {
-        subsidy = "0.001 INN per block";
-    }
+    // Derived from consensus, never a local copy of the emission ladder.
+    // pindexBest->pprev is the argument ConnectBlock uses for the tip's reward.
+    const CBlockRewardSummary rewardSummary =
+        GetBlockRewardSummary(nHeight, pindexBest->pprev);
+
+    QString subsidy = QString::fromStdString(FormatBlockRewardPerBlock(rewardSummary));
     QString hardness = QString::number(pHardness, 'f', 6);
     QString hardness2 = QString::number(pHardness2, 'f', 6);
     QString pawrate = QString::number(pPawrate2, 'f', 3);
@@ -338,7 +132,7 @@ void StatisticsPage::updateStatistics()
     QString QPeers = QString::number(peers);
     QString qVolume = QString::number(volume);
 	QString mn = "25,000 INN";
-	QString mn2 = "65% of PoW/PoS block reward";
+	QString mn2 = QString::fromStdString(FormatCollateralnodeReward(rewardSummary));
 
 	ui->mncost->setText("<b><font color=\"light blue\">" + mn + "</font></b>");
 	ui->mnreward->setText("<b><font color=\"light blue\">" + mn2 + "</font></b>");
