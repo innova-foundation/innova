@@ -1290,6 +1290,85 @@ BOOST_AUTO_TEST_CASE(the_envelope_table_is_the_same_table_on_both_sides)
     BOOST_CHECK(!iv5::IsAttestationOperation(iv5::NOTE_TRANSFER));
 }
 
+// Only owner authorization is enforced by a proof, so envelopes admit only that mode;
+// withdrawing an admitted value later would be a fork.
+BOOST_AUTO_TEST_CASE(only_implemented_authorization_modes_are_admitted)
+{
+    const uint8_t vUnimplemented[3] = {iv5::AUTH_COLD_STAKER,
+                                       iv5::AUTH_M_OF_N_PUBLIC_SIGNERS,
+                                       iv5::AUTH_M_OF_N_HIDDEN_SIGNERS};
+
+    // 2008 is the live envelope, and a plain transfer named no authorization at all.
+    for (uint8_t nMask = 0; nMask <= iv5::DISCLOSURE_MASK; ++nMask)
+    {
+        BOOST_CHECK(iv5::EnvelopeAllows(2008, iv5::NOTE_TRANSFER, iv5::FINALITY_NONE,
+                                        iv5::AUTH_OWNER, iv5::FINALITY_OBJECT_NONE,
+                                        nMask));
+        for (size_t i = 0; i < 3; ++i)
+            BOOST_CHECK_MESSAGE(
+                !iv5::EnvelopeAllows(2008, iv5::NOTE_TRANSFER, iv5::FINALITY_NONE,
+                                     vUnimplemented[i], iv5::FINALITY_OBJECT_NONE, nMask),
+                strprintf("2008 admitted authorization %u at mask %u",
+                          (unsigned)vUnimplemented[i], (unsigned)nMask));
+    }
+
+    // 2005 constrained neither of its two shapes.
+    BOOST_CHECK(iv5::EnvelopeAllows(2005, iv5::NOTE_OPERATION_NONE,
+                                    iv5::FINALITY_NULLSTAKE_V3, iv5::AUTH_OWNER,
+                                    iv5::FINALITY_OBJECT_VOTE, iv5::DISCLOSURE_MASK));
+    BOOST_CHECK(iv5::EnvelopeAllows(2005, iv5::NOTE_DELEGATION_CREATE, iv5::FINALITY_NONE,
+                                    iv5::AUTH_OWNER, iv5::FINALITY_OBJECT_NONE,
+                                    iv5::DISCLOSURE_MASK));
+    for (size_t i = 0; i < 3; ++i)
+    {
+        BOOST_CHECK(!iv5::EnvelopeAllows(2005, iv5::NOTE_OPERATION_NONE,
+                                         iv5::FINALITY_NULLSTAKE_V3, vUnimplemented[i],
+                                         iv5::FINALITY_OBJECT_VOTE,
+                                         iv5::DISCLOSURE_MASK));
+        BOOST_CHECK(!iv5::EnvelopeAllows(2005, iv5::NOTE_DELEGATION_CREATE,
+                                         iv5::FINALITY_NONE, vUnimplemented[i],
+                                         iv5::FINALITY_OBJECT_NONE,
+                                         iv5::DISCLOSURE_MASK));
+    }
+
+    // 2006 is the one envelope whose mode is not owner, and it keeps both M-of-N values.
+    BOOST_CHECK(iv5::EnvelopeAllows(2006, iv5::NOTE_M_OF_N_MINT, iv5::FINALITY_NONE,
+                                    iv5::AUTH_M_OF_N_PUBLIC_SIGNERS,
+                                    iv5::FINALITY_OBJECT_NONE, iv5::DISCLOSURE_MASK));
+    BOOST_CHECK(iv5::EnvelopeAllows(2006, iv5::NOTE_M_OF_N_MINT, iv5::FINALITY_NONE,
+                                    iv5::AUTH_M_OF_N_HIDDEN_SIGNERS,
+                                    iv5::FINALITY_OBJECT_NONE, iv5::DISCLOSURE_MASK));
+    BOOST_CHECK(!iv5::EnvelopeAllows(2006, iv5::NOTE_M_OF_N_MINT, iv5::FINALITY_NONE,
+                                     iv5::AUTH_OWNER, iv5::FINALITY_OBJECT_NONE,
+                                     iv5::DISCLOSURE_MASK));
+}
+
+// Every scan derives keys for one address type. A higher type would decode, be payable, and
+// never be seen, which is the shape of the scan-index defect one layer over: the accepted set
+// and the scanned set have to be the same set.
+BOOST_AUTO_TEST_CASE(only_the_scanned_iv5_address_type_derives)
+{
+    PrivacyVNextDigest seed;
+    seed.fill(0x21);
+    PrivacyVNextDigest genesis;
+    genesis.fill(0x9c);
+
+    std::string error;
+    PrivacyVNextDerivedKeys keys;
+    BOOST_REQUIRE_MESSAGE(
+        DerivePrivacyVNextKeys(seed, genesis, 0, 1, 0, keys, error), error);
+    BOOST_CHECK_EQUAL(keys.nAddressType, 0U);
+
+    for (uint8_t nType = 1; nType <= 3; ++nType)
+    {
+        PrivacyVNextDerivedKeys unscanned;
+        error.clear();
+        BOOST_CHECK_MESSAGE(
+            !DerivePrivacyVNextKeys(seed, genesis, 0, 1, nType, unscanned, error),
+            strprintf("address type %u derived keys no scan covers", (unsigned)nType));
+    }
+}
+
 // The normative contract names every operation the decoder admits.
 BOOST_AUTO_TEST_CASE(the_normative_contract_names_every_operation_the_decoder_admits)
 {
@@ -1360,6 +1439,78 @@ BOOST_AUTO_TEST_CASE(the_normative_contract_names_every_operation_the_decoder_ad
                       (int)INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_TRAILER_SIZE);
     BOOST_CHECK_EQUAL(find_value(effects, "header_bytes").get_int(),
                       (int)INNOVA_PRIVACY_VNEXT_PAYLOAD_EFFECTS_HEADER_SIZE);
+}
+
+// The contract's authorization lists equal the modes the decoder admits per envelope.
+BOOST_AUTO_TEST_CASE(the_normative_contract_names_every_authorization_the_decoder_admits)
+{
+    size_t nRequired = 0;
+    BOOST_REQUIRE_EQUAL(
+        innova_privacy_vnext_protocol_contract(NULL, 0, &nRequired),
+        INNOVA_PRIVACY_VNEXT_VALID);
+    std::vector<uint8_t> contract(nRequired);
+    size_t nWritten = 0;
+    BOOST_REQUIRE_EQUAL(
+        innova_privacy_vnext_protocol_contract(&contract[0], contract.size(),
+                                               &nWritten),
+        INNOVA_PRIVACY_VNEXT_VALID);
+    BOOST_REQUIRE_EQUAL(nWritten, nRequired);
+
+    using namespace json_spirit;
+    json_spirit::Value parsed;
+    const std::string strContract(contract.begin(), contract.end());
+    BOOST_REQUIRE(json_spirit::read_string(strContract, parsed));
+    const json_spirit::Object& capabilities =
+        find_value(parsed.get_obj(), "envelope_capabilities").get_obj();
+    BOOST_REQUIRE_GT(capabilities.size(), 0U);
+
+    size_t nChecked = 0;
+    for (size_t i = 0; i < capabilities.size(); ++i)
+    {
+        const int nVersion = atoi(capabilities[i].name_.c_str());
+        BOOST_REQUIRE_GT(nVersion, 0);
+
+        std::set<int> setDeclared;
+        const json_spirit::Array& declared =
+            find_value(capabilities[i].value_.get_obj(), "authorization_modes")
+                .get_array();
+        for (size_t j = 0; j < declared.size(); ++j)
+            setDeclared.insert(declared[j].get_int());
+
+        // What the decoder admits anywhere in this envelope, over the same enum ranges
+        // the two-sided table check walks.
+        std::set<int> setAdmitted;
+        for (uint8_t nAuth = 0; nAuth <= iv5::AUTH_M_OF_N_HIDDEN_SIGNERS; ++nAuth)
+        for (int nOperationIndex = 0; nOperationIndex <= 11; ++nOperationIndex)
+        {
+            const uint8_t nOperation =
+                nOperationIndex == 11
+                    ? iv5::NOTE_OPERATION_NONE
+                    : static_cast<uint8_t>(nOperationIndex);
+            for (uint8_t nProfile = 0; nProfile <= iv5::FINALITY_NULLSTAKE_V3; ++nProfile)
+            for (uint8_t nObject = 0;
+                 nObject <= iv5::FINALITY_OBJECT_COMMITTEE_ROTATION; ++nObject)
+            for (uint8_t nMask = 0; nMask <= iv5::DISCLOSURE_MASK; ++nMask)
+                if (iv5::EnvelopeAllows(nVersion, nOperation, nProfile, nAuth, nObject,
+                                        nMask))
+                    setAdmitted.insert(nAuth);
+        }
+
+        for (int nAuth = 0; nAuth <= iv5::AUTH_M_OF_N_HIDDEN_SIGNERS; ++nAuth)
+        {
+            BOOST_CHECK_MESSAGE(
+                (setDeclared.count(nAuth) != 0) == (setAdmitted.count(nAuth) != 0),
+                strprintf("the contract and the decoder disagree about envelope %d "
+                          "authorization %d: declared %d admitted %d",
+                          nVersion, nAuth, (int)(setDeclared.count(nAuth) != 0),
+                          (int)(setAdmitted.count(nAuth) != 0)));
+        }
+        // An envelope that admitted nothing would agree with an empty list trivially.
+        BOOST_CHECK_MESSAGE(!setAdmitted.empty(),
+                            strprintf("envelope %d admits no authorization", nVersion));
+        ++nChecked;
+    }
+    BOOST_CHECK_GE(nChecked, 9U);
 }
 
 // A contract edit that changes no rule must not invalidate re-validation of every payload

@@ -366,6 +366,12 @@ fn parse_payload_prefix<'a>(
         pseudo_outs.push(pseudo_out);
         let key_image = cursor.array()?;
         validate_ed25519_point(key_image)?;
+        // Each SAL is verified on its own, so a payload that lists one key image twice
+        // spends one note twice and still proves. The ledger rejects it at every site; this
+        // keeps the proof layer from certifying a payload that double-spends inside itself.
+        if key_images.contains(&key_image) {
+            return Err(ResultCode::ConsensusInvalid);
+        }
         key_images.push(key_image);
     }
 
@@ -1999,6 +2005,61 @@ mod tests {
             parse_payload_prefix(2008, &two_outputs(&distinct), TEST_NETWORK, Some(&genesis))
                 .is_ok(),
             "distinct owners must still parse"
+        );
+    }
+
+    // A payload naming one key image twice is refused at the proof layer, matching the
+    // rule for output owners.
+    #[test]
+    fn payload_rejects_a_repeated_key_image() {
+        let genesis = [0x11_u8; 32];
+        let (encrypted, _, _) = encrypted_output(&genesis, 0);
+        let first_key_image = (ED25519_BASEPOINT_POINT * Scalar::from(5_u64))
+            .compress()
+            .to_bytes();
+        let two_inputs = |second_key_image: &[u8; 32]| -> Vec<u8> {
+            let state =
+                tree::update(&[1, 0, 1, 0, 0, 0, 0, 0]).expect("empty canonical tree state");
+            let root = tree::root(&state).expect("empty canonical tree root");
+            let pseudo_out = ED25519_BASEPOINT_POINT.compress().to_bytes();
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+            payload.extend_from_slice(&[NOTE_TRANSFER, 0, 0, 7, FINALITY_OBJECT_NONE, 1, 0]);
+            payload.extend_from_slice(&genesis);
+            payload.extend_from_slice(&Sha256::digest(PRODUCT_CONTRACT));
+            payload.extend_from_slice(&root[12..44]);
+            payload.extend_from_slice(&0_u64.to_le_bytes());
+            payload.extend_from_slice(&0_i64.to_le_bytes());
+            payload.extend_from_slice(&1_u64.to_le_bytes());
+            payload.extend_from_slice(&TEST_TRANSPARENT_BINDING);
+            compact_size(&mut payload, 2);
+            for key_image in [&first_key_image, second_key_image] {
+                payload.extend_from_slice(&pseudo_out);
+                payload.extend_from_slice(key_image);
+            }
+            compact_size(&mut payload, 1);
+            put_output(&mut payload, &encrypted);
+            payload
+        };
+
+        assert_eq!(
+            parse_payload_prefix(
+                2008,
+                &two_inputs(&first_key_image),
+                TEST_NETWORK,
+                Some(&genesis)
+            )
+            .err(),
+            Some(ResultCode::ConsensusInvalid)
+        );
+
+        let distinct = (ED25519_BASEPOINT_POINT * Scalar::from(6_u64))
+            .compress()
+            .to_bytes();
+        assert!(
+            parse_payload_prefix(2008, &two_inputs(&distinct), TEST_NETWORK, Some(&genesis))
+                .is_ok(),
+            "distinct key images must still parse"
         );
     }
 

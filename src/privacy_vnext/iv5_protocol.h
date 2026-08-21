@@ -11,7 +11,7 @@
 namespace iv5
 {
 static const char PROTOCOL_CONTRACT_SHA256[] =
-    "f0259cccfe96b0665a26b1774e2794222ceb8093d800d886cb1646f760f3710b";
+    "401f625a625e393fd295971a939f03a02eec22489a7e7258bbb0b2d6f8a3cb7a";
 // Protocol-contract digests still accepted on a payload built before this one.
 //
 // The digest is a provenance tag no validation rule branches on -- it is only ever
@@ -24,8 +24,12 @@ static const char PROTOCOL_CONTRACT_SHA256[] =
 // LoadPrivacyVNextAbiInfo refuses a build whose two lists disagree.
 //
 // e65eaaa6: operation 8 was written into the contract text and operation 9 was added.
+// f0259ccc: the text still declared all four authorization modes on 2005 and 2008 after
+// the decoders were narrowed to owner. The digest selects no rule, so a payload carrying
+// it is judged by the narrowed table like any other.
 static const char* const PROTOCOL_CONTRACT_SHA256_PRIOR[] = {
-    "e65eaaa660c07e806f5b7e7c9550709929b9c2e9ba4cfd1e4fe56dcd384c9d5f"
+    "e65eaaa660c07e806f5b7e7c9550709929b9c2e9ba4cfd1e4fe56dcd384c9d5f",
+    "f0259cccfe96b0665a26b1774e2794222ceb8093d800d886cb1646f760f3710b"
 };
 static const size_t PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT =
     sizeof(PROTOCOL_CONTRACT_SHA256_PRIOR) /
@@ -34,7 +38,7 @@ static const size_t PROTOCOL_CONTRACT_SHA256_PRIOR_COUNT =
 // LoadPrivacyVNextAbiInfo refuses a mismatch; update together with the manifest
 // (verify_provenance.py checks).
 static const char PROVENANCE_SHA256[] =
-    "40b4747fa008d1762201243aab12f2d319e395da4fd5e019e9dbca00c9815e6a";
+    "07b9de2f8d99d5f9846d99a9df93ae959cbb6035c887a1c8f191ae1ed70c3175";
 static const uint16_t PROTOCOL_SCHEMA = 1;
 static const unsigned char ENVELOPE_MARKER[5] = {
     0xff, 0x49, 0x56, 0x35, 0x50
@@ -173,7 +177,8 @@ inline bool EnvelopeAllows(int wireVersion, uint8_t operation,
                authorization == AUTH_OWNER;
     case 2005:
         return (profile == FINALITY_NULLSTAKE_V3 ||
-                operation == NOTE_DELEGATION_CREATE);
+                operation == NOTE_DELEGATION_CREATE) &&
+               authorization == AUTH_OWNER;
     case 2006:
         return operation == NOTE_M_OF_N_MINT &&
                (authorization == AUTH_M_OF_N_PUBLIC_SIGNERS ||
@@ -181,11 +186,13 @@ inline bool EnvelopeAllows(int wireVersion, uint8_t operation,
     case 2007:
         return operation == NOTE_RECLAIM && authorization == AUTH_OWNER;
     case 2008:
-        // An attestation publishes a persistent per-node pseudonym by design; the rest of
-        // the note must stay hidden, so the fully private mask is the only one allowed and
-        // the sender authority a lower mask would publish never exists.
-        return !IsAttestationOperation(operation) ||
-               (disclosureMask == DISCLOSURE_MASK && authorization == AUTH_OWNER);
+        // No verifier dispatches on the authorization field, so owner is the only mode any
+        // proof actually enforces; admitting a mode nothing verifies would take a fork to
+        // withdraw. An attestation also publishes a persistent per-node pseudonym by
+        // design, so the fully private mask is the only one it may carry.
+        return authorization == AUTH_OWNER &&
+               (!IsAttestationOperation(operation) ||
+                disclosureMask == DISCLOSURE_MASK);
     default:
         return false;
     }

@@ -68,6 +68,20 @@ BOOST_AUTO_TEST_CASE(privacy_vnext_seed_record_is_encrypted_and_checked)
                               address, 2, decodedAddress, error), error);
     BOOST_CHECK_EQUAL(decodedAddress.nNetwork, 2U);
     BOOST_CHECK_EQUAL(decodedAddress.nAddressType, 0U);
+
+    // Issuance stops where scanning stops, for the address type as much as for the index:
+    // a scan derives one type, so an address of any other is receivable and never seen.
+    for (uint8_t nType = 1; nType <= 3; ++nType)
+    {
+        std::string unscanned;
+        uint32_t unscannedIndex = 0;
+        error.clear();
+        BOOST_CHECK(!localWallet.GenerateNewPrivacyVNextAddress(
+            nType, unscanned, unscannedIndex, error));
+        BOOST_CHECK(!error.empty());
+        BOOST_CHECK(unscanned.empty());
+    }
+
     CPrivacyVNextSeedRecord advanced;
     {
         CWalletDB walletdb(walletFile);

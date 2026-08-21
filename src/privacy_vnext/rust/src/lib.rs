@@ -43,7 +43,10 @@ const NULLSTAKE_GENERATION_MAX: u32 = 3;
 const PAYLOAD_SCHEMA: u32 = 1;
 const PAYLOAD_SCHEMA_U16: u16 = 1;
 const ADDRESS_FORMAT: u8 = 1;
-const ADDRESS_TYPE_MAX: u8 = 3;
+// Issuance stops where scanning stops. Every scan derives keys for one address type, so a
+// higher type would decode, be payable, and never be seen. Raising this bound is a change to
+// the scan first: the callers that pass a type are the same list, not a second one.
+const ADDRESS_TYPE_MAX: u8 = 0;
 const NETWORK_ID_MAX: u8 = 2;
 const ADDRESS_COMPONENT_SIZE: usize = 70;
 const KEY_DERIVATION_REQUEST_SIZE: usize = 72;
@@ -196,10 +199,22 @@ pub const fn is_attestation_operation(operation: u8) -> bool {
 /// e65eaaa6: the text before operation 8 was written down and operation 9 was added. Both
 /// were already enforced by this binary's predecessor, so payloads carrying it are judged
 /// by exactly the rules they were built under.
-const PRIOR_PARAMETER_DIGESTS: [[u8; 32]; 1] = [[
-    0xe6, 0x5e, 0xaa, 0xa6, 0x60, 0xc0, 0x7e, 0x80, 0x6f, 0x5b, 0x7e, 0x7c, 0x95, 0x50, 0x70, 0x99,
-    0x29, 0xb9, 0xc2, 0xe9, 0xba, 0x4c, 0xfd, 0x1e, 0x4f, 0xe5, 0x6d, 0xcd, 0x38, 0x4c, 0x9d, 0x5f,
-]];
+///
+/// f0259ccc: the text still declared all four authorization modes on 2005 and 2008 after the
+/// decoders were narrowed to owner. The digest selects no rule, so a payload carrying it is
+/// judged by the narrowed table like any other.
+const PRIOR_PARAMETER_DIGESTS: [[u8; 32]; 2] = [
+    [
+        0xe6, 0x5e, 0xaa, 0xa6, 0x60, 0xc0, 0x7e, 0x80, 0x6f, 0x5b, 0x7e, 0x7c, 0x95, 0x50, 0x70,
+        0x99, 0x29, 0xb9, 0xc2, 0xe9, 0xba, 0x4c, 0xfd, 0x1e, 0x4f, 0xe5, 0x6d, 0xcd, 0x38, 0x4c,
+        0x9d, 0x5f,
+    ],
+    [
+        0xf0, 0x25, 0x9c, 0xcc, 0xfe, 0x96, 0xb0, 0x66, 0x5a, 0x26, 0xb1, 0x77, 0x4e, 0x27, 0x94,
+        0x22, 0x2c, 0xeb, 0x80, 0x93, 0xd8, 0x00, 0xd8, 0x86, 0xcb, 0x16, 0x46, 0xf7, 0x60, 0xf3,
+        0x71, 0x0b,
+    ],
+];
 
 /// Whether a payload's declared parameter digest is one this binary judges payloads under.
 #[must_use]
@@ -255,7 +270,10 @@ pub const fn envelope_allows(
         2002 => matches!(operation, NOTE_TRANSFER | NOTE_NULLSEND) && authorization == AUTH_OWNER,
         2003 => profile == FINALITY_NULLSTAKE_V1 && authorization == AUTH_OWNER,
         2004 => profile == FINALITY_NULLSTAKE_V2 && authorization == AUTH_OWNER,
-        2005 => profile == FINALITY_NULLSTAKE_V3 || operation == NOTE_DELEGATION_CREATE,
+        2005 => {
+            (profile == FINALITY_NULLSTAKE_V3 || operation == NOTE_DELEGATION_CREATE)
+                && authorization == AUTH_OWNER
+        }
         2006 => {
             operation == NOTE_M_OF_N_MINT
                 && matches!(
@@ -264,14 +282,15 @@ pub const fn envelope_allows(
                 )
         }
         2007 => operation == NOTE_RECLAIM && authorization == AUTH_OWNER,
-        // An attestation publishes a persistent per-node pseudonym by design; the rest of
-        // the note must stay hidden, so the fully private mask is the only one allowed and
-        // the sender authority a lower mask would publish never exists. Both attestation
+        // No verifier dispatches on the authorization field, so owner is the only mode any
+        // proof actually enforces; admitting a mode nothing verifies would take a fork to
+        // withdraw. An attestation also publishes a persistent per-node pseudonym by
+        // design, so the fully private mask is the only one it may carry. Both attestation
         // operations are bound by it: a member registration is an attestation that also
         // publishes an encryption key, and exposing its sender would name the collateral.
         2008 => {
-            !is_attestation_operation(operation)
-                || (disclosure_mask == 7 && authorization == AUTH_OWNER)
+            authorization == AUTH_OWNER
+                && (!is_attestation_operation(operation) || disclosure_mask == 7)
         }
         _ => false,
     }
@@ -1635,6 +1654,106 @@ mod tests {
         ));
     }
 
+    // No verifier dispatches on the authorization field and owner is the only enforced mode, so
+    // every envelope admits only owner; withdrawing an admitted value later is a fork.
+    #[test]
+    fn only_implemented_authorization_modes_are_admitted() {
+        const UNIMPLEMENTED: [u8; 3] = [
+            AUTH_COLD_STAKER,
+            AUTH_M_OF_N_PUBLIC_SIGNERS,
+            AUTH_M_OF_N_HIDDEN_SIGNERS,
+        ];
+
+        // 2008 is the live envelope, and a plain transfer carried no constraint at all.
+        for mask in 0..=7_u8 {
+            assert!(envelope_allows(
+                2008,
+                NOTE_TRANSFER,
+                FINALITY_NONE,
+                AUTH_OWNER,
+                FINALITY_OBJECT_NONE,
+                mask
+            ));
+            for authorization in UNIMPLEMENTED {
+                assert!(
+                    !envelope_allows(
+                        2008,
+                        NOTE_TRANSFER,
+                        FINALITY_NONE,
+                        authorization,
+                        FINALITY_OBJECT_NONE,
+                        mask
+                    ),
+                    "2008 admitted unimplemented authorization {authorization} at mask {mask}"
+                );
+            }
+        }
+
+        // 2005 named no authorization on either of its two shapes.
+        assert!(envelope_allows(
+            2005,
+            NOTE_OPERATION_NONE,
+            FINALITY_NULLSTAKE_V3,
+            AUTH_OWNER,
+            FINALITY_OBJECT_VOTE,
+            7
+        ));
+        assert!(envelope_allows(
+            2005,
+            NOTE_DELEGATION_CREATE,
+            FINALITY_NONE,
+            AUTH_OWNER,
+            FINALITY_OBJECT_NONE,
+            7
+        ));
+        for authorization in UNIMPLEMENTED {
+            assert!(
+                !envelope_allows(
+                    2005,
+                    NOTE_OPERATION_NONE,
+                    FINALITY_NULLSTAKE_V3,
+                    authorization,
+                    FINALITY_OBJECT_VOTE,
+                    7
+                ),
+                "2005 admitted unimplemented authorization {authorization} on a vote"
+            );
+            assert!(
+                !envelope_allows(
+                    2005,
+                    NOTE_DELEGATION_CREATE,
+                    FINALITY_NONE,
+                    authorization,
+                    FINALITY_OBJECT_NONE,
+                    7
+                ),
+                "2005 admitted unimplemented authorization {authorization} on a delegation"
+            );
+        }
+
+        // 2006 is the one envelope whose mode is not owner, and it keeps both M-of-N values.
+        for authorization in [AUTH_M_OF_N_PUBLIC_SIGNERS, AUTH_M_OF_N_HIDDEN_SIGNERS] {
+            assert!(envelope_allows(
+                2006,
+                NOTE_M_OF_N_MINT,
+                FINALITY_NONE,
+                authorization,
+                FINALITY_OBJECT_NONE,
+                7
+            ));
+        }
+        for authorization in [AUTH_OWNER, AUTH_COLD_STAKER] {
+            assert!(!envelope_allows(
+                2006,
+                NOTE_M_OF_N_MINT,
+                FINALITY_NONE,
+                authorization,
+                FINALITY_OBJECT_NONE,
+                7
+            ));
+        }
+    }
+
     // An attestation publishes a key image that stays linked to the note forever, so the
     // grammar must not admit one that also publishes the sender authority, an amount, or a
     // recipient, and no wire version before 2008 may carry the operation at all.
@@ -2059,6 +2178,71 @@ mod tests {
                 )
             },
             ResultCode::ConsensusInvalid as i32
+        );
+    }
+
+    // Scans derive keys for address type 0 only, so accepted types are spelled out: widening the
+    // bound alone fails here until the scan callers widen.
+    #[test]
+    fn only_the_scanned_address_type_is_accepted() {
+        const SCANNED: u8 = 0;
+
+        let keys = derive_test_keys(1, 7);
+        let mut components = [0_u8; ADDRESS_COMPONENT_SIZE];
+        components[..2].copy_from_slice(&PAYLOAD_SCHEMA_U16.to_le_bytes());
+        components[2] = 1;
+        components[3] = ADDRESS_FORMAT;
+        components[6..38].copy_from_slice(&keys[168..200]);
+        components[38..70].copy_from_slice(&keys[200..232]);
+
+        let mut address = [0_u8; 128];
+        let mut address_len = 0;
+        let mut output = [0_u8; KEY_DERIVATION_OUTPUT_SIZE];
+        let mut written = 0;
+        for address_type in 0..=3_u8 {
+            let expected = if address_type == SCANNED {
+                ResultCode::Valid as i32
+            } else {
+                ResultCode::ConsensusInvalid as i32
+            };
+
+            components[4] = address_type;
+            // SAFETY: all pointers identify caller-owned request/output storage.
+            let encoded = unsafe {
+                innova_privacy_vnext_address_encode(
+                    components.as_ptr(),
+                    components.len(),
+                    address.as_mut_ptr(),
+                    address.len(),
+                    &raw mut address_len,
+                )
+            };
+            assert_eq!(
+                encoded, expected,
+                "an address of type {address_type} must follow the scanned type"
+            );
+
+            let mut request = test_key_request(1, 7);
+            request[3] = address_type;
+            // SAFETY: all pointers identify exact caller-owned request/output storage.
+            let derived = unsafe {
+                innova_privacy_vnext_key_derive(
+                    request.as_ptr(),
+                    request.len(),
+                    output.as_mut_ptr(),
+                    output.len(),
+                    &raw mut written,
+                )
+            };
+            assert_eq!(
+                derived, expected,
+                "derivation for address type {address_type} must follow the scanned type"
+            );
+        }
+
+        assert_eq!(
+            ADDRESS_TYPE_MAX, SCANNED,
+            "the accepted address type must be the one every scan derives"
         );
     }
 }
