@@ -212,7 +212,7 @@
       "note_operations": [4, 255],
       "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
       "finality_profiles": [0, 3],
-      "authorization_modes": [0, 1, 2, 3],
+      "authorization_modes": [0],
       "finality_objects": [0, 1, 2, 3, 4]
     },
     "2006": {
@@ -233,7 +233,7 @@
       "note_operations": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 255],
       "disclosure_masks": [0, 1, 2, 3, 4, 5, 6, 7],
       "finality_profiles": [0, 1, 2, 3],
-      "authorization_modes": [0, 1, 2, 3],
+      "authorization_modes": [0],
       "finality_objects": [0, 1, 2, 3, 4],
       "note_operation_8_and_9_disclosure_masks": [7],
       "note_operation_8_and_9_authorization_modes": [0]
